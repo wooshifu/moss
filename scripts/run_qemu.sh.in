@@ -1,0 +1,63 @@
+#!/bin/bash
+set -e
+
+# QEMU运行脚本模板
+KERNEL_ELF="@CMAKE_BINARY_DIR@/bin/moss.elf"
+BUILD_DIR="@CMAKE_BINARY_DIR@"
+
+# 检查内核文件是否存在
+if [ ! -f "$KERNEL_ELF" ]; then
+    echo "错误: 内核文件不存在: $KERNEL_ELF"
+    echo "请先运行 'make' 构建内核"
+    exit 1
+fi
+
+# QEMU参数配置
+QEMU_ARGS=(
+    -machine virt                    # 使用virt平台
+    -cpu cortex-a57                 # ARM64 Cortex-A57 CPU
+    -smp 4                          # 4个CPU核心
+    -m 256M                         # 256MB内存
+    -kernel "$KERNEL_ELF"           # 内核文件
+    -nographic                      # 无图形界面
+    -serial stdio                   # 串口重定向到终端
+    -monitor none                   # 禁用QEMU监视器
+    -no-reboot                      # 崩溃时不重启
+)
+
+# 调试模式参数
+DEBUG_ARGS=(
+    -s                              # GDB服务器端口1234
+    -S                              # 启动时暂停，等待GDB连接
+)
+
+# 检查是否为调试模式
+DEBUG_MODE=false
+if [ "$1" == "--debug" ]; then
+    DEBUG_MODE=true
+fi
+
+echo "=================================================="
+echo "           Moss ARM64微内核操作系统"
+echo "=================================================="
+echo "内核文件: $KERNEL_ELF"
+echo "构建目录: $BUILD_DIR"
+
+if [ "$DEBUG_MODE" == "true" ]; then
+    echo "调试模式: 启用"
+    echo "GDB连接: target remote localhost:1234"
+    echo "=================================================="
+    echo "在另一个终端运行:"
+    echo "  gdb $KERNEL_ELF"
+    echo "  (gdb) target remote localhost:1234"
+    echo "  (gdb) continue"
+    echo "=================================================="
+    echo ""
+    exec qemu-system-aarch64 "${QEMU_ARGS[@]}" "${DEBUG_ARGS[@]}"
+else
+    echo "运行模式: 正常"
+    echo "退出方式: Ctrl+A然后按X"
+    echo "=================================================="
+    echo ""
+    exec qemu-system-aarch64 "${QEMU_ARGS[@]}"
+fi
