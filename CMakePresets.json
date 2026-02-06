@@ -1,0 +1,23 @@
+{
+    "version": 6,
+    "cmakeMinimumRequired": {
+        "major": 3,
+        "minor": 25,
+        "patch": 0
+    },
+    "include": [
+        "presets/arm64.json",
+        "presets/x86_64.json",
+        "presets/riscv.json"
+    ],
+    "testPresets": [
+        {
+            "name": "debug-test",
+            "displayName": "Debug Test in QEMU",
+            "configurePreset": "arm64-qemu-debug",
+            "execution": {
+                "timeout": 10
+            }
+        }
+    ]
+}
