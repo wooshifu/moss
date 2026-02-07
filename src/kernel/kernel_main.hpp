@@ -3,18 +3,18 @@
 // MOSS微内核主系统集成
 // 统一初始化和管理所有内核子系统
 
-#include "include/types.hpp"
-#include "include/result.hpp"
-#include "mm/page_table.hpp"
-#include "containers/containers.hpp"
-#include "process/process.hpp"
-#include "process/cfs_scheduler.hpp"
-#include "process/load_balancer.hpp"
-#include "ipc/shared_memory.hpp"
-#include "ipc/ipc_manager.hpp"
-#include "interrupts/gic.hpp"
+#include "types.hpp"           // 从 src/include/
+#include "result.hpp"          // 从 src/include/
+#include "mm/page_table.hpp"   // 从 src/include/mm/
+#include "containers/containers.hpp" // 从 src/include/containers/
+#include "process.hpp"         // 从 src/process/
+#include "cfs_scheduler.hpp"   // 从 src/process/
+#include "load_balancer.hpp"   // 从 src/process/
+#include "shared_memory.hpp"   // 从 src/ipc/
+#include "ipc/ipc_manager.hpp" // 从 src/include/ipc/
+#include "gic.hpp"             // 从 src/interrupts/
 #include "drivers/device_manager.hpp"
-#include "drivers/uart_driver.hpp"
+// #include "uart_driver.hpp" // 暂时注释掉，稍后修复
 
 namespace moss::kernel {
 
@@ -57,7 +57,7 @@ class Kernel {
 private:
     // 启动状态
     BootPhase current_phase_;
-    SubsystemState subsystem_states_[8];  // 各子系统状态
+    [[maybe_unused]] SubsystemState subsystem_states_[8];  // 各子系统状态
 
     // 核心子系统实例
     containers::ContainerLibrary* container_lib_;
@@ -69,7 +69,7 @@ private:
     ipc::IpcManager* ipc_manager_;
     interrupts::GenericInterruptController* gic_;
     drivers::DeviceManager* device_manager_;
-    drivers::UartDriver* uart_driver_;
+    // drivers::UartDriver* uart_driver_; // 暂时注释掉
 
     // 启动时间记录
     u64 boot_start_time_;
@@ -94,7 +94,7 @@ public:
           process_manager_(nullptr), scheduler_(nullptr),
           load_balancer_(nullptr), shared_memory_manager_(nullptr),
           ipc_manager_(nullptr), gic_(nullptr),
-          device_manager_(nullptr), uart_driver_(nullptr),
+          device_manager_(nullptr), // uart_driver_(nullptr), // 暂时注释掉
           boot_start_time_(0), phase_start_times_{0}
     {
         // 初始化内核配置
@@ -166,7 +166,7 @@ public:
 
         // 按相反顺序关闭子系统
         if (device_manager_) {
-            device_manager_->suspend_all_devices();
+            (void)device_manager_->suspend_all_devices();
             delete device_manager_;
             device_manager_ = nullptr;
         }
@@ -303,7 +303,7 @@ private:
         if (!containers::ContainerLibrary::initialize()) {
             return VoidResult{ErrorCode::InternalError};
         }
-        container_lib_ = &containers::ContainerLibrary{};
+        container_lib_ = nullptr; // ContainerLibrary is a singleton/static, no instance needed
 
         return VoidResult{};
     }
@@ -402,7 +402,8 @@ private:
             return VoidResult{ErrorCode::OutOfMemory};
         }
 
-        // 注册UART驱动
+        // 注册UART驱动 (暂时注释掉)
+        /*
         uart_driver_ = new drivers::UartDriver();
         if (!uart_driver_) {
             delete device_manager_;
@@ -422,6 +423,7 @@ private:
             gic_ = nullptr;
             return uart_reg_result;
         }
+        */
 
         return VoidResult{};
     }
@@ -448,13 +450,25 @@ private:
 
     // 启用中断
     void enable_interrupts() noexcept {
-        asm volatile("msr daifclr, #2" ::: "memory");  // 启用IRQ
+        #if defined(MOSS_ARCH_ARM64)
+            asm volatile("msr daifclr, #2" ::: "memory");  // 启用IRQ
+        #elif defined(MOSS_ARCH_X86_64)
+            asm volatile("sti" ::: "memory");  // 启用中断
+        #elif defined(MOSS_ARCH_RISCV)
+            asm volatile("csrsi mstatus, 0x8" ::: "memory"); // 启用机器级中断
+        #endif
     }
 
     // 内核崩溃处理
     [[noreturn]] void kernel_panic(const char* message, ErrorCode error) noexcept {
         // 禁用中断
-        asm volatile("msr daifset, #2" ::: "memory");
+        #if defined(MOSS_ARCH_ARM64)
+            asm volatile("msr daifset, #2" ::: "memory");
+        #elif defined(MOSS_ARCH_X86_64)
+            asm volatile("cli" ::: "memory");
+        #elif defined(MOSS_ARCH_RISCV)
+            asm volatile("csrci mstatus, 0x8" ::: "memory"); // 禁用机器级中断
+        #endif
 
         kernel_print("\n💀 KERNEL PANIC 💀\n");
         kernel_print("错误: %s\n", message);
@@ -466,7 +480,16 @@ private:
 
         // 停机
         while (true) {
-            asm volatile("wfi" ::: "memory");  // 等待中断
+            #if defined(MOSS_ARCH_ARM64)
+                asm volatile("wfi" ::: "memory");  // 等待中断
+            #elif defined(MOSS_ARCH_X86_64)
+                asm volatile("hlt" ::: "memory");  // 停机等待中断
+            #elif defined(MOSS_ARCH_RISCV)
+                asm volatile("wfi" ::: "memory");  // RISC-V也有wfi指令
+            #else
+                // 通用停机 - CPU空循环
+                for (volatile int i = 0; i < 1000000; ++i) {}
+            #endif
         }
     }
 
@@ -488,22 +511,40 @@ private:
     void print_stack_trace() const noexcept {
         kernel_print("📍 调用栈:\n");
 
-        u64 fp;
-        asm volatile("mov %0, x29" : "=r"(fp));
+        u64 fp = 0;
+        #if defined(MOSS_ARCH_ARM64)
+            asm volatile("mov %0, x29" : "=r"(fp));
+        #elif defined(MOSS_ARCH_X86_64)
+            asm volatile("mov %%rbp, %0" : "=r"(fp));
+        #elif defined(MOSS_ARCH_RISCV)
+            asm volatile("mv %0, s0" : "=r"(fp));
+        #endif
 
         for (int i = 0; i < 10 && fp != 0; i++) {
             u64* frame = reinterpret_cast<u64*>(fp);
-            u64 lr = frame[1];  // 返回地址
-            fp = frame[0];      // 下一帧指针
+            if (frame != nullptr) {
+                u64 lr = frame[1];  // 返回地址
+                fp = frame[0];      // 下一帧指针
 
-            kernel_print("  [%d] 0x%016llx\n", i, lr);
+                kernel_print("  [%d] 0x%016llx\n", i, lr);
+            } else {
+                break;
+            }
         }
     }
 
     // 获取当前时间
     [[nodiscard]] static u64 get_current_time() noexcept {
         u64 count;
-        asm volatile("mrs %0, cntvct_el0" : "=r"(count));
+        #if defined(MOSS_ARCH_ARM64)
+            asm volatile("mrs %0, cntvct_el0" : "=r"(count));
+        #elif defined(MOSS_ARCH_X86_64)
+            asm volatile("rdtsc" : "=A"(count));
+        #elif defined(MOSS_ARCH_RISCV)
+            asm volatile("rdcycle %0" : "=r"(count));
+        #else
+            count = 0; // 回退实现
+        #endif
         return count;
     }
 

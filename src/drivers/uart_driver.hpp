@@ -3,9 +3,9 @@
 // ARM64 UART (PL011) 驱动示例
 // 展示设备驱动框架的使用
 
-#include "device_manager.hpp"
-#include "../include/types.hpp"
-#include "../include/result.hpp"
+#include "drivers/device_manager.hpp"
+#include "types.hpp"
+#include "result.hpp"
 
 namespace moss::kernel::drivers {
 
@@ -93,7 +93,7 @@ public:
     ~UartDevice() override = default;
 
     // 设备初始化
-    [[nodiscard]] VoidResult initialize() override noexcept {
+    [[nodiscard]] VoidResult initialize() noexcept override {
         if (initialized_) {
             return VoidResult{ErrorCode::InvalidState};
         }
@@ -145,7 +145,7 @@ public:
     }
 
     // 设备挂起
-    [[nodiscard]] VoidResult suspend() override noexcept {
+    [[nodiscard]] VoidResult suspend() noexcept override {
         if (!initialized_) {
             return VoidResult{ErrorCode::InvalidState};
         }
@@ -378,7 +378,7 @@ public:
     ~UartDriver() override = default;
 
     // 探测设备
-    [[nodiscard]] VoidResult probe(Device* device) override noexcept {
+    [[nodiscard]] VoidResult probe(Device* device) noexcept override {
         if (device == nullptr) {
             return VoidResult{ErrorCode::InvalidParameter};
         }
@@ -398,7 +398,7 @@ public:
     }
 
     // 移除设备
-    void remove(Device* device) override noexcept {
+    void remove(Device* device) noexcept override {
         if (device != nullptr) {
             device->shutdown();
         }

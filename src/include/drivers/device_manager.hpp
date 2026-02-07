@@ -3,11 +3,11 @@
 // 设备管理器和驱动框架
 // 支持设备树解析、驱动匹配和生命周期管理
 
-#include "../include/types.hpp"
-#include "../include/result.hpp"
-#include "../include/smart_ptr.hpp"
+#include "../types.hpp"
+#include "../result.hpp"
+#include "../smart_ptr.hpp"
 #include "../containers/containers.hpp"
-#include "../interrupts/gic.hpp"
+#include "../../interrupts/gic.hpp"
 
 namespace moss::kernel::drivers {
 
@@ -121,11 +121,8 @@ public:
 
     virtual ~Device() noexcept = default;
 
-    // 禁用拷贝，允许移动
-    NON_COPYABLE(Device)
-
-    Device(Device&& other) noexcept = default;
-    Device& operator=(Device&& other) noexcept = default;
+    // 禁用拷贝和移动（由于children_成员的限制）
+    NON_COPYABLE_NON_MOVABLE(Device)
 
     // 设备生命周期接口
     [[nodiscard]] virtual VoidResult initialize() noexcept = 0;
@@ -198,11 +195,13 @@ public:
         access_count_++;
     }
 
-    [[nodiscard]] struct {
+    struct DeviceStats {
         u64 init_time;
         u64 last_access_time;
         u64 access_count;
-    } get_statistics() const noexcept {
+    };
+
+    [[nodiscard]] DeviceStats get_statistics() const noexcept {
         return {init_time_, last_access_time_, access_count_};
     }
 
@@ -219,7 +218,15 @@ protected:
 
     [[nodiscard]] static u64 get_current_time() noexcept {
         u64 count;
-        asm volatile("mrs %0, cntvct_el0" : "=r"(count));
+        #if defined(MOSS_ARCH_ARM64)
+            asm volatile("mrs %0, cntvct_el0" : "=r"(count));
+        #elif defined(MOSS_ARCH_X86_64)
+            asm volatile("rdtsc" : "=A"(count));
+        #elif defined(MOSS_ARCH_RISCV)
+            asm volatile("rdcycle %0" : "=r"(count));
+        #else
+            count = 0; // 回退实现
+        #endif
         return count;
     }
 };
@@ -248,8 +255,8 @@ public:
     virtual void remove(Device* device) noexcept = 0;
 
     // 电源管理
-    [[nodiscard]] virtual VoidResult suspend(Device* device) noexcept { return VoidResult{}; }
-    [[nodiscard]] virtual VoidResult resume(Device* device) noexcept { return VoidResult{}; }
+    [[nodiscard]] virtual VoidResult suspend([[maybe_unused]] Device* device) noexcept { return VoidResult{}; }
+    [[nodiscard]] virtual VoidResult resume([[maybe_unused]] Device* device) noexcept { return VoidResult{}; }
 
     // 基本属性
     [[nodiscard]] const char* name() const noexcept { return name_; }
@@ -344,8 +351,9 @@ public:
         shared_ptr<Device> device = *device_ptr;
 
         // 移除驱动绑定
-        Driver* driver = const_cast<Driver*>(device_driver_map_.find(device_id));
-        if (driver != nullptr) {
+        auto driver_ptr = device_driver_map_.find(device_id);
+        if (driver_ptr != nullptr) {
+            Driver* driver = *driver_ptr;
             driver->remove(device.get());
             device_driver_map_.remove(device_id);
         }
@@ -357,9 +365,9 @@ public:
         }
 
         if (device->state() == DeviceState::Active) {
-            active_devices_.fetch_sub(1, containers::MemoryOrder::Relaxed);
+            (void)active_devices_.fetch_sub(1, containers::MemoryOrder::Relaxed);
         }
-        total_devices_.fetch_sub(1, containers::MemoryOrder::Relaxed);
+        (void)total_devices_.fetch_sub(1, containers::MemoryOrder::Relaxed);
 
         device->shutdown();
         return VoidResult{};
@@ -409,12 +417,14 @@ public:
         return get_device(*device_id_ptr);
     }
 
-    // 获取设备统计信息
-    [[nodiscard]] struct {
+    struct DeviceManagerStats {
         u32 total_devices;
         u32 active_devices;
         u32 registered_drivers;
-    } get_statistics() const noexcept {
+    };
+
+    // 获取设备统计信息
+    [[nodiscard]] DeviceManagerStats get_statistics() const noexcept {
         return {
             total_devices_.load(containers::MemoryOrder::Relaxed),
             active_devices_.load(containers::MemoryOrder::Relaxed),
@@ -470,16 +480,18 @@ public:
 private:
     // 为设备匹配驱动
     [[nodiscard]] VoidResult match_driver(Device* device) noexcept {
-        const Driver* matched_driver = drivers_.find_if([device](const Driver* driver) {
+        auto matched_driver_ptr = drivers_.find_if([device](const Driver* driver) {
             return driver->is_compatible(device->compatible());
         });
 
-        if (matched_driver == nullptr) {
+        if (matched_driver_ptr == nullptr) {
             return VoidResult{ErrorCode::NotFound};
         }
 
+        Driver* matched_driver = *matched_driver_ptr;
+
         // 尝试探测设备
-        auto probe_result = const_cast<Driver*>(matched_driver)->probe(device);
+        auto probe_result = matched_driver->probe(device);
         if (!probe_result) {
             return probe_result;
         }
@@ -496,9 +508,7 @@ private:
             entry.value->shutdown();
         });
 
-        devices_ = {};
-        device_name_map_ = {};
-        device_driver_map_ = {};
+        // RcuHashMap doesn't support assignment, entries are automatically cleaned up
     }
 };
 

@@ -6,8 +6,9 @@
 #include "shared_memory.hpp"
 #include "../include/types.hpp"
 #include "../include/result.hpp"
-#include "../containers/containers.hpp"
+#include "containers/containers.hpp"
 #include "../process/process.hpp"
+#include "../include/std/atomic"
 
 namespace moss::kernel::ipc {
 
@@ -44,7 +45,7 @@ static_assert(sizeof(MessageHeader) == 64, "MessageHeader must be 64 bytes");
 
 // 消息缓冲区槽位
 struct MessageSlot {
-    containers::AtomicU32 state;        // 槽位状态
+    moss::kernel::containers::AtomicU32 state;        // 槽位状态
     MessageHeader header;               // 消息头部
     u8 payload[0];                      // 可变长度负载
 
@@ -67,10 +68,10 @@ private:
 
     // 环形缓冲区控制结构
     struct alignas(64) RingControl {
-        containers::AtomicU64 write_pos;    // 写入位置
-        containers::AtomicU64 read_pos;     // 读取位置
-        containers::AtomicU64 write_count;  // 写入计数
-        containers::AtomicU64 read_count;   // 读取计数
+        moss::kernel::containers::AtomicU64 write_pos;    // 写入位置
+        moss::kernel::containers::AtomicU64 read_pos;     // 读取位置
+        moss::kernel::containers::AtomicU64 write_count;  // 写入计数
+        moss::kernel::containers::AtomicU64 read_count;   // 读取计数
         u64 reserved[4];                    // 缓存行填充
     };
 
@@ -79,6 +80,14 @@ private:
     usize buffer_size_;                 // 缓冲区大小
 
 public:
+    // 环形缓冲区统计信息
+    struct RingBufferStats {
+        u64 write_count;
+        u64 read_count;
+        u64 pending_messages;
+        usize used_space;
+    };
+
     ZeroCopyRingBuffer(void* shared_memory, usize size) noexcept
         : buffer_size_(size - sizeof(RingControl)) {
         control_ = static_cast<RingControl*>(shared_memory);
@@ -102,8 +111,8 @@ public:
         }
 
         // 原子地获取写入位置
-        u64 write_pos = control_->write_pos.load(containers::MemoryOrder::Acquire);
-        u64 read_pos = control_->read_pos.load(containers::MemoryOrder::Acquire);
+        u64 write_pos = control_->write_pos.load(moss::kernel::containers::MemoryOrder::Acquire);
+        u64 read_pos = control_->read_pos.load(moss::kernel::containers::MemoryOrder::Acquire);
 
         // 检查是否有足够空间
         if (write_pos - read_pos + total_size > buffer_size_) {
@@ -112,7 +121,7 @@ public:
 
         // 尝试原子地更新写入位置
         if (!control_->write_pos.compare_exchange_weak(write_pos, write_pos + total_size,
-                                                       containers::MemoryOrder::AcqRel)) {
+                                                       moss::kernel::containers::MemoryOrder::AcqRel)) {
             return false;  // 其他线程抢先写入
         }
 
@@ -128,10 +137,10 @@ public:
         }
 
         // 内存屏障确保写入完成
-        containers::atomic_thread_fence(containers::MemoryOrder::Release);
+        std::atomic_thread_fence(std::memory_order_release);
 
         // 增加写入计数
-        control_->write_count.fetch_add(1, containers::MemoryOrder::Relaxed);
+        (void)control_->write_count.fetch_add(1, moss::kernel::containers::MemoryOrder::Relaxed);
 
         return true;
     }
@@ -139,8 +148,8 @@ public:
     // 尝试接收消息（非阻塞）
     [[nodiscard]] bool try_receive(MessageHeader& header, void* payload, usize max_payload_size) noexcept {
         // 原子地获取读取位置
-        u64 read_pos = control_->read_pos.load(containers::MemoryOrder::Acquire);
-        u64 write_pos = control_->write_pos.load(containers::MemoryOrder::Acquire);
+        u64 read_pos = control_->read_pos.load(moss::kernel::containers::MemoryOrder::Acquire);
+        u64 write_pos = control_->write_pos.load(moss::kernel::containers::MemoryOrder::Acquire);
 
         // 检查是否有消息可读
         if (read_pos >= write_pos) {
@@ -168,29 +177,24 @@ public:
         total_size = align_up(total_size, 8);
 
         // 原子地更新读取位置
-        control_->read_pos.fetch_add(total_size, containers::MemoryOrder::AcqRel);
+        (void)control_->read_pos.fetch_add(total_size, moss::kernel::containers::MemoryOrder::AcqRel);
 
         // 增加读取计数
-        control_->read_count.fetch_add(1, containers::MemoryOrder::Relaxed);
+        (void)control_->read_count.fetch_add(1, moss::kernel::containers::MemoryOrder::Relaxed);
 
         return true;
     }
 
     // 获取统计信息
-    [[nodiscard]] struct {
-        u64 write_count;
-        u64 read_count;
-        u64 pending_messages;
-        usize used_space;
-    } get_statistics() const noexcept {
-        u64 write_pos = control_->write_pos.load(containers::MemoryOrder::Relaxed);
-        u64 read_pos = control_->read_pos.load(containers::MemoryOrder::Relaxed);
+    [[nodiscard]] RingBufferStats get_statistics() const noexcept {
+        u64 write_pos = control_->write_pos.load(moss::kernel::containers::MemoryOrder::Relaxed);
+        u64 read_pos = control_->read_pos.load(moss::kernel::containers::MemoryOrder::Relaxed);
 
         return {
-            control_->write_count.load(containers::MemoryOrder::Relaxed),
-            control_->read_count.load(containers::MemoryOrder::Relaxed),
-            control_->write_count.load(containers::MemoryOrder::Relaxed) -
-            control_->read_count.load(containers::MemoryOrder::Relaxed),
+            control_->write_count.load(moss::kernel::containers::MemoryOrder::Relaxed),
+            control_->read_count.load(moss::kernel::containers::MemoryOrder::Relaxed),
+            control_->write_count.load(moss::kernel::containers::MemoryOrder::Relaxed) -
+            control_->read_count.load(moss::kernel::containers::MemoryOrder::Relaxed),
             static_cast<usize>(write_pos - read_pos)
         };
     }
@@ -238,15 +242,24 @@ private:
     unique_ptr<ZeroCopyRingBuffer<>> server_to_client_;
 
     // 通知机制（用于阻塞等待）
-    containers::AtomicU64 client_wait_seq_;
-    containers::AtomicU64 server_wait_seq_;
+    moss::kernel::containers::AtomicU64 client_wait_seq_;
+    moss::kernel::containers::AtomicU64 server_wait_seq_;
 
     // 统计信息
-    containers::AtomicU64 messages_sent_;
-    containers::AtomicU64 messages_received_;
-    containers::AtomicU64 bytes_transferred_;
+    moss::kernel::containers::AtomicU64 messages_sent_;
+    moss::kernel::containers::AtomicU64 messages_received_;
+    moss::kernel::containers::AtomicU64 bytes_transferred_;
 
 public:
+    // 零拷贝通道统计信息
+    struct ChannelStats {
+        u64 messages_sent;
+        u64 messages_received;
+        u64 bytes_transferred;
+        u64 client_to_server_pending;
+        u64 server_to_client_pending;
+    };
+
     ZeroCopyChannel(ChannelId id, ProcessId client, ProcessId server) noexcept
         : channel_id_(id), client_pid_(client), server_pid_(server),
           client_to_server_shm_(0), server_to_client_shm_(0),
@@ -276,7 +289,7 @@ public:
             server_pid_, sizeof(ZeroCopyRingBuffer<>) + 64 * 1024,
             ShmType::Normal, ShmPermission::ReadWrite);
         if (!s2c_result) {
-            g_shared_memory_manager->destroy_region(client_to_server_shm_);
+            (void)g_shared_memory_manager->destroy_region(client_to_server_shm_);
             return VoidResult{s2c_result.error()};
         }
         server_to_client_shm_ = *s2c_result;
@@ -318,8 +331,8 @@ public:
         }
 
         if (buffer->try_send(header, payload)) {
-            messages_sent_.fetch_add(1, containers::MemoryOrder::Relaxed);
-            bytes_transferred_.fetch_add(header.payload_size, containers::MemoryOrder::Relaxed);
+            (void)messages_sent_.fetch_add(1, moss::kernel::containers::MemoryOrder::Relaxed);
+            (void)bytes_transferred_.fetch_add(header.payload_size, moss::kernel::containers::MemoryOrder::Relaxed);
 
             // 通知接收者
             notify_receiver(sender_pid);
@@ -343,7 +356,7 @@ public:
         }
 
         if (buffer->try_receive(header, payload, max_payload_size)) {
-            messages_received_.fetch_add(1, containers::MemoryOrder::Relaxed);
+            (void)messages_received_.fetch_add(1, moss::kernel::containers::MemoryOrder::Relaxed);
             return true;
         }
 
@@ -376,20 +389,14 @@ public:
     }
 
     // 获取通道统计信息
-    [[nodiscard]] struct {
-        u64 messages_sent;
-        u64 messages_received;
-        u64 bytes_transferred;
-        u64 client_to_server_pending;
-        u64 server_to_client_pending;
-    } get_statistics() const noexcept {
+    [[nodiscard]] ChannelStats get_statistics() const noexcept {
         auto c2s_stats = client_to_server_->get_statistics();
         auto s2c_stats = server_to_client_->get_statistics();
 
         return {
-            messages_sent_.load(containers::MemoryOrder::Relaxed),
-            messages_received_.load(containers::MemoryOrder::Relaxed),
-            bytes_transferred_.load(containers::MemoryOrder::Relaxed),
+            messages_sent_.load(moss::kernel::containers::MemoryOrder::Relaxed),
+            messages_received_.load(moss::kernel::containers::MemoryOrder::Relaxed),
+            bytes_transferred_.load(moss::kernel::containers::MemoryOrder::Relaxed),
             c2s_stats.pending_messages,
             s2c_stats.pending_messages
         };
@@ -404,25 +411,25 @@ private:
     // 通知接收者
     void notify_receiver(ProcessId sender_pid) noexcept {
         if (sender_pid == client_pid_) {
-            server_wait_seq_.fetch_add(1, containers::MemoryOrder::Release);
+            (void)server_wait_seq_.fetch_add(1, moss::kernel::containers::MemoryOrder::Release);
             // 实际实现中需要唤醒等待的服务端线程
         } else {
-            client_wait_seq_.fetch_add(1, containers::MemoryOrder::Release);
+            (void)client_wait_seq_.fetch_add(1, moss::kernel::containers::MemoryOrder::Release);
             // 实际实现中需要唤醒等待的客户端线程
         }
     }
 
     // 等待通知
     void wait_for_notification(ProcessId receiver_pid, u64 timeout_ns) noexcept {
-        containers::AtomicU64* wait_seq = (receiver_pid == client_pid_)
+        moss::kernel::containers::AtomicU64* wait_seq = (receiver_pid == client_pid_)
                                          ? &client_wait_seq_ : &server_wait_seq_;
 
-        u64 current_seq = wait_seq->load(containers::MemoryOrder::Acquire);
+        u64 current_seq = wait_seq->load(moss::kernel::containers::MemoryOrder::Acquire);
 
         // 简化实现：使用自旋等待
         // 实际实现中应该使用futex或类似的内核原语
         u64 start_time = get_current_time_ns();
-        while (wait_seq->load(containers::MemoryOrder::Acquire) == current_seq) {
+        while (wait_seq->load(moss::kernel::containers::MemoryOrder::Acquire) == current_seq) {
             if (get_current_time_ns() - start_time >= timeout_ns) {
                 break;
             }
@@ -434,19 +441,27 @@ private:
     // 获取当前时间
     [[nodiscard]] static u64 get_current_time_ns() noexcept {
         u64 count;
-        asm volatile("mrs %0, cntvct_el0" : "=r"(count));
+        #if defined(MOSS_ARCH_ARM64)
+            asm volatile("mrs %0, cntvct_el0" : "=r"(count));
+        #elif defined(MOSS_ARCH_X86_64)
+            asm volatile("rdtsc" : "=A"(count));
+        #elif defined(MOSS_ARCH_RISCV)
+            asm volatile("rdcycle %0" : "=r"(count));
+        #else
+            count = 0; // 回退实现
+        #endif
         return count;  // 简化实现，实际需要转换为纳秒
     }
 
     // 清理资源
     void cleanup() noexcept {
         if (client_to_server_shm_ != 0) {
-            g_shared_memory_manager->destroy_region(client_to_server_shm_);
+            (void)g_shared_memory_manager->destroy_region(client_to_server_shm_);
             client_to_server_shm_ = 0;
         }
 
         if (server_to_client_shm_ != 0) {
-            g_shared_memory_manager->destroy_region(server_to_client_shm_);
+            (void)g_shared_memory_manager->destroy_region(server_to_client_shm_);
             server_to_client_shm_ = 0;
         }
 

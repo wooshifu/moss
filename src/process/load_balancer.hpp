@@ -5,8 +5,8 @@
 
 #include "process.hpp"
 #include "cfs_scheduler.hpp"
-#include "../containers/containers.hpp"
-#include "../include/types.hpp"
+#include "containers/containers.hpp"
+#include "types.hpp"
 
 namespace moss::kernel::process {
 
@@ -38,6 +38,9 @@ struct CpuTopology {
     u32 numa_node;       // NUMA节点ID
     bool is_big_core;    // 是否为大核(性能核心)
 
+    constexpr CpuTopology() noexcept
+        : cpu_id(0), core_id(0), cluster_id(0), numa_node(0), is_big_core(false) {}
+
     constexpr CpuTopology(u32 cpu, u32 core, u32 cluster, u32 numa, bool big) noexcept
         : cpu_id(cpu), core_id(core), cluster_id(cluster),
           numa_node(numa), is_big_core(big) {}
@@ -64,12 +67,13 @@ private:
 
 public:
     LoadBalancer() noexcept
-        : policy_(BalancePolicy::Conservative),
+        : stats_{},                 // 默认初始化统计数据
+          topology_{},              // 默认初始化数组
+          policy_(BalancePolicy::Conservative),
           imbalance_threshold_(25),  // 25%的负载差异阈值
           migration_cost_(10000),    // 10微秒的迁移开销
           last_balance_time_(0),
-          balance_interval_(4000000), // 4ms负载均衡间隔
-          topology_{}               // 默认初始化数组
+          balance_interval_(4000000) // 4ms负载均衡间隔
     {
         // 初始化CPU拓扑（简化实现）
         for (u32 i = 0; i < MAX_CPUS; ++i) {
@@ -121,7 +125,7 @@ public:
     [[nodiscard]] u32 select_cpu_for_task(Thread* thread, CfsScheduler& scheduler) noexcept {
         if (thread == nullptr) return 0;
 
-        u32 current_cpu = current_cpu_id();
+        [[maybe_unused]] u32 current_cpu = current_cpu_id();
         u32 prev_cpu = thread->cpu;
 
         // CPU亲和性检查
@@ -304,7 +308,8 @@ private:
     }
 
     // 选择迁移候选任务
-    [[nodiscard]] Thread* select_migration_candidate(u32 cpu, CfsScheduler& scheduler) const noexcept {
+    [[nodiscard]] Thread* select_migration_candidate([[maybe_unused]] u32 cpu,
+                                                     [[maybe_unused]] CfsScheduler& scheduler) const noexcept {
         // 简化实现：返回nullptr表示没有合适的候选任务
         // 实际实现需要从运行队列中选择合适的任务
         return nullptr;
@@ -322,13 +327,13 @@ private:
     }
 
     // 检查线程的CPU亲和性
-    [[nodiscard]] bool has_cpu_affinity(Thread* thread, u32 cpu) const noexcept {
+    [[nodiscard]] bool has_cpu_affinity([[maybe_unused]] Thread* thread, [[maybe_unused]] u32 cpu) const noexcept {
         // 简化实现：假设所有线程可以在任何CPU上运行
         return cpu < MAX_CPUS;
     }
 
     // 获取线程的NUMA节点
-    [[nodiscard]] u32 get_thread_numa_node(Thread* thread) const noexcept {
+    [[nodiscard]] u32 get_thread_numa_node([[maybe_unused]] Thread* thread) const noexcept {
         // 简化实现：返回0表示NUMA节点0
         return 0;
     }

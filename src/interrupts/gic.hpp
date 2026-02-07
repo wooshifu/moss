@@ -3,9 +3,9 @@
 // ARM64 Generic Interrupt Controller (GIC) 驱动
 // 支持 GICv2/GICv3 中断控制器
 
-#include "../include/types.hpp"
-#include "../include/result.hpp"
-#include "../containers/containers.hpp"
+#include "types.hpp"
+#include "result.hpp"
+#include "containers/containers.hpp"
 
 namespace moss::kernel::interrupts {
 
@@ -130,6 +130,14 @@ public:
     // 禁用拷贝和移动
     NON_COPYABLE_NON_MOVABLE(GenericInterruptController)
 
+    // GIC统计信息
+    struct GicStats {
+        u64 total_interrupts;
+        u64 spurious_interrupts;
+        u32 registered_interrupts;
+        u32 enabled_interrupts;
+    };
+
     // 初始化GIC
     [[nodiscard]] VoidResult initialize(VirtAddr dist_base, VirtAddr cpu_base) noexcept {
         distributor_base_ = dist_base;
@@ -188,10 +196,11 @@ public:
 
     // 取消注册中断处理函数
     [[nodiscard]] VoidResult unregister_interrupt(InterruptId irq) noexcept {
-        InterruptDescriptor* desc = const_cast<InterruptDescriptor*>(interrupt_table_.find(irq));
-        if (desc == nullptr) {
+        auto desc_ptr = interrupt_table_.find(irq);
+        if (desc_ptr == nullptr) {
             return VoidResult{ErrorCode::NotFound};
         }
+        InterruptDescriptor* desc = *desc_ptr;
 
         // 先禁用中断
         (void)disable_interrupt(irq);
@@ -210,15 +219,16 @@ public:
         }
 
         // 设置使能位
-        u32 reg_offset = GICD_ISENABLER + (irq / 32) * 4;
+        u32 reg_offset = GicRegs::GICD_ISENABLER + (irq / 32) * 4;
         u32 bit_pos = irq % 32;
         u32 reg_value = 1U << bit_pos;
 
         write_distributor_reg(reg_offset, reg_value);
 
         // 更新描述符状态
-        InterruptDescriptor* desc = const_cast<InterruptDescriptor*>(interrupt_table_.find(irq));
-        if (desc != nullptr) {
+        auto desc_ptr = interrupt_table_.find(irq);
+        if (desc_ptr != nullptr) {
+            InterruptDescriptor* desc = *desc_ptr;
             desc->enabled = true;
         }
 
@@ -239,8 +249,9 @@ public:
         write_distributor_reg(reg_offset, reg_value);
 
         // 更新描述符状态
-        InterruptDescriptor* desc = const_cast<InterruptDescriptor*>(interrupt_table_.find(irq));
-        if (desc != nullptr) {
+        auto desc_ptr = interrupt_table_.find(irq);
+        if (desc_ptr != nullptr) {
+            InterruptDescriptor* desc = *desc_ptr;
             desc->enabled = false;
         }
 
@@ -258,8 +269,9 @@ public:
         write_distributor_reg(reg_offset, priority);
 
         // 更新描述符
-        InterruptDescriptor* desc = const_cast<InterruptDescriptor*>(interrupt_table_.find(irq));
-        if (desc != nullptr) {
+        auto desc_ptr = interrupt_table_.find(irq);
+        if (desc_ptr != nullptr) {
+            InterruptDescriptor* desc = *desc_ptr;
             desc->priority = priority;
         }
 
@@ -282,8 +294,9 @@ public:
         write_distributor_reg(reg_offset, cpu_mask);
 
         // 更新描述符
-        InterruptDescriptor* desc = const_cast<InterruptDescriptor*>(interrupt_table_.find(irq));
-        if (desc != nullptr) {
+        auto desc_ptr = interrupt_table_.find(irq);
+        if (desc_ptr != nullptr) {
+            InterruptDescriptor* desc = *desc_ptr;
             desc->target_cpu_mask = cpu_mask;
         }
 
@@ -322,13 +335,16 @@ public:
         interrupt_counts_.get_cpu(cpu)++;
 
         // 查找中断处理函数
-        const InterruptDescriptor* desc = interrupt_table_.find(irq);
-        if (desc != nullptr && desc->handler != nullptr) {
-            // 调用中断处理函数
-            desc->handler(irq, desc->context);
+        auto desc_ptr = interrupt_table_.find(irq);
+        if (desc_ptr != nullptr) {
+            InterruptDescriptor* desc = *desc_ptr;
+            if (desc->handler != nullptr) {
+                // 调用中断处理函数
+                desc->handler(irq, desc->context);
 
-            // 更新中断计数
-            const_cast<InterruptDescriptor*>(desc)->count++;
+                // 更新中断计数
+                desc->count++;
+            }
         }
 
         // 写入中断结束寄存器
@@ -336,12 +352,7 @@ public:
     }
 
     // 获取中断统计信息
-    [[nodiscard]] struct {
-        u64 total_interrupts;
-        u64 spurious_interrupts;
-        u32 registered_interrupts;
-        u32 enabled_interrupts;
-    } get_statistics() const noexcept {
+    [[nodiscard]] GicStats get_statistics() const noexcept {
         u32 registered = 0;
         u32 enabled = 0;
 
@@ -362,7 +373,8 @@ public:
 
     // 获取中断信息
     [[nodiscard]] const InterruptDescriptor* get_interrupt_info(InterruptId irq) const noexcept {
-        return interrupt_table_.find(irq);
+        auto desc_ptr = interrupt_table_.find(irq);
+        return desc_ptr ? *desc_ptr : nullptr;
     }
 
     // 设置CPU接口优先级掩码
@@ -456,7 +468,7 @@ private:
         interrupt_table_.for_each([](const auto& entry) {
             delete entry.value;
         });
-        interrupt_table_ = {};
+        // RcuHashMap doesn't support assignment, entries are automatically cleaned up
     }
 };
 

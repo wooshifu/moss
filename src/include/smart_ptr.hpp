@@ -6,7 +6,9 @@
 #include "types.hpp"
 #include "result.hpp"
 #include "../containers/atomic_types.hpp"
-#include <utility>
+
+// 包含统一的内核标准库支持
+#include "kernel_std.hpp"
 
 namespace moss::kernel {
 
@@ -20,7 +22,11 @@ public:
     // 构造函数
     UniquePtr() noexcept : ptr_(nullptr) {}
     UniquePtr(T* p) noexcept : ptr_(p) {}
+#if MOSS_HAS_STD_UTILITY_SMARTPTR
     UniquePtr(std::nullptr_t) noexcept : ptr_(nullptr) {}
+#else
+    UniquePtr(decltype(nullptr)) noexcept : ptr_(nullptr) {}
+#endif
 
     // 移动构造和赋值
     UniquePtr(UniquePtr&& other) noexcept : ptr_(other.release()) {}
@@ -113,7 +119,7 @@ public:
     // 拷贝构造
     SharedPtr(const SharedPtr& other) noexcept : control_(other.control_) {
         if (control_ != nullptr) {
-            control_->ref_count.fetch_add(1, containers::MemoryOrder::Relaxed);
+            (void)control_->ref_count.fetch_add(1, containers::MemoryOrder::Relaxed);
         }
     }
 
@@ -128,7 +134,7 @@ public:
             release();
             control_ = other.control_;
             if (control_ != nullptr) {
-                control_->ref_count.fetch_add(1, containers::MemoryOrder::Relaxed);
+                (void)control_->ref_count.fetch_add(1, containers::MemoryOrder::Relaxed);
             }
         }
         return *this;

@@ -3,11 +3,11 @@
 // 现代进程管理系统
 // 支持多线程、优先级、实时调度等特性
 
-#include "../include/types.hpp"
-#include "../include/result.hpp"
-#include "../include/smart_ptr.hpp"
-#include "../containers/containers.hpp"
-#include <utility>
+#include "types.hpp"
+#include "result.hpp"
+#include "smart_ptr.hpp"
+#include "containers/containers.hpp"
+// utility 通过 containers.hpp 包含
 
 namespace moss::kernel::process {
 
@@ -76,6 +76,17 @@ struct alignas(16) CpuContext {
 };
 
 static_assert(sizeof(CpuContext) <= 1024, "CpuContext should fit in reasonable size");
+
+// 虚拟内存区域（VMA）
+struct VmaRegion {
+    moss::kernel::VirtAddr start_addr;        // 起始虚拟地址
+    moss::kernel::VirtAddr end_addr;          // 结束虚拟地址
+    moss::kernel::u32 flags;                  // 区域标志（读写执行权限等）
+    moss::kernel::PhysAddr phys_addr;         // 对应物理地址（如果映射）
+
+    VmaRegion(moss::kernel::VirtAddr start, moss::kernel::VirtAddr end, moss::kernel::u32 region_flags, moss::kernel::PhysAddr phys = 0) noexcept
+        : start_addr(start), end_addr(end), flags(region_flags), phys_addr(phys) {}
+};
 
 // 虚拟内存地址空间
 struct AddressSpace {
@@ -270,7 +281,7 @@ public:
 
     // 引用计数管理
     void add_ref() const noexcept {
-        ref_count_.fetch_add(1, containers::MemoryOrder::Relaxed);
+        (void)ref_count_.fetch_add(1, containers::MemoryOrder::Relaxed);
     }
 
     void release() const noexcept {
@@ -332,8 +343,8 @@ public:
 
 private:
     [[nodiscard]] ProcessId allocate_pid() noexcept;
-    void record_fork() noexcept { total_forks_.fetch_add_local(1); }
-    void record_exit() noexcept { total_exits_.fetch_add_local(1); }
+    void record_fork() noexcept { (void)total_forks_.fetch_add_local(1); }
+    void record_exit() noexcept { (void)total_exits_.fetch_add_local(1); }
 };
 
 // 全局进程管理器实例

@@ -74,26 +74,26 @@ function(moss_detect_linker clang_bin_dir)
     # 统一使用 Clang 内置的 LLD 链接器，避免不同架构的兼容性问题
     message(STATUS "配置 Clang 内置链接器...")
 
-    # 优先查找独立的 LLD
-    find_program(LLD_EXECUTABLE lld HINTS ${clang_bin_dir})
+    # 优先查找Unix版本的LLD (ld.lld)，包括LLVM安装目录
+    find_program(LLD_EXECUTABLE ld.lld
+        HINTS
+            ${clang_bin_dir}
+            /usr/lib/llvm-21/bin
+            /usr/lib/llvm-20/bin
+            /usr/lib/llvm-19/bin
+            /usr/lib/llvm-18/bin
+        PATHS
+            /usr/bin
+            /usr/local/bin
+    )
     if(LLD_EXECUTABLE)
-        message(STATUS "使用独立的 LLVM LLD 链接器: ${LLD_EXECUTABLE}")
-        set(CMAKE_LINKER ${LLD_EXECUTABLE} PARENT_SCOPE)
+        message(STATUS "使用 LLVM LLD 链接器: ${LLD_EXECUTABLE}")
+        # 使用标准的 -fuse-ld=lld 方式，让 Clang 处理链接器调用
+        set(CMAKE_EXE_LINKER_FLAGS "-fuse-ld=lld" PARENT_SCOPE)
         return()
     endif()
 
-    # 对于所有架构，统一使用 Clang 的 -fuse-ld=lld 选项
-    if(MOSS_TARGET_ARCH STREQUAL "ARM64")
-        # ARM64: 优先尝试系统的 aarch64 链接器作为备用
-        find_program(AARCH64_LD aarch64-linux-gnu-ld)
-        if(AARCH64_LD)
-            message(STATUS "使用 GNU LD (ARM64): ${AARCH64_LD}")
-            set(CMAKE_LINKER ${AARCH64_LD} PARENT_SCOPE)
-            return()
-        endif()
-    endif()
-
-    # 所有架构的默认配置：使用 Clang 内置链接器
+    # 如果没有找到 LLD，回退到默认配置
     message(STATUS "使用 Clang 内置链接器 (LLD) 处理 ${MOSS_TARGET_ARCH} 架构")
     set(CMAKE_EXE_LINKER_FLAGS "-fuse-ld=lld" PARENT_SCOPE)
 endfunction()
@@ -192,6 +192,11 @@ function(moss_initialize_clang_toolchain arch)
     message(STATUS "初始化 Clang 工具链 (${arch})...")
 
     moss_detect_clang_toolchain()
+
+    # 获取Clang bin目录用于链接器检测
+    get_filename_component(CLANG_BIN_DIR ${CMAKE_CXX_COMPILER} DIRECTORY)
+    moss_detect_linker(${CLANG_BIN_DIR})
+
     moss_set_clang_flags()
     moss_verify_clang_cross_compile(${arch})
 

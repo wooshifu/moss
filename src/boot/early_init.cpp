@@ -1,6 +1,6 @@
-#include "../kernel/include/types.hpp"
-#include "../kernel/include/result.hpp"
-#include "../kernel/mm/page_table.hpp"
+#include "types.hpp"
+#include "result.hpp"
+#include "mm/page_table.hpp"
 
 // 外部符号声明（来自链接器脚本）
 extern "C" {
