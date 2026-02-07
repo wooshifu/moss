@@ -87,9 +87,17 @@ private:
     containers::AtomicCounter<u64> bytes_transferred_;
 
 public:
+    // IPC管理器统计信息
+    struct IpcStats {
+        u64 total_services;
+        u64 total_channels;
+        u64 messages_processed;
+        u64 bytes_transferred;
+    };
+
     IpcManager(SharedMemoryManager* shm_manager) noexcept
-        : shared_memory_manager_(shm_manager),
-          next_service_id_(1), next_channel_id_(1),
+        : next_service_id_(1), next_channel_id_(1),
+          shared_memory_manager_(shm_manager),
           total_services_(0), total_channels_(0),
           messages_processed_(0), bytes_transferred_(0) {}
 
@@ -122,17 +130,18 @@ public:
 
         // 注册服务
         services_.insert_or_update(service_id, service);
-        total_services_.fetch_add(1, containers::MemoryOrder::Relaxed);
+        (void)total_services_.fetch_add(1, containers::MemoryOrder::Relaxed);
 
         return KernelResult<ServiceId>{service_id};
     }
 
     // 取消注册服务
     [[nodiscard]] VoidResult unregister_service(ServiceId service_id, ProcessId provider_pid) noexcept {
-        const ServiceDescriptor* service = services_.find(service_id);
-        if (service == nullptr) {
+        auto service_ptr = services_.find(service_id);
+        if (service_ptr == nullptr) {
             return VoidResult{KernelError::NotFound};
         }
+        const ServiceDescriptor* service = *service_ptr;
 
         // 验证权限
         if (service->provider_pid != provider_pid) {
@@ -146,7 +155,7 @@ public:
         services_.remove(service_id);
         delete service;
 
-        total_services_.fetch_sub(1, containers::MemoryOrder::Relaxed);
+        (void)total_services_.fetch_sub(1, containers::MemoryOrder::Relaxed);
         return VoidResult{};
     }
 
@@ -154,10 +163,11 @@ public:
     [[nodiscard]] KernelResult<ChannelId> connect_to_service(ProcessId client_pid,
                                                              ServiceId service_id) noexcept {
         // 查找服务
-        ServiceDescriptor* service = const_cast<ServiceDescriptor*>(services_.find(service_id));
-        if (service == nullptr) {
+        auto service_ptr = services_.find(service_id);
+        if (service_ptr == nullptr) {
             return KernelResult<ChannelId>{KernelError::NotFound};
         }
+        ServiceDescriptor* service = *service_ptr;
 
         // 检查客户端数量限制
         if (service->current_clients >= service->max_clients) {
@@ -189,7 +199,7 @@ public:
 
         // 更新统计
         service->current_clients++;
-        total_channels_.fetch_add(1, containers::MemoryOrder::Relaxed);
+        (void)total_channels_.fetch_add(1, containers::MemoryOrder::Relaxed);
 
         // 记录进程通道映射
         add_process_channel(client_pid, channel_id);
@@ -212,10 +222,11 @@ public:
     // 断开连接
     [[nodiscard]] VoidResult disconnect(ChannelId channel_id, ProcessId requester_pid) noexcept {
         // 查找连接
-        ConnectionDescriptor* conn = const_cast<ConnectionDescriptor*>(connections_.find(channel_id));
-        if (conn == nullptr) {
+        auto conn_ptr = connections_.find(channel_id);
+        if (conn_ptr == nullptr) {
             return VoidResult{KernelError::NotFound};
         }
+        ConnectionDescriptor* conn = *conn_ptr;
 
         // 验证权限
         if (conn->client_pid != requester_pid && conn->server_pid != requester_pid) {
@@ -226,8 +237,9 @@ public:
         channels_.remove(channel_id);
 
         // 更新服务统计
-        ServiceDescriptor* service = const_cast<ServiceDescriptor*>(services_.find(conn->service_id));
-        if (service != nullptr) {
+        auto service_ptr = services_.find(conn->service_id);
+        if (service_ptr != nullptr) {
+            ServiceDescriptor* service = *service_ptr;
             service->current_clients--;
         }
 
@@ -239,7 +251,7 @@ public:
         connections_.remove(channel_id);
         delete conn;
 
-        total_channels_.fetch_sub(1, containers::MemoryOrder::Relaxed);
+        (void)total_channels_.fetch_sub(1, containers::MemoryOrder::Relaxed);
         return VoidResult{};
     }
 
@@ -256,8 +268,8 @@ public:
         bool success = (*channel)->send_message(sender_pid, header, payload);
         if (success) {
             // 更新统计
-            messages_processed_.fetch_add(1, containers::MemoryOrder::Relaxed);
-            bytes_transferred_.fetch_add(header.payload_size, containers::MemoryOrder::Relaxed);
+            (void)messages_processed_.fetch_add(1, containers::MemoryOrder::Relaxed);
+            (void)bytes_transferred_.fetch_add(header.payload_size, containers::MemoryOrder::Relaxed);
 
             // 更新连接统计
             update_connection_statistics(channel_id, true, header.payload_size);
@@ -280,7 +292,7 @@ public:
         bool success = (*channel)->receive_message(receiver_pid, header, payload, max_payload_size);
         if (success) {
             // 更新统计
-            messages_processed_.fetch_add(1, containers::MemoryOrder::Relaxed);
+            (void)messages_processed_.fetch_add(1, containers::MemoryOrder::Relaxed);
 
             // 更新连接统计
             update_connection_statistics(channel_id, false, header.payload_size);
@@ -304,7 +316,7 @@ public:
     }
 
     // 获取服务列表
-    void get_service_list(ProcessId requester_pid,
+    void get_service_list([[maybe_unused]] ProcessId requester_pid,
                          void (*callback)(const ServiceDescriptor&, void*),
                          void* context) const noexcept {
         services_.for_each([callback, context](const auto& entry) {
@@ -316,12 +328,7 @@ public:
     }
 
     // 获取IPC统计信息
-    [[nodiscard]] struct {
-        u64 total_services;
-        u64 total_channels;
-        u64 messages_processed;
-        u64 bytes_transferred;
-    } get_statistics() const noexcept {
+    [[nodiscard]] IpcStats get_statistics() const noexcept {
         return {
             total_services_.load(containers::MemoryOrder::Relaxed),
             total_channels_.load(containers::MemoryOrder::Relaxed),
@@ -334,14 +341,19 @@ public:
     void get_process_connections(ProcessId pid,
                                 void (*callback)(const ConnectionDescriptor&, void*),
                                 void* context) const noexcept {
-        const auto* channels = process_channels_.find(pid);
+        auto channels_ptr = process_channels_.find(pid);
+        if (channels_ptr == nullptr) {
+            return;
+        }
+        const auto* channels = *channels_ptr;
         if (channels == nullptr) {
             return;
         }
 
         channels->for_each([this, callback, context](const ChannelId& channel_id) {
-            const ConnectionDescriptor* conn = connections_.find(channel_id);
-            if (conn != nullptr) {
+            auto conn_ptr = connections_.find(channel_id);
+            if (conn_ptr != nullptr) {
+                const ConnectionDescriptor* conn = *conn_ptr;
                 callback(*conn, context);
             }
         });
@@ -349,7 +361,11 @@ public:
 
     // 清理进程的所有IPC资源
     void cleanup_process_ipc(ProcessId pid) noexcept {
-        const auto* channels = process_channels_.find(pid);
+        auto channels_ptr = process_channels_.find(pid);
+        if (channels_ptr == nullptr) {
+            return;
+        }
+        const auto* channels = *channels_ptr;
         if (channels == nullptr) {
             return;
         }
@@ -362,7 +378,7 @@ public:
 
         // 关闭所有通道
         channels_to_close.for_each([this, pid](const ChannelId& channel_id) {
-            disconnect(channel_id, pid);
+            (void)disconnect(channel_id, pid);
         });
 
         // 清理进程通道列表
@@ -402,16 +418,21 @@ private:
         });
 
         channels_to_close.for_each([this](const ChannelId& channel_id) {
-            const ConnectionDescriptor* conn = connections_.find(channel_id);
-            if (conn != nullptr) {
-                disconnect(channel_id, conn->client_pid);
+            auto conn_ptr = connections_.find(channel_id);
+            if (conn_ptr != nullptr) {
+                const ConnectionDescriptor* conn = *conn_ptr;
+                (void)disconnect(channel_id, conn->client_pid);
             }
         });
     }
 
     // 添加进程通道映射
     void add_process_channel(ProcessId pid, ChannelId channel_id) noexcept {
-        auto* channels = const_cast<containers::RcuList<ChannelId>*>(process_channels_.find(pid));
+        auto channels_ptr = process_channels_.find(pid);
+        containers::RcuList<ChannelId>* channels = nullptr;
+        if (channels_ptr != nullptr) {
+            channels = *channels_ptr;
+        }
         if (channels == nullptr) {
             channels = new containers::RcuList<ChannelId>();
             process_channels_.insert_or_update(pid, channels);
@@ -421,17 +442,28 @@ private:
 
     // 移除进程通道映射
     void remove_process_channel(ProcessId pid, ChannelId channel_id) noexcept {
-        auto* channels = const_cast<containers::RcuList<ChannelId>*>(process_channels_.find(pid));
-        if (channels != nullptr) {
-            channels->remove_if([channel_id](const ChannelId& id) {
-                return id == channel_id;
-            });
+        auto channels_ptr = process_channels_.find(pid);
+        if (channels_ptr != nullptr) {
+            auto* channels = *channels_ptr;
+            if (channels != nullptr) {
+                // 使用find_if找到要删除的元素，然后用remove删除
+                const ChannelId* found = channels->find_if([channel_id](const ChannelId& id) {
+                    return id == channel_id;
+                });
+                if (found != nullptr) {
+                    channels->remove(*found);
+                }
+            }
         }
     }
 
     // 更新连接统计
     void update_connection_statistics(ChannelId channel_id, bool is_send, u32 bytes) noexcept {
-        ConnectionDescriptor* conn = const_cast<ConnectionDescriptor*>(connections_.find(channel_id));
+        auto conn_ptr = connections_.find(channel_id);
+        if (conn_ptr == nullptr) {
+            return;
+        }
+        ConnectionDescriptor* conn = *conn_ptr;
         if (conn != nullptr) {
             if (is_send) {
                 conn->messages_sent++;
@@ -455,7 +487,15 @@ private:
     // 获取当前时间
     [[nodiscard]] static u64 get_current_time() noexcept {
         u64 count;
-        asm volatile("mrs %0, cntvct_el0" : "=r"(count));
+        #if defined(MOSS_ARCH_ARM64)
+            asm volatile("mrs %0, cntvct_el0" : "=r"(count));
+        #elif defined(MOSS_ARCH_X86_64)
+            asm volatile("rdtsc" : "=A"(count));
+        #elif defined(MOSS_ARCH_RISCV)
+            asm volatile("rdcycle %0" : "=r"(count));
+        #else
+            count = 0; // 回退实现
+        #endif
         return count;
     }
 
@@ -463,27 +503,28 @@ private:
     void cleanup() noexcept {
         // 清理所有通道
         channels_.for_each([](const auto& entry) {
+            (void)entry; // 避免未使用参数警告
             // unique_ptr会自动清理
         });
-        channels_ = {};
+        // channels_ 中的 unique_ptr 会自动清理
 
         // 清理连接描述符
         connections_.for_each([](const auto& entry) {
+            (void)entry; // 避免未使用参数警告
             delete entry.value;
         });
-        connections_ = {};
 
         // 清理服务描述符
         services_.for_each([](const auto& entry) {
+            (void)entry; // 避免未使用参数警告
             delete entry.value;
         });
-        services_ = {};
 
         // 清理进程通道列表
         process_channels_.for_each([](const auto& entry) {
+            (void)entry; // 避免未使用参数警告
             delete entry.value;
         });
-        process_channels_ = {};
     }
 };
 

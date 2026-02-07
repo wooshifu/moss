@@ -1,0 +1,206 @@
+/**
+ * @file config.h
+ * @brief Moss微内核配置系统（CMake生成）
+ * @version 0.1.0
+ *
+ * 本文件由CMake自动生成，请勿手动修改。
+ * 源模板：src/include/config/config.h.in
+ */
+
+#ifndef MOSS_CONFIG_H
+#define MOSS_CONFIG_H
+
+// ============================================================================
+// 架构和平台信息宏定义（由CMake生成）
+// ============================================================================
+
+// 目标架构信息
+#cmakedefine MOSS_ARCH_ARM64
+#cmakedefine MOSS_ARCH_X86_64
+#cmakedefine MOSS_ARCH_RISCV
+
+#define MOSS_ARCH_NAME "@MOSS_ARCH_NAME@"
+#define MOSS_PAGE_SIZE @MOSS_PAGE_SIZE@
+#define MOSS_CACHE_LINE_SIZE @MOSS_CACHE_LINE_SIZE@
+#define MOSS_POINTER_SIZE @MOSS_POINTER_SIZE@
+
+// 目标平台信息
+#cmakedefine MOSS_PLATFORM_QEMU_VIRT
+#define MOSS_PLATFORM_NAME "@MOSS_PLATFORM_NAME@"
+
+// 构建类型
+#cmakedefine MOSS_DEBUG_BUILD
+#cmakedefine MOSS_RELEASE_BUILD
+#define MOSS_BUILD_TYPE "@MOSS_BUILD_TYPE@"
+
+// 编译器信息
+#define MOSS_CXX_COMPILER "@CMAKE_CXX_COMPILER_ID@ @CMAKE_CXX_COMPILER_VERSION@"
+#define MOSS_BUILD_TIMESTAMP "@MOSS_BUILD_TIMESTAMP@"
+
+// ============================================================================
+// 模块级别功能开关
+// ============================================================================
+
+// 核心模块（必须启用）
+#define MOSS_ENABLE_CONTAINERS    1  // 容器库（基础依赖）
+#define MOSS_ENABLE_MM           1  // 内存管理（核心功能）
+#define MOSS_ENABLE_KERNEL       1  // 内核核心（必须启用）
+#define MOSS_ENABLE_BOOT         1  // 启动模块（必须启用）
+
+// 可选模块开关（由CMake选项控制）
+#define MOSS_ENABLE_DRIVERS @MOSS_ENABLE_DRIVERS@      // 设备驱动支持
+#define MOSS_ENABLE_INTERRUPTS @MOSS_ENABLE_INTERRUPTS@   // 中断处理
+#define MOSS_ENABLE_IPC @MOSS_ENABLE_IPC@          // 进程间通信
+#define MOSS_ENABLE_PROCESS @MOSS_ENABLE_PROCESS@      // 进程管理和调度
+
+// 依赖关系检查
+#if defined(MOSS_ENABLE_PROCESS) && MOSS_ENABLE_PROCESS && (!defined(MOSS_ENABLE_IPC) || !MOSS_ENABLE_IPC)
+    #error "Process management requires IPC support (MOSS_ENABLE_IPC)"
+#endif
+
+#if defined(MOSS_ENABLE_IPC) && MOSS_ENABLE_IPC && !defined(MOSS_ENABLE_MM)
+    #error "IPC requires memory management support (MOSS_ENABLE_MM)"
+#endif
+
+#if ((defined(MOSS_ENABLE_DRIVERS) && MOSS_ENABLE_DRIVERS) || (defined(MOSS_ENABLE_INTERRUPTS) && MOSS_ENABLE_INTERRUPTS)) && !defined(MOSS_ENABLE_MM)
+    #error "Drivers and interrupts require memory management support (MOSS_ENABLE_MM)"
+#endif
+
+// ============================================================================
+// 子系统内功能级别开关
+// ============================================================================
+
+// 容器库功能开关
+#if defined(MOSS_ENABLE_CONTAINERS) && MOSS_ENABLE_CONTAINERS
+    #define MOSS_ENABLE_LOCKFREE_QUEUE @MOSS_ENABLE_LOCKFREE_QUEUE@     // 无锁队列
+    #define MOSS_ENABLE_SLAB_ALLOCATOR @MOSS_ENABLE_SLAB_ALLOCATOR@     // Slab分配器
+    #define MOSS_ENABLE_RCU_LIST @MOSS_ENABLE_RCU_LIST@           // RCU链表
+    #define MOSS_ENABLE_PER_CPU_DATA @MOSS_ENABLE_PER_CPU_DATA@       // Per-CPU数据结构
+    #define MOSS_ENABLE_ATOMIC_TYPES @MOSS_ENABLE_ATOMIC_TYPES@       // 原子类型支持
+#endif
+
+// 进程管理功能开关
+#if defined(MOSS_ENABLE_PROCESS) && MOSS_ENABLE_PROCESS
+    #define MOSS_ENABLE_CFS_SCHEDULER @MOSS_ENABLE_CFS_SCHEDULER@      // CFS调度器
+    #define MOSS_ENABLE_LOAD_BALANCER @MOSS_ENABLE_LOAD_BALANCER@      // 负载均衡器
+    #define MOSS_ENABLE_PROCESS_TREE @MOSS_ENABLE_PROCESS_TREE@       // 进程树管理
+#endif
+
+// IPC功能开关
+#if defined(MOSS_ENABLE_IPC) && MOSS_ENABLE_IPC
+    #define MOSS_ENABLE_SHARED_MEMORY @MOSS_ENABLE_SHARED_MEMORY@      // 共享内存
+    #define MOSS_ENABLE_ZERO_COPY_CHANNEL @MOSS_ENABLE_ZERO_COPY_CHANNEL@  // 零拷贝通道
+    #define MOSS_ENABLE_IPC_MANAGER @MOSS_ENABLE_IPC_MANAGER@        // IPC管理器
+#endif
+
+// 驱动和中断功能开关
+#if defined(MOSS_ENABLE_DRIVERS) && MOSS_ENABLE_DRIVERS
+    #define MOSS_ENABLE_UART_DRIVER @MOSS_ENABLE_UART_DRIVER@        // UART驱动
+    #define MOSS_ENABLE_DEVICE_MANAGER @MOSS_ENABLE_DEVICE_MANAGER@     // 设备管理器
+#endif
+
+#if defined(MOSS_ENABLE_INTERRUPTS) && MOSS_ENABLE_INTERRUPTS
+    #define MOSS_ENABLE_GIC @MOSS_ENABLE_GIC@               // ARM GIC中断控制器
+#endif
+
+// ============================================================================
+// 调试和断言配置系统
+// ============================================================================
+
+// 调试级别控制（由CMake设置）
+#define MOSS_DEBUG_LEVEL @MOSS_DEBUG_LEVEL@
+
+// 内存调试功能
+#if MOSS_DEBUG_LEVEL >= 2
+    #define MOSS_ENABLE_MEMORY_DEBUG @MOSS_ENABLE_MEMORY_DEBUG@       // 内存调试
+    #define MOSS_ENABLE_STACK_OVERFLOW_CHECK @MOSS_ENABLE_STACK_OVERFLOW_CHECK@ // 栈溢出检测
+    #define MOSS_ENABLE_HEAP_CORRUPTION_CHECK @MOSS_ENABLE_HEAP_CORRUPTION_CHECK@ // 堆损坏检测
+    #define MOSS_ENABLE_DOUBLE_FREE_CHECK @MOSS_ENABLE_DOUBLE_FREE_CHECK@     // 双重释放检测
+#endif
+
+// 断言和验证
+#if MOSS_DEBUG_LEVEL >= 1
+    #define MOSS_ENABLE_ASSERTIONS @MOSS_ENABLE_ASSERTIONS@         // 运行时断言
+    #define MOSS_ENABLE_DATA_STRUCTURE_CHECK @MOSS_ENABLE_DATA_STRUCTURE_CHECK@ // 数据结构一致性检查
+
+    // 断言宏定义
+    #define MOSS_STRINGIFY(x) #x
+    #define MOSS_TOSTRING(x) MOSS_STRINGIFY(x)
+
+    #define MOSS_ASSERT(condition) \
+        do { \
+            if (!(condition)) { \
+                moss_kernel_panic("Assertion failed: " #condition \
+                                " at " __FILE__ ":" MOSS_TOSTRING(__LINE__)); \
+            } \
+        } while(0)
+
+    #define MOSS_ASSERT_MSG(condition, msg) \
+        do { \
+            if (!(condition)) { \
+                moss_kernel_panic("Assertion failed: " #condition \
+                                ": " msg " at " __FILE__ ":" MOSS_TOSTRING(__LINE__)); \
+            } \
+        } while(0)
+#else
+    #define MOSS_ASSERT(condition) ((void)0)
+    #define MOSS_ASSERT_MSG(condition, msg) ((void)0)
+#endif
+
+// 性能分析和跟踪
+#if MOSS_DEBUG_LEVEL >= 3
+    #define MOSS_ENABLE_FUNCTION_TRACING @MOSS_ENABLE_FUNCTION_TRACING@   // 函数调用跟踪
+    #define MOSS_ENABLE_LOCK_PROFILING @MOSS_ENABLE_LOCK_PROFILING@     // 锁性能分析
+    #define MOSS_ENABLE_SCHEDULER_STATS @MOSS_ENABLE_SCHEDULER_STATS@    // 调度器统计
+    #define MOSS_ENABLE_SYSCALL_TRACING @MOSS_ENABLE_SYSCALL_TRACING@    // 系统调用跟踪
+#endif
+
+// ============================================================================
+// 便利宏和工具函数声明
+// ============================================================================
+
+// 编译时配置信息字符串
+#define MOSS_CONFIG_STRING "Moss v@PROJECT_VERSION@ (" MOSS_ARCH_NAME "/" MOSS_PLATFORM_NAME "/" MOSS_BUILD_TYPE ")"
+#define MOSS_FULL_VERSION_STRING MOSS_CONFIG_STRING " built on " MOSS_BUILD_TIMESTAMP
+
+// 条件编译便利宏
+#define MOSS_IF_ENABLED(feature, code) \
+    do { \
+        if constexpr (feature) { \
+            code; \
+        } \
+    } while(0)
+
+// 调试输出宏（需要在其他地方实现具体函数）
+#if MOSS_DEBUG_LEVEL >= 1
+    #define MOSS_DEBUG_PRINT(level, ...) \
+        do { \
+            if constexpr (level <= MOSS_DEBUG_LEVEL) { \
+                moss_debug_printf("[DEBUG] " __VA_ARGS__); \
+            } \
+        } while(0)
+#else
+    #define MOSS_DEBUG_PRINT(level, ...) ((void)0)
+#endif
+
+// 内核恐慌函数声明（需要在kernel模块中实现）
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+[[noreturn]] void moss_kernel_panic(const char* message);
+
+#if MOSS_DEBUG_LEVEL >= 1
+void moss_debug_printf(const char* format, ...);
+#endif
+
+#ifdef __cplusplus
+}
+#endif
+
+// 静态断言检查关键配置
+static_assert(MOSS_PAGE_SIZE > 0, "Page size must be positive");
+static_assert(MOSS_CACHE_LINE_SIZE > 0, "Cache line size must be positive");
+static_assert(MOSS_POINTER_SIZE == 8, "Only 64-bit architectures supported");
+
+#endif // MOSS_CONFIG_H

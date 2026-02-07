@@ -4,9 +4,9 @@
 // 基于红黑树的完全公平调度器，类似Linux CFS
 
 #include "process.hpp"
-#include "../include/types.hpp"
-#include "../include/result.hpp"
-#include "../containers/containers.hpp"
+#include "types.hpp"
+#include "result.hpp"
+#include "containers/containers.hpp"
 
 namespace moss::kernel::process {
 
@@ -231,7 +231,7 @@ private:
 
         // 简化的负载追踪实现
         // 实际的PELT算法更复杂，考虑衰减因子等
-        constexpr u64 LOAD_AVG_PERIOD = 32;
+        [[maybe_unused]] constexpr u64 LOAD_AVG_PERIOD = 32;
         constexpr u64 LOAD_AVG_MAX = 47742;  // 32 * 1024 * 1.5
 
         // 更新负载统计
@@ -499,11 +499,11 @@ public:
 
     // 内部统计更新
     void record_context_switch() noexcept {
-        total_switches_.fetch_add_local(1);
+        (void)total_switches_.fetch_add_local(1);
     }
 
     void record_preemption() noexcept {
-        total_preemptions_.fetch_add_local(1);
+        (void)total_preemptions_.fetch_add_local(1);
     }
 
     // 启动调度循环（主调度入口）
@@ -529,11 +529,24 @@ public:
 
 private:
     // 空闲任务
-    void idle_task(u32 cpu) noexcept {
+    void idle_task([[maybe_unused]] u32 cpu) noexcept {
         // 启用中断并等待
-        asm volatile("msr daifclr, #2" ::: "memory");  // 启用IRQ
-        asm volatile("wfi" ::: "memory");              // 等待中断
-        asm volatile("msr daifset, #2" ::: "memory");  // 禁用IRQ
+        #if defined(MOSS_ARCH_ARM64)
+            asm volatile("msr daifclr, #2" ::: "memory");  // 启用IRQ
+            asm volatile("wfi" ::: "memory");              // 等待中断
+            asm volatile("msr daifset, #2" ::: "memory");  // 禁用IRQ
+        #elif defined(MOSS_ARCH_X86_64)
+            asm volatile("sti" ::: "memory");              // 启用中断
+            asm volatile("hlt" ::: "memory");              // 停机等待中断
+            asm volatile("cli" ::: "memory");              // 禁用中断
+        #elif defined(MOSS_ARCH_RISCV)
+            asm volatile("csrsi mstatus, 0x8" ::: "memory"); // 启用机器级中断
+            asm volatile("wfi" ::: "memory");              // 等待中断
+            asm volatile("csrci mstatus, 0x8" ::: "memory"); // 禁用机器级中断
+        #else
+            // 通用回退：简单的CPU循环
+            for (volatile int i = 0; i < 1000; ++i) {}
+        #endif
     }
 
     // 上下文切换到指定任务
@@ -564,15 +577,35 @@ private:
 
     // 获取当前CPU ID
     [[nodiscard]] static u32 get_current_cpu_id() noexcept {
-        u64 mpidr;
-        asm volatile("mrs %0, mpidr_el1" : "=r"(mpidr));
-        return static_cast<u32>(mpidr & 0xFF) % MAX_CPUS;
+        #if defined(MOSS_ARCH_ARM64)
+            u64 mpidr;
+            asm volatile("mrs %0, mpidr_el1" : "=r"(mpidr));
+            return static_cast<u32>(mpidr & 0xFF) % MAX_CPUS;
+        #elif defined(MOSS_ARCH_X86_64)
+            // x86_64: 使用 APIC ID 或简单递增计数器
+            return 0; // 简化实现，单核
+        #elif defined(MOSS_ARCH_RISCV)
+            // RISC-V: 读取 hart ID
+            u64 hart_id;
+            asm volatile("csrr %0, mhartid" : "=r"(hart_id));
+            return static_cast<u32>(hart_id) % MAX_CPUS;
+        #else
+            return 0; // 回退实现
+        #endif
     }
 
     // 获取当前时间
     [[nodiscard]] static u64 get_current_time() noexcept {
         u64 count;
-        asm volatile("mrs %0, cntvct_el0" : "=r"(count));
+        #if defined(MOSS_ARCH_ARM64)
+            asm volatile("mrs %0, cntvct_el0" : "=r"(count));
+        #elif defined(MOSS_ARCH_X86_64)
+            asm volatile("rdtsc" : "=A"(count));
+        #elif defined(MOSS_ARCH_RISCV)
+            asm volatile("rdcycle %0" : "=r"(count));
+        #else
+            count = 0; // 回退实现
+        #endif
         return count;
     }
 };

@@ -5,6 +5,7 @@
 
 #include "../include/types.hpp"
 #include "../include/result.hpp"
+#include "../include/arch/arch_abstraction.hpp"
 
 namespace moss::kernel::mm {
 
@@ -212,11 +213,10 @@ public:
         return kernel_pgd;
     }
 
-    // 无效化TLB
+    // 无效化TLB（使用架构抽象层）
     static void invalidate_tlb() {
-        asm volatile("tlbi vmalle1is");
-        asm volatile("dsb sy");
-        asm volatile("isb");
+        // 使用架构抽象层的TLB刷新功能
+        moss::kernel::arch::mmu::flush_tlb();
     }
 
     // 从当前页表初始化（用于启动后）

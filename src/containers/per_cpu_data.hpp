@@ -5,7 +5,9 @@
 
 #include "atomic_types.hpp"
 #include "../include/types.hpp"
-#include <utility>
+
+// 包含统一的内核标准库支持
+#include "../include/kernel_std.hpp"
 
 namespace moss::kernel::containers {
 
@@ -22,12 +24,21 @@ private:
 
 public:
     // 默认构造
+#if MOSS_HAS_STD_UTILITY_PERCPU
     constexpr PerCpuData() noexcept(std::is_nothrow_default_constructible_v<T>)
         : data_{} {}
+#else
+    constexpr PerCpuData() noexcept
+        : data_{} {}
+#endif
 
     // 统一值构造
     template<typename... Args>
+#if MOSS_HAS_STD_UTILITY_PERCPU
     explicit PerCpuData(Args&&... args) noexcept(std::is_nothrow_constructible_v<T, Args...>) {
+#else
+    explicit PerCpuData(Args&&... args) noexcept {
+#endif
         for (usize i = 0; i < MAX_CPUS; ++i) {
             new (&data_[i]) T(args...);
         }
@@ -37,12 +48,21 @@ public:
     PerCpuData(const PerCpuData&) = delete;
     PerCpuData& operator=(const PerCpuData&) = delete;
 
+#if MOSS_HAS_STD_UTILITY_PERCPU
     PerCpuData(PerCpuData&& other) noexcept(std::is_nothrow_move_constructible_v<T>) {
         for (usize i = 0; i < MAX_CPUS; ++i) {
             data_[i] = std::move(other.data_[i]);
         }
     }
+#else
+    PerCpuData(PerCpuData&& other) noexcept {
+        for (usize i = 0; i < MAX_CPUS; ++i) {
+            data_[i] = static_cast<T&&>(other.data_[i]);
+        }
+    }
+#endif
 
+#if MOSS_HAS_STD_UTILITY_PERCPU
     PerCpuData& operator=(PerCpuData&& other) noexcept(std::is_nothrow_move_assignable_v<T>) {
         if (this != &other) {
             for (usize i = 0; i < MAX_CPUS; ++i) {
@@ -51,6 +71,16 @@ public:
         }
         return *this;
     }
+#else
+    PerCpuData& operator=(PerCpuData&& other) noexcept {
+        if (this != &other) {
+            for (usize i = 0; i < MAX_CPUS; ++i) {
+                data_[i] = static_cast<T&&>(other.data_[i]);
+            }
+        }
+        return *this;
+    }
+#endif
 
     // 获取当前CPU的数据
     [[nodiscard]] T& get_local() noexcept {
@@ -96,7 +126,11 @@ public:
     }
 
     // 获取所有CPU数据的总和（要求T支持+=操作）
+#if MOSS_HAS_STD_UTILITY_PERCPU
     [[nodiscard]] T sum() const noexcept(noexcept(std::declval<T&>() += std::declval<const T&>())) {
+#else
+    [[nodiscard]] T sum() const noexcept {
+#endif
         T total{};
         for (usize i = 0; i < MAX_CPUS; ++i) {
             total += data_[i];
@@ -107,9 +141,22 @@ public:
 private:
     // 获取当前CPU ID
     [[nodiscard]] static usize get_current_cpu_id() noexcept {
-        u64 mpidr;
-        asm volatile("mrs %0, mpidr_el1" : "=r"(mpidr));
-        return static_cast<usize>(mpidr & 0xFF) % MAX_CPUS;
+        #if defined(MOSS_ARCH_ARM64)
+            u64 mpidr;
+            asm volatile("mrs %0, mpidr_el1" : "=r"(mpidr));
+            return static_cast<usize>(mpidr & 0xFF) % MAX_CPUS;
+        #elif defined(MOSS_ARCH_X86_64)
+            // x86_64: 简化实现，返回CPU 0
+            // 实际应使用APIC ID或其他机制
+            return 0;
+        #elif defined(MOSS_ARCH_RISCV)
+            // RISC-V: 读取hart ID
+            u64 hart_id;
+            asm volatile("csrr %0, mhartid" : "=r"(hart_id));
+            return static_cast<usize>(hart_id) % MAX_CPUS;
+        #else
+            return 0; // 回退实现
+        #endif
     }
 };
 
@@ -201,7 +248,11 @@ public:
     }
 
     [[nodiscard]] bool enqueue_local(T&& item) noexcept {
+#if MOSS_HAS_STD_UTILITY_PERCPU
         return queues_.get_local().try_enqueue(std::move(item));
+#else
+        return queues_.get_local().try_enqueue(static_cast<T&&>(item));
+#endif
     }
 
     // 从当前CPU的队列取出工作
@@ -215,7 +266,11 @@ public:
     }
 
     [[nodiscard]] bool enqueue_to_cpu(usize cpu_id, T&& item) noexcept {
+#if MOSS_HAS_STD_UTILITY_PERCPU
         return queues_.get_cpu(cpu_id).try_enqueue(std::move(item));
+#else
+        return queues_.get_cpu(cpu_id).try_enqueue(static_cast<T&&>(item));
+#endif
     }
 
     // 从指定CPU的队列取出工作

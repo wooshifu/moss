@@ -9,6 +9,9 @@
 #include "slab_allocator.hpp"
 #include "per_cpu_data.hpp"
 
+// 包含统一的内核标准库支持
+#include "../kernel_std.hpp"
+
 namespace moss::kernel::containers {
 
 // Optional类型实现
@@ -279,6 +282,11 @@ public:
 
         // RCU结构内存占用
         constexpr usize rcu_list_size = sizeof(RcuList<u64>);
+
+        // Suppress unused variable warnings
+        (void)spsc_256_size; (void)spsc_1024_size;
+        (void)per_cpu_u64_size; (void)per_cpu_counter_size;
+        (void)rcu_list_size;
 
         // 在实际内核中，这些信息会输出到内核日志
         // 目前只是编译时大小检查

@@ -3,11 +3,11 @@
 // 高性能共享内存管理器
 // 支持零拷贝IPC和大页面优化
 
-#include "../include/types.hpp"
-#include "../include/result.hpp"
-#include "../include/smart_ptr.hpp"
-#include "../containers/containers.hpp"
-#include "../mm/page_table.hpp"
+#include "types.hpp"
+#include "result.hpp"
+#include "smart_ptr.hpp"
+#include "containers/containers.hpp"
+#include "mm/page_table.hpp"
 
 namespace moss::kernel::ipc {
 
@@ -32,6 +32,14 @@ constexpr ShmPermission operator|(ShmPermission a, ShmPermission b) noexcept {
 constexpr ShmPermission operator&(ShmPermission a, ShmPermission b) noexcept {
     return static_cast<ShmPermission>(static_cast<u8>(a) & static_cast<u8>(b));
 }
+
+// 共享内存管理器统计信息
+struct SharedMemoryStats {
+    u64 total_regions;
+    usize total_memory_usage;
+    usize large_pages_used;
+    usize huge_pages_used;
+};
 
 // 共享内存区域类型
 enum class ShmType : u8 {
@@ -74,6 +82,13 @@ struct ShmMapping {
 
     ShmMapping(ShmId id, VirtAddr addr, usize sz, ShmPermission perm) noexcept
         : region_id(id), virt_addr(addr), size(sz), permission(perm), map_time(0) {}
+
+    // 相等比较运算符（用于RcuList::remove）
+    [[nodiscard]] bool operator==(const ShmMapping& other) const noexcept {
+        return region_id == other.region_id &&
+               virt_addr == other.virt_addr &&
+               size == other.size;
+    }
 };
 
 // 共享内存管理器
@@ -157,8 +172,8 @@ public:
 
         // 注册共享内存区域
         regions_.insert_or_update(region_id, region);
-        total_regions_.fetch_add(1, containers::MemoryOrder::Relaxed);
-        total_memory_usage_.fetch_add(aligned_size, containers::MemoryOrder::Relaxed);
+        (void)total_regions_.fetch_add(1, containers::MemoryOrder::Relaxed);
+        (void)total_memory_usage_.fetch_add(aligned_size, containers::MemoryOrder::Relaxed);
 
         // 更新大页面统计
         update_page_statistics(page_size, 1);
@@ -173,7 +188,11 @@ public:
                                                         ShmPermission map_permission = ShmPermission::ReadWrite) noexcept {
 
         // 查找共享内存区域
-        const ShmRegion* region = regions_.find(region_id);
+        auto region_ptr = regions_.find(region_id);
+        if (region_ptr == nullptr) {
+            return KernelResult<VirtAddr>{KernelError::InvalidArgument};
+        }
+        const ShmRegion* region = *region_ptr;
         if (region == nullptr) {
             return KernelResult<VirtAddr>{KernelError::InvalidArgument};
         }
@@ -210,7 +229,11 @@ public:
     [[nodiscard]] VoidResult unmap_from_process(ProcessId pid, ShmId region_id) noexcept {
 
         // 查找共享内存区域
-        ShmRegion* region = const_cast<ShmRegion*>(regions_.find(region_id));
+        auto region_ptr = regions_.find(region_id);
+        if (region_ptr == nullptr) {
+            return VoidResult{KernelError::InvalidArgument};
+        }
+        ShmRegion* region = *region_ptr;
         if (region == nullptr) {
             return VoidResult{KernelError::InvalidArgument};
         }
@@ -235,7 +258,7 @@ public:
 
         // 如果没有进程使用，考虑释放共享内存区域
         if (region->ref_count == 0) {
-            destroy_region(region_id);
+            (void)destroy_region(region_id);
         }
 
         return VoidResult{};
@@ -244,7 +267,11 @@ public:
     // 销毁共享内存区域
     [[nodiscard]] VoidResult destroy_region(ShmId region_id) noexcept {
 
-        ShmRegion* region = const_cast<ShmRegion*>(regions_.find(region_id));
+        auto region_ptr = regions_.find(region_id);
+        if (region_ptr == nullptr) {
+            return VoidResult{KernelError::InvalidArgument};
+        }
+        ShmRegion* region = *region_ptr;
         if (region == nullptr) {
             return VoidResult{KernelError::InvalidArgument};
         }
@@ -264,8 +291,8 @@ public:
         free_kernel_virtual_address(region->virt_base, region->size);
 
         // 更新统计
-        total_regions_.fetch_sub(1, containers::MemoryOrder::Relaxed);
-        total_memory_usage_.fetch_sub(region->size, containers::MemoryOrder::Relaxed);
+        (void)total_regions_.fetch_sub(1, containers::MemoryOrder::Relaxed);
+        (void)total_memory_usage_.fetch_sub(region->size, containers::MemoryOrder::Relaxed);
         update_page_statistics(region->page_size, -1);
 
         // 从注册表中移除
@@ -277,12 +304,20 @@ public:
 
     // 获取共享内存区域信息
     [[nodiscard]] const ShmRegion* get_region_info(ShmId region_id) const noexcept {
-        return regions_.find(region_id);
+        auto region_ptr = regions_.find(region_id);
+        if (region_ptr == nullptr) {
+            return nullptr;
+        }
+        return *region_ptr;
     }
 
     // 同步共享内存（刷新缓存）
     void sync_region(ShmId region_id) noexcept {
-        const ShmRegion* region = regions_.find(region_id);
+        auto region_ptr = regions_.find(region_id);
+        if (region_ptr == nullptr) {
+            return;
+        }
+        const ShmRegion* region = *region_ptr;
         if (region == nullptr) {
             return;
         }
@@ -292,12 +327,7 @@ public:
     }
 
     // 获取统计信息
-    [[nodiscard]] struct {
-        u64 total_regions;
-        usize total_memory_usage;
-        usize large_pages_used;
-        usize huge_pages_used;
-    } get_statistics() const noexcept {
+    [[nodiscard]] SharedMemoryStats get_statistics() const noexcept {
         return {
             total_regions_.load(containers::MemoryOrder::Relaxed),
             total_memory_usage_.load(containers::MemoryOrder::Relaxed),
@@ -308,14 +338,18 @@ public:
 
     // 清理进程的所有共享内存映射
     void cleanup_process_mappings(ProcessId pid) noexcept {
-        auto* mappings = process_mappings_.find(pid);
+        auto mappings_ptr = process_mappings_.find(pid);
+        if (mappings_ptr == nullptr) {
+            return;
+        }
+        auto* mappings = *mappings_ptr;
         if (mappings == nullptr) {
             return;
         }
 
         // 取消所有映射
         mappings->for_each([this, pid](const ShmMapping& mapping) {
-            unmap_from_process(pid, mapping.region_id);
+            (void)unmap_from_process(pid, mapping.region_id);
         });
 
         // 清理映射列表
@@ -357,53 +391,67 @@ private:
     }
 
     // 物理内存分配（简化实现）
-    [[nodiscard]] KernelResult<PhysAddr> allocate_physical_memory(usize size, usize page_size) noexcept {
+    [[nodiscard]] KernelResult<PhysAddr> allocate_physical_memory([[maybe_unused]] usize size,
+                                                                  [[maybe_unused]] usize page_size) noexcept {
         // 实际实现中需要从页面分配器分配
         // 这里返回模拟地址
         return KernelResult<PhysAddr>{0x80000000};
     }
 
-    void free_physical_memory(PhysAddr addr, usize size) noexcept {
+    void free_physical_memory([[maybe_unused]] PhysAddr addr, [[maybe_unused]] usize size) noexcept {
         // 实际实现中需要释放到页面分配器
     }
 
     // 虚拟地址分配（简化实现）
-    [[nodiscard]] VirtAddr allocate_kernel_virtual_address(usize size) noexcept {
+    [[nodiscard]] VirtAddr allocate_kernel_virtual_address([[maybe_unused]] usize size) noexcept {
         // 实际实现中需要从内核虚拟地址空间分配
         return 0xFFFF800000000000ULL;
     }
 
-    void free_kernel_virtual_address(VirtAddr addr, usize size) noexcept {
+    void free_kernel_virtual_address([[maybe_unused]] VirtAddr addr, [[maybe_unused]] usize size) noexcept {
         // 实际实现中需要释放虚拟地址
     }
 
-    [[nodiscard]] VirtAddr allocate_user_virtual_address(ProcessId pid, usize size, VirtAddr hint) noexcept {
+    [[nodiscard]] VirtAddr allocate_user_virtual_address([[maybe_unused]] ProcessId pid,
+                                                          [[maybe_unused]] usize size,
+                                                          [[maybe_unused]] VirtAddr hint) noexcept {
         // 实际实现中需要从用户虚拟地址空间分配
         return 0x400000;
     }
 
-    void free_user_virtual_address(ProcessId pid, VirtAddr addr, usize size) noexcept {
+    void free_user_virtual_address([[maybe_unused]] ProcessId pid,
+                                   [[maybe_unused]] VirtAddr addr,
+                                   [[maybe_unused]] usize size) noexcept {
         // 实际实现中需要释放用户虚拟地址
     }
 
     // 内存映射（简化实现）
-    [[nodiscard]] VoidResult map_kernel_memory(VirtAddr virt, PhysAddr phys, usize size,
-                                               mm::MemoryAttributes attr, usize page_size) noexcept {
+    [[nodiscard]] VoidResult map_kernel_memory([[maybe_unused]] VirtAddr virt,
+                                               [[maybe_unused]] PhysAddr phys,
+                                               [[maybe_unused]] usize size,
+                                               [[maybe_unused]] mm::MemoryAttributes attr,
+                                               [[maybe_unused]] usize page_size) noexcept {
         // 实际实现中需要设置页表
         return VoidResult{};
     }
 
-    void unmap_kernel_memory(VirtAddr virt, usize size) noexcept {
+    void unmap_kernel_memory([[maybe_unused]] VirtAddr virt, [[maybe_unused]] usize size) noexcept {
         // 实际实现中需要清除页表项
     }
 
-    [[nodiscard]] VoidResult map_user_memory(ProcessId pid, VirtAddr virt, PhysAddr phys, usize size,
-                                             mm::MemoryAttributes attr, usize page_size) noexcept {
+    [[nodiscard]] VoidResult map_user_memory([[maybe_unused]] ProcessId pid,
+                                             [[maybe_unused]] VirtAddr virt,
+                                             [[maybe_unused]] PhysAddr phys,
+                                             [[maybe_unused]] usize size,
+                                             [[maybe_unused]] mm::MemoryAttributes attr,
+                                             [[maybe_unused]] usize page_size) noexcept {
         // 实际实现中需要设置用户页表
         return VoidResult{};
     }
 
-    void unmap_user_memory(ProcessId pid, VirtAddr virt, usize size) noexcept {
+    void unmap_user_memory([[maybe_unused]] ProcessId pid,
+                           [[maybe_unused]] VirtAddr virt,
+                           [[maybe_unused]] usize size) noexcept {
         // 实际实现中需要清除用户页表项
     }
 
@@ -420,7 +468,11 @@ private:
     // 进程映射管理
     void record_process_mapping(ProcessId pid, ShmId region_id, VirtAddr virt_addr,
                                usize size, ShmPermission permission) noexcept {
-        auto* mappings = const_cast<containers::RcuList<ShmMapping>*>(process_mappings_.find(pid));
+        auto mappings_ptr = process_mappings_.find(pid);
+        containers::RcuList<ShmMapping>* mappings = nullptr;
+        if (mappings_ptr != nullptr) {
+            mappings = *mappings_ptr;
+        }
         if (mappings == nullptr) {
             mappings = new containers::RcuList<ShmMapping>();
             process_mappings_.insert_or_update(pid, mappings);
@@ -430,7 +482,11 @@ private:
     }
 
     [[nodiscard]] containers::Optional<ShmMapping> find_process_mapping(ProcessId pid, ShmId region_id) noexcept {
-        auto* mappings = process_mappings_.find(pid);
+        auto mappings_ptr = process_mappings_.find(pid);
+        if (mappings_ptr == nullptr) {
+            return containers::Optional<ShmMapping>{};
+        }
+        auto* mappings = *mappings_ptr;
         if (mappings == nullptr) {
             return containers::Optional<ShmMapping>{};
         }
@@ -443,29 +499,38 @@ private:
     }
 
     void remove_process_mapping(ProcessId pid, ShmId region_id) noexcept {
-        auto* mappings = const_cast<containers::RcuList<ShmMapping>*>(process_mappings_.find(pid));
+        auto mappings_ptr = process_mappings_.find(pid);
+        if (mappings_ptr == nullptr) {
+            return;
+        }
+        auto* mappings = *mappings_ptr;
         if (mappings == nullptr) {
             return;
         }
 
-        mappings->remove_if([region_id](const ShmMapping& mapping) {
+        // 首先找到要删除的映射
+        const ShmMapping* found = mappings->find_if([region_id](const ShmMapping& mapping) {
             return mapping.region_id == region_id;
         });
+
+        if (found != nullptr) {
+            mappings->remove(*found);
+        }
     }
 
     // 统计更新
     void update_page_statistics(usize page_size, i32 delta) noexcept {
         if (page_size == LARGE_PAGE_SIZE) {
             if (delta > 0) {
-                large_pages_used_.fetch_add(delta, containers::MemoryOrder::Relaxed);
+                (void)large_pages_used_.fetch_add(delta, containers::MemoryOrder::Relaxed);
             } else {
-                large_pages_used_.fetch_sub(-delta, containers::MemoryOrder::Relaxed);
+                (void)large_pages_used_.fetch_sub(-delta, containers::MemoryOrder::Relaxed);
             }
         } else if (page_size == HUGE_PAGE_SIZE) {
             if (delta > 0) {
-                huge_pages_used_.fetch_add(delta, containers::MemoryOrder::Relaxed);
+                (void)huge_pages_used_.fetch_add(delta, containers::MemoryOrder::Relaxed);
             } else {
-                huge_pages_used_.fetch_sub(-delta, containers::MemoryOrder::Relaxed);
+                (void)huge_pages_used_.fetch_sub(-delta, containers::MemoryOrder::Relaxed);
             }
         }
     }
@@ -473,7 +538,7 @@ private:
     // 清理所有区域
     void cleanup_all_regions() noexcept {
         regions_.for_each([this](const auto& entry) {
-            destroy_region(entry.key);
+            (void)destroy_region(entry.key);
         });
     }
 

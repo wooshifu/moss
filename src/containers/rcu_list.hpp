@@ -6,7 +6,9 @@
 #include "atomic_types.hpp"
 #include "../include/types.hpp"
 #include "../include/result.hpp"
-#include <utility>
+
+// 包含统一的内核标准库支持
+#include "../include/kernel_std.hpp"
 
 namespace moss::kernel::containers {
 
@@ -79,7 +81,16 @@ public:
         #ifndef NDEBUG
         if (!RcuReadLock::in_read_side()) {
             // 在实际内核中，这里应该触发panic或警告
-            asm volatile("brk #1");  // ARM64断点指令
+            #if defined(MOSS_ARCH_ARM64)
+                asm volatile("brk #1");  // ARM64断点指令
+            #elif defined(MOSS_ARCH_X86_64)
+                asm volatile("int3");    // x86_64断点指令
+            #elif defined(MOSS_ARCH_RISCV)
+                asm volatile("ebreak");  // RISC-V断点指令
+            #else
+                // 通用断点 - 进入无限循环
+                while(1) {}
+            #endif
         }
         #endif
         return ptr_.load(MemoryOrder::Consume);
@@ -108,6 +119,16 @@ public:
         return false;
     }
 
+    // 交换并返回旧值（用于clear()等操作）
+    [[nodiscard]] T* exchange(T* new_ptr, MemoryOrder order = MemoryOrder::AcqRel) noexcept {
+        return ptr_.exchange(new_ptr, order);
+    }
+
+    // 原子加载（用于next指针等）
+    [[nodiscard]] T* load(MemoryOrder order = MemoryOrder::Acquire) const noexcept {
+        return ptr_.load(order);
+    }
+
 private:
     // RCU回调调度（简化实现）
     template<typename Func>
@@ -126,8 +147,13 @@ struct RcuListNode {
     T data;
 
     template<typename... Args>
+#if MOSS_HAS_STD_UTILITY
     constexpr RcuListNode(Args&&... args) noexcept(std::is_nothrow_constructible_v<T, Args...>)
         : next(nullptr), data(std::forward<Args>(args)...) {}
+#else
+    constexpr RcuListNode(Args&&... args) noexcept
+        : next(nullptr), data(static_cast<Args&&>(args)...) {}
+#endif
 };
 
 // RCU保护的链表
@@ -151,7 +177,11 @@ public:
     // 在头部插入元素（写入操作）
     template<typename... Args>
     void push_front(Args&&... args) {
+#if MOSS_HAS_STD_UTILITY
         auto new_node = new RcuListNode<T>(std::forward<Args>(args)...);
+#else
+        auto new_node = new RcuListNode<T>(static_cast<Args&&>(args)...);
+#endif
 
         RcuListNode<T>* old_head = head_.load(MemoryOrder::Relaxed);
         do {
@@ -271,9 +301,14 @@ private:
         Value value;
 
         template<typename K, typename V>
+#if MOSS_HAS_STD_UTILITY
         Entry(K&& k, V&& v) noexcept(std::is_nothrow_constructible_v<Key, K&&> &&
                                      std::is_nothrow_constructible_v<Value, V&&>)
             : key(std::forward<K>(k)), value(std::forward<V>(v)) {}
+#else
+        Entry(K&& k, V&& v) noexcept
+            : key(static_cast<K&&>(k)), value(static_cast<V&&>(v)) {}
+#endif
 
         bool operator==(const Entry& other) const noexcept {
             return key == other.key;
@@ -304,7 +339,11 @@ public:
         }
 
         // 插入新条目
+#if MOSS_HAS_STD_UTILITY
         buckets_[bucket_idx].push_front(std::forward<K>(key), std::forward<V>(value));
+#else
+        buckets_[bucket_idx].push_front(static_cast<K&&>(key), static_cast<V&&>(value));
+#endif
         (void)size_.fetch_add(1, MemoryOrder::Relaxed);
     }
 

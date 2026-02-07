@@ -6,7 +6,9 @@
 #include "atomic_types.hpp"
 #include "../include/types.hpp"
 #include "../include/result.hpp"
-#include <utility>
+
+// 包含统一的内核标准库支持
+#include "../include/kernel_std.hpp"
 
 namespace moss::kernel::containers {
 
@@ -78,7 +80,7 @@ private:
 class SlabCache {
 private:
     const usize object_size_;
-    const usize object_alignment_;
+    [[maybe_unused]] const usize object_alignment_;
     const usize aligned_object_size_;
     const usize objects_per_page_;
 
@@ -312,7 +314,8 @@ private:
         move_page_to_partial(page);
     }
 
-    void remove_page_from_list(AtomicPtr<SlabPage>& head, SlabPage* page) noexcept {
+    void remove_page_from_list([[maybe_unused]] AtomicPtr<SlabPage>& head,
+                               [[maybe_unused]] SlabPage* page) noexcept {
         // 简化实现：重建链表（实际实现应该更高效）
         // 这里需要更复杂的无锁链表删除算法
     }
@@ -456,7 +459,11 @@ template<typename T, typename... Args>
 
     T* ptr = *ptr_result;
     try {
+#if MOSS_HAS_STD_UTILITY_SLAB
         new (ptr) T(std::forward<Args>(args)...);
+#else
+        new (ptr) T(static_cast<Args&&>(args)...);
+#endif
         return SlabResult<T*>{ptr};
     } catch (...) {
         g_slab_allocator->deallocate(ptr);

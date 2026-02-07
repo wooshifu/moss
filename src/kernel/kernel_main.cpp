@@ -2,7 +2,7 @@
 // 系统启动入口和全局实例管理
 
 #include "kernel_main.hpp"
-#include <cstring>
+// cstring 不需要 - 内核环境使用自定义内存操作
 
 // 使用内核命名空间的类型
 using moss::kernel::u32;
@@ -24,7 +24,7 @@ ipc::SharedMemoryManager* g_shared_memory_manager = nullptr;
 ipc::IpcManager* g_ipc_manager = nullptr;
 interrupts::GenericInterruptController* g_gic = nullptr;
 drivers::DeviceManager* g_device_manager = nullptr;
-drivers::UartDriver* g_uart_driver = nullptr;
+// drivers::UartDriver* g_uart_driver = nullptr; // 暂时注释掉
 
 } // namespace moss::kernel
 
@@ -47,7 +47,15 @@ void test_device_management(void) noexcept;
     if (g_kernel == nullptr) {
         // 无法创建内核实例，直接停机
         while (true) {
-            asm volatile("wfi");
+            #if defined(MOSS_ARCH_ARM64)
+                asm volatile("wfi");
+            #elif defined(MOSS_ARCH_X86_64)
+                asm volatile("hlt");
+            #elif defined(MOSS_ARCH_RISCV)
+                asm volatile("wfi");
+            #else
+                for (volatile int i = 0; i < 1000000; ++i) {}
+            #endif
         }
     }
 
@@ -59,12 +67,20 @@ void test_device_management(void) noexcept;
         g_kernel = nullptr;
 
         while (true) {
-            asm volatile("wfi");
+            #if defined(MOSS_ARCH_ARM64)
+                asm volatile("wfi");
+            #elif defined(MOSS_ARCH_X86_64)
+                asm volatile("hlt");
+            #elif defined(MOSS_ARCH_RISCV)
+                asm volatile("wfi");
+            #else
+                for (volatile int i = 0; i < 1000000; ++i) {}
+            #endif
         }
     }
 
     // 运行内核（不会返回）
-    auto run_result = g_kernel->run();
+    (void)g_kernel->run(); // 不应该返回
 
     // 如果到达这里，说明内核异常退出
     delete g_kernel;
@@ -129,7 +145,7 @@ void test_container_library(void) noexcept {
     // 测试原子计数器
     AtomicU64 counter{0};
     for (int i = 0; i < 100; ++i) {
-        counter.fetch_add(1, MemoryOrder::Relaxed);
+        (void)counter.fetch_add(1, MemoryOrder::Relaxed);
     }
 
     u64 final_value = counter.load(MemoryOrder::Relaxed);
@@ -146,9 +162,9 @@ void test_memory_management(void) noexcept {
         return;
     }
 
-    // 测试页表映射
-    PhysAddr test_phys = 0x80000000;
-    VirtAddr test_virt = 0xFFFF800080000000;
+    // 测试页表映射 (暂时注释掉，避免未使用变量警告)
+    [[maybe_unused]] PhysAddr test_phys = 0x80000000;
+    [[maybe_unused]] VirtAddr test_virt = 0xFFFF800080000000;
 
     // 简单映射测试（实际需要更完善的测试）
     // auto map_result = g_page_table_manager->map_page(test_virt, test_phys, ...);
@@ -183,7 +199,7 @@ void test_ipc_system(void) noexcept {
     );
 
     if (shm_result) {
-        ShmId shm_id = *shm_result;
+        [[maybe_unused]] ShmId shm_id = *shm_result;
 
         // 测试IPC服务注册
         auto service_result = g_ipc_manager->register_service(1, "test-service", 10);
@@ -214,7 +230,13 @@ void test_device_management(void) noexcept {
 // 内核崩溃回调
 void kernel_panic_handler(const char* message) noexcept {
     // 禁用中断
-    asm volatile("msr daifset, #15" ::: "memory");
+    #if defined(MOSS_ARCH_ARM64)
+        asm volatile("msr daifset, #15" ::: "memory");
+    #elif defined(MOSS_ARCH_X86_64)
+        asm volatile("cli" ::: "memory");
+    #elif defined(MOSS_ARCH_RISCV)
+        asm volatile("csrci mstatus, 0x8" ::: "memory"); // 禁用机器级中断
+    #endif
 
     // 基本错误输出（如果可能）
     volatile u32* uart_data = reinterpret_cast<volatile u32*>(0x09000000);
@@ -233,7 +255,16 @@ void kernel_panic_handler(const char* message) noexcept {
 
     // 停机
     while (true) {
-        asm volatile("wfi");
+        #if defined(MOSS_ARCH_ARM64)
+            asm volatile("wfi");
+        #elif defined(MOSS_ARCH_X86_64)
+            asm volatile("hlt");
+        #elif defined(MOSS_ARCH_RISCV)
+            asm volatile("wfi"); // RISC-V 也有 wfi 指令
+        #else
+            // 通用停机 - CPU 空循环
+            for (volatile int i = 0; i < 1000000; ++i) {}
+        #endif
     }
 }
 
@@ -262,8 +293,12 @@ void early_debug_print(const char* message) noexcept {
 }
 
 // 系统调用入口
-long system_call_handler(long syscall_number, long arg0, long arg1,
-                        long arg2, long arg3, long arg4, long arg5) noexcept {
+long system_call_handler(long syscall_number, long arg0,
+                        [[maybe_unused]] long arg1,
+                        [[maybe_unused]] long arg2,
+                        [[maybe_unused]] long arg3,
+                        [[maybe_unused]] long arg4,
+                        [[maybe_unused]] long arg5) noexcept {
     using namespace moss::kernel;
 
     // 基本的系统调用分发

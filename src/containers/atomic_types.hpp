@@ -1,28 +1,52 @@
 #pragma once
 
-// ARM64原子操作和内存屏障支持
-// 使用C++20的atomic库和ARM64特定的LSE指令
+// 多架构原子操作和内存屏障支持
+// 使用C++20的atomic库和架构特定的指令
 
 #include "../include/types.hpp"
+#include "../include/arch/arch_abstraction.hpp"
+
+// 条件包含atomic头文件
+#if __has_include(<atomic>)
 #include <atomic>
+#define MOSS_HAS_STD_ATOMIC 1
+#else
+#define MOSS_HAS_STD_ATOMIC 0
+#endif
 
 namespace moss::kernel::containers {
 
-// ARM64内存排序标签
+// 内存排序标签 - 多架构支持
 enum class MemoryOrder : int {
+#if MOSS_HAS_STD_ATOMIC
     Relaxed = static_cast<int>(std::memory_order_relaxed),
     Consume = static_cast<int>(std::memory_order_consume),
     Acquire = static_cast<int>(std::memory_order_acquire),
     Release = static_cast<int>(std::memory_order_release),
     AcqRel = static_cast<int>(std::memory_order_acq_rel),
     SeqCst = static_cast<int>(std::memory_order_seq_cst)
+#else
+    // Fallback values when std::atomic is not available
+    Relaxed = 0,
+    Consume = 1,
+    Acquire = 2,
+    Release = 3,
+    AcqRel = 4,
+    SeqCst = 5
+#endif
 };
 
-// 原子指针类型 - 针对ARM64优化
+// 原子指针类型 - 多架构优化
 template<typename T>
 class AtomicPtr {
 private:
+#if MOSS_HAS_STD_ATOMIC
     std::atomic<T*> ptr_;
+#else
+    // 简化实现：当没有标准库atomic时使用volatile指针
+    // 注意：这不是真正的原子操作，仅用于编译兼容性
+    volatile T* ptr_;
+#endif
 
 public:
     constexpr AtomicPtr() noexcept : ptr_(nullptr) {}
@@ -32,44 +56,90 @@ public:
     AtomicPtr(const AtomicPtr&) = delete;
     AtomicPtr& operator=(const AtomicPtr&) = delete;
 
-    AtomicPtr(AtomicPtr&& other) noexcept : ptr_(other.ptr_.exchange(nullptr)) {}
+    AtomicPtr(AtomicPtr&& other) noexcept {
+#if MOSS_HAS_STD_ATOMIC
+        ptr_ = other.ptr_.exchange(nullptr);
+#else
+        ptr_ = other.ptr_;
+        other.ptr_ = nullptr;
+#endif
+    }
+
     AtomicPtr& operator=(AtomicPtr&& other) noexcept {
         if (this != &other) {
+#if MOSS_HAS_STD_ATOMIC
             ptr_.store(other.ptr_.exchange(nullptr));
+#else
+            ptr_ = other.ptr_;
+            other.ptr_ = nullptr;
+#endif
         }
         return *this;
     }
 
     // 原子加载
     [[nodiscard]] T* load(MemoryOrder order = MemoryOrder::SeqCst) const noexcept {
+#if MOSS_HAS_STD_ATOMIC
         return ptr_.load(static_cast<std::memory_order>(order));
+#else
+        (void)order;  // 忽略内存顺序参数
+        return const_cast<T*>(ptr_);
+#endif
     }
 
     // 原子存储
     void store(T* desired, MemoryOrder order = MemoryOrder::SeqCst) noexcept {
+#if MOSS_HAS_STD_ATOMIC
         ptr_.store(desired, static_cast<std::memory_order>(order));
+#else
+        (void)order;  // 忽略内存顺序参数
+        ptr_ = desired;
+#endif
     }
 
     // 原子交换
     [[nodiscard]] T* exchange(T* desired, MemoryOrder order = MemoryOrder::SeqCst) noexcept {
+#if MOSS_HAS_STD_ATOMIC
         return ptr_.exchange(desired, static_cast<std::memory_order>(order));
+#else
+        (void)order;  // 忽略内存顺序参数
+        T* old = const_cast<T*>(ptr_);
+        ptr_ = desired;
+        return old;
+#endif
     }
 
     // CAS操作
     [[nodiscard]] bool compare_exchange_weak(T*& expected, T* desired,
                                              MemoryOrder success = MemoryOrder::SeqCst,
                                              MemoryOrder failure = MemoryOrder::SeqCst) noexcept {
+#if MOSS_HAS_STD_ATOMIC
         return ptr_.compare_exchange_weak(expected, desired,
                                           static_cast<std::memory_order>(success),
                                           static_cast<std::memory_order>(failure));
+#else
+        (void)success; (void)failure;  // 忽略内存顺序参数
+        if (ptr_ == expected) {
+            ptr_ = desired;
+            return true;
+        } else {
+            expected = const_cast<T*>(ptr_);
+            return false;
+        }
+#endif
     }
 
     [[nodiscard]] bool compare_exchange_strong(T*& expected, T* desired,
                                                MemoryOrder success = MemoryOrder::SeqCst,
                                                MemoryOrder failure = MemoryOrder::SeqCst) noexcept {
+#if MOSS_HAS_STD_ATOMIC
         return ptr_.compare_exchange_strong(expected, desired,
                                             static_cast<std::memory_order>(success),
                                             static_cast<std::memory_order>(failure));
+#else
+        // 在 fallback 实现中，strong 和 weak 版本相同
+        return compare_exchange_weak(expected, desired, success, failure);
+#endif
     }
 
     // 便利操作符
@@ -91,11 +161,17 @@ public:
     }
 };
 
-// 原子计数器 - 使用ARM64 LSE指令优化
+// 原子计数器 - 多架构优化
 template<typename T>
 class AtomicCounter {
 private:
+#if MOSS_HAS_STD_ATOMIC
     std::atomic<T> value_;
+#else
+    // 简化实现：当没有标准库atomic时使用volatile值
+    // 注意：这不是真正的原子操作，仅用于编译兼容性
+    volatile T value_;
+#endif
 
 public:
     constexpr AtomicCounter() noexcept : value_(0) {}
@@ -107,22 +183,66 @@ public:
 
     // 原子加载
     [[nodiscard]] T load(MemoryOrder order = MemoryOrder::SeqCst) const noexcept {
+#if MOSS_HAS_STD_ATOMIC
         return value_.load(static_cast<std::memory_order>(order));
+#else
+        (void)order;  // 忽略内存顺序参数
+        return value_;
+#endif
     }
 
     // 原子存储
     void store(T desired, MemoryOrder order = MemoryOrder::SeqCst) noexcept {
+#if MOSS_HAS_STD_ATOMIC
         value_.store(desired, static_cast<std::memory_order>(order));
+#else
+        (void)order;  // 忽略内存顺序参数
+        value_ = desired;
+#endif
     }
 
     // 原子递增
     [[nodiscard]] T fetch_add(T arg, MemoryOrder order = MemoryOrder::SeqCst) noexcept {
+#if MOSS_HAS_STD_ATOMIC
         return value_.fetch_add(arg, static_cast<std::memory_order>(order));
+#else
+        (void)order;  // 忽略内存顺序参数
+        T old = value_;
+        value_ = old + arg;
+        return old;
+#endif
     }
 
     // 原子递减
     [[nodiscard]] T fetch_sub(T arg, MemoryOrder order = MemoryOrder::SeqCst) noexcept {
+#if MOSS_HAS_STD_ATOMIC
         return value_.fetch_sub(arg, static_cast<std::memory_order>(order));
+#else
+        (void)order;  // 忽略内存顺序参数
+        T old = value_;
+        value_ = old - arg;
+        return old;
+#endif
+    }
+
+    // 原子比较和交换
+    [[nodiscard]] bool compare_exchange_weak(T& expected, T desired,
+                                           MemoryOrder success = MemoryOrder::SeqCst,
+                                           MemoryOrder failure = MemoryOrder::SeqCst) noexcept {
+#if MOSS_HAS_STD_ATOMIC
+        return value_.compare_exchange_weak(expected, desired,
+                                          static_cast<std::memory_order>(success),
+                                          static_cast<std::memory_order>(failure));
+#else
+        (void)success; (void)failure;  // 忽略内存顺序参数
+        if (value_ == expected) {
+            value_ = desired;
+            return true;
+        } else {
+            expected = value_;
+            return false;
+        }
+#endif
     }
 
     // 前缀递增/递减
@@ -154,22 +274,11 @@ using AtomicU32 = AtomicCounter<u32>;
 using AtomicU64 = AtomicCounter<u64>;
 using AtomicSize = AtomicCounter<usize>;
 
-// 内存屏障函数 - ARM64特定实现
-inline void memory_barrier() noexcept {
-    asm volatile("dsb sy" ::: "memory");
-}
-
-inline void read_barrier() noexcept {
-    asm volatile("dsb ld" ::: "memory");
-}
-
-inline void write_barrier() noexcept {
-    asm volatile("dsb st" ::: "memory");
-}
-
-inline void instruction_barrier() noexcept {
-    asm volatile("isb" ::: "memory");
-}
+// 内存屏障函数 - 使用架构抽象层
+using moss::kernel::arch::memory_barrier;
+using moss::kernel::arch::read_barrier;
+using moss::kernel::arch::write_barrier;
+using moss::kernel::arch::instruction_barrier;
 
 // CPU缓存行对齐的原子类型
 template<typename T>

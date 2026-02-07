@@ -1,4 +1,5 @@
-#include "page_table.hpp"
+#include "mm/page_table.hpp"
+#include "../include/arch/arch_abstraction.hpp"
 
 // 外部符号声明（来自链接器脚本）
 extern "C" {
@@ -179,33 +180,8 @@ VoidResult PageTableManager::enable_mmu() {
 
     PhysAddr kernel_pgd_pa = PageTableManager::get_physical_address(PageTableManager::kernel_pgd);
 
-        // 设置内存属性寄存器
-        asm volatile("msr mair_el1, %0" :: "r"(AddressSpaceConfig::MAIR_VALUE));
-
-        // 设置翻译控制寄存器
-        asm volatile("msr tcr_el1, %0" :: "r"(AddressSpaceConfig::TCR_VALUE));
-
-        // 设置页表基址寄存器（TTBR1_EL1用于内核空间）
-        asm volatile("msr ttbr1_el1, %0" :: "r"(kernel_pgd_pa));
-
-        // 设置TTBR0_EL1为0（暂时不使用用户空间）
-        asm volatile("msr ttbr0_el1, %0" :: "r"(0ULL));
-
-        // 内存屏障
-        asm volatile("dsb sy");
-        asm volatile("isb");
-
-        // 启用MMU
-        u64 sctlr;
-        asm volatile("mrs %0, sctlr_el1" : "=r"(sctlr));
-        sctlr |= (1ULL << 0);  // M位：启用MMU
-        sctlr |= (1ULL << 2);  // C位：启用数据缓存
-        sctlr |= (1ULL << 12); // I位：启用指令缓存
-        asm volatile("msr sctlr_el1, %0" :: "r"(sctlr));
-
-        // 确保MMU启用生效
-        asm volatile("dsb sy");
-        asm volatile("isb");
+    // 使用架构抽象层设置MMU（支持多架构）
+    moss::kernel::arch::mmu::setup_kernel_mmu(kernel_pgd_pa);
 
         return VoidResult{};
 }
