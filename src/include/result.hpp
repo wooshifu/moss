@@ -4,10 +4,8 @@
 
 #include "types.hpp"
 
-// 包含concepts约束（仅在支持时）
-#ifdef __cpp_concepts
-#include "concepts/kernel_concepts.hpp"
-#endif
+// 使用标准库concepts
+#include "moss_std.hpp"
 
 // 内核环境下的基础 type traits 实现
 namespace moss::kernel::detail {
@@ -91,11 +89,7 @@ using KernelError = ErrorCode;
 const char* error_to_string(ErrorCode error) noexcept;
 
 // Result类型实现 - 类似Rust的Result<T, E>
-#ifdef __cpp_concepts
-template<moss::concepts::KernelSafe T, typename E = ErrorCode>
-#else
 template<typename T, typename E = ErrorCode>
-#endif
 class [[nodiscard]] Result {
 private:
     union {
@@ -106,22 +100,22 @@ private:
 
 public:
     // 构造函数
-    constexpr Result(const T& value) noexcept(detail::is_nothrow_copy_constructible_v<T>)
+    constexpr Result(const T& value) noexcept(is_nothrow_copy_constructible_v<T>)
         : value_(value), has_value_(true) {}
 
-    constexpr Result(T&& value) noexcept(detail::is_nothrow_move_constructible_v<T>)
-        : value_(detail::move(value)), has_value_(true) {}
+    constexpr Result(T&& value) noexcept(is_nothrow_move_constructible_v<T>)
+        : value_(move(value)), has_value_(true) {}
 
-    constexpr Result(const E& error) noexcept(detail::is_nothrow_copy_constructible_v<E>)
+    constexpr Result(const E& error) noexcept(is_nothrow_copy_constructible_v<E>)
         : error_(error), has_value_(false) {}
 
-    constexpr Result(E&& error) noexcept(detail::is_nothrow_move_constructible_v<E>)
-        : error_(detail::move(error)), has_value_(false) {}
+    constexpr Result(E&& error) noexcept(is_nothrow_move_constructible_v<E>)
+        : error_(move(error)), has_value_(false) {}
 
     // 拷贝构造函数
     constexpr Result(const Result& other) noexcept(
-        detail::is_nothrow_copy_constructible_v<T> &&
-        detail::is_nothrow_copy_constructible_v<E>)
+        is_nothrow_copy_constructible_v<T> &&
+        is_nothrow_copy_constructible_v<E>)
         : has_value_(other.has_value_) {
         if (has_value_) {
             new (&value_) T(other.value_);
@@ -132,13 +126,13 @@ public:
 
     // 移动构造函数
     constexpr Result(Result&& other) noexcept(
-        detail::is_nothrow_move_constructible_v<T> &&
-        detail::is_nothrow_move_constructible_v<E>)
+        is_nothrow_move_constructible_v<T> &&
+        is_nothrow_move_constructible_v<E>)
         : has_value_(other.has_value_) {
         if (has_value_) {
-            new (&value_) T(detail::move(other.value_));
+            new (&value_) T(move(other.value_));
         } else {
-            new (&error_) E(detail::move(other.error_));
+            new (&error_) E(move(other.error_));
         }
     }
 
@@ -153,10 +147,10 @@ public:
 
     // 赋值操作符
     constexpr Result& operator=(const Result& other) noexcept(
-        detail::is_nothrow_copy_constructible_v<T> &&
-        detail::is_nothrow_copy_constructible_v<E> &&
-        detail::is_nothrow_copy_assignable_v<T> &&
-        detail::is_nothrow_copy_assignable_v<E>) {
+        is_nothrow_copy_constructible_v<T> &&
+        is_nothrow_copy_constructible_v<E> &&
+        is_nothrow_copy_assignable_v<T> &&
+        is_nothrow_copy_assignable_v<E>) {
         if (this != &other) {
             if (has_value_ && other.has_value_) {
                 value_ = other.value_;
@@ -198,7 +192,7 @@ public:
     }
 
     [[nodiscard]] constexpr T&& value() && noexcept {
-        return detail::move(value_);
+        return move(value_);
     }
 
     // 获取错误（不安全，需要先检查）
@@ -211,7 +205,7 @@ public:
     }
 
     [[nodiscard]] constexpr E&& error() && noexcept {
-        return detail::move(error_);
+        return move(error_);
     }
 
     // 安全的值获取
@@ -220,7 +214,7 @@ public:
     }
 
     [[nodiscard]] constexpr T value_or(T&& default_value) && {
-        return has_value_ ? detail::move(value_) : detail::move(default_value);
+        return has_value_ ? move(value_) : move(default_value);
     }
 
     // 操作符重载
@@ -237,7 +231,7 @@ public:
     }
 
     [[nodiscard]] constexpr T&& operator*() && noexcept {
-        return detail::move(value_);
+        return move(value_);
     }
 
     [[nodiscard]] constexpr const T* operator->() const noexcept {
@@ -261,11 +255,11 @@ public:
     constexpr Result() noexcept : has_value_(true) {}
 
     // 错误构造函数
-    constexpr Result(const E& error) noexcept(detail::is_nothrow_copy_constructible_v<E>)
+    constexpr Result(const E& error) noexcept(is_nothrow_copy_constructible_v<E>)
         : error_(error), has_value_(false) {}
 
-    constexpr Result(E&& error) noexcept(detail::is_nothrow_move_constructible_v<E>)
-        : error_(detail::move(error)), has_value_(false) {}
+    constexpr Result(E&& error) noexcept(is_nothrow_move_constructible_v<E>)
+        : error_(move(error)), has_value_(false) {}
 
     // 检查方法
     [[nodiscard]] constexpr bool has_value() const noexcept {
@@ -304,7 +298,7 @@ using VoidResult = Result<void, ErrorCode>;
 // 便利函数
 template<typename T>
 [[nodiscard]] constexpr Result<T> Ok(T&& value) {
-    return Result<T>{detail::forward<T>(value)};
+    return Result<T>{move(value)};
 }
 
 [[nodiscard]] constexpr Result<void> Ok() {
@@ -313,12 +307,12 @@ template<typename T>
 
 template<typename E>
 [[nodiscard]] constexpr Result<void, E> Error(E&& error) {
-    return Result<void, E>{detail::forward<E>(error)};
+    return Result<void, E>{moss::forward<E>(error)};
 }
 
 template<typename T, typename E>
 [[nodiscard]] constexpr Result<T, E> Error(E&& error) {
-    return Result<T, E>{detail::forward<E>(error)};
+    return Result<T, E>{moss::forward<E>(error)};
 }
 
 } // namespace moss::kernel

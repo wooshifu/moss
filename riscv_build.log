@@ -1,0 +1,2 @@
+[1/5] Building CXX object src/kernel/CMakeFiles/moss_kernel.dir/runtime_support.cpp.obj
+[2/5] Building ASM object src/boot/CMakeFiles/moss_boot.dir/start_riscv.S.obj
