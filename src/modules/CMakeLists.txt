@@ -29,3 +29,13 @@ moss_add_module(moss_result
 set_target_properties(moss_result PROPERTIES
     EXPORT_NAME "moss.result"
 )
+
+# Add moss.arch module
+moss_add_module(moss_arch
+    SOURCES arch.cppm
+    DEPENDENCIES moss_std moss_types
+)
+
+set_target_properties(moss_arch PROPERTIES
+    EXPORT_NAME "moss.arch"
+)
