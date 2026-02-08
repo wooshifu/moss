@@ -158,7 +158,7 @@ public:
     }
 
     // 设备恢复
-    [[nodiscard]] VoidResult resume() override noexcept {
+    [[nodiscard]] VoidResult resume() noexcept override {
         if (state() != DeviceState::Suspended) {
             return VoidResult{ErrorCode::InvalidState};
         }
@@ -174,7 +174,7 @@ public:
     }
 
     // 设备关闭
-    void shutdown() override noexcept {
+    void shutdown() noexcept override {
         if (initialized_) {
             // 禁用UART
             write_reg(UartRegs::UARTCR, 0);
@@ -247,15 +247,18 @@ public:
         return VoidResult{};
     }
 
-    // 获取UART统计信息
-    [[nodiscard]] struct {
+    // UART统计信息结构
+    struct UartStatistics {
         u64 bytes_sent;
         u64 bytes_received;
         u64 tx_errors;
         u64 rx_errors;
         u32 current_baud_rate;
         bool is_active;
-    } get_uart_statistics() const noexcept {
+    };
+
+    // 获取UART统计信息
+    [[nodiscard]] UartStatistics get_uart_statistics() const noexcept {
         return {
             bytes_sent_,
             bytes_received_,
@@ -287,6 +290,27 @@ public:
     }
 
 private:
+    // 寄存器读写辅助函数 - 需要先定义，供其他方法使用
+    [[nodiscard]] u32 read_reg(u32 offset) const noexcept {
+        return *reinterpret_cast<volatile u32*>(base_addr_ + offset);
+    }
+
+    void write_reg(u32 offset, u32 value) const noexcept {
+        *reinterpret_cast<volatile u32*>(base_addr_ + offset) = value;
+    }
+
+    // 字符串转数字辅助函数
+    [[nodiscard]] static u32 string_to_u32(const char* str) noexcept {
+        if (str == nullptr) return 0;
+
+        u32 result = 0;
+        while (*str >= '0' && *str <= '9') {
+            result = result * 10 + (*str - '0');
+            str++;
+        }
+        return result;
+    }
+
     // 初始化UART硬件
     [[nodiscard]] VoidResult initialize_hardware() noexcept {
         // 禁用UART
@@ -318,26 +342,6 @@ private:
         return VoidResult{};
     }
 
-    // 寄存器读写
-    [[nodiscard]] u32 read_reg(u32 offset) const noexcept {
-        return *reinterpret_cast<volatile u32*>(base_addr_ + offset);
-    }
-
-    void write_reg(u32 offset, u32 value) const noexcept {
-        *reinterpret_cast<volatile u32*>(base_addr_ + offset) = value;
-    }
-
-    // 字符串转数字
-    [[nodiscard]] static u32 string_to_u32(const char* str) noexcept {
-        if (str == nullptr) return 0;
-
-        u32 result = 0;
-        while (*str >= '0' && *str <= '9') {
-            result = result * 10 + (*str - '0');
-            str++;
-        }
-        return result;
-    }
 
     // 中断处理函数
     static void uart_interrupt_handler(InterruptId irq, void* context) noexcept {

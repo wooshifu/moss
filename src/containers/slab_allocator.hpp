@@ -8,7 +8,7 @@
 #include "../include/result.hpp"
 
 // 包含统一的内核标准库支持
-#include "../include/kernel_std.hpp"
+// Removed kernel_std.hpp include to avoid conflicts
 
 namespace moss::kernel::containers {
 
@@ -97,7 +97,7 @@ public:
     SlabCache(usize object_size, usize alignment = alignof(void*)) noexcept
         : object_size_(object_size),
           object_alignment_(alignment),
-          aligned_object_size_(align_up<alignof(void*)>(kernel_max(object_size, sizeof(void*)))),
+          aligned_object_size_(align_up<alignof(void*)>(kernel_max<usize>(object_size, sizeof(void*)))),
           objects_per_page_(PAGE_SIZE / aligned_object_size_),
           full_pages_(nullptr), partial_pages_(nullptr), empty_pages_(nullptr),
           total_objects_(0), allocated_objects_(0) {}

@@ -87,7 +87,16 @@ void test_device_management(void) noexcept;
     g_kernel = nullptr;
 
     while (true) {
-        asm volatile("wfi");
+#if defined(__aarch64__) || defined(MOSS_ARCH_ARM64)
+        asm volatile("wfi"); // 等待中断 (ARM64)
+#elif defined(__x86_64__) || defined(MOSS_ARCH_X86_64)
+        asm volatile("hlt"); // 停机等待中断 (x86_64)
+#elif defined(__riscv) || defined(MOSS_ARCH_RISCV)
+        asm volatile("wfi"); // 等待中断 (RISC-V)
+#else
+        // 通用停机 - CPU空循环
+        for (volatile int i = 0; i < 1000000; ++i) {}
+#endif
     }
 }
 
