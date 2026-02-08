@@ -14,9 +14,14 @@ export namespace moss::kernel {
     using isize = ptrdiff_t;
 #endif
 
+// Physical and virtual address types
+using PhysAddr = u64;
+using VirtAddr = u64;
+
 // Kernel constants
 constexpr usize PAGE_SIZE = 4096;
 constexpr usize CACHE_LINE_SIZE = 64;
+constexpr usize MAX_CPUS = 8;
 
 // Process and Thread IDs
 using ProcessId = u32;
@@ -65,3 +70,10 @@ protected:
 };
 
 } // namespace moss::kernel
+
+// Macro for non-copyable, non-movable classes
+#define NON_COPYABLE_NON_MOVABLE(ClassName) \
+    ClassName(const ClassName&) = delete; \
+    ClassName& operator=(const ClassName&) = delete; \
+    ClassName(ClassName&&) = delete; \
+    ClassName& operator=(ClassName&&) = delete
