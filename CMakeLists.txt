@@ -6,7 +6,6 @@ project(moss VERSION 0.1.0 LANGUAGES CXX ASM)
 # Enable C++20 modules
 set(CMAKE_CXX_SCAN_FOR_MODULES ON)
 set(CMAKE_CXX_MODULE_STD ON)
-set(CMAKE_EXPERIMENTAL_CXX_MODULE_CMAKE_API "2182bf5c-ef0d-489a-91da-49dbc3090d2a")
 
 # Configure C++20 instead of C++26 for modules compatibility
 set(CMAKE_CXX_STANDARD 20)
@@ -331,41 +330,23 @@ set_target_properties(moss.elf PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin
 )
 
-# === 后处理和工具 ===
-# 生成反汇编文件（调试用）
-set(OBJDUMP_CMD "")
-
-# 查找 LLVM objdump 作为首选
+# 查找 LLVM objdump
 find_program(LLVM_OBJDUMP llvm-objdump)
 if(LLVM_OBJDUMP)
     set(OBJDUMP_CMD ${LLVM_OBJDUMP})
     message(STATUS "使用 LLVM objdump: ${LLVM_OBJDUMP}")
 else()
-    # 查找架构特定的 objdump
-    if(MOSS_TARGET_ARCH STREQUAL "ARM64")
-        find_program(ARCH_OBJDUMP aarch64-elf-objdump)
-    elseif(MOSS_TARGET_ARCH STREQUAL "X86_64")
-        find_program(ARCH_OBJDUMP objdump)
-    elseif(MOSS_TARGET_ARCH STREQUAL "RISCV")
-        find_program(ARCH_OBJDUMP riscv64-linux-gnu-objdump)
-    endif()
-
-    if(ARCH_OBJDUMP)
-        set(OBJDUMP_CMD ${ARCH_OBJDUMP})
-        message(STATUS "使用架构特定 objdump: ${ARCH_OBJDUMP}")
-    endif()
+    message(FATAL_ERROR "未找到 llvm-objdump 工具，请安装 LLVM 工具链以生成反汇编文件")
 endif()
-
-# 只有找到 objdump 工具时才生成反汇编
-if(OBJDUMP_CMD)
+if(LLVM_OBJDUMP)
     add_custom_command(TARGET moss.elf POST_BUILD
-        COMMAND ${OBJDUMP_CMD} -d $<TARGET_FILE:moss.elf> > moss.dis
-        COMMAND ${OBJDUMP_CMD} -t $<TARGET_FILE:moss.elf> | sort > moss.sym
+        COMMAND ${OBJDUMP_CMD} -Cd $<TARGET_FILE:moss.elf> > moss.dis
+        COMMAND ${OBJDUMP_CMD} -Ct $<TARGET_FILE:moss.elf> | sort > moss.sym
         WORKING_DIRECTORY ${CMAKE_BINARY_DIR}
         COMMENT "Generating disassembly and symbol table for ${MOSS_TARGET_ARCH}"
     )
 else()
-    message(STATUS "未找到 objdump 工具，跳过反汇编文件生成")
+    message(STATUS "未找到 llvm-objdump 工具，跳过反汇编文件生成")
 endif()
 
 # === 构建目标 ===
