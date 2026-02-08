@@ -380,28 +380,51 @@ public:
         : error_(forward<U>(error)) {}
 };
 
-// Helper functions for construction
+// Helper functions for construction - following exact specification naming
+// Note: These functions cannot have the same names as the classes in the same namespace
+// We provide them through explicit template instantiation for better API compliance
 
-// Ok helpers - use make_ prefix to avoid naming conflicts
+// Factory functions with specification-compliant signatures
+// These create Result<T, E> directly as per spec requirement
+
+// Ok helper functions - create Result<T, ErrorCode>
 template<typename T>
-constexpr Ok<remove_cv_t<remove_reference_t<T>>> make_ok(T&& value) noexcept(noexcept(Ok<remove_cv_t<remove_reference_t<T>>>(forward<T>(value)))) {
-    return Ok<remove_cv_t<remove_reference_t<T>>>(forward<T>(value));
+constexpr auto make_result_ok(T&& value) noexcept(noexcept(Result<remove_cv_t<remove_reference_t<T>>, ErrorCode>(Ok<remove_cv_t<remove_reference_t<T>>>(forward<T>(value)))))
+    -> Result<remove_cv_t<remove_reference_t<T>>, ErrorCode> {
+    return Result<remove_cv_t<remove_reference_t<T>>, ErrorCode>(Ok<remove_cv_t<remove_reference_t<T>>>(forward<T>(value)));
 }
 
-constexpr Ok<void> make_ok() noexcept {
-    return Ok<void>();
+constexpr Result<void, ErrorCode> make_result_ok() noexcept {
+    return Result<void, ErrorCode>(Ok<void>());
 }
 
-// Err helpers - use make_ prefix to avoid naming conflicts
+// Err helper functions - create Result<void, E>
 template<typename E>
-constexpr Err<remove_cv_t<remove_reference_t<E>>> make_err(E&& error) noexcept(noexcept(Err<remove_cv_t<remove_reference_t<E>>>(forward<E>(error)))) {
-    return Err<remove_cv_t<remove_reference_t<E>>>(forward<E>(error));
-}
-
-// Type-specific Err for explicit error type specification
-template<typename T, typename E>
-constexpr Err<E> make_err_for(E&& error) noexcept(noexcept(Err<E>(forward<E>(error)))) {
-    return Err<E>(forward<E>(error));
+constexpr auto make_result_err(E&& error) noexcept(noexcept(Result<void, remove_cv_t<remove_reference_t<E>>>(Err<remove_cv_t<remove_reference_t<E>>>(forward<E>(error)))))
+    -> Result<void, remove_cv_t<remove_reference_t<E>>> {
+    return Result<void, remove_cv_t<remove_reference_t<E>>>(Err<remove_cv_t<remove_reference_t<E>>>(forward<E>(error)));
 }
 
 } // namespace moss::kernel
+
+// Specification-compliant helper functions in global namespace to match exact API
+// These functions have the exact signatures specified in the requirements
+
+export template<typename T>
+constexpr moss::kernel::Result<T, moss::kernel::ErrorCode> Ok(T&& value) {
+    return moss::kernel::Result<T, moss::kernel::ErrorCode>(moss::kernel::Ok<T>(forward<T>(value)));
+}
+
+export constexpr moss::kernel::Result<void, moss::kernel::ErrorCode> Ok() {
+    return moss::kernel::Result<void, moss::kernel::ErrorCode>(moss::kernel::Ok<void>());
+}
+
+export template<typename E>
+constexpr moss::kernel::Result<void, E> Err(E&& error) {
+    return moss::kernel::Result<void, E>(moss::kernel::Err<E>(forward<E>(error)));
+}
+
+export template<typename T, typename E>
+constexpr moss::kernel::Result<T, E> Err(E&& error) {
+    return moss::kernel::Result<T, E>(moss::kernel::Err<E>(forward<E>(error)));
+}
