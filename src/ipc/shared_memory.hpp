@@ -522,15 +522,15 @@ private:
     void update_page_statistics(usize page_size, i32 delta) noexcept {
         if (page_size == LARGE_PAGE_SIZE) {
             if (delta > 0) {
-                (void)large_pages_used_.fetch_add(delta, containers::MemoryOrder::Relaxed);
+                (void)large_pages_used_.fetch_add(static_cast<usize>(delta), containers::MemoryOrder::Relaxed);
             } else {
-                (void)large_pages_used_.fetch_sub(-delta, containers::MemoryOrder::Relaxed);
+                (void)large_pages_used_.fetch_sub(static_cast<usize>(-delta), containers::MemoryOrder::Relaxed);
             }
         } else if (page_size == HUGE_PAGE_SIZE) {
             if (delta > 0) {
-                (void)huge_pages_used_.fetch_add(delta, containers::MemoryOrder::Relaxed);
+                (void)huge_pages_used_.fetch_add(static_cast<usize>(delta), containers::MemoryOrder::Relaxed);
             } else {
-                (void)huge_pages_used_.fetch_sub(-delta, containers::MemoryOrder::Relaxed);
+                (void)huge_pages_used_.fetch_sub(static_cast<usize>(-delta), containers::MemoryOrder::Relaxed);
             }
         }
     }

@@ -1,7 +1,7 @@
+#include "moss_std.hpp"  // 裸机环境基础定义
 #include "types.hpp"
 #include "result.hpp"
 #include "mm/page_table.hpp"
-#include <cstddef>  // for size_t
 
 // 外部符号声明（来自链接器脚本）
 extern "C" {
@@ -256,19 +256,4 @@ extern "C" void early_main(void* device_tree_ptr) {
     }
 }
 
-// 实现placement new操作符
-void* operator new(size_t, void* ptr) noexcept {
-    return ptr;
-}
-
-void* operator new[](size_t, void* ptr) noexcept {
-    return ptr;
-}
-
-void operator delete(void*, void*) noexcept {
-    // placement delete不需要做任何事情
-}
-
-void operator delete[](void*, void*) noexcept {
-    // placement delete不需要做任何事情
-}
+// placement new操作符已在moss_std.hpp中定义

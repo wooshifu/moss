@@ -17,7 +17,7 @@ set(SUPPORTED_PLATFORMS
 )
 
 # 架构到 Clang target 的映射
-set(ARCH_TARGET_MAP_ARM64 "aarch64-linux-gnu")
+set(ARCH_TARGET_MAP_ARM64 "aarch64-unknown-elf")
 set(ARCH_TARGET_MAP_X86_64 "x86_64-elf")
 set(ARCH_TARGET_MAP_RISCV "riscv64-unknown-elf")
 

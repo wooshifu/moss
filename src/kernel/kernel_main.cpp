@@ -253,12 +253,12 @@ void kernel_panic_handler(const char* message) noexcept {
 
     // 输出错误信息
     while (*panic_msg) {
-        *uart_data = *panic_msg++;
+        *uart_data = static_cast<u32>(static_cast<unsigned char>(*panic_msg++));
     }
 
     if (message) {
         while (*message) {
-            *uart_data = *message++;
+            *uart_data = static_cast<u32>(static_cast<unsigned char>(*message++));
         }
     }
 
@@ -291,11 +291,11 @@ void early_debug_print(const char* message) noexcept {
         }
 
         if (*message == '\n') {
-            *uart_data = '\r';
+            *uart_data = static_cast<u32>('\r');
             while (*uart_flags & (1 << 5)) {}
-            *uart_data = '\n';
+            *uart_data = static_cast<u32>('\n');
         } else {
-            *uart_data = *message;
+            *uart_data = static_cast<u32>(static_cast<unsigned char>(*message));
         }
         message++;
     }

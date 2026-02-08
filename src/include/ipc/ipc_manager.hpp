@@ -195,7 +195,7 @@ public:
                                                             service->provider_pid, service_id);
 
         // 注册通道和连接
-        channels_.insert_or_update(channel_id, std::move(channel));
+        channels_.insert_or_update(channel_id, moss::move(channel));
         connections_.insert_or_update(channel_id, conn);
 
         // 更新统计

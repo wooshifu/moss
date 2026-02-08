@@ -184,7 +184,7 @@ public:
         }
 
         // 计算调度延迟
-        u64 ideal_runtime = CfsParams::sched_slice(current->se.weight, total_weight_);
+        u64 ideal_runtime = CfsParams::sched_slice(current->se.weight, static_cast<u32>(total_weight_));
         u64 delta_exec = current->se.sum_exec_runtime - current->se.prev_sum_exec_runtime;
 
         // 如果当前任务运行时间超过理想时间片，允许抢占

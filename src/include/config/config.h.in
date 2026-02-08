@@ -14,18 +14,26 @@
 // 架构和平台信息宏定义（由CMake生成）
 // ============================================================================
 
-// 目标架构信息
-#cmakedefine MOSS_ARCH_ARM64
-#cmakedefine MOSS_ARCH_X86_64
-#cmakedefine MOSS_ARCH_RISCV
+// 目标架构信息（避免与命令行定义冲突）
+#ifndef MOSS_ARCH_ARM64
+    #cmakedefine MOSS_ARCH_ARM64
+#endif
+#ifndef MOSS_ARCH_X86_64
+    #cmakedefine MOSS_ARCH_X86_64
+#endif
+#ifndef MOSS_ARCH_RISCV
+    #cmakedefine MOSS_ARCH_RISCV
+#endif
 
 #define MOSS_ARCH_NAME "@MOSS_ARCH_NAME@"
 #define MOSS_PAGE_SIZE @MOSS_PAGE_SIZE@
 #define MOSS_CACHE_LINE_SIZE @MOSS_CACHE_LINE_SIZE@
 #define MOSS_POINTER_SIZE @MOSS_POINTER_SIZE@
 
-// 目标平台信息
-#cmakedefine MOSS_PLATFORM_QEMU_VIRT
+// 目标平台信息（避免与命令行定义冲突）
+#ifndef MOSS_PLATFORM_QEMU_VIRT
+    #cmakedefine MOSS_PLATFORM_QEMU_VIRT
+#endif
 #define MOSS_PLATFORM_NAME "@MOSS_PLATFORM_NAME@"
 
 // 构建类型
@@ -77,6 +85,12 @@
     #define MOSS_ENABLE_RCU_LIST @MOSS_ENABLE_RCU_LIST@           // RCU链表
     #define MOSS_ENABLE_PER_CPU_DATA @MOSS_ENABLE_PER_CPU_DATA@       // Per-CPU数据结构
     #define MOSS_ENABLE_ATOMIC_TYPES @MOSS_ENABLE_ATOMIC_TYPES@       // 原子类型支持
+
+    // 标准库工具函数支持（裸机环境中为0）
+    #define MOSS_HAS_STD_UTILITY 0                    // 无std::utility支持
+    #define MOSS_HAS_STD_UTILITY_SLAB 0              // 无Slab分配器std::utility支持
+    #define MOSS_HAS_STD_UTILITY_PERCPU 0            // 无Per-CPU std::utility支持
+    #define MOSS_HAS_STD_UTILITY_SMARTPTR 0          // 无智能指针std::utility支持
 #endif
 
 // 进程管理功能开关

@@ -181,7 +181,7 @@ public:
     [[nodiscard]] double utilization() const noexcept {
         usize total = total_objects();
         if (total == 0) return 0.0;
-        return static_cast<double>(allocated_objects()) / total;
+        return static_cast<double>(allocated_objects()) / static_cast<double>(total);
     }
 
 private:

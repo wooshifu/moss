@@ -56,6 +56,28 @@ struct DeviceProperty {
         : name(n), value(v), value_size(size) {}
 };
 
+// 设备资源信息结构体
+struct DeviceMemoryInfo {
+    PhysAddr start;
+    PhysAddr end;
+    VirtAddr mapped_addr;
+};
+
+struct DeviceIoInfo {
+    u16 start;
+    u16 end;
+};
+
+struct DeviceInterruptInfo {
+    InterruptId irq;
+    interrupts::TriggerType trigger;
+};
+
+struct DeviceDmaInfo {
+    u32 channel;
+    u32 request_line;
+};
+
 // 设备资源
 struct DeviceResource {
     enum Type {
@@ -66,26 +88,10 @@ struct DeviceResource {
     } type;
 
     union {
-        struct {
-            PhysAddr start;
-            PhysAddr end;
-            VirtAddr mapped_addr;
-        } memory;
-
-        struct {
-            u16 start;
-            u16 end;
-        } io;
-
-        struct {
-            InterruptId irq;
-            interrupts::TriggerType trigger;
-        } interrupt;
-
-        struct {
-            u32 channel;
-            u32 request_line;
-        } dma;
+        DeviceMemoryInfo memory;
+        DeviceIoInfo io;
+        DeviceInterruptInfo interrupt;
+        DeviceDmaInfo dma;
     };
 
     DeviceResource() noexcept : type(Memory) {

@@ -144,7 +144,7 @@ function(moss_verify_clang_cross_compile arch)
 
     # 获取目标三元组
     if(arch STREQUAL "ARM64")
-        set(test_target "aarch64-linux-gnu")
+        set(test_target "aarch64-unknown-elf")
     elseif(arch STREQUAL "X86_64")
         set(test_target "x86_64-elf")
     elseif(arch STREQUAL "RISCV")
