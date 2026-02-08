@@ -36,8 +36,9 @@ using i64 = signed long long;
 using f32 = float;
 using f64 = double;
 
-using usize = size_t;
-using isize = ptrdiff_t;
+// usize 和 isize 在 types.hpp 中根据架构定义
+// using usize = size_t;
+// using isize = ptrdiff_t;
 
 // 物理和虚拟地址类型
 using PhysAddr = u64;
