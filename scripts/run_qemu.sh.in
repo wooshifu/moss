@@ -23,6 +23,7 @@ QEMU_ARGS=(
     -serial stdio                   # 串口重定向到终端
     -monitor none                   # 禁用QEMU监视器
     -no-reboot                      # 崩溃时不重启
+    -semihosting-config enable=on,target=native  # 启用ARM Semihosting支持
 )
 
 # 调试模式参数
@@ -53,11 +54,26 @@ if [ "$DEBUG_MODE" == "true" ]; then
     echo "  (gdb) continue"
     echo "=================================================="
     echo ""
-    exec qemu-system-aarch64 "${QEMU_ARGS[@]}" "${DEBUG_ARGS[@]}"
+    qemu-system-aarch64 "${QEMU_ARGS[@]}" "${DEBUG_ARGS[@]}"
+    QEMU_EXIT_CODE=$?
+    echo ""
+    echo "=== QEMU调试会话结束 ==="
+    echo "退出状态: $QEMU_EXIT_CODE"
+    exit $QEMU_EXIT_CODE
 else
     echo "运行模式: 正常"
     echo "退出方式: Ctrl+A然后按X"
     echo "=================================================="
     echo ""
-    exec qemu-system-aarch64 "${QEMU_ARGS[@]}"
+    qemu-system-aarch64 "${QEMU_ARGS[@]}"
+    QEMU_EXIT_CODE=$?
+    echo ""
+    echo "=== MOSS内核执行完成 ==="
+    echo "QEMU退出状态: $QEMU_EXIT_CODE"
+    if [ $QEMU_EXIT_CODE -eq 0 ]; then
+        echo "✅ 内核测试成功完成！"
+    else
+        echo "❌ 内核执行异常，退出码: $QEMU_EXIT_CODE"
+    fi
+    exit $QEMU_EXIT_CODE
 fi
