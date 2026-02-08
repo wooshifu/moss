@@ -1,7 +1,10 @@
 [project]
-name = "moss"
+name = "moss-build"
 version = "0.1.0"
-description = "Add your description here"
-readme = "README.md"
-requires-python = ">=3.12"
-dependencies = []
+description = "MOSS Microkernel Build Tools"
+requires-python = ">=3.11"
+
+[dependency-groups]
+dev = [
+    "cmake>=4.2.1",
+]
