@@ -19,3 +19,13 @@ moss_add_module(moss_types
 set_target_properties(moss_types PROPERTIES
     EXPORT_NAME "moss.types"
 )
+
+# Add moss.result module
+moss_add_module(moss_result
+    SOURCES result.cppm
+    DEPENDENCIES moss_std moss_types
+)
+
+set_target_properties(moss_result PROPERTIES
+    EXPORT_NAME "moss.result"
+)
