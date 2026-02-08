@@ -39,3 +39,6 @@ moss_add_module(moss_arch
 set_target_properties(moss_arch PROPERTIES
     EXPORT_NAME "moss.arch"
 )
+
+# Add architecture implementations
+add_subdirectory(arch)
