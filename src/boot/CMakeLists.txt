@@ -13,10 +13,16 @@ if(MOSS_TARGET_ARCH STREQUAL "ARM64")
     message(STATUS "ARM64 启动源文件: ${BOOT_SOURCES}")
 elseif(MOSS_TARGET_ARCH STREQUAL "X86_64")
     # X86_64 特定的启动文件
-    message(STATUS "X86_64 架构启动代码待实现")
+    if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/start_x86_64.S")
+        list(APPEND BOOT_SOURCES "start_x86_64.S")
+    endif()
+    message(STATUS "X86_64 启动源文件: ${BOOT_SOURCES}")
 elseif(MOSS_TARGET_ARCH STREQUAL "RISCV")
     # RISC-V 特定的启动文件
-    message(STATUS "RISC-V 架构启动代码待实现")
+    if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/start_riscv.S")
+        list(APPEND BOOT_SOURCES "start_riscv.S")
+    endif()
+    message(STATUS "RISC-V 启动源文件: ${BOOT_SOURCES}")
 endif()
 
 # 只有在有源文件时才创建库

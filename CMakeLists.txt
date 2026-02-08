@@ -4,7 +4,7 @@ cmake_minimum_required(VERSION 3.25)
 project(moss VERSION 0.1.0 LANGUAGES CXX ASM)
 
 # 设置 C++ 标准
-set(CMAKE_CXX_STANDARD 23)
+set(CMAKE_CXX_STANDARD 26)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
@@ -25,10 +25,28 @@ moss_configure_architecture()
 # 配置目标平台
 moss_configure_platform()
 
-# 设置通用内核编译标志
+# 设置通用内核编译标志 - 最严格模式
 set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -ffreestanding -fno-exceptions -fno-rtti")
 set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -fno-stack-protector")
+
+# 最严格的警告和错误设置
 set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wall -Wextra -Werror")
+set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wpedantic")           # 严格遵循标准
+set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wconversion")         # 类型转换警告
+set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wsign-conversion")    # 符号转换警告
+set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wshadow")             # 变量遮蔽警告
+set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wunused")             # 未使用变量警告
+set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wunreachable-code")   # 不可达代码警告
+set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wcast-qual")          # const转换警告
+set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wcast-align")         # 对齐转换警告
+set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wmissing-declarations") # 缺少声明警告
+set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wredundant-decls")    # 冗余声明警告
+set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wundef")              # 未定义宏警告
+set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wstrict-aliasing")    # 严格别名警告
+set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wformat=2")           # 格式字符串警告
+set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wimplicit-fallthrough") # switch穿透警告
+set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wnull-dereference")   # 空指针解引用警告
+set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wdouble-promotion")   # 双精度提升警告
 
 # 优化级别设置
 set(CMAKE_CXX_FLAGS_DEBUG "-Og -g3")
@@ -315,7 +333,7 @@ if(LLVM_OBJDUMP)
 else()
     # 查找架构特定的 objdump
     if(MOSS_TARGET_ARCH STREQUAL "ARM64")
-        find_program(ARCH_OBJDUMP aarch64-linux-gnu-objdump)
+        find_program(ARCH_OBJDUMP aarch64-elf-objdump)
     elseif(MOSS_TARGET_ARCH STREQUAL "X86_64")
         find_program(ARCH_OBJDUMP objdump)
     elseif(MOSS_TARGET_ARCH STREQUAL "RISCV")

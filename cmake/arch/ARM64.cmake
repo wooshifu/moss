@@ -6,7 +6,7 @@ message(STATUS "配置 ARM64 (AArch64) 架构...")
 # ARM64 架构信息
 set(MOSS_ARCH_NAME "ARM64")
 set(MOSS_ARCH_BITS "64")
-set(MOSS_TARGET_TRIPLE "aarch64-linux-gnu")
+set(MOSS_TARGET_TRIPLE "aarch64-unknown-elf")
 
 # 默认 CPU 配置
 if(NOT MOSS_CPU_TYPE)
@@ -37,9 +37,10 @@ message(STATUS "ARM64 目标 CPU: ${MOSS_CPU_TYPE}")
 # ARM64 特定编译标志
 set(ARM64_SPECIFIC_FLAGS
     "-mcpu=${MOSS_CPU_TYPE}"
-    "-march=armv8-a+lse"
+    "-march=armv8-a"
     "-mgeneral-regs-only"
     "-mstrict-align"
+    "-mno-outline-atomics"
 )
 
 # ARM64 内核特定标志
@@ -48,12 +49,13 @@ set(ARM64_KERNEL_FLAGS
     "-fno-pie"
 )
 
-# ARM64 编译器标志已迁移到 CMakePresets.json 中的 ARM64 预设配置
-# string(JOIN " " ARM64_FLAGS_STR ${ARM64_SPECIFIC_FLAGS} ${ARM64_KERNEL_FLAGS})
-# set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} ${ARM64_FLAGS_STR}" PARENT_SCOPE)
+# ARM64 编译器标志应用
+string(JOIN " " ARM64_FLAGS_STR ${ARM64_SPECIFIC_FLAGS} ${ARM64_KERNEL_FLAGS})
+set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} --target=${MOSS_TARGET_TRIPLE} ${ARM64_FLAGS_STR}" PARENT_SCOPE)
+set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} --target=${MOSS_TARGET_TRIPLE} ${ARM64_FLAGS_STR}" PARENT_SCOPE)
 
 # ARM64 汇编器标志
-set(CMAKE_ASM_FLAGS "${CMAKE_ASM_FLAGS} --target=${MOSS_TARGET_TRIPLE} -march=armv8-a" PARENT_SCOPE)
+set(CMAKE_ASM_FLAGS "${CMAKE_ASM_FLAGS} --target=${MOSS_TARGET_TRIPLE} -march=armv8-a -mno-outline-atomics" PARENT_SCOPE)
 
 # ARM64 链接器标志
 set(ARM64_LINKER_FLAGS
@@ -62,9 +64,9 @@ set(ARM64_LINKER_FLAGS
     "-z max-page-size=4096"
 )
 
-# ARM64 链接器标志已迁移到 CMakePresets.json 中的 ARM64 预设配置
-# string(JOIN " " ARM64_LINKER_STR ${ARM64_LINKER_FLAGS})
-# set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} ${ARM64_LINKER_STR}" PARENT_SCOPE)
+# ARM64 链接器标志应用
+string(JOIN " " ARM64_LINKER_STR ${ARM64_LINKER_FLAGS})
+set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} ${ARM64_LINKER_STR} -mcmodel=small" PARENT_SCOPE)
 
 # 定义 ARM64 特定宏
 add_compile_definitions(

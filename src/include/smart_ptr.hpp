@@ -3,6 +3,7 @@
 // 内核专用智能指针实现
 // 替代std::unique_ptr和std::shared_ptr
 
+#include "moss_std.hpp"  // 裸机环境基础定义
 #include "types.hpp"
 #include "result.hpp"
 #include "../containers/atomic_types.hpp"
@@ -84,7 +85,7 @@ public:
 // 创建unique_ptr的便利函数
 template<typename T, typename... Args>
 [[nodiscard]] UniquePtr<T> make_unique(Args&&... args) {
-    return UniquePtr<T>(new T(std::forward<Args>(args)...));
+    return UniquePtr<T>(new T(moss::forward<Args>(args)...));
 }
 
 // 内核专用shared_ptr实现（简化版本）
@@ -184,7 +185,7 @@ public:
 // 创建shared_ptr的便利函数
 template<typename T, typename... Args>
 [[nodiscard]] SharedPtr<T> make_shared(Args&&... args) {
-    return SharedPtr<T>(new T(std::forward<Args>(args)...));
+    return SharedPtr<T>(new T(moss::forward<Args>(args)...));
 }
 
 // 便利的类型别名

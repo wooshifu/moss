@@ -92,7 +92,7 @@ namespace {
 void* kernel_malloc(size_t size) noexcept {
     // 简单的线性分配器（仅用于调试）
     // 对齐到8字节边界
-    size = (size + 7) & ~7;
+    size = (size + 7UL) & ~7UL;
 
     if (heap_used + size > sizeof(kernel_heap)) {
         return nullptr;  // 堆耗尽

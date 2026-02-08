@@ -47,7 +47,7 @@ static_assert(sizeof(MessageHeader) == 64, "MessageHeader must be 64 bytes");
 struct MessageSlot {
     moss::kernel::containers::AtomicU32 state;        // 槽位状态
     MessageHeader header;               // 消息头部
-    u8 payload[0];                      // 可变长度负载
+    u8* payload;                        // 可变长度负载指针
 
     enum State : u32 {
         Empty = 0,                      // 空槽位
@@ -137,7 +137,7 @@ public:
         }
 
         // 内存屏障确保写入完成
-        std::atomic_thread_fence(std::memory_order_release);
+        atomic_thread_fence(memory_order_release);
 
         // 增加写入计数
         (void)control_->write_count.fetch_add(1, moss::kernel::containers::MemoryOrder::Relaxed);

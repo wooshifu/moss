@@ -3,6 +3,7 @@
 // 现代进程管理系统
 // 支持多线程、优先级、实时调度等特性
 
+#include "moss_std.hpp"  // 裸机环境基础定义
 #include "types.hpp"
 #include "result.hpp"
 #include "smart_ptr.hpp"
@@ -237,7 +238,7 @@ public:
 
     Process(Process&& other) noexcept
         : pid_(other.pid_), parent_pid_(other.parent_pid_),
-          address_space_(std::move(other.address_space_)),
+          address_space_(moss::move(other.address_space_)),
           threads_{}, // 新进程开始时线程列表为空
           thread_count_(0), // 重置线程计数
           main_thread_id_(other.main_thread_id_),

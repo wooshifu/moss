@@ -3,6 +3,8 @@
 // 高性能内核容器库 - 综合头文件
 // 提供无锁、高性能的数据结构
 
+#include "config/config.h"  // 包含配置系统定义的宏
+#include "../moss_std.hpp"  // 包含裸机环境基础定义
 #include "../../containers/atomic_types.hpp"
 #include "../../containers/lockfree_queue.hpp"
 #include "../../containers/rcu_list.hpp"
@@ -24,18 +26,18 @@ public:
     // 构造函数
     constexpr Optional() noexcept : has_value_(false) {}
 
-    constexpr Optional(const T& value) noexcept(std::is_nothrow_copy_constructible_v<T>)
+    constexpr Optional(const T& value) noexcept(moss::is_nothrow_copy_constructible_v<T>)
         : has_value_(true) {
         new (storage_) T(value);
     }
 
-    constexpr Optional(T&& value) noexcept(std::is_nothrow_move_constructible_v<T>)
+    constexpr Optional(T&& value) noexcept(moss::is_nothrow_move_constructible_v<T>)
         : has_value_(true) {
-        new (storage_) T(std::move(value));
+        new (storage_) T(moss::move(value));
     }
 
     // 拷贝构造
-    Optional(const Optional& other) noexcept(std::is_nothrow_copy_constructible_v<T>)
+    Optional(const Optional& other) noexcept(moss::is_nothrow_copy_constructible_v<T>)
         : has_value_(other.has_value_) {
         if (has_value_) {
             new (storage_) T(other.value());
@@ -43,10 +45,10 @@ public:
     }
 
     // 移动构造
-    Optional(Optional&& other) noexcept(std::is_nothrow_move_constructible_v<T>)
+    Optional(Optional&& other) noexcept(moss::is_nothrow_move_constructible_v<T>)
         : has_value_(other.has_value_) {
         if (has_value_) {
-            new (storage_) T(std::move(other.value()));
+            new (storage_) T(moss::move(other.value()));
             other.reset();
         }
     }
@@ -57,7 +59,7 @@ public:
     }
 
     // 赋值操作符
-    Optional& operator=(const Optional& other) noexcept(std::is_nothrow_copy_assignable_v<T>) {
+    Optional& operator=(const Optional& other) noexcept(moss::is_nothrow_copy_assignable_v<T>) {
         if (this != &other) {
             if (other.has_value_) {
                 if (has_value_) {
@@ -73,13 +75,13 @@ public:
         return *this;
     }
 
-    Optional& operator=(Optional&& other) noexcept(std::is_nothrow_move_assignable_v<T>) {
+    Optional& operator=(Optional&& other) noexcept(moss::is_nothrow_move_assignable_v<T>) {
         if (this != &other) {
             if (other.has_value_) {
                 if (has_value_) {
-                    value() = std::move(other.value());
+                    value() = moss::move(other.value());
                 } else {
-                    new (storage_) T(std::move(other.value()));
+                    new (storage_) T(moss::move(other.value()));
                     has_value_ = true;
                 }
                 other.reset();
@@ -109,18 +111,18 @@ public:
     }
 
     [[nodiscard]] constexpr T&& value() && noexcept {
-        return std::move(*reinterpret_cast<T*>(storage_));
+        return moss::move(*reinterpret_cast<T*>(storage_));
     }
 
     [[nodiscard]] constexpr const T&& value() const && noexcept {
-        return std::move(*reinterpret_cast<const T*>(storage_));
+        return moss::move(*reinterpret_cast<const T*>(storage_));
     }
 
     // 操作符重载
     [[nodiscard]] constexpr T& operator*() & noexcept { return value(); }
     [[nodiscard]] constexpr const T& operator*() const & noexcept { return value(); }
-    [[nodiscard]] constexpr T&& operator*() && noexcept { return std::move(value()); }
-    [[nodiscard]] constexpr const T&& operator*() const && noexcept { return std::move(value()); }
+    [[nodiscard]] constexpr T&& operator*() && noexcept { return moss::move(value()); }
+    [[nodiscard]] constexpr const T&& operator*() const && noexcept { return moss::move(value()); }
 
     [[nodiscard]] constexpr T* operator->() noexcept { return &value(); }
     [[nodiscard]] constexpr const T* operator->() const noexcept { return &value(); }
@@ -135,9 +137,9 @@ public:
 
     // 就地构造
     template<typename... Args>
-    T& emplace(Args&&... args) noexcept(std::is_nothrow_constructible_v<T, Args...>) {
+    T& emplace(Args&&... args) noexcept(moss::is_nothrow_constructible_v<T, Args...>) {
         reset();
-        new (storage_) T(std::forward<Args>(args)...);
+        new (storage_) T(moss::forward<Args>(args)...);
         has_value_ = true;
         return value();
     }
@@ -236,7 +238,7 @@ public:
         // 简单的性能测试（在实际内核中会更复杂）
         for (usize i = 0; i < OPERATIONS; ++i) {
             T item{};
-            if (queue.try_enqueue(std::move(item))) {
+            if (queue.try_enqueue(moss::move(item))) {
                 T result;
                 queue.try_dequeue(result);
             }
