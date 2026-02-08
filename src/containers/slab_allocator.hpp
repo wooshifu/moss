@@ -28,32 +28,32 @@ enum class SlabError : u32 {
 
 // Slab分配结果类型
 template<typename T>
-using SlabResult = Result<T, SlabError>;
+using SlabResult = moss::kernel::Result<T, SlabError>;
 
 // void特化
-using SlabVoidResult = Result<void, SlabError>;
+using SlabVoidResult = moss::kernel::Result<void, SlabError>;
 
 // 内存对齐工具
-template<usize Alignment>
-constexpr usize align_up(usize value) noexcept {
+template<moss::kernel::usize Alignment>
+constexpr moss::kernel::usize align_up(moss::kernel::usize value) noexcept {
     static_assert((Alignment & (Alignment - 1)) == 0, "Alignment must be power of 2");
     return (value + Alignment - 1) & ~(Alignment - 1);
 }
 
-constexpr bool is_aligned(usize value, usize alignment) noexcept {
+constexpr bool is_aligned(moss::kernel::usize value, moss::kernel::usize alignment) noexcept {
     return (value & (alignment - 1)) == 0;
 }
 
 // Slab页面结构
 struct SlabPage {
     void* memory;           // 页面内存起始地址
-    usize object_size;      // 对象大小
-    usize objects_per_page; // 每页对象数量
-    AtomicCounter<usize> free_count;    // 空闲对象数量
-    AtomicPtr<u8> free_list;           // 空闲对象链表
-    AtomicPtr<SlabPage> next;          // 下一个slab页面
+    moss::kernel::usize object_size;      // 对象大小
+    moss::kernel::usize objects_per_page; // 每页对象数量
+    moss::kernel::containers::AtomicCounter<moss::kernel::usize> free_count;    // 空闲对象数量
+    moss::kernel::containers::AtomicPtr<u8> free_list;           // 空闲对象链表
+    moss::kernel::containers::AtomicPtr<SlabPage> next;          // 下一个slab页面
 
-    SlabPage(void* mem, usize obj_size, usize obj_per_page) noexcept
+    SlabPage(void* mem, moss::kernel::usize obj_size, moss::kernel::usize obj_per_page) noexcept
         : memory(mem), object_size(obj_size), objects_per_page(obj_per_page),
           free_count(obj_per_page), free_list(nullptr), next(nullptr) {
         initialize_free_list();
@@ -65,48 +65,48 @@ private:
         char* current = static_cast<char*>(memory);
         void* last_free = nullptr;
 
-        for (usize i = 0; i < objects_per_page; ++i) {
+        for (moss::kernel::usize i = 0; i < objects_per_page; ++i) {
             void** obj_ptr = reinterpret_cast<void**>(current);
             *obj_ptr = last_free;
             last_free = current;
             current += object_size;
         }
 
-        free_list.store(static_cast<u8*>(last_free), MemoryOrder::Release);
+        free_list.store(static_cast<u8*>(last_free), moss::MemoryOrder::Release);
     }
 };
 
 // 单个对象大小的Slab缓存
 class SlabCache {
 private:
-    const usize object_size_;
-    [[maybe_unused]] const usize object_alignment_;
-    const usize aligned_object_size_;
-    const usize objects_per_page_;
+    const moss::kernel::usize object_size_;
+    [[maybe_unused]] const moss::kernel::usize object_alignment_;
+    const moss::kernel::usize aligned_object_size_;
+    const moss::kernel::usize objects_per_page_;
 
     // 页面链表
-    AtomicPtr<SlabPage> full_pages_;    // 已满的页面
-    AtomicPtr<SlabPage> partial_pages_; // 部分使用的页面
-    AtomicPtr<SlabPage> empty_pages_;   // 空的页面
+    moss::kernel::containers::AtomicPtr<SlabPage> full_pages_;    // 已满的页面
+    moss::kernel::containers::AtomicPtr<SlabPage> partial_pages_; // 部分使用的页面
+    moss::kernel::containers::AtomicPtr<SlabPage> empty_pages_;   // 空的页面
 
     // 统计信息
-    AtomicCounter<usize> total_objects_;
-    AtomicCounter<usize> allocated_objects_;
+    moss::kernel::containers::AtomicCounter<moss::kernel::usize> total_objects_;
+    moss::kernel::containers::AtomicCounter<moss::kernel::usize> allocated_objects_;
 
 public:
-    SlabCache(usize object_size, usize alignment = alignof(void*)) noexcept
+    SlabCache(moss::kernel::usize object_size, moss::kernel::usize alignment = alignof(void*)) noexcept
         : object_size_(object_size),
           object_alignment_(alignment),
-          aligned_object_size_(align_up<alignof(void*)>(kernel_max<usize>(object_size, sizeof(void*)))),
-          objects_per_page_(PAGE_SIZE / aligned_object_size_),
+          aligned_object_size_(align_up<alignof(void*)>(kernel_max<moss::kernel::usize>(object_size, sizeof(void*)))),
+          objects_per_page_(moss::kernel::PAGE_SIZE / aligned_object_size_),
           full_pages_(nullptr), partial_pages_(nullptr), empty_pages_(nullptr),
           total_objects_(0), allocated_objects_(0) {}
 
     ~SlabCache() noexcept {
         // 释放所有页面
-        free_page_list(full_pages_.load(MemoryOrder::Relaxed));
-        free_page_list(partial_pages_.load(MemoryOrder::Relaxed));
-        free_page_list(empty_pages_.load(MemoryOrder::Relaxed));
+        free_page_list(full_pages_.load(moss::MemoryOrder::Relaxed));
+        free_page_list(partial_pages_.load(moss::MemoryOrder::Relaxed));
+        free_page_list(empty_pages_.load(moss::MemoryOrder::Relaxed));
     }
 
     // 禁用拷贝和移动
@@ -141,17 +141,17 @@ public:
         }
 
         // 将对象添加到页面的空闲链表中
-        u8* current_free = page->free_list.load(MemoryOrder::Relaxed);
+        u8* current_free = page->free_list.load(moss::MemoryOrder::Relaxed);
         void** obj_ptr = static_cast<void**>(ptr);
 
         do {
             *obj_ptr = current_free;
         } while (!page->free_list.compare_exchange_weak(current_free, static_cast<u8*>(ptr),
-                                                        MemoryOrder::Release,
-                                                        MemoryOrder::Relaxed));
+                                                        moss::MemoryOrder::Release,
+                                                        moss::MemoryOrder::Relaxed));
 
-        usize new_free_count = page->free_count.fetch_add(1, MemoryOrder::AcqRel) + 1;
-        (void)allocated_objects_.fetch_sub(1, MemoryOrder::Relaxed);
+        moss::kernel::usize new_free_count = page->free_count.fetch_add(1, moss::MemoryOrder::AcqRel) + 1;
+        (void)allocated_objects_.fetch_sub(1, moss::MemoryOrder::Relaxed);
 
         // 根据页面状态移动到相应的链表
         if (new_free_count == page->objects_per_page) {
@@ -166,27 +166,27 @@ public:
     }
 
     // 获取统计信息
-    [[nodiscard]] usize total_objects() const noexcept {
-        return total_objects_.load(MemoryOrder::Relaxed);
+    [[nodiscard]] moss::kernel::usize total_objects() const noexcept {
+        return total_objects_.load(moss::MemoryOrder::Relaxed);
     }
 
-    [[nodiscard]] usize allocated_objects() const noexcept {
-        return allocated_objects_.load(MemoryOrder::Relaxed);
+    [[nodiscard]] moss::kernel::usize allocated_objects() const noexcept {
+        return allocated_objects_.load(moss::MemoryOrder::Relaxed);
     }
 
-    [[nodiscard]] usize object_size() const noexcept {
+    [[nodiscard]] moss::kernel::usize object_size() const noexcept {
         return object_size_;
     }
 
     [[nodiscard]] double utilization() const noexcept {
-        usize total = total_objects();
+        moss::kernel::usize total = total_objects();
         if (total == 0) return 0.0;
         return static_cast<double>(allocated_objects()) / static_cast<double>(total);
     }
 
 private:
     [[nodiscard]] SlabResult<void*> allocate_from_partial() noexcept {
-        SlabPage* page = partial_pages_.load(MemoryOrder::Acquire);
+        SlabPage* page = partial_pages_.load(moss::MemoryOrder::Acquire);
         if (page == nullptr) {
             return SlabResult<void*>{SlabError::OutOfMemory};
         }
@@ -195,7 +195,7 @@ private:
     }
 
     [[nodiscard]] SlabResult<void*> allocate_from_empty() noexcept {
-        SlabPage* page = empty_pages_.exchange(nullptr, MemoryOrder::AcqRel);
+        SlabPage* page = empty_pages_.exchange(nullptr, moss::MemoryOrder::AcqRel);
         if (page == nullptr) {
             return SlabResult<void*>{SlabError::OutOfMemory};
         }
@@ -214,7 +214,7 @@ private:
 
         // 创建新的slab页面
         SlabPage* new_page = new SlabPage(page_memory, aligned_object_size_, objects_per_page_);
-        (void)total_objects_.fetch_add(objects_per_page_, MemoryOrder::Relaxed);
+        (void)total_objects_.fetch_add(objects_per_page_, moss::MemoryOrder::Relaxed);
 
         // 添加到部分使用链表
         move_page_to_partial(new_page);
@@ -222,7 +222,7 @@ private:
     }
 
     [[nodiscard]] SlabResult<void*> allocate_from_page(SlabPage* page) noexcept {
-        u8* current_free = page->free_list.load(MemoryOrder::Acquire);
+        u8* current_free = page->free_list.load(moss::MemoryOrder::Acquire);
         if (current_free == nullptr) {
             return SlabResult<void*>{SlabError::OutOfMemory};
         }
@@ -235,11 +235,11 @@ private:
             }
             next_free = *reinterpret_cast<u8**>(current_free);
         } while (!page->free_list.compare_exchange_weak(current_free, next_free,
-                                                        MemoryOrder::AcqRel,
-                                                        MemoryOrder::Acquire));
+                                                        moss::MemoryOrder::AcqRel,
+                                                        moss::MemoryOrder::Acquire));
 
-        usize new_free_count = page->free_count.fetch_sub(1, MemoryOrder::AcqRel) - 1;
-        (void)allocated_objects_.fetch_add(1, MemoryOrder::Relaxed);
+        moss::kernel::usize new_free_count = page->free_count.fetch_sub(1, moss::MemoryOrder::AcqRel) - 1;
+        (void)allocated_objects_.fetch_add(1, moss::MemoryOrder::Relaxed);
 
         // 如果页面已满，移动到满页面链表
         if (new_free_count == 0) {
@@ -251,57 +251,57 @@ private:
 
     // 查找对象所属的页面
     [[nodiscard]] SlabPage* find_page_for_object(void* ptr) const noexcept {
-        usize ptr_addr = reinterpret_cast<usize>(ptr);
-        usize page_addr = ptr_addr & ~(PAGE_SIZE - 1);
+        moss::kernel::usize ptr_addr = reinterpret_cast<moss::kernel::usize>(ptr);
+        moss::kernel::usize page_addr = ptr_addr & ~(moss::kernel::PAGE_SIZE - 1);
 
         // 在所有页面链表中搜索
-        if (auto page = find_in_page_list(full_pages_.load(MemoryOrder::Acquire), page_addr)) {
+        if (auto page = find_in_page_list(full_pages_.load(moss::MemoryOrder::Acquire), page_addr)) {
             return page;
         }
-        if (auto page = find_in_page_list(partial_pages_.load(MemoryOrder::Acquire), page_addr)) {
+        if (auto page = find_in_page_list(partial_pages_.load(moss::MemoryOrder::Acquire), page_addr)) {
             return page;
         }
-        return find_in_page_list(empty_pages_.load(MemoryOrder::Acquire), page_addr);
+        return find_in_page_list(empty_pages_.load(moss::MemoryOrder::Acquire), page_addr);
     }
 
-    [[nodiscard]] SlabPage* find_in_page_list(SlabPage* head, usize page_addr) const noexcept {
+    [[nodiscard]] SlabPage* find_in_page_list(SlabPage* head, moss::kernel::usize page_addr) const noexcept {
         SlabPage* current = head;
         while (current != nullptr) {
-            usize current_page_addr = reinterpret_cast<usize>(current->memory) & ~(PAGE_SIZE - 1);
+            moss::kernel::usize current_page_addr = reinterpret_cast<moss::kernel::usize>(current->memory) & ~(moss::kernel::PAGE_SIZE - 1);
             if (current_page_addr == page_addr) {
                 return current;
             }
-            current = current->next.load(MemoryOrder::Acquire);
+            current = current->next.load(moss::MemoryOrder::Acquire);
         }
         return nullptr;
     }
 
     // 页面链表管理
     void move_page_to_partial(SlabPage* page) noexcept {
-        SlabPage* old_head = partial_pages_.load(MemoryOrder::Relaxed);
+        SlabPage* old_head = partial_pages_.load(moss::MemoryOrder::Relaxed);
         do {
-            page->next.store(old_head, MemoryOrder::Relaxed);
+            page->next.store(old_head, moss::MemoryOrder::Relaxed);
         } while (!partial_pages_.compare_exchange_weak(old_head, page,
-                                                      MemoryOrder::Release,
-                                                      MemoryOrder::Relaxed));
+                                                      moss::MemoryOrder::Release,
+                                                      moss::MemoryOrder::Relaxed));
     }
 
     void move_page_to_full(SlabPage* page) noexcept {
-        SlabPage* old_head = full_pages_.load(MemoryOrder::Relaxed);
+        SlabPage* old_head = full_pages_.load(moss::MemoryOrder::Relaxed);
         do {
-            page->next.store(old_head, MemoryOrder::Relaxed);
+            page->next.store(old_head, moss::MemoryOrder::Relaxed);
         } while (!full_pages_.compare_exchange_weak(old_head, page,
-                                                   MemoryOrder::Release,
-                                                   MemoryOrder::Relaxed));
+                                                   moss::MemoryOrder::Release,
+                                                   moss::MemoryOrder::Relaxed));
     }
 
     void move_page_to_empty(SlabPage* page) noexcept {
-        SlabPage* old_head = empty_pages_.load(MemoryOrder::Relaxed);
+        SlabPage* old_head = empty_pages_.load(moss::MemoryOrder::Relaxed);
         do {
-            page->next.store(old_head, MemoryOrder::Relaxed);
+            page->next.store(old_head, moss::MemoryOrder::Relaxed);
         } while (!empty_pages_.compare_exchange_weak(old_head, page,
-                                                    MemoryOrder::Release,
-                                                    MemoryOrder::Relaxed));
+                                                    moss::MemoryOrder::Release,
+                                                    moss::MemoryOrder::Relaxed));
     }
 
     void move_page_from_partial_to_full(SlabPage* page) noexcept {
@@ -314,7 +314,7 @@ private:
         move_page_to_partial(page);
     }
 
-    void remove_page_from_list([[maybe_unused]] AtomicPtr<SlabPage>& head,
+    void remove_page_from_list([[maybe_unused]] moss::kernel::containers::AtomicPtr<SlabPage>& head,
                                [[maybe_unused]] SlabPage* page) noexcept {
         // 简化实现：重建链表（实际实现应该更高效）
         // 这里需要更复杂的无锁链表删除算法
@@ -343,7 +343,7 @@ private:
 
     void free_page_list(SlabPage* head) noexcept {
         while (head != nullptr) {
-            SlabPage* next = head->next.load(MemoryOrder::Relaxed);
+            SlabPage* next = head->next.load(moss::MemoryOrder::Relaxed);
             free_page(head->memory);
             delete head;
             head = next;
@@ -354,19 +354,19 @@ private:
 // 多大小Slab分配器
 class SlabAllocator {
 private:
-    static constexpr usize NUM_CACHES = 32;
-    static constexpr usize MIN_OBJECT_SIZE = 8;
-    static constexpr usize MAX_OBJECT_SIZE = 4096;
+    static constexpr moss::kernel::usize NUM_CACHES = 32;
+    static constexpr moss::kernel::usize MIN_OBJECT_SIZE = 8;
+    static constexpr moss::kernel::usize MAX_OBJECT_SIZE = 4096;
 
     // 预定义的对象大小（2的幂）
     SlabCache* caches_[NUM_CACHES];
-    usize cache_sizes_[NUM_CACHES];
+    moss::kernel::usize cache_sizes_[NUM_CACHES];
 
 public:
     SlabAllocator() noexcept {
         // 初始化不同大小的缓存
-        usize size = MIN_OBJECT_SIZE;
-        for (usize i = 0; i < NUM_CACHES; ++i) {
+        moss::kernel::usize size = MIN_OBJECT_SIZE;
+        for (moss::kernel::usize i = 0; i < NUM_CACHES; ++i) {
             cache_sizes_[i] = size;
             caches_[i] = new SlabCache(size);
             size *= 2;
@@ -377,7 +377,7 @@ public:
     }
 
     ~SlabAllocator() noexcept {
-        for (usize i = 0; i < NUM_CACHES; ++i) {
+        for (moss::kernel::usize i = 0; i < NUM_CACHES; ++i) {
             delete caches_[i];
         }
     }
@@ -386,8 +386,8 @@ public:
     NON_COPYABLE_NON_MOVABLE(SlabAllocator)
 
     // 分配指定大小的内存
-    [[nodiscard]] SlabResult<void*> allocate(usize size) noexcept {
-        usize cache_index = find_cache_index(size);
+    [[nodiscard]] SlabResult<void*> allocate(moss::kernel::usize size) noexcept {
+        moss::kernel::usize cache_index = find_cache_index(size);
         if (cache_index >= NUM_CACHES) {
             return SlabResult<void*>{SlabError::InvalidSize};
         }
@@ -406,12 +406,12 @@ public:
     }
 
     // 释放内存
-    [[nodiscard]] SlabVoidResult deallocate(void* ptr, usize size) noexcept {
+    [[nodiscard]] SlabVoidResult deallocate(void* ptr, moss::kernel::usize size) noexcept {
         if (ptr == nullptr) {
             return SlabVoidResult{};
         }
 
-        usize cache_index = find_cache_index(size);
+        moss::kernel::usize cache_index = find_cache_index(size);
         if (cache_index >= NUM_CACHES) {
             return SlabVoidResult{SlabError::InvalidSize};
         }
@@ -428,7 +428,7 @@ public:
     // 获取统计信息
     void get_statistics() const noexcept {
         // 输出所有缓存的统计信息（用于调试）
-        for (usize i = 0; i < NUM_CACHES; ++i) {
+        for (moss::kernel::usize i = 0; i < NUM_CACHES; ++i) {
             if (caches_[i]->total_objects() > 0) {
                 // 在实际实现中，这里会输出到内核日志
             }
@@ -436,8 +436,8 @@ public:
     }
 
 private:
-    [[nodiscard]] usize find_cache_index(usize size) const noexcept {
-        for (usize i = 0; i < NUM_CACHES; ++i) {
+    [[nodiscard]] moss::kernel::usize find_cache_index(moss::kernel::usize size) const noexcept {
+        for (moss::kernel::usize i = 0; i < NUM_CACHES; ++i) {
             if (cache_sizes_[i] >= size) {
                 return i;
             }
@@ -459,11 +459,7 @@ template<typename T, typename... Args>
 
     T* ptr = *ptr_result;
     try {
-#if MOSS_HAS_STD_UTILITY_SLAB
-        new (ptr) T(std::forward<Args>(args)...);
-#else
-        new (ptr) T(static_cast<Args&&>(args)...);
-#endif
+        new (ptr) T(moss::forward<Args>(args)...);
         return SlabResult<T*>{ptr};
     } catch (...) {
         g_slab_allocator->deallocate(ptr);

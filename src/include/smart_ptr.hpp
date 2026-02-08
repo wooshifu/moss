@@ -14,7 +14,7 @@
 namespace moss::kernel {
 
 // 内核专用unique_ptr实现
-template<moss::concepts::UniquePtrCompatible T>
+template<typename T>
 class UniquePtr {
 private:
     T* ptr_;
@@ -23,11 +23,7 @@ public:
     // 构造函数
     UniquePtr() noexcept : ptr_(nullptr) {}
     UniquePtr(T* p) noexcept : ptr_(p) {}
-#if MOSS_HAS_STD_UTILITY_SMARTPTR
-    UniquePtr(std::nullptr_t) noexcept : ptr_(nullptr) {}
-#else
-    UniquePtr(decltype(nullptr)) noexcept : ptr_(nullptr) {}
-#endif
+    UniquePtr(nullptr_t) noexcept : ptr_(nullptr) {}
 
     // 移动构造和赋值
     UniquePtr(UniquePtr&& other) noexcept : ptr_(other.release()) {}
@@ -195,4 +191,4 @@ using unique_ptr = UniquePtr<T>;
 template<typename T>
 using shared_ptr = SharedPtr<T>;
 
-} // namespace moss::kernel
+} // namespace std::kernel

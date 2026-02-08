@@ -33,12 +33,12 @@ private:
     static void enter_read_side() noexcept {
         ++read_depth_;
         // 内存屏障确保读取操作不会重排到锁之前
-        read_barrier();
+        moss::kernel::arch::read_barrier();
     }
 
     static void exit_read_side() noexcept {
         // 内存屏障确保读取操作不会重排到锁之后
-        read_barrier();
+        moss::kernel::arch::read_barrier();
         --read_depth_;
     }
 
@@ -54,7 +54,7 @@ thread_local u32 RcuReadLock::read_depth_ = 0;
 template<typename T>
 class RcuPtr {
 private:
-    AtomicPtr<T> ptr_;
+    moss::kernel::containers::AtomicPtr<T> ptr_;
 
 public:
     constexpr RcuPtr() noexcept : ptr_(nullptr) {}
@@ -147,13 +147,8 @@ struct RcuListNode {
     T data;
 
     template<typename... Args>
-#if MOSS_HAS_STD_UTILITY
-    constexpr RcuListNode(Args&&... args) noexcept(std::is_nothrow_constructible_v<T, Args...>)
-        : next(nullptr), data(std::forward<Args>(args)...) {}
-#else
-    constexpr RcuListNode(Args&&... args) noexcept
-        : next(nullptr), data(static_cast<Args&&>(args)...) {}
-#endif
+    constexpr RcuListNode(Args&&... args) noexcept(moss::is_nothrow_constructible_v<T, Args...>)
+        : next(nullptr), data(moss::forward<Args>(args)...) {}
 };
 
 // RCU保护的链表
@@ -161,7 +156,7 @@ template<typename T>
 class RcuList {
 private:
     RcuPtr<RcuListNode<T>> head_;
-    AtomicCounter<usize> size_;
+    moss::kernel::containers::AtomicCounter<moss::kernel::usize> size_;
 
 public:
     constexpr RcuList() noexcept : head_(nullptr), size_(0) {}
@@ -177,11 +172,7 @@ public:
     // 在头部插入元素（写入操作）
     template<typename... Args>
     void push_front(Args&&... args) {
-#if MOSS_HAS_STD_UTILITY
-        auto new_node = new RcuListNode<T>(std::forward<Args>(args)...);
-#else
-        auto new_node = new RcuListNode<T>(static_cast<Args&&>(args)...);
-#endif
+        auto new_node = new RcuListNode<T>(moss::forward<Args>(args)...);
 
         RcuListNode<T>* old_head = head_.load(MemoryOrder::Relaxed);
         do {
@@ -254,7 +245,7 @@ public:
     }
 
     // 获取大小（近似值）
-    [[nodiscard]] usize size() const noexcept {
+    [[nodiscard]] moss::kernel::usize size() const noexcept {
         return size_.load(MemoryOrder::Relaxed);
     }
 
@@ -290,25 +281,20 @@ private:
 };
 
 // RCU保护的哈希表（简化实现）
-template<typename Key, typename Value, usize BucketCount = 256>
+template<typename Key, typename Value, moss::kernel::usize BucketCount = 256>
 class RcuHashMap {
 private:
     static_assert((BucketCount & (BucketCount - 1)) == 0, "BucketCount must be power of 2");
-    static constexpr usize BUCKET_MASK = BucketCount - 1;
+    static constexpr moss::kernel::usize BUCKET_MASK = BucketCount - 1;
 
     struct Entry {
         Key key;
         Value value;
 
         template<typename K, typename V>
-#if MOSS_HAS_STD_UTILITY
-        Entry(K&& k, V&& v) noexcept(std::is_nothrow_constructible_v<Key, K&&> &&
-                                     std::is_nothrow_constructible_v<Value, V&&>)
-            : key(std::forward<K>(k)), value(std::forward<V>(v)) {}
-#else
-        Entry(K&& k, V&& v) noexcept
-            : key(static_cast<K&&>(k)), value(static_cast<V&&>(v)) {}
-#endif
+        Entry(K&& k, V&& v) noexcept(moss::is_nothrow_constructible_v<Key, K&&> &&
+                                     moss::is_nothrow_constructible_v<Value, V&&>)
+            : key(moss::forward<K>(k)), value(moss::forward<V>(v)) {}
 
         bool operator==(const Entry& other) const noexcept {
             return key == other.key;
@@ -316,7 +302,7 @@ private:
     };
 
     RcuList<Entry> buckets_[BucketCount];
-    AtomicCounter<usize> size_;
+    moss::kernel::containers::AtomicCounter<moss::kernel::usize> size_;
 
 public:
     constexpr RcuHashMap() noexcept : size_(0) {}
@@ -324,7 +310,7 @@ public:
     // 插入或更新键值对
     template<typename K, typename V>
     void insert_or_update(K&& key, V&& value) {
-        usize bucket_idx = hash_key(key) & BUCKET_MASK;
+        moss::kernel::usize bucket_idx = hash_key(key) & BUCKET_MASK;
 
         // 尝试更新现有条目
         {
@@ -339,18 +325,15 @@ public:
         }
 
         // 插入新条目
-#if MOSS_HAS_STD_UTILITY
-        buckets_[bucket_idx].push_front(std::forward<K>(key), std::forward<V>(value));
-#else
+        buckets_[bucket_idx].push_front(moss::forward<K>(key), moss::forward<V>(value));
         buckets_[bucket_idx].push_front(static_cast<K&&>(key), static_cast<V&&>(value));
-#endif
         (void)size_.fetch_add(1, MemoryOrder::Relaxed);
     }
 
     // 查找值
     template<typename K>
     [[nodiscard]] const Value* find(const K& key) const {
-        usize bucket_idx = hash_key(key) & BUCKET_MASK;
+        moss::kernel::usize bucket_idx = hash_key(key) & BUCKET_MASK;
 
         const Entry* entry = buckets_[bucket_idx].find_if(
             [&key](const Entry& e) { return e.key == key; });
@@ -361,7 +344,7 @@ public:
     // 删除键
     template<typename K>
     bool remove(const K& key) {
-        usize bucket_idx = hash_key(key) & BUCKET_MASK;
+        moss::kernel::usize bucket_idx = hash_key(key) & BUCKET_MASK;
 
         bool removed = buckets_[bucket_idx].remove(Entry{key, Value{}});
         if (removed) {
@@ -371,7 +354,7 @@ public:
     }
 
     // 获取大小
-    [[nodiscard]] usize size() const noexcept {
+    [[nodiscard]] moss::kernel::usize size() const noexcept {
         return size_.load(MemoryOrder::Relaxed);
     }
 
@@ -383,7 +366,7 @@ public:
     // 遍历所有键值对
     template<typename Func>
     void for_each(Func&& func) const {
-        for (usize i = 0; i < BucketCount; ++i) {
+        for (moss::kernel::usize i = 0; i < BucketCount; ++i) {
             buckets_[i].for_each([&func](const Entry& entry) {
                 struct KeyValue {
                     const Key& key;
@@ -397,11 +380,11 @@ public:
 private:
     // 简单的哈希函数
     template<typename K>
-    [[nodiscard]] static usize hash_key(const K& key) noexcept {
+    [[nodiscard]] static moss::kernel::usize hash_key(const K& key) noexcept {
         // 使用FNV-1a哈希算法的简化版本
-        usize hash = 2166136261u;
+        moss::kernel::usize hash = 2166136261u;
         const u8* data = reinterpret_cast<const u8*>(&key);
-        for (usize i = 0; i < sizeof(K); ++i) {
+        for (moss::kernel::usize i = 0; i < sizeof(K); ++i) {
             hash ^= data[i];
             hash *= 16777619u;
         }
@@ -410,7 +393,7 @@ private:
 };
 
 // 类型别名
-using ProcessList = RcuList<ProcessId>;
-using DeviceRegistry = RcuHashMap<DeviceId, VirtAddr>;
+using ProcessList = RcuList<moss::kernel::ProcessId>;
+using DeviceRegistry = RcuHashMap<moss::kernel::DeviceId, moss::kernel::VirtAddr>;
 
 } // namespace moss::kernel::containers

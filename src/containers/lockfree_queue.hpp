@@ -22,30 +22,24 @@ struct QueueNode {
     T data;
 
     template<typename... Args>
-#if MOSS_HAS_STD_UTILITY
-    constexpr QueueNode(Args&&... args) noexcept(std::is_nothrow_constructible_v<T, Args...>)
-        : next(nullptr), data(std::forward<Args>(args)...) {}
-#else
     constexpr QueueNode(Args&&... args) noexcept
-        : next(nullptr), data(static_cast<Args&&>(args)...) {}
-#endif
+        : next(nullptr), data(move(args)...) {}
 };
 
 // SPSC (Single Producer Single Consumer) 无锁队列
 // 使用环形缓冲区实现，性能最优
-template<moss::concepts::SPSCQueueElement T, usize Capacity>
-    requires moss::concepts::ValidQueueCapacity<Capacity>
+template<typename T, moss::kernel::usize Capacity>
 class SPSCQueue {
 private:
     static_assert((Capacity & (Capacity - 1)) == 0, "Capacity must be power of 2");
-    static constexpr usize MASK = Capacity - 1;
+    static constexpr moss::kernel::usize MASK = Capacity - 1;
 
     // 使用缓存行对齐避免false sharing
-    alignas(CACHE_LINE_SIZE) CacheAlignedAtomic<usize> head_{0};
-    alignas(CACHE_LINE_SIZE) CacheAlignedAtomic<usize> tail_{0};
+    alignas(moss::kernel::CACHE_LINE_SIZE) CacheAlignedAtomic<moss::kernel::usize> head_{0};
+    alignas(moss::kernel::CACHE_LINE_SIZE) CacheAlignedAtomic<moss::kernel::usize> tail_{0};
 
     // 数据数组，每个元素缓存行对齐
-    alignas(CACHE_LINE_SIZE) T data_[Capacity];
+    alignas(moss::kernel::CACHE_LINE_SIZE) T data_[Capacity];
 
 public:
     constexpr SPSCQueue() noexcept = default;
@@ -55,13 +49,9 @@ public:
 
     // 生产者接口：入队（非阻塞）
     template<typename U>
-#if MOSS_HAS_STD_UTILITY
-    [[nodiscard]] bool try_enqueue(U&& item) noexcept(std::is_nothrow_assignable_v<T&, U&&>) {
-#else
     [[nodiscard]] bool try_enqueue(U&& item) noexcept {
-#endif
-        const usize current_tail = tail_.load(MemoryOrder::Relaxed);
-        const usize next_tail = (current_tail + 1) & MASK;
+        const moss::kernel::usize current_tail = tail_.load(MemoryOrder::Relaxed);
+        const moss::kernel::usize next_tail = (current_tail + 1) & MASK;
 
         // 检查队列是否已满（与head相撞）
         if (next_tail == head_.load(MemoryOrder::Acquire)) {
@@ -69,11 +59,7 @@ public:
         }
 
         // 写入数据
-#if MOSS_HAS_STD_UTILITY
-        data_[current_tail] = std::forward<U>(item);
-#else
-        data_[current_tail] = static_cast<U&&>(item);
-#endif
+        data_[current_tail] = moss::forward<U>(item);
 
         // 更新tail，使用release语义确保数据写入可见
         tail_.store(next_tail, MemoryOrder::Release);
@@ -82,12 +68,8 @@ public:
     }
 
     // 消费者接口：出队（非阻塞）
-#if MOSS_HAS_STD_UTILITY
-    [[nodiscard]] bool try_dequeue(T& result) noexcept(std::is_nothrow_move_assignable_v<T>) {
-#else
     [[nodiscard]] bool try_dequeue(T& result) noexcept {
-#endif
-        const usize current_head = head_.load(MemoryOrder::Relaxed);
+        const moss::kernel::usize current_head = head_.load(MemoryOrder::Relaxed);
 
         // 检查队列是否为空
         if (current_head == tail_.load(MemoryOrder::Acquire)) {
@@ -95,11 +77,7 @@ public:
         }
 
         // 读取数据
-#if MOSS_HAS_STD_UTILITY
-        result = std::move(data_[current_head]);
-#else
-        result = static_cast<T&&>(data_[current_head]);
-#endif
+        result = moss::move(data_[current_head]);
 
         // 更新head，使用release语义
         head_.store((current_head + 1) & MASK, MemoryOrder::Release);
@@ -113,32 +91,32 @@ public:
     }
 
     [[nodiscard]] bool full() const noexcept {
-        const usize current_tail = tail_.load(MemoryOrder::Acquire);
-        const usize next_tail = (current_tail + 1) & MASK;
+        const moss::kernel::usize current_tail = tail_.load(MemoryOrder::Acquire);
+        const moss::kernel::usize next_tail = (current_tail + 1) & MASK;
         return next_tail == head_.load(MemoryOrder::Acquire);
     }
 
-    [[nodiscard]] usize approximate_size() const noexcept {
-        const usize current_head = head_.load(MemoryOrder::Acquire);
-        const usize current_tail = tail_.load(MemoryOrder::Acquire);
+    [[nodiscard]] moss::kernel::usize approximate_size() const noexcept {
+        const moss::kernel::usize current_head = head_.load(MemoryOrder::Acquire);
+        const moss::kernel::usize current_tail = tail_.load(MemoryOrder::Acquire);
         return (current_tail - current_head) & MASK;
     }
 
-    [[nodiscard]] static constexpr usize capacity() noexcept {
+    [[nodiscard]] static constexpr moss::kernel::usize capacity() noexcept {
         return Capacity - 1;  // 实际容量减1（用于区分满和空）
     }
 };
 
 // MPSC (Multiple Producer Single Consumer) 无锁队列
 // 使用链表实现，支持多个生产者
-template<moss::concepts::MPSCQueueElement T>
+template<typename T>
 class MPSCQueue {
 private:
     // 头节点（消费者操作）
-    alignas(CACHE_LINE_SIZE) AtomicPtr<QueueNode<T>> head_;
+    alignas(moss::kernel::CACHE_LINE_SIZE) AtomicPtr<QueueNode<T>> head_;
 
     // 尾节点（生产者操作）
-    alignas(CACHE_LINE_SIZE) AtomicPtr<QueueNode<T>> tail_;
+    alignas(moss::kernel::CACHE_LINE_SIZE) AtomicPtr<QueueNode<T>> tail_;
 
     // 虚拟头节点，简化算法实现
     QueueNode<T> stub_;
@@ -184,19 +162,14 @@ public:
 };
 
 // 固定大小的对象池（配合MPSC队列使用）
-template<moss::concepts::PoolableObject T, usize PoolSize>
-    requires moss::concepts::ValidCapacity<PoolSize>
+template<typename T, moss::kernel::usize PoolSize>
+    requires (PoolSize > 0 && (PoolSize & (PoolSize - 1)) == 0)
 class ObjectPool {
 private:
     struct PoolNode : public QueueNode<T> {
         template<typename... Args>
-#if MOSS_HAS_STD_UTILITY
-        constexpr PoolNode(Args&&... args) noexcept(std::is_nothrow_constructible_v<T, Args...>)
-            : QueueNode<T>(std::forward<Args>(args)...) {}
-#else
-        constexpr PoolNode(Args&&... args) noexcept
-            : QueueNode<T>(static_cast<Args&&>(args)...) {}
-#endif
+        constexpr PoolNode(Args&&... args) noexcept(moss::is_nothrow_constructible_v<T, Args...>)
+            : QueueNode<T>(moss::forward<Args>(args)...) {}
     };
 
     alignas(PAGE_SIZE) PoolNode pool_[PoolSize];
@@ -205,7 +178,7 @@ private:
 public:
     constexpr ObjectPool() noexcept {
         // 初始化时将所有节点放入自由列表
-        for (usize i = 0; i < PoolSize; ++i) {
+        for (moss::kernel::usize i = 0; i < PoolSize; ++i) {
             free_list_.enqueue(&pool_[i]);
         }
     }
@@ -231,19 +204,19 @@ public:
         return !free_list_.empty();
     }
 
-    [[nodiscard]] static constexpr usize pool_size() noexcept {
+    [[nodiscard]] static constexpr moss::kernel::usize pool_size() noexcept {
         return PoolSize;
     }
 };
 
 // MPMC (Multiple Producer Multiple Consumer) 队列
 // 基于SPSC队列数组实现，每个消费者有专用队列
-template<moss::concepts::MPMCQueueElement T, usize NumConsumers, usize QueueCapacity>
-    requires moss::concepts::ValidQueueCapacity<QueueCapacity> && (NumConsumers > 0)
+template<typename T, moss::kernel::usize NumConsumers, moss::kernel::usize QueueCapacity>
+    requires (QueueCapacity > 0 && (QueueCapacity & (QueueCapacity - 1)) == 0) && (NumConsumers > 0)
 class MPMCQueue {
 private:
     SPSCQueue<T, QueueCapacity> queues_[NumConsumers];
-    AtomicCounter<usize> round_robin_counter_;
+    AtomicCounter<moss::kernel::usize> round_robin_counter_;
 
 public:
     constexpr MPMCQueue() noexcept : round_robin_counter_(0) {}
@@ -253,21 +226,13 @@ public:
 
     // 生产者接口：入队（轮询分发）
     template<typename U>
-#if MOSS_HAS_STD_UTILITY
-    [[nodiscard]] bool try_enqueue(U&& item) noexcept(std::is_nothrow_assignable_v<T&, U&&>) {
-#else
     [[nodiscard]] bool try_enqueue(U&& item) noexcept {
-#endif
-        const usize start_idx = round_robin_counter_.fetch_add(1, MemoryOrder::Relaxed) % NumConsumers;
+        const moss::kernel::usize start_idx = round_robin_counter_.fetch_add(1, MemoryOrder::Relaxed) % NumConsumers;
 
         // 尝试所有队列，从随机位置开始
-        for (usize i = 0; i < NumConsumers; ++i) {
-            usize queue_idx = (start_idx + i) % NumConsumers;
-#if MOSS_HAS_STD_UTILITY
-            if (queues_[queue_idx].try_enqueue(std::forward<U>(item))) {
-#else
-            if (queues_[queue_idx].try_enqueue(static_cast<U&&>(item))) {
-#endif
+        for (moss::kernel::usize i = 0; i < NumConsumers; ++i) {
+            moss::kernel::usize queue_idx = (start_idx + i) % NumConsumers;
+            if (queues_[queue_idx].try_enqueue(moss::forward<U>(item))) {
                 return true;
             }
         }
@@ -276,11 +241,7 @@ public:
     }
 
     // 消费者接口：出队（指定消费者索引）
-#if MOSS_HAS_STD_UTILITY
-    [[nodiscard]] bool try_dequeue(usize consumer_id, T& result) noexcept(std::is_nothrow_move_assignable_v<T>) {
-#else
-    [[nodiscard]] bool try_dequeue(usize consumer_id, T& result) noexcept {
-#endif
+    [[nodiscard]] bool try_dequeue(moss::kernel::usize consumer_id, T& result) noexcept {
         if (consumer_id >= NumConsumers) {
             return false;
         }
@@ -289,16 +250,12 @@ public:
     }
 
     // 消费者接口：从任意队列出队（工作窃取）
-#if MOSS_HAS_STD_UTILITY
-    [[nodiscard]] bool try_dequeue_any(T& result) noexcept(std::is_nothrow_move_assignable_v<T>) {
-#else
     [[nodiscard]] bool try_dequeue_any(T& result) noexcept {
-#endif
-        const usize start_idx = get_current_cpu_id() % NumConsumers;
+        const moss::kernel::usize start_idx = get_current_cpu_id() % NumConsumers;
 
         // 尝试所有队列
-        for (usize i = 0; i < NumConsumers; ++i) {
-            usize queue_idx = (start_idx + i) % NumConsumers;
+        for (moss::kernel::usize i = 0; i < NumConsumers; ++i) {
+            moss::kernel::usize queue_idx = (start_idx + i) % NumConsumers;
             if (queues_[queue_idx].try_dequeue(result)) {
                 return true;
             }
@@ -309,7 +266,7 @@ public:
 
     // 队列状态
     [[nodiscard]] bool empty() const noexcept {
-        for (usize i = 0; i < NumConsumers; ++i) {
+        for (moss::kernel::usize i = 0; i < NumConsumers; ++i) {
             if (!queues_[i].empty()) {
                 return false;
             }
@@ -317,19 +274,19 @@ public:
         return true;
     }
 
-    [[nodiscard]] usize approximate_total_size() const noexcept {
-        usize total = 0;
-        for (usize i = 0; i < NumConsumers; ++i) {
+    [[nodiscard]] moss::kernel::usize approximate_total_size() const noexcept {
+        moss::kernel::usize total = 0;
+        for (moss::kernel::usize i = 0; i < NumConsumers; ++i) {
             total += queues_[i].approximate_size();
         }
         return total;
     }
 
 private:
-    [[nodiscard]] static u32 get_current_cpu_id() noexcept {
-        u64 mpidr;
+    [[nodiscard]] static moss::kernel::u32 get_current_cpu_id() noexcept {
+        moss::kernel::u64 mpidr;
         asm volatile("mrs %0, mpidr_el1" : "=r"(mpidr));
-        return static_cast<u32>(mpidr & 0xFF);
+        return static_cast<moss::kernel::u32>(mpidr & 0xFFU);  // 返回CPU ID
     }
 };
 
