@@ -86,11 +86,7 @@
     #define MOSS_ENABLE_PER_CPU_DATA @MOSS_ENABLE_PER_CPU_DATA@       // Per-CPU数据结构
     #define MOSS_ENABLE_ATOMIC_TYPES @MOSS_ENABLE_ATOMIC_TYPES@       // 原子类型支持
 
-    // 标准库工具函数支持（裸机环境中为0）
-    #define MOSS_HAS_STD_UTILITY 0                    // 无std::utility支持
-    #define MOSS_HAS_STD_UTILITY_SLAB 0              // 无Slab分配器std::utility支持
-    #define MOSS_HAS_STD_UTILITY_PERCPU 0            // 无Per-CPU std::utility支持
-    #define MOSS_HAS_STD_UTILITY_SMARTPTR 0          // 无智能指针std::utility支持
+    // 标准库功能已通过自定义头文件提供，无需条件编译
 #endif
 
 // 进程管理功能开关

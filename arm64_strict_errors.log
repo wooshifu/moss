@@ -1,0 +1,82 @@
+[1/3] Building CXX object src/kernel/CMakeFiles/moss_kernel.dir/runtime_support.cpp.obj
+FAILED: [code=1] src/kernel/CMakeFiles/moss_kernel.dir/runtime_support.cpp.obj 
+/usr/bin/clang++-21 --target=aarch64-unknown-elf -DMOSS_ARCH_ARM64 -DMOSS_ARCH_ARM64=1 -DMOSS_ARCH_BITS=64 -DMOSS_CACHE_LINE_SIZE=64 -DMOSS_CONTAINERS_MODULE -DMOSS_CPU_CORES=4 -DMOSS_DRIVERS_MODULE -DMOSS_INTERRUPTS_MODULE -DMOSS_IPC_MODULE -DMOSS_KERNEL_CORE -DMOSS_KERNEL_LOAD_ADDR=0x40080000 -DMOSS_KERNEL_MODULE -DMOSS_MEMORY_BASE=0x40000000 -DMOSS_PAGE_SIZE=4096 -DMOSS_PLATFORM_QEMU_VIRT=1 -I/home/wu/mercedes-benz/moss/src/include -I/home/wu/mercedes-benz/moss/build/arm64-qemu-debug/include -I/home/wu/mercedes-benz/moss/src/kernel -I/home/wu/mercedes-benz/moss/src/process -I/home/wu/mercedes-benz/moss/src/interrupts -I/home/wu/mercedes-benz/moss/src/drivers -I/home/wu/mercedes-benz/moss/src/ipc -I/home/wu/mercedes-benz/moss/src/containers -mcpu=cortex-a57 -march=armv8-a+lse -mgeneral-regs-only -mstrict-align --target=aarch64-unknown-elf -mcpu=cortex-a57 -march=armv8-a -mgeneral-regs-only -mstrict-align -mno-outline-atomics -fno-pic -fno-pie -ffreestanding -fno-exceptions -fno-rtti -fno-stack-protector -Wall -Wextra -Werror -Wpedantic -Wconversion -Wsign-conversion -Wshadow -Wunused -Wunreachable-code -Wcast-qual -Wcast-align -Wmissing-declarations -Wredundant-decls -Wundef -Wstrict-aliasing -Wformat=2 -Wimplicit-fallthrough -Wnull-dereference -Wdouble-promotion -Og -g3 -std=c++26 -MD -MT src/kernel/CMakeFiles/moss_kernel.dir/runtime_support.cpp.obj -MF src/kernel/CMakeFiles/moss_kernel.dir/runtime_support.cpp.obj.d -o src/kernel/CMakeFiles/moss_kernel.dir/runtime_support.cpp.obj -c /home/wu/mercedes-benz/moss/src/kernel/runtime_support.cpp
+/home/wu/mercedes-benz/moss/src/kernel/runtime_support.cpp:95:25: error: implicit conversion changes signedness: 'int' to 'size_t' (aka 'unsigned long') [-Werror,-Wsign-conversion]
+   95 |     size = (size + 7) & ~7;
+      |                       ~ ^~
+1 error generated.
+[2/3] Building CXX object src/kernel/CMakeFiles/moss_kernel.dir/kernel_main.cpp.obj
+FAILED: [code=1] src/kernel/CMakeFiles/moss_kernel.dir/kernel_main.cpp.obj 
+/usr/bin/clang++-21 --target=aarch64-unknown-elf -DMOSS_ARCH_ARM64 -DMOSS_ARCH_ARM64=1 -DMOSS_ARCH_BITS=64 -DMOSS_CACHE_LINE_SIZE=64 -DMOSS_CONTAINERS_MODULE -DMOSS_CPU_CORES=4 -DMOSS_DRIVERS_MODULE -DMOSS_INTERRUPTS_MODULE -DMOSS_IPC_MODULE -DMOSS_KERNEL_CORE -DMOSS_KERNEL_LOAD_ADDR=0x40080000 -DMOSS_KERNEL_MODULE -DMOSS_MEMORY_BASE=0x40000000 -DMOSS_PAGE_SIZE=4096 -DMOSS_PLATFORM_QEMU_VIRT=1 -I/home/wu/mercedes-benz/moss/src/include -I/home/wu/mercedes-benz/moss/build/arm64-qemu-debug/include -I/home/wu/mercedes-benz/moss/src/kernel -I/home/wu/mercedes-benz/moss/src/process -I/home/wu/mercedes-benz/moss/src/interrupts -I/home/wu/mercedes-benz/moss/src/drivers -I/home/wu/mercedes-benz/moss/src/ipc -I/home/wu/mercedes-benz/moss/src/containers -mcpu=cortex-a57 -march=armv8-a+lse -mgeneral-regs-only -mstrict-align --target=aarch64-unknown-elf -mcpu=cortex-a57 -march=armv8-a -mgeneral-regs-only -mstrict-align -mno-outline-atomics -fno-pic -fno-pie -ffreestanding -fno-exceptions -fno-rtti -fno-stack-protector -Wall -Wextra -Werror -Wpedantic -Wconversion -Wsign-conversion -Wshadow -Wunused -Wunreachable-code -Wcast-qual -Wcast-align -Wmissing-declarations -Wredundant-decls -Wundef -Wstrict-aliasing -Wformat=2 -Wimplicit-fallthrough -Wnull-dereference -Wdouble-promotion -Og -g3 -std=c++26 -MD -MT src/kernel/CMakeFiles/moss_kernel.dir/kernel_main.cpp.obj -MF src/kernel/CMakeFiles/moss_kernel.dir/kernel_main.cpp.obj.d -o src/kernel/CMakeFiles/moss_kernel.dir/kernel_main.cpp.obj -c /home/wu/mercedes-benz/moss/src/kernel/kernel_main.cpp
+In file included from /home/wu/mercedes-benz/moss/src/kernel/kernel_main.cpp:4:
+In file included from /home/wu/mercedes-benz/moss/src/kernel/kernel_main.hpp:9:
+In file included from /home/wu/mercedes-benz/moss/src/include/containers/containers.hpp:8:
+/home/wu/mercedes-benz/moss/src/include/containers/../../containers/lockfree_queue.hpp:25:5: error: 'MOSS_HAS_STD_UTILITY' is not defined, evaluates to 0 [-Werror,-Wundef]
+   25 | #if MOSS_HAS_STD_UTILITY
+      |     ^
+/home/wu/mercedes-benz/moss/src/include/containers/../../containers/lockfree_queue.hpp:58:5: error: 'MOSS_HAS_STD_UTILITY' is not defined, evaluates to 0 [-Werror,-Wundef]
+   58 | #if MOSS_HAS_STD_UTILITY
+      |     ^
+/home/wu/mercedes-benz/moss/src/include/containers/../../containers/lockfree_queue.hpp:72:5: error: 'MOSS_HAS_STD_UTILITY' is not defined, evaluates to 0 [-Werror,-Wundef]
+   72 | #if MOSS_HAS_STD_UTILITY
+      |     ^
+/home/wu/mercedes-benz/moss/src/include/containers/../../containers/lockfree_queue.hpp:85:5: error: 'MOSS_HAS_STD_UTILITY' is not defined, evaluates to 0 [-Werror,-Wundef]
+   85 | #if MOSS_HAS_STD_UTILITY
+      |     ^
+/home/wu/mercedes-benz/moss/src/include/containers/../../containers/lockfree_queue.hpp:98:5: error: 'MOSS_HAS_STD_UTILITY' is not defined, evaluates to 0 [-Werror,-Wundef]
+   98 | #if MOSS_HAS_STD_UTILITY
+      |     ^
+/home/wu/mercedes-benz/moss/src/include/containers/../../containers/lockfree_queue.hpp:193:5: error: 'MOSS_HAS_STD_UTILITY' is not defined, evaluates to 0 [-Werror,-Wundef]
+  193 | #if MOSS_HAS_STD_UTILITY
+      |     ^
+/home/wu/mercedes-benz/moss/src/include/containers/../../containers/lockfree_queue.hpp:256:5: error: 'MOSS_HAS_STD_UTILITY' is not defined, evaluates to 0 [-Werror,-Wundef]
+  256 | #if MOSS_HAS_STD_UTILITY
+      |     ^
+/home/wu/mercedes-benz/moss/src/include/containers/../../containers/lockfree_queue.hpp:266:5: error: 'MOSS_HAS_STD_UTILITY' is not defined, evaluates to 0 [-Werror,-Wundef]
+  266 | #if MOSS_HAS_STD_UTILITY
+      |     ^
+/home/wu/mercedes-benz/moss/src/include/containers/../../containers/lockfree_queue.hpp:279:5: error: 'MOSS_HAS_STD_UTILITY' is not defined, evaluates to 0 [-Werror,-Wundef]
+  279 | #if MOSS_HAS_STD_UTILITY
+      |     ^
+/home/wu/mercedes-benz/moss/src/include/containers/../../containers/lockfree_queue.hpp:292:5: error: 'MOSS_HAS_STD_UTILITY' is not defined, evaluates to 0 [-Werror,-Wundef]
+  292 | #if MOSS_HAS_STD_UTILITY
+      |     ^
+In file included from /home/wu/mercedes-benz/moss/src/kernel/kernel_main.cpp:4:
+In file included from /home/wu/mercedes-benz/moss/src/kernel/kernel_main.hpp:9:
+In file included from /home/wu/mercedes-benz/moss/src/include/containers/containers.hpp:9:
+/home/wu/mercedes-benz/moss/src/include/containers/../../containers/rcu_list.hpp:150:5: error: 'MOSS_HAS_STD_UTILITY' is not defined, evaluates to 0 [-Werror,-Wundef]
+  150 | #if MOSS_HAS_STD_UTILITY
+      |     ^
+/home/wu/mercedes-benz/moss/src/include/containers/../../containers/rcu_list.hpp:180:5: error: 'MOSS_HAS_STD_UTILITY' is not defined, evaluates to 0 [-Werror,-Wundef]
+  180 | #if MOSS_HAS_STD_UTILITY
+      |     ^
+/home/wu/mercedes-benz/moss/src/include/containers/../../containers/rcu_list.hpp:304:5: error: 'MOSS_HAS_STD_UTILITY' is not defined, evaluates to 0 [-Werror,-Wundef]
+  304 | #if MOSS_HAS_STD_UTILITY
+      |     ^
+/home/wu/mercedes-benz/moss/src/include/containers/../../containers/rcu_list.hpp:342:5: error: 'MOSS_HAS_STD_UTILITY' is not defined, evaluates to 0 [-Werror,-Wundef]
+  342 | #if MOSS_HAS_STD_UTILITY
+      |     ^
+In file included from /home/wu/mercedes-benz/moss/src/kernel/kernel_main.cpp:4:
+In file included from /home/wu/mercedes-benz/moss/src/kernel/kernel_main.hpp:9:
+In file included from /home/wu/mercedes-benz/moss/src/include/containers/containers.hpp:10:
+/home/wu/mercedes-benz/moss/src/include/containers/../../containers/slab_allocator.hpp:184:59: error: implicit conversion from 'usize' (aka 'unsigned long') to 'double' may lose precision [-Werror,-Wimplicit-int-float-conversion]
+  184 |         return static_cast<double>(allocated_objects()) / total;
+      |                                                         ~ ^~~~~
+/home/wu/mercedes-benz/moss/src/include/containers/../../containers/slab_allocator.hpp:462:5: error: 'MOSS_HAS_STD_UTILITY_SLAB' is not defined, evaluates to 0 [-Werror,-Wundef]
+  462 | #if MOSS_HAS_STD_UTILITY_SLAB
+      |     ^
+In file included from /home/wu/mercedes-benz/moss/src/kernel/kernel_main.cpp:4:
+In file included from /home/wu/mercedes-benz/moss/src/kernel/kernel_main.hpp:9:
+In file included from /home/wu/mercedes-benz/moss/src/include/containers/containers.hpp:11:
+/home/wu/mercedes-benz/moss/src/include/containers/../../containers/per_cpu_data.hpp:25:5: error: 'MOSS_HAS_STD_UTILITY_PERCPU' is not defined, evaluates to 0 [-Werror,-Wundef]
+   25 | #if MOSS_HAS_STD_UTILITY_PERCPU
+      |     ^
+/home/wu/mercedes-benz/moss/src/include/containers/../../containers/per_cpu_data.hpp:35:5: error: 'MOSS_HAS_STD_UTILITY_PERCPU' is not defined, evaluates to 0 [-Werror,-Wundef]
+   35 | #if MOSS_HAS_STD_UTILITY_PERCPU
+      |     ^
+/home/wu/mercedes-benz/moss/src/include/containers/../../containers/per_cpu_data.hpp:49:5: error: 'MOSS_HAS_STD_UTILITY_PERCPU' is not defined, evaluates to 0 [-Werror,-Wundef]
+   49 | #if MOSS_HAS_STD_UTILITY_PERCPU
+      |     ^
+fatal error: too many errors emitted, stopping now [-ferror-limit=]
+20 errors generated.
+ninja: build stopped: subcommand failed.
