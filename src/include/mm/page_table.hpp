@@ -178,7 +178,7 @@ struct AddressSpaceConfig {
 class PageTableManager {
 private:
     // 早期页表分配器（简单的静态分配）
-    static constexpr usize MAX_EARLY_TABLES = 128;
+    static constexpr usize MAX_EARLY_TABLES = 512;  // 增加到512个页表
     alignas(PAGE_SIZE) static inline PageTable early_tables[MAX_EARLY_TABLES];
     static inline usize next_table_index = 0;
 
