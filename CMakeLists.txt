@@ -1,10 +1,15 @@
-cmake_minimum_required(VERSION 3.25)
+cmake_minimum_required(VERSION 4.2)
 
 # === Moss 微内核多架构构建系统 ===
 project(moss VERSION 0.1.0 LANGUAGES CXX ASM)
 
-# 设置 C++ 标准
-set(CMAKE_CXX_STANDARD 26)
+# Enable C++20 modules
+set(CMAKE_CXX_SCAN_FOR_MODULES ON)
+set(CMAKE_CXX_MODULE_STD ON)
+set(CMAKE_EXPERIMENTAL_CXX_MODULE_CMAKE_API "2182bf5c-ef0d-489a-91da-49dbc3090d2a")
+
+# Configure C++20 instead of C++26 for modules compatibility
+set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
@@ -12,6 +17,7 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 list(APPEND CMAKE_MODULE_PATH "${CMAKE_SOURCE_DIR}/cmake")
 include(ArchSupport)
 include(ToolchainDetection)
+include(Modules)
 
 # === 多架构配置 ===
 message(STATUS "开始配置 Moss 内核构建系统...")
