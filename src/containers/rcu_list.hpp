@@ -8,7 +8,7 @@
 #include "../include/result.hpp"
 
 // 包含统一的内核标准库支持
-#include "../include/kernel_std.hpp"
+// Removed kernel_std.hpp include to avoid conflicts
 
 namespace moss::kernel::containers {
 

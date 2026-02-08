@@ -8,7 +8,7 @@
 #include "../include/result.hpp"
 #include "containers/containers.hpp"
 #include "../process/process.hpp"
-#include "../include/std/atomic"
+// 移除有问题的atomic包含，使用容器中的原子类型
 
 namespace moss::kernel::ipc {
 

@@ -88,7 +88,7 @@ static constexpr usize MAX_CPUS = 8;
 } // namespace moss::kernel
 
 // 全局操作符重载（placement new）
-void* operator new(moss::kernel::usize, void* ptr) noexcept;
-void* operator new[](moss::kernel::usize, void* ptr) noexcept;
+void* operator new(unsigned long, void* ptr) noexcept;
+void* operator new[](unsigned long, void* ptr) noexcept;
 void operator delete(void*, void*) noexcept;
 void operator delete[](void*, void*) noexcept;

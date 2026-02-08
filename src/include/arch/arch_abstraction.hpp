@@ -5,6 +5,25 @@
 
 #include "../types.hpp"
 
+// 默认架构检测
+#ifndef MOSS_ARCH_ARM64
+#ifndef MOSS_ARCH_X86_64
+#ifndef MOSS_ARCH_RISCV
+    // 如果没有定义架构，默认使用x86_64
+    #if defined(__x86_64__) || defined(__x86_64) || defined(__amd64__) || defined(__amd64) || defined(_M_X64)
+        #define MOSS_ARCH_X86_64
+    #elif defined(__aarch64__) || defined(_M_ARM64)
+        #define MOSS_ARCH_ARM64
+    #elif defined(__riscv) && __riscv_xlen == 64
+        #define MOSS_ARCH_RISCV
+    #else
+        // 默认fallback到x86_64
+        #define MOSS_ARCH_X86_64
+    #endif
+#endif
+#endif
+#endif
+
 namespace moss::kernel::arch {
 
 // 架构特定的panic/breakpoint操作
@@ -180,11 +199,11 @@ inline void setup_kernel_mmu(PhysAddr kernel_pgd_pa) noexcept {
     // 设置翻译控制寄存器
     asm volatile("msr tcr_el1, %0" :: "r"(TCR_VALUE));
 
-    // 设置页表基址寄存器（TTBR1_EL1用于内核空间）
-    asm volatile("msr ttbr1_el1, %0" :: "r"(kernel_pgd_pa));
+    // 设置页表基址寄存器（TTBR0_EL1用于内核空间）
+    asm volatile("msr ttbr0_el1, %0" :: "r"(kernel_pgd_pa));
 
-    // 设置TTBR0_EL1为0（暂时不使用用户空间）
-    asm volatile("msr ttbr0_el1, %0" :: "r"(0ULL));
+    // 设置TTBR1_EL1为0（已禁用）
+    asm volatile("msr ttbr1_el1, %0" :: "r"(0ULL));
 
     // 内存屏障
     asm volatile("dsb sy");

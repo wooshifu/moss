@@ -3,8 +3,8 @@
 // 高性能IPC管理器
 // 统一管理零拷贝通道、共享内存、消息传递和能力传递
 
-#include "shared_memory.hpp"
-#include "zero_copy_channel.hpp"
+#include "../../ipc/shared_memory.hpp"
+#include "../../ipc/zero_copy_channel.hpp"
 #include "../include/types.hpp"
 #include "../include/result.hpp"
 #include "../include/smart_ptr.hpp"
@@ -13,9 +13,10 @@
 
 namespace moss::kernel::ipc {
 
-// 使用内核智能指针
-using moss::kernel::unique_ptr;
+// 简化类型使用
+template<typename T> using unique_ptr = moss::kernel::UniquePtr<T>;
 using moss::kernel::make_unique;
+using VoidResult = moss::kernel::Result<void, moss::kernel::ErrorCode>;
 
 // IPC端点类型
 enum class EndpointType : u8 {

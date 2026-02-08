@@ -7,13 +7,13 @@
 #include "result.hpp"
 #include "../containers/atomic_types.hpp"
 
-// 包含统一的内核标准库支持
-#include "kernel_std.hpp"
+// 包含concepts约束
+#include "concepts/memory_concepts.hpp"
 
 namespace moss::kernel {
 
 // 内核专用unique_ptr实现
-template<typename T>
+template<moss::concepts::UniquePtrCompatible T>
 class UniquePtr {
 private:
     T* ptr_;

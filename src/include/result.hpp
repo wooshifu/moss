@@ -4,6 +4,11 @@
 
 #include "types.hpp"
 
+// 包含concepts约束（仅在支持时）
+#ifdef __cpp_concepts
+#include "concepts/kernel_concepts.hpp"
+#endif
+
 // 内核环境下的基础 type traits 实现
 namespace moss::kernel::detail {
     // 基础类型特征
@@ -86,7 +91,11 @@ using KernelError = ErrorCode;
 const char* error_to_string(ErrorCode error) noexcept;
 
 // Result类型实现 - 类似Rust的Result<T, E>
+#ifdef __cpp_concepts
+template<moss::concepts::KernelSafe T, typename E = ErrorCode>
+#else
 template<typename T, typename E = ErrorCode>
+#endif
 class [[nodiscard]] Result {
 private:
     union {

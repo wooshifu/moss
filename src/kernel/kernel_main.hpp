@@ -3,16 +3,16 @@
 // MOSS微内核主系统集成
 // 统一初始化和管理所有内核子系统
 
-#include "types.hpp"           // 从 src/include/
-#include "result.hpp"          // 从 src/include/
-#include "mm/page_table.hpp"   // 从 src/include/mm/
-#include "containers/containers.hpp" // 从 src/include/containers/
-#include "process.hpp"         // 从 src/process/
-#include "cfs_scheduler.hpp"   // 从 src/process/
-#include "load_balancer.hpp"   // 从 src/process/
-#include "shared_memory.hpp"   // 从 src/ipc/
-#include "ipc/ipc_manager.hpp" // 从 src/include/ipc/
-#include "gic.hpp"             // 从 src/interrupts/
+#include "types.hpp"           // 使用include path查找
+#include "result.hpp"          // 使用include path查找
+#include "mm/page_table.hpp"   // 使用include path查找
+#include "containers/containers.hpp" // 使用include path查找
+#include "../process/process.hpp"         // 从 src/process/
+#include "../process/cfs_scheduler.hpp"   // 从 src/process/
+#include "../process/load_balancer.hpp"   // 从 src/process/
+#include "../ipc/shared_memory.hpp"   // 从 src/ipc/
+#include "../include/ipc/ipc_manager.hpp" // 从 src/include/ipc/
+#include "../interrupts/gic.hpp"             // 从 src/interrupts/
 #include "drivers/device_manager.hpp"
 // #include "uart_driver.hpp" // 暂时注释掉，稍后修复
 

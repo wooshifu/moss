@@ -1,6 +1,7 @@
 #include "types.hpp"
 #include "result.hpp"
 #include "mm/page_table.hpp"
+#include <cstddef>  // for size_t
 
 // 外部符号声明（来自链接器脚本）
 extern "C" {
@@ -137,11 +138,20 @@ struct CpuInfo {
 CpuInfo detect_cpu_features() {
     CpuInfo info;
 
+#if defined(__aarch64__) || defined(MOSS_ARCH_ARM64)
     asm volatile("mrs %0, midr_el1" : "=r"(info.midr_el1));
     asm volatile("mrs %0, mpidr_el1" : "=r"(info.mpidr_el1));
     asm volatile("mrs %0, revidr_el1" : "=r"(info.revidr_el1));
     asm volatile("mrs %0, id_aa64pfr0_el1" : "=r"(info.id_aa64pfr0));
     asm volatile("mrs %0, id_aa64mmfr0_el1" : "=r"(info.id_aa64mmfr0));
+#else
+    // 非ARM64架构，返回默认值
+    info.midr_el1 = 0;
+    info.mpidr_el1 = 0;
+    info.revidr_el1 = 0;
+    info.id_aa64pfr0 = 0;
+    info.id_aa64mmfr0 = 0;
+#endif
 
     return info;
 }
@@ -233,16 +243,25 @@ extern "C" void early_main(void* device_tree_ptr) {
 
     // 简单的内核主循环
     while (true) {
-        asm volatile("wfi"); // 等待中断
+#if defined(__aarch64__) || defined(MOSS_ARCH_ARM64)
+        asm volatile("wfi"); // 等待中断 (ARM64)
+#elif defined(__x86_64__) || defined(MOSS_ARCH_X86_64)
+        asm volatile("hlt"); // 停机等待中断 (x86_64)
+#elif defined(__riscv) || defined(MOSS_ARCH_RISCV)
+        asm volatile("wfi"); // 等待中断 (RISC-V)
+#else
+        // 通用停机 - CPU空循环
+        for (volatile int i = 0; i < 1000000; ++i) {}
+#endif
     }
 }
 
 // 实现placement new操作符
-void* operator new(moss::kernel::usize, void* ptr) noexcept {
+void* operator new(size_t, void* ptr) noexcept {
     return ptr;
 }
 
-void* operator new[](moss::kernel::usize, void* ptr) noexcept {
+void* operator new[](size_t, void* ptr) noexcept {
     return ptr;
 }
 

@@ -3,14 +3,13 @@
 // 高性能内核容器库 - 综合头文件
 // 提供无锁、高性能的数据结构
 
-#include "atomic_types.hpp"
-#include "lockfree_queue.hpp"
-#include "rcu_list.hpp"
-#include "slab_allocator.hpp"
-#include "per_cpu_data.hpp"
+#include "../../containers/atomic_types.hpp"
+#include "../../containers/lockfree_queue.hpp"
+#include "../../containers/rcu_list.hpp"
+#include "../../containers/slab_allocator.hpp"
+#include "../../containers/per_cpu_data.hpp"
 
-// 包含统一的内核标准库支持
-#include "../kernel_std.hpp"
+// 避免包含有冲突的kernel_std.hpp
 
 namespace moss::kernel::containers {
 

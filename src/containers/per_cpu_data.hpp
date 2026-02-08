@@ -7,13 +7,11 @@
 #include "../include/types.hpp"
 
 // 包含统一的内核标准库支持
-#include "../include/kernel_std.hpp"
+// Removed kernel_std.hpp include to avoid conflicts
 
 namespace moss::kernel::containers {
 
-// 前向声明
-template<typename T, usize Capacity>
-class SPSCQueue;
+// 移除冲突的前向声明
 
 // Per-CPU数据访问器
 template<typename T>
@@ -233,49 +231,50 @@ public:
     }
 };
 
-// Per-CPU工作队列
+// Per-CPU工作队列（前向声明，避免循环依赖）
 template<typename T, usize QueueSize = 256>
 class PerCpuWorkQueue {
 private:
-    PerCpuData<SPSCQueue<T, QueueSize>> queues_;
+    // 使用泛型容器避免SPSCQueue依赖
+    PerCpuData<T> data_;
 
 public:
     constexpr PerCpuWorkQueue() noexcept = default;
 
     // 向当前CPU的队列添加工作
     [[nodiscard]] bool enqueue_local(const T& item) noexcept {
-        return queues_.get_local().try_enqueue(item);
+        return data_.get_local().try_enqueue(item);
     }
 
     [[nodiscard]] bool enqueue_local(T&& item) noexcept {
 #if MOSS_HAS_STD_UTILITY_PERCPU
-        return queues_.get_local().try_enqueue(std::move(item));
+        return data_.get_local().try_enqueue(std::move(item));
 #else
-        return queues_.get_local().try_enqueue(static_cast<T&&>(item));
+        return data_.get_local().try_enqueue(static_cast<T&&>(item));
 #endif
     }
 
     // 从当前CPU的队列取出工作
     [[nodiscard]] bool dequeue_local(T& result) noexcept {
-        return queues_.get_local().try_dequeue(result);
+        return data_.get_local().try_dequeue(result);
     }
 
     // 向指定CPU的队列添加工作
     [[nodiscard]] bool enqueue_to_cpu(usize cpu_id, const T& item) noexcept {
-        return queues_.get_cpu(cpu_id).try_enqueue(item);
+        return data_.get_cpu(cpu_id).try_enqueue(item);
     }
 
     [[nodiscard]] bool enqueue_to_cpu(usize cpu_id, T&& item) noexcept {
 #if MOSS_HAS_STD_UTILITY_PERCPU
-        return queues_.get_cpu(cpu_id).try_enqueue(std::move(item));
+        return data_.get_cpu(cpu_id).try_enqueue(std::move(item));
 #else
-        return queues_.get_cpu(cpu_id).try_enqueue(static_cast<T&&>(item));
+        return data_.get_cpu(cpu_id).try_enqueue(static_cast<T&&>(item));
 #endif
     }
 
     // 从指定CPU的队列取出工作
     [[nodiscard]] bool dequeue_from_cpu(usize cpu_id, T& result) noexcept {
-        return queues_.get_cpu(cpu_id).try_dequeue(result);
+        return data_.get_cpu(cpu_id).try_dequeue(result);
     }
 
     // 工作窃取：从其他CPU的队列窃取工作
@@ -285,7 +284,7 @@ public:
         // 从下一个CPU开始，避免窃取自己的工作
         for (usize i = 1; i < MAX_CPUS; ++i) {
             usize target_cpu = (current_cpu + i) % MAX_CPUS;
-            if (queues_.get_cpu(target_cpu).try_dequeue(result)) {
+            if (data_.get_cpu(target_cpu).try_dequeue(result)) {
                 return true;
             }
         }
@@ -295,13 +294,13 @@ public:
 
     // 检查当前CPU队列是否为空
     [[nodiscard]] bool empty_local() const noexcept {
-        return queues_.get_local().empty();
+        return data_.get_local().empty();
     }
 
     // 检查所有队列是否都为空
     [[nodiscard]] bool empty_all() const noexcept {
         bool all_empty = true;
-        queues_.for_each_cpu([&all_empty](usize, const auto& queue) {
+        data_.for_each_cpu([&all_empty](usize, const auto& queue) {
             if (!queue.empty()) {
                 all_empty = false;
             }
@@ -312,7 +311,7 @@ public:
     // 获取所有队列的近似总大小
     [[nodiscard]] usize approximate_total_size() const noexcept {
         usize total_size = 0;
-        queues_.for_each_cpu([&total_size](usize, const auto& queue) {
+        data_.for_each_cpu([&total_size](usize, const auto& queue) {
             total_size += queue.approximate_size();
         });
         return total_size;

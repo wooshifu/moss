@@ -8,7 +8,10 @@
 #include "../include/result.hpp"
 
 // 包含统一的内核标准库支持
-#include "../include/kernel_std.hpp"
+// Removed kernel_std.hpp include to avoid conflicts
+
+// 包含concepts约束
+#include "../include/concepts/container_concepts.hpp"
 
 namespace moss::kernel::containers {
 
@@ -30,7 +33,8 @@ struct QueueNode {
 
 // SPSC (Single Producer Single Consumer) 无锁队列
 // 使用环形缓冲区实现，性能最优
-template<typename T, usize Capacity>
+template<moss::concepts::SPSCQueueElement T, usize Capacity>
+    requires moss::concepts::ValidQueueCapacity<Capacity>
 class SPSCQueue {
 private:
     static_assert((Capacity & (Capacity - 1)) == 0, "Capacity must be power of 2");
@@ -127,7 +131,7 @@ public:
 
 // MPSC (Multiple Producer Single Consumer) 无锁队列
 // 使用链表实现，支持多个生产者
-template<typename T>
+template<moss::concepts::MPSCQueueElement T>
 class MPSCQueue {
 private:
     // 头节点（消费者操作）
@@ -180,7 +184,8 @@ public:
 };
 
 // 固定大小的对象池（配合MPSC队列使用）
-template<typename T, usize PoolSize>
+template<moss::concepts::PoolableObject T, usize PoolSize>
+    requires moss::concepts::ValidCapacity<PoolSize>
 class ObjectPool {
 private:
     struct PoolNode : public QueueNode<T> {
@@ -233,7 +238,8 @@ public:
 
 // MPMC (Multiple Producer Multiple Consumer) 队列
 // 基于SPSC队列数组实现，每个消费者有专用队列
-template<typename T, usize NumConsumers, usize QueueCapacity>
+template<moss::concepts::MPMCQueueElement T, usize NumConsumers, usize QueueCapacity>
+    requires moss::concepts::ValidQueueCapacity<QueueCapacity> && (NumConsumers > 0)
 class MPMCQueue {
 private:
     SPSCQueue<T, QueueCapacity> queues_[NumConsumers];
