@@ -32,8 +32,8 @@ set_target_properties(moss_result PROPERTIES
 
 # Add moss.arch module
 moss_add_module(moss_arch
-    SOURCES arch.cppm
-    DEPENDENCIES moss_std moss_types
+    SOURCES arch.cppm arch_impl.cpp
+    DEPENDENCIES moss_std moss_types moss_arch_arm64
 )
 
 set_target_properties(moss_arch PROPERTIES
