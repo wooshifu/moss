@@ -300,6 +300,7 @@ add_executable(moss.elf)
 
 # 链接所有模块库
 target_link_libraries(moss.elf PRIVATE
+    moss_std
     moss_boot
     moss_kernel
     moss_containers
