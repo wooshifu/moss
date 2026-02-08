@@ -1,19 +1,11 @@
-[build-system]
-requires = ["hatchling"]
-build-backend = "hatchling.build"
-
 [project]
 name = "moss-build"
 version = "0.1.0"
 description = "MOSS Microkernel Build Tools"
-requires-python = ">=3.11"
+requires-python = ">=3.12"
 
-[tool.uv]
-dev-dependencies = [
+[dependency-groups]
+dev = [
     "cmake>=4.2.1",
+    "ninja>=1.13.0",
 ]
-
-[tool.uv.scripts]
-configure = "cmake --preset"
-build = "cmake --build"
-clean = "cmake --build --target clean"
