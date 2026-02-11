@@ -1,30 +1,23 @@
-# src/containers/CMakeLists.txt
+# src/containers/CMakeLists.txt - 重构后的目录结构版本
 
-# 创建容器模块接口库（header-only）
-add_library(moss_containers INTERFACE)
+# 创建OBJECT库（统一策略）
+add_library(moss_containers OBJECT)
 
-# 添加头文件到接口库
-set(CONTAINER_HEADERS atomic_types.hpp lockfree_queue.hpp per_cpu_data.hpp
-                      rcu_list.hpp slab_allocator.hpp)
+# 添加空源文件（满足OBJECT库需求）
+target_sources(moss_containers PRIVATE src/containers.cpp)
 
-# 接口库不需要源文件
+# 标准包含目录配置（使用新的目录结构）
+target_include_directories(moss_containers PUBLIC
+    ${CMAKE_SOURCE_DIR}/src/include
+    ${CMAKE_CURRENT_SOURCE_DIR}/include
+)
 
-# 设置包含目录
-target_include_directories(
-  moss_containers INTERFACE ${CMAKE_SOURCE_DIR}/src/include
-                            ${CMAKE_CURRENT_SOURCE_DIR})
+# 标准编译定义
+target_compile_definitions(moss_containers PRIVATE MOSS_KERNEL_MODULE MOSS_CONTAINERS_MODULE)
 
-# 编译器定义
-target_compile_definitions(moss_containers INTERFACE MOSS_KERNEL_MODULE
-                                                     MOSS_CONTAINERS_MODULE)
+# 架构配置（使用统一函数）
+moss_configure_module_arch(moss_containers)
 
-# 架构特定设置
-if(MOSS_TARGET_ARCH STREQUAL "ARM64")
-  target_compile_definitions(moss_containers INTERFACE MOSS_ARCH_ARM64)
-elseif(MOSS_TARGET_ARCH STREQUAL "X86_64")
-  target_compile_definitions(moss_containers INTERFACE MOSS_ARCH_X86_64)
-elseif(MOSS_TARGET_ARCH STREQUAL "RISCV")
-  target_compile_definitions(moss_containers INTERFACE MOSS_ARCH_RISCV)
-endif()
+# containers模块无其他依赖（基础层）
 
 message(STATUS "容器模块配置完成")

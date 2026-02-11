@@ -1,31 +1,24 @@
-# src/ipc/CMakeLists.txt
+# src/ipc/CMakeLists.txt - 重构后的目录结构版本
 
-# 创建 IPC 模块接口库（header-only）
-add_library(moss_ipc INTERFACE)
+# 创建OBJECT库（统一策略）
+add_library(moss_ipc OBJECT)
 
-# 添加头文件
-set(IPC_HEADERS shared_memory.hpp zero_copy_channel.hpp)
+# 添加空源文件（满足OBJECT库需求）
+target_sources(moss_ipc PRIVATE src/ipc.cpp)
 
-# 接口库不需要源文件
+# 标准包含目录配置（使用新的目录结构）
+target_include_directories(moss_ipc PUBLIC
+    ${CMAKE_SOURCE_DIR}/src/include
+    ${CMAKE_CURRENT_SOURCE_DIR}/include
+)
 
-# 设置包含目录
-target_include_directories(moss_ipc INTERFACE ${CMAKE_SOURCE_DIR}/src/include
-                                              ${CMAKE_CURRENT_SOURCE_DIR})
+# 标准编译定义
+target_compile_definitions(moss_ipc PRIVATE MOSS_KERNEL_MODULE MOSS_IPC_MODULE)
 
-# 链接依赖
-target_link_libraries(moss_ipc INTERFACE moss_containers moss_mm)
+# 架构配置（使用统一函数）
+moss_configure_module_arch(moss_ipc)
 
-# 编译器定义
-target_compile_definitions(moss_ipc INTERFACE MOSS_KERNEL_MODULE
-                                              MOSS_IPC_MODULE)
+# 依赖关系（IPC层依赖基础层和内存管理层）
+target_link_libraries(moss_ipc PRIVATE moss_containers moss_mm)
 
-# 架构特定设置
-if(MOSS_TARGET_ARCH STREQUAL "ARM64")
-  target_compile_definitions(moss_ipc INTERFACE MOSS_ARCH_ARM64)
-elseif(MOSS_TARGET_ARCH STREQUAL "X86_64")
-  target_compile_definitions(moss_ipc INTERFACE MOSS_ARCH_X86_64)
-elseif(MOSS_TARGET_ARCH STREQUAL "RISCV")
-  target_compile_definitions(moss_ipc INTERFACE MOSS_ARCH_RISCV)
-endif()
-
-message(STATUS "IPC 模块配置完成")
+message(STATUS "IPC模块配置完成")
