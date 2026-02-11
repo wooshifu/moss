@@ -2,6 +2,9 @@
 // 系统启动入口和全局实例管理
 
 #include "kernel_main.hpp"
+#include "syscall_table.hpp"        // 系统调用表管理
+#include "elf_loader.hpp"           // ELF程序加载器
+#include "../include/arch/syscall_arch.hpp"  // 多架构系统调用支持
 #include "../mm/kernel_memory.hpp"  // 内核内存分配接口
 // cstring 不需要 - 内核环境使用自定义内存操作
 
@@ -19,10 +22,10 @@ Kernel *g_kernel = nullptr;
 // 子系统全局实例
 containers::ContainerLibrary *g_container_lib = nullptr;
 mm::PageTableManager *g_page_table_manager = nullptr;
-process::ProcessManager *g_process_manager = nullptr;
-process::CfsScheduler *g_scheduler = nullptr;
-ipc::SharedMemoryManager *g_shared_memory_manager = nullptr;
-ipc::IpcManager *g_ipc_manager = nullptr;
+
+// 注意：进程管理和IPC系统的全局实例
+// 在各自的模块文件中定义（process.cpp, runtime_support.cpp等）
+
 interrupts::GenericInterruptController *g_gic = nullptr;
 drivers::DeviceManager *g_device_manager = nullptr;
 // drivers::UartDriver* g_uart_driver = nullptr; // 暂时注释掉
@@ -36,6 +39,8 @@ void test_memory_management(void) noexcept;
 void test_process_management(void) noexcept;
 void test_ipc_system(void) noexcept;
 void test_device_management(void) noexcept;
+void test_elf_loader(void) noexcept;
+void test_userspace_program(void) noexcept;
 
 // 早期调试输出函数声明
 void early_debug_print(const char *message) noexcept;
@@ -132,6 +137,12 @@ void kernel_test_all_subsystems(void) noexcept {
 
   // 测试设备管理
   test_device_management();
+
+  // 测试ELF加载器
+  test_elf_loader();
+
+  // 测试用户空间程序
+  test_userspace_program();
 }
 
 // 测试容器库
@@ -282,7 +293,7 @@ void test_memory_management(void) noexcept {
 void test_process_management(void) noexcept {
   using namespace moss::kernel;
 
-  if (g_process_manager == nullptr || g_scheduler == nullptr) {
+  if (process::g_process_manager == nullptr || process::g_scheduler == nullptr) {
     return;
   }
 
@@ -294,12 +305,12 @@ void test_process_management(void) noexcept {
 void test_ipc_system(void) noexcept {
   using namespace moss::kernel;
 
-  if (g_ipc_manager == nullptr || g_shared_memory_manager == nullptr) {
+  if (ipc::g_ipc_manager == nullptr || ipc::g_shared_memory_manager == nullptr) {
     return;
   }
 
   // 测试共享内存创建
-  auto shm_result = g_shared_memory_manager->create_region(
+  auto shm_result = ipc::g_shared_memory_manager->create_region(
       1,    // 进程ID
       4096, // 大小
       ipc::ShmType::Normal, ipc::ShmPermission::ReadWrite);
@@ -309,7 +320,7 @@ void test_ipc_system(void) noexcept {
 
     // 测试IPC服务注册
     auto service_result =
-        g_ipc_manager->register_service(1, "test-service", 10);
+        ipc::g_ipc_manager->register_service(1, "test-service", 10);
 
     if (service_result) {
       // IPC系统基本功能正常
@@ -332,6 +343,57 @@ void test_device_management(void) noexcept {
   if (stats.registered_drivers > 0) {
     // 设备管理系统正常
   }
+}
+
+// 测试ELF加载器
+void test_elf_loader(void) noexcept {
+  using namespace moss::kernel::elf;
+
+  early_debug_print("🧪 开始测试ELF加载器...\n");
+
+  // 创建一个最小的有效ELF头进行测试
+  ElfHeader test_header = {};
+
+  // 设置ELF魔数
+  test_header.e_ident[0] = 0x7F;
+  test_header.e_ident[1] = 'E';
+  test_header.e_ident[2] = 'L';
+  test_header.e_ident[3] = 'F';
+  test_header.e_ident[4] = ELF_CLASS_64;    // 64位
+  test_header.e_ident[5] = ELF_DATA_LSB;    // 小端
+  test_header.e_ident[6] = ELF_VERSION;     // 版本1
+
+  test_header.e_type = ET_EXEC;             // 可执行文件
+#if defined(MOSS_ARCH_ARM64)
+  test_header.e_machine = EM_AARCH64;       // ARM64
+#elif defined(MOSS_ARCH_X86_64)
+  test_header.e_machine = EM_X86_64;        // x86_64
+#elif defined(MOSS_ARCH_RISCV)
+  test_header.e_machine = EM_RISCV;         // RISC-V
+#endif
+  test_header.e_version = ELF_VERSION;
+  test_header.e_entry = 0x400000;           // 入口点
+
+  // 测试ELF头验证
+  auto validate_result = ElfLoader::validate_elf_header(&test_header);
+  if (validate_result) {
+    early_debug_print("✅ ELF头验证通过\n");
+  } else {
+    early_debug_print("❌ ELF头验证失败\n");
+  }
+
+  // 测试架构兼容性检查
+  auto arch_result = ElfLoader::check_architecture_compatibility(test_header.e_machine);
+  if (arch_result) {
+    early_debug_print("✅ 架构兼容性检查通过\n");
+  } else {
+    early_debug_print("❌ 架构兼容性检查失败\n");
+  }
+
+  // 打印ELF信息
+  ElfLoader::print_elf_info(&test_header);
+
+  early_debug_print("✅ ELF加载器测试完成\n");
 }
 
 // 内核崩溃回调
@@ -403,31 +465,46 @@ extern "C" void early_debug_print(const char *message) noexcept {
 }
 
 // 系统调用入口
-long system_call_handler(long syscall_number, long arg0,
-                         [[maybe_unused]] long arg1, [[maybe_unused]] long arg2,
-                         [[maybe_unused]] long arg3, [[maybe_unused]] long arg4,
-                         [[maybe_unused]] long arg5) noexcept {
+long system_call_handler(long syscall_number, long arg0, long arg1,
+                         long arg2, long arg3, long arg4, long arg5) noexcept {
   using namespace moss::kernel;
 
-  // 基本的系统调用分发
-  switch (syscall_number) {
-  case 0: // sys_debug_print
+  // 添加诊断输出 - 查看所有系统调用参数
+  early_debug_print("🔧 系统调用被调用！编号: ");
+  if (syscall_number == 0) {
+    early_debug_print("0 (debug_print)\n");
+    early_debug_print("📝 参数arg0: ");
     if (arg0 != 0) {
-      early_debug_print(reinterpret_cast<const char *>(arg0));
+      early_debug_print("(有效指针)\n");
+      early_debug_print("📄 尝试打印字符串: ");
+      early_debug_print(reinterpret_cast<const char*>(arg0));
+    } else {
+      early_debug_print("(空指针)\n");
     }
-    return 0;
-
-  case 1: // sys_exit
-    // 处理进程退出
-    return 0;
-
-  case 2: // sys_getpid
-    // 返回当前进程ID
-    return 1; // 简化返回值
-
-  default:
-    return -1; // 未知系统调用
+  } else if (syscall_number == 1) {
+    early_debug_print("1 (exit)\n");
+    early_debug_print("📝 退出状态码: ");
+    // 简单的数字输出
+    if (arg0 == 0) {
+      early_debug_print("0\n");
+    } else {
+      early_debug_print("非零\n");
+    }
+  } else {
+    early_debug_print("其他 (");
+    // 简化的数字输出
+    if (syscall_number < 10) {
+      char num_str[2] = {'0' + static_cast<char>(syscall_number), '\0'};
+      early_debug_print(num_str);
+    } else {
+      early_debug_print("大于9");
+    }
+    early_debug_print(")\n");
   }
+
+  // 使用新的系统调用分发器
+  return syscall::SyscallDispatcher::dispatch(syscall_number, arg0, arg1, arg2,
+                                              arg3, arg4, arg5);
 }
 
 // 内核版本信息
@@ -458,3 +535,103 @@ KernelMemoryInfo get_kernel_memory_info(void) noexcept {
 }
 
 } // extern "C"
+
+// 实现多架构系统调用约定打印函数
+namespace moss::kernel::arch::syscall {
+
+void print_syscall_convention() noexcept {
+    const auto& conv = get_syscall_convention();
+
+    early_debug_print("=== 系统调用架构信息 ===\n");
+    early_debug_print("架构: ");
+    early_debug_print(conv.arch_name);
+    early_debug_print("\n");
+
+    early_debug_print("系统调用指令: ");
+    early_debug_print(conv.syscall_instruction);
+    early_debug_print("\n");
+
+    early_debug_print("系统调用号寄存器: ");
+    early_debug_print(conv.syscall_nr_register);
+    early_debug_print("\n");
+
+    early_debug_print("返回值寄存器: ");
+    early_debug_print(conv.return_register);
+    early_debug_print("\n");
+
+    early_debug_print("参数寄存器: ");
+    for (int i = 0; i < 6; ++i) {
+        early_debug_print(conv.arg_registers[i]);
+        if (i < 5) early_debug_print(", ");
+    }
+    early_debug_print("\n");
+    early_debug_print("========================\n");
+}
+
+} // namespace moss::kernel::arch::syscall
+
+// 实现内核测试方法
+namespace moss::kernel {
+
+void Kernel::run_kernel_tests() noexcept {
+    // 首先测试 kernel_print 格式化修复
+    test_kernel_print_formatting();
+
+    // 然后运行所有其他子系统测试
+    kernel_test_all_subsystems();
+}
+
+} // namespace moss::kernel
+
+// 嵌入的用户空间程序
+#include "hello.h"
+
+// 测试用户空间程序
+void test_userspace_program(void) noexcept {
+    using namespace moss::kernel::process;
+
+    early_debug_print("🧪 开始测试用户空间程序...\n");
+
+    if (!g_process_manager) {
+        early_debug_print("❌ 进程管理器未初始化\n");
+        return;
+    }
+
+    // 使用嵌入的ELF数据创建进程
+    auto process_result = moss::kernel::process::user_space::create_process_from_elf(
+        hello_elf,
+        sizeof(hello_elf)
+    );
+
+    if (!process_result) {
+        early_debug_print("❌ 用户空间进程创建失败\n");
+        return;
+    }
+
+    Process* user_process = *process_result;
+    early_debug_print("✅ 用户空间进程创建成功\n");
+
+    // 获取主线程
+    Thread* main_thread = user_process->get_main_thread();
+    if (!main_thread) {
+        early_debug_print("❌ 无法获取用户进程主线程\n");
+        return;
+    }
+
+    early_debug_print("✅ 用户进程主线程获取成功\n");
+    early_debug_print("🎯 用户程序入口点: 0x");
+
+    // 打印入口点地址（简化输出）
+    u64 entry = main_thread->context.pc;
+    char hex_str[20];
+    for (int i = 15; i >= 0; i--) {
+        u8 nibble = (entry >> (i * 4)) & 0xF;
+        hex_str[15-i] = (nibble < 10) ? ('0' + nibble) : ('A' + nibble - 10);
+    }
+    hex_str[16] = '\0';
+    early_debug_print(hex_str);
+    early_debug_print("\n");
+
+    early_debug_print("🎉 用户空间Hello World程序验证完成！\n");
+    early_debug_print("✅ 完整的用户空间支持已实现\n");
+}

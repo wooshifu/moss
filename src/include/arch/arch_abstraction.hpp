@@ -291,4 +291,175 @@ inline void flush_tlb_addr(VirtAddr addr) noexcept {
 
 } // namespace mmu
 
+// 系统调用抽象
+namespace syscall {
+
+// 系统调用上下文结构体 - 保存用户空间寄存器状态
+struct SyscallContext {
+    // 通用寄存器
+    u64 regs[32];        // 通用寄存器 (架构特定数量)
+    u64 sp;              // 栈指针
+    u64 pc;              // 程序计数器/返回地址
+    u64 pstate;          // 处理器状态寄存器
+
+    // 系统调用参数和返回值
+    u64 syscall_nr;      // 系统调用号
+    u64 args[6];         // 系统调用参数 (arg0-arg5)
+    u64 ret_value;       // 返回值
+
+    // 错误信息
+    u64 error_code;      // 错误代码
+};
+
+// 系统调用入口点函数类型
+extern "C" {
+    // 系统调用处理函数 - 由kernel_main.cpp中的system_call_handler实现
+    long system_call_handler(long syscall_number, long arg0, long arg1,
+                            long arg2, long arg3, long arg4, long arg5) noexcept;
+
+    // 架构特定的系统调用入口点 - 由汇编实现
+    void syscall_entry_point() noexcept;
+
+    // 系统调用返回处理 - 从内核空间返回用户空间
+    void syscall_return(SyscallContext* context) noexcept;
+}
+
+// 初始化系统调用支持
+inline void initialize_syscall_support() noexcept {
+#if defined(MOSS_ARCH_ARM64)
+    // ARM64: 设置异常向量表中的SVC处理程序
+    // TODO: 实现异常向量表设置
+    // 目前暂时使用简化实现
+#elif defined(MOSS_ARCH_X86_64)
+    // X86_64: 设置SYSCALL指令的MSR寄存器
+    // IA32_LSTAR: 系统调用入口点地址
+    // IA32_FMASK: RFLAGS掩码
+    // IA32_STAR: 段选择器配置
+    u64 syscall_entry = reinterpret_cast<u64>(&syscall_entry_point);
+
+    // 设置SYSCALL入口点
+    asm volatile("wrmsr" :: "c"(0xC0000082), "a"(syscall_entry), "d"(syscall_entry >> 32));
+    // 设置RFLAGS掩码 (禁用中断等)
+    asm volatile("wrmsr" :: "c"(0xC0000084), "a"(0x200), "d"(0));
+    // 设置段选择器
+    asm volatile("wrmsr" :: "c"(0xC0000081), "a"(0x00180008), "d"(0));
+
+#elif defined(MOSS_ARCH_RISCV)
+    // RISC-V: 设置trap向量表中的ECALL处理程序
+    // TODO: 实现trap向量表设置
+    // 目前暂时使用简化实现
+#else
+#error "Unsupported architecture for syscall initialization"
+#endif
+}
+
+// 获取当前系统调用上下文 (从架构特定寄存器中提取)
+inline void extract_syscall_args(SyscallContext* context,
+                                 u64 syscall_nr, u64 arg0, u64 arg1, u64 arg2,
+                                 u64 arg3, u64 arg4, u64 arg5) noexcept {
+    if (!context) return;
+
+    context->syscall_nr = syscall_nr;
+    context->args[0] = arg0;
+    context->args[1] = arg1;
+    context->args[2] = arg2;
+    context->args[3] = arg3;
+    context->args[4] = arg4;
+    context->args[5] = arg5;
+    context->ret_value = 0;
+    context->error_code = 0;
+}
+
+// 设置系统调用返回值
+inline void set_syscall_return(SyscallContext* context, long ret_value) noexcept {
+    if (!context) return;
+
+    if (ret_value < 0) {
+        // 负数表示错误
+        context->error_code = static_cast<u64>(-ret_value);
+        context->ret_value = static_cast<u64>(-1); // 错误时返回-1
+    } else {
+        // 正数或0表示成功
+        context->error_code = 0;
+        context->ret_value = static_cast<u64>(ret_value);
+    }
+}
+
+// 架构特定的系统调用参数提取
+inline void get_syscall_args_from_registers(u64* syscall_nr, u64* arg0, u64* arg1,
+                                           u64* arg2, u64* arg3, u64* arg4, u64* arg5) noexcept {
+#if defined(MOSS_ARCH_ARM64)
+    // ARM64系统调用约定：
+    // x8 = 系统调用号
+    // x0-x5 = 参数
+    asm volatile(
+        "str x8, %0\n"   // 系统调用号
+        "str x0, %1\n"   // arg0
+        "str x1, %2\n"   // arg1
+        "str x2, %3\n"   // arg2
+        "str x3, %4\n"   // arg3
+        "str x4, %5\n"   // arg4
+        "str x5, %6\n"   // arg5
+        : "=m"(*syscall_nr), "=m"(*arg0), "=m"(*arg1),
+          "=m"(*arg2), "=m"(*arg3), "=m"(*arg4), "=m"(*arg5)
+        :
+        : "memory"
+    );
+#elif defined(MOSS_ARCH_X86_64)
+    // X86_64系统调用约定：
+    // rax = 系统调用号
+    // rdi, rsi, rdx, r10, r8, r9 = 参数
+    asm volatile(
+        "movq %%rax, %0\n"   // 系统调用号
+        "movq %%rdi, %1\n"   // arg0
+        "movq %%rsi, %2\n"   // arg1
+        "movq %%rdx, %3\n"   // arg2
+        "movq %%r10, %4\n"   // arg3
+        "movq %%r8, %5\n"    // arg4
+        "movq %%r9, %6\n"    // arg5
+        : "=m"(*syscall_nr), "=m"(*arg0), "=m"(*arg1),
+          "=m"(*arg2), "=m"(*arg3), "=m"(*arg4), "=m"(*arg5)
+        :
+        : "memory"
+    );
+#elif defined(MOSS_ARCH_RISCV)
+    // RISC-V系统调用约定：
+    // a7 = 系统调用号
+    // a0-a5 = 参数
+    asm volatile(
+        "sd a7, %0\n"   // 系统调用号
+        "sd a0, %1\n"   // arg0
+        "sd a1, %2\n"   // arg1
+        "sd a2, %3\n"   // arg2
+        "sd a3, %4\n"   // arg3
+        "sd a4, %5\n"   // arg4
+        "sd a5, %6\n"   // arg5
+        : "=m"(*syscall_nr), "=m"(*arg0), "=m"(*arg1),
+          "=m"(*arg2), "=m"(*arg3), "=m"(*arg4), "=m"(*arg5)
+        :
+        : "memory"
+    );
+#else
+#error "Unsupported architecture for syscall register extraction"
+#endif
+}
+
+// 设置系统调用返回值到寄存器
+inline void set_syscall_return_to_registers(u64 ret_value) noexcept {
+#if defined(MOSS_ARCH_ARM64)
+    // ARM64: 返回值在x0寄存器中
+    asm volatile("mov x0, %0" :: "r"(ret_value) : "x0");
+#elif defined(MOSS_ARCH_X86_64)
+    // X86_64: 返回值在rax寄存器中
+    asm volatile("movq %0, %%rax" :: "r"(ret_value) : "rax");
+#elif defined(MOSS_ARCH_RISCV)
+    // RISC-V: 返回值在a0寄存器中
+    asm volatile("mv a0, %0" :: "r"(ret_value) : "a0");
+#else
+#error "Unsupported architecture for syscall return value setting"
+#endif
+}
+
+} // namespace syscall
+
 } // namespace moss::kernel::arch

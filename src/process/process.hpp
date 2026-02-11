@@ -12,6 +12,21 @@
 
 namespace moss::kernel::process {
 
+// 前向声明
+struct Thread;
+
+// 线程映射项（用于RcuList存储）
+struct ThreadEntry {
+    ThreadId tid;
+    Thread* thread;
+
+    ThreadEntry(ThreadId id, Thread* thr) : tid(id), thread(thr) {}
+
+    bool operator==(const ThreadEntry& other) const {
+        return tid == other.tid;
+    }
+};
+
 // 使用内核智能指针
 using moss::kernel::make_unique;
 using moss::kernel::unique_ptr;
@@ -196,8 +211,8 @@ private:
   // 内存管理
   unique_ptr<AddressSpace> address_space_;
 
-  // 线程管理
-  containers::RcuHashMap<ThreadId, Thread *> threads_;
+  // 线程管理 (使用RcuList替代不存在的RcuHashMap)
+  containers::RcuList<ThreadEntry> threads_;
   containers::AtomicCounter<u32> thread_count_;
   ThreadId main_thread_id_;
 
@@ -377,5 +392,26 @@ extern ProcessManager *g_process_manager;
   asm volatile("mrs %0, mpidr_el1" : "=r"(mpidr));
   return static_cast<u32>(mpidr & 0xFF) % MAX_CPUS;
 }
+
+// 用户地址空间管理扩展功能
+namespace user_space {
+
+// 创建用户地址空间
+[[nodiscard]] KernelResult<unique_ptr<AddressSpace>> create_user_address_space() noexcept;
+
+// 从ELF程序加载创建进程
+[[nodiscard]] KernelResult<Process*> create_process_from_elf(const u8* elf_data, usize elf_size) noexcept;
+
+// 映射内存区域到用户地址空间
+[[nodiscard]] VoidResult map_user_memory(AddressSpace* as, VirtAddr vaddr, PhysAddr paddr,
+                          usize size, u32 flags) noexcept;
+
+// 分配用户堆内存
+[[nodiscard]] KernelResult<VirtAddr> allocate_user_heap(Process* process, usize size) noexcept;
+
+} // namespace user_space
+
+// 全局进程管理器实例
+extern ProcessManager* g_process_manager;
 
 } // namespace moss::kernel::process

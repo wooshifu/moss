@@ -3,6 +3,11 @@
 // MOSS混合内核主系统集成
 // 统一初始化和管理所有内核子系统
 
+// 外部C函数声明
+extern "C" {
+void kernel_test_all_subsystems(void) noexcept;
+}
+
 #include "../include/ipc/ipc_manager.hpp" // 从 src/include/ipc/
 #include "../interrupts/gic.hpp"          // 从 src/interrupts/
 #include "../ipc/shared_memory.hpp"       // 从 src/ipc/
@@ -14,9 +19,22 @@
 #include "mm/page_table.hpp" // 使用include path查找
 #include "../mm/mm_interface.hpp"    // 统一内存管理接口
 #include "../mm/kernel_memory.hpp"   // 内核内存分配接口
+#include "../include/arch/syscall_arch.hpp"  // 多架构系统调用支持
 #include "result.hpp"        // 使用include path查找
 #include "types.hpp"         // 使用include path查找
 // #include "uart_driver.hpp" // 暂时注释掉，稍后修复
+
+// 内核环境下的 va_list 支持
+extern "C" {
+#ifdef __GNUC__
+typedef __builtin_va_list va_list;
+#define va_start(v, l) __builtin_va_start(v, l)
+#define va_end(v) __builtin_va_end(v)
+#define va_arg(v, l) __builtin_va_arg(v, l)
+#else
+#error "Unsupported compiler for va_list"
+#endif
+}
 
 namespace moss::kernel {
 
@@ -129,6 +147,11 @@ public:
 
     u64 boot_time = get_current_time() - boot_start_time_;
     kernel_print("✅ MOSS内核启动完成 (用时: %llu cycles)\n", boot_time);
+
+    // 运行内核子系统测试
+    kernel_print("🧪 开始运行内核子系统测试...\n");
+    run_kernel_tests();
+    kernel_print("✅ 内核子系统测试完成\n");
 
     return VoidResult{};
   }
@@ -248,6 +271,38 @@ public:
   }
 
 private:
+  // 运行内核测试
+  void run_kernel_tests() noexcept;
+
+  // 测试 kernel_print 格式化修复
+  void test_kernel_print_formatting() noexcept {
+    kernel_print("=== kernel_print 格式化测试 ===\n");
+
+    // 测试所有主要格式说明符
+    kernel_print("%%d 测试: %d\n", -12345);
+    kernel_print("%%u 测试: %u\n", 54321u);
+    kernel_print("%%x 测试: %x\n", 0xabcd);
+    kernel_print("%%X 测试: %X\n", 0xABCD);
+    kernel_print("%%s 测试: %s\n", "Hello MOSS!");
+    kernel_print("%%c 测试: %c\n", 'M');
+
+    // 关键测试：%llu 格式（之前的bug）
+    u64 large_number = 0x123456789ABCDEF0ULL;
+    kernel_print("%%llu 测试: %llu\n", large_number);
+    kernel_print("%%llx 测试: %llx\n", large_number);
+    kernel_print("%%llX 测试: %llX\n", large_number);
+
+    // 测试指针格式
+    void* test_ptr = reinterpret_cast<void*>(0x40080000);
+    kernel_print("%%p 测试: %p\n", test_ptr);
+
+    // 边界情况测试
+    kernel_print("零值测试: %llu\n", 0ULL);
+    kernel_print("最大值测试: %llu\n", 0xFFFFFFFFFFFFFFFFULL);
+
+    kernel_print("=== kernel_print 测试完成 ===\n");
+  }
+
   // 分阶段初始化
   [[nodiscard]] VoidResult initialize_phase_by_phase() noexcept {
     const char *phase_names[] = {"早期初始化", "内存管理", "调度器",
@@ -373,13 +428,20 @@ private:
       return VoidResult{ErrorCode::OutOfMemory};
     }
 
+    // 设置全局进程管理器指针
+    ::moss::kernel::process::g_process_manager = process_manager_;
+
     // 创建CFS调度器
     scheduler_ = new process::CfsScheduler();
     if (!scheduler_) {
       delete process_manager_;
       process_manager_ = nullptr;
+      ::moss::kernel::process::g_process_manager = nullptr;
       return VoidResult{ErrorCode::OutOfMemory};
     }
+
+    // 设置全局调度器指针
+    ::moss::kernel::process::g_scheduler = scheduler_;
 
     // 创建负载均衡器
     load_balancer_ = new process::LoadBalancer();
@@ -388,6 +450,8 @@ private:
       delete process_manager_;
       scheduler_ = nullptr;
       process_manager_ = nullptr;
+      ::moss::kernel::process::g_scheduler = nullptr;
+      ::moss::kernel::process::g_process_manager = nullptr;
       return VoidResult{ErrorCode::OutOfMemory};
     }
 
@@ -402,13 +466,20 @@ private:
       return VoidResult{ErrorCode::OutOfMemory};
     }
 
+    // 设置全局共享内存管理器指针
+    ::moss::kernel::ipc::g_shared_memory_manager = shared_memory_manager_;
+
     // 创建IPC管理器
     ipc_manager_ = new ipc::IpcManager(shared_memory_manager_);
     if (!ipc_manager_) {
       delete shared_memory_manager_;
       shared_memory_manager_ = nullptr;
+      ::moss::kernel::ipc::g_shared_memory_manager = nullptr;
       return VoidResult{ErrorCode::OutOfMemory};
     }
+
+    // 设置全局IPC管理器指针
+    ::moss::kernel::ipc::g_ipc_manager = ipc_manager_;
 
     return VoidResult{};
   }
@@ -462,6 +533,17 @@ private:
         return uart_reg_result;
     }
     */
+
+    // 初始化多架构系统调用支持
+    kernel_print("🔧 初始化多架构系统调用支持...\n");
+    if (!arch::syscall::initialize_architecture_syscalls()) {
+        kernel_print("❌ 系统调用架构初始化失败\n");
+        return VoidResult{ErrorCode::NotSupported};
+    }
+    kernel_print("✅ 系统调用架构初始化成功\n");
+
+    // 打印系统调用架构信息
+    arch::syscall::print_syscall_convention();
 
     return VoidResult{};
   }
@@ -589,32 +671,158 @@ private:
     return count;
   }
 
-  // 内核打印函数
-  static void kernel_print(const char *format, ...) noexcept {
-    // 简化实现：通过UART输出
-    // 实际应该实现完整的格式化输出
-    if (format == nullptr)
-      return;
+  // 数字格式化辅助函数
+  static void print_signed_number(i64 num) noexcept {
+    if (num < 0) {
+      uart_putc('-');
+      print_unsigned_number(static_cast<u64>(-num), 10);
+    } else {
+      print_unsigned_number(static_cast<u64>(num), 10);
+    }
+  }
 
-    // 直接输出到UART（简化版本）
+  static void print_unsigned_number(u64 num, u32 base, bool uppercase = false) noexcept {
+    if (num == 0) {
+      uart_putc('0');
+      return;
+    }
+
+    char buffer[32];
+    u32 idx = 0;
+    const char *digits = uppercase ? "0123456789ABCDEF" : "0123456789abcdef";
+
+    while (num > 0) {
+      buffer[idx++] = digits[num % base];
+      num /= base;
+    }
+
+    for (i32 i = static_cast<i32>(idx) - 1; i >= 0; i--) {
+      uart_putc(buffer[i]);
+    }
+  }
+
+  // 内核打印函数 - 完整实现
+  static void kernel_print(const char *format, ...) noexcept {
+    if (format == nullptr) return;
+
+    va_list args;
+    va_start(args, format);
+
     const char *ptr = format;
     while (*ptr) {
       if (*ptr == '\n') {
         uart_putc('\r');
         uart_putc('\n');
       } else if (*ptr == '%') {
-        // 简化的格式化支持
         ptr++;
-        if (*ptr == 's') {
-          // 字符串处理会更复杂，这里简化
-        } else if (*ptr == 'd' || *ptr == 'u' || *ptr == 'x') {
-          // 数字处理会更复杂，这里简化
+        if (*ptr == '\0') break;
+
+        // 解析长度修饰符
+        bool is_long = false;
+        bool is_long_long = false;
+
+        if (*ptr == 'l') {
+          is_long = true;
+          ptr++;
+          if (*ptr == 'l') {
+            is_long_long = true;
+            ptr++;
+          }
+        }
+
+        // 处理格式说明符
+        switch (*ptr) {
+        case 'd': {
+          if (is_long_long) {
+            signed long long value = va_arg(args, signed long long);
+            print_signed_number(static_cast<i64>(value));
+          } else {
+            int value = va_arg(args, int);
+            print_signed_number(static_cast<i64>(value));
+          }
+          break;
+        }
+        case 'u': {
+          if (is_long_long) {
+            unsigned long long value = va_arg(args, unsigned long long);
+            print_unsigned_number(static_cast<u64>(value), 10);
+          } else {
+            unsigned int value = va_arg(args, unsigned int);
+            print_unsigned_number(static_cast<u64>(value), 10);
+          }
+          break;
+        }
+        case 'x': {
+          if (is_long_long) {
+            unsigned long long value = va_arg(args, unsigned long long);
+            print_unsigned_number(static_cast<u64>(value), 16);
+          } else {
+            unsigned int value = va_arg(args, unsigned int);
+            print_unsigned_number(static_cast<u64>(value), 16);
+          }
+          break;
+        }
+        case 'X': {
+          if (is_long_long) {
+            unsigned long long value = va_arg(args, unsigned long long);
+            print_unsigned_number(static_cast<u64>(value), 16, true);
+          } else {
+            unsigned int value = va_arg(args, unsigned int);
+            print_unsigned_number(static_cast<u64>(value), 16, true);
+          }
+          break;
+        }
+        case 's': {
+          const char *str = va_arg(args, char*);
+          if (str) {
+            while (*str) {
+              uart_putc(*str);
+              str++;
+            }
+          } else {
+            const char *null_str = "(null)";
+            while (*null_str) {
+              uart_putc(*null_str);
+              null_str++;
+            }
+          }
+          break;
+        }
+        case 'c': {
+          char ch = static_cast<char>(va_arg(args, int));
+          uart_putc(ch);
+          break;
+        }
+        case 'p': {
+          void *ptr_val = va_arg(args, void*);
+          uart_putc('0');
+          uart_putc('x');
+          print_unsigned_number(reinterpret_cast<u64>(ptr_val), 16);
+          break;
+        }
+        case '%': {
+          uart_putc('%');
+          break;
+        }
+        default:
+          // 不支持的格式
+          uart_putc('%');
+          if (is_long_long) {
+            uart_putc('l');
+            uart_putc('l');
+          } else if (is_long) {
+            uart_putc('l');
+          }
+          uart_putc(*ptr);
+          break;
         }
       } else {
         uart_putc(*ptr);
       }
       ptr++;
     }
+
+    va_end(args);
   }
 
   // 简化UART输出
