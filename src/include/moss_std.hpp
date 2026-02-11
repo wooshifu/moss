@@ -45,6 +45,24 @@ using PhysAddr = u64;
 using VirtAddr = u64;
 using PageFrame = u64;
 
+// 便利函数
+namespace moss {
+    template<typename T>
+    constexpr const T& min(const T& a, const T& b) noexcept {
+        return (a < b) ? a : b;
+    }
+
+    template<typename T>
+    constexpr const T& max(const T& a, const T& b) noexcept {
+        return (a > b) ? a : b;
+    }
+
+    template<typename T>
+    constexpr T abs(const T& value) noexcept {
+        return (value < 0) ? -value : value;
+    }
+}
+
 // 常用常量定义
 static constexpr u8 UINT8_MAX = 255u;
 static constexpr u16 UINT16_MAX = 65535u;
