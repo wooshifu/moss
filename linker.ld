@@ -60,10 +60,10 @@ SECTIONS
         _stack_top = .;
     }
 
-    /* 内核堆空间保留 */
-    .heap : ALIGN(4K) {
+    /* 内核堆空间标记 - 运行时动态分配，预留少量占位空间 */
+    .heap (NOLOAD) : ALIGN(4K) {
         _heap_start = .;
-        . += 16M;  /* 16MB堆空间 */
+        . += 4K;  /* 预留4KB占位空间，避免与页表区重叠 */
         _heap_end = .;
     }
 
