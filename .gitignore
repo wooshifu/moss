@@ -11,3 +11,7 @@ wheels/
 
 # Git worktrees
 .worktrees/
+
+.cache/
+
+compile_commands.json

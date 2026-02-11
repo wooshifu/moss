@@ -1,6 +1,6 @@
 #pragma once
 
-// 简化的 atomic 支持，用于 MOSS 微内核
+// 简化的 atomic 支持，用于 MOSS 混合内核
 // 主要用于防止缺少 <atomic> 的编译错误
 
 // 对于大部分情况，我们的 atomic_types.hpp 已经提供了所需的原子操作

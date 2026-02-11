@@ -1,6 +1,6 @@
 #pragma once
 
-// MOSS微内核主系统集成
+// MOSS混合内核主系统集成
 // 统一初始化和管理所有内核子系统
 
 #include "types.hpp"           // 使用include path查找
@@ -502,7 +502,7 @@ private:
         kernel_print("██║╚██╔╝██║██║   ██║╚════██║╚════██║\n");
         kernel_print("██║ ╚═╝ ██║╚██████╔╝███████║███████║\n");
         kernel_print("╚═╝     ╚═╝ ╚═════╝ ╚══════╝╚══════╝\n");
-        kernel_print("\n🚀 MOSS微内核 v1.0 - ARM64架构\n");
+        kernel_print("\n🚀 MOSS混合内核 v1.0 - ARM64架构\n");
         kernel_print("🔧 现代C++23 | 零拷贝IPC | 高性能调度\n");
         kernel_print("⚡ 目标: 实际生产环境使用\n\n");
     }
