@@ -624,10 +624,7 @@ private:
     kernel_print("██║╚██╔╝██║██║   ██║╚════██║╚════██║\n");
     kernel_print("██║ ╚═╝ ██║╚██████╔╝███████║███████║\n");
     kernel_print("╚═╝     ╚═╝ ╚═════╝ ╚══════╝╚══════╝\n");
-    kernel_print("\n🚀 MOSS混合内核 v1.0 - ARM64架构\n");
-    kernel_print("🔧 现代C++23 | 零拷贝IPC | 高性能调度\n");
-    kernel_print("⚡ 目标: 实际生产环境使用\n");
-    kernel_print("🧠 *** 集成世界级统一内存管理系统 ***\n\n");
+    kernel_print("\n🚀      MOSS混合内核 v1.0\n");
   }
 
   // 打印调用栈
