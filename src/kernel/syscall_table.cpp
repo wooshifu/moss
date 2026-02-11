@@ -4,6 +4,7 @@
 #include "syscall_table.hpp"
 #include "../process/process.hpp"  // 进程管理相关类型和全局变量
 #include "../process/cfs_scheduler.hpp"  // 调度器相关类型和全局变量
+#include "arch/arch_abstraction.hpp"  // 架构抽象层
 
 // 用于early_debug_print的外部函数声明
 extern "C" void early_debug_print(const char *message) noexcept;
@@ -64,7 +65,7 @@ namespace handlers {
             early_debug_print("❌ 调度器未初始化，进入无限循环\n");
             // Fallback: infinite loop to prevent returning to deleted userspace
             while (true) {
-                asm volatile("wfi" ::: "memory");  // Wait for interrupt (ARM64)
+                ::moss::kernel::arch::cpu_yield();  // 架构无关的CPU让出
             }
         }
 

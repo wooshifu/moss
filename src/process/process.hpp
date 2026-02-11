@@ -60,7 +60,9 @@ static constexpr u32 MAX_RT_PRIORITY = 99;
 static constexpr u32 DEFAULT_RT_PRIORITY = 50;
 } // namespace Priority
 
-// CPU上下文结构（ARM64）
+// CPU上下文结构（多架构支持）
+#if defined(__aarch64__) || defined(MOSS_ARCH_ARM64)
+// ARM64 CPU上下文
 struct alignas(16) CpuContext {
   // 通用寄存器 x0-x30
   u64 x[31];
@@ -90,6 +92,66 @@ struct alignas(16) CpuContext {
   constexpr CpuContext() noexcept
       : x{}, sp(0), pc(0), pstate(0), fpsr(0), fpcr(0), v{}, tpidr_el0(0) {}
 };
+
+#elif defined(__x86_64__) || defined(__x86_64) || defined(MOSS_ARCH_X86_64)
+// x86_64 CPU上下文
+struct alignas(16) CpuContext {
+  // 通用寄存器
+  u64 rax, rbx, rcx, rdx;
+  u64 rsi, rdi, rbp;
+
+  // 栈指针（使用统一命名）
+  u64 sp;
+
+  u64 r8, r9, r10, r11;
+  u64 r12, r13, r14, r15;
+
+  // 状态寄存器（使用统一命名）
+  u64 pstate;
+
+  // 程序计数器（使用统一命名）
+  u64 pc;
+
+  // 段寄存器
+  u16 cs, ds, es, fs, gs, ss;
+
+  // 浮点寄存器状态
+  u64 mxcsr;
+  u64 fcw;
+
+  // 初始化上下文
+  constexpr CpuContext() noexcept
+      : rax(0), rbx(0), rcx(0), rdx(0), rsi(0), rdi(0), rbp(0), sp(0),
+        r8(0), r9(0), r10(0), r11(0), r12(0), r13(0), r14(0), r15(0),
+        pstate(0x202), pc(0), cs(0), ds(0), es(0), fs(0), gs(0), ss(0),
+        mxcsr(0), fcw(0) {}
+};
+
+#elif defined(__riscv) || defined(__riscv__) || defined(MOSS_ARCH_RISCV)
+// RISC-V CPU上下文
+struct alignas(16) CpuContext {
+  // 通用寄存器 x0-x31 (x0总是0，但为了对齐保留)
+  u64 x[32];
+
+  // 程序计数器（使用统一命名）
+  u64 pc;
+
+  // 状态寄存器（使用统一命名 - 映射到sstatus）
+  u64 pstate;
+
+  // 栈指针（使用统一命名 - 同时映射到x[2]）
+  u64 sp;
+
+  // 初始化上下文
+  constexpr CpuContext() noexcept : x{}, pc(0), pstate(0), sp(0) {
+    // 保持x[2]和sp同步
+    x[2] = sp;
+  }
+};
+
+#else
+#error "不支持的目标架构：请确保在ARM64、x86_64或RISC-V平台上编译"
+#endif
 
 static_assert(sizeof(CpuContext) <= 1024,
               "CpuContext should fit in reasonable size");
