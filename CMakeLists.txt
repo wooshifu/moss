@@ -383,13 +383,14 @@ add_custom_command(
   COMMAND ${OBJDUMP_CMD} -Cd $<TARGET_FILE:moss.elf> > moss.dis
   COMMAND ${OBJDUMP_CMD} -Ct $<TARGET_FILE:moss.elf> | sort > moss.sym
   COMMAND ${OBJCOPY_CMD} -O binary $<TARGET_FILE:moss.elf> moss.bin
+  COMMAND ${OBJCOPY_CMD} -O binary -j .text.boot $<TARGET_FILE:moss.elf> moss_boot.bin
   COMMAND ${OBJCOPY_CMD} -O binary -j .text.boot -j .text -j .rodata -j .data -j
           .bss $<TARGET_FILE:moss.elf> moss_code.bin
   WORKING_DIRECTORY ${CMAKE_BINARY_DIR}
   COMMENT
     "Generating disassembly, symbol table, and binary images for ${MOSS_TARGET_ARCH}"
 )
-message(STATUS "将生成文件: moss.dis, moss.sym, moss.bin, moss_code.bin")
+message(STATUS "将生成文件: moss.dis, moss.sym, moss.bin, moss_boot.bin, moss_code.bin")
 
 # === 构建目标 ===
 # 测试目标 - 在 QEMU 中运行内核

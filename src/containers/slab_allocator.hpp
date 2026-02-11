@@ -6,6 +6,7 @@
 #include "../include/result.hpp"
 #include "../include/types.hpp"
 #include "atomic_types.hpp"
+#include "../mm/page_frame_allocator.hpp"
 
 // 包含统一的内核标准库支持
 // Removed kernel_std.hpp include to avoid conflicts
@@ -340,25 +341,33 @@ private:
     // 这里需要更复杂的无锁链表删除算法
   }
 
-  // 页面内存分配（简化实现）
+  // 页面内存分配 - 使用 PageFrameAllocator
   [[nodiscard]] void *allocate_page() noexcept {
-    // 在实际实现中，这里应该从内核页分配器分配
-    // 目前使用简化的内存分配（在实际内核中需要替换）
+    // 使用物理页面分配器分配单个4KB页面
+    auto result = moss::kernel::mm::PageFrameAllocator::allocate_pages(0);
+    if (!result) {
+      return nullptr;  // 分配失败
+    }
 
-    // 在真正的内核中，这里会调用页面分配器
-    // 例如：alloc_pages(GFP_KERNEL, 0)
-
-    // 临时使用原始内存分配（这在真正的内核中不可用）
-    // 这只是为了让代码编译通过，实际使用时需要替换
-    return nullptr; // 暂时返回nullptr，表示分配失败
+    // 返回物理地址作为指针（在内核地址空间中）
+    return reinterpret_cast<void*>(result.value());
   }
 
   void free_page(void *ptr) noexcept {
-    // 在真正的内核中，这里会调用页面释放器
-    // 例如：free_pages(ptr, 0)
+    if (ptr == nullptr) {
+      return;
+    }
 
-    // 目前什么都不做
-    (void)ptr;
+    // 使用物理页面分配器释放页面
+    moss::kernel::PhysAddr phys_addr = reinterpret_cast<moss::kernel::PhysAddr>(ptr);
+    [[maybe_unused]] auto result = moss::kernel::mm::PageFrameAllocator::free_pages(phys_addr, 0);
+
+    // 在调试模式下可以检查释放结果
+#ifdef DEBUG
+    if (!result) {
+      // 页面释放失败 - 在实际实现中可能需要panic
+    }
+#endif
   }
 
   void free_page_list(SlabPage *head) noexcept {

@@ -72,9 +72,9 @@ protected:
 
 } // namespace moss::kernel
 
-// Macro for non-copyable, non-movable classes
-#define NON_COPYABLE_NON_MOVABLE(ClassName)                                    \
-  ClassName(const ClassName &) = delete;                                       \
-  ClassName &operator=(const ClassName &) = delete;                            \
-  ClassName(ClassName &&) = delete;                                            \
-  ClassName &operator=(ClassName &&) = delete
+// Macro for non-copyable, non-movable classes (currently unused but kept for future use)
+// #define NON_COPYABLE_NON_MOVABLE(ClassName)                                    \
+//   ClassName(const ClassName &) = delete;                                       \
+//   ClassName &operator=(const ClassName &) = delete;                            \
+//   ClassName(ClassName &&) = delete;                                            \
+//   ClassName &operator=(ClassName &&) = delete
