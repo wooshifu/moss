@@ -1,6 +1,9 @@
 cmake_minimum_required(VERSION 4.2)
 
-project(moss VERSION 0.9.9 LANGUAGES C CXX ASM)
+project(
+  moss
+  VERSION 0.9.9
+  LANGUAGES C CXX ASM)
 
 set(CMAKE_CXX_SCAN_FOR_MODULES ON)
 # set(CMAKE_CXX_MODULE_STD OFF) # 使用 freestanding C++, 不使用标准库模块
@@ -29,21 +32,15 @@ moss_configure_architecture()
 moss_configure_platform()
 
 # 设置通用内核编译标志 - 最严格模式
-set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -ffreestanding -fno-exceptions -fno-rtti")
+set(CMAKE_CXX_FLAGS
+    "${CMAKE_CXX_FLAGS} -ffreestanding -fno-exceptions -fno-rtti")
 set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -fno-stack-protector")
 
 # === 🚀 CLANG -Weverything 终极严格模式 ===
 # 启用所有可能的警告选项
 # === -Weverything 说明 ===
-# 这是 Clang 最激进的警告设置，包含：
-# ✅ 所有 -Wall, -Wextra 选项
-# ✅ 所有类型转换和安全检查
-# ✅ 所有代码质量和风格检查
-# ✅ 所有现代C++最佳实践检查
-# ✅ 所有线程安全和并发检查
-# ✅ 所有性能和优化建议
-# ✅ 所有内核特定安全检查
-# ⚠️  超过 200+ 个不同的警告类别
+# 这是 Clang 最激进的警告设置，包含： ✅ 所有 -Wall, -Wextra 选项 ✅ 所有类型转换和安全检查 ✅ 所有代码质量和风格检查 ✅
+# 所有现代C++最佳实践检查 ✅ 所有线程安全和并发检查 ✅ 所有性能和优化建议 ✅ 所有内核特定安全检查 ⚠️  超过 200+ 个不同的警告类别
 set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Weverything -Werror")
 
 # === 必要的警告禁用 (维持可构建性) ===
@@ -57,28 +54,28 @@ set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wno-c++17-compat")
 set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wno-c++20-compat")
 
 # 禁用不适用于内核开发的警告
-set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wno-padded")        # 结构体填充（开发期间太严格）
-set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wno-unsafe-buffer-usage") # 缓冲区安全（需要大量重构）
+set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wno-padded") # 结构体填充（开发期间太严格）
+set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wno-unsafe-buffer-usage"
+)# 缓冲区安全（需要大量重构）
 
 # 禁用GNU/Microsoft扩展警告（内核代码可能需要特定扩展）
 set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wno-gnu-zero-variadic-macro-arguments")
 set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wno-gnu-anonymous-struct")
 set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wno-nested-anon-types")
 
-# 禁用文档相关警告（开发期间）
-# set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wno-documentation")
+# 禁用文档相关警告（开发期间） set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wno-documentation")
 # set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wno-documentation-pedantic")
 # set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wno-documentation-unknown-command")
 
 # 禁用一些在内核环境中常见但可接受的警告
-set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wno-missing-prototypes")  # C++中不适用
+set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wno-missing-prototypes") # C++中不适用
 set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wno-missing-variable-declarations")
 set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wno-global-constructors") # 内核中有时需要
 set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wno-exit-time-destructors") # 内核中有时需要
-set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wno-weak-vtables")       # 内联虚表有时有用
+set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wno-weak-vtables") # 内联虚表有时有用
 
 # 内联相关警告调整
-set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wno-inline")          # 内联失败不报错（避免噪音）
+set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wno-inline") # 内联失败不报错（避免噪音）
 
 # 禁用过于严格的宏和预处理器警告
 set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wno-reserved-identifier") # 保留标识符（内核需要）
@@ -90,10 +87,9 @@ set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wno-covered-switch-default")
 # 禁用NRVO警告（返回值优化相关，可能与内核代码风格冲突）
 set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wno-nrvo")
 
-
 # 优化级别设置
 set(CMAKE_CXX_FLAGS_DEBUG "-Og -g3")
-set(CMAKE_CXX_FLAGS_RELEASE "-O3 -DNDEBUG")
+set(CMAKE_CXX_FLAGS_RELEASE "-g0 -O3 -DNDEBUG")
 
 # === 全局头文件路径设置 ===
 # 设置公共接口头文件路径
@@ -105,56 +101,60 @@ string(TIMESTAMP MOSS_BUILD_TIMESTAMP "%Y-%m-%d %H:%M:%S UTC" UTC)
 
 # 实用函数：将CMake布尔值转换为1/0数值
 function(moss_bool_to_int var)
-    if(${${var}})
-        set(${var} 1 PARENT_SCOPE)
-    else()
-        set(${var} 0 PARENT_SCOPE)
-    endif()
+  if(${${var}})
+    set(${var}
+        1
+        PARENT_SCOPE)
+  else()
+    set(${var}
+        0
+        PARENT_SCOPE)
+  endif()
 endfunction()
 
 # 设置架构特定的配置变量
 if(MOSS_TARGET_ARCH STREQUAL "ARM64")
-    set(MOSS_ARCH_ARM64 ON)
-    set(MOSS_ARCH_NAME "ARM64")
-    set(MOSS_PAGE_SIZE 4096)
-    set(MOSS_CACHE_LINE_SIZE 64)
-    set(MOSS_POINTER_SIZE 8)
+  set(MOSS_ARCH_ARM64 ON)
+  set(MOSS_ARCH_NAME "ARM64")
+  set(MOSS_PAGE_SIZE 4096)
+  set(MOSS_CACHE_LINE_SIZE 64)
+  set(MOSS_POINTER_SIZE 8)
 elseif(MOSS_TARGET_ARCH STREQUAL "X86_64")
-    set(MOSS_ARCH_X86_64 ON)
-    set(MOSS_ARCH_NAME "X86_64")
-    set(MOSS_PAGE_SIZE 4096)
-    set(MOSS_CACHE_LINE_SIZE 64)
-    set(MOSS_POINTER_SIZE 8)
+  set(MOSS_ARCH_X86_64 ON)
+  set(MOSS_ARCH_NAME "X86_64")
+  set(MOSS_PAGE_SIZE 4096)
+  set(MOSS_CACHE_LINE_SIZE 64)
+  set(MOSS_POINTER_SIZE 8)
 elseif(MOSS_TARGET_ARCH STREQUAL "RISCV")
-    set(MOSS_ARCH_RISCV ON)
-    set(MOSS_ARCH_NAME "RISCV64")
-    set(MOSS_PAGE_SIZE 4096)
-    set(MOSS_CACHE_LINE_SIZE 64)
-    set(MOSS_POINTER_SIZE 8)
+  set(MOSS_ARCH_RISCV ON)
+  set(MOSS_ARCH_NAME "RISCV64")
+  set(MOSS_PAGE_SIZE 4096)
+  set(MOSS_CACHE_LINE_SIZE 64)
+  set(MOSS_POINTER_SIZE 8)
 else()
-    message(FATAL_ERROR "Unsupported architecture: ${MOSS_TARGET_ARCH}")
+  message(FATAL_ERROR "Unsupported architecture: ${MOSS_TARGET_ARCH}")
 endif()
 
 # 设置平台特定的配置
 if(MOSS_TARGET_PLATFORM STREQUAL "QEMU_VIRT")
-    set(MOSS_PLATFORM_QEMU_VIRT ON)
-    set(MOSS_PLATFORM_NAME "QEMU_VIRT")
+  set(MOSS_PLATFORM_QEMU_VIRT ON)
+  set(MOSS_PLATFORM_NAME "QEMU_VIRT")
 else()
-    set(MOSS_PLATFORM_NAME "UNKNOWN")
+  set(MOSS_PLATFORM_NAME "UNKNOWN")
 endif()
 
 # 设置构建类型相关配置
 if(CMAKE_BUILD_TYPE STREQUAL "Debug")
-    set(MOSS_DEBUG_BUILD ON)
-    set(MOSS_BUILD_TYPE "Debug")
-    set(MOSS_DEBUG_LEVEL 3)
+  set(MOSS_DEBUG_BUILD ON)
+  set(MOSS_BUILD_TYPE "Debug")
+  set(MOSS_DEBUG_LEVEL 3)
 elseif(CMAKE_BUILD_TYPE STREQUAL "Release")
-    set(MOSS_RELEASE_BUILD ON)
-    set(MOSS_BUILD_TYPE "Release")
-    set(MOSS_DEBUG_LEVEL 1)
+  set(MOSS_RELEASE_BUILD ON)
+  set(MOSS_BUILD_TYPE "Release")
+  set(MOSS_DEBUG_LEVEL 1)
 else()
-    set(MOSS_BUILD_TYPE "Unknown")
-    set(MOSS_DEBUG_LEVEL 2)
+  set(MOSS_BUILD_TYPE "Unknown")
+  set(MOSS_DEBUG_LEVEL 2)
 endif()
 
 # 模块开关选项（可通过CMake -D 选项覆盖）
@@ -209,91 +209,89 @@ moss_bool_to_int(MOSS_ENABLE_GIC)
 
 # 调试功能选项（根据调试级别自动启用）
 if(MOSS_DEBUG_LEVEL GREATER_EQUAL 2)
-    option(MOSS_ENABLE_MEMORY_DEBUG "Enable memory debugging" ON)
-    option(MOSS_ENABLE_STACK_OVERFLOW_CHECK "Enable stack overflow checking" ON)
-    option(MOSS_ENABLE_HEAP_CORRUPTION_CHECK "Enable heap corruption checking" ON)
-    option(MOSS_ENABLE_DOUBLE_FREE_CHECK "Enable double-free checking" ON)
+  option(MOSS_ENABLE_MEMORY_DEBUG "Enable memory debugging" ON)
+  option(MOSS_ENABLE_STACK_OVERFLOW_CHECK "Enable stack overflow checking" ON)
+  option(MOSS_ENABLE_HEAP_CORRUPTION_CHECK "Enable heap corruption checking" ON)
+  option(MOSS_ENABLE_DOUBLE_FREE_CHECK "Enable double-free checking" ON)
 endif()
 
 if(MOSS_DEBUG_LEVEL GREATER_EQUAL 1)
-    option(MOSS_ENABLE_ASSERTIONS "Enable runtime assertions" ON)
-    option(MOSS_ENABLE_DATA_STRUCTURE_CHECK "Enable data structure consistency checks" ON)
+  option(MOSS_ENABLE_ASSERTIONS "Enable runtime assertions" ON)
+  option(MOSS_ENABLE_DATA_STRUCTURE_CHECK
+         "Enable data structure consistency checks" ON)
 endif()
 
 if(MOSS_DEBUG_LEVEL GREATER_EQUAL 3)
-    option(MOSS_ENABLE_FUNCTION_TRACING "Enable function call tracing" ON)
-    option(MOSS_ENABLE_LOCK_PROFILING "Enable lock profiling" ON)
-    option(MOSS_ENABLE_SCHEDULER_STATS "Enable scheduler statistics" ON)
-    option(MOSS_ENABLE_SYSCALL_TRACING "Enable system call tracing" ON)
+  option(MOSS_ENABLE_FUNCTION_TRACING "Enable function call tracing" ON)
+  option(MOSS_ENABLE_LOCK_PROFILING "Enable lock profiling" ON)
+  option(MOSS_ENABLE_SCHEDULER_STATS "Enable scheduler statistics" ON)
+  option(MOSS_ENABLE_SYSCALL_TRACING "Enable system call tracing" ON)
 endif()
 
 # 转换调试选项为数值（需要检查是否已定义）
 if(DEFINED MOSS_ENABLE_MEMORY_DEBUG)
-    moss_bool_to_int(MOSS_ENABLE_MEMORY_DEBUG)
+  moss_bool_to_int(MOSS_ENABLE_MEMORY_DEBUG)
 else()
-    set(MOSS_ENABLE_MEMORY_DEBUG 0)
+  set(MOSS_ENABLE_MEMORY_DEBUG 0)
 endif()
 
 if(DEFINED MOSS_ENABLE_STACK_OVERFLOW_CHECK)
-    moss_bool_to_int(MOSS_ENABLE_STACK_OVERFLOW_CHECK)
+  moss_bool_to_int(MOSS_ENABLE_STACK_OVERFLOW_CHECK)
 else()
-    set(MOSS_ENABLE_STACK_OVERFLOW_CHECK 0)
+  set(MOSS_ENABLE_STACK_OVERFLOW_CHECK 0)
 endif()
 
 if(DEFINED MOSS_ENABLE_HEAP_CORRUPTION_CHECK)
-    moss_bool_to_int(MOSS_ENABLE_HEAP_CORRUPTION_CHECK)
+  moss_bool_to_int(MOSS_ENABLE_HEAP_CORRUPTION_CHECK)
 else()
-    set(MOSS_ENABLE_HEAP_CORRUPTION_CHECK 0)
+  set(MOSS_ENABLE_HEAP_CORRUPTION_CHECK 0)
 endif()
 
 if(DEFINED MOSS_ENABLE_DOUBLE_FREE_CHECK)
-    moss_bool_to_int(MOSS_ENABLE_DOUBLE_FREE_CHECK)
+  moss_bool_to_int(MOSS_ENABLE_DOUBLE_FREE_CHECK)
 else()
-    set(MOSS_ENABLE_DOUBLE_FREE_CHECK 0)
+  set(MOSS_ENABLE_DOUBLE_FREE_CHECK 0)
 endif()
 
 if(DEFINED MOSS_ENABLE_ASSERTIONS)
-    moss_bool_to_int(MOSS_ENABLE_ASSERTIONS)
+  moss_bool_to_int(MOSS_ENABLE_ASSERTIONS)
 else()
-    set(MOSS_ENABLE_ASSERTIONS 0)
+  set(MOSS_ENABLE_ASSERTIONS 0)
 endif()
 
 if(DEFINED MOSS_ENABLE_DATA_STRUCTURE_CHECK)
-    moss_bool_to_int(MOSS_ENABLE_DATA_STRUCTURE_CHECK)
+  moss_bool_to_int(MOSS_ENABLE_DATA_STRUCTURE_CHECK)
 else()
-    set(MOSS_ENABLE_DATA_STRUCTURE_CHECK 0)
+  set(MOSS_ENABLE_DATA_STRUCTURE_CHECK 0)
 endif()
 
 if(DEFINED MOSS_ENABLE_FUNCTION_TRACING)
-    moss_bool_to_int(MOSS_ENABLE_FUNCTION_TRACING)
+  moss_bool_to_int(MOSS_ENABLE_FUNCTION_TRACING)
 else()
-    set(MOSS_ENABLE_FUNCTION_TRACING 0)
+  set(MOSS_ENABLE_FUNCTION_TRACING 0)
 endif()
 
 if(DEFINED MOSS_ENABLE_LOCK_PROFILING)
-    moss_bool_to_int(MOSS_ENABLE_LOCK_PROFILING)
+  moss_bool_to_int(MOSS_ENABLE_LOCK_PROFILING)
 else()
-    set(MOSS_ENABLE_LOCK_PROFILING 0)
+  set(MOSS_ENABLE_LOCK_PROFILING 0)
 endif()
 
 if(DEFINED MOSS_ENABLE_SCHEDULER_STATS)
-    moss_bool_to_int(MOSS_ENABLE_SCHEDULER_STATS)
+  moss_bool_to_int(MOSS_ENABLE_SCHEDULER_STATS)
 else()
-    set(MOSS_ENABLE_SCHEDULER_STATS 0)
+  set(MOSS_ENABLE_SCHEDULER_STATS 0)
 endif()
 
 if(DEFINED MOSS_ENABLE_SYSCALL_TRACING)
-    moss_bool_to_int(MOSS_ENABLE_SYSCALL_TRACING)
+  moss_bool_to_int(MOSS_ENABLE_SYSCALL_TRACING)
 else()
-    set(MOSS_ENABLE_SYSCALL_TRACING 0)
+  set(MOSS_ENABLE_SYSCALL_TRACING 0)
 endif()
 
 # 生成配置头文件
-configure_file(
-    ${CMAKE_SOURCE_DIR}/src/include/config/config.h.in
-    ${CMAKE_BINARY_DIR}/include/config/config.h
-    @ONLY
-)
+configure_file(${CMAKE_SOURCE_DIR}/src/include/config/config.h.in
+               ${CMAKE_BINARY_DIR}/include/config/config.h @ONLY)
 
 # 添加生成的配置头文件目录到包含路径
 include_directories(${CMAKE_BINARY_DIR}/include)
@@ -333,86 +331,98 @@ add_subdirectory(src/boot)
 add_executable(moss.elf)
 
 # 链接所有模块库
-target_link_libraries(moss.elf PRIVATE
-    moss_std
-    moss_boot
-    moss_kernel
-    moss_containers
-    moss_mm
-    moss_drivers
-    moss_interrupts
-    moss_ipc
-    moss_process
-)
+target_link_libraries(
+  moss.elf
+  PRIVATE moss_std
+          moss_boot
+          moss_kernel
+          moss_containers
+          moss_mm
+          moss_drivers
+          moss_interrupts
+          moss_ipc
+          moss_process)
 
 # 架构特定链接配置 - 统一使用lld链接器
 if(MOSS_TARGET_ARCH STREQUAL "ARM64")
-    set_target_properties(moss.elf PROPERTIES
-        LINK_FLAGS "-fuse-ld=lld -nostdlib -nostartfiles"
-    )
+  set_target_properties(
+    moss.elf PROPERTIES LINK_FLAGS "-fuse-ld=lld -nostdlib -nostartfiles")
 elseif(MOSS_TARGET_ARCH STREQUAL "X86_64")
-    set_target_properties(moss.elf PROPERTIES
-        LINK_FLAGS "-fuse-ld=lld -nostdlib -nostartfiles"
-    )
+  set_target_properties(
+    moss.elf PROPERTIES LINK_FLAGS "-fuse-ld=lld -nostdlib -nostartfiles")
 elseif(MOSS_TARGET_ARCH STREQUAL "RISCV")
-    set_target_properties(moss.elf PROPERTIES
-        LINK_FLAGS "-fuse-ld=lld -nostdlib -nostartfiles"
-    )
+  set_target_properties(
+    moss.elf PROPERTIES LINK_FLAGS "-fuse-ld=lld -nostdlib -nostartfiles")
 endif()
 
 # 设置输出目录
-set_target_properties(moss.elf PROPERTIES
-    RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin
-)
+set_target_properties(moss.elf PROPERTIES RUNTIME_OUTPUT_DIRECTORY
+                                          ${CMAKE_BINARY_DIR}/bin)
 
-# 查找 LLVM objdump
+# 查找 LLVM 工具链
 find_program(LLVM_OBJDUMP llvm-objdump)
+find_program(LLVM_OBJCOPY llvm-objcopy)
+
 if(LLVM_OBJDUMP)
-    set(OBJDUMP_CMD ${LLVM_OBJDUMP})
-    message(STATUS "使用 LLVM objdump: ${LLVM_OBJDUMP}")
+  set(OBJDUMP_CMD ${LLVM_OBJDUMP})
+  message(STATUS "使用 LLVM objdump: ${LLVM_OBJDUMP}")
 else()
-    message(FATAL_ERROR "未找到 llvm-objdump 工具，请安装 LLVM 工具链以生成反汇编文件")
+  message(FATAL_ERROR "未找到 llvm-objdump 工具，请安装 LLVM 工具链以生成反汇编文件")
 endif()
-if(LLVM_OBJDUMP)
-    add_custom_command(TARGET moss.elf POST_BUILD
-        COMMAND ${OBJDUMP_CMD} -Cd $<TARGET_FILE:moss.elf> > moss.dis
-        COMMAND ${OBJDUMP_CMD} -Ct $<TARGET_FILE:moss.elf> | sort > moss.sym
-        WORKING_DIRECTORY ${CMAKE_BINARY_DIR}
-        COMMENT "Generating disassembly and symbol table for ${MOSS_TARGET_ARCH}"
-    )
+
+if(LLVM_OBJCOPY)
+  set(OBJCOPY_CMD ${LLVM_OBJCOPY})
+  message(STATUS "使用 LLVM objcopy: ${LLVM_OBJCOPY}")
 else()
-    message(STATUS "未找到 llvm-objdump 工具，跳过反汇编文件生成")
+  message(FATAL_ERROR "未找到 llvm-objcopy 工具，请安装 LLVM 工具链以生成二进制镜像")
 endif()
+# 生成反汇编、符号表和二进制文件 注意：llvm-objdump 和 llvm-objcopy 都是必需的，缺失任一个都会导致构建失败
+add_custom_command(
+  TARGET moss.elf
+  POST_BUILD
+  COMMAND ${OBJDUMP_CMD} -Cd $<TARGET_FILE:moss.elf> > moss.dis
+  COMMAND ${OBJDUMP_CMD} -Ct $<TARGET_FILE:moss.elf> | sort > moss.sym
+  COMMAND ${OBJCOPY_CMD} -O binary $<TARGET_FILE:moss.elf> moss.bin
+  COMMAND ${OBJCOPY_CMD} -O binary -j .text.boot -j .text -j .rodata -j .data -j
+          .bss $<TARGET_FILE:moss.elf> moss_code.bin
+  WORKING_DIRECTORY ${CMAKE_BINARY_DIR}
+  COMMENT
+    "Generating disassembly, symbol table, and binary images for ${MOSS_TARGET_ARCH}"
+)
+message(STATUS "将生成文件: moss.dis, moss.sym, moss.bin, moss_code.bin")
 
 # === 构建目标 ===
 # 测试目标 - 在 QEMU 中运行内核
 if(EXISTS "${CMAKE_BINARY_DIR}/run_qemu.sh")
-    add_custom_target(test
-        COMMAND bash ${CMAKE_BINARY_DIR}/run_qemu.sh
-        DEPENDS moss.elf
-        COMMENT "Running moss in QEMU (${MOSS_TARGET_ARCH}/${MOSS_TARGET_PLATFORM})"
-    )
+  add_custom_target(
+    test
+    COMMAND bash ${CMAKE_BINARY_DIR}/run_qemu.sh
+    DEPENDS moss.elf
+    COMMENT "Running moss in QEMU (${MOSS_TARGET_ARCH}/${MOSS_TARGET_PLATFORM})"
+  )
 
-    # 调试目标 - 在 QEMU 中启动 GDB 调试
-    add_custom_target(debug
-        COMMAND bash ${CMAKE_BINARY_DIR}/run_qemu.sh --debug
-        DEPENDS moss.elf
-        COMMENT "Running moss in QEMU with GDB server (${MOSS_TARGET_ARCH})"
-    )
+  # 调试目标 - 在 QEMU 中启动 GDB 调试
+  add_custom_target(
+    debug
+    COMMAND bash ${CMAKE_BINARY_DIR}/run_qemu.sh --debug
+    DEPENDS moss.elf
+    COMMENT "Running moss in QEMU with GDB server (${MOSS_TARGET_ARCH})")
 else()
-    message(WARNING "QEMU 运行脚本未生成，test 和 debug 目标不可用")
+  message(WARNING "QEMU 运行脚本未生成，test 和 debug 目标不可用")
 endif()
 
 # 清理目标
-add_custom_target(clean-all
-    COMMAND ${CMAKE_COMMAND} -E remove_directory ${CMAKE_BINARY_DIR}
-    COMMENT "Cleaning all build files"
-)
+add_custom_target(
+  clean-all
+  COMMAND ${CMAKE_COMMAND} -E remove_directory ${CMAKE_BINARY_DIR}
+  COMMENT "Cleaning all build files")
 
 # === 配置摘要 ===
 moss_print_config_summary()
 
 message(STATUS "=== 模块化构建配置完成 ===")
-message(STATUS "已启用的模块: containers, mm, drivers, interrupts, ipc, process, kernel, boot")
+message(
+  STATUS
+    "已启用的模块: containers, mm, drivers, interrupts, ipc, process, kernel, boot")
 message(STATUS "主可执行文件: moss.elf")
 message(STATUS "===============================")

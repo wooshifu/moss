@@ -130,8 +130,9 @@ make debug                             # 启动GDB调试会话
 ```
 build/
 ├── arm64-qemu-debug/
-│   ├── bin/moss.elf          # 内核二进制
-│   ├── moss.dis              # 反汇编
+│   ├── bin/moss.elf          # 内核ELF二进制
+│   ├── moss.bin              # 原始内核二进制镜像 (llvm-objcopy生成)
+│   ├── moss.dis              # 反汇编文件
 │   ├── moss.sym              # 符号表
 │   ├── compile_commands.json # 编译数据库
 │   └── run_qemu.sh           # QEMU运行脚本
