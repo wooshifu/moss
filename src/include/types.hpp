@@ -1,6 +1,6 @@
 #pragma once
 
-// Moss 微内核基础类型定义（无标准库环境）
+// Moss 混合内核基础类型定义（无标准库环境）
 
 namespace moss::kernel {
 

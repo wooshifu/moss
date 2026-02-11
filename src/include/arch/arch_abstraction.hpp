@@ -171,53 +171,62 @@ namespace mmu {
 // 设置页表基址和MMU配置
 inline void setup_kernel_mmu(PhysAddr kernel_pgd_pa) noexcept {
 #if defined(MOSS_ARCH_ARM64)
-    // ARM64 MMU 配置
+    // ARM64 MMU 配置 - 与page_table.hpp的AddressSpaceConfig保持完全一致
+    // 使用双TTBR方案（EPD1=0）：TTBR0用于身份映射，TTBR1用于内核虚拟映射
+    // 此配置与page_table.cpp中的实现兼容，确保MMU配置一致性
     constexpr u64 MAIR_VALUE =
-        (0x00ULL << (0 * 8)) |   // Device-nGnRnE memory
-        (0x04ULL << (1 * 8)) |   // Normal memory, Outer Non-cacheable
-        (0xFFULL << (2 * 8)) |   // Normal memory, Inner/Outer WB/WA/RA
-        (0x44ULL << (3 * 8));    // Normal memory, Inner/Outer NC
+        (0x00ULL << (0 * 8)) |   // 属性索引0：设备内存 (Device-nGnRnE)
+        (0xFFULL << (1 * 8)) |   // 属性索引1：普通缓存内存 (Normal WB/WA/RA)
+        (0x44ULL << (2 * 8));    // 属性索引2：非缓存内存 (Normal NC)
 
     constexpr u64 TCR_VALUE =
-        (16ULL << 0) |      // T0SZ = 16 (48-bit VA space)
-        (0x0ULL << 6) |     // EPD0 = 0 (enable TTBR0)
-        (0x1ULL << 7) |     // EPD1 = 1 (disable TTBR1)
-        (0x2ULL << 8) |     // IRGN0 = 0b10 (Inner WB RA WA)
-        (0x2ULL << 10) |    // ORGN0 = 0b10 (Outer WB RA WA)
-        (0x3ULL << 12) |    // SH0 = 0b11 (Inner Shareable)
-        (0x0ULL << 14) |    // TG0 = 0b00 (4KB granule)
-        (16ULL << 16) |     // T1SZ = 16
-        (0x2ULL << 24) |    // IRGN1 = 0b10
-        (0x2ULL << 26) |    // ORGN1 = 0b10
-        (0x3ULL << 28) |    // SH1 = 0b11
-        (0x0ULL << 30) |    // TG1 = 0b00
-        (0x0ULL << 32);     // IPS = 0b000 (32-bit IPA)
+        (16ULL << 0) |           // T0SZ=16 (48位虚拟地址空间，身份映射)
+        (16ULL << 16) |          // T1SZ=16 (48位内核虚拟地址空间)
+        (0ULL << 6) |            // EPD0=0 (启用TTBR0_EL1用于身份映射)
+        (0ULL << 23) |           // EPD1=0 (启用TTBR1_EL1，双TTBR方案)
+        (0ULL << 14) |           // TG0=00 (4KB页面大小，身份映射)
+        (0ULL << 30) |           // TG1=00 (4KB页面大小，内核空间)
+        (1ULL << 8) |            // IRGN0=01 (身份映射内部Write-Back/Write-Allocate)
+        (1ULL << 10) |           // ORGN0=01 (身份映射外部Write-Back/Write-Allocate)
+        (3ULL << 12) |           // SH0=11 (身份映射内部共享)
+        (1ULL << 24) |           // IRGN1=01 (内核内部Write-Back/Write-Allocate)
+        (1ULL << 26) |           // ORGN1=01 (内核外部Write-Back/Write-Allocate)
+        (3ULL << 28) |           // SH1=11 (内核内部共享)
+        (5ULL << 32);            // IPS=101 (48位物理地址空间)
 
-    // 设置内存属性寄存器
-    asm volatile("msr mair_el1, %0" :: "r"(MAIR_VALUE));
+    // 完整的ARM64 MMU启用序列
 
-    // 设置翻译控制寄存器
-    asm volatile("msr tcr_el1, %0" :: "r"(TCR_VALUE));
+    // 1. 完全禁用MMU和缓存，确保干净状态
+    u64 sctlr;
+    asm volatile("mrs %0, sctlr_el1" : "=r"(sctlr));
+    sctlr &= ~(1ULL << 0 | 1ULL << 2 | 1ULL << 12);  // 清除M,C,I位
+    asm volatile("msr sctlr_el1, %0" :: "r"(sctlr));
+    asm volatile("isb");
 
-    // 设置页表基址寄存器（TTBR0_EL1用于内核空间）
-    asm volatile("msr ttbr0_el1, %0" :: "r"(kernel_pgd_pa));
-
-    // 设置TTBR1_EL1为0（已禁用）
-    asm volatile("msr ttbr1_el1, %0" :: "r"(0ULL));
-
-    // 内存屏障
+    // 2. 无效化所有TLB条目
+    asm volatile("tlbi vmalle1");
     asm volatile("dsb sy");
     asm volatile("isb");
 
-    // 启用MMU
-    u64 sctlr;
-    asm volatile("mrs %0, sctlr_el1" : "=r"(sctlr));
-    sctlr |= (1ULL << 0);  // M位：启用MMU
-    sctlr |= (1ULL << 2);  // C位：启用数据缓存
-    sctlr |= (1ULL << 12); // I位：启用指令缓存
+    // 3. 设置内存属性寄存器
+    asm volatile("msr mair_el1, %0" :: "r"(MAIR_VALUE));
+
+    // 4. 设置翻译控制寄存器
+    asm volatile("msr tcr_el1, %0" :: "r"(TCR_VALUE));
+
+    // 5. 设置页表基址寄存器 (双TTBR方案，与page_table.cpp一致)
+    asm volatile("msr ttbr0_el1, %0" :: "r"(kernel_pgd_pa));   // TTBR0用于身份映射
+    asm volatile("msr ttbr1_el1, %0" :: "r"(kernel_pgd_pa));   // TTBR1用于内核虚拟映射
+
+    // 6. 内存和指令同步屏障
+    asm volatile("dsb sy");
+    asm volatile("isb");
+
+    // 7. 启用MMU和缓存
+    sctlr |= (1ULL << 0 | 1ULL << 2 | 1ULL << 12);  // 设置M,C,I位
     asm volatile("msr sctlr_el1, %0" :: "r"(sctlr));
 
-    // 确保MMU启用生效
+    // 8. 最终同步确保MMU生效
     asm volatile("dsb sy");
     asm volatile("isb");
 

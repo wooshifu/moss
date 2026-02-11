@@ -1,6 +1,6 @@
 /**
  * @file config.h
- * @brief Moss微内核配置系统（CMake生成）
+ * @brief Moss混合内核配置系统（CMake生成）
  * @version 0.1.0
  *
  * 本文件由CMake自动生成，请勿手动修改。

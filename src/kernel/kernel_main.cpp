@@ -1,4 +1,4 @@
-// MOSS微内核主函数实现
+// MOSS混合内核主函数实现
 // 系统启动入口和全局实例管理
 
 #include "kernel_main.hpp"

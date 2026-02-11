@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 4.2)
 
-# === Moss 微内核多架构构建系统 ===
+# === Moss 混合内核多架构构建系统 ===
 project(moss VERSION 0.1.0 LANGUAGES CXX ASM)
 
 # Enable C++20 modules

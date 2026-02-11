@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## 项目概述
 
-Moss 是一个现代化的多架构微内核操作系统，支持 ARM64、x86_64 和 RISC-V 架构。项目使用 C++23 标准，并基于 Clang 21 构建系统，采用模块化设计架构。
+Moss 是一个现代化的多架构混合内核操作系统，支持 ARM64、x86_64 和 RISC-V 架构。项目使用 C++23 标准，并基于 Clang 21 构建系统，采用模块化设计架构。
 
 ## 构建系统
 
