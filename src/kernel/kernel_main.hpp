@@ -157,7 +157,6 @@ public:
 
         // 不应该到达这里
         kernel_panic("Scheduler returned unexpectedly", ErrorCode::InternalError);
-        return VoidResult{ErrorCode::InternalError};
     }
 
     // 内核关闭
@@ -280,6 +279,9 @@ private:
                     break;
                 case BootPhase::UserInit:
                     result = initialize_userspace();
+                    break;
+                case BootPhase::Completed:
+                    result = VoidResult{};  // 启动已完成，返回成功
                     break;
                 default:
                     break;

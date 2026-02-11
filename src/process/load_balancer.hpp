@@ -201,6 +201,11 @@ public:
                 imbalance_threshold_ = 20;
                 balance_interval_ = 4000000;  // 4ms
                 break;
+            default:
+                // 默认使用保守策略
+                imbalance_threshold_ = 25;
+                balance_interval_ = 8000000;  // 8ms
+                break;
         }
     }
 

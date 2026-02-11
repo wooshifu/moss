@@ -1,14 +1,12 @@
 cmake_minimum_required(VERSION 4.2)
 
-# === Moss 混合内核多架构构建系统 ===
-project(moss VERSION 0.1.0 LANGUAGES CXX ASM)
+project(moss VERSION 0.9.9 LANGUAGES C CXX ASM)
 
-# Enable C++20 modules
 set(CMAKE_CXX_SCAN_FOR_MODULES ON)
-set(CMAKE_CXX_MODULE_STD ON)
+# set(CMAKE_CXX_MODULE_STD OFF) # 使用 freestanding C++, 不使用标准库模块
 
-# Configure C++20 instead of C++26 for modules compatibility
-set(CMAKE_CXX_STANDARD 20)
+# Configure C++26 standard with strict settings
+set(CMAKE_CXX_STANDARD 26)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
@@ -34,31 +32,68 @@ moss_configure_platform()
 set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -ffreestanding -fno-exceptions -fno-rtti")
 set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -fno-stack-protector")
 
-# 最严格的警告和错误设置
-set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wall -Wextra -Werror")
-set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wpedantic")           # 严格遵循标准
-set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wconversion")         # 类型转换警告
-set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wsign-conversion")    # 符号转换警告
-set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wshadow")             # 变量遮蔽警告
-set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wunused")             # 未使用变量警告
-set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wunreachable-code")   # 不可达代码警告
-set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wcast-qual")          # const转换警告
-set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wcast-align")         # 对齐转换警告
-set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wmissing-declarations") # 缺少声明警告
-set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wredundant-decls")    # 冗余声明警告
-set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wundef")              # 未定义宏警告
-set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wstrict-aliasing")    # 严格别名警告
-set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wformat=2")           # 格式字符串警告
-set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wimplicit-fallthrough") # switch穿透警告
-set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wnull-dereference")   # 空指针解引用警告
-set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wdouble-promotion")   # 双精度提升警告
+# === 🚀 CLANG -Weverything 终极严格模式 ===
+# 启用所有可能的警告选项
+# === -Weverything 说明 ===
+# 这是 Clang 最激进的警告设置，包含：
+# ✅ 所有 -Wall, -Wextra 选项
+# ✅ 所有类型转换和安全检查
+# ✅ 所有代码质量和风格检查
+# ✅ 所有现代C++最佳实践检查
+# ✅ 所有线程安全和并发检查
+# ✅ 所有性能和优化建议
+# ✅ 所有内核特定安全检查
+# ⚠️  超过 200+ 个不同的警告类别
+set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Weverything -Werror")
+
+# === 必要的警告禁用 (维持可构建性) ===
+# 禁用C++兼容性警告（项目专门使用C++26）
+set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wno-c++-compat")
+set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wno-c++98-compat")
+set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wno-c++98-compat-pedantic")
+set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wno-c++11-compat")
+set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wno-c++14-compat")
+set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wno-c++17-compat")
+set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wno-c++20-compat")
+
+# 禁用不适用于内核开发的警告
+set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wno-padded")        # 结构体填充（开发期间太严格）
+set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wno-unsafe-buffer-usage") # 缓冲区安全（需要大量重构）
+
+# 禁用GNU/Microsoft扩展警告（内核代码可能需要特定扩展）
+set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wno-gnu-zero-variadic-macro-arguments")
+set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wno-gnu-anonymous-struct")
+set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wno-nested-anon-types")
+
+# 禁用文档相关警告（开发期间）
+# set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wno-documentation")
+# set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wno-documentation-pedantic")
+# set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wno-documentation-unknown-command")
+
+# 禁用一些在内核环境中常见但可接受的警告
+set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wno-missing-prototypes")  # C++中不适用
+set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wno-missing-variable-declarations")
+set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wno-global-constructors") # 内核中有时需要
+set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wno-exit-time-destructors") # 内核中有时需要
+set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wno-weak-vtables")       # 内联虚表有时有用
+
+# 内联相关警告调整
+set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wno-inline")          # 内联失败不报错（避免噪音）
+
+# 禁用过于严格的宏和预处理器警告
+set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wno-reserved-identifier") # 保留标识符（内核需要）
+set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wno-reserved-macro-identifier")
+
+# 解决Switch语句冲突警告：禁用covered-switch-default，保留switch-default
+set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wno-covered-switch-default")
+
+# 禁用NRVO警告（返回值优化相关，可能与内核代码风格冲突）
+set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wno-nrvo")
+
 
 # 优化级别设置
 set(CMAKE_CXX_FLAGS_DEBUG "-Og -g3")
 set(CMAKE_CXX_FLAGS_RELEASE "-O3 -DNDEBUG")
-
-# 启用汇编语言支持
-enable_language(ASM)
 
 # === 全局头文件路径设置 ===
 # 设置公共接口头文件路径

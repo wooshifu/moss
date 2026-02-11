@@ -237,7 +237,7 @@ void test_device_management(void) noexcept {
 }
 
 // 内核崩溃回调
-void kernel_panic_handler(const char* message) noexcept {
+[[noreturn]] void kernel_panic_handler(const char* message) noexcept {
     // 禁用中断
     #if defined(MOSS_ARCH_ARM64)
         asm volatile("msr daifset, #15" ::: "memory");
@@ -337,7 +337,7 @@ const char* get_kernel_version(void) noexcept {
 }
 
 const char* get_build_info(void) noexcept {
-    return __DATE__ " " __TIME__ " - Clang-21 C++23";
+    return "Clang-21 C++26 - Release Build";
 }
 
 // 内核内存统计
