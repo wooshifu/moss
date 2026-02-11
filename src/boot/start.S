@@ -184,7 +184,7 @@ exception_vectors:
 
     // Lower EL using AArch64
     .align 7
-    b       exception_handler    // Synchronous
+    b       syscall_entry_point  // Synchronous (SVC from user space)
     .align 7
     b       exception_handler    // IRQ
     .align 7
@@ -209,3 +209,6 @@ exception_handler:
 // 导出符号给链接器
 .global _bss_start_addr, _bss_end_addr, _stack_top_addr
 .global exception_vectors
+
+// 引用外部符号
+.extern syscall_entry_point

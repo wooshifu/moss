@@ -1,7 +1,7 @@
 # src/process/CMakeLists.txt
 
 # 添加源文件
-set(PROCESS_SOURCES "")
+set(PROCESS_SOURCES process.cpp)
 set(PROCESS_HEADERS cfs_scheduler.hpp load_balancer.hpp process.hpp)
 
 # 根据架构添加汇编文件

@@ -8,6 +8,9 @@
 #include "result.hpp"
 #include "types.hpp"
 
+// 外部汇编函数声明
+extern "C" void switch_to_user(moss::kernel::process::CpuContext* context, u64 user_stack);
+
 // 简化的调度器日志输出函数
 namespace {
 void sched_log(const char *str) noexcept {
@@ -831,9 +834,16 @@ private:
     // 记录上下文切换
     record_context_switch();
 
-    // 这里应该执行实际的上下文切换
-    // 简化实现：模拟任务执行（实际需要汇编实现）
-    // 在真实实现中，这里会调用 context_switch() 汇编函数
+    // 执行实际的上下文切换
+    if (task) {
+      // 简化判断：如果TID=1000，这是我们的用户空间线程
+      if (task->tid == 1000) {
+        // 切换到用户空间
+        switch_to_user(&task->context, task->stack_base + task->stack_size - 16);
+      } else {
+        // 内核线程的上下文切换（暂时跳过）
+      }
+    }
   }
 
   // 检查是否需要重新调度
@@ -880,5 +890,8 @@ private:
     return count;
   }
 };
+
+// 全局CFS调度器实例
+extern CfsScheduler *g_scheduler;
 
 } // namespace moss::kernel::process
