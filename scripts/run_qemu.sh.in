@@ -3,7 +3,7 @@ set -e
 
 # QEMU运行脚本模板
 KERNEL_ELF="@CMAKE_BINARY_DIR@/bin/moss.elf"
-KERNEL_BIN="@CMAKE_BINARY_DIR@/moss_code.bin"  # 使用精简二进制文件（避免设备树冲突）
+KERNEL_BIN="@CMAKE_BINARY_DIR@/moss_boot.bin"  # 使用最小启动二进制文件（只包含.text.boot段）
 KERNEL_BIN_FULL="@CMAKE_BINARY_DIR@/moss.bin"  # 完整版本（备用）
 BUILD_DIR="@CMAKE_BINARY_DIR@"
 
@@ -81,13 +81,9 @@ esac
 
 # 根据内核类型配置加载方式
 if [ "$USE_BINARY" == "true" ]; then
-    # 使用原始二进制文件 - 禁用设备树
+    # 使用原始二进制文件
     KERNEL_ARGS="-device loader,file=$KERNEL_FILE,addr=$KERNEL_LOAD_ADDR,cpu-num=0,force-raw=on"
     MACHINE_ARGS="-machine $MACHINE_TYPE"
-    # 在 ARM64 上为原始二进制添加特殊处理
-    if [ "$ARCH" == "ARM64" ]; then
-        EXTRA_ARGS="$EXTRA_ARGS -dtb /dev/null"
-    fi
 else
     # 使用ELF文件
     KERNEL_ARGS="-kernel $KERNEL_FILE"
