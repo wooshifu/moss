@@ -3,7 +3,7 @@
 // 内核专用智能指针实现
 // 替代std::unique_ptr和std::shared_ptr
 
-#include "../containers/atomic_types.hpp"
+#include "containers/atomic_types.hpp"
 #include "moss_std.hpp" // 裸机环境基础定义
 #include "result.hpp"
 #include "types.hpp"

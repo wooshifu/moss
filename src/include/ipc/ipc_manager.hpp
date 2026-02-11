@@ -3,13 +3,13 @@
 // 高性能IPC管理器
 // 统一管理零拷贝通道、共享内存、消息传递和能力传递
 
-#include "../../ipc/shared_memory.hpp"
-#include "../../ipc/zero_copy_channel.hpp"
-#include "../containers/containers.hpp"
-#include "../include/result.hpp"
-#include "../include/smart_ptr.hpp"
-#include "../include/types.hpp"
-#include "../process/process.hpp"
+#include "ipc/shared_memory.hpp"
+#include "ipc/zero_copy_channel.hpp"
+#include "containers/containers.hpp"
+#include "result.hpp"
+#include "smart_ptr.hpp"
+#include "types.hpp"
+#include "process/process.hpp"
 
 namespace moss::kernel::ipc {
 
