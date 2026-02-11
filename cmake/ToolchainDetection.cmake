@@ -183,9 +183,134 @@ function(moss_verify_clang_cross_compile arch)
   endif()
 endfunction()
 
+# 确保所有必需的 LLVM 工具存在并检查版本
+function(ensure_llvm_tools_exists)
+  message(STATUS "检查 LLVM 工具链完整性...")
+
+  set(MOSS_MIN_LLVM_VERSION "21.0")
+  set(missing_tools "")
+  set(version_issues "")
+
+  # 需要检测的工具列表 - 使用结构化的方法
+  set(TOOL_NAMES "clang" "clang++" "llvm-objdump" "llvm-objcopy" "llvm-nm" "llvm-readelf"
+                 "llvm-strip" "llvm-strings" "llvm-addr2line" "llvm-cxxfilt" "llvm-ar"
+                 "llvm-ranlib" "llvm-size" "lld" "ld.lld")
+
+  set(TOOL_DESCRIPTIONS "编译器" "C++编译器" "对象转储工具" "对象复制工具" "符号表工具" "ELF读取工具"
+                       "符号剥离工具" "字符串提取工具" "地址转换工具" "符号解析工具" "归档工具"
+                       "索引生成工具" "大小分析工具" "链接器" "Unix链接器")
+
+  list(LENGTH TOOL_NAMES tool_count)
+  math(EXPR tool_max_index "${tool_count} - 1")
+
+  # 检测每个工具
+  foreach(i RANGE 0 ${tool_max_index})
+    list(GET TOOL_NAMES ${i} tool_name)
+    list(GET TOOL_DESCRIPTIONS ${i} tool_desc)
+
+    # 创建安全的变量名 - 将特殊字符转换为下划线
+    string(REGEX REPLACE "[^a-zA-Z0-9]" "_" var_name "${tool_name}")
+
+    # 查找工具
+    find_program(${var_name}_EXECUTABLE ${tool_name}
+      HINTS /usr/lib/llvm-21/bin /usr/lib/llvm-20/bin /usr/lib/llvm-19/bin /usr/lib/llvm-18/bin
+      PATHS /usr/bin /usr/local/bin)
+
+    if(${var_name}_EXECUTABLE)
+      # 工具存在，检查版本
+      execute_process(
+        COMMAND ${${var_name}_EXECUTABLE} --version
+        OUTPUT_VARIABLE tool_version_output
+        ERROR_VARIABLE tool_version_error
+        RESULT_VARIABLE tool_version_result
+        OUTPUT_STRIP_TRAILING_WHITESPACE
+        ERROR_STRIP_TRAILING_WHITESPACE
+      )
+
+      if(tool_version_result EQUAL 0)
+        # 解析版本号 - 从输出中提取版本信息
+        string(REGEX MATCH "([0-9]+\\.[0-9]+)" tool_version "${tool_version_output}")
+
+        if(tool_version)
+          if(tool_version VERSION_LESS ${MOSS_MIN_LLVM_VERSION})
+            list(APPEND version_issues "${tool_name} (${tool_desc}): 版本 ${tool_version} < ${MOSS_MIN_LLVM_VERSION}")
+            message(WARNING "⚠️  ${tool_name} 版本过低: ${tool_version}, 要求: ${MOSS_MIN_LLVM_VERSION}+")
+          else()
+            message(STATUS "✓ ${tool_name} (${tool_desc}): 版本 ${tool_version}")
+          endif()
+        else()
+          message(STATUS "✓ ${tool_name} (${tool_desc}): 已找到，但无法确定版本")
+        endif()
+      else()
+        message(STATUS "✓ ${tool_name} (${tool_desc}): 已找到，但版本检查失败")
+      endif()
+    else()
+      list(APPEND missing_tools "${tool_name}")
+      message(WARNING "✗ 未找到 ${tool_name} (${tool_desc})")
+    endif()
+  endforeach()
+
+  # 处理缺失的工具
+  if(missing_tools)
+    message(FATAL_ERROR
+      "❌ 缺少必需的 LLVM 工具: ${missing_tools}\n"
+      "\n"
+      "请使用以下命令安装完整的 LLVM 工具链:\n"
+      "\n"
+      "Ubuntu/Debian 系统:\n"
+      "  # 安装 LLVM 21\n"
+      "  sudo apt update\n"
+      "  sudo apt install llvm-21 clang-21 lld-21 libc++-21-dev libc++abi-21-dev\n"
+      "\n"
+      "  # 配置 update-alternatives (推荐)\n"
+      "  sudo update-alternatives --install /usr/bin/clang clang /usr/bin/clang-21 100\n"
+      "  sudo update-alternatives --install /usr/bin/clang++ clang++ /usr/bin/clang++-21 100\n"
+      "  sudo update-alternatives --install /usr/bin/llvm-objdump llvm-objdump /usr/bin/llvm-objdump-21 100\n"
+      "  sudo update-alternatives --install /usr/bin/llvm-objcopy llvm-objcopy /usr/bin/llvm-objcopy-21 100\n"
+      "  sudo update-alternatives --install /usr/bin/llvm-nm llvm-nm /usr/bin/llvm-nm-21 100\n"
+      "  sudo update-alternatives --install /usr/bin/llvm-readelf llvm-readelf /usr/bin/llvm-readelf-21 100\n"
+      "  sudo update-alternatives --install /usr/bin/llvm-strip llvm-strip /usr/bin/llvm-strip-21 100\n"
+      "  sudo update-alternatives --install /usr/bin/llvm-strings llvm-strings /usr/bin/llvm-strings-21 100\n"
+      "  sudo update-alternatives --install /usr/bin/llvm-addr2line llvm-addr2line /usr/bin/llvm-addr2line-21 100\n"
+      "  sudo update-alternatives --install /usr/bin/llvm-cxxfilt llvm-cxxfilt /usr/bin/llvm-cxxfilt-21 100\n"
+      "  sudo update-alternatives --install /usr/bin/llvm-ar llvm-ar /usr/bin/llvm-ar-21 100\n"
+      "  sudo update-alternatives --install /usr/bin/llvm-ranlib llvm-ranlib /usr/bin/llvm-ranlib-21 100\n"
+      "  sudo update-alternatives --install /usr/bin/llvm-size llvm-size /usr/bin/llvm-size-21 100\n"
+      "  sudo update-alternatives --install /usr/bin/ld.lld ld.lld /usr/bin/ld.lld-21 100\n"
+      "\n"
+      "Fedora/RHEL 系统:\n"
+      "  sudo dnf install llvm clang lld\n"
+      "\n"
+      "Arch Linux:\n"
+      "  sudo pacman -S llvm clang lld\n"
+      "\n"
+      "macOS (Homebrew):\n"
+      "  brew install llvm\n"
+      "\n"
+      "或者设置环境变量指向已安装的 LLVM 工具:\n"
+      "  export PATH=\"/usr/lib/llvm-21/bin:$PATH\"\n"
+    )
+  endif()
+
+  # 处理版本问题
+  if(version_issues)
+    message(FATAL_ERROR
+      "❌ LLVM 工具版本不符合要求 (需要 ${MOSS_MIN_LLVM_VERSION}+):\n"
+      "${version_issues}\n"
+      "\n"
+      "请升级到 LLVM ${MOSS_MIN_LLVM_VERSION}+ 或使用 update-alternatives 配置更高版本的工具。"
+    )
+  endif()
+
+  message(STATUS "✅ LLVM 工具链检查完成")
+endfunction()
+
 # 主要的工具链初始化函数
 function(moss_initialize_clang_toolchain arch)
   message(STATUS "初始化 Clang 工具链 (${arch})...")
+
+  # 首先确保所有 LLVM 工具存在并版本符合要求
+  ensure_llvm_tools_exists()
 
   moss_detect_clang_toolchain()
 
