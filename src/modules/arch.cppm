@@ -7,20 +7,16 @@ import moss.types;
 namespace moss::kernel::arch {
 
 // Architecture identification
-export enum class Architecture {
-    ARM64,
-    X86_64,
-    RISCV
-};
+export enum class Architecture { ARM64, X86_64, RISCV };
 
 #if defined(MOSS_ARCH_ARM64)
-    export constexpr Architecture CURRENT_ARCH = Architecture::ARM64;
+export constexpr Architecture CURRENT_ARCH = Architecture::ARM64;
 #elif defined(MOSS_ARCH_X86_64)
-    export constexpr Architecture CURRENT_ARCH = Architecture::X86_64;
+export constexpr Architecture CURRENT_ARCH = Architecture::X86_64;
 #elif defined(MOSS_ARCH_RISCV)
-    export constexpr Architecture CURRENT_ARCH = Architecture::RISCV;
+export constexpr Architecture CURRENT_ARCH = Architecture::RISCV;
 #else
-    #error "Unsupported architecture"
+#error "Unsupported architecture"
 #endif
 
 // Memory barrier operations - implemented per architecture
@@ -39,11 +35,11 @@ export void flush_tlb() noexcept;
 export void flush_tlb_addr(VirtAddr addr) noexcept;
 
 // Debug and panic
-export [[noreturn]] void kernel_panic(const char* message) noexcept;
+export [[noreturn]] void kernel_panic(const char *message) noexcept;
 
 // Context switching (platform specific)
-export void switch_to_kernel_stack(void* stack_ptr) noexcept;
-export void* get_current_stack_pointer() noexcept;
+export void switch_to_kernel_stack(void *stack_ptr) noexcept;
+export void *get_current_stack_pointer() noexcept;
 
 // Interrupt control
 export void enable_interrupts() noexcept;

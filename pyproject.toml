@@ -7,5 +7,6 @@ requires-python = ">=3.12"
 [dependency-groups]
 dev = [
     "cmake>=4.2.1",
+    "cmake-format>=0.6.13",
     "ninja>=1.13.0",
 ]
