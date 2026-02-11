@@ -8,6 +8,62 @@
 #include "result.hpp"
 #include "types.hpp"
 
+// 简化的调度器日志输出函数
+namespace {
+void sched_log(const char *str) noexcept {
+    volatile u32 *uart_data = reinterpret_cast<volatile u32 *>(0x09000000);
+    volatile u32 *uart_flags = reinterpret_cast<volatile u32 *>(0x09000018);
+
+    while (*str) {
+        // 等待发送FIFO可用
+        while (*uart_flags & (1 << 5)) {
+            // TXFF标志
+        }
+
+        if (*str == '\n') {
+            *uart_data = static_cast<u32>('\r');
+            while (*uart_flags & (1 << 5)) {}
+        }
+        *uart_data = static_cast<u32>(static_cast<unsigned char>(*str));
+        str++;
+    }
+}
+
+void sched_log_uint(u32 value) noexcept {
+    char buffer[12]; // 最多10位数字 + 终止符
+    char *ptr = buffer + sizeof(buffer) - 1;
+    *ptr = '\0';
+
+    if (value == 0) {
+        *(--ptr) = '0';
+    } else {
+        while (value > 0 && ptr > buffer) {
+            *(--ptr) = '0' + (value % 10);
+            value /= 10;
+        }
+    }
+
+    sched_log(ptr);
+}
+
+void sched_log_u64(u64 value) noexcept {
+    char buffer[22]; // 最多20位数字 + 终止符
+    char *ptr = buffer + sizeof(buffer) - 1;
+    *ptr = '\0';
+
+    if (value == 0) {
+        *(--ptr) = '0';
+    } else {
+        while (value > 0 && ptr > buffer) {
+            *(--ptr) = '0' + (value % 10);
+            value /= 10;
+        }
+    }
+
+    sched_log(ptr);
+}
+}
+
 namespace moss::kernel::process {
 
 // CFS调度参数
@@ -533,25 +589,210 @@ public:
     (void)total_preemptions_.fetch_add_local(1);
   }
 
+  // 创建测试任务 - 每1秒打印日志
+  void create_test_task() noexcept {
+    // 分配测试任务的栈空间 (使用静态分配避免动态内存)
+    alignas(16) static char test_task_stack[8192]; // 8KB栈
+
+    // 创建测试线程
+    auto test_thread = new Thread(1001, 1); // TID=1001, PID=1
+    if (test_thread == nullptr) {
+      sched_log("❌ 无法创建测试任务线程\n");
+      return;
+    }
+
+    // 设置栈
+    test_thread->stack_base = reinterpret_cast<VirtAddr>(test_task_stack);
+    test_thread->stack_size = sizeof(test_task_stack);
+
+    // 设置上下文 - 程序计数器指向测试任务函数
+    test_thread->context.sp = reinterpret_cast<u64>(test_task_stack + sizeof(test_task_stack) - 16);
+    test_thread->context.pc = reinterpret_cast<u64>(&test_task_entry);
+    test_thread->context.pstate = 0x00000005; // EL1h, DAIF masked
+
+    // 设置调度参数
+    test_thread->sched_class = process::SchedClass::Normal;
+    test_thread->se.nice = 0;
+    test_thread->se.weight = 1024; // 默认权重
+    test_thread->se.vruntime = 0;
+
+    sched_log("🧪 创建测试任务 TID=1001\n");
+
+    // 将测试任务添加到当前CPU的运行队列
+    u32 current_cpu = get_current_cpu_id();
+    enqueue_task(test_thread, current_cpu);
+
+    sched_log("✅ 测试任务已添加到CPU");
+    sched_log_uint(current_cpu);
+    sched_log("的运行队列\n");
+  }
+
+  // 测试任务入口函数（静态函数，避免this指针问题）
+  [[noreturn]] static void test_task_entry() noexcept {
+    sched_log("🚀 测试任务开始执行! TID=1001\n");
+
+    u64 last_print_time = get_current_time();
+    u64 print_counter = 0;
+    u64 loop_counter = 0;
+
+    // 使用更短的时间间隔便于观察 (大约100万个时钟周期)
+    constexpr u64 CYCLES_PER_PRINT = 1000000ULL;
+
+    sched_log("📊 测试任务参数 - 打印间隔=");
+    sched_log_u64(CYCLES_PER_PRINT);
+    sched_log(" 周期\n");
+
+    while (true) {
+      loop_counter++;
+      u64 current_time = get_current_time();
+      u64 time_elapsed = current_time - last_print_time;
+
+      // 每隔CYCLES_PER_PRINT个周期打印一次日志
+      if (time_elapsed >= CYCLES_PER_PRINT) {
+        print_counter++;
+        sched_log("⏰ [测试任务] 第");
+        sched_log_u64(print_counter);
+        sched_log("次打印 - 调度器工作正常! CPU=");
+        sched_log_uint(get_current_cpu_id());
+        sched_log(", 时间=");
+        sched_log_u64(current_time);
+        sched_log(", 循环=");
+        sched_log_u64(loop_counter);
+        sched_log("\n");
+
+        last_print_time = current_time;
+      }
+
+      // 每100万次循环输出一次调试信息
+      if (loop_counter % 1000000 == 0) {
+        sched_log("📍 [测试任务] 循环计数=");
+        sched_log_u64(loop_counter);
+        sched_log(", 当前时间=");
+        sched_log_u64(current_time);
+        sched_log("\n");
+      }
+
+      // 主动让出CPU，让其他任务运行
+      yield_cpu();
+    }
+  }
+
+  // CPU让出函数 - 在ARM64上使用yield指令
+  static void yield_cpu() noexcept {
+#if defined(MOSS_ARCH_ARM64)
+    asm volatile("yield" ::: "memory");
+#elif defined(MOSS_ARCH_X86_64)
+    asm volatile("pause" ::: "memory");
+#elif defined(MOSS_ARCH_RISCV)
+    // RISC-V没有专门的yield指令，使用nop
+    asm volatile("nop" ::: "memory");
+#endif
+
+    // 添加小的延迟避免busy waiting过于频繁
+    for (volatile int i = 0; i < 10000; i = i + 1) {
+      // 小的忙等待循环
+    }
+  }
+
   // 启动调度循环（主调度入口）
   [[noreturn]] void start_scheduling() noexcept {
+    // 打印调度器启动日志
+    sched_log("🔄 CFS调度器启动开始\n");
+    sched_log("📊 支持多CPU调度，最大CPU数: ");
+    sched_log_uint(static_cast<u32>(MAX_CPUS));
+    sched_log("\n");
+
+    u32 current_cpu = get_current_cpu_id();
+    sched_log("🎯 当前CPU ID: ");
+    sched_log_uint(current_cpu);
+    sched_log("\n");
+    sched_log("⚡ 进入主调度循环...\n");
+
+    // 创建测试任务来验证调度器工作
+    create_test_task();
+
+    u32 idle_cycles = 0;
+    u32 active_cycles = 0;
+    constexpr u32 LOG_INTERVAL = 1000000; // 每百万次循环输出一次统计
+
     while (true) {
-      u32 current_cpu = get_current_cpu_id();
+      current_cpu = get_current_cpu_id();
 
       // 选择下一个任务
       Thread *next_task = pick_next_task(current_cpu);
 
       if (next_task != nullptr) {
+        active_cycles++;
+
+        // 检查是否是我们的测试任务
+        if (next_task->tid == 1001) {
+          // 直接调用测试逻辑来验证调度器工作
+          static u64 test_task_call_count = 0;
+          test_task_call_count++;
+
+          if (test_task_call_count % 1000000 == 0) {
+            sched_log("⏰ [调度器测试] 第");
+            sched_log_u64(test_task_call_count / 1000000);
+            sched_log("次调度测试任务 TID=");
+            sched_log_u64(next_task->tid);
+            sched_log(" - 调度器正常工作! CPU=");
+            sched_log_uint(current_cpu);
+            sched_log("\n");
+          }
+
+          // 模拟任务执行一些工作
+          for (volatile int work = 0; work < 1000; work = work + 1) {
+            // 模拟任务工作负载
+          }
+        }
+
+        // 偶尔输出活动日志（避免日志过多）
+        if (active_cycles == 1 || (active_cycles % LOG_INTERVAL == 0)) {
+          sched_log("🚀 CPU");
+          sched_log_uint(current_cpu);
+          sched_log(": 找到可运行任务 TID=");
+          sched_log_u64(next_task->tid);
+          sched_log(" (活动周期: ");
+          sched_log_uint(active_cycles);
+          sched_log(")\n");
+        }
+
         // 切换到选定的任务
         context_switch_to_task(next_task);
       } else {
+        idle_cycles++;
+
+        // 第一次进入空闲或者每隔一段时间输出空闲日志
+        if (idle_cycles == 1 || (idle_cycles % LOG_INTERVAL == 0)) {
+          sched_log("💤 CPU");
+          sched_log_uint(current_cpu);
+          sched_log(": 无可运行任务，进入空闲 (空闲周期: ");
+          sched_log_uint(idle_cycles);
+          sched_log(")\n");
+        }
+
         // 没有可运行的任务，进入空闲状态
         idle_task(current_cpu);
       }
 
       // 检查是否需要重新调度
       check_need_resched();
+
+      // 定期输出统计信息
+      u32 total_cycles = active_cycles + idle_cycles;
+      if (total_cycles > 0 && total_cycles % (LOG_INTERVAL * 10) == 0) {
+        sched_log("📈 调度统计 - CPU");
+        sched_log_uint(current_cpu);
+        sched_log(": 活动周期=");
+        sched_log_uint(active_cycles);
+        sched_log(", 空闲周期=");
+        sched_log_uint(idle_cycles);
+        sched_log(", 总上下文切换=");
+        sched_log_u64(total_context_switches());
+        sched_log("\n");
+      }
     }
+    // 注意：由于函数标记为[[noreturn]]，while(true)循环永远不会退出
   }
 
 private:

@@ -12,6 +12,8 @@
 #include "containers/containers.hpp"      // 使用include path查找
 #include "drivers/device_manager.hpp"
 #include "mm/page_table.hpp" // 使用include path查找
+#include "../mm/mm_interface.hpp"    // 统一内存管理接口
+#include "../mm/kernel_memory.hpp"   // 内核内存分配接口
 #include "result.hpp"        // 使用include path查找
 #include "types.hpp"         // 使用include path查找
 // #include "uart_driver.hpp" // 暂时注释掉，稍后修复
@@ -184,9 +186,18 @@ public:
       process_manager_ = nullptr;
     }
 
+    if (page_table_manager_) {
+      delete page_table_manager_;
+      page_table_manager_ = nullptr;
+    }
+
     if (container_lib_) {
       containers::ContainerLibrary::cleanup();
     }
+
+    // 最后关闭内存管理系统
+    kernel_print("🧠 关闭统一内存管理系统...\n");
+    mm::shutdown_kernel_memory();
 
     kernel_print("✅ MOSS内核已关闭\n");
   }
@@ -307,19 +318,49 @@ private:
 
   // 内存管理初始化
   [[nodiscard]] VoidResult initialize_memory() noexcept {
-    // 创建页表管理器
+    kernel_print("🧠 初始化统一内存管理系统...\n");
+
+    // 首先初始化统一内存管理系统
+    if (!mm::initialize_kernel_memory()) {
+      kernel_print("❌ 统一内存管理系统初始化失败\n");
+      return VoidResult{ErrorCode::InternalError};
+    }
+    kernel_print("✅ 统一内存管理系统初始化成功\n");
+
+    // 创建页表管理器（现在使用新的内存管理系统）
     page_table_manager_ = new mm::PageTableManager();
     if (!page_table_manager_) {
+      kernel_print("❌ PageTableManager创建失败\n");
+      mm::shutdown_kernel_memory();
       return VoidResult{ErrorCode::OutOfMemory};
     }
 
     // 初始化页表管理器（使用当前页表）
     auto init_result = page_table_manager_->initialize_from_current();
     if (!init_result) {
+      kernel_print("❌ PageTableManager初始化失败\n");
       delete page_table_manager_;
       page_table_manager_ = nullptr;
+      mm::shutdown_kernel_memory();
       return init_result;
     }
+
+    // 检查内存系统状态
+    if (!mm::is_memory_system_healthy()) {
+      kernel_print("⚠️ 内存系统状态异常\n");
+    }
+
+    // 打印内存系统信息
+    auto pressure = mm::get_memory_pressure();
+    const char* pressure_str = "UNKNOWN";
+    switch (pressure) {
+      case mm::MemoryPressure::LOW: pressure_str = "LOW"; break;
+      case mm::MemoryPressure::MEDIUM: pressure_str = "MEDIUM"; break;
+      case mm::MemoryPressure::HIGH: pressure_str = "HIGH"; break;
+      case mm::MemoryPressure::CRITICAL: pressure_str = "CRITICAL"; break;
+      default: pressure_str = "UNKNOWN"; break;
+    }
+    kernel_print("📊 内存压力等级: %s\n", pressure_str);
 
     return VoidResult{};
   }
@@ -503,7 +544,8 @@ private:
     kernel_print("╚═╝     ╚═╝ ╚═════╝ ╚══════╝╚══════╝\n");
     kernel_print("\n🚀 MOSS混合内核 v1.0 - ARM64架构\n");
     kernel_print("🔧 现代C++23 | 零拷贝IPC | 高性能调度\n");
-    kernel_print("⚡ 目标: 实际生产环境使用\n\n");
+    kernel_print("⚡ 目标: 实际生产环境使用\n");
+    kernel_print("🧠 *** 集成世界级统一内存管理系统 ***\n\n");
   }
 
   // 打印调用栈

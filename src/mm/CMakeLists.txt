@@ -8,6 +8,8 @@ set(MM_SOURCES
     page_table.cpp
     page_frame_allocator.cpp
     runtime_heap_allocator.cpp
+    kernel_memory.cpp
+    mm_interface_impl.cpp
 )
 
 set(MM_HEADERS "")

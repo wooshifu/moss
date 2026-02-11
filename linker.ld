@@ -53,10 +53,10 @@ SECTIONS
         _bss_end = .;
     }
 
-    /* 栈空间 */
-    .stack : ALIGN(4K) {
+    /* 栈空间 - 优化为16KB并使用NOLOAD减少二进制大小 */
+    .stack (NOLOAD) : ALIGN(4K) {
         _stack_bottom = .;
-        . += 64K;  /* 64KB栈空间 */
+        . += 16K;  /* 16KB栈空间（对标嵌入式内核） */
         _stack_top = .;
     }
 
@@ -67,10 +67,10 @@ SECTIONS
         _heap_end = .;
     }
 
-    /* 页表空间（早期启动使用） */
-    .pagetables : ALIGN(4K) {
+    /* 页表空间（早期启动使用） - 优化为64KB并使用NOLOAD */
+    .pagetables (NOLOAD) : ALIGN(4K) {
         _pagetable_start = .;
-        . += 512K;  /* 512KB页表空间 */
+        . += 64K;   /* 64KB页表空间（配合早期页表数组优化） */
         _pagetable_end = .;
     }
 
