@@ -327,8 +327,6 @@ add_subdirectory(src/kernel)
 # 启动模块：启动代码（独立）
 add_subdirectory(src/boot)
 
-# add_subdirectory(src/tests)
-
 # === 创建最终内核可执行文件 ===
 add_executable(moss.elf)
 
@@ -344,7 +342,6 @@ target_link_libraries(
           moss_interrupts
           moss_ipc
           moss_process
-          # moss_tests
           )
 
 # 架构特定链接配置 - 统一使用lld链接器
