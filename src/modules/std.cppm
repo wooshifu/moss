@@ -1,5 +1,5 @@
 // src/modules/std.cppm
-// MOSS Standard Library Module - Freestanding C++20 Implementation
+// MOSS Standard Library Module - Freestanding C++26 Implementation
 // Provides all basic types, type traits, and utility functions for kernel use
 
 module;

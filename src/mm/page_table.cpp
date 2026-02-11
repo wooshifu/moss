@@ -100,7 +100,7 @@ VoidResult PageTableManager::setup_kernel_page_tables() {
     // 映射前4个1GB块，覆盖0x00000000-0x100000000 (4GB)
     for (usize i = 0; i < 4; i++) {
         usize pgd_index = i;  // PGD索引0, 1, 2, 3
-        PhysAddr block_addr = (PhysAddr)(i * 0x40000000ULL);  // 0GB, 1GB, 2GB, 3GB
+        PhysAddr block_addr = static_cast<PhysAddr>(i * 0x40000000ULL);  // 0GB, 1GB, 2GB, 3GB
 
         u64 block_entry = (block_addr & 0x0000FFFFFFFFF000ULL) | block_permissions;
         PageTableManager::kernel_pgd->entries[pgd_index].raw = block_entry;
@@ -257,12 +257,14 @@ VoidResult setup_mmu() {
     }
 
     // 3. 验证MMU已启用
+#if defined(__aarch64__) || defined(MOSS_ARCH_ARM64)
     u64 sctlr;
     asm volatile("mrs %0, sctlr_el1" : "=r"(sctlr));
     if (!(sctlr & (1ULL << 0))) {
         // MMU启用失败但继续运行
         // return VoidResult{ErrorCode::InvalidState};
     }
+#endif
 
     // 4. 打印页表详细信息（调试输出）
     PageTableManager::print_page_table_details();
@@ -501,3 +503,4 @@ void PageTableManager::print_page_table_details() {
 }
 
 } // namespace moss::kernel::mm
+

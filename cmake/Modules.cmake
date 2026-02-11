@@ -1,5 +1,5 @@
 # cmake/Modules.cmake
-# C++20 Modules Configuration for MOSS
+# C++26 Modules Configuration for MOSS
 
 # Enable module compilation caching
 set(CMAKE_CXX_MODULE_BMI_CACHE_DIR "${CMAKE_BINARY_DIR}/modules")

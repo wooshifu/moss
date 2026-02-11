@@ -27,7 +27,7 @@
 namespace moss::kernel::arch {
 
 // 架构特定的panic/breakpoint操作
-inline void kernel_panic() noexcept {
+[[noreturn]] inline void kernel_panic() noexcept {
 #if defined(MOSS_ARCH_ARM64)
     asm volatile("brk #0");  // ARM64 breakpoint
     __builtin_unreachable();
@@ -290,3 +290,4 @@ inline void flush_tlb_addr(VirtAddr addr) noexcept {
 } // namespace mmu
 
 } // namespace moss::kernel::arch
+
