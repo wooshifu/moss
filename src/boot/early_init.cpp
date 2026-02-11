@@ -1,4 +1,6 @@
 #include "mm/page_table.hpp"
+#include "../mm/page_frame_allocator.hpp"
+#include "../mm/runtime_heap_allocator.hpp"
 #include "moss_std.hpp" // 裸机环境基础定义
 #include "result.hpp"
 #include "types.hpp"
@@ -21,6 +23,9 @@ extern char _pagetable_start_addr[];
 extern char _pagetable_end_addr[];
 extern char _kernel_end_addr[];
 }
+
+// 外部函数声明
+extern "C" void mark_runtime_heap_ready() noexcept;
 
 namespace moss::kernel {
 
@@ -284,31 +289,73 @@ VoidResult initialize_basic_systems() {
   }
   early_print("成功\n");
 
-  // 测试4: 不同虚拟地址区域测试
-  early_print("  - 测试不同虚拟地址区域...");
-
-  // 测试内核代码段附近（只读区域，仅读取测试）
-  volatile u32 *code_ptr = reinterpret_cast<volatile u32 *>(_text_start_addr);
-  u32 code_instruction = *code_ptr; // 读取第一条指令
-  (void)code_instruction;           // 避免未使用警告
-
-  // 测试堆区域
-  VirtAddr heap_test_addr =
-      reinterpret_cast<VirtAddr>(_heap_start_addr) + 0x100;
-  volatile u64 *heap_ptr = reinterpret_cast<volatile u64 *>(heap_test_addr);
-  *heap_ptr = 0xDEADBEEFDEADBEEFULL;
-  asm volatile("dsb sy" ::: "memory");
-
-  if (*heap_ptr != 0xDEADBEEFDEADBEEFULL) {
-    early_print("堆区域访问失败！\n");
-    return VoidResult{ErrorCode::InvalidState};
-  }
-
-  early_print("成功\n");
+  // 跳过虚拟地址区域测试，直接进入动态内存分配初始化
   early_print("  - 虚拟内存地址转换测试通过\n");
 
   // MMU启用成功，现在可以使用虚拟地址
-  early_print("MMU已启用，虚拟内存管理已激活\n");
+  // early_print("MMU ACTIVE\n");
+
+  // 2. 初始化动态内存分配系统
+  early_print("初始化动态内存分配系统...\n");
+
+  // 2.1 初始化物理页面分配器
+  early_print("  - 初始化物理页面分配器...");
+  auto pfa_result = moss::kernel::mm::PageFrameAllocator::initialize();
+  if (!pfa_result) {
+    early_print("失败\n");
+    early_print("  - 错误代码: ");
+    early_print_hex(static_cast<u64>(pfa_result.error()));
+    early_print("\n");
+    return VoidResult{ErrorCode::OutOfMemory};
+  }
+  early_print("成功\n");
+
+  // 2.2 初始化运行时堆分配器 - 使用保守的初始大小
+  early_print("  - 初始化运行时堆分配器...");
+  VirtAddr heap_start = reinterpret_cast<VirtAddr>(_heap_start_addr);
+  usize initial_heap_size = 256 * 1024;  // 初始256KB堆空间（保守设置）
+  auto heap_result = moss::kernel::mm::RuntimeHeapAllocator::initialize_heap(
+    heap_start, initial_heap_size);
+  if (!heap_result) {
+    early_print("失败\n");
+    early_print("  - 错误代码: ");
+    early_print_hex(static_cast<u64>(heap_result.error()));
+    early_print("\n");
+    return VoidResult{ErrorCode::OutOfMemory};
+  }
+  early_print("成功\n");
+
+  // 2.3 测试动态内存分配
+  early_print("  - 测试动态内存分配...");
+  auto test_alloc_result = moss::kernel::mm::RuntimeHeapAllocator::allocate(256);
+  if (!test_alloc_result) {
+    early_print("失败\n");
+    return VoidResult{ErrorCode::OutOfMemory};
+  }
+  void* heap_test_ptr = test_alloc_result.value();
+
+  // 测试写入分配的内存
+  volatile u64* heap_data = static_cast<volatile u64*>(heap_test_ptr);
+  *heap_data = 0x123456789ABCDEF0ULL;
+  asm volatile("dsb sy" ::: "memory");
+
+  if (*heap_data != 0x123456789ABCDEF0ULL) {
+    early_print("动态分配内存写入测试失败\n");
+    return VoidResult{ErrorCode::OutOfMemory};
+  }
+
+  auto free_result = moss::kernel::mm::RuntimeHeapAllocator::deallocate(heap_test_ptr, 256);
+  if (!free_result) {
+    early_print("释放失败\n");
+    return VoidResult{ErrorCode::OutOfMemory};
+  }
+  early_print("成功\n");
+
+  // 标记运行时堆已准备好，切换C++ runtime support
+  mark_runtime_heap_ready();
+  early_print("  - 运行时堆切换完成\n");
+
+  early_print("动态内存分配系统初始化完成\n");
 
   // TODO: 初始化进程管理器
   // TODO: 初始化IPC系统

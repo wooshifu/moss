@@ -4,7 +4,11 @@
 add_library(moss_mm OBJECT)
 
 # 添加源文件
-set(MM_SOURCES page_table.cpp)
+set(MM_SOURCES
+    page_table.cpp
+    page_frame_allocator.cpp
+    runtime_heap_allocator.cpp
+)
 
 set(MM_HEADERS "")
 

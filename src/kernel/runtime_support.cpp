@@ -3,6 +3,7 @@
 
 #include "../include/arch/arch_abstraction.hpp"
 #include "../include/types.hpp"
+#include "../mm/runtime_heap_allocator.hpp"
 
 // 前向声明必要的类型（避免循环依赖）
 namespace moss::kernel::containers {
@@ -82,34 +83,70 @@ void syscall_handler() noexcept {
   asm volatile("nop");
 }
 
-// 简单的内核内存分配器
-namespace {
-// 静态内存池，用于临时分配
-alignas(64) char kernel_heap[2 * 1024 * 1024]; // 2MB静态堆
-size_t heap_used = 0;
-} // namespace
+// 早期静态堆缓冲区 - 在RuntimeHeapAllocator初始化之前使用
+static char early_heap_buffer[64 * 1024]; // 64KB早期堆
+static size_t early_heap_used = 0;
+static bool runtime_heap_ready = false;
 
+// 运行时堆分配器支持 - 带fallback机制
 void *kernel_malloc(size_t size) noexcept {
-  // 简单的线性分配器（仅用于调试）
-  // 对齐到8字节边界
-  size = (size + 7UL) & ~7UL;
+  using moss::kernel::mm::RuntimeHeapAllocator;
 
-  if (heap_used + size > sizeof(kernel_heap)) {
-    return nullptr; // 堆耗尽
+  // 如果RuntimeHeapAllocator已经初始化，使用它
+  if (runtime_heap_ready) {
+    auto result = RuntimeHeapAllocator::allocate(size);
+    if (!result) {
+      return nullptr; // 分配失败
+    }
+
+    void *ptr = result.value();
+    // 清零分配的内存
+    memset(ptr, 0, size);
+    return ptr;
+  } else {
+    // 使用早期静态堆
+    size_t aligned_size = (size + 15UL) & ~15UL; // 16字节对齐
+    if (early_heap_used + aligned_size > sizeof(early_heap_buffer)) {
+      return nullptr; // 早期堆空间不足
+    }
+
+    void *ptr = &early_heap_buffer[early_heap_used];
+    early_heap_used += aligned_size;
+
+    // 清零分配的内存
+    memset(ptr, 0, size);
+    return ptr;
   }
-
-  void *result = &kernel_heap[heap_used];
-  heap_used += size;
-
-  // 清零分配的内存
-  memset(result, 0, size);
-
-  return result;
 }
 
-void kernel_free([[maybe_unused]] void *ptr) noexcept {
-  // 简单实现：不实际释放内存
-  // 实际内核需要真正的内存管理
+void kernel_free(void *ptr) noexcept {
+  if (ptr == nullptr) {
+    return;
+  }
+
+  using moss::kernel::mm::RuntimeHeapAllocator;
+
+  // 如果RuntimeHeapAllocator已经初始化，使用它
+  if (runtime_heap_ready) {
+    // 注意：这里使用0作为大小，因为RuntimeHeapAllocator会从块头获取实际大小
+    [[maybe_unused]] auto result = RuntimeHeapAllocator::deallocate(ptr, 0);
+
+    // 在调试模式下可以检查释放结果
+#ifdef DEBUG
+    if (!result) {
+      // 内存释放失败 - 可能是堆损坏
+      moss::kernel::arch::kernel_panic();
+    }
+#endif
+  } else {
+    // 早期堆分配的内存不需要释放（静态缓冲区）
+    // 在实际系统中，这些内存在RuntimeHeapAllocator初始化后就废弃了
+  }
+}
+
+// 标记运行时堆已准备好
+void mark_runtime_heap_ready() noexcept {
+  runtime_heap_ready = true;
 }
 
 // C++ operator new/delete 实现
@@ -157,13 +194,19 @@ void _ZdaPv(void *ptr) {
 // std::align_val_t 在内核中定义为size_t
 void *_ZnwmSt11align_val_t(size_t size, size_t alignment) {
   // operator new(unsigned long, std::align_val_t) 的修饰符号
-  // 在简单实现中，忽略对齐要求（实际内核应该处理对齐）
-  (void)alignment; // 忽略对齐参数
-  void *ptr = kernel_malloc(size);
-  if (!ptr) {
+  // 使用RuntimeHeapAllocator的对齐分配
+  using moss::kernel::mm::RuntimeHeapAllocator;
+
+  auto result = RuntimeHeapAllocator::allocate_aligned(size, alignment);
+  if (!result) {
     // 内核panic - 内存耗尽是致命错误
     moss::kernel::arch::kernel_panic();
   }
+
+  void *ptr = result.value();
+  // 清零分配的内存
+  memset(ptr, 0, size);
+
   return ptr;
 }
 
