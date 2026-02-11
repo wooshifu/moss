@@ -3,11 +3,11 @@
 // 高性能内核容器库 - 综合头文件
 // 提供无锁、高性能的数据结构
 
-#include "../../containers/atomic_types.hpp"
-#include "../../containers/lockfree_queue.hpp"
-#include "../../containers/per_cpu_data.hpp"
-#include "../../containers/rcu_list.hpp"
-#include "../../containers/slab_allocator.hpp"
+#include "containers/atomic_types.hpp"
+#include "containers/lockfree_queue.hpp"
+#include "containers/per_cpu_data.hpp"
+#include "containers/rcu_list.hpp"
+#include "containers/slab_allocator.hpp"
 #include "../moss_std.hpp" // 包含裸机环境基础定义
 #include "config/config.h" // 包含配置系统定义的宏
 

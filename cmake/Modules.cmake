@@ -15,7 +15,7 @@ function(moss_add_module MODULE_NAME)
   cmake_parse_arguments(ARG "${options}" "${oneValueArgs}" "${multiValueArgs}"
                         ${ARGN})
 
-  add_library(${MODULE_NAME})
+  add_library(${MODULE_NAME} OBJECT)
 
   # Separate module interface files (.cppm) from implementation files (.cpp)
   set(MODULE_INTERFACES)
@@ -60,4 +60,16 @@ function(moss_add_module MODULE_NAME)
             -Wall
             -Wextra
             -Werror)
+endfunction()
+
+# 统一架构配置函数 - 消除所有模块中的重复架构检测代码
+function(moss_configure_module_arch MODULE_NAME)
+    if(MOSS_TARGET_ARCH STREQUAL "ARM64")
+        target_compile_definitions(${MODULE_NAME} PRIVATE MOSS_ARCH_ARM64)
+    elseif(MOSS_TARGET_ARCH STREQUAL "X86_64")
+        target_compile_definitions(${MODULE_NAME} PRIVATE MOSS_ARCH_X86_64)
+    elseif(MOSS_TARGET_ARCH STREQUAL "RISCV")
+        target_compile_definitions(${MODULE_NAME} PRIVATE MOSS_ARCH_RISCV)
+    endif()
+    message(STATUS "已为 ${MODULE_NAME} 配置架构: ${MOSS_TARGET_ARCH}")
 endfunction()

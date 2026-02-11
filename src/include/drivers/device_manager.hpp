@@ -3,11 +3,11 @@
 // 设备管理器和驱动框架
 // 支持设备树解析、驱动匹配和生命周期管理
 
-#include "../../interrupts/gic.hpp"
-#include "../containers/containers.hpp"
-#include "../result.hpp"
-#include "../smart_ptr.hpp"
-#include "../types.hpp"
+#include "interrupts/gic.hpp"
+#include "containers/containers.hpp"
+#include "result.hpp"
+#include "smart_ptr.hpp"
+#include "types.hpp"
 
 namespace moss::kernel::drivers {
 
