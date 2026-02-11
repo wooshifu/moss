@@ -5,25 +5,25 @@
 // cstring 不需要 - 内核环境使用自定义内存操作
 
 // 使用内核命名空间的类型
+using moss::kernel::ShmId;
 using moss::kernel::u32;
 using moss::kernel::u64;
 using moss::kernel::usize;
-using moss::kernel::ShmId;
 
 namespace moss::kernel {
 
 // 全局实例定义
-Kernel* g_kernel = nullptr;
+Kernel *g_kernel = nullptr;
 
 // 子系统全局实例
-containers::ContainerLibrary* g_container_lib = nullptr;
-mm::PageTableManager* g_page_table_manager = nullptr;
-process::ProcessManager* g_process_manager = nullptr;
-process::CfsScheduler* g_scheduler = nullptr;
-ipc::SharedMemoryManager* g_shared_memory_manager = nullptr;
-ipc::IpcManager* g_ipc_manager = nullptr;
-interrupts::GenericInterruptController* g_gic = nullptr;
-drivers::DeviceManager* g_device_manager = nullptr;
+containers::ContainerLibrary *g_container_lib = nullptr;
+mm::PageTableManager *g_page_table_manager = nullptr;
+process::ProcessManager *g_process_manager = nullptr;
+process::CfsScheduler *g_scheduler = nullptr;
+ipc::SharedMemoryManager *g_shared_memory_manager = nullptr;
+ipc::IpcManager *g_ipc_manager = nullptr;
+interrupts::GenericInterruptController *g_gic = nullptr;
+drivers::DeviceManager *g_device_manager = nullptr;
 // drivers::UartDriver* g_uart_driver = nullptr; // 暂时注释掉
 
 } // namespace moss::kernel
@@ -40,324 +40,326 @@ void test_device_management(void) noexcept;
 
 // 内核主入口函数
 [[noreturn]] void kernel_main(void) noexcept {
-    using namespace moss::kernel;
+  using namespace moss::kernel;
 
-    // 创建内核实例
-    g_kernel = new Kernel();
-    if (g_kernel == nullptr) {
-        // 无法创建内核实例，直接停机
-        while (true) {
-            #if defined(MOSS_ARCH_ARM64)
-                asm volatile("wfi");
-            #elif defined(MOSS_ARCH_X86_64)
-                asm volatile("hlt");
-            #elif defined(MOSS_ARCH_RISCV)
-                asm volatile("wfi");
-            #else
-                for (volatile int i = 0; i < 1000000; ++i) {}
-            #endif
-        }
+  // 创建内核实例
+  g_kernel = new Kernel();
+  if (g_kernel == nullptr) {
+    // 无法创建内核实例，直接停机
+    while (true) {
+#if defined(MOSS_ARCH_ARM64)
+      asm volatile("wfi");
+#elif defined(MOSS_ARCH_X86_64)
+      asm volatile("hlt");
+#elif defined(MOSS_ARCH_RISCV)
+      asm volatile("wfi");
+#else
+      for (volatile int i = 0; i < 1000000; ++i) {
+      }
+#endif
     }
+  }
 
-    // 初始化内核
-    auto init_result = g_kernel->initialize();
-    if (!init_result) {
-        // 初始化失败，停机
-        delete g_kernel;
-        g_kernel = nullptr;
-
-        while (true) {
-            #if defined(MOSS_ARCH_ARM64)
-                asm volatile("wfi");
-            #elif defined(MOSS_ARCH_X86_64)
-                asm volatile("hlt");
-            #elif defined(MOSS_ARCH_RISCV)
-                asm volatile("wfi");
-            #else
-                for (volatile int i = 0; i < 1000000; ++i) {}
-            #endif
-        }
-    }
-
-    // 运行内核（不会返回）
-    (void)g_kernel->run(); // 不应该返回
-
-    // 如果到达这里，说明内核异常退出
+  // 初始化内核
+  auto init_result = g_kernel->initialize();
+  if (!init_result) {
+    // 初始化失败，停机
     delete g_kernel;
     g_kernel = nullptr;
 
     while (true) {
-#if defined(__aarch64__) || defined(MOSS_ARCH_ARM64)
-        asm volatile("wfi"); // 等待中断 (ARM64)
-#elif defined(__x86_64__) || defined(MOSS_ARCH_X86_64)
-        asm volatile("hlt"); // 停机等待中断 (x86_64)
-#elif defined(__riscv) || defined(MOSS_ARCH_RISCV)
-        asm volatile("wfi"); // 等待中断 (RISC-V)
+#if defined(MOSS_ARCH_ARM64)
+      asm volatile("wfi");
+#elif defined(MOSS_ARCH_X86_64)
+      asm volatile("hlt");
+#elif defined(MOSS_ARCH_RISCV)
+      asm volatile("wfi");
 #else
-        // 通用停机 - CPU空循环
-        for (volatile int i = 0; i < 1000000; ++i) {}
+      for (volatile int i = 0; i < 1000000; ++i) {
+      }
 #endif
     }
+  }
+
+  // 运行内核（不会返回）
+  (void)g_kernel->run(); // 不应该返回
+
+  // 如果到达这里，说明内核异常退出
+  delete g_kernel;
+  g_kernel = nullptr;
+
+  while (true) {
+#if defined(__aarch64__) || defined(MOSS_ARCH_ARM64)
+    asm volatile("wfi"); // 等待中断 (ARM64)
+#elif defined(__x86_64__) || defined(MOSS_ARCH_X86_64)
+    asm volatile("hlt"); // 停机等待中断 (x86_64)
+#elif defined(__riscv) || defined(MOSS_ARCH_RISCV)
+    asm volatile("wfi"); // 等待中断 (RISC-V)
+#else
+    // 通用停机 - CPU空循环
+    for (volatile int i = 0; i < 1000000; ++i) {
+    }
+#endif
+  }
 }
 
 // 内核调试和测试接口
 void kernel_test_all_subsystems(void) noexcept {
-    using namespace moss::kernel;
+  using namespace moss::kernel;
 
-    if (g_kernel == nullptr) {
-        return;
-    }
+  if (g_kernel == nullptr) {
+    return;
+  }
 
-    // 打印系统信息
-    g_kernel->print_system_info();
+  // 打印系统信息
+  g_kernel->print_system_info();
 
-    // 测试容器库
-    test_container_library();
+  // 测试容器库
+  test_container_library();
 
-    // 测试内存管理
-    test_memory_management();
+  // 测试内存管理
+  test_memory_management();
 
-    // 测试进程管理
-    test_process_management();
+  // 测试进程管理
+  test_process_management();
 
-    // 测试IPC系统
-    test_ipc_system();
+  // 测试IPC系统
+  test_ipc_system();
 
-    // 测试设备管理
-    test_device_management();
+  // 测试设备管理
+  test_device_management();
 }
 
 // 测试容器库
 void test_container_library(void) noexcept {
-    using namespace moss::kernel::containers;
+  using namespace moss::kernel::containers;
 
-    // 测试SPSC队列
-    SPSCQueue<u32, 16> queue;
+  // 测试SPSC队列
+  SPSCQueue<u32, 16> queue;
 
-    // 入队测试
-    for (u32 i = 0; i < 10; ++i) {
-        bool success = queue.try_enqueue(i);
-        if (success) {
-            // 成功入队
-        }
+  // 入队测试
+  for (u32 i = 0; i < 10; ++i) {
+    bool success = queue.try_enqueue(i);
+    if (success) {
+      // 成功入队
     }
+  }
 
-    // 出队测试
-    for (u32 i = 0; i < 10; ++i) {
-        u32 value;
-        bool success = queue.try_dequeue(value);
-        if (success && value == i) {
-            // 成功出队且值正确
-        }
+  // 出队测试
+  for (u32 i = 0; i < 10; ++i) {
+    u32 value;
+    bool success = queue.try_dequeue(value);
+    if (success && value == i) {
+      // 成功出队且值正确
     }
+  }
 
-    // 测试原子计数器
-    AtomicU64 counter{0};
-    for (int i = 0; i < 100; ++i) {
-        (void)counter.fetch_add(1, MemoryOrder::Relaxed);
-    }
+  // 测试原子计数器
+  AtomicU64 counter{0};
+  for (int i = 0; i < 100; ++i) {
+    (void)counter.fetch_add(1, MemoryOrder::Relaxed);
+  }
 
-    u64 final_value = counter.load(MemoryOrder::Relaxed);
-    if (final_value == 100) {
-        // 原子计数器工作正常
-    }
+  u64 final_value = counter.load(MemoryOrder::Relaxed);
+  if (final_value == 100) {
+    // 原子计数器工作正常
+  }
 }
 
 // 测试内存管理
 void test_memory_management(void) noexcept {
-    using namespace moss::kernel;
+  using namespace moss::kernel;
 
-    if (g_page_table_manager == nullptr) {
-        return;
-    }
+  if (g_page_table_manager == nullptr) {
+    return;
+  }
 
-    // 测试页表映射 (暂时注释掉，避免未使用变量警告)
-    [[maybe_unused]] PhysAddr test_phys = 0x80000000;
-    [[maybe_unused]] VirtAddr test_virt = 0xFFFF800080000000;
+  // 测试页表映射 (暂时注释掉，避免未使用变量警告)
+  [[maybe_unused]] PhysAddr test_phys = 0x80000000;
+  [[maybe_unused]] VirtAddr test_virt = 0xFFFF800080000000;
 
-    // 简单映射测试（实际需要更完善的测试）
-    // auto map_result = g_page_table_manager->map_page(test_virt, test_phys, ...);
+  // 简单映射测试（实际需要更完善的测试）
+  // auto map_result = g_page_table_manager->map_page(test_virt, test_phys,
+  // ...);
 }
 
 // 测试进程管理
 void test_process_management(void) noexcept {
-    using namespace moss::kernel;
+  using namespace moss::kernel;
 
-    if (g_process_manager == nullptr || g_scheduler == nullptr) {
-        return;
-    }
+  if (g_process_manager == nullptr || g_scheduler == nullptr) {
+    return;
+  }
 
-    // 测试进程创建和调度（简化版本）
-    // 实际需要更完整的测试
+  // 测试进程创建和调度（简化版本）
+  // 实际需要更完整的测试
 }
 
 // 测试IPC系统
 void test_ipc_system(void) noexcept {
-    using namespace moss::kernel;
+  using namespace moss::kernel;
 
-    if (g_ipc_manager == nullptr || g_shared_memory_manager == nullptr) {
-        return;
+  if (g_ipc_manager == nullptr || g_shared_memory_manager == nullptr) {
+    return;
+  }
+
+  // 测试共享内存创建
+  auto shm_result = g_shared_memory_manager->create_region(
+      1,    // 进程ID
+      4096, // 大小
+      ipc::ShmType::Normal, ipc::ShmPermission::ReadWrite);
+
+  if (shm_result) {
+    [[maybe_unused]] ShmId shm_id = *shm_result;
+
+    // 测试IPC服务注册
+    auto service_result =
+        g_ipc_manager->register_service(1, "test-service", 10);
+
+    if (service_result) {
+      // IPC系统基本功能正常
     }
-
-    // 测试共享内存创建
-    auto shm_result = g_shared_memory_manager->create_region(
-        1,  // 进程ID
-        4096,  // 大小
-        ipc::ShmType::Normal,
-        ipc::ShmPermission::ReadWrite
-    );
-
-    if (shm_result) {
-        [[maybe_unused]] ShmId shm_id = *shm_result;
-
-        // 测试IPC服务注册
-        auto service_result = g_ipc_manager->register_service(1, "test-service", 10);
-
-        if (service_result) {
-            // IPC系统基本功能正常
-        }
-    }
+  }
 }
 
 // 测试设备管理
 void test_device_management(void) noexcept {
-    using namespace moss::kernel;
+  using namespace moss::kernel;
 
-    if (g_device_manager == nullptr) {
-        return;
-    }
+  if (g_device_manager == nullptr) {
+    return;
+  }
 
-    // 获取设备统计
-    auto stats = g_device_manager->get_statistics();
+  // 获取设备统计
+  auto stats = g_device_manager->get_statistics();
 
-    // 简单验证设备管理器状态
-    if (stats.registered_drivers > 0) {
-        // 设备管理系统正常
-    }
+  // 简单验证设备管理器状态
+  if (stats.registered_drivers > 0) {
+    // 设备管理系统正常
+  }
 }
 
 // 内核崩溃回调
-[[noreturn]] void kernel_panic_handler(const char* message) noexcept {
-    // 禁用中断
-    #if defined(MOSS_ARCH_ARM64)
-        asm volatile("msr daifset, #15" ::: "memory");
-    #elif defined(MOSS_ARCH_X86_64)
-        asm volatile("cli" ::: "memory");
-    #elif defined(MOSS_ARCH_RISCV)
-        asm volatile("csrci mstatus, 0x8" ::: "memory"); // 禁用机器级中断
-    #endif
+[[noreturn]] void kernel_panic_handler(const char *message) noexcept {
+// 禁用中断
+#if defined(MOSS_ARCH_ARM64)
+  asm volatile("msr daifset, #15" ::: "memory");
+#elif defined(MOSS_ARCH_X86_64)
+  asm volatile("cli" ::: "memory");
+#elif defined(MOSS_ARCH_RISCV)
+  asm volatile("csrci mstatus, 0x8" ::: "memory"); // 禁用机器级中断
+#endif
 
-    // 基本错误输出（如果可能）
-    volatile u32* uart_data = reinterpret_cast<volatile u32*>(0x09000000);
-    const char* panic_msg = "\n💀 KERNEL PANIC: ";
+  // 基本错误输出（如果可能）
+  volatile u32 *uart_data = reinterpret_cast<volatile u32 *>(0x09000000);
+  const char *panic_msg = "\n💀 KERNEL PANIC: ";
 
-    // 输出错误信息
-    while (*panic_msg) {
-        *uart_data = static_cast<u32>(static_cast<unsigned char>(*panic_msg++));
+  // 输出错误信息
+  while (*panic_msg) {
+    *uart_data = static_cast<u32>(static_cast<unsigned char>(*panic_msg++));
+  }
+
+  if (message) {
+    while (*message) {
+      *uart_data = static_cast<u32>(static_cast<unsigned char>(*message++));
     }
+  }
 
-    if (message) {
-        while (*message) {
-            *uart_data = static_cast<u32>(static_cast<unsigned char>(*message++));
-        }
+  // 停机
+  while (true) {
+#if defined(MOSS_ARCH_ARM64)
+    asm volatile("wfi");
+#elif defined(MOSS_ARCH_X86_64)
+    asm volatile("hlt");
+#elif defined(MOSS_ARCH_RISCV)
+    asm volatile("wfi"); // RISC-V 也有 wfi 指令
+#else
+    // 通用停机 - CPU 空循环
+    for (volatile int i = 0; i < 1000000; ++i) {
     }
-
-    // 停机
-    while (true) {
-        #if defined(MOSS_ARCH_ARM64)
-            asm volatile("wfi");
-        #elif defined(MOSS_ARCH_X86_64)
-            asm volatile("hlt");
-        #elif defined(MOSS_ARCH_RISCV)
-            asm volatile("wfi"); // RISC-V 也有 wfi 指令
-        #else
-            // 通用停机 - CPU 空循环
-            for (volatile int i = 0; i < 1000000; ++i) {}
-        #endif
-    }
+#endif
+  }
 }
 
 // 早期调试输出（在UART驱动初始化前使用）
-void early_debug_print(const char* message) noexcept {
-    if (message == nullptr) return;
+void early_debug_print(const char *message) noexcept {
+  if (message == nullptr)
+    return;
 
-    volatile u32* uart_data = reinterpret_cast<volatile u32*>(0x09000000);
-    volatile u32* uart_flags = reinterpret_cast<volatile u32*>(0x09000018);
+  volatile u32 *uart_data = reinterpret_cast<volatile u32 *>(0x09000000);
+  volatile u32 *uart_flags = reinterpret_cast<volatile u32 *>(0x09000018);
 
-    while (*message) {
-        // 等待发送FIFO可用
-        while (*uart_flags & (1 << 5)) {
-            // TXFF标志
-        }
-
-        if (*message == '\n') {
-            *uart_data = static_cast<u32>('\r');
-            while (*uart_flags & (1 << 5)) {}
-            *uart_data = static_cast<u32>('\n');
-        } else {
-            *uart_data = static_cast<u32>(static_cast<unsigned char>(*message));
-        }
-        message++;
+  while (*message) {
+    // 等待发送FIFO可用
+    while (*uart_flags & (1 << 5)) {
+      // TXFF标志
     }
+
+    if (*message == '\n') {
+      *uart_data = static_cast<u32>('\r');
+      while (*uart_flags & (1 << 5)) {
+      }
+      *uart_data = static_cast<u32>('\n');
+    } else {
+      *uart_data = static_cast<u32>(static_cast<unsigned char>(*message));
+    }
+    message++;
+  }
 }
 
 // 系统调用入口
 long system_call_handler(long syscall_number, long arg0,
-                        [[maybe_unused]] long arg1,
-                        [[maybe_unused]] long arg2,
-                        [[maybe_unused]] long arg3,
-                        [[maybe_unused]] long arg4,
-                        [[maybe_unused]] long arg5) noexcept {
-    using namespace moss::kernel;
+                         [[maybe_unused]] long arg1, [[maybe_unused]] long arg2,
+                         [[maybe_unused]] long arg3, [[maybe_unused]] long arg4,
+                         [[maybe_unused]] long arg5) noexcept {
+  using namespace moss::kernel;
 
-    // 基本的系统调用分发
-    switch (syscall_number) {
-        case 0: // sys_debug_print
-            if (arg0 != 0) {
-                early_debug_print(reinterpret_cast<const char*>(arg0));
-            }
-            return 0;
-
-        case 1: // sys_exit
-            // 处理进程退出
-            return 0;
-
-        case 2: // sys_getpid
-            // 返回当前进程ID
-            return 1;  // 简化返回值
-
-        default:
-            return -1;  // 未知系统调用
+  // 基本的系统调用分发
+  switch (syscall_number) {
+  case 0: // sys_debug_print
+    if (arg0 != 0) {
+      early_debug_print(reinterpret_cast<const char *>(arg0));
     }
+    return 0;
+
+  case 1: // sys_exit
+    // 处理进程退出
+    return 0;
+
+  case 2: // sys_getpid
+    // 返回当前进程ID
+    return 1; // 简化返回值
+
+  default:
+    return -1; // 未知系统调用
+  }
 }
 
 // 内核版本信息
-const char* get_kernel_version(void) noexcept {
-    return "MOSS v1.0.0 - ARM64 Microkernel";
+const char *get_kernel_version(void) noexcept {
+  return "MOSS v1.0.0 - ARM64 Microkernel";
 }
 
-const char* get_build_info(void) noexcept {
-    return "Clang-21 C++26 - Release Build";
+const char *get_build_info(void) noexcept {
+  return "Clang-21 C++26 - Release Build";
 }
 
 // 内核内存统计
 struct KernelMemoryInfo {
-    usize total_memory;
-    usize free_memory;
-    usize kernel_heap_used;
-    usize user_heap_used;
-    u32 page_faults;
+  usize total_memory;
+  usize free_memory;
+  usize kernel_heap_used;
+  usize user_heap_used;
+  u32 page_faults;
 };
 
 KernelMemoryInfo get_kernel_memory_info(void) noexcept {
-    // 简化实现
-    return {
-        .total_memory = 1024 * 1024 * 1024,  // 1GB
-        .free_memory = 512 * 1024 * 1024,    // 512MB
-        .kernel_heap_used = 16 * 1024 * 1024, // 16MB
-        .user_heap_used = 0,
-        .page_faults = 0
-    };
+  // 简化实现
+  return {.total_memory = 1024 * 1024 * 1024,   // 1GB
+          .free_memory = 512 * 1024 * 1024,     // 512MB
+          .kernel_heap_used = 16 * 1024 * 1024, // 16MB
+          .user_heap_used = 0,
+          .page_faults = 0};
 }
 
 } // extern "C"
