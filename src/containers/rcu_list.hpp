@@ -42,7 +42,9 @@ public:
   static bool in_read_side() noexcept { return read_depth_ > 0; }
 };
 
-thread_local u32 RcuReadLock::read_depth_ = 0;
+// 在实际系统中，这应该在.cpp文件中定义
+// 为了简化，这里使用inline避免重复定义错误
+inline thread_local u32 RcuReadLock::read_depth_ = 0;
 
 // RCU保护的指针
 template <typename T> class RcuPtr {

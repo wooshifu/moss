@@ -12,6 +12,7 @@ class SlabAllocator;
 
 namespace moss::kernel::ipc {
 class SharedMemoryManager;
+class IpcManager;
 }
 
 // 在freestanding环境中定义必要的类型
@@ -240,4 +241,7 @@ SlabAllocator *g_slab_allocator = nullptr;
 namespace moss::kernel::ipc {
 // 全局共享内存管理器实例（简化实现）
 SharedMemoryManager *g_shared_memory_manager = nullptr;
+
+// 全局IPC管理器实例
+IpcManager *g_ipc_manager = nullptr;
 } // namespace moss::kernel::ipc

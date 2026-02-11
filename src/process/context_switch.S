@@ -139,8 +139,9 @@ context_switch:
 .global switch_to_user
 .type switch_to_user, @function
 switch_to_user:
-    // 设置异常返回状态
-    mov     x2, #0                // 用户模式EL0
+    // 设置异常返回状态 - 正确的EL0切换
+    // SPSR_EL1 for EL0t (EL0 with SP_EL0): M[3:0] = 0000, other flags cleared
+    mov     x2, #0x0              // EL0t mode, interrupts enabled
     msr     spsr_el1, x2
 
     // 设置用户模式栈指针

@@ -4,9 +4,27 @@
 add_library(moss_kernel OBJECT)
 
 # 添加源文件
-set(KERNEL_SOURCES kernel_main.cpp runtime_support.cpp)
+set(KERNEL_SOURCES
+    kernel_main.cpp
+    runtime_support.cpp
+    syscall_table.cpp
+    elf_loader.cpp
+)
 
-set(KERNEL_HEADERS kernel_main.hpp)
+set(KERNEL_HEADERS
+    kernel_main.hpp
+    syscall_table.hpp
+    elf_loader.hpp
+)
+
+# 添加架构特定的汇编文件
+if(MOSS_TARGET_ARCH STREQUAL "ARM64")
+    list(APPEND KERNEL_SOURCES ${CMAKE_SOURCE_DIR}/src/include/arch/arm64_syscall.S)
+elseif(MOSS_TARGET_ARCH STREQUAL "X86_64")
+    list(APPEND KERNEL_SOURCES ${CMAKE_SOURCE_DIR}/src/include/arch/x86_64_syscall.S)
+elseif(MOSS_TARGET_ARCH STREQUAL "RISCV")
+    list(APPEND KERNEL_SOURCES ${CMAKE_SOURCE_DIR}/src/include/arch/riscv_syscall.S)
+endif()
 
 # 添加源文件
 target_sources(moss_kernel PRIVATE ${KERNEL_SOURCES} ${KERNEL_HEADERS})
