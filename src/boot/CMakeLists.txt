@@ -20,16 +20,16 @@ if(MOSS_TARGET_ARCH STREQUAL "ARM64")
 elseif(MOSS_TARGET_ARCH STREQUAL "X86_64")
     list(APPEND BOOT_ARCH_SOURCES
         "arch/x86_64/start_x86_64.S"
-        # TODO: "arch/x86_64/boot_impl.cpp"
+        "arch/x86_64/boot_impl.cpp"
     )
-    message(STATUS "X86_64 启动模块: 使用存根实现")
+    message(STATUS "X86_64 启动模块: 使用统一启动接口")
 
 elseif(MOSS_TARGET_ARCH STREQUAL "RISCV")
     list(APPEND BOOT_ARCH_SOURCES
         "arch/riscv/start_riscv.S"
-        # TODO: "arch/riscv/boot_impl.cpp"
+        "arch/riscv/boot_impl.cpp"
     )
-    message(STATUS "RISC-V 启动模块: 使用存根实现")
+    message(STATUS "RISC-V 启动模块: 使用统一启动接口")
 
 else()
     message(FATAL_ERROR "不支持的目标架构: ${MOSS_TARGET_ARCH}")
@@ -124,10 +124,10 @@ endif()
 # 架构验证
 if(MOSS_TARGET_ARCH STREQUAL "ARM64" AND ALL_BOOT_SOURCES)
     message(STATUS "✓ ARM64启动模块：统一接口 + 完整实现")
-elseif(MOSS_TARGET_ARCH STREQUAL "X86_64")
-    message(STATUS "⚠ x86_64启动模块：存根实现，需要boot_impl.cpp")
-elseif(MOSS_TARGET_ARCH STREQUAL "RISCV")
-    message(STATUS "⚠ RISC-V启动模块：存根实现，需要boot_impl.cpp")
+elseif(MOSS_TARGET_ARCH STREQUAL "X86_64" AND ALL_BOOT_SOURCES)
+    message(STATUS "✓ x86_64启动模块：统一接口 + 完整实现")
+elseif(MOSS_TARGET_ARCH STREQUAL "RISCV" AND ALL_BOOT_SOURCES)
+    message(STATUS "✓ RISC-V启动模块：统一接口 + 完整实现")
 endif()
 
 message(STATUS "统一启动模块配置完成")

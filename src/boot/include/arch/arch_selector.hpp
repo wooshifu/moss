@@ -28,13 +28,35 @@ using ArchBoot = ARM64BootImpl;
 #define MOSS_CURRENT_ARCH_ID 1
 
 #elif defined(__x86_64__) || defined(__x86_64) || defined(MOSS_ARCH_X86_64)
-class X86_64BootImpl;
+// x86_64实现类声明
+class X86_64BootImpl : public ArchBootInterface {
+public:
+    static moss::kernel::VoidResult hardware_early_init(BootContext& ctx) noexcept;
+    static moss::kernel::VoidResult setup_memory_management(BootContext& ctx) noexcept;
+    static moss::kernel::VoidResult setup_interrupts_and_exceptions(BootContext& ctx) noexcept;
+    static moss::kernel::VoidResult setup_smp_support(BootContext& ctx) noexcept;
+    static moss::kernel::VoidResult finalize_arch_init(BootContext& ctx) noexcept;
+    static moss::kernel::VoidResult detect_memory_layout(BootContext& ctx) noexcept;
+    static u32 get_current_cpu_id() noexcept;
+    [[noreturn]] static void arch_panic(const char* message) noexcept;
+};
 using ArchBoot = X86_64BootImpl;
 #define MOSS_CURRENT_ARCH "x86_64"
 #define MOSS_CURRENT_ARCH_ID 2
 
 #elif defined(__riscv) || defined(__riscv__) || defined(MOSS_ARCH_RISCV)
-class RISCVBootImpl;
+// RISC-V实现类声明
+class RISCVBootImpl : public ArchBootInterface {
+public:
+    static moss::kernel::VoidResult hardware_early_init(BootContext& ctx) noexcept;
+    static moss::kernel::VoidResult setup_memory_management(BootContext& ctx) noexcept;
+    static moss::kernel::VoidResult setup_interrupts_and_exceptions(BootContext& ctx) noexcept;
+    static moss::kernel::VoidResult setup_smp_support(BootContext& ctx) noexcept;
+    static moss::kernel::VoidResult finalize_arch_init(BootContext& ctx) noexcept;
+    static moss::kernel::VoidResult detect_memory_layout(BootContext& ctx) noexcept;
+    static u32 get_current_cpu_id() noexcept;
+    [[noreturn]] static void arch_panic(const char* message) noexcept;
+};
 using ArchBoot = RISCVBootImpl;
 #define MOSS_CURRENT_ARCH "RISC-V"
 #define MOSS_CURRENT_ARCH_ID 3
