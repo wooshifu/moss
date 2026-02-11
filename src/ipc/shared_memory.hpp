@@ -386,6 +386,7 @@ private:
             case ShmType::LargePage:
                 return mm::MemoryAttributes::NORMAL_CACHEABLE;
             default:
+                // 默认使用普通缓存内存
                 return mm::MemoryAttributes::NORMAL_CACHEABLE;
         }
     }

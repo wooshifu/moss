@@ -12,6 +12,11 @@ wheels/
 # Git worktrees
 .worktrees/
 
+# Ruff cache
 .cache/
 
+# Clangd database file
 compile_commands.json
+
+# Claude files
+.claude/
