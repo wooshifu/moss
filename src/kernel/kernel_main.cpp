@@ -2,6 +2,7 @@
 // 系统启动入口和全局实例管理
 
 #include "kernel_main.hpp"
+#include "../mm/kernel_memory.hpp"  // 内核内存分配接口
 // cstring 不需要 - 内核环境使用自定义内存操作
 
 // 使用内核命名空间的类型
@@ -35,6 +36,9 @@ void test_memory_management(void) noexcept;
 void test_process_management(void) noexcept;
 void test_ipc_system(void) noexcept;
 void test_device_management(void) noexcept;
+
+// 早期调试输出函数声明
+void early_debug_print(const char *message) noexcept;
 
 // C风格入口函数（从汇编启动代码调用）
 
@@ -174,13 +178,104 @@ void test_memory_management(void) noexcept {
     return;
   }
 
-  // 测试页表映射 (暂时注释掉，避免未使用变量警告)
+  // 测试统一内存管理系统
+  early_debug_print("🧪 开始测试统一内存管理系统...\n");
+
+  // 检查内存系统健康状态
+  if (!mm::is_memory_system_healthy()) {
+    early_debug_print("❌ 内存系统状态不健康\n");
+    return;
+  }
+
+  // 测试基本内存分配
+  void* ptr1 = mm::kmalloc(1024);
+  if (ptr1) {
+    early_debug_print("✅ kmalloc(1024) 成功\n");
+
+    // 测试内存释放
+    mm::kfree(ptr1);
+    early_debug_print("✅ kfree() 成功\n");
+  } else {
+    early_debug_print("❌ kmalloc(1024) 失败\n");
+  }
+
+  // 测试零初始化分配
+  void* ptr2 = mm::kzalloc(2048);
+  if (ptr2) {
+    early_debug_print("✅ kzalloc(2048) 成功\n");
+
+    // 检查是否真的零初始化
+    bool is_zero = true;
+    for (usize i = 0; i < 2048; ++i) {
+      if (static_cast<char*>(ptr2)[i] != 0) {
+        is_zero = false;
+        break;
+      }
+    }
+
+    if (is_zero) {
+      early_debug_print("✅ 零初始化验证成功\n");
+    } else {
+      early_debug_print("❌ 零初始化验证失败\n");
+    }
+
+    mm::kfree_sized(ptr2, 2048);
+    early_debug_print("✅ kfree_sized() 成功\n");
+  } else {
+    early_debug_print("❌ kzalloc(2048) 失败\n");
+  }
+
+  // 测试对齐分配
+  void* ptr3 = mm::kmalloc_aligned(512, 64);
+  if (ptr3) {
+    usize addr = reinterpret_cast<usize>(ptr3);
+    if (addr % 64 == 0) {
+      early_debug_print("✅ 对齐分配验证成功\n");
+    } else {
+      early_debug_print("❌ 对齐分配验证失败\n");
+    }
+    mm::kfree(ptr3);
+  } else {
+    early_debug_print("❌ kmalloc_aligned() 失败\n");
+  }
+
+  // 测试原子分配
+  void* ptr4 = mm::kmalloc_atomic(256);
+  if (ptr4) {
+    early_debug_print("✅ kmalloc_atomic(256) 成功\n");
+    mm::kfree(ptr4);
+  } else {
+    early_debug_print("❌ kmalloc_atomic(256) 失败\n");
+  }
+
+  // 获取内存压力信息
+  auto pressure = mm::get_memory_pressure();
+  const char* pressure_str = "UNKNOWN";
+  switch (pressure) {
+    case mm::MemoryPressure::LOW: pressure_str = "LOW"; break;
+    case mm::MemoryPressure::MEDIUM: pressure_str = "MEDIUM"; break;
+    case mm::MemoryPressure::HIGH: pressure_str = "HIGH"; break;
+    case mm::MemoryPressure::CRITICAL: pressure_str = "CRITICAL"; break;
+    default: pressure_str = "UNKNOWN"; break;
+  }
+  early_debug_print("📊 内存压力: ");
+  early_debug_print(pressure_str);
+  early_debug_print("\n");
+
+  // 打印内存统计信息
+  mm::print_memory_stats();
+
+  // 检查内存泄漏
+  mm::check_memory_leaks();
+
+  early_debug_print("✅ 内存管理测试完成\n");
+
+  // 测试页表映射 (保持原有测试，用于兼容性)
   [[maybe_unused]] PhysAddr test_phys = 0x80000000;
   [[maybe_unused]] VirtAddr test_virt = 0xFFFF800080000000;
 
   // 简单映射测试（实际需要更完善的测试）
-  // auto map_result = g_page_table_manager->map_page(test_virt, test_phys,
-  // ...);
+  // auto map_result = g_page_table_manager->map_page(test_virt, test_phys, ...);
 }
 
 // 测试进程管理
@@ -282,7 +377,7 @@ void test_device_management(void) noexcept {
 }
 
 // 早期调试输出（在UART驱动初始化前使用）
-void early_debug_print(const char *message) noexcept {
+extern "C" void early_debug_print(const char *message) noexcept {
   if (message == nullptr)
     return;
 
