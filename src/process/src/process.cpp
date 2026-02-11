@@ -1,8 +1,8 @@
 // MOSS进程管理器实现
 // 支持用户地址空间管理和ELF程序加载
 
-#include "process.hpp"
-#include "cfs_scheduler.hpp"
+#include "process/process.hpp"
+#include "process/cfs_scheduler.hpp"
 #include "mm/kernel_memory.hpp"
 #include "mm/page_table.hpp"
 #include "kernel/elf_loader.hpp"

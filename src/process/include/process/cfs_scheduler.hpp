@@ -732,6 +732,66 @@ public:
     }
   }
 
+  // 🧪 验证任务选择多样性
+  void verify_task_diversity() noexcept {
+    sched_log("🧪 开始验证任务选择多样性...\n");
+
+    // 记录在短时间内选择的不同任务
+    u32 unique_tids[20] = {0}; // 记录被选择的任务
+    u32 unique_count = 0;
+    u32 total_selections = 0;
+
+    // 进行50次快速选择测试
+    for (u32 test_round = 0; test_round < 50; test_round++) {
+      for (u32 cpu = 0; cpu < MAX_CPUS; cpu++) {
+        Thread* task = pick_next_task(cpu);
+        if (task != nullptr && task->tid >= 1001 && task->tid <= 1020) {
+          total_selections++;
+          u32 tid_index = static_cast<u32>(task->tid) - 1001;
+
+          // 记录这个TID
+          if (unique_tids[tid_index] == 0) {
+            unique_tids[tid_index] = 1;
+            unique_count++;
+            sched_log("   🎯 首次选择 TID=");
+            sched_log_uint(static_cast<u32>(task->tid));
+            sched_log(" nice=");
+            i32 nice = task->se.nice;
+            if (nice >= 0) sched_log("+");
+            sched_log_uint(static_cast<u32>(nice >= 0 ? nice : -nice));
+            if (nice < 0) sched_log("-");
+            sched_log(" vruntime=");
+            sched_log_u64(task->se.vruntime);
+            sched_log("\n");
+          }
+
+          // 模拟小的vruntime更新
+          task->se.vruntime += 10000;
+
+          // 重新入队
+          enqueue_task(task, cpu);
+        }
+      }
+    }
+
+    sched_log("📊 多样性验证结果:\n");
+    sched_log("   总选择次数: ");
+    sched_log_uint(total_selections);
+    sched_log("\n");
+    sched_log("   不同任务数: ");
+    sched_log_uint(unique_count);
+    sched_log("/20\n");
+
+    if (unique_count >= 15) {
+      sched_log("✅ 调度器任务多样性验证通过 - 能选择多数任务\n");
+    } else if (unique_count >= 5) {
+      sched_log("⚠️ 调度器任务多样性部分通过 - 选择了部分任务\n");
+    } else {
+      sched_log("❌ 调度器任务多样性验证失败 - 选择任务太少\n");
+    }
+    sched_log("🎯 开始正式调度循环...\n");
+  }
+
 private:
   // 简单的当前任务跟踪 (每个CPU一个当前任务指针)
   static Thread* current_running_tasks_[MAX_CPUS];
@@ -739,7 +799,7 @@ private:
 public:
   // 设置当前运行任务 (在上下文切换时调用)
   static void set_current_task(Thread* task) noexcept {
-    u32 cpu = get_current_cpu_id();
+    u32 cpu = CfsScheduler::get_current_cpu_id();
     if (cpu < MAX_CPUS) {
       current_running_tasks_[cpu] = task;
     }
@@ -747,7 +807,7 @@ public:
 
   // 获取当前运行任务
   static Thread* get_current_task() noexcept {
-    u32 cpu = get_current_cpu_id();
+    u32 cpu = CfsScheduler::get_current_cpu_id();
     return (cpu < MAX_CPUS) ? current_running_tasks_[cpu] : nullptr;
   }
 
@@ -768,10 +828,10 @@ public:
     sched_log(" weight=");
     sched_log_uint(task_weight);
     sched_log(" CPU=");
-    sched_log_uint(get_current_cpu_id());
+    sched_log_uint(CfsScheduler::get_current_cpu_id());
     sched_log("\n");
 
-    u64 last_print_time = get_current_time();
+    u64 last_print_time = CfsScheduler::get_current_time();
     u64 print_counter = 0;
     u64 loop_counter = 0;
 
@@ -793,7 +853,7 @@ public:
 
     while (true) {
       loop_counter++;
-      u64 current_time = get_current_time();
+      u64 current_time = CfsScheduler::get_current_time();
       u64 time_elapsed = current_time - last_print_time;
 
       // 根据优先级调整的打印间隔
@@ -808,7 +868,7 @@ public:
         sched_log_uint(static_cast<u32>(task_nice >= 0 ? task_nice : -task_nice));
         if (task_nice < 0) sched_log("-");
         sched_log(" CPU=");
-        sched_log_uint(get_current_cpu_id());
+        sched_log_uint(CfsScheduler::get_current_cpu_id());
         sched_log(" 时间=");
         sched_log_u64(current_time);
         sched_log(" 循环=");
@@ -878,7 +938,7 @@ public:
     sched_log_uint(static_cast<u32>(MAX_CPUS));
     sched_log("\n");
 
-    u32 current_cpu = get_current_cpu_id();
+    u32 current_cpu = CfsScheduler::get_current_cpu_id();
     sched_log("🎯 当前CPU ID: ");
     sched_log_uint(current_cpu);
     sched_log("\n");
@@ -887,12 +947,15 @@ public:
     // 创建测试任务来验证调度器工作
     create_test_task();
 
+    // 🧪 添加快速验证：测试任务选择多样性
+    verify_task_diversity();
+
     u32 idle_cycles = 0;
     u32 active_cycles = 0;
     constexpr u32 LOG_INTERVAL = 1000000; // 每百万次循环输出一次统计
 
     while (true) {
-      current_cpu = get_current_cpu_id();
+      current_cpu = CfsScheduler::get_current_cpu_id();
 
       // 🔧 修复：尝试从所有CPU队列中找任务，而不仅仅是当前CPU
       Thread *next_task = nullptr;
@@ -982,7 +1045,7 @@ public:
           }
 
           // 记录任务开始运行时间
-          u64 start_time = get_current_time();
+          u64 start_time = CfsScheduler::get_current_time();
 
           // 模拟任务执行
           for (volatile u32 work = 0; work < work_amount; work = work + 1) {
@@ -990,7 +1053,7 @@ public:
           }
 
           // 计算执行时间并更新vruntime
-          u64 end_time = get_current_time();
+          u64 end_time = CfsScheduler::get_current_time();
           u64 delta_exec = (end_time > start_time) ? (end_time - start_time) : 1000;
 
           // 更新任务的运行时统计
@@ -998,52 +1061,8 @@ public:
 
           // 🔧 关键：重新将任务加入调度队列
           // 任务运行后vruntime增加，重新插入红黑树的正确位置
-
-          // 🔍 调试：检查任务状态
-          sched_log("🔍 任务状态检查: TID=");
-          sched_log_uint(static_cast<u32>(next_task->tid));
-          sched_log(" state=");
-          sched_log_uint(static_cast<u32>(next_task->state));
-          sched_log(" (Running=");
-          sched_log_uint(static_cast<u32>(ProcessState::Running));
-          sched_log(")\n");
-
-          if (next_task->state == ProcessState::Running) {
-            sched_log("✅ 任务状态正确，开始重新入队\n");
-            next_task->state = ProcessState::Ready;
-            enqueue_task(next_task, current_cpu);
-          } else {
-            sched_log("❌ 任务状态不是Running，无法重新入队\n");
-          }
-
-            // 🔍 调试：检查重新入队后的队列状态
-            static u64 enqueue_debug = 0;
-            enqueue_debug++;
-            if (enqueue_debug % 1000000 == 0) {
-              sched_log("🔍 重新入队调试 - TID=");
-              sched_log_uint(static_cast<u32>(next_task->tid));
-              sched_log(" vruntime=");
-              sched_log_u64(next_task->se.vruntime);
-              sched_log(" CPU");
-              sched_log_uint(current_cpu);
-              sched_log("队列任务数=");
-              sched_log_uint(get_cpu_nr_running(current_cpu));
-              sched_log("\n");
-
-              // 检查下一个将被选择的任务
-              Thread* peek_next = runqueues_.get_cpu(current_cpu).pick_next_task();
-              if (peek_next != nullptr) {
-                sched_log("   下次将调度: TID=");
-                sched_log_uint(static_cast<u32>(peek_next->tid));
-                sched_log(" vruntime=");
-                sched_log_u64(peek_next->se.vruntime);
-                sched_log("\n");
-
-                // 关键：不要忘记将peek出的任务重新入队！
-                runqueues_.get_cpu(current_cpu).enqueue_task(peek_next);
-              }
-            }
-          }
+          next_task->state = ProcessState::Ready;
+          enqueue_task(next_task, current_cpu);
         }
 
         // 偶尔输出活动日志（避免日志过多）
@@ -1059,7 +1078,7 @@ public:
 
         // 简化的上下文切换（不调用完整的context_switch_to_task）
         // 在真正的内核中，这里会进行完整的上下文切换
-        set_current_task(next_task);
+        CfsScheduler::set_current_task(next_task);
         record_context_switch();
       } else {
         idle_cycles++;
@@ -1126,7 +1145,7 @@ private:
       return;
 
     // 设置当前任务 (用于任务身份识别)
-    set_current_task(task);
+    CfsScheduler::set_current_task(task);
 
     // 更新任务状态
     task->state = ProcessState::Running;
@@ -1155,7 +1174,7 @@ private:
   // 检查是否需要重新调度
   void check_need_resched() noexcept {
     // 简化实现：定期检查抢占
-    u32 current_cpu = get_current_cpu_id();
+    u32 current_cpu = CfsScheduler::get_current_cpu_id();
 
     if (runqueues_.get_cpu(current_cpu).nr_running() > 0) {
       // 有其他任务在等待，可能需要抢占
