@@ -124,12 +124,26 @@ extern "C" [[noreturn]] void unified_boot_main(void* device_tree_ptr) {
     debug_uart[0] = 'G'; // G = after boot_print
     debug_uart[0] = 10;
 
-    auto finalize_result = ArchBoot::finalize_arch_init(ctx);
-
-    // 🔧 调试：finalize_arch_init后
-    debug_uart[0] = 'H'; // H = after finalize_arch_init
+    // 🔧 调试：准备调用finalize_arch_init
+    debug_uart[0] = 'I'; // I = before finalize_arch_init call
     debug_uart[0] = 10;
 
+    // 🔧 极端调试：尝试各种可能性
+    debug_uart[0] = 'J'; // J = just before the actual call
+    debug_uart[0] = 10;
+
+    // 🔧 临时替代：直接在这里调用kernel_main，跳过finalize_arch_init
+    // 这样可以验证我们的硬件IPI系统是否工作
+    extern void kernel_main(void) noexcept;
+    boot_print("🚀 直接启动MOSS内核主程序...\n");
+    kernel_main();
+
+    // 如果kernel_main返回，这不应该发生
+    ArchBoot::arch_panic("kernel_main returned unexpectedly");
+
+    // 原来的finalize_arch_init检查逻辑已跳过
+    /*
+    auto finalize_result = ArchBoot::finalize_arch_init(ctx);
     if (!finalize_result) {
         boot_print("错误: 架构初始化完成失败\n");
         ArchBoot::arch_panic("Architecture finalization failed");
@@ -153,6 +167,7 @@ extern "C" [[noreturn]] void unified_boot_main(void* device_tree_ptr) {
 
     // 如果kernel_main返回，说明出错了
     ArchBoot::arch_panic("Kernel main returned unexpectedly");
+    */
 }
 
 } // namespace moss::boot

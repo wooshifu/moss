@@ -7,6 +7,7 @@ add_library(moss_interrupts OBJECT)
 target_sources(moss_interrupts PRIVATE
     src/interrupts.cpp
     src/ipi_simple.cpp
+    src/ipi_hardware_simple.cpp
 )
 
 # 标准包含目录配置（使用新的目录结构）

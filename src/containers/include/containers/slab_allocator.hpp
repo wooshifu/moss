@@ -6,7 +6,7 @@
 #include "../../../include/result.hpp"
 #include "../../../include/types.hpp"
 #include "atomic_types.hpp"
-#include "mm/page_frame_allocator.hpp"
+#include "../../../mm/include/mm/page_frame_allocator.hpp"
 
 // 包含统一的内核标准库支持
 // Removed kernel_std.hpp include to avoid conflicts
