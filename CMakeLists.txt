@@ -327,6 +327,9 @@ add_subdirectory(src/kernel)
 # 启动模块：启动代码（独立）
 add_subdirectory(src/boot)
 
+# 测试框架：单元测试基础设施（独立）
+add_subdirectory(src/test)
+
 # === 创建最终内核可执行文件 ===
 add_executable(moss.elf)
 
