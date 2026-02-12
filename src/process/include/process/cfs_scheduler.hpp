@@ -267,12 +267,36 @@ public:
     if (current == nullptr)
       return;
 
+    // 记录更新前的vruntime
+    u64 old_vruntime = current->se.vruntime;
+
     // 更新执行时间
     current->se.sum_exec_runtime += delta_exec;
 
     // 计算加权的虚拟运行时间
     u64 weighted_delta = calc_delta_fair(delta_exec, current);
     current->se.vruntime += weighted_delta;
+
+    // 🔧 Production级别修复：vruntime改变时重新平衡红黑树
+    u64 vruntime_diff = current->se.vruntime - old_vruntime;
+    if (vruntime_diff > 5000) { // 只有显著变化才重新平衡
+      // 从红黑树中移除任务
+      RbNode<Thread>* node = find_node(current);
+      if (node != nullptr) {
+        rb_remove(node);
+
+        // 用新的vruntime重新插入
+        rb_insert(node);
+
+        sched_log("🔄 任务vruntime显著变化，重新平衡: TID=");
+        sched_log_uint(static_cast<u32>(current->tid));
+        sched_log(" old=");
+        sched_log_u64(old_vruntime);
+        sched_log(" new=");
+        sched_log_u64(current->se.vruntime);
+        sched_log("\n");
+      }
+    }
 
     // 更新最小vruntime（单调递增）
     min_vruntime_ = kernel_max(min_vruntime_, current->se.vruntime);
