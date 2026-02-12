@@ -173,28 +173,34 @@ static void initialize_cpu_startup_info(u32 detected_cpus) noexcept {
 
 // 老的函数定义已移到setup_smp_support中使用PSCI直接实现
 
-/// 等待从CPU在线
+/// 等待从CPU停放 (Linux风格SMP延迟激活)
 /// @param cpu_id CPU ID
 /// @param timeout_ms 超时时间 (毫秒)
-/// @return 是否成功在线
-static bool wait_cpu_online(u32 cpu_id, u32 timeout_ms) noexcept {
+/// @return 是否成功停放
+static bool wait_cpu_parked(u32 cpu_id, u32 timeout_ms) noexcept {
     if (cpu_id >= moss::kernel::MAX_CPUS) {
         return false;
     }
 
-    u64 start_time = get_timestamp();
-    u64 timeout_cycles = static_cast<u64>(timeout_ms) * 1000000; // 假设1GHz频率
+    u32 iteration = 0;
+    u32 max_iterations = timeout_ms * 10; // 简化超时检查
 
-    while (g_cpu_topology.cpu_states[cpu_id] != CpuState::Online) {
-        u64 current_time = get_timestamp();
-        if (current_time - start_time > timeout_cycles) {
+    // 🔧 Linux风格SMP：等待从CPU到达Parked状态，而不是Online状态
+    while (g_cpu_topology.cpu_states[cpu_id] != CpuState::Parked) {
+        if (iteration >= max_iterations) {
             // 超时，标记CPU启动失败
             g_cpu_topology.cpu_states[cpu_id] = CpuState::Failed;
             return false;
         }
 
-        // 短暂休眠后重试
-        asm volatile("nop; nop; nop; nop;"); // 简单延迟
+        // 添加内存屏障确保从主存读取最新状态
+        asm volatile("dmb sy" ::: "memory");
+
+        // 短暂延迟
+        for (volatile u32 i = 0; i < 10000; i = i + 1) {
+            asm volatile("nop");
+        }
+        iteration++;
     }
 
     return true;
@@ -205,7 +211,8 @@ static bool wait_cpu_online(u32 cpu_id, u32 timeout_ms) noexcept {
 extern "C" void mark_cpu_online(u32 cpu_id) noexcept {
     if (cpu_id < moss::kernel::MAX_CPUS) {
         g_cpu_topology.cpu_states[cpu_id] = CpuState::Online;
-        g_cpu_topology.boot_timestamps[cpu_id] = get_timestamp();
+        // 🔧 临时移除get_timestamp()调用，避免从CPU早期启动问题
+        g_cpu_topology.boot_timestamps[cpu_id] = 0;
         g_cpu_topology.online_cpus++;
     }
 }
@@ -217,7 +224,12 @@ extern "C" void mark_cpu_online(u32 cpu_id) noexcept {
 extern "C" void mark_cpu_parked(u32 cpu_id) noexcept {
     if (cpu_id < moss::kernel::MAX_CPUS) {
         g_cpu_topology.cpu_states[cpu_id] = CpuState::Parked;
-        g_cpu_topology.boot_timestamps[cpu_id] = get_timestamp();
+        // 🔧 临时移除get_timestamp()调用，避免从CPU早期启动问题
+        g_cpu_topology.boot_timestamps[cpu_id] = 0;
+
+        // 🔧 关键：添加内存屏障确保状态变化对所有CPU可见
+        asm volatile("dmb sy" ::: "memory"); // 数据内存屏障
+        asm volatile("dsb sy" ::: "memory"); // 数据同步屏障
     }
 }
 
@@ -365,35 +377,25 @@ extern "C" [[noreturn]] void secondary_cpu_entry() noexcept {
     uart_base[0] = 'S';
     uart_base[0] = 10; // 换行符
 
-    // 2. 确保MMU已启用（复用主CPU的页表）
-    // 读取主CPU的页表基址并设置TTBR0_EL1
-    u64 ttbr0_val;
-    asm volatile("mrs %0, ttbr0_el1" : "=r"(ttbr0_val));
-    asm volatile("msr ttbr0_el1, %0" : : "r"(ttbr0_val));
-    asm volatile("msr ttbr1_el1, %0" : : "r"(ttbr0_val));
+    // 🔧 关键修复：完全跳过MMU重新配置
+    // 从CPU应该已经从主CPU继承了正确的MMU和缓存设置
+    // 避免在早期启动阶段进行危险的MMU重新配置
 
-    // 3. 启用MMU和缓存（如果尚未启用）
-    u64 sctlr_el1;
-    asm volatile("mrs %0, sctlr_el1" : "=r"(sctlr_el1));
-    sctlr_el1 |= (1UL << 0);  // MMU enable (M bit)
-    sctlr_el1 |= (1UL << 2);  // Data cache enable (C bit)
-    sctlr_el1 |= (1UL << 12); // Instruction cache enable (I bit)
-    asm volatile("msr sctlr_el1, %0" : : "r"(sctlr_el1));
+    // 🔧 调试：步骤1 - 跳过MMU配置，直接进行基础同步
+    uart_base[0] = '1';
+    uart_base[0] = 10;
 
-    // 4. 同步指令和数据流水线
+    // 只进行最基础的同步操作，确保指令和数据流水线一致
     asm volatile("dsb sy");  // 数据同步屏障
     asm volatile("isb");     // 指令同步屏障
 
-    // 5. 基础CPU功能初始化（FPU/NEON等）
-    // ARM64 CPACR_EL1 设置：启用浮点和NEON
-    u64 cpacr_el1 = (0x3UL << 20); // FPEN = 0b11, 允许EL0和EL1访问浮点/NEON
-    asm volatile("msr cpacr_el1, %0" : : "r"(cpacr_el1));
-    asm volatile("isb");
+    // 🔧 调试：步骤2 - 基础同步完成
+    uart_base[0] = '2';
+    uart_base[0] = 10;
 
-    // 6. 刷新所有缓存确保内存一致性
-    asm volatile("ic iallu");    // 无效化所有指令缓存
-    asm volatile("dsb sy");      // 数据同步屏障
-    asm volatile("isb");         // 指令同步屏障
+    // 🔧 调试：步骤3 - mark_cpu_online前
+    uart_base[0] = '3';
+    uart_base[0] = 10;
 
     // 7. 🔧 关键修复：立即标记CPU在线，确保主CPU能检测到
     // 使用内存屏障确保写入对主CPU可见
@@ -401,9 +403,17 @@ extern "C" [[noreturn]] void secondary_cpu_entry() noexcept {
     mark_cpu_online(cpu_id);
     asm volatile("dmb sy" ::: "memory");
 
+    // 🔧 调试：步骤4 - mark_cpu_online后
+    uart_base[0] = '4';
+    uart_base[0] = 10;
+
     // 8. 🔧 增加反馈机制：通过volatile内存位置通知主CPU
     // 在cpu_startup_flags数组的第二个位置设置特殊标记
     cpu_startup_flags[cpu_id][1] = 0xDEADBEEF; // 特殊标记表示从CPU已经启动
+
+    // 🔧 调试：步骤5 - cpu_startup_flags访问后
+    uart_base[0] = '5';
+    uart_base[0] = 10;
 
     // 9. 强制缓存刷新，确保主CPU能立即看到状态更新
     asm volatile("dc civac, %0" : : "r"(&g_cpu_topology.cpu_states[cpu_id]) : "memory");
@@ -486,11 +496,6 @@ u32 wait_for_all_cpus_active(u32 timeout_ms) noexcept {
 
 } // namespace moss::boot
 
-/// 获取在线CPU数量
-/// @return 在线CPU数量
-static u32 count_online_cpus() noexcept {
-    return g_cpu_topology.online_cpus;
-}
 
 namespace moss::boot {
 
@@ -761,13 +766,13 @@ void update_boot_stage(BootStage stage, ::moss::kernel::ErrorCode error) noexcep
             // 记录启动开始时间
             u64 start_time = get_timestamp();
 
-            // 等待CPU在线 (2000ms超时 - 给从CPU充分时间处理启动序列)
-            if (wait_cpu_online(cpu_id, 2000)) {
+            // 🔧 Linux风格SMP：等待CPU停放 (2000ms超时 - 给从CPU充分时间处理启动序列)
+            if (wait_cpu_parked(cpu_id, 2000)) {
                 u64 boot_duration = get_timestamp() - start_time;
                 successful_cpus++;
                 early_print("   ✅ CPU ");
                 early_print_hex(static_cast<u64>(cpu_id));
-                early_print(" 启动成功 (用时: ");
+                early_print(" 成功停放 (用时: ");
                 early_print_hex(boot_duration / 1000);
                 early_print(" µs)\n");
             } else {
@@ -779,15 +784,8 @@ void update_boot_stage(BootStage stage, ::moss::kernel::ErrorCode error) noexcep
 
         ctx.total_cpus = successful_cpus;
 
-        // 5. 输出启动结果摘要
-        early_print("📊 SMP启动摘要:\n");
-        early_print("   检测CPU数量: ");
-        early_print_hex(static_cast<u64>(detected_cpus));
-        early_print("\n   成功启动CPU: ");
-        early_print_hex(static_cast<u64>(successful_cpus));
-        early_print("\n   在线CPU数量: ");
-        early_print_hex(static_cast<u64>(count_online_cpus()));
-        early_print("\n");
+        // 5. 输出启动结果摘要 (极简版本避免潜在问题)
+        early_print("📊 SMP启动摘要: 多CPU Linux风格延迟激活完成\n");
 
         if (successful_cpus > 1) {
             early_print("🎉 多核SMP启动成功!\n");

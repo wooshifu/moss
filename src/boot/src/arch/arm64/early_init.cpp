@@ -395,12 +395,20 @@ extern "C" void early_main(void *device_tree_ptr) {
     return;
   }
 
-  early_print("早期初始化完成，转交给内核主程序...\n");
+  early_print("早期初始化完成，转交给统一启动流程...\n");
   early_print("\n");
 
-  // 调用内核主程序，这将启动统一内存管理系统
-  early_print("🚀 启动MOSS内核主程序...\n");
-  kernel_main();
+  // 🔧 关键修复：调用统一启动流程，包含完整的SMP支持和Linux风格延迟激活
+  early_print("🚀 进入统一启动流程（包含Linux风格SMP支持）...\n");
+
+  // 声明统一启动函数
+  extern void unified_boot_main(void* device_tree_ptr);
+
+  // 调用统一启动流程，这将：
+  // 1. 完成所有启动阶段（包括SMP支持）
+  // 2. 调用kernel_main()
+  // 3. 在kernel中执行Linux风格延迟激活
+  unified_boot_main(device_tree_ptr);
 
   // 执行干净的关闭 - 使用semihosting退出
 #if defined(__aarch64__) || defined(MOSS_ARCH_ARM64)
