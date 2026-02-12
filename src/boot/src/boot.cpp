@@ -106,6 +106,12 @@ extern "C" [[noreturn]] void unified_boot_main(void* device_tree_ptr) {
         ArchBoot::arch_panic("SMP setup failed");
     }
 
+    // 🔧 关键调试：SMP完成后立即测试
+    volatile u8* uart_post_smp = reinterpret_cast<volatile u8*>(0x9000000);
+    uart_post_smp[0] = 'P'; // P = Post-SMP completion
+    uart_post_smp[0] = 10;
+    boot_print("阶段4: SMP支持设置完成\n");
+
     // 🔧 调试：阶段5入口
     volatile u8* debug_uart = reinterpret_cast<volatile u8*>(0x9000000);
     debug_uart[0] = 'F'; // F = Finalize stage entry
