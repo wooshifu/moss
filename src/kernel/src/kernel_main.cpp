@@ -509,7 +509,7 @@ long system_call_handler(long syscall_number, long arg0, long arg1,
 
 // 内核版本信息
 const char *get_kernel_version(void) noexcept {
-  return "MOSS v1.0.0 - ARM64 Microkernel";
+  return "MOSS v1.0.0 - ARM64 Hybrid Kernel";
 }
 
 const char *get_build_info(void) noexcept {
