@@ -426,60 +426,28 @@ if(MOSS_BUILD_TESTS)
   message(STATUS "启用单元测试框架构建")
   add_subdirectory(src/test)
 
-  # 创建测试内核目标 moss.test.elf
-  add_executable(moss.test.elf)
+  # 🧪 为主内核添加测试模式支持
+  target_link_libraries(moss.elf PRIVATE moss_test_framework)
+  target_compile_definitions(moss_kernel PRIVATE MOSS_TEST_MODE=1)
 
-  # 测试内核源文件 - 使用精简的内核组件
-  target_sources(moss.test.elf PRIVATE
-    src/test/test_main.cpp
-    src/test/minimal_boot_support.cpp
-  )
-
-  # 测试内核依赖 - 仅链接必要的测试模块，避免启动冲突
-  target_link_libraries(moss.test.elf PRIVATE
-    moss_containers
-    moss_mm
-    moss_process
-    moss_ipc
-    moss_drivers
-    moss_interrupts
-    moss_test_framework
-  )
-
-  # 测试内核链接配置 - 不重复添加链接器脚本
-  target_link_options(moss.test.elf PRIVATE
-    -fuse-ld=lld
-    -nostdlib
-    -nostartfiles
-  )
-
-  # 设置输出目录
-  set_target_properties(moss.test.elf PROPERTIES
-    RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin
-  )
-
-  # 生成测试内核的反汇编和二进制文件
+  # 创建测试内核别名 - 使用主内核但标记为测试模式
   add_custom_command(
-    TARGET moss.test.elf
+    TARGET moss.elf
     POST_BUILD
-    COMMAND ${OBJDUMP_CMD} -Cd $<TARGET_FILE:moss.test.elf> > moss.test.dis
-    COMMAND ${OBJDUMP_CMD} -Ct $<TARGET_FILE:moss.test.elf> | sort > moss.test.sym
-    COMMAND ${OBJCOPY_CMD} -O binary $<TARGET_FILE:moss.test.elf> moss.test.bin
-    WORKING_DIRECTORY ${CMAKE_BINARY_DIR}
-    COMMENT "Generating test kernel disassembly and binary files"
+    COMMAND ${CMAKE_COMMAND} -E copy ${CMAKE_BINARY_DIR}/bin/moss.elf ${CMAKE_BINARY_DIR}/bin/moss.test.elf
+    COMMAND ${CMAKE_COMMAND} -E copy ${CMAKE_BINARY_DIR}/moss.bin ${CMAKE_BINARY_DIR}/moss.test.bin
+    COMMENT "Creating test mode kernel files"
   )
 
-  # 修改test目标使用moss.test.elf
-  if(EXISTS "${CMAKE_BINARY_DIR}/run_qemu.sh")
-    add_custom_target(
-      test-kernel
-      COMMAND bash ${CMAKE_BINARY_DIR}/run_qemu_test.sh
-      DEPENDS moss.test.elf
-      COMMENT "Running MOSS unit tests in QEMU (${MOSS_TARGET_ARCH})"
-    )
-  endif()
+  # 修改test目标使用测试模式内核
+  add_custom_target(
+    test-kernel
+    COMMAND bash ${CMAKE_BINARY_DIR}/run_qemu.sh
+    DEPENDS moss.elf
+    COMMENT "Running MOSS unit tests in QEMU (${MOSS_TARGET_ARCH})"
+  )
 
-  message(STATUS "测试内核目标: moss.test.elf")
+  message(STATUS "测试模式已启用 - moss.elf将包含单元测试功能")
 else()
   message(STATUS "跳过单元测试框架构建")
 endif()

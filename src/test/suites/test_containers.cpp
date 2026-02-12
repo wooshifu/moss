@@ -476,4 +476,17 @@ static bool register_container_tests() {
 // 全局自动注册
 [[maybe_unused]] static bool container_tests_registered = register_container_tests();
 
+// 手动注册套件到全局注册表（freestanding环境不能依赖全局构造器）
+void register_container_test_suite() noexcept {
+    // freestanding环境中，全局构造器可能不执行，需要手动初始化测试套件
+    // 重新构造测试套件以确保正确初始化
+    new (&g_test_suite_containers) TestSuite("containers");
+
+    // 强制执行测试注册（freestanding环境中全局变量可能未初始化）
+    register_container_tests();
+
+    // 注册套件到全局注册表
+    [[maybe_unused]] auto result = TestRegistry::get_instance().register_suite(&g_test_suite_containers);
+}
+
 } // namespace moss::kernel::test
