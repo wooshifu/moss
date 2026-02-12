@@ -167,7 +167,7 @@ public:
     // 🔍 调试：跟踪任务入队
     static u64 enqueue_count = 0;
     enqueue_count++;
-    if (enqueue_count % 1000000 == 0 || thread->tid >= 1001) {
+    if (enqueue_count % 1000000 == 0 || (thread->tid >= 1001 && enqueue_count % 50000 == 0)) {
       sched_log("🔍 enqueue_task: TID=");
       sched_log_uint(static_cast<u32>(thread->tid));
       sched_log(" vruntime=");
@@ -205,7 +205,7 @@ public:
     // 🔍 调试：跟踪任务出队
     static u64 dequeue_count = 0;
     dequeue_count++;
-    if (dequeue_count % 1000000 == 0 || thread->tid >= 1001) {
+    if (dequeue_count % 1000000 == 0 || (thread->tid >= 1001 && dequeue_count % 50000 == 0)) {
       sched_log("🔍 dequeue_task: TID=");
       sched_log_uint(static_cast<u32>(thread->tid));
       sched_log(" vruntime=");
