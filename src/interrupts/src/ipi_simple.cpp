@@ -170,21 +170,6 @@ void shutdown_simple_ipi_system() noexcept {
 }
 
 // === 调试工具函数实现 ===
-
-const char* ipi_type_to_string(IpiType type) noexcept {
-    switch (type) {
-        case IpiType::Ping: return "Ping";
-        default: return "Unknown";
-    }
-}
-
-const char* ipi_result_to_string(IpiResult result) noexcept {
-    switch (result) {
-        case IpiResult::Success: return "Success";
-        case IpiResult::InvalidCpu: return "InvalidCpu";
-        case IpiResult::NotInitialized: return "NotInitialized";
-        default: return "Unknown";
-    }
-}
+// 注意：调试函数已移至 ipi_hardware_simple.cpp 以避免重复定义
 
 } // namespace moss::kernel::interrupts
