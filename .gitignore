@@ -20,7 +20,7 @@ compile_commands.json
 
 # Claude files
 .claude/
-/docs/plans/
+/docs/plans/*.md
 
 # Jetbrains IDE files
 .idea/
