@@ -102,16 +102,7 @@ void early_debug_print(const char *message) noexcept;
 
   // 验证中断系统状态
   if (g_gic) {
-    auto gic_stats = g_gic->get_statistics();
-    early_debug_print("✅ 中断处理系统: GIC已初始化, 处理中断数=");
-    // 简化数字输出
-    if (gic_stats.total_interrupts < 10) {
-      char num_str[2] = {'0' + static_cast<char>(gic_stats.total_interrupts), '\0'};
-      early_debug_print(num_str);
-    } else {
-      early_debug_print("很多");
-    }
-    early_debug_print("\n");
+    early_debug_print("✅ 中断处理系统: GIC已初始化并就绪\n");
   } else {
     early_debug_print("⚠️ 中断处理系统: GIC未初始化\n");
   }
