@@ -12,13 +12,28 @@ cmake --workflow --preset x86_64-qemu-release
 cmake --workflow --preset riscv-qemu-debug
 cmake --workflow --preset riscv-qemu-release
 
-# 编译全部架构
-./build.sh -a
+# 编译全部架构（默认行为）
+uv run build.py
+
+# 其他常用选项
+uv run build.py list                    # 列出所有预设
+uv run build.py --arch arm64            # 仅ARM64架构
+uv run build.py -m --build-type debug   # 主要架构debug版本
+uv run build.py --dry-run               # 预览模式
+uv run build.py --all                   # 显式构建所有架构
 ```
 
 ## 编译要求
 
 必须保证没有编译错误。项目使用 `-Weverything -Werror` 最严格模式。
+
+## 脚本开发约束
+
+**所有脚本使用 Python 实现：**
+- 项目统一使用 Python 3.12+ 开发脚本和工具
+- 禁止使用 bash、shell 脚本或其他脚本语言
+- 使用 `uv run script.py` 方式运行所有 Python 脚本
+- 脚本依赖在 `pyproject.toml` 中统一管理
 
 ## CMake 要求
 

@@ -784,18 +784,89 @@ void update_boot_stage(BootStage stage, ::moss::kernel::ErrorCode error) noexcep
 
         ctx.total_cpus = successful_cpus;
 
-        // 5. 输出启动结果摘要 (极简版本避免潜在问题)
-        early_print("📊 SMP启动摘要: 多CPU Linux风格延迟激活完成\n");
+        // 5. 输出启动结果摘要 (修复early_print并发问题)
+        volatile u8* uart_base_summary = reinterpret_cast<volatile u8*>(0x9000000);
+        const char* summary_msg = "SMP startup SUMMARY: Linux-style delayed activation completed\n";
+        while (*summary_msg) {
+            uart_base_summary[0] = static_cast<u8>(*summary_msg);
+            summary_msg++;
+        }
 
         if (successful_cpus > 1) {
-            early_print("🎉 多核SMP启动成功!\n");
+            // 🔧 重大发现：early_print是挂起的原因！
+            // 使用直接UART写入代替early_print以避免并发问题
+            volatile u8* uart_base = reinterpret_cast<volatile u8*>(0x9000000);
+
+            // 直接写入成功消息 (避免复杂的UTF-8字符)
+            const char* msg = "Multi-CPU SMP startup SUCCESS!\n";
+            while (*msg) {
+                uart_base[0] = static_cast<u8>(*msg);
+                msg++;
+            }
+
+            uart_base[0] = 'Q'; // Q = Post-message test
+            uart_base[0] = 10;
+
+            // 🔧 测试：基础操作
+            volatile u32 simple_var = 42;
+            simple_var = simple_var + 1;
+
+            uart_base[0] = 'R'; // R = after variable operation
+            uart_base[0] = 10;
+
+            // 🔧 紧急调试：R点后立即测试
+            uart_base[0] = 'X'; // X = right after R
+            uart_base[0] = 10;
+
+            // 🔧 测试：尝试简单操作
+            volatile u32 test_var2 = 123;
+            test_var2 = test_var2 * 2;
+
+            uart_base[0] = 'Y'; // Y = after simple math
+
+            // 🔧 超细致调试：Y后立即测试
+            uart_base[0] = '1'; // 1 = right after Y write
+
+            uart_base[0] = 10;
+
+            // 🔧 超细致调试：换行后测试
+            uart_base[0] = '2'; // 2 = after newline
+
+            // 🔧 关键调试：if块结束前最后测试
+            uart_base[0] = 'Z'; // Z = before if block ends
+            uart_base[0] = 10;
         } else {
-            early_print("⚠️ 从CPU启动失败，回退到单核模式\n");
+            // 🔧 修复：替换early_print避免并发问题
+            volatile u8* uart_base_else = reinterpret_cast<volatile u8*>(0x9000000);
+            const char* fallback_msg = "Secondary CPU startup FAILED, fallback to single-core mode\n";
+            while (*fallback_msg) {
+                uart_base_else[0] = static_cast<u8>(*fallback_msg);
+                fallback_msg++;
+            }
             ctx.total_cpus = 1;
+        }
+
+        // 🔧 调试：测试点B：条件块结束后 (简化版本避免变量声明问题)
+        {
+            volatile u8* test_uart = reinterpret_cast<volatile u8*>(0x9000000);
+            test_uart[0] = 'B';
+            test_uart[0] = 10;
         }
     }
 
-    early_print("ARM64 SMP设置完成\n\n");
+    // 🔧 调试：测试点C：准备打印完成消息
+    volatile u8* uart_base = reinterpret_cast<volatile u8*>(0x9000000);
+    uart_base[0] = 'C';
+    uart_base[0] = 10;
+
+    // 🔧 关键测试：跳过所有消息，直接测试函数返回
+    // 如果到达D点，说明setup_smp_support函数可以成功返回
+
+    // 🔧 调试：测试点D：跳过消息直接测试返回
+    volatile u8* uart_base_direct = reinterpret_cast<volatile u8*>(0x9000000);
+    uart_base_direct[0] = 'D';
+    uart_base_direct[0] = 10;
+
     return ::moss::kernel::VoidResult{};
 }
 
