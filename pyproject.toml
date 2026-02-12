@@ -8,15 +8,9 @@ dependencies = [
     "rich>=14.3.2",
 ]
 
-[project.scripts]
-build = "build:app"
-
 [dependency-groups]
 dev = [
     "cmake>=4.2.1",
     "cmake-format>=0.6.13",
     "ninja>=1.13.0",
 ]
-
-[tool.uv]
-package = true
