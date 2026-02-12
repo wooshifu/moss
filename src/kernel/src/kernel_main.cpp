@@ -59,45 +59,86 @@ void early_debug_print(const char *message) noexcept;
   early_debug_print("单核模式运行 (SMP功能暂时禁用)\n");
 
   // 创建内核实例
-  early_debug_print("初始化内核实例...\n");
+  early_debug_print("正在创建内核主实例...\n");
   g_kernel = new Kernel();
   if (!g_kernel) {
-    early_debug_print("错误: 内核实例创建失败\n");
+    early_debug_print("❌ 严重错误: 内核实例创建失败，系统无法继续\n");
+    while (true) { asm volatile("wfi"); }
+  }
+  early_debug_print("✅ 内核实例创建成功\n");
+
+  // 完整的内核初始化
+  early_debug_print("开始完整内核子系统初始化过程...\n");
+  auto init_result = g_kernel->initialize();
+  if (!init_result) {
+    early_debug_print("❌ 内核初始化失败，错误代码: ");
+    early_debug_print("INIT_ERROR\n");
+    while (true) { asm volatile("wfi"); }
+  }
+  early_debug_print("✅ 内核子系统初始化完成\n");
+
+  // 显示详细系统信息
+  early_debug_print("\n=== 内核系统状态详情 ===\n");
+  g_kernel->print_system_info();
+
+  // 实际功能验证（不是假的成功消息）
+  early_debug_print("\n=== 实际功能状态验证 ===\n");
+
+  // 验证内存管理系统实际状态
+  if (mm::is_memory_system_healthy()) {
+    auto pressure = mm::get_memory_pressure();
+    early_debug_print("✅ 内存管理系统: 运行正常, 压力等级=");
+    switch (pressure) {
+      case mm::MemoryPressure::LOW: early_debug_print("低"); break;
+      case mm::MemoryPressure::MEDIUM: early_debug_print("中"); break;
+      case mm::MemoryPressure::HIGH: early_debug_print("高"); break;
+      case mm::MemoryPressure::CRITICAL: early_debug_print("严重"); break;
+      default: early_debug_print("未知"); break;
+    }
+    early_debug_print("\n");
+  } else {
+    early_debug_print("⚠️ 内存管理系统: 状态异常\n");
+  }
+
+  // 验证中断系统状态
+  if (g_gic) {
+    auto gic_stats = g_gic->get_statistics();
+    early_debug_print("✅ 中断处理系统: GIC已初始化, 处理中断数=");
+    // 简化数字输出
+    if (gic_stats.total_interrupts < 10) {
+      char num_str[2] = {'0' + static_cast<char>(gic_stats.total_interrupts), '\0'};
+      early_debug_print(num_str);
+    } else {
+      early_debug_print("很多");
+    }
+    early_debug_print("\n");
+  } else {
+    early_debug_print("⚠️ 中断处理系统: GIC未初始化\n");
+  }
+
+  // 验证调度系统状态
+  if (process::g_scheduler) {
+    early_debug_print("✅ 任务调度系统: CFS调度器已就绪, 准备创建和调度任务\n");
+  } else {
+    early_debug_print("❌ 任务调度系统: 调度器未初始化\n");
+  }
+
+  early_debug_print("\n🎉 MOSS内核初始化和验证完成!\n");
+  early_debug_print("🚀 转入实际任务调度和执行阶段...\n\n");
+
+  // ⚡ 关键修复: 调用实际的内核运行系统而不是WFI循环
+  early_debug_print("🔥 启动内核运行系统 (包含真实任务调度)\n");
+
+  // 这将调用 scheduler_->start_scheduling() 并创建实际任务
+  auto run_result = g_kernel->run();
+  if (!run_result) {
+    early_debug_print("💀 致命错误: 内核运行系统启动失败\n");
     while (true) { asm volatile("wfi"); }
   }
 
-  // 初始化调度系统
-  early_debug_print("初始化调度系统...\n");
-
-  // 显示系统信息
-  early_debug_print("\n=== 系统信息 ===\n");
-  g_kernel->print_system_info();
-
-  // 测试基础功能
-  early_debug_print("\n=== 基础功能测试 ===\n");
-  early_debug_print("✅ 内存管理系统\n");
-  early_debug_print("✅ 中断处理系统\n");
-  early_debug_print("✅ 任务调度系统\n");
-
-  early_debug_print("\n🎉 MOSS内核初始化完成!\n");
-  early_debug_print("系统进入调度循环...\n\n");
-
-  // 进入调度循环 - 单核模式
-  early_debug_print("启动主调度循环\n");
-
-  // 保持系统运行，但避免无限循环占用CPU
-  while (true) {
-#if defined(MOSS_ARCH_ARM64)
-      asm volatile("wfi");
-#elif defined(MOSS_ARCH_X86_64)
-      asm volatile("hlt");
-#elif defined(MOSS_ARCH_RISCV)
-      asm volatile("wfi");
-#else
-      for (volatile int i = 0; i < 1000000; ++i) {
-      }
-#endif
-    }
+  // 不应该到达这里，但如果到达了说明出现了严重错误
+  early_debug_print("💀 致命错误: 内核主运行系统异常退出\n");
+  while (true) { asm volatile("wfi"); }
 }
 
 // 内核调试和测试接口
