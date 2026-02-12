@@ -89,7 +89,7 @@ IpiResult SimpleInterProcessorInterrupt::ping_cpu(u32 target_cpu) noexcept {
 
 VoidResult SimpleInterProcessorInterrupt::self_test() noexcept {
     if (!initialized_) {
-        return VoidResult{ErrorCode::NotInitialized};
+        return VoidResult{ErrorCode::InvalidState};
     }
 
     early_debug_print("🧪 开始简化IPI子系统自测试...\n");
