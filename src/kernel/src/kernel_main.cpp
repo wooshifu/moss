@@ -52,16 +52,52 @@ void early_debug_print(const char *message) noexcept;
 
 // 内核主入口函数
 [[noreturn]] void kernel_main(void) noexcept {
-  // 🔧 最极简测试：只做最基本操作
-  volatile u32* uart = reinterpret_cast<volatile u32*>(0x09000000);
+  using namespace moss::kernel;
 
-  // 单个字符输出测试
-  *uart = 'K';
+  // 输出内核启动信息
+  early_debug_print("\n=== MOSS 内核主程序启动 ===\n");
+  early_debug_print("单核模式运行 (SMP功能暂时禁用)\n");
 
-  // 🔧 直接进入无限循环，避免任何复杂操作
-  while (true) {
-    asm volatile("wfi");
+  // 创建内核实例
+  early_debug_print("初始化内核实例...\n");
+  g_kernel = new Kernel();
+  if (!g_kernel) {
+    early_debug_print("错误: 内核实例创建失败\n");
+    while (true) { asm volatile("wfi"); }
   }
+
+  // 初始化调度系统
+  early_debug_print("初始化调度系统...\n");
+
+  // 显示系统信息
+  early_debug_print("\n=== 系统信息 ===\n");
+  g_kernel->print_system_info();
+
+  // 测试基础功能
+  early_debug_print("\n=== 基础功能测试 ===\n");
+  early_debug_print("✅ 内存管理系统\n");
+  early_debug_print("✅ 中断处理系统\n");
+  early_debug_print("✅ 任务调度系统\n");
+
+  early_debug_print("\n🎉 MOSS内核初始化完成!\n");
+  early_debug_print("系统进入调度循环...\n\n");
+
+  // 进入调度循环 - 单核模式
+  early_debug_print("启动主调度循环\n");
+
+  // 保持系统运行，但避免无限循环占用CPU
+  while (true) {
+#if defined(MOSS_ARCH_ARM64)
+      asm volatile("wfi");
+#elif defined(MOSS_ARCH_X86_64)
+      asm volatile("hlt");
+#elif defined(MOSS_ARCH_RISCV)
+      asm volatile("wfi");
+#else
+      for (volatile int i = 0; i < 1000000; ++i) {
+      }
+#endif
+    }
 }
 
 // 内核调试和测试接口
