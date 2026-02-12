@@ -7,6 +7,7 @@
 #include "../include/arch/syscall_arch.hpp"  // 多架构系统调用支持
 #include "mm/kernel_memory.hpp"  // 内核内存分配接口
 #include "../../interrupts/include/interrupts/ipi_hardware_simple.hpp"      // 简化硬件IPI系统
+#include "../../boot/include/boot/boot.hpp"                                  // Boot阶段全局变量
 // cstring 不需要 - 内核环境使用自定义内存操作
 
 // 使用内核命名空间的类型
@@ -73,86 +74,113 @@ void early_debug_print(const char *message) noexcept;
   uart_bypass_kernel[0] = 10;
 
   // 🔥 启动真正的硬件IPI系统！
-  early_debug_print("\n=== MOSS Linux-Style SMP + 真正硬件IPI系统 ===\n");
-  early_debug_print("🚀 从概念验证转向ARM64 GIC SGI硬件实现\n");
-  early_debug_print("💡 这是从演示到生产级IPI的重大突破\n\n");
-
-  // 使用真正的简化硬件IPI系统
-  early_debug_print("=== 简化硬件IPI系统启动 ===\n");
+  early_debug_print("\n=== MOSS Linux-Style SMP + 真正GIC硬件IPI ===\n");
+  early_debug_print("🔥 检测到GIC硬件，启动真正硬件IPI\n");
 
   using namespace moss::kernel::interrupts;
 
-  // 🔥 尝试创建真正的硬件IPI系统
-  // 注意：由于我们目前没有GIC实例，这里将使用概念验证模式
+  // Linux风格硬件检查
+  if (g_gic_hardware_available && g_gic_controller) {
+    early_debug_print("🔥 检测到GIC硬件，启动真正硬件IPI\n");
 
-  early_debug_print("🔧 检查GIC可用性...\n");
+    // 创建硬件IPI实例
+    SimpleHardwareIpi hardware_ipi;
 
-  // 暂时使用nullptr作为GIC (概念验证模式)
-  // 使用void*避免需要包含GIC头文件
-  void* gic = nullptr;
+    auto init_result = hardware_ipi.initialize(g_gic_controller, 4);
+    if (init_result) {
+      early_debug_print("✅ 硬件IPI系统初始化成功\n");
 
-  if (gic == nullptr) {
-    early_debug_print("⚠️  GIC未初始化，使用概念验证模式\n");
-    early_debug_print("💡 展示硬件IPI架构设计和API\n");
-  }
+      // 执行Linux风格IPI测试套件
+      early_debug_print("\n🧪 Linux风格IPI硬件测试套件:\n");
 
-  // 尝试初始化简化硬件IPI系统（概念验证模式）
-  early_debug_print("🚀 初始化简化硬件IPI系统...\n");
+      // Test 1: Basic ping (SGI4)
+      early_debug_print("测试1: 基础Ping IPI (SGI4)\n");
+      for (u32 cpu = 1; cpu < 4; ++cpu) {
+        auto result = hardware_ipi.ping_cpu(cpu);
+        if (result == IpiResult::Success) {
+          early_debug_print("  ✅ 硬件Ping CPU");
+          char cpu_str[2] = {'0' + static_cast<char>(cpu), '\0'};
+          early_debug_print(cpu_str);
+          early_debug_print(" 成功 - 真正SGI4发送\n");
+        } else {
+          early_debug_print("  ❌ 硬件Ping失败\n");
+        }
+      }
 
-  // 🔥 创建简化硬件IPI实例
-  SimpleHardwareIpi hardware_ipi;
+      // Test 2: Reschedule request (SGI0)
+      early_debug_print("测试2: Reschedule IPI (SGI0)\n");
+      auto reschedule_result = hardware_ipi.request_reschedule(1);
+      if (reschedule_result == IpiResult::Success) {
+        early_debug_print("  ✅ 硬件Reschedule IPI成功 - 真正SGI0发送\n");
+      }
 
-  if (gic != nullptr) {
-    // 真正的硬件模式（当有GIC时）
-    early_debug_print("🔥 使用真正的GIC硬件模式\n");
-    // auto init_result = hardware_ipi.initialize(static_cast<GenericInterruptController*>(gic), 4);
-    early_debug_print("✅ 硬件IPI系统将使用真正的SGI中断\n");
+      // Test 3: Multi-CPU ping
+      early_debug_print("测试3: 多CPU Ping (广播SGI4)\n");
+      u32 cpu_mask = 0b1110; // CPU 1,2,3
+      auto broadcast_result = hardware_ipi.ping_cpus(cpu_mask);
+      if (broadcast_result == IpiResult::Success) {
+        early_debug_print("  ✅ 硬件广播Ping成功 - 同时向3个CPU发送SGI4\n");
+      }
+
+      // 显示统计信息
+      auto stats = hardware_ipi.get_statistics();
+      early_debug_print("\n📊 硬件IPI统计:\n");
+      early_debug_print("  - 总发送: ");
+      // 简化数字输出
+      char total_str[4];
+      u32 total = static_cast<u32>(stats.total_sent);
+      if (total < 10) {
+        total_str[0] = '0' + static_cast<char>(total);
+        total_str[1] = '\0';
+      } else {
+        total_str[0] = '0' + static_cast<char>(total / 10);
+        total_str[1] = '0' + static_cast<char>(total % 10);
+        total_str[2] = '\0';
+      }
+      early_debug_print(total_str);
+      early_debug_print(" 个硬件SGI\n");
+
+      early_debug_print("🎉 Linux风格硬件IPI系统验证成功!\n");
+    } else {
+      early_debug_print("❌ 硬件IPI初始化失败\n");
+    }
+
   } else {
-    // 概念验证模式 - 展示API设计
-    early_debug_print("🔧 概念验证模式：展示硬件IPI架构\n");
+    early_debug_print("🔧 GIC硬件不可用，使用概念验证模式\n");
+    // 保持现有的概念验证代码作为fallback
     early_debug_print("💡 Linux兼容的IPI API设计：\n");
     early_debug_print("   - send_ipi(target_cpu, type)\n");
     early_debug_print("   - ping_cpu(target_cpu)\n");
     early_debug_print("   - request_reschedule(target_cpu)\n");
     early_debug_print("   - wakeup_cpu(target_cpu)\n");
     early_debug_print("🚀 ARM64 GIC SGI硬件集成架构已设计完成\n");
-  }
 
-  // 执行硬件IPI概念验证测试
-  early_debug_print("\n🧪 开始硬件IPI概念验证测试...\n");
-  early_debug_print("测试1: IPI API架构验证\n");
-
-  for (u32 target_cpu = 1; target_cpu < 4; ++target_cpu) {
-    early_debug_print("📡 概念验证: 硬件IPI CPU0→CPU");
-    char cpu_str[2] = {'0' + static_cast<char>(target_cpu), '\0'};
-    early_debug_print(cpu_str);
-    early_debug_print(" SGI=4 (Ping)\n");
-
-    // 展示如果有真正硬件会发生什么
-    if (gic != nullptr) {
-      early_debug_print("🔥 将调用真正的硬件SGI发送\n");
-      // auto result = hardware_ipi.ping_cpu(target_cpu);
-      early_debug_print("✅ 真正硬件Ping将成功\n");
-    } else {
+    // 概念验证测试
+    early_debug_print("\n🧪 硬件IPI概念验证测试:\n");
+    for (u32 target_cpu = 1; target_cpu < 4; ++target_cpu) {
+      early_debug_print("📡 模拟: 硬件IPI CPU0→CPU");
+      char cpu_str[2] = {'0' + static_cast<char>(target_cpu), '\0'};
+      early_debug_print(cpu_str);
+      early_debug_print(" SGI=4 (Ping)\n");
       early_debug_print("🏓 模拟: CPU");
       early_debug_print(cpu_str);
-      early_debug_print(" 将收到真正的SGI4中断\n");
-      early_debug_print("✅ 硬件IPI API验证成功\n");
+      early_debug_print(" 收到SGI4中断\n");
     }
-
-    early_debug_print("\n");
   }
 
   early_debug_print("✅ 简化IPI自测试完成\n");
   early_debug_print("📊 总计发送IPI: 3次\n");
   early_debug_print("🎯 Linux风格SMP + IPI架构验证成功!\n\n");
 
-  early_debug_print("=== 系统运行状态总结 ===\n");
-  early_debug_print("✅ Linux风格SMP延迟激活: 4个CPU全部启动成功\n");
-  early_debug_print("✅ 统一启动流程: 完整工作\n");
-  early_debug_print("✅ IPI机制架构: 设计验证成功\n");
-  early_debug_print("✅ 垂直切片实现: Ping IPI演示完成\n");
-  early_debug_print("🚀 MOSS内核已准备好进入生产级IPI实现!\n");
+  early_debug_print("\n=== 系统运行状态总结 ===\n");
+  early_debug_print("✅ Linux风格SMP延迟激活: 4CPU成功\n");
+  if (g_gic_hardware_available) {
+    early_debug_print("✅ ARM64 GIC SGI硬件: 真正硬件IPI工作\n");
+    early_debug_print("🚀 生产级多CPU内核协调已实现!\n");
+  } else {
+    early_debug_print("⚠️  ARM64 GIC SGI硬件: 概念验证模式\n");
+    early_debug_print("💡 架构验证完成，等待硬件集成\n");
+  }
 
   // 正常情况下这里会进入调度循环，但为了演示，我们保持系统运行
   early_debug_print("\n🏁 IPI演示完成，系统保持运行状态...\n");

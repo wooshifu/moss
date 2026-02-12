@@ -184,7 +184,7 @@ IpiResult SimpleHardwareIpi::ping_cpus(u32 cpu_mask) noexcept {
     }
 
     // 更新统计 (简化计算发送的CPU数量)
-    u32 cpu_count = __builtin_popcount(cpu_mask);
+    u32 cpu_count = static_cast<u32>(__builtin_popcount(cpu_mask));
     sgi_send_counts_[static_cast<u8>(IpiSgiId::Ping)] += cpu_count;
     total_ipis_sent_ += cpu_count;
 
