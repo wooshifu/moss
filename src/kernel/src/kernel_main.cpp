@@ -77,6 +77,16 @@ void early_debug_print(const char *message) noexcept;
   }
   early_debug_print("✅ 内核子系统初始化完成\n");
 
+  // ⚡ 关键修复：连接Boot阶段初始化的GIC实例
+  // Boot阶段的g_gic_controller已成功初始化，现在让Kernel可以访问它
+  using namespace moss::boot;
+  if (g_gic_controller && g_gic_hardware_available) {
+    g_gic = g_gic_controller; // 连接Boot和Kernel阶段的GIC指针
+    early_debug_print("🔗 GIC实例已连接：Boot阶段->Kernel阶段\n");
+  } else {
+    early_debug_print("⚠️ GIC硬件不可用，Kernel将正确报告状态\n");
+  }
+
   // 显示详细系统信息
   early_debug_print("\n=== 内核系统状态详情 ===\n");
   g_kernel->print_system_info();
