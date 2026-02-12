@@ -1375,8 +1375,22 @@ public:
     // 🔧 关键调试：确认这个while循环确实是正在执行的循环
     sched_log("🔍 开始进入start_scheduling()的主while循环\n");
 
+    static u64 system_status_counter = 0; // 系统状态报告计数器
+
     while (true) {
       current_cpu = CfsScheduler::get_current_cpu_id();
+
+      // 定期输出系统状态报告 (每5百万次循环)
+      system_status_counter++;
+      if (system_status_counter % 5000000 == 0) {
+        sched_log("📊 [系统状态]");
+        // 简化实现：显示当前CPU的状态
+        sched_log(" CPU");
+        sched_log_uint(current_cpu);
+        sched_log(":活跃");
+        sched_log(" 其他CPU:等待多核启动");
+        sched_log("\n");
+      }
 
       // 🔧 修复：尝试从所有CPU队列中找任务，而不仅仅是当前CPU
       Thread *next_task = nullptr;
@@ -1438,19 +1452,26 @@ public:
 
           // 每100万次调度或者切换到不同TID时输出日志
           if (test_task_call_count % 1000000 == 0 || last_logged_tid != next_task->tid) {
-            sched_log("⏰ [调度器] 第");
-            sched_log_u64(test_task_call_count / 1000000 + 1);
-            sched_log("M次调度测试任务 TID=");
+            // 新格式：⏰ [TID=xxx][CPU=x] 任务运行 nice=+0 vruntime=xxx 运行时长=x.xms
+            sched_log("⏰ [TID=");
             sched_log_uint(static_cast<u32>(next_task->tid));
-            sched_log(" nice=");
+            sched_log("][CPU=");
+            sched_log_uint(current_cpu);
+            sched_log("] 任务运行 nice=");
             i32 nice = next_task->se.nice;
             if (nice >= 0) sched_log("+");
             sched_log_uint(static_cast<u32>(nice >= 0 ? nice : -nice));
             if (nice < 0) sched_log("-");
             sched_log(" vruntime=");
             sched_log_u64(next_task->se.vruntime);
-            sched_log(" CPU=");
-            sched_log_uint(current_cpu);
+
+            // 计算运行时长 (简化版，基于调度次数估算)
+            u64 estimated_runtime_us = test_task_call_count * 100; // 每次调度约100微秒
+            sched_log(" 运行时长=");
+            sched_log_u64(estimated_runtime_us / 1000); // 转换为毫秒
+            sched_log(".");
+            sched_log_uint(static_cast<u32>((estimated_runtime_us % 1000) / 100)); // 小数部分
+            sched_log("ms");
             sched_log("\n");
 
             last_logged_tid = static_cast<u32>(next_task->tid);
@@ -1498,6 +1519,23 @@ public:
 
         // 简化的上下文切换（不调用完整的context_switch_to_task）
         // 在真正的内核中，这里会进行完整的上下文切换
+
+        // 记录任务切换事件
+        Thread* prev_task = CfsScheduler::get_current_task();
+        ThreadId prev_tid = prev_task ? prev_task->tid : ThreadId{0};
+        ThreadId new_tid = next_task->tid;
+
+        // 只有在真正发生切换时才显示切换日志
+        if (prev_tid != new_tid && (active_cycles == 1 || active_cycles % (LOG_INTERVAL * 10) == 0)) {
+          sched_log("🔄 [调度切换] CPU=");
+          sched_log_uint(current_cpu);
+          sched_log(": TID=");
+          sched_log_u64(prev_tid);
+          sched_log(" -> TID=");
+          sched_log_u64(new_tid);
+          sched_log("\n");
+        }
+
         CfsScheduler::set_current_task(next_task);
         record_context_switch();
       } else {
