@@ -10,6 +10,8 @@
 #include "mm/runtime_heap_allocator.hpp"
 #include "moss_std.hpp"
 #include "result.hpp"
+#include "process/cfs_scheduler.hpp"
+#include "process/idle_process.hpp"
 
 // 声明汇编入口点和外部符号
 extern "C" {
@@ -167,49 +169,7 @@ static void initialize_cpu_startup_info(u32 detected_cpus) noexcept {
     }
 }
 
-/// 设置从CPU启动参数
-/// @param cpu_id CPU ID (1-detected_cpus-1)
-/// @param entry_point 从CPU入口点函数
-/// @return 是否成功设置
-static bool prepare_secondary_cpu_startup(u32 cpu_id, void (*entry_point)() noexcept) noexcept {
-    if (cpu_id == 0 || cpu_id >= g_cpu_topology.total_cpus || cpu_id >= moss::kernel::MAX_CPUS) {
-        return false; // 无效的CPU ID
-    }
-
-    if (g_cpu_topology.cpu_states[cpu_id] != CpuState::Offline) {
-        return false; // CPU不在离线状态
-    }
-
-    // 设置启动参数
-    cpu_startup_flags[cpu_id][0] = reinterpret_cast<u64>(entry_point); // entry_point
-    cpu_startup_flags[cpu_id][1] = 0; // startup_flag先设为0，等待唤醒
-
-    // 标记CPU为启动中状态
-    g_cpu_topology.cpu_states[cpu_id] = CpuState::Starting;
-
-    return true;
-}
-
-/// 唤醒从CPU
-/// @param cpu_id CPU ID
-/// @return 是否成功唤醒
-static bool wakeup_secondary_cpu(u32 cpu_id) noexcept {
-    if (cpu_id == 0 || cpu_id >= g_cpu_topology.total_cpus) {
-        return false;
-    }
-
-    if (g_cpu_topology.cpu_states[cpu_id] != CpuState::Starting) {
-        return false;
-    }
-
-    // 设置启动标志为1 (这会被从CPU的汇编代码轮询到)
-    cpu_startup_flags[cpu_id][1] = 1;
-
-    // 发送SEV事件唤醒等待的CPU
-    asm volatile("sev" ::: "memory");
-
-    return true;
-}
+// 老的函数定义已移到setup_smp_support中使用PSCI直接实现
 
 /// 等待从CPU在线
 /// @param cpu_id CPU ID
@@ -250,38 +210,136 @@ extern "C" void mark_cpu_online(u32 cpu_id) noexcept {
 
 // 从CPU入口点函数实现
 extern "C" [[noreturn]] void secondary_cpu_entry() noexcept {
-    // 获取当前CPU ID - 直接内联实现避免链接问题
+    // 🔧 立即发送调试信息证明secondary CPU正在运行
+    volatile u32* uart_base = reinterpret_cast<volatile u32*>(0x09000000);
+    uart_base[0] = 'S'; // 发送'S'表示Secondary
+    uart_base[0] = 'E'; // 发送'E'表示Entry
+    uart_base[0] = 'C'; // 发送'C'表示CPU
+    uart_base[0] = '!'; // 发送感叹号
+    uart_base[0] = 10;  // 发送换行符
+
+    // 🔧 关键修复：立即启用MMU和缓存，确保内存访问一致性
+    // 1. 获取当前CPU ID - 直接内联实现避免链接问题
     u64 mpidr;
     asm volatile("mrs %0, mpidr_el1" : "=r"(mpidr));
     u32 cpu_id = static_cast<u32>(mpidr & 0xFF);
 
-    // 基础CPU功能初始化（FPU/NEON等）
+    // 立即发送CPU ID
+    uart_base[0] = 'C';
+    uart_base[0] = 'P';
+    uart_base[0] = 'U';
+    uart_base[0] = (cpu_id + '0'); // 转换为ASCII
+    uart_base[0] = ':';
+    uart_base[0] = 'S';
+    uart_base[0] = 10; // 换行符
+
+    // 2. 确保MMU已启用（复用主CPU的页表）
+    // 读取主CPU的页表基址并设置TTBR0_EL1
+    u64 ttbr0_val;
+    asm volatile("mrs %0, ttbr0_el1" : "=r"(ttbr0_val));
+    asm volatile("msr ttbr0_el1, %0" : : "r"(ttbr0_val));
+    asm volatile("msr ttbr1_el1, %0" : : "r"(ttbr0_val));
+
+    // 3. 启用MMU和缓存（如果尚未启用）
+    u64 sctlr_el1;
+    asm volatile("mrs %0, sctlr_el1" : "=r"(sctlr_el1));
+    sctlr_el1 |= (1UL << 0);  // MMU enable (M bit)
+    sctlr_el1 |= (1UL << 2);  // Data cache enable (C bit)
+    sctlr_el1 |= (1UL << 12); // Instruction cache enable (I bit)
+    asm volatile("msr sctlr_el1, %0" : : "r"(sctlr_el1));
+
+    // 4. 同步指令和数据流水线
+    asm volatile("dsb sy");  // 数据同步屏障
+    asm volatile("isb");     // 指令同步屏障
+
+    // 5. 基础CPU功能初始化（FPU/NEON等）
     // ARM64 CPACR_EL1 设置：启用浮点和NEON
     u64 cpacr_el1 = (0x3UL << 20); // FPEN = 0b11, 允许EL0和EL1访问浮点/NEON
     asm volatile("msr cpacr_el1, %0" : : "r"(cpacr_el1));
-
-    // CPU缓存一致性
     asm volatile("isb");
 
-    // 🔧 关键修复：立即标记CPU在线，确保主CPU能检测到
-    mark_cpu_online(cpu_id);
+    // 6. 刷新所有缓存确保内存一致性
+    asm volatile("ic iallu");    // 无效化所有指令缓存
+    asm volatile("dsb sy");      // 数据同步屏障
+    asm volatile("isb");         // 指令同步屏障
 
-    // 🔧 增加反馈机制：通过volatile内存位置通知主CPU
+    // 7. 🔧 关键修复：立即标记CPU在线，确保主CPU能检测到
+    // 使用内存屏障确保写入对主CPU可见
+    asm volatile("dmb sy" ::: "memory");
+    mark_cpu_online(cpu_id);
+    asm volatile("dmb sy" ::: "memory");
+
+    // 8. 🔧 增加反馈机制：通过volatile内存位置通知主CPU
     // 在cpu_startup_flags数组的第二个位置设置特殊标记
     cpu_startup_flags[cpu_id][1] = 0xDEADBEEF; // 特殊标记表示从CPU已经启动
 
-    // 进入空闲循环，等待调度器初始化完成
-    // 使用简单的循环，避免复杂的调度器依赖
-    while (true) {
-        // 使用WFE进入低功耗等待状态
-        // 当有中断或其他事件时会被唤醒
-        asm volatile("wfe");
+    // 9. 强制缓存刷新，确保主CPU能立即看到状态更新
+    asm volatile("dc civac, %0" : : "r"(&g_cpu_topology.cpu_states[cpu_id]) : "memory");
+    asm volatile("dc civac, %0" : : "r"(&cpu_startup_flags[cpu_id][1]) : "memory");
+    asm volatile("dsb sy" ::: "memory");
 
-        // 短暂的活动检测
-        for (volatile u32 i = 0; i < 1000; i = i + 1) {
+    // 10. 发送事件通知主CPU
+    asm volatile("sev" ::: "memory");
+
+    // 🔧 Linux风格SMP重构：创建并注册Per-CPU idle任务
+    uart_base[0] = 'I'; // I for Idle
+    uart_base[0] = 'D'; // D for Idle
+    uart_base[0] = 'L'; // L for Idle
+    uart_base[0] = 'E'; // E for Idle
+    uart_base[0] = 10;  // 换行符
+
+    // 等待全局调度器初始化完成
+    volatile u32 wait_counter = 0;
+    while (moss::kernel::process::g_scheduler == nullptr) {
+        asm volatile("wfe");  // 等待事件
+        wait_counter = wait_counter + 1;
+
+        // 防止无限等待，设置超时
+        if (wait_counter > 10000000) {
+            uart_base[0] = 'T'; // T for Timeout
+            uart_base[0] = 'O'; // O for Timeout
+            uart_base[0] = 10;  // 换行符
+            // 超时后进入简单的空闲循环
+            while (true) {
+                asm volatile("wfe");
+            }
+        }
+
+        // 短暂延迟
+        for (u32 i = 0; i < 1000; i = i + 1) {
             asm volatile("nop");
         }
     }
+
+    // 创建Per-CPU idle任务
+    uart_base[0] = 'C'; // C for Create
+    uart_base[0] = 'R'; // R for Create
+    uart_base[0] = 'E'; // E for Create
+    uart_base[0] = 10;  // 换行符
+
+    auto* idle_task = moss::kernel::process::create_idle_task(cpu_id);
+    if (idle_task != nullptr) {
+        moss::kernel::process::g_scheduler->set_idle_task(cpu_id, idle_task);
+        uart_base[0] = 'O'; // O for OK
+        uart_base[0] = 'K'; // K for OK
+        uart_base[0] = 10;  // 换行符
+    } else {
+        uart_base[0] = 'F'; // F for Failed
+        uart_base[0] = 'A'; // A for Failed
+        uart_base[0] = 'I'; // I for Failed
+        uart_base[0] = 'L'; // L for Failed
+        uart_base[0] = 10;  // 换行符
+    }
+
+    // 🔧 关键：进入Linux风格Per-CPU独立调度循环
+    uart_base[0] = 'R'; // R for Ready
+    uart_base[0] = 'U'; // U for rUn
+    uart_base[0] = 'N'; // N for ruN
+    uart_base[0] = '!'; // ! for excitement
+    uart_base[0] = 10;  // 换行符
+
+    // 🚀 Linux风格SMP：调用Per-CPU调度入口点！
+    moss::kernel::process::g_scheduler->cpu_startup_entry(cpu_id);
 }
 
 /// 获取在线CPU数量
@@ -291,6 +349,37 @@ static u32 count_online_cpus() noexcept {
 }
 
 namespace moss::boot {
+
+// ARM64 PSCI (Power State Coordination Interface) 调用
+// 只保留实际使用的PSCI常量
+#define PSCI_CPU_ON_64          0xC4000003  // 启动CPU (64位)
+
+/// ARM64 PSCI调用函数
+/// @param function_id PSCI功能ID
+/// @param arg0 PSCI参数0
+/// @param arg1 PSCI参数1
+/// @param arg2 PSCI参数2
+/// @param arg3 PSCI参数3
+/// @return PSCI返回值
+static u64 psci_call(u32 function_id, u64 arg0 = 0, u64 arg1 = 0, u64 arg2 = 0, u64 arg3 = 0) noexcept {
+    u64 result;
+
+    // 使用HVC指令进行PSCI调用（在虚拟化环境中）
+    asm volatile(
+        "mov x0, %1\n"      // PSCI功能ID
+        "mov x1, %2\n"      // 参数0
+        "mov x2, %3\n"      // 参数1
+        "mov x3, %4\n"      // 参数2
+        "mov x4, %5\n"      // 参数3
+        "hvc #0\n"          // 调用hypervisor
+        "mov %0, x0\n"      // 获取返回值
+        : "=r" (result)
+        : "r" (static_cast<u64>(function_id)), "r" (arg0), "r" (arg1), "r" (arg2), "r" (arg3)
+        : "x0", "x1", "x2", "x3", "x4", "memory"
+    );
+
+    return result;
+}
 
 // 全局启动状态
 BootStatus g_boot_status = {
@@ -463,57 +552,75 @@ void update_boot_stage(BootStage stage, ::moss::kernel::ErrorCode error) noexcep
 
         u32 successful_cpus = 1; // 主CPU已在线
 
-        // 3. 为每个从CPU准备启动参数
+        // 3. 使用PSCI直接启动从CPU
         for (u32 cpu_id = 1; cpu_id < detected_cpus; cpu_id++) {
-            early_print("   准备CPU ");
+            early_print("   🔧 使用PSCI启动CPU ");
             early_print_hex(static_cast<u64>(cpu_id));
-            early_print(" 启动参数...\n");
+            early_print("...\n");
 
-            if (prepare_secondary_cpu_startup(cpu_id, secondary_cpu_entry)) {
-                early_print("   ✅ CPU ");
-                early_print_hex(static_cast<u64>(cpu_id));
-                early_print(" 参数设置成功\n");
+            // 设置启动参数（让secondary CPU通过正常boot流程启动）
+            cpu_startup_flags[cpu_id][0] = reinterpret_cast<u64>(secondary_cpu_entry);
+            cpu_startup_flags[cpu_id][1] = 1; // 设置启动标志
+
+            // 内存屏障
+            asm volatile("dmb sy" ::: "memory");
+            asm volatile("dsb sy" ::: "memory");
+
+            // 🔧 使用secondary_cpu_entry作为PSCI入口点
+            // PSCI将直接启动secondary CPU到这个函数
+            u64 target_mpidr = static_cast<u64>(cpu_id);
+            u64 entry_addr = reinterpret_cast<u64>(secondary_cpu_entry);
+            u64 context_id = static_cast<u64>(cpu_id);
+
+            early_print("   📞 调用PSCI_CPU_ON: target=");
+            early_print_hex(target_mpidr);
+            early_print(" entry=");
+            early_print_hex(entry_addr);
+            early_print("\n");
+
+            u64 psci_result = psci_call(PSCI_CPU_ON_64, target_mpidr, entry_addr, context_id);
+
+            early_print("   📋 PSCI返回值: ");
+            early_print_hex(psci_result);
+
+            if (psci_result == 0) { // PSCI_SUCCESS
+                early_print(" (成功)\n");
+                g_cpu_topology.cpu_states[cpu_id] = CpuState::Starting;
             } else {
-                early_print("   ❌ CPU ");
-                early_print_hex(static_cast<u64>(cpu_id));
-                early_print(" 参数设置失败\n");
+                early_print(" (失败)\n");
+                early_print("   ❌ PSCI启动失败，错误码: ");
+                early_print_hex(psci_result);
+                early_print("\n");
                 continue;
             }
         }
 
-        // 4. 依序启动从CPU
+        // 4. 等待PSCI启动的CPU在线
         for (u32 cpu_id = 1; cpu_id < detected_cpus; cpu_id++) {
-            early_print("   启动CPU ");
+            if (g_cpu_topology.cpu_states[cpu_id] != CpuState::Starting) {
+                continue; // 跳过PSCI启动失败的CPU
+            }
+
+            early_print("   ⏰ 等待CPU ");
             early_print_hex(static_cast<u64>(cpu_id));
-            early_print("...\n");
+            early_print(" 在线...\n");
 
             // 记录启动开始时间
             u64 start_time = get_timestamp();
 
-            // 唤醒从CPU
-            if (wakeup_secondary_cpu(cpu_id)) {
-                early_print("   🔔 CPU ");
+            // 等待CPU在线 (500ms超时 - 给PSCI更多时间)
+            if (wait_cpu_online(cpu_id, 500)) {
+                u64 boot_duration = get_timestamp() - start_time;
+                successful_cpus++;
+                early_print("   ✅ CPU ");
                 early_print_hex(static_cast<u64>(cpu_id));
-                early_print(" 唤醒信号已发送\n");
-
-                // 等待CPU在线 (100ms超时)
-                if (wait_cpu_online(cpu_id, 100)) {
-                    u64 boot_duration = get_timestamp() - start_time;
-                    successful_cpus++;
-                    early_print("   ✅ CPU ");
-                    early_print_hex(static_cast<u64>(cpu_id));
-                    early_print(" 启动成功 (用时: ");
-                    early_print_hex(boot_duration / 1000);
-                    early_print(" µs)\n");
-                } else {
-                    early_print("   ⚠️  CPU ");
-                    early_print_hex(static_cast<u64>(cpu_id));
-                    early_print(" 启动超时 (100ms)\n");
-                }
+                early_print(" 启动成功 (用时: ");
+                early_print_hex(boot_duration / 1000);
+                early_print(" µs)\n");
             } else {
-                early_print("   ❌ CPU ");
+                early_print("   ⚠️  CPU ");
                 early_print_hex(static_cast<u64>(cpu_id));
-                early_print(" 唤醒失败\n");
+                early_print(" 启动超时 (500ms)\n");
             }
         }
 

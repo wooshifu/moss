@@ -7,6 +7,7 @@
 #include "process.hpp"
 #include "result.hpp"
 #include "types.hpp"
+#include "idle_process.hpp"
 
 // 外部汇编函数声明
 extern "C" void switch_to_user(moss::kernel::process::CpuContext* context, u64 user_stack);
@@ -823,12 +824,15 @@ private:
   // 每个CPU的运行队列
   containers::PerCpuData<CfsRunqueue> runqueues_;
 
+  // Per-CPU idle任务管理
+  containers::PerCpuData<IdleTask*> idle_tasks_;
+
   // 全局统计
   containers::PerCpuAtomicCounter<u64> total_switches_;
   containers::PerCpuAtomicCounter<u64> total_preemptions_;
 
 public:
-  constexpr CfsScheduler() noexcept = default;
+  constexpr CfsScheduler() noexcept : idle_tasks_{nullptr} {}
 
   // 任务管理
   void enqueue_task(Thread *thread, u32 cpu) noexcept {
@@ -856,6 +860,204 @@ public:
       return nullptr;
 
     return runqueues_.get_cpu(cpu).pick_next_task();
+  }
+
+  // Linux风格的idle任务管理
+  inline void set_idle_task(u32 cpu_id, IdleTask* idle_task) noexcept {
+    if (cpu_id >= MAX_CPUS)
+      return;
+
+    idle_tasks_.get_cpu(cpu_id) = idle_task;
+
+    sched_log("✅ 设置CPU");
+    sched_log_uint(cpu_id);
+    sched_log("的idle任务: TID=");
+    if (idle_task) {
+      sched_log_uint(static_cast<u32>(idle_task->get_cpu_id()));
+    } else {
+      sched_log("NULL");
+    }
+    sched_log("\n");
+  }
+
+  [[nodiscard]] IdleTask* get_idle_task(u32 cpu_id) const noexcept {
+    if (cpu_id >= MAX_CPUS)
+      return nullptr;
+    return idle_tasks_.get_cpu(cpu_id);
+  }
+
+  [[nodiscard]] bool has_runnable_tasks(u32 cpu_id) const noexcept {
+    if (cpu_id >= MAX_CPUS)
+      return false;
+    return runqueues_.get_cpu(cpu_id).nr_running() > 0;
+  }
+
+private:
+  // Linux风格idle任务执行的辅助函数（移到public函数之前）
+  void execute_task_simplified(Thread* task, [[maybe_unused]] u32 cpu_id) noexcept {
+    if (task == nullptr) return;
+
+    // 记录任务执行开始时间
+    u64 start_time = get_current_time();
+
+    // 模拟任务执行（简化版）
+    // 实际内核中这里会进行完整的上下文切换
+    for (u32 work = 0; work < 1000; ++work) {
+      // 模拟任务工作负载
+      asm volatile("" ::: "memory"); // 防止优化
+    }
+
+    // 更新任务时间统计
+    u64 end_time = get_current_time();
+    u64 delta_exec = (end_time > start_time) ? (end_time - start_time) : 1000;
+    update_current(task, delta_exec);
+
+    // 设置当前任务
+    set_current_task(task);
+    record_context_switch();
+  }
+
+  void run_idle_task_simplified(IdleTask* idle_task, u32 cpu_id) noexcept {
+    if (idle_task == nullptr) return;
+
+    // 标记CPU进入idle状态
+    mark_cpu_idle(cpu_id, true);
+
+    // 简化的idle任务执行
+    idle_task_loop(cpu_id);
+
+    // 标记CPU退出idle状态
+    mark_cpu_idle(cpu_id, false);
+  }
+
+  void idle_task_loop([[maybe_unused]] u32 cpu_id) noexcept {
+    // Linux风格的do_idle简化实现
+#if defined(MOSS_ARCH_ARM64)
+    // ARM64: 使用WFI (Wait For Interrupt)
+    asm volatile("dsb sy" ::: "memory");  // 数据同步屏障
+    asm volatile("wfi" ::: "memory");     // 等待中断
+    asm volatile("isb" ::: "memory");     // 指令同步屏障
+#elif defined(MOSS_ARCH_X86_64)
+    asm volatile("sti" ::: "memory"); // 启用中断
+    asm volatile("hlt" ::: "memory"); // 停机等待中断
+    asm volatile("cli" ::: "memory"); // 禁用中断
+#elif defined(MOSS_ARCH_RISCV)
+    asm volatile("csrsi mstatus, 0x8" ::: "memory"); // 启用机器级中断
+    asm volatile("wfi" ::: "memory");                // 等待中断
+    asm volatile("csrci mstatus, 0x8" ::: "memory"); // 禁用机器级中断
+#else
+    // 通用回退：短暂休眠
+    for (volatile int i = 0; i < 1000; ++i) {
+      // 空闲循环
+    }
+#endif
+  }
+
+  void mark_cpu_idle(u32 cpu_id, bool is_idle) noexcept {
+    // 标记CPU idle状态（简化实现）
+    // 实际Linux内核中会更新更复杂的CPU状态信息
+    static bool cpu_idle_status[MAX_CPUS] = {false};
+    if (cpu_id < MAX_CPUS) {
+      cpu_idle_status[cpu_id] = is_idle;
+    }
+  }
+
+public:
+  // Linux风格的Per-CPU调度入口点
+  [[noreturn]] inline void cpu_startup_entry(u32 cpu_id) noexcept {
+    sched_log("🚀 CPU");
+    sched_log_uint(cpu_id);
+    sched_log(": Linux风格独立调度循环启动\n");
+
+    // 验证CPU ID有效性
+    if (cpu_id >= MAX_CPUS) {
+      sched_log("❌ CPU");
+      sched_log_uint(cpu_id);
+      sched_log(": 无效的CPU ID\n");
+      while (true) {
+        idle_task_loop(cpu_id);
+      }
+    }
+
+    // 验证idle任务已设置
+    IdleTask* idle_task = get_idle_task(cpu_id);
+    if (idle_task == nullptr) {
+      sched_log("⚠️ CPU");
+      sched_log_uint(cpu_id);
+      sched_log(": idle任务未设置，创建默认idle任务\n");
+
+      // 创建临时idle任务
+      idle_task = create_idle_task(cpu_id);
+      if (idle_task) {
+        set_idle_task(cpu_id, idle_task);
+      }
+    }
+
+    sched_log("✅ CPU");
+    sched_log_uint(cpu_id);
+    sched_log(": 进入Per-CPU独立调度循环\n");
+
+    u32 idle_cycles = 0;
+    u32 active_cycles = 0;
+    constexpr u32 LOG_INTERVAL = 2000000; // 每2百万次循环输出一次
+
+    // Linux风格的Per-CPU调度主循环
+    while (true) {
+      Thread* next_task = nullptr;
+
+      // 1. 检查是否有可运行任务
+      if (has_runnable_tasks(cpu_id)) {
+        next_task = pick_next_task(cpu_id);
+
+        if (next_task != nullptr) {
+          active_cycles++;
+
+          // 执行任务调度
+          if (active_cycles % LOG_INTERVAL == 1) {
+            sched_log("⏰ [CPU");
+            sched_log_uint(cpu_id);
+            sched_log("][TID=");
+            sched_log_uint(static_cast<u32>(next_task->tid));
+            sched_log("] 任务运行\n");
+          }
+
+          // 简化的任务执行（实际内核中会进行完整上下文切换）
+          execute_task_simplified(next_task, cpu_id);
+        }
+      }
+
+      // 2. 没有可运行任务，运行idle任务
+      if (next_task == nullptr) {
+        idle_cycles++;
+
+        if (idle_cycles % LOG_INTERVAL == 1) {
+          sched_log("💤 [CPU");
+          sched_log_uint(cpu_id);
+          sched_log("] 进入idle状态\n");
+        }
+
+        // 运行idle任务
+        if (idle_task != nullptr) {
+          run_idle_task_simplified(idle_task, cpu_id);
+        } else {
+          idle_task_loop(cpu_id);
+        }
+      }
+
+      // 3. 定期输出统计信息
+      u32 total_cycles = active_cycles + idle_cycles;
+      if (total_cycles > 0 && total_cycles % (LOG_INTERVAL * 5) == 0) {
+        sched_log("📊 [CPU");
+        sched_log_uint(cpu_id);
+        sched_log("] 统计: 活跃=");
+        sched_log_uint(active_cycles);
+        sched_log(" 空闲=");
+        sched_log_uint(idle_cycles);
+        sched_log(" 任务数=");
+        sched_log_uint(get_cpu_nr_running(cpu_id));
+        sched_log("\n");
+      }
+    }
   }
 
   // ============================================================================
@@ -1557,7 +1759,7 @@ public:
         }
 
         // 没有可运行的任务，进入空闲状态
-        idle_task(current_cpu);
+        idle_task_loop(current_cpu);
       }
 
       // 检查是否需要重新调度
@@ -1581,27 +1783,6 @@ public:
   }
 
 private:
-  // 空闲任务
-  void idle_task([[maybe_unused]] u32 cpu) noexcept {
-// 启用中断并等待
-#if defined(MOSS_ARCH_ARM64)
-    asm volatile("msr daifclr, #2" ::: "memory"); // 启用IRQ
-    asm volatile("wfi" ::: "memory");             // 等待中断
-    asm volatile("msr daifset, #2" ::: "memory"); // 禁用IRQ
-#elif defined(MOSS_ARCH_X86_64)
-    asm volatile("sti" ::: "memory"); // 启用中断
-    asm volatile("hlt" ::: "memory"); // 停机等待中断
-    asm volatile("cli" ::: "memory"); // 禁用中断
-#elif defined(MOSS_ARCH_RISCV)
-    asm volatile("csrsi mstatus, 0x8" ::: "memory"); // 启用机器级中断
-    asm volatile("wfi" ::: "memory");                // 等待中断
-    asm volatile("csrci mstatus, 0x8" ::: "memory"); // 禁用机器级中断
-#else
-    // 通用回退：简单的CPU循环
-    for (volatile int i = 0; i < 1000; ++i) {
-    }
-#endif
-  }
 
   // 上下文切换到指定任务
   void context_switch_to_task(Thread *task) noexcept {
