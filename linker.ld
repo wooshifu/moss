@@ -53,10 +53,10 @@ SECTIONS
         _bss_end = .;
     }
 
-    /* 栈空间 - 优化为16KB并使用NOLOAD减少二进制大小 */
+    /* 栈空间 - 多CPU支持：64KB总空间，每CPU 16KB */
     .stack (NOLOAD) : ALIGN(4K) {
         _stack_bottom = .;
-        . += 16K;  /* 16KB栈空间（对标嵌入式内核） */
+        . += 64K;  /* 64KB栈空间支持4个CPU (每CPU 16KB) */
         _stack_top = .;
     }
 
