@@ -727,10 +727,7 @@ private:
       rb_delete_fixup(replacement);
     }
 
-    // 更新计数
-    if (nr_running_ > 0) {
-      nr_running_--;
-    }
+    // 注意：nr_running_计数在dequeue_task中已经更新，这里不需要重复减少
 
     sched_log("✅ 节点删除完成，剩余任务数=");
     sched_log_uint(nr_running_);
@@ -1605,6 +1602,11 @@ public:
 
       // 优先从当前CPU选择任务
       next_task = pick_next_task(current_cpu);
+      if (next_task != nullptr) {
+        // ⚡ 关键修复：将选中的任务从运行队列中移除
+        // CFS原理：运行中的任务不应该在红黑树中，只有等待调度的任务才在树中
+        dequeue_task(next_task);
+      }
 
       // 如果当前CPU没有任务，从其他CPU队列"偷取"任务(简化的负载均衡)
       if (next_task == nullptr) {
@@ -1631,6 +1633,8 @@ public:
 
               next_task = pick_next_task(cpu);
               if (next_task != nullptr) {
+                // ⚡ 关键修复：从源CPU的运行队列中移除任务
+                dequeue_task(next_task);
                 // 将任务迁移到当前CPU
                 next_task->cpu = current_cpu;
 
@@ -1709,9 +1713,9 @@ public:
           // 更新任务的运行时统计
           update_current(next_task, delta_exec);
 
-          // ✅ 正确的CFS实现：任务已经在队列中，无需重新入队
-          // vruntime的更新会自动调整任务在红黑树中的相对位置
-          // 任务状态保持Running，只有在被抢占时才变为Ready
+          // ⚡ 关键修复：任务执行完时间片后重新加入运行队列
+          // CFS原理：运行中的任务不在队列中，执行完成后需要重新入队等待下次调度
+          enqueue_task(next_task, current_cpu);
         }
 
         // 偶尔输出活动日志（避免日志过多）
