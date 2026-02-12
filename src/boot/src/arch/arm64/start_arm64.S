@@ -194,56 +194,39 @@ secondary_cpu_park:
     mov     x26, #10                 // 发送换行符
     str     w26, [x25]
 
-    // 从CPU进入SMP启动协议
-    // 动态CPU检测和启动标志轮询机制
+    // 🔧 关键修复：绕过轮询机制，直接跳转到Linux风格延迟激活
+    // 从CPU不再等待启动标志，而是立即进入C++代码进行Linux风格的cpu_park()
 
-    // 1. 验证CPU ID是否在有效范围内 (MAX_CPUS = 8)
+    // 验证CPU ID是否在有效范围内 (MAX_CPUS = 8)
     cmp     x19, #8
-    b.hs    invalid_cpu_id        // 如果 CPU ID >= 8，跳转到错误处理
+    b.hs    invalid_cpu_id
 
-    // 2. 计算启动标志地址：cpu_startup_flags[cpu_id]
-    ldr     x21, =cpu_startup_flags  // 加载启动标志数组基址
-    mov     x22, #16                 // 每个CPU启动信息占16字节 (entry_point: 8字节 + flags: 8字节)
-    mul     x22, x19, x22            // CPU ID * sizeof(CpuStartupEntry)
-    add     x21, x21, x22            // x21 = &cpu_startup_flags[cpu_id]
+    // 🔧 发送'D'表示直接跳转模式
+    mov     x25, #0x09000000         // QEMU UART基址
+    mov     x26, #'D'                // 'D' = Direct jump
+    str     w26, [x25]
+    add     x26, x19, #'0'           // CPU ID
+    str     w26, [x25]
+    mov     x26, #10                 // 换行
+    str     w26, [x25]
 
-    // 3. 轮询启动标志
-cpu_startup_poll:
-    // 🔧 添加内存屏障确保从主存读取最新数据
-    dmb     sy                       // 数据内存屏障，确保读取一致性
+    // 🔧 直接跳转到secondary_cpu_entry C++函数
+    // 不需要轮询，让Linux风格的延迟激活机制处理同步
+    adr     x23, secondary_cpu_entry_wrapper
 
-    // 加载启动入口点地址
-    ldr     x23, [x21]               // x23 = cpu_startup_flags[cpu_id].entry_point
+    // 添加同步屏障确保执行流正确
+    dsb     sy
+    isb
 
-    // 检查启动标志
-    ldr     x24, [x21, #8]           // x24 = cpu_startup_flags[cpu_id].startup_flag
+    br      x23                      // 直接跳转到C++包装器
 
-    // 🔧 再次添加内存屏障确保读取完成
-    dmb     sy                       // 数据内存屏障
+secondary_cpu_entry_wrapper:
+    // 为C++函数调用准备栈和寄存器
+    // 调用C++的secondary_cpu_entry函数
+    bl      secondary_cpu_entry      // 调用C++函数
 
-    cbz     x23, cpu_startup_wait    // 如果 entry_point == NULL，继续等待
-    cbz     x24, cpu_startup_wait    // 如果 startup_flag == 0，继续等待
-
-    // CPU被唤醒！跳转到初始化代码
-    // x23 包含了从CPU的入口点地址
-
-    // 🔧 在跳转前添加指令同步屏障
-    dsb     sy                       // 数据同步屏障，确保所有内存操作完成
-    isb                              // 指令同步屏障，刷新指令流水线
-
-    br      x23                      // 跳转到 secondary_cpu_entry
-
-cpu_startup_wait:
-    // 使用WFE节能等待
-    wfe                              // 等待事件 (SEV指令会唤醒)
-
-    // 🔧 添加短暂延迟以降低轮询频率
-    mov     x25, #1000               // 延迟计数器
-cpu_startup_delay:
-    subs    x25, x25, #1             // 递减计数器
-    bne     cpu_startup_delay        // 如果不为零，继续延迟
-
-    b       cpu_startup_poll         // 继续轮询
+    // 如果函数返回（不应该发生），进入halt
+    b       halt
 
 invalid_cpu_id:
     // CPU ID超出范围，进入永久等待
