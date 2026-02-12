@@ -110,36 +110,10 @@ extern "C" [[noreturn]] void unified_boot_main(void* device_tree_ptr) {
     //     ArchBoot::arch_panic("SMP setup failed");
     // }
 
-    // 🔧 关键调试：SMP完成后立即测试
-    volatile u8* uart_post_smp = reinterpret_cast<volatile u8*>(0x9000000);
-    uart_post_smp[0] = 'P'; // P = Post-SMP completion
-    uart_post_smp[0] = 10;
     boot_print("阶段4: SMP支持设置完成\n");
-
-    // 🔧 CRITICAL FIX: SMP完成后添加延迟让系统稳定
-    for (u32 stabilize = 0; stabilize < 1000000; stabilize++) {
-        asm volatile("nop");
-    }
-
-    // 🔧 调试：阶段5入口
-    volatile u8* debug_uart = reinterpret_cast<volatile u8*>(0x9000000);
-    debug_uart[0] = 'F'; // F = Finalize stage entry
-    debug_uart[0] = 10;
 
     // 阶段5：架构特定的最终化
     boot_print("阶段5: 架构初始化完成\n");
-
-    // 🔧 调试：boot_print后
-    debug_uart[0] = 'G'; // G = after boot_print
-    debug_uart[0] = 10;
-
-    // 🔧 调试：准备调用finalize_arch_init
-    debug_uart[0] = 'I'; // I = before finalize_arch_init call
-    debug_uart[0] = 10;
-
-    // 🔧 极端调试：尝试各种可能性
-    debug_uart[0] = 'J'; // J = just before the actual call
-    debug_uart[0] = 10;
 
     // 完成架构初始化后，转交给kernel_main
     auto finalize_result = ArchBoot::finalize_arch_init(ctx);
