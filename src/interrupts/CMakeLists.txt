@@ -3,8 +3,11 @@
 # 创建OBJECT库（统一策略）
 add_library(moss_interrupts OBJECT)
 
-# 添加空源文件（满足OBJECT库需求）
-target_sources(moss_interrupts PRIVATE src/interrupts.cpp)
+# 添加源文件
+target_sources(moss_interrupts PRIVATE
+    src/interrupts.cpp
+    src/ipi_simple.cpp
+)
 
 # 标准包含目录配置（使用新的目录结构）
 target_include_directories(moss_interrupts PUBLIC
