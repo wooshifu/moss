@@ -36,6 +36,12 @@ typedef __builtin_va_list va_list;
 #endif
 }
 
+// Linux风格SMP延迟激活函数前向声明
+namespace moss::boot {
+void activate_secondary_cpus() noexcept;
+u32 wait_for_all_cpus_active(u32 timeout_ms = 5000) noexcept;
+}
+
 namespace moss::kernel {
 
 // 内核子系统状态
@@ -453,6 +459,25 @@ private:
       ::moss::kernel::process::g_scheduler = nullptr;
       ::moss::kernel::process::g_process_manager = nullptr;
       return VoidResult{ErrorCode::OutOfMemory};
+    }
+
+    // 🚀 Linux风格SMP延迟激活：调度器就绪后激活从CPU
+    if (config_.enable_smp) {
+      kernel_print("🔄 调度器就绪，开始激活停放的从CPU...\n");
+
+      // 激活所有停放的从CPU
+      moss::boot::activate_secondary_cpus();
+
+      // 等待从CPU完成激活
+      u32 active_cpus = moss::boot::wait_for_all_cpus_active(5000);
+
+      kernel_print("✅ CPU激活完成: %u个CPU已激活\n", active_cpus);
+
+      if (active_cpus > 1) {
+        kernel_print("🎉 Linux风格多CPU调度器启动成功！\n");
+      } else {
+        kernel_print("⚠️  回退到单核模式运行\n");
+      }
     }
 
     return VoidResult{};

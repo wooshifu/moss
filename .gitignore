@@ -20,3 +20,11 @@ compile_commands.json
 
 # Claude files
 .claude/
+
+# Jetbrains IDE files
+.idea/
+
+# Compilation intermediate files
+*.elf
+*.bin
+*.o
