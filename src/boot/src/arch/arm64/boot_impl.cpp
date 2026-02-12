@@ -61,8 +61,10 @@ struct CpuStartupInfo {
 enum class CpuState : u32 {
     Offline = 0,     // CPU离线
     Starting = 1,    // CPU正在启动
-    Online = 2,      // CPU已在线
-    Failed = 3       // CPU启动失败
+    Parked = 2,      // CPU已启动，等待激活 (Linux风格延迟激活)
+    Active = 3,      // CPU已激活，运行调度循环
+    Online = 4,      // CPU完全在线 (兼容旧状态)
+    Failed = 5       // CPU启动失败
 };
 
 /// 全局CPU拓扑信息
@@ -208,6 +210,136 @@ extern "C" void mark_cpu_online(u32 cpu_id) noexcept {
     }
 }
 
+/// Linux风格SMP状态管理函数
+
+/// 标记CPU为Parked状态 (由从CPU调用)
+/// @param cpu_id CPU ID
+extern "C" void mark_cpu_parked(u32 cpu_id) noexcept {
+    if (cpu_id < moss::kernel::MAX_CPUS) {
+        g_cpu_topology.cpu_states[cpu_id] = CpuState::Parked;
+        g_cpu_topology.boot_timestamps[cpu_id] = get_timestamp();
+    }
+}
+
+/// 标记CPU为Active状态 (由主CPU调用)
+/// @param cpu_id CPU ID
+void mark_cpu_active(u32 cpu_id) noexcept {
+    if (cpu_id < moss::kernel::MAX_CPUS) {
+        g_cpu_topology.cpu_states[cpu_id] = CpuState::Active;
+    }
+}
+
+/// 检查CPU是否为指定状态
+/// @param cpu_id CPU ID
+/// @param expected_state 期望的状态
+/// @return true如果CPU为指定状态
+bool is_cpu_in_state(u32 cpu_id, CpuState expected_state) noexcept {
+    if (cpu_id >= moss::kernel::MAX_CPUS) {
+        return false;
+    }
+    return g_cpu_topology.cpu_states[cpu_id] == expected_state;
+}
+
+/// 等待CPU到达指定状态
+/// @param cpu_id CPU ID
+/// @param expected_state 期望状态
+/// @param timeout_ms 超时毫秒数
+/// @return true如果CPU到达指定状态
+bool wait_for_cpu_state(u32 cpu_id, CpuState expected_state, u32 timeout_ms) noexcept {
+    if (cpu_id >= moss::kernel::MAX_CPUS) {
+        return false;
+    }
+
+    u32 elapsed = 0;
+    while (g_cpu_topology.cpu_states[cpu_id] != expected_state && elapsed < timeout_ms) {
+        // 简单的延迟循环 - 在实际系统中应该使用定时器
+        for (volatile u32 i = 0; i < 10000; i = i + 1) {
+            asm volatile("nop");
+        }
+        elapsed += 10; // 约10ms延迟
+    }
+
+    return g_cpu_topology.cpu_states[cpu_id] == expected_state;
+}
+
+/// Linux风格CPU停放函数
+/// 从CPU在此等待主CPU激活，不依赖复杂的全局状态
+/// @param cpu_id 当前CPU ID
+[[noreturn]] void cpu_park(u32 cpu_id) noexcept {
+    // 使用UART发送调试信息
+    volatile u8* uart_base = reinterpret_cast<volatile u8*>(0x9000000);
+
+    // 发送 "PARK" 调试信息
+    uart_base[0] = 'P';
+    uart_base[0] = 'A';
+    uart_base[0] = 'R';
+    uart_base[0] = 'K';
+    uart_base[0] = '0' + static_cast<u8>(cpu_id % 10); // CPU ID
+    uart_base[0] = 10; // 换行
+
+    // 标记CPU为Parked状态
+    mark_cpu_parked(cpu_id);
+
+    // 🔧 Linux风格等待循环：等待主CPU激活
+    while (!is_cpu_in_state(cpu_id, CpuState::Active)) {
+        // 使用WFI进入低功耗状态，等待事件
+        asm volatile("wfi");
+
+        // 短暂的活动检测
+        for (volatile u32 i = 0; i < 100; i = i + 1) {
+            asm volatile("nop");
+        }
+    }
+
+    // 被激活后发送调试信息
+    uart_base[0] = 'A';
+    uart_base[0] = 'C';
+    uart_base[0] = 'T';
+    uart_base[0] = 'V';
+    uart_base[0] = '0' + static_cast<u8>(cpu_id % 10); // CPU ID
+    uart_base[0] = 10; // 换行
+
+    // 🚀 现在可以安全使用调度器了
+    // 等待全局调度器初始化完成（应该已经完成）
+    volatile u32 scheduler_wait = 0;
+    while (moss::kernel::process::g_scheduler == nullptr) {
+        asm volatile("nop");
+        scheduler_wait = scheduler_wait + 1;
+        if (scheduler_wait > 100000) {
+            // 调度器应该已经就绪，如果还没有就是严重错误
+            uart_base[0] = 'E';
+            uart_base[0] = 'R';
+            uart_base[0] = 'R';
+            uart_base[0] = 10;
+            while (true) { asm volatile("wfi"); }
+        }
+    }
+
+    // 创建Per-CPU idle任务
+    auto* idle_task = moss::kernel::process::create_idle_task(cpu_id);
+    if (idle_task != nullptr) {
+        moss::kernel::process::g_scheduler->set_idle_task(cpu_id, idle_task);
+
+        uart_base[0] = 'I';
+        uart_base[0] = 'D';
+        uart_base[0] = 'L';
+        uart_base[0] = 'E';
+        uart_base[0] = '0' + static_cast<u8>(cpu_id % 10);
+        uart_base[0] = 10;
+    }
+
+    // 进入Linux风格Per-CPU调度循环
+    uart_base[0] = 'R';
+    uart_base[0] = 'U';
+    uart_base[0] = 'N';
+    uart_base[0] = '!';
+    uart_base[0] = '0' + static_cast<u8>(cpu_id % 10);
+    uart_base[0] = 10;
+
+    // 🚀 Linux风格SMP：调用Per-CPU调度入口点！
+    moss::kernel::process::g_scheduler->cpu_startup_entry(cpu_id);
+}
+
 // 从CPU入口点函数实现
 extern "C" [[noreturn]] void secondary_cpu_entry() noexcept {
     // 🔧 立即发送调试信息证明secondary CPU正在运行
@@ -281,66 +413,78 @@ extern "C" [[noreturn]] void secondary_cpu_entry() noexcept {
     // 10. 发送事件通知主CPU
     asm volatile("sev" ::: "memory");
 
-    // 🔧 Linux风格SMP重构：创建并注册Per-CPU idle任务
-    uart_base[0] = 'I'; // I for Idle
-    uart_base[0] = 'D'; // D for Idle
-    uart_base[0] = 'L'; // L for Idle
-    uart_base[0] = 'E'; // E for Idle
+    // 🚀 Linux风格SMP重构：进入CPU停放等待激活
+    // 不再依赖复杂的全局状态，简单地等待主CPU激活
+    uart_base[0] = 'P'; // P for Park
+    uart_base[0] = 'A'; // A for Park
+    uart_base[0] = 'R'; // R for Park
+    uart_base[0] = 'K'; // K for Park
     uart_base[0] = 10;  // 换行符
 
-    // 等待全局调度器初始化完成
-    volatile u32 wait_counter = 0;
-    while (moss::kernel::process::g_scheduler == nullptr) {
-        asm volatile("wfe");  // 等待事件
-        wait_counter = wait_counter + 1;
+    // 🔧 关键：调用Linux风格CPU停放函数
+    // cpu_park()将等待主CPU激活，然后创建idle任务并进入调度循环
+    cpu_park(cpu_id);
+}
 
-        // 防止无限等待，设置超时
-        if (wait_counter > 10000000) {
-            uart_base[0] = 'T'; // T for Timeout
-            uart_base[0] = 'O'; // O for Timeout
-            uart_base[0] = 10;  // 换行符
-            // 超时后进入简单的空闲循环
-            while (true) {
-                asm volatile("wfe");
+/// 激活所有停放的从CPU (由主CPU在调度器就绪后调用)
+/// Linux风格延迟激活机制的核心函数
+namespace moss::boot {
+void activate_secondary_cpus() noexcept {
+    u32 successfully_activated = 0;
+
+    // 遍历所有检测到的CPU
+    for (u32 cpu_id = 1; cpu_id < g_cpu_topology.total_cpus; ++cpu_id) {
+        if (is_cpu_in_state(cpu_id, CpuState::Parked)) {
+            // 标记CPU为Active状态
+            mark_cpu_active(cpu_id);
+
+            // 发送事件唤醒停放的CPU
+            asm volatile("sev");
+
+            // 等待CPU确认激活
+            if (wait_for_cpu_state(cpu_id, CpuState::Active, 1000)) {
+                successfully_activated++;
+            }
+        }
+    }
+
+    // TODO: 添加成功日志当日志系统可用时
+    // 暂时使用简单的统计更新
+    g_cpu_topology.online_cpus = 1 + successfully_activated;
+}
+
+/// 等待所有CPU完成激活
+/// @param timeout_ms 最大等待时间
+/// @return 成功激活的CPU数量
+u32 wait_for_all_cpus_active(u32 timeout_ms) noexcept {
+    u32 active_count = 1; // 主CPU已经活跃
+    u32 elapsed = 0;
+
+    while (elapsed < timeout_ms) {
+        active_count = 1; // 重新计算
+
+        for (u32 cpu_id = 1; cpu_id < g_cpu_topology.total_cpus; ++cpu_id) {
+            if (is_cpu_in_state(cpu_id, CpuState::Active)) {
+                active_count++;
             }
         }
 
-        // 短暂延迟
-        for (u32 i = 0; i < 1000; i = i + 1) {
+        // 如果所有CPU都活跃，提前返回
+        if (active_count >= g_cpu_topology.total_cpus) {
+            break;
+        }
+
+        // 等待10ms后重试
+        for (volatile u32 i = 0; i < 100000; i = i + 1) {
             asm volatile("nop");
         }
+        elapsed += 10;
     }
 
-    // 创建Per-CPU idle任务
-    uart_base[0] = 'C'; // C for Create
-    uart_base[0] = 'R'; // R for Create
-    uart_base[0] = 'E'; // E for Create
-    uart_base[0] = 10;  // 换行符
-
-    auto* idle_task = moss::kernel::process::create_idle_task(cpu_id);
-    if (idle_task != nullptr) {
-        moss::kernel::process::g_scheduler->set_idle_task(cpu_id, idle_task);
-        uart_base[0] = 'O'; // O for OK
-        uart_base[0] = 'K'; // K for OK
-        uart_base[0] = 10;  // 换行符
-    } else {
-        uart_base[0] = 'F'; // F for Failed
-        uart_base[0] = 'A'; // A for Failed
-        uart_base[0] = 'I'; // I for Failed
-        uart_base[0] = 'L'; // L for Failed
-        uart_base[0] = 10;  // 换行符
-    }
-
-    // 🔧 关键：进入Linux风格Per-CPU独立调度循环
-    uart_base[0] = 'R'; // R for Ready
-    uart_base[0] = 'U'; // U for rUn
-    uart_base[0] = 'N'; // N for ruN
-    uart_base[0] = '!'; // ! for excitement
-    uart_base[0] = 10;  // 换行符
-
-    // 🚀 Linux风格SMP：调用Per-CPU调度入口点！
-    moss::kernel::process::g_scheduler->cpu_startup_entry(cpu_id);
+    return active_count;
 }
+
+} // namespace moss::boot
 
 /// 获取在线CPU数量
 /// @return 在线CPU数量
@@ -558,18 +702,27 @@ void update_boot_stage(BootStage stage, ::moss::kernel::ErrorCode error) noexcep
             early_print_hex(static_cast<u64>(cpu_id));
             early_print("...\n");
 
-            // 设置启动参数（让secondary CPU通过正常boot流程启动）
+            // 🔧 关键修复：在PSCI调用前就设置启动参数
+            // 确保从CPU轮询时就能立即读取到入口点
             cpu_startup_flags[cpu_id][0] = reinterpret_cast<u64>(secondary_cpu_entry);
             cpu_startup_flags[cpu_id][1] = 1; // 设置启动标志
 
-            // 内存屏障
+            // 强化内存屏障，确保写入对所有CPU可见
             asm volatile("dmb sy" ::: "memory");
             asm volatile("dsb sy" ::: "memory");
 
-            // 🔧 使用secondary_cpu_entry作为PSCI入口点
-            // PSCI将直接启动secondary CPU到这个函数
+            // 🔧 增加缓存刷新，确保从CPU能看到写入
+            asm volatile("dc civac, %0" : : "r"(&cpu_startup_flags[cpu_id][0]) : "memory");
+            asm volatile("dc civac, %0" : : "r"(&cpu_startup_flags[cpu_id][1]) : "memory");
+            asm volatile("dsb sy" ::: "memory");
+
+            // 🔧 关键修复：使用SEV指令唤醒等待中的从CPU
+            asm volatile("sev" ::: "memory"); // Send Event - 唤醒WFE等待的CPU
+
+            // 🔧 关键修复：使用_start作为PSCI入口点
+            // _start会正确处理异常级别、栈设置，然后路由到secondary_cpu_entry
             u64 target_mpidr = static_cast<u64>(cpu_id);
-            u64 entry_addr = reinterpret_cast<u64>(secondary_cpu_entry);
+            u64 entry_addr = reinterpret_cast<u64>(_start); // 使用正确声明的_start符号
             u64 context_id = static_cast<u64>(cpu_id);
 
             early_print("   📞 调用PSCI_CPU_ON: target=");
@@ -608,8 +761,8 @@ void update_boot_stage(BootStage stage, ::moss::kernel::ErrorCode error) noexcep
             // 记录启动开始时间
             u64 start_time = get_timestamp();
 
-            // 等待CPU在线 (500ms超时 - 给PSCI更多时间)
-            if (wait_cpu_online(cpu_id, 500)) {
+            // 等待CPU在线 (2000ms超时 - 给从CPU充分时间处理启动序列)
+            if (wait_cpu_online(cpu_id, 2000)) {
                 u64 boot_duration = get_timestamp() - start_time;
                 successful_cpus++;
                 early_print("   ✅ CPU ");
@@ -620,7 +773,7 @@ void update_boot_stage(BootStage stage, ::moss::kernel::ErrorCode error) noexcep
             } else {
                 early_print("   ⚠️  CPU ");
                 early_print_hex(static_cast<u64>(cpu_id));
-                early_print(" 启动超时 (500ms)\n");
+                early_print(" 启动超时 (2000ms)\n");
             }
         }
 

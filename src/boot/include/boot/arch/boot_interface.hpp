@@ -128,4 +128,17 @@ inline const BootStatus& get_boot_status() noexcept {
  */
 void update_boot_stage(BootStage stage, moss::kernel::ErrorCode error = moss::kernel::ErrorCode::Success) noexcept;
 
+/**
+ * Linux风格SMP延迟激活函数
+ * 在调度器初始化完成后激活所有停放的从CPU
+ */
+void activate_secondary_cpus() noexcept;
+
+/**
+ * 等待所有CPU完成激活
+ * @param timeout_ms 最大等待时间（毫秒）
+ * @return 成功激活的CPU数量
+ */
+u32 wait_for_all_cpus_active(u32 timeout_ms = 5000) noexcept;
+
 } // namespace moss::boot
