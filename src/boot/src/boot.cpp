@@ -106,9 +106,24 @@ extern "C" [[noreturn]] void unified_boot_main(void* device_tree_ptr) {
         ArchBoot::arch_panic("SMP setup failed");
     }
 
+    // 🔧 调试：阶段5入口
+    volatile u8* debug_uart = reinterpret_cast<volatile u8*>(0x9000000);
+    debug_uart[0] = 'F'; // F = Finalize stage entry
+    debug_uart[0] = 10;
+
     // 阶段5：架构特定的最终化
     boot_print("阶段5: 架构初始化完成\n");
+
+    // 🔧 调试：boot_print后
+    debug_uart[0] = 'G'; // G = after boot_print
+    debug_uart[0] = 10;
+
     auto finalize_result = ArchBoot::finalize_arch_init(ctx);
+
+    // 🔧 调试：finalize_arch_init后
+    debug_uart[0] = 'H'; // H = after finalize_arch_init
+    debug_uart[0] = 10;
+
     if (!finalize_result) {
         boot_print("错误: 架构初始化完成失败\n");
         ArchBoot::arch_panic("Architecture finalization failed");
