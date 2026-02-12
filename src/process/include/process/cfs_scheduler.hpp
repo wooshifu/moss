@@ -1104,10 +1104,16 @@ public:
       // 给测试任务从0开始的连续值，确保它们有更高优先级
       test_threads[i]->se.vruntime = static_cast<u64>(i); // TID=1001->vruntime=0, TID=1002->vruntime=1...TID=1020->vruntime=19
 
-      // 🔧 临时修复：将所有任务都分配到CPU 0来测试调度逻辑
-      // 这样可以验证红黑树和CFS调度是否正常工作
-      u32 target_cpu = 0; // 强制所有任务到CPU 0
+      // 🔧 SMP修复：实现真正的负载均衡任务分配
+      // 使用轮询方式将任务分配到4个CPU核心（匹配QEMU -smp 4）
+      u32 target_cpu = i % 4; // 轮询分配到4个CPU
       enqueue_task(test_threads[i], target_cpu);
+
+      sched_log("🔄 任务分配：TID=");
+      sched_log_uint(tid);
+      sched_log(" -> CPU");
+      sched_log_uint(target_cpu);
+      sched_log("\n");
 
       sched_log("✅ 创建测试任务 TID=");
       sched_log_uint(tid);
