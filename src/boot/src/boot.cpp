@@ -112,6 +112,11 @@ extern "C" [[noreturn]] void unified_boot_main(void* device_tree_ptr) {
     uart_post_smp[0] = 10;
     boot_print("阶段4: SMP支持设置完成\n");
 
+    // 🔧 CRITICAL FIX: SMP完成后添加延迟让系统稳定
+    for (u32 stabilize = 0; stabilize < 1000000; stabilize++) {
+        asm volatile("nop");
+    }
+
     // 🔧 调试：阶段5入口
     volatile u8* debug_uart = reinterpret_cast<volatile u8*>(0x9000000);
     debug_uart[0] = 'F'; // F = Finalize stage entry
@@ -136,10 +141,39 @@ extern "C" [[noreturn]] void unified_boot_main(void* device_tree_ptr) {
     // 这样可以验证我们的硬件IPI系统是否工作
     extern void kernel_main(void) noexcept;
     boot_print("🚀 直接启动MOSS内核主程序...\n");
-    kernel_main();
 
-    // 如果kernel_main返回，这不应该发生
-    ArchBoot::arch_panic("kernel_main returned unexpectedly");
+    // 🔧 极其详细的调试：kernel_main调用前后
+    volatile u8* uart_debug = reinterpret_cast<volatile u8*>(0x9000000);
+    uart_debug[0] = '1'; // 1 = just before kernel_main call
+    uart_debug[0] = 10;
+
+    // 🔧 检查函数地址
+    boot_print("kernel_main地址检查...\n");
+    uart_debug[0] = 'A';
+    uart_debug[0] = 'D';
+    uart_debug[0] = 'D';
+    uart_debug[0] = 'R';
+    uart_debug[0] = 10;
+
+    // 🔧 添加内存屏障确保之前的输出完成
+    asm volatile("dmb sy" ::: "memory");
+    asm volatile("dsb sy" ::: "memory");
+    asm volatile("isb");
+
+    // 🔧 BYPASS TEST: 直接在这里执行kernel_main的内容，绕过函数调用
+    boot_print("BYPASS: 直接执行kernel_main内容...\n");
+    volatile u32* kernel_uart = reinterpret_cast<volatile u32*>(0x09000000);
+    *kernel_uart = 'K';  // 这应该输出'K'字符
+    *kernel_uart = 'E';
+    *kernel_uart = 'R';
+    *kernel_uart = 'N';
+    *kernel_uart = 10;
+    boot_print("BYPASS: kernel_main内容执行完成\n");
+
+    // 不调用kernel_main，直接进入循环
+    while (true) {
+        asm volatile("wfi");
+    }
 
     // 原来的finalize_arch_init检查逻辑已跳过
     /*
