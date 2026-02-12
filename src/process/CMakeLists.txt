@@ -4,7 +4,10 @@
 add_library(moss_process OBJECT)
 
 # 添加源文件（从src目录）
-set(PROCESS_SOURCES src/process.cpp)
+set(PROCESS_SOURCES
+    src/process.cpp
+    src/idle_process.cpp
+)
 
 # 添加架构特定汇编文件（使用新的路径结构）
 if(MOSS_TARGET_ARCH STREQUAL "ARM64")

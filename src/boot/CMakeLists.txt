@@ -13,6 +13,7 @@ target_include_directories(moss_boot PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}/include
     ${CMAKE_SOURCE_DIR}/src/mm/include
     ${CMAKE_SOURCE_DIR}/src/containers/include
+    ${CMAKE_SOURCE_DIR}/src/process/include
 )
 target_include_directories(moss_boot PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/include/boot
