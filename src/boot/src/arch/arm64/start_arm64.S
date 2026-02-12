@@ -136,9 +136,32 @@ bss_cleared:
     mul     x1, x19, x1          // CPU ID * 栈大小
     sub     sp, x0, x1
 
+    // 🔧 调试：发送CPU ID到UART证明CPU正在启动
+    mov     x25, #0x09000000         // QEMU UART基址
+    mov     x26, #'['
+    str     w26, [x25]
+    add     x26, x19, #'0'           // 将CPU ID转换为ASCII数字
+    str     w26, [x25]
+    mov     x26, #']'
+    str     w26, [x25]
+    mov     x26, #10                 // 换行符
+    str     w26, [x25]
+
     // 只有主CPU（CPU 0）继续执行，其他CPU等待
     cmp     x19, #0
     b.ne    secondary_cpu_park
+
+    // 🔧 主CPU调试信息
+    mov     x26, #'M'                // 主CPU标识
+    str     w26, [x25]
+    mov     x26, #'A'
+    str     w26, [x25]
+    mov     x26, #'I'
+    str     w26, [x25]
+    mov     x26, #'N'
+    str     w26, [x25]
+    mov     x26, #10                 // 换行符
+    str     w26, [x25]
 
     // 主CPU：跳转到C++代码
     mov     x0, x20              // 传递设备树指针
@@ -148,6 +171,29 @@ bss_cleared:
     b       halt
 
 secondary_cpu_park:
+    // 🔧 关键调试：立即通过UART发送secondary CPU启动信号
+    // 这样我们就能知道secondary CPU是否真正启动
+
+    // 发送CPU ID到UART以证明secondary CPU正在运行
+    mov     x25, #0x09000000         // QEMU UART基址
+    mov     x26, #'C'                // 发送字符'C'表示CPU启动
+    str     w26, [x25]
+    mov     x26, #'P'                // 发送字符'P'
+    str     w26, [x25]
+    mov     x26, #'U'                // 发送字符'U'
+    str     w26, [x25]
+
+    // 发送CPU ID作为数字
+    add     x26, x19, #'0'           // 将CPU ID转换为ASCII数字
+    str     w26, [x25]
+
+    mov     x26, #':'                // 发送分隔符
+    str     w26, [x25]
+    mov     x26, #'S'                // 发送'S'表示Started
+    str     w26, [x25]
+    mov     x26, #10                 // 发送换行符
+    str     w26, [x25]
+
     // 从CPU进入SMP启动协议
     // 动态CPU检测和启动标志轮询机制
 
@@ -163,22 +209,40 @@ secondary_cpu_park:
 
     // 3. 轮询启动标志
 cpu_startup_poll:
+    // 🔧 添加内存屏障确保从主存读取最新数据
+    dmb     sy                       // 数据内存屏障，确保读取一致性
+
     // 加载启动入口点地址
     ldr     x23, [x21]               // x23 = cpu_startup_flags[cpu_id].entry_point
 
     // 检查启动标志
     ldr     x24, [x21, #8]           // x24 = cpu_startup_flags[cpu_id].startup_flag
 
+    // 🔧 再次添加内存屏障确保读取完成
+    dmb     sy                       // 数据内存屏障
+
     cbz     x23, cpu_startup_wait    // 如果 entry_point == NULL，继续等待
     cbz     x24, cpu_startup_wait    // 如果 startup_flag == 0，继续等待
 
     // CPU被唤醒！跳转到初始化代码
     // x23 包含了从CPU的入口点地址
+
+    // 🔧 在跳转前添加指令同步屏障
+    dsb     sy                       // 数据同步屏障，确保所有内存操作完成
+    isb                              // 指令同步屏障，刷新指令流水线
+
     br      x23                      // 跳转到 secondary_cpu_entry
 
 cpu_startup_wait:
     // 使用WFE节能等待
     wfe                              // 等待事件 (SEV指令会唤醒)
+
+    // 🔧 添加短暂延迟以降低轮询频率
+    mov     x25, #1000               // 延迟计数器
+cpu_startup_delay:
+    subs    x25, x25, #1             // 递减计数器
+    bne     cpu_startup_delay        // 如果不为零，继续延迟
+
     b       cpu_startup_poll         // 继续轮询
 
 invalid_cpu_id:
