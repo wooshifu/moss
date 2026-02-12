@@ -822,18 +822,8 @@ void update_boot_stage(BootStage stage, ::moss::kernel::ErrorCode error) noexcep
             volatile u32 test_var2 = 123;
             test_var2 = test_var2 * 2;
 
-            uart_base[0] = 'Y'; // Y = after simple math
-
-            // 🔧 超细致调试：Y后立即测试
-            uart_base[0] = '1'; // 1 = right after Y write
-
-            uart_base[0] = 10;
-
-            // 🔧 超细致调试：换行后测试
-            uart_base[0] = '2'; // 2 = after newline
-
-            // 🔧 关键调试：if块结束前最后测试
-            uart_base[0] = 'Z'; // Z = before if block ends
+            // 🔧 重大修复：验证SMP功能后直接完成
+            uart_base[0] = 'Y'; // Y = SMP验证完成，准备返回
             uart_base[0] = 10;
         } else {
             // 🔧 修复：替换early_print避免并发问题
@@ -846,26 +836,14 @@ void update_boot_stage(BootStage stage, ::moss::kernel::ErrorCode error) noexcep
             ctx.total_cpus = 1;
         }
 
-        // 🔧 调试：测试点B：条件块结束后 (简化版本避免变量声明问题)
-        {
-            volatile u8* test_uart = reinterpret_cast<volatile u8*>(0x9000000);
-            test_uart[0] = 'B';
-            test_uart[0] = 10;
+        // 🔧 SMP功能验证完成，输出最终消息
+        volatile u8* uart_final = reinterpret_cast<volatile u8*>(0x9000000);
+        const char* completed_msg = "ARM64 SMP setup COMPLETED - returning to unified boot flow\n";
+        while (*completed_msg) {
+            uart_final[0] = static_cast<u8>(*completed_msg);
+            completed_msg++;
         }
     }
-
-    // 🔧 调试：测试点C：准备打印完成消息
-    volatile u8* uart_base = reinterpret_cast<volatile u8*>(0x9000000);
-    uart_base[0] = 'C';
-    uart_base[0] = 10;
-
-    // 🔧 关键测试：跳过所有消息，直接测试函数返回
-    // 如果到达D点，说明setup_smp_support函数可以成功返回
-
-    // 🔧 调试：测试点D：跳过消息直接测试返回
-    volatile u8* uart_base_direct = reinterpret_cast<volatile u8*>(0x9000000);
-    uart_base_direct[0] = 'D';
-    uart_base_direct[0] = 10;
 
     return ::moss::kernel::VoidResult{};
 }
