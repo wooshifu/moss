@@ -1,77 +1,50 @@
 # CLAUDE.md
 
-Moss - 现代化多架构混合内核操作系统，支持ARM64/x86_64/RISC-V，基于C++23和Clang 21构建。
+## 构建命令
 
-## 快速开始
-
+使用这些预设构建：
 ```bash
-# 构建和测试（最常用命令）
-./build.sh --preset debug        # 构建ARM64 debug版本
-./build.sh --main --debug        # 构建主要架构(ARM64+x86_64)
-make test                         # 在QEMU中运行内核
-make debug                        # 启动GDB调试
+# 单个架构构建
+cmake --workflow --preset arm64-qemu-debug
+cmake --workflow --preset arm64-qemu-release
+cmake --workflow --preset x86_64-qemu-debug
+cmake --workflow --preset x86_64-qemu-release
+cmake --workflow --preset riscv-qemu-debug
+cmake --workflow --preset riscv-qemu-release
 
-# 清理重建
-./build.sh --all --clean         # 清理所有架构并重建
+# 编译全部架构
+./build.sh -a
 ```
 
-## 核心架构
+## 编译要求
 
-内核采用分层模块设计：
+必须保证没有编译错误。项目使用 `-Weverything -Werror` 最严格模式。
 
+## CMake 要求
+
+编写 CMake 代码时要求：
+- 简洁明了，避免复杂的嵌套逻辑
+- 可读性高，使用清晰的变量名和注释
+- 遵循项目现有的 CMake 风格和结构
+
+## C++26 开发
+
+Use latest C++26 standard and cutting-edge C++ features for development:
+- freestanding environment (no standard library, exceptions, RTTI)
+- concepts and constraints
+- module support (import/module)
+
+## C++ 命名风格
+
+遵循以下命名约定：
+- 类名：CamelCase（如 `ProcessManager`）
+- 函数、变量等：lower_case（如 `get_cpu_id()`）
+- 私有成员：使用 `_` 后缀（如 `cpu_count_`）
+
+## QEMU 测试
+
+使用 QEMU 进行测试：
+```bash
+# 构建完成后，运行脚本自动生成
+./build/preset-name/run_qemu.sh
 ```
-src/
-├── containers/     # 基础层：无锁队列、RCU链表、Slab分配器
-├── mm/            # 内存管理：页表、物理内存
-├── drivers/       # 硬件抽象：设备管理器、中断控制器
-├── interrupts/    # 中断处理
-├── ipc/           # 进程间通信：共享内存、零拷贝通道
-├── process/       # 进程管理：CFS调度器、负载均衡
-├── kernel/        # 内核核心：汇聚所有功能
-└── boot/          # 启动代码：独立启动层
-```
-
-## 多架构支持
-
-- **架构抽象层**: `src/include/arch/arch_abstraction.hpp`
-  - 内存屏障、CPU操作、MMU管理、调试支持
-- **架构特定代码**: 使用 `#if defined(MOSS_ARCH_ARM64)` 等宏
-- **CMake预设**: `presets/arch/{arm64,x86_64,riscv}.json`
-
-## 开发工作流
-
-### 添加新功能
-1. 确定属于哪个模块层（containers→mm→drivers→ipc→process→kernel）
-2. 在`src/{module}/`添加实现
-3. 更新对应的`CMakeLists.txt`
-4. 使用`./build.sh --main --debug`验证
-
-### 架构特定代码
-- 条件编译：`#if defined(MOSS_ARCH_ARM64)`
-- 汇编代码：放在对应架构目录
-- 统一接口：通过`arch_abstraction.hpp`
-
-## 技术要点
-
-- **编译器**: Clang 21，C++23标准
-- **链接器**: LLD
-- **内存模型**: freestanding环境（无栈保护/异常/RTTI）
-- **构建时间**: ~1秒（ARM64，24核系统）
-
-## 构建输出
-
-```
-build/arm64-qemu-debug/
-├── bin/moss.elf     # 内核ELF二进制
-├── moss.bin         # 原始二进制镜像
-├── moss.dis         # 反汇编文件
-├── moss.sym         # 符号表
-└── run_qemu.sh      # QEMU运行脚本
-```
-
-## 常见问题
-
-- **工具链**: 确保安装Clang 21和LLD
-- **权限**: `chmod +x build.sh`
-- **调试**: 使用`--verbose`查看详细输出
-- **配置**: 动态生成到`build/{preset}/include/config/config.h`
