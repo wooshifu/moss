@@ -98,13 +98,17 @@ extern "C" [[noreturn]] void unified_boot_main(void* device_tree_ptr) {
         ArchBoot::arch_panic("Interrupt/exception setup failed");
     }
 
-    // 阶段4：多核支持（如果需要）
-    boot_print("阶段4: SMP支持设置\n");
-    auto smp_result = ArchBoot::setup_smp_support(ctx);
-    if (!smp_result) {
-        boot_print("错误: SMP设置失败\n");
-        ArchBoot::arch_panic("SMP setup failed");
-    }
+    // 阶段4：多核支持（暂时跳过，优先恢复单核调度功能）
+    boot_print("阶段4: SMP支持设置 (暂时跳过)\n");
+    // 🔧 TEMPORARY: 暂时不调用SMP，直接设置单核模式
+    ctx.total_cpus = 1;
+    boot_print("单核模式：1个CPU\n");
+
+    // auto smp_result = ArchBoot::setup_smp_support(ctx);
+    // if (!smp_result) {
+    //     boot_print("错误: SMP设置失败\n");
+    //     ArchBoot::arch_panic("SMP setup failed");
+    // }
 
     // 🔧 关键调试：SMP完成后立即测试
     volatile u8* uart_post_smp = reinterpret_cast<volatile u8*>(0x9000000);
@@ -137,43 +141,31 @@ extern "C" [[noreturn]] void unified_boot_main(void* device_tree_ptr) {
     debug_uart[0] = 'J'; // J = just before the actual call
     debug_uart[0] = 10;
 
-    // 🔧 临时替代：直接在这里调用kernel_main，跳过finalize_arch_init
-    // 这样可以验证我们的硬件IPI系统是否工作
-    extern void kernel_main(void) noexcept;
-    boot_print("🚀 直接启动MOSS内核主程序...\n");
-
-    // 🔧 极其详细的调试：kernel_main调用前后
-    volatile u8* uart_debug = reinterpret_cast<volatile u8*>(0x9000000);
-    uart_debug[0] = '1'; // 1 = just before kernel_main call
-    uart_debug[0] = 10;
-
-    // 🔧 检查函数地址
-    boot_print("kernel_main地址检查...\n");
-    uart_debug[0] = 'A';
-    uart_debug[0] = 'D';
-    uart_debug[0] = 'D';
-    uart_debug[0] = 'R';
-    uart_debug[0] = 10;
-
-    // 🔧 添加内存屏障确保之前的输出完成
-    asm volatile("dmb sy" ::: "memory");
-    asm volatile("dsb sy" ::: "memory");
-    asm volatile("isb");
-
-    // 🔧 BYPASS TEST: 直接在这里执行kernel_main的内容，绕过函数调用
-    boot_print("BYPASS: 直接执行kernel_main内容...\n");
-    volatile u32* kernel_uart = reinterpret_cast<volatile u32*>(0x09000000);
-    *kernel_uart = 'K';  // 这应该输出'K'字符
-    *kernel_uart = 'E';
-    *kernel_uart = 'R';
-    *kernel_uart = 'N';
-    *kernel_uart = 10;
-    boot_print("BYPASS: kernel_main内容执行完成\n");
-
-    // 不调用kernel_main，直接进入循环
-    while (true) {
-        asm volatile("wfi");
+    // 完成架构初始化后，转交给kernel_main
+    auto finalize_result = ArchBoot::finalize_arch_init(ctx);
+    if (!finalize_result) {
+        boot_print("错误: 架构初始化完成失败\n");
+        ArchBoot::arch_panic("Architecture finalization failed");
     }
+
+    // 更新启动状态
+    update_boot_stage(BootStage::SystemInit);
+
+    boot_print("=== 架构特定启动完成 ===\n");
+    boot_print("转交给架构无关的系统初始化...\n\n");
+
+    // 转交给架构无关的系统初始化
+    extern void kernel_main(void) noexcept;
+    boot_print("🚀 启动MOSS内核主程序...\n");
+
+    // 标记启动完成
+    update_boot_stage(BootStage::Complete);
+
+    // 调用内核主程序
+    kernel_main();
+
+    // 如果kernel_main返回，说明出错了
+    ArchBoot::arch_panic("Kernel main returned unexpectedly");
 
     // 原来的finalize_arch_init检查逻辑已跳过
     /*
