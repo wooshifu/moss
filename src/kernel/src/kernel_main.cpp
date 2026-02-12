@@ -45,6 +45,10 @@ void test_elf_loader(void) noexcept;
 void test_userspace_program(void) noexcept;
 void test_simple_ipi_system(void) noexcept;
 
+// 🧪 单元测试框架函数
+void kernel_run_unit_tests(void) noexcept;
+void u32_to_string(u32 value, char* buffer, usize buffer_size) noexcept;
+
 // 早期调试输出函数声明
 void early_debug_print(const char *message) noexcept;
 
@@ -89,10 +93,13 @@ void early_debug_print(const char *message) noexcept;
 
   // 显示详细系统信息
   early_debug_print("\n=== 内核系统状态详情 ===\n");
+  early_debug_print("🔍 即将调用print_system_info()...\n");
   g_kernel->print_system_info();
+  early_debug_print("🔍 print_system_info()调用完成...\n");
 
   // 实际功能验证（不是假的成功消息）
   early_debug_print("\n=== 实际功能状态验证 ===\n");
+  early_debug_print("🔍 开始系统状态验证...\n");
 
   // 验证内存管理系统实际状态
   if (mm::is_memory_system_healthy()) {
@@ -125,21 +132,32 @@ void early_debug_print(const char *message) noexcept;
   }
 
   early_debug_print("\n🎉 MOSS内核初始化和验证完成!\n");
-  early_debug_print("🚀 转入实际任务调度和执行阶段...\n\n");
 
-  // ⚡ 关键修复: 调用实际的内核运行系统而不是WFI循环
-  early_debug_print("🔥 启动内核运行系统 (包含真实任务调度)\n");
+  // 🧪 检查是否需要运行测试模式
+  early_debug_print("🔍 调试：检查MOSS_TEST_MODE宏定义...\n");
+  #ifdef MOSS_TEST_MODE
+    early_debug_print("✅ MOSS_TEST_MODE宏已定义，启动单元测试执行...\n");
+    kernel_run_unit_tests();
+    early_debug_print("🎉 所有单元测试执行完成!\n");
+    while (true) { asm volatile("wfi"); } // 测试完成后挂起
+  #else
+    early_debug_print("❌ MOSS_TEST_MODE宏未定义，跳过单元测试\n");
+    early_debug_print("🚀 转入实际任务调度和执行阶段...\n\n");
 
-  // 这将调用 scheduler_->start_scheduling() 并创建实际任务
-  auto run_result = g_kernel->run();
-  if (!run_result) {
-    early_debug_print("💀 致命错误: 内核运行系统启动失败\n");
+    // ⚡ 关键修复: 调用实际的内核运行系统而不是WFI循环
+    early_debug_print("🔥 启动内核运行系统 (包含真实任务调度)\n");
+
+    // 这将调用 scheduler_->start_scheduling() 并创建实际任务
+    auto run_result = g_kernel->run();
+    if (!run_result) {
+      early_debug_print("💀 致命错误: 内核运行系统启动失败\n");
+      while (true) { asm volatile("wfi"); }
+    }
+
+    // 不应该到达这里，但如果到达了说明出现了严重错误
+    early_debug_print("💀 致命错误: 内核主运行系统异常退出\n");
     while (true) { asm volatile("wfi"); }
-  }
-
-  // 不应该到达这里，但如果到达了说明出现了严重错误
-  early_debug_print("💀 致命错误: 内核主运行系统异常退出\n");
-  while (true) { asm volatile("wfi"); }
+  #endif
 }
 
 // 内核调试和测试接口
@@ -774,3 +792,149 @@ void test_simple_ipi_system(void) noexcept {
     early_debug_print("🚀 Linux风格IPI架构概念验证通过\n");
     early_debug_print("💡 下一步: 实现真正的GIC SGI硬件集成\n");
 }
+
+// ============================================================================
+// 🧪 单元测试框架集成 - 在完全初始化的内核环境中运行测试
+// ============================================================================
+
+// 包含测试框架头文件
+#ifdef MOSS_TEST_MODE
+#include "../../test/framework/test_framework.hpp"
+#include "../../test/framework/test_registry.hpp"
+
+// 声明测试套件注册函数（避免包含完整的测试头文件）
+namespace moss::kernel::test {
+    void register_container_test_suite() noexcept;
+}
+
+using namespace moss::kernel::test;
+
+void kernel_run_unit_tests(void) noexcept {
+    early_debug_print("🧪 MOSS内核单元测试框架启动\n");
+    early_debug_print("🔬 在完全初始化的内核环境中执行测试...\n\n");
+
+    // 获取测试注册表实例
+    TestRegistry& registry = TestRegistry::get_instance();
+
+    // 手动注册所有测试套件（freestanding环境不能依赖全局构造器）
+    early_debug_print("📝 手动注册测试套件...\n");
+    register_container_test_suite();
+    early_debug_print("✅ 容器测试套件已注册\n");
+
+    // 调试：直接创建和运行一个简单测试来验证测试框架
+    early_debug_print("🔍 创建简单测试来验证框架...\n");
+    TestSuite simple_test("simple_debug_test");
+
+    // 添加一个简单的测试函数
+    auto simple_test_func = []() -> void {
+        // 简单的测试：验证1+1=2
+        u32 result = 1 + 1;
+        MOSS_ASSERT_EQ_U32(2, result);
+    };
+
+    [[maybe_unused]] auto add_result = simple_test.add_test("test_basic_math", simple_test_func);
+    early_debug_print("🔍 添加简单测试完成\n");
+
+    // 运行这个简单测试
+    TestResult simple_result = simple_test.run_all_tests();
+    early_debug_print("🔍 简单测试运行完成\n");
+
+    // 检查结果
+    if (simple_result.passed_tests > 0) {
+        early_debug_print("✅ 简单测试通过！测试框架工作正常\n");
+    } else {
+        early_debug_print("❌ 简单测试失败！测试框架有问题\n");
+    }
+
+    // 显示测试环境信息
+    early_debug_print("=== 测试环境信息 ===\n");
+    early_debug_print("✅ 内存管理系统: 已初始化\n");
+    early_debug_print("✅ 中断处理系统: 已初始化\n");
+    early_debug_print("✅ 调度系统: 已初始化\n");
+    early_debug_print("✅ 设备管理系统: 已初始化\n\n");
+
+    // 列出所有注册的测试套件
+    early_debug_print("📋 已注册的测试套件:\n");
+    registry.list_all_suites();
+
+    if (registry.get_suite_count() == 0) {
+        early_debug_print("❌ 错误：没有找到任何注册的测试套件\n");
+        early_debug_print("💡 确保测试套件已正确注册\n");
+        return;
+    }
+
+    early_debug_print("\n🚀 开始执行所有测试套件...\n");
+
+    // 运行所有测试
+    GlobalTestResult global_result = registry.run_all_suites();
+
+    // 显示测试结果摘要
+    early_debug_print("\n=== 测试执行结果摘要 ===\n");
+
+    // 输出统计信息
+    early_debug_print("总测试套件数: ");
+    char suite_count[8];
+    u32_to_string(global_result.total_suites, suite_count, sizeof(suite_count));
+    early_debug_print(suite_count);
+    early_debug_print("\n");
+
+    early_debug_print("通过套件数: ");
+    u32_to_string(global_result.passed_suites, suite_count, sizeof(suite_count));
+    early_debug_print(suite_count);
+    early_debug_print("\n");
+
+    early_debug_print("失败套件数: ");
+    u32_to_string(global_result.failed_suites, suite_count, sizeof(suite_count));
+    early_debug_print(suite_count);
+    early_debug_print("\n");
+
+    early_debug_print("总测试数: ");
+    u32_to_string(global_result.total_tests, suite_count, sizeof(suite_count));
+    early_debug_print(suite_count);
+    early_debug_print("\n");
+
+    // 判断总体测试结果
+    if (global_result.failed_tests == 0) {
+        early_debug_print("\n🎉 所有测试通过！MOSS内核质量验证成功！\n");
+        early_debug_print("✅ 内核组件功能正常，可以安全运行\n");
+    } else {
+        early_debug_print("\n❌ 发现测试失败！需要修复问题\n");
+        early_debug_print("失败测试数: ");
+        u32_to_string(global_result.failed_tests, suite_count, sizeof(suite_count));
+        early_debug_print(suite_count);
+        early_debug_print("\n");
+        early_debug_print("⚠️ 内核可能存在功能问题\n");
+    }
+
+    early_debug_print("\n🔬 测试框架执行完成\n");
+}
+
+// 简单的数字转字符串函数
+void u32_to_string(u32 value, char* buffer, usize buffer_size) noexcept {
+    if (buffer_size < 2) return; // 至少需要2字节（1个数字+1个结束符）
+
+    if (value == 0) {
+        buffer[0] = '0';
+        buffer[1] = '\0';
+        return;
+    }
+
+    usize len = 0;
+    u32 temp = value;
+
+    // 计算数字位数
+    while (temp > 0 && len < buffer_size - 1) {
+        temp /= 10;
+        len++;
+    }
+
+    // 反向填充数字
+    buffer[len] = '\0';
+    temp = value;
+    for (usize i = len; i > 0; i--) {
+        buffer[i - 1] = '0' + (temp % 10);
+        temp /= 10;
+    }
+}
+
+#endif // MOSS_TEST_MODE

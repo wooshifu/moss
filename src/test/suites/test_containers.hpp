@@ -4,11 +4,15 @@
 // 测试无锁队列、Per-CPU数据、Slab分配器等核心容器组件
 
 #include "../framework/test_framework.hpp"
+#include "../framework/test_registry.hpp"
 #include "../../containers/include/containers/lockfree_queue.hpp"
 #include "../../containers/include/containers/per_cpu_data.hpp"
 #include "../../containers/include/containers/atomic_types.hpp"
 
 namespace moss::kernel::test {
+
+// 手动注册函数声明
+void register_container_test_suite() noexcept;
 
 // 测试数据类型
 struct TestItem {
