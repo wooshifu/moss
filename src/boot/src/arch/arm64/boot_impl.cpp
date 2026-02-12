@@ -940,17 +940,7 @@ void update_boot_stage(BootStage stage, ::moss::kernel::ErrorCode error) noexcep
 }
 
 ::moss::kernel::VoidResult moss::boot::ARM64BootImpl::finalize_arch_init(BootContext& /* ctx */) noexcept {
-    // 🔧 超明显的调试输出：连续多个字符
-    volatile u8* uart = reinterpret_cast<volatile u8*>(0x9000000);
-
-    // 连续输出多个Z字符，确保可见
-    uart[0] = 'Z';
-    uart[0] = 'Z';
-    uart[0] = 'Z';
-    uart[0] = 'Z';
-    uart[0] = 'Z';
-    uart[0] = 10; // 换行
-
+    // 架构特定的最终化完成
     return ::moss::kernel::VoidResult{};
 }
 
