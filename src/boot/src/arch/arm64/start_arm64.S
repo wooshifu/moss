@@ -148,11 +148,56 @@ bss_cleared:
     b       halt
 
 secondary_cpu_park:
-    // 从CPU进入等待状态
-    // TODO: 实现SMP启动协议
-secondary_wait:
-    wfe                          // 等待事件
-    b       secondary_wait
+    // 从CPU进入SMP启动协议
+    // 动态CPU检测和启动标志轮询机制
+
+    // 1. 验证CPU ID是否在有效范围内 (MAX_CPUS = 8)
+    cmp     x19, #8
+    b.hs    invalid_cpu_id        // 如果 CPU ID >= 8，跳转到错误处理
+
+    // 2. 计算启动标志地址：cpu_startup_flags[cpu_id]
+    ldr     x21, =cpu_startup_flags  // 加载启动标志数组基址
+    mov     x22, #16                 // 每个CPU启动信息占16字节 (entry_point: 8字节 + flags: 8字节)
+    mul     x22, x19, x22            // CPU ID * sizeof(CpuStartupEntry)
+    add     x21, x21, x22            // x21 = &cpu_startup_flags[cpu_id]
+
+    // 3. 轮询启动标志
+cpu_startup_poll:
+    // 加载启动入口点地址
+    ldr     x23, [x21]               // x23 = cpu_startup_flags[cpu_id].entry_point
+
+    // 检查启动标志
+    ldr     x24, [x21, #8]           // x24 = cpu_startup_flags[cpu_id].startup_flag
+
+    cbz     x23, cpu_startup_wait    // 如果 entry_point == NULL，继续等待
+    cbz     x24, cpu_startup_wait    // 如果 startup_flag == 0，继续等待
+
+    // CPU被唤醒！跳转到初始化代码
+    // x23 包含了从CPU的入口点地址
+    br      x23                      // 跳转到 secondary_cpu_entry
+
+cpu_startup_wait:
+    // 使用WFE节能等待
+    wfe                              // 等待事件 (SEV指令会唤醒)
+    b       cpu_startup_poll         // 继续轮询
+
+invalid_cpu_id:
+    // CPU ID超出范围，进入永久等待
+    wfi                              // 等待中断 (永不会来)
+    b       invalid_cpu_id
+
+// 导出CPU启动标志数组给链接器
+.global cpu_startup_flags
+
+// CPU启动标志数据结构 (在BSS段分配)
+.section ".bss", "aw", @nobits
+.align 8
+cpu_startup_flags:
+    // 为每个CPU分配启动控制块: [entry_point:8字节] [startup_flag:8字节]
+    .space 8 * 16                    // MAX_CPUS=8, 每个CPU 16字节
+
+// 切换回文本段，放置可执行代码
+.section ".text.boot", "ax"
 
 halt:
     // 系统停机
