@@ -1,7 +1,7 @@
 // MOSS内核ELF程序加载器实现
 // 支持加载64位ELF可执行文件到用户空间
 
-#include "elf_loader.hpp"
+#include "kernel/elf_loader.hpp"
 // #include "../mm/kernel_memory.hpp"  // TODO: 将来实现内存分配时需要
 
 // 用于调试输出

@@ -1,7 +1,7 @@
 // MOSS内核全局内存分配接口实现
 // 实现C风格接口和内存管理系统集成
 
-#include "kernel_memory.hpp"
+#include "mm/kernel_memory.hpp"
 
 extern "C" {
 

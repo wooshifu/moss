@@ -18,13 +18,11 @@ endif()
 target_sources(moss_process PRIVATE ${PROCESS_SOURCES})
 
 target_include_directories(moss_process PUBLIC
-    ${CMAKE_CURRENT_SOURCE_DIR}/include
-    ${CMAKE_SOURCE_DIR}/src/kernel/include)
-target_include_directories(moss_process PRIVATE
-    ${CMAKE_CURRENT_SOURCE_DIR}/include/process)
+    ${CMAKE_CURRENT_SOURCE_DIR}/include)
 
 target_compile_definitions(moss_process PRIVATE MOSS_PROCESS_MODULE)
 
-target_link_libraries(moss_process PRIVATE moss_containers moss_mm moss_drivers moss_interrupts moss_ipc)
+target_link_libraries(moss_process PRIVATE moss_containers moss_mm moss_drivers moss_interrupts moss_ipc
+    PUBLIC moss_kernel_headers)
 
 message(STATUS "进程模块配置完成")

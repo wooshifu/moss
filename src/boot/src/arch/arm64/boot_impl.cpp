@@ -3,8 +3,8 @@
  * 实现统一启动接口的ARM64版本
  */
 
-#include "arch/boot_interface.hpp"
-#include "arch/arch_selector.hpp"
+#include "boot/arch/boot_interface.hpp"
+#include "boot/arch/arch_selector.hpp"
 #include "mm/page_table.hpp"
 #include "mm/page_frame_allocator.hpp"
 #include "mm/runtime_heap_allocator.hpp"
