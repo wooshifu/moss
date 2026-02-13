@@ -51,6 +51,8 @@ u64 get_timestamp_counter() noexcept {
 void setup_kernel_mmu(PhysAddr kernel_pgd_pa) noexcept {
 #if defined(MOSS_ARCH_ARM64)
   arm64::setup_kernel_mmu(kernel_pgd_pa);
+#else
+  (void)kernel_pgd_pa;
 #endif
 }
 
@@ -63,6 +65,8 @@ void flush_tlb() noexcept {
 void flush_tlb_addr(VirtAddr addr) noexcept {
 #if defined(MOSS_ARCH_ARM64)
   arm64::flush_tlb_addr(addr);
+#else
+  (void)addr;
 #endif
 }
 
@@ -80,6 +84,8 @@ void flush_tlb_addr(VirtAddr addr) noexcept {
 void switch_to_kernel_stack(void *stack_ptr) noexcept {
 #if defined(MOSS_ARCH_ARM64)
   arm64::switch_to_kernel_stack(stack_ptr);
+#else
+  (void)stack_ptr;
 #endif
 }
 
