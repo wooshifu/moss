@@ -46,7 +46,7 @@ void test_userspace_program(void) noexcept;
 void test_simple_ipi_system(void) noexcept;
 
 // 🧪 单元测试框架函数
-[[noreturn]] void kernel_run_unit_tests(void) noexcept;
+void kernel_run_unit_tests(void) noexcept;
 void u32_to_string(u32 value, char* buffer, usize buffer_size) noexcept;
 
 // 早期调试输出函数声明
@@ -137,7 +137,9 @@ void early_debug_print(const char *message) noexcept;
   early_debug_print("🔍 调试：检查MOSS_TEST_MODE宏定义...\n");
   #ifdef MOSS_TEST_MODE
     early_debug_print("✅ MOSS_TEST_MODE宏已定义，启动单元测试执行...\n");
-    kernel_run_unit_tests(); // [[noreturn]] function - never returns
+    kernel_run_unit_tests();
+    early_debug_print("🎉 所有单元测试执行完成!\n");
+    while (true) { asm volatile("wfi"); } // 测试完成后挂起
   #else
     early_debug_print("❌ MOSS_TEST_MODE宏未定义，跳过单元测试\n");
     early_debug_print("🚀 转入实际任务调度和执行阶段...\n\n");
@@ -795,29 +797,130 @@ void test_simple_ipi_system(void) noexcept {
 // 🧪 单元测试框架集成 - 在完全初始化的内核环境中运行测试
 // ============================================================================
 
-// 声明 ut.hpp 测试框架主函数
-extern "C" [[noreturn]] void test_kernel_main() noexcept;
-
+// 包含测试框架头文件
 #ifdef MOSS_TEST_MODE
+#include "../../test/framework/test_framework.hpp"
+#include "../../test/framework/test_registry.hpp"
 
-[[noreturn]] void kernel_run_unit_tests(void) noexcept {
-    early_debug_print("🧪 MOSS内核 ut.hpp 测试框架启动\n");
-    early_debug_print("🔬 在完全初始化的内核环境中执行现代化测试...\n\n");
+// 声明测试套件注册函数（避免包含完整的测试头文件）
+namespace moss::kernel::test {
+    void register_container_test_suite() noexcept;
+    void register_memory_test_suite() noexcept;
+    void register_scheduler_test_suite() noexcept;
+}
+
+using namespace moss::kernel::test;
+
+void kernel_run_unit_tests(void) noexcept {
+    early_debug_print("🧪 MOSS内核单元测试框架启动\n");
+    early_debug_print("🔬 在完全初始化的内核环境中执行测试...\n\n");
+
+    // 获取测试注册表实例
+    TestRegistry& registry = TestRegistry::get_instance();
+
+    // 手动注册所有测试套件（freestanding环境不能依赖全局构造器）
+    early_debug_print("📝 手动注册测试套件...\n");
+    register_container_test_suite();
+    early_debug_print("✅ 容器测试套件已注册\n");
+    register_memory_test_suite();
+    early_debug_print("✅ 内存管理测试套件已注册\n");
+    register_scheduler_test_suite();
+    early_debug_print("✅ 调度器测试套件已注册\n");
+
+    // 调试：直接创建和运行一个简单测试来验证测试框架
+    early_debug_print("🔍 创建简单测试来验证框架...\n");
+    TestSuite simple_test("simple_debug_test");
+
+    // 添加一个简单的测试函数
+    auto simple_test_func = []() -> void {
+        // 简单的测试：验证1+1=2
+        u32 result = 1 + 1;
+        MOSS_ASSERT_EQ_U32(2, result);
+    };
+
+    [[maybe_unused]] auto add_result = simple_test.add_test("test_basic_math", simple_test_func);
+    early_debug_print("🔍 添加简单测试完成\n");
+
+    // 运行这个简单测试
+    TestResult simple_result = simple_test.run_all_tests();
+    early_debug_print("🔍 简单测试运行完成\n");
+
+    // 检查结果
+    if (simple_result.passed_tests > 0) {
+        early_debug_print("✅ 简单测试通过！测试框架工作正常\n");
+    } else {
+        early_debug_print("❌ 简单测试失败！测试框架有问题\n");
+    }
 
     // 显示测试环境信息
     early_debug_print("=== 测试环境信息 ===\n");
     early_debug_print("✅ 内存管理系统: 已初始化\n");
     early_debug_print("✅ 中断处理系统: 已初始化\n");
     early_debug_print("✅ 调度系统: 已初始化\n");
-    early_debug_print("✅ 设备管理系统: 已初始化\n");
-    early_debug_print("📋 使用 kernel-optimized ut.hpp 测试框架\n\n");
+    early_debug_print("✅ 设备管理系统: 已初始化\n\n");
 
-    early_debug_print("🚀 启动 kernel-optimized ut.hpp 测试执行...\n");
+    // 列出所有注册的测试套件
+    early_debug_print("📋 已注册的测试套件:\n");
+    registry.list_all_suites();
 
-    // 调用我们的 ut.hpp 测试框架主函数 (never returns)
-    test_kernel_main();
+    if (registry.get_suite_count() == 0) {
+        early_debug_print("❌ 错误：没有找到任何注册的测试套件\n");
+        early_debug_print("💡 确保测试套件已正确注册\n");
+        return;
+    }
 
-    // 注意：test_kernel_main() 不会返回，函数在此处结束
+    early_debug_print("\n🚀 开始执行所有测试套件...\n");
+
+    // 运行所有测试
+    GlobalTestResult global_result = registry.run_all_suites();
+
+    // 显示测试结果摘要
+    early_debug_print("\n=== 测试执行结果摘要 ===\n");
+
+    // 输出统计信息
+    early_debug_print("总测试套件数: ");
+    char suite_count[8];
+    u32_to_string(global_result.total_suites, suite_count, sizeof(suite_count));
+    early_debug_print(suite_count);
+    early_debug_print("\n");
+
+    early_debug_print("通过套件数: ");
+    u32_to_string(global_result.passed_suites, suite_count, sizeof(suite_count));
+    early_debug_print(suite_count);
+    early_debug_print("\n");
+
+    early_debug_print("失败套件数: ");
+    u32_to_string(global_result.failed_suites, suite_count, sizeof(suite_count));
+    early_debug_print(suite_count);
+    early_debug_print("\n");
+
+    early_debug_print("总测试数: ");
+    u32_to_string(global_result.total_tests, suite_count, sizeof(suite_count));
+    early_debug_print(suite_count);
+    early_debug_print("\n");
+
+    // 判断总体测试结果
+    if (global_result.failed_tests == 0) {
+        early_debug_print("\n🎉 所有测试通过！MOSS内核质量验证成功！\n");
+        early_debug_print("✅ 内核组件功能正常，可以安全运行\n");
+    } else {
+        early_debug_print("\n❌ 发现测试失败！需要修复问题\n");
+        early_debug_print("失败测试数: ");
+        u32_to_string(global_result.failed_tests, suite_count, sizeof(suite_count));
+        early_debug_print(suite_count);
+        early_debug_print("\n");
+        early_debug_print("⚠️ 内核可能存在功能问题\n");
+    }
+
+    early_debug_print("\n🔬 测试框架执行完成\n");
+
+    // 使用正确的退出机制关闭QEMU
+    // 这样测试完成后不需要手动终止QEMU进程
+    if (global_result.failed_tests == 0) {
+        moss::kernel::test::test_kernel_shutdown(moss::kernel::test::TestExitCode::AllPassed);
+    } else {
+        moss::kernel::test::test_kernel_shutdown(moss::kernel::test::TestExitCode::TestFailed);
+    }
 }
 
 // 简单的数字转字符串函数
@@ -833,15 +936,10 @@ void u32_to_string(u32 value, char* buffer, usize buffer_size) noexcept {
     usize len = 0;
     u32 temp = value;
 
-    // 计算数字长度
-    while (temp > 0) {
-        len++;
+    // 计算数字位数
+    while (temp > 0 && len < buffer_size - 1) {
         temp /= 10;
-    }
-
-    // 确保缓冲区足够大
-    if (len >= buffer_size) {
-        len = buffer_size - 1;
+        len++;
     }
 
     // 反向填充数字
