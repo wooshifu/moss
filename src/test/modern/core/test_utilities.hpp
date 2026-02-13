@@ -1,5 +1,7 @@
 #pragma once
-#include "moss_ut.hpp"
+#include "../../moss_ut.hpp"
+#include "moss_std.hpp"
+#include "arch/arch_abstraction.hpp"
 
 namespace moss::test::utils {
     // Memory alignment verification
@@ -10,12 +12,12 @@ namespace moss::test::utils {
 
     // Performance timing
     struct PerformanceTimer {
-        uint64_t start_cycles;
+        u64 start_cycles;
 
-        PerformanceTimer() : start_cycles(get_test_timestamp_ns()) {}
+        PerformanceTimer() : start_cycles(moss::kernel::arch::get_timestamp_counter()) {}
 
-        auto elapsed_less_than(uint64_t max_cycles) {
-            return (get_test_timestamp_ns() - start_cycles) < max_cycles;
+        auto elapsed_less_than(u64 max_cycles) {
+            return (moss::kernel::arch::get_timestamp_counter() - start_cycles) < max_cycles;
         }
     };
 
