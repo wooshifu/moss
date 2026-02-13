@@ -30,7 +30,7 @@ uv run build.py --all                   # 显式构建所有架构
 ## 脚本开发约束
 
 **所有脚本使用 Python 实现：**
-- 项目统一使用 Python 3.12+ 开发脚本和工具，使用 uv 来管理 python 环境
+- 项目统一使用 Python 3.14+ 开发脚本和工具，使用 uv 来管理 python 环境
 - 如果没有特殊指定，禁止使用 bash、shell 脚本或其他脚本语言
 - 使用 `uv run script.py` 方式运行所有 Python 脚本
 - 脚本依赖在 `pyproject.toml` 中统一管理
