@@ -204,9 +204,6 @@ message(STATUS "目标架构: ${MOSS_ARCH_NAME}")
 message(STATUS "目标平台: ${MOSS_PLATFORM_NAME}")
 message(STATUS "构建类型: ${MOSS_BUILD_TYPE} (调试级别: ${MOSS_DEBUG_LEVEL})")
 
-# === 添加模块 ===
-add_subdirectory(src/modules)
-
 # === 添加子模块（按依赖顺序）===
 add_subdirectory(src/core)
 add_subdirectory(src/containers)
