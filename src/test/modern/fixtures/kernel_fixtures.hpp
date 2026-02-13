@@ -1,6 +1,7 @@
 #pragma once
-#include "moss_ut.hpp"
+#include "../../moss_ut.hpp"
 #include "../core/test_utilities.hpp"
+#include "moss_std.hpp"
 
 namespace moss::test::fixtures {
     struct KernelTestFixture {
