@@ -489,5 +489,30 @@ extern "C" void force_kernel_test_registration() {
     });
 
     kernel_printer::print("DEBUG: All 13 tests (including failure test) registered explicitly\n");
+
+    // Test 14: Boost.UT Compatible Syntax Demo
+    register_test("boost_ut_syntax_demo", []() {
+        kernel_printer::print("\n=== Boost.UT Compatible Syntax Demo ===\n");
+
+        // Test with _i literals and simple comparisons
+        kernel_printer::print("Running test \"sum\"...\n");
+
+        // Simple sum function for testing
+        auto sum = [](auto... values) { return (values + ...); };
+
+        // Test cases that should pass
+        expect(sum(0) == 0_i);
+        expect(sum(1, 2) == 3_i);
+
+        kernel_printer::print("✅ First two assertions passed\n");
+
+        // Test case that should fail - demonstrates boost::ut style output
+        kernel_printer::print("🧪 Now testing complex expression that will fail...\n");
+        expect(sum(1, 2) > 0_i and 41_i == sum(40, 2));  // This will fail: 41 == 42
+
+        kernel_printer::print("🔍 Boost.UT syntax demonstration complete\n");
+    });
+
+    kernel_printer::print("DEBUG: All 14 tests (including boost::ut demo) registered\n");
 }
 

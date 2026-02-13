@@ -12,6 +12,7 @@ add_library(moss_test_framework STATIC)
 target_sources(moss_test_framework PRIVATE
     test_main.cpp
     kernel_modern_validation.cpp
+    boost_ut_demo.cpp
 )
 
 # 内核测试头文件
