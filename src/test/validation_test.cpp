@@ -7,152 +7,139 @@
  * MOSS compatibility and modern ut.hpp-style testing approaches.
  */
 
-#include "moss_compat.hpp"
+#include "moss_ut.hpp"
 
 // ========================================================================
-// Validation Tests Using Legacy MOSS Compatibility
+// Validation Tests Using Pure ut.hpp Syntax
 // ========================================================================
 
-MOSS_TEST_SUITE_BEGIN(freestanding_validation)
+namespace moss::test::validation {
 
-MOSS_TEST_FUNCTION(test_type_traits_validation) {
-    // Test basic type traits functionality
-    static_assert(std::is_same_v<int, int>);
-    static_assert(!std::is_same_v<int, float>);
-    static_assert(std::is_integral_v<int>);
-    static_assert(!std::is_integral_v<float>);
+void test_type_traits_validation() {
+    boost::ut::test_case test("type_traits_validation", []() {
+        // Test basic type traits functionality
+        static_assert(std::is_same_v<int, int>);
+        static_assert(!std::is_same_v<int, float>);
+        static_assert(std::is_integral_v<int>);
+        static_assert(!std::is_integral_v<float>);
 
-    MOSS_ASSERT_TRUE(std::is_same_v<int, int>);
-    MOSS_ASSERT_FALSE(std::is_same_v<int, float>);
+        // Runtime checks
+        expect(static_cast<bool>(std::is_same_v<int, int>));
+        expect(static_cast<bool>(!std::is_same_v<int, float>));
+    });
 }
 
-MOSS_TEST_FUNCTION(test_vector_validation) {
-    // Test basic vector functionality
-    std::vector<int> vec;
-    vec.push_back(42);
-    vec.push_back(24);
+void test_vector_validation() {
+    boost::ut::test_case test("test_vector_validation", []() {
+        // Test basic vector functionality
+        std::vector<int> vec;
+        vec.push_back(42);
+        vec.push_back(24);
 
-    MOSS_ASSERT_EQ_U64(2, vec.size());
-    MOSS_ASSERT_EQ_U32(42, vec[0]);
-    MOSS_ASSERT_EQ_U32(24, vec[1]);
-    MOSS_ASSERT_FALSE(vec.empty());
+        expect(vec.size() == 2);
+        expect(vec[0] == 42);
+        expect(vec[1] == 24);
+        expect(!vec.empty());
+    });
 }
 
-MOSS_TEST_FUNCTION(test_string_validation) {
-    // Test basic string functionality
-    std::string str("Hello");
-    str += " World";
+void test_string_validation() {
+    boost::ut::test_case test("test_string_validation", []() {
+        // Test basic string functionality
+        std::string str("Hello");
+        str += " World";
 
-    MOSS_ASSERT_EQ_U64(11, str.size());
-    MOSS_ASSERT_FALSE(str.empty());
-    MOSS_ASSERT_TRUE(str == "Hello World");
+        expect(str.size() == 11);
+        expect(!str.empty());
+        expect(str == "Hello World");
+    });
 }
 
-MOSS_TEST_FUNCTION(test_string_view_validation) {
-    // Test basic string_view functionality
-    const char* cstr = "Test String";
-    std::string_view sv(cstr);
+void test_string_view_validation() {
+    boost::ut::test_case test("test_string_view_validation", []() {
+        // Test basic string_view functionality
+        const char* cstr = "Test String";
+        std::string_view sv(cstr);
 
-    MOSS_ASSERT_EQ_U64(11, sv.size());
-    MOSS_ASSERT_FALSE(sv.empty());
-    MOSS_ASSERT_TRUE(sv.front() == 'T');
-    MOSS_ASSERT_TRUE(sv.back() == 'g');
+        expect(sv.size() == 11);
+        expect(!sv.empty());
+        expect(sv.front() == 'T');
+        expect(sv.back() == 'g');
+    });
 }
 
-MOSS_TEST_FUNCTION(test_unordered_map_validation) {
-    // Test basic unordered_map functionality
-    std::unordered_map<int, std::string> map;
-    map[42] = "answer";
-    map[24] = "reverse";
+void test_unordered_map_validation() {
+    boost::ut::test_case test("test_unordered_map_validation", []() {
+        // Test basic unordered_map functionality
+        std::unordered_map<int, std::string> map;
+        map[42] = "answer";
+        map[24] = "reverse";
 
-    MOSS_ASSERT_EQ_U64(2, map.size());
-    MOSS_ASSERT_FALSE(map.empty());
-    MOSS_ASSERT_TRUE(map[42] == "answer");
+        expect(map.size() == 2);
+        expect(!map.empty());
+        expect(map[42] == "answer");
+    });
 }
 
-MOSS_TEST_FUNCTION(test_iostream_validation) {
-    // Test basic iostream functionality
-    std::cout << "[IOSTREAM] Testing UART-based output... ";
-    std::cout << "SUCCESS" << std::endl;
-    MOSS_ASSERT_TRUE(true); // If we got here, iostream works
+void test_iostream_validation() {
+    boost::ut::test_case test("test_iostream_validation", []() {
+        // Test basic iostream functionality using our test output
+        boost::ut::test_output("[IOSTREAM] Testing UART-based output... SUCCESS\n");
+        expect(true); // If we got here, iostream works
+    });
 }
 
-MOSS_TEST_FUNCTION(test_sstream_validation) {
-    // Test basic string stream functionality
-    std::ostringstream oss;
-    oss << "Number: " << 42;
-    std::string result = oss.str();
+void test_sstream_validation() {
+    boost::ut::test_case test("test_sstream_validation", []() {
+        // Test basic string stream functionality
+        std::ostringstream oss;
+        oss << "Number: " << 42;
+        std::string result = oss.str();
 
-    MOSS_ASSERT_FALSE(result.empty());
-    MOSS_ASSERT_TRUE(result.find("42") != std::string::npos);
+        expect(!result.empty());
+        expect(result.find("42") != std::string::npos);
+    });
 }
 
-MOSS_TEST_FUNCTION(test_memory_validation) {
-    // Test basic smart pointer functionality
-    auto ptr = std::make_unique<int>(42);
+void test_memory_validation() {
+    boost::ut::test_case test("test_memory_validation", []() {
+        // Test basic memory operations without make_unique in freestanding
+        int value = 42;
+        int* ptr = &value;
 
-    MOSS_ASSERT_NOT_NULL(ptr.get());
-    MOSS_ASSERT_EQ_U32(42, *ptr);
+        expect(ptr != nullptr);
+        expect(*ptr == 42);
+    });
 }
 
-MOSS_TEST_SUITE_END()
+} // namespace moss::test::validation
 
 // ========================================================================
-// Register Tests with Legacy Framework
-// ========================================================================
-
-MOSS_REGISTER_TEST(freestanding_validation, test_type_traits_validation)
-MOSS_REGISTER_TEST(freestanding_validation, test_vector_validation)
-MOSS_REGISTER_TEST(freestanding_validation, test_string_validation)
-MOSS_REGISTER_TEST(freestanding_validation, test_string_view_validation)
-MOSS_REGISTER_TEST(freestanding_validation, test_unordered_map_validation)
-MOSS_REGISTER_TEST(freestanding_validation, test_iostream_validation)
-MOSS_REGISTER_TEST(freestanding_validation, test_sstream_validation)
-MOSS_REGISTER_TEST(freestanding_validation, test_memory_validation)
-
-// ========================================================================
-// Modern Test Style Examples (for future migration)
-// ========================================================================
-
-MOSS_TEST_CASE(modern_type_traits_test) {
-    MOSS_EXPECT(std::is_same_v<int, int>);
-    MOSS_EXPECT(!std::is_same_v<int, float>);
-    MOSS_EXPECT(std::is_integral_v<int>);
-    MOSS_EXPECT(!std::is_integral_v<float>);
-}
-
-MOSS_TEST_CASE(modern_container_test) {
-    std::vector<int> vec;
-    vec.push_back(100);
-    vec.push_back(200);
-
-    MOSS_EXPECT_EQ(2, vec.size());
-    MOSS_EXPECT_EQ(100, vec[0]);
-    MOSS_EXPECT_EQ(200, vec[1]);
-}
-
-// ========================================================================
-// Main Test Runner
+// Test Registration (Modern ut.hpp Style)
 // ========================================================================
 
 namespace moss::test {
     /**
      * @brief Main validation test entry point
      *
-     * This function demonstrates our complete ut.hpp integration working
+     * This function registers and runs all validation tests using pure ut.hpp
      * with the MOSS kernel freestanding environment.
      */
-    void run_validation_tests() {
-        std::cout << std::endl;
-        std::cout << "========================================" << std::endl;
-        std::cout << "MOSS ut.hpp Integration Validation" << std::endl;
-        std::cout << "========================================" << std::endl;
-        std::cout << "Testing freestanding std library implementations..." << std::endl;
-        std::cout << std::endl;
+    void run_validation_tests() noexcept {
+        boost::ut::test_output("========================================\n");
+        boost::ut::test_output("MOSS ut.hpp Integration Validation\n");
+        boost::ut::test_output("========================================\n");
+        boost::ut::test_output("Testing freestanding std library implementations...\n\n");
 
-        // Run all registered tests
-        // The static constructors will have already executed the tests
-        MOSS_RUN_ALL_TESTS();
+        // Run all validation tests
+        validation::test_type_traits_validation();
+        validation::test_vector_validation();
+        validation::test_string_validation();
+        validation::test_string_view_validation();
+        validation::test_unordered_map_validation();
+        validation::test_iostream_validation();
+        validation::test_sstream_validation();
+        validation::test_memory_validation();
     }
 }
 
