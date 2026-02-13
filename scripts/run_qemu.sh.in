@@ -3,6 +3,7 @@ set -e
 
 # QEMU运行脚本模板
 KERNEL_ELF="@CMAKE_BINARY_DIR@/bin/moss.elf"
+TEST_ELF="@CMAKE_BINARY_DIR@/bin/moss.test.elf"
 KERNEL_BIN="@CMAKE_BINARY_DIR@/moss_boot.bin"  # 使用最小启动二进制文件（只包含.text.boot段）
 KERNEL_BIN_FULL="@CMAKE_BINARY_DIR@/moss.bin"  # 完整版本（备用）
 BUILD_DIR="@CMAKE_BINARY_DIR@"
@@ -10,6 +11,7 @@ BUILD_DIR="@CMAKE_BINARY_DIR@"
 # 解析命令行参数
 USE_BINARY=false
 DEBUG_MODE=false
+TEST_MODE=false
 
 for arg in "$@"; do
     case $arg in
@@ -21,6 +23,10 @@ for arg in "$@"; do
             DEBUG_MODE=true
             shift
             ;;
+        --test)
+            TEST_MODE=true
+            shift
+            ;;
         *)
             # 未知参数
             ;;
@@ -28,7 +34,15 @@ for arg in "$@"; do
 done
 
 # 根据参数选择内核文件
-if [ "$USE_BINARY" == "true" ]; then
+if [ "$TEST_MODE" == "true" ]; then
+    KERNEL_FILE="$TEST_ELF"
+    KERNEL_TYPE="Unit Test ELF"
+    if [ ! -f "$TEST_ELF" ]; then
+        echo "错误: 测试ELF文件不存在: $TEST_ELF"
+        echo "请先运行构建命令生成 moss.test.elf"
+        exit 1
+    fi
+elif [ "$USE_BINARY" == "true" ]; then
     KERNEL_FILE="$KERNEL_BIN"
     KERNEL_TYPE="原始二进制"
     if [ ! -f "$KERNEL_BIN" ]; then
@@ -79,6 +93,13 @@ case "$ARCH" in
         ;;
 esac
 
+# 测试模式使用单核，内核模式使用4核
+if [ "$TEST_MODE" == "true" ]; then
+    SMP_COUNT=1
+else
+    SMP_COUNT=4
+fi
+
 # 根据内核类型配置加载方式
 if [ "$USE_BINARY" == "true" ]; then
     # 使用原始二进制文件
@@ -94,7 +115,7 @@ fi
 QEMU_ARGS=(
     $MACHINE_ARGS                   # 机器类型
     -cpu $CPU_TYPE                  # CPU类型
-    -smp 4                          # 4个CPU核心
+    -smp $SMP_COUNT                 # CPU核心数
     -m 256M                         # 256MB内存
     $KERNEL_ARGS                    # 内核加载方式
     -nographic                      # 无图形界面
@@ -113,6 +134,28 @@ DEBUG_ARGS=(
     -s                              # GDB服务器端口1234
     -S                              # 启动时暂停，等待GDB连接
 )
+
+if [ "$TEST_MODE" == "true" ]; then
+    echo "=================================================="
+    echo "        MOSS Unit Tests (${ARCH})"
+    echo "=================================================="
+    echo "架构:       $ARCH"
+    echo "测试文件:   $KERNEL_FILE"
+    echo "=================================================="
+    echo ""
+    echo "启动 $QEMU_SYSTEM..."
+    "$QEMU_SYSTEM" "${QEMU_ARGS[@]}"
+    QEMU_EXIT_CODE=$?
+    echo ""
+    echo "=== 单元测试执行完成 ==="
+    echo "QEMU退出状态: $QEMU_EXIT_CODE"
+    if [ $QEMU_EXIT_CODE -eq 0 ]; then
+        echo "✅ 单元测试全部通过！"
+    else
+        echo "❌ 单元测试失败，退出码: $QEMU_EXIT_CODE"
+    fi
+    exit $QEMU_EXIT_CODE
+fi
 
 echo "=================================================="
 echo "           Moss ${ARCH}内核操作系统"
@@ -160,7 +203,7 @@ else
     fi
     echo "QEMU退出状态: $QEMU_EXIT_CODE"
     if [ $QEMU_EXIT_CODE -eq 0 ]; then
-        echo "✅ 内核测试成功完成！"
+        echo "✅ 内核运行成功完成！"
     else
         echo "❌ 内核执行异常，退出码: $QEMU_EXIT_CODE"
     fi
@@ -173,3 +216,5 @@ fi
 #   ./run_qemu.sh --bin              # 运行原始二进制内核
 #   ./run_qemu.sh --debug            # 调试ELF内核
 #   ./run_qemu.sh --bin --debug      # 调试原始二进制内核
+#   ./run_qemu.sh --test             # 运行单元测试 (moss.test.elf)
+#   ./run_qemu.sh --test --debug     # 调试单元测试
