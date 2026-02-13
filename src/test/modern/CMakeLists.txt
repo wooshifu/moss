@@ -4,6 +4,7 @@ add_library(moss_modern_tests STATIC)
 target_sources(moss_modern_tests PRIVATE
     core/test_main_modern.cpp
     suites/containers_test.cpp
+    suites/memory_test.cpp
 )
 
 target_sources(moss_modern_tests PUBLIC

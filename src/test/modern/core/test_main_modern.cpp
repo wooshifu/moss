@@ -4,6 +4,7 @@ using namespace boost::ut;
 
 // Forward declare our test suites
 extern void run_containers_tests();
+extern void run_memory_tests();
 
 extern "C" [[noreturn]] void modern_test_main() noexcept {
     using namespace moss::kernel;
@@ -15,6 +16,9 @@ extern "C" [[noreturn]] void modern_test_main() noexcept {
     // Run specific test suites directly
     kernel_uart_puts("Running containers test suite...\n");
     run_containers_tests();
+
+    kernel_uart_puts("Running memory test suite...\n");
+    run_memory_tests();
 
     kernel_uart_puts("🎉 All modern tests completed successfully!\n");
     kernel_test_exit(0);
