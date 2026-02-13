@@ -1,4 +1,14 @@
-// containers.cpp - 空源文件（header-only模块）
-// 此文件存在仅为满足CMake OBJECT库的源文件需求
+// containers.cpp - module implementation unit
+// Provides definitions for module-level symbols (thread_local, extern)
 
-// containers模块是header-only模块，所有实现都在头文件中
+module moss.containers;
+
+namespace moss::kernel::containers {
+
+// RcuReadLock thread_local definition
+thread_local u32 RcuReadLock::read_depth_ = 0;
+
+// Global slab allocator instance
+SlabAllocator *g_slab_allocator = nullptr;
+
+} // namespace moss::kernel::containers
