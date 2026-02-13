@@ -1,7 +1,10 @@
 # src/containers/CMakeLists.txt
 
 add_library(moss_containers OBJECT)
-target_sources(moss_containers PRIVATE src/containers.cpp)
+
+target_sources(moss_containers
+    PUBLIC FILE_SET CXX_MODULES FILES src/containers.cppm
+    PRIVATE src/containers.cpp src/page_alloc_shim.cpp)
 
 target_include_directories(moss_containers PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}/include)
