@@ -806,6 +806,7 @@ void test_simple_ipi_system(void) noexcept {
 namespace moss::kernel::test {
     void register_container_test_suite() noexcept;
     void register_memory_test_suite() noexcept;
+    void register_scheduler_test_suite() noexcept;
 }
 
 using namespace moss::kernel::test;
@@ -823,6 +824,8 @@ void kernel_run_unit_tests(void) noexcept {
     early_debug_print("✅ 容器测试套件已注册\n");
     register_memory_test_suite();
     early_debug_print("✅ 内存管理测试套件已注册\n");
+    register_scheduler_test_suite();
+    early_debug_print("✅ 调度器测试套件已注册\n");
 
     // 调试：直接创建和运行一个简单测试来验证测试框架
     early_debug_print("🔍 创建简单测试来验证框架...\n");
@@ -910,6 +913,14 @@ void kernel_run_unit_tests(void) noexcept {
     }
 
     early_debug_print("\n🔬 测试框架执行完成\n");
+
+    // 使用正确的退出机制关闭QEMU
+    // 这样测试完成后不需要手动终止QEMU进程
+    if (global_result.failed_tests == 0) {
+        moss::kernel::test::test_kernel_shutdown(moss::kernel::test::TestExitCode::AllPassed);
+    } else {
+        moss::kernel::test::test_kernel_shutdown(moss::kernel::test::TestExitCode::TestFailed);
+    }
 }
 
 // 简单的数字转字符串函数

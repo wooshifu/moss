@@ -9,6 +9,7 @@ target_sources(moss_test_framework PRIVATE
     framework/test_registry.cpp
     suites/test_containers.cpp
     suites/test_memory.cpp
+    suites/test_scheduler.cpp
 )
 
 # 测试框架头文件
@@ -24,6 +25,8 @@ target_sources(moss_test_framework PUBLIC
 target_include_directories(moss_test_framework PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}/framework
     ${PROJECT_SOURCE_DIR}/src/include
+    ${PROJECT_SOURCE_DIR}/src/containers/include
+    ${PROJECT_SOURCE_DIR}/src/process/include
 )
 
 # 编译选项 - 与主内核保持一致的严格模式
