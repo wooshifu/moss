@@ -415,6 +415,10 @@ constexpr auto make_result_err(E &&error) noexcept(
       Err<remove_cv_t<remove_reference_t<E>>>(forward<E>(error)));
 }
 
+// Convenience type aliases
+template <typename T> using KernelResult = Result<T, ErrorCode>;
+using VoidResult = Result<void, ErrorCode>;
+
 } // namespace moss::kernel
 
 // Specification-compliant helper functions in global namespace to match exact

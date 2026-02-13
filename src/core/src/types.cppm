@@ -1,4 +1,4 @@
-// src/modules/types.cppm
+// MOSS Types Module - Kernel Type Definitions
 export module moss.types;
 
 import moss.std;
@@ -19,39 +19,89 @@ using isize = ptrdiff_t;
 using PhysAddr = u64;
 using VirtAddr = u64;
 
-// Kernel constants
+// Page-related constants
 constexpr usize PAGE_SIZE = 4096;
+constexpr usize PAGE_SHIFT = 12;
+constexpr usize LARGE_PAGE_SIZE = 2 * 1024 * 1024;   // 2MB
+constexpr usize HUGE_PAGE_SIZE = 1024 * 1024 * 1024;  // 1GB
+
+// Memory layout constants
+constexpr VirtAddr KERNEL_BASE = 0xFFFF800000000000ULL;
+constexpr VirtAddr USER_BASE = 0x0000000000000000ULL;
+constexpr VirtAddr USER_MAX = 0x0000800000000000ULL;
+
+// Hardware constants
 constexpr usize CACHE_LINE_SIZE = 64;
 constexpr usize MAX_CPUS = 8;
 
 // Process and Thread IDs
 using ProcessId = u32;
-using ThreadId = u32;
+using ThreadId = u64;
+using EndpointId = u32;
+using DeviceId = u32;
+using InterruptId = u32;
 
-// Error codes
+// IPC-related types
+using MessageId = u64;
+using ChannelId = u32;
+using ShmId = u32;
+using ServiceId = u32;
+
+// Special ID values
+constexpr ProcessId INVALID_PROCESS_ID = 0;
+constexpr ThreadId INVALID_THREAD_ID = 0;
+constexpr EndpointId INVALID_ENDPOINT_ID = 0;
+
+// Error codes (superset of both types.hpp and result.hpp)
 enum class ErrorCode : u32 {
   Success = 0,
-  OutOfMemory = 1,
-  InvalidParameter = 2,
-  ResourceBusy = 3,
-  NotFound = 4,
-  PermissionDenied = 5,
-  Timeout = 6,
-  DeviceError = 7,
-  NetworkError = 8,
-  FileSystemError = 9,
+  OutOfMemory,
+  InvalidParameter,
+  PermissionDenied,
+  NotFound,
+  AlreadyExists,
+  ResourceBusy,
+  Timeout,
+  DeviceError,
+  DeviceBusy,
+  IoError,
+  NetworkError,
+  FileSystemError,
+  InvalidState,
+  Interrupted,
+  TooManyFiles,
+  NoSpace,
+  ReadOnly,
+  NotSupported,
+  // IPC-related errors
+  InvalidArgument,
+  ResourceExhausted,
+  Busy,
+  InternalError,
   Unknown = 0xFFFFFFFF
 };
+
+// Kernel error type alias
+using KernelError = ErrorCode;
 
 // Handle types for kernel objects
 using Handle = u64;
 constexpr Handle INVALID_HANDLE = 0;
+
+// Error code to string conversion
+const char *error_to_string(ErrorCode error) noexcept;
 
 // Memory alignment utilities
 template <usize Alignment> constexpr usize align_up(usize value) noexcept {
   static_assert((Alignment & (Alignment - 1)) == 0,
                 "Alignment must be power of 2");
   return (value + Alignment - 1) & ~(Alignment - 1);
+}
+
+template <usize Alignment> constexpr usize align_down(usize value) noexcept {
+  static_assert((Alignment & (Alignment - 1)) == 0,
+                "Alignment must be power of 2");
+  return value & ~(Alignment - 1);
 }
 
 constexpr bool is_aligned(usize value, usize alignment) noexcept {
@@ -71,10 +121,3 @@ protected:
 };
 
 } // namespace moss::kernel
-
-// Macro for non-copyable, non-movable classes (currently unused but kept for future use)
-// #define NON_COPYABLE_NON_MOVABLE(ClassName)                                    \
-//   ClassName(const ClassName &) = delete;                                       \
-//   ClassName &operator=(const ClassName &) = delete;                            \
-//   ClassName(ClassName &&) = delete;                                            \
-//   ClassName &operator=(ClassName &&) = delete

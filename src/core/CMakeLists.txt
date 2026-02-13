@@ -11,6 +11,8 @@ target_sources(moss_core PUBLIC FILE_SET CXX_MODULES FILES
     src/std.cppm
     src/types.cppm
     src/result.cppm
+    src/concepts.cppm
+    src/smart_ptr.cppm
     src/arch.cppm)
 target_sources(moss_core PRIVATE src/arch_impl.cpp)
 
