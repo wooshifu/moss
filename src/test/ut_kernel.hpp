@@ -162,22 +162,25 @@ private:
 // Expect function - core of ut.hpp API
 template<typename T>
 constexpr auto expect(T&& value, const char* expr = "unknown", const char* file = __FILE__, int line = __LINE__) {
-    return expectation<T>{static_cast<T&&>(value), expr, file, line};
+    auto exp = expectation<T>{static_cast<T&&>(value), expr, file, line};
+    // Force evaluation to count assertions
+    (void)static_cast<bool>(exp);
+    return exp;
 }
 
 // ============================================================================
-// Test Registration and Execution
+// Test Registration and Execution (Type-erased)
 // ============================================================================
 
-template<typename F>
-struct test_impl {
+// Non-templated base for test registration to avoid template instantiation issues
+struct test_base {
     const char* name;
-    F test_function;
-    test_impl* next;
+    void (*test_function)();
+    test_base* next;
 
-    static inline test_impl* head = nullptr;
+    static inline test_base* head = nullptr;
 
-    constexpr test_impl(const char* n, F f) : name(n), test_function(f), next(head) {
+    test_base(const char* n, void (*f)()) : name(n), test_function(f), next(head) {
         head = this;
     }
 
@@ -187,7 +190,7 @@ struct test_impl {
         kernel_printer::print(name);
         kernel_printer::print(" ... ");
 
-        // No exception handling in freestanding environment
+        // Execute test function
         test_function();
         kernel_printer::print("✅ PASS\n");
         test_result::tests_passed++;
@@ -196,7 +199,20 @@ struct test_impl {
     [[noreturn]] static void run_all() {
         kernel_printer::print("\n=== Kernel UT Test Execution ===\n");
 
-        test_impl* current = head;
+        // Count and show registered tests
+        int count = 0;
+        test_base* current = head;
+        while (current) {
+            count++;
+            current = current->next;
+        }
+
+        kernel_printer::print("DEBUG: Found ");
+        kernel_printer::print_number(count);
+        kernel_printer::print(" registered tests\n");
+
+        // Run the tests
+        current = head;
         while (current) {
             current->run();
             current = current->next;
@@ -225,19 +241,46 @@ struct test_impl {
 };
 
 // ============================================================================
-// Test Case Creation (ut.hpp style API)
+// Simplified Test Registration (Direct Function Registration)
 // ============================================================================
 
+// Simple registration function
+inline void register_test(const char* name, void (*test_func)()) {
+    static test_base* test_instances[64];  // Maximum 64 tests
+    static int test_count = 0;
+
+    kernel_printer::print("DEBUG: Registering test: ");
+    kernel_printer::print(name);
+    kernel_printer::print("\n");
+
+    if (test_count < 64) {
+        test_instances[test_count] = new test_base(name, test_func);
+        test_count++;
+
+        kernel_printer::print("DEBUG: Test registered, count now: ");
+        kernel_printer::print_number(test_count);
+        kernel_printer::print("\n");
+    }
+}
+
+// Note: REGISTER_TEST macro removed as we use test_case_t direct registration
+
+// For compatibility with existing test_case_t syntax
 template<typename F>
 struct test_case_t {
-    constexpr test_case_t(const char* name, F test_function) {
-        static test_impl<F> test_instance(name, test_function);
+    test_case_t(const char* name, F test_function) {
+        // Add debug output to see if constructor is called
+        kernel_printer::print("DEBUG: test_case_t constructor called for: ");
+        kernel_printer::print(name);
+        kernel_printer::print("\n");
+
+        // Create wrapper function for this specific lambda
+        static F stored_lambda = test_function;
+        static auto wrapper_func = []() { stored_lambda(); };
+
+        register_test(name, wrapper_func);
     }
 };
-
-// Explicit deduction guide for test_case_t
-template<typename F>
-test_case_t(const char*, F) -> test_case_t<F>;
 
 // String literal operator for test names (ut.hpp style)
 constexpr auto operator""_test(const char* name, decltype(sizeof(int))) {
@@ -269,7 +312,7 @@ constexpr auto operator""_suite(const char* name, decltype(sizeof(int))) {
 // ============================================================================
 
 [[noreturn]] inline void run_all_tests() {
-    test_impl<void(*)()>::run_all();
+    test_base::run_all();
 }
 
 // ============================================================================
@@ -309,10 +352,8 @@ constexpr auto operator!=(T&& lhs, U&& rhs) -> ne_t<T, U> {
 } // namespace boost::ut
 
 // ============================================================================
-// Compatibility Macros (for easier migration)
+// Compatibility layer for MOSS framework integration
 // ============================================================================
-
-#define UT_EXPECT(condition) boost::ut::expect(condition, #condition, __FILE__, __LINE__)
 
 // For direct compatibility with MOSS framework
 namespace moss::test {

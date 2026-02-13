@@ -8,6 +8,9 @@
 
 #include "moss_ut.hpp"
 
+// Force test registration from kernel_modern_validation.cpp
+extern "C" void force_kernel_test_registration();
+
 // ============================================================================
 // Main Test Function
 // ============================================================================
@@ -37,6 +40,9 @@ extern "C" [[noreturn]] void test_kernel_main() noexcept {
 
     kernel_uart_puts("🔧 Modern ut.hpp framework initialized\n");
     kernel_uart_puts("🧪 Running modern syntax tests...\n\n");
+
+    // Force test registration to ensure static constructors run
+    force_kernel_test_registration();
 
     // Run validation tests
     moss::test::run_validation_tests();

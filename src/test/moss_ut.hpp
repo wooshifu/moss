@@ -20,7 +20,7 @@ namespace moss::kernel {
     /**
      * @brief UART output for kernel test environment
      */
-    void kernel_uart_puts(const char* str) noexcept {
+    inline void kernel_uart_puts(const char* str) noexcept {
 #if defined(MOSS_ARCH_ARM64)
         volatile char* uart_base = reinterpret_cast<volatile char*>(0x09000000);
         while (*str) {
@@ -44,7 +44,7 @@ namespace moss::kernel {
     /**
      * @brief Kernel test exit with architecture-specific halt
      */
-    [[noreturn]] void kernel_test_exit(int exit_code) noexcept {
+    [[noreturn]] inline void kernel_test_exit(int exit_code) noexcept {
         // Print final status
         if (exit_code == 0) {
             kernel_uart_puts("🎉 All tests passed! Kernel testing successful.\n");
@@ -52,7 +52,27 @@ namespace moss::kernel {
             kernel_uart_puts("❌ Some tests failed. Check output above.\n");
         }
 
-        // Architecture-specific halt
+        // Architecture-specific QEMU exit using semihosting
+#if defined(MOSS_ARCH_ARM64)
+        // ARM64 semihosting exit call
+        // 0x18 is SYS_EXIT, exit_code is in x1
+        asm volatile(
+            "mov x0, #0x18\n"          // SYS_EXIT
+            "mov x1, %0\n"             // exit_code
+            "hlt #0xF000\n"            // ARM64 semihosting breakpoint
+            :
+            : "r"(static_cast<unsigned long long>(exit_code))
+            : "x0", "x1"
+        );
+#elif defined(MOSS_ARCH_X86_64)
+        // For x86_64, use simple halt (no standard semihosting)
+        asm volatile("hlt");
+#else
+        // Other architectures: busy loop
+        for (volatile int i = 0; i < 1000000; ++i) {}
+#endif
+
+        // Fallback: infinite loop (should never reach here)
         while (true) {
 #if defined(MOSS_ARCH_ARM64)
             asm volatile("wfi");
