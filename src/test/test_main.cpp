@@ -23,13 +23,6 @@ using namespace moss::kernel::test;
 // ============================================================================
 
 // 测试结果退出码
-enum class TestExitCode : u32 {
-    AllPassed = 0,      // 所有测试通过
-    TestFailed = 1,     // 有测试失败
-    SystemError = 2,    // 系统错误
-    NoTests = 3         // 没有找到测试
-};
-
 // 全局测试统计
 struct TestKernelStats {
     u32 total_assertions = 0;
@@ -74,58 +67,7 @@ void test_kernel_early_init() noexcept {
     early_debug_print("🔍 [LAYER 4] test_kernel_early_init() completed\n");
 }
 
-// 测试内核关闭处理
-[[noreturn]] void test_kernel_shutdown(TestExitCode exit_code) noexcept {
-    const char* exit_message = nullptr;
-
-    switch (exit_code) {
-        case TestExitCode::AllPassed:
-            exit_message = "🎉 所有测试通过！内核质量验证成功！\n";
-            break;
-        case TestExitCode::TestFailed:
-            exit_message = "❌ 测试失败！发现问题需要修复\n";
-            break;
-        case TestExitCode::SystemError:
-            exit_message = "💥 系统错误！测试框架出现问题\n";
-            break;
-        case TestExitCode::NoTests:
-            exit_message = "⚠️ 警告：没有找到任何测试\n";
-            break;
-        default:
-            exit_message = "❓ 未知退出状态\n";
-            break;
-    }
-
-    early_debug_print("\n");
-    early_debug_print("================================\n");
-    early_debug_print("=== 测试内核关闭 ===\n");
-    early_debug_print(exit_message);
-    early_debug_print("================================\n");
-
-    // 在QEMU中，可以使用特殊的退出机制
-    // 对于真实硬件，这里会是halt指令
-    #if defined(MOSS_ARCH_ARM64)
-    // ARM64: WFI (等待中断) 指令
-    while (true) {
-        asm volatile("wfi");
-    }
-    #elif defined(MOSS_ARCH_X86_64)
-    // x86_64: HLT 指令
-    while (true) {
-        asm volatile("hlt");
-    }
-    #elif defined(MOSS_ARCH_RISCV)
-    // RISC-V: WFI 指令
-    while (true) {
-        asm volatile("wfi");
-    }
-    #else
-    // 通用回退 - 死循环
-    while (true) {
-        asm volatile("nop");
-    }
-    #endif
-}
+// 测试内核关闭处理 - 已移动到test_framework.cpp中
 
 // ============================================================================
 // 示例测试套件 - 验证测试框架本身的工作
