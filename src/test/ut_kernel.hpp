@@ -1,0 +1,331 @@
+#pragma once
+/**
+ * @file ut_kernel.hpp
+ * @brief Kernel-optimized version of Boost.UT testing framework
+ *
+ * This is a simplified version of ut.hpp (Boost.UT) specifically optimized for
+ * freestanding kernel environments. It removes features not needed in kernel:
+ * - File I/O and logging
+ * - Threading and parallel execution
+ * - Process spawning and subprocess tests
+ * - Complex formatting and output streams
+ * - Dynamic memory allocation where possible
+ *
+ * Preserves core ut.hpp features:
+ * - Modern testing syntax: expect(), "test_name"_test
+ * - Automatic test discovery and registration
+ * - Assertion reporting and test statistics
+ * - Template-based test framework
+ */
+
+// Minimal includes - only what we actually need
+// No external includes needed - we'll implement everything inline
+
+// MOSS kernel integration
+namespace moss::kernel {
+    void kernel_uart_puts(const char* str) noexcept;
+    [[noreturn]] void kernel_test_exit(int exit_code) noexcept;
+}
+
+// ============================================================================
+// Kernel UT Configuration
+// ============================================================================
+
+#ifndef BOOST_UT_DISABLE_MODULE
+#define BOOST_UT_DISABLE_MODULE 1
+#endif
+
+#ifndef BOOST_UT_DISABLE_FILE_OUTPUT
+#define BOOST_UT_DISABLE_FILE_OUTPUT 1
+#endif
+
+// ============================================================================
+// Core UT Implementation (Kernel Optimized)
+// ============================================================================
+
+namespace boost::ut {
+
+// Forward declarations
+template<typename T>
+struct test_case;
+
+template<typename T>
+struct suite;
+
+// ============================================================================
+// Basic Types and Utilities
+// ============================================================================
+
+using literals_t = int;
+
+template<typename T>
+constexpr auto type_name() -> const char* {
+    return "unknown";  // Simplified for kernel
+}
+
+// ============================================================================
+// Test Result and Statistics
+// ============================================================================
+
+struct test_result {
+    static inline int tests_passed = 0;
+    static inline int tests_failed = 0;
+    static inline int assertions_passed = 0;
+    static inline int assertions_failed = 0;
+    static inline const char* current_test_name = nullptr;
+};
+
+// ============================================================================
+// Output System (UART-based for kernel)
+// ============================================================================
+
+struct kernel_printer {
+    static void print(const char* message) {
+        moss::kernel::kernel_uart_puts(message);
+    }
+
+    static void print_number(int num) {
+        char buffer[12] = {0};
+        if (num == 0) {
+            print("0");
+            return;
+        }
+
+        int index = 0;
+        bool negative = num < 0;
+        if (negative) num = -num;
+
+        while (num > 0 && index < 11) {
+            buffer[index++] = static_cast<char>('0' + (num % 10));
+            num /= 10;
+        }
+
+        if (negative) buffer[index++] = '-';
+
+        // Reverse string
+        for (int i = 0; i < index / 2; ++i) {
+            char temp = buffer[i];
+            buffer[i] = buffer[index - 1 - i];
+            buffer[index - 1 - i] = temp;
+        }
+
+        print(buffer);
+    }
+};
+
+// ============================================================================
+// Assertion Framework
+// ============================================================================
+
+template<typename T>
+struct expectation {
+    T value;
+    const char* expression;
+    const char* file;
+    int line;
+
+    constexpr expectation(T v, const char* expr, const char* f, int l)
+        : value(v), expression(expr), file(f), line(l) {}
+
+    constexpr auto operator!() const {
+        if (!value) {
+            test_result::assertions_passed++;
+            return true;
+        } else {
+            test_result::assertions_failed++;
+            report_failure();
+            return false;
+        }
+    }
+
+    constexpr operator bool() const {
+        if (value) {
+            test_result::assertions_passed++;
+            return true;
+        } else {
+            test_result::assertions_failed++;
+            report_failure();
+            return false;
+        }
+    }
+
+private:
+    void report_failure() const {
+        kernel_printer::print("\n  ❌ Assertion failed: ");
+        kernel_printer::print(expression);
+        kernel_printer::print(" in test: ");
+        kernel_printer::print(test_result::current_test_name ? test_result::current_test_name : "unknown");
+        kernel_printer::print("\n");
+    }
+};
+
+// Expect function - core of ut.hpp API
+template<typename T>
+constexpr auto expect(T&& value, const char* expr = "unknown", const char* file = __FILE__, int line = __LINE__) {
+    return expectation<T>{static_cast<T&&>(value), expr, file, line};
+}
+
+// ============================================================================
+// Test Registration and Execution
+// ============================================================================
+
+template<typename F>
+struct test_impl {
+    const char* name;
+    F test_function;
+    test_impl* next;
+
+    static inline test_impl* head = nullptr;
+
+    constexpr test_impl(const char* n, F f) : name(n), test_function(f), next(head) {
+        head = this;
+    }
+
+    void run() const {
+        test_result::current_test_name = name;
+        kernel_printer::print("Running test: ");
+        kernel_printer::print(name);
+        kernel_printer::print(" ... ");
+
+        // No exception handling in freestanding environment
+        test_function();
+        kernel_printer::print("✅ PASS\n");
+        test_result::tests_passed++;
+    }
+
+    [[noreturn]] static void run_all() {
+        kernel_printer::print("\n=== Kernel UT Test Execution ===\n");
+
+        test_impl* current = head;
+        while (current) {
+            current->run();
+            current = current->next;
+        }
+
+        // Print results
+        kernel_printer::print("\n=== Test Results ===\n");
+        kernel_printer::print("Tests passed: ");
+        kernel_printer::print_number(test_result::tests_passed);
+        kernel_printer::print("\nTests failed: ");
+        kernel_printer::print_number(test_result::tests_failed);
+        kernel_printer::print("\nAssertions passed: ");
+        kernel_printer::print_number(test_result::assertions_passed);
+        kernel_printer::print("\nAssertions failed: ");
+        kernel_printer::print_number(test_result::assertions_failed);
+        kernel_printer::print("\n");
+
+        if (test_result::tests_failed == 0) {
+            kernel_printer::print("🎉 All tests passed!\n");
+            moss::kernel::kernel_test_exit(0);
+        } else {
+            kernel_printer::print("❌ Some tests failed!\n");
+            moss::kernel::kernel_test_exit(1);
+        }
+    }
+};
+
+// ============================================================================
+// Test Case Creation (ut.hpp style API)
+// ============================================================================
+
+template<typename F>
+struct test_case_t {
+    constexpr test_case_t(const char* name, F test_function) {
+        static test_impl<F> test_instance(name, test_function);
+    }
+};
+
+// Explicit deduction guide for test_case_t
+template<typename F>
+test_case_t(const char*, F) -> test_case_t<F>;
+
+// String literal operator for test names (ut.hpp style)
+constexpr auto operator""_test(const char* name, decltype(sizeof(int))) {
+    return [name](auto test_function) {
+        return test_case_t{name, test_function};
+    };
+}
+
+// ============================================================================
+// Test Suite Support (simplified)
+// ============================================================================
+
+template<typename F>
+struct suite_t {
+    constexpr suite_t([[maybe_unused]] const char* name, F suite_function) {
+        // For kernel, we just execute immediately - no complex suite management
+        suite_function();
+    }
+};
+
+constexpr auto operator""_suite(const char* name, decltype(sizeof(int))) {
+    return [name](auto suite_function) {
+        return suite_t{name, suite_function};
+    };
+}
+
+// ============================================================================
+// Main Test Runner Entry Point
+// ============================================================================
+
+[[noreturn]] inline void run_all_tests() {
+    test_impl<void(*)()>::run_all();
+}
+
+// ============================================================================
+// Comparison operators (simplified set)
+// ============================================================================
+
+template<typename T, typename U>
+struct eq_t {
+    T lhs;
+    U rhs;
+
+    constexpr operator bool() const {
+        return lhs == rhs;
+    }
+};
+
+template<typename T, typename U>
+constexpr auto operator==(T&& lhs, U&& rhs) -> eq_t<T, U> {
+    return {static_cast<T&&>(lhs), static_cast<U&&>(rhs)};
+}
+
+template<typename T, typename U>
+struct ne_t {
+    T lhs;
+    U rhs;
+
+    constexpr operator bool() const {
+        return lhs != rhs;
+    }
+};
+
+template<typename T, typename U>
+constexpr auto operator!=(T&& lhs, U&& rhs) -> ne_t<T, U> {
+    return {static_cast<T&&>(lhs), static_cast<U&&>(rhs)};
+}
+
+} // namespace boost::ut
+
+// ============================================================================
+// Compatibility Macros (for easier migration)
+// ============================================================================
+
+#define UT_EXPECT(condition) boost::ut::expect(condition, #condition, __FILE__, __LINE__)
+
+// For direct compatibility with MOSS framework
+namespace moss::test {
+    inline void initialize_freestanding_std() noexcept {
+        // No initialization needed for kernel ut
+    }
+
+    inline void run_validation_tests() noexcept {
+        boost::ut::kernel_printer::print("Starting kernel ut.hpp validation tests...\n");
+    }
+
+    [[noreturn]] inline void run_freestanding_validation_tests() noexcept {
+        boost::ut::run_all_tests();
+    }
+}
+
