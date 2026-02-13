@@ -1,7 +1,10 @@
 # src/drivers/CMakeLists.txt
 
 add_library(moss_drivers OBJECT)
-target_sources(moss_drivers PRIVATE src/drivers.cpp)
+
+target_sources(moss_drivers
+    PUBLIC FILE_SET CXX_MODULES FILES src/drivers.cppm
+    PRIVATE src/drivers.cpp)
 
 target_include_directories(moss_drivers PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}/include)
