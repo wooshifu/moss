@@ -471,10 +471,20 @@ struct test_base {
         kernel_printer::print(name);
         kernel_printer::print(" ... ");
 
+        // Record assertion count before this test
+        int failures_before = test_result::assertions_failed;
+
         // Execute test function
         test_function();
-        kernel_printer::print("✅ PASS\n");
-        test_result::tests_passed++;
+
+        // Check if any assertions failed during this test
+        if (test_result::assertions_failed > failures_before) {
+            kernel_printer::print("❌ FAIL\n");
+            test_result::tests_failed++;
+        } else {
+            kernel_printer::print("✅ PASS\n");
+            test_result::tests_passed++;
+        }
     }
 
     [[noreturn]] static void run_all() {

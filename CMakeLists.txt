@@ -397,7 +397,7 @@ message(STATUS "将生成文件: moss.dis, moss.sym, moss.bin, moss_boot.bin, mo
 # 测试目标 - 在 QEMU 中运行内核
 if(EXISTS "${CMAKE_BINARY_DIR}/run_qemu.sh")
   add_custom_target(
-    test
+    run-qemu
     COMMAND bash ${CMAKE_BINARY_DIR}/run_qemu.sh
     DEPENDS moss.elf
     COMMENT "Running moss in QEMU (${MOSS_TARGET_ARCH}/${MOSS_TARGET_PLATFORM})"
@@ -426,7 +426,15 @@ if(MOSS_BUILD_TESTS)
   message(STATUS "启用单元测试构建 (独立 moss.test.elf)")
   add_subdirectory(src/test)
 
-  # QEMU 测试运行目标
+  # CTest integration: cmake --workflow test step 使用此定义
+  enable_testing()
+  add_test(
+    NAME moss-unit-tests
+    COMMAND bash ${CMAKE_BINARY_DIR}/run_qemu.sh --test
+  )
+  set_tests_properties(moss-unit-tests PROPERTIES TIMEOUT 30)
+
+  # 便捷 make 目标
   add_custom_target(
     test-kernel
     COMMAND bash ${CMAKE_BINARY_DIR}/run_qemu.sh --test

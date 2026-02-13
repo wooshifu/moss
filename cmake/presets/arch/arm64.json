@@ -71,20 +71,44 @@
             "name": "arm64-qemu-debug",
             "displayName": "ARM64 QEMU Debug Build",
             "configurePreset": "arm64-qemu-debug",
-            "targets": ["moss.elf"]
+            "targets": ["moss.elf", "moss.test.elf"]
         },
         {
             "name": "arm64-qemu-release",
             "displayName": "ARM64 QEMU Release Build",
             "configurePreset": "arm64-qemu-release",
-            "targets": ["moss.elf"]
+            "targets": ["moss.elf", "moss.test.elf"]
+        }
+    ],
+    "testPresets": [
+        {
+            "name": "arm64-qemu-debug-test",
+            "displayName": "ARM64 Debug Unit Tests",
+            "configurePreset": "arm64-qemu-debug",
+            "execution": {
+                "timeout": 30
+            },
+            "output": {
+                "outputOnFailure": true
+            }
+        },
+        {
+            "name": "arm64-qemu-release-test",
+            "displayName": "ARM64 Release Unit Tests",
+            "configurePreset": "arm64-qemu-release",
+            "execution": {
+                "timeout": 30
+            },
+            "output": {
+                "outputOnFailure": true
+            }
         }
     ],
     "workflowPresets": [
         {
             "name": "arm64-qemu-debug",
             "displayName": "ARM64 QEMU Debug Workflow",
-            "description": "Complete ARM64 debug workflow",
+            "description": "Configure, build (moss.elf + moss.test.elf), and run tests",
             "steps": [
                 {
                     "type": "configure",
@@ -93,13 +117,17 @@
                 {
                     "type": "build",
                     "name": "arm64-qemu-debug"
+                },
+                {
+                    "type": "test",
+                    "name": "arm64-qemu-debug-test"
                 }
             ]
         },
         {
             "name": "arm64-qemu-release",
             "displayName": "ARM64 QEMU Release Workflow",
-            "description": "Complete ARM64 release workflow",
+            "description": "Configure, build (moss.elf + moss.test.elf), and run tests",
             "steps": [
                 {
                     "type": "configure",
@@ -108,18 +136,12 @@
                 {
                     "type": "build",
                     "name": "arm64-qemu-release"
+                },
+                {
+                    "type": "test",
+                    "name": "arm64-qemu-release-test"
                 }
             ]
-        }
-    ],
-    "testPresets": [
-        {
-            "name": "debug-test",
-            "displayName": "Debug Test in QEMU",
-            "configurePreset": "arm64-qemu-debug",
-            "execution": {
-                "timeout": 10
-            }
         }
     ]
 }

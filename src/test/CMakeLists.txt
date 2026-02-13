@@ -18,7 +18,6 @@ target_sources(moss.test.elf PRIVATE
     test_main.cpp
     framework/minimal_boot_support.cpp
     cases/kernel_modern_validation.cpp
-    cases/boost_ut_demo.cpp
     cases/boost_ut_kernel_validation.cpp
 )
 

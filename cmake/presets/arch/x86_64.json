@@ -71,20 +71,44 @@
             "name": "x86_64-qemu-debug",
             "displayName": "x86-64 QEMU Debug Build",
             "configurePreset": "x86_64-qemu-debug",
-            "targets": ["moss.elf"]
+            "targets": ["moss.elf", "moss.test.elf"]
         },
         {
             "name": "x86_64-qemu-release",
             "displayName": "x86-64 QEMU Release Build",
             "configurePreset": "x86_64-qemu-release",
-            "targets": ["moss.elf"]
+            "targets": ["moss.elf", "moss.test.elf"]
+        }
+    ],
+    "testPresets": [
+        {
+            "name": "x86_64-qemu-debug-test",
+            "displayName": "x86-64 Debug Unit Tests",
+            "configurePreset": "x86_64-qemu-debug",
+            "execution": {
+                "timeout": 30
+            },
+            "output": {
+                "outputOnFailure": true
+            }
+        },
+        {
+            "name": "x86_64-qemu-release-test",
+            "displayName": "x86-64 Release Unit Tests",
+            "configurePreset": "x86_64-qemu-release",
+            "execution": {
+                "timeout": 30
+            },
+            "output": {
+                "outputOnFailure": true
+            }
         }
     ],
     "workflowPresets": [
         {
             "name": "x86_64-qemu-debug",
             "displayName": "x86-64 QEMU Debug Workflow",
-            "description": "Complete x86-64 debug workflow",
+            "description": "Configure, build (moss.elf + moss.test.elf), and run tests",
             "steps": [
                 {
                     "type": "configure",
@@ -93,13 +117,17 @@
                 {
                     "type": "build",
                     "name": "x86_64-qemu-debug"
+                },
+                {
+                    "type": "test",
+                    "name": "x86_64-qemu-debug-test"
                 }
             ]
         },
         {
             "name": "x86_64-qemu-release",
             "displayName": "x86-64 QEMU Release Workflow",
-            "description": "Complete x86-64 release workflow",
+            "description": "Configure, build (moss.elf + moss.test.elf), and run tests",
             "steps": [
                 {
                     "type": "configure",
@@ -108,6 +136,10 @@
                 {
                     "type": "build",
                     "name": "x86_64-qemu-release"
+                },
+                {
+                    "type": "test",
+                    "name": "x86_64-qemu-release-test"
                 }
             ]
         }
