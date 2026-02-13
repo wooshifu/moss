@@ -1,4 +1,3 @@
-// src/modules/std.cppm
 // MOSS Standard Library Module - Freestanding C++26 Implementation
 // Provides all basic types, type traits, and utility functions for kernel use
 
@@ -26,15 +25,27 @@ using i16 = signed short;
 using i32 = signed int;
 using i64 = signed long long;
 
-// Physical address type for kernel use
+// Floating point types
+using f32 = float;
+using f64 = double;
+
+// Physical/virtual address and page types
 using PhysAddr = u64;
 using VirtAddr = u64;
+using PageFrame = u64;
 
 // Byte type
 enum class byte : unsigned char {};
 
-// Null pointer type
+// Null pointer and max alignment types
 using nullptr_t = decltype(nullptr);
+using max_align_t = long double;
+
+// Integer limits
+inline constexpr u8 UINT8_MAX = 255u;
+inline constexpr u16 UINT16_MAX = 65535u;
+inline constexpr u32 UINT32_MAX = 4294967295u;
+inline constexpr u64 UINT64_MAX = 18446744073709551615ull;
 
 } // namespace moss
 
@@ -348,11 +359,85 @@ constexpr int memcmp(const void *lhs, const void *rhs, size_t count) noexcept {
   return 0;
 }
 
+// Absolute value
+template <typename T> constexpr T abs(const T &value) noexcept {
+  return (value < 0) ? -value : value;
+}
+
+} // namespace moss
+
+// Type traits - is_function (simplified, always false for freestanding)
+export namespace moss {
+
+template <typename T> struct is_function {
+  static constexpr bool value = false;
+};
+template <typename T>
+inline constexpr bool is_function_v = is_function<T>::value;
+
+} // namespace moss
+
+// Simplified nothrow traits (in freestanding environment, assume all nothrow)
+export namespace moss {
+
+template <typename T> struct is_nothrow_copy_constructible {
+  static constexpr bool value = true;
+};
+template <typename T>
+inline constexpr bool is_nothrow_copy_constructible_v =
+    is_nothrow_copy_constructible<T>::value;
+
+template <typename T> struct is_nothrow_move_constructible {
+  static constexpr bool value = true;
+};
+template <typename T>
+inline constexpr bool is_nothrow_move_constructible_v =
+    is_nothrow_move_constructible<T>::value;
+
+template <typename T> struct is_nothrow_copy_assignable {
+  static constexpr bool value = true;
+};
+template <typename T>
+inline constexpr bool is_nothrow_copy_assignable_v =
+    is_nothrow_copy_assignable<T>::value;
+
+template <typename T> struct is_nothrow_move_assignable {
+  static constexpr bool value = true;
+};
+template <typename T>
+inline constexpr bool is_nothrow_move_assignable_v =
+    is_nothrow_move_assignable<T>::value;
+
+template <typename T, typename... Args> struct is_nothrow_constructible {
+  static constexpr bool value = true;
+};
+template <typename T, typename... Args>
+inline constexpr bool is_nothrow_constructible_v =
+    is_nothrow_constructible<T, Args...>::value;
+
+template <typename T, typename U> struct is_nothrow_assignable {
+  static constexpr bool value = true;
+};
+template <typename T, typename U>
+inline constexpr bool is_nothrow_assignable_v =
+    is_nothrow_assignable<T, U>::value;
+
 } // namespace moss
 
 // Memory ordering for atomics
 export namespace moss {
 
+// CamelCase MemoryOrder - used by 415+ callsites across the codebase
+enum class MemoryOrder {
+  Relaxed = 0,
+  Consume = 1,
+  Acquire = 2,
+  Release = 3,
+  AcqRel = 4,
+  SeqCst = 5
+};
+
+// lowercase memory_order - std-compatible alias
 enum class memory_order : int {
   relaxed = 0,
   consume = 1,
@@ -368,6 +453,52 @@ inline constexpr memory_order memory_order_acquire = memory_order::acquire;
 inline constexpr memory_order memory_order_release = memory_order::release;
 inline constexpr memory_order memory_order_acq_rel = memory_order::acq_rel;
 inline constexpr memory_order memory_order_seq_cst = memory_order::seq_cst;
+
+// Integer conversion helpers for __atomic builtins
+constexpr int memory_order_to_int(MemoryOrder order) noexcept {
+  return static_cast<int>(order);
+}
+
+constexpr int memory_order_to_int(memory_order order) noexcept {
+  return static_cast<int>(order);
+}
+
+// Atomic thread fence (multi-architecture support)
+inline void atomic_thread_fence(MemoryOrder /*order*/) noexcept {
+#if defined(MOSS_ARCH_ARM64)
+  asm volatile("dmb sy" ::: "memory");
+#elif defined(MOSS_ARCH_X86_64)
+  asm volatile("mfence" ::: "memory");
+#elif defined(MOSS_ARCH_RISCV)
+  asm volatile("fence rw,rw" ::: "memory");
+#else
+  asm volatile("" ::: "memory"); // compiler barrier fallback
+#endif
+}
+
+inline void atomic_thread_fence(memory_order /*order*/) noexcept {
+#if defined(MOSS_ARCH_ARM64)
+  asm volatile("dmb sy" ::: "memory");
+#elif defined(MOSS_ARCH_X86_64)
+  asm volatile("mfence" ::: "memory");
+#elif defined(MOSS_ARCH_RISCV)
+  asm volatile("fence rw,rw" ::: "memory");
+#else
+  asm volatile("" ::: "memory"); // compiler barrier fallback
+#endif
+}
+
+inline void atomic_thread_fence(int /*order*/) noexcept {
+#if defined(MOSS_ARCH_ARM64)
+  asm volatile("dmb sy" ::: "memory");
+#elif defined(MOSS_ARCH_X86_64)
+  asm volatile("mfence" ::: "memory");
+#elif defined(MOSS_ARCH_RISCV)
+  asm volatile("fence rw,rw" ::: "memory");
+#else
+  asm volatile("" ::: "memory"); // compiler barrier fallback
+#endif
+}
 
 } // namespace moss
 
