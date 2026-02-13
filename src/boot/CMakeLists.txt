@@ -11,13 +11,10 @@ endif()
 add_library(moss_boot OBJECT ${BOOT_SOURCES})
 
 target_include_directories(moss_boot PUBLIC
-    ${CMAKE_CURRENT_SOURCE_DIR}/include
-    ${CMAKE_SOURCE_DIR}/src/mm/include
-    ${CMAKE_SOURCE_DIR}/src/containers/include
-    ${CMAKE_SOURCE_DIR}/src/process/include)
-target_include_directories(moss_boot PRIVATE
-    ${CMAKE_CURRENT_SOURCE_DIR}/include/boot)
+    ${CMAKE_CURRENT_SOURCE_DIR}/include)
 
 target_compile_definitions(moss_boot PRIVATE MOSS_BOOT_MODULE MOSS_UNIFIED_BOOT)
+
+target_link_libraries(moss_boot PRIVATE moss_mm moss_containers moss_process)
 
 message(STATUS "启动模块配置完成")

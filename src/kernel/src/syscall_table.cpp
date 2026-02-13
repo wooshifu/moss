@@ -1,7 +1,7 @@
 // MOSS内核系统调用表实现
 // 提供完整的系统调用处理和分发机制
 
-#include "syscall_table.hpp"
+#include "kernel/syscall_table.hpp"
 #include "process/process.hpp"  // 进程管理相关类型和全局变量
 #include "process/cfs_scheduler.hpp"  // 调度器相关类型和全局变量
 #include "arch/arch_abstraction.hpp"  // 架构抽象层

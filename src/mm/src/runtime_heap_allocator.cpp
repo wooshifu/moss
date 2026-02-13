@@ -1,8 +1,8 @@
 // 运行时堆分配器实现
 // 提供动态内存分配功能，基于虚拟内存和物理页面管理
 
-#include "runtime_heap_allocator.hpp"
-#include "../include/mm/page_table.hpp"
+#include "mm/runtime_heap_allocator.hpp"
+#include "mm/page_table.hpp"
 
 // 简化实现：移除调试打印功能以避免链接依赖
 // 在生产版本中，调试输出应该通过统一的日志系统处理
