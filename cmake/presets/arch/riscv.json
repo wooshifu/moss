@@ -72,20 +72,44 @@
             "name": "riscv-qemu-debug",
             "displayName": "RISC-V QEMU Debug Build",
             "configurePreset": "riscv-qemu-debug",
-            "targets": ["moss.elf"]
+            "targets": ["moss.elf", "moss.test.elf"]
         },
         {
             "name": "riscv-qemu-release",
             "displayName": "RISC-V QEMU Release Build",
             "configurePreset": "riscv-qemu-release",
-            "targets": ["moss.elf"]
+            "targets": ["moss.elf", "moss.test.elf"]
+        }
+    ],
+    "testPresets": [
+        {
+            "name": "riscv-qemu-debug-test",
+            "displayName": "RISC-V Debug Unit Tests",
+            "configurePreset": "riscv-qemu-debug",
+            "execution": {
+                "timeout": 30
+            },
+            "output": {
+                "outputOnFailure": true
+            }
+        },
+        {
+            "name": "riscv-qemu-release-test",
+            "displayName": "RISC-V Release Unit Tests",
+            "configurePreset": "riscv-qemu-release",
+            "execution": {
+                "timeout": 30
+            },
+            "output": {
+                "outputOnFailure": true
+            }
         }
     ],
     "workflowPresets": [
         {
             "name": "riscv-qemu-debug",
             "displayName": "RISC-V QEMU Debug Workflow",
-            "description": "Complete RISC-V debug workflow",
+            "description": "Configure, build (moss.elf + moss.test.elf), and run tests",
             "steps": [
                 {
                     "type": "configure",
@@ -94,13 +118,17 @@
                 {
                     "type": "build",
                     "name": "riscv-qemu-debug"
+                },
+                {
+                    "type": "test",
+                    "name": "riscv-qemu-debug-test"
                 }
             ]
         },
         {
             "name": "riscv-qemu-release",
             "displayName": "RISC-V QEMU Release Workflow",
-            "description": "Complete RISC-V release workflow",
+            "description": "Configure, build (moss.elf + moss.test.elf), and run tests",
             "steps": [
                 {
                     "type": "configure",
@@ -109,6 +137,10 @@
                 {
                     "type": "build",
                     "name": "riscv-qemu-release"
+                },
+                {
+                    "type": "test",
+                    "name": "riscv-qemu-release-test"
                 }
             ]
         }

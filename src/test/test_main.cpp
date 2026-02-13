@@ -11,7 +11,6 @@
 
 // Force test registration from test case files
 extern "C" void force_kernel_test_registration();
-extern "C" void force_boost_ut_demo_registration();
 
 // ============================================================================
 // Architecture-specific _start entry point
@@ -94,7 +93,6 @@ extern "C" [[noreturn]] void test_kernel_main() noexcept {
 
     // Force test registration to ensure static constructors run
     force_kernel_test_registration();
-    force_boost_ut_demo_registration();
 
     // Run validation tests
     moss::test::run_validation_tests();
