@@ -3,7 +3,7 @@
 // Per-CPU数据结构实现
 // 避免缓存行冲突，提高多核性能
 
-#include "../../../include/types.hpp"
+#include "core/types.hpp"
 #include "atomic_types.hpp"
 
 // 包含统一的内核标准库支持

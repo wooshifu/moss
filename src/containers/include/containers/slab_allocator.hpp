@@ -3,10 +3,10 @@
 // Slab内存分配器实现
 // 专为内核对象分配优化，减少碎片和提高性能
 
-#include "../../../include/result.hpp"
-#include "../../../include/types.hpp"
+#include "core/result.hpp"
+#include "core/types.hpp"
 #include "atomic_types.hpp"
-#include "../../../mm/include/mm/page_frame_allocator.hpp"
+#include "mm/page_frame_allocator.hpp"
 
 // 包含统一的内核标准库支持
 // Removed kernel_std.hpp include to avoid conflicts

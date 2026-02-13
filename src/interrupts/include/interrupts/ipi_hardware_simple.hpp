@@ -3,8 +3,8 @@
 // MOSS内核简化硬件IPI系统 - 基于ARM64 GIC SGI实现
 // 避免复杂依赖，专注核心SGI硬件集成功能
 
-#include "../../../include/types.hpp"
-#include "../../../include/result.hpp"
+#include "core/types.hpp"
+#include "core/result.hpp"
 #include "gic.hpp"
 
 // 外部调试打印函数

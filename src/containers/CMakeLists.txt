@@ -8,4 +8,6 @@ target_include_directories(moss_containers PUBLIC
 
 target_compile_definitions(moss_containers PRIVATE MOSS_CONTAINERS_MODULE)
 
+target_link_libraries(moss_containers PUBLIC moss_core moss_mm_headers)
+
 message(STATUS "容器模块配置完成")

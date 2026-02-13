@@ -19,9 +19,9 @@ void kernel_test_all_subsystems(void) noexcept;
 #include "mm/page_table.hpp"
 #include "mm/mm_interface.hpp"
 #include "mm/kernel_memory.hpp"
-#include "arch/syscall_arch.hpp"
-#include "result.hpp"
-#include "types.hpp"
+#include "kernel/syscall_arch.hpp"
+#include "core/result.hpp"
+#include "core/types.hpp"
 // #include "uart_driver.hpp" // 暂时注释掉，稍后修复
 
 // 内核环境下的 va_list 支持

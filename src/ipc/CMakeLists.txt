@@ -8,6 +8,7 @@ target_include_directories(moss_ipc PUBLIC
 
 target_compile_definitions(moss_ipc PRIVATE MOSS_IPC_MODULE)
 
-target_link_libraries(moss_ipc PRIVATE moss_containers moss_mm)
+target_link_libraries(moss_ipc PRIVATE moss_core moss_containers moss_mm
+    PUBLIC moss_process_headers)
 
 message(STATUS "IPC模块配置完成")

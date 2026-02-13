@@ -3,8 +3,8 @@
 // 增强Buddy分配器 - 实现迁移类型反碎片化
 // 基于Linux内核的anti-fragmentation设计，支持页面迁移类型分类和智能分配策略
 
-#include "../../../include/types.hpp"
-#include "../../../include/result.hpp"
+#include "core/types.hpp"
+#include "core/result.hpp"
 #include "containers/atomic_types.hpp"
 #include "containers/per_cpu_data.hpp"
 

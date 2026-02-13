@@ -6,9 +6,9 @@
 #include "ipc/shared_memory.hpp"
 #include "ipc/zero_copy_channel.hpp"
 #include "containers/containers.hpp"
-#include "result.hpp"
-#include "smart_ptr.hpp"
-#include "types.hpp"
+#include "core/result.hpp"
+#include "core/smart_ptr.hpp"
+#include "core/types.hpp"
 #include "process/process.hpp"
 
 namespace moss::kernel::ipc {

@@ -3,8 +3,8 @@
 // 大页支持系统 - 现代高性能内存管理
 // 实现透明大页(THP)、HugeTLB和大页池管理，优化TLB性能
 
-#include "../../../include/types.hpp"
-#include "../../../include/result.hpp"
+#include "core/types.hpp"
+#include "core/result.hpp"
 #include "containers/atomic_types.hpp"
 #include "numa_policy.hpp"
 

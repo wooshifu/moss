@@ -5,9 +5,9 @@
 
 #include "interrupts/gic.hpp"
 #include "containers/containers.hpp"
-#include "result.hpp"
-#include "smart_ptr.hpp"
-#include "types.hpp"
+#include "core/result.hpp"
+#include "core/smart_ptr.hpp"
+#include "core/types.hpp"
 
 namespace moss::kernel::drivers {
 

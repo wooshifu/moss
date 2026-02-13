@@ -3,9 +3,9 @@
 // Vmalloc虚拟内存分配器 - 高性能虚拟地址空间管理
 // 基于红黑树的地址分配，支持延迟释放、NUMA亲和性和大内存分配
 
-#include "../../../include/types.hpp"
-#include "../../../include/result.hpp"
-#include "../../../include/arch/arch_abstraction.hpp"
+#include "core/types.hpp"
+#include "core/result.hpp"
+#include "core/arch/arch_abstraction.hpp"
 #include "containers/atomic_types.hpp"
 #include "containers/per_cpu_data.hpp"
 #include "mm/buddy_allocator_v2.hpp"

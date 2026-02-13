@@ -8,6 +8,6 @@ target_include_directories(moss_drivers PUBLIC
 
 target_compile_definitions(moss_drivers PRIVATE MOSS_DRIVERS_MODULE)
 
-target_link_libraries(moss_drivers PRIVATE moss_containers moss_mm)
+target_link_libraries(moss_drivers PRIVATE moss_core moss_containers moss_mm moss_interrupts)
 
 message(STATUS "驱动模块配置完成")

@@ -1,9 +1,9 @@
 #include "mm/page_table.hpp"
 #include "mm/page_frame_allocator.hpp"
 #include "mm/runtime_heap_allocator.hpp"
-#include "moss_std.hpp" // 裸机环境基础定义
-#include "result.hpp"
-#include "types.hpp"
+#include "core/moss_std.hpp" // 裸机环境基础定义
+#include "core/result.hpp"
+#include "core/types.hpp"
 
 // 外部符号声明（来自链接器脚本）
 extern "C" {

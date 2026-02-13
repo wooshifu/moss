@@ -4,7 +4,7 @@
 // 红黑树地址管理、延迟释放和NUMA感知分配的具体实现
 
 #include "vmalloc_allocator.hpp"
-#include "../../../include/moss_std.hpp"
+#include "core/moss_std.hpp"
 
 namespace moss::kernel::mm {
 

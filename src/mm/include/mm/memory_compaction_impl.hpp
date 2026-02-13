@@ -4,7 +4,7 @@
 // 页面迁移、CMA分配和碎片整理的具体实现
 
 #include "memory_compaction.hpp"
-#include "../../../include/moss_std.hpp"
+#include "core/moss_std.hpp"
 
 namespace moss::kernel::mm {
 

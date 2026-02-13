@@ -22,6 +22,8 @@ target_compile_definitions(moss.test.elf PRIVATE
     MOSS_USE_UT_HPP=1
     MOSS_FREESTANDING_MODE=1)
 
+target_link_libraries(moss.test.elf PRIVATE moss_core)
+
 message(STATUS "MOSS Test Executable: moss.test.elf (standalone)")
 message(STATUS "  Architecture: ${MOSS_TARGET_ARCH}")
 message(STATUS "  Build Type: ${CMAKE_BUILD_TYPE}")

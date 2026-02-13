@@ -3,7 +3,7 @@
 // MOSS内核系统调用表和管理系统
 // 实现完整的POSIX兼容系统调用接口
 
-#include "types.hpp"
+#include "core/types.hpp"
 
 namespace moss::kernel::syscall {
 

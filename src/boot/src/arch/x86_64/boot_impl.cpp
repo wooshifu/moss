@@ -6,8 +6,8 @@
 #include "boot/arch/boot_interface.hpp"
 #include "boot/arch/arch_selector.hpp"
 #include "boot/boot.hpp"
-#include "moss_std.hpp"
-#include "result.hpp"
+#include "core/moss_std.hpp"
+#include "core/result.hpp"
 
 // 声明汇编入口点和外部符号
 extern "C" {

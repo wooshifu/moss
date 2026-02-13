@@ -3,10 +3,10 @@
 // SLUB内存分配器实现 - 基于Per-CPU快速路径的高性能分配器
 // 结合Linux SLUB设计和多核优化，提供卓越的分配性能
 
-#include "../../../include/result.hpp"
-#include "../../../include/types.hpp"
-#include "../../../include/moss_std.hpp"
-#include "../../../include/arch/arch_abstraction.hpp"
+#include "core/result.hpp"
+#include "core/types.hpp"
+#include "core/moss_std.hpp"
+#include "core/arch/arch_abstraction.hpp"
 #include "containers/atomic_types.hpp"
 #include "containers/per_cpu_data.hpp"
 #include "mm/page_frame_allocator.hpp"

@@ -3,8 +3,8 @@
 // RCU (Read-Copy-Update) 保护的数据结构
 // 实现高性能的并发读取，延迟释放机制
 
-#include "../../../include/result.hpp"
-#include "../../../include/types.hpp"
+#include "core/result.hpp"
+#include "core/types.hpp"
 #include "atomic_types.hpp"
 
 // 包含统一的内核标准库支持

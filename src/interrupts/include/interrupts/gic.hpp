@@ -3,10 +3,10 @@
 // ARM64 Generic Interrupt Controller (GIC) 驱动
 // 支持 GICv2/GICv3 中断控制器
 
-#include "arch/arch_abstraction.hpp"
+#include "core/arch/arch_abstraction.hpp"
 #include "containers/containers.hpp"
-#include "result.hpp"
-#include "types.hpp"
+#include "core/result.hpp"
+#include "core/types.hpp"
 
 namespace moss::kernel::interrupts {
 

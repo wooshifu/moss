@@ -4,7 +4,7 @@
 #include "kernel/syscall_table.hpp"
 #include "process/process.hpp"  // 进程管理相关类型和全局变量
 #include "process/cfs_scheduler.hpp"  // 调度器相关类型和全局变量
-#include "arch/arch_abstraction.hpp"  // 架构抽象层
+#include "core/arch/arch_abstraction.hpp"  // 架构抽象层
 
 // 用于early_debug_print的外部函数声明
 extern "C" void early_debug_print(const char *message) noexcept;

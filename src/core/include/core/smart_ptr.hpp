@@ -4,12 +4,12 @@
 // 替代std::unique_ptr和std::shared_ptr
 
 #include "containers/atomic_types.hpp"
-#include "moss_std.hpp" // 裸机环境基础定义
-#include "result.hpp"
-#include "types.hpp"
+#include "core/moss_std.hpp" // 裸机环境基础定义
+#include "core/result.hpp"
+#include "core/types.hpp"
 
 // 包含concepts约束
-#include "concepts/memory_concepts.hpp"
+#include "core/concepts/memory_concepts.hpp"
 
 namespace moss::kernel {
 
