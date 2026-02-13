@@ -1,39 +1,11 @@
 {
     "version": 6,
-    "cmakeMinimumRequired": {
-        "major": 3,
-        "minor": 25,
-        "patch": 0
-    },
+    "include": ["../base.json"],
     "configurePresets": [
-        {
-            "name": "base-arm64",
-            "hidden": true,
-            "generator": "Ninja",
-            "binaryDir": "${sourceDir}/build/${presetName}",
-            "installDir": "${sourceDir}/install/${presetName}",
-            "cacheVariables": {
-                "CMAKE_EXPORT_COMPILE_COMMANDS": "ON",
-                "CMAKE_C_COMPILER": "clang-21",
-                "CMAKE_CXX_COMPILER": "clang++-21",
-                "CMAKE_ASM_COMPILER": "clang-21",
-                "CMAKE_SYSTEM_NAME": "Generic",
-                "MOSS_TARGET_PLATFORM": "QEMU_VIRT",
-                "CMAKE_CXX_FLAGS": "-ffreestanding -fno-exceptions -fno-rtti -fno-stack-protector -Wall -Wextra -Werror -fno-pic -fno-pie"
-            },
-            "environment": {
-                "CXX": "clang++-21"
-            },
-            "vendor": {
-                "microsoft.com/VisualStudioSettings/CMake/1.0": {
-                    "hostOS": ["Linux"]
-                }
-            }
-        },
         {
             "name": "arm64-base",
             "hidden": true,
-            "inherits": "base-arm64",
+            "inherits": "base-common",
             "displayName": "ARM64 Base Configuration",
             "cacheVariables": {
                 "CMAKE_CXX_FLAGS": "$penv{CMAKE_CXX_FLAGS} -mcpu=cortex-a57 -march=armv8-a+lse -mgeneral-regs-only -mstrict-align",
@@ -110,18 +82,9 @@
             "displayName": "ARM64 QEMU Debug Workflow",
             "description": "Configure, build (moss.elf + moss.test.elf), and run tests",
             "steps": [
-                {
-                    "type": "configure",
-                    "name": "arm64-qemu-debug"
-                },
-                {
-                    "type": "build",
-                    "name": "arm64-qemu-debug"
-                },
-                {
-                    "type": "test",
-                    "name": "arm64-qemu-debug-test"
-                }
+                { "type": "configure", "name": "arm64-qemu-debug" },
+                { "type": "build", "name": "arm64-qemu-debug" },
+                { "type": "test", "name": "arm64-qemu-debug-test" }
             ]
         },
         {
@@ -129,18 +92,9 @@
             "displayName": "ARM64 QEMU Release Workflow",
             "description": "Configure, build (moss.elf + moss.test.elf), and run tests",
             "steps": [
-                {
-                    "type": "configure",
-                    "name": "arm64-qemu-release"
-                },
-                {
-                    "type": "build",
-                    "name": "arm64-qemu-release"
-                },
-                {
-                    "type": "test",
-                    "name": "arm64-qemu-release-test"
-                }
+                { "type": "configure", "name": "arm64-qemu-release" },
+                { "type": "build", "name": "arm64-qemu-release" },
+                { "type": "test", "name": "arm64-qemu-release-test" }
             ]
         }
     ]

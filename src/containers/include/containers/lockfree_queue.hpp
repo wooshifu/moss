@@ -3,6 +3,7 @@
 // 无锁队列实现 - 高性能的SPSC和MPSC队列
 // 专为内核环境优化，避免动态内存分配
 
+#include "../../../include/arch/arch_abstraction.hpp"
 #include "../../../include/result.hpp"
 #include "../../../include/types.hpp"
 #include "atomic_types.hpp"
@@ -287,9 +288,7 @@ public:
 
 private:
   [[nodiscard]] static moss::kernel::u32 get_current_cpu_id() noexcept {
-    moss::kernel::u64 mpidr;
-    asm volatile("mrs %0, mpidr_el1" : "=r"(mpidr));
-    return static_cast<moss::kernel::u32>(mpidr & 0xFFU); // 返回CPU ID
+    return moss::kernel::arch::get_current_cpu_id();
   }
 };
 

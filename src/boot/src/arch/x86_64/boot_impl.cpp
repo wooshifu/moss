@@ -5,6 +5,7 @@
 
 #include "arch/boot_interface.hpp"
 #include "arch/arch_selector.hpp"
+#include "boot/boot.hpp"
 #include "moss_std.hpp"
 #include "result.hpp"
 
@@ -261,4 +262,23 @@ u32 moss::boot::X86_64BootImpl::get_current_cpu_id() noexcept {
         asm volatile("hlt");
     }
 }
+
+// === Boot 全局变量 (x86_64 存根) ===
+// GIC 是 ARM64 特有硬件，x86_64 使用 APIC
+moss::kernel::interrupts::GenericInterruptController* g_gic_controller = nullptr;
+bool g_gic_hardware_available = false;
+
+namespace moss::boot {
+
+void activate_secondary_cpus() noexcept {
+    // x86_64: SMP 激活待实现 (需要 APIC/SIPI 序列)
+    early_print("[x86_64] SMP activation not yet implemented\n");
+}
+
+u32 wait_for_all_cpus_active([[maybe_unused]] u32 timeout_ms) noexcept {
+    // x86_64: 当前仅支持单核
+    return 1;
+}
+
+} // namespace moss::boot
 

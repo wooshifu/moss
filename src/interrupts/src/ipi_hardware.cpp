@@ -2,6 +2,7 @@
 // 真正的CPU间中断通信，替换概念验证系统
 
 #include "../include/interrupts/ipi_hardware.hpp"
+#include "arch/arch_abstraction.hpp"
 
 // 外部调试打印函数
 extern "C" void early_debug_print(const char* message) noexcept;
@@ -295,7 +296,7 @@ IpiResult HardwareInterProcessorInterrupt::smp_call_function_single(u32 cpu, voi
         u32 iterations = 0;
 
         while (!call_data->completed && iterations < timeout_iterations) {
-            asm volatile("yield" ::: "memory");
+            arch::cpu_yield();
             iterations++;
         }
 
