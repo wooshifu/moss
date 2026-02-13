@@ -327,9 +327,6 @@ add_subdirectory(src/kernel)
 # 启动模块：启动代码（独立）
 add_subdirectory(src/boot)
 
-# 测试框架：单元测试基础设施（独立）
-add_subdirectory(src/test)
-
 # === 创建最终内核可执行文件 ===
 add_executable(moss.elf)
 
@@ -426,6 +423,7 @@ add_custom_target(
 option(MOSS_BUILD_TESTS "构建MOSS内核单元测试" ON)
 
 if(MOSS_BUILD_TESTS)
+  # 测试框架：单元测试基础设施（独立）
   message(STATUS "启用单元测试框架构建")
   add_subdirectory(src/test)
 
