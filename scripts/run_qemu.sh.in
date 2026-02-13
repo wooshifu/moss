@@ -144,8 +144,9 @@ if [ "$TEST_MODE" == "true" ]; then
     echo "=================================================="
     echo ""
     echo "启动 $QEMU_SYSTEM..."
-    "$QEMU_SYSTEM" "${QEMU_ARGS[@]}"
-    QEMU_EXIT_CODE=$?
+    # Capture exit code without triggering set -e
+    QEMU_EXIT_CODE=0
+    "$QEMU_SYSTEM" "${QEMU_ARGS[@]}" || QEMU_EXIT_CODE=$?
     echo ""
     echo "=== 单元测试执行完成 ==="
     echo "QEMU退出状态: $QEMU_EXIT_CODE"
