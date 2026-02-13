@@ -442,5 +442,52 @@ extern "C" void force_kernel_test_registration() {
     });
 
     kernel_printer::print("DEBUG: All 12 tests registered explicitly\n");
+
+    // Add intentional failure tests to verify error reporting
+    kernel_printer::print("DEBUG: Adding failure test cases to verify error reporting\n");
+
+    // Test 13: Enhanced error reporting with expected vs actual values
+    register_test("enhanced_error_reporting_tests", []() {
+        kernel_printer::print("\n=== Testing Enhanced Error Reporting with Expected/Actual Values ===\n");
+
+        // This should pass first to show the test is running
+        expect(true);
+        kernel_printer::print("✅ Initial assertion passed\n");
+
+        kernel_printer::print("🧪 Testing basic operators (no enhanced reporting)...\n");
+
+        // Basic operators - show regular error messages
+        int result = 5 + 3;
+        expect(result == 10);  // Basic error message
+
+        kernel_printer::print("🧪 Now testing ENHANCED failure reporting with helper functions...\n");
+
+        // Enhanced comparisons using helper functions - show Expected: vs Actual:
+        expect(eq(result, 10));  // Enhanced: Expected: 10, Actual: 8
+
+        // Character comparison with enhancement
+        char letter = 'A';
+        expect(eq(letter, 'B'));  // Enhanced: Expected: 'B', Actual: 'A'
+
+        // Greater than comparison with enhancement
+        int score = 75;
+        expect(gt(score, 90));  // Enhanced: Expected: > 90, Actual: 75
+
+        // Pointer comparison with enhancement
+        int value = 42;
+        int* ptr = &value;
+        expect(eq(ptr, static_cast<int*>(nullptr)));  // Enhanced: Expected: nullptr, Actual: 0x[address]
+
+        // Inequality with enhancement
+        int duplicate = 100;
+        expect(ne(duplicate, 100));  // Enhanced: Should not be equal to: 100, Actual: 100
+
+        // Boolean logic failure (non-comparison) - still shows basic error
+        expect(false);
+
+        kernel_printer::print("🔍 Enhanced error reporting demonstrations complete\n");
+    });
+
+    kernel_printer::print("DEBUG: All 13 tests (including failure test) registered explicitly\n");
 }
 

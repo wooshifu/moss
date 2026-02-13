@@ -1,4 +1,5 @@
 #pragma once
+
 /**
  * @file ut_kernel.hpp
  * @brief Kernel-optimized version of Boost.UT testing framework
@@ -114,6 +115,145 @@ struct kernel_printer {
 };
 
 // ============================================================================
+// Enhanced Comparison operators with detailed reporting
+// ============================================================================
+
+template<typename T, typename U>
+struct eq_t {
+    T lhs;
+    U rhs;
+
+    constexpr operator bool() const {
+        return lhs == rhs;
+    }
+};
+
+template<typename T, typename U>
+struct ne_t {
+    T lhs;
+    U rhs;
+
+    constexpr operator bool() const {
+        return lhs != rhs;
+    }
+};
+
+template<typename T, typename U>
+struct gt_t {
+    T lhs;
+    U rhs;
+
+    constexpr operator bool() const {
+        return lhs > rhs;
+    }
+};
+
+template<typename T, typename U>
+struct lt_t {
+    T lhs;
+    U rhs;
+
+    constexpr operator bool() const {
+        return lhs < rhs;
+    }
+};
+
+template<typename T, typename U>
+struct ge_t {
+    T lhs;
+    U rhs;
+
+    constexpr operator bool() const {
+        return lhs >= rhs;
+    }
+};
+
+template<typename T, typename U>
+struct le_t {
+    T lhs;
+    U rhs;
+
+    constexpr operator bool() const {
+        return lhs <= rhs;
+    }
+};
+
+// ============================================================================
+// Type trait helpers to detect comparison types
+// ============================================================================
+
+template<typename T>
+struct is_eq_t { static constexpr bool value = false; };
+
+template<typename T, typename U>
+struct is_eq_t<eq_t<T, U>> { static constexpr bool value = true; };
+
+template<typename T>
+struct is_ne_t { static constexpr bool value = false; };
+
+template<typename T, typename U>
+struct is_ne_t<ne_t<T, U>> { static constexpr bool value = true; };
+
+template<typename T>
+struct is_gt_t { static constexpr bool value = false; };
+
+template<typename T, typename U>
+struct is_gt_t<gt_t<T, U>> { static constexpr bool value = true; };
+
+template<typename T>
+struct is_lt_t { static constexpr bool value = false; };
+
+template<typename T, typename U>
+struct is_lt_t<lt_t<T, U>> { static constexpr bool value = true; };
+
+template<typename T>
+struct is_ge_t { static constexpr bool value = false; };
+
+template<typename T, typename U>
+struct is_ge_t<ge_t<T, U>> { static constexpr bool value = true; };
+
+template<typename T>
+struct is_le_t { static constexpr bool value = false; };
+
+template<typename T, typename U>
+struct is_le_t<le_t<T, U>> { static constexpr bool value = true; };
+
+// ============================================================================
+// Value Formatting for Error Reporting
+// ============================================================================
+
+// Helper to format values for error reporting
+template<typename T>
+void format_value(T value) {
+    if constexpr (requires { static_cast<int>(value); }) {
+        if constexpr (sizeof(T) == 1) {
+            // Character types
+            if (value >= 32 && value <= 126) {
+                kernel_printer::print("'");
+                char c[2] = {static_cast<char>(value), '\0'};
+                kernel_printer::print(c);  // Print single character with null terminator
+                kernel_printer::print("'");
+            } else {
+                kernel_printer::print_number(static_cast<int>(value));
+            }
+        } else {
+            kernel_printer::print_number(static_cast<int>(value));
+        }
+    } else if constexpr (requires { value == nullptr; }) {
+        // Pointer types
+        if (value == nullptr) {
+            kernel_printer::print("nullptr");
+        } else {
+            kernel_printer::print("0x");
+            // Print hex address (truncated to int size for kernel_printer compatibility)
+            kernel_printer::print_number(static_cast<int>(reinterpret_cast<unsigned long>(value)));
+        }
+    } else {
+        kernel_printer::print("[complex_type]");
+    }
+}
+
+// ============================================================================
 // Assertion Framework
 // ============================================================================
 
@@ -153,20 +293,168 @@ private:
     void report_failure() const {
         kernel_printer::print("\n  ❌ Assertion failed: ");
         kernel_printer::print(expression);
-        kernel_printer::print(" in test: ");
+        kernel_printer::print("\n     Test: ");
         kernel_printer::print(test_result::current_test_name ? test_result::current_test_name : "unknown");
+        kernel_printer::print("\n     File: ");
+        kernel_printer::print(file ? file : "unknown");
+        kernel_printer::print("\n     Line: ");
+        kernel_printer::print_number(line);
+
+        // Check if this is a comparison type and show expected vs actual
+        report_comparison_details();
+
+        kernel_printer::print("\n");
+    }
+
+
+    void report_comparison_details() const {
+        // Base implementation - no additional details for non-comparison types
+    }
+};
+
+// ============================================================================
+// Specialized expectation templates for comparison types
+// ============================================================================
+
+// Specialization for equality comparison
+template<typename T, typename U>
+struct expectation<eq_t<T, U>> {
+    eq_t<T, U> value;
+    const char* expression;
+    const char* file;
+    int line;
+
+    constexpr expectation(eq_t<T, U> v, const char* expr, const char* f, int l)
+        : value(v), expression(expr), file(f), line(l) {}
+
+    constexpr operator bool() const {
+        if (value) {
+            test_result::assertions_passed++;
+            return true;
+        } else {
+            test_result::assertions_failed++;
+            report_failure();
+            return false;
+        }
+    }
+
+private:
+    void report_failure() const {
+        kernel_printer::print("\n  ❌ Assertion failed: ");
+        kernel_printer::print(expression);
+        kernel_printer::print("\n     Test: ");
+        kernel_printer::print(test_result::current_test_name ? test_result::current_test_name : "unknown");
+        kernel_printer::print("\n     File: ");
+        kernel_printer::print(file ? file : "unknown");
+        kernel_printer::print("\n     Line: ");
+        kernel_printer::print_number(line);
+        kernel_printer::print("\n     Expected: ");
+        format_value(value.rhs);
+        kernel_printer::print("\n     Actual:   ");
+        format_value(value.lhs);
+        kernel_printer::print("\n");
+    }
+};
+
+// Specialization for inequality comparison
+template<typename T, typename U>
+struct expectation<ne_t<T, U>> {
+    ne_t<T, U> value;
+    const char* expression;
+    const char* file;
+    int line;
+
+    constexpr expectation(ne_t<T, U> v, const char* expr, const char* f, int l)
+        : value(v), expression(expr), file(f), line(l) {}
+
+    constexpr operator bool() const {
+        if (value) {
+            test_result::assertions_passed++;
+            return true;
+        } else {
+            test_result::assertions_failed++;
+            report_failure();
+            return false;
+        }
+    }
+
+private:
+    void report_failure() const {
+        kernel_printer::print("\n  ❌ Assertion failed: ");
+        kernel_printer::print(expression);
+        kernel_printer::print("\n     Test: ");
+        kernel_printer::print(test_result::current_test_name ? test_result::current_test_name : "unknown");
+        kernel_printer::print("\n     File: ");
+        kernel_printer::print(file ? file : "unknown");
+        kernel_printer::print("\n     Line: ");
+        kernel_printer::print_number(line);
+        kernel_printer::print("\n     Should not be equal to: ");
+        format_value(value.rhs);
+        kernel_printer::print("\n     Actual value:           ");
+        format_value(value.lhs);
+        kernel_printer::print("\n");
+    }
+};
+
+// Specialization for greater than comparison
+template<typename T, typename U>
+struct expectation<gt_t<T, U>> {
+    gt_t<T, U> value;
+    const char* expression;
+    const char* file;
+    int line;
+
+    constexpr expectation(gt_t<T, U> v, const char* expr, const char* f, int l)
+        : value(v), expression(expr), file(f), line(l) {}
+
+    constexpr operator bool() const {
+        if (value) {
+            test_result::assertions_passed++;
+            return true;
+        } else {
+            test_result::assertions_failed++;
+            report_failure();
+            return false;
+        }
+    }
+
+private:
+    void report_failure() const {
+        kernel_printer::print("\n  ❌ Assertion failed: ");
+        kernel_printer::print(expression);
+        kernel_printer::print("\n     Test: ");
+        kernel_printer::print(test_result::current_test_name ? test_result::current_test_name : "unknown");
+        kernel_printer::print("\n     File: ");
+        kernel_printer::print(file ? file : "unknown");
+        kernel_printer::print("\n     Line: ");
+        kernel_printer::print_number(line);
+        kernel_printer::print("\n     Expected: > ");
+        format_value(value.rhs);
+        kernel_printer::print("\n     Actual:     ");
+        format_value(value.lhs);
         kernel_printer::print("\n");
     }
 };
 
 // Expect function - core of ut.hpp API
 template<typename T>
-constexpr auto expect(T&& value, const char* expr = "unknown", const char* file = __FILE__, int line = __LINE__) {
+constexpr auto expect_impl(T&& value, const char* expr, const char* file, int line) {
+    // Debug: Print type information
+    kernel_printer::print("\n     DEBUG: expect_impl called with type: ");
+    if constexpr (sizeof(T) == sizeof(bool)) {
+        kernel_printer::print("bool-sized");
+    } else {
+        kernel_printer::print("other");
+    }
+
     auto exp = expectation<T>{static_cast<T&&>(value), expr, file, line};
     // Force evaluation to count assertions
     (void)static_cast<bool>(exp);
     return exp;
 }
+
+// Macro to capture proper file/line information at call site
+#define expect(condition) expect_impl((condition), #condition, __FILE__, __LINE__)
 
 // ============================================================================
 // Test Registration and Execution (Type-erased)
@@ -315,37 +603,34 @@ constexpr auto operator""_suite(const char* name, decltype(sizeof(int))) {
     test_base::run_all();
 }
 
-// ============================================================================
-// Comparison operators (simplified set)
-// ============================================================================
-
+// Helper functions that create comparison objects for enhanced reporting
 template<typename T, typename U>
-struct eq_t {
-    T lhs;
-    U rhs;
-
-    constexpr operator bool() const {
-        return lhs == rhs;
-    }
-};
-
-template<typename T, typename U>
-constexpr auto operator==(T&& lhs, U&& rhs) -> eq_t<T, U> {
+constexpr auto eq(T&& lhs, U&& rhs) -> eq_t<T, U> {
     return {static_cast<T&&>(lhs), static_cast<U&&>(rhs)};
 }
 
 template<typename T, typename U>
-struct ne_t {
-    T lhs;
-    U rhs;
-
-    constexpr operator bool() const {
-        return lhs != rhs;
-    }
-};
+constexpr auto ne(T&& lhs, U&& rhs) -> ne_t<T, U> {
+    return {static_cast<T&&>(lhs), static_cast<U&&>(rhs)};
+}
 
 template<typename T, typename U>
-constexpr auto operator!=(T&& lhs, U&& rhs) -> ne_t<T, U> {
+constexpr auto gt(T&& lhs, U&& rhs) -> gt_t<T, U> {
+    return {static_cast<T&&>(lhs), static_cast<U&&>(rhs)};
+}
+
+template<typename T, typename U>
+constexpr auto lt(T&& lhs, U&& rhs) -> lt_t<T, U> {
+    return {static_cast<T&&>(lhs), static_cast<U&&>(rhs)};
+}
+
+template<typename T, typename U>
+constexpr auto ge(T&& lhs, U&& rhs) -> ge_t<T, U> {
+    return {static_cast<T&&>(lhs), static_cast<U&&>(rhs)};
+}
+
+template<typename T, typename U>
+constexpr auto le(T&& lhs, U&& rhs) -> le_t<T, U> {
     return {static_cast<T&&>(lhs), static_cast<U&&>(rhs)};
 }
 
