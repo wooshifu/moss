@@ -123,3 +123,6 @@ message(STATUS "  - Environment: Kernel freestanding")
 # ========================================================================
 
 add_subdirectory(modern)
+
+# Link modern tests to main test framework
+target_link_libraries(moss_test_framework PRIVATE moss_modern_tests)

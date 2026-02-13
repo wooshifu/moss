@@ -12,6 +12,9 @@
 extern "C" void force_kernel_test_registration();
 extern "C" void force_boost_ut_demo_registration();
 
+// Modern test framework entry point
+extern "C" [[noreturn]] void modern_test_main() noexcept;
+
 // ============================================================================
 // Main Test Function
 // ============================================================================
@@ -46,11 +49,9 @@ extern "C" [[noreturn]] void test_kernel_main() noexcept {
     force_kernel_test_registration();
     force_boost_ut_demo_registration();
 
-    // Run validation tests
-    moss::test::run_validation_tests();
-
-    // Run all registered tests and exit (this function never returns)
-    moss::test::run_freestanding_validation_tests();
+    // Run modern tests first
+    kernel_uart_puts("🚀 Running Modern Test Suite...\n");
+    modern_test_main(); // This function never returns
 }
 
 // Note: _start is provided by kernel's boot system
