@@ -634,6 +634,261 @@ constexpr auto le(T&& lhs, U&& rhs) -> le_t<T, U> {
     return {static_cast<T&&>(lhs), static_cast<U&&>(rhs)};
 }
 
+// ============================================================================
+// Boost.UT Compatible Syntax: _i literals and logical operators
+// ============================================================================
+
+// Integer literal wrapper for boost::ut compatibility
+struct integral {
+    int value;
+
+    constexpr integral(int v) : value(v) {}
+
+    constexpr operator int() const { return value; }
+
+    // Support comparison with integral
+    template<typename T>
+    constexpr auto operator==(T other) const -> eq_t<int, T> {
+        return {value, static_cast<T>(other)};
+    }
+
+    template<typename T>
+    constexpr auto operator!=(T other) const -> ne_t<int, T> {
+        return {value, static_cast<T>(other)};
+    }
+
+    template<typename T>
+    constexpr auto operator>(T other) const -> gt_t<int, T> {
+        return {value, static_cast<T>(other)};
+    }
+
+    template<typename T>
+    constexpr auto operator<(T other) const -> lt_t<int, T> {
+        return {value, static_cast<T>(other)};
+    }
+
+    template<typename T>
+    constexpr auto operator>=(T other) const -> ge_t<int, T> {
+        return {value, static_cast<T>(other)};
+    }
+
+    template<typename T>
+    constexpr auto operator<=(T other) const -> le_t<int, T> {
+        return {value, static_cast<T>(other)};
+    }
+};
+
+// _i literal operator
+constexpr integral operator""_i(unsigned long long value) {
+    return integral(static_cast<int>(value));
+}
+
+// Support comparison between any type and integral
+template<typename T>
+constexpr auto operator==(T lhs, integral rhs) -> eq_t<T, int> {
+    return {static_cast<T>(lhs), rhs.value};
+}
+
+template<typename T>
+constexpr auto operator!=(T lhs, integral rhs) -> ne_t<T, int> {
+    return {static_cast<T>(lhs), rhs.value};
+}
+
+template<typename T>
+constexpr auto operator>(T lhs, integral rhs) -> gt_t<T, int> {
+    return {static_cast<T>(lhs), rhs.value};
+}
+
+template<typename T>
+constexpr auto operator<(T lhs, integral rhs) -> lt_t<T, int> {
+    return {static_cast<T>(lhs), rhs.value};
+}
+
+template<typename T>
+constexpr auto operator>=(T lhs, integral rhs) -> ge_t<T, int> {
+    return {static_cast<T>(lhs), rhs.value};
+}
+
+template<typename T>
+constexpr auto operator<=(T lhs, integral rhs) -> le_t<T, int> {
+    return {static_cast<T>(lhs), rhs.value};
+}
+
+// ============================================================================
+// Logical operators with expression evaluation display
+// ============================================================================
+
+// Forward declarations for expression types
+template<typename L, typename R> struct and_expr;
+template<typename L, typename R> struct or_expr;
+
+// Expression evaluation and formatting
+template<typename T>
+void format_expression(const T& expr) {
+    if constexpr (requires { expr.lhs; expr.rhs; }) {
+        // Binary comparison - show evaluated values
+        kernel_printer::print("(");
+        if constexpr (requires { static_cast<int>(expr.lhs); }) {
+            kernel_printer::print_number(static_cast<int>(expr.lhs));
+        } else {
+            format_value(expr.lhs);
+        }
+
+        // Print operator based on type
+        if constexpr (is_eq_t<T>::value) {
+            kernel_printer::print(" == ");
+        } else if constexpr (is_ne_t<T>::value) {
+            kernel_printer::print(" != ");
+        } else if constexpr (is_gt_t<T>::value) {
+            kernel_printer::print(" > ");
+        } else if constexpr (is_lt_t<T>::value) {
+            kernel_printer::print(" < ");
+        } else if constexpr (is_ge_t<T>::value) {
+            kernel_printer::print(" >= ");
+        } else if constexpr (is_le_t<T>::value) {
+            kernel_printer::print(" <= ");
+        }
+
+        if constexpr (requires { static_cast<int>(expr.rhs); }) {
+            kernel_printer::print_number(static_cast<int>(expr.rhs));
+        } else {
+            format_value(expr.rhs);
+        }
+        kernel_printer::print(")");
+    } else {
+        // Other expressions
+        kernel_printer::print("[expr]");
+    }
+}
+
+// Logical AND expression
+template<typename L, typename R>
+struct and_expr {
+    L lhs;
+    R rhs;
+
+    constexpr and_expr(L l, R r) : lhs(l), rhs(r) {}
+
+    constexpr operator bool() const {
+        return static_cast<bool>(lhs) && static_cast<bool>(rhs);
+    }
+
+    void format_condition() const {
+        kernel_printer::print("[");
+        format_expression(lhs);
+        kernel_printer::print(" and ");
+        format_expression(rhs);
+        kernel_printer::print("]");
+    }
+};
+
+// Logical OR expression
+template<typename L, typename R>
+struct or_expr {
+    L lhs;
+    R rhs;
+
+    constexpr or_expr(L l, R r) : lhs(l), rhs(r) {}
+
+    constexpr operator bool() const {
+        return static_cast<bool>(lhs) || static_cast<bool>(rhs);
+    }
+
+    void format_condition() const {
+        kernel_printer::print("[");
+        format_expression(lhs);
+        kernel_printer::print(" or ");
+        format_expression(rhs);
+        kernel_printer::print("]");
+    }
+};
+
+// AND operator for all comparison types
+template<typename L, typename R>
+constexpr auto operator&&(L&& lhs, R&& rhs) -> and_expr<L, R> {
+    return and_expr<L, R>{static_cast<L&&>(lhs), static_cast<R&&>(rhs)};
+}
+
+// OR operator for all comparison types
+template<typename L, typename R>
+constexpr auto operator||(L&& lhs, R&& rhs) -> or_expr<L, R> {
+    return or_expr<L, R>{static_cast<L&&>(lhs), static_cast<R&&>(rhs)};
+}
+
+// 'and' and 'or' keywords are natively supported in C++
+
+// ============================================================================
+// Enhanced expectation for complex expressions
+// ============================================================================
+
+// Specialization for AND expressions
+template<typename L, typename R>
+struct expectation<and_expr<L, R>> {
+    and_expr<L, R> value;
+    const char* expression;
+    const char* file;
+    int line;
+
+    constexpr expectation(and_expr<L, R> v, const char* expr, const char* f, int l)
+        : value(v), expression(expr), file(f), line(l) {}
+
+    constexpr operator bool() const {
+        if (value) {
+            test_result::assertions_passed++;
+            return true;
+        } else {
+            test_result::assertions_failed++;
+            report_failure();
+            return false;
+        }
+    }
+
+private:
+    void report_failure() const {
+        kernel_printer::print("FAILED in: ");
+        kernel_printer::print(file ? file : "unknown");
+        kernel_printer::print(":");
+        kernel_printer::print_number(line);
+        kernel_printer::print(" - test condition: ");
+        value.format_condition();
+        kernel_printer::print("\n");
+    }
+};
+
+// Specialization for OR expressions
+template<typename L, typename R>
+struct expectation<or_expr<L, R>> {
+    or_expr<L, R> value;
+    const char* expression;
+    const char* file;
+    int line;
+
+    constexpr expectation(or_expr<L, R> v, const char* expr, const char* f, int l)
+        : value(v), expression(expr), file(f), line(l) {}
+
+    constexpr operator bool() const {
+        if (value) {
+            test_result::assertions_passed++;
+            return true;
+        } else {
+            test_result::assertions_failed++;
+            report_failure();
+            return false;
+        }
+    }
+
+private:
+    void report_failure() const {
+        kernel_printer::print("FAILED in: ");
+        kernel_printer::print(file ? file : "unknown");
+        kernel_printer::print(":");
+        kernel_printer::print_number(line);
+        kernel_printer::print(" - test condition: ");
+        value.format_condition();
+        kernel_printer::print("\n");
+    }
+};
+
 } // namespace boost::ut
 
 // ============================================================================
