@@ -8,6 +8,7 @@ target_sources(moss_test_framework PRIVATE
     framework/test_framework.cpp
     framework/test_registry.cpp
     suites/test_containers.cpp
+    suites/test_memory.cpp
 )
 
 # 测试框架头文件

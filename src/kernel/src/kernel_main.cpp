@@ -805,6 +805,7 @@ void test_simple_ipi_system(void) noexcept {
 // 声明测试套件注册函数（避免包含完整的测试头文件）
 namespace moss::kernel::test {
     void register_container_test_suite() noexcept;
+    void register_memory_test_suite() noexcept;
 }
 
 using namespace moss::kernel::test;
@@ -820,6 +821,8 @@ void kernel_run_unit_tests(void) noexcept {
     early_debug_print("📝 手动注册测试套件...\n");
     register_container_test_suite();
     early_debug_print("✅ 容器测试套件已注册\n");
+    register_memory_test_suite();
+    early_debug_print("✅ 内存管理测试套件已注册\n");
 
     // 调试：直接创建和运行一个简单测试来验证测试框架
     early_debug_print("🔍 创建简单测试来验证框架...\n");
