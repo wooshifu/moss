@@ -117,3 +117,9 @@ message(STATUS "  - Architecture: ${MOSS_TARGET_ARCH}")
 message(STATUS "  - Build Type: ${CMAKE_BUILD_TYPE}")
 message(STATUS "  - C++ Standard: C++26")
 message(STATUS "  - Environment: Kernel freestanding")
+
+# ========================================================================
+# Modern Test Framework (boost::ut compatible)
+# ========================================================================
+
+add_subdirectory(modern)
