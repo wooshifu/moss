@@ -93,9 +93,9 @@
  * 当前实现使用双TTBR方案，两个寄存器指向同一页表，简化早期启动。
  */
 
-#include "../include/arch/arch_abstraction.hpp"
-#include "../include/result.hpp"
-#include "../include/types.hpp"
+#include "core/arch/arch_abstraction.hpp"
+#include "core/result.hpp"
+#include "core/types.hpp"
 
 namespace moss::kernel::mm {
 

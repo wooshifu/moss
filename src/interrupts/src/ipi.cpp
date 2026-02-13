@@ -2,7 +2,7 @@
 // Linux风格的CPU间通信系统实现
 
 #include "interrupts/ipi.hpp"
-#include "arch/arch_abstraction.hpp"
+#include "core/arch/arch_abstraction.hpp"
 
 namespace moss::kernel::interrupts {
 

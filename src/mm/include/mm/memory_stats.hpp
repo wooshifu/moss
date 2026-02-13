@@ -3,8 +3,8 @@
 // 高级内存统计和监控系统 - 现代性能分析与诊断
 // 实现详细性能指标收集、内存使用模式分析、泄漏检测和实时性能调优
 
-#include "../../../include/types.hpp"
-#include "../../../include/result.hpp"
+#include "core/types.hpp"
+#include "core/result.hpp"
 #include "containers/atomic_types.hpp"
 #include "containers/per_cpu_data.hpp"
 

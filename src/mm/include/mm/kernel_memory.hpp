@@ -4,7 +4,7 @@
 // 提供kmalloc/kfree等标准内核内存分配接口，集成世界级内存管理系统
 
 #include "mm_interface.hpp"
-#include "../../../include/types.hpp"
+#include "core/types.hpp"
 
 // C++ 内核接口
 namespace moss::kernel::mm {

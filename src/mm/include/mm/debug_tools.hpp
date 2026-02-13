@@ -3,8 +3,8 @@
 // MOSS内核内存调试和性能调优工具集
 // 提供全面的内存分析、性能调优、泄漏检测和系统诊断功能
 
-#include "../../../include/types.hpp"
-#include "../../../include/result.hpp"
+#include "core/types.hpp"
+#include "core/result.hpp"
 #include "mm_interface.hpp"
 #include "memory_stats.hpp"
 

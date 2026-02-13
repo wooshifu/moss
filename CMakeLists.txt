@@ -63,7 +63,7 @@ set(CMAKE_CXX_FLAGS_RELEASE "-g0 -O3 -DNDEBUG")
 add_compile_definitions(MOSS_KERNEL_MODULE)
 
 # === 全局头文件路径设置 ===
-include_directories(${CMAKE_SOURCE_DIR}/src/include)
+# moss_core 的 PUBLIC include 通过 target_link_libraries 传播到各模块
 
 # === 配置系统生成 ===
 string(TIMESTAMP MOSS_BUILD_TIMESTAMP "%Y-%m-%d %H:%M:%S UTC" UTC)
@@ -193,7 +193,7 @@ foreach(_opt IN LISTS _MOSS_CONDITIONAL_OPTIONS)
 endforeach()
 
 # 生成配置头文件
-configure_file(${CMAKE_SOURCE_DIR}/src/include/config/config.h.in
+configure_file(${CMAKE_SOURCE_DIR}/src/core/config/config.h.in
                ${CMAKE_BINARY_DIR}/include/config/config.h @ONLY)
 
 # 添加生成的配置头文件目录到包含路径
@@ -208,6 +208,7 @@ message(STATUS "构建类型: ${MOSS_BUILD_TYPE} (调试级别: ${MOSS_DEBUG_LEV
 add_subdirectory(src/modules)
 
 # === 添加子模块（按依赖顺序）===
+add_subdirectory(src/core)
 add_subdirectory(src/containers)
 add_subdirectory(src/mm)
 add_subdirectory(src/drivers)
@@ -223,6 +224,7 @@ add_executable(moss.elf)
 target_link_libraries(
   moss.elf
   PRIVATE moss_std
+          moss_core
           moss_boot
           moss_kernel
           moss_containers

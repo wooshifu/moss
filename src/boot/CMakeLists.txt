@@ -15,6 +15,6 @@ target_include_directories(moss_boot PUBLIC
 
 target_compile_definitions(moss_boot PRIVATE MOSS_BOOT_MODULE MOSS_UNIFIED_BOOT)
 
-target_link_libraries(moss_boot PRIVATE moss_mm moss_containers moss_process)
+target_link_libraries(moss_boot PRIVATE moss_core moss_mm moss_containers moss_process)
 
 message(STATUS "启动模块配置完成")

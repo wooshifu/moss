@@ -2,7 +2,7 @@
 
 #include "process.hpp"
 #include "containers/per_cpu_data.hpp"
-#include "types.hpp"
+#include "core/types.hpp"
 
 namespace moss::kernel::process {
 

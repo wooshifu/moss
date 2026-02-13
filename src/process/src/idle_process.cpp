@@ -1,6 +1,6 @@
 #include "process/idle_process.hpp"
-#include "arch/arch_abstraction.hpp"
-#include "types.hpp"
+#include "core/arch/arch_abstraction.hpp"
+#include "core/types.hpp"
 
 namespace moss::kernel::process {
 

@@ -3,8 +3,8 @@
 // 内存压缩系统 - Linux风格页面迁移和碎片整理
 // 实现智能页面迁移算法，减少内存碎片化，为大内存分配提供连续空间
 
-#include "../../../include/types.hpp"
-#include "../../../include/result.hpp"
+#include "core/types.hpp"
+#include "core/result.hpp"
 #include "containers/atomic_types.hpp"
 #include "containers/per_cpu_data.hpp"
 #include "buddy_allocator_v2.hpp"

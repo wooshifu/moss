@@ -6,8 +6,8 @@
 #include "containers/atomic_types.hpp"
 #include "containers/lockfree_queue.hpp"
 #include "containers/per_cpu_data.hpp"
-#include "result.hpp"
-#include "types.hpp"
+#include "core/result.hpp"
+#include "core/types.hpp"
 
 namespace moss::kernel::interrupts {
 

@@ -1,5 +1,5 @@
 #include "mm/page_table.hpp"
-#include "arch/arch_abstraction.hpp"
+#include "core/arch/arch_abstraction.hpp"
 
 // 简化的调试输出函数 - 直接使用UART输出
 namespace {

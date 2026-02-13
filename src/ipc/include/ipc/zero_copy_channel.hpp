@@ -3,9 +3,9 @@
 // 零拷贝通信通道实现
 // 基于共享内存和无锁队列的高性能IPC
 
-#include "../../../include/arch/arch_abstraction.hpp"
-#include "../../../include/result.hpp"
-#include "../../../include/types.hpp"
+#include "core/arch/arch_abstraction.hpp"
+#include "core/result.hpp"
+#include "core/types.hpp"
 #include "process/process.hpp"
 #include "containers/containers.hpp"
 #include "shared_memory.hpp"

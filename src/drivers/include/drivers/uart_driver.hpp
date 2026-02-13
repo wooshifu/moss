@@ -4,8 +4,8 @@
 // 展示设备驱动框架的使用
 
 #include "drivers/device_manager.hpp"
-#include "result.hpp"
-#include "types.hpp"
+#include "core/result.hpp"
+#include "core/types.hpp"
 
 namespace moss::kernel::drivers {
 

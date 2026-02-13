@@ -3,11 +3,11 @@
 // MOSS内核硬件IPI系统 - 基于ARM64 GIC SGI实现
 // 替换概念验证系统，提供真正的CPU间中断通信
 
-#include "../../../include/types.hpp"
-#include "../../../include/result.hpp"
-#include "../../containers/include/containers/lockfree_queue.hpp"
-#include "../../containers/include/containers/per_cpu_data.hpp"
-#include "../../containers/include/containers/atomic_types.hpp"
+#include "core/types.hpp"
+#include "core/result.hpp"
+#include "containers/lockfree_queue.hpp"
+#include "containers/per_cpu_data.hpp"
+#include "containers/atomic_types.hpp"
 #include "gic.hpp"
 
 namespace moss::kernel::interrupts {

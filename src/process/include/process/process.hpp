@@ -3,12 +3,12 @@
 // 现代进程管理系统
 // 支持多线程、优先级、实时调度等特性
 
-#include "arch/arch_abstraction.hpp"
+#include "core/arch/arch_abstraction.hpp"
 #include "containers/containers.hpp"
-#include "moss_std.hpp" // 裸机环境基础定义
-#include "result.hpp"
-#include "smart_ptr.hpp"
-#include "types.hpp"
+#include "core/moss_std.hpp" // 裸机环境基础定义
+#include "core/result.hpp"
+#include "core/smart_ptr.hpp"
+#include "core/types.hpp"
 // utility 通过 containers.hpp 包含
 
 namespace moss::kernel::process {

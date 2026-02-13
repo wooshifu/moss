@@ -3,8 +3,8 @@
 // MOSS内核统一内存管理接口 - 世界级性能的内存子系统
 // 整合所有内存管理组件：Vmalloc、回收引擎、压缩系统、NUMA策略、大页支持、监控系统
 
-#include "../../../include/types.hpp"
-#include "../../../include/result.hpp"
+#include "core/types.hpp"
+#include "core/result.hpp"
 #include "numa_policy.hpp"
 #include "vmalloc_allocator.hpp"
 #include "memory_reclaim.hpp"

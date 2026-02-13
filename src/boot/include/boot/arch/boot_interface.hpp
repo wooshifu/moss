@@ -5,8 +5,8 @@
 
 #pragma once
 
-#include "types.hpp"
-#include "result.hpp"
+#include "core/types.hpp"
+#include "core/result.hpp"
 
 namespace moss::boot {
 
