@@ -9,6 +9,9 @@
  * minimal freestanding standard library and kernel-optimized ut.hpp.
  */
 
+// Include kernel types first
+#include "moss_std.hpp"
+
 // Include kernel-optimized ut.hpp (it has everything we need)
 #include "ut_kernel.hpp"
 
@@ -28,9 +31,9 @@ namespace moss::kernel {
         }
 #elif defined(MOSS_ARCH_X86_64)
         // x86_64 serial port output
-        volatile uint16_t* serial = reinterpret_cast<volatile uint16_t*>(0x3F8);
+        volatile u16* serial = reinterpret_cast<volatile u16*>(0x3F8);
         while (*str) {
-            *serial = static_cast<uint16_t>(*str++);
+            *serial = static_cast<u16>(*str++);
         }
 #elif defined(MOSS_ARCH_RISCV)
         // RISC-V UART output (QEMU virt platform)
