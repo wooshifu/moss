@@ -16,7 +16,8 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 list(APPEND CMAKE_MODULE_PATH "${CMAKE_SOURCE_DIR}/cmake")
 include(ArchSupport)
 include(ToolchainDetection)
-include(Modules)
+# C++26 Modules BMI 缓存
+# set(CMAKE_CXX_MODULE_BMI_CACHE_DIR "${CMAKE_BINARY_DIR}/modules")
 
 # === 多架构配置 ===
 message(STATUS "开始配置 Moss 内核构建系统...")
@@ -220,8 +221,7 @@ add_executable(moss.elf)
 
 target_link_libraries(
   moss.elf
-  PRIVATE moss_std
-          moss_core
+  PRIVATE moss_core
           moss_boot
           moss_kernel
           moss_containers
