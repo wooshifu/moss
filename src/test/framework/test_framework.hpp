@@ -17,6 +17,21 @@ static constexpr u32 MAX_ERROR_MESSAGE_LENGTH = 256;
 static constexpr u32 MAX_TEST_SUITES = 32;
 static constexpr u32 MAX_TEST_NAME_LENGTH = 64;
 
+// ============================================================================
+// 测试退出代码和内核关闭
+// ============================================================================
+
+// 测试退出状态码
+enum class TestExitCode : u32 {
+    AllPassed = 0,      // 所有测试通过
+    TestFailed = 1,     // 有测试失败
+    SystemError = 2,    // 系统错误
+    NoTests = 3         // 没有找到测试
+};
+
+// 测试内核关闭函数（使用QEMU semihosting正确退出）
+[[noreturn]] void test_kernel_shutdown(TestExitCode exit_code) noexcept;
+
 // 测试结果结构
 struct TestResult {
     u32 total_tests = 0;

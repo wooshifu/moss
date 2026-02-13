@@ -486,4 +486,84 @@ u64 get_test_timestamp_ns() noexcept {
     #endif
 }
 
+// ============================================================================
+// QEMU Semihosting Exit Implementation
+// ============================================================================
+
+// 外部函数声明
+extern "C" void early_debug_print(const char* message) noexcept;
+
+[[noreturn]] void test_kernel_shutdown(TestExitCode exit_code) noexcept {
+    const char* exit_message = nullptr;
+
+    switch (exit_code) {
+        case TestExitCode::AllPassed:
+            exit_message = "🎉 所有测试通过！内核质量验证成功！\n";
+            break;
+        case TestExitCode::TestFailed:
+            exit_message = "❌ 测试失败！发现问题需要修复\n";
+            break;
+        case TestExitCode::SystemError:
+            exit_message = "💥 系统错误！测试框架出现问题\n";
+            break;
+        case TestExitCode::NoTests:
+            exit_message = "⚠️ 警告：没有找到任何测试\n";
+            break;
+        default:
+            exit_message = "❓ 未知退出状态\n";
+            break;
+    }
+
+    early_debug_print("\n");
+    early_debug_print("================================\n");
+    early_debug_print("=== 测试内核关闭 ===\n");
+    early_debug_print(exit_message);
+    early_debug_print("================================\n");
+
+    // 使用QEMU semihosting机制正确退出QEMU
+    // 这样测试完成后QEMU会立即退出，而不需要手动终止
+    #if defined(MOSS_ARCH_ARM64)
+    // ARM64 QEMU semihosting exit
+    u32 exit_status = (exit_code == TestExitCode::AllPassed) ? 0 : 1;
+
+    // 使用 ADP_Stopped_ApplicationExit semihosting调用
+    // 这是标准的ARM semihosting退出机制
+    asm volatile(
+        "mov x0, #0x18\n"      // ADP_Stopped_ApplicationExit
+        "mov x1, %0\n"         // exit status
+        "hlt #0xf000\n"        // semihosting breakpoint
+        :
+        : "r"(static_cast<u64>(exit_status))
+        : "x0", "x1"
+    );
+
+    #elif defined(MOSS_ARCH_X86_64)
+    // x86_64: 使用QEMU调试端口退出
+    u32 exit_status = (exit_code == TestExitCode::AllPassed) ? 0 : 1;
+    asm volatile("outl %0, $0xf4" : : "a"(exit_status));
+
+    #elif defined(MOSS_ARCH_RISCV)
+    // RISC-V: 使用SBI系统重置调用
+    u32 exit_status = (exit_code == TestExitCode::AllPassed) ? 0 : 1;
+    asm volatile(
+        "li a0, 0\n"           // shutdown type
+        "li a1, 0\n"           // reason
+        "li a7, 8\n"           // SBI system reset
+        "ecall\n"
+        :
+        :
+        : "a0", "a1", "a7"
+    );
+
+    #else
+    // 通用回退 - 死循环（真实硬件）
+    while (true) {
+        asm volatile("nop");
+    }
+    #endif
+
+    // 这行代码永远不会执行到，但需要确保[[noreturn]]函数不返回
+    __builtin_unreachable();
+}
+
 } // namespace moss::kernel::test
