@@ -3,6 +3,7 @@
 // 零拷贝通信通道实现
 // 基于共享内存和无锁队列的高性能IPC
 
+#include "../../../include/arch/arch_abstraction.hpp"
 #include "../../../include/result.hpp"
 #include "../../../include/types.hpp"
 #include "process/process.hpp"
@@ -458,8 +459,8 @@ private:
       if (get_current_time_ns() - start_time >= timeout_ns) {
         break;
       }
-      // CPU yield hint
-      asm volatile("yield");
+      // CPU yield hint (多架构支持)
+      arch::cpu_yield();
     }
   }
 

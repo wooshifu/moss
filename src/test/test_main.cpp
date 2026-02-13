@@ -46,7 +46,7 @@ asm(
     ".section .text.boot, \"ax\"\n"
     ".global _start\n"
     "_start:\n"
-    "    lea rsp, [rip + _stack_top]\n"
+    "    leaq _stack_top(%rip), %rsp\n"
     "    call _test_entry\n"
     "    hlt\n"
     "    jmp .\n"

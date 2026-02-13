@@ -7,6 +7,7 @@
 #include "mm/kernel_memory.hpp"  // 内核内存分配接口
 #include "../../interrupts/include/interrupts/ipi_hardware_simple.hpp"      // 简化硬件IPI系统
 #include "../../boot/include/boot/boot.hpp"                                  // Boot阶段全局变量
+#include "arch/arch_abstraction.hpp"       // 多架构抽象层
 // cstring 不需要 - 内核环境使用自定义内存操作
 
 // 使用内核命名空间的类型
@@ -53,7 +54,7 @@ void early_debug_print(const char *message) noexcept;
   g_kernel = new Kernel();
   if (!g_kernel) {
     early_debug_print("❌ 严重错误: 内核实例创建失败，系统无法继续\n");
-    while (true) { asm volatile("wfi"); }
+    while (true) { arch::cpu_halt(); }
   }
   early_debug_print("✅ 内核实例创建成功\n");
 
@@ -63,7 +64,7 @@ void early_debug_print(const char *message) noexcept;
   if (!init_result) {
     early_debug_print("❌ 内核初始化失败，错误代码: ");
     early_debug_print("INIT_ERROR\n");
-    while (true) { asm volatile("wfi"); }
+    while (true) { arch::cpu_halt(); }
   }
   early_debug_print("✅ 内核子系统初始化完成\n");
 
@@ -128,12 +129,12 @@ void early_debug_print(const char *message) noexcept;
   auto run_result = g_kernel->run();
   if (!run_result) {
     early_debug_print("💀 致命错误: 内核运行系统启动失败\n");
-    while (true) { asm volatile("wfi"); }
+    while (true) { arch::cpu_halt(); }
   }
 
   // 不应该到达这里，但如果到达了说明出现了严重错误
   early_debug_print("💀 致命错误: 内核主运行系统异常退出\n");
-  while (true) { asm volatile("wfi"); }
+  while (true) { arch::cpu_halt(); }
 }
 
 // 内核崩溃回调

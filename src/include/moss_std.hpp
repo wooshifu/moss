@@ -265,11 +265,17 @@ constexpr int memory_order_release = static_cast<int>(MemoryOrder::Release);
 constexpr int memory_order_acq_rel = static_cast<int>(MemoryOrder::AcqRel);
 constexpr int memory_order_seq_cst = static_cast<int>(MemoryOrder::SeqCst);
 
-// 简化的原子内存屏障函数（在freestanding环境中为空实现）
+// 简化的原子内存屏障函数（多架构支持）
 inline void atomic_thread_fence(int /*order*/) noexcept {
-  // 在实际的内核中，这里应该插入适当的内存屏障指令
-  // 对于ARM64，这可能是 dmb sy 或类似指令
+#if defined(MOSS_ARCH_ARM64)
   asm volatile("dmb sy" ::: "memory");
+#elif defined(MOSS_ARCH_X86_64)
+  asm volatile("mfence" ::: "memory");
+#elif defined(MOSS_ARCH_RISCV)
+  asm volatile("fence rw,rw" ::: "memory");
+#else
+  asm volatile("" ::: "memory"); // compiler barrier fallback
+#endif
 }
 
 } // namespace moss

@@ -3,6 +3,7 @@
 // 高性能共享内存管理器
 // 支持零拷贝IPC和大页面优化
 
+#include "arch/arch_abstraction.hpp"
 #include "containers/containers.hpp"
 #include "mm/page_table.hpp"
 #include "result.hpp"
@@ -470,14 +471,13 @@ private:
     // 实际实现中需要清除用户页表项
   }
 
-  // 缓存管理
+  // 缓存管理 (多架构支持)
   void flush_cache_range(VirtAddr addr, usize size) noexcept {
-    // ARM64缓存刷新操作
     VirtAddr end = addr + size;
     for (VirtAddr va = addr; va < end; va += CACHE_LINE_SIZE) {
-      asm volatile("dc civac, %0" ::"r"(va) : "memory");
+      arch::flush_cache_line(va);
     }
-    asm volatile("dsb sy" ::: "memory");
+    arch::memory_barrier();
   }
 
   // 进程映射管理

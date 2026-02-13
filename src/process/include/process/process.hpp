@@ -3,6 +3,7 @@
 // 现代进程管理系统
 // 支持多线程、优先级、实时调度等特性
 
+#include "arch/arch_abstraction.hpp"
 #include "containers/containers.hpp"
 #include "moss_std.hpp" // 裸机环境基础定义
 #include "result.hpp"
@@ -450,9 +451,7 @@ extern ProcessManager *g_process_manager;
 }
 
 [[nodiscard]] inline u32 current_cpu() noexcept {
-  u64 mpidr;
-  asm volatile("mrs %0, mpidr_el1" : "=r"(mpidr));
-  return static_cast<u32>(mpidr & 0xFF) % MAX_CPUS;
+  return arch::get_current_cpu_id();
 }
 
 // 用户地址空间管理扩展功能

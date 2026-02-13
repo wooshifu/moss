@@ -1,4 +1,5 @@
 #include "process/idle_process.hpp"
+#include "arch/arch_abstraction.hpp"
 #include "types.hpp"
 
 namespace moss::kernel::process {
@@ -50,11 +51,10 @@ IdleTask::IdleTask(u32 cpu_id) noexcept
         // 2. 检查是否有中断等待处理
         // TODO: 实现中断检查机制
 
-        // 3. 电源管理：进入低功耗状态
-        // 在ARM64上使用WFI(Wait For Interrupt)指令
-        asm volatile("dsb sy");  // 数据同步屏障
-        asm volatile("wfi");     // 等待中断 - CPU进入低功耗状态
-        asm volatile("isb");     // 指令同步屏障
+        // 3. 电源管理：进入低功耗状态 (多架构支持)
+        arch::memory_barrier();    // 数据同步屏障
+        arch::cpu_halt();          // 等待中断 - CPU进入低功耗状态
+        arch::instruction_barrier(); // 指令同步屏障
 
         // 4. WFI被中断唤醒后，检查是否需要退出idle
         // 这里我们需要检查调度器是否有可运行的任务
@@ -62,7 +62,7 @@ IdleTask::IdleTask(u32 cpu_id) noexcept
         // 5. 短暂的活动检测
         // 给其他子系统一些处理时间
         for (volatile u32 i = 0; i < 100; i = i + 1) {
-            asm volatile("nop");
+            arch::cpu_yield();
         }
 
         // TODO: 实现真正的idle退出条件检查
