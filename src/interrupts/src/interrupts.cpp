@@ -1,4 +1,11 @@
-// interrupts.cpp - 空源文件（header-only模块）
-// 此文件存在仅为满足CMake OBJECT库的源文件需求
+// interrupts.cpp - Module implementation unit for moss.interrupts
+// Defines global variables that need external linkage.
 
-// interrupts模块是header-only模块，所有实现都在头文件中
+module moss.interrupts;
+
+namespace moss::kernel::interrupts {
+
+// Global GIC instance
+GenericInterruptController *g_gic = nullptr;
+
+} // namespace moss::kernel::interrupts
