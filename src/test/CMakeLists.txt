@@ -14,10 +14,7 @@ set_target_properties(moss.test.elf PROPERTIES
 # Include paths & freestanding definitions
 # Note: MOSS_ARCH_* definitions are already set globally by cmake/arch/*.cmake
 target_include_directories(moss.test.elf PRIVATE
-    ${PROJECT_SOURCE_DIR}/src/containers/include
-    ${PROJECT_SOURCE_DIR}/src/process/include
-    ${CMAKE_CURRENT_SOURCE_DIR}
-    ${CMAKE_CURRENT_SOURCE_DIR}/framework)
+    ${CMAKE_CURRENT_SOURCE_DIR})
 
 target_compile_definitions(moss.test.elf PRIVATE
     BOOST_UT_DISABLE_MODULE=1

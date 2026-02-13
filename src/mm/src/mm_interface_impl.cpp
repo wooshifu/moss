@@ -1,7 +1,7 @@
 // MOSS内核统一内存管理器实现
 // 提供UnifiedMemoryManager类的基础实现
 
-#include "mm_interface.hpp"
+#include "mm/mm_interface.hpp"
 
 namespace moss::kernel::mm {
 

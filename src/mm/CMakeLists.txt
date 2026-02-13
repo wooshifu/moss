@@ -12,8 +12,6 @@ target_sources(moss_mm PRIVATE ${MM_SOURCES})
 
 target_include_directories(moss_mm PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}/include)
-target_include_directories(moss_mm PRIVATE
-    ${CMAKE_CURRENT_SOURCE_DIR}/include/mm)
 
 target_compile_definitions(moss_mm PRIVATE MOSS_MM_MODULE)
 

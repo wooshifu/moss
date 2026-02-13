@@ -1,8 +1,8 @@
 // 物理页面分配器实现 - Buddy算法
 // 为内核提供可靠的物理页面分配和释放功能
 
-#include "page_frame_allocator.hpp"
-#include "../include/arch/arch_abstraction.hpp"
+#include "mm/page_frame_allocator.hpp"
+#include "arch/arch_abstraction.hpp"
 // 简化实现：移除调试打印功能以避免链接依赖
 // 在生产版本中，调试输出应该通过统一的日志系统处理
 
