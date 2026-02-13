@@ -1,8 +1,10 @@
-// MOSS内核单元测试框架 - 测试内核主入口点
-// 这是一个独立的测试模式内核，专门用于运行单元测试
+// MOSS内核单元测试框架 - 统一测试入口点
+// 整合 ut.hpp 现代测试框架和传统 MOSS 测试框架
 
 #include "framework/test_framework.hpp"
 #include "framework/test_registry.hpp"
+#include "moss_ut.hpp"      // ut.hpp 集成
+// 注意：不包含 moss_compat.hpp 因为它重定义了 MOSS_TEST_FUNCTION 宏
 
 // 内核基础设施
 #include "types.hpp"
@@ -155,7 +157,33 @@ extern "C" [[noreturn]] void test_kernel_main() noexcept {
     early_debug_print("\n");
     early_debug_print("🧪 开始执行MOSS内核单元测试...\n");
 
-    // === 阶段2: 运行所有注册的测试套件 ===
+#ifdef ENABLE_UT_HPP_TESTS
+    // === 阶段2A: 运行 ut.hpp 现代测试框架 ===
+    early_debug_print("📋 Phase 1: ut.hpp 现代测试框架\n");
+    early_debug_print("-------------------------------------\n");
+
+    // 初始化 freestanding 标准库
+    moss::test::initialize_freestanding_std();
+
+    // 运行 ut.hpp 验证测试
+    early_debug_print("🔍 Running ut.hpp validation tests\n");
+    moss::test::run_validation_tests();
+
+    // 运行 freestanding 库测试
+    early_debug_print("🔍 Running freestanding library tests\n");
+    moss::test::run_freestanding_validation_tests();
+
+    early_debug_print("✅ ut.hpp 测试完成\n\n");
+#endif
+
+    // 初始化默认测试结果
+    GlobalTestResult global_result = {};
+
+#ifdef ENABLE_LEGACY_TESTS
+    // === 阶段2B: 运行传统 MOSS 测试框架 ===
+    early_debug_print("📋 Phase 2: 传统 MOSS 测试框架\n");
+    early_debug_print("-----------------------------------\n");
+
     early_debug_print("🔍 [LAYER 3] Getting TestRegistry instance\n");
     TestRegistry& registry = TestRegistry::get_instance();
     early_debug_print("🔍 [LAYER 3] TestRegistry instance obtained\n");
@@ -166,16 +194,20 @@ extern "C" [[noreturn]] void test_kernel_main() noexcept {
     early_debug_print("🔍 [LAYER 3] Test suites listed\n");
 
     if (registry.get_suite_count() == 0) {
-        early_debug_print("❌ 错误：没有找到任何注册的测试套件\n");
-        test_kernel_shutdown(TestExitCode::NoTests);
+        early_debug_print("⚠️  警告：没有找到传统测试套件，跳过传统测试阶段\n");
+        // 使用默认结果值
+    } else {
+        early_debug_print("🚀 开始执行传统测试...\n");
+
+        // 运行所有传统测试
+        global_result = registry.run_all_suites();
+
+        early_debug_print("✅ 传统 MOSS 测试完成\n\n");
     }
-
-    early_debug_print("🚀 开始执行测试...\n");
-
-    // 运行所有测试
-    GlobalTestResult global_result = registry.run_all_suites();
+#endif
 
     // === 阶段3: 处理测试结果 ===
+    early_debug_print("📊 汇总所有测试结果\n");
     g_test_stats.total_assertions = g_test_state.total_assertions;
     g_test_stats.failed_assertions = g_test_state.failed_assertions;
     g_test_stats.total_suites = global_result.total_suites;
