@@ -110,6 +110,19 @@ inline void cpu_yield() noexcept {
 #endif
 }
 
+// CPU halt/wait for interrupt (低功耗等待)
+inline void cpu_halt() noexcept {
+#if defined(MOSS_ARCH_ARM64)
+  asm volatile("wfi");
+#elif defined(MOSS_ARCH_X86_64)
+  asm volatile("hlt");
+#elif defined(MOSS_ARCH_RISCV)
+  asm volatile("wfi");
+#else
+#error "Unsupported architecture for cpu_halt"
+#endif
+}
+
 // 获取当前时间戳计数器
 inline u64 get_timestamp_counter() noexcept {
 #if defined(MOSS_ARCH_ARM64)

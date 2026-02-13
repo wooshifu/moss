@@ -266,9 +266,7 @@ public:
 
 private:
   [[nodiscard]] static moss::kernel::usize get_current_cpu_id() noexcept {
-    u64 mpidr;
-    asm volatile("mrs %0, mpidr_el1" : "=r"(mpidr));
-    return static_cast<moss::kernel::usize>(mpidr & 0xFF) % MAX_CPUS;
+    return static_cast<moss::kernel::usize>(arch::get_current_cpu_id());
   }
 };
 

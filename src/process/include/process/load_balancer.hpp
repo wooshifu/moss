@@ -361,11 +361,9 @@ private:
     return 0;
   }
 
-  // 获取当前CPU ID
+  // 获取当前CPU ID (多架构支持)
   [[nodiscard]] static u32 current_cpu_id() noexcept {
-    u64 mpidr;
-    asm volatile("mrs %0, mpidr_el1" : "=r"(mpidr));
-    return static_cast<u32>(mpidr & 0xFF) % MAX_CPUS;
+    return arch::get_current_cpu_id();
   }
 };
 

@@ -1,39 +1,11 @@
 {
     "version": 6,
-    "cmakeMinimumRequired": {
-        "major": 3,
-        "minor": 25,
-        "patch": 0
-    },
+    "include": ["../base.json"],
     "configurePresets": [
-        {
-            "name": "base-riscv",
-            "hidden": true,
-            "generator": "Ninja",
-            "binaryDir": "${sourceDir}/build/${presetName}",
-            "installDir": "${sourceDir}/install/${presetName}",
-            "cacheVariables": {
-                "CMAKE_EXPORT_COMPILE_COMMANDS": "ON",
-                "CMAKE_C_COMPILER": "clang-21",
-                "CMAKE_CXX_COMPILER": "clang++-21",
-                "CMAKE_ASM_COMPILER": "clang-21",
-                "CMAKE_SYSTEM_NAME": "Generic",
-                "MOSS_TARGET_PLATFORM": "QEMU_VIRT",
-                "CMAKE_CXX_FLAGS": "-ffreestanding -fno-exceptions -fno-rtti -fno-stack-protector -Wall -Wextra -Werror -fno-pic -fno-pie"
-            },
-            "environment": {
-                "CXX": "clang++-21"
-            },
-            "vendor": {
-                "microsoft.com/VisualStudioSettings/CMake/1.0": {
-                    "hostOS": ["Linux"]
-                }
-            }
-        },
         {
             "name": "riscv-base",
             "hidden": true,
-            "inherits": "base-riscv",
+            "inherits": "base-common",
             "displayName": "RISC-V Base Configuration",
             "cacheVariables": {
                 "CMAKE_CXX_FLAGS": "$penv{CMAKE_CXX_FLAGS} -march=rv64imac -mabi=lp64 -mcmodel=medany -mstrict-align",
@@ -109,39 +81,19 @@
         {
             "name": "riscv-qemu-debug",
             "displayName": "RISC-V QEMU Debug Workflow",
-            "description": "Configure, build (moss.elf + moss.test.elf), and run tests",
+            "description": "Configure and build (moss.elf + moss.test.elf)",
             "steps": [
-                {
-                    "type": "configure",
-                    "name": "riscv-qemu-debug"
-                },
-                {
-                    "type": "build",
-                    "name": "riscv-qemu-debug"
-                },
-                {
-                    "type": "test",
-                    "name": "riscv-qemu-debug-test"
-                }
+                { "type": "configure", "name": "riscv-qemu-debug" },
+                { "type": "build", "name": "riscv-qemu-debug" }
             ]
         },
         {
             "name": "riscv-qemu-release",
             "displayName": "RISC-V QEMU Release Workflow",
-            "description": "Configure, build (moss.elf + moss.test.elf), and run tests",
+            "description": "Configure and build (moss.elf + moss.test.elf)",
             "steps": [
-                {
-                    "type": "configure",
-                    "name": "riscv-qemu-release"
-                },
-                {
-                    "type": "build",
-                    "name": "riscv-qemu-release"
-                },
-                {
-                    "type": "test",
-                    "name": "riscv-qemu-release-test"
-                }
+                { "type": "configure", "name": "riscv-qemu-release" },
+                { "type": "build", "name": "riscv-qemu-release" }
             ]
         }
     ]

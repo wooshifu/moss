@@ -317,11 +317,9 @@ public:
   }
 
 private:
-  // 获取当前CPU ID的简单实现
+  // 获取当前CPU ID (多架构支持)
   [[nodiscard]] static moss::kernel::u32 get_current_cpu_id() noexcept {
-    moss::kernel::u64 mpidr;
-    asm volatile("mrs %0, mpidr_el1" : "=r"(mpidr));
-    return static_cast<moss::kernel::u32>(mpidr & 0xFF);
+    return moss::kernel::arch::get_current_cpu_id();
   }
 };
 

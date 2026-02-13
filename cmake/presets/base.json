@@ -1,0 +1,34 @@
+{
+    "version": 6,
+    "cmakeMinimumRequired": {
+        "major": 3,
+        "minor": 31,
+        "patch": 0
+    },
+    "configurePresets": [
+        {
+            "name": "base-common",
+            "hidden": true,
+            "generator": "Ninja",
+            "binaryDir": "${sourceDir}/build/${presetName}",
+            "installDir": "${sourceDir}/install/${presetName}",
+            "cacheVariables": {
+                "CMAKE_EXPORT_COMPILE_COMMANDS": "ON",
+                "CMAKE_C_COMPILER": "clang-21",
+                "CMAKE_CXX_COMPILER": "clang++-21",
+                "CMAKE_ASM_COMPILER": "clang-21",
+                "CMAKE_SYSTEM_NAME": "Generic",
+                "MOSS_TARGET_PLATFORM": "QEMU_VIRT",
+                "CMAKE_CXX_FLAGS": ""
+            },
+            "environment": {
+                "CXX": "clang++-21"
+            },
+            "vendor": {
+                "microsoft.com/VisualStudioSettings/CMake/1.0": {
+                    "hostOS": ["Linux"]
+                }
+            }
+        }
+    ]
+}

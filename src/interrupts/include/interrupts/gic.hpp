@@ -3,6 +3,7 @@
 // ARM64 Generic Interrupt Controller (GIC) 驱动
 // 支持 GICv2/GICv3 中断控制器
 
+#include "arch/arch_abstraction.hpp"
 #include "containers/containers.hpp"
 #include "result.hpp"
 #include "types.hpp"
@@ -381,11 +382,9 @@ public:
     write_cpu_interface_reg(GicRegs::GICC_PMR, mask);
   }
 
-  // 获取当前CPU ID
+  // 获取当前CPU ID (多架构支持)
   [[nodiscard]] static u32 get_current_cpu_id() noexcept {
-    u64 mpidr;
-    asm volatile("mrs %0, mpidr_el1" : "=r"(mpidr));
-    return static_cast<u32>(mpidr & 0xFF);
+    return arch::get_current_cpu_id();
   }
 
 private:

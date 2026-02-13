@@ -5,6 +5,7 @@
 
 #include "arch/boot_interface.hpp"
 #include "arch/arch_selector.hpp"
+#include "boot/boot.hpp"
 #include "moss_std.hpp"
 #include "result.hpp"
 
@@ -231,3 +232,22 @@ u32 moss::boot::RISCVBootImpl::get_current_cpu_id() noexcept {
         asm volatile("wfi");
     }
 }
+
+// === Boot 全局变量 (RISC-V 存根) ===
+// GIC 是 ARM64 特有硬件，RISC-V 使用 PLIC/CLINT
+moss::kernel::interrupts::GenericInterruptController* g_gic_controller = nullptr;
+bool g_gic_hardware_available = false;
+
+namespace moss::boot {
+
+void activate_secondary_cpus() noexcept {
+    // RISC-V: SMP 激活待实现 (需要 HSM SBI 扩展)
+    early_print("[RISC-V] SMP activation not yet implemented\n");
+}
+
+u32 wait_for_all_cpus_active([[maybe_unused]] u32 timeout_ms) noexcept {
+    // RISC-V: 当前仅支持单核
+    return 1;
+}
+
+} // namespace moss::boot
