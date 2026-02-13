@@ -1,4 +1,17 @@
-// drivers.cpp - 空源文件（header-only模块）
-// 此文件存在仅为满足CMake OBJECT库的源文件需求
+// drivers.cpp - Module implementation unit for moss.drivers
+// Defines global variables and static data members.
 
-// drivers模块是header-only模块，所有实现都在头文件中
+module moss.drivers;
+
+namespace moss::kernel::drivers {
+
+// Global device manager instance
+DeviceManager *g_device_manager = nullptr;
+
+// Global UART driver instance
+UartDriver *g_uart_driver = nullptr;
+
+// UartDriver compatible device list (static data member)
+const char *UartDriver::compatible_devices[] = {"arm,pl011", "arm,primecell"};
+
+} // namespace moss::kernel::drivers

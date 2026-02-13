@@ -230,6 +230,12 @@ void _ZdaPvmSt11align_val_t(void *ptr, [[maybe_unused]] size_t size,
   _ZdlPvmSt11align_val_t(ptr, size, alignment);
 }
 
+// Pure virtual function call handler (required by vtable for abstract classes)
+[[noreturn]] void __cxa_pure_virtual() {
+  // In kernel: calling a pure virtual function is a fatal error
+  moss::kernel::arch::kernel_panic();
+}
+
 } // extern "C"
 
 // 提供缺失的全局变量实例
