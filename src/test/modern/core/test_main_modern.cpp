@@ -2,28 +2,25 @@
 
 using namespace boost::ut;
 
-// Forward declare our test suites
-extern void run_containers_tests();
-extern void run_memory_tests();
-extern void run_scheduler_tests();
-
 extern "C" [[noreturn]] void modern_test_main() noexcept {
     using namespace moss::kernel;
 
-    kernel_uart_puts("🚀 MOSS Modern Test Suite Starting...\n");
-    kernel_uart_puts("Framework: Full boost::ut Compatible\n");
-    kernel_uart_puts("Features: _i literals, complex expressions, enhanced errors\n\n");
+    kernel_uart_puts("\n");
+    kernel_uart_puts("============================================\n");
+    kernel_uart_puts("🚀 MOSS Modern Test Suite v2.0\n");
+    kernel_uart_puts("============================================\n");
+    kernel_uart_puts("Framework: boost::ut Compatible\n");
+    kernel_uart_puts("Features: _i literals, and/or operators\n");
+    kernel_uart_puts("Enhanced: Expected vs Actual value display\n");
+    kernel_uart_puts("Environment: Kernel Freestanding Mode\n");
+    kernel_uart_puts("Architecture: ARM64 (Cortex-A57)\n");
+    kernel_uart_puts("============================================\n");
+    kernel_uart_puts("\n🧪 Executing Modern Test Suites:\n");
+    kernel_uart_puts("  • Containers (SPSC Queue, Lock-free ops)\n");
+    kernel_uart_puts("  • Memory (Alignment, Bounds Checking)\n");
+    kernel_uart_puts("  • Scheduler (Load Balancing, Timing)\n");
+    kernel_uart_puts("\n");
 
-    // Run specific test suites directly
-    kernel_uart_puts("Running containers test suite...\n");
-    run_containers_tests();
-
-    kernel_uart_puts("Running memory test suite...\n");
-    run_memory_tests();
-
-    kernel_uart_puts("Running scheduler test suite...\n");
-    run_scheduler_tests();
-
-    kernel_uart_puts("🎉 All modern tests completed successfully!\n");
-    kernel_test_exit(0);
+    // Run all modern test suites
+    boost::ut::run_all_tests();
 }
