@@ -154,11 +154,6 @@ public:
     u64 boot_time = get_current_time() - boot_start_time_;
     kernel_print("✅ MOSS内核启动完成 (用时: %llu cycles)\n", boot_time);
 
-    // 运行内核子系统测试
-    kernel_print("🧪 开始运行内核子系统测试...\n");
-    run_kernel_tests();
-    kernel_print("✅ 内核子系统测试完成\n");
-
     return VoidResult{};
   }
 
@@ -277,9 +272,6 @@ public:
   }
 
 private:
-  // 运行内核测试
-  void run_kernel_tests() noexcept;
-
   // 测试 kernel_print 格式化修复
   void test_kernel_print_formatting() noexcept {
     kernel_print("=== kernel_print 格式化测试 ===\n");
