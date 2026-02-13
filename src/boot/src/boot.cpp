@@ -5,7 +5,7 @@
 
 #include "boot/arch/boot_interface.hpp"
 #include "boot/arch/arch_selector.hpp"
-#include "moss_std.hpp"
+#include "core/moss_std.hpp"
 
 // 包含架构特定的实现定义
 #if defined(__aarch64__) || defined(MOSS_ARCH_ARM64)

@@ -3,8 +3,8 @@
 // MOSS内核ELF程序加载器
 // 支持加载64位ELF可执行文件到用户空间
 
-#include "types.hpp"
-#include "result.hpp"
+#include "core/types.hpp"
+#include "core/result.hpp"
 
 namespace moss::kernel::elf {
 

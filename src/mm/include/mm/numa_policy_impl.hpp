@@ -4,8 +4,8 @@
 // 拓扑发现、本地化分配和负载均衡的具体实现
 
 #include "numa_policy.hpp"
-#include "../../../include/moss_std.hpp"
-#include "../../../include/arch/arch_abstraction.hpp"
+#include "core/moss_std.hpp"
+#include "core/arch/arch_abstraction.hpp"
 
 namespace moss::kernel::mm {
 

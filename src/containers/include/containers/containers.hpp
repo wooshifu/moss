@@ -8,7 +8,7 @@
 #include "containers/per_cpu_data.hpp"
 #include "containers/rcu_list.hpp"
 #include "containers/slab_allocator.hpp"
-#include "../moss_std.hpp" // 包含裸机环境基础定义
+#include "core/moss_std.hpp" // 包含裸机环境基础定义
 #include "config/config.h" // 包含配置系统定义的宏
 
 // 避免包含有冲突的kernel_std.hpp

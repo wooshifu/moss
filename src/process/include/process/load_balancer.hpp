@@ -6,7 +6,7 @@
 #include "cfs_scheduler.hpp"
 #include "containers/containers.hpp"
 #include "process.hpp"
-#include "types.hpp"
+#include "core/types.hpp"
 
 namespace moss::kernel::process {
 

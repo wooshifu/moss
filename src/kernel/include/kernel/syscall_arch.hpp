@@ -3,7 +3,7 @@
 // 多架构系统调用入口点选择
 // 根据目标架构包含对应的汇编实现
 
-#include "arch_abstraction.hpp"
+#include "core/arch/arch_abstraction.hpp"
 
 namespace moss::kernel::arch::syscall {
 

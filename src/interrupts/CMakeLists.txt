@@ -12,6 +12,6 @@ target_include_directories(moss_interrupts PUBLIC
 
 target_compile_definitions(moss_interrupts PRIVATE MOSS_INTERRUPTS_MODULE)
 
-target_link_libraries(moss_interrupts PRIVATE moss_containers)
+target_link_libraries(moss_interrupts PRIVATE moss_core moss_containers)
 
 message(STATUS "中断模块配置完成")

@@ -3,12 +3,12 @@
 // 高性能共享内存管理器
 // 支持零拷贝IPC和大页面优化
 
-#include "arch/arch_abstraction.hpp"
+#include "core/arch/arch_abstraction.hpp"
 #include "containers/containers.hpp"
 #include "mm/page_table.hpp"
-#include "result.hpp"
-#include "smart_ptr.hpp"
-#include "types.hpp"
+#include "core/result.hpp"
+#include "core/smart_ptr.hpp"
+#include "core/types.hpp"
 
 namespace moss::kernel::ipc {
 

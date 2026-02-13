@@ -4,7 +4,7 @@
 // 实现智能性能分析、泄漏检测算法和实时监控机制
 
 #include "memory_stats.hpp"
-#include "../../../include/moss_std.hpp"
+#include "core/moss_std.hpp"
 
 namespace moss::kernel::mm {
 

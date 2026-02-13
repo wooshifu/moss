@@ -3,8 +3,8 @@
 // NUMA感知内存管理策略 - 现代多核系统优化
 // 基于Linux内核NUMA策略，实现节点拓扑发现、本地化分配和负载均衡
 
-#include "../../../include/types.hpp"
-#include "../../../include/result.hpp"
+#include "core/types.hpp"
+#include "core/result.hpp"
 #include "containers/atomic_types.hpp"
 #include "containers/per_cpu_data.hpp"
 #include "buddy_allocator_v2.hpp"

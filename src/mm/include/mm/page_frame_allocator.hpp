@@ -3,8 +3,8 @@
 // 物理页面分配器 - Buddy算法实现
 // 管理内核可用的物理内存页面，支持4KB到2MB的分配
 
-#include "../../../include/types.hpp"
-#include "../../../include/result.hpp"
+#include "core/types.hpp"
+#include "core/result.hpp"
 #include "containers/atomic_types.hpp"
 
 namespace moss::kernel::mm {

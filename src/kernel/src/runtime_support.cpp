@@ -1,8 +1,8 @@
 // 内核运行时支持函数
 // 提供必要的C库函数和内存管理函数的内核实现
 
-#include "../include/arch/arch_abstraction.hpp"
-#include "../include/types.hpp"
+#include "core/arch/arch_abstraction.hpp"
+#include "core/types.hpp"
 #include "mm/runtime_heap_allocator.hpp"
 
 // 前向声明必要的类型（避免循环依赖）

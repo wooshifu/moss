@@ -3,16 +3,16 @@
 // 无锁队列实现 - 高性能的SPSC和MPSC队列
 // 专为内核环境优化，避免动态内存分配
 
-#include "../../../include/arch/arch_abstraction.hpp"
-#include "../../../include/result.hpp"
-#include "../../../include/types.hpp"
+#include "core/arch/arch_abstraction.hpp"
+#include "core/result.hpp"
+#include "core/types.hpp"
 #include "atomic_types.hpp"
 
 // 包含统一的内核标准库支持
 // Removed kernel_std.hpp include to avoid conflicts
 
 // 包含concepts约束
-#include "../../../include/concepts/container_concepts.hpp"
+#include "core/concepts/container_concepts.hpp"
 
 namespace moss::kernel::containers {
 

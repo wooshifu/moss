@@ -3,9 +3,9 @@
 // 高性能硬件原子操作实现 - 基于编译器内建函数
 // 提供真正的多架构硬件级原子操作支持
 
-#include "../../../include/arch/arch_abstraction.hpp"
-#include "../../../include/moss_std.hpp"
-#include "../../../include/types.hpp"
+#include "core/arch/arch_abstraction.hpp"
+#include "core/moss_std.hpp"
+#include "core/types.hpp"
 
 namespace moss::kernel::containers {
 

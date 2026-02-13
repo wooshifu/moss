@@ -2,7 +2,7 @@
 // 真正的CPU间中断通信，替换概念验证系统
 
 #include "../include/interrupts/ipi_hardware.hpp"
-#include "arch/arch_abstraction.hpp"
+#include "core/arch/arch_abstraction.hpp"
 
 // 外部调试打印函数
 extern "C" void early_debug_print(const char* message) noexcept;

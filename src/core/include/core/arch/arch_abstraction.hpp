@@ -3,7 +3,7 @@
 // 架构特定的汇编指令抽象层
 // 为不同架构提供统一的接口
 
-#include "../types.hpp"
+#include "core/types.hpp"
 
 // 默认架构检测
 #ifndef MOSS_ARCH_ARM64

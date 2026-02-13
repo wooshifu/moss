@@ -5,8 +5,8 @@
 
 #include "containers/containers.hpp"
 #include "process.hpp"
-#include "result.hpp"
-#include "types.hpp"
+#include "core/result.hpp"
+#include "core/types.hpp"
 #include "idle_process.hpp"
 
 // 外部汇编函数声明

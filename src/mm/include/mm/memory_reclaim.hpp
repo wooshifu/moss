@@ -3,8 +3,8 @@
 // 内存回收引擎 - Linux风格LRU页面回收机制
 // 实现多级LRU列表、工作集检测和智能页面扫描算法
 
-#include "../../../include/types.hpp"
-#include "../../../include/result.hpp"
+#include "core/types.hpp"
+#include "core/result.hpp"
 #include "containers/atomic_types.hpp"
 #include "containers/per_cpu_data.hpp"
 #include "buddy_allocator_v2.hpp"

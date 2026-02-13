@@ -3,11 +3,11 @@
 
 #include "kernel/kernel_main.hpp"
 #include "kernel/syscall_table.hpp"        // 系统调用表管理
-#include "../include/arch/syscall_arch.hpp"  // 多架构系统调用支持
+#include "kernel/syscall_arch.hpp"            // 多架构系统调用支持
 #include "mm/kernel_memory.hpp"  // 内核内存分配接口
 #include "../../interrupts/include/interrupts/ipi_hardware_simple.hpp"      // 简化硬件IPI系统
 #include "../../boot/include/boot/boot.hpp"                                  // Boot阶段全局变量
-#include "arch/arch_abstraction.hpp"       // 多架构抽象层
+#include "core/arch/arch_abstraction.hpp"  // 多架构抽象层
 // cstring 不需要 - 内核环境使用自定义内存操作
 
 // 使用内核命名空间的类型

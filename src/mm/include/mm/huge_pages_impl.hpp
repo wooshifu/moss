@@ -4,7 +4,7 @@
 // 实现THP自动提升、HugeTLB文件系统和动态大页池管理
 
 #include "huge_pages.hpp"
-#include "../../../include/moss_std.hpp"
+#include "core/moss_std.hpp"
 
 namespace moss::kernel::mm {
 

@@ -3,8 +3,8 @@
 // 运行时堆分配器 - 管理内核动态堆分配
 // 基于虚拟内存管理，使用 PageFrameAllocator 作为物理页面后端
 
-#include "../../../include/types.hpp"
-#include "../../../include/result.hpp"
+#include "core/types.hpp"
+#include "core/result.hpp"
 #include "page_frame_allocator.hpp"
 
 namespace moss::kernel::mm {

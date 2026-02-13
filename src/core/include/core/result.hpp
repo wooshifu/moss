@@ -2,10 +2,10 @@
 
 // 现代C++风格的错误处理 - Result<T, E>类型
 
-#include "types.hpp"
+#include "core/types.hpp"
 
 // 使用标准库concepts
-#include "moss_std.hpp"
+#include "core/moss_std.hpp"
 
 // 内核环境下的基础 type traits 实现
 namespace moss::kernel::detail {

@@ -4,7 +4,7 @@
 // LRU页面管理、智能扫描和工作集检测的具体实现
 
 #include "memory_reclaim.hpp"
-#include "../../../include/moss_std.hpp"
+#include "core/moss_std.hpp"
 
 namespace moss::kernel::mm {
 
