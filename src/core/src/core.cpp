@@ -1,4 +1,4 @@
 // moss_core minimal translation unit
-// Global operator new/delete for freestanding environment
+// Ensures placement new/delete from moss.std are available
 
-#include "core/moss_std.hpp"
+import moss.std;
