@@ -1,67 +1,27 @@
 # MOSS内核现代化单元测试框架构建配置
-# 完全基于 ut.hpp v2.3.1 + 自定义 freestanding 标准库实现
+# 基于精简的内核优化 ut.hpp 实现
 
 # ========================================================================
-# Freestanding 标准库兼容层
+# 内核优化测试框架
 # ========================================================================
 
-# 创建 freestanding 标准库接口库
-add_library(moss_freestanding_std INTERFACE)
-
-# freestanding 标准库头文件
-target_sources(moss_freestanding_std PUBLIC
-    FILE_SET HEADERS
-    BASE_DIRS freestanding_std
-    FILES
-        freestanding_std/type_traits.hpp
-        freestanding_std/vector.hpp
-        freestanding_std/string.hpp
-        freestanding_std/string_view.hpp
-        freestanding_std/array.hpp
-        freestanding_std/unordered_map.hpp
-        freestanding_std/memory.hpp
-        freestanding_std/iostream.hpp
-        freestanding_std/sstream.hpp
-        freestanding_std/chrono.hpp
-        freestanding_std/exception.hpp
-        freestanding_std/unistd.hpp
-        freestanding_std/sys/wait.hpp
-)
-
-# freestanding 标准库包含目录
-target_include_directories(moss_freestanding_std INTERFACE
-    ${CMAKE_CURRENT_SOURCE_DIR}/freestanding_std
-    ${CMAKE_CURRENT_SOURCE_DIR}
-)
-
-# ========================================================================
-# ut.hpp 现代测试框架
-# ========================================================================
-
-# ut.hpp 测试框架静态库
+# 创建内核测试框架静态库
 add_library(moss_test_framework STATIC)
 
-# Kernel testing framework源文件 - 轻量级实现
+# 内核测试源文件
 target_sources(moss_test_framework PRIVATE
-    kernel_validation_test.cpp
-    # 移除复杂的freestanding std依赖文件
-    # moss_ut.cpp - 不再需要复杂的ut.hpp集成
-    # validation_test.cpp - 被kernel_validation_test.cpp替代
+    test_main.cpp
+    kernel_modern_validation.cpp
 )
 
-# Kernel testing framework头文件
+# 内核测试头文件
 target_sources(moss_test_framework PUBLIC
     FILE_SET HEADERS
     BASE_DIRS .
     FILES
-        kernel_ut.hpp
-        # 移除复杂的ut.hpp相关文件
-        # moss_ut.hpp - 被kernel_ut.hpp替代
-        # ut.hpp - 原始Boost.UT，不再需要
+        ut_kernel.hpp
+        moss_ut.hpp
 )
-
-# Kernel testing framework 不需要复杂的freestanding标准库
-# target_link_libraries(moss_test_framework PUBLIC moss_freestanding_std)
 
 # ========================================================================
 # 编译选项配置
@@ -93,7 +53,8 @@ function(configure_moss_test_target target_name)
         -Wno-suggest-destructor-override
         -Wno-deprecated-volatile     # 兼容性
         -Wno-unused-value            # ut.hpp 表达式模板
-        -Wno-ctad-maybe-unsupported  # C++26 类模板参数推导
+        -Wno-ctad-maybe-unsupported  # 类模板参数推导 (ut.hpp合法使用)
+        -Wno-unused-variable         # 测试变量可能未使用
     )
 
     # 架构特定定义
@@ -123,7 +84,6 @@ function(configure_moss_test_target target_name)
         ${PROJECT_SOURCE_DIR}/src/containers/include
         ${PROJECT_SOURCE_DIR}/src/process/include
         ${CMAKE_CURRENT_SOURCE_DIR}
-        ${CMAKE_CURRENT_SOURCE_DIR}/freestanding_std
     )
 endfunction()
 
@@ -149,9 +109,9 @@ target_compile_definitions(moss_test_framework PUBLIC
 # 构建信息输出
 # ========================================================================
 
-message(STATUS "MOSS Modern Test Framework Configuration:")
-message(STATUS "  - Framework: ut.hpp v2.3.1 (Boost.UT)")
-message(STATUS "  - Standard Library: Custom freestanding implementation")
+message(STATUS "MOSS Kernel-Optimized Test Framework Configuration:")
+message(STATUS "  - Framework: Kernel-optimized ut.hpp")
+message(STATUS "  - Standard Library: None (pure freestanding)")
 message(STATUS "  - Architecture: ${MOSS_TARGET_ARCH}")
 message(STATUS "  - Build Type: ${CMAKE_BUILD_TYPE}")
 message(STATUS "  - C++ Standard: C++26")

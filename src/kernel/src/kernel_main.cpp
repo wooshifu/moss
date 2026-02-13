@@ -795,12 +795,14 @@ void test_simple_ipi_system(void) noexcept {
 // 🧪 单元测试框架集成 - 在完全初始化的内核环境中运行测试
 // ============================================================================
 
-// 轻量级内核测试 - 不需要外部测试框架头文件
+// 声明 ut.hpp 测试框架主函数
+extern "C" [[noreturn]] void test_kernel_main() noexcept;
+
 #ifdef MOSS_TEST_MODE
 
 [[noreturn]] void kernel_run_unit_tests(void) noexcept {
-    early_debug_print("🧪 MOSS轻量级内核测试框架启动\n");
-    early_debug_print("🔬 在完全初始化的内核环境中执行测试...\n\n");
+    early_debug_print("🧪 MOSS内核 ut.hpp 测试框架启动\n");
+    early_debug_print("🔬 在完全初始化的内核环境中执行现代化测试...\n\n");
 
     // 显示测试环境信息
     early_debug_print("=== 测试环境信息 ===\n");
@@ -808,84 +810,14 @@ void test_simple_ipi_system(void) noexcept {
     early_debug_print("✅ 中断处理系统: 已初始化\n");
     early_debug_print("✅ 调度系统: 已初始化\n");
     early_debug_print("✅ 设备管理系统: 已初始化\n");
-    early_debug_print("📋 使用轻量级内核测试框架\n\n");
+    early_debug_print("📋 使用 kernel-optimized ut.hpp 测试框架\n\n");
 
-    // 运行一个简单的内核环境测试来验证基本功能
-    early_debug_print("🔍 执行内核环境验证测试...\n");
+    early_debug_print("🚀 启动 kernel-optimized ut.hpp 测试执行...\n");
 
-    int test_passed = 1; // 简单的测试状态跟踪
+    // 调用我们的 ut.hpp 测试框架主函数 (never returns)
+    test_kernel_main();
 
-    // 基本算术测试
-    {
-        u32 a = 5;
-        u32 b = 3;
-        if ((a + b) != 8 || (a * b) != 15) {
-            early_debug_print("❌ 基本算术测试失败\n");
-            test_passed = 0;
-        } else {
-            early_debug_print("✅ 基本算术测试通过\n");
-        }
-    }
-
-    // 内存访问测试
-    {
-        volatile u32 test_var = 42;
-        u32* ptr = const_cast<u32*>(&test_var);
-        if (*ptr != 42) {
-            early_debug_print("❌ 内存访问测试失败\n");
-            test_passed = 0;
-        } else {
-            early_debug_print("✅ 内存访问测试通过\n");
-        }
-    }
-
-    // 数组操作测试
-    {
-        u32 arr[3] = {1, 2, 3};
-        if (arr[0] != 1 || arr[2] != 3) {
-            early_debug_print("❌ 数组操作测试失败\n");
-            test_passed = 0;
-        } else {
-            early_debug_print("✅ 数组操作测试通过\n");
-        }
-    }
-
-    // 位运算测试
-    {
-        u32 flags = 0;
-        flags |= (1U << 2);  // 设置位2
-        if ((flags & (1U << 2)) == 0) {
-            early_debug_print("❌ 位运算测试失败\n");
-            test_passed = 0;
-        } else {
-            early_debug_print("✅ 位运算测试通过\n");
-        }
-    }
-
-    // 显示测试结果摘要
-    early_debug_print("\n=== 内核测试执行结果 ===\n");
-
-    if (test_passed) {
-        early_debug_print("🎉 所有基本功能测试通过！\n");
-        early_debug_print("✅ 内核运行环境正常，可以安全运行\n");
-    } else {
-        early_debug_print("❌ 发现基本功能测试失败！\n");
-        early_debug_print("⚠️ 内核可能存在功能问题\n");
-    }
-
-    early_debug_print("\n🔬 轻量级测试框架执行完成\n");
-
-    // 使用架构特定的halt指令停止执行
-    early_debug_print("🛑 测试完成，停止内核执行...\n");
-    while (true) {
-#if defined(MOSS_ARCH_ARM64)
-        asm volatile("wfi");
-#elif defined(MOSS_ARCH_X86_64)
-        asm volatile("hlt");
-#else
-        for (volatile int i = 0; i < 1000000; ++i) {}
-#endif
-    }
+    // 注意：test_kernel_main() 不会返回，函数在此处结束
 }
 
 // 简单的数字转字符串函数
@@ -901,10 +833,15 @@ void u32_to_string(u32 value, char* buffer, usize buffer_size) noexcept {
     usize len = 0;
     u32 temp = value;
 
-    // 计算数字位数
-    while (temp > 0 && len < buffer_size - 1) {
-        temp /= 10;
+    // 计算数字长度
+    while (temp > 0) {
         len++;
+        temp /= 10;
+    }
+
+    // 确保缓冲区足够大
+    if (len >= buffer_size) {
+        len = buffer_size - 1;
     }
 
     // 反向填充数字
