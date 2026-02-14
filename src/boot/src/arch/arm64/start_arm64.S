@@ -44,7 +44,7 @@
 #define SPSR_EL2_D        (1 << 9)
 
 _start:
-    // 保存设备树指针（在x0中传入）
+    // 保存设备树指针（x0 可能为 0，见后续 DTB 扫描）
     mov     x20, x0
 
     // 获取当前CPU ID
@@ -163,6 +163,35 @@ bss_cleared:
     mov     x26, #10                 // 换行符
     str     w26, [x25]
 
+    // --- DTB 扫描 ---
+    // QEMU -kernel 对裸 ELF 不通过 x0 传递 DTB。
+    // 如果 x0 为 0，线性扫描 RAM 区域查找 DTB magic (0xd00dfeed)。
+    // 此处已在 EL1，MMU 关闭，可安全读取任意物理地址。
+    cbnz    x20, .Ldtb_ready
+
+    movz    w21, #0x0DD0             // DTB magic as seen by little-endian ldr:
+    movk    w21, #0xEDFE, lsl #16   // 0xD00DFEED big-endian → 0xEDFE0DD0 little-endian
+
+    // 线性扫描：从 RAM 末尾向下，以 64KB 对齐步进
+    // QEMU virt: RAM = 0x40000000 .. 0x4FFFFFFF (256MB)
+    movz    x24, #0x4FFF, lsl #16   // 起始：0x4FFF0000 (接近 RAM 顶端)
+    movz    x22, #0x4000, lsl #16   // 终止：0x40000000 (RAM 底部)
+
+.Ldtb_scan_loop:
+    cmp     x24, x22
+    b.lo    .Ldtb_ready              // 扫描完毕未找到，x20 保持 0
+
+    ldr     w26, [x24]
+    cmp     w26, w21
+    b.eq    .Ldtb_match
+
+    sub     x24, x24, #0x10000      // 步进 64KB (DTB 总是至少页对齐)
+    b       .Ldtb_scan_loop
+
+.Ldtb_match:
+    mov     x20, x24                 // DTB 找到
+
+.Ldtb_ready:
     // 主CPU：跳转到C++代码
     mov     x0, x20              // 传递设备树指针
     bl      early_main

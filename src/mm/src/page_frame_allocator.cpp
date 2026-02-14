@@ -130,13 +130,15 @@ PageFrameAllocator::MemoryStats PageFrameAllocator::get_memory_stats() noexcept 
 
 // 解析内核内存布局
 PageAllocVoidResult PageFrameAllocator::parse_memory_layout() noexcept {
-    // QEMU virt 平台内存布局：
-    // 0x40000000 - 内核起始
-    // _kernel_end_addr - 内核结束，可用内存开始
-    // 假设系统有256MB内存 (0x40000000 + 256MB = 0x50000000)
+    // 从 DTB 解析结果获取物理内存范围，若 DTB 无效则回退到 256MB 默认值。
+    // DTB 解析在 hardware_early_init() 中完成，此处仅读取结果。
+    const auto &plat = ::moss::fdt::get_platform_info();
 
     PhysAddr kernel_end = reinterpret_cast<PhysAddr>(_kernel_end_addr);
-    PhysAddr memory_end = static_cast<PhysAddr>(0x50000000);  // 256MB
+    PhysAddr memory_end =
+        (plat.dtb_valid && plat.memory_region_count > 0)
+            ? static_cast<PhysAddr>(plat.total_memory_start + plat.total_memory_size)
+            : static_cast<PhysAddr>(0x50000000);  // fallback: 256MB
 
     // 对齐到页面边界
     PhysAddr available_start = (kernel_end + PAGE_SIZE - 1) & ~(PAGE_SIZE - 1);

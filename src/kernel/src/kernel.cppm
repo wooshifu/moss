@@ -58,6 +58,7 @@ import moss.containers;
 import moss.mm;
 import moss.interrupts;
 import moss.drivers;
+import moss.fdt;
 import moss.ipc;
 import moss.process;
 import moss.boot;
@@ -1073,9 +1074,14 @@ private:
       return VoidResult{ErrorCode::OutOfMemory};
     }
 
-    // Initialize GIC (using fixed addresses; should read from device tree)
-    VirtAddr gic_dist_base = 0x08000000; // GIC distributor base
-    VirtAddr gic_cpu_base = 0x08010000;  // GIC CPU interface base
+    // 从 DTB 解析结果获取 GIC 地址，若 DTB 无效则回退到 QEMU virt 默认值
+    const auto &plat = ::moss::fdt::get_platform_info();
+    VirtAddr gic_dist_base = (plat.dtb_valid && plat.intc.valid)
+                                 ? static_cast<VirtAddr>(plat.intc.dist_base)
+                                 : 0x08000000;
+    VirtAddr gic_cpu_base = (plat.dtb_valid && plat.intc.valid)
+                                ? static_cast<VirtAddr>(plat.intc.cpu_base)
+                                : 0x08010000;
 
     auto gic_result = gic_->initialize(gic_dist_base, gic_cpu_base);
     if (!gic_result) {

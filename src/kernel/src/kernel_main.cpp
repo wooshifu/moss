@@ -285,10 +285,16 @@ struct KernelMemoryInfo {
 };
 
 KernelMemoryInfo get_kernel_memory_info(void) noexcept {
-  // 简化实现
-  return {.total_memory = 1024 * 1024 * 1024,   // 1GB
-          .free_memory = 512 * 1024 * 1024,     // 512MB
-          .kernel_heap_used = 16 * 1024 * 1024, // 16MB
+  // 从 DTB 解析结果获取总内存，粗略估算已使用量
+  const auto &plat = ::moss::fdt::get_platform_info();
+  usize total = (plat.dtb_valid && plat.total_memory_size > 0)
+                    ? static_cast<usize>(plat.total_memory_size)
+                    : static_cast<usize>(1024 * 1024 * 1024); // fallback: 1GB
+
+  // TODO: 接入 PageFrameAllocator 统计信息获取精确的空闲页数
+  return {.total_memory = total,
+          .free_memory = total / 2,             // 粗略估算
+          .kernel_heap_used = 16 * 1024 * 1024, // 16MB 估算
           .user_heap_used = 0,
           .page_faults = 0};
 }

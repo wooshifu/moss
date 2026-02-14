@@ -45,6 +45,7 @@ export module moss.mm;
 import moss.std;
 import moss.types;
 import moss.result;
+import moss.fdt;
 import moss.containers;
 import moss.arch;
 

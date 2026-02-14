@@ -531,9 +531,42 @@ void update_boot_stage(BootStage stage, ::moss::kernel::ErrorCode error) noexcep
     early_print_hex(ctx.cpu_id);
     early_print("\n");
 
-    ctx.memory_start = 0x40000000;
-    ctx.memory_size = 1024 * 1024 * 1024;
-    ctx.kernel_phys_base = 0x40000000;
+    // --- DTB 解析：从 Device Tree 获取真实硬件拓扑 ---
+    // QEMU 通过 x0 寄存器传递 DTB 指针，已保存在 ctx.device_tree_ptr 中。
+    // 解析成功后用真实值填充 BootContext，否则回退到硬编码默认值。
+    if (ctx.device_tree_ptr) {
+        early_print("DTB pointer: ");
+        early_print_hex(reinterpret_cast<u64>(ctx.device_tree_ptr));
+        early_print("\n");
+
+        if (moss::fdt::parse_dtb(ctx.device_tree_ptr)) {
+            const auto &info = moss::fdt::get_platform_info();
+
+            early_print("DTB parse OK: ");
+            early_print_hex(info.cpu_count);
+            early_print(" CPUs, memory ");
+            early_print_hex(info.total_memory_start);
+            early_print(" + ");
+            early_print_hex(info.total_memory_size);
+            early_print("\n");
+
+            ctx.memory_start = info.total_memory_start;
+            ctx.memory_size = info.total_memory_size;
+            ctx.kernel_phys_base = info.total_memory_start;
+            ctx.total_cpus = info.cpu_count;
+        } else {
+            early_print("DTB parse failed, using hardcoded defaults\n");
+            ctx.memory_start = 0x40000000;
+            ctx.memory_size = 1024 * 1024 * 1024;
+            ctx.kernel_phys_base = 0x40000000;
+        }
+    } else {
+        early_print("No DTB pointer, using hardcoded defaults\n");
+        ctx.memory_start = 0x40000000;
+        ctx.memory_size = 1024 * 1024 * 1024;
+        ctx.kernel_phys_base = 0x40000000;
+    }
+
     ctx.kernel_virt_base = moss::boot::arch_constants::KERNEL_VIRT_BASE;
 
     early_print("ARM64 hardware init complete\n\n");
@@ -585,10 +618,22 @@ void update_boot_stage(BootStage stage, ::moss::kernel::ErrorCode error) noexcep
         g_gic_hardware_available = false;
         early_print("System will use IPI proof-of-concept mode\n");
     } else {
-        moss::kernel::VirtAddr gic_dist_base = 0x08000000;
-        moss::kernel::VirtAddr gic_cpu_base = 0x08010000;
+        // 从 DTB 解析结果获取 GIC 地址，若 DTB 无效则回退到硬编码默认值
+        const auto &plat = moss::fdt::get_platform_info();
+        moss::kernel::VirtAddr gic_dist_base =
+            (plat.dtb_valid && plat.intc.valid)
+                ? static_cast<moss::kernel::VirtAddr>(plat.intc.dist_base)
+                : 0x08000000;
+        moss::kernel::VirtAddr gic_cpu_base =
+            (plat.dtb_valid && plat.intc.valid)
+                ? static_cast<moss::kernel::VirtAddr>(plat.intc.cpu_base)
+                : 0x08010000;
 
-        early_print("GIC addresses: GICD=0x08000000, GICC=0x08010000\n");
+        early_print("GIC GICD=");
+        early_print_hex(gic_dist_base);
+        early_print(" GICC=");
+        early_print_hex(gic_cpu_base);
+        early_print("\n");
 
         auto gic_result = g_gic_controller->initialize(gic_dist_base, gic_cpu_base);
         if (gic_result) {
