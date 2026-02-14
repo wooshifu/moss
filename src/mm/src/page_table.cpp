@@ -29,8 +29,13 @@ namespace log = moss::kernel::logging;
 
 namespace moss::kernel::mm {
 
-// PageTableManager 方法实现
+// PageTableManager 方法实现 — routes to early bump or dynamic buddy allocator
 KernelResult<PageTable *> PageTableManager::allocate_page_table() {
+  if (use_dynamic_alloc) {
+    return allocate_page_table_dynamic();
+  }
+
+  // Early boot path: bump allocator from linker-allocated page table section
   if (next_table_index >= MAX_EARLY_TABLES) {
     return KernelResult<PageTable *>{ErrorCode::OutOfMemory};
   }
@@ -43,6 +48,105 @@ KernelResult<PageTable *> PageTableManager::allocate_page_table() {
   }
 
   return KernelResult<PageTable *>{table};
+}
+
+// Dynamic page table allocation from buddy allocator (post-boot)
+KernelResult<PageTable *> PageTableManager::allocate_page_table_dynamic() {
+  auto result = page_alloc::alloc_kernel_pages(0);  // order 0 = 1 page = 4KB
+  if (!result) {
+    return KernelResult<PageTable *>{ErrorCode::OutOfMemory};
+  }
+  PhysAddr pa = *result;
+  auto *table = reinterpret_cast<PageTable *>(phys_to_virt(pa));
+
+  for (usize i = 0; i < PageTable::ENTRIES_PER_TABLE; i++) {
+    table->entries[i].clear();
+  }
+
+  return KernelResult<PageTable *>{table};
+}
+
+// Build TTBR1 high-half kernel page table: map physical RAM at KERNEL_DIRECT_MAP_BASE
+VoidResult PageTableManager::setup_kernel_high_half_tables() {
+  // 1. Allocate L0 (PGD) for TTBR1 — using early bump allocator (before dynamic switch)
+  auto pgd_result = allocate_page_table();
+  if (!pgd_result) return VoidResult{pgd_result.error()};
+  kernel_high_pgd = *pgd_result;
+
+  // 2. Determine RAM region from DTB (PlatformInfo)
+  const auto &plat = moss::fdt::get_platform_info();
+  PhysAddr ram_start = (plat.dtb_valid && plat.total_memory_size > 0)
+                           ? plat.total_memory_start
+                           : moss::kernel::platform::ram_base();
+  u64 ram_size = (plat.dtb_valid && plat.total_memory_size > 0)
+                     ? plat.total_memory_size
+                     : moss::kernel::platform::ram_size();
+  PhysAddr ram_end = ram_start + ram_size;
+
+  // 3. Map physical address space at KERNEL_DIRECT_MAP_BASE using 1GB blocks.
+  //    TTBR1 handles VA >= 0xFFFF000000000000 (with T1SZ=16).
+  //    PGD index = (va >> 39) & 0x1FF
+  //    For KERNEL_DIRECT_MAP_BASE (0xFFFF800000000000): PGD[256]
+  u16 pgd_idx = static_cast<u16>((KERNEL_DIRECT_MAP_BASE >> 39) & 0x1FF);
+
+  // Allocate PUD table for this PGD entry
+  auto pud_result = allocate_page_table();
+  if (!pud_result) return VoidResult{pud_result.error()};
+  PageTable *pud = *pud_result;
+
+  PhysAddr pud_pa = get_physical_address(pud);
+  kernel_high_pgd->entries[pgd_idx].set_table(pud_pa);
+
+  // 4. Fill PUD entries with 1GB block descriptors covering 0-4GB
+  //    This maps device MMIO (0x00000000-0x3FFFFFFF) + RAM (0x40000000+)
+  constexpr u64 ONE_GB = 0x40000000ULL;
+  for (usize i = 0; i < 4; i++) {
+    PhysAddr block_addr = static_cast<PhysAddr>(i * ONE_GB);
+    PhysAddr block_end = block_addr + ONE_GB;
+    bool overlaps_ram = (block_addr < ram_end) && (block_end > ram_start);
+    u64 block_entry = overlaps_ram
+        ? moss::kernel::hal::mmu::make_normal_block(block_addr)
+        : moss::kernel::hal::mmu::make_device_block(block_addr);
+    pud->entries[i].raw = block_entry;
+  }
+
+  log::klog::info("high-half page table: PGD[{}] -> PUD with 4x1GB blocks", pgd_idx);
+  return VoidResult{};
+}
+
+// Map a single 4KB page into a user process page table (4-level walk)
+VoidResult PageTableManager::map_user_page(PhysAddr pgd_phys, VirtAddr va,
+                                            PhysAddr pa, u64 perms) {
+  auto *pgd = get_table_from_physical(pgd_phys);
+  auto bd = break_virtual_address(va);
+
+  // PGD -> PUD
+  if (!pgd->entries[bd.pgd_index].is_valid()) {
+    auto result = allocate_page_table();
+    if (!result) return VoidResult{ErrorCode::OutOfMemory};
+    pgd->entries[bd.pgd_index].set_table(get_physical_address(*result));
+  }
+  auto *pud = get_table_from_physical(pgd->entries[bd.pgd_index].get_phys_addr());
+
+  // PUD -> PMD
+  if (!pud->entries[bd.pud_index].is_valid()) {
+    auto result = allocate_page_table();
+    if (!result) return VoidResult{ErrorCode::OutOfMemory};
+    pud->entries[bd.pud_index].set_table(get_physical_address(*result));
+  }
+  auto *pmd = get_table_from_physical(pud->entries[bd.pud_index].get_phys_addr());
+
+  // PMD -> PTE table
+  if (!pmd->entries[bd.pmd_index].is_valid()) {
+    auto result = allocate_page_table();
+    if (!result) return VoidResult{ErrorCode::OutOfMemory};
+    pmd->entries[bd.pmd_index].set_table(get_physical_address(*result));
+  }
+  auto *pte = get_table_from_physical(pmd->entries[bd.pmd_index].get_phys_addr());
+
+  // Set the final 4KB page entry
+  pte->entries[bd.pte_index].set_block(pa, perms);
+  return VoidResult{};
 }
 
 // 创建内核页表映射
