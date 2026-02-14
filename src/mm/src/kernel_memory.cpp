@@ -1,7 +1,10 @@
 // MOSS内核全局内存分配接口实现
 // 实现C风格接口和内存管理系统集成
+// Module implementation unit
 
-#include "mm/kernel_memory.hpp"
+module;
+
+module moss.mm;
 
 extern "C" {
 

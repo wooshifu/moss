@@ -5,11 +5,22 @@ import moss.std;
 
 export namespace moss::kernel {
 
+// Re-export basic integer types from moss:: namespace for backward compatibility
+using moss::u8;
+using moss::u16;
+using moss::u32;
+using moss::u64;
+using moss::i8;
+using moss::i16;
+using moss::i32;
+using moss::i64;
+
 // Architecture-dependent size type
+// Must match ABI size_t (unsigned long on LP64) - NOT u64 (unsigned long long)
 #if defined(MOSS_ARCH_ARM64) || defined(MOSS_ARCH_X86_64) ||                   \
     defined(MOSS_ARCH_RISCV)
-using usize = u64;
-using isize = i64;
+using usize = unsigned long;
+using isize = signed long;
 #else
 using usize = size_t;
 using isize = ptrdiff_t;
