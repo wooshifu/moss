@@ -3,23 +3,8 @@
 
 module;
 
-// Architecture detection macros (do not cross module boundaries)
-#ifndef MOSS_ARCH_ARM64
-#ifndef MOSS_ARCH_X86_64
-#ifndef MOSS_ARCH_RISCV
-#if defined(__x86_64__) || defined(__x86_64) || defined(__amd64__) ||           \
-    defined(__amd64) || defined(_M_X64)
-#define MOSS_ARCH_X86_64
-#elif defined(__aarch64__) || defined(_M_ARM64)
-#define MOSS_ARCH_ARM64
-#elif defined(__riscv) && __riscv_xlen == 64
-#define MOSS_ARCH_RISCV
-#else
-#define MOSS_ARCH_X86_64
-#endif
-#endif
-#endif
-#endif
+// Architecture detection
+#include "arch_detect.h"
 
 // Linker symbols (must be in global module fragment)
 extern "C" {
@@ -38,55 +23,13 @@ extern "C" {
 
 module moss.mm;
 
-// 简化的调试输出函数
-// Post-DTB: UART 地址从 PlatformInfo 获取，fallback 到 ARM64 PL011 默认值。
+import moss.hal.uart;
+
+// Debug output aliases — delegate to HAL/UART
 namespace {
-
-static volatile char *get_uart_base() {
-  const auto &plat = moss::fdt::get_platform_info();
-  moss::u64 addr = (plat.dtb_valid && plat.uart.valid)
-                       ? plat.uart.base_addr
-                       : 0x09000000;
-  return reinterpret_cast<volatile char *>(addr);
-}
-
-// 简单UART输出字符
-void debug_putchar(char c) { *get_uart_base() = c; }
-
-// 简单UART输出字符串
-void debug_print(const char *str) {
-  if (!str)
-    return;
-  while (*str) {
-    debug_putchar(*str++);
-  }
-}
-
-// 简单十六进制输出（带0x前缀）
-void debug_print_hex(moss::u64 value) {
-  constexpr char hex_chars[] = "0123456789ABCDEF";
-  char buffer[19] = "0x"; // "0x" + 16个十六进制字符 + null终止符
-
-  for (int i = 15; i >= 0; i--) {
-    buffer[2 + (15 - i)] = hex_chars[(value >> (i * 4)) & 0xF];
-  }
-  buffer[18] = '\0';
-
-  debug_print(buffer);
-}
-
-// 简单十六进制输出（不带0x前缀）
-void debug_print_hex_plain(moss::u64 value) {
-  constexpr char hex_chars[] = "0123456789ABCDEF";
-  char buffer[17]; // 16个十六进制字符 + null终止符
-
-  for (int i = 15; i >= 0; i--) {
-    buffer[15 - i] = hex_chars[(value >> (i * 4)) & 0xF];
-  }
-  buffer[16] = '\0';
-
-  debug_print(buffer);
-}
+void debug_print(const char *str) { moss::kernel::hal::uart::puts(str); }
+void debug_print_hex(moss::u64 value) { moss::kernel::hal::uart::put_hex(value); }
+void debug_print_hex_plain(moss::u64 value) { moss::kernel::hal::uart::put_hex_plain(value); }
 } // namespace
 
 namespace moss::kernel::mm {
@@ -123,40 +66,27 @@ VoidResult PageTableManager::setup_kernel_page_tables() {
   const auto &plat = moss::fdt::get_platform_info();
   PhysAddr ram_start = (plat.dtb_valid && plat.total_memory_size > 0)
                            ? plat.total_memory_start
-                           : 0x40000000; // QEMU virt default
+                           : moss::kernel::platform::ram_base();
   u64 ram_size = (plat.dtb_valid && plat.total_memory_size > 0)
                      ? plat.total_memory_size
-                     : 256ULL * 1024 * 1024; // fallback: 256MB
+                     : moss::kernel::platform::ram_size();
   PhysAddr ram_end = ram_start + ram_size;
-
-  // Device memory attributes: AttrIndx=0 (MAIR: Device-nGnRnE)
-  u64 device_block = (1ULL << 0) |  // Valid
-                     (0ULL << 1) |  // Block (not Table)
-                     (0ULL << 2) |  // AttrIndx=0 (Device-nGnRnE)
-                     (1ULL << 10);  // AF (Access Flag)
-
-  // Normal cacheable memory attributes: AttrIndx=1 (MAIR: Normal WB-WA)
-  // Required for atomic operations (ldxr/stxr, ldadd) to work correctly
-  u64 normal_block = (1ULL << 0) |  // Valid
-                     (0ULL << 1) |  // Block (not Table)
-                     (1ULL << 2) |  // AttrIndx=1 (Normal Cacheable)
-                     (1ULL << 10) | // AF (Access Flag)
-                     (3ULL << 8);   // Inner Shareable (SH bits for SMP)
 
   // Map 4 x 1GB blocks covering 0x00000000 - 0xFFFFFFFF
   // Each block's memory type is determined by whether it overlaps with RAM
-  // (from DTB) rather than using a hardcoded PGD index.
+  // (from DTB). Block descriptor format is provided by the MMU HAL.
+  constexpr u64 ONE_GB = 0x40000000ULL;
   for (usize i = 0; i < 4; i++) {
-    PhysAddr block_addr = static_cast<PhysAddr>(i * 0x40000000ULL);
-    PhysAddr block_end = block_addr + 0x40000000ULL;
+    PhysAddr block_addr = static_cast<PhysAddr>(i * ONE_GB);
+    PhysAddr block_end = block_addr + ONE_GB;
 
     // If this 1GB block overlaps with the RAM region, use Normal memory;
-    // otherwise use Device memory. This correctly handles any RAM base/size
-    // reported by the DTB (e.g., QEMU virt: RAM at 0x40000000).
+    // otherwise use Device memory.
     bool overlaps_ram = (block_addr < ram_end) && (block_end > ram_start);
-    u64 permissions = overlaps_ram ? normal_block : device_block;
+    u64 block_entry = overlaps_ram
+        ? moss::kernel::hal::mmu::make_normal_block(block_addr)
+        : moss::kernel::hal::mmu::make_device_block(block_addr);
 
-    u64 block_entry = (block_addr & 0x0000FFFFFFFFF000ULL) | permissions;
     PageTableManager::kernel_pgd->entries[i].raw = block_entry;
   }
 
@@ -251,62 +181,16 @@ VoidResult PageTableManager::map_page(VirtAddr virt_addr, PhysAddr phys_addr,
   return VoidResult{};
 }
 
-// 启用MMU
+// 启用MMU — delegates to HAL for architecture-specific register operations
 VoidResult PageTableManager::enable_mmu() {
   if (!PageTableManager::kernel_pgd) {
     return VoidResult{ErrorCode::InvalidState};
   }
 
-#if defined(__aarch64__) || defined(MOSS_ARCH_ARM64)
-  // 使用原始配置参数，避免自定义配置导致的问题
   PhysAddr kernel_pgd_pa =
       PageTableManager::get_physical_address(PageTableManager::kernel_pgd);
 
-  u64 current_sctlr;
-  asm volatile("mrs %0, sctlr_el1" : "=r"(current_sctlr));
-
-  // 使用项目原始的MAIR配置
-  asm volatile("msr mair_el1, %0" ::"r"(AddressSpaceConfig::MAIR_VALUE));
-
-  // 使用项目原始的TCR配置
-  asm volatile("msr tcr_el1, %0" ::"r"(AddressSpaceConfig::TCR_VALUE));
-
-  // 按照原始配置设置TTBR（双TTBR方案）
-  asm volatile("msr ttbr0_el1, %0" ::"r"(kernel_pgd_pa));
-  asm volatile("msr ttbr1_el1, %0" ::"r"(kernel_pgd_pa));
-
-  // Invalidate all TLB entries to ensure new page table attributes take effect
-  // This is critical when changing memory types (e.g., Device → Normal)
-  asm volatile("tlbi vmalle1is" ::: "memory");
-  asm volatile("dsb sy");
-  asm volatile("isb");
-
-  // Invalidate instruction cache before enabling it
-  asm volatile("ic iallu" ::: "memory");
-  asm volatile("dsb sy");
-  asm volatile("isb");
-
-  // Enable MMU + data cache + instruction cache
-  // Caches are required for Normal Cacheable memory attributes to work correctly
-  u64 sctlr = current_sctlr;
-  sctlr |= (1ULL << 0);  // M bit: enable MMU
-  sctlr |= (1ULL << 2);  // C bit: enable data cache
-  sctlr |= (1ULL << 12); // I bit: enable instruction cache
-  asm volatile("msr sctlr_el1, %0" ::"r"(sctlr));
-
-  // Ensure MMU + cache enablement takes full effect
-  asm volatile("dsb sy");
-  asm volatile("isb");
-
-  // 如果能到这里说明MMU启用成功
-  (void)kernel_pgd_pa; // 避免未使用警告
-  (void)current_sctlr; // 避免未使用警告
-#else
-  // 非ARM64架构，MMU操作不适用，返回成功
-  // 实际项目中需要为不同架构实现相应的内存管理
-#endif
-
-  return VoidResult{};
+  return moss::kernel::hal::mmu::enable_mmu(kernel_pgd_pa);
 }
 
 // 全局函数接口
@@ -326,14 +210,10 @@ VoidResult setup_mmu() {
   }
 
   // 3. 验证MMU已启用
-#if defined(__aarch64__) || defined(MOSS_ARCH_ARM64)
-  u64 sctlr;
-  asm volatile("mrs %0, sctlr_el1" : "=r"(sctlr));
-  if (!(sctlr & (1ULL << 0))) {
+  if (!moss::kernel::hal::mmu::mmu_enabled()) {
     // MMU启用失败但继续运行
     // return VoidResult{ErrorCode::InvalidState};
   }
-#endif
 
   // 4. 打印页表详细信息（调试输出）
   PageTableManager::print_page_table_details();

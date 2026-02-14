@@ -5,23 +5,8 @@
 
 module;
 
-// Architecture detection macros (global module fragment)
-#ifndef MOSS_ARCH_ARM64
-#ifndef MOSS_ARCH_X86_64
-#ifndef MOSS_ARCH_RISCV
-#if defined(__x86_64__) || defined(__x86_64) || defined(__amd64__) ||           \
-    defined(__amd64) || defined(_M_X64)
-#define MOSS_ARCH_X86_64
-#elif defined(__aarch64__) || defined(_M_ARM64)
-#define MOSS_ARCH_ARM64
-#elif defined(__riscv) && __riscv_xlen == 64
-#define MOSS_ARCH_RISCV
-#else
-#define MOSS_ARCH_X86_64
-#endif
-#endif
-#endif
-#endif
+// Architecture detection
+#include "arch_detect.h"
 
 #if defined(__aarch64__) || defined(MOSS_ARCH_ARM64)
 #define MOSS_CURRENT_ARCH "ARM64"
@@ -54,7 +39,7 @@ namespace moss::boot {
 static void boot_print(const char *message) {
 #if defined(__aarch64__) || defined(MOSS_ARCH_ARM64)
     // ARM64 uses UART
-    static constexpr VirtAddr UART_BASE = 0x09000000;
+    static constexpr VirtAddr UART_BASE = ::moss::kernel::platform::uart_base();
     volatile u32 *uart_base = reinterpret_cast<volatile u32 *>(UART_BASE);
     const char *p = message;
     while (*p) {

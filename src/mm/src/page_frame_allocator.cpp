@@ -138,7 +138,8 @@ PageAllocVoidResult PageFrameAllocator::parse_memory_layout() noexcept {
     PhysAddr memory_end =
         (plat.dtb_valid && plat.memory_region_count > 0)
             ? static_cast<PhysAddr>(plat.total_memory_start + plat.total_memory_size)
-            : static_cast<PhysAddr>(0x50000000);  // fallback: 256MB
+            : static_cast<PhysAddr>(moss::kernel::platform::ram_base() +
+                                        moss::kernel::platform::ram_size());
 
     // 对齐到页面边界
     PhysAddr available_start = (kernel_end + PAGE_SIZE - 1) & ~(PAGE_SIZE - 1);

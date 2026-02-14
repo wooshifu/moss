@@ -4,23 +4,8 @@
 
 module;
 
-// Architecture detection for global module fragment
-#ifndef MOSS_ARCH_ARM64
-#ifndef MOSS_ARCH_X86_64
-#ifndef MOSS_ARCH_RISCV
-#if defined(__x86_64__) || defined(__x86_64) || defined(__amd64__) ||           \
-    defined(__amd64) || defined(_M_X64)
-#define MOSS_ARCH_X86_64
-#elif defined(__aarch64__) || defined(_M_ARM64)
-#define MOSS_ARCH_ARM64
-#elif defined(__riscv) && __riscv_xlen == 64
-#define MOSS_ARCH_RISCV
-#else
-#define MOSS_ARCH_X86_64
-#endif
-#endif
-#endif
-#endif
+// Architecture detection
+#include "arch_detect.h"
 
 // Assembly interop declarations (global module fragment)
 extern "C" void switch_to_user(void* context, unsigned long long user_stack);
@@ -1296,23 +1281,7 @@ private:
   }
 
   void idle_task_loop([[maybe_unused]] u32 cpu_id) noexcept {
-#if defined(MOSS_ARCH_ARM64)
-    asm volatile("dsb sy" ::: "memory");
-    asm volatile("wfi" ::: "memory");
-    asm volatile("isb" ::: "memory");
-#elif defined(MOSS_ARCH_X86_64)
-    asm volatile("sti" ::: "memory");
-    asm volatile("hlt" ::: "memory");
-    asm volatile("cli" ::: "memory");
-#elif defined(MOSS_ARCH_RISCV)
-    asm volatile("csrsi mstatus, 0x8" ::: "memory");
-    asm volatile("wfi" ::: "memory");
-    asm volatile("csrci mstatus, 0x8" ::: "memory");
-#else
-    for (volatile int i = 0; i < 1000; ++i) {
-      // Idle loop fallback
-    }
-#endif
+    arch::cpu_idle_once();
   }
 
   void mark_cpu_idle(u32 cpu_id, bool is_idle) noexcept {
@@ -1817,13 +1786,7 @@ public:
   }
 
   static void yield_cpu() noexcept {
-#if defined(MOSS_ARCH_ARM64)
-    asm volatile("yield" ::: "memory");
-#elif defined(MOSS_ARCH_X86_64)
-    asm volatile("pause" ::: "memory");
-#elif defined(MOSS_ARCH_RISCV)
-    asm volatile("nop" ::: "memory");
-#endif
+    arch::cpu_yield();
 
     for (volatile int i = 0; i < 10000; i = i + 1) {
     }
@@ -2057,33 +2020,11 @@ private:
   }
 
   [[nodiscard]] static u32 get_current_cpu_id() noexcept {
-#if defined(MOSS_ARCH_ARM64)
-    u64 mpidr;
-    asm volatile("mrs %0, mpidr_el1" : "=r"(mpidr));
-    return static_cast<u32>(mpidr & 0xFF) % MAX_CPUS;
-#elif defined(MOSS_ARCH_X86_64)
-    return 0;
-#elif defined(MOSS_ARCH_RISCV)
-    u64 hart_id;
-    asm volatile("csrr %0, mhartid" : "=r"(hart_id));
-    return static_cast<u32>(hart_id) % MAX_CPUS;
-#else
-    return 0;
-#endif
+    return arch::get_current_cpu_id();
   }
 
   [[nodiscard]] static u64 get_current_time() noexcept {
-    u64 count;
-#if defined(MOSS_ARCH_ARM64)
-    asm volatile("mrs %0, cntvct_el0" : "=r"(count));
-#elif defined(MOSS_ARCH_X86_64)
-    asm volatile("rdtsc" : "=A"(count));
-#elif defined(MOSS_ARCH_RISCV)
-    asm volatile("rdcycle %0" : "=r"(count));
-#else
-    count = 0;
-#endif
-    return count;
+    return arch::get_timestamp_counter();
   }
 };
 
