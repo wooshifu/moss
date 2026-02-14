@@ -41,13 +41,15 @@ namespace handlers {
         ProcessId pid = cur->owner_pid;
         log::klog::info("sys_exit: PID={} TID={}", pid, static_cast<u32>(cur->tid));
 
+        // CRITICAL: Mark terminated BEFORE dequeue so that scheduler_tick()
+        // (which may fire on this or another CPU) will not re-enqueue the
+        // task into the CFS runqueue after we remove it.
+        cur->state = ProcessState::Terminated;
+
         // Dequeue this thread from the scheduler so it won't be picked again
         if (g_scheduler) {
             g_scheduler->dequeue_task(cur);
         }
-
-        // Mark thread as terminated
-        cur->state = ProcessState::Terminated;
 
         // Terminate the process in ProcessManager (marks + removes from table)
         if (g_process_manager) {
