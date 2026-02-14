@@ -1,6 +1,32 @@
 /*
  * ARM64内核启动汇编代码
  * 处理多核启动序列和早期系统初始化
+ *
+ * == DTB (Device Tree Blob) 传递机制 ==
+ *
+ * ARM64 Linux 启动协议规定 bootloader 通过 x0 寄存器传递 DTB 物理地址。
+ * 但 QEMU 的 -kernel 选项仅在识别到 Linux ARM64 Image 格式时遵循该协议：
+ *
+ *   QEMU hw/arm/boot.c 检查内核文件前 2 字节是否为 0x5A4D ("MZ")，
+ *   以及偏移 0x38 处是否有 magic 0x644d5241 ("ARM\x64")。
+ *   只有两者都匹配，QEMU 才会：
+ *     1. 生成 DTB 并放入 RAM 高地址区域
+ *     2. 将 DTB 物理地址写入 x0
+ *     3. 按 Linux 启动协议跳转到内核入口
+ *
+ *   对于裸 ELF（如 MOSS）——没有 Linux Image 头部——QEMU 直接跳转到
+ *   ELF entry point，x0 = 0，且不加载 DTB 到 RAM。
+ *
+ * 我们的解决方案分两部分：
+ *
+ *   1. run_qemu.py 启动前自动执行 QEMU -machine dumpdtb 导出 DTB，
+ *      再通过 -device loader,addr=0x48000000 将 DTB 放入 RAM 已知地址。
+ *
+ *   2. 本文件在 EL1 初始化后、调用 early_main 之前，如果 x0 == 0 则
+ *      线性扫描 RAM 区域查找 DTB magic。DTB 头部是大端 0xD00DFEED，
+ *      ARM64 小端 ldr 指令读出为 0xEDFE0DD0，以此作为匹配值。
+ *
+ * 这使得 MOSS 不依赖 Linux 启动协议，同时兼容任何直接传递 DTB 的 bootloader。
  */
 
 .section ".text.boot", "ax"
@@ -44,7 +70,9 @@
 #define SPSR_EL2_D        (1 << 9)
 
 _start:
-    // 保存设备树指针（x0 可能为 0，见后续 DTB 扫描）
+    // 保存 x0（可能的 DTB 指针）到 callee-saved 寄存器 x20。
+    // Linux 启动协议: bootloader 通过 x0 传递 DTB 物理地址。
+    // QEMU 裸 ELF 模式: x0 = 0（不传递 DTB，后续由内存扫描补偿）。
     mov     x20, x0
 
     // 获取当前CPU ID
@@ -163,33 +191,45 @@ bss_cleared:
     mov     x26, #10                 // 换行符
     str     w26, [x25]
 
-    // --- DTB 扫描 ---
-    // QEMU -kernel 对裸 ELF 不通过 x0 传递 DTB。
-    // 如果 x0 为 0，线性扫描 RAM 区域查找 DTB magic (0xd00dfeed)。
-    // 此处已在 EL1，MMU 关闭，可安全读取任意物理地址。
+    // --- DTB 内存扫描 ---
+    //
+    // 背景：QEMU -kernel 对裸 ELF 不通过 x0 传递 DTB（详见文件头注释）。
+    // run_qemu.py 通过 -device loader 将 DTB 放入 RAM 的已知地址
+    // (ARM64: 0x48000000)，但我们不硬编码该地址，而是通用地扫描
+    // 整个 RAM 区域来查找 DTB magic。
+    //
+    // 字节序要点：
+    //   DTB 规范要求头部 magic 固定为大端 0xD00DFEED，即内存中字节序为
+    //   [D0][0D][FE][ED]。ARM64 的 ldr 指令以小端序组装 4 字节，读出
+    //   结果为 0xEDFE0DD0。因此比较目标是 0xEDFE0DD0 而非 0xD00DFEED。
+    //
+    // 时机：此处已完成 EL3→EL2→EL1 下降、BSS 清零和栈设置，MMU 关闭，
+    // 可安全读取任意物理地址。如果 bootloader 已通过 x0 传递了 DTB
+    // (x20 != 0)，则跳过扫描。
+    //
     cbnz    x20, .Ldtb_ready
 
-    movz    w21, #0x0DD0             // DTB magic as seen by little-endian ldr:
-    movk    w21, #0xEDFE, lsl #16   // 0xD00DFEED big-endian → 0xEDFE0DD0 little-endian
+    movz    w21, #0x0DD0             // DTB magic 的小端表示低 16 位
+    movk    w21, #0xEDFE, lsl #16   // 完整值: 0xEDFE0DD0 (= big-endian 0xD00DFEED)
 
-    // 线性扫描：从 RAM 末尾向下，以 64KB 对齐步进
-    // QEMU virt: RAM = 0x40000000 .. 0x4FFFFFFF (256MB)
-    movz    x24, #0x4FFF, lsl #16   // 起始：0x4FFF0000 (接近 RAM 顶端)
-    movz    x22, #0x4000, lsl #16   // 终止：0x40000000 (RAM 底部)
+    // 从 RAM 顶部向下扫描，64KB 步进（DTB 至少页对齐）
+    // QEMU virt machine: RAM 基址 0x40000000, 大小由 -m 参数决定
+    movz    x24, #0x4FFF, lsl #16   // 扫描起始：0x4FFF0000 (接近 256MB RAM 顶端)
+    movz    x22, #0x4000, lsl #16   // 扫描终止：0x40000000 (RAM 底部，含内核代码)
 
 .Ldtb_scan_loop:
     cmp     x24, x22
-    b.lo    .Ldtb_ready              // 扫描完毕未找到，x20 保持 0
+    b.lo    .Ldtb_ready              // 扫描完毕未找到，x20 保持 0 → C++ 层走 fallback
 
     ldr     w26, [x24]
     cmp     w26, w21
     b.eq    .Ldtb_match
 
-    sub     x24, x24, #0x10000      // 步进 64KB (DTB 总是至少页对齐)
+    sub     x24, x24, #0x10000      // 步进 64KB
     b       .Ldtb_scan_loop
 
 .Ldtb_match:
-    mov     x20, x24                 // DTB 找到
+    mov     x20, x24                 // 记录找到的 DTB 物理地址
 
 .Ldtb_ready:
     // 主CPU：跳转到C++代码
