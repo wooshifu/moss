@@ -9,9 +9,6 @@ target_sources(moss_interrupts
         src/ipi_simple.cpp
         src/ipi_hardware_simple.cpp)
 
-target_include_directories(moss_interrupts PUBLIC
-    ${CMAKE_CURRENT_SOURCE_DIR}/include)
-
 target_compile_definitions(moss_interrupts PRIVATE MOSS_INTERRUPTS_MODULE)
 
 target_link_libraries(moss_interrupts PUBLIC moss_core moss_containers)

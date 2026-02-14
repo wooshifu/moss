@@ -1,11 +1,5 @@
 # src/kernel/CMakeLists.txt
 
-# Header-only interface for modules that need kernel headers without circular deps
-add_library(moss_kernel_headers INTERFACE)
-target_include_directories(moss_kernel_headers INTERFACE
-    ${CMAKE_CURRENT_SOURCE_DIR}/include)
-target_link_libraries(moss_kernel_headers INTERFACE moss_core)
-
 add_library(moss_kernel OBJECT)
 
 set(KERNEL_SOURCES
@@ -26,9 +20,6 @@ endif()
 target_sources(moss_kernel
     PUBLIC FILE_SET CXX_MODULES FILES src/kernel.cppm
     PRIVATE ${KERNEL_SOURCES})
-
-target_include_directories(moss_kernel PUBLIC
-    ${CMAKE_CURRENT_SOURCE_DIR}/include)
 
 target_compile_definitions(moss_kernel PRIVATE MOSS_KERNEL_CORE)
 
