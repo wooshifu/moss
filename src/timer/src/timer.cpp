@@ -173,10 +173,10 @@ void TimerSubsystem::dequeue(HrTimer* timer) noexcept {
 }
 
 void TimerSubsystem::handle_interrupt() noexcept {
-  // 1. Ack the hardware interrupt
-  hal::timer::ack_interrupt();
+  // Note: hardware timer ack is done by the caller (timer_irq_handler)
+  // before invoking this method.
 
-  // 2. Get current time
+  // 1. Get current time
   u64 now = clocksource_.now_ns();
 
   // 3. Fire all expired timers
@@ -217,8 +217,15 @@ void TimerSubsystem::reprogram_next() noexcept {
     u64 delta_ns = (queue_head_->expires_ns_ > now)
                        ? (queue_head_->expires_ns_ - now)
                        : 0;
+    // Enforce minimum delta to avoid interrupt storm on level-triggered PPI.
+    // 100 µs minimum gives the ISR enough time to complete.
+    constexpr u64 MIN_DELTA_NS = 100000;  // 100 µs
+    if (delta_ns < MIN_DELTA_NS) {
+      delta_ns = MIN_DELTA_NS;
+    }
     u64 delta_cycles = clocksource_.ns_to_cycles(delta_ns);
-    u64 compare = hal::timer::read_counter() + delta_cycles;
+    u64 counter_now = hal::timer::read_counter();
+    u64 compare = counter_now + delta_cycles;
     hal::timer::set_compare(compare);
   } else {
     // No pending timers — set compare far in the future

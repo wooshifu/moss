@@ -41,6 +41,8 @@ import moss.smart_ptr;
 import moss.arch;
 import moss.platform;
 import moss.hal.uart;
+import moss.hal.intc;
+import moss.hal.timer;
 import moss.containers;
 import moss.mm;
 import moss.interrupts;
