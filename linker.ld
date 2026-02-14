@@ -77,6 +77,9 @@ SECTIONS
     /* 内核结束标记 */
     _kernel_end = .;
 
+    /* Linux Image header uses this to report image_size */
+    _kernel_image_size = . - ORIGIN(RAM);
+
     /* 丢弃不需要的段 */
     /DISCARD/ : {
         *(.note*)
