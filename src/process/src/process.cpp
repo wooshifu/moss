@@ -39,6 +39,9 @@ CfsScheduler* g_scheduler = nullptr;
 // 当前运行任务数组定义 (CfsScheduler类的静态成员)
 Thread* CfsScheduler::current_running_tasks_[MAX_CPUS] = {nullptr};
 
+// Per-CPU bootstrap context for context_switch when no previous task exists
+CpuContext CfsScheduler::bootstrap_contexts_[MAX_CPUS] = {};
+
 // Process类方法实现
 KernelResult<ThreadId> Process::create_thread(VirtAddr entry_point,
                                              VirtAddr stack_base,
