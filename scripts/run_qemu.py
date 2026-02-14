@@ -93,10 +93,24 @@ def resolve_kernel_file(
 
 
 def prepare_dtb(cfg: QemuConfig, *, smp: int) -> Path | None:
-    """为 ARM64/RISC-V 生成 DTB 文件，供 -device loader 加载。
+    """为 ARM64/RISC-V 生成 DTB 文件，供 -device loader 加载到 RAM。
 
-    QEMU -kernel 模式对裸 ELF 不通过寄存器传递 DTB 地址，
-    需要先 dumpdtb 再手动加载到已知内存地址。
+    == 为什么需要这一步 ==
+
+    QEMU -kernel 模式仅在识别到 Linux ARM64 Image 格式（前 2 字节为
+    "MZ"，偏移 0x38 处有 magic "ARMd"）时才通过 x0 寄存器传递 DTB 地址。
+    对于裸 ELF（如 MOSS），QEMU 直接跳转到 ELF entry point，x0 = 0，
+    且不会将 DTB 加载到 RAM。
+
+    本函数的工作流程：
+      1. 用 QEMU -machine dumpdtb 导出当前机器配置（CPU 数量、内存大小
+         等参数全部匹配）生成的 DTB 文件
+      2. 返回 DTB 文件路径，由调用方通过 -device loader,addr=<固定地址>
+         将其放入 RAM
+      3. 内核启动汇编代码在 x0==0 时线性扫描 RAM 查找 DTB magic
+         (0xD00DFEED big-endian → 0xEDFE0DD0 as little-endian ldr)
+
+    此方案不修改内核二进制格式，兼容任何直接传递 DTB 的真实 bootloader。
     """
     if cfg.arch not in ("ARM64", "RISCV"):
         return None
@@ -120,10 +134,12 @@ def prepare_dtb(cfg: QemuConfig, *, smp: int) -> Path | None:
     return None
 
 
-# DTB 加载地址：必须在内核代码之后、RAM 范围之内
+# DTB 加载地址：必须满足 (a) 在 RAM 范围内 (b) 不与内核代码/数据重叠。
+# 内核汇编会从 RAM 顶部向下扫描 DTB magic，所以地址不需要精确匹配——
+# 只要在 RAM 范围内且 64KB 对齐即可被扫描到。
 DTB_LOAD_ADDR = {
-    "ARM64": "0x48000000",  # 内核从 0x40000000 起，DTB 放 +128MB 处
-    "RISCV": "0x84000000",  # 内核从 0x80000000 起，DTB 放 +64MB 处
+    "ARM64": "0x48000000",  # QEMU virt RAM 起始 0x40000000，内核约 2MB，DTB 放 +128MB
+    "RISCV": "0x84000000",  # QEMU virt RAM 起始 0x80000000，内核约 2MB，DTB 放 +64MB
 }
 
 
@@ -150,6 +166,9 @@ def build_qemu_args(
     else:
         kernel_args = ["-kernel", str(kernel_file)]
 
+    # -nodefaults: 禁止 QEMU 创建默认设备（IDE 磁盘等），避免与
+    # -device loader 产生 "drive with bus=0, unit=0 exists" 冲突。
+    # 因此需要手动通过 -chardev + -serial 建立串口输出。
     args = [
         arch_cfg["qemu_system"],
         "-nodefaults",
