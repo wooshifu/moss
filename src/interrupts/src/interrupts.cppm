@@ -6,9 +6,6 @@ module;
 // Architecture detection
 #include "arch_detect.h"
 
-// External debug print function
-extern "C" void early_debug_print(const char *message) noexcept;
-
 export module moss.interrupts;
 
 import moss.std;
@@ -18,11 +15,14 @@ import moss.arch;
 import moss.platform;
 import moss.hal.intc;
 import moss.containers;
+import moss.logging;
 
 // ============================================================================
 // Exported interrupt types and classes
 // ============================================================================
 export namespace moss::kernel::interrupts {
+
+namespace log = moss::kernel::logging;
 
 // ========================================================================
 // GIC (Generic Interrupt Controller) Driver
