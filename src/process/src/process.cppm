@@ -24,6 +24,8 @@ import moss.containers;
 import moss.mm;
 import moss.ipc;
 import moss.interrupts;
+import moss.platform;
+import moss.hal.intc;
 import moss.hal.timer;
 import moss.timer;
 import moss.logging;
@@ -586,6 +588,18 @@ bool is_cpu_idle(u32 cpu_id) noexcept;
 
 // Wake up CPU from idle state (for IPI mechanism)
 void wakeup_idle_cpu(u32 cpu_id) noexcept;
+
+/// Send a reschedule IPI (SGI 0) to the target CPU.
+/// This wakes the target from WFI and causes it to re-examine its runqueue.
+/// Used by load balancer after migrating tasks to an idle or less-loaded CPU.
+inline void send_reschedule_ipi(u32 target_cpu) noexcept {
+    if (target_cpu >= MAX_CPUS || target_cpu == arch::get_current_cpu_id())
+        return;
+    u32 target_mask = 1U << target_cpu;
+    VirtAddr dist_base = platform::intc_dist_base();
+    VirtAddr cpu_base = platform::intc_cpu_base();
+    (void)hal::intc::send_sgi(dist_base, cpu_base, 0, target_mask);  // SGI 0 = Reschedule
+}
 
 // CFS run queue (red-black tree implementation)
 class CfsRunqueue {

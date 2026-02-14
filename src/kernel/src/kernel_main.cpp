@@ -240,6 +240,16 @@ void irq_handler_c(void) noexcept {
   // timer IRQs until the suspended task resumes.
   intc_hal::eoi(gicc_base, ack_val);
 
+  // SGI 0 (Reschedule IPI): another CPU wants us to re-examine our runqueue.
+  // Just EOI + return — the interrupted context (WFI or running task) will
+  // naturally re-check the runqueue.  No further action needed because:
+  //   - If in WFI (idle loop), eret returns to the scheduling loop
+  //   - If running a task, the next timer tick will preempt if needed
+  constexpr u32 RESCHEDULE_SGI = 0;
+  if (irq == RESCHEDULE_SGI) {
+    return;  // EOI already sent above
+  }
+
   // Timer PPI (IRQ 27): per-CPU timer interrupt.
   // Each CPU has its own banked cntv_cval_el0 compare register.
   // We must reprogram THIS CPU's compare before dispatching, because
