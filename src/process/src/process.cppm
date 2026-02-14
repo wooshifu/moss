@@ -44,23 +44,10 @@ namespace {
 using moss::u32;
 using moss::u64;
 
+// Delegate to the centralized early_debug_print() which uses PlatformInfo
+// for UART address resolution (declared in global module fragment above).
 void sched_log(const char *str) noexcept {
-    volatile u32 *uart_data = reinterpret_cast<volatile u32 *>(0x09000000);
-    volatile u32 *uart_flags = reinterpret_cast<volatile u32 *>(0x09000018);
-
-    while (*str) {
-        // Wait for TX FIFO available
-        while (*uart_flags & (1 << 5)) {
-            // TXFF flag
-        }
-
-        if (*str == '\n') {
-            *uart_data = static_cast<u32>('\r');
-            while (*uart_flags & (1 << 5)) {}
-        }
-        *uart_data = static_cast<u32>(static_cast<unsigned char>(*str));
-        str++;
-    }
+    early_debug_print(str);
 }
 
 void sched_log_uint(u32 value) noexcept {

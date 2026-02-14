@@ -62,11 +62,15 @@ inline void flush_tlb_addr(VirtAddr addr) noexcept {
 }
 
 // Debug and panic
+// NOTE: This panic function intentionally hardcodes the ARM64 PL011 UART
+// address (0x09000000). In a panic scenario, PlatformInfo may be corrupted
+// and we cannot import moss.fdt here without risking circular dependencies.
+// This is the same "pre-DTB hardcoded constant" pattern used in assembly boot code.
 [[noreturn]] inline void kernel_panic(const char *message) noexcept {
   // Disable interrupts
   asm volatile("msr daifset, #0xf" ::: "memory");
 
-  // Output panic message to UART (PL011 at 0x09000000)
+  // Output panic message to UART (PL011 at 0x09000000 — hardcoded, see NOTE above)
   volatile u32 *uart_data = reinterpret_cast<volatile u32 *>(0x09000000);
   volatile u32 *uart_flags = reinterpret_cast<volatile u32 *>(0x09000018);
 

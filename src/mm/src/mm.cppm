@@ -38,6 +38,8 @@ extern "C" {
     extern char _kernel_end_addr[];
     extern char _heap_start_addr[];
     extern char _heap_end_addr[];
+
+    void early_debug_print(const char *message) noexcept;
 }
 
 export module moss.mm;
@@ -2925,29 +2927,19 @@ inline UnifiedMemoryManager::SystemPerformanceStats get_memory_stats() noexcept 
     return UnifiedMemoryManager::get_performance_stats();
 }
 
-// Print memory stats
+// Print memory stats (uses centralized early_debug_print for UART output)
 inline void print_memory_stats() noexcept {
     [[maybe_unused]] auto stats = get_memory_stats();
-    volatile u32* uart_data = reinterpret_cast<volatile u32*>(0x09000000);
-    const char* msg = "\n=== MEMORY SYSTEM STATS ===\n";
-    while (*msg) {
-        *uart_data = static_cast<u32>(*msg);
-        msg++;
-    }
+    early_debug_print("\n=== MEMORY SYSTEM STATS ===\n");
 }
 
-// Check memory leaks
+// Check memory leaks (uses centralized early_debug_print for UART output)
 inline void check_memory_leaks() noexcept {
     auto leak_result = UnifiedMemoryManager::generate_leak_report();
     if (leak_result.is_ok()) {
         auto report = *leak_result;
         if (report.total_leaked_bytes > 0) {
-            volatile u32* uart_data = reinterpret_cast<volatile u32*>(0x09000000);
-            const char* warning = "\nMEMORY LEAKS DETECTED!\n";
-            while (*warning) {
-                *uart_data = static_cast<u32>(*warning);
-                warning++;
-            }
+            early_debug_print("\nMEMORY LEAKS DETECTED!\n");
         }
     }
 }
