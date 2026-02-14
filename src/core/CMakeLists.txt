@@ -1,7 +1,6 @@
 # src/core/CMakeLists.txt
 
 add_library(moss_core OBJECT)
-target_sources(moss_core PRIVATE src/core.cpp)
 
 # === C++26 Modules ===
 target_sources(moss_core PUBLIC FILE_SET CXX_MODULES FILES

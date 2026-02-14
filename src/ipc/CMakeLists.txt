@@ -2,8 +2,7 @@
 
 add_library(moss_ipc OBJECT)
 target_sources(moss_ipc
-    PUBLIC FILE_SET CXX_MODULES FILES src/ipc.cppm
-    PRIVATE src/ipc.cpp)
+    PUBLIC FILE_SET CXX_MODULES FILES src/ipc.cppm)
 
 target_compile_definitions(moss_ipc PRIVATE MOSS_IPC_MODULE)
 

@@ -3,8 +3,7 @@
 add_library(moss_drivers OBJECT)
 
 target_sources(moss_drivers
-    PUBLIC FILE_SET CXX_MODULES FILES src/drivers.cppm
-    PRIVATE src/drivers.cpp)
+    PUBLIC FILE_SET CXX_MODULES FILES src/drivers.cppm)
 
 target_compile_definitions(moss_drivers PRIVATE MOSS_DRIVERS_MODULE)
 

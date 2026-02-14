@@ -885,4 +885,15 @@ public:
 // Global UART driver instance
 extern UartDriver *g_uart_driver;
 
+// === Module-level variable definitions ===
+
+// Global device manager instance
+DeviceManager *g_device_manager = nullptr;
+
+// Global UART driver instance
+UartDriver *g_uart_driver = nullptr;
+
+// UartDriver compatible device list (static data member)
+const char *UartDriver::compatible_devices[] = {"arm,pl011", "arm,primecell"};
+
 } // namespace moss::kernel::drivers

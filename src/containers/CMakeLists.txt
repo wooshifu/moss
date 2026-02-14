@@ -4,7 +4,7 @@ add_library(moss_containers OBJECT)
 
 target_sources(moss_containers
     PUBLIC FILE_SET CXX_MODULES FILES src/containers.cppm
-    PRIVATE src/containers.cpp)
+    PRIVATE src/containers_defs.cpp)
 
 target_compile_definitions(moss_containers PRIVATE MOSS_CONTAINERS_MODULE)
 
