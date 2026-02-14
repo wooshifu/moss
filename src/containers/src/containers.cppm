@@ -883,7 +883,8 @@ export namespace moss::kernel::containers {
 // RCU read-side critical section guard
 class RcuReadLock {
 private:
-  static thread_local u32 read_depth_;
+  // Per-CPU read depth counter (replaces thread_local, unavailable in kernel)
+  static inline PerCpuData<u32> read_depth_{};
 
 public:
   RcuReadLock() noexcept { enter_read_side(); }
@@ -896,17 +897,17 @@ public:
 
 private:
   static void enter_read_side() noexcept {
-    ++read_depth_;
+    ++read_depth_.get_local();
     moss::kernel::arch::read_barrier();
   }
 
   static void exit_read_side() noexcept {
     moss::kernel::arch::read_barrier();
-    --read_depth_;
+    --read_depth_.get_local();
   }
 
 public:
-  static bool in_read_side() noexcept { return read_depth_ > 0; }
+  static bool in_read_side() noexcept { return read_depth_.get_local() > 0; }
 };
 
 // RCU-protected pointer
