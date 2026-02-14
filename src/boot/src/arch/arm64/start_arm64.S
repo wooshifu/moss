@@ -446,9 +446,95 @@ irq_trampoline:
 
     eret
 
+// ============================================================================
+// Synchronous exception handler — dispatch by Exception Class (EC)
+//
+// Reads ESR_EL1, FAR_EL1, ELR_EL1, extracts EC field, and routes to:
+//   EC=0x25 (Data Abort, same EL)        → kernel_page_fault_handler (C++)
+//   EC=0x21 (Instruction Abort, same EL) → kernel_page_fault_handler (C++)
+//   Other EC                              → unhandled_exception_handler (C++) → halt
+//
+// Register save/restore follows the same 34-slot layout as irq_trampoline.
+// ============================================================================
 exception_handler:
-    // 简单的异常处理器 - 目前只是停机
+    // Save all general-purpose registers
+    sub     sp, sp, #(34 * 8)
+
+    stp     x0,  x1,  [sp, #(0  * 8)]
+    stp     x2,  x3,  [sp, #(2  * 8)]
+    stp     x4,  x5,  [sp, #(4  * 8)]
+    stp     x6,  x7,  [sp, #(6  * 8)]
+    stp     x8,  x9,  [sp, #(8  * 8)]
+    stp     x10, x11, [sp, #(10 * 8)]
+    stp     x12, x13, [sp, #(12 * 8)]
+    stp     x14, x15, [sp, #(14 * 8)]
+    stp     x16, x17, [sp, #(16 * 8)]
+    stp     x18, x19, [sp, #(18 * 8)]
+    stp     x20, x21, [sp, #(20 * 8)]
+    stp     x22, x23, [sp, #(22 * 8)]
+    stp     x24, x25, [sp, #(24 * 8)]
+    stp     x26, x27, [sp, #(26 * 8)]
+    stp     x28, x29, [sp, #(28 * 8)]
+    str     x30,       [sp, #(30 * 8)]
+
+    mrs     x0, elr_el1
+    mrs     x1, spsr_el1
+    stp     x0,  x1,  [sp, #(31 * 8)]
+
+    // Read exception information into C calling convention registers
+    mrs     x0, esr_el1              // arg0: ESR_EL1 (exception syndrome)
+    mrs     x1, far_el1              // arg1: FAR_EL1 (fault address)
+    mrs     x2, elr_el1              // arg2: ELR_EL1 (return address)
+
+    // Extract EC = ESR_EL1[31:26]
+    lsr     x3, x0, #26
+    and     x3, x3, #0x3F
+
+    // EC=0x25: Data Abort from same EL
+    cmp     x3, #0x25
+    b.eq    .Lcall_page_fault
+
+    // EC=0x21: Instruction Abort from same EL
+    cmp     x3, #0x21
+    b.eq    .Lcall_page_fault
+
+    // All other exceptions: print diagnostics then halt
+    bl      unhandled_exception_handler
+    // Restore stack and halt (do NOT eret — exception is fatal)
+    add     sp, sp, #(34 * 8)
     b       halt
+
+.Lcall_page_fault:
+    // x0=esr, x1=far, x2=elr already set
+    bl      kernel_page_fault_handler
+
+    // If the handler returns, the fault was resolved — restore and eret
+
+    // Restore ELR_EL1 and SPSR_EL1
+    ldp     x0,  x1,  [sp, #(31 * 8)]
+    msr     elr_el1, x0
+    msr     spsr_el1, x1
+
+    // Restore general-purpose registers
+    ldp     x0,  x1,  [sp, #(0  * 8)]
+    ldp     x2,  x3,  [sp, #(2  * 8)]
+    ldp     x4,  x5,  [sp, #(4  * 8)]
+    ldp     x6,  x7,  [sp, #(6  * 8)]
+    ldp     x8,  x9,  [sp, #(8  * 8)]
+    ldp     x10, x11, [sp, #(10 * 8)]
+    ldp     x12, x13, [sp, #(12 * 8)]
+    ldp     x14, x15, [sp, #(14 * 8)]
+    ldp     x16, x17, [sp, #(16 * 8)]
+    ldp     x18, x19, [sp, #(18 * 8)]
+    ldp     x20, x21, [sp, #(20 * 8)]
+    ldp     x22, x23, [sp, #(22 * 8)]
+    ldp     x24, x25, [sp, #(24 * 8)]
+    ldp     x26, x27, [sp, #(26 * 8)]
+    ldp     x28, x29, [sp, #(28 * 8)]
+    ldr     x30,       [sp, #(30 * 8)]
+
+    add     sp, sp, #(34 * 8)
+    eret
 
 // 导出符号给链接器
 .global _bss_start_addr, _bss_end_addr, _stack_top_addr
@@ -457,3 +543,5 @@ exception_handler:
 // 引用外部符号
 .extern syscall_entry_point
 .extern irq_handler_c
+.extern kernel_page_fault_handler
+.extern unhandled_exception_handler

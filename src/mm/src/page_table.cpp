@@ -387,4 +387,128 @@ void PageTableManager::print_page_table_details() {
   log::klog::info("========================================");
 }
 
+// ============================================================================
+// unmap_page — remove a 4KB page mapping and invalidate TLB
+// ============================================================================
+VoidResult PageTableManager::unmap_page(VirtAddr virt_addr) {
+  if (!kernel_pgd) {
+    return VoidResult{ErrorCode::InvalidState};
+  }
+
+  auto bd = break_virtual_address(virt_addr);
+
+  // PGD level
+  auto& pgd_entry = kernel_pgd->entries[bd.pgd_index];
+  if (!pgd_entry.is_valid()) {
+    return VoidResult{ErrorCode::NotFound};
+  }
+  // 1GB block mapping — cannot unmap a single 4KB page from it
+  if (!pgd_entry.is_table()) {
+    return VoidResult{ErrorCode::NotSupported};
+  }
+
+  // PUD level
+  auto* pud = reinterpret_cast<PageTable*>(pgd_entry.get_phys_addr());
+  auto& pud_entry = pud->entries[bd.pud_index];
+  if (!pud_entry.is_valid()) {
+    return VoidResult{ErrorCode::NotFound};
+  }
+  if (!pud_entry.is_table()) {
+    return VoidResult{ErrorCode::NotSupported}; // 2MB block — not yet split
+  }
+
+  // PMD level
+  auto* pmd = reinterpret_cast<PageTable*>(pud_entry.get_phys_addr());
+  auto& pmd_entry = pmd->entries[bd.pmd_index];
+  if (!pmd_entry.is_valid()) {
+    return VoidResult{ErrorCode::NotFound};
+  }
+  if (!pmd_entry.is_table()) {
+    return VoidResult{ErrorCode::NotSupported}; // 2MB block
+  }
+
+  // PTE level — the actual 4KB page
+  auto* pte_table = reinterpret_cast<PageTable*>(pmd_entry.get_phys_addr());
+  auto& pte_entry = pte_table->entries[bd.pte_index];
+  if (!pte_entry.is_valid()) {
+    return VoidResult{ErrorCode::NotFound};
+  }
+
+  // Clear the PTE and invalidate TLB for this address
+  pte_entry.clear();
+  invalidate_tlb_addr(virt_addr);
+
+  return VoidResult{};
+}
+
+// ============================================================================
+// query_page — walk the page table and return mapping information
+// ============================================================================
+PageTableManager::PageInfo PageTableManager::query_page(VirtAddr virt_addr) {
+  PageInfo info{0, 0, false, 0};
+
+  if (!kernel_pgd) {
+    return info;
+  }
+
+  auto bd = break_virtual_address(virt_addr);
+
+  // PGD level
+  auto& pgd_entry = kernel_pgd->entries[bd.pgd_index];
+  if (!pgd_entry.is_valid()) {
+    return info;
+  }
+  // 1GB block mapping
+  if (!pgd_entry.is_table()) {
+    info.phys_addr  = pgd_entry.get_phys_addr() | (virt_addr & 0x3FFFFFFFULL);
+    info.attributes = pgd_entry.raw;
+    info.mapped     = true;
+    info.level      = 1;
+    return info;
+  }
+
+  // PUD level
+  auto* pud = reinterpret_cast<PageTable*>(pgd_entry.get_phys_addr());
+  auto& pud_entry = pud->entries[bd.pud_index];
+  if (!pud_entry.is_valid()) {
+    return info;
+  }
+  if (!pud_entry.is_table()) {
+    // 1GB block at PUD level (ARM64 uses this for initial boot mapping)
+    info.phys_addr  = pud_entry.get_phys_addr() | (virt_addr & 0x3FFFFFFFULL);
+    info.attributes = pud_entry.raw;
+    info.mapped     = true;
+    info.level      = 1;
+    return info;
+  }
+
+  // PMD level
+  auto* pmd = reinterpret_cast<PageTable*>(pud_entry.get_phys_addr());
+  auto& pmd_entry = pmd->entries[bd.pmd_index];
+  if (!pmd_entry.is_valid()) {
+    return info;
+  }
+  if (!pmd_entry.is_table()) {
+    // 2MB block mapping
+    info.phys_addr  = pmd_entry.get_phys_addr() | (virt_addr & 0x1FFFFFULL);
+    info.attributes = pmd_entry.raw;
+    info.mapped     = true;
+    info.level      = 2;
+    return info;
+  }
+
+  // PTE level — 4KB page
+  auto* pte_table = reinterpret_cast<PageTable*>(pmd_entry.get_phys_addr());
+  auto& pte_entry = pte_table->entries[bd.pte_index];
+  if (!pte_entry.is_valid()) {
+    return info;
+  }
+
+  info.phys_addr  = pte_entry.get_phys_addr() | (virt_addr & 0xFFFULL);
+  info.attributes = pte_entry.raw;
+  info.mapped     = true;
+  info.level      = 3;
+  return info;
+}
+
 } // namespace moss::kernel::mm

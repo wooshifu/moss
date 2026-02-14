@@ -6,6 +6,7 @@ target_sources(moss_mm
     PUBLIC FILE_SET CXX_MODULES FILES src/mm.cppm
     PRIVATE
         src/page_table.cpp
+        src/page_fault.cpp
         src/page_frame_allocator.cpp
         src/runtime_heap_allocator.cpp
         src/kernel_memory.cpp
