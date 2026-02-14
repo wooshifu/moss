@@ -1056,4 +1056,12 @@ KernelError ipc_receive_message(ChannelId channel, ProcessId receiver,
 KernelError ipc_disconnect(ChannelId channel, ProcessId pid);
 }
 
+// === Module-level variable definitions ===
+
+// Global shared memory manager instance
+SharedMemoryManager *g_shared_memory_manager = nullptr;
+
+// Global IPC manager instance
+IpcManager *g_ipc_manager = nullptr;
+
 } // namespace moss::kernel::ipc

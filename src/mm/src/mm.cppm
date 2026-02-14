@@ -2967,6 +2967,34 @@ extern "C" {
     void moss_memory_gc(void) noexcept;
     void moss_memory_check_leaks(void) noexcept;
     void moss_memory_print_stats(void) noexcept;
+
+    // Page allocator shim (C-linkage wrappers for PageFrameAllocator)
+    unsigned long long moss_slab_alloc_pages(unsigned long long order) noexcept;
+    int moss_slab_free_pages(unsigned long long addr,
+                             unsigned long long order) noexcept;
 }
 
 } // namespace moss::kernel::mm
+
+// === Page allocator shim definitions (extern "C") ===
+extern "C" {
+
+unsigned long long moss_slab_alloc_pages(unsigned long long order) noexcept {
+    auto result =
+        moss::kernel::mm::PageFrameAllocator::allocate_pages(
+            static_cast<moss::kernel::usize>(order));
+    if (!result) {
+        return 0;
+    }
+    return static_cast<unsigned long long>(*result);
+}
+
+int moss_slab_free_pages(unsigned long long addr,
+                         unsigned long long order) noexcept {
+    auto result = moss::kernel::mm::PageFrameAllocator::free_pages(
+        static_cast<moss::kernel::PhysAddr>(addr),
+        static_cast<moss::kernel::usize>(order));
+    return result.has_value() ? 0 : 1;
+}
+
+} // extern "C"

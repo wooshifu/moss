@@ -9,8 +9,7 @@ target_sources(moss_mm
         src/page_frame_allocator.cpp
         src/runtime_heap_allocator.cpp
         src/kernel_memory.cpp
-        src/mm_interface_impl.cpp
-        src/page_alloc_shim.cpp)
+        src/mm_interface_impl.cpp)
 
 target_compile_definitions(moss_mm PRIVATE MOSS_MM_MODULE)
 
