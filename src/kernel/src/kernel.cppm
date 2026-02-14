@@ -7,16 +7,6 @@ module;
 // Architecture detection
 #include "arch_detect.h"
 
-// Kernel environment va_list support (must be in global module fragment)
-#ifdef __GNUC__
-typedef __builtin_va_list va_list;
-#define va_start(v, l) __builtin_va_start(v, l)
-#define va_end(v) __builtin_va_end(v)
-#define va_arg(v, l) __builtin_va_arg(v, l)
-#else
-#error "Unsupported compiler for va_list"
-#endif
-
 // extern "C" declarations (global module fragment)
 extern "C" {
 void kernel_test_all_subsystems(void) noexcept;
@@ -51,6 +41,7 @@ import moss.fdt;
 import moss.ipc;
 import moss.process;
 import moss.timer;
+import moss.logging;
 import moss.boot;
 
 // ============================================================================
@@ -602,6 +593,8 @@ void print_syscall_convention() noexcept;
 
 export namespace moss::kernel {
 
+namespace log = moss::kernel::logging;
+
 // Kernel subsystem state
 enum class SubsystemState : u8 {
   Uninitialized = 0,
@@ -711,14 +704,14 @@ public:
     current_phase_ = BootPhase::Completed;
 
     u64 boot_time = get_current_time() - boot_start_time_;
-    kernel_print("MOSS kernel boot completed (time: %llu cycles)\n", boot_time);
+    log::klog::info("MOSS kernel boot completed (time: {} cycles)", boot_time);
 
     return VoidResult{};
   }
 
   // Kernel main loop
   [[nodiscard]] VoidResult run() noexcept {
-    kernel_print("MOSS kernel starting...\n");
+    log::klog::info("MOSS kernel starting...");
 
     // Enable interrupts
     enable_interrupts();
@@ -730,13 +723,13 @@ public:
     }
 
     // Enter scheduling loop (start_scheduling is [[noreturn]])
-    kernel_print("Entering scheduling loop\n");
+    log::klog::info("Entering scheduling loop");
     scheduler_->start_scheduling();
   }
 
   // Kernel shutdown
   void shutdown() noexcept {
-    kernel_print("MOSS kernel shutting down...\n");
+    log::klog::info("MOSS kernel shutting down...");
 
     // Shutdown subsystems in reverse order
     if (device_manager_) {
@@ -775,10 +768,10 @@ public:
     }
 
     // Shutdown memory management system last
-    kernel_print("Shutting down unified memory management system...\n");
+    log::klog::info("Shutting down unified memory management system...");
     mm::shutdown_kernel_memory();
 
-    kernel_print("MOSS kernel shutdown complete\n");
+    log::klog::info("MOSS kernel shutdown complete");
   }
 
   // Get kernel statistics
@@ -812,50 +805,21 @@ public:
 
   // Kernel debug interface
   void print_system_info() const noexcept {
-    kernel_print("=== MOSS Kernel System Info ===\n");
-    kernel_print("Boot phase: %d\n", static_cast<int>(current_phase_));
-    kernel_print("SMP support: %s\n", config_.enable_smp ? "enabled" : "disabled");
-    kernel_print("Preemptive scheduling: %s\n", config_.enable_preemption ? "enabled" : "disabled");
+    log::klog::info("=== MOSS Kernel System Info ===");
+    log::klog::info("Boot phase: {}", static_cast<int>(current_phase_));
+    log::klog::info("SMP support: {}", config_.enable_smp ? "enabled" : "disabled");
+    log::klog::info("Preemptive scheduling: {}", config_.enable_preemption ? "enabled" : "disabled");
 
     auto stats = get_statistics();
-    kernel_print("Uptime: %llu cycles\n", stats.uptime);
-    kernel_print("Active processes: %u\n", stats.active_processes);
-    kernel_print("Interrupts handled: %llu\n", stats.interrupts_handled);
-    kernel_print("IPC messages: %llu\n", stats.ipc_messages);
-    kernel_print("Registered devices: %u\n", stats.registered_devices);
-    kernel_print("===============================\n");
+    log::klog::info("Uptime: {} cycles", stats.uptime);
+    log::klog::info("Active processes: {}", stats.active_processes);
+    log::klog::info("Interrupts handled: {}", stats.interrupts_handled);
+    log::klog::info("IPC messages: {}", stats.ipc_messages);
+    log::klog::info("Registered devices: {}", stats.registered_devices);
+    log::klog::info("===============================");
   }
 
 private:
-  // Test kernel_print formatting
-  void test_kernel_print_formatting() noexcept {
-    kernel_print("=== kernel_print formatting test ===\n");
-
-    // Test all major format specifiers
-    kernel_print("%%d test: %d\n", -12345);
-    kernel_print("%%u test: %u\n", 54321u);
-    kernel_print("%%x test: %x\n", 0xabcd);
-    kernel_print("%%X test: %X\n", 0xABCD);
-    kernel_print("%%s test: %s\n", "Hello MOSS!");
-    kernel_print("%%c test: %c\n", 'M');
-
-    // Key test: %llu format (previous bug)
-    u64 large_number = 0x123456789ABCDEF0ULL;
-    kernel_print("%%llu test: %llu\n", large_number);
-    kernel_print("%%llx test: %llx\n", large_number);
-    kernel_print("%%llX test: %llX\n", large_number);
-
-    // Pointer format test
-    void* test_ptr = reinterpret_cast<void*>(0x40080000);
-    kernel_print("%%p test: %p\n", test_ptr);
-
-    // Edge cases
-    kernel_print("Zero value test: %llu\n", 0ULL);
-    kernel_print("Max value test: %llu\n", static_cast<u64>(-1));
-
-    kernel_print("=== kernel_print test complete ===\n");
-  }
-
   // Phase-by-phase initialization
   [[nodiscard]] VoidResult initialize_phase_by_phase() noexcept {
     const char *phase_names[] = {"Early init", "Memory management", "Scheduler",
@@ -866,7 +830,7 @@ private:
       current_phase_ = static_cast<BootPhase>(phase);
       phase_start_times_[phase] = get_current_time();
 
-      kernel_print("Phase %d: %s\n", phase, phase_names[phase]);
+      log::klog::info("Phase {}: {}", phase, phase_names[phase]);
 
       VoidResult result = VoidResult{ErrorCode::NotSupported};
 
@@ -900,13 +864,13 @@ private:
       }
 
       if (!result) {
-        kernel_print("Phase %d failed: %d\n", phase,
-                     static_cast<int>(result.error()));
+        log::klog::error("Phase {} failed: {}", phase,
+                        static_cast<int>(result.error()));
         return result;
       }
 
       u64 phase_time = get_current_time() - phase_start_times_[phase];
-      kernel_print("Phase %d complete (time: %llu cycles)\n", phase, phase_time);
+      log::klog::info("Phase {} complete (time: {} cycles)", phase, phase_time);
     }
 
     return VoidResult{};
@@ -922,14 +886,14 @@ private:
         nullptr; // ContainerLibrary is a singleton/static, no instance needed
 
     // Initialize timer subsystem (clocksource + hardware timer)
-    kernel_print("Initializing timer subsystem...\n");
+    log::klog::info("Initializing timer subsystem...");
     auto timer_result = timer::TimerSubsystem::instance().initialize();
     if (!timer_result) {
-      kernel_print("Timer subsystem init failed (non-fatal)\n");
+      log::klog::warn("Timer subsystem init failed (non-fatal)");
       // Non-fatal: kernel can operate without timer, just no preemption
     } else {
       auto freq = timer::TimerSubsystem::instance().clocksource().frequency_hz();
-      kernel_print("Timer subsystem initialized: freq=%llu Hz\n", freq);
+      log::klog::info("Timer subsystem initialized: freq={} Hz", freq);
     }
 
     return VoidResult{};
@@ -937,19 +901,19 @@ private:
 
   // Memory management initialization
   [[nodiscard]] VoidResult initialize_memory() noexcept {
-    kernel_print("Initializing unified memory management system...\n");
+    log::klog::info("Initializing unified memory management system...");
 
     // Initialize unified memory management system first
     if (!mm::initialize_kernel_memory()) {
-      kernel_print("Unified memory management system initialization failed\n");
+      log::klog::error("Unified memory management system initialization failed");
       return VoidResult{ErrorCode::InternalError};
     }
-    kernel_print("Unified memory management system initialized\n");
+    log::klog::info("Unified memory management system initialized");
 
     // Create page table manager (now uses new memory management system)
     page_table_manager_ = new mm::PageTableManager();
     if (!page_table_manager_) {
-      kernel_print("PageTableManager creation failed\n");
+      log::klog::error("PageTableManager creation failed");
       mm::shutdown_kernel_memory();
       return VoidResult{ErrorCode::OutOfMemory};
     }
@@ -957,7 +921,7 @@ private:
     // Initialize page table manager (use current page table)
     auto init_result = page_table_manager_->initialize_from_current();
     if (!init_result) {
-      kernel_print("PageTableManager initialization failed\n");
+      log::klog::error("PageTableManager initialization failed");
       delete page_table_manager_;
       page_table_manager_ = nullptr;
       mm::shutdown_kernel_memory();
@@ -966,7 +930,7 @@ private:
 
     // Check memory system health
     if (!mm::is_memory_system_healthy()) {
-      kernel_print("Memory system status abnormal\n");
+      log::klog::warn("Memory system status abnormal");
     }
 
     // Print memory system information
@@ -979,7 +943,7 @@ private:
       case mm::MemoryPressure::CRITICAL: pressure_str = "CRITICAL"; break;
       default: pressure_str = "UNKNOWN"; break;
     }
-    kernel_print("Memory pressure level: %s\n", pressure_str);
+    log::klog::info("Memory pressure level: {}", pressure_str);
 
     return VoidResult{};
   }
@@ -1021,7 +985,7 @@ private:
 
     // Linux-style SMP delayed activation: activate secondary CPUs after scheduler is ready
     if (config_.enable_smp) {
-      kernel_print("Scheduler ready, activating parked secondary CPUs...\n");
+      log::klog::info("Scheduler ready, activating parked secondary CPUs...");
 
       // Activate all parked secondary CPUs
       moss::boot::activate_secondary_cpus();
@@ -1029,12 +993,12 @@ private:
       // Wait for secondary CPUs to complete activation
       u32 active_cpus = moss::boot::wait_for_all_cpus_active(5000);
 
-      kernel_print("CPU activation complete: %u CPUs active\n", active_cpus);
+      log::klog::info("CPU activation complete: {} CPUs active", active_cpus);
 
       if (active_cpus > 1) {
-        kernel_print("Linux-style multi-CPU scheduler started successfully!\n");
+        log::klog::info("Linux-style multi-CPU scheduler started successfully!");
       } else {
-        kernel_print("Falling back to single-core mode\n");
+        log::klog::info("Falling back to single-core mode");
       }
     }
 
@@ -1103,12 +1067,12 @@ private:
     }
 
     // Initialize multi-architecture syscall support
-    kernel_print("Initializing multi-architecture syscall support...\n");
+    log::klog::info("Initializing multi-architecture syscall support...");
     if (!arch::syscall::initialize_architecture_syscalls()) {
-        kernel_print("Syscall architecture initialization failed\n");
+        log::klog::error("Syscall architecture initialization failed");
         return VoidResult{ErrorCode::NotSupported};
     }
-    kernel_print("Syscall architecture initialization succeeded\n");
+    log::klog::info("Syscall architecture initialization succeeded");
 
     // Print syscall architecture information
     arch::syscall::print_syscall_convention();
@@ -1146,10 +1110,10 @@ private:
                                  ErrorCode error) noexcept {
     arch::disable_interrupts();
 
-    kernel_print("\nKERNEL PANIC\n");
-    kernel_print("Error: %s\n", message);
-    kernel_print("Error code: %d\n", static_cast<int>(error));
-    kernel_print("Current phase: %d\n", static_cast<int>(current_phase_));
+    log::klog::panic("KERNEL PANIC");
+    log::klog::panic("Error: {}", message);
+    log::klog::panic("Error code: {}", static_cast<int>(error));
+    log::klog::panic("Current phase: {}", static_cast<int>(current_phase_));
 
     // Print call stack
     print_stack_trace();
@@ -1162,14 +1126,14 @@ private:
 
   // Print boot banner
   void print_banner() const noexcept {
-    kernel_print("\n");
-    kernel_print("MOSS Hybrid Kernel v1.0\n");
-    kernel_print("\n");
+    log::klog::info("");
+    log::klog::info("MOSS Hybrid Kernel v1.0");
+    log::klog::info("");
   }
 
   // Print call stack
   void print_stack_trace() const noexcept {
-    kernel_print("Stack trace:\n");
+    log::klog::panic("Stack trace:");
 
     u64 fp = arch::get_frame_pointer();
 
@@ -1179,7 +1143,7 @@ private:
         u64 lr = frame[1]; // Return address
         fp = frame[0];     // Next frame pointer
 
-        kernel_print("  [%d] 0x%016llx\n", i, lr);
+        log::klog::panic("  [{}] {:#x}", i, lr);
       } else {
         break;
       }
@@ -1191,164 +1155,6 @@ private:
     return arch::get_timestamp_counter();
   }
 
-  // Number formatting helper functions
-  static void print_signed_number(i64 num) noexcept {
-    if (num < 0) {
-      uart_putc('-');
-      print_unsigned_number(static_cast<u64>(-num), 10);
-    } else {
-      print_unsigned_number(static_cast<u64>(num), 10);
-    }
-  }
-
-  static void print_unsigned_number(u64 num, u32 base, bool uppercase = false) noexcept {
-    if (num == 0) {
-      uart_putc('0');
-      return;
-    }
-
-    char buffer[32];
-    u32 idx = 0;
-    const char *digits = uppercase ? "0123456789ABCDEF" : "0123456789abcdef";
-
-    while (num > 0) {
-      buffer[idx++] = digits[num % base];
-      num /= base;
-    }
-
-    for (i32 i = static_cast<i32>(idx) - 1; i >= 0; i--) {
-      uart_putc(buffer[i]);
-    }
-  }
-
-  // Kernel print function - full implementation
-  static void kernel_print(const char *format, ...) noexcept {
-    if (format == nullptr) return;
-
-    va_list args;
-    va_start(args, format);
-
-    const char *ptr = format;
-    while (*ptr) {
-      if (*ptr == '\n') {
-        uart_putc('\r');
-        uart_putc('\n');
-      } else if (*ptr == '%') {
-        ptr++;
-        if (*ptr == '\0') break;
-
-        // Parse length modifiers
-        bool is_long = false;
-        bool is_long_long = false;
-
-        if (*ptr == 'l') {
-          is_long = true;
-          ptr++;
-          if (*ptr == 'l') {
-            is_long_long = true;
-            ptr++;
-          }
-        }
-
-        // Handle format specifiers
-        switch (*ptr) {
-        case 'd': {
-          if (is_long_long) {
-            signed long long value = va_arg(args, signed long long);
-            print_signed_number(static_cast<i64>(value));
-          } else {
-            int value = va_arg(args, int);
-            print_signed_number(static_cast<i64>(value));
-          }
-          break;
-        }
-        case 'u': {
-          if (is_long_long) {
-            unsigned long long value = va_arg(args, unsigned long long);
-            print_unsigned_number(static_cast<u64>(value), 10);
-          } else {
-            unsigned int value = va_arg(args, unsigned int);
-            print_unsigned_number(static_cast<u64>(value), 10);
-          }
-          break;
-        }
-        case 'x': {
-          if (is_long_long) {
-            unsigned long long value = va_arg(args, unsigned long long);
-            print_unsigned_number(static_cast<u64>(value), 16);
-          } else {
-            unsigned int value = va_arg(args, unsigned int);
-            print_unsigned_number(static_cast<u64>(value), 16);
-          }
-          break;
-        }
-        case 'X': {
-          if (is_long_long) {
-            unsigned long long value = va_arg(args, unsigned long long);
-            print_unsigned_number(static_cast<u64>(value), 16, true);
-          } else {
-            unsigned int value = va_arg(args, unsigned int);
-            print_unsigned_number(static_cast<u64>(value), 16, true);
-          }
-          break;
-        }
-        case 's': {
-          const char *str = va_arg(args, char*);
-          if (str) {
-            while (*str) {
-              uart_putc(*str);
-              str++;
-            }
-          } else {
-            const char *null_str = "(null)";
-            while (*null_str) {
-              uart_putc(*null_str);
-              null_str++;
-            }
-          }
-          break;
-        }
-        case 'c': {
-          char ch = static_cast<char>(va_arg(args, int));
-          uart_putc(ch);
-          break;
-        }
-        case 'p': {
-          void *ptr_val = va_arg(args, void*);
-          uart_putc('0');
-          uart_putc('x');
-          print_unsigned_number(reinterpret_cast<u64>(ptr_val), 16);
-          break;
-        }
-        case '%': {
-          uart_putc('%');
-          break;
-        }
-        default:
-          // Unsupported format
-          uart_putc('%');
-          if (is_long_long) {
-            uart_putc('l');
-            uart_putc('l');
-          } else if (is_long) {
-            uart_putc('l');
-          }
-          uart_putc(*ptr);
-          break;
-        }
-      } else {
-        uart_putc(*ptr);
-      }
-      ptr++;
-    }
-
-    va_end(args);
-  }
-
-  // UART output — delegates to HAL for architecture-specific implementation
-  static void uart_putc(char c) noexcept {
-    hal::uart::putc(c);
-  }
 };
 
 // Global kernel instance
