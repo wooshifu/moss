@@ -1,5 +1,5 @@
-// MOSS混合内核主函数实现
-// 系统启动入口和全局实例管理
+// MOSS Kernel main entry point
+// System boot entry and global instance management
 
 module;
 
@@ -19,151 +19,130 @@ long system_call_handler(long syscall_number, long arg0, long arg1,
 
 // IRQ handler called from assembly irq_trampoline (start_arm64.S)
 void irq_handler_c(void) noexcept;
-
-// Forward declaration for boot module globals
-// (These are defined in boot module but accessed here via extern)
 }
 
 module moss.kernel;
 
-// 使用内核命名空间的类型
+import moss.logging;
+
 using moss::kernel::u32;
 using moss::kernel::u64;
 using moss::kernel::usize;
 
+// Bring logging into scope for use in extern "C" and namespace blocks
+namespace log = moss::kernel::logging;
+
 namespace moss::kernel {
 
-// 全局实例定义
+// Global instance definitions
 Kernel *g_kernel = nullptr;
 
-// 子系统全局实例
+// Subsystem global instances
 containers::ContainerLibrary *g_container_lib = nullptr;
 mm::PageTableManager *g_page_table_manager = nullptr;
-
-// 注意：进程管理和IPC系统的全局实例
-// 在各自的模块文件中定义（process.cpp, runtime_support.cpp等）
-
 drivers::DeviceManager *g_device_manager = nullptr;
 
 } // namespace moss::kernel
 
 extern "C" {
 
-// C风格入口函数（从汇编启动代码调用）
-
-// 内核主入口函数
+// Kernel main entry (called from boot assembly)
 [[noreturn]] void kernel_main(void) noexcept {
   using namespace moss::kernel;
 
-  // 输出内核启动信息
-  early_debug_print("\n=== MOSS 内核主程序启动 ===\n");
-  early_debug_print("单核模式运行 (SMP功能暂时禁用)\n");
+  log::klog::info("=== MOSS kernel main starting ===");
+  log::klog::info("single-core mode (SMP disabled)");
 
-  // 创建内核实例
-  early_debug_print("正在创建内核主实例...\n");
+  // Create kernel instance
+  log::klog::info("creating kernel instance...");
   g_kernel = new Kernel();
   if (!g_kernel) {
-    early_debug_print("❌ 严重错误: 内核实例创建失败，系统无法继续\n");
+    log::klog::panic("kernel instance creation failed, cannot continue");
     while (true) { arch::cpu_halt(); }
   }
-  early_debug_print("✅ 内核实例创建成功\n");
+  log::klog::info("kernel instance created");
 
-  // 完整的内核初始化
-  early_debug_print("开始完整内核子系统初始化过程...\n");
+  // Full kernel initialization
+  log::klog::info("initializing kernel subsystems...");
   auto init_result = g_kernel->initialize();
   if (!init_result) {
-    early_debug_print("❌ 内核初始化失败，错误代码: ");
-    early_debug_print("INIT_ERROR\n");
+    log::klog::error("kernel initialization failed");
     while (true) { arch::cpu_halt(); }
   }
-  early_debug_print("✅ 内核子系统初始化完成\n");
+  log::klog::info("kernel subsystem initialization complete");
 
-  // ⚡ 关键修复：连接Boot阶段初始化的GIC实例
-  // Boot阶段的g_gic_controller已成功初始化，现在让Kernel可以访问它
-  // Note: boot module globals accessed via forward declarations
-  // TODO: Properly import boot module when moss.boot is created
-  // For now, skip GIC connection as boot module is not yet a C++26 module
-
-  // 显示详细系统信息
-  early_debug_print("\n=== 内核系统状态详情 ===\n");
-  early_debug_print("🔍 即将调用print_system_info()...\n");
+  // Display system info
+  log::klog::info("=== kernel system status ===");
   g_kernel->print_system_info();
-  early_debug_print("🔍 print_system_info()调用完成...\n");
 
-  // 实际功能验证（不是假的成功消息）
-  early_debug_print("\n=== 实际功能状态验证 ===\n");
-  early_debug_print("🔍 开始系统状态验证...\n");
+  // Subsystem verification
+  log::klog::info("=== subsystem verification ===");
 
-  // 验证内存管理系统实际状态
+  // Memory management
   if (mm::is_memory_system_healthy()) {
     auto pressure = mm::get_memory_pressure();
-    early_debug_print("✅ 内存管理系统: 运行正常, 压力等级=");
+    const char *level = "unknown";
     switch (pressure) {
-      case mm::MemoryPressure::LOW: early_debug_print("低"); break;
-      case mm::MemoryPressure::MEDIUM: early_debug_print("中"); break;
-      case mm::MemoryPressure::HIGH: early_debug_print("高"); break;
-      case mm::MemoryPressure::CRITICAL: early_debug_print("严重"); break;
-      default: early_debug_print("未知"); break;
+      case mm::MemoryPressure::LOW: level = "low"; break;
+      case mm::MemoryPressure::MEDIUM: level = "medium"; break;
+      case mm::MemoryPressure::HIGH: level = "high"; break;
+      case mm::MemoryPressure::CRITICAL: level = "critical"; break;
+      default: break;
     }
-    early_debug_print("\n");
+    log::klog::info("memory: healthy, pressure={}", level);
   } else {
-    early_debug_print("⚠️ 内存管理系统: 状态异常\n");
+    log::klog::warn("memory: unhealthy");
   }
 
-  // 验证中断系统状态
+  // Interrupt controller
   if (interrupts::g_gic) {
-    early_debug_print("✅ 中断处理系统: GIC已初始化并就绪\n");
+    log::klog::info("interrupts: GIC initialized");
   } else {
-    early_debug_print("⚠️ 中断处理系统: GIC未初始化\n");
+    log::klog::warn("interrupts: GIC not initialized");
   }
 
-  // 验证定时器系统状态
+  // Timer subsystem
   if (timer::TimerSubsystem::instance().is_initialized()) {
-    early_debug_print("✅ 定时器子系统: 已初始化\n");
+    log::klog::info("timer: initialized");
   } else {
-    early_debug_print("⚠️ 定时器子系统: 未初始化\n");
+    log::klog::warn("timer: not initialized");
   }
 
-  // 验证调度系统状态
+  // Scheduler
   if (process::g_scheduler) {
-    early_debug_print("✅ 任务调度系统: CFS调度器已就绪, 准备创建和调度任务\n");
+    log::klog::info("scheduler: CFS ready");
   } else {
-    early_debug_print("❌ 任务调度系统: 调度器未初始化\n");
+    log::klog::error("scheduler: not initialized");
   }
 
-  early_debug_print("\n🎉 MOSS内核初始化和验证完成!\n");
+  log::klog::info("MOSS kernel init and verification complete");
+  log::klog::info("entering task scheduling phase...");
 
-  early_debug_print("🚀 转入实际任务调度和执行阶段...\n\n");
+  // Start kernel run system (with real task scheduling)
+  log::klog::info("starting kernel run system");
 
-  // 启动内核运行系统 (包含真实任务调度)
-  early_debug_print("🔥 启动内核运行系统 (包含真实任务调度)\n");
-
-  // 这将调用 scheduler_->start_scheduling() 并创建实际任务
   auto run_result = g_kernel->run();
   if (!run_result) {
-    early_debug_print("💀 致命错误: 内核运行系统启动失败\n");
+    log::klog::panic("kernel run system failed to start");
     while (true) { arch::cpu_halt(); }
   }
 
-  // 不应该到达这里，但如果到达了说明出现了严重错误
-  early_debug_print("💀 致命错误: 内核主运行系统异常退出\n");
+  log::klog::panic("kernel main loop exited unexpectedly");
   while (true) { arch::cpu_halt(); }
 }
 
-// 内核崩溃回调
+// Kernel panic handler — uses direct UART writes for crash safety.
+// Does NOT use the logging module because the system may be in an
+// inconsistent state (corrupted heap, invalid stack, etc.).
 [[noreturn]] void kernel_panic_handler(const char *message) noexcept {
-  // 禁用中断
   ::moss::kernel::arch::disable_all_interrupts();
 
-  // Panic output: use PlatformInfo with hardcoded fallback.
-  // In a panic scenario PlatformInfo *might* be corrupted, so the fallback
-  // to the platform default UART address is intentionally kept.
   const auto &plat = ::moss::fdt::get_platform_info();
   u64 uart_base = (plat.dtb_valid && plat.uart.valid)
                       ? plat.uart.base_addr
                       : ::moss::kernel::platform::uart_base();
   volatile u32 *uart_data = reinterpret_cast<volatile u32 *>(uart_base);
-  const char *panic_msg = "\n💀 KERNEL PANIC: ";
+  const char *panic_msg = "\n[PANIC] KERNEL PANIC: ";
 
   while (*panic_msg) {
     *uart_data = static_cast<u32>(static_cast<unsigned char>(*panic_msg++));
@@ -175,62 +154,37 @@ extern "C" {
     }
   }
 
-  // 停机
   while (true) {
     ::moss::kernel::arch::cpu_halt();
   }
 }
 
-// 早期调试输出 — delegates to HAL/UART for architecture-specific output.
-// Retains extern "C" signature for ABI compatibility with assembly and legacy callers.
+// Legacy extern "C" shim — retained for ABI compatibility with assembly
+// code and test harness. New code should import moss.logging instead.
 void early_debug_print(const char *message) noexcept {
   ::moss::kernel::hal::uart::puts(message);
 }
 
-// 系统调用入口
+// Syscall entry
 long system_call_handler(long syscall_number, long arg0, long arg1,
                          long arg2, long arg3, long arg4, long arg5) noexcept {
   using namespace moss::kernel;
 
-  // 添加诊断输出 - 查看所有系统调用参数
-  early_debug_print("🔧 系统调用被调用！编号: ");
   if (syscall_number == 0) {
-    early_debug_print("0 (debug_print)\n");
-    early_debug_print("📝 参数arg0: ");
+    log::klog::debug("syscall 0 (debug_print)");
     if (arg0 != 0) {
-      early_debug_print("(有效指针)\n");
-      early_debug_print("📄 尝试打印字符串: ");
-      early_debug_print(reinterpret_cast<const char*>(arg0));
-    } else {
-      early_debug_print("(空指针)\n");
+      hal::uart::puts(reinterpret_cast<const char *>(arg0));
     }
   } else if (syscall_number == 1) {
-    early_debug_print("1 (exit)\n");
-    early_debug_print("📝 退出状态码: ");
-    // 简单的数字输出
-    if (arg0 == 0) {
-      early_debug_print("0\n");
-    } else {
-      early_debug_print("非零\n");
-    }
+    log::klog::debug("syscall 1 (exit) status={}", arg0);
   } else {
-    early_debug_print("其他 (");
-    // 简化的数字输出
-    if (syscall_number < 10) {
-      char num_str[2] = {'0' + static_cast<char>(syscall_number), '\0'};
-      early_debug_print(num_str);
-    } else {
-      early_debug_print("大于9");
-    }
-    early_debug_print(")\n");
+    log::klog::debug("syscall {}", syscall_number);
   }
 
-  // 使用新的系统调用分发器
   return syscall::SyscallDispatcher::dispatch(syscall_number, arg0, arg1, arg2,
                                               arg3, arg4, arg5);
 }
 
-// 内核版本信息
 const char *get_kernel_version(void) noexcept {
   return "MOSS v1.0.0 - ARM64 Hybrid Kernel";
 }
@@ -239,7 +193,7 @@ const char *get_build_info(void) noexcept {
   return "Clang-21 C++26 - Release Build";
 }
 
-// 内核内存统计
+// Kernel memory statistics
 struct KernelMemoryInfo {
   usize total_memory;
   usize free_memory;
@@ -249,22 +203,20 @@ struct KernelMemoryInfo {
 };
 
 KernelMemoryInfo get_kernel_memory_info(void) noexcept {
-  // 从 DTB 解析结果获取总内存，粗略估算已使用量
   const auto &plat = ::moss::fdt::get_platform_info();
   usize total = (plat.dtb_valid && plat.total_memory_size > 0)
                     ? static_cast<usize>(plat.total_memory_size)
                     : static_cast<usize>(::moss::kernel::platform::ram_size());
 
-  // TODO: 接入 PageFrameAllocator 统计信息获取精确的空闲页数
   return {.total_memory = total,
-          .free_memory = total / 2,             // 粗略估算
-          .kernel_heap_used = 16 * 1024 * 1024, // 16MB 估算
+          .free_memory = total / 2,
+          .kernel_heap_used = 16 * 1024 * 1024,
           .user_heap_used = 0,
           .page_faults = 0};
 }
 
 // IRQ handler called from assembly irq_trampoline.
-// Delegates to GIC's handle_interrupt() which dispatches to registered handlers.
+// Kept minimal — no logging in hot ISR path.
 static u64 irq_count = 0;
 
 void irq_handler_c(void) noexcept {
@@ -273,7 +225,6 @@ void irq_handler_c(void) noexcept {
   namespace intc_hal = ::moss::kernel::hal::intc;
   namespace timer_hal = ::moss::kernel::hal::timer;
 
-  // GIC ack
   u64 gicc_base = ::moss::kernel::platform::intc_cpu_base();
   u32 ack_val = intc_hal::ack_irq(gicc_base);
   u32 irq = intc_hal::irq_from_ack(ack_val);
@@ -282,46 +233,34 @@ void irq_handler_c(void) noexcept {
     return;
   }
 
-  // Timer handling: ack hardware, dispatch expired callbacks, reprogram
   timer_hal::ack_interrupt();
   ::moss::kernel::timer::TimerSubsystem::instance().handle_interrupt();
 
-  // GIC EOI
   intc_hal::eoi(gicc_base, ack_val);
 }
 
 } // extern "C"
 
-// 实现多架构系统调用约定打印函数
+// Syscall convention info (multi-arch)
 namespace moss::kernel::arch::syscall {
 
 void print_syscall_convention() noexcept {
     const auto& conv = get_syscall_convention();
 
-    early_debug_print("=== 系统调用架构信息 ===\n");
-    early_debug_print("架构: ");
-    early_debug_print(conv.arch_name);
-    early_debug_print("\n");
+    log::klog::info("=== syscall architecture info ===");
+    log::klog::info("arch: {}", conv.arch_name);
+    log::klog::info("instruction: {}", conv.syscall_instruction);
+    log::klog::info("syscall_nr: {}", conv.syscall_nr_register);
+    log::klog::info("return_reg: {}", conv.return_register);
 
-    early_debug_print("系统调用指令: ");
-    early_debug_print(conv.syscall_instruction);
-    early_debug_print("\n");
-
-    early_debug_print("系统调用号寄存器: ");
-    early_debug_print(conv.syscall_nr_register);
-    early_debug_print("\n");
-
-    early_debug_print("返回值寄存器: ");
-    early_debug_print(conv.return_register);
-    early_debug_print("\n");
-
-    early_debug_print("参数寄存器: ");
+    // Print arg registers — use uart directly for inline list
+    hal::uart::puts("[INFO]  arg_regs: ");
     for (int i = 0; i < 6; ++i) {
-        early_debug_print(conv.arg_registers[i]);
-        if (i < 5) early_debug_print(", ");
+        hal::uart::puts(conv.arg_registers[i]);
+        if (i < 5) hal::uart::puts(", ");
     }
-    early_debug_print("\n");
-    early_debug_print("========================\n");
+    hal::uart::puts("\n");
+    log::klog::info("================================");
 }
 
 } // namespace moss::kernel::arch::syscall
