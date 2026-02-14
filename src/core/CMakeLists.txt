@@ -3,9 +3,6 @@
 add_library(moss_core OBJECT)
 target_sources(moss_core PRIVATE src/core.cpp)
 
-target_include_directories(moss_core PUBLIC
-    ${CMAKE_CURRENT_SOURCE_DIR}/include)
-
 # === C++26 Modules ===
 target_sources(moss_core PUBLIC FILE_SET CXX_MODULES FILES
     src/std.cppm

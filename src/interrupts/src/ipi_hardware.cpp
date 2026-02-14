@@ -1,11 +1,18 @@
 // MOSS内核硬件IPI系统实现 - 基于ARM64 GIC SGI
 // 真正的CPU间中断通信，替换概念验证系统
 
-#include "../include/interrupts/ipi_hardware.hpp"
-#include "core/arch/arch_abstraction.hpp"
+module;
 
-// 外部调试打印函数
 extern "C" void early_debug_print(const char* message) noexcept;
+
+module moss.interrupts;
+
+using moss::kernel::u8;
+using moss::kernel::u32;
+using moss::kernel::u64;
+using moss::kernel::usize;
+using moss::kernel::VoidResult;
+using moss::kernel::ErrorCode;
 
 namespace moss::kernel::interrupts {
 

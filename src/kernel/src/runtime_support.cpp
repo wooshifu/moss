@@ -1,19 +1,9 @@
 // 内核运行时支持函数
 // 提供必要的C库函数和内存管理函数的内核实现
 
-#include "core/arch/arch_abstraction.hpp"
-#include "core/types.hpp"
-#include "mm/runtime_heap_allocator.hpp"
+module;
 
-// 前向声明必要的类型（避免循环依赖）
-namespace moss::kernel::containers {
-class SlabAllocator;
-}
-
-namespace moss::kernel::ipc {
-class SharedMemoryManager;
-class IpcManager;
-}
+module moss.kernel;
 
 // 在freestanding环境中定义必要的类型
 using size_t = moss::kernel::usize;
@@ -237,11 +227,3 @@ void _ZdaPvmSt11align_val_t(void *ptr, [[maybe_unused]] size_t size,
 }
 
 } // extern "C"
-
-// 提供缺失的全局变量实例
-namespace moss::kernel::containers {
-// 全局slab分配器实例（简化实现）
-SlabAllocator *g_slab_allocator = nullptr;
-} // namespace moss::kernel::containers
-
-// IPC global variables now defined in moss.ipc module (ipc.cpp)

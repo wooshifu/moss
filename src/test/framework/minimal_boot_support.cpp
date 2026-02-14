@@ -1,8 +1,9 @@
 // MOSS内核测试框架 - 最小启动支持
 // 为测试内核提供必需的启动相关函数
 
-#include "core/types.hpp"
-#include "core/result.hpp"
+import moss.std;
+import moss.types;
+import moss.result;
 
 using namespace moss::kernel;
 

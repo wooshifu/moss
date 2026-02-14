@@ -6,9 +6,6 @@ target_sources(moss_drivers
     PUBLIC FILE_SET CXX_MODULES FILES src/drivers.cppm
     PRIVATE src/drivers.cpp)
 
-target_include_directories(moss_drivers PUBLIC
-    ${CMAKE_CURRENT_SOURCE_DIR}/include)
-
 target_compile_definitions(moss_drivers PRIVATE MOSS_DRIVERS_MODULE)
 
 target_link_libraries(moss_drivers PRIVATE moss_core moss_containers moss_mm moss_interrupts)
