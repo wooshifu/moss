@@ -528,6 +528,10 @@ struct [[gnu::packed]] PageTableEntry {
     constexpr void set_block(PhysAddr block_pa, u64 attributes) {
         raw = (block_pa & hal::mmu::PTE_ADDR_MASK) | attributes | PageAttr::VALID;
     }
+    // L3 page descriptor: bits[1:0]=0b11 (same encoding as table descriptor)
+    constexpr void set_page(PhysAddr page_pa, u64 attributes) {
+        raw = (page_pa & hal::mmu::PTE_ADDR_MASK) | attributes | PageAttr::VALID | PageAttr::TABLE;
+    }
     constexpr void clear() { raw = 0; }
 };
 
