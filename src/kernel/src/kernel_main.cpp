@@ -233,10 +233,15 @@ void irq_handler_c(void) noexcept {
     return;
   }
 
+  // EOI first: tell the GIC we've acknowledged this interrupt so it can
+  // deliver the next one.  This is critical because handle_interrupt() may
+  // call context_switch(), which suspends the current execution flow.
+  // If EOI were after handle_interrupt(), the GIC would block subsequent
+  // timer IRQs until the suspended task resumes.
+  intc_hal::eoi(gicc_base, ack_val);
+
   timer_hal::ack_interrupt();
   ::moss::kernel::timer::TimerSubsystem::instance().handle_interrupt();
-
-  intc_hal::eoi(gicc_base, ack_val);
 }
 
 } // extern "C"

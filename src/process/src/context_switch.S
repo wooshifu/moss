@@ -71,13 +71,30 @@ context_switch:
     mrs     x2, tpidr_el0
     str     x2, [x0, #800]       // 保存TPIDR_EL0
 
-    // 恢复下一个上下文
-    // 恢复线程指针寄存器
-    ldr     x2, [x1, #800]       // 恢复TPIDR_EL0
+    // ================================================================
+    // Restore next context
+    // ================================================================
+    // IMPORTANT: Do NOT restore DAIF here.  context_switch() is always
+    // called from a known interrupt context:
+    //   - From IRQ handler (DAIF.I=1, masked) — must stay masked so
+    //     irq_trampoline can safely eret after we return.
+    //   - From schedule_after_exit (DAIF inherited from caller).
+    // Restoring a saved DAIF=0 (unmasked) while SP still points to
+    // the OLD task's stack would allow an IRQ to corrupt that stack.
+    // The correct place to unmask IRQs is:
+    //   - irq_trampoline's eret (restores SPSR_EL1 which has the
+    //     pre-IRQ PSTATE including DAIF).
+    //   - test_task_entry for fresh tasks (runs with DAIF=0 naturally
+    //     because the context_switch caller was already in IRQ-masked
+    //     state, and eret restores the interrupted task's DAIF).
+    // ================================================================
+
+    // Restore thread pointer register
+    ldr     x2, [x1, #800]       // TPIDR_EL0
     msr     tpidr_el0, x2
 
-    // 恢复NEON/FP寄存器
-    add     x2, x1, #288         // NEON寄存器起始地址
+    // Restore NEON/FP registers
+    add     x2, x1, #288
     ldp     q0, q1, [x2, #0]
     ldp     q2, q3, [x2, #32]
     ldp     q4, q5, [x2, #64]
@@ -95,40 +112,36 @@ context_switch:
     ldp     q28, q29, [x2, #448]
     ldp     q30, q31, [x2, #480]
 
-    // 恢复浮点状态寄存器
-    ldp     x2, x3, [x1, #272]   // 恢复FPSR,FPCR
+    // Restore FP status registers
+    ldp     x2, x3, [x1, #272]   // FPSR, FPCR
     msr     fpsr, x2
     msr     fpcr, x3
 
-    // 恢复PSTATE
-    ldr     x2, [x1, #264]       // 恢复PSTATE
-    msr     daif, x2
-
-    // 恢复栈指针
-    ldr     x2, [x1, #248]       // 恢复SP
+    // Restore stack pointer FIRST (before any IRQ-unsafe window)
+    ldr     x2, [x1, #248]       // SP
     mov     sp, x2
 
-    // 恢复通用寄存器（除了x0,x1）
-    ldp     x2, x3, [x1, #16]    // 恢复x2,x3
-    ldp     x4, x5, [x1, #32]    // 恢复x4,x5
-    ldp     x6, x7, [x1, #48]    // 恢复x6,x7
-    ldp     x8, x9, [x1, #64]    // 恢复x8,x9
-    ldp     x10, x11, [x1, #80]  // 恢复x10,x11
-    ldp     x12, x13, [x1, #96]  // 恢复x12,x13
-    ldp     x14, x15, [x1, #112] // 恢复x14,x15
-    ldp     x16, x17, [x1, #128] // 恢复x16,x17
-    ldp     x18, x19, [x1, #144] // 恢复x18,x19
-    ldp     x20, x21, [x1, #160] // 恢复x20,x21
-    ldp     x22, x23, [x1, #176] // 恢复x22,x23
-    ldp     x24, x25, [x1, #192] // 恢复x24,x25
-    ldp     x26, x27, [x1, #208] // 恢复x26,x27
-    ldp     x28, x29, [x1, #224] // 恢复x28,x29(FP)
-    ldr     x30, [x1, #240]      // 恢复x30(LR)
+    // Restore general-purpose registers (except x0, x1)
+    ldp     x2, x3, [x1, #16]
+    ldp     x4, x5, [x1, #32]
+    ldp     x6, x7, [x1, #48]
+    ldp     x8, x9, [x1, #64]
+    ldp     x10, x11, [x1, #80]
+    ldp     x12, x13, [x1, #96]
+    ldp     x14, x15, [x1, #112]
+    ldp     x16, x17, [x1, #128]
+    ldp     x18, x19, [x1, #144]
+    ldp     x20, x21, [x1, #160]
+    ldp     x22, x23, [x1, #176]
+    ldp     x24, x25, [x1, #192]
+    ldp     x26, x27, [x1, #208]
+    ldp     x28, x29, [x1, #224]  // FP
+    ldr     x30, [x1, #240]       // LR
 
-    // 最后恢复x0,x1
-    ldp     x0, x1, [x1, #0]     // 恢复x0,x1
+    // Restore x0, x1 last (x1 is our base pointer)
+    ldp     x0, x1, [x1, #0]
 
-    // 返回到新线程
+    // Return to new thread (x30 = saved LR)
     ret
 
 .size context_switch, .-context_switch

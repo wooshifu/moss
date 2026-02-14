@@ -27,49 +27,50 @@ namespace handlers {
 
     long sys_exit(long exit_code, long, long, long, long, long) noexcept {
         using namespace moss::kernel::process;
+        namespace log = moss::kernel::logging;
 
-        early_debug_print("📋 系统调用: exit() - 进程请求退出\n");
+        log::klog::info("sys_exit: exit_code={}", exit_code);
 
-        // 获取全局进程管理器
-        if (!g_process_manager) {
-            early_debug_print("❌ 进程管理器未初始化\n");
-            return -1;
+        // Identify the calling process from the per-CPU current_task
+        Thread *cur = CfsScheduler::get_current_task();
+        if (!cur) {
+            log::klog::error("sys_exit: no current thread");
+            while (true) { ::moss::kernel::arch::cpu_yield(); }
         }
 
-        // 当前用户空间进程的PID是1（第一个创建的进程）
-        const ProcessId current_pid = 1;
+        ProcessId pid = cur->owner_pid;
+        log::klog::info("sys_exit: PID={} TID={}", pid, static_cast<u32>(cur->tid));
 
-        early_debug_print("🔄 正在清理进程资源...\n");
-
-        // 调用进程管理器的terminate_process进行完整的进程清理
-        auto result = g_process_manager->terminate_process(current_pid, static_cast<i32>(exit_code));
-
-        if (!result) {
-            early_debug_print("❌ 进程退出失败\n");
-            return -1;
-        }
-
-        early_debug_print("✅ 进程已终止，资源已清理\n");
-        early_debug_print("🔄 调度器将继续执行其他任务...\n");
-
-        // CRITICAL: exit() should NEVER return to userspace
-        // The process has been deleted - returning would jump to freed memory
-
-        // Instead, call scheduler directly to pick next task
+        // Dequeue this thread from the scheduler so it won't be picked again
         if (g_scheduler) {
-            early_debug_print("🎯 直接调用调度器选择下一个任务...\n");
-            // This will not return - scheduler takes over execution
-            g_scheduler->start_scheduling();
-        } else {
-            early_debug_print("❌ 调度器未初始化，进入无限循环\n");
-            // Fallback: infinite loop to prevent returning to deleted userspace
-            while (true) {
-                ::moss::kernel::arch::cpu_yield();  // 架构无关的CPU让出
+            g_scheduler->dequeue_task(cur);
+        }
+
+        // Mark thread as terminated
+        cur->state = ProcessState::Terminated;
+
+        // Terminate the process in ProcessManager (marks + removes from table)
+        if (g_process_manager) {
+            auto result = g_process_manager->terminate_process(pid, static_cast<i32>(exit_code));
+            if (!result) {
+                log::klog::warn("sys_exit: terminate_process failed (PID={}), continuing", pid);
+            } else {
+                log::klog::info("sys_exit: process PID={} terminated", pid);
             }
         }
 
-        // This point should NEVER be reached due to scheduler taking over
-        // Removing unreachable return statement
+        // CRITICAL: sys_exit must NEVER return to userspace.
+        // The process context is dead — eret would jump to invalid memory.
+        // Hand control to the scheduler to pick the next runnable task.
+        if (g_scheduler) {
+            g_scheduler->schedule_after_exit();
+            // [[noreturn]] — never reaches here
+        }
+
+        // Fallback: no scheduler, just halt
+        while (true) {
+            ::moss::kernel::arch::cpu_yield();
+        }
     }
 
     long sys_getpid(long, long, long, long, long, long) noexcept {
