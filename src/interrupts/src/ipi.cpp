@@ -1,14 +1,20 @@
 // MOSS内核IPI(CPU间中断)机制实现
 // Linux风格的CPU间通信系统实现
 
-#include "interrupts/ipi.hpp"
-#include "core/arch/arch_abstraction.hpp"
+module;
+
+extern "C" void early_debug_print(const char* message) noexcept;
+
+module moss.interrupts;
+
+using moss::kernel::u8;
+using moss::kernel::u32;
+using moss::kernel::u64;
+using moss::kernel::usize;
+using moss::kernel::VoidResult;
+using moss::kernel::ErrorCode;
 
 namespace moss::kernel::interrupts {
-
-// 前向声明 - 避免包含复杂的GIC头文件
-class GenericInterruptController;
-extern GenericInterruptController* g_gic;
 
 // 全局IPI管理器实例
 InterProcessorInterrupt* g_ipi_manager = nullptr;
