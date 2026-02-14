@@ -23,14 +23,9 @@ extern "C" {
 
 module moss.mm;
 
-import moss.hal.uart;
+import moss.logging;
 
-// Debug output aliases — delegate to HAL/UART
-namespace {
-void debug_print(const char *str) { moss::kernel::hal::uart::puts(str); }
-void debug_print_hex(moss::u64 value) { moss::kernel::hal::uart::put_hex(value); }
-void debug_print_hex_plain(moss::u64 value) { moss::kernel::hal::uart::put_hex_plain(value); }
-} // namespace
+namespace log = moss::kernel::logging;
 
 namespace moss::kernel::mm {
 
@@ -49,8 +44,6 @@ KernelResult<PageTable *> PageTableManager::allocate_page_table() {
 
   return KernelResult<PageTable *>{table};
 }
-
-// 使用本地调试输出函数替换external early_print调用，避免链接问题
 
 // 创建内核页表映射
 VoidResult PageTableManager::setup_kernel_page_tables() {
@@ -225,7 +218,7 @@ void invalidate_all_tlb() { PageTableManager::invalidate_tlb(); }
 
 // 调试功能实现：打印MMU寄存器状态
 void PageTableManager::print_mmu_registers() {
-  debug_print("\n=== MMU寄存器详细状态 ===\n");
+  log::klog::info("=== MMU寄存器详细状态 ===");
 
 #if defined(__aarch64__) || defined(MOSS_ARCH_ARM64)
   // 读取关键MMU寄存器
@@ -237,64 +230,40 @@ void PageTableManager::print_mmu_registers() {
   asm volatile("mrs %0, ttbr0_el1" : "=r"(ttbr0_el1));
   asm volatile("mrs %0, ttbr1_el1" : "=r"(ttbr1_el1));
 
-  debug_print("SCTLR_EL1:  0x");
-  debug_print_hex(sctlr_el1);
-  debug_print("\n  MMU启用:  ");
-  debug_print((sctlr_el1 & (1ULL << 0)) ? "是" : "否");
-  debug_print(" (M位)\n  缓存启用: ");
-  debug_print((sctlr_el1 & (1ULL << 2)) ? "是" : "否");
-  debug_print(" (C位)\n  指令缓存: ");
-  debug_print((sctlr_el1 & (1ULL << 12)) ? "是" : "否");
-  debug_print(" (I位)\n");
+  log::klog::debug_chain("SCTLR_EL1: ").hex(sctlr_el1);
+  log::klog::debug_chain("  MMU启用: ").str((sctlr_el1 & (1ULL << 0)) ? "是" : "否").str(" (M位)");
+  log::klog::debug_chain("  缓存启用: ").str((sctlr_el1 & (1ULL << 2)) ? "是" : "否").str(" (C位)");
+  log::klog::debug_chain("  指令缓存: ").str((sctlr_el1 & (1ULL << 12)) ? "是" : "否").str(" (I位)");
 
-  debug_print("\nTCR_EL1:    0x");
-  debug_print_hex(tcr_el1);
-  debug_print("\n  T0SZ:     ");
-  debug_print_hex(tcr_el1 & 0x3F);
-  debug_print(" (TTBR0地址空间大小)\n  T1SZ:     ");
-  debug_print_hex((tcr_el1 >> 16) & 0x3F);
-  debug_print(" (TTBR1地址空间大小)\n  EPD0:     ");
-  debug_print_hex((tcr_el1 >> 7) & 1);
-  debug_print(" (TTBR0 ");
-  debug_print(((tcr_el1 >> 7) & 1) ? "禁用" : "启用");
-  debug_print(")\n  EPD1:     ");
-  debug_print_hex((tcr_el1 >> 23) & 1);
-  debug_print(" (TTBR1 ");
-  debug_print(((tcr_el1 >> 23) & 1) ? "禁用" : "启用");
-  debug_print(")\n");
+  log::klog::debug_chain("TCR_EL1:   ").hex(tcr_el1);
+  log::klog::debug_chain("  T0SZ: ").hex(tcr_el1 & 0x3F).str(" (TTBR0地址空间大小)");
+  log::klog::debug_chain("  T1SZ: ").hex((tcr_el1 >> 16) & 0x3F).str(" (TTBR1地址空间大小)");
+  log::klog::debug_chain("  EPD0: ").hex((tcr_el1 >> 7) & 1).str(" (TTBR0 ").str(((tcr_el1 >> 7) & 1) ? "禁用" : "启用").str(")");
+  log::klog::debug_chain("  EPD1: ").hex((tcr_el1 >> 23) & 1).str(" (TTBR1 ").str(((tcr_el1 >> 23) & 1) ? "禁用" : "启用").str(")");
 
-  debug_print("\nMAIR_EL1:   0x");
-  debug_print_hex(mair_el1);
-  debug_print("\n  属性0:    0x");
-  debug_print_hex((mair_el1 >> 0) & 0xFF);
-  debug_print(" (设备内存)\n  属性1:    0x");
-  debug_print_hex((mair_el1 >> 8) & 0xFF);
-  debug_print(" (普通缓存)\n  属性2:    0x");
-  debug_print_hex((mair_el1 >> 16) & 0xFF);
-  debug_print(" (非缓存)\n");
+  log::klog::debug_chain("MAIR_EL1:  ").hex(mair_el1);
+  log::klog::debug_chain("  属性0: ").hex((mair_el1 >> 0) & 0xFF).str(" (设备内存)");
+  log::klog::debug_chain("  属性1: ").hex((mair_el1 >> 8) & 0xFF).str(" (普通缓存)");
+  log::klog::debug_chain("  属性2: ").hex((mair_el1 >> 16) & 0xFF).str(" (非缓存)");
 
-  debug_print("\nTTBR0_EL1:  0x");
-  debug_print_hex(ttbr0_el1);
-  debug_print("\nTTBR1_EL1:  0x");
-  debug_print_hex(ttbr1_el1);
-  debug_print("\n");
+  log::klog::debug_chain("TTBR0_EL1: ").hex(ttbr0_el1);
+  log::klog::debug_chain("TTBR1_EL1: ").hex(ttbr1_el1);
 #else
-  debug_print("非ARM64架构，跳过MMU寄存器读取\n");
+  log::klog::debug("非ARM64架构，跳过MMU寄存器读取");
 #endif
 }
 
 // 调试功能实现：打印PGD级页表项
 void PageTableManager::print_pgd_entries() {
-  debug_print("\n=== PGD级页表项详细信息 ===\n");
+  log::klog::info("=== PGD级页表项详细信息 ===");
 
   if (!kernel_pgd) {
-    debug_print("错误：内核页表根目录未初始化\n");
+    log::klog::error("内核页表根目录未初始化");
     return;
   }
 
-  debug_print("PGD物理地址: 0x");
-  debug_print_hex_plain(get_physical_address(kernel_pgd));
-  debug_print("\nPGD索引范围: [0-511] (每个索引覆盖1GB地址空间)\n\n");
+  log::klog::debug_chain("PGD物理地址: ").hex(get_physical_address(kernel_pgd));
+  log::klog::debug("PGD索引范围: [0-511] (每个索引覆盖1GB地址空间)");
 
   // 遍历PGD的所有条目，但只详细显示有效的条目
   u32 valid_entries = 0;
@@ -310,34 +279,20 @@ void PageTableManager::print_pgd_entries() {
       VirtAddr virt_end = virt_start + 0x40000000ULL - 1;
       PhysAddr phys_addr = entry.get_phys_addr();
 
-      debug_print("PGD[");
-      debug_print_hex(i);
-      debug_print("] = 0x");
-      debug_print_hex_plain(entry.raw);
-      debug_print(" (有效)\n  虚拟地址范围: 0x");
-      debug_print_hex_plain(virt_start);
-      debug_print(" - 0x");
-      debug_print_hex_plain(virt_end);
-      debug_print(" (1GB)\n  物理地址:     0x");
-      debug_print_hex_plain(phys_addr);
-      debug_print("\n  映射类型:     ");
-      debug_print(entry.is_table() ? "页表" : "1GB块");
+      log::klog::debug_chain("PGD[").hex(i).str("] = ").hex(entry.raw).str(" (有效)");
+      log::klog::debug_chain("  虚拟地址范围: ").hex(virt_start).str(" - ").hex(virt_end).str(" (1GB)");
+      log::klog::debug_chain("  物理地址:     ").hex(phys_addr);
+      log::klog::debug_chain("  映射类型:     ").str(entry.is_table() ? "页表" : "1GB块");
 
       // 解析权限位
       u64 raw = entry.raw;
-      debug_print("\n  权限位:\n    Valid:    ");
-      debug_print((raw & (1ULL << 0)) ? "是" : "否");
-      debug_print(" (bit0)\n    Table:    ");
-      debug_print((raw & (1ULL << 1)) ? "是" : "否");
-      debug_print(" (bit1)\n    AttrIndx: ");
-      debug_print_hex((raw >> 2) & 7);
-      debug_print(" (bits[4:2])\n    AF:       ");
-      debug_print((raw & (1ULL << 10)) ? "是" : "否");
-      debug_print(" (bit10)\n    PXN:      ");
-      debug_print((raw & (1ULL << 53)) ? "是" : "否");
-      debug_print(" (bit53)\n    XN:       ");
-      debug_print((raw & (1ULL << 54)) ? "是" : "否");
-      debug_print(" (bit54)\n");
+      log::klog::debug_chain("  权限位:").str("");
+      log::klog::debug_chain("    Valid:    ").str((raw & (1ULL << 0)) ? "是" : "否").str(" (bit0)");
+      log::klog::debug_chain("    Table:    ").str((raw & (1ULL << 1)) ? "是" : "否").str(" (bit1)");
+      log::klog::debug_chain("    AttrIndx: ").hex((raw >> 2) & 7).str(" (bits[4:2])");
+      log::klog::debug_chain("    AF:       ").str((raw & (1ULL << 10)) ? "是" : "否").str(" (bit10)");
+      log::klog::debug_chain("    PXN:      ").str((raw & (1ULL << 53)) ? "是" : "否").str(" (bit53)");
+      log::klog::debug_chain("    XN:       ").str((raw & (1ULL << 54)) ? "是" : "否").str(" (bit54)");
 
       // 根据AttrIndx解释内存类型
       u64 attr_idx = (raw >> 2) & 7;
@@ -356,56 +311,38 @@ void PageTableManager::print_pgd_entries() {
         mem_type = "未知内存类型";
         break;
       }
-      debug_print("    内存类型: ");
-      debug_print(mem_type);
-      debug_print("\n\n");
+      log::klog::debug_chain("    内存类型: ").str(mem_type);
     }
   }
 
-  debug_print("页表统计:\n  有效条目数: ");
-  debug_print_hex(valid_entries);
-  debug_print(" / 512\n  映射覆盖:   ");
-  debug_print_hex(valid_entries);
-  debug_print(" GB\n");
+  log::klog::debug_chain("页表统计: 有效条目数: ").hex(valid_entries).str(" / 512");
+  log::klog::debug_chain("  映射覆盖: ").hex(valid_entries).str(" GB");
 }
 
 // 调试功能实现：打印页表详细信息
 void PageTableManager::print_page_table_details() {
-  debug_print("\n========================================\n");
-  debug_print("        MOSS页表详细信息调试输出\n");
-  debug_print("========================================\n");
+  log::klog::info("========================================");
+  log::klog::info("        MOSS页表详细信息调试输出");
+  log::klog::info("========================================");
 
   // 1. 页表分配器状态
-  debug_print("\n=== 页表分配器状态 ===\n");
-  debug_print("最大页表数量: ");
-  debug_print_hex(MAX_EARLY_TABLES);
-  debug_print("\n已分配页表数: ");
-  debug_print_hex(next_table_index);
-  debug_print("\n可用页表数:   ");
-  debug_print_hex(MAX_EARLY_TABLES - next_table_index);
-  debug_print("\n总内存占用:   ");
-  debug_print_hex(MAX_EARLY_TABLES * 4);
-  debug_print(" KB\n");
+  log::klog::info("=== 页表分配器状态 ===");
+  log::klog::debug_chain("最大页表数量: ").hex(MAX_EARLY_TABLES);
+  log::klog::debug_chain("已分配页表数: ").hex(next_table_index);
+  log::klog::debug_chain("可用页表数:   ").hex(MAX_EARLY_TABLES - next_table_index);
+  log::klog::debug_chain("总内存占用:   ").hex(MAX_EARLY_TABLES * 4).str(" KB");
 
   // 2. 页表数组布局
-  debug_print("\n=== 页表内存布局 ===\n");
-  debug_print("early_tables起始: 0x");
-  debug_print_hex_plain(reinterpret_cast<PhysAddr>(early_tables));
-  debug_print("\n单个页表大小:     ");
-  debug_print_hex(sizeof(PageTable));
-  debug_print(" 字节\n每页表条目数:     ");
-  debug_print_hex(PageTable::ENTRIES_PER_TABLE);
-  debug_print(" 个\n");
+  log::klog::info("=== 页表内存布局 ===");
+  log::klog::debug_chain("early_tables起始: ").hex(reinterpret_cast<PhysAddr>(early_tables));
+  log::klog::debug_chain("单个页表大小:     ").hex(sizeof(PageTable)).str(" 字节");
+  log::klog::debug_chain("每页表条目数:     ").hex(PageTable::ENTRIES_PER_TABLE).str(" 个");
 
   if (kernel_pgd) {
     usize pgd_index = get_table_index(kernel_pgd);
-    debug_print("内核PGD位置:      early_tables[");
-    debug_print_hex(pgd_index);
-    debug_print("] (0x");
-    debug_print_hex(get_physical_address(kernel_pgd));
-    debug_print(")\n");
+    log::klog::debug_chain("内核PGD位置: early_tables[").hex(pgd_index).str("] (").hex(get_physical_address(kernel_pgd)).str(")");
   } else {
-    debug_print("内核PGD:          未初始化\n");
+    log::klog::debug("内核PGD: 未初始化");
   }
 
   // 3. MMU寄存器状态
@@ -415,7 +352,7 @@ void PageTableManager::print_page_table_details() {
   print_pgd_entries();
 
   // 5. 地址转换示例（1GB块映射）
-  debug_print("\n=== 地址转换示例 (1GB块映射) ===\n");
+  log::klog::info("=== 地址转换示例 (1GB块映射) ===");
   VirtAddr test_addrs[] = {0x00000000, 0x12345678, 0x40000000, 0x80000000,
                            0xC0000000};
   const char *addr_names[] = {"0GB起始", "内核代码", "1GB边界", "2GB边界",
@@ -428,15 +365,9 @@ void PageTableManager::print_page_table_details() {
     u32 pgd_index_1gb = (vaddr >> 30) & 0x3;   // 1GB块映射的PGD索引
     u32 block_offset_1gb = vaddr & 0x3FFFFFFF; // 1GB块内偏移
 
-    debug_print("虚拟地址 0x");
-    debug_print_hex_plain(vaddr);
-    debug_print(" (");
-    debug_print(addr_names[i]);
-    debug_print("):\n  PGD索引: ");
-    debug_print_hex(pgd_index_1gb);
-    debug_print(" (1GB块映射)\n  块内偏移: 0x");
-    debug_print_hex_plain(block_offset_1gb);
-    debug_print("\n");
+    log::klog::debug_chain("虚拟地址 ").hex(vaddr).str(" (").str(addr_names[i]).str("):");
+    log::klog::debug_chain("  PGD索引: ").hex(pgd_index_1gb).str(" (1GB块映射)");
+    log::klog::debug_chain("  块内偏移: ").hex(block_offset_1gb);
 
     // 检查对应的PGD条目
     if (kernel_pgd && pgd_index_1gb < PageTable::ENTRIES_PER_TABLE) {
@@ -444,19 +375,16 @@ void PageTableManager::print_page_table_details() {
       if (pgd_entry.is_valid()) {
         PhysAddr phys_base = pgd_entry.get_phys_addr();
         PhysAddr phys_final = phys_base + block_offset_1gb;
-        debug_print("  → 物理地址: 0x");
-        debug_print_hex_plain(phys_final);
-        debug_print("\n");
+        log::klog::debug_chain("  -> 物理地址: ").hex(phys_final);
       } else {
-        debug_print("  → 未映射\n");
+        log::klog::debug("  -> 未映射");
       }
     }
-    debug_print("\n");
   }
 
-  debug_print("========================================\n");
-  debug_print("        页表详细信息输出完成\n");
-  debug_print("========================================\n\n");
+  log::klog::info("========================================");
+  log::klog::info("        页表详细信息输出完成");
+  log::klog::info("========================================");
 }
 
 } // namespace moss::kernel::mm

@@ -10,6 +10,6 @@ target_sources(moss_interrupts
 
 target_compile_definitions(moss_interrupts PRIVATE MOSS_INTERRUPTS_MODULE)
 
-target_link_libraries(moss_interrupts PUBLIC moss_core moss_aal moss_platform moss_hal_intc moss_containers)
+target_link_libraries(moss_interrupts PUBLIC moss_core moss_aal moss_platform moss_hal_intc moss_containers moss_logging)
 
 message(STATUS "中断模块配置完成")

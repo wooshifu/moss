@@ -3,10 +3,9 @@
 
 module moss.interrupts;
 
-// External debug print function
-extern "C" void early_debug_print(const char *message) noexcept;
-
 namespace moss::kernel::interrupts::simple {
+
+namespace log = moss::kernel::logging;
 
 // Global simplified IPI manager instance
 SimpleInterProcessorInterrupt *g_simple_ipi_manager = nullptr;
@@ -27,7 +26,7 @@ VoidResult SimpleInterProcessorInterrupt::initialize(u32 max_cpus) noexcept {
   total_pings_sent_ = 0;
   initialized_ = true;
 
-  early_debug_print("IPI simple subsystem initialized\n");
+  log::klog::info("IPI simple subsystem initialized");
 
   return VoidResult{};
 }
@@ -65,20 +64,20 @@ VoidResult SimpleInterProcessorInterrupt::self_test() noexcept {
     return VoidResult{ErrorCode::InvalidState};
   }
 
-  early_debug_print("IPI simple self-test started\n");
+  log::klog::info("IPI simple self-test started");
 
   u32 current_cpu = get_current_cpu_id();
   for (u32 target_cpu = 0; target_cpu < max_cpus_; ++target_cpu) {
     if (target_cpu != current_cpu) {
       auto result = ping_cpu(target_cpu);
       if (result != IpiResult::Success) {
-        early_debug_print("IPI simple self-test failed\n");
+        log::klog::error("IPI simple self-test failed");
         return VoidResult{ErrorCode::InvalidState};
       }
     }
   }
 
-  early_debug_print("IPI simple self-test passed\n");
+  log::klog::info("IPI simple self-test passed");
   return VoidResult{};
 }
 

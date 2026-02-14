@@ -23,6 +23,6 @@ elseif(MOSS_TARGET_ARCH STREQUAL "RISCV")
     target_compile_definitions(moss_mm PRIVATE MOSS_MM_RISCV)
 endif()
 
-target_link_libraries(moss_mm PRIVATE moss_core moss_aal moss_platform moss_hal_mmu moss_hal_uart moss_fdt moss_libfdt_c moss_containers)
+target_link_libraries(moss_mm PRIVATE moss_core moss_aal moss_platform moss_hal_mmu moss_hal_uart moss_fdt moss_libfdt_c moss_containers moss_logging)
 
 message(STATUS "内存管理模块配置完成")
