@@ -1084,6 +1084,9 @@ private:
       return gic_result;
     }
 
+    // Set global GIC pointer so other subsystems can access it
+    ::moss::kernel::interrupts::g_gic = gic_;
+
     // Create device manager
     device_manager_ = new drivers::DeviceManager();
     if (!device_manager_) {
