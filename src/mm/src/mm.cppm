@@ -589,6 +589,37 @@ public:
     static void print_page_table_details();
     static void print_pgd_entries();
     static void print_mmu_registers();
+
+    // ---- Page fault support: unmap, query, TLB invalidation ----
+
+    // Page mapping query result
+    struct PageInfo {
+        PhysAddr phys_addr;   // Physical address (0 if unmapped)
+        u64      attributes;  // Raw PTE attribute bits
+        bool     mapped;      // Whether a valid mapping exists
+        u8       level;       // Mapping granularity: 1=1GB block, 2=2MB block, 3=4KB page
+    };
+
+    // Remove a 4KB page mapping. Returns NotFound if no valid PTE exists,
+    // NotSupported if the address falls within a block mapping (1GB/2MB).
+    [[nodiscard]] static VoidResult unmap_page(VirtAddr virt_addr);
+
+    // Query the mapping state of a virtual address without modifying anything.
+    [[nodiscard]] static PageInfo query_page(VirtAddr virt_addr);
+
+    // Invalidate TLB entry for a single virtual address
+    static void invalidate_tlb_addr(VirtAddr virt_addr) {
+#if defined(MOSS_ARCH_ARM64)
+        asm volatile("dsb ishst" ::: "memory");
+        asm volatile("tlbi vale1is, %0" :: "r"(virt_addr >> 12) : "memory");
+        asm volatile("dsb ish" ::: "memory");
+        asm volatile("isb" ::: "memory");
+#elif defined(MOSS_ARCH_X86_64)
+        asm volatile("invlpg (%0)" :: "r"(virt_addr) : "memory");
+#elif defined(MOSS_ARCH_RISCV)
+        asm volatile("sfence.vma %0, zero" :: "r"(virt_addr) : "memory");
+#endif
+    }
 };
 
 [[nodiscard]] VoidResult setup_mmu();
