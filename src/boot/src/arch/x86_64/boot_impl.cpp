@@ -176,9 +176,26 @@ void update_boot_stage(BootStage stage, ::moss::kernel::ErrorCode error) noexcep
     moss::boot::early_print_hex(edx);
     moss::boot::early_print("\n");
 
-    ctx.memory_start = 0x00100000;
-    ctx.memory_size = 128 * 1024 * 1024;
-    ctx.kernel_phys_base = 0x00100000;
+    // x86_64 QEMU q35 不提供 DTB，静态填充 PlatformInfo 以统一子系统接口。
+    // 后续可扩展为 ACPI/E820 内存映射解析。
+    {
+        auto &info = moss::fdt::g_platform_info;
+        info = {};
+        info.dtb_valid = false;
+        info.cpu_count = 1; // TODO: 可通过 CPUID 扩展检测
+        info.memory_regions[0] = {
+            static_cast<PhysAddr>(0x00100000),
+            128 * 1024 * 1024
+        };
+        info.memory_region_count = 1;
+        info.total_memory_start = 0x00100000;
+        info.total_memory_size = 128 * 1024 * 1024;
+
+        ctx.memory_start = info.total_memory_start;
+        ctx.memory_size = info.total_memory_size;
+        ctx.kernel_phys_base = info.total_memory_start;
+    }
+
     ctx.kernel_virt_base = moss::boot::arch_constants::KERNEL_VIRT_BASE;
 
     moss::boot::early_print("Memory range: ");

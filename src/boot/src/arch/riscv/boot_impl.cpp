@@ -142,9 +142,41 @@ void update_boot_stage(BootStage stage, ::moss::kernel::ErrorCode error) noexcep
     moss::boot::early_print_hex(mvendorid);
     moss::boot::early_print("\n");
 
-    ctx.memory_start = 0x80000000;
-    ctx.memory_size = 128 * 1024 * 1024;
-    ctx.kernel_phys_base = 0x80000000;
+    // --- DTB 解析：从 Device Tree 获取真实硬件拓扑 ---
+    // OpenSBI 通过 a1 寄存器传递 DTB 指针，已保存在 ctx.device_tree_ptr 中。
+    if (ctx.device_tree_ptr) {
+        moss::boot::early_print("DTB pointer: ");
+        moss::boot::early_print_hex(reinterpret_cast<u64>(ctx.device_tree_ptr));
+        moss::boot::early_print("\n");
+
+        if (moss::fdt::parse_dtb(ctx.device_tree_ptr)) {
+            const auto &info = moss::fdt::get_platform_info();
+
+            moss::boot::early_print("DTB parse OK: ");
+            moss::boot::early_print_hex(info.cpu_count);
+            moss::boot::early_print(" CPUs, memory ");
+            moss::boot::early_print_hex(info.total_memory_start);
+            moss::boot::early_print(" + ");
+            moss::boot::early_print_hex(info.total_memory_size);
+            moss::boot::early_print("\n");
+
+            ctx.memory_start = info.total_memory_start;
+            ctx.memory_size = info.total_memory_size;
+            ctx.kernel_phys_base = info.total_memory_start;
+            ctx.total_cpus = info.cpu_count;
+        } else {
+            moss::boot::early_print("DTB parse failed, using hardcoded defaults\n");
+            ctx.memory_start = 0x80000000;
+            ctx.memory_size = 128 * 1024 * 1024;
+            ctx.kernel_phys_base = 0x80000000;
+        }
+    } else {
+        moss::boot::early_print("No DTB pointer, using hardcoded defaults\n");
+        ctx.memory_start = 0x80000000;
+        ctx.memory_size = 128 * 1024 * 1024;
+        ctx.kernel_phys_base = 0x80000000;
+    }
+
     ctx.kernel_virt_base = moss::boot::arch_constants::KERNEL_VIRT_BASE;
 
     moss::boot::early_print("Memory range: ");

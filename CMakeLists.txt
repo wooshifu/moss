@@ -34,6 +34,21 @@ moss_configure_platform()
 # === 通用内核编译标志 ===
 # freestanding 环境标志（所有架构通用）
 set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -ffreestanding -fno-exceptions -fno-rtti")
+# 内核开发编译器标志配置
+# 
+# -fno-stack-protector: 禁用栈保护机制
+#   原因: 内核代码运行在特权模式下,栈保护需要额外的运行时支持(如__stack_chk_fail函数)
+#   在内核初始化阶段这些支持可能尚未就绪,且内核有自己的安全机制
+#
+# -fno-pic: 禁用位置无关代码(Position Independent Code)
+#   原因: 内核代码运行在固定的虚拟地址空间,不需要重定位
+#   PIC会引入额外的间接寻址开销,影响内核性能
+#   内核使用自己的加载和链接机制,不需要动态链接器支持
+#
+# -fno-pie: 禁用位置无关可执行文件(Position Independent Executable)
+#   原因: 内核不是普通的用户空间可执行文件,有固定的加载地址
+#   PIE是为了实现ASLR(地址空间布局随机化),但内核有自己的KASLR机制
+#   避免生成不必要的重定位信息,减小内核镜像大小
 set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -fno-stack-protector -fno-pic -fno-pie")
 
 # === Clang -Weverything 终极严格模式 ===
@@ -54,6 +69,15 @@ set(MOSS_WARNING_SUPPRESSIONS
     # Switch 和 NRVO 相关
     -Wno-covered-switch-default -Wno-nrvo)
 string(JOIN " " MOSS_WARNING_STR ${MOSS_WARNING_SUPPRESSIONS})
+# Compiler flags configuration for strict code quality enforcement
+# -Weverything: Enables ALL available compiler warnings to ensure maximum code quality
+#               and maintainability. This is especially critical for kernel-level 
+#               development where bugs can have severe system-wide consequences.
+# -Werror: Treats all warnings as errors, enforcing zero-tolerance policy for 
+#          potential issues during the build process.
+#
+# Note: The -Weverything flag is used to maintain the rigor required for kernel 
+#       code development, where reliability, safety, and correctness are paramount.
 set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Weverything -Werror ${MOSS_WARNING_STR}")
 
 # 优化级别设置
@@ -207,6 +231,7 @@ message(STATUS "构建类型: ${MOSS_BUILD_TYPE} (调试级别: ${MOSS_DEBUG_LEV
 
 # === 添加子模块（按依赖顺序）===
 add_subdirectory(src/core)
+add_subdirectory(src/fdt)
 add_subdirectory(src/containers)
 add_subdirectory(src/mm)
 add_subdirectory(src/drivers)
@@ -222,6 +247,8 @@ add_executable(moss.elf)
 target_link_libraries(
   moss.elf
   PRIVATE moss_core
+          moss_fdt
+          moss_libfdt_c
           moss_boot
           moss_kernel
           moss_containers
