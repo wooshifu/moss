@@ -608,18 +608,54 @@ void update_boot_stage(BootStage stage, ::moss::kernel::ErrorCode error) noexcep
 
     early_print("=== ARM64 Memory Management Setup ===\n");
 
+    // Phase 1: Setup identity-mapped page tables in TTBR0 (existing 4×1GB blocks)
     auto mmu_result = ::moss::kernel::mm::setup_mmu();
     if (!mmu_result) {
         early_print("MMU setup failed\n");
         return ::moss::kernel::VoidResult{mmu_result.error()};
     }
 
+    // Phase 2: Initialize PageFrameAllocator (buddy allocator)
     auto pfa_result = ::moss::kernel::mm::PageFrameAllocator::initialize();
     if (!pfa_result) {
         early_print("Physical page allocator init failed\n");
         return ::moss::kernel::VoidResult{::moss::kernel::ErrorCode::OutOfMemory};
     }
 
+    // Phase 3: Build TTBR1 high-half kernel page table
+    // Maps physical 0-4GB at KERNEL_DIRECT_MAP_BASE (0xFFFF800000000000)
+    early_print("Building TTBR1 high-half kernel page table...\n");
+    auto high_result = ::moss::kernel::mm::PageTableManager::setup_kernel_high_half_tables();
+    if (!high_result) {
+        early_print("High-half page table setup failed\n");
+        return ::moss::kernel::VoidResult{high_result.error()};
+    }
+
+    // Phase 4: Activate TTBR1 — write high-half PGD to ttbr1_el1
+    PhysAddr high_pgd_pa = ::moss::kernel::mm::PageTableManager::get_physical_address(
+        ::moss::kernel::mm::PageTableManager::get_kernel_high_pgd());
+
+    early_print("TTBR1 PGD physical: ");
+    early_print_hex(high_pgd_pa);
+    early_print("\n");
+
+#if defined(MOSS_ARCH_ARM64)
+    // Write TTBR1 with kernel high-half PGD (ASID=0 for kernel)
+    asm volatile("msr ttbr1_el1, %0" :: "r"(high_pgd_pa));
+    asm volatile("isb" ::: "memory");
+
+    // Full TLB invalidation to ensure new TTBR1 mappings take effect
+    asm volatile("tlbi vmalle1" ::: "memory");
+    asm volatile("dsb sy" ::: "memory");
+    asm volatile("isb" ::: "memory");
+#endif
+
+    early_print("TTBR1 high-half mapping active\n");
+
+    // Phase 5: Enable dynamic page table allocation (buddy-backed)
+    ::moss::kernel::mm::PageTableManager::enable_dynamic_alloc();
+
+    // Phase 6: Initialize runtime heap
     VirtAddr heap_start = reinterpret_cast<VirtAddr>(_heap_start_addr);
     ::moss::kernel::usize initial_heap_size = 256 * 1024;
     auto heap_result = ::moss::kernel::mm::RuntimeHeapAllocator::initialize_heap(heap_start, initial_heap_size);
@@ -628,7 +664,7 @@ void update_boot_stage(BootStage stage, ::moss::kernel::ErrorCode error) noexcep
         return ::moss::kernel::VoidResult{::moss::kernel::ErrorCode::OutOfMemory};
     }
 
-    early_print("ARM64 memory management setup complete\n\n");
+    early_print("ARM64 memory management setup complete (high-half active)\n\n");
     return ::moss::kernel::VoidResult{};
 }
 
