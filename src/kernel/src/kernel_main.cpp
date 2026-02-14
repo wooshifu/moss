@@ -240,6 +240,36 @@ void irq_handler_c(void) noexcept {
   // timer IRQs until the suspended task resumes.
   intc_hal::eoi(gicc_base, ack_val);
 
+  // Timer PPI (IRQ 27): per-CPU timer interrupt.
+  // Each CPU has its own banked cntv_cval_el0 compare register.
+  // We must reprogram THIS CPU's compare before dispatching, because
+  // TimerSubsystem::handle_interrupt() may context_switch and never return.
+  constexpr u32 TIMER_PPI_IRQ = 27;
+  if (irq == TIMER_PPI_IRQ) {
+    timer_hal::ack_interrupt();
+
+    // Reprogram THIS CPU's timer compare for the next tick interval.
+    // This ensures the timer keeps firing regardless of what handle_interrupt does.
+    auto &ts = ::moss::kernel::timer::TimerSubsystem::instance();
+    u64 tick_ns = ::moss::kernel::process::CfsParams::SCHED_LATENCY_NS;
+    u64 delta_cycles = ts.clocksource().ns_to_cycles(tick_ns);
+    u64 counter_now = timer_hal::read_counter();
+    timer_hal::set_compare(counter_now + delta_cycles);
+
+    // Dispatch: CPU 0 uses TimerSubsystem (drives HrTimer queue),
+    // secondary CPUs call scheduler_tick() directly.
+    u32 cpu = ::moss::kernel::arch::get_current_cpu_id();
+    if (cpu == 0) {
+      ts.handle_interrupt();
+    } else {
+      if (::moss::kernel::process::g_scheduler) {
+        ::moss::kernel::process::g_scheduler->scheduler_tick();
+      }
+    }
+    return;
+  }
+
+  // Non-timer IRQ: pass to TimerSubsystem (legacy path)
   timer_hal::ack_interrupt();
   ::moss::kernel::timer::TimerSubsystem::instance().handle_interrupt();
 }
