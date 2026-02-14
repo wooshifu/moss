@@ -14,22 +14,83 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 
 # 包含多架构支持模块
 list(APPEND CMAKE_MODULE_PATH "${CMAKE_SOURCE_DIR}/cmake")
-include(ArchSupport)
-include(ToolchainDetection)
-# C++26 Modules BMI 缓存
-# set(CMAKE_CXX_MODULE_BMI_CACHE_DIR "${CMAKE_BINARY_DIR}/modules")
+include(arch_support)
+include(ensure_prerequisites)
+include(toolchain_detection)
 
 # === 多架构配置 ===
 message(STATUS "开始配置 Moss 内核构建系统...")
 
+# Bootstrap: ensure uv is available, then run full prerequisite check
+moss_ensure_uv()
+moss_check_prerequisites(${MOSS_TARGET_ARCH})
+
 # 初始化 Clang 工具链
 moss_initialize_clang_toolchain(${MOSS_TARGET_ARCH})
 
-# 配置目标架构
-moss_configure_architecture()
+# Validate target architecture
+if(NOT MOSS_TARGET_ARCH)
+  message(FATAL_ERROR "MOSS_TARGET_ARCH must be set. Supported: ARM64, X86_64, RISCV")
+endif()
+set(_SUPPORTED_ARCHITECTURES "ARM64" "X86_64" "RISCV")
+if(NOT MOSS_TARGET_ARCH IN_LIST _SUPPORTED_ARCHITECTURES)
+  message(FATAL_ERROR "Unsupported architecture: ${MOSS_TARGET_ARCH}. Supported: ${_SUPPORTED_ARCHITECTURES}")
+endif()
 
-# 配置目标平台
-moss_configure_platform()
+# === QEMU 运行环境配置 ===
+if(NOT MOSS_CPU_CORES)
+  set(MOSS_CPU_CORES 4)
+endif()
+
+# 根据架构选择 QEMU 命令名
+if(MOSS_TARGET_ARCH STREQUAL "ARM64")
+  set(_QEMU_CMD "qemu-system-aarch64")
+elseif(MOSS_TARGET_ARCH STREQUAL "X86_64")
+  set(_QEMU_CMD "qemu-system-x86_64")
+elseif(MOSS_TARGET_ARCH STREQUAL "RISCV")
+  set(_QEMU_CMD "qemu-system-riscv64")
+endif()
+
+# 查找 QEMU 可执行文件（Windows 上通常不在 PATH 中）
+set(_QEMU_HINTS "")
+if(CMAKE_HOST_SYSTEM_NAME STREQUAL "Windows")
+  list(APPEND _QEMU_HINTS "C:/Program Files/qemu" "$ENV{LOCALAPPDATA}/Programs/qemu")
+elseif(CMAKE_HOST_SYSTEM_NAME STREQUAL "Darwin")
+  list(APPEND _QEMU_HINTS "/opt/homebrew/bin" "/usr/local/bin")
+endif()
+
+find_program(QEMU_EXECUTABLE ${_QEMU_CMD} HINTS ${_QEMU_HINTS})
+if(QEMU_EXECUTABLE)
+  set(MOSS_QEMU_PATH "${QEMU_EXECUTABLE}")
+  message(STATUS "Found QEMU: ${QEMU_EXECUTABLE}")
+else()
+  set(MOSS_QEMU_PATH "${_QEMU_CMD}")
+  message(STATUS "${_QEMU_CMD} not found, will rely on PATH at runtime")
+endif()
+
+# 生成 QEMU 配置文件和运行脚本
+configure_file("${CMAKE_SOURCE_DIR}/scripts/qemu_config.json.in"
+               "${CMAKE_BINARY_DIR}/qemu_config.json" @ONLY)
+configure_file("${CMAKE_SOURCE_DIR}/scripts/run_qemu.sh.in"
+               "${CMAKE_BINARY_DIR}/run_qemu.sh" @ONLY)
+configure_file("${CMAKE_SOURCE_DIR}/scripts/run_qemu.ps1.in"
+               "${CMAKE_BINARY_DIR}/run_qemu.ps1" @ONLY)
+
+if(NOT CMAKE_HOST_SYSTEM_NAME STREQUAL "Windows")
+  file(CHMOD "${CMAKE_BINARY_DIR}/run_qemu.sh"
+    PERMISSIONS OWNER_READ OWNER_WRITE OWNER_EXECUTE
+                GROUP_READ GROUP_EXECUTE
+                WORLD_READ WORLD_EXECUTE)
+endif()
+
+# 按主机平台选择 CMake 目标使用的 runner
+if(CMAKE_HOST_SYSTEM_NAME STREQUAL "Windows")
+  set(MOSS_QEMU_RUNNER "powershell.exe")
+  set(MOSS_QEMU_RUNNER_ARGS "-NoProfile;-ExecutionPolicy;Bypass;-File;${CMAKE_BINARY_DIR}/run_qemu.ps1")
+else()
+  set(MOSS_QEMU_RUNNER "bash")
+  set(MOSS_QEMU_RUNNER_ARGS "${CMAKE_BINARY_DIR}/run_qemu.sh")
+endif()
 
 # === 通用内核编译标志 ===
 # freestanding 环境标志（所有架构通用）
@@ -102,16 +163,41 @@ function(moss_bool_to_int var)
   endif()
 endfunction()
 
-# 设置架构特定的配置变量（MOSS_ARCH_NAME 由 cmake/arch/*.cmake 设置）
+# === 架构特定配置 ===
 if(MOSS_TARGET_ARCH STREQUAL "ARM64")
   set(MOSS_ARCH_ARM64 ON)
+  set(MOSS_ARCH_NAME "ARM64")
+  add_compile_definitions(MOSS_ARCH_ARM64=1)
 elseif(MOSS_TARGET_ARCH STREQUAL "X86_64")
   set(MOSS_ARCH_X86_64 ON)
+  set(MOSS_ARCH_NAME "X86_64")
+  add_compile_definitions(MOSS_ARCH_X86_64=1)
 elseif(MOSS_TARGET_ARCH STREQUAL "RISCV")
   set(MOSS_ARCH_RISCV ON)
+  set(MOSS_ARCH_NAME "RISCV64")
+  add_compile_definitions(MOSS_ARCH_RISCV=1)
+  # RISC-V ISA extension feature macros (derived from CMAKE_CXX_FLAGS -march=)
+  if(CMAKE_CXX_FLAGS MATCHES "-march=rv64[^ ]*m")
+    add_compile_definitions(MOSS_RISCV_M_EXT=1)
+  endif()
+  if(CMAKE_CXX_FLAGS MATCHES "-march=rv64[^ ]*a")
+    add_compile_definitions(MOSS_RISCV_A_EXT=1)
+  endif()
+  if(CMAKE_CXX_FLAGS MATCHES "-march=rv64[^ ]*c")
+    add_compile_definitions(MOSS_RISCV_C_EXT=1)
+  endif()
+  if(CMAKE_CXX_FLAGS MATCHES "-march=rv64[^ ]*f")
+    add_compile_definitions(MOSS_RISCV_F_EXT=1)
+  endif()
+  if(CMAKE_CXX_FLAGS MATCHES "-march=rv64[^ ]*d")
+    add_compile_definitions(MOSS_RISCV_D_EXT=1)
+  endif()
 else()
   message(FATAL_ERROR "Unsupported architecture: ${MOSS_TARGET_ARCH}")
 endif()
+
+# All 64-bit architectures share these definitions
+add_compile_definitions(MOSS_ARCH_BITS=64 MOSS_PAGE_SIZE=4096 MOSS_CACHE_LINE_SIZE=64)
 
 # 所有 64 位架构的公共配置值
 set(MOSS_PAGE_SIZE 4096)
@@ -272,31 +358,13 @@ target_link_libraries(
           moss_process
           )
 
-# 链接配置 - 统一使用lld链接器
-set_target_properties(
-  moss.elf PROPERTIES LINK_FLAGS "-fuse-ld=lld -nostdlib -nostartfiles")
-
 # 设置输出目录
 set_target_properties(moss.elf PROPERTIES RUNTIME_OUTPUT_DIRECTORY
                                           ${CMAKE_BINARY_DIR}/bin)
 
-# 查找 LLVM 工具链
-find_program(LLVM_OBJDUMP llvm-objdump)
-find_program(LLVM_OBJCOPY llvm-objcopy)
-
-if(LLVM_OBJDUMP)
-  set(OBJDUMP_CMD ${LLVM_OBJDUMP})
-  message(STATUS "使用 LLVM objdump: ${LLVM_OBJDUMP}")
-else()
-  message(FATAL_ERROR "未找到 llvm-objdump 工具，请安装 LLVM 工具链以生成反汇编文件")
-endif()
-
-if(LLVM_OBJCOPY)
-  set(OBJCOPY_CMD ${LLVM_OBJCOPY})
-  message(STATUS "使用 LLVM objcopy: ${LLVM_OBJCOPY}")
-else()
-  message(FATAL_ERROR "未找到 llvm-objcopy 工具，请安装 LLVM 工具链以生成二进制镜像")
-endif()
+# LLVM tool paths are set by moss_check_prerequisites() in ensure_prerequisites.cmake
+set(OBJDUMP_CMD "${MOSS_LLVM_OBJDUMP}")
+set(OBJCOPY_CMD "${MOSS_LLVM_OBJCOPY}")
 
 # 生成反汇编、符号表和二进制文件
 add_custom_command(
@@ -328,22 +396,22 @@ else()
   message(STATUS "将生成文件: moss.dis, moss.sym, moss.bin, moss_boot.bin, moss_code.bin")
 endif()
 
-# === 构建目标 ===
-if(EXISTS "${CMAKE_BINARY_DIR}/run_qemu.sh")
+# === 构建目标 (QEMU) ===
+if(MOSS_QEMU_RUNNER)
   add_custom_target(
     run-qemu
-    COMMAND bash ${CMAKE_BINARY_DIR}/run_qemu.sh
+    COMMAND ${MOSS_QEMU_RUNNER} ${MOSS_QEMU_RUNNER_ARGS}
     DEPENDS moss.elf
     COMMENT "Running moss in QEMU (${MOSS_TARGET_ARCH}/${MOSS_TARGET_PLATFORM})"
   )
 
   add_custom_target(
     debug
-    COMMAND bash ${CMAKE_BINARY_DIR}/run_qemu.sh --debug
+    COMMAND ${MOSS_QEMU_RUNNER} ${MOSS_QEMU_RUNNER_ARGS} --debug
     DEPENDS moss.elf
     COMMENT "Running moss in QEMU with GDB server (${MOSS_TARGET_ARCH})")
 else()
-  message(WARNING "QEMU 运行脚本未生成，test 和 debug 目标不可用")
+  message(STATUS "QEMU 运行脚本未生成，run-qemu 和 debug 目标不可用")
 endif()
 
 # 清理目标
@@ -359,19 +427,23 @@ if(MOSS_BUILD_TESTS)
   message(STATUS "启用单元测试构建 (独立 moss.test.elf)")
   add_subdirectory(src/test)
 
-  enable_testing()
-  add_test(
-    NAME moss-unit-tests
-    COMMAND bash ${CMAKE_BINARY_DIR}/run_qemu.sh --test
-  )
-  set_tests_properties(moss-unit-tests PROPERTIES TIMEOUT 30)
+  if(MOSS_QEMU_RUNNER)
+    enable_testing()
+    add_test(
+      NAME moss-unit-tests
+      COMMAND ${MOSS_QEMU_RUNNER} ${MOSS_QEMU_RUNNER_ARGS} --test
+    )
+    set_tests_properties(moss-unit-tests PROPERTIES TIMEOUT 30)
 
-  add_custom_target(
-    test-kernel
-    COMMAND bash ${CMAKE_BINARY_DIR}/run_qemu.sh --test
-    DEPENDS moss.test.elf
-    COMMENT "Running MOSS unit tests in QEMU (${MOSS_TARGET_ARCH})"
-  )
+    add_custom_target(
+      test-kernel
+      COMMAND ${MOSS_QEMU_RUNNER} ${MOSS_QEMU_RUNNER_ARGS} --test
+      DEPENDS moss.test.elf
+      COMMENT "Running MOSS unit tests in QEMU (${MOSS_TARGET_ARCH})"
+    )
+  else()
+    message(STATUS "QEMU 运行脚本未配置，test-kernel 目标不可用")
+  endif()
 else()
   message(STATUS "跳过单元测试构建")
 endif()

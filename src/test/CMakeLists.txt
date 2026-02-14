@@ -12,7 +12,7 @@ set_target_properties(moss.test.elf PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
 
 # Include paths & freestanding definitions
-# Note: MOSS_ARCH_* definitions are already set globally by cmake/arch/*.cmake
+# Note: MOSS_ARCH_* definitions are already set globally by CMakeLists.txt
 target_include_directories(moss.test.elf PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR})
 
