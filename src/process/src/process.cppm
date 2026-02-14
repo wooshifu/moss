@@ -9,7 +9,6 @@ module;
 
 // Assembly interop declarations (global module fragment)
 extern "C" void switch_to_user(void* context, unsigned long long user_stack);
-extern "C" void early_debug_print(const char* message) noexcept;
 
 export module moss.process;
 
@@ -24,59 +23,14 @@ import moss.ipc;
 import moss.interrupts;
 import moss.hal.timer;
 import moss.timer;
-
-// ============================================================================
-// Scheduler debug logging (internal, not exported)
-// ============================================================================
-namespace {
-using moss::u32;
-using moss::u64;
-
-// Delegate to the centralized early_debug_print() which uses PlatformInfo
-// for UART address resolution (declared in global module fragment above).
-void sched_log(const char *str) noexcept {
-    early_debug_print(str);
-}
-
-void sched_log_uint(u32 value) noexcept {
-    char buffer[12];
-    char *ptr = buffer + sizeof(buffer) - 1;
-    *ptr = '\0';
-
-    if (value == 0) {
-        *(--ptr) = '0';
-    } else {
-        while (value > 0 && ptr > buffer) {
-            *(--ptr) = '0' + (value % 10);
-            value /= 10;
-        }
-    }
-
-    sched_log(ptr);
-}
-
-void sched_log_u64(u64 value) noexcept {
-    char buffer[22];
-    char *ptr = buffer + sizeof(buffer) - 1;
-    *ptr = '\0';
-
-    if (value == 0) {
-        *(--ptr) = '0';
-    } else {
-        while (value > 0 && ptr > buffer) {
-            *(--ptr) = '0' + (value % 10);
-            value /= 10;
-        }
-    }
-
-    sched_log(ptr);
-}
-} // anonymous namespace
+import moss.logging;
 
 // ============================================================================
 // process.hpp - Base process types
 // ============================================================================
 export namespace moss::kernel::process {
+
+namespace log = moss::kernel::logging;
 
 // Forward declarations
 struct Thread;
@@ -670,13 +624,7 @@ public:
     static u64 dequeue_count = 0;
     dequeue_count++;
     if (dequeue_count % 1000000 == 0 || (thread->tid >= 1001 && dequeue_count % 50000 == 0)) {
-      sched_log("dequeue_task: TID=");
-      sched_log_uint(static_cast<u32>(thread->tid));
-      sched_log(" vruntime=");
-      sched_log_u64(thread->se.vruntime);
-      sched_log(" queue_size=");
-      sched_log_uint(nr_running_);
-      sched_log("\n");
+      log::klog::debug("dequeue_task: TID={} vruntime={} queue_size={}", static_cast<u32>(thread->tid), thread->se.vruntime, nr_running_);
     }
 
     RbNode<Thread> *node = find_node(thread);
@@ -703,15 +651,7 @@ public:
     static u64 pick_debug = 0;
     pick_debug++;
     if (pick_debug % 1000000 == 0) {
-      sched_log("pick_next_task: selected TID=");
-      sched_log_uint(static_cast<u32>(next->tid));
-      sched_log(" vruntime=");
-      sched_log_u64(next->se.vruntime);
-      sched_log(" nr_running=");
-      sched_log_uint(nr_running_);
-      sched_log(" min_vruntime=");
-      sched_log_u64(min_vruntime_);
-      sched_log("\n");
+      log::klog::debug("pick_next_task: selected TID={} vruntime={} nr_running={} min_vruntime={}", static_cast<u32>(next->tid), next->se.vruntime, nr_running_, min_vruntime_);
     }
 
     // Linux CFS: only select the task, do not remove it
@@ -738,13 +678,7 @@ public:
         rb_remove(node);
         rb_insert(node);
 
-        sched_log("task vruntime rebalance: TID=");
-        sched_log_uint(static_cast<u32>(current->tid));
-        sched_log(" old=");
-        sched_log_u64(old_vruntime);
-        sched_log(" new=");
-        sched_log_u64(current->se.vruntime);
-        sched_log("\n");
+        log::klog::debug("task vruntime rebalance: TID={} old={} new={}", static_cast<u32>(current->tid), old_vruntime, current->se.vruntime);
       }
     }
 
@@ -884,16 +818,11 @@ private:
       static u64 leftmost_updates = 0;
       leftmost_updates++;
       if (leftmost_updates <= 50 || leftmost_updates % 1000000 == 0) {
-        sched_log("leftmost update: TID=");
-        sched_log_uint(static_cast<u32>(node->data->tid));
-        sched_log(" vruntime=");
-        sched_log_u64(vruntime);
         if (rb_leftmost_ != node) {
-          sched_log(" (replacing TID=");
-          sched_log_uint(static_cast<u32>(rb_leftmost_->data->tid));
-          sched_log(")");
+          log::klog::debug("leftmost update: TID={} vruntime={} (replacing TID={})", static_cast<u32>(node->data->tid), vruntime, static_cast<u32>(rb_leftmost_->data->tid));
+        } else {
+          log::klog::debug("leftmost update: TID={} vruntime={}", static_cast<u32>(node->data->tid), vruntime);
         }
-        sched_log("\n");
       }
     }
 
@@ -903,11 +832,7 @@ private:
   void rb_remove(RbNode<Thread> *node) noexcept {
     if (node == nullptr) return;
 
-    sched_log("rb_remove: TID=");
-    sched_log_uint(static_cast<u32>(node->data->tid));
-    sched_log(" vruntime=");
-    sched_log_u64(node->data->se.vruntime);
-    sched_log("\n");
+    log::klog::debug("rb_remove: TID={} vruntime={}", static_cast<u32>(node->data->tid), node->data->se.vruntime);
 
     bool was_leftmost = (node == rb_leftmost_);
 
@@ -920,33 +845,27 @@ private:
 
       rb_leftmost_ = new_leftmost;
 
-      sched_log("leftmost updated: ");
       if (rb_leftmost_) {
-        sched_log("new leftmost TID=");
-        sched_log_uint(static_cast<u32>(rb_leftmost_->data->tid));
-        sched_log(" vruntime=");
-        sched_log_u64(rb_leftmost_->data->se.vruntime);
+        log::klog::debug("leftmost updated: new leftmost TID={} vruntime={}", static_cast<u32>(rb_leftmost_->data->tid), rb_leftmost_->data->se.vruntime);
       } else {
-        sched_log("tree empty");
+        log::klog::debug("leftmost updated: tree empty");
       }
-      sched_log("\n");
     }
 
     rb_delete_node(node);
 
     if (rb_root_ != nullptr && rb_leftmost_ == nullptr) {
       rb_leftmost_ = find_tree_minimum(rb_root_);
-      sched_log("leftmost pointer fixed: ");
       if (rb_leftmost_) {
-        sched_log("TID=");
-        sched_log_uint(static_cast<u32>(rb_leftmost_->data->tid));
+        log::klog::debug("leftmost pointer fixed: TID={}", static_cast<u32>(rb_leftmost_->data->tid));
+      } else {
+        log::klog::debug("leftmost pointer fixed");
       }
-      sched_log("\n");
     }
 
     #ifdef DEBUG
     if (!verify_tree_consistency()) {
-      sched_log("tree consistency check failed!\n");
+      log::klog::error("tree consistency check failed!");
     }
     #endif
   }
@@ -1043,9 +962,7 @@ private:
       replacement = nullptr;
       replace_node_in_parent(node, nullptr);
 
-      sched_log("delete leaf vruntime=");
-      sched_log_u64(node->data->se.vruntime);
-      sched_log("\n");
+      log::klog::debug("delete leaf vruntime={}", node->data->se.vruntime);
     }
     // Case 2: Only right child
     else if (node->left == nullptr) {
@@ -1053,11 +970,7 @@ private:
       replace_node_in_parent(node, node->right);
       node->right->parent = original_parent;
 
-      sched_log("delete single-child(right) vruntime=");
-      sched_log_u64(node->data->se.vruntime);
-      sched_log(" replacement vruntime=");
-      sched_log_u64(replacement->data->se.vruntime);
-      sched_log("\n");
+      log::klog::debug("delete single-child(right) vruntime={} replacement vruntime={}", node->data->se.vruntime, replacement->data->se.vruntime);
     }
     // Case 3: Only left child
     else if (node->right == nullptr) {
@@ -1065,11 +978,7 @@ private:
       replace_node_in_parent(node, node->left);
       node->left->parent = original_parent;
 
-      sched_log("delete single-child(left) vruntime=");
-      sched_log_u64(node->data->se.vruntime);
-      sched_log(" replacement vruntime=");
-      sched_log_u64(replacement->data->se.vruntime);
-      sched_log("\n");
+      log::klog::debug("delete single-child(left) vruntime={} replacement vruntime={}", node->data->se.vruntime, replacement->data->se.vruntime);
     }
     // Case 4: Two children - find inorder successor
     else {
@@ -1096,20 +1005,14 @@ private:
       successor->left->parent = successor;
       successor->red = node->red;
 
-      sched_log("delete two-children vruntime=");
-      sched_log_u64(node->data->se.vruntime);
-      sched_log(" successor vruntime=");
-      sched_log_u64(successor->data->se.vruntime);
-      sched_log("\n");
+      log::klog::debug("delete two-children vruntime={} successor vruntime={}", node->data->se.vruntime, successor->data->se.vruntime);
     }
 
     if (!original_red && replacement != nullptr) {
       rb_delete_fixup(replacement);
     }
 
-    sched_log("node deletion complete, remaining tasks=");
-    sched_log_uint(nr_running_);
-    sched_log("\n");
+    log::klog::debug("node deletion complete, remaining tasks={}", nr_running_);
   }
 
   void replace_node_in_parent(RbNode<Thread>* old_node, RbNode<Thread>* new_node) noexcept {
@@ -1238,15 +1141,11 @@ public:
 
     idle_tasks_.get_cpu(cpu_id) = idle_task;
 
-    sched_log("set idle task CPU");
-    sched_log_uint(cpu_id);
-    sched_log(": TID=");
     if (idle_task) {
-      sched_log_uint(static_cast<u32>(idle_task->get_cpu_id()));
+      log::klog::info("set idle task CPU{}: TID={}", cpu_id, static_cast<u32>(idle_task->get_cpu_id()));
     } else {
-      sched_log("NULL");
+      log::klog::info("set idle task CPU{}: TID=NULL", cpu_id);
     }
-    sched_log("\n");
   }
 
   [[nodiscard]] IdleTask* get_idle_task(u32 cpu_id) const noexcept {
@@ -1300,14 +1199,10 @@ private:
 
 public:
   [[noreturn]] inline void cpu_startup_entry(u32 cpu_id) noexcept {
-    sched_log("CPU");
-    sched_log_uint(cpu_id);
-    sched_log(": per-CPU scheduling loop started\n");
+    log::klog::info("CPU{}: per-CPU scheduling loop started", cpu_id);
 
     if (cpu_id >= MAX_CPUS) {
-      sched_log("CPU");
-      sched_log_uint(cpu_id);
-      sched_log(": invalid CPU ID\n");
+      log::klog::error("CPU{}: invalid CPU ID", cpu_id);
       while (true) {
         idle_task_loop(cpu_id);
       }
@@ -1315,9 +1210,7 @@ public:
 
     IdleTask* idle_task = get_idle_task(cpu_id);
     if (idle_task == nullptr) {
-      sched_log("CPU");
-      sched_log_uint(cpu_id);
-      sched_log(": idle task not set, creating default\n");
+      log::klog::warn("CPU{}: idle task not set, creating default", cpu_id);
 
       idle_task = create_idle_task(cpu_id);
       if (idle_task) {
@@ -1325,9 +1218,7 @@ public:
       }
     }
 
-    sched_log("CPU");
-    sched_log_uint(cpu_id);
-    sched_log(": entering per-CPU scheduling loop\n");
+    log::klog::info("CPU{}: entering per-CPU scheduling loop", cpu_id);
 
     u32 idle_cycles = 0;
     u32 active_cycles = 0;
@@ -1343,11 +1234,7 @@ public:
           active_cycles++;
 
           if (active_cycles % LOG_INTERVAL == 1) {
-            sched_log("[CPU");
-            sched_log_uint(cpu_id);
-            sched_log("][TID=");
-            sched_log_uint(static_cast<u32>(next_task->tid));
-            sched_log("] task running\n");
+            log::klog::debug("[CPU{}][TID={}] task running", cpu_id, static_cast<u32>(next_task->tid));
           }
 
           execute_task_simplified(next_task, cpu_id);
@@ -1358,9 +1245,7 @@ public:
         idle_cycles++;
 
         if (idle_cycles % LOG_INTERVAL == 1) {
-          sched_log("[CPU");
-          sched_log_uint(cpu_id);
-          sched_log("] entering idle\n");
+          log::klog::debug("[CPU{}] entering idle", cpu_id);
         }
 
         if (idle_task != nullptr) {
@@ -1372,15 +1257,7 @@ public:
 
       u32 total_cycles = active_cycles + idle_cycles;
       if (total_cycles > 0 && total_cycles % (LOG_INTERVAL * 5) == 0) {
-        sched_log("[CPU");
-        sched_log_uint(cpu_id);
-        sched_log("] stats: active=");
-        sched_log_uint(active_cycles);
-        sched_log(" idle=");
-        sched_log_uint(idle_cycles);
-        sched_log(" tasks=");
-        sched_log_uint(get_cpu_nr_running(cpu_id));
-        sched_log("\n");
+        log::klog::info("[CPU{}] stats: active={} idle={} tasks={}", cpu_id, active_cycles, idle_cycles, get_cpu_nr_running(cpu_id));
       }
     }
   }
@@ -1394,9 +1271,7 @@ public:
 
     if (old_state == ProcessState::Running || old_state == ProcessState::Ready) {
       dequeue_task(task);
-      sched_log("task blocked and dequeued: TID=");
-      sched_log_uint(static_cast<u32>(task->tid));
-      sched_log("\n");
+      log::klog::info("task blocked and dequeued: TID={}", static_cast<u32>(task->tid));
     }
   }
 
@@ -1406,11 +1281,7 @@ public:
     task->state = ProcessState::Ready;
     enqueue_task(task, target_cpu);
 
-    sched_log("task wakeup and enqueued: TID=");
-    sched_log_uint(static_cast<u32>(task->tid));
-    sched_log(" CPU=");
-    sched_log_uint(target_cpu);
-    sched_log("\n");
+    log::klog::info("task wakeup and enqueued: TID={} CPU={}", static_cast<u32>(task->tid), target_cpu);
   }
 
   void task_terminate(Thread* task) noexcept {
@@ -1421,9 +1292,7 @@ public:
 
     if (old_state == ProcessState::Running || old_state == ProcessState::Ready) {
       dequeue_task(task);
-      sched_log("task terminated and dequeued: TID=");
-      sched_log_uint(static_cast<u32>(task->tid));
-      sched_log("\n");
+      log::klog::info("task terminated and dequeued: TID={}", static_cast<u32>(task->tid));
     }
   }
 
@@ -1480,11 +1349,7 @@ public:
     if (valid_transition) {
       task->state = new_state;
     } else {
-      sched_log("invalid state transition: ");
-      sched_log_uint(static_cast<u8>(old_state));
-      sched_log(" -> ");
-      sched_log_uint(static_cast<u8>(new_state));
-      sched_log("\n");
+      log::klog::warn("invalid state transition: {} -> {}", static_cast<u32>(static_cast<u8>(old_state)), static_cast<u32>(static_cast<u8>(new_state)));
     }
   }
 
@@ -1545,10 +1410,10 @@ public:
 
   // Create 20 test tasks to verify scheduler
   void create_test_task() noexcept {
-    sched_log("create_test_task started\n");
-    sched_log("creating 20 test tasks to verify CFS scheduler...\n");
+    log::klog::info("create_test_task started");
+    log::klog::info("creating 20 test tasks to verify CFS scheduler...");
 
-    sched_log("adjusting user task TID=1000 priority...\n");
+    log::klog::info("adjusting user task TID=1000 priority...");
     bool found_user_task = false;
 
     for (u32 cpu = 0; cpu < MAX_CPUS; cpu++) {
@@ -1556,13 +1421,13 @@ public:
       if (current_task != nullptr && current_task->tid == 1000) {
         current_task->se.vruntime = 100;
         found_user_task = true;
-        sched_log("set user task TID=1000 vruntime=100\n");
+        log::klog::info("set user task TID=1000 vruntime=100");
         break;
       }
     }
 
     if (!found_user_task) {
-      sched_log("TID=1000 not found in current running tasks\n");
+      log::klog::warn("TID=1000 not found in current running tasks");
     }
 
     alignas(16) static char test_task_stacks[20][8192];
@@ -1597,44 +1462,26 @@ public:
       u32 target_cpu = i % 4;
       enqueue_task(test_threads[i], target_cpu);
 
-      sched_log("created test task TID=");
-      sched_log_uint(tid);
-      sched_log(" nice=0 weight=");
-      sched_log_uint(test_threads[i]->se.weight);
-      sched_log(" vruntime=");
-      sched_log_u64(test_threads[i]->se.vruntime);
-      sched_log(" CPU=");
-      sched_log_uint(target_cpu);
-      sched_log("\n");
+      log::klog::info("created test task TID={} nice=0 weight={} vruntime={} CPU={}", tid, test_threads[i]->se.weight, test_threads[i]->se.vruntime, target_cpu);
 
       created_tasks++;
     }
 
-    sched_log("test task creation summary:\n");
-    sched_log("   created: ");
-    sched_log_uint(created_tasks);
-    sched_log(" tasks\n");
-    sched_log("   failed: ");
-    sched_log_uint(failed_tasks);
-    sched_log(" tasks\n");
-    sched_log("   load balance: tasks distributed to ");
-    sched_log_uint(MAX_CPUS);
-    sched_log(" CPUs\n");
-    sched_log("multi-task scheduling test environment ready!\n");
+    log::klog::info("test task creation summary:");
+    log::klog::info("   created: {} tasks", created_tasks);
+    log::klog::info("   failed: {} tasks", failed_tasks);
+    log::klog::info("   load balance: tasks distributed to {} CPUs", static_cast<u32>(MAX_CPUS));
+    log::klog::info("multi-task scheduling test environment ready!");
 
-    sched_log("checking all CPU queue status...\n");
+    log::klog::info("checking all CPU queue status...");
     for (u32 cpu = 0; cpu < MAX_CPUS; cpu++) {
       u32 nr_tasks = get_cpu_nr_running(cpu);
-      sched_log("   CPU");
-      sched_log_uint(cpu);
-      sched_log(": ");
-      sched_log_uint(nr_tasks);
-      sched_log(" tasks\n");
+      log::klog::info("   CPU{}: {} tasks", cpu, nr_tasks);
     }
   }
 
   void verify_task_diversity() noexcept {
-    sched_log("verifying task selection diversity...\n");
+    log::klog::info("verifying task selection diversity...");
 
     u32 unique_tids[20] = {0};
     u32 unique_count = 0;
@@ -1650,16 +1497,7 @@ public:
           if (unique_tids[tid_index] == 0) {
             unique_tids[tid_index] = 1;
             unique_count++;
-            sched_log("   first select TID=");
-            sched_log_uint(static_cast<u32>(task->tid));
-            sched_log(" nice=");
-            i32 nice = task->se.nice;
-            if (nice >= 0) sched_log("+");
-            sched_log_uint(static_cast<u32>(nice >= 0 ? nice : -nice));
-            if (nice < 0) sched_log("-");
-            sched_log(" vruntime=");
-            sched_log_u64(task->se.vruntime);
-            sched_log("\n");
+            log::klog::debug("   first select TID={} nice={} vruntime={}", static_cast<u32>(task->tid), task->se.nice, task->se.vruntime);
           }
 
           task->se.vruntime += 10000;
@@ -1669,22 +1507,18 @@ public:
       }
     }
 
-    sched_log("diversity verification results:\n");
-    sched_log("   total selections: ");
-    sched_log_uint(total_selections);
-    sched_log("\n");
-    sched_log("   unique tasks: ");
-    sched_log_uint(unique_count);
-    sched_log("/20\n");
+    log::klog::info("diversity verification results:");
+    log::klog::info("   total selections: {}", total_selections);
+    log::klog::info("   unique tasks: {}/20", unique_count);
 
     if (unique_count >= 15) {
-      sched_log("scheduler diversity verification passed\n");
+      log::klog::info("scheduler diversity verification passed");
     } else if (unique_count >= 5) {
-      sched_log("scheduler diversity partially passed\n");
+      log::klog::warn("scheduler diversity partially passed");
     } else {
-      sched_log("scheduler diversity verification failed\n");
+      log::klog::error("scheduler diversity verification failed");
     }
-    sched_log("starting main scheduling loop...\n");
+    log::klog::info("starting main scheduling loop...");
   }
 
 private:
@@ -1709,17 +1543,7 @@ public:
     i32 task_nice = (current_task != nullptr) ? current_task->se.nice : 0;
     u32 task_weight = (current_task != nullptr) ? current_task->se.weight : 1024;
 
-    sched_log("test task started! TID=");
-    sched_log_uint(task_tid);
-    sched_log(" nice=");
-    if (task_nice >= 0) sched_log("+");
-    sched_log_uint(static_cast<u32>(task_nice >= 0 ? task_nice : -task_nice));
-    if (task_nice < 0) sched_log("-");
-    sched_log(" weight=");
-    sched_log_uint(task_weight);
-    sched_log(" CPU=");
-    sched_log_uint(CfsScheduler::get_current_cpu_id());
-    sched_log("\n");
+    log::klog::info("test task started! TID={} nice={} weight={} CPU={}", task_tid, task_nice, task_weight, CfsScheduler::get_current_cpu_id());
 
     u64 last_print_time = CfsScheduler::get_current_time();
     u64 print_counter = 0;
@@ -1732,11 +1556,7 @@ public:
       cycles_per_print = 2000000ULL;
     }
 
-    sched_log("TID=");
-    sched_log_uint(task_tid);
-    sched_log(" print interval=");
-    sched_log_u64(cycles_per_print);
-    sched_log(" cycles\n");
+    log::klog::debug("TID={} print interval={} cycles", task_tid, cycles_per_print);
 
     while (true) {
       loop_counter++;
@@ -1745,39 +1565,13 @@ public:
 
       if (time_elapsed >= cycles_per_print) {
         print_counter++;
-        sched_log("[TID=");
-        sched_log_uint(task_tid);
-        sched_log("] print #");
-        sched_log_u64(print_counter);
-        sched_log(" nice=");
-        if (task_nice >= 0) sched_log("+");
-        sched_log_uint(static_cast<u32>(task_nice >= 0 ? task_nice : -task_nice));
-        if (task_nice < 0) sched_log("-");
-        sched_log(" CPU=");
-        sched_log_uint(CfsScheduler::get_current_cpu_id());
-        sched_log(" time=");
-        sched_log_u64(current_time);
-        sched_log(" loops=");
-        sched_log_u64(loop_counter);
-        sched_log("\n");
+        log::klog::debug("[TID={}] print #{} nice={} CPU={} time={} loops={}", task_tid, print_counter, task_nice, CfsScheduler::get_current_cpu_id(), current_time, loop_counter);
 
         last_print_time = current_time;
       }
 
       if (loop_counter % 5000000 == 0) {
-        sched_log("[TID=");
-        sched_log_uint(task_tid);
-        sched_log(" nice=");
-        if (task_nice >= 0) sched_log("+");
-        sched_log_uint(static_cast<u32>(task_nice >= 0 ? task_nice : -task_nice));
-        if (task_nice < 0) sched_log("-");
-        sched_log("] loop_count=");
-        sched_log_u64(loop_counter);
-        sched_log(" time=");
-        sched_log_u64(current_time);
-        sched_log(" vruntime=");
-        sched_log_u64((current_task != nullptr) ? current_task->se.vruntime : 0);
-        sched_log("\n");
+        log::klog::debug("[TID={} nice={}] loop_count={} time={} vruntime={}", task_tid, task_nice, loop_counter, current_time, (current_task != nullptr) ? current_task->se.vruntime : 0);
       }
 
       if (task_nice < 0) {
@@ -1823,19 +1617,11 @@ public:
     // Periodic status log (every ~500 ticks = ~3 seconds at 6ms tick)
     if (tick_count_ % 500 == 0) {
       u32 current_cpu = CfsScheduler::get_current_cpu_id();
-      sched_log("[sched_tick] tick=");
-      sched_log_u64(tick_count_);
-      sched_log(" CPU=");
-      sched_log_uint(current_cpu);
-      sched_log(" nr_running=");
-      sched_log_uint(get_cpu_nr_running(current_cpu));
-      sched_log(" switches=");
-      sched_log_u64(total_context_switches());
       if (timer::TimerSubsystem::instance().is_initialized()) {
-        sched_log(" uptime_ms=");
-        sched_log_u64(timer::TimerSubsystem::instance().now_ns() / 1000000);
+        log::klog::info("[sched_tick] tick={} CPU={} nr_running={} switches={} uptime_ms={}", tick_count_, current_cpu, get_cpu_nr_running(current_cpu), total_context_switches(), timer::TimerSubsystem::instance().now_ns() / 1000000);
+      } else {
+        log::klog::info("[sched_tick] tick={} CPU={} nr_running={} switches={}", tick_count_, current_cpu, get_cpu_nr_running(current_cpu), total_context_switches());
       }
-      sched_log("\n");
     }
 
     // Note: Full CFS pick_next + dequeue/enqueue is deferred to a
@@ -1845,19 +1631,17 @@ public:
   }
 
   [[noreturn]] void start_scheduling() noexcept {
-    sched_log("CRITICAL: start_scheduling() ENTRY POINT REACHED!\n");
-    sched_log("CFS scheduler starting (start_scheduling)\n");
-    sched_log("multi-CPU scheduling supported, max CPUs: 16\n");
+    log::klog::info("CRITICAL: start_scheduling() ENTRY POINT REACHED!");
+    log::klog::info("CFS scheduler starting (start_scheduling)");
+    log::klog::info("multi-CPU scheduling supported, max CPUs: 16");
 
     u32 current_cpu = CfsScheduler::get_current_cpu_id();
-    sched_log("current CPU ID: ");
-    sched_log_uint(current_cpu);
-    sched_log("\n");
+    log::klog::info("current CPU ID: {}", current_cpu);
 
     // Create synthetic test tasks (same as before)
-    sched_log("creating test tasks...\n");
+    log::klog::info("creating test tasks...");
     create_test_task();
-    sched_log("test tasks created\n");
+    log::klog::info("test tasks created");
 
     verify_task_diversity();
 
@@ -1865,39 +1649,33 @@ public:
     if (timer::TimerSubsystem::instance().is_initialized()) {
       // Step 1: Register timer IRQ handler with GIC
       u32 timer_irq = hal::timer::irq_number();
-      sched_log("registering timer IRQ handler: IRQ=");
-      sched_log_uint(timer_irq);
-      sched_log("\n");
+      log::klog::info("registering timer IRQ handler: IRQ={}", timer_irq);
 
       if (interrupts::g_gic) {
         auto reg_result = interrupts::g_gic->register_interrupt(
             timer_irq, timer_irq_handler, nullptr, "sched_timer");
         if (!reg_result) {
-          sched_log("WARNING: failed to register timer IRQ handler\n");
+          log::klog::warn("failed to register timer IRQ handler");
         } else {
           auto en_result = interrupts::g_gic->enable_interrupt(timer_irq);
           if (!en_result) {
-            sched_log("WARNING: failed to enable timer IRQ\n");
+            log::klog::warn("failed to enable timer IRQ");
           } else {
-            sched_log("timer IRQ registered and enabled\n");
+            log::klog::info("timer IRQ registered and enabled");
           }
         }
       } else {
-        sched_log("WARNING: GIC not available, timer interrupts won't fire\n");
+        log::klog::warn("GIC not available, timer interrupts won't fire");
       }
 
       // Step 2: Arm the periodic scheduler tick HrTimer
-      sched_log("arming scheduler tick timer: period=");
-      sched_log_u64(CfsParams::SCHED_LATENCY_NS);
-      sched_log(" ns (");
-      sched_log_u64(CfsParams::SCHED_LATENCY_NS / 1000000);
-      sched_log(" ms)\n");
+      log::klog::info("arming scheduler tick timer: period={} ns ({} ms)", CfsParams::SCHED_LATENCY_NS, CfsParams::SCHED_LATENCY_NS / 1000000);
 
       sched_tick_.init(timer::TimerMode::Periodic,
                        scheduler_tick_callback, this);
       sched_tick_.start_relative(CfsParams::SCHED_LATENCY_NS);
 
-      sched_log("scheduler tick armed, entering idle loop (WFI)\n");
+      log::klog::info("scheduler tick armed, entering idle loop (WFI)");
 
       // Timer-driven scheduling: CPU sleeps until timer interrupt fires,
       // which invokes scheduler_tick() to perform scheduling decisions.
@@ -1907,7 +1685,7 @@ public:
     }
 
     // Fallback: if timer is not available, use the legacy busy-wait loop
-    sched_log("WARNING: timer unavailable, falling back to busy-wait scheduling\n");
+    log::klog::warn("timer unavailable, falling back to busy-wait scheduling");
     fallback_busy_wait_scheduling(current_cpu);
   }
 
@@ -1940,13 +1718,7 @@ public:
         }
 
         if (active_cycles == 1 || (active_cycles % LOG_INTERVAL == 0)) {
-          sched_log("CPU");
-          sched_log_uint(current_cpu);
-          sched_log(": task TID=");
-          sched_log_u64(next_task->tid);
-          sched_log(" (active: ");
-          sched_log_uint(active_cycles);
-          sched_log(")\n");
+          log::klog::info("CPU{}: task TID={} (active: {})", current_cpu, next_task->tid, active_cycles);
         }
 
         CfsScheduler::set_current_task(next_task);

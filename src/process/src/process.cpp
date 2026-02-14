@@ -12,7 +12,7 @@ extern "C" void early_debug_print(const char* message) noexcept;
 module moss.process;
 
 // 获取当前时间的辅助函数
-static u64 get_current_time() noexcept {
+static moss::u64 get_current_time() noexcept {
     return moss::kernel::arch::get_timestamp_counter();
 }
 
