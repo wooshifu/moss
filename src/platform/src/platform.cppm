@@ -62,13 +62,22 @@ struct MemoryDefaults {
 };
 
 // ============================================================================
+// Timer defaults
+// ============================================================================
+struct TimerDefaults {
+  u32 irq;           // Timer IRQ number (PPI for ARM64, etc.)
+  u64 frequency;     // Timer frequency in Hz (0 = read from hardware)
+};
+
+// ============================================================================
 // Aggregate: all platform defaults in one struct
 // ============================================================================
 struct PlatformDefaults {
-  const char   *name;
-  UartDefaults  uart;
-  IntcDefaults  intc;
-  MemoryDefaults memory;
+  const char     *name;
+  UartDefaults    uart;
+  IntcDefaults    intc;
+  MemoryDefaults  memory;
+  TimerDefaults   timer;
 };
 
 // ============================================================================
@@ -95,6 +104,10 @@ inline constexpr PlatformDefaults DEFAULTS {
     .ram_size    = 1ULL * 1024 * 1024 * 1024, // 1 GB default
     .kernel_virt = 0xFFFF000000000000ULL,
   },
+  .timer = {
+    .irq       = 27,         // PPI #11 (virtual timer, non-secure EL1)
+    .frequency = 0,          // Read from cntfrq_el0 at runtime
+  },
 };
 
 #elif defined(MOSS_ARCH_X86_64)
@@ -117,6 +130,10 @@ inline constexpr PlatformDefaults DEFAULTS {
     .ram_size    = 256ULL * 1024 * 1024,     // 256 MB default
     .kernel_virt = 0xFFFF800000000000ULL,
   },
+  .timer = {
+    .irq       = 0,          // Local APIC timer (vector, not IRQ line)
+    .frequency = 0,          // Calibrate at runtime
+  },
 };
 
 #elif defined(MOSS_ARCH_RISCV)
@@ -138,6 +155,10 @@ inline constexpr PlatformDefaults DEFAULTS {
     .ram_base    = 0x80000000,               // 2 GB mark
     .ram_size    = 256ULL * 1024 * 1024,     // 256 MB default
     .kernel_virt = 0xFFFFFFFF80000000ULL,
+  },
+  .timer = {
+    .irq       = 5,          // S-mode timer interrupt
+    .frequency = 10000000,   // 10 MHz (QEMU virt default from DTB)
   },
 };
 #endif
@@ -174,6 +195,16 @@ inline constexpr PlatformDefaults DEFAULTS {
 /// Get kernel virtual base address
 [[nodiscard]] inline constexpr VirtAddr kernel_virt_base() noexcept {
   return DEFAULTS.memory.kernel_virt;
+}
+
+/// Get default timer IRQ number
+[[nodiscard]] inline constexpr u32 timer_irq() noexcept {
+  return DEFAULTS.timer.irq;
+}
+
+/// Get default timer frequency (0 = discover at runtime)
+[[nodiscard]] inline constexpr u64 timer_frequency() noexcept {
+  return DEFAULTS.timer.frequency;
 }
 
 // ============================================================================

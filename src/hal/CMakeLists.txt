@@ -2,3 +2,4 @@
 add_subdirectory(mmu)
 add_subdirectory(intc)
 add_subdirectory(uart)
+add_subdirectory(timer)

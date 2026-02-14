@@ -114,6 +114,13 @@ extern "C" {
     early_debug_print("⚠️ 中断处理系统: GIC未初始化\n");
   }
 
+  // 验证定时器系统状态
+  if (timer::TimerSubsystem::instance().is_initialized()) {
+    early_debug_print("✅ 定时器子系统: 已初始化\n");
+  } else {
+    early_debug_print("⚠️ 定时器子系统: 未初始化\n");
+  }
+
   // 验证调度系统状态
   if (process::g_scheduler) {
     early_debug_print("✅ 任务调度系统: CFS调度器已就绪, 准备创建和调度任务\n");
