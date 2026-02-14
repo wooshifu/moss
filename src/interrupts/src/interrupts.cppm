@@ -695,4 +695,9 @@ const char *sgi_id_to_string(IpiSgiId sgi) noexcept;
 
 } // namespace hw_simple
 
+// === Module-level variable definitions ===
+
+// Global GIC instance
+GenericInterruptController *g_gic = nullptr;
+
 } // namespace moss::kernel::interrupts

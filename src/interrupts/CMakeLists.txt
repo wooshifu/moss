@@ -5,7 +5,6 @@ add_library(moss_interrupts OBJECT)
 target_sources(moss_interrupts
     PUBLIC FILE_SET CXX_MODULES FILES src/interrupts.cppm
     PRIVATE
-        src/interrupts.cpp
         src/ipi_simple.cpp
         src/ipi_hardware_simple.cpp)
 
