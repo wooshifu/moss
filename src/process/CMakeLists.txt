@@ -21,6 +21,6 @@ target_sources(moss_process
 
 target_compile_definitions(moss_process PRIVATE MOSS_PROCESS_MODULE)
 
-target_link_libraries(moss_process PRIVATE moss_core moss_aal moss_containers moss_mm moss_drivers moss_interrupts moss_ipc moss_timer moss_hal_timer moss_platform)
+target_link_libraries(moss_process PRIVATE moss_core moss_aal moss_containers moss_mm moss_drivers moss_interrupts moss_ipc moss_timer moss_hal_timer moss_logging moss_platform)
 
 message(STATUS "进程模块配置完成")
