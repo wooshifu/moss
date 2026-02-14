@@ -590,6 +590,7 @@ void wakeup_idle_cpu(u32 cpu_id) noexcept;
 // CFS run queue (red-black tree implementation)
 class CfsRunqueue {
 private:
+  mutable containers::IrqSpinLock lock_;
   RbNode<Thread> *rb_root_;
   RbNode<Thread> *rb_leftmost_;
 
@@ -616,6 +617,7 @@ public:
   void enqueue_task(Thread *thread) noexcept {
     if (thread == nullptr)
       return;
+    containers::LockGuard<containers::IrqSpinLock> guard(lock_);
 
     if (thread->se.vruntime == 0 && thread->tid < 1001) {
       thread->se.vruntime = calc_initial_vruntime();
@@ -634,6 +636,7 @@ public:
   void dequeue_task(Thread *thread) noexcept {
     if (thread == nullptr)
       return;
+    containers::LockGuard<containers::IrqSpinLock> guard(lock_);
 
     static u64 dequeue_count = 0;
     dequeue_count++;
@@ -653,6 +656,7 @@ public:
   }
 
   [[nodiscard]] Thread *pick_next_task() noexcept {
+    containers::LockGuard<containers::IrqSpinLock> guard(lock_);
     if (rb_leftmost_ == nullptr) {
       return nullptr;
     }
@@ -677,6 +681,7 @@ public:
   void update_curr_task(Thread *current, u64 delta_exec) noexcept {
     if (current == nullptr)
       return;
+    containers::LockGuard<containers::IrqSpinLock> guard(lock_);
 
     u64 old_vruntime = current->se.vruntime;
 
@@ -698,14 +703,22 @@ public:
 
     min_vruntime_ = kernel_max(min_vruntime_, current->se.vruntime);
 
-    if (should_preempt(current)) {
+    if (should_preempt_unlocked(current)) {
       // Set reschedule flag (in actual implementation)
     }
 
     update_load_tracking(current, delta_exec);
   }
 
-  [[nodiscard]] bool should_preempt(Thread *current) const noexcept {
+  // Public version: acquires lock for external callers
+  [[nodiscard]] bool should_preempt(Thread *current) noexcept {
+    containers::LockGuard<containers::IrqSpinLock> guard(lock_);
+    return should_preempt_unlocked(current);
+  }
+
+private:
+  // Internal version: no lock, called from within already-locked methods
+  [[nodiscard]] bool should_preempt_unlocked(Thread *current) const noexcept {
     if (current == nullptr || rb_leftmost_ == nullptr) {
       return false;
     }
@@ -722,6 +735,8 @@ public:
 
     return delta_exec > ideal_runtime;
   }
+
+public:
 
   [[nodiscard]] u32 nr_running() const noexcept { return nr_running_; }
   [[nodiscard]] u64 min_vruntime() const noexcept { return min_vruntime_; }
@@ -1377,7 +1392,7 @@ public:
     }
   }
 
-  [[nodiscard]] bool should_preempt_current(Thread *current) const noexcept {
+  [[nodiscard]] bool should_preempt_current(Thread *current) noexcept {
     if (current == nullptr)
       return false;
 
