@@ -9,6 +9,7 @@ module moss.mm;
 namespace moss::kernel::mm {
 
 // 静态成员定义
+containers::IrqSpinLock RuntimeHeapAllocator::lock_;
 bool RuntimeHeapAllocator::initialized_ = false;
 VirtAddr RuntimeHeapAllocator::heap_start_ = 0;
 VirtAddr RuntimeHeapAllocator::heap_end_ = 0;
@@ -57,6 +58,7 @@ HeapAllocResult<void*> RuntimeHeapAllocator::allocate_aligned(usize size, usize 
     if (!initialized_) {
         return HeapAllocResult<void*>{HeapAllocError::InitializationFailed};
     }
+    containers::LockGuard<containers::IrqSpinLock> guard(lock_);
 
     if (size == 0) {
         return HeapAllocResult<void*>{HeapAllocError::InvalidSize};
@@ -114,6 +116,7 @@ HeapAllocVoidResult RuntimeHeapAllocator::deallocate(void* ptr, [[maybe_unused]]
     if (!initialized_) {
         return HeapAllocVoidResult{HeapAllocError::InitializationFailed};
     }
+    containers::LockGuard<containers::IrqSpinLock> guard(lock_);
 
     if (ptr == nullptr) {
         return HeapAllocVoidResult{};  // 释放nullptr是合法的

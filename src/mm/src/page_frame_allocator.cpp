@@ -16,6 +16,7 @@ module moss.mm;
 namespace moss::kernel::mm {
 
 // 静态成员定义
+containers::IrqSpinLock PageFrameAllocator::lock_;
 bool PageFrameAllocator::initialized_ = false;
 PageFrameAllocator::MemoryRegion* PageFrameAllocator::memory_regions_ = nullptr;
 PageFrameAllocator::FreeBlock* PageFrameAllocator::free_lists_[MAX_ORDER + 1] = {nullptr};
@@ -53,6 +54,7 @@ PageAllocResult<PhysAddr> PageFrameAllocator::allocate_pages(usize order) noexce
     if (!initialized_) {
         return PageAllocResult<PhysAddr>{PageAllocError::InitializationFailed};
     }
+    containers::LockGuard<containers::IrqSpinLock> guard(lock_);
 
     if (order > MAX_ORDER) {
         return PageAllocResult<PhysAddr>{PageAllocError::InvalidOrder};
@@ -95,6 +97,7 @@ PageAllocVoidResult PageFrameAllocator::free_pages(PhysAddr addr, usize order) n
     if (!initialized_) {
         return PageAllocVoidResult{PageAllocError::InitializationFailed};
     }
+    containers::LockGuard<containers::IrqSpinLock> guard(lock_);
 
     if (order > MAX_ORDER) {
         return PageAllocVoidResult{PageAllocError::InvalidOrder};
