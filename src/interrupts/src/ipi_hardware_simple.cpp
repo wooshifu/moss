@@ -3,10 +3,9 @@
 
 module moss.interrupts;
 
-// External debug print function
-extern "C" void early_debug_print(const char *message) noexcept;
-
 namespace moss::kernel::interrupts::hw_simple {
+
+namespace log = moss::kernel::logging;
 
 // Forward declare static SGI handler functions
 static void handle_ping_sgi(InterruptId irq, void *context) noexcept;
@@ -35,14 +34,14 @@ VoidResult SimpleHardwareIpi::initialize(GenericInterruptController *gic,
   max_cpus_ = max_cpus;
   message_sequence_ = 1;
 
-  early_debug_print("Hardware IPI system initializing...\n");
+  log::klog::info("Hardware IPI system initializing...");
 
   // Register core IPI SGI handlers to GIC
   auto ping_result = gic_->register_interrupt(
       static_cast<InterruptId>(IpiSgiId::Ping), handle_ping_sgi, this,
       "IPI-Ping");
   if (!ping_result) {
-    early_debug_print("Failed to register Ping SGI\n");
+    log::klog::error("Failed to register Ping SGI");
     return ping_result;
   }
 
@@ -50,7 +49,7 @@ VoidResult SimpleHardwareIpi::initialize(GenericInterruptController *gic,
       static_cast<InterruptId>(IpiSgiId::Reschedule), handle_reschedule_sgi,
       this, "IPI-Reschedule");
   if (!reschedule_result) {
-    early_debug_print("Failed to register Reschedule SGI\n");
+    log::klog::error("Failed to register Reschedule SGI");
     return reschedule_result;
   }
 
@@ -61,12 +60,12 @@ VoidResult SimpleHardwareIpi::initialize(GenericInterruptController *gic,
       gic_->enable_interrupt(static_cast<InterruptId>(IpiSgiId::Reschedule));
 
   if (!enable_ping || !enable_reschedule) {
-    early_debug_print("Failed to enable SGI interrupts\n");
+    log::klog::error("Failed to enable SGI interrupts");
     return VoidResult{ErrorCode::InvalidState};
   }
 
   initialized_ = true;
-  early_debug_print("Hardware IPI system initialized successfully\n");
+  log::klog::info("Hardware IPI system initialized successfully");
 
   return VoidResult{};
 }
@@ -153,13 +152,13 @@ IpiResult SimpleHardwareIpi::wakeup_cpu(u32 target_cpu) noexcept {
 static void handle_ping_sgi(InterruptId /* irq */,
                              void * /* context */) noexcept {
   // Ping received on current CPU
-  early_debug_print("Ping SGI received\n");
+  log::klog::debug("Ping SGI received");
 }
 
 static void handle_reschedule_sgi(InterruptId /* irq */,
                                    void * /* context */) noexcept {
   // Reschedule request received
-  early_debug_print("Reschedule SGI received\n");
+  log::klog::debug("Reschedule SGI received");
 }
 
 // === Internal helper implementations ===
@@ -205,17 +204,17 @@ VoidResult SimpleHardwareIpi::self_test() noexcept {
     return VoidResult{ErrorCode::InvalidState};
   }
 
-  early_debug_print("Hardware IPI self-test started\n");
+  log::klog::info("Hardware IPI self-test started");
 
   for (u32 target_cpu = 1; target_cpu < max_cpus_; ++target_cpu) {
     auto result = ping_cpu(target_cpu);
     if (result != IpiResult::Success) {
-      early_debug_print("Hardware IPI self-test failed\n");
+      log::klog::error("Hardware IPI self-test failed");
       return VoidResult{ErrorCode::InvalidState};
     }
   }
 
-  early_debug_print("Hardware IPI self-test passed\n");
+  log::klog::info("Hardware IPI self-test passed");
   return VoidResult{};
 }
 

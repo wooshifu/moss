@@ -23,8 +23,6 @@ extern "C" {
     extern char _kernel_end_addr[];
     extern char _heap_start_addr[];
     extern char _heap_end_addr[];
-
-    void early_debug_print(const char *message) noexcept;
 }
 
 export module moss.mm;
@@ -37,6 +35,7 @@ import moss.containers;
 import moss.arch;
 import moss.platform;
 import moss.hal.mmu;
+import moss.logging;
 
 // ============================================================================
 // Global-scope constants (originally outside namespace in buddy_allocator_v2.hpp)
@@ -60,6 +59,8 @@ using moss::kernel::VirtAddr;
 using moss::kernel::ErrorCode;
 using moss::kernel::KernelResult;
 using moss::kernel::VoidResult;
+
+namespace log = moss::kernel::logging;
 
 // ========================================================================
 // memory_stats.hpp - Basic enums (needed by mm_interface types)
@@ -2863,19 +2864,19 @@ inline UnifiedMemoryManager::SystemPerformanceStats get_memory_stats() noexcept 
     return UnifiedMemoryManager::get_performance_stats();
 }
 
-// Print memory stats (uses centralized early_debug_print for UART output)
+// Print memory stats (uses klog for UART output)
 inline void print_memory_stats() noexcept {
     [[maybe_unused]] auto stats = get_memory_stats();
-    early_debug_print("\n=== MEMORY SYSTEM STATS ===\n");
+    log::klog::info("=== MEMORY SYSTEM STATS ===");
 }
 
-// Check memory leaks (uses centralized early_debug_print for UART output)
+// Check memory leaks (uses klog for UART output)
 inline void check_memory_leaks() noexcept {
     auto leak_result = UnifiedMemoryManager::generate_leak_report();
     if (leak_result.is_ok()) {
         auto report = *leak_result;
         if (report.total_leaked_bytes > 0) {
-            early_debug_print("\nMEMORY LEAKS DETECTED!\n");
+            log::klog::warn("MEMORY LEAKS DETECTED!");
         }
     }
 }
