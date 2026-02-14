@@ -240,6 +240,7 @@ add_subdirectory(src/mm)
 add_subdirectory(src/drivers)
 add_subdirectory(src/interrupts)
 add_subdirectory(src/ipc)
+add_subdirectory(src/timer)
 add_subdirectory(src/process)
 add_subdirectory(src/kernel)
 add_subdirectory(src/boot)
@@ -255,6 +256,7 @@ target_link_libraries(
           moss_hal_mmu
           moss_hal_intc
           moss_hal_uart
+          moss_hal_timer
           moss_fdt
           moss_libfdt_c
           moss_boot
@@ -264,6 +266,7 @@ target_link_libraries(
           moss_drivers
           moss_interrupts
           moss_ipc
+          moss_timer
           moss_process
           )
 

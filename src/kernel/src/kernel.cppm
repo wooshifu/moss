@@ -48,6 +48,7 @@ import moss.drivers;
 import moss.fdt;
 import moss.ipc;
 import moss.process;
+import moss.timer;
 import moss.boot;
 
 // ============================================================================
@@ -917,6 +918,17 @@ private:
     }
     container_lib_ =
         nullptr; // ContainerLibrary is a singleton/static, no instance needed
+
+    // Initialize timer subsystem (clocksource + hardware timer)
+    kernel_print("Initializing timer subsystem...\n");
+    auto timer_result = timer::TimerSubsystem::instance().initialize();
+    if (!timer_result) {
+      kernel_print("Timer subsystem init failed (non-fatal)\n");
+      // Non-fatal: kernel can operate without timer, just no preemption
+    } else {
+      auto freq = timer::TimerSubsystem::instance().clocksource().frequency_hz();
+      kernel_print("Timer subsystem initialized: freq=%llu Hz\n", freq);
+    }
 
     return VoidResult{};
   }
