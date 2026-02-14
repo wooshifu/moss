@@ -1076,7 +1076,11 @@ public:
   template <typename K> bool remove(const K &key) {
     moss::kernel::usize bucket_idx = hash_key(key) & BUCKET_MASK;
 
-    bool removed = buckets_[bucket_idx].remove(Entry{key, Value{}});
+    bool removed;
+    {
+      RcuReadLock read_lock;
+      removed = buckets_[bucket_idx].remove(Entry{key, Value{}});
+    }
     if (removed) {
       (void)size_.fetch_sub(1, MemoryOrder::Relaxed);
     }

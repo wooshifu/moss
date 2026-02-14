@@ -1109,39 +1109,53 @@ private:
 #if defined(MOSS_ARCH_ARM64)
     using namespace process;
 
-    log::klog::info("creating init user process (TID=1000)");
+    log::klog::info("creating init user process (PID=1, TID=1000)");
 
-    // Allocate a Thread control block
-    auto *init_thread = new Thread(1000, 1);
+    // Step 1: Register PID=1 in the ProcessManager so sys_exit can find it.
+    // create_process() allocates a PID (will be 1, the first allocated) and
+    // inserts the Process into the processes_ hash map.
+    if (!process_manager_) {
+      log::klog::error("process manager not initialized");
+      return VoidResult{ErrorCode::InvalidState};
+    }
+    auto proc_result = process_manager_->create_process(0);
+    if (!proc_result) {
+      log::klog::error("failed to create init process");
+      return VoidResult{proc_result.error()};
+    }
+    Process *init_proc = proc_result.value();
+    ProcessId init_pid = init_proc->pid();
+    log::klog::info("init process registered: PID={}", init_pid);
+
+    // Step 2: Manually create Thread.  We do NOT use Process::create_thread()
+    // because it requires address_space_ to be set (kernel init process uses
+    // identity mapping, not a private address space).
+    auto *init_thread = new Thread(1000, init_pid);
     if (!init_thread) {
       return VoidResult{ErrorCode::OutOfMemory};
     }
 
-    // Allocate a user-mode stack (16 KB, static)
+    // Step 3: Configure the user-mode context
     alignas(16) static char user_stack[16384];
     init_thread->stack_base = reinterpret_cast<VirtAddr>(user_stack);
     init_thread->stack_size = sizeof(user_stack);
-
-    // Set entry point to the embedded user program
     init_thread->context.pc = reinterpret_cast<u64>(_user_program_start);
-
-    // SP is set by switch_to_user from stack_base + stack_size - 16;
-    // context.sp is the kernel stack (not used for EL0).
     init_thread->context.sp = reinterpret_cast<u64>(
         user_stack + sizeof(user_stack) - 16);
-
-    // EL0t mode: all interrupts enabled, AArch64 state
-    init_thread->context.pstate = 0x00000000;
+    init_thread->context.pstate = 0x00000000;  // EL0t
 
     init_thread->sched_class = SchedClass::Normal;
     init_thread->se.nice = -5;  // Higher priority than test tasks
     init_thread->se.weight = CfsParams::nice_to_weight(-5);
-    // Set vruntime=1 (not 0) to bypass enqueue_task's calc_initial_vruntime()
+    // vruntime=1 (not 0) to bypass enqueue_task's calc_initial_vruntime()
     // override which replaces vruntime=0 with 100 for tid<1001.
     init_thread->se.vruntime = 1;
     init_thread->state = ProcessState::Ready;
 
-    // Enqueue into scheduler on CPU 0
+    // Mark process as running
+    init_proc->set_state(ProcessState::Running);
+
+    // Step 4: Enqueue into scheduler on CPU 0
     scheduler_->enqueue_task(init_thread, 0);
 
     log::klog::info("init process TID=1000 created: entry={:#x} stack={:#x}+{}",

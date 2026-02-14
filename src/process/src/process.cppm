@@ -9,6 +9,9 @@ module;
 
 // Assembly interop declarations (global module fragment)
 extern "C" void switch_to_user(void* context, unsigned long long user_stack);
+#if defined(__aarch64__) || defined(MOSS_ARCH_ARM64)
+extern "C" void context_switch(void* prev_context, void* next_context);
+#endif
 
 export module moss.process;
 
@@ -442,14 +445,9 @@ private:
 // Global process manager instance
 extern ProcessManager *g_process_manager;
 
-// Convenience functions
-[[nodiscard]] inline Process *current_process() noexcept {
-  return nullptr;
-}
-
-[[nodiscard]] inline Thread *current_thread() noexcept {
-  return nullptr;
-}
+// Convenience functions (defined after CfsScheduler — see below)
+[[nodiscard]] Thread *current_thread() noexcept;
+[[nodiscard]] Process *current_process() noexcept;
 
 [[nodiscard]] inline u32 current_cpu() noexcept {
   return arch::get_current_cpu_id();
@@ -1466,7 +1464,10 @@ public:
 
       test_threads[i]->context.sp = reinterpret_cast<u64>(test_task_stacks[i] + sizeof(test_task_stacks[i]) - 16);
       test_threads[i]->context.pc = reinterpret_cast<u64>(&test_task_entry);
-      test_threads[i]->context.pstate = 0x00000005;
+#if defined(MOSS_ARCH_ARM64)
+      test_threads[i]->context.x[30] = reinterpret_cast<u64>(&test_task_entry);  // LR = entry for context_switch ret
+#endif
+      test_threads[i]->context.pstate = 0x00000000;  // DAIF=0: all interrupts unmasked
 
       test_threads[i]->sched_class = process::SchedClass::Normal;
 
@@ -1497,48 +1498,32 @@ public:
   }
 
   void verify_task_diversity() noexcept {
-    log::klog::info("verifying task selection diversity...");
-
-    u32 unique_tids[20] = {0};
-    u32 unique_count = 0;
-    u32 total_selections = 0;
-
-    for (u32 test_round = 0; test_round < 50; test_round++) {
-      for (u32 cpu = 0; cpu < MAX_CPUS; cpu++) {
-        Thread* task = pick_next_task(cpu);
-        if (task != nullptr && task->tid >= 1001 && task->tid <= 1020) {
-          total_selections++;
-          u32 tid_index = static_cast<u32>(task->tid) - 1001;
-
-          if (unique_tids[tid_index] == 0) {
-            unique_tids[tid_index] = 1;
-            unique_count++;
-            log::klog::debug("   first select TID={} nice={} vruntime={}", static_cast<u32>(task->tid), task->se.nice, task->se.vruntime);
-          }
-
-          task->se.vruntime += 10000;
-
-          enqueue_task(task, cpu);
+    // Quick sanity check: just log per-CPU queue status.
+    // The old implementation had a bug (enqueue without dequeue) that
+    // created duplicate RB tree nodes and broke scheduling.
+    log::klog::info("verifying task queues...");
+    for (u32 cpu = 0; cpu < MAX_CPUS; cpu++) {
+      u32 nr = get_cpu_nr_running(cpu);
+      if (nr > 0) {
+        Thread *leftmost = pick_next_task(cpu);
+        if (leftmost) {
+          log::klog::info("  CPU{}: {} tasks, leftmost TID={} vruntime={}",
+                          cpu, nr, static_cast<u32>(leftmost->tid),
+                          leftmost->se.vruntime);
         }
       }
-    }
-
-    log::klog::info("diversity verification results:");
-    log::klog::info("   total selections: {}", total_selections);
-    log::klog::info("   unique tasks: {}/20", unique_count);
-
-    if (unique_count >= 15) {
-      log::klog::info("scheduler diversity verification passed");
-    } else if (unique_count >= 5) {
-      log::klog::warn("scheduler diversity partially passed");
-    } else {
-      log::klog::error("scheduler diversity verification failed");
     }
     log::klog::info("starting main scheduling loop...");
   }
 
 private:
   static Thread* current_running_tasks_[MAX_CPUS];
+
+  // Per-CPU bootstrap context — used as "prev" save target when there is
+  // no current task (e.g. schedule_after_exit or first dispatch).
+  // context_switch() saves the caller's registers here; the new task
+  // starts on its own stack.  Restoring bootstrap returns to the caller.
+  static CpuContext bootstrap_contexts_[MAX_CPUS];
 
 public:
   static void set_current_task(Thread* task) noexcept {
@@ -1554,6 +1539,14 @@ public:
   }
 
   [[noreturn]] static void test_task_entry() noexcept {
+    // Enable IRQs: context_switch does NOT restore DAIF, so when a fresh
+    // task is first-started from inside an IRQ handler (DAIF.I=1), we
+    // arrive here with interrupts masked.  Unmask IRQs so the timer can
+    // preempt us.
+#if defined(MOSS_ARCH_ARM64)
+    asm volatile("msr daifclr, #2" ::: "memory");
+#endif
+
     Thread* current_task = get_current_task();
     u32 task_tid = (current_task != nullptr) ? static_cast<u32>(current_task->tid) : 0;
     i32 task_nice = (current_task != nullptr) ? current_task->se.nice : 0;
@@ -1561,35 +1554,7 @@ public:
 
     log::klog::info("test task started! TID={} nice={} weight={} CPU={}", task_tid, task_nice, task_weight, CfsScheduler::get_current_cpu_id());
 
-    u64 last_print_time = CfsScheduler::get_current_time();
-    u64 print_counter = 0;
-    u64 loop_counter = 0;
-
-    u64 cycles_per_print = 1000000ULL;
-    if (task_nice < 0) {
-      cycles_per_print = 500000ULL;
-    } else if (task_nice > 5) {
-      cycles_per_print = 2000000ULL;
-    }
-
-    log::klog::debug("TID={} print interval={} cycles", task_tid, cycles_per_print);
-
     while (true) {
-      loop_counter++;
-      u64 current_time = CfsScheduler::get_current_time();
-      u64 time_elapsed = current_time - last_print_time;
-
-      if (time_elapsed >= cycles_per_print) {
-        print_counter++;
-        log::klog::debug("[TID={}] print #{} nice={} CPU={} time={} loops={}", task_tid, print_counter, task_nice, CfsScheduler::get_current_cpu_id(), current_time, loop_counter);
-
-        last_print_time = current_time;
-      }
-
-      if (loop_counter % 5000000 == 0) {
-        log::klog::debug("[TID={} nice={}] loop_count={} time={} vruntime={}", task_tid, task_nice, loop_counter, current_time, (current_task != nullptr) ? current_task->se.vruntime : 0);
-      }
-
       if (task_nice < 0) {
         for (volatile int work = 0; work < 1000; work = work + 1) {
         }
@@ -1629,21 +1594,42 @@ public:
 
   void scheduler_tick() noexcept {
     tick_count_++;
+    u32 cpu = get_current_cpu_id();
+    Thread *curr = get_current_task();
 
-    // Periodic status log (every ~500 ticks = ~3 seconds at 6ms tick)
-    if (tick_count_ % 500 == 0) {
-      u32 current_cpu = CfsScheduler::get_current_cpu_id();
-      if (timer::TimerSubsystem::instance().is_initialized()) {
-        log::klog::info("[sched_tick] tick={} CPU={} nr_running={} switches={} uptime_ms={}", tick_count_, current_cpu, get_cpu_nr_running(current_cpu), total_context_switches(), timer::TimerSubsystem::instance().now_ns() / 1000000);
-      } else {
-        log::klog::info("[sched_tick] tick={} CPU={} nr_running={} switches={}", tick_count_, current_cpu, get_cpu_nr_running(current_cpu), total_context_switches());
+    // Update vruntime for the currently running task
+    if (curr != nullptr && curr->state == ProcessState::Running) {
+      u64 now = get_current_time();
+      u64 delta = (now > curr->se.exec_start) ? (now - curr->se.exec_start) : 1000;
+      curr->se.exec_start = now;
+      update_current(curr, delta);
+
+      // Check if a higher-priority task is waiting (CFS: lower vruntime)
+      if (should_preempt_current(curr)) {
+        // Reset time-slice accounting so curr gets a fresh slice next time
+        curr->se.prev_sum_exec_runtime = curr->se.sum_exec_runtime;
+        curr->state = ProcessState::Ready;
+        record_preemption();
+
+        // Re-enqueue current task, pick the next one
+        enqueue_task(curr, cpu);
+        Thread *next = pick_next_task(cpu);
+        if (next != nullptr && next != curr) {
+          dequeue_task(next);
+          context_switch_to_task(next);
+          // Returns here when curr is scheduled again.
+        }
       }
     }
 
-    // Note: Full CFS pick_next + dequeue/enqueue is deferred to a
-    // bottom-half or softirq context in future work. The tick currently
-    // just bumps the counter and logs; actual rescheduling will be
-    // triggered by setting a need_resched flag (TODO).
+    // Periodic status log (every ~500 ticks = ~3 seconds at 6ms tick)
+    if (tick_count_ % 500 == 0) {
+      if (timer::TimerSubsystem::instance().is_initialized()) {
+        log::klog::info("[sched_tick] tick={} CPU={} nr_running={} switches={} preemptions={} uptime_ms={}", tick_count_, cpu, get_cpu_nr_running(cpu), total_context_switches(), total_preemptions(), timer::TimerSubsystem::instance().now_ns() / 1000000);
+      } else {
+        log::klog::info("[sched_tick] tick={} CPU={} nr_running={} switches={}", tick_count_, cpu, get_cpu_nr_running(cpu), total_context_switches());
+      }
+    }
   }
 
   [[noreturn]] void start_scheduling() noexcept {
@@ -1790,20 +1776,45 @@ private:
     if (task == nullptr)
       return;
 
+#if defined(MOSS_ARCH_ARM64)
+    // Save prev BEFORE updating current — context_switch needs it
+    Thread *prev = get_current_task();
+#endif
+
     CfsScheduler::set_current_task(task);
-
     task->state = ProcessState::Running;
-
+    task->se.exec_start = get_current_time();  // Reset for vruntime accounting
     record_context_switch();
 
-    if (task) {
-      if (task->tid == 1000) {
-        switch_to_user(&task->context, task->stack_base + task->stack_size - 16);
-      } else if (task->tid >= 1001 && task->tid <= 1020) {
-        test_task_entry();
+    if (task->tid == 1000) {
+      // User process — eret to EL0 (never returns)
+      switch_to_user(&task->context, task->stack_base + task->stack_size - 16);
+    } else {
+#if defined(MOSS_ARCH_ARM64)
+      // Kernel-to-kernel context switch via assembly.
+      // When prev is null (e.g. schedule_after_exit) or self-switch,
+      // use per-CPU bootstrap context as throwaway save target.
+      // This ensures the new task starts on its OWN stack.
+      CpuContext *prev_ctx;
+      if (prev != nullptr && prev != task) {
+        prev_ctx = &prev->context;
       } else {
-        // Other kernel thread context switch (placeholder)
+        prev_ctx = &bootstrap_contexts_[get_current_cpu_id()];
       }
+      // Mask IRQs before context_switch.  context_switch does NOT
+      // touch DAIF, so the new task inherits IRQ-masked state.
+      // Fresh tasks explicitly unmask in test_task_entry().
+      // Resumed tasks are inside irq_trampoline and eret restores
+      // the pre-IRQ PSTATE (with DAIF=0).
+      arch::disable_interrupts();
+      context_switch(prev_ctx, &task->context);
+      // Returns here when prev_ctx is scheduled again.
+      // Re-enable IRQs for the returned-to context.
+      arch::enable_interrupts();
+#else
+      // Non-ARM64: direct call (no asm context_switch yet)
+      test_task_entry();
+#endif
     }
   }
 
@@ -1822,10 +1833,48 @@ private:
   [[nodiscard]] static u64 get_current_time() noexcept {
     return arch::get_timestamp_counter();
   }
+
+public:
+  // Called after a process exits (sys_exit).  Picks the next runnable task
+  // and switches to it.  Never returns to the caller because the exited
+  // task's context is no longer valid.
+  [[noreturn]] void schedule_after_exit() noexcept {
+    u32 cpu = get_current_cpu_id();
+
+    // Clear current task — the old one is dead
+    set_current_task(nullptr);
+
+    // Loop: find a runnable task, switch to it.  When bootstrap context
+    // is restored (the task was preempted away or exited), try next.
+    while (true) {
+      Thread *next = pick_next_task(cpu);
+      if (next != nullptr) {
+        dequeue_task(next);
+        log::klog::info("schedule_after_exit: switching to TID={}", static_cast<u32>(next->tid));
+        context_switch_to_task(next);
+        // context_switch returned — bootstrap context restored.
+        // The task was preempted or exited.  Re-clear and retry.
+        set_current_task(nullptr);
+      } else {
+        // No runnable tasks: idle until timer interrupt enqueues work
+        arch::cpu_idle_once();
+      }
+    }
+  }
 };
 
 // Global CFS scheduler instance
 extern CfsScheduler *g_scheduler;
+
+// current_thread / current_process implementation (needs CfsScheduler to be defined)
+inline Thread *current_thread() noexcept {
+  return CfsScheduler::get_current_task();
+}
+inline Process *current_process() noexcept {
+  Thread *t = current_thread();
+  if (!t || !g_process_manager) return nullptr;
+  return g_process_manager->find_process(t->owner_pid);
+}
 
 // ============================================================================
 // load_balancer.hpp - Multi-core load balancer

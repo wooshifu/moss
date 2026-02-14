@@ -179,33 +179,45 @@ void TimerSubsystem::handle_interrupt() noexcept {
   // 1. Get current time
   u64 now = clocksource_.now_ns();
 
-  // 3. Fire all expired timers
+  // 2. Fire all expired timers
   while (queue_head_ != nullptr && queue_head_->expires_ns_ <= now) {
     HrTimer* expired = queue_head_;
     queue_head_ = expired->next_;
     expired->next_ = nullptr;
     expired->active_ = false;
 
-    // Fire callback
-    if (expired->callback_) {
-      expired->callback_(expired->callback_data_);
-    }
     stats_.timers_fired++;
 
-    // Re-enqueue periodic timers
+    // IMPORTANT: Re-enqueue periodic timers and reprogram hardware
+    // BEFORE firing the callback.  The callback (e.g. scheduler_tick)
+    // may call context_switch(), which suspends the current execution
+    // and never returns.  If we wait until after the callback,
+    // the re-enqueue and reprogram_next() will never execute,
+    // and the timer stops forever.
     if (expired->mode_ == TimerMode::Periodic && expired->interval_ns_ > 0) {
       expired->expires_ns_ += expired->interval_ns_;
       expired->active_ = true;
       enqueue(expired);
-      // Refresh now — enqueue may have taken time
-      now = clocksource_.now_ns();
     }
+
+    // Reprogram hardware for the (possibly re-enqueued) next timer.
+    // This ensures the hardware compare value is set even if the
+    // callback below does context_switch and never returns.
+    reprogram_next();
+
+    // Fire callback — may context_switch and not return!
+    if (expired->callback_) {
+      expired->callback_(expired->callback_data_);
+    }
+
+    // Refresh now for next iteration (if callback returned)
+    now = clocksource_.now_ns();
   }
 
-  // 4. Reprogram hardware for next pending timer
+  // 3. Final reprogram in case no timers fired or all returned normally
   reprogram_next();
 
-  // 5. Update statistics
+  // 4. Update statistics
   stats_.total_interrupts++;
 }
 
