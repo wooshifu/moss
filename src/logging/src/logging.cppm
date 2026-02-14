@@ -57,14 +57,24 @@ namespace uart = moss::kernel::hal::uart;
 //   klog::info("x={}", val);   // same — no syntax change needed
 // ============================================================================
 
+// Compile-time feature detection: prefer __builtin_FILE_NAME() (basename only,
+// no runtime stripping needed) and fall back to __builtin_FILE() (full path).
+#if __has_builtin(__builtin_FILE_NAME)
+#  define MOSS_LOG_FILE_BUILTIN __builtin_FILE_NAME()
+inline constexpr bool kFileBuiltinIsBareNameOnly = true;
+#else
+#  define MOSS_LOG_FILE_BUILTIN __builtin_FILE()
+inline constexpr bool kFileBuiltinIsBareNameOnly = false;
+#endif
+
 struct FmtStr {
   const char* value;
   const char* file;
   unsigned    line;
 
-  // Implicit conversion from string literal — captures source location
+  // Implicit conversion from string literal — captures source location.
   constexpr FmtStr(const char* s,
-                   const char* f = __builtin_FILE(),
+                   const char* f = MOSS_LOG_FILE_BUILTIN,
                    unsigned    l = __builtin_LINE()) noexcept
       : value(s), file(f), line(l) {}
 };
@@ -167,15 +177,19 @@ public:
     append_str(v ? "true" : "false");
   }
 
-  // Extract basename from full path and format as "file:line "
+  // Format as "file:line "
   void append_source_loc(const char *file, unsigned line) noexcept {
     if (!file) return;
-    // Find last '/' to extract basename
-    const char *basename = file;
-    for (const char *p = file; *p; p++) {
-      if (*p == '/') basename = p + 1;
+    const char *name = file;
+    // When __builtin_FILE_NAME() is available, file is already a bare
+    // filename — skip the runtime scan entirely.  Otherwise strip the
+    // directory prefix at runtime (handles both '/' and '\\').
+    if constexpr (!kFileBuiltinIsBareNameOnly) {
+      for (const char *p = file; *p; p++) {
+        if (*p == '/' || *p == '\\') name = p + 1;
+      }
     }
-    append_str(basename);
+    append_str(name);
     append_char(':');
     append_dec(static_cast<u64>(line));
     append_char(' ');
