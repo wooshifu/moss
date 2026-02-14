@@ -32,6 +32,9 @@ extern char _pagetable_start_addr[];
 extern char _pagetable_end_addr[];
 extern char _kernel_end_addr[];
 
+// Exception vectors defined in start_arm64.S
+extern char exception_vectors[];
+
 void mark_runtime_heap_ready() noexcept;
 
 // CPU startup protocol assembly symbols
@@ -84,7 +87,7 @@ enum class CpuState : u32 {
 struct CpuTopology {
     u32 total_cpus;
     u32 online_cpus;
-    CpuState cpu_states[moss::kernel::MAX_CPUS];
+    volatile CpuState cpu_states[moss::kernel::MAX_CPUS];
     u64 boot_timestamps[moss::kernel::MAX_CPUS];
     bool detection_completed;
 };
@@ -115,7 +118,7 @@ static u32 probe_available_cpus() noexcept {
     // Priority 2: Estimate from linker-allocated stack space
     auto total_stack_size = reinterpret_cast<u64>(_stack_top_addr) -
                             reinterpret_cast<u64>(_stack_bottom_addr);
-    u32 stack_based = static_cast<u32>(total_stack_size / (16 * 1024));
+    u32 stack_based = static_cast<u32>(total_stack_size / (32 * 1024));
     if (stack_based >= 1 && stack_based <= moss::kernel::MAX_CPUS) {
         return stack_based;
     }
@@ -238,13 +241,18 @@ bool wait_for_cpu_state(u32 cpu_id, CpuState expected_state, u32 timeout_ms) noe
     }
 
     u32 elapsed = 0;
-    while (g_cpu_topology.cpu_states[cpu_id] != expected_state && elapsed < timeout_ms) {
+    while (elapsed < timeout_ms) {
+        asm volatile("dmb sy" ::: "memory");
+        if (g_cpu_topology.cpu_states[cpu_id] == expected_state) {
+            return true;
+        }
         for (volatile u32 i = 0; i < 10000; i = i + 1) {
             asm volatile("nop");
         }
         elapsed += 10;
     }
 
+    asm volatile("dmb sy" ::: "memory");
     return g_cpu_topology.cpu_states[cpu_id] == expected_state;
 }
 
@@ -291,64 +299,75 @@ bool wait_for_cpu_state(u32 cpu_id, CpuState expected_state, u32 timeout_ms) noe
     }
 }
 
-// Secondary CPU entry point
+// Secondary CPU entry point — park first, then full subsystem initialization
+// on activation by CPU 0 (after GIC distributor and timer are ready).
 extern "C" [[noreturn]] void secondary_cpu_entry() noexcept {
-    volatile u32 *uart_base = reinterpret_cast<volatile u32 *>(moss::kernel::platform::uart_base());
-    uart_base[0] = 'S';
-    uart_base[0] = 'E';
-    uart_base[0] = 'C';
-    uart_base[0] = '!';
-    uart_base[0] = 10;
-
+    // 1. Read CPU ID from hardware
     u64 mpidr;
     asm volatile("mrs %0, mpidr_el1" : "=r"(mpidr));
     u32 cpu_id = static_cast<u32>(mpidr & 0xFF);
 
-    uart_base[0] = 'C';
-    uart_base[0] = 'P';
-    uart_base[0] = 'U';
-    uart_base[0] = (cpu_id + '0');
-    uart_base[0] = ':';
-    uart_base[0] = 'S';
-    uart_base[0] = 10;
+    // Minimal UART output — avoid flooding FIFO while CPU 0 is printing
+    volatile u8 *uart_out = reinterpret_cast<volatile u8 *>(0x09000000);
+    uart_out[0] = 'S';
+    uart_out[0] = '0' + static_cast<u8>(cpu_id % 10);
+    uart_out[0] = '\n';
 
-    uart_base[0] = '1';
-    uart_base[0] = 10;
+    // --- Phase 1: Park and wait for CPU 0 to finish initialization ---
+    // Directly set state without UART output to avoid FIFO contention
+    if (cpu_id < moss::kernel::MAX_CPUS) {
+        g_cpu_topology.cpu_states[cpu_id] = CpuState::Parked;
+        asm volatile("dmb sy" ::: "memory");
+    }
 
-    asm volatile("dsb sy");
+    // Wait until CPU 0 marks us as Active (meaning all subsystems are ready)
+    while (!is_cpu_in_state(cpu_id, CpuState::Active)) {
+        asm volatile("wfe");
+    }
+
+    uart_out[0] = 'I';
+    uart_out[0] = '0' + static_cast<u8>(cpu_id % 10);
+    uart_out[0] = '\n';
+
+    // --- Phase 2: Full subsystem initialization (GIC/timer are ready) ---
+
+    // 2. Set exception vectors (same as CPU 0)
+    asm volatile("msr vbar_el1, %0" :: "r"(exception_vectors));
     asm volatile("isb");
 
-    uart_base[0] = '2';
-    uart_base[0] = 10;
+    // 3. Enable FP/NEON access
+    u64 cpacr = (3ULL << 20);
+    asm volatile("msr cpacr_el1, %0" :: "r"(cpacr));
+    asm volatile("isb");
 
-    uart_base[0] = '3';
-    uart_base[0] = 10;
+    // 4. Initialize GIC CPU interface for this CPU
+    const auto &plat = moss::fdt::get_platform_info();
+    moss::kernel::VirtAddr gic_cpu_base =
+        (plat.dtb_valid && plat.intc.valid)
+            ? static_cast<moss::kernel::VirtAddr>(plat.intc.cpu_base)
+            : moss::kernel::platform::intc_cpu_base();
+    (void)moss::kernel::hal::intc::init_cpu_interface(gic_cpu_base);
 
+    // 5. Enable per-CPU timer
+    moss::kernel::hal::timer::enable();
+    // Set compare far in the future to avoid spurious interrupt
+    u64 counter_now = moss::kernel::hal::timer::read_counter();
+    moss::kernel::hal::timer::set_compare(
+        counter_now + moss::kernel::timer::TimerSubsystem::instance().clocksource().ns_to_cycles(1000000000ULL));
+
+    // 6. Mark CPU as online (init complete)
     asm volatile("dmb sy" ::: "memory");
     mark_cpu_online(cpu_id);
     asm volatile("dmb sy" ::: "memory");
-
-    uart_base[0] = '4';
-    uart_base[0] = 10;
-
-    cpu_startup_flags[cpu_id][1] = 0xDEADBEEF;
-
-    uart_base[0] = '5';
-    uart_base[0] = 10;
-
-    asm volatile("dc civac, %0" : : "r"(&g_cpu_topology.cpu_states[cpu_id]) : "memory");
-    asm volatile("dc civac, %0" : : "r"(&cpu_startup_flags[cpu_id][1]) : "memory");
-    asm volatile("dsb sy" ::: "memory");
-
     asm volatile("sev" ::: "memory");
 
-    uart_base[0] = 'P';
-    uart_base[0] = 'A';
-    uart_base[0] = 'R';
-    uart_base[0] = 'K';
-    uart_base[0] = 10;
+    uart_out[0] = 'R';
+    uart_out[0] = '0' + static_cast<u8>(cpu_id % 10);
+    uart_out[0] = '\n';
 
-    cpu_park(cpu_id);
+    // 7. Enable IRQs and enter scheduling loop (never returns)
+    asm volatile("msr daifclr, #2" ::: "memory");
+    moss::kernel::process::secondary_cpu_schedule_loop(cpu_id);
 }
 
 // === Linux-style global GIC hardware instances ===
@@ -360,19 +379,26 @@ bool g_gic_hardware_available = false;
 
 } // namespace moss::boot
 
-/// Activate all parked secondary CPUs
+/// Activate parked secondary CPUs: mark Active (to unblock their init),
+/// then wait for them to reach Online (init complete, scheduling loop entered).
 namespace moss::boot {
 void activate_secondary_cpus() noexcept {
     u32 successfully_activated = 0;
 
     for (u32 cpu_id = 1; cpu_id < g_cpu_topology.total_cpus; ++cpu_id) {
-        if (is_cpu_in_state(cpu_id, CpuState::Parked)) {
-            mark_cpu_active(cpu_id);
-            asm volatile("sev");
+        // Wait for secondary CPU to reach Parked state (PSCI may take time)
+        if (!wait_for_cpu_state(cpu_id, CpuState::Parked, 3000)) {
+            continue;
+        }
 
-            if (wait_for_cpu_state(cpu_id, CpuState::Active, 1000)) {
-                successfully_activated++;
-            }
+        // Unblock secondary CPU from its WFE loop
+        mark_cpu_active(cpu_id);
+        asm volatile("dmb sy" ::: "memory");
+        asm volatile("sev");
+
+        // Wait for it to finish init and reach Online state
+        if (wait_for_cpu_state(cpu_id, CpuState::Online, 3000)) {
+            successfully_activated++;
         }
     }
 
@@ -387,7 +413,8 @@ u32 wait_for_all_cpus_active(u32 timeout_ms) noexcept {
         active_count = 1;
 
         for (u32 cpu_id = 1; cpu_id < g_cpu_topology.total_cpus; ++cpu_id) {
-            if (is_cpu_in_state(cpu_id, CpuState::Active)) {
+            if (is_cpu_in_state(cpu_id, CpuState::Active) ||
+                is_cpu_in_state(cpu_id, CpuState::Online)) {
                 active_count++;
             }
         }
@@ -678,6 +705,12 @@ void update_boot_stage(BootStage stage, ::moss::kernel::ErrorCode error) noexcep
             early_print_hex(static_cast<u64>(cpu_id));
             early_print(" via PSCI...\n");
 
+            // Mark Starting BEFORE PSCI call to avoid race: secondary CPU
+            // may reach Parked before we return from PSCI, and we must not
+            // overwrite its Parked state with Starting.
+            g_cpu_topology.cpu_states[cpu_id] = CpuState::Starting;
+            asm volatile("dmb sy" ::: "memory");
+
             cpu_startup_flags[cpu_id][0] = reinterpret_cast<u64>(secondary_cpu_entry);
             cpu_startup_flags[cpu_id][1] = 1;
 
@@ -707,7 +740,6 @@ void update_boot_stage(BootStage stage, ::moss::kernel::ErrorCode error) noexcep
 
             if (psci_result == 0) {
                 early_print(" (success)\n");
-                g_cpu_topology.cpu_states[cpu_id] = CpuState::Starting;
             } else {
                 early_print(" (failed)\n");
                 continue;

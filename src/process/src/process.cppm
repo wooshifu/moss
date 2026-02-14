@@ -1541,6 +1541,10 @@ private:
   static CpuContext bootstrap_contexts_[MAX_CPUS];
 
 public:
+  static CpuContext& bootstrap_context(u32 cpu) noexcept {
+    return bootstrap_contexts_[cpu % MAX_CPUS];
+  }
+
   static void set_current_task(Thread* task) noexcept {
     u32 cpu = CfsScheduler::get_current_cpu_id();
     if (cpu < MAX_CPUS) {
@@ -1880,6 +1884,9 @@ public:
 
 // Global CFS scheduler instance
 extern CfsScheduler *g_scheduler;
+
+// Secondary CPU scheduling entry point -- called from boot_impl.cpp
+[[noreturn]] void secondary_cpu_schedule_loop(u32 cpu_id) noexcept;
 
 // current_thread / current_process implementation (needs CfsScheduler to be defined)
 inline Thread *current_thread() noexcept {

@@ -20,8 +20,12 @@ import moss.types;
 import moss.result;
 import moss.fdt;
 import moss.platform;
+import moss.arch;
 import moss.mm;
 import moss.interrupts;
+import moss.hal.intc;
+import moss.hal.timer;
+import moss.timer;
 import moss.process;
 
 // ============================================================================

@@ -106,11 +106,13 @@ extern "C" [[noreturn]] void unified_boot_main(void *device_tree_ptr) {
         ArchBoot::arch_panic("Interrupt/exception setup failed");
     }
 
-    // Stage 4: SMP support (temporarily skipped, single-core first)
-    boot_print("Stage 4: SMP support setup (temporarily skipped)\n");
-    ctx.total_cpus = 1;
-    boot_print("Single-core mode: 1 CPU\n");
-
+    // Stage 4: SMP support — boot secondary CPUs via PSCI
+    boot_print("Stage 4: SMP support setup\n");
+    auto smp_result = ArchBoot::setup_smp_support(ctx);
+    if (!smp_result) {
+        boot_print("Warning: SMP setup failed, falling back to single-core\n");
+        ctx.total_cpus = 1;
+    }
     boot_print("Stage 4: SMP support setup complete\n");
 
     // Stage 5: Architecture finalization
