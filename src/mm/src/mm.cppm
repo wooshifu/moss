@@ -172,6 +172,7 @@ private:
         FreeBlock* free_list_node;
     };
 
+    static containers::IrqSpinLock lock_;
     static bool initialized_;
     static MemoryRegion* memory_regions_;
     static FreeBlock* free_lists_[MAX_ORDER + 1];
@@ -454,6 +455,7 @@ private:
         [[nodiscard]] bool is_valid() const noexcept { return magic == MAGIC; }
     };
 
+    static containers::IrqSpinLock lock_;
     static bool initialized_;
     static VirtAddr heap_start_;
     static VirtAddr heap_end_;
