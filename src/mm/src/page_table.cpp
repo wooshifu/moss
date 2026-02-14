@@ -259,9 +259,8 @@ VoidResult PageTableManager::map_page(VirtAddr virt_addr, PhysAddr phys_addr,
     current_table->entries[addr_breakdown.pgd_index].set_table(pud_pa);
   }
 
-  PhysAddr pud_pa =
-      current_table->entries[addr_breakdown.pgd_index].get_phys_addr();
-  current_table = reinterpret_cast<PageTable *>(pud_pa);
+  current_table = get_table_from_physical(
+      current_table->entries[addr_breakdown.pgd_index].get_phys_addr());
 
   // PUD -> PMD
   if (!current_table->entries[addr_breakdown.pud_index].is_valid()) {
@@ -274,9 +273,8 @@ VoidResult PageTableManager::map_page(VirtAddr virt_addr, PhysAddr phys_addr,
     current_table->entries[addr_breakdown.pud_index].set_table(pmd_pa);
   }
 
-  PhysAddr pmd_pa =
-      current_table->entries[addr_breakdown.pud_index].get_phys_addr();
-  current_table = reinterpret_cast<PageTable *>(pmd_pa);
+  current_table = get_table_from_physical(
+      current_table->entries[addr_breakdown.pud_index].get_phys_addr());
 
   // PMD -> PTE
   if (!current_table->entries[addr_breakdown.pmd_index].is_valid()) {
@@ -289,9 +287,8 @@ VoidResult PageTableManager::map_page(VirtAddr virt_addr, PhysAddr phys_addr,
     current_table->entries[addr_breakdown.pmd_index].set_table(pte_pa);
   }
 
-  PhysAddr pte_pa =
-      current_table->entries[addr_breakdown.pmd_index].get_phys_addr();
-  current_table = reinterpret_cast<PageTable *>(pte_pa);
+  current_table = get_table_from_physical(
+      current_table->entries[addr_breakdown.pmd_index].get_phys_addr());
 
   // 设置最终的页表项
   current_table->entries[addr_breakdown.pte_index].set_block(phys_addr,
@@ -406,7 +403,8 @@ void PageTableManager::print_pgd_entries() {
       log::klog::debug_chain("PGD[").hex(i).str("] = ").hex(entry.raw).str(" -> L1 table @ ").hex(pud_pa);
 
       // Walk into L1 (PUD) table
-      auto *pud = reinterpret_cast<const PageTable *>(pud_pa);
+      auto *pud = static_cast<const PageTable *>(
+          static_cast<const void *>(get_table_from_physical(pud_pa)));
       for (usize j = 0; j < PageTable::ENTRIES_PER_TABLE; j++) {
         const auto &l1_entry = pud->entries[j];
         if (!l1_entry.is_valid()) continue;
@@ -505,7 +503,7 @@ VoidResult PageTableManager::unmap_page(VirtAddr virt_addr) {
   }
 
   // PUD level
-  auto* pud = reinterpret_cast<PageTable*>(pgd_entry.get_phys_addr());
+  auto* pud = get_table_from_physical(pgd_entry.get_phys_addr());
   auto& pud_entry = pud->entries[bd.pud_index];
   if (!pud_entry.is_valid()) {
     return VoidResult{ErrorCode::NotFound};
@@ -515,7 +513,7 @@ VoidResult PageTableManager::unmap_page(VirtAddr virt_addr) {
   }
 
   // PMD level
-  auto* pmd = reinterpret_cast<PageTable*>(pud_entry.get_phys_addr());
+  auto* pmd = get_table_from_physical(pud_entry.get_phys_addr());
   auto& pmd_entry = pmd->entries[bd.pmd_index];
   if (!pmd_entry.is_valid()) {
     return VoidResult{ErrorCode::NotFound};
@@ -525,7 +523,7 @@ VoidResult PageTableManager::unmap_page(VirtAddr virt_addr) {
   }
 
   // PTE level — the actual 4KB page
-  auto* pte_table = reinterpret_cast<PageTable*>(pmd_entry.get_phys_addr());
+  auto* pte_table = get_table_from_physical(pmd_entry.get_phys_addr());
   auto& pte_entry = pte_table->entries[bd.pte_index];
   if (!pte_entry.is_valid()) {
     return VoidResult{ErrorCode::NotFound};
@@ -565,7 +563,7 @@ PageTableManager::PageInfo PageTableManager::query_page(VirtAddr virt_addr) {
   }
 
   // PUD level
-  auto* pud = reinterpret_cast<PageTable*>(pgd_entry.get_phys_addr());
+  auto* pud = get_table_from_physical(pgd_entry.get_phys_addr());
   auto& pud_entry = pud->entries[bd.pud_index];
   if (!pud_entry.is_valid()) {
     return info;
@@ -580,7 +578,7 @@ PageTableManager::PageInfo PageTableManager::query_page(VirtAddr virt_addr) {
   }
 
   // PMD level
-  auto* pmd = reinterpret_cast<PageTable*>(pud_entry.get_phys_addr());
+  auto* pmd = get_table_from_physical(pud_entry.get_phys_addr());
   auto& pmd_entry = pmd->entries[bd.pmd_index];
   if (!pmd_entry.is_valid()) {
     return info;
@@ -595,7 +593,7 @@ PageTableManager::PageInfo PageTableManager::query_page(VirtAddr virt_addr) {
   }
 
   // PTE level — 4KB page
-  auto* pte_table = reinterpret_cast<PageTable*>(pmd_entry.get_phys_addr());
+  auto* pte_table = get_table_from_physical(pmd_entry.get_phys_addr());
   auto& pte_entry = pte_table->entries[bd.pte_index];
   if (!pte_entry.is_valid()) {
     return info;
