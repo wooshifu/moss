@@ -82,44 +82,20 @@ else()
   endif()
 endif()
 
-# 生成 QEMU 运行脚本 (向后兼容)
-set(QEMU_SCRIPT_TEMPLATE
-    "${CMAKE_SOURCE_DIR}/platform/qemu-virt/run_qemu.sh.in")
-set(QEMU_SCRIPT_OUTPUT "${CMAKE_BINARY_DIR}/run_qemu.sh")
-
-if(EXISTS ${QEMU_SCRIPT_TEMPLATE})
-  configure_file(${QEMU_SCRIPT_TEMPLATE} ${QEMU_SCRIPT_OUTPUT} @ONLY)
-  file(
-    CHMOD
-    ${QEMU_SCRIPT_OUTPUT}
-    PERMISSIONS
-    OWNER_READ
-    OWNER_WRITE
-    OWNER_EXECUTE
-    GROUP_READ
-    GROUP_EXECUTE
-    WORLD_READ
-    WORLD_EXECUTE)
-  message(STATUS "生成 QEMU 运行脚本: ${QEMU_SCRIPT_OUTPUT}")
-else()
-  # 回退到原始 QEMU 脚本 (向后兼容)
-  set(FALLBACK_QEMU_TEMPLATE "${CMAKE_SOURCE_DIR}/scripts/run_qemu.sh.in")
-  if(EXISTS ${FALLBACK_QEMU_TEMPLATE})
-    configure_file(${FALLBACK_QEMU_TEMPLATE} ${QEMU_SCRIPT_OUTPUT} @ONLY)
-    file(
-      CHMOD
-      ${QEMU_SCRIPT_OUTPUT}
-      PERMISSIONS
-      OWNER_READ
-      OWNER_WRITE
-      OWNER_EXECUTE
-      GROUP_READ
-      GROUP_EXECUTE
-      WORLD_READ
-      WORLD_EXECUTE)
-    message(STATUS "使用回退 QEMU 运行脚本: ${QEMU_SCRIPT_OUTPUT}")
-  endif()
-endif()
+# 生成 QEMU 配置文件和运行脚本 (Python 实现)
+configure_file("${CMAKE_SOURCE_DIR}/scripts/qemu_config.json.in"
+               "${CMAKE_BINARY_DIR}/qemu_config.json" @ONLY)
+configure_file("${CMAKE_SOURCE_DIR}/scripts/run_qemu.sh.in"
+               "${CMAKE_BINARY_DIR}/run_qemu.sh" @ONLY)
+file(
+  CHMOD
+  "${CMAKE_BINARY_DIR}/run_qemu.sh"
+  PERMISSIONS
+  OWNER_READ OWNER_WRITE OWNER_EXECUTE
+  GROUP_READ GROUP_EXECUTE
+  WORLD_READ WORLD_EXECUTE)
+message(STATUS "生成 QEMU 配置: ${CMAKE_BINARY_DIR}/qemu_config.json")
+message(STATUS "生成 QEMU 运行脚本: ${CMAKE_BINARY_DIR}/run_qemu.sh")
 
 # 平台特定编译定义
 add_compile_definitions(

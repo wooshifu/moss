@@ -99,6 +99,8 @@ Detailed explanation (optional):
 使用 QEMU 进行测试：
 
 ```bash
-# 构建完成后，运行脚本自动生成
-./build/preset-name/run_qemu.sh
+# 构建完成后，wrapper 脚本自动生成（调用 scripts/run_qemu.py）
+./build/preset-name/run_qemu.sh            # 运行内核
+./build/preset-name/run_qemu.sh --test     # 运行单元测试
+./build/preset-name/run_qemu.sh --debug    # GDB 调试
 ```
