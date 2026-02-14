@@ -39,6 +39,9 @@ ProcessManager* g_process_manager = nullptr;
 // 全局调度器实例
 CfsScheduler* g_scheduler = nullptr;
 
+// 全局负载均衡器实例
+LoadBalancer* g_load_balancer = nullptr;
+
 // 当前运行任务数组定义 (CfsScheduler类的静态成员)
 Thread* CfsScheduler::current_running_tasks_[MAX_CPUS] = {nullptr};
 
@@ -362,6 +365,8 @@ KernelResult<VirtAddr> allocate_user_heap(Process* process, usize size) noexcept
             // Returned -- task was preempted back to bootstrap context. Clear and retry.
             CfsScheduler::set_current_task(nullptr);
         } else {
+            // No local tasks: try to steal from busiest CPU before sleeping
+            try_idle_balance(cpu_id);
             arch::cpu_idle_once();
         }
     }

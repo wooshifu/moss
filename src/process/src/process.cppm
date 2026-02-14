@@ -2052,6 +2052,8 @@ public:
     auto &src_stats = stats_.get_cpu(src_cpu);
     src_stats.migrations_count++;
 
+    // Notify target CPU so it picks up the migrated task promptly
+    send_reschedule_ipi(dst_cpu);
     return true;
   }
 
@@ -2193,13 +2195,19 @@ private:
     stats.steal_success++;
     stats.migrations_count++;
 
+    // Notify destination CPU (ourselves if idle-balancing, or another CPU)
+    send_reschedule_ipi(dst_cpu);
     return true;
   }
 
   [[nodiscard]] Thread *select_migration_candidate(
-      [[maybe_unused]] u32 cpu,
-      [[maybe_unused]] CfsScheduler &scheduler) const noexcept {
-    return nullptr;
+      u32 cpu, CfsScheduler &scheduler) const noexcept {
+    // Pick the next (lowest-vruntime) runnable task on the source CPU.
+    // Only candidates with nr_running > 1 on source are eligible
+    // (we never steal the last runnable task).
+    if (scheduler.get_cpu_nr_running(cpu) <= 1)
+      return nullptr;
+    return scheduler.pick_next_task(cpu);
   }
 
   [[nodiscard]] u64
@@ -2228,5 +2236,15 @@ private:
     return arch::get_current_cpu_id();
   }
 };
+
+/// Global load balancer instance (initialized alongside scheduler)
+extern LoadBalancer *g_load_balancer;
+
+/// Try idle-balance: steal tasks from busiest CPU into the idle CPU.
+/// Call from idle paths when no local tasks are available.
+inline void try_idle_balance(u32 cpu) noexcept {
+    if (g_load_balancer && g_scheduler)
+        g_load_balancer->idle_balance(cpu, *g_scheduler);
+}
 
 } // namespace moss::kernel::process
