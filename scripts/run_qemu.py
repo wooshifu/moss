@@ -50,6 +50,7 @@ class QemuConfig:
     test_elf: str
     kernel_bin: str
     kernel_bin_full: str
+    kernel_image: str  # Linux-compatible Image (ARM64 only)
     cpu_cores: int = 4  # 从 CMake MOSS_CPU_CORES 变量读取，默认 4
 
     @classmethod
@@ -62,12 +63,13 @@ class QemuConfig:
             test_elf=data["test_elf"],
             kernel_bin=data["kernel_bin"],
             kernel_bin_full=data["kernel_bin_full"],
+            kernel_image=data.get("kernel_image", ""),
             cpu_cores=data.get("cpu_cores", 4),
         )
 
 
 def resolve_kernel_file(
-    cfg: QemuConfig, *, use_binary: bool, test_mode: bool
+    cfg: QemuConfig, *, use_binary: bool, use_image: bool, test_mode: bool
 ) -> tuple[Path, str]:
     """选择内核文件并返回 (路径, 描述)"""
     if test_mode:
@@ -77,6 +79,14 @@ def resolve_kernel_file(
             console.print("请先运行构建命令生成 moss.test.elf")
             raise typer.Exit(1)
         return path, "Unit Test ELF"
+
+    if use_image:
+        path = Path(cfg.kernel_image) if cfg.kernel_image else Path(cfg.build_dir) / "moss.img"
+        if not path.exists():
+            console.print(f"[red]错误: Linux Image 文件不存在: {path}[/red]")
+            console.print("请先运行构建命令（仅 ARM64 架构生成 moss.img）")
+            raise typer.Exit(1)
+        return path, "Linux Image"
 
     if use_binary:
         path = Path(cfg.kernel_bin)
@@ -150,6 +160,7 @@ def build_qemu_args(
     kernel_file: Path,
     *,
     use_binary: bool,
+    use_image: bool,
     test_mode: bool,
     debug_mode: bool,
 ) -> list[str]:
@@ -166,6 +177,9 @@ def build_qemu_args(
             f"loader,file={kernel_file},addr={load_addr},cpu-num=0,force-raw=on",
         ]
     else:
+        # Both ELF and Linux Image use -kernel; QEMU auto-detects format.
+        # For Linux Image (moss.img): QEMU recognizes ARM64 magic → passes DTB via x0.
+        # For ELF (moss.elf): QEMU loads at entry point → x0 = 0, DTB via -device loader.
         kernel_args = ["-kernel", str(kernel_file)]
 
     # -nodefaults: 禁止 QEMU 创建默认设备（IDE 磁盘等），避免与
@@ -186,13 +200,16 @@ def build_qemu_args(
         *arch_cfg["extra_args"],
     ]
 
-    # 为 ARM64/RISC-V 自动生成并加载 DTB
-    dtb_path = prepare_dtb(cfg, smp=smp)
-    if dtb_path and cfg.arch in DTB_LOAD_ADDR:
-        args += [
-            "-device",
-            f"loader,file={dtb_path},addr={DTB_LOAD_ADDR[cfg.arch]},force-raw=on",
-        ]
+    # DTB handling depends on boot mode:
+    #   - Linux Image (--image): QEMU handles DTB automatically, no loader needed
+    #   - ELF/binary: need explicit DTB generation + loader for ARM64/RISC-V
+    if not use_image:
+        dtb_path = prepare_dtb(cfg, smp=smp)
+        if dtb_path and cfg.arch in DTB_LOAD_ADDR:
+            args += [
+                "-device",
+                f"loader,file={dtb_path},addr={DTB_LOAD_ADDR[cfg.arch]},force-raw=on",
+            ]
 
     if debug_mode:
         args += ["-s", "-S"]
@@ -206,6 +223,7 @@ def print_banner(
     kernel_type: str,
     *,
     use_binary: bool,
+    use_image: bool,
     debug_mode: bool,
     test_mode: bool,
 ) -> None:
@@ -227,9 +245,14 @@ def print_banner(
     rprint(f"内核类型:   {kernel_type}")
     rprint(f"构建目录:   {cfg.build_dir}")
 
-    if use_binary:
+    if use_binary or use_image:
         size = kernel_file.stat().st_size
-        rprint(f"二进制大小: {size / 1024:.1f}K")
+        rprint(f"镜像大小:   {size / 1024:.1f}K")
+
+    if use_image:
+        rprint("[green]DTB 传递: 自动 (Linux 启动协议, x0 寄存器)[/green]")
+    elif not test_mode:
+        rprint("DTB 传递: -device loader + RAM 扫描")
 
     if debug_mode:
         rprint("[yellow]调试模式: 启用[/yellow]")
@@ -275,6 +298,10 @@ def main(
         typer.Option("--config", "-c", help="qemu_config.json 路径"),
     ] = None,
     use_binary: Annotated[bool, typer.Option("--bin", help="使用原始二进制内核")] = False,
+    use_image: Annotated[
+        bool,
+        typer.Option("--image", help="使用 Linux Image 格式 (ARM64, DTB 自动传递)"),
+    ] = False,
     debug_mode: Annotated[bool, typer.Option("--debug", help="启用 GDB 调试")] = False,
     test_mode: Annotated[bool, typer.Option("--test", help="运行单元测试")] = False,
 ) -> None:
@@ -284,7 +311,7 @@ def main(
 
     • uv run scripts/run_qemu.py --config build/arm64/qemu_config.json
 
-    • uv run scripts/run_qemu.py --config build/arm64/qemu_config.json --test
+    • uv run scripts/run_qemu.py --config build/arm64/qemu_config.json --image
 
     • uv run scripts/run_qemu.py --config build/arm64/qemu_config.json --debug
     """
@@ -305,11 +332,18 @@ def main(
         raise typer.Exit(1)
 
     # 选择内核文件
-    kernel_file, kernel_type = resolve_kernel_file(cfg, use_binary=use_binary, test_mode=test_mode)
+    kernel_file, kernel_type = resolve_kernel_file(
+        cfg, use_binary=use_binary, use_image=use_image, test_mode=test_mode
+    )
 
     # 构造 QEMU 参数
     qemu_args = build_qemu_args(
-        cfg, kernel_file, use_binary=use_binary, test_mode=test_mode, debug_mode=debug_mode
+        cfg,
+        kernel_file,
+        use_binary=use_binary,
+        use_image=use_image,
+        test_mode=test_mode,
+        debug_mode=debug_mode,
     )
 
     # 打印横幅
@@ -318,6 +352,7 @@ def main(
         kernel_file,
         kernel_type,
         use_binary=use_binary,
+        use_image=use_image,
         debug_mode=debug_mode,
         test_mode=test_mode,
     )
