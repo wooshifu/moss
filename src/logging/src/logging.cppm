@@ -17,8 +17,8 @@
 //   {:#b}  — boolean as "true"/"false"
 //
 // Output format:
-//   [LEVEL] filename:line message
-//   e.g. [INFO]  kernel_main.cpp:53 === MOSS kernel main starting ===
+//   [L] filename:line message
+//   e.g. [I] kernel_main.cpp:53 === MOSS kernel main starting ===
 //
 // Source location is captured automatically via __builtin_FILE()/__builtin_LINE()
 // using FmtStr's implicit constructor — callers need NO syntax changes.
@@ -183,12 +183,12 @@ public:
 
   void append_level_tag(LogLevel level) noexcept {
     switch (level) {
-    case LogLevel::Debug: append_str("[DEBUG] "); break;
-    case LogLevel::Info:  append_str("[INFO]  "); break;
-    case LogLevel::Warn:  append_str("[WARN]  "); break;
-    case LogLevel::Error: append_str("[ERROR] "); break;
-    case LogLevel::Panic: append_str("[PANIC] "); break;
-    default: append_str("[???]   "); break;
+    case LogLevel::Debug: append_str("[D] "); break;
+    case LogLevel::Info:  append_str("[I] "); break;
+    case LogLevel::Warn:  append_str("[W] "); break;
+    case LogLevel::Error: append_str("[E] "); break;
+    case LogLevel::Panic: append_str("[P] "); break;
+    default: append_str("[?] "); break;
     }
   }
 
