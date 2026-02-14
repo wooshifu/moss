@@ -4,23 +4,8 @@
 
 module;
 
-// Architecture detection macros (global module fragment)
-#ifndef MOSS_ARCH_ARM64
-#ifndef MOSS_ARCH_X86_64
-#ifndef MOSS_ARCH_RISCV
-#if defined(__x86_64__) || defined(__x86_64) || defined(__amd64__) ||           \
-    defined(__amd64) || defined(_M_X64)
-#define MOSS_ARCH_X86_64
-#elif defined(__aarch64__) || defined(_M_ARM64)
-#define MOSS_ARCH_ARM64
-#elif defined(__riscv) && __riscv_xlen == 64
-#define MOSS_ARCH_RISCV
-#else
-#define MOSS_ARCH_X86_64
-#endif
-#endif
-#endif
-#endif
+// Architecture detection
+#include "arch_detect.h"
 
 // Kernel environment va_list support (must be in global module fragment)
 #ifdef __GNUC__
@@ -54,6 +39,8 @@ import moss.types;
 import moss.result;
 import moss.smart_ptr;
 import moss.arch;
+import moss.platform;
+import moss.hal.uart;
 import moss.containers;
 import moss.mm;
 import moss.interrupts;
@@ -1078,10 +1065,10 @@ private:
     const auto &plat = ::moss::fdt::get_platform_info();
     VirtAddr gic_dist_base = (plat.dtb_valid && plat.intc.valid)
                                  ? static_cast<VirtAddr>(plat.intc.dist_base)
-                                 : 0x08000000;
+                                 : platform::intc_dist_base();
     VirtAddr gic_cpu_base = (plat.dtb_valid && plat.intc.valid)
                                 ? static_cast<VirtAddr>(plat.intc.cpu_base)
-                                : 0x08010000;
+                                : platform::intc_cpu_base();
 
     auto gic_result = gic_->initialize(gic_dist_base, gic_cpu_base);
     if (!gic_result) {
@@ -1137,26 +1124,13 @@ private:
 
   // Enable interrupts
   void enable_interrupts() noexcept {
-#if defined(MOSS_ARCH_ARM64)
-    asm volatile("msr daifclr, #2" ::: "memory"); // Enable IRQ
-#elif defined(MOSS_ARCH_X86_64)
-    asm volatile("sti" ::: "memory"); // Enable interrupts
-#elif defined(MOSS_ARCH_RISCV)
-    asm volatile("csrsi mstatus, 0x8" ::: "memory"); // Enable machine-level interrupts
-#endif
+    arch::enable_interrupts();
   }
 
   // Kernel panic handler
   [[noreturn]] void kernel_panic(const char *message,
                                  ErrorCode error) noexcept {
-    // Disable interrupts
-#if defined(MOSS_ARCH_ARM64)
-    asm volatile("msr daifset, #2" ::: "memory");
-#elif defined(MOSS_ARCH_X86_64)
-    asm volatile("cli" ::: "memory");
-#elif defined(MOSS_ARCH_RISCV)
-    asm volatile("csrci mstatus, 0x8" ::: "memory"); // Disable machine-level interrupts
-#endif
+    arch::disable_interrupts();
 
     kernel_print("\nKERNEL PANIC\n");
     kernel_print("Error: %s\n", message);
@@ -1168,17 +1142,7 @@ private:
 
     // Halt
     while (true) {
-#if defined(MOSS_ARCH_ARM64)
-      asm volatile("wfi" ::: "memory"); // Wait for interrupt
-#elif defined(MOSS_ARCH_X86_64)
-      asm volatile("hlt" ::: "memory"); // Halt and wait for interrupt
-#elif defined(MOSS_ARCH_RISCV)
-      asm volatile("wfi" ::: "memory"); // RISC-V also has wfi instruction
-#else
-      // Generic halt - CPU idle loop
-      for (volatile int i = 0; i < 1000000; ++i) {
-      }
-#endif
+      arch::cpu_halt();
     }
   }
 
@@ -1193,14 +1157,7 @@ private:
   void print_stack_trace() const noexcept {
     kernel_print("Stack trace:\n");
 
-    u64 fp = 0;
-#if defined(MOSS_ARCH_ARM64)
-    asm volatile("mov %0, x29" : "=r"(fp));
-#elif defined(MOSS_ARCH_X86_64)
-    asm volatile("mov %%rbp, %0" : "=r"(fp));
-#elif defined(MOSS_ARCH_RISCV)
-    asm volatile("mv %0, s0" : "=r"(fp));
-#endif
+    u64 fp = arch::get_frame_pointer();
 
     for (int i = 0; i < 10 && fp != 0; i++) {
       u64 *frame = reinterpret_cast<u64 *>(fp);
@@ -1217,17 +1174,7 @@ private:
 
   // Get current time
   [[nodiscard]] static u64 get_current_time() noexcept {
-    u64 count;
-#if defined(MOSS_ARCH_ARM64)
-    asm volatile("mrs %0, cntvct_el0" : "=r"(count));
-#elif defined(MOSS_ARCH_X86_64)
-    asm volatile("rdtsc" : "=A"(count));
-#elif defined(MOSS_ARCH_RISCV)
-    asm volatile("rdcycle %0" : "=r"(count));
-#else
-    count = 0; // Fallback implementation
-#endif
-    return count;
+    return arch::get_timestamp_counter();
   }
 
   // Number formatting helper functions
@@ -1384,19 +1331,9 @@ private:
     va_end(args);
   }
 
-  // Simplified UART output
+  // UART output — delegates to HAL for architecture-specific implementation
   static void uart_putc(char c) noexcept {
-    // Simplified implementation: write directly to UART register
-    // In practice, should go through device driver
-    volatile u32 *uart_data = reinterpret_cast<volatile u32 *>(0x09000000);
-    volatile u32 *uart_flags = reinterpret_cast<volatile u32 *>(0x09000018);
-
-    // Wait for TX FIFO available
-    while (*uart_flags & (1 << 5)) {
-      // TXFF flag
-    }
-
-    *uart_data = static_cast<u32>(c);
+    hal::uart::putc(c);
   }
 };
 

@@ -23,6 +23,6 @@ target_sources(moss_kernel
 
 target_compile_definitions(moss_kernel PRIVATE MOSS_KERNEL_CORE)
 
-target_link_libraries(moss_kernel PRIVATE moss_core moss_fdt moss_libfdt_c moss_containers moss_mm moss_drivers moss_interrupts moss_ipc moss_process moss_boot)
+target_link_libraries(moss_kernel PRIVATE moss_core moss_aal moss_platform moss_hal_uart moss_fdt moss_libfdt_c moss_containers moss_mm moss_drivers moss_interrupts moss_ipc moss_process moss_boot)
 
 message(STATUS "内核核心模块配置完成")

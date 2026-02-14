@@ -3,23 +3,8 @@
 
 module;
 
-// Architecture detection macros (same as containers.cppm)
-#ifndef MOSS_ARCH_ARM64
-#ifndef MOSS_ARCH_X86_64
-#ifndef MOSS_ARCH_RISCV
-#if defined(__x86_64__) || defined(__x86_64) || defined(__amd64__) ||           \
-    defined(__amd64) || defined(_M_X64)
-#define MOSS_ARCH_X86_64
-#elif defined(__aarch64__) || defined(_M_ARM64)
-#define MOSS_ARCH_ARM64
-#elif defined(__riscv) && __riscv_xlen == 64
-#define MOSS_ARCH_RISCV
-#else
-#define MOSS_ARCH_X86_64
-#endif
-#endif
-#endif
-#endif
+// Architecture detection
+#include "arch_detect.h"
 
 // External debug print function
 extern "C" void early_debug_print(const char *message) noexcept;
@@ -29,54 +14,10 @@ export module moss.interrupts;
 import moss.std;
 import moss.types;
 import moss.result;
+import moss.arch;
+import moss.platform;
+import moss.hal.intc;
 import moss.containers;
-
-// ============================================================================
-// Internal (non-exported) arch helpers
-// ============================================================================
-namespace moss::kernel::arch {
-
-inline void memory_barrier() noexcept {
-#if defined(MOSS_ARCH_ARM64)
-  asm volatile("dsb sy" ::: "memory");
-#elif defined(MOSS_ARCH_X86_64)
-  asm volatile("mfence" ::: "memory");
-#elif defined(MOSS_ARCH_RISCV)
-  asm volatile("fence iorw, iorw" ::: "memory");
-#else
-  asm volatile("" ::: "memory");
-#endif
-}
-
-inline void cpu_yield() noexcept {
-#if defined(MOSS_ARCH_ARM64)
-  asm volatile("yield" ::: "memory");
-#elif defined(MOSS_ARCH_X86_64)
-  asm volatile("pause" ::: "memory");
-#elif defined(MOSS_ARCH_RISCV)
-  asm volatile("" ::: "memory");
-#else
-  asm volatile("" ::: "memory");
-#endif
-}
-
-[[nodiscard]] inline u32 get_current_cpu_id() noexcept {
-#if defined(MOSS_ARCH_ARM64)
-  u64 mpidr;
-  asm volatile("mrs %0, mpidr_el1" : "=r"(mpidr));
-  return static_cast<u32>(mpidr & 0xFF);
-#elif defined(MOSS_ARCH_X86_64)
-  return 0;
-#elif defined(MOSS_ARCH_RISCV)
-  u64 hart_id;
-  asm volatile("csrr %0, mhartid" : "=r"(hart_id));
-  return static_cast<u32>(hart_id);
-#else
-  return 0;
-#endif
-}
-
-} // namespace moss::kernel::arch
 
 // ============================================================================
 // Exported interrupt types and classes
@@ -146,33 +87,8 @@ private:
   }
 };
 
-// GIC register offsets (GICv2)
-namespace GicRegs {
-// Distributor registers
-inline constexpr u32 GICD_CTLR = 0x000;
-inline constexpr u32 GICD_TYPER = 0x004;
-inline constexpr u32 GICD_IIDR = 0x008;
-inline constexpr u32 GICD_IGROUPR = 0x080;
-inline constexpr u32 GICD_ISENABLER = 0x100;
-inline constexpr u32 GICD_ICENABLER = 0x180;
-inline constexpr u32 GICD_ISPENDR = 0x200;
-inline constexpr u32 GICD_ICPENDR = 0x280;
-inline constexpr u32 GICD_ISACTIVER = 0x300;
-inline constexpr u32 GICD_ICACTIVER = 0x380;
-inline constexpr u32 GICD_IPRIORITYR = 0x400;
-inline constexpr u32 GICD_ITARGETSR = 0x800;
-inline constexpr u32 GICD_ICFGR = 0xC00;
-inline constexpr u32 GICD_SGIR = 0xF00;
-
-// CPU Interface registers
-inline constexpr u32 GICC_CTLR = 0x000;
-inline constexpr u32 GICC_PMR = 0x004;
-inline constexpr u32 GICC_BPR = 0x008;
-inline constexpr u32 GICC_IAR = 0x00C;
-inline constexpr u32 GICC_EOIR = 0x010;
-inline constexpr u32 GICC_RPR = 0x014;
-inline constexpr u32 GICC_HPPIR = 0x018;
-} // namespace GicRegs
+// GIC register offsets are now provided by moss.hal.intc (DistRegs/CpuRegs).
+// All GIC-specific register operations are delegated to the HAL layer.
 
 // GIC driver main class
 class GenericInterruptController {
@@ -280,11 +196,7 @@ public:
       return VoidResult{ErrorCode::InvalidParameter};
     }
 
-    u32 reg_offset = GicRegs::GICD_ISENABLER + (irq / 32) * 4;
-    u32 bit_pos = irq % 32;
-    u32 reg_value = 1U << bit_pos;
-
-    write_distributor_reg(reg_offset, reg_value);
+    ::moss::kernel::hal::intc::enable_irq(distributor_base_, irq);
 
     auto desc_ptr = interrupt_table_.find(irq);
     if (desc_ptr != nullptr) {
@@ -300,11 +212,7 @@ public:
       return VoidResult{ErrorCode::InvalidParameter};
     }
 
-    u32 reg_offset = GicRegs::GICD_ICENABLER + (irq / 32) * 4;
-    u32 bit_pos = irq % 32;
-    u32 reg_value = 1U << bit_pos;
-
-    write_distributor_reg(reg_offset, reg_value);
+    ::moss::kernel::hal::intc::disable_irq(distributor_base_, irq);
 
     auto desc_ptr = interrupt_table_.find(irq);
     if (desc_ptr != nullptr) {
@@ -321,8 +229,7 @@ public:
       return VoidResult{ErrorCode::InvalidParameter};
     }
 
-    u32 reg_offset = GicRegs::GICD_IPRIORITYR + irq;
-    write_distributor_reg(reg_offset, priority);
+    ::moss::kernel::hal::intc::set_priority(distributor_base_, irq, priority);
 
     auto desc_ptr = interrupt_table_.find(irq);
     if (desc_ptr != nullptr) {
@@ -343,8 +250,7 @@ public:
       return VoidResult{ErrorCode::NotSupported};
     }
 
-    u32 reg_offset = GicRegs::GICD_ITARGETSR + irq;
-    write_distributor_reg(reg_offset, cpu_mask);
+    ::moss::kernel::hal::intc::set_target(distributor_base_, irq, cpu_mask);
 
     auto desc_ptr = interrupt_table_.find(irq);
     if (desc_ptr != nullptr) {
@@ -357,23 +263,18 @@ public:
 
   [[nodiscard]] VoidResult send_sgi(InterruptId sgi,
                                     u32 target_cpu_mask) noexcept {
-    if (sgi >= 16) {
-      return VoidResult{ErrorCode::InvalidParameter};
-    }
-
-    u32 sgir_value = sgi | (target_cpu_mask << 16);
-    write_distributor_reg(GicRegs::GICD_SGIR, sgir_value);
-
-    return VoidResult{};
+    return ::moss::kernel::hal::intc::send_sgi(
+        distributor_base_, cpu_interface_base_, sgi, target_cpu_mask);
   }
 
   void handle_interrupt() noexcept {
+    namespace intc_hal = ::moss::kernel::hal::intc;
     u32 cpu = get_current_cpu_id();
 
-    u32 iar = read_cpu_interface_reg(GicRegs::GICC_IAR);
-    InterruptId irq = iar & 0x3FF;
+    u32 ack_val = intc_hal::ack_irq(cpu_interface_base_);
+    InterruptId irq = intc_hal::irq_from_ack(ack_val);
 
-    if (irq >= 1020) {
+    if (intc_hal::is_spurious(irq)) {
       (void)spurious_interrupts_.fetch_add(
           1, containers::MemoryOrder::Relaxed);
       return;
@@ -391,7 +292,7 @@ public:
       }
     }
 
-    write_cpu_interface_reg(GicRegs::GICC_EOIR, iar);
+    intc_hal::eoi(cpu_interface_base_, ack_val);
   }
 
   [[nodiscard]] GicStats get_statistics() const noexcept {
@@ -417,7 +318,7 @@ public:
   }
 
   void set_priority_mask(InterruptPriority mask) noexcept {
-    write_cpu_interface_reg(GicRegs::GICC_PMR, mask);
+    ::moss::kernel::hal::intc::set_priority_mask(cpu_interface_base_, mask);
   }
 
   [[nodiscard]] static u32 get_current_cpu_id() noexcept {
@@ -426,58 +327,37 @@ public:
 
 private:
   [[nodiscard]] VoidResult detect_gic_config() noexcept {
-    u32 typer = read_distributor_reg(GicRegs::GICD_TYPER);
-
-    max_interrupts_ = ((typer & 0x1F) + 1) * 32;
-    max_cpus_ = ((typer >> 5) & 0x7) + 1;
+    namespace hal = ::moss::kernel::hal::intc;
+    max_interrupts_ = hal::read_max_interrupts(distributor_base_);
+    max_cpus_ = hal::read_max_cpus(distributor_base_);
     version_ = GicVersion::GICv2;
-
     return VoidResult{};
   }
 
   [[nodiscard]] VoidResult initialize_distributor() noexcept {
-    write_distributor_reg(GicRegs::GICD_CTLR, 0);
-
-    for (u32 i = 0; i < max_interrupts_; i += 32) {
-      write_distributor_reg(GicRegs::GICD_ICENABLER + i / 8, 0xFFFFFFFF);
-    }
-
-    for (u32 i = 0; i < max_interrupts_; i += 32) {
-      write_distributor_reg(GicRegs::GICD_ICPENDR + i / 8, 0xFFFFFFFF);
-    }
-
-    for (u32 i = 0; i < max_interrupts_; i += 4) {
-      write_distributor_reg(GicRegs::GICD_IPRIORITYR + i, 0x80808080);
-    }
-
-    for (u32 i = 32; i < max_interrupts_; i += 4) {
-      write_distributor_reg(GicRegs::GICD_ITARGETSR + i, 0x01010101);
-    }
-
-    write_distributor_reg(GicRegs::GICD_CTLR, 1);
-    return VoidResult{};
+    return ::moss::kernel::hal::intc::init_distributor(
+        distributor_base_, max_interrupts_);
   }
 
   [[nodiscard]] VoidResult initialize_cpu_interface() noexcept {
-    write_cpu_interface_reg(GicRegs::GICC_PMR, 0xFF);
-    write_cpu_interface_reg(GicRegs::GICC_CTLR, 1);
-    return VoidResult{};
+    return ::moss::kernel::hal::intc::init_cpu_interface(cpu_interface_base_);
   }
 
+  // Thin wrappers over HAL register access (preserves call sites)
   [[nodiscard]] u32 read_distributor_reg(u32 offset) const noexcept {
-    return *reinterpret_cast<volatile u32 *>(distributor_base_ + offset);
+    return ::moss::kernel::hal::intc::read_reg(distributor_base_, offset);
   }
 
   void write_distributor_reg(u32 offset, u32 value) const noexcept {
-    *reinterpret_cast<volatile u32 *>(distributor_base_ + offset) = value;
+    ::moss::kernel::hal::intc::write_reg(distributor_base_, offset, value);
   }
 
   [[nodiscard]] u32 read_cpu_interface_reg(u32 offset) const noexcept {
-    return *reinterpret_cast<volatile u32 *>(cpu_interface_base_ + offset);
+    return ::moss::kernel::hal::intc::read_reg(cpu_interface_base_, offset);
   }
 
   void write_cpu_interface_reg(u32 offset, u32 value) const noexcept {
-    *reinterpret_cast<volatile u32 *>(cpu_interface_base_ + offset) = value;
+    ::moss::kernel::hal::intc::write_reg(cpu_interface_base_, offset, value);
   }
 
   void cleanup() noexcept {

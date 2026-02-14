@@ -4,27 +4,8 @@
 
 module;
 
-// Global module fragment: only architecture-detection macros and
-// forward declarations that do NOT pull in types.hpp / types.cppm
-// (to avoid duplicate-symbol ambiguity between header and module).
-
-// Architecture detection (same logic as arch_abstraction.hpp)
-#ifndef MOSS_ARCH_ARM64
-#ifndef MOSS_ARCH_X86_64
-#ifndef MOSS_ARCH_RISCV
-#if defined(__x86_64__) || defined(__x86_64) || defined(__amd64__) ||           \
-    defined(__amd64) || defined(_M_X64)
-#define MOSS_ARCH_X86_64
-#elif defined(__aarch64__) || defined(_M_ARM64)
-#define MOSS_ARCH_ARM64
-#elif defined(__riscv) && __riscv_xlen == 64
-#define MOSS_ARCH_RISCV
-#else
-#define MOSS_ARCH_X86_64
-#endif
-#endif
-#endif
-#endif
+// Global module fragment: arch detection and extern "C" declarations.
+#include "arch_detect.h"
 
 // C-linkage shim for PageFrameAllocator (defined in page_alloc_shim.cpp).
 // Returns 0 on failure, otherwise the allocated physical address.
@@ -39,75 +20,7 @@ export module moss.containers;
 import moss.std;
 import moss.types;
 import moss.result;
-
-// ============================================================================
-// Internal (non-exported) arch helpers — inline asm using MOSS_ARCH_* macros
-// These replicate arch_abstraction.hpp but live inside the module to avoid
-// pulling the header (which would re-introduce types.hpp ambiguity).
-// ============================================================================
-namespace moss::kernel::arch {
-
-inline void memory_barrier() noexcept {
-#if defined(MOSS_ARCH_ARM64)
-  asm volatile("dsb sy" ::: "memory");
-#elif defined(MOSS_ARCH_X86_64)
-  asm volatile("mfence" ::: "memory");
-#elif defined(MOSS_ARCH_RISCV)
-  asm volatile("fence" ::: "memory");
-#endif
-}
-
-inline void read_barrier() noexcept {
-#if defined(MOSS_ARCH_ARM64)
-  asm volatile("dsb ld" ::: "memory");
-#elif defined(MOSS_ARCH_X86_64)
-  asm volatile("lfence" ::: "memory");
-#elif defined(MOSS_ARCH_RISCV)
-  asm volatile("fence r,r" ::: "memory");
-#endif
-}
-
-inline void write_barrier() noexcept {
-#if defined(MOSS_ARCH_ARM64)
-  asm volatile("dsb st" ::: "memory");
-#elif defined(MOSS_ARCH_X86_64)
-  asm volatile("sfence" ::: "memory");
-#elif defined(MOSS_ARCH_RISCV)
-  asm volatile("fence w,w" ::: "memory");
-#endif
-}
-
-inline void instruction_barrier() noexcept {
-#if defined(MOSS_ARCH_ARM64)
-  asm volatile("isb" ::: "memory");
-#elif defined(MOSS_ARCH_X86_64)
-  asm volatile("" ::: "memory");
-#elif defined(MOSS_ARCH_RISCV)
-  asm volatile("fence.i" ::: "memory");
-#endif
-}
-
-inline u32 get_current_cpu_id() noexcept {
-#if defined(MOSS_ARCH_ARM64)
-  u64 mpidr;
-  asm volatile("mrs %0, mpidr_el1" : "=r"(mpidr));
-  return static_cast<u32>(mpidr & 0xFF) % MAX_CPUS;
-#elif defined(MOSS_ARCH_X86_64)
-  u32 eax, ebx, ecx, edx;
-  asm volatile("cpuid"
-               : "=a"(eax), "=b"(ebx), "=c"(ecx), "=d"(edx)
-               : "a"(1));
-  return (ebx >> 24) & 0xFF;
-#elif defined(MOSS_ARCH_RISCV)
-  u64 hartid;
-  asm volatile("csrr %0, mhartid" : "=r"(hartid));
-  return static_cast<u32>(hartid) % MAX_CPUS;
-#else
-  return 0;
-#endif
-}
-
-} // namespace moss::kernel::arch
+import moss.arch;
 
 // ============================================================================
 // Atomic types

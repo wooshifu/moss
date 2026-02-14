@@ -5,23 +5,8 @@
 
 module;
 
-// Architecture detection macros (do not cross module boundaries)
-#ifndef MOSS_ARCH_ARM64
-#ifndef MOSS_ARCH_X86_64
-#ifndef MOSS_ARCH_RISCV
-#if defined(__x86_64__) || defined(__x86_64) || defined(__amd64__) ||           \
-    defined(__amd64) || defined(_M_X64)
-#define MOSS_ARCH_X86_64
-#elif defined(__aarch64__) || defined(_M_ARM64)
-#define MOSS_ARCH_ARM64
-#elif defined(__riscv) && __riscv_xlen == 64
-#define MOSS_ARCH_RISCV
-#else
-#define MOSS_ARCH_X86_64
-#endif
-#endif
-#endif
-#endif
+// Architecture detection
+#include "arch_detect.h"
 
 // Linker symbols (must be in global module fragment)
 extern "C" {
@@ -50,6 +35,8 @@ import moss.result;
 import moss.fdt;
 import moss.containers;
 import moss.arch;
+import moss.platform;
+import moss.hal.mmu;
 
 // ============================================================================
 // Global-scope constants (originally outside namespace in buddy_allocator_v2.hpp)
@@ -515,41 +502,12 @@ enum class PageSize : u64 {
     Size1GB = 1024ULL * 1024 * 1024
 };
 
-namespace PageAttr {
-    inline constexpr u64 VALID = (1ULL << 0);
-    inline constexpr u64 TABLE = (1ULL << 1);
-    inline constexpr u64 USER = (1ULL << 6);
-    inline constexpr u64 READONLY = (1ULL << 7);
-    inline constexpr u64 SHARED = (1ULL << 8);
-    inline constexpr u64 AF = (1ULL << 10);
-    inline constexpr u64 NG = (1ULL << 11);
-    inline constexpr u64 PXN = (1ULL << 53);
-    inline constexpr u64 XN = (1ULL << 54);
-    inline constexpr u64 ATTR_IDX_SHIFT = 2;
-    inline constexpr u64 ATTR_DEVICE = (0ULL << ATTR_IDX_SHIFT);
-    inline constexpr u64 ATTR_NORMAL = (1ULL << ATTR_IDX_SHIFT);
-    inline constexpr u64 ATTR_NORMAL_NC = (2ULL << ATTR_IDX_SHIFT);
-}
-
-namespace PagePerms {
-    inline constexpr u64 KERNEL_RO = PageAttr::VALID | PageAttr::AF |
-                                     PageAttr::ATTR_NORMAL | PageAttr::READONLY |
-                                     PageAttr::PXN | PageAttr::XN;
-    inline constexpr u64 KERNEL_RW = PageAttr::VALID | PageAttr::AF |
-                                     PageAttr::ATTR_NORMAL | PageAttr::PXN |
-                                     PageAttr::XN;
-    inline constexpr u64 KERNEL_RX = PageAttr::VALID | PageAttr::AF |
-                                     PageAttr::ATTR_NORMAL | PageAttr::READONLY;
-    inline constexpr u64 USER_RO = PageAttr::VALID | PageAttr::AF | PageAttr::USER |
-                                   PageAttr::READONLY | PageAttr::ATTR_NORMAL;
-    inline constexpr u64 USER_RW = PageAttr::VALID | PageAttr::AF | PageAttr::USER |
-                                   PageAttr::ATTR_NORMAL;
-    inline constexpr u64 USER_RX = PageAttr::VALID | PageAttr::AF | PageAttr::USER |
-                                   PageAttr::READONLY | PageAttr::ATTR_NORMAL;
-    inline constexpr u64 DEVICE = PageAttr::VALID | PageAttr::AF |
-                                  PageAttr::ATTR_DEVICE | PageAttr::XN |
-                                  PageAttr::PXN;
-}
+// PageAttr and PagePerms are re-exported from the MMU HAL.
+// This provides architecture-specific PTE bit-field definitions
+// (ARM64 descriptors, x86_64 PTE bits, RISC-V Sv48 PTE bits)
+// from a single source of truth in moss.hal.mmu.
+namespace PageAttr = ::moss::kernel::hal::mmu::PageAttr;
+namespace PagePerms = ::moss::kernel::hal::mmu::PagePerms;
 
 struct [[gnu::packed]] PageTableEntry {
     u64 raw;
@@ -559,13 +517,13 @@ struct [[gnu::packed]] PageTableEntry {
     [[nodiscard]] constexpr bool is_table() const { return raw & PageAttr::TABLE; }
     [[nodiscard]] constexpr bool is_block() const { return is_valid() && !is_table(); }
     [[nodiscard]] constexpr PhysAddr get_phys_addr() const {
-        return raw & 0x0000FFFFFFFFF000ULL;
+        return raw & hal::mmu::PTE_ADDR_MASK;
     }
     constexpr void set_table(PhysAddr next_table_pa) {
-        raw = (next_table_pa & 0x0000FFFFFFFFF000ULL) | PageAttr::VALID | PageAttr::TABLE;
+        raw = (next_table_pa & hal::mmu::PTE_ADDR_MASK) | PageAttr::VALID | PageAttr::TABLE;
     }
     constexpr void set_block(PhysAddr block_pa, u64 attributes) {
-        raw = (block_pa & 0x0000FFFFFFFFF000ULL) | attributes | PageAttr::VALID;
+        raw = (block_pa & hal::mmu::PTE_ADDR_MASK) | attributes | PageAttr::VALID;
     }
     constexpr void clear() { raw = 0; }
 };
@@ -582,34 +540,12 @@ struct alignas(PAGE_SIZE) PageTable {
 
 static_assert(sizeof(PageTable) == PAGE_SIZE, "PageTable must be one page");
 
-struct VirtualAddressBreakdown {
-    u16 pgd_index;
-    u16 pud_index;
-    u16 pmd_index;
-    u16 pte_index;
-    u16 page_offset;
-};
-
-inline constexpr VirtualAddressBreakdown break_virtual_address(VirtAddr vaddr) {
-    return {.pgd_index = static_cast<u16>((vaddr >> 39) & 0x1FF),
-            .pud_index = static_cast<u16>((vaddr >> 30) & 0x1FF),
-            .pmd_index = static_cast<u16>((vaddr >> 21) & 0x1FF),
-            .pte_index = static_cast<u16>((vaddr >> 12) & 0x1FF),
-            .page_offset = static_cast<u16>(vaddr & 0xFFF)};
-}
-
-struct AddressSpaceConfig {
-    static constexpr u64 TCR_VALUE =
-        (16ULL << 0) | (16ULL << 16) | (0ULL << 6) | (0ULL << 23) |
-        (0ULL << 14) | (0ULL << 30) | (1ULL << 8) | (1ULL << 10) |
-        (3ULL << 12) | (1ULL << 24) | (1ULL << 26) | (3ULL << 28) |
-        (5ULL << 32);
-    static constexpr u64 MAIR_DEVICE_nGnRnE = 0x00ULL;
-    static constexpr u64 MAIR_NORMAL_WBWA = 0xFFULL;
-    static constexpr u64 MAIR_NORMAL_NC = 0x44ULL;
-    static constexpr u64 MAIR_VALUE =
-        (MAIR_DEVICE_nGnRnE << 0) | (MAIR_NORMAL_WBWA << 8) | (MAIR_NORMAL_NC << 16);
-};
+// VirtualAddressBreakdown, break_virtual_address, and AddressSpaceConfig
+// are re-exported from the MMU HAL — architecture-specific definitions
+// live in moss.hal.mmu (hal/mmu/src/mmu_hal.cppm).
+using hal::mmu::VirtualAddressBreakdown;
+using hal::mmu::break_virtual_address;
+using hal::mmu::AddressSpaceConfig;
 
 class PageTableManager {
 private:

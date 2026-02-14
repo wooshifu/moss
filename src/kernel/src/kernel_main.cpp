@@ -3,23 +3,8 @@
 
 module;
 
-// Architecture detection (global module fragment)
-#ifndef MOSS_ARCH_ARM64
-#ifndef MOSS_ARCH_X86_64
-#ifndef MOSS_ARCH_RISCV
-#if defined(__x86_64__) || defined(__x86_64) || defined(__amd64__) ||           \
-    defined(__amd64) || defined(_M_X64)
-#define MOSS_ARCH_X86_64
-#elif defined(__aarch64__) || defined(_M_ARM64)
-#define MOSS_ARCH_ARM64
-#elif defined(__riscv) && __riscv_xlen == 64
-#define MOSS_ARCH_RISCV
-#else
-#define MOSS_ARCH_X86_64
-#endif
-#endif
-#endif
-#endif
+// Architecture detection
+#include "arch_detect.h"
 
 // extern "C" declarations in global module fragment
 extern "C" {
@@ -157,22 +142,16 @@ extern "C" {
 
 // 内核崩溃回调
 [[noreturn]] void kernel_panic_handler(const char *message) noexcept {
-// 禁用中断
-#if defined(MOSS_ARCH_ARM64)
-  asm volatile("msr daifset, #15" ::: "memory");
-#elif defined(MOSS_ARCH_X86_64)
-  asm volatile("cli" ::: "memory");
-#elif defined(MOSS_ARCH_RISCV)
-  asm volatile("csrci mstatus, 0x8" ::: "memory"); // 禁用机器级中断
-#endif
+  // 禁用中断
+  ::moss::kernel::arch::disable_all_interrupts();
 
   // Panic output: use PlatformInfo with hardcoded fallback.
   // In a panic scenario PlatformInfo *might* be corrupted, so the fallback
-  // to 0x09000000 (ARM64 PL011 default) is intentionally kept.
+  // to the platform default UART address is intentionally kept.
   const auto &plat = ::moss::fdt::get_platform_info();
   u64 uart_base = (plat.dtb_valid && plat.uart.valid)
                       ? plat.uart.base_addr
-                      : 0x09000000;
+                      : ::moss::kernel::platform::uart_base();
   volatile u32 *uart_data = reinterpret_cast<volatile u32 *>(uart_base);
   const char *panic_msg = "\n💀 KERNEL PANIC: ";
 
@@ -188,52 +167,14 @@ extern "C" {
 
   // 停机
   while (true) {
-#if defined(MOSS_ARCH_ARM64)
-    asm volatile("wfi");
-#elif defined(MOSS_ARCH_X86_64)
-    asm volatile("hlt");
-#elif defined(MOSS_ARCH_RISCV)
-    asm volatile("wfi"); // RISC-V 也有 wfi 指令
-#else
-    // 通用停机 - CPU 空循环
-    for (volatile int i = 0; i < 1000000; ++i) {
-    }
-#endif
+    ::moss::kernel::arch::cpu_halt();
   }
 }
 
-// 早期调试输出（在UART驱动初始化前使用）
-// Post-DTB: UART 地址从 PlatformInfo 获取，fallback 到 ARM64 PL011 默认地址。
-// PL011 寄存器布局: data @ base+0x00, flags @ base+0x18, TXFF = bit 5。
+// 早期调试输出 — delegates to HAL/UART for architecture-specific output.
+// Retains extern "C" signature for ABI compatibility with assembly and legacy callers.
 void early_debug_print(const char *message) noexcept {
-  if (message == nullptr)
-    return;
-
-  // Use DTB-derived UART address when available
-  const auto &plat = ::moss::fdt::get_platform_info();
-  u64 uart_base = (plat.dtb_valid && plat.uart.valid)
-                      ? plat.uart.base_addr
-                      : 0x09000000; // ARM64 PL011 default
-
-  volatile u32 *uart_data = reinterpret_cast<volatile u32 *>(uart_base);
-  volatile u32 *uart_flags = reinterpret_cast<volatile u32 *>(uart_base + 0x18);
-
-  while (*message) {
-    // 等待发送FIFO可用
-    while (*uart_flags & (1 << 5)) {
-      // TXFF标志
-    }
-
-    if (*message == '\n') {
-      *uart_data = static_cast<u32>('\r');
-      while (*uart_flags & (1 << 5)) {
-      }
-      *uart_data = static_cast<u32>('\n');
-    } else {
-      *uart_data = static_cast<u32>(static_cast<unsigned char>(*message));
-    }
-    message++;
-  }
+  ::moss::kernel::hal::uart::puts(message);
 }
 
 // 系统调用入口
@@ -302,7 +243,7 @@ KernelMemoryInfo get_kernel_memory_info(void) noexcept {
   const auto &plat = ::moss::fdt::get_platform_info();
   usize total = (plat.dtb_valid && plat.total_memory_size > 0)
                     ? static_cast<usize>(plat.total_memory_size)
-                    : static_cast<usize>(1024 * 1024 * 1024); // fallback: 1GB
+                    : static_cast<usize>(::moss::kernel::platform::ram_size());
 
   // TODO: 接入 PageFrameAllocator 统计信息获取精确的空闲页数
   return {.total_memory = total,

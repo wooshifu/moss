@@ -3,23 +3,8 @@
 
 module;
 
-// Architecture detection macros (needed for Device::get_current_time)
-#ifndef MOSS_ARCH_ARM64
-#ifndef MOSS_ARCH_X86_64
-#ifndef MOSS_ARCH_RISCV
-#if defined(__x86_64__) || defined(__x86_64) || defined(__amd64__) ||           \
-    defined(__amd64) || defined(_M_X64)
-#define MOSS_ARCH_X86_64
-#elif defined(__aarch64__) || defined(_M_ARM64)
-#define MOSS_ARCH_ARM64
-#elif defined(__riscv) && __riscv_xlen == 64
-#define MOSS_ARCH_RISCV
-#else
-#define MOSS_ARCH_X86_64
-#endif
-#endif
-#endif
-#endif
+// Architecture detection
+#include "arch_detect.h"
 
 // Macro for disabling copy and move (macros do not cross module boundaries)
 #define NON_COPYABLE(ClassName)                                                \
@@ -40,6 +25,7 @@ import moss.std;
 import moss.types;
 import moss.result;
 import moss.smart_ptr;
+import moss.arch;
 import moss.containers;
 import moss.interrupts;
 
@@ -262,17 +248,7 @@ protected:
   }
 
   [[nodiscard]] static u64 get_current_time() noexcept {
-    u64 count;
-#if defined(MOSS_ARCH_ARM64)
-    asm volatile("mrs %0, cntvct_el0" : "=r"(count));
-#elif defined(MOSS_ARCH_X86_64)
-    asm volatile("rdtsc" : "=A"(count));
-#elif defined(MOSS_ARCH_RISCV)
-    asm volatile("rdcycle %0" : "=r"(count));
-#else
-    count = 0;
-#endif
-    return count;
+    return arch::get_timestamp_counter();
   }
 };
 
