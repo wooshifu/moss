@@ -253,25 +253,45 @@ ProcessId ProcessManager::allocate_pid() noexcept {
 // 用户地址空间管理扩展功能
 namespace user_space {
 
-// 创建用户地址空间
+// ASID allocator: 8-bit (1-255), ASID 0 reserved for kernel.
+// On overflow (>255): global TLB flush + reset counter.
+static containers::AtomicU32 next_asid{1};
+
+static u16 allocate_asid() noexcept {
+    u32 val = next_asid.fetch_add(1, containers::MemoryOrder::Relaxed);
+    if (val > 255) {
+        // Wrap around: global TLB flush, reset counter
+#if defined(__aarch64__) || defined(MOSS_ARCH_ARM64)
+        asm volatile("tlbi vmalle1" ::: "memory");
+        asm volatile("dsb sy" ::: "memory");
+        asm volatile("isb" ::: "memory");
+#endif
+        next_asid.store(2, containers::MemoryOrder::Relaxed);
+        return 1;
+    }
+    return static_cast<u16>(val);
+}
+
+// Create a real user address space with buddy-allocated PGD
 KernelResult<unique_ptr<AddressSpace>> create_user_address_space() noexcept {
-    early_debug_print("🏗️ 创建用户地址空间...\n");
+    // 1. Allocate a physical page for the user PGD (L0 table)
+    auto pgd_result = mm::PageTableManager::allocate_page_table_dynamic();
+    if (!pgd_result) {
+        return KernelResult<unique_ptr<AddressSpace>>{ErrorCode::OutOfMemory};
+    }
 
-    // 简化实现：创建一个基本的地址空间
-    // TODO: 实现实际的页表分配和管理
+    // get_physical_address works on the high-half virtual pointer
+    PhysAddr pgd_phys = mm::PageTableManager::get_physical_address(*pgd_result);
 
-    // 分配ASID（地址空间ID）
-    static containers::AtomicU32 next_asid{1};
-    u16 asid = static_cast<u16>(next_asid.fetch_add(1, containers::MemoryOrder::Relaxed));
+    // 2. Allocate ASID
+    u16 asid = allocate_asid();
 
-    // 创建地址空间对象（使用占位符物理地址）
-    PhysAddr pgd_phys = 0x0; // 占位符
+    // 3. Create AddressSpace object
     auto address_space = make_unique<AddressSpace>(pgd_phys, asid);
     if (!address_space) {
         return KernelResult<unique_ptr<AddressSpace>>{ErrorCode::OutOfMemory};
     }
 
-    early_debug_print("✅ 用户地址空间创建成功（简化版本）\n");
     return KernelResult<unique_ptr<AddressSpace>>{moss::move(address_space)};
 }
 
@@ -287,17 +307,17 @@ KernelResult<Process*> create_process_from_elf([[maybe_unused]] const u8* elf_da
 }
 
 // 映射内存区域到用户地址空间
-VoidResult map_user_memory(AddressSpace* as, VirtAddr vaddr, PhysAddr paddr,
+VoidResult map_user_memory(AddressSpace* as, VirtAddr vaddr,
+                          [[maybe_unused]] PhysAddr paddr,
                           usize size, u32 flags) noexcept {
     if (!as || vaddr == 0 || size == 0) {
         return VoidResult{ErrorCode::InvalidArgument};
     }
 
-    // 创建VMA区域
-    VmaRegion region(vaddr, vaddr + size, flags, paddr);
-
-    // 添加到地址空间的VMA列表 (使用push_front)
-    as->vma_list.push_front(region);
+    // Add VMA region via AddressSpace helper
+    if (!as->add_vma(vaddr, vaddr + size, flags)) {
+        return VoidResult{ErrorCode::AlreadyExists};
+    }
 
     // 更新统计信息
     usize pages = (size + PAGE_SIZE - 1) / PAGE_SIZE;
