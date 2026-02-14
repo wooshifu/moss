@@ -348,13 +348,14 @@ extern "C" [[noreturn]] void secondary_cpu_entry() noexcept {
             : moss::kernel::platform::intc_cpu_base();
     (void)moss::kernel::hal::intc::init_cpu_interface(gic_cpu_base);
 
-    // Enable timer PPI (IRQ 27) in per-CPU banked GICD_ISENABLER.
-    // PPI registers are per-CPU in GICv2, so each CPU must enable its own.
+    // Enable timer PPI (IRQ 27) and reschedule SGI (IRQ 0) in per-CPU
+    // banked GICD_ISENABLER.  PPI/SGI registers are per-CPU in GICv2.
     moss::kernel::VirtAddr gic_dist_base =
         (plat.dtb_valid && plat.intc.valid)
             ? static_cast<moss::kernel::VirtAddr>(plat.intc.dist_base)
             : moss::kernel::platform::intc_dist_base();
     moss::kernel::hal::intc::enable_irq(gic_dist_base, moss::kernel::platform::timer_irq());
+    moss::kernel::hal::intc::enable_irq(gic_dist_base, 0);  // SGI 0 = Reschedule IPI
 
     // 5. Enable per-CPU timer and set initial compare for first tick.
     //    Use SCHED_LATENCY_NS (~6ms) so the first scheduler tick fires promptly.
