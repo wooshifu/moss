@@ -310,7 +310,21 @@ add_custom_command(
   COMMENT
     "Generating disassembly, symbol table, and binary images for ${MOSS_TARGET_ARCH}"
 )
-message(STATUS "将生成文件: moss.dis, moss.sym, moss.bin, moss_boot.bin, moss_code.bin")
+
+# Generate Linux-compatible Image (ARM64 only) from flat binary
+if(MOSS_TARGET_ARCH STREQUAL "ARM64")
+  add_custom_command(
+    TARGET moss.elf
+    POST_BUILD
+    COMMAND uv run ${CMAKE_SOURCE_DIR}/scripts/create_linux_image.py
+            ${CMAKE_BINARY_DIR}/moss.bin ${CMAKE_BINARY_DIR}/moss.img
+    WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+    COMMENT "Generating ARM64 Linux-compatible Image (moss.img)"
+  )
+  message(STATUS "将生成文件: moss.dis, moss.sym, moss.bin, moss_boot.bin, moss_code.bin, moss.img")
+else()
+  message(STATUS "将生成文件: moss.dis, moss.sym, moss.bin, moss_boot.bin, moss_code.bin")
+endif()
 
 # === 构建目标 ===
 if(EXISTS "${CMAKE_BINARY_DIR}/run_qemu.sh")

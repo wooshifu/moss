@@ -5,5 +5,6 @@
     "test_elf": "@CMAKE_BINARY_DIR@/bin/moss.test.elf",
     "kernel_bin": "@CMAKE_BINARY_DIR@/moss_boot.bin",
     "kernel_bin_full": "@CMAKE_BINARY_DIR@/moss.bin",
+    "kernel_image": "@CMAKE_BINARY_DIR@/moss.img",
     "cpu_cores": @MOSS_CPU_CORES@
 }
