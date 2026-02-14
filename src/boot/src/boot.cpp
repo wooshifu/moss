@@ -1,179 +1,165 @@
 /*
- * 统一启动入口文件
- * 为所有架构提供统一的启动流程控制
+ * Unified boot entry file - module implementation unit
+ * Provides unified boot flow control for all architectures
  */
 
-#include "boot/arch/boot_interface.hpp"
-#include "boot/arch/arch_selector.hpp"
-#include "core/moss_std.hpp"
+module;
 
-// 包含架构特定的实现定义
-#if defined(__aarch64__) || defined(MOSS_ARCH_ARM64)
-// 包含ARM64的完整实现
-extern "C" {
-    [[noreturn]] void early_main(void* device_tree_ptr); // 与ARM64汇编代码的C链接
-}
-// 注意：ARM64BootImpl的实现在arch/arm64/boot_impl.cpp中定义
-// 会通过链接器与此文件链接在一起
-#elif defined(__x86_64__) || defined(__x86_64) || defined(MOSS_ARCH_X86_64)
-// x86_64实现（待开发）
-#elif defined(__riscv) || defined(__riscv__) || defined(MOSS_ARCH_RISCV)
-// RISC-V实现（待开发）
+// Architecture detection macros (global module fragment)
+#ifndef MOSS_ARCH_ARM64
+#ifndef MOSS_ARCH_X86_64
+#ifndef MOSS_ARCH_RISCV
+#if defined(__x86_64__) || defined(__x86_64) || defined(__amd64__) ||           \
+    defined(__amd64) || defined(_M_X64)
+#define MOSS_ARCH_X86_64
+#elif defined(__aarch64__) || defined(_M_ARM64)
+#define MOSS_ARCH_ARM64
+#elif defined(__riscv) && __riscv_xlen == 64
+#define MOSS_ARCH_RISCV
+#else
+#define MOSS_ARCH_X86_64
 #endif
+#endif
+#endif
+#endif
+
+#if defined(__aarch64__) || defined(MOSS_ARCH_ARM64)
+#define MOSS_CURRENT_ARCH "ARM64"
+#elif defined(__x86_64__) || defined(__x86_64) || defined(MOSS_ARCH_X86_64)
+#define MOSS_CURRENT_ARCH "x86_64"
+#elif defined(__riscv) || defined(__riscv__) || defined(MOSS_ARCH_RISCV)
+#define MOSS_CURRENT_ARCH "RISC-V"
+#endif
+
+// extern "C" declarations (global module fragment)
+#if defined(__aarch64__) || defined(MOSS_ARCH_ARM64)
+extern "C" {
+[[noreturn]] void early_main(void *device_tree_ptr);
+}
+#endif
+
+extern "C" {
+void kernel_main(void) noexcept;
+}
+
+module moss.boot;
+
+using moss::u32;
+using moss::u64;
+using moss::VirtAddr;
 
 namespace moss::boot {
 
-// 早期启动打印函数（架构无关）
-static void boot_print(const char* message) {
-    // 根据架构选择合适的早期打印方式
+// Early boot print function (architecture-independent)
+static void boot_print(const char *message) {
 #if defined(__aarch64__) || defined(MOSS_ARCH_ARM64)
-    // ARM64使用UART
+    // ARM64 uses UART
     static constexpr VirtAddr UART_BASE = 0x09000000;
     volatile u32 *uart_base = reinterpret_cast<volatile u32 *>(UART_BASE);
-    const char* p = message;
+    const char *p = message;
     while (*p) {
         if (*p == '\n') {
-            // 等待FIFO不满
-            while (uart_base[0x018 / 4] & (1 << 5)) {}
+            // Wait for FIFO not full
+            while (uart_base[0x018 / 4] & (1 << 5)) {
+            }
             uart_base[0x000 / 4] = '\r';
         }
-        // 等待FIFO不满
-        while (uart_base[0x018 / 4] & (1 << 5)) {}
+        // Wait for FIFO not full
+        while (uart_base[0x018 / 4] & (1 << 5)) {
+        }
         uart_base[0x000 / 4] = *p++;
     }
 #else
-    // 其他架构的早期打印（待实现）
     (void)message;
 #endif
 }
 
-/**
- * 统一启动主函数
- * 所有架构的启动流程都经过这个统一入口
- */
-extern "C" [[noreturn]] void unified_boot_main(void* device_tree_ptr) {
-    // 显示启动信息
-    boot_print("\n=== Moss 多架构统一启动系统 ===\n");
-    boot_print("目标架构: ");
+/// Unified boot main function
+/// All architectures go through this unified entry
+extern "C" [[noreturn]] void unified_boot_main(void *device_tree_ptr) {
+    boot_print("\n=== Moss Multi-arch Unified Boot System ===\n");
+    boot_print("Target arch: ");
     boot_print(MOSS_CURRENT_ARCH);
     boot_print("\n");
 
-    // 初始化启动上下文
+    // Initialize boot context
     BootContext ctx{
         .device_tree_ptr = device_tree_ptr,
-        .memory_start = 0,    // 将在hardware_early_init中设置
-        .memory_size = 0,     // 将在hardware_early_init中设置
-        .cpu_id = 0,          // 将在hardware_early_init中设置
-        .total_cpus = 1,      // 默认单核
+        .memory_start = 0,
+        .memory_size = 0,
+        .cpu_id = 0,
+        .total_cpus = 1,
         .kernel_phys_base = 0,
-        .kernel_virt_base = 0
-    };
+        .kernel_virt_base = 0};
 
-    boot_print("启动上下文初始化完成\n\n");
+    boot_print("Boot context initialized\n\n");
 
-    // 执行架构特定的标准化启动流程
-    boot_print("开始标准化启动序列...\n");
+    // Execute architecture-specific standardized boot sequence
+    boot_print("Starting standardized boot sequence...\n");
 
-    // 阶段1：硬件层初始化
-    boot_print("阶段1: 硬件早期初始化\n");
+    // Stage 1: Hardware early init
+    boot_print("Stage 1: Hardware early init\n");
     auto hw_result = ArchBoot::hardware_early_init(ctx);
     if (!hw_result) {
-        boot_print("错误: 硬件初始化失败\n");
+        boot_print("Error: Hardware init failed\n");
         ArchBoot::arch_panic("Hardware initialization failed");
     }
 
-    // 阶段2：内存管理设置
-    boot_print("阶段2: 内存管理设置\n");
+    // Stage 2: Memory management setup
+    boot_print("Stage 2: Memory management setup\n");
     auto mem_result = ArchBoot::setup_memory_management(ctx);
     if (!mem_result) {
-        boot_print("错误: 内存管理设置失败\n");
+        boot_print("Error: Memory management setup failed\n");
         ArchBoot::arch_panic("Memory management setup failed");
     }
 
-    // 阶段3：中断异常设置
-    boot_print("阶段3: 中断和异常设置\n");
+    // Stage 3: Interrupts and exceptions setup
+    boot_print("Stage 3: Interrupts and exceptions setup\n");
     auto int_result = ArchBoot::setup_interrupts_and_exceptions(ctx);
     if (!int_result) {
-        boot_print("错误: 中断异常设置失败\n");
+        boot_print("Error: Interrupt/exception setup failed\n");
         ArchBoot::arch_panic("Interrupt/exception setup failed");
     }
 
-    // 阶段4：多核支持（暂时跳过，优先恢复单核调度功能）
-    boot_print("阶段4: SMP支持设置 (暂时跳过)\n");
-    // 🔧 TEMPORARY: 暂时不调用SMP，直接设置单核模式
+    // Stage 4: SMP support (temporarily skipped, single-core first)
+    boot_print("Stage 4: SMP support setup (temporarily skipped)\n");
     ctx.total_cpus = 1;
-    boot_print("单核模式：1个CPU\n");
+    boot_print("Single-core mode: 1 CPU\n");
 
-    // auto smp_result = ArchBoot::setup_smp_support(ctx);
-    // if (!smp_result) {
-    //     boot_print("错误: SMP设置失败\n");
-    //     ArchBoot::arch_panic("SMP setup failed");
-    // }
+    boot_print("Stage 4: SMP support setup complete\n");
 
-    boot_print("阶段4: SMP支持设置完成\n");
+    // Stage 5: Architecture finalization
+    boot_print("Stage 5: Architecture init complete\n");
 
-    // 阶段5：架构特定的最终化
-    boot_print("阶段5: 架构初始化完成\n");
-
-    // 完成架构初始化后，转交给kernel_main
     auto finalize_result = ArchBoot::finalize_arch_init(ctx);
     if (!finalize_result) {
-        boot_print("错误: 架构初始化完成失败\n");
+        boot_print("Error: Architecture finalization failed\n");
         ArchBoot::arch_panic("Architecture finalization failed");
     }
 
-    // 更新启动状态
+    // Update boot status
     update_boot_stage(BootStage::SystemInit);
 
-    boot_print("=== 架构特定启动完成 ===\n");
-    boot_print("转交给架构无关的系统初始化...\n\n");
+    boot_print("=== Architecture-specific boot complete ===\n");
+    boot_print("Handing off to architecture-independent system init...\n\n");
 
-    // 转交给架构无关的系统初始化
-    extern void kernel_main(void) noexcept;
-    boot_print("🚀 启动MOSS内核主程序...\n");
+    // Hand off to architecture-independent system init
+    boot_print("Launching MOSS kernel main...\n");
 
-    // 标记启动完成
+    // Mark boot complete
     update_boot_stage(BootStage::Complete);
 
-    // 调用内核主程序
+    // Call kernel main
     kernel_main();
 
-    // 如果kernel_main返回，说明出错了
+    // If kernel_main returns, something is wrong
     ArchBoot::arch_panic("Kernel main returned unexpectedly");
-
-    // 原来的finalize_arch_init检查逻辑已跳过
-    /*
-    auto finalize_result = ArchBoot::finalize_arch_init(ctx);
-    if (!finalize_result) {
-        boot_print("错误: 架构初始化完成失败\n");
-        ArchBoot::arch_panic("Architecture finalization failed");
-    }
-
-    // 更新启动状态
-    update_boot_stage(BootStage::SystemInit);
-
-    boot_print("=== 架构特定启动完成 ===\n");
-    boot_print("转交给架构无关的系统初始化...\n\n");
-
-    // 转交给架构无关的系统初始化
-    extern void kernel_main(void) noexcept;
-    boot_print("🚀 启动MOSS内核主程序...\n");
-
-    // 标记启动完成
-    update_boot_stage(BootStage::Complete);
-
-    // 调用内核主程序
-    kernel_main();
-
-    // 如果kernel_main返回，说明出错了
-    ArchBoot::arch_panic("Kernel main returned unexpectedly");
-    */
 }
 
 } // namespace moss::boot
 
-// C语言入口点，由各架构的汇编代码调用
-extern "C" [[noreturn]] void early_main(void* device_tree_ptr) {
-    // 直接调用统一启动主函数
+// C entry point, called by architecture assembly code
+extern "C" [[noreturn]] void early_main(void *device_tree_ptr) {
+    // Directly call unified boot main
     moss::boot::unified_boot_main(device_tree_ptr);
 }

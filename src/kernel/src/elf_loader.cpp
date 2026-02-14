@@ -1,11 +1,33 @@
 // MOSS内核ELF程序加载器实现
 // 支持加载64位ELF可执行文件到用户空间
 
-#include "kernel/elf_loader.hpp"
-// #include "../mm/kernel_memory.hpp"  // TODO: 将来实现内存分配时需要
+module;
+
+// Architecture detection macros (global module fragment)
+#ifndef MOSS_ARCH_ARM64
+#ifndef MOSS_ARCH_X86_64
+#ifndef MOSS_ARCH_RISCV
+#if defined(__x86_64__) || defined(__x86_64) || defined(__amd64__) ||           \
+    defined(__amd64) || defined(_M_X64)
+#define MOSS_ARCH_X86_64
+#elif defined(__aarch64__) || defined(_M_ARM64)
+#define MOSS_ARCH_ARM64
+#elif defined(__riscv) && __riscv_xlen == 64
+#define MOSS_ARCH_RISCV
+#else
+#define MOSS_ARCH_X86_64
+#endif
+#endif
+#endif
+#endif
+
+// UINT64_MAX replacement for freestanding
+#define MOSS_UINT64_MAX static_cast<unsigned long long>(-1)
 
 // 用于调试输出
 extern "C" void early_debug_print(const char* message) noexcept;
+
+module moss.kernel;
 
 namespace moss::kernel::elf {
 
@@ -153,7 +175,7 @@ VoidResult ElfLoader::calculate_memory_layout(
         return VoidResult{ErrorCode::InvalidArgument};
     }
 
-    VirtAddr min_addr = UINT64_MAX;
+    VirtAddr min_addr = MOSS_UINT64_MAX;
     VirtAddr max_addr = 0;
 
     // 找到最小和最大虚拟地址
@@ -215,7 +237,7 @@ VoidResult ElfLoader::map_elf_segments(
     const ProgramHeader* phdrs = reinterpret_cast<const ProgramHeader*>(phdr_data);
 
     // 计算原始ELF的基地址，用于重定位
-    VirtAddr original_base = UINT64_MAX;
+    VirtAddr original_base = MOSS_UINT64_MAX;
     for (u16 i = 0; i < header->e_phnum; ++i) {
         const ProgramHeader& phdr = phdrs[i];
         if (phdr.p_type == PT_LOAD && phdr.p_vaddr < original_base) {
@@ -407,11 +429,11 @@ Result<LoadedProgram> ElfLoader::load_elf_from_memory(
 
     // 9. 构造加载结果 - 重定位入口点
     // 重新计算原始基地址以计算入口点偏移
-    VirtAddr original_base = UINT64_MAX;
-    const u8* phdr_data = elf_data + header->e_phoff;
-    const ProgramHeader* phdrs = reinterpret_cast<const ProgramHeader*>(phdr_data);
+    VirtAddr original_base = MOSS_UINT64_MAX;
+    const u8* phdr_data2 = elf_data + header->e_phoff;
+    const ProgramHeader* phdrs2 = reinterpret_cast<const ProgramHeader*>(phdr_data2);
     for (u16 i = 0; i < header->e_phnum; ++i) {
-        const ProgramHeader& phdr = phdrs[i];
+        const ProgramHeader& phdr = phdrs2[i];
         if (phdr.p_type == PT_LOAD && phdr.p_vaddr < original_base) {
             original_base = phdr.p_vaddr;
         }

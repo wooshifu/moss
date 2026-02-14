@@ -1,17 +1,44 @@
 // MOSS混合内核主函数实现
 // 系统启动入口和全局实例管理
 
-#include "kernel/kernel_main.hpp"
-#include "kernel/syscall_table.hpp"        // 系统调用表管理
-#include "kernel/syscall_arch.hpp"            // 多架构系统调用支持
-#include "mm/kernel_memory.hpp"  // 内核内存分配接口
-#include "../../interrupts/include/interrupts/ipi_hardware_simple.hpp"      // 简化硬件IPI系统
-#include "../../boot/include/boot/boot.hpp"                                  // Boot阶段全局变量
-#include "core/arch/arch_abstraction.hpp"  // 多架构抽象层
-// cstring 不需要 - 内核环境使用自定义内存操作
+module;
+
+// Architecture detection (global module fragment)
+#ifndef MOSS_ARCH_ARM64
+#ifndef MOSS_ARCH_X86_64
+#ifndef MOSS_ARCH_RISCV
+#if defined(__x86_64__) || defined(__x86_64) || defined(__amd64__) ||           \
+    defined(__amd64) || defined(_M_X64)
+#define MOSS_ARCH_X86_64
+#elif defined(__aarch64__) || defined(_M_ARM64)
+#define MOSS_ARCH_ARM64
+#elif defined(__riscv) && __riscv_xlen == 64
+#define MOSS_ARCH_RISCV
+#else
+#define MOSS_ARCH_X86_64
+#endif
+#endif
+#endif
+#endif
+
+// extern "C" declarations in global module fragment
+extern "C" {
+void early_debug_print(const char *message) noexcept;
+void kernel_test_all_subsystems(void) noexcept;
+[[noreturn]] void kernel_main(void) noexcept;
+[[noreturn]] void kernel_panic_handler(const char *message) noexcept;
+const char *get_kernel_version(void) noexcept;
+const char *get_build_info(void) noexcept;
+long system_call_handler(long syscall_number, long arg0, long arg1,
+                         long arg2, long arg3, long arg4, long arg5) noexcept;
+
+// Forward declaration for boot module globals
+// (These are defined in boot module but accessed here via extern)
+}
+
+module moss.kernel;
 
 // 使用内核命名空间的类型
-using moss::kernel::ShmId;
 using moss::kernel::u32;
 using moss::kernel::u64;
 using moss::kernel::usize;
@@ -30,14 +57,10 @@ mm::PageTableManager *g_page_table_manager = nullptr;
 
 interrupts::GenericInterruptController *g_gic = nullptr;
 drivers::DeviceManager *g_device_manager = nullptr;
-// drivers::UartDriver* g_uart_driver = nullptr; // 暂时注释掉
 
 } // namespace moss::kernel
 
 extern "C" {
-
-// 早期调试输出函数声明
-void early_debug_print(const char *message) noexcept;
 
 // C风格入口函数（从汇编启动代码调用）
 
@@ -70,13 +93,9 @@ void early_debug_print(const char *message) noexcept;
 
   // ⚡ 关键修复：连接Boot阶段初始化的GIC实例
   // Boot阶段的g_gic_controller已成功初始化，现在让Kernel可以访问它
-  using namespace moss::boot;
-  if (g_gic_controller && g_gic_hardware_available) {
-    g_gic = g_gic_controller; // 连接Boot和Kernel阶段的GIC指针
-    early_debug_print("🔗 GIC实例已连接：Boot阶段->Kernel阶段\n");
-  } else {
-    early_debug_print("⚠️ GIC硬件不可用，Kernel将正确报告状态\n");
-  }
+  // Note: boot module globals accessed via forward declarations
+  // TODO: Properly import boot module when moss.boot is created
+  // For now, skip GIC connection as boot module is not yet a C++26 module
 
   // 显示详细系统信息
   early_debug_print("\n=== 内核系统状态详情 ===\n");
@@ -180,7 +199,7 @@ void early_debug_print(const char *message) noexcept;
 }
 
 // 早期调试输出（在UART驱动初始化前使用）
-extern "C" void early_debug_print(const char *message) noexcept {
+void early_debug_print(const char *message) noexcept {
   if (message == nullptr)
     return;
 
@@ -310,5 +329,3 @@ void print_syscall_convention() noexcept {
 }
 
 } // namespace moss::kernel::arch::syscall
-
-

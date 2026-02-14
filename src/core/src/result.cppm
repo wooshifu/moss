@@ -16,7 +16,7 @@ template <typename T> class Ok;
 template <typename E> class Err;
 
 // Primary Result template for value/error handling
-template <typename T, typename E> class Result {
+template <typename T, typename E = ErrorCode> class Result {
 private:
   union Storage {
     T value_;
@@ -69,14 +69,16 @@ public:
   constexpr Result(const U &value) noexcept(noexcept(T(value)))
     requires(!is_same_v<remove_cv_t<remove_reference_t<U>>, Result> &&
              !is_same_v<remove_cv_t<remove_reference_t<U>>, Ok<T>> &&
-             !is_same_v<remove_cv_t<remove_reference_t<U>>, Err<E>>)
+             !is_same_v<remove_cv_t<remove_reference_t<U>>, Err<E>> &&
+             !is_same_v<remove_cv_t<remove_reference_t<U>>, E>)
       : storage_(true, value), has_value_(true) {}
 
   template <typename U = T>
   constexpr Result(U &&value) noexcept(noexcept(T(forward<U>(value))))
     requires(!is_same_v<remove_cv_t<remove_reference_t<U>>, Result> &&
              !is_same_v<remove_cv_t<remove_reference_t<U>>, Ok<T>> &&
-             !is_same_v<remove_cv_t<remove_reference_t<U>>, Err<E>>)
+             !is_same_v<remove_cv_t<remove_reference_t<U>>, Err<E>> &&
+             !is_same_v<remove_cv_t<remove_reference_t<U>>, E>)
       : storage_(true, forward<U>(value)), has_value_(true) {}
 
   // Ok constructor
@@ -85,6 +87,15 @@ public:
 
   constexpr Result(Ok<T> &&ok) noexcept(noexcept(T(move(ok.value_))))
       : storage_(true, move(ok.value_)), has_value_(true) {}
+
+  // Direct error constructor (allows Result{ErrorType::value})
+  constexpr Result(const E &error) noexcept(noexcept(E(error)))
+    requires(!is_same_v<E, T>)
+      : storage_(1, error), has_value_(false) {}
+
+  constexpr Result(E &&error) noexcept(noexcept(E(move(error))))
+    requires(!is_same_v<E, T>)
+      : storage_(1, move(error)), has_value_(false) {}
 
   // Err constructor
   constexpr Result(const Err<E> &err) noexcept(noexcept(E(err.error_)))
@@ -156,7 +167,8 @@ public:
   constexpr Result &operator=(const U &value) noexcept(noexcept(T(value)))
     requires(!is_same_v<remove_cv_t<remove_reference_t<U>>, Result> &&
              !is_same_v<remove_cv_t<remove_reference_t<U>>, Ok<T>> &&
-             !is_same_v<remove_cv_t<remove_reference_t<U>>, Err<E>>)
+             !is_same_v<remove_cv_t<remove_reference_t<U>>, Err<E>> &&
+             !is_same_v<remove_cv_t<remove_reference_t<U>>, E>)
   {
     destroy();
     has_value_ = true;
@@ -169,7 +181,8 @@ public:
   operator=(U &&value) noexcept(noexcept(T(forward<U>(value))))
     requires(!is_same_v<remove_cv_t<remove_reference_t<U>>, Result> &&
              !is_same_v<remove_cv_t<remove_reference_t<U>>, Ok<T>> &&
-             !is_same_v<remove_cv_t<remove_reference_t<U>>, Err<E>>)
+             !is_same_v<remove_cv_t<remove_reference_t<U>>, Err<E>> &&
+             !is_same_v<remove_cv_t<remove_reference_t<U>>, E>)
   {
     destroy();
     has_value_ = true;
@@ -224,8 +237,18 @@ public:
 
   constexpr const T &value() const & {
     if (!has_value_) {
-      // In kernel environment, we can't throw exceptions
-      // This would typically cause a kernel panic in real implementation
+      __builtin_unreachable();
+    }
+    return storage_.value_;
+  }
+
+  // Value access (mutable lvalue reference versions)
+  constexpr T &operator*() & noexcept { return storage_.value_; }
+
+  constexpr T *operator->() noexcept { return &storage_.value_; }
+
+  constexpr T &value() & {
+    if (!has_value_) {
       __builtin_unreachable();
     }
     return storage_.value_;
@@ -277,6 +300,13 @@ public:
 
   constexpr Result(const Ok<void> &) noexcept : has_value_(true) {}
   constexpr Result(Ok<void> &&) noexcept : has_value_(true) {}
+
+  // Direct error constructor
+  constexpr Result(const E &error) noexcept(noexcept(E(error)))
+      : error_(error), has_value_(false) {}
+
+  constexpr Result(E &&error) noexcept(noexcept(E(move(error))))
+      : error_(move(error)), has_value_(false) {}
 
   constexpr Result(const Err<E> &err) noexcept(noexcept(E(err.error_)))
       : error_(err.error_), has_value_(false) {}

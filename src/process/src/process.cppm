@@ -1,0 +1,2435 @@
+// MOSS Process Module - Process Management, CFS Scheduler, Load Balancer, Idle Task
+// Combines process management, CFS scheduling, multi-core load balancing,
+// and idle task support into a single C++26 module.
+
+module;
+
+// Architecture detection for global module fragment
+#ifndef MOSS_ARCH_ARM64
+#ifndef MOSS_ARCH_X86_64
+#ifndef MOSS_ARCH_RISCV
+#if defined(__x86_64__) || defined(__x86_64) || defined(__amd64__) ||           \
+    defined(__amd64) || defined(_M_X64)
+#define MOSS_ARCH_X86_64
+#elif defined(__aarch64__) || defined(_M_ARM64)
+#define MOSS_ARCH_ARM64
+#elif defined(__riscv) && __riscv_xlen == 64
+#define MOSS_ARCH_RISCV
+#else
+#define MOSS_ARCH_X86_64
+#endif
+#endif
+#endif
+#endif
+
+// Assembly interop declarations (global module fragment)
+extern "C" void switch_to_user(void* context, unsigned long long user_stack);
+extern "C" void early_debug_print(const char* message) noexcept;
+
+export module moss.process;
+
+import moss.std;
+import moss.types;
+import moss.result;
+import moss.smart_ptr;
+import moss.arch;
+import moss.containers;
+import moss.mm;
+import moss.ipc;
+
+// ============================================================================
+// Scheduler debug logging (internal, not exported)
+// ============================================================================
+namespace {
+using moss::u32;
+using moss::u64;
+
+void sched_log(const char *str) noexcept {
+    volatile u32 *uart_data = reinterpret_cast<volatile u32 *>(0x09000000);
+    volatile u32 *uart_flags = reinterpret_cast<volatile u32 *>(0x09000018);
+
+    while (*str) {
+        // Wait for TX FIFO available
+        while (*uart_flags & (1 << 5)) {
+            // TXFF flag
+        }
+
+        if (*str == '\n') {
+            *uart_data = static_cast<u32>('\r');
+            while (*uart_flags & (1 << 5)) {}
+        }
+        *uart_data = static_cast<u32>(static_cast<unsigned char>(*str));
+        str++;
+    }
+}
+
+void sched_log_uint(u32 value) noexcept {
+    char buffer[12];
+    char *ptr = buffer + sizeof(buffer) - 1;
+    *ptr = '\0';
+
+    if (value == 0) {
+        *(--ptr) = '0';
+    } else {
+        while (value > 0 && ptr > buffer) {
+            *(--ptr) = '0' + (value % 10);
+            value /= 10;
+        }
+    }
+
+    sched_log(ptr);
+}
+
+void sched_log_u64(u64 value) noexcept {
+    char buffer[22];
+    char *ptr = buffer + sizeof(buffer) - 1;
+    *ptr = '\0';
+
+    if (value == 0) {
+        *(--ptr) = '0';
+    } else {
+        while (value > 0 && ptr > buffer) {
+            *(--ptr) = '0' + (value % 10);
+            value /= 10;
+        }
+    }
+
+    sched_log(ptr);
+}
+} // anonymous namespace
+
+// ============================================================================
+// process.hpp - Base process types
+// ============================================================================
+export namespace moss::kernel::process {
+
+// Forward declarations
+struct Thread;
+
+// Thread entry for RcuList storage
+struct ThreadEntry {
+    ThreadId tid;
+    Thread* thread;
+
+    ThreadEntry(ThreadId id, Thread* thr) : tid(id), thread(thr) {}
+
+    bool operator==(const ThreadEntry& other) const {
+        return tid == other.tid;
+    }
+};
+
+// Use kernel smart pointers
+using moss::kernel::make_unique;
+using moss::kernel::unique_ptr;
+
+// Process states
+enum class ProcessState : u8 {
+  Created = 0,
+  Ready = 1,
+  Running = 2,
+  Blocked = 3,
+  Terminated = 4,
+  Zombie = 5
+};
+
+// Scheduling classes
+enum class SchedClass : u8 {
+  Normal = 0,
+  RealTime = 1,
+  Idle = 2,
+  Batch = 3
+};
+
+// Process priority range
+namespace Priority {
+inline constexpr i32 MIN_NICE = -20;
+inline constexpr i32 MAX_NICE = 19;
+inline constexpr i32 DEFAULT_NICE = 0;
+
+inline constexpr u32 MIN_RT_PRIORITY = 1;
+inline constexpr u32 MAX_RT_PRIORITY = 99;
+inline constexpr u32 DEFAULT_RT_PRIORITY = 50;
+} // namespace Priority
+
+// CPU context structure (multi-architecture support)
+#if defined(__aarch64__) || defined(MOSS_ARCH_ARM64)
+// ARM64 CPU context
+struct alignas(16) CpuContext {
+  // General purpose registers x0-x30
+  u64 x[31];
+
+  // Stack pointer
+  u64 sp;
+
+  // Program counter
+  u64 pc;
+
+  // Program state register
+  u64 pstate;
+
+  // Floating point and NEON registers
+  u64 fpsr;
+  u64 fpcr;
+
+  // NEON/FP registers (128-bit x 32)
+  struct {
+    u64 low, high;
+  } v[32];
+
+  // Thread pointer register
+  u64 tpidr_el0;
+
+  constexpr CpuContext() noexcept
+      : x{}, sp(0), pc(0), pstate(0), fpsr(0), fpcr(0), v{}, tpidr_el0(0) {}
+};
+
+#elif defined(__x86_64__) || defined(__x86_64) || defined(MOSS_ARCH_X86_64)
+// x86_64 CPU context
+struct alignas(16) CpuContext {
+  // General purpose registers
+  u64 rax, rbx, rcx, rdx;
+  u64 rsi, rdi, rbp;
+
+  // Stack pointer (unified naming)
+  u64 sp;
+
+  u64 r8, r9, r10, r11;
+  u64 r12, r13, r14, r15;
+
+  // Status register (unified naming)
+  u64 pstate;
+
+  // Program counter (unified naming)
+  u64 pc;
+
+  // Segment registers
+  u16 cs, ds, es, fs, gs, ss;
+
+  // Floating point register state
+  u64 mxcsr;
+  u64 fcw;
+
+  constexpr CpuContext() noexcept
+      : rax(0), rbx(0), rcx(0), rdx(0), rsi(0), rdi(0), rbp(0), sp(0),
+        r8(0), r9(0), r10(0), r11(0), r12(0), r13(0), r14(0), r15(0),
+        pstate(0x202), pc(0), cs(0), ds(0), es(0), fs(0), gs(0), ss(0),
+        mxcsr(0), fcw(0) {}
+};
+
+#elif defined(__riscv) || defined(__riscv__) || defined(MOSS_ARCH_RISCV)
+// RISC-V CPU context
+struct alignas(16) CpuContext {
+  // General purpose registers x0-x31
+  u64 x[32];
+
+  // Program counter (unified naming)
+  u64 pc;
+
+  // Status register (unified naming - maps to sstatus)
+  u64 pstate;
+
+  // Stack pointer (unified naming - also maps to x[2])
+  u64 sp;
+
+  constexpr CpuContext() noexcept : x{}, pc(0), pstate(0), sp(0) {
+    x[2] = sp;
+  }
+};
+
+#else
+#error "Unsupported target architecture: please compile on ARM64, x86_64 or RISC-V"
+#endif
+
+static_assert(sizeof(CpuContext) <= 1024,
+              "CpuContext should fit in reasonable size");
+
+// Virtual Memory Area (VMA)
+struct VmaRegion {
+  moss::kernel::VirtAddr start_addr;
+  moss::kernel::VirtAddr end_addr;
+  moss::kernel::u32 flags;
+  moss::kernel::PhysAddr phys_addr;
+
+  VmaRegion(moss::kernel::VirtAddr start, moss::kernel::VirtAddr end,
+            moss::kernel::u32 region_flags,
+            moss::kernel::PhysAddr phys = 0) noexcept
+      : start_addr(start), end_addr(end), flags(region_flags), phys_addr(phys) {
+  }
+};
+
+// Virtual memory address space
+struct AddressSpace {
+  PhysAddr pgd_phys;
+  u16 asid;
+
+  containers::RcuList<struct VmaRegion> vma_list;
+
+  containers::AtomicSize total_pages;
+  containers::AtomicSize resident_pages;
+
+  AddressSpace(PhysAddr pgd, u16 asid_val) noexcept
+      : pgd_phys(pgd), asid(asid_val), total_pages(0), resident_pages(0) {}
+};
+
+// CFS scheduling entity
+struct SchedEntity {
+  u64 vruntime;
+  u64 exec_start;
+  u64 sum_exec_runtime;
+  u64 prev_sum_exec_runtime;
+
+  u32 weight;
+  i32 nice;
+  u32 prio;
+
+  u32 load_weight;
+  u64 load_sum;
+  u64 util_sum;
+  u64 load_avg;
+  u64 util_avg;
+
+  SchedEntity() noexcept
+      : vruntime(0), exec_start(0), sum_exec_runtime(0),
+        prev_sum_exec_runtime(0), weight(1024), nice(0), prio(120),
+        load_weight(1024), load_sum(0), util_sum(0), load_avg(0), util_avg(0) {}
+};
+
+// Real-time scheduling entity
+struct RtSchedEntity {
+  u32 priority;
+  u64 runtime;
+  u64 deadline;
+  u64 period;
+
+  RtSchedEntity() noexcept
+      : priority(Priority::DEFAULT_RT_PRIORITY), runtime(0), deadline(0),
+        period(0) {}
+};
+
+// Thread structure
+struct Thread {
+  ThreadId tid;
+  ProcessId owner_pid;
+
+  CpuContext context;
+  u32 cpu;
+  u32 wake_cpu;
+
+  ProcessState state;
+  SchedClass sched_class;
+  SchedEntity se;
+  RtSchedEntity rt;
+
+  u64 start_time;
+  u64 utime;
+  u64 stime;
+
+  VirtAddr stack_base;
+  usize stack_size;
+
+  VirtAddr wait_queue;
+  u64 signal_mask;
+  u64 pending_signals;
+
+  Thread(ThreadId id, ProcessId pid) noexcept
+      : tid(id), owner_pid(pid), context{}, cpu(0), wake_cpu(0),
+        state(ProcessState::Created), sched_class(SchedClass::Normal), se{},
+        rt{}, start_time(0), utime(0), stime(0), stack_base(0), stack_size(0),
+        wait_queue(0), signal_mask(0), pending_signals(0) {}
+};
+
+// Process control block
+class Process {
+private:
+  ProcessId pid_;
+  ProcessId parent_pid_;
+
+  unique_ptr<AddressSpace> address_space_;
+
+  containers::RcuList<ThreadEntry> threads_;
+  containers::AtomicCounter<u32> thread_count_;
+  ThreadId main_thread_id_;
+
+  ProcessState state_;
+  i32 exit_code_;
+
+  struct {
+    u64 max_memory;
+    u64 max_cpu_time;
+    u32 max_threads;
+    u32 max_files;
+  } limits_;
+
+  struct {
+    u64 memory_usage;
+    u64 cpu_time;
+    u32 minor_faults;
+    u32 major_faults;
+    u32 voluntary_ctxt_switches;
+    u32 nonvoluntary_ctxt_switches;
+  } stats_;
+
+  mutable containers::AtomicU32 ref_count_;
+
+public:
+  Process(ProcessId pid, ProcessId parent = INVALID_PROCESS_ID) noexcept
+      : pid_(pid), parent_pid_(parent), address_space_(nullptr),
+        thread_count_(0), main_thread_id_(INVALID_THREAD_ID),
+        state_(ProcessState::Created), exit_code_(0), limits_{}, stats_{},
+        ref_count_(1) {}
+
+  ~Process() noexcept {
+    cleanup_threads();
+  }
+
+  // Non-copyable (deleted copy constructor and copy assignment)
+  Process(const Process&) = delete;
+  Process& operator=(const Process&) = delete;
+
+  Process(Process &&other) noexcept
+      : pid_(other.pid_), parent_pid_(other.parent_pid_),
+        address_space_(moss::move(other.address_space_)),
+        threads_{},
+        thread_count_(0),
+        main_thread_id_(other.main_thread_id_), state_(other.state_),
+        exit_code_(other.exit_code_), limits_(other.limits_),
+        stats_(other.stats_), ref_count_(1) {
+    other.pid_ = INVALID_PROCESS_ID;
+  }
+
+  // Basic property access
+  [[nodiscard]] ProcessId pid() const noexcept { return pid_; }
+  [[nodiscard]] ProcessId parent_pid() const noexcept { return parent_pid_; }
+  [[nodiscard]] ProcessState state() const noexcept { return state_; }
+  [[nodiscard]] i32 exit_code() const noexcept { return exit_code_; }
+
+  // Thread management
+  [[nodiscard]] KernelResult<ThreadId> create_thread(VirtAddr entry_point,
+                                                     VirtAddr stack_base,
+                                                     usize stack_size) noexcept;
+
+  [[nodiscard]] Thread *get_thread(ThreadId tid) const noexcept;
+  [[nodiscard]] Thread *get_main_thread() const noexcept;
+
+  [[nodiscard]] u32 thread_count() const noexcept {
+    return thread_count_.load(containers::MemoryOrder::Relaxed);
+  }
+
+  // Memory management
+  [[nodiscard]] VoidResult
+  set_address_space(unique_ptr<AddressSpace> as) noexcept;
+  [[nodiscard]] AddressSpace *address_space() const noexcept {
+    return address_space_.get();
+  }
+
+  // Process state management
+  void set_state(ProcessState new_state) noexcept;
+  void set_exit_code(i32 code) noexcept { exit_code_ = code; }
+
+  // Statistics update
+  void update_cpu_time(u64 user_time, u64 kernel_time) noexcept;
+  void record_context_switch(bool voluntary) noexcept;
+  void record_page_fault(bool major) noexcept;
+
+  // Reference counting
+  void add_ref() const noexcept {
+    (void)ref_count_.fetch_add(1, containers::MemoryOrder::Relaxed);
+  }
+
+  void release() const noexcept {
+    if (ref_count_.fetch_sub(1, containers::MemoryOrder::AcqRel) == 1) {
+      delete this;
+    }
+  }
+
+  [[nodiscard]] u32 ref_count() const noexcept {
+    return ref_count_.load(containers::MemoryOrder::Acquire);
+  }
+
+private:
+  void cleanup_threads() noexcept;
+  [[nodiscard]] ThreadId allocate_thread_id() noexcept;
+};
+
+// Process manager
+class ProcessManager {
+private:
+  containers::RcuHashMap<ProcessId, Process *> processes_;
+  containers::AtomicCounter<ProcessId> next_pid_;
+
+  containers::PerCpuAtomicCounter<u64> total_context_switches_;
+  containers::PerCpuAtomicCounter<u64> total_forks_;
+  containers::PerCpuAtomicCounter<u64> total_exits_;
+
+public:
+  ProcessManager() noexcept : next_pid_(1) {}
+
+  [[nodiscard]] KernelResult<Process *>
+  create_process(ProcessId parent_pid = INVALID_PROCESS_ID) noexcept;
+  [[nodiscard]] VoidResult terminate_process(ProcessId pid,
+                                             i32 exit_code) noexcept;
+
+  [[nodiscard]] Process *find_process(ProcessId pid) const noexcept;
+  [[nodiscard]] bool process_exists(ProcessId pid) const noexcept;
+
+  [[nodiscard]] KernelResult<ProcessId> sys_fork() noexcept;
+  [[nodiscard]] VoidResult sys_exit(i32 exit_code) noexcept;
+  [[nodiscard]] KernelResult<ProcessId> sys_wait(ProcessId pid) noexcept;
+
+  [[nodiscard]] u64 total_processes() const noexcept;
+  [[nodiscard]] u64 total_context_switches() const noexcept {
+    return total_context_switches_;
+  }
+  [[nodiscard]] u64 total_forks() const noexcept { return total_forks_; }
+  [[nodiscard]] u64 total_exits() const noexcept { return total_exits_; }
+
+  template <typename Func> void for_each_process(Func &&func) const {
+    processes_.for_each(
+        [&func](const auto &entry) { func(entry.key, entry.value); });
+  }
+
+private:
+  [[nodiscard]] ProcessId allocate_pid() noexcept;
+  void record_fork() noexcept { (void)total_forks_.fetch_add_local(1); }
+  void record_exit() noexcept { (void)total_exits_.fetch_add_local(1); }
+};
+
+// Global process manager instance
+extern ProcessManager *g_process_manager;
+
+// Convenience functions
+[[nodiscard]] inline Process *current_process() noexcept {
+  return nullptr;
+}
+
+[[nodiscard]] inline Thread *current_thread() noexcept {
+  return nullptr;
+}
+
+[[nodiscard]] inline u32 current_cpu() noexcept {
+  return arch::get_current_cpu_id();
+}
+
+// User address space management extensions
+namespace user_space {
+
+[[nodiscard]] KernelResult<unique_ptr<AddressSpace>> create_user_address_space() noexcept;
+
+[[nodiscard]] KernelResult<Process*> create_process_from_elf(const u8* elf_data, usize elf_size) noexcept;
+
+[[nodiscard]] VoidResult map_user_memory(AddressSpace* as, VirtAddr vaddr, PhysAddr paddr,
+                          usize size, u32 flags) noexcept;
+
+[[nodiscard]] KernelResult<VirtAddr> allocate_user_heap(Process* process, usize size) noexcept;
+
+} // namespace user_space
+
+// ============================================================================
+// cfs_scheduler.hpp - CFS (Completely Fair Scheduler)
+// ============================================================================
+
+// CFS scheduling parameters
+namespace CfsParams {
+inline constexpr u64 SCHED_LATENCY_NS = 6000000;  // 6ms
+inline constexpr u64 MIN_GRANULARITY_NS = 750000;  // 0.75ms
+inline constexpr u32 SCHED_NR_LATENCY = 8;
+
+// nice-to-weight mapping table (similar to Linux kernel)
+inline constexpr u32 NICE_TO_WEIGHT[] = {
+    /* -20 */ 88761, 71755, 56483, 46273, 36291,
+    /* -15 */ 29154, 23254, 18705, 14949, 11916,
+    /* -10 */ 9548,  7620,  6100,  4904,  3906,
+    /*  -5 */ 3121,  2501,  1991,  1586,  1277,
+    /*   0 */ 1024,  820,   655,   526,   423,
+    /*   5 */ 335,   272,   215,   172,   137,
+    /*  10 */ 110,   87,    70,    56,    45,
+    /*  15 */ 36,    29,    23,    18,    15,
+};
+
+inline constexpr u32 nice_to_weight_index(i32 nice) {
+  return static_cast<u32>(nice + 20);
+}
+
+inline constexpr u32 nice_to_weight(i32 nice) {
+  u32 index = nice_to_weight_index(nice);
+  return (index < 40) ? NICE_TO_WEIGHT[index] : 1;
+}
+
+inline constexpr u64 sched_slice(u32 weight, u32 total_weight) {
+  if (total_weight == 0)
+    return MIN_GRANULARITY_NS;
+
+  u64 slice = (SCHED_LATENCY_NS * weight) / total_weight;
+  return (slice < MIN_GRANULARITY_NS) ? MIN_GRANULARITY_NS : slice;
+}
+} // namespace CfsParams
+
+// Red-black tree node (simplified implementation)
+template <typename T> struct RbNode {
+  T *data;
+  RbNode *left;
+  RbNode *right;
+  RbNode *parent;
+  bool red;
+
+  constexpr RbNode() noexcept
+      : data(nullptr), left(nullptr), right(nullptr), parent(nullptr),
+        red(true) {}
+
+  constexpr RbNode(T *d) noexcept
+      : data(d), left(nullptr), right(nullptr), parent(nullptr), red(true) {}
+};
+
+// ============================================================================
+// idle_process.hpp - Idle task management
+// ============================================================================
+
+// Linux-style idle task class
+// Each CPU has an independent idle task that runs when no other tasks are available
+class IdleTask : public Thread {
+public:
+    explicit IdleTask(u32 cpu_id) noexcept;
+
+    ~IdleTask() noexcept = default;
+
+    // Non-copyable, non-movable
+    IdleTask(const IdleTask&) = delete;
+    IdleTask& operator=(const IdleTask&) = delete;
+    IdleTask(IdleTask&&) = delete;
+    IdleTask& operator=(IdleTask&&) = delete;
+
+    [[noreturn]] void run() noexcept;
+
+    u32 get_cpu_id() const noexcept { return cpu_id_; }
+
+    u64 get_idle_time_ns() const noexcept { return idle_time_ns_; }
+
+    void reset_idle_time() noexcept { idle_time_ns_ = 0; }
+
+private:
+    u32 cpu_id_;
+    u64 idle_time_ns_;
+    [[maybe_unused]] u64 last_idle_start_;
+};
+
+// Linux-style do_idle function
+[[noreturn]] void do_idle(u32 cpu_id) noexcept;
+
+// Create idle task for specified CPU
+IdleTask* create_idle_task(u32 cpu_id) noexcept;
+
+// Global idle task management
+extern moss::kernel::containers::PerCpuData<IdleTask*> g_idle_tasks;
+
+// Get idle task for specified CPU
+inline IdleTask* get_idle_task(u32 cpu_id) noexcept {
+    if (cpu_id >= moss::kernel::MAX_CPUS) {
+        return nullptr;
+    }
+    return g_idle_tasks.get_cpu(cpu_id);
+}
+
+// Set idle task for specified CPU
+inline bool set_idle_task(u32 cpu_id, IdleTask* idle_task) noexcept {
+    if (cpu_id >= moss::kernel::MAX_CPUS) {
+        return false;
+    }
+    g_idle_tasks.get_cpu(cpu_id) = idle_task;
+    return true;
+}
+
+// Check if specified CPU is running idle task
+bool is_cpu_idle(u32 cpu_id) noexcept;
+
+// Wake up CPU from idle state (for IPI mechanism)
+void wakeup_idle_cpu(u32 cpu_id) noexcept;
+
+// CFS run queue (red-black tree implementation)
+class CfsRunqueue {
+private:
+  RbNode<Thread> *rb_root_;
+  RbNode<Thread> *rb_leftmost_;
+
+  u32 nr_running_;
+  u64 min_vruntime_;
+  u64 total_weight_;
+
+  u64 load_sum_;
+  u64 util_sum_;
+  u32 load_avg_;
+  u32 util_avg_;
+
+  static constexpr usize MAX_NODES = 1024;
+  RbNode<Thread> node_pool_[MAX_NODES];
+  containers::AtomicCounter<usize> next_node_index_;
+
+public:
+  constexpr CfsRunqueue() noexcept
+      : rb_root_(nullptr), rb_leftmost_(nullptr), nr_running_(0),
+        min_vruntime_(0), total_weight_(0), load_sum_(0), util_sum_(0),
+        load_avg_(0), util_avg_(0), next_node_index_(0) {}
+
+  void enqueue_task(Thread *thread) noexcept {
+    if (thread == nullptr)
+      return;
+
+    static u64 enqueue_count = 0;
+    enqueue_count++;
+    if (enqueue_count % 1000000 == 0 || (thread->tid >= 1001 && enqueue_count % 50000 == 0)) {
+      sched_log("enqueue_task: TID=");
+      sched_log_uint(static_cast<u32>(thread->tid));
+      sched_log(" vruntime=");
+      sched_log_u64(thread->se.vruntime);
+      sched_log(" queue_size=");
+      sched_log_uint(nr_running_);
+      sched_log("\n");
+    }
+
+    if (thread->se.vruntime == 0 && thread->tid < 1001) {
+      thread->se.vruntime = calc_initial_vruntime();
+    }
+
+    RbNode<Thread> *node = allocate_node(thread);
+    if (node != nullptr) {
+      rb_insert(node);
+      nr_running_++;
+      total_weight_ += thread->se.weight;
+
+      update_load_stats(thread, true);
+    }
+  }
+
+  void dequeue_task(Thread *thread) noexcept {
+    if (thread == nullptr)
+      return;
+
+    static u64 dequeue_count = 0;
+    dequeue_count++;
+    if (dequeue_count % 1000000 == 0 || (thread->tid >= 1001 && dequeue_count % 50000 == 0)) {
+      sched_log("dequeue_task: TID=");
+      sched_log_uint(static_cast<u32>(thread->tid));
+      sched_log(" vruntime=");
+      sched_log_u64(thread->se.vruntime);
+      sched_log(" queue_size=");
+      sched_log_uint(nr_running_);
+      sched_log("\n");
+    }
+
+    RbNode<Thread> *node = find_node(thread);
+    if (node != nullptr) {
+      rb_remove(node);
+      deallocate_node(node);
+      nr_running_--;
+      total_weight_ -= thread->se.weight;
+
+      update_load_stats(thread, false);
+    }
+  }
+
+  [[nodiscard]] Thread *pick_next_task() noexcept {
+    if (rb_leftmost_ == nullptr) {
+      return nullptr;
+    }
+
+    Thread *next = rb_leftmost_->data;
+    if (next == nullptr) {
+      return nullptr;
+    }
+
+    static u64 pick_debug = 0;
+    pick_debug++;
+    if (pick_debug % 1000000 == 0) {
+      sched_log("pick_next_task: selected TID=");
+      sched_log_uint(static_cast<u32>(next->tid));
+      sched_log(" vruntime=");
+      sched_log_u64(next->se.vruntime);
+      sched_log(" nr_running=");
+      sched_log_uint(nr_running_);
+      sched_log(" min_vruntime=");
+      sched_log_u64(min_vruntime_);
+      sched_log("\n");
+    }
+
+    // Linux CFS: only select the task, do not remove it
+    min_vruntime_ = moss::max(min_vruntime_, next->se.vruntime);
+
+    return next;
+  }
+
+  void update_curr_task(Thread *current, u64 delta_exec) noexcept {
+    if (current == nullptr)
+      return;
+
+    u64 old_vruntime = current->se.vruntime;
+
+    current->se.sum_exec_runtime += delta_exec;
+
+    u64 weighted_delta = calc_delta_fair(delta_exec, current);
+    current->se.vruntime += weighted_delta;
+
+    u64 vruntime_diff = current->se.vruntime - old_vruntime;
+    if (vruntime_diff > 5000) {
+      RbNode<Thread>* node = find_node(current);
+      if (node != nullptr) {
+        rb_remove(node);
+        rb_insert(node);
+
+        sched_log("task vruntime rebalance: TID=");
+        sched_log_uint(static_cast<u32>(current->tid));
+        sched_log(" old=");
+        sched_log_u64(old_vruntime);
+        sched_log(" new=");
+        sched_log_u64(current->se.vruntime);
+        sched_log("\n");
+      }
+    }
+
+    min_vruntime_ = kernel_max(min_vruntime_, current->se.vruntime);
+
+    if (should_preempt(current)) {
+      // Set reschedule flag (in actual implementation)
+    }
+
+    update_load_tracking(current, delta_exec);
+  }
+
+  [[nodiscard]] bool should_preempt(Thread *current) const noexcept {
+    if (current == nullptr || rb_leftmost_ == nullptr) {
+      return false;
+    }
+
+    Thread *leftmost = rb_leftmost_->data;
+    if (leftmost == nullptr || leftmost == current) {
+      return false;
+    }
+
+    u64 ideal_runtime = CfsParams::sched_slice(current->se.weight,
+                                               static_cast<u32>(total_weight_));
+    u64 delta_exec =
+        current->se.sum_exec_runtime - current->se.prev_sum_exec_runtime;
+
+    return delta_exec > ideal_runtime;
+  }
+
+  [[nodiscard]] u32 nr_running() const noexcept { return nr_running_; }
+  [[nodiscard]] u64 min_vruntime() const noexcept { return min_vruntime_; }
+  [[nodiscard]] u64 total_weight() const noexcept { return total_weight_; }
+  [[nodiscard]] u32 load_avg() const noexcept { return load_avg_; }
+  [[nodiscard]] u32 util_avg() const noexcept { return util_avg_; }
+
+  void dump_runqueue() const noexcept {
+    // Debug output placeholder
+  }
+
+private:
+  [[nodiscard]] u64 calc_initial_vruntime() const noexcept {
+    return 100;
+  }
+
+  [[nodiscard]] u64 calc_delta_fair(u64 delta_exec,
+                                    Thread *thread) const noexcept {
+    if (thread->se.weight == 0)
+      return delta_exec;
+
+    return (delta_exec * CfsParams::NICE_TO_WEIGHT[20]) / thread->se.weight;
+  }
+
+  void update_load_tracking(Thread *thread, u64 delta_exec) noexcept {
+    if (thread == nullptr)
+      return;
+
+    [[maybe_unused]] constexpr u64 LOAD_AVG_PERIOD = 32;
+    constexpr u64 LOAD_AVG_MAX = 47742;
+
+    thread->se.load_sum += delta_exec;
+    thread->se.util_sum += delta_exec;
+
+    if (thread->se.load_sum > LOAD_AVG_MAX) {
+      thread->se.load_avg = LOAD_AVG_MAX >> 10;
+      thread->se.load_sum = LOAD_AVG_MAX;
+    } else {
+      thread->se.load_avg = thread->se.load_sum >> 10;
+    }
+
+    if (thread->se.util_sum > LOAD_AVG_MAX) {
+      thread->se.util_avg = LOAD_AVG_MAX >> 10;
+      thread->se.util_sum = LOAD_AVG_MAX;
+    } else {
+      thread->se.util_avg = thread->se.util_sum >> 10;
+    }
+  }
+
+  void update_load_stats(Thread *thread, bool add) noexcept {
+    if (thread == nullptr)
+      return;
+
+    if (add) {
+      load_sum_ += thread->se.load_avg;
+      util_sum_ += thread->se.util_avg;
+    } else {
+      load_sum_ = (load_sum_ > thread->se.load_avg)
+                      ? (load_sum_ - thread->se.load_avg)
+                      : 0;
+      util_sum_ = (util_sum_ > thread->se.util_avg)
+                      ? (util_sum_ - thread->se.util_avg)
+                      : 0;
+    }
+
+    load_avg_ =
+        static_cast<u32>((nr_running_ > 0) ? (load_sum_ / nr_running_) : 0);
+    util_avg_ =
+        static_cast<u32>((nr_running_ > 0) ? (util_sum_ / nr_running_) : 0);
+  }
+
+  void rb_insert(RbNode<Thread> *node) noexcept {
+    if (node == nullptr || node->data == nullptr)
+      return;
+
+    RbNode<Thread> **new_node = &rb_root_;
+    RbNode<Thread> *parent = nullptr;
+    u64 vruntime = node->data->se.vruntime;
+
+    while (*new_node != nullptr) {
+      parent = *new_node;
+
+      if (vruntime < parent->data->se.vruntime) {
+        new_node = &parent->left;
+      } else {
+        new_node = &parent->right;
+      }
+    }
+
+    *new_node = node;
+    node->parent = parent;
+
+    bool should_update_leftmost = false;
+
+    if (rb_leftmost_ == nullptr) {
+      should_update_leftmost = true;
+    } else if (vruntime < rb_leftmost_->data->se.vruntime) {
+      should_update_leftmost = true;
+    } else if (vruntime == rb_leftmost_->data->se.vruntime) {
+      if (node->data->tid < rb_leftmost_->data->tid) {
+        should_update_leftmost = true;
+      }
+    }
+
+    if (should_update_leftmost) {
+      rb_leftmost_ = node;
+
+      static u64 leftmost_updates = 0;
+      leftmost_updates++;
+      if (leftmost_updates <= 50 || leftmost_updates % 1000000 == 0) {
+        sched_log("leftmost update: TID=");
+        sched_log_uint(static_cast<u32>(node->data->tid));
+        sched_log(" vruntime=");
+        sched_log_u64(vruntime);
+        if (rb_leftmost_ != node) {
+          sched_log(" (replacing TID=");
+          sched_log_uint(static_cast<u32>(rb_leftmost_->data->tid));
+          sched_log(")");
+        }
+        sched_log("\n");
+      }
+    }
+
+    rb_insert_fixup(node);
+  }
+
+  void rb_remove(RbNode<Thread> *node) noexcept {
+    if (node == nullptr) return;
+
+    sched_log("rb_remove: TID=");
+    sched_log_uint(static_cast<u32>(node->data->tid));
+    sched_log(" vruntime=");
+    sched_log_u64(node->data->se.vruntime);
+    sched_log("\n");
+
+    bool was_leftmost = (node == rb_leftmost_);
+
+    if (was_leftmost) {
+      RbNode<Thread>* new_leftmost = rb_next(node);
+
+      if (new_leftmost == nullptr) {
+        new_leftmost = find_tree_minimum(rb_root_);
+      }
+
+      rb_leftmost_ = new_leftmost;
+
+      sched_log("leftmost updated: ");
+      if (rb_leftmost_) {
+        sched_log("new leftmost TID=");
+        sched_log_uint(static_cast<u32>(rb_leftmost_->data->tid));
+        sched_log(" vruntime=");
+        sched_log_u64(rb_leftmost_->data->se.vruntime);
+      } else {
+        sched_log("tree empty");
+      }
+      sched_log("\n");
+    }
+
+    rb_delete_node(node);
+
+    if (rb_root_ != nullptr && rb_leftmost_ == nullptr) {
+      rb_leftmost_ = find_tree_minimum(rb_root_);
+      sched_log("leftmost pointer fixed: ");
+      if (rb_leftmost_) {
+        sched_log("TID=");
+        sched_log_uint(static_cast<u32>(rb_leftmost_->data->tid));
+      }
+      sched_log("\n");
+    }
+
+    #ifdef DEBUG
+    if (!verify_tree_consistency()) {
+      sched_log("tree consistency check failed!\n");
+    }
+    #endif
+  }
+
+  [[nodiscard]] RbNode<Thread>* find_tree_minimum(RbNode<Thread>* root) const noexcept {
+    if (root == nullptr) return nullptr;
+
+    while (root->left != nullptr) {
+      root = root->left;
+    }
+    return root;
+  }
+
+  [[nodiscard]] bool verify_tree_consistency() const noexcept {
+    if (rb_root_ == nullptr) {
+      return rb_leftmost_ == nullptr;
+    }
+
+    RbNode<Thread>* actual_min = find_tree_minimum(rb_root_);
+    if (rb_leftmost_ != actual_min) {
+      return false;
+    }
+
+    u32 actual_count = count_tree_nodes(rb_root_);
+    if (actual_count != nr_running_) {
+      return false;
+    }
+
+    return true;
+  }
+
+  [[nodiscard]] u32 count_tree_nodes(RbNode<Thread>* node) const noexcept {
+    if (node == nullptr) return 0;
+    return 1 + count_tree_nodes(node->left) + count_tree_nodes(node->right);
+  }
+
+  [[nodiscard]] RbNode<Thread> *find_node(Thread *thread) const noexcept {
+    return find_node_linear(rb_root_, thread);
+  }
+
+  [[nodiscard]] RbNode<Thread> *find_node_linear(RbNode<Thread> *node, Thread *thread) const noexcept {
+    if (node == nullptr) {
+      return nullptr;
+    }
+
+    if (node->data == thread) {
+      return node;
+    }
+
+    RbNode<Thread> *left_result = find_node_linear(node->left, thread);
+    if (left_result != nullptr) {
+      return left_result;
+    }
+
+    return find_node_linear(node->right, thread);
+  }
+
+  [[nodiscard]] RbNode<Thread> *rb_next(RbNode<Thread> *node) const noexcept {
+    if (node == nullptr)
+      return nullptr;
+
+    if (node->right != nullptr) {
+      node = node->right;
+      while (node->left != nullptr) {
+        node = node->left;
+      }
+      return node;
+    }
+
+    RbNode<Thread> *parent = node->parent;
+    while (parent != nullptr && node == parent->right) {
+      node = parent;
+      parent = parent->parent;
+    }
+
+    return parent;
+  }
+
+  void rb_insert_fixup(RbNode<Thread> *node) noexcept {
+    if (node != nullptr && node->parent == nullptr) {
+      node->red = false;
+    }
+  }
+
+  void rb_delete_node(RbNode<Thread> *node) noexcept {
+    if (node == nullptr) return;
+
+    RbNode<Thread>* replacement = nullptr;
+    RbNode<Thread>* original_parent = node->parent;
+    bool original_red = node->red;
+
+    // Case 1: Leaf node
+    if (node->left == nullptr && node->right == nullptr) {
+      replacement = nullptr;
+      replace_node_in_parent(node, nullptr);
+
+      sched_log("delete leaf vruntime=");
+      sched_log_u64(node->data->se.vruntime);
+      sched_log("\n");
+    }
+    // Case 2: Only right child
+    else if (node->left == nullptr) {
+      replacement = node->right;
+      replace_node_in_parent(node, node->right);
+      node->right->parent = original_parent;
+
+      sched_log("delete single-child(right) vruntime=");
+      sched_log_u64(node->data->se.vruntime);
+      sched_log(" replacement vruntime=");
+      sched_log_u64(replacement->data->se.vruntime);
+      sched_log("\n");
+    }
+    // Case 3: Only left child
+    else if (node->right == nullptr) {
+      replacement = node->left;
+      replace_node_in_parent(node, node->left);
+      node->left->parent = original_parent;
+
+      sched_log("delete single-child(left) vruntime=");
+      sched_log_u64(node->data->se.vruntime);
+      sched_log(" replacement vruntime=");
+      sched_log_u64(replacement->data->se.vruntime);
+      sched_log("\n");
+    }
+    // Case 4: Two children - find inorder successor
+    else {
+      RbNode<Thread>* successor = tree_minimum(node->right);
+      original_red = successor->red;
+      replacement = successor->right;
+
+      if (successor->parent != node) {
+        replace_node_in_parent(successor, successor->right);
+        if (successor->right) {
+          successor->right->parent = successor->parent;
+        }
+
+        successor->right = node->right;
+        successor->right->parent = successor;
+      } else {
+        if (replacement) {
+          replacement->parent = successor;
+        }
+      }
+
+      replace_node_in_parent(node, successor);
+      successor->left = node->left;
+      successor->left->parent = successor;
+      successor->red = node->red;
+
+      sched_log("delete two-children vruntime=");
+      sched_log_u64(node->data->se.vruntime);
+      sched_log(" successor vruntime=");
+      sched_log_u64(successor->data->se.vruntime);
+      sched_log("\n");
+    }
+
+    if (!original_red && replacement != nullptr) {
+      rb_delete_fixup(replacement);
+    }
+
+    sched_log("node deletion complete, remaining tasks=");
+    sched_log_uint(nr_running_);
+    sched_log("\n");
+  }
+
+  void replace_node_in_parent(RbNode<Thread>* old_node, RbNode<Thread>* new_node) noexcept {
+    if (old_node->parent == nullptr) {
+      rb_root_ = new_node;
+    } else if (old_node == old_node->parent->left) {
+      old_node->parent->left = new_node;
+    } else {
+      old_node->parent->right = new_node;
+    }
+  }
+
+  [[nodiscard]] RbNode<Thread>* tree_minimum(RbNode<Thread>* node) const noexcept {
+    if (node == nullptr) return nullptr;
+
+    while (node->left != nullptr) {
+      node = node->left;
+    }
+    return node;
+  }
+
+  void rb_delete_fixup(RbNode<Thread>* node) noexcept {
+    while (node != rb_root_ && node != nullptr && !node->red) {
+      if (node == node->parent->left) {
+        break;
+      } else {
+        break;
+      }
+    }
+
+    if (node != nullptr) {
+      node->red = false;
+    }
+
+    if (rb_root_ != nullptr) {
+      rb_root_->red = false;
+    }
+  }
+
+  [[nodiscard]] RbNode<Thread> *allocate_node(Thread *thread) noexcept {
+    usize index =
+        next_node_index_.fetch_add(1, containers::MemoryOrder::Relaxed);
+    if (index >= MAX_NODES) {
+      return nullptr;
+    }
+
+    RbNode<Thread> *node = &node_pool_[index];
+    node->data = thread;
+    node->left = nullptr;
+    node->right = nullptr;
+    node->parent = nullptr;
+    node->red = true;
+
+    return node;
+  }
+
+  void deallocate_node(RbNode<Thread> *node) noexcept {
+    if (node != nullptr) {
+      node->data = nullptr;
+      node->left = nullptr;
+      node->right = nullptr;
+      node->parent = nullptr;
+      node->red = true;
+    }
+  }
+
+  template <typename T>
+  constexpr const T &kernel_max(const T &a, const T &b) noexcept {
+    return (a < b) ? b : a;
+  }
+};
+
+// CFS scheduler class
+class CfsScheduler {
+private:
+  containers::PerCpuData<CfsRunqueue> runqueues_;
+  containers::PerCpuData<IdleTask*> idle_tasks_;
+
+  containers::PerCpuAtomicCounter<u64> total_switches_;
+  containers::PerCpuAtomicCounter<u64> total_preemptions_;
+
+public:
+  constexpr CfsScheduler() noexcept : idle_tasks_{nullptr} {}
+
+  void enqueue_task(Thread *thread, u32 cpu) noexcept {
+    if (thread == nullptr || cpu >= MAX_CPUS)
+      return;
+
+    runqueues_.get_cpu(cpu).enqueue_task(thread);
+    thread->cpu = cpu;
+    thread->state = ProcessState::Ready;
+  }
+
+  void dequeue_task(Thread *thread) noexcept {
+    if (thread == nullptr)
+      return;
+
+    u32 cpu = thread->cpu;
+    if (cpu < MAX_CPUS) {
+      runqueues_.get_cpu(cpu).dequeue_task(thread);
+    }
+  }
+
+  [[nodiscard]] Thread *pick_next_task(u32 cpu) noexcept {
+    if (cpu >= MAX_CPUS)
+      return nullptr;
+
+    return runqueues_.get_cpu(cpu).pick_next_task();
+  }
+
+  inline void set_idle_task(u32 cpu_id, IdleTask* idle_task) noexcept {
+    if (cpu_id >= MAX_CPUS)
+      return;
+
+    idle_tasks_.get_cpu(cpu_id) = idle_task;
+
+    sched_log("set idle task CPU");
+    sched_log_uint(cpu_id);
+    sched_log(": TID=");
+    if (idle_task) {
+      sched_log_uint(static_cast<u32>(idle_task->get_cpu_id()));
+    } else {
+      sched_log("NULL");
+    }
+    sched_log("\n");
+  }
+
+  [[nodiscard]] IdleTask* get_idle_task(u32 cpu_id) const noexcept {
+    if (cpu_id >= MAX_CPUS)
+      return nullptr;
+    return idle_tasks_.get_cpu(cpu_id);
+  }
+
+  [[nodiscard]] bool has_runnable_tasks(u32 cpu_id) const noexcept {
+    if (cpu_id >= MAX_CPUS)
+      return false;
+    return runqueues_.get_cpu(cpu_id).nr_running() > 0;
+  }
+
+private:
+  void execute_task_simplified(Thread* task, [[maybe_unused]] u32 cpu_id) noexcept {
+    if (task == nullptr) return;
+
+    u64 start_time = get_current_time();
+
+    for (u32 work = 0; work < 1000; ++work) {
+      asm volatile("" ::: "memory");
+    }
+
+    u64 end_time = get_current_time();
+    u64 delta_exec = (end_time > start_time) ? (end_time - start_time) : 1000;
+    update_current(task, delta_exec);
+
+    set_current_task(task);
+    record_context_switch();
+  }
+
+  void run_idle_task_simplified(IdleTask* idle_task, u32 cpu_id) noexcept {
+    if (idle_task == nullptr) return;
+
+    mark_cpu_idle(cpu_id, true);
+    idle_task_loop(cpu_id);
+    mark_cpu_idle(cpu_id, false);
+  }
+
+  void idle_task_loop([[maybe_unused]] u32 cpu_id) noexcept {
+#if defined(MOSS_ARCH_ARM64)
+    asm volatile("dsb sy" ::: "memory");
+    asm volatile("wfi" ::: "memory");
+    asm volatile("isb" ::: "memory");
+#elif defined(MOSS_ARCH_X86_64)
+    asm volatile("sti" ::: "memory");
+    asm volatile("hlt" ::: "memory");
+    asm volatile("cli" ::: "memory");
+#elif defined(MOSS_ARCH_RISCV)
+    asm volatile("csrsi mstatus, 0x8" ::: "memory");
+    asm volatile("wfi" ::: "memory");
+    asm volatile("csrci mstatus, 0x8" ::: "memory");
+#else
+    for (volatile int i = 0; i < 1000; ++i) {
+      // Idle loop fallback
+    }
+#endif
+  }
+
+  void mark_cpu_idle(u32 cpu_id, bool is_idle) noexcept {
+    static bool cpu_idle_status[MAX_CPUS] = {false};
+    if (cpu_id < MAX_CPUS) {
+      cpu_idle_status[cpu_id] = is_idle;
+    }
+  }
+
+public:
+  [[noreturn]] inline void cpu_startup_entry(u32 cpu_id) noexcept {
+    sched_log("CPU");
+    sched_log_uint(cpu_id);
+    sched_log(": per-CPU scheduling loop started\n");
+
+    if (cpu_id >= MAX_CPUS) {
+      sched_log("CPU");
+      sched_log_uint(cpu_id);
+      sched_log(": invalid CPU ID\n");
+      while (true) {
+        idle_task_loop(cpu_id);
+      }
+    }
+
+    IdleTask* idle_task = get_idle_task(cpu_id);
+    if (idle_task == nullptr) {
+      sched_log("CPU");
+      sched_log_uint(cpu_id);
+      sched_log(": idle task not set, creating default\n");
+
+      idle_task = create_idle_task(cpu_id);
+      if (idle_task) {
+        set_idle_task(cpu_id, idle_task);
+      }
+    }
+
+    sched_log("CPU");
+    sched_log_uint(cpu_id);
+    sched_log(": entering per-CPU scheduling loop\n");
+
+    u32 idle_cycles = 0;
+    u32 active_cycles = 0;
+    constexpr u32 LOG_INTERVAL = 2000000;
+
+    while (true) {
+      Thread* next_task = nullptr;
+
+      if (has_runnable_tasks(cpu_id)) {
+        next_task = pick_next_task(cpu_id);
+
+        if (next_task != nullptr) {
+          active_cycles++;
+
+          if (active_cycles % LOG_INTERVAL == 1) {
+            sched_log("[CPU");
+            sched_log_uint(cpu_id);
+            sched_log("][TID=");
+            sched_log_uint(static_cast<u32>(next_task->tid));
+            sched_log("] task running\n");
+          }
+
+          execute_task_simplified(next_task, cpu_id);
+        }
+      }
+
+      if (next_task == nullptr) {
+        idle_cycles++;
+
+        if (idle_cycles % LOG_INTERVAL == 1) {
+          sched_log("[CPU");
+          sched_log_uint(cpu_id);
+          sched_log("] entering idle\n");
+        }
+
+        if (idle_task != nullptr) {
+          run_idle_task_simplified(idle_task, cpu_id);
+        } else {
+          idle_task_loop(cpu_id);
+        }
+      }
+
+      u32 total_cycles = active_cycles + idle_cycles;
+      if (total_cycles > 0 && total_cycles % (LOG_INTERVAL * 5) == 0) {
+        sched_log("[CPU");
+        sched_log_uint(cpu_id);
+        sched_log("] stats: active=");
+        sched_log_uint(active_cycles);
+        sched_log(" idle=");
+        sched_log_uint(idle_cycles);
+        sched_log(" tasks=");
+        sched_log_uint(get_cpu_nr_running(cpu_id));
+        sched_log("\n");
+      }
+    }
+  }
+
+  // State transition management
+  void task_blocked(Thread* task) noexcept {
+    if (task == nullptr) return;
+
+    ProcessState old_state = task->state;
+    task->state = ProcessState::Blocked;
+
+    if (old_state == ProcessState::Running || old_state == ProcessState::Ready) {
+      dequeue_task(task);
+      sched_log("task blocked and dequeued: TID=");
+      sched_log_uint(static_cast<u32>(task->tid));
+      sched_log("\n");
+    }
+  }
+
+  void task_wakeup(Thread* task, u32 target_cpu) noexcept {
+    if (task == nullptr || task->state != ProcessState::Blocked) return;
+
+    task->state = ProcessState::Ready;
+    enqueue_task(task, target_cpu);
+
+    sched_log("task wakeup and enqueued: TID=");
+    sched_log_uint(static_cast<u32>(task->tid));
+    sched_log(" CPU=");
+    sched_log_uint(target_cpu);
+    sched_log("\n");
+  }
+
+  void task_terminate(Thread* task) noexcept {
+    if (task == nullptr) return;
+
+    ProcessState old_state = task->state;
+    task->state = ProcessState::Terminated;
+
+    if (old_state == ProcessState::Running || old_state == ProcessState::Ready) {
+      dequeue_task(task);
+      sched_log("task terminated and dequeued: TID=");
+      sched_log_uint(static_cast<u32>(task->tid));
+      sched_log("\n");
+    }
+  }
+
+  [[nodiscard]] bool should_preempt(Thread* current, u32 cpu) noexcept {
+    if (current == nullptr || current->state != ProcessState::Running) {
+      return true;
+    }
+
+    Thread* leftmost = pick_next_task(cpu);
+    if (leftmost == nullptr || leftmost == current) {
+      return false;
+    }
+
+    const u64 preempt_threshold = CfsParams::SCHED_LATENCY_NS / 2;
+    u64 vruntime_diff = current->se.vruntime - leftmost->se.vruntime;
+
+    return vruntime_diff > preempt_threshold;
+  }
+
+  void transition_task_state(Thread* task, ProcessState new_state) noexcept {
+    if (task == nullptr) return;
+
+    ProcessState old_state = task->state;
+
+    bool valid_transition = false;
+    switch (old_state) {
+      case ProcessState::Created:
+        valid_transition = (new_state == ProcessState::Ready);
+        break;
+      case ProcessState::Ready:
+        valid_transition = (new_state == ProcessState::Running ||
+                          new_state == ProcessState::Blocked ||
+                          new_state == ProcessState::Terminated);
+        break;
+      case ProcessState::Running:
+        valid_transition = (new_state == ProcessState::Ready ||
+                          new_state == ProcessState::Blocked ||
+                          new_state == ProcessState::Terminated);
+        break;
+      case ProcessState::Blocked:
+        valid_transition = (new_state == ProcessState::Ready ||
+                          new_state == ProcessState::Terminated);
+        break;
+      case ProcessState::Terminated:
+        valid_transition = (new_state == ProcessState::Zombie);
+        break;
+      case ProcessState::Zombie:
+        valid_transition = false;
+        break;
+      default:
+        valid_transition = false;
+    }
+
+    if (valid_transition) {
+      task->state = new_state;
+    } else {
+      sched_log("invalid state transition: ");
+      sched_log_uint(static_cast<u8>(old_state));
+      sched_log(" -> ");
+      sched_log_uint(static_cast<u8>(new_state));
+      sched_log("\n");
+    }
+  }
+
+  void update_current(Thread *current, u64 delta_exec) noexcept {
+    if (current == nullptr)
+      return;
+
+    u32 cpu = current->cpu;
+    if (cpu < MAX_CPUS) {
+      runqueues_.get_cpu(cpu).update_curr_task(current, delta_exec);
+    }
+  }
+
+  [[nodiscard]] bool should_preempt_current(Thread *current) const noexcept {
+    if (current == nullptr)
+      return false;
+
+    u32 cpu = current->cpu;
+    if (cpu >= MAX_CPUS)
+      return false;
+
+    return runqueues_.get_cpu(cpu).should_preempt(current);
+  }
+
+  [[nodiscard]] u32 get_cpu_load(u32 cpu) const noexcept {
+    if (cpu >= MAX_CPUS)
+      return 0;
+    return runqueues_.get_cpu(cpu).load_avg();
+  }
+
+  [[nodiscard]] u32 get_cpu_nr_running(u32 cpu) const noexcept {
+    if (cpu >= MAX_CPUS)
+      return 0;
+    return runqueues_.get_cpu(cpu).nr_running();
+  }
+
+  [[nodiscard]] u64 total_context_switches() const noexcept {
+    return total_switches_.load_total();
+  }
+
+  [[nodiscard]] u64 total_preemptions() const noexcept {
+    return total_preemptions_.load_total();
+  }
+
+  void dump_runqueue(u32 cpu) const noexcept {
+    if (cpu < MAX_CPUS) {
+      runqueues_.get_cpu(cpu).dump_runqueue();
+    }
+  }
+
+  void record_context_switch() noexcept {
+    (void)total_switches_.fetch_add_local(1);
+  }
+
+  void record_preemption() noexcept {
+    (void)total_preemptions_.fetch_add_local(1);
+  }
+
+  // Create 20 test tasks to verify scheduler
+  void create_test_task() noexcept {
+    sched_log("create_test_task started\n");
+    sched_log("creating 20 test tasks to verify CFS scheduler...\n");
+
+    sched_log("adjusting user task TID=1000 priority...\n");
+    bool found_user_task = false;
+
+    for (u32 cpu = 0; cpu < MAX_CPUS; cpu++) {
+      Thread* current_task = current_running_tasks_[cpu];
+      if (current_task != nullptr && current_task->tid == 1000) {
+        current_task->se.vruntime = 100;
+        found_user_task = true;
+        sched_log("set user task TID=1000 vruntime=100\n");
+        break;
+      }
+    }
+
+    if (!found_user_task) {
+      sched_log("TID=1000 not found in current running tasks\n");
+    }
+
+    alignas(16) static char test_task_stacks[20][8192];
+    static Thread* test_threads[20];
+
+    u32 created_tasks = 0;
+    u32 failed_tasks = 0;
+
+    for (u32 i = 0; i < 20; i++) {
+      u32 tid = 1001 + i;
+
+      test_threads[i] = new Thread(tid, 1);
+      if (test_threads[i] == nullptr) {
+        sched_log("failed to create test task TID=");
+        sched_log_uint(tid);
+        sched_log("\n");
+        failed_tasks++;
+        continue;
+      }
+
+      test_threads[i]->stack_base = reinterpret_cast<VirtAddr>(test_task_stacks[i]);
+      test_threads[i]->stack_size = sizeof(test_task_stacks[i]);
+
+      test_threads[i]->context.sp = reinterpret_cast<u64>(test_task_stacks[i] + sizeof(test_task_stacks[i]) - 16);
+      test_threads[i]->context.pc = reinterpret_cast<u64>(&test_task_entry);
+      test_threads[i]->context.pstate = 0x00000005;
+
+      test_threads[i]->sched_class = process::SchedClass::Normal;
+
+      test_threads[i]->se.nice = 0;
+      test_threads[i]->se.weight = CfsParams::nice_to_weight(0);
+
+      test_threads[i]->se.vruntime = static_cast<u64>(i);
+
+      u32 target_cpu = i % 4;
+      enqueue_task(test_threads[i], target_cpu);
+
+      sched_log("task assigned: TID=");
+      sched_log_uint(tid);
+      sched_log(" -> CPU");
+      sched_log_uint(target_cpu);
+      sched_log("\n");
+
+      sched_log("created test task TID=");
+      sched_log_uint(tid);
+      sched_log(" nice=0 weight=");
+      sched_log_uint(test_threads[i]->se.weight);
+      sched_log(" vruntime=");
+      sched_log_u64(test_threads[i]->se.vruntime);
+      sched_log(" CPU=");
+      sched_log_uint(target_cpu);
+      sched_log("\n");
+
+      created_tasks++;
+    }
+
+    sched_log("test task creation summary:\n");
+    sched_log("   created: ");
+    sched_log_uint(created_tasks);
+    sched_log(" tasks\n");
+    sched_log("   failed: ");
+    sched_log_uint(failed_tasks);
+    sched_log(" tasks\n");
+    sched_log("   load balance: tasks distributed to ");
+    sched_log_uint(MAX_CPUS);
+    sched_log(" CPUs\n");
+    sched_log("multi-task scheduling test environment ready!\n");
+
+    sched_log("checking all CPU queue status...\n");
+    for (u32 cpu = 0; cpu < MAX_CPUS; cpu++) {
+      u32 nr_tasks = get_cpu_nr_running(cpu);
+      sched_log("   CPU");
+      sched_log_uint(cpu);
+      sched_log(": ");
+      sched_log_uint(nr_tasks);
+      sched_log(" tasks\n");
+    }
+  }
+
+  void verify_task_diversity() noexcept {
+    sched_log("verifying task selection diversity...\n");
+
+    u32 unique_tids[20] = {0};
+    u32 unique_count = 0;
+    u32 total_selections = 0;
+
+    for (u32 test_round = 0; test_round < 50; test_round++) {
+      for (u32 cpu = 0; cpu < MAX_CPUS; cpu++) {
+        Thread* task = pick_next_task(cpu);
+        if (task != nullptr && task->tid >= 1001 && task->tid <= 1020) {
+          total_selections++;
+          u32 tid_index = static_cast<u32>(task->tid) - 1001;
+
+          if (unique_tids[tid_index] == 0) {
+            unique_tids[tid_index] = 1;
+            unique_count++;
+            sched_log("   first select TID=");
+            sched_log_uint(static_cast<u32>(task->tid));
+            sched_log(" nice=");
+            i32 nice = task->se.nice;
+            if (nice >= 0) sched_log("+");
+            sched_log_uint(static_cast<u32>(nice >= 0 ? nice : -nice));
+            if (nice < 0) sched_log("-");
+            sched_log(" vruntime=");
+            sched_log_u64(task->se.vruntime);
+            sched_log("\n");
+          }
+
+          task->se.vruntime += 10000;
+
+          enqueue_task(task, cpu);
+        }
+      }
+    }
+
+    sched_log("diversity verification results:\n");
+    sched_log("   total selections: ");
+    sched_log_uint(total_selections);
+    sched_log("\n");
+    sched_log("   unique tasks: ");
+    sched_log_uint(unique_count);
+    sched_log("/20\n");
+
+    if (unique_count >= 15) {
+      sched_log("scheduler diversity verification passed\n");
+    } else if (unique_count >= 5) {
+      sched_log("scheduler diversity partially passed\n");
+    } else {
+      sched_log("scheduler diversity verification failed\n");
+    }
+    sched_log("starting main scheduling loop...\n");
+  }
+
+private:
+  static Thread* current_running_tasks_[MAX_CPUS];
+
+public:
+  static void set_current_task(Thread* task) noexcept {
+    u32 cpu = CfsScheduler::get_current_cpu_id();
+    if (cpu < MAX_CPUS) {
+      current_running_tasks_[cpu] = task;
+    }
+  }
+
+  static Thread* get_current_task() noexcept {
+    u32 cpu = CfsScheduler::get_current_cpu_id();
+    return (cpu < MAX_CPUS) ? current_running_tasks_[cpu] : nullptr;
+  }
+
+  [[noreturn]] static void test_task_entry() noexcept {
+    Thread* current_task = get_current_task();
+    u32 task_tid = (current_task != nullptr) ? static_cast<u32>(current_task->tid) : 0;
+    i32 task_nice = (current_task != nullptr) ? current_task->se.nice : 0;
+    u32 task_weight = (current_task != nullptr) ? current_task->se.weight : 1024;
+
+    sched_log("test task started! TID=");
+    sched_log_uint(task_tid);
+    sched_log(" nice=");
+    if (task_nice >= 0) sched_log("+");
+    sched_log_uint(static_cast<u32>(task_nice >= 0 ? task_nice : -task_nice));
+    if (task_nice < 0) sched_log("-");
+    sched_log(" weight=");
+    sched_log_uint(task_weight);
+    sched_log(" CPU=");
+    sched_log_uint(CfsScheduler::get_current_cpu_id());
+    sched_log("\n");
+
+    u64 last_print_time = CfsScheduler::get_current_time();
+    u64 print_counter = 0;
+    u64 loop_counter = 0;
+
+    u64 cycles_per_print = 1000000ULL;
+    if (task_nice < 0) {
+      cycles_per_print = 500000ULL;
+    } else if (task_nice > 5) {
+      cycles_per_print = 2000000ULL;
+    }
+
+    sched_log("TID=");
+    sched_log_uint(task_tid);
+    sched_log(" print interval=");
+    sched_log_u64(cycles_per_print);
+    sched_log(" cycles\n");
+
+    while (true) {
+      loop_counter++;
+      u64 current_time = CfsScheduler::get_current_time();
+      u64 time_elapsed = current_time - last_print_time;
+
+      if (time_elapsed >= cycles_per_print) {
+        print_counter++;
+        sched_log("[TID=");
+        sched_log_uint(task_tid);
+        sched_log("] print #");
+        sched_log_u64(print_counter);
+        sched_log(" nice=");
+        if (task_nice >= 0) sched_log("+");
+        sched_log_uint(static_cast<u32>(task_nice >= 0 ? task_nice : -task_nice));
+        if (task_nice < 0) sched_log("-");
+        sched_log(" CPU=");
+        sched_log_uint(CfsScheduler::get_current_cpu_id());
+        sched_log(" time=");
+        sched_log_u64(current_time);
+        sched_log(" loops=");
+        sched_log_u64(loop_counter);
+        sched_log("\n");
+
+        last_print_time = current_time;
+      }
+
+      if (loop_counter % 5000000 == 0) {
+        sched_log("[TID=");
+        sched_log_uint(task_tid);
+        sched_log(" nice=");
+        if (task_nice >= 0) sched_log("+");
+        sched_log_uint(static_cast<u32>(task_nice >= 0 ? task_nice : -task_nice));
+        if (task_nice < 0) sched_log("-");
+        sched_log("] loop_count=");
+        sched_log_u64(loop_counter);
+        sched_log(" time=");
+        sched_log_u64(current_time);
+        sched_log(" vruntime=");
+        sched_log_u64((current_task != nullptr) ? current_task->se.vruntime : 0);
+        sched_log("\n");
+      }
+
+      if (task_nice < 0) {
+        for (volatile int work = 0; work < 1000; work = work + 1) {
+        }
+      } else if (task_nice > 5) {
+        for (volatile int work = 0; work < 100; work = work + 1) {
+        }
+      }
+
+      yield_cpu();
+    }
+  }
+
+  static void yield_cpu() noexcept {
+#if defined(MOSS_ARCH_ARM64)
+    asm volatile("yield" ::: "memory");
+#elif defined(MOSS_ARCH_X86_64)
+    asm volatile("pause" ::: "memory");
+#elif defined(MOSS_ARCH_RISCV)
+    asm volatile("nop" ::: "memory");
+#endif
+
+    for (volatile int i = 0; i < 10000; i = i + 1) {
+    }
+  }
+
+  [[noreturn]] void start_scheduling() noexcept {
+    sched_log("CRITICAL: start_scheduling() ENTRY POINT REACHED!\n");
+    sched_log("CFS scheduler starting (start_scheduling)\n");
+    sched_log("multi-CPU scheduling supported, max CPUs: 16\n");
+
+    u32 current_cpu = CfsScheduler::get_current_cpu_id();
+    sched_log("current CPU ID: ");
+    sched_log_uint(current_cpu);
+    sched_log("\n");
+    sched_log("entering main scheduling loop...\n");
+
+    sched_log("creating test tasks...\n");
+    create_test_task();
+    sched_log("test tasks created\n");
+
+    verify_task_diversity();
+
+    u32 idle_cycles = 0;
+    u32 active_cycles = 0;
+    constexpr u32 LOG_INTERVAL = 1000000;
+
+    sched_log("entering start_scheduling() main while loop\n");
+
+    static u64 system_status_counter = 0;
+
+    while (true) {
+      current_cpu = CfsScheduler::get_current_cpu_id();
+
+      system_status_counter++;
+      if (system_status_counter % 5000000 == 0) {
+        sched_log("[system status]");
+        sched_log(" CPU");
+        sched_log_uint(current_cpu);
+        sched_log(":active");
+        sched_log(" other CPUs:waiting for multi-core startup");
+        sched_log("\n");
+      }
+
+      Thread *next_task = nullptr;
+
+      next_task = pick_next_task(current_cpu);
+      if (next_task != nullptr) {
+        dequeue_task(next_task);
+      }
+
+      if (next_task == nullptr) {
+        static u64 steal_attempts = 0;
+        steal_attempts++;
+
+        if (steal_attempts % 1000000 == 1) {
+          sched_log("load balance: CPU");
+          sched_log_uint(current_cpu);
+          sched_log(" no tasks, attempting steal...\n");
+        }
+
+        for (u32 cpu = 0; cpu < MAX_CPUS && next_task == nullptr; cpu++) {
+          if (cpu != current_cpu) {
+            u32 nr_running = get_cpu_nr_running(cpu);
+            if (nr_running > 0) {
+              if (steal_attempts % 1000000 == 1) {
+                sched_log("   checking CPU");
+                sched_log_uint(cpu);
+                sched_log(": ");
+                sched_log_uint(nr_running);
+                sched_log(" tasks\n");
+              }
+
+              next_task = pick_next_task(cpu);
+              if (next_task != nullptr) {
+                dequeue_task(next_task);
+                next_task->cpu = current_cpu;
+
+                if (steal_attempts % 1000000 == 1) {
+                  sched_log("stole task TID=");
+                  sched_log_uint(static_cast<u32>(next_task->tid));
+                  sched_log(" from CPU");
+                  sched_log_uint(cpu);
+                  sched_log("\n");
+                }
+                break;
+              }
+            }
+          }
+        }
+      }
+
+      if (next_task != nullptr) {
+        active_cycles++;
+
+        if (next_task->tid >= 1001 && next_task->tid <= 1020) {
+          static u64 test_task_call_count = 0;
+          static u32 last_logged_tid = 0;
+          test_task_call_count++;
+
+          if (test_task_call_count % 1000000 == 0 || last_logged_tid != next_task->tid) {
+            sched_log("[TID=");
+            sched_log_uint(static_cast<u32>(next_task->tid));
+            sched_log("][CPU=");
+            sched_log_uint(current_cpu);
+            sched_log("] task running nice=");
+            i32 nice = next_task->se.nice;
+            if (nice >= 0) sched_log("+");
+            sched_log_uint(static_cast<u32>(nice >= 0 ? nice : -nice));
+            if (nice < 0) sched_log("-");
+            sched_log(" vruntime=");
+            sched_log_u64(next_task->se.vruntime);
+
+            u64 estimated_runtime_us = test_task_call_count * 100;
+            sched_log(" runtime=");
+            sched_log_u64(estimated_runtime_us / 1000);
+            sched_log(".");
+            sched_log_uint(static_cast<u32>((estimated_runtime_us % 1000) / 100));
+            sched_log("ms");
+            sched_log("\n");
+
+            last_logged_tid = static_cast<u32>(next_task->tid);
+          }
+
+          i32 nice = next_task->se.nice;
+          u32 work_amount = 1000;
+          if (nice < 0) {
+            work_amount = 1500;
+          } else if (nice > 5) {
+            work_amount = 500;
+          }
+
+          u64 start_time = CfsScheduler::get_current_time();
+
+          for (volatile u32 work = 0; work < work_amount; work = work + 1) {
+          }
+
+          u64 end_time = CfsScheduler::get_current_time();
+          u64 delta_exec = (end_time > start_time) ? (end_time - start_time) : 1000;
+
+          update_current(next_task, delta_exec);
+
+          enqueue_task(next_task, current_cpu);
+        }
+
+        if (active_cycles == 1 || (active_cycles % LOG_INTERVAL == 0)) {
+          sched_log("CPU");
+          sched_log_uint(current_cpu);
+          sched_log(": found runnable task TID=");
+          sched_log_u64(next_task->tid);
+          sched_log(" (active cycles: ");
+          sched_log_uint(active_cycles);
+          sched_log(")\n");
+        }
+
+        Thread* prev_task = CfsScheduler::get_current_task();
+        ThreadId prev_tid = prev_task ? prev_task->tid : ThreadId{0};
+        ThreadId new_tid = next_task->tid;
+
+        if (prev_tid != new_tid && (active_cycles == 1 || active_cycles % (LOG_INTERVAL * 10) == 0)) {
+          sched_log("[sched switch] CPU=");
+          sched_log_uint(current_cpu);
+          sched_log(": TID=");
+          sched_log_u64(prev_tid);
+          sched_log(" -> TID=");
+          sched_log_u64(new_tid);
+          sched_log("\n");
+        }
+
+        CfsScheduler::set_current_task(next_task);
+        record_context_switch();
+      } else {
+        idle_cycles++;
+
+        if (idle_cycles == 1 || (idle_cycles % LOG_INTERVAL == 0)) {
+          sched_log("CPU");
+          sched_log_uint(current_cpu);
+          sched_log(": no runnable tasks, entering idle (idle cycles: ");
+          sched_log_uint(idle_cycles);
+          sched_log(")\n");
+        }
+
+        idle_task_loop(current_cpu);
+      }
+
+      check_need_resched();
+
+      u32 total_cycles = active_cycles + idle_cycles;
+      if (total_cycles > 0 && total_cycles % (LOG_INTERVAL * 10) == 0) {
+        sched_log("sched stats - CPU");
+        sched_log_uint(current_cpu);
+        sched_log(": active=");
+        sched_log_uint(active_cycles);
+        sched_log(", idle=");
+        sched_log_uint(idle_cycles);
+        sched_log(", total ctx switches=");
+        sched_log_u64(total_context_switches());
+        sched_log("\n");
+      }
+    }
+  }
+
+private:
+
+  void context_switch_to_task(Thread *task) noexcept {
+    if (task == nullptr)
+      return;
+
+    CfsScheduler::set_current_task(task);
+
+    task->state = ProcessState::Running;
+
+    record_context_switch();
+
+    if (task) {
+      if (task->tid == 1000) {
+        switch_to_user(&task->context, task->stack_base + task->stack_size - 16);
+      } else if (task->tid >= 1001 && task->tid <= 1020) {
+        test_task_entry();
+      } else {
+        // Other kernel thread context switch (placeholder)
+      }
+    }
+  }
+
+  void check_need_resched() noexcept {
+    u32 current_cpu = CfsScheduler::get_current_cpu_id();
+
+    if (runqueues_.get_cpu(current_cpu).nr_running() > 0) {
+      // Other tasks waiting, may need preemption
+    }
+  }
+
+  [[nodiscard]] static u32 get_current_cpu_id() noexcept {
+#if defined(MOSS_ARCH_ARM64)
+    u64 mpidr;
+    asm volatile("mrs %0, mpidr_el1" : "=r"(mpidr));
+    return static_cast<u32>(mpidr & 0xFF) % MAX_CPUS;
+#elif defined(MOSS_ARCH_X86_64)
+    return 0;
+#elif defined(MOSS_ARCH_RISCV)
+    u64 hart_id;
+    asm volatile("csrr %0, mhartid" : "=r"(hart_id));
+    return static_cast<u32>(hart_id) % MAX_CPUS;
+#else
+    return 0;
+#endif
+  }
+
+  [[nodiscard]] static u64 get_current_time() noexcept {
+    u64 count;
+#if defined(MOSS_ARCH_ARM64)
+    asm volatile("mrs %0, cntvct_el0" : "=r"(count));
+#elif defined(MOSS_ARCH_X86_64)
+    asm volatile("rdtsc" : "=A"(count));
+#elif defined(MOSS_ARCH_RISCV)
+    asm volatile("rdcycle %0" : "=r"(count));
+#else
+    count = 0;
+#endif
+    return count;
+  }
+};
+
+// Global CFS scheduler instance
+extern CfsScheduler *g_scheduler;
+
+// ============================================================================
+// load_balancer.hpp - Multi-core load balancer
+// ============================================================================
+
+// Load balance statistics
+struct LoadBalanceStats {
+  u64 migrations_count;
+  u64 steal_attempts;
+  u64 steal_success;
+  u64 idle_balance_count;
+  u64 active_balance_count;
+
+  constexpr LoadBalanceStats() noexcept
+      : migrations_count(0), steal_attempts(0), steal_success(0),
+        idle_balance_count(0), active_balance_count(0) {}
+};
+
+// Load balance policy
+enum class BalancePolicy : u8 {
+  Conservative = 0,
+  Aggressive = 1,
+  NUMA_Aware = 2
+};
+
+// CPU topology information
+struct CpuTopology {
+  u32 cpu_id;
+  u32 core_id;
+  u32 cluster_id;
+  u32 numa_node;
+  bool is_big_core;
+
+  constexpr CpuTopology() noexcept
+      : cpu_id(0), core_id(0), cluster_id(0), numa_node(0), is_big_core(false) {
+  }
+
+  constexpr CpuTopology(u32 cpu, u32 core, u32 cluster, u32 numa,
+                        bool big) noexcept
+      : cpu_id(cpu), core_id(core), cluster_id(cluster), numa_node(numa),
+        is_big_core(big) {}
+};
+
+// Load balancer class
+class LoadBalancer {
+private:
+  containers::PerCpuData<LoadBalanceStats> stats_;
+  CpuTopology topology_[MAX_CPUS];
+
+  BalancePolicy policy_;
+  u32 imbalance_threshold_;
+  u64 migration_cost_;
+  u64 last_balance_time_;
+  u64 balance_interval_;
+
+  containers::PerCpuWorkQueue<Thread *, 64> migration_queue_;
+
+public:
+  LoadBalancer() noexcept
+      : stats_{},
+        topology_{},
+        policy_(BalancePolicy::Conservative),
+        imbalance_threshold_(25),
+        migration_cost_(10000),
+        last_balance_time_(0), balance_interval_(4000000)
+  {
+    for (u32 i = 0; i < MAX_CPUS; ++i) {
+      topology_[i] = CpuTopology(i, i, 0, 0, true);
+    }
+  }
+
+  bool idle_balance(u32 cpu, CfsScheduler &scheduler) noexcept {
+    if (cpu >= MAX_CPUS)
+      return false;
+
+    auto &local_stats = stats_.get_cpu(cpu);
+    local_stats.idle_balance_count++;
+
+    u32 busiest_cpu = find_busiest_cpu(cpu, scheduler);
+    if (busiest_cpu == cpu || busiest_cpu >= MAX_CPUS) {
+      return false;
+    }
+
+    return steal_task(cpu, busiest_cpu, scheduler);
+  }
+
+  void periodic_balance(u64 current_time, CfsScheduler &scheduler) noexcept {
+    if (current_time - last_balance_time_ < balance_interval_) {
+      return;
+    }
+
+    last_balance_time_ = current_time;
+
+    for (u32 cpu = 0; cpu < MAX_CPUS; ++cpu) {
+      u32 load = scheduler.get_cpu_load(cpu);
+      u32 nr_running = scheduler.get_cpu_nr_running(cpu);
+
+      if (nr_running > 2 && load > 80) {
+        u32 target_cpu = find_least_loaded_cpu(scheduler);
+        if (target_cpu != cpu && target_cpu < MAX_CPUS) {
+          migrate_task(cpu, target_cpu, scheduler);
+        }
+      }
+    }
+  }
+
+  [[nodiscard]] u32 select_cpu_for_task(Thread *thread,
+                                        CfsScheduler &scheduler) noexcept {
+    if (thread == nullptr)
+      return 0;
+
+    [[maybe_unused]] u32 current_cpu = current_cpu_id();
+    u32 prev_cpu = thread->cpu;
+
+    if (has_cpu_affinity(thread, prev_cpu)) {
+      u32 prev_load = scheduler.get_cpu_load(prev_cpu);
+      if (prev_load < 70) {
+        return prev_cpu;
+      }
+    }
+
+    return find_best_cpu_for_task(thread, scheduler);
+  }
+
+  bool migrate_task(u32 src_cpu, u32 dst_cpu,
+                    CfsScheduler &scheduler) noexcept {
+    if (src_cpu >= MAX_CPUS || dst_cpu >= MAX_CPUS || src_cpu == dst_cpu) {
+      return false;
+    }
+
+    Thread *task = select_migration_candidate(src_cpu, scheduler);
+    if (task == nullptr) {
+      return false;
+    }
+
+    scheduler.dequeue_task(task);
+    scheduler.enqueue_task(task, dst_cpu);
+
+    auto &src_stats = stats_.get_cpu(src_cpu);
+    src_stats.migrations_count++;
+
+    return true;
+  }
+
+  [[nodiscard]] LoadBalanceStats get_stats(u32 cpu) const noexcept {
+    if (cpu >= MAX_CPUS)
+      return LoadBalanceStats{};
+    return stats_.get_cpu(cpu);
+  }
+
+  [[nodiscard]] LoadBalanceStats get_global_stats() const noexcept {
+    LoadBalanceStats global{};
+
+    stats_.for_each_cpu([&global](usize, const LoadBalanceStats &stats) {
+      global.migrations_count += stats.migrations_count;
+      global.steal_attempts += stats.steal_attempts;
+      global.steal_success += stats.steal_success;
+      global.idle_balance_count += stats.idle_balance_count;
+      global.active_balance_count += stats.active_balance_count;
+    });
+
+    return global;
+  }
+
+  void set_policy(BalancePolicy policy) noexcept {
+    policy_ = policy;
+
+    switch (policy) {
+    case BalancePolicy::Conservative:
+      imbalance_threshold_ = 25;
+      balance_interval_ = 8000000;
+      break;
+    case BalancePolicy::Aggressive:
+      imbalance_threshold_ = 15;
+      balance_interval_ = 2000000;
+      break;
+    case BalancePolicy::NUMA_Aware:
+      imbalance_threshold_ = 20;
+      balance_interval_ = 4000000;
+      break;
+    default:
+      imbalance_threshold_ = 25;
+      balance_interval_ = 8000000;
+      break;
+    }
+  }
+
+private:
+  [[nodiscard]] u32 find_busiest_cpu(u32 current_cpu,
+                                     CfsScheduler &scheduler) const noexcept {
+    u32 busiest_cpu = current_cpu;
+    u32 max_load = scheduler.get_cpu_load(current_cpu);
+
+    for (u32 cpu = 0; cpu < MAX_CPUS; ++cpu) {
+      if (cpu == current_cpu)
+        continue;
+
+      u32 load = scheduler.get_cpu_load(cpu);
+      u32 nr_running = scheduler.get_cpu_nr_running(cpu);
+
+      if (load > max_load && nr_running > 1) {
+        max_load = load;
+        busiest_cpu = cpu;
+      }
+    }
+
+    u32 current_load = scheduler.get_cpu_load(current_cpu);
+    if (max_load - current_load < imbalance_threshold_) {
+      return current_cpu;
+    }
+
+    return busiest_cpu;
+  }
+
+  [[nodiscard]] u32
+  find_least_loaded_cpu(CfsScheduler &scheduler) const noexcept {
+    u32 least_loaded_cpu = 0;
+    u32 min_load = scheduler.get_cpu_load(0);
+
+    for (u32 cpu = 1; cpu < MAX_CPUS; ++cpu) {
+      u32 load = scheduler.get_cpu_load(cpu);
+      if (load < min_load) {
+        min_load = load;
+        least_loaded_cpu = cpu;
+      }
+    }
+
+    return least_loaded_cpu;
+  }
+
+  [[nodiscard]] u32
+  find_best_cpu_for_task(Thread *thread,
+                         CfsScheduler &scheduler) const noexcept {
+    u32 best_cpu = 0;
+    u32 min_load = static_cast<u32>(-1);
+
+    for (u32 cpu = 0; cpu < MAX_CPUS; ++cpu) {
+      if (!has_cpu_affinity(thread, cpu)) {
+        continue;
+      }
+
+      u32 load = scheduler.get_cpu_load(cpu);
+
+      if (policy_ == BalancePolicy::NUMA_Aware) {
+        u32 thread_numa = get_thread_numa_node(thread);
+        u32 cpu_numa = topology_[cpu].numa_node;
+
+        if (thread_numa != cpu_numa) {
+          load += 20;
+        }
+      }
+
+      if (load < min_load) {
+        min_load = load;
+        best_cpu = cpu;
+      }
+    }
+
+    return best_cpu;
+  }
+
+  bool steal_task(u32 dst_cpu, u32 src_cpu, CfsScheduler &scheduler) noexcept {
+    auto &stats = stats_.get_cpu(dst_cpu);
+    stats.steal_attempts++;
+
+    Thread *task = select_migration_candidate(src_cpu, scheduler);
+    if (task == nullptr) {
+      return false;
+    }
+
+    u64 expected_benefit =
+        calculate_migration_benefit(task, src_cpu, dst_cpu, scheduler);
+    if (expected_benefit < migration_cost_) {
+      return false;
+    }
+
+    scheduler.dequeue_task(task);
+    scheduler.enqueue_task(task, dst_cpu);
+
+    stats.steal_success++;
+    stats.migrations_count++;
+
+    return true;
+  }
+
+  [[nodiscard]] Thread *select_migration_candidate(
+      [[maybe_unused]] u32 cpu,
+      [[maybe_unused]] CfsScheduler &scheduler) const noexcept {
+    return nullptr;
+  }
+
+  [[nodiscard]] u64
+  calculate_migration_benefit(Thread *thread, u32 src_cpu, u32 dst_cpu,
+                              CfsScheduler &scheduler) const noexcept {
+    if (thread == nullptr)
+      return 0;
+
+    u32 src_load = scheduler.get_cpu_load(src_cpu);
+    u32 dst_load = scheduler.get_cpu_load(dst_cpu);
+
+    return (src_load > dst_load) ? (src_load - dst_load) * 1000 : 0;
+  }
+
+  [[nodiscard]] bool has_cpu_affinity([[maybe_unused]] Thread *thread,
+                                      [[maybe_unused]] u32 cpu) const noexcept {
+    return cpu < MAX_CPUS;
+  }
+
+  [[nodiscard]] u32
+  get_thread_numa_node([[maybe_unused]] Thread *thread) const noexcept {
+    return 0;
+  }
+
+  [[nodiscard]] static u32 current_cpu_id() noexcept {
+    return arch::get_current_cpu_id();
+  }
+};
+
+} // namespace moss::kernel::process

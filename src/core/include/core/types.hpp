@@ -1,94 +1,14 @@
 #pragma once
 
-// Moss 混合内核基础类型定义（无标准库环境）
+// Thin bridge header - types now in moss.types module
+import moss.std;
+import moss.types;
 
-namespace moss::kernel {
-
-// 基础整数类型（原生定义，无需标准库）
-using u8 = unsigned char;
-static_assert(sizeof(u8) == 1, "u8 must be 1 byte");
-using u16 = unsigned short;
-static_assert(sizeof(u16) == 2, "u16 must be 2 bytes");
-using u32 = unsigned int;
-static_assert(sizeof(u32) == 4, "u32 must be 4 bytes");
-using u64 = unsigned long long;
-static_assert(sizeof(u64) == 8, "u64 must be 8 bytes");
-
-using i8 = signed char;
-static_assert(sizeof(i8) == 1, "i8 must be 1 byte");
-using i16 = signed short;
-static_assert(sizeof(i16) == 2, "i16 must be 2 bytes");
-using i32 = signed int;
-static_assert(sizeof(i32) == 4, "i32 must be 4 bytes");
-using i64 = signed long long;
-static_assert(sizeof(i64) == 8, "i64 must be 8 bytes");
-
-// 平台相关的 size_t 和 ptrdiff_t 定义
-#ifdef MOSS_ARCH_X86_64
-using usize = unsigned long;
-static_assert(sizeof(usize) == 8, "usize must be 8 bytes on x86_64");
-using isize = signed long;
-static_assert(sizeof(isize) == 8, "isize must be 8 bytes on x86_64");
-#elif defined(MOSS_ARCH_ARM64)
-using usize = unsigned long;
-static_assert(sizeof(usize) == 8, "usize must be 8 bytes on ARM64");
-using isize = signed long;
-static_assert(sizeof(isize) == 8, "isize must be 8 bytes on ARM64");
-#elif defined(MOSS_ARCH_RISCV)
-using usize = unsigned long;
-static_assert(sizeof(usize) == 8, "usize must be 8 bytes on RISC-V");
-using isize = signed long;
-static_assert(sizeof(isize) == 8, "isize must be 8 bytes on RISC-V");
-#else
-using usize = unsigned long long;
-static_assert(sizeof(usize) == 8, "usize must be 8 bytes");
-using isize = signed long long;
-static_assert(sizeof(isize) == 8, "isize must be 8 bytes");
-#endif
-
-// 物理和虚拟地址类型
-using PhysAddr = u64;
-using VirtAddr = u64;
-
-// 页面相关常量
-static constexpr usize PAGE_SIZE = 4096;
-static constexpr usize PAGE_SHIFT = 12;
-static constexpr usize LARGE_PAGE_SIZE = 2 * 1024 * 1024;   // 2MB
-static constexpr usize HUGE_PAGE_SIZE = 1024 * 1024 * 1024; // 1GB
-
-// 内存布局常量
-static constexpr VirtAddr KERNEL_BASE = 0xFFFF800000000000ULL;
-static constexpr VirtAddr USER_BASE = 0x0000000000000000ULL;
-static constexpr VirtAddr USER_MAX = 0x0000800000000000ULL;
-
-// 进程和线程标识符
-using ProcessId = u32;
-using ThreadId = u64;
-using EndpointId = u32;
-using DeviceId = u32;
-using InterruptId = u32;
-
-// IPC相关类型
-using MessageId = u64;
-using ChannelId = u32;
-using ShmId = u32;
-using ServiceId = u32;
-
-// 特殊ID值
-static constexpr ProcessId INVALID_PROCESS_ID = 0;
-static constexpr ThreadId INVALID_THREAD_ID = 0;
-static constexpr EndpointId INVALID_ENDPOINT_ID = 0;
-
-// ARM64特定常量
-static constexpr usize CACHE_LINE_SIZE = 64;
-static constexpr usize MAX_CPUS = 8;
-
-// 编译时对齐宏
+// Macros do not cross module boundaries, so keep them here
 #define ALIGNED(x) __attribute__((aligned(x)))
-#define CACHE_ALIGNED ALIGNED(CACHE_LINE_SIZE)
-#define PAGE_ALIGNED ALIGNED(PAGE_SIZE)
+#define CACHE_ALIGNED ALIGNED(64)
+#define PAGE_ALIGNED ALIGNED(4096)
 
-// 禁用拷贝和移动的宏
 #define NON_COPYABLE(ClassName)                                                \
   ClassName(const ClassName &) = delete;                                       \
   ClassName &operator=(const ClassName &) = delete;
@@ -100,11 +20,3 @@ static constexpr usize MAX_CPUS = 8;
 #define NON_COPYABLE_NON_MOVABLE(ClassName)                                    \
   NON_COPYABLE(ClassName)                                                      \
   NON_MOVABLE(ClassName)
-
-} // namespace moss::kernel
-
-// 全局操作符重载（placement new）
-void *operator new(unsigned long, void *ptr) noexcept;
-void *operator new[](unsigned long, void *ptr) noexcept;
-void operator delete(void *, void *) noexcept;
-void operator delete[](void *, void *) noexcept;

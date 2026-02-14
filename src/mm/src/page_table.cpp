@@ -1,5 +1,42 @@
-#include "mm/page_table.hpp"
-#include "core/arch/arch_abstraction.hpp"
+// MOSS页表管理器实现 - Module implementation unit
+// 提供ARM64页表管理、MMU启用和调试输出功能
+
+module;
+
+// Architecture detection macros (do not cross module boundaries)
+#ifndef MOSS_ARCH_ARM64
+#ifndef MOSS_ARCH_X86_64
+#ifndef MOSS_ARCH_RISCV
+#if defined(__x86_64__) || defined(__x86_64) || defined(__amd64__) ||           \
+    defined(__amd64) || defined(_M_X64)
+#define MOSS_ARCH_X86_64
+#elif defined(__aarch64__) || defined(_M_ARM64)
+#define MOSS_ARCH_ARM64
+#elif defined(__riscv) && __riscv_xlen == 64
+#define MOSS_ARCH_RISCV
+#else
+#define MOSS_ARCH_X86_64
+#endif
+#endif
+#endif
+#endif
+
+// Linker symbols (must be in global module fragment)
+extern "C" {
+    extern char _text_start_addr[];
+    extern char _text_end_addr[];
+    extern char _rodata_start_addr[];
+    extern char _rodata_end_addr[];
+    extern char _data_start_addr[];
+    extern char _data_end_addr[];
+    extern char _bss_start_addr[];
+    extern char _bss_end_addr[];
+    extern char _pagetable_start_addr[];
+    extern char _pagetable_end_addr[];
+    extern char _kernel_end_addr[];
+}
+
+module moss.mm;
 
 // 简化的调试输出函数 - 直接使用UART输出
 namespace {
@@ -20,7 +57,7 @@ void debug_print(const char *str) {
 }
 
 // 简单十六进制输出（带0x前缀）
-void debug_print_hex(u64 value) {
+void debug_print_hex(moss::u64 value) {
   constexpr char hex_chars[] = "0123456789ABCDEF";
   char buffer[19] = "0x"; // "0x" + 16个十六进制字符 + null终止符
 
@@ -33,7 +70,7 @@ void debug_print_hex(u64 value) {
 }
 
 // 简单十六进制输出（不带0x前缀）
-void debug_print_hex_plain(u64 value) {
+void debug_print_hex_plain(moss::u64 value) {
   constexpr char hex_chars[] = "0123456789ABCDEF";
   char buffer[17]; // 16个十六进制字符 + null终止符
 
@@ -45,21 +82,6 @@ void debug_print_hex_plain(u64 value) {
   debug_print(buffer);
 }
 } // namespace
-
-// 外部符号声明（来自链接器脚本）
-extern "C" {
-extern char _text_start_addr[];
-extern char _text_end_addr[];
-extern char _rodata_start_addr[];
-extern char _rodata_end_addr[];
-extern char _data_start_addr[];
-extern char _data_end_addr[];
-extern char _bss_start_addr[];
-extern char _bss_end_addr[];
-extern char _pagetable_start_addr[];
-extern char _pagetable_end_addr[];
-extern char _kernel_end_addr[];
-}
 
 namespace moss::kernel::mm {
 

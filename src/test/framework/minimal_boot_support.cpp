@@ -210,7 +210,7 @@ public:
 // ELF加载器实现
 [[nodiscard]] Result<LoadedProgram> ElfLoader::load_elf_from_memory(const u8* /*elf_data*/, usize /*elf_size*/) noexcept {
     early_debug_print("⚠️ 测试内核不支持ELF加载\n");
-    return Error<LoadedProgram>(ErrorCode::NotSupported);
+    return Result<LoadedProgram>{ErrorCode::NotSupported};
 }
 
 } // namespace moss::kernel::elf

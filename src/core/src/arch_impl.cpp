@@ -32,6 +32,36 @@ void cpu_yield() noexcept {
 #endif
 }
 
+void cpu_halt() noexcept {
+#if defined(MOSS_ARCH_ARM64)
+  asm volatile("wfi");
+#elif defined(MOSS_ARCH_X86_64)
+  asm volatile("hlt");
+#elif defined(MOSS_ARCH_RISCV)
+  asm volatile("wfi");
+#endif
+}
+
+void instruction_barrier() noexcept {
+#if defined(MOSS_ARCH_ARM64)
+  asm volatile("isb" ::: "memory");
+#elif defined(MOSS_ARCH_X86_64)
+  asm volatile("" ::: "memory");
+#elif defined(MOSS_ARCH_RISCV)
+  asm volatile("fence.i" ::: "memory");
+#endif
+}
+
+void flush_cache_line(VirtAddr addr) noexcept {
+#if defined(MOSS_ARCH_ARM64)
+  asm volatile("dc civac, %0" :: "r"(addr) : "memory");
+#elif defined(MOSS_ARCH_X86_64)
+  asm volatile("clflush (%0)" :: "r"(addr) : "memory");
+#elif defined(MOSS_ARCH_RISCV)
+  (void)addr; // RISC-V cache flush is implementation-specific
+#endif
+}
+
 u32 get_current_cpu_id() noexcept {
 #if defined(MOSS_ARCH_ARM64)
   return arm64::get_current_cpu_id();

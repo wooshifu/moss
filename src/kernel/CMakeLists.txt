@@ -23,13 +23,15 @@ elseif(MOSS_TARGET_ARCH STREQUAL "RISCV")
     list(APPEND KERNEL_SOURCES src/arch/riscv_syscall.S)
 endif()
 
-target_sources(moss_kernel PRIVATE ${KERNEL_SOURCES})
+target_sources(moss_kernel
+    PUBLIC FILE_SET CXX_MODULES FILES src/kernel.cppm
+    PRIVATE ${KERNEL_SOURCES})
 
 target_include_directories(moss_kernel PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}/include)
 
 target_compile_definitions(moss_kernel PRIVATE MOSS_KERNEL_CORE)
 
-target_link_libraries(moss_kernel PRIVATE moss_core moss_containers moss_mm moss_drivers moss_interrupts moss_ipc moss_process)
+target_link_libraries(moss_kernel PRIVATE moss_core moss_containers moss_mm moss_drivers moss_interrupts moss_ipc moss_process moss_boot)
 
 message(STATUS "内核核心模块配置完成")

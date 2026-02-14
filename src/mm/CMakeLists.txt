@@ -1,6 +1,7 @@
 # src/mm/CMakeLists.txt
 
 # Header-only interface for modules that need mm headers without circular deps
+# (kept for backward compatibility until all consumers use import moss.mm)
 add_library(moss_mm_headers INTERFACE)
 target_include_directories(moss_mm_headers INTERFACE
     ${CMAKE_CURRENT_SOURCE_DIR}/include)
@@ -8,13 +9,15 @@ target_link_libraries(moss_mm_headers INTERFACE moss_core)
 
 add_library(moss_mm OBJECT)
 
-set(MM_SOURCES
-    src/page_table.cpp
-    src/page_frame_allocator.cpp
-    src/runtime_heap_allocator.cpp
-    src/kernel_memory.cpp
-    src/mm_interface_impl.cpp)
-target_sources(moss_mm PRIVATE ${MM_SOURCES})
+target_sources(moss_mm
+    PUBLIC FILE_SET CXX_MODULES FILES src/mm.cppm
+    PRIVATE
+        src/page_table.cpp
+        src/page_frame_allocator.cpp
+        src/runtime_heap_allocator.cpp
+        src/kernel_memory.cpp
+        src/mm_interface_impl.cpp
+        src/page_alloc_shim.cpp)
 
 target_include_directories(moss_mm PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}/include)
