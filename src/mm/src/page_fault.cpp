@@ -44,10 +44,10 @@ extern "C" {
                            const unsigned char** out_backing_data,
                            unsigned long long* out_backing_offset,
                            unsigned long long* out_backing_size,
-                           unsigned long long* out_vma_start) noexcept __attribute__((weak));
+                           unsigned long long* out_vma_start) noexcept;
 
     // Returns current process's PGD physical address, or 0 if none
-    unsigned long long get_current_pgd_phys() noexcept __attribute__((weak));
+    unsigned long long get_current_pgd_phys() noexcept;
 }
 
 module moss.mm;
@@ -265,6 +265,8 @@ static bool try_demand_page(moss::kernel::u64 far_addr, bool is_write,
     using moss::kernel::VirtAddr;
     using moss::kernel::phys_to_virt;
 
+    namespace log = moss::kernel::logging;
+
     u32 vma_flags = 0;
     const u8* backing_data = nullptr;
     u64 backing_offset = 0;
@@ -348,20 +350,22 @@ extern "C" void user_page_fault_handler(
     using namespace moss::kernel;
 
     u64 dfsc = esr & 0x3F;
+    u64 ec = (esr >> 26) & 0x3F;
     bool is_write = ((esr >> 6) & 1) != 0;
+
+    log::klog::debug("user_page_fault: addr={:#x} pc={:#x} dfsc={:#x} write={}",
+                     far_addr, elr, dfsc, is_write);
 
     // Translation faults (DFSC 0x04-0x07): attempt demand paging
     bool is_translation_fault = (dfsc >= 0x04 && dfsc <= 0x07);
 
-    if (is_translation_fault && demand_page_lookup != nullptr
-                             && get_current_pgd_phys != nullptr) {
+    if (is_translation_fault) {
         if (try_demand_page(far_addr, is_write, elr)) {
             return; // Fault resolved — eret retries instruction
         }
     }
 
     // No VMA, not a translation fault, or bridge not registered — fatal
-    u64 ec = (esr >> 26) & 0x3F;
     log::klog::error("USER PAGE FAULT: addr={:#x} pc={:#x} write={} ec={:#x} ({})",
                      far_addr, elr, is_write, ec, mm::ec_to_string(ec));
     log::klog::error("  DFSC: {:#x} ({})", dfsc, mm::dfsc_to_string(dfsc));
