@@ -348,12 +348,22 @@ extern "C" [[noreturn]] void secondary_cpu_entry() noexcept {
             : moss::kernel::platform::intc_cpu_base();
     (void)moss::kernel::hal::intc::init_cpu_interface(gic_cpu_base);
 
-    // 5. Enable per-CPU timer
+    // Enable timer PPI (IRQ 27) in per-CPU banked GICD_ISENABLER.
+    // PPI registers are per-CPU in GICv2, so each CPU must enable its own.
+    moss::kernel::VirtAddr gic_dist_base =
+        (plat.dtb_valid && plat.intc.valid)
+            ? static_cast<moss::kernel::VirtAddr>(plat.intc.dist_base)
+            : moss::kernel::platform::intc_dist_base();
+    moss::kernel::hal::intc::enable_irq(gic_dist_base, moss::kernel::platform::timer_irq());
+
+    // 5. Enable per-CPU timer and set initial compare for first tick.
+    //    Use SCHED_LATENCY_NS (~6ms) so the first scheduler tick fires promptly.
+    //    After that, irq_handler_c reprograms the compare register each tick.
     moss::kernel::hal::timer::enable();
-    // Set compare far in the future to avoid spurious interrupt
     u64 counter_now = moss::kernel::hal::timer::read_counter();
-    moss::kernel::hal::timer::set_compare(
-        counter_now + moss::kernel::timer::TimerSubsystem::instance().clocksource().ns_to_cycles(1000000000ULL));
+    u64 first_tick_cycles = moss::kernel::timer::TimerSubsystem::instance()
+        .clocksource().ns_to_cycles(moss::kernel::process::CfsParams::SCHED_LATENCY_NS);
+    moss::kernel::hal::timer::set_compare(counter_now + first_tick_cycles);
 
     // 6. Mark CPU as online (init complete)
     asm volatile("dmb sy" ::: "memory");
