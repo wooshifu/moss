@@ -112,21 +112,35 @@ VoidResult PageTableManager::setup_kernel_page_tables() {
   }
   PageTableManager::kernel_pgd = *pgd_result;
 
-  // 创建全面的内存映射 - 映射整个4GB地址空间
-  // 使用最简单的设备内存权限，确保MMU能正常工作
-  u64 block_permissions = (1ULL << 0) | // Valid
-                          (0ULL << 1) | // Block (不是Table)
-                          (0ULL << 2) | // AttrIndx=0 (设备内存)
-                          (1ULL << 10); // AF (Access Flag)
+  // QEMU virt machine memory layout:
+  //   0x00000000 - 0x3FFFFFFF: Device MMIO (GIC, UART, etc.)
+  //   0x40000000 - 0x7FFFFFFF: RAM (kernel code, data, heap)
+  //   0x80000000 - 0xFFFFFFFF: Additional MMIO / unused
 
-  // 映射前4个1GB块，覆盖0x00000000-0x100000000 (4GB)
+  // Device memory attributes: AttrIndx=0 (MAIR: Device-nGnRnE)
+  u64 device_block = (1ULL << 0) |  // Valid
+                     (0ULL << 1) |  // Block (not Table)
+                     (0ULL << 2) |  // AttrIndx=0 (Device-nGnRnE)
+                     (1ULL << 10);  // AF (Access Flag)
+
+  // Normal cacheable memory attributes: AttrIndx=1 (MAIR: Normal WB-WA)
+  // Required for atomic operations (ldxr/stxr, ldadd) to work correctly
+  u64 normal_block = (1ULL << 0) |  // Valid
+                     (0ULL << 1) |  // Block (not Table)
+                     (1ULL << 2) |  // AttrIndx=1 (Normal Cacheable)
+                     (1ULL << 10) | // AF (Access Flag)
+                     (3ULL << 8);   // Inner Shareable (SH bits for SMP)
+
+  // Map 4 x 1GB blocks covering 0x00000000 - 0xFFFFFFFF
   for (usize i = 0; i < 4; i++) {
-    usize pgd_index = i; // PGD索引0, 1, 2, 3
-    PhysAddr block_addr =
-        static_cast<PhysAddr>(i * 0x40000000ULL); // 0GB, 1GB, 2GB, 3GB
+    PhysAddr block_addr = static_cast<PhysAddr>(i * 0x40000000ULL);
 
-    u64 block_entry = (block_addr & 0x0000FFFFFFFFF000ULL) | block_permissions;
-    PageTableManager::kernel_pgd->entries[pgd_index].raw = block_entry;
+    // PGD index 1 (0x40000000-0x7FFFFFFF) is RAM — use Normal memory
+    // All other regions are Device MMIO
+    u64 permissions = (i == 1) ? normal_block : device_block;
+
+    u64 block_entry = (block_addr & 0x0000FFFFFFFFF000ULL) | permissions;
+    PageTableManager::kernel_pgd->entries[i].raw = block_entry;
   }
 
   return VoidResult{};
@@ -244,16 +258,26 @@ VoidResult PageTableManager::enable_mmu() {
   asm volatile("msr ttbr0_el1, %0" ::"r"(kernel_pgd_pa));
   asm volatile("msr ttbr1_el1, %0" ::"r"(kernel_pgd_pa));
 
-  // 内存屏障
+  // Invalidate all TLB entries to ensure new page table attributes take effect
+  // This is critical when changing memory types (e.g., Device → Normal)
+  asm volatile("tlbi vmalle1is" ::: "memory");
   asm volatile("dsb sy");
   asm volatile("isb");
 
-  // 只启用MMU，不改变缓存设置
+  // Invalidate instruction cache before enabling it
+  asm volatile("ic iallu" ::: "memory");
+  asm volatile("dsb sy");
+  asm volatile("isb");
+
+  // Enable MMU + data cache + instruction cache
+  // Caches are required for Normal Cacheable memory attributes to work correctly
   u64 sctlr = current_sctlr;
-  sctlr |= (1ULL << 0); // M位：启用MMU
+  sctlr |= (1ULL << 0);  // M bit: enable MMU
+  sctlr |= (1ULL << 2);  // C bit: enable data cache
+  sctlr |= (1ULL << 12); // I bit: enable instruction cache
   asm volatile("msr sctlr_el1, %0" ::"r"(sctlr));
 
-  // 确保MMU启用生效
+  // Ensure MMU + cache enablement takes full effect
   asm volatile("dsb sy");
   asm volatile("isb");
 
