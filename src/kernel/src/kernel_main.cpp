@@ -19,6 +19,15 @@ long system_call_handler(long syscall_number, long arg0, long arg1,
 
 // IRQ handler called from assembly irq_trampoline (start_arm64.S)
 void irq_handler_c(void) noexcept;
+
+// Bridge functions for demand paging (called from page_fault.cpp in mm module)
+int demand_page_lookup(unsigned long long fault_addr,
+                       unsigned int* out_flags,
+                       const unsigned char** out_backing_data,
+                       unsigned long long* out_backing_offset,
+                       unsigned long long* out_backing_size,
+                       unsigned long long* out_vma_start) noexcept;
+unsigned long long get_current_pgd_phys() noexcept;
 }
 
 module moss.kernel;
@@ -282,6 +291,42 @@ void irq_handler_c(void) noexcept {
   // Non-timer IRQ: pass to TimerSubsystem (legacy path)
   timer_hal::ack_interrupt();
   ::moss::kernel::timer::TimerSubsystem::instance().handle_interrupt();
+}
+
+// ============================================================================
+// Bridge functions for demand paging
+// These are called from page_fault.cpp (mm module) via weak extern "C" linkage,
+// bridging the mm ↔ process module boundary without circular imports.
+// ============================================================================
+
+int demand_page_lookup(unsigned long long fault_addr,
+                       unsigned int* out_flags,
+                       const unsigned char** out_backing_data,
+                       unsigned long long* out_backing_offset,
+                       unsigned long long* out_backing_size,
+                       unsigned long long* out_vma_start) noexcept {
+    using namespace moss::kernel;
+
+    auto* proc = process::current_process();
+    if (!proc || !proc->address_space()) return 0;
+
+    const auto* vma = proc->address_space()->find_vma(static_cast<VirtAddr>(fault_addr));
+    if (!vma) return 0;
+
+    *out_flags = vma->flags;
+    *out_backing_data = vma->backing_data;
+    *out_backing_offset = static_cast<unsigned long long>(vma->backing_offset);
+    *out_backing_size = static_cast<unsigned long long>(vma->backing_size);
+    *out_vma_start = static_cast<unsigned long long>(vma->start_addr);
+    return 1;
+}
+
+unsigned long long get_current_pgd_phys() noexcept {
+    using namespace moss::kernel;
+
+    auto* proc = process::current_process();
+    if (!proc || !proc->address_space()) return 0;
+    return static_cast<unsigned long long>(proc->address_space()->pgd_phys);
 }
 
 } // extern "C"

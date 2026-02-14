@@ -22,7 +22,8 @@ extern "C" void unhandled_exception_handler(
     unsigned long long elr) noexcept;
 
 // User-mode exception handlers (called from lower_el_sync_dispatch)
-extern "C" [[noreturn]] void user_page_fault_handler(
+// NOTE: NOT [[noreturn]] — demand paging resolves faults and returns to eret.
+extern "C" void user_page_fault_handler(
     unsigned long long esr,
     unsigned long long far_addr,
     unsigned long long elr) noexcept;
@@ -31,6 +32,23 @@ extern "C" [[noreturn]] void unhandled_user_exception_handler(
     unsigned long long esr,
     unsigned long long far_addr,
     unsigned long long elr) noexcept;
+
+// Bridge functions — implemented in kernel module (which can access both mm and process)
+// These avoid circular dependency between mm and process modules.
+extern "C" {
+    // Returns pointer to VmaRegion for faulting addr in current process, or nullptr.
+    // Out params: *out_flags, *out_backing_data, *out_backing_offset, *out_backing_size
+    // Returns 1 on success, 0 on failure
+    int demand_page_lookup(unsigned long long fault_addr,
+                           unsigned int* out_flags,
+                           const unsigned char** out_backing_data,
+                           unsigned long long* out_backing_offset,
+                           unsigned long long* out_backing_size,
+                           unsigned long long* out_vma_start) noexcept __attribute__((weak));
+
+    // Returns current process's PGD physical address, or 0 if none
+    unsigned long long get_current_pgd_phys() noexcept __attribute__((weak));
+}
 
 module moss.mm;
 
@@ -220,47 +238,134 @@ extern "C" void kernel_page_fault_handler(
 //
 // Future: demand paging, COW, stack growth, mmap fault-in.
 // ============================================================================
-extern "C" [[noreturn]] void user_page_fault_handler(
-    unsigned long long esr,
-    unsigned long long far_addr,
-    unsigned long long elr) noexcept {
+// Helper: kill the current user process and halt
+[[noreturn]] static void kill_user_process(const char* reason,
+                                           unsigned long long far_addr,
+                                           unsigned long long elr) noexcept {
     namespace log = moss::kernel::logging;
-    namespace mm  = moss::kernel::mm;
-    using moss::u64;
-
-    u64 ec   = (esr >> 26) & 0x3F;
-    u64 dfsc = esr & 0x3F;
-    bool is_write = ((esr >> 6) & 1) != 0;
-
-    log::klog::error("USER PAGE FAULT: addr={:#x} pc={:#x} write={} ec={:#x} ({})",
-                     far_addr, elr, is_write,
-                     ec, mm::ec_to_string(ec));
-    log::klog::error("  DFSC: {:#x} ({})", dfsc, mm::dfsc_to_string(dfsc));
-
-    // TODO: Once VMA regions are tracked per-process, look up the faulting
-    // address in the process VMA list and handle demand paging / COW here.
-    // For now, any user page fault is fatal to the process.
-
+    log::klog::error("USER FAULT: {} addr={:#x} pc={:#x}", reason, far_addr, elr);
     log::klog::error("  Terminating user process (SIGSEGV equivalent)");
-
-    // TODO: Properly terminate the current user process via the scheduler.
-    // For MVP, we just log and return — the eret will re-execute the
-    // faulting instruction, which will fault again. To prevent an infinite
-    // loop, we advance ELR past the faulting instruction (skip 4 bytes on
-    // ARM64) and set x0 to an error indicator. In practice, the user
-    // program will crash on the next instruction, but the kernel stays alive.
-    //
-    // A proper implementation would: mark process as killed, switch to
-    // scheduler, never return to this user context.
-
-    // For now: halt the CPU to prevent infinite fault loop.
-    // This is temporary until we have proper process termination.
-    log::klog::error("  Halting CPU (user process killed)");
     while (true) {
 #if defined(MOSS_ARCH_ARM64)
         asm volatile("wfi");
 #endif
     }
+}
+
+// Attempt demand paging for a user translation fault.
+// Returns true if the fault was resolved (caller should return to eret).
+static bool try_demand_page(moss::kernel::u64 far_addr, bool is_write,
+                            unsigned long long elr) noexcept {
+    namespace mm = moss::kernel::mm;
+    using moss::kernel::u8;
+    using moss::kernel::u32;
+    using moss::kernel::u64;
+    using moss::kernel::usize;
+    using moss::kernel::PhysAddr;
+    using moss::kernel::VirtAddr;
+    using moss::kernel::phys_to_virt;
+
+    u32 vma_flags = 0;
+    const u8* backing_data = nullptr;
+    u64 backing_offset = 0;
+    u64 backing_size = 0;
+    u64 vma_start = 0;
+
+    int found = demand_page_lookup(far_addr, &vma_flags, &backing_data,
+                                   &backing_offset, &backing_size,
+                                   &vma_start);
+    if (!found) return false;
+
+    // VmaFlags bit definitions (must match process::VmaFlags)
+    constexpr u32 VMA_WRITE = 1u << 1;
+    constexpr u32 VMA_EXEC  = 1u << 2;
+
+    // Permission check: write to read-only VMA
+    if (is_write && !(vma_flags & VMA_WRITE)) {
+        kill_user_process("write to read-only VMA", far_addr, elr);
+    }
+
+    // Allocate a physical page
+    constexpr usize PG_SIZE = 4096;
+    auto page_result = mm::page_alloc::alloc_kernel_pages(0);
+    if (!page_result) {
+        kill_user_process("out of memory", far_addr, elr);
+    }
+    PhysAddr page_pa = *page_result;
+    auto* page_va = reinterpret_cast<u8*>(phys_to_virt(page_pa));
+
+    // Fill page from backing data or zero
+    VirtAddr fault_page = far_addr & ~(static_cast<u64>(PG_SIZE) - 1);
+    u64 page_offset = fault_page - vma_start;
+
+    if (backing_data != nullptr && page_offset < backing_size) {
+        u64 copy_size = backing_size - page_offset;
+        if (copy_size > PG_SIZE) copy_size = PG_SIZE;
+        for (u64 i = 0; i < copy_size; i++) {
+            page_va[i] = backing_data[backing_offset + page_offset + i];
+        }
+        for (u64 i = copy_size; i < PG_SIZE; i++) {
+            page_va[i] = 0;
+        }
+    } else {
+        for (usize i = 0; i < PG_SIZE; i++) {
+            page_va[i] = 0;
+        }
+    }
+
+    // Build user PTE permissions from VMA flags
+    // AP[1]=1 (EL0 access), AF=1, nG=1, PXN=1, SH=Inner Shareable
+    u64 perms = (1ULL << 10) // AF
+              | (1ULL << 11) // nG
+              | (3ULL << 8)  // SH = Inner Shareable
+              | (1ULL << 53) // PXN
+              | (1ULL << 2)  // AttrIndx=1 (Normal memory)
+              | (1ULL << 6); // AP[1]=1 (EL0 accessible)
+
+    if (!(vma_flags & VMA_WRITE)) {
+        perms |= (1ULL << 7); // AP[2]=1 → read-only
+    }
+    if (!(vma_flags & VMA_EXEC)) {
+        perms |= (1ULL << 54); // UXN
+    }
+
+    PhysAddr pgd_phys = get_current_pgd_phys();
+    auto map_result = mm::PageTableManager::map_user_page(pgd_phys, fault_page, page_pa, perms);
+    if (!map_result) {
+        kill_user_process("map_user_page failed", far_addr, elr);
+    }
+
+    mm::PageTableManager::invalidate_tlb_addr(fault_page);
+    return true;
+}
+
+extern "C" void user_page_fault_handler(
+    unsigned long long esr,
+    unsigned long long far_addr,
+    unsigned long long elr) noexcept {
+    namespace log = moss::kernel::logging;
+    namespace mm  = moss::kernel::mm;
+    using namespace moss::kernel;
+
+    u64 dfsc = esr & 0x3F;
+    bool is_write = ((esr >> 6) & 1) != 0;
+
+    // Translation faults (DFSC 0x04-0x07): attempt demand paging
+    bool is_translation_fault = (dfsc >= 0x04 && dfsc <= 0x07);
+
+    if (is_translation_fault && demand_page_lookup != nullptr
+                             && get_current_pgd_phys != nullptr) {
+        if (try_demand_page(far_addr, is_write, elr)) {
+            return; // Fault resolved — eret retries instruction
+        }
+    }
+
+    // No VMA, not a translation fault, or bridge not registered — fatal
+    u64 ec = (esr >> 26) & 0x3F;
+    log::klog::error("USER PAGE FAULT: addr={:#x} pc={:#x} write={} ec={:#x} ({})",
+                     far_addr, elr, is_write, ec, mm::ec_to_string(ec));
+    log::klog::error("  DFSC: {:#x} ({})", dfsc, mm::dfsc_to_string(dfsc));
+    kill_user_process("no VMA for address", far_addr, elr);
 }
 
 // ============================================================================
