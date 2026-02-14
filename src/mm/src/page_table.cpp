@@ -46,16 +46,38 @@ KernelResult<PageTable *> PageTableManager::allocate_page_table() {
 }
 
 // 创建内核页表映射
+//
+// ARM64 4KB granule page table walk with T0SZ=16 (48-bit VA):
+//   L0 (PGD): bits[47:39], each entry covers 512GB — table descriptors ONLY
+//   L1 (PUD): bits[38:30], each entry covers 1GB   — block or table
+//   L2 (PMD): bits[29:21], each entry covers 2MB   — block or table
+//   L3 (PTE): bits[20:12], each entry covers 4KB   — page descriptors
+//
+// 1GB block descriptors are valid at L1, NOT at L0.
+// We place a table descriptor at PGD[0] → L1 table, then fill L1[0..3]
+// with 1GB block descriptors for the first 4GB identity map.
 VoidResult PageTableManager::setup_kernel_page_tables() {
-  // 1. 分配内核页表根目录
+  // 1. Allocate L0 (PGD) — root of the 4-level page table
   auto pgd_result = PageTableManager::allocate_page_table();
   if (!pgd_result) {
     return VoidResult{pgd_result.error()};
   }
   PageTableManager::kernel_pgd = *pgd_result;
 
-  // Determine RAM region from DTB (PlatformInfo) — no more hardcoded assumptions
-  // about which 1GB block contains RAM.
+  // 2. Allocate L1 (PUD) — one table is enough for 512 × 1GB = 512GB
+  auto pud_result = PageTableManager::allocate_page_table();
+  if (!pud_result) {
+    return VoidResult{pud_result.error()};
+  }
+  PageTable *pud = *pud_result;
+
+  // 3. PGD[0] → table descriptor pointing to the L1 (PUD) table
+  //    With T0SZ=16, PGD index 0 covers VA [0, 512GB), which contains
+  //    our entire 4GB identity map.
+  PhysAddr pud_pa = PageTableManager::get_physical_address(pud);
+  PageTableManager::kernel_pgd->entries[0].set_table(pud_pa);
+
+  // 4. Determine RAM region from DTB (PlatformInfo)
   const auto &plat = moss::fdt::get_platform_info();
   PhysAddr ram_start = (plat.dtb_valid && plat.total_memory_size > 0)
                            ? plat.total_memory_start
@@ -65,9 +87,9 @@ VoidResult PageTableManager::setup_kernel_page_tables() {
                      : moss::kernel::platform::ram_size();
   PhysAddr ram_end = ram_start + ram_size;
 
-  // Map 4 x 1GB blocks covering 0x00000000 - 0xFFFFFFFF
-  // Each block's memory type is determined by whether it overlaps with RAM
-  // (from DTB). Block descriptor format is provided by the MMU HAL.
+  // 5. Fill L1 (PUD) entries [0..3] with 1GB block descriptors
+  //    covering 0x00000000 - 0xFFFFFFFF (4GB identity map).
+  //    1GB block descriptors are architecturally valid at L1.
   constexpr u64 ONE_GB = 0x40000000ULL;
   for (usize i = 0; i < 4; i++) {
     PhysAddr block_addr = static_cast<PhysAddr>(i * ONE_GB);
@@ -80,7 +102,7 @@ VoidResult PageTableManager::setup_kernel_page_tables() {
         ? moss::kernel::hal::mmu::make_normal_block(block_addr)
         : moss::kernel::hal::mmu::make_device_block(block_addr);
 
-    PageTableManager::kernel_pgd->entries[i].raw = block_entry;
+    pud->entries[i].raw = block_entry;
   }
 
   return VoidResult{};
@@ -263,60 +285,46 @@ void PageTableManager::print_pgd_entries() {
   }
 
   log::klog::debug_chain("PGD物理地址: ").hex(get_physical_address(kernel_pgd));
-  log::klog::debug("PGD索引范围: [0-511] (每个索引覆盖1GB地址空间)");
+  log::klog::debug("L0 (PGD): [0-511], each entry covers 512GB");
+  log::klog::debug("L1 (PUD): [0-511], each entry covers 1GB");
 
-  // 遍历PGD的所有条目，但只详细显示有效的条目
-  u32 valid_entries = 0;
+  // Show valid L0 entries and walk into L1 for block details
+  u32 total_blocks = 0;
 
   for (usize i = 0; i < PageTable::ENTRIES_PER_TABLE; i++) {
     const auto &entry = kernel_pgd->entries[i];
+    if (!entry.is_valid()) continue;
 
-    if (entry.is_valid()) {
-      valid_entries++;
+    VirtAddr virt_start = i * (512ULL * 0x40000000ULL); // i * 512GB
 
-      // 计算这个条目覆盖的虚拟地址范围
-      VirtAddr virt_start = i * 0x40000000ULL; // i * 1GB
-      VirtAddr virt_end = virt_start + 0x40000000ULL - 1;
-      PhysAddr phys_addr = entry.get_phys_addr();
+    if (entry.is_table()) {
+      PhysAddr pud_pa = entry.get_phys_addr();
+      log::klog::debug_chain("PGD[").hex(i).str("] = ").hex(entry.raw).str(" -> L1 table @ ").hex(pud_pa);
 
-      log::klog::debug_chain("PGD[").hex(i).str("] = ").hex(entry.raw).str(" (有效)");
-      log::klog::debug_chain("  虚拟地址范围: ").hex(virt_start).str(" - ").hex(virt_end).str(" (1GB)");
-      log::klog::debug_chain("  物理地址:     ").hex(phys_addr);
-      log::klog::debug_chain("  映射类型:     ").str(entry.is_table() ? "页表" : "1GB块");
+      // Walk into L1 (PUD) table
+      auto *pud = reinterpret_cast<const PageTable *>(pud_pa);
+      for (usize j = 0; j < PageTable::ENTRIES_PER_TABLE; j++) {
+        const auto &l1_entry = pud->entries[j];
+        if (!l1_entry.is_valid()) continue;
+        total_blocks++;
 
-      // 解析权限位
-      u64 raw = entry.raw;
-      log::klog::debug_chain("  权限位:").str("");
-      log::klog::debug_chain("    Valid:    ").str((raw & (1ULL << 0)) ? "是" : "否").str(" (bit0)");
-      log::klog::debug_chain("    Table:    ").str((raw & (1ULL << 1)) ? "是" : "否").str(" (bit1)");
-      log::klog::debug_chain("    AttrIndx: ").hex((raw >> 2) & 7).str(" (bits[4:2])");
-      log::klog::debug_chain("    AF:       ").str((raw & (1ULL << 10)) ? "是" : "否").str(" (bit10)");
-      log::klog::debug_chain("    PXN:      ").str((raw & (1ULL << 53)) ? "是" : "否").str(" (bit53)");
-      log::klog::debug_chain("    XN:       ").str((raw & (1ULL << 54)) ? "是" : "否").str(" (bit54)");
+        VirtAddr block_start = virt_start + j * 0x40000000ULL;
+        VirtAddr block_end_va = block_start + 0x40000000ULL - 1;
+        PhysAddr phys_addr = l1_entry.get_phys_addr();
 
-      // 根据AttrIndx解释内存类型
-      u64 attr_idx = (raw >> 2) & 7;
-      const char *mem_type;
-      switch (attr_idx) {
-      case 0:
-        mem_type = "设备内存 (nGnRnE)";
-        break;
-      case 1:
-        mem_type = "普通缓存内存 (WB/WA)";
-        break;
-      case 2:
-        mem_type = "普通非缓存内存";
-        break;
-      default:
-        mem_type = "未知内存类型";
-        break;
+        log::klog::debug_chain("  PUD[").hex(j).str("] = ").hex(l1_entry.raw);
+        log::klog::debug_chain("    VA: ").hex(block_start).str(" - ").hex(block_end_va).str(" -> PA: ").hex(phys_addr).str(l1_entry.is_table() ? " (1GB table)" : " (1GB block)");
+
+        // Memory type from AttrIndx
+        u64 attr_idx = (l1_entry.raw >> 2) & 7;
+        log::klog::debug_chain("    AttrIndx=").hex(attr_idx).str(attr_idx == 0 ? " Device" : attr_idx == 1 ? " Normal" : " NC");
       }
-      log::klog::debug_chain("    内存类型: ").str(mem_type);
+    } else {
+      log::klog::debug_chain("PGD[").hex(i).str("] = ").hex(entry.raw).str(" (block - unexpected at L0!)");
     }
   }
 
-  log::klog::debug_chain("页表统计: 有效条目数: ").hex(valid_entries).str(" / 512");
-  log::klog::debug_chain("  映射覆盖: ").hex(valid_entries).str(" GB");
+  log::klog::debug_chain("Total 1GB blocks mapped: ").hex(total_blocks);
 }
 
 // 调试功能实现：打印页表详细信息
@@ -351,35 +359,20 @@ void PageTableManager::print_page_table_details() {
   // 4. PGD页表项详情
   print_pgd_entries();
 
-  // 5. 地址转换示例（1GB块映射）
-  log::klog::info("=== 地址转换示例 (1GB块映射) ===");
-  VirtAddr test_addrs[] = {0x00000000, 0x12345678, 0x40000000, 0x80000000,
+  // 5. 地址转换示例 (L0→L1 1GB block mapping)
+  log::klog::info("=== 地址转换示例 (L0→L1 1GB block mapping) ===");
+  VirtAddr test_addrs[] = {0x00000000, 0x09000000, 0x40000000, 0x80000000,
                            0xC0000000};
-  const char *addr_names[] = {"0GB起始", "内核代码", "1GB边界", "2GB边界",
-                              "3GB边界"};
+  const char *addr_names[] = {"RAM start", "UART MMIO", "1GB boundary",
+                              "2GB boundary", "3GB boundary"};
 
   for (size_t i = 0; i < 5; i++) {
     VirtAddr vaddr = test_addrs[i];
+    u32 l0_idx = (vaddr >> 39) & 0x1FF;  // PGD index (512GB)
+    u32 l1_idx = (vaddr >> 30) & 0x1FF;  // PUD index (1GB)
+    u32 block_offset = vaddr & 0x3FFFFFFF;
 
-    // 对于1GB块映射，PGD索引是地址的前2位 (vaddr >> 30)
-    u32 pgd_index_1gb = (vaddr >> 30) & 0x3;   // 1GB块映射的PGD索引
-    u32 block_offset_1gb = vaddr & 0x3FFFFFFF; // 1GB块内偏移
-
-    log::klog::debug_chain("虚拟地址 ").hex(vaddr).str(" (").str(addr_names[i]).str("):");
-    log::klog::debug_chain("  PGD索引: ").hex(pgd_index_1gb).str(" (1GB块映射)");
-    log::klog::debug_chain("  块内偏移: ").hex(block_offset_1gb);
-
-    // 检查对应的PGD条目
-    if (kernel_pgd && pgd_index_1gb < PageTable::ENTRIES_PER_TABLE) {
-      const auto &pgd_entry = kernel_pgd->entries[pgd_index_1gb];
-      if (pgd_entry.is_valid()) {
-        PhysAddr phys_base = pgd_entry.get_phys_addr();
-        PhysAddr phys_final = phys_base + block_offset_1gb;
-        log::klog::debug_chain("  -> 物理地址: ").hex(phys_final);
-      } else {
-        log::klog::debug("  -> 未映射");
-      }
-    }
+    log::klog::debug_chain("VA ").hex(vaddr).str(" (").str(addr_names[i]).str("): L0[").hex(l0_idx).str("] L1[").hex(l1_idx).str("] offset=").hex(block_offset);
   }
 
   log::klog::info("========================================");

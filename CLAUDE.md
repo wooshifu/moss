@@ -98,9 +98,28 @@ Detailed explanation (optional):
 
 使用 QEMU 进行测试：
 
+构建完成后，CMake 会根据主机平台在 build 目录下生成对应的 QEMU 运行脚本（QEMU 路径已自动探测注入）：
+
+**Linux / macOS** — `run_qemu.sh`：
 ```bash
 # 构建完成后，wrapper 脚本自动生成（调用 scripts/run_qemu.py）
-./build/preset-name/run_qemu.sh            # 运行内核
-./build/preset-name/run_qemu.sh --test     # 运行单元测试
-./build/preset-name/run_qemu.sh --debug    # GDB 调试
+./build/<preset>/run_qemu.sh              # 运行内核（ELF 模式）
+./build/<preset>/run_qemu.sh --test       # 运行单元测试
+./build/<preset>/run_qemu.sh --debug      # GDB 调试模式
+./build/<preset>/run_qemu.sh --bin        # 使用原始二进制内核
+```
+
+**Windows** — `run_qemu.ps1` / `run_qemu.bat`：
+```powershell
+.\build\<preset>\run_qemu.bat              # 运行内核（ELF 模式）
+.\build\<preset>\run_qemu.bat --test       # 运行单元测试
+.\build\<preset>\run_qemu.bat --debug      # GDB 调试模式
+.\build\<preset>\run_qemu.bat --bin        # 使用原始二进制内核
+```
+
+也可通过 CMake 目标运行：
+```bash
+cmake --build --preset arm64-qemu-debug --target run-qemu
+cmake --build --preset arm64-qemu-debug --target debug
+cmake --build --preset arm64-qemu-debug --target test-kernel
 ```

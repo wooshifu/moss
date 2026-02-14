@@ -52,19 +52,24 @@ class QemuConfig:
     kernel_bin_full: str
     kernel_image: str  # Linux-compatible Image (ARM64 only)
     cpu_cores: int = 4  # 从 CMake MOSS_CPU_CORES 变量读取，默认 4
+    qemu_path: str = ""  # CMake 探测到的 QEMU 可执行文件完整路径
 
     @classmethod
     def from_json(cls, path: Path) -> "QemuConfig":
         data = json.loads(path.read_text())
+        arch = data["arch"]
+        # qemu_path: 优先使用 CMake 探测的完整路径，回退到架构默认命令名
+        qemu_path = data.get("qemu_path", "") or ARCH_CONFIG.get(arch, {}).get("qemu_system", "")
         return cls(
             build_dir=data["build_dir"],
-            arch=data["arch"],
+            arch=arch,
             kernel_elf=data["kernel_elf"],
             test_elf=data["test_elf"],
             kernel_bin=data["kernel_bin"],
             kernel_bin_full=data["kernel_bin_full"],
             kernel_image=data.get("kernel_image", ""),
             cpu_cores=data.get("cpu_cores", 4),
+            qemu_path=qemu_path,
         )
 
 
@@ -132,7 +137,7 @@ def prepare_dtb(cfg: QemuConfig, *, smp: int) -> Path | None:
 
     # 用 QEMU 自身导出当前机器配置的 DTB
     dump_args = [
-        arch_cfg["qemu_system"],
+        cfg.qemu_path,
         "-machine", f"{arch_cfg['machine']},dumpdtb={dtb_path}",
         "-cpu", arch_cfg["cpu"],
         "-smp", str(smp),
@@ -186,7 +191,7 @@ def build_qemu_args(
     # -device loader 产生 "drive with bus=0, unit=0 exists" 冲突。
     # 因此需要手动通过 -chardev + -serial 建立串口输出。
     args = [
-        arch_cfg["qemu_system"],
+        cfg.qemu_path,
         "-nodefaults",
         "-nographic",
         "-chardev", "stdio,id=char0",
@@ -357,8 +362,7 @@ def main(
         test_mode=test_mode,
     )
 
-    qemu_cmd = ARCH_CONFIG[cfg.arch]["qemu_system"]
-    rprint(f"\n启动 {qemu_cmd}...")
+    rprint(f"\n启动 {cfg.qemu_path}...")
 
     # 启动 QEMU
     result = subprocess.run(qemu_args, check=False)

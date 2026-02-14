@@ -190,7 +190,7 @@ const char *get_kernel_version(void) noexcept {
 }
 
 const char *get_build_info(void) noexcept {
-  return "Clang-21 C++26 - Release Build";
+  return "clang C++26 - Release Build";
 }
 
 // Kernel memory statistics
