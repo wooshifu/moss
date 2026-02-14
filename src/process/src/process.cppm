@@ -185,21 +185,45 @@ inline constexpr u32 EXEC        = 1u << 2;
 inline constexpr u32 DEMAND_ZERO = 1u << 3;  // allocate zero page on first access
 } // namespace VmaFlags
 
-// Virtual Memory Area (VMA)
+// VMA region types (what is this VMA for?)
+enum class VmaType : u32 {
+  CODE  = 0,
+  DATA  = 1,
+  BSS   = 2,
+  STACK = 3,
+  HEAP  = 4,
+};
+
+// Virtual Memory Area (VMA) — describes a contiguous region in a process's
+// virtual address space.  Backing data (if any) comes from an ELF segment
+// held in kernel memory; pages without backing are demand-zeroed.
 struct VmaRegion {
   moss::kernel::VirtAddr start_addr;
   moss::kernel::VirtAddr end_addr;
   moss::kernel::u32 flags;
-  moss::kernel::PhysAddr phys_addr;
+  VmaType type;
+
+  // Lazy backing: ELF segment data source (nullptr = demand-zero only)
+  const moss::kernel::u8* backing_data;    // pointer to ELF data in kernel memory
+  moss::kernel::usize backing_offset;      // offset into backing_data for this VMA
+  moss::kernel::usize backing_size;        // valid backing data length (rest is zero)
 
   VmaRegion(moss::kernel::VirtAddr start, moss::kernel::VirtAddr end,
             moss::kernel::u32 region_flags,
-            moss::kernel::PhysAddr phys = 0) noexcept
-      : start_addr(start), end_addr(end), flags(region_flags), phys_addr(phys) {
+            VmaType vma_type = VmaType::DATA,
+            const moss::kernel::u8* backing = nullptr,
+            moss::kernel::usize b_offset = 0,
+            moss::kernel::usize b_size = 0) noexcept
+      : start_addr(start), end_addr(end), flags(region_flags), type(vma_type),
+        backing_data(backing), backing_offset(b_offset), backing_size(b_size) {
   }
 
   [[nodiscard]] bool is_demand_zero() const noexcept {
     return (flags & VmaFlags::DEMAND_ZERO) != 0;
+  }
+
+  [[nodiscard]] bool has_backing() const noexcept {
+    return backing_data != nullptr && backing_size > 0;
   }
 
   [[nodiscard]] bool contains(VirtAddr addr) const noexcept {
@@ -207,10 +231,10 @@ struct VmaRegion {
   }
 };
 
-// Virtual memory address space
+// Virtual memory address space — per-process PGD + VMA list
 struct AddressSpace {
-  PhysAddr pgd_phys;
-  u16 asid;
+  PhysAddr pgd_phys;       // physical address of the L0 (PGD) page table
+  u16 asid;                // Address Space ID (0 = kernel, 1-255 = user)
 
   containers::RcuList<struct VmaRegion> vma_list;
 
@@ -219,6 +243,31 @@ struct AddressSpace {
 
   AddressSpace(PhysAddr pgd, u16 asid_val) noexcept
       : pgd_phys(pgd), asid(asid_val), total_pages(0), resident_pages(0) {}
+
+  // Add a VMA region (returns false if overlapping with existing)
+  bool add_vma(VirtAddr start, VirtAddr end, u32 flags,
+               VmaType type = VmaType::DATA,
+               const u8* backing = nullptr,
+               usize b_offset = 0, usize b_size = 0) noexcept {
+    // Overlap check
+    bool overlap = false;
+    vma_list.for_each([&](const VmaRegion& vma) {
+      if (start < vma.end_addr && end > vma.start_addr) {
+        overlap = true;
+      }
+    });
+    if (overlap) return false;
+
+    vma_list.push_front(start, end, flags, type, backing, b_offset, b_size);
+    return true;
+  }
+
+  // Find the VMA containing the given address (const pointer, nullptr if none)
+  [[nodiscard]] const VmaRegion* find_vma(VirtAddr addr) const noexcept {
+    return vma_list.find_if([addr](const VmaRegion& vma) {
+      return vma.contains(addr);
+    });
+  }
 };
 
 // CFS scheduling entity
