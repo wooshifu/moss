@@ -41,6 +41,17 @@ constexpr VirtAddr KERNEL_BASE = 0xFFFF800000000000ULL;
 constexpr VirtAddr USER_BASE = 0x0000000000000000ULL;
 constexpr VirtAddr USER_MAX = 0x0000800000000000ULL;
 
+// Direct-map: physical RAM is mapped at KERNEL_BASE + phys_addr (post-trampoline)
+constexpr VirtAddr KERNEL_DIRECT_MAP_BASE = KERNEL_BASE;  // 0xFFFF800000000000
+constexpr PhysAddr PHYS_BASE = 0x40000000ULL;             // QEMU virt RAM start
+
+// Address translation: physical ↔ virtual (valid only after boot trampoline)
+inline VirtAddr phys_to_virt(PhysAddr pa) noexcept { return pa + KERNEL_DIRECT_MAP_BASE; }
+inline PhysAddr virt_to_phys(VirtAddr va) noexcept { return va - KERNEL_DIRECT_MAP_BASE; }
+
+// Check if an address is in the high-half kernel region
+inline bool is_kernel_addr(VirtAddr va) noexcept { return va >= KERNEL_BASE; }
+
 // Hardware constants
 constexpr usize CACHE_LINE_SIZE = 64;
 constexpr usize MAX_CPUS = 8;
