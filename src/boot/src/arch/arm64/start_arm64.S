@@ -320,24 +320,27 @@ halt:
     wfi                          // 等待中断
     b       halt
 
-// 异常向量表 - 简单实现，稍后扩展
+// 异常向量表
+// Each vector entry is 128 bytes (2^7 aligned).
+// IRQ vectors route to irq_trampoline which saves context, calls C handler,
+// restores context, and returns via eret.
 .align 11
 exception_vectors:
     // Current EL with SP0
     .align 7
     b       exception_handler    // Synchronous
     .align 7
-    b       exception_handler    // IRQ
+    b       irq_trampoline       // IRQ
     .align 7
     b       exception_handler    // FIQ
     .align 7
     b       exception_handler    // SError
 
-    // Current EL with SPx
+    // Current EL with SPx (kernel running mode)
     .align 7
     b       exception_handler    // Synchronous
     .align 7
-    b       exception_handler    // IRQ
+    b       irq_trampoline       // IRQ
     .align 7
     b       exception_handler    // FIQ
     .align 7
@@ -347,7 +350,7 @@ exception_vectors:
     .align 7
     b       syscall_entry_point  // Synchronous (SVC from user space)
     .align 7
-    b       exception_handler    // IRQ
+    b       irq_trampoline       // IRQ
     .align 7
     b       exception_handler    // FIQ
     .align 7
@@ -357,11 +360,70 @@ exception_vectors:
     .align 7
     b       exception_handler    // Synchronous
     .align 7
-    b       exception_handler    // IRQ
+    b       irq_trampoline       // IRQ
     .align 7
     b       exception_handler    // FIQ
     .align 7
     b       exception_handler    // SError
+
+// ============================================================================
+// IRQ trampoline: save caller-saved registers, call C handler, restore, eret
+// ============================================================================
+irq_trampoline:
+    // Save general-purpose registers (all caller-saved + some callee-saved
+    // needed for safe return). Save ELR_EL1 and SPSR_EL1 for nested handling.
+    sub     sp, sp, #(34 * 8)    // 34 slots: x0-x30, ELR, SPSR, pad
+
+    stp     x0,  x1,  [sp, #(0  * 8)]
+    stp     x2,  x3,  [sp, #(2  * 8)]
+    stp     x4,  x5,  [sp, #(4  * 8)]
+    stp     x6,  x7,  [sp, #(6  * 8)]
+    stp     x8,  x9,  [sp, #(8  * 8)]
+    stp     x10, x11, [sp, #(10 * 8)]
+    stp     x12, x13, [sp, #(12 * 8)]
+    stp     x14, x15, [sp, #(14 * 8)]
+    stp     x16, x17, [sp, #(16 * 8)]
+    stp     x18, x19, [sp, #(18 * 8)]
+    stp     x20, x21, [sp, #(20 * 8)]
+    stp     x22, x23, [sp, #(22 * 8)]
+    stp     x24, x25, [sp, #(24 * 8)]
+    stp     x26, x27, [sp, #(26 * 8)]
+    stp     x28, x29, [sp, #(28 * 8)]
+    str     x30,       [sp, #(30 * 8)]
+
+    mrs     x0, elr_el1
+    mrs     x1, spsr_el1
+    stp     x0,  x1,  [sp, #(31 * 8)]
+
+    // Call C interrupt handler
+    bl      irq_handler_c
+
+    // Restore ELR_EL1 and SPSR_EL1
+    ldp     x0,  x1,  [sp, #(31 * 8)]
+    msr     elr_el1, x0
+    msr     spsr_el1, x1
+
+    // Restore general-purpose registers
+    ldp     x0,  x1,  [sp, #(0  * 8)]
+    ldp     x2,  x3,  [sp, #(2  * 8)]
+    ldp     x4,  x5,  [sp, #(4  * 8)]
+    ldp     x6,  x7,  [sp, #(6  * 8)]
+    ldp     x8,  x9,  [sp, #(8  * 8)]
+    ldp     x10, x11, [sp, #(10 * 8)]
+    ldp     x12, x13, [sp, #(12 * 8)]
+    ldp     x14, x15, [sp, #(14 * 8)]
+    ldp     x16, x17, [sp, #(16 * 8)]
+    ldp     x18, x19, [sp, #(18 * 8)]
+    ldp     x20, x21, [sp, #(20 * 8)]
+    ldp     x22, x23, [sp, #(22 * 8)]
+    ldp     x24, x25, [sp, #(24 * 8)]
+    ldp     x26, x27, [sp, #(26 * 8)]
+    ldp     x28, x29, [sp, #(28 * 8)]
+    ldr     x30,       [sp, #(30 * 8)]
+
+    add     sp, sp, #(34 * 8)
+
+    eret
 
 exception_handler:
     // 简单的异常处理器 - 目前只是停机
@@ -373,3 +435,4 @@ exception_handler:
 
 // 引用外部符号
 .extern syscall_entry_point
+.extern irq_handler_c

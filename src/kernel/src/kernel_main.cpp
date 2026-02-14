@@ -17,6 +17,9 @@ const char *get_build_info(void) noexcept;
 long system_call_handler(long syscall_number, long arg0, long arg1,
                          long arg2, long arg3, long arg4, long arg5) noexcept;
 
+// IRQ handler called from assembly irq_trampoline (start_arm64.S)
+void irq_handler_c(void) noexcept;
+
 // Forward declaration for boot module globals
 // (These are defined in boot module but accessed here via extern)
 }
@@ -258,6 +261,33 @@ KernelMemoryInfo get_kernel_memory_info(void) noexcept {
           .kernel_heap_used = 16 * 1024 * 1024, // 16MB 估算
           .user_heap_used = 0,
           .page_faults = 0};
+}
+
+// IRQ handler called from assembly irq_trampoline.
+// Delegates to GIC's handle_interrupt() which dispatches to registered handlers.
+static u64 irq_count = 0;
+
+void irq_handler_c(void) noexcept {
+  irq_count++;
+
+  namespace intc_hal = ::moss::kernel::hal::intc;
+  namespace timer_hal = ::moss::kernel::hal::timer;
+
+  // GIC ack
+  u64 gicc_base = ::moss::kernel::platform::intc_cpu_base();
+  u32 ack_val = intc_hal::ack_irq(gicc_base);
+  u32 irq = intc_hal::irq_from_ack(ack_val);
+
+  if (intc_hal::is_spurious(irq)) {
+    return;
+  }
+
+  // Timer handling: ack hardware, dispatch expired callbacks, reprogram
+  timer_hal::ack_interrupt();
+  ::moss::kernel::timer::TimerSubsystem::instance().handle_interrupt();
+
+  // GIC EOI
+  intc_hal::eoi(gicc_base, ack_val);
 }
 
 } // extern "C"
