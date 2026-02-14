@@ -1113,9 +1113,7 @@ private:
 
     log::klog::info("creating init user process (PID=1, TID=1000)");
 
-    // Step 1: Register PID=1 in the ProcessManager so sys_exit can find it.
-    // create_process() allocates a PID (will be 1, the first allocated) and
-    // inserts the Process into the processes_ hash map.
+    // Step 1: Create process
     if (!process_manager_) {
       log::klog::error("process manager not initialized");
       return VoidResult{ErrorCode::InvalidState};
@@ -1129,41 +1127,103 @@ private:
     ProcessId init_pid = init_proc->pid();
     log::klog::info("init process registered: PID={}", init_pid);
 
-    // Step 2: Manually create Thread.  We do NOT use Process::create_thread()
-    // because it requires address_space_ to be set (kernel init process uses
-    // identity mapping, not a private address space).
+    // Step 2: Create real AddressSpace with buddy-allocated PGD
+    auto as_result = user_space::create_user_address_space();
+    if (!as_result) {
+      log::klog::error("failed to create address space for init process");
+      return VoidResult{as_result.error()};
+    }
+    auto as = moss::move(*as_result);
+
+    // Step 3: Register VMA regions for demand paging
+    // Code VMA: ELF program embedded in kernel at _user_program_start
+    const auto* elf_data = reinterpret_cast<const u8*>(_user_program_start);
+    usize elf_size = static_cast<usize>(
+        reinterpret_cast<VirtAddr>(_user_program_end) -
+        reinterpret_cast<VirtAddr>(_user_program_start));
+
+    // Parse ELF to get entry point and register PT_LOAD segments as VMAs
+    const auto* header = reinterpret_cast<const elf::ElfHeader*>(elf_data);
+    VirtAddr entry_point = header->e_entry;
+
+    const auto* phdrs = reinterpret_cast<const elf::ProgramHeader*>(
+        elf_data + header->e_phoff);
+    for (u16 i = 0; i < header->e_phnum; ++i) {
+      const auto& phdr = phdrs[i];
+      if (phdr.p_type != elf::PT_LOAD) continue;
+
+      u32 vma_flags = VmaFlags::READ;
+      VmaType vma_type = VmaType::DATA;
+      if (phdr.p_flags & elf::PF_W) vma_flags |= VmaFlags::WRITE;
+      if (phdr.p_flags & elf::PF_X) {
+        vma_flags |= VmaFlags::EXEC;
+        vma_type = VmaType::CODE;
+      }
+
+      VirtAddr seg_start = phdr.p_vaddr & ~(static_cast<VirtAddr>(PAGE_SIZE) - 1);
+      VirtAddr seg_end = (phdr.p_vaddr + phdr.p_memsz + PAGE_SIZE - 1) & ~(static_cast<VirtAddr>(PAGE_SIZE) - 1);
+
+      as->add_vma(seg_start, seg_end, vma_flags, vma_type,
+                  elf_data + phdr.p_offset,   // backing_data
+                  0,                           // backing_offset (data starts at beginning)
+                  static_cast<usize>(phdr.p_filesz));  // backing_size
+      log::klog::info("  VMA: {:#x}-{:#x} flags={:#x} backing={} bytes",
+                      seg_start, seg_end, vma_flags, phdr.p_filesz);
+    }
+
+    // Stack VMA: 8 pages (32KB) at user stack area, demand-zero
+    constexpr VirtAddr USER_STACK_TOP = 0x00007FFF00000000ULL;
+    constexpr usize USER_STACK_SIZE = 32 * 1024;  // 32KB
+    constexpr VirtAddr USER_STACK_BOTTOM = USER_STACK_TOP - USER_STACK_SIZE;
+    as->add_vma(USER_STACK_BOTTOM, USER_STACK_TOP,
+                VmaFlags::READ | VmaFlags::WRITE | VmaFlags::DEMAND_ZERO,
+                VmaType::STACK);
+    log::klog::info("  VMA stack: {:#x}-{:#x}", USER_STACK_BOTTOM, USER_STACK_TOP);
+
+    // Heap VMA: small initial region, demand-zero
+    constexpr VirtAddr USER_HEAP_START = 0x0000000100000000ULL;
+    constexpr usize USER_HEAP_INIT_SIZE = 64 * 1024;
+    as->add_vma(USER_HEAP_START, USER_HEAP_START + USER_HEAP_INIT_SIZE,
+                VmaFlags::READ | VmaFlags::WRITE | VmaFlags::DEMAND_ZERO,
+                VmaType::HEAP);
+
+    // Bind AddressSpace to process
+    auto set_result = init_proc->set_address_space(moss::move(as));
+    if (!set_result) {
+      log::klog::error("failed to set address space on process");
+      return VoidResult{set_result.error()};
+    }
+
+    // Step 4: Create thread with user-space entry point
     auto *init_thread = new Thread(1000, init_pid);
     if (!init_thread) {
       return VoidResult{ErrorCode::OutOfMemory};
     }
 
-    // Step 3: Configure the user-mode context
-    alignas(16) static char user_stack[16384];
-    init_thread->stack_base = reinterpret_cast<VirtAddr>(user_stack);
-    init_thread->stack_size = sizeof(user_stack);
-    init_thread->context.pc = reinterpret_cast<u64>(_user_program_start);
-    init_thread->context.sp = reinterpret_cast<u64>(
-        user_stack + sizeof(user_stack) - 16);
+    // User context: entry point and stack pointer are user-space VAs
+    // (demand-paged on first access)
+    init_thread->stack_base = USER_STACK_BOTTOM;
+    init_thread->stack_size = USER_STACK_SIZE;
+    init_thread->context.pc = entry_point;
+    init_thread->context.sp = USER_STACK_TOP - 16;  // 16-byte aligned
     init_thread->context.pstate = 0x00000000;  // EL0t
 
     init_thread->sched_class = SchedClass::Normal;
-    init_thread->se.nice = -5;  // Higher priority than test tasks
+    init_thread->se.nice = -5;
     init_thread->se.weight = CfsParams::nice_to_weight(-5);
-    // vruntime=1 (not 0) to bypass enqueue_task's calc_initial_vruntime()
-    // override which replaces vruntime=0 with 100 for tid<1001.
     init_thread->se.vruntime = 1;
     init_thread->state = ProcessState::Ready;
 
-    // Mark process as running
     init_proc->set_state(ProcessState::Running);
 
-    // Step 4: Enqueue into scheduler on CPU 0
+    // Step 5: Enqueue into scheduler
     scheduler_->enqueue_task(init_thread, 0);
 
-    log::klog::info("init process TID=1000 created: entry={:#x} stack={:#x}+{}",
-                    reinterpret_cast<u64>(_user_program_start),
-                    reinterpret_cast<u64>(user_stack),
-                    sizeof(user_stack));
+    log::klog::info("init process TID=1000: entry={:#x} stack={:#x}-{:#x} pgd={:#x} asid={}",
+                    entry_point, USER_STACK_BOTTOM, USER_STACK_TOP,
+                    init_proc->address_space()->pgd_phys,
+                    init_proc->address_space()->asid);
+    (void)elf_size;
 #else
     log::klog::info("user process creation not yet supported on this architecture");
 #endif
