@@ -734,6 +734,14 @@ void update_boot_stage(BootStage stage, ::moss::kernel::ErrorCode error) noexcep
 }
 
 ::moss::kernel::VoidResult moss::boot::ARM64BootImpl::finalize_arch_init(BootContext & /* ctx */) noexcept {
+    early_print("=== ARM64 Architecture Init Complete ===\n");
+
+    // Mark runtime heap as ready so operator new uses RuntimeHeapAllocator
+    // instead of the 64KB early static buffer
+    mark_runtime_heap_ready();
+    early_print("Runtime heap marked ready\n");
+
+    early_print("ARM64 architecture-specific init all complete\n\n");
     return ::moss::kernel::VoidResult{};
 }
 

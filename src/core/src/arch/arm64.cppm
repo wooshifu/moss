@@ -62,13 +62,37 @@ inline void flush_tlb_addr(VirtAddr addr) noexcept {
 }
 
 // Debug and panic
-[[noreturn]] inline void kernel_panic(const char * /*message*/) noexcept {
+[[noreturn]] inline void kernel_panic(const char *message) noexcept {
   // Disable interrupts
   asm volatile("msr daifset, #0xf" ::: "memory");
 
-  // Halt with breakpoint for debugger
+  // Output panic message to UART (PL011 at 0x09000000)
+  volatile u32 *uart_data = reinterpret_cast<volatile u32 *>(0x09000000);
+  volatile u32 *uart_flags = reinterpret_cast<volatile u32 *>(0x09000018);
+
+  const char *prefix = "\r\nKERNEL PANIC: ";
+  while (*prefix) {
+    while (*uart_flags & (1u << 5)) {}
+    *uart_data = static_cast<u32>(static_cast<unsigned char>(*prefix++));
+  }
+  if (message) {
+    while (*message) {
+      while (*uart_flags & (1u << 5)) {}
+      if (*message == '\n') {
+        *uart_data = static_cast<u32>('\r');
+        while (*uart_flags & (1u << 5)) {}
+      }
+      *uart_data = static_cast<u32>(static_cast<unsigned char>(*message++));
+    }
+  }
+  const char *suffix = "\r\n";
+  while (*suffix) {
+    while (*uart_flags & (1u << 5)) {}
+    *uart_data = static_cast<u32>(static_cast<unsigned char>(*suffix++));
+  }
+
+  // Halt
   while (true) {
-    asm volatile("brk #0");
     asm volatile("wfi");
   }
 }

@@ -55,7 +55,6 @@ mm::PageTableManager *g_page_table_manager = nullptr;
 // 注意：进程管理和IPC系统的全局实例
 // 在各自的模块文件中定义（process.cpp, runtime_support.cpp等）
 
-interrupts::GenericInterruptController *g_gic = nullptr;
 drivers::DeviceManager *g_device_manager = nullptr;
 
 } // namespace moss::kernel
@@ -124,7 +123,7 @@ extern "C" {
   }
 
   // 验证中断系统状态
-  if (g_gic) {
+  if (interrupts::g_gic) {
     early_debug_print("✅ 中断处理系统: GIC已初始化并就绪\n");
   } else {
     early_debug_print("⚠️ 中断处理系统: GIC未初始化\n");

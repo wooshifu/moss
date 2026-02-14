@@ -661,29 +661,18 @@ private:
 
   static constexpr usize MAX_NODES = 1024;
   RbNode<Thread> node_pool_[MAX_NODES];
-  containers::AtomicCounter<usize> next_node_index_;
+  usize next_fresh_index_;      // Next unused slot in node_pool_
+  RbNode<Thread> *free_list_;   // Singly-linked free list (reuses `left` ptr)
 
 public:
   constexpr CfsRunqueue() noexcept
       : rb_root_(nullptr), rb_leftmost_(nullptr), nr_running_(0),
         min_vruntime_(0), total_weight_(0), load_sum_(0), util_sum_(0),
-        load_avg_(0), util_avg_(0), next_node_index_(0) {}
+        load_avg_(0), util_avg_(0), next_fresh_index_(0), free_list_(nullptr) {}
 
   void enqueue_task(Thread *thread) noexcept {
     if (thread == nullptr)
       return;
-
-    static u64 enqueue_count = 0;
-    enqueue_count++;
-    if (enqueue_count % 1000000 == 0 || (thread->tid >= 1001 && enqueue_count % 50000 == 0)) {
-      sched_log("enqueue_task: TID=");
-      sched_log_uint(static_cast<u32>(thread->tid));
-      sched_log(" vruntime=");
-      sched_log_u64(thread->se.vruntime);
-      sched_log(" queue_size=");
-      sched_log_uint(nr_running_);
-      sched_log("\n");
-    }
 
     if (thread->se.vruntime == 0 && thread->tid < 1001) {
       thread->se.vruntime = calc_initial_vruntime();
@@ -1186,13 +1175,19 @@ private:
   }
 
   [[nodiscard]] RbNode<Thread> *allocate_node(Thread *thread) noexcept {
-    usize index =
-        next_node_index_.fetch_add(1, containers::MemoryOrder::Relaxed);
-    if (index >= MAX_NODES) {
-      return nullptr;
+    RbNode<Thread> *node = nullptr;
+
+    // First try the free list (recycled nodes)
+    if (free_list_ != nullptr) {
+      node = free_list_;
+      free_list_ = free_list_->left; // left used as next pointer
+    } else if (next_fresh_index_ < MAX_NODES) {
+      // Fall back to fresh pool allocation
+      node = &node_pool_[next_fresh_index_++];
+    } else {
+      return nullptr; // Pool exhausted
     }
 
-    RbNode<Thread> *node = &node_pool_[index];
     node->data = thread;
     node->left = nullptr;
     node->right = nullptr;
@@ -1203,13 +1198,15 @@ private:
   }
 
   void deallocate_node(RbNode<Thread> *node) noexcept {
-    if (node != nullptr) {
-      node->data = nullptr;
-      node->left = nullptr;
-      node->right = nullptr;
-      node->parent = nullptr;
-      node->red = true;
-    }
+    if (node == nullptr) return;
+
+    // Return node to free list for reuse
+    node->data = nullptr;
+    node->right = nullptr;
+    node->parent = nullptr;
+    node->red = false;
+    node->left = free_list_; // Use left as next pointer
+    free_list_ = node;
   }
 
   template <typename T>
@@ -1616,9 +1613,6 @@ public:
 
       test_threads[i] = new Thread(tid, 1);
       if (test_threads[i] == nullptr) {
-        sched_log("failed to create test task TID=");
-        sched_log_uint(tid);
-        sched_log("\n");
         failed_tasks++;
         continue;
       }
@@ -1639,12 +1633,6 @@ public:
 
       u32 target_cpu = i % 4;
       enqueue_task(test_threads[i], target_cpu);
-
-      sched_log("task assigned: TID=");
-      sched_log_uint(tid);
-      sched_log(" -> CPU");
-      sched_log_uint(target_cpu);
-      sched_log("\n");
 
       sched_log("created test task TID=");
       sched_log_uint(tid);
