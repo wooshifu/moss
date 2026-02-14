@@ -556,14 +556,27 @@ private:
     alignas(PAGE_SIZE) static inline PageTable early_tables[MAX_EARLY_TABLES];
     static inline usize next_table_index = 0;
     static inline PageTable* kernel_pgd = nullptr;
+    static inline PageTable* kernel_high_pgd = nullptr;  // TTBR1 high-half PGD
+    static inline bool use_dynamic_alloc = false;         // Switch to buddy-backed alloc
 
 public:
     [[nodiscard]] static KernelResult<PageTable*> allocate_page_table();
+
+    // Dynamically allocate a page table from buddy allocator (post-boot only)
+    [[nodiscard]] static KernelResult<PageTable*> allocate_page_table_dynamic();
+
     [[nodiscard]] static PhysAddr get_physical_address(const PageTable* table) {
-        return reinterpret_cast<PhysAddr>(table);
+        auto va = reinterpret_cast<VirtAddr>(table);
+        if (is_kernel_addr(va)) {
+            return virt_to_phys(va);
+        }
+        return static_cast<PhysAddr>(va);  // identity-mapped (early boot)
     }
     [[nodiscard]] static PageTable* get_table_from_physical(PhysAddr pa) {
-        return reinterpret_cast<PageTable*>(pa);
+        if (use_dynamic_alloc) {
+            return reinterpret_cast<PageTable*>(phys_to_virt(pa));
+        }
+        return reinterpret_cast<PageTable*>(pa);  // identity-mapped (early boot)
     }
     [[nodiscard]] static usize get_table_index(const PageTable* table) {
         if (!table || table < early_tables || table >= early_tables + MAX_EARLY_TABLES) {
@@ -582,6 +595,17 @@ public:
                                              u64 permissions);
     [[nodiscard]] static VoidResult enable_mmu();
     [[nodiscard]] static PageTable* get_kernel_pgd() { return kernel_pgd; }
+    [[nodiscard]] static PageTable* get_kernel_high_pgd() { return kernel_high_pgd; }
+    static void enable_dynamic_alloc() { use_dynamic_alloc = true; }
+    [[nodiscard]] static bool is_dynamic_alloc() { return use_dynamic_alloc; }
+
+    // Build TTBR1 kernel page table: map physical RAM at KERNEL_DIRECT_MAP_BASE
+    [[nodiscard]] static VoidResult setup_kernel_high_half_tables();
+
+    // Map a 4KB page into a user process page table (operates on user PGD, not kernel PGD)
+    [[nodiscard]] static VoidResult map_user_page(PhysAddr pgd_phys, VirtAddr va,
+                                                   PhysAddr pa, u64 perms);
+
     static void invalidate_tlb() {
         moss::kernel::arch::flush_tlb();
     }
