@@ -92,6 +92,41 @@ def resolve_kernel_file(
     return path, "ELF 可执行文件"
 
 
+def prepare_dtb(cfg: QemuConfig, *, smp: int) -> Path | None:
+    """为 ARM64/RISC-V 生成 DTB 文件，供 -device loader 加载。
+
+    QEMU -kernel 模式对裸 ELF 不通过寄存器传递 DTB 地址，
+    需要先 dumpdtb 再手动加载到已知内存地址。
+    """
+    if cfg.arch not in ("ARM64", "RISCV"):
+        return None
+
+    arch_cfg = ARCH_CONFIG[cfg.arch]
+    dtb_path = Path(cfg.build_dir) / "qemu_virt.dtb"
+
+    # 用 QEMU 自身导出当前机器配置的 DTB
+    dump_args = [
+        arch_cfg["qemu_system"],
+        "-machine", f"{arch_cfg['machine']},dumpdtb={dtb_path}",
+        "-cpu", arch_cfg["cpu"],
+        "-smp", str(smp),
+        "-m", "256M",
+        "-nographic",
+    ]
+    subprocess.run(dump_args, check=True, capture_output=True)
+
+    if dtb_path.exists():
+        return dtb_path
+    return None
+
+
+# DTB 加载地址：必须在内核代码之后、RAM 范围之内
+DTB_LOAD_ADDR = {
+    "ARM64": "0x48000000",  # 内核从 0x40000000 起，DTB 放 +128MB 处
+    "RISCV": "0x84000000",  # 内核从 0x80000000 起，DTB 放 +64MB 处
+}
+
+
 def build_qemu_args(
     cfg: QemuConfig,
     kernel_file: Path,
@@ -117,17 +152,26 @@ def build_qemu_args(
 
     args = [
         arch_cfg["qemu_system"],
+        "-nodefaults",
+        "-nographic",
+        "-chardev", "stdio,id=char0",
+        "-serial", "chardev:char0",
         "-machine", arch_cfg["machine"],
         "-cpu", arch_cfg["cpu"],
         "-smp", str(smp),
         "-m", "256M",
         *kernel_args,
-        "-nographic",
-        "-serial", "stdio",
-        "-monitor", "none",
         "-no-reboot",
         *arch_cfg["extra_args"],
     ]
+
+    # 为 ARM64/RISC-V 自动生成并加载 DTB
+    dtb_path = prepare_dtb(cfg, smp=smp)
+    if dtb_path and cfg.arch in DTB_LOAD_ADDR:
+        args += [
+            "-device",
+            f"loader,file={dtb_path},addr={DTB_LOAD_ADDR[cfg.arch]},force-raw=on",
+        ]
 
     if debug_mode:
         args += ["-s", "-S"]

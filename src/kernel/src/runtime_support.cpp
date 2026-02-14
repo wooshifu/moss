@@ -67,6 +67,79 @@ int memcmp(const void *s1, const void *s2, size_t n) noexcept {
   return 0;
 }
 
+// C 字符串操作函数
+// libfdt 等 C 库需要这些函数，在 freestanding 环境中手动提供
+
+size_t strlen(const char *s) noexcept {
+  const char *p = s;
+  while (*p) {
+    ++p;
+  }
+  return static_cast<size_t>(p - s);
+}
+
+size_t strnlen(const char *s, size_t maxlen) noexcept {
+  size_t i = 0;
+  while (i < maxlen && s[i]) {
+    ++i;
+  }
+  return i;
+}
+
+int strcmp(const char *s1, const char *s2) noexcept {
+  while (*s1 && (*s1 == *s2)) {
+    s1++;
+    s2++;
+  }
+  return static_cast<int>(static_cast<unsigned char>(*s1) -
+                          static_cast<unsigned char>(*s2));
+}
+
+int strncmp(const char *s1, const char *s2, size_t n) noexcept {
+  for (size_t i = 0; i < n; i++) {
+    if (s1[i] != s2[i] || s1[i] == '\0') {
+      return static_cast<int>(static_cast<unsigned char>(s1[i]) -
+                              static_cast<unsigned char>(s2[i]));
+    }
+  }
+  return 0;
+}
+
+char *strchr(const char *s, int c) noexcept {
+  while (*s) {
+    if (*s == static_cast<char>(c)) {
+      return const_cast<char *>(s);
+    }
+    s++;
+  }
+  return (c == '\0') ? const_cast<char *>(s) : nullptr;
+}
+
+char *strrchr(const char *s, int c) noexcept {
+  const char *last = nullptr;
+  while (*s) {
+    if (*s == static_cast<char>(c)) {
+      last = s;
+    }
+    s++;
+  }
+  if (c == '\0') {
+    return const_cast<char *>(s);
+  }
+  return const_cast<char *>(last);
+}
+
+void *memchr(const void *s, int c, size_t n) noexcept {
+  const unsigned char *p = static_cast<const unsigned char *>(s);
+  unsigned char value = static_cast<unsigned char>(c);
+  for (size_t i = 0; i < n; i++) {
+    if (p[i] == value) {
+      return const_cast<void *>(static_cast<const void *>(&p[i]));
+    }
+  }
+  return nullptr;
+}
+
 // 系统调用处理器（临时实现）
 void syscall_handler() noexcept {
   // 目前只是一个占位符实现

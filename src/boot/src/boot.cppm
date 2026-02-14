@@ -33,6 +33,7 @@ export module moss.boot;
 import moss.std;
 import moss.types;
 import moss.result;
+import moss.fdt;
 import moss.mm;
 import moss.interrupts;
 import moss.process;
