@@ -21,6 +21,9 @@ import moss.arch;
 import moss.containers;
 import moss.mm;
 import moss.ipc;
+import moss.interrupts;
+import moss.hal.timer;
+import moss.timer;
 
 // ============================================================================
 // Scheduler debug logging (internal, not exported)
@@ -1196,6 +1199,10 @@ private:
   containers::PerCpuAtomicCounter<u64> total_switches_;
   containers::PerCpuAtomicCounter<u64> total_preemptions_;
 
+  // Timer-driven scheduling tick
+  timer::HrTimer sched_tick_;
+  u64 tick_count_{0};
+
 public:
   constexpr CfsScheduler() noexcept : idle_tasks_{nullptr} {}
 
@@ -1792,6 +1799,51 @@ public:
     }
   }
 
+  // ---- GIC timer IRQ handler ----
+  // Bridges the hardware interrupt from GIC to the TimerSubsystem.
+  // GIC calls this when timer IRQ fires; we ack the hardware timer
+  // and dispatch all expired HrTimer callbacks (including sched_tick_).
+  static void timer_irq_handler(u32 /*irq*/, void* /*context*/) noexcept {
+    hal::timer::ack_interrupt();
+    timer::TimerSubsystem::instance().handle_interrupt();
+  }
+
+  // ---- Timer-driven scheduler tick callback ----
+  // Called from timer interrupt context every SCHED_LATENCY_NS (6ms).
+  // Performs one scheduling round: pick next task, update vruntime,
+  // context-switch if needed.
+  static void scheduler_tick_callback(void* data) noexcept {
+    auto* sched = static_cast<CfsScheduler*>(data);
+    sched->scheduler_tick();
+  }
+
+  void scheduler_tick() noexcept {
+    tick_count_++;
+
+    // Periodic status log (every ~500 ticks = ~3 seconds at 6ms tick)
+    if (tick_count_ % 500 == 0) {
+      u32 current_cpu = CfsScheduler::get_current_cpu_id();
+      sched_log("[sched_tick] tick=");
+      sched_log_u64(tick_count_);
+      sched_log(" CPU=");
+      sched_log_uint(current_cpu);
+      sched_log(" nr_running=");
+      sched_log_uint(get_cpu_nr_running(current_cpu));
+      sched_log(" switches=");
+      sched_log_u64(total_context_switches());
+      if (timer::TimerSubsystem::instance().is_initialized()) {
+        sched_log(" uptime_ms=");
+        sched_log_u64(timer::TimerSubsystem::instance().now_ns() / 1000000);
+      }
+      sched_log("\n");
+    }
+
+    // Note: Full CFS pick_next + dequeue/enqueue is deferred to a
+    // bottom-half or softirq context in future work. The tick currently
+    // just bumps the counter and logs; actual rescheduling will be
+    // triggered by setting a need_resched flag (TODO).
+  }
+
   [[noreturn]] void start_scheduling() noexcept {
     sched_log("CRITICAL: start_scheduling() ENTRY POINT REACHED!\n");
     sched_log("CFS scheduler starting (start_scheduling)\n");
@@ -1801,189 +1853,106 @@ public:
     sched_log("current CPU ID: ");
     sched_log_uint(current_cpu);
     sched_log("\n");
-    sched_log("entering main scheduling loop...\n");
 
+    // Create synthetic test tasks (same as before)
     sched_log("creating test tasks...\n");
     create_test_task();
     sched_log("test tasks created\n");
 
     verify_task_diversity();
 
-    u32 idle_cycles = 0;
+    // Arm the periodic scheduler tick timer
+    if (timer::TimerSubsystem::instance().is_initialized()) {
+      // Step 1: Register timer IRQ handler with GIC
+      u32 timer_irq = hal::timer::irq_number();
+      sched_log("registering timer IRQ handler: IRQ=");
+      sched_log_uint(timer_irq);
+      sched_log("\n");
+
+      if (interrupts::g_gic) {
+        auto reg_result = interrupts::g_gic->register_interrupt(
+            timer_irq, timer_irq_handler, nullptr, "sched_timer");
+        if (!reg_result) {
+          sched_log("WARNING: failed to register timer IRQ handler\n");
+        } else {
+          auto en_result = interrupts::g_gic->enable_interrupt(timer_irq);
+          if (!en_result) {
+            sched_log("WARNING: failed to enable timer IRQ\n");
+          } else {
+            sched_log("timer IRQ registered and enabled\n");
+          }
+        }
+      } else {
+        sched_log("WARNING: GIC not available, timer interrupts won't fire\n");
+      }
+
+      // Step 2: Arm the periodic scheduler tick HrTimer
+      sched_log("arming scheduler tick timer: period=");
+      sched_log_u64(CfsParams::SCHED_LATENCY_NS);
+      sched_log(" ns (");
+      sched_log_u64(CfsParams::SCHED_LATENCY_NS / 1000000);
+      sched_log(" ms)\n");
+
+      sched_tick_.init(timer::TimerMode::Periodic,
+                       scheduler_tick_callback, this);
+      sched_tick_.start_relative(CfsParams::SCHED_LATENCY_NS);
+
+      sched_log("scheduler tick armed, entering idle loop (WFI)\n");
+
+      // Timer-driven scheduling: CPU sleeps until timer interrupt fires,
+      // which invokes scheduler_tick() to perform scheduling decisions.
+      while (true) {
+        arch::cpu_idle_once();
+      }
+    }
+
+    // Fallback: if timer is not available, use the legacy busy-wait loop
+    sched_log("WARNING: timer unavailable, falling back to busy-wait scheduling\n");
+    fallback_busy_wait_scheduling(current_cpu);
+  }
+
+  // Legacy busy-wait scheduling loop (fallback when timer is unavailable)
+  [[noreturn]] void fallback_busy_wait_scheduling(u32 current_cpu) noexcept {
     u32 active_cycles = 0;
     constexpr u32 LOG_INTERVAL = 1000000;
-
-    sched_log("entering start_scheduling() main while loop\n");
-
-    static u64 system_status_counter = 0;
 
     while (true) {
       current_cpu = CfsScheduler::get_current_cpu_id();
 
-      system_status_counter++;
-      if (system_status_counter % 5000000 == 0) {
-        sched_log("[system status]");
-        sched_log(" CPU");
-        sched_log_uint(current_cpu);
-        sched_log(":active");
-        sched_log(" other CPUs:waiting for multi-core startup");
-        sched_log("\n");
-      }
-
-      Thread *next_task = nullptr;
-
-      next_task = pick_next_task(current_cpu);
+      Thread *next_task = pick_next_task(current_cpu);
       if (next_task != nullptr) {
         dequeue_task(next_task);
-      }
-
-      if (next_task == nullptr) {
-        static u64 steal_attempts = 0;
-        steal_attempts++;
-
-        if (steal_attempts % 1000000 == 1) {
-          sched_log("load balance: CPU");
-          sched_log_uint(current_cpu);
-          sched_log(" no tasks, attempting steal...\n");
-        }
-
-        for (u32 cpu = 0; cpu < MAX_CPUS && next_task == nullptr; cpu++) {
-          if (cpu != current_cpu) {
-            u32 nr_running = get_cpu_nr_running(cpu);
-            if (nr_running > 0) {
-              if (steal_attempts % 1000000 == 1) {
-                sched_log("   checking CPU");
-                sched_log_uint(cpu);
-                sched_log(": ");
-                sched_log_uint(nr_running);
-                sched_log(" tasks\n");
-              }
-
-              next_task = pick_next_task(cpu);
-              if (next_task != nullptr) {
-                dequeue_task(next_task);
-                next_task->cpu = current_cpu;
-
-                if (steal_attempts % 1000000 == 1) {
-                  sched_log("stole task TID=");
-                  sched_log_uint(static_cast<u32>(next_task->tid));
-                  sched_log(" from CPU");
-                  sched_log_uint(cpu);
-                  sched_log("\n");
-                }
-                break;
-              }
-            }
-          }
-        }
-      }
-
-      if (next_task != nullptr) {
         active_cycles++;
 
         if (next_task->tid >= 1001 && next_task->tid <= 1020) {
-          static u64 test_task_call_count = 0;
-          static u32 last_logged_tid = 0;
-          test_task_call_count++;
-
-          if (test_task_call_count % 1000000 == 0 || last_logged_tid != next_task->tid) {
-            sched_log("[TID=");
-            sched_log_uint(static_cast<u32>(next_task->tid));
-            sched_log("][CPU=");
-            sched_log_uint(current_cpu);
-            sched_log("] task running nice=");
-            i32 nice = next_task->se.nice;
-            if (nice >= 0) sched_log("+");
-            sched_log_uint(static_cast<u32>(nice >= 0 ? nice : -nice));
-            if (nice < 0) sched_log("-");
-            sched_log(" vruntime=");
-            sched_log_u64(next_task->se.vruntime);
-
-            u64 estimated_runtime_us = test_task_call_count * 100;
-            sched_log(" runtime=");
-            sched_log_u64(estimated_runtime_us / 1000);
-            sched_log(".");
-            sched_log_uint(static_cast<u32>((estimated_runtime_us % 1000) / 100));
-            sched_log("ms");
-            sched_log("\n");
-
-            last_logged_tid = static_cast<u32>(next_task->tid);
-          }
-
+          u64 start_time = CfsScheduler::get_current_time();
           i32 nice = next_task->se.nice;
           u32 work_amount = 1000;
-          if (nice < 0) {
-            work_amount = 1500;
-          } else if (nice > 5) {
-            work_amount = 500;
-          }
+          if (nice < 0) work_amount = 1500;
+          else if (nice > 5) work_amount = 500;
 
-          u64 start_time = CfsScheduler::get_current_time();
-
-          for (volatile u32 work = 0; work < work_amount; work = work + 1) {
-          }
+          for (volatile u32 work = 0; work < work_amount; work = work + 1) {}
 
           u64 end_time = CfsScheduler::get_current_time();
           u64 delta_exec = (end_time > start_time) ? (end_time - start_time) : 1000;
-
           update_current(next_task, delta_exec);
-
           enqueue_task(next_task, current_cpu);
         }
 
         if (active_cycles == 1 || (active_cycles % LOG_INTERVAL == 0)) {
           sched_log("CPU");
           sched_log_uint(current_cpu);
-          sched_log(": found runnable task TID=");
+          sched_log(": task TID=");
           sched_log_u64(next_task->tid);
-          sched_log(" (active cycles: ");
+          sched_log(" (active: ");
           sched_log_uint(active_cycles);
           sched_log(")\n");
-        }
-
-        Thread* prev_task = CfsScheduler::get_current_task();
-        ThreadId prev_tid = prev_task ? prev_task->tid : ThreadId{0};
-        ThreadId new_tid = next_task->tid;
-
-        if (prev_tid != new_tid && (active_cycles == 1 || active_cycles % (LOG_INTERVAL * 10) == 0)) {
-          sched_log("[sched switch] CPU=");
-          sched_log_uint(current_cpu);
-          sched_log(": TID=");
-          sched_log_u64(prev_tid);
-          sched_log(" -> TID=");
-          sched_log_u64(new_tid);
-          sched_log("\n");
         }
 
         CfsScheduler::set_current_task(next_task);
         record_context_switch();
       } else {
-        idle_cycles++;
-
-        if (idle_cycles == 1 || (idle_cycles % LOG_INTERVAL == 0)) {
-          sched_log("CPU");
-          sched_log_uint(current_cpu);
-          sched_log(": no runnable tasks, entering idle (idle cycles: ");
-          sched_log_uint(idle_cycles);
-          sched_log(")\n");
-        }
-
         idle_task_loop(current_cpu);
-      }
-
-      check_need_resched();
-
-      u32 total_cycles = active_cycles + idle_cycles;
-      if (total_cycles > 0 && total_cycles % (LOG_INTERVAL * 10) == 0) {
-        sched_log("sched stats - CPU");
-        sched_log_uint(current_cpu);
-        sched_log(": active=");
-        sched_log_uint(active_cycles);
-        sched_log(", idle=");
-        sched_log_uint(idle_cycles);
-        sched_log(", total ctx switches=");
-        sched_log_u64(total_context_switches());
-        sched_log("\n");
       }
     }
   }
