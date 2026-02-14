@@ -141,7 +141,25 @@ void mark_runtime_heap_ready() noexcept {
 }
 
 // C++ operator new/delete 实现
-// 直接提供链接器需要的符号
+//
+// 这里直接使用 Itanium C++ ABI 定义的 mangled 符号名（如 _Znwm），
+// 而非标准的 `void* operator new(size_t)` 语法，原因如下：
+//
+// 1. Freestanding 环境无标准库头文件
+//    标准 operator new/delete 语法要求 #include <new> 提供声明，
+//    但内核是 freestanding 环境，没有任何标准库头文件可用。
+//
+// 2. C++ Modules 的链接可见性问题
+//    本文件处于 `module moss.kernel` 内，模块中定义的符号默认具有
+//    module linkage，不会导出为全局符号。而 operator new/delete 必须
+//    全局可见，因为编译器在任意翻译单元遇到 new/delete 表达式时都要
+//    链接到它们。通过 extern "C" 直接提供 mangled 名称，可绕过模块
+//    链接的限制，确保符号全局可见。
+//
+// 3. 链接器符号零歧义
+//    直接提供 ABI 规定的 mangled 名称（如 _Znwm = operator new(unsigned long)），
+//    编译器生成的所有 new/delete 调用都能被链接器正确解析，
+//    不依赖头文件声明或编译器的 overload resolution。
 void *_Znwm(size_t size) {
   // operator new(unsigned long) 的修饰符号
   void *ptr = kernel_malloc(size);
