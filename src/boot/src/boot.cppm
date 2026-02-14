@@ -3,23 +3,8 @@
 
 module;
 
-// Architecture detection macros (global module fragment)
-#ifndef MOSS_ARCH_ARM64
-#ifndef MOSS_ARCH_X86_64
-#ifndef MOSS_ARCH_RISCV
-#if defined(__x86_64__) || defined(__x86_64) || defined(__amd64__) ||           \
-    defined(__amd64) || defined(_M_X64)
-#define MOSS_ARCH_X86_64
-#elif defined(__aarch64__) || defined(_M_ARM64)
-#define MOSS_ARCH_ARM64
-#elif defined(__riscv) && __riscv_xlen == 64
-#define MOSS_ARCH_RISCV
-#else
-#define MOSS_ARCH_X86_64
-#endif
-#endif
-#endif
-#endif
+// Architecture detection
+#include "arch_detect.h"
 
 // extern "C" declarations for assembly-callable functions (global module fragment)
 extern "C" {
@@ -34,6 +19,7 @@ import moss.std;
 import moss.types;
 import moss.result;
 import moss.fdt;
+import moss.platform;
 import moss.mm;
 import moss.interrupts;
 import moss.process;
@@ -196,24 +182,10 @@ constexpr ArchInfo get_current_arch_info() noexcept {
 
 /// Architecture-specific constants
 namespace arch_constants {
-#if defined(__aarch64__) || defined(MOSS_ARCH_ARM64)
 constexpr u32 PAGE_SIZE = 4096;
 constexpr u32 CACHE_LINE_SIZE = 64;
 constexpr u32 STACK_ALIGNMENT = 16;
-constexpr VirtAddr KERNEL_VIRT_BASE = 0xFFFF000000000000ULL;
-
-#elif defined(__x86_64__) || defined(__x86_64) || defined(MOSS_ARCH_X86_64)
-constexpr u32 PAGE_SIZE = 4096;
-constexpr u32 CACHE_LINE_SIZE = 64;
-constexpr u32 STACK_ALIGNMENT = 16;
-constexpr VirtAddr KERNEL_VIRT_BASE = 0xFFFF800000000000ULL;
-
-#elif defined(__riscv) || defined(__riscv__) || defined(MOSS_ARCH_RISCV)
-constexpr u32 PAGE_SIZE = 4096;
-constexpr u32 CACHE_LINE_SIZE = 64;
-constexpr u32 STACK_ALIGNMENT = 16;
-constexpr VirtAddr KERNEL_VIRT_BASE = 0xFFFFFFFF80000000ULL;
-#endif
+constexpr VirtAddr KERNEL_VIRT_BASE = ::moss::kernel::platform::kernel_virt_base();
 } // namespace arch_constants
 
 } // namespace moss::boot

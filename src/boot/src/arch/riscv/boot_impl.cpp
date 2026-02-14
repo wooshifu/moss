@@ -53,7 +53,7 @@ BootStatus g_boot_status = {
 // Early UART output (RISC-V specific)
 class EarlyUart {
 private:
-    static constexpr VirtAddr UART_BASE = 0x10000000;
+    static constexpr VirtAddr UART_BASE = moss::kernel::platform::uart_base();
     static constexpr u32 UART_REG_TXDATA = 0x00;
 
     volatile u32 *const uart_base;
@@ -165,16 +165,16 @@ void update_boot_stage(BootStage stage, ::moss::kernel::ErrorCode error) noexcep
             ctx.kernel_phys_base = info.total_memory_start;
             ctx.total_cpus = info.cpu_count;
         } else {
-            moss::boot::early_print("DTB parse failed, using hardcoded defaults\n");
-            ctx.memory_start = 0x80000000;
-            ctx.memory_size = 128 * 1024 * 1024;
-            ctx.kernel_phys_base = 0x80000000;
+            moss::boot::early_print("DTB parse failed, using platform defaults\n");
+            ctx.memory_start = moss::kernel::platform::ram_base();
+            ctx.memory_size = moss::kernel::platform::ram_size();
+            ctx.kernel_phys_base = moss::kernel::platform::ram_base();
         }
     } else {
-        moss::boot::early_print("No DTB pointer, using hardcoded defaults\n");
-        ctx.memory_start = 0x80000000;
-        ctx.memory_size = 128 * 1024 * 1024;
-        ctx.kernel_phys_base = 0x80000000;
+        moss::boot::early_print("No DTB pointer, using platform defaults\n");
+        ctx.memory_start = moss::kernel::platform::ram_base();
+        ctx.memory_size = moss::kernel::platform::ram_size();
+        ctx.kernel_phys_base = moss::kernel::platform::ram_base();
     }
 
     ctx.kernel_virt_base = moss::boot::arch_constants::KERNEL_VIRT_BASE;

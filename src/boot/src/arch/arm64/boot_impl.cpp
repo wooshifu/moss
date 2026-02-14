@@ -5,10 +5,8 @@
 
 module;
 
-// Architecture detection (global module fragment)
-#ifndef MOSS_ARCH_ARM64
-#define MOSS_ARCH_ARM64
-#endif
+// Architecture detection
+#include "arch_detect.h"
 
 // PSCI constants (must be in global module fragment as macros)
 #define PSCI_CPU_ON_64 0xC4000003
@@ -295,7 +293,7 @@ bool wait_for_cpu_state(u32 cpu_id, CpuState expected_state, u32 timeout_ms) noe
 
 // Secondary CPU entry point
 extern "C" [[noreturn]] void secondary_cpu_entry() noexcept {
-    volatile u32 *uart_base = reinterpret_cast<volatile u32 *>(0x09000000);
+    volatile u32 *uart_base = reinterpret_cast<volatile u32 *>(moss::kernel::platform::uart_base());
     uart_base[0] = 'S';
     uart_base[0] = 'E';
     uart_base[0] = 'C';
@@ -440,7 +438,7 @@ BootStatus g_boot_status = {
 // Early UART output
 class EarlyUart {
 private:
-    static constexpr VirtAddr UART_BASE = 0x09000000;
+    static constexpr VirtAddr UART_BASE = moss::kernel::platform::uart_base();
     static constexpr u32 UART_DR = 0x000;
     static constexpr u32 UART_FR = 0x018;
     static constexpr u32 UART_FR_TXFF = (1 << 5);
@@ -548,16 +546,16 @@ void update_boot_stage(BootStage stage, ::moss::kernel::ErrorCode error) noexcep
             ctx.kernel_phys_base = info.total_memory_start;
             ctx.total_cpus = info.cpu_count;
         } else {
-            early_print("DTB parse failed, using hardcoded defaults\n");
-            ctx.memory_start = 0x40000000;
-            ctx.memory_size = 1024 * 1024 * 1024;
-            ctx.kernel_phys_base = 0x40000000;
+            early_print("DTB parse failed, using platform defaults\n");
+            ctx.memory_start = moss::kernel::platform::ram_base();
+            ctx.memory_size = moss::kernel::platform::ram_size();
+            ctx.kernel_phys_base = moss::kernel::platform::ram_base();
         }
     } else {
-        early_print("No DTB pointer, using hardcoded defaults\n");
-        ctx.memory_start = 0x40000000;
-        ctx.memory_size = 1024 * 1024 * 1024;
-        ctx.kernel_phys_base = 0x40000000;
+        early_print("No DTB pointer, using platform defaults\n");
+        ctx.memory_start = moss::kernel::platform::ram_base();
+        ctx.memory_size = moss::kernel::platform::ram_size();
+        ctx.kernel_phys_base = moss::kernel::platform::ram_base();
     }
 
     ctx.kernel_virt_base = moss::boot::arch_constants::KERNEL_VIRT_BASE;
@@ -616,11 +614,11 @@ void update_boot_stage(BootStage stage, ::moss::kernel::ErrorCode error) noexcep
         moss::kernel::VirtAddr gic_dist_base =
             (plat.dtb_valid && plat.intc.valid)
                 ? static_cast<moss::kernel::VirtAddr>(plat.intc.dist_base)
-                : 0x08000000;
+                : moss::kernel::platform::intc_dist_base();
         moss::kernel::VirtAddr gic_cpu_base =
             (plat.dtb_valid && plat.intc.valid)
                 ? static_cast<moss::kernel::VirtAddr>(plat.intc.cpu_base)
-                : 0x08010000;
+                : moss::kernel::platform::intc_cpu_base();
 
         early_print("GIC GICD=");
         early_print_hex(gic_dist_base);

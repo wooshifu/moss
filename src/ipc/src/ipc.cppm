@@ -693,17 +693,7 @@ private:
   }
 
   [[nodiscard]] static u64 get_current_time_ns() noexcept {
-    u64 count;
-#if defined(MOSS_ARCH_ARM64)
-    asm volatile("mrs %0, cntvct_el0" : "=r"(count));
-#elif defined(MOSS_ARCH_X86_64)
-    asm volatile("rdtsc" : "=A"(count));
-#elif defined(MOSS_ARCH_RISCV)
-    asm volatile("rdcycle %0" : "=r"(count));
-#else
-    count = 0;
-#endif
-    return count;
+    return arch::get_timestamp_counter();
   }
 
   void cleanup() noexcept {
@@ -1021,17 +1011,7 @@ private:
   }
 
   [[nodiscard]] static u64 get_current_time() noexcept {
-    u64 count;
-#if defined(MOSS_ARCH_ARM64)
-    asm volatile("mrs %0, cntvct_el0" : "=r"(count));
-#elif defined(MOSS_ARCH_X86_64)
-    asm volatile("rdtsc" : "=A"(count));
-#elif defined(MOSS_ARCH_RISCV)
-    asm volatile("rdcycle %0" : "=r"(count));
-#else
-    count = 0;
-#endif
-    return count;
+    return arch::get_timestamp_counter();
   }
 
   void cleanup() noexcept {

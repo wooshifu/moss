@@ -184,12 +184,12 @@ void update_boot_stage(BootStage stage, ::moss::kernel::ErrorCode error) noexcep
         info.dtb_valid = false;
         info.cpu_count = 1; // TODO: 可通过 CPUID 扩展检测
         info.memory_regions[0] = {
-            static_cast<PhysAddr>(0x00100000),
-            128 * 1024 * 1024
+            moss::kernel::platform::ram_base(),
+            moss::kernel::platform::ram_size()
         };
         info.memory_region_count = 1;
-        info.total_memory_start = 0x00100000;
-        info.total_memory_size = 128 * 1024 * 1024;
+        info.total_memory_start = moss::kernel::platform::ram_base();
+        info.total_memory_size = moss::kernel::platform::ram_size();
 
         ctx.memory_start = info.total_memory_start;
         ctx.memory_size = info.total_memory_size;
