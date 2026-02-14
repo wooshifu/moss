@@ -120,9 +120,9 @@ VoidResult PageTableManager::map_user_page(PhysAddr pgd_phys, VirtAddr va,
   auto *pgd = get_table_from_physical(pgd_phys);
   auto bd = break_virtual_address(va);
 
-  // PGD -> PUD
+  // PGD -> PUD (use dynamic allocator for user page tables)
   if (!pgd->entries[bd.pgd_index].is_valid()) {
-    auto result = allocate_page_table();
+    auto result = allocate_page_table_dynamic();
     if (!result) return VoidResult{ErrorCode::OutOfMemory};
     pgd->entries[bd.pgd_index].set_table(get_physical_address(*result));
   }
@@ -130,7 +130,7 @@ VoidResult PageTableManager::map_user_page(PhysAddr pgd_phys, VirtAddr va,
 
   // PUD -> PMD
   if (!pud->entries[bd.pud_index].is_valid()) {
-    auto result = allocate_page_table();
+    auto result = allocate_page_table_dynamic();
     if (!result) return VoidResult{ErrorCode::OutOfMemory};
     pud->entries[bd.pud_index].set_table(get_physical_address(*result));
   }
@@ -138,14 +138,14 @@ VoidResult PageTableManager::map_user_page(PhysAddr pgd_phys, VirtAddr va,
 
   // PMD -> PTE table
   if (!pmd->entries[bd.pmd_index].is_valid()) {
-    auto result = allocate_page_table();
+    auto result = allocate_page_table_dynamic();
     if (!result) return VoidResult{ErrorCode::OutOfMemory};
     pmd->entries[bd.pmd_index].set_table(get_physical_address(*result));
   }
   auto *pte = get_table_from_physical(pmd->entries[bd.pmd_index].get_phys_addr());
 
-  // Set the final 4KB page entry
-  pte->entries[bd.pte_index].set_block(pa, perms);
+  // Set the final 4KB page entry (L3 uses page descriptor: bits[1:0]=0b11)
+  pte->entries[bd.pte_index].set_page(pa, perms);
   return VoidResult{};
 }
 

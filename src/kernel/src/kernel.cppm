@@ -1136,40 +1136,27 @@ private:
     auto as = moss::move(*as_result);
 
     // Step 3: Register VMA regions for demand paging
-    // Code VMA: ELF program embedded in kernel at _user_program_start
-    const auto* elf_data = reinterpret_cast<const u8*>(_user_program_start);
-    usize elf_size = static_cast<usize>(
+    //
+    // The embedded user program is raw machine code (not ELF).
+    // We place it at a fixed user virtual address and register as a code VMA
+    // with backing data pointing to the kernel-resident copy.
+    constexpr VirtAddr USER_CODE_BASE = 0x0000000200000000ULL;  // 8GB — above kernel identity map
+    const auto* raw_code = reinterpret_cast<const u8*>(_user_program_start);
+    usize code_size = static_cast<usize>(
         reinterpret_cast<VirtAddr>(_user_program_end) -
         reinterpret_cast<VirtAddr>(_user_program_start));
 
-    // Parse ELF to get entry point and register PT_LOAD segments as VMAs
-    const auto* header = reinterpret_cast<const elf::ElfHeader*>(elf_data);
-    VirtAddr entry_point = header->e_entry;
+    // Code VMA: readable + executable, backed by the embedded raw program
+    VirtAddr code_end = (USER_CODE_BASE + code_size + PAGE_SIZE - 1)
+                        & ~(static_cast<VirtAddr>(PAGE_SIZE) - 1);
+    as->add_vma(USER_CODE_BASE, code_end,
+                VmaFlags::READ | VmaFlags::EXEC,
+                VmaType::CODE,
+                raw_code, 0, code_size);
+    log::klog::info("  VMA code: {:#x}-{:#x} backing={} bytes",
+                    USER_CODE_BASE, code_end, code_size);
 
-    const auto* phdrs = reinterpret_cast<const elf::ProgramHeader*>(
-        elf_data + header->e_phoff);
-    for (u16 i = 0; i < header->e_phnum; ++i) {
-      const auto& phdr = phdrs[i];
-      if (phdr.p_type != elf::PT_LOAD) continue;
-
-      u32 vma_flags = VmaFlags::READ;
-      VmaType vma_type = VmaType::DATA;
-      if (phdr.p_flags & elf::PF_W) vma_flags |= VmaFlags::WRITE;
-      if (phdr.p_flags & elf::PF_X) {
-        vma_flags |= VmaFlags::EXEC;
-        vma_type = VmaType::CODE;
-      }
-
-      VirtAddr seg_start = phdr.p_vaddr & ~(static_cast<VirtAddr>(PAGE_SIZE) - 1);
-      VirtAddr seg_end = (phdr.p_vaddr + phdr.p_memsz + PAGE_SIZE - 1) & ~(static_cast<VirtAddr>(PAGE_SIZE) - 1);
-
-      as->add_vma(seg_start, seg_end, vma_flags, vma_type,
-                  elf_data + phdr.p_offset,   // backing_data
-                  0,                           // backing_offset (data starts at beginning)
-                  static_cast<usize>(phdr.p_filesz));  // backing_size
-      log::klog::info("  VMA: {:#x}-{:#x} flags={:#x} backing={} bytes",
-                      seg_start, seg_end, vma_flags, phdr.p_filesz);
-    }
+    VirtAddr entry_point = USER_CODE_BASE;  // entry = start of raw code
 
     // Stack VMA: 8 pages (32KB) at user stack area, demand-zero
     constexpr VirtAddr USER_STACK_TOP = 0x00007FFF00000000ULL;
@@ -1223,7 +1210,7 @@ private:
                     entry_point, USER_STACK_BOTTOM, USER_STACK_TOP,
                     init_proc->address_space()->pgd_phys,
                     init_proc->address_space()->asid);
-    (void)elf_size;
+    (void)code_size;
 #else
     log::klog::info("user process creation not yet supported on this architecture");
 #endif

@@ -295,7 +295,7 @@ void irq_handler_c(void) noexcept {
 
 // ============================================================================
 // Bridge functions for demand paging
-// These are called from page_fault.cpp (mm module) via weak extern "C" linkage,
+// These are called from page_fault.cpp (mm module) via extern "C" linkage,
 // bridging the mm ↔ process module boundary without circular imports.
 // ============================================================================
 

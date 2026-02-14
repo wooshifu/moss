@@ -208,6 +208,10 @@ struct VmaRegion {
   moss::kernel::usize backing_offset;      // offset into backing_data for this VMA
   moss::kernel::usize backing_size;        // valid backing data length (rest is zero)
 
+  VmaRegion() noexcept
+      : start_addr(0), end_addr(0), flags(0), type(VmaType::DATA),
+        backing_data(nullptr), backing_offset(0), backing_size(0) {}
+
   VmaRegion(moss::kernel::VirtAddr start, moss::kernel::VirtAddr end,
             moss::kernel::u32 region_flags,
             VmaType vma_type = VmaType::DATA,
@@ -233,40 +237,48 @@ struct VmaRegion {
 
 // Virtual memory address space — per-process PGD + VMA list
 struct AddressSpace {
+  static constexpr usize MAX_VMAS = 16;  // sufficient for MVP
+
   PhysAddr pgd_phys;       // physical address of the L0 (PGD) page table
   u16 asid;                // Address Space ID (0 = kernel, 1-255 = user)
 
-  containers::RcuList<struct VmaRegion> vma_list;
+  VmaRegion vmas[MAX_VMAS];
+  u32 vma_count;
 
   containers::AtomicSize total_pages;
   containers::AtomicSize resident_pages;
 
   AddressSpace(PhysAddr pgd, u16 asid_val) noexcept
-      : pgd_phys(pgd), asid(asid_val), total_pages(0), resident_pages(0) {}
+      : pgd_phys(pgd), asid(asid_val), vmas{}, vma_count(0),
+        total_pages(0), resident_pages(0) {}
 
-  // Add a VMA region (returns false if overlapping with existing)
+  // Add a VMA region (returns false if overlapping with existing or full)
   bool add_vma(VirtAddr start, VirtAddr end, u32 flags,
                VmaType type = VmaType::DATA,
                const u8* backing = nullptr,
                usize b_offset = 0, usize b_size = 0) noexcept {
-    // Overlap check
-    bool overlap = false;
-    vma_list.for_each([&](const VmaRegion& vma) {
-      if (start < vma.end_addr && end > vma.start_addr) {
-        overlap = true;
-      }
-    });
-    if (overlap) return false;
+    if (vma_count >= MAX_VMAS) return false;
 
-    vma_list.push_front(start, end, flags, type, backing, b_offset, b_size);
+    // Overlap check
+    for (u32 i = 0; i < vma_count; i++) {
+      if (start < vmas[i].end_addr && end > vmas[i].start_addr) {
+        return false;
+      }
+    }
+
+    vmas[vma_count] = VmaRegion(start, end, flags, type, backing, b_offset, b_size);
+    vma_count++;
     return true;
   }
 
   // Find the VMA containing the given address (const pointer, nullptr if none)
   [[nodiscard]] const VmaRegion* find_vma(VirtAddr addr) const noexcept {
-    return vma_list.find_if([addr](const VmaRegion& vma) {
-      return vma.contains(addr);
-    });
+    for (u32 i = 0; i < vma_count; i++) {
+      if (vmas[i].contains(addr)) {
+        return &vmas[i];
+      }
+    }
+    return nullptr;
   }
 };
 
@@ -1794,7 +1806,7 @@ public:
         }
 
         if (init_task != nullptr) {
-          log::klog::info("initial dispatch: TID=1000 -> switch_to_user");
+          log::klog::debug("initial dispatch: TID=1000 -> switch_to_user");
           context_switch_to_task(init_task);
           // switch_to_user does eret and never returns for user tasks.
           // If we somehow get here (shouldn't), re-enqueue.
@@ -1883,10 +1895,18 @@ private:
       if (proc && proc->address_space() && proc->address_space()->pgd_phys != 0) {
         u64 ttbr0_val = proc->address_space()->pgd_phys
                       | (static_cast<u64>(proc->address_space()->asid) << 48);
+        log::klog::debug("TTBR0 switch: pgd={:#x} asid={} ttbr0_val={:#x}",
+                         proc->address_space()->pgd_phys, proc->address_space()->asid, ttbr0_val);
         asm volatile("msr ttbr0_el1, %0" :: "r"(ttbr0_val));
         asm volatile("isb" ::: "memory");
+      } else {
+        log::klog::error("TTBR0 switch FAILED: proc={} as={} pgd={}",
+                         proc != nullptr, proc ? (proc->address_space() != nullptr) : false,
+                         proc && proc->address_space() ? proc->address_space()->pgd_phys : 0ULL);
       }
 #endif
+      log::klog::debug("switch_to_user: pc={:#x} sp={:#x}",
+                       task->context.pc, task->stack_base + task->stack_size - 16);
       switch_to_user(&task->context, task->stack_base + task->stack_size - 16);
     } else {
 #if defined(MOSS_ARCH_ARM64)

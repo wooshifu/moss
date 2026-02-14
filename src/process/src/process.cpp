@@ -283,10 +283,23 @@ KernelResult<unique_ptr<AddressSpace>> create_user_address_space() noexcept {
     // get_physical_address works on the high-half virtual pointer
     PhysAddr pgd_phys = mm::PageTableManager::get_physical_address(*pgd_result);
 
-    // 2. Allocate ASID
+    // 2. Copy kernel PGD entries into user PGD so that kernel code
+    //    (which still runs at identity-mapped low addresses) remains
+    //    accessible after we switch TTBR0 to this user PGD.
+    //    This is the standard technique used by Linux (pre-KPTI):
+    //    user page tables carry the kernel mappings in their upper half.
+    //    Here, the kernel identity map lives in PGD[0] (covers 0-512GB).
+    auto* kernel_pgd = mm::PageTableManager::get_kernel_pgd();
+    auto* user_pgd   = *pgd_result;
+    if (kernel_pgd && user_pgd) {
+        // Copy PGD[0] — the low-address identity mapping (4x1GB blocks)
+        user_pgd->entries[0] = kernel_pgd->entries[0];
+    }
+
+    // 3. Allocate ASID
     u16 asid = allocate_asid();
 
-    // 3. Create AddressSpace object
+    // 4. Create AddressSpace object
     auto address_space = make_unique<AddressSpace>(pgd_phys, asid);
     if (!address_space) {
         return KernelResult<unique_ptr<AddressSpace>>{ErrorCode::OutOfMemory};
