@@ -1,14 +1,30 @@
 // MOSS进程管理器实现
 // 支持用户地址空间管理和ELF程序加载
 
-#include "process/process.hpp"
-#include "process/cfs_scheduler.hpp"
-#include "mm/kernel_memory.hpp"
-#include "mm/page_table.hpp"
-#include "kernel/elf_loader.hpp"
+module;
 
-// 用于调试输出
+// Architecture detection (global module fragment)
+#ifndef MOSS_ARCH_ARM64
+#ifndef MOSS_ARCH_X86_64
+#ifndef MOSS_ARCH_RISCV
+#if defined(__x86_64__) || defined(__x86_64) || defined(__amd64__) ||           \
+    defined(__amd64) || defined(_M_X64)
+#define MOSS_ARCH_X86_64
+#elif defined(__aarch64__) || defined(_M_ARM64)
+#define MOSS_ARCH_ARM64
+#elif defined(__riscv) && __riscv_xlen == 64
+#define MOSS_ARCH_RISCV
+#else
+#define MOSS_ARCH_X86_64
+#endif
+#endif
+#endif
+#endif
+
+// extern "C" declarations in global module fragment
 extern "C" void early_debug_print(const char* message) noexcept;
+
+module moss.process;
 
 // 获取当前时间的辅助函数
 static u64 get_current_time() noexcept {
@@ -276,73 +292,14 @@ KernelResult<unique_ptr<AddressSpace>> create_user_address_space() noexcept {
 }
 
 // 从ELF程序加载创建进程
-KernelResult<Process*> create_process_from_elf(const u8* elf_data, usize elf_size) noexcept {
-    early_debug_print("🚀 从ELF数据创建进程...\n");
-
-    if (!g_process_manager) {
-        return KernelResult<Process*>{ErrorCode::InternalError};
-    }
-
-    // 1. 使用ELF加载器加载程序
-    auto load_result = elf::ElfLoader::load_elf_from_memory(elf_data, elf_size);
-    if (!load_result) {
-        early_debug_print("❌ ELF程序加载失败\n");
-        return KernelResult<Process*>{load_result.error()};
-    }
-
-    const auto& loaded_program = *load_result;
-    early_debug_print("✅ ELF程序加载成功\n");
-
-    // 2. 创建进程
-    auto process_result = g_process_manager->create_process();
-    if (!process_result) {
-        early_debug_print("❌ 进程创建失败\n");
-        return process_result;
-    }
-
-    Process* process = *process_result;
-    early_debug_print("✅ 进程创建成功\n");
-
-    // 3. 创建用户地址空间
-    auto as_result = create_user_address_space();
-    if (!as_result) {
-        early_debug_print("❌ 用户地址空间创建失败\n");
-        (void)g_process_manager->terminate_process(process->pid(), -1);
-        return KernelResult<Process*>{as_result.error()};
-    }
-
-    unique_ptr<AddressSpace> address_space = moss::move(*as_result);
-    early_debug_print("✅ 用户地址空间创建成功\n");
-
-    // 4. 设置地址空间到进程
-    auto set_as_result = process->set_address_space(moss::move(address_space));
-    if (!set_as_result) {
-        early_debug_print("❌ 地址空间设置失败\n");
-        (void)g_process_manager->terminate_process(process->pid(), -1);
-        return KernelResult<Process*>{set_as_result.error()};
-    }
-
-    // 5. 创建主线程
-    auto thread_result = process->create_thread(
-        loaded_program.entry_point,
-        loaded_program.stack_top - 8 * 1024 * 1024, // 栈基址（8MB栈）
-        8 * 1024 * 1024 // 栈大小
-    );
-
-    if (!thread_result) {
-        early_debug_print("❌ 主线程创建失败\n");
-        (void)g_process_manager->terminate_process(process->pid(), -1);
-        return KernelResult<Process*>{thread_result.error()};
-    }
-
-    (void)*thread_result; // 抑制未使用变量警告
-    early_debug_print("✅ 主线程创建成功\n");
-
-    // 6. 设置进程为就绪状态
-    process->set_state(ProcessState::Ready);
-
-    early_debug_print("🎉 从ELF创建进程完成\n");
-    return KernelResult<Process*>{process};
+// Note: ELF loading is implemented in kernel module (moss.kernel)
+// This stub will be replaced when kernel module provides the full implementation
+KernelResult<Process*> create_process_from_elf([[maybe_unused]] const u8* elf_data,
+                                               [[maybe_unused]] usize elf_size) noexcept {
+    // TODO: Implement via kernel module's ElfLoader when moss.kernel is available
+    // The actual implementation will call elf::ElfLoader::load_elf_from_memory()
+    // and then create the process with address space and main thread.
+    return KernelResult<Process*>{ErrorCode::NotSupported};
 }
 
 // 映射内存区域到用户地址空间

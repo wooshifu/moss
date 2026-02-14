@@ -26,8 +26,12 @@ export void write_barrier() noexcept;
 
 // CPU operations
 export void cpu_yield() noexcept;
+export void cpu_halt() noexcept;
 export u32 get_current_cpu_id() noexcept;
 export u64 get_timestamp_counter() noexcept;
+
+// Instruction barrier
+export void instruction_barrier() noexcept;
 
 // MMU management
 export void setup_kernel_mmu(PhysAddr kernel_pgd_pa) noexcept;
@@ -51,6 +55,7 @@ export void invalidate_icache() noexcept;
 export void invalidate_dcache() noexcept;
 export void clean_dcache() noexcept;
 export void flush_dcache() noexcept;
+export void flush_cache_line(VirtAddr addr) noexcept;
 
 // Architecture-specific initialization
 export void early_arch_init() noexcept;

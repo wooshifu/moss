@@ -1,11 +1,10 @@
 // 运行时堆分配器实现
 // 提供动态内存分配功能，基于虚拟内存和物理页面管理
+// Module implementation unit
 
-#include "mm/runtime_heap_allocator.hpp"
-#include "mm/page_table.hpp"
+module;
 
-// 简化实现：移除调试打印功能以避免链接依赖
-// 在生产版本中，调试输出应该通过统一的日志系统处理
+module moss.mm;
 
 namespace moss::kernel::mm {
 
@@ -44,8 +43,6 @@ HeapAllocVoidResult RuntimeHeapAllocator::initialize_heap(VirtAddr heap_start, u
     allocated_bytes_ = 0;
     total_allocations_ = 0;
     initialized_ = true;
-
-// DEBUG: Heap initialization完成 (调试输出已禁用)
 
     return HeapAllocVoidResult{};
 }
@@ -185,8 +182,6 @@ HeapAllocVoidResult RuntimeHeapAllocator::expand_heap(usize additional_size) noe
 
     // 尝试与前一个块合并
     merge_free_blocks();
-
-// DEBUG: Heap expansion完成 (调试输出已禁用)
 
     return HeapAllocVoidResult{};
 }
@@ -386,4 +381,3 @@ void RuntimeHeapAllocator::dump_heap_layout() noexcept {
 #endif
 
 } // namespace moss::kernel::mm
-

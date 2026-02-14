@@ -1,9 +1,55 @@
 // MOSS内核统一内存管理器实现
 // 提供UnifiedMemoryManager类的基础实现
+// Module implementation unit
 
-#include "mm/mm_interface.hpp"
+module;
+
+module moss.mm;
 
 namespace moss::kernel::mm {
+
+// BuddyAllocatorV2 stub implementations
+BuddyResult<moss::kernel::PhysAddr> BuddyAllocatorV2::allocate_pages(const PageAllocRequest& request) noexcept {
+    // TODO: Implement full buddy allocator with migration type support
+    // Delegate to PageFrameAllocator for now
+    auto result = PageFrameAllocator::allocate_pages(request.order);
+    if (!result) {
+        return BuddyResult<moss::kernel::PhysAddr>{BuddyError::OutOfMemory};
+    }
+    return BuddyResult<moss::kernel::PhysAddr>{*result};
+}
+
+BuddyVoidResult BuddyAllocatorV2::initialize() noexcept {
+    return BuddyVoidResult{};
+}
+
+BuddyVoidResult BuddyAllocatorV2::free_pages(moss::kernel::PhysAddr addr, moss::kernel::usize order) noexcept {
+    auto result = PageFrameAllocator::free_pages(addr, order);
+    if (!result) {
+        return BuddyVoidResult{BuddyError::InvalidAddress};
+    }
+    return BuddyVoidResult{};
+}
+
+BuddyVoidResult BuddyAllocatorV2::compact_memory() noexcept {
+    return BuddyVoidResult{};
+}
+
+BuddyAllocatorV2::WaterMark BuddyAllocatorV2::get_water_mark() noexcept {
+    return WaterMark::HIGH;
+}
+
+bool BuddyAllocatorV2::is_memory_pressure() noexcept {
+    return false;
+}
+
+BuddyAllocatorV2::FragmentationStats BuddyAllocatorV2::get_fragmentation_stats() noexcept {
+    return FragmentationStats{};
+}
+
+BuddyAllocatorV2::MemoryStats BuddyAllocatorV2::get_memory_stats() noexcept {
+    return MemoryStats{};
+}
 
 // 静态成员初始化
 bool UnifiedMemoryManager::initialized_ = false;
@@ -51,7 +97,7 @@ MMVoidResult UnifiedMemoryManager::free([[maybe_unused]] moss::kernel::VirtAddr 
     return MMVoidResult{};
 }
 
-MMVoidResult UnifiedMemoryManager::free([[maybe_unused]] [[maybe_unused]] moss::kernel::VirtAddr address, [[maybe_unused]] [[maybe_unused]] moss::kernel::usize size) noexcept {
+MMVoidResult UnifiedMemoryManager::free([[maybe_unused]] moss::kernel::VirtAddr address, [[maybe_unused]] moss::kernel::usize size) noexcept {
     // 简化实现
     // TODO: 实现带大小的内存释放
     return MMVoidResult{};

@@ -1,13 +1,12 @@
 // MOSS内核系统调用表实现
 // 提供完整的系统调用处理和分发机制
 
-#include "kernel/syscall_table.hpp"
-#include "process/process.hpp"  // 进程管理相关类型和全局变量
-#include "process/cfs_scheduler.hpp"  // 调度器相关类型和全局变量
-#include "core/arch/arch_abstraction.hpp"  // 架构抽象层
+module;
 
-// 用于early_debug_print的外部函数声明
+// extern "C" declarations in global module fragment
 extern "C" void early_debug_print(const char *message) noexcept;
+
+module moss.kernel;
 
 namespace moss::kernel::syscall {
 

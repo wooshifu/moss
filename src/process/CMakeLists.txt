@@ -21,7 +21,9 @@ elseif(MOSS_TARGET_ARCH STREQUAL "RISCV")
     list(APPEND PROCESS_SOURCES src/arch/riscv/context_switch.S)
 endif()
 
-target_sources(moss_process PRIVATE ${PROCESS_SOURCES})
+target_sources(moss_process
+    PUBLIC FILE_SET CXX_MODULES FILES src/process.cppm
+    PRIVATE ${PROCESS_SOURCES})
 
 target_include_directories(moss_process PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}/include)

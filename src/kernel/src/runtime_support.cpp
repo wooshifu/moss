@@ -136,7 +136,7 @@ void kernel_free(void *ptr) noexcept {
 #ifdef DEBUG
     if (!result) {
       // 内存释放失败 - 可能是堆损坏
-      moss::kernel::arch::kernel_panic();
+      moss::kernel::arch::kernel_panic("runtime support: fatal error");
     }
 #endif
   } else {
@@ -157,7 +157,7 @@ void *_Znwm(size_t size) {
   void *ptr = kernel_malloc(size);
   if (!ptr) {
     // 内核panic - 内存耗尽是致命错误
-    moss::kernel::arch::kernel_panic();
+    moss::kernel::arch::kernel_panic("runtime support: fatal error");
   }
   return ptr;
 }
@@ -201,7 +201,7 @@ void *_ZnwmSt11align_val_t(size_t size, size_t alignment) {
   auto result = RuntimeHeapAllocator::allocate_aligned(size, alignment);
   if (!result) {
     // 内核panic - 内存耗尽是致命错误
-    moss::kernel::arch::kernel_panic();
+    moss::kernel::arch::kernel_panic("runtime support: fatal error");
   }
 
   void *ptr = result.value();
@@ -233,7 +233,7 @@ void _ZdaPvmSt11align_val_t(void *ptr, [[maybe_unused]] size_t size,
 // Pure virtual function call handler (required by vtable for abstract classes)
 [[noreturn]] void __cxa_pure_virtual() {
   // In kernel: calling a pure virtual function is a fatal error
-  moss::kernel::arch::kernel_panic();
+  moss::kernel::arch::kernel_panic("runtime support: fatal error");
 }
 
 } // extern "C"
@@ -244,10 +244,4 @@ namespace moss::kernel::containers {
 SlabAllocator *g_slab_allocator = nullptr;
 } // namespace moss::kernel::containers
 
-namespace moss::kernel::ipc {
-// 全局共享内存管理器实例（简化实现）
-SharedMemoryManager *g_shared_memory_manager = nullptr;
-
-// 全局IPC管理器实例
-IpcManager *g_ipc_manager = nullptr;
-} // namespace moss::kernel::ipc
+// IPC global variables now defined in moss.ipc module (ipc.cpp)

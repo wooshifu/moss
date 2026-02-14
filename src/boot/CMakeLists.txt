@@ -10,11 +10,14 @@ elseif(MOSS_TARGET_ARCH STREQUAL "RISCV")
 endif()
 add_library(moss_boot OBJECT ${BOOT_SOURCES})
 
+target_sources(moss_boot
+    PUBLIC FILE_SET CXX_MODULES FILES src/boot.cppm)
+
 target_include_directories(moss_boot PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}/include)
 
 target_compile_definitions(moss_boot PRIVATE MOSS_BOOT_MODULE MOSS_UNIFIED_BOOT)
 
-target_link_libraries(moss_boot PRIVATE moss_core moss_mm moss_containers moss_process)
+target_link_libraries(moss_boot PRIVATE moss_core moss_mm moss_containers moss_process moss_interrupts)
 
-message(STATUS "启动模块配置完成")
+message(STATUS "Boot module configured")
