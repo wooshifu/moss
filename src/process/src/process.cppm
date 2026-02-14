@@ -1639,6 +1639,10 @@ public:
 
       // Check if a higher-priority task is waiting (CFS: lower vruntime)
       if (should_preempt_current(curr)) {
+        // Guard: task may have been marked Terminated by sys_exit
+        // between our state==Running check above and here.
+        if (curr->state == ProcessState::Terminated) return;
+
         // Reset time-slice accounting so curr gets a fresh slice next time
         curr->se.prev_sum_exec_runtime = curr->se.sum_exec_runtime;
         curr->state = ProcessState::Ready;
@@ -1807,6 +1811,10 @@ private:
 
   void context_switch_to_task(Thread *task) noexcept {
     if (task == nullptr)
+      return;
+
+    // Guard: never switch to a terminated task (e.g. sys_exit race)
+    if (task->state == ProcessState::Terminated)
       return;
 
 #if defined(MOSS_ARCH_ARM64)
