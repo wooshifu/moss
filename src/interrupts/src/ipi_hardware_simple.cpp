@@ -207,8 +207,7 @@ VoidResult SimpleHardwareIpi::self_test() noexcept {
 
   early_debug_print("Hardware IPI self-test started\n");
 
-  for (u32 target_cpu = 1; target_cpu < max_cpus_ && target_cpu < 4;
-       ++target_cpu) {
+  for (u32 target_cpu = 1; target_cpu < max_cpus_; ++target_cpu) {
     auto result = ping_cpu(target_cpu);
     if (result != IpiResult::Success) {
       early_debug_print("Hardware IPI self-test failed\n");

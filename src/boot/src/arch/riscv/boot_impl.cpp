@@ -213,7 +213,11 @@ void update_boot_stage(BootStage stage, ::moss::kernel::ErrorCode error) noexcep
     moss::boot::update_boot_stage(moss::boot::BootStage::SmpSupport);
 
     moss::boot::early_print("=== RISC-V SMP Support Setup ===\n");
-    ctx.total_cpus = 1;
+    // Preserve DTB-derived CPU count (set in hardware_early_init); only default to 1
+    // if it wasn't set. Once RISC-V SMP boot is implemented, this fallback can be removed.
+    if (ctx.total_cpus == 0) {
+        ctx.total_cpus = 1;
+    }
     moss::boot::early_print("TODO: Implement RISC-V multi-core boot support\n");
     moss::boot::early_print("RISC-V SMP setup complete\n\n");
     return ::moss::kernel::VoidResult{};

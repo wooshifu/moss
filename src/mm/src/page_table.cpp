@@ -38,14 +38,20 @@ extern "C" {
 
 module moss.mm;
 
-// 简化的调试输出函数 - 直接使用UART输出
+// 简化的调试输出函数
+// Post-DTB: UART 地址从 PlatformInfo 获取，fallback 到 ARM64 PL011 默认值。
 namespace {
-// UART基址（QEMU Virt平台）
-static volatile char *const UART_BASE =
-    reinterpret_cast<volatile char *>(0x09000000);
+
+static volatile char *get_uart_base() {
+  const auto &plat = moss::fdt::get_platform_info();
+  moss::u64 addr = (plat.dtb_valid && plat.uart.valid)
+                       ? plat.uart.base_addr
+                       : 0x09000000;
+  return reinterpret_cast<volatile char *>(addr);
+}
 
 // 简单UART输出字符
-void debug_putchar(char c) { *UART_BASE = c; }
+void debug_putchar(char c) { *get_uart_base() = c; }
 
 // 简单UART输出字符串
 void debug_print(const char *str) {
@@ -112,10 +118,16 @@ VoidResult PageTableManager::setup_kernel_page_tables() {
   }
   PageTableManager::kernel_pgd = *pgd_result;
 
-  // QEMU virt machine memory layout:
-  //   0x00000000 - 0x3FFFFFFF: Device MMIO (GIC, UART, etc.)
-  //   0x40000000 - 0x7FFFFFFF: RAM (kernel code, data, heap)
-  //   0x80000000 - 0xFFFFFFFF: Additional MMIO / unused
+  // Determine RAM region from DTB (PlatformInfo) — no more hardcoded assumptions
+  // about which 1GB block contains RAM.
+  const auto &plat = moss::fdt::get_platform_info();
+  PhysAddr ram_start = (plat.dtb_valid && plat.total_memory_size > 0)
+                           ? plat.total_memory_start
+                           : 0x40000000; // QEMU virt default
+  u64 ram_size = (plat.dtb_valid && plat.total_memory_size > 0)
+                     ? plat.total_memory_size
+                     : 256ULL * 1024 * 1024; // fallback: 256MB
+  PhysAddr ram_end = ram_start + ram_size;
 
   // Device memory attributes: AttrIndx=0 (MAIR: Device-nGnRnE)
   u64 device_block = (1ULL << 0) |  // Valid
@@ -132,12 +144,17 @@ VoidResult PageTableManager::setup_kernel_page_tables() {
                      (3ULL << 8);   // Inner Shareable (SH bits for SMP)
 
   // Map 4 x 1GB blocks covering 0x00000000 - 0xFFFFFFFF
+  // Each block's memory type is determined by whether it overlaps with RAM
+  // (from DTB) rather than using a hardcoded PGD index.
   for (usize i = 0; i < 4; i++) {
     PhysAddr block_addr = static_cast<PhysAddr>(i * 0x40000000ULL);
+    PhysAddr block_end = block_addr + 0x40000000ULL;
 
-    // PGD index 1 (0x40000000-0x7FFFFFFF) is RAM — use Normal memory
-    // All other regions are Device MMIO
-    u64 permissions = (i == 1) ? normal_block : device_block;
+    // If this 1GB block overlaps with the RAM region, use Normal memory;
+    // otherwise use Device memory. This correctly handles any RAM base/size
+    // reported by the DTB (e.g., QEMU virt: RAM at 0x40000000).
+    bool overlaps_ram = (block_addr < ram_end) && (block_end > ram_start);
+    u64 permissions = overlaps_ram ? normal_block : device_block;
 
     u64 block_entry = (block_addr & 0x0000FFFFFFFFF000ULL) | permissions;
     PageTableManager::kernel_pgd->entries[i].raw = block_entry;
