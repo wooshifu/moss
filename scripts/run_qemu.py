@@ -50,6 +50,7 @@ class QemuConfig:
     test_elf: str
     kernel_bin: str
     kernel_bin_full: str
+    cpu_cores: int = 4  # 从 CMake MOSS_CPU_CORES 变量读取，默认 4
 
     @classmethod
     def from_json(cls, path: Path) -> "QemuConfig":
@@ -61,6 +62,7 @@ class QemuConfig:
             test_elf=data["test_elf"],
             kernel_bin=data["kernel_bin"],
             kernel_bin_full=data["kernel_bin_full"],
+            cpu_cores=data.get("cpu_cores", 4),
         )
 
 
@@ -154,7 +156,7 @@ def build_qemu_args(
     """构造完整的 QEMU 命令行参数列表"""
     arch_cfg = ARCH_CONFIG[cfg.arch]
 
-    smp = 1 if test_mode else 4
+    smp = 1 if test_mode else cfg.cpu_cores
 
     # 内核加载方式
     if use_binary:

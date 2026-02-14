@@ -166,11 +166,16 @@ extern "C" {
   asm volatile("csrci mstatus, 0x8" ::: "memory"); // 禁用机器级中断
 #endif
 
-  // 基本错误输出（如果可能）
-  volatile u32 *uart_data = reinterpret_cast<volatile u32 *>(0x09000000);
+  // Panic output: use PlatformInfo with hardcoded fallback.
+  // In a panic scenario PlatformInfo *might* be corrupted, so the fallback
+  // to 0x09000000 (ARM64 PL011 default) is intentionally kept.
+  const auto &plat = ::moss::fdt::get_platform_info();
+  u64 uart_base = (plat.dtb_valid && plat.uart.valid)
+                      ? plat.uart.base_addr
+                      : 0x09000000;
+  volatile u32 *uart_data = reinterpret_cast<volatile u32 *>(uart_base);
   const char *panic_msg = "\n💀 KERNEL PANIC: ";
 
-  // 输出错误信息
   while (*panic_msg) {
     *uart_data = static_cast<u32>(static_cast<unsigned char>(*panic_msg++));
   }
@@ -198,12 +203,20 @@ extern "C" {
 }
 
 // 早期调试输出（在UART驱动初始化前使用）
+// Post-DTB: UART 地址从 PlatformInfo 获取，fallback 到 ARM64 PL011 默认地址。
+// PL011 寄存器布局: data @ base+0x00, flags @ base+0x18, TXFF = bit 5。
 void early_debug_print(const char *message) noexcept {
   if (message == nullptr)
     return;
 
-  volatile u32 *uart_data = reinterpret_cast<volatile u32 *>(0x09000000);
-  volatile u32 *uart_flags = reinterpret_cast<volatile u32 *>(0x09000018);
+  // Use DTB-derived UART address when available
+  const auto &plat = ::moss::fdt::get_platform_info();
+  u64 uart_base = (plat.dtb_valid && plat.uart.valid)
+                      ? plat.uart.base_addr
+                      : 0x09000000; // ARM64 PL011 default
+
+  volatile u32 *uart_data = reinterpret_cast<volatile u32 *>(uart_base);
+  volatile u32 *uart_flags = reinterpret_cast<volatile u32 *>(uart_base + 0x18);
 
   while (*message) {
     // 等待发送FIFO可用

@@ -53,10 +53,10 @@ SECTIONS
         _bss_end = .;
     }
 
-    /* 栈空间 - 多CPU支持：64KB总空间，每CPU 16KB */
+    /* 栈空间 - 多CPU支持：128KB总空间，每CPU 16KB，支持 MAX_CPUS=8 */
     .stack (NOLOAD) : ALIGN(4K) {
         _stack_bottom = .;
-        . += 64K;  /* 64KB栈空间支持4个CPU (每CPU 16KB) */
+        . += 128K;  /* 128KB栈空间支持8个CPU (每CPU 16KB) */
         _stack_top = .;
     }
 

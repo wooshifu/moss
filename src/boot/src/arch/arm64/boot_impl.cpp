@@ -104,33 +104,26 @@ static CpuTopology g_cpu_topology = {
 // ========================================================================
 
 static u32 probe_available_cpus() noexcept {
-    u32 detected_cpus = 1;
+    // Priority 1: Use DTB-derived CPU count (set during hardware_early_init)
+    const auto &plat = moss::fdt::get_platform_info();
+    if (plat.dtb_valid && plat.cpu_count > 0) {
+        u32 count = plat.cpu_count;
+        if (count > moss::kernel::MAX_CPUS) {
+            count = moss::kernel::MAX_CPUS;
+        }
+        return count;
+    }
 
-    u64 mpidr;
-    asm volatile("mrs %0, mpidr_el1" : "=r"(mpidr));
-
-    [[maybe_unused]] u32 current_cpu_id = static_cast<u32>(mpidr & 0xFF);
-    [[maybe_unused]] u32 cluster_id = static_cast<u32>((mpidr >> 8) & 0xFF);
-
-    u32 likely_cpu_count = 4;
-
+    // Priority 2: Estimate from linker-allocated stack space
     auto total_stack_size = reinterpret_cast<u64>(_stack_top_addr) -
                             reinterpret_cast<u64>(_stack_bottom_addr);
-
-    u32 stack_based_cpu_count = static_cast<u32>(total_stack_size / (16 * 1024));
-    if (stack_based_cpu_count > 1 && stack_based_cpu_count <= moss::kernel::MAX_CPUS) {
-        likely_cpu_count = stack_based_cpu_count;
+    u32 stack_based = static_cast<u32>(total_stack_size / (16 * 1024));
+    if (stack_based >= 1 && stack_based <= moss::kernel::MAX_CPUS) {
+        return stack_based;
     }
 
-    detected_cpus = likely_cpu_count;
-
-    if (detected_cpus < 1) {
-        detected_cpus = 1;
-    } else if (detected_cpus > 4) {
-        detected_cpus = 4;
-    }
-
-    return detected_cpus;
+    // Fallback: single core
+    return 1;
 }
 
 static u64 get_timestamp() noexcept {
@@ -723,56 +716,18 @@ void update_boot_stage(BootStage stage, ::moss::kernel::ErrorCode error) noexcep
             }
         }
 
-        // Skip complex wait logic, assume all CPUs started successfully
-        volatile u8 *uart_base_skip = reinterpret_cast<volatile u8 *>(0x9000000);
-        uart_base_skip[0] = 'K';
-        uart_base_skip[0] = 10;
-
+        // Assume all PSCI-started CPUs are successful
         successful_cpus = detected_cpus;
-
         ctx.total_cpus = successful_cpus;
 
-        volatile u8 *uart_base_debug = reinterpret_cast<volatile u8 *>(0x9000000);
-        uart_base_debug[0] = 'N';
-        uart_base_debug[0] = '0' + static_cast<u8>(successful_cpus % 10);
-        uart_base_debug[0] = 10;
-
-        volatile u8 *uart_base_summary = reinterpret_cast<volatile u8 *>(0x9000000);
-        uart_base_summary[0] = 'O';
-        uart_base_summary[0] = 'K';
-        uart_base_summary[0] = '4';
-        uart_base_summary[0] = 10;
-
         if (successful_cpus > 1) {
-            volatile u8 *uart_base = reinterpret_cast<volatile u8 *>(0x9000000);
-            uart_base[0] = 'S';
-            uart_base[0] = 'M';
-            uart_base[0] = 'P';
-            uart_base[0] = '!';
-            uart_base[0] = 10;
-
-            uart_base[0] = 'Q';
-            uart_base[0] = 10;
-
-            uart_base[0] = 'Y';
-            uart_base[0] = 10;
+            early_print("SMP boot complete: ");
+            early_print_hex(static_cast<u64>(successful_cpus));
+            early_print(" CPUs online\n");
         } else {
-            volatile u8 *uart_base_else = reinterpret_cast<volatile u8 *>(0x9000000);
-            const char *fallback_msg = "Secondary CPU startup FAILED, fallback to single-core mode\n";
-            while (*fallback_msg) {
-                uart_base_else[0] = static_cast<u8>(*fallback_msg);
-                fallback_msg++;
-            }
+            early_print("Secondary CPU startup failed, fallback to single-core mode\n");
             ctx.total_cpus = 1;
         }
-
-        volatile u8 *test_uart = reinterpret_cast<volatile u8 *>(0x9000000);
-        test_uart[0] = 'X';
-        test_uart[0] = 10;
-
-        volatile u8 *uart_final = reinterpret_cast<volatile u8 *>(0x9000000);
-        uart_final[0] = 'Z';
-        uart_final[0] = 10;
     }
 
     return ::moss::kernel::VoidResult{};
