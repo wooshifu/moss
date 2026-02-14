@@ -153,6 +153,13 @@ el2_entry:
 el1_entry:
     // EL1初始化：这是我们的目标异常级别
 
+    // Secondary CPUs must NOT re-run cold-boot initialization (BSS clear,
+    // MMU disable, etc.) because CPU 0 has already set up the system.
+    // They only need a stack and then jump to secondary_cpu_park.
+    cbnz    x19, secondary_el1_entry
+
+    // === CPU 0 cold-boot path ===
+
     // 禁用MMU和缓存
     mrs     x0, sctlr_el1
     bic     x0, x0, #SCTLR_EL1_M    // 禁用MMU
@@ -168,7 +175,7 @@ el1_entry:
     mov     x0, #CPACR_EL1_FPEN
     msr     cpacr_el1, x0
 
-    // 清零BSS段
+    // 清零BSS段 (CPU 0 only — secondary CPUs skip this)
     ldr     x0, =_bss_start_addr
     ldr     x1, =_bss_end_addr
 clear_bss:
@@ -178,26 +185,48 @@ clear_bss:
     b       clear_bss
 bss_cleared:
 
-    // 设置栈指针（每个CPU有独立的栈）
+    // 设置CPU 0栈指针
     ldr     x0, =_stack_top_addr
-    mov     x1, #0x4000           // 每个CPU 16KB栈空间
-    mul     x1, x19, x1          // CPU ID * 栈大小
-    sub     sp, x0, x1
+    mov     sp, x0
 
     // 🔧 调试：发送CPU ID到UART证明CPU正在启动
     mov     x25, #0x09000000         // QEMU UART基址
     mov     x26, #'['
     str     w26, [x25]
-    add     x26, x19, #'0'           // 将CPU ID转换为ASCII数字
+    mov     x26, #'0'               // CPU 0
     str     w26, [x25]
     mov     x26, #']'
     str     w26, [x25]
     mov     x26, #10                 // 换行符
     str     w26, [x25]
 
-    // 只有主CPU（CPU 0）继续执行，其他CPU等待
-    cmp     x19, #0
-    b.ne    secondary_cpu_park
+    b       primary_cpu_continue
+
+    // === Secondary CPU entry (PSCI CPU_ON lands here via _start) ===
+secondary_el1_entry:
+    // Do NOT clear BSS, do NOT disable MMU (CPU 0 already set up everything).
+    // Just set up per-CPU stack and jump to park.
+
+    // 设置栈指针（每个CPU有独立的栈）
+    ldr     x0, =_stack_top_addr
+    mov     x1, #0x8000           // 每个CPU 32KB栈空间
+    mul     x1, x19, x1          // CPU ID * 栈大小
+    sub     sp, x0, x1
+
+    // 🔧 调试：发送CPU ID到UART
+    mov     x25, #0x09000000
+    mov     x26, #'['
+    str     w26, [x25]
+    add     x26, x19, #'0'
+    str     w26, [x25]
+    mov     x26, #']'
+    str     w26, [x25]
+    mov     x26, #10
+    str     w26, [x25]
+
+    b       secondary_cpu_park
+
+primary_cpu_continue:
 
     // 🔧 主CPU调试信息
     mov     x26, #'M'                // 主CPU标识

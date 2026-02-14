@@ -8,6 +8,9 @@ module;
 
 // extern "C" declarations in global module fragment
 extern "C" void early_debug_print(const char* message) noexcept;
+#if defined(__aarch64__) || defined(MOSS_ARCH_ARM64)
+extern "C" void context_switch(void* prev_context, void* next_context);
+#endif
 
 module moss.process;
 
@@ -323,5 +326,52 @@ KernelResult<VirtAddr> allocate_user_heap(Process* process, usize size) noexcept
 }
 
 } // namespace user_space
+
+// ============================================================================
+// Secondary CPU scheduling loop
+// ============================================================================
+
+static void secondary_tick_callback(void* data) noexcept {
+    auto* sched = static_cast<CfsScheduler*>(data);
+    sched->scheduler_tick();
+}
+
+[[noreturn]] void secondary_cpu_schedule_loop(u32 cpu_id) noexcept {
+    namespace log = moss::kernel::logging;
+
+    log::klog::info("CPU{}: entering scheduling loop", cpu_id);
+
+    // Arm per-CPU scheduler tick timer
+    static timer::HrTimer secondary_ticks[MAX_CPUS];
+    secondary_ticks[cpu_id].init(
+        timer::TimerMode::Periodic,
+        secondary_tick_callback,
+        g_scheduler);
+    secondary_ticks[cpu_id].start_relative(CfsParams::SCHED_LATENCY_NS);
+
+    log::klog::info("CPU{}: scheduler tick armed, entering idle", cpu_id);
+
+    // Main scheduling loop
+    while (true) {
+        Thread *next = g_scheduler->pick_next_task(cpu_id);
+        if (next != nullptr) {
+            g_scheduler->dequeue_task(next);
+            CfsScheduler::set_current_task(next);
+            next->state = ProcessState::Running;
+            next->se.exec_start = arch::get_timestamp_counter();
+
+#if defined(MOSS_ARCH_ARM64)
+            CpuContext *prev_ctx = &CfsScheduler::bootstrap_context(cpu_id);
+            arch::disable_interrupts();
+            context_switch(prev_ctx, &next->context);
+            arch::enable_interrupts();
+#endif
+            // Returned -- task was preempted. Clear and retry.
+            CfsScheduler::set_current_task(nullptr);
+        } else {
+            arch::cpu_idle_once();
+        }
+    }
+}
 
 } // namespace moss::kernel::process
