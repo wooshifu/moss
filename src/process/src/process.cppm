@@ -1505,7 +1505,7 @@ public:
 
       test_threads[i]->se.vruntime = static_cast<u64>(i);
 
-      u32 target_cpu = i % 4;
+      u32 target_cpu = i % MAX_CPUS;
       enqueue_task(test_threads[i], target_cpu);
 
       log::klog::info("created test task TID={} nice=0 weight={} vruntime={} CPU={}", tid, test_threads[i]->se.weight, test_threads[i]->se.vruntime, target_cpu);
