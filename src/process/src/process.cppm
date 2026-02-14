@@ -1877,7 +1877,16 @@ private:
     record_context_switch();
 
     if (task->tid == 1000) {
-      // User process — eret to EL0 (never returns)
+      // User process — switch TTBR0 to this process's page table, then eret to EL0
+#if defined(MOSS_ARCH_ARM64)
+      Process *proc = g_process_manager ? g_process_manager->find_process(task->owner_pid) : nullptr;
+      if (proc && proc->address_space() && proc->address_space()->pgd_phys != 0) {
+        u64 ttbr0_val = proc->address_space()->pgd_phys
+                      | (static_cast<u64>(proc->address_space()->asid) << 48);
+        asm volatile("msr ttbr0_el1, %0" :: "r"(ttbr0_val));
+        asm volatile("isb" ::: "memory");
+      }
+#endif
       switch_to_user(&task->context, task->stack_base + task->stack_size - 16);
     } else {
 #if defined(MOSS_ARCH_ARM64)
