@@ -172,6 +172,14 @@ struct alignas(16) CpuContext {
 static_assert(sizeof(CpuContext) <= 1024,
               "CpuContext should fit in reasonable size");
 
+// VMA permission / type flags
+namespace VmaFlags {
+inline constexpr u32 READ        = 1u << 0;
+inline constexpr u32 WRITE       = 1u << 1;
+inline constexpr u32 EXEC        = 1u << 2;
+inline constexpr u32 DEMAND_ZERO = 1u << 3;  // allocate zero page on first access
+} // namespace VmaFlags
+
 // Virtual Memory Area (VMA)
 struct VmaRegion {
   moss::kernel::VirtAddr start_addr;
@@ -183,6 +191,14 @@ struct VmaRegion {
             moss::kernel::u32 region_flags,
             moss::kernel::PhysAddr phys = 0) noexcept
       : start_addr(start), end_addr(end), flags(region_flags), phys_addr(phys) {
+  }
+
+  [[nodiscard]] bool is_demand_zero() const noexcept {
+    return (flags & VmaFlags::DEMAND_ZERO) != 0;
+  }
+
+  [[nodiscard]] bool contains(VirtAddr addr) const noexcept {
+    return addr >= start_addr && addr < end_addr;
   }
 };
 
