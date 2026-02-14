@@ -16,6 +16,13 @@
 //   {:#x}  — hexadecimal with 0x prefix
 //   {:#b}  — boolean as "true"/"false"
 //
+// Output format:
+//   [LEVEL] filename:line message
+//   e.g. [INFO]  kernel_main.cpp:53 === MOSS kernel main starting ===
+//
+// Source location is captured automatically via __builtin_FILE()/__builtin_LINE()
+// using FmtStr's implicit constructor — callers need NO syntax changes.
+//
 // Backend: hal::uart (architecture-independent UART/serial output)
 //
 // Boot-phase functions (early_print, boot_print) remain independent
@@ -39,6 +46,28 @@ using moss::u8;
 using moss::u32;
 using moss::u64;
 namespace uart = moss::kernel::hal::uart;
+
+// ============================================================================
+// FmtStr — format string wrapper that captures source location at call site
+//
+// Uses __builtin_FILE() / __builtin_LINE() as default arguments so that
+// the compiler evaluates them at the CALLER's location, not here.
+// The implicit constructor from const char* means callers write:
+//   klog::info("msg");         // file:line captured automatically
+//   klog::info("x={}", val);   // same — no syntax change needed
+// ============================================================================
+
+struct FmtStr {
+  const char* value;
+  const char* file;
+  unsigned    line;
+
+  // Implicit conversion from string literal — captures source location
+  constexpr FmtStr(const char* s,
+                   const char* f = __builtin_FILE(),
+                   unsigned    l = __builtin_LINE()) noexcept
+      : value(s), file(f), line(l) {}
+};
 
 // ============================================================================
 // Log levels
@@ -70,7 +99,7 @@ inline auto get_log_level() noexcept -> LogLevel { return g_log_level; }
 
 class LogBuffer {
 public:
-  static constexpr u32 BUFFER_SIZE = 256;
+  static constexpr u32 BUFFER_SIZE = 512;
 
   void append_char(char c) noexcept {
     if (pos_ < BUFFER_SIZE - 1) {
@@ -136,6 +165,20 @@ public:
 
   void append_bool(bool v) noexcept {
     append_str(v ? "true" : "false");
+  }
+
+  // Extract basename from full path and format as "file:line "
+  void append_source_loc(const char *file, unsigned line) noexcept {
+    if (!file) return;
+    // Find last '/' to extract basename
+    const char *basename = file;
+    for (const char *p = file; *p; p++) {
+      if (*p == '/') basename = p + 1;
+    }
+    append_str(basename);
+    append_char(':');
+    append_dec(static_cast<u64>(line));
+    append_char(' ');
   }
 
   void append_level_tag(LogLevel level) noexcept {
@@ -419,29 +462,31 @@ private:
 
 struct klog {
   // -- fmt-style API with {} placeholders --
+  // FmtStr's implicit constructor captures __builtin_FILE()/__builtin_LINE()
+  // at the call site, so callers need no syntax change.
 
   template <typename... Args>
-  static void debug(const char *fmt, Args... args) noexcept {
+  static void debug(FmtStr fmt, Args... args) noexcept {
     log_fmt(LogLevel::Debug, fmt, args...);
   }
 
   template <typename... Args>
-  static void info(const char *fmt, Args... args) noexcept {
+  static void info(FmtStr fmt, Args... args) noexcept {
     log_fmt(LogLevel::Info, fmt, args...);
   }
 
   template <typename... Args>
-  static void warn(const char *fmt, Args... args) noexcept {
+  static void warn(FmtStr fmt, Args... args) noexcept {
     log_fmt(LogLevel::Warn, fmt, args...);
   }
 
   template <typename... Args>
-  static void error(const char *fmt, Args... args) noexcept {
+  static void error(FmtStr fmt, Args... args) noexcept {
     log_fmt(LogLevel::Error, fmt, args...);
   }
 
   template <typename... Args>
-  static void panic(const char *fmt, Args... args) noexcept {
+  static void panic(FmtStr fmt, Args... args) noexcept {
     log_fmt(LogLevel::Panic, fmt, args...);
   }
 
@@ -479,11 +524,12 @@ struct klog {
 
 private:
   template <typename... Args>
-  static void log_fmt(LogLevel level, const char *fmt, Args... args) noexcept {
+  static void log_fmt(LogLevel level, FmtStr fmt, Args... args) noexcept {
     if (level < g_log_level) return;
     LogBuffer buf;
     buf.append_level_tag(level);
-    format_into(buf, fmt, args...);
+    buf.append_source_loc(fmt.file, fmt.line);
+    format_into(buf, fmt.value, args...);
     buf.flush_line();
   }
 };
