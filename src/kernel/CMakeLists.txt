@@ -10,7 +10,7 @@ set(KERNEL_SOURCES
 
 # Architecture-specific assembly files
 if(MOSS_TARGET_ARCH STREQUAL "ARM64")
-    list(APPEND KERNEL_SOURCES src/arch/arm64_syscall.S)
+    list(APPEND KERNEL_SOURCES src/arch/arm64_syscall.S src/arch/arm64_user_program.S)
 elseif(MOSS_TARGET_ARCH STREQUAL "X86_64")
     list(APPEND KERNEL_SOURCES src/arch/x86_64_syscall.S)
 elseif(MOSS_TARGET_ARCH STREQUAL "RISCV")
