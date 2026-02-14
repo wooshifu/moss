@@ -133,9 +133,31 @@ namespace handlers {
         return -38; // ENOSYS
     }
 
-    long sys_write(long, long, long, long, long, long) noexcept {
-        early_debug_print("📋 系统调用: write() - 尚未实现\n");
-        return -38; // ENOSYS
+    long sys_write(long fd, long buf_addr, long count, long, long, long) noexcept {
+        // sys_write(fd, buf, count) — write count bytes from buf to fd
+        //
+        // Currently only stdout (fd=1) and stderr (fd=2) are supported,
+        // both routing to the kernel UART console.
+        if (fd != 1 && fd != 2) {
+            return -9; // EBADF — bad file descriptor
+        }
+
+        if (buf_addr == 0 || count <= 0) {
+            return -22; // EINVAL
+        }
+
+        // TODO: Proper user pointer validation. Under identity mapping (1GB
+        // blocks), kernel can access user addresses directly. A production
+        // kernel would verify the range falls within the process VMA.
+        const char *buf = reinterpret_cast<const char *>(
+            static_cast<unsigned long long>(buf_addr));
+
+        // Write each byte to UART via HAL
+        for (long i = 0; i < count; ++i) {
+            moss::kernel::hal::uart::putc(buf[i]);
+        }
+
+        return count; // Number of bytes written
     }
 
     // 内存管理系统调用
@@ -227,7 +249,7 @@ const SyscallDescriptor SYSCALL_TABLE[static_cast<int>(SyscallNumber::MAX_SYSCAL
     {"open", handlers::sys_open, 3, false, "打开文件"},
     {"close", handlers::sys_close, 1, false, "关闭文件"},
     {"read", handlers::sys_read, 3, false, "读取文件"},
-    {"write", handlers::sys_write, 3, false, "写入文件"},
+    {"write", handlers::sys_write, 3, true, "写入文件"},
     {"lseek", handlers::sys_not_implemented, 3, false, "文件定位"},
     {"stat", handlers::sys_not_implemented, 2, false, "获取文件状态"},
     {"fstat", handlers::sys_not_implemented, 2, false, "获取文件描述符状态"},

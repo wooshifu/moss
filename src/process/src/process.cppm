@@ -1693,6 +1693,45 @@ public:
 
       log::klog::info("scheduler tick armed, entering idle loop (WFI)");
 
+      // Before entering idle, dispatch the init user process (TID=1000).
+      // We explicitly search for it because test tasks may have lower
+      // vruntime values and would otherwise be selected first by CFS.
+      {
+        // Scan CPU 0's runqueue for TID=1000
+        Thread *init_task = nullptr;
+        for (u32 cpu = 0; cpu < MAX_CPUS && init_task == nullptr; cpu++) {
+          // Try picking tasks from this CPU until we find TID=1000 or exhaust
+          constexpr u32 MAX_SCAN = 32;
+          Thread *stash[MAX_SCAN];
+          u32 stash_count = 0;
+
+          for (u32 s = 0; s < MAX_SCAN; s++) {
+            Thread *t = pick_next_task(cpu);
+            if (t == nullptr) break;
+            dequeue_task(t);
+            if (t->tid == 1000) {
+              init_task = t;
+              break;
+            }
+            stash[stash_count++] = t;
+          }
+          // Re-enqueue any tasks we pulled out
+          for (u32 s = 0; s < stash_count; s++) {
+            enqueue_task(stash[s], cpu);
+          }
+        }
+
+        if (init_task != nullptr) {
+          log::klog::info("initial dispatch: TID=1000 -> switch_to_user");
+          context_switch_to_task(init_task);
+          // switch_to_user does eret and never returns for user tasks.
+          // If we somehow get here (shouldn't), re-enqueue.
+          enqueue_task(init_task, current_cpu);
+        } else {
+          log::klog::warn("init process TID=1000 not found in any runqueue");
+        }
+      }
+
       // Timer-driven scheduling: CPU sleeps until timer interrupt fires,
       // which invokes scheduler_tick() to perform scheduling decisions.
       while (true) {

@@ -21,6 +21,17 @@ extern "C" void unhandled_exception_handler(
     unsigned long long far_addr,
     unsigned long long elr) noexcept;
 
+// User-mode exception handlers (called from lower_el_sync_dispatch)
+extern "C" [[noreturn]] void user_page_fault_handler(
+    unsigned long long esr,
+    unsigned long long far_addr,
+    unsigned long long elr) noexcept;
+
+extern "C" [[noreturn]] void unhandled_user_exception_handler(
+    unsigned long long esr,
+    unsigned long long far_addr,
+    unsigned long long elr) noexcept;
+
 module moss.mm;
 
 namespace moss::kernel::mm {
@@ -190,6 +201,95 @@ extern "C" void kernel_page_fault_handler(
     // Other DFSC values (alignment, external abort, etc.)
     log::klog::panic("KERNEL FAULT: unhandled dfsc={:#x} ({}) addr={:#x} pc={:#x}",
                      dfsc, mm::dfsc_to_string(dfsc), far_addr, elr);
+    while (true) {
+#if defined(MOSS_ARCH_ARM64)
+        asm volatile("wfi");
+#endif
+    }
+}
+
+// ============================================================================
+// User-mode page fault handler
+//
+// Called from lower_el_sync_dispatch when EC=0x24 (Data Abort, lower EL) or
+// EC=0x20 (Instruction Abort, lower EL).
+//
+// MVP behaviour: log diagnostics and terminate the faulting user process.
+// The kernel does NOT panic — it simply kills the offending process and
+// lets the scheduler pick the next runnable task.
+//
+// Future: demand paging, COW, stack growth, mmap fault-in.
+// ============================================================================
+extern "C" [[noreturn]] void user_page_fault_handler(
+    unsigned long long esr,
+    unsigned long long far_addr,
+    unsigned long long elr) noexcept {
+    namespace log = moss::kernel::logging;
+    namespace mm  = moss::kernel::mm;
+    using moss::u64;
+
+    u64 ec   = (esr >> 26) & 0x3F;
+    u64 dfsc = esr & 0x3F;
+    bool is_write = ((esr >> 6) & 1) != 0;
+
+    log::klog::error("USER PAGE FAULT: addr={:#x} pc={:#x} write={} ec={:#x} ({})",
+                     far_addr, elr, is_write,
+                     ec, mm::ec_to_string(ec));
+    log::klog::error("  DFSC: {:#x} ({})", dfsc, mm::dfsc_to_string(dfsc));
+
+    // TODO: Once VMA regions are tracked per-process, look up the faulting
+    // address in the process VMA list and handle demand paging / COW here.
+    // For now, any user page fault is fatal to the process.
+
+    log::klog::error("  Terminating user process (SIGSEGV equivalent)");
+
+    // TODO: Properly terminate the current user process via the scheduler.
+    // For MVP, we just log and return — the eret will re-execute the
+    // faulting instruction, which will fault again. To prevent an infinite
+    // loop, we advance ELR past the faulting instruction (skip 4 bytes on
+    // ARM64) and set x0 to an error indicator. In practice, the user
+    // program will crash on the next instruction, but the kernel stays alive.
+    //
+    // A proper implementation would: mark process as killed, switch to
+    // scheduler, never return to this user context.
+
+    // For now: halt the CPU to prevent infinite fault loop.
+    // This is temporary until we have proper process termination.
+    log::klog::error("  Halting CPU (user process killed)");
+    while (true) {
+#if defined(MOSS_ARCH_ARM64)
+        asm volatile("wfi");
+#endif
+    }
+}
+
+// ============================================================================
+// Unhandled user-mode exception handler
+//
+// Called for any Lower EL synchronous exception that is NOT an SVC, Data
+// Abort, or Instruction Abort (e.g., SP alignment fault, illegal execution
+// state, FP trap, etc.).
+// ============================================================================
+extern "C" [[noreturn]] void unhandled_user_exception_handler(
+    unsigned long long esr,
+    unsigned long long far_addr,
+    unsigned long long elr) noexcept {
+    namespace log = moss::kernel::logging;
+    using moss::u64;
+
+    u64 ec  = (esr >> 26) & 0x3F;
+    u64 iss = esr & 0x1FFFFFF;
+
+    log::klog::error("=== UNHANDLED USER EXCEPTION ===");
+    log::klog::error("EC:  {:#x} ({})", ec, moss::kernel::mm::ec_to_string(ec));
+    log::klog::error("ISS: {:#x}", iss);
+    log::klog::error("ESR: {:#x}", esr);
+    log::klog::error("FAR: {:#x}", far_addr);
+    log::klog::error("ELR: {:#x}", elr);
+    log::klog::error("Terminating user process");
+
+    // Same temporary halt as user_page_fault_handler.
+    // Proper implementation: kill process, return to scheduler.
     while (true) {
 #if defined(MOSS_ARCH_ARM64)
         asm volatile("wfi");

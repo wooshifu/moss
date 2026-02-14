@@ -369,7 +369,7 @@ exception_vectors:
 
     // Lower EL using AArch64
     .align 7
-    b       syscall_entry_point  // Synchronous (SVC from user space)
+    b       lower_el_sync_dispatch  // Synchronous (SVC / Data Abort / Instr Abort)
     .align 7
     b       irq_trampoline       // IRQ
     .align 7
@@ -536,12 +536,126 @@ exception_handler:
     add     sp, sp, #(34 * 8)
     eret
 
+// ============================================================================
+// Lower EL Synchronous exception dispatch
+//
+// All synchronous exceptions from EL0 (userspace) arrive here.
+// We save context, read ESR_EL1, extract EC, and route:
+//   EC=0x15 (SVC AArch64)                → system_call_handler (C)
+//   EC=0x24 (Data Abort, lower EL)       → user_page_fault_handler (C)
+//   EC=0x20 (Instruction Abort, lower EL)→ user_page_fault_handler (C)
+//   Other EC                              → unhandled_user_exception_handler (C)
+// ============================================================================
+lower_el_sync_dispatch:
+    // Save all general-purpose registers using the standard 34-slot frame
+    sub     sp, sp, #(34 * 8)
+
+    stp     x0,  x1,  [sp, #(0  * 8)]
+    stp     x2,  x3,  [sp, #(2  * 8)]
+    stp     x4,  x5,  [sp, #(4  * 8)]
+    stp     x6,  x7,  [sp, #(6  * 8)]
+    stp     x8,  x9,  [sp, #(8  * 8)]
+    stp     x10, x11, [sp, #(10 * 8)]
+    stp     x12, x13, [sp, #(12 * 8)]
+    stp     x14, x15, [sp, #(14 * 8)]
+    stp     x16, x17, [sp, #(16 * 8)]
+    stp     x18, x19, [sp, #(18 * 8)]
+    stp     x20, x21, [sp, #(20 * 8)]
+    stp     x22, x23, [sp, #(22 * 8)]
+    stp     x24, x25, [sp, #(24 * 8)]
+    stp     x26, x27, [sp, #(26 * 8)]
+    stp     x28, x29, [sp, #(28 * 8)]
+    str     x30,       [sp, #(30 * 8)]
+
+    mrs     x0, elr_el1
+    mrs     x1, spsr_el1
+    stp     x0,  x1,  [sp, #(31 * 8)]
+
+    // Read ESR_EL1 and extract EC = bits[31:26]
+    mrs     x9, esr_el1
+    lsr     x10, x9, #26
+    and     x10, x10, #0x3F
+
+    // EC=0x15: SVC from AArch64 (system call)
+    cmp     x10, #0x15
+    b.eq    .Llower_syscall
+
+    // EC=0x24: Data Abort from lower EL (user page fault)
+    cmp     x10, #0x24
+    b.eq    .Llower_page_fault
+
+    // EC=0x20: Instruction Abort from lower EL (user page fault)
+    cmp     x10, #0x20
+    b.eq    .Llower_page_fault
+
+    // All other EC: unhandled user exception
+    mov     x0, x9              // arg0: ESR_EL1
+    mrs     x1, far_el1         // arg1: FAR_EL1
+    mrs     x2, elr_el1         // arg2: ELR_EL1
+    bl      unhandled_user_exception_handler
+    b       .Llower_restore_eret
+
+.Llower_syscall:
+    // Syscall: x8 = syscall number, x0-x5 = args (saved on stack)
+    // Prepare arguments for system_call_handler(nr, a0..a5)
+    ldr     x0, [sp, #(8  * 8)]    // x8 = syscall number → arg0
+    ldr     x1, [sp, #(0  * 8)]    // x0 = user arg0 → arg1
+    ldr     x2, [sp, #(1  * 8)]    // x1 = user arg1 → arg2
+    ldr     x3, [sp, #(2  * 8)]    // x2 = user arg2 → arg3
+    ldr     x4, [sp, #(3  * 8)]    // x3 = user arg3 → arg4
+    ldr     x5, [sp, #(4  * 8)]    // x4 = user arg4 → arg5
+    ldr     x6, [sp, #(5  * 8)]    // x5 = user arg5 → arg6
+    bl      system_call_handler
+
+    // Store return value into saved x0 slot so user sees it after eret
+    str     x0, [sp, #(0  * 8)]
+    b       .Llower_restore_eret
+
+.Llower_page_fault:
+    // User page fault: pass ESR, FAR, ELR to C handler
+    mov     x0, x9              // arg0: ESR_EL1 (already in x9)
+    mrs     x1, far_el1         // arg1: FAR_EL1
+    mrs     x2, elr_el1         // arg2: ELR_EL1
+    bl      user_page_fault_handler
+    // Fall through to restore — handler may have resolved the fault,
+    // or terminated the process (scheduler will pick next task).
+    b       .Llower_restore_eret
+
+.Llower_restore_eret:
+    // Restore ELR_EL1 and SPSR_EL1
+    ldp     x0,  x1,  [sp, #(31 * 8)]
+    msr     elr_el1, x0
+    msr     spsr_el1, x1
+
+    // Restore general-purpose registers
+    ldp     x0,  x1,  [sp, #(0  * 8)]
+    ldp     x2,  x3,  [sp, #(2  * 8)]
+    ldp     x4,  x5,  [sp, #(4  * 8)]
+    ldp     x6,  x7,  [sp, #(6  * 8)]
+    ldp     x8,  x9,  [sp, #(8  * 8)]
+    ldp     x10, x11, [sp, #(10 * 8)]
+    ldp     x12, x13, [sp, #(12 * 8)]
+    ldp     x14, x15, [sp, #(14 * 8)]
+    ldp     x16, x17, [sp, #(16 * 8)]
+    ldp     x18, x19, [sp, #(18 * 8)]
+    ldp     x20, x21, [sp, #(20 * 8)]
+    ldp     x22, x23, [sp, #(22 * 8)]
+    ldp     x24, x25, [sp, #(24 * 8)]
+    ldp     x26, x27, [sp, #(26 * 8)]
+    ldp     x28, x29, [sp, #(28 * 8)]
+    ldr     x30,       [sp, #(30 * 8)]
+
+    add     sp, sp, #(34 * 8)
+    eret
+
 // 导出符号给链接器
 .global _bss_start_addr, _bss_end_addr, _stack_top_addr
 .global exception_vectors
 
 // 引用外部符号
-.extern syscall_entry_point
+.extern system_call_handler
 .extern irq_handler_c
 .extern kernel_page_fault_handler
 .extern unhandled_exception_handler
+.extern user_page_fault_handler
+.extern unhandled_user_exception_handler
