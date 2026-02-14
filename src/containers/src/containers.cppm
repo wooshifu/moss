@@ -213,6 +213,101 @@ struct alignas(moss::kernel::CACHE_LINE_SIZE) CacheAlignedAtomic {
   [[nodiscard]] operator T() const noexcept { return value; }
 };
 
+// ============================================================================
+// Ticket SpinLock — fair, FIFO-ordered mutual exclusion
+// ============================================================================
+
+// ARM64-optimized ticket spinlock.
+// Uses fetch_add for ticket acquisition (LDAXR/STLXR on ARM64).
+// Waiters use cpu_yield() which maps to WFE on ARM64, woken by
+// SEV generated implicitly by the store-release in unlock().
+class TicketSpinLock {
+private:
+  AtomicU32 next_ticket_{0};
+  AtomicU32 now_serving_{0};
+
+public:
+  constexpr TicketSpinLock() noexcept = default;
+
+  TicketSpinLock(const TicketSpinLock &) = delete;
+  TicketSpinLock &operator=(const TicketSpinLock &) = delete;
+
+  void lock() noexcept {
+    u32 my_ticket = next_ticket_.fetch_add(1, MemoryOrder::Acquire);
+    while (now_serving_.load(MemoryOrder::Acquire) != my_ticket) {
+      moss::kernel::arch::cpu_yield();  // WFE on ARM64
+    }
+  }
+
+  void unlock() noexcept {
+    (void)now_serving_.fetch_add(1, MemoryOrder::Release);
+    // ARM64: store-release generates implicit SEV to wake WFE waiters
+  }
+
+  [[nodiscard]] bool try_lock() noexcept {
+    u32 current = now_serving_.load(MemoryOrder::Acquire);
+    u32 next = current;
+    return next_ticket_.compare_exchange_weak(next, current + 1,
+                                              MemoryOrder::Acquire,
+                                              MemoryOrder::Relaxed);
+  }
+
+  [[nodiscard]] bool is_locked() const noexcept {
+    return next_ticket_.load(MemoryOrder::Relaxed) !=
+           now_serving_.load(MemoryOrder::Relaxed);
+  }
+};
+
+// IRQ-safe spinlock variant: disables IRQs while held.
+// Prevents deadlock when IRQ handler also takes the same lock.
+class IrqSpinLock {
+private:
+  TicketSpinLock inner_;
+
+public:
+  constexpr IrqSpinLock() noexcept = default;
+
+  IrqSpinLock(const IrqSpinLock &) = delete;
+  IrqSpinLock &operator=(const IrqSpinLock &) = delete;
+
+  void lock() noexcept {
+    moss::kernel::arch::disable_interrupts();
+    inner_.lock();
+  }
+
+  void unlock() noexcept {
+    inner_.unlock();
+    moss::kernel::arch::enable_interrupts();
+  }
+
+  [[nodiscard]] bool try_lock() noexcept {
+    moss::kernel::arch::disable_interrupts();
+    if (inner_.try_lock()) {
+      return true;
+    }
+    moss::kernel::arch::enable_interrupts();
+    return false;
+  }
+};
+
+// RAII lock guard
+template <typename LockType>
+class LockGuard {
+private:
+  LockType &lock_;
+
+public:
+  explicit LockGuard(LockType &lock) noexcept : lock_(lock) {
+    lock_.lock();
+  }
+  ~LockGuard() noexcept {
+    lock_.unlock();
+  }
+
+  LockGuard(const LockGuard &) = delete;
+  LockGuard &operator=(const LockGuard &) = delete;
+};
+
 // Per-CPU counter (avoids cache line contention)
 template <typename T> class PerCpuCounter {
 private:
