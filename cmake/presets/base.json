@@ -14,20 +14,19 @@
             "installDir": "${sourceDir}/install/${presetName}",
             "cacheVariables": {
                 "CMAKE_EXPORT_COMPILE_COMMANDS": "ON",
-                "CMAKE_C_COMPILER": "clang-21",
-                "CMAKE_CXX_COMPILER": "clang++-21",
-                "CMAKE_ASM_COMPILER": "clang-21",
+                "CMAKE_TRY_COMPILE_TARGET_TYPE": "STATIC_LIBRARY",
+                "CMAKE_C_COMPILER": "clang",
+                "CMAKE_CXX_COMPILER": "clang++",
+                "CMAKE_ASM_COMPILER": "clang",
                 "CMAKE_SYSTEM_NAME": "Generic",
                 "MOSS_TARGET_PLATFORM": "QEMU_VIRT",
-                "CMAKE_CXX_FLAGS": ""
+                "CMAKE_C_FLAGS": "",
+                "CMAKE_CXX_FLAGS": "",
+                "CMAKE_EXE_LINKER_FLAGS": "-fuse-ld=lld -nostdlib -nostartfiles -static -T ${sourceDir}/linker.ld",
+                "CMAKE_SHARED_LINKER_FLAGS": "-fuse-ld=lld -nostdlib"
             },
             "environment": {
-                "CXX": "clang++-21"
-            },
-            "vendor": {
-                "microsoft.com/VisualStudioSettings/CMake/1.0": {
-                    "hostOS": ["Linux"]
-                }
+                "CXX": "clang++"
             }
         }
     ]

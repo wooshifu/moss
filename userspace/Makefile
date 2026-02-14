@@ -1,6 +1,6 @@
 # 用户空间程序构建配置
-CC = clang-21
-OBJCOPY = llvm-objcopy-21
+CC = clang
+OBJCOPY = llvm-objcopy
 
 # 编译标志
 CFLAGS = -target aarch64-linux-gnu \

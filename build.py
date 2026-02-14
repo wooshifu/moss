@@ -4,9 +4,18 @@
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
+import io
+import os
 import shutil
 import subprocess
+import sys
 import time
+
+# Windows 终端默认 GBK 编码无法输出 emoji，强制使用 UTF-8
+if sys.platform == "win32":
+    sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="replace")
+    sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding="utf-8", errors="replace")
+    os.environ.setdefault("PYTHONIOENCODING", "utf-8")
 
 import typer
 from rich.console import Console
@@ -14,7 +23,7 @@ from rich.progress import Progress, SpinnerColumn, TextColumn, TimeElapsedColumn
 from rich.table import Table
 from rich import print as rprint
 
-console = Console()
+console = Console(force_terminal=True)
 
 # 创建应用
 app = typer.Typer(help="🚀 Moss 内核多架构构建工具", rich_markup_mode="rich")
@@ -51,7 +60,8 @@ def get_cmake_presets() -> list[str]:
     try:
         result = subprocess.run(
             ["cmake", "--list-presets", "workflow"],
-            capture_output=True, text=True, check=False
+            capture_output=True, text=True, encoding="utf-8", errors="replace",
+            check=False,
         )
 
         presets = []
@@ -116,7 +126,10 @@ def execute_build(preset: str, verbose: bool, dry_run: bool) -> BuildResult:
             console.print(f"[blue]▶️  执行: {' '.join(cmd)}[/blue]")
             subprocess.run(cmd, check=True)
         else:
-            subprocess.run(cmd, capture_output=True, text=True, check=True)
+            subprocess.run(
+                cmd, capture_output=True, text=True,
+                encoding="utf-8", errors="replace", check=True,
+            )
 
         result.status = "success"
         result.duration = time.time() - start_time
@@ -125,7 +138,7 @@ def execute_build(preset: str, verbose: bool, dry_run: bool) -> BuildResult:
     except subprocess.CalledProcessError as e:
         result.status = "failed"
         result.duration = time.time() - start_time
-        result.error_msg = getattr(e, 'stderr', str(e))
+        result.error_msg = getattr(e, 'stderr', '') or str(e)
         console.print(f"[red]❌ {preset} 构建失败 ({result.duration:.1f}s)[/red]")
         if not verbose and result.error_msg:
             console.print(f"[dim red]{result.error_msg.strip()}[/dim red]")
