@@ -353,12 +353,26 @@ struct Thread {
   // on every re-dispatch after preemption.
   bool is_user_task;
 
+  // Per-thread kernel stack: used as SP_EL1 when handling exceptions
+  // from this thread's user-mode execution.  For kernel threads, this
+  // is the same as their regular stack.  For user threads, this is a
+  // separately allocated 16KB region.
+  // kernel_stack_top is the high end (SP initial value, 16-byte aligned).
+  VirtAddr kernel_stack_base;   // low address of allocated region
+  usize kernel_stack_size;      // size in bytes (typically 16KB)
+
   Thread(ThreadId id, ProcessId pid) noexcept
       : tid(id), owner_pid(pid), context{}, cpu(0), wake_cpu(0),
         state(ProcessState::Created), sched_class(SchedClass::Normal), se{},
         rt{}, start_time(0), utime(0), stime(0), stack_base(0), stack_size(0),
         wait_queue(0), signal_mask(0), pending_signals(0),
-        needs_initial_eret(false), is_user_task(false) {}
+        needs_initial_eret(false), is_user_task(false),
+        kernel_stack_base(0), kernel_stack_size(0) {}
+
+  // Returns the top of this thread's kernel stack (for TPIDR_EL1).
+  [[nodiscard]] VirtAddr kernel_stack_top() const noexcept {
+    return kernel_stack_base + kernel_stack_size;
+  }
 };
 
 // Process control block
@@ -1902,6 +1916,15 @@ private:
                          proc != nullptr, proc ? (proc->address_space() != nullptr) : false,
                          proc && proc->address_space() ? proc->address_space()->pgd_phys : 0ULL);
       }
+
+      // Set TPIDR_EL1 to the per-thread kernel stack top.
+      // switch_to_user reads TPIDR_EL1 to set SP_EL1 before eret.
+      // When the next exception from EL0 occurs, SP_EL1 will be this
+      // thread's dedicated kernel stack — not the shared boot stack.
+      if (task->kernel_stack_base != 0) {
+        u64 kstack_top = task->kernel_stack_top();
+        asm volatile("msr tpidr_el1, %0" :: "r"(kstack_top));
+      }
 #endif
       switch_to_user(&task->context, task->stack_base + task->stack_size - 16);
     } else {
@@ -1928,6 +1951,17 @@ private:
                         | (static_cast<u64>(proc->address_space()->asid) << 48);
           asm volatile("msr ttbr0_el1, %0" :: "r"(ttbr0_val));
           asm volatile("isb" ::: "memory");
+        }
+
+        // Set TPIDR_EL1 for per-thread kernel stack.
+        // After context_switch restores this task → ret into irq_trampoline
+        // → irq_trampoline's add sp + eret → SP_EL1 = kernel_stack_top.
+        // The TPIDR_EL1 value is not used by context_switch itself, but
+        // will be read by switch_to_user on future first-entry paths or
+        // by irq_trampoline exit to verify SP correctness.
+        if (task->kernel_stack_base != 0) {
+          u64 kstack_top = task->kernel_stack_top();
+          asm volatile("msr tpidr_el1, %0" :: "r"(kstack_top));
         }
       }
 
