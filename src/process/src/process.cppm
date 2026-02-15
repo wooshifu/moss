@@ -924,16 +924,6 @@ private:
 
     if (should_update_leftmost) {
       rb_leftmost_ = node;
-
-      static u64 leftmost_updates = 0;
-      leftmost_updates++;
-      if (leftmost_updates <= 50 || leftmost_updates % 1000000 == 0) {
-        if (rb_leftmost_ != node) {
-          log::klog::debug("leftmost update: TID={} vruntime={} (replacing TID={})", static_cast<u32>(node->data->tid), vruntime, static_cast<u32>(rb_leftmost_->data->tid));
-        } else {
-          log::klog::debug("leftmost update: TID={} vruntime={}", static_cast<u32>(node->data->tid), vruntime);
-        }
-      }
     }
 
     rb_insert_fixup(node);
@@ -941,8 +931,6 @@ private:
 
   void rb_remove(RbNode<Thread> *node) noexcept {
     if (node == nullptr) return;
-
-    log::klog::debug("rb_remove: TID={} vruntime={}", static_cast<u32>(node->data->tid), node->data->se.vruntime);
 
     bool was_leftmost = (node == rb_leftmost_);
 
@@ -954,23 +942,12 @@ private:
       }
 
       rb_leftmost_ = new_leftmost;
-
-      if (rb_leftmost_) {
-        log::klog::debug("leftmost updated: new leftmost TID={} vruntime={}", static_cast<u32>(rb_leftmost_->data->tid), rb_leftmost_->data->se.vruntime);
-      } else {
-        log::klog::debug("leftmost updated: tree empty");
-      }
     }
 
     rb_delete_node(node);
 
     if (rb_root_ != nullptr && rb_leftmost_ == nullptr) {
       rb_leftmost_ = find_tree_minimum(rb_root_);
-      if (rb_leftmost_) {
-        log::klog::debug("leftmost pointer fixed: TID={}", static_cast<u32>(rb_leftmost_->data->tid));
-      } else {
-        log::klog::debug("leftmost pointer fixed");
-      }
     }
 
     #ifdef DEBUG
@@ -1071,24 +1048,18 @@ private:
     if (node->left == nullptr && node->right == nullptr) {
       replacement = nullptr;
       replace_node_in_parent(node, nullptr);
-
-      log::klog::debug("delete leaf vruntime={}", node->data->se.vruntime);
     }
     // Case 2: Only right child
     else if (node->left == nullptr) {
       replacement = node->right;
       replace_node_in_parent(node, node->right);
       node->right->parent = original_parent;
-
-      log::klog::debug("delete single-child(right) vruntime={} replacement vruntime={}", node->data->se.vruntime, replacement->data->se.vruntime);
     }
     // Case 3: Only left child
     else if (node->right == nullptr) {
       replacement = node->left;
       replace_node_in_parent(node, node->left);
       node->left->parent = original_parent;
-
-      log::klog::debug("delete single-child(left) vruntime={} replacement vruntime={}", node->data->se.vruntime, replacement->data->se.vruntime);
     }
     // Case 4: Two children - find inorder successor
     else {
@@ -1114,15 +1085,11 @@ private:
       successor->left = node->left;
       successor->left->parent = successor;
       successor->red = node->red;
-
-      log::klog::debug("delete two-children vruntime={} successor vruntime={}", node->data->se.vruntime, successor->data->se.vruntime);
     }
 
     if (!original_red && replacement != nullptr) {
       rb_delete_fixup(replacement);
     }
-
-    log::klog::debug("node deletion complete, remaining tasks={}", nr_running_);
   }
 
   void replace_node_in_parent(RbNode<Thread>* old_node, RbNode<Thread>* new_node) noexcept {
@@ -1540,7 +1507,9 @@ public:
       log::klog::warn("TID=1000 not found in current running tasks");
     }
 
-    alignas(16) static char test_task_stacks[20][8192];
+    // 32KB per stack — IRQ handling (irq_trampoline 272B + scheduler_tick
+    // + RB-tree ops + logging) runs on the interrupted task's stack.
+    alignas(16) static char test_task_stacks[20][32768];
     static Thread* test_threads[20];
 
     u32 created_tasks = 0;
