@@ -1898,14 +1898,20 @@ private:
       // First entry into user space — set up TTBR0 and eret to EL0.
       // Subsequent dispatches (after IRQ preemption) go through the normal
       // context_switch path; irq_trampoline's eret returns to EL0.
+      //
+      // CRITICAL: Disable IRQs for the entire sequence.  A timer IRQ between
+      // set_current_task() and switch_to_user() would trigger scheduler_tick
+      // which calls context_switch(&this_task->context, ...), overwriting
+      // context.pc with a kernel LR.  switch_to_user's eret restores SPSR
+      // with DAIF=0, so IRQs are re-enabled upon entering EL0.
       task->needs_initial_eret = false;
 #if defined(MOSS_ARCH_ARM64)
+      arch::disable_interrupts();
+
       Process *proc = g_process_manager ? g_process_manager->find_process(task->owner_pid) : nullptr;
       if (proc && proc->address_space() && proc->address_space()->pgd_phys != 0) {
         u64 ttbr0_val = proc->address_space()->pgd_phys
                       | (static_cast<u64>(proc->address_space()->asid) << 48);
-        log::klog::debug("TTBR0 switch: pgd={:#x} asid={} ttbr0_val={:#x}",
-                         proc->address_space()->pgd_phys, proc->address_space()->asid, ttbr0_val);
         asm volatile("msr ttbr0_el1, %0" :: "r"(ttbr0_val));
         asm volatile("isb" ::: "memory");
       } else {
@@ -1914,8 +1920,6 @@ private:
                          proc && proc->address_space() ? proc->address_space()->pgd_phys : 0ULL);
       }
 #endif
-      log::klog::debug("switch_to_user: pc={:#x} sp={:#x}",
-                       task->context.pc, task->stack_base + task->stack_size - 16);
       switch_to_user(&task->context, task->stack_base + task->stack_size - 16);
     } else {
 #if defined(MOSS_ARCH_ARM64)
