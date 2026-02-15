@@ -146,30 +146,33 @@ context_switch:
 
 .size context_switch, .-context_switch
 
-// 进入用户模式的上下文切换
+// Enter user mode for the first time
 // void switch_to_user(CpuContext* context, uint64_t user_stack)
 // x0 = context, x1 = user stack pointer
+//
+// IMPORTANT: Before eret, SP_EL1 is set to this thread's kernel stack top
+// (from TPIDR_EL1).  This ensures that when an exception from EL0 brings us
+// back to EL1, SP_EL1 points to the correct per-thread kernel stack.
 .global switch_to_user
 .type switch_to_user, @function
 switch_to_user:
-    // 设置异常返回状态 - 正确的EL0切换
-    // SPSR_EL1 for EL0t (EL0 with SP_EL0): M[3:0] = 0000, other flags cleared
-    mov     x2, #0x0              // EL0t mode, interrupts enabled
+    // SPSR_EL1 for EL0t: M[3:0]=0000, interrupts enabled
+    mov     x2, #0x0
     msr     spsr_el1, x2
 
-    // 设置用户模式栈指针
+    // Set user stack pointer
     msr     sp_el0, x1
 
-    // 设置返回地址（用户程序入口）
-    ldr     x2, [x0, #256]        // 加载PC
+    // Set return address (user entry point)
+    ldr     x2, [x0, #256]        // PC
     msr     elr_el1, x2
 
-    // 恢复浮点状态寄存器
+    // Restore FP status
     ldp     x2, x3, [x0, #272]
     msr     fpsr, x2
     msr     fpcr, x3
 
-    // 恢复NEON/FP寄存器
+    // Restore NEON/FP registers
     add     x2, x0, #288
     ldp     q0, q1, [x2, #0]
     ldp     q2, q3, [x2, #32]
@@ -188,11 +191,11 @@ switch_to_user:
     ldp     q28, q29, [x2, #448]
     ldp     q30, q31, [x2, #480]
 
-    // 恢复线程指针寄存器
+    // Restore thread pointer
     ldr     x2, [x0, #800]
     msr     tpidr_el0, x2
 
-    // 恢复通用寄存器
+    // Restore general-purpose registers
     ldp     x2, x3, [x0, #16]
     ldp     x4, x5, [x0, #32]
     ldp     x6, x7, [x0, #48]
@@ -209,10 +212,17 @@ switch_to_user:
     ldp     x28, x29, [x0, #224]
     ldr     x30, [x0, #240]
 
-    // 最后恢复x0,x1
-    ldp     x0, x1, [x0, #0]
+    // Set SP_EL1 to this thread's per-thread kernel stack top BEFORE eret.
+    // After eret to EL0, SP_EL1 is preserved.  The next exception from EL0
+    // will enter EL1 with SP = this kernel stack — no assembly trampoline needed.
+    // Use x1 as scratch (x0 still holds context ptr for the final ldp below).
+    mrs     x1, tpidr_el1           // x1 = kernel stack top
+    mov     sp, x1                  // SP_EL1 = per-thread kernel stack
 
-    // 异常返回到用户模式
+    // Restore x0, x1 last (x0 still valid: context ptr, x1 overwritten above)
+    ldr     x1, [x0, #8]           // restore x1 from context
+    ldr     x0, [x0, #0]           // restore x0 from context
+
     eret
 
 .size switch_to_user, .-switch_to_user

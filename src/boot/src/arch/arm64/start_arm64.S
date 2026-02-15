@@ -397,10 +397,13 @@ exception_vectors:
     b       exception_handler    // SError
 
     // Lower EL using AArch64
+    // NOTE: SP_EL1 is pre-set to the current thread's kernel stack top before
+    // entering EL0 (in switch_to_user and after irq_trampoline cleanup).
+    // So when exceptions from EL0 arrive here, SP is already correct.
     .align 7
     b       lower_el_sync_dispatch  // Synchronous (SVC / Data Abort / Instr Abort)
     .align 7
-    b       irq_trampoline       // IRQ
+    b       irq_trampoline       // IRQ — SP_EL1 pre-set to per-thread kernel stack
     .align 7
     b       exception_handler    // FIQ
     .align 7
@@ -410,7 +413,7 @@ exception_vectors:
     .align 7
     b       exception_handler    // Synchronous
     .align 7
-    b       irq_trampoline       // IRQ
+    b       irq_trampoline       // IRQ — SP_EL1 pre-set to per-thread kernel stack
     .align 7
     b       exception_handler    // FIQ
     .align 7
@@ -418,6 +421,12 @@ exception_vectors:
 
 // ============================================================================
 // IRQ trampoline: save caller-saved registers, call C handler, restore, eret
+//
+// For exceptions from EL0 (user-mode), SP_EL1 is pre-set to the current
+// thread's per-thread kernel stack top before entering user mode:
+//   - switch_to_user: sets SP = kernel_stack_top via TPIDR_EL1 before eret
+//   - irq_trampoline: after `add sp, #(34*8)`, SP_EL1 = kernel_stack_top
+// So when we arrive here from either Same EL or Lower EL, SP is always valid.
 // ============================================================================
 irq_trampoline:
     // Save general-purpose registers (all caller-saved + some callee-saved
