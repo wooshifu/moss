@@ -347,12 +347,18 @@ struct Thread {
   // context_switch + irq_trampoline eret, so this is set false.
   bool needs_initial_eret;
 
+  // Permanent flag: true for tasks that run in EL0 (user-mode).
+  // Unlike needs_initial_eret (which is cleared after first eret),
+  // this persists for the task's lifetime and drives TTBR0 switching
+  // on every re-dispatch after preemption.
+  bool is_user_task;
+
   Thread(ThreadId id, ProcessId pid) noexcept
       : tid(id), owner_pid(pid), context{}, cpu(0), wake_cpu(0),
         state(ProcessState::Created), sched_class(SchedClass::Normal), se{},
         rt{}, start_time(0), utime(0), stime(0), stack_base(0), stack_size(0),
         wait_queue(0), signal_mask(0), pending_signals(0),
-        needs_initial_eret(false) {}
+        needs_initial_eret(false), is_user_task(false) {}
 };
 
 // Process control block
@@ -397,6 +403,14 @@ public:
 
   ~Process() noexcept {
     cleanup_threads();
+
+    // Free user page tables and demand-paged physical pages.
+    // Must happen AFTER TTBR0 is restored to kernel PGD (done in sys_exit
+    // and terminate_current_user_process) so we don't free active tables.
+    if (address_space_ && address_space_->pgd_phys != 0) {
+      mm::PageTableManager::free_user_page_tables(address_space_->pgd_phys);
+      address_space_->pgd_phys = 0; // Prevent double-free
+    }
   }
 
   // Non-copyable (deleted copy constructor and copy assignment)
@@ -1902,6 +1916,21 @@ private:
       } else {
         prev_ctx = &bootstrap_contexts_[get_current_cpu_id()];
       }
+
+      // For user tasks being re-dispatched after preemption:
+      // Set TTBR0 to this process's page tables BEFORE context_switch.
+      // context_switch restores regs → ret into irq_trampoline → eret to EL0.
+      // Without this, the user task would resume with the wrong (or kernel) page tables.
+      if (task->is_user_task) {
+        Process *proc = g_process_manager ? g_process_manager->find_process(task->owner_pid) : nullptr;
+        if (proc && proc->address_space() && proc->address_space()->pgd_phys != 0) {
+          u64 ttbr0_val = proc->address_space()->pgd_phys
+                        | (static_cast<u64>(proc->address_space()->asid) << 48);
+          asm volatile("msr ttbr0_el1, %0" :: "r"(ttbr0_val));
+          asm volatile("isb" ::: "memory");
+        }
+      }
+
       // Mask IRQs before context_switch.  context_switch does NOT
       // touch DAIF, so the new task inherits IRQ-masked state.
       // Fresh tasks explicitly unmask in test_task_entry().

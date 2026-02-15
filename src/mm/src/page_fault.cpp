@@ -48,6 +48,11 @@ extern "C" {
 
     // Returns current process's PGD physical address, or 0 if none
     unsigned long long get_current_pgd_phys() noexcept;
+
+    // Terminate the current user process and switch to next runnable task.
+    // Called when a fatal user fault is unrecoverable (SIGSEGV equivalent).
+    // Never returns — hands control to scheduler.
+    [[noreturn]] void terminate_current_user_process(int exit_code) noexcept;
 }
 
 module moss.mm;
@@ -238,18 +243,17 @@ extern "C" void kernel_page_fault_handler(
 //
 // Future: demand paging, COW, stack growth, mmap fault-in.
 // ============================================================================
-// Helper: kill the current user process and halt
+// Helper: kill the current user process and hand control to the scheduler
 [[noreturn]] static void kill_user_process(const char* reason,
                                            unsigned long long far_addr,
                                            unsigned long long elr) noexcept {
     namespace log = moss::kernel::logging;
     log::klog::error("USER FAULT: {} addr={:#x} pc={:#x}", reason, far_addr, elr);
     log::klog::error("  Terminating user process (SIGSEGV equivalent)");
-    while (true) {
-#if defined(MOSS_ARCH_ARM64)
-        asm volatile("wfi");
-#endif
-    }
+
+    // Bridge to kernel module: terminates process + restores kernel TTBR0 +
+    // calls schedule_after_exit().  Never returns.
+    terminate_current_user_process(-11); // -11 ≈ SIGSEGV
 }
 
 // Attempt demand paging for a user translation fault.
@@ -397,11 +401,6 @@ extern "C" [[noreturn]] void unhandled_user_exception_handler(
     log::klog::error("ELR: {:#x}", elr);
     log::klog::error("Terminating user process");
 
-    // Same temporary halt as user_page_fault_handler.
-    // Proper implementation: kill process, return to scheduler.
-    while (true) {
-#if defined(MOSS_ARCH_ARM64)
-        asm volatile("wfi");
-#endif
-    }
+    // Terminate the faulting process and let the scheduler pick the next task.
+    terminate_current_user_process(-11); // -11 ≈ SIGSEGV
 }
