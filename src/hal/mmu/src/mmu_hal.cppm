@@ -60,6 +60,9 @@ inline constexpr u64 ATTR_DEVICE    = (0ULL << ATTR_IDX_SHIFT); // MAIR index 0
 inline constexpr u64 ATTR_NORMAL    = (1ULL << ATTR_IDX_SHIFT); // MAIR index 1
 inline constexpr u64 ATTR_NORMAL_NC = (2ULL << ATTR_IDX_SHIFT); // MAIR index 2
 
+// Software-defined: Copy-on-Write marker (bits 55-58 are software-available)
+inline constexpr u64 SW_COW         = (1ULL << 55);
+
 #elif defined(MOSS_ARCH_X86_64)
 // x86_64 4-level paging PTE format (Intel SDM Vol.3, Ch.4)
 inline constexpr u64 VALID          = (1ULL << 0);   // Present
@@ -82,6 +85,9 @@ inline constexpr u64 WRITABLE       = (1ULL << 1);   // R/W
 inline constexpr u64 DIRTY          = (1ULL << 6);   // Dirty
 inline constexpr u64 HUGE_PAGE      = (1ULL << 7);   // PS (Page Size, for 2MB/1GB)
 inline constexpr u64 GLOBAL         = (1ULL << 8);   // Global
+
+// Software-defined: Copy-on-Write marker (bit 52 is software-available)
+inline constexpr u64 SW_COW         = (1ULL << 52);
 
 #elif defined(MOSS_ARCH_RISCV)
 // RISC-V Sv48 PTE format (RISC-V Privileged Spec, Ch. 4.4)
@@ -106,6 +112,9 @@ inline constexpr u64 WRITE          = (1ULL << 2);   // W
 inline constexpr u64 EXECUTE        = (1ULL << 3);   // X
 inline constexpr u64 DIRTY          = (1ULL << 7);   // D (Dirty)
 inline constexpr u64 GLOBAL         = (1ULL << 5);   // G (Global)
+
+// Software-defined: Copy-on-Write marker (RSW bit 0, bits 8-9 are reserved for software)
+inline constexpr u64 SW_COW         = (1ULL << 8);
 #endif
 
 } // namespace PageAttr

@@ -153,6 +153,12 @@ public:
 
     [[nodiscard]] static MemoryStats get_memory_stats() noexcept;
 
+    // Page reference counting for COW (Copy-on-Write)
+    static void page_ref_inc(PhysAddr addr) noexcept;
+    static u32  page_ref_dec(PhysAddr addr) noexcept;   // returns new refcount
+    static u32  page_ref_get(PhysAddr addr) noexcept;
+    static void page_ref_set(PhysAddr addr, u32 count) noexcept;
+
 private:
     struct MemoryRegion {
         PhysAddr start_addr;
@@ -533,6 +539,35 @@ struct [[gnu::packed]] PageTableEntry {
         raw = (page_pa & hal::mmu::PTE_ADDR_MASK) | attributes | PageAttr::VALID | PageAttr::TABLE;
     }
     constexpr void clear() { raw = 0; }
+
+    // ---- COW (Copy-on-Write) helpers ----
+    [[nodiscard]] constexpr bool is_cow() const {
+        return (raw & PageAttr::SW_COW) != 0;
+    }
+    constexpr void set_cow() { raw |= PageAttr::SW_COW; }
+    constexpr void clear_cow() { raw &= ~PageAttr::SW_COW; }
+
+    // Make page read-only (architecture-specific bit manipulation)
+    constexpr void make_readonly() {
+#if defined(MOSS_ARCH_ARM64)
+        raw |= PageAttr::READONLY;     // AP[2]=1 → read-only
+#elif defined(MOSS_ARCH_X86_64)
+        raw &= ~PageAttr::WRITABLE;    // Clear R/W bit → read-only
+#elif defined(MOSS_ARCH_RISCV)
+        raw &= ~PageAttr::WRITE;       // Clear W bit → read-only
+#endif
+    }
+
+    // Make page writable (architecture-specific bit manipulation)
+    constexpr void make_writable() {
+#if defined(MOSS_ARCH_ARM64)
+        raw &= ~PageAttr::READONLY;    // Clear AP[2] → read-write
+#elif defined(MOSS_ARCH_X86_64)
+        raw |= PageAttr::WRITABLE;     // Set R/W bit → read-write
+#elif defined(MOSS_ARCH_RISCV)
+        raw |= PageAttr::WRITE;        // Set W bit → read-write
+#endif
+    }
 };
 
 static_assert(sizeof(PageTableEntry) == 8, "PageTableEntry must be 8 bytes");
@@ -641,7 +676,13 @@ public:
     // Walks PGD→PUD→PMD→PTE, frees leaf pages and intermediate tables.
     // Skips PGD[0] (shared kernel identity map).
     // The PGD page itself is also freed.
+    // COW-aware: only frees physical pages when refcount drops to 0.
     static void free_user_page_tables(PhysAddr pgd_phys);
+
+    // Walk user page tables and return a mutable pointer to the L3 PTE.
+    // Returns nullptr if any intermediate table is missing (does not allocate).
+    // Used by the COW fault handler to modify PTE in-place.
+    [[nodiscard]] static PageTableEntry* get_user_pte(PhysAddr pgd_phys, VirtAddr va);
 
     // Invalidate TLB entry for a single virtual address
     static void invalidate_tlb_addr(VirtAddr virt_addr) {

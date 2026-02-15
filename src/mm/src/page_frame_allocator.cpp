@@ -89,6 +89,15 @@ PageAllocResult<PhysAddr> PageFrameAllocator::allocate_pages(usize order) noexce
     [[maybe_unused]] auto old_free = free_pages_.fetch_sub(pages_allocated);
 
     PhysAddr allocated_addr = reinterpret_cast<PhysAddr>(block);
+
+    // Initialize reference count to 1 for COW tracking
+    if (page_metadata_ && memory_regions_) {
+        usize page_idx = addr_to_page(allocated_addr - memory_regions_->start_addr);
+        if (page_idx < total_pages_) {
+            page_metadata_[page_idx].ref_count.store(1, containers::MemoryOrder::Relaxed);
+        }
+    }
+
     return PageAllocResult<PhysAddr>{allocated_addr};
 }
 
@@ -152,7 +161,30 @@ PageAllocVoidResult PageFrameAllocator::parse_memory_layout() noexcept {
         return PageAllocVoidResult{PageAllocError::InitializationFailed};
     }
 
-    // 计算可用页面数
+    // 计算可用页面数 (preliminary, before reserving metadata)
+    usize raw_total_pages = (available_end - available_start) / PAGE_SIZE;
+
+    // Reserve space for page metadata array at the start of available memory.
+    // Each page needs a PageMetadata struct for COW reference counting.
+    usize metadata_bytes = raw_total_pages * sizeof(PageMetadata);
+    usize metadata_pages = (metadata_bytes + PAGE_SIZE - 1) / PAGE_SIZE;
+
+    page_metadata_ = reinterpret_cast<PageMetadata*>(available_start);
+
+    // Zero-initialize metadata
+    auto* raw_ptr = reinterpret_cast<u8*>(available_start);
+    for (usize i = 0; i < metadata_pages * PAGE_SIZE; i++) {
+        raw_ptr[i] = 0;
+    }
+
+    // Advance available_start past metadata region
+    available_start += metadata_pages * PAGE_SIZE;
+
+    if (available_start >= available_end) {
+        return PageAllocVoidResult{PageAllocError::InitializationFailed};
+    }
+
+    // Final page count (after metadata reservation)
     total_pages_ = (available_end - available_start) / PAGE_SIZE;
     free_pages_.store(total_pages_);
     used_pages_.store(0);
@@ -350,5 +382,43 @@ void PageFrameAllocator::dump_memory_layout() noexcept {
     // In production, use unified logging system
 }
 #endif
+
+// ============================================================================
+// Page reference counting for COW (Copy-on-Write)
+// ============================================================================
+
+void PageFrameAllocator::page_ref_inc(PhysAddr addr) noexcept {
+    if (!page_metadata_ || !memory_regions_) return;
+    usize idx = addr_to_page(addr - memory_regions_->start_addr);
+    if (idx < total_pages_) {
+        (void)page_metadata_[idx].ref_count.fetch_add(1);
+    }
+}
+
+u32 PageFrameAllocator::page_ref_dec(PhysAddr addr) noexcept {
+    if (!page_metadata_ || !memory_regions_) return 0;
+    usize idx = addr_to_page(addr - memory_regions_->start_addr);
+    if (idx < total_pages_) {
+        return page_metadata_[idx].ref_count.fetch_sub(1) - 1;
+    }
+    return 0;
+}
+
+u32 PageFrameAllocator::page_ref_get(PhysAddr addr) noexcept {
+    if (!page_metadata_ || !memory_regions_) return 0;
+    usize idx = addr_to_page(addr - memory_regions_->start_addr);
+    if (idx < total_pages_) {
+        return page_metadata_[idx].ref_count.load(containers::MemoryOrder::Relaxed);
+    }
+    return 0;
+}
+
+void PageFrameAllocator::page_ref_set(PhysAddr addr, u32 count) noexcept {
+    if (!page_metadata_ || !memory_regions_) return;
+    usize idx = addr_to_page(addr - memory_regions_->start_addr);
+    if (idx < total_pages_) {
+        page_metadata_[idx].ref_count.store(count, containers::MemoryOrder::Relaxed);
+    }
+}
 
 } // namespace moss::kernel::mm
