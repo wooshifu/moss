@@ -189,7 +189,8 @@ bss_cleared:
     ldr     x0, =_stack_top_addr
     mov     sp, x0
 
-    // 🔧 调试：发送CPU ID到UART证明CPU正在启动
+    // 🔧 调试：发送CPU ID到UART证明CPU正在启动 (locked)
+    bl      early_uart_acquire
     mov     x25, #0x09000000         // QEMU UART基址
     mov     x26, #'['
     str     w26, [x25]
@@ -199,6 +200,7 @@ bss_cleared:
     str     w26, [x25]
     mov     x26, #10                 // 换行符
     str     w26, [x25]
+    bl      early_uart_release
 
     b       primary_cpu_continue
 
@@ -213,7 +215,8 @@ secondary_el1_entry:
     mul     x1, x19, x1          // CPU ID * 栈大小
     sub     sp, x0, x1
 
-    // 🔧 调试：发送CPU ID到UART
+    // 🔧 调试：发送CPU ID到UART (locked)
+    bl      early_uart_acquire
     mov     x25, #0x09000000
     mov     x26, #'['
     str     w26, [x25]
@@ -223,12 +226,15 @@ secondary_el1_entry:
     str     w26, [x25]
     mov     x26, #10
     str     w26, [x25]
+    bl      early_uart_release
 
     b       secondary_cpu_park
 
 primary_cpu_continue:
 
-    // 🔧 主CPU调试信息
+    // 🔧 主CPU调试信息 (locked)
+    bl      early_uart_acquire
+    mov     x25, #0x09000000
     mov     x26, #'M'                // 主CPU标识
     str     w26, [x25]
     mov     x26, #'A'
@@ -239,6 +245,7 @@ primary_cpu_continue:
     str     w26, [x25]
     mov     x26, #10                 // 换行符
     str     w26, [x25]
+    bl      early_uart_release
 
     // --- DTB 双重发现机制 ---
     //
@@ -290,10 +297,8 @@ primary_cpu_continue:
     b       halt
 
 secondary_cpu_park:
-    // 🔧 关键调试：立即通过UART发送secondary CPU启动信号
-    // 这样我们就能知道secondary CPU是否真正启动
-
-    // 发送CPU ID到UART以证明secondary CPU正在运行
+    // 🔧 关键调试：立即通过UART发送secondary CPU启动信号 (locked)
+    bl      early_uart_acquire
     mov     x25, #0x09000000         // QEMU UART基址
     mov     x26, #'C'                // 发送字符'C'表示CPU启动
     str     w26, [x25]
@@ -312,6 +317,7 @@ secondary_cpu_park:
     str     w26, [x25]
     mov     x26, #10                 // 发送换行符
     str     w26, [x25]
+    bl      early_uart_release
 
     // 🔧 关键修复：绕过轮询机制，直接跳转到Linux风格延迟激活
     // 从CPU不再等待启动标志，而是立即进入C++代码进行Linux风格的cpu_park()
@@ -320,7 +326,8 @@ secondary_cpu_park:
     cmp     x19, #8
     b.hs    invalid_cpu_id
 
-    // 🔧 发送'D'表示直接跳转模式
+    // 🔧 发送'D'表示直接跳转模式 (locked)
+    bl      early_uart_acquire
     mov     x25, #0x09000000         // QEMU UART基址
     mov     x26, #'D'                // 'D' = Direct jump
     str     w26, [x25]
@@ -328,6 +335,7 @@ secondary_cpu_park:
     str     w26, [x25]
     mov     x26, #10                 // 换行
     str     w26, [x25]
+    bl      early_uart_release
 
     // 🔧 直接跳转到secondary_cpu_entry C++函数
     // 不需要轮询，让Linux风格的延迟激活机制处理同步
@@ -362,8 +370,37 @@ cpu_startup_flags:
     // 为每个CPU分配启动控制块: [entry_point:8字节] [startup_flag:8字节]
     .space 8 * 16                    // MAX_CPUS=8, 每个CPU 16字节
 
+// Global early UART spinlock — shared between assembly and C++ boot code.
+// 0 = unlocked, 1 = locked.  Simple test-and-set via LDXR/STXR.
+.global early_uart_lock
+.align 4
+early_uart_lock:
+    .word 0
+
 // 切换回文本段，放置可执行代码
 .section ".text.boot", "ax"
+
+// ============================================================================
+// Early UART spinlock acquire/release subroutines
+// Uses LDXR/STXR test-and-set on early_uart_lock.
+// Clobbers: x24, x27, x28 (scratch registers, not used by UART print sequences).
+// ============================================================================
+early_uart_acquire:
+    adr     x27, early_uart_lock
+1:
+    ldxr    w28, [x27]
+    cbnz    w28, 1b               // spin while locked
+    mov     w28, #1
+    stxr    w24, w28, [x27]       // w24 = status (must differ from w28)
+    cbnz    w24, 1b               // retry if store-exclusive failed
+    dmb     sy                     // acquire barrier
+    ret
+
+early_uart_release:
+    adr     x27, early_uart_lock
+    dmb     sy                     // release barrier
+    str     wzr, [x27]
+    ret
 
 halt:
     // 系统停机

@@ -1,32 +1,29 @@
-// MOSS Kernel Logging Module — Unified logging with levels and formatting
+// MOSS Kernel Logging Module — Linux-style printk architecture
 //
-// Replaces scattered early_debug_print(), sched_log(), kernel_print(),
-// debug_print() calls with a single type-safe API.
+// Three-layer design modeled on Linux's printk:
 //
-// Two formatting styles:
+//   1. FORMAT LAYER: Callers format messages into stack-local LogBuffer
+//      (concurrent, no lock needed — each CPU has its own stack).
 //
-//   1. fmt-style with {} placeholders (PREFERRED):
-//      klog::info("tick={} cpu={} addr={:#x}", count, cpu_id, addr);
+//   2. RING BUFFER LAYER: Formatted text is copied into a global 32KB
+//      lockless ring buffer as complete log records (LogRecordHeader +
+//      text). A brief IrqSpinLock (write_lock_) serializes the copy
+//      (~sub-microsecond hold time).
 //
-//   2. Chaining style:
-//      klog::info("tick=").u64(count).str(" cpu=").u32(cpu_id);
+//   3. CONSOLE LAYER: After writing a record, the writer tries to acquire
+//      console_lock_ (IrqSpinLock, non-blocking try_lock). If acquired,
+//      it drains all pending records to UART via uart::puts(). Other CPUs
+//      return immediately — only one CPU does the slow UART output.
 //
-// Supported {} format specs:
-//   {}     — auto (decimal for integers, string for const char*)
-//   {:#x}  — hexadecimal with 0x prefix
-//   {:#b}  — boolean as "true"/"false"
+// Emergency path: klog::panic() bypasses the ring buffer entirely and
+// writes directly to UART with interrupts disabled, ensuring output
+// even if the ring buffer or locks are corrupted.
 //
-// Output format:
-//   [L] filename:line message
-//   e.g. [I] kernel_main.cpp:53 === MOSS kernel main starting ===
-//
-// Source location is captured automatically via __builtin_FILE()/__builtin_LINE()
-// using FmtStr's implicit constructor — callers need NO syntax changes.
+// API unchanged:
+//   klog::info("tick={} cpu={}", count, cpu_id);       // fmt-style
+//   klog::info("data: ").hex(addr).str(" sz=").u64(n); // chaining
 //
 // Backend: hal::uart (architecture-independent UART/serial output)
-//
-// Boot-phase functions (early_print, boot_print) remain independent
-// because they execute before the C++26 module system is available.
 
 module;
 
@@ -37,28 +34,28 @@ export module moss.logging;
 import moss.std;
 import moss.types;
 import moss.hal.uart;
+import moss.arch;
+import moss.containers;
 
 export namespace moss::kernel::logging {
 
 using moss::i32;
 using moss::i64;
 using moss::u8;
+using moss::u16;
 using moss::u32;
 using moss::u64;
 namespace uart = moss::kernel::hal::uart;
+namespace arch = moss::kernel::arch;
+using containers::AtomicU32;
+using containers::AtomicU64;
+using containers::IrqSpinLock;
+using containers::LockGuard;
 
 // ============================================================================
 // FmtStr — format string wrapper that captures source location at call site
-//
-// Uses __builtin_FILE() / __builtin_LINE() as default arguments so that
-// the compiler evaluates them at the CALLER's location, not here.
-// The implicit constructor from const char* means callers write:
-//   klog::info("msg");         // file:line captured automatically
-//   klog::info("x={}", val);   // same — no syntax change needed
 // ============================================================================
 
-// Compile-time feature detection: prefer __builtin_FILE_NAME() (basename only,
-// no runtime stripping needed) and fall back to __builtin_FILE() (full path).
 #if __has_builtin(__builtin_FILE_NAME)
 #  define MOSS_LOG_FILE_BUILTIN __builtin_FILE_NAME()
 inline constexpr bool kFileBuiltinIsBareNameOnly = true;
@@ -72,7 +69,6 @@ struct FmtStr {
   const char* file;
   unsigned    line;
 
-  // Implicit conversion from string literal — captures source location.
   constexpr FmtStr(const char* s,
                    const char* f = MOSS_LOG_FILE_BUILTIN,
                    unsigned    l = __builtin_LINE()) noexcept
@@ -91,10 +87,6 @@ enum class LogLevel : u8 {
   Panic = 4,
 };
 
-// ============================================================================
-// Runtime log level filter — only messages >= this level are output
-// ============================================================================
-
 inline LogLevel g_log_level = LogLevel::Debug;
 
 inline void set_log_level(LogLevel level) noexcept { g_log_level = level; }
@@ -102,9 +94,6 @@ inline auto get_log_level() noexcept -> LogLevel { return g_log_level; }
 
 // ============================================================================
 // LogBuffer — fixed-size stack buffer with formatting primitives
-//
-// Shared by both the {} formatter and the chaining API. All formatting
-// is done into this buffer; it is flushed to UART as a single write.
 // ============================================================================
 
 class LogBuffer {
@@ -177,13 +166,9 @@ public:
     append_str(v ? "true" : "false");
   }
 
-  // Format as "file:line "
   void append_source_loc(const char *file, unsigned line) noexcept {
     if (!file) return;
     const char *name = file;
-    // When __builtin_FILE_NAME() is available, file is already a bare
-    // filename — skip the runtime scan entirely.  Otherwise strip the
-    // directory prefix at runtime (handles both '/' and '\\').
     if constexpr (!kFileBuiltinIsBareNameOnly) {
       for (const char *p = file; *p; p++) {
         if (*p == '/' || *p == '\\') name = p + 1;
@@ -206,7 +191,8 @@ public:
     }
   }
 
-  void flush_line() noexcept {
+  // Direct UART flush — used only by the emergency (panic) path.
+  void flush_line_direct() noexcept {
     if (pos_ == 0) return;
     if (pos_ < BUFFER_SIZE - 1) {
       buf_[pos_++] = '\n';
@@ -217,6 +203,7 @@ public:
   }
 
   [[nodiscard]] auto pos() const noexcept -> u32 { return pos_; }
+  [[nodiscard]] auto data() const noexcept -> const char* { return buf_; }
 
 private:
   char buf_[BUFFER_SIZE]{};
@@ -224,29 +211,25 @@ private:
 };
 
 // ============================================================================
-// Format spec parsing — detect {}, {:#x}, {:#b} in format strings
+// Format spec parsing
 // ============================================================================
 
 enum class FmtSpec : u8 {
-  Auto,   // {} — decimal for numbers, string for const char*
-  Hex,    // {:#x} or {:x} — hexadecimal
-  Bool,   // {:#b} — boolean
+  Auto,
+  Hex,
+  Bool,
 };
 
-// Parse a format spec starting after '{'. Returns the spec and advances
-// the pointer past the closing '}'.
 inline auto parse_fmt_spec(const char *&p) noexcept -> FmtSpec {
   FmtSpec spec = FmtSpec::Auto;
 
   if (*p == '}') {
-    p++; // skip '}'
+    p++;
     return spec;
   }
 
-  // Skip ':'
   if (*p == ':') {
     p++;
-    // Skip optional '#'
     if (*p == '#') p++;
 
     if (*p == 'x') {
@@ -258,7 +241,6 @@ inline auto parse_fmt_spec(const char *&p) noexcept -> FmtSpec {
     }
   }
 
-  // Skip to closing '}'
   while (*p && *p != '}') p++;
   if (*p == '}') p++;
 
@@ -288,7 +270,6 @@ inline void format_arg(LogBuffer &buf, FmtSpec spec, i32 value) noexcept {
   format_arg(buf, spec, static_cast<i64>(value));
 }
 
-// Handle 'long' which may differ from i32/i64 on some platforms
 inline void format_arg(LogBuffer &buf, FmtSpec spec, long value) noexcept {
   format_arg(buf, spec, static_cast<i64>(value));
 }
@@ -315,26 +296,22 @@ inline void format_arg(LogBuffer &buf, FmtSpec spec, const void *value) noexcept
 }
 
 // ============================================================================
-// Core format engine — walks format string, substitutes {} with args
+// Core format engine
 // ============================================================================
 
-// Base case: no more arguments — just append remaining format string
 inline void format_into(LogBuffer &buf, const char *fmt) noexcept {
   while (*fmt) {
     if (*fmt == '{' && *(fmt + 1)) {
-      fmt++; // skip '{'
-      // Literal {{ → '{'
+      fmt++;
       if (*fmt == '{') {
         buf.append_char('{');
         fmt++;
         continue;
       }
-      // No more args — output {} placeholder literally
       buf.append_str("<?>");
       while (*fmt && *fmt != '}') fmt++;
       if (*fmt == '}') fmt++;
     } else if (*fmt == '}' && *(fmt + 1) == '}') {
-      // Literal }} → '}'
       buf.append_char('}');
       fmt += 2;
     } else {
@@ -343,23 +320,19 @@ inline void format_into(LogBuffer &buf, const char *fmt) noexcept {
   }
 }
 
-// Recursive case: format the first arg, then recurse for the rest
 template <typename T, typename... Rest>
 inline void format_into(LogBuffer &buf, const char *fmt, T value,
                         Rest... rest) noexcept {
   while (*fmt) {
     if (*fmt == '{' && *(fmt + 1)) {
-      fmt++; // skip '{'
-      // Literal {{ → '{'
+      fmt++;
       if (*fmt == '{') {
         buf.append_char('{');
         fmt++;
         continue;
       }
-      // Parse format spec and format this argument
       FmtSpec spec = parse_fmt_spec(fmt);
       format_arg(buf, spec, value);
-      // Recurse for remaining args
       format_into(buf, fmt, rest...);
       return;
     } else if (*fmt == '}' && *(fmt + 1) == '}') {
@@ -369,21 +342,158 @@ inline void format_into(LogBuffer &buf, const char *fmt, T value,
       buf.append_char(*fmt++);
     }
   }
-  // Format string ended but we still have args — silently ignore
 }
 
 // ============================================================================
-// LogEntry — RAII log line builder
+// PrintkRingBuffer — Linux-style log record ring buffer
 //
-// Supports both styles:
-//   auto-flush:    klog::info("tick={} cpu={}", count, cpu_id);
-//   chaining:      klog::info("tick=").u64(count).str(" cpu=").u32(cpu_id);
+// Records are stored as LogRecordHeader (16 bytes) + text + padding.
+// write_lock_ serializes writes (held ~sub-μs for memcpy).
+// console_lock_ serializes UART drain (held for uart::puts duration).
+// emergency_mode_ bypasses everything for panic output.
+// ============================================================================
+
+struct LogRecordHeader {
+  u16 total_len;   // header + text + '\0' + padding (4-byte aligned)
+  u8  level;       // LogLevel as u8; 0xFF = skip-marker (padding)
+  u8  cpu_id;      // writer CPU
+  u32 seq;         // monotonic sequence number
+  u64 timestamp;   // arch::get_timestamp_counter()
+};
+
+inline constexpr u32 RING_BUFFER_SIZE = 32768;  // 32KB, power of 2
+inline constexpr u32 RING_BUFFER_MASK = RING_BUFFER_SIZE - 1;
+inline constexpr u8  SKIP_MARKER = 0xFF;
+inline constexpr u16 MAX_RECORD_TEXT = 496;
+
+class PrintkRingBuffer {
+public:
+  // Write a formatted log line into the ring buffer, then try to drain.
+  void emit(LogLevel level, const char* text, u32 text_len) noexcept {
+    if (text_len > MAX_RECORD_TEXT) text_len = MAX_RECORD_TEXT;
+
+    // Record size: header + text + '\n' + '\0', padded to 4 bytes
+    u32 record_len = (static_cast<u32>(sizeof(LogRecordHeader))
+                      + text_len + 2 + 3) & ~3u;
+
+    u8 cpu = static_cast<u8>(arch::get_current_cpu_id()
+                              % moss::kernel::MAX_CPUS);
+    u64 ts = arch::get_timestamp_counter();
+
+    {
+      LockGuard<IrqSpinLock> guard(write_lock_);
+
+      u32 seq = next_seq_++;
+
+      u32 offset = static_cast<u32>(write_pos_) & RING_BUFFER_MASK;
+
+      // If record would wrap around buffer end, insert skip-marker padding
+      if (offset + record_len > RING_BUFFER_SIZE) {
+        u32 skip_len = RING_BUFFER_SIZE - offset;
+        auto* skip = reinterpret_cast<LogRecordHeader*>(&buf_[offset]);
+        skip->total_len = static_cast<u16>(skip_len);
+        skip->level = SKIP_MARKER;
+        skip->cpu_id = 0;
+        skip->seq = seq;
+        skip->timestamp = 0;
+        write_pos_ += skip_len;
+        offset = 0;
+        seq = next_seq_++;
+      }
+
+      // Write record header
+      auto* hdr = reinterpret_cast<LogRecordHeader*>(&buf_[offset]);
+      hdr->total_len = static_cast<u16>(record_len);
+      hdr->level = static_cast<u8>(level);
+      hdr->cpu_id = cpu;
+      hdr->seq = seq;
+      hdr->timestamp = ts;
+
+      // Copy text after header, append newline + null-terminate
+      char* dst = &buf_[offset + sizeof(LogRecordHeader)];
+      for (u32 i = 0; i < text_len; ++i) dst[i] = text[i];
+      dst[text_len] = '\n';
+      dst[text_len + 1] = '\0';
+
+      write_pos_ += record_len;
+    }
+
+    // Try to drain buffered records to UART console
+    try_drain();
+  }
+
+  // Attempt to drain all pending records to UART.
+  // Non-blocking: returns immediately if another CPU is already draining.
+  void try_drain() noexcept {
+    if (!console_lock_.try_lock()) return;
+
+    // Read write_pos_ snapshot (write_lock_ protects writes, but we only
+    // need a consistent snapshot — worst case we drain fewer records and
+    // the next emit() will drain the rest).
+    u64 wp = write_pos_;
+
+    while (read_pos_ < wp) {
+      u32 offset = static_cast<u32>(read_pos_) & RING_BUFFER_MASK;
+
+      // Handle buffer overflow: if read_pos_ is too far behind,
+      // skip ahead to avoid reading overwritten data.
+      if (wp - read_pos_ > RING_BUFFER_SIZE) {
+        read_pos_ = wp - RING_BUFFER_SIZE;
+        offset = static_cast<u32>(read_pos_) & RING_BUFFER_MASK;
+      }
+
+      auto* hdr = reinterpret_cast<LogRecordHeader*>(&buf_[offset]);
+
+      if (hdr->level == SKIP_MARKER) {
+        // Skip padding record
+        read_pos_ += hdr->total_len;
+        continue;
+      }
+
+      // Output the text (already null-terminated by emit)
+      const char* text = &buf_[offset + sizeof(LogRecordHeader)];
+      uart::puts(text);
+
+      read_pos_ += hdr->total_len;
+    }
+
+    console_lock_.unlock();
+  }
+
+  // Set emergency mode — all subsequent output goes direct to UART
+  void set_emergency() noexcept {
+    emergency_mode_.store(1, containers::MemoryOrder::Release);
+  }
+
+  [[nodiscard]] bool is_emergency() const noexcept {
+    return emergency_mode_.load(containers::MemoryOrder::Relaxed) != 0;
+  }
+
+private:
+  alignas(64) char buf_[RING_BUFFER_SIZE]{};
+
+  // Cursor positions (monotonically increasing, masked for buffer access).
+  // Protected by their respective locks — not atomic.
+  alignas(64) u64 write_pos_{0};    // protected by write_lock_
+  alignas(64) u64 read_pos_{0};     // protected by console_lock_
+  u32 next_seq_{0};                 // protected by write_lock_
+
+  alignas(64) IrqSpinLock write_lock_{};
+  alignas(64) IrqSpinLock console_lock_{};
+  AtomicU32 emergency_mode_{0};
+};
+
+// Global ring buffer instance — static storage, zero-initialized
+inline PrintkRingBuffer g_printk_rb;
+
+// ============================================================================
+// LogEntry — RAII log line builder (routes through ring buffer)
 // ============================================================================
 
 class LogEntry {
 public:
   LogEntry(LogLevel level, bool active) noexcept
-      : active_(active) {
+      : level_(level), active_(active) {
     if (!active_) return;
     buf_.append_level_tag(level);
   }
@@ -391,10 +501,9 @@ public:
   LogEntry(const LogEntry &) = delete;
   auto operator=(const LogEntry &) -> LogEntry & = delete;
 
-  // Move constructor needed for factory return
   LogEntry(LogEntry &&other) noexcept
-      : buf_(other.buf_), active_(other.active_) {
-    other.active_ = false; // Prevent double-flush
+      : buf_(other.buf_), level_(other.level_), active_(other.active_) {
+    other.active_ = false;
   }
 
   ~LogEntry() noexcept { flush(); }
@@ -452,33 +561,29 @@ private:
   friend struct klog;
 
   LogBuffer buf_{};
-  bool active_;
+  LogLevel  level_;
+  bool      active_;
 
   void flush() noexcept {
     if (!active_) return;
-    buf_.flush_line();
+    if (level_ == LogLevel::Panic || g_printk_rb.is_emergency()) {
+      // Emergency: bypass ring buffer, write directly to UART
+      buf_.flush_line_direct();
+    } else {
+      // Normal: write to ring buffer, then try to drain
+      if (buf_.pos() > 0) {
+        g_printk_rb.emit(level_, buf_.data(), buf_.pos());
+      }
+    }
     active_ = false;
   }
 };
 
 // ============================================================================
 // klog — primary logging interface
-//
-// fmt-style (preferred):
-//   klog::info("count={} addr={:#x}", count, addr);
-//
-// Simple message:
-//   klog::info("kernel started");
-//
-// Chaining (for complex output):
-//   klog::info("data: ").hex(addr).str(" size=").u64(size);
 // ============================================================================
 
 struct klog {
-  // -- fmt-style API with {} placeholders --
-  // FmtStr's implicit constructor captures __builtin_FILE()/__builtin_LINE()
-  // at the call site, so callers need no syntax change.
-
   template <typename... Args>
   static void debug(FmtStr fmt, Args... args) noexcept {
     log_fmt(LogLevel::Debug, fmt, args...);
@@ -504,7 +609,7 @@ struct klog {
     log_fmt(LogLevel::Panic, fmt, args...);
   }
 
-  // -- Chaining API (returns LogEntry for .str()/.u64()/.hex() etc.) --
+  // -- Chaining API --
 
   static auto debug_chain(const char *prefix = "") noexcept -> LogEntry {
     LogEntry e(LogLevel::Debug, LogLevel::Debug >= g_log_level);
@@ -540,11 +645,24 @@ private:
   template <typename... Args>
   static void log_fmt(LogLevel level, FmtStr fmt, Args... args) noexcept {
     if (level < g_log_level) return;
+
     LogBuffer buf;
     buf.append_level_tag(level);
     buf.append_source_loc(fmt.file, fmt.line);
     format_into(buf, fmt.value, args...);
-    buf.flush_line();
+
+    if (level == LogLevel::Panic || g_printk_rb.is_emergency()) {
+      // Emergency: set flag + direct UART output
+      g_printk_rb.set_emergency();
+      arch::disable_all_interrupts();
+      buf.flush_line_direct();
+      return;
+    }
+
+    // Normal path: ring buffer + try_drain
+    if (buf.pos() > 0) {
+      g_printk_rb.emit(level, buf.data(), buf.pos());
+    }
   }
 };
 
