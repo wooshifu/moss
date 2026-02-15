@@ -256,6 +256,77 @@ extern "C" void kernel_page_fault_handler(
     terminate_current_user_process(-11); // -11 ≈ SIGSEGV
 }
 
+// Attempt COW (Copy-on-Write) resolution for a write permission fault.
+// Returns true if the fault was a COW page and has been resolved.
+static bool try_cow_fault(moss::kernel::u64 far_addr,
+                          unsigned long long elr) noexcept {
+    namespace mm  = moss::kernel::mm;
+    namespace log = moss::kernel::logging;
+    using moss::kernel::u8;
+    using moss::kernel::u32;
+    using moss::kernel::u64;
+    using moss::kernel::usize;
+    using moss::kernel::PhysAddr;
+    using moss::kernel::VirtAddr;
+    using moss::kernel::phys_to_virt;
+
+    constexpr usize PG_SIZE = 4096;
+    VirtAddr fault_page = far_addr & ~(static_cast<u64>(PG_SIZE) - 1);
+    PhysAddr pgd_phys = get_current_pgd_phys();
+    if (pgd_phys == 0) return false;
+
+    // Walk page tables to get a mutable pointer to the PTE
+    auto* pte = mm::PageTableManager::get_user_pte(pgd_phys, fault_page);
+    if (!pte || !pte->is_valid()) return false;
+
+    // Must be a COW-marked page
+    if (!pte->is_cow()) return false;
+
+    PhysAddr old_pa = pte->get_phys_addr();
+    u32 refcount = mm::PageFrameAllocator::page_ref_get(old_pa);
+
+    if (refcount > 1) {
+        // Shared page: allocate new page, copy content, remap writable
+        auto new_page = mm::page_alloc::alloc_kernel_pages(0);
+        if (!new_page) {
+            kill_user_process("COW: out of memory", far_addr, elr);
+        }
+        PhysAddr new_pa = *new_page;
+
+        // Copy 4KB from old page to new page
+        auto* src = reinterpret_cast<const u8*>(phys_to_virt(old_pa));
+        auto* dst = reinterpret_cast<u8*>(phys_to_virt(new_pa));
+        for (usize i = 0; i < PG_SIZE; i++) {
+            dst[i] = src[i];
+        }
+
+        // Decrement old page refcount
+        mm::PageFrameAllocator::page_ref_dec(old_pa);
+        // New page has refcount=1 (set by allocator)
+
+        // Update PTE: new physical page, clear COW, make writable
+        u64 attrs = pte->raw & ~::moss::kernel::hal::mmu::PTE_ADDR_MASK;
+        attrs &= ~mm::PageAttr::SW_COW;
+#if defined(MOSS_ARCH_ARM64)
+        attrs &= ~mm::PageAttr::READONLY;
+#elif defined(MOSS_ARCH_X86_64)
+        attrs |= mm::PageAttr::WRITABLE;
+#elif defined(MOSS_ARCH_RISCV)
+        attrs |= mm::PageAttr::WRITE;
+#endif
+        pte->raw = (new_pa & ::moss::kernel::hal::mmu::PTE_ADDR_MASK) | attrs;
+    } else {
+        // Last reference: just clear COW flag and make writable
+        pte->clear_cow();
+        pte->make_writable();
+    }
+
+    mm::PageTableManager::invalidate_tlb_addr(fault_page);
+
+    log::klog::debug("COW resolved: va={:#x} refcount_was={}", far_addr, refcount);
+    return true;
+}
+
 // Attempt demand paging for a user translation fault.
 // Returns true if the fault was resolved (caller should return to eret).
 static bool try_demand_page(moss::kernel::u64 far_addr, bool is_write,
@@ -359,6 +430,14 @@ extern "C" void user_page_fault_handler(
 
     log::klog::debug("user_page_fault: addr={:#x} pc={:#x} dfsc={:#x} write={}",
                      far_addr, elr, dfsc, is_write);
+
+    // Permission faults (DFSC 0x0C-0x0F): try COW resolution first
+    bool is_permission_fault = (dfsc >= 0x0C && dfsc <= 0x0F);
+    if (is_permission_fault && is_write) {
+        if (try_cow_fault(far_addr, elr)) {
+            return; // COW resolved — eret retries instruction
+        }
+    }
 
     // Translation faults (DFSC 0x04-0x07): attempt demand paging
     bool is_translation_fault = (dfsc >= 0x04 && dfsc <= 0x07);
