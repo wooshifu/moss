@@ -20,6 +20,8 @@ module;
 #if defined(__aarch64__) || defined(MOSS_ARCH_ARM64)
 extern "C" {
 [[noreturn]] void early_main(void *device_tree_ptr);
+// Early UART spinlock defined in start_arm64.S (BSS)
+extern unsigned int early_uart_lock;
 }
 #endif
 
@@ -36,8 +38,26 @@ using moss::VirtAddr;
 namespace moss::boot {
 
 // Early boot print function (architecture-independent)
+// Protected by early_uart_lock on ARM64 to prevent interleaving with
+// secondary CPU debug output during SMP boot.
 static void boot_print(const char *message) {
 #if defined(__aarch64__) || defined(MOSS_ARCH_ARM64)
+    // Acquire early_uart_lock (test-and-set spinlock via LDXR/STXR)
+    {
+        unsigned int val, status;
+        asm volatile(
+            "1:\n"
+            "   ldxr  %w0, [%2]\n"
+            "   cbnz  %w0, 1b\n"
+            "   mov   %w0, #1\n"
+            "   stxr  %w1, %w0, [%2]\n"
+            "   cbnz  %w1, 1b\n"
+            "   dmb   sy\n"
+            : "=&r"(val), "=&r"(status)
+            : "r"(&early_uart_lock)
+            : "memory");
+    }
+
     // ARM64 uses UART
     static constexpr VirtAddr UART_BASE = ::moss::kernel::platform::uart_base();
     volatile u32 *uart_base = reinterpret_cast<volatile u32 *>(UART_BASE);
@@ -54,6 +74,10 @@ static void boot_print(const char *message) {
         }
         uart_base[0x000 / 4] = *p++;
     }
+
+    // Release early_uart_lock
+    asm volatile("dmb sy" ::: "memory");
+    early_uart_lock = 0;
 #else
     (void)message;
 #endif
