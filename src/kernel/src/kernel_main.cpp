@@ -28,6 +28,10 @@ int demand_page_lookup(unsigned long long fault_addr,
                        unsigned long long* out_backing_size,
                        unsigned long long* out_vma_start) noexcept;
 unsigned long long get_current_pgd_phys() noexcept;
+
+// Bridge function: terminate current user process and switch to next task.
+// Called from page_fault.cpp when a fatal user fault is unrecoverable.
+[[noreturn]] void terminate_current_user_process(int exit_code) noexcept;
 }
 
 module moss.kernel;
@@ -327,6 +331,54 @@ unsigned long long get_current_pgd_phys() noexcept {
     auto* proc = process::current_process();
     if (!proc || !proc->address_space()) return 0;
     return static_cast<unsigned long long>(proc->address_space()->pgd_phys);
+}
+
+// ============================================================================
+// Bridge: terminate current user process and switch to scheduler
+// ============================================================================
+[[noreturn]] void terminate_current_user_process(int exit_code) noexcept {
+    using namespace moss::kernel;
+
+    process::Thread *cur = process::CfsScheduler::get_current_task();
+    if (!cur) {
+        log::klog::panic("terminate_current_user_process: no current thread");
+        while (true) { arch::cpu_halt(); }
+    }
+
+    ProcessId pid = cur->owner_pid;
+    log::klog::info("terminate_user_process: PID={} TID={} exit_code={}",
+                    pid, static_cast<u32>(cur->tid), exit_code);
+
+    // Mark terminated + dequeue so scheduler_tick won't re-enqueue
+    cur->state = process::ProcessState::Terminated;
+    if (process::g_scheduler) {
+        process::g_scheduler->dequeue_task(cur);
+    }
+
+    // Terminate in ProcessManager
+    if (process::g_process_manager) {
+        (void)process::g_process_manager->terminate_process(pid, static_cast<i32>(exit_code));
+    }
+
+    // Restore TTBR0 to kernel identity-mapped PGD
+#if defined(MOSS_ARCH_ARM64)
+    {
+        auto *kpgd = mm::PageTableManager::get_kernel_pgd();
+        if (kpgd) {
+            u64 kpgd_phys = mm::PageTableManager::get_physical_address(kpgd);
+            asm volatile("msr ttbr0_el1, %0" :: "r"(kpgd_phys));
+            asm volatile("isb" ::: "memory");
+        }
+    }
+#endif
+
+    // Hand control to the scheduler — never returns
+    if (process::g_scheduler) {
+        process::g_scheduler->schedule_after_exit();
+    }
+
+    // Fallback halt
+    while (true) { arch::cpu_halt(); }
 }
 
 } // extern "C"

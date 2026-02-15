@@ -3,6 +3,9 @@
 
 module;
 
+// Architecture detection
+#include "arch_detect.h"
+
 // extern "C" declarations in global module fragment
 extern "C" void early_debug_print(const char *message) noexcept;
 
@@ -60,6 +63,20 @@ namespace handlers {
                 log::klog::info("sys_exit: process PID={} terminated", pid);
             }
         }
+
+        // Restore TTBR0 to the kernel identity-mapped PGD.
+        // The user process page tables are no longer valid after terminate_process,
+        // and schedule_after_exit may pick a kernel task that doesn't set TTBR0.
+#if defined(__aarch64__) || defined(MOSS_ARCH_ARM64)
+        {
+            auto *kpgd = mm::PageTableManager::get_kernel_pgd();
+            if (kpgd) {
+                u64 kpgd_phys = mm::PageTableManager::get_physical_address(kpgd);
+                asm volatile("msr ttbr0_el1, %0" :: "r"(kpgd_phys));
+                asm volatile("isb" ::: "memory");
+            }
+        }
+#endif
 
         // CRITICAL: sys_exit must NEVER return to userspace.
         // The process context is dead — eret would jump to invalid memory.
