@@ -114,6 +114,28 @@ VoidResult PageTableManager::setup_kernel_high_half_tables() {
   return VoidResult{};
 }
 
+// Walk user page tables and return a mutable pointer to the L3 PTE.
+// Returns nullptr if any intermediate table is missing (does not allocate).
+PageTableEntry* PageTableManager::get_user_pte(PhysAddr pgd_phys, VirtAddr va) {
+  auto *pgd = get_table_from_physical(pgd_phys);
+  if (!pgd) return nullptr;
+  auto bd = break_virtual_address(va);
+
+  auto &pge = pgd->entries[bd.pgd_index];
+  if (!pge.is_valid() || !pge.is_table()) return nullptr;
+  auto *pud = get_table_from_physical(pge.get_phys_addr());
+
+  auto &pude = pud->entries[bd.pud_index];
+  if (!pude.is_valid() || !pude.is_table()) return nullptr;
+  auto *pmd = get_table_from_physical(pude.get_phys_addr());
+
+  auto &pmde = pmd->entries[bd.pmd_index];
+  if (!pmde.is_valid() || !pmde.is_table()) return nullptr;
+  auto *pte = get_table_from_physical(pmde.get_phys_addr());
+
+  return &pte->entries[bd.pte_index];
+}
+
 // Free all user page tables and demand-paged physical pages.
 // Walks PGD→PUD→PMD→PTE, frees leaf pages and intermediate tables.
 // PGD[0] is the shared kernel identity map — skip it.
@@ -156,12 +178,15 @@ void PageTableManager::free_user_page_tables(PhysAddr pgd_phys) {
         auto *pte = get_table_from_physical(pmde.get_phys_addr());
         if (!pte) continue;
 
-        // Free all leaf pages (demand-paged physical pages)
+        // Free all leaf pages (COW-aware: only free when refcount drops to 0)
         for (usize i3 = 0; i3 < ENTRIES; i3++) {
           auto &ptee = pte->entries[i3];
           if (ptee.is_valid()) {
             PhysAddr leaf_pa = ptee.get_phys_addr();
-            (void)free_pages(leaf_pa, 0); // order-0 = single 4KB page
+            u32 remaining = PageFrameAllocator::page_ref_dec(leaf_pa);
+            if (remaining == 0) {
+              (void)free_pages(leaf_pa, 0); // order-0 = single 4KB page
+            }
             ptee.clear();
           }
         }
