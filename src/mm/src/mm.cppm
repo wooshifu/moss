@@ -637,6 +637,12 @@ public:
     // Query the mapping state of a virtual address without modifying anything.
     [[nodiscard]] static PageInfo query_page(VirtAddr virt_addr);
 
+    // Free all user page tables and demand-paged physical pages for a process.
+    // Walks PGD→PUD→PMD→PTE, frees leaf pages and intermediate tables.
+    // Skips PGD[0] (shared kernel identity map).
+    // The PGD page itself is also freed.
+    static void free_user_page_tables(PhysAddr pgd_phys);
+
     // Invalidate TLB entry for a single virtual address
     static void invalidate_tlb_addr(VirtAddr virt_addr) {
 #if defined(MOSS_ARCH_ARM64)

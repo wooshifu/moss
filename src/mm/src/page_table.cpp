@@ -114,6 +114,80 @@ VoidResult PageTableManager::setup_kernel_high_half_tables() {
   return VoidResult{};
 }
 
+// Free all user page tables and demand-paged physical pages.
+// Walks PGD→PUD→PMD→PTE, frees leaf pages and intermediate tables.
+// PGD[0] is the shared kernel identity map — skip it.
+void PageTableManager::free_user_page_tables(PhysAddr pgd_phys) {
+  if (pgd_phys == 0) return;
+
+  auto *pgd = get_table_from_physical(pgd_phys);
+  if (!pgd) return;
+
+  constexpr usize ENTRIES = PageTable::ENTRIES_PER_TABLE;
+
+  for (usize i0 = 0; i0 < ENTRIES; i0++) {
+    auto &pge = pgd->entries[i0];
+    if (!pge.is_valid() || !pge.is_table()) continue;
+
+    // Skip PGD[0]: shared kernel identity map (1GB blocks)
+    if (i0 == 0) continue;
+
+    auto *pud = get_table_from_physical(pge.get_phys_addr());
+    if (!pud) continue;
+
+    for (usize i1 = 0; i1 < ENTRIES; i1++) {
+      auto &pude = pud->entries[i1];
+      if (!pude.is_valid()) continue;
+
+      // Block mapping (1GB) — don't free the underlying physical memory
+      // (it belongs to device or kernel identity map)
+      if (pude.is_block()) continue;
+
+      auto *pmd = get_table_from_physical(pude.get_phys_addr());
+      if (!pmd) continue;
+
+      for (usize i2 = 0; i2 < ENTRIES; i2++) {
+        auto &pmde = pmd->entries[i2];
+        if (!pmde.is_valid()) continue;
+
+        // Block mapping (2MB) — skip
+        if (pmde.is_block()) continue;
+
+        auto *pte = get_table_from_physical(pmde.get_phys_addr());
+        if (!pte) continue;
+
+        // Free all leaf pages (demand-paged physical pages)
+        for (usize i3 = 0; i3 < ENTRIES; i3++) {
+          auto &ptee = pte->entries[i3];
+          if (ptee.is_valid()) {
+            PhysAddr leaf_pa = ptee.get_phys_addr();
+            (void)free_pages(leaf_pa, 0); // order-0 = single 4KB page
+            ptee.clear();
+          }
+        }
+
+        // Free PTE table page
+        PhysAddr pte_pa = pmde.get_phys_addr();
+        (void)free_pages(pte_pa, 0);
+        pmde.clear();
+      }
+
+      // Free PMD table page
+      PhysAddr pmd_pa = pude.get_phys_addr();
+      (void)free_pages(pmd_pa, 0);
+      pude.clear();
+    }
+
+    // Free PUD table page
+    PhysAddr pud_pa = pge.get_phys_addr();
+    (void)free_pages(pud_pa, 0);
+    pge.clear();
+  }
+
+  // Free the PGD page itself
+  (void)free_pages(pgd_phys, 0);
+}
+
 // Map a single 4KB page into a user process page table (4-level walk)
 VoidResult PageTableManager::map_user_page(PhysAddr pgd_phys, VirtAddr va,
                                             PhysAddr pa, u64 perms) {

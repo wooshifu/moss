@@ -1195,6 +1195,7 @@ private:
     init_thread->context.sp = USER_STACK_TOP - 16;  // 16-byte aligned
     init_thread->context.pstate = 0x00000000;  // EL0t
     init_thread->needs_initial_eret = true;  // First dispatch uses switch_to_user + eret
+    init_thread->is_user_task = true;         // Permanent: drives TTBR0 switch on re-dispatch
 
     init_thread->sched_class = SchedClass::Normal;
     init_thread->se.nice = -5;
