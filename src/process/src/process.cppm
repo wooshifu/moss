@@ -342,11 +342,17 @@ struct Thread {
   u64 signal_mask;
   u64 pending_signals;
 
+  // True when a user-mode task has not yet entered EL0 (needs switch_to_user
+  // + eret).  After the first eret, timer-IRQ preemption saves/restores via
+  // context_switch + irq_trampoline eret, so this is set false.
+  bool needs_initial_eret;
+
   Thread(ThreadId id, ProcessId pid) noexcept
       : tid(id), owner_pid(pid), context{}, cpu(0), wake_cpu(0),
         state(ProcessState::Created), sched_class(SchedClass::Normal), se{},
         rt{}, start_time(0), utime(0), stime(0), stack_base(0), stack_size(0),
-        wait_queue(0), signal_mask(0), pending_signals(0) {}
+        wait_queue(0), signal_mask(0), pending_signals(0),
+        needs_initial_eret(false) {}
 };
 
 // Process control block
@@ -1888,8 +1894,11 @@ private:
     task->se.exec_start = get_current_time();  // Reset for vruntime accounting
     record_context_switch();
 
-    if (task->tid == 1000) {
-      // User process — switch TTBR0 to this process's page table, then eret to EL0
+    if (task->needs_initial_eret) {
+      // First entry into user space — set up TTBR0 and eret to EL0.
+      // Subsequent dispatches (after IRQ preemption) go through the normal
+      // context_switch path; irq_trampoline's eret returns to EL0.
+      task->needs_initial_eret = false;
 #if defined(MOSS_ARCH_ARM64)
       Process *proc = g_process_manager ? g_process_manager->find_process(task->owner_pid) : nullptr;
       if (proc && proc->address_space() && proc->address_space()->pgd_phys != 0) {
