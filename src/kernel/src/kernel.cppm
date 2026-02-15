@@ -1187,6 +1187,26 @@ private:
       return VoidResult{ErrorCode::OutOfMemory};
     }
 
+    // Allocate per-thread kernel stack (16KB = order 2, 4 pages).
+    // This stack is used as SP_EL1 when handling exceptions from this
+    // thread's user-mode execution — prevents all user processes from
+    // sharing the single boot stack.
+    constexpr usize KERNEL_STACK_ORDER = 2;  // 4 pages = 16KB
+    constexpr usize KERNEL_STACK_SIZE = PAGE_SIZE << KERNEL_STACK_ORDER;
+    auto kstack_result = mm::allocate_pages(KERNEL_STACK_ORDER);
+    if (!kstack_result) {
+      log::klog::error("failed to allocate kernel stack for init thread");
+      delete init_thread;
+      return VoidResult{ErrorCode::OutOfMemory};
+    }
+    // Use physical address directly (identity-mapped region)
+    PhysAddr kstack_phys = *kstack_result;
+    init_thread->kernel_stack_base = static_cast<VirtAddr>(kstack_phys);
+    init_thread->kernel_stack_size = KERNEL_STACK_SIZE;
+    log::klog::info("  kernel stack: {:#x}-{:#x} ({}KB)",
+                    kstack_phys, kstack_phys + KERNEL_STACK_SIZE,
+                    KERNEL_STACK_SIZE / 1024);
+
     // User context: entry point and stack pointer are user-space VAs
     // (demand-paged on first access)
     init_thread->stack_base = USER_STACK_BOTTOM;
