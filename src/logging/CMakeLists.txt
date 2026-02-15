@@ -5,4 +5,4 @@ target_sources(moss_logging
     src/logging.cppm
 )
 
-target_link_libraries(moss_logging PUBLIC moss_core moss_hal_uart)
+target_link_libraries(moss_logging PUBLIC moss_core moss_hal_uart moss_aal moss_containers)

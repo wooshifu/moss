@@ -11,6 +11,30 @@ module;
 // PSCI constants (must be in global module fragment as macros)
 #define PSCI_CPU_ON_64 0xC4000003
 
+// Early UART spinlock defined in start_arm64.S (BSS).
+// Simple test-and-set: 0 = unlocked, 1 = locked.
+extern "C" unsigned int early_uart_lock;
+
+static void early_uart_lock_acquire() noexcept {
+    unsigned int val, status;
+    asm volatile(
+        "1:\n"
+        "   ldxr  %w0, [%2]\n"
+        "   cbnz  %w0, 1b\n"
+        "   mov   %w0, #1\n"
+        "   stxr  %w1, %w0, [%2]\n"
+        "   cbnz  %w1, 1b\n"
+        "   dmb   sy\n"
+        : "=&r"(val), "=&r"(status)
+        : "r"(&early_uart_lock)
+        : "memory");
+}
+
+static void early_uart_lock_release() noexcept {
+    asm volatile("dmb sy" ::: "memory");
+    early_uart_lock = 0;
+}
+
 // extern "C" declarations for assembly-callable functions
 extern "C" {
 void _start();
@@ -163,15 +187,19 @@ static void initialize_cpu_startup_info(u32 detected_cpus) noexcept {
     u32 max_iterations = timeout_ms * 10;
 
     volatile u8 *uart_debug = reinterpret_cast<volatile u8 *>(0x9000000);
+    early_uart_lock_acquire();
     uart_debug[0] = 'W';
     uart_debug[0] = '0' + static_cast<u8>(cpu_id % 10);
     uart_debug[0] = 10;
+    early_uart_lock_release();
 
     while (g_cpu_topology.cpu_states[cpu_id] != CpuState::Parked) {
         if (iteration >= max_iterations) {
+            early_uart_lock_acquire();
             uart_debug[0] = 'T';
             uart_debug[0] = '0' + static_cast<u8>(cpu_id % 10);
             uart_debug[0] = 10;
+            early_uart_lock_release();
 
             g_cpu_topology.cpu_states[cpu_id] = CpuState::Failed;
             return false;
@@ -185,16 +213,20 @@ static void initialize_cpu_startup_info(u32 detected_cpus) noexcept {
         iteration++;
 
         if (iteration % 1000 == 0) {
+            early_uart_lock_acquire();
             uart_debug[0] = 'C';
             uart_debug[0] = '0' + static_cast<u8>(cpu_id % 10);
             uart_debug[0] = '0' + static_cast<u8>(g_cpu_topology.cpu_states[cpu_id]);
             uart_debug[0] = 10;
+            early_uart_lock_release();
         }
     }
 
+    early_uart_lock_acquire();
     uart_debug[0] = 'S';
     uart_debug[0] = '0' + static_cast<u8>(cpu_id % 10);
     uart_debug[0] = 10;
+    early_uart_lock_release();
 
     return true;
 }
@@ -216,9 +248,11 @@ extern "C" void mark_cpu_parked(u32 cpu_id) noexcept {
         asm volatile("dsb sy" ::: "memory");
 
         volatile u8 *uart_debug = reinterpret_cast<volatile u8 *>(0x9000000);
+        early_uart_lock_acquire();
         uart_debug[0] = 'M';
         uart_debug[0] = '0' + static_cast<u8>(cpu_id % 10);
         uart_debug[0] = 10;
+        early_uart_lock_release();
     }
 }
 
@@ -259,12 +293,14 @@ bool wait_for_cpu_state(u32 cpu_id, CpuState expected_state, u32 timeout_ms) noe
 [[noreturn]] void cpu_park(u32 cpu_id) noexcept {
     volatile u8 *uart_base = reinterpret_cast<volatile u8 *>(0x9000000);
 
+    early_uart_lock_acquire();
     uart_base[0] = 'P';
     uart_base[0] = 'A';
     uart_base[0] = 'R';
     uart_base[0] = 'K';
     uart_base[0] = '0' + static_cast<u8>(cpu_id % 10);
     uart_base[0] = 10;
+    early_uart_lock_release();
 
     mark_cpu_parked(cpu_id);
 
@@ -276,6 +312,7 @@ bool wait_for_cpu_state(u32 cpu_id, CpuState expected_state, u32 timeout_ms) noe
         }
     }
 
+    early_uart_lock_acquire();
     uart_base[0] = 'A';
     uart_base[0] = 'C';
     uart_base[0] = 'T';
@@ -289,6 +326,7 @@ bool wait_for_cpu_state(u32 cpu_id, CpuState expected_state, u32 timeout_ms) noe
     uart_base[0] = 'T';
     uart_base[0] = '0' + static_cast<u8>(cpu_id % 10);
     uart_base[0] = 10;
+    early_uart_lock_release();
 
     while (true) {
         asm volatile("wfi");
@@ -307,11 +345,13 @@ extern "C" [[noreturn]] void secondary_cpu_entry() noexcept {
     asm volatile("mrs %0, mpidr_el1" : "=r"(mpidr));
     u32 cpu_id = static_cast<u32>(mpidr & 0xFF);
 
-    // Minimal UART output — avoid flooding FIFO while CPU 0 is printing
+    // Minimal UART output (locked)
     volatile u8 *uart_out = reinterpret_cast<volatile u8 *>(0x09000000);
+    early_uart_lock_acquire();
     uart_out[0] = 'S';
     uart_out[0] = '0' + static_cast<u8>(cpu_id % 10);
     uart_out[0] = '\n';
+    early_uart_lock_release();
 
     // --- Phase 1: Park and wait for CPU 0 to finish initialization ---
     // Directly set state without UART output to avoid FIFO contention
@@ -325,9 +365,11 @@ extern "C" [[noreturn]] void secondary_cpu_entry() noexcept {
         asm volatile("wfe");
     }
 
+    early_uart_lock_acquire();
     uart_out[0] = 'I';
     uart_out[0] = '0' + static_cast<u8>(cpu_id % 10);
     uart_out[0] = '\n';
+    early_uart_lock_release();
 
     // --- Phase 2: Full subsystem initialization (GIC/timer are ready) ---
 
@@ -372,9 +414,11 @@ extern "C" [[noreturn]] void secondary_cpu_entry() noexcept {
     asm volatile("dmb sy" ::: "memory");
     asm volatile("sev" ::: "memory");
 
+    early_uart_lock_acquire();
     uart_out[0] = 'R';
     uart_out[0] = '0' + static_cast<u8>(cpu_id % 10);
     uart_out[0] = '\n';
+    early_uart_lock_release();
 
     // 7. Enable IRQs and enter scheduling loop (never returns)
     asm volatile("msr daifclr, #2" ::: "memory");
@@ -504,6 +548,18 @@ public:
 
 static EarlyUart early_uart;
 
+// RAII guard — holds early_uart_lock for the lifetime of the scope.
+// Use to group multiple early_print() calls into one atomic output block.
+struct EarlyPrintGuard {
+    EarlyPrintGuard() noexcept { early_uart_lock_acquire(); }
+    ~EarlyPrintGuard() noexcept { early_uart_lock_release(); }
+    EarlyPrintGuard(const EarlyPrintGuard &) = delete;
+    auto operator=(const EarlyPrintGuard &) -> EarlyPrintGuard & = delete;
+};
+
+// early_print / early_print_hex: raw output, NO lock.
+// Caller must hold early_uart_lock (via EarlyPrintGuard) when concurrent
+// CPUs may be printing.  Before SMP starts there is no contention.
 static void early_print(const char *str) {
     early_uart.put_string(str);
 }
@@ -730,27 +786,26 @@ void update_boot_stage(BootStage stage, ::moss::kernel::ErrorCode error) noexcep
 ::moss::kernel::VoidResult moss::boot::ARM64BootImpl::setup_smp_support(BootContext &ctx) noexcept {
     moss::boot::update_boot_stage(moss::boot::BootStage::SmpSupport);
 
-    early_print("=== ARM64 SMP Support Setup (Dynamic Detection) ===\n");
+    { EarlyPrintGuard g; early_print("=== ARM64 SMP Support Setup (Dynamic Detection) ===\n"); }
 
     u32 detected_cpus = probe_available_cpus();
-    early_print("Detected CPU count: ");
-    early_print_hex(static_cast<u64>(detected_cpus));
-    early_print("\n");
+    { EarlyPrintGuard g; early_print("Detected CPU count: ");
+      early_print_hex(static_cast<u64>(detected_cpus)); early_print("\n"); }
 
     initialize_cpu_startup_info(detected_cpus);
 
     if (detected_cpus == 1) {
-        early_print("Single-core mode\n");
+        { EarlyPrintGuard g; early_print("Single-core mode\n"); }
         ctx.total_cpus = 1;
     } else {
-        early_print("Multi-core boot sequence:\n");
+        { EarlyPrintGuard g; early_print("Multi-core boot sequence:\n"); }
 
         u32 successful_cpus = 1;
 
         for (u32 cpu_id = 1; cpu_id < detected_cpus; cpu_id++) {
-            early_print("   Starting CPU ");
-            early_print_hex(static_cast<u64>(cpu_id));
-            early_print(" via PSCI...\n");
+            { EarlyPrintGuard g; early_print("   Starting CPU ");
+              early_print_hex(static_cast<u64>(cpu_id));
+              early_print(" via PSCI...\n"); }
 
             // Mark Starting BEFORE PSCI call to avoid race: secondary CPU
             // may reach Parked before we return from PSCI, and we must not
@@ -774,35 +829,46 @@ void update_boot_stage(BootStage stage, ::moss::kernel::ErrorCode error) noexcep
             u64 entry_addr = reinterpret_cast<u64>(_start);
             u64 context_id = static_cast<u64>(cpu_id);
 
-            early_print("   PSCI_CPU_ON: target=");
-            early_print_hex(target_mpidr);
-            early_print(" entry=");
-            early_print_hex(entry_addr);
-            early_print("\n");
+            { EarlyPrintGuard g; early_print("   PSCI_CPU_ON: target=");
+              early_print_hex(target_mpidr); early_print(" entry=");
+              early_print_hex(entry_addr); early_print("\n"); }
 
             u64 psci_result = psci_call(PSCI_CPU_ON_64, target_mpidr, entry_addr, context_id);
 
-            early_print("   PSCI result: ");
-            early_print_hex(psci_result);
+            { EarlyPrintGuard g; early_print("   PSCI result: ");
+              early_print_hex(psci_result);
+              early_print(psci_result == 0 ? " (success)\n" : " (failed)\n"); }
 
-            if (psci_result == 0) {
-                early_print(" (success)\n");
-            } else {
-                early_print(" (failed)\n");
+            if (psci_result != 0) {
                 continue;
+            }
+
+            // Wait for this CPU to reach Parked before starting the next.
+            // Serializes boot so each CPU's debug output ([N], CPUN:S, DN, SN)
+            // appears cleanly between its own PSCI result and the next CPU.
+            if (!wait_for_cpu_state(cpu_id, CpuState::Parked, 5000)) {
+                { EarlyPrintGuard g; early_print("   Warning: CPU ");
+                  early_print_hex(static_cast<u64>(cpu_id));
+                  early_print(" did not park in time\n"); }
             }
         }
 
-        // Assume all PSCI-started CPUs are successful
-        successful_cpus = detected_cpus;
+        // Count successfully parked CPUs
+        successful_cpus = 1;
+        for (u32 cpu_id = 1; cpu_id < detected_cpus; cpu_id++) {
+            if (g_cpu_topology.cpu_states[cpu_id] == CpuState::Parked) {
+                successful_cpus++;
+            }
+        }
         ctx.total_cpus = successful_cpus;
 
         if (successful_cpus > 1) {
-            early_print("SMP boot complete: ");
-            early_print_hex(static_cast<u64>(successful_cpus));
-            early_print(" CPUs online\n");
+            { EarlyPrintGuard g; early_print("SMP boot complete: ");
+              early_print_hex(static_cast<u64>(successful_cpus));
+              early_print(" CPUs online\n"); }
         } else {
-            early_print("Secondary CPU startup failed, fallback to single-core mode\n");
+            { EarlyPrintGuard g;
+              early_print("Secondary CPU startup failed, fallback to single-core mode\n"); }
             ctx.total_cpus = 1;
         }
     }
@@ -811,14 +877,16 @@ void update_boot_stage(BootStage stage, ::moss::kernel::ErrorCode error) noexcep
 }
 
 ::moss::kernel::VoidResult moss::boot::ARM64BootImpl::finalize_arch_init(BootContext & /* ctx */) noexcept {
-    early_print("=== ARM64 Architecture Init Complete ===\n");
+    { EarlyPrintGuard g;
+      early_print("=== ARM64 Architecture Init Complete ===\n"); }
 
     // Mark runtime heap as ready so operator new uses RuntimeHeapAllocator
     // instead of the 64KB early static buffer
     mark_runtime_heap_ready();
-    early_print("Runtime heap marked ready\n");
+    { EarlyPrintGuard g; early_print("Runtime heap marked ready\n"); }
 
-    early_print("ARM64 architecture-specific init all complete\n\n");
+    { EarlyPrintGuard g;
+      early_print("ARM64 architecture-specific init all complete\n\n"); }
     return ::moss::kernel::VoidResult{};
 }
 
