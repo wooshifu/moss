@@ -1,0 +1,67 @@
+{
+    "version": "2.0.0",
+    "tasks": [
+        {
+            // ── QEMU GDB 调试服务器 ──────────────────────────────────
+            //
+            // 启动 QEMU 并等待 GDB 连接（-s -S 参数）。
+            // 由 launch.json 的 preLaunchTask 自动触发，无需手动运行。
+            //
+            // 工作流程：
+            //   1. VS Code F5 → 先执行此任务
+            //   2. run_qemu.sh --debug 启动 QEMU（监听 localhost:1234）
+            //   3. VS Code 检测到 endsPattern 匹配 → 认为 QEMU 就绪
+            //   4. GDB 连接 localhost:1234，停在 _start 入口
+            //
+            // 调试结束后在 QEMU 终端按 Ctrl+A X 退出 QEMU 进程。
+            // ─────────────────────────────────────────────────────────
+            "label": "QEMU Debug Server",
+            "type": "shell",
+            "command": "./build/arm64-qemu-debug/run_qemu.sh",
+            "args": [
+                // --debug 会自动切换到 ELF 模式（保留符号表）
+                // 并添加 QEMU -s（GDB server :1234）-S（启动暂停）参数
+                "--debug"
+            ],
+
+            // QEMU 是长驻进程，不能等它退出才启动 GDB
+            // isBackground=true 让 VS Code 通过 problemMatcher 判断就绪时机
+            "isBackground": true,
+
+            "presentation": {
+                "reveal": "always",    // 启动时自动显示终端面板
+                "panel": "dedicated",  // 独立终端面板，不与其他任务混用
+                "close": false         // 调试结束后保留面板（方便查看 QEMU 输出）
+            },
+
+            // ── Background Problem Matcher ───────────────────────────
+            //
+            // VS Code 需要知道后台任务何时"启动完成"。
+            // 通过匹配 run_qemu.py 的输出来判断：
+            //
+            //   run_qemu.py 输出示例：
+            //   ==================================================  ← beginsPattern
+            //            Moss ARM64 内核操作系统
+            //   ==================================================
+            //   架构:       ARM64
+            //   ...
+            //   $ qemu-system-aarch64 -nodefaults ...              ← endsPattern
+            //
+            // 当 endsPattern 匹配到 "$ ...qemu-system..." 时，
+            // 表示 QEMU 进程已启动并在监听 GDB 端口，VS Code 继续连接。
+            // ─────────────────────────────────────────────────────────
+            "problemMatcher": {
+                "owner": "qemu",
+                // pattern: 用于匹配编译错误/警告的正则（此处不需要，用空行占位）
+                "pattern": {
+                    "regexp": "^$"
+                },
+                "background": {
+                    "activeOnStart": true,                  // 任务启动时立即开始监听输出
+                    "beginsPattern": "^==+$",               // banner 分隔线 → 任务开始
+                    "endsPattern": "\\$.*qemu-system"       // 命令打印行 → QEMU 就绪
+                }
+            }
+        }
+    ]
+}
