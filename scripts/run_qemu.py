@@ -5,6 +5,7 @@
 """
 
 import json
+import shlex
 import subprocess
 import sys
 from dataclasses import dataclass
@@ -231,6 +232,7 @@ def print_banner(
     use_image: bool,
     debug_mode: bool,
     test_mode: bool,
+    timeout: int | None = None,
 ) -> None:
     """打印启动横幅"""
     if test_mode:
@@ -239,6 +241,8 @@ def print_banner(
         rprint("[bold]==================================================[/bold]")
         rprint(f"架构:       {cfg.arch}")
         rprint(f"测试文件:   {kernel_file}")
+        if timeout:
+            rprint(f"超时:       {timeout}s")
         rprint("[bold]==================================================[/bold]")
         return
 
@@ -258,6 +262,9 @@ def print_banner(
         rprint("[green]DTB 传递: 自动 (Linux 启动协议, x0 寄存器)[/green]")
     elif not test_mode:
         rprint("DTB 传递: -device loader + RAM 扫描")
+
+    if timeout:
+        rprint(f"超时:       {timeout}s")
 
     if debug_mode:
         rprint("[yellow]调试模式: 启用[/yellow]")
@@ -305,20 +312,29 @@ def main(
     use_binary: Annotated[bool, typer.Option("--bin", help="使用原始二进制内核")] = False,
     use_image: Annotated[
         bool,
-        typer.Option("--image", help="使用 Linux Image 格式 (ARM64, DTB 自动传递)"),
-    ] = False,
+        typer.Option("--image/--no-image", help="使用 Linux Image 格式 (ARM64, DTB 自动传递)"),
+    ] = True,
     debug_mode: Annotated[bool, typer.Option("--debug", help="启用 GDB 调试")] = False,
     test_mode: Annotated[bool, typer.Option("--test", help="运行单元测试")] = False,
+    timeout: Annotated[
+        Optional[int],
+        typer.Option("--timeout", "-t", help="QEMU 运行超时时间（秒），超时后自动终止"),
+    ] = None,
 ) -> None:
     """启动 QEMU 运行 MOSS 内核
+
+    默认使用 Linux Image 格式启动（--image），QEMU 自动传递 DTB。
+    使用 --no-image 回退到 ELF 模式。
 
     示例:
 
     • uv run scripts/run_qemu.py --config build/arm64/qemu_config.json
 
-    • uv run scripts/run_qemu.py --config build/arm64/qemu_config.json --image
+    • uv run scripts/run_qemu.py --config build/arm64/qemu_config.json --no-image
 
     • uv run scripts/run_qemu.py --config build/arm64/qemu_config.json --debug
+
+    • uv run scripts/run_qemu.py --config build/arm64/qemu_config.json --timeout 30
     """
     # 查找配置文件
     if config is None:
@@ -360,12 +376,21 @@ def main(
         use_image=use_image,
         debug_mode=debug_mode,
         test_mode=test_mode,
+        timeout=timeout,
     )
 
-    rprint(f"\n启动 {cfg.qemu_path}...")
+    # 打印完整的 QEMU 命令（可直接复制到终端执行）
+    rprint(f"\n[dim]$ {shlex.join(qemu_args)}[/dim]")
+    if timeout:
+        rprint(f"[yellow]超时: {timeout}s[/yellow]")
+    rprint()
 
     # 启动 QEMU
-    result = subprocess.run(qemu_args, check=False)
+    try:
+        result = subprocess.run(qemu_args, check=False, timeout=timeout)
+    except subprocess.TimeoutExpired:
+        rprint(f"\n[red]⏰ QEMU 运行超时（{timeout}s），已终止进程[/red]")
+        sys.exit(124)  # 与 GNU timeout 一致的退出码
 
     # 打印结果
     print_result(result.returncode, test_mode=test_mode, use_binary=use_binary)
