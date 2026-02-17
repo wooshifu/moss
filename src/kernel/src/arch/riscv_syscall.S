@@ -61,6 +61,7 @@
 // =============================================================================
 // syscall_entry_point — system call handler for RISC-V
 // =============================================================================
+.type syscall_entry_point, @function
 syscall_entry_point:
     // ---- Allocate 256-byte trap frame on kernel stack ----
     addi    sp, sp, -256
@@ -161,6 +162,7 @@ syscall_entry_point:
     //      TODO: Replace with SRET when true user-space is implemented.
     //      SRET would atomically restore SSTATUS and branch to SEPC.
     ret
+.size syscall_entry_point, . - syscall_entry_point
 
 // =============================================================================
 // syscall_return — extract return value from SyscallContext*
@@ -174,6 +176,7 @@ syscall_entry_point:
 // Input:   a0 = pointer to SyscallContext (may be nullptr)
 // Output:  a0 = context->ret_value, or -1 on nullptr
 // =============================================================================
+.type syscall_return, @function
 syscall_return:
     beqz    a0, .return_error           // nullptr guard
 
@@ -184,3 +187,4 @@ syscall_return:
 .return_error:
     li      a0, -1                      // error sentinel
     ret
+.size syscall_return, . - syscall_return

@@ -1,22 +1,49 @@
 {
-    // Use IntelliSense to learn about possible attributes.
-    // Hover to view descriptions of existing attributes.
-    // For more information, visit: https://go.microsoft.com/fwlink/?linkid=830387
     "version": "0.2.0",
     "configurations": [
         {
+            // ── MOSS ARM64 内核调试 (GDB + QEMU) ───────────────────
+            //
+            // 调试流程：
+            //   1. F5 → preLaunchTask 启动 QEMU（-kernel moss.elf -s -S）
+            //   2. QEMU 从 ELF entry point (_start) 开始，-S 暂停 CPU
+            //   3. GDB 加载 moss.elf 符号表 → 连接 localhost:1234
+            //   4. stopAtEntry → GDB 在 _start 处停住（有完整 DWARF 信息）
+            //   5. F10/F11/断点全部正常工作
+            //
+            // 关键：--debug 模式让 QEMU 加载 moss.elf（非 moss.bin），
+            // 这样 QEMU 从 ELF ENTRY(_start) 启动，跳过 Linux Image Header。
+            // _start 有 .type/.size 注解和 DWARF 行号表，GDB 能正确识别函数边界。
+            //
+            // DTB 传递：ELF 模式下 x0=0，内核使用 RAM 线性扫描回退方案。
+            // run_qemu.py --debug 自动导出 DTB 并通过 -device loader 加载到 RAM。
+            // ─────────────────────────────────────────────────────────
             "name": "moss remote debug",
             "type": "cppdbg",
             "request": "launch",
             "program": "${workspaceFolder}/build/arm64-qemu-debug/bin/moss.elf",
-            "miDebuggerPath": "/usr/bin/gdb-multiarch",
-            "miDebuggerServerAddress": "localhost:1234",
-            "stopAtEntry": true,
             "cwd": "${workspaceFolder}",
             "environment": [],
             "externalConsole": false,
+            "stopAtEntry": true,
             "MIMode": "gdb",
-            "preLaunchTask": "QEMU Debug Server", // This should match the label of the task in tasks.json
+            "miDebuggerPath": "/usr/bin/gdb-multiarch",
+            "miDebuggerServerAddress": "localhost:1234",
+
+            "setupCommands": [
+                {
+                    "description": "Set architecture to AArch64",
+                    "text": "set architecture aarch64",
+                    "ignoreFailures": false
+                },
+                {
+                    "description": "Allow access to unmapped memory regions",
+                    "text": "set mem inaccessible-by-default off",
+                    "ignoreFailures": false
+                }
+            ],
+
+            "preLaunchTask": "QEMU Debug Server"
         }
     ]
 }

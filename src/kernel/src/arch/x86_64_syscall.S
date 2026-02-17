@@ -53,6 +53,7 @@
 // =============================================================================
 // syscall_entry_point — system call handler for x86_64
 // =============================================================================
+.type syscall_entry_point, @function
 syscall_entry_point:
     // ---- Establish stack frame ----
     pushq   %rbp
@@ -131,6 +132,7 @@ syscall_entry_point:
     //      SYSRET would use RCX (user RIP) and R11 (user RFLAGS) to return
     //      to ring 3 in a single instruction.
     ret
+.size syscall_entry_point, . - syscall_entry_point
 
 // =============================================================================
 // syscall_return — extract return value from SyscallContext*
@@ -144,6 +146,7 @@ syscall_entry_point:
 // Input:   RDI = pointer to SyscallContext (may be nullptr)
 // Output:  RAX = context->ret_value, or -1 on nullptr
 // =============================================================================
+.type syscall_return, @function
 syscall_return:
     testq   %rdi, %rdi
     jz      .return_error
@@ -154,6 +157,7 @@ syscall_return:
 .return_error:
     movq    $-1, %rax                   // error sentinel
     ret
+.size syscall_return, . - syscall_return
 
 // Prevent executable stack warning from the GNU linker
 .section .note.GNU-stack,"",@progbits

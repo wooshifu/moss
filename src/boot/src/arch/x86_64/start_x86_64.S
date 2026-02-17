@@ -27,6 +27,7 @@
 .global _start
 .code64
 
+.type _start, @function
 _start:
     // Clear direction flag — required for REP STOSB below to move forward
     cld
@@ -47,6 +48,7 @@ _start:
 
     // Jump to stub (full x86_64 boot not yet implemented)
     jmp kernel_main_stub
+.size _start, . - _start
 
 // =============================================================================
 // Temporary kernel stack (8 KB, page-aligned, in BSS)
@@ -66,10 +68,12 @@ stack_top:
 // disabled, it effectively halts permanently.
 // =============================================================================
 .section ".text"
+.type kernel_main_stub, @function
 kernel_main_stub:
     cli                                 // disable interrupts
 1:  hlt                                 // halt CPU
     jmp 1b                              // loop (in case of NMI wakeup)
+.size kernel_main_stub, . - kernel_main_stub
 
 // =============================================================================
 // Weak BSS boundary symbols
