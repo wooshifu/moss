@@ -145,6 +145,12 @@ set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Weverything -Werror ${MOSS_WARNING_STR}
 set(CMAKE_CXX_FLAGS_DEBUG "-Og -g3")
 set(CMAKE_CXX_FLAGS_RELEASE "-g0 -O3 -DNDEBUG")
 
+# 汇编文件调试信息：生成 DWARF .debug_line 行号表，
+# 使 GDB 的 next/step 命令能在汇编代码中正常工作。
+# （.type/.size 只提供 ELF 符号边界，行号表才是 GDB 单步调试的依据）
+set(CMAKE_ASM_FLAGS_DEBUG "-g3")
+set(CMAKE_ASM_FLAGS_RELEASE "-g0")
+
 # === 全局编译定义 ===
 add_compile_definitions(MOSS_KERNEL_MODULE)
 
@@ -381,20 +387,19 @@ add_custom_command(
     "Generating disassembly, symbol table, and binary images for ${MOSS_TARGET_ARCH}"
 )
 
-# Generate Linux-compatible Image (ARM64 only) from flat binary
+# Verify ARM64 Linux Image header in moss.bin (ARM64 only)
+# The header is embedded in start_arm64.S; moss.bin already IS the Linux Image.
 if(MOSS_TARGET_ARCH STREQUAL "ARM64")
   add_custom_command(
     TARGET moss.elf
     POST_BUILD
-    COMMAND uv run ${CMAKE_SOURCE_DIR}/scripts/create_linux_image.py
-            ${CMAKE_BINARY_DIR}/moss.bin ${CMAKE_BINARY_DIR}/moss.img
+    COMMAND uv run ${CMAKE_SOURCE_DIR}/scripts/verify_linux_image.py
+            ${CMAKE_BINARY_DIR}/moss.bin
     WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
-    COMMENT "Generating ARM64 Linux-compatible Image (moss.img)"
+    COMMENT "Verifying ARM64 Linux Image header in moss.bin"
   )
-  message(STATUS "将生成文件: moss.dis, moss.sym, moss.bin, moss_boot.bin, moss_code.bin, moss.img")
-else()
-  message(STATUS "将生成文件: moss.dis, moss.sym, moss.bin, moss_boot.bin, moss_code.bin")
 endif()
+message(STATUS "将生成文件: moss.dis, moss.sym, moss.bin, moss_boot.bin, moss_code.bin")
 
 # === 构建目标 (QEMU) ===
 if(MOSS_QEMU_RUNNER)

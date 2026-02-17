@@ -55,6 +55,7 @@
 // =============================================================================
 // syscall_entry_point — legacy same-EL system call handler
 // =============================================================================
+.type syscall_entry_point, @function
 syscall_entry_point:
     // ---- Save frame pointer and link register (outermost pair) ----
     stp     x29, x30, [sp, #-16]!
@@ -163,6 +164,7 @@ syscall_entry_point:
     //      eret: atomically restores PSTATE from SPSR_EL1 and branches to
     //      the address in ELR_EL1, dropping back to EL0.
     eret
+.size syscall_entry_point, . - syscall_entry_point
 
 // =============================================================================
 // syscall_return — extract return value from SyscallContext*
@@ -179,6 +181,7 @@ syscall_entry_point:
 // Input:   x0 = pointer to SyscallContext (may be nullptr)
 // Output:  x0 = context->ret_value, or -1 on nullptr
 // =============================================================================
+.type syscall_return, @function
 syscall_return:
     cbz     x0, .return_error           // nullptr guard
 
@@ -189,6 +192,7 @@ syscall_return:
 .return_error:
     mov     x0, #-1                     // error sentinel
     ret
+.size syscall_return, . - syscall_return
 
 // Prevent executable stack warning from the GNU linker
 .section .note.GNU-stack,"",%progbits
