@@ -4,6 +4,7 @@
 // 系统调用号定义（与内核系统调用表匹配）
 #define SYS_DEBUG_PRINT 0
 #define SYS_EXIT        1
+#define SYS_FORK       10
 
 // 系统调用接口函数
 static long syscall(long number, long arg0, long arg1, long arg2,
@@ -40,9 +41,19 @@ static void exit(int status) {
 
 // 程序入口点
 int main(void) {
-    print("🎉 Hello from user space!\n");
-    print("✅ 用户空间程序运行成功！\n");
-    print("🚀 MOSS内核用户空间支持验证通过\n");
+    print("Parent: about to fork\n");
+
+    long pid = syscall(SYS_FORK, 0, 0, 0, 0, 0, 0);
+
+    if (pid < 0) {
+        print("fork() failed!\n");
+    } else if (pid == 0) {
+        // Child process
+        print("Hello from child process!\n");
+    } else {
+        // Parent process
+        print("Hello from parent, child PID created!\n");
+    }
 
     exit(0);
     return 0; // 永远不会执行
