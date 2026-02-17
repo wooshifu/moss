@@ -1886,4 +1886,7 @@ struct ContainerConfig {
   static constexpr bool ENABLE_DEBUG_CHECKS = false;
 };
 
+// Global slab allocator instance
+SlabAllocator *g_slab_allocator = nullptr;
+
 } // namespace moss::kernel::containers
