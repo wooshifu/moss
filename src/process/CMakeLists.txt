@@ -8,7 +8,7 @@ set(PROCESS_SOURCES
 
 # Architecture-specific assembly files
 if(MOSS_TARGET_ARCH STREQUAL "ARM64")
-    list(APPEND PROCESS_SOURCES src/context_switch.S)
+    list(APPEND PROCESS_SOURCES src/arch/arm64/context_switch.S)
 elseif(MOSS_TARGET_ARCH STREQUAL "X86_64")
     list(APPEND PROCESS_SOURCES src/arch/x86_64/context_switch.S)
 elseif(MOSS_TARGET_ARCH STREQUAL "RISCV")

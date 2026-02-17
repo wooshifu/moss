@@ -190,13 +190,19 @@ def build_qemu_args(
 
     # -nodefaults: 禁止 QEMU 创建默认设备（IDE 磁盘等），避免与
     # -device loader 产生 "drive with bus=0, unit=0 exists" 冲突。
-    # 因此需要手动通过 -chardev + -serial 建立串口输出。
+    # 因此需要手动通过 -chardev + -serial + -mon 建立串口输出和监控台。
+    #
+    # chardev 参数说明：
+    #   mux=on   — 复用 stdio，让串口和 monitor 共享同一个终端
+    #   signal=off — 禁止 chardev 拦截 Ctrl+C（由 mux 层处理转义序列）
+    # 有了 mux=on + -mon，用户可以用 Ctrl+A X 退出 QEMU。
     args = [
         cfg.qemu_path,
         "-nodefaults",
         "-nographic",
-        "-chardev", "stdio,id=char0",
+        "-chardev", "stdio,id=char0,mux=on,signal=off",
         "-serial", "chardev:char0",
+        "-mon", "chardev=char0,mode=readline",
         "-machine", arch_cfg["machine"],
         "-cpu", arch_cfg["cpu"],
         "-smp", str(smp),
