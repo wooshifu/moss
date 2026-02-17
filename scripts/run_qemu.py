@@ -358,6 +358,10 @@ def main(
         console.print(f"[red]错误: 不支持的架构 {cfg.arch}[/red]")
         raise typer.Exit(1)
 
+    # Debug 模式默认使用 ELF（保留完整符号表，方便 GDB 断点和回溯）
+    if debug_mode:
+        use_image = False
+
     # 选择内核文件
     kernel_file, kernel_type = resolve_kernel_file(
         cfg, use_binary=use_binary, use_image=use_image, test_mode=test_mode
