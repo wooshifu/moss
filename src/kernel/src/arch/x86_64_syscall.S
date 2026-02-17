@@ -1,115 +1,159 @@
-.section .text
+// =============================================================================
+// x86_64 System Call Entry Point
+// =============================================================================
+//
+// This file implements the low-level system call entry/exit path for x86_64.
+//
+// Execution flow:
+//   1. User-space executes `syscall` → CPU loads RIP from LSTAR MSR (points
+//      here), saves user RIP in RCX and RFLAGS in R11, switches to ring 0.
+//   2. syscall_entry_point saves all general-purpose registers onto the
+//      kernel stack, remaps arguments from the syscall ABI to the System V
+//      AMD64 C calling convention, and calls system_call_handler().
+//   3. On return, the result (in RAX) is patched into the saved frame,
+//      registers are restored, and execution returns to user-space.
+//
+// x86_64 system call ABI (Linux-compatible):
+//   RAX       = system call number
+//   RDI, RSI, RDX, R10, R8, R9 = arguments 0 - 5
+//   Return value delivered in RAX
+//
+//   NOTE: The kernel uses RCX for arg2 in the C ABI, but user-space RCX is
+//         clobbered by the SYSCALL instruction (it receives user RIP).
+//         User-space therefore passes arg3 in R10 instead of RCX.
+//
+// C handler prototype:
+//   extern "C" int64_t system_call_handler(
+//       uint64_t nr, uint64_t a0, uint64_t a1, uint64_t a2,
+//       uint64_t a3, uint64_t a4, uint64_t a5);
+//
+// Stack frame layout after saving all registers (RSP-relative offsets):
+//   +0x00 : R11 (user RFLAGS)
+//   +0x08 : RCX (user RIP)
+//   +0x10 : R9  (arg5)
+//   +0x18 : R8  (arg4)
+//   +0x20 : R10 (arg3)
+//   +0x28 : RDX (arg2/a1)
+//   +0x30 : RSI (arg1/a0)
+//   +0x38 : RDI (arg0/user a0)
+//   +0x40 : RAX (syscall number)
+//   +0x48 : R15 ... R12, RBX  (callee-saved)
+//   +0x70 : RBP (frame pointer)
+//
+// NOTE: Currently uses `ret` instead of `sysret` because the kernel runs
+//       all code in ring 0.  A future user-space implementation should
+//       switch to SYSRET for proper privilege-level return.
+// =============================================================================
 
-# x86_64系统调用入口点实现
-# 处理SYSCALL指令，提取参数并调用系统调用分发器
+.section .text
 
 .global syscall_entry_point
 .global syscall_return
 
-# x86_64系统调用入口点
-# 当用户空间执行SYSCALL指令时，CPU会跳转到此处
-# x86_64系统调用约定：
-#   rax = 系统调用号
-#   rdi, rsi, rdx, r10, r8, r9 = 参数
-#   返回值在rax中
+// =============================================================================
+// syscall_entry_point — system call handler for x86_64
+// =============================================================================
 syscall_entry_point:
-    # 保存用户态寄存器到栈上
-    pushq   %rbp                        # 保存frame pointer
-    movq    %rsp, %rbp                  # 设置新的frame pointer
+    // ---- Establish stack frame ----
+    pushq   %rbp
+    movq    %rsp, %rbp
 
-    # 保存callee-saved寄存器
+    // ---- Save callee-saved registers (System V ABI requires preservation) ----
     pushq   %rbx
     pushq   %r12
     pushq   %r13
     pushq   %r14
     pushq   %r15
 
-    # 保存系统调用参数寄存器
-    pushq   %rax                        # 系统调用号
-    pushq   %rdi                        # arg0
-    pushq   %rsi                        # arg1
-    pushq   %rdx                        # arg2
-    pushq   %r10                        # arg3 (注意：r10而不是rcx)
-    pushq   %r8                         # arg4
-    pushq   %r9                         # arg5
+    // ---- Save syscall argument registers ----
+    pushq   %rax                        // syscall number
+    pushq   %rdi                        // arg0
+    pushq   %rsi                        // arg1
+    pushq   %rdx                        // arg2
+    pushq   %r10                        // arg3 (R10, not RCX — see ABI note)
+    pushq   %r8                         // arg4
+    pushq   %r9                         // arg5
 
-    # 保存其他寄存器
-    pushq   %rcx                        # 用户空间的RIP
-    pushq   %r11                        # 用户空间的RFLAGS
+    // ---- Save registers clobbered by SYSCALL instruction ----
+    pushq   %rcx                        // user RIP (saved by CPU)
+    pushq   %r11                        // user RFLAGS (saved by CPU)
 
-    # 准备调用C函数 system_call_handler
-    # System V ABI调用约定：
-    #   rdi = 系统调用号 (从rax移动)
-    #   rsi = arg0 (从rdi移动)
-    #   rdx = arg1 (从rsi移动)
-    #   rcx = arg2 (保持rdx)
-    #   r8  = arg3 (从r10移动)
-    #   r9  = arg4 (保持r8)
-    #   [rsp+8] = arg5 (从r9推入栈)
+    // ---- Remap syscall ABI → System V AMD64 C calling convention ----
+    //
+    //  C prototype: system_call_handler(nr, a0, a1, a2, a3, a4, a5)
+    //               registers:          RDI RSI RDX RCX R8  R9  [stack]
+    //
+    //  Syscall ABI: RAX=nr, RDI=a0, RSI=a1, RDX=a2, R10=a3, R8=a4, R9=a5
+    //
+    //  Read saved values from stack (offsets from current RSP):
+    movq    72(%rsp), %rdi              // C arg0 (nr)   ← saved RAX
+    movq    64(%rsp), %rsi              // C arg1 (a0)   ← saved RDI
+    movq    56(%rsp), %rdx              // C arg2 (a1)   ← saved RSI
+    movq    48(%rsp), %rcx              // C arg3 (a2)   ← saved RDX
+    movq    40(%rsp), %r8               // C arg4 (a3)   ← saved R10
+    movq    32(%rsp), %r9               // C arg5 (a4)   ← saved R8
 
-    # 从栈上重新加载参数
-    movq    72(%rsp), %rdi              # 系统调用号 (原rax)
-    movq    64(%rsp), %rsi              # arg0 (原rdi)
-    movq    56(%rsp), %rdx              # arg1 (原rsi)
-    movq    48(%rsp), %rcx              # arg2 (原rdx)
-    movq    40(%rsp), %r8               # arg3 (原r10)
-    movq    32(%rsp), %r9               # arg4 (原r8)
+    // C arg6 (a5) passed on the stack per System V ABI
+    pushq   24(%rsp)                    // push saved R9 (arg5)
 
-    # arg5需要通过栈传递
-    pushq   24(%rsp)                    # arg5 (原r9)
-
-    # 调用系统调用分发器
+    // ---- Call the C system call dispatcher ----
     call    system_call_handler
 
-    # 清理栈上的arg5参数
+    // ---- Clean up stack arg (arg5) ----
     addq    $8, %rsp
 
-    # 返回值现在在rax中，保存到栈上
-    movq    %rax, 72(%rsp)              # 将返回值存储到原rax的位置
+    // ---- Patch return value into saved RAX slot ----
+    movq    %rax, 72(%rsp)
 
-    # 恢复寄存器 (除了rax，它包含返回值)
-    popq    %r11                        # 恢复用户RFLAGS
-    popq    %rcx                        # 恢复用户RIP
-    popq    %r9                         # 恢复r9
-    popq    %r8                         # 恢复r8
-    popq    %r10                        # 恢复r10
-    popq    %rdx                        # 恢复rdx
-    popq    %rsi                        # 恢复rsi
-    popq    %rdi                        # 恢复rdi
-    popq    %rax                        # 恢复rax (包含返回值)
+    // ---- Restore all registers (reverse of save order) ----
+    popq    %r11                        // user RFLAGS
+    popq    %rcx                        // user RIP
+    popq    %r9
+    popq    %r8
+    popq    %r10
+    popq    %rdx
+    popq    %rsi
+    popq    %rdi
+    popq    %rax                        // return value (patched above)
 
-    # 恢复callee-saved寄存器
+    // ---- Restore callee-saved registers ----
     popq    %r15
     popq    %r14
     popq    %r13
     popq    %r12
     popq    %rbx
 
-    # 恢复frame pointer
+    // ---- Tear down stack frame ----
     popq    %rbp
 
-    # 返回用户空间
-    # 注意：这里应该使用SYSRET指令返回用户空间
-    # 但是由于我们目前在内核模式运行，暂时使用ret
+    // ---- Return to caller ----
+    //      TODO: Replace with SYSRET when true user-space is implemented.
+    //      SYSRET would use RCX (user RIP) and R11 (user RFLAGS) to return
+    //      to ring 3 in a single instruction.
     ret
 
-# x86_64系统调用返回处理
-# 从内核空间返回用户空间，并设置返回值
+// =============================================================================
+// syscall_return — extract return value from SyscallContext*
+// =============================================================================
+//
+// Prototype: extern "C" void syscall_return(void* context) noexcept;
+//
+// SyscallContext layout (relevant field):
+//   offset 56 (0x38): ret_value (uint64_t)
+//
+// Input:   RDI = pointer to SyscallContext (may be nullptr)
+// Output:  RAX = context->ret_value, or -1 on nullptr
+// =============================================================================
 syscall_return:
-    # rdi包含SyscallContext*指针
-    testq   %rdi, %rdi                  # 检查context是否为空
-    jz      .return_error               # 如果为空，跳转到错误处理
+    testq   %rdi, %rdi
+    jz      .return_error
 
-    # 从context中加载返回值
-    movq    56(%rdi), %rax              # 加载ret_value字段 (偏移56字节)
-
-    # 返回值已经在rax中了
+    movq    56(%rdi), %rax              // RAX = context->ret_value
     ret
 
 .return_error:
-    # 错误情况：返回-1
-    movq    $-1, %rax
+    movq    $-1, %rax                   // error sentinel
     ret
 
-# 定义节段属性
+// Prevent executable stack warning from the GNU linker
 .section .note.GNU-stack,"",@progbits
