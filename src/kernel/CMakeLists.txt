@@ -18,7 +18,12 @@ elseif(MOSS_TARGET_ARCH STREQUAL "RISCV")
 endif()
 
 target_sources(moss_kernel
-    PUBLIC FILE_SET CXX_MODULES FILES src/kernel.cppm
+    PUBLIC FILE_SET CXX_MODULES FILES
+        src/kernel.cppm
+        src/kernel-elf.cppm
+        src/kernel-syscall_table.cppm
+        src/kernel-syscall_arch.cppm
+        src/kernel-main.cppm
     PRIVATE ${KERNEL_SOURCES})
 
 target_compile_definitions(moss_kernel PRIVATE MOSS_KERNEL_CORE)

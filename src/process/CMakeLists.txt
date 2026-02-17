@@ -16,7 +16,11 @@ elseif(MOSS_TARGET_ARCH STREQUAL "RISCV")
 endif()
 
 target_sources(moss_process
-    PUBLIC FILE_SET CXX_MODULES FILES src/process.cppm
+    PUBLIC FILE_SET CXX_MODULES FILES
+        src/process.cppm
+        src/process-types.cppm
+        src/process-scheduler.cppm
+        src/process-load_balancer.cppm
     PRIVATE ${PROCESS_SOURCES})
 
 target_compile_definitions(moss_process PRIVATE MOSS_PROCESS_MODULE)
