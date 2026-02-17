@@ -1,83 +1,126 @@
-.section .text
+// =============================================================================
+// RISC-V 64-bit System Call Entry Point
+// =============================================================================
+//
+// This file implements the low-level system call entry/exit path for RV64.
+//
+// Execution flow:
+//   1. User-space executes `ecall` → CPU traps to S-mode, SCAUSE = 8
+//      (Environment call from U-mode).
+//   2. The trap vector routes the exception here.
+//   3. syscall_entry_point allocates a 256-byte trap frame on the kernel
+//      stack, saves ALL 32 general-purpose registers plus ra, remaps
+//      arguments from the RISC-V syscall ABI to the standard calling
+//      convention, and calls system_call_handler().
+//   4. On return, the result (in a0) is patched into the saved frame,
+//      registers are restored, and execution returns to user-space.
+//
+// RISC-V system call ABI (Linux-compatible):
+//   a7 (x17) = system call number
+//   a0 - a5  = arguments 0 - 5
+//   Return value delivered in a0
+//
+// C handler prototype:
+//   extern "C" int64_t system_call_handler(
+//       uint64_t nr, uint64_t a0, uint64_t a1, uint64_t a2,
+//       uint64_t a3, uint64_t a4, uint64_t a5);
+//
+// Trap frame layout (256 bytes, SP-relative offsets):
+//   +0x00  : ra   (x1)      — return address
+//   +0x08  : t0   (x5)      — temporary registers
+//   +0x10  : t1   (x6)
+//   +0x18  : t2   (x7)
+//   +0x20  : t3   (x28)
+//   +0x28  : t4   (x29)
+//   +0x30  : t5   (x30)
+//   +0x38  : t6   (x31)
+//   +0x40  : a0   (x10)     — arg0 / return value slot
+//   +0x48  : a1   (x11)     — arg1
+//   +0x50  : a2   (x12)     — arg2
+//   +0x58  : a3   (x13)     — arg3
+//   +0x60  : a4   (x14)     — arg4
+//   +0x68  : a5   (x15)     — arg5
+//   +0x70  : a6   (x16)
+//   +0x78  : a7   (x17)     — syscall number
+//   +0x80  : s0/fp (x8)     — callee-saved registers
+//   +0x88  : s1   (x9)
+//   +0x90  : s2   (x18)
+//   ...
+//   +0xD8  : s11  (x27)
+//
+// NOTE: Currently uses `ret` instead of `sret` because the kernel runs
+//       all code in S-mode.  A future user-space implementation should
+//       switch to SRET for proper privilege-level return.
+// =============================================================================
 
-// RISC-V系统调用入口点实现
-// 处理ECALL指令引发的trap，提取参数并调用系统调用分发器
+.section .text
 
 .global syscall_entry_point
 .global syscall_return
 
-// RISC-V系统调用入口点
-// 当用户空间执行ECALL指令时，CPU会跳转到此处
-// RISC-V系统调用约定：
-//   a7 = 系统调用号
-//   a0-a5 = 参数
-//   返回值在a0中
+// =============================================================================
+// syscall_entry_point — system call handler for RISC-V
+// =============================================================================
 syscall_entry_point:
-    // 保存用户态寄存器到栈上
-    // RISC-V使用sp作为栈指针，ra作为返回地址寄存器
+    // ---- Allocate 256-byte trap frame on kernel stack ----
+    addi    sp, sp, -256
 
-    addi    sp, sp, -256                // 为寄存器分配栈空间
+    // ---- Save caller-saved (temporary) registers ----
+    sd      ra, 0(sp)                   // x1  — return address
+    sd      t0, 8(sp)                   // x5  — temporary
+    sd      t1, 16(sp)                  // x6
+    sd      t2, 24(sp)                  // x7
+    sd      t3, 32(sp)                  // x28
+    sd      t4, 40(sp)                  // x29
+    sd      t5, 48(sp)                  // x30
+    sd      t6, 56(sp)                  // x31
 
-    // 保存通用寄存器 (caller-saved)
-    sd      ra, 0(sp)                   // 保存返回地址
-    sd      t0, 8(sp)                   // 临时寄存器
-    sd      t1, 16(sp)
-    sd      t2, 24(sp)
-    sd      t3, 32(sp)
-    sd      t4, 40(sp)
-    sd      t5, 48(sp)
-    sd      t6, 56(sp)
+    // ---- Save argument registers (a0-a7) ----
+    sd      a0, 64(sp)                  // x10 — arg0 / return value slot
+    sd      a1, 72(sp)                  // x11 — arg1
+    sd      a2, 80(sp)                  // x12 — arg2
+    sd      a3, 88(sp)                  // x13 — arg3
+    sd      a4, 96(sp)                  // x14 — arg4
+    sd      a5, 104(sp)                 // x15 — arg5
+    sd      a6, 112(sp)                 // x16 — (unused for syscalls)
+    sd      a7, 120(sp)                 // x17 — syscall number
 
-    // 保存参数寄存器
-    sd      a0, 64(sp)                  // arg0 (也用作返回值)
-    sd      a1, 72(sp)                  // arg1
-    sd      a2, 80(sp)                  // arg2
-    sd      a3, 88(sp)                  // arg3
-    sd      a4, 96(sp)                  // arg4
-    sd      a5, 104(sp)                 // arg5
-    sd      a6, 112(sp)                 // 通常不用于系统调用
-    sd      a7, 120(sp)                 // 系统调用号
+    // ---- Save callee-saved registers (s0-s11) ----
+    sd      s0, 128(sp)                 // x8  — frame pointer / s0
+    sd      s1, 136(sp)                 // x9
+    sd      s2, 144(sp)                 // x18
+    sd      s3, 152(sp)                 // x19
+    sd      s4, 160(sp)                 // x20
+    sd      s5, 168(sp)                 // x21
+    sd      s6, 176(sp)                 // x22
+    sd      s7, 184(sp)                 // x23
+    sd      s8, 192(sp)                 // x24
+    sd      s9, 200(sp)                 // x25
+    sd      s10, 208(sp)                // x26
+    sd      s11, 216(sp)                // x27
 
-    // 保存callee-saved寄存器
-    sd      s0, 128(sp)                 // frame pointer
-    sd      s1, 136(sp)
-    sd      s2, 144(sp)
-    sd      s3, 152(sp)
-    sd      s4, 160(sp)
-    sd      s5, 168(sp)
-    sd      s6, 176(sp)
-    sd      s7, 184(sp)
-    sd      s8, 192(sp)
-    sd      s9, 200(sp)
-    sd      s10, 208(sp)
-    sd      s11, 216(sp)
+    // ---- Remap RISC-V syscall ABI → standard C calling convention ----
+    //
+    //  C prototype: system_call_handler(nr, a0, a1, a2, a3, a4, a5)
+    //               registers:          a0  a1  a2  a3  a4  a5  a6
+    //
+    //  Syscall ABI: a7=nr, a0=arg0, a1=arg1, a2=arg2, a3=arg3, a4=arg4, a5=arg5
+    //
+    ld      a0, 120(sp)                 // C arg0 (nr)   ← saved a7
+    ld      a1, 64(sp)                  // C arg1 (a0)   ← saved a0
+    ld      a2, 72(sp)                  // C arg2 (a1)   ← saved a1
+    ld      a3, 80(sp)                  // C arg3 (a2)   ← saved a2
+    ld      a4, 88(sp)                  // C arg4 (a3)   ← saved a3
+    ld      a5, 96(sp)                  // C arg5 (a4)   ← saved a4
+    ld      a6, 104(sp)                 // C arg6 (a5)   ← saved a5
 
-    // 准备调用C函数 system_call_handler
-    // RISC-V调用约定：
-    //   a0 = 系统调用号 (从a7移动)
-    //   a1 = arg0 (从原a0移动)
-    //   a2 = arg1 (从原a1移动)
-    //   a3 = arg2 (从原a2移动)
-    //   a4 = arg3 (从原a3移动)
-    //   a5 = arg4 (从原a4移动)
-    //   a6 = arg5 (从原a5移动)
-
-    // 从栈上重新加载参数
-    ld      a0, 120(sp)                 // 系统调用号 (原a7)
-    ld      a1, 64(sp)                  // arg0 (原a0)
-    ld      a2, 72(sp)                  // arg1 (原a1)
-    ld      a3, 80(sp)                  // arg2 (原a2)
-    ld      a4, 88(sp)                  // arg3 (原a3)
-    ld      a5, 96(sp)                  // arg4 (原a4)
-    ld      a6, 104(sp)                 // arg5 (原a5)
-
-    // 调用系统调用分发器
+    // ---- Call the C system call dispatcher ----
     call    system_call_handler
 
-    // 返回值现在在a0中，保存到栈上原a0的位置
+    // ---- Patch return value into saved a0 slot ----
     sd      a0, 64(sp)
 
-    // 恢复callee-saved寄存器
+    // ---- Restore callee-saved registers (s11 → s0, reverse order) ----
     ld      s11, 216(sp)
     ld      s10, 208(sp)
     ld      s9, 200(sp)
@@ -89,19 +132,19 @@ syscall_entry_point:
     ld      s3, 152(sp)
     ld      s2, 144(sp)
     ld      s1, 136(sp)
-    ld      s0, 128(sp)                 // frame pointer
+    ld      s0, 128(sp)
 
-    // 恢复参数寄存器 (除了a0包含返回值)
-    ld      a7, 120(sp)                 // 系统调用号
+    // ---- Restore argument registers ----
+    ld      a7, 120(sp)                 // syscall number (for diagnostics)
     ld      a6, 112(sp)
-    ld      a5, 104(sp)                 // arg5
-    ld      a4, 96(sp)                  // arg4
-    ld      a3, 88(sp)                  // arg3
-    ld      a2, 80(sp)                  // arg2
-    ld      a1, 72(sp)                  // arg1
-    ld      a0, 64(sp)                  // arg0 (现在包含返回值)
+    ld      a5, 104(sp)
+    ld      a4, 96(sp)
+    ld      a3, 88(sp)
+    ld      a2, 80(sp)
+    ld      a1, 72(sp)
+    ld      a0, 64(sp)                  // return value (patched above)
 
-    // 恢复临时寄存器
+    // ---- Restore temporary registers ----
     ld      t6, 56(sp)
     ld      t5, 48(sp)
     ld      t4, 40(sp)
@@ -109,32 +152,35 @@ syscall_entry_point:
     ld      t2, 24(sp)
     ld      t1, 16(sp)
     ld      t0, 8(sp)
-    ld      ra, 0(sp)                   // 返回地址
+    ld      ra, 0(sp)                   // return address
 
-    // 恢复栈指针
+    // ---- Deallocate trap frame ----
     addi    sp, sp, 256
 
-    // 返回用户空间
-    // 注意：这里应该使用SRET指令从监管者模式返回用户模式
-    // 但是由于我们目前在内核模式运行，暂时使用ret
+    // ---- Return to caller ----
+    //      TODO: Replace with SRET when true user-space is implemented.
+    //      SRET would atomically restore SSTATUS and branch to SEPC.
     ret
 
-// RISC-V系统调用返回处理
-// 从内核空间返回用户空间，并设置返回值
+// =============================================================================
+// syscall_return — extract return value from SyscallContext*
+// =============================================================================
+//
+// Prototype: extern "C" void syscall_return(void* context) noexcept;
+//
+// SyscallContext layout (relevant field):
+//   offset 56 (0x38): ret_value (uint64_t)
+//
+// Input:   a0 = pointer to SyscallContext (may be nullptr)
+// Output:  a0 = context->ret_value, or -1 on nullptr
+// =============================================================================
 syscall_return:
-    // a0包含SyscallContext*指针
-    beqz    a0, .return_error           // 如果context为空，返回错误
+    beqz    a0, .return_error           // nullptr guard
 
-    // 从context中加载返回值
-    ld      a1, 56(a0)                  // 加载ret_value字段 (偏移56字节)
-
-    // 设置返回值到a0寄存器 (用户空间会看到这个值)
-    mv      a0, a1
-
-    // 返回
+    ld      a1, 56(a0)                  // a1 = context->ret_value
+    mv      a0, a1                      // return value in a0
     ret
 
 .return_error:
-    // 错误情况：返回-1
-    li      a0, -1
+    li      a0, -1                      // error sentinel
     ret

@@ -1,46 +1,83 @@
-/*
- * x86_64 内核启动汇编代码
- * 最小启动存根，待完整实现
- */
+// =============================================================================
+// x86_64 Kernel Boot Stub
+// =============================================================================
+//
+// Minimal bootstrap for x86_64 MOSS kernel.  This is a placeholder — the full
+// x86_64 boot sequence (GDT setup, paging, AP bringup, etc.) is not yet
+// implemented.
+//
+// Current behavior:
+//   1. Clear direction flag (CLD) for safe REP string operations
+//   2. Set up a temporary 8 KB kernel stack
+//   3. Zero the BSS section
+//   4. Jump to kernel_main_stub which halts the CPU
+//
+// Entry point: _start (set by the linker via ENTRY(_start) in linker.ld)
+//
+// TODO:
+//   - Set up a proper GDT with kernel/user code+data segments
+//   - Initialize page tables (identity + high-half mapping)
+//   - Set up IDT for exception/interrupt handling
+//   - Parse ACPI/MP tables for multi-core topology
+//   - Boot application processors (APs) via SIPI
+//   - Jump to the real kernel_main
+// =============================================================================
 
 .section ".text.boot", "ax"
 .global _start
 .code64
 
 _start:
-    // 清除方向标志
+    // Clear direction flag — required for REP STOSB below to move forward
     cld
 
-    // 设置内核栈（临时）
+    // Set up temporary kernel stack (8 KB, defined in .bss.stack below)
     lea stack_top(%rip), %rsp
 
-    // 清零BSS段
+    // Zero BSS section: memset(BSS_START, 0, BSS_END - BSS_START)
+    //   RDI = destination (BSS start)
+    //   RCX = count in bytes (BSS end - BSS start)
+    //   AL  = 0 (fill value)
+    //   REP STOSB: store AL to [RDI], increment RDI, decrement RCX, repeat
     lea __bss_start(%rip), %rdi
     lea __bss_end(%rip), %rcx
-    sub %rdi, %rcx
-    xor %eax, %eax
-    rep stosb
+    sub %rdi, %rcx                      // RCX = BSS size in bytes
+    xor %eax, %eax                      // fill with zeros
+    rep stosb                           // zero the entire BSS
 
-    // 跳转到C++内核主函数
-    // TODO: 实现完整的x86_64启动序列
+    // Jump to stub (full x86_64 boot not yet implemented)
     jmp kernel_main_stub
 
-// 临时内核栈
+// =============================================================================
+// Temporary kernel stack (8 KB, page-aligned, in BSS)
+// =============================================================================
 .section ".bss.stack", "aw", @nobits
 .align 16
 stack_bottom:
-    .skip 8192  // 8KB栈空间
+    .skip 8192                          // 8 KB stack
 stack_top:
 
-// 临时符号定义
+// =============================================================================
+// kernel_main_stub — placeholder halt loop
+// =============================================================================
+//
+// Disables interrupts (CLI) then enters an infinite HLT loop.
+// HLT stops the CPU until the next interrupt, but since interrupts are
+// disabled, it effectively halts permanently.
+// =============================================================================
 .section ".text"
 kernel_main_stub:
-    // 临时实现 - 无限循环
-    cli
-1:  hlt
-    jmp 1b
+    cli                                 // disable interrupts
+1:  hlt                                 // halt CPU
+    jmp 1b                              // loop (in case of NMI wakeup)
 
-// BSS段标记（由链接器脚本定义）
+// =============================================================================
+// Weak BSS boundary symbols
+// =============================================================================
+//
+// These are defined as weak so the linker script can override them.
+// If no linker script is used, they default to 0 (no BSS to clear).
+// =============================================================================
 .weak __bss_start
 .weak __bss_end
 __bss_start = 0
