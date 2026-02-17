@@ -35,6 +35,7 @@
 .global _user_program_start
 .global _user_program_end
 
+.type _user_program_start, @function
 _user_program_start:
 
     // ---- Step 1: sys_write(fd=1, "Parent: about to fork\n", 22) ----
@@ -84,6 +85,7 @@ _user_program_start:
 
     // ---- Infinite loop (unreachable — sys_exit never returns) ----
     b       .
+.size _user_program_start, . - _user_program_start
 
 // =============================================================================
 // Read-only string data (placed inline to allow PC-relative addressing via ADR)

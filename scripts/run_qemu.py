@@ -49,11 +49,10 @@ class QemuConfig:
     arch: str
     kernel_elf: str
     test_elf: str
-    kernel_bin: str
-    kernel_bin_full: str
-    kernel_image: str  # Linux-compatible Image (ARM64 only)
-    cpu_cores: int = 4  # 从 CMake MOSS_CPU_CORES 变量读取，默认 4
-    qemu_path: str = ""  # CMake 探测到的 QEMU 可执行文件完整路径
+    kernel_bin: str       # moss_boot.bin（仅 .text.boot 段）
+    kernel_bin_full: str  # moss.bin（完整内核，ARM64 含 Linux Image header）
+    cpu_cores: int = 4    # 从 CMake MOSS_CPU_CORES 变量读取，默认 4
+    qemu_path: str = ""   # CMake 探测到的 QEMU 可执行文件完整路径
 
     @classmethod
     def from_json(cls, path: Path) -> "QemuConfig":
@@ -68,16 +67,22 @@ class QemuConfig:
             test_elf=data["test_elf"],
             kernel_bin=data["kernel_bin"],
             kernel_bin_full=data["kernel_bin_full"],
-            kernel_image=data.get("kernel_image", ""),
             cpu_cores=data.get("cpu_cores", 4),
             qemu_path=qemu_path,
         )
 
 
 def resolve_kernel_file(
-    cfg: QemuConfig, *, use_binary: bool, use_image: bool, test_mode: bool
+    cfg: QemuConfig, *, use_binary: bool, test_mode: bool, debug_mode: bool
 ) -> tuple[Path, str]:
-    """选择内核文件并返回 (路径, 描述)"""
+    """选择内核文件并返回 (路径, 描述)
+
+    启动模式优先级：
+      1. --test  → test ELF (moss.test.elf)
+      2. --bin   → 原始二进制 (moss_boot.bin)，device loader 直接加载到 RAM
+      3. --debug → moss.elf（保留完整 DWARF 符号，QEMU 从 ELF entry point 启动）
+      4. 默认    → moss.bin（含 Linux Image header，QEMU 自动传递 DTB）
+    """
     if test_mode:
         path = Path(cfg.test_elf)
         if not path.exists():
@@ -86,28 +91,35 @@ def resolve_kernel_file(
             raise typer.Exit(1)
         return path, "Unit Test ELF"
 
-    if use_image:
-        path = Path(cfg.kernel_image) if cfg.kernel_image else Path(cfg.build_dir) / "moss.img"
-        if not path.exists():
-            console.print(f"[red]错误: Linux Image 文件不存在: {path}[/red]")
-            console.print("请先运行构建命令（仅 ARM64 架构生成 moss.img）")
-            raise typer.Exit(1)
-        return path, "Linux Image"
-
     if use_binary:
         path = Path(cfg.kernel_bin)
         if not path.exists():
             console.print(f"[red]错误: 内核二进制文件不存在: {path}[/red]")
-            console.print("请先运行构建命令生成 moss.bin")
+            console.print("请先运行构建命令生成 moss_boot.bin")
             raise typer.Exit(1)
         return path, "原始二进制"
 
-    path = Path(cfg.kernel_elf)
+    if debug_mode:
+        # 调试模式：使用 moss.elf（保留 DWARF 调试符号）
+        # QEMU -kernel 可直接加载 ELF，从 ENTRY(_start) 开始执行。
+        # _start 在 Linux Image Header 之后（偏移 0x40），GDB stopAtEntry
+        # 直接停在有完整函数边界和行号信息的代码中，F10/F11 正常工作。
+        # 注意：ELF 模式下 QEMU 不会自动通过 x0 传递 DTB，内核使用 RAM 扫描回退。
+        path = Path(cfg.kernel_elf)
+        if not path.exists():
+            console.print(f"[red]错误: 内核 ELF 文件不存在: {path}[/red]")
+            console.print("请先运行构建命令生成 moss.elf")
+            raise typer.Exit(1)
+        return path, "Debug ELF (moss.elf)"
+
+    # 默认模式：使用 moss.bin
+    # ARM64 的 moss.bin 含 Linux Image header，QEMU 自动识别并传递 DTB。
+    path = Path(cfg.kernel_bin_full)
     if not path.exists():
-        console.print(f"[red]错误: 内核 ELF 文件不存在: {path}[/red]")
-        console.print("请先运行 'make' 构建内核")
+        console.print(f"[red]错误: 内核文件不存在: {path}[/red]")
+        console.print("请先运行构建命令生成 moss.bin")
         raise typer.Exit(1)
-    return path, "ELF 可执行文件"
+    return path, "Linux Image (moss.bin)"
 
 
 def prepare_dtb(cfg: QemuConfig, *, smp: int) -> Path | None:
@@ -161,12 +173,23 @@ DTB_LOAD_ADDR = {
 }
 
 
+def _needs_dtb_loader(*, use_binary: bool, debug_mode: bool) -> bool:
+    """判断是否需要手动加载 DTB（通过 -device loader）
+
+    需要手动加载 DTB 的场景：
+      - --bin 模式：原始二进制没有 Linux Image header
+      - --debug 模式：ELF 文件没有 Linux Image header
+    默认的 moss.bin 模式不需要——QEMU 识别 ARM64 Linux Image header 后
+    自动通过 x0 寄存器传递 DTB 地址。
+    """
+    return use_binary or debug_mode
+
+
 def build_qemu_args(
     cfg: QemuConfig,
     kernel_file: Path,
     *,
     use_binary: bool,
-    use_image: bool,
     test_mode: bool,
     debug_mode: bool,
 ) -> list[str]:
@@ -183,9 +206,9 @@ def build_qemu_args(
             f"loader,file={kernel_file},addr={load_addr},cpu-num=0,force-raw=on",
         ]
     else:
-        # Both ELF and Linux Image use -kernel; QEMU auto-detects format.
-        # For Linux Image (moss.img): QEMU recognizes ARM64 magic → passes DTB via x0.
-        # For ELF (moss.elf): QEMU loads at entry point → x0 = 0, DTB via -device loader.
+        # ELF 和 Linux Image 都使用 -kernel；QEMU 自动检测格式。
+        # moss.bin (Linux Image): QEMU 识别 ARM64 magic → 自动通过 x0 传递 DTB
+        # moss.elf (ELF): QEMU 加载到 entry point → x0 = 0，需手动加载 DTB
         kernel_args = ["-kernel", str(kernel_file)]
 
     # -nodefaults: 禁止 QEMU 创建默认设备（IDE 磁盘等），避免与
@@ -212,10 +235,10 @@ def build_qemu_args(
         *arch_cfg["extra_args"],
     ]
 
-    # DTB handling depends on boot mode:
-    #   - Linux Image (--image): QEMU handles DTB automatically, no loader needed
-    #   - ELF/binary: need explicit DTB generation + loader for ARM64/RISC-V
-    if not use_image:
+    # DTB 处理：
+    #   - moss.bin（默认）: QEMU 自动识别 Linux Image header，通过 x0 传递 DTB
+    #   - --bin / --debug 模式: 无 Linux Image header，需手动导出 DTB 并加载到 RAM
+    if _needs_dtb_loader(use_binary=use_binary, debug_mode=debug_mode):
         dtb_path = prepare_dtb(cfg, smp=smp)
         if dtb_path and cfg.arch in DTB_LOAD_ADDR:
             args += [
@@ -235,7 +258,6 @@ def print_banner(
     kernel_type: str,
     *,
     use_binary: bool,
-    use_image: bool,
     debug_mode: bool,
     test_mode: bool,
     timeout: int | None = None,
@@ -260,26 +282,27 @@ def print_banner(
     rprint(f"内核类型:   {kernel_type}")
     rprint(f"构建目录:   {cfg.build_dir}")
 
-    if use_binary or use_image:
+    if use_binary:
         size = kernel_file.stat().st_size
         rprint(f"镜像大小:   {size / 1024:.1f}K")
 
-    if use_image:
-        rprint("[green]DTB 传递: 自动 (Linux 启动协议, x0 寄存器)[/green]")
-    elif not test_mode:
+    # DTB 传递方式提示
+    if _needs_dtb_loader(use_binary=use_binary, debug_mode=debug_mode):
         rprint("DTB 传递: -device loader + RAM 扫描")
+    else:
+        rprint("[green]DTB 传递: 自动 (Linux 启动协议, x0 寄存器)[/green]")
 
     if timeout:
         rprint(f"超时:       {timeout}s")
 
     if debug_mode:
-        rprint("[yellow]调试模式: 启用[/yellow]")
+        rprint("[yellow]调试模式: 启用 (QEMU 启动 moss.elf, GDB 远程连接)[/yellow]")
         rprint("GDB 连接: target remote localhost:1234")
         rprint("[bold]==================================================[/bold]")
-        rprint("在另一个终端运行:")
-        rprint(f"  gdb {cfg.kernel_elf}")
+        rprint("VS Code: F5 自动连接 GDB，停在 _start")
+        rprint("手动调试:")
+        rprint(f"  gdb-multiarch {cfg.kernel_elf}")
         rprint("  (gdb) target remote localhost:1234")
-        rprint("  (gdb) continue")
     else:
         rprint("运行模式: 正常")
         rprint("退出方式: Ctrl+A 然后按 X")
@@ -316,10 +339,6 @@ def main(
         typer.Option("--config", "-c", help="qemu_config.json 路径"),
     ] = None,
     use_binary: Annotated[bool, typer.Option("--bin", help="使用原始二进制内核")] = False,
-    use_image: Annotated[
-        bool,
-        typer.Option("--image/--no-image", help="使用 Linux Image 格式 (ARM64, DTB 自动传递)"),
-    ] = True,
     debug_mode: Annotated[bool, typer.Option("--debug", help="启用 GDB 调试")] = False,
     test_mode: Annotated[bool, typer.Option("--test", help="运行单元测试")] = False,
     timeout: Annotated[
@@ -329,14 +348,12 @@ def main(
 ) -> None:
     """启动 QEMU 运行 MOSS 内核
 
-    默认使用 Linux Image 格式启动（--image），QEMU 自动传递 DTB。
-    使用 --no-image 回退到 ELF 模式。
+    所有模式均使用 moss.bin 启动（ARM64 含 Linux Image header，QEMU 自动传递 DTB）。
+    --debug 模式额外启动 GDB server（-s -S），GDB 通过 "file moss.elf" 加载符号表。
 
     示例:
 
     • uv run scripts/run_qemu.py --config build/arm64/qemu_config.json
-
-    • uv run scripts/run_qemu.py --config build/arm64/qemu_config.json --no-image
 
     • uv run scripts/run_qemu.py --config build/arm64/qemu_config.json --debug
 
@@ -358,13 +375,9 @@ def main(
         console.print(f"[red]错误: 不支持的架构 {cfg.arch}[/red]")
         raise typer.Exit(1)
 
-    # Debug 模式默认使用 ELF（保留完整符号表，方便 GDB 断点和回溯）
-    if debug_mode:
-        use_image = False
-
     # 选择内核文件
     kernel_file, kernel_type = resolve_kernel_file(
-        cfg, use_binary=use_binary, use_image=use_image, test_mode=test_mode
+        cfg, use_binary=use_binary, test_mode=test_mode, debug_mode=debug_mode
     )
 
     # 构造 QEMU 参数
@@ -372,7 +385,6 @@ def main(
         cfg,
         kernel_file,
         use_binary=use_binary,
-        use_image=use_image,
         test_mode=test_mode,
         debug_mode=debug_mode,
     )
@@ -383,7 +395,6 @@ def main(
         kernel_file,
         kernel_type,
         use_binary=use_binary,
-        use_image=use_image,
         debug_mode=debug_mode,
         test_mode=test_mode,
         timeout=timeout,

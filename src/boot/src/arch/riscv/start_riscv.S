@@ -32,6 +32,7 @@
 .section ".text.boot", "ax"
 .global _start
 
+.type _start, @function
 _start:
     // ---- Set up global pointer for linker relaxation ----
     //
@@ -62,6 +63,7 @@ _start:
 
     // ---- Jump to stub (full RISC-V boot not yet implemented) ----
     call kernel_main_stub
+.size _start, . - _start
 
 // =============================================================================
 // Temporary kernel stack (8 KB, 16-byte aligned, in BSS)
@@ -81,9 +83,11 @@ stack_top:
 // halts the hart permanently.
 // =============================================================================
 .section ".text"
+.type kernel_main_stub, @function
 kernel_main_stub:
 1:  wfi                                 // wait for interrupt (halt)
     j 1b                                // loop (in case of spurious wakeup)
+.size kernel_main_stub, . - kernel_main_stub
 
 // =============================================================================
 // Weak BSS and GP boundary symbols

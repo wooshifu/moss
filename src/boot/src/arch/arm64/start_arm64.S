@@ -85,6 +85,7 @@
 
 .section ".text.boot", "ax"
 .global _start
+.type _start, @function
 
 // =============================================================================
 // ARM64 Linux Image Header (64 bytes)
@@ -383,6 +384,7 @@ primary_cpu_continue:
 
     // If early_main returns (should not happen), halt
     b       halt
+.size _start, . - _start
 
 // =============================================================================
 // Secondary CPU park — wait then jump to C++ secondary_cpu_entry
@@ -393,6 +395,7 @@ primary_cpu_continue:
 // function.  The Linux-style deferred activation mechanism in C++ handles
 // synchronization — no polling loop needed here.
 // =============================================================================
+.type secondary_cpu_park, @function
 secondary_cpu_park:
     // ---- Debug: print "CPUN:S\n" (locked) ----
     bl      early_uart_acquire
@@ -448,6 +451,7 @@ invalid_cpu_id:
     // CPU ID out of range — enter permanent WFI loop
     wfi
     b       invalid_cpu_id
+.size secondary_cpu_park, . - secondary_cpu_park
 
 // =============================================================================
 // CPU startup flags — inter-processor communication during boot
@@ -488,6 +492,7 @@ early_uart_lock:
 // Clobbers: x24, x27, x28 (chosen to not conflict with UART print sequences
 //           which use x25=base, x26=char)
 // =============================================================================
+.type early_uart_acquire, @function
 early_uart_acquire:
     adr     x27, early_uart_lock
 1:
@@ -498,19 +503,24 @@ early_uart_acquire:
     cbnz    w24, 1b                     // retry if exclusive store failed
     dmb     sy                          // acquire barrier
     ret
+.size early_uart_acquire, . - early_uart_acquire
 
+.type early_uart_release, @function
 early_uart_release:
     adr     x27, early_uart_lock
     dmb     sy                          // release barrier
     str     wzr, [x27]                  // unlock: write 0
     ret
+.size early_uart_release, . - early_uart_release
 
 // =============================================================================
 // halt — infinite WFI loop (system halt)
 // =============================================================================
+.type halt, @function
 halt:
     wfi                                 // wait for interrupt (power-saving halt)
     b       halt
+.size halt, . - halt
 
 // =============================================================================
 // Exception Vector Table
@@ -594,6 +604,7 @@ exception_vectors:
 // For exceptions from same EL (kernel mode):
 //   SP was already the kernel stack.
 // =============================================================================
+.type irq_trampoline, @function
 irq_trampoline:
     // Allocate 34-slot frame: x0-x30, ELR, SPSR, padding
     sub     sp, sp, #(34 * 8)
@@ -650,6 +661,7 @@ irq_trampoline:
     // Deallocate frame and return from exception
     add     sp, sp, #(34 * 8)
     eret
+.size irq_trampoline, . - irq_trampoline
 
 // =============================================================================
 // exception_handler — same-EL synchronous exception dispatch
@@ -664,6 +676,7 @@ irq_trampoline:
 //
 // Uses the same 34-slot frame layout as irq_trampoline.
 // =============================================================================
+.type exception_handler, @function
 exception_handler:
     // Save all registers (same frame as irq_trampoline)
     sub     sp, sp, #(34 * 8)
@@ -738,6 +751,7 @@ exception_handler:
 
     add     sp, sp, #(34 * 8)
     eret
+.size exception_handler, . - exception_handler
 
 // =============================================================================
 // lower_el_sync_dispatch — user-mode synchronous exception dispatch
@@ -757,6 +771,7 @@ exception_handler:
 //
 //   Other EC: → unhandled_user_exception_handler(esr, far, elr)
 // =============================================================================
+.type lower_el_sync_dispatch, @function
 lower_el_sync_dispatch:
     // Save full register frame
     sub     sp, sp, #(34 * 8)
@@ -863,6 +878,7 @@ lower_el_sync_dispatch:
 
     add     sp, sp, #(34 * 8)
     eret
+.size lower_el_sync_dispatch, . - lower_el_sync_dispatch
 
 // =============================================================================
 // Exported linker symbols and external function declarations

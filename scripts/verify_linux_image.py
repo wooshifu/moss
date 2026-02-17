@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
-"""Verify and copy ARM64 Linux-compatible kernel Image.
+"""Verify ARM64 Linux-compatible Image header in a flat binary.
 
 The ARM64 Linux Image header is embedded directly in the boot assembly
 (start_arm64.S), so the flat binary produced by `objcopy -O binary` already
-contains the correct header at offset 0. This script verifies the header
-and copies the binary to the output path.
+contains the correct header at offset 0.  This script verifies the header
+is intact — it does NOT produce a separate output file.
 
 Usage:
-    uv run scripts/create_linux_image.py moss.bin moss.img
+    uv run scripts/verify_linux_image.py moss.bin
 """
 
 import struct
@@ -17,7 +17,7 @@ from typing import Annotated
 import typer
 from rich import print as rprint
 
-app = typer.Typer(help="Verify and package ARM64 Linux-compatible kernel Image")
+app = typer.Typer(help="Verify ARM64 Linux-compatible Image header")
 
 # ARM64 Linux Image header constants
 ARM64_IMAGE_MAGIC = 0x644D5241  # "ARM\x64" little-endian
@@ -36,17 +36,15 @@ def verify_arm64_header(data: bytes) -> bool:
 
 @app.callback(invoke_without_command=True)
 def main(
-    input_bin: Annotated[Path, typer.Argument(help="Input flat binary (moss.bin)")],
-    output_img: Annotated[Path, typer.Argument(help="Output Linux Image (moss.img)")],
+    input_bin: Annotated[Path, typer.Argument(help="Flat binary to verify (moss.bin)")],
 ) -> None:
-    """Verify ARM64 Linux Image header and produce final image.
+    """Verify ARM64 Linux Image header in a flat binary.
 
-    The header is embedded in the assembly source (start_arm64.S), so the
-    flat binary already contains it. This script verifies correctness and
-    copies the binary to the output path.
+    Checks that the ARM64 magic ("ARM\\x64") is present at offset 0x38,
+    and prints header field details.  Exits with code 1 on failure.
     """
     if not input_bin.exists():
-        rprint(f"[red]Error: input binary not found: {input_bin}[/red]")
+        rprint(f"[red]Error: binary not found: {input_bin}[/red]")
         raise typer.Exit(1)
 
     payload = input_bin.read_bytes()
@@ -62,9 +60,7 @@ def main(
     text_offset = struct.unpack_from("<Q", payload, 0x08)[0]
     image_size = struct.unpack_from("<Q", payload, 0x10)[0]
 
-    output_img.write_bytes(payload)
-
-    rprint(f"[green]ARM64 Linux Image verified and written:[/green] {output_img}")
+    rprint(f"[green]ARM64 Linux Image header verified:[/green] {input_bin}")
     rprint(f"  code0:       0x{code0:08x} ({'branch' if (code0 >> 26) == 5 else 'other'})")
     rprint(f"  text_offset: 0x{text_offset:x}")
     rprint(f"  image_size:  {image_size:,} bytes ({image_size / 1024:.1f} KB)")
