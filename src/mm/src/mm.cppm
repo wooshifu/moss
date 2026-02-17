@@ -684,6 +684,13 @@ public:
     // Used by the COW fault handler to modify PTE in-place.
     [[nodiscard]] static PageTableEntry* get_user_pte(PhysAddr pgd_phys, VirtAddr va);
 
+    // Clone a user page table tree for fork().
+    // Allocates fresh intermediate tables (PUD/PMD/PTE) for dst_pgd_phys.
+    // Leaf pages are shared: both src and dst PTEs are marked READONLY + SW_COW,
+    // and physical page refcounts are incremented.
+    // PGD[0] (kernel identity map) is skipped (already copied by create_user_address_space).
+    static void clone_user_page_tables(PhysAddr src_pgd_phys, PhysAddr dst_pgd_phys);
+
     // Invalidate TLB entry for a single virtual address
     static void invalidate_tlb_addr(VirtAddr virt_addr) {
 #if defined(MOSS_ARCH_ARM64)

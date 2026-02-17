@@ -491,9 +491,12 @@ public:
     return ref_count_.load(containers::MemoryOrder::Acquire);
   }
 
+  // Allocate a globally unique thread ID (static atomic counter).
+  // Public so that fork() and other kernel code can create threads directly.
+  [[nodiscard]] static ThreadId allocate_thread_id() noexcept;
+
 private:
   void cleanup_threads() noexcept;
-  [[nodiscard]] ThreadId allocate_thread_id() noexcept;
 };
 
 // Process manager

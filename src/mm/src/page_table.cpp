@@ -136,6 +136,79 @@ PageTableEntry* PageTableManager::get_user_pte(PhysAddr pgd_phys, VirtAddr va) {
   return &pte->entries[bd.pte_index];
 }
 
+// Clone user page tables for fork(): deep-copy intermediate tables,
+// share leaf pages via COW (mark READONLY + SW_COW, increment refcount).
+void PageTableManager::clone_user_page_tables(PhysAddr src_pgd_phys,
+                                               PhysAddr dst_pgd_phys) {
+  auto *src_pgd = get_table_from_physical(src_pgd_phys);
+  auto *dst_pgd = get_table_from_physical(dst_pgd_phys);
+  if (!src_pgd || !dst_pgd) return;
+
+  constexpr usize ENTRIES = PageTable::ENTRIES_PER_TABLE;
+
+  // Skip PGD[0] — kernel identity map (already copied by create_user_address_space)
+  for (usize pgd_i = 1; pgd_i < ENTRIES; pgd_i++) {
+    auto &src_pge = src_pgd->entries[pgd_i];
+    if (!src_pge.is_valid() || !src_pge.is_table()) continue;
+
+    auto *src_pud = get_table_from_physical(src_pge.get_phys_addr());
+    if (!src_pud) continue;
+
+    // Allocate fresh PUD for child
+    auto pud_result = allocate_page_table_dynamic();
+    if (!pud_result) return;
+    auto *dst_pud = *pud_result;
+    dst_pgd->entries[pgd_i].set_table(get_physical_address(dst_pud));
+
+    for (usize pud_i = 0; pud_i < ENTRIES; pud_i++) {
+      auto &src_pude = src_pud->entries[pud_i];
+      if (!src_pude.is_valid()) continue;
+      if (!src_pude.is_table()) continue; // skip 1GB block descriptors
+
+      auto *src_pmd = get_table_from_physical(src_pude.get_phys_addr());
+      if (!src_pmd) continue;
+
+      // Allocate fresh PMD for child
+      auto pmd_result = allocate_page_table_dynamic();
+      if (!pmd_result) return;
+      auto *dst_pmd = *pmd_result;
+      dst_pud->entries[pud_i].set_table(get_physical_address(dst_pmd));
+
+      for (usize pmd_i = 0; pmd_i < ENTRIES; pmd_i++) {
+        auto &src_pmde = src_pmd->entries[pmd_i];
+        if (!src_pmde.is_valid()) continue;
+        if (!src_pmde.is_table()) continue; // skip 2MB block descriptors
+
+        auto *src_pte = get_table_from_physical(src_pmde.get_phys_addr());
+        if (!src_pte) continue;
+
+        // Allocate fresh PTE table for child
+        auto pte_result = allocate_page_table_dynamic();
+        if (!pte_result) return;
+        auto *dst_pte = *pte_result;
+        dst_pmd->entries[pmd_i].set_table(get_physical_address(dst_pte));
+
+        for (usize pte_i = 0; pte_i < ENTRIES; pte_i++) {
+          auto &src_ptee = src_pte->entries[pte_i];
+          if (!src_ptee.is_valid()) continue;
+
+          PhysAddr leaf_pa = src_ptee.get_phys_addr();
+
+          // Mark parent PTE as COW + read-only
+          src_ptee.set_cow();
+          src_ptee.make_readonly();
+
+          // Child gets same PTE value (COW + read-only)
+          dst_pte->entries[pte_i].raw = src_ptee.raw;
+
+          // Increment physical page refcount (now shared)
+          PageFrameAllocator::page_ref_inc(leaf_pa);
+        }
+      }
+    }
+  }
+}
+
 // Free all user page tables and demand-paged physical pages.
 // Walks PGD→PUD→PMD→PTE, frees leaf pages and intermediate tables.
 // PGD[0] is the shared kernel identity map — skip it.

@@ -54,7 +54,24 @@ namespace handlers {
             g_scheduler->dequeue_task(cur);
         }
 
+        // Restore TTBR0 to the kernel identity-mapped PGD BEFORE
+        // terminate_process. The destructor frees user page tables, and the
+        // kernel runs under TTBR0 identity mapping — freeing the current PGD
+        // while TTBR0 still points to it would fault immediately.
+#if defined(__aarch64__) || defined(MOSS_ARCH_ARM64)
+        {
+            auto *kpgd = mm::PageTableManager::get_kernel_pgd();
+            if (kpgd) {
+                u64 kpgd_phys = mm::PageTableManager::get_physical_address(kpgd);
+                asm volatile("msr ttbr0_el1, %0" :: "r"(kpgd_phys));
+                asm volatile("dsb ish" ::: "memory");
+                asm volatile("isb" ::: "memory");
+            }
+        }
+#endif
+
         // Terminate the process in ProcessManager (marks + removes from table)
+        // The destructor will free user page tables (safe now — TTBR0 restored).
         if (g_process_manager) {
             auto result = g_process_manager->terminate_process(pid, static_cast<i32>(exit_code));
             if (!result) {
@@ -63,20 +80,6 @@ namespace handlers {
                 log::klog::info("sys_exit: process PID={} terminated", pid);
             }
         }
-
-        // Restore TTBR0 to the kernel identity-mapped PGD.
-        // The user process page tables are no longer valid after terminate_process,
-        // and schedule_after_exit may pick a kernel task that doesn't set TTBR0.
-#if defined(__aarch64__) || defined(MOSS_ARCH_ARM64)
-        {
-            auto *kpgd = mm::PageTableManager::get_kernel_pgd();
-            if (kpgd) {
-                u64 kpgd_phys = mm::PageTableManager::get_physical_address(kpgd);
-                asm volatile("msr ttbr0_el1, %0" :: "r"(kpgd_phys));
-                asm volatile("isb" ::: "memory");
-            }
-        }
-#endif
 
         // CRITICAL: sys_exit must NEVER return to userspace.
         // The process context is dead — eret would jump to invalid memory.
@@ -116,10 +119,137 @@ namespace handlers {
         return 0;
     }
 
-    // 进程管理系统调用 - 框架实现
+    // fork() — create a child process with COW-shared address space.
+    // Child returns 0, parent returns child PID.
     long sys_fork(long, long, long, long, long, long) noexcept {
-        early_debug_print("📋 系统调用: fork() - 尚未实现\n");
-        return -38; // ENOSYS - Function not implemented
+        using namespace moss::kernel::process;
+        namespace log = moss::kernel::logging;
+
+        // 1. Get current thread and process
+        Thread *parent_thread = CfsScheduler::get_current_task();
+        if (!parent_thread) {
+            log::klog::error("sys_fork: no current thread");
+            return -11; // EAGAIN
+        }
+
+        Process *parent_proc = g_process_manager
+            ? g_process_manager->find_process(parent_thread->owner_pid)
+            : nullptr;
+        if (!parent_proc || !parent_proc->address_space()) {
+            log::klog::error("sys_fork: no parent process or address space");
+            return -11;
+        }
+
+        AddressSpace *parent_as = parent_proc->address_space();
+
+        // 2. Capture user-mode PC and SP (preserved in EL1 system registers)
+        u64 user_pc = 0;
+        u64 user_sp = 0;
+#if defined(MOSS_ARCH_ARM64)
+        asm volatile("mrs %0, elr_el1" : "=r"(user_pc));
+        asm volatile("mrs %0, sp_el0"  : "=r"(user_sp));
+#endif
+
+        // 3. Create child process
+        auto child_proc_result = g_process_manager->create_process(parent_proc->pid());
+        if (!child_proc_result) {
+            log::klog::error("sys_fork: create_process failed");
+            return -12; // ENOMEM
+        }
+        Process *child_proc = *child_proc_result;
+
+        // 4. Create child address space (new PGD + ASID)
+        auto child_as_result = user_space::create_user_address_space();
+        if (!child_as_result) {
+            log::klog::error("sys_fork: create_user_address_space failed");
+            return -12;
+        }
+        auto child_as = moss::move(*child_as_result);
+
+        // 5. Clone page tables with COW
+        mm::PageTableManager::clone_user_page_tables(
+            parent_as->pgd_phys, child_as->pgd_phys);
+
+        // 6. Flush parent TLB (PTEs changed to readonly/COW)
+#if defined(MOSS_ARCH_ARM64)
+        {
+            u64 asid_val = static_cast<u64>(parent_as->asid) << 48;
+            asm volatile("tlbi aside1is, %0" :: "r"(asid_val));
+            asm volatile("dsb ish" ::: "memory");
+            asm volatile("isb" ::: "memory");
+        }
+#endif
+
+        // 7. Copy VMAs from parent to child
+        for (u32 i = 0; i < parent_as->vma_count; i++) {
+            child_as->vmas[i] = parent_as->vmas[i];
+        }
+        child_as->vma_count = parent_as->vma_count;
+
+        // 8. Bind address space to child process
+        auto set_result = child_proc->set_address_space(moss::move(child_as));
+        if (!set_result) {
+            log::klog::error("sys_fork: set_address_space failed");
+            return -12;
+        }
+
+        // 9. Create child thread
+        ThreadId child_tid = Process::allocate_thread_id();
+        auto *child_thread = new Thread(child_tid, child_proc->pid());
+        if (!child_thread) {
+            log::klog::error("sys_fork: thread allocation failed");
+            return -12;
+        }
+
+        // 10. Copy parent context → child, set return register = 0 for child
+        child_thread->context = parent_thread->context;
+#if defined(MOSS_ARCH_ARM64)
+        child_thread->context.x[0] = 0;        // ARM64: x0 = fork return
+#elif defined(MOSS_ARCH_X86_64)
+        child_thread->context.rax = 0;          // x86_64: rax = fork return
+#elif defined(MOSS_ARCH_RISCV)
+        child_thread->context.x[10] = 0;        // RISC-V: a0 (x10) = fork return
+#endif
+        child_thread->context.pc = user_pc;     // return to instruction after SVC
+        child_thread->context.sp = user_sp;     // same user stack
+        child_thread->context.pstate = 0;       // EL0t, all interrupts enabled
+
+        child_thread->stack_base = parent_thread->stack_base;
+        child_thread->stack_size = parent_thread->stack_size;
+        child_thread->needs_initial_eret = true;
+        child_thread->is_user_task = true;
+        child_thread->sched_class = SchedClass::Normal;
+        child_thread->se.nice = parent_thread->se.nice;
+        child_thread->se.weight = parent_thread->se.weight;
+        child_thread->se.vruntime = parent_thread->se.vruntime;
+        child_thread->state = ProcessState::Ready;
+
+        // 11. Allocate per-thread kernel stack (16KB)
+        constexpr usize KERNEL_STACK_ORDER = 2;  // 4 pages = 16KB
+        constexpr usize KERNEL_STACK_SIZE = PAGE_SIZE << KERNEL_STACK_ORDER;
+        auto kstack_result = mm::allocate_pages(KERNEL_STACK_ORDER);
+        if (!kstack_result) {
+            log::klog::error("sys_fork: kernel stack alloc failed");
+            delete child_thread;
+            return -12;
+        }
+        PhysAddr kstack_phys = *kstack_result;
+        child_thread->kernel_stack_base = static_cast<VirtAddr>(kstack_phys);
+        child_thread->kernel_stack_size = KERNEL_STACK_SIZE;
+
+        // 12. Enqueue child into scheduler
+        child_proc->set_state(ProcessState::Running);
+        if (g_scheduler) {
+            g_scheduler->enqueue_task(child_thread, 0);
+        }
+
+        log::klog::info("sys_fork: parent PID={} -> child PID={} TID={} pgd={:#x} asid={}",
+                        parent_proc->pid(), child_proc->pid(),
+                        static_cast<u32>(child_tid), child_proc->address_space()->pgd_phys,
+                        child_proc->address_space()->asid);
+
+        // 13. Parent returns child PID
+        return static_cast<long>(child_proc->pid());
     }
 
     long sys_execve(long, long, long, long, long, long) noexcept {
@@ -244,7 +374,7 @@ const SyscallDescriptor SYSCALL_TABLE[static_cast<int>(SyscallNumber::MAX_SYSCAL
     {"getpgid", handlers::sys_not_implemented, 1, false, "获取进程组ID"},
 
     // === 进程管理 (10-29) ===
-    {"fork", handlers::sys_fork, 0, false, "创建子进程"},
+    {"fork", handlers::sys_fork, 0, true, "创建子进程"},
     {"execve", handlers::sys_execve, 3, false, "执行程序"},
     {"wait4", handlers::sys_wait4, 4, false, "等待子进程"},
     {"waitpid", handlers::sys_not_implemented, 3, false, "等待指定进程"},
