@@ -3,7 +3,13 @@
 add_library(moss_mm OBJECT)
 
 target_sources(moss_mm
-    PUBLIC FILE_SET CXX_MODULES FILES src/mm.cppm
+    PUBLIC FILE_SET CXX_MODULES FILES
+        src/mm.cppm
+        src/mm-core.cppm
+        src/mm-page_table.cppm
+        src/mm-policy.cppm
+        src/mm-reclaim.cppm
+        src/mm-interface.cppm
     PRIVATE
         src/page_table.cpp
         src/page_fault.cpp

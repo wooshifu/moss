@@ -33,8 +33,7 @@ target_include_directories(moss_libfdt_c PUBLIC
 add_library(moss_fdt OBJECT)
 
 target_sources(moss_fdt
-    PUBLIC FILE_SET CXX_MODULES FILES src/fdt.cppm
-    PRIVATE src/fdt_parser.cpp)
+    PUBLIC FILE_SET CXX_MODULES FILES src/fdt.cppm)
 
 # SYSTEM 标记确保 vendored C 头文件在 C++ 编译时不触发 -Weverything 警告
 target_include_directories(moss_fdt SYSTEM PRIVATE
