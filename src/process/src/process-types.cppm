@@ -220,52 +220,46 @@ struct VmaRegion {
   [[nodiscard]] bool contains(VirtAddr addr) const noexcept {
     return addr >= start_addr && addr < end_addr;
   }
+
+  bool operator==(const VmaRegion& other) const noexcept {
+    return start_addr == other.start_addr && end_addr == other.end_addr;
+  }
 };
 
 // Virtual memory address space — per-process PGD + VMA list
 struct AddressSpace {
-  static constexpr usize MAX_VMAS = 16;  // sufficient for MVP
-
   PhysAddr pgd_phys;       // physical address of the L0 (PGD) page table
   u16 asid;                // Address Space ID (0 = kernel, 1-255 = user)
 
-  VmaRegion vmas[MAX_VMAS];
-  u32 vma_count;
+  containers::RcuList<VmaRegion> vmas;   // dynamic VMA list (was: fixed array)
 
   containers::AtomicSize total_pages;
   containers::AtomicSize resident_pages;
 
   AddressSpace(PhysAddr pgd, u16 asid_val) noexcept
-      : pgd_phys(pgd), asid(asid_val), vmas{}, vma_count(0),
+      : pgd_phys(pgd), asid(asid_val), vmas{},
         total_pages(0), resident_pages(0) {}
 
-  // Add a VMA region (returns false if overlapping with existing or full)
+  // Add a VMA region (returns false if overlapping with existing)
   bool add_vma(VirtAddr start, VirtAddr end, u32 flags,
                VmaType type = VmaType::DATA,
                const u8* backing = nullptr,
                usize b_offset = 0, usize b_size = 0) noexcept {
-    if (vma_count >= MAX_VMAS) return false;
+    // Overlap check via RcuList traversal
+    const VmaRegion* overlap = vmas.find_if([start, end](const VmaRegion& v) {
+        return start < v.end_addr && end > v.start_addr;
+    });
+    if (overlap) return false;
 
-    // Overlap check
-    for (u32 i = 0; i < vma_count; i++) {
-      if (start < vmas[i].end_addr && end > vmas[i].start_addr) {
-        return false;
-      }
-    }
-
-    vmas[vma_count] = VmaRegion(start, end, flags, type, backing, b_offset, b_size);
-    vma_count++;
+    vmas.push_front(VmaRegion(start, end, flags, type, backing, b_offset, b_size));
     return true;
   }
 
   // Find the VMA containing the given address (const pointer, nullptr if none)
   [[nodiscard]] const VmaRegion* find_vma(VirtAddr addr) const noexcept {
-    for (u32 i = 0; i < vma_count; i++) {
-      if (vmas[i].contains(addr)) {
-        return &vmas[i];
-      }
-    }
-    return nullptr;
+    return vmas.find_if([addr](const VmaRegion& v) {
+        return v.contains(addr);
+    });
   }
 };
 
@@ -395,12 +389,16 @@ private:
 
   mutable containers::AtomicU32 ref_count_;
 
+  // Children tracking for wait()/waitpid()
+  containers::RcuList<ProcessId> children_;
+  containers::WaitQueue child_exit_wq_;
+
 public:
   Process(ProcessId pid, ProcessId parent = INVALID_PROCESS_ID) noexcept
       : pid_(pid), parent_pid_(parent), address_space_(nullptr),
         thread_count_(0), main_thread_id_(INVALID_THREAD_ID),
         state_(ProcessState::Created), exit_code_(0), limits_{}, stats_{},
-        ref_count_(1) {}
+        ref_count_(1), children_{}, child_exit_wq_{} {}
 
   ~Process() noexcept {
     cleanup_threads();
@@ -418,16 +416,9 @@ public:
   Process(const Process&) = delete;
   Process& operator=(const Process&) = delete;
 
-  Process(Process &&other) noexcept
-      : pid_(other.pid_), parent_pid_(other.parent_pid_),
-        address_space_(moss::move(other.address_space_)),
-        threads_{},
-        thread_count_(0),
-        main_thread_id_(other.main_thread_id_), state_(other.state_),
-        exit_code_(other.exit_code_), limits_(other.limits_),
-        stats_(other.stats_), ref_count_(1) {
-    other.pid_ = INVALID_PROCESS_ID;
-  }
+  // Process objects are heap-allocated and accessed via pointer; move is not needed.
+  Process(Process&&) = delete;
+  Process& operator=(Process&&) = delete;
 
   // Basic property access
   [[nodiscard]] ProcessId pid() const noexcept { return pid_; }
@@ -481,6 +472,46 @@ public:
   // Allocate a globally unique thread ID (static atomic counter).
   // Public so that fork() and other kernel code can create threads directly.
   [[nodiscard]] static ThreadId allocate_thread_id() noexcept;
+
+  // ── Children tracking (for wait/waitpid) ──────────────────────────
+
+  void add_child(ProcessId child_pid) {
+      children_.push_front(child_pid);
+  }
+
+  void remove_child(ProcessId child_pid) {
+      containers::RcuReadLock lock;
+      children_.remove(child_pid);
+  }
+
+  [[nodiscard]] bool has_children() const noexcept {
+      return !children_.empty();
+  }
+
+  // Find a zombie child matching wait_pid:
+  //   wait_pid > 0  → specific child
+  //   wait_pid == -1 → any zombie child
+  // Returns PID of found zombie, or INVALID_PROCESS_ID if none.
+  [[nodiscard]] ProcessId find_zombie_child(i64 wait_pid) const noexcept;
+
+  // Check if a specific PID is in this process's children list
+  [[nodiscard]] bool is_child(ProcessId pid) const noexcept {
+      return children_.find(pid) != nullptr;
+  }
+
+  // Access wait queue for child exit notification
+  containers::WaitQueue& child_exit_wait_queue() noexcept {
+      return child_exit_wq_;
+  }
+
+  // Iterate children (for reparenting in sys_exit)
+  template <typename Func>
+  void for_each_child(Func func) const {
+      children_.for_each(func);
+  }
+
+  // Parent PID setter (for reparenting)
+  void set_parent_pid(ProcessId pid) noexcept { parent_pid_ = pid; }
 
 private:
   void cleanup_threads() noexcept;

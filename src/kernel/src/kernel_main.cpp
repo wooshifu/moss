@@ -349,30 +349,80 @@ unsigned long long get_current_pgd_phys() noexcept {
     log::klog::info("terminate_user_process: PID={} TID={} exit_code={}",
                     pid, static_cast<u32>(cur->tid), exit_code);
 
-    // Mark terminated + dequeue so scheduler_tick won't re-enqueue
+    // Unified Zombie path — same as sys_exit so parent can waitpid()
+
+    // 1. Mark thread terminated + dequeue
     cur->state = process::ProcessState::Terminated;
     if (process::g_scheduler) {
         process::g_scheduler->dequeue_task(cur);
     }
 
-    // Terminate in ProcessManager
-    if (process::g_process_manager) {
-        (void)process::g_process_manager->terminate_process(pid, static_cast<i32>(exit_code));
-    }
-
-    // Restore TTBR0 to kernel identity-mapped PGD
+    // 2. Restore TTBR0 to kernel PGD before freeing user page tables
 #if defined(MOSS_ARCH_ARM64)
     {
         auto *kpgd = mm::PageTableManager::get_kernel_pgd();
         if (kpgd) {
             u64 kpgd_phys = mm::PageTableManager::get_physical_address(kpgd);
             asm volatile("msr ttbr0_el1, %0" :: "r"(kpgd_phys));
+            asm volatile("dsb ish" ::: "memory");
             asm volatile("isb" ::: "memory");
         }
     }
 #endif
 
-    // Hand control to the scheduler — never returns
+    process::Process *proc = process::g_process_manager
+        ? process::g_process_manager->find_process(pid) : nullptr;
+
+    if (proc) {
+        // 3. Free user page tables (keep Process object alive for Zombie)
+        auto *as = proc->address_space();
+        if (as && as->pgd_phys != 0) {
+            mm::PageTableManager::free_user_page_tables(as->pgd_phys);
+            as->pgd_phys = 0;   // prevent double-free in ~Process
+        }
+
+        // 4. Reparent children to init (PID 1)
+        process::Process *init_proc = process::g_process_manager->find_process(1);
+        proc->for_each_child([&](ProcessId child_pid) {
+            process::Process *child = process::g_process_manager->find_process(child_pid);
+            if (child) {
+                child->set_parent_pid(1);
+                if (init_proc) {
+                    init_proc->add_child(child_pid);
+                    if (child->state() == process::ProcessState::Zombie) {
+                        init_proc->child_exit_wait_queue().for_each_waiter(
+                            [](void* thread_ptr) {
+                                auto* t = static_cast<process::Thread*>(thread_ptr);
+                                t->state = process::ProcessState::Ready;
+                                if (process::g_scheduler)
+                                    process::g_scheduler->enqueue_task(t, 0);
+                            });
+                    }
+                }
+            }
+        });
+
+        // 5. Transition to Zombie (Process stays in table for waitpid)
+        proc->set_exit_code(static_cast<i32>(exit_code));
+        proc->set_state(process::ProcessState::Zombie);
+
+        // 6. Wake parent's wait queue
+        process::Process *parent = process::g_process_manager->find_process(proc->parent_pid());
+        if (parent) {
+            parent->child_exit_wait_queue().for_each_waiter(
+                [](void* thread_ptr) {
+                    auto* t = static_cast<process::Thread*>(thread_ptr);
+                    t->state = process::ProcessState::Ready;
+                    if (process::g_scheduler)
+                        process::g_scheduler->enqueue_task(t, 0);
+                });
+        }
+
+        log::klog::info("terminate_user_process: PID={} -> Zombie, exit_code={}",
+                        pid, exit_code);
+    }
+
+    // 7. Hand control to scheduler (never returns)
     if (process::g_scheduler) {
         process::g_scheduler->schedule_after_exit();
     }
