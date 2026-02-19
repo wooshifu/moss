@@ -144,9 +144,10 @@ inline void cpu_idle_once() noexcept {
   asm volatile("hlt" ::: "memory");
   asm volatile("cli" ::: "memory");
 #elif defined(MOSS_ARCH_RISCV)
-  asm volatile("csrsi mstatus, 0x8" ::: "memory");
+  // S-mode: use sstatus.SIE (bit 1), not mstatus.MIE (bit 3)
+  asm volatile("csrsi sstatus, 0x2" ::: "memory");
   asm volatile("wfi" ::: "memory");
-  asm volatile("csrci mstatus, 0x8" ::: "memory");
+  asm volatile("csrci sstatus, 0x2" ::: "memory");
 #endif
 }
 
@@ -163,8 +164,9 @@ inline void cpu_idle_once() noexcept {
                : "a"(1));
   return (ebx >> 24) & 0xFF;
 #elif defined(MOSS_ARCH_RISCV)
+  // S-mode cannot read mhartid; use tp register (set by SBI/bootloader)
   u64 hartid;
-  asm volatile("csrr %0, mhartid" : "=r"(hartid));
+  asm volatile("mv %0, tp" : "=r"(hartid));
   return static_cast<u32>(hartid) % MAX_CPUS;
 #else
   return 0;
@@ -200,7 +202,7 @@ inline void enable_interrupts() noexcept {
 #elif defined(MOSS_ARCH_X86_64)
   asm volatile("sti" ::: "memory");
 #elif defined(MOSS_ARCH_RISCV)
-  asm volatile("csrsi mstatus, 0x8" ::: "memory");
+  asm volatile("csrsi sstatus, 0x2" ::: "memory");  // SIE = bit 1
 #endif
 }
 
@@ -210,7 +212,7 @@ inline void disable_interrupts() noexcept {
 #elif defined(MOSS_ARCH_X86_64)
   asm volatile("cli" ::: "memory");
 #elif defined(MOSS_ARCH_RISCV)
-  asm volatile("csrci mstatus, 0x8" ::: "memory");
+  asm volatile("csrci sstatus, 0x2" ::: "memory");  // clear SIE
 #endif
 }
 
@@ -221,7 +223,7 @@ inline void disable_all_interrupts() noexcept {
 #elif defined(MOSS_ARCH_X86_64)
   asm volatile("cli" ::: "memory");
 #elif defined(MOSS_ARCH_RISCV)
-  asm volatile("csrci mstatus, 0x8" ::: "memory");
+  asm volatile("csrci sstatus, 0x2" ::: "memory");  // clear SIE
 #endif
 }
 
@@ -235,9 +237,9 @@ inline void disable_all_interrupts() noexcept {
   asm volatile("pushfq; pop %0" : "=r"(flags));
   return (flags & (1 << 9)) != 0; // IF flag
 #elif defined(MOSS_ARCH_RISCV)
-  u64 mstatus;
-  asm volatile("csrr %0, mstatus" : "=r"(mstatus));
-  return (mstatus & 0x8) != 0; // MIE bit
+  u64 sstatus;
+  asm volatile("csrr %0, sstatus" : "=r"(sstatus));
+  return (sstatus & 0x2) != 0; // SIE = bit 1
 #else
   return false;
 #endif

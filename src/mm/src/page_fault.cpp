@@ -390,21 +390,36 @@ static bool try_demand_page(moss::kernel::u64 far_addr, bool is_write,
         }
     }
 
-    // Build user PTE permissions from VMA flags
-    // AP[1]=1 (EL0 access), AF=1, nG=1, PXN=1, SH=Inner Shareable
-    u64 perms = (1ULL << 10) // AF
-              | (1ULL << 11) // nG
-              | (3ULL << 8)  // SH = Inner Shareable
-              | (1ULL << 53) // PXN
-              | (1ULL << 2)  // AttrIndx=1 (Normal memory)
-              | (1ULL << 6); // AP[1]=1 (EL0 accessible)
+    // Build user PTE permissions from VMA flags using portable PageAttr constants.
+    // Base: valid, accessed, user-accessible, normal memory.
+    namespace PA = ::moss::kernel::hal::mmu::PageAttr;
+    u64 perms = PA::VALID | PA::AF | PA::USER | PA::ATTR_NORMAL;
 
+#if defined(MOSS_ARCH_ARM64)
+    // ARM64-specific: non-global (per-process ASID), inner-shareable, PXN
+    perms |= PA::NG | PA::PXN | (3ULL << 8); // SH=Inner Shareable (bits [9:8]=0b11)
     if (!(vma_flags & VMA_WRITE)) {
-        perms |= (1ULL << 7); // AP[2]=1 → read-only
+        perms |= PA::READONLY;  // AP[2]=1 → read-only
     }
     if (!(vma_flags & VMA_EXEC)) {
-        perms |= (1ULL << 54); // UXN
+        perms |= PA::XN;  // UXN → no user execute
     }
+#elif defined(MOSS_ARCH_X86_64)
+    if (vma_flags & VMA_WRITE) {
+        perms |= PA::WRITABLE;
+    }
+    if (!(vma_flags & VMA_EXEC)) {
+        perms |= PA::XN;  // NX bit
+    }
+#elif defined(MOSS_ARCH_RISCV)
+    perms |= PA::READ;  // Always readable
+    if (vma_flags & VMA_WRITE) {
+        perms |= PA::WRITE;
+    }
+    if (vma_flags & VMA_EXEC) {
+        perms |= PA::EXECUTE;
+    }
+#endif
 
     PhysAddr pgd_phys = get_current_pgd_phys();
     auto map_result = mm::PageTableManager::map_user_page(pgd_phys, fault_page, page_pa, perms);

@@ -334,9 +334,16 @@ inline void eoi(VirtAddr cpu_base, u32 ack_value) noexcept {
 // ============================================================================
 
 /// Set the priority of a specific interrupt.
+/// IPRIORITYR registers are byte-accessible (4 IRQs per 32-bit register).
+/// We must read-modify-write to avoid corrupting adjacent IRQ priorities.
 inline void set_priority(VirtAddr dist_base, u32 irq, u8 priority) noexcept {
 #if defined(MOSS_ARCH_ARM64)
-  write_reg(dist_base, DistRegs::IPRIORITYR + irq, priority);
+  u32 reg_offset = DistRegs::IPRIORITYR + (irq & ~3u);
+  u32 byte_shift = (irq & 3u) * 8;
+  u32 val = read_reg(dist_base, reg_offset);
+  val &= ~(0xFFu << byte_shift);
+  val |= (static_cast<u32>(priority) << byte_shift);
+  write_reg(dist_base, reg_offset, val);
 
 #elif defined(MOSS_ARCH_X86_64)
   // APIC: priority is embedded in the vector number (upper 4 bits)
@@ -351,9 +358,16 @@ inline void set_priority(VirtAddr dist_base, u32 irq, u8 priority) noexcept {
 }
 
 /// Set the CPU target mask for a specific interrupt (SPIs only).
+/// ITARGETSR registers are byte-accessible (4 IRQs per 32-bit register).
+/// We must read-modify-write to avoid corrupting adjacent IRQ targets.
 inline void set_target(VirtAddr dist_base, u32 irq, u32 cpu_mask) noexcept {
 #if defined(MOSS_ARCH_ARM64)
-  write_reg(dist_base, DistRegs::ITARGETSR + irq, cpu_mask);
+  u32 reg_offset = DistRegs::ITARGETSR + (irq & ~3u);
+  u32 byte_shift = (irq & 3u) * 8;
+  u32 val = read_reg(dist_base, reg_offset);
+  val &= ~(0xFFu << byte_shift);
+  val |= ((cpu_mask & 0xFFu) << byte_shift);
+  write_reg(dist_base, reg_offset, val);
 
 #elif defined(MOSS_ARCH_X86_64)
   // I/O APIC: destination field in redirection table entry

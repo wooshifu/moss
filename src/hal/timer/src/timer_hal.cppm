@@ -84,8 +84,8 @@ inline void set_compare(u64 value) noexcept {
   // APIC Timer: write initial count (placeholder — needs calibration)
   (void)value;
 #elif defined(MOSS_ARCH_RISCV)
-  // RISC-V: write stimecmp CSR (if available) or SBI call
-  (void)value;
+  // RISC-V: write stimecmp CSR (Sstc extension)
+  asm volatile("csrw stimecmp, %0" :: "r"(value));
 #endif
 }
 
@@ -107,7 +107,7 @@ inline void enable() noexcept {
   // Unmask APIC LVT timer entry (placeholder)
 #elif defined(MOSS_ARCH_RISCV)
   // Set SIE.STIE (S-mode timer interrupt enable)
-  // asm volatile("csrs sie, %0" :: "r"(1ULL << 5));
+  asm volatile("csrs sie, %0" :: "r"(1ULL << 5));
 #endif
 }
 
@@ -123,7 +123,7 @@ inline void disable() noexcept {
   // Mask APIC LVT timer entry (placeholder)
 #elif defined(MOSS_ARCH_RISCV)
   // Clear SIE.STIE
-  // asm volatile("csrc sie, %0" :: "r"(1ULL << 5));
+  asm volatile("csrc sie, %0" :: "r"(1ULL << 5));
 #endif
 }
 
@@ -142,8 +142,8 @@ inline void ack_interrupt() noexcept {
 #elif defined(MOSS_ARCH_X86_64)
   // APIC EOI — handled by intc_hal::eoi, not duplicated here
 #elif defined(MOSS_ARCH_RISCV)
-  // Clear SIP.STIP (S-mode timer interrupt pending)
-  // asm volatile("csrc sip, %0" :: "r"(1ULL << 5));
+  // On RISC-V with Sstc, writing stimecmp clears the pending timer interrupt.
+  // No explicit SIP.STIP clear needed — the caller will set a new compare value.
 #endif
 }
 

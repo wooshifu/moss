@@ -385,7 +385,8 @@ public:
 
       u32 seq = next_seq_++;
 
-      u32 offset = static_cast<u32>(write_pos_) & RING_BUFFER_MASK;
+      u64 wp = write_pos_.load(containers::MemoryOrder::Relaxed);
+      u32 offset = static_cast<u32>(wp) & RING_BUFFER_MASK;
 
       // If record would wrap around buffer end, insert skip-marker padding
       if (offset + record_len > RING_BUFFER_SIZE) {
@@ -396,7 +397,8 @@ public:
         skip->cpu_id = 0;
         skip->seq = seq;
         skip->timestamp = 0;
-        write_pos_ += skip_len;
+        wp += skip_len;
+        write_pos_.store(wp, containers::MemoryOrder::Relaxed);
         offset = 0;
         seq = next_seq_++;
       }
@@ -415,7 +417,7 @@ public:
       dst[text_len] = '\n';
       dst[text_len + 1] = '\0';
 
-      write_pos_ += record_len;
+      write_pos_.store(wp + record_len, containers::MemoryOrder::Release);
     }
 
     // Try to drain buffered records to UART console
@@ -427,10 +429,8 @@ public:
   void try_drain() noexcept {
     if (!console_lock_.try_lock()) return;
 
-    // Read write_pos_ snapshot (write_lock_ protects writes, but we only
-    // need a consistent snapshot — worst case we drain fewer records and
-    // the next emit() will drain the rest).
-    u64 wp = write_pos_;
+    // Read write_pos_ snapshot — Acquire pairs with Release in emit().
+    u64 wp = write_pos_.load(containers::MemoryOrder::Acquire);
 
     while (read_pos_ < wp) {
       u32 offset = static_cast<u32>(read_pos_) & RING_BUFFER_MASK;
@@ -473,10 +473,12 @@ private:
   alignas(64) char buf_[RING_BUFFER_SIZE]{};
 
   // Cursor positions (monotonically increasing, masked for buffer access).
-  // Protected by their respective locks — not atomic.
-  alignas(64) u64 write_pos_{0};    // protected by write_lock_
-  alignas(64) u64 read_pos_{0};     // protected by console_lock_
-  u32 next_seq_{0};                 // protected by write_lock_
+  // write_pos_: updated under write_lock_, read (unsynchronized) in try_drain()
+  //   → atomic to avoid data race between writer and drainer.
+  // read_pos_: updated only under console_lock_ → plain u64 is fine.
+  alignas(64) AtomicU64 write_pos_;  // updated under write_lock_
+  alignas(64) u64 read_pos_{0};      // protected by console_lock_
+  u32 next_seq_{0};                  // protected by write_lock_
 
   alignas(64) IrqSpinLock write_lock_{};
   alignas(64) IrqSpinLock console_lock_{};
