@@ -18,6 +18,7 @@ import moss.std;
 import moss.types;
 import moss.result;
 import moss.hal.timer;
+import moss.containers;
 
 export namespace moss::kernel::timer {
 
@@ -57,7 +58,8 @@ public:
   [[nodiscard]] u64 frequency_hz() const noexcept { return freq_hz_; }
 
 private:
-  u64 mult_{0};          // Multiply factor for cycles -> ns
+  u64 mult_{0};          // Multiply factor for cycles -> ns: ns = (cycles * mult) >> shift
+  u64 inv_mult_{0};      // Inverse factor for ns -> cycles: cycles = (ns * inv_mult) >> shift
   u32 shift_{0};         // Right-shift amount
   u64 freq_hz_{0};       // Raw hardware frequency (Hz)
   u64 boot_cycles_{0};   // Counter value at init time
@@ -169,9 +171,13 @@ private:
   HrTimer*    queue_head_{nullptr};   // Sorted by expires_ns (ascending)
   Stats       stats_{};
   bool        initialized_{false};
+  containers::IrqSpinLock queue_lock_;  // Protects queue_head_ linked list
 
   /// Reprogram hardware for next pending expiry.
   void reprogram_next() noexcept;
+
+  /// Insert into sorted queue — caller must already hold queue_lock_.
+  void enqueue_locked(HrTimer* timer) noexcept;
 };
 
 } // namespace moss::kernel::timer
@@ -202,6 +208,10 @@ VoidResult Clocksource::initialize() noexcept {
   u64 ns_per_sec = 1000000000ULL;
   mult_ = (ns_per_sec << shift_) / freq_hz_;
 
+  // Compute inverse: cycles = (ns * inv_mult) >> shift
+  // inv_mult = (freq_hz << shift) / 10^9
+  inv_mult_ = (freq_hz_ << shift_) / ns_per_sec;
+
   // Record boot timestamp
   boot_cycles_ = hal::timer::read_counter();
 
@@ -211,16 +221,21 @@ VoidResult Clocksource::initialize() noexcept {
 u64 Clocksource::now_ns() const noexcept {
   u64 current = hal::timer::read_counter();
   u64 delta = current - boot_cycles_;
-  return (delta * mult_) >> shift_;
+  // Use 128-bit multiply to prevent overflow (u64 * u64 overflows after ~69s at 62MHz)
+  return static_cast<u64>(
+      (static_cast<__uint128_t>(delta) * mult_) >> shift_);
 }
 
 u64 Clocksource::cycles_to_ns(u64 cycles) const noexcept {
-  return (cycles * mult_) >> shift_;
+  return static_cast<u64>(
+      (static_cast<__uint128_t>(cycles) * mult_) >> shift_);
 }
 
 u64 Clocksource::ns_to_cycles(u64 ns) const noexcept {
-  if (mult_ == 0) return 0;
-  return (ns << shift_) / mult_;
+  if (inv_mult_ == 0) return 0;
+  // Use multiply-then-shift (no 128-bit division needed — safe in freestanding)
+  return static_cast<u64>(
+      (static_cast<__uint128_t>(ns) * inv_mult_) >> shift_);
 }
 
 // ============================================================================
@@ -298,6 +313,11 @@ void TimerSubsystem::shutdown() noexcept {
 }
 
 void TimerSubsystem::enqueue(HrTimer* timer) noexcept {
+  containers::LockGuard<containers::IrqSpinLock> guard(queue_lock_);
+  enqueue_locked(timer);
+}
+
+void TimerSubsystem::enqueue_locked(HrTimer* timer) noexcept {
   // Insert into sorted position (ascending expires_ns)
   if (queue_head_ == nullptr || timer->expires_ns_ < queue_head_->expires_ns_) {
     // Insert at head
@@ -321,6 +341,7 @@ void TimerSubsystem::enqueue(HrTimer* timer) noexcept {
 }
 
 void TimerSubsystem::dequeue(HrTimer* timer) noexcept {
+  containers::LockGuard<containers::IrqSpinLock> guard(queue_lock_);
   if (queue_head_ == nullptr) return;
 
   if (queue_head_ == timer) {
@@ -342,6 +363,7 @@ void TimerSubsystem::dequeue(HrTimer* timer) noexcept {
 }
 
 void TimerSubsystem::handle_interrupt() noexcept {
+  containers::LockGuard<containers::IrqSpinLock> guard(queue_lock_);
   // Note: hardware timer ack is done by the caller (timer_irq_handler)
   // before invoking this method.
 
@@ -366,7 +388,7 @@ void TimerSubsystem::handle_interrupt() noexcept {
     if (expired->mode_ == TimerMode::Periodic && expired->interval_ns_ > 0) {
       expired->expires_ns_ += expired->interval_ns_;
       expired->active_ = true;
-      enqueue(expired);
+      enqueue_locked(expired);  // Already holding queue_lock_
     }
 
     // Reprogram hardware for the (possibly re-enqueued) next timer.

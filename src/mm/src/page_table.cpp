@@ -207,6 +207,11 @@ void PageTableManager::clone_user_page_tables(PhysAddr src_pgd_phys,
       }
     }
   }
+
+  // Parent PTEs were changed to read-only + COW — flush stale writable TLB entries.
+  // Without this, the parent can silently write through a stale writable TLB entry,
+  // bypassing COW and corrupting the shared page.
+  invalidate_tlb();
 }
 
 // Free all user page tables and demand-paged physical pages.
@@ -318,6 +323,7 @@ VoidResult PageTableManager::map_user_page(PhysAddr pgd_phys, VirtAddr va,
 
   // Set the final 4KB page entry (L3 uses page descriptor: bits[1:0]=0b11)
   pte->entries[bd.pte_index].set_page(pa, perms);
+  invalidate_tlb_addr(va);
   return VoidResult{};
 }
 
@@ -405,6 +411,10 @@ VoidResult PageTableManager::map_region(VirtAddr virt_addr, PhysAddr phys_addr,
     }
   }
 
+  // Full TLB flush after bulk mapping (map_page does per-page invalidation,
+  // but a full flush is cheaper for large regions and ensures coherency)
+  invalidate_tlb();
+
   return VoidResult{};
 }
 
@@ -462,9 +472,12 @@ VoidResult PageTableManager::map_page(VirtAddr virt_addr, PhysAddr phys_addr,
   current_table = get_table_from_physical(
       current_table->entries[addr_breakdown.pmd_index].get_phys_addr());
 
-  // 设置最终的页表项
-  current_table->entries[addr_breakdown.pte_index].set_block(phys_addr,
-                                                             permissions);
+  // Set final L3 page table entry (must use set_page, not set_block, at L3)
+  current_table->entries[addr_breakdown.pte_index].set_page(phys_addr,
+                                                            permissions);
+
+  // Invalidate stale TLB entry for this VA
+  invalidate_tlb_addr(virt_addr);
 
   return VoidResult{};
 }

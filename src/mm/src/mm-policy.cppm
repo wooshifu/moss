@@ -471,6 +471,7 @@ private:
     VmArea* area_list_head_;
     usize area_count_;
     moss::kernel::containers::AtomicSize allocated_size_;
+    mutable moss::kernel::containers::IrqSpinLock lock_;
 
     // Red-black tree operations
     void rb_insert(VmArea* area) noexcept;
@@ -512,6 +513,7 @@ private:
     LazyFreeEntry* pending_list_;
     usize pending_count_;
     usize pending_size_;
+    moss::kernel::containers::IrqSpinLock lock_;
     static constexpr usize MAX_PENDING_SIZE = 64 * 1024 * 1024;  // 64MB
     static constexpr usize MAX_PENDING_COUNT = 256;
 
