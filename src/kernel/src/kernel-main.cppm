@@ -634,7 +634,8 @@ private:
     }
 
     // Step 4: Create thread with user-space entry point
-    auto *init_thread = new Thread(1000, init_pid);
+    ThreadId init_tid = Process::allocate_thread_id();
+    auto *init_thread = new Thread(init_tid, init_pid);
     if (!init_thread) {
       return VoidResult{ErrorCode::OutOfMemory};
     }
@@ -677,11 +678,14 @@ private:
 
     init_proc->set_state(ProcessState::Running);
 
-    // Step 5: Enqueue into scheduler
+    // Step 5: Register thread into process's thread list (for cleanup)
+    init_proc->register_thread(init_thread);
+
+    // Step 6: Enqueue into scheduler
     scheduler_->enqueue_task(init_thread, 0);
 
-    log::klog::info("init process TID=1000: entry={:#x} stack={:#x}-{:#x} pgd={:#x} asid={}",
-                    entry_point, USER_STACK_BOTTOM, USER_STACK_TOP,
+    log::klog::info("init process TID={}: entry={:#x} stack={:#x}-{:#x} pgd={:#x} asid={}",
+                    static_cast<u32>(init_tid), entry_point, USER_STACK_BOTTOM, USER_STACK_TOP,
                     init_proc->address_space()->pgd_phys,
                     init_proc->address_space()->asid);
     (void)code_size;

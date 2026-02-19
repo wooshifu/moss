@@ -91,30 +91,11 @@ KernelResult<ThreadId> Process::create_thread(VirtAddr entry_point,
 
     (void)thread_count_.fetch_add(1, containers::MemoryOrder::Relaxed);
 
-    // 🔧 关键修复：将新线程加入调度器运行队列
+    // Enqueue new thread into scheduler run queue
     if (g_scheduler != nullptr) {
-        // 获取当前CPU ID
-        u32 current_cpu = 0; // 简化实现：使用CPU 0
-        g_scheduler->enqueue_task(thread, current_cpu);
-
-        early_debug_print("✅ 线程已加入调度器运行队列 TID=");
-        // 简化的数字输出
-        char tid_str[10];
-        u32 temp_tid = static_cast<u32>(tid);
-        int pos = 0;
-        do {
-            tid_str[pos++] = '0' + (temp_tid % 10);
-            temp_tid /= 10;
-        } while (temp_tid > 0 && pos < 9);
-        tid_str[pos] = '\0';
-        // 反转字符串
-        for (int i = 0; i < pos / 2; i++) {
-            char temp = tid_str[i];
-            tid_str[i] = tid_str[pos - 1 - i];
-            tid_str[pos - 1 - i] = temp;
-        }
-        early_debug_print(tid_str);
-        early_debug_print("\n");
+        u32 cpu = 0; // TODO: select target CPU via load balancer
+        g_scheduler->enqueue_task(thread, cpu);
+        log::klog::info("thread enqueued TID={} PID={} cpu={}", static_cast<u32>(tid), pid_, cpu);
     }
 
     return KernelResult<ThreadId>{tid};
@@ -175,6 +156,20 @@ ThreadId Process::allocate_thread_id() noexcept {
     // 简化实现：从当前线程数量+1开始分配
     static containers::AtomicU32 next_tid{1000};
     return next_tid.fetch_add(1, containers::MemoryOrder::Relaxed);
+}
+
+void Process::register_thread(Thread* thread) noexcept {
+    if (!thread) return;
+
+    ThreadEntry entry(thread->tid, thread);
+    threads_.push_front(entry);
+
+    // Set main thread if this is the first thread
+    if (thread_count_.load(containers::MemoryOrder::Relaxed) == 0) {
+        main_thread_id_ = thread->tid;
+    }
+
+    (void)thread_count_.fetch_add(1, containers::MemoryOrder::Relaxed);
 }
 
 
@@ -244,23 +239,6 @@ bool ProcessManager::process_exists(ProcessId pid) const noexcept {
     return find_process(pid) != nullptr;
 }
 
-KernelResult<ProcessId> ProcessManager::sys_fork() noexcept {
-    // TODO: 实现进程复制
-    return KernelResult<ProcessId>{ErrorCode::NotSupported};
-}
-
-VoidResult ProcessManager::sys_exit(i32 exit_code) noexcept {
-    // TODO: 实现进程退出
-    (void)exit_code;
-    return VoidResult{ErrorCode::NotSupported};
-}
-
-KernelResult<ProcessId> ProcessManager::sys_wait(ProcessId pid) noexcept {
-    // TODO: 实现进程等待
-    (void)pid;
-    return KernelResult<ProcessId>{ErrorCode::NotSupported};
-}
-
 u64 ProcessManager::total_processes() const noexcept {
     return processes_.size();
 }
@@ -327,17 +305,6 @@ KernelResult<unique_ptr<AddressSpace>> create_user_address_space() noexcept {
     return KernelResult<unique_ptr<AddressSpace>>{moss::move(address_space)};
 }
 
-// 从ELF程序加载创建进程
-// Note: ELF loading is implemented in kernel module (moss.kernel)
-// This stub will be replaced when kernel module provides the full implementation
-KernelResult<Process*> create_process_from_elf([[maybe_unused]] const u8* elf_data,
-                                               [[maybe_unused]] usize elf_size) noexcept {
-    // TODO: Implement via kernel module's ElfLoader when moss.kernel is available
-    // The actual implementation will call elf::ElfLoader::load_elf_from_memory()
-    // and then create the process with address space and main thread.
-    return KernelResult<Process*>{ErrorCode::NotSupported};
-}
-
 // 映射内存区域到用户地址空间
 VoidResult map_user_memory(AddressSpace* as, VirtAddr vaddr,
                           [[maybe_unused]] PhysAddr paddr,
@@ -371,7 +338,7 @@ KernelResult<VirtAddr> allocate_user_heap(Process* process, usize size) noexcept
 
     // TODO: 实现真正的内存分配和映射
     // 现在只是创建VMA区域
-    u32 flags = 0x3; // 可读写
+    u32 flags = VmaFlags::READ | VmaFlags::WRITE;
     auto map_result = map_user_memory(as, heap_addr, 0, size, flags);
     if (!map_result) {
         return KernelResult<VirtAddr>{map_result.error()};
@@ -381,6 +348,88 @@ KernelResult<VirtAddr> allocate_user_heap(Process* process, usize size) noexcept
 }
 
 } // namespace user_space
+
+// ============================================================================
+// Shared Zombie transition — called by sys_exit and terminate_current_user_process
+// ============================================================================
+
+[[noreturn]] void do_exit(Thread* cur, Process* proc, i32 exit_code) noexcept {
+    namespace log = moss::kernel::logging;
+
+    ProcessId pid = cur->owner_pid;
+
+    // 1. Mark thread terminated BEFORE dequeue (prevents re-enqueue by scheduler_tick)
+    cur->state = ProcessState::Terminated;
+    if (g_scheduler) {
+        g_scheduler->dequeue_task(cur);
+    }
+
+    // 2. Restore TTBR0 to kernel PGD BEFORE freeing user page tables
+#if defined(__aarch64__) || defined(MOSS_ARCH_ARM64)
+    {
+        auto *kpgd = mm::PageTableManager::get_kernel_pgd();
+        if (kpgd) {
+            u64 kpgd_phys = mm::PageTableManager::get_physical_address(kpgd);
+            asm volatile("msr ttbr0_el1, %0" :: "r"(kpgd_phys));
+            asm volatile("dsb ish" ::: "memory");
+            asm volatile("isb" ::: "memory");
+        }
+    }
+#endif
+
+    // 3. Free user page tables (keeps Process object alive for Zombie)
+    auto *as = proc->address_space();
+    if (as && as->pgd_phys != 0) {
+        mm::PageTableManager::free_user_page_tables(as->pgd_phys);
+        as->pgd_phys = 0;   // prevent double-free in ~Process
+    }
+
+    // 4. Reparent children to init (PID 1)
+    Process *init_proc = g_process_manager->find_process(1);
+    proc->for_each_child([&](ProcessId child_pid) {
+        Process *child = g_process_manager->find_process(child_pid);
+        if (child) {
+            child->set_parent_pid(1);
+            if (init_proc) {
+                init_proc->add_child(child_pid);
+                // If child is already zombie, wake init's waiters
+                if (child->state() == ProcessState::Zombie) {
+                    init_proc->child_exit_wait_queue().for_each_waiter(
+                        [](void* thread_ptr) {
+                            auto* t = static_cast<Thread*>(thread_ptr);
+                            t->state = ProcessState::Ready;
+                            if (g_scheduler) g_scheduler->enqueue_task(t, 0);
+                        });
+                }
+            }
+        }
+    });
+
+    // 5. Transition to Zombie state (Process stays in process table)
+    proc->set_exit_code(exit_code);
+    proc->set_state(ProcessState::Zombie);
+
+    // 6. Wake parent's wait queue so waitpid() can collect us
+    Process *parent = g_process_manager->find_process(proc->parent_pid());
+    if (parent) {
+        parent->child_exit_wait_queue().for_each_waiter(
+            [](void* thread_ptr) {
+                auto* t = static_cast<Thread*>(thread_ptr);
+                t->state = ProcessState::Ready;
+                if (g_scheduler) g_scheduler->enqueue_task(t, 0);
+            });
+    }
+
+    log::klog::info("do_exit: PID={} -> Zombie, exit_code={}", pid, exit_code);
+
+    // 7. Hand control to scheduler (never returns)
+    if (g_scheduler) {
+        g_scheduler->schedule_after_exit();
+    }
+
+    // Fallback halt (should never be reached)
+    while (true) { moss::kernel::arch::cpu_halt(); }
+}
 
 // ============================================================================
 // Secondary CPU scheduling loop
