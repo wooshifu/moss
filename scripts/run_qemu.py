@@ -386,6 +386,10 @@ def main(
     所有模式均使用 moss.bin 启动（ARM64 含 Linux Image header，QEMU 自动传递 DTB）。
     --debug 模式额外启动 GDB server（-s -S），GDB 通过 "file moss.elf" 加载符号表。
 
+    支持两种方式传递额外的 QEMU 参数：
+    1. --qemu-args 选项: --qemu-args="-d int,in_asm"
+    2. 双破折号分隔: --debug -- -d int,in_asm
+
     示例:
 
     • uv run scripts/run_qemu.py --config build/arm64/qemu_config.json
@@ -393,6 +397,10 @@ def main(
     • uv run scripts/run_qemu.py --config build/arm64/qemu_config.json --debug
 
     • uv run scripts/run_qemu.py --config build/arm64/qemu_config.json --timeout 30
+
+    • uv run scripts/run_qemu.py --config build/arm64/qemu_config.json --qemu-args="-d int,in_asm"
+
+    • uv run scripts/run_qemu.py --config build/arm64/qemu_config.json --debug -- -d int,in_asm -trace enable=virtio*
     """
     # 查找配置文件
     if config is None:
