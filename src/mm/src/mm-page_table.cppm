@@ -79,17 +79,34 @@ struct [[gnu::packed]] PageTableEntry {
     [[nodiscard]] constexpr bool is_table() const { return raw & PageAttr::TABLE; }
     [[nodiscard]] constexpr bool is_block() const { return is_valid() && !is_table(); }
     [[nodiscard]] constexpr PhysAddr get_phys_addr() const {
+        // RISC-V: PPN in bits[53:10], physical addr = PPN << 12 = (pte & mask) << 2
+#if defined(MOSS_ARCH_RISCV)
+        return (raw & hal::mmu::PTE_ADDR_MASK) << 2;
+#else
         return raw & hal::mmu::PTE_ADDR_MASK;
+#endif
     }
     constexpr void set_table(PhysAddr next_table_pa) {
+#if defined(MOSS_ARCH_RISCV)
+        raw = ((next_table_pa >> 2) & hal::mmu::PTE_ADDR_MASK) | PageAttr::VALID | PageAttr::TABLE;
+#else
         raw = (next_table_pa & hal::mmu::PTE_ADDR_MASK) | PageAttr::VALID | PageAttr::TABLE;
+#endif
     }
     constexpr void set_block(PhysAddr block_pa, u64 attributes) {
+#if defined(MOSS_ARCH_RISCV)
+        raw = ((block_pa >> 2) & hal::mmu::PTE_ADDR_MASK) | attributes | PageAttr::VALID;
+#else
         raw = (block_pa & hal::mmu::PTE_ADDR_MASK) | attributes | PageAttr::VALID;
+#endif
     }
     // L3 page descriptor: bits[1:0]=0b11 (same encoding as table descriptor)
     constexpr void set_page(PhysAddr page_pa, u64 attributes) {
+#if defined(MOSS_ARCH_RISCV)
+        raw = ((page_pa >> 2) & hal::mmu::PTE_ADDR_MASK) | attributes | PageAttr::VALID | PageAttr::TABLE;
+#else
         raw = (page_pa & hal::mmu::PTE_ADDR_MASK) | attributes | PageAttr::VALID | PageAttr::TABLE;
+#endif
     }
     constexpr void clear() { raw = 0; }
 

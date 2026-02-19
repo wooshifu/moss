@@ -59,9 +59,12 @@ inline void putc(char c) noexcept {
                "Nd"(static_cast<u16>(0x3F8)));
 
 #elif defined(MOSS_ARCH_RISCV)
-  // NS16550 UART: TX data register at base+0x00
+  // NS16550 UART: TX data register at base+0x00, Line Status at base+0x14
+  // Wait for THR empty (bit 5 of LSR) before transmitting
   auto base = platform::uart_base();
   volatile u32 *uart_data = reinterpret_cast<volatile u32 *>(base);
+  volatile u32 *uart_lsr  = reinterpret_cast<volatile u32 *>(base + 0x14);
+  while ((*uart_lsr & (1U << 5)) == 0) {}
   *uart_data = static_cast<u32>(static_cast<unsigned char>(c));
 #endif
 }

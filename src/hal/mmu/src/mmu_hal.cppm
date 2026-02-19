@@ -356,8 +356,8 @@ inline VoidResult enable_mmu(PhysAddr pgd_phys) noexcept {
          PageAttr::VALID | PageAttr::WRITABLE | PageAttr::AF |
          PageAttr::ATTR_DEVICE | PageAttr::HUGE_PAGE;
 #elif defined(MOSS_ARCH_RISCV)
-  // RISC-V: leaf PTE with R+W, no execute
-  return (block_addr & PTE_ADDR_MASK) |
+  // RISC-V: leaf PTE with R+W, no execute. PPN = phys_addr >> 12, stored at bits[53:10]
+  return ((block_addr >> 2) & PTE_ADDR_MASK) |
          PageAttr::VALID | PageAttr::AF | PageAttr::READ | PageAttr::WRITE |
          PageAttr::GLOBAL;
 #endif
@@ -374,10 +374,10 @@ inline VoidResult enable_mmu(PhysAddr pgd_phys) noexcept {
          PageAttr::VALID | PageAttr::WRITABLE | PageAttr::AF |
          PageAttr::ATTR_NORMAL | PageAttr::HUGE_PAGE;
 #elif defined(MOSS_ARCH_RISCV)
-  // RISC-V: leaf PTE with R+W+X
-  return (block_addr & PTE_ADDR_MASK) |
+  // RISC-V: leaf PTE with R+W (no EXECUTE — W^X). PPN = phys_addr >> 12, stored at bits[53:10]
+  return ((block_addr >> 2) & PTE_ADDR_MASK) |
          PageAttr::VALID | PageAttr::AF | PageAttr::READ | PageAttr::WRITE |
-         PageAttr::EXECUTE | PageAttr::GLOBAL;
+         PageAttr::GLOBAL;
 #endif
 }
 

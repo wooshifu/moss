@@ -583,17 +583,23 @@ using WorkQueue = MPMCQueue<ProcessId, 4, 128>;
 // ============================================================================
 export namespace moss::kernel::containers {
 
-// Per-CPU data accessor
+// Per-CPU data accessor — each slot is cache-line aligned to prevent false sharing
 template <typename T> class PerCpuData {
 private:
-  alignas(moss::kernel::CACHE_LINE_SIZE) T data_[moss::kernel::MAX_CPUS];
+  struct alignas(moss::kernel::CACHE_LINE_SIZE) PaddedSlot {
+    T value;
+    template <typename... Args>
+    constexpr explicit PaddedSlot(Args &&...args) noexcept : value(moss::forward<Args>(args)...) {}
+    constexpr PaddedSlot() noexcept : value{} {}
+  };
+  PaddedSlot data_[moss::kernel::MAX_CPUS];
 
 public:
   constexpr PerCpuData() noexcept : data_{} {}
 
   template <typename... Args> explicit PerCpuData(Args &&...args) noexcept {
     for (moss::kernel::usize i = 0; i < moss::kernel::MAX_CPUS; ++i) {
-      new (&data_[i]) T(args...);
+      new (&data_[i].value) T(args...);
     }
   }
 
@@ -602,42 +608,42 @@ public:
 
   PerCpuData(PerCpuData &&other) noexcept {
     for (moss::kernel::usize i = 0; i < moss::kernel::MAX_CPUS; ++i) {
-      data_[i] = static_cast<T &&>(other.data_[i]);
+      data_[i].value = static_cast<T &&>(other.data_[i].value);
     }
   }
 
   PerCpuData &operator=(PerCpuData &&other) noexcept {
     if (this != &other) {
       for (moss::kernel::usize i = 0; i < moss::kernel::MAX_CPUS; ++i) {
-        data_[i] = static_cast<T &&>(other.data_[i]);
+        data_[i].value = static_cast<T &&>(other.data_[i].value);
       }
     }
     return *this;
   }
 
-  [[nodiscard]] T &get_local() noexcept { return data_[get_current_cpu_id()]; }
+  [[nodiscard]] T &get_local() noexcept { return data_[get_current_cpu_id()].value; }
 
   [[nodiscard]] const T &get_local() const noexcept {
-    return data_[get_current_cpu_id()];
+    return data_[get_current_cpu_id()].value;
   }
 
   [[nodiscard]] T &get_cpu(moss::kernel::usize cpu_id) noexcept {
-    return data_[cpu_id % MAX_CPUS];
+    return data_[cpu_id % MAX_CPUS].value;
   }
 
   [[nodiscard]] const T &get_cpu(moss::kernel::usize cpu_id) const noexcept {
-    return data_[cpu_id % MAX_CPUS];
+    return data_[cpu_id % MAX_CPUS].value;
   }
 
   template <typename Func> void for_each_cpu(Func &&func) {
     for (moss::kernel::usize i = 0; i < MAX_CPUS; ++i) {
-      func(i, data_[i]);
+      func(i, data_[i].value);
     }
   }
 
   template <typename Func> void for_each_cpu(Func &&func) const {
     for (moss::kernel::usize i = 0; i < MAX_CPUS; ++i) {
-      func(i, data_[i]);
+      func(i, data_[i].value);
     }
   }
 
@@ -645,7 +651,7 @@ public:
   [[nodiscard]] Result fold(Func &&func, Result initial = Result{}) const {
     Result result = initial;
     for (moss::kernel::usize i = 0; i < MAX_CPUS; ++i) {
-      result = func(result, data_[i]);
+      result = func(result, data_[i].value);
     }
     return result;
   }
@@ -653,7 +659,7 @@ public:
   [[nodiscard]] T sum() const noexcept {
     T total{};
     for (moss::kernel::usize i = 0; i < MAX_CPUS; ++i) {
-      total += data_[i];
+      total += data_[i].value;
     }
     return total;
   }
@@ -888,6 +894,104 @@ using InterruptWorkQueue = PerCpuWorkQueue<InterruptId, 64>;
 // ============================================================================
 export namespace moss::kernel::containers {
 
+// RCU deferred callback queue — type-erased callbacks scheduled by RcuPtr
+// and executed after a grace period via rcu_process_callbacks().
+//
+// Storage is at namespace scope with constinit to guarantee constant
+// initialization and avoid __cxa_guard_acquire/release runtime calls.
+
+struct RcuDeferredEntry {
+  void (*fn)(void *);
+  void *arg;
+  RcuDeferredEntry *next;
+
+  constexpr RcuDeferredEntry() noexcept : fn(nullptr), arg(nullptr), next(nullptr) {}
+};
+
+namespace rcu_detail {
+  inline constexpr moss::kernel::usize RCU_POOL_SIZE = 512;
+
+  struct alignas(16) RcuNodePool {
+    RcuDeferredEntry nodes[RCU_POOL_SIZE];
+    bool used[RCU_POOL_SIZE];
+    IrqSpinLock pool_lock;
+
+    constexpr RcuNodePool() noexcept : nodes{}, used{}, pool_lock{} {}
+  };
+
+  // All storage is constinit — zero/constant-initialized at load time,
+  // no runtime guard needed.
+  constinit inline RcuNodePool g_rcu_pool{};
+  constinit inline RcuDeferredEntry *g_rcu_pending = nullptr;
+  constinit inline moss::kernel::usize g_rcu_pending_count = 0;
+  constinit inline IrqSpinLock g_rcu_lock{};
+} // namespace rcu_detail
+
+class RcuCallbackQueue {
+public:
+  static void enqueue(void (*fn)(void *), void *arg) noexcept {
+    auto *cb = alloc_node();
+    if (cb == nullptr) {
+      // Pool exhausted — fall back to synchronous execution.
+      fn(arg);
+      return;
+    }
+    cb->fn = fn;
+    cb->arg = arg;
+    cb->next = nullptr;
+
+    LockGuard<IrqSpinLock> guard(rcu_detail::g_rcu_lock);
+    cb->next = rcu_detail::g_rcu_pending;
+    rcu_detail::g_rcu_pending = cb;
+    ++rcu_detail::g_rcu_pending_count;
+  }
+
+  static void process_callbacks() noexcept {
+    RcuDeferredEntry *list = nullptr;
+    {
+      LockGuard<IrqSpinLock> guard(rcu_detail::g_rcu_lock);
+      list = rcu_detail::g_rcu_pending;
+      rcu_detail::g_rcu_pending = nullptr;
+      rcu_detail::g_rcu_pending_count = 0;
+    }
+    while (list != nullptr) {
+      RcuDeferredEntry *next = list->next;
+      list->fn(list->arg);
+      free_node(list);
+      list = next;
+    }
+  }
+
+  [[nodiscard]] static moss::kernel::usize pending_count() noexcept {
+    return rcu_detail::g_rcu_pending_count;
+  }
+
+private:
+  static RcuDeferredEntry *alloc_node() noexcept {
+    LockGuard<IrqSpinLock> guard(rcu_detail::g_rcu_pool.pool_lock);
+    for (moss::kernel::usize i = 0; i < rcu_detail::RCU_POOL_SIZE; ++i) {
+      if (!rcu_detail::g_rcu_pool.used[i]) {
+        rcu_detail::g_rcu_pool.used[i] = true;
+        return &rcu_detail::g_rcu_pool.nodes[i];
+      }
+    }
+    return nullptr;
+  }
+
+  static void free_node(RcuDeferredEntry *cb) noexcept {
+    auto offset = static_cast<moss::kernel::usize>(cb - rcu_detail::g_rcu_pool.nodes);
+    if (offset < rcu_detail::RCU_POOL_SIZE) {
+      LockGuard<IrqSpinLock> guard(rcu_detail::g_rcu_pool.pool_lock);
+      rcu_detail::g_rcu_pool.used[offset] = false;
+    }
+  }
+};
+
+// Public API for draining RCU callbacks (called from scheduler/timer).
+inline void rcu_process_callbacks() noexcept {
+  RcuCallbackQueue::process_callbacks();
+}
+
 // RCU read-side critical section guard
 class RcuReadLock {
 private:
@@ -934,7 +1038,7 @@ public:
   RcuPtr &operator=(RcuPtr &&other) noexcept {
     if (this != &other) {
       T *old_ptr = ptr_.exchange(other.ptr_.exchange(nullptr));
-      schedule_rcu_callback([old_ptr]() { delete old_ptr; });
+      schedule_rcu_delete(old_ptr);
     }
     return *this;
   }
@@ -959,17 +1063,13 @@ public:
 
   void store_rcu(T *new_ptr) noexcept {
     T *old_ptr = ptr_.exchange(new_ptr, MemoryOrder::Release);
-    if (old_ptr != nullptr) {
-      schedule_rcu_callback([old_ptr]() { delete old_ptr; });
-    }
+    schedule_rcu_delete(old_ptr);
   }
 
   [[nodiscard]] bool compare_exchange_rcu(T *&expected, T *desired) noexcept {
     if (ptr_.compare_exchange_weak(expected, desired, MemoryOrder::Release,
                                    MemoryOrder::Consume)) {
-      if (expected != nullptr) {
-        schedule_rcu_callback([expected]() { delete expected; });
-      }
+      schedule_rcu_delete(expected);
       return true;
     }
     return false;
@@ -986,10 +1086,16 @@ public:
   }
 
 private:
-  template <typename Func>
-  static void schedule_rcu_callback(Func &&callback) noexcept {
-    // Simplified: execute immediately (prototype only)
-    callback();
+  // Type-erased destructor: casts void* back to T* and deletes.
+  static void destroy_callback(void *ptr) noexcept {
+    delete static_cast<T *>(ptr);
+  }
+
+  // Enqueue deferred deletion of old_ptr via RcuCallbackQueue.
+  static void schedule_rcu_delete(T *old_ptr) noexcept {
+    if (old_ptr != nullptr) {
+      RcuCallbackQueue::enqueue(&destroy_callback, static_cast<void *>(old_ptr));
+    }
   }
 };
 
@@ -1099,15 +1205,21 @@ public:
 
     while (current != nullptr) {
       RcuListNode<T> *next = current->next.load(MemoryOrder::Relaxed);
-      schedule_rcu_callback([current]() { delete current; });
+      schedule_rcu_delete(current);
       current = next;
     }
   }
 
 private:
-  template <typename Func>
-  static void schedule_rcu_callback(Func &&callback) noexcept {
-    callback();
+  // Type-erased destructor for RcuListNode<T>.
+  static void destroy_node(void *ptr) noexcept {
+    delete static_cast<RcuListNode<T> *>(ptr);
+  }
+
+  static void schedule_rcu_delete(RcuListNode<T> *ptr) noexcept {
+    if (ptr != nullptr) {
+      RcuCallbackQueue::enqueue(&destroy_node, static_cast<void *>(ptr));
+    }
   }
 };
 
@@ -1202,14 +1314,19 @@ private:
 
   RcuList<Entry> buckets_[BucketCount];
   moss::kernel::containers::AtomicCounter<moss::kernel::usize> size_;
+  mutable moss::kernel::containers::IrqSpinLock write_lock_;
 
 public:
-  constexpr RcuHashMap() noexcept : size_(0) {}
+  constexpr RcuHashMap() noexcept : size_(0), write_lock_{} {}
 
   template <typename K, typename V>
   void insert_or_update(K &&key, V &&value) {
+    moss::kernel::containers::LockGuard<moss::kernel::containers::IrqSpinLock>
+        guard(write_lock_);
+
     moss::kernel::usize bucket_idx = hash_key(key) & BUCKET_MASK;
 
+    bool replaced = false;
     {
       RcuReadLock read_lock;
       const Entry *existing = buckets_[bucket_idx].find_if(
@@ -1217,12 +1334,15 @@ public:
 
       if (existing != nullptr) {
         buckets_[bucket_idx].remove(*existing);
+        replaced = true;
       }
     }
 
     buckets_[bucket_idx].push_front(static_cast<K &&>(key),
                                     static_cast<V &&>(value));
-    (void)size_.fetch_add(1, MemoryOrder::Relaxed);
+    if (!replaced) {
+      (void)size_.fetch_add(1, MemoryOrder::Relaxed);
+    }
   }
 
   template <typename K> [[nodiscard]] const Value *find(const K &key) const {
@@ -1235,6 +1355,9 @@ public:
   }
 
   template <typename K> bool remove(const K &key) {
+    moss::kernel::containers::LockGuard<moss::kernel::containers::IrqSpinLock>
+        guard(write_lock_);
+
     moss::kernel::usize bucket_idx = hash_key(key) & BUCKET_MASK;
 
     bool removed;
@@ -1585,9 +1708,38 @@ private:
   }
 
   void remove_page_from_list(
-      [[maybe_unused]] moss::kernel::containers::AtomicPtr<SlabPage> &head,
-      [[maybe_unused]] SlabPage *page) noexcept {
-    // Simplified: rebuild list (actual implementation should be more efficient)
+      moss::kernel::containers::AtomicPtr<SlabPage> &head,
+      SlabPage *page) noexcept {
+    // CAS-based lock-free removal from singly-linked list.
+    // Case 1: page is the head — CAS head from page to page->next.
+    SlabPage *expected = page;
+    SlabPage *page_next = page->next.load(moss::MemoryOrder::Acquire);
+    if (head.compare_exchange_strong(expected, page_next,
+                                      moss::MemoryOrder::AcqRel,
+                                      moss::MemoryOrder::Acquire)) {
+      page->next.store(nullptr, moss::MemoryOrder::Relaxed);
+      return;
+    }
+    // Case 2: page is in the middle or tail — walk from head.
+    SlabPage *prev = head.load(moss::MemoryOrder::Acquire);
+    while (prev != nullptr) {
+      SlabPage *curr = prev->next.load(moss::MemoryOrder::Acquire);
+      if (curr == page) {
+        // Splice prev->next from page to page->next.
+        SlabPage *next = page->next.load(moss::MemoryOrder::Acquire);
+        if (prev->next.compare_exchange_strong(curr, next,
+                                                moss::MemoryOrder::AcqRel,
+                                                moss::MemoryOrder::Acquire)) {
+          page->next.store(nullptr, moss::MemoryOrder::Relaxed);
+          return;
+        }
+        // CAS failed — concurrent modification; restart from head.
+        prev = head.load(moss::MemoryOrder::Acquire);
+        continue;
+      }
+      prev = curr;
+    }
+    // page not found in list — benign (already removed by concurrent op).
   }
 
   [[nodiscard]] void *allocate_page() noexcept {

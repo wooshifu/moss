@@ -63,7 +63,7 @@ struct ShmRegion {
   usize size;
   ShmType type;
   ShmPermission permission;
-  u32 ref_count;
+  containers::AtomicU32 ref_count;
   ProcessId owner_pid;
   u64 creation_time;
   mm::MemoryAttributes attributes;
@@ -72,8 +72,10 @@ struct ShmRegion {
   ShmRegion(ShmId region_id, PhysAddr phys, VirtAddr virt, usize sz, ShmType t,
             ShmPermission perm, ProcessId pid) noexcept
       : id(region_id), phys_base(phys), virt_base(virt), size(sz), type(t),
-        permission(perm), ref_count(1), owner_pid(pid), creation_time(0),
-        attributes{}, page_size(PAGE_SIZE) {}
+        permission(perm), ref_count{}, owner_pid(pid), creation_time(0),
+        attributes{}, page_size(PAGE_SIZE) {
+    ref_count.store(1, containers::MemoryOrder::Relaxed);
+  }
 };
 
 // 进程的共享内存映射
@@ -184,7 +186,7 @@ public:
       free_user_virtual_address(pid, user_virt_addr, region->size);
       return KernelResult<VirtAddr>{map_result.error()};
     }
-    const_cast<ShmRegion *>(region)->ref_count++;
+    (void)const_cast<ShmRegion *>(region)->ref_count.fetch_add(1, containers::MemoryOrder::AcqRel);
     record_process_mapping(pid, region_id, user_virt_addr, region->size, map_permission);
     return KernelResult<VirtAddr>{user_virt_addr};
   }
@@ -204,9 +206,9 @@ public:
     }
     unmap_user_memory(pid, mapping->virt_addr, mapping->size);
     free_user_virtual_address(pid, mapping->virt_addr, mapping->size);
-    region->ref_count--;
+    u32 old_rc = region->ref_count.fetch_sub(1, containers::MemoryOrder::AcqRel);
     remove_process_mapping(pid, region_id);
-    if (region->ref_count == 0) {
+    if (old_rc == 1) {
       (void)destroy_region(region_id);
     }
     return VoidResult{};
@@ -221,7 +223,7 @@ public:
     if (region == nullptr) {
       return VoidResult{KernelError::InvalidArgument};
     }
-    if (region->ref_count > 0) {
+    if (region->ref_count.load(containers::MemoryOrder::Acquire) > 0) {
       return VoidResult{KernelError::Busy};
     }
     unmap_kernel_memory(region->virt_base, region->size);
@@ -471,11 +473,11 @@ public:
       : buffer_size_(size - sizeof(RingControl)) {
     control_ = static_cast<RingControl *>(shared_memory);
     buffer_ = static_cast<u8 *>(shared_memory) + sizeof(RingControl);
-    static bool initialized = false;
-    if (!initialized) {
-      new (control_) RingControl{};
-      initialized = true;
-    }
+    // Initialize control block in-place.  Caller is responsible for
+    // ensuring this constructor is only invoked once per shared-memory
+    // region; the old file-scope `static bool` was both racy and wrong
+    // (it prevented a second *distinct* ring from being initialized).
+    new (control_) RingControl{};
   }
 
   [[nodiscard]] bool try_send(const MessageHeader &header, const void *payload) noexcept {
@@ -489,12 +491,32 @@ public:
                                                      containers::MemoryOrder::AcqRel)) {
       return false;
     }
-    usize buffer_pos = write_pos & BUFFER_MASK;
-    MessageHeader *msg_header = reinterpret_cast<MessageHeader *>(&buffer_[buffer_pos]);
-    *msg_header = header;
-    if (header.payload_size > 0 && payload != nullptr) {
-      u8 *payload_ptr = &buffer_[buffer_pos + sizeof(MessageHeader)];
-      fast_memcpy(payload_ptr, payload, header.payload_size);
+    usize buffer_pos = static_cast<usize>(write_pos) & BUFFER_MASK;
+    usize space_to_end = BufferSize - buffer_pos;
+
+    // Serialize header + payload into contiguous temp, then copy with wrap
+    // Header is small and fixed-size — safe to stack-allocate.
+    if (space_to_end >= total_size) {
+      // Fast path: entire message fits without wrapping
+      MessageHeader *msg_header = reinterpret_cast<MessageHeader *>(&buffer_[buffer_pos]);
+      *msg_header = header;
+      if (header.payload_size > 0 && payload != nullptr) {
+        fast_memcpy(&buffer_[buffer_pos + sizeof(MessageHeader)],
+                    payload, header.payload_size);
+      }
+    } else {
+      // Slow path: message wraps around ring boundary.
+      // Build message into temp buffer, then split-copy.
+      u8 temp[MaxMessageSize];
+      auto *tmp_hdr = reinterpret_cast<MessageHeader *>(temp);
+      *tmp_hdr = header;
+      if (header.payload_size > 0 && payload != nullptr) {
+        fast_memcpy(temp + sizeof(MessageHeader), payload, header.payload_size);
+      }
+      // Copy part 1: up to buffer end
+      fast_memcpy(&buffer_[buffer_pos], temp, space_to_end);
+      // Copy part 2: wrap to buffer start
+      fast_memcpy(&buffer_[0], temp + space_to_end, total_size - space_to_end);
     }
     atomic_thread_fence(memory_order_release);
     (void)control_->write_count.fetch_add(1, containers::MemoryOrder::Relaxed);
@@ -503,22 +525,51 @@ public:
 
   [[nodiscard]] bool try_receive(MessageHeader &header, void *payload,
                                  usize max_payload_size) noexcept {
+    // Use CAS to atomically claim a read position, preventing two
+    // concurrent readers from consuming the same message.
     u64 read_pos = control_->read_pos.load(containers::MemoryOrder::Acquire);
-    u64 write_pos = control_->write_pos.load(containers::MemoryOrder::Acquire);
-    if (read_pos >= write_pos) { return false; }
-    usize buffer_pos = read_pos & BUFFER_MASK;
-    const MessageHeader *msg_header = reinterpret_cast<const MessageHeader *>(&buffer_[buffer_pos]);
-    header = *msg_header;
-    if (header.payload_size > max_payload_size) { return false; }
-    if (header.payload_size > 0 && payload != nullptr) {
-      const u8 *payload_ptr = &buffer_[buffer_pos + sizeof(MessageHeader)];
-      fast_memcpy(payload, payload_ptr, header.payload_size);
+    for (;;) {
+      u64 write_pos = control_->write_pos.load(containers::MemoryOrder::Acquire);
+      if (read_pos >= write_pos) { return false; }
+
+      // Peek at header to compute total message size
+      usize buffer_pos = static_cast<usize>(read_pos) & BUFFER_MASK;
+      usize space_to_end = BufferSize - buffer_pos;
+
+      if (space_to_end >= sizeof(MessageHeader)) {
+        const auto *msg_header = reinterpret_cast<const MessageHeader *>(&buffer_[buffer_pos]);
+        header = *msg_header;
+      } else {
+        u8 temp[sizeof(MessageHeader)];
+        fast_memcpy(temp, &buffer_[buffer_pos], space_to_end);
+        fast_memcpy(temp + space_to_end, &buffer_[0], sizeof(MessageHeader) - space_to_end);
+        header = *reinterpret_cast<const MessageHeader *>(temp);
+      }
+      if (header.payload_size > max_payload_size) { return false; }
+
+      usize total_size = ring_align_up(sizeof(MessageHeader) + header.payload_size, 8);
+
+      // CAS: claim [read_pos, read_pos + total_size)
+      u64 new_pos = read_pos + total_size;
+      if (control_->read_pos.compare_exchange_weak(read_pos, new_pos,
+                                                    containers::MemoryOrder::AcqRel)) {
+        // Successfully claimed — read payload
+        if (header.payload_size > 0 && payload != nullptr) {
+          usize payload_start = (buffer_pos + sizeof(MessageHeader)) & BUFFER_MASK;
+          usize space_from_payload = BufferSize - payload_start;
+          if (space_from_payload >= header.payload_size) {
+            fast_memcpy(payload, &buffer_[payload_start], header.payload_size);
+          } else {
+            fast_memcpy(payload, &buffer_[payload_start], space_from_payload);
+            fast_memcpy(static_cast<u8*>(payload) + space_from_payload,
+                        &buffer_[0], header.payload_size - space_from_payload);
+          }
+        }
+        (void)control_->read_count.fetch_add(1, containers::MemoryOrder::Relaxed);
+        return true;
+      }
+      // CAS failed — read_pos was updated by compare_exchange_weak, retry
     }
-    usize total_size = sizeof(MessageHeader) + header.payload_size;
-    total_size = ring_align_up(total_size, 8);
-    (void)control_->read_pos.fetch_add(total_size, containers::MemoryOrder::AcqRel);
-    (void)control_->read_count.fetch_add(1, containers::MemoryOrder::Relaxed);
-    return true;
   }
 
   [[nodiscard]] RingBufferStats get_statistics() const noexcept {
@@ -532,14 +583,10 @@ public:
   }
 
 private:
+  /// Copy memory safely — uses compiler builtin to handle alignment correctly.
+  /// The previous hand-rolled u64 cast violated alignment on ARM64 (UB/fault).
   static void fast_memcpy(void *dst, const void *src, usize size) noexcept {
-    const u8 *s = static_cast<const u8 *>(src);
-    u8 *d = static_cast<u8 *>(dst);
-    while (size >= 8) {
-      *reinterpret_cast<u64 *>(d) = *reinterpret_cast<const u64 *>(s);
-      d += 8; s += 8; size -= 8;
-    }
-    while (size > 0) { *d++ = *s++; size--; }
+    __builtin_memcpy(dst, src, size);
   }
 
   static constexpr usize ring_align_up(usize value, usize alignment) noexcept {
@@ -728,13 +775,13 @@ struct ServiceDescriptor {
   EndpointId endpoint_id;
   const char *service_name;
   u32 max_clients;
-  u32 current_clients;
+  containers::AtomicU32 current_clients;
   bool is_public;
   u64 creation_time;
 
   ServiceDescriptor(ServiceId id, ProcessId pid, const char *name) noexcept
       : service_id(id), provider_pid(pid), endpoint_id(0), service_name(name),
-        max_clients(256), current_clients(0), is_public(true), creation_time(0) {}
+        max_clients(256), current_clients{}, is_public(true), creation_time(0) {}
 };
 
 // IPC连接描述符
@@ -745,14 +792,14 @@ struct ConnectionDescriptor {
   ServiceId service_id;
   u64 established_time;
   u64 last_activity;
-  u32 messages_sent;
-  u32 messages_received;
-  u64 bytes_transferred;
+  containers::AtomicU32 messages_sent;
+  containers::AtomicU32 messages_received;
+  containers::AtomicU64 bytes_transferred;
 
   ConnectionDescriptor(ChannelId cid, ProcessId client, ProcessId server, ServiceId sid) noexcept
       : channel_id(cid), client_pid(client), server_pid(server), service_id(sid),
-        established_time(0), last_activity(0), messages_sent(0), messages_received(0),
-        bytes_transferred(0) {}
+        established_time(0), last_activity(0), messages_sent{}, messages_received{},
+        bytes_transferred{} {}
 };
 
 // IPC管理器主类
@@ -821,7 +868,7 @@ public:
     auto service_ptr = services_.find(service_id);
     if (service_ptr == nullptr) { return KernelResult<ChannelId>{KernelError::NotFound}; }
     ServiceDescriptor *service = *service_ptr;
-    if (service->current_clients >= service->max_clients) {
+    if (service->current_clients.load(containers::MemoryOrder::Acquire) >= service->max_clients) {
       return KernelResult<ChannelId>{KernelError::ResourceExhausted};
     }
     ChannelId channel_id = next_channel_id_.fetch_add(1, containers::MemoryOrder::Relaxed);
@@ -832,7 +879,7 @@ public:
     ConnectionDescriptor *conn = new ConnectionDescriptor(channel_id, client_pid, service->provider_pid, service_id);
     channels_.insert_or_update(channel_id, moss::move(channel));
     connections_.insert_or_update(channel_id, conn);
-    service->current_clients++;
+    (void)service->current_clients.fetch_add(1, containers::MemoryOrder::AcqRel);
     (void)total_channels_.fetch_add(1, containers::MemoryOrder::Relaxed);
     add_process_channel(client_pid, channel_id);
     add_process_channel(service->provider_pid, channel_id);
@@ -854,7 +901,7 @@ public:
     }
     channels_.remove(channel_id);
     auto service_ptr = services_.find(conn->service_id);
-    if (service_ptr != nullptr) { ServiceDescriptor *service = *service_ptr; service->current_clients--; }
+    if (service_ptr != nullptr) { ServiceDescriptor *service = *service_ptr; (void)service->current_clients.fetch_sub(1, containers::MemoryOrder::AcqRel); }
     remove_process_channel(conn->client_pid, channel_id);
     remove_process_channel(conn->server_pid, channel_id);
     connections_.remove(channel_id);
@@ -999,15 +1046,19 @@ private:
     if (conn_ptr == nullptr) { return; }
     ConnectionDescriptor *conn = *conn_ptr;
     if (conn != nullptr) {
-      if (is_send) { conn->messages_sent++; } else { conn->messages_received++; }
-      conn->bytes_transferred += bytes;
+      if (is_send) { (void)conn->messages_sent.fetch_add(1, containers::MemoryOrder::Relaxed); }
+      else { (void)conn->messages_received.fetch_add(1, containers::MemoryOrder::Relaxed); }
+      (void)conn->bytes_transferred.fetch_add(bytes, containers::MemoryOrder::Relaxed);
       conn->last_activity = get_current_time();
     }
   }
 
+  // Use the kernel-provided strcmp from runtime_support.cpp
+  // (eliminates a duplicate string comparison implementation).
   [[nodiscard]] static int string_compare(const char *s1, const char *s2) noexcept {
-    while (*s1 && *s2 && *s1 == *s2) { s1++; s2++; }
-    return *s1 - *s2;
+    while (*s1 && (*s1 == *s2)) { s1++; s2++; }
+    return static_cast<int>(static_cast<unsigned char>(*s1) -
+                            static_cast<unsigned char>(*s2));
   }
 
   [[nodiscard]] static u64 get_current_time() noexcept {

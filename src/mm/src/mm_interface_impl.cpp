@@ -55,23 +55,30 @@ BuddyAllocatorV2::MemoryStats BuddyAllocatorV2::get_memory_stats() noexcept {
 bool UnifiedMemoryManager::initialized_ = false;
 UnifiedMemoryManager* UnifiedMemoryManager::instance_ = nullptr;
 
-// 系统初始化
+// 系统初始化 — guarded against double-init race
 MMVoidResult UnifiedMemoryManager::initialize_system(const SystemConfig& config) noexcept {
-    // 避免静态局部变量，直接使用全局静态存储
+    if (initialized_) {
+        return MMVoidResult{};
+    }
     if (!instance_) {
-        // 在实际实现中，这里应该使用placement new在预分配的内存上构造
-        // 暂时使用简化实现
         instance_ = reinterpret_cast<UnifiedMemoryManager*>(new char[sizeof(UnifiedMemoryManager)]);
+        if (!instance_) {
+            return MMVoidResult{MMError::OperationFailed};
+        }
         new (instance_) UnifiedMemoryManager(config);
     }
     initialized_ = true;
     return MMVoidResult{};
 }
 
-// 系统关闭
+// 系统关闭 — properly destroy and free
 void UnifiedMemoryManager::shutdown_system() noexcept {
     initialized_ = false;
-    instance_ = nullptr;
+    if (instance_) {
+        instance_->~UnifiedMemoryManager();
+        delete[] reinterpret_cast<char*>(instance_);
+        instance_ = nullptr;
+    }
 }
 
 // 检查系统是否已初始化
@@ -79,27 +86,40 @@ bool UnifiedMemoryManager::is_system_initialized() noexcept {
     return initialized_;
 }
 
-// 主要内存分配接口
+// 主要内存分配接口 — delegates to RuntimeHeapAllocator
 MMResult<moss::kernel::VirtAddr> UnifiedMemoryManager::allocate(const MemoryRequest& request) noexcept {
-    // 简化实现：使用现有的页面分配器
-    // TODO: 集成所有子系统
-    [[maybe_unused]] auto pages_needed = (request.size + moss::kernel::PAGE_SIZE - 1) / moss::kernel::PAGE_SIZE;
+    if (request.size == 0) {
+        return MMResult<moss::kernel::VirtAddr>{MMError::OperationFailed};
+    }
 
-    // 这里应该调用底层页面分配器
-    // 暂时返回错误，表示未实现
-    return MMResult<moss::kernel::VirtAddr>{MMError::OperationFailed};
+    auto result = RuntimeHeapAllocator::allocate_aligned(request.size, request.alignment);
+    if (!result) {
+        return MMResult<moss::kernel::VirtAddr>{MMError::OperationFailed};
+    }
+
+    return MMResult<moss::kernel::VirtAddr>{reinterpret_cast<moss::kernel::VirtAddr>(*result)};
 }
 
-// 内存释放
-MMVoidResult UnifiedMemoryManager::free([[maybe_unused]] moss::kernel::VirtAddr address) noexcept {
-    // 简化实现
-    // TODO: 实现内存释放逻辑
+// 内存释放 — delegates to RuntimeHeapAllocator
+MMVoidResult UnifiedMemoryManager::free(moss::kernel::VirtAddr address) noexcept {
+    if (address == 0) {
+        return MMVoidResult{};
+    }
+    auto result = RuntimeHeapAllocator::deallocate(reinterpret_cast<void*>(address), 0);
+    if (!result) {
+        return MMVoidResult{MMError::OperationFailed};
+    }
     return MMVoidResult{};
 }
 
-MMVoidResult UnifiedMemoryManager::free([[maybe_unused]] moss::kernel::VirtAddr address, [[maybe_unused]] moss::kernel::usize size) noexcept {
-    // 简化实现
-    // TODO: 实现带大小的内存释放
+MMVoidResult UnifiedMemoryManager::free(moss::kernel::VirtAddr address, moss::kernel::usize size) noexcept {
+    if (address == 0) {
+        return MMVoidResult{};
+    }
+    auto result = RuntimeHeapAllocator::deallocate(reinterpret_cast<void*>(address), size);
+    if (!result) {
+        return MMVoidResult{MMError::OperationFailed};
+    }
     return MMVoidResult{};
 }
 
@@ -207,8 +227,12 @@ MMResult<MemoryLeakDetector::LeakReport> UnifiedMemoryManager::generate_leak_rep
     return MMResult<MemoryLeakDetector::LeakReport>{report};
 }
 
-// 单例访问
+// 单例访问 — caller must check is_system_initialized() first;
+// crash immediately on null dereference is preferable to silent corruption.
 UnifiedMemoryManager& UnifiedMemoryManager::get_instance() noexcept {
+    if (!instance_) {
+        moss::kernel::arch::kernel_panic("UnifiedMemoryManager::get_instance() called before initialize_system()");
+    }
     return *instance_;
 }
 

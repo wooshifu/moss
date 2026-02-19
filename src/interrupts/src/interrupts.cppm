@@ -62,19 +62,19 @@ struct InterruptDescriptor {
   u32 target_cpu_mask;
   InterruptHandler handler;
   void *context;
-  u64 count;
+  containers::AtomicU64 count;
   bool enabled;
   const char *name;
 
   InterruptDescriptor() noexcept
       : irq(0), type(InterruptType::SPI), trigger(TriggerType::LevelHigh),
         priority(128), target_cpu_mask(1), handler(nullptr), context(nullptr),
-        count(0), enabled(false), name(nullptr) {}
+        count{}, enabled(false), name(nullptr) {}
 
   InterruptDescriptor(InterruptId id, InterruptHandler h, void *ctx,
                       const char *n) noexcept
       : irq(id), type(determine_type(id)), trigger(TriggerType::LevelHigh),
-        priority(128), target_cpu_mask(1), handler(h), context(ctx), count(0),
+        priority(128), target_cpu_mask(1), handler(h), context(ctx), count{},
         enabled(false), name(n) {}
 
 private:
@@ -100,6 +100,7 @@ private:
   u32 max_cpus_;
 
   containers::RcuHashMap<InterruptId, InterruptDescriptor *> interrupt_table_;
+  containers::IrqSpinLock table_write_lock_;  // Protects interrupt_table_ mutations
   containers::PerCpuData<u64> interrupt_counts_;
 
   containers::AtomicCounter<u64> total_interrupts_;
@@ -162,6 +163,8 @@ public:
       return VoidResult{ErrorCode::InvalidParameter};
     }
 
+    containers::LockGuard<containers::IrqSpinLock> guard(table_write_lock_);
+
     if (interrupt_table_.find(irq) != nullptr) {
       return VoidResult{ErrorCode::AlreadyExists};
     }
@@ -178,6 +181,8 @@ public:
   }
 
   [[nodiscard]] VoidResult unregister_interrupt(InterruptId irq) noexcept {
+    containers::LockGuard<containers::IrqSpinLock> guard(table_write_lock_);
+
     auto desc_ptr = interrupt_table_.find(irq);
     if (desc_ptr == nullptr) {
       return VoidResult{ErrorCode::NotFound};
@@ -288,7 +293,7 @@ public:
       InterruptDescriptor *desc = *desc_ptr;
       if (desc->handler != nullptr) {
         desc->handler(irq, desc->context);
-        desc->count++;
+        (void)desc->count.fetch_add(1, containers::MemoryOrder::Relaxed);
       }
     }
 
@@ -438,8 +443,8 @@ public:
 private:
   bool initialized_ = false;
   u32 max_cpus_ = 0;
-  u64 message_sequence_ = 0;
-  u64 total_pings_sent_ = 0;
+  containers::AtomicU64 message_sequence_;
+  containers::AtomicU64 total_pings_sent_;
 
   bool is_valid_cpu_id(u32 cpu_id) const noexcept;
   u32 get_current_cpu_id() const noexcept;
@@ -512,20 +517,18 @@ private:
   GenericInterruptController *gic_;
   bool initialized_;
   u32 max_cpus_;
-  u64 total_ipis_sent_;
-  u64 message_sequence_;
+  containers::AtomicU64 total_ipis_sent_;
+  containers::AtomicU64 message_sequence_;
 
-  u64 sgi_send_counts_[8];
-  u64 sgi_receive_counts_[8];
+  containers::AtomicU64 sgi_send_counts_[8];
+  containers::AtomicU64 sgi_receive_counts_[8];
 
 public:
   SimpleHardwareIpi() noexcept
       : gic_(nullptr), initialized_(false), max_cpus_(0),
-        total_ipis_sent_(0), message_sequence_(1000) {
-    for (u32 i = 0; i < 8; ++i) {
-      sgi_send_counts_[i] = 0;
-      sgi_receive_counts_[i] = 0;
-    }
+        total_ipis_sent_{}, message_sequence_{},
+        sgi_send_counts_{}, sgi_receive_counts_{} {
+    message_sequence_.store(1000, containers::MemoryOrder::Relaxed);
   }
 
   ~SimpleHardwareIpi() noexcept { shutdown(); }

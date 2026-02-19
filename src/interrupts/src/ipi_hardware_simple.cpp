@@ -32,7 +32,7 @@ VoidResult SimpleHardwareIpi::initialize(GenericInterruptController *gic,
 
   gic_ = gic;
   max_cpus_ = max_cpus;
-  message_sequence_ = 1;
+  message_sequence_.store(1, containers::MemoryOrder::Relaxed);
 
   log::klog::info("Hardware IPI system initializing...");
 
@@ -111,9 +111,9 @@ IpiResult SimpleHardwareIpi::send_ipi(u32 target_cpu, IpiType type) noexcept {
 
   u8 sgi_index = static_cast<u8>(sgi_id);
   if (sgi_index < 8) {
-    sgi_send_counts_[sgi_index]++;
+    (void)sgi_send_counts_[sgi_index].fetch_add(1, containers::MemoryOrder::Relaxed);
   }
-  total_ipis_sent_++;
+  (void)total_ipis_sent_.fetch_add(1, containers::MemoryOrder::Relaxed);
 
   return IpiResult::Success;
 }
@@ -133,8 +133,8 @@ IpiResult SimpleHardwareIpi::ping_cpus(u32 cpu_mask) noexcept {
   }
 
   u32 cpu_count = static_cast<u32>(__builtin_popcount(cpu_mask));
-  sgi_send_counts_[static_cast<u8>(IpiSgiId::Ping)] += cpu_count;
-  total_ipis_sent_ += cpu_count;
+  (void)sgi_send_counts_[static_cast<u8>(IpiSgiId::Ping)].fetch_add(cpu_count, containers::MemoryOrder::Relaxed);
+  (void)total_ipis_sent_.fetch_add(cpu_count, containers::MemoryOrder::Relaxed);
 
   return IpiResult::Success;
 }
@@ -182,7 +182,7 @@ u32 SimpleHardwareIpi::get_current_cpu_id() noexcept {
 }
 
 u64 SimpleHardwareIpi::generate_sequence() noexcept {
-  return message_sequence_++;
+  return message_sequence_.fetch_add(1, containers::MemoryOrder::Relaxed);
 }
 
 // === Statistics ===
@@ -190,10 +190,10 @@ u64 SimpleHardwareIpi::generate_sequence() noexcept {
 SimpleHardwareIpi::Statistics
 SimpleHardwareIpi::get_statistics() const noexcept {
   Statistics stats{};
-  stats.total_sent = total_ipis_sent_;
-  stats.ping_count = sgi_send_counts_[static_cast<u8>(IpiSgiId::Ping)];
+  stats.total_sent = total_ipis_sent_.load(containers::MemoryOrder::Relaxed);
+  stats.ping_count = sgi_send_counts_[static_cast<u8>(IpiSgiId::Ping)].load(containers::MemoryOrder::Relaxed);
   stats.reschedule_count =
-      sgi_send_counts_[static_cast<u8>(IpiSgiId::Reschedule)];
+      sgi_send_counts_[static_cast<u8>(IpiSgiId::Reschedule)].load(containers::MemoryOrder::Relaxed);
   stats.max_cpus = max_cpus_;
   stats.initialized = initialized_;
   return stats;

@@ -22,8 +22,8 @@ VoidResult SimpleInterProcessorInterrupt::initialize(u32 max_cpus) noexcept {
   }
 
   max_cpus_ = max_cpus;
-  message_sequence_ = 0;
-  total_pings_sent_ = 0;
+  message_sequence_.store(0, containers::MemoryOrder::Relaxed);
+  total_pings_sent_.store(0, containers::MemoryOrder::Relaxed);
   initialized_ = true;
 
   log::klog::info("IPI simple subsystem initialized");
@@ -44,10 +44,10 @@ IpiResult SimpleInterProcessorInterrupt::send_ipi(u32 target_cpu,
   IpiMessage msg{.type = type,
                  .source_cpu = get_current_cpu_id(),
                  .target_cpu = target_cpu,
-                 .sequence = message_sequence_++};
+                 .sequence = message_sequence_.fetch_add(1, containers::MemoryOrder::Relaxed)};
 
   if (type == IpiType::Ping) {
-    total_pings_sent_++;
+    (void)total_pings_sent_.fetch_add(1, containers::MemoryOrder::Relaxed);
   }
 
   (void)msg;
@@ -86,7 +86,7 @@ SimpleInterProcessorInterrupt::get_system_info() const noexcept {
   SystemInfo info{};
   info.initialized = initialized_;
   info.max_cpus = max_cpus_;
-  info.total_pings_sent = total_pings_sent_;
+  info.total_pings_sent = total_pings_sent_.load(containers::MemoryOrder::Relaxed);
   return info;
 }
 

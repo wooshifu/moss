@@ -5,4 +5,4 @@ target_sources(moss_timer
     src/timer.cppm
 )
 
-target_link_libraries(moss_timer PRIVATE moss_core moss_aal moss_platform moss_hal_timer)
+target_link_libraries(moss_timer PRIVATE moss_core moss_aal moss_platform moss_hal_timer moss_containers)

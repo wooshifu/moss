@@ -235,7 +235,8 @@ extern "C" void mark_cpu_online(u32 cpu_id) noexcept {
     if (cpu_id < moss::kernel::MAX_CPUS) {
         g_cpu_topology.cpu_states[cpu_id] = CpuState::Online;
         g_cpu_topology.boot_timestamps[cpu_id] = 0;
-        g_cpu_topology.online_cpus++;
+        // Atomic increment: called concurrently from multiple secondary CPUs
+        __atomic_fetch_add(&g_cpu_topology.online_cpus, 1, __ATOMIC_RELAXED);
     }
 }
 
@@ -457,7 +458,7 @@ void activate_secondary_cpus() noexcept {
         }
     }
 
-    g_cpu_topology.online_cpus = 1 + successfully_activated;
+    __atomic_store_n(&g_cpu_topology.online_cpus, 1 + successfully_activated, __ATOMIC_RELAXED);
 }
 
 u32 wait_for_all_cpus_active(u32 timeout_ms) noexcept {

@@ -391,7 +391,8 @@ void PageFrameAllocator::page_ref_inc(PhysAddr addr) noexcept {
     if (!page_metadata_ || !memory_regions_) return;
     usize idx = addr_to_page(addr - memory_regions_->start_addr);
     if (idx < total_pages_) {
-        (void)page_metadata_[idx].ref_count.fetch_add(1);
+        // AcqRel: inc must be visible before any access to the shared page
+        (void)page_metadata_[idx].ref_count.fetch_add(1, containers::MemoryOrder::AcqRel);
     }
 }
 
@@ -399,7 +400,9 @@ u32 PageFrameAllocator::page_ref_dec(PhysAddr addr) noexcept {
     if (!page_metadata_ || !memory_regions_) return 0;
     usize idx = addr_to_page(addr - memory_regions_->start_addr);
     if (idx < total_pages_) {
-        return page_metadata_[idx].ref_count.fetch_sub(1) - 1;
+        // AcqRel: dec must synchronize-with the last inc; when result==0 the
+        // caller frees the page — Acquire ensures all prior writes are visible.
+        return page_metadata_[idx].ref_count.fetch_sub(1, containers::MemoryOrder::AcqRel) - 1;
     }
     return 0;
 }
@@ -408,7 +411,9 @@ u32 PageFrameAllocator::page_ref_get(PhysAddr addr) noexcept {
     if (!page_metadata_ || !memory_regions_) return 0;
     usize idx = addr_to_page(addr - memory_regions_->start_addr);
     if (idx < total_pages_) {
-        return page_metadata_[idx].ref_count.load(containers::MemoryOrder::Relaxed);
+        // Acquire: reading refcount to decide COW copy vs in-place write —
+        // must see all prior increments to avoid premature free.
+        return page_metadata_[idx].ref_count.load(containers::MemoryOrder::Acquire);
     }
     return 0;
 }
