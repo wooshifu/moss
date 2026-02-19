@@ -26,6 +26,13 @@ inline constexpr long EINVAL      = 22;  // Invalid argument
 inline constexpr long ENOSYS      = 38;  // Function not implemented
 } // namespace Errno
 
+// Standard POSIX file descriptor numbers
+namespace Fd {
+inline constexpr long STDIN  = 0;
+inline constexpr long STDOUT = 1;
+inline constexpr long STDERR = 2;
+} // namespace Fd
+
 // Syscall number enumeration - grouped by functionality
 enum class SyscallNumber : long {
     // === Basic syscalls (0-9) ===

@@ -93,7 +93,7 @@ KernelResult<ThreadId> Process::create_thread(VirtAddr entry_point,
 
     // Enqueue new thread into scheduler run queue
     if (g_scheduler != nullptr) {
-        u32 cpu = 0; // TODO: select target CPU via load balancer
+        u32 cpu = arch::get_current_cpu_id();
         g_scheduler->enqueue_task(thread, cpu);
         log::klog::info("thread enqueued TID={} PID={} cpu={}", static_cast<u32>(tid), pid_, cpu);
     }
@@ -333,8 +333,7 @@ KernelResult<VirtAddr> allocate_user_heap(Process* process, usize size) noexcept
 
     AddressSpace* as = process->address_space();
 
-    // 简化实现：固定分配在4GB处
-    VirtAddr heap_addr = 0x100000000ULL; // 4GB
+    VirtAddr heap_addr = UserLayout::HEAP_START;
 
     // TODO: 实现真正的内存分配和映射
     // 现在只是创建VMA区域
@@ -398,7 +397,7 @@ KernelResult<VirtAddr> allocate_user_heap(Process* process, usize size) noexcept
                         [](void* thread_ptr) {
                             auto* t = static_cast<Thread*>(thread_ptr);
                             t->state = ProcessState::Ready;
-                            if (g_scheduler) g_scheduler->enqueue_task(t, 0);
+                            if (g_scheduler) g_scheduler->enqueue_task(t, t->wake_cpu);
                         });
                 }
             }
@@ -416,7 +415,7 @@ KernelResult<VirtAddr> allocate_user_heap(Process* process, usize size) noexcept
             [](void* thread_ptr) {
                 auto* t = static_cast<Thread*>(thread_ptr);
                 t->state = ProcessState::Ready;
-                if (g_scheduler) g_scheduler->enqueue_task(t, 0);
+                if (g_scheduler) g_scheduler->enqueue_task(t, t->wake_cpu);
             });
     }
 
