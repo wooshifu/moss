@@ -178,6 +178,25 @@ ThreadId Process::allocate_thread_id() noexcept {
 }
 
 
+ProcessId Process::find_zombie_child(i64 wait_pid) const noexcept {
+    ProcessId found = INVALID_PROCESS_ID;
+
+    children_.for_each([&](ProcessId child_pid) {
+        if (found != INVALID_PROCESS_ID) return; // Already found one
+
+        Process* child = g_process_manager->find_process(child_pid);
+        if (!child) return;
+
+        if (child->state() != ProcessState::Zombie) return;
+
+        if (wait_pid == -1 || static_cast<ProcessId>(wait_pid) == child_pid) {
+            found = child_pid;
+        }
+    });
+
+    return found;
+}
+
 // ProcessManager类方法实现
 KernelResult<Process*> ProcessManager::create_process(ProcessId parent_pid) noexcept {
     ProcessId new_pid = allocate_pid();

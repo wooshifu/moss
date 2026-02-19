@@ -1111,6 +1111,72 @@ private:
   }
 };
 
+// ============================================================================
+// WaitQueue — generic blocking primitive for process synchronization
+// ============================================================================
+
+// WaitQueue entry: holds a raw pointer to a blocked thread.
+// Thread* is an opaque pointer here — the actual Thread type is defined
+// in moss.process. WaitQueue only stores/retrieves the pointer; the
+// sleep()/wake logic that calls scheduler APIs lives in kernel module
+// bridge functions.
+struct WaitQueueEntry {
+    void* thread;   // Actually Thread*, but opaque to avoid module cycle
+
+    WaitQueueEntry() noexcept : thread(nullptr) {}
+    explicit WaitQueueEntry(void* t) noexcept : thread(t) {}
+
+    bool operator==(const WaitQueueEntry& other) const noexcept {
+        return thread == other.thread;
+    }
+};
+
+// WaitQueue: a list of threads waiting for an event.
+// Data structure only — actual sleep/wake logic requires scheduler access,
+// so it is implemented as bridge functions in the kernel module.
+class WaitQueue {
+private:
+    RcuList<WaitQueueEntry> waiters_;
+
+public:
+    constexpr WaitQueue() noexcept = default;
+
+    WaitQueue(const WaitQueue&) = delete;
+    WaitQueue& operator=(const WaitQueue&) = delete;
+    WaitQueue(WaitQueue&&) = delete;
+    WaitQueue& operator=(WaitQueue&&) = delete;
+
+    // Add a thread to the wait queue
+    void add_waiter(void* thread) {
+        waiters_.push_front(WaitQueueEntry(thread));
+    }
+
+    // Remove a specific thread from the wait queue
+    void remove_waiter(void* thread) {
+        RcuReadLock lock;
+        waiters_.remove(WaitQueueEntry(thread));
+    }
+
+    // Iterate over all waiters and call func(void* thread) for each.
+    // The kernel module uses this to set state=Ready and enqueue each thread.
+    template <typename Func>
+    void for_each_waiter(Func func) const {
+        waiters_.for_each([&func](const WaitQueueEntry& entry) {
+            func(entry.thread);
+        });
+    }
+
+    // Check if any threads are waiting
+    [[nodiscard]] bool has_waiters() const noexcept {
+        return !waiters_.empty();
+    }
+
+    // Clear all waiters (used during teardown)
+    void clear() {
+        waiters_.clear();
+    }
+};
+
 // RCU-protected hash map
 template <typename Key, typename Value, moss::kernel::usize BucketCount = 256>
 class RcuHashMap {

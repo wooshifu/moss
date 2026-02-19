@@ -8,6 +8,9 @@ module;
 
 // extern "C" declarations in global module fragment
 extern "C" void early_debug_print(const char *message) noexcept;
+#if defined(__aarch64__) || defined(MOSS_ARCH_ARM64)
+extern "C" void context_switch(void* prev_context, void* next_context);
+#endif
 
 module moss.kernel;
 
@@ -34,7 +37,6 @@ namespace handlers {
 
         log::klog::info("sys_exit: exit_code={}", exit_code);
 
-        // Identify the calling process from the per-CPU current_task
         Thread *cur = CfsScheduler::get_current_task();
         if (!cur) {
             log::klog::error("sys_exit: no current thread");
@@ -44,20 +46,20 @@ namespace handlers {
         ProcessId pid = cur->owner_pid;
         log::klog::info("sys_exit: PID={} TID={}", pid, static_cast<u32>(cur->tid));
 
-        // CRITICAL: Mark terminated BEFORE dequeue so that scheduler_tick()
-        // (which may fire on this or another CPU) will not re-enqueue the
-        // task into the CFS runqueue after we remove it.
-        cur->state = ProcessState::Terminated;
+        Process *proc = g_process_manager
+            ? g_process_manager->find_process(pid) : nullptr;
+        if (!proc) {
+            log::klog::error("sys_exit: process not found PID={}", pid);
+            while (true) { ::moss::kernel::arch::cpu_yield(); }
+        }
 
-        // Dequeue this thread from the scheduler so it won't be picked again
+        // 1. Mark thread terminated BEFORE dequeue (prevents re-enqueue by scheduler_tick)
+        cur->state = ProcessState::Terminated;
         if (g_scheduler) {
             g_scheduler->dequeue_task(cur);
         }
 
-        // Restore TTBR0 to the kernel identity-mapped PGD BEFORE
-        // terminate_process. The destructor frees user page tables, and the
-        // kernel runs under TTBR0 identity mapping — freeing the current PGD
-        // while TTBR0 still points to it would fault immediately.
+        // 2. Restore TTBR0 to kernel PGD BEFORE freeing user page tables
 #if defined(__aarch64__) || defined(MOSS_ARCH_ARM64)
         {
             auto *kpgd = mm::PageTableManager::get_kernel_pgd();
@@ -70,41 +72,75 @@ namespace handlers {
         }
 #endif
 
-        // Terminate the process in ProcessManager (marks + removes from table)
-        // The destructor will free user page tables (safe now — TTBR0 restored).
-        if (g_process_manager) {
-            auto result = g_process_manager->terminate_process(pid, static_cast<i32>(exit_code));
-            if (!result) {
-                log::klog::warn("sys_exit: terminate_process failed (PID={}), continuing", pid);
-            } else {
-                log::klog::info("sys_exit: process PID={} terminated", pid);
-            }
+        // 3. Free user page tables (keeps Process object alive for Zombie)
+        auto *as = proc->address_space();
+        if (as && as->pgd_phys != 0) {
+            mm::PageTableManager::free_user_page_tables(as->pgd_phys);
+            as->pgd_phys = 0;   // prevent double-free in ~Process
         }
 
-        // CRITICAL: sys_exit must NEVER return to userspace.
-        // The process context is dead — eret would jump to invalid memory.
-        // Hand control to the scheduler to pick the next runnable task.
+        // 4. Reparent children to init (PID 1)
+        Process *init_proc = g_process_manager->find_process(1);
+        proc->for_each_child([&](ProcessId child_pid) {
+            Process *child = g_process_manager->find_process(child_pid);
+            if (child) {
+                child->set_parent_pid(1);
+                if (init_proc) {
+                    init_proc->add_child(child_pid);
+                    // If child is already zombie, wake init's waiters
+                    if (child->state() == ProcessState::Zombie) {
+                        init_proc->child_exit_wait_queue().for_each_waiter(
+                            [](void* thread_ptr) {
+                                auto* t = static_cast<Thread*>(thread_ptr);
+                                t->state = ProcessState::Ready;
+                                if (g_scheduler) g_scheduler->enqueue_task(t, 0);
+                            });
+                    }
+                }
+            }
+        });
+
+        // 5. Transition to Zombie state (Process stays in process table)
+        proc->set_exit_code(static_cast<i32>(exit_code));
+        proc->set_state(ProcessState::Zombie);
+
+        // 6. Wake parent's wait queue so waitpid() can collect us
+        Process *parent = g_process_manager->find_process(proc->parent_pid());
+        if (parent) {
+            parent->child_exit_wait_queue().for_each_waiter(
+                [](void* thread_ptr) {
+                    auto* t = static_cast<Thread*>(thread_ptr);
+                    t->state = ProcessState::Ready;
+                    if (g_scheduler) g_scheduler->enqueue_task(t, 0);
+                });
+        }
+
+        log::klog::info("sys_exit: PID={} -> Zombie, exit_code={}", pid, exit_code);
+
+        // 7. Hand control to scheduler (never returns)
         if (g_scheduler) {
             g_scheduler->schedule_after_exit();
-            // [[noreturn]] — never reaches here
         }
 
-        // Fallback: no scheduler, just halt
-        while (true) {
-            ::moss::kernel::arch::cpu_yield();
-        }
+        while (true) { ::moss::kernel::arch::cpu_yield(); }
     }
 
     long sys_getpid(long, long, long, long, long, long) noexcept {
-        // TODO: 从进程管理器获取当前进程ID
-        // 临时返回固定值 1
-        return 1;
+        using namespace moss::kernel::process;
+        Thread *cur = CfsScheduler::get_current_task();
+        if (!cur) return -1;
+        return static_cast<long>(cur->owner_pid);
     }
 
     long sys_getppid(long, long, long, long, long, long) noexcept {
-        // TODO: 从进程管理器获取父进程ID
-        // 临时返回固定值 0 (init进程)
-        return 0;
+        using namespace moss::kernel::process;
+        Thread *cur = CfsScheduler::get_current_task();
+        if (!cur) return -1;
+        Process *proc = g_process_manager
+            ? g_process_manager->find_process(cur->owner_pid)
+            : nullptr;
+        if (!proc) return -1;
+        return static_cast<long>(proc->parent_pid());
     }
 
     long sys_getuid(long, long, long, long, long, long) noexcept {
@@ -180,11 +216,10 @@ namespace handlers {
         }
 #endif
 
-        // 7. Copy VMAs from parent to child
-        for (u32 i = 0; i < parent_as->vma_count; i++) {
-            child_as->vmas[i] = parent_as->vmas[i];
-        }
-        child_as->vma_count = parent_as->vma_count;
+        // 7. Copy VMAs from parent to child via RcuList iteration
+        parent_as->vmas.for_each([&child_as](const process::VmaRegion& vma) {
+            child_as->vmas.push_front(vma);
+        });
 
         // 8. Bind address space to child process
         auto set_result = child_proc->set_address_space(moss::move(child_as));
@@ -237,7 +272,10 @@ namespace handlers {
         child_thread->kernel_stack_base = static_cast<VirtAddr>(kstack_phys);
         child_thread->kernel_stack_size = KERNEL_STACK_SIZE;
 
-        // 12. Enqueue child into scheduler
+        // 12. Register child in parent's children list (for waitpid)
+        parent_proc->add_child(child_proc->pid());
+
+        // 13. Enqueue child into scheduler
         child_proc->set_state(ProcessState::Running);
         if (g_scheduler) {
             g_scheduler->enqueue_task(child_thread, 0);
@@ -248,7 +286,7 @@ namespace handlers {
                         static_cast<u32>(child_tid), child_proc->address_space()->pgd_phys,
                         child_proc->address_space()->asid);
 
-        // 13. Parent returns child PID
+        // 14. Parent returns child PID
         return static_cast<long>(child_proc->pid());
     }
 
@@ -257,9 +295,116 @@ namespace handlers {
         return -38; // ENOSYS
     }
 
-    long sys_wait4(long, long, long, long, long, long) noexcept {
-        early_debug_print("📋 系统调用: wait4() - 尚未实现\n");
-        return -38; // ENOSYS
+    // wait4(pid, wstatus, options, rusage) — wait for child process state change
+    // pid > 0: wait for specific child
+    // pid == -1: wait for any child
+    // options: WNOHANG (1) = return immediately if no child has exited
+    long sys_wait4(long wait_pid, long wstatus_addr, long options, long, long, long) noexcept {
+        using namespace moss::kernel::process;
+        namespace log = moss::kernel::logging;
+
+        constexpr long WNOHANG = 1;
+        constexpr long ECHILD = -10;
+
+        Thread *cur = CfsScheduler::get_current_task();
+        if (!cur) return -22; // EINVAL
+
+        Process *proc = g_process_manager
+            ? g_process_manager->find_process(cur->owner_pid)
+            : nullptr;
+        if (!proc) return -22;
+
+        // Must have children
+        if (!proc->has_children()) {
+            return ECHILD;
+        }
+
+        while (true) {
+            // Scan for matching zombie child
+            ProcessId zombie_pid = proc->find_zombie_child(wait_pid);
+
+            if (zombie_pid != INVALID_PROCESS_ID) {
+                // Found a zombie — reap it
+                Process *zombie = g_process_manager->find_process(zombie_pid);
+                if (!zombie) {
+                    // Race: already reaped by another thread, retry
+                    continue;
+                }
+
+                i32 child_exit_code = zombie->exit_code();
+                ProcessId result_pid = zombie->pid();
+
+                // Remove from parent's children list
+                proc->remove_child(zombie_pid);
+
+                // Remove from process table and free Process object
+                // terminate_process sets Terminated + removes from table + release()
+                (void)g_process_manager->terminate_process(zombie_pid, child_exit_code);
+
+                // Write status to user space if pointer is non-null
+                // Linux WEXITSTATUS encoding: (exit_code & 0xFF) << 8
+                if (wstatus_addr != 0) {
+                    auto *wstatus_ptr = reinterpret_cast<int*>(
+                        static_cast<unsigned long long>(wstatus_addr));
+                    *wstatus_ptr = (static_cast<int>(child_exit_code) & 0xFF) << 8;
+                }
+
+                log::klog::info("sys_wait4: reaped PID={} exit_code={}", result_pid, child_exit_code);
+                return static_cast<long>(result_pid);
+            }
+
+            // No zombie found
+            // Check if specified PID is actually a child
+            if (wait_pid > 0 && !proc->is_child(static_cast<ProcessId>(wait_pid))) {
+                return ECHILD;
+            }
+
+            // WNOHANG: non-blocking, return 0
+            if (options & WNOHANG) {
+                return 0;
+            }
+
+            // Block: add self to wait queue, set Blocked, dequeue from scheduler.
+            // When a child calls sys_exit, it wakes all waiters on parent's WQ,
+            // setting them back to Ready and re-enqueueing them.  The thread
+            // then resumes here (after being re-dispatched by scheduler_tick's
+            // context_switch) and loops back to rescan for zombies.
+            log::klog::info("sys_wait4: PID={} blocking on child exit", cur->owner_pid);
+
+            proc->child_exit_wait_queue().add_waiter(static_cast<void*>(cur));
+            cur->state = ProcessState::Blocked;
+            if (g_scheduler) {
+                g_scheduler->dequeue_task(cur);
+            }
+
+            // Yield CPU: switch to bootstrap context, let scheduler pick next task.
+            // When this thread is woken (state=Ready, re-enqueued), scheduler_tick
+            // will context_switch back and we resume after this point.
+#if defined(MOSS_ARCH_ARM64)
+            {
+                u32 cpu = arch::get_current_cpu_id();
+                CpuContext *my_ctx = &cur->context;
+                CpuContext *bootstrap = &CfsScheduler::bootstrap_context(cpu);
+
+                CfsScheduler::set_current_task(nullptr);
+                arch::disable_interrupts();
+                context_switch(my_ctx, bootstrap);
+                arch::enable_interrupts();
+            }
+#endif
+            // Resumed — remove self from wait queue and rescan
+            proc->child_exit_wait_queue().remove_waiter(static_cast<void*>(cur));
+
+            // Check we still have children (might have been reaped by another thread)
+            if (!proc->has_children()) {
+                return ECHILD;
+            }
+        }
+    }
+
+    // waitpid(pid, wstatus, options) — thin wrapper over wait4
+    long sys_waitpid(long pid, long wstatus, long options, long, long, long) noexcept {
+        return sys_wait4(pid, wstatus, options, 0, 0, 0);
     }
 
     long sys_kill(long, long, long, long, long, long) noexcept {
@@ -376,8 +521,8 @@ const SyscallDescriptor SYSCALL_TABLE[static_cast<int>(SyscallNumber::MAX_SYSCAL
     // === 进程管理 (10-29) ===
     {"fork", handlers::sys_fork, 0, true, "创建子进程"},
     {"execve", handlers::sys_execve, 3, false, "执行程序"},
-    {"wait4", handlers::sys_wait4, 4, false, "等待子进程"},
-    {"waitpid", handlers::sys_not_implemented, 3, false, "等待指定进程"},
+    {"wait4", handlers::sys_wait4, 4, true, "等待子进程"},
+    {"waitpid", handlers::sys_waitpid, 3, true, "等待指定进程"},
     {"kill", handlers::sys_kill, 2, false, "发送信号"},
     {"sigaction", handlers::sys_not_implemented, 3, false, "信号处理设置"},
     {"sigprocmask", handlers::sys_not_implemented, 3, false, "信号掩码操作"},
