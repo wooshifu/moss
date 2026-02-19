@@ -408,9 +408,9 @@ void ElfLoader::print_loaded_program(const LoadedProgram& program) noexcept {
 
 u32 ElfLoader::elf_flags_to_memory_flags(u32 elf_flags) noexcept {
     u32 mem_flags = 0;
-    if (elf_flags & PF_R) mem_flags |= 0x1;
-    if (elf_flags & PF_W) mem_flags |= 0x2;
-    if (elf_flags & PF_X) mem_flags |= 0x4;
+    if (elf_flags & PF_R) mem_flags |= process::VmaFlags::READ;
+    if (elf_flags & PF_W) mem_flags |= process::VmaFlags::WRITE;
+    if (elf_flags & PF_X) mem_flags |= process::VmaFlags::EXEC;
     return mem_flags;
 }
 

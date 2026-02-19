@@ -28,7 +28,7 @@ namespace handlers {
             early_debug_print(reinterpret_cast<const char*>(arg0));
             return 0;
         }
-        return -1; // EINVAL
+        return -Errno::EINVAL;
     }
 
     long sys_exit(long exit_code, long, long, long, long, long) noexcept {
@@ -53,93 +53,25 @@ namespace handlers {
             while (true) { ::moss::kernel::arch::cpu_yield(); }
         }
 
-        // 1. Mark thread terminated BEFORE dequeue (prevents re-enqueue by scheduler_tick)
-        cur->state = ProcessState::Terminated;
-        if (g_scheduler) {
-            g_scheduler->dequeue_task(cur);
-        }
-
-        // 2. Restore TTBR0 to kernel PGD BEFORE freeing user page tables
-#if defined(__aarch64__) || defined(MOSS_ARCH_ARM64)
-        {
-            auto *kpgd = mm::PageTableManager::get_kernel_pgd();
-            if (kpgd) {
-                u64 kpgd_phys = mm::PageTableManager::get_physical_address(kpgd);
-                asm volatile("msr ttbr0_el1, %0" :: "r"(kpgd_phys));
-                asm volatile("dsb ish" ::: "memory");
-                asm volatile("isb" ::: "memory");
-            }
-        }
-#endif
-
-        // 3. Free user page tables (keeps Process object alive for Zombie)
-        auto *as = proc->address_space();
-        if (as && as->pgd_phys != 0) {
-            mm::PageTableManager::free_user_page_tables(as->pgd_phys);
-            as->pgd_phys = 0;   // prevent double-free in ~Process
-        }
-
-        // 4. Reparent children to init (PID 1)
-        Process *init_proc = g_process_manager->find_process(1);
-        proc->for_each_child([&](ProcessId child_pid) {
-            Process *child = g_process_manager->find_process(child_pid);
-            if (child) {
-                child->set_parent_pid(1);
-                if (init_proc) {
-                    init_proc->add_child(child_pid);
-                    // If child is already zombie, wake init's waiters
-                    if (child->state() == ProcessState::Zombie) {
-                        init_proc->child_exit_wait_queue().for_each_waiter(
-                            [](void* thread_ptr) {
-                                auto* t = static_cast<Thread*>(thread_ptr);
-                                t->state = ProcessState::Ready;
-                                if (g_scheduler) g_scheduler->enqueue_task(t, 0);
-                            });
-                    }
-                }
-            }
-        });
-
-        // 5. Transition to Zombie state (Process stays in process table)
-        proc->set_exit_code(static_cast<i32>(exit_code));
-        proc->set_state(ProcessState::Zombie);
-
-        // 6. Wake parent's wait queue so waitpid() can collect us
-        Process *parent = g_process_manager->find_process(proc->parent_pid());
-        if (parent) {
-            parent->child_exit_wait_queue().for_each_waiter(
-                [](void* thread_ptr) {
-                    auto* t = static_cast<Thread*>(thread_ptr);
-                    t->state = ProcessState::Ready;
-                    if (g_scheduler) g_scheduler->enqueue_task(t, 0);
-                });
-        }
-
-        log::klog::info("sys_exit: PID={} -> Zombie, exit_code={}", pid, exit_code);
-
-        // 7. Hand control to scheduler (never returns)
-        if (g_scheduler) {
-            g_scheduler->schedule_after_exit();
-        }
-
-        while (true) { ::moss::kernel::arch::cpu_yield(); }
+        // Delegate to shared Zombie transition (never returns)
+        do_exit(cur, proc, static_cast<i32>(exit_code));
     }
 
     long sys_getpid(long, long, long, long, long, long) noexcept {
         using namespace moss::kernel::process;
         Thread *cur = CfsScheduler::get_current_task();
-        if (!cur) return -1;
+        if (!cur) return -Errno::ESRCH;
         return static_cast<long>(cur->owner_pid);
     }
 
     long sys_getppid(long, long, long, long, long, long) noexcept {
         using namespace moss::kernel::process;
         Thread *cur = CfsScheduler::get_current_task();
-        if (!cur) return -1;
+        if (!cur) return -Errno::ESRCH;
         Process *proc = g_process_manager
             ? g_process_manager->find_process(cur->owner_pid)
             : nullptr;
-        if (!proc) return -1;
+        if (!proc) return -Errno::ESRCH;
         return static_cast<long>(proc->parent_pid());
     }
 
@@ -165,7 +97,7 @@ namespace handlers {
         Thread *parent_thread = CfsScheduler::get_current_task();
         if (!parent_thread) {
             log::klog::error("sys_fork: no current thread");
-            return -11; // EAGAIN
+            return -Errno::EAGAIN;
         }
 
         Process *parent_proc = g_process_manager
@@ -173,7 +105,7 @@ namespace handlers {
             : nullptr;
         if (!parent_proc || !parent_proc->address_space()) {
             log::klog::error("sys_fork: no parent process or address space");
-            return -11;
+            return -Errno::EAGAIN;
         }
 
         AddressSpace *parent_as = parent_proc->address_space();
@@ -190,7 +122,7 @@ namespace handlers {
         auto child_proc_result = g_process_manager->create_process(parent_proc->pid());
         if (!child_proc_result) {
             log::klog::error("sys_fork: create_process failed");
-            return -12; // ENOMEM
+            return -Errno::ENOMEM;
         }
         Process *child_proc = *child_proc_result;
 
@@ -198,7 +130,7 @@ namespace handlers {
         auto child_as_result = user_space::create_user_address_space();
         if (!child_as_result) {
             log::klog::error("sys_fork: create_user_address_space failed");
-            return -12;
+            return -Errno::ENOMEM;
         }
         auto child_as = moss::move(*child_as_result);
 
@@ -225,7 +157,7 @@ namespace handlers {
         auto set_result = child_proc->set_address_space(moss::move(child_as));
         if (!set_result) {
             log::klog::error("sys_fork: set_address_space failed");
-            return -12;
+            return -Errno::ENOMEM;
         }
 
         // 9. Create child thread
@@ -233,7 +165,7 @@ namespace handlers {
         auto *child_thread = new Thread(child_tid, child_proc->pid());
         if (!child_thread) {
             log::klog::error("sys_fork: thread allocation failed");
-            return -12;
+            return -Errno::ENOMEM;
         }
 
         // 10. Copy parent context → child, set return register = 0 for child
@@ -266,16 +198,19 @@ namespace handlers {
         if (!kstack_result) {
             log::klog::error("sys_fork: kernel stack alloc failed");
             delete child_thread;
-            return -12;
+            return -Errno::ENOMEM;
         }
         PhysAddr kstack_phys = *kstack_result;
         child_thread->kernel_stack_base = static_cast<VirtAddr>(kstack_phys);
         child_thread->kernel_stack_size = KERNEL_STACK_SIZE;
 
-        // 12. Register child in parent's children list (for waitpid)
+        // 12. Register child thread in child process's thread list
+        child_proc->register_thread(child_thread);
+
+        // 13. Register child in parent's children list (for waitpid)
         parent_proc->add_child(child_proc->pid());
 
-        // 13. Enqueue child into scheduler
+        // 14. Enqueue child into scheduler
         child_proc->set_state(ProcessState::Running);
         if (g_scheduler) {
             g_scheduler->enqueue_task(child_thread, 0);
@@ -286,13 +221,13 @@ namespace handlers {
                         static_cast<u32>(child_tid), child_proc->address_space()->pgd_phys,
                         child_proc->address_space()->asid);
 
-        // 14. Parent returns child PID
+        // 15. Parent returns child PID
         return static_cast<long>(child_proc->pid());
     }
 
     long sys_execve(long, long, long, long, long, long) noexcept {
         early_debug_print("📋 系统调用: execve() - 尚未实现\n");
-        return -38; // ENOSYS
+        return -Errno::ENOSYS;
     }
 
     // wait4(pid, wstatus, options, rusage) — wait for child process state change
@@ -304,19 +239,18 @@ namespace handlers {
         namespace log = moss::kernel::logging;
 
         constexpr long WNOHANG = 1;
-        constexpr long ECHILD = -10;
 
         Thread *cur = CfsScheduler::get_current_task();
-        if (!cur) return -22; // EINVAL
+        if (!cur) return -Errno::EINVAL;
 
         Process *proc = g_process_manager
             ? g_process_manager->find_process(cur->owner_pid)
             : nullptr;
-        if (!proc) return -22;
+        if (!proc) return -Errno::EINVAL;
 
         // Must have children
         if (!proc->has_children()) {
-            return ECHILD;
+            return -Errno::ECHILD;
         }
 
         while (true) {
@@ -356,7 +290,7 @@ namespace handlers {
             // No zombie found
             // Check if specified PID is actually a child
             if (wait_pid > 0 && !proc->is_child(static_cast<ProcessId>(wait_pid))) {
-                return ECHILD;
+                return -Errno::ECHILD;
             }
 
             // WNOHANG: non-blocking, return 0
@@ -397,7 +331,7 @@ namespace handlers {
 
             // Check we still have children (might have been reaped by another thread)
             if (!proc->has_children()) {
-                return ECHILD;
+                return -Errno::ECHILD;
             }
         }
     }
@@ -409,23 +343,23 @@ namespace handlers {
 
     long sys_kill(long, long, long, long, long, long) noexcept {
         early_debug_print("📋 系统调用: kill() - 尚未实现\n");
-        return -38; // ENOSYS
+        return -Errno::ENOSYS;
     }
 
     // 文件系统调用 - 框架实现
     long sys_open(long, long, long, long, long, long) noexcept {
         early_debug_print("📋 系统调用: open() - 尚未实现\n");
-        return -38; // ENOSYS
+        return -Errno::ENOSYS;
     }
 
     long sys_close(long, long, long, long, long, long) noexcept {
         early_debug_print("📋 系统调用: close() - 尚未实现\n");
-        return -38; // ENOSYS
+        return -Errno::ENOSYS;
     }
 
     long sys_read(long, long, long, long, long, long) noexcept {
         early_debug_print("📋 系统调用: read() - 尚未实现\n");
-        return -38; // ENOSYS
+        return -Errno::ENOSYS;
     }
 
     long sys_write(long fd, long buf_addr, long count, long, long, long) noexcept {
@@ -434,11 +368,11 @@ namespace handlers {
         // Currently only stdout (fd=1) and stderr (fd=2) are supported,
         // both routing to the kernel UART console.
         if (fd != 1 && fd != 2) {
-            return -9; // EBADF — bad file descriptor
+            return -Errno::EBADF;
         }
 
         if (buf_addr == 0 || count <= 0) {
-            return -22; // EINVAL
+            return -Errno::EINVAL;
         }
 
         // TODO: Proper user pointer validation. Under identity mapping (1GB
@@ -458,49 +392,49 @@ namespace handlers {
     // 内存管理系统调用
     long sys_mmap(long, long, long, long, long, long) noexcept {
         early_debug_print("📋 系统调用: mmap() - 尚未实现\n");
-        return -38; // ENOSYS
+        return -Errno::ENOSYS;
     }
 
     long sys_munmap(long, long, long, long, long, long) noexcept {
         early_debug_print("📋 系统调用: munmap() - 尚未实现\n");
-        return -38; // ENOSYS
+        return -Errno::ENOSYS;
     }
 
     long sys_mprotect(long, long, long, long, long, long) noexcept {
         early_debug_print("📋 系统调用: mprotect() - 尚未实现\n");
-        return -38; // ENOSYS
+        return -Errno::ENOSYS;
     }
 
     long sys_brk(long, long, long, long, long, long) noexcept {
         early_debug_print("📋 系统调用: brk() - 尚未实现\n");
-        return -38; // ENOSYS
+        return -Errno::ENOSYS;
     }
 
     // 网络通信系统调用 - 框架实现
     long sys_socket(long, long, long, long, long, long) noexcept {
         early_debug_print("📋 系统调用: socket() - 尚未实现\n");
-        return -38; // ENOSYS
+        return -Errno::ENOSYS;
     }
 
     long sys_bind(long, long, long, long, long, long) noexcept {
         early_debug_print("📋 系统调用: bind() - 尚未实现\n");
-        return -38; // ENOSYS
+        return -Errno::ENOSYS;
     }
 
     long sys_listen(long, long, long, long, long, long) noexcept {
         early_debug_print("📋 系统调用: listen() - 尚未实现\n");
-        return -38; // ENOSYS
+        return -Errno::ENOSYS;
     }
 
     long sys_accept(long, long, long, long, long, long) noexcept {
         early_debug_print("📋 系统调用: accept() - 尚未实现\n");
-        return -38; // ENOSYS
+        return -Errno::ENOSYS;
     }
 
     // 未实现系统调用的默认处理器
     long sys_not_implemented(long, long, long, long, long, long) noexcept {
         early_debug_print("📋 系统调用: 未知系统调用\n");
-        return -38; // ENOSYS - Function not implemented
+        return -Errno::ENOSYS;
     }
 }
 
@@ -660,7 +594,7 @@ long SyscallDispatcher::dispatch(long syscall_number, long arg0, long arg1,
     // 检查系统调用号有效性
     if (!is_valid_syscall(syscall_number)) {
         ++g_syscall_stats.invalid_syscalls;
-        return -22; // EINVAL
+        return -Errno::EINVAL;
     }
 
     const SyscallDescriptor* desc = &SYSCALL_TABLE[syscall_number];

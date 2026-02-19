@@ -216,15 +216,13 @@ struct KernelMemoryInfo {
 };
 
 KernelMemoryInfo get_kernel_memory_info(void) noexcept {
-  const auto &plat = ::moss::fdt::get_platform_info();
-  usize total = (plat.dtb_valid && plat.total_memory_size > 0)
-                    ? static_cast<usize>(plat.total_memory_size)
-                    : static_cast<usize>(::moss::kernel::platform::ram_size());
+  auto stats = ::moss::kernel::mm::PageFrameAllocator::get_memory_stats();
+  constexpr usize PS = ::moss::kernel::PAGE_SIZE;
 
-  return {.total_memory = total,
-          .free_memory = total / 2,
-          .kernel_heap_used = 16 * 1024 * 1024,
-          .user_heap_used = 0,
+  return {.total_memory = stats.total_pages * PS,
+          .free_memory = stats.free_pages * PS,
+          .kernel_heap_used = stats.kernel_pages * PS,
+          .user_heap_used = stats.used_pages * PS,
           .page_faults = 0};
 }
 
@@ -349,86 +347,16 @@ unsigned long long get_current_pgd_phys() noexcept {
     log::klog::info("terminate_user_process: PID={} TID={} exit_code={}",
                     pid, static_cast<u32>(cur->tid), exit_code);
 
-    // Unified Zombie path — same as sys_exit so parent can waitpid()
-
-    // 1. Mark thread terminated + dequeue
-    cur->state = process::ProcessState::Terminated;
-    if (process::g_scheduler) {
-        process::g_scheduler->dequeue_task(cur);
-    }
-
-    // 2. Restore TTBR0 to kernel PGD before freeing user page tables
-#if defined(MOSS_ARCH_ARM64)
-    {
-        auto *kpgd = mm::PageTableManager::get_kernel_pgd();
-        if (kpgd) {
-            u64 kpgd_phys = mm::PageTableManager::get_physical_address(kpgd);
-            asm volatile("msr ttbr0_el1, %0" :: "r"(kpgd_phys));
-            asm volatile("dsb ish" ::: "memory");
-            asm volatile("isb" ::: "memory");
-        }
-    }
-#endif
-
     process::Process *proc = process::g_process_manager
         ? process::g_process_manager->find_process(pid) : nullptr;
 
-    if (proc) {
-        // 3. Free user page tables (keep Process object alive for Zombie)
-        auto *as = proc->address_space();
-        if (as && as->pgd_phys != 0) {
-            mm::PageTableManager::free_user_page_tables(as->pgd_phys);
-            as->pgd_phys = 0;   // prevent double-free in ~Process
-        }
-
-        // 4. Reparent children to init (PID 1)
-        process::Process *init_proc = process::g_process_manager->find_process(1);
-        proc->for_each_child([&](ProcessId child_pid) {
-            process::Process *child = process::g_process_manager->find_process(child_pid);
-            if (child) {
-                child->set_parent_pid(1);
-                if (init_proc) {
-                    init_proc->add_child(child_pid);
-                    if (child->state() == process::ProcessState::Zombie) {
-                        init_proc->child_exit_wait_queue().for_each_waiter(
-                            [](void* thread_ptr) {
-                                auto* t = static_cast<process::Thread*>(thread_ptr);
-                                t->state = process::ProcessState::Ready;
-                                if (process::g_scheduler)
-                                    process::g_scheduler->enqueue_task(t, 0);
-                            });
-                    }
-                }
-            }
-        });
-
-        // 5. Transition to Zombie (Process stays in table for waitpid)
-        proc->set_exit_code(static_cast<i32>(exit_code));
-        proc->set_state(process::ProcessState::Zombie);
-
-        // 6. Wake parent's wait queue
-        process::Process *parent = process::g_process_manager->find_process(proc->parent_pid());
-        if (parent) {
-            parent->child_exit_wait_queue().for_each_waiter(
-                [](void* thread_ptr) {
-                    auto* t = static_cast<process::Thread*>(thread_ptr);
-                    t->state = process::ProcessState::Ready;
-                    if (process::g_scheduler)
-                        process::g_scheduler->enqueue_task(t, 0);
-                });
-        }
-
-        log::klog::info("terminate_user_process: PID={} -> Zombie, exit_code={}",
-                        pid, exit_code);
+    if (!proc) {
+        log::klog::panic("terminate_user_process: process not found PID={}", pid);
+        while (true) { arch::cpu_halt(); }
     }
 
-    // 7. Hand control to scheduler (never returns)
-    if (process::g_scheduler) {
-        process::g_scheduler->schedule_after_exit();
-    }
-
-    // Fallback halt
-    while (true) { arch::cpu_halt(); }
+    // Delegate to shared Zombie transition (never returns)
+    process::do_exit(cur, proc, static_cast<i32>(exit_code));
 }
 
 } // extern "C"
