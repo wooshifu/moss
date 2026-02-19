@@ -359,6 +359,7 @@ app = typer.Typer(
 
 @app.callback(invoke_without_command=True)
 def main(
+    ctx: typer.Context,
     config: Annotated[
         Optional[Path],
         typer.Option("--config", "-c", help="qemu_config.json 路径"),
@@ -369,6 +370,10 @@ def main(
     timeout: Annotated[
         Optional[int],
         typer.Option("--timeout", "-t", help="QEMU 运行超时时间（秒），超时后自动终止"),
+    ] = None,
+    qemu_args: Annotated[
+        Optional[str],
+        typer.Option("--qemu-args", help="额外的QEMU参数（用空格分隔）")
     ] = None,
 ) -> None:
     """启动 QEMU 运行 MOSS 内核
