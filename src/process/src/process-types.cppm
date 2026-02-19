@@ -473,6 +473,10 @@ public:
   // Public so that fork() and other kernel code can create threads directly.
   [[nodiscard]] static ThreadId allocate_thread_id() noexcept;
 
+  // Register an externally-created thread into this process's thread list.
+  // Used by fork() which builds a Thread manually instead of create_thread().
+  void register_thread(Thread* thread) noexcept;
+
   // ── Children tracking (for wait/waitpid) ──────────────────────────
 
   void add_child(ProcessId child_pid) {
@@ -538,10 +542,6 @@ public:
   [[nodiscard]] Process *find_process(ProcessId pid) const noexcept;
   [[nodiscard]] bool process_exists(ProcessId pid) const noexcept;
 
-  [[nodiscard]] KernelResult<ProcessId> sys_fork() noexcept;
-  [[nodiscard]] VoidResult sys_exit(i32 exit_code) noexcept;
-  [[nodiscard]] KernelResult<ProcessId> sys_wait(ProcessId pid) noexcept;
-
   [[nodiscard]] u64 total_processes() const noexcept;
   [[nodiscard]] u64 total_context_switches() const noexcept {
     return total_context_switches_;
@@ -571,12 +571,20 @@ extern ProcessManager *g_process_manager;
   return arch::get_current_cpu_id();
 }
 
+// Shared Zombie transition: tear down a dying process and hand control to the
+// scheduler.  Called by both sys_exit (syscall) and terminate_current_user_process
+// (fatal page fault bridge).  This function never returns.
+//
+// Preconditions:
+//   - `cur` is the currently running thread (will be marked Terminated)
+//   - `proc` is the Process owning `cur` (will transition to Zombie)
+//   - Caller must have already validated cur/proc are non-null
+[[noreturn]] void do_exit(Thread* cur, Process* proc, i32 exit_code) noexcept;
+
 // User address space management extensions
 namespace user_space {
 
 [[nodiscard]] KernelResult<unique_ptr<AddressSpace>> create_user_address_space() noexcept;
-
-[[nodiscard]] KernelResult<Process*> create_process_from_elf(const u8* elf_data, usize elf_size) noexcept;
 
 [[nodiscard]] VoidResult map_user_memory(AddressSpace* as, VirtAddr vaddr, PhysAddr paddr,
                           usize size, u32 flags) noexcept;
