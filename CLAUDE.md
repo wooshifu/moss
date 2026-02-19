@@ -197,3 +197,15 @@ cmake --build --preset arm64-qemu-debug --target run-qemu
 cmake --build --preset arm64-qemu-debug --target debug
 cmake --build --preset arm64-qemu-debug --target test-kernel
 ```
+
+## QEMU 调试选项
+
+**精确跟踪内核运行：**
+```bash
+./build/<preset>/run_qemu.sh --debug -- -d int,in_asm  # 显示中断和汇编指令
+```
+
+**汇编代码分析：**
+- `moss.dis` - 构建后生成的完整内核反汇编代码
+- 位置：`./build/<preset>/moss.dis`
+- 用于对照QEMU输出分析执行流程

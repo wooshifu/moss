@@ -8,7 +8,7 @@
             "inherits": "base-common",
             "displayName": "ARM64 Base Configuration",
             "cacheVariables": {
-                "CMAKE_CXX_FLAGS": "$penv{CMAKE_CXX_FLAGS} -mcpu=cortex-a57 -march=armv8-a+lse -mgeneral-regs-only -mstrict-align",
+                "CMAKE_CXX_FLAGS": "$penv{CMAKE_CXX_FLAGS} -mcpu=cortex-a57 -march=armv8-a -mgeneral-regs-only -mstrict-align",
                 "CMAKE_ASM_FLAGS": "-march=armv8-a -mno-outline-atomics",
                 "CMAKE_C_COMPILER_TARGET": "aarch64-unknown-elf",
                 "CMAKE_CXX_COMPILER_TARGET": "aarch64-unknown-elf",

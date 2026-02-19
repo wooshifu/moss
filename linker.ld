@@ -7,7 +7,9 @@
  *
  * Memory Map Overview (physical addresses):
  * ┌──────────────────────────────────────────────────────────────┐
- * │ 0x4000_0000  ┌─────────────────┐  RAM start (QEMU virt)     │
+ * │ 0x4000_0000  RAM start (QEMU virt platform)                  │
+ * │ ...          QEMU stub loader / DTB (first 2 MB)             │
+ * │ 0x4020_0000  ┌─────────────────┐  Kernel load address        │
  * │              │ .text.boot       │  Boot code (entry point)   │
  * │              ├─────────────────┤  4K aligned                 │
  * │              │ .text            │  Kernel code               │
@@ -32,7 +34,7 @@
  *
  * Key design decisions:
  *   - All sections are 4K-aligned for page-granularity protection
- *   - .text.boot is placed FIRST so _start is at the load address (0x4000_0000)
+ *   - .text.boot is placed FIRST so _start is at the load address (0x4020_0000)
  *   - NOLOAD sections (.stack, .heap, .pagetables) don't occupy ELF file space
  *   - KERNEL_VMA is defined for future high-half kernel mapping (0xFFFF_8000_0000_0000)
  *   - Symbols exported via PROVIDE() are referenced by C++ code through extern "C"
@@ -58,12 +60,17 @@ ENTRY(_start)
  *   0x0000_0000 - 0x3FFF_FFFF : I/O devices (GIC, UART, etc.)
  *   0x4000_0000 - 0x4FFF_FFFF : RAM (256 MB, configurable with -m)
  *
+ * QEMU's Linux Image loader places the kernel at RAM + 2 MB (0x4020_0000)
+ * when text_offset = 0, reserving the first 2 MB for the stub loader and DTB.
+ * The ORIGIN must match this actual load address so that absolute addresses
+ * (function pointers, global variables, vtables) resolve correctly.
+ *
  * The (rwx) attributes allow read/write/execute for all sections.
  * Fine-grained permissions are enforced at the page table level, not here.
  * ============================================================================= */
 MEMORY
 {
-    RAM (rwx) : ORIGIN = 0x40000000, LENGTH = 256M
+    RAM (rwx) : ORIGIN = 0x40200000, LENGTH = 254M
 }
 
 /* =============================================================================
