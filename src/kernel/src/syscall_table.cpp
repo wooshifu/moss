@@ -7,7 +7,6 @@ module;
 #include "arch_detect.h"
 
 // extern "C" declarations in global module fragment
-extern "C" void early_debug_print(const char *message) noexcept;
 #if defined(__aarch64__) || defined(MOSS_ARCH_ARM64)
 extern "C" void context_switch(void* prev_context, void* next_context);
 #endif
@@ -21,11 +20,12 @@ SyscallStats g_syscall_stats = {0, 0, 0, 0, 0};
 
 // 系统调用处理函数实现
 namespace handlers {
+    namespace log = moss::kernel::logging;
 
     // 基础系统调用处理函数
     long sys_debug_print(long arg0, long, long, long, long, long) noexcept {
         if (arg0 != 0) {
-            early_debug_print(reinterpret_cast<const char*>(arg0));
+            moss::kernel::hal::uart::puts(reinterpret_cast<const char*>(arg0));
             return 0;
         }
         return -Errno::EINVAL;
@@ -213,7 +213,7 @@ namespace handlers {
         // 14. Enqueue child into scheduler
         child_proc->set_state(ProcessState::Running);
         if (g_scheduler) {
-            g_scheduler->enqueue_task(child_thread, 0);
+            g_scheduler->enqueue_task(child_thread, arch::get_current_cpu_id());
         }
 
         log::klog::info("sys_fork: parent PID={} -> child PID={} TID={} pgd={:#x} asid={}",
@@ -226,7 +226,7 @@ namespace handlers {
     }
 
     long sys_execve(long, long, long, long, long, long) noexcept {
-        early_debug_print("📋 系统调用: execve() - 尚未实现\n");
+        log::klog::warn("syscall: execve() not implemented");
         return -Errno::ENOSYS;
     }
 
@@ -342,23 +342,23 @@ namespace handlers {
     }
 
     long sys_kill(long, long, long, long, long, long) noexcept {
-        early_debug_print("📋 系统调用: kill() - 尚未实现\n");
+        log::klog::warn("syscall: kill() not implemented");
         return -Errno::ENOSYS;
     }
 
     // 文件系统调用 - 框架实现
     long sys_open(long, long, long, long, long, long) noexcept {
-        early_debug_print("📋 系统调用: open() - 尚未实现\n");
+        log::klog::warn("syscall: open() not implemented");
         return -Errno::ENOSYS;
     }
 
     long sys_close(long, long, long, long, long, long) noexcept {
-        early_debug_print("📋 系统调用: close() - 尚未实现\n");
+        log::klog::warn("syscall: close() not implemented");
         return -Errno::ENOSYS;
     }
 
     long sys_read(long, long, long, long, long, long) noexcept {
-        early_debug_print("📋 系统调用: read() - 尚未实现\n");
+        log::klog::warn("syscall: read() not implemented");
         return -Errno::ENOSYS;
     }
 
@@ -367,7 +367,7 @@ namespace handlers {
         //
         // Currently only stdout (fd=1) and stderr (fd=2) are supported,
         // both routing to the kernel UART console.
-        if (fd != 1 && fd != 2) {
+        if (fd != Fd::STDOUT && fd != Fd::STDERR) {
             return -Errno::EBADF;
         }
 
@@ -391,49 +391,49 @@ namespace handlers {
 
     // 内存管理系统调用
     long sys_mmap(long, long, long, long, long, long) noexcept {
-        early_debug_print("📋 系统调用: mmap() - 尚未实现\n");
+        log::klog::warn("syscall: mmap() not implemented");
         return -Errno::ENOSYS;
     }
 
     long sys_munmap(long, long, long, long, long, long) noexcept {
-        early_debug_print("📋 系统调用: munmap() - 尚未实现\n");
+        log::klog::warn("syscall: munmap() not implemented");
         return -Errno::ENOSYS;
     }
 
     long sys_mprotect(long, long, long, long, long, long) noexcept {
-        early_debug_print("📋 系统调用: mprotect() - 尚未实现\n");
+        log::klog::warn("syscall: mprotect() not implemented");
         return -Errno::ENOSYS;
     }
 
     long sys_brk(long, long, long, long, long, long) noexcept {
-        early_debug_print("📋 系统调用: brk() - 尚未实现\n");
+        log::klog::warn("syscall: brk() not implemented");
         return -Errno::ENOSYS;
     }
 
     // 网络通信系统调用 - 框架实现
     long sys_socket(long, long, long, long, long, long) noexcept {
-        early_debug_print("📋 系统调用: socket() - 尚未实现\n");
+        log::klog::warn("syscall: socket() not implemented");
         return -Errno::ENOSYS;
     }
 
     long sys_bind(long, long, long, long, long, long) noexcept {
-        early_debug_print("📋 系统调用: bind() - 尚未实现\n");
+        log::klog::warn("syscall: bind() not implemented");
         return -Errno::ENOSYS;
     }
 
     long sys_listen(long, long, long, long, long, long) noexcept {
-        early_debug_print("📋 系统调用: listen() - 尚未实现\n");
+        log::klog::warn("syscall: listen() not implemented");
         return -Errno::ENOSYS;
     }
 
     long sys_accept(long, long, long, long, long, long) noexcept {
-        early_debug_print("📋 系统调用: accept() - 尚未实现\n");
+        log::klog::warn("syscall: accept() not implemented");
         return -Errno::ENOSYS;
     }
 
     // 未实现系统调用的默认处理器
     long sys_not_implemented(long, long, long, long, long, long) noexcept {
-        early_debug_print("📋 系统调用: 未知系统调用\n");
+        log::klog::warn("syscall: unknown/unimplemented");
         return -Errno::ENOSYS;
     }
 }
@@ -654,20 +654,16 @@ void SyscallDispatcher::get_syscall_stats(u64* total_calls, u64* implemented_cal
 }
 
 void SyscallDispatcher::print_implemented_syscalls() noexcept {
-    early_debug_print("=== 已实现的系统调用 ===\n");
+    namespace log = moss::kernel::logging;
 
+    log::klog::info("=== implemented syscalls ===");
     for (int i = 0; i < static_cast<int>(SyscallNumber::MAX_SYSCALL); ++i) {
         const auto& desc = SYSCALL_TABLE[i];
         if (desc.implemented) {
-            early_debug_print("  ");
-            early_debug_print(desc.name);
-            early_debug_print(" (");
-            early_debug_print(desc.description);
-            early_debug_print(")\n");
+            log::klog::info("  [{}] {}", i, desc.name);
         }
     }
-
-    early_debug_print("========================\n");
+    log::klog::info("============================");
 }
 
 } // namespace moss::kernel::syscall
