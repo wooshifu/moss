@@ -202,7 +202,14 @@ cmake --build --preset arm64-qemu-debug --target test-kernel
 
 **精确跟踪内核运行：**
 ```bash
-./build/<preset>/run_qemu.sh --debug -- -d int,in_asm  # 显示中断和汇编指令
+# 方式1: 专用选项
+./build/<preset>/run_qemu.sh --debug --qemu-args="-d int,in_asm"
+
+# 方式2: 双破折号分隔
+./build/<preset>/run_qemu.sh --debug -- -d int,in_asm
+
+# 复合调试选项
+./build/<preset>/run_qemu.sh --qemu-args="-d int,in_asm -D qemu.log -trace enable=virtio*"
 ```
 
 **汇编代码分析：**
