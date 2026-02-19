@@ -78,8 +78,8 @@ Build system: CMake + Clang C++26 modules, 6 presets (3 arch x debug/release).
   - `src/mm/src/page_table.cpp`
 - [x] **free_user_page_tables()** — Recursive 4-level walk: frees leaf physical pages (demand-paged), then PTE/PMD/PUD table pages, then PGD page; skips PGD[0] (shared kernel identity map)
   - `src/mm/src/page_table.cpp`
-- [x] **VMA management** — `AddressSpace` struct with 16 VMA slots, `add_vma()` with overlap check, `find_vma()` for fault lookup, VMA types: CODE/DATA/BSS/STACK/HEAP, VMA flags: READ/WRITE/EXEC
-  - `src/process/src/process.cppm` (`AddressSpace`, `VmaRegion`)
+- [x] **VMA management** — `AddressSpace` struct with `RcuList<VmaRegion>` (dynamic, unlimited), `add_vma()` with overlap check via `find_if()`, `find_vma()` for fault lookup, VMA types: CODE/DATA/BSS/STACK/HEAP, VMA flags: READ/WRITE/EXEC/DEMAND_ZERO, backing data for ELF segments
+  - `src/process/src/process-types.cppm` (`AddressSpace`, `VmaRegion`)
 - [x] **Page fault diagnostics** — EC-to-string, DFSC/IFSC-to-string, kernel fault handler with TLB invalidate retry for stale entries, permission fault logging
   - `src/mm/src/page_fault.cpp`
 - [x] **Memory statistics** — `MemoryStats` class tracking allocation counts, free pages, watermarks, memory pressure levels (LOW/MEDIUM/HIGH/CRITICAL), `is_memory_system_healthy()`, `get_memory_pressure()`
@@ -149,9 +149,13 @@ Build system: CMake + Clang C++26 modules, 6 presets (3 arch x debug/release).
 - [x] **Syscall table** — 130 entries in `SYSCALL_TABLE[]`, each with name, handler function pointer, arg count, implemented flag, description
   - `src/kernel/src/syscall_table.cpp`
 - [x] **sys_debug_print (0)** — Writes string at arg0 to UART via `early_debug_print()`
-- [x] **sys_exit (1)** — Marks thread Terminated, dequeues from scheduler, terminates process in ProcessManager, restores TTBR0 to kernel PGD, calls `schedule_after_exit()` ([[noreturn]])
+- [x] **sys_exit (1)** — 7-step Zombie transition: mark thread terminated → dequeue → restore TTBR0 → free user page tables → reparent children to init → set Zombie state + exit code → wake parent's WaitQueue → `schedule_after_exit()` ([[noreturn]]). Process stays in table for waitpid() to reap.
+- [x] **sys_fork (10)** — Full COW fork: clone PGD, copy VMAs, duplicate thread context (child x0=0), allocate kernel stack, register child in parent's children list, enqueue child into CFS
+- [x] **sys_wait4 (12)** — Blocking wait for child exit: zombie scan, WNOHANG support, blocking via context_switch to bootstrap context, reap zombie (remove child + terminate + WEXITSTATUS encoding)
+- [x] **sys_waitpid (13)** — Thin wrapper over sys_wait4
 - [x] **sys_write (33)** — Writes `count` bytes from `buf` to UART for fd=1 (stdout) and fd=2 (stderr); returns byte count or -EBADF/-EINVAL
-- [x] **sys_getpid/getppid/getuid/getgid (2-5)** — Marked implemented but return hardcoded values (1, 0, 0, 0)
+- [x] **sys_getpid/getppid (2-3)** — Return real PID/PPID from current thread/process via CfsScheduler::get_current_task()
+- [x] **sys_getuid/getgid (4-5)** — Return 0 (root); credential structure not yet implemented
 
 ### Timer Subsystem
 
@@ -180,6 +184,7 @@ Build system: CMake + Clang C++26 modules, 6 presets (3 arch x debug/release).
 - [x] **MpscQueue<T>** — Multi-producer single-consumer lock-free queue
 - [x] **RcuList<T>** — RCU-protected singly-linked list: `push_front()`, `remove()`, `find_if()`, `for_each()`
 - [x] **RcuHashMap<K, V>** — RCU-protected hash map: `insert_or_update()`, `find()`, `remove()`, `size()`
+- [x] **WaitQueue** — Generic blocking primitive using `RcuList<WaitQueueEntry>` with `void*` thread pointers (avoids module cycle), `add_waiter()`, `remove_waiter()`, `for_each_waiter()`, `has_waiters()`
   - All in `src/containers/src/containers.cppm`
 
 ### Core Infrastructure
@@ -226,23 +231,11 @@ Build system: CMake + Clang C++26 modules, 6 presets (3 arch x debug/release).
   - `switch_to_user` assembly: reads TPIDR_EL1 → sets SP before eret
   - Files: `process.cppm` (Thread struct), `kernel.cppm`, `context_switch.S`, `start_arm64.S`
 
-- [ ] **fork() system call** — Cannot create child processes. This is the fundamental process creation primitive.
-  - Need: copy Process object (new PID, inherit parent_pid)
-  - Need: clone address space — allocate new PGD, copy PTE structure, mark all writable pages as COW (read-only + COW flag)
-  - Need: clone thread state (copy CpuContext, set child return value to 0)
-  - Need: add child to parent's children list for wait()
-  - Need: enqueue child thread into scheduler
-  - Files: `syscall_table.cpp` (handler), `process.cppm`/`process.cpp` (clone logic), `page_table.cpp` (PGD copy + COW marking)
-  - Dependency: COW support, per-process kernel stack
-  - Complexity: High
+- [x] **fork() system call** — Full COW fork: copies Process object, clones PGD with `clone_user_page_tables()` (marks all writable PTEs as read-only + COW bit 55), copies CpuContext with child x0=0, allocates per-thread kernel stack (16KB), registers child in parent's children list, enqueues into CFS scheduler. Parent returns child PID, child returns 0.
+  - `src/kernel/src/syscall_table.cpp` (sys_fork, 14-step implementation)
 
-- [ ] **Copy-on-Write (COW)** — Permission fault handler (DFSC 0x0C-0x0F) currently panics. Need to handle write faults on COW-marked pages.
-  - Need: COW flag in PTE (use software-defined bit, e.g. bit 55 or 58)
-  - Need: reference counting for physical pages (shared between parent/child)
-  - Need: on write fault: if refcount > 1, allocate new page, copy content, map writable, decrement old refcount; if refcount == 1, just remap as writable
-  - Files: `page_fault.cpp` (permission fault path), `mm.cppm` (page refcount), `page_table.cpp`
-  - Dependency: Required by fork()
-  - Complexity: High
+- [x] **Copy-on-Write (COW)** — PTE bit 55 as COW flag, atomic page reference counting (`PageRefCount` array), permission fault handler (DFSC 0x0C-0x0F): if refcount > 1 → allocate new page + copy + map writable + decrement old; if refcount == 1 → flip PTE to writable. `clone_user_page_tables()` marks shared pages and increments refcounts.
+  - `src/mm/src/page_fault.cpp` (COW fault path), `src/mm/src/mm.cppm` (PageRefCount), `src/mm/src/page_table.cpp` (clone + COW PTE bit)
 
 - [ ] **execve() system call** — Cannot replace process image. Need to load a new ELF into an existing process.
   - Need: tear down old address space (free all user page tables + physical pages)
@@ -253,14 +246,16 @@ Build system: CMake + Clang C++26 modules, 6 presets (3 arch x debug/release).
   - Files: `syscall_table.cpp`, `kernel.cppm` (ElfLoader), `process.cppm`, `page_table.cpp`
   - Complexity: Medium-High
 
-- [ ] **wait()/waitpid() system calls** — Cannot wait for child process exit or collect exit status.
-  - Need: parent-child relationship tracking (children list in Process)
-  - Need: zombie state: terminated processes stay in process table until parent calls wait()
-  - Need: blocking: if no child has exited, block parent (set to Blocked state, wake on child exit)
-  - Need: WNOHANG option for non-blocking check
-  - Files: `syscall_table.cpp`, `process.cppm` (Process class), `process.cpp`
-  - Dependency: fork() must exist for there to be children
-  - Complexity: Medium
+- [x] **wait4()/waitpid() system calls** — Full blocking wait with Zombie lifecycle:
+  - `WaitQueue` primitive in containers (void*-based to avoid module cycle)
+  - `RcuList<ProcessId>` children tracking + `WaitQueue` child_exit_wq in Process
+  - sys_exit: 7-step Zombie transition (dequeue → restore TTBR0 → free page tables → reparent children to init → set Zombie → wake parent WQ → schedule_after_exit)
+  - sys_wait4: zombie scan → WNOHANG → blocking via context_switch to bootstrap context → reap (remove child + terminate_process + WEXITSTATUS encoding)
+  - sys_waitpid: thin wrapper over sys_wait4
+  - terminate_current_user_process: unified Zombie path (same as sys_exit)
+  - Dynamic VMA: AddressSpace migrated from fixed array to `RcuList<VmaRegion>`
+  - getpid/getppid: return real values from current thread/process
+  - `src/kernel/src/syscall_table.cpp`, `src/process/src/process-types.cppm`, `src/process/src/process.cpp`, `src/containers/src/containers.cppm`, `src/kernel/src/kernel_main.cpp`
 
 ### P1: Basic OS Functionality
 
@@ -328,12 +323,8 @@ Build system: CMake + Clang C++26 modules, 6 presets (3 arch x debug/release).
   - Files: `page_fault.cpp`, `process.cppm` (VMA management)
   - Complexity: Low-Medium
 
-- [ ] **Proper getpid/getppid/getuid/getgid** — Currently return hardcoded values instead of querying current process.
-  - Need: getpid → return current_process()->pid()
-  - Need: getppid → return current_process()->parent_pid()
-  - Need: getuid/getgid → implement credential structure in Process
-  - Files: `syscall_table.cpp`
-  - Complexity: Low
+- [x] **Proper getpid/getppid** — Return real values from `CfsScheduler::get_current_task()` → `owner_pid` / `find_process()` → `parent_pid()`. getuid/getgid still return 0 (root) pending credential structure.
+  - `src/kernel/src/syscall_table.cpp`
 
 - [ ] **Red-black tree full rebalancing** — `rb_insert_fixup()` only sets root black (no rotations or uncle-based recoloring). `rb_delete_fixup()` is also simplified. Under adversarial insertion patterns, tree degrades to O(n).
   - Need: implement full left/right rotation
@@ -349,9 +340,8 @@ Build system: CMake + Clang C++26 modules, 6 presets (3 arch x debug/release).
   - Files: `syscall_table.cpp`, `timer.cppm`
   - Complexity: Low-Medium
 
-- [ ] **Process exit notification** — When a user process crashes (SIGSEGV equivalent via `terminate_current_user_process`), the exit code is set but no parent is notified. With wait() not implemented, zombie processes accumulate.
-  - Dependency: wait() implementation, signal mechanism
-  - Complexity: Low (once dependencies exist)
+- [x] **Process exit notification** — `terminate_current_user_process` now uses unified Zombie path (same 7-step flow as sys_exit): process enters Zombie state, parent's WaitQueue is woken, parent can collect exit status via waitpid(). No more zombie accumulation.
+  - `src/kernel/src/kernel_main.cpp`
 
 ### P3: Platform Extension
 
@@ -480,6 +470,6 @@ moss.types ← moss.std ← moss.concepts ← moss.result ← moss.smart_ptr
 - **Total source files**: ~60 (.cppm + .cpp + .S + .c)
 - **Total lines of code**: ~15,000+ (estimated)
 - **Modules**: 23 C++26 modules
-- **Syscall table entries**: 130 (7 implemented, ~123 stubs)
+- **Syscall table entries**: 130 (11 implemented, ~119 stubs)
 - **Architectures**: 3 (ARM64 full, x86_64 stub, RISC-V stub)
 - **Build presets**: 6 (3 arch × 2 build types)
