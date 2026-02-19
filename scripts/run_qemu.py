@@ -351,7 +351,10 @@ def collect_extra_qemu_args(ctx: typer.Context, qemu_args: Optional[str]) -> lis
     return extra_args
 
 
-app = typer.Typer(help="🖥️ MOSS QEMU 运行工具")
+app = typer.Typer(
+    help="🖥️ MOSS QEMU 运行工具",
+    context_settings={"allow_extra_args": True, "allow_interspersed_args": False}
+)
 
 
 @app.callback(invoke_without_command=True)
