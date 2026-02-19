@@ -200,7 +200,7 @@ def build_qemu_args(
 
     # 内核加载方式
     if use_binary:
-        load_addr = {"ARM64": "0x40000000", "X86_64": "0x00100000", "RISCV": "0x80200000"}[cfg.arch]
+        load_addr = {"ARM64": "0x40200000", "X86_64": "0x00100000", "RISCV": "0x80200000"}[cfg.arch]
         kernel_args = [
             "-device",
             f"loader,file={kernel_file},addr={load_addr},cpu-num=0,force-raw=on",
