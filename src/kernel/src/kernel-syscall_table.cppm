@@ -194,6 +194,7 @@ namespace handlers {
     long sys_fork(long arg0, long arg1, long arg2, long arg3, long arg4, long arg5) noexcept;
     long sys_execve(long arg0, long arg1, long arg2, long arg3, long arg4, long arg5) noexcept;
     long sys_wait4(long arg0, long arg1, long arg2, long arg3, long arg4, long arg5) noexcept;
+    long sys_waitpid(long arg0, long arg1, long arg2, long arg3, long arg4, long arg5) noexcept;
     long sys_kill(long arg0, long arg1, long arg2, long arg3, long arg4, long arg5) noexcept;
 
     // Filesystem - framework implementation
