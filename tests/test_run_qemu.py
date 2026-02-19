@@ -47,3 +47,32 @@ def test_collect_extra_qemu_args_empty():
 
     result = collect_extra_qemu_args(ctx, None)
     assert result == []
+
+
+def test_build_qemu_args_with_extra_args():
+    """Test that extra arguments are appended to QEMU command."""
+    # Create minimal config
+    cfg = QemuConfig(
+        build_dir="/tmp",
+        arch="ARM64",
+        kernel_elf="/tmp/moss.elf",
+        test_elf="/tmp/moss.test.elf",
+        kernel_bin="/tmp/moss_boot.bin",
+        kernel_bin_full="/tmp/moss.bin",
+        qemu_path="qemu-system-aarch64"
+    )
+
+    kernel_file = Path("/tmp/moss.bin")
+    extra_args = ["-d", "int,in_asm", "-trace", "enable=virtio*"]
+
+    result = build_qemu_args(
+        cfg,
+        kernel_file,
+        use_binary=False,
+        test_mode=False,
+        debug_mode=False,
+        extra_args=extra_args
+    )
+
+    # Check that extra args are at the end
+    assert result[-4:] == ["-d", "int,in_asm", "-trace", "enable=virtio*"]
