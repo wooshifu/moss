@@ -371,7 +371,7 @@ def main(
         Optional[int],
         typer.Option("--timeout", "-t", help="QEMU 运行超时时间（秒），超时后自动终止"),
     ] = None,
-    qemu_args: Annotated[
+    extra_qemu_args: Annotated[
         Optional[str],
         typer.Option("--qemu-args", help="额外的QEMU参数（用空格分隔）")
     ] = None,
@@ -411,7 +411,7 @@ def main(
     )
 
     # 构造 QEMU 参数
-    qemu_args = build_qemu_args(
+    qemu_cmd_args = build_qemu_args(
         cfg,
         kernel_file,
         use_binary=use_binary,
@@ -430,15 +430,20 @@ def main(
         timeout=timeout,
     )
 
+    # 收集额外的 QEMU 参数
+    extra_args = collect_extra_qemu_args(ctx, extra_qemu_args)
+    if extra_args:
+        qemu_cmd_args.extend(extra_args)
+
     # 打印完整的 QEMU 命令（可直接复制到终端执行）
-    rprint(f"\n[dim]$ {shlex.join(qemu_args)}[/dim]")
+    rprint(f"\n[dim]$ {shlex.join(qemu_cmd_args)}[/dim]")
     if timeout:
         rprint(f"[yellow]超时: {timeout}s[/yellow]")
     rprint()
 
     # 启动 QEMU
     try:
-        result = subprocess.run(qemu_args, check=False, timeout=timeout)
+        result = subprocess.run(qemu_cmd_args, check=False, timeout=timeout)
     except subprocess.TimeoutExpired:
         rprint(f"\n[red]⏰ QEMU 运行超时（{timeout}s），已终止进程[/red]")
         sys.exit(124)  # 与 GNU timeout 一致的退出码
