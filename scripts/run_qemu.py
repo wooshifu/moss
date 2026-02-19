@@ -192,7 +192,7 @@ def build_qemu_args(
     use_binary: bool,
     test_mode: bool,
     debug_mode: bool,
-    extra_args: list[str] = None,
+    extra_args: Optional[list[str]] = None,
 ) -> list[str]:
     """构造完整的 QEMU 命令行参数列表"""
     arch_cfg = ARCH_CONFIG[cfg.arch]
