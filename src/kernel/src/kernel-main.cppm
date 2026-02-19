@@ -592,37 +592,32 @@ private:
     // The embedded user program is raw machine code (not ELF).
     // We place it at a fixed user virtual address and register as a code VMA
     // with backing data pointing to the kernel-resident copy.
-    constexpr VirtAddr USER_CODE_BASE = 0x0000000200000000ULL;  // 8GB — above kernel identity map
     const auto* raw_code = reinterpret_cast<const u8*>(_user_program_start);
     usize code_size = static_cast<usize>(
         reinterpret_cast<VirtAddr>(_user_program_end) -
         reinterpret_cast<VirtAddr>(_user_program_start));
 
     // Code VMA: readable + executable, backed by the embedded raw program
-    VirtAddr code_end = (USER_CODE_BASE + code_size + PAGE_SIZE - 1)
+    VirtAddr code_end = (UserLayout::CODE_BASE + code_size + PAGE_SIZE - 1)
                         & ~(static_cast<VirtAddr>(PAGE_SIZE) - 1);
-    as->add_vma(USER_CODE_BASE, code_end,
+    as->add_vma(UserLayout::CODE_BASE, code_end,
                 VmaFlags::READ | VmaFlags::EXEC,
                 VmaType::CODE,
                 raw_code, 0, code_size);
     log::klog::info("  VMA code: {:#x}-{:#x} backing={} bytes",
-                    USER_CODE_BASE, code_end, code_size);
+                    UserLayout::CODE_BASE, code_end, code_size);
 
-    VirtAddr entry_point = USER_CODE_BASE;  // entry = start of raw code
+    VirtAddr entry_point = UserLayout::CODE_BASE;  // entry = start of raw code
 
-    // Stack VMA: 8 pages (32KB) at user stack area, demand-zero
-    constexpr VirtAddr USER_STACK_TOP = 0x00007FFF00000000ULL;
-    constexpr usize USER_STACK_SIZE = 32 * 1024;  // 32KB
-    constexpr VirtAddr USER_STACK_BOTTOM = USER_STACK_TOP - USER_STACK_SIZE;
-    as->add_vma(USER_STACK_BOTTOM, USER_STACK_TOP,
+    // Stack VMA: demand-zero
+    constexpr VirtAddr STACK_BOTTOM = UserLayout::STACK_TOP - UserLayout::STACK_SIZE;
+    as->add_vma(STACK_BOTTOM, UserLayout::STACK_TOP,
                 VmaFlags::READ | VmaFlags::WRITE | VmaFlags::DEMAND_ZERO,
                 VmaType::STACK);
-    log::klog::info("  VMA stack: {:#x}-{:#x}", USER_STACK_BOTTOM, USER_STACK_TOP);
+    log::klog::info("  VMA stack: {:#x}-{:#x}", STACK_BOTTOM, UserLayout::STACK_TOP);
 
     // Heap VMA: small initial region, demand-zero
-    constexpr VirtAddr USER_HEAP_START = 0x0000000100000000ULL;
-    constexpr usize USER_HEAP_INIT_SIZE = 64 * 1024;
-    as->add_vma(USER_HEAP_START, USER_HEAP_START + USER_HEAP_INIT_SIZE,
+    as->add_vma(UserLayout::HEAP_START, UserLayout::HEAP_START + UserLayout::HEAP_INIT,
                 VmaFlags::READ | VmaFlags::WRITE | VmaFlags::DEMAND_ZERO,
                 VmaType::HEAP);
 
@@ -662,10 +657,10 @@ private:
 
     // User context: entry point and stack pointer are user-space VAs
     // (demand-paged on first access)
-    init_thread->stack_base = USER_STACK_BOTTOM;
-    init_thread->stack_size = USER_STACK_SIZE;
+    init_thread->stack_base = STACK_BOTTOM;
+    init_thread->stack_size = UserLayout::STACK_SIZE;
     init_thread->context.pc = entry_point;
-    init_thread->context.sp = USER_STACK_TOP - 16;  // 16-byte aligned
+    init_thread->context.sp = UserLayout::STACK_TOP - 16;  // 16-byte aligned
     init_thread->context.pstate = 0x00000000;  // EL0t
     init_thread->needs_initial_eret = true;  // First dispatch uses switch_to_user + eret
     init_thread->is_user_task = true;         // Permanent: drives TTBR0 switch on re-dispatch
@@ -682,10 +677,10 @@ private:
     init_proc->register_thread(init_thread);
 
     // Step 6: Enqueue into scheduler
-    scheduler_->enqueue_task(init_thread, 0);
+    scheduler_->enqueue_task(init_thread, current_cpu());
 
     log::klog::info("init process TID={}: entry={:#x} stack={:#x}-{:#x} pgd={:#x} asid={}",
-                    static_cast<u32>(init_tid), entry_point, USER_STACK_BOTTOM, USER_STACK_TOP,
+                    static_cast<u32>(init_tid), entry_point, STACK_BOTTOM, UserLayout::STACK_TOP,
                     init_proc->address_space()->pgd_phys,
                     init_proc->address_space()->asid);
     (void)code_size;

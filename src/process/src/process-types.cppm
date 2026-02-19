@@ -581,6 +581,17 @@ extern ProcessManager *g_process_manager;
 //   - Caller must have already validated cur/proc are non-null
 [[noreturn]] void do_exit(Thread* cur, Process* proc, i32 exit_code) noexcept;
 
+// Canonical user-space virtual address layout.
+// All components that create user VMAs should reference these constants
+// instead of hardcoding addresses.
+namespace UserLayout {
+inline constexpr VirtAddr CODE_BASE   = 0x0000000200000000ULL; // 8GB — above kernel identity map
+inline constexpr VirtAddr HEAP_START  = 0x0000000100000000ULL; // 4GB
+inline constexpr VirtAddr STACK_TOP   = 0x00007FFF00000000ULL; // 128TB boundary - 4GB
+inline constexpr usize    STACK_SIZE  = 32 * 1024;             // 32KB default user stack
+inline constexpr usize    HEAP_INIT   = 64 * 1024;             // 64KB initial heap
+} // namespace UserLayout
+
 // User address space management extensions
 namespace user_space {
 
