@@ -328,6 +328,28 @@ def print_result(exit_code: int, *, test_mode: bool, use_binary: bool) -> None:
         else:
             rprint(f"[red]❌ 内核执行异常，退出码: {exit_code}[/red]")
 
+def collect_extra_qemu_args(ctx: typer.Context, qemu_args: Optional[str]) -> list[str]:
+    """收集来自两种语法的额外QEMU参数
+
+    Args:
+        ctx: Typer上下文，包含双破折号后的参数
+        qemu_args: --qemu-args选项的值
+
+    Returns:
+        额外QEMU参数列表
+    """
+    extra_args = []
+
+    # 方式1：--qemu-args 选项
+    if qemu_args:
+        extra_args.extend(shlex.split(qemu_args))
+
+    # 方式2：双破折号后的参数
+    if hasattr(ctx, 'args') and ctx.args:
+        extra_args.extend(ctx.args)
+
+    return extra_args
+
 
 app = typer.Typer(help="🖥️ MOSS QEMU 运行工具")
 
