@@ -366,7 +366,8 @@ namespace handlers {
         // sys_write(fd, buf, count) — write count bytes from buf to fd
         //
         // Currently only stdout (fd=1) and stderr (fd=2) are supported,
-        // both routing to the kernel UART console.
+        // both routing through the kernel printk ring buffer for proper
+        // serialization with kernel log output.
         if (fd != Fd::STDOUT && fd != Fd::STDERR) {
             return -Errno::EBADF;
         }
@@ -381,12 +382,33 @@ namespace handlers {
         const char *buf = reinterpret_cast<const char *>(
             static_cast<unsigned long long>(buf_addr));
 
-        // Write each byte to UART via HAL
-        for (long i = 0; i < count; ++i) {
-            moss::kernel::hal::uart::putc(buf[i]);
+        // Route through printk ring buffer for UART serialization.
+        // Split user output into lines and emit each as a log record so that
+        // kernel log messages never interleave mid-line with user output.
+        long written = 0;
+        long line_start = 0;
+        for (long i = 0; i <= count; ++i) {
+            bool is_end = (i == count);
+            bool is_newline = (!is_end && buf[i] == '\n');
+            if (is_newline || is_end) {
+                long line_len = i - line_start;
+                if (line_len > 0) {
+                    // emit() appends '\n' automatically
+                    log::g_printk_rb.emit(
+                        log::LogLevel::Info,
+                        buf + line_start,
+                        static_cast<u32>(line_len));
+                } else if (is_newline) {
+                    // Bare newline — emit empty line
+                    log::g_printk_rb.emit(
+                        log::LogLevel::Info, "", 0);
+                }
+                line_start = i + 1;
+            }
         }
+        written = count;
 
-        return count; // Number of bytes written
+        return written;
     }
 
     // 内存管理系统调用
