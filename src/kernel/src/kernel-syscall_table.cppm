@@ -8,6 +8,24 @@ import moss.types;
 
 export namespace moss::kernel::syscall {
 
+// Linux-compatible errno constants.
+// Syscall handlers return the negated value (e.g. -EINVAL).
+namespace Errno {
+inline constexpr long EPERM       = 1;   // Operation not permitted
+inline constexpr long ENOENT      = 2;   // No such file or directory
+inline constexpr long ESRCH       = 3;   // No such process
+inline constexpr long EINTR       = 4;   // Interrupted system call
+inline constexpr long EIO         = 5;   // I/O error
+inline constexpr long EBADF       = 9;   // Bad file descriptor
+inline constexpr long ECHILD      = 10;  // No child processes
+inline constexpr long EAGAIN      = 11;  // Try again / resource temporarily unavailable
+inline constexpr long ENOMEM      = 12;  // Out of memory
+inline constexpr long EACCES      = 13;  // Permission denied
+inline constexpr long EFAULT      = 14;  // Bad address
+inline constexpr long EINVAL      = 22;  // Invalid argument
+inline constexpr long ENOSYS      = 38;  // Function not implemented
+} // namespace Errno
+
 // Syscall number enumeration - grouped by functionality
 enum class SyscallNumber : long {
     // === Basic syscalls (0-9) ===
