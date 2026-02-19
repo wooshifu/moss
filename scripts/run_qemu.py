@@ -192,6 +192,7 @@ def build_qemu_args(
     use_binary: bool,
     test_mode: bool,
     debug_mode: bool,
+    extra_args: list[str] = None,
 ) -> list[str]:
     """构造完整的 QEMU 命令行参数列表"""
     arch_cfg = ARCH_CONFIG[cfg.arch]
@@ -248,6 +249,10 @@ def build_qemu_args(
 
     if debug_mode:
         args += ["-s", "-S"]
+
+    # 添加用户指定的额外参数
+    if extra_args:
+        args.extend(extra_args)
 
     return args
 
@@ -410,6 +415,9 @@ def main(
         cfg, use_binary=use_binary, test_mode=test_mode, debug_mode=debug_mode
     )
 
+    # 收集额外的 QEMU 参数
+    extra_args = collect_extra_qemu_args(ctx, extra_qemu_args)
+
     # 构造 QEMU 参数
     qemu_cmd_args = build_qemu_args(
         cfg,
@@ -417,6 +425,7 @@ def main(
         use_binary=use_binary,
         test_mode=test_mode,
         debug_mode=debug_mode,
+        extra_args=extra_args,
     )
 
     # 打印横幅
@@ -430,10 +439,6 @@ def main(
         timeout=timeout,
     )
 
-    # 收集额外的 QEMU 参数
-    extra_args = collect_extra_qemu_args(ctx, extra_qemu_args)
-    if extra_args:
-        qemu_cmd_args.extend(extra_args)
 
     # 打印完整的 QEMU 命令（可直接复制到终端执行）
     rprint(f"\n[dim]$ {shlex.join(qemu_cmd_args)}[/dim]")
