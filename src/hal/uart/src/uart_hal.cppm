@@ -74,6 +74,30 @@ inline void putc(char c) noexcept {
 // Returns 0-255 on success, -1 if no character available.
 // ============================================================================
 
+inline void enable_rx() noexcept {
+#if defined(MOSS_ARCH_ARM64)
+  // PL011 register offsets
+  auto base = platform::uart_base();
+  volatile u32 *uart_cr   = reinterpret_cast<volatile u32 *>(base + 0x30);  // Control
+  volatile u32 *uart_icr  = reinterpret_cast<volatile u32 *>(base + 0x44);  // IntClear
+  volatile u32 *uart_lcr  = reinterpret_cast<volatile u32 *>(base + 0x2C);  // LineCtrl
+
+  // Read CR before modification
+  u32 cr_before = *uart_cr;
+
+  // Proper PL011 init sequence: disable → configure → re-enable
+  // (ARM PL011 TRM requires UARTEN=0 when modifying UARTCR fields)
+  *uart_cr = 0;                                      // 1. Disable UART
+  *uart_icr = 0x7FFU;                                // 2. Clear all pending interrupts
+  *uart_lcr = (0x3U << 5) | (1U << 4);               // 3. 8N1 + FIFO enable (WLEN=11, FEN=1)
+  *uart_cr = (1U << 0) | (1U << 8) | (1U << 9);      // 4. UARTEN | TXE | RXE
+
+  // Diagnostic removed — QEMU PL011 model ignores enable bits anyway,
+  // but real hardware needs proper UARTEN|TXE|RXE setup.
+  (void)cr_before;
+#endif
+}
+
 inline int getc() noexcept {
 #if defined(MOSS_ARCH_ARM64)
   // PL011 UART: data register at base+0x00, flags register at base+0x18

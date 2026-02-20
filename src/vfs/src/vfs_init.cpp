@@ -514,6 +514,14 @@ static long console_release([[maybe_unused]] File* file) noexcept {
 
 static long console_read([[maybe_unused]] File* file,
                           u8* buf, usize count) noexcept {
+    // Ensure UART RX path is enabled (PL011 RXE bit).
+    // QEMU defaults to TX-only; this is a one-time hardware setup.
+    static bool rx_enabled = false;
+    if (!rx_enabled) {
+        uart::enable_rx();
+        rx_enabled = true;
+    }
+
     // Polling-based, line-buffered console input with echo.
     // Reads characters from UART RX FIFO, echoes them back, and returns
     // when a newline is received or the buffer is full.
@@ -523,12 +531,12 @@ static long console_read([[maybe_unused]] File* file,
         if (ch < 0) {
             // No data available
             if (pos > 0) break;  // Return partial line if we have data
-            // Low-power wait: WFE sleeps until next event (timer IRQ wakes us)
 #if defined(__aarch64__)
-            asm volatile("wfe");
-#else
-            // x86_64 / RISC-V: pause hint
-            asm volatile("" ::: "memory");
+            asm volatile("yield" ::: "memory");  // hint: power-efficient spin
+#elif defined(__x86_64__)
+            asm volatile("pause" ::: "memory");
+#elif defined(__riscv)
+            asm volatile(".insn i 0x0F, 0, x0, x0, 0x010" ::: "memory"); // pause
 #endif
             continue;
         }
@@ -566,6 +574,7 @@ static long console_read([[maybe_unused]] File* file,
         uart::putc(static_cast<char>(ch));
         buf[pos++] = static_cast<u8>(ch);
     }
+
     return static_cast<long>(pos);
 }
 

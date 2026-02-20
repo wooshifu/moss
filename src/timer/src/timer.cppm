@@ -363,9 +363,19 @@ void TimerSubsystem::dequeue(HrTimer* timer) noexcept {
 }
 
 void TimerSubsystem::handle_interrupt() noexcept {
-  containers::LockGuard<containers::IrqSpinLock> guard(queue_lock_);
   // Note: hardware timer ack is done by the caller (timer_irq_handler)
   // before invoking this method.
+  //
+  // IMPORTANT: We must NOT hold queue_lock_ across the callback invocation.
+  // The callback (e.g. scheduler_tick) may call context_switch(), which
+  // suspends the current execution and never returns.  If the LockGuard
+  // destructor never runs, queue_lock_ stays locked forever, deadlocking
+  // all future timer interrupts on this CPU.
+  //
+  // Strategy: lock → dequeue + re-enqueue periodic + reprogram → unlock
+  //           → fire callback (lock-free) → re-lock for next iteration.
+
+  queue_lock_.lock();
 
   // 1. Get current time
   u64 now = clocksource_.now_ns();
@@ -379,27 +389,27 @@ void TimerSubsystem::handle_interrupt() noexcept {
 
     stats_.timers_fired++;
 
-    // IMPORTANT: Re-enqueue periodic timers and reprogram hardware
-    // BEFORE firing the callback.  The callback (e.g. scheduler_tick)
-    // may call context_switch(), which suspends the current execution
-    // and never returns.  If we wait until after the callback,
-    // the re-enqueue and reprogram_next() will never execute,
-    // and the timer stops forever.
+    // Re-enqueue periodic timers BEFORE firing (callback may not return).
     if (expired->mode_ == TimerMode::Periodic && expired->interval_ns_ > 0) {
       expired->expires_ns_ += expired->interval_ns_;
       expired->active_ = true;
       enqueue_locked(expired);  // Already holding queue_lock_
     }
 
-    // Reprogram hardware for the (possibly re-enqueued) next timer.
-    // This ensures the hardware compare value is set even if the
-    // callback below does context_switch and never returns.
+    // Reprogram hardware while still holding the lock (ensures consistent
+    // queue state for the compare value computation).
     reprogram_next();
 
-    // Fire callback — may context_switch and not return!
+    // Release lock BEFORE callback — callback may context_switch and
+    // never return, which is fine since we no longer hold the lock.
+    queue_lock_.unlock();
+
     if (expired->callback_) {
       expired->callback_(expired->callback_data_);
     }
+
+    // Re-acquire lock for next iteration
+    queue_lock_.lock();
 
     // Refresh now for next iteration (if callback returned)
     now = clocksource_.now_ns();
@@ -410,6 +420,8 @@ void TimerSubsystem::handle_interrupt() noexcept {
 
   // 4. Update statistics
   stats_.total_interrupts++;
+
+  queue_lock_.unlock();
 }
 
 void TimerSubsystem::reprogram_next() noexcept {

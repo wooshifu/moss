@@ -443,9 +443,6 @@ extern "C" void user_page_fault_handler(
     u64 ec = (esr >> 26) & 0x3F;
     bool is_write = ((esr >> 6) & 1) != 0;
 
-    log::klog::debug("user_page_fault: addr={:#x} pc={:#x} dfsc={:#x} write={}",
-                     far_addr, elr, dfsc, is_write);
-
     // Permission faults (DFSC 0x0C-0x0F): try COW resolution first
     bool is_permission_fault = (dfsc >= 0x0C && dfsc <= 0x0F);
     if (is_permission_fault && is_write) {
