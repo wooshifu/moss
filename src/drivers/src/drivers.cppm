@@ -6,6 +6,9 @@ module;
 // Architecture detection
 #include "arch_detect.h"
 
+// strcmp is defined in runtime_support.cpp (global C linkage)
+extern "C" int strcmp(const char *s1, const char *s2) noexcept;
+
 // Macro for disabling copy and move (macros do not cross module boundaries)
 #define NON_COPYABLE(ClassName)                                                \
   ClassName(const ClassName &) = delete;                                       \
@@ -205,7 +208,7 @@ public:
   [[nodiscard]] const char *get_property(const char *name) const noexcept {
     const DeviceProperty *found =
         properties_.find_if([name](const DeviceProperty &prop) {
-          return string_compare(prop.name, name) == 0;
+          return strcmp(prop.name, name) == 0;
         });
 
     return found ? found->value : nullptr;
@@ -236,17 +239,6 @@ public:
   }
 
 protected:
-  [[nodiscard]] static int string_compare(const char *s1,
-                                          const char *s2) noexcept {
-    if (s1 == nullptr || s2 == nullptr)
-      return -1;
-    while (*s1 && *s2 && *s1 == *s2) {
-      s1++;
-      s2++;
-    }
-    return *s1 - *s2;
-  }
-
   [[nodiscard]] static u64 get_current_time() noexcept {
     return arch::get_timestamp_counter();
   }
@@ -295,24 +287,13 @@ public:
   [[nodiscard]] bool
   is_compatible(const char *device_compatible) const noexcept {
     for (usize i = 0; i < compatible_count_; ++i) {
-      if (string_compare(compatible_list_[i], device_compatible) == 0) {
+      if (strcmp(compatible_list_[i], device_compatible) == 0) {
         return true;
       }
     }
     return false;
   }
 
-private:
-  [[nodiscard]] static int string_compare(const char *s1,
-                                          const char *s2) noexcept {
-    if (s1 == nullptr || s2 == nullptr)
-      return -1;
-    while (*s1 && *s2 && *s1 == *s2) {
-      s1++;
-      s2++;
-    }
-    return *s1 - *s2;
-  }
 };
 
 // ========================================================================

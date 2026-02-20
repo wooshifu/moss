@@ -108,19 +108,22 @@ enum class CpuState : u32 {
 };
 
 /// Global CPU topology info
+/// All cross-CPU shared fields use __atomic builtins (not volatile) to ensure
+/// correct memory ordering on ARM64.  We use raw builtins here because this
+/// file runs before moss.containers is fully available.
 struct CpuTopology {
-    u32 total_cpus;
-    u32 online_cpus;
-    volatile CpuState cpu_states[moss::kernel::MAX_CPUS];
-    u64 boot_timestamps[moss::kernel::MAX_CPUS];
-    bool detection_completed;
+    u32 total_cpus;                              // written only by CPU 0 during init
+    u32 online_cpus;                             // atomic: concurrent inc from secondary CPUs
+    u32 cpu_states[moss::kernel::MAX_CPUS];      // atomic: each CPU writes its own slot; CPU 0 reads all
+    u64 boot_timestamps[moss::kernel::MAX_CPUS]; // written once per CPU during init
+    bool detection_completed;                    // written by CPU 0, read by others after barrier
 };
 
 // Global variable definitions
 static CpuTopology g_cpu_topology = {
     .total_cpus = 1,
     .online_cpus = 1,
-    .cpu_states = {CpuState::Online},
+    .cpu_states = {static_cast<u32>(CpuState::Online)},
     .boot_timestamps = {0},
     .detection_completed = false};
 
@@ -157,17 +160,28 @@ static u64 get_timestamp() noexcept {
     return count;
 }
 
+// Helpers for atomic cpu_states[] access (stored as u32, CpuState enum underneath)
+static void store_cpu_state(u32 cpu_id, CpuState state) noexcept {
+    __atomic_store_n(&g_cpu_topology.cpu_states[cpu_id],
+                     static_cast<u32>(state), __ATOMIC_RELEASE);
+}
+
+static CpuState load_cpu_state(u32 cpu_id) noexcept {
+    return static_cast<CpuState>(
+        __atomic_load_n(&g_cpu_topology.cpu_states[cpu_id], __ATOMIC_ACQUIRE));
+}
+
 static void initialize_cpu_startup_info(u32 detected_cpus) noexcept {
     g_cpu_topology.total_cpus = detected_cpus;
-    g_cpu_topology.online_cpus = 1;
+    __atomic_store_n(&g_cpu_topology.online_cpus, 1, __ATOMIC_RELAXED);
     g_cpu_topology.detection_completed = true;
 
     for (u32 cpu = 0; cpu < moss::kernel::MAX_CPUS; cpu++) {
         if (cpu == 0) {
-            g_cpu_topology.cpu_states[cpu] = CpuState::Online;
+            store_cpu_state(cpu, CpuState::Online);
             g_cpu_topology.boot_timestamps[cpu] = get_timestamp();
         } else {
-            g_cpu_topology.cpu_states[cpu] = CpuState::Offline;
+            store_cpu_state(cpu, CpuState::Offline);
             g_cpu_topology.boot_timestamps[cpu] = 0;
         }
     }
@@ -193,7 +207,7 @@ static void initialize_cpu_startup_info(u32 detected_cpus) noexcept {
     uart_debug[0] = 10;
     early_uart_lock_release();
 
-    while (g_cpu_topology.cpu_states[cpu_id] != CpuState::Parked) {
+    while (load_cpu_state(cpu_id) != CpuState::Parked) {
         if (iteration >= max_iterations) {
             early_uart_lock_acquire();
             uart_debug[0] = 'T';
@@ -201,11 +215,9 @@ static void initialize_cpu_startup_info(u32 detected_cpus) noexcept {
             uart_debug[0] = 10;
             early_uart_lock_release();
 
-            g_cpu_topology.cpu_states[cpu_id] = CpuState::Failed;
+            store_cpu_state(cpu_id, CpuState::Failed);
             return false;
         }
-
-        asm volatile("dmb sy" ::: "memory");
 
         for (volatile u32 i = 0; i < 10000; i = i + 1) {
             asm volatile("nop");
@@ -216,7 +228,7 @@ static void initialize_cpu_startup_info(u32 detected_cpus) noexcept {
             early_uart_lock_acquire();
             uart_debug[0] = 'C';
             uart_debug[0] = '0' + static_cast<u8>(cpu_id % 10);
-            uart_debug[0] = '0' + static_cast<u8>(g_cpu_topology.cpu_states[cpu_id]);
+            uart_debug[0] = '0' + static_cast<u8>(load_cpu_state(cpu_id));
             uart_debug[0] = 10;
             early_uart_lock_release();
         }
@@ -233,20 +245,17 @@ static void initialize_cpu_startup_info(u32 detected_cpus) noexcept {
 
 extern "C" void mark_cpu_online(u32 cpu_id) noexcept {
     if (cpu_id < moss::kernel::MAX_CPUS) {
-        g_cpu_topology.cpu_states[cpu_id] = CpuState::Online;
+        store_cpu_state(cpu_id, CpuState::Online);
         g_cpu_topology.boot_timestamps[cpu_id] = 0;
-        // Atomic increment: called concurrently from multiple secondary CPUs
-        __atomic_fetch_add(&g_cpu_topology.online_cpus, 1, __ATOMIC_RELAXED);
+        __atomic_fetch_add(&g_cpu_topology.online_cpus, 1, __ATOMIC_ACQ_REL);
     }
 }
 
 extern "C" void mark_cpu_parked(u32 cpu_id) noexcept {
     if (cpu_id < moss::kernel::MAX_CPUS) {
-        g_cpu_topology.cpu_states[cpu_id] = CpuState::Parked;
         g_cpu_topology.boot_timestamps[cpu_id] = 0;
-
-        asm volatile("dmb sy" ::: "memory");
-        asm volatile("dsb sy" ::: "memory");
+        // Release store: makes all prior initialization visible to CPU 0
+        store_cpu_state(cpu_id, CpuState::Parked);
 
         volatile u8 *uart_debug = reinterpret_cast<volatile u8 *>(0x9000000);
         early_uart_lock_acquire();
@@ -259,7 +268,7 @@ extern "C" void mark_cpu_parked(u32 cpu_id) noexcept {
 
 void mark_cpu_active(u32 cpu_id) noexcept {
     if (cpu_id < moss::kernel::MAX_CPUS) {
-        g_cpu_topology.cpu_states[cpu_id] = CpuState::Active;
+        store_cpu_state(cpu_id, CpuState::Active);
     }
 }
 
@@ -267,7 +276,7 @@ bool is_cpu_in_state(u32 cpu_id, CpuState expected_state) noexcept {
     if (cpu_id >= moss::kernel::MAX_CPUS) {
         return false;
     }
-    return g_cpu_topology.cpu_states[cpu_id] == expected_state;
+    return load_cpu_state(cpu_id) == expected_state;
 }
 
 bool wait_for_cpu_state(u32 cpu_id, CpuState expected_state, u32 timeout_ms) noexcept {
@@ -277,8 +286,7 @@ bool wait_for_cpu_state(u32 cpu_id, CpuState expected_state, u32 timeout_ms) noe
 
     u32 elapsed = 0;
     while (elapsed < timeout_ms) {
-        asm volatile("dmb sy" ::: "memory");
-        if (g_cpu_topology.cpu_states[cpu_id] == expected_state) {
+        if (load_cpu_state(cpu_id) == expected_state) {
             return true;
         }
         for (volatile u32 i = 0; i < 10000; i = i + 1) {
@@ -287,8 +295,7 @@ bool wait_for_cpu_state(u32 cpu_id, CpuState expected_state, u32 timeout_ms) noe
         elapsed += 10;
     }
 
-    asm volatile("dmb sy" ::: "memory");
-    return g_cpu_topology.cpu_states[cpu_id] == expected_state;
+    return load_cpu_state(cpu_id) == expected_state;
 }
 
 [[noreturn]] void cpu_park(u32 cpu_id) noexcept {
@@ -303,7 +310,9 @@ bool wait_for_cpu_state(u32 cpu_id, CpuState expected_state, u32 timeout_ms) noe
     uart_base[0] = 10;
     early_uart_lock_release();
 
-    mark_cpu_parked(cpu_id);
+    // Directly use store_cpu_state + UART (mark_cpu_parked does UART too,
+    // but cpu_park has its own UART output above, so just set state here)
+    store_cpu_state(cpu_id, CpuState::Parked);
 
     while (!is_cpu_in_state(cpu_id, CpuState::Active)) {
         asm volatile("wfi");
@@ -355,10 +364,9 @@ extern "C" [[noreturn]] void secondary_cpu_entry() noexcept {
     early_uart_lock_release();
 
     // --- Phase 1: Park and wait for CPU 0 to finish initialization ---
-    // Directly set state without UART output to avoid FIFO contention
+    // Use atomic release store so CPU 0 sees the state transition
     if (cpu_id < moss::kernel::MAX_CPUS) {
-        g_cpu_topology.cpu_states[cpu_id] = CpuState::Parked;
-        asm volatile("dmb sy" ::: "memory");
+        store_cpu_state(cpu_id, CpuState::Parked);
     }
 
     // Wait until CPU 0 marks us as Active (meaning all subsystems are ready)
@@ -410,10 +418,9 @@ extern "C" [[noreturn]] void secondary_cpu_entry() noexcept {
     moss::kernel::hal::timer::set_compare(counter_now + first_tick_cycles);
 
     // 6. Mark CPU as online (init complete)
-    asm volatile("dmb sy" ::: "memory");
+    // mark_cpu_online uses __ATOMIC_RELEASE for state + __ATOMIC_ACQ_REL for count
     mark_cpu_online(cpu_id);
-    asm volatile("dmb sy" ::: "memory");
-    asm volatile("sev" ::: "memory");
+    asm volatile("sev" ::: "memory");  // wake CPU 0's wait_for_cpu_state
 
     early_uart_lock_acquire();
     uart_out[0] = 'R';
@@ -448,9 +455,10 @@ void activate_secondary_cpus() noexcept {
         }
 
         // Unblock secondary CPU from its WFE loop
+        // store_cpu_state uses __ATOMIC_RELEASE, so the state is visible
+        // before SEV wakes the secondary CPU from WFE.
         mark_cpu_active(cpu_id);
-        asm volatile("dmb sy" ::: "memory");
-        asm volatile("sev");
+        asm volatile("sev" ::: "memory");
 
         // Wait for it to finish init and reach Online state
         if (wait_for_cpu_state(cpu_id, CpuState::Online, 3000)) {
@@ -811,8 +819,7 @@ void update_boot_stage(BootStage stage, ::moss::kernel::ErrorCode error) noexcep
             // Mark Starting BEFORE PSCI call to avoid race: secondary CPU
             // may reach Parked before we return from PSCI, and we must not
             // overwrite its Parked state with Starting.
-            g_cpu_topology.cpu_states[cpu_id] = CpuState::Starting;
-            asm volatile("dmb sy" ::: "memory");
+            store_cpu_state(cpu_id, CpuState::Starting);
 
             cpu_startup_flags[cpu_id][0] = reinterpret_cast<u64>(secondary_cpu_entry);
             cpu_startup_flags[cpu_id][1] = 1;
@@ -857,7 +864,7 @@ void update_boot_stage(BootStage stage, ::moss::kernel::ErrorCode error) noexcep
         // Count successfully parked CPUs
         successful_cpus = 1;
         for (u32 cpu_id = 1; cpu_id < detected_cpus; cpu_id++) {
-            if (g_cpu_topology.cpu_states[cpu_id] == CpuState::Parked) {
+            if (load_cpu_state(cpu_id) == CpuState::Parked) {
                 successful_cpus++;
             }
         }

@@ -932,7 +932,15 @@ public:
   static void enqueue(void (*fn)(void *), void *arg) noexcept {
     auto *cb = alloc_node();
     if (cb == nullptr) {
-      // Pool exhausted — fall back to synchronous execution.
+      // Pool exhausted — drain completed callbacks to reclaim nodes, then retry.
+      process_callbacks();
+      cb = alloc_node();
+    }
+    if (cb == nullptr) {
+      // Still exhausted after draining.  Synchronous execution risks
+      // use-after-free if an RCU reader is active, but is the last resort
+      // to avoid leaking memory.  In practice this should not happen with
+      // a 512-entry pool unless the system is severely overloaded.
       fn(arg);
       return;
     }
@@ -1710,36 +1718,42 @@ private:
   void remove_page_from_list(
       moss::kernel::containers::AtomicPtr<SlabPage> &head,
       SlabPage *page) noexcept {
-    // CAS-based lock-free removal from singly-linked list.
-    // Case 1: page is the head — CAS head from page to page->next.
-    SlabPage *expected = page;
-    SlabPage *page_next = page->next.load(moss::MemoryOrder::Acquire);
-    if (head.compare_exchange_strong(expected, page_next,
-                                      moss::MemoryOrder::AcqRel,
-                                      moss::MemoryOrder::Acquire)) {
-      page->next.store(nullptr, moss::MemoryOrder::Relaxed);
-      return;
-    }
-    // Case 2: page is in the middle or tail — walk from head.
-    SlabPage *prev = head.load(moss::MemoryOrder::Acquire);
-    while (prev != nullptr) {
-      SlabPage *curr = prev->next.load(moss::MemoryOrder::Acquire);
-      if (curr == page) {
-        // Splice prev->next from page to page->next.
-        SlabPage *next = page->next.load(moss::MemoryOrder::Acquire);
-        if (prev->next.compare_exchange_strong(curr, next,
-                                                moss::MemoryOrder::AcqRel,
-                                                moss::MemoryOrder::Acquire)) {
-          page->next.store(nullptr, moss::MemoryOrder::Relaxed);
-          return;
-        }
-        // CAS failed — concurrent modification; restart from head.
-        prev = head.load(moss::MemoryOrder::Acquire);
-        continue;
+    // CAS-based removal from singly-linked list with retry.
+    // Retry loop handles concurrent modifications to head or prev->next.
+    constexpr int MAX_RETRIES = 16;
+    for (int retry = 0; retry < MAX_RETRIES; ++retry) {
+      // Case 1: page is the head.
+      SlabPage *expected = page;
+      // Re-load page->next inside the retry loop to avoid stale values.
+      SlabPage *page_next = page->next.load(moss::MemoryOrder::Acquire);
+      if (head.compare_exchange_strong(expected, page_next,
+                                        moss::MemoryOrder::AcqRel,
+                                        moss::MemoryOrder::Acquire)) {
+        page->next.store(nullptr, moss::MemoryOrder::Relaxed);
+        return;
       }
-      prev = curr;
+
+      // Case 2: page is in the middle or tail — walk from head.
+      SlabPage *prev = head.load(moss::MemoryOrder::Acquire);
+      while (prev != nullptr) {
+        SlabPage *curr = prev->next.load(moss::MemoryOrder::Acquire);
+        if (curr == page) {
+          // Re-load page->next right before CAS to minimise TOCTOU window.
+          SlabPage *next = page->next.load(moss::MemoryOrder::Acquire);
+          if (prev->next.compare_exchange_strong(curr, next,
+                                                  moss::MemoryOrder::AcqRel,
+                                                  moss::MemoryOrder::Acquire)) {
+            page->next.store(nullptr, moss::MemoryOrder::Relaxed);
+            return;
+          }
+          // CAS failed — restart from head for this retry.
+          break;
+        }
+        prev = curr;
+      }
+      // Page not found or CAS failed — retry from scratch.
     }
-    // page not found in list — benign (already removed by concurrent op).
+    // Exhausted retries — page was likely already removed by a concurrent op.
   }
 
   [[nodiscard]] void *allocate_page() noexcept {
