@@ -183,15 +183,11 @@ long system_call_handler(long syscall_number, long arg0, long arg1,
                          long arg2, long arg3, long arg4, long arg5) noexcept {
   using namespace moss::kernel;
 
+  // syscall 0 = debug_print (raw UART output from userspace)
   if (syscall_number == 0) {
-    log::klog::debug("syscall 0 (debug_print)");
     if (arg0 != 0) {
       hal::uart::puts(reinterpret_cast<const char *>(arg0));
     }
-  } else if (syscall_number == 1) {
-    log::klog::debug("syscall 1 (exit) status={}", arg0);
-  } else {
-    log::klog::debug("syscall {}", syscall_number);
   }
 
   return syscall::SyscallDispatcher::dispatch(syscall_number, arg0, arg1, arg2,
