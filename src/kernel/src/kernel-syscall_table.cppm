@@ -234,6 +234,11 @@ namespace handlers {
     long sys_close(long arg0, long arg1, long arg2, long arg3, long arg4, long arg5) noexcept;
     long sys_read(long arg0, long arg1, long arg2, long arg3, long arg4, long arg5) noexcept;
     long sys_write(long arg0, long arg1, long arg2, long arg3, long arg4, long arg5) noexcept;
+    long sys_lseek(long arg0, long arg1, long arg2, long arg3, long arg4, long arg5) noexcept;
+    long sys_fstat(long arg0, long arg1, long arg2, long arg3, long arg4, long arg5) noexcept;
+    long sys_dup(long arg0, long arg1, long arg2, long arg3, long arg4, long arg5) noexcept;
+    long sys_dup2(long arg0, long arg1, long arg2, long arg3, long arg4, long arg5) noexcept;
+    long sys_pipe(long arg0, long arg1, long arg2, long arg3, long arg4, long arg5) noexcept;
 
     // Memory management
     long sys_mmap(long arg0, long arg1, long arg2, long arg3, long arg4, long arg5) noexcept;

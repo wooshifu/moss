@@ -513,10 +513,60 @@ static long console_release([[maybe_unused]] File* file) noexcept {
 }
 
 static long console_read([[maybe_unused]] File* file,
-                          [[maybe_unused]] u8* buf,
-                          [[maybe_unused]] usize count) noexcept {
-    // Console read not yet supported (would need input buffer / interrupt)
-    return 0;
+                          u8* buf, usize count) noexcept {
+    // Polling-based, line-buffered console input with echo.
+    // Reads characters from UART RX FIFO, echoes them back, and returns
+    // when a newline is received or the buffer is full.
+    usize pos = 0;
+    while (pos < count) {
+        int ch = uart::getc();
+        if (ch < 0) {
+            // No data available
+            if (pos > 0) break;  // Return partial line if we have data
+            // Low-power wait: WFE sleeps until next event (timer IRQ wakes us)
+#if defined(__aarch64__)
+            asm volatile("wfe");
+#else
+            // x86_64 / RISC-V: pause hint
+            asm volatile("" ::: "memory");
+#endif
+            continue;
+        }
+
+        // Handle backspace (DEL=0x7F or BS=0x08)
+        if (ch == 0x7F || ch == 0x08) {
+            if (pos > 0) {
+                --pos;
+                uart::putc('\b');
+                uart::putc(' ');
+                uart::putc('\b');
+            }
+            continue;
+        }
+
+        // Handle Ctrl+C → discard line, print "^C\n", restart
+        if (ch == 0x03) {
+            uart::putc('^');
+            uart::putc('C');
+            uart::putc('\r');
+            uart::putc('\n');
+            pos = 0;
+            continue;
+        }
+
+        // Handle Enter (CR or LF)
+        if (ch == '\r' || ch == '\n') {
+            uart::putc('\r');
+            uart::putc('\n');
+            if (pos < count) buf[pos++] = '\n';
+            break;
+        }
+
+        // Echo printable characters and store in buffer
+        uart::putc(static_cast<char>(ch));
+        buf[pos++] = static_cast<u8>(ch);
+    }
+    return static_cast<long>(pos);
 }
 
 static long console_write([[maybe_unused]] File* file,
