@@ -39,40 +39,6 @@ export namespace moss::kernel::process {
 
 namespace log = moss::kernel::logging;
 
-// ---------------------------------------------------------------------------
-// Direct-UART helpers (bypass ring buffer to avoid IRQ livelock / lock
-// contention that makes klog unusable from ISR and idle-loop contexts).
-// ---------------------------------------------------------------------------
-
-// Append decimal representation of v to buf at pos (no NUL terminator).
-inline void fmt_u64(char* buf, u32& pos, u32 cap, u64 v) noexcept {
-  char tmp[20];
-  u32 len = 0;
-  if (v == 0) { tmp[len++] = '0'; }
-  else { while (v > 0 && len < 20) { tmp[len++] = static_cast<char>('0' + v % 10); v /= 10; } }
-  for (u32 i = len; i > 0 && pos < cap - 1; --i) buf[pos++] = tmp[i - 1];
-}
-
-inline void fmt_str(char* buf, u32& pos, u32 cap, const char* s) noexcept {
-  while (*s != '\0' && pos < cap - 1) buf[pos++] = *s++;
-}
-
-/// Print idle-heartbeat via direct UART (no locks, no ring buffer).
-inline void idle_heartbeat_print(const char* tag, u32 cpu, u64 uptime_ms) noexcept {
-  char buf[96];
-  u32 pos = 0;
-  constexpr u32 CAP = sizeof(buf);
-  fmt_str(buf, pos, CAP, "[idle] ");
-  fmt_str(buf, pos, CAP, tag);
-  fmt_str(buf, pos, CAP, " CPU");
-  fmt_u64(buf, pos, CAP, cpu);
-  fmt_str(buf, pos, CAP, " heartbeat: uptime_ms=");
-  fmt_u64(buf, pos, CAP, uptime_ms);
-  fmt_str(buf, pos, CAP, "\n");
-  buf[pos] = '\0';
-  early_debug_print(buf);
-}
-
 // CFS scheduling parameters
 namespace CfsParams {
 inline constexpr u64 SCHED_LATENCY_NS = 6000000;  // 6ms
@@ -831,7 +797,7 @@ public:
 
     IdleTask* idle_task = get_idle_task(cpu_id);
     if (idle_task == nullptr) {
-      log::klog::warn("CPU{}: idle task not set, creating default", cpu_id);
+      log::klog::info("CPU{}: idle task not set, creating default", cpu_id);
 
       idle_task = create_idle_task(cpu_id);
       if (idle_task) {
@@ -1040,92 +1006,6 @@ public:
     (void)total_preemptions_.fetch_add_local(1);
   }
 
-  // Create 20 test tasks to verify scheduler
-  void create_test_task() noexcept {
-    early_debug_print("[sched] creating 20 test tasks...\n");
-
-    bool found_user_task = false;
-    for (u32 cpu = 0; cpu < MAX_CPUS; cpu++) {
-      Thread* current_task = current_running_tasks_[cpu];
-      if (current_task != nullptr && current_task->tid == 1000) {
-        current_task->se.vruntime = 100;
-        found_user_task = true;
-        break;
-      }
-    }
-
-    (void)found_user_task;
-
-    // 32KB per stack — IRQ handling (irq_trampoline 272B + scheduler_tick
-    // + RB-tree ops + logging) runs on the interrupted task's stack.
-    alignas(16) static char test_task_stacks[20][32768];
-    static Thread* test_threads[20];
-
-    u32 created_tasks = 0;
-    u32 failed_tasks = 0;
-
-    for (u32 i = 0; i < 20; i++) {
-      u32 tid = 1001 + i;
-
-      test_threads[i] = new Thread(tid, 1);
-      if (test_threads[i] == nullptr) {
-        failed_tasks++;
-        continue;
-      }
-
-      test_threads[i]->stack_base = reinterpret_cast<VirtAddr>(test_task_stacks[i]);
-      test_threads[i]->stack_size = sizeof(test_task_stacks[i]);
-
-      test_threads[i]->context.sp = reinterpret_cast<u64>(test_task_stacks[i] + sizeof(test_task_stacks[i]) - 16);
-      test_threads[i]->context.pc = reinterpret_cast<u64>(&test_task_entry);
-#if defined(MOSS_ARCH_ARM64)
-      test_threads[i]->context.x[30] = reinterpret_cast<u64>(&test_task_entry);  // LR = entry for context_switch ret
-#endif
-      test_threads[i]->context.pstate = 0x00000000;  // DAIF=0: all interrupts unmasked
-
-      test_threads[i]->sched_class = process::SchedClass::Normal;
-
-      test_threads[i]->se.nice = 0;
-      test_threads[i]->se.weight = CfsParams::nice_to_weight(0);
-
-      test_threads[i]->se.vruntime = static_cast<u64>(i);
-
-      u32 target_cpu = i % MAX_CPUS;
-      enqueue_task(test_threads[i], target_cpu);
-
-      (void)tid;
-      created_tasks++;
-    }
-
-    // Summary via direct UART (one message instead of many klog calls)
-    char msg[80];
-    u32 pos = 0;
-    constexpr u32 CAP = sizeof(msg);
-    fmt_str(msg, pos, CAP, "[sched] test tasks: created=");
-    fmt_u64(msg, pos, CAP, created_tasks);
-    fmt_str(msg, pos, CAP, " failed=");
-    fmt_u64(msg, pos, CAP, failed_tasks);
-    fmt_str(msg, pos, CAP, "\n");
-    msg[pos] = '\0';
-    early_debug_print(msg);
-  }
-
-  void verify_task_diversity() noexcept {
-    // Quick sanity check: count per-CPU queues via direct UART.
-    u32 total = 0;
-    for (u32 cpu = 0; cpu < MAX_CPUS; cpu++)
-      total += get_cpu_nr_running(cpu);
-
-    char msg[64];
-    u32 pos = 0;
-    constexpr u32 CAP = sizeof(msg);
-    fmt_str(msg, pos, CAP, "[sched] total queued tasks: ");
-    fmt_u64(msg, pos, CAP, total);
-    fmt_str(msg, pos, CAP, "\n");
-    msg[pos] = '\0';
-    early_debug_print(msg);
-  }
-
 private:
   static Thread* current_running_tasks_[MAX_CPUS];
 
@@ -1150,44 +1030,6 @@ public:
   static Thread* get_current_task() noexcept {
     u32 cpu = CfsScheduler::get_current_cpu_id();
     return (cpu < MAX_CPUS) ? current_running_tasks_[cpu] : nullptr;
-  }
-
-  [[noreturn]] static void test_task_entry() noexcept {
-    // Enable IRQs: context_switch does NOT restore DAIF, so when a fresh
-    // task is first-started from inside an IRQ handler (DAIF.I=1), we
-    // arrive here with interrupts masked.  Unmask IRQs so the timer can
-    // preempt us.
-#if defined(MOSS_ARCH_ARM64)
-    asm volatile("msr daifclr, #2" ::: "memory");
-#endif
-
-    Thread* current_task = get_current_task();
-    u32 task_tid = (current_task != nullptr) ? static_cast<u32>(current_task->tid) : 0;
-    i32 task_nice = (current_task != nullptr) ? current_task->se.nice : 0;
-    u32 task_weight = (current_task != nullptr) ? current_task->se.weight : 1024;
-
-    (void)task_tid;
-    (void)task_nice;
-    (void)task_weight;
-
-    while (true) {
-      if (task_nice < 0) {
-        for (volatile int work = 0; work < 1000; work = work + 1) {
-        }
-      } else if (task_nice > 5) {
-        for (volatile int work = 0; work < 100; work = work + 1) {
-        }
-      }
-
-      yield_cpu();
-    }
-  }
-
-  static void yield_cpu() noexcept {
-    arch::cpu_yield();
-
-    for (volatile int i = 0; i < 10000; i = i + 1) {
-    }
   }
 
   // ---- GIC timer IRQ handler ----
@@ -1266,12 +1108,10 @@ public:
 
     u32 current_cpu = CfsScheduler::get_current_cpu_id();
 
-    // Create synthetic test tasks
-    early_debug_print("[sched] creating test tasks...\n");
-    create_test_task();
-    early_debug_print("[sched] test tasks created\n");
-
-    verify_task_diversity();
+    // NOTE: Synthetic test tasks (create_test_task) have been removed.
+    // They used TID 1001-1020 which conflicted with fork-allocated TIDs,
+    // consumed scheduling bandwidth via execute_task_simplified, and caused
+    // user process starvation after long IRQ-masked console_read periods.
 
     // Arm the periodic scheduler tick timer
     if (timer::TimerSubsystem::instance().is_initialized()) {
@@ -1343,11 +1183,15 @@ public:
         }
       }
 
+      // Raise log level before entering the scheduling loop so that
+      // debug/info messages from the idle loop and scheduler tick
+      // do not pollute user-visible UART output.
+      log::set_log_level(log::LogLevel::Warn);
+
       // BSP enters the same per-CPU scheduling loop as secondary CPUs.
       // This ensures that user tasks re-enqueued after preemption (e.g. init/shell)
       // are properly dispatched via context_switch_to_task, not just
       // execute_task_simplified.
-      early_debug_print("[BSP] entering scheduling loop\n");
       cpu_startup_entry(current_cpu);
     }
 
@@ -1358,38 +1202,14 @@ public:
 
   // Legacy busy-wait scheduling loop (fallback when timer is unavailable)
   [[noreturn]] void fallback_busy_wait_scheduling(u32 current_cpu) noexcept {
-    u32 active_cycles = 0;
-    constexpr u32 LOG_INTERVAL = 1000000;
-
     while (true) {
       current_cpu = CfsScheduler::get_current_cpu_id();
 
       Thread *next_task = pick_next_task(current_cpu);
       if (next_task != nullptr) {
         dequeue_task(next_task);
-        active_cycles++;
-
-        if (next_task->tid >= 1001 && next_task->tid <= 1020) {
-          u64 start_time = CfsScheduler::get_current_time();
-          i32 nice = next_task->se.nice;
-          u32 work_amount = 1000;
-          if (nice < 0) work_amount = 1500;
-          else if (nice > 5) work_amount = 500;
-
-          for (volatile u32 work = 0; work < work_amount; work = work + 1) {}
-
-          u64 end_time = CfsScheduler::get_current_time();
-          u64 delta_exec = (end_time > start_time) ? (end_time - start_time) : 1000;
-          update_current(next_task, delta_exec);
-          enqueue_task(next_task, current_cpu);
-        }
-
-        if (active_cycles == 1 || (active_cycles % LOG_INTERVAL == 0)) {
-          log::klog::info("CPU{}: task TID={} (active: {})", current_cpu, next_task->tid, active_cycles);
-        }
-
-        CfsScheduler::set_current_task(next_task);
-        record_context_switch();
+        execute_task_simplified(next_task, current_cpu);
+        enqueue_task(next_task, current_cpu);
       } else {
         idle_task_loop(current_cpu);
       }
@@ -1510,8 +1330,8 @@ private:
       // Re-enable IRQs for the returned-to context.
       arch::enable_interrupts();
 #else
-      // Non-ARM64: direct call (no asm context_switch yet)
-      test_task_entry();
+      // Non-ARM64: no asm context_switch yet — just simulate execution
+      execute_task_simplified(task, get_current_cpu_id());
 #endif
     }
   }
@@ -1537,7 +1357,6 @@ public:
   // and switches to it.  Never returns to the caller because the exited
   // task's context is no longer valid.
   [[noreturn]] void schedule_after_exit() noexcept {
-    early_debug_print("[sched] schedule_after_exit() entered\n");
     u32 cpu = get_current_cpu_id();
 
     // Clear current task — the old one is dead
@@ -1549,12 +1368,10 @@ public:
 
     // Loop: find a runnable task, switch to it.  When bootstrap context
     // is restored (the task was preempted away or exited), try next.
-    u64 last_idle_log_ns = timer::TimerSubsystem::instance().now_ns();
     while (true) {
       Thread *next = pick_next_task(cpu);
       if (next != nullptr) {
         dequeue_task(next);
-        early_debug_print("[sched] schedule_after_exit: dispatching task\n");
         context_switch_to_task(next);
         // context_switch returned — bootstrap context restored.
         // The task was preempted or exited.  Re-clear and retry.
@@ -1562,11 +1379,6 @@ public:
       } else {
         // No runnable tasks: idle until timer interrupt enqueues work
         arch::cpu_idle_once();
-        u64 now = timer::TimerSubsystem::instance().now_ns();
-        if (now - last_idle_log_ns >= 1000000000ULL) {
-          last_idle_log_ns = now;
-          idle_heartbeat_print("exit", cpu, now / 1000000);
-        }
       }
     }
   }
