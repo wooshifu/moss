@@ -724,6 +724,45 @@ namespace handlers {
             fdt, static_cast<int>(fd), buf, static_cast<usize>(count));
     }
 
+    // ── Additional VFS syscalls (dup, dup2, pipe, lseek, fstat) ────
+
+    long sys_lseek(long fd, long offset, long whence, long, long, long) noexcept {
+        void* fdt = get_current_fd_table();
+        if (!fdt) return -Errno::EBADF;
+        return moss::kernel::vfs::syscall::do_lseek(
+            fdt, fd, static_cast<i64>(offset), static_cast<u32>(whence));
+    }
+
+    long sys_fstat(long fd, long stat_buf_addr, long, long, long, long) noexcept {
+        void* fdt = get_current_fd_table();
+        if (!fdt) return -Errno::EBADF;
+        if (stat_buf_addr == 0) return -Errno::EFAULT;
+        auto* stat_buf = reinterpret_cast<void*>(
+            static_cast<unsigned long long>(stat_buf_addr));
+        return moss::kernel::vfs::syscall::do_fstat(fdt, fd, stat_buf);
+    }
+
+    long sys_dup(long oldfd, long, long, long, long, long) noexcept {
+        void* fdt = get_current_fd_table();
+        if (!fdt) return -Errno::EBADF;
+        return moss::kernel::vfs::syscall::do_dup(fdt, oldfd);
+    }
+
+    long sys_dup2(long oldfd, long newfd, long, long, long, long) noexcept {
+        void* fdt = get_current_fd_table();
+        if (!fdt) return -Errno::EBADF;
+        return moss::kernel::vfs::syscall::do_dup2(fdt, oldfd, newfd);
+    }
+
+    long sys_pipe(long pipefd_addr, long, long, long, long, long) noexcept {
+        void* fdt = get_current_fd_table();
+        if (!fdt) return -Errno::EBADF;
+        if (pipefd_addr == 0) return -Errno::EFAULT;
+        auto* pipefd = reinterpret_cast<long*>(
+            static_cast<unsigned long long>(pipefd_addr));
+        return moss::kernel::vfs::syscall::do_pipe(fdt, pipefd);
+    }
+
     // 内存管理系统调用
     long sys_mmap(long, long, long, long, long, long) noexcept {
         log::klog::warn("syscall: mmap() not implemented");
@@ -814,17 +853,17 @@ const SyscallDescriptor SYSCALL_TABLE[static_cast<int>(SyscallNumber::MAX_SYSCAL
     {"close", handlers::sys_close, 1, true, "关闭文件"},
     {"read", handlers::sys_read, 3, true, "读取文件"},
     {"write", handlers::sys_write, 3, true, "写入文件"},
-    {"lseek", handlers::sys_not_implemented, 3, false, "文件定位"},
+    {"lseek", handlers::sys_lseek, 3, true, "文件定位"},
     {"stat", handlers::sys_not_implemented, 2, false, "获取文件状态"},
-    {"fstat", handlers::sys_not_implemented, 2, false, "获取文件描述符状态"},
+    {"fstat", handlers::sys_fstat, 2, true, "获取文件描述符状态"},
     {"lstat", handlers::sys_not_implemented, 2, false, "获取链接文件状态"},
     {"access", handlers::sys_not_implemented, 2, false, "检查文件权限"},
     {"chmod", handlers::sys_not_implemented, 2, false, "修改文件权限"},
     {"chown", handlers::sys_not_implemented, 3, false, "修改文件所有者"},
     {"umask", handlers::sys_not_implemented, 1, false, "设置文件创建掩码"},
-    {"dup", handlers::sys_not_implemented, 1, false, "复制文件描述符"},
-    {"dup2", handlers::sys_not_implemented, 2, false, "复制文件描述符到指定位置"},
-    {"pipe", handlers::sys_not_implemented, 1, false, "创建管道"},
+    {"dup", handlers::sys_dup, 1, true, "复制文件描述符"},
+    {"dup2", handlers::sys_dup2, 2, true, "复制文件描述符到指定位置"},
+    {"pipe", handlers::sys_pipe, 1, true, "创建管道"},
     {"mkdir", handlers::sys_not_implemented, 2, false, "创建目录"},
     {"rmdir", handlers::sys_not_implemented, 1, false, "删除目录"},
     {"link", handlers::sys_not_implemented, 2, false, "创建硬链接"},

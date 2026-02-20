@@ -7,8 +7,8 @@
 //
 // Execution flow:
 //   1. sys_write(stdout, "init: calling execve...\n") — announce trampoline
-//   2. sys_execve("/hello.elf", NULL, NULL) — replace process image with
-//      the hello.elf program from initramfs CPIO archive
+//   2. sys_execve("/shell.elf", NULL, NULL) — replace process image with
+//      the shell.elf program from initramfs CPIO archive
 //   3. On failure: sys_write(stdout, error message) → sys_exit(1)
 //
 // ARM64 syscall convention (Linux-compatible):
@@ -44,9 +44,9 @@ _user_program_start:
     mov     x2, #25                 // count = 25 bytes
     svc     #0                      // trap to EL1 → system_call_handler
 
-    // ---- Step 2: sys_execve("/hello.elf", NULL, NULL) ----
+    // ---- Step 2: sys_execve("/shell.elf", NULL, NULL) ----
     mov     x8, #11                 // syscall number: sys_execve
-    adr     x0, .Lpath_hello        // pathname = "/hello.elf"
+    adr     x0, .Lpath_shell        // pathname = "/shell.elf"
     mov     x1, #0                  // argv = NULL
     mov     x2, #0                  // envp = NULL
     svc     #0                      // trap to EL1 → sys_execve handler
@@ -78,8 +78,8 @@ _user_program_start:
     .ascii  "init: calling execve...\n"    // 25 bytes (includes \n, no NUL)
 .Lmsg_fail:
     .ascii  "init: execve failed!\n"       // 22 bytes (includes \n, no NUL)
-.Lpath_hello:
-    .asciz  "/hello.elf"                   // NUL-terminated VFS path for execve
+.Lpath_shell:
+    .asciz  "/shell.elf"                   // NUL-terminated VFS path for execve
 
 // =============================================================================
 // End-of-program marker

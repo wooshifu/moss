@@ -410,31 +410,45 @@ if(MOSS_TARGET_ARCH STREQUAL "ARM64")
   set(USERSPACE_DIR "${CMAKE_SOURCE_DIR}/userspace")
   set(USERSPACE_LD "${USERSPACE_DIR}/userspace.ld")
 
-  # Build hello.elf userspace program using the kernel's Clang cross-compiler
+  # Common compiler flags for userspace programs
+  set(USERSPACE_CFLAGS
+      --target=aarch64-unknown-elf
+      -ffreestanding -fno-stack-protector -nostdlib -nostartfiles
+      -fuse-ld=lld -O2 -Wall
+      -I${USERSPACE_DIR}
+      -Wl,-T,${USERSPACE_LD})
+
+  # Build hello.elf userspace program
   add_custom_command(
     OUTPUT ${CMAKE_BINARY_DIR}/userspace/hello.elf
     COMMAND ${CMAKE_COMMAND} -E make_directory ${CMAKE_BINARY_DIR}/userspace
-    COMMAND ${CMAKE_C_COMPILER}
-            --target=aarch64-unknown-elf
-            -ffreestanding -fno-stack-protector -nostdlib -nostartfiles
-            -fuse-ld=lld
-            -O2 -Wall
-            -Wl,-T,${USERSPACE_LD}
+    COMMAND ${CMAKE_C_COMPILER} ${USERSPACE_CFLAGS}
             -o ${CMAKE_BINARY_DIR}/userspace/hello.elf
             ${USERSPACE_DIR}/hello.c
-    DEPENDS ${USERSPACE_DIR}/hello.c ${USERSPACE_LD}
+    DEPENDS ${USERSPACE_DIR}/hello.c ${USERSPACE_DIR}/syscall.h ${USERSPACE_LD}
     COMMENT "Building userspace hello.elf"
   )
 
-  # Generate initramfs.cpio from userspace programs
+  # Build shell.elf interactive shell
+  add_custom_command(
+    OUTPUT ${CMAKE_BINARY_DIR}/userspace/shell.elf
+    COMMAND ${CMAKE_C_COMPILER} ${USERSPACE_CFLAGS}
+            -o ${CMAKE_BINARY_DIR}/userspace/shell.elf
+            ${USERSPACE_DIR}/shell.c
+    DEPENDS ${USERSPACE_DIR}/shell.c ${USERSPACE_DIR}/syscall.h ${USERSPACE_LD}
+    COMMENT "Building userspace shell.elf"
+  )
+
+  # Generate initramfs.cpio from all userspace programs
   # Uses GNU cpio "newc" format (070701 magic, required by the CPIO parser)
   add_custom_command(
     OUTPUT ${CMAKE_BINARY_DIR}/initramfs.cpio
     COMMAND uv run ${CMAKE_SOURCE_DIR}/scripts/gen_initramfs.py
             ${CMAKE_BINARY_DIR}/initramfs.cpio
             ${CMAKE_BINARY_DIR}/userspace
-            hello.elf
+            hello.elf shell.elf
     DEPENDS ${CMAKE_BINARY_DIR}/userspace/hello.elf
+            ${CMAKE_BINARY_DIR}/userspace/shell.elf
     WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
     COMMENT "Generating initramfs.cpio"
   )

@@ -70,6 +70,47 @@ inline void putc(char c) noexcept {
 }
 
 // ============================================================================
+// Low-level getc — architecture-specific single character input (non-blocking)
+// Returns 0-255 on success, -1 if no character available.
+// ============================================================================
+
+inline int getc() noexcept {
+#if defined(MOSS_ARCH_ARM64)
+  // PL011 UART: data register at base+0x00, flags register at base+0x18
+  // RXFE (RX FIFO Empty) is bit 4 of the flags register
+  auto base = platform::uart_base();
+  volatile u32 *uart_data  = reinterpret_cast<volatile u32 *>(base);
+  volatile u32 *uart_flags = reinterpret_cast<volatile u32 *>(base + 0x18);
+
+  if (*uart_flags & (1U << 4)) return -1;  // RXFE: RX FIFO empty
+  return static_cast<int>(*uart_data & 0xFFU);
+
+#elif defined(MOSS_ARCH_X86_64)
+  // COM1 serial port: Line Status Register at 0x3FD, data at 0x3F8
+  // DR (Data Ready) is bit 0 of LSR
+  u8 lsr;
+  asm volatile("inb %1, %0" : "=a"(lsr) : "Nd"(static_cast<u16>(0x3FD)));
+  if (!(lsr & 0x01)) return -1;  // No data ready
+  u8 data;
+  asm volatile("inb %1, %0" : "=a"(data) : "Nd"(static_cast<u16>(0x3F8)));
+  return static_cast<int>(data);
+
+#elif defined(MOSS_ARCH_RISCV)
+  // NS16550 UART: data register at base+0x00, Line Status at base+0x14
+  // DR (Data Ready) is bit 0 of LSR
+  auto base = platform::uart_base();
+  volatile u32 *uart_data = reinterpret_cast<volatile u32 *>(base);
+  volatile u32 *uart_lsr  = reinterpret_cast<volatile u32 *>(base + 0x14);
+
+  if ((*uart_lsr & 0x01) == 0) return -1;  // No data ready
+  return static_cast<int>(*uart_data & 0xFFU);
+
+#else
+  return -1;
+#endif
+}
+
+// ============================================================================
 // String output — with automatic \n → \r\n conversion
 // ============================================================================
 
