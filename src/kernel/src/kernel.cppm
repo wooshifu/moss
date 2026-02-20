@@ -47,6 +47,7 @@ import moss.mm;
 import moss.interrupts;
 import moss.drivers;
 import moss.fdt;
+import moss.initramfs;
 import moss.ipc;
 import moss.process;
 import moss.timer;

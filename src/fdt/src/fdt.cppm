@@ -73,6 +73,10 @@ struct PlatformInfo {
   // 启动参数（来自 /chosen 节点，指针指向 DTB blob 内部）
   const char *bootargs;
   const char *stdout_path;
+
+  // initramfs 地址（来自 /chosen 节点）
+  PhysAddr initrd_start;   // linux,initrd-start
+  PhysAddr initrd_end;     // linux,initrd-end
 };
 
 /// 全局平台信息实例（早期启动阶段填充）
@@ -387,6 +391,30 @@ static void parse_chosen(const void *fdt) noexcept {
       fdt_getprop(fdt, node, "bootargs", nullptr));
   g_platform_info.stdout_path = static_cast<const char *>(
       fdt_getprop(fdt, node, "stdout-path", nullptr));
+
+  // Parse initramfs address range (QEMU -initrd writes these to DTB)
+  int len = 0;
+  const void *prop = fdt_getprop(fdt, node, "linux,initrd-start", &len);
+  if (prop && len >= 4) {
+    // DTB stores as big-endian — can be 4 or 8 bytes depending on #address-cells
+    if (len == 8) {
+      g_platform_info.initrd_start = static_cast<PhysAddr>(
+          fdt64_to_cpu(*static_cast<const fdt64_t *>(prop)));
+    } else {
+      g_platform_info.initrd_start = static_cast<PhysAddr>(
+          fdt32_to_cpu(*static_cast<const fdt32_t *>(prop)));
+    }
+  }
+  prop = fdt_getprop(fdt, node, "linux,initrd-end", &len);
+  if (prop && len >= 4) {
+    if (len == 8) {
+      g_platform_info.initrd_end = static_cast<PhysAddr>(
+          fdt64_to_cpu(*static_cast<const fdt64_t *>(prop)));
+    } else {
+      g_platform_info.initrd_end = static_cast<PhysAddr>(
+          fdt32_to_cpu(*static_cast<const fdt32_t *>(prop)));
+    }
+  }
 }
 
 // ============================================================================

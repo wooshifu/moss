@@ -1209,8 +1209,22 @@ public:
     u32 cpu = get_current_cpu_id();
     Thread *curr = get_current_task();
 
+    if (curr == nullptr) {
+      // CPU is idle (e.g. after execve cleared current_task and returned to
+      // the idle loop via bootstrap context).  Check if any tasks are waiting
+      // in this CPU's runqueue and dispatch the highest-priority one.
+      Thread *next = pick_next_task(cpu);
+      if (next != nullptr) {
+        dequeue_task(next);
+        context_switch_to_task(next);
+        // Returns here when the idle loop is restored (unlikely for user tasks
+        // that eret and only come back via preemption into a new task).
+      }
+      return;
+    }
+
     // Update vruntime for the currently running task
-    if (curr != nullptr && curr->state == ProcessState::Running) {
+    if (curr->state == ProcessState::Running) {
       u64 now = get_current_time();
       u64 delta = (now > curr->se.exec_start) ? (now - curr->se.exec_start) : 1000;
       curr->se.exec_start = now;

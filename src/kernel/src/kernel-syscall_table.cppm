@@ -16,6 +16,7 @@ inline constexpr long ENOENT      = 2;   // No such file or directory
 inline constexpr long ESRCH       = 3;   // No such process
 inline constexpr long EINTR       = 4;   // Interrupted system call
 inline constexpr long EIO         = 5;   // I/O error
+inline constexpr long ENOEXEC     = 8;   // Exec format error
 inline constexpr long EBADF       = 9;   // Bad file descriptor
 inline constexpr long ECHILD      = 10;  // No child processes
 inline constexpr long EAGAIN      = 11;  // Try again / resource temporarily unavailable

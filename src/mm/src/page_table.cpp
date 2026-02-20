@@ -229,8 +229,12 @@ void PageTableManager::free_user_page_tables(PhysAddr pgd_phys) {
     auto &pge = pgd->entries[i0];
     if (!pge.is_valid() || !pge.is_table()) continue;
 
-    // Skip PGD[0]: shared kernel identity map (1GB blocks)
-    if (i0 == 0) continue;
+    // PGD[0] now points to a per-process private PUD that contains
+    // copies of the kernel 1GB block descriptors.  The loop below
+    // correctly handles this: is_block() entries (kernel identity map)
+    // are skipped, while table descriptors (user L2/L3 from demand
+    // paging) are recursively freed.  The PUD page itself is freed
+    // at the end of this iteration.
 
     auto *pud = get_table_from_physical(pge.get_phys_addr());
     if (!pud) continue;

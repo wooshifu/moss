@@ -327,6 +327,7 @@ add_subdirectory(src/aal)
 add_subdirectory(src/platform)
 add_subdirectory(src/hal)
 add_subdirectory(src/fdt)
+add_subdirectory(src/initramfs)
 add_subdirectory(src/containers)
 add_subdirectory(src/mm)
 add_subdirectory(src/drivers)
@@ -352,6 +353,7 @@ target_link_libraries(
           moss_hal_timer
           moss_logging
           moss_fdt
+          moss_initramfs
           moss_libfdt_c
           moss_boot
           moss_kernel
@@ -400,6 +402,46 @@ if(MOSS_TARGET_ARCH STREQUAL "ARM64")
   )
 endif()
 message(STATUS "将生成文件: moss.dis, moss.sym, moss.bin, moss_boot.bin, moss_code.bin")
+
+# === Userspace programs + initramfs CPIO (ARM64 only) ===
+if(MOSS_TARGET_ARCH STREQUAL "ARM64")
+  set(USERSPACE_DIR "${CMAKE_SOURCE_DIR}/userspace")
+  set(USERSPACE_LD "${USERSPACE_DIR}/userspace.ld")
+
+  # Build hello.elf userspace program using the kernel's Clang cross-compiler
+  add_custom_command(
+    OUTPUT ${CMAKE_BINARY_DIR}/userspace/hello.elf
+    COMMAND ${CMAKE_COMMAND} -E make_directory ${CMAKE_BINARY_DIR}/userspace
+    COMMAND ${CMAKE_C_COMPILER}
+            --target=aarch64-unknown-elf
+            -ffreestanding -fno-stack-protector -nostdlib -nostartfiles
+            -fuse-ld=lld
+            -O2 -Wall
+            -Wl,-T,${USERSPACE_LD}
+            -o ${CMAKE_BINARY_DIR}/userspace/hello.elf
+            ${USERSPACE_DIR}/hello.c
+    DEPENDS ${USERSPACE_DIR}/hello.c ${USERSPACE_LD}
+    COMMENT "Building userspace hello.elf"
+  )
+
+  # Generate initramfs.cpio from userspace programs
+  # Uses GNU cpio "newc" format (070701 magic, required by the CPIO parser)
+  add_custom_command(
+    OUTPUT ${CMAKE_BINARY_DIR}/initramfs.cpio
+    COMMAND uv run ${CMAKE_SOURCE_DIR}/scripts/gen_initramfs.py
+            ${CMAKE_BINARY_DIR}/initramfs.cpio
+            ${CMAKE_BINARY_DIR}/userspace
+            hello.elf
+    DEPENDS ${CMAKE_BINARY_DIR}/userspace/hello.elf
+    WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+    COMMENT "Generating initramfs.cpio"
+  )
+
+  add_custom_target(initramfs ALL DEPENDS ${CMAKE_BINARY_DIR}/initramfs.cpio)
+  add_dependencies(moss.elf initramfs)
+
+  message(STATUS "Userspace + initramfs configured (ARM64)")
+endif()
 
 # === 构建目标 (QEMU) ===
 if(MOSS_QEMU_RUNNER)

@@ -1,66 +1,41 @@
-// 用户空间Hello World程序
-// 使用MOSS内核系统调用接口
+// MOSS userspace hello program — loaded via execve from initramfs
+//
+// This is a minimal freestanding program that uses MOSS syscalls to write
+// a message to stdout and then exit cleanly.
 
-// 系统调用号定义（与内核系统调用表匹配）
-#define SYS_DEBUG_PRINT 0
-#define SYS_EXIT        1
-#define SYS_FORK       10
+#define SYS_EXIT  1
+#define SYS_WRITE 33
 
-// 系统调用接口函数
-static long syscall(long number, long arg0, long arg1, long arg2,
-                   long arg3, long arg4, long arg5) {
+static long syscall3(long number, long a0, long a1, long a2) {
     register long x8 asm("x8") = number;
-    register long x0 asm("x0") = arg0;
-    register long x1 asm("x1") = arg1;
-    register long x2 asm("x2") = arg2;
-    register long x3 asm("x3") = arg3;
-    register long x4 asm("x4") = arg4;
-    register long x5 asm("x5") = arg5;
+    register long x0 asm("x0") = a0;
+    register long x1 asm("x1") = a1;
+    register long x2 asm("x2") = a2;
     register long ret asm("x0");
-
-    asm volatile(
-        "svc #0"
+    asm volatile("svc #0"
         : "=r"(ret)
-        : "r"(x8), "r"(x0), "r"(x1), "r"(x2), "r"(x3), "r"(x4), "r"(x5)
-        : "memory"
-    );
-
+        : "r"(x8), "r"(x0), "r"(x1), "r"(x2)
+        : "memory");
     return ret;
 }
 
-// 打印字符串到内核调试输出
-static void print(const char* message) {
-    syscall(SYS_DEBUG_PRINT, (long)message, 0, 0, 0, 0, 0);
+static long write(int fd, const char *buf, long count) {
+    return syscall3(SYS_WRITE, fd, (long)buf, count);
 }
 
-// 退出程序
-static void exit(int status) {
-    syscall(SYS_EXIT, status, 0, 0, 0, 0, 0);
-    while(1); // 永远不应该到达这里
+static int strlen_simple(const char *s) {
+    int n = 0;
+    while (s[n]) n++;
+    return n;
 }
 
-// 程序入口点
-int main(void) {
-    print("Parent: about to fork\n");
-
-    long pid = syscall(SYS_FORK, 0, 0, 0, 0, 0, 0);
-
-    if (pid < 0) {
-        print("fork() failed!\n");
-    } else if (pid == 0) {
-        // Child process
-        print("Hello from child process!\n");
-    } else {
-        // Parent process
-        print("Hello from parent, child PID created!\n");
-    }
-
-    exit(0);
-    return 0; // 永远不会执行
+static void print(const char *msg) {
+    write(1, msg, strlen_simple(msg));
 }
 
-// 程序入口点（符合ELF标准）
 void _start(void) {
-    int result = main();
-    exit(result);
+    print("Hello from initramfs!\n");
+    print("MOSS execve() works!\n");
+    syscall3(SYS_EXIT, 0, 0, 0);
+    while (1) {}
 }
