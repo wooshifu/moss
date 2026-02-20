@@ -45,6 +45,7 @@ import moss.process;
 import moss.timer;
 import moss.logging;
 import moss.boot;
+import moss.vfs;
 
 import :elf;
 import :syscall_table;
@@ -186,6 +187,10 @@ public:
             log::klog::info("initramfs: not present (no -initrd passed to QEMU)");
         }
     }
+
+    // Initialize VFS: mount root (ramfs) + devfs
+    vfs::vfs_init();
+    early_debug_print("[kernel] VFS initialized\n");
 
     // Create initial user process
     auto init_result = create_init_process();
@@ -688,6 +693,15 @@ private:
     init_thread->state = ProcessState::Ready;
 
     init_proc->set_state(ProcessState::Running);
+
+    // Step 4b: Allocate FdTable and open stdin/stdout/stderr
+    {
+      auto* fdt = new vfs::FdTable();
+      fdt->init();
+      init_proc->set_fd_table(fdt);
+      vfs::vfs_init_stdio(fdt);
+      early_debug_print("[init] VFS fd table initialized (fd 0/1/2)\n");
+    }
 
     // Step 5: Register thread into process's thread list (for cleanup)
     init_proc->register_thread(init_thread);
