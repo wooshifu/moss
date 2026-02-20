@@ -8,6 +8,7 @@ module;
 
 // Assembly interop declarations (global module fragment)
 extern "C" void switch_to_user(void* context, unsigned long long user_stack);
+extern "C" void early_debug_print(const char* message) noexcept;
 #if defined(__aarch64__) || defined(MOSS_ARCH_ARM64)
 extern "C" void context_switch(void* prev_context, void* next_context);
 #endif
@@ -36,6 +37,61 @@ import moss.logging;
 export namespace moss::kernel::process {
 
 namespace log = moss::kernel::logging;
+
+// ---------------------------------------------------------------------------
+// Direct-UART helpers (bypass ring buffer to avoid IRQ livelock / lock
+// contention that makes klog unusable from ISR and idle-loop contexts).
+// ---------------------------------------------------------------------------
+
+// Append decimal representation of v to buf at pos (no NUL terminator).
+inline void fmt_u64(char* buf, u32& pos, u32 cap, u64 v) noexcept {
+  char tmp[20];
+  u32 len = 0;
+  if (v == 0) { tmp[len++] = '0'; }
+  else { while (v > 0 && len < 20) { tmp[len++] = static_cast<char>('0' + v % 10); v /= 10; } }
+  for (u32 i = len; i > 0 && pos < cap - 1; --i) buf[pos++] = tmp[i - 1];
+}
+
+inline void fmt_str(char* buf, u32& pos, u32 cap, const char* s) noexcept {
+  while (*s != '\0' && pos < cap - 1) buf[pos++] = *s++;
+}
+
+/// Print idle-heartbeat via direct UART (no locks, no ring buffer).
+inline void idle_heartbeat_print(const char* tag, u32 cpu, u64 uptime_ms) noexcept {
+  char buf[96];
+  u32 pos = 0;
+  constexpr u32 CAP = sizeof(buf);
+  fmt_str(buf, pos, CAP, "[idle] ");
+  fmt_str(buf, pos, CAP, tag);
+  fmt_str(buf, pos, CAP, " CPU");
+  fmt_u64(buf, pos, CAP, cpu);
+  fmt_str(buf, pos, CAP, " heartbeat: uptime_ms=");
+  fmt_u64(buf, pos, CAP, uptime_ms);
+  fmt_str(buf, pos, CAP, "\n");
+  buf[pos] = '\0';
+  early_debug_print(buf);
+}
+
+/// Print scheduler tick stats via direct UART (safe to call from ISR).
+inline void sched_tick_print(u64 tick, u32 cpu, u32 nr_running,
+                             u64 switches, u64 uptime_ms) noexcept {
+  char buf[160];
+  u32 pos = 0;
+  constexpr u32 CAP = sizeof(buf);
+  fmt_str(buf, pos, CAP, "[sched_tick] tick=");
+  fmt_u64(buf, pos, CAP, tick);
+  fmt_str(buf, pos, CAP, " CPU=");
+  fmt_u64(buf, pos, CAP, cpu);
+  fmt_str(buf, pos, CAP, " nr_running=");
+  fmt_u64(buf, pos, CAP, nr_running);
+  fmt_str(buf, pos, CAP, " switches=");
+  fmt_u64(buf, pos, CAP, switches);
+  fmt_str(buf, pos, CAP, " uptime_ms=");
+  fmt_u64(buf, pos, CAP, uptime_ms);
+  fmt_str(buf, pos, CAP, "\n");
+  buf[pos] = '\0';
+  early_debug_print(buf);
+}
 
 // CFS scheduling parameters
 namespace CfsParams {
@@ -984,25 +1040,19 @@ public:
 
   // Create 20 test tasks to verify scheduler
   void create_test_task() noexcept {
-    log::klog::info("create_test_task started");
-    log::klog::info("creating 20 test tasks to verify CFS scheduler...");
+    early_debug_print("[sched] creating 20 test tasks...\n");
 
-    log::klog::info("adjusting user task TID=1000 priority...");
     bool found_user_task = false;
-
     for (u32 cpu = 0; cpu < MAX_CPUS; cpu++) {
       Thread* current_task = current_running_tasks_[cpu];
       if (current_task != nullptr && current_task->tid == 1000) {
         current_task->se.vruntime = 100;
         found_user_task = true;
-        log::klog::info("set user task TID=1000 vruntime=100");
         break;
       }
     }
 
-    if (!found_user_task) {
-      log::klog::warn("TID=1000 not found in current running tasks");
-    }
+    (void)found_user_task;
 
     // 32KB per stack — IRQ handling (irq_trampoline 272B + scheduler_tick
     // + RB-tree ops + logging) runs on the interrupted task's stack.
@@ -1041,41 +1091,37 @@ public:
       u32 target_cpu = i % MAX_CPUS;
       enqueue_task(test_threads[i], target_cpu);
 
-      log::klog::info("created test task TID={} nice=0 weight={} vruntime={} CPU={}", tid, test_threads[i]->se.weight, test_threads[i]->se.vruntime, target_cpu);
-
+      (void)tid;
       created_tasks++;
     }
 
-    log::klog::info("test task creation summary:");
-    log::klog::info("   created: {} tasks", created_tasks);
-    log::klog::info("   failed: {} tasks", failed_tasks);
-    log::klog::info("   load balance: tasks distributed to {} CPUs", static_cast<u32>(MAX_CPUS));
-    log::klog::info("multi-task scheduling test environment ready!");
-
-    log::klog::info("checking all CPU queue status...");
-    for (u32 cpu = 0; cpu < MAX_CPUS; cpu++) {
-      u32 nr_tasks = get_cpu_nr_running(cpu);
-      log::klog::info("   CPU{}: {} tasks", cpu, nr_tasks);
-    }
+    // Summary via direct UART (one message instead of many klog calls)
+    char msg[80];
+    u32 pos = 0;
+    constexpr u32 CAP = sizeof(msg);
+    fmt_str(msg, pos, CAP, "[sched] test tasks: created=");
+    fmt_u64(msg, pos, CAP, created_tasks);
+    fmt_str(msg, pos, CAP, " failed=");
+    fmt_u64(msg, pos, CAP, failed_tasks);
+    fmt_str(msg, pos, CAP, "\n");
+    msg[pos] = '\0';
+    early_debug_print(msg);
   }
 
   void verify_task_diversity() noexcept {
-    // Quick sanity check: just log per-CPU queue status.
-    // The old implementation had a bug (enqueue without dequeue) that
-    // created duplicate RB tree nodes and broke scheduling.
-    log::klog::info("verifying task queues...");
-    for (u32 cpu = 0; cpu < MAX_CPUS; cpu++) {
-      u32 nr = get_cpu_nr_running(cpu);
-      if (nr > 0) {
-        Thread *leftmost = pick_next_task(cpu);
-        if (leftmost) {
-          log::klog::info("  CPU{}: {} tasks, leftmost TID={} vruntime={}",
-                          cpu, nr, static_cast<u32>(leftmost->tid),
-                          leftmost->se.vruntime);
-        }
-      }
-    }
-    log::klog::info("starting main scheduling loop...");
+    // Quick sanity check: count per-CPU queues via direct UART.
+    u32 total = 0;
+    for (u32 cpu = 0; cpu < MAX_CPUS; cpu++)
+      total += get_cpu_nr_running(cpu);
+
+    char msg[64];
+    u32 pos = 0;
+    constexpr u32 CAP = sizeof(msg);
+    fmt_str(msg, pos, CAP, "[sched] total queued tasks: ");
+    fmt_u64(msg, pos, CAP, total);
+    fmt_str(msg, pos, CAP, "\n");
+    msg[pos] = '\0';
+    early_debug_print(msg);
   }
 
 private:
@@ -1192,28 +1238,29 @@ public:
       }
     }
 
-    // Periodic status log (every ~500 ticks = ~3 seconds at 6ms tick)
-    if (tick_count_ % 500 == 0) {
-      if (timer::TimerSubsystem::instance().is_initialized()) {
-        log::klog::info("[sched_tick] tick={} CPU={} nr_running={} switches={} preemptions={} uptime_ms={}", tick_count_, cpu, get_cpu_nr_running(cpu), total_context_switches(), total_preemptions(), timer::TimerSubsystem::instance().now_ns() / 1000000);
-      } else {
-        log::klog::info("[sched_tick] tick={} CPU={} nr_running={} switches={}", tick_count_, cpu, get_cpu_nr_running(cpu), total_context_switches());
-      }
+    // Periodic status log — use direct UART to avoid ring-buffer lock
+    // contention that causes IRQ livelock when 8 CPUs compete for
+    // write_lock_ inside klog::info().  Every 5000 ticks ≈ 30 s.
+    if (tick_count_ % 5000 == 0) {
+      u64 uptime_ms = 0;
+      if (timer::TimerSubsystem::instance().is_initialized())
+        uptime_ms = timer::TimerSubsystem::instance().now_ns() / 1000000;
+      sched_tick_print(tick_count_, cpu, get_cpu_nr_running(cpu),
+                       total_context_switches(), uptime_ms);
     }
   }
 
   [[noreturn]] void start_scheduling() noexcept {
-    log::klog::info("CRITICAL: start_scheduling() ENTRY POINT REACHED!");
-    log::klog::info("CFS scheduler starting (start_scheduling)");
-    log::klog::info("multi-CPU scheduling supported, max CPUs: 16");
+    // Use direct UART for all boot-path messages to avoid ring-buffer
+    // lock contention with secondary CPUs (IRQ livelock root cause).
+    early_debug_print("[sched] CFS scheduler starting\n");
 
     u32 current_cpu = CfsScheduler::get_current_cpu_id();
-    log::klog::info("current CPU ID: {}", current_cpu);
 
-    // Create synthetic test tasks (same as before)
-    log::klog::info("creating test tasks...");
+    // Create synthetic test tasks
+    early_debug_print("[sched] creating test tasks...\n");
     create_test_task();
-    log::klog::info("test tasks created");
+    early_debug_print("[sched] test tasks created\n");
 
     verify_task_diversity();
 
@@ -1221,33 +1268,33 @@ public:
     if (timer::TimerSubsystem::instance().is_initialized()) {
       // Step 1: Register timer IRQ handler with GIC
       u32 timer_irq = hal::timer::irq_number();
-      log::klog::info("registering timer IRQ handler: IRQ={}", timer_irq);
+      early_debug_print("[sched] registering timer IRQ handler\n");
 
       if (interrupts::g_gic) {
         auto reg_result = interrupts::g_gic->register_interrupt(
             timer_irq, timer_irq_handler, nullptr, "sched_timer");
         if (!reg_result) {
-          log::klog::warn("failed to register timer IRQ handler");
+          early_debug_print("[sched] WARN: failed to register timer IRQ\n");
         } else {
           auto en_result = interrupts::g_gic->enable_interrupt(timer_irq);
           if (!en_result) {
-            log::klog::warn("failed to enable timer IRQ");
+            early_debug_print("[sched] WARN: failed to enable timer IRQ\n");
           } else {
-            log::klog::info("timer IRQ registered and enabled");
+            early_debug_print("[sched] timer IRQ registered and enabled\n");
           }
         }
       } else {
-        log::klog::warn("GIC not available, timer interrupts won't fire");
+        early_debug_print("[sched] WARN: GIC not available\n");
       }
 
       // Step 2: Arm the periodic scheduler tick HrTimer
-      log::klog::info("arming scheduler tick timer: period={} ns ({} ms)", CfsParams::SCHED_LATENCY_NS, CfsParams::SCHED_LATENCY_NS / 1000000);
+      early_debug_print("[sched] arming scheduler tick timer (6ms period)\n");
 
       sched_tick_.init(timer::TimerMode::Periodic,
                        scheduler_tick_callback, this);
       sched_tick_.start_relative(CfsParams::SCHED_LATENCY_NS);
 
-      log::klog::info("scheduler tick armed, entering idle loop (WFI)");
+      early_debug_print("[sched] tick armed, entering idle loop\n");
 
       // Before entering idle, dispatch the init user process (TID=1000).
       // We explicitly search for it because test tasks may have lower
@@ -1278,25 +1325,33 @@ public:
         }
 
         if (init_task != nullptr) {
-          log::klog::debug("initial dispatch: TID=1000 -> switch_to_user");
+          early_debug_print("[sched] dispatching init TID=1000\n");
           context_switch_to_task(init_task);
           // switch_to_user does eret and never returns for user tasks.
           // If we somehow get here (shouldn't), re-enqueue.
           enqueue_task(init_task, current_cpu);
         } else {
-          log::klog::warn("init process TID=1000 not found in any runqueue");
+          early_debug_print("[sched] WARN: init TID=1000 not found\n");
         }
       }
 
       // Timer-driven scheduling: CPU sleeps until timer interrupt fires,
       // which invokes scheduler_tick() to perform scheduling decisions.
+      // Idle heartbeat prints every ~1 second via direct UART.
+      early_debug_print("[BSP] entering idle loop (heartbeat every 1s)\n");
+      u64 last_idle_log_ns = timer::TimerSubsystem::instance().now_ns();
       while (true) {
         arch::cpu_idle_once();
+        u64 now = timer::TimerSubsystem::instance().now_ns();
+        if (now - last_idle_log_ns >= 1000000000ULL) {
+          last_idle_log_ns = now;
+          idle_heartbeat_print("BSP", current_cpu, now / 1000000);
+        }
       }
     }
 
     // Fallback: if timer is not available, use the legacy busy-wait loop
-    log::klog::warn("timer unavailable, falling back to busy-wait scheduling");
+    early_debug_print("[sched] WARN: timer unavailable, fallback busy-wait\n");
     fallback_busy_wait_scheduling(current_cpu);
   }
 
@@ -1472,18 +1527,24 @@ public:
   // and switches to it.  Never returns to the caller because the exited
   // task's context is no longer valid.
   [[noreturn]] void schedule_after_exit() noexcept {
+    early_debug_print("[sched] schedule_after_exit() entered\n");
     u32 cpu = get_current_cpu_id();
 
     // Clear current task — the old one is dead
     set_current_task(nullptr);
 
+    // Ensure interrupts are enabled so timer ticks can fire and
+    // re-enqueue tasks while we idle.
+    arch::enable_interrupts();
+
     // Loop: find a runnable task, switch to it.  When bootstrap context
     // is restored (the task was preempted away or exited), try next.
+    u64 last_idle_log_ns = timer::TimerSubsystem::instance().now_ns();
     while (true) {
       Thread *next = pick_next_task(cpu);
       if (next != nullptr) {
         dequeue_task(next);
-        log::klog::info("schedule_after_exit: switching to TID={}", static_cast<u32>(next->tid));
+        early_debug_print("[sched] schedule_after_exit: dispatching task\n");
         context_switch_to_task(next);
         // context_switch returned — bootstrap context restored.
         // The task was preempted or exited.  Re-clear and retry.
@@ -1491,6 +1552,11 @@ public:
       } else {
         // No runnable tasks: idle until timer interrupt enqueues work
         arch::cpu_idle_once();
+        u64 now = timer::TimerSubsystem::instance().now_ns();
+        if (now - last_idle_log_ns >= 1000000000ULL) {
+          last_idle_log_ns = now;
+          idle_heartbeat_print("exit", cpu, now / 1000000);
+        }
       }
     }
   }
