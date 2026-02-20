@@ -529,8 +529,10 @@ static long console_read([[maybe_unused]] File* file,
     while (pos < count) {
         int ch = uart::getc();
         if (ch < 0) {
-            // No data available
-            if (pos > 0) break;  // Return partial line if we have data
+            // No data available — keep waiting.
+            // Line-buffered mode: only return on newline or buffer-full,
+            // never on inter-keystroke gaps (user types at ~50ms/char,
+            // but getc() polls at ~6ms/tick — gap is normal).
             // WFE/WFI puts the CPU to sleep until the next interrupt
             // (timer tick).  This is essential for QEMU: without it,
             // the tight polling loop starves QEMU's main event loop,

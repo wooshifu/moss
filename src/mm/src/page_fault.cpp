@@ -323,7 +323,6 @@ static bool try_cow_fault(moss::kernel::u64 far_addr,
 
     mm::PageTableManager::invalidate_tlb_addr(fault_page);
 
-    log::klog::debug("COW resolved: va={:#x} refcount_was={}", far_addr, refcount);
     return true;
 }
 
