@@ -11,6 +11,7 @@ extern "C" void switch_to_user(void* context, unsigned long long user_stack);
 extern "C" void early_debug_print(const char* message) noexcept;
 #if defined(__aarch64__) || defined(MOSS_ARCH_ARM64)
 extern "C" void context_switch(void* prev_context, void* next_context);
+extern "C" void user_eret_trampoline();
 #endif
 
 export module moss.process:scheduler;
@@ -769,6 +770,21 @@ public:
     return runqueues_.get_cpu(cpu_id).nr_running() > 0;
   }
 
+  // Reset the current task's vruntime to min_vruntime of its runqueue.
+  // Called after an IO polling wait (e.g. console_read) so CFS does not
+  // starve the task — equivalent to Linux place_entity() for waking tasks.
+  void reset_current_to_min_vruntime() noexcept {
+    auto* curr = get_current_task();
+    if (!curr) return;
+    u32 cpu = get_current_cpu_id();
+    if (cpu >= MAX_CPUS) return;
+    u64 min_vr = runqueues_.get_cpu(cpu).min_vruntime();
+    if (curr->se.vruntime > min_vr) {
+      curr->se.vruntime = min_vr;
+    }
+    curr->se.exec_start = get_current_time();
+  }
+
 private:
   void execute_task_simplified(Thread* task, [[maybe_unused]] u32 cpu_id) noexcept {
     if (task == nullptr) return;
@@ -1210,6 +1226,12 @@ public:
     if (curr->state == ProcessState::Running) {
       u64 now = get_current_time();
       u64 delta = (now > curr->se.exec_start) ? (now - curr->se.exec_start) : 1000;
+      // Cap delta to one scheduling period.  scheduler_tick() fires every
+      // SCHED_LATENCY_NS (6ms); a delta much larger than that means the task
+      // was in a kernel path that masked IRQ (e.g. console_read polling for
+      // keyboard input).  Charge at most one tick's worth of vruntime so the
+      // task is not starved by CFS after the masked period ends.
+      if (delta > CfsParams::SCHED_LATENCY_NS * 2) delta = 0;
       curr->se.exec_start = now;
       update_current(curr, delta);
 
@@ -1314,9 +1336,8 @@ public:
         if (init_task != nullptr) {
           early_debug_print("[sched] dispatching init TID=1000\n");
           context_switch_to_task(init_task);
-          // switch_to_user does eret and never returns for user tasks.
-          // If we somehow get here (shouldn't), re-enqueue.
-          enqueue_task(init_task, current_cpu);
+          // Returns here when init is preempted by timer IRQ.
+          // scheduler_tick already re-enqueued init; proceed to idle loop.
         } else {
           early_debug_print("[sched] WARN: init TID=1000 not found\n");
         }
@@ -1396,42 +1417,51 @@ private:
     record_context_switch();
 
     if (task->needs_initial_eret) {
-      // First entry into user space — set up TTBR0 and eret to EL0.
-      // Subsequent dispatches (after IRQ preemption) go through the normal
-      // context_switch path; irq_trampoline's eret returns to EL0.
+      // First entry into user space.  We MUST go through context_switch
+      // (not direct switch_to_user) so the caller's bootstrap context is
+      // properly saved.  Without this, waitpid's context_switch back to
+      // bootstrap would restore an all-zero CpuContext and hang.
       //
-      // CRITICAL: Disable IRQs for the entire sequence.  A timer IRQ between
-      // set_current_task() and switch_to_user() would trigger scheduler_tick
-      // which calls context_switch(&this_task->context, ...), overwriting
-      // context.pc with a kernel LR.  switch_to_user's eret restores SPSR
-      // with DAIF=0, so IRQs are re-enabled upon entering EL0.
+      // Strategy: prepare task->context as a *kernel* context whose LR
+      // (x[30]) points to user_eret_trampoline.  The trampoline reads
+      // the saved user PC/SP from callee-saved registers and calls
+      // switch_to_user.  context_switch saves bootstrap, restores this
+      // prepared context, and `ret` jumps to the trampoline.
       task->needs_initial_eret = false;
 #if defined(MOSS_ARCH_ARM64)
-      arch::disable_interrupts();
+      // Stash user-mode entry point, stack, and x0 in callee-saved regs.
+      // context_switch preserves x19-x28, so these survive the switch.
+      u64 user_pc = task->context.pc;
+      u64 user_sp = task->context.sp;
+      u64 user_x0 = task->context.x[0];  // fork child: 0, init/execve: 0
 
-      Process *proc = g_process_manager ? g_process_manager->find_process(task->owner_pid) : nullptr;
-      if (proc && proc->address_space() && proc->address_space()->pgd_phys != 0) {
-        u64 ttbr0_val = proc->address_space()->pgd_phys
-                      | (static_cast<u64>(proc->address_space()->asid) << 48);
-        asm volatile("msr ttbr0_el1, %0" :: "r"(ttbr0_val));
-        asm volatile("isb" ::: "memory");
-      } else {
-        log::klog::error("TTBR0 switch FAILED: proc={} as={} pgd={}",
-                         proc != nullptr, proc ? (proc->address_space() != nullptr) : false,
-                         proc && proc->address_space() ? proc->address_space()->pgd_phys : 0ULL);
-      }
+      // Build a kernel-mode CpuContext for the trampoline:
+      //   x[19] = Thread* (unused by trampoline, debug aid)
+      //   x[20] = user PC  → ELR_EL1
+      //   x[21] = user SP  → SP_EL0
+      //   x[22] = user x0  (fork return value)
+      //   x[30] = trampoline address (LR → context_switch ret target)
+      //   sp    = kernel stack top
+      task->context = CpuContext{};  // zero all regs
+      task->context.x[19] = reinterpret_cast<u64>(task);
+      task->context.x[20] = user_pc;
+      task->context.x[21] = user_sp;
+      task->context.x[22] = user_x0;
+      u64 trampoline_addr = reinterpret_cast<u64>(&user_eret_trampoline);
+      task->context.x[30] = trampoline_addr;  // LR → ret target
+      task->context.pc    = trampoline_addr;
+      // SP = kernel stack top (16-byte aligned)
+      task->context.sp = task->kernel_stack_base != 0
+                           ? task->kernel_stack_top()
+                           : 0;
 
-      // Set TPIDR_EL1 to the per-thread kernel stack top.
-      // switch_to_user reads TPIDR_EL1 to set SP_EL1 before eret.
-      // When the next exception from EL0 occurs, SP_EL1 will be this
-      // thread's dedicated kernel stack — not the shared boot stack.
-      if (task->kernel_stack_base != 0) {
-        u64 kstack_top = task->kernel_stack_top();
-        asm volatile("msr tpidr_el1, %0" :: "r"(kstack_top));
-      }
+      // Fall through to the normal context_switch path below, which will:
+      //   1. Save bootstrap_contexts_[cpu] (or prev task)
+      //   2. Restore this prepared context
+      //   3. `ret` to user_eret_trampoline
 #endif
-      switch_to_user(&task->context, task->stack_base + task->stack_size - 16);
-    } else {
+    }
+    {
 #if defined(MOSS_ARCH_ARM64)
       // Kernel-to-kernel context switch via assembly.
       // When prev is null (e.g. schedule_after_exit) or self-switch,

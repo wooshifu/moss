@@ -3,6 +3,11 @@
 
 module;
 
+// Bridge: reset current task's vruntime to CFS min_vruntime after IO wait.
+// Prevents CFS starvation when a task has been idle (IRQ-masked) in a kernel
+// polling loop — equivalent to Linux's place_entity() for waking tasks.
+extern "C" void sched_yield_to_min_vruntime() noexcept;
+
 module moss.vfs;
 
 namespace moss::kernel::vfs {
@@ -525,25 +530,28 @@ static long console_read([[maybe_unused]] File* file,
     // Polling-based, line-buffered console input with echo.
     // Reads characters from UART RX FIFO, echoes them back, and returns
     // when a newline is received or the buffer is full.
+    //
+    // Mask timer IRQ during the polling wait.  Without this, scheduler_tick()
+    // fires every 6ms and accumulates CFS vruntime against the shell even
+    // though it's just waiting for keyboard input.  After Enter the shell's
+    // vruntime is sky-high and CFS won't schedule it for seconds — the user
+    // sees a multi-second delay before command output appears.
+    //
+    // With IRQ masked the timer interrupt stays pending but never fires,
+    // so no vruntime accumulates.  A short delay loop between polls keeps
+    // host CPU usage reasonable (QEMU's Ctrl+A X is handled at the host
+    // stdio layer, unaffected by guest IRQ state).
+#if defined(__aarch64__)
+    asm volatile("msr daifset, #0x2" ::: "memory");
+#endif
+
     usize pos = 0;
     while (pos < count) {
         int ch = uart::getc();
         if (ch < 0) {
-            // No data available — keep waiting.
-            // Line-buffered mode: only return on newline or buffer-full,
-            // never on inter-keystroke gaps (user types at ~50ms/char,
-            // but getc() polls at ~6ms/tick — gap is normal).
-            // WFE/WFI puts the CPU to sleep until the next interrupt
-            // (timer tick).  This is essential for QEMU: without it,
-            // the tight polling loop starves QEMU's main event loop,
-            // preventing Ctrl+A X from working.
-#if defined(__aarch64__)
-            asm volatile("wfe" ::: "memory");
-#elif defined(__x86_64__)
-            asm volatile("hlt" ::: "memory");
-#elif defined(__riscv)
-            asm volatile("wfi" ::: "memory");
-#endif
+            // Brief delay between polls (~0.5-1ms) to avoid burning
+            // 100% host CPU while the guest spins with IRQ masked.
+            { volatile u32 d = 0; while (d < 30000) { d = d + 1; } }
             continue;
         }
 
@@ -580,6 +588,17 @@ static long console_read([[maybe_unused]] File* file,
         uart::putc(static_cast<char>(ch));
         buf[pos++] = static_cast<u8>(ch);
     }
+
+    // Unmask timer IRQ now that we have input — scheduler_tick()
+    // resumes tracking vruntime from this point forward.
+#if defined(__aarch64__)
+    asm volatile("msr daifclr, #0x2" ::: "memory");
+#endif
+
+    // Reset our vruntime to CFS min_vruntime so we're not starved by tasks
+    // that ran while we were waiting for input.  This is equivalent to
+    // Linux's place_entity() that gives IO-waking tasks a vruntime boost.
+    sched_yield_to_min_vruntime();
 
     return static_cast<long>(pos);
 }

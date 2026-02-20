@@ -484,18 +484,14 @@ namespace handlers {
 
         // 13. Direct eret to new program image.
         //
-        // We cannot context_switch to the bootstrap context because the initial
-        // dispatch of TID=1000 used switch_to_user (eret, never returns), so
-        // bootstrap_contexts_[cpu] was never populated with a valid saved state.
-        //
-        // Instead, we directly eret from here — identical to what
-        // context_switch_to_task() does for needs_initial_eret tasks:
-        //   1. Switch TTBR0 to this process's page tables
-        //   2. Set TPIDR_EL1 for per-thread kernel stack
-        //   3. switch_to_user(&cur->context, user_sp) → eret to EL0
-        //
-        // This is safe because execve is called from a syscall (EL1), and we
-        // have already rebuilt the address space, so we can eret directly.
+        // execve is called from a syscall handler (EL1), so we can eret
+        // directly to the new ELF entry point.  This is safe because:
+        //   - We already rebuilt the address space and page tables
+        //   - switch_to_user sets up ELR_EL1/SPSR_EL1/SP_EL0 and does eret
+        //   - When the new program is later preempted by timer IRQ,
+        //     irq_trampoline saves its state via context_switch, and
+        //     bootstrap_contexts_[cpu] is already valid (saved by the
+        //     user_eret_trampoline path that initially dispatched this task).
 #if defined(MOSS_ARCH_ARM64)
         {
             cur->needs_initial_eret = false;
@@ -524,8 +520,7 @@ namespace handlers {
             }
 
             // eret to new program — never returns
-            switch_to_user(&cur->context,
-                          cur->stack_base + cur->stack_size - 16);
+            switch_to_user(&cur->context, cur->context.sp);
         }
 #endif
 
@@ -539,7 +534,6 @@ namespace handlers {
     // options: WNOHANG (1) = return immediately if no child has exited
     long sys_wait4(long wait_pid, long wstatus_addr, long options, long, long, long) noexcept {
         using namespace moss::kernel::process;
-        namespace log = moss::kernel::logging;
 
         constexpr long WNOHANG = 1;
 

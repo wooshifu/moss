@@ -306,6 +306,89 @@ kernel_thread_entry:
 .size kernel_thread_entry, .-kernel_thread_entry
 
 // =============================================================================
+// user_eret_trampoline — first-time eret to EL0 via context_switch
+// =============================================================================
+//
+// This trampoline is the target of `ret` after context_switch restores a
+// freshly-prepared CpuContext for a user task that has never entered EL0
+// (needs_initial_eret).
+//
+// By going through context_switch instead of calling switch_to_user directly,
+// the caller's bootstrap context is properly saved.  This allows waitpid's
+// context_switch(my_ctx, bootstrap) to correctly return to the idle loop.
+//
+// Callee-saved registers set by context_switch_to_task before context_switch:
+//   x19 = (reserved — Thread*)
+//   x20 = user entry point (ELR_EL1)
+//   x21 = user stack pointer (SP_EL0)
+//   x22 = user x0 value (0 for fork child, 0 for execve/init)
+//
+// Preconditions (set by context_switch_to_task's normal path):
+//   - TTBR0_EL1 already points to this process's page tables
+//   - TPIDR_EL1 already holds this thread's kernel stack top
+//   - IRQs are masked (context_switch path masks them)
+// =============================================================================
+.global user_eret_trampoline
+.type user_eret_trampoline, @function
+user_eret_trampoline:
+    // Set SPSR_EL1 = 0x0 (EL0t, all interrupts enabled upon eret)
+    mov     x0, #0
+    msr     spsr_el1, x0
+
+    // Set user stack pointer
+    msr     sp_el0, x21
+
+    // Set user entry point
+    msr     elr_el1, x20
+
+    // Set SP_EL1 to per-thread kernel stack (from TPIDR_EL1).
+    // Future exceptions from EL0 will use this stack.
+    mrs     x0, tpidr_el1
+    mov     sp, x0
+
+    // Set user x0 (fork return value for child, or 0 for fresh process)
+    mov     x0, x22
+
+    // Zero remaining user-visible GP registers for clean entry.
+    // Callee-saved x19-x28 are kernel artifacts from context_switch;
+    // user code must not see stale kernel pointers.
+    mov     x1, #0
+    mov     x2, #0
+    mov     x3, #0
+    mov     x4, #0
+    mov     x5, #0
+    mov     x6, #0
+    mov     x7, #0
+    mov     x8, #0
+    mov     x9, #0
+    mov     x10, #0
+    mov     x11, #0
+    mov     x12, #0
+    mov     x13, #0
+    mov     x14, #0
+    mov     x15, #0
+    mov     x16, #0
+    mov     x17, #0
+    mov     x18, #0
+    mov     x19, #0
+    mov     x20, #0
+    mov     x21, #0
+    mov     x22, #0
+    mov     x23, #0
+    mov     x24, #0
+    mov     x25, #0
+    mov     x26, #0
+    mov     x27, #0
+    mov     x28, #0
+    mov     x29, #0
+    mov     x30, #0
+
+    // Atomically drop to EL0
+    eret
+
+.size user_eret_trampoline, .-user_eret_trampoline
+
+// =============================================================================
 // syscall_fast_path — optimized entry for lightweight system calls
 // =============================================================================
 //
