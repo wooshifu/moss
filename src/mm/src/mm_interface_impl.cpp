@@ -55,35 +55,39 @@ BuddyAllocatorV2::MemoryStats BuddyAllocatorV2::get_memory_stats() noexcept {
 bool UnifiedMemoryManager::initialized_ = false;
 UnifiedMemoryManager* UnifiedMemoryManager::instance_ = nullptr;
 
-// 系统初始化 — guarded against double-init race
+// 系统初始化 — atomic flag prevents double-init from concurrent CPUs.
+// Uses __atomic builtins because containers::AtomicBool is not available
+// here (mm is lower-level than containers in the module dependency graph).
 MMVoidResult UnifiedMemoryManager::initialize_system(const SystemConfig& config) noexcept {
-    if (initialized_) {
+    // Atomic compare-and-swap: only one caller can transition false→true
+    bool expected = false;
+    if (!__atomic_compare_exchange_n(&initialized_, &expected, true,
+                                     false, __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE)) {
+        // Already initialized (or another CPU won the race)
         return MMVoidResult{};
     }
-    if (!instance_) {
-        instance_ = reinterpret_cast<UnifiedMemoryManager*>(new char[sizeof(UnifiedMemoryManager)]);
-        if (!instance_) {
-            return MMVoidResult{MMError::OperationFailed};
-        }
-        new (instance_) UnifiedMemoryManager(config);
-    }
-    initialized_ = true;
+
+    // We won the race — create instance.
+    // operator new panics on OOM in this kernel, so no null check needed.
+    auto* raw = new char[sizeof(UnifiedMemoryManager)];
+    auto* inst = new (raw) UnifiedMemoryManager(config);
+    __atomic_store_n(&instance_, inst, __ATOMIC_RELEASE);
     return MMVoidResult{};
 }
 
 // 系统关闭 — properly destroy and free
 void UnifiedMemoryManager::shutdown_system() noexcept {
-    initialized_ = false;
-    if (instance_) {
-        instance_->~UnifiedMemoryManager();
-        delete[] reinterpret_cast<char*>(instance_);
-        instance_ = nullptr;
+    auto* inst = __atomic_exchange_n(&instance_, nullptr, __ATOMIC_ACQ_REL);
+    __atomic_store_n(&initialized_, false, __ATOMIC_RELEASE);
+    if (inst) {
+        inst->~UnifiedMemoryManager();
+        delete[] reinterpret_cast<char*>(inst);
     }
 }
 
 // 检查系统是否已初始化
 bool UnifiedMemoryManager::is_system_initialized() noexcept {
-    return initialized_;
+    return __atomic_load_n(&initialized_, __ATOMIC_ACQUIRE);
 }
 
 // 主要内存分配接口 — delegates to RuntimeHeapAllocator
@@ -204,7 +208,7 @@ UnifiedMemoryManager::SystemPerformanceStats UnifiedMemoryManager::get_performan
 }
 
 bool UnifiedMemoryManager::is_system_healthy() noexcept {
-    return initialized_;
+    return __atomic_load_n(&initialized_, __ATOMIC_ACQUIRE);
 }
 
 void UnifiedMemoryManager::reset_performance_counters() noexcept {
@@ -230,10 +234,11 @@ MMResult<MemoryLeakDetector::LeakReport> UnifiedMemoryManager::generate_leak_rep
 // 单例访问 — caller must check is_system_initialized() first;
 // crash immediately on null dereference is preferable to silent corruption.
 UnifiedMemoryManager& UnifiedMemoryManager::get_instance() noexcept {
-    if (!instance_) {
+    auto* inst = __atomic_load_n(&instance_, __ATOMIC_ACQUIRE);
+    if (!inst) {
         moss::kernel::arch::kernel_panic("UnifiedMemoryManager::get_instance() called before initialize_system()");
     }
-    return *instance_;
+    return *inst;
 }
 
 // 构造函数

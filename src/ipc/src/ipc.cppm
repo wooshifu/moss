@@ -1,5 +1,11 @@
 // MOSS IPC Module - Inter-Process Communication
 // Combines shared_memory, zero_copy_channel, and ipc_manager
+
+module;
+
+// strcmp is defined in runtime_support.cpp (global C linkage)
+extern "C" int strcmp(const char *s1, const char *s2) noexcept;
+
 export module moss.ipc;
 
 import moss.std;
@@ -223,8 +229,18 @@ public:
     if (region == nullptr) {
       return VoidResult{KernelError::InvalidArgument};
     }
-    if (region->ref_count.load(containers::MemoryOrder::Acquire) > 0) {
-      return VoidResult{KernelError::Busy};
+    // Atomically claim ownership for destruction: CAS ref_count 0→UINT32_MAX.
+    // This prevents TOCTOU between the check and the actual teardown.
+    // Loop on spurious failure (compare_exchange_weak) but not on real failure.
+    u32 expected = 0;
+    while (!region->ref_count.compare_exchange_weak(
+               expected, static_cast<u32>(0xFFFFFFFFU),
+               containers::MemoryOrder::AcqRel,
+               containers::MemoryOrder::Acquire)) {
+      if (expected != 0) {
+        return VoidResult{KernelError::Busy};
+      }
+      // Spurious failure with expected still 0 — retry.
     }
     unmap_kernel_memory(region->virt_base, region->size);
     free_physical_memory(region->phys_base, region->size);
@@ -995,7 +1011,7 @@ private:
     ServiceDescriptor *found_service = nullptr;
     services_.for_each([name, &found_service](const auto &entry) {
       const ServiceDescriptor *service = entry.value;
-      if (string_compare(service->service_name, name) == 0) {
+      if (strcmp(service->service_name, name) == 0) {
         found_service = const_cast<ServiceDescriptor *>(service);
         return;
       }
@@ -1051,14 +1067,6 @@ private:
       (void)conn->bytes_transferred.fetch_add(bytes, containers::MemoryOrder::Relaxed);
       conn->last_activity = get_current_time();
     }
-  }
-
-  // Use the kernel-provided strcmp from runtime_support.cpp
-  // (eliminates a duplicate string comparison implementation).
-  [[nodiscard]] static int string_compare(const char *s1, const char *s2) noexcept {
-    while (*s1 && (*s1 == *s2)) { s1++; s2++; }
-    return static_cast<int>(static_cast<unsigned char>(*s1) -
-                            static_cast<unsigned char>(*s2));
   }
 
   [[nodiscard]] static u64 get_current_time() noexcept {
