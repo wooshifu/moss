@@ -606,7 +606,7 @@ exception_vectors:
 // =============================================================================
 .type irq_trampoline, @function
 irq_trampoline:
-    // Allocate 34-slot frame: x0-x30, ELR, SPSR, padding
+    // Allocate 34-slot frame: x0-x30, ELR, SPSR, SP_EL0
     sub     sp, sp, #(34 * 8)
 
     // Save all general-purpose registers
@@ -627,13 +627,19 @@ irq_trampoline:
     stp     x28, x29, [sp, #(28 * 8)]
     str     x30,       [sp, #(30 * 8)]
 
-    // Save exception return state
+    // Save exception return state + user stack pointer
     mrs     x0, elr_el1                 // exception return address
     mrs     x1, spsr_el1                // saved processor state
     stp     x0,  x1,  [sp, #(31 * 8)]
+    mrs     x0, sp_el0                  // user-mode stack pointer
+    str     x0,        [sp, #(33 * 8)]
 
     // Call C++ interrupt handler
     bl      irq_handler_c
+
+    // Restore user stack pointer (before GP regs clobber temporaries)
+    ldr     x0,        [sp, #(33 * 8)]
+    msr     sp_el0, x0
 
     // Restore exception return state
     ldp     x0,  x1,  [sp, #(31 * 8)]
@@ -796,6 +802,8 @@ lower_el_sync_dispatch:
     mrs     x0, elr_el1
     mrs     x1, spsr_el1
     stp     x0,  x1,  [sp, #(31 * 8)]
+    mrs     x0, sp_el0                  // save user-mode stack pointer
+    str     x0,        [sp, #(33 * 8)]
 
     // Read ESR_EL1 and extract Exception Class
     mrs     x9, esr_el1                 // save ESR in callee-saved-safe x9
@@ -855,6 +863,10 @@ lower_el_sync_dispatch:
 
 .Llower_restore_eret:
     // ---- Common restore path for all lower-EL exceptions ----
+    // Restore user SP_EL0 first (may have changed via context_switch)
+    ldr     x0,        [sp, #(33 * 8)]
+    msr     sp_el0, x0
+
     ldp     x0,  x1,  [sp, #(31 * 8)]
     msr     elr_el1, x0
     msr     spsr_el1, x1

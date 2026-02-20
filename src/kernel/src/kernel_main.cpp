@@ -32,6 +32,10 @@ unsigned long long get_current_pgd_phys() noexcept;
 // Bridge function: terminate current user process and switch to next task.
 // Called from page_fault.cpp when a fatal user fault is unrecoverable.
 [[noreturn]] void terminate_current_user_process(int exit_code) noexcept;
+
+// Bridge function: reset current task's vruntime to min_vruntime.
+// Called from console_read() after IO wait to prevent CFS starvation.
+void sched_yield_to_min_vruntime() noexcept;
 }
 
 module moss.kernel;
@@ -353,6 +357,18 @@ unsigned long long get_current_pgd_phys() noexcept {
 
     // Delegate to shared Zombie transition (never returns)
     process::do_exit(cur, proc, static_cast<i32>(exit_code));
+}
+
+// ============================================================================
+// Bridge: reset current task's vruntime to CFS min_vruntime
+// Called after a polling IO wait (console_read) so the task is not
+// starved by others whose vruntimes advanced during the wait.
+// ============================================================================
+void sched_yield_to_min_vruntime() noexcept {
+    using namespace moss::kernel;
+    if (process::g_scheduler) {
+        process::g_scheduler->reset_current_to_min_vruntime();
+    }
 }
 
 } // extern "C"
