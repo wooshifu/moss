@@ -79,7 +79,7 @@ _user_program_start:
 .Lmsg_fail:
     .ascii  "init: execve failed!\n"       // 22 bytes (includes \n, no NUL)
 .Lpath_hello:
-    .asciz  "hello.elf"                    // NUL-terminated path for execve
+    .asciz  "/hello.elf"                   // NUL-terminated VFS path for execve
 
 // =============================================================================
 // End-of-program marker

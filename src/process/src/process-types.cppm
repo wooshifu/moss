@@ -389,6 +389,10 @@ private:
 
   mutable containers::AtomicU32 ref_count_;
 
+  // VFS: per-process file descriptor table (vfs::FdTable*)
+  // Stored as void* to avoid circular dependency on moss.vfs
+  void* fd_table_ = nullptr;
+
   // Children tracking for wait()/waitpid()
   containers::RcuList<ProcessId> children_;
   containers::WaitQueue child_exit_wq_;
@@ -516,6 +520,10 @@ public:
 
   // Parent PID setter (for reparenting)
   void set_parent_pid(ProcessId pid) noexcept { parent_pid_ = pid; }
+
+  // VFS file descriptor table access (void* to avoid circular dependency)
+  [[nodiscard]] void* fd_table() const noexcept { return fd_table_; }
+  void set_fd_table(void* fdt) noexcept { fd_table_ = fdt; }
 
 private:
   void cleanup_threads() noexcept;

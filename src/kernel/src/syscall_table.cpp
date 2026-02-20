@@ -14,6 +14,8 @@ extern "C" void switch_to_user(void* context, unsigned long user_sp);
 
 module moss.kernel;
 
+import moss.vfs;
+
 namespace moss::kernel::syscall {
 
 // 全局系统调用统计
@@ -208,6 +210,14 @@ namespace handlers {
         // 12. Register child thread in child process's thread list
         child_proc->register_thread(child_thread);
 
+        // 12b. Clone VFS fd table from parent to child
+        if (parent_proc->fd_table() != nullptr) {
+            auto* parent_fdt = static_cast<moss::kernel::vfs::FdTable*>(
+                parent_proc->fd_table());
+            auto* child_fdt = parent_fdt->clone();
+            child_proc->set_fd_table(child_fdt);
+        }
+
         // 13. Register child in parent's children list (for waitpid)
         parent_proc->add_child(child_proc->pid());
 
@@ -230,7 +240,6 @@ namespace handlers {
                     long, long, long) noexcept {
         using namespace moss::kernel::process;
         using namespace moss::kernel::elf;
-        using namespace moss::kernel::initramfs;
 
         // 1. Get current thread and process
         Thread *cur = g_scheduler ? CfsScheduler::get_current_task() : nullptr;
@@ -268,20 +277,25 @@ namespace handlers {
 
         log::klog::info("execve: PID={} loading '{}'", proc->pid(), pathname);
 
-        // 3. Look up file in initramfs
-        if (!g_initramfs.is_initialized()) {
-            log::klog::error("execve: initramfs not initialized");
+        // 3. Resolve file via VFS path resolution (replaces direct initramfs access)
+        auto* dentry = moss::kernel::vfs::resolve_path(pathname);
+        if (!dentry || !dentry->inode) {
+            log::klog::error("execve: '{}' not found via VFS", pathname);
             return -Errno::ENOENT;
         }
-        const auto *entry = g_initramfs.lookup(pathname);
-        if (!entry) {
-            log::klog::error("execve: '{}' not found in initramfs", pathname);
-            return -Errno::ENOENT;
+        auto* file_inode = dentry->inode;
+        if (file_inode->type != moss::kernel::vfs::FileType::Regular) {
+            log::klog::error("execve: '{}' is not a regular file", pathname);
+            return -Errno::EACCES;
+        }
+        if (file_inode->data == nullptr || file_inode->size == 0) {
+            log::klog::error("execve: '{}' has no data", pathname);
+            return -Errno::ENOEXEC;
         }
 
-        // 4. Validate ELF header
-        auto *elf_hdr = reinterpret_cast<const ElfHeader *>(entry->data);
-        if (!validate_elf_header(elf_hdr, entry->data_size)) {
+        // 4. Validate ELF header (inode->data = zero-copy ELF backing)
+        auto *elf_hdr = reinterpret_cast<const ElfHeader *>(file_inode->data);
+        if (!validate_elf_header(elf_hdr, file_inode->size)) {
             log::klog::error("execve: '{}' is not a valid ELF", pathname);
             return -Errno::ENOEXEC;
         }
@@ -397,7 +411,7 @@ namespace handlers {
                 usize backing_size = 0;
                 u64 backing_offset = 0;
                 if (file_offset_max > file_offset_min) {
-                    backing = entry->data + file_offset_min;
+                    backing = file_inode->data + file_offset_min;
                     backing_size = static_cast<usize>(file_offset_max - file_offset_min);
                     // backing_offset = how far into the page the data starts
                     backing_offset = overall_start - page_start;
@@ -432,7 +446,7 @@ namespace handlers {
                                        & ~(static_cast<VirtAddr>(PAGE_SIZE) - 1);
 
                     const u8 *backing = (ph.p_filesz > 0)
-                        ? (entry->data + ph.p_offset) : nullptr;
+                        ? (file_inode->data + ph.p_offset) : nullptr;
                     usize b_size = static_cast<usize>(ph.p_filesz);
 
                     if (ph.p_filesz == 0) vma_flags |= VmaFlags::DEMAND_ZERO;
@@ -652,69 +666,62 @@ namespace handlers {
         return -Errno::ENOSYS;
     }
 
-    // 文件系统调用 - 框架实现
-    long sys_open(long, long, long, long, long, long) noexcept {
-        log::klog::warn("syscall: open() not implemented");
-        return -Errno::ENOSYS;
+    // ── VFS-backed file system calls ─────────────────────────────────
+
+    /// Helper: get the calling process's VFS fd_table (void*).
+    static void* get_current_fd_table() noexcept {
+        using namespace moss::kernel::process;
+        Thread *cur = CfsScheduler::get_current_task();
+        if (!cur) return nullptr;
+        Process *proc = g_process_manager
+            ? g_process_manager->find_process(cur->owner_pid)
+            : nullptr;
+        return proc ? proc->fd_table() : nullptr;
     }
 
-    long sys_close(long, long, long, long, long, long) noexcept {
-        log::klog::warn("syscall: close() not implemented");
-        return -Errno::ENOSYS;
+    long sys_open(long pathname_addr, long flags, long mode, long, long, long) noexcept {
+        void* fdt = get_current_fd_table();
+        if (!fdt) return -Errno::EBADF;
+
+        const char* path = reinterpret_cast<const char*>(
+            static_cast<unsigned long long>(pathname_addr));
+        if (!path) return -Errno::EFAULT;
+
+        return moss::kernel::vfs::syscall::do_open(
+            fdt, path, static_cast<u32>(flags), static_cast<u32>(mode));
     }
 
-    long sys_read(long, long, long, long, long, long) noexcept {
-        log::klog::warn("syscall: read() not implemented");
-        return -Errno::ENOSYS;
+    long sys_close(long fd, long, long, long, long, long) noexcept {
+        void* fdt = get_current_fd_table();
+        if (!fdt) return -Errno::EBADF;
+
+        return moss::kernel::vfs::syscall::do_close(fdt, static_cast<int>(fd));
+    }
+
+    long sys_read(long fd, long buf_addr, long count, long, long, long) noexcept {
+        void* fdt = get_current_fd_table();
+        if (!fdt) return -Errno::EBADF;
+
+        if (buf_addr == 0 || count <= 0) return -Errno::EINVAL;
+
+        auto* buf = reinterpret_cast<u8*>(
+            static_cast<unsigned long long>(buf_addr));
+
+        return moss::kernel::vfs::syscall::do_read(
+            fdt, static_cast<int>(fd), buf, static_cast<usize>(count));
     }
 
     long sys_write(long fd, long buf_addr, long count, long, long, long) noexcept {
-        // sys_write(fd, buf, count) — write count bytes from buf to fd
-        //
-        // Currently only stdout (fd=1) and stderr (fd=2) are supported,
-        // both routing through the kernel printk ring buffer for proper
-        // serialization with kernel log output.
-        if (fd != Fd::STDOUT && fd != Fd::STDERR) {
-            return -Errno::EBADF;
-        }
+        void* fdt = get_current_fd_table();
+        if (!fdt) return -Errno::EBADF;
 
-        if (buf_addr == 0 || count <= 0) {
-            return -Errno::EINVAL;
-        }
+        if (buf_addr == 0 || count <= 0) return -Errno::EINVAL;
 
-        // TODO: Proper user pointer validation. Under identity mapping (1GB
-        // blocks), kernel can access user addresses directly. A production
-        // kernel would verify the range falls within the process VMA.
-        const char *buf = reinterpret_cast<const char *>(
+        const auto* buf = reinterpret_cast<const u8*>(
             static_cast<unsigned long long>(buf_addr));
 
-        // Route through printk ring buffer for UART serialization.
-        // Split user output into lines and emit each as a log record so that
-        // kernel log messages never interleave mid-line with user output.
-        long written = 0;
-        long line_start = 0;
-        for (long i = 0; i <= count; ++i) {
-            bool is_end = (i == count);
-            bool is_newline = (!is_end && buf[i] == '\n');
-            if (is_newline || is_end) {
-                long line_len = i - line_start;
-                if (line_len > 0) {
-                    // emit() appends '\n' automatically
-                    log::g_printk_rb.emit(
-                        log::LogLevel::Info,
-                        buf + line_start,
-                        static_cast<u32>(line_len));
-                } else if (is_newline) {
-                    // Bare newline — emit empty line
-                    log::g_printk_rb.emit(
-                        log::LogLevel::Info, "", 0);
-                }
-                line_start = i + 1;
-            }
-        }
-        written = count;
-
-        return written;
+        return moss::kernel::vfs::syscall::do_write(
+            fdt, static_cast<int>(fd), buf, static_cast<usize>(count));
     }
 
     // 内存管理系统调用
@@ -803,9 +810,9 @@ const SyscallDescriptor SYSCALL_TABLE[static_cast<int>(SyscallNumber::MAX_SYSCAL
     {"getpriority", handlers::sys_not_implemented, 2, false, "获取进程优先级"},
 
     // === 文件系统操作 (30-59) ===
-    {"open", handlers::sys_open, 3, false, "打开文件"},
-    {"close", handlers::sys_close, 1, false, "关闭文件"},
-    {"read", handlers::sys_read, 3, false, "读取文件"},
+    {"open", handlers::sys_open, 3, true, "打开文件"},
+    {"close", handlers::sys_close, 1, true, "关闭文件"},
+    {"read", handlers::sys_read, 3, true, "读取文件"},
     {"write", handlers::sys_write, 3, true, "写入文件"},
     {"lseek", handlers::sys_not_implemented, 3, false, "文件定位"},
     {"stat", handlers::sys_not_implemented, 2, false, "获取文件状态"},

@@ -336,6 +336,7 @@ add_subdirectory(src/ipc)
 add_subdirectory(src/logging)
 add_subdirectory(src/timer)
 add_subdirectory(src/process)
+add_subdirectory(src/vfs)
 add_subdirectory(src/kernel)
 add_subdirectory(src/boot)
 
@@ -364,6 +365,7 @@ target_link_libraries(
           moss_ipc
           moss_timer
           moss_process
+          moss_vfs
           )
 
 # 设置输出目录
