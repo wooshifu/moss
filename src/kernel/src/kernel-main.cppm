@@ -161,15 +161,14 @@ public:
 
     current_phase_ = BootPhase::Completed;
 
-    u64 boot_time = get_current_time() - boot_start_time_;
-    log::klog::info("MOSS kernel boot completed (time: {} cycles)", boot_time);
+    early_debug_print("[boot] MOSS kernel boot completed\n");
 
     return VoidResult{};
   }
 
   // Kernel main loop
   [[nodiscard]] VoidResult run() noexcept {
-    log::klog::info("MOSS kernel starting...");
+    early_debug_print("[kernel] MOSS kernel starting...\n");
 
     // Enable interrupts
     enable_interrupts();
@@ -181,7 +180,7 @@ public:
     }
 
     // Enter scheduling loop (start_scheduling is [[noreturn]])
-    log::klog::info("Entering scheduling loop");
+    early_debug_print("[kernel] Entering scheduling loop\n");
     scheduler_->start_scheduling();
   }
 
@@ -288,7 +287,13 @@ private:
       current_phase_ = static_cast<BootPhase>(phase);
       phase_start_times_[phase] = get_current_time();
 
-      log::klog::info("Phase {}: {}", phase, phase_names[phase]);
+      // Direct UART: avoid klog lock contention after secondary CPUs start
+      early_debug_print("[boot] Phase ");
+      char ph[2] = {static_cast<char>('0' + phase), '\0'};
+      early_debug_print(ph);
+      early_debug_print(": ");
+      early_debug_print(phase_names[phase]);
+      early_debug_print("\n");
 
       VoidResult result = VoidResult{ErrorCode::NotSupported};
 
@@ -322,13 +327,13 @@ private:
       }
 
       if (!result) {
-        log::klog::error("Phase {} failed: {}", phase,
-                        static_cast<int>(result.error()));
+        early_debug_print("[boot] Phase FAILED\n");
         return result;
       }
 
-      u64 phase_time = get_current_time() - phase_start_times_[phase];
-      log::klog::info("Phase {} complete (time: {} cycles)", phase, phase_time);
+      early_debug_print("[boot] Phase ");
+      early_debug_print(ph);
+      early_debug_print(" complete\n");
     }
 
     return VoidResult{};
@@ -445,7 +450,7 @@ private:
 
     // Linux-style SMP delayed activation: activate secondary CPUs after scheduler is ready
     if (config_.enable_smp) {
-      log::klog::info("Scheduler ready, activating parked secondary CPUs...");
+      early_debug_print("[sched] activating parked secondary CPUs...\n");
 
       // Activate all parked secondary CPUs
       moss::boot::activate_secondary_cpus();
@@ -453,12 +458,12 @@ private:
       // Wait for secondary CPUs to complete activation
       u32 active_cpus = moss::boot::wait_for_all_cpus_active(5000);
 
-      log::klog::info("CPU activation complete: {} CPUs active", active_cpus);
+      early_debug_print("[sched] CPU activation complete\n");
 
       if (active_cpus > 1) {
-        log::klog::info("Linux-style multi-CPU scheduler started successfully!");
+        early_debug_print("[sched] multi-CPU scheduler started\n");
       } else {
-        log::klog::info("Falling back to single-core mode");
+        early_debug_print("[sched] single-core mode\n");
       }
     }
 
@@ -563,26 +568,26 @@ private:
 #if defined(MOSS_ARCH_ARM64)
     using namespace process;
 
-    log::klog::info("creating init user process (PID=1, TID=1000)");
+    early_debug_print("[init] creating init user process\n");
 
     // Step 1: Create process
     if (!process_manager_) {
-      log::klog::error("process manager not initialized");
+      early_debug_print("[init] ERROR: process manager not initialized\n");
       return VoidResult{ErrorCode::InvalidState};
     }
     auto proc_result = process_manager_->create_process(0);
     if (!proc_result) {
-      log::klog::error("failed to create init process");
+      early_debug_print("[init] ERROR: failed to create init process\n");
       return VoidResult{proc_result.error()};
     }
     Process *init_proc = proc_result.value();
     ProcessId init_pid = init_proc->pid();
-    log::klog::info("init process registered: PID={}", init_pid);
+    early_debug_print("[init] init process registered\n");
 
     // Step 2: Create real AddressSpace with buddy-allocated PGD
     auto as_result = user_space::create_user_address_space();
     if (!as_result) {
-      log::klog::error("failed to create address space for init process");
+      early_debug_print("[init] ERROR: failed to create address space\n");
       return VoidResult{as_result.error()};
     }
     auto as = moss::move(*as_result);
@@ -604,8 +609,7 @@ private:
                 VmaFlags::READ | VmaFlags::EXEC,
                 VmaType::CODE,
                 raw_code, 0, code_size);
-    log::klog::info("  VMA code: {:#x}-{:#x} backing={} bytes",
-                    UserLayout::CODE_BASE, code_end, code_size);
+    early_debug_print("[init] VMA code registered\n");
 
     VirtAddr entry_point = UserLayout::CODE_BASE;  // entry = start of raw code
 
@@ -614,7 +618,7 @@ private:
     as->add_vma(STACK_BOTTOM, UserLayout::STACK_TOP,
                 VmaFlags::READ | VmaFlags::WRITE | VmaFlags::DEMAND_ZERO,
                 VmaType::STACK);
-    log::klog::info("  VMA stack: {:#x}-{:#x}", STACK_BOTTOM, UserLayout::STACK_TOP);
+    early_debug_print("[init] VMA stack registered\n");
 
     // Heap VMA: small initial region, demand-zero
     as->add_vma(UserLayout::HEAP_START, UserLayout::HEAP_START + UserLayout::HEAP_INIT,
@@ -624,7 +628,7 @@ private:
     // Bind AddressSpace to process
     auto set_result = init_proc->set_address_space(moss::move(as));
     if (!set_result) {
-      log::klog::error("failed to set address space on process");
+      early_debug_print("[init] ERROR: failed to set address space\n");
       return VoidResult{set_result.error()};
     }
 
@@ -643,7 +647,7 @@ private:
     constexpr usize KERNEL_STACK_SIZE = PAGE_SIZE << KERNEL_STACK_ORDER;
     auto kstack_result = mm::allocate_pages(KERNEL_STACK_ORDER);
     if (!kstack_result) {
-      log::klog::error("failed to allocate kernel stack for init thread");
+      early_debug_print("[init] ERROR: failed to allocate kernel stack\n");
       delete init_thread;
       return VoidResult{ErrorCode::OutOfMemory};
     }
@@ -651,9 +655,7 @@ private:
     PhysAddr kstack_phys = *kstack_result;
     init_thread->kernel_stack_base = static_cast<VirtAddr>(kstack_phys);
     init_thread->kernel_stack_size = KERNEL_STACK_SIZE;
-    log::klog::info("  kernel stack: {:#x}-{:#x} ({}KB)",
-                    kstack_phys, kstack_phys + KERNEL_STACK_SIZE,
-                    KERNEL_STACK_SIZE / 1024);
+    early_debug_print("[init] kernel stack allocated\n");
 
     // User context: entry point and stack pointer are user-space VAs
     // (demand-paged on first access)
@@ -679,13 +681,10 @@ private:
     // Step 6: Enqueue into scheduler
     scheduler_->enqueue_task(init_thread, current_cpu());
 
-    log::klog::info("init process TID={}: entry={:#x} stack={:#x}-{:#x} pgd={:#x} asid={}",
-                    static_cast<u32>(init_tid), entry_point, STACK_BOTTOM, UserLayout::STACK_TOP,
-                    init_proc->address_space()->pgd_phys,
-                    init_proc->address_space()->asid);
+    early_debug_print("[init] init process enqueued to scheduler\n");
     (void)code_size;
 #else
-    log::klog::info("user process creation not yet supported on this architecture");
+    early_debug_print("[init] user process not supported on this arch\n");
 #endif
     return VoidResult{};
   }
