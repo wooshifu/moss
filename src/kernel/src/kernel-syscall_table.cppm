@@ -23,7 +23,13 @@ inline constexpr long EAGAIN      = 11;  // Try again / resource temporarily una
 inline constexpr long ENOMEM      = 12;  // Out of memory
 inline constexpr long EACCES      = 13;  // Permission denied
 inline constexpr long EFAULT      = 14;  // Bad address
+inline constexpr long EEXIST      = 17;  // File exists
+inline constexpr long ENOTDIR     = 20;  // Not a directory
+inline constexpr long EISDIR      = 21;  // Is a directory
 inline constexpr long EINVAL      = 22;  // Invalid argument
+inline constexpr long EMFILE      = 24;  // Too many open files
+inline constexpr long ESPIPE      = 29;  // Illegal seek (pipe)
+inline constexpr long ENAMETOOLONG = 36; // File name too long
 inline constexpr long ENOSYS      = 38;  // Function not implemented
 } // namespace Errno
 
