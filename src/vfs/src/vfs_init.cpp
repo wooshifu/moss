@@ -531,12 +531,16 @@ static long console_read([[maybe_unused]] File* file,
         if (ch < 0) {
             // No data available
             if (pos > 0) break;  // Return partial line if we have data
+            // WFE/WFI puts the CPU to sleep until the next interrupt
+            // (timer tick).  This is essential for QEMU: without it,
+            // the tight polling loop starves QEMU's main event loop,
+            // preventing Ctrl+A X from working.
 #if defined(__aarch64__)
-            asm volatile("yield" ::: "memory");  // hint: power-efficient spin
+            asm volatile("wfe" ::: "memory");
 #elif defined(__x86_64__)
-            asm volatile("pause" ::: "memory");
+            asm volatile("hlt" ::: "memory");
 #elif defined(__riscv)
-            asm volatile(".insn i 0x0F, 0, x0, x0, 0x010" ::: "memory"); // pause
+            asm volatile("wfi" ::: "memory");
 #endif
             continue;
         }
