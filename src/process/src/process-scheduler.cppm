@@ -72,27 +72,6 @@ inline void idle_heartbeat_print(const char* tag, u32 cpu, u64 uptime_ms) noexce
   early_debug_print(buf);
 }
 
-/// Print scheduler tick stats via direct UART (safe to call from ISR).
-inline void sched_tick_print(u64 tick, u32 cpu, u32 nr_running,
-                             u64 switches, u64 uptime_ms) noexcept {
-  char buf[160];
-  u32 pos = 0;
-  constexpr u32 CAP = sizeof(buf);
-  fmt_str(buf, pos, CAP, "[sched_tick] tick=");
-  fmt_u64(buf, pos, CAP, tick);
-  fmt_str(buf, pos, CAP, " CPU=");
-  fmt_u64(buf, pos, CAP, cpu);
-  fmt_str(buf, pos, CAP, " nr_running=");
-  fmt_u64(buf, pos, CAP, nr_running);
-  fmt_str(buf, pos, CAP, " switches=");
-  fmt_u64(buf, pos, CAP, switches);
-  fmt_str(buf, pos, CAP, " uptime_ms=");
-  fmt_u64(buf, pos, CAP, uptime_ms);
-  fmt_str(buf, pos, CAP, "\n");
-  buf[pos] = '\0';
-  early_debug_print(buf);
-}
-
 // CFS scheduling parameters
 namespace CfsParams {
 inline constexpr u64 SCHED_LATENCY_NS = 6000000;  // 6ms
@@ -794,15 +773,11 @@ private:
   void execute_task_simplified(Thread* task, [[maybe_unused]] u32 cpu_id) noexcept {
     if (task == nullptr) return;
 
-    u64 start_time = get_current_time();
-
-    for (u32 work = 0; work < 1000; ++work) {
-      asm volatile("" ::: "memory");
-    }
-
-    u64 end_time = get_current_time();
-    u64 delta_exec = (end_time > start_time) ? (end_time - start_time) : 1000;
-    update_current(task, delta_exec);
+    // Simulate a realistic time slice so vruntime advances fairly.
+    // Without this, fake test tasks accumulate negligible vruntime
+    // and starve real user tasks (CFS always picks lowest vruntime).
+    constexpr u64 SIMULATED_SLICE_NS = 6000000;  // 6ms = sched latency
+    update_current(task, SIMULATED_SLICE_NS);
 
     set_current_task(task);
     record_context_switch();
@@ -867,7 +842,18 @@ public:
             log::klog::debug("[CPU{}][TID={}] task running", cpu_id, static_cast<u32>(next_task->tid));
           }
 
-          execute_task_simplified(next_task, cpu_id);
+          // User tasks (e.g. init/shell) need a real context switch —
+          // switch_to_user/eret for first entry, context_switch for
+          // subsequent dispatches.  execute_task_simplified only fakes
+          // the accounting without actually giving the CPU to the task.
+          if (next_task->is_user_task) {
+            dequeue_task(next_task);
+            context_switch_to_task(next_task);
+            // Returns here when this CPU's bootstrap context is restored
+            // after the user task is preempted by a timer IRQ.
+          } else {
+            execute_task_simplified(next_task, cpu_id);
+          }
         }
       }
 
@@ -1164,7 +1150,9 @@ public:
     i32 task_nice = (current_task != nullptr) ? current_task->se.nice : 0;
     u32 task_weight = (current_task != nullptr) ? current_task->se.weight : 1024;
 
-    log::klog::info("test task started! TID={} nice={} weight={} CPU={}", task_tid, task_nice, task_weight, CfsScheduler::get_current_cpu_id());
+    (void)task_tid;
+    (void)task_nice;
+    (void)task_weight;
 
     while (true) {
       if (task_nice < 0) {
@@ -1210,15 +1198,10 @@ public:
     Thread *curr = get_current_task();
 
     if (curr == nullptr) {
-      // CPU is idle (e.g. after execve cleared current_task and returned to
-      // the idle loop via bootstrap context).  Check if any tasks are waiting
-      // in this CPU's runqueue and dispatch the highest-priority one.
       Thread *next = pick_next_task(cpu);
       if (next != nullptr) {
         dequeue_task(next);
         context_switch_to_task(next);
-        // Returns here when the idle loop is restored (unlikely for user tasks
-        // that eret and only come back via preemption into a new task).
       }
       return;
     }
@@ -1252,16 +1235,6 @@ public:
       }
     }
 
-    // Periodic status log — use direct UART to avoid ring-buffer lock
-    // contention that causes IRQ livelock when 8 CPUs compete for
-    // write_lock_ inside klog::info().  Every 5000 ticks ≈ 30 s.
-    if (tick_count_ % 5000 == 0) {
-      u64 uptime_ms = 0;
-      if (timer::TimerSubsystem::instance().is_initialized())
-        uptime_ms = timer::TimerSubsystem::instance().now_ns() / 1000000;
-      sched_tick_print(tick_count_, cpu, get_cpu_nr_running(cpu),
-                       total_context_switches(), uptime_ms);
-    }
   }
 
   [[noreturn]] void start_scheduling() noexcept {
@@ -1349,19 +1322,12 @@ public:
         }
       }
 
-      // Timer-driven scheduling: CPU sleeps until timer interrupt fires,
-      // which invokes scheduler_tick() to perform scheduling decisions.
-      // Idle heartbeat prints every ~1 second via direct UART.
-      early_debug_print("[BSP] entering idle loop (heartbeat every 1s)\n");
-      u64 last_idle_log_ns = timer::TimerSubsystem::instance().now_ns();
-      while (true) {
-        arch::cpu_idle_once();
-        u64 now = timer::TimerSubsystem::instance().now_ns();
-        if (now - last_idle_log_ns >= 1000000000ULL) {
-          last_idle_log_ns = now;
-          idle_heartbeat_print("BSP", current_cpu, now / 1000000);
-        }
-      }
+      // BSP enters the same per-CPU scheduling loop as secondary CPUs.
+      // This ensures that user tasks re-enqueued after preemption (e.g. init/shell)
+      // are properly dispatched via context_switch_to_task, not just
+      // execute_task_simplified.
+      early_debug_print("[BSP] entering scheduling loop\n");
+      cpu_startup_entry(current_cpu);
     }
 
     // Fallback: if timer is not available, use the legacy busy-wait loop
