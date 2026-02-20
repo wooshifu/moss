@@ -280,17 +280,52 @@ KernelResult<unique_ptr<AddressSpace>> create_user_address_space() noexcept {
     // get_physical_address works on the high-half virtual pointer
     PhysAddr pgd_phys = mm::PageTableManager::get_physical_address(*pgd_result);
 
-    // 2. Copy kernel PGD entries into user PGD so that kernel code
-    //    (which still runs at identity-mapped low addresses) remains
-    //    accessible after we switch TTBR0 to this user PGD.
-    //    This is the standard technique used by Linux (pre-KPTI):
-    //    user page tables carry the kernel mappings in their upper half.
-    //    Here, the kernel identity map lives in PGD[0] (covers 0-512GB).
+    // 2. Copy kernel identity map into user PGD.
+    //
+    // The kernel PGD[0] → L1 table contains both:
+    //   - 1GB block mappings (L1[0..3]) for device/RAM identity map
+    //   - L1 entries for user addresses (e.g. L1[8] for 0x200000000)
+    //     created by demand paging of previous user processes
+    //
+    // We MUST NOT share the kernel L1 table pointer — that would let
+    // user demand paging pollute the kernel's L1 table (new L2/L3
+    // entries would persist across address space switches).
+    //
+    // Instead, allocate a SEPARATE L1 (PUD) for each user process
+    // and copy ONLY the kernel 1GB block descriptors.  User addresses
+    // in the PGD[0] range (e.g. 0x200000000 = L1[8]) start with an
+    // empty L1 entry, so demand paging creates fresh L2/L3 tables
+    // owned by this process — properly freed by free_user_page_tables.
     auto* kernel_pgd = mm::PageTableManager::get_kernel_pgd();
     auto* user_pgd   = *pgd_result;
-    if (kernel_pgd && user_pgd) {
-        // Copy PGD[0] — the low-address identity mapping (4x1GB blocks)
-        user_pgd->entries[0] = kernel_pgd->entries[0];
+    if (kernel_pgd && user_pgd && kernel_pgd->entries[0].is_valid()) {
+        // Allocate a private L1 (PUD) table for user PGD[0]
+        auto pud_result = mm::PageTableManager::allocate_page_table_dynamic();
+        if (!pud_result) {
+            return KernelResult<unique_ptr<AddressSpace>>{ErrorCode::OutOfMemory};
+        }
+        auto* user_pud = *pud_result;
+        auto* kernel_pud = mm::PageTableManager::get_table_from_physical(
+            kernel_pgd->entries[0].get_phys_addr());
+
+        if (kernel_pud) {
+            // Copy only the 1GB block descriptors (kernel identity map).
+            // Table descriptors (pointing to L2 tables) are NOT copied —
+            // they belong to previous user processes or kernel-internal use.
+            constexpr usize ENTRIES = mm::PageTable::ENTRIES_PER_TABLE;
+            for (usize i = 0; i < ENTRIES; i++) {
+                if (kernel_pud->entries[i].is_valid() &&
+                    kernel_pud->entries[i].is_block()) {
+                    user_pud->entries[i] = kernel_pud->entries[i];
+                }
+                // Non-block entries (table descriptors for user L2/L3)
+                // are left as zero → translation fault → demand paging
+            }
+        }
+
+        // Point user PGD[0] to the private PUD
+        PhysAddr pud_phys = mm::PageTableManager::get_physical_address(user_pud);
+        user_pgd->entries[0].set_table(pud_phys);
     }
 
     // 3. Allocate ASID

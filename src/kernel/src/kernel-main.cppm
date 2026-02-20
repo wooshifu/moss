@@ -39,6 +39,7 @@ import moss.mm;
 import moss.interrupts;
 import moss.drivers;
 import moss.fdt;
+import moss.initramfs;
 import moss.ipc;
 import moss.process;
 import moss.timer;
@@ -172,6 +173,19 @@ public:
 
     // Enable interrupts
     enable_interrupts();
+
+    // Initialize initramfs if bootloader provided one via DTB
+    {
+        auto& pi = fdt::g_platform_info;
+        if (pi.initrd_start != 0 && pi.initrd_end > pi.initrd_start) {
+            usize initrd_size = static_cast<usize>(pi.initrd_end - pi.initrd_start);
+            log::klog::info("initramfs: found at {:#x}-{:#x} ({} bytes)",
+                           pi.initrd_start, pi.initrd_end, initrd_size);
+            initramfs::g_initramfs.init(pi.initrd_start, initrd_size);
+        } else {
+            log::klog::info("initramfs: not present (no -initrd passed to QEMU)");
+        }
+    }
 
     // Create initial user process
     auto init_result = create_init_process();

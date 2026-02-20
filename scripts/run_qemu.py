@@ -51,6 +51,7 @@ class QemuConfig:
     test_elf: str
     kernel_bin: str       # moss_boot.bin（仅 .text.boot 段）
     kernel_bin_full: str  # moss.bin（完整内核，ARM64 含 Linux Image header）
+    initramfs: str = ""   # initramfs.cpio 路径（ARM64 only）
     cpu_cores: int = 4    # 从 CMake MOSS_CPU_CORES 变量读取，默认 4
     qemu_path: str = ""   # CMake 探测到的 QEMU 可执行文件完整路径
 
@@ -67,6 +68,7 @@ class QemuConfig:
             test_elf=data["test_elf"],
             kernel_bin=data["kernel_bin"],
             kernel_bin_full=data["kernel_bin_full"],
+            initramfs=data.get("initramfs", ""),
             cpu_cores=data.get("cpu_cores", 4),
             qemu_path=qemu_path,
         )
@@ -236,6 +238,14 @@ def build_qemu_args(
         *arch_cfg["extra_args"],
     ]
 
+    # Initramfs: pass CPIO archive to QEMU via -initrd
+    # QEMU loads it into guest RAM and records the address in DTB /chosen node
+    # as linux,initrd-start / linux,initrd-end (read by the kernel FDT parser)
+    if cfg.initramfs and not test_mode:
+        initrd_path = Path(cfg.initramfs)
+        if initrd_path.exists():
+            args += ["-initrd", str(initrd_path)]
+
     # DTB 处理：
     #   - moss.bin（默认）: QEMU 自动识别 Linux Image header，通过 x0 传递 DTB
     #   - --bin / --debug 模式: 无 Linux Image header，需手动导出 DTB 并加载到 RAM
@@ -290,6 +300,14 @@ def print_banner(
     if use_binary:
         size = kernel_file.stat().st_size
         rprint(f"镜像大小:   {size / 1024:.1f}K")
+
+    # Initramfs 信息
+    if cfg.initramfs:
+        initrd_path = Path(cfg.initramfs)
+        if initrd_path.exists():
+            rprint(f"[green]Initramfs:  {initrd_path.name} ({initrd_path.stat().st_size / 1024:.1f}K)[/green]")
+        else:
+            rprint("[yellow]Initramfs:  configured but not built[/yellow]")
 
     # DTB 传递方式提示
     if _needs_dtb_loader(use_binary=use_binary, debug_mode=debug_mode):

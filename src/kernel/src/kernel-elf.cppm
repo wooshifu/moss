@@ -1,6 +1,10 @@
 // MOSS Kernel Module - ELF Format Partition
 // ELF constants, header structures, and program header definitions.
 
+module;
+
+#include "arch_detect.h"
+
 export module moss.kernel:elf;
 
 import moss.std;
@@ -71,5 +75,47 @@ struct [[gnu::packed]] ProgramHeader {
     u64 p_memsz;         // Segment size in memory
     u64 p_align;         // Segment alignment
 };
+
+// ============================================================================
+// ELF validation
+// ============================================================================
+
+/// Validate an ELF64 header for the current architecture
+[[nodiscard]] inline bool validate_elf_header(const ElfHeader* hdr, usize data_size) noexcept {
+    if (data_size < sizeof(ElfHeader)) return false;
+
+    // Check magic
+    if (*reinterpret_cast<const u32*>(hdr->e_ident) != ELF_MAGIC) return false;
+
+    // Check class (64-bit)
+    if (hdr->e_ident[4] != ELF_CLASS_64) return false;
+
+    // Check endianness (little-endian)
+    if (hdr->e_ident[5] != ELF_DATA_LSB) return false;
+
+    // Check type (executable)
+    if (hdr->e_type != ET_EXEC) return false;
+
+    // Check architecture
+#if defined(MOSS_ARCH_ARM64)
+    if (hdr->e_machine != EM_AARCH64) return false;
+#elif defined(MOSS_ARCH_X86_64)
+    if (hdr->e_machine != EM_X86_64) return false;
+#elif defined(MOSS_ARCH_RISCV)
+    if (hdr->e_machine != EM_RISCV) return false;
+#endif
+
+    // Check program header table
+    if (hdr->e_phoff == 0 || hdr->e_phnum == 0) return false;
+    if (hdr->e_phoff + static_cast<u64>(hdr->e_phnum) * hdr->e_phentsize > data_size) return false;
+
+    return true;
+}
+
+/// Get pointer to program header table
+[[nodiscard]] inline const ProgramHeader* get_program_headers(const ElfHeader* hdr) noexcept {
+    return reinterpret_cast<const ProgramHeader*>(
+        reinterpret_cast<const u8*>(hdr) + hdr->e_phoff);
+}
 
 } // namespace moss::kernel::elf

@@ -9,6 +9,7 @@ module;
 // extern "C" declarations in global module fragment
 #if defined(__aarch64__) || defined(MOSS_ARCH_ARM64)
 extern "C" void context_switch(void* prev_context, void* next_context);
+extern "C" void switch_to_user(void* context, unsigned long user_sp);
 #endif
 
 module moss.kernel;
@@ -225,9 +226,314 @@ namespace handlers {
         return static_cast<long>(child_proc->pid());
     }
 
-    long sys_execve(long, long, long, long, long, long) noexcept {
-        log::klog::warn("syscall: execve() not implemented");
-        return -Errno::ENOSYS;
+    long sys_execve(long pathname_addr, long /* argv */, long /* envp */,
+                    long, long, long) noexcept {
+        using namespace moss::kernel::process;
+        using namespace moss::kernel::elf;
+        using namespace moss::kernel::initramfs;
+
+        // 1. Get current thread and process
+        Thread *cur = g_scheduler ? CfsScheduler::get_current_task() : nullptr;
+        if (!cur) {
+            log::klog::error("execve: no current task");
+            return -Errno::ESRCH;
+        }
+        Process *proc = g_process_manager
+            ? g_process_manager->find_process(cur->owner_pid)
+            : nullptr;
+        if (!proc || !proc->address_space()) {
+            log::klog::error("execve: no process or address space");
+            return -Errno::ESRCH;
+        }
+
+        // 2. Copy pathname from user memory into kernel buffer.
+        //    After step 5 switches TTBR0 to the kernel PGD, user addresses
+        //    are no longer accessible, so we must capture the string now.
+        constexpr usize PATH_MAX = 256;
+        char pathname_buf[PATH_MAX];
+        {
+            const char *user_path = reinterpret_cast<const char *>(
+                static_cast<usize>(pathname_addr));
+            if (!user_path) {
+                return -Errno::EFAULT;
+            }
+            usize len = 0;
+            while (len < PATH_MAX - 1 && user_path[len] != '\0') {
+                pathname_buf[len] = user_path[len];
+                len++;
+            }
+            pathname_buf[len] = '\0';
+        }
+        const char *pathname = pathname_buf;
+
+        log::klog::info("execve: PID={} loading '{}'", proc->pid(), pathname);
+
+        // 3. Look up file in initramfs
+        if (!g_initramfs.is_initialized()) {
+            log::klog::error("execve: initramfs not initialized");
+            return -Errno::ENOENT;
+        }
+        const auto *entry = g_initramfs.lookup(pathname);
+        if (!entry) {
+            log::klog::error("execve: '{}' not found in initramfs", pathname);
+            return -Errno::ENOENT;
+        }
+
+        // 4. Validate ELF header
+        auto *elf_hdr = reinterpret_cast<const ElfHeader *>(entry->data);
+        if (!validate_elf_header(elf_hdr, entry->data_size)) {
+            log::klog::error("execve: '{}' is not a valid ELF", pathname);
+            return -Errno::ENOEXEC;
+        }
+
+        VirtAddr elf_entry = elf_hdr->e_entry;
+        const auto *phdrs = get_program_headers(elf_hdr);
+        u16 phnum = elf_hdr->e_phnum;
+
+        log::klog::info("execve: ELF entry={:#x} phnum={}", elf_entry, phnum);
+
+        // ===== Point of no return =====
+        // From here, errors terminate the process (old address space is gone).
+
+        // 5. Switch TTBR0 to kernel PGD (safe teardown)
+        AddressSpace *old_as = proc->address_space();
+        PhysAddr old_pgd = old_as->pgd_phys;
+
+#if defined(MOSS_ARCH_ARM64)
+        {
+            auto *kpgd = mm::PageTableManager::get_kernel_pgd();
+            if (kpgd) {
+                u64 kpgd_phys = mm::PageTableManager::get_physical_address(kpgd);
+                asm volatile("msr ttbr0_el1, %0" :: "r"(kpgd_phys));
+                asm volatile("dsb ish" ::: "memory");
+                asm volatile("isb" ::: "memory");
+            }
+        }
+#endif
+
+        // 6. Free old user page tables
+        if (old_pgd != 0) {
+            mm::PageTableManager::free_user_page_tables(old_pgd);
+            old_as->pgd_phys = 0; // prevent double-free
+        }
+
+        // 7. Create new address space
+        auto new_as_result = user_space::create_user_address_space();
+        if (!new_as_result) {
+            log::klog::error("execve: failed to create new address space");
+            // Unrecoverable — process has no address space
+            cur->state = ProcessState::Terminated;
+            if (g_scheduler) {
+                g_scheduler->dequeue_task(cur);
+                g_scheduler->schedule_after_exit();
+            }
+            while (true) { ::moss::kernel::arch::cpu_halt(); }
+        }
+        auto new_as = moss::move(*new_as_result);
+
+        // 8. Load PT_LOAD segments as VMAs
+        //
+        // Multiple PT_LOAD segments may fall within the same page (e.g.
+        // .text at 0x400000 and .rodata at 0x400048 both within page
+        // 0x400000-0x401000).  The demand-paging handler maps one page
+        // per fault using a single VMA's backing data, so overlapping
+        // VMAs would cause data loss.
+        //
+        // Solution: two-pass approach.
+        //   Pass 1 — compute the overall VA range and file-offset range
+        //            across all PT_LOAD segments.
+        //   Pass 2 — create one merged VMA if all segments fit in the
+        //            same page range, otherwise fall back to per-segment
+        //            VMAs (safe when segments are page-separated).
+        {
+            constexpr u16 MAX_LOADS = 8;
+            u16 load_count = 0;
+
+            // Collect PT_LOAD segments
+            VirtAddr overall_start = ~0ULL;
+            VirtAddr overall_end = 0;
+            u64 file_offset_min = ~0ULL;
+            u64 file_offset_max = 0;  // offset + filesz
+            u32 merged_flags = 0;
+
+            for (u16 i = 0; i < phnum && load_count < MAX_LOADS; ++i) {
+                const auto &ph = phdrs[i];
+                if (ph.p_type != PT_LOAD || ph.p_memsz == 0) continue;
+                ++load_count;
+
+                if (ph.p_vaddr < overall_start) overall_start = ph.p_vaddr;
+                VirtAddr seg_end = ph.p_vaddr + ph.p_memsz;
+                if (seg_end > overall_end) overall_end = seg_end;
+
+                if (ph.p_filesz > 0) {
+                    if (ph.p_offset < file_offset_min) file_offset_min = ph.p_offset;
+                    u64 fo_end = ph.p_offset + ph.p_filesz;
+                    if (fo_end > file_offset_max) file_offset_max = fo_end;
+                }
+
+                if (ph.p_flags & PF_R) merged_flags |= VmaFlags::READ;
+                if (ph.p_flags & PF_W) merged_flags |= VmaFlags::WRITE;
+                if (ph.p_flags & PF_X) merged_flags |= VmaFlags::EXEC;
+            }
+
+            // Page-align the overall range
+            VirtAddr page_start = overall_start & ~(static_cast<VirtAddr>(PAGE_SIZE) - 1);
+            VirtAddr page_end = (overall_end + PAGE_SIZE - 1)
+                                & ~(static_cast<VirtAddr>(PAGE_SIZE) - 1);
+
+            // Determine if all segments share the same page range
+            // (common for small programs like hello.elf)
+            bool same_page_range = (page_end - page_start) <= PAGE_SIZE
+                                   || load_count <= 1;
+
+            if (same_page_range && load_count > 0) {
+                // Merged VMA: one VMA covering all PT_LOAD segments.
+                // backing_offset accounts for the gap between page_start and
+                // the first byte of file data in the ELF.
+                VmaType vma_type = (merged_flags & VmaFlags::EXEC)
+                    ? VmaType::CODE : VmaType::DATA;
+
+                const u8 *backing = nullptr;
+                usize backing_size = 0;
+                u64 backing_offset = 0;
+                if (file_offset_max > file_offset_min) {
+                    backing = entry->data + file_offset_min;
+                    backing_size = static_cast<usize>(file_offset_max - file_offset_min);
+                    // backing_offset = how far into the page the data starts
+                    backing_offset = overall_start - page_start;
+                }
+
+                if (backing_size == 0) merged_flags |= VmaFlags::DEMAND_ZERO;
+
+                new_as->add_vma(page_start, page_end, merged_flags, vma_type,
+                               backing, backing_offset, backing_size);
+
+                log::klog::info("  merged VMA: {:#x}-{:#x} backing={} bytes "
+                               "(offset={}, {} segments)",
+                               page_start, page_end, backing_size,
+                               backing_offset, load_count);
+            } else {
+                // Separate VMAs for page-separated segments (general case)
+                for (u16 i = 0; i < phnum; ++i) {
+                    const auto &ph = phdrs[i];
+                    if (ph.p_type != PT_LOAD || ph.p_memsz == 0) continue;
+
+                    u32 vma_flags = 0;
+                    if (ph.p_flags & PF_R) vma_flags |= VmaFlags::READ;
+                    if (ph.p_flags & PF_W) vma_flags |= VmaFlags::WRITE;
+                    if (ph.p_flags & PF_X) vma_flags |= VmaFlags::EXEC;
+
+                    VmaType vma_type = VmaType::DATA;
+                    if ((ph.p_flags & PF_X) && !(ph.p_flags & PF_W))
+                        vma_type = VmaType::CODE;
+
+                    VirtAddr seg_start = ph.p_vaddr;
+                    VirtAddr seg_end = (seg_start + ph.p_memsz + PAGE_SIZE - 1)
+                                       & ~(static_cast<VirtAddr>(PAGE_SIZE) - 1);
+
+                    const u8 *backing = (ph.p_filesz > 0)
+                        ? (entry->data + ph.p_offset) : nullptr;
+                    usize b_size = static_cast<usize>(ph.p_filesz);
+
+                    if (ph.p_filesz == 0) vma_flags |= VmaFlags::DEMAND_ZERO;
+
+                    new_as->add_vma(seg_start, seg_end, vma_flags, vma_type,
+                                   backing, 0, b_size);
+
+                    log::klog::info("  PT_LOAD: {:#x}-{:#x} filesz={} memsz={}",
+                                   seg_start, seg_end,
+                                   static_cast<u64>(ph.p_filesz),
+                                   static_cast<u64>(ph.p_memsz));
+                }
+            }
+        }
+
+        // 9. Add stack VMA (demand-zero)
+        constexpr VirtAddr STACK_BOTTOM = UserLayout::STACK_TOP - UserLayout::STACK_SIZE;
+        new_as->add_vma(STACK_BOTTOM, UserLayout::STACK_TOP,
+                       VmaFlags::READ | VmaFlags::WRITE | VmaFlags::DEMAND_ZERO,
+                       VmaType::STACK);
+
+        // 10. Add heap VMA (demand-zero)
+        new_as->add_vma(UserLayout::HEAP_START,
+                       UserLayout::HEAP_START + UserLayout::HEAP_INIT,
+                       VmaFlags::READ | VmaFlags::WRITE | VmaFlags::DEMAND_ZERO,
+                       VmaType::HEAP);
+
+        // 11. Bind new address space to process
+        auto set_result = proc->set_address_space(moss::move(new_as));
+        if (!set_result) {
+            log::klog::error("execve: set_address_space failed");
+            cur->state = ProcessState::Terminated;
+            if (g_scheduler) {
+                g_scheduler->dequeue_task(cur);
+                g_scheduler->schedule_after_exit();
+            }
+            while (true) { ::moss::kernel::arch::cpu_halt(); }
+        }
+
+        // 12. Reset thread context
+        cur->context = CpuContext{};    // zero all registers
+        cur->context.pc = elf_entry;
+        cur->context.sp = UserLayout::STACK_TOP - 16;  // 16-byte aligned
+        cur->context.pstate = 0;  // EL0t
+        cur->needs_initial_eret = true;  // next dispatch does switch_to_user + eret
+        cur->stack_base = STACK_BOTTOM;
+        cur->stack_size = UserLayout::STACK_SIZE;
+
+        log::klog::info("execve: PID={} -> '{}' entry={:#x} stack={:#x}",
+                       proc->pid(), pathname, elf_entry,
+                       UserLayout::STACK_TOP - 16);
+
+        // 13. Direct eret to new program image.
+        //
+        // We cannot context_switch to the bootstrap context because the initial
+        // dispatch of TID=1000 used switch_to_user (eret, never returns), so
+        // bootstrap_contexts_[cpu] was never populated with a valid saved state.
+        //
+        // Instead, we directly eret from here — identical to what
+        // context_switch_to_task() does for needs_initial_eret tasks:
+        //   1. Switch TTBR0 to this process's page tables
+        //   2. Set TPIDR_EL1 for per-thread kernel stack
+        //   3. switch_to_user(&cur->context, user_sp) → eret to EL0
+        //
+        // This is safe because execve is called from a syscall (EL1), and we
+        // have already rebuilt the address space, so we can eret directly.
+#if defined(MOSS_ARCH_ARM64)
+        {
+            cur->needs_initial_eret = false;
+            cur->state = ProcessState::Running;
+
+            arch::disable_interrupts();
+
+            // Switch TTBR0 to new address space and invalidate TLB.
+            // The old address space's mappings (e.g. 0x200000000) are cached
+            // in the TLB.  Without invalidation, the CPU may use stale TLB
+            // entries after the TTBR0 switch, causing spurious faults.
+            if (proc->address_space() && proc->address_space()->pgd_phys != 0) {
+                u64 ttbr0_val = proc->address_space()->pgd_phys
+                              | (static_cast<u64>(proc->address_space()->asid) << 48);
+                asm volatile("msr ttbr0_el1, %0" :: "r"(ttbr0_val));
+                // Invalidate all TLB entries for this ASID
+                asm volatile("tlbi aside1, %0" :: "r"(static_cast<u64>(proc->address_space()->asid) << 48));
+                asm volatile("dsb sy" ::: "memory");
+                asm volatile("isb" ::: "memory");
+            }
+
+            // Set TPIDR_EL1 for per-thread kernel stack
+            if (cur->kernel_stack_base != 0) {
+                u64 kstack_top = cur->kernel_stack_top();
+                asm volatile("msr tpidr_el1, %0" :: "r"(kstack_top));
+            }
+
+            // eret to new program — never returns
+            switch_to_user(&cur->context,
+                          cur->stack_base + cur->stack_size - 16);
+        }
+#endif
+
+        // Should not reach here (switch_to_user does eret)
+        while (true) { ::moss::kernel::arch::cpu_halt(); }
     }
 
     // wait4(pid, wstatus, options, rusage) — wait for child process state change
@@ -476,7 +782,7 @@ const SyscallDescriptor SYSCALL_TABLE[static_cast<int>(SyscallNumber::MAX_SYSCAL
 
     // === 进程管理 (10-29) ===
     {"fork", handlers::sys_fork, 0, true, "创建子进程"},
-    {"execve", handlers::sys_execve, 3, false, "执行程序"},
+    {"execve", handlers::sys_execve, 3, true, "执行程序"},
     {"wait4", handlers::sys_wait4, 4, true, "等待子进程"},
     {"waitpid", handlers::sys_waitpid, 3, true, "等待指定进程"},
     {"kill", handlers::sys_kill, 2, false, "发送信号"},
