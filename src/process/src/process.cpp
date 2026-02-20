@@ -435,19 +435,18 @@ KernelResult<VirtAddr> allocate_user_heap(Process* process, usize size) noexcept
 // ============================================================================
 
 [[noreturn]] void secondary_cpu_schedule_loop(u32 cpu_id) noexcept {
-    namespace log = moss::kernel::logging;
-
-    log::klog::info("CPU{}: entering scheduling loop", cpu_id);
+    // Use direct UART — klog from secondary CPUs causes TicketSpinLock
+    // contention that triggers IRQ livelock on all CPUs.
+    early_debug_print("[SEC] CPU entering scheduling loop\n");
 
     // No HrTimer needed: irq_handler_c recognises the per-CPU timer PPI and
     // calls scheduler_tick() directly for secondary CPUs.  The hardware timer
     // compare register is reprogrammed there as well.
 
-    log::klog::info("CPU{}: timer-driven via irq_handler_c, entering idle", cpu_id);
-
     // Main scheduling loop — driven by timer IRQ calling scheduler_tick(),
     // which does preemption via context_switch.  Between preemptions, we
     // idle with WFI and re-check when an interrupt (timer or IPI) wakes us.
+    u64 last_idle_log_ns = moss::kernel::timer::TimerSubsystem::instance().now_ns();
     while (true) {
         Thread *next = g_scheduler->pick_next_task(cpu_id);
         if (next != nullptr) {
@@ -468,6 +467,11 @@ KernelResult<VirtAddr> allocate_user_heap(Process* process, usize size) noexcept
             // No local tasks: try to steal from busiest CPU before sleeping
             try_idle_balance(cpu_id);
             arch::cpu_idle_once();
+            u64 now = moss::kernel::timer::TimerSubsystem::instance().now_ns();
+            if (now - last_idle_log_ns >= 1000000000ULL) {
+                last_idle_log_ns = now;
+                idle_heartbeat_print("SEC", cpu_id, now / 1000000);
+            }
         }
     }
 }
