@@ -7,23 +7,24 @@
  *
  * Virtual Address Layout:
  * ┌──────────────────────────────────────────┐
- * │ 0x0040_0000  ┌────────────┐              │
- * │              │ .text       │  Code (RX)   │
- * │              ├────────────┤              │
- * │              │ .rodata     │  Read-only   │
- * │              ├────────────┤              │
- * │              │ .data       │  Data (RW)   │
- * │              ├────────────┤              │
- * │              │ .bss        │  BSS  (RW)   │
- * │              └────────────┘              │
- * │ ...          ↑ heap grows upward         │
- * │ ...          ↓ stack grows downward      │
- * │ 0x????_????  Stack top (set by kernel)   │
+ * │ 0x2_0000_0000 ┌────────────┐             │
+ * │               │ .text       │  Code (RX)  │
+ * │               ├────────────┤             │
+ * │               │ .rodata     │  Read-only  │
+ * │               ├────────────┤             │
+ * │               │ .data       │  Data (RW)  │
+ * │               ├────────────┤             │
+ * │               │ .bss        │  BSS  (RW)  │
+ * │               └────────────┘             │
+ * │ ...           ↑ heap grows upward        │
+ * │ ...           ↓ stack grows downward     │
+ * │ 0x????_????   Stack top (set by kernel)  │
  * └──────────────────────────────────────────┘
  *
  * Key design decisions:
- *   - Base address 0x40_0000 (4 MB) — standard Linux user-space convention,
- *     leaves the first 4 MB unmapped as a NULL-pointer guard region
+ *   - Base address 0x2_0000_0000 (8 GB) — placed above the kernel identity
+ *     map region (PGD[0] L1 entries cover 0-4 GB) to ensure user page faults
+ *     trigger demand paging instead of hitting kernel block mappings
  *   - No explicit stack section — the kernel allocates the user stack and
  *     passes the stack pointer via switch_to_user()
  *   - Minimal layout: only .text, .rodata, .data, .bss sections are needed
@@ -44,11 +45,16 @@ ENTRY(_start)
 SECTIONS
 {
     /* ---- Program Load Address ----
-     * 0x40_0000 (4 MB) is the conventional start for user-space programs.
-     * This ensures that any NULL-pointer dereference (address 0x0) faults
-     * immediately rather than silently accessing valid memory.
+     * 0x2_0000_0000 (8 GB) places user code above the kernel identity map
+     * region.  The kernel copies PGD[0]→PUD[0..3] (4x 1GB blocks at 0-4GB)
+     * into every user page table for kernel code accessibility.  User
+     * addresses must fall outside this 0-4GB region so that demand paging
+     * (L1/L2/L3 translation faults) works correctly.
+     *
+     * 0x200000000 maps to PGD[0]→PUD[8], which is empty in the kernel
+     * page tables, ensuring user faults are properly handled.
      */
-    . = 0x400000;
+    . = 0x200000000;
 
     /* ---- Code Section ----
      * All executable code from the user program.
