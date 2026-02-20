@@ -23,7 +23,7 @@ ARCH_CONFIG = {
     "ARM64": {
         "qemu_system": "qemu-system-aarch64",
         "machine": "virt",
-        "cpu": "max",
+        "cpu": "cortex-a57",
         "extra_args": ["-semihosting-config", "enable=on,target=native"],
     },
     "X86_64": {
