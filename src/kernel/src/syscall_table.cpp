@@ -227,11 +227,6 @@ namespace handlers {
             g_scheduler->enqueue_task(child_thread, arch::get_current_cpu_id());
         }
 
-        log::klog::info("sys_fork: parent PID={} -> child PID={} TID={} pgd={:#x} asid={}",
-                        parent_proc->pid(), child_proc->pid(),
-                        static_cast<u32>(child_tid), child_proc->address_space()->pgd_phys,
-                        child_proc->address_space()->asid);
-
         // 15. Parent returns child PID
         return static_cast<long>(child_proc->pid());
     }
@@ -275,8 +270,6 @@ namespace handlers {
         }
         const char *pathname = pathname_buf;
 
-        log::klog::info("execve: PID={} loading '{}'", proc->pid(), pathname);
-
         // 3. Resolve file via VFS path resolution (replaces direct initramfs access)
         auto* dentry = moss::kernel::vfs::resolve_path(pathname);
         if (!dentry || !dentry->inode) {
@@ -303,8 +296,6 @@ namespace handlers {
         VirtAddr elf_entry = elf_hdr->e_entry;
         const auto *phdrs = get_program_headers(elf_hdr);
         u16 phnum = elf_hdr->e_phnum;
-
-        log::klog::info("execve: ELF entry={:#x} phnum={}", elf_entry, phnum);
 
         // ===== Point of no return =====
         // From here, errors terminate the process (old address space is gone).
@@ -422,10 +413,6 @@ namespace handlers {
                 new_as->add_vma(page_start, page_end, merged_flags, vma_type,
                                backing, backing_offset, backing_size);
 
-                log::klog::info("  merged VMA: {:#x}-{:#x} backing={} bytes "
-                               "(offset={}, {} segments)",
-                               page_start, page_end, backing_size,
-                               backing_offset, load_count);
             } else {
                 // Separate VMAs for page-separated segments (general case)
                 for (u16 i = 0; i < phnum; ++i) {
@@ -494,10 +481,6 @@ namespace handlers {
         cur->needs_initial_eret = true;  // next dispatch does switch_to_user + eret
         cur->stack_base = STACK_BOTTOM;
         cur->stack_size = UserLayout::STACK_SIZE;
-
-        log::klog::info("execve: PID={} -> '{}' entry={:#x} stack={:#x}",
-                       proc->pid(), pathname, elf_entry,
-                       UserLayout::STACK_TOP - 16);
 
         // 13. Direct eret to new program image.
         //
@@ -603,7 +586,6 @@ namespace handlers {
                     *wstatus_ptr = (static_cast<int>(child_exit_code) & 0xFF) << 8;
                 }
 
-                log::klog::info("sys_wait4: reaped PID={} exit_code={}", result_pid, child_exit_code);
                 return static_cast<long>(result_pid);
             }
 
@@ -623,8 +605,6 @@ namespace handlers {
             // setting them back to Ready and re-enqueueing them.  The thread
             // then resumes here (after being re-dispatched by scheduler_tick's
             // context_switch) and loops back to rescan for zombies.
-            log::klog::info("sys_wait4: PID={} blocking on child exit", cur->owner_pid);
-
             proc->child_exit_wait_queue().add_waiter(static_cast<void*>(cur));
             cur->state = ProcessState::Blocked;
             if (g_scheduler) {
