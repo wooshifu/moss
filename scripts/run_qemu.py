@@ -74,6 +74,19 @@ class QemuConfig:
         )
 
 
+def get_qemu_version(qemu_path: str) -> str:
+    """查询 QEMU 可执行文件的版本号"""
+    try:
+        result = subprocess.run(
+            [qemu_path, "--version"], capture_output=True, text=True, check=False
+        )
+        # 首行格式: "QEMU emulator version X.Y.Z ..."
+        first_line = result.stdout.strip().splitlines()[0]
+        return first_line.split("version", 1)[1].strip()
+    except Exception:
+        return "unknown"
+
+
 def resolve_kernel_file(
     cfg: QemuConfig, *, use_binary: bool, test_mode: bool, debug_mode: bool
 ) -> tuple[Path, str]:
@@ -278,11 +291,14 @@ def print_banner(
     timeout: int | None = None,
 ) -> None:
     """打印启动横幅"""
+    qemu_version = get_qemu_version(cfg.qemu_path)
+
     if test_mode:
         rprint("[bold]==================================================[/bold]")
         rprint(f"[bold]        MOSS Unit Tests ({cfg.arch})[/bold]")
         rprint("[bold]==================================================[/bold]")
         rprint(f"架构:       {cfg.arch}")
+        rprint(f"QEMU:       {qemu_version}")
         rprint(f"测试文件:   {kernel_file}")
         if timeout:
             rprint(f"超时:       {timeout}s")
@@ -293,6 +309,7 @@ def print_banner(
     rprint(f"[bold]           Moss {cfg.arch} 内核操作系统[/bold]")
     rprint("[bold]==================================================[/bold]")
     rprint(f"架构:       {cfg.arch}")
+    rprint(f"QEMU:       {qemu_version}")
     rprint(f"内核文件:   {kernel_file}")
     rprint(f"内核类型:   {kernel_type}")
     rprint(f"构建目录:   {cfg.build_dir}")

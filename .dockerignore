@@ -1,0 +1,22 @@
+# Build outputs (will be rebuilt inside container)
+build/
+install/
+
+# IDE / editor
+.vscode/
+.idea/
+.claude/
+compile_commands.json
+
+# Git
+.git/
+.gitignore
+
+# Python caches
+__pycache__/
+*.py[oc]
+.venv/
+.cache/
+
+# Worktrees
+.worktrees/
