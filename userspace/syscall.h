@@ -16,6 +16,7 @@
 #define SYS_EXECVE   11
 #define SYS_WAIT4    12
 #define SYS_WAITPID  13
+#define SYS_SCHED_YIELD 18
 #define SYS_OPEN     30
 #define SYS_CLOSE    31
 #define SYS_READ     32
@@ -25,6 +26,9 @@
 #define SYS_DUP      42
 #define SYS_DUP2     43
 #define SYS_PIPE     44
+#define SYS_CLOCK_GETTIME 83
+#define SYS_NANOSLEEP     86
+#define SYS_TOPINFO       111
 
 // ============================================================================
 // Low-level syscall wrappers (ARM64: x8=nr, x0-x5=args, svc #0)
@@ -134,6 +138,62 @@ static inline long pipe(long pipefd[2]) {
     return syscall1(SYS_PIPE, (long)pipefd);
 }
 
+static inline long sched_yield(void) {
+    return syscall0(SYS_SCHED_YIELD);
+}
+
+static inline long clock_gettime_ns(unsigned long *ns) {
+    return syscall1(SYS_CLOCK_GETTIME, (long)ns);
+}
+
+static inline long nanosleep_ns(unsigned long *ns) {
+    return syscall1(SYS_NANOSLEEP, (long)ns);
+}
+
+// ============================================================================
+// TopInfo — system monitoring structures (for top command)
+// Layout must match kernel-side topinfo_layout exactly.
+// ============================================================================
+
+#define TOP_MAX_PROCS 64
+#define TOP_MAX_CPUS  8
+
+struct TopProcessInfo {
+    long pid;
+    long ppid;
+    unsigned long state;           // ProcessState enum value
+    unsigned long cpu;             // current CPU
+    long nice;
+    unsigned long vruntime;
+    unsigned long sum_exec_runtime; // total CPU time in nanoseconds
+    unsigned long load_avg;
+    unsigned long util_avg;
+    char name[16];
+};
+
+struct TopInfo {
+    unsigned long uptime_ns;
+    unsigned long total_processes;
+    unsigned long total_context_switches;
+    unsigned long total_preemptions;
+    unsigned long total_forks;
+    unsigned long total_exits;
+    unsigned long nr_cpus;
+    unsigned long cpu_load[TOP_MAX_CPUS];
+    unsigned long cpu_nr_running[TOP_MAX_CPUS];
+    unsigned long cpu_idle_time_ns[TOP_MAX_CPUS];
+    unsigned long mem_total_pages;
+    unsigned long mem_used_pages;
+    unsigned long mem_free_pages;
+    unsigned long page_size;
+    unsigned long nr_processes;
+    struct TopProcessInfo procs[TOP_MAX_PROCS];
+};
+
+static inline long topinfo(struct TopInfo *info) {
+    return syscall1(SYS_TOPINFO, (long)info);
+}
+
 // ============================================================================
 // String utilities (no libc available)
 // ============================================================================
@@ -171,4 +231,71 @@ static inline void print(const char *msg) {
 
 static inline void eprint(const char *msg) {
     write(2, msg, strlen(msg));
+}
+
+// ============================================================================
+// Number formatting utilities (no printf available)
+// ============================================================================
+
+// Convert unsigned long to decimal string, return length written
+static inline int ultoa(unsigned long val, char *buf, int bufsize) {
+    if (bufsize <= 0) return 0;
+    if (val == 0) { buf[0] = '0'; buf[1] = '\0'; return 1; }
+    char tmp[20];
+    int len = 0;
+    while (val > 0 && len < 20) {
+        tmp[len++] = '0' + (int)(val % 10);
+        val /= 10;
+    }
+    if (len >= bufsize) len = bufsize - 1;
+    for (int i = 0; i < len; i++) buf[i] = tmp[len - 1 - i];
+    buf[len] = '\0';
+    return len;
+}
+
+// Convert signed long to decimal string, return length written
+static inline int ltoa(long val, char *buf, int bufsize) {
+    if (bufsize <= 1) return 0;
+    if (val < 0) {
+        buf[0] = '-';
+        return 1 + ultoa((unsigned long)(-val), buf + 1, bufsize - 1);
+    }
+    return ultoa((unsigned long)val, buf, bufsize);
+}
+
+// Print an unsigned long as decimal
+static inline void print_ulong(unsigned long val) {
+    char buf[20];
+    ultoa(val, buf, 20);
+    print(buf);
+}
+
+// Print a signed long as decimal
+static inline void print_long(long val) {
+    char buf[21];
+    ltoa(val, buf, 21);
+    print(buf);
+}
+
+// Print unsigned long right-aligned in a field of given width
+static inline void print_num_padded(unsigned long val, int width) {
+    char buf[20];
+    int len = ultoa(val, buf, 20);
+    for (int i = len; i < width; i++) print(" ");
+    print(buf);
+}
+
+// Print signed long right-aligned in a field of given width
+static inline void print_snum_padded(long val, int width) {
+    char buf[21];
+    int len = ltoa(val, buf, 21);
+    for (int i = len; i < width; i++) print(" ");
+    print(buf);
+}
+
+// Print a string left-aligned, padded to given width
+static inline void print_str_padded(const char *s, int width) {
+    int len = strlen(s);
+    print(s);
+    for (int i = len; i < width; i++) print(" ");
 }

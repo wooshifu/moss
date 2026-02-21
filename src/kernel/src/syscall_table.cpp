@@ -218,6 +218,9 @@ namespace handlers {
             child_proc->set_fd_table(child_fdt);
         }
 
+        // 12c. Inherit process name from parent
+        child_proc->set_name(parent_proc->name());
+
         // 13. Register child in parent's children list (for waitpid)
         parent_proc->add_child(child_proc->pid());
 
@@ -275,6 +278,15 @@ namespace handlers {
             pathname_buf[len] = '\0';
         }
         const char *pathname = pathname_buf;
+
+        // 2b. Set process name from pathname basename
+        {
+            const char* basename = pathname;
+            for (const char* p = pathname; *p; ++p) {
+                if (*p == '/') basename = p + 1;
+            }
+            proc->set_name(basename);
+        }
 
         // 3. Resolve file via VFS path resolution (replaces direct initramfs access)
         auto* dentry = moss::kernel::vfs::resolve_path(pathname);
@@ -392,12 +404,34 @@ namespace handlers {
             VirtAddr page_end = (overall_end + PAGE_SIZE - 1)
                                 & ~(static_cast<VirtAddr>(PAGE_SIZE) - 1);
 
-            // Determine if all segments share the same page range
-            // (common for small programs like hello.elf)
-            bool same_page_range = (page_end - page_start) <= PAGE_SIZE
-                                   || load_count <= 1;
+            // Check if any segments overlap when page-aligned.
+            // This is common: .text ending at 0x36f8 and .rodata starting
+            // at 0x36f8 share the same page (0x3000-0x4000).  Overlapping
+            // VMAs cause demand-paging data loss, so we must merge.
+            bool has_page_overlap = false;
+            if (load_count > 1) {
+                // Simple O(n²) check — MAX_LOADS ≤ 8
+                struct { VirtAddr s; VirtAddr e; } ranges[MAX_LOADS];
+                u16 ri = 0;
+                for (u16 i = 0; i < phnum && ri < MAX_LOADS; ++i) {
+                    const auto &ph2 = phdrs[i];
+                    if (ph2.p_type != PT_LOAD || ph2.p_memsz == 0) continue;
+                    ranges[ri].s = ph2.p_vaddr
+                                   & ~(static_cast<VirtAddr>(PAGE_SIZE) - 1);
+                    ranges[ri].e = (ph2.p_vaddr + ph2.p_memsz + PAGE_SIZE - 1)
+                                   & ~(static_cast<VirtAddr>(PAGE_SIZE) - 1);
+                    ++ri;
+                }
+                for (u16 a = 0; a < ri && !has_page_overlap; ++a)
+                    for (u16 b = a + 1; b < ri; ++b)
+                        if (ranges[a].s < ranges[b].e
+                            && ranges[b].s < ranges[a].e)
+                        { has_page_overlap = true; break; }
+            }
 
-            if (same_page_range && load_count > 0) {
+            bool use_merged = has_page_overlap || load_count <= 1;
+
+            if (use_merged && load_count > 0) {
                 // Merged VMA: one VMA covering all PT_LOAD segments.
                 // backing_offset accounts for the gap between page_start and
                 // the first byte of file data in the ELF.
@@ -943,11 +977,434 @@ namespace handlers {
         return 0;
     }
 
+    // ── Time syscalls ─────────────────────────────────────────────
+
+    // sys_clock_gettime(clock_id, time_ns_ptr)
+    // Returns monotonic nanoseconds since boot via timer subsystem.
+    long sys_clock_gettime(long /* clock_id */, long time_ns_addr,
+                           long, long, long, long) noexcept {
+        if (time_ns_addr == 0) return -Errno::EFAULT;
+        auto* ns_ptr = reinterpret_cast<u64*>(
+            static_cast<unsigned long long>(time_ns_addr));
+        *ns_ptr = timer::TimerSubsystem::instance().now_ns();
+        return 0;
+    }
+
+    // Wake callback for nanosleep: called from timer ISR when sleep expires.
+    // Sets the blocked thread back to Ready and enqueues it for scheduling.
+    static void nanosleep_wake_callback(void* data) noexcept {
+        using namespace moss::kernel::process;
+        auto* thread = static_cast<Thread*>(data);
+        if (thread && thread->state == ProcessState::Blocked) {
+            if (g_scheduler) {
+                g_scheduler->task_wakeup(thread, thread->cpu);
+            }
+        }
+    }
+
+    // sys_nanosleep(ns_ptr, remaining_ptr)
+    // Blocking sleep: arms a one-shot HrTimer, blocks the calling thread,
+    // and lets the CPU idle (WFI).  The timer ISR wakes the thread.
+    long sys_nanosleep(long ns_addr, long /* remaining */,
+                       long, long, long, long) noexcept {
+        using namespace moss::kernel::process;
+
+        if (ns_addr == 0) return -Errno::EFAULT;
+        auto* req_ns = reinterpret_cast<const u64*>(
+            static_cast<unsigned long long>(ns_addr));
+        u64 duration = *req_ns;
+        if (duration == 0) return 0;
+
+        Thread *cur = CfsScheduler::get_current_task();
+        if (!cur || !g_scheduler) return -Errno::ESRCH;
+
+        // 1. Arm one-shot timer to wake us after `duration` ns.
+        //    HrTimer lives on kernel stack — safe because the stack
+        //    frame is preserved while the thread is blocked
+        //    (context_switch only saves/restores registers, not stack).
+        timer::HrTimer sleep_timer;
+        sleep_timer.init(timer::TimerMode::OneShot,
+                         nanosleep_wake_callback, cur);
+        sleep_timer.start_relative(duration);
+
+        // 2. Block: set Blocked, dequeue, context-switch to bootstrap.
+        //    Same pattern as sys_wait4.  After context_switch, the CPU
+        //    enters idle (WFI) if no other tasks are runnable, causing
+        //    idle_time_ns to accumulate correctly.
+        cur->state = ProcessState::Blocked;
+        g_scheduler->dequeue_task(cur);
+
+#if defined(MOSS_ARCH_ARM64)
+        {
+            u32 cpu = arch::get_current_cpu_id();
+            CpuContext *my_ctx = &cur->context;
+            CpuContext *bootstrap = &CfsScheduler::bootstrap_context(cpu);
+
+            log::klog::debug("nanosleep: TID={} pre-switch pc={:#x} sp={:#x} x30={:#x}",
+                             static_cast<u32>(cur->tid),
+                             my_ctx->pc, my_ctx->sp, my_ctx->x[30]);
+
+            CfsScheduler::set_current_task(nullptr);
+            arch::disable_interrupts();
+            context_switch(my_ctx, bootstrap);
+            arch::enable_interrupts();
+
+            log::klog::debug("nanosleep: TID={} resumed pc={:#x} sp={:#x} x30={:#x}",
+                             static_cast<u32>(cur->tid),
+                             my_ctx->pc, my_ctx->sp, my_ctx->x[30]);
+        }
+#endif
+
+        // 3. Resumed: timer fired, ISR called task_wakeup, scheduler
+        //    re-dispatched us.  Cancel defensively (already inactive).
+        sleep_timer.cancel();
+
+        return 0;
+    }
+
+    // ── System monitoring: topinfo ──────────────────────────────
+
+    // Kernel-side mirror of userspace TopProcessInfo / TopInfo structs.
+    // Layout must match exactly (all fields are u64/long on 64-bit).
+    namespace topinfo_layout {
+        inline constexpr u64 MAX_PROCS = 64;
+        inline constexpr u64 MAX_CPUS_TOP = 8;
+
+        struct ProcEntry {
+            long pid;
+            long ppid;
+            u64 state;
+            u64 cpu;
+            long nice;
+            u64 vruntime;
+            u64 sum_exec_runtime;
+            u64 load_avg;
+            u64 util_avg;
+            char name[16];
+        };
+
+        struct Info {
+            u64 uptime_ns;
+            u64 total_processes;
+            u64 total_context_switches;
+            u64 total_preemptions;
+            u64 total_forks;
+            u64 total_exits;
+            u64 nr_cpus;
+            u64 cpu_load[MAX_CPUS_TOP];
+            u64 cpu_nr_running[MAX_CPUS_TOP];
+            u64 cpu_idle_time_ns[MAX_CPUS_TOP];
+            u64 mem_total_pages;
+            u64 mem_used_pages;
+            u64 mem_free_pages;
+            u64 page_size;
+            u64 nr_processes;
+            ProcEntry procs[MAX_PROCS];
+        };
+    } // namespace topinfo_layout
+
+    // sys_topinfo(info_ptr) — fill TopInfo struct for userspace `top`
+    //
+    // Strategy: collect ALL data into a kernel-stack local struct first,
+    // then copy to user space in one shot.  This avoids data loss caused
+    // by ARM64 demand-paging: when we write directly to user addresses,
+    // page faults can invalidate TLB entries for previously-written pages,
+    // causing those stores to be lost.  By buffering on the kernel stack
+    // (which is always resident), we guarantee no data loss.
+    long sys_topinfo(long info_addr, long, long, long, long, long) noexcept {
+        using namespace moss::kernel::process;
+
+        if (info_addr == 0) return -Errno::EFAULT;
+
+        // Kernel-stack buffer (~5920 bytes, kernel stack is 16KB)
+        topinfo_layout::Info kbuf;
+
+        // Zero-initialize on kernel stack (no page fault issues)
+        {
+            auto* p = reinterpret_cast<u8*>(&kbuf);
+            for (usize i = 0; i < sizeof(kbuf); ++i)
+                p[i] = 0;
+        }
+
+        // System summary
+        kbuf.uptime_ns = timer::TimerSubsystem::instance().now_ns();
+        kbuf.nr_cpus = arch::MAX_CPUS < topinfo_layout::MAX_CPUS_TOP
+                     ? arch::MAX_CPUS : topinfo_layout::MAX_CPUS_TOP;
+
+        if (g_process_manager) {
+            kbuf.total_processes = g_process_manager->total_processes();
+            kbuf.total_forks = g_process_manager->total_forks();
+            kbuf.total_exits = g_process_manager->total_exits();
+            kbuf.total_context_switches =
+                g_process_manager->total_context_switches();
+        }
+
+        if (g_scheduler) {
+            kbuf.total_preemptions = g_scheduler->total_preemptions();
+            if (kbuf.total_context_switches == 0)
+                kbuf.total_context_switches =
+                    g_scheduler->total_context_switches();
+
+            // Cap to struct array size to avoid out-of-bounds writes
+            u32 nr_cpus = arch::MAX_CPUS;
+            if (nr_cpus > topinfo_layout::MAX_CPUS_TOP)
+                nr_cpus = static_cast<u32>(topinfo_layout::MAX_CPUS_TOP);
+
+            for (u32 cpu = 0; cpu < nr_cpus; ++cpu) {
+                kbuf.cpu_load[cpu] = g_scheduler->get_cpu_load(cpu);
+                kbuf.cpu_nr_running[cpu] =
+                    g_scheduler->get_cpu_nr_running(cpu);
+
+                // Idle time: snapshot includes in-progress idle periods
+                auto* idle = get_idle_task(cpu);
+                kbuf.cpu_idle_time_ns[cpu] =
+                    idle ? idle->snapshot_idle_time_ns(kbuf.uptime_ns) : 0;
+
+                // CFS dequeues running tasks; compensate nr_running
+                Thread* running = CfsScheduler::get_current_task_on_cpu(cpu);
+                if (running != nullptr) {
+                    kbuf.cpu_nr_running[cpu] += 1;
+                }
+            }
+        }
+
+        // Memory stats
+        auto mem_stats = mm::PageFrameAllocator::get_memory_stats();
+        kbuf.mem_total_pages = mem_stats.total_pages;
+        kbuf.mem_used_pages = mem_stats.used_pages;
+        kbuf.mem_free_pages = mem_stats.free_pages;
+        kbuf.page_size = PAGE_SIZE;
+
+        // Process table
+        u64 proc_idx = 0;
+        if (g_process_manager) {
+            g_process_manager->for_each_process(
+                [&](ProcessId pid, Process* proc) {
+                if (proc_idx >= topinfo_layout::MAX_PROCS || !proc)
+                    return;
+
+                auto& pe = kbuf.procs[proc_idx];
+                pe.pid = static_cast<long>(pid);
+                pe.ppid = static_cast<long>(proc->parent_pid());
+                pe.state = static_cast<u64>(
+                    static_cast<u8>(proc->state()));
+
+                // Copy process name
+                const char* n = proc->name();
+                for (usize i = 0; i < 15 && n[i]; ++i)
+                    pe.name[i] = n[i];
+
+                // Main thread scheduling info
+                Thread* main = proc->get_main_thread();
+                if (main) {
+                    pe.cpu = main->cpu;
+                    pe.nice = main->se.nice;
+                    pe.vruntime = main->se.vruntime;
+                    pe.sum_exec_runtime = main->se.sum_exec_runtime;
+                    pe.load_avg = main->se.load_avg;
+                    pe.util_avg = main->se.util_avg;
+                }
+
+                proc_idx++;
+            });
+        }
+        kbuf.nr_processes = proc_idx;
+
+        // Single bulk copy from kernel stack to user space.
+        // Any demand-page faults happen here, but the source data
+        // (kbuf) is safe on the kernel stack and won't be affected.
+        {
+            auto* dst = reinterpret_cast<volatile u8*>(
+                static_cast<unsigned long long>(info_addr));
+            const auto* src = reinterpret_cast<const u8*>(&kbuf);
+            for (usize i = 0; i < sizeof(kbuf); ++i)
+                dst[i] = src[i];
+        }
+
+        return 0;
+    }
+
     // 未实现系统调用的默认处理器
     long sys_not_implemented(long, long, long, long, long, long) noexcept {
         log::klog::warn("syscall: unknown/unimplemented");
         return -Errno::ENOSYS;
     }
+}
+
+// ============================================================================
+// Console RX: UART interrupt-driven input with ring buffer
+// ============================================================================
+//
+// Architecture: IRQ handler drains PL011 RX FIFO into a lock-free SPSC ring
+// buffer and wakes the single blocked reader thread.  The reader blocks via
+// the same Blocked + dequeue + context_switch pattern used by sys_nanosleep.
+//
+// Exported as extern "C" for use by the VFS module (vfs_init.cpp) which
+// cannot directly import moss.interrupts / moss.process.
+// ============================================================================
+
+namespace console_rx {
+
+// Lock-free SPSC ring buffer (single producer = IRQ, single consumer = reader).
+// Power-of-2 size for mask-based wrap-around.
+constexpr usize RX_BUF_SIZE = 256;
+constexpr usize RX_BUF_MASK = RX_BUF_SIZE - 1;
+
+static u8 rx_buf_[RX_BUF_SIZE];
+static volatile usize rx_head_ = 0;  // Written by IRQ (producer)
+static volatile usize rx_tail_ = 0;  // Written by consumer
+
+static bool initialized_ = false;
+
+#if defined(MOSS_ARCH_ARM64)
+// The thread currently blocked waiting for input (at most one reader).
+// ARM64-only: used by uart_rx_irq_handler and console_getc_blocking.
+static process::Thread* blocked_reader_ = nullptr;
+#endif
+
+static bool buf_empty() noexcept { return rx_head_ == rx_tail_; }
+
+static int buf_get() noexcept {
+    if (buf_empty()) return -1;
+    u8 ch = rx_buf_[rx_tail_];
+    rx_tail_ = (rx_tail_ + 1) & RX_BUF_MASK;
+    return ch;
+}
+
+#if defined(MOSS_ARCH_ARM64)
+
+static bool buf_put(u8 ch) noexcept {
+    usize next_head = (rx_head_ + 1) & RX_BUF_MASK;
+    if (next_head == rx_tail_) return false;  // full — drop char
+    rx_buf_[rx_head_] = ch;
+    rx_head_ = next_head;
+    return true;
+}
+
+// UART RX IRQ handler — called from GIC interrupt context (IRQ 33).
+// Drains PL011 RX FIFO into ring buffer, then wakes the blocked reader.
+static void uart_rx_irq_handler(u32 /*irq*/, void* /*context*/) noexcept {
+    auto base = platform::uart_base();
+    auto* uart_flags = reinterpret_cast<volatile u32*>(base + 0x18);
+    auto* uart_data  = reinterpret_cast<volatile u32*>(base);
+    auto* uart_icr   = reinterpret_cast<volatile u32*>(base + 0x44);
+
+    // Drain all available chars from RX FIFO
+    while (!((*uart_flags) & (1U << 4))) {  // while RXFE == 0
+        u32 dr = *uart_data;
+        buf_put(static_cast<u8>(dr & 0xFF));
+    }
+
+    // Clear RX interrupt (RXIC = bit 4)
+    *uart_icr = (1U << 4);
+
+    // Wake the blocked reader if any
+    if (blocked_reader_ != nullptr &&
+        blocked_reader_->state == process::ProcessState::Blocked) {
+        auto* thr = blocked_reader_;
+        blocked_reader_ = nullptr;
+        if (process::g_scheduler) {
+            process::g_scheduler->task_wakeup(thr, thr->cpu);
+        }
+    }
+}
+
+#endif // MOSS_ARCH_ARM64
+
+} // namespace console_rx
+
+// extern "C" bridge: initialize console RX interrupt subsystem.
+// Called once from console_read() on first invocation.
+extern "C" void console_rx_init() noexcept {
+    using namespace console_rx;
+    if (initialized_) return;
+
+#if defined(MOSS_ARCH_ARM64)
+    // 1. Enable PL011 RXE bit
+    hal::uart::enable_rx();
+
+    // 2. Enable PL011 RX interrupt (RXIM = bit 4 of UARTIMSC register)
+    auto base = platform::uart_base();
+    auto* uart_imsc = reinterpret_cast<volatile u32*>(base + 0x38);
+    u32 imsc = *uart_imsc;
+    imsc |= (1U << 4);  // Set RXIM — enables RX interrupt
+    *uart_imsc = imsc;
+
+    // 3. Register IRQ handler with GIC and enable UART IRQ (SPI 33)
+    if (interrupts::g_gic) {
+        u32 uart_irq = platform::DEFAULTS.uart.irq;  // 33
+        auto reg = interrupts::g_gic->register_interrupt(
+            uart_irq, uart_rx_irq_handler, nullptr, "uart_rx");
+        if (reg) {
+            (void)interrupts::g_gic->enable_interrupt(uart_irq);
+        }
+    }
+#endif
+
+    initialized_ = true;
+}
+
+// extern "C" bridge: blocking getc — blocks the calling thread until a
+// character is available in the ring buffer.  Returns 0-255.
+extern "C" int console_getc_blocking() noexcept {
+    using namespace console_rx;
+    using namespace process;
+
+    // Fast path: char already in buffer
+    int ch = buf_get();
+    if (ch >= 0) return ch;
+
+#if defined(MOSS_ARCH_ARM64)
+    // Slow path: block until UART IRQ delivers a character
+    Thread* cur = CfsScheduler::get_current_task();
+    if (!cur || !g_scheduler) {
+        // Fallback: WFI polling if scheduler not available yet
+        while (buf_empty()) {
+            asm volatile("wfi" ::: "memory");
+        }
+        return buf_get();
+    }
+
+    while (buf_empty()) {
+        // 1. Set Blocked + dequeue first
+        cur->state = ProcessState::Blocked;
+        g_scheduler->dequeue_task(cur);
+
+        // 2. Record as blocked reader — if UART IRQ fires between here
+        //    and context_switch, handler calls task_wakeup (safe: thread
+        //    is already Blocked, wakeup re-enqueues it, and bootstrap
+        //    will pick it back up immediately).
+        blocked_reader_ = cur;
+
+        // 3. Context-switch to bootstrap (CPU enters idle → WFI)
+        {
+            u32 cpu = arch::get_current_cpu_id();
+            CpuContext* my_ctx = &cur->context;
+            CpuContext* bootstrap = &CfsScheduler::bootstrap_context(cpu);
+            CfsScheduler::set_current_task(nullptr);
+            arch::disable_interrupts();
+            context_switch(my_ctx, bootstrap);
+            arch::enable_interrupts();
+        }
+
+        // 4. Resumed after task_wakeup — loop re-checks buf_empty()
+    }
+
+    return buf_get();
+#else
+    // x86_64 / RISC-V: WFI/HLT polling with direct UART read (no GIC/PL011 IRQ).
+    // No IRQ handler populates the ring buffer on these platforms, so poll
+    // hal::uart::getc() directly.
+    for (;;) {
+        int c = hal::uart::getc();
+        if (c >= 0) return c;
+  #if defined(__x86_64__)
+        asm volatile("hlt" ::: "memory");
+  #elif defined(__riscv)
+        asm volatile("wfi" ::: "memory");
+  #endif
+    }
+#endif
 }
 
 // 全局系统调用表定义
@@ -1044,10 +1501,10 @@ const SyscallDescriptor SYSCALL_TABLE[static_cast<int>(SyscallNumber::MAX_SYSCAL
     {"time", handlers::sys_not_implemented, 1, false, "获取时间"},
     {"gettimeofday", handlers::sys_not_implemented, 2, false, "获取时间(微秒精度)"},
     {"settimeofday", handlers::sys_not_implemented, 2, false, "设置时间"},
-    {"clock_gettime", handlers::sys_not_implemented, 2, false, "获取时钟时间"},
+    {"clock_gettime", handlers::sys_clock_gettime, 2, true, "Get monotonic time (ns)"},
     {"clock_settime", handlers::sys_not_implemented, 2, false, "设置时钟时间"},
     {"clock_getres", handlers::sys_not_implemented, 2, false, "获取时钟分辨率"},
-    {"nanosleep", handlers::sys_not_implemented, 2, false, "纳秒级睡眠"},
+    {"nanosleep", handlers::sys_nanosleep, 2, true, "Yield-loop nanosleep"},
     {"timer_create", handlers::sys_not_implemented, 3, false, "创建定时器"},
     {"timer_settime", handlers::sys_not_implemented, 4, false, "设置定时器"},
     {"timer_gettime", handlers::sys_not_implemented, 2, false, "获取定时器状态"},
@@ -1076,7 +1533,7 @@ const SyscallDescriptor SYSCALL_TABLE[static_cast<int>(SyscallNumber::MAX_SYSCAL
 
     // === 系统信息和控制 (110-129) ===
     {"uname", handlers::sys_not_implemented, 1, false, "获取系统信息"},
-    {"sysinfo", handlers::sys_not_implemented, 1, false, "获取系统统计信息"},
+    {"topinfo", handlers::sys_topinfo, 1, true, "Get system/process info for top"},
     {"getrlimit", handlers::sys_not_implemented, 2, false, "获取资源限制"},
     {"setrlimit", handlers::sys_not_implemented, 2, false, "设置资源限制"},
     {"getrusage", handlers::sys_not_implemented, 2, false, "获取资源使用情况"},
