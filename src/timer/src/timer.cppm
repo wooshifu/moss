@@ -156,6 +156,11 @@ public:
   /// Is the subsystem initialized?
   [[nodiscard]] bool is_initialized() const noexcept { return initialized_; }
 
+  /// Check if any timers are pending (for tickless idle decisions).
+  [[nodiscard]] bool has_pending_timers() const noexcept {
+    return queue_head_ != nullptr;
+  }
+
   /// Statistics.
   struct Stats {
     u64 total_interrupts{0};

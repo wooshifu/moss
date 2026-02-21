@@ -736,6 +736,10 @@ exception_handler:
     b.eq    .Lcall_page_fault
 
     // All other exceptions: fatal → print diagnostics and halt
+    // Pass saved x30 (frame offset 30*8=0xF0) as arg3 for diagnostics:
+    // unhandled_exception_handler(esr, far, elr, saved_x30, frame_sp)
+    ldr     x3, [sp, #(30 * 8)]        // arg3: saved x30 from faulting code
+    mov     x4, sp                      // arg4: exception frame pointer
     bl      unhandled_exception_handler
     add     sp, sp, #(34 * 8)
     b       halt

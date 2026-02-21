@@ -49,6 +49,9 @@ PageAllocVoidResult PageFrameAllocator::initialize() noexcept {
     return PageAllocVoidResult{};
 }
 
+// Allocated flag bit in PageMetadata::flags
+static constexpr u32 PAGE_FLAG_ALLOCATED = 1u << 0;
+
 // 分配物理页面
 PageAllocResult<PhysAddr> PageFrameAllocator::allocate_pages(usize order) noexcept {
     if (!initialized_) {
@@ -90,11 +93,32 @@ PageAllocResult<PhysAddr> PageFrameAllocator::allocate_pages(usize order) noexce
 
     PhysAddr allocated_addr = reinterpret_cast<PhysAddr>(block);
 
-    // Initialize reference count to 1 for COW tracking
+    // Initialize reference count to 1 for COW tracking, and mark as allocated
     if (page_metadata_ && memory_regions_) {
         usize page_idx = addr_to_page(allocated_addr - memory_regions_->start_addr);
         if (page_idx < total_pages_) {
             page_metadata_[page_idx].ref_count.store(1, containers::MemoryOrder::Relaxed);
+        }
+
+        // Guard: mark all pages in this allocation as ALLOCATED
+        for (usize pi = 0; pi < pages_allocated; pi++) {
+            PhysAddr pa = allocated_addr + pi * PAGE_SIZE;
+            usize idx = addr_to_page(pa - memory_regions_->start_addr);
+            if (idx < total_pages_) {
+                // Use CAS loop since AtomicCounter lacks fetch_or
+                u32 expected = page_metadata_[idx].flags.load(containers::MemoryOrder::Relaxed);
+                while (true) {
+                    if (expected & PAGE_FLAG_ALLOCATED) {
+                        log::klog::panic("PFA: double-alloc page 0x{:x} idx={} order={}",
+                                         static_cast<u64>(pa), idx, order);
+                    }
+                    u32 desired = expected | PAGE_FLAG_ALLOCATED;
+                    if (page_metadata_[idx].flags.compare_exchange_weak(
+                            expected, desired, containers::MemoryOrder::Relaxed)) {
+                        break;
+                    }
+                }
+            }
         }
     }
 
@@ -116,6 +140,30 @@ PageAllocVoidResult PageFrameAllocator::free_pages(PhysAddr addr, usize order) n
         return PageAllocVoidResult{PageAllocError::InvalidAddress};
     }
 
+    // Guard: verify pages are actually allocated before freeing
+    usize pages_freed = 1UL << order;
+    if (page_metadata_ && memory_regions_) {
+        for (usize pi = 0; pi < pages_freed; pi++) {
+            PhysAddr pa = addr + pi * PAGE_SIZE;
+            usize idx = addr_to_page(pa - memory_regions_->start_addr);
+            if (idx < total_pages_) {
+                // Use CAS loop since AtomicCounter lacks fetch_and
+                u32 expected = page_metadata_[idx].flags.load(containers::MemoryOrder::Relaxed);
+                while (true) {
+                    if (!(expected & PAGE_FLAG_ALLOCATED)) {
+                        log::klog::panic("PFA: double-free page 0x{:x} idx={} order={}",
+                                         static_cast<u64>(pa), idx, order);
+                    }
+                    u32 desired = expected & ~PAGE_FLAG_ALLOCATED;
+                    if (page_metadata_[idx].flags.compare_exchange_weak(
+                            expected, desired, containers::MemoryOrder::Relaxed)) {
+                        break;
+                    }
+                }
+            }
+        }
+    }
+
     // 将地址转换为FreeBlock
     FreeBlock* block = reinterpret_cast<FreeBlock*>(addr);
 
@@ -123,7 +171,6 @@ PageAllocVoidResult PageFrameAllocator::free_pages(PhysAddr addr, usize order) n
     merge_buddies(block, order);
 
     // 更新统计信息
-    usize pages_freed = 1UL << order;
     [[maybe_unused]] auto old_used = used_pages_.fetch_sub(pages_freed);
     [[maybe_unused]] auto old_free = free_pages_.fetch_add(pages_freed);
 

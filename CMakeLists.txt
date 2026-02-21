@@ -439,6 +439,16 @@ if(MOSS_TARGET_ARCH STREQUAL "ARM64")
     COMMENT "Building userspace shell.elf"
   )
 
+  # Build top.elf system monitoring program
+  add_custom_command(
+    OUTPUT ${CMAKE_BINARY_DIR}/userspace/top.elf
+    COMMAND ${CMAKE_C_COMPILER} ${USERSPACE_CFLAGS}
+            -o ${CMAKE_BINARY_DIR}/userspace/top.elf
+            ${USERSPACE_DIR}/top.c
+    DEPENDS ${USERSPACE_DIR}/top.c ${USERSPACE_DIR}/syscall.h ${USERSPACE_LD}
+    COMMENT "Building userspace top.elf"
+  )
+
   # Generate initramfs.cpio from all userspace programs
   # Uses GNU cpio "newc" format (070701 magic, required by the CPIO parser)
   add_custom_command(
@@ -446,9 +456,10 @@ if(MOSS_TARGET_ARCH STREQUAL "ARM64")
     COMMAND uv run ${CMAKE_SOURCE_DIR}/scripts/gen_initramfs.py
             ${CMAKE_BINARY_DIR}/initramfs.cpio
             ${CMAKE_BINARY_DIR}/userspace
-            hello.elf shell.elf
+            hello.elf shell.elf top.elf
     DEPENDS ${CMAKE_BINARY_DIR}/userspace/hello.elf
             ${CMAKE_BINARY_DIR}/userspace/shell.elf
+            ${CMAKE_BINARY_DIR}/userspace/top.elf
     WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
     COMMENT "Generating initramfs.cpio"
   )

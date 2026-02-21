@@ -48,6 +48,9 @@ Thread* CfsScheduler::current_running_tasks_[MAX_CPUS] = {nullptr};
 // Per-CPU bootstrap context for context_switch when no previous task exists
 CpuContext CfsScheduler::bootstrap_contexts_[MAX_CPUS] = {};
 
+// Per-CPU exit stack for schedule_after_exit (avoids use-after-free on dead task's kernel stack)
+alignas(16) u8 CfsScheduler::exit_stacks_[MAX_CPUS][CfsScheduler::EXIT_STACK_SIZE] = {};
+
 // Process类方法实现
 KernelResult<ThreadId> Process::create_thread(VirtAddr entry_point,
                                              VirtAddr stack_base,
