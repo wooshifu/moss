@@ -258,11 +258,14 @@ public:
   }
 };
 
-// IRQ-safe spinlock variant: disables IRQs while held.
+// IRQ-safe spinlock variant: saves/restores IRQ state while held.
 // Prevents deadlock when IRQ handler also takes the same lock.
+// Uses irqsave/irqrestore pattern: nested lock/unlock pairs correctly
+// preserve the outer caller's interrupt state.
 class IrqSpinLock {
 private:
   TicketSpinLock inner_;
+  bool saved_irq_state_{false};
 
 public:
   constexpr IrqSpinLock() noexcept = default;
@@ -271,21 +274,30 @@ public:
   IrqSpinLock &operator=(const IrqSpinLock &) = delete;
 
   void lock() noexcept {
+    bool was_enabled = moss::kernel::arch::interrupts_enabled();
     moss::kernel::arch::disable_interrupts();
     inner_.lock();
+    saved_irq_state_ = was_enabled;
   }
 
   void unlock() noexcept {
+    bool restore = saved_irq_state_;
     inner_.unlock();
-    moss::kernel::arch::enable_interrupts();
+    if (restore) {
+      moss::kernel::arch::enable_interrupts();
+    }
   }
 
   [[nodiscard]] bool try_lock() noexcept {
+    bool was_enabled = moss::kernel::arch::interrupts_enabled();
     moss::kernel::arch::disable_interrupts();
     if (inner_.try_lock()) {
+      saved_irq_state_ = was_enabled;
       return true;
     }
-    moss::kernel::arch::enable_interrupts();
+    if (was_enabled) {
+      moss::kernel::arch::enable_interrupts();
+    }
     return false;
   }
 };

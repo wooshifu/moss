@@ -287,6 +287,7 @@ struct SchedEntity {
 };
 
 // Real-time scheduling entity
+// Reserved for future RT scheduling class — currently unused by dispatch logic.
 struct RtSchedEntity {
   u32 priority;
   u64 runtime;
@@ -334,6 +335,14 @@ struct Thread {
   // on every re-dispatch after preemption.
   bool is_user_task;
 
+  // TIF_NEED_RESCHED — set when preemption is needed,
+  // checked at safe points (syscall return, IRQ return).
+  bool need_resched{false};
+
+  // CPU affinity bitmask: bit N set means task may run on CPU N.
+  // Default: all CPUs allowed.
+  u32 cpu_affinity_mask{0xFFFFu};
+
   // Per-thread kernel stack: used as SP_EL1 when handling exceptions
   // from this thread's user-mode execution.  For kernel threads, this
   // is the same as their regular stack.  For user threads, this is a
@@ -353,6 +362,7 @@ struct Thread {
         rt{}, start_time(0), utime(0), stime(0), stack_base(0), stack_size(0),
         wait_queue(0), signal_mask(0), pending_signals(0),
         needs_initial_eret(false), is_user_task(false),
+        need_resched(false), cpu_affinity_mask(0xFFFFu),
         kernel_stack_base(0), kernel_stack_size(0), rq_node(nullptr) {}
 
   // Returns the top of this thread's kernel stack (for TPIDR_EL1).

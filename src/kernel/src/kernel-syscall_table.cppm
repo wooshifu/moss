@@ -63,9 +63,9 @@ enum class SyscallNumber : long {
     SYS_SIGACTION = 15,
     SYS_SIGPROCMASK = 16,
     SYS_SIGRETURN = 17,
-    SYS_PAUSE = 18,
-    SYS_ALARM = 19,
-    SYS_SETPGID = 20,
+    SYS_SCHED_YIELD = 18,
+    SYS_SCHED_GETAFFINITY = 19,
+    SYS_SCHED_SETAFFINITY = 20,
     SYS_SETUID = 21,
     SYS_SETGID = 22,
     SYS_SETEUID = 23,
@@ -251,6 +251,13 @@ namespace handlers {
     long sys_bind(long arg0, long arg1, long arg2, long arg3, long arg4, long arg5) noexcept;
     long sys_listen(long arg0, long arg1, long arg2, long arg3, long arg4, long arg5) noexcept;
     long sys_accept(long arg0, long arg1, long arg2, long arg3, long arg4, long arg5) noexcept;
+
+    // Scheduling syscalls
+    long sys_nice(long arg0, long arg1, long arg2, long arg3, long arg4, long arg5) noexcept;
+    long sys_getpriority(long arg0, long arg1, long arg2, long arg3, long arg4, long arg5) noexcept;
+    long sys_sched_yield(long arg0, long arg1, long arg2, long arg3, long arg4, long arg5) noexcept;
+    long sys_sched_getaffinity(long arg0, long arg1, long arg2, long arg3, long arg4, long arg5) noexcept;
+    long sys_sched_setaffinity(long arg0, long arg1, long arg2, long arg3, long arg4, long arg5) noexcept;
 
     // Default handler for unimplemented syscalls
     long sys_not_implemented(long arg0, long arg1, long arg2, long arg3, long arg4, long arg5) noexcept;

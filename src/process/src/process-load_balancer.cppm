@@ -301,12 +301,14 @@ private:
 
   [[nodiscard]] Thread *select_migration_candidate(
       u32 cpu, CfsScheduler &scheduler) const noexcept {
-    // Pick the next (lowest-vruntime) runnable task on the source CPU.
+    // Pick the highest-vruntime (least-deserving) runnable task on source CPU.
+    // This preserves CFS fairness: we migrate the task that has consumed
+    // the most CPU, not the one most in need of CPU time.
     // Only candidates with nr_running > 1 on source are eligible
     // (we never steal the last runnable task).
     if (scheduler.get_cpu_nr_running(cpu) <= 1)
       return nullptr;
-    return scheduler.pick_next_task(cpu);
+    return scheduler.pick_last_task(cpu);
   }
 
   [[nodiscard]] u64
@@ -321,9 +323,10 @@ private:
     return (src_load > dst_load) ? (src_load - dst_load) * 1000 : 0;
   }
 
-  [[nodiscard]] bool has_cpu_affinity([[maybe_unused]] Thread *thread,
-                                      [[maybe_unused]] u32 cpu) const noexcept {
-    return cpu < MAX_CPUS;
+  [[nodiscard]] bool has_cpu_affinity(Thread *thread,
+                                      u32 cpu) const noexcept {
+    if (!thread || cpu >= MAX_CPUS) return false;
+    return (thread->cpu_affinity_mask & (1u << cpu)) != 0;
   }
 
   [[nodiscard]] u32
