@@ -221,10 +221,14 @@ namespace handlers {
         // 13. Register child in parent's children list (for waitpid)
         parent_proc->add_child(child_proc->pid());
 
-        // 14. Enqueue child into scheduler
+        // 14. Enqueue child into scheduler (scatter across CPUs via load balancer)
         child_proc->set_state(ProcessState::Running);
         if (g_scheduler) {
-            g_scheduler->enqueue_task(child_thread, arch::get_current_cpu_id());
+            u32 target_cpu = arch::get_current_cpu_id();
+            if (g_load_balancer) {
+                target_cpu = g_load_balancer->select_cpu_for_task(child_thread, *g_scheduler);
+            }
+            g_scheduler->enqueue_task(child_thread, target_cpu);
         }
 
         // 15. Parent returns child PID

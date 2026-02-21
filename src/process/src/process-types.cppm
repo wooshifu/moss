@@ -342,13 +342,18 @@ struct Thread {
   VirtAddr kernel_stack_base;   // low address of allocated region
   usize kernel_stack_size;      // size in bytes (typically 16KB)
 
+  // Scheduler internals: back-pointer to RbNode in CfsRunqueue.
+  // Set by enqueue_task(), cleared by dequeue_task().
+  // Enables O(1) thread→node lookup (avoids O(n) linear tree search).
+  void* rq_node{nullptr};
+
   Thread(ThreadId id, ProcessId pid) noexcept
       : tid(id), owner_pid(pid), context{}, cpu(0), wake_cpu(0),
         state(ProcessState::Created), sched_class(SchedClass::Normal), se{},
         rt{}, start_time(0), utime(0), stime(0), stack_base(0), stack_size(0),
         wait_queue(0), signal_mask(0), pending_signals(0),
         needs_initial_eret(false), is_user_task(false),
-        kernel_stack_base(0), kernel_stack_size(0) {}
+        kernel_stack_base(0), kernel_stack_size(0), rq_node(nullptr) {}
 
   // Returns the top of this thread's kernel stack (for TPIDR_EL1).
   [[nodiscard]] VirtAddr kernel_stack_top() const noexcept {

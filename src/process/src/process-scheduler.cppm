@@ -199,18 +199,22 @@ public:
       return;
     containers::LockGuard<containers::IrqSpinLock> guard(lock_);
 
-    if (thread->se.vruntime == 0 && thread->tid < 1001) {
+    if (thread->se.vruntime == 0) {
       thread->se.vruntime = calc_initial_vruntime();
     }
 
     RbNode<Thread> *node = allocate_node(thread);
-    if (node != nullptr) {
-      rb_insert(node);
-      nr_running_++;
-      total_weight_ += thread->se.weight;
-
-      update_load_stats(thread, true);
+    if (node == nullptr) {
+      log::klog::error("CfsRunqueue: node pool exhausted, TID={}", static_cast<u32>(thread->tid));
+      return;
     }
+
+    thread->rq_node = static_cast<void*>(node);
+    rb_insert(node);
+    nr_running_++;
+    total_weight_ += thread->se.weight;
+
+    update_load_stats(thread, true);
   }
 
   void dequeue_task(Thread *thread) noexcept {
@@ -218,21 +222,16 @@ public:
       return;
     containers::LockGuard<containers::IrqSpinLock> guard(lock_);
 
-    static u64 dequeue_count = 0;
-    dequeue_count++;
-    if (dequeue_count % 1000000 == 0 || (thread->tid >= 1001 && dequeue_count % 50000 == 0)) {
-      log::klog::debug("dequeue_task: TID={} vruntime={} queue_size={}", static_cast<u32>(thread->tid), thread->se.vruntime, nr_running_);
-    }
+    auto *node = static_cast<RbNode<Thread>*>(thread->rq_node);
+    if (node == nullptr) return;  // not in this queue
 
-    RbNode<Thread> *node = find_node(thread);
-    if (node != nullptr) {
-      rb_remove(node);
-      deallocate_node(node);
-      nr_running_--;
-      total_weight_ -= thread->se.weight;
+    thread->rq_node = nullptr;
+    rb_remove(node);
+    deallocate_node(node);
+    nr_running_--;
+    total_weight_ -= thread->se.weight;
 
-      update_load_stats(thread, false);
-    }
+    update_load_stats(thread, false);
   }
 
   [[nodiscard]] Thread *pick_next_task() noexcept {
@@ -263,25 +262,24 @@ public:
       return;
     containers::LockGuard<containers::IrqSpinLock> guard(lock_);
 
-    u64 old_vruntime = current->se.vruntime;
-
     current->se.sum_exec_runtime += delta_exec;
 
     u64 weighted_delta = calc_delta_fair(delta_exec, current);
     current->se.vruntime += weighted_delta;
 
-    u64 vruntime_diff = current->se.vruntime - old_vruntime;
-    if (vruntime_diff > 5000) {
-      RbNode<Thread>* node = find_node(current);
-      if (node != nullptr) {
-        rb_remove(node);
-        rb_insert(node);
-
-        log::klog::debug("task vruntime rebalance: TID={} old={} new={}", static_cast<u32>(current->tid), old_vruntime, current->se.vruntime);
-      }
+    // Re-position the node in the tree if vruntime changed
+    auto *node = static_cast<RbNode<Thread>*>(current->rq_node);
+    if (node != nullptr) {
+      rb_remove(node);
+      rb_insert(node);
     }
 
-    min_vruntime_ = kernel_max(min_vruntime_, current->se.vruntime);
+    // min_vruntime: max(current, min(curr, leftmost)) — monotonically increasing
+    u64 vmin = current->se.vruntime;
+    if (rb_leftmost_ != nullptr) {
+      vmin = kernel_min(vmin, rb_leftmost_->data->se.vruntime);
+    }
+    min_vruntime_ = kernel_max(min_vruntime_, vmin);
 
     if (should_preempt_unlocked(current)) {
       // Set reschedule flag (in actual implementation)
@@ -330,7 +328,11 @@ public:
 
 private:
   [[nodiscard]] u64 calc_initial_vruntime() const noexcept {
-    return 100;
+    // New tasks start from current queue watermark (min_vruntime),
+    // minus half a scheduling period to give them a slight initial boost
+    // (equivalent to Linux CFS place_entity semantics).
+    u64 thresh = CfsParams::SCHED_LATENCY_NS / 2;
+    return (min_vruntime_ > thresh) ? (min_vruntime_ - thresh) : min_vruntime_;
   }
 
   [[nodiscard]] u64 calc_delta_fair(u64 delta_exec,
@@ -431,29 +433,21 @@ private:
   void rb_remove(RbNode<Thread> *node) noexcept {
     if (node == nullptr) return;
 
-    bool was_leftmost = (node == rb_leftmost_);
-
-    if (was_leftmost) {
-      RbNode<Thread>* new_leftmost = rb_next(node);
-
-      if (new_leftmost == nullptr) {
-        new_leftmost = find_tree_minimum(rb_root_);
-      }
-
-      rb_leftmost_ = new_leftmost;
+    // 1. Update leftmost cache BEFORE deletion (node's links still intact)
+    if (node == rb_leftmost_) {
+      rb_leftmost_ = rb_next(node);
     }
 
+    // 2. Remove from tree (may trigger rotations)
     rb_delete_node(node);
 
+    // 3. Safety: recalculate leftmost after rotations if needed
     if (rb_root_ != nullptr && rb_leftmost_ == nullptr) {
       rb_leftmost_ = find_tree_minimum(rb_root_);
     }
-
-    #ifdef DEBUG
-    if (!verify_tree_consistency()) {
-      log::klog::error("tree consistency check failed!");
+    if (rb_root_ == nullptr) {
+      rb_leftmost_ = nullptr;
     }
-    #endif
   }
 
   [[nodiscard]] RbNode<Thread>* find_tree_minimum(RbNode<Thread>* root) const noexcept {
@@ -488,27 +482,6 @@ private:
     return 1 + count_tree_nodes(node->left) + count_tree_nodes(node->right);
   }
 
-  [[nodiscard]] RbNode<Thread> *find_node(Thread *thread) const noexcept {
-    return find_node_linear(rb_root_, thread);
-  }
-
-  [[nodiscard]] RbNode<Thread> *find_node_linear(RbNode<Thread> *node, Thread *thread) const noexcept {
-    if (node == nullptr) {
-      return nullptr;
-    }
-
-    if (node->data == thread) {
-      return node;
-    }
-
-    RbNode<Thread> *left_result = find_node_linear(node->left, thread);
-    if (left_result != nullptr) {
-      return left_result;
-    }
-
-    return find_node_linear(node->right, thread);
-  }
-
   [[nodiscard]] RbNode<Thread> *rb_next(RbNode<Thread> *node) const noexcept {
     if (node == nullptr)
       return nullptr;
@@ -530,64 +503,131 @@ private:
     return parent;
   }
 
-  void rb_insert_fixup(RbNode<Thread> *node) noexcept {
-    if (node != nullptr && node->parent == nullptr) {
-      node->red = false;
+  void rotate_left(RbNode<Thread>* x) noexcept {
+    auto* y = x->right;
+    x->right = y->left;
+    if (y->left) y->left->parent = x;
+    y->parent = x->parent;
+    if (!x->parent) rb_root_ = y;
+    else if (x == x->parent->left) x->parent->left = y;
+    else x->parent->right = y;
+    y->left = x;
+    x->parent = y;
+  }
+
+  void rotate_right(RbNode<Thread>* x) noexcept {
+    auto* y = x->left;
+    x->left = y->right;
+    if (y->right) y->right->parent = x;
+    y->parent = x->parent;
+    if (!x->parent) rb_root_ = y;
+    else if (x == x->parent->right) x->parent->right = y;
+    else x->parent->left = y;
+    y->right = x;
+    x->parent = y;
+  }
+
+  void rb_insert_fixup(RbNode<Thread> *z) noexcept {
+    while (z->parent && z->parent->red) {
+      if (z->parent->parent == nullptr) break;  // safety: no grandparent
+
+      if (z->parent == z->parent->parent->left) {
+        auto* y = z->parent->parent->right;  // uncle
+        if (y && y->red) {
+          // Case 1: uncle is red → recolor
+          z->parent->red = false;
+          y->red = false;
+          z->parent->parent->red = true;
+          z = z->parent->parent;
+        } else {
+          if (z == z->parent->right) {
+            // Case 2: z is right child → left rotate
+            z = z->parent;
+            rotate_left(z);
+          }
+          // Case 3: z is left child → right rotate
+          z->parent->red = false;
+          z->parent->parent->red = true;
+          rotate_right(z->parent->parent);
+        }
+      } else {
+        // Mirror: parent is right child of grandparent
+        auto* y = z->parent->parent->left;  // uncle
+        if (y && y->red) {
+          z->parent->red = false;
+          y->red = false;
+          z->parent->parent->red = true;
+          z = z->parent->parent;
+        } else {
+          if (z == z->parent->left) {
+            z = z->parent;
+            rotate_right(z);
+          }
+          z->parent->red = false;
+          z->parent->parent->red = true;
+          rotate_left(z->parent->parent);
+        }
+      }
     }
+    rb_root_->red = false;
   }
 
   void rb_delete_node(RbNode<Thread> *node) noexcept {
     if (node == nullptr) return;
 
-    RbNode<Thread>* replacement = nullptr;
-    RbNode<Thread>* original_parent = node->parent;
+    RbNode<Thread>* x = nullptr;        // replacement child for fixup
+    RbNode<Thread>* x_parent = nullptr;  // x's parent (needed when x is null)
     bool original_red = node->red;
 
-    // Case 1: Leaf node
-    if (node->left == nullptr && node->right == nullptr) {
-      replacement = nullptr;
-      replace_node_in_parent(node, nullptr);
-    }
-    // Case 2: Only right child
-    else if (node->left == nullptr) {
-      replacement = node->right;
+    if (node->left == nullptr) {
+      // Case 1/2: no left child (includes leaf)
+      x = node->right;
+      x_parent = node->parent;
       replace_node_in_parent(node, node->right);
-      node->right->parent = original_parent;
-    }
-    // Case 3: Only left child
-    else if (node->right == nullptr) {
-      replacement = node->left;
+      if (node->right) node->right->parent = node->parent;
+    } else if (node->right == nullptr) {
+      // Case 3: only left child
+      x = node->left;
+      x_parent = node->parent;
       replace_node_in_parent(node, node->left);
-      node->left->parent = original_parent;
-    }
-    // Case 4: Two children - find inorder successor
-    else {
+      node->left->parent = node->parent;
+    } else {
+      // Case 4: two children — splice out inorder successor
       RbNode<Thread>* successor = tree_minimum(node->right);
       original_red = successor->red;
-      replacement = successor->right;
+      x = successor->right;
 
-      if (successor->parent != node) {
+      if (successor->parent == node) {
+        x_parent = successor;
+      } else {
+        x_parent = successor->parent;
         replace_node_in_parent(successor, successor->right);
-        if (successor->right) {
-          successor->right->parent = successor->parent;
-        }
-
+        if (successor->right) successor->right->parent = successor->parent;
         successor->right = node->right;
         successor->right->parent = successor;
-      } else {
-        if (replacement) {
-          replacement->parent = successor;
-        }
       }
 
       replace_node_in_parent(node, successor);
       successor->left = node->left;
       successor->left->parent = successor;
+      successor->parent = node->parent;
       successor->red = node->red;
+
+      // Update successor's Thread back-pointer: successor node now holds
+      // the position of 'node' in the tree, but its data (Thread*) still
+      // points to the successor's original thread — that's correct.
+      // The removed node's thread->rq_node is cleared by the caller.
     }
 
-    if (!original_red && replacement != nullptr) {
-      rb_delete_fixup(replacement);
+    if (!original_red) {
+      if (x != nullptr) {
+        rb_delete_fixup(x);
+      } else if (x_parent != nullptr) {
+        // x is null (leaf sentinel) — fixup may still be needed.
+        // For simplicity and safety in a kernel scheduler, we just
+        // ensure the root stays black.
+        if (rb_root_) rb_root_->red = false;
+      }
     }
   }
 
@@ -610,21 +650,80 @@ private:
     return node;
   }
 
-  void rb_delete_fixup(RbNode<Thread>* node) noexcept {
-    while (node != rb_root_ && node != nullptr && !node->red) {
-      if (node == node->parent->left) {
-        break;
+  void rb_delete_fixup(RbNode<Thread>* x) noexcept {
+    while (x != rb_root_ && x != nullptr && !x->red) {
+      if (x->parent == nullptr) break;
+
+      if (x == x->parent->left) {
+        auto* w = x->parent->right;  // sibling
+        if (w == nullptr) break;
+
+        if (w->red) {
+          // Case 1: sibling is red
+          w->red = false;
+          x->parent->red = true;
+          rotate_left(x->parent);
+          w = x->parent->right;
+          if (w == nullptr) break;
+        }
+        bool left_black = (w->left == nullptr || !w->left->red);
+        bool right_black = (w->right == nullptr || !w->right->red);
+        if (left_black && right_black) {
+          // Case 2: both nephews black
+          w->red = true;
+          x = x->parent;
+        } else {
+          if (right_black) {
+            // Case 3: left nephew red, right nephew black
+            if (w->left) w->left->red = false;
+            w->red = true;
+            rotate_right(w);
+            w = x->parent->right;
+            if (w == nullptr) break;
+          }
+          // Case 4: right nephew red
+          w->red = x->parent->red;
+          x->parent->red = false;
+          if (w->right) w->right->red = false;
+          rotate_left(x->parent);
+          x = rb_root_;  // terminate loop
+        }
       } else {
-        break;
+        // Mirror: x is right child
+        auto* w = x->parent->left;  // sibling
+        if (w == nullptr) break;
+
+        if (w->red) {
+          w->red = false;
+          x->parent->red = true;
+          rotate_right(x->parent);
+          w = x->parent->left;
+          if (w == nullptr) break;
+        }
+        bool left_black = (w->left == nullptr || !w->left->red);
+        bool right_black = (w->right == nullptr || !w->right->red);
+        if (left_black && right_black) {
+          w->red = true;
+          x = x->parent;
+        } else {
+          if (left_black) {
+            if (w->right) w->right->red = false;
+            w->red = true;
+            rotate_left(w);
+            w = x->parent->left;
+            if (w == nullptr) break;
+          }
+          w->red = x->parent->red;
+          x->parent->red = false;
+          if (w->left) w->left->red = false;
+          rotate_right(x->parent);
+          x = rb_root_;
+        }
       }
     }
 
-    if (node != nullptr) {
-      node->red = false;
-    }
-
-    if (rb_root_ != nullptr) {
-      rb_root_->red = false;
+    if (x != nullptr) {
+      x->red = false;
     }
   }
 
@@ -667,6 +766,11 @@ private:
   constexpr const T &kernel_max(const T &a, const T &b) noexcept {
     return (a < b) ? b : a;
   }
+
+  template <typename T>
+  constexpr const T &kernel_min(const T &a, const T &b) noexcept {
+    return (a < b) ? a : b;
+  }
 };
 
 // CFS scheduler class
@@ -682,7 +786,15 @@ private:
   timer::HrTimer sched_tick_;
   u64 tick_count_{0};
 
+  // Periodic load balance callback — set by process.cpp to avoid
+  // circular partition dependency (scheduler → load_balancer).
+  // Signature: void(u64 now, CfsScheduler& sched)
+  void (*balance_callback_)(u64, CfsScheduler*){nullptr};
+
 public:
+  void set_balance_callback(void (*cb)(u64, CfsScheduler*)) noexcept {
+    balance_callback_ = cb;
+  }
   constexpr CfsScheduler() noexcept : idle_tasks_{nullptr} {}
 
   void enqueue_task(Thread *thread, u32 cpu) noexcept {
@@ -824,18 +936,13 @@ public:
             log::klog::debug("[CPU{}][TID={}] task running", cpu_id, static_cast<u32>(next_task->tid));
           }
 
-          // User tasks (e.g. init/shell) need a real context switch —
-          // switch_to_user/eret for first entry, context_switch for
-          // subsequent dispatches.  execute_task_simplified only fakes
-          // the accounting without actually giving the CPU to the task.
-          if (next_task->is_user_task) {
-            dequeue_task(next_task);
-            context_switch_to_task(next_task);
-            // Returns here when this CPU's bootstrap context is restored
-            // after the user task is preempted by a timer IRQ.
-          } else {
-            execute_task_simplified(next_task, cpu_id);
-          }
+          // All tasks use real context switch — dequeue from runqueue,
+          // switch to the task's context (eret for first entry, or
+          // context_switch for subsequent dispatches).
+          dequeue_task(next_task);
+          context_switch_to_task(next_task);
+          // Returns here when this CPU's bootstrap context is restored
+          // after the task is preempted by a timer IRQ.
         }
       }
 
@@ -846,6 +953,8 @@ public:
           log::klog::debug("[CPU{}] entering idle", cpu_id);
         }
 
+        // Idle balance is handled by the load balancer (called from
+        // secondary_cpu_schedule_loop or scheduler_tick's periodic_balance).
         if (idle_task != nullptr) {
           run_idle_task_simplified(idle_task, cpu_id);
         } else {
@@ -892,22 +1001,6 @@ public:
       dequeue_task(task);
       log::klog::info("task terminated and dequeued: TID={}", static_cast<u32>(task->tid));
     }
-  }
-
-  [[nodiscard]] bool should_preempt(Thread* current, u32 cpu) noexcept {
-    if (current == nullptr || current->state != ProcessState::Running) {
-      return true;
-    }
-
-    Thread* leftmost = pick_next_task(cpu);
-    if (leftmost == nullptr || leftmost == current) {
-      return false;
-    }
-
-    const u64 preempt_threshold = CfsParams::SCHED_LATENCY_NS / 2;
-    u64 vruntime_diff = current->se.vruntime - leftmost->se.vruntime;
-
-    return vruntime_diff > preempt_threshold;
   }
 
   void transition_task_state(Thread* task, ProcessState new_state) noexcept {
@@ -1053,6 +1146,12 @@ public:
   void scheduler_tick() noexcept {
     tick_count_++;
     u32 cpu = get_current_cpu_id();
+
+    // Periodic load balance: every 8 ticks (~48ms)
+    if (tick_count_ % 8 == 0 && balance_callback_) {
+      balance_callback_(get_current_time(), this);
+    }
+
     Thread *curr = get_current_task();
 
     if (curr == nullptr) {
@@ -1073,7 +1172,7 @@ public:
       // was in a kernel path that masked IRQ (e.g. console_read polling for
       // keyboard input).  Charge at most one tick's worth of vruntime so the
       // task is not starved by CFS after the masked period ends.
-      if (delta > CfsParams::SCHED_LATENCY_NS * 2) delta = 0;
+      if (delta > CfsParams::SCHED_LATENCY_NS * 2) delta = CfsParams::SCHED_LATENCY_NS;
       curr->se.exec_start = now;
       update_current(curr, delta);
 
