@@ -290,9 +290,17 @@ void irq_handler_c(void) noexcept {
     return;
   }
 
-  // Non-timer IRQ: pass to TimerSubsystem (legacy path)
-  timer_hal::ack_interrupt();
-  ::moss::kernel::timer::TimerSubsystem::instance().handle_interrupt();
+  // Non-timer, non-SGI IRQ (e.g. UART SPI 33): dispatch via GIC's
+  // registered interrupt handler table.  ACK + EOI already done above.
+  if (::moss::kernel::interrupts::g_gic) {
+    // Look up the registered handler for this IRQ and call it directly.
+    // We cannot call g_gic->handle_interrupt() because it would do its
+    // own ACK+EOI (already done above).  Instead, look up and invoke.
+    auto* desc = ::moss::kernel::interrupts::g_gic->get_interrupt_info(irq);
+    if (desc != nullptr && desc->handler != nullptr) {
+      desc->handler(irq, desc->context);
+    }
+  }
 }
 
 // ============================================================================

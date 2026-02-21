@@ -3,10 +3,10 @@
 
 module;
 
-// Bridge: reset current task's vruntime to CFS min_vruntime after IO wait.
-// Prevents CFS starvation when a task has been idle (IRQ-masked) in a kernel
-// polling loop — equivalent to Linux's place_entity() for waking tasks.
-extern "C" void sched_yield_to_min_vruntime() noexcept;
+// Console RX bridge: interrupt-driven blocking character input.
+// Implemented in syscall_table.cpp (has access to GIC, scheduler, process).
+extern "C" void console_rx_init() noexcept;
+extern "C" int  console_getc_blocking() noexcept;
 
 module moss.vfs;
 
@@ -519,41 +519,23 @@ static long console_release([[maybe_unused]] File* file) noexcept {
 
 static long console_read([[maybe_unused]] File* file,
                           u8* buf, usize count) noexcept {
-    // Ensure UART RX path is enabled (PL011 RXE bit).
-    // QEMU defaults to TX-only; this is a one-time hardware setup.
-    static bool rx_enabled = false;
-    if (!rx_enabled) {
-        uart::enable_rx();
-        rx_enabled = true;
+    // One-time init: enable PL011 RX interrupt, register GIC handler,
+    // set up ring buffer.  All heavy lifting is in syscall_table.cpp.
+    static bool inited = false;
+    if (!inited) {
+        console_rx_init();
+        inited = true;
     }
 
-    // Polling-based, line-buffered console input with echo.
-    // Reads characters from UART RX FIFO, echoes them back, and returns
-    // when a newline is received or the buffer is full.
-    //
-    // Mask timer IRQ during the polling wait.  Without this, scheduler_tick()
-    // fires every 6ms and accumulates CFS vruntime against the shell even
-    // though it's just waiting for keyboard input.  After Enter the shell's
-    // vruntime is sky-high and CFS won't schedule it for seconds — the user
-    // sees a multi-second delay before command output appears.
-    //
-    // With IRQ masked the timer interrupt stays pending but never fires,
-    // so no vruntime accumulates.  A short delay loop between polls keeps
-    // host CPU usage reasonable (QEMU's Ctrl+A X is handled at the host
-    // stdio layer, unaffected by guest IRQ state).
-#if defined(__aarch64__)
-    asm volatile("msr daifset, #0x2" ::: "memory");
-#endif
-
+    // Interrupt-driven, line-buffered console input with echo.
+    // Each console_getc_blocking() call either returns instantly from the
+    // ring buffer (fast path) or blocks the calling thread until the UART
+    // RX interrupt delivers a character (slow path).  The CPU enters idle
+    // (WFI) while blocked, so host CPU usage is ~0%.
     usize pos = 0;
     while (pos < count) {
-        int ch = uart::getc();
-        if (ch < 0) {
-            // Brief delay between polls (~0.5-1ms) to avoid burning
-            // 100% host CPU while the guest spins with IRQ masked.
-            { volatile u32 d = 0; while (d < 30000) { d = d + 1; } }
-            continue;
-        }
+        int ch = console_getc_blocking();
+        if (ch < 0) continue;
 
         // Handle backspace (DEL=0x7F or BS=0x08)
         if (ch == 0x7F || ch == 0x08) {
@@ -588,17 +570,6 @@ static long console_read([[maybe_unused]] File* file,
         uart::putc(static_cast<char>(ch));
         buf[pos++] = static_cast<u8>(ch);
     }
-
-    // Unmask timer IRQ now that we have input — scheduler_tick()
-    // resumes tracking vruntime from this point forward.
-#if defined(__aarch64__)
-    asm volatile("msr daifclr, #0x2" ::: "memory");
-#endif
-
-    // Reset our vruntime to CFS min_vruntime so we're not starved by tasks
-    // that ran while we were waiting for input.  This is equivalent to
-    // Linux's place_entity() that gives IO-waking tasks a vruntime boost.
-    sched_yield_to_min_vruntime();
 
     return static_cast<long>(pos);
 }

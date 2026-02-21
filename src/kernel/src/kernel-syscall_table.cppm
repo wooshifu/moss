@@ -259,6 +259,13 @@ namespace handlers {
     long sys_sched_getaffinity(long arg0, long arg1, long arg2, long arg3, long arg4, long arg5) noexcept;
     long sys_sched_setaffinity(long arg0, long arg1, long arg2, long arg3, long arg4, long arg5) noexcept;
 
+    // Time syscalls
+    long sys_clock_gettime(long arg0, long arg1, long arg2, long arg3, long arg4, long arg5) noexcept;
+    long sys_nanosleep(long arg0, long arg1, long arg2, long arg3, long arg4, long arg5) noexcept;
+
+    // System monitoring
+    long sys_topinfo(long arg0, long arg1, long arg2, long arg3, long arg4, long arg5) noexcept;
+
     // Default handler for unimplemented syscalls
     long sys_not_implemented(long arg0, long arg1, long arg2, long arg3, long arg4, long arg5) noexcept;
 }

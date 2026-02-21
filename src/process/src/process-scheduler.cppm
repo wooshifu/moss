@@ -125,12 +125,35 @@ public:
 
     u64 get_idle_time_ns() const noexcept { return idle_time_ns_; }
 
+    // Snapshot idle time including in-progress idle period (for topinfo)
+    u64 snapshot_idle_time_ns(u64 now_ns) const noexcept {
+      u64 total = idle_time_ns_;
+      u64 start = last_idle_start_;
+      if (start != 0 && now_ns > start) {
+        total += (now_ns - start);
+      }
+      return total;
+    }
+
+    void accumulate_idle_time(u64 delta_ns) noexcept { idle_time_ns_ += delta_ns; }
+
+    // Mark idle entry — called when CPU enters idle (before WFI)
+    void enter_idle(u64 now_ns) noexcept { last_idle_start_ = now_ns; }
+
+    // Mark idle exit — called when CPU exits idle (WFI returned)
+    void exit_idle(u64 now_ns) noexcept {
+      if (last_idle_start_ != 0 && now_ns > last_idle_start_) {
+        idle_time_ns_ += (now_ns - last_idle_start_);
+      }
+      last_idle_start_ = 0;
+    }
+
     void reset_idle_time() noexcept { idle_time_ns_ = 0; }
 
 private:
     u32 cpu_id_;
     u64 idle_time_ns_;
-    [[maybe_unused]] u64 last_idle_start_;
+    u64 last_idle_start_;
 };
 
 // Linux-style do_idle function
@@ -963,7 +986,14 @@ private:
     if (idle_task == nullptr) return;
 
     mark_cpu_idle(cpu_id, true);
+
+    // Track idle time: mark entry before WFI so snapshot_idle_time_ns()
+    // can include the in-progress idle period.  exit_idle() accumulates
+    // the delta when WFI returns.
+    idle_task->enter_idle(timer::TimerSubsystem::instance().now_ns());
     idle_task_loop(cpu_id);
+    idle_task->exit_idle(timer::TimerSubsystem::instance().now_ns());
+
     mark_cpu_idle(cpu_id, false);
   }
 
@@ -1043,13 +1073,24 @@ public:
         // so idle CPUs are not woken every 6ms by timer PPI (IRQ 27).
         // Only SGI 0 (reschedule IPI) can wake us — sent by enqueue_task()
         // when a task is placed on this CPU's runqueue.
-        hal::timer::disable();
+        //
+        // Exception: if there are pending HrTimers (e.g. nanosleep),
+        // keep the timer enabled so the ISR can fire and wake blocked
+        // threads.  reprogram_next() already set the compare register
+        // to the earliest expiry.
+        bool timer_disabled = false;
+        if (!timer::TimerSubsystem::instance().has_pending_timers()) {
+          hal::timer::disable();
+          timer_disabled = true;
+        }
         if (idle_task != nullptr) {
           run_idle_task_simplified(idle_task, cpu_id);
         } else {
           idle_task_loop(cpu_id);
         }
-        hal::timer::enable();
+        if (timer_disabled) {
+          hal::timer::enable();
+        }
       }
 
       u32 total_cycles = active_cycles + idle_cycles;
@@ -1200,6 +1241,14 @@ private:
   // starts on its own stack.  Restoring bootstrap returns to the caller.
   static CpuContext bootstrap_contexts_[MAX_CPUS];
 
+  // Per-CPU exit stack — used by schedule_after_exit() to avoid running
+  // on the exited process's kernel stack (which will be freed by waitpid).
+  // Without this, bootstrap_contexts_[cpu].sp would point to the dead
+  // task's kernel stack, creating a use-after-free when that stack is
+  // reclaimed by a subsequent fork.
+  static constexpr usize EXIT_STACK_SIZE = 4096;  // 4KB per CPU is plenty
+  alignas(16) static u8 exit_stacks_[MAX_CPUS][EXIT_STACK_SIZE];
+
 public:
   static CpuContext& bootstrap_context(u32 cpu) noexcept {
     return bootstrap_contexts_[cpu % MAX_CPUS];
@@ -1214,6 +1263,11 @@ public:
 
   static Thread* get_current_task() noexcept {
     u32 cpu = CfsScheduler::get_current_cpu_id();
+    return (cpu < MAX_CPUS) ? current_running_tasks_[cpu] : nullptr;
+  }
+
+  // Get the currently running task on a specific CPU (for topinfo)
+  static Thread* get_current_task_on_cpu(u32 cpu) noexcept {
     return (cpu < MAX_CPUS) ? current_running_tasks_[cpu] : nullptr;
   }
 
@@ -1555,6 +1609,20 @@ public:
     // Clear current task — the old one is dead
     set_current_task(nullptr);
 
+    // CRITICAL: Switch SP to a safe per-CPU exit stack BEFORE any
+    // context_switch.  We are currently running on the exited process's
+    // kernel stack, which will be freed by the parent's waitpid →
+    // terminate_process → cleanup_threads → free_pages().
+    // If we don't switch, context_switch saves this SP into
+    // bootstrap_contexts_[cpu], and later restoration reads from
+    // freed/reused memory → use-after-free crash.
+#if defined(MOSS_ARCH_ARM64)
+    {
+      u64 exit_sp = reinterpret_cast<u64>(&exit_stacks_[cpu % MAX_CPUS][EXIT_STACK_SIZE]);
+      asm volatile("mov sp, %0" :: "r"(exit_sp) : "memory");
+    }
+#endif
+
     // Ensure interrupts are enabled so timer ticks can fire and
     // re-enqueue tasks while we idle.
     arch::enable_interrupts();
@@ -1570,10 +1638,19 @@ public:
         // The task was preempted or exited.  Re-clear and retry.
         set_current_task(nullptr);
       } else {
-        // No runnable tasks: tickless idle until reschedule IPI
-        hal::timer::disable();
+        // No runnable tasks: tickless idle until reschedule IPI.
+        // Only disable the timer if there are no pending HrTimers
+        // (e.g. nanosleep).  If there are pending timers, keep the
+        // timer enabled so the ISR can fire and wake blocked threads.
+        bool timer_disabled = false;
+        if (!timer::TimerSubsystem::instance().has_pending_timers()) {
+          hal::timer::disable();
+          timer_disabled = true;
+        }
         arch::cpu_idle_once();
-        hal::timer::enable();
+        if (timer_disabled) {
+          hal::timer::enable();
+        }
       }
     }
   }

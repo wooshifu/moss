@@ -408,6 +408,9 @@ private:
   // Stored as void* to avoid circular dependency on moss.vfs
   void* fd_table_ = nullptr;
 
+  // Process name (like Linux task_struct.comm), set by execve
+  char name_[16]{};
+
   // Children tracking for wait()/waitpid()
   containers::RcuList<ProcessId> children_;
   containers::WaitQueue child_exit_wq_;
@@ -444,6 +447,14 @@ public:
   [[nodiscard]] ProcessId parent_pid() const noexcept { return parent_pid_; }
   [[nodiscard]] ProcessState state() const noexcept { return state_; }
   [[nodiscard]] i32 exit_code() const noexcept { return exit_code_; }
+
+  // Process name (set by execve, inherited by fork)
+  [[nodiscard]] const char* name() const noexcept { return name_; }
+  void set_name(const char* n) noexcept {
+    usize i = 0;
+    while (i < 15 && n[i] != '\0') { name_[i] = n[i]; ++i; }
+    name_[i] = '\0';
+  }
 
   // Thread management
   [[nodiscard]] KernelResult<ThreadId> create_thread(VirtAddr entry_point,

@@ -19,7 +19,9 @@ extern "C" void kernel_page_fault_handler(
 extern "C" void unhandled_exception_handler(
     unsigned long long esr,
     unsigned long long far_addr,
-    unsigned long long elr) noexcept;
+    unsigned long long elr,
+    unsigned long long saved_x30,
+    unsigned long long frame_sp) noexcept;
 
 // User-mode exception handlers (called from lower_el_sync_dispatch)
 // NOTE: NOT [[noreturn]] — demand paging resolves faults and returns to eret.
@@ -131,13 +133,24 @@ static auto dfsc_to_string(u64 dfsc) noexcept -> const char* {
 
 } // namespace moss::kernel::mm
 
+// Forward declarations for static helpers used by both kernel and user handlers
+[[noreturn]] static void kill_user_process(const char* reason,
+                                           unsigned long long far_addr,
+                                           unsigned long long elr) noexcept;
+static bool try_cow_fault(moss::kernel::u64 far_addr,
+                          unsigned long long elr) noexcept;
+static bool try_demand_page(moss::kernel::u64 far_addr, bool is_write,
+                            unsigned long long elr) noexcept;
+
 // ============================================================================
 // Unhandled exception handler — print diagnostics, then return to asm (halt)
 // ============================================================================
 extern "C" void unhandled_exception_handler(
     unsigned long long esr,
     unsigned long long far_addr,
-    unsigned long long elr) noexcept {
+    unsigned long long elr,
+    unsigned long long saved_x30,
+    unsigned long long frame_sp) noexcept {
     namespace log = moss::kernel::logging;
     using moss::u64;
 
@@ -150,11 +163,47 @@ extern "C" void unhandled_exception_handler(
     log::klog::panic("ESR: {:#x}", esr);
     log::klog::panic("FAR: {:#x}", far_addr);
     log::klog::panic("ELR: {:#x}", elr);
+    log::klog::panic("saved x30 (LR at fault): {:#x}", saved_x30);
+
+#if defined(MOSS_ARCH_ARM64)
+    // Diagnostic: dump critical system registers
+    u64 sp_val = 0, ttbr0 = 0, ttbr1 = 0, sctlr = 0, spsr = 0;
+    asm volatile("mov %0, sp" : "=r"(sp_val));
+    asm volatile("mrs %0, ttbr0_el1" : "=r"(ttbr0));
+    asm volatile("mrs %0, ttbr1_el1" : "=r"(ttbr1));
+    asm volatile("mrs %0, sctlr_el1" : "=r"(sctlr));
+    asm volatile("mrs %0, spsr_el1"  : "=r"(spsr));
+    log::klog::panic("SP:  {:#x}", sp_val);
+    log::klog::panic("TTBR0: {:#x}  TTBR1: {:#x}", ttbr0, ttbr1);
+    log::klog::panic("SCTLR: {:#x}  SPSR: {:#x}", sctlr, spsr);
+
+    // Dump selected registers from the exception frame.
+    // Frame layout: x0..x30 at [frame_sp + 0..30*8], ELR/SPSR at [31*8], SP_EL0 at [33*8]
+    if (frame_sp != 0) {
+        auto* frame = reinterpret_cast<const u64*>(frame_sp);
+        log::klog::panic("--- Exception Frame Dump ---");
+        log::klog::panic("frame x0={:#x}  x1={:#x}", frame[0], frame[1]);
+        log::klog::panic("frame x8={:#x}  x9={:#x}", frame[8], frame[9]);
+        log::klog::panic("frame x19={:#x} x20={:#x} x21={:#x}", frame[19], frame[20], frame[21]);
+        log::klog::panic("frame x22={:#x} x23={:#x} x24={:#x}", frame[22], frame[23], frame[24]);
+        log::klog::panic("frame x28={:#x} x29={:#x} x30={:#x}", frame[28], frame[29], frame[30]);
+        // ELR/SPSR saved at slots 31/32
+        log::klog::panic("frame saved_ELR={:#x} saved_SPSR={:#x}", frame[31], frame[32]);
+    }
+#else
+    (void)saved_x30;
+    (void)frame_sp;
+#endif
     // Returns to asm which executes `b halt`
 }
 
 // ============================================================================
-// Kernel page fault handler — handle translation faults with demand zero
+// Kernel page fault handler — same-EL faults (EC=0x25 Data, EC=0x21 Instr)
+//
+// Handles two scenarios:
+// 1. Kernel code accessing user pointer (e.g. syscall writing to user buffer):
+//    the fault address is in user VA range — resolve via demand paging / COW.
+// 2. Genuine kernel fault (bug): address is in kernel VA range — panic.
 // ============================================================================
 extern "C" void kernel_page_fault_handler(
     unsigned long long esr,
@@ -168,40 +217,49 @@ extern "C" void kernel_page_fault_handler(
     u64 dfsc = esr & 0x3F;
     [[maybe_unused]] bool is_write = ((esr >> 6) & 1) != 0;
 
-    log::klog::warn("page fault: addr={:#x} pc={:#x} write={:#b} dfsc={:#x} ({})",
-                    far_addr, elr, is_write,
-                    dfsc, mm::dfsc_to_string(dfsc));
-
     // Translation faults: DFSC 0x04-0x07 (L0-L3 translation miss)
     bool is_translation_fault = (dfsc >= 0x04 && dfsc <= 0x07);
 
     // Permission faults: DFSC 0x0C-0x0F (page exists, permission denied)
     bool is_permission_fault  = (dfsc >= 0x0C && dfsc <= 0x0F);
 
+    // Detect user-space address: kernel code (e.g. syscall handler) accessing
+    // user pointer triggers a same-EL fault, but the address belongs to the
+    // current process's user address space and should be handled like a user fault.
+    bool is_user_address = !moss::kernel::is_kernel_addr(far_addr);
+
     if (is_translation_fault) {
-        // Check if the faulting address has a valid page table mapping already.
-        // For the boot identity mapping (1GB blocks), query_page will return
-        // mapped=true, so we won't reach here for normal kernel addresses.
+        // For user addresses accessed from kernel mode (e.g. sys_topinfo writing
+        // to a user-provided TopInfo pointer on the demand-zero stack), attempt
+        // demand paging exactly like user_page_fault_handler would.
+        if (is_user_address) {
+            if (try_demand_page(far_addr, is_write, elr)) {
+                return; // Demand page resolved — eret retries instruction
+            }
+            // No VMA found — this is a bad user pointer passed to syscall.
+            // Terminate the faulting user process instead of panicking the kernel.
+            kill_user_process("kernel access to unmapped user addr", far_addr, elr);
+        }
+
+        // Kernel address fault — always log for diagnostics.
+        log::klog::warn("kernel page fault: addr={:#x} pc={:#x} write={} dfsc={:#x} ({})",
+                        far_addr, elr, is_write,
+                        dfsc, mm::dfsc_to_string(dfsc));
+
+        // Kernel address: check if mapping exists (stale TLB)
         auto info = mm::PageTableManager::query_page(far_addr);
         if (info.mapped) {
-            // Address is mapped but we got a translation fault — this shouldn't
-            // happen. Could be a stale TLB entry; try invalidating and retrying.
             mm::PageTableManager::invalidate_tlb_addr(far_addr);
             log::klog::warn("page fault: addr={:#x} was mapped (level={}), TLB invalidated — retrying",
                             far_addr, static_cast<moss::u32>(info.level));
             return; // eret will retry the faulting instruction
         }
 
-        // Address is truly unmapped — for now, no demand-zero VMA lookup
-        // because the kernel runs on boot identity mapping (1GB blocks).
-        // This is a genuine fault in kernel code.
+        // Genuine kernel fault — no mapping in kernel page tables.
         log::klog::panic("KERNEL PAGE FAULT: no mapping for addr={:#x}", far_addr);
         log::klog::panic("  EC:   {:#x} ({})", ec, mm::ec_to_string(ec));
         log::klog::panic("  DFSC: {:#x} ({})", dfsc, mm::dfsc_to_string(dfsc));
         log::klog::panic("  ELR:  {:#x}", elr);
-        // Return to asm; since we used panic, the log is flushed.
-        // The asm side will halt after this returns if we don't eret.
-        // For safety, we loop here (asm will also halt).
         while (true) {
 #if defined(MOSS_ARCH_ARM64)
             asm volatile("wfi");
@@ -210,7 +268,12 @@ extern "C" void kernel_page_fault_handler(
     }
 
     if (is_permission_fault) {
-        // Permission fault — future: COW handling
+        // User address with permission fault: try COW resolution
+        if (is_user_address && is_write) {
+            if (try_cow_fault(far_addr, elr)) {
+                return; // COW resolved — eret retries instruction
+            }
+        }
         log::klog::panic("KERNEL PERMISSION FAULT: addr={:#x} pc={:#x} write={:#b}",
                          far_addr, elr, is_write);
         log::klog::panic("  DFSC: {:#x} ({})", dfsc, mm::dfsc_to_string(dfsc));
