@@ -136,8 +136,14 @@ inline void cpu_halt() noexcept {
 // (used by scheduler idle tasks)
 inline void cpu_idle_once() noexcept {
 #if defined(MOSS_ARCH_ARM64)
+  // Match x86_64 (sti;hlt;cli) and RISC-V (csrsi;wfi;csrci) pattern:
+  // enable IRQ → WFI → disable IRQ.
+  // Without explicit IRQ enable, WFI returns immediately when DAIF.I=1
+  // (IRQs masked), causing a busy-loop that pins host CPU at 100%.
   asm volatile("dsb sy" ::: "memory");
+  asm volatile("msr daifclr, #0x2" ::: "memory");  // enable IRQ (clear DAIF.I)
   asm volatile("wfi" ::: "memory");
+  asm volatile("msr daifset, #0x2" ::: "memory");   // disable IRQ (set DAIF.I)
   asm volatile("isb" ::: "memory");
 #elif defined(MOSS_ARCH_X86_64)
   asm volatile("sti" ::: "memory");
