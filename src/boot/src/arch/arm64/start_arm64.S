@@ -240,12 +240,16 @@ el1_entry:
 
     // ==================== CPU 0 cold-boot path ====================
 
-    // Disable MMU, data cache, and instruction cache for clean startup.
-    // We'll enable them later once page tables are set up.
+    // Disable MMU, data cache, instruction cache and alignment check
+    // for clean startup.  We'll enable M/C/I later once page tables are
+    // set up.  The A bit must be cleared because libfdt reads DTB fields
+    // that may not be naturally aligned; QEMU ≥10 sets A=1 by default
+    // on cortex-a57 which causes alignment faults during DTB parsing.
     mrs     x0, sctlr_el1
     bic     x0, x0, #SCTLR_EL1_M       // disable MMU
     bic     x0, x0, #SCTLR_EL1_C       // disable data cache
     bic     x0, x0, #SCTLR_EL1_I       // disable instruction cache
+    bic     x0, x0, #SCTLR_EL1_A       // disable alignment check
     msr     sctlr_el1, x0
 
     // Install exception vector table (defined later in this file)
@@ -294,6 +298,13 @@ bss_cleared:
 // Each CPU gets a 32KB stack slice below _stack_top.
 // =============================================================================
 secondary_el1_entry:
+    // Clear alignment check on secondary CPUs too (SCTLR_EL1 resets on each
+    // PSCI CPU_ON, so the A bit may be set by QEMU ≥10 default).
+    mrs     x0, sctlr_el1
+    bic     x0, x0, #SCTLR_EL1_A
+    msr     sctlr_el1, x0
+    isb
+
     // Set up per-CPU stack: SP = _stack_top - (CPU_ID * 32KB)
     ldr     x0, =_stack_top_addr
     mov     x1, #0x8000                 // 32KB per CPU
