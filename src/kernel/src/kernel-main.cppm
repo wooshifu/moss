@@ -457,6 +457,7 @@ private:
     load_balancer_ = new process::LoadBalancer();
     ::moss::kernel::process::g_load_balancer = load_balancer_;
     if (!load_balancer_) {
+      // NOTE: error handling below covers cleanup
       delete scheduler_;
       delete process_manager_;
       scheduler_ = nullptr;
@@ -466,6 +467,14 @@ private:
       ::moss::kernel::process::g_process_manager = nullptr;
       return VoidResult{ErrorCode::OutOfMemory};
     }
+
+    // Wire periodic load balance into scheduler_tick via callback.
+    // This avoids circular module partition dependency (scheduler→load_balancer).
+    scheduler_->set_balance_callback([](u64 now, process::CfsScheduler* sched) {
+      if (::moss::kernel::process::g_load_balancer && sched) {
+        ::moss::kernel::process::g_load_balancer->periodic_balance(now, *sched);
+      }
+    });
 
     // Linux-style SMP delayed activation: activate secondary CPUs after scheduler is ready
     if (config_.enable_smp) {
