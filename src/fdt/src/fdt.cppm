@@ -24,6 +24,20 @@ using moss::kernel::PhysAddr;
 using moss::kernel::VirtAddr;
 using moss::kernel::usize;
 
+/// Read a big-endian 64-bit value from a potentially unaligned DTB pointer.
+/// DTB property data is only guaranteed 4-byte aligned, so a direct
+/// *(fdt64_t*)ptr can fault with strict alignment (QEMU 10 / SCTLR.A=1).
+/// We read two aligned 32-bit halves and combine them.
+inline u64 read_fdt64_unaligned(const void *ptr) noexcept {
+  const auto *p = static_cast<const u8 *>(ptr);
+  // DTB is big-endian: first 4 bytes = high word, next 4 = low word
+  auto hi = static_cast<u64>(fdt32_to_cpu(
+      *reinterpret_cast<const fdt32_t *>(p)));
+  auto lo = static_cast<u64>(fdt32_to_cpu(
+      *reinterpret_cast<const fdt32_t *>(p + 4)));
+  return (hi << 32) | lo;
+}
+
 /// DTB 中最大支持的内存区域数
 constexpr u32 MAX_MEMORY_REGIONS = 8;
 
@@ -399,7 +413,7 @@ static void parse_chosen(const void *fdt) noexcept {
     // DTB stores as big-endian — can be 4 or 8 bytes depending on #address-cells
     if (len == 8) {
       g_platform_info.initrd_start = static_cast<PhysAddr>(
-          fdt64_to_cpu(*static_cast<const fdt64_t *>(prop)));
+          read_fdt64_unaligned(prop));
     } else {
       g_platform_info.initrd_start = static_cast<PhysAddr>(
           fdt32_to_cpu(*static_cast<const fdt32_t *>(prop)));
@@ -409,7 +423,7 @@ static void parse_chosen(const void *fdt) noexcept {
   if (prop && len >= 4) {
     if (len == 8) {
       g_platform_info.initrd_end = static_cast<PhysAddr>(
-          fdt64_to_cpu(*static_cast<const fdt64_t *>(prop)));
+          read_fdt64_unaligned(prop));
     } else {
       g_platform_info.initrd_end = static_cast<PhysAddr>(
           fdt32_to_cpu(*static_cast<const fdt32_t *>(prop)));
