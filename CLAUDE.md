@@ -216,3 +216,15 @@ cmake --build --preset arm64-qemu-debug --target test-kernel
 - `moss.dis` - 构建后生成的完整内核反汇编代码
 - 位置：`./build/<preset>/moss.dis`
 - 用于对照QEMU输出分析执行流程
+
+## Docker QEMU 测试
+
+无需本地安装工具链，在容器内完成构建 + QEMU 运行：
+
+```bash
+docker compose -f docker/docker-compose.yaml build                    # 构建镜像
+docker compose -f docker/docker-compose.yaml run moss-qemu            # 构建内核 + 运行
+docker compose -f docker/docker-compose.yaml run moss-qemu test       # 运行单元测试
+docker compose -f docker/docker-compose.yaml run moss-qemu run --arch x86_64  # 指定架构
+docker compose -f docker/docker-compose.yaml run moss-qemu shell      # 交互式 shell
+```
