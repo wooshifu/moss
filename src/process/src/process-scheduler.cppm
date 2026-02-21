@@ -804,6 +804,11 @@ public:
     runqueues_.get_cpu(cpu).enqueue_task(thread);
     thread->cpu = cpu;
     thread->state = ProcessState::Ready;
+
+    // Wake target CPU if idle (tickless idle disables timer PPI,
+    // so only SGI can break WFI).  send_reschedule_ipi() is a
+    // no-op when target == current CPU.
+    send_reschedule_ipi(cpu);
   }
 
   void dequeue_task(Thread *thread) noexcept {
@@ -953,13 +958,17 @@ public:
           log::klog::debug("[CPU{}] entering idle", cpu_id);
         }
 
-        // Idle balance is handled by the load balancer (called from
-        // secondary_cpu_schedule_loop or scheduler_tick's periodic_balance).
+        // Tickless idle (NO_HZ_IDLE): disable per-CPU timer before WFI
+        // so idle CPUs are not woken every 6ms by timer PPI (IRQ 27).
+        // Only SGI 0 (reschedule IPI) can wake us — sent by enqueue_task()
+        // when a task is placed on this CPU's runqueue.
+        hal::timer::disable();
         if (idle_task != nullptr) {
           run_idle_task_simplified(idle_task, cpu_id);
         } else {
           idle_task_loop(cpu_id);
         }
+        hal::timer::enable();
       }
 
       u32 total_cycles = active_cycles + idle_cycles;
@@ -1476,8 +1485,10 @@ public:
         // The task was preempted or exited.  Re-clear and retry.
         set_current_task(nullptr);
       } else {
-        // No runnable tasks: idle until timer interrupt enqueues work
+        // No runnable tasks: tickless idle until reschedule IPI
+        hal::timer::disable();
         arch::cpu_idle_once();
+        hal::timer::enable();
       }
     }
   }
