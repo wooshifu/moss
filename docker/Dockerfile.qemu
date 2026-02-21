@@ -1,0 +1,53 @@
+# MOSS Kernel QEMU Test Environment
+#
+# Fedora Rawhide provides the latest QEMU and LLVM/Clang toolchain,
+# matching the bleeding-edge C++26 requirements of the MOSS kernel.
+#
+# Usage:
+#   docker compose -f docker/docker-compose.yaml build
+#   docker compose -f docker/docker-compose.yaml run moss-qemu          # build + run kernel
+#   docker compose -f docker/docker-compose.yaml run moss-qemu --test   # build + run tests
+
+FROM fedora:rawhide
+
+# Avoid interactive prompts during dnf install
+ENV LANG=C.UTF-8
+
+# --- Layer 1: System packages ---
+# QEMU emulators (aarch64, x86_64, riscv64) + build toolchain (clang/lld/llvm)
+# + CMake/Ninja + Python (for build scripts via uv)
+RUN dnf install -y --setopt=install_weak_deps=False \
+        # QEMU system emulators
+        qemu-system-aarch64 \
+        qemu-system-x86 \
+        qemu-system-riscv \
+        # LLVM / Clang toolchain (C++26 modules require Clang 21+)
+        clang \
+        clang-tools-extra \
+        lld \
+        llvm \
+        # Build system
+        cmake \
+        ninja-build \
+        # Python (for uv + build/run scripts)
+        python3 \
+        python3-pip \
+    && dnf clean all \
+    && rm -rf /var/cache/dnf
+
+# --- Layer 2: uv (Python package manager) ---
+COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv
+
+# --- Layer 3: Pre-install Python dependencies ---
+# Copy only dependency metadata first for Docker layer caching
+WORKDIR /moss
+COPY pyproject.toml uv.lock ./
+RUN uv sync --frozen --no-install-project
+
+# --- Layer 4: Copy full source tree ---
+COPY . .
+
+# Default: build ARM64 debug and run in QEMU
+# Override via docker compose run or docker run args
+ENTRYPOINT ["/moss/docker/entrypoint.sh"]
+CMD ["run"]
