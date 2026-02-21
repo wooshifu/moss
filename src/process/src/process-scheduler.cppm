@@ -66,11 +66,21 @@ inline constexpr u32 nice_to_weight(i32 nice) {
   return (index < 40) ? NICE_TO_WEIGHT[index] : 1;
 }
 
-inline constexpr u64 sched_slice(u32 weight, u32 total_weight) {
+// Adaptive scheduling period: when nr_running exceeds SCHED_NR_LATENCY,
+// grow linearly to avoid excessively short time slices.
+inline constexpr u64 sched_period(u32 nr_running) {
+  if (nr_running > SCHED_NR_LATENCY) {
+    return static_cast<u64>(nr_running) * MIN_GRANULARITY_NS;
+  }
+  return SCHED_LATENCY_NS;
+}
+
+inline constexpr u64 sched_slice(u32 weight, u32 total_weight, u32 nr_running = SCHED_NR_LATENCY) {
   if (total_weight == 0)
     return MIN_GRANULARITY_NS;
 
-  u64 slice = (SCHED_LATENCY_NS * weight) / total_weight;
+  u64 period = sched_period(nr_running);
+  u64 slice = (period * weight) / total_weight;
   return (slice < MIN_GRANULARITY_NS) ? MIN_GRANULARITY_NS : slice;
 }
 } // namespace CfsParams
@@ -307,20 +317,59 @@ private:
     }
 
     u64 ideal_runtime = CfsParams::sched_slice(current->se.weight,
-                                               static_cast<u32>(total_weight_));
+                                               static_cast<u32>(total_weight_),
+                                               nr_running_);
     u64 delta_exec =
         current->se.sum_exec_runtime - current->se.prev_sum_exec_runtime;
 
-    return delta_exec > ideal_runtime;
+    if (delta_exec > ideal_runtime) {
+      return true;
+    }
+
+    // vruntime-based preemption: if leftmost has much lower vruntime, preempt.
+    // WAKEUP_GRANULARITY prevents excessive switching on tiny vruntime deltas.
+    constexpr u64 WAKEUP_GRANULARITY_NS = 1000000;  // 1ms
+    if (current->se.vruntime > leftmost->se.vruntime + WAKEUP_GRANULARITY_NS) {
+      return true;
+    }
+
+    return false;
   }
 
 public:
+
+  // Pick the highest-vruntime (rightmost) task — used by load balancer
+  // to select migration candidates (migrate the least-deserving task).
+  [[nodiscard]] Thread *pick_last_task() noexcept {
+    containers::LockGuard<containers::IrqSpinLock> guard(lock_);
+    if (rb_root_ == nullptr) return nullptr;
+    RbNode<Thread> *node = rb_root_;
+    while (node->right != nullptr) node = node->right;
+    return node->data;
+  }
 
   [[nodiscard]] u32 nr_running() const noexcept { return nr_running_; }
   [[nodiscard]] u64 min_vruntime() const noexcept { return min_vruntime_; }
   [[nodiscard]] u64 total_weight() const noexcept { return total_weight_; }
   [[nodiscard]] u32 load_avg() const noexcept { return load_avg_; }
   [[nodiscard]] u32 util_avg() const noexcept { return util_avg_; }
+
+  // Set initial vruntime for a newly enqueued task.
+  // is_fork=true: slight penalty so parent runs first (returns child PID).
+  // is_fork=false (wakeup): slight bonus to reduce wakeup latency.
+  void place_entity(Thread* thread, bool is_fork) noexcept {
+    containers::LockGuard<containers::IrqSpinLock> guard(lock_);
+    u64 vruntime = min_vruntime_;
+    if (is_fork) {
+      // Fork: penalty → parent runs first
+      vruntime += CfsParams::SCHED_LATENCY_NS / 2;
+    } else {
+      // Wakeup: bonus → reduce wakeup latency
+      u64 thresh = CfsParams::SCHED_LATENCY_NS / 2;
+      vruntime = (vruntime > thresh) ? (vruntime - thresh) : 0;
+    }
+    thread->se.vruntime = vruntime;
+  }
 
   void dump_runqueue() const noexcept {
     // Debug output placeholder
@@ -343,29 +392,31 @@ private:
     return (delta_exec * CfsParams::NICE_TO_WEIGHT[20]) / thread->se.weight;
   }
 
+  // Simplified PELT (Per-Entity Load Tracking) with geometric decay.
+  // Fixed decay factor ~0.98 per tick (Q12 fixed-point, ~32ms half-life).
   void update_load_tracking(Thread *thread, u64 delta_exec) noexcept {
     if (thread == nullptr)
       return;
 
-    [[maybe_unused]] constexpr u64 LOAD_AVG_PERIOD = 32;
     constexpr u64 LOAD_AVG_MAX = 47742;
+    // Decay factor ~0.98 in Q12 fixed-point: 0.98 * 4096 ≈ 4015
+    constexpr u64 DECAY_FACTOR = 4015;
 
+    // Decay existing sums
+    thread->se.load_sum = (thread->se.load_sum * DECAY_FACTOR) >> 12;
+    thread->se.util_sum = (thread->se.util_sum * DECAY_FACTOR) >> 12;
+
+    // Accumulate new contribution
     thread->se.load_sum += delta_exec;
     thread->se.util_sum += delta_exec;
 
-    if (thread->se.load_sum > LOAD_AVG_MAX) {
-      thread->se.load_avg = LOAD_AVG_MAX >> 10;
-      thread->se.load_sum = LOAD_AVG_MAX;
-    } else {
-      thread->se.load_avg = thread->se.load_sum >> 10;
-    }
+    // Cap to prevent unbounded growth
+    if (thread->se.load_sum > LOAD_AVG_MAX) thread->se.load_sum = LOAD_AVG_MAX;
+    if (thread->se.util_sum > LOAD_AVG_MAX) thread->se.util_sum = LOAD_AVG_MAX;
 
-    if (thread->se.util_sum > LOAD_AVG_MAX) {
-      thread->se.util_avg = LOAD_AVG_MAX >> 10;
-      thread->se.util_sum = LOAD_AVG_MAX;
-    } else {
-      thread->se.util_avg = thread->se.util_sum >> 10;
-    }
+    // Derive averages
+    thread->se.load_avg = thread->se.load_sum >> 10;
+    thread->se.util_avg = thread->se.util_sum >> 10;
   }
 
   void update_load_stats(Thread *thread, bool add) noexcept {
@@ -620,14 +671,7 @@ private:
     }
 
     if (!original_red) {
-      if (x != nullptr) {
-        rb_delete_fixup(x);
-      } else if (x_parent != nullptr) {
-        // x is null (leaf sentinel) — fixup may still be needed.
-        // For simplicity and safety in a kernel scheduler, we just
-        // ensure the root stays black.
-        if (rb_root_) rb_root_->red = false;
-      }
+      rb_delete_fixup(x, x_parent);
     }
   }
 
@@ -650,20 +694,23 @@ private:
     return node;
   }
 
-  void rb_delete_fixup(RbNode<Thread>* x) noexcept {
-    while (x != rb_root_ && x != nullptr && !x->red) {
-      if (x->parent == nullptr) break;
+  // Two-parameter rb_delete_fixup: supports x == nullptr (NIL sentinel)
+  // by tracking parent explicitly.  This is the standard CLRS algorithm
+  // adapted for nullptr-as-NIL (no sentinel node).
+  void rb_delete_fixup(RbNode<Thread>* x, RbNode<Thread>* x_parent) noexcept {
+    while (x != rb_root_ && (x == nullptr || !x->red)) {
+      if (x_parent == nullptr) break;
 
-      if (x == x->parent->left) {
-        auto* w = x->parent->right;  // sibling
+      if (x == x_parent->left) {
+        auto* w = x_parent->right;  // sibling
         if (w == nullptr) break;
 
         if (w->red) {
           // Case 1: sibling is red
           w->red = false;
-          x->parent->red = true;
-          rotate_left(x->parent);
-          w = x->parent->right;
+          x_parent->red = true;
+          rotate_left(x_parent);
+          w = x_parent->right;
           if (w == nullptr) break;
         }
         bool left_black = (w->left == nullptr || !w->left->red);
@@ -671,52 +718,54 @@ private:
         if (left_black && right_black) {
           // Case 2: both nephews black
           w->red = true;
-          x = x->parent;
+          x = x_parent;
+          x_parent = x->parent;
         } else {
           if (right_black) {
             // Case 3: left nephew red, right nephew black
             if (w->left) w->left->red = false;
             w->red = true;
             rotate_right(w);
-            w = x->parent->right;
+            w = x_parent->right;
             if (w == nullptr) break;
           }
           // Case 4: right nephew red
-          w->red = x->parent->red;
-          x->parent->red = false;
+          w->red = x_parent->red;
+          x_parent->red = false;
           if (w->right) w->right->red = false;
-          rotate_left(x->parent);
+          rotate_left(x_parent);
           x = rb_root_;  // terminate loop
         }
       } else {
-        // Mirror: x is right child
-        auto* w = x->parent->left;  // sibling
+        // Mirror: x is right child of x_parent
+        auto* w = x_parent->left;  // sibling
         if (w == nullptr) break;
 
         if (w->red) {
           w->red = false;
-          x->parent->red = true;
-          rotate_right(x->parent);
-          w = x->parent->left;
+          x_parent->red = true;
+          rotate_right(x_parent);
+          w = x_parent->left;
           if (w == nullptr) break;
         }
         bool left_black = (w->left == nullptr || !w->left->red);
         bool right_black = (w->right == nullptr || !w->right->red);
         if (left_black && right_black) {
           w->red = true;
-          x = x->parent;
+          x = x_parent;
+          x_parent = x->parent;
         } else {
           if (left_black) {
             if (w->right) w->right->red = false;
             w->red = true;
             rotate_left(w);
-            w = x->parent->left;
+            w = x_parent->left;
             if (w == nullptr) break;
           }
-          w->red = x->parent->red;
-          x->parent->red = false;
+          w->red = x_parent->red;
+          x_parent->red = false;
           if (w->left) w->left->red = false;
-          rotate_right(x->parent);
+          rotate_right(x_parent);
           x = rb_root_;
         }
       }
@@ -805,6 +854,14 @@ public:
     thread->cpu = cpu;
     thread->state = ProcessState::Ready;
 
+    // Wakeup preemption check: if the newly enqueued task has lower
+    // vruntime than the current task on the target CPU, mark it for
+    // rescheduling.
+    Thread *curr = current_running_tasks_[cpu];
+    if (curr != nullptr && thread->se.vruntime < curr->se.vruntime) {
+      curr->need_resched = true;
+    }
+
     // Wake target CPU if idle (tickless idle disables timer PPI,
     // so only SGI can break WFI).  send_reschedule_ipi() is a
     // no-op when target == current CPU.
@@ -826,6 +883,14 @@ public:
       return nullptr;
 
     return runqueues_.get_cpu(cpu).pick_next_task();
+  }
+
+  // Pick highest-vruntime task from a CPU's runqueue (for load balancer).
+  // Steals the least-deserving task (ran most), preserving CFS fairness.
+  [[nodiscard]] Thread *pick_last_task(u32 cpu) noexcept {
+    if (cpu >= MAX_CPUS)
+      return nullptr;
+    return runqueues_.get_cpu(cpu).pick_last_task();
   }
 
   inline void set_idle_task(u32 cpu_id, IdleTask* idle_task) noexcept {
@@ -851,6 +916,18 @@ public:
     if (cpu_id >= MAX_CPUS)
       return false;
     return runqueues_.get_cpu(cpu_id).nr_running() > 0;
+  }
+
+  // Place entity vruntime for fork or wakeup (before enqueue)
+  void place_entity(Thread* thread, u32 cpu, bool is_fork) noexcept {
+    if (cpu >= MAX_CPUS || !thread) return;
+    runqueues_.get_cpu(cpu).place_entity(thread, is_fork);
+  }
+
+  // Get min_vruntime for a specific CPU's runqueue
+  [[nodiscard]] u64 get_cpu_min_vruntime(u32 cpu) const noexcept {
+    if (cpu >= MAX_CPUS) return 0;
+    return runqueues_.get_cpu(cpu).min_vruntime();
   }
 
   // Reset the current task's vruntime to min_vruntime of its runqueue.
@@ -958,6 +1035,10 @@ public:
           log::klog::debug("[CPU{}] entering idle", cpu_id);
         }
 
+        // Idle balance is handled via reschedule IPI: when load_balancer
+        // migrates a task to this CPU's runqueue, it sends SGI 0 which
+        // breaks WFI below and lets us pick up the new task.
+
         // Tickless idle (NO_HZ_IDLE): disable per-CPU timer before WFI
         // so idle CPUs are not woken every 6ms by timer PPI (IRQ 27).
         // Only SGI 0 (reschedule IPI) can wake us — sent by enqueue_task()
@@ -995,6 +1076,8 @@ public:
     if (task == nullptr || task->state != ProcessState::Blocked) return;
 
     task->state = ProcessState::Ready;
+    // Place entity with wakeup bonus before enqueueing
+    place_entity(task, target_cpu, /*is_fork=*/false);
     enqueue_task(task, target_cpu);
 
     log::klog::info("task wakeup and enqueued: TID={} CPU={}", static_cast<u32>(task->tid), target_cpu);
@@ -1190,6 +1273,8 @@ public:
         // Guard: task may have been marked Terminated by sys_exit
         // between our state==Running check above and here.
         if (curr->state == ProcessState::Terminated) return;
+
+        curr->need_resched = true;
 
         // Reset time-slice accounting so curr gets a fresh slice next time
         curr->se.prev_sum_exec_runtime = curr->se.sum_exec_runtime;
@@ -1445,10 +1530,10 @@ private:
   }
 
   void check_need_resched() noexcept {
-    u32 current_cpu = CfsScheduler::get_current_cpu_id();
-
-    if (runqueues_.get_cpu(current_cpu).nr_running() > 0) {
-      // Other tasks waiting, may need preemption
+    Thread *curr = get_current_task();
+    if (curr && curr->need_resched) {
+      // Preemption pending — will be serviced at next safe preemption point
+      // (IRQ return, syscall return).
     }
   }
 

@@ -191,7 +191,7 @@ namespace handlers {
         child_thread->sched_class = SchedClass::Normal;
         child_thread->se.nice = parent_thread->se.nice;
         child_thread->se.weight = parent_thread->se.weight;
-        child_thread->se.vruntime = parent_thread->se.vruntime;
+        child_thread->cpu_affinity_mask = parent_thread->cpu_affinity_mask;
         child_thread->state = ProcessState::Ready;
 
         // 11. Allocate per-thread kernel stack (16KB)
@@ -228,6 +228,8 @@ namespace handlers {
             if (g_load_balancer) {
                 target_cpu = g_load_balancer->select_cpu_for_task(child_thread, *g_scheduler);
             }
+            // Place child vruntime: fork penalty so parent runs first (returns child PID)
+            g_scheduler->place_entity(child_thread, target_cpu, /*is_fork=*/true);
             g_scheduler->enqueue_task(child_thread, target_cpu);
         }
 
@@ -783,6 +785,164 @@ namespace handlers {
         return -Errno::ENOSYS;
     }
 
+    // ── Scheduling syscalls ───────────────────────────────────────────
+
+    // nice(increment) — adjust calling thread's nice value
+    // Returns the new nice value on success, or -errno on failure.
+    long sys_nice(long increment, long, long, long, long, long) noexcept {
+        using namespace moss::kernel::process;
+
+        Thread *cur = CfsScheduler::get_current_task();
+        if (!cur) return -Errno::ESRCH;
+
+        i32 new_nice = cur->se.nice + static_cast<i32>(increment);
+
+        // Clamp to valid range [-20, 19]
+        if (new_nice < Priority::MIN_NICE) new_nice = Priority::MIN_NICE;
+        if (new_nice > Priority::MAX_NICE) new_nice = Priority::MAX_NICE;
+
+        cur->se.nice = new_nice;
+        cur->se.weight = CfsParams::nice_to_weight(new_nice);
+        cur->se.load_weight = cur->se.weight;
+
+        log::klog::info("sys_nice: TID={} nice={} weight={}",
+                        static_cast<u32>(cur->tid), new_nice, cur->se.weight);
+        return static_cast<long>(new_nice);
+    }
+
+    // getpriority(which, who) — get scheduling priority (nice value)
+    // which: 0=PRIO_PROCESS, who: PID (0 = calling process)
+    // Returns 20 - nice_value (to avoid negative return indicating error)
+    long sys_getpriority(long which, long who, long, long, long, long) noexcept {
+        using namespace moss::kernel::process;
+
+        // Only support PRIO_PROCESS (which == 0) for now
+        if (which != 0) return -Errno::EINVAL;
+
+        Thread *cur = CfsScheduler::get_current_task();
+        if (!cur) return -Errno::ESRCH;
+
+        if (who == 0 || static_cast<ProcessId>(who) == cur->owner_pid) {
+            // Return 20 - nice (Linux convention: avoids ambiguity with -errno)
+            return 20 - static_cast<long>(cur->se.nice);
+        }
+
+        // Look up the target process
+        if (!g_process_manager) return -Errno::ESRCH;
+        Process *proc = g_process_manager->find_process(static_cast<ProcessId>(who));
+        if (!proc) return -Errno::ESRCH;
+
+        Thread *main_thread = proc->get_main_thread();
+        if (!main_thread) return -Errno::ESRCH;
+
+        return 20 - static_cast<long>(main_thread->se.nice);
+    }
+
+    // sched_yield() — voluntarily give up the CPU
+    // Sets current task's vruntime to min_vruntime + SCHED_LATENCY_NS,
+    // re-enqueues, then context-switches away.
+    long sys_sched_yield(long, long, long, long, long, long) noexcept {
+        using namespace moss::kernel::process;
+
+        Thread *cur = CfsScheduler::get_current_task();
+        if (!cur || !g_scheduler) return -Errno::ESRCH;
+
+        u32 cpu = arch::get_current_cpu_id();
+
+        // Penalize vruntime so other tasks get priority
+        u64 min_vrt = g_scheduler->get_cpu_min_vruntime(cpu);
+        cur->se.vruntime = min_vrt + CfsParams::SCHED_LATENCY_NS;
+
+        // Re-enqueue and trigger reschedule
+        g_scheduler->enqueue_task(cur, cpu);
+
+#if defined(MOSS_ARCH_ARM64)
+        {
+            CpuContext *my_ctx = &cur->context;
+            CpuContext *bootstrap = &CfsScheduler::bootstrap_context(cpu);
+            CfsScheduler::set_current_task(nullptr);
+            arch::disable_interrupts();
+            context_switch(my_ctx, bootstrap);
+            arch::enable_interrupts();
+        }
+#endif
+
+        return 0;
+    }
+
+    // sched_getaffinity(pid, cpusetsize, mask_addr) — get CPU affinity mask
+    // pid: 0 = calling thread
+    // Returns 0 on success, -errno on failure
+    long sys_sched_getaffinity(long pid_arg, long, long mask_addr,
+                               long, long, long) noexcept {
+        using namespace moss::kernel::process;
+
+        Thread *target = nullptr;
+
+        if (pid_arg == 0) {
+            target = CfsScheduler::get_current_task();
+        } else {
+            if (!g_process_manager) return -Errno::ESRCH;
+            Process *proc = g_process_manager->find_process(
+                static_cast<ProcessId>(pid_arg));
+            if (!proc) return -Errno::ESRCH;
+            target = proc->get_main_thread();
+        }
+
+        if (!target) return -Errno::ESRCH;
+
+        if (mask_addr != 0) {
+            auto *mask_ptr = reinterpret_cast<u32*>(
+                static_cast<unsigned long long>(mask_addr));
+            *mask_ptr = target->cpu_affinity_mask;
+        }
+
+        return 0;
+    }
+
+    // sched_setaffinity(pid, cpusetsize, mask_addr) — set CPU affinity mask
+    // pid: 0 = calling thread
+    // Returns 0 on success, -errno on failure
+    long sys_sched_setaffinity(long pid_arg, long, long mask_addr,
+                               long, long, long) noexcept {
+        using namespace moss::kernel::process;
+
+        if (mask_addr == 0) return -Errno::EFAULT;
+
+        auto *mask_ptr = reinterpret_cast<const u32*>(
+            static_cast<unsigned long long>(mask_addr));
+        u32 new_mask = *mask_ptr;
+
+        // Must allow at least one CPU
+        if (new_mask == 0) return -Errno::EINVAL;
+
+        // Mask out CPUs beyond arch::MAX_CPUS
+        constexpr u32 max_cpus = arch::MAX_CPUS;
+        u32 valid_mask = (max_cpus >= 32) ? 0xFFFFFFFFu : ((1u << max_cpus) - 1);
+        new_mask &= valid_mask;
+        if (new_mask == 0) return -Errno::EINVAL;
+
+        Thread *target = nullptr;
+
+        if (pid_arg == 0) {
+            target = CfsScheduler::get_current_task();
+        } else {
+            if (!g_process_manager) return -Errno::ESRCH;
+            Process *proc = g_process_manager->find_process(
+                static_cast<ProcessId>(pid_arg));
+            if (!proc) return -Errno::ESRCH;
+            target = proc->get_main_thread();
+        }
+
+        if (!target) return -Errno::ESRCH;
+
+        target->cpu_affinity_mask = new_mask;
+
+        log::klog::info("sys_sched_setaffinity: TID={} mask={:#x}",
+                        static_cast<u32>(target->tid), new_mask);
+        return 0;
+    }
+
     // 未实现系统调用的默认处理器
     long sys_not_implemented(long, long, long, long, long, long) noexcept {
         log::klog::warn("syscall: unknown/unimplemented");
@@ -813,9 +973,9 @@ const SyscallDescriptor SYSCALL_TABLE[static_cast<int>(SyscallNumber::MAX_SYSCAL
     {"sigaction", handlers::sys_not_implemented, 3, false, "信号处理设置"},
     {"sigprocmask", handlers::sys_not_implemented, 3, false, "信号掩码操作"},
     {"sigreturn", handlers::sys_not_implemented, 0, false, "信号返回"},
-    {"pause", handlers::sys_not_implemented, 0, false, "等待信号"},
-    {"alarm", handlers::sys_not_implemented, 1, false, "设置闹钟"},
-    {"setpgid", handlers::sys_not_implemented, 2, false, "设置进程组"},
+    {"sched_yield", handlers::sys_sched_yield, 0, true, "Yield CPU"},
+    {"sched_getaffinity", handlers::sys_sched_getaffinity, 3, true, "Get CPU affinity"},
+    {"sched_setaffinity", handlers::sys_sched_setaffinity, 3, true, "Set CPU affinity"},
     {"setuid", handlers::sys_not_implemented, 1, false, "设置用户ID"},
     {"setgid", handlers::sys_not_implemented, 1, false, "设置组ID"},
     {"seteuid", handlers::sys_not_implemented, 1, false, "设置有效用户ID"},
@@ -823,8 +983,8 @@ const SyscallDescriptor SYSCALL_TABLE[static_cast<int>(SyscallNumber::MAX_SYSCAL
     {"getpgrp", handlers::sys_not_implemented, 0, false, "获取进程组"},
     {"setpgrp", handlers::sys_not_implemented, 0, false, "设置进程组"},
     {"getsid", handlers::sys_not_implemented, 1, false, "获取会话ID"},
-    {"nice", handlers::sys_not_implemented, 1, false, "设置进程优先级"},
-    {"getpriority", handlers::sys_not_implemented, 2, false, "获取进程优先级"},
+    {"nice", handlers::sys_nice, 1, true, "Set process nice value"},
+    {"getpriority", handlers::sys_getpriority, 2, true, "Get process priority"},
 
     // === 文件系统操作 (30-59) ===
     {"open", handlers::sys_open, 3, true, "打开文件"},
