@@ -147,7 +147,20 @@ void Process::record_page_fault(bool major) noexcept {
 
 void Process::cleanup_threads() noexcept {
     threads_.for_each([](const ThreadEntry& entry) {
-        delete entry.thread;
+        if (entry.thread) {
+            // Free per-thread kernel stack (allocated in sys_fork)
+            if (entry.thread->kernel_stack_base != 0 && entry.thread->kernel_stack_size > 0) {
+                constexpr usize PAGE_SIZE = 4096;
+                usize order = 0;
+                usize pages = entry.thread->kernel_stack_size / PAGE_SIZE;
+                while ((1U << order) < pages) ++order;
+                (void)mm::free_pages(
+                    static_cast<PhysAddr>(entry.thread->kernel_stack_base), order);
+            }
+            // Clear scheduler back-pointer to avoid dangling reference
+            entry.thread->rq_node = nullptr;
+            delete entry.thread;
+        }
     });
     threads_.clear();
 }
@@ -470,39 +483,11 @@ KernelResult<VirtAddr> allocate_user_heap(Process* process, usize size) noexcept
 // ============================================================================
 
 [[noreturn]] void secondary_cpu_schedule_loop(u32 cpu_id) noexcept {
-    // Use direct UART — klog from secondary CPUs causes TicketSpinLock
-    // contention that triggers IRQ livelock on all CPUs.
     early_debug_print("[SEC] CPU entering scheduling loop\n");
 
-    // No HrTimer needed: irq_handler_c recognises the per-CPU timer PPI and
-    // calls scheduler_tick() directly for secondary CPUs.  The hardware timer
-    // compare register is reprogrammed there as well.
-
-    // Main scheduling loop — driven by timer IRQ calling scheduler_tick(),
-    // which does preemption via context_switch.  Between preemptions, we
-    // idle with WFI and re-check when an interrupt (timer or IPI) wakes us.
-    while (true) {
-        Thread *next = g_scheduler->pick_next_task(cpu_id);
-        if (next != nullptr) {
-            g_scheduler->dequeue_task(next);
-            CfsScheduler::set_current_task(next);
-            next->state = ProcessState::Running;
-            next->se.exec_start = arch::get_timestamp_counter();
-
-#if defined(MOSS_ARCH_ARM64)
-            CpuContext *prev_ctx = &CfsScheduler::bootstrap_context(cpu_id);
-            arch::disable_interrupts();
-            context_switch(prev_ctx, &next->context);
-            arch::enable_interrupts();
-#endif
-            // Returned -- task was preempted back to bootstrap context. Clear and retry.
-            CfsScheduler::set_current_task(nullptr);
-        } else {
-            // No local tasks: try to steal from busiest CPU before sleeping
-            try_idle_balance(cpu_id);
-            arch::cpu_idle_once();
-        }
-    }
+    // Unified entry point: secondary CPUs use the same scheduling loop
+    // as the BSP, with full context_switch and idle balance support.
+    g_scheduler->cpu_startup_entry(cpu_id);
 }
 
 } // namespace moss::kernel::process
