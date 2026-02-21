@@ -12,6 +12,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Annotated, Optional
 
+import fdt
 import typer
 from rich import print as rprint
 from rich.console import Console
@@ -94,7 +95,7 @@ def resolve_kernel_file(
 
     启动模式优先级：
       1. --test  → test ELF (moss.test.elf)
-      2. --bin   → 原始二进制 (moss_boot.bin)，device loader 直接加载到 RAM
+      2. --bin   → 完整二进制 (moss.bin)，device loader 直接加载到 RAM
       3. --debug → moss.elf（保留完整 DWARF 符号，QEMU 从 ELF entry point 启动）
       4. 默认    → moss.bin（含 Linux Image header，QEMU 自动传递 DTB）
     """
@@ -107,12 +108,14 @@ def resolve_kernel_file(
         return path, "Unit Test ELF"
 
     if use_binary:
-        path = Path(cfg.kernel_bin)
+        # 使用完整内核二进制 moss.bin（含 Linux Image header，首指令为 branch 跳过 header）
+        # 而非 moss_boot.bin（仅 .text.boot 段，缺少内核代码会导致挂死）
+        path = Path(cfg.kernel_bin_full)
         if not path.exists():
             console.print(f"[red]错误: 内核二进制文件不存在: {path}[/red]")
-            console.print("请先运行构建命令生成 moss_boot.bin")
+            console.print("请先运行构建命令生成 moss.bin")
             raise typer.Exit(1)
-        return path, "原始二进制"
+        return path, "原始二进制 (moss.bin)"
 
     if debug_mode:
         # 调试模式：使用 moss.elf（保留 DWARF 调试符号）
@@ -188,6 +191,33 @@ DTB_LOAD_ADDR = {
 }
 
 
+# Initramfs 加载地址（--bin 模式使用 -device loader 而非 -initrd）
+# 地址选择原则：在 DTB 地址之前，与内核代码（~2MB）不重叠，64KB 对齐。
+INITRD_LOAD_ADDR = {
+    "ARM64": 0x44000000,   # RAM 0x40000000 + 64MB，DTB 在 +128MB
+    "RISCV": 0x82000000,   # RAM 0x80000000 + 32MB，DTB 在 +64MB
+}
+
+
+def patch_dtb_initrd(dtb_path: Path, initrd_start: int, initrd_size: int) -> None:
+    """在 DTB 的 /chosen 节点中写入 linux,initrd-start/end 属性
+
+    --bin 模式无法使用 -initrd（QEMU 要求 -kernel），因此通过 -device loader
+    手动加载 initramfs 到固定 RAM 地址，同时在 DTB 中记录地址范围。
+    内核 FDT parser 读取这两个属性来定位 initramfs。
+    """
+    dt = fdt.parse_dtb(dtb_path.read_bytes())
+    chosen = dt.get_node("chosen")
+    if chosen is None:
+        chosen = fdt.Node("chosen")
+        dt.root.append(chosen)
+
+    # 使用 PropWords (u32) — 内核 FDT parser 同时支持 4 字节和 8 字节值
+    chosen.append(fdt.PropWords("linux,initrd-start", initrd_start))
+    chosen.append(fdt.PropWords("linux,initrd-end", initrd_start + initrd_size))
+    dtb_path.write_bytes(dt.to_dtb())
+
+
 def _needs_dtb_loader(*, use_binary: bool, debug_mode: bool) -> bool:
     """判断是否需要手动加载 DTB（通过 -device loader）
 
@@ -254,7 +284,7 @@ def build_qemu_args(
     # Initramfs: pass CPIO archive to QEMU via -initrd
     # QEMU loads it into guest RAM and records the address in DTB /chosen node
     # as linux,initrd-start / linux,initrd-end (read by the kernel FDT parser)
-    if cfg.initramfs and not test_mode:
+    if cfg.initramfs and not test_mode and not use_binary:
         initrd_path = Path(cfg.initramfs)
         if initrd_path.exists():
             args += ["-initrd", str(initrd_path)]
@@ -264,6 +294,19 @@ def build_qemu_args(
     #   - --bin / --debug 模式: 无 Linux Image header，需手动导出 DTB 并加载到 RAM
     if _needs_dtb_loader(use_binary=use_binary, debug_mode=debug_mode):
         dtb_path = prepare_dtb(cfg, smp=smp)
+
+        # --bin 模式: initramfs 也需通过 -device loader 加载（-initrd 需要 -kernel）
+        # 同时在 DTB /chosen 中写入 linux,initrd-start/end 让内核定位 initramfs
+        if use_binary and cfg.initramfs and not test_mode:
+            initrd_path = Path(cfg.initramfs)
+            if initrd_path.exists() and dtb_path and cfg.arch in INITRD_LOAD_ADDR:
+                initrd_addr = INITRD_LOAD_ADDR[cfg.arch]
+                patch_dtb_initrd(dtb_path, initrd_addr, initrd_path.stat().st_size)
+                args += [
+                    "-device",
+                    f"loader,file={initrd_path},addr={hex(initrd_addr)},force-raw=on",
+                ]
+
         if dtb_path and cfg.arch in DTB_LOAD_ADDR:
             args += [
                 "-device",
@@ -328,7 +371,9 @@ def print_banner(
 
     # DTB 传递方式提示
     if _needs_dtb_loader(use_binary=use_binary, debug_mode=debug_mode):
-        rprint("DTB 传递: -device loader + RAM 扫描")
+        rprint("DTB 传递:   -device loader + RAM 扫描")
+        if use_binary and cfg.initramfs and cfg.arch in INITRD_LOAD_ADDR:
+            rprint(f"Initrd:     -device loader @ {hex(INITRD_LOAD_ADDR[cfg.arch])}")
     else:
         rprint("[green]DTB 传递: 自动 (Linux 启动协议, x0 寄存器)[/green]")
 
