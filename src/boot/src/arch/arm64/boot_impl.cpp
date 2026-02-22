@@ -73,11 +73,11 @@ enum class CpuState : u32 { Offline = 0, Starting = 1, Parked = 2, Active = 3, O
 /// correct memory ordering on ARM64.  We use raw builtins here because this
 /// file runs before moss.containers is fully available.
 struct CpuTopology {
-  u32 total_cpus;                              // written only by CPU 0 during init
-  u32 online_cpus;                             // atomic: concurrent inc from secondary CPUs
-  u32 cpu_states[moss::kernel::MAX_CPUS];      // atomic: each CPU writes its own slot; CPU 0 reads all
-  u64 boot_timestamps[moss::kernel::MAX_CPUS]; // written once per CPU during init
-  bool detection_completed;                    // written by CPU 0, read by others after barrier
+  u32 total_cpus;                                   // written only by CPU 0 during init
+  u32 online_cpus;                                  // atomic: concurrent inc from secondary CPUs
+  u32 cpu_states[moss::kernel::BOOT_MAX_CPUS];      // atomic: each CPU writes its own slot; CPU 0 reads all
+  u64 boot_timestamps[moss::kernel::BOOT_MAX_CPUS]; // written once per CPU during init
+  bool detection_completed;                         // written by CPU 0, read by others after barrier
 };
 
 // Global variable definitions
@@ -96,8 +96,11 @@ static u32 probe_available_cpus() noexcept {
   const auto &plat = moss::fdt::get_platform_info();
   if (plat.dtb_valid && plat.cpu_count > 0) {
     u32 count = plat.cpu_count;
-    if (count > moss::kernel::MAX_CPUS) {
-      count = moss::kernel::MAX_CPUS;
+    // Store the full count in g_num_cpus (runtime, unlimited)
+    moss::kernel::g_num_cpus = count;
+    // Boot arrays are limited to BOOT_MAX_CPUS
+    if (count > moss::kernel::BOOT_MAX_CPUS) {
+      count = moss::kernel::BOOT_MAX_CPUS;
     }
     return count;
   }
@@ -106,11 +109,13 @@ static u32 probe_available_cpus() noexcept {
   auto total_stack_size =
       static_cast<u64>(moss::abi::linker::stack_top()) - static_cast<u64>(moss::abi::linker::stack_bottom());
   u32 stack_based = static_cast<u32>(total_stack_size / (32ULL * 1024));
-  if (stack_based >= 1 && stack_based <= moss::kernel::MAX_CPUS) {
+  if (stack_based >= 1 && stack_based <= moss::kernel::BOOT_MAX_CPUS) {
+    moss::kernel::g_num_cpus = stack_based;
     return stack_based;
   }
 
   // Fallback: single core
+  moss::kernel::g_num_cpus = 1;
   return 1;
 }
 
@@ -134,7 +139,7 @@ static void initialize_cpu_startup_info(u32 detected_cpus) noexcept {
   __atomic_store_n(&g_cpu_topology.online_cpus, 1, __ATOMIC_RELAXED);
   g_cpu_topology.detection_completed = true;
 
-  for (u32 cpu = 0; cpu < moss::kernel::MAX_CPUS; cpu++) {
+  for (u32 cpu = 0; cpu < moss::kernel::BOOT_MAX_CPUS; cpu++) {
     if (cpu == 0) {
       store_cpu_state(cpu, CpuState::Online);
       g_cpu_topology.boot_timestamps[cpu] = get_timestamp();
@@ -144,14 +149,14 @@ static void initialize_cpu_startup_info(u32 detected_cpus) noexcept {
     }
   }
 
-  for (u32 cpu = 0; cpu < moss::kernel::MAX_CPUS; cpu++) {
+  for (u32 cpu = 0; cpu < moss::kernel::BOOT_MAX_CPUS; cpu++) {
     cpu_startup_flags[cpu][0] = 0;
     cpu_startup_flags[cpu][1] = 0;
   }
 }
 
 [[maybe_unused]] static bool wait_cpu_parked(u32 cpu_id, u32 timeout_ms) noexcept {
-  if (cpu_id >= moss::kernel::MAX_CPUS) {
+  if (cpu_id >= moss::kernel::BOOT_MAX_CPUS) {
     return false;
   }
 
@@ -202,7 +207,7 @@ static void initialize_cpu_startup_info(u32 detected_cpus) noexcept {
 }
 
 void mark_cpu_online(u32 cpu_id) noexcept {
-  if (cpu_id < moss::kernel::MAX_CPUS) {
+  if (cpu_id < moss::kernel::BOOT_MAX_CPUS) {
     store_cpu_state(cpu_id, CpuState::Online);
     g_cpu_topology.boot_timestamps[cpu_id] = 0;
     __atomic_fetch_add(&g_cpu_topology.online_cpus, 1, __ATOMIC_ACQ_REL);
@@ -210,7 +215,7 @@ void mark_cpu_online(u32 cpu_id) noexcept {
 }
 
 void mark_cpu_parked(u32 cpu_id) noexcept {
-  if (cpu_id < moss::kernel::MAX_CPUS) {
+  if (cpu_id < moss::kernel::BOOT_MAX_CPUS) {
     g_cpu_topology.boot_timestamps[cpu_id] = 0;
     // Release store: makes all prior initialization visible to CPU 0
     store_cpu_state(cpu_id, CpuState::Parked);
@@ -225,20 +230,20 @@ void mark_cpu_parked(u32 cpu_id) noexcept {
 }
 
 void mark_cpu_active(u32 cpu_id) noexcept {
-  if (cpu_id < moss::kernel::MAX_CPUS) {
+  if (cpu_id < moss::kernel::BOOT_MAX_CPUS) {
     store_cpu_state(cpu_id, CpuState::Active);
   }
 }
 
 bool is_cpu_in_state(u32 cpu_id, CpuState expected_state) noexcept {
-  if (cpu_id >= moss::kernel::MAX_CPUS) {
+  if (cpu_id >= moss::kernel::BOOT_MAX_CPUS) {
     return false;
   }
   return load_cpu_state(cpu_id) == expected_state;
 }
 
 bool wait_for_cpu_state(u32 cpu_id, CpuState expected_state, u32 timeout_ms) noexcept {
-  if (cpu_id >= moss::kernel::MAX_CPUS) {
+  if (cpu_id >= moss::kernel::BOOT_MAX_CPUS) {
     return false;
   }
 
@@ -323,7 +328,7 @@ extern "C" [[noreturn]] void secondary_cpu_entry() noexcept {
 
   // --- Phase 1: Park and wait for CPU 0 to finish initialization ---
   // Use atomic release store so CPU 0 sees the state transition
-  if (cpu_id < moss::kernel::MAX_CPUS) {
+  if (cpu_id < moss::kernel::BOOT_MAX_CPUS) {
     store_cpu_state(cpu_id, CpuState::Parked);
   }
 

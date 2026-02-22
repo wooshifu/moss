@@ -130,7 +130,7 @@ protected:
   NUMADistance distance_matrix_;
   moss::kernel::containers::AtomicU32 online_node_count_;
   u64 topology_version_;
-  numa_node_t cpu_to_node_[moss::kernel::MAX_CPUS];
+  numa_node_t cpu_to_node_[moss::kernel::BOOT_MAX_CPUS];
 
 public:
   NUMATopology() noexcept;

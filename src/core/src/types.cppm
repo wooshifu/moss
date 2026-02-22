@@ -54,9 +54,185 @@ inline bool is_kernel_addr(VirtAddr va) noexcept { return va >= KERNEL_BASE; }
 // Hardware constants
 constexpr usize CACHE_LINE_SIZE = 64;
 
-// Maximum supported CPUs (compile-time constant, single source of truth).
-// Assembly uses ASM_MAX_CPUS (#define 32) and linker allocates 32×32KB stacks.
-constexpr usize MAX_CPUS = 32;
+// Boot-time maximum CPUs (compile-time constant for assembly/linker only).
+// Assembly uses ASM_MAX_CPUS and linker allocates BOOT_MAX_CPUS × 32KB stacks.
+// This is the upper bound for early boot before the memory allocator is available.
+constexpr usize BOOT_MAX_CPUS = 8;
+
+// Runtime CPU count — set from FDT during early boot, read-only after SMP init.
+// All per-CPU iteration and bounds checks should use this instead of compile-time constants.
+inline u32 g_num_cpus = 1;
+
+// CPU bitmap: dynamically-sized bitmask for CPU sets.
+// Uses a single inline u64 for ≤64 CPUs (zero heap allocation).
+// For >64 CPUs, dynamically allocates via operator new.
+class CpuBitmap {
+  static constexpr u32 BITS_PER_WORD = 64;
+
+  u64 inline_word_{0};
+  u64 *words_{&inline_word_};
+  u32 num_words_{1};
+
+public:
+  // Default: empty bitmap (single inline word, all zeros)
+  constexpr CpuBitmap() noexcept = default;
+
+  // Bitmap for a specific CPU count (allocates if num_cpus > 64)
+  explicit CpuBitmap(u32 num_cpus, bool set_all) noexcept : inline_word_{0}, words_{&inline_word_}, num_words_{1} {
+    u32 needed = (num_cpus + BITS_PER_WORD - 1) / BITS_PER_WORD;
+    if (needed < 1) {
+      needed = 1;
+    }
+    if (needed > 1) {
+      words_ = new u64[needed]();
+      num_words_ = needed;
+    }
+    if (set_all) {
+      set_all_up_to(num_cpus);
+    }
+  }
+
+  // All-CPUs-set factory (uses g_num_cpus)
+  static CpuBitmap all() noexcept {
+    CpuBitmap bm(g_num_cpus, true);
+    return bm;
+  }
+
+  // Single-CPU bitmap factory
+  static CpuBitmap single(u32 cpu) noexcept {
+    CpuBitmap bm;
+    bm.set(cpu);
+    return bm;
+  }
+
+  // Copy
+  CpuBitmap(const CpuBitmap &other) noexcept : inline_word_{0}, words_{&inline_word_}, num_words_{other.num_words_} {
+    if (num_words_ > 1) {
+      words_ = new u64[num_words_]();
+      for (u32 i = 0; i < num_words_; ++i) {
+        words_[i] = other.words_[i];
+      }
+    } else {
+      inline_word_ = other.inline_word_;
+    }
+  }
+
+  CpuBitmap &operator=(const CpuBitmap &other) noexcept {
+    if (this != &other) {
+      if (words_ != &inline_word_) {
+        delete[] words_;
+      }
+      num_words_ = other.num_words_;
+      if (num_words_ > 1) {
+        words_ = new u64[num_words_]();
+        for (u32 i = 0; i < num_words_; ++i) {
+          words_[i] = other.words_[i];
+        }
+      } else {
+        inline_word_ = other.inline_word_;
+        words_ = &inline_word_;
+      }
+    }
+    return *this;
+  }
+
+  // Move
+  CpuBitmap(CpuBitmap &&other) noexcept : inline_word_{0}, words_{&inline_word_}, num_words_{other.num_words_} {
+    if (num_words_ > 1) {
+      words_ = other.words_;
+      other.words_ = &other.inline_word_;
+      other.inline_word_ = 0;
+      other.num_words_ = 1;
+    } else {
+      inline_word_ = other.inline_word_;
+      other.inline_word_ = 0;
+    }
+  }
+
+  CpuBitmap &operator=(CpuBitmap &&other) noexcept {
+    if (this != &other) {
+      if (words_ != &inline_word_) {
+        delete[] words_;
+      }
+      num_words_ = other.num_words_;
+      if (num_words_ > 1) {
+        words_ = other.words_;
+        other.words_ = &other.inline_word_;
+        other.inline_word_ = 0;
+        other.num_words_ = 1;
+      } else {
+        inline_word_ = other.inline_word_;
+        words_ = &inline_word_;
+        other.inline_word_ = 0;
+      }
+    }
+    return *this;
+  }
+
+  ~CpuBitmap() noexcept {
+    if (words_ != &inline_word_) {
+      delete[] words_;
+    }
+  }
+
+  // Bit manipulation
+  void set(u32 cpu) noexcept {
+    u32 word_idx = cpu / BITS_PER_WORD;
+    if (word_idx < num_words_) {
+      words_[word_idx] |= (1ULL << (cpu % BITS_PER_WORD));
+    }
+  }
+
+  void clear(u32 cpu) noexcept {
+    u32 word_idx = cpu / BITS_PER_WORD;
+    if (word_idx < num_words_) {
+      words_[word_idx] &= ~(1ULL << (cpu % BITS_PER_WORD));
+    }
+  }
+
+  [[nodiscard]] bool test(u32 cpu) const noexcept {
+    u32 word_idx = cpu / BITS_PER_WORD;
+    if (word_idx >= num_words_) {
+      return false;
+    }
+    return (words_[word_idx] & (1ULL << (cpu % BITS_PER_WORD))) != 0;
+  }
+
+  [[nodiscard]] bool empty() const noexcept {
+    for (u32 i = 0; i < num_words_; ++i) {
+      if (words_[i] != 0) {
+        return false;
+      }
+    }
+    return true;
+  }
+
+  // Extract low 8 bits as u8 (for GICv2 SGIR target mask)
+  [[nodiscard]] u8 low_byte() const noexcept { return static_cast<u8>(words_[0] & 0xFF); }
+
+  // Extract low 32 bits as u32 (for syscall ABI compatibility)
+  [[nodiscard]] u32 low_word() const noexcept { return static_cast<u32>(words_[0] & 0xFFFFFFFFULL); }
+
+  // Set from a u32 bitmask (for syscall ABI compatibility)
+  void set_from_u32(u32 mask) noexcept {
+    for (u32 i = 0; i < num_words_; ++i) {
+      words_[i] = 0;
+    }
+    words_[0] = mask;
+  }
+
+private:
+  void set_all_up_to(u32 num_cpus) noexcept {
+    u32 full_words = num_cpus / BITS_PER_WORD;
+    u32 remaining_bits = num_cpus % BITS_PER_WORD;
+    for (u32 i = 0; i < full_words && i < num_words_; ++i) {
+      words_[i] = ~0ULL;
+    }
+    if (remaining_bits > 0 && full_words < num_words_) {
+      words_[full_words] = (1ULL << remaining_bits) - 1;
+    }
+  }
+};
 
 // Process and Thread IDs
 using ProcessId = u32;
