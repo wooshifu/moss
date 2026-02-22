@@ -39,6 +39,15 @@ Use latest C++26 standard and cutting-edge C++ features for development:
 - 函数、变量等：lower_case（如 `get_cpu_id()`）
 - 私有成员：使用 `_` 后缀（如 `cpu_count_`）
 
+## 代码质量门禁
+
+提交前必须通过所有检查，零错误零警告：
+
+- **Lint**：`uv run scripts/format.py lint`（clang-tidy + ruff，`WarningsAsErrors: '*'`）
+- **Format**：`uv run scripts/format.py format --check`（clang-format + cmake-format + ruff format）
+
+详见 `moss-quality-gate` skill。
+
 ## Commit Message 格式
 
 详见 `moss-commit` skill。核心规则：`[module][subsystem] description`，英文，祈使句，禁止 Co-Authored-By。

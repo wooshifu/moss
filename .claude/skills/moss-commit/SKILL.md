@@ -10,6 +10,16 @@ Every commit message starts with [module][subsystem] in lowercase.
 English only. No Co-Authored-By line.
 ```
 
+## Pre-Commit: Quality Gate
+
+**Before staging any files**, verify the `moss-quality-gate` skill passes:
+
+1. `cmake --build build/arm64-qemu-debug` — zero warnings
+2. `uv run scripts/format.py lint` — zero issues
+3. `uv run scripts/format.py format --check` — zero diffs
+
+Do not commit until all three pass. If any fail, fix and re-verify.
+
 ## Format
 
 ```
