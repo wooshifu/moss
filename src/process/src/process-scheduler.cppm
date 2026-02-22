@@ -34,6 +34,7 @@ using moss::abi::arm64::user_eret_trampoline;
 export namespace moss::kernel::process {
 
 namespace log = moss::kernel::logging;
+namespace containers = moss::kernel::containers;
 
 // CFS scheduling parameters
 namespace cfs_params {
@@ -159,7 +160,7 @@ extern moss::kernel::containers::PerCpuData<IdleTask *> g_idle_tasks;
 
 // Get idle task for specified CPU
 inline IdleTask *get_idle_task(u32 cpu_id) noexcept {
-  if (cpu_id >= moss::kernel::MAX_CPUS) {
+  if (cpu_id >= MAX_CPUS) {
     return nullptr;
   }
   return g_idle_tasks.get_cpu(cpu_id);
@@ -167,7 +168,7 @@ inline IdleTask *get_idle_task(u32 cpu_id) noexcept {
 
 // Set idle task for specified CPU
 inline bool set_idle_task(u32 cpu_id, IdleTask *idle_task) noexcept {
-  if (cpu_id >= moss::kernel::MAX_CPUS) {
+  if (cpu_id >= MAX_CPUS) {
     return false;
   }
   g_idle_tasks.get_cpu(cpu_id) = idle_task;
@@ -912,7 +913,7 @@ public:
     // Wakeup preemption check: if the newly enqueued task has lower
     // vruntime than the current task on the target CPU, mark it for
     // rescheduling.
-    Thread *curr = current_running_tasks_[cpu];
+    Thread *curr = current_running_tasks_.get_cpu(cpu);
     if (curr != nullptr && thread->se.vruntime < curr->se.vruntime) {
       curr->need_resched = true;
     }
@@ -1050,10 +1051,8 @@ private:
   void idle_task_loop([[maybe_unused]] u32 cpu_id) noexcept { arch::cpu_idle_once(); }
 
   void mark_cpu_idle(u32 cpu_id, bool is_idle) noexcept {
-    static bool cpu_idle_status[MAX_CPUS] = {false};
-    if (cpu_id < MAX_CPUS) {
-      cpu_idle_status[cpu_id] = is_idle;
-    }
+    static containers::PerCpuData<bool> cpu_idle_status{};
+    cpu_idle_status.get_cpu(cpu_id) = is_idle;
   }
 
 public:
@@ -1285,13 +1284,13 @@ public:
   void record_preemption() noexcept { (void)total_preemptions_.fetch_add_local(1); }
 
 private:
-  static Thread *current_running_tasks_[MAX_CPUS];
+  static containers::PerCpuData<Thread *> current_running_tasks_;
 
   // Per-CPU bootstrap context — used as "prev" save target when there is
   // no current task (e.g. schedule_after_exit or first dispatch).
   // context_switch() saves the caller's registers here; the new task
   // starts on its own stack.  Restoring bootstrap returns to the caller.
-  static CpuContext bootstrap_contexts_[MAX_CPUS];
+  static containers::PerCpuData<CpuContext> bootstrap_contexts_;
 
   // Per-CPU exit stack — used by schedule_after_exit() to avoid running
   // on the exited process's kernel stack (which will be freed by waitpid).
@@ -1299,27 +1298,25 @@ private:
   // task's kernel stack, creating a use-after-free when that stack is
   // reclaimed by a subsequent fork.
   static constexpr usize EXIT_STACK_SIZE = 4096; // 4KB per CPU is plenty
-  alignas(16) static u8 exit_stacks_[MAX_CPUS][EXIT_STACK_SIZE];
 
 public:
-  static CpuContext &bootstrap_context(u32 cpu) noexcept { return bootstrap_contexts_[cpu % MAX_CPUS]; }
+  struct alignas(16) ExitStack {
+    u8 data[EXIT_STACK_SIZE];
+    u8 *end() noexcept { return data + EXIT_STACK_SIZE; }
+    const u8 *end() const noexcept { return data + EXIT_STACK_SIZE; }
+  };
 
-  static void set_current_task(Thread *task) noexcept {
-    u32 cpu = CfsScheduler::get_current_cpu_id();
-    if (cpu < MAX_CPUS) {
-      current_running_tasks_[cpu] = task;
-    }
-  }
+  static CpuContext &bootstrap_context(u32 cpu) noexcept { return bootstrap_contexts_.get_cpu(cpu); }
 
-  static Thread *get_current_task() noexcept {
-    u32 cpu = CfsScheduler::get_current_cpu_id();
-    return (cpu < MAX_CPUS) ? current_running_tasks_[cpu] : nullptr;
-  }
+  static void set_current_task(Thread *task) noexcept { current_running_tasks_.get_local() = task; }
+
+  static Thread *get_current_task() noexcept { return current_running_tasks_.get_local(); }
 
   // Get the currently running task on a specific CPU (for topinfo)
-  static Thread *get_current_task_on_cpu(u32 cpu) noexcept {
-    return (cpu < MAX_CPUS) ? current_running_tasks_[cpu] : nullptr;
-  }
+  static Thread *get_current_task_on_cpu(u32 cpu) noexcept { return current_running_tasks_.get_cpu(cpu); }
+
+private:
+  static containers::PerCpuData<ExitStack> exit_stacks_;
 
   // ---- GIC timer IRQ handler ----
   // Bridges the hardware interrupt from GIC to the TimerSubsystem.
@@ -1339,6 +1336,7 @@ public:
     sched->scheduler_tick();
   }
 
+public:
   void scheduler_tick() noexcept {
     tick_count_++;
     u32 cpu = get_current_cpu_id();
@@ -1401,6 +1399,10 @@ public:
     }
   }
 
+private:
+  // Move start_scheduling to public as well
+
+public:
   [[noreturn]] void start_scheduling() noexcept {
     // Use direct UART for all boot-path messages to avoid ring-buffer
     // lock contention with secondary CPUs (IRQ livelock root cause).
@@ -1500,6 +1502,7 @@ public:
     fallback_busy_wait_scheduling(current_cpu);
   }
 
+private:
   // Legacy busy-wait scheduling loop (fallback when timer is unavailable)
   [[noreturn]] void fallback_busy_wait_scheduling(u32 current_cpu) noexcept {
     while (true) {
@@ -1516,7 +1519,6 @@ public:
     }
   }
 
-private:
   void context_switch_to_task(Thread *task) noexcept {
     if (task == nullptr) {
       return;
@@ -1628,7 +1630,7 @@ private:
       if (prev != nullptr && prev != task) {
         prev_ctx = &prev->context;
       } else {
-        prev_ctx = &bootstrap_contexts_[get_current_cpu_id()];
+        prev_ctx = &bootstrap_contexts_.get_local();
       }
 
       // For user tasks being re-dispatched after preemption:
@@ -1703,7 +1705,7 @@ public:
     // freed/reused memory → use-after-free crash.
 #if defined(MOSS_ARCH_ARM64)
     {
-      u64 exit_sp = reinterpret_cast<u64>(&exit_stacks_[cpu % MAX_CPUS][EXIT_STACK_SIZE]);
+      u64 exit_sp = reinterpret_cast<u64>(exit_stacks_.get_cpu(cpu).end());
       asm volatile("mov sp, %0" ::"r"(exit_sp) : "memory");
     }
 #endif
