@@ -1,11 +1,6 @@
 // MOSS IPC Module - Inter-Process Communication
 // Combines shared_memory, zero_copy_channel, and ipc_manager
 
-module;
-
-// strcmp is defined in runtime_support.cpp (global C linkage)
-extern "C" int strcmp(const char *s1, const char *s2) noexcept;
-
 export module moss.ipc;
 
 import moss.std;
@@ -15,6 +10,7 @@ import moss.smart_ptr;
 import moss.arch;
 import moss.containers;
 import moss.mm;
+import moss.abi;
 
 export namespace moss::kernel::ipc {
 
@@ -1011,7 +1007,7 @@ private:
     ServiceDescriptor *found_service = nullptr;
     services_.for_each([name, &found_service](const auto &entry) {
       const ServiceDescriptor *service = entry.value;
-      if (strcmp(service->service_name, name) == 0) {
+      if (moss::abi::bridge::strcmp(service->service_name, name) == 0) {
         found_service = const_cast<ServiceDescriptor *>(service);
         return;
       }

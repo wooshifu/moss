@@ -13,20 +13,9 @@ module;
 #define MOSS_CURRENT_ARCH "RISC-V"
 #endif
 
-// extern "C" declarations (global module fragment)
-#if defined(__aarch64__) || defined(MOSS_ARCH_ARM64)
-extern "C" {
-[[noreturn]] void early_main(void *device_tree_ptr);
-// Early UART spinlock defined in start_arm64.S (BSS)
-extern unsigned int early_uart_lock;
-}
-#endif
-
-extern "C" {
-void kernel_main(void) noexcept;
-}
-
 module moss.boot;
+
+import moss.abi;
 
 using moss::u32;
 using moss::u64;
@@ -35,11 +24,11 @@ using moss::VirtAddr;
 namespace moss::boot {
 
 // Early boot print function (architecture-independent)
-// Protected by early_uart_lock on ARM64 to prevent interleaving with
+// Protected by moss::abi::arm64::early_uart_lock on ARM64 to prevent interleaving with
 // secondary CPU debug output during SMP boot.
 static void boot_print(const char *message) {
 #if defined(__aarch64__) || defined(MOSS_ARCH_ARM64)
-    // Acquire early_uart_lock (test-and-set spinlock via LDXR/STXR)
+    // Acquire moss::abi::arm64::early_uart_lock (test-and-set spinlock via LDXR/STXR)
     {
         unsigned int val, status;
         asm volatile(
@@ -51,7 +40,7 @@ static void boot_print(const char *message) {
             "   cbnz  %w1, 1b\n"
             "   dmb   sy\n"
             : "=&r"(val), "=&r"(status)
-            : "r"(&early_uart_lock)
+            : "r"(&moss::abi::arm64::early_uart_lock)
             : "memory");
     }
 
@@ -72,9 +61,9 @@ static void boot_print(const char *message) {
         uart_base[0x000 / 4] = *p++;
     }
 
-    // Release early_uart_lock
+    // Release moss::abi::arm64::early_uart_lock
     asm volatile("dmb sy" ::: "memory");
-    early_uart_lock = 0;
+    moss::abi::arm64::early_uart_lock = 0;
 #else
     (void)message;
 #endif
@@ -157,11 +146,8 @@ extern "C" [[noreturn]] void unified_boot_main(void *device_tree_ptr) {
     // Mark boot complete
     update_boot_stage(BootStage::Complete);
 
-    // Call kernel main
-    kernel_main();
-
-    // If kernel_main returns, something is wrong
-    ArchBoot::arch_panic("Kernel main returned unexpectedly");
+    // Call kernel main (never returns)
+    moss::abi::entry::kernel_main();
 }
 
 } // namespace moss::boot

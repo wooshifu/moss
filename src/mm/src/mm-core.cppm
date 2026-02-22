@@ -2,15 +2,6 @@
 // Contains: Global constants, basic enums, NUMA base types,
 //           PageFrameAllocator, BuddyAllocatorV2, RuntimeHeapAllocator
 
-module;
-
-// Linker symbols needed by PageFrameAllocator
-extern "C" {
-    extern char _kernel_end_addr[];
-    extern char _heap_start_addr[];
-    extern char _heap_end_addr[];
-}
-
 export module moss.mm:core;
 
 import moss.std;
@@ -22,6 +13,7 @@ import moss.arch;
 import moss.platform;
 import moss.hal.mmu;
 import moss.logging;
+import moss.abi;
 
 // ============================================================================
 // Global-scope constants (originally outside namespace in buddy_allocator_v2.hpp)

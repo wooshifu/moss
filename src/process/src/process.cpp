@@ -1,15 +1,13 @@
 // MOSS进程管理器实现
 // 支持用户地址空间管理和ELF程序加载
 
-module;
-
-// extern "C" declarations in global module fragment
-extern "C" void early_debug_print(const char* message) noexcept;
-#if defined(__aarch64__) || defined(MOSS_ARCH_ARM64)
-extern "C" void context_switch(void* prev_context, void* next_context);
-#endif
-
 module moss.process;
+
+import moss.abi;
+
+// Assembly/entry symbols from moss.abi
+using moss::abi::context_switch;
+using moss::abi::entry::early_debug_print;
 
 // 获取当前时间的辅助函数
 static moss::u64 get_current_time() noexcept {

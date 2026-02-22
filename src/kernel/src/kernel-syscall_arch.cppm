@@ -1,26 +1,21 @@
 // MOSS Kernel Module - Syscall Architecture Partition
 // Architecture-specific syscall initialization, conventions, and context.
 
-module;
-
-// Forward declaration for syscall_return (needs SyscallContext which is defined later)
-// We declare the raw extern "C" here; the typed version is inside the module.
-extern "C" void syscall_return(void *context) noexcept;
-
 export module moss.kernel:syscall_arch;
 
 import moss.std;
 import moss.types;
 import moss.arch;
+import moss.abi;
 
 export namespace moss::kernel::arch::syscall {
 
 // Syscall context structure (forward declaration, used as opaque pointer in assembly)
 struct SyscallContext;
 
-// Syscall return handler (wraps the extern "C" declaration from global fragment)
+// Syscall return handler (wraps the assembly function from moss.abi)
 inline void do_syscall_return(SyscallContext* context) noexcept {
-    ::syscall_return(static_cast<void*>(context));
+    moss::abi::syscall_return(static_cast<void*>(context));
 }
 
 // Unified syscall initialization interface

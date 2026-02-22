@@ -323,6 +323,7 @@ message(STATUS "构建类型: ${MOSS_BUILD_TYPE} (调试级别: ${MOSS_DEBUG_LEV
 
 # === 添加子模块（按依赖顺序）===
 add_subdirectory(src/core)
+add_subdirectory(src/abi)
 add_subdirectory(src/aal)
 add_subdirectory(src/platform)
 add_subdirectory(src/hal)
@@ -346,6 +347,7 @@ add_executable(moss.elf)
 target_link_libraries(
   moss.elf
   PRIVATE moss_core
+          moss_abi
           moss_aal
           moss_platform
           moss_hal_mmu

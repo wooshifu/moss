@@ -1,23 +1,6 @@
 // MOSS Memory Management Module - Page Table partition
 // Contains: PageTableEntry, PageTable, PageTableManager
 
-module;
-
-// Linker symbols needed by PageTableManager
-extern "C" {
-    extern char _text_start_addr[];
-    extern char _text_end_addr[];
-    extern char _rodata_start_addr[];
-    extern char _rodata_end_addr[];
-    extern char _data_start_addr[];
-    extern char _data_end_addr[];
-    extern char _bss_start_addr[];
-    extern char _bss_end_addr[];
-    extern char _pagetable_start_addr[];
-    extern char _pagetable_end_addr[];
-    extern char _kernel_end_addr[];
-}
-
 export module moss.mm:page_table;
 
 import :core;
@@ -28,6 +11,7 @@ import moss.result;
 import moss.containers;
 import moss.arch;
 import moss.hal.mmu;
+import moss.abi;
 
 // ========================================================================
 // page_table.hpp - ARM64 MMU types

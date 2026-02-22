@@ -7,8 +7,6 @@ target_sources(moss_containers
 
 target_compile_definitions(moss_containers PRIVATE MOSS_CONTAINERS_MODULE)
 
-# arch_detect.h is in src/aal/ (provided via moss_aal's PUBLIC include dirs)
-
-target_link_libraries(moss_containers PUBLIC moss_core moss_aal)
+target_link_libraries(moss_containers PUBLIC moss_core moss_abi moss_aal)
 
 message(STATUS "容器模块配置完成")

@@ -10,29 +10,9 @@ module;
 #define MOSS_ARCH_RISCV
 #endif
 
-// extern "C" declarations
-extern "C" {
-void _start();
-
-// Linker script symbols (weak)
-extern char _text_start_addr[] __attribute__((weak));
-extern char _text_end_addr[] __attribute__((weak));
-extern char _rodata_start_addr[] __attribute__((weak));
-extern char _rodata_end_addr[] __attribute__((weak));
-extern char _data_start_addr[] __attribute__((weak));
-extern char _data_end_addr[] __attribute__((weak));
-extern char _bss_start_addr[] __attribute__((weak));
-extern char _bss_end_addr[] __attribute__((weak));
-extern char _stack_bottom_addr[] __attribute__((weak));
-extern char _stack_top_addr[] __attribute__((weak));
-extern char _heap_start_addr[] __attribute__((weak));
-extern char _heap_end_addr[] __attribute__((weak));
-extern char _kernel_end_addr[] __attribute__((weak));
-
-void mark_runtime_heap_ready() noexcept __attribute__((weak));
-}
-
 module moss.boot;
+
+import moss.abi;
 
 using moss::u8;
 using moss::u16;
@@ -229,9 +209,8 @@ void update_boot_stage(BootStage stage, ::moss::kernel::ErrorCode error) noexcep
 
     moss::boot::early_print("=== RISC-V Architecture Init Complete ===\n");
 
-    // mark_runtime_heap_ready is weak-linked; call unconditionally
-    // as it's always available in our build
-    mark_runtime_heap_ready();
+    // Mark runtime heap as ready so operator new uses RuntimeHeapAllocator
+    moss::abi::entry::mark_runtime_heap_ready();
     moss::boot::early_print("Runtime heap marked ready\n");
 
     moss::boot::early_print("RISC-V architecture-specific init all complete\n\n");

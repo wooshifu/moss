@@ -3,9 +3,6 @@
 
 module;
 
-// strcmp is defined in runtime_support.cpp (global C linkage)
-extern "C" int strcmp(const char *s1, const char *s2) noexcept;
-
 // Macro for disabling copy and move (macros do not cross module boundaries)
 #define NON_COPYABLE(ClassName)                                                \
   ClassName(const ClassName &) = delete;                                       \
@@ -28,6 +25,7 @@ import moss.smart_ptr;
 import moss.arch;
 import moss.containers;
 import moss.interrupts;
+import moss.abi;
 
 // ============================================================================
 // Exported driver framework types and classes
@@ -205,7 +203,7 @@ public:
   [[nodiscard]] const char *get_property(const char *name) const noexcept {
     const DeviceProperty *found =
         properties_.find_if([name](const DeviceProperty &prop) {
-          return strcmp(prop.name, name) == 0;
+          return moss::abi::bridge::strcmp(prop.name, name) == 0;
         });
 
     return found ? found->value : nullptr;
@@ -284,7 +282,7 @@ public:
   [[nodiscard]] bool
   is_compatible(const char *device_compatible) const noexcept {
     for (usize i = 0; i < compatible_count_; ++i) {
-      if (strcmp(compatible_list_[i], device_compatible) == 0) {
+      if (moss::abi::bridge::strcmp(compatible_list_[i], device_compatible) == 0) {
         return true;
       }
     }

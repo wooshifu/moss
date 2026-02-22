@@ -1,14 +1,9 @@
 // MOSS VFS initialization — implementation
 // Mounts root ramfs, devfs, and sets up stdio for PID 1.
 
-module;
-
-// Console RX bridge: interrupt-driven blocking character input.
-// Implemented in syscall_table.cpp (has access to GIC, scheduler, process).
-extern "C" void console_rx_init() noexcept;
-extern "C" int  console_getc_blocking() noexcept;
-
 module moss.vfs;
+
+import moss.abi;
 
 namespace moss::kernel::vfs {
 
@@ -523,18 +518,18 @@ static long console_read([[maybe_unused]] File* file,
     // set up ring buffer.  All heavy lifting is in syscall_table.cpp.
     static bool inited = false;
     if (!inited) {
-        console_rx_init();
+        moss::abi::bridge::console_rx_init();
         inited = true;
     }
 
     // Interrupt-driven, line-buffered console input with echo.
-    // Each console_getc_blocking() call either returns instantly from the
+    // Each moss::abi::bridge::console_getc_blocking() call either returns instantly from the
     // ring buffer (fast path) or blocks the calling thread until the UART
     // RX interrupt delivers a character (slow path).  The CPU enters idle
     // (WFI) while blocked, so host CPU usage is ~0%.
     usize pos = 0;
     while (pos < count) {
-        int ch = console_getc_blocking();
+        int ch = moss::abi::bridge::console_getc_blocking();
         if (ch < 0) continue;
 
         // Handle backspace (DEL=0x7F or BS=0x08)
