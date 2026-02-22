@@ -606,6 +606,7 @@ long sys_execve(long pathname_addr, long argv_addr, long /* envp */, long /*unus
                   vma_flags::READ | vma_flags::WRITE | vma_flags::DEMAND_ZERO, VmaType::HEAP);
   new_as->brk_base = user_layout::HEAP_START;
   new_as->brk_current = user_layout::HEAP_START;
+  new_as->mmap_next = user_layout::MMAP_BASE;
 
   // 11. Bind new address space to process
   auto set_result = proc->set_address_space(moss::move(new_as));
@@ -972,16 +973,131 @@ long sys_pipe(long pipefd_addr, long /*unused*/, long /*unused*/, long /*unused*
 }
 
 // 内存管理系统调用
-long sys_mmap(long /*unused*/, long /*unused*/, long /*unused*/, long /*unused*/, long /*unused*/,
-              long /*unused*/) noexcept {
-  log::klog::warn("syscall: mmap() not implemented");
-  return -errc::ENOSYS;
+
+// Anonymous mmap constants (AArch64 Linux ABI values)
+constexpr long PROT_READ = 0x1;
+constexpr long PROT_WRITE = 0x2;
+constexpr long PROT_EXEC = 0x4;
+constexpr long MAP_PRIVATE = 0x02;
+constexpr long MAP_ANONYMOUS = 0x20;
+
+long sys_mmap(long addr, long length, long prot, long flags, long fd, long /*offset*/) noexcept {
+  using namespace moss::kernel::process;
+
+  // Only support MAP_ANONYMOUS | MAP_PRIVATE (no file-backed mmap yet)
+  if (length <= 0) {
+    return -errc::EINVAL;
+  }
+  if (!(flags & MAP_ANONYMOUS)) {
+    return -errc::ENOSYS;
+  }
+  if (!(flags & MAP_PRIVATE)) {
+    return -errc::EINVAL;
+  }
+  if (fd != -1) {
+    return -errc::EINVAL;
+  }
+
+  Thread *cur = CfsScheduler::get_current_task();
+  if (!cur) {
+    return -errc::ESRCH;
+  }
+  Process *proc = g_process_manager ? g_process_manager->find_process(cur->owner_pid) : nullptr;
+  if (!proc) {
+    return -errc::ESRCH;
+  }
+  auto *as = proc->address_space();
+  if (!as) {
+    return -errc::ENOMEM;
+  }
+
+  // Page-align length upward
+  auto map_len = static_cast<usize>(length);
+  map_len = (map_len + PAGE_SIZE - 1) & ~(PAGE_SIZE - 1);
+
+  // Choose mapping address
+  VirtAddr map_addr = 0;
+  if (addr == 0) {
+    map_addr = as->mmap_next;
+  } else {
+    // Use hint address (page-aligned), not MAP_FIXED
+    map_addr = static_cast<VirtAddr>(static_cast<usize>(addr)) & ~(static_cast<VirtAddr>(PAGE_SIZE) - 1);
+  }
+
+  // Convert prot flags to VMA flags
+  u32 vflags = vma_flags::DEMAND_ZERO;
+  if (prot & PROT_READ) {
+    vflags |= vma_flags::READ;
+  }
+  if (prot & PROT_WRITE) {
+    vflags |= vma_flags::WRITE;
+  }
+  if (prot & PROT_EXEC) {
+    vflags |= vma_flags::EXEC;
+  }
+
+  // Add VMA (overlap check built in)
+  if (!as->add_vma(map_addr, map_addr + map_len, vflags, VmaType::MMAP)) {
+    return -errc::ENOMEM;
+  }
+
+  // Advance mmap cursor past this mapping
+  VirtAddr map_end = map_addr + map_len;
+  if (map_end > as->mmap_next) {
+    as->mmap_next = map_end;
+  }
+
+  return static_cast<long>(map_addr);
 }
 
-long sys_munmap(long /*unused*/, long /*unused*/, long /*unused*/, long /*unused*/, long /*unused*/,
-                long /*unused*/) noexcept {
-  log::klog::warn("syscall: munmap() not implemented");
-  return -errc::ENOSYS;
+long sys_munmap(long addr, long length, long /*unused*/, long /*unused*/, long /*unused*/, long /*unused*/) noexcept {
+  using namespace moss::kernel::process;
+
+  auto map_addr = static_cast<VirtAddr>(static_cast<usize>(addr));
+  if (map_addr & (PAGE_SIZE - 1)) {
+    return -errc::EINVAL;
+  }
+  if (length <= 0) {
+    return -errc::EINVAL;
+  }
+  auto map_len = static_cast<usize>(length);
+  map_len = (map_len + PAGE_SIZE - 1) & ~(PAGE_SIZE - 1);
+
+  Thread *cur = CfsScheduler::get_current_task();
+  if (!cur) {
+    return -errc::ESRCH;
+  }
+  Process *proc = g_process_manager ? g_process_manager->find_process(cur->owner_pid) : nullptr;
+  if (!proc) {
+    return -errc::ESRCH;
+  }
+  auto *as = proc->address_space();
+  if (!as) {
+    return -errc::EINVAL;
+  }
+
+  // Find VMA containing the unmap address
+  const auto *vma = as->find_vma(map_addr);
+  if (!vma) {
+    return -errc::EINVAL;
+  }
+
+  // Only support unmapping entire VMAs (no partial unmap / VMA splitting)
+  if (map_addr != vma->start_addr || map_addr + map_len != vma->end_addr) {
+    return -errc::EINVAL;
+  }
+
+  VirtAddr vma_start = vma->start_addr;
+  VirtAddr vma_end = vma->end_addr;
+
+  // Unmap all pages that have been demand-paged into the range
+  for (VirtAddr va = vma_start; va < vma_end; va += PAGE_SIZE) {
+    mm::PageTableManager::unmap_user_page(as->pgd_phys, va);
+  }
+
+  // Remove VMA from address space
+  as->remove_vma(vma_start, vma_end);
+  return 0;
 }
 
 long sys_mprotect(long /*unused*/, long /*unused*/, long /*unused*/, long /*unused*/, long /*unused*/,
@@ -1766,8 +1882,8 @@ const SyscallDescriptor SYSCALL_TABLE[static_cast<int>(SyscallNumber::MAX_SYSCAL
     {"mount", handlers::sys_not_implemented, 5, false, "挂载文件系统"},
 
     // === 内存管理 (60-79) ===
-    {"mmap", handlers::sys_mmap, 6, false, "内存映射"},
-    {"munmap", handlers::sys_munmap, 2, false, "取消内存映射"},
+    {"mmap", handlers::sys_mmap, 6, true, "内存映射"},
+    {"munmap", handlers::sys_munmap, 2, true, "取消内存映射"},
     {"mprotect", handlers::sys_mprotect, 3, false, "修改内存保护"},
     {"mlock", handlers::sys_not_implemented, 2, false, "锁定内存页"},
     {"munlock", handlers::sys_not_implemented, 2, false, "解锁内存页"},
