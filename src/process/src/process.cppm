@@ -1,14 +1,6 @@
 // MOSS Process Module - Process Management, CFS Scheduler, Load Balancer, Idle Task
 // Primary interface: re-exports all partitions.
 
-module;
-
-// Assembly interop declarations (global module fragment)
-extern "C" void switch_to_user(void* context, unsigned long long user_stack);
-#if defined(__aarch64__) || defined(MOSS_ARCH_ARM64)
-extern "C" void context_switch(void* prev_context, void* next_context);
-#endif
-
 export module moss.process;
 
 // All external module imports

@@ -1,40 +1,6 @@
 // MOSS Kernel main entry point
 // System boot entry and global instance management
 
-module;
-
-// extern "C" declarations in global module fragment
-extern "C" {
-void early_debug_print(const char *message) noexcept;
-void kernel_test_all_subsystems(void) noexcept;
-[[noreturn]] void kernel_main(void) noexcept;
-[[noreturn]] void kernel_panic_handler(const char *message) noexcept;
-const char *get_kernel_version(void) noexcept;
-const char *get_build_info(void) noexcept;
-long system_call_handler(long syscall_number, long arg0, long arg1,
-                         long arg2, long arg3, long arg4, long arg5) noexcept;
-
-// IRQ handler called from assembly irq_trampoline (start_arm64.S)
-void irq_handler_c(void) noexcept;
-
-// Bridge functions for demand paging (called from page_fault.cpp in mm module)
-int demand_page_lookup(unsigned long long fault_addr,
-                       unsigned int* out_flags,
-                       const unsigned char** out_backing_data,
-                       unsigned long long* out_backing_offset,
-                       unsigned long long* out_backing_size,
-                       unsigned long long* out_vma_start) noexcept;
-unsigned long long get_current_pgd_phys() noexcept;
-
-// Bridge function: terminate current user process and switch to next task.
-// Called from page_fault.cpp when a fatal user fault is unrecoverable.
-[[noreturn]] void terminate_current_user_process(int exit_code) noexcept;
-
-// Bridge function: reset current task's vruntime to min_vruntime.
-// Called from console_read() after IO wait to prevent CFS starvation.
-void sched_yield_to_min_vruntime() noexcept;
-}
-
 module moss.kernel;
 
 import moss.logging;

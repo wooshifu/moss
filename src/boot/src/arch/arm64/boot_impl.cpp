@@ -8,9 +8,22 @@ module;
 // PSCI constants (must be in global module fragment as macros)
 #define PSCI_CPU_ON_64 0xC4000003
 
-// Early UART spinlock defined in start_arm64.S (BSS).
-// Simple test-and-set: 0 = unlocked, 1 = locked.
-extern "C" unsigned int early_uart_lock;
+// Assembly-callable function forward declarations (defined in this file)
+extern "C" {
+void mark_cpu_online(unsigned int cpu_id) noexcept;
+void mark_cpu_parked(unsigned int cpu_id) noexcept;
+[[noreturn]] void secondary_cpu_entry() noexcept;
+}
+
+module moss.boot;
+
+import moss.abi;
+
+// Bring assembly/linker symbols into scope via moss.abi
+using moss::abi::arm64::early_uart_lock;
+using moss::abi::arm64::cpu_startup_flags;
+using moss::abi::arm64::exception_vectors;
+using moss::abi::_start;
 
 static void early_uart_lock_acquire() noexcept {
     unsigned int val, status;
@@ -31,43 +44,6 @@ static void early_uart_lock_release() noexcept {
     asm volatile("dmb sy" ::: "memory");
     early_uart_lock = 0;
 }
-
-// extern "C" declarations for assembly-callable functions
-extern "C" {
-void _start();
-
-// Linker script symbols
-extern char _text_start_addr[];
-extern char _text_end_addr[];
-extern char _rodata_start_addr[];
-extern char _rodata_end_addr[];
-extern char _data_start_addr[];
-extern char _data_end_addr[];
-extern char _bss_start_addr[];
-extern char _bss_end_addr[];
-extern char _stack_bottom_addr[];
-extern char _stack_top_addr[];
-extern char _heap_start_addr[];
-extern char _heap_end_addr[];
-extern char _pagetable_start_addr[];
-extern char _pagetable_end_addr[];
-extern char _kernel_end_addr[];
-
-// Exception vectors defined in start_arm64.S
-extern char exception_vectors[];
-
-void mark_runtime_heap_ready() noexcept;
-
-// CPU startup protocol assembly symbols
-extern volatile unsigned long long cpu_startup_flags[][2];
-
-// Assembly-callable functions
-void mark_cpu_online(unsigned int cpu_id) noexcept;
-void mark_cpu_parked(unsigned int cpu_id) noexcept;
-[[noreturn]] void secondary_cpu_entry() noexcept;
-}
-
-module moss.boot;
 
 using moss::u8;
 using moss::u16;
@@ -140,8 +116,8 @@ static u32 probe_available_cpus() noexcept {
     }
 
     // Priority 2: Estimate from linker-allocated stack space
-    auto total_stack_size = reinterpret_cast<u64>(_stack_top_addr) -
-                            reinterpret_cast<u64>(_stack_bottom_addr);
+    auto total_stack_size = static_cast<u64>(moss::abi::linker::stack_top()) -
+                            static_cast<u64>(moss::abi::linker::stack_bottom());
     u32 stack_based = static_cast<u32>(total_stack_size / (32 * 1024));
     if (stack_based >= 1 && stack_based <= moss::kernel::MAX_CPUS) {
         return stack_based;
@@ -718,7 +694,7 @@ void update_boot_stage(BootStage stage, ::moss::kernel::ErrorCode error) noexcep
     ::moss::kernel::mm::PageTableManager::enable_dynamic_alloc();
 
     // Phase 6: Initialize runtime heap
-    VirtAddr heap_start = reinterpret_cast<VirtAddr>(_heap_start_addr);
+    VirtAddr heap_start = moss::abi::linker::heap_start();
     ::moss::kernel::usize initial_heap_size = 256 * 1024;
     auto heap_result = ::moss::kernel::mm::RuntimeHeapAllocator::initialize_heap(heap_start, initial_heap_size);
     if (!heap_result) {
@@ -887,7 +863,7 @@ void update_boot_stage(BootStage stage, ::moss::kernel::ErrorCode error) noexcep
 
     // Mark runtime heap as ready so operator new uses RuntimeHeapAllocator
     // instead of the 64KB early static buffer
-    mark_runtime_heap_ready();
+    moss::abi::entry::mark_runtime_heap_ready();
     { EarlyPrintGuard g; early_print("Runtime heap marked ready\n"); }
 
     { EarlyPrintGuard g;

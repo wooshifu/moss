@@ -2,22 +2,13 @@
 // Provides lock-free queues, atomic types, per-CPU data, RCU structures,
 // slab allocator, and related utilities for kernel use.
 
-module;
-
-// C-linkage shim for PageFrameAllocator (defined in page_alloc_shim.cpp).
-// Returns 0 on failure, otherwise the allocated physical address.
-extern "C" unsigned long long
-moss_slab_alloc_pages(unsigned long long order) noexcept;
-// Returns 0 on success, non-zero on failure.
-extern "C" int moss_slab_free_pages(unsigned long long addr,
-                                    unsigned long long order) noexcept;
-
 export module moss.containers;
 
 import moss.std;
 import moss.types;
 import moss.result;
 import moss.arch;
+import moss.abi;
 
 // ============================================================================
 // Atomic types
@@ -1766,7 +1757,7 @@ private:
   }
 
   [[nodiscard]] void *allocate_page() noexcept {
-    unsigned long long addr = moss_slab_alloc_pages(0);
+    unsigned long long addr = moss::abi::bridge::moss_slab_alloc_pages(0);
     if (addr == 0) {
       return nullptr;
     }
@@ -1777,7 +1768,7 @@ private:
     if (ptr == nullptr) {
       return;
     }
-    (void)moss_slab_free_pages(reinterpret_cast<unsigned long long>(ptr), 0);
+    (void)moss::abi::bridge::moss_slab_free_pages(reinterpret_cast<unsigned long long>(ptr), 0);
   }
 
   void free_page_list(SlabPage *head) noexcept {

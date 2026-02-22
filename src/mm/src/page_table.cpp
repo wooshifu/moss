@@ -1,23 +1,6 @@
 // MOSS页表管理器实现 - Module implementation unit
 // 提供ARM64页表管理、MMU启用和调试输出功能
 
-module;
-
-// Linker symbols (must be in global module fragment)
-extern "C" {
-    extern char _text_start_addr[];
-    extern char _text_end_addr[];
-    extern char _rodata_start_addr[];
-    extern char _rodata_end_addr[];
-    extern char _data_start_addr[];
-    extern char _data_end_addr[];
-    extern char _bss_start_addr[];
-    extern char _bss_end_addr[];
-    extern char _pagetable_start_addr[];
-    extern char _pagetable_end_addr[];
-    extern char _kernel_end_addr[];
-}
-
 module moss.mm;
 
 import moss.logging;

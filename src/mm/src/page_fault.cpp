@@ -8,7 +8,9 @@
 
 module;
 
-// extern "C" handler symbols called from assembly
+// extern "C" handler symbols — defined in this file, called from assembly.
+// Forward declarations required in GMF so the extern "C" linkage is
+// established before the module purview begins.
 extern "C" void kernel_page_fault_handler(
     unsigned long long esr,
     unsigned long long far_addr,
@@ -21,8 +23,6 @@ extern "C" void unhandled_exception_handler(
     unsigned long long saved_x30,
     unsigned long long frame_sp) noexcept;
 
-// User-mode exception handlers (called from lower_el_sync_dispatch)
-// NOTE: NOT [[noreturn]] — demand paging resolves faults and returns to eret.
 extern "C" void user_page_fault_handler(
     unsigned long long esr,
     unsigned long long far_addr,
@@ -33,29 +33,9 @@ extern "C" [[noreturn]] void unhandled_user_exception_handler(
     unsigned long long far_addr,
     unsigned long long elr) noexcept;
 
-// Bridge functions — implemented in kernel module (which can access both mm and process)
-// These avoid circular dependency between mm and process modules.
-extern "C" {
-    // Returns pointer to VmaRegion for faulting addr in current process, or nullptr.
-    // Out params: *out_flags, *out_backing_data, *out_backing_offset, *out_backing_size
-    // Returns 1 on success, 0 on failure
-    int demand_page_lookup(unsigned long long fault_addr,
-                           unsigned int* out_flags,
-                           const unsigned char** out_backing_data,
-                           unsigned long long* out_backing_offset,
-                           unsigned long long* out_backing_size,
-                           unsigned long long* out_vma_start) noexcept;
-
-    // Returns current process's PGD physical address, or 0 if none
-    unsigned long long get_current_pgd_phys() noexcept;
-
-    // Terminate the current user process and switch to next runnable task.
-    // Called when a fatal user fault is unrecoverable (SIGSEGV equivalent).
-    // Never returns — hands control to scheduler.
-    [[noreturn]] void terminate_current_user_process(int exit_code) noexcept;
-}
-
 module moss.mm;
+
+import moss.abi;
 
 namespace moss::kernel::mm {
 
@@ -130,6 +110,11 @@ static auto dfsc_to_string(u64 dfsc) noexcept -> const char* {
 }
 
 } // namespace moss::kernel::mm
+
+// Import bridge functions from moss.abi (previously declared as extern "C" in this file)
+using moss::abi::bridge::demand_page_lookup;
+using moss::abi::bridge::get_current_pgd_phys;
+using moss::abi::bridge::terminate_current_user_process;
 
 // Forward declarations for static helpers used by both kernel and user handlers
 [[noreturn]] static void kill_user_process(const char* reason,
