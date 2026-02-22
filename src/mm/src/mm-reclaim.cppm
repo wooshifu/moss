@@ -597,10 +597,10 @@ enum class HugePageSize : u32 {
 };
 
 // Huge page size constants
-inline constexpr usize HUGE_PAGE_2MB = 2 * 1024 * 1024;
-inline constexpr usize HUGE_PAGE_1GB = 1024 * 1024 * 1024;
-inline constexpr usize HUGE_PAGE_16MB = 16 * 1024 * 1024;
-inline constexpr usize HUGE_PAGE_32MB = 32 * 1024 * 1024;
+inline constexpr usize HUGE_PAGE_2MB = 2ULL * 1024 * 1024;
+inline constexpr usize HUGE_PAGE_1GB = 1ULL * 1024 * 1024 * 1024;
+inline constexpr usize HUGE_PAGE_16MB = 16ULL * 1024 * 1024;
+inline constexpr usize HUGE_PAGE_32MB = 32ULL * 1024 * 1024;
 
 inline constexpr usize HUGE_PAGE_2MB_SIZE = 2ULL * 1024 * 1024;
 inline constexpr usize HUGE_PAGE_2MB_SHIFT = 21;

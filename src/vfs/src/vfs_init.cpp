@@ -50,16 +50,12 @@ bool MountTable::lookup(const char *path, MountLookupResult &result) noexcept {
       }
     }
 
-    // Ensure the match is at a path boundary
-    if (match && m.path_len > best_len) {
-      // Root "/" matches everything; others need boundary check
-      if (m.path_len == 1 && m.path[0] == '/') {
-        best_len = m.path_len;
-        best = &m;
-      } else if (path[m.path_len] == '\0' || path[m.path_len] == '/') {
-        best_len = m.path_len;
-        best = &m;
-      }
+    // Ensure the match is at a path boundary:
+    // Root "/" matches everything; others need exact boundary (end of string or '/').
+    if (match && m.path_len > best_len &&
+        ((m.path_len == 1 && m.path[0] == '/') || path[m.path_len] == '\0' || path[m.path_len] == '/')) {
+      best_len = m.path_len;
+      best = &m;
     }
   }
 
@@ -92,18 +88,18 @@ void DentryCache::init() noexcept {
 
 u32 DentryCache::hash(const Dentry *parent, const char *name, u32 name_len) noexcept {
   // FNV-1a inspired hash
-  u32 h = 2166136261u;
+  u32 h = 2166136261U;
   // Mix in parent address
   auto addr = reinterpret_cast<u64>(parent);
   for (u32 i = 0; i < 8; ++i) {
     h ^= static_cast<u32>(addr & 0xFF);
-    h *= 16777619u;
+    h *= 16777619U;
     addr >>= 8;
   }
   // Mix in name
   for (u32 i = 0; i < name_len; ++i) {
     h ^= static_cast<u32>(static_cast<u8>(name[i]));
-    h *= 16777619u;
+    h *= 16777619U;
   }
   return h % CACHE_SIZE;
 }
@@ -942,7 +938,7 @@ SuperBlock *ramfs_init() noexcept {
 
       file_inode->ino = g_ramfs_next_ino++;
       file_inode->type = FileType::Regular;
-      file_inode->mode = S_IFREG | (entry.mode & 0777u);
+      file_inode->mode = S_IFREG | (entry.mode & 0777U);
       file_inode->size = entry.data_size;
       file_inode->data = entry.data;
       file_inode->sb = &g_ramfs_sb;

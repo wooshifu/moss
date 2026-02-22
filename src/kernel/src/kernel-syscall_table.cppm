@@ -212,7 +212,7 @@ struct SyscallDescriptor {
 namespace handlers {
 // Basic syscalls
 long sys_debug_print(long arg0, long arg1, long arg2, long arg3, long arg4, long arg5) noexcept;
-long sys_exit(long arg0, long arg1, long arg2, long arg3, long arg4, long arg5) noexcept;
+long sys_exit(long exit_code, long arg1, long arg2, long arg3, long arg4, long arg5) noexcept;
 long sys_getpid(long arg0, long arg1, long arg2, long arg3, long arg4, long arg5) noexcept;
 long sys_getppid(long arg0, long arg1, long arg2, long arg3, long arg4, long arg5) noexcept;
 long sys_getuid(long arg0, long arg1, long arg2, long arg3, long arg4, long arg5) noexcept;
@@ -220,21 +220,21 @@ long sys_getgid(long arg0, long arg1, long arg2, long arg3, long arg4, long arg5
 
 // Process management - framework implementation
 long sys_fork(long arg0, long arg1, long arg2, long arg3, long arg4, long arg5) noexcept;
-long sys_execve(long arg0, long arg1, long arg2, long arg3, long arg4, long arg5) noexcept;
-long sys_wait4(long arg0, long arg1, long arg2, long arg3, long arg4, long arg5) noexcept;
-long sys_waitpid(long arg0, long arg1, long arg2, long arg3, long arg4, long arg5) noexcept;
+long sys_execve(long pathname_addr, long argv_addr, long arg2, long arg3, long arg4, long arg5) noexcept;
+long sys_wait4(long wait_pid, long wstatus_addr, long options, long arg3, long arg4, long arg5) noexcept;
+long sys_waitpid(long pid, long wstatus, long options, long arg3, long arg4, long arg5) noexcept;
 long sys_kill(long arg0, long arg1, long arg2, long arg3, long arg4, long arg5) noexcept;
 
 // Filesystem - framework implementation
-long sys_open(long arg0, long arg1, long arg2, long arg3, long arg4, long arg5) noexcept;
-long sys_close(long arg0, long arg1, long arg2, long arg3, long arg4, long arg5) noexcept;
-long sys_read(long arg0, long arg1, long arg2, long arg3, long arg4, long arg5) noexcept;
-long sys_write(long arg0, long arg1, long arg2, long arg3, long arg4, long arg5) noexcept;
-long sys_lseek(long arg0, long arg1, long arg2, long arg3, long arg4, long arg5) noexcept;
-long sys_fstat(long arg0, long arg1, long arg2, long arg3, long arg4, long arg5) noexcept;
-long sys_dup(long arg0, long arg1, long arg2, long arg3, long arg4, long arg5) noexcept;
-long sys_dup2(long arg0, long arg1, long arg2, long arg3, long arg4, long arg5) noexcept;
-long sys_pipe(long arg0, long arg1, long arg2, long arg3, long arg4, long arg5) noexcept;
+long sys_open(long pathname_addr, long flags, long mode, long arg3, long arg4, long arg5) noexcept;
+long sys_close(long fd, long arg1, long arg2, long arg3, long arg4, long arg5) noexcept;
+long sys_read(long fd, long buf_addr, long count, long arg3, long arg4, long arg5) noexcept;
+long sys_write(long fd, long buf_addr, long count, long arg3, long arg4, long arg5) noexcept;
+long sys_lseek(long fd, long offset, long whence, long arg3, long arg4, long arg5) noexcept;
+long sys_fstat(long fd, long stat_buf_addr, long arg2, long arg3, long arg4, long arg5) noexcept;
+long sys_dup(long oldfd, long arg1, long arg2, long arg3, long arg4, long arg5) noexcept;
+long sys_dup2(long oldfd, long newfd, long arg2, long arg3, long arg4, long arg5) noexcept;
+long sys_pipe(long pipefd_addr, long arg1, long arg2, long arg3, long arg4, long arg5) noexcept;
 
 // Memory management
 long sys_mmap(long arg0, long arg1, long arg2, long arg3, long arg4, long arg5) noexcept;
@@ -249,18 +249,18 @@ long sys_listen(long arg0, long arg1, long arg2, long arg3, long arg4, long arg5
 long sys_accept(long arg0, long arg1, long arg2, long arg3, long arg4, long arg5) noexcept;
 
 // Scheduling syscalls
-long sys_nice(long arg0, long arg1, long arg2, long arg3, long arg4, long arg5) noexcept;
-long sys_getpriority(long arg0, long arg1, long arg2, long arg3, long arg4, long arg5) noexcept;
+long sys_nice(long increment, long arg1, long arg2, long arg3, long arg4, long arg5) noexcept;
+long sys_getpriority(long which, long who, long arg2, long arg3, long arg4, long arg5) noexcept;
 long sys_sched_yield(long arg0, long arg1, long arg2, long arg3, long arg4, long arg5) noexcept;
-long sys_sched_getaffinity(long arg0, long arg1, long arg2, long arg3, long arg4, long arg5) noexcept;
-long sys_sched_setaffinity(long arg0, long arg1, long arg2, long arg3, long arg4, long arg5) noexcept;
+long sys_sched_getaffinity(long pid_arg, long arg1, long mask_addr, long arg3, long arg4, long arg5) noexcept;
+long sys_sched_setaffinity(long pid_arg, long arg1, long mask_addr, long arg3, long arg4, long arg5) noexcept;
 
 // Time syscalls
-long sys_clock_gettime(long arg0, long arg1, long arg2, long arg3, long arg4, long arg5) noexcept;
-long sys_nanosleep(long arg0, long arg1, long arg2, long arg3, long arg4, long arg5) noexcept;
+long sys_clock_gettime(long arg0, long time_ns_addr, long arg2, long arg3, long arg4, long arg5) noexcept;
+long sys_nanosleep(long ns_addr, long arg1, long arg2, long arg3, long arg4, long arg5) noexcept;
 
 // System monitoring
-long sys_topinfo(long arg0, long arg1, long arg2, long arg3, long arg4, long arg5) noexcept;
+long sys_topinfo(long info_addr, long arg1, long arg2, long arg3, long arg4, long arg5) noexcept;
 
 // Default handler for unimplemented syscalls
 long sys_not_implemented(long arg0, long arg1, long arg2, long arg3, long arg4, long arg5) noexcept;

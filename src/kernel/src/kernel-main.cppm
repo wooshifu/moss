@@ -111,7 +111,7 @@ public:
                .enable_preemption = true,
                .max_processes = 256,
                .max_threads_per_process = 16,
-               .kernel_heap_size = 16 * 1024 * 1024, // 16MB
+               .kernel_heap_size = 16ULL * 1024 * 1024, // 16MB
                .enable_debug_output = true,
                .scheduler_timeslice_ms = 10};
   }
@@ -373,7 +373,7 @@ private:
     }
 
     // Initialize page table manager (use current page table)
-    auto init_result = page_table_manager_->initialize_from_current();
+    auto init_result = moss::kernel::mm::PageTableManager::initialize_from_current();
     if (!init_result) {
       log::klog::error("PageTableManager initialization failed");
       delete page_table_manager_;

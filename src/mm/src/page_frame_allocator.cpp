@@ -43,7 +43,7 @@ PageAllocVoidResult PageFrameAllocator::initialize() noexcept {
 }
 
 // Allocated flag bit in PageMetadata::flags
-static constexpr u32 PAGE_FLAG_ALLOCATED = 1u << 0;
+static constexpr u32 PAGE_FLAG_ALLOCATED = 1U << 0;
 
 // 分配物理页面
 PageAllocResult<PhysAddr> PageFrameAllocator::allocate_pages(usize order) noexcept {

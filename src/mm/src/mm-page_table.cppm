@@ -35,7 +35,7 @@ enum class MemoryAttributes : u8 {
 
 enum class PageLevel : u32 { PGD = 0, PUD = 1, PMD = 2, PTE = 3 };
 
-enum class PageSize : u64 { Size4KB = PAGE_SIZE, Size2MB = 2 * 1024 * 1024, Size1GB = 1024ULL * 1024 * 1024 };
+enum class PageSize : u64 { Size4KB = PAGE_SIZE, Size2MB = 2ULL * 1024 * 1024, Size1GB = 1024ULL * 1024 * 1024 };
 
 // page_attr and page_perms are re-exported from the MMU HAL.
 // This provides architecture-specific PTE bit-field definitions

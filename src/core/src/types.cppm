@@ -32,8 +32,8 @@ using VirtAddr = u64;
 // Page-related constants
 constexpr usize PAGE_SIZE = 4096;
 constexpr usize PAGE_SHIFT = 12;
-constexpr usize LARGE_PAGE_SIZE = 2 * 1024 * 1024;   // 2MB
-constexpr usize HUGE_PAGE_SIZE = 1024 * 1024 * 1024; // 1GB
+constexpr usize LARGE_PAGE_SIZE = 2ULL * 1024 * 1024;       // 2MB
+constexpr usize HUGE_PAGE_SIZE = 1ULL * 1024 * 1024 * 1024; // 1GB
 
 // Memory layout constants
 constexpr VirtAddr KERNEL_BASE = 0xFFFF800000000000ULL;
@@ -127,14 +127,15 @@ constexpr bool is_aligned(usize value, usize alignment) noexcept { return (value
 
 // Non-copyable and non-movable base class
 class NonCopyable {
-protected:
-  constexpr NonCopyable() = default;
-  ~NonCopyable() = default;
-
+public:
   NonCopyable(const NonCopyable &) = delete;
   NonCopyable &operator=(const NonCopyable &) = delete;
   NonCopyable(NonCopyable &&) = delete;
   NonCopyable &operator=(NonCopyable &&) = delete;
+
+protected:
+  constexpr NonCopyable() = default;
+  ~NonCopyable() = default;
 };
 
 } // namespace moss::kernel

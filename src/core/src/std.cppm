@@ -43,10 +43,10 @@ using nullptr_t = decltype(nullptr);
 using max_align_t = long double;
 
 // Integer limits
-inline constexpr u8 UINT8_MAX = 255u;
-inline constexpr u16 UINT16_MAX = 65535u;
-inline constexpr u32 UINT32_MAX = 4294967295u;
-inline constexpr u64 UINT64_MAX = 18446744073709551615ull;
+inline constexpr u8 UINT8_MAX = 255U;
+inline constexpr u16 UINT16_MAX = 65535U;
+inline constexpr u32 UINT32_MAX = 4294967295U;
+inline constexpr u64 UINT64_MAX = 18446744073709551615ULL;
 
 } // namespace moss
 
@@ -445,13 +445,13 @@ template <typename T> T atomic_exchange(atomic<T> *obj, T desired) noexcept { re
 export {
 
   // Placement new
-  inline void *operator new(moss::size_t, void *ptr) noexcept { return ptr; }
+  inline void *operator new(moss::size_t /*unused*/, void *ptr) noexcept { return ptr; }
 
-  inline void *operator new[](moss::size_t, void *ptr) noexcept { return ptr; }
+  inline void *operator new[](moss::size_t /*unused*/, void *ptr) noexcept { return ptr; }
 
   // Placement delete (for completeness)
-  inline void operator delete(void *, void *) noexcept {}
-  inline void operator delete[](void *, void *) noexcept {}
+  inline void operator delete(void * /*unused*/, void * /*unused*/) noexcept {}
+  inline void operator delete[](void * /*unused*/, void * /*unused*/) noexcept {}
 }
 
 // Memory alignment utilities

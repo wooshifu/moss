@@ -20,7 +20,8 @@ namespace handlers {
 namespace log = moss::kernel::logging;
 
 // 基础系统调用处理函数
-long sys_debug_print(long arg0, long, long, long, long, long) noexcept {
+long sys_debug_print(long arg0, long /*unused*/, long /*unused*/, long /*unused*/, long /*unused*/,
+                     long /*unused*/) noexcept {
   if (arg0 != 0) {
     moss::kernel::hal::uart::puts(reinterpret_cast<const char *>(arg0));
     return 0;
@@ -28,7 +29,8 @@ long sys_debug_print(long arg0, long, long, long, long, long) noexcept {
   return -errc::EINVAL;
 }
 
-long sys_exit(long exit_code, long, long, long, long, long) noexcept {
+long sys_exit(long exit_code, long /*unused*/, long /*unused*/, long /*unused*/, long /*unused*/,
+              long /*unused*/) noexcept {
   using namespace moss::kernel::process;
   namespace log = moss::kernel::logging;
 
@@ -57,7 +59,8 @@ long sys_exit(long exit_code, long, long, long, long, long) noexcept {
   do_exit(cur, proc, static_cast<i32>(exit_code));
 }
 
-long sys_getpid(long, long, long, long, long, long) noexcept {
+long sys_getpid(long /*unused*/, long /*unused*/, long /*unused*/, long /*unused*/, long /*unused*/,
+                long /*unused*/) noexcept {
   using namespace moss::kernel::process;
   Thread *cur = CfsScheduler::get_current_task();
   if (!cur) {
@@ -66,7 +69,8 @@ long sys_getpid(long, long, long, long, long, long) noexcept {
   return static_cast<long>(cur->owner_pid);
 }
 
-long sys_getppid(long, long, long, long, long, long) noexcept {
+long sys_getppid(long /*unused*/, long /*unused*/, long /*unused*/, long /*unused*/, long /*unused*/,
+                 long /*unused*/) noexcept {
   using namespace moss::kernel::process;
   Thread *cur = CfsScheduler::get_current_task();
   if (!cur) {
@@ -79,13 +83,15 @@ long sys_getppid(long, long, long, long, long, long) noexcept {
   return static_cast<long>(proc->parent_pid());
 }
 
-long sys_getuid(long, long, long, long, long, long) noexcept {
+long sys_getuid(long /*unused*/, long /*unused*/, long /*unused*/, long /*unused*/, long /*unused*/,
+                long /*unused*/) noexcept {
   // TODO: 从安全子系统获取用户ID
   // 临时返回 root 用户 (0)
   return 0;
 }
 
-long sys_getgid(long, long, long, long, long, long) noexcept {
+long sys_getgid(long /*unused*/, long /*unused*/, long /*unused*/, long /*unused*/, long /*unused*/,
+                long /*unused*/) noexcept {
   // TODO: 从安全子系统获取组ID
   // 临时返回 root 组 (0)
   return 0;
@@ -93,7 +99,8 @@ long sys_getgid(long, long, long, long, long, long) noexcept {
 
 // fork() — create a child process with COW-shared address space.
 // Child returns 0, parent returns child PID.
-long sys_fork(long, long, long, long, long, long) noexcept {
+long sys_fork(long /*unused*/, long /*unused*/, long /*unused*/, long /*unused*/, long /*unused*/,
+              long /*unused*/) noexcept {
   using namespace moss::kernel::process;
   namespace log = moss::kernel::logging;
 
@@ -198,7 +205,7 @@ long sys_fork(long, long, long, long, long, long) noexcept {
     // Read user GP registers from the syscall entry frame on
     // the parent's kernel stack.
     u64 kstop = parent_thread->kernel_stack_top();
-    const auto *trap_frame = reinterpret_cast<const u64 *>(kstop - 34 * 8);
+    const auto *trap_frame = reinterpret_cast<const u64 *>(kstop - 34ULL * 8);
 
     // Copy all 31 GP registers (x0-x30) from trap frame
     for (int i = 0; i < 31; ++i) {
@@ -275,7 +282,8 @@ long sys_fork(long, long, long, long, long, long) noexcept {
   return static_cast<long>(child_proc->pid());
 }
 
-long sys_execve(long pathname_addr, long argv_addr, long /* envp */, long, long, long) noexcept {
+long sys_execve(long pathname_addr, long argv_addr, long /* envp */, long /*unused*/, long /*unused*/,
+                long /*unused*/) noexcept {
   using namespace moss::kernel::process;
   using namespace moss::kernel::elf;
 
@@ -728,7 +736,8 @@ long sys_execve(long pathname_addr, long argv_addr, long /* envp */, long, long,
 // pid > 0: wait for specific child
 // pid == -1: wait for any child
 // options: WNOHANG (1) = return immediately if no child has exited
-long sys_wait4(long wait_pid, long wstatus_addr, long options, long, long, long) noexcept {
+long sys_wait4(long wait_pid, long wstatus_addr, long options, long /*unused*/, long /*unused*/,
+               long /*unused*/) noexcept {
   using namespace moss::kernel::process;
 
   constexpr long WNOHANG = 1;
@@ -828,11 +837,12 @@ long sys_wait4(long wait_pid, long wstatus_addr, long options, long, long, long)
 }
 
 // waitpid(pid, wstatus, options) — thin wrapper over wait4
-long sys_waitpid(long pid, long wstatus, long options, long, long, long) noexcept {
+long sys_waitpid(long pid, long wstatus, long options, long /*unused*/, long /*unused*/, long /*unused*/) noexcept {
   return sys_wait4(pid, wstatus, options, 0, 0, 0);
 }
 
-long sys_kill(long, long, long, long, long, long) noexcept {
+long sys_kill(long /*unused*/, long /*unused*/, long /*unused*/, long /*unused*/, long /*unused*/,
+              long /*unused*/) noexcept {
   log::klog::warn("syscall: kill() not implemented");
   return -errc::ENOSYS;
 }
@@ -850,7 +860,7 @@ static void *get_current_fd_table() noexcept {
   return proc ? proc->fd_table() : nullptr;
 }
 
-long sys_open(long pathname_addr, long flags, long mode, long, long, long) noexcept {
+long sys_open(long pathname_addr, long flags, long mode, long /*unused*/, long /*unused*/, long /*unused*/) noexcept {
   void *fdt = get_current_fd_table();
   if (!fdt) {
     return -errc::EBADF;
@@ -864,7 +874,7 @@ long sys_open(long pathname_addr, long flags, long mode, long, long, long) noexc
   return moss::kernel::vfs::syscall::do_open(fdt, path, static_cast<u32>(flags), static_cast<u32>(mode));
 }
 
-long sys_close(long fd, long, long, long, long, long) noexcept {
+long sys_close(long fd, long /*unused*/, long /*unused*/, long /*unused*/, long /*unused*/, long /*unused*/) noexcept {
   void *fdt = get_current_fd_table();
   if (!fdt) {
     return -errc::EBADF;
@@ -873,7 +883,7 @@ long sys_close(long fd, long, long, long, long, long) noexcept {
   return moss::kernel::vfs::syscall::do_close(fdt, static_cast<int>(fd));
 }
 
-long sys_read(long fd, long buf_addr, long count, long, long, long) noexcept {
+long sys_read(long fd, long buf_addr, long count, long /*unused*/, long /*unused*/, long /*unused*/) noexcept {
   void *fdt = get_current_fd_table();
   if (!fdt) {
     return -errc::EBADF;
@@ -888,7 +898,7 @@ long sys_read(long fd, long buf_addr, long count, long, long, long) noexcept {
   return moss::kernel::vfs::syscall::do_read(fdt, static_cast<int>(fd), buf, static_cast<usize>(count));
 }
 
-long sys_write(long fd, long buf_addr, long count, long, long, long) noexcept {
+long sys_write(long fd, long buf_addr, long count, long /*unused*/, long /*unused*/, long /*unused*/) noexcept {
   void *fdt = get_current_fd_table();
   if (!fdt) {
     return -errc::EBADF;
@@ -905,7 +915,7 @@ long sys_write(long fd, long buf_addr, long count, long, long, long) noexcept {
 
 // ── Additional VFS syscalls (dup, dup2, pipe, lseek, fstat) ────
 
-long sys_lseek(long fd, long offset, long whence, long, long, long) noexcept {
+long sys_lseek(long fd, long offset, long whence, long /*unused*/, long /*unused*/, long /*unused*/) noexcept {
   void *fdt = get_current_fd_table();
   if (!fdt) {
     return -errc::EBADF;
@@ -913,7 +923,8 @@ long sys_lseek(long fd, long offset, long whence, long, long, long) noexcept {
   return moss::kernel::vfs::syscall::do_lseek(fdt, fd, static_cast<i64>(offset), static_cast<u32>(whence));
 }
 
-long sys_fstat(long fd, long stat_buf_addr, long, long, long, long) noexcept {
+long sys_fstat(long fd, long stat_buf_addr, long /*unused*/, long /*unused*/, long /*unused*/,
+               long /*unused*/) noexcept {
   void *fdt = get_current_fd_table();
   if (!fdt) {
     return -errc::EBADF;
@@ -925,7 +936,7 @@ long sys_fstat(long fd, long stat_buf_addr, long, long, long, long) noexcept {
   return moss::kernel::vfs::syscall::do_fstat(fdt, fd, stat_buf);
 }
 
-long sys_dup(long oldfd, long, long, long, long, long) noexcept {
+long sys_dup(long oldfd, long /*unused*/, long /*unused*/, long /*unused*/, long /*unused*/, long /*unused*/) noexcept {
   void *fdt = get_current_fd_table();
   if (!fdt) {
     return -errc::EBADF;
@@ -933,7 +944,7 @@ long sys_dup(long oldfd, long, long, long, long, long) noexcept {
   return moss::kernel::vfs::syscall::do_dup(fdt, oldfd);
 }
 
-long sys_dup2(long oldfd, long newfd, long, long, long, long) noexcept {
+long sys_dup2(long oldfd, long newfd, long /*unused*/, long /*unused*/, long /*unused*/, long /*unused*/) noexcept {
   void *fdt = get_current_fd_table();
   if (!fdt) {
     return -errc::EBADF;
@@ -941,7 +952,8 @@ long sys_dup2(long oldfd, long newfd, long, long, long, long) noexcept {
   return moss::kernel::vfs::syscall::do_dup2(fdt, oldfd, newfd);
 }
 
-long sys_pipe(long pipefd_addr, long, long, long, long, long) noexcept {
+long sys_pipe(long pipefd_addr, long /*unused*/, long /*unused*/, long /*unused*/, long /*unused*/,
+              long /*unused*/) noexcept {
   void *fdt = get_current_fd_table();
   if (!fdt) {
     return -errc::EBADF;
@@ -954,43 +966,51 @@ long sys_pipe(long pipefd_addr, long, long, long, long, long) noexcept {
 }
 
 // 内存管理系统调用
-long sys_mmap(long, long, long, long, long, long) noexcept {
+long sys_mmap(long /*unused*/, long /*unused*/, long /*unused*/, long /*unused*/, long /*unused*/,
+              long /*unused*/) noexcept {
   log::klog::warn("syscall: mmap() not implemented");
   return -errc::ENOSYS;
 }
 
-long sys_munmap(long, long, long, long, long, long) noexcept {
+long sys_munmap(long /*unused*/, long /*unused*/, long /*unused*/, long /*unused*/, long /*unused*/,
+                long /*unused*/) noexcept {
   log::klog::warn("syscall: munmap() not implemented");
   return -errc::ENOSYS;
 }
 
-long sys_mprotect(long, long, long, long, long, long) noexcept {
+long sys_mprotect(long /*unused*/, long /*unused*/, long /*unused*/, long /*unused*/, long /*unused*/,
+                  long /*unused*/) noexcept {
   log::klog::warn("syscall: mprotect() not implemented");
   return -errc::ENOSYS;
 }
 
-long sys_brk(long, long, long, long, long, long) noexcept {
+long sys_brk(long /*unused*/, long /*unused*/, long /*unused*/, long /*unused*/, long /*unused*/,
+             long /*unused*/) noexcept {
   log::klog::warn("syscall: brk() not implemented");
   return -errc::ENOSYS;
 }
 
 // 网络通信系统调用 - 框架实现
-long sys_socket(long, long, long, long, long, long) noexcept {
+long sys_socket(long /*unused*/, long /*unused*/, long /*unused*/, long /*unused*/, long /*unused*/,
+                long /*unused*/) noexcept {
   log::klog::warn("syscall: socket() not implemented");
   return -errc::ENOSYS;
 }
 
-long sys_bind(long, long, long, long, long, long) noexcept {
+long sys_bind(long /*unused*/, long /*unused*/, long /*unused*/, long /*unused*/, long /*unused*/,
+              long /*unused*/) noexcept {
   log::klog::warn("syscall: bind() not implemented");
   return -errc::ENOSYS;
 }
 
-long sys_listen(long, long, long, long, long, long) noexcept {
+long sys_listen(long /*unused*/, long /*unused*/, long /*unused*/, long /*unused*/, long /*unused*/,
+                long /*unused*/) noexcept {
   log::klog::warn("syscall: listen() not implemented");
   return -errc::ENOSYS;
 }
 
-long sys_accept(long, long, long, long, long, long) noexcept {
+long sys_accept(long /*unused*/, long /*unused*/, long /*unused*/, long /*unused*/, long /*unused*/,
+                long /*unused*/) noexcept {
   log::klog::warn("syscall: accept() not implemented");
   return -errc::ENOSYS;
 }
@@ -999,7 +1019,8 @@ long sys_accept(long, long, long, long, long, long) noexcept {
 
 // nice(increment) — adjust calling thread's nice value
 // Returns the new nice value on success, or -errno on failure.
-long sys_nice(long increment, long, long, long, long, long) noexcept {
+long sys_nice(long increment, long /*unused*/, long /*unused*/, long /*unused*/, long /*unused*/,
+              long /*unused*/) noexcept {
   using namespace moss::kernel::process;
 
   Thread *cur = CfsScheduler::get_current_task();
@@ -1028,7 +1049,8 @@ long sys_nice(long increment, long, long, long, long, long) noexcept {
 // getpriority(which, who) — get scheduling priority (nice value)
 // which: 0=PRIO_PROCESS, who: PID (0 = calling process)
 // Returns 20 - nice_value (to avoid negative return indicating error)
-long sys_getpriority(long which, long who, long, long, long, long) noexcept {
+long sys_getpriority(long which, long who, long /*unused*/, long /*unused*/, long /*unused*/,
+                     long /*unused*/) noexcept {
   using namespace moss::kernel::process;
 
   // Only support PRIO_PROCESS (which == 0) for now
@@ -1066,7 +1088,8 @@ long sys_getpriority(long which, long who, long, long, long, long) noexcept {
 // sched_yield() — voluntarily give up the CPU
 // Sets current task's vruntime to min_vruntime + SCHED_LATENCY_NS,
 // re-enqueues, then context-switches away.
-long sys_sched_yield(long, long, long, long, long, long) noexcept {
+long sys_sched_yield(long /*unused*/, long /*unused*/, long /*unused*/, long /*unused*/, long /*unused*/,
+                     long /*unused*/) noexcept {
   using namespace moss::kernel::process;
 
   Thread *cur = CfsScheduler::get_current_task();
@@ -1100,7 +1123,8 @@ long sys_sched_yield(long, long, long, long, long, long) noexcept {
 // sched_getaffinity(pid, cpusetsize, mask_addr) — get CPU affinity mask
 // pid: 0 = calling thread
 // Returns 0 on success, -errno on failure
-long sys_sched_getaffinity(long pid_arg, long, long mask_addr, long, long, long) noexcept {
+long sys_sched_getaffinity(long pid_arg, long /*unused*/, long mask_addr, long /*unused*/, long /*unused*/,
+                           long /*unused*/) noexcept {
   using namespace moss::kernel::process;
 
   Thread *target = nullptr;
@@ -1133,7 +1157,8 @@ long sys_sched_getaffinity(long pid_arg, long, long mask_addr, long, long, long)
 // sched_setaffinity(pid, cpusetsize, mask_addr) — set CPU affinity mask
 // pid: 0 = calling thread
 // Returns 0 on success, -errno on failure
-long sys_sched_setaffinity(long pid_arg, long, long mask_addr, long, long, long) noexcept {
+long sys_sched_setaffinity(long pid_arg, long /*unused*/, long mask_addr, long /*unused*/, long /*unused*/,
+                           long /*unused*/) noexcept {
   using namespace moss::kernel::process;
 
   if (mask_addr == 0) {
@@ -1150,7 +1175,7 @@ long sys_sched_setaffinity(long pid_arg, long, long mask_addr, long, long, long)
 
   // Mask out CPUs beyond arch::MAX_CPUS
   constexpr u32 max_cpus = arch::MAX_CPUS;
-  u32 valid_mask = (max_cpus >= 32) ? 0xFFFFFFFFu : ((1u << max_cpus) - 1);
+  u32 valid_mask = (max_cpus >= 32) ? 0xFFFFFFFFU : ((1U << max_cpus) - 1);
   new_mask &= valid_mask;
   if (new_mask == 0) {
     return -errc::EINVAL;
@@ -1185,7 +1210,8 @@ long sys_sched_setaffinity(long pid_arg, long, long mask_addr, long, long, long)
 
 // sys_clock_gettime(clock_id, time_ns_ptr)
 // Returns monotonic nanoseconds since boot via timer subsystem.
-long sys_clock_gettime(long /* clock_id */, long time_ns_addr, long, long, long, long) noexcept {
+long sys_clock_gettime(long /* clock_id */, long time_ns_addr, long /*unused*/, long /*unused*/, long /*unused*/,
+                       long /*unused*/) noexcept {
   if (time_ns_addr == 0) {
     return -errc::EFAULT;
   }
@@ -1209,7 +1235,8 @@ static void nanosleep_wake_callback(void *data) noexcept {
 // sys_nanosleep(ns_ptr, remaining_ptr)
 // Blocking sleep: arms a one-shot HrTimer, blocks the calling thread,
 // and lets the CPU idle (WFI).  The timer ISR wakes the thread.
-long sys_nanosleep(long ns_addr, long /* remaining */, long, long, long, long) noexcept {
+long sys_nanosleep(long ns_addr, long /* remaining */, long /*unused*/, long /*unused*/, long /*unused*/,
+                   long /*unused*/) noexcept {
   using namespace moss::kernel::process;
 
   if (ns_addr == 0) {
@@ -1316,7 +1343,8 @@ struct Info {
 // page faults can invalidate TLB entries for previously-written pages,
 // causing those stores to be lost.  By buffering on the kernel stack
 // (which is always resident), we guarantee no data loss.
-long sys_topinfo(long info_addr, long, long, long, long, long) noexcept {
+long sys_topinfo(long info_addr, long /*unused*/, long /*unused*/, long /*unused*/, long /*unused*/,
+                 long /*unused*/) noexcept {
   using namespace moss::kernel::process;
 
   if (info_addr == 0) {
@@ -1430,7 +1458,8 @@ long sys_topinfo(long info_addr, long, long, long, long, long) noexcept {
 }
 
 // 未实现系统调用的默认处理器
-long sys_not_implemented(long, long, long, long, long, long) noexcept {
+long sys_not_implemented(long /*unused*/, long /*unused*/, long /*unused*/, long /*unused*/, long /*unused*/,
+                         long /*unused*/) noexcept {
   log::klog::warn("syscall: unknown/unimplemented");
   return -errc::ENOSYS;
 }
