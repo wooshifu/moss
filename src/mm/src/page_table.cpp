@@ -32,7 +32,7 @@ KernelResult<PageTable *> PageTableManager::allocate_page_table() {
 
 // Dynamic page table allocation from buddy allocator (post-boot)
 KernelResult<PageTable *> PageTableManager::allocate_page_table_dynamic() {
-  auto result = page_alloc::alloc_kernel_pages(0);  // order 0 = 1 page = 4KB
+  auto result = page_alloc::alloc_kernel_pages(0); // order 0 = 1 page = 4KB
   if (!result) {
     return KernelResult<PageTable *>{ErrorCode::OutOfMemory};
   }
@@ -50,17 +50,16 @@ KernelResult<PageTable *> PageTableManager::allocate_page_table_dynamic() {
 VoidResult PageTableManager::setup_kernel_high_half_tables() {
   // 1. Allocate L0 (PGD) for TTBR1 — using early bump allocator (before dynamic switch)
   auto pgd_result = allocate_page_table();
-  if (!pgd_result) return VoidResult{pgd_result.error()};
+  if (!pgd_result)
+    return VoidResult{pgd_result.error()};
   kernel_high_pgd = *pgd_result;
 
   // 2. Determine RAM region from DTB (PlatformInfo)
   const auto &plat = moss::fdt::get_platform_info();
-  PhysAddr ram_start = (plat.dtb_valid && plat.total_memory_size > 0)
-                           ? plat.total_memory_start
-                           : moss::kernel::platform::ram_base();
-  u64 ram_size = (plat.dtb_valid && plat.total_memory_size > 0)
-                     ? plat.total_memory_size
-                     : moss::kernel::platform::ram_size();
+  PhysAddr ram_start =
+      (plat.dtb_valid && plat.total_memory_size > 0) ? plat.total_memory_start : moss::kernel::platform::ram_base();
+  u64 ram_size =
+      (plat.dtb_valid && plat.total_memory_size > 0) ? plat.total_memory_size : moss::kernel::platform::ram_size();
   PhysAddr ram_end = ram_start + ram_size;
 
   // 3. Map physical address space at KERNEL_DIRECT_MAP_BASE using 1GB blocks.
@@ -71,7 +70,8 @@ VoidResult PageTableManager::setup_kernel_high_half_tables() {
 
   // Allocate PUD table for this PGD entry
   auto pud_result = allocate_page_table();
-  if (!pud_result) return VoidResult{pud_result.error()};
+  if (!pud_result)
+    return VoidResult{pud_result.error()};
   PageTable *pud = *pud_result;
 
   PhysAddr pud_pa = get_physical_address(pud);
@@ -84,9 +84,8 @@ VoidResult PageTableManager::setup_kernel_high_half_tables() {
     PhysAddr block_addr = static_cast<PhysAddr>(i * ONE_GB);
     PhysAddr block_end = block_addr + ONE_GB;
     bool overlaps_ram = (block_addr < ram_end) && (block_end > ram_start);
-    u64 block_entry = overlaps_ram
-        ? moss::kernel::hal::mmu::make_normal_block(block_addr)
-        : moss::kernel::hal::mmu::make_device_block(block_addr);
+    u64 block_entry = overlaps_ram ? moss::kernel::hal::mmu::make_normal_block(block_addr)
+                                   : moss::kernel::hal::mmu::make_device_block(block_addr);
     pud->entries[i].raw = block_entry;
   }
 
@@ -96,21 +95,25 @@ VoidResult PageTableManager::setup_kernel_high_half_tables() {
 
 // Walk user page tables and return a mutable pointer to the L3 PTE.
 // Returns nullptr if any intermediate table is missing (does not allocate).
-PageTableEntry* PageTableManager::get_user_pte(PhysAddr pgd_phys, VirtAddr va) {
+PageTableEntry *PageTableManager::get_user_pte(PhysAddr pgd_phys, VirtAddr va) {
   auto *pgd = get_table_from_physical(pgd_phys);
-  if (!pgd) return nullptr;
+  if (!pgd)
+    return nullptr;
   auto bd = break_virtual_address(va);
 
   auto &pge = pgd->entries[bd.pgd_index];
-  if (!pge.is_valid() || !pge.is_table()) return nullptr;
+  if (!pge.is_valid() || !pge.is_table())
+    return nullptr;
   auto *pud = get_table_from_physical(pge.get_phys_addr());
 
   auto &pude = pud->entries[bd.pud_index];
-  if (!pude.is_valid() || !pude.is_table()) return nullptr;
+  if (!pude.is_valid() || !pude.is_table())
+    return nullptr;
   auto *pmd = get_table_from_physical(pude.get_phys_addr());
 
   auto &pmde = pmd->entries[bd.pmd_index];
-  if (!pmde.is_valid() || !pmde.is_table()) return nullptr;
+  if (!pmde.is_valid() || !pmde.is_table())
+    return nullptr;
   auto *pte = get_table_from_physical(pmde.get_phys_addr());
 
   return &pte->entries[bd.pte_index];
@@ -118,11 +121,11 @@ PageTableEntry* PageTableManager::get_user_pte(PhysAddr pgd_phys, VirtAddr va) {
 
 // Clone user page tables for fork(): deep-copy intermediate tables,
 // share leaf pages via COW (mark READONLY + SW_COW, increment refcount).
-void PageTableManager::clone_user_page_tables(PhysAddr src_pgd_phys,
-                                               PhysAddr dst_pgd_phys) {
+void PageTableManager::clone_user_page_tables(PhysAddr src_pgd_phys, PhysAddr dst_pgd_phys) {
   auto *src_pgd = get_table_from_physical(src_pgd_phys);
   auto *dst_pgd = get_table_from_physical(dst_pgd_phys);
-  if (!src_pgd || !dst_pgd) return;
+  if (!src_pgd || !dst_pgd)
+    return;
 
   constexpr usize ENTRIES = PageTable::ENTRIES_PER_TABLE;
 
@@ -133,35 +136,44 @@ void PageTableManager::clone_user_page_tables(PhysAddr src_pgd_phys,
   auto clone_pud_user_entries = [&](PageTable *src_pud, PageTable *dst_pud) {
     for (usize pud_i = 0; pud_i < ENTRIES; pud_i++) {
       auto &src_pude = src_pud->entries[pud_i];
-      if (!src_pude.is_valid()) continue;
-      if (!src_pude.is_table()) continue; // skip 1GB block descriptors
+      if (!src_pude.is_valid())
+        continue;
+      if (!src_pude.is_table())
+        continue; // skip 1GB block descriptors
 
       auto *src_pmd = get_table_from_physical(src_pude.get_phys_addr());
-      if (!src_pmd) continue;
+      if (!src_pmd)
+        continue;
 
       // Allocate fresh PMD for child
       auto pmd_result = allocate_page_table_dynamic();
-      if (!pmd_result) return;
+      if (!pmd_result)
+        return;
       auto *dst_pmd = *pmd_result;
       dst_pud->entries[pud_i].set_table(get_physical_address(dst_pmd));
 
       for (usize pmd_i = 0; pmd_i < ENTRIES; pmd_i++) {
         auto &src_pmde = src_pmd->entries[pmd_i];
-        if (!src_pmde.is_valid()) continue;
-        if (!src_pmde.is_table()) continue; // skip 2MB block descriptors
+        if (!src_pmde.is_valid())
+          continue;
+        if (!src_pmde.is_table())
+          continue; // skip 2MB block descriptors
 
         auto *src_pte = get_table_from_physical(src_pmde.get_phys_addr());
-        if (!src_pte) continue;
+        if (!src_pte)
+          continue;
 
         // Allocate fresh PTE table for child
         auto pte_result = allocate_page_table_dynamic();
-        if (!pte_result) return;
+        if (!pte_result)
+          return;
         auto *dst_pte = *pte_result;
         dst_pmd->entries[pmd_i].set_table(get_physical_address(dst_pte));
 
         for (usize pte_i = 0; pte_i < ENTRIES; pte_i++) {
           auto &src_ptee = src_pte->entries[pte_i];
-          if (!src_ptee.is_valid()) continue;
+          if (!src_ptee.is_valid())
+            continue;
 
           PhysAddr leaf_pa = src_ptee.get_phys_addr();
 
@@ -184,8 +196,8 @@ void PageTableManager::clone_user_page_tables(PhysAddr src_pgd_phys,
   // create_user_address_space already set up dst PGD[0] with a private PUD
   // that has the kernel 1GB block descriptors.  We must additionally clone
   // user table descriptors (PMD→PTE chains) from parent's PGD[0] PUD.
-  if (src_pgd->entries[0].is_valid() && src_pgd->entries[0].is_table() &&
-      dst_pgd->entries[0].is_valid() && dst_pgd->entries[0].is_table()) {
+  if (src_pgd->entries[0].is_valid() && src_pgd->entries[0].is_table() && dst_pgd->entries[0].is_valid() &&
+      dst_pgd->entries[0].is_table()) {
     auto *src_pud = get_table_from_physical(src_pgd->entries[0].get_phys_addr());
     auto *dst_pud = get_table_from_physical(dst_pgd->entries[0].get_phys_addr());
     if (src_pud && dst_pud) {
@@ -196,14 +208,17 @@ void PageTableManager::clone_user_page_tables(PhysAddr src_pgd_phys,
   // PGD[1..511]: pure user-space mappings — allocate fresh PUD per entry.
   for (usize pgd_i = 1; pgd_i < ENTRIES; pgd_i++) {
     auto &src_pge = src_pgd->entries[pgd_i];
-    if (!src_pge.is_valid() || !src_pge.is_table()) continue;
+    if (!src_pge.is_valid() || !src_pge.is_table())
+      continue;
 
     auto *src_pud = get_table_from_physical(src_pge.get_phys_addr());
-    if (!src_pud) continue;
+    if (!src_pud)
+      continue;
 
     // Allocate fresh PUD for child
     auto pud_result = allocate_page_table_dynamic();
-    if (!pud_result) return;
+    if (!pud_result)
+      return;
     auto *dst_pud = *pud_result;
     dst_pgd->entries[pgd_i].set_table(get_physical_address(dst_pud));
 
@@ -220,16 +235,19 @@ void PageTableManager::clone_user_page_tables(PhysAddr src_pgd_phys,
 // Walks PGD→PUD→PMD→PTE, frees leaf pages and intermediate tables.
 // PGD[0] is the shared kernel identity map — skip it.
 void PageTableManager::free_user_page_tables(PhysAddr pgd_phys) {
-  if (pgd_phys == 0) return;
+  if (pgd_phys == 0)
+    return;
 
   auto *pgd = get_table_from_physical(pgd_phys);
-  if (!pgd) return;
+  if (!pgd)
+    return;
 
   constexpr usize ENTRIES = PageTable::ENTRIES_PER_TABLE;
 
   for (usize i0 = 0; i0 < ENTRIES; i0++) {
     auto &pge = pgd->entries[i0];
-    if (!pge.is_valid() || !pge.is_table()) continue;
+    if (!pge.is_valid() || !pge.is_table())
+      continue;
 
     // PGD[0] now points to a per-process private PUD that contains
     // copies of the kernel 1GB block descriptors.  The loop below
@@ -239,28 +257,35 @@ void PageTableManager::free_user_page_tables(PhysAddr pgd_phys) {
     // at the end of this iteration.
 
     auto *pud = get_table_from_physical(pge.get_phys_addr());
-    if (!pud) continue;
+    if (!pud)
+      continue;
 
     for (usize i1 = 0; i1 < ENTRIES; i1++) {
       auto &pude = pud->entries[i1];
-      if (!pude.is_valid()) continue;
+      if (!pude.is_valid())
+        continue;
 
       // Block mapping (1GB) — don't free the underlying physical memory
       // (it belongs to device or kernel identity map)
-      if (pude.is_block()) continue;
+      if (pude.is_block())
+        continue;
 
       auto *pmd = get_table_from_physical(pude.get_phys_addr());
-      if (!pmd) continue;
+      if (!pmd)
+        continue;
 
       for (usize i2 = 0; i2 < ENTRIES; i2++) {
         auto &pmde = pmd->entries[i2];
-        if (!pmde.is_valid()) continue;
+        if (!pmde.is_valid())
+          continue;
 
         // Block mapping (2MB) — skip
-        if (pmde.is_block()) continue;
+        if (pmde.is_block())
+          continue;
 
         auto *pte = get_table_from_physical(pmde.get_phys_addr());
-        if (!pte) continue;
+        if (!pte)
+          continue;
 
         // Free all leaf pages (COW-aware: only free when refcount drops to 0)
         for (usize i3 = 0; i3 < ENTRIES; i3++) {
@@ -298,15 +323,15 @@ void PageTableManager::free_user_page_tables(PhysAddr pgd_phys) {
 }
 
 // Map a single 4KB page into a user process page table (4-level walk)
-VoidResult PageTableManager::map_user_page(PhysAddr pgd_phys, VirtAddr va,
-                                            PhysAddr pa, u64 perms) {
+VoidResult PageTableManager::map_user_page(PhysAddr pgd_phys, VirtAddr va, PhysAddr pa, u64 perms) {
   auto *pgd = get_table_from_physical(pgd_phys);
   auto bd = break_virtual_address(va);
 
   // PGD -> PUD (use dynamic allocator for user page tables)
   if (!pgd->entries[bd.pgd_index].is_valid()) {
     auto result = allocate_page_table_dynamic();
-    if (!result) return VoidResult{ErrorCode::OutOfMemory};
+    if (!result)
+      return VoidResult{ErrorCode::OutOfMemory};
     pgd->entries[bd.pgd_index].set_table(get_physical_address(*result));
   }
   auto *pud = get_table_from_physical(pgd->entries[bd.pgd_index].get_phys_addr());
@@ -314,7 +339,8 @@ VoidResult PageTableManager::map_user_page(PhysAddr pgd_phys, VirtAddr va,
   // PUD -> PMD
   if (!pud->entries[bd.pud_index].is_valid()) {
     auto result = allocate_page_table_dynamic();
-    if (!result) return VoidResult{ErrorCode::OutOfMemory};
+    if (!result)
+      return VoidResult{ErrorCode::OutOfMemory};
     pud->entries[bd.pud_index].set_table(get_physical_address(*result));
   }
   auto *pmd = get_table_from_physical(pud->entries[bd.pud_index].get_phys_addr());
@@ -322,7 +348,8 @@ VoidResult PageTableManager::map_user_page(PhysAddr pgd_phys, VirtAddr va,
   // PMD -> PTE table
   if (!pmd->entries[bd.pmd_index].is_valid()) {
     auto result = allocate_page_table_dynamic();
-    if (!result) return VoidResult{ErrorCode::OutOfMemory};
+    if (!result)
+      return VoidResult{ErrorCode::OutOfMemory};
     pmd->entries[bd.pmd_index].set_table(get_physical_address(*result));
   }
   auto *pte = get_table_from_physical(pmd->entries[bd.pmd_index].get_phys_addr());
@@ -367,12 +394,10 @@ VoidResult PageTableManager::setup_kernel_page_tables() {
 
   // 4. Determine RAM region from DTB (PlatformInfo)
   const auto &plat = moss::fdt::get_platform_info();
-  PhysAddr ram_start = (plat.dtb_valid && plat.total_memory_size > 0)
-                           ? plat.total_memory_start
-                           : moss::kernel::platform::ram_base();
-  u64 ram_size = (plat.dtb_valid && plat.total_memory_size > 0)
-                     ? plat.total_memory_size
-                     : moss::kernel::platform::ram_size();
+  PhysAddr ram_start =
+      (plat.dtb_valid && plat.total_memory_size > 0) ? plat.total_memory_start : moss::kernel::platform::ram_base();
+  u64 ram_size =
+      (plat.dtb_valid && plat.total_memory_size > 0) ? plat.total_memory_size : moss::kernel::platform::ram_size();
   PhysAddr ram_end = ram_start + ram_size;
 
   // 5. Fill L1 (PUD) entries [0..3] with 1GB block descriptors
@@ -386,9 +411,8 @@ VoidResult PageTableManager::setup_kernel_page_tables() {
     // If this 1GB block overlaps with the RAM region, use Normal memory;
     // otherwise use Device memory.
     bool overlaps_ram = (block_addr < ram_end) && (block_end > ram_start);
-    u64 block_entry = overlaps_ram
-        ? moss::kernel::hal::mmu::make_normal_block(block_addr)
-        : moss::kernel::hal::mmu::make_device_block(block_addr);
+    u64 block_entry = overlaps_ram ? moss::kernel::hal::mmu::make_normal_block(block_addr)
+                                   : moss::kernel::hal::mmu::make_device_block(block_addr);
 
     pud->entries[i].raw = block_entry;
   }
@@ -397,11 +421,9 @@ VoidResult PageTableManager::setup_kernel_page_tables() {
 }
 
 // 映射内存区域
-VoidResult PageTableManager::map_region(VirtAddr virt_addr, PhysAddr phys_addr,
-                                        usize size, u64 permissions) {
+VoidResult PageTableManager::map_region(VirtAddr virt_addr, PhysAddr phys_addr, usize size, u64 permissions) {
   // 页面对齐检查
-  if ((virt_addr & (PAGE_SIZE - 1)) != 0 ||
-      (phys_addr & (PAGE_SIZE - 1)) != 0) {
+  if ((virt_addr & (PAGE_SIZE - 1)) != 0 || (phys_addr & (PAGE_SIZE - 1)) != 0) {
     return VoidResult{ErrorCode::InvalidParameter};
   }
 
@@ -425,8 +447,7 @@ VoidResult PageTableManager::map_region(VirtAddr virt_addr, PhysAddr phys_addr,
 }
 
 // 映射单个页面
-VoidResult PageTableManager::map_page(VirtAddr virt_addr, PhysAddr phys_addr,
-                                      u64 permissions) {
+VoidResult PageTableManager::map_page(VirtAddr virt_addr, PhysAddr phys_addr, u64 permissions) {
   if (!PageTableManager::kernel_pgd) {
     return VoidResult{ErrorCode::InvalidState};
   }
@@ -447,8 +468,7 @@ VoidResult PageTableManager::map_page(VirtAddr virt_addr, PhysAddr phys_addr,
     current_table->entries[addr_breakdown.pgd_index].set_table(pud_pa);
   }
 
-  current_table = get_table_from_physical(
-      current_table->entries[addr_breakdown.pgd_index].get_phys_addr());
+  current_table = get_table_from_physical(current_table->entries[addr_breakdown.pgd_index].get_phys_addr());
 
   // PUD -> PMD
   if (!current_table->entries[addr_breakdown.pud_index].is_valid()) {
@@ -461,8 +481,7 @@ VoidResult PageTableManager::map_page(VirtAddr virt_addr, PhysAddr phys_addr,
     current_table->entries[addr_breakdown.pud_index].set_table(pmd_pa);
   }
 
-  current_table = get_table_from_physical(
-      current_table->entries[addr_breakdown.pud_index].get_phys_addr());
+  current_table = get_table_from_physical(current_table->entries[addr_breakdown.pud_index].get_phys_addr());
 
   // PMD -> PTE
   if (!current_table->entries[addr_breakdown.pmd_index].is_valid()) {
@@ -475,12 +494,10 @@ VoidResult PageTableManager::map_page(VirtAddr virt_addr, PhysAddr phys_addr,
     current_table->entries[addr_breakdown.pmd_index].set_table(pte_pa);
   }
 
-  current_table = get_table_from_physical(
-      current_table->entries[addr_breakdown.pmd_index].get_phys_addr());
+  current_table = get_table_from_physical(current_table->entries[addr_breakdown.pmd_index].get_phys_addr());
 
   // Set final L3 page table entry (must use set_page, not set_block, at L3)
-  current_table->entries[addr_breakdown.pte_index].set_page(phys_addr,
-                                                            permissions);
+  current_table->entries[addr_breakdown.pte_index].set_page(phys_addr, permissions);
 
   // Invalidate stale TLB entry for this VA
   invalidate_tlb_addr(virt_addr);
@@ -494,8 +511,7 @@ VoidResult PageTableManager::enable_mmu() {
     return VoidResult{ErrorCode::InvalidState};
   }
 
-  PhysAddr kernel_pgd_pa =
-      PageTableManager::get_physical_address(PageTableManager::kernel_pgd);
+  PhysAddr kernel_pgd_pa = PageTableManager::get_physical_address(PageTableManager::kernel_pgd);
 
   return moss::kernel::hal::mmu::enable_mmu(kernel_pgd_pa);
 }
@@ -552,8 +568,16 @@ void PageTableManager::print_mmu_registers() {
   log::klog::debug_chain("TCR_EL1:   ").hex(tcr_el1);
   log::klog::debug_chain("  T0SZ: ").hex(tcr_el1 & 0x3F).str(" (TTBR0地址空间大小)");
   log::klog::debug_chain("  T1SZ: ").hex((tcr_el1 >> 16) & 0x3F).str(" (TTBR1地址空间大小)");
-  log::klog::debug_chain("  EPD0: ").hex((tcr_el1 >> 7) & 1).str(" (TTBR0 ").str(((tcr_el1 >> 7) & 1) ? "禁用" : "启用").str(")");
-  log::klog::debug_chain("  EPD1: ").hex((tcr_el1 >> 23) & 1).str(" (TTBR1 ").str(((tcr_el1 >> 23) & 1) ? "禁用" : "启用").str(")");
+  log::klog::debug_chain("  EPD0: ")
+      .hex((tcr_el1 >> 7) & 1)
+      .str(" (TTBR0 ")
+      .str(((tcr_el1 >> 7) & 1) ? "禁用" : "启用")
+      .str(")");
+  log::klog::debug_chain("  EPD1: ")
+      .hex((tcr_el1 >> 23) & 1)
+      .str(" (TTBR1 ")
+      .str(((tcr_el1 >> 23) & 1) ? "禁用" : "启用")
+      .str(")");
 
   log::klog::debug_chain("MAIR_EL1:  ").hex(mair_el1);
   log::klog::debug_chain("  属性0: ").hex((mair_el1 >> 0) & 0xFF).str(" (设备内存)");
@@ -585,7 +609,8 @@ void PageTableManager::print_pgd_entries() {
 
   for (usize i = 0; i < PageTable::ENTRIES_PER_TABLE; i++) {
     const auto &entry = kernel_pgd->entries[i];
-    if (!entry.is_valid()) continue;
+    if (!entry.is_valid())
+      continue;
 
     VirtAddr virt_start = i * (512ULL * 0x40000000ULL); // i * 512GB
 
@@ -594,11 +619,11 @@ void PageTableManager::print_pgd_entries() {
       log::klog::debug_chain("PGD[").hex(i).str("] = ").hex(entry.raw).str(" -> L1 table @ ").hex(pud_pa);
 
       // Walk into L1 (PUD) table
-      auto *pud = static_cast<const PageTable *>(
-          static_cast<const void *>(get_table_from_physical(pud_pa)));
+      auto *pud = static_cast<const PageTable *>(static_cast<const void *>(get_table_from_physical(pud_pa)));
       for (usize j = 0; j < PageTable::ENTRIES_PER_TABLE; j++) {
         const auto &l1_entry = pud->entries[j];
-        if (!l1_entry.is_valid()) continue;
+        if (!l1_entry.is_valid())
+          continue;
         total_blocks++;
 
         VirtAddr block_start = virt_start + j * 0x40000000ULL;
@@ -606,11 +631,21 @@ void PageTableManager::print_pgd_entries() {
         PhysAddr phys_addr = l1_entry.get_phys_addr();
 
         log::klog::debug_chain("  PUD[").hex(j).str("] = ").hex(l1_entry.raw);
-        log::klog::debug_chain("    VA: ").hex(block_start).str(" - ").hex(block_end_va).str(" -> PA: ").hex(phys_addr).str(l1_entry.is_table() ? " (1GB table)" : " (1GB block)");
+        log::klog::debug_chain("    VA: ")
+            .hex(block_start)
+            .str(" - ")
+            .hex(block_end_va)
+            .str(" -> PA: ")
+            .hex(phys_addr)
+            .str(l1_entry.is_table() ? " (1GB table)" : " (1GB block)");
 
         // Memory type from AttrIndx
         u64 attr_idx = (l1_entry.raw >> 2) & 7;
-        log::klog::debug_chain("    AttrIndx=").hex(attr_idx).str(attr_idx == 0 ? " Device" : attr_idx == 1 ? " Normal" : " NC");
+        log::klog::debug_chain("    AttrIndx=")
+            .hex(attr_idx)
+            .str(attr_idx == 0   ? " Device"
+                 : attr_idx == 1 ? " Normal"
+                                 : " NC");
       }
     } else {
       log::klog::debug_chain("PGD[").hex(i).str("] = ").hex(entry.raw).str(" (block - unexpected at L0!)");
@@ -641,7 +676,11 @@ void PageTableManager::print_page_table_details() {
 
   if (kernel_pgd) {
     usize pgd_index = get_table_index(kernel_pgd);
-    log::klog::debug_chain("内核PGD位置: early_tables[").hex(pgd_index).str("] (").hex(get_physical_address(kernel_pgd)).str(")");
+    log::klog::debug_chain("内核PGD位置: early_tables[")
+        .hex(pgd_index)
+        .str("] (")
+        .hex(get_physical_address(kernel_pgd))
+        .str(")");
   } else {
     log::klog::debug("内核PGD: 未初始化");
   }
@@ -654,18 +693,25 @@ void PageTableManager::print_page_table_details() {
 
   // 5. 地址转换示例 (L0→L1 1GB block mapping)
   log::klog::info("=== 地址转换示例 (L0→L1 1GB block mapping) ===");
-  VirtAddr test_addrs[] = {0x00000000, 0x09000000, 0x40000000, 0x80000000,
-                           0xC0000000};
-  const char *addr_names[] = {"RAM start", "UART MMIO", "1GB boundary",
-                              "2GB boundary", "3GB boundary"};
+  VirtAddr test_addrs[] = {0x00000000, 0x09000000, 0x40000000, 0x80000000, 0xC0000000};
+  const char *addr_names[] = {"RAM start", "UART MMIO", "1GB boundary", "2GB boundary", "3GB boundary"};
 
   for (size_t i = 0; i < 5; i++) {
     VirtAddr vaddr = test_addrs[i];
-    u32 l0_idx = (vaddr >> 39) & 0x1FF;  // PGD index (512GB)
-    u32 l1_idx = (vaddr >> 30) & 0x1FF;  // PUD index (1GB)
+    u32 l0_idx = (vaddr >> 39) & 0x1FF; // PGD index (512GB)
+    u32 l1_idx = (vaddr >> 30) & 0x1FF; // PUD index (1GB)
     u32 block_offset = vaddr & 0x3FFFFFFF;
 
-    log::klog::debug_chain("VA ").hex(vaddr).str(" (").str(addr_names[i]).str("): L0[").hex(l0_idx).str("] L1[").hex(l1_idx).str("] offset=").hex(block_offset);
+    log::klog::debug_chain("VA ")
+        .hex(vaddr)
+        .str(" (")
+        .str(addr_names[i])
+        .str("): L0[")
+        .hex(l0_idx)
+        .str("] L1[")
+        .hex(l1_idx)
+        .str("] offset=")
+        .hex(block_offset);
   }
 
   log::klog::info("========================================");
@@ -684,7 +730,7 @@ VoidResult PageTableManager::unmap_page(VirtAddr virt_addr) {
   auto bd = break_virtual_address(virt_addr);
 
   // PGD level
-  auto& pgd_entry = kernel_pgd->entries[bd.pgd_index];
+  auto &pgd_entry = kernel_pgd->entries[bd.pgd_index];
   if (!pgd_entry.is_valid()) {
     return VoidResult{ErrorCode::NotFound};
   }
@@ -694,8 +740,8 @@ VoidResult PageTableManager::unmap_page(VirtAddr virt_addr) {
   }
 
   // PUD level
-  auto* pud = get_table_from_physical(pgd_entry.get_phys_addr());
-  auto& pud_entry = pud->entries[bd.pud_index];
+  auto *pud = get_table_from_physical(pgd_entry.get_phys_addr());
+  auto &pud_entry = pud->entries[bd.pud_index];
   if (!pud_entry.is_valid()) {
     return VoidResult{ErrorCode::NotFound};
   }
@@ -704,8 +750,8 @@ VoidResult PageTableManager::unmap_page(VirtAddr virt_addr) {
   }
 
   // PMD level
-  auto* pmd = get_table_from_physical(pud_entry.get_phys_addr());
-  auto& pmd_entry = pmd->entries[bd.pmd_index];
+  auto *pmd = get_table_from_physical(pud_entry.get_phys_addr());
+  auto &pmd_entry = pmd->entries[bd.pmd_index];
   if (!pmd_entry.is_valid()) {
     return VoidResult{ErrorCode::NotFound};
   }
@@ -714,8 +760,8 @@ VoidResult PageTableManager::unmap_page(VirtAddr virt_addr) {
   }
 
   // PTE level — the actual 4KB page
-  auto* pte_table = get_table_from_physical(pmd_entry.get_phys_addr());
-  auto& pte_entry = pte_table->entries[bd.pte_index];
+  auto *pte_table = get_table_from_physical(pmd_entry.get_phys_addr());
+  auto &pte_entry = pte_table->entries[bd.pte_index];
   if (!pte_entry.is_valid()) {
     return VoidResult{ErrorCode::NotFound};
   }
@@ -740,60 +786,60 @@ PageTableManager::PageInfo PageTableManager::query_page(VirtAddr virt_addr) {
   auto bd = break_virtual_address(virt_addr);
 
   // PGD level
-  auto& pgd_entry = kernel_pgd->entries[bd.pgd_index];
+  auto &pgd_entry = kernel_pgd->entries[bd.pgd_index];
   if (!pgd_entry.is_valid()) {
     return info;
   }
   // 1GB block mapping
   if (!pgd_entry.is_table()) {
-    info.phys_addr  = pgd_entry.get_phys_addr() | (virt_addr & 0x3FFFFFFFULL);
+    info.phys_addr = pgd_entry.get_phys_addr() | (virt_addr & 0x3FFFFFFFULL);
     info.attributes = pgd_entry.raw;
-    info.mapped     = true;
-    info.level      = 1;
+    info.mapped = true;
+    info.level = 1;
     return info;
   }
 
   // PUD level
-  auto* pud = get_table_from_physical(pgd_entry.get_phys_addr());
-  auto& pud_entry = pud->entries[bd.pud_index];
+  auto *pud = get_table_from_physical(pgd_entry.get_phys_addr());
+  auto &pud_entry = pud->entries[bd.pud_index];
   if (!pud_entry.is_valid()) {
     return info;
   }
   if (!pud_entry.is_table()) {
     // 1GB block at PUD level (ARM64 uses this for initial boot mapping)
-    info.phys_addr  = pud_entry.get_phys_addr() | (virt_addr & 0x3FFFFFFFULL);
+    info.phys_addr = pud_entry.get_phys_addr() | (virt_addr & 0x3FFFFFFFULL);
     info.attributes = pud_entry.raw;
-    info.mapped     = true;
-    info.level      = 1;
+    info.mapped = true;
+    info.level = 1;
     return info;
   }
 
   // PMD level
-  auto* pmd = get_table_from_physical(pud_entry.get_phys_addr());
-  auto& pmd_entry = pmd->entries[bd.pmd_index];
+  auto *pmd = get_table_from_physical(pud_entry.get_phys_addr());
+  auto &pmd_entry = pmd->entries[bd.pmd_index];
   if (!pmd_entry.is_valid()) {
     return info;
   }
   if (!pmd_entry.is_table()) {
     // 2MB block mapping
-    info.phys_addr  = pmd_entry.get_phys_addr() | (virt_addr & 0x1FFFFFULL);
+    info.phys_addr = pmd_entry.get_phys_addr() | (virt_addr & 0x1FFFFFULL);
     info.attributes = pmd_entry.raw;
-    info.mapped     = true;
-    info.level      = 2;
+    info.mapped = true;
+    info.level = 2;
     return info;
   }
 
   // PTE level — 4KB page
-  auto* pte_table = get_table_from_physical(pmd_entry.get_phys_addr());
-  auto& pte_entry = pte_table->entries[bd.pte_index];
+  auto *pte_table = get_table_from_physical(pmd_entry.get_phys_addr());
+  auto &pte_entry = pte_table->entries[bd.pte_index];
   if (!pte_entry.is_valid()) {
     return info;
   }
 
-  info.phys_addr  = pte_entry.get_phys_addr() | (virt_addr & 0xFFFULL);
+  info.phys_addr = pte_entry.get_phys_addr() | (virt_addr & 0xFFFULL);
   info.attributes = pte_entry.raw;
-  info.mapped     = true;
-  info.level      = 3;
+  info.mapped = true;
+  info.level = 3;
   return info;
 }
 

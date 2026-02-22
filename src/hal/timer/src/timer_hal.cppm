@@ -74,14 +74,14 @@ using moss::u64;
 inline void set_compare(u64 value) noexcept {
 #if defined(MOSS_ARCH_ARM64)
   // ARM64: write virtual timer compare value
-  asm volatile("msr cntv_cval_el0, %0" :: "r"(value));
+  asm volatile("msr cntv_cval_el0, %0" ::"r"(value));
   asm volatile("isb");
 #elif defined(MOSS_ARCH_X86_64)
   // APIC Timer: write initial count (placeholder — needs calibration)
   (void)value;
 #elif defined(MOSS_ARCH_RISCV)
   // RISC-V: write stimecmp CSR (Sstc extension)
-  asm volatile("csrw stimecmp, %0" :: "r"(value));
+  asm volatile("csrw stimecmp, %0" ::"r"(value));
 #endif
 }
 
@@ -95,15 +95,15 @@ inline void enable() noexcept {
   // cntv_ctl_el0: bit0 = ENABLE, bit1 = IMASK (0 = not masked)
   u64 ctl;
   asm volatile("mrs %0, cntv_ctl_el0" : "=r"(ctl));
-  ctl |= 1ULL;           // Set ENABLE
-  ctl &= ~(1ULL << 1);   // Clear IMASK
-  asm volatile("msr cntv_ctl_el0, %0" :: "r"(ctl));
+  ctl |= 1ULL;         // Set ENABLE
+  ctl &= ~(1ULL << 1); // Clear IMASK
+  asm volatile("msr cntv_ctl_el0, %0" ::"r"(ctl));
   asm volatile("isb");
 #elif defined(MOSS_ARCH_X86_64)
   // Unmask APIC LVT timer entry (placeholder)
 #elif defined(MOSS_ARCH_RISCV)
   // Set SIE.STIE (S-mode timer interrupt enable)
-  asm volatile("csrs sie, %0" :: "r"(1ULL << 5));
+  asm volatile("csrs sie, %0" ::"r"(1ULL << 5));
 #endif
 }
 
@@ -112,14 +112,14 @@ inline void disable() noexcept {
 #if defined(MOSS_ARCH_ARM64)
   u64 ctl;
   asm volatile("mrs %0, cntv_ctl_el0" : "=r"(ctl));
-  ctl |= (1ULL << 1);    // Set IMASK
-  asm volatile("msr cntv_ctl_el0, %0" :: "r"(ctl));
+  ctl |= (1ULL << 1); // Set IMASK
+  asm volatile("msr cntv_ctl_el0, %0" ::"r"(ctl));
   asm volatile("isb");
 #elif defined(MOSS_ARCH_X86_64)
   // Mask APIC LVT timer entry (placeholder)
 #elif defined(MOSS_ARCH_RISCV)
   // Clear SIE.STIE
-  asm volatile("csrc sie, %0" :: "r"(1ULL << 5));
+  asm volatile("csrc sie, %0" ::"r"(1ULL << 5));
 #endif
 }
 
@@ -148,8 +148,6 @@ inline void ack_interrupt() noexcept {
 // ============================================================================
 
 /// Return the IRQ number used by the timer, as configured in PlatformDefaults.
-[[nodiscard]] inline u32 irq_number() noexcept {
-  return platform::timer_irq();
-}
+[[nodiscard]] inline u32 irq_number() noexcept { return platform::timer_irq(); }
 
 } // namespace moss::kernel::hal::timer

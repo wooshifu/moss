@@ -50,9 +50,7 @@ public:
   AtomicPtr(const AtomicPtr &) = delete;
   AtomicPtr &operator=(const AtomicPtr &) = delete;
 
-  AtomicPtr(AtomicPtr &&other) noexcept {
-    ptr_ = other.exchange(nullptr, MemoryOrder::AcqRel);
-  }
+  AtomicPtr(AtomicPtr &&other) noexcept { ptr_ = other.exchange(nullptr, MemoryOrder::AcqRel); }
 
   AtomicPtr &operator=(AtomicPtr &&other) noexcept {
     if (this != &other) {
@@ -62,8 +60,7 @@ public:
     return *this;
   }
 
-  [[nodiscard]] T *
-  load(MemoryOrder order = MemoryOrder::SeqCst) const noexcept {
+  [[nodiscard]] T *load(MemoryOrder order = MemoryOrder::SeqCst) const noexcept {
     return __atomic_load_n(&ptr_, to_builtin_order(order));
   }
 
@@ -71,40 +68,27 @@ public:
     __atomic_store_n(&ptr_, desired, to_builtin_order(order));
   }
 
-  [[nodiscard]] T *
-  exchange(T *desired, MemoryOrder order = MemoryOrder::SeqCst) noexcept {
+  [[nodiscard]] T *exchange(T *desired, MemoryOrder order = MemoryOrder::SeqCst) noexcept {
     return __atomic_exchange_n(&ptr_, desired, to_builtin_order(order));
   }
 
-  [[nodiscard]] bool
-  compare_exchange_weak(T *&expected, T *desired,
-                        MemoryOrder success = MemoryOrder::SeqCst,
-                        MemoryOrder failure = MemoryOrder::SeqCst) noexcept {
-    return __atomic_compare_exchange_n(&ptr_, &expected, desired, true,
-                                       to_builtin_order(success),
+  [[nodiscard]] bool compare_exchange_weak(T *&expected, T *desired, MemoryOrder success = MemoryOrder::SeqCst,
+                                           MemoryOrder failure = MemoryOrder::SeqCst) noexcept {
+    return __atomic_compare_exchange_n(&ptr_, &expected, desired, true, to_builtin_order(success),
                                        to_builtin_order(failure));
   }
 
-  [[nodiscard]] bool
-  compare_exchange_strong(T *&expected, T *desired,
-                          MemoryOrder success = MemoryOrder::SeqCst,
-                          MemoryOrder failure = MemoryOrder::SeqCst) noexcept {
-    return __atomic_compare_exchange_n(&ptr_, &expected, desired, false,
-                                       to_builtin_order(success),
+  [[nodiscard]] bool compare_exchange_strong(T *&expected, T *desired, MemoryOrder success = MemoryOrder::SeqCst,
+                                             MemoryOrder failure = MemoryOrder::SeqCst) noexcept {
+    return __atomic_compare_exchange_n(&ptr_, &expected, desired, false, to_builtin_order(success),
                                        to_builtin_order(failure));
   }
 
-  [[nodiscard]] T *operator->() const noexcept {
-    return load(MemoryOrder::Acquire);
-  }
+  [[nodiscard]] T *operator->() const noexcept { return load(MemoryOrder::Acquire); }
 
-  [[nodiscard]] T &operator*() const noexcept {
-    return *load(MemoryOrder::Acquire);
-  }
+  [[nodiscard]] T &operator*() const noexcept { return *load(MemoryOrder::Acquire); }
 
-  [[nodiscard]] operator T *() const noexcept {
-    return load(MemoryOrder::Acquire);
-  }
+  [[nodiscard]] operator T *() const noexcept { return load(MemoryOrder::Acquire); }
 
   AtomicPtr &operator=(T *desired) noexcept {
     store(desired, MemoryOrder::Release);
@@ -124,8 +108,7 @@ public:
   AtomicCounter(const AtomicCounter &) = delete;
   AtomicCounter &operator=(const AtomicCounter &) = delete;
 
-  [[nodiscard]] T
-  load(MemoryOrder order = MemoryOrder::SeqCst) const noexcept {
+  [[nodiscard]] T load(MemoryOrder order = MemoryOrder::SeqCst) const noexcept {
     return __atomic_load_n(&value_, to_builtin_order(order));
   }
 
@@ -133,41 +116,26 @@ public:
     __atomic_store_n(&value_, desired, to_builtin_order(order));
   }
 
-  [[nodiscard]] T
-  fetch_add(T arg, MemoryOrder order = MemoryOrder::SeqCst) noexcept {
+  [[nodiscard]] T fetch_add(T arg, MemoryOrder order = MemoryOrder::SeqCst) noexcept {
     return __atomic_fetch_add(&value_, arg, to_builtin_order(order));
   }
 
-  [[nodiscard]] T
-  fetch_sub(T arg, MemoryOrder order = MemoryOrder::SeqCst) noexcept {
+  [[nodiscard]] T fetch_sub(T arg, MemoryOrder order = MemoryOrder::SeqCst) noexcept {
     return __atomic_fetch_sub(&value_, arg, to_builtin_order(order));
   }
 
-  [[nodiscard]] bool
-  compare_exchange_weak(T &expected, T desired,
-                        MemoryOrder success = MemoryOrder::SeqCst,
-                        MemoryOrder failure = MemoryOrder::SeqCst) noexcept {
-    return __atomic_compare_exchange_n(&value_, &expected, desired, true,
-                                       to_builtin_order(success),
+  [[nodiscard]] bool compare_exchange_weak(T &expected, T desired, MemoryOrder success = MemoryOrder::SeqCst,
+                                           MemoryOrder failure = MemoryOrder::SeqCst) noexcept {
+    return __atomic_compare_exchange_n(&value_, &expected, desired, true, to_builtin_order(success),
                                        to_builtin_order(failure));
   }
 
-  [[nodiscard]] T operator++() noexcept {
-    return fetch_add(1, MemoryOrder::SeqCst) + 1;
-  }
-  [[nodiscard]] T operator--() noexcept {
-    return fetch_sub(1, MemoryOrder::SeqCst) - 1;
-  }
-  [[nodiscard]] T operator++(int) noexcept {
-    return fetch_add(1, MemoryOrder::SeqCst);
-  }
-  [[nodiscard]] T operator--(int) noexcept {
-    return fetch_sub(1, MemoryOrder::SeqCst);
-  }
+  [[nodiscard]] T operator++() noexcept { return fetch_add(1, MemoryOrder::SeqCst) + 1; }
+  [[nodiscard]] T operator--() noexcept { return fetch_sub(1, MemoryOrder::SeqCst) - 1; }
+  [[nodiscard]] T operator++(int) noexcept { return fetch_add(1, MemoryOrder::SeqCst); }
+  [[nodiscard]] T operator--(int) noexcept { return fetch_sub(1, MemoryOrder::SeqCst); }
 
-  [[nodiscard]] operator T() const noexcept {
-    return load(MemoryOrder::Acquire);
-  }
+  [[nodiscard]] operator T() const noexcept { return load(MemoryOrder::Acquire); }
 };
 
 // Common atomic type aliases
@@ -177,21 +145,15 @@ using AtomicSize = AtomicCounter<moss::kernel::usize>;
 using AtomicBool = AtomicCounter<bool>;
 
 // Cache-line aligned atomic type
-template <typename T>
-struct alignas(moss::kernel::CACHE_LINE_SIZE) CacheAlignedAtomic {
+template <typename T> struct alignas(moss::kernel::CACHE_LINE_SIZE) CacheAlignedAtomic {
   AtomicCounter<T> value;
 
   constexpr CacheAlignedAtomic() noexcept = default;
   constexpr CacheAlignedAtomic(T initial) noexcept : value(initial) {}
 
-  [[nodiscard]] T
-  load(MemoryOrder order = MemoryOrder::SeqCst) const noexcept {
-    return value.load(order);
-  }
+  [[nodiscard]] T load(MemoryOrder order = MemoryOrder::SeqCst) const noexcept { return value.load(order); }
 
-  void store(T desired, MemoryOrder order = MemoryOrder::SeqCst) noexcept {
-    value.store(desired, order);
-  }
+  void store(T desired, MemoryOrder order = MemoryOrder::SeqCst) noexcept { value.store(desired, order); }
 
   [[nodiscard]] T operator++() noexcept { return ++value; }
   [[nodiscard]] T operator--() noexcept { return --value; }
@@ -223,7 +185,7 @@ public:
   void lock() noexcept {
     u32 my_ticket = next_ticket_.fetch_add(1, MemoryOrder::Acquire);
     while (now_serving_.load(MemoryOrder::Acquire) != my_ticket) {
-      moss::kernel::arch::cpu_yield();  // WFE on ARM64
+      moss::kernel::arch::cpu_yield(); // WFE on ARM64
     }
   }
 
@@ -235,14 +197,11 @@ public:
   [[nodiscard]] bool try_lock() noexcept {
     u32 current = now_serving_.load(MemoryOrder::Acquire);
     u32 next = current;
-    return next_ticket_.compare_exchange_weak(next, current + 1,
-                                              MemoryOrder::Acquire,
-                                              MemoryOrder::Relaxed);
+    return next_ticket_.compare_exchange_weak(next, current + 1, MemoryOrder::Acquire, MemoryOrder::Relaxed);
   }
 
   [[nodiscard]] bool is_locked() const noexcept {
-    return next_ticket_.load(MemoryOrder::Relaxed) !=
-           now_serving_.load(MemoryOrder::Relaxed);
+    return next_ticket_.load(MemoryOrder::Relaxed) != now_serving_.load(MemoryOrder::Relaxed);
   }
 };
 
@@ -291,18 +250,13 @@ public:
 };
 
 // RAII lock guard
-template <typename LockType>
-class LockGuard {
+template <typename LockType> class LockGuard {
 private:
   LockType &lock_;
 
 public:
-  explicit LockGuard(LockType &lock) noexcept : lock_(lock) {
-    lock_.lock();
-  }
-  ~LockGuard() noexcept {
-    lock_.unlock();
-  }
+  explicit LockGuard(LockType &lock) noexcept : lock_(lock) { lock_.lock(); }
+  ~LockGuard() noexcept { lock_.unlock(); }
 
   LockGuard(const LockGuard &) = delete;
   LockGuard &operator=(const LockGuard &) = delete;
@@ -342,22 +296,17 @@ template <typename T> struct QueueNode {
   AtomicPtr<QueueNode<T>> next;
   T data;
 
-  template <typename... Args>
-  constexpr QueueNode(Args &&...args) noexcept
-      : next(nullptr), data(moss::move(args)...) {}
+  template <typename... Args> constexpr QueueNode(Args &&...args) noexcept : next(nullptr), data(moss::move(args)...) {}
 };
 
 // SPSC (Single Producer Single Consumer) lock-free queue
 template <typename T, moss::kernel::usize Capacity> class SPSCQueue {
 private:
-  static_assert((Capacity & (Capacity - 1)) == 0,
-                "Capacity must be power of 2");
+  static_assert((Capacity & (Capacity - 1)) == 0, "Capacity must be power of 2");
   static constexpr moss::kernel::usize MASK = Capacity - 1;
 
-  alignas(moss::kernel::CACHE_LINE_SIZE)
-      CacheAlignedAtomic<moss::kernel::usize> head_{0};
-  alignas(moss::kernel::CACHE_LINE_SIZE)
-      CacheAlignedAtomic<moss::kernel::usize> tail_{0};
+  alignas(moss::kernel::CACHE_LINE_SIZE) CacheAlignedAtomic<moss::kernel::usize> head_{0};
+  alignas(moss::kernel::CACHE_LINE_SIZE) CacheAlignedAtomic<moss::kernel::usize> tail_{0};
 
   alignas(moss::kernel::CACHE_LINE_SIZE) T data_[Capacity];
 
@@ -395,8 +344,7 @@ public:
   }
 
   [[nodiscard]] bool empty() const noexcept {
-    return head_.load(MemoryOrder::Acquire) ==
-           tail_.load(MemoryOrder::Acquire);
+    return head_.load(MemoryOrder::Acquire) == tail_.load(MemoryOrder::Acquire);
   }
 
   [[nodiscard]] bool full() const noexcept {
@@ -411,9 +359,7 @@ public:
     return (current_tail - current_head) & MASK;
   }
 
-  [[nodiscard]] static constexpr moss::kernel::usize capacity() noexcept {
-    return Capacity - 1;
-  }
+  [[nodiscard]] static constexpr moss::kernel::usize capacity() noexcept { return Capacity - 1; }
 };
 
 // MPSC (Multiple Producer Single Consumer) lock-free queue
@@ -424,9 +370,7 @@ private:
   QueueNode<T> stub_;
 
 public:
-  MPSCQueue() noexcept : head_(&stub_), tail_(&stub_) {
-    stub_.next.store(nullptr, MemoryOrder::Relaxed);
-  }
+  MPSCQueue() noexcept : head_(&stub_), tail_(&stub_) { stub_.next.store(nullptr, MemoryOrder::Relaxed); }
 
   MPSCQueue(const MPSCQueue &) = delete;
   MPSCQueue &operator=(const MPSCQueue &) = delete;
@@ -465,8 +409,7 @@ class ObjectPool {
 private:
   struct PoolNode : public QueueNode<T> {
     template <typename... Args>
-    constexpr PoolNode(Args &&...args) noexcept(
-        moss::is_nothrow_constructible_v<T, Args...>)
+    constexpr PoolNode(Args &&...args) noexcept(moss::is_nothrow_constructible_v<T, Args...>)
         : QueueNode<T>(moss::forward<Args>(args)...) {}
   };
 
@@ -480,9 +423,7 @@ public:
     }
   }
 
-  [[nodiscard]] QueueNode<T> *allocate() noexcept {
-    return free_list_.try_dequeue();
-  }
+  [[nodiscard]] QueueNode<T> *allocate() noexcept { return free_list_.try_dequeue(); }
 
   void deallocate(QueueNode<T> *node) noexcept {
     if (node != nullptr) {
@@ -492,20 +433,14 @@ public:
     }
   }
 
-  [[nodiscard]] bool has_available() const noexcept {
-    return !free_list_.empty();
-  }
+  [[nodiscard]] bool has_available() const noexcept { return !free_list_.empty(); }
 
-  [[nodiscard]] static constexpr moss::kernel::usize pool_size() noexcept {
-    return PoolSize;
-  }
+  [[nodiscard]] static constexpr moss::kernel::usize pool_size() noexcept { return PoolSize; }
 };
 
 // MPMC (Multiple Producer Multiple Consumer) queue
-template <typename T, moss::kernel::usize NumConsumers,
-          moss::kernel::usize QueueCapacity>
-  requires(QueueCapacity > 0 && (QueueCapacity & (QueueCapacity - 1)) == 0) &&
-          (NumConsumers > 0)
+template <typename T, moss::kernel::usize NumConsumers, moss::kernel::usize QueueCapacity>
+  requires(QueueCapacity > 0 && (QueueCapacity & (QueueCapacity - 1)) == 0) && (NumConsumers > 0)
 class MPMCQueue {
 private:
   SPSCQueue<T, QueueCapacity> queues_[NumConsumers];
@@ -520,8 +455,7 @@ public:
   MPMCQueue &operator=(MPMCQueue &&) = delete;
 
   template <typename U> [[nodiscard]] bool try_enqueue(U &&item) noexcept {
-    const moss::kernel::usize start_idx =
-        round_robin_counter_.fetch_add(1, MemoryOrder::Relaxed) % NumConsumers;
+    const moss::kernel::usize start_idx = round_robin_counter_.fetch_add(1, MemoryOrder::Relaxed) % NumConsumers;
 
     for (moss::kernel::usize i = 0; i < NumConsumers; ++i) {
       moss::kernel::usize queue_idx = (start_idx + i) % NumConsumers;
@@ -532,8 +466,7 @@ public:
     return false;
   }
 
-  [[nodiscard]] bool try_dequeue(moss::kernel::usize consumer_id,
-                                 T &result) noexcept {
+  [[nodiscard]] bool try_dequeue(moss::kernel::usize consumer_id, T &result) noexcept {
     if (consumer_id >= NumConsumers) {
       return false;
     }
@@ -541,8 +474,7 @@ public:
   }
 
   [[nodiscard]] bool try_dequeue_any(T &result) noexcept {
-    const moss::kernel::usize start_idx =
-        moss::kernel::arch::get_current_cpu_id() % NumConsumers;
+    const moss::kernel::usize start_idx = moss::kernel::arch::get_current_cpu_id() % NumConsumers;
 
     for (moss::kernel::usize i = 0; i < NumConsumers; ++i) {
       moss::kernel::usize queue_idx = (start_idx + i) % NumConsumers;
@@ -623,17 +555,11 @@ public:
 
   [[nodiscard]] T &get_local() noexcept { return data_[get_current_cpu_id()].value; }
 
-  [[nodiscard]] const T &get_local() const noexcept {
-    return data_[get_current_cpu_id()].value;
-  }
+  [[nodiscard]] const T &get_local() const noexcept { return data_[get_current_cpu_id()].value; }
 
-  [[nodiscard]] T &get_cpu(moss::kernel::usize cpu_id) noexcept {
-    return data_[cpu_id % MAX_CPUS].value;
-  }
+  [[nodiscard]] T &get_cpu(moss::kernel::usize cpu_id) noexcept { return data_[cpu_id % MAX_CPUS].value; }
 
-  [[nodiscard]] const T &get_cpu(moss::kernel::usize cpu_id) const noexcept {
-    return data_[cpu_id % MAX_CPUS].value;
-  }
+  [[nodiscard]] const T &get_cpu(moss::kernel::usize cpu_id) const noexcept { return data_[cpu_id % MAX_CPUS].value; }
 
   template <typename Func> void for_each_cpu(Func &&func) {
     for (moss::kernel::usize i = 0; i < MAX_CPUS; ++i) {
@@ -666,8 +592,7 @@ public:
 
 private:
   [[nodiscard]] static moss::kernel::usize get_current_cpu_id() noexcept {
-    return static_cast<moss::kernel::usize>(
-        moss::kernel::arch::get_current_cpu_id());
+    return static_cast<moss::kernel::usize>(moss::kernel::arch::get_current_cpu_id());
   }
 };
 
@@ -687,22 +612,17 @@ public:
     return counters_.get_local().value.fetch_sub(value, MemoryOrder::Relaxed);
   }
 
-  [[nodiscard]] T load_local() const noexcept {
-    return counters_.get_local().value.load(MemoryOrder::Relaxed);
-  }
+  [[nodiscard]] T load_local() const noexcept { return counters_.get_local().value.load(MemoryOrder::Relaxed); }
 
   [[nodiscard]] T load_total() const noexcept {
     T total = 0;
-    counters_.for_each_cpu([&total](moss::kernel::usize, const auto &counter) {
-      total += counter.value.load(MemoryOrder::Relaxed);
-    });
+    counters_.for_each_cpu(
+        [&total](moss::kernel::usize, const auto &counter) { total += counter.value.load(MemoryOrder::Relaxed); });
     return total;
   }
 
   void reset_all() noexcept {
-    counters_.for_each_cpu([](moss::kernel::usize, auto &counter) {
-      counter.value.store(0, MemoryOrder::Relaxed);
-    });
+    counters_.for_each_cpu([](moss::kernel::usize, auto &counter) { counter.value.store(0, MemoryOrder::Relaxed); });
   }
 
   [[nodiscard]] T operator++() noexcept { return fetch_add_local() + 1; }
@@ -724,44 +644,33 @@ public:
 };
 
 // Per-CPU work queue
-template <typename T, moss::kernel::usize QueueSize = 256>
-class PerCpuWorkQueue {
+template <typename T, moss::kernel::usize QueueSize = 256> class PerCpuWorkQueue {
 private:
   PerCpuData<T> data_;
 
 public:
   constexpr PerCpuWorkQueue() noexcept = default;
 
-  [[nodiscard]] bool enqueue_local(const T &item) noexcept {
-    return data_.get_local().try_enqueue(item);
-  }
+  [[nodiscard]] bool enqueue_local(const T &item) noexcept { return data_.get_local().try_enqueue(item); }
 
-  [[nodiscard]] bool enqueue_local(T &&item) noexcept {
-    return data_.get_local().try_enqueue(static_cast<T &&>(item));
-  }
+  [[nodiscard]] bool enqueue_local(T &&item) noexcept { return data_.get_local().try_enqueue(static_cast<T &&>(item)); }
 
-  [[nodiscard]] bool dequeue_local(T &result) noexcept {
-    return data_.get_local().try_dequeue(result);
-  }
+  [[nodiscard]] bool dequeue_local(T &result) noexcept { return data_.get_local().try_dequeue(result); }
 
-  [[nodiscard]] bool enqueue_to_cpu(moss::kernel::usize cpu_id,
-                                    const T &item) noexcept {
+  [[nodiscard]] bool enqueue_to_cpu(moss::kernel::usize cpu_id, const T &item) noexcept {
     return data_.get_cpu(cpu_id).try_enqueue(item);
   }
 
-  [[nodiscard]] bool enqueue_to_cpu(moss::kernel::usize cpu_id,
-                                    T &&item) noexcept {
+  [[nodiscard]] bool enqueue_to_cpu(moss::kernel::usize cpu_id, T &&item) noexcept {
     return data_.get_cpu(cpu_id).try_enqueue(static_cast<T &&>(item));
   }
 
-  [[nodiscard]] bool dequeue_from_cpu(moss::kernel::usize cpu_id,
-                                      T &result) noexcept {
+  [[nodiscard]] bool dequeue_from_cpu(moss::kernel::usize cpu_id, T &result) noexcept {
     return data_.get_cpu(cpu_id).try_dequeue(result);
   }
 
   [[nodiscard]] bool steal_work(T &result) noexcept {
-    moss::kernel::usize current_cpu = static_cast<moss::kernel::usize>(
-        moss::kernel::arch::get_current_cpu_id());
+    moss::kernel::usize current_cpu = static_cast<moss::kernel::usize>(moss::kernel::arch::get_current_cpu_id());
 
     for (moss::kernel::usize i = 1; i < MAX_CPUS; ++i) {
       moss::kernel::usize target_cpu = (current_cpu + i) % MAX_CPUS;
@@ -772,9 +681,7 @@ public:
     return false;
   }
 
-  [[nodiscard]] bool empty_local() const noexcept {
-    return data_.get_local().empty();
-  }
+  [[nodiscard]] bool empty_local() const noexcept { return data_.get_local().empty(); }
 
   [[nodiscard]] bool empty_all() const noexcept {
     bool all_empty = true;
@@ -789,9 +696,7 @@ public:
   [[nodiscard]] moss::kernel::usize approximate_total_size() const noexcept {
     moss::kernel::usize total_size = 0;
     data_.for_each_cpu(
-        [&total_size](moss::kernel::usize, const auto &queue) {
-          total_size += queue.approximate_size();
-        });
+        [&total_size](moss::kernel::usize, const auto &queue) { total_size += queue.approximate_size(); });
     return total_size;
   }
 };
@@ -802,8 +707,7 @@ struct RcuCallback {
   u64 grace_period;
 
   RcuCallback() noexcept : callback(nullptr), grace_period(0) {}
-  RcuCallback(void (*func)(), u64 gp) noexcept
-      : callback(func), grace_period(gp) {}
+  RcuCallback(void (*func)(), u64 gp) noexcept : callback(func), grace_period(gp) {}
 };
 
 class PerCpuRcuCallbacks {
@@ -874,9 +778,7 @@ public:
     }
   }
 
-  void advance_grace_period() noexcept {
-    (void)grace_period_counter_.fetch_add_local(1);
-  }
+  void advance_grace_period() noexcept { (void)grace_period_counter_.fetch_add_local(1); }
 };
 
 // Per-CPU type aliases
@@ -909,22 +811,22 @@ struct RcuDeferredEntry {
 };
 
 namespace rcu_detail {
-  inline constexpr moss::kernel::usize RCU_POOL_SIZE = 512;
+inline constexpr moss::kernel::usize RCU_POOL_SIZE = 512;
 
-  struct alignas(16) RcuNodePool {
-    RcuDeferredEntry nodes[RCU_POOL_SIZE];
-    bool used[RCU_POOL_SIZE];
-    IrqSpinLock pool_lock;
+struct alignas(16) RcuNodePool {
+  RcuDeferredEntry nodes[RCU_POOL_SIZE];
+  bool used[RCU_POOL_SIZE];
+  IrqSpinLock pool_lock;
 
-    constexpr RcuNodePool() noexcept : nodes{}, used{}, pool_lock{} {}
-  };
+  constexpr RcuNodePool() noexcept : nodes{}, used{}, pool_lock{} {}
+};
 
-  // All storage is constinit — zero/constant-initialized at load time,
-  // no runtime guard needed.
-  constinit inline RcuNodePool g_rcu_pool{};
-  constinit inline RcuDeferredEntry *g_rcu_pending = nullptr;
-  constinit inline moss::kernel::usize g_rcu_pending_count = 0;
-  constinit inline IrqSpinLock g_rcu_lock{};
+// All storage is constinit — zero/constant-initialized at load time,
+// no runtime guard needed.
+constinit inline RcuNodePool g_rcu_pool{};
+constinit inline RcuDeferredEntry *g_rcu_pending = nullptr;
+constinit inline moss::kernel::usize g_rcu_pending_count = 0;
+constinit inline IrqSpinLock g_rcu_lock{};
 } // namespace rcu_detail
 
 class RcuCallbackQueue {
@@ -970,9 +872,7 @@ public:
     }
   }
 
-  [[nodiscard]] static moss::kernel::usize pending_count() noexcept {
-    return rcu_detail::g_rcu_pending_count;
-  }
+  [[nodiscard]] static moss::kernel::usize pending_count() noexcept { return rcu_detail::g_rcu_pending_count; }
 
 private:
   static RcuDeferredEntry *alloc_node() noexcept {
@@ -996,9 +896,7 @@ private:
 };
 
 // Public API for draining RCU callbacks (called from scheduler/timer).
-inline void rcu_process_callbacks() noexcept {
-  RcuCallbackQueue::process_callbacks();
-}
+inline void rcu_process_callbacks() noexcept { RcuCallbackQueue::process_callbacks(); }
 
 // RCU read-side critical section guard
 class RcuReadLock {
@@ -1075,29 +973,22 @@ public:
   }
 
   [[nodiscard]] bool compare_exchange_rcu(T *&expected, T *desired) noexcept {
-    if (ptr_.compare_exchange_weak(expected, desired, MemoryOrder::Release,
-                                   MemoryOrder::Consume)) {
+    if (ptr_.compare_exchange_weak(expected, desired, MemoryOrder::Release, MemoryOrder::Consume)) {
       schedule_rcu_delete(expected);
       return true;
     }
     return false;
   }
 
-  [[nodiscard]] T *exchange(T *new_ptr,
-                            MemoryOrder order = MemoryOrder::AcqRel) noexcept {
+  [[nodiscard]] T *exchange(T *new_ptr, MemoryOrder order = MemoryOrder::AcqRel) noexcept {
     return ptr_.exchange(new_ptr, order);
   }
 
-  [[nodiscard]] T *
-  load(MemoryOrder order = MemoryOrder::Acquire) const noexcept {
-    return ptr_.load(order);
-  }
+  [[nodiscard]] T *load(MemoryOrder order = MemoryOrder::Acquire) const noexcept { return ptr_.load(order); }
 
 private:
   // Type-erased destructor: casts void* back to T* and deletes.
-  static void destroy_callback(void *ptr) noexcept {
-    delete static_cast<T *>(ptr);
-  }
+  static void destroy_callback(void *ptr) noexcept { delete static_cast<T *>(ptr); }
 
   // Enqueue deferred deletion of old_ptr via RcuCallbackQueue.
   static void schedule_rcu_delete(T *old_ptr) noexcept {
@@ -1113,8 +1004,7 @@ template <typename T> struct RcuListNode {
   T data;
 
   template <typename... Args>
-  constexpr RcuListNode(Args &&...args) noexcept(
-      moss::is_nothrow_constructible_v<T, Args...>)
+  constexpr RcuListNode(Args &&...args) noexcept(moss::is_nothrow_constructible_v<T, Args...>)
       : next(nullptr), data(moss::forward<Args>(args)...) {}
 };
 
@@ -1170,8 +1060,7 @@ public:
     return false;
   }
 
-  template <typename Predicate>
-  [[nodiscard]] const T *find_if(Predicate pred) const {
+  template <typename Predicate> [[nodiscard]] const T *find_if(Predicate pred) const {
     RcuReadLock read_lock;
 
     RcuListNode<T> *current = head_.load_rcu();
@@ -1198,9 +1087,7 @@ public:
     }
   }
 
-  [[nodiscard]] moss::kernel::usize size() const noexcept {
-    return size_.load(MemoryOrder::Relaxed);
-  }
+  [[nodiscard]] moss::kernel::usize size() const noexcept { return size_.load(MemoryOrder::Relaxed); }
 
   [[nodiscard]] bool empty() const noexcept {
     RcuReadLock read_lock;
@@ -1220,9 +1107,7 @@ public:
 
 private:
   // Type-erased destructor for RcuListNode<T>.
-  static void destroy_node(void *ptr) noexcept {
-    delete static_cast<RcuListNode<T> *>(ptr);
-  }
+  static void destroy_node(void *ptr) noexcept { delete static_cast<RcuListNode<T> *>(ptr); }
 
   static void schedule_rcu_delete(RcuListNode<T> *ptr) noexcept {
     if (ptr != nullptr) {
@@ -1241,14 +1126,12 @@ private:
 // sleep()/wake logic that calls scheduler APIs lives in kernel module
 // bridge functions.
 struct WaitQueueEntry {
-    void* thread;   // Actually Thread*, but opaque to avoid module cycle
+  void *thread; // Actually Thread*, but opaque to avoid module cycle
 
-    WaitQueueEntry() noexcept : thread(nullptr) {}
-    explicit WaitQueueEntry(void* t) noexcept : thread(t) {}
+  WaitQueueEntry() noexcept : thread(nullptr) {}
+  explicit WaitQueueEntry(void *t) noexcept : thread(t) {}
 
-    bool operator==(const WaitQueueEntry& other) const noexcept {
-        return thread == other.thread;
-    }
+  bool operator==(const WaitQueueEntry &other) const noexcept { return thread == other.thread; }
 };
 
 // WaitQueue: a list of threads waiting for an event.
@@ -1256,53 +1139,42 @@ struct WaitQueueEntry {
 // so it is implemented as bridge functions in the kernel module.
 class WaitQueue {
 private:
-    RcuList<WaitQueueEntry> waiters_;
+  RcuList<WaitQueueEntry> waiters_;
 
 public:
-    constexpr WaitQueue() noexcept = default;
+  constexpr WaitQueue() noexcept = default;
 
-    WaitQueue(const WaitQueue&) = delete;
-    WaitQueue& operator=(const WaitQueue&) = delete;
-    WaitQueue(WaitQueue&&) = delete;
-    WaitQueue& operator=(WaitQueue&&) = delete;
+  WaitQueue(const WaitQueue &) = delete;
+  WaitQueue &operator=(const WaitQueue &) = delete;
+  WaitQueue(WaitQueue &&) = delete;
+  WaitQueue &operator=(WaitQueue &&) = delete;
 
-    // Add a thread to the wait queue
-    void add_waiter(void* thread) {
-        waiters_.push_front(WaitQueueEntry(thread));
-    }
+  // Add a thread to the wait queue
+  void add_waiter(void *thread) { waiters_.push_front(WaitQueueEntry(thread)); }
 
-    // Remove a specific thread from the wait queue
-    void remove_waiter(void* thread) {
-        RcuReadLock lock;
-        waiters_.remove(WaitQueueEntry(thread));
-    }
+  // Remove a specific thread from the wait queue
+  void remove_waiter(void *thread) {
+    RcuReadLock lock;
+    waiters_.remove(WaitQueueEntry(thread));
+  }
 
-    // Iterate over all waiters and call func(void* thread) for each.
-    // The kernel module uses this to set state=Ready and enqueue each thread.
-    template <typename Func>
-    void for_each_waiter(Func func) const {
-        waiters_.for_each([&func](const WaitQueueEntry& entry) {
-            func(entry.thread);
-        });
-    }
+  // Iterate over all waiters and call func(void* thread) for each.
+  // The kernel module uses this to set state=Ready and enqueue each thread.
+  template <typename Func> void for_each_waiter(Func func) const {
+    waiters_.for_each([&func](const WaitQueueEntry &entry) { func(entry.thread); });
+  }
 
-    // Check if any threads are waiting
-    [[nodiscard]] bool has_waiters() const noexcept {
-        return !waiters_.empty();
-    }
+  // Check if any threads are waiting
+  [[nodiscard]] bool has_waiters() const noexcept { return !waiters_.empty(); }
 
-    // Clear all waiters (used during teardown)
-    void clear() {
-        waiters_.clear();
-    }
+  // Clear all waiters (used during teardown)
+  void clear() { waiters_.clear(); }
 };
 
 // RCU-protected hash map
-template <typename Key, typename Value, moss::kernel::usize BucketCount = 256>
-class RcuHashMap {
+template <typename Key, typename Value, moss::kernel::usize BucketCount = 256> class RcuHashMap {
 private:
-  static_assert((BucketCount & (BucketCount - 1)) == 0,
-                "BucketCount must be power of 2");
+  static_assert((BucketCount & (BucketCount - 1)) == 0, "BucketCount must be power of 2");
   static constexpr moss::kernel::usize BUCKET_MASK = BucketCount - 1;
 
   struct Entry {
@@ -1310,14 +1182,11 @@ private:
     Value value;
 
     template <typename K, typename V>
-    Entry(K &&k, V &&v) noexcept(
-        moss::is_nothrow_constructible_v<Key, K &&> &&
-        moss::is_nothrow_constructible_v<Value, V &&>)
+    Entry(K &&k,
+          V &&v) noexcept(moss::is_nothrow_constructible_v<Key, K &&> && moss::is_nothrow_constructible_v<Value, V &&>)
         : key(moss::forward<K>(k)), value(moss::forward<V>(v)) {}
 
-    bool operator==(const Entry &other) const noexcept {
-      return key == other.key;
-    }
+    bool operator==(const Entry &other) const noexcept { return key == other.key; }
   };
 
   RcuList<Entry> buckets_[BucketCount];
@@ -1327,18 +1196,15 @@ private:
 public:
   constexpr RcuHashMap() noexcept : size_(0), write_lock_{} {}
 
-  template <typename K, typename V>
-  void insert_or_update(K &&key, V &&value) {
-    moss::kernel::containers::LockGuard<moss::kernel::containers::IrqSpinLock>
-        guard(write_lock_);
+  template <typename K, typename V> void insert_or_update(K &&key, V &&value) {
+    moss::kernel::containers::LockGuard<moss::kernel::containers::IrqSpinLock> guard(write_lock_);
 
     moss::kernel::usize bucket_idx = hash_key(key) & BUCKET_MASK;
 
     bool replaced = false;
     {
       RcuReadLock read_lock;
-      const Entry *existing = buckets_[bucket_idx].find_if(
-          [&key](const Entry &entry) { return entry.key == key; });
+      const Entry *existing = buckets_[bucket_idx].find_if([&key](const Entry &entry) { return entry.key == key; });
 
       if (existing != nullptr) {
         buckets_[bucket_idx].remove(*existing);
@@ -1346,8 +1212,7 @@ public:
       }
     }
 
-    buckets_[bucket_idx].push_front(static_cast<K &&>(key),
-                                    static_cast<V &&>(value));
+    buckets_[bucket_idx].push_front(static_cast<K &&>(key), static_cast<V &&>(value));
     if (!replaced) {
       (void)size_.fetch_add(1, MemoryOrder::Relaxed);
     }
@@ -1356,15 +1221,13 @@ public:
   template <typename K> [[nodiscard]] const Value *find(const K &key) const {
     moss::kernel::usize bucket_idx = hash_key(key) & BUCKET_MASK;
 
-    const Entry *entry = buckets_[bucket_idx].find_if(
-        [&key](const Entry &e) { return e.key == key; });
+    const Entry *entry = buckets_[bucket_idx].find_if([&key](const Entry &e) { return e.key == key; });
 
     return entry ? &entry->value : nullptr;
   }
 
   template <typename K> bool remove(const K &key) {
-    moss::kernel::containers::LockGuard<moss::kernel::containers::IrqSpinLock>
-        guard(write_lock_);
+    moss::kernel::containers::LockGuard<moss::kernel::containers::IrqSpinLock> guard(write_lock_);
 
     moss::kernel::usize bucket_idx = hash_key(key) & BUCKET_MASK;
 
@@ -1379,9 +1242,7 @@ public:
     return removed;
   }
 
-  [[nodiscard]] moss::kernel::usize size() const noexcept {
-    return size_.load(MemoryOrder::Relaxed);
-  }
+  [[nodiscard]] moss::kernel::usize size() const noexcept { return size_.load(MemoryOrder::Relaxed); }
 
   [[nodiscard]] bool empty() const noexcept { return size() == 0; }
 
@@ -1398,8 +1259,7 @@ public:
   }
 
 private:
-  template <typename K>
-  [[nodiscard]] static moss::kernel::usize hash_key(const K &key) noexcept {
+  template <typename K> [[nodiscard]] static moss::kernel::usize hash_key(const K &key) noexcept {
     moss::kernel::usize hash = 2166136261u;
     const u8 *data = reinterpret_cast<const u8 *>(&key);
     for (moss::kernel::usize i = 0; i < sizeof(K); ++i) {
@@ -1412,8 +1272,7 @@ private:
 
 // RCU type aliases
 using ProcessList = RcuList<moss::kernel::ProcessId>;
-using DeviceRegistry =
-    RcuHashMap<moss::kernel::DeviceId, moss::kernel::VirtAddr>;
+using DeviceRegistry = RcuHashMap<moss::kernel::DeviceId, moss::kernel::VirtAddr>;
 
 } // namespace moss::kernel::containers
 
@@ -1423,33 +1282,22 @@ using DeviceRegistry =
 export namespace moss::kernel::containers {
 
 // Kernel utility function
-template <typename T>
-constexpr const T &kernel_max(const T &a, const T &b) noexcept {
-  return (a < b) ? b : a;
-}
+template <typename T> constexpr const T &kernel_max(const T &a, const T &b) noexcept { return (a < b) ? b : a; }
 
 // Slab allocator error codes
-enum class SlabError : u32 {
-  OutOfMemory = 1,
-  InvalidSize = 2,
-  DoubleFree = 3,
-  CorruptedSlab = 4
-};
+enum class SlabError : u32 { OutOfMemory = 1, InvalidSize = 2, DoubleFree = 3, CorruptedSlab = 4 };
 
 // Slab result types
 template <typename T> using SlabResult = moss::kernel::Result<T, SlabError>;
 using SlabVoidResult = moss::kernel::Result<void, SlabError>;
 
 // Memory alignment utilities
-template <moss::kernel::usize Alignment>
-constexpr moss::kernel::usize align_up(moss::kernel::usize value) noexcept {
-  static_assert((Alignment & (Alignment - 1)) == 0,
-                "Alignment must be power of 2");
+template <moss::kernel::usize Alignment> constexpr moss::kernel::usize align_up(moss::kernel::usize value) noexcept {
+  static_assert((Alignment & (Alignment - 1)) == 0, "Alignment must be power of 2");
   return (value + Alignment - 1) & ~(Alignment - 1);
 }
 
-constexpr bool is_aligned(moss::kernel::usize value,
-                          moss::kernel::usize alignment) noexcept {
+constexpr bool is_aligned(moss::kernel::usize value, moss::kernel::usize alignment) noexcept {
   return (value & (alignment - 1)) == 0;
 }
 
@@ -1462,10 +1310,9 @@ struct SlabPage {
   moss::kernel::containers::AtomicPtr<u8> free_list;
   moss::kernel::containers::AtomicPtr<SlabPage> next;
 
-  SlabPage(void *mem, moss::kernel::usize obj_size,
-           moss::kernel::usize obj_per_page) noexcept
-      : memory(mem), object_size(obj_size), objects_per_page(obj_per_page),
-        free_count(obj_per_page), free_list(nullptr), next(nullptr) {
+  SlabPage(void *mem, moss::kernel::usize obj_size, moss::kernel::usize obj_per_page) noexcept
+      : memory(mem), object_size(obj_size), objects_per_page(obj_per_page), free_count(obj_per_page),
+        free_list(nullptr), next(nullptr) {
     initialize_free_list();
   }
 
@@ -1498,18 +1345,14 @@ private:
   moss::kernel::containers::AtomicPtr<SlabPage> empty_pages_;
 
   moss::kernel::containers::AtomicCounter<moss::kernel::usize> total_objects_;
-  moss::kernel::containers::AtomicCounter<moss::kernel::usize>
-      allocated_objects_;
+  moss::kernel::containers::AtomicCounter<moss::kernel::usize> allocated_objects_;
 
 public:
-  SlabCache(moss::kernel::usize object_size,
-            moss::kernel::usize alignment = alignof(void *)) noexcept
+  SlabCache(moss::kernel::usize object_size, moss::kernel::usize alignment = alignof(void *)) noexcept
       : object_size_(object_size), object_alignment_(alignment),
-        aligned_object_size_(align_up<alignof(void *)>(
-            kernel_max<moss::kernel::usize>(object_size, sizeof(void *)))),
-        objects_per_page_(moss::kernel::PAGE_SIZE / aligned_object_size_),
-        full_pages_(nullptr), partial_pages_(nullptr), empty_pages_(nullptr),
-        total_objects_(0), allocated_objects_(0) {}
+        aligned_object_size_(align_up<alignof(void *)>(kernel_max<moss::kernel::usize>(object_size, sizeof(void *)))),
+        objects_per_page_(moss::kernel::PAGE_SIZE / aligned_object_size_), full_pages_(nullptr),
+        partial_pages_(nullptr), empty_pages_(nullptr), total_objects_(0), allocated_objects_(0) {}
 
   ~SlabCache() noexcept {
     free_page_list(full_pages_.load(moss::MemoryOrder::Relaxed));
@@ -1547,12 +1390,10 @@ public:
 
     do {
       *obj_ptr = current_free;
-    } while (!page->free_list.compare_exchange_weak(
-        current_free, static_cast<u8 *>(ptr), moss::MemoryOrder::Release,
-        moss::MemoryOrder::Relaxed));
+    } while (!page->free_list.compare_exchange_weak(current_free, static_cast<u8 *>(ptr), moss::MemoryOrder::Release,
+                                                    moss::MemoryOrder::Relaxed));
 
-    moss::kernel::usize new_free_count =
-        page->free_count.fetch_add(1, moss::MemoryOrder::AcqRel) + 1;
+    moss::kernel::usize new_free_count = page->free_count.fetch_add(1, moss::MemoryOrder::AcqRel) + 1;
     (void)allocated_objects_.fetch_sub(1, moss::MemoryOrder::Relaxed);
 
     if (new_free_count == page->objects_per_page) {
@@ -1572,9 +1413,7 @@ public:
     return allocated_objects_.load(moss::MemoryOrder::Relaxed);
   }
 
-  [[nodiscard]] moss::kernel::usize object_size() const noexcept {
-    return object_size_;
-  }
+  [[nodiscard]] moss::kernel::usize object_size() const noexcept { return object_size_; }
 
   // Returns utilization as a percentage (0-100)
   [[nodiscard]] moss::kernel::usize utilization() const noexcept {
@@ -1594,8 +1433,7 @@ private:
   }
 
   [[nodiscard]] SlabResult<void *> allocate_from_empty() noexcept {
-    SlabPage *page =
-        empty_pages_.exchange(nullptr, moss::MemoryOrder::AcqRel);
+    SlabPage *page = empty_pages_.exchange(nullptr, moss::MemoryOrder::AcqRel);
     if (page == nullptr) {
       return SlabResult<void *>{moss::kernel::Err<SlabError>(SlabError::OutOfMemory)};
     }
@@ -1609,17 +1447,14 @@ private:
       return SlabResult<void *>{moss::kernel::Err<SlabError>(SlabError::OutOfMemory)};
     }
 
-    SlabPage *new_page =
-        new SlabPage(page_memory, aligned_object_size_, objects_per_page_);
-    (void)total_objects_.fetch_add(objects_per_page_,
-                                   moss::MemoryOrder::Relaxed);
+    SlabPage *new_page = new SlabPage(page_memory, aligned_object_size_, objects_per_page_);
+    (void)total_objects_.fetch_add(objects_per_page_, moss::MemoryOrder::Relaxed);
 
     move_page_to_partial(new_page);
     return allocate_from_page(new_page);
   }
 
-  [[nodiscard]] SlabResult<void *>
-  allocate_from_page(SlabPage *page) noexcept {
+  [[nodiscard]] SlabResult<void *> allocate_from_page(SlabPage *page) noexcept {
     u8 *current_free = page->free_list.load(moss::MemoryOrder::Acquire);
     if (current_free == nullptr) {
       return SlabResult<void *>{moss::kernel::Err<SlabError>(SlabError::OutOfMemory)};
@@ -1631,12 +1466,10 @@ private:
         return SlabResult<void *>{moss::kernel::Err<SlabError>(SlabError::OutOfMemory)};
       }
       next_free = *reinterpret_cast<u8 **>(current_free);
-    } while (!page->free_list.compare_exchange_weak(
-        current_free, next_free, moss::MemoryOrder::AcqRel,
-        moss::MemoryOrder::Acquire));
+    } while (!page->free_list.compare_exchange_weak(current_free, next_free, moss::MemoryOrder::AcqRel,
+                                                    moss::MemoryOrder::Acquire));
 
-    moss::kernel::usize new_free_count =
-        page->free_count.fetch_sub(1, moss::MemoryOrder::AcqRel) - 1;
+    moss::kernel::usize new_free_count = page->free_count.fetch_sub(1, moss::MemoryOrder::AcqRel) - 1;
     (void)allocated_objects_.fetch_add(1, moss::MemoryOrder::Relaxed);
 
     if (new_free_count == 0) {
@@ -1650,26 +1483,20 @@ private:
     moss::kernel::usize ptr_addr = reinterpret_cast<moss::kernel::usize>(ptr);
     moss::kernel::usize page_addr = ptr_addr & ~(moss::kernel::PAGE_SIZE - 1);
 
-    if (auto page = find_in_page_list(
-            full_pages_.load(moss::MemoryOrder::Acquire), page_addr)) {
+    if (auto page = find_in_page_list(full_pages_.load(moss::MemoryOrder::Acquire), page_addr)) {
       return page;
     }
-    if (auto page = find_in_page_list(
-            partial_pages_.load(moss::MemoryOrder::Acquire), page_addr)) {
+    if (auto page = find_in_page_list(partial_pages_.load(moss::MemoryOrder::Acquire), page_addr)) {
       return page;
     }
-    return find_in_page_list(empty_pages_.load(moss::MemoryOrder::Acquire),
-                             page_addr);
+    return find_in_page_list(empty_pages_.load(moss::MemoryOrder::Acquire), page_addr);
   }
 
-  [[nodiscard]] SlabPage *
-  find_in_page_list(SlabPage *head,
-                    moss::kernel::usize page_addr) const noexcept {
+  [[nodiscard]] SlabPage *find_in_page_list(SlabPage *head, moss::kernel::usize page_addr) const noexcept {
     SlabPage *current = head;
     while (current != nullptr) {
       moss::kernel::usize current_page_addr =
-          reinterpret_cast<moss::kernel::usize>(current->memory) &
-          ~(moss::kernel::PAGE_SIZE - 1);
+          reinterpret_cast<moss::kernel::usize>(current->memory) & ~(moss::kernel::PAGE_SIZE - 1);
       if (current_page_addr == page_addr) {
         return current;
       }
@@ -1682,27 +1509,24 @@ private:
     SlabPage *old_head = partial_pages_.load(moss::MemoryOrder::Relaxed);
     do {
       page->next.store(old_head, moss::MemoryOrder::Relaxed);
-    } while (!partial_pages_.compare_exchange_weak(
-        old_head, page, moss::MemoryOrder::Release,
-        moss::MemoryOrder::Relaxed));
+    } while (
+        !partial_pages_.compare_exchange_weak(old_head, page, moss::MemoryOrder::Release, moss::MemoryOrder::Relaxed));
   }
 
   void move_page_to_full(SlabPage *page) noexcept {
     SlabPage *old_head = full_pages_.load(moss::MemoryOrder::Relaxed);
     do {
       page->next.store(old_head, moss::MemoryOrder::Relaxed);
-    } while (!full_pages_.compare_exchange_weak(
-        old_head, page, moss::MemoryOrder::Release,
-        moss::MemoryOrder::Relaxed));
+    } while (
+        !full_pages_.compare_exchange_weak(old_head, page, moss::MemoryOrder::Release, moss::MemoryOrder::Relaxed));
   }
 
   void move_page_to_empty(SlabPage *page) noexcept {
     SlabPage *old_head = empty_pages_.load(moss::MemoryOrder::Relaxed);
     do {
       page->next.store(old_head, moss::MemoryOrder::Relaxed);
-    } while (!empty_pages_.compare_exchange_weak(
-        old_head, page, moss::MemoryOrder::Release,
-        moss::MemoryOrder::Relaxed));
+    } while (
+        !empty_pages_.compare_exchange_weak(old_head, page, moss::MemoryOrder::Release, moss::MemoryOrder::Relaxed));
   }
 
   void move_page_from_partial_to_full(SlabPage *page) noexcept {
@@ -1715,9 +1539,7 @@ private:
     move_page_to_partial(page);
   }
 
-  void remove_page_from_list(
-      moss::kernel::containers::AtomicPtr<SlabPage> &head,
-      SlabPage *page) noexcept {
+  void remove_page_from_list(moss::kernel::containers::AtomicPtr<SlabPage> &head, SlabPage *page) noexcept {
     // CAS-based removal from singly-linked list with retry.
     // Retry loop handles concurrent modifications to head or prev->next.
     constexpr int MAX_RETRIES = 16;
@@ -1726,9 +1548,7 @@ private:
       SlabPage *expected = page;
       // Re-load page->next inside the retry loop to avoid stale values.
       SlabPage *page_next = page->next.load(moss::MemoryOrder::Acquire);
-      if (head.compare_exchange_strong(expected, page_next,
-                                        moss::MemoryOrder::AcqRel,
-                                        moss::MemoryOrder::Acquire)) {
+      if (head.compare_exchange_strong(expected, page_next, moss::MemoryOrder::AcqRel, moss::MemoryOrder::Acquire)) {
         page->next.store(nullptr, moss::MemoryOrder::Relaxed);
         return;
       }
@@ -1740,9 +1560,7 @@ private:
         if (curr == page) {
           // Re-load page->next right before CAS to minimise TOCTOU window.
           SlabPage *next = page->next.load(moss::MemoryOrder::Acquire);
-          if (prev->next.compare_exchange_strong(curr, next,
-                                                  moss::MemoryOrder::AcqRel,
-                                                  moss::MemoryOrder::Acquire)) {
+          if (prev->next.compare_exchange_strong(curr, next, moss::MemoryOrder::AcqRel, moss::MemoryOrder::Acquire)) {
             page->next.store(nullptr, moss::MemoryOrder::Relaxed);
             return;
           }
@@ -1815,8 +1633,7 @@ public:
   SlabAllocator(SlabAllocator &&) = delete;
   SlabAllocator &operator=(SlabAllocator &&) = delete;
 
-  [[nodiscard]] SlabResult<void *>
-  allocate(moss::kernel::usize size) noexcept {
+  [[nodiscard]] SlabResult<void *> allocate(moss::kernel::usize size) noexcept {
     moss::kernel::usize cache_index = find_cache_index(size);
     if (cache_index >= NUM_CACHES) {
       return SlabResult<void *>{moss::kernel::Err<SlabError>(SlabError::InvalidSize)};
@@ -1832,8 +1649,7 @@ public:
     return SlabResult<T *>{static_cast<T *>(*result)};
   }
 
-  [[nodiscard]] SlabVoidResult deallocate(void *ptr,
-                                          moss::kernel::usize size) noexcept {
+  [[nodiscard]] SlabVoidResult deallocate(void *ptr, moss::kernel::usize size) noexcept {
     if (ptr == nullptr) {
       return SlabVoidResult{};
     }
@@ -1845,10 +1661,7 @@ public:
     return caches_[cache_index]->deallocate(ptr);
   }
 
-  template <typename T>
-  [[nodiscard]] SlabVoidResult deallocate(T *ptr) noexcept {
-    return deallocate(ptr, sizeof(T));
-  }
+  template <typename T> [[nodiscard]] SlabVoidResult deallocate(T *ptr) noexcept { return deallocate(ptr, sizeof(T)); }
 
   void get_statistics() const noexcept {
     for (moss::kernel::usize i = 0; i < NUM_CACHES; ++i) {
@@ -1859,8 +1672,7 @@ public:
   }
 
 private:
-  [[nodiscard]] moss::kernel::usize
-  find_cache_index(moss::kernel::usize size) const noexcept {
+  [[nodiscard]] moss::kernel::usize find_cache_index(moss::kernel::usize size) const noexcept {
     for (moss::kernel::usize i = 0; i < NUM_CACHES; ++i) {
       if (cache_sizes_[i] >= size) {
         return i;
@@ -1874,8 +1686,7 @@ private:
 extern SlabAllocator *g_slab_allocator;
 
 // Convenience functions
-template <typename T, typename... Args>
-[[nodiscard]] SlabResult<T *> slab_new(Args &&...args) noexcept {
+template <typename T, typename... Args> [[nodiscard]] SlabResult<T *> slab_new(Args &&...args) noexcept {
   auto ptr_result = g_slab_allocator->allocate<T>();
   if (!ptr_result) {
     return SlabResult<T *>{moss::kernel::Err<SlabError>(ptr_result.error())};
@@ -1886,8 +1697,7 @@ template <typename T, typename... Args>
   return SlabResult<T *>{ptr};
 }
 
-template <typename T>
-[[nodiscard]] SlabVoidResult slab_delete(T *ptr) noexcept {
+template <typename T> [[nodiscard]] SlabVoidResult slab_delete(T *ptr) noexcept {
   if (ptr != nullptr) {
     ptr->~T();
     return g_slab_allocator->deallocate(ptr);
@@ -1911,29 +1721,21 @@ private:
 public:
   constexpr Optional() noexcept : has_value_(false) {}
 
-  constexpr Optional(const T &value) noexcept(
-      moss::is_nothrow_copy_constructible_v<T>)
-      : has_value_(true) {
+  constexpr Optional(const T &value) noexcept(moss::is_nothrow_copy_constructible_v<T>) : has_value_(true) {
     new (storage_) T(value);
   }
 
-  constexpr Optional(T &&value) noexcept(
-      moss::is_nothrow_move_constructible_v<T>)
-      : has_value_(true) {
+  constexpr Optional(T &&value) noexcept(moss::is_nothrow_move_constructible_v<T>) : has_value_(true) {
     new (storage_) T(moss::move(value));
   }
 
-  Optional(const Optional &other) noexcept(
-      moss::is_nothrow_copy_constructible_v<T>)
-      : has_value_(other.has_value_) {
+  Optional(const Optional &other) noexcept(moss::is_nothrow_copy_constructible_v<T>) : has_value_(other.has_value_) {
     if (has_value_) {
       new (storage_) T(other.value());
     }
   }
 
-  Optional(Optional &&other) noexcept(
-      moss::is_nothrow_move_constructible_v<T>)
-      : has_value_(other.has_value_) {
+  Optional(Optional &&other) noexcept(moss::is_nothrow_move_constructible_v<T>) : has_value_(other.has_value_) {
     if (has_value_) {
       new (storage_) T(moss::move(other.value()));
       other.reset();
@@ -1942,8 +1744,7 @@ public:
 
   ~Optional() noexcept { reset(); }
 
-  Optional &operator=(const Optional &other) noexcept(
-      moss::is_nothrow_copy_assignable_v<T>) {
+  Optional &operator=(const Optional &other) noexcept(moss::is_nothrow_copy_assignable_v<T>) {
     if (this != &other) {
       if (other.has_value_) {
         if (has_value_) {
@@ -1959,8 +1760,7 @@ public:
     return *this;
   }
 
-  Optional &operator=(Optional &&other) noexcept(
-      moss::is_nothrow_move_assignable_v<T>) {
+  Optional &operator=(Optional &&other) noexcept(moss::is_nothrow_move_assignable_v<T>) {
     if (this != &other) {
       if (other.has_value_) {
         if (has_value_) {
@@ -1977,45 +1777,27 @@ public:
     return *this;
   }
 
-  [[nodiscard]] constexpr bool has_value() const noexcept {
-    return has_value_;
-  }
+  [[nodiscard]] constexpr bool has_value() const noexcept { return has_value_; }
 
-  [[nodiscard]] constexpr explicit operator bool() const noexcept {
-    return has_value_;
-  }
+  [[nodiscard]] constexpr explicit operator bool() const noexcept { return has_value_; }
 
-  [[nodiscard]] constexpr T &value() & noexcept {
-    return *reinterpret_cast<T *>(storage_);
-  }
+  [[nodiscard]] constexpr T &value() & noexcept { return *reinterpret_cast<T *>(storage_); }
 
-  [[nodiscard]] constexpr const T &value() const & noexcept {
-    return *reinterpret_cast<const T *>(storage_);
-  }
+  [[nodiscard]] constexpr const T &value() const & noexcept { return *reinterpret_cast<const T *>(storage_); }
 
-  [[nodiscard]] constexpr T &&value() && noexcept {
-    return moss::move(*reinterpret_cast<T *>(storage_));
-  }
+  [[nodiscard]] constexpr T &&value() && noexcept { return moss::move(*reinterpret_cast<T *>(storage_)); }
 
   [[nodiscard]] constexpr const T &&value() const && noexcept {
     return moss::move(*reinterpret_cast<const T *>(storage_));
   }
 
   [[nodiscard]] constexpr T &operator*() & noexcept { return value(); }
-  [[nodiscard]] constexpr const T &operator*() const & noexcept {
-    return value();
-  }
-  [[nodiscard]] constexpr T &&operator*() && noexcept {
-    return moss::move(value());
-  }
-  [[nodiscard]] constexpr const T &&operator*() const && noexcept {
-    return moss::move(value());
-  }
+  [[nodiscard]] constexpr const T &operator*() const & noexcept { return value(); }
+  [[nodiscard]] constexpr T &&operator*() && noexcept { return moss::move(value()); }
+  [[nodiscard]] constexpr const T &&operator*() const && noexcept { return moss::move(value()); }
 
   [[nodiscard]] constexpr T *operator->() noexcept { return &value(); }
-  [[nodiscard]] constexpr const T *operator->() const noexcept {
-    return &value();
-  }
+  [[nodiscard]] constexpr const T *operator->() const noexcept { return &value(); }
 
   void reset() noexcept {
     if (has_value_) {
@@ -2024,9 +1806,7 @@ public:
     }
   }
 
-  template <typename... Args>
-  T &emplace(Args &&...args) noexcept(
-      moss::is_nothrow_constructible_v<T, Args...>) {
+  template <typename... Args> T &emplace(Args &&...args) noexcept(moss::is_nothrow_constructible_v<T, Args...>) {
     reset();
     new (storage_) T(moss::forward<Args>(args)...);
     has_value_ = true;

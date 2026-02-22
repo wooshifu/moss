@@ -22,12 +22,12 @@ import moss.platform;
 
 export namespace moss::kernel::hal::intc {
 
-using moss::u8;
 using moss::u32;
 using moss::u64;
+using moss::u8;
+using moss::kernel::ErrorCode;
 using moss::kernel::VirtAddr;
 using moss::kernel::VoidResult;
-using moss::kernel::ErrorCode;
 
 // ============================================================================
 // Interrupt controller register offsets — architecture-specific
@@ -36,64 +36,64 @@ using moss::kernel::ErrorCode;
 #if defined(MOSS_ARCH_ARM64)
 // GICv2 Distributor registers (offset from distributor base)
 namespace DistRegs {
-inline constexpr u32 CTLR       = 0x000;  // Distributor Control
-inline constexpr u32 TYPER      = 0x004;  // Interrupt Controller Type
-inline constexpr u32 IIDR       = 0x008;  // Distributor Implementer ID
-inline constexpr u32 IGROUPR    = 0x080;  // Interrupt Group (base)
-inline constexpr u32 ISENABLER  = 0x100;  // Interrupt Set-Enable (base)
-inline constexpr u32 ICENABLER  = 0x180;  // Interrupt Clear-Enable (base)
-inline constexpr u32 ISPENDR    = 0x200;  // Interrupt Set-Pending (base)
-inline constexpr u32 ICPENDR    = 0x280;  // Interrupt Clear-Pending (base)
-inline constexpr u32 ISACTIVER  = 0x300;  // Interrupt Set-Active (base)
-inline constexpr u32 ICACTIVER  = 0x380;  // Interrupt Clear-Active (base)
-inline constexpr u32 IPRIORITYR = 0x400;  // Interrupt Priority (base)
-inline constexpr u32 ITARGETSR  = 0x800;  // Interrupt Processor Targets (base)
-inline constexpr u32 ICFGR      = 0xC00;  // Interrupt Configuration (base)
-inline constexpr u32 SGIR       = 0xF00;  // Software Generated Interrupt
+inline constexpr u32 CTLR = 0x000;       // Distributor Control
+inline constexpr u32 TYPER = 0x004;      // Interrupt Controller Type
+inline constexpr u32 IIDR = 0x008;       // Distributor Implementer ID
+inline constexpr u32 IGROUPR = 0x080;    // Interrupt Group (base)
+inline constexpr u32 ISENABLER = 0x100;  // Interrupt Set-Enable (base)
+inline constexpr u32 ICENABLER = 0x180;  // Interrupt Clear-Enable (base)
+inline constexpr u32 ISPENDR = 0x200;    // Interrupt Set-Pending (base)
+inline constexpr u32 ICPENDR = 0x280;    // Interrupt Clear-Pending (base)
+inline constexpr u32 ISACTIVER = 0x300;  // Interrupt Set-Active (base)
+inline constexpr u32 ICACTIVER = 0x380;  // Interrupt Clear-Active (base)
+inline constexpr u32 IPRIORITYR = 0x400; // Interrupt Priority (base)
+inline constexpr u32 ITARGETSR = 0x800;  // Interrupt Processor Targets (base)
+inline constexpr u32 ICFGR = 0xC00;      // Interrupt Configuration (base)
+inline constexpr u32 SGIR = 0xF00;       // Software Generated Interrupt
 } // namespace DistRegs
 
 // GICv2 CPU Interface registers (offset from CPU interface base)
 namespace CpuRegs {
-inline constexpr u32 CTLR  = 0x000;  // CPU Interface Control
-inline constexpr u32 PMR   = 0x004;  // Priority Mask
-inline constexpr u32 BPR   = 0x008;  // Binary Point
-inline constexpr u32 IAR   = 0x00C;  // Interrupt Acknowledge
-inline constexpr u32 EOIR  = 0x010;  // End of Interrupt
-inline constexpr u32 RPR   = 0x014;  // Running Priority
-inline constexpr u32 HPPIR = 0x018;  // Highest Priority Pending Interrupt
+inline constexpr u32 CTLR = 0x000;  // CPU Interface Control
+inline constexpr u32 PMR = 0x004;   // Priority Mask
+inline constexpr u32 BPR = 0x008;   // Binary Point
+inline constexpr u32 IAR = 0x00C;   // Interrupt Acknowledge
+inline constexpr u32 EOIR = 0x010;  // End of Interrupt
+inline constexpr u32 RPR = 0x014;   // Running Priority
+inline constexpr u32 HPPIR = 0x018; // Highest Priority Pending Interrupt
 } // namespace CpuRegs
 
 #elif defined(MOSS_ARCH_X86_64)
 // x86_64 Local APIC registers (MMIO offsets from APIC base, or MSR addresses)
 namespace DistRegs {
 // Placeholder — I/O APIC registers for SPI routing
-inline constexpr u32 IOREGSEL = 0x00;  // I/O Register Select
-inline constexpr u32 IOWIN    = 0x10;  // I/O Window
+inline constexpr u32 IOREGSEL = 0x00; // I/O Register Select
+inline constexpr u32 IOWIN = 0x10;    // I/O Window
 } // namespace DistRegs
 
 namespace CpuRegs {
 // Local APIC MMIO offsets
-inline constexpr u32 ID       = 0x020;  // Local APIC ID
-inline constexpr u32 VERSION  = 0x030;  // Local APIC Version
-inline constexpr u32 TPR      = 0x080;  // Task Priority
-inline constexpr u32 EOI      = 0x0B0;  // End of Interrupt
-inline constexpr u32 SVR      = 0x0F0;  // Spurious Interrupt Vector
-inline constexpr u32 ICR_LOW  = 0x300;  // Interrupt Command (low 32 bits)
-inline constexpr u32 ICR_HIGH = 0x310;  // Interrupt Command (high 32 bits)
+inline constexpr u32 ID = 0x020;       // Local APIC ID
+inline constexpr u32 VERSION = 0x030;  // Local APIC Version
+inline constexpr u32 TPR = 0x080;      // Task Priority
+inline constexpr u32 EOI = 0x0B0;      // End of Interrupt
+inline constexpr u32 SVR = 0x0F0;      // Spurious Interrupt Vector
+inline constexpr u32 ICR_LOW = 0x300;  // Interrupt Command (low 32 bits)
+inline constexpr u32 ICR_HIGH = 0x310; // Interrupt Command (high 32 bits)
 } // namespace CpuRegs
 
 #elif defined(MOSS_ARCH_RISCV)
 // RISC-V PLIC registers (Platform-Level Interrupt Controller)
 namespace DistRegs {
-inline constexpr u32 PRIORITY_BASE = 0x000000;  // Priority for each source
-inline constexpr u32 PENDING_BASE  = 0x001000;  // Pending bits
-inline constexpr u32 ENABLE_BASE   = 0x002000;  // Enable bits per context
+inline constexpr u32 PRIORITY_BASE = 0x000000; // Priority for each source
+inline constexpr u32 PENDING_BASE = 0x001000;  // Pending bits
+inline constexpr u32 ENABLE_BASE = 0x002000;   // Enable bits per context
 } // namespace DistRegs
 
 namespace CpuRegs {
 // PLIC per-hart context (context = hart_id * 2 + 1 for M-mode)
-inline constexpr u32 THRESHOLD_OFFSET = 0x200000;  // Priority threshold
-inline constexpr u32 CLAIM_OFFSET     = 0x200004;  // Claim/Complete
+inline constexpr u32 THRESHOLD_OFFSET = 0x200000; // Priority threshold
+inline constexpr u32 CLAIM_OFFSET = 0x200004;     // Claim/Complete
 } // namespace CpuRegs
 #endif
 
@@ -103,9 +103,9 @@ inline constexpr u32 CLAIM_OFFSET     = 0x200004;  // Claim/Complete
 #if defined(MOSS_ARCH_ARM64)
 inline constexpr u32 SPURIOUS_IRQ_THRESHOLD = 1020;
 #elif defined(MOSS_ARCH_X86_64)
-inline constexpr u32 SPURIOUS_IRQ_THRESHOLD = 0xFF;  // APIC spurious vector
+inline constexpr u32 SPURIOUS_IRQ_THRESHOLD = 0xFF; // APIC spurious vector
 #elif defined(MOSS_ARCH_RISCV)
-inline constexpr u32 SPURIOUS_IRQ_THRESHOLD = 0;     // PLIC: claim=0 means no pending
+inline constexpr u32 SPURIOUS_IRQ_THRESHOLD = 0; // PLIC: claim=0 means no pending
 #endif
 
 // ============================================================================
@@ -133,7 +133,7 @@ inline void write_reg(VirtAddr base, u32 offset, u32 value) noexcept {
   return ((typer & 0x1F) + 1) * 32;
 #elif defined(MOSS_ARCH_X86_64)
   (void)dist_base;
-  return 256;  // x86 supports up to 256 interrupt vectors
+  return 256; // x86 supports up to 256 interrupt vectors
 #elif defined(MOSS_ARCH_RISCV)
   (void)dist_base;
   return 1024; // PLIC can support up to 1024 sources
@@ -147,10 +147,10 @@ inline void write_reg(VirtAddr base, u32 offset, u32 value) noexcept {
   return ((typer >> 5) & 0x7) + 1;
 #elif defined(MOSS_ARCH_X86_64)
   (void)dist_base;
-  return 256;  // APIC ID space
+  return 256; // APIC ID space
 #elif defined(MOSS_ARCH_RISCV)
   (void)dist_base;
-  return 64;   // Typical PLIC hart limit
+  return 64; // Typical PLIC hart limit
 #endif
 }
 
@@ -160,8 +160,7 @@ inline void write_reg(VirtAddr base, u32 offset, u32 value) noexcept {
 
 /// Initialize the interrupt distributor/router.
 /// Disables all interrupts, clears pending, sets default priority and targets.
-inline VoidResult init_distributor(VirtAddr dist_base,
-                                   u32 max_interrupts) noexcept {
+inline VoidResult init_distributor(VirtAddr dist_base, u32 max_interrupts) noexcept {
 #if defined(MOSS_ARCH_ARM64)
   // Disable distributor
   write_reg(dist_base, DistRegs::CTLR, 0);
@@ -220,8 +219,8 @@ inline VoidResult init_cpu_interface(VirtAddr cpu_base) noexcept {
 #elif defined(MOSS_ARCH_X86_64)
   // Local APIC: enable via SVR
   u32 svr = read_reg(cpu_base, CpuRegs::SVR);
-  svr |= 0x100;  // APIC Enable bit
-  svr |= 0xFF;   // Spurious vector
+  svr |= 0x100; // APIC Enable bit
+  svr |= 0xFF;  // Spurious vector
   write_reg(cpu_base, CpuRegs::SVR, svr);
 
 #elif defined(MOSS_ARCH_RISCV)
@@ -301,11 +300,11 @@ inline void disable_irq(VirtAddr dist_base, u32 irq) noexcept {
 /// Extract the IRQ number from the raw acknowledge value.
 [[nodiscard]] inline u32 irq_from_ack(u32 ack_value) noexcept {
 #if defined(MOSS_ARCH_ARM64)
-  return ack_value & 0x3FF;  // GICv2: bits [9:0]
+  return ack_value & 0x3FF; // GICv2: bits [9:0]
 #elif defined(MOSS_ARCH_X86_64)
-  return ack_value;  // APIC: vector number directly
+  return ack_value; // APIC: vector number directly
 #elif defined(MOSS_ARCH_RISCV)
-  return ack_value;  // PLIC: source ID directly
+  return ack_value; // PLIC: source ID directly
 #endif
 }
 
@@ -402,8 +401,8 @@ inline void set_priority_mask(VirtAddr cpu_base, u8 mask) noexcept {
 /// For ARM64 GICv2, sgi_id is 0-15 and target_cpu_mask selects destination CPUs.
 /// For x86_64 APIC, this sends an IPI via the ICR register.
 /// For RISC-V, software interrupts are triggered via SIP CSR.
-inline VoidResult send_sgi(VirtAddr dist_base, [[maybe_unused]] VirtAddr cpu_base,
-                           u32 sgi_id, u32 target_cpu_mask) noexcept {
+inline VoidResult send_sgi(VirtAddr dist_base, [[maybe_unused]] VirtAddr cpu_base, u32 sgi_id,
+                           u32 target_cpu_mask) noexcept {
 #if defined(MOSS_ARCH_ARM64)
   if (sgi_id >= 16) {
     return VoidResult{ErrorCode::InvalidParameter};
@@ -442,11 +441,11 @@ inline VoidResult send_sgi(VirtAddr dist_base, [[maybe_unused]] VirtAddr cpu_bas
 /// Check if the acknowledged IRQ number indicates a spurious interrupt.
 [[nodiscard]] inline bool is_spurious(u32 irq_num) noexcept {
 #if defined(MOSS_ARCH_ARM64)
-  return irq_num >= SPURIOUS_IRQ_THRESHOLD;  // GICv2: 1020-1023 are spurious
+  return irq_num >= SPURIOUS_IRQ_THRESHOLD; // GICv2: 1020-1023 are spurious
 #elif defined(MOSS_ARCH_X86_64)
-  return irq_num == SPURIOUS_IRQ_THRESHOLD;  // APIC spurious vector
+  return irq_num == SPURIOUS_IRQ_THRESHOLD; // APIC spurious vector
 #elif defined(MOSS_ARCH_RISCV)
-  return irq_num == 0;  // PLIC: claim=0 means no pending interrupt
+  return irq_num == 0; // PLIC: claim=0 means no pending interrupt
 #endif
 }
 

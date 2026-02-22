@@ -4,16 +4,16 @@
 module;
 
 // Macro for disabling copy and move (macros do not cross module boundaries)
-#define NON_COPYABLE(ClassName)                                                \
-  ClassName(const ClassName &) = delete;                                       \
+#define NON_COPYABLE(ClassName)                                                                                        \
+  ClassName(const ClassName &) = delete;                                                                               \
   ClassName &operator=(const ClassName &) = delete;
 
-#define NON_MOVABLE(ClassName)                                                 \
-  ClassName(ClassName &&) = delete;                                            \
+#define NON_MOVABLE(ClassName)                                                                                         \
+  ClassName(ClassName &&) = delete;                                                                                    \
   ClassName &operator=(ClassName &&) = delete;
 
-#define NON_COPYABLE_NON_MOVABLE(ClassName)                                    \
-  NON_COPYABLE(ClassName)                                                      \
+#define NON_COPYABLE_NON_MOVABLE(ClassName)                                                                            \
+  NON_COPYABLE(ClassName)                                                                                              \
   NON_MOVABLE(ClassName)
 
 export module moss.drivers;
@@ -60,14 +60,7 @@ enum class DeviceType : u8 {
   Platform = 14
 };
 
-enum class DeviceState : u8 {
-  Uninitialized = 0,
-  Initializing = 1,
-  Active = 2,
-  Suspended = 3,
-  Error = 4,
-  Removed = 5
-};
+enum class DeviceState : u8 { Uninitialized = 0, Initializing = 1, Active = 2, Suspended = 3, Error = 4, Removed = 5 };
 
 // ========================================================================
 // Device resource structures
@@ -78,8 +71,7 @@ struct DeviceProperty {
   const char *value;
   usize value_size;
 
-  DeviceProperty(const char *n, const char *v, usize size) noexcept
-      : name(n), value(v), value_size(size) {}
+  DeviceProperty(const char *n, const char *v, usize size) noexcept : name(n), value(v), value_size(size) {}
 };
 
 struct DeviceMemoryInfo {
@@ -138,11 +130,9 @@ protected:
   u64 access_count_;
 
 public:
-  Device(DeviceId id, DeviceType type, const char *name,
-         const char *compatible) noexcept
-      : device_id_(id), type_(type), state_(DeviceState::Uninitialized),
-        name_(name), compatible_(compatible), parent_(nullptr), init_time_(0),
-        last_access_time_(0), access_count_(0) {}
+  Device(DeviceId id, DeviceType type, const char *name, const char *compatible) noexcept
+      : device_id_(id), type_(type), state_(DeviceState::Uninitialized), name_(name), compatible_(compatible),
+        parent_(nullptr), init_time_(0), last_access_time_(0), access_count_(0) {}
 
   virtual ~Device() noexcept = default;
 
@@ -170,41 +160,34 @@ public:
   }
 
   // Resource management
-  void add_resource(const DeviceResource &resource) noexcept {
-    resources_.push_front(resource);
-  }
+  void add_resource(const DeviceResource &resource) noexcept { resources_.push_front(resource); }
 
-  [[nodiscard]] containers::Optional<DeviceResource>
-  get_resource(DeviceResource::Type type, usize index = 0) const noexcept {
+  [[nodiscard]] containers::Optional<DeviceResource> get_resource(DeviceResource::Type type,
+                                                                  usize index = 0) const noexcept {
     usize found_count = 0;
     const DeviceResource *found = nullptr;
 
-    resources_.for_each(
-        [type, index, &found_count, &found](const DeviceResource &res) {
-          if (res.type == type) {
-            if (found_count == index) {
-              found = &res;
-              return;
-            }
-            found_count++;
-          }
-        });
+    resources_.for_each([type, index, &found_count, &found](const DeviceResource &res) {
+      if (res.type == type) {
+        if (found_count == index) {
+          found = &res;
+          return;
+        }
+        found_count++;
+      }
+    });
 
-    return found ? containers::Optional<DeviceResource>{*found}
-                 : containers::Optional<DeviceResource>{};
+    return found ? containers::Optional<DeviceResource>{*found} : containers::Optional<DeviceResource>{};
   }
 
   // Property management
-  void add_property(const char *name, const char *value,
-                    usize value_size) noexcept {
+  void add_property(const char *name, const char *value, usize value_size) noexcept {
     properties_.push_front(DeviceProperty(name, value, value_size));
   }
 
   [[nodiscard]] const char *get_property(const char *name) const noexcept {
-    const DeviceProperty *found =
-        properties_.find_if([name](const DeviceProperty &prop) {
-          return moss::abi::bridge::strcmp(prop.name, name) == 0;
-        });
+    const DeviceProperty *found = properties_.find_if(
+        [name](const DeviceProperty &prop) { return moss::abi::bridge::strcmp(prop.name, name) == 0; });
 
     return found ? found->value : nullptr;
   }
@@ -229,14 +212,10 @@ public:
     u64 access_count;
   };
 
-  [[nodiscard]] DeviceStats get_statistics() const noexcept {
-    return {init_time_, last_access_time_, access_count_};
-  }
+  [[nodiscard]] DeviceStats get_statistics() const noexcept { return {init_time_, last_access_time_, access_count_}; }
 
 protected:
-  [[nodiscard]] static u64 get_current_time() noexcept {
-    return arch::get_timestamp_counter();
-  }
+  [[nodiscard]] static u64 get_current_time() noexcept { return arch::get_timestamp_counter(); }
 };
 
 // ========================================================================
@@ -251,10 +230,8 @@ protected:
   usize compatible_count_;
 
 public:
-  Driver(const char *name, const char *version, const char **compatible_list,
-         usize compatible_count) noexcept
-      : name_(name), version_(version), compatible_list_(compatible_list),
-        compatible_count_(compatible_count) {}
+  Driver(const char *name, const char *version, const char **compatible_list, usize compatible_count) noexcept
+      : name_(name), version_(version), compatible_list_(compatible_list), compatible_count_(compatible_count) {}
 
   virtual ~Driver() noexcept = default;
 
@@ -265,22 +242,15 @@ public:
   virtual void remove(Device *device) noexcept = 0;
 
   // Power management
-  [[nodiscard]] virtual VoidResult
-  suspend([[maybe_unused]] Device *device) noexcept {
-    return VoidResult{};
-  }
-  [[nodiscard]] virtual VoidResult
-  resume([[maybe_unused]] Device *device) noexcept {
-    return VoidResult{};
-  }
+  [[nodiscard]] virtual VoidResult suspend([[maybe_unused]] Device *device) noexcept { return VoidResult{}; }
+  [[nodiscard]] virtual VoidResult resume([[maybe_unused]] Device *device) noexcept { return VoidResult{}; }
 
   // Basic properties
   [[nodiscard]] const char *name() const noexcept { return name_; }
   [[nodiscard]] const char *version() const noexcept { return version_; }
 
   // Device matching
-  [[nodiscard]] bool
-  is_compatible(const char *device_compatible) const noexcept {
+  [[nodiscard]] bool is_compatible(const char *device_compatible) const noexcept {
     for (usize i = 0; i < compatible_count_; ++i) {
       if (moss::abi::bridge::strcmp(compatible_list_[i], device_compatible) == 0) {
         return true;
@@ -288,7 +258,6 @@ public:
     }
     return false;
   }
-
 };
 
 // ========================================================================
@@ -308,22 +277,18 @@ private:
   containers::AtomicCounter<u32> registered_drivers_;
 
 public:
-  DeviceManager() noexcept
-      : next_device_id_(1), total_devices_(0), active_devices_(0),
-        registered_drivers_(0) {}
+  DeviceManager() noexcept : next_device_id_(1), total_devices_(0), active_devices_(0), registered_drivers_(0) {}
 
   ~DeviceManager() noexcept { cleanup(); }
 
   NON_COPYABLE_NON_MOVABLE(DeviceManager)
 
-  [[nodiscard]] KernelResult<DeviceId>
-  register_device(shared_ptr<Device> device) noexcept {
+  [[nodiscard]] KernelResult<DeviceId> register_device(shared_ptr<Device> device) noexcept {
     if (!device) {
       return KernelResult<DeviceId>{Err<ErrorCode>(ErrorCode::InvalidParameter)};
     }
 
-    DeviceId device_id =
-        next_device_id_.fetch_add(1, containers::MemoryOrder::Relaxed);
+    DeviceId device_id = next_device_id_.fetch_add(1, containers::MemoryOrder::Relaxed);
 
     devices_.insert_or_update(device_id, device);
     if (device->name() != nullptr) {
@@ -380,8 +345,7 @@ public:
 
     devices_.for_each([this, driver](const auto &entry) {
       Device *device = entry.value.get();
-      if (device->state() == DeviceState::Uninitialized &&
-          driver->is_compatible(device->compatible())) {
+      if (device->state() == DeviceState::Uninitialized && driver->is_compatible(device->compatible())) {
 
         auto probe_result = driver->probe(device);
         if (probe_result) {
@@ -395,14 +359,12 @@ public:
     return VoidResult{};
   }
 
-  [[nodiscard]] shared_ptr<Device>
-  get_device(DeviceId device_id) const noexcept {
+  [[nodiscard]] shared_ptr<Device> get_device(DeviceId device_id) const noexcept {
     const auto *device_ptr = devices_.find(device_id);
     return device_ptr ? *device_ptr : shared_ptr<Device>{};
   }
 
-  [[nodiscard]] shared_ptr<Device>
-  get_device_by_name(const char *name) const noexcept {
+  [[nodiscard]] shared_ptr<Device> get_device_by_name(const char *name) const noexcept {
     const DeviceId *device_id_ptr = device_name_map_.find(name);
     if (device_id_ptr == nullptr) {
       return shared_ptr<Device>{};
@@ -423,8 +385,7 @@ public:
             registered_drivers_.load(containers::MemoryOrder::Relaxed)};
   }
 
-  void list_devices(void (*callback)(const Device &, void *),
-                    void *context) const noexcept {
+  void list_devices(void (*callback)(const Device &, void *), void *context) const noexcept {
     devices_.for_each([callback, context](const auto &entry) {
       const Device &device = *entry.value;
       callback(device, context);
@@ -469,9 +430,8 @@ public:
 
 private:
   [[nodiscard]] VoidResult match_driver(Device *device) noexcept {
-    auto matched_driver_ptr = drivers_.find_if([device](const Driver *driver) {
-      return driver->is_compatible(device->compatible());
-    });
+    auto matched_driver_ptr =
+        drivers_.find_if([device](const Driver *driver) { return driver->is_compatible(device->compatible()); });
 
     if (matched_driver_ptr == nullptr) {
       return VoidResult{ErrorCode::NotFound};
@@ -484,8 +444,7 @@ private:
       return probe_result;
     }
 
-    device_driver_map_.insert_or_update(device->device_id(),
-                                        const_cast<Driver *>(matched_driver));
+    device_driver_map_.insert_or_update(device->device_id(), const_cast<Driver *>(matched_driver));
     return VoidResult{};
   }
 
@@ -576,9 +535,8 @@ private:
 
 public:
   UartDevice(const char *name, const char *compatible) noexcept
-      : Device(0, DeviceType::UART, name, compatible), base_addr_(0),
-        clock_freq_(24000000), baud_rate_(115200), irq_(0), initialized_(false),
-        bytes_sent_(0), bytes_received_(0), tx_errors_(0), rx_errors_(0) {}
+      : Device(0, DeviceType::UART, name, compatible), base_addr_(0), clock_freq_(24000000), baud_rate_(115200),
+        irq_(0), initialized_(false), bytes_sent_(0), bytes_received_(0), tx_errors_(0), rx_errors_(0) {}
 
   ~UartDevice() override = default;
 
@@ -719,8 +677,7 @@ public:
   };
 
   [[nodiscard]] UartStatistics get_uart_statistics() const noexcept {
-    return {bytes_sent_, bytes_received_, tx_errors_,
-            rx_errors_,  baud_rate_,      state() == DeviceState::Active};
+    return {bytes_sent_, bytes_received_, tx_errors_, rx_errors_, baud_rate_, state() == DeviceState::Active};
   }
 
   [[nodiscard]] VoidResult set_baud_rate(u32 baud_rate) noexcept {
@@ -770,14 +727,11 @@ private:
       return baud_result;
     }
 
-    write_reg(UartRegs::UARTLCR_H, UartLineControl::UARTLCR_H_WLEN_8 |
-                                        UartLineControl::UARTLCR_H_FEN);
+    write_reg(UartRegs::UARTLCR_H, UartLineControl::UARTLCR_H_WLEN_8 | UartLineControl::UARTLCR_H_FEN);
 
     write_reg(UartRegs::UARTICR, 0x7FF);
 
-    write_reg(UartRegs::UARTCR, UartControl::UARTCR_UARTEN |
-                                    UartControl::UARTCR_TXE |
-                                    UartControl::UARTCR_RXE);
+    write_reg(UartRegs::UARTCR, UartControl::UARTCR_UARTEN | UartControl::UARTCR_TXE | UartControl::UARTCR_RXE);
 
     return VoidResult{};
   }

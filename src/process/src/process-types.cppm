@@ -24,14 +24,12 @@ struct Thread;
 
 // Thread entry for RcuList storage
 struct ThreadEntry {
-    ThreadId tid;
-    Thread* thread;
+  ThreadId tid;
+  Thread *thread;
 
-    ThreadEntry(ThreadId id, Thread* thr) : tid(id), thread(thr) {}
+  ThreadEntry(ThreadId id, Thread *thr) : tid(id), thread(thr) {}
 
-    bool operator==(const ThreadEntry& other) const {
-        return tid == other.tid;
-    }
+  bool operator==(const ThreadEntry &other) const { return tid == other.tid; }
 };
 
 // Use kernel smart pointers
@@ -39,22 +37,10 @@ using moss::kernel::make_unique;
 using moss::kernel::unique_ptr;
 
 // Process states
-enum class ProcessState : u8 {
-  Created = 0,
-  Ready = 1,
-  Running = 2,
-  Blocked = 3,
-  Terminated = 4,
-  Zombie = 5
-};
+enum class ProcessState : u8 { Created = 0, Ready = 1, Running = 2, Blocked = 3, Terminated = 4, Zombie = 5 };
 
 // Scheduling classes
-enum class SchedClass : u8 {
-  Normal = 0,
-  RealTime = 1,
-  Idle = 2,
-  Batch = 3
-};
+enum class SchedClass : u8 { Normal = 0, RealTime = 1, Idle = 2, Batch = 3 };
 
 // Process priority range
 namespace Priority {
@@ -95,8 +81,7 @@ struct alignas(16) CpuContext {
   // Thread pointer register
   u64 tpidr_el0;
 
-  constexpr CpuContext() noexcept
-      : x{}, sp(0), pc(0), pstate(0), fpsr(0), fpcr(0), v{}, tpidr_el0(0) {}
+  constexpr CpuContext() noexcept : x{}, sp(0), pc(0), pstate(0), fpsr(0), fpcr(0), v{}, tpidr_el0(0) {}
 };
 
 #elif defined(__x86_64__) || defined(__x86_64) || defined(MOSS_ARCH_X86_64)
@@ -126,10 +111,8 @@ struct alignas(16) CpuContext {
   u64 fcw;
 
   constexpr CpuContext() noexcept
-      : rax(0), rbx(0), rcx(0), rdx(0), rsi(0), rdi(0), rbp(0), sp(0),
-        r8(0), r9(0), r10(0), r11(0), r12(0), r13(0), r14(0), r15(0),
-        pstate(0x202), pc(0), cs(0), ds(0), es(0), fs(0), gs(0), ss(0),
-        mxcsr(0), fcw(0) {}
+      : rax(0), rbx(0), rcx(0), rdx(0), rsi(0), rdi(0), rbp(0), sp(0), r8(0), r9(0), r10(0), r11(0), r12(0), r13(0),
+        r14(0), r15(0), pstate(0x202), pc(0), cs(0), ds(0), es(0), fs(0), gs(0), ss(0), mxcsr(0), fcw(0) {}
 };
 
 #elif defined(__riscv) || defined(__riscv__) || defined(MOSS_ARCH_RISCV)
@@ -147,33 +130,30 @@ struct alignas(16) CpuContext {
   // Stack pointer (unified naming - also maps to x[2])
   u64 sp;
 
-  constexpr CpuContext() noexcept : x{}, pc(0), pstate(0), sp(0) {
-    x[2] = sp;
-  }
+  constexpr CpuContext() noexcept : x{}, pc(0), pstate(0), sp(0) { x[2] = sp; }
 };
 
 #else
 #error "Unsupported target architecture: please compile on ARM64, x86_64 or RISC-V"
 #endif
 
-static_assert(sizeof(CpuContext) <= 1024,
-              "CpuContext should fit in reasonable size");
+static_assert(sizeof(CpuContext) <= 1024, "CpuContext should fit in reasonable size");
 
 // VMA permission / type flags
 namespace VmaFlags {
-inline constexpr u32 READ        = 1u << 0;
-inline constexpr u32 WRITE       = 1u << 1;
-inline constexpr u32 EXEC        = 1u << 2;
-inline constexpr u32 DEMAND_ZERO = 1u << 3;  // allocate zero page on first access
+inline constexpr u32 READ = 1u << 0;
+inline constexpr u32 WRITE = 1u << 1;
+inline constexpr u32 EXEC = 1u << 2;
+inline constexpr u32 DEMAND_ZERO = 1u << 3; // allocate zero page on first access
 } // namespace VmaFlags
 
 // VMA region types (what is this VMA for?)
 enum class VmaType : u32 {
-  CODE  = 0,
-  DATA  = 1,
-  BSS   = 2,
+  CODE = 0,
+  DATA = 1,
+  BSS = 2,
   STACK = 3,
-  HEAP  = 4,
+  HEAP = 4,
 };
 
 // Virtual Memory Area (VMA) — describes a contiguous region in a process's
@@ -186,54 +166,43 @@ struct VmaRegion {
   VmaType type;
 
   // Lazy backing: ELF segment data source (nullptr = demand-zero only)
-  const moss::kernel::u8* backing_data;    // pointer to ELF data in kernel memory
-  moss::kernel::usize backing_offset;      // offset into backing_data for this VMA
-  moss::kernel::usize backing_size;        // valid backing data length (rest is zero)
+  const moss::kernel::u8 *backing_data; // pointer to ELF data in kernel memory
+  moss::kernel::usize backing_offset;   // offset into backing_data for this VMA
+  moss::kernel::usize backing_size;     // valid backing data length (rest is zero)
 
   VmaRegion() noexcept
-      : start_addr(0), end_addr(0), flags(0), type(VmaType::DATA),
-        backing_data(nullptr), backing_offset(0), backing_size(0) {}
+      : start_addr(0), end_addr(0), flags(0), type(VmaType::DATA), backing_data(nullptr), backing_offset(0),
+        backing_size(0) {}
 
-  VmaRegion(moss::kernel::VirtAddr start, moss::kernel::VirtAddr end,
-            moss::kernel::u32 region_flags,
-            VmaType vma_type = VmaType::DATA,
-            const moss::kernel::u8* backing = nullptr,
-            moss::kernel::usize b_offset = 0,
-            moss::kernel::usize b_size = 0) noexcept
-      : start_addr(start), end_addr(end), flags(region_flags), type(vma_type),
-        backing_data(backing), backing_offset(b_offset), backing_size(b_size) {
-  }
+  VmaRegion(moss::kernel::VirtAddr start, moss::kernel::VirtAddr end, moss::kernel::u32 region_flags,
+            VmaType vma_type = VmaType::DATA, const moss::kernel::u8 *backing = nullptr,
+            moss::kernel::usize b_offset = 0, moss::kernel::usize b_size = 0) noexcept
+      : start_addr(start), end_addr(end), flags(region_flags), type(vma_type), backing_data(backing),
+        backing_offset(b_offset), backing_size(b_size) {}
 
-  [[nodiscard]] bool is_demand_zero() const noexcept {
-    return (flags & VmaFlags::DEMAND_ZERO) != 0;
-  }
+  [[nodiscard]] bool is_demand_zero() const noexcept { return (flags & VmaFlags::DEMAND_ZERO) != 0; }
 
-  [[nodiscard]] bool has_backing() const noexcept {
-    return backing_data != nullptr && backing_size > 0;
-  }
+  [[nodiscard]] bool has_backing() const noexcept { return backing_data != nullptr && backing_size > 0; }
 
-  [[nodiscard]] bool contains(VirtAddr addr) const noexcept {
-    return addr >= start_addr && addr < end_addr;
-  }
+  [[nodiscard]] bool contains(VirtAddr addr) const noexcept { return addr >= start_addr && addr < end_addr; }
 
-  bool operator==(const VmaRegion& other) const noexcept {
+  bool operator==(const VmaRegion &other) const noexcept {
     return start_addr == other.start_addr && end_addr == other.end_addr;
   }
 };
 
 // Virtual memory address space — per-process PGD + VMA list
 struct AddressSpace {
-  PhysAddr pgd_phys;       // physical address of the L0 (PGD) page table
-  u16 asid;                // Address Space ID (0 = kernel, 1-255 = user)
+  PhysAddr pgd_phys; // physical address of the L0 (PGD) page table
+  u16 asid;          // Address Space ID (0 = kernel, 1-255 = user)
 
-  containers::RcuList<VmaRegion> vmas;   // dynamic VMA list (was: fixed array)
+  containers::RcuList<VmaRegion> vmas; // dynamic VMA list (was: fixed array)
 
   containers::AtomicSize total_pages;
   containers::AtomicSize resident_pages;
 
   AddressSpace(PhysAddr pgd, u16 asid_val) noexcept
-      : pgd_phys(pgd), asid(asid_val), vmas{},
-        total_pages(0), resident_pages(0) {}
+      : pgd_phys(pgd), asid(asid_val), vmas{}, total_pages(0), resident_pages(0) {}
 
   // Destructor: free page table hierarchy if still owned.
   // This ensures no PGD/PUD/PMD/PTE leak when an AddressSpace is
@@ -246,29 +215,25 @@ struct AddressSpace {
   }
 
   // Non-copyable (page tables are unique resources)
-  AddressSpace(const AddressSpace&) = delete;
-  AddressSpace& operator=(const AddressSpace&) = delete;
+  AddressSpace(const AddressSpace &) = delete;
+  AddressSpace &operator=(const AddressSpace &) = delete;
 
   // Add a VMA region (returns false if overlapping with existing)
-  bool add_vma(VirtAddr start, VirtAddr end, u32 flags,
-               VmaType type = VmaType::DATA,
-               const u8* backing = nullptr,
+  bool add_vma(VirtAddr start, VirtAddr end, u32 flags, VmaType type = VmaType::DATA, const u8 *backing = nullptr,
                usize b_offset = 0, usize b_size = 0) noexcept {
     // Overlap check via RcuList traversal
-    const VmaRegion* overlap = vmas.find_if([start, end](const VmaRegion& v) {
-        return start < v.end_addr && end > v.start_addr;
-    });
-    if (overlap) return false;
+    const VmaRegion *overlap =
+        vmas.find_if([start, end](const VmaRegion &v) { return start < v.end_addr && end > v.start_addr; });
+    if (overlap)
+      return false;
 
     vmas.push_front(VmaRegion(start, end, flags, type, backing, b_offset, b_size));
     return true;
   }
 
   // Find the VMA containing the given address (const pointer, nullptr if none)
-  [[nodiscard]] const VmaRegion* find_vma(VirtAddr addr) const noexcept {
-    return vmas.find_if([addr](const VmaRegion& v) {
-        return v.contains(addr);
-    });
+  [[nodiscard]] const VmaRegion *find_vma(VirtAddr addr) const noexcept {
+    return vmas.find_if([addr](const VmaRegion &v) { return v.contains(addr); });
   }
 };
 
@@ -290,8 +255,7 @@ struct SchedEntity {
   u64 util_avg;
 
   SchedEntity() noexcept
-      : vruntime(0), exec_start(0), sum_exec_runtime(0),
-        prev_sum_exec_runtime(0), weight(1024), nice(0), prio(120),
+      : vruntime(0), exec_start(0), sum_exec_runtime(0), prev_sum_exec_runtime(0), weight(1024), nice(0), prio(120),
         load_weight(1024), load_sum(0), util_sum(0), load_avg(0), util_avg(0) {}
 };
 
@@ -303,9 +267,7 @@ struct RtSchedEntity {
   u64 deadline;
   u64 period;
 
-  RtSchedEntity() noexcept
-      : priority(Priority::DEFAULT_RT_PRIORITY), runtime(0), deadline(0),
-        period(0) {}
+  RtSchedEntity() noexcept : priority(Priority::DEFAULT_RT_PRIORITY), runtime(0), deadline(0), period(0) {}
 };
 
 // Thread structure
@@ -357,27 +319,22 @@ struct Thread {
   // is the same as their regular stack.  For user threads, this is a
   // separately allocated 16KB region.
   // kernel_stack_top is the high end (SP initial value, 16-byte aligned).
-  VirtAddr kernel_stack_base;   // low address of allocated region
-  usize kernel_stack_size;      // size in bytes (typically 16KB)
+  VirtAddr kernel_stack_base; // low address of allocated region
+  usize kernel_stack_size;    // size in bytes (typically 16KB)
 
   // Scheduler internals: back-pointer to RbNode in CfsRunqueue.
   // Set by enqueue_task(), cleared by dequeue_task().
   // Enables O(1) thread→node lookup (avoids O(n) linear tree search).
-  void* rq_node{nullptr};
+  void *rq_node{nullptr};
 
   Thread(ThreadId id, ProcessId pid) noexcept
-      : tid(id), owner_pid(pid), context{}, cpu(0), wake_cpu(0),
-        state(ProcessState::Created), sched_class(SchedClass::Normal), se{},
-        rt{}, start_time(0), utime(0), stime(0), stack_base(0), stack_size(0),
-        wait_queue(0), signal_mask(0), pending_signals(0),
-        needs_initial_eret(false), is_user_task(false),
-        need_resched(false), cpu_affinity_mask(0xFFFFu),
-        kernel_stack_base(0), kernel_stack_size(0), rq_node(nullptr) {}
+      : tid(id), owner_pid(pid), context{}, cpu(0), wake_cpu(0), state(ProcessState::Created),
+        sched_class(SchedClass::Normal), se{}, rt{}, start_time(0), utime(0), stime(0), stack_base(0), stack_size(0),
+        wait_queue(0), signal_mask(0), pending_signals(0), needs_initial_eret(false), is_user_task(false),
+        need_resched(false), cpu_affinity_mask(0xFFFFu), kernel_stack_base(0), kernel_stack_size(0), rq_node(nullptr) {}
 
   // Returns the top of this thread's kernel stack (for TPIDR_EL1).
-  [[nodiscard]] VirtAddr kernel_stack_top() const noexcept {
-    return kernel_stack_base + kernel_stack_size;
-  }
+  [[nodiscard]] VirtAddr kernel_stack_top() const noexcept { return kernel_stack_base + kernel_stack_size; }
 };
 
 // Process control block
@@ -415,7 +372,7 @@ private:
 
   // VFS: per-process file descriptor table (vfs::FdTable*)
   // Stored as void* to avoid circular dependency on moss.vfs
-  void* fd_table_ = nullptr;
+  void *fd_table_ = nullptr;
 
   // Process name (like Linux task_struct.comm), set by execve
   char name_[16]{};
@@ -426,10 +383,9 @@ private:
 
 public:
   Process(ProcessId pid, ProcessId parent = INVALID_PROCESS_ID) noexcept
-      : pid_(pid), parent_pid_(parent), address_space_(nullptr),
-        thread_count_(0), main_thread_id_(INVALID_THREAD_ID),
-        state_(ProcessState::Created), exit_code_(0), limits_{}, stats_{},
-        ref_count_(1), children_{}, child_exit_wq_{} {}
+      : pid_(pid), parent_pid_(parent), address_space_(nullptr), thread_count_(0), main_thread_id_(INVALID_THREAD_ID),
+        state_(ProcessState::Created), exit_code_(0), limits_{}, stats_{}, ref_count_(1), children_{},
+        child_exit_wq_{} {}
 
   ~Process() noexcept {
     cleanup_threads();
@@ -439,12 +395,12 @@ public:
   }
 
   // Non-copyable (deleted copy constructor and copy assignment)
-  Process(const Process&) = delete;
-  Process& operator=(const Process&) = delete;
+  Process(const Process &) = delete;
+  Process &operator=(const Process &) = delete;
 
   // Process objects are heap-allocated and accessed via pointer; move is not needed.
-  Process(Process&&) = delete;
-  Process& operator=(Process&&) = delete;
+  Process(Process &&) = delete;
+  Process &operator=(Process &&) = delete;
 
   // Basic property access
   [[nodiscard]] ProcessId pid() const noexcept { return pid_; }
@@ -453,31 +409,28 @@ public:
   [[nodiscard]] i32 exit_code() const noexcept { return exit_code_; }
 
   // Process name (set by execve, inherited by fork)
-  [[nodiscard]] const char* name() const noexcept { return name_; }
-  void set_name(const char* n) noexcept {
+  [[nodiscard]] const char *name() const noexcept { return name_; }
+  void set_name(const char *n) noexcept {
     usize i = 0;
-    while (i < 15 && n[i] != '\0') { name_[i] = n[i]; ++i; }
+    while (i < 15 && n[i] != '\0') {
+      name_[i] = n[i];
+      ++i;
+    }
     name_[i] = '\0';
   }
 
   // Thread management
-  [[nodiscard]] KernelResult<ThreadId> create_thread(VirtAddr entry_point,
-                                                     VirtAddr stack_base,
+  [[nodiscard]] KernelResult<ThreadId> create_thread(VirtAddr entry_point, VirtAddr stack_base,
                                                      usize stack_size) noexcept;
 
   [[nodiscard]] Thread *get_thread(ThreadId tid) const noexcept;
   [[nodiscard]] Thread *get_main_thread() const noexcept;
 
-  [[nodiscard]] u32 thread_count() const noexcept {
-    return thread_count_.load(containers::MemoryOrder::Relaxed);
-  }
+  [[nodiscard]] u32 thread_count() const noexcept { return thread_count_.load(containers::MemoryOrder::Relaxed); }
 
   // Memory management
-  [[nodiscard]] VoidResult
-  set_address_space(unique_ptr<AddressSpace> as) noexcept;
-  [[nodiscard]] AddressSpace *address_space() const noexcept {
-    return address_space_.get();
-  }
+  [[nodiscard]] VoidResult set_address_space(unique_ptr<AddressSpace> as) noexcept;
+  [[nodiscard]] AddressSpace *address_space() const noexcept { return address_space_.get(); }
 
   // Process state management
   void set_state(ProcessState new_state) noexcept;
@@ -489,9 +442,7 @@ public:
   void record_page_fault(bool major) noexcept;
 
   // Reference counting
-  void add_ref() const noexcept {
-    (void)ref_count_.fetch_add(1, containers::MemoryOrder::Relaxed);
-  }
+  void add_ref() const noexcept { (void)ref_count_.fetch_add(1, containers::MemoryOrder::Relaxed); }
 
   void release() const noexcept {
     if (ref_count_.fetch_sub(1, containers::MemoryOrder::AcqRel) == 1) {
@@ -499,9 +450,7 @@ public:
     }
   }
 
-  [[nodiscard]] u32 ref_count() const noexcept {
-    return ref_count_.load(containers::MemoryOrder::Acquire);
-  }
+  [[nodiscard]] u32 ref_count() const noexcept { return ref_count_.load(containers::MemoryOrder::Acquire); }
 
   // Allocate a globally unique thread ID (static atomic counter).
   // Public so that fork() and other kernel code can create threads directly.
@@ -509,22 +458,18 @@ public:
 
   // Register an externally-created thread into this process's thread list.
   // Used by fork() which builds a Thread manually instead of create_thread().
-  void register_thread(Thread* thread) noexcept;
+  void register_thread(Thread *thread) noexcept;
 
   // ── Children tracking (for wait/waitpid) ──────────────────────────
 
-  void add_child(ProcessId child_pid) {
-      children_.push_front(child_pid);
-  }
+  void add_child(ProcessId child_pid) { children_.push_front(child_pid); }
 
   void remove_child(ProcessId child_pid) {
-      containers::RcuReadLock lock;
-      children_.remove(child_pid);
+    containers::RcuReadLock lock;
+    children_.remove(child_pid);
   }
 
-  [[nodiscard]] bool has_children() const noexcept {
-      return !children_.empty();
-  }
+  [[nodiscard]] bool has_children() const noexcept { return !children_.empty(); }
 
   // Find a zombie child matching wait_pid:
   //   wait_pid > 0  → specific child
@@ -533,27 +478,20 @@ public:
   [[nodiscard]] ProcessId find_zombie_child(i64 wait_pid) const noexcept;
 
   // Check if a specific PID is in this process's children list
-  [[nodiscard]] bool is_child(ProcessId pid) const noexcept {
-      return children_.find(pid) != nullptr;
-  }
+  [[nodiscard]] bool is_child(ProcessId pid) const noexcept { return children_.find(pid) != nullptr; }
 
   // Access wait queue for child exit notification
-  containers::WaitQueue& child_exit_wait_queue() noexcept {
-      return child_exit_wq_;
-  }
+  containers::WaitQueue &child_exit_wait_queue() noexcept { return child_exit_wq_; }
 
   // Iterate children (for reparenting in sys_exit)
-  template <typename Func>
-  void for_each_child(Func func) const {
-      children_.for_each(func);
-  }
+  template <typename Func> void for_each_child(Func func) const { children_.for_each(func); }
 
   // Parent PID setter (for reparenting)
   void set_parent_pid(ProcessId pid) noexcept { parent_pid_ = pid; }
 
   // VFS file descriptor table access (void* to avoid circular dependency)
-  [[nodiscard]] void* fd_table() const noexcept { return fd_table_; }
-  void set_fd_table(void* fdt) noexcept { fd_table_ = fdt; }
+  [[nodiscard]] void *fd_table() const noexcept { return fd_table_; }
+  void set_fd_table(void *fdt) noexcept { fd_table_ = fdt; }
 
 private:
   void cleanup_threads() noexcept;
@@ -572,24 +510,19 @@ private:
 public:
   ProcessManager() noexcept : next_pid_(1) {}
 
-  [[nodiscard]] KernelResult<Process *>
-  create_process(ProcessId parent_pid = INVALID_PROCESS_ID) noexcept;
-  [[nodiscard]] VoidResult terminate_process(ProcessId pid,
-                                             i32 exit_code) noexcept;
+  [[nodiscard]] KernelResult<Process *> create_process(ProcessId parent_pid = INVALID_PROCESS_ID) noexcept;
+  [[nodiscard]] VoidResult terminate_process(ProcessId pid, i32 exit_code) noexcept;
 
   [[nodiscard]] Process *find_process(ProcessId pid) const noexcept;
   [[nodiscard]] bool process_exists(ProcessId pid) const noexcept;
 
   [[nodiscard]] u64 total_processes() const noexcept;
-  [[nodiscard]] u64 total_context_switches() const noexcept {
-    return total_context_switches_;
-  }
+  [[nodiscard]] u64 total_context_switches() const noexcept { return total_context_switches_; }
   [[nodiscard]] u64 total_forks() const noexcept { return total_forks_; }
   [[nodiscard]] u64 total_exits() const noexcept { return total_exits_; }
 
   template <typename Func> void for_each_process(Func &&func) const {
-    processes_.for_each(
-        [&func](const auto &entry) { func(entry.key, entry.value); });
+    processes_.for_each([&func](const auto &entry) { func(entry.key, entry.value); });
   }
 
 private:
@@ -605,9 +538,7 @@ extern ProcessManager *g_process_manager;
 [[nodiscard]] Thread *current_thread() noexcept;
 [[nodiscard]] Process *current_process() noexcept;
 
-[[nodiscard]] inline u32 current_cpu() noexcept {
-  return arch::get_current_cpu_id();
-}
+[[nodiscard]] inline u32 current_cpu() noexcept { return arch::get_current_cpu_id(); }
 
 // Shared Zombie transition: tear down a dying process and hand control to the
 // scheduler.  Called by both sys_exit (syscall) and terminate_current_user_process
@@ -617,17 +548,17 @@ extern ProcessManager *g_process_manager;
 //   - `cur` is the currently running thread (will be marked Terminated)
 //   - `proc` is the Process owning `cur` (will transition to Zombie)
 //   - Caller must have already validated cur/proc are non-null
-[[noreturn]] void do_exit(Thread* cur, Process* proc, i32 exit_code) noexcept;
+[[noreturn]] void do_exit(Thread *cur, Process *proc, i32 exit_code) noexcept;
 
 // Canonical user-space virtual address layout.
 // All components that create user VMAs should reference these constants
 // instead of hardcoding addresses.
 namespace UserLayout {
-inline constexpr VirtAddr CODE_BASE   = 0x0000000200000000ULL; // 8GB — above kernel identity map
-inline constexpr VirtAddr HEAP_START  = 0x0000000100000000ULL; // 4GB
-inline constexpr VirtAddr STACK_TOP   = 0x00007FFF00000000ULL; // 128TB boundary - 4GB
-inline constexpr usize    STACK_SIZE  = 32 * 1024;             // 32KB default user stack
-inline constexpr usize    HEAP_INIT   = 64 * 1024;             // 64KB initial heap
+inline constexpr VirtAddr CODE_BASE = 0x0000000200000000ULL;  // 8GB — above kernel identity map
+inline constexpr VirtAddr HEAP_START = 0x0000000100000000ULL; // 4GB
+inline constexpr VirtAddr STACK_TOP = 0x00007FFF00000000ULL;  // 128TB boundary - 4GB
+inline constexpr usize STACK_SIZE = 32 * 1024;                // 32KB default user stack
+inline constexpr usize HEAP_INIT = 64 * 1024;                 // 64KB initial heap
 } // namespace UserLayout
 
 // User address space management extensions
@@ -635,10 +566,10 @@ namespace user_space {
 
 [[nodiscard]] KernelResult<unique_ptr<AddressSpace>> create_user_address_space() noexcept;
 
-[[nodiscard]] VoidResult map_user_memory(AddressSpace* as, VirtAddr vaddr, PhysAddr paddr,
-                          usize size, u32 flags) noexcept;
+[[nodiscard]] VoidResult map_user_memory(AddressSpace *as, VirtAddr vaddr, PhysAddr paddr, usize size,
+                                         u32 flags) noexcept;
 
-[[nodiscard]] KernelResult<VirtAddr> allocate_user_heap(Process* process, usize size) noexcept;
+[[nodiscard]] KernelResult<VirtAddr> allocate_user_heap(Process *process, usize size) noexcept;
 
 } // namespace user_space
 

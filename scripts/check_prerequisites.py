@@ -16,12 +16,11 @@ import platform
 import re
 import shutil
 import subprocess
-from enum import Enum
+from enum import StrEnum
 from pathlib import Path
-from typing import Optional
 
 import typer
-from packaging.version import Version, InvalidVersion
+from packaging.version import InvalidVersion, Version
 from pydantic import BaseModel, Field
 from rich.console import Console
 from rich.table import Table
@@ -31,7 +30,7 @@ from rich.table import Table
 # ---------------------------------------------------------------------------
 
 
-class Requirement(str, Enum):
+class Requirement(StrEnum):
     REQUIRED = "required"
     OPTIONAL = "optional"
 
@@ -240,9 +239,7 @@ def check_all(arch: str | None = None) -> CheckResult:
             if not exe:
                 result.missing_required.append(spec.name)
             elif ver and ver < Version(spec.min_version):
-                result.version_errors.append(
-                    f"{spec.name}: version {ver} < {spec.min_version}"
-                )
+                result.version_errors.append(f"{spec.name}: version {ver} < {spec.min_version}")
         else:
             result.optional_tools[spec.name] = info
 
@@ -250,9 +247,7 @@ def check_all(arch: str | None = None) -> CheckResult:
             llvm_bin_dir = exe.parent
 
     # --- QEMU (optional, arch-specific) ---
-    qemu_names = (
-        [QEMU_ARCH_MAP[arch]] if arch and arch in QEMU_ARCH_MAP else list(QEMU_ARCH_MAP.values())
-    )
+    qemu_names = [QEMU_ARCH_MAP[arch]] if arch and arch in QEMU_ARCH_MAP else list(QEMU_ARCH_MAP.values())
     for qname in qemu_names:
         exe, ver = _resolve_tool(qname, "8.0", qemu_dirs)
         result.optional_tools[qname] = ToolInfo(
@@ -286,8 +281,8 @@ def _build_install_guide(missing: list[str], ver_errors: list[str]) -> str:
         "  Windows       : winget install LLVM.LLVM",
         "",
         "Ensure LLVM binaries are on PATH:",
-        "  Linux  : export PATH=\"/usr/lib/llvm-21/bin:$PATH\"",
-        "  macOS  : export PATH=\"$(brew --prefix llvm)/bin:$PATH\"",
+        '  Linux  : export PATH="/usr/lib/llvm-21/bin:$PATH"',
+        '  macOS  : export PATH="$(brew --prefix llvm)/bin:$PATH"',
         "  Windows: add LLVM bin directory to system PATH",
     ]
     return "\n".join(lines)
@@ -303,13 +298,13 @@ app = typer.Typer(help="Moss prerequisite checker", rich_markup_mode="rich")
 @app.callback(invoke_without_command=True)
 def main(
     output_json: bool = typer.Option(False, "--json", help="Output JSON for CMake"),
-    arch: Optional[str] = typer.Option(
+    arch: str | None = typer.Option(
         None,
         "--arch",
         "-a",
         help="Target architecture (ARM64, X86_64, RISCV)",
     ),
-    build_dir: Optional[Path] = typer.Option(
+    build_dir: Path | None = typer.Option(
         None,
         "--build-dir",
         "-b",

@@ -6,12 +6,17 @@
 
 add_library(moss_aal OBJECT)
 
-# The single module file contains all arch-specific inline asm,
-# selected by #ifdef at compile time — no per-arch source split needed.
-target_sources(moss_aal PUBLIC FILE_SET CXX_MODULES FILES
-    src/arch.cppm)
+# The single module file contains all arch-specific inline asm, selected by #ifdef at compile time — no per-arch source
+# split needed.
+target_sources(
+    moss_aal
+    PUBLIC FILE_SET CXX_MODULES FILES src/arch.cppm
+)
 
 # AAL depends on core for moss.std and moss.types
-target_link_libraries(moss_aal PUBLIC moss_core)
+target_link_libraries(
+    moss_aal
+    PUBLIC moss_core
+)
 
 message(STATUS "AAL (Architecture Abstraction Layer) configured")

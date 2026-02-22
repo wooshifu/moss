@@ -58,118 +58,138 @@ export namespace moss {
 // --- Type transformations (Clang TransformTypeTraits) -----------------------
 
 template <typename T> using remove_const_t = __remove_const(T);
-template <typename T> struct remove_const { using type = remove_const_t<T>; };
+template <typename T> struct remove_const {
+  using type = remove_const_t<T>;
+};
 
 template <typename T> using remove_volatile_t = __remove_volatile(T);
-template <typename T> struct remove_volatile { using type = remove_volatile_t<T>; };
+template <typename T> struct remove_volatile {
+  using type = remove_volatile_t<T>;
+};
 
 template <typename T> using remove_cv_t = __remove_cv(T);
-template <typename T> struct remove_cv { using type = remove_cv_t<T>; };
+template <typename T> struct remove_cv {
+  using type = remove_cv_t<T>;
+};
 
 template <typename T> using remove_reference_t = __remove_reference_t(T);
-template <typename T> struct remove_reference { using type = remove_reference_t<T>; };
+template <typename T> struct remove_reference {
+  using type = remove_reference_t<T>;
+};
 
 template <typename T> using remove_pointer_t = __remove_pointer(T);
-template <typename T> struct remove_pointer { using type = remove_pointer_t<T>; };
+template <typename T> struct remove_pointer {
+  using type = remove_pointer_t<T>;
+};
 
 // --- Type property traits (Clang __is_* intrinsics) -------------------------
 
-template <typename T, typename U>
-inline constexpr bool is_same_v = __is_same(T, U);
-template <typename T, typename U>
-struct is_same { static constexpr bool value = is_same_v<T, U>; };
+template <typename T, typename U> inline constexpr bool is_same_v = __is_same(T, U);
+template <typename T, typename U> struct is_same {
+  static constexpr bool value = is_same_v<T, U>;
+};
 
 template <typename T> inline constexpr bool is_const_v = __is_const(T);
-template <typename T> struct is_const { static constexpr bool value = is_const_v<T>; };
+template <typename T> struct is_const {
+  static constexpr bool value = is_const_v<T>;
+};
 
 template <typename T> inline constexpr bool is_volatile_v = __is_volatile(T);
-template <typename T> struct is_volatile { static constexpr bool value = is_volatile_v<T>; };
+template <typename T> struct is_volatile {
+  static constexpr bool value = is_volatile_v<T>;
+};
 
 template <typename T> inline constexpr bool is_void_v = __is_void(T);
-template <typename T> struct is_void { static constexpr bool value = is_void_v<T>; };
+template <typename T> struct is_void {
+  static constexpr bool value = is_void_v<T>;
+};
 
 template <typename T> inline constexpr bool is_integral_v = __is_integral(T);
-template <typename T> struct is_integral { static constexpr bool value = is_integral_v<T>; };
+template <typename T> struct is_integral {
+  static constexpr bool value = is_integral_v<T>;
+};
 
 template <typename T> inline constexpr bool is_floating_point_v = __is_floating_point(T);
-template <typename T> struct is_floating_point { static constexpr bool value = is_floating_point_v<T>; };
+template <typename T> struct is_floating_point {
+  static constexpr bool value = is_floating_point_v<T>;
+};
 
 template <typename T> inline constexpr bool is_array_v = __is_array(T);
-template <typename T> struct is_array { static constexpr bool value = is_array_v<T>; };
+template <typename T> struct is_array {
+  static constexpr bool value = is_array_v<T>;
+};
 
 template <typename T> inline constexpr bool is_pointer_v = __is_pointer(T);
-template <typename T> struct is_pointer { static constexpr bool value = is_pointer_v<T>; };
+template <typename T> struct is_pointer {
+  static constexpr bool value = is_pointer_v<T>;
+};
 
 template <typename T> inline constexpr bool is_lvalue_reference_v = __is_lvalue_reference(T);
-template <typename T> struct is_lvalue_reference { static constexpr bool value = is_lvalue_reference_v<T>; };
+template <typename T> struct is_lvalue_reference {
+  static constexpr bool value = is_lvalue_reference_v<T>;
+};
 
 template <typename T> inline constexpr bool is_rvalue_reference_v = __is_rvalue_reference(T);
-template <typename T> struct is_rvalue_reference { static constexpr bool value = is_rvalue_reference_v<T>; };
+template <typename T> struct is_rvalue_reference {
+  static constexpr bool value = is_rvalue_reference_v<T>;
+};
 
 template <typename T> inline constexpr bool is_reference_v = __is_reference(T);
-template <typename T> struct is_reference { static constexpr bool value = is_reference_v<T>; };
+template <typename T> struct is_reference {
+  static constexpr bool value = is_reference_v<T>;
+};
 
 template <typename T> inline constexpr bool is_function_v = __is_function(T);
-template <typename T> struct is_function { static constexpr bool value = is_function_v<T>; };
+template <typename T> struct is_function {
+  static constexpr bool value = is_function_v<T>;
+};
 
 // --- Conditional / enable_if (no builtin equivalent) ------------------------
 
-template <bool B, typename T, typename F> struct conditional { using type = T; };
-template <typename T, typename F> struct conditional<false, T, F> { using type = F; };
-template <bool B, typename T, typename F>
-using conditional_t = typename conditional<B, T, F>::type;
+template <bool B, typename T, typename F> struct conditional {
+  using type = T;
+};
+template <typename T, typename F> struct conditional<false, T, F> {
+  using type = F;
+};
+template <bool B, typename T, typename F> using conditional_t = typename conditional<B, T, F>::type;
 
 template <bool B, typename T = void> struct enable_if {};
-template <typename T> struct enable_if<true, T> { using type = T; };
-template <bool B, typename T = void>
-using enable_if_t = typename enable_if<B, T>::type;
+template <typename T> struct enable_if<true, T> {
+  using type = T;
+};
+template <bool B, typename T = void> using enable_if_t = typename enable_if<B, T>::type;
 
 // --- Nothrow traits (Clang __is_nothrow_* intrinsics) -----------------------
 
-template <typename T>
-inline constexpr bool is_nothrow_copy_constructible_v =
-    __is_nothrow_constructible(T, const T &);
-template <typename T>
-struct is_nothrow_copy_constructible {
+template <typename T> inline constexpr bool is_nothrow_copy_constructible_v = __is_nothrow_constructible(T, const T &);
+template <typename T> struct is_nothrow_copy_constructible {
   static constexpr bool value = is_nothrow_copy_constructible_v<T>;
 };
 
-template <typename T>
-inline constexpr bool is_nothrow_move_constructible_v =
-    __is_nothrow_constructible(T, T &&);
-template <typename T>
-struct is_nothrow_move_constructible {
+template <typename T> inline constexpr bool is_nothrow_move_constructible_v = __is_nothrow_constructible(T, T &&);
+template <typename T> struct is_nothrow_move_constructible {
   static constexpr bool value = is_nothrow_move_constructible_v<T>;
 };
 
-template <typename T>
-inline constexpr bool is_nothrow_copy_assignable_v =
-    __is_nothrow_assignable(T &, const T &);
-template <typename T>
-struct is_nothrow_copy_assignable {
+template <typename T> inline constexpr bool is_nothrow_copy_assignable_v = __is_nothrow_assignable(T &, const T &);
+template <typename T> struct is_nothrow_copy_assignable {
   static constexpr bool value = is_nothrow_copy_assignable_v<T>;
 };
 
-template <typename T>
-inline constexpr bool is_nothrow_move_assignable_v =
-    __is_nothrow_assignable(T &, T &&);
-template <typename T>
-struct is_nothrow_move_assignable {
+template <typename T> inline constexpr bool is_nothrow_move_assignable_v = __is_nothrow_assignable(T &, T &&);
+template <typename T> struct is_nothrow_move_assignable {
   static constexpr bool value = is_nothrow_move_assignable_v<T>;
 };
 
 template <typename T, typename... Args>
-inline constexpr bool is_nothrow_constructible_v =
-    __is_nothrow_constructible(T, Args...);
-template <typename T, typename... Args>
-struct is_nothrow_constructible {
+inline constexpr bool is_nothrow_constructible_v = __is_nothrow_constructible(T, Args...);
+template <typename T, typename... Args> struct is_nothrow_constructible {
   static constexpr bool value = is_nothrow_constructible_v<T, Args...>;
 };
 
-template <typename T, typename U>
-inline constexpr bool is_nothrow_assignable_v = __is_nothrow_assignable(T, U);
-template <typename T, typename U>
-struct is_nothrow_assignable {
+template <typename T, typename U> inline constexpr bool is_nothrow_assignable_v = __is_nothrow_assignable(T, U);
+template <typename T, typename U> struct is_nothrow_assignable {
   static constexpr bool value = is_nothrow_assignable_v<T, U>;
 };
 
@@ -184,19 +204,14 @@ template <typename T> constexpr remove_reference_t<T> &&move(T &&t) noexcept {
   return static_cast<remove_reference_t<T> &&>(t);
 }
 
-template <typename T> constexpr T &&forward(remove_reference_t<T> &t) noexcept {
+template <typename T> constexpr T &&forward(remove_reference_t<T> &t) noexcept { return static_cast<T &&>(t); }
+
+template <typename T> constexpr T &&forward(remove_reference_t<T> &&t) noexcept {
+  static_assert(!is_lvalue_reference_v<T>, "Cannot forward an rvalue as an lvalue");
   return static_cast<T &&>(t);
 }
 
-template <typename T>
-constexpr T &&forward(remove_reference_t<T> &&t) noexcept {
-  static_assert(!is_lvalue_reference_v<T>,
-                "Cannot forward an rvalue as an lvalue");
-  return static_cast<T &&>(t);
-}
-
-template <typename T, typename U = T>
-constexpr T exchange(T &obj, U &&new_value) noexcept {
+template <typename T, typename U = T> constexpr T exchange(T &obj, U &&new_value) noexcept {
   T old_value = move(obj);
   obj = forward<U>(new_value);
   return old_value;
@@ -208,16 +223,11 @@ template <typename T> constexpr void swap(T &a, T &b) noexcept {
   b = move(temp);
 }
 
-template <typename T> constexpr const T &min(const T &a, const T &b) {
-  return (b < a) ? b : a;
-}
+template <typename T> constexpr const T &min(const T &a, const T &b) { return (b < a) ? b : a; }
 
-template <typename T> constexpr const T &max(const T &a, const T &b) {
-  return (a < b) ? b : a;
-}
+template <typename T> constexpr const T &max(const T &a, const T &b) { return (a < b) ? b : a; }
 
-template <typename T>
-constexpr const T &clamp(const T &v, const T &lo, const T &hi) {
+template <typename T> constexpr const T &clamp(const T &v, const T &lo, const T &hi) {
   return (v < lo) ? lo : (hi < v) ? hi : v;
 }
 
@@ -228,9 +238,7 @@ constexpr const T &clamp(const T &v, const T &lo, const T &hi) {
 // ============================================================================
 export namespace moss {
 
-constexpr void *memset(void *dest, int ch, size_t count) noexcept {
-  return __builtin_memset(dest, ch, count);
-}
+constexpr void *memset(void *dest, int ch, size_t count) noexcept { return __builtin_memset(dest, ch, count); }
 
 constexpr void *memcpy(void *dest, const void *src, size_t count) noexcept {
   return __builtin_memcpy(dest, src, count);
@@ -244,9 +252,7 @@ constexpr int memcmp(const void *lhs, const void *rhs, size_t count) noexcept {
   return __builtin_memcmp(lhs, rhs, count);
 }
 
-template <typename T> constexpr T abs(const T &value) noexcept {
-  return (value < 0) ? -value : value;
-}
+template <typename T> constexpr T abs(const T &value) noexcept { return (value < 0) ? -value : value; }
 
 } // namespace moss
 
@@ -256,24 +262,10 @@ template <typename T> constexpr T abs(const T &value) noexcept {
 export namespace moss {
 
 // CamelCase MemoryOrder - used by 415+ callsites across the codebase
-enum class MemoryOrder {
-  Relaxed = 0,
-  Consume = 1,
-  Acquire = 2,
-  Release = 3,
-  AcqRel = 4,
-  SeqCst = 5
-};
+enum class MemoryOrder { Relaxed = 0, Consume = 1, Acquire = 2, Release = 3, AcqRel = 4, SeqCst = 5 };
 
 // lowercase memory_order - std-compatible alias
-enum class memory_order : int {
-  relaxed = 0,
-  consume = 1,
-  acquire = 2,
-  release = 3,
-  acq_rel = 4,
-  seq_cst = 5
-};
+enum class memory_order : int { relaxed = 0, consume = 1, acquire = 2, release = 3, acq_rel = 4, seq_cst = 5 };
 
 inline constexpr memory_order memory_order_relaxed = memory_order::relaxed;
 inline constexpr memory_order memory_order_consume = memory_order::consume;
@@ -283,13 +275,9 @@ inline constexpr memory_order memory_order_acq_rel = memory_order::acq_rel;
 inline constexpr memory_order memory_order_seq_cst = memory_order::seq_cst;
 
 // Integer conversion helpers for __atomic builtins
-constexpr int memory_order_to_int(MemoryOrder order) noexcept {
-  return static_cast<int>(order);
-}
+constexpr int memory_order_to_int(MemoryOrder order) noexcept { return static_cast<int>(order); }
 
-constexpr int memory_order_to_int(memory_order order) noexcept {
-  return static_cast<int>(order);
-}
+constexpr int memory_order_to_int(memory_order order) noexcept { return static_cast<int>(order); }
 
 // Atomic thread fence (multi-architecture support)
 inline void atomic_thread_fence(MemoryOrder /*order*/) noexcept {
@@ -335,8 +323,7 @@ export namespace moss {
 
 // Basic atomic type template
 template <typename T> struct atomic {
-  static_assert(is_integral_v<T> || is_pointer_v<T>,
-                "Atomic type must be integral or pointer");
+  static_assert(is_integral_v<T> || is_pointer_v<T>, "Atomic type must be integral or pointer");
 
 private:
   T value_{};
@@ -362,51 +349,41 @@ public:
     return __atomic_exchange_n(&value_, desired, static_cast<int>(order));
   }
 
-  bool
-  compare_exchange_weak(T &expected, T desired,
-                        memory_order success = memory_order_seq_cst,
-                        memory_order failure = memory_order_seq_cst) noexcept {
-    return __atomic_compare_exchange_n(&value_, &expected, desired, true,
-                                       static_cast<int>(success),
+  bool compare_exchange_weak(T &expected, T desired, memory_order success = memory_order_seq_cst,
+                             memory_order failure = memory_order_seq_cst) noexcept {
+    return __atomic_compare_exchange_n(&value_, &expected, desired, true, static_cast<int>(success),
                                        static_cast<int>(failure));
   }
 
-  bool compare_exchange_strong(
-      T &expected, T desired, memory_order success = memory_order_seq_cst,
-      memory_order failure = memory_order_seq_cst) noexcept {
-    return __atomic_compare_exchange_n(&value_, &expected, desired, false,
-                                       static_cast<int>(success),
+  bool compare_exchange_strong(T &expected, T desired, memory_order success = memory_order_seq_cst,
+                               memory_order failure = memory_order_seq_cst) noexcept {
+    return __atomic_compare_exchange_n(&value_, &expected, desired, false, static_cast<int>(success),
                                        static_cast<int>(failure));
   }
 
   // Atomic arithmetic operations (for integral types)
   template <typename U = T>
-  enable_if_t<is_integral_v<U>, T>
-  fetch_add(T arg, memory_order order = memory_order_seq_cst) noexcept {
+  enable_if_t<is_integral_v<U>, T> fetch_add(T arg, memory_order order = memory_order_seq_cst) noexcept {
     return __atomic_fetch_add(&value_, arg, static_cast<int>(order));
   }
 
   template <typename U = T>
-  enable_if_t<is_integral_v<U>, T>
-  fetch_sub(T arg, memory_order order = memory_order_seq_cst) noexcept {
+  enable_if_t<is_integral_v<U>, T> fetch_sub(T arg, memory_order order = memory_order_seq_cst) noexcept {
     return __atomic_fetch_sub(&value_, arg, static_cast<int>(order));
   }
 
   template <typename U = T>
-  enable_if_t<is_integral_v<U>, T>
-  fetch_and(T arg, memory_order order = memory_order_seq_cst) noexcept {
+  enable_if_t<is_integral_v<U>, T> fetch_and(T arg, memory_order order = memory_order_seq_cst) noexcept {
     return __atomic_fetch_and(&value_, arg, static_cast<int>(order));
   }
 
   template <typename U = T>
-  enable_if_t<is_integral_v<U>, T>
-  fetch_or(T arg, memory_order order = memory_order_seq_cst) noexcept {
+  enable_if_t<is_integral_v<U>, T> fetch_or(T arg, memory_order order = memory_order_seq_cst) noexcept {
     return __atomic_fetch_or(&value_, arg, static_cast<int>(order));
   }
 
   template <typename U = T>
-  enable_if_t<is_integral_v<U>, T>
-  fetch_xor(T arg, memory_order order = memory_order_seq_cst) noexcept {
+  enable_if_t<is_integral_v<U>, T> fetch_xor(T arg, memory_order order = memory_order_seq_cst) noexcept {
     return __atomic_fetch_xor(&value_, arg, static_cast<int>(order));
   }
 
@@ -418,50 +395,23 @@ public:
     return desired;
   }
 
-  template <typename U = T>
-  enable_if_t<is_integral_v<U>, T> operator++() noexcept {
-    return fetch_add(1) + 1;
-  }
+  template <typename U = T> enable_if_t<is_integral_v<U>, T> operator++() noexcept { return fetch_add(1) + 1; }
 
-  template <typename U = T>
-  enable_if_t<is_integral_v<U>, T> operator++(int) noexcept {
-    return fetch_add(1);
-  }
+  template <typename U = T> enable_if_t<is_integral_v<U>, T> operator++(int) noexcept { return fetch_add(1); }
 
-  template <typename U = T>
-  enable_if_t<is_integral_v<U>, T> operator--() noexcept {
-    return fetch_sub(1) - 1;
-  }
+  template <typename U = T> enable_if_t<is_integral_v<U>, T> operator--() noexcept { return fetch_sub(1) - 1; }
 
-  template <typename U = T>
-  enable_if_t<is_integral_v<U>, T> operator--(int) noexcept {
-    return fetch_sub(1);
-  }
+  template <typename U = T> enable_if_t<is_integral_v<U>, T> operator--(int) noexcept { return fetch_sub(1); }
 
-  template <typename U = T>
-  enable_if_t<is_integral_v<U>, T> operator+=(T arg) noexcept {
-    return fetch_add(arg) + arg;
-  }
+  template <typename U = T> enable_if_t<is_integral_v<U>, T> operator+=(T arg) noexcept { return fetch_add(arg) + arg; }
 
-  template <typename U = T>
-  enable_if_t<is_integral_v<U>, T> operator-=(T arg) noexcept {
-    return fetch_sub(arg) - arg;
-  }
+  template <typename U = T> enable_if_t<is_integral_v<U>, T> operator-=(T arg) noexcept { return fetch_sub(arg) - arg; }
 
-  template <typename U = T>
-  enable_if_t<is_integral_v<U>, T> operator&=(T arg) noexcept {
-    return fetch_and(arg) & arg;
-  }
+  template <typename U = T> enable_if_t<is_integral_v<U>, T> operator&=(T arg) noexcept { return fetch_and(arg) & arg; }
 
-  template <typename U = T>
-  enable_if_t<is_integral_v<U>, T> operator|=(T arg) noexcept {
-    return fetch_or(arg) | arg;
-  }
+  template <typename U = T> enable_if_t<is_integral_v<U>, T> operator|=(T arg) noexcept { return fetch_or(arg) | arg; }
 
-  template <typename U = T>
-  enable_if_t<is_integral_v<U>, T> operator^=(T arg) noexcept {
-    return fetch_xor(arg) ^ arg;
-  }
+  template <typename U = T> enable_if_t<is_integral_v<U>, T> operator^=(T arg) noexcept { return fetch_xor(arg) ^ arg; }
 };
 
 // Common atomic type aliases
@@ -483,17 +433,11 @@ using atomic_intptr_t = atomic<intptr_t>;
 using atomic_uintptr_t = atomic<uintptr_t>;
 
 // Atomic utility functions
-template <typename T> T atomic_load(const atomic<T> *obj) noexcept {
-  return obj->load();
-}
+template <typename T> T atomic_load(const atomic<T> *obj) noexcept { return obj->load(); }
 
-template <typename T> void atomic_store(atomic<T> *obj, T desired) noexcept {
-  obj->store(desired);
-}
+template <typename T> void atomic_store(atomic<T> *obj, T desired) noexcept { obj->store(desired); }
 
-template <typename T> T atomic_exchange(atomic<T> *obj, T desired) noexcept {
-  return obj->exchange(desired);
-}
+template <typename T> T atomic_exchange(atomic<T> *obj, T desired) noexcept { return obj->exchange(desired); }
 
 } // namespace moss
 

@@ -31,45 +31,40 @@ import :syscall_table;
 import :syscall_arch;
 
 // ABI symbols used by kernel boot/init
-using moss::abi::entry::early_debug_print;
 using moss::abi::syscall_entry_point;
+using moss::abi::entry::early_debug_print;
 
 export namespace moss::kernel {
 
 namespace log = moss::kernel::logging;
 
 // Kernel subsystem state
-enum class SubsystemState : u8 {
-  Uninitialized = 0,
-  Initializing = 1,
-  Active = 2,
-  Error = 3
-};
+enum class SubsystemState : u8 { Uninitialized = 0, Initializing = 1, Active = 2, Error = 3 };
 
 // Kernel boot phase
 enum class BootPhase : u8 {
-  EarlyInit = 0,      // Early initialization (after assembly)
-  MemoryInit = 1,     // Memory management initialization
-  SchedulerInit = 2,  // Scheduler initialization
-  IpcInit = 3,        // IPC system initialization
-  DeviceInit = 4,     // Device management initialization
-  ServiceInit = 5,    // System service startup
-  UserInit = 6,       // User-space initialization
-  Completed = 7       // Boot completed
+  EarlyInit = 0,     // Early initialization (after assembly)
+  MemoryInit = 1,    // Memory management initialization
+  SchedulerInit = 2, // Scheduler initialization
+  IpcInit = 3,       // IPC system initialization
+  DeviceInit = 4,    // Device management initialization
+  ServiceInit = 5,   // System service startup
+  UserInit = 6,      // User-space initialization
+  Completed = 7      // Boot completed
 };
 
 // Kernel statistics
 struct KernelStats {
-  u64 boot_time;           // Boot time
-  u64 uptime;              // Uptime
-  u64 total_memory;        // Total memory
-  u64 free_memory;         // Free memory
-  u32 active_processes;    // Active process count
-  u32 total_threads;       // Total thread count
-  u64 context_switches;    // Context switch count
-  u64 interrupts_handled;  // Interrupts handled
-  u64 ipc_messages;        // IPC message count
-  u32 registered_devices;  // Registered device count
+  u64 boot_time;          // Boot time
+  u64 uptime;             // Uptime
+  u64 total_memory;       // Total memory
+  u64 free_memory;        // Free memory
+  u32 active_processes;   // Active process count
+  u32 total_threads;      // Total thread count
+  u64 context_switches;   // Context switch count
+  u64 interrupts_handled; // Interrupts handled
+  u64 ipc_messages;       // IPC message count
+  u32 registered_devices; // Registered device count
 };
 
 // Kernel main class
@@ -96,23 +91,20 @@ private:
 
   // Kernel configuration
   struct KernelConfig {
-    bool enable_smp;              // Enable multi-core support
-    bool enable_preemption;       // Enable preemptive scheduling
-    u32 max_processes;            // Maximum process count
-    u32 max_threads_per_process;  // Maximum threads per process
-    usize kernel_heap_size;       // Kernel heap size
-    bool enable_debug_output;     // Enable debug output
-    u32 scheduler_timeslice_ms;   // Scheduling timeslice (milliseconds)
+    bool enable_smp;             // Enable multi-core support
+    bool enable_preemption;      // Enable preemptive scheduling
+    u32 max_processes;           // Maximum process count
+    u32 max_threads_per_process; // Maximum threads per process
+    usize kernel_heap_size;      // Kernel heap size
+    bool enable_debug_output;    // Enable debug output
+    u32 scheduler_timeslice_ms;  // Scheduling timeslice (milliseconds)
   } config_;
 
 public:
   Kernel() noexcept
-      : current_phase_(BootPhase::EarlyInit),
-        subsystem_states_{SubsystemState::Uninitialized},
-        container_lib_(nullptr), page_table_manager_(nullptr),
-        process_manager_(nullptr), scheduler_(nullptr), load_balancer_(nullptr),
-        shared_memory_manager_(nullptr), ipc_manager_(nullptr), gic_(nullptr),
-        device_manager_(nullptr),
+      : current_phase_(BootPhase::EarlyInit), subsystem_states_{SubsystemState::Uninitialized}, container_lib_(nullptr),
+        page_table_manager_(nullptr), process_manager_(nullptr), scheduler_(nullptr), load_balancer_(nullptr),
+        shared_memory_manager_(nullptr), ipc_manager_(nullptr), gic_(nullptr), device_manager_(nullptr),
         boot_start_time_(0), phase_start_times_{0} {
     // Initialize kernel configuration
     config_ = {.enable_smp = true,
@@ -127,10 +119,10 @@ public:
   ~Kernel() noexcept { shutdown(); }
 
   // Non-copyable, non-movable
-  Kernel(const Kernel&) = delete;
-  Kernel& operator=(const Kernel&) = delete;
-  Kernel(Kernel&&) = delete;
-  Kernel& operator=(Kernel&&) = delete;
+  Kernel(const Kernel &) = delete;
+  Kernel &operator=(const Kernel &) = delete;
+  Kernel(Kernel &&) = delete;
+  Kernel &operator=(Kernel &&) = delete;
 
   // Kernel initialization main entry
   [[nodiscard]] VoidResult initialize() noexcept {
@@ -160,15 +152,14 @@ public:
 
     // Initialize initramfs if bootloader provided one via DTB
     {
-        auto& pi = fdt::g_platform_info;
-        if (pi.initrd_start != 0 && pi.initrd_end > pi.initrd_start) {
-            usize initrd_size = static_cast<usize>(pi.initrd_end - pi.initrd_start);
-            log::klog::info("initramfs: found at {:#x}-{:#x} ({} bytes)",
-                           pi.initrd_start, pi.initrd_end, initrd_size);
-            initramfs::g_initramfs.init(pi.initrd_start, initrd_size);
-        } else {
-            log::klog::info("initramfs: not present (no -initrd passed to QEMU)");
-        }
+      auto &pi = fdt::g_platform_info;
+      if (pi.initrd_start != 0 && pi.initrd_end > pi.initrd_start) {
+        usize initrd_size = static_cast<usize>(pi.initrd_end - pi.initrd_start);
+        log::klog::info("initramfs: found at {:#x}-{:#x} ({} bytes)", pi.initrd_start, pi.initrd_end, initrd_size);
+        initramfs::g_initramfs.init(pi.initrd_start, initrd_size);
+      } else {
+        log::klog::info("initramfs: not present (no -initrd passed to QEMU)");
+      }
     }
 
     // Initialize VFS: mount root (ramfs) + devfs
@@ -281,9 +272,8 @@ public:
 private:
   // Phase-by-phase initialization
   [[nodiscard]] VoidResult initialize_phase_by_phase() noexcept {
-    const char *phase_names[] = {"Early init", "Memory management", "Scheduler",
-                                 "IPC system", "Device management", "System services",
-                                 "User-space", "Complete"};
+    const char *phase_names[] = {"Early init",        "Memory management", "Scheduler",  "IPC system",
+                                 "Device management", "System services",   "User-space", "Complete"};
 
     for (int phase = 0; phase < 7; ++phase) {
       current_phase_ = static_cast<BootPhase>(phase);
@@ -347,8 +337,7 @@ private:
     if (!containers::ContainerLibrary::initialize()) {
       return VoidResult{ErrorCode::InternalError};
     }
-    container_lib_ =
-        nullptr; // ContainerLibrary is a singleton/static, no instance needed
+    container_lib_ = nullptr; // ContainerLibrary is a singleton/static, no instance needed
 
     // Initialize timer subsystem (clocksource + hardware timer)
     log::klog::info("Initializing timer subsystem...");
@@ -400,13 +389,23 @@ private:
 
     // Print memory system information
     auto pressure = mm::get_memory_pressure();
-    const char* pressure_str = "UNKNOWN";
+    const char *pressure_str = "UNKNOWN";
     switch (pressure) {
-      case mm::MemoryPressure::LOW: pressure_str = "LOW"; break;
-      case mm::MemoryPressure::MEDIUM: pressure_str = "MEDIUM"; break;
-      case mm::MemoryPressure::HIGH: pressure_str = "HIGH"; break;
-      case mm::MemoryPressure::CRITICAL: pressure_str = "CRITICAL"; break;
-      default: pressure_str = "UNKNOWN"; break;
+    case mm::MemoryPressure::LOW:
+      pressure_str = "LOW";
+      break;
+    case mm::MemoryPressure::MEDIUM:
+      pressure_str = "MEDIUM";
+      break;
+    case mm::MemoryPressure::HIGH:
+      pressure_str = "HIGH";
+      break;
+    case mm::MemoryPressure::CRITICAL:
+      pressure_str = "CRITICAL";
+      break;
+    default:
+      pressure_str = "UNKNOWN";
+      break;
     }
     log::klog::info("Memory pressure level: {}", pressure_str);
 
@@ -453,7 +452,7 @@ private:
 
     // Wire periodic load balance into scheduler_tick via callback.
     // This avoids circular module partition dependency (scheduler→load_balancer).
-    scheduler_->set_balance_callback([](u64 now, process::CfsScheduler* sched) {
+    scheduler_->set_balance_callback([](u64 now, process::CfsScheduler *sched) {
       if (::moss::kernel::process::g_load_balancer && sched) {
         ::moss::kernel::process::g_load_balancer->periodic_balance(now, *sched);
       }
@@ -517,12 +516,10 @@ private:
 
     // 从 DTB 解析结果获取 GIC 地址，若 DTB 无效则回退到 QEMU virt 默认值
     const auto &plat = ::moss::fdt::get_platform_info();
-    VirtAddr gic_dist_base = (plat.dtb_valid && plat.intc.valid)
-                                 ? static_cast<VirtAddr>(plat.intc.dist_base)
-                                 : platform::intc_dist_base();
-    VirtAddr gic_cpu_base = (plat.dtb_valid && plat.intc.valid)
-                                ? static_cast<VirtAddr>(plat.intc.cpu_base)
-                                : platform::intc_cpu_base();
+    VirtAddr gic_dist_base =
+        (plat.dtb_valid && plat.intc.valid) ? static_cast<VirtAddr>(plat.intc.dist_base) : platform::intc_dist_base();
+    VirtAddr gic_cpu_base =
+        (plat.dtb_valid && plat.intc.valid) ? static_cast<VirtAddr>(plat.intc.cpu_base) : platform::intc_cpu_base();
 
     auto gic_result = gic_->initialize(gic_dist_base, gic_cpu_base);
     if (!gic_result) {
@@ -545,8 +542,8 @@ private:
     // Initialize multi-architecture syscall support
     log::klog::info("Initializing multi-architecture syscall support...");
     if (!arch::syscall::initialize_architecture_syscalls()) {
-        log::klog::error("Syscall architecture initialization failed");
-        return VoidResult{ErrorCode::NotSupported};
+      log::klog::error("Syscall architecture initialization failed");
+      return VoidResult{ErrorCode::NotSupported};
     }
     log::klog::info("Syscall architecture initialization succeeded");
 
@@ -608,31 +605,26 @@ private:
     // The embedded user program is raw machine code (not ELF).
     // We place it at a fixed user virtual address and register as a code VMA
     // with backing data pointing to the kernel-resident copy.
-    const auto* raw_code = moss::abi::arm64::user_program_start();
+    const auto *raw_code = moss::abi::arm64::user_program_start();
     usize code_size = moss::abi::arm64::user_program_size();
 
     // Code VMA: readable + executable, backed by the embedded raw program
-    VirtAddr code_end = (UserLayout::CODE_BASE + code_size + PAGE_SIZE - 1)
-                        & ~(static_cast<VirtAddr>(PAGE_SIZE) - 1);
-    as->add_vma(UserLayout::CODE_BASE, code_end,
-                VmaFlags::READ | VmaFlags::EXEC,
-                VmaType::CODE,
-                raw_code, 0, code_size);
+    VirtAddr code_end = (UserLayout::CODE_BASE + code_size + PAGE_SIZE - 1) & ~(static_cast<VirtAddr>(PAGE_SIZE) - 1);
+    as->add_vma(UserLayout::CODE_BASE, code_end, VmaFlags::READ | VmaFlags::EXEC, VmaType::CODE, raw_code, 0,
+                code_size);
     early_debug_print("[init] VMA code registered\n");
 
-    VirtAddr entry_point = UserLayout::CODE_BASE;  // entry = start of raw code
+    VirtAddr entry_point = UserLayout::CODE_BASE; // entry = start of raw code
 
     // Stack VMA: demand-zero
     constexpr VirtAddr STACK_BOTTOM = UserLayout::STACK_TOP - UserLayout::STACK_SIZE;
-    as->add_vma(STACK_BOTTOM, UserLayout::STACK_TOP,
-                VmaFlags::READ | VmaFlags::WRITE | VmaFlags::DEMAND_ZERO,
+    as->add_vma(STACK_BOTTOM, UserLayout::STACK_TOP, VmaFlags::READ | VmaFlags::WRITE | VmaFlags::DEMAND_ZERO,
                 VmaType::STACK);
     early_debug_print("[init] VMA stack registered\n");
 
     // Heap VMA: small initial region, demand-zero
     as->add_vma(UserLayout::HEAP_START, UserLayout::HEAP_START + UserLayout::HEAP_INIT,
-                VmaFlags::READ | VmaFlags::WRITE | VmaFlags::DEMAND_ZERO,
-                VmaType::HEAP);
+                VmaFlags::READ | VmaFlags::WRITE | VmaFlags::DEMAND_ZERO, VmaType::HEAP);
 
     // Bind AddressSpace to process
     auto set_result = init_proc->set_address_space(moss::move(as));
@@ -652,7 +644,7 @@ private:
     // This stack is used as SP_EL1 when handling exceptions from this
     // thread's user-mode execution — prevents all user processes from
     // sharing the single boot stack.
-    constexpr usize KERNEL_STACK_ORDER = 2;  // 4 pages = 16KB
+    constexpr usize KERNEL_STACK_ORDER = 2; // 4 pages = 16KB
     constexpr usize KERNEL_STACK_SIZE = PAGE_SIZE << KERNEL_STACK_ORDER;
     auto kstack_result = mm::allocate_pages(KERNEL_STACK_ORDER);
     if (!kstack_result) {
@@ -671,10 +663,10 @@ private:
     init_thread->stack_base = STACK_BOTTOM;
     init_thread->stack_size = UserLayout::STACK_SIZE;
     init_thread->context.pc = entry_point;
-    init_thread->context.sp = UserLayout::STACK_TOP - 16;  // 16-byte aligned
-    init_thread->context.pstate = 0x00000000;  // EL0t
-    init_thread->needs_initial_eret = true;  // First dispatch uses switch_to_user + eret
-    init_thread->is_user_task = true;         // Permanent: drives TTBR0 switch on re-dispatch
+    init_thread->context.sp = UserLayout::STACK_TOP - 16; // 16-byte aligned
+    init_thread->context.pstate = 0x00000000;             // EL0t
+    init_thread->needs_initial_eret = true;               // First dispatch uses switch_to_user + eret
+    init_thread->is_user_task = true;                     // Permanent: drives TTBR0 switch on re-dispatch
 
     init_thread->sched_class = SchedClass::Normal;
     init_thread->se.nice = -5;
@@ -686,7 +678,7 @@ private:
 
     // Step 4b: Allocate FdTable and open stdin/stdout/stderr
     {
-      auto* fdt = new vfs::FdTable();
+      auto *fdt = new vfs::FdTable();
       fdt->init();
       init_proc->set_fd_table(fdt);
       vfs::vfs_init_stdio(fdt);
@@ -708,13 +700,10 @@ private:
   }
 
   // Enable interrupts
-  void enable_interrupts() noexcept {
-    arch::enable_interrupts();
-  }
+  void enable_interrupts() noexcept { arch::enable_interrupts(); }
 
   // Kernel panic handler
-  [[noreturn]] void kernel_panic(const char *message,
-                                 ErrorCode error) noexcept {
+  [[noreturn]] void kernel_panic(const char *message, ErrorCode error) noexcept {
     arch::disable_interrupts();
 
     log::klog::panic("KERNEL PANIC");
@@ -758,10 +747,7 @@ private:
   }
 
   // Get current time
-  [[nodiscard]] static u64 get_current_time() noexcept {
-    return arch::get_timestamp_counter();
-  }
-
+  [[nodiscard]] static u64 get_current_time() noexcept { return arch::get_timestamp_counter(); }
 };
 
 // Global kernel instance

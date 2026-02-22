@@ -18,16 +18,17 @@ export namespace moss::kernel::vfs {
 // ============================================================================
 
 struct Dentry {
-    char         name[MAX_NAME_LEN + 1];  // NUL-terminated component name
-    u32          name_len;                  // strlen(name)
-    Inode*       inode;                     // the inode this name resolves to
-    Dentry*      parent;                    // parent directory dentry (null for root)
-    u32          ref_count;
+  char name[MAX_NAME_LEN + 1]; // NUL-terminated component name
+  u32 name_len;                // strlen(name)
+  Inode *inode;                // the inode this name resolves to
+  Dentry *parent;              // parent directory dentry (null for root)
+  u32 ref_count;
 
-    void ref() noexcept { ++ref_count; }
-    void unref() noexcept {
-        if (ref_count > 0) --ref_count;
-    }
+  void ref() noexcept { ++ref_count; }
+  void unref() noexcept {
+    if (ref_count > 0)
+      --ref_count;
+  }
 };
 
 // ============================================================================
@@ -38,24 +39,22 @@ struct Dentry {
 /// Key: (parent Dentry*, name) → Dentry*
 class DentryCache {
 public:
-    static constexpr u32 CACHE_SIZE = 256;
+  static constexpr u32 CACHE_SIZE = 256;
 
-    /// Initialize the cache (zero all slots)
-    void init() noexcept;
+  /// Initialize the cache (zero all slots)
+  void init() noexcept;
 
-    /// Insert a dentry into the cache.
-    void insert(Dentry* dentry) noexcept;
+  /// Insert a dentry into the cache.
+  void insert(Dentry *dentry) noexcept;
 
-    /// Look up a child dentry by parent + name.
-    /// Returns nullptr if not cached.
-    [[nodiscard]] Dentry* lookup(const Dentry* parent,
-                                  const char* name, u32 name_len) noexcept;
+  /// Look up a child dentry by parent + name.
+  /// Returns nullptr if not cached.
+  [[nodiscard]] Dentry *lookup(const Dentry *parent, const char *name, u32 name_len) noexcept;
 
 private:
-    Dentry* slots_[CACHE_SIZE];
+  Dentry *slots_[CACHE_SIZE];
 
-    [[nodiscard]] static u32 hash(const Dentry* parent,
-                                   const char* name, u32 name_len) noexcept;
+  [[nodiscard]] static u32 hash(const Dentry *parent, const char *name, u32 name_len) noexcept;
 };
 
 // ============================================================================
@@ -64,14 +63,13 @@ private:
 
 /// Resolve a full path (e.g. "/dev/console") starting from the VFS root.
 /// On success returns the final Dentry*; on failure returns nullptr.
-[[nodiscard]] Dentry* resolve_path(const char* path) noexcept;
+[[nodiscard]] Dentry *resolve_path(const char *path) noexcept;
 
 /// Allocate a new Dentry from the global dentry pool.
-[[nodiscard]] Dentry* alloc_dentry(const char* name, u32 name_len,
-                                    Inode* inode, Dentry* parent) noexcept;
+[[nodiscard]] Dentry *alloc_dentry(const char *name, u32 name_len, Inode *inode, Dentry *parent) noexcept;
 
 /// Allocate a new Inode from the global inode pool.
-[[nodiscard]] Inode* alloc_inode() noexcept;
+[[nodiscard]] Inode *alloc_inode() noexcept;
 
 // Global dcache instance
 inline DentryCache g_dcache;

@@ -29,9 +29,9 @@ inline constexpr Architecture CURRENT_ARCH = Architecture::X86_64;
 inline constexpr Architecture CURRENT_ARCH = Architecture::RISCV;
 #endif
 
-inline constexpr bool is_arm64  = (CURRENT_ARCH == Architecture::ARM64);
+inline constexpr bool is_arm64 = (CURRENT_ARCH == Architecture::ARM64);
 inline constexpr bool is_x86_64 = (CURRENT_ARCH == Architecture::X86_64);
-inline constexpr bool is_riscv  = (CURRENT_ARCH == Architecture::RISCV);
+inline constexpr bool is_riscv = (CURRENT_ARCH == Architecture::RISCV);
 
 // Maximum supported CPUs (compile-time constant)
 inline constexpr u32 MAX_CPUS = 16;
@@ -141,9 +141,9 @@ inline void cpu_idle_once() noexcept {
   // Without explicit IRQ enable, WFI returns immediately when DAIF.I=1
   // (IRQs masked), causing a busy-loop that pins host CPU at 100%.
   asm volatile("dsb sy" ::: "memory");
-  asm volatile("msr daifclr, #0x2" ::: "memory");  // enable IRQ (clear DAIF.I)
+  asm volatile("msr daifclr, #0x2" ::: "memory"); // enable IRQ (clear DAIF.I)
   asm volatile("wfi" ::: "memory");
-  asm volatile("msr daifset, #0x2" ::: "memory");   // disable IRQ (set DAIF.I)
+  asm volatile("msr daifset, #0x2" ::: "memory"); // disable IRQ (set DAIF.I)
   asm volatile("isb" ::: "memory");
 #elif defined(MOSS_ARCH_X86_64)
   asm volatile("sti" ::: "memory");
@@ -165,9 +165,7 @@ inline void cpu_idle_once() noexcept {
   return static_cast<u32>(mpidr & 0xFF) % MAX_CPUS;
 #elif defined(MOSS_ARCH_X86_64)
   u32 eax, ebx, ecx, edx;
-  asm volatile("cpuid"
-               : "=a"(eax), "=b"(ebx), "=c"(ecx), "=d"(edx)
-               : "a"(1));
+  asm volatile("cpuid" : "=a"(eax), "=b"(ebx), "=c"(ecx), "=d"(edx) : "a"(1));
   return (ebx >> 24) & 0xFF;
 #elif defined(MOSS_ARCH_RISCV)
   // S-mode cannot read mhartid; use tp register (set by SBI/bootloader)
@@ -208,7 +206,7 @@ inline void enable_interrupts() noexcept {
 #elif defined(MOSS_ARCH_X86_64)
   asm volatile("sti" ::: "memory");
 #elif defined(MOSS_ARCH_RISCV)
-  asm volatile("csrsi sstatus, 0x2" ::: "memory");  // SIE = bit 1
+  asm volatile("csrsi sstatus, 0x2" ::: "memory"); // SIE = bit 1
 #endif
 }
 
@@ -218,7 +216,7 @@ inline void disable_interrupts() noexcept {
 #elif defined(MOSS_ARCH_X86_64)
   asm volatile("cli" ::: "memory");
 #elif defined(MOSS_ARCH_RISCV)
-  asm volatile("csrci sstatus, 0x2" ::: "memory");  // clear SIE
+  asm volatile("csrci sstatus, 0x2" ::: "memory"); // clear SIE
 #endif
 }
 
@@ -229,7 +227,7 @@ inline void disable_all_interrupts() noexcept {
 #elif defined(MOSS_ARCH_X86_64)
   asm volatile("cli" ::: "memory");
 #elif defined(MOSS_ARCH_RISCV)
-  asm volatile("csrci sstatus, 0x2" ::: "memory");  // clear SIE
+  asm volatile("csrci sstatus, 0x2" ::: "memory"); // clear SIE
 #endif
 }
 
@@ -380,11 +378,12 @@ inline void setup_kernel_mmu(PhysAddr kernel_pgd_pa) noexcept {
 
 #if defined(MOSS_ARCH_ARM64)
   // PL011 UART at QEMU virt default 0x09000000
-  volatile u32 *uart_data  = reinterpret_cast<volatile u32 *>(0x09000000ULL);
+  volatile u32 *uart_data = reinterpret_cast<volatile u32 *>(0x09000000ULL);
   volatile u32 *uart_flags = reinterpret_cast<volatile u32 *>(0x09000018ULL);
 
   auto uart_putc = [&](char c) {
-    while (*uart_flags & (1u << 5)) {}
+    while (*uart_flags & (1u << 5)) {
+    }
     *uart_data = static_cast<u32>(static_cast<unsigned char>(c));
   };
 #elif defined(MOSS_ARCH_X86_64)
@@ -394,25 +393,29 @@ inline void setup_kernel_mmu(PhysAddr kernel_pgd_pa) noexcept {
     for (;;) {
       u8 lsr;
       asm volatile("inb %1, %0" : "=a"(lsr) : "Nd"(static_cast<u16>(0x3FD)));
-      if (lsr & 0x20) break;
+      if (lsr & 0x20)
+        break;
     }
     asm volatile("outb %0, %1" ::"a"(static_cast<u8>(c)), "Nd"(static_cast<u16>(0x3F8)));
   };
 #elif defined(MOSS_ARCH_RISCV)
   // NS16550 UART at QEMU virt default 0x10000000
-  volatile u8 *uart_data  = reinterpret_cast<volatile u8 *>(0x10000000ULL);
-  volatile u8 *uart_lsr   = reinterpret_cast<volatile u8 *>(0x10000005ULL);
+  volatile u8 *uart_data = reinterpret_cast<volatile u8 *>(0x10000000ULL);
+  volatile u8 *uart_lsr = reinterpret_cast<volatile u8 *>(0x10000005ULL);
 
   auto uart_putc = [&](char c) {
-    while (!(*uart_lsr & 0x20)) {}
+    while (!(*uart_lsr & 0x20)) {
+    }
     *uart_data = static_cast<u8>(c);
   };
 #endif
 
   auto puts = [&](const char *s) {
-    if (!s) return;
+    if (!s)
+      return;
     while (*s) {
-      if (*s == '\n') uart_putc('\r');
+      if (*s == '\n')
+        uart_putc('\r');
       uart_putc(*s++);
     }
   };

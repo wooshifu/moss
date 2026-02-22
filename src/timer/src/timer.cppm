@@ -18,11 +18,11 @@ import moss.containers;
 
 export namespace moss::kernel::timer {
 
-using moss::u8;
 using moss::u32;
 using moss::u64;
-using moss::kernel::VoidResult;
+using moss::u8;
 using moss::kernel::ErrorCode;
+using moss::kernel::VoidResult;
 
 // ============================================================================
 // Clocksource — divide-free cycle-to-nanosecond conversion
@@ -54,11 +54,11 @@ public:
   [[nodiscard]] u64 frequency_hz() const noexcept { return freq_hz_; }
 
 private:
-  u64 mult_{0};          // Multiply factor for cycles -> ns: ns = (cycles * mult) >> shift
-  u64 inv_mult_{0};      // Inverse factor for ns -> cycles: cycles = (ns * inv_mult) >> shift
-  u32 shift_{0};         // Right-shift amount
-  u64 freq_hz_{0};       // Raw hardware frequency (Hz)
-  u64 boot_cycles_{0};   // Counter value at init time
+  u64 mult_{0};        // Multiply factor for cycles -> ns: ns = (cycles * mult) >> shift
+  u64 inv_mult_{0};    // Inverse factor for ns -> cycles: cycles = (ns * inv_mult) >> shift
+  u32 shift_{0};       // Right-shift amount
+  u64 freq_hz_{0};     // Raw hardware frequency (Hz)
+  u64 boot_cycles_{0}; // Counter value at init time
 };
 
 // ============================================================================
@@ -66,7 +66,7 @@ private:
 // ============================================================================
 
 /// Timer callback signature: called from interrupt context.
-using TimerCallback = void(*)(void* data) noexcept;
+using TimerCallback = void (*)(void *data) noexcept;
 
 /// Timer mode: one-shot fires once, periodic repeats at interval.
 enum class TimerMode : u8 {
@@ -78,14 +78,13 @@ enum class TimerMode : u8 {
 class TimerSubsystem;
 
 class HrTimer {
-  friend class TimerSubsystem;  // TimerSubsystem manages the sorted list
+  friend class TimerSubsystem; // TimerSubsystem manages the sorted list
 
 public:
   HrTimer() noexcept = default;
 
   /// Configure this timer (must be called before start).
-  void init(TimerMode mode, TimerCallback callback,
-            void* data = nullptr) noexcept;
+  void init(TimerMode mode, TimerCallback callback, void *data = nullptr) noexcept;
 
   /// Start with absolute expiry (ns since boot).
   void start(u64 expires_ns) noexcept;
@@ -102,13 +101,13 @@ public:
   [[nodiscard]] TimerMode mode() const noexcept { return mode_; }
 
 private:
-  u64           expires_ns_{0};
-  u64           interval_ns_{0};    // For periodic timers: repeat interval
+  u64 expires_ns_{0};
+  u64 interval_ns_{0}; // For periodic timers: repeat interval
   TimerCallback callback_{nullptr};
-  void*         callback_data_{nullptr};
-  TimerMode     mode_{TimerMode::OneShot};
-  bool          active_{false};
-  HrTimer*      next_{nullptr};     // Sorted linked list linkage
+  void *callback_data_{nullptr};
+  TimerMode mode_{TimerMode::OneShot};
+  bool active_{false};
+  HrTimer *next_{nullptr}; // Sorted linked list linkage
 };
 
 // ============================================================================
@@ -121,8 +120,8 @@ public:
   ~TimerSubsystem() noexcept = default;
 
   // Non-copyable, non-movable
-  TimerSubsystem(const TimerSubsystem&) = delete;
-  TimerSubsystem& operator=(const TimerSubsystem&) = delete;
+  TimerSubsystem(const TimerSubsystem &) = delete;
+  TimerSubsystem &operator=(const TimerSubsystem &) = delete;
 
   /// Initialize the entire timer subsystem:
   ///   1. Clocksource init (read frequency, compute mult/shift)
@@ -133,18 +132,16 @@ public:
   void shutdown() noexcept;
 
   /// Access the clocksource.
-  [[nodiscard]] const Clocksource& clocksource() const noexcept {
-    return clocksource_;
-  }
+  [[nodiscard]] const Clocksource &clocksource() const noexcept { return clocksource_; }
 
   /// Convenience: current time in nanoseconds since boot.
   [[nodiscard]] u64 now_ns() const noexcept { return clocksource_.now_ns(); }
 
   /// Insert a timer into the sorted queue.
-  void enqueue(HrTimer* timer) noexcept;
+  void enqueue(HrTimer *timer) noexcept;
 
   /// Remove a timer from the queue.
-  void dequeue(HrTimer* timer) noexcept;
+  void dequeue(HrTimer *timer) noexcept;
 
   /// Called from the timer interrupt handler.
   void handle_interrupt() noexcept;
@@ -153,9 +150,7 @@ public:
   [[nodiscard]] bool is_initialized() const noexcept { return initialized_; }
 
   /// Check if any timers are pending (for tickless idle decisions).
-  [[nodiscard]] bool has_pending_timers() const noexcept {
-    return queue_head_ != nullptr;
-  }
+  [[nodiscard]] bool has_pending_timers() const noexcept { return queue_head_ != nullptr; }
 
   /// Statistics.
   struct Stats {
@@ -165,20 +160,20 @@ public:
   [[nodiscard]] Stats get_statistics() const noexcept { return stats_; }
 
   /// Global singleton access.
-  static TimerSubsystem& instance() noexcept;
+  static TimerSubsystem &instance() noexcept;
 
 private:
   Clocksource clocksource_;
-  HrTimer*    queue_head_{nullptr};   // Sorted by expires_ns (ascending)
-  Stats       stats_{};
-  bool        initialized_{false};
-  containers::IrqSpinLock queue_lock_;  // Protects queue_head_ linked list
+  HrTimer *queue_head_{nullptr}; // Sorted by expires_ns (ascending)
+  Stats stats_{};
+  bool initialized_{false};
+  containers::IrqSpinLock queue_lock_; // Protects queue_head_ linked list
 
   /// Reprogram hardware for next pending expiry.
   void reprogram_next() noexcept;
 
   /// Insert into sorted queue — caller must already hold queue_lock_.
-  void enqueue_locked(HrTimer* timer) noexcept;
+  void enqueue_locked(HrTimer *timer) noexcept;
 };
 
 } // namespace moss::kernel::timer
@@ -223,28 +218,25 @@ u64 Clocksource::now_ns() const noexcept {
   u64 current = hal::timer::read_counter();
   u64 delta = current - boot_cycles_;
   // Use 128-bit multiply to prevent overflow (u64 * u64 overflows after ~69s at 62MHz)
-  return static_cast<u64>(
-      (static_cast<__uint128_t>(delta) * mult_) >> shift_);
+  return static_cast<u64>((static_cast<__uint128_t>(delta) * mult_) >> shift_);
 }
 
 u64 Clocksource::cycles_to_ns(u64 cycles) const noexcept {
-  return static_cast<u64>(
-      (static_cast<__uint128_t>(cycles) * mult_) >> shift_);
+  return static_cast<u64>((static_cast<__uint128_t>(cycles) * mult_) >> shift_);
 }
 
 u64 Clocksource::ns_to_cycles(u64 ns) const noexcept {
-  if (inv_mult_ == 0) return 0;
+  if (inv_mult_ == 0)
+    return 0;
   // Use multiply-then-shift (no 128-bit division needed — safe in freestanding)
-  return static_cast<u64>(
-      (static_cast<__uint128_t>(ns) * inv_mult_) >> shift_);
+  return static_cast<u64>((static_cast<__uint128_t>(ns) * inv_mult_) >> shift_);
 }
 
 // ============================================================================
 // HrTimer implementation
 // ============================================================================
 
-void HrTimer::init(TimerMode mode, TimerCallback callback,
-                   void* data) noexcept {
+void HrTimer::init(TimerMode mode, TimerCallback callback, void *data) noexcept {
   mode_ = mode;
   callback_ = callback;
   callback_data_ = data;
@@ -280,7 +272,7 @@ void HrTimer::cancel() noexcept {
 // ============================================================================
 
 // Singleton instance
-TimerSubsystem& TimerSubsystem::instance() noexcept {
+TimerSubsystem &TimerSubsystem::instance() noexcept {
   static TimerSubsystem inst;
   return inst;
 }
@@ -313,12 +305,12 @@ void TimerSubsystem::shutdown() noexcept {
   initialized_ = false;
 }
 
-void TimerSubsystem::enqueue(HrTimer* timer) noexcept {
+void TimerSubsystem::enqueue(HrTimer *timer) noexcept {
   containers::LockGuard<containers::IrqSpinLock> guard(queue_lock_);
   enqueue_locked(timer);
 }
 
-void TimerSubsystem::enqueue_locked(HrTimer* timer) noexcept {
+void TimerSubsystem::enqueue_locked(HrTimer *timer) noexcept {
   // Insert into sorted position (ascending expires_ns)
   if (queue_head_ == nullptr || timer->expires_ns_ < queue_head_->expires_ns_) {
     // Insert at head
@@ -326,9 +318,8 @@ void TimerSubsystem::enqueue_locked(HrTimer* timer) noexcept {
     queue_head_ = timer;
   } else {
     // Walk to find insertion point
-    HrTimer* prev = queue_head_;
-    while (prev->next_ != nullptr &&
-           prev->next_->expires_ns_ <= timer->expires_ns_) {
+    HrTimer *prev = queue_head_;
+    while (prev->next_ != nullptr && prev->next_->expires_ns_ <= timer->expires_ns_) {
       prev = prev->next_;
     }
     timer->next_ = prev->next_;
@@ -341,9 +332,10 @@ void TimerSubsystem::enqueue_locked(HrTimer* timer) noexcept {
   }
 }
 
-void TimerSubsystem::dequeue(HrTimer* timer) noexcept {
+void TimerSubsystem::dequeue(HrTimer *timer) noexcept {
   containers::LockGuard<containers::IrqSpinLock> guard(queue_lock_);
-  if (queue_head_ == nullptr) return;
+  if (queue_head_ == nullptr)
+    return;
 
   if (queue_head_ == timer) {
     queue_head_ = timer->next_;
@@ -352,7 +344,7 @@ void TimerSubsystem::dequeue(HrTimer* timer) noexcept {
     return;
   }
 
-  HrTimer* prev = queue_head_;
+  HrTimer *prev = queue_head_;
   while (prev->next_ != nullptr && prev->next_ != timer) {
     prev = prev->next_;
   }
@@ -383,7 +375,7 @@ void TimerSubsystem::handle_interrupt() noexcept {
 
   // 2. Fire all expired timers
   while (queue_head_ != nullptr && queue_head_->expires_ns_ <= now) {
-    HrTimer* expired = queue_head_;
+    HrTimer *expired = queue_head_;
     queue_head_ = expired->next_;
     expired->next_ = nullptr;
     expired->active_ = false;
@@ -394,7 +386,7 @@ void TimerSubsystem::handle_interrupt() noexcept {
     if (expired->mode_ == TimerMode::Periodic && expired->interval_ns_ > 0) {
       expired->expires_ns_ += expired->interval_ns_;
       expired->active_ = true;
-      enqueue_locked(expired);  // Already holding queue_lock_
+      enqueue_locked(expired); // Already holding queue_lock_
     }
 
     // Reprogram hardware while still holding the lock (ensures consistent
@@ -430,12 +422,10 @@ void TimerSubsystem::reprogram_next() noexcept {
     // Convert expires_ns to absolute cycle count for hardware compare:
     //   compare = current_counter + ns_to_cycles(expires_ns - now_ns)
     u64 now = clocksource_.now_ns();
-    u64 delta_ns = (queue_head_->expires_ns_ > now)
-                       ? (queue_head_->expires_ns_ - now)
-                       : 0;
+    u64 delta_ns = (queue_head_->expires_ns_ > now) ? (queue_head_->expires_ns_ - now) : 0;
     // Enforce minimum delta to avoid interrupt storm on level-triggered PPI.
     // 100 µs minimum gives the ISR enough time to complete.
-    constexpr u64 MIN_DELTA_NS = 100000;  // 100 µs
+    constexpr u64 MIN_DELTA_NS = 100000; // 100 µs
     if (delta_ns < MIN_DELTA_NS) {
       delta_ns = MIN_DELTA_NS;
     }

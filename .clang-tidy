@@ -1,0 +1,87 @@
+# MOSS Kernel — clang-tidy configuration
+#
+# Freestanding kernel: no standard library, no exceptions, no RTTI.
+# Checks are chosen to catch real bugs without false-positive noise.
+#
+# Run: uv run scripts/format.py lint
+# Fix: uv run scripts/format.py lint --fix
+
+Checks: >
+  -*,
+  bugprone-*,
+  performance-*,
+  readability-*,
+  misc-const-correctness,
+  misc-redundant-expression,
+  misc-unused-using-decls,
+  -bugprone-easily-swappable-parameters,
+  -readability-identifier-length,
+  -readability-magic-numbers,
+  -readability-function-cognitive-complexity,
+  -readability-convert-member-functions-to-static,
+  -readability-use-std-min-max,
+  -readability-braces-around-statements,
+  -readability-implicit-bool-conversion,
+  -misc-include-cleaner,
+
+HeaderFilterRegex: 'src/.*'
+WarningsAsErrors: ''
+FormatStyle: file
+
+CheckOptions:
+  # ── Naming conventions (matches CLAUDE.md) ──
+  #
+  # Classes/structs:  CamelCase        (ProcessManager, LogBuffer)
+  # Functions:        lower_case       (get_cpu_id, nice_to_weight)
+  # Variables:        lower_case       (cpu_count, build_dir)
+  # Private members:  lower_case_      (pos_, freq_hz_)
+  # Enum constants:   CamelCase        (EdgeRising, Success)
+  # Namespaces:       lower_case       (moss::kernel::mm)
+  # Template params:  CamelCase        (T, LockType)
+  # Constexpr vars:   any (mixed UPPER_CASE and lower_case in codebase)
+
+  - key: readability-identifier-naming.ClassCase
+    value: CamelCase
+  - key: readability-identifier-naming.StructCase
+    value: CamelCase
+  # STL-style type trait structs use lower_case (remove_const, is_same, etc.)
+  - key: readability-identifier-naming.StructIgnoredRegexp
+    value: '[a-z][a-z_]+'
+  - key: readability-identifier-naming.FunctionCase
+    value: lower_case
+  # _start (linker entry), Ok/Err (Rust-style factory functions)
+  - key: readability-identifier-naming.FunctionIgnoredRegexp
+    value: '(_[a-z_]+|Ok|Err)'
+  - key: readability-identifier-naming.VariableCase
+    value: lower_case
+  # Linker script symbols (_text_start_addr) and static members (count_) with _ prefix/suffix
+  - key: readability-identifier-naming.GlobalVariableIgnoredRegexp
+    value: '(_[a-z_]+|[a-z_]+_)'
+  - key: readability-identifier-naming.ParameterCase
+    value: lower_case
+  - key: readability-identifier-naming.MemberCase
+    value: lower_case
+  # Public union/struct members may also use _ suffix (value_, error_)
+  - key: readability-identifier-naming.MemberIgnoredRegexp
+    value: '[a-z_]+_'
+  - key: readability-identifier-naming.PrivateMemberSuffix
+    value: '_'
+  - key: readability-identifier-naming.ProtectedMemberSuffix
+    value: '_'
+  # Enum constants: mostly CamelCase (EdgeRising, Success) but some UPPER_CASE (X86_64)
+  - key: readability-identifier-naming.EnumConstantCase
+    value: aNy_CasE
+  - key: readability-identifier-naming.ScopedEnumConstantCase
+    value: aNy_CasE
+  - key: readability-identifier-naming.NamespaceCase
+    value: lower_case
+  - key: readability-identifier-naming.TemplateParameterCase
+    value: CamelCase
+  # Type aliases: CamelCase (VoidResult) and lower_case (value_type, STL-style)
+  - key: readability-identifier-naming.TypeAliasCase
+    value: aNy_CasE
+  - key: readability-identifier-naming.ConceptCase
+    value: CamelCase
+  # constexpr: both UPPER_CASE (PAGE_SIZE) and lower_case (is_same_v) are used
+  - key: readability-identifier-naming.ConstexprVariableCase
+    value: aNy_CasE

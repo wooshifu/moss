@@ -25,61 +25,58 @@ export namespace moss::boot {
 /// Boot context structure
 /// Contains key information passed between boot stages
 struct BootContext {
-    void *device_tree_ptr;                  // Device tree pointer (ARM64) or boot info
-    PhysAddr memory_start;                  // Available physical memory start
-    moss::kernel::usize memory_size;        // Available physical memory size
-    u32 cpu_id;                             // Current CPU ID
-    u32 total_cpus;                         // Total CPU cores in system
-    PhysAddr kernel_phys_base;              // Kernel physical base address
-    VirtAddr kernel_virt_base;              // Kernel virtual base address
+  void *device_tree_ptr;           // Device tree pointer (ARM64) or boot info
+  PhysAddr memory_start;           // Available physical memory start
+  moss::kernel::usize memory_size; // Available physical memory size
+  u32 cpu_id;                      // Current CPU ID
+  u32 total_cpus;                  // Total CPU cores in system
+  PhysAddr kernel_phys_base;       // Kernel physical base address
+  VirtAddr kernel_virt_base;       // Kernel virtual base address
 };
 
 /// Architecture-specific boot interface abstract base class
 class ArchBootInterface {
 public:
-    static moss::kernel::VoidResult hardware_early_init(BootContext &ctx) noexcept;
-    static moss::kernel::VoidResult setup_memory_management(BootContext &ctx) noexcept;
-    static moss::kernel::VoidResult setup_interrupts_and_exceptions(BootContext &ctx) noexcept;
-    static moss::kernel::VoidResult setup_smp_support(BootContext &ctx) noexcept;
-    static moss::kernel::VoidResult finalize_arch_init(BootContext &ctx) noexcept;
+  static moss::kernel::VoidResult hardware_early_init(BootContext &ctx) noexcept;
+  static moss::kernel::VoidResult setup_memory_management(BootContext &ctx) noexcept;
+  static moss::kernel::VoidResult setup_interrupts_and_exceptions(BootContext &ctx) noexcept;
+  static moss::kernel::VoidResult setup_smp_support(BootContext &ctx) noexcept;
+  static moss::kernel::VoidResult finalize_arch_init(BootContext &ctx) noexcept;
 
 protected:
-    static moss::kernel::VoidResult detect_memory_layout(BootContext &ctx) noexcept;
-    static u32 get_current_cpu_id() noexcept;
-    [[noreturn]] static void arch_panic(const char *message) noexcept;
+  static moss::kernel::VoidResult detect_memory_layout(BootContext &ctx) noexcept;
+  static u32 get_current_cpu_id() noexcept;
+  [[noreturn]] static void arch_panic(const char *message) noexcept;
 };
 
 /// Boot stage enumeration
 enum class BootStage : u32 {
-    PreInit = 0,
-    HardwareInit = 1,
-    MemoryManagement = 2,
-    InterruptsExceptions = 3,
-    SmpSupport = 4,
-    ArchFinalize = 5,
-    SystemInit = 6,
-    Complete = 7
+  PreInit = 0,
+  HardwareInit = 1,
+  MemoryManagement = 2,
+  InterruptsExceptions = 3,
+  SmpSupport = 4,
+  ArchFinalize = 5,
+  SystemInit = 6,
+  Complete = 7
 };
 
 /// Boot status structure
 struct BootStatus {
-    BootStage current_stage;
-    u32 completed_stages_mask;
-    u64 stage_timestamps[8];
-    moss::kernel::ErrorCode last_error;
+  BootStage current_stage;
+  u32 completed_stages_mask;
+  u64 stage_timestamps[8];
+  moss::kernel::ErrorCode last_error;
 };
 
 // Global boot status (defined in arch-specific implementation)
 extern BootStatus g_boot_status;
 
 /// Get current boot status
-inline const BootStatus &get_boot_status() noexcept {
-    return g_boot_status;
-}
+inline const BootStatus &get_boot_status() noexcept { return g_boot_status; }
 
 /// Update boot stage status
-void update_boot_stage(BootStage stage,
-                       moss::kernel::ErrorCode error = moss::kernel::ErrorCode::Success) noexcept;
+void update_boot_stage(BootStage stage, moss::kernel::ErrorCode error = moss::kernel::ErrorCode::Success) noexcept;
 
 /// Linux-style SMP delayed activation
 void activate_secondary_cpus() noexcept;
@@ -100,14 +97,14 @@ export namespace moss::boot {
 
 class ARM64BootImpl : public ArchBootInterface {
 public:
-    static moss::kernel::VoidResult hardware_early_init(BootContext &ctx) noexcept;
-    static moss::kernel::VoidResult setup_memory_management(BootContext &ctx) noexcept;
-    static moss::kernel::VoidResult setup_interrupts_and_exceptions(BootContext &ctx) noexcept;
-    static moss::kernel::VoidResult setup_smp_support(BootContext &ctx) noexcept;
-    static moss::kernel::VoidResult finalize_arch_init(BootContext &ctx) noexcept;
-    static moss::kernel::VoidResult detect_memory_layout(BootContext &ctx) noexcept;
-    static u32 get_current_cpu_id() noexcept;
-    [[noreturn]] static void arch_panic(const char *message) noexcept;
+  static moss::kernel::VoidResult hardware_early_init(BootContext &ctx) noexcept;
+  static moss::kernel::VoidResult setup_memory_management(BootContext &ctx) noexcept;
+  static moss::kernel::VoidResult setup_interrupts_and_exceptions(BootContext &ctx) noexcept;
+  static moss::kernel::VoidResult setup_smp_support(BootContext &ctx) noexcept;
+  static moss::kernel::VoidResult finalize_arch_init(BootContext &ctx) noexcept;
+  static moss::kernel::VoidResult detect_memory_layout(BootContext &ctx) noexcept;
+  static u32 get_current_cpu_id() noexcept;
+  [[noreturn]] static void arch_panic(const char *message) noexcept;
 };
 using ArchBoot = ARM64BootImpl;
 
@@ -115,14 +112,14 @@ using ArchBoot = ARM64BootImpl;
 
 class X86_64BootImpl : public ArchBootInterface {
 public:
-    static moss::kernel::VoidResult hardware_early_init(BootContext &ctx) noexcept;
-    static moss::kernel::VoidResult setup_memory_management(BootContext &ctx) noexcept;
-    static moss::kernel::VoidResult setup_interrupts_and_exceptions(BootContext &ctx) noexcept;
-    static moss::kernel::VoidResult setup_smp_support(BootContext &ctx) noexcept;
-    static moss::kernel::VoidResult finalize_arch_init(BootContext &ctx) noexcept;
-    static moss::kernel::VoidResult detect_memory_layout(BootContext &ctx) noexcept;
-    static u32 get_current_cpu_id() noexcept;
-    [[noreturn]] static void arch_panic(const char *message) noexcept;
+  static moss::kernel::VoidResult hardware_early_init(BootContext &ctx) noexcept;
+  static moss::kernel::VoidResult setup_memory_management(BootContext &ctx) noexcept;
+  static moss::kernel::VoidResult setup_interrupts_and_exceptions(BootContext &ctx) noexcept;
+  static moss::kernel::VoidResult setup_smp_support(BootContext &ctx) noexcept;
+  static moss::kernel::VoidResult finalize_arch_init(BootContext &ctx) noexcept;
+  static moss::kernel::VoidResult detect_memory_layout(BootContext &ctx) noexcept;
+  static u32 get_current_cpu_id() noexcept;
+  [[noreturn]] static void arch_panic(const char *message) noexcept;
 };
 using ArchBoot = X86_64BootImpl;
 
@@ -130,14 +127,14 @@ using ArchBoot = X86_64BootImpl;
 
 class RISCVBootImpl : public ArchBootInterface {
 public:
-    static moss::kernel::VoidResult hardware_early_init(BootContext &ctx) noexcept;
-    static moss::kernel::VoidResult setup_memory_management(BootContext &ctx) noexcept;
-    static moss::kernel::VoidResult setup_interrupts_and_exceptions(BootContext &ctx) noexcept;
-    static moss::kernel::VoidResult setup_smp_support(BootContext &ctx) noexcept;
-    static moss::kernel::VoidResult finalize_arch_init(BootContext &ctx) noexcept;
-    static moss::kernel::VoidResult detect_memory_layout(BootContext &ctx) noexcept;
-    static u32 get_current_cpu_id() noexcept;
-    [[noreturn]] static void arch_panic(const char *message) noexcept;
+  static moss::kernel::VoidResult hardware_early_init(BootContext &ctx) noexcept;
+  static moss::kernel::VoidResult setup_memory_management(BootContext &ctx) noexcept;
+  static moss::kernel::VoidResult setup_interrupts_and_exceptions(BootContext &ctx) noexcept;
+  static moss::kernel::VoidResult setup_smp_support(BootContext &ctx) noexcept;
+  static moss::kernel::VoidResult finalize_arch_init(BootContext &ctx) noexcept;
+  static moss::kernel::VoidResult detect_memory_layout(BootContext &ctx) noexcept;
+  static u32 get_current_cpu_id() noexcept;
+  [[noreturn]] static void arch_panic(const char *message) noexcept;
 };
 using ArchBoot = RISCVBootImpl;
 
@@ -147,28 +144,19 @@ using ArchBoot = RISCVBootImpl;
 
 /// Compile-time architecture info
 struct ArchInfo {
-    const char *name;
-    u32 id;
-    const char *description;
+  const char *name;
+  u32 id;
+  const char *description;
 };
 
 /// Get current architecture info
 constexpr ArchInfo get_current_arch_info() noexcept {
 #if defined(__aarch64__) || defined(MOSS_ARCH_ARM64)
-    return ArchInfo{
-        .name = "ARM64",
-        .id = 1,
-        .description = "ARM 64-bit (AArch64) Architecture"};
+  return ArchInfo{.name = "ARM64", .id = 1, .description = "ARM 64-bit (AArch64) Architecture"};
 #elif defined(__x86_64__) || defined(__x86_64) || defined(MOSS_ARCH_X86_64)
-    return ArchInfo{
-        .name = "x86_64",
-        .id = 2,
-        .description = "x86-64 (AMD64) Architecture"};
+  return ArchInfo{.name = "x86_64", .id = 2, .description = "x86-64 (AMD64) Architecture"};
 #elif defined(__riscv) || defined(__riscv__) || defined(MOSS_ARCH_RISCV)
-    return ArchInfo{
-        .name = "RISC-V",
-        .id = 3,
-        .description = "RISC-V 64-bit Architecture"};
+  return ArchInfo{.name = "RISC-V", .id = 3, .description = "RISC-V 64-bit Architecture"};
 #endif
 }
 

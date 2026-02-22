@@ -38,7 +38,9 @@ extern "C" {
   g_kernel = new Kernel();
   if (!g_kernel) {
     log::klog::panic("kernel instance creation failed, cannot continue");
-    while (true) { arch::cpu_halt(); }
+    while (true) {
+      arch::cpu_halt();
+    }
   }
   log::klog::info("kernel instance created");
 
@@ -47,7 +49,9 @@ extern "C" {
   auto init_result = g_kernel->initialize();
   if (!init_result) {
     log::klog::error("kernel initialization failed");
-    while (true) { arch::cpu_halt(); }
+    while (true) {
+      arch::cpu_halt();
+    }
   }
   log::klog::info("kernel subsystem initialization complete");
 
@@ -63,11 +67,20 @@ extern "C" {
     auto pressure = mm::get_memory_pressure();
     const char *level = "unknown";
     switch (pressure) {
-      case mm::MemoryPressure::LOW: level = "low"; break;
-      case mm::MemoryPressure::MEDIUM: level = "medium"; break;
-      case mm::MemoryPressure::HIGH: level = "high"; break;
-      case mm::MemoryPressure::CRITICAL: level = "critical"; break;
-      default: break;
+    case mm::MemoryPressure::LOW:
+      level = "low";
+      break;
+    case mm::MemoryPressure::MEDIUM:
+      level = "medium";
+      break;
+    case mm::MemoryPressure::HIGH:
+      level = "high";
+      break;
+    case mm::MemoryPressure::CRITICAL:
+      level = "critical";
+      break;
+    default:
+      break;
     }
     log::klog::info("memory: healthy, pressure={}", level);
   } else {
@@ -104,22 +117,24 @@ extern "C" {
   auto run_result = g_kernel->run();
   if (!run_result) {
     log::klog::panic("kernel run system failed to start");
-    while (true) { arch::cpu_halt(); }
+    while (true) {
+      arch::cpu_halt();
+    }
   }
 
   log::klog::panic("kernel main loop exited unexpectedly");
-  while (true) { arch::cpu_halt(); }
+  while (true) {
+    arch::cpu_halt();
+  }
 }
 
 // Legacy extern "C" shim — retained for ABI compatibility with assembly
 // code and test harness. New code should import moss.logging instead.
-void early_debug_print(const char *message) noexcept {
-  ::moss::kernel::hal::uart::puts(message);
-}
+void early_debug_print(const char *message) noexcept { ::moss::kernel::hal::uart::puts(message); }
 
 // Syscall entry
-long system_call_handler(long syscall_number, long arg0, long arg1,
-                         long arg2, long arg3, long arg4, long arg5) noexcept {
+long system_call_handler(long syscall_number, long arg0, long arg1, long arg2, long arg3, long arg4,
+                         long arg5) noexcept {
   using namespace moss::kernel;
 
   // syscall 0 = debug_print (raw UART output from userspace)
@@ -129,8 +144,7 @@ long system_call_handler(long syscall_number, long arg0, long arg1,
     }
   }
 
-  return syscall::SyscallDispatcher::dispatch(syscall_number, arg0, arg1, arg2,
-                                              arg3, arg4, arg5);
+  return syscall::SyscallDispatcher::dispatch(syscall_number, arg0, arg1, arg2, arg3, arg4, arg5);
 }
 
 // IRQ handler called from assembly irq_trampoline.
@@ -165,7 +179,7 @@ void irq_handler_c(void) noexcept {
   //   - If running a task, the next timer tick will preempt if needed
   constexpr u32 RESCHEDULE_SGI = 0;
   if (irq == RESCHEDULE_SGI) {
-    return;  // EOI already sent above
+    return; // EOI already sent above
   }
 
   // Timer PPI (IRQ 27): per-CPU timer interrupt.
@@ -203,7 +217,7 @@ void irq_handler_c(void) noexcept {
     // Look up the registered handler for this IRQ and call it directly.
     // We cannot call g_gic->handle_interrupt() because it would do its
     // own ACK+EOI (already done above).  Instead, look up and invoke.
-    auto* desc = ::moss::kernel::interrupts::g_gic->get_interrupt_info(irq);
+    auto *desc = ::moss::kernel::interrupts::g_gic->get_interrupt_info(irq);
     if (desc != nullptr && desc->handler != nullptr) {
       desc->handler(irq, desc->context);
     }
@@ -216,62 +230,64 @@ void irq_handler_c(void) noexcept {
 // bridging the mm ↔ process module boundary without circular imports.
 // ============================================================================
 
-int demand_page_lookup(unsigned long long fault_addr,
-                       unsigned int* out_flags,
-                       const unsigned char** out_backing_data,
-                       unsigned long long* out_backing_offset,
-                       unsigned long long* out_backing_size,
-                       unsigned long long* out_vma_start) noexcept {
-    using namespace moss::kernel;
+int demand_page_lookup(unsigned long long fault_addr, unsigned int *out_flags, const unsigned char **out_backing_data,
+                       unsigned long long *out_backing_offset, unsigned long long *out_backing_size,
+                       unsigned long long *out_vma_start) noexcept {
+  using namespace moss::kernel;
 
-    auto* proc = process::current_process();
-    if (!proc || !proc->address_space()) return 0;
+  auto *proc = process::current_process();
+  if (!proc || !proc->address_space())
+    return 0;
 
-    const auto* vma = proc->address_space()->find_vma(static_cast<VirtAddr>(fault_addr));
-    if (!vma) return 0;
+  const auto *vma = proc->address_space()->find_vma(static_cast<VirtAddr>(fault_addr));
+  if (!vma)
+    return 0;
 
-    *out_flags = vma->flags;
-    *out_backing_data = vma->backing_data;
-    *out_backing_offset = static_cast<unsigned long long>(vma->backing_offset);
-    *out_backing_size = static_cast<unsigned long long>(vma->backing_size);
-    *out_vma_start = static_cast<unsigned long long>(vma->start_addr);
-    return 1;
+  *out_flags = vma->flags;
+  *out_backing_data = vma->backing_data;
+  *out_backing_offset = static_cast<unsigned long long>(vma->backing_offset);
+  *out_backing_size = static_cast<unsigned long long>(vma->backing_size);
+  *out_vma_start = static_cast<unsigned long long>(vma->start_addr);
+  return 1;
 }
 
 unsigned long long get_current_pgd_phys() noexcept {
-    using namespace moss::kernel;
+  using namespace moss::kernel;
 
-    auto* proc = process::current_process();
-    if (!proc || !proc->address_space()) return 0;
-    return static_cast<unsigned long long>(proc->address_space()->pgd_phys);
+  auto *proc = process::current_process();
+  if (!proc || !proc->address_space())
+    return 0;
+  return static_cast<unsigned long long>(proc->address_space()->pgd_phys);
 }
 
 // ============================================================================
 // Bridge: terminate current user process and switch to scheduler
 // ============================================================================
 [[noreturn]] void terminate_current_user_process(int exit_code) noexcept {
-    using namespace moss::kernel;
+  using namespace moss::kernel;
 
-    process::Thread *cur = process::CfsScheduler::get_current_task();
-    if (!cur) {
-        log::klog::panic("terminate_current_user_process: no current thread");
-        while (true) { arch::cpu_halt(); }
+  process::Thread *cur = process::CfsScheduler::get_current_task();
+  if (!cur) {
+    log::klog::panic("terminate_current_user_process: no current thread");
+    while (true) {
+      arch::cpu_halt();
     }
+  }
 
-    ProcessId pid = cur->owner_pid;
-    log::klog::info("terminate_user_process: PID={} TID={} exit_code={}",
-                    pid, static_cast<u32>(cur->tid), exit_code);
+  ProcessId pid = cur->owner_pid;
+  log::klog::info("terminate_user_process: PID={} TID={} exit_code={}", pid, static_cast<u32>(cur->tid), exit_code);
 
-    process::Process *proc = process::g_process_manager
-        ? process::g_process_manager->find_process(pid) : nullptr;
+  process::Process *proc = process::g_process_manager ? process::g_process_manager->find_process(pid) : nullptr;
 
-    if (!proc) {
-        log::klog::panic("terminate_user_process: process not found PID={}", pid);
-        while (true) { arch::cpu_halt(); }
+  if (!proc) {
+    log::klog::panic("terminate_user_process: process not found PID={}", pid);
+    while (true) {
+      arch::cpu_halt();
     }
+  }
 
-    // Delegate to shared Zombie transition (never returns)
-    process::do_exit(cur, proc, static_cast<i32>(exit_code));
+  // Delegate to shared Zombie transition (never returns)
+  process::do_exit(cur, proc, static_cast<i32>(exit_code));
 }
 
 } // extern "C"
@@ -280,22 +296,23 @@ unsigned long long get_current_pgd_phys() noexcept {
 namespace moss::kernel::arch::syscall {
 
 void print_syscall_convention() noexcept {
-    const auto& conv = get_syscall_convention();
+  const auto &conv = get_syscall_convention();
 
-    log::klog::info("=== syscall architecture info ===");
-    log::klog::info("arch: {}", conv.arch_name);
-    log::klog::info("instruction: {}", conv.syscall_instruction);
-    log::klog::info("syscall_nr: {}", conv.syscall_nr_register);
-    log::klog::info("return_reg: {}", conv.return_register);
+  log::klog::info("=== syscall architecture info ===");
+  log::klog::info("arch: {}", conv.arch_name);
+  log::klog::info("instruction: {}", conv.syscall_instruction);
+  log::klog::info("syscall_nr: {}", conv.syscall_nr_register);
+  log::klog::info("return_reg: {}", conv.return_register);
 
-    // Print arg registers — use uart directly for inline list
-    hal::uart::puts("[INFO]  arg_regs: ");
-    for (int i = 0; i < 6; ++i) {
-        hal::uart::puts(conv.arg_registers[i]);
-        if (i < 5) hal::uart::puts(", ");
-    }
-    hal::uart::puts("\n");
-    log::klog::info("================================");
+  // Print arg registers — use uart directly for inline list
+  hal::uart::puts("[INFO]  arg_regs: ");
+  for (int i = 0; i < 6; ++i) {
+    hal::uart::puts(conv.arg_registers[i]);
+    if (i < 5)
+      hal::uart::puts(", ");
+  }
+  hal::uart::puts("\n");
+  log::klog::info("================================");
 }
 
 } // namespace moss::kernel::arch::syscall
