@@ -1,9 +1,17 @@
 // MOSS top — system monitoring tool
 //
 // Displays real-time CPU load, memory usage, and per-process statistics.
-// Refreshes every 1 second for 30 iterations, then exits.
+// Refreshes periodically, then exits.
 //
-// Usage: top.elf (from MOSS shell)
+// Usage: top.elf [-d INTERVAL_MS] [-t DURATION_S]
+//   -d  Refresh interval in milliseconds (default: 1000)
+//   -t  Total duration in seconds (default: 10)
+//
+// Examples:
+//   top.elf                  # 1s interval, 10s total
+//   top.elf -d 500           # 500ms interval, 10s total
+//   top.elf -t 30            # 1s interval, 30s total
+//   top.elf -d 2000 -t 60   # 2s interval, 60s total
 
 #include "syscall.h"
 
@@ -250,15 +258,45 @@ static void print_process_table(struct TopInfo *info,
     }
 }
 
-void _start(void) {
+// Simple string-to-unsigned-long conversion
+static unsigned long parse_ulong(const char *s) {
+    unsigned long val = 0;
+    while (*s >= '0' && *s <= '9') {
+        val = val * 10 + (unsigned long)(*s - '0');
+        s++;
+    }
+    return val;
+}
+
+void _start(long argc, char **argv) {
+    // Defaults: 1s refresh interval, 10s total duration
+    unsigned long interval_ms = 1000;
+    unsigned long duration_s = 10;
+
+    // Parse command-line arguments
+    for (long i = 1; i < argc; i++) {
+        if (argv[i][0] == '-' && argv[i][1] == 'd' && argv[i][2] == '\0') {
+            if (i + 1 < argc) {
+                interval_ms = parse_ulong(argv[++i]);
+                if (interval_ms == 0) interval_ms = 100;  // minimum 100ms
+            }
+        } else if (argv[i][0] == '-' && argv[i][1] == 't' && argv[i][2] == '\0') {
+            if (i + 1 < argc) {
+                duration_s = parse_ulong(argv[++i]);
+                if (duration_s == 0) duration_s = 1;
+            }
+        }
+    }
+
+    unsigned long sleep_ns = interval_ms * 1000000UL;
+    unsigned long total_iterations = (duration_s * 1000) / interval_ms;
+    if (total_iterations == 0) total_iterations = 1;
+
     // Two TopInfo buffers for delta calculation
     struct TopInfo info_a;
     struct TopInfo info_b;
     struct TopInfo *cur = &info_a;
     struct TopInfo *prev = &info_b;
-
-    int iterations = 30;  // Run for 30 seconds
-    unsigned long sleep_ns = 1000000000UL;  // 1 second
 
     // Initial snapshot (prev)
     long ret = topinfo(prev);
@@ -269,10 +307,10 @@ void _start(void) {
         _exit(1);
     }
 
-    // Wait a bit for first delta
+    // Wait one interval for first delta
     nanosleep_ns(&sleep_ns);
 
-    for (int i = 0; i < iterations; i++) {
+    for (unsigned long i = 0; i < total_iterations; i++) {
         // Get current snapshot
         ret = topinfo(cur);
         if (ret < 0) {
@@ -294,10 +332,12 @@ void _start(void) {
         prev = cur;
         cur = tmp;
 
-        // Sleep 1 second
+        // Sleep
         nanosleep_ns(&sleep_ns);
     }
 
-    print("\ntop: finished (30 iterations)\n");
+    print("\ntop: finished (");
+    print_ulong(total_iterations);
+    print(" iterations)\n");
     _exit(0);
 }

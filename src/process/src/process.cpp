@@ -318,6 +318,7 @@ KernelResult<unique_ptr<AddressSpace>> create_user_address_space() noexcept {
         // Allocate a private L1 (PUD) table for user PGD[0]
         auto pud_result = mm::PageTableManager::allocate_page_table_dynamic();
         if (!pud_result) {
+            mm::free_pages(pgd_phys, 0);  // clean up PGD allocated above
             return KernelResult<unique_ptr<AddressSpace>>{ErrorCode::OutOfMemory};
         }
         auto* user_pud = *pud_result;
@@ -347,9 +348,11 @@ KernelResult<unique_ptr<AddressSpace>> create_user_address_space() noexcept {
     // 3. Allocate ASID
     u16 asid = allocate_asid();
 
-    // 4. Create AddressSpace object
+    // 4. Create AddressSpace object — on success, ~AddressSpace owns pgd_phys.
+    //    On failure, we must free the page table hierarchy manually.
     auto address_space = make_unique<AddressSpace>(pgd_phys, asid);
     if (!address_space) {
+        mm::PageTableManager::free_user_page_tables(pgd_phys);
         return KernelResult<unique_ptr<AddressSpace>>{ErrorCode::OutOfMemory};
     }
 

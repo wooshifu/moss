@@ -78,16 +78,44 @@ static void cmd_pid(void) {
 // External command execution
 // ============================================================================
 
+// Maximum number of arguments (including program name)
+#define MAX_ARGS 16
+
 static void run_external(const char *cmd) {
-    // Build absolute path: prepend '/' if needed
+    // Parse command line into argv[] (split on whitespace).
+    // We copy into a local buffer so we can null-terminate each token.
+    static char argbuf[256];
+    static char *argv[MAX_ARGS + 1];
+    int argc = 0;
+
+    // Copy command string
+    int len = 0;
+    while (cmd[len] && len < 254) { argbuf[len] = cmd[len]; len++; }
+    argbuf[len] = '\0';
+
+    // Tokenize: split on spaces/tabs
+    char *p = argbuf;
+    while (*p && argc < MAX_ARGS) {
+        // Skip whitespace
+        while (*p == ' ' || *p == '\t') p++;
+        if (*p == '\0') break;
+        argv[argc++] = p;
+        // Find end of token
+        while (*p && *p != ' ' && *p != '\t') p++;
+        if (*p) *p++ = '\0';
+    }
+    argv[argc] = (char *)0;  // NULL-terminate argv
+
+    if (argc == 0) return;
+
+    // Build absolute path from argv[0]: prepend '/' if needed
     char path[64];
     int pi = 0;
-
-    if (cmd[0] != '/') {
+    if (argv[0][0] != '/') {
         path[pi++] = '/';
     }
-    for (int i = 0; cmd[i] && pi < 62; i++) {
-        path[pi++] = cmd[i];
+    for (int i = 0; argv[0][i] && pi < 62; i++) {
+        path[pi++] = argv[0][i];
     }
     path[pi] = '\0';
 
@@ -99,7 +127,7 @@ static void run_external(const char *cmd) {
 
     if (pid == 0) {
         // Child process: replace with new program
-        long ret = execve(path, (char *const *)0, (char *const *)0);
+        long ret = execve(path, argv, (char *const *)0);
         // If execve returns, it failed
         eprint("shell: exec failed: ");
         eprint(path);
