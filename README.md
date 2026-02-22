@@ -1,6 +1,6 @@
 # Moss
 
-A modern multi-architecture hybrid kernel (混合内核) operating system supporting ARM64, x86_64, and RISC-V architectures. Built with C++26.
+Moss is a modern multi-architecture hybrid kernel operating system supporting ARM64, x86_64, and RISC-V architectures. Built with C++26 using latest techniques, it emphasizes performance, modularity, and a clean codebase.
 
 ## Quick Start
 
