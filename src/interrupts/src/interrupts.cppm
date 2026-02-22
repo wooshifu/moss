@@ -384,7 +384,7 @@ struct IpiMessage {
 
 class SimpleInterProcessorInterrupt {
 public:
-  static constexpr u32 MAX_CPUS = moss::kernel::MAX_CPUS;
+  static constexpr u32 MAX_CPUS = moss::kernel::BOOT_MAX_CPUS;
 
   SimpleInterProcessorInterrupt() noexcept = default;
   ~SimpleInterProcessorInterrupt() noexcept = default;

@@ -262,21 +262,39 @@ public:
 };
 
 // Per-CPU counter (avoids cache line contention)
+// Two-phase design: boot buffer of BOOT_MAX_CPUS, expandable after MM init.
 template <typename T> class PerCpuCounter {
 private:
-  CacheAlignedAtomic<T> counters_[moss::kernel::MAX_CPUS];
+  CacheAlignedAtomic<T> boot_buf_[moss::kernel::BOOT_MAX_CPUS];
+  CacheAlignedAtomic<T> *counters_{boot_buf_};
+  u32 capacity_{moss::kernel::BOOT_MAX_CPUS};
 
 public:
   constexpr PerCpuCounter() noexcept = default;
 
+  // Expand to support more CPUs (call after MM init)
+  bool expand(u32 num_cpus) noexcept {
+    if (num_cpus <= capacity_) {
+      return true;
+    }
+    auto *new_buf = new CacheAlignedAtomic<T>[num_cpus]();
+    for (u32 i = 0; i < capacity_; ++i) {
+      new_buf[i].value.store(counters_[i].load(MemoryOrder::Relaxed), MemoryOrder::Relaxed);
+    }
+    counters_ = new_buf;
+    capacity_ = num_cpus;
+    return true;
+  }
+
   [[nodiscard]] AtomicCounter<T> &get_local() noexcept {
     u32 cpu_id = moss::kernel::arch::get_current_cpu_id();
-    return counters_[cpu_id % moss::kernel::MAX_CPUS].value;
+    return counters_[cpu_id % capacity_].value;
   }
 
   [[nodiscard]] T get_total() const noexcept {
     T total = 0;
-    for (moss::kernel::usize i = 0; i < moss::kernel::MAX_CPUS; ++i) {
+    u32 limit = moss::kernel::g_num_cpus < capacity_ ? moss::kernel::g_num_cpus : capacity_;
+    for (u32 i = 0; i < limit; ++i) {
       total += counters_[i].load(MemoryOrder::Relaxed);
     }
     return total;
@@ -514,8 +532,15 @@ using WorkQueue = MPMCQueue<ProcessId, 4, 128>;
 // ============================================================================
 export namespace moss::kernel::containers {
 
-// Per-CPU data accessor — each slot is cache-line aligned to prevent false sharing
-// TODO: Will be enhanced with hybrid storage later
+// Per-CPU data accessor — each slot is cache-line aligned to prevent false sharing.
+//
+// Two-phase design for runtime-unlimited CPU count:
+//   Phase 1 (boot): uses inline boot_buf_[BOOT_MAX_CPUS] — no heap needed.
+//   Phase 2 (post-MM): expand(n) allocates n slots via operator new.
+//
+// Static/global instances start in Phase 1 and call expand() after MM init.
+// Heap-allocated instances (inside new CfsScheduler, etc.) use the Args
+// constructor which directly allocates for g_num_cpus.
 template <typename T> class PerCpuData {
 private:
   struct alignas(moss::kernel::CACHE_LINE_SIZE) PaddedSlot {
@@ -524,13 +549,23 @@ private:
     constexpr explicit PaddedSlot(Args &&...args) noexcept : value(moss::forward<Args>(args)...) {}
     constexpr PaddedSlot() noexcept : value{} {}
   };
-  PaddedSlot data_[moss::kernel::MAX_CPUS];
+
+  PaddedSlot boot_buf_[moss::kernel::BOOT_MAX_CPUS];
+  PaddedSlot *data_{boot_buf_};
+  u32 capacity_{moss::kernel::BOOT_MAX_CPUS};
 
 public:
-  constexpr PerCpuData() noexcept : data_{} {}
+  constexpr PerCpuData() noexcept : boot_buf_{} {}
 
+  // Fill all slots with the same value.
+  // If g_num_cpus > BOOT_MAX_CPUS, dynamically allocates.
   template <typename... Args> explicit PerCpuData(Args &&...args) noexcept {
-    for (moss::kernel::usize i = 0; i < moss::kernel::MAX_CPUS; ++i) {
+    u32 target = moss::kernel::g_num_cpus;
+    if (target > moss::kernel::BOOT_MAX_CPUS) {
+      data_ = new PaddedSlot[target];
+      capacity_ = target;
+    }
+    for (u32 i = 0; i < capacity_; ++i) {
       new (&data_[i].value) T(args...);
     }
   }
@@ -538,39 +573,79 @@ public:
   PerCpuData(const PerCpuData &) = delete;
   PerCpuData &operator=(const PerCpuData &) = delete;
 
-  PerCpuData(PerCpuData &&other) noexcept {
-    for (moss::kernel::usize i = 0; i < moss::kernel::MAX_CPUS; ++i) {
-      data_[i].value = static_cast<T &&>(other.data_[i].value);
+  PerCpuData(PerCpuData &&other) noexcept : boot_buf_{}, data_{boot_buf_}, capacity_{other.capacity_} {
+    if (other.data_ != other.boot_buf_) {
+      // Other uses dynamic buffer — steal it
+      data_ = other.data_;
+      other.data_ = other.boot_buf_;
+      other.capacity_ = moss::kernel::BOOT_MAX_CPUS;
+    } else {
+      // Other uses boot buffer — copy element-wise
+      for (u32 i = 0; i < capacity_; ++i) {
+        boot_buf_[i].value = static_cast<T &&>(other.boot_buf_[i].value);
+      }
     }
   }
 
   PerCpuData &operator=(PerCpuData &&other) noexcept {
     if (this != &other) {
-      for (moss::kernel::usize i = 0; i < moss::kernel::MAX_CPUS; ++i) {
-        data_[i].value = static_cast<T &&>(other.data_[i].value);
+      // Free our dynamic buffer if any
+      if (data_ != boot_buf_) {
+        delete[] data_;
+      }
+      capacity_ = other.capacity_;
+      if (other.data_ != other.boot_buf_) {
+        data_ = other.data_;
+        other.data_ = other.boot_buf_;
+        other.capacity_ = moss::kernel::BOOT_MAX_CPUS;
+      } else {
+        data_ = boot_buf_;
+        for (u32 i = 0; i < capacity_; ++i) {
+          boot_buf_[i].value = static_cast<T &&>(other.boot_buf_[i].value);
+        }
       }
     }
     return *this;
   }
 
+  // Expand capacity to num_cpus (call after MM init).
+  // Copies existing boot_buf_ data to the new buffer.
+  bool expand(u32 num_cpus) noexcept {
+    if (num_cpus <= capacity_) {
+      return true;
+    }
+    auto *new_buf = new PaddedSlot[num_cpus]();
+    for (u32 i = 0; i < capacity_; ++i) {
+      new_buf[i].value = static_cast<T &&>(data_[i].value);
+    }
+    if (data_ != boot_buf_) {
+      delete[] data_;
+    }
+    data_ = new_buf;
+    capacity_ = num_cpus;
+    return true;
+  }
+
+  [[nodiscard]] u32 capacity() const noexcept { return capacity_; }
+
   [[nodiscard]] T &get_local() noexcept { return data_[get_current_cpu_id()].value; }
 
   [[nodiscard]] const T &get_local() const noexcept { return data_[get_current_cpu_id()].value; }
 
-  [[nodiscard]] T &get_cpu(moss::kernel::usize cpu_id) noexcept { return data_[cpu_id % moss::kernel::MAX_CPUS].value; }
+  [[nodiscard]] T &get_cpu(moss::kernel::usize cpu_id) noexcept { return data_[cpu_id % capacity_].value; }
 
-  [[nodiscard]] const T &get_cpu(moss::kernel::usize cpu_id) const noexcept {
-    return data_[cpu_id % moss::kernel::MAX_CPUS].value;
-  }
+  [[nodiscard]] const T &get_cpu(moss::kernel::usize cpu_id) const noexcept { return data_[cpu_id % capacity_].value; }
 
   template <typename Func> void for_each_cpu(Func &&func) {
-    for (moss::kernel::usize i = 0; i < moss::kernel::MAX_CPUS; ++i) {
+    u32 limit = moss::kernel::g_num_cpus < capacity_ ? moss::kernel::g_num_cpus : capacity_;
+    for (u32 i = 0; i < limit; ++i) {
       func(i, data_[i].value);
     }
   }
 
   template <typename Func> void for_each_cpu(Func &&func) const {
-    for (moss::kernel::usize i = 0; i < moss::kernel::MAX_CPUS; ++i) {
+    u32 limit = moss::kernel::g_num_cpus < capacity_ ? moss::kernel::g_num_cpus : capacity_;
+    for (u32 i = 0; i < limit; ++i) {
       func(i, data_[i].value);
     }
   }
@@ -578,7 +653,8 @@ public:
   template <typename Func, typename Result = T>
   [[nodiscard]] Result fold(Func &&func, Result initial = Result{}) const {
     Result result = initial;
-    for (moss::kernel::usize i = 0; i < moss::kernel::MAX_CPUS; ++i) {
+    u32 limit = moss::kernel::g_num_cpus < capacity_ ? moss::kernel::g_num_cpus : capacity_;
+    for (u32 i = 0; i < limit; ++i) {
       result = func(result, data_[i].value);
     }
     return result;
@@ -586,7 +662,8 @@ public:
 
   [[nodiscard]] T sum() const noexcept {
     T total{};
-    for (moss::kernel::usize i = 0; i < moss::kernel::MAX_CPUS; ++i) {
+    u32 limit = moss::kernel::g_num_cpus < capacity_ ? moss::kernel::g_num_cpus : capacity_;
+    for (u32 i = 0; i < limit; ++i) {
       total += data_[i].value;
     }
     return total;
@@ -673,8 +750,9 @@ public:
 
   [[nodiscard]] bool steal_work(T &result) noexcept {
     moss::kernel::usize current_cpu = static_cast<moss::kernel::usize>(moss::kernel::arch::get_current_cpu_id());
-    for (moss::kernel::usize i = 1; i < moss::kernel::MAX_CPUS; ++i) {
-      moss::kernel::usize target_cpu = (current_cpu + i) % moss::kernel::MAX_CPUS;
+    u32 num_cpus = moss::kernel::g_num_cpus;
+    for (u32 i = 1; i < num_cpus; ++i) {
+      moss::kernel::usize target_cpu = (current_cpu + i) % num_cpus;
       if (data_.get_cpu(target_cpu).try_dequeue(result)) {
         return true;
       }

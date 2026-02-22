@@ -83,8 +83,11 @@
  *   unhandled_user_exception_handler(esr, far, elr) — unknown user exceptions
  */
 
-// CPU configuration constants (must match kernel constants)
-#define ASM_MAX_CPUS 32
+// Boot-time CPU limit (must match BOOT_MAX_CPUS in types.cppm).
+// Can be overridden via CMake: -DASM_MAX_CPUS=N
+#ifndef ASM_MAX_CPUS
+#define ASM_MAX_CPUS 8
+#endif
 
 .section ".text.boot", "ax"
 .global _start

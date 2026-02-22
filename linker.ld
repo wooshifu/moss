@@ -149,7 +149,7 @@ SECTIONS
 
     /* ---- Per-CPU Kernel Stack ----
      * NOLOAD: does not occupy ELF file space; only reserves virtual address space.
-     * Layout: 1024 KB total = MAX_CPUS (32) × 32 KB per CPU.
+     * Layout: 256 KB total = BOOT_MAX_CPUS (8) × 32 KB per CPU.
      *
      * Stack assignment at boot (start_arm64.S):
      *   cpu_sp = _stack_top - (cpu_id × 32KB)
@@ -162,7 +162,7 @@ SECTIONS
      */
     .stack (NOLOAD) : ALIGN(4K) {
         _stack_bottom = .;
-        . += 1024K;
+        . += 256K;
         _stack_top = .;
     }
 

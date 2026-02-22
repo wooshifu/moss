@@ -48,7 +48,7 @@ struct CpuTopology {
 class LoadBalancer {
 private:
   containers::PerCpuData<LoadBalanceStats> stats_;
-  CpuTopology topology_[MAX_CPUS];
+  containers::PerCpuData<CpuTopology> topology_;
 
   BalancePolicy policy_;
   u32 imbalance_threshold_;
@@ -62,13 +62,13 @@ public:
   LoadBalancer() noexcept
       : stats_{}, topology_{}, policy_(BalancePolicy::Conservative), imbalance_threshold_(25), migration_cost_(10000),
         last_balance_time_(0), balance_interval_(4000000) {
-    for (u32 i = 0; i < MAX_CPUS; ++i) {
-      topology_[i] = CpuTopology(i, i, 0, 0, true);
+    for (u32 i = 0; i < g_num_cpus; ++i) {
+      topology_.get_cpu(i) = CpuTopology(i, i, 0, 0, true);
     }
   }
 
   bool idle_balance(u32 cpu, CfsScheduler &scheduler) noexcept {
-    if (cpu >= MAX_CPUS) {
+    if (cpu >= g_num_cpus) {
       return false;
     }
 
@@ -76,7 +76,7 @@ public:
     local_stats.idle_balance_count++;
 
     u32 busiest_cpu = find_busiest_cpu(cpu, scheduler);
-    if (busiest_cpu == cpu || busiest_cpu >= MAX_CPUS) {
+    if (busiest_cpu == cpu || busiest_cpu >= g_num_cpus) {
       return false;
     }
 
@@ -90,13 +90,13 @@ public:
 
     last_balance_time_ = current_time;
 
-    for (u32 cpu = 0; cpu < MAX_CPUS; ++cpu) {
+    for (u32 cpu = 0; cpu < g_num_cpus; ++cpu) {
       u32 load = scheduler.get_cpu_load(cpu);
       u32 nr_running = scheduler.get_cpu_nr_running(cpu);
 
       if (nr_running > 2 && load > 80) {
         u32 target_cpu = find_least_loaded_cpu(scheduler);
-        if (target_cpu != cpu && target_cpu < MAX_CPUS) {
+        if (target_cpu != cpu && target_cpu < g_num_cpus) {
           migrate_task(cpu, target_cpu, scheduler);
         }
       }
@@ -122,7 +122,7 @@ public:
   }
 
   bool migrate_task(u32 src_cpu, u32 dst_cpu, CfsScheduler &scheduler) noexcept {
-    if (src_cpu >= MAX_CPUS || dst_cpu >= MAX_CPUS || src_cpu == dst_cpu) {
+    if (src_cpu >= g_num_cpus || dst_cpu >= g_num_cpus || src_cpu == dst_cpu) {
       return false;
     }
 
@@ -143,7 +143,7 @@ public:
   }
 
   [[nodiscard]] LoadBalanceStats get_stats(u32 cpu) const noexcept {
-    if (cpu >= MAX_CPUS) {
+    if (cpu >= g_num_cpus) {
       return LoadBalanceStats{};
     }
     return stats_.get_cpu(cpu);
@@ -191,7 +191,7 @@ private:
     u32 busiest_cpu = current_cpu;
     u32 max_load = scheduler.get_cpu_load(current_cpu);
 
-    for (u32 cpu = 0; cpu < MAX_CPUS; ++cpu) {
+    for (u32 cpu = 0; cpu < g_num_cpus; ++cpu) {
       if (cpu == current_cpu) {
         continue;
       }
@@ -217,7 +217,7 @@ private:
     u32 least_loaded_cpu = 0;
     u32 min_load = scheduler.get_cpu_load(0);
 
-    for (u32 cpu = 1; cpu < MAX_CPUS; ++cpu) {
+    for (u32 cpu = 1; cpu < g_num_cpus; ++cpu) {
       u32 load = scheduler.get_cpu_load(cpu);
       if (load < min_load) {
         min_load = load;
@@ -232,7 +232,7 @@ private:
     u32 best_cpu = 0;
     u32 min_load = static_cast<u32>(-1);
 
-    for (u32 cpu = 0; cpu < MAX_CPUS; ++cpu) {
+    for (u32 cpu = 0; cpu < g_num_cpus; ++cpu) {
       if (!has_cpu_affinity(thread, cpu)) {
         continue;
       }
@@ -241,7 +241,7 @@ private:
 
       if (policy_ == BalancePolicy::NUMA_Aware) {
         u32 thread_numa = get_thread_numa_node(thread);
-        u32 cpu_numa = topology_[cpu].numa_node;
+        u32 cpu_numa = topology_.get_cpu(cpu).numa_node;
 
         if (thread_numa != cpu_numa) {
           load += 20;
@@ -307,10 +307,10 @@ private:
   }
 
   [[nodiscard]] bool has_cpu_affinity(Thread *thread, u32 cpu) const noexcept {
-    if (!thread || cpu >= MAX_CPUS) {
+    if (!thread || cpu >= g_num_cpus) {
       return false;
     }
-    return (thread->cpu_affinity_mask & (1U << cpu)) != 0;
+    return thread->cpu_affinity_mask.test(cpu);
   }
 
   [[nodiscard]] u32 get_thread_numa_node([[maybe_unused]] Thread *thread) const noexcept { return 0; }

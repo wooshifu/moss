@@ -160,7 +160,7 @@ extern moss::kernel::containers::PerCpuData<IdleTask *> g_idle_tasks;
 
 // Get idle task for specified CPU
 inline IdleTask *get_idle_task(u32 cpu_id) noexcept {
-  if (cpu_id >= MAX_CPUS) {
+  if (cpu_id >= g_num_cpus) {
     return nullptr;
   }
   return g_idle_tasks.get_cpu(cpu_id);
@@ -168,7 +168,7 @@ inline IdleTask *get_idle_task(u32 cpu_id) noexcept {
 
 // Set idle task for specified CPU
 inline bool set_idle_task(u32 cpu_id, IdleTask *idle_task) noexcept {
-  if (cpu_id >= MAX_CPUS) {
+  if (cpu_id >= g_num_cpus) {
     return false;
   }
   g_idle_tasks.get_cpu(cpu_id) = idle_task;
@@ -185,8 +185,12 @@ void wakeup_idle_cpu(u32 cpu_id) noexcept;
 /// This wakes the target from WFI and causes it to re-examine its runqueue.
 /// Used by load balancer after migrating tasks to an idle or less-loaded CPU.
 inline void send_reschedule_ipi(u32 target_cpu) noexcept {
-  if (target_cpu >= MAX_CPUS || target_cpu == arch::get_current_cpu_id()) {
+  if (target_cpu >= g_num_cpus || target_cpu == arch::get_current_cpu_id()) {
     return;
+  }
+  // GICv2 SGIR only supports 8-bit CPU target mask (CPUs 0-7).
+  if (target_cpu >= 8) {
+    return; // GICv3 affinity routing needed for CPU >= 8
   }
   u32 target_mask = 1U << target_cpu;
   VirtAddr dist_base = platform::intc_dist_base();
@@ -902,7 +906,7 @@ public:
   constexpr CfsScheduler() noexcept : idle_tasks_{nullptr} {}
 
   void enqueue_task(Thread *thread, u32 cpu) noexcept {
-    if (thread == nullptr || cpu >= MAX_CPUS) {
+    if (thread == nullptr || cpu >= g_num_cpus) {
       return;
     }
 
@@ -930,13 +934,13 @@ public:
     }
 
     u32 cpu = thread->cpu;
-    if (cpu < MAX_CPUS) {
+    if (cpu < g_num_cpus) {
       runqueues_.get_cpu(cpu).dequeue_task(thread);
     }
   }
 
   [[nodiscard]] Thread *pick_next_task(u32 cpu) noexcept {
-    if (cpu >= MAX_CPUS) {
+    if (cpu >= g_num_cpus) {
       return nullptr;
     }
 
@@ -946,14 +950,14 @@ public:
   // Pick highest-vruntime task from a CPU's runqueue (for load balancer).
   // Steals the least-deserving task (ran most), preserving CFS fairness.
   [[nodiscard]] Thread *pick_last_task(u32 cpu) noexcept {
-    if (cpu >= MAX_CPUS) {
+    if (cpu >= g_num_cpus) {
       return nullptr;
     }
     return runqueues_.get_cpu(cpu).pick_last_task();
   }
 
   void set_idle_task(u32 cpu_id, IdleTask *idle_task) noexcept {
-    if (cpu_id >= MAX_CPUS) {
+    if (cpu_id >= g_num_cpus) {
       return;
     }
 
@@ -967,14 +971,14 @@ public:
   }
 
   [[nodiscard]] IdleTask *get_idle_task(u32 cpu_id) const noexcept {
-    if (cpu_id >= MAX_CPUS) {
+    if (cpu_id >= g_num_cpus) {
       return nullptr;
     }
     return idle_tasks_.get_cpu(cpu_id);
   }
 
   [[nodiscard]] bool has_runnable_tasks(u32 cpu_id) const noexcept {
-    if (cpu_id >= MAX_CPUS) {
+    if (cpu_id >= g_num_cpus) {
       return false;
     }
     return runqueues_.get_cpu(cpu_id).nr_running() > 0;
@@ -982,7 +986,7 @@ public:
 
   // Place entity vruntime for fork or wakeup (before enqueue)
   void place_entity(Thread *thread, u32 cpu, bool is_fork) noexcept {
-    if (cpu >= MAX_CPUS || !thread) {
+    if (cpu >= g_num_cpus || !thread) {
       return;
     }
     runqueues_.get_cpu(cpu).place_entity(thread, is_fork);
@@ -990,7 +994,7 @@ public:
 
   // Get min_vruntime for a specific CPU's runqueue
   [[nodiscard]] u64 get_cpu_min_vruntime(u32 cpu) const noexcept {
-    if (cpu >= MAX_CPUS) {
+    if (cpu >= g_num_cpus) {
       return 0;
     }
     return runqueues_.get_cpu(cpu).min_vruntime();
@@ -1005,7 +1009,7 @@ public:
       return;
     }
     u32 cpu = get_current_cpu_id();
-    if (cpu >= MAX_CPUS) {
+    if (cpu >= g_num_cpus) {
       return;
     }
     u64 min_vr = runqueues_.get_cpu(cpu).min_vruntime();
@@ -1059,7 +1063,7 @@ public:
   [[noreturn]] void cpu_startup_entry(u32 cpu_id) noexcept {
     log::klog::info("CPU{}: per-CPU scheduling loop started", cpu_id);
 
-    if (cpu_id >= MAX_CPUS) {
+    if (cpu_id >= g_num_cpus) {
       log::klog::error("CPU{}: invalid CPU ID", cpu_id);
       while (true) {
         idle_task_loop(cpu_id);
@@ -1237,7 +1241,7 @@ public:
     }
 
     u32 cpu = current->cpu;
-    if (cpu < MAX_CPUS) {
+    if (cpu < g_num_cpus) {
       runqueues_.get_cpu(cpu).update_curr_task(current, delta_exec);
     }
   }
@@ -1248,7 +1252,7 @@ public:
     }
 
     u32 cpu = current->cpu;
-    if (cpu >= MAX_CPUS) {
+    if (cpu >= g_num_cpus) {
       return false;
     }
 
@@ -1256,14 +1260,14 @@ public:
   }
 
   [[nodiscard]] u32 get_cpu_load(u32 cpu) const noexcept {
-    if (cpu >= MAX_CPUS) {
+    if (cpu >= g_num_cpus) {
       return 0;
     }
     return runqueues_.get_cpu(cpu).load_avg();
   }
 
   [[nodiscard]] u32 get_cpu_nr_running(u32 cpu) const noexcept {
-    if (cpu >= MAX_CPUS) {
+    if (cpu >= g_num_cpus) {
       return 0;
     }
     return runqueues_.get_cpu(cpu).nr_running();
@@ -1274,7 +1278,7 @@ public:
   [[nodiscard]] u64 total_preemptions() const noexcept { return total_preemptions_.load_total(); }
 
   void dump_runqueue(u32 cpu) const noexcept {
-    if (cpu < MAX_CPUS) {
+    if (cpu < g_num_cpus) {
       runqueues_.get_cpu(cpu).dump_runqueue();
     }
   }
@@ -1451,7 +1455,7 @@ public:
       {
         // Scan CPU 0's runqueue for TID=1000
         Thread *init_task = nullptr;
-        for (u32 cpu = 0; cpu < MAX_CPUS && init_task == nullptr; cpu++) {
+        for (u32 cpu = 0; cpu < g_num_cpus && init_task == nullptr; cpu++) {
           // Try picking tasks from this CPU until we find TID=1000 or exhaust
           constexpr u32 MAX_SCAN = 32;
           Thread *stash[MAX_SCAN];
