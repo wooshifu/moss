@@ -3,9 +3,6 @@
 
 module;
 
-// Architecture detection
-#include "arch_detect.h"
-
 // extern "C" declarations for assembly-callable functions (global module fragment)
 extern "C" {
 void early_debug_print(const char *message) noexcept;

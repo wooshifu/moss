@@ -14,10 +14,6 @@
 //   - PageTable/PageTableEntry structs (512 entries × 8B = 4KB on all archs)
 //   - Higher-level MM subsystems (buddy, slab, vmalloc, etc.)
 
-module;
-
-#include "arch_detect.h"
-
 export module moss.hal.mmu;
 
 import moss.std;

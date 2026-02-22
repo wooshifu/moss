@@ -18,10 +18,6 @@
 //                       ? plat.uart.base_addr
 //                       : platform::defaults::UART_BASE;
 
-module;
-
-#include "arch_detect.h"
-
 export module moss.platform;
 
 import moss.std;

@@ -3,9 +3,6 @@
 
 module;
 
-// Architecture detection
-#include "arch_detect.h"
-
 // strcmp is defined in runtime_support.cpp (global C linkage)
 extern "C" int strcmp(const char *s1, const char *s2) noexcept;
 

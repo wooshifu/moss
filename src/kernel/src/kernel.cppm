@@ -4,9 +4,6 @@
 
 module;
 
-// Architecture detection
-#include "arch_detect.h"
-
 // extern "C" declarations (global module fragment)
 // Kept here so that implementation .cpp files (which `module moss.kernel;`)
 // can see these symbols without their own GMF.

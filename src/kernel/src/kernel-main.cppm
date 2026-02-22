@@ -3,9 +3,6 @@
 
 module;
 
-// Architecture detection
-#include "arch_detect.h"
-
 // extern "C" declarations needed by this partition
 extern "C" {
 void kernel_test_all_subsystems(void) noexcept;

@@ -12,10 +12,6 @@
 //   - HrTimer class (timer instances)
 //   - TimerSubsystem class (sorted queue, ISR dispatch)
 
-module;
-
-#include "arch_detect.h"
-
 export module moss.hal.timer;
 
 import moss.std;

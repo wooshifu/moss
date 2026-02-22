@@ -4,8 +4,6 @@
 
 module;
 
-#include "arch_detect.h"
-
 // Linker symbols needed by PageFrameAllocator
 extern "C" {
     extern char _kernel_end_addr[];

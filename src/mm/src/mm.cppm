@@ -5,9 +5,6 @@
 
 module;
 
-// Architecture detection
-#include "arch_detect.h"
-
 // Linker symbols (must be in global module fragment)
 extern "C" {
     extern char _text_start_addr[];

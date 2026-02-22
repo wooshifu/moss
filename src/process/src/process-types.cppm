@@ -1,11 +1,6 @@
 // MOSS Process Module - Partition: types
 // Base process types, Thread, Process, ProcessManager, user_space
 
-module;
-
-// Architecture detection
-#include "arch_detect.h"
-
 export module moss.process:types;
 
 import moss.std;
