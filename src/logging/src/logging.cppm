@@ -350,7 +350,7 @@ inline void format_into(LogBuffer &buf, const char *fmt, T value,
 // ============================================================================
 
 struct LogRecordHeader {
-  u16 total_len;   // header + text + '\0' + padding (4-byte aligned)
+  u16 total_len;   // header + text + '\0' + padding (8-byte aligned)
   u8  level;       // LogLevel as u8; 0xFF = skip-marker (padding)
   u8  cpu_id;      // writer CPU
   u32 seq;         // monotonic sequence number
@@ -368,9 +368,9 @@ public:
   void emit(LogLevel level, const char* text, u32 text_len) noexcept {
     if (text_len > MAX_RECORD_TEXT) text_len = MAX_RECORD_TEXT;
 
-    // Record size: header + text + '\n' + '\0', padded to 4 bytes
+    // Record size: header + text + '\n' + '\0', padded to 8 bytes
     u32 record_len = (static_cast<u32>(sizeof(LogRecordHeader))
-                      + text_len + 2 + 3) & ~3u;
+                      + text_len + 2 + 7) & ~7u;
 
     u8 cpu = static_cast<u8>(arch::get_current_cpu_id()
                               % moss::kernel::MAX_CPUS);
