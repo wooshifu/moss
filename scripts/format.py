@@ -249,22 +249,23 @@ def find_clang_tidy(build_dir: Path) -> str:
     return "clang-tidy"
 
 
-def run_clang_tidy(files: list[Path], *, fix: bool) -> bool:
+def run_clang_tidy(files: list[Path], *, fix: bool, build_dir: Path) -> bool:
     """Run clang-tidy on C++ source files. Returns True if no warnings."""
     tidy_files = [f for f in files if f.suffix in CLANG_TIDY_EXTENSIONS]
     if not tidy_files:
         return True
 
-    build_dir = find_compile_commands()
-    if build_dir is None:
-        console.print("  [red]compile_commands.json not found — build first[/]")
+    if not (build_dir / "compile_commands.json").exists():
+        console.print(f"  [red]compile_commands.json not found in {build_dir} — build first[/]")
         return False
 
     clang_tidy = find_clang_tidy(build_dir)
 
     if fix:
-        # --fix modifies files → must run serially to avoid conflicts
-        return _run_clang_tidy_serial(tidy_files, clang_tidy=clang_tidy, build_dir=build_dir, fix=True)
+        # Serial: fix one file, rebuild to refresh .pcm, then next file.
+        # Without rebuild, clang-tidy reads stale .pcm ASTs and generates
+        # duplicate edits on already-fixed module interfaces.
+        return _run_clang_tidy_serial(tidy_files, clang_tidy=clang_tidy, build_dir=build_dir)
 
     # Read-only analysis → parallel
     ok, _ = _run_parallel(
@@ -275,24 +276,30 @@ def run_clang_tidy(files: list[Path], *, fix: bool) -> bool:
     return ok
 
 
-def _run_clang_tidy_serial(files: list[Path], *, clang_tidy: str, build_dir: Path, fix: bool) -> bool:
-    """Run clang-tidy one file at a time (for --fix mode)."""
+def _run_clang_tidy_serial(files: list[Path], *, clang_tidy: str, build_dir: Path) -> bool:
+    """Run clang-tidy --fix one file at a time, rebuilding between runs to refresh .pcm."""
     issues: list[str] = []
 
     with _make_progress("clang-tidy [fix]") as progress:
         task = progress.add_task("", total=len(files), current_file="")
         for f in files:
             progress.update(task, current_file=str(f))
-            cmd = [clang_tidy, "-p", str(build_dir)]
-            if fix:
-                cmd += ["--fix", "--fix-errors", "--fix-notes"]
-            cmd.append(str(f))
+            cmd = [clang_tidy, "-p", str(build_dir), "--fix", "--fix-errors", "--fix-notes", str(f)]
 
             result = subprocess.run(cmd, capture_output=True, text=True)
             output = result.stdout + result.stderr
             for line in output.splitlines():
                 if ": warning:" in line or ": error:" in line:
                     issues.append(line)
+
+            # Rebuild project to refresh all .pcm files so the next
+            # clang-tidy invocation sees the updated module ASTs.
+            rebuild = subprocess.run(["cmake", "--build", str(build_dir)], capture_output=True, text=True)
+            if rebuild.returncode != 0:
+                progress.stop()
+                console.print(f"  [red]build failed after fixing {f} — aborting[/]")
+                console.print(rebuild.stderr or rebuild.stdout)
+                return False
             progress.advance(task)
 
     for line in issues:
@@ -405,6 +412,9 @@ def lint(
     fix: bool = typer.Option(False, "--fix", help="Auto-fix issues where possible"),
     cpp_only: bool = typer.Option(False, "--cpp-only", help="Lint C++ files only"),
     py_only: bool = typer.Option(False, "--py-only", help="Lint Python files only"),
+    build_dir: str = typer.Option(
+        "build/arm64-qemu-debug", "--build-dir", help="CMake build directory (for rebuilding .pcm after --fix)"
+    ),
 ) -> None:
     """Lint all tracked source files (clang-tidy + ruff check)."""
     files = git_tracked_files()
@@ -422,7 +432,7 @@ def lint(
     all_ok = True
 
     if cpp_files:
-        ok = run_clang_tidy(cpp_files, fix=fix)
+        ok = run_clang_tidy(cpp_files, fix=fix, build_dir=Path(build_dir))
         _print_result("clang-tidy", ok)
         all_ok &= ok
     if py_files:
@@ -439,6 +449,8 @@ def lint(
 
 if __name__ == "__main__":
     # Default to "format" when no subcommand is given
-    if len(sys.argv) == 1 or (len(sys.argv) > 1 and sys.argv[1].startswith("-")):
+    if len(sys.argv) > 1 and sys.argv[1] in ("help", "--help", "-h"):
+        sys.argv[1:] = ["--help"]
+    elif len(sys.argv) == 1 or (len(sys.argv) > 1 and sys.argv[1].startswith("-")):
         sys.argv.insert(1, "format")
     app()

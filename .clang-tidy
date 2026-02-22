@@ -9,7 +9,6 @@
 Checks: >
   -*,
   readability-identifier-naming,
-  misc-const-correctness,
 
 HeaderFilterRegex: 'src/.*'
 WarningsAsErrors: ''
