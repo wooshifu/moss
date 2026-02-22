@@ -1,5 +1,6 @@
 // MOSS Standard Library Module - Freestanding C++26 Implementation
 // Provides all basic types, type traits, and utility functions for kernel use
+// Type traits and memory ops use Clang builtins for correctness and codegen.
 
 module;
 
@@ -49,217 +50,140 @@ inline constexpr u64 UINT64_MAX = 18446744073709551615ull;
 
 } // namespace moss
 
-// Type traits implementation
+// ============================================================================
+// Type traits — Clang builtin type transforms & intrinsics
+// ============================================================================
 export namespace moss {
 
-// Primary type categories
-template <typename T> struct remove_const {
-  using type = T;
-};
-template <typename T> struct remove_const<const T> {
-  using type = T;
-};
-template <typename T> using remove_const_t = typename remove_const<T>::type;
+// --- Type transformations (Clang TransformTypeTraits) -----------------------
 
-template <typename T> struct remove_volatile {
-  using type = T;
-};
-template <typename T> struct remove_volatile<volatile T> {
-  using type = T;
-};
-template <typename T>
-using remove_volatile_t = typename remove_volatile<T>::type;
+template <typename T> using remove_const_t = __remove_const(T);
+template <typename T> struct remove_const { using type = remove_const_t<T>; };
 
-template <typename T> struct remove_cv {
-  using type = remove_volatile_t<remove_const_t<T>>;
-};
-template <typename T> using remove_cv_t = typename remove_cv<T>::type;
+template <typename T> using remove_volatile_t = __remove_volatile(T);
+template <typename T> struct remove_volatile { using type = remove_volatile_t<T>; };
 
-template <typename T> struct remove_reference {
-  using type = T;
-};
-template <typename T> struct remove_reference<T &> {
-  using type = T;
-};
-template <typename T> struct remove_reference<T &&> {
-  using type = T;
-};
-template <typename T>
-using remove_reference_t = typename remove_reference<T>::type;
+template <typename T> using remove_cv_t = __remove_cv(T);
+template <typename T> struct remove_cv { using type = remove_cv_t<T>; };
 
-template <typename T> struct remove_pointer {
-  using type = T;
-};
-template <typename T> struct remove_pointer<T *> {
-  using type = T;
-};
-template <typename T> using remove_pointer_t = typename remove_pointer<T>::type;
+template <typename T> using remove_reference_t = __remove_reference_t(T);
+template <typename T> struct remove_reference { using type = remove_reference_t<T>; };
 
-// Type relationships
-template <typename T, typename U> struct is_same {
-  static constexpr bool value = false;
-};
-template <typename T> struct is_same<T, T> {
-  static constexpr bool value = true;
-};
+template <typename T> using remove_pointer_t = __remove_pointer(T);
+template <typename T> struct remove_pointer { using type = remove_pointer_t<T>; };
+
+// --- Type property traits (Clang __is_* intrinsics) -------------------------
+
 template <typename T, typename U>
-inline constexpr bool is_same_v = is_same<T, U>::value;
+inline constexpr bool is_same_v = __is_same(T, U);
+template <typename T, typename U>
+struct is_same { static constexpr bool value = is_same_v<T, U>; };
 
-// Type properties
-template <typename T> struct is_const {
-  static constexpr bool value = false;
-};
-template <typename T> struct is_const<const T> {
-  static constexpr bool value = true;
-};
-template <typename T> inline constexpr bool is_const_v = is_const<T>::value;
+template <typename T> inline constexpr bool is_const_v = __is_const(T);
+template <typename T> struct is_const { static constexpr bool value = is_const_v<T>; };
 
-template <typename T> struct is_volatile {
-  static constexpr bool value = false;
-};
-template <typename T> struct is_volatile<volatile T> {
-  static constexpr bool value = true;
-};
-template <typename T>
-inline constexpr bool is_volatile_v = is_volatile<T>::value;
+template <typename T> inline constexpr bool is_volatile_v = __is_volatile(T);
+template <typename T> struct is_volatile { static constexpr bool value = is_volatile_v<T>; };
 
-template <typename T> struct is_void {
-  static constexpr bool value = is_same_v<remove_cv_t<T>, void>;
-};
-template <typename T> inline constexpr bool is_void_v = is_void<T>::value;
+template <typename T> inline constexpr bool is_void_v = __is_void(T);
+template <typename T> struct is_void { static constexpr bool value = is_void_v<T>; };
 
-template <typename T> struct is_integral {
-  static constexpr bool value = false;
-};
-template <> struct is_integral<bool> {
-  static constexpr bool value = true;
-};
-template <> struct is_integral<char> {
-  static constexpr bool value = true;
-};
-template <> struct is_integral<signed char> {
-  static constexpr bool value = true;
-};
-template <> struct is_integral<unsigned char> {
-  static constexpr bool value = true;
-};
-template <> struct is_integral<short> {
-  static constexpr bool value = true;
-};
-template <> struct is_integral<unsigned short> {
-  static constexpr bool value = true;
-};
-template <> struct is_integral<int> {
-  static constexpr bool value = true;
-};
-template <> struct is_integral<unsigned int> {
-  static constexpr bool value = true;
-};
-template <> struct is_integral<long> {
-  static constexpr bool value = true;
-};
-template <> struct is_integral<unsigned long> {
-  static constexpr bool value = true;
-};
-template <> struct is_integral<long long> {
-  static constexpr bool value = true;
-};
-template <> struct is_integral<unsigned long long> {
-  static constexpr bool value = true;
-};
-template <typename T>
-inline constexpr bool is_integral_v = is_integral<remove_cv_t<T>>::value;
+template <typename T> inline constexpr bool is_integral_v = __is_integral(T);
+template <typename T> struct is_integral { static constexpr bool value = is_integral_v<T>; };
 
-template <typename T> struct is_floating_point {
-  static constexpr bool value = false;
-};
-template <> struct is_floating_point<float> {
-  static constexpr bool value = true;
-};
-template <> struct is_floating_point<double> {
-  static constexpr bool value = true;
-};
-template <> struct is_floating_point<long double> {
-  static constexpr bool value = true;
-};
-template <typename T>
-inline constexpr bool is_floating_point_v =
-    is_floating_point<remove_cv_t<T>>::value;
+template <typename T> inline constexpr bool is_floating_point_v = __is_floating_point(T);
+template <typename T> struct is_floating_point { static constexpr bool value = is_floating_point_v<T>; };
 
-template <typename T> struct is_array {
-  static constexpr bool value = false;
-};
-template <typename T> struct is_array<T[]> {
-  static constexpr bool value = true;
-};
-template <typename T, size_t N> struct is_array<T[N]> {
-  static constexpr bool value = true;
-};
-template <typename T> inline constexpr bool is_array_v = is_array<T>::value;
+template <typename T> inline constexpr bool is_array_v = __is_array(T);
+template <typename T> struct is_array { static constexpr bool value = is_array_v<T>; };
 
-template <typename T> struct is_pointer {
-  static constexpr bool value = false;
-};
-template <typename T> struct is_pointer<T *> {
-  static constexpr bool value = true;
-};
-template <typename T>
-inline constexpr bool is_pointer_v = is_pointer<remove_cv_t<T>>::value;
+template <typename T> inline constexpr bool is_pointer_v = __is_pointer(T);
+template <typename T> struct is_pointer { static constexpr bool value = is_pointer_v<T>; };
 
-template <typename T> struct is_lvalue_reference {
-  static constexpr bool value = false;
-};
-template <typename T> struct is_lvalue_reference<T &> {
-  static constexpr bool value = true;
-};
-template <typename T>
-inline constexpr bool is_lvalue_reference_v = is_lvalue_reference<T>::value;
+template <typename T> inline constexpr bool is_lvalue_reference_v = __is_lvalue_reference(T);
+template <typename T> struct is_lvalue_reference { static constexpr bool value = is_lvalue_reference_v<T>; };
 
-template <typename T> struct is_rvalue_reference {
-  static constexpr bool value = false;
-};
-template <typename T> struct is_rvalue_reference<T &&> {
-  static constexpr bool value = true;
-};
-template <typename T>
-inline constexpr bool is_rvalue_reference_v = is_rvalue_reference<T>::value;
+template <typename T> inline constexpr bool is_rvalue_reference_v = __is_rvalue_reference(T);
+template <typename T> struct is_rvalue_reference { static constexpr bool value = is_rvalue_reference_v<T>; };
 
-template <typename T> struct is_reference {
-  static constexpr bool value =
-      is_lvalue_reference_v<T> || is_rvalue_reference_v<T>;
-};
-template <typename T>
-inline constexpr bool is_reference_v = is_reference<T>::value;
+template <typename T> inline constexpr bool is_reference_v = __is_reference(T);
+template <typename T> struct is_reference { static constexpr bool value = is_reference_v<T>; };
 
-// Conditional type selection
-template <bool B, typename T, typename F> struct conditional {
-  using type = T;
-};
-template <typename T, typename F> struct conditional<false, T, F> {
-  using type = F;
-};
+template <typename T> inline constexpr bool is_function_v = __is_function(T);
+template <typename T> struct is_function { static constexpr bool value = is_function_v<T>; };
+
+// --- Conditional / enable_if (no builtin equivalent) ------------------------
+
+template <bool B, typename T, typename F> struct conditional { using type = T; };
+template <typename T, typename F> struct conditional<false, T, F> { using type = F; };
 template <bool B, typename T, typename F>
 using conditional_t = typename conditional<B, T, F>::type;
 
-// Enable if
 template <bool B, typename T = void> struct enable_if {};
-template <typename T> struct enable_if<true, T> {
-  using type = T;
-};
+template <typename T> struct enable_if<true, T> { using type = T; };
 template <bool B, typename T = void>
 using enable_if_t = typename enable_if<B, T>::type;
 
+// --- Nothrow traits (Clang __is_nothrow_* intrinsics) -----------------------
+
+template <typename T>
+inline constexpr bool is_nothrow_copy_constructible_v =
+    __is_nothrow_constructible(T, const T &);
+template <typename T>
+struct is_nothrow_copy_constructible {
+  static constexpr bool value = is_nothrow_copy_constructible_v<T>;
+};
+
+template <typename T>
+inline constexpr bool is_nothrow_move_constructible_v =
+    __is_nothrow_constructible(T, T &&);
+template <typename T>
+struct is_nothrow_move_constructible {
+  static constexpr bool value = is_nothrow_move_constructible_v<T>;
+};
+
+template <typename T>
+inline constexpr bool is_nothrow_copy_assignable_v =
+    __is_nothrow_assignable(T &, const T &);
+template <typename T>
+struct is_nothrow_copy_assignable {
+  static constexpr bool value = is_nothrow_copy_assignable_v<T>;
+};
+
+template <typename T>
+inline constexpr bool is_nothrow_move_assignable_v =
+    __is_nothrow_assignable(T &, T &&);
+template <typename T>
+struct is_nothrow_move_assignable {
+  static constexpr bool value = is_nothrow_move_assignable_v<T>;
+};
+
+template <typename T, typename... Args>
+inline constexpr bool is_nothrow_constructible_v =
+    __is_nothrow_constructible(T, Args...);
+template <typename T, typename... Args>
+struct is_nothrow_constructible {
+  static constexpr bool value = is_nothrow_constructible_v<T, Args...>;
+};
+
+template <typename T, typename U>
+inline constexpr bool is_nothrow_assignable_v = __is_nothrow_assignable(T, U);
+template <typename T, typename U>
+struct is_nothrow_assignable {
+  static constexpr bool value = is_nothrow_assignable_v<T, U>;
+};
+
 } // namespace moss
 
+// ============================================================================
 // Utility functions
+// ============================================================================
 export namespace moss {
 
-// Move semantics
 template <typename T> constexpr remove_reference_t<T> &&move(T &&t) noexcept {
   return static_cast<remove_reference_t<T> &&>(t);
 }
 
-// Perfect forwarding
 template <typename T> constexpr T &&forward(remove_reference_t<T> &t) noexcept {
   return static_cast<T &&>(t);
 }
@@ -271,7 +195,6 @@ constexpr T &&forward(remove_reference_t<T> &&t) noexcept {
   return static_cast<T &&>(t);
 }
 
-// Exchange
 template <typename T, typename U = T>
 constexpr T exchange(T &obj, U &&new_value) noexcept {
   T old_value = move(obj);
@@ -279,14 +202,12 @@ constexpr T exchange(T &obj, U &&new_value) noexcept {
   return old_value;
 }
 
-// Swap
 template <typename T> constexpr void swap(T &a, T &b) noexcept {
   T temp = move(a);
   a = move(b);
   b = move(temp);
 }
 
-// Min/max
 template <typename T> constexpr const T &min(const T &a, const T &b) {
   return (b < a) ? b : a;
 }
@@ -295,7 +216,6 @@ template <typename T> constexpr const T &max(const T &a, const T &b) {
   return (a < b) ? b : a;
 }
 
-// Clamp
 template <typename T>
 constexpr const T &clamp(const T &v, const T &lo, const T &hi) {
   return (v < lo) ? lo : (hi < v) ? hi : v;
@@ -303,128 +223,36 @@ constexpr const T &clamp(const T &v, const T &lo, const T &hi) {
 
 } // namespace moss
 
-// Memory operations (freestanding implementations)
+// ============================================================================
+// Memory operations — delegated to Clang builtins
+// ============================================================================
 export namespace moss {
 
-// Memory set
 constexpr void *memset(void *dest, int ch, size_t count) noexcept {
-  unsigned char *d = static_cast<unsigned char *>(dest);
-  unsigned char c = static_cast<unsigned char>(ch);
-  for (size_t i = 0; i < count; ++i) {
-    d[i] = c;
-  }
-  return dest;
+  return __builtin_memset(dest, ch, count);
 }
 
-// Memory copy
 constexpr void *memcpy(void *dest, const void *src, size_t count) noexcept {
-  unsigned char *d = static_cast<unsigned char *>(dest);
-  const unsigned char *s = static_cast<const unsigned char *>(src);
-  for (size_t i = 0; i < count; ++i) {
-    d[i] = s[i];
-  }
-  return dest;
+  return __builtin_memcpy(dest, src, count);
 }
 
-// Memory move (handles overlapping regions)
 constexpr void *memmove(void *dest, const void *src, size_t count) noexcept {
-  unsigned char *d = static_cast<unsigned char *>(dest);
-  const unsigned char *s = static_cast<const unsigned char *>(src);
-
-  if (d < s) {
-    // Copy forward
-    for (size_t i = 0; i < count; ++i) {
-      d[i] = s[i];
-    }
-  } else if (d > s) {
-    // Copy backward
-    for (size_t i = count; i > 0; --i) {
-      d[i - 1] = s[i - 1];
-    }
-  }
-  return dest;
+  return __builtin_memmove(dest, src, count);
 }
 
-// Memory compare
 constexpr int memcmp(const void *lhs, const void *rhs, size_t count) noexcept {
-  const unsigned char *l = static_cast<const unsigned char *>(lhs);
-  const unsigned char *r = static_cast<const unsigned char *>(rhs);
-
-  for (size_t i = 0; i < count; ++i) {
-    if (l[i] < r[i])
-      return -1;
-    if (l[i] > r[i])
-      return 1;
-  }
-  return 0;
+  return __builtin_memcmp(lhs, rhs, count);
 }
 
-// Absolute value
 template <typename T> constexpr T abs(const T &value) noexcept {
   return (value < 0) ? -value : value;
 }
 
 } // namespace moss
 
-// Type traits - is_function (simplified, always false for freestanding)
-export namespace moss {
-
-template <typename T> struct is_function {
-  static constexpr bool value = false;
-};
-template <typename T>
-inline constexpr bool is_function_v = is_function<T>::value;
-
-} // namespace moss
-
-// Simplified nothrow traits (in freestanding environment, assume all nothrow)
-export namespace moss {
-
-template <typename T> struct is_nothrow_copy_constructible {
-  static constexpr bool value = true;
-};
-template <typename T>
-inline constexpr bool is_nothrow_copy_constructible_v =
-    is_nothrow_copy_constructible<T>::value;
-
-template <typename T> struct is_nothrow_move_constructible {
-  static constexpr bool value = true;
-};
-template <typename T>
-inline constexpr bool is_nothrow_move_constructible_v =
-    is_nothrow_move_constructible<T>::value;
-
-template <typename T> struct is_nothrow_copy_assignable {
-  static constexpr bool value = true;
-};
-template <typename T>
-inline constexpr bool is_nothrow_copy_assignable_v =
-    is_nothrow_copy_assignable<T>::value;
-
-template <typename T> struct is_nothrow_move_assignable {
-  static constexpr bool value = true;
-};
-template <typename T>
-inline constexpr bool is_nothrow_move_assignable_v =
-    is_nothrow_move_assignable<T>::value;
-
-template <typename T, typename... Args> struct is_nothrow_constructible {
-  static constexpr bool value = true;
-};
-template <typename T, typename... Args>
-inline constexpr bool is_nothrow_constructible_v =
-    is_nothrow_constructible<T, Args...>::value;
-
-template <typename T, typename U> struct is_nothrow_assignable {
-  static constexpr bool value = true;
-};
-template <typename T, typename U>
-inline constexpr bool is_nothrow_assignable_v =
-    is_nothrow_assignable<T, U>::value;
-
-} // namespace moss
-
+// ============================================================================
 // Memory ordering for atomics
+// ============================================================================
 export namespace moss {
 
 // CamelCase MemoryOrder - used by 415+ callsites across the codebase
