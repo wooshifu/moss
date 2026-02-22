@@ -151,36 +151,12 @@ set(CMAKE_CXX_FLAGS_RELEASE "-g0 -O3 -DNDEBUG")
 set(CMAKE_ASM_FLAGS_DEBUG "-g3")
 set(CMAKE_ASM_FLAGS_RELEASE "-g0")
 
-# === 全局编译定义 ===
-add_compile_definitions(MOSS_KERNEL_MODULE)
-
-# === 全局头文件路径设置 ===
-# moss_core 的 PUBLIC include 通过 target_link_libraries 传播到各模块
-
-# === 配置系统生成 ===
-string(TIMESTAMP MOSS_BUILD_TIMESTAMP "%Y-%m-%d %H:%M:%S UTC" UTC)
-
-# 实用函数：将CMake布尔值转换为1/0数值
-function(moss_bool_to_int var)
-  if(${${var}})
-    set(${var} 1 PARENT_SCOPE)
-  else()
-    set(${var} 0 PARENT_SCOPE)
-  endif()
-endfunction()
-
 # === 架构特定配置 ===
 if(MOSS_TARGET_ARCH STREQUAL "ARM64")
-  set(MOSS_ARCH_ARM64 ON)
-  set(MOSS_ARCH_NAME "ARM64")
   add_compile_definitions(MOSS_ARCH_ARM64=1)
 elseif(MOSS_TARGET_ARCH STREQUAL "X86_64")
-  set(MOSS_ARCH_X86_64 ON)
-  set(MOSS_ARCH_NAME "X86_64")
   add_compile_definitions(MOSS_ARCH_X86_64=1)
 elseif(MOSS_TARGET_ARCH STREQUAL "RISCV")
-  set(MOSS_ARCH_RISCV ON)
-  set(MOSS_ARCH_NAME "RISCV64")
   add_compile_definitions(MOSS_ARCH_RISCV=1)
   # RISC-V ISA extension feature macros (derived from CMAKE_CXX_FLAGS -march=)
   if(CMAKE_CXX_FLAGS MATCHES "-march=rv64[^ ]*m")
@@ -201,125 +177,6 @@ elseif(MOSS_TARGET_ARCH STREQUAL "RISCV")
 else()
   message(FATAL_ERROR "Unsupported architecture: ${MOSS_TARGET_ARCH}")
 endif()
-
-# All 64-bit architectures share these definitions
-add_compile_definitions(MOSS_ARCH_BITS=64 MOSS_PAGE_SIZE=4096 MOSS_CACHE_LINE_SIZE=64)
-
-# 所有 64 位架构的公共配置值
-set(MOSS_PAGE_SIZE 4096)
-set(MOSS_CACHE_LINE_SIZE 64)
-set(MOSS_POINTER_SIZE 8)
-
-# 设置平台特定的配置
-if(MOSS_TARGET_PLATFORM STREQUAL "QEMU_VIRT")
-  set(MOSS_PLATFORM_QEMU_VIRT ON)
-  set(MOSS_PLATFORM_NAME "QEMU_VIRT")
-else()
-  set(MOSS_PLATFORM_NAME "UNKNOWN")
-endif()
-
-# 设置构建类型相关配置
-if(CMAKE_BUILD_TYPE STREQUAL "Debug")
-  set(MOSS_DEBUG_BUILD ON)
-  set(MOSS_BUILD_TYPE "Debug")
-  set(MOSS_DEBUG_LEVEL 3)
-elseif(CMAKE_BUILD_TYPE STREQUAL "Release")
-  set(MOSS_RELEASE_BUILD ON)
-  set(MOSS_BUILD_TYPE "Release")
-  set(MOSS_DEBUG_LEVEL 1)
-else()
-  set(MOSS_BUILD_TYPE "Unknown")
-  set(MOSS_DEBUG_LEVEL 2)
-endif()
-
-# 模块开关选项（可通过CMake -D 选项覆盖）
-option(MOSS_ENABLE_DRIVERS "Enable device driver support" ON)
-option(MOSS_ENABLE_INTERRUPTS "Enable interrupt handling" ON)
-option(MOSS_ENABLE_IPC "Enable inter-process communication" ON)
-option(MOSS_ENABLE_PROCESS "Enable process management" ON)
-
-# 容器库功能选项
-option(MOSS_ENABLE_LOCKFREE_QUEUE "Enable lockfree queue implementation" ON)
-option(MOSS_ENABLE_SLAB_ALLOCATOR "Enable slab allocator" ON)
-option(MOSS_ENABLE_RCU_LIST "Enable RCU list implementation" ON)
-option(MOSS_ENABLE_PER_CPU_DATA "Enable per-CPU data structures" ON)
-option(MOSS_ENABLE_ATOMIC_TYPES "Enable atomic type support" ON)
-
-# 进程管理功能选项
-option(MOSS_ENABLE_CFS_SCHEDULER "Enable CFS scheduler" ON)
-option(MOSS_ENABLE_LOAD_BALANCER "Enable load balancer" ON)
-option(MOSS_ENABLE_PROCESS_TREE "Enable process tree management" ON)
-
-# IPC功能选项
-option(MOSS_ENABLE_SHARED_MEMORY "Enable shared memory support" ON)
-option(MOSS_ENABLE_ZERO_COPY_CHANNEL "Enable zero-copy channel" ON)
-option(MOSS_ENABLE_IPC_MANAGER "Enable IPC manager" ON)
-
-# 驱动功能选项
-option(MOSS_ENABLE_UART_DRIVER "Enable UART driver" ON)
-option(MOSS_ENABLE_DEVICE_MANAGER "Enable device manager" ON)
-
-# 中断功能选项
-option(MOSS_ENABLE_GIC "Enable ARM GIC support" ON)
-
-# 将所有标准模块选项转换为1/0数值（用于config.h模板）
-foreach(_opt
-    MOSS_ENABLE_DRIVERS MOSS_ENABLE_INTERRUPTS MOSS_ENABLE_IPC MOSS_ENABLE_PROCESS
-    MOSS_ENABLE_LOCKFREE_QUEUE MOSS_ENABLE_SLAB_ALLOCATOR MOSS_ENABLE_RCU_LIST
-    MOSS_ENABLE_PER_CPU_DATA MOSS_ENABLE_ATOMIC_TYPES MOSS_ENABLE_CFS_SCHEDULER
-    MOSS_ENABLE_LOAD_BALANCER MOSS_ENABLE_PROCESS_TREE MOSS_ENABLE_SHARED_MEMORY
-    MOSS_ENABLE_ZERO_COPY_CHANNEL MOSS_ENABLE_IPC_MANAGER MOSS_ENABLE_UART_DRIVER
-    MOSS_ENABLE_DEVICE_MANAGER MOSS_ENABLE_GIC)
-  moss_bool_to_int(${_opt})
-endforeach()
-
-# 调试功能选项（根据调试级别自动启用）
-if(MOSS_DEBUG_LEVEL GREATER_EQUAL 2)
-  option(MOSS_ENABLE_MEMORY_DEBUG "Enable memory debugging" ON)
-  option(MOSS_ENABLE_STACK_OVERFLOW_CHECK "Enable stack overflow checking" ON)
-  option(MOSS_ENABLE_HEAP_CORRUPTION_CHECK "Enable heap corruption checking" ON)
-  option(MOSS_ENABLE_DOUBLE_FREE_CHECK "Enable double-free checking" ON)
-endif()
-
-if(MOSS_DEBUG_LEVEL GREATER_EQUAL 1)
-  option(MOSS_ENABLE_ASSERTIONS "Enable runtime assertions" ON)
-  option(MOSS_ENABLE_DATA_STRUCTURE_CHECK
-         "Enable data structure consistency checks" ON)
-endif()
-
-if(MOSS_DEBUG_LEVEL GREATER_EQUAL 3)
-  option(MOSS_ENABLE_FUNCTION_TRACING "Enable function call tracing" ON)
-  option(MOSS_ENABLE_LOCK_PROFILING "Enable lock profiling" ON)
-  option(MOSS_ENABLE_SCHEDULER_STATS "Enable scheduler statistics" ON)
-  option(MOSS_ENABLE_SYSCALL_TRACING "Enable system call tracing" ON)
-endif()
-
-# 转换条件调试选项为数值（未定义则默认为0）
-set(_MOSS_CONDITIONAL_OPTIONS
-    MOSS_ENABLE_MEMORY_DEBUG MOSS_ENABLE_STACK_OVERFLOW_CHECK
-    MOSS_ENABLE_HEAP_CORRUPTION_CHECK MOSS_ENABLE_DOUBLE_FREE_CHECK
-    MOSS_ENABLE_ASSERTIONS MOSS_ENABLE_DATA_STRUCTURE_CHECK
-    MOSS_ENABLE_FUNCTION_TRACING MOSS_ENABLE_LOCK_PROFILING
-    MOSS_ENABLE_SCHEDULER_STATS MOSS_ENABLE_SYSCALL_TRACING)
-foreach(_opt IN LISTS _MOSS_CONDITIONAL_OPTIONS)
-  if(DEFINED ${_opt})
-    moss_bool_to_int(${_opt})
-  else()
-    set(${_opt} 0)
-  endif()
-endforeach()
-
-# 生成配置头文件
-configure_file(${CMAKE_SOURCE_DIR}/src/core/config/config.h.in
-               ${CMAKE_BINARY_DIR}/include/config/config.h @ONLY)
-
-# 添加生成的配置头文件目录到包含路径
-include_directories(${CMAKE_BINARY_DIR}/include)
-
-message(STATUS "配置系统已生成: ${CMAKE_BINARY_DIR}/include/config/config.h")
-message(STATUS "目标架构: ${MOSS_ARCH_NAME}")
-message(STATUS "目标平台: ${MOSS_PLATFORM_NAME}")
-message(STATUS "构建类型: ${MOSS_BUILD_TYPE} (调试级别: ${MOSS_DEBUG_LEVEL})")
 
 # === 添加子模块（按依赖顺序）===
 add_subdirectory(src/core)
