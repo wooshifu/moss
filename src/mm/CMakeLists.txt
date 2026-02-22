@@ -15,7 +15,6 @@ target_sources(moss_mm
         src/page_fault.cpp
         src/page_frame_allocator.cpp
         src/runtime_heap_allocator.cpp
-        src/kernel_memory.cpp
         src/mm_interface_impl.cpp)
 
 # Architecture-specific memory management settings

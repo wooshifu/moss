@@ -71,7 +71,7 @@ static void boot_print(const char *message) {
 
 /// Unified boot main function
 /// All architectures go through this unified entry
-extern "C" [[noreturn]] void unified_boot_main(void *device_tree_ptr) {
+[[noreturn]] void unified_boot_main(void *device_tree_ptr) {
     boot_print("\n=== Moss Multi-arch Unified Boot System ===\n");
     boot_print("Target arch: ");
     boot_print(MOSS_CURRENT_ARCH);

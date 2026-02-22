@@ -62,7 +62,6 @@ extern "C" {
 [[noreturn]] void early_main(void *device_tree_ptr);
 [[noreturn]] void kernel_main(void) noexcept;
 void early_debug_print(const char *message) noexcept;
-[[noreturn]] void kernel_panic_handler(const char *message) noexcept;
 long system_call_handler(long syscall_number, long arg0, long arg1,
                          long arg2, long arg3, long arg4,
                          long arg5) noexcept;
@@ -85,11 +84,7 @@ void mark_runtime_heap_ready() noexcept;
 }
 
 #if defined(__aarch64__) || defined(MOSS_ARCH_ARM64)
-extern "C" {
-[[noreturn]] void secondary_cpu_entry() noexcept;
-void mark_cpu_online(unsigned int cpu_id) noexcept;
-void mark_cpu_parked(unsigned int cpu_id) noexcept;
-}
+extern "C" [[noreturn]] void secondary_cpu_entry() noexcept;
 #endif
 
 // ============================================================================
@@ -106,9 +101,6 @@ int demand_page_lookup(unsigned long long fault_addr,
 unsigned long long get_current_pgd_phys() noexcept;
 [[noreturn]] void terminate_current_user_process(int exit_code) noexcept;
 
-// scheduler bridge
-void sched_yield_to_min_vruntime() noexcept;
-
 // vfs <-> kernel bridge
 void console_rx_init() noexcept;
 int console_getc_blocking() noexcept;
@@ -120,10 +112,6 @@ int moss_slab_free_pages(unsigned long long addr,
 
 // C string function (runtime_support.cpp)
 int strcmp(const char *s1, const char *s2) noexcept;
-
-// Kernel info
-const char *get_kernel_version(void) noexcept;
-const char *get_build_info(void) noexcept;
 }
 
 export module moss.abi;
@@ -244,7 +232,6 @@ export namespace moss::abi::bridge {
 using ::demand_page_lookup;
 using ::get_current_pgd_phys;
 using ::terminate_current_user_process;
-using ::sched_yield_to_min_vruntime;
 using ::console_rx_init;
 using ::console_getc_blocking;
 using ::moss_slab_alloc_pages;
@@ -261,7 +248,6 @@ export namespace moss::abi::entry {
 using ::early_main;
 using ::kernel_main;
 using ::early_debug_print;
-using ::kernel_panic_handler;
 using ::system_call_handler;
 using ::irq_handler_c;
 using ::kernel_page_fault_handler;
@@ -269,13 +255,9 @@ using ::user_page_fault_handler;
 using ::unhandled_exception_handler;
 using ::unhandled_user_exception_handler;
 using ::mark_runtime_heap_ready;
-using ::get_kernel_version;
-using ::get_build_info;
 
 #if defined(__aarch64__) || defined(MOSS_ARCH_ARM64)
 using ::secondary_cpu_entry;
-using ::mark_cpu_online;
-using ::mark_cpu_parked;
 #endif
 
 } // namespace moss::abi::entry

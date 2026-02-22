@@ -8,12 +8,8 @@ module;
 // PSCI constants (must be in global module fragment as macros)
 #define PSCI_CPU_ON_64 0xC4000003
 
-// Assembly-callable function forward declarations (defined in this file)
-extern "C" {
-void mark_cpu_online(unsigned int cpu_id) noexcept;
-void mark_cpu_parked(unsigned int cpu_id) noexcept;
-[[noreturn]] void secondary_cpu_entry() noexcept;
-}
+// Assembly-callable function forward declaration (defined in this file)
+extern "C" [[noreturn]] void secondary_cpu_entry() noexcept;
 
 module moss.boot;
 
@@ -216,7 +212,7 @@ static void initialize_cpu_startup_info(u32 detected_cpus) noexcept {
     return true;
 }
 
-extern "C" void mark_cpu_online(u32 cpu_id) noexcept {
+void mark_cpu_online(u32 cpu_id) noexcept {
     if (cpu_id < moss::kernel::MAX_CPUS) {
         store_cpu_state(cpu_id, CpuState::Online);
         g_cpu_topology.boot_timestamps[cpu_id] = 0;
@@ -224,7 +220,7 @@ extern "C" void mark_cpu_online(u32 cpu_id) noexcept {
     }
 }
 
-extern "C" void mark_cpu_parked(u32 cpu_id) noexcept {
+void mark_cpu_parked(u32 cpu_id) noexcept {
     if (cpu_id < moss::kernel::MAX_CPUS) {
         g_cpu_topology.boot_timestamps[cpu_id] = 0;
         // Release store: makes all prior initialization visible to CPU 0
