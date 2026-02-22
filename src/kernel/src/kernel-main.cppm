@@ -334,10 +334,8 @@ private:
 
   // Early initialization
   [[nodiscard]] VoidResult initialize_early() noexcept {
-    // Initialize CPU topology first (needed by other subsystems)
+    // Detect CPU count from device tree (needed by other subsystems)
     cpu_topology::early_cpu_topology_init();
-    cpu_topology::initialize_cpu_topology();
-    log::klog::info("CPU topology initialized: {} CPUs detected", cpu_topology::num_cpu_ids);
 
     // Initialize container library
     if (!containers::ContainerLibrary::initialize()) {
