@@ -129,10 +129,18 @@ namespace handlers {
         }
         Process *child_proc = *child_proc_result;
 
+        // Helper: clean up the child process on error (removes from process
+        // table and triggers ~Process which frees address space, threads, etc.)
+        auto cleanup_child = [&](Process* cp) {
+            if (g_process_manager)
+                (void)g_process_manager->terminate_process(cp->pid(), -1);
+        };
+
         // 4. Create child address space (new PGD + ASID)
         auto child_as_result = user_space::create_user_address_space();
         if (!child_as_result) {
             log::klog::error("sys_fork: create_user_address_space failed");
+            cleanup_child(child_proc);
             return -Errno::ENOMEM;
         }
         auto child_as = moss::move(*child_as_result);
@@ -160,6 +168,9 @@ namespace handlers {
         auto set_result = child_proc->set_address_space(moss::move(child_as));
         if (!set_result) {
             log::klog::error("sys_fork: set_address_space failed");
+            // child_as was moved — if set failed, unique_ptr may still own it
+            // and ~AddressSpace will free the page tables.
+            cleanup_child(child_proc);
             return -Errno::ENOMEM;
         }
 
@@ -168,16 +179,43 @@ namespace handlers {
         auto *child_thread = new Thread(child_tid, child_proc->pid());
         if (!child_thread) {
             log::klog::error("sys_fork: thread allocation failed");
+            cleanup_child(child_proc);
             return -Errno::ENOMEM;
         }
 
-        // 10. Copy parent context → child, set return register = 0 for child
-        child_thread->context = parent_thread->context;
+        // 10. Copy parent's USER-SPACE registers → child context.
+        //
+        // parent_thread->context contains KERNEL-mode state (from the last
+        // context_switch), NOT user-space GP registers.  The actual user
+        // registers were saved by lower_el_sync_dispatch in a 34-slot frame
+        // at the top of the kernel stack:
+        //   [kstop - 272 + 0*8] = user x0
+        //   [kstop - 272 + 1*8] = user x1
+        //   ...
+        //   [kstop - 272 + 30*8] = user x30
+        //   [kstop - 272 + 31*8] = ELR_EL1
+        //   [kstop - 272 + 32*8] = SPSR_EL1
+        //   [kstop - 272 + 33*8] = SP_EL0
 #if defined(MOSS_ARCH_ARM64)
-        child_thread->context.x[0] = 0;        // ARM64: x0 = fork return
+        {
+            // Read user GP registers from the syscall entry frame on
+            // the parent's kernel stack.
+            u64 kstop = parent_thread->kernel_stack_top();
+            auto* trap_frame = reinterpret_cast<const u64*>(kstop - 34 * 8);
+
+            // Copy all 31 GP registers (x0-x30) from trap frame
+            for (int i = 0; i < 31; ++i) {
+                child_thread->context.x[i] = trap_frame[i];
+            }
+
+            // Child fork returns 0
+            child_thread->context.x[0] = 0;
+        }
 #elif defined(MOSS_ARCH_X86_64)
+        child_thread->context = parent_thread->context;
         child_thread->context.rax = 0;          // x86_64: rax = fork return
 #elif defined(MOSS_ARCH_RISCV)
+        child_thread->context = parent_thread->context;
         child_thread->context.x[10] = 0;        // RISC-V: a0 (x10) = fork return
 #endif
         child_thread->context.pc = user_pc;     // return to instruction after SVC
@@ -201,6 +239,7 @@ namespace handlers {
         if (!kstack_result) {
             log::klog::error("sys_fork: kernel stack alloc failed");
             delete child_thread;
+            cleanup_child(child_proc);
             return -Errno::ENOMEM;
         }
         PhysAddr kstack_phys = *kstack_result;
@@ -240,7 +279,7 @@ namespace handlers {
         return static_cast<long>(child_proc->pid());
     }
 
-    long sys_execve(long pathname_addr, long /* argv */, long /* envp */,
+    long sys_execve(long pathname_addr, long argv_addr, long /* envp */,
                     long, long, long) noexcept {
         using namespace moss::kernel::process;
         using namespace moss::kernel::elf;
@@ -278,6 +317,36 @@ namespace handlers {
             pathname_buf[len] = '\0';
         }
         const char *pathname = pathname_buf;
+
+        // 2a. Copy argv strings from user memory into kernel buffer.
+        //     Must be done before TTBR0 switch (user addresses become invalid).
+        constexpr usize MAX_ARGS = 16;
+        constexpr usize ARGV_BUF_SIZE = 512;
+        char argv_buf[ARGV_BUF_SIZE];            // flat buffer for all strings
+        usize argv_offsets[MAX_ARGS];             // offset of each string in argv_buf
+        usize kernel_argc = 0;
+        usize argv_buf_pos = 0;
+
+        if (argv_addr != 0) {
+            auto *user_argv = reinterpret_cast<const char *const *>(
+                static_cast<usize>(argv_addr));
+            for (usize ai = 0; ai < MAX_ARGS; ++ai) {
+                const char *arg = user_argv[ai];
+                if (arg == nullptr) break;
+                argv_offsets[kernel_argc] = argv_buf_pos;
+                // Copy string
+                for (usize ci = 0; ci < ARGV_BUF_SIZE - argv_buf_pos - 1; ++ci) {
+                    char ch = arg[ci];
+                    argv_buf[argv_buf_pos++] = ch;
+                    if (ch == '\0') break;
+                }
+                // Ensure null-termination
+                if (argv_buf_pos > 0 && argv_buf[argv_buf_pos - 1] != '\0') {
+                    argv_buf[argv_buf_pos++] = '\0';
+                }
+                ++kernel_argc;
+            }
+        }
 
         // 2b. Set process name from pathname basename
         {
@@ -513,11 +582,84 @@ namespace handlers {
             while (true) { ::moss::kernel::arch::cpu_halt(); }
         }
 
-        // 12. Reset thread context
+        // 11b. Switch TTBR0 to the new address space BEFORE writing to user
+        //      stack.  Steps 5-6 switched TTBR0 to kernel PGD for safe teardown;
+        //      now that the new address space is bound, we need user-space
+        //      mappings active so demand-paging works when we write argv data.
+#if defined(MOSS_ARCH_ARM64)
+        if (proc->address_space() && proc->address_space()->pgd_phys != 0) {
+            u64 ttbr0_val = proc->address_space()->pgd_phys
+                          | (static_cast<u64>(proc->address_space()->asid) << 48);
+            asm volatile("msr ttbr0_el1, %0" :: "r"(ttbr0_val));
+            asm volatile("tlbi aside1, %0" :: "r"(
+                static_cast<u64>(proc->address_space()->asid) << 48));
+            asm volatile("dsb sy" ::: "memory");
+            asm volatile("isb" ::: "memory");
+        }
+#endif
+
+        // 12. Set up user stack with argc/argv, then reset thread context.
+        //
+        // Standard C ABI: _start receives argc in x0, argv in x1.
+        // We place the argv string data and pointer array on the user stack:
+        //
+        //   [STACK_TOP - 16]  (alignment padding)
+        //   ...strings...     null-terminated argv strings
+        //   argv[argc] = NULL
+        //   argv[argc-1]      pointers to strings (user VAs)
+        //   ...
+        //   argv[0]
+        //   <--- SP (16-byte aligned)
+        //
+        VirtAddr user_sp = UserLayout::STACK_TOP - 16;
+        if (kernel_argc > 0) {
+            // Phase 1: calculate where strings will live on user stack.
+            // Strings are placed first (high addresses), then argv[] array below.
+            VirtAddr strings_base = user_sp - argv_buf_pos;
+            strings_base &= ~static_cast<VirtAddr>(0x7);  // 8-byte align
+
+            // Phase 2: build argv[] pointer array (points to user VAs)
+            // argv[0..argc-1] + argv[argc]=NULL
+            usize argv_array_size = (kernel_argc + 1) * sizeof(u64);
+            VirtAddr argv_base = strings_base - argv_array_size;
+            argv_base &= ~static_cast<VirtAddr>(0xF);  // 16-byte align SP
+
+            user_sp = argv_base;
+
+            // Phase 3: write strings and argv[] to user stack.
+            // Note: these user addresses are demand-zero pages.  Writing to
+            // them triggers kernel page faults that are resolved by the
+            // kernel_page_fault_handler (which handles user addresses via
+            // demand paging).  The data is written via volatile pointers to
+            // prevent the compiler from optimizing away the stores.
+
+            // Write string data
+            {
+                auto *dst = reinterpret_cast<volatile char *>(strings_base);
+                for (usize i = 0; i < argv_buf_pos; ++i)
+                    dst[i] = argv_buf[i];
+            }
+
+            // Write argv[] pointer array
+            {
+                auto *argv_ptrs = reinterpret_cast<volatile u64 *>(argv_base);
+                for (usize i = 0; i < kernel_argc; ++i) {
+                    argv_ptrs[i] = strings_base + argv_offsets[i];
+                }
+                argv_ptrs[kernel_argc] = 0;  // NULL terminator
+            }
+        }
+
         cur->context = CpuContext{};    // zero all registers
         cur->context.pc = elf_entry;
-        cur->context.sp = UserLayout::STACK_TOP - 16;  // 16-byte aligned
+        cur->context.sp = user_sp;
         cur->context.pstate = 0;  // EL0t
+#if defined(MOSS_ARCH_ARM64)
+        cur->context.x[0] = kernel_argc;              // x0 = argc
+        cur->context.x[1] = (kernel_argc > 0)         // x1 = argv
+            ? (user_sp)  // argv_base == user_sp
+            : 0;
+#endif
         cur->needs_initial_eret = true;  // next dispatch does switch_to_user + eret
         cur->stack_base = STACK_BOTTOM;
         cur->stack_size = UserLayout::STACK_SIZE;
@@ -539,19 +681,7 @@ namespace handlers {
 
             arch::disable_interrupts();
 
-            // Switch TTBR0 to new address space and invalidate TLB.
-            // The old address space's mappings (e.g. 0x200000000) are cached
-            // in the TLB.  Without invalidation, the CPU may use stale TLB
-            // entries after the TTBR0 switch, causing spurious faults.
-            if (proc->address_space() && proc->address_space()->pgd_phys != 0) {
-                u64 ttbr0_val = proc->address_space()->pgd_phys
-                              | (static_cast<u64>(proc->address_space()->asid) << 48);
-                asm volatile("msr ttbr0_el1, %0" :: "r"(ttbr0_val));
-                // Invalidate all TLB entries for this ASID
-                asm volatile("tlbi aside1, %0" :: "r"(static_cast<u64>(proc->address_space()->asid) << 48));
-                asm volatile("dsb sy" ::: "memory");
-                asm volatile("isb" ::: "memory");
-            }
+            // TTBR0 already switched to new address space in step 11b.
 
             // Set TPIDR_EL1 for per-thread kernel stack
             if (cur->kernel_stack_base != 0) {

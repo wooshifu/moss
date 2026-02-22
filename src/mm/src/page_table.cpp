@@ -146,20 +146,11 @@ void PageTableManager::clone_user_page_tables(PhysAddr src_pgd_phys,
 
   constexpr usize ENTRIES = PageTable::ENTRIES_PER_TABLE;
 
-  // Skip PGD[0] — kernel identity map (already copied by create_user_address_space)
-  for (usize pgd_i = 1; pgd_i < ENTRIES; pgd_i++) {
-    auto &src_pge = src_pgd->entries[pgd_i];
-    if (!src_pge.is_valid() || !src_pge.is_table()) continue;
-
-    auto *src_pud = get_table_from_physical(src_pge.get_phys_addr());
-    if (!src_pud) continue;
-
-    // Allocate fresh PUD for child
-    auto pud_result = allocate_page_table_dynamic();
-    if (!pud_result) return;
-    auto *dst_pud = *pud_result;
-    dst_pgd->entries[pgd_i].set_table(get_physical_address(dst_pud));
-
+  // Helper: clone PUD→PMD→PTE user mappings from src_pud into dst_pud.
+  // Only table descriptors (pointing to PMD/PTE) are cloned with COW.
+  // 1GB block descriptors (kernel identity map) are skipped — they are
+  // already present in dst_pud (copied by create_user_address_space).
+  auto clone_pud_user_entries = [&](PageTable *src_pud, PageTable *dst_pud) {
     for (usize pud_i = 0; pud_i < ENTRIES; pud_i++) {
       auto &src_pude = src_pud->entries[pud_i];
       if (!src_pude.is_valid()) continue;
@@ -206,6 +197,37 @@ void PageTableManager::clone_user_page_tables(PhysAddr src_pgd_phys,
         }
       }
     }
+  };
+
+  // PGD[0] special case: contains both kernel 1GB block descriptors and
+  // user page-table entries (e.g. 0x200000000 = PUD[8]).
+  // create_user_address_space already set up dst PGD[0] with a private PUD
+  // that has the kernel 1GB block descriptors.  We must additionally clone
+  // user table descriptors (PMD→PTE chains) from parent's PGD[0] PUD.
+  if (src_pgd->entries[0].is_valid() && src_pgd->entries[0].is_table() &&
+      dst_pgd->entries[0].is_valid() && dst_pgd->entries[0].is_table()) {
+    auto *src_pud = get_table_from_physical(src_pgd->entries[0].get_phys_addr());
+    auto *dst_pud = get_table_from_physical(dst_pgd->entries[0].get_phys_addr());
+    if (src_pud && dst_pud) {
+      clone_pud_user_entries(src_pud, dst_pud);
+    }
+  }
+
+  // PGD[1..511]: pure user-space mappings — allocate fresh PUD per entry.
+  for (usize pgd_i = 1; pgd_i < ENTRIES; pgd_i++) {
+    auto &src_pge = src_pgd->entries[pgd_i];
+    if (!src_pge.is_valid() || !src_pge.is_table()) continue;
+
+    auto *src_pud = get_table_from_physical(src_pge.get_phys_addr());
+    if (!src_pud) continue;
+
+    // Allocate fresh PUD for child
+    auto pud_result = allocate_page_table_dynamic();
+    if (!pud_result) return;
+    auto *dst_pud = *pud_result;
+    dst_pgd->entries[pgd_i].set_table(get_physical_address(dst_pud));
+
+    clone_pud_user_entries(src_pud, dst_pud);
   }
 
   // Parent PTEs were changed to read-only + COW — flush stale writable TLB entries.

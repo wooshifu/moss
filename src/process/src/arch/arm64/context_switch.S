@@ -321,7 +321,13 @@ kernel_thread_entry:
 //   x19 = (reserved — Thread*)
 //   x20 = user entry point (ELR_EL1)
 //   x21 = user stack pointer (SP_EL0)
-//   x22 = user x0 value (0 for fork child, 0 for execve/init)
+//   x22 = user x0 value (fork: 0, execve: argc)
+//   x23 = user x1 value (fork: 0, execve: argv pointer)
+//   x24 = CpuContext pointer (fork: non-zero, execve: 0)
+//
+// Two modes:
+//   x24 == 0 (execve): zero all user GP regs except x0/x1 (clean slate)
+//   x24 != 0 (fork):   restore parent's full GP regs from CpuContext at x24
 //
 // Preconditions (set by context_switch_to_task's normal path):
 //   - TTBR0_EL1 already points to this process's page tables
@@ -346,13 +352,15 @@ user_eret_trampoline:
     mrs     x0, tpidr_el1
     mov     sp, x0
 
-    // Set user x0 (fork return value for child, or 0 for fresh process)
+    // Check x24: fork (non-zero) vs execve (zero)
+    cbnz    x24, .Lfork_restore
+
+    // ---- Execve path: clean register slate ----
+    // Set user x0 and x1 from callee-saved registers.
     mov     x0, x22
+    mov     x1, x23
 
     // Zero remaining user-visible GP registers for clean entry.
-    // Callee-saved x19-x28 are kernel artifacts from context_switch;
-    // user code must not see stale kernel pointers.
-    mov     x1, #0
     mov     x2, #0
     mov     x3, #0
     mov     x4, #0
@@ -382,8 +390,46 @@ user_eret_trampoline:
     mov     x28, #0
     mov     x29, #0
     mov     x30, #0
+    eret
 
-    // Atomically drop to EL0
+    // ---- Fork path: restore parent's full GP registers ----
+    // x24 = pointer to CpuContext (in Thread.context)
+    // CpuContext layout: x[0] at offset 0, x[1] at 8, ..., x[30] at 240
+    //
+    // Parent's original x[19]-x[24] were saved to kernel stack before
+    // context_switch_to_task overwrote them with trampoline args.
+    // Location: [SP - 48] (SP = kernel_stack_top after mov sp above)
+.Lfork_restore:
+    // x0 = fork return value (always 0 for child)
+    mov     x0, #0
+
+    // Restore x1 from parent's saved context
+    ldr     x1, [x24, #8]              // parent x[1]
+
+    // Restore x2-x18 from CpuContext (these were NOT overwritten)
+    ldp     x2, x3, [x24, #16]
+    ldp     x4, x5, [x24, #32]
+    ldp     x6, x7, [x24, #48]
+    ldp     x8, x9, [x24, #64]
+    ldp     x10, x11, [x24, #80]
+    ldp     x12, x13, [x24, #96]
+    ldp     x14, x15, [x24, #112]
+    ldp     x16, x17, [x24, #128]
+    ldr     x18, [x24, #144]
+
+    // Restore x25-x29, x30 from CpuContext (NOT overwritten by trampoline setup)
+    ldr     x25, [x24, #200]           // parent x[25]
+    ldp     x26, x27, [x24, #208]      // parent x[26], x[27]
+    ldp     x28, x29, [x24, #224]      // parent x[28], x[29] (FP)
+    ldr     x30, [x24, #240]           // parent x[30] (LR)
+
+    // Restore x19-x24 from kernel stack save area.
+    // These were saved by context_switch_to_task BEFORE overwriting with
+    // trampoline args.  SP = kernel_stack_top, saved at [SP - 48].
+    ldp     x19, x20, [sp, #-48]       // parent x[19], x[20]
+    ldp     x21, x22, [sp, #-32]       // parent x[21], x[22]
+    ldp     x23, x24, [sp, #-16]       // parent x[23], x[24]
+
     eret
 
 .size user_eret_trampoline, .-user_eret_trampoline
