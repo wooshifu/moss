@@ -849,24 +849,8 @@ inline void check_memory_leaks() noexcept {
     }
 }
 
-// C-compatible interface declarations
+// Page allocator shim (C-linkage bridge for containers→mm dependency)
 extern "C" {
-    bool moss_memory_init(void) noexcept;
-    void moss_memory_shutdown(void) noexcept;
-    void* moss_kmalloc(usize size) noexcept;
-    void* moss_kzalloc(usize size) noexcept;
-    void* moss_kmalloc_aligned(usize size, usize alignment) noexcept;
-    void* moss_kmalloc_atomic(usize size) noexcept;
-    void moss_kfree(void* ptr) noexcept;
-    void moss_kfree_sized(void* ptr, usize size) noexcept;
-    void* moss_krealloc(void* ptr, usize old_size, usize new_size) noexcept;
-    int moss_memory_is_healthy(void) noexcept;
-    int moss_memory_get_pressure(void) noexcept;
-    void moss_memory_gc(void) noexcept;
-    void moss_memory_check_leaks(void) noexcept;
-    void moss_memory_print_stats(void) noexcept;
-
-    // Page allocator shim (C-linkage wrappers for PageFrameAllocator)
     unsigned long long moss_slab_alloc_pages(unsigned long long order) noexcept;
     int moss_slab_free_pages(unsigned long long addr,
                              unsigned long long order) noexcept;

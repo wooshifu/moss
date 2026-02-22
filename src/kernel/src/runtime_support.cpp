@@ -140,12 +140,7 @@ void *memchr(const void *s, int c, size_t n) noexcept {
   return nullptr;
 }
 
-// 系统调用处理器（临时实现）
-void syscall_handler() noexcept {
-  // 目前只是一个占位符实现
-  // 实际的系统调用处理逻辑稍后实现
-  asm volatile("nop");
-}
+} // extern "C"
 
 // 早期静态堆缓冲区 - 在RuntimeHeapAllocator初始化之前使用
 static char early_heap_buffer[64 * 1024]; // 64KB早期堆
@@ -153,7 +148,7 @@ static size_t early_heap_used = 0;
 static bool runtime_heap_ready = false;
 
 // 运行时堆分配器支持 - 带fallback机制
-void *kernel_malloc(size_t size) noexcept {
+static void *kernel_malloc(size_t size) noexcept {
   using moss::kernel::mm::RuntimeHeapAllocator;
 
   // 如果RuntimeHeapAllocator已经初始化，使用它
@@ -183,7 +178,7 @@ void *kernel_malloc(size_t size) noexcept {
   }
 }
 
-void kernel_free(void *ptr) noexcept {
+static void kernel_free(void *ptr) noexcept {
   if (ptr == nullptr) {
     return;
   }
@@ -208,12 +203,13 @@ void kernel_free(void *ptr) noexcept {
   }
 }
 
-// 标记运行时堆已准备好
-void mark_runtime_heap_ready() noexcept {
+// 标记运行时堆已准备好（extern "C" — boot→kernel bridge via abi.cppm）
+extern "C" void mark_runtime_heap_ready() noexcept {
   runtime_heap_ready = true;
 }
 
 // C++ operator new/delete 实现
+extern "C" {
 //
 // 这里直接使用 Itanium C++ ABI 定义的 mangled 符号名（如 _Znwm），
 // 而非标准的 `void* operator new(size_t)` 语法，原因如下：

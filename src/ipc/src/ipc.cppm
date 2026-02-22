@@ -1080,17 +1080,6 @@ private:
 // 全局IPC管理器实例
 extern IpcManager *g_ipc_manager;
 
-// 便利的C风格接口
-extern "C" {
-KernelError ipc_register_service(ProcessId pid, const char *name, ServiceId *out_id);
-KernelError ipc_connect_to_service(ProcessId pid, const char *name, ChannelId *out_channel);
-KernelError ipc_send_message(ChannelId channel, ProcessId sender,
-                             const MessageHeader *header, const void *payload);
-KernelError ipc_receive_message(ChannelId channel, ProcessId receiver,
-                                MessageHeader *header, void *payload, usize max_size);
-KernelError ipc_disconnect(ChannelId channel, ProcessId pid);
-}
-
 // === Module-level variable definitions ===
 
 // Global shared memory manager instance
