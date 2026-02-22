@@ -461,7 +461,7 @@ extern DeviceManager *g_device_manager;
 // ========================================================================
 
 // PL011 UART register offsets
-namespace UartRegs {
+namespace uart_regs {
 inline constexpr u32 UARTDR = 0x000;
 inline constexpr u32 UARTRSR = 0x004;
 inline constexpr u32 UARTFR = 0x018;
@@ -476,10 +476,10 @@ inline constexpr u32 UARTRIS = 0x03C;
 inline constexpr u32 UARTMIS = 0x040;
 inline constexpr u32 UARTICR = 0x044;
 inline constexpr u32 UARTDMACR = 0x048;
-} // namespace UartRegs
+} // namespace uart_regs
 
 // UART flag bits
-namespace UartFlags {
+namespace uart_flags {
 inline constexpr u32 UARTFR_CTS = (1 << 0);
 inline constexpr u32 UARTFR_DSR = (1 << 1);
 inline constexpr u32 UARTFR_DCD = (1 << 2);
@@ -488,10 +488,10 @@ inline constexpr u32 UARTFR_RXFE = (1 << 4);
 inline constexpr u32 UARTFR_TXFF = (1 << 5);
 inline constexpr u32 UARTFR_RXFF = (1 << 6);
 inline constexpr u32 UARTFR_TXFE = (1 << 7);
-} // namespace UartFlags
+} // namespace uart_flags
 
 // UART control bits
-namespace UartControl {
+namespace uart_control {
 inline constexpr u32 UARTCR_UARTEN = (1 << 0);
 inline constexpr u32 UARTCR_SIREN = (1 << 1);
 inline constexpr u32 UARTCR_SIRLP = (1 << 2);
@@ -504,10 +504,10 @@ inline constexpr u32 UARTCR_OUT1 = (1 << 12);
 inline constexpr u32 UARTCR_OUT2 = (1 << 13);
 inline constexpr u32 UARTCR_RTSEN = (1 << 14);
 inline constexpr u32 UARTCR_CTSEN = (1 << 15);
-} // namespace UartControl
+} // namespace uart_control
 
 // UART line control bits
-namespace UartLineControl {
+namespace uart_line_control {
 inline constexpr u32 UARTLCR_H_BRK = (1 << 0);
 inline constexpr u32 UARTLCR_H_PEN = (1 << 1);
 inline constexpr u32 UARTLCR_H_EPS = (1 << 2);
@@ -517,7 +517,7 @@ inline constexpr u32 UARTLCR_H_WLEN_5 = (0 << 5);
 inline constexpr u32 UARTLCR_H_WLEN_6 = (1 << 5);
 inline constexpr u32 UARTLCR_H_WLEN_7 = (2 << 5);
 inline constexpr u32 UARTLCR_H_WLEN_8 = (3 << 5);
-} // namespace UartLineControl
+} // namespace uart_line_control
 
 // UART device class
 class UartDevice : public Device {
@@ -586,7 +586,7 @@ public:
       return VoidResult{ErrorCode::InvalidState};
     }
 
-    write_reg(UartRegs::UARTCR, 0);
+    write_reg(uart_regs::UARTCR, 0);
     set_state(DeviceState::Suspended);
 
     return VoidResult{};
@@ -608,7 +608,7 @@ public:
 
   void shutdown() noexcept override {
     if (initialized_) {
-      write_reg(UartRegs::UARTCR, 0);
+      write_reg(uart_regs::UARTCR, 0);
       initialized_ = false;
     }
   }
@@ -619,11 +619,11 @@ public:
       return VoidResult{ErrorCode::InvalidState};
     }
 
-    while (read_reg(UartRegs::UARTFR) & UartFlags::UARTFR_TXFF) {
+    while (read_reg(uart_regs::UARTFR) & uart_flags::UARTFR_TXFF) {
       // Wait for TX FIFO to be non-full
     }
 
-    write_reg(UartRegs::UARTDR, static_cast<u32>(c));
+    write_reg(uart_regs::UARTDR, static_cast<u32>(c));
     bytes_sent_++;
     update_access();
 
@@ -635,11 +635,11 @@ public:
       return KernelResult<char>{Err<ErrorCode>(ErrorCode::InvalidState)};
     }
 
-    if (read_reg(UartRegs::UARTFR) & UartFlags::UARTFR_RXFE) {
+    if (read_reg(uart_regs::UARTFR) & uart_flags::UARTFR_RXFE) {
       return KernelResult<char>{Err<ErrorCode>(ErrorCode::NotFound)};
     }
 
-    u32 data = read_reg(UartRegs::UARTDR);
+    u32 data = read_reg(uart_regs::UARTDR);
 
     if (data & 0xF00) {
       rx_errors_++;
@@ -691,8 +691,8 @@ public:
     u32 divint = clock_freq_ / temp;
     u32 divfrac = ((clock_freq_ % temp) * 64 + temp / 2) / temp;
 
-    write_reg(UartRegs::UARTIBRD, divint);
-    write_reg(UartRegs::UARTFBRD, divfrac);
+    write_reg(uart_regs::UARTIBRD, divint);
+    write_reg(uart_regs::UARTFBRD, divfrac);
 
     return VoidResult{};
   }
@@ -719,19 +719,19 @@ private:
   }
 
   [[nodiscard]] VoidResult initialize_hardware() noexcept {
-    write_reg(UartRegs::UARTCR, 0);
-    write_reg(UartRegs::UARTRSR, 0);
+    write_reg(uart_regs::UARTCR, 0);
+    write_reg(uart_regs::UARTRSR, 0);
 
     auto baud_result = set_baud_rate(baud_rate_);
     if (!baud_result) {
       return baud_result;
     }
 
-    write_reg(UartRegs::UARTLCR_H, UartLineControl::UARTLCR_H_WLEN_8 | UartLineControl::UARTLCR_H_FEN);
+    write_reg(uart_regs::UARTLCR_H, uart_line_control::UARTLCR_H_WLEN_8 | uart_line_control::UARTLCR_H_FEN);
 
-    write_reg(UartRegs::UARTICR, 0x7FF);
+    write_reg(uart_regs::UARTICR, 0x7FF);
 
-    write_reg(UartRegs::UARTCR, UartControl::UARTCR_UARTEN | UartControl::UARTCR_TXE | UartControl::UARTCR_RXE);
+    write_reg(uart_regs::UARTCR, uart_control::UARTCR_UARTEN | uart_control::UARTCR_TXE | uart_control::UARTCR_RXE);
 
     return VoidResult{};
   }
@@ -742,15 +742,15 @@ private:
     if (uart == nullptr)
       return;
 
-    u32 int_status = uart->read_reg(UartRegs::UARTMIS);
+    u32 int_status = uart->read_reg(uart_regs::UARTMIS);
 
     if (int_status & (1 << 4)) {
-      while (!(uart->read_reg(UartRegs::UARTFR) & UartFlags::UARTFR_RXFE)) {
-        (void)uart->read_reg(UartRegs::UARTDR);
+      while (!(uart->read_reg(uart_regs::UARTFR) & uart_flags::UARTFR_RXFE)) {
+        (void)uart->read_reg(uart_regs::UARTDR);
       }
     }
 
-    uart->write_reg(UartRegs::UARTICR, int_status);
+    uart->write_reg(uart_regs::UARTICR, int_status);
   }
 };
 

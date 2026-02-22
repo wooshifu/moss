@@ -27,9 +27,9 @@ using moss::kernel::VoidResult;
 
 namespace log = moss::kernel::logging;
 
-// PageAttr and PagePerms re-exported from MMU HAL (needed by VmallocRequest)
-namespace PageAttr = ::moss::kernel::hal::mmu::PageAttr;
-namespace PagePerms = ::moss::kernel::hal::mmu::PagePerms;
+// page_attr and page_perms re-exported from MMU HAL (needed by VmallocRequest)
+namespace page_attr = ::moss::kernel::hal::mmu::page_attr;
+namespace page_perms = ::moss::kernel::hal::mmu::page_perms;
 
 enum class NUMAError : u32 {
   InvalidNode = 1,
@@ -374,7 +374,7 @@ struct VmallocRequest {
   };
 
   VmallocRequest(usize sz, VmAreaType t = VmAreaType::VMALLOC) noexcept
-      : size(sz), alignment(PAGE_SIZE), type(t), permissions(PagePerms::KERNEL_RW), preferred_node(NUMA_NO_NODE),
+      : size(sz), alignment(PAGE_SIZE), type(t), permissions(page_perms::KERNEL_RW), preferred_node(NUMA_NO_NODE),
         flags(Flags::GUARD_PAGES) {}
 };
 

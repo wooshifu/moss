@@ -362,11 +362,11 @@ KernelResult<VirtAddr> allocate_user_heap(Process *process, usize size) noexcept
 
   AddressSpace *as = process->address_space();
 
-  VirtAddr heap_addr = UserLayout::HEAP_START;
+  VirtAddr heap_addr = user_layout::HEAP_START;
 
   // TODO: 实现真正的内存分配和映射
   // 现在只是创建VMA区域
-  u32 flags = VmaFlags::READ | VmaFlags::WRITE;
+  u32 flags = vma_flags::READ | vma_flags::WRITE;
   auto map_result = map_user_memory(as, heap_addr, 0, size, flags);
   if (!map_result) {
     return KernelResult<VirtAddr>{map_result.error()};

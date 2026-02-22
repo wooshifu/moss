@@ -386,13 +386,13 @@ static bool try_cow_fault(moss::kernel::u64 far_addr, unsigned long long elr) no
 
     // Update PTE: new physical page, clear COW, make writable
     u64 attrs = pte->raw & ~::moss::kernel::hal::mmu::PTE_ADDR_MASK;
-    attrs &= ~mm::PageAttr::SW_COW;
+    attrs &= ~mm::page_attr::SW_COW;
 #if defined(MOSS_ARCH_ARM64)
-    attrs &= ~mm::PageAttr::READONLY;
+    attrs &= ~mm::page_attr::READONLY;
 #elif defined(MOSS_ARCH_X86_64)
-    attrs |= mm::PageAttr::WRITABLE;
+    attrs |= mm::page_attr::WRITABLE;
 #elif defined(MOSS_ARCH_RISCV)
-    attrs |= mm::PageAttr::WRITE;
+    attrs |= mm::page_attr::WRITE;
 #endif
     pte->raw = (new_pa & ::moss::kernel::hal::mmu::PTE_ADDR_MASK) | attrs;
   } else {
@@ -430,7 +430,7 @@ static bool try_demand_page(moss::kernel::u64 far_addr, bool is_write, unsigned 
   if (!found)
     return false;
 
-  // VmaFlags bit definitions (must match process::VmaFlags)
+  // vma_flags bit definitions (must match process::vma_flags)
   constexpr u32 VMA_WRITE = 1u << 1;
   constexpr u32 VMA_EXEC = 1u << 2;
 
@@ -468,34 +468,34 @@ static bool try_demand_page(moss::kernel::u64 far_addr, bool is_write, unsigned 
     }
   }
 
-  // Build user PTE permissions from VMA flags using portable PageAttr constants.
+  // Build user PTE permissions from VMA flags using portable page_attr constants.
   // Base: valid, accessed, user-accessible, normal memory.
-  namespace PA = ::moss::kernel::hal::mmu::PageAttr;
-  u64 perms = PA::VALID | PA::AF | PA::USER | PA::ATTR_NORMAL;
+  namespace pa = ::moss::kernel::hal::mmu::page_attr;
+  u64 perms = pa::VALID | pa::AF | pa::USER | pa::ATTR_NORMAL;
 
 #if defined(MOSS_ARCH_ARM64)
   // ARM64-specific: non-global (per-process ASID), inner-shareable, PXN
-  perms |= PA::NG | PA::PXN | (3ULL << 8); // SH=Inner Shareable (bits [9:8]=0b11)
+  perms |= pa::NG | pa::PXN | (3ULL << 8); // SH=Inner Shareable (bits [9:8]=0b11)
   if (!(vma_flags & VMA_WRITE)) {
-    perms |= PA::READONLY; // AP[2]=1 → read-only
+    perms |= pa::READONLY; // AP[2]=1 → read-only
   }
   if (!(vma_flags & VMA_EXEC)) {
-    perms |= PA::XN; // UXN → no user execute
+    perms |= pa::XN; // UXN → no user execute
   }
 #elif defined(MOSS_ARCH_X86_64)
   if (vma_flags & VMA_WRITE) {
-    perms |= PA::WRITABLE;
+    perms |= pa::WRITABLE;
   }
   if (!(vma_flags & VMA_EXEC)) {
-    perms |= PA::XN; // NX bit
+    perms |= pa::XN; // NX bit
   }
 #elif defined(MOSS_ARCH_RISCV)
-  perms |= PA::READ; // Always readable
+  perms |= pa::READ; // Always readable
   if (vma_flags & VMA_WRITE) {
-    perms |= PA::WRITE;
+    perms |= pa::WRITE;
   }
   if (vma_flags & VMA_EXEC) {
-    perms |= PA::EXECUTE;
+    perms |= pa::EXECUTE;
   }
 #endif
 

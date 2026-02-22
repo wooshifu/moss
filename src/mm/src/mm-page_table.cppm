@@ -37,19 +37,19 @@ enum class PageLevel : u32 { PGD = 0, PUD = 1, PMD = 2, PTE = 3 };
 
 enum class PageSize : u64 { Size4KB = PAGE_SIZE, Size2MB = 2 * 1024 * 1024, Size1GB = 1024ULL * 1024 * 1024 };
 
-// PageAttr and PagePerms are re-exported from the MMU HAL.
+// page_attr and page_perms are re-exported from the MMU HAL.
 // This provides architecture-specific PTE bit-field definitions
 // (ARM64 descriptors, x86_64 PTE bits, RISC-V Sv48 PTE bits)
 // from a single source of truth in moss.hal.mmu.
-namespace PageAttr = ::moss::kernel::hal::mmu::PageAttr;
-namespace PagePerms = ::moss::kernel::hal::mmu::PagePerms;
+namespace page_attr = ::moss::kernel::hal::mmu::page_attr;
+namespace page_perms = ::moss::kernel::hal::mmu::page_perms;
 
 struct [[gnu::packed]] PageTableEntry {
   u64 raw;
   constexpr PageTableEntry() : raw(0) {}
   constexpr explicit PageTableEntry(u64 value) : raw(value) {}
-  [[nodiscard]] constexpr bool is_valid() const { return raw & PageAttr::VALID; }
-  [[nodiscard]] constexpr bool is_table() const { return raw & PageAttr::TABLE; }
+  [[nodiscard]] constexpr bool is_valid() const { return raw & page_attr::VALID; }
+  [[nodiscard]] constexpr bool is_table() const { return raw & page_attr::TABLE; }
   [[nodiscard]] constexpr bool is_block() const { return is_valid() && !is_table(); }
   [[nodiscard]] constexpr PhysAddr get_phys_addr() const {
     // RISC-V: PPN in bits[53:10], physical addr = PPN << 12 = (pte & mask) << 2
@@ -61,52 +61,52 @@ struct [[gnu::packed]] PageTableEntry {
   }
   constexpr void set_table(PhysAddr next_table_pa) {
 #if defined(MOSS_ARCH_RISCV)
-    raw = ((next_table_pa >> 2) & hal::mmu::PTE_ADDR_MASK) | PageAttr::VALID | PageAttr::TABLE;
+    raw = ((next_table_pa >> 2) & hal::mmu::PTE_ADDR_MASK) | page_attr::VALID | page_attr::TABLE;
 #else
-    raw = (next_table_pa & hal::mmu::PTE_ADDR_MASK) | PageAttr::VALID | PageAttr::TABLE;
+    raw = (next_table_pa & hal::mmu::PTE_ADDR_MASK) | page_attr::VALID | page_attr::TABLE;
 #endif
   }
   constexpr void set_block(PhysAddr block_pa, u64 attributes) {
 #if defined(MOSS_ARCH_RISCV)
-    raw = ((block_pa >> 2) & hal::mmu::PTE_ADDR_MASK) | attributes | PageAttr::VALID;
+    raw = ((block_pa >> 2) & hal::mmu::PTE_ADDR_MASK) | attributes | page_attr::VALID;
 #else
-    raw = (block_pa & hal::mmu::PTE_ADDR_MASK) | attributes | PageAttr::VALID;
+    raw = (block_pa & hal::mmu::PTE_ADDR_MASK) | attributes | page_attr::VALID;
 #endif
   }
   // L3 page descriptor: bits[1:0]=0b11 (same encoding as table descriptor)
   constexpr void set_page(PhysAddr page_pa, u64 attributes) {
 #if defined(MOSS_ARCH_RISCV)
-    raw = ((page_pa >> 2) & hal::mmu::PTE_ADDR_MASK) | attributes | PageAttr::VALID | PageAttr::TABLE;
+    raw = ((page_pa >> 2) & hal::mmu::PTE_ADDR_MASK) | attributes | page_attr::VALID | page_attr::TABLE;
 #else
-    raw = (page_pa & hal::mmu::PTE_ADDR_MASK) | attributes | PageAttr::VALID | PageAttr::TABLE;
+    raw = (page_pa & hal::mmu::PTE_ADDR_MASK) | attributes | page_attr::VALID | page_attr::TABLE;
 #endif
   }
   constexpr void clear() { raw = 0; }
 
   // ---- COW (Copy-on-Write) helpers ----
-  [[nodiscard]] constexpr bool is_cow() const { return (raw & PageAttr::SW_COW) != 0; }
-  constexpr void set_cow() { raw |= PageAttr::SW_COW; }
-  constexpr void clear_cow() { raw &= ~PageAttr::SW_COW; }
+  [[nodiscard]] constexpr bool is_cow() const { return (raw & page_attr::SW_COW) != 0; }
+  constexpr void set_cow() { raw |= page_attr::SW_COW; }
+  constexpr void clear_cow() { raw &= ~page_attr::SW_COW; }
 
   // Make page read-only (architecture-specific bit manipulation)
   constexpr void make_readonly() {
 #if defined(MOSS_ARCH_ARM64)
-    raw |= PageAttr::READONLY; // AP[2]=1 -> read-only
+    raw |= page_attr::READONLY; // AP[2]=1 -> read-only
 #elif defined(MOSS_ARCH_X86_64)
-    raw &= ~PageAttr::WRITABLE; // Clear R/W bit -> read-only
+    raw &= ~page_attr::WRITABLE; // Clear R/W bit -> read-only
 #elif defined(MOSS_ARCH_RISCV)
-    raw &= ~PageAttr::WRITE; // Clear W bit -> read-only
+    raw &= ~page_attr::WRITE; // Clear W bit -> read-only
 #endif
   }
 
   // Make page writable (architecture-specific bit manipulation)
   constexpr void make_writable() {
 #if defined(MOSS_ARCH_ARM64)
-    raw &= ~PageAttr::READONLY; // Clear AP[2] -> read-write
+    raw &= ~page_attr::READONLY; // Clear AP[2] -> read-write
 #elif defined(MOSS_ARCH_X86_64)
-    raw |= PageAttr::WRITABLE; // Set R/W bit -> read-write
+    raw |= page_attr::WRITABLE; // Set R/W bit -> read-write
 #elif defined(MOSS_ARCH_RISCV)
-    raw |= PageAttr::WRITE; // Set W bit -> read-write
+    raw |= page_attr::WRITE; // Set W bit -> read-write
 #endif
   }
 };
