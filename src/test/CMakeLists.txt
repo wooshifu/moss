@@ -18,9 +18,7 @@ target_include_directories(moss.test.elf PRIVATE
 
 target_compile_definitions(moss.test.elf PRIVATE
     BOOST_UT_DISABLE_MODULE=1
-    BOOST_UT_DISABLE_FILE_OUTPUT=1
-    MOSS_USE_UT_HPP=1
-    MOSS_FREESTANDING_MODE=1)
+    BOOST_UT_DISABLE_FILE_OUTPUT=1)
 
 target_link_libraries(moss.test.elf PRIVATE moss_core)
 
