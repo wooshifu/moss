@@ -102,8 +102,8 @@ private:
   containers::AtomicCounter<usize> huge_pages_used_;
 
   static constexpr usize MAX_SHM_SIZE = 1ULL << 32;
-  static constexpr usize SHM_LARGE_PAGE_SIZE = 2 * 1024 * 1024;
-  static constexpr usize SHM_HUGE_PAGE_SIZE = 1024 * 1024 * 1024;
+  static constexpr usize SHM_LARGE_PAGE_SIZE = 2ULL * 1024 * 1024;
+  static constexpr usize SHM_HUGE_PAGE_SIZE = 1ULL * 1024 * 1024 * 1024;
 
 public:
   SharedMemoryManager() noexcept
@@ -291,14 +291,12 @@ private:
 
   [[nodiscard]] static mm::MemoryAttributes get_memory_attributes(ShmType type) noexcept {
     switch (type) {
-    case ShmType::Normal:
-      return mm::MemoryAttributes::NORMAL_CACHEABLE;
     case ShmType::DeviceMemory:
       return mm::MemoryAttributes::DEVICE_nGnRnE;
     case ShmType::DMA_Coherent:
       return mm::MemoryAttributes::NORMAL_NON_CACHEABLE;
+    case ShmType::Normal:
     case ShmType::LargePage:
-      return mm::MemoryAttributes::NORMAL_CACHEABLE;
     default:
       return mm::MemoryAttributes::NORMAL_CACHEABLE;
     }
@@ -647,13 +645,13 @@ public:
   ZeroCopyChannel &operator=(ZeroCopyChannel &&) = delete;
 
   [[nodiscard]] VoidResult initialize() noexcept {
-    auto c2s_result = g_shared_memory_manager->create_region(client_pid_, sizeof(ZeroCopyRingBuffer<>) + 64 * 1024,
+    auto c2s_result = g_shared_memory_manager->create_region(client_pid_, sizeof(ZeroCopyRingBuffer<>) + 64ULL * 1024,
                                                              ShmType::Normal, ShmPermission::ReadWrite);
     if (!c2s_result) {
       return VoidResult{c2s_result.error()};
     }
     client_to_server_shm_ = *c2s_result;
-    auto s2c_result = g_shared_memory_manager->create_region(server_pid_, sizeof(ZeroCopyRingBuffer<>) + 64 * 1024,
+    auto s2c_result = g_shared_memory_manager->create_region(server_pid_, sizeof(ZeroCopyRingBuffer<>) + 64ULL * 1024,
                                                              ShmType::Normal, ShmPermission::ReadWrite);
     if (!s2c_result) {
       (void)g_shared_memory_manager->destroy_region(client_to_server_shm_);

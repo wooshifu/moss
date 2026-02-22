@@ -435,8 +435,8 @@ static bool try_demand_page(moss::kernel::u64 far_addr, bool is_write, unsigned 
   }
 
   // vma_flags bit definitions (must match process::vma_flags)
-  constexpr u32 VMA_WRITE = 1u << 1;
-  constexpr u32 VMA_EXEC = 1u << 2;
+  constexpr u32 VMA_WRITE = 1U << 1;
+  constexpr u32 VMA_EXEC = 1U << 2;
 
   // Permission check: write to read-only VMA
   if (is_write && !(vma_flags & VMA_WRITE)) {

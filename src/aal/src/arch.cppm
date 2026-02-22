@@ -382,7 +382,7 @@ inline void setup_kernel_mmu(PhysAddr kernel_pgd_pa) noexcept {
   volatile u32 *uart_flags = reinterpret_cast<volatile u32 *>(0x09000018ULL);
 
   auto uart_putc = [&](char c) {
-    while (*uart_flags & (1u << 5)) {
+    while (*uart_flags & (1U << 5)) {
     }
     *uart_data = static_cast<u32>(static_cast<unsigned char>(c));
   };

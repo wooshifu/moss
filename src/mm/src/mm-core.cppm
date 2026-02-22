@@ -89,9 +89,11 @@ enum class PageAllocError : u32 { OutOfMemory = 1, InvalidOrder = 2, InvalidAddr
 template <typename T> using PageAllocResult = moss::kernel::Result<T, PageAllocError>;
 using PageAllocVoidResult = moss::kernel::Result<void, PageAllocError>;
 
-inline constexpr usize addr_to_page(PhysAddr addr) noexcept { return static_cast<usize>(addr) >> PAGE_SHIFT; }
+constexpr usize addr_to_page(PhysAddr addr) noexcept { return static_cast<usize>(addr) >> PAGE_SHIFT; }
 
-inline constexpr PhysAddr page_to_addr(usize page) noexcept { return static_cast<PhysAddr>(page << PAGE_SHIFT); }
+constexpr PhysAddr page_to_addr(usize page) noexcept {
+  return static_cast<PhysAddr>(static_cast<u64>(page) << PAGE_SHIFT);
+}
 
 class PageFrameAllocator {
 public:

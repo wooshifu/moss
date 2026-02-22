@@ -27,12 +27,12 @@ private:
 
     // Value constructor
     template <typename... Args>
-    constexpr Storage(bool, Args &&...args) noexcept(noexcept(T(forward<Args>(args)...)))
+    constexpr Storage(bool /*unused*/, Args &&...args) noexcept(noexcept(T(forward<Args>(args)...)))
         : value_(forward<Args>(args)...) {}
 
     // Error constructor
     template <typename... Args>
-    constexpr Storage(int, Args &&...args) noexcept(noexcept(E(forward<Args>(args)...)))
+    constexpr Storage(int /*unused*/, Args &&...args) noexcept(noexcept(E(forward<Args>(args)...)))
         : error_(forward<Args>(args)...) {}
 
     // Destructor - does nothing (Result handles destruction)
@@ -280,8 +280,8 @@ public:
   // Constructors
   constexpr Result() noexcept : has_value_(true) {}
 
-  constexpr Result(const Ok<void> &) noexcept : has_value_(true) {}
-  constexpr Result(Ok<void> &&) noexcept : has_value_(true) {}
+  constexpr Result(const Ok<void> & /*unused*/) noexcept : has_value_(true) {}
+  constexpr Result(Ok<void> && /*unused*/) noexcept : has_value_(true) {}
 
   // Direct error constructor
   constexpr Result(const E &error) noexcept(noexcept(E(error))) : error_(error), has_value_(false) {}
@@ -318,12 +318,12 @@ public:
     return *this;
   }
 
-  constexpr Result &operator=(const Ok<void> &) noexcept {
+  constexpr Result &operator=(const Ok<void> & /*unused*/) noexcept {
     has_value_ = true;
     return *this;
   }
 
-  constexpr Result &operator=(Ok<void> &&) noexcept {
+  constexpr Result &operator=(Ok<void> && /*unused*/) noexcept {
     has_value_ = true;
     return *this;
   }

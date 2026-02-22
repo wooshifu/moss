@@ -444,7 +444,7 @@ private:
       return probe_result;
     }
 
-    device_driver_map_.insert_or_update(device->device_id(), const_cast<Driver *>(matched_driver));
+    device_driver_map_.insert_or_update(device->device_id(), matched_driver);
     return VoidResult{};
   }
 

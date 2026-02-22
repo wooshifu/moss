@@ -141,10 +141,10 @@ static_assert(sizeof(CpuContext) <= 1024, "CpuContext should fit in reasonable s
 
 // VMA permission / type flags
 namespace vma_flags {
-inline constexpr u32 READ = 1u << 0;
-inline constexpr u32 WRITE = 1u << 1;
-inline constexpr u32 EXEC = 1u << 2;
-inline constexpr u32 DEMAND_ZERO = 1u << 3; // allocate zero page on first access
+inline constexpr u32 READ = 1U << 0;
+inline constexpr u32 WRITE = 1U << 1;
+inline constexpr u32 EXEC = 1U << 2;
+inline constexpr u32 DEMAND_ZERO = 1U << 3; // allocate zero page on first access
 } // namespace vma_flags
 
 // VMA region types (what is this VMA for?)
@@ -313,7 +313,7 @@ struct Thread {
 
   // CPU affinity bitmask: bit N set means task may run on CPU N.
   // Default: all CPUs allowed.
-  u32 cpu_affinity_mask{0xFFFFu};
+  u32 cpu_affinity_mask{0xFFFFU};
 
   // Per-thread kernel stack: used as SP_EL1 when handling exceptions
   // from this thread's user-mode execution.  For kernel threads, this
@@ -332,7 +332,7 @@ struct Thread {
       : tid(id), owner_pid(pid), context{}, cpu(0), wake_cpu(0), state(ProcessState::Created),
         sched_class(SchedClass::Normal), se{}, rt{}, start_time(0), utime(0), stime(0), stack_base(0), stack_size(0),
         wait_queue(0), signal_mask(0), pending_signals(0), needs_initial_eret(false), is_user_task(false),
-        need_resched(false), cpu_affinity_mask(0xFFFFu), kernel_stack_base(0), kernel_stack_size(0), rq_node(nullptr) {}
+        need_resched(false), cpu_affinity_mask(0xFFFFU), kernel_stack_base(0), kernel_stack_size(0), rq_node(nullptr) {}
 
   // Returns the top of this thread's kernel stack (for TPIDR_EL1).
   [[nodiscard]] VirtAddr kernel_stack_top() const noexcept { return kernel_stack_base + kernel_stack_size; }
@@ -558,8 +558,8 @@ namespace user_layout {
 inline constexpr VirtAddr CODE_BASE = 0x0000000200000000ULL;  // 8GB — above kernel identity map
 inline constexpr VirtAddr HEAP_START = 0x0000000100000000ULL; // 4GB
 inline constexpr VirtAddr STACK_TOP = 0x00007FFF00000000ULL;  // 128TB boundary - 4GB
-inline constexpr usize STACK_SIZE = 32 * 1024;                // 32KB default user stack
-inline constexpr usize HEAP_INIT = 64 * 1024;                 // 64KB initial heap
+inline constexpr usize STACK_SIZE = 32ULL * 1024;             // 32KB default user stack
+inline constexpr usize HEAP_INIT = 64ULL * 1024;              // 64KB initial heap
 } // namespace user_layout
 
 // User address space management extensions

@@ -105,7 +105,7 @@ static u32 probe_available_cpus() noexcept {
   // Priority 2: Estimate from linker-allocated stack space
   auto total_stack_size =
       static_cast<u64>(moss::abi::linker::stack_top()) - static_cast<u64>(moss::abi::linker::stack_bottom());
-  u32 stack_based = static_cast<u32>(total_stack_size / (32 * 1024));
+  u32 stack_based = static_cast<u32>(total_stack_size / (32ULL * 1024));
   if (stack_based >= 1 && stack_based <= moss::kernel::MAX_CPUS) {
     return stack_based;
   }
@@ -558,7 +558,7 @@ void update_boot_stage(BootStage stage, ::moss::kernel::ErrorCode error) noexcep
     g_boot_status.stage_timestamps[stage_index] = get_timestamp_counter();
 
     if (error == ::moss::kernel::ErrorCode::Success) {
-      g_boot_status.completed_stages_mask |= (1u << stage_index);
+      g_boot_status.completed_stages_mask |= (1U << stage_index);
     }
   }
 }
@@ -673,7 +673,7 @@ void update_boot_stage(BootStage stage, ::moss::kernel::ErrorCode error) noexcep
 
   // Phase 6: Initialize runtime heap
   VirtAddr heap_start = moss::abi::linker::heap_start();
-  ::moss::kernel::usize initial_heap_size = 256 * 1024;
+  ::moss::kernel::usize initial_heap_size = 256ULL * 1024;
   auto heap_result = ::moss::kernel::mm::RuntimeHeapAllocator::initialize_heap(heap_start, initial_heap_size);
   if (!heap_result) {
     early_print("Runtime heap allocator init failed\n");

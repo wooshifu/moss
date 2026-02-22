@@ -491,7 +491,7 @@ private:
   usize pending_count_;
   usize pending_size_;
   moss::kernel::containers::IrqSpinLock lock_;
-  static constexpr usize MAX_PENDING_SIZE = 64 * 1024 * 1024; // 64MB
+  static constexpr usize MAX_PENDING_SIZE = 64ULL * 1024 * 1024; // 64MB
   static constexpr usize MAX_PENDING_COUNT = 256;
 
   VmallocVoidResult do_flush(LazyFreeEntry *entry) noexcept;

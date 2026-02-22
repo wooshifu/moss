@@ -176,28 +176,28 @@ inline constexpr PlatformDefaults DEFAULTS{
 // ============================================================================
 
 /// Get default UART base address for the current platform
-[[nodiscard]] inline constexpr VirtAddr uart_base() noexcept { return DEFAULTS.uart.base; }
+[[nodiscard]] constexpr VirtAddr uart_base() noexcept { return DEFAULTS.uart.base; }
 
 /// Get default GIC/PLIC distributor base address
-[[nodiscard]] inline constexpr VirtAddr intc_dist_base() noexcept { return DEFAULTS.intc.dist_base; }
+[[nodiscard]] constexpr VirtAddr intc_dist_base() noexcept { return DEFAULTS.intc.dist_base; }
 
 /// Get default GIC CPU interface base address (0 on non-ARM)
-[[nodiscard]] inline constexpr VirtAddr intc_cpu_base() noexcept { return DEFAULTS.intc.cpu_base; }
+[[nodiscard]] constexpr VirtAddr intc_cpu_base() noexcept { return DEFAULTS.intc.cpu_base; }
 
 /// Get default physical RAM start address
-[[nodiscard]] inline constexpr PhysAddr ram_base() noexcept { return DEFAULTS.memory.ram_base; }
+[[nodiscard]] constexpr PhysAddr ram_base() noexcept { return DEFAULTS.memory.ram_base; }
 
 /// Get default RAM size in bytes
-[[nodiscard]] inline constexpr u64 ram_size() noexcept { return DEFAULTS.memory.ram_size; }
+[[nodiscard]] constexpr u64 ram_size() noexcept { return DEFAULTS.memory.ram_size; }
 
 /// Get kernel virtual base address
-[[nodiscard]] inline constexpr VirtAddr kernel_virt_base() noexcept { return DEFAULTS.memory.kernel_virt; }
+[[nodiscard]] constexpr VirtAddr kernel_virt_base() noexcept { return DEFAULTS.memory.kernel_virt; }
 
 /// Get default timer IRQ number
-[[nodiscard]] inline constexpr u32 timer_irq() noexcept { return DEFAULTS.timer.irq; }
+[[nodiscard]] constexpr u32 timer_irq() noexcept { return DEFAULTS.timer.irq; }
 
 /// Get default timer frequency (0 = discover at runtime)
-[[nodiscard]] inline constexpr u64 timer_frequency() noexcept { return DEFAULTS.timer.frequency; }
+[[nodiscard]] constexpr u64 timer_frequency() noexcept { return DEFAULTS.timer.frequency; }
 
 // ============================================================================
 // Helper: resolve DTB value with platform fallback
@@ -206,7 +206,7 @@ inline constexpr PlatformDefaults DEFAULTS{
 /// Return `dtb_value` if `valid` is true, otherwise the platform fallback.
 /// This replaces the repetitive ternary pattern throughout the kernel:
 ///   (plat.dtb_valid && plat.xxx.valid) ? plat.xxx.addr : 0xHARDCODED
-[[nodiscard]] inline constexpr u64 resolve(bool valid, u64 dtb_value, u64 fallback) noexcept {
+[[nodiscard]] constexpr u64 resolve(bool valid, u64 dtb_value, u64 fallback) noexcept {
   return valid ? dtb_value : fallback;
 }
 

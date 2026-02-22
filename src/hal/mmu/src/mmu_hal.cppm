@@ -180,7 +180,7 @@ struct VirtualAddressBreakdown {
   u16 page_offset; // Offset within page [11:0]
 };
 
-[[nodiscard]] inline constexpr VirtualAddressBreakdown break_virtual_address(VirtAddr vaddr) noexcept {
+[[nodiscard]] constexpr VirtualAddressBreakdown break_virtual_address(VirtAddr vaddr) noexcept {
   return {.pgd_index = static_cast<u16>((vaddr >> 39) & 0x1FF),
           .pud_index = static_cast<u16>((vaddr >> 30) & 0x1FF),
           .pmd_index = static_cast<u16>((vaddr >> 21) & 0x1FF),
@@ -322,7 +322,7 @@ inline VoidResult enable_mmu(PhysAddr pgd_phys) noexcept {
 // ============================================================================
 
 /// Build a 1GB block descriptor for device memory.
-[[nodiscard]] inline constexpr u64 make_device_block(PhysAddr block_addr) noexcept {
+[[nodiscard]] constexpr u64 make_device_block(PhysAddr block_addr) noexcept {
 #if defined(MOSS_ARCH_ARM64)
   return (block_addr & PTE_ADDR_MASK) | page_attr::VALID | page_attr::AF | page_attr::ATTR_DEVICE;
 #elif defined(MOSS_ARCH_X86_64)
@@ -336,7 +336,7 @@ inline VoidResult enable_mmu(PhysAddr pgd_phys) noexcept {
 }
 
 /// Build a 1GB block descriptor for normal (cacheable) memory.
-[[nodiscard]] inline constexpr u64 make_normal_block(PhysAddr block_addr) noexcept {
+[[nodiscard]] constexpr u64 make_normal_block(PhysAddr block_addr) noexcept {
 #if defined(MOSS_ARCH_ARM64)
   return (block_addr & PTE_ADDR_MASK) | page_attr::VALID | page_attr::AF | page_attr::ATTR_NORMAL |
          (3ULL << 8); // Inner Shareable
