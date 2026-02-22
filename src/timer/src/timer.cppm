@@ -226,8 +226,9 @@ u64 Clocksource::cycles_to_ns(u64 cycles) const noexcept {
 }
 
 u64 Clocksource::ns_to_cycles(u64 ns) const noexcept {
-  if (inv_mult_ == 0)
+  if (inv_mult_ == 0) {
     return 0;
+  }
   // Use multiply-then-shift (no 128-bit division needed — safe in freestanding)
   return static_cast<u64>((static_cast<__uint128_t>(ns) * inv_mult_) >> shift_);
 }
@@ -334,8 +335,9 @@ void TimerSubsystem::enqueue_locked(HrTimer *timer) noexcept {
 
 void TimerSubsystem::dequeue(HrTimer *timer) noexcept {
   containers::LockGuard<containers::IrqSpinLock> guard(queue_lock_);
-  if (queue_head_ == nullptr)
+  if (queue_head_ == nullptr) {
     return;
+  }
 
   if (queue_head_ == timer) {
     queue_head_ = timer->next_;

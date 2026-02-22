@@ -137,8 +137,9 @@ void Process::cleanup_threads() noexcept {
         constexpr usize PAGE_SIZE = 4096;
         usize order = 0;
         usize pages = entry.thread->kernel_stack_size / PAGE_SIZE;
-        while ((1U << order) < pages)
+        while ((1U << order) < pages) {
           ++order;
+        }
         (void)mm::free_pages(static_cast<PhysAddr>(entry.thread->kernel_stack_base), order);
       }
       // Clear scheduler back-pointer to avoid dangling reference
@@ -156,8 +157,9 @@ ThreadId Process::allocate_thread_id() noexcept {
 }
 
 void Process::register_thread(Thread *thread) noexcept {
-  if (!thread)
+  if (!thread) {
     return;
+  }
 
   ThreadEntry entry(thread->tid, thread);
   threads_.push_front(entry);
@@ -174,15 +176,18 @@ ProcessId Process::find_zombie_child(i64 wait_pid) const noexcept {
   ProcessId found = INVALID_PROCESS_ID;
 
   children_.for_each([&](ProcessId child_pid) {
-    if (found != INVALID_PROCESS_ID)
+    if (found != INVALID_PROCESS_ID) {
       return; // Already found one
+    }
 
     Process *child = g_process_manager->find_process(child_pid);
-    if (!child)
+    if (!child) {
       return;
+    }
 
-    if (child->state() != ProcessState::Zombie)
+    if (child->state() != ProcessState::Zombie) {
       return;
+    }
 
     if (wait_pid == -1 || static_cast<ProcessId>(wait_pid) == child_pid) {
       found = child_pid;
@@ -425,8 +430,9 @@ KernelResult<VirtAddr> allocate_user_heap(Process *process, usize size) noexcept
           init_proc->child_exit_wait_queue().for_each_waiter([](void *thread_ptr) {
             auto *t = static_cast<Thread *>(thread_ptr);
             t->state = ProcessState::Ready;
-            if (g_scheduler)
+            if (g_scheduler) {
               g_scheduler->enqueue_task(t, t->wake_cpu);
+            }
           });
         }
       }
@@ -443,8 +449,9 @@ KernelResult<VirtAddr> allocate_user_heap(Process *process, usize size) noexcept
     parent->child_exit_wait_queue().for_each_waiter([](void *thread_ptr) {
       auto *t = static_cast<Thread *>(thread_ptr);
       t->state = ProcessState::Ready;
-      if (g_scheduler)
+      if (g_scheduler) {
         g_scheduler->enqueue_task(t, t->wake_cpu);
+      }
     });
   }
 

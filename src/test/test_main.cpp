@@ -27,8 +27,9 @@ extern char _stack_top[];
 extern "C" [[noreturn]] void test_kernel_main() noexcept;
 
 static void clear_bss() noexcept {
-  for (char *p = _bss_start; p < _bss_end; ++p)
+  for (char *p = _bss_start; p < _bss_end; ++p) {
     *p = 0;
+  }
 }
 
 #if defined(MOSS_ARCH_ARM64)

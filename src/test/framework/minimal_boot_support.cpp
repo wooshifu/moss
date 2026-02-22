@@ -22,8 +22,9 @@ static void uart_putchar(char c) noexcept {
 
 // 简单的字符串输出
 static void uart_puts(const char *str) noexcept {
-  if (!str)
+  if (!str) {
     return;
+  }
   while (*str) {
     uart_putchar(*str);
     str++;
@@ -71,8 +72,9 @@ void early_debug_print(const char *message) noexcept { uart_puts(message); }
 
 // 内存复制
 void *memcpy(void *dest, const void *src, usize n) noexcept {
-  if (!dest || !src || n == 0)
+  if (!dest || !src || n == 0) {
     return dest;
+  }
 
   char *d = static_cast<char *>(dest);
   const char *s = static_cast<const char *>(src);
@@ -89,8 +91,9 @@ void *memcpy(void *dest, const void *src, usize n) noexcept {
 
 // 内存设置
 void *memset(void *ptr, int value, usize num) noexcept {
-  if (!ptr || num == 0)
+  if (!ptr || num == 0) {
     return ptr;
+  }
 
   char *p = static_cast<char *>(ptr);
   char c = static_cast<char>(value);
@@ -106,8 +109,9 @@ void *memset(void *ptr, int value, usize num) noexcept {
 
 // 内存比较
 int memcmp(const void *ptr1, const void *ptr2, usize num) noexcept {
-  if (!ptr1 || !ptr2 || num == 0)
+  if (!ptr1 || !ptr2 || num == 0) {
     return 0;
+  }
 
   const char *p1 = static_cast<const char *>(ptr1);
   const char *p2 = static_cast<const char *>(ptr2);

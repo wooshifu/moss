@@ -8,8 +8,9 @@ module moss.vfs;
 namespace moss::kernel::vfs {
 
 Dentry *resolve_path(const char *path) noexcept {
-  if (path == nullptr || path[0] != '/')
+  if (path == nullptr || path[0] != '/') {
     return nullptr;
+  }
 
   // Find which mount point this path belongs to
   MountLookupResult mount_result{};
@@ -19,8 +20,9 @@ Dentry *resolve_path(const char *path) noexcept {
 
   // Start from the mount's root dentry
   Dentry *current = mount_result.mount->root;
-  if (current == nullptr)
+  if (current == nullptr) {
     return nullptr;
+  }
 
   // If residual is empty, return root of the mount
   const char *residual = mount_result.residual;
@@ -32,16 +34,19 @@ Dentry *resolve_path(const char *path) noexcept {
   const char *p = residual;
   while (*p != '\0') {
     // Skip leading '/'
-    while (*p == '/')
+    while (*p == '/') {
       ++p;
-    if (*p == '\0')
+    }
+    if (*p == '\0') {
       break;
+    }
 
     // Extract component name
     const char *name_start = p;
     u32 name_len = 0;
-    while (p[name_len] != '\0' && p[name_len] != '/')
+    while (p[name_len] != '\0' && p[name_len] != '/') {
       ++name_len;
+    }
     p += name_len;
 
     if (current->inode == nullptr || !current->inode->is_directory()) {
@@ -85,8 +90,9 @@ Dentry *resolve_path(const char *path) noexcept {
         }
       }
     }
-    if (!found)
+    if (!found) {
       return nullptr;
+    }
   }
 
   return current;

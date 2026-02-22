@@ -104,8 +104,9 @@ inline int getc() noexcept {
   volatile u32 *uart_data = reinterpret_cast<volatile u32 *>(base);
   volatile u32 *uart_flags = reinterpret_cast<volatile u32 *>(base + 0x18);
 
-  if (*uart_flags & (1U << 4))
+  if (*uart_flags & (1U << 4)) {
     return -1; // RXFE: RX FIFO empty
+  }
   return static_cast<int>(*uart_data & 0xFFU);
 
 #elif defined(MOSS_ARCH_X86_64)
@@ -140,11 +141,13 @@ inline int getc() noexcept {
 // ============================================================================
 
 inline void puts(const char *str) noexcept {
-  if (!str)
+  if (!str) {
     return;
+  }
   while (*str) {
-    if (*str == '\n')
+    if (*str == '\n') {
       putc('\r');
+    }
     putc(*str++);
   }
 }

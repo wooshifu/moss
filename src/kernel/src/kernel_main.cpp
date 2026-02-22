@@ -217,7 +217,7 @@ void irq_handler_c(void) noexcept {
     // Look up the registered handler for this IRQ and call it directly.
     // We cannot call g_gic->handle_interrupt() because it would do its
     // own ACK+EOI (already done above).  Instead, look up and invoke.
-    auto *desc = ::moss::kernel::interrupts::g_gic->get_interrupt_info(irq);
+    const auto *desc = ::moss::kernel::interrupts::g_gic->get_interrupt_info(irq);
     if (desc != nullptr && desc->handler != nullptr) {
       desc->handler(irq, desc->context);
     }
@@ -236,12 +236,14 @@ int demand_page_lookup(unsigned long long fault_addr, unsigned int *out_flags, c
   using namespace moss::kernel;
 
   auto *proc = process::current_process();
-  if (!proc || !proc->address_space())
+  if (!proc || !proc->address_space()) {
     return 0;
+  }
 
   const auto *vma = proc->address_space()->find_vma(static_cast<VirtAddr>(fault_addr));
-  if (!vma)
+  if (!vma) {
     return 0;
+  }
 
   *out_flags = vma->flags;
   *out_backing_data = vma->backing_data;
@@ -255,8 +257,9 @@ unsigned long long get_current_pgd_phys() noexcept {
   using namespace moss::kernel;
 
   auto *proc = process::current_process();
-  if (!proc || !proc->address_space())
+  if (!proc || !proc->address_space()) {
     return 0;
+  }
   return static_cast<unsigned long long>(proc->address_space()->pgd_phys);
 }
 
@@ -308,8 +311,9 @@ void print_syscall_convention() noexcept {
   hal::uart::puts("[INFO]  arg_regs: ");
   for (int i = 0; i < 6; ++i) {
     hal::uart::puts(conv.arg_registers[i]);
-    if (i < 5)
+    if (i < 5) {
       hal::uart::puts(", ");
+    }
   }
   hal::uart::puts("\n");
   log::klog::info("================================");

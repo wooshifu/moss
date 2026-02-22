@@ -160,8 +160,9 @@ long do_dup2(void *fd_table_ptr, long oldfd, long newfd) noexcept {
   if (file == nullptr) {
     return -static_cast<long>(VfsError::BadFd);
   }
-  if (oldfd == newfd)
+  if (oldfd == newfd) {
     return newfd;
+  }
   return fdt->install_fd(newfd, file);
 }
 
@@ -173,8 +174,9 @@ long do_pipe(void *fd_table_ptr, long *pipefd) noexcept {
   File *read_file = nullptr;
   File *write_file = nullptr;
   long ret = pipefs::create_pipe(read_file, write_file);
-  if (ret < 0)
+  if (ret < 0) {
     return ret;
+  }
 
   auto *fdt = static_cast<FdTable *>(fd_table_ptr);
   long rfd = fdt->alloc_fd(read_file);

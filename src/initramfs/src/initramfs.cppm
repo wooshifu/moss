@@ -55,12 +55,13 @@ inline u32 parse_hex8(const char *s) noexcept {
   for (int i = 0; i < 8; ++i) {
     val <<= 4;
     char c = s[i];
-    if (c >= '0' && c <= '9')
+    if (c >= '0' && c <= '9') {
       val |= static_cast<u32>(c - '0');
-    else if (c >= 'a' && c <= 'f')
+    } else if (c >= 'a' && c <= 'f') {
       val |= static_cast<u32>(c - 'a' + 10);
-    else if (c >= 'A' && c <= 'F')
+    } else if (c >= 'A' && c <= 'F') {
       val |= static_cast<u32>(c - 'A' + 10);
+    }
   }
   return val;
 }
@@ -71,8 +72,9 @@ inline usize align4(usize v) noexcept { return (v + 3) & ~static_cast<usize>(3);
 /// Simple string comparison (no libc)
 inline bool str_equal(const char *a, const char *b) noexcept {
   while (*a && *b) {
-    if (*a != *b)
+    if (*a != *b) {
       return false;
+    }
     ++a;
     ++b;
   }
@@ -100,7 +102,7 @@ public:
     const u8 *end = base_ + size;
 
     while (ptr + sizeof(CpioNewcHeader) <= end && file_count_ < MAX_INITRAMFS_FILES) {
-      auto *hdr = reinterpret_cast<const CpioNewcHeader *>(ptr);
+      const auto *hdr = reinterpret_cast<const CpioNewcHeader *>(ptr);
 
       // Verify magic
       if (hdr->c_magic[0] != '0' || hdr->c_magic[1] != '7' || hdr->c_magic[2] != '0' || hdr->c_magic[3] != '7' ||
@@ -134,7 +136,7 @@ public:
       }
 
       // Skip "." directory entry
-      if (!(namesize == 2 && name[0] == '.' && name[1] == '\0')) {
+      if (namesize != 2 || name[0] != '.' || name[1] != '\0') {
         // Strip leading "./" if present
         const char *clean_name = name;
         if (namesize > 2 && name[0] == '.' && name[1] == '/') {
@@ -169,13 +171,15 @@ public:
   /// Look up a file by name (linear scan).
   /// Path matching: "hello.elf" matches entry "hello.elf", "/hello.elf" matches "hello.elf".
   [[nodiscard]] const InitramfsEntry *lookup(const char *path) const noexcept {
-    if (!initialized_ || !path)
+    if (!initialized_ || !path) {
       return nullptr;
+    }
 
     // Strip leading "/"
     const char *search = path;
-    if (search[0] == '/')
+    if (search[0] == '/') {
       search = path + 1;
+    }
 
     for (u32 i = 0; i < file_count_; ++i) {
       if (str_equal(entries_[i].name, search)) {

@@ -1418,8 +1418,9 @@ public:
   // Returns utilization as a percentage (0-100)
   [[nodiscard]] moss::kernel::usize utilization() const noexcept {
     moss::kernel::usize total = total_objects();
-    if (total == 0)
+    if (total == 0) {
       return 0;
+    }
     return (allocated_objects() * 100) / total;
   }
 
@@ -1483,10 +1484,10 @@ private:
     moss::kernel::usize ptr_addr = reinterpret_cast<moss::kernel::usize>(ptr);
     moss::kernel::usize page_addr = ptr_addr & ~(moss::kernel::PAGE_SIZE - 1);
 
-    if (auto page = find_in_page_list(full_pages_.load(moss::MemoryOrder::Acquire), page_addr)) {
+    if (auto *page = find_in_page_list(full_pages_.load(moss::MemoryOrder::Acquire), page_addr)) {
       return page;
     }
-    if (auto page = find_in_page_list(partial_pages_.load(moss::MemoryOrder::Acquire), page_addr)) {
+    if (auto *page = find_in_page_list(partial_pages_.load(moss::MemoryOrder::Acquire), page_addr)) {
       return page;
     }
     return find_in_page_list(empty_pages_.load(moss::MemoryOrder::Acquire), page_addr);
