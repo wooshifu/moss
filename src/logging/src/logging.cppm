@@ -25,10 +25,6 @@
 //
 // Backend: hal::uart (architecture-independent UART/serial output)
 
-module;
-
-#include "arch_detect.h"
-
 export module moss.logging;
 
 import moss.std;

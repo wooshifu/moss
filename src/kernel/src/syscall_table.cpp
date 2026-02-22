@@ -3,9 +3,6 @@
 
 module;
 
-// Architecture detection
-#include "arch_detect.h"
-
 // extern "C" declarations in global module fragment
 #if defined(__aarch64__) || defined(MOSS_ARCH_ARM64)
 extern "C" void context_switch(void* prev_context, void* next_context);

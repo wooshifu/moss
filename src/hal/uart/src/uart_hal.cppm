@@ -14,10 +14,6 @@
 //   moss::kernel::hal::uart::puts("Hello kernel\n");
 //   moss::kernel::hal::uart::put_hex(0xDEADBEEF);
 
-module;
-
-#include "arch_detect.h"
-
 export module moss.hal.uart;
 
 import moss.std;

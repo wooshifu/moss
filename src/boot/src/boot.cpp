@@ -5,9 +5,6 @@
 
 module;
 
-// Architecture detection
-#include "arch_detect.h"
-
 #if defined(__aarch64__) || defined(MOSS_ARCH_ARM64)
 #define MOSS_CURRENT_ARCH "ARM64"
 #elif defined(__x86_64__) || defined(__x86_64) || defined(MOSS_ARCH_X86_64)

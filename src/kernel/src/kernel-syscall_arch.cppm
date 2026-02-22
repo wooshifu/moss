@@ -3,9 +3,6 @@
 
 module;
 
-// Architecture detection
-#include "arch_detect.h"
-
 // Forward declaration for syscall_return (needs SyscallContext which is defined later)
 // We declare the raw extern "C" here; the typed version is inside the module.
 extern "C" void syscall_return(void *context) noexcept;
@@ -14,6 +11,7 @@ export module moss.kernel:syscall_arch;
 
 import moss.std;
 import moss.types;
+import moss.arch;
 
 export namespace moss::kernel::arch::syscall {
 
@@ -27,25 +25,24 @@ inline void do_syscall_return(SyscallContext* context) noexcept {
 
 // Unified syscall initialization interface
 inline bool initialize_architecture_syscalls() noexcept {
-#if defined(MOSS_ARCH_ARM64)
-    // ARM64: Set up exception vector table to handle SVC instruction
-    // TODO: Set up EL1 exception vector table, point SVC exception to syscall_entry_point
-    return true;
-
-#elif defined(MOSS_ARCH_X86_64)
-    // X86_64: Set up SYSCALL instruction MSR registers
-    // TODO: implement initialize_syscall_support() for x86_64
-    return true;
-
-#elif defined(MOSS_ARCH_RISCV)
-    // RISC-V: Set up trap vector table to handle ECALL instruction
-    // TODO: Set up stvec register to point to syscall_entry_point
-    return true;
-
-#else
-    // Unsupported architecture
-    return false;
-#endif
+    using moss::kernel::arch::is_arm64;
+    using moss::kernel::arch::is_x86_64;
+    using moss::kernel::arch::is_riscv;
+    if constexpr (is_arm64) {
+        // ARM64: Set up exception vector table to handle SVC instruction
+        // TODO: Set up EL1 exception vector table, point SVC exception to syscall_entry_point
+        return true;
+    } else if constexpr (is_x86_64) {
+        // X86_64: Set up SYSCALL instruction MSR registers
+        // TODO: implement initialize_syscall_support() for x86_64
+        return true;
+    } else if constexpr (is_riscv) {
+        // RISC-V: Set up trap vector table to handle ECALL instruction
+        // TODO: Set up stvec register to point to syscall_entry_point
+        return true;
+    } else {
+        return false;
+    }
 }
 
 // Architecture-specific syscall convention information
@@ -58,46 +55,46 @@ struct SyscallConvention {
 };
 
 inline const SyscallConvention& get_syscall_convention() noexcept {
-#if defined(MOSS_ARCH_ARM64)
-    static const SyscallConvention conv = {
-        .arch_name = "ARM64",
-        .syscall_instruction = "SVC",
-        .syscall_nr_register = "x8",
-        .return_register = "x0",
-        .arg_registers = {"x0", "x1", "x2", "x3", "x4", "x5"}
-    };
-    return conv;
-
-#elif defined(MOSS_ARCH_X86_64)
-    static const SyscallConvention conv = {
-        .arch_name = "x86_64",
-        .syscall_instruction = "SYSCALL",
-        .syscall_nr_register = "rax",
-        .return_register = "rax",
-        .arg_registers = {"rdi", "rsi", "rdx", "r10", "r8", "r9"}
-    };
-    return conv;
-
-#elif defined(MOSS_ARCH_RISCV)
-    static const SyscallConvention conv = {
-        .arch_name = "RISC-V",
-        .syscall_instruction = "ECALL",
-        .syscall_nr_register = "a7",
-        .return_register = "a0",
-        .arg_registers = {"a0", "a1", "a2", "a3", "a4", "a5"}
-    };
-    return conv;
-
-#else
-    static const SyscallConvention conv = {
-        .arch_name = "Unknown",
-        .syscall_instruction = "Unknown",
-        .syscall_nr_register = "Unknown",
-        .return_register = "Unknown",
-        .arg_registers = {"Unknown", "Unknown", "Unknown", "Unknown", "Unknown", "Unknown"}
-    };
-    return conv;
-#endif
+    using moss::kernel::arch::is_arm64;
+    using moss::kernel::arch::is_x86_64;
+    using moss::kernel::arch::is_riscv;
+    if constexpr (is_arm64) {
+        static const SyscallConvention conv = {
+            .arch_name = "ARM64",
+            .syscall_instruction = "SVC",
+            .syscall_nr_register = "x8",
+            .return_register = "x0",
+            .arg_registers = {"x0", "x1", "x2", "x3", "x4", "x5"}
+        };
+        return conv;
+    } else if constexpr (is_x86_64) {
+        static const SyscallConvention conv = {
+            .arch_name = "x86_64",
+            .syscall_instruction = "SYSCALL",
+            .syscall_nr_register = "rax",
+            .return_register = "rax",
+            .arg_registers = {"rdi", "rsi", "rdx", "r10", "r8", "r9"}
+        };
+        return conv;
+    } else if constexpr (is_riscv) {
+        static const SyscallConvention conv = {
+            .arch_name = "RISC-V",
+            .syscall_instruction = "ECALL",
+            .syscall_nr_register = "a7",
+            .return_register = "a0",
+            .arg_registers = {"a0", "a1", "a2", "a3", "a4", "a5"}
+        };
+        return conv;
+    } else {
+        static const SyscallConvention conv = {
+            .arch_name = "Unknown",
+            .syscall_instruction = "Unknown",
+            .syscall_nr_register = "Unknown",
+            .return_register = "Unknown",
+            .arg_registers = {"Unknown", "Unknown", "Unknown", "Unknown", "Unknown", "Unknown"}
+        };
+        return conv;
+    }
 }
 
 // Debug: print current architecture's syscall convention

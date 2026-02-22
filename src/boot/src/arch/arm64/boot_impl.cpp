@@ -5,9 +5,6 @@
 
 module;
 
-// Architecture detection
-#include "arch_detect.h"
-
 // PSCI constants (must be in global module fragment as macros)
 #define PSCI_CPU_ON_64 0xC4000003
 

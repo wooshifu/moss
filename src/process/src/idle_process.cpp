@@ -1,10 +1,5 @@
 // Idle process implementation - module implementation unit for moss.process
 
-module;
-
-// Architecture detection
-#include "arch_detect.h"
-
 module moss.process;
 
 namespace moss::kernel::process {
