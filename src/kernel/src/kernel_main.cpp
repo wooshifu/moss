@@ -111,34 +111,6 @@ extern "C" {
   while (true) { arch::cpu_halt(); }
 }
 
-// Kernel panic handler — uses direct UART writes for crash safety.
-// Does NOT use the logging module because the system may be in an
-// inconsistent state (corrupted heap, invalid stack, etc.).
-[[noreturn]] void kernel_panic_handler(const char *message) noexcept {
-  ::moss::kernel::arch::disable_all_interrupts();
-
-  const auto &plat = ::moss::fdt::get_platform_info();
-  u64 uart_base = (plat.dtb_valid && plat.uart.valid)
-                      ? plat.uart.base_addr
-                      : ::moss::kernel::platform::uart_base();
-  volatile u32 *uart_data = reinterpret_cast<volatile u32 *>(uart_base);
-  const char *panic_msg = "\n[PANIC] KERNEL PANIC: ";
-
-  while (*panic_msg) {
-    *uart_data = static_cast<u32>(static_cast<unsigned char>(*panic_msg++));
-  }
-
-  if (message) {
-    while (*message) {
-      *uart_data = static_cast<u32>(static_cast<unsigned char>(*message++));
-    }
-  }
-
-  while (true) {
-    ::moss::kernel::arch::cpu_halt();
-  }
-}
-
 // Legacy extern "C" shim — retained for ABI compatibility with assembly
 // code and test harness. New code should import moss.logging instead.
 void early_debug_print(const char *message) noexcept {
@@ -159,34 +131,6 @@ long system_call_handler(long syscall_number, long arg0, long arg1,
 
   return syscall::SyscallDispatcher::dispatch(syscall_number, arg0, arg1, arg2,
                                               arg3, arg4, arg5);
-}
-
-const char *get_kernel_version(void) noexcept {
-  return "MOSS v1.0.0 - ARM64 Hybrid Kernel";
-}
-
-const char *get_build_info(void) noexcept {
-  return "clang C++26 - Release Build";
-}
-
-// Kernel memory statistics
-struct KernelMemoryInfo {
-  usize total_memory;
-  usize free_memory;
-  usize kernel_heap_used;
-  usize user_heap_used;
-  u32 page_faults;
-};
-
-KernelMemoryInfo get_kernel_memory_info(void) noexcept {
-  auto stats = ::moss::kernel::mm::PageFrameAllocator::get_memory_stats();
-  constexpr usize PS = ::moss::kernel::PAGE_SIZE;
-
-  return {.total_memory = stats.total_pages * PS,
-          .free_memory = stats.free_pages * PS,
-          .kernel_heap_used = stats.kernel_pages * PS,
-          .user_heap_used = stats.used_pages * PS,
-          .page_faults = 0};
 }
 
 // IRQ handler called from assembly irq_trampoline.
@@ -328,18 +272,6 @@ unsigned long long get_current_pgd_phys() noexcept {
 
     // Delegate to shared Zombie transition (never returns)
     process::do_exit(cur, proc, static_cast<i32>(exit_code));
-}
-
-// ============================================================================
-// Bridge: reset current task's vruntime to CFS min_vruntime
-// Called after a polling IO wait (console_read) so the task is not
-// starved by others whose vruntimes advanced during the wait.
-// ============================================================================
-void sched_yield_to_min_vruntime() noexcept {
-    using namespace moss::kernel;
-    if (process::g_scheduler) {
-        process::g_scheduler->reset_current_to_min_vruntime();
-    }
 }
 
 } // extern "C"

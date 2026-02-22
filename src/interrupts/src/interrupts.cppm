@@ -368,15 +368,6 @@ private:
 // Global GIC instance pointer
 extern GenericInterruptController *g_gic;
 
-// C-style convenience interface
-extern "C" {
-void interrupt_handler_entry() noexcept;
-ErrorCode register_irq_handler(InterruptId irq, InterruptHandler handler,
-                               void *context, const char *name);
-ErrorCode enable_irq(InterruptId irq);
-ErrorCode disable_irq(InterruptId irq);
-}
-
 // ========================================================================
 // IPI SGI ID assignment (based on Linux kernel design)
 // ========================================================================

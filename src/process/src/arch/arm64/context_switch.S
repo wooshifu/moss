@@ -465,7 +465,7 @@ syscall_fast_path:
 syscall_slow_path:
     // Fall through to full system call handling
     ldp     x29, x30, [sp], #16
-    b       syscall_handler             // external: full syscall dispatcher
+    b       system_call_handler         // external: full syscall dispatcher
 
 .size syscall_fast_path, .-syscall_fast_path
 
