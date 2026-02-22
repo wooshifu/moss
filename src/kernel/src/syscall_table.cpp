@@ -1,17 +1,14 @@
 // MOSS内核系统调用表实现
 // 提供完整的系统调用处理和分发机制
 
-module;
-
-// extern "C" declarations in global module fragment
-#if defined(__aarch64__) || defined(MOSS_ARCH_ARM64)
-extern "C" void context_switch(void* prev_context, void* next_context);
-extern "C" void switch_to_user(void* context, unsigned long user_sp);
-#endif
-
 module moss.kernel;
 
+import moss.abi;
 import moss.vfs;
+
+// Assembly symbols from moss.abi
+using moss::abi::context_switch;
+using moss::abi::switch_to_user;
 
 namespace moss::kernel::syscall {
 

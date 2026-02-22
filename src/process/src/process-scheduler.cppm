@@ -1,16 +1,6 @@
 // MOSS Process Module - Partition: scheduler
 // CFS Scheduler, Idle Task, CfsRunqueue, CfsScheduler
 
-module;
-
-// Assembly interop declarations (global module fragment)
-extern "C" void switch_to_user(void* context, unsigned long long user_stack);
-extern "C" void early_debug_print(const char* message) noexcept;
-#if defined(__aarch64__) || defined(MOSS_ARCH_ARM64)
-extern "C" void context_switch(void* prev_context, void* next_context);
-extern "C" void user_eret_trampoline();
-#endif
-
 export module moss.process:scheduler;
 
 import :types;
@@ -23,11 +13,20 @@ import moss.arch;
 import moss.containers;
 import moss.mm;
 import moss.interrupts;
+import moss.abi;
 import moss.platform;
 import moss.hal.intc;
 import moss.hal.timer;
 import moss.timer;
 import moss.logging;
+
+// Assembly/entry symbols from moss.abi — bring into scope for this partition
+using moss::abi::context_switch;
+using moss::abi::switch_to_user;
+using moss::abi::entry::early_debug_print;
+#if defined(MOSS_ARCH_ARM64)
+using moss::abi::arm64::user_eret_trampoline;
+#endif
 
 // ============================================================================
 // cfs_scheduler.hpp - CFS (Completely Fair Scheduler)

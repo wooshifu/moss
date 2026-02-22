@@ -1,15 +1,6 @@
 // MOSS Boot Module - Unified multi-architecture boot system
 // Merges boot.hpp, boot_interface.hpp, arch_selector.hpp into a single C++26 module.
 
-module;
-
-// extern "C" declarations for assembly-callable functions (global module fragment)
-extern "C" {
-void early_debug_print(const char *message) noexcept;
-[[noreturn]] void early_main(void *device_tree_ptr);
-void mark_runtime_heap_ready() noexcept;
-}
-
 export module moss.boot;
 
 import moss.std;

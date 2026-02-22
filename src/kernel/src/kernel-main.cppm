@@ -1,25 +1,6 @@
 // MOSS Kernel Module - Main Partition
 // Kernel class, subsystem states, boot phases, and kernel statistics.
 
-module;
-
-// extern "C" declarations needed by this partition
-extern "C" {
-void kernel_test_all_subsystems(void) noexcept;
-void early_debug_print(const char *message) noexcept;
-
-// Syscall arch assembly function declarations
-void syscall_entry_point() noexcept;
-long system_call_handler(long syscall_number, long arg0, long arg1,
-                         long arg2, long arg3, long arg4, long arg5) noexcept;
-
-// Embedded user program symbols (ARM64 only, linked from arm64_user_program.S)
-#if defined(MOSS_ARCH_ARM64)
-extern char _user_program_start[];
-extern char _user_program_end[];
-#endif
-}
-
 export module moss.kernel:main;
 
 import moss.std;
@@ -43,10 +24,15 @@ import moss.timer;
 import moss.logging;
 import moss.boot;
 import moss.vfs;
+import moss.abi;
 
 import :elf;
 import :syscall_table;
 import :syscall_arch;
+
+// ABI symbols used by kernel boot/init
+using moss::abi::entry::early_debug_print;
+using moss::abi::syscall_entry_point;
 
 export namespace moss::kernel {
 
@@ -622,10 +608,8 @@ private:
     // The embedded user program is raw machine code (not ELF).
     // We place it at a fixed user virtual address and register as a code VMA
     // with backing data pointing to the kernel-resident copy.
-    const auto* raw_code = reinterpret_cast<const u8*>(_user_program_start);
-    usize code_size = static_cast<usize>(
-        reinterpret_cast<VirtAddr>(_user_program_end) -
-        reinterpret_cast<VirtAddr>(_user_program_start));
+    const auto* raw_code = moss::abi::arm64::user_program_start();
+    usize code_size = moss::abi::arm64::user_program_size();
 
     // Code VMA: readable + executable, backed by the embedded raw program
     VirtAddr code_end = (UserLayout::CODE_BASE + code_size + PAGE_SIZE - 1)

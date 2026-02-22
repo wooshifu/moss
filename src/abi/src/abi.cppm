@@ -1,0 +1,281 @@
+// MOSS ABI Module — single source of truth for all extern "C" symbols.
+//
+// Eliminates ~80 duplicated extern "C" declarations scattered across 30+ files.
+// Consumer modules: `import moss.abi;` then use moss::abi::linker::*, etc.
+
+module;
+
+// ============================================================================
+// Linker script symbols (all architectures)
+// ============================================================================
+extern "C" {
+extern char _text_start_addr[];
+extern char _text_end_addr[];
+extern char _rodata_start_addr[];
+extern char _rodata_end_addr[];
+extern char _data_start_addr[];
+extern char _data_end_addr[];
+extern char _bss_start_addr[];
+extern char _bss_end_addr[];
+extern char _stack_bottom_addr[];
+extern char _stack_top_addr[];
+extern char _heap_start_addr[];
+extern char _heap_end_addr[];
+extern char _pagetable_start_addr[];
+extern char _pagetable_end_addr[];
+extern char _kernel_end_addr[];
+}
+
+// ============================================================================
+// Assembly-defined functions (all architectures)
+// ============================================================================
+extern "C" {
+void _start();
+void context_switch(void *prev_context, void *next_context);
+void switch_to_user(void *context, unsigned long long user_stack);
+void kernel_thread_entry();
+void syscall_entry_point() noexcept;
+void syscall_return(void *context) noexcept;
+}
+
+// ============================================================================
+// ARM64-only assembly symbols
+// ============================================================================
+#if defined(__aarch64__) || defined(MOSS_ARCH_ARM64)
+extern "C" {
+void user_eret_trampoline();
+void syscall_fast_path();
+void flush_tlb_single(unsigned long long va);
+void flush_tlb_all();
+extern volatile unsigned long long cpu_startup_flags[][2];
+extern unsigned int early_uart_lock;
+extern char exception_vectors[];
+extern char _user_program_start[];
+extern char _user_program_end[];
+}
+#endif
+
+// ============================================================================
+// C++ functions called FROM assembly (need C linkage at definition site)
+// ============================================================================
+extern "C" {
+[[noreturn]] void early_main(void *device_tree_ptr);
+[[noreturn]] void kernel_main(void) noexcept;
+void early_debug_print(const char *message) noexcept;
+[[noreturn]] void kernel_panic_handler(const char *message) noexcept;
+long system_call_handler(long syscall_number, long arg0, long arg1,
+                         long arg2, long arg3, long arg4,
+                         long arg5) noexcept;
+void irq_handler_c(void) noexcept;
+void kernel_page_fault_handler(unsigned long long esr,
+                               unsigned long long far_addr,
+                               unsigned long long elr) noexcept;
+void user_page_fault_handler(unsigned long long esr,
+                             unsigned long long far_addr,
+                             unsigned long long elr) noexcept;
+void unhandled_exception_handler(unsigned long long esr,
+                                 unsigned long long far_addr,
+                                 unsigned long long elr,
+                                 unsigned long long saved_x30,
+                                 unsigned long long frame_sp) noexcept;
+[[noreturn]] void unhandled_user_exception_handler(
+    unsigned long long esr, unsigned long long far_addr,
+    unsigned long long elr) noexcept;
+void mark_runtime_heap_ready() noexcept;
+}
+
+#if defined(__aarch64__) || defined(MOSS_ARCH_ARM64)
+extern "C" {
+[[noreturn]] void secondary_cpu_entry() noexcept;
+void mark_cpu_online(unsigned int cpu_id) noexcept;
+void mark_cpu_parked(unsigned int cpu_id) noexcept;
+}
+#endif
+
+// ============================================================================
+// Cross-module bridge functions (extern "C" to break circular dependencies)
+// ============================================================================
+extern "C" {
+// mm <-> kernel bridge
+int demand_page_lookup(unsigned long long fault_addr,
+                       unsigned int *out_flags,
+                       const unsigned char **out_backing_data,
+                       unsigned long long *out_backing_offset,
+                       unsigned long long *out_backing_size,
+                       unsigned long long *out_vma_start) noexcept;
+unsigned long long get_current_pgd_phys() noexcept;
+[[noreturn]] void terminate_current_user_process(int exit_code) noexcept;
+
+// scheduler bridge
+void sched_yield_to_min_vruntime() noexcept;
+
+// vfs <-> kernel bridge
+void console_rx_init() noexcept;
+int console_getc_blocking() noexcept;
+
+// containers <-> mm bridge
+unsigned long long moss_slab_alloc_pages(unsigned long long order) noexcept;
+int moss_slab_free_pages(unsigned long long addr,
+                         unsigned long long order) noexcept;
+
+// C string function (runtime_support.cpp)
+int strcmp(const char *s1, const char *s2) noexcept;
+
+// Kernel info
+const char *get_kernel_version(void) noexcept;
+const char *get_build_info(void) noexcept;
+}
+
+export module moss.abi;
+
+import moss.types;
+
+// ============================================================================
+// Typed linker symbol accessors
+// ============================================================================
+export namespace moss::abi::linker {
+
+using moss::kernel::VirtAddr;
+using moss::kernel::usize;
+
+inline auto text_start() noexcept -> VirtAddr {
+    return reinterpret_cast<VirtAddr>(_text_start_addr);
+}
+inline auto text_end() noexcept -> VirtAddr {
+    return reinterpret_cast<VirtAddr>(_text_end_addr);
+}
+inline auto rodata_start() noexcept -> VirtAddr {
+    return reinterpret_cast<VirtAddr>(_rodata_start_addr);
+}
+inline auto rodata_end() noexcept -> VirtAddr {
+    return reinterpret_cast<VirtAddr>(_rodata_end_addr);
+}
+inline auto data_start() noexcept -> VirtAddr {
+    return reinterpret_cast<VirtAddr>(_data_start_addr);
+}
+inline auto data_end() noexcept -> VirtAddr {
+    return reinterpret_cast<VirtAddr>(_data_end_addr);
+}
+inline auto bss_start() noexcept -> VirtAddr {
+    return reinterpret_cast<VirtAddr>(_bss_start_addr);
+}
+inline auto bss_end() noexcept -> VirtAddr {
+    return reinterpret_cast<VirtAddr>(_bss_end_addr);
+}
+inline auto stack_bottom() noexcept -> VirtAddr {
+    return reinterpret_cast<VirtAddr>(_stack_bottom_addr);
+}
+inline auto stack_top() noexcept -> VirtAddr {
+    return reinterpret_cast<VirtAddr>(_stack_top_addr);
+}
+inline auto heap_start() noexcept -> VirtAddr {
+    return reinterpret_cast<VirtAddr>(_heap_start_addr);
+}
+inline auto heap_end() noexcept -> VirtAddr {
+    return reinterpret_cast<VirtAddr>(_heap_end_addr);
+}
+inline auto pagetable_start() noexcept -> VirtAddr {
+    return reinterpret_cast<VirtAddr>(_pagetable_start_addr);
+}
+inline auto pagetable_end() noexcept -> VirtAddr {
+    return reinterpret_cast<VirtAddr>(_pagetable_end_addr);
+}
+inline auto kernel_end() noexcept -> VirtAddr {
+    return reinterpret_cast<VirtAddr>(_kernel_end_addr);
+}
+
+// Computed helpers
+inline auto text_size() noexcept -> usize { return text_end() - text_start(); }
+inline auto rodata_size() noexcept -> usize { return rodata_end() - rodata_start(); }
+inline auto data_size() noexcept -> usize { return data_end() - data_start(); }
+inline auto bss_size() noexcept -> usize { return bss_end() - bss_start(); }
+inline auto stack_size() noexcept -> usize { return stack_top() - stack_bottom(); }
+inline auto heap_size() noexcept -> usize { return heap_end() - heap_start(); }
+inline auto pagetable_size() noexcept -> usize { return pagetable_end() - pagetable_start(); }
+
+} // namespace moss::abi::linker
+
+// ============================================================================
+// Assembly function re-exports
+// ============================================================================
+export namespace moss::abi {
+
+using ::_start;
+using ::context_switch;
+using ::switch_to_user;
+using ::kernel_thread_entry;
+using ::syscall_entry_point;
+using ::syscall_return;
+
+} // namespace moss::abi
+
+#if defined(__aarch64__) || defined(MOSS_ARCH_ARM64)
+export namespace moss::abi::arm64 {
+
+using ::user_eret_trampoline;
+using ::syscall_fast_path;
+using ::flush_tlb_single;
+using ::flush_tlb_all;
+using ::early_uart_lock;
+using ::cpu_startup_flags;
+using ::exception_vectors;
+
+inline auto user_program_start() noexcept -> const unsigned char * {
+    return reinterpret_cast<const unsigned char *>(::_user_program_start);
+}
+inline auto user_program_end() noexcept -> const unsigned char * {
+    return reinterpret_cast<const unsigned char *>(::_user_program_end);
+}
+inline auto user_program_size() noexcept -> moss::kernel::usize {
+    return static_cast<moss::kernel::usize>(user_program_end() - user_program_start());
+}
+inline auto exception_vectors_addr() noexcept -> moss::kernel::VirtAddr {
+    return reinterpret_cast<moss::kernel::VirtAddr>(::exception_vectors);
+}
+
+} // namespace moss::abi::arm64
+#endif
+
+// ============================================================================
+// Cross-module bridge re-exports
+// ============================================================================
+export namespace moss::abi::bridge {
+
+using ::demand_page_lookup;
+using ::get_current_pgd_phys;
+using ::terminate_current_user_process;
+using ::sched_yield_to_min_vruntime;
+using ::console_rx_init;
+using ::console_getc_blocking;
+using ::moss_slab_alloc_pages;
+using ::moss_slab_free_pages;
+using ::strcmp;
+
+} // namespace moss::abi::bridge
+
+// ============================================================================
+// Kernel entry points (C++ functions called from assembly)
+// ============================================================================
+export namespace moss::abi::entry {
+
+using ::early_main;
+using ::kernel_main;
+using ::early_debug_print;
+using ::kernel_panic_handler;
+using ::system_call_handler;
+using ::irq_handler_c;
+using ::kernel_page_fault_handler;
+using ::user_page_fault_handler;
+using ::unhandled_exception_handler;
+using ::unhandled_user_exception_handler;
+using ::mark_runtime_heap_ready;
+using ::get_kernel_version;
+using ::get_build_info;
+
+#if defined(__aarch64__) || defined(MOSS_ARCH_ARM64)
+using ::secondary_cpu_entry;
+using ::mark_cpu_online;
+using ::mark_cpu_parked;
+#endif
+
+} // namespace moss::abi::entry

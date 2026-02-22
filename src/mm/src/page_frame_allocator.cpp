@@ -2,16 +2,9 @@
 // 为内核提供可靠的物理页面分配和释放功能
 // Module implementation unit
 
-module;
-
-// Linker symbols (must be in global module fragment)
-extern "C" {
-    extern char _kernel_end_addr[];
-    extern char _heap_start_addr[];
-    extern char _heap_end_addr[];
-}
-
 module moss.mm;
+
+import moss.abi;
 
 namespace moss::kernel::mm {
 
@@ -193,7 +186,7 @@ PageAllocVoidResult PageFrameAllocator::parse_memory_layout() noexcept {
     // DTB 解析在 hardware_early_init() 中完成，此处仅读取结果。
     const auto &plat = ::moss::fdt::get_platform_info();
 
-    PhysAddr kernel_end = reinterpret_cast<PhysAddr>(_kernel_end_addr);
+    PhysAddr kernel_end = moss::abi::linker::kernel_end();
     PhysAddr memory_end =
         (plat.dtb_valid && plat.memory_region_count > 0)
             ? static_cast<PhysAddr>(plat.total_memory_start + plat.total_memory_size)

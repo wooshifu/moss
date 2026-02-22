@@ -3,25 +3,6 @@
 // page_table, numa_policy, vmalloc_allocator, memory_reclaim, memory_compaction,
 // huge_pages, memory_stats, mm_interface, kernel_memory
 
-module;
-
-// Linker symbols (must be in global module fragment)
-extern "C" {
-    extern char _text_start_addr[];
-    extern char _text_end_addr[];
-    extern char _rodata_start_addr[];
-    extern char _rodata_end_addr[];
-    extern char _data_start_addr[];
-    extern char _data_end_addr[];
-    extern char _bss_start_addr[];
-    extern char _bss_end_addr[];
-    extern char _pagetable_start_addr[];
-    extern char _pagetable_end_addr[];
-    extern char _kernel_end_addr[];
-    extern char _heap_start_addr[];
-    extern char _heap_end_addr[];
-}
-
 export module moss.mm;
 
 import moss.std;
