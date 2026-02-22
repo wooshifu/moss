@@ -35,11 +35,6 @@ export void early_cpu_topology_init() noexcept {
   log::klog::info("CPU topology: {} CPUs detected", num_cpu_ids);
 }
 
-// Second-phase init (placeholder for future per-CPU setup)
-export void initialize_cpu_topology() noexcept {
-  log::klog::info("CPU topology initialized: {} CPUs", num_cpu_ids);
-}
-
 } // namespace moss::kernel::cpu_topology
 
 // Re-export at kernel namespace level
