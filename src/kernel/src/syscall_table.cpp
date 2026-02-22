@@ -13,7 +13,11 @@ using moss::abi::switch_to_user;
 namespace moss::kernel::syscall {
 
 // 全局系统调用统计
-SyscallStats g_syscall_stats = {0, 0, 0, 0, 0};
+SyscallStats g_syscall_stats = {.total_syscalls = 0,
+                                .successful_syscalls = 0,
+                                .failed_syscalls = 0,
+                                .unimplemented_syscalls = 0,
+                                .invalid_syscalls = 0};
 
 // 系统调用处理函数实现
 namespace handlers {

@@ -1,21 +1,6 @@
 // MOSS Drivers Module - Device Management and Driver Framework
 // Provides device tree, driver matching, lifecycle management, and UART driver.
 
-module;
-
-// Macro for disabling copy and move (macros do not cross module boundaries)
-#define NON_COPYABLE(ClassName)                                                                                        \
-  ClassName(const ClassName &) = delete;                                                                               \
-  ClassName &operator=(const ClassName &) = delete;
-
-#define NON_MOVABLE(ClassName)                                                                                         \
-  ClassName(ClassName &&) = delete;                                                                                    \
-  ClassName &operator=(ClassName &&) = delete;
-
-#define NON_COPYABLE_NON_MOVABLE(ClassName)                                                                            \
-  NON_COPYABLE(ClassName)                                                                                              \
-  NON_MOVABLE(ClassName)
-
 export module moss.drivers;
 
 import moss.std;
@@ -105,7 +90,7 @@ struct DeviceResource {
     DeviceDmaInfo dma;
   };
 
-  DeviceResource() noexcept : type(Memory) { memory = {0, 0, 0}; }
+  DeviceResource() noexcept : type(Memory) { memory = {.start = 0, .end = 0, .mapped_addr = 0}; }
 };
 
 // ========================================================================
@@ -136,7 +121,10 @@ public:
 
   virtual ~Device() noexcept = default;
 
-  NON_COPYABLE_NON_MOVABLE(Device)
+  Device(const Device &) = delete;
+  Device &operator=(const Device &) = delete;
+  Device(Device &&) = delete;
+  Device &operator=(Device &&) = delete;
 
   // Device lifecycle interface
   [[nodiscard]] virtual VoidResult initialize() noexcept = 0;
@@ -212,7 +200,9 @@ public:
     u64 access_count;
   };
 
-  [[nodiscard]] DeviceStats get_statistics() const noexcept { return {init_time_, last_access_time_, access_count_}; }
+  [[nodiscard]] DeviceStats get_statistics() const noexcept {
+    return {.init_time = init_time_, .last_access_time = last_access_time_, .access_count = access_count_};
+  }
 
 protected:
   [[nodiscard]] static u64 get_current_time() noexcept { return arch::get_timestamp_counter(); }
@@ -235,7 +225,10 @@ public:
 
   virtual ~Driver() noexcept = default;
 
-  NON_COPYABLE_NON_MOVABLE(Driver)
+  Driver(const Driver &) = delete;
+  Driver &operator=(const Driver &) = delete;
+  Driver(Driver &&) = delete;
+  Driver &operator=(Driver &&) = delete;
 
   // Driver interface
   [[nodiscard]] virtual VoidResult probe(Device *device) noexcept = 0;
@@ -281,7 +274,10 @@ public:
 
   ~DeviceManager() noexcept { cleanup(); }
 
-  NON_COPYABLE_NON_MOVABLE(DeviceManager)
+  DeviceManager(const DeviceManager &) = delete;
+  DeviceManager &operator=(const DeviceManager &) = delete;
+  DeviceManager(DeviceManager &&) = delete;
+  DeviceManager &operator=(DeviceManager &&) = delete;
 
   [[nodiscard]] KernelResult<DeviceId> register_device(shared_ptr<Device> device) noexcept {
     if (!device) {
@@ -380,9 +376,9 @@ public:
   };
 
   [[nodiscard]] DeviceManagerStats get_statistics() const noexcept {
-    return {total_devices_.load(containers::MemoryOrder::Relaxed),
-            active_devices_.load(containers::MemoryOrder::Relaxed),
-            registered_drivers_.load(containers::MemoryOrder::Relaxed)};
+    return {.total_devices = total_devices_.load(containers::MemoryOrder::Relaxed),
+            .active_devices = active_devices_.load(containers::MemoryOrder::Relaxed),
+            .registered_drivers = registered_drivers_.load(containers::MemoryOrder::Relaxed)};
   }
 
   void list_devices(void (*callback)(const Device &, void *), void *context) const noexcept {
@@ -677,7 +673,12 @@ public:
   };
 
   [[nodiscard]] UartStatistics get_uart_statistics() const noexcept {
-    return {bytes_sent_, bytes_received_, tx_errors_, rx_errors_, baud_rate_, state() == DeviceState::Active};
+    return {.bytes_sent = bytes_sent_,
+            .bytes_received = bytes_received_,
+            .tx_errors = tx_errors_,
+            .rx_errors = rx_errors_,
+            .current_baud_rate = baud_rate_,
+            .is_active = state() == DeviceState::Active};
   }
 
   [[nodiscard]] VoidResult set_baud_rate(u32 baud_rate) noexcept {

@@ -242,7 +242,7 @@ static void parse_memory(const void *fdt) noexcept {
   for (u32 i = 0; i < region_count; i++) {
     u64 base = read_cells_value(ptr, addr_cells);
     u64 size = read_cells_value(ptr, size_cells);
-    g_platform_info.memory_regions[i] = {static_cast<PhysAddr>(base), size};
+    g_platform_info.memory_regions[i] = {.base = static_cast<PhysAddr>(base), .size = size};
     total_size += size;
   }
 

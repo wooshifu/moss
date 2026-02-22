@@ -45,6 +45,28 @@ Checks: >
   bugprone-implicit-widening-of-multiplication-result,
   bugprone-too-small-loop-variable,
   bugprone-misplaced-widening-cast,
+  bugprone-chained-comparison,
+  bugprone-inc-dec-in-conditions,
+  bugprone-redundant-branch-condition,
+  bugprone-undelegated-constructor,
+  bugprone-suspicious-enum-usage,
+  bugprone-casting-through-void,
+  bugprone-incorrect-roundings,
+  # bugprone-macro-parentheses — disabled: --fix adds parens to macro args used as type names, breaking syntax
+  bugprone-terminating-continue,
+  bugprone-suspicious-include,
+  bugprone-virtual-near-miss,
+  bugprone-multiple-statement-macro,
+  cppcoreguidelines-avoid-goto,
+  cppcoreguidelines-virtual-class-destructor,
+  modernize-concat-nested-namespaces,
+  modernize-macro-to-enum,
+  modernize-use-designated-initializers,
+  readability-const-return-type,
+  readability-avoid-unconditional-preprocessor-if,
+  readability-duplicate-include,
+  readability-avoid-nested-conditional-operator,
+  readability-enum-initial-value,
 
 HeaderFilterRegex: 'src/.*'
 WarningsAsErrors: '*'

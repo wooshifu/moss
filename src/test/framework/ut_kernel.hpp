@@ -617,21 +617,13 @@ struct bdd_test_factory {
 };
 
 // BDD syntax functions
-constexpr auto given(const char* name) {
-    return bdd_test_factory{"[Given] ", name};
-}
+constexpr auto given(const char *name) { return bdd_test_factory{.prefix = "[Given] ", .name = name}; }
 
-constexpr auto when(const char* name) {
-    return bdd_test_factory{"[When] ", name};
-}
+constexpr auto when(const char *name) { return bdd_test_factory{.prefix = "[When] ", .name = name}; }
 
-constexpr auto then(const char* name) {
-    return bdd_test_factory{"[Then] ", name};
-}
+constexpr auto then(const char *name) { return bdd_test_factory{.prefix = "[Then] ", .name = name}; }
 
-constexpr auto should(const char* name) {
-    return bdd_test_factory{"[Should] ", name};
-}
+constexpr auto should(const char *name) { return bdd_test_factory{.prefix = "[Should] ", .name = name}; }
 
 // ============================================================================
 // Simple Parameterized Testing Support
