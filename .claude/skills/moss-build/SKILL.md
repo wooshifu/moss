@@ -1,87 +1,113 @@
 ---
 name: moss-build
-description: Use when building the moss kernel, running QEMU tests, debugging with QEMU, or using Docker for builds. Covers cmake presets, build.py, run_qemu.sh, QEMU debug tracing, and Docker compose. Use this skill whenever the user mentions building, compiling, testing, running, QEMU, or Docker in the context of the moss kernel.
+description: This skill should be used when building the moss kernel, running it in QEMU, running unit tests, debugging with GDB, or using Docker for CI builds. Also use when the user mentions "build", "compile", "cmake", "preset", "QEMU", "run", "test", "debug", "GDB", "docker compose", "build.py", or asks about build errors, test failures, or how to run the kernel.
 ---
 
 # Moss Build & Test
 
-## Build Commands
-
-```bash
-# 单个架构构建
-cmake --workflow --preset arm64-qemu-debug
-cmake --workflow --preset arm64-qemu-release
-cmake --workflow --preset x86_64-qemu-debug
-cmake --workflow --preset x86_64-qemu-release
-cmake --workflow --preset riscv-qemu-debug
-cmake --workflow --preset riscv-qemu-release
-
-# 编译全部架构（默认行为）
-uv run build.py
-
-# 其他常用选项
-uv run build.py list                    # 列出所有预设
-uv run build.py --arch arm64            # 仅ARM64架构
-uv run build.py -m --build-type debug   # 主要架构debug版本
-uv run build.py --dry-run               # 预览模式
-uv run build.py --all                   # 显式构建所有架构
+```
+Build → Run → Test — always in this order.
+Build with cmake presets, run/test with the generated QEMU wrapper script.
 ```
 
-## QEMU Testing
+Moss targets 3 architectures (ARM64, x86_64, RISC-V) × 2 build types (debug, release) = 6 presets. Each preset builds, generates QEMU scripts, and optionally runs tests in a single workflow.
 
-构建完成后，CMake 会根据主机平台在 build 目录下生成对应的 QEMU 运行脚本（QEMU 路径已自动探测注入）：
+## Step 1 — Build
 
-**Linux / macOS** — `run_qemu.sh`：
+Pick the right command based on scope:
+
+| Goal | Command |
+|------|---------|
+| Single preset (fastest) | `cmake --workflow --preset arm64-qemu-debug` |
+| All 6 presets | `uv run build.py` |
+| One architecture, both types | `uv run build.py --arch arm64` |
+| Main architectures, debug only | `uv run build.py -m --build-type debug` |
+| Preview what would build | `uv run build.py --dry-run` |
+| List available presets | `uv run build.py list` |
+
+Available presets: `arm64-qemu-debug`, `arm64-qemu-release`, `x86_64-qemu-debug`, `x86_64-qemu-release`, `riscv-qemu-debug`, `riscv-qemu-release`.
+
+The project uses `-Weverything -Werror` — every warning is a build failure. Fix all warnings before proceeding.
+
+## Step 2 — Run & Test
+
+After a successful build, CMake generates a QEMU wrapper script in the build directory. Use it for all run/test/debug operations:
+
 ```bash
-# 构建完成后，wrapper 脚本自动生成（调用 scripts/run_qemu.py）
-./build/<preset>/run_qemu.sh              # 运行内核（ELF 模式）
-./build/<preset>/run_qemu.sh --test       # 运行单元测试
-./build/<preset>/run_qemu.sh --debug      # GDB 调试模式
-./build/<preset>/run_qemu.sh --bin        # 使用原始二进制内核
+./build/<preset>/run_qemu.sh              # run kernel (ELF mode)
+./build/<preset>/run_qemu.sh --test       # run unit tests
+./build/<preset>/run_qemu.sh --debug      # start GDB server (port 1234)
+./build/<preset>/run_qemu.sh --bin        # boot raw binary image
 ```
 
-**Windows** — `run_qemu.ps1` / `run_qemu.bat`：
-```powershell
-.\build\<preset>\run_qemu.bat              # 运行内核（ELF 模式）
-.\build\<preset>\run_qemu.bat --test       # 运行单元测试
-.\build\<preset>\run_qemu.bat --debug      # GDB 调试模式
-.\build\<preset>\run_qemu.bat --bin        # 使用原始二进制内核
+On Windows, use `run_qemu.bat` or `run_qemu.ps1` instead.
+
+CMake targets provide an alternative interface:
+
+```bash
+cmake --build --preset arm64-qemu-debug --target run-qemu      # run
+cmake --build --preset arm64-qemu-debug --target debug          # GDB
+cmake --build --preset arm64-qemu-debug --target test-kernel    # test
 ```
 
-也可通过 CMake 目标运行：
+## Step 3 — Debug
+
+### GDB attach
+
+Start the kernel in debug mode, then attach GDB from another terminal:
+
 ```bash
-cmake --build --preset arm64-qemu-debug --target run-qemu
-cmake --build --preset arm64-qemu-debug --target debug
-cmake --build --preset arm64-qemu-debug --target test-kernel
+# Terminal 1: start QEMU with GDB server
+./build/arm64-qemu-debug/run_qemu.sh --debug
+
+# Terminal 2: attach GDB
+gdb-multiarch build/arm64-qemu-debug/bin/moss.elf -ex "target remote :1234"
 ```
 
-## QEMU Debug Options
+### QEMU trace options
 
-**精确跟踪内核运行：**
+Pass extra QEMU flags to trace interrupts, instruction execution, or device activity:
+
 ```bash
-# 方式1: 专用选项
+# Trace interrupts and executed instructions
 ./build/<preset>/run_qemu.sh --debug --qemu-args="-d int,in_asm"
 
-# 方式2: 双破折号分隔
+# Alternative syntax with double-dash separator
 ./build/<preset>/run_qemu.sh --debug -- -d int,in_asm
 
-# 复合调试选项
+# Log to file + trace virtio devices
 ./build/<preset>/run_qemu.sh --qemu-args="-d int,in_asm -D qemu.log -trace enable=virtio*"
 ```
 
-**汇编代码分析：**
-- `moss.dis` - 构建后生成的完整内核反汇编代码
-- 位置：`./build/<preset>/moss.dis`
-- 用于对照QEMU输出分析执行流程
+### Disassembly analysis
 
-## Docker QEMU Testing
-
-无需本地安装工具链，在容器内完成构建 + QEMU 运行：
+After each build, the full kernel disassembly is generated at `./build/<preset>/moss.dis`. Cross-reference it with QEMU trace output to follow execution flow:
 
 ```bash
-docker compose -f docker/docker-compose.yaml build                    # 构建镜像
-docker compose -f docker/docker-compose.yaml run moss-qemu            # 构建内核 + 运行
-docker compose -f docker/docker-compose.yaml run moss-qemu test       # 运行单元测试
-docker compose -f docker/docker-compose.yaml run moss-qemu run --arch x86_64  # 指定架构
-docker compose -f docker/docker-compose.yaml run moss-qemu shell      # 交互式 shell
+# Find a function in the disassembly
+grep -A 20 '<kernel_main>:' build/arm64-qemu-debug/moss.dis
 ```
+
+Other generated files: `moss.sym` (symbol table), `moss.bin` (raw binary), `moss_boot.bin` (boot section).
+
+## Docker (CI / no local toolchain)
+
+Build and test inside Docker without installing Clang or QEMU locally:
+
+```bash
+docker compose -f docker/docker-compose.yaml build                           # build image
+docker compose -f docker/docker-compose.yaml run moss-qemu                   # build + run
+docker compose -f docker/docker-compose.yaml run moss-qemu test              # unit tests
+docker compose -f docker/docker-compose.yaml run moss-qemu run --arch x86_64 # specific arch
+docker compose -f docker/docker-compose.yaml run moss-qemu shell             # interactive
+```
+
+## Troubleshooting
+
+| Problem | Likely Cause | Fix |
+|---------|-------------|-----|
+| Build fails with warning-as-error | `-Weverything -Werror` flags a new warning | Fix the warning; do not suppress it without justification |
+| QEMU script not found | Build did not complete successfully | Rerun `cmake --workflow --preset <preset>` |
+| Test timeout (>30s) | Kernel hangs or infinite loop | Use `--debug` mode with GDB to find the hang point |
+| `qemu-system-*` not found | QEMU not installed or not in PATH | Install QEMU or set path in CMakeUserPresets.json |
+| Wrong architecture binary | Used wrong preset | Check preset name matches target arch |

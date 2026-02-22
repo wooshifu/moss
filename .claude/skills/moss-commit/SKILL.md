@@ -1,35 +1,95 @@
 ---
 name: moss-commit
-description: Use when creating git commits in the moss project. Defines the required commit message format with [module][subsystem] tags, English-only requirement, and prohibited Co-Authored-By line. Use this skill whenever committing changes, writing commit messages, or preparing code for commit.
+description: This skill should be used when creating git commits, writing commit messages, staging changes, or preparing code for commit in the moss project. Also use when the user says "commit", "提交", asks to save changes, or when you need to create a commit after completing implementation work.
 ---
 
-# Commit Message Format
-
-**使用英文编写所有提交信息，格式如下：**
+# Moss Commit Convention
 
 ```
-[module][subsystem] brief description of changes
-
-Detailed explanation (optional):
-- Explain the reason and impact of changes
-- List important technical details
-- Reference related issues or discussions
+Every commit message starts with [module][subsystem] in lowercase.
+English only. No Co-Authored-By line.
 ```
+
+## Format
+
+```
+[module][subsystem] brief description in imperative mood
+
+Optional body:
+- Why this change was made (not what — the diff shows what)
+- Impact on other modules or behavior
+- Technical details worth preserving
+```
+
+The subject line is the only required part. The body is optional but encouraged for non-trivial changes.
 
 ## Rules
 
-- **必须使用英文**
-- **禁止在提交信息中包含**: Co-Authored-By: Claude <noreply@anthropic.com>
-- **module**: 主要模块名（如 smp, boot, mm, process, ipc, driver）
-- **subsystem**: 具体组件（如 scheduler, allocator, driver）
-- **description**: 使用祈使句，首字母小写
+| Rule | Reason |
+|------|--------|
+| English only | Consistent with codebase language and git tooling |
+| No `Co-Authored-By: Claude` | Project policy — never include AI attribution lines |
+| Imperative mood, lowercase start | Matches git convention: "fix X" not "Fixed X" or "Fixes X" |
+| `[module]` = top-level area | Maps to `src/` subdirectories: mm, boot, kernel, process, etc. |
+| `[subsystem]` = specific component | Narrows scope: scheduler, allocator, page_table, arm64, etc. |
 
-## Examples
+## Module Tags
 
+Pick from these based on which `src/` directory the change primarily affects:
+
+| Tag | Scope |
+|-----|-------|
+| `[mm]` | Memory management (page tables, allocators, page fault) |
+| `[kernel]` | Kernel core (syscalls, ELF loader, main) |
+| `[process]` | Process management (scheduler, load balancer, fork) |
+| `[boot]` | Boot sequence and arch-specific startup |
+| `[ipc]` | Inter-process communication |
+| `[drivers]` | Device drivers (UART, etc.) |
+| `[interrupts]` | Interrupt handling (GIC, exception vectors) |
+| `[containers]` | Data structures (lists, queues, slab allocator) |
+| `[core]` | Core modules (std, types, result, arch, platform) |
+| `[abi]` | ABI definitions (linker symbols, extern C) |
+| `[cmake]` | Build system changes |
+| `[docs]` | Documentation, CLAUDE.md, skills |
+| `[infra]` | Scripts, CI, Docker, tooling |
+| `[cleanup]` | Refactoring that spans multiple modules |
+
+For cross-cutting changes, use the most impactful module as `[module]` and `[cleanup]` or a descriptive subsystem as `[subsystem]`.
+
+## Good vs Bad Examples
+
+**Good** — imperative, explains why in body:
 ```
-[smp][scheduler] implement dynamic CPU load balancing
-
-[boot][arm64] fix CPU topology detection using MPIDR register
-
 [mm][allocator] optimize slab allocation for multi-core systems
+
+Per-CPU slab caches reduce cross-core contention by 40%. Each CPU
+now maintains a local free list, falling back to the global pool
+only when empty.
+```
+
+**Good** — concise single-line for small changes:
+```
+[core][std] replace hand-written type traits with Clang builtins
+```
+
+**Good** — cross-cutting cleanup:
+```
+[cleanup][extern-c] remove dead extern C declarations and unnecessary C linkage
+```
+
+**Bad** — past tense, no tags:
+```
+Fixed a bug in the memory allocator
+```
+
+**Bad** — too vague:
+```
+[mm][core] update code
+```
+
+**Bad** — includes AI attribution:
+```
+[kernel][main] add error handling
+
+Co-Authored-By: Claude <noreply@anthropic.com>
 ```
