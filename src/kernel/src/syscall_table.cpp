@@ -60,19 +60,22 @@ long sys_exit(long exit_code, long, long, long, long, long) noexcept {
 long sys_getpid(long, long, long, long, long, long) noexcept {
   using namespace moss::kernel::process;
   Thread *cur = CfsScheduler::get_current_task();
-  if (!cur)
+  if (!cur) {
     return -errc::ESRCH;
+  }
   return static_cast<long>(cur->owner_pid);
 }
 
 long sys_getppid(long, long, long, long, long, long) noexcept {
   using namespace moss::kernel::process;
   Thread *cur = CfsScheduler::get_current_task();
-  if (!cur)
+  if (!cur) {
     return -errc::ESRCH;
+  }
   Process *proc = g_process_manager ? g_process_manager->find_process(cur->owner_pid) : nullptr;
-  if (!proc)
+  if (!proc) {
     return -errc::ESRCH;
+  }
   return static_cast<long>(proc->parent_pid());
 }
 
@@ -128,8 +131,9 @@ long sys_fork(long, long, long, long, long, long) noexcept {
   // Helper: clean up the child process on error (removes from process
   // table and triggers ~Process which frees address space, threads, etc.)
   auto cleanup_child = [&](Process *cp) {
-    if (g_process_manager)
+    if (g_process_manager) {
       (void)g_process_manager->terminate_process(cp->pid(), -1);
+    }
   };
 
   // 4. Create child address space (new PGD + ASID)
@@ -194,7 +198,7 @@ long sys_fork(long, long, long, long, long, long) noexcept {
     // Read user GP registers from the syscall entry frame on
     // the parent's kernel stack.
     u64 kstop = parent_thread->kernel_stack_top();
-    auto *trap_frame = reinterpret_cast<const u64 *>(kstop - 34 * 8);
+    const auto *trap_frame = reinterpret_cast<const u64 *>(kstop - 34 * 8);
 
     // Copy all 31 GP registers (x0-x30) from trap frame
     for (int i = 0; i < 31; ++i) {
@@ -316,18 +320,20 @@ long sys_execve(long pathname_addr, long argv_addr, long /* envp */, long, long,
   usize argv_buf_pos = 0;
 
   if (argv_addr != 0) {
-    auto *user_argv = reinterpret_cast<const char *const *>(static_cast<usize>(argv_addr));
+    const auto *user_argv = reinterpret_cast<const char *const *>(static_cast<usize>(argv_addr));
     for (usize ai = 0; ai < MAX_ARGS; ++ai) {
       const char *arg = user_argv[ai];
-      if (arg == nullptr)
+      if (arg == nullptr) {
         break;
+      }
       argv_offsets[kernel_argc] = argv_buf_pos;
       // Copy string
       for (usize ci = 0; ci < ARGV_BUF_SIZE - argv_buf_pos - 1; ++ci) {
         char ch = arg[ci];
         argv_buf[argv_buf_pos++] = ch;
-        if (ch == '\0')
+        if (ch == '\0') {
           break;
+        }
       }
       // Ensure null-termination
       if (argv_buf_pos > 0 && argv_buf[argv_buf_pos - 1] != '\0') {
@@ -341,8 +347,9 @@ long sys_execve(long pathname_addr, long argv_addr, long /* envp */, long, long,
   {
     const char *basename = pathname;
     for (const char *p = pathname; *p; ++p) {
-      if (*p == '/')
+      if (*p == '/') {
         basename = p + 1;
+      }
     }
     proc->set_name(basename);
   }
@@ -364,7 +371,7 @@ long sys_execve(long pathname_addr, long argv_addr, long /* envp */, long, long,
   }
 
   // 4. Validate ELF header (inode->data = zero-copy ELF backing)
-  auto *elf_hdr = reinterpret_cast<const ElfHeader *>(file_inode->data);
+  const auto *elf_hdr = reinterpret_cast<const ElfHeader *>(file_inode->data);
   if (!validate_elf_header(elf_hdr, file_inode->size)) {
     log::klog::error("execve: '{}' is not a valid ELF", pathname);
     return -errc::ENOEXEC;
@@ -442,30 +449,38 @@ long sys_execve(long pathname_addr, long argv_addr, long /* envp */, long, long,
 
     for (u16 i = 0; i < phnum && load_count < MAX_LOADS; ++i) {
       const auto &ph = phdrs[i];
-      if (ph.p_type != PT_LOAD || ph.p_memsz == 0)
+      if (ph.p_type != PT_LOAD || ph.p_memsz == 0) {
         continue;
+      }
       ++load_count;
 
-      if (ph.p_vaddr < overall_start)
+      if (ph.p_vaddr < overall_start) {
         overall_start = ph.p_vaddr;
+      }
       VirtAddr seg_end = ph.p_vaddr + ph.p_memsz;
-      if (seg_end > overall_end)
+      if (seg_end > overall_end) {
         overall_end = seg_end;
-
-      if (ph.p_filesz > 0) {
-        if (ph.p_offset < file_offset_min)
-          file_offset_min = ph.p_offset;
-        u64 fo_end = ph.p_offset + ph.p_filesz;
-        if (fo_end > file_offset_max)
-          file_offset_max = fo_end;
       }
 
-      if (ph.p_flags & PF_R)
+      if (ph.p_filesz > 0) {
+        if (ph.p_offset < file_offset_min) {
+          file_offset_min = ph.p_offset;
+        }
+        u64 fo_end = ph.p_offset + ph.p_filesz;
+        if (fo_end > file_offset_max) {
+          file_offset_max = fo_end;
+        }
+      }
+
+      if (ph.p_flags & PF_R) {
         merged_flags |= vma_flags::READ;
-      if (ph.p_flags & PF_W)
+      }
+      if (ph.p_flags & PF_W) {
         merged_flags |= vma_flags::WRITE;
-      if (ph.p_flags & PF_X)
+      }
+      if (ph.p_flags & PF_X) {
         merged_flags |= vma_flags::EXEC;
+      }
     }
 
     // Page-align the overall range
@@ -486,18 +501,21 @@ long sys_execve(long pathname_addr, long argv_addr, long /* envp */, long, long,
       u16 ri = 0;
       for (u16 i = 0; i < phnum && ri < MAX_LOADS; ++i) {
         const auto &ph2 = phdrs[i];
-        if (ph2.p_type != PT_LOAD || ph2.p_memsz == 0)
+        if (ph2.p_type != PT_LOAD || ph2.p_memsz == 0) {
           continue;
+        }
         ranges[ri].s = ph2.p_vaddr & ~(static_cast<VirtAddr>(PAGE_SIZE) - 1);
         ranges[ri].e = (ph2.p_vaddr + ph2.p_memsz + PAGE_SIZE - 1) & ~(static_cast<VirtAddr>(PAGE_SIZE) - 1);
         ++ri;
       }
-      for (u16 a = 0; a < ri && !has_page_overlap; ++a)
-        for (u16 b = a + 1; b < ri; ++b)
+      for (u16 a = 0; a < ri && !has_page_overlap; ++a) {
+        for (u16 b = a + 1; b < ri; ++b) {
           if (ranges[a].s < ranges[b].e && ranges[b].s < ranges[a].e) {
             has_page_overlap = true;
             break;
           }
+        }
+      }
     }
 
     bool use_merged = has_page_overlap || load_count <= 1;
@@ -518,8 +536,9 @@ long sys_execve(long pathname_addr, long argv_addr, long /* envp */, long, long,
         backing_offset = overall_start - page_start;
       }
 
-      if (backing_size == 0)
+      if (backing_size == 0) {
         merged_flags |= vma_flags::DEMAND_ZERO;
+      }
 
       new_as->add_vma(page_start, page_end, merged_flags, vma_type, backing, backing_offset, backing_size);
 
@@ -527,20 +546,25 @@ long sys_execve(long pathname_addr, long argv_addr, long /* envp */, long, long,
       // Separate VMAs for page-separated segments (general case)
       for (u16 i = 0; i < phnum; ++i) {
         const auto &ph = phdrs[i];
-        if (ph.p_type != PT_LOAD || ph.p_memsz == 0)
+        if (ph.p_type != PT_LOAD || ph.p_memsz == 0) {
           continue;
+        }
 
         u32 vma_flags = 0;
-        if (ph.p_flags & PF_R)
+        if (ph.p_flags & PF_R) {
           vma_flags |= vma_flags::READ;
-        if (ph.p_flags & PF_W)
+        }
+        if (ph.p_flags & PF_W) {
           vma_flags |= vma_flags::WRITE;
-        if (ph.p_flags & PF_X)
+        }
+        if (ph.p_flags & PF_X) {
           vma_flags |= vma_flags::EXEC;
+        }
 
         VmaType vma_type = VmaType::DATA;
-        if ((ph.p_flags & PF_X) && !(ph.p_flags & PF_W))
+        if ((ph.p_flags & PF_X) && !(ph.p_flags & PF_W)) {
           vma_type = VmaType::CODE;
+        }
 
         VirtAddr seg_start = ph.p_vaddr;
         VirtAddr seg_end = (seg_start + ph.p_memsz + PAGE_SIZE - 1) & ~(static_cast<VirtAddr>(PAGE_SIZE) - 1);
@@ -548,8 +572,9 @@ long sys_execve(long pathname_addr, long argv_addr, long /* envp */, long, long,
         const u8 *backing = (ph.p_filesz > 0) ? (file_inode->data + ph.p_offset) : nullptr;
         usize b_size = static_cast<usize>(ph.p_filesz);
 
-        if (ph.p_filesz == 0)
+        if (ph.p_filesz == 0) {
           vma_flags |= vma_flags::DEMAND_ZERO;
+        }
 
         new_as->add_vma(seg_start, seg_end, vma_flags, vma_type, backing, 0, b_size);
 
@@ -634,8 +659,9 @@ long sys_execve(long pathname_addr, long argv_addr, long /* envp */, long, long,
     // Write string data
     {
       auto *dst = reinterpret_cast<volatile char *>(strings_base);
-      for (usize i = 0; i < argv_buf_pos; ++i)
+      for (usize i = 0; i < argv_buf_pos; ++i) {
         dst[i] = argv_buf[i];
+      }
     }
 
     // Write argv[] pointer array
@@ -708,12 +734,14 @@ long sys_wait4(long wait_pid, long wstatus_addr, long options, long, long, long)
   constexpr long WNOHANG = 1;
 
   Thread *cur = CfsScheduler::get_current_task();
-  if (!cur)
+  if (!cur) {
     return -errc::EINVAL;
+  }
 
   Process *proc = g_process_manager ? g_process_manager->find_process(cur->owner_pid) : nullptr;
-  if (!proc)
+  if (!proc) {
     return -errc::EINVAL;
+  }
 
   // Must have children
   if (!proc->has_children()) {
@@ -815,39 +843,45 @@ long sys_kill(long, long, long, long, long, long) noexcept {
 static void *get_current_fd_table() noexcept {
   using namespace moss::kernel::process;
   Thread *cur = CfsScheduler::get_current_task();
-  if (!cur)
+  if (!cur) {
     return nullptr;
+  }
   Process *proc = g_process_manager ? g_process_manager->find_process(cur->owner_pid) : nullptr;
   return proc ? proc->fd_table() : nullptr;
 }
 
 long sys_open(long pathname_addr, long flags, long mode, long, long, long) noexcept {
   void *fdt = get_current_fd_table();
-  if (!fdt)
+  if (!fdt) {
     return -errc::EBADF;
+  }
 
   const char *path = reinterpret_cast<const char *>(static_cast<unsigned long long>(pathname_addr));
-  if (!path)
+  if (!path) {
     return -errc::EFAULT;
+  }
 
   return moss::kernel::vfs::syscall::do_open(fdt, path, static_cast<u32>(flags), static_cast<u32>(mode));
 }
 
 long sys_close(long fd, long, long, long, long, long) noexcept {
   void *fdt = get_current_fd_table();
-  if (!fdt)
+  if (!fdt) {
     return -errc::EBADF;
+  }
 
   return moss::kernel::vfs::syscall::do_close(fdt, static_cast<int>(fd));
 }
 
 long sys_read(long fd, long buf_addr, long count, long, long, long) noexcept {
   void *fdt = get_current_fd_table();
-  if (!fdt)
+  if (!fdt) {
     return -errc::EBADF;
+  }
 
-  if (buf_addr == 0 || count <= 0)
+  if (buf_addr == 0 || count <= 0) {
     return -errc::EINVAL;
+  }
 
   auto *buf = reinterpret_cast<u8 *>(static_cast<unsigned long long>(buf_addr));
 
@@ -856,11 +890,13 @@ long sys_read(long fd, long buf_addr, long count, long, long, long) noexcept {
 
 long sys_write(long fd, long buf_addr, long count, long, long, long) noexcept {
   void *fdt = get_current_fd_table();
-  if (!fdt)
+  if (!fdt) {
     return -errc::EBADF;
+  }
 
-  if (buf_addr == 0 || count <= 0)
+  if (buf_addr == 0 || count <= 0) {
     return -errc::EINVAL;
+  }
 
   const auto *buf = reinterpret_cast<const u8 *>(static_cast<unsigned long long>(buf_addr));
 
@@ -871,41 +907,48 @@ long sys_write(long fd, long buf_addr, long count, long, long, long) noexcept {
 
 long sys_lseek(long fd, long offset, long whence, long, long, long) noexcept {
   void *fdt = get_current_fd_table();
-  if (!fdt)
+  if (!fdt) {
     return -errc::EBADF;
+  }
   return moss::kernel::vfs::syscall::do_lseek(fdt, fd, static_cast<i64>(offset), static_cast<u32>(whence));
 }
 
 long sys_fstat(long fd, long stat_buf_addr, long, long, long, long) noexcept {
   void *fdt = get_current_fd_table();
-  if (!fdt)
+  if (!fdt) {
     return -errc::EBADF;
-  if (stat_buf_addr == 0)
+  }
+  if (stat_buf_addr == 0) {
     return -errc::EFAULT;
+  }
   auto *stat_buf = reinterpret_cast<void *>(static_cast<unsigned long long>(stat_buf_addr));
   return moss::kernel::vfs::syscall::do_fstat(fdt, fd, stat_buf);
 }
 
 long sys_dup(long oldfd, long, long, long, long, long) noexcept {
   void *fdt = get_current_fd_table();
-  if (!fdt)
+  if (!fdt) {
     return -errc::EBADF;
+  }
   return moss::kernel::vfs::syscall::do_dup(fdt, oldfd);
 }
 
 long sys_dup2(long oldfd, long newfd, long, long, long, long) noexcept {
   void *fdt = get_current_fd_table();
-  if (!fdt)
+  if (!fdt) {
     return -errc::EBADF;
+  }
   return moss::kernel::vfs::syscall::do_dup2(fdt, oldfd, newfd);
 }
 
 long sys_pipe(long pipefd_addr, long, long, long, long, long) noexcept {
   void *fdt = get_current_fd_table();
-  if (!fdt)
+  if (!fdt) {
     return -errc::EBADF;
-  if (pipefd_addr == 0)
+  }
+  if (pipefd_addr == 0) {
     return -errc::EFAULT;
+  }
   auto *pipefd = reinterpret_cast<long *>(static_cast<unsigned long long>(pipefd_addr));
   return moss::kernel::vfs::syscall::do_pipe(fdt, pipefd);
 }
@@ -960,16 +1003,19 @@ long sys_nice(long increment, long, long, long, long, long) noexcept {
   using namespace moss::kernel::process;
 
   Thread *cur = CfsScheduler::get_current_task();
-  if (!cur)
+  if (!cur) {
     return -errc::ESRCH;
+  }
 
   i32 new_nice = cur->se.nice + static_cast<i32>(increment);
 
   // Clamp to valid range [-20, 19]
-  if (new_nice < priority::MIN_NICE)
+  if (new_nice < priority::MIN_NICE) {
     new_nice = priority::MIN_NICE;
-  if (new_nice > priority::MAX_NICE)
+  }
+  if (new_nice > priority::MAX_NICE) {
     new_nice = priority::MAX_NICE;
+  }
 
   cur->se.nice = new_nice;
   cur->se.weight = cfs_params::nice_to_weight(new_nice);
@@ -986,12 +1032,14 @@ long sys_getpriority(long which, long who, long, long, long, long) noexcept {
   using namespace moss::kernel::process;
 
   // Only support PRIO_PROCESS (which == 0) for now
-  if (which != 0)
+  if (which != 0) {
     return -errc::EINVAL;
+  }
 
   Thread *cur = CfsScheduler::get_current_task();
-  if (!cur)
+  if (!cur) {
     return -errc::ESRCH;
+  }
 
   if (who == 0 || static_cast<ProcessId>(who) == cur->owner_pid) {
     // Return 20 - nice (Linux convention: avoids ambiguity with -errno)
@@ -999,15 +1047,18 @@ long sys_getpriority(long which, long who, long, long, long, long) noexcept {
   }
 
   // Look up the target process
-  if (!g_process_manager)
+  if (!g_process_manager) {
     return -errc::ESRCH;
+  }
   Process *proc = g_process_manager->find_process(static_cast<ProcessId>(who));
-  if (!proc)
+  if (!proc) {
     return -errc::ESRCH;
+  }
 
   Thread *main_thread = proc->get_main_thread();
-  if (!main_thread)
+  if (!main_thread) {
     return -errc::ESRCH;
+  }
 
   return 20 - static_cast<long>(main_thread->se.nice);
 }
@@ -1019,8 +1070,9 @@ long sys_sched_yield(long, long, long, long, long, long) noexcept {
   using namespace moss::kernel::process;
 
   Thread *cur = CfsScheduler::get_current_task();
-  if (!cur || !g_scheduler)
+  if (!cur || !g_scheduler) {
     return -errc::ESRCH;
+  }
 
   u32 cpu = arch::get_current_cpu_id();
 
@@ -1056,16 +1108,19 @@ long sys_sched_getaffinity(long pid_arg, long, long mask_addr, long, long, long)
   if (pid_arg == 0) {
     target = CfsScheduler::get_current_task();
   } else {
-    if (!g_process_manager)
+    if (!g_process_manager) {
       return -errc::ESRCH;
+    }
     Process *proc = g_process_manager->find_process(static_cast<ProcessId>(pid_arg));
-    if (!proc)
+    if (!proc) {
       return -errc::ESRCH;
+    }
     target = proc->get_main_thread();
   }
 
-  if (!target)
+  if (!target) {
     return -errc::ESRCH;
+  }
 
   if (mask_addr != 0) {
     auto *mask_ptr = reinterpret_cast<u32 *>(static_cast<unsigned long long>(mask_addr));
@@ -1081,38 +1136,44 @@ long sys_sched_getaffinity(long pid_arg, long, long mask_addr, long, long, long)
 long sys_sched_setaffinity(long pid_arg, long, long mask_addr, long, long, long) noexcept {
   using namespace moss::kernel::process;
 
-  if (mask_addr == 0)
+  if (mask_addr == 0) {
     return -errc::EFAULT;
+  }
 
-  auto *mask_ptr = reinterpret_cast<const u32 *>(static_cast<unsigned long long>(mask_addr));
+  const auto *mask_ptr = reinterpret_cast<const u32 *>(static_cast<unsigned long long>(mask_addr));
   u32 new_mask = *mask_ptr;
 
   // Must allow at least one CPU
-  if (new_mask == 0)
+  if (new_mask == 0) {
     return -errc::EINVAL;
+  }
 
   // Mask out CPUs beyond arch::MAX_CPUS
   constexpr u32 max_cpus = arch::MAX_CPUS;
   u32 valid_mask = (max_cpus >= 32) ? 0xFFFFFFFFu : ((1u << max_cpus) - 1);
   new_mask &= valid_mask;
-  if (new_mask == 0)
+  if (new_mask == 0) {
     return -errc::EINVAL;
+  }
 
   Thread *target = nullptr;
 
   if (pid_arg == 0) {
     target = CfsScheduler::get_current_task();
   } else {
-    if (!g_process_manager)
+    if (!g_process_manager) {
       return -errc::ESRCH;
+    }
     Process *proc = g_process_manager->find_process(static_cast<ProcessId>(pid_arg));
-    if (!proc)
+    if (!proc) {
       return -errc::ESRCH;
+    }
     target = proc->get_main_thread();
   }
 
-  if (!target)
+  if (!target) {
     return -errc::ESRCH;
+  }
 
   target->cpu_affinity_mask = new_mask;
 
@@ -1125,8 +1186,9 @@ long sys_sched_setaffinity(long pid_arg, long, long mask_addr, long, long, long)
 // sys_clock_gettime(clock_id, time_ns_ptr)
 // Returns monotonic nanoseconds since boot via timer subsystem.
 long sys_clock_gettime(long /* clock_id */, long time_ns_addr, long, long, long, long) noexcept {
-  if (time_ns_addr == 0)
+  if (time_ns_addr == 0) {
     return -errc::EFAULT;
+  }
   auto *ns_ptr = reinterpret_cast<u64 *>(static_cast<unsigned long long>(time_ns_addr));
   *ns_ptr = timer::TimerSubsystem::instance().now_ns();
   return 0;
@@ -1150,16 +1212,19 @@ static void nanosleep_wake_callback(void *data) noexcept {
 long sys_nanosleep(long ns_addr, long /* remaining */, long, long, long, long) noexcept {
   using namespace moss::kernel::process;
 
-  if (ns_addr == 0)
+  if (ns_addr == 0) {
     return -errc::EFAULT;
-  auto *req_ns = reinterpret_cast<const u64 *>(static_cast<unsigned long long>(ns_addr));
+  }
+  const auto *req_ns = reinterpret_cast<const u64 *>(static_cast<unsigned long long>(ns_addr));
   u64 duration = *req_ns;
-  if (duration == 0)
+  if (duration == 0) {
     return 0;
+  }
 
   Thread *cur = CfsScheduler::get_current_task();
-  if (!cur || !g_scheduler)
+  if (!cur || !g_scheduler) {
     return -errc::ESRCH;
+  }
 
   // 1. Arm one-shot timer to wake us after `duration` ns.
   //    HrTimer lives on kernel stack — safe because the stack
@@ -1254,8 +1319,9 @@ struct Info {
 long sys_topinfo(long info_addr, long, long, long, long, long) noexcept {
   using namespace moss::kernel::process;
 
-  if (info_addr == 0)
+  if (info_addr == 0) {
     return -errc::EFAULT;
+  }
 
   // Kernel-stack buffer (~5920 bytes, kernel stack is 16KB)
   topinfo_layout::Info kbuf;
@@ -1263,8 +1329,9 @@ long sys_topinfo(long info_addr, long, long, long, long, long) noexcept {
   // Zero-initialize on kernel stack (no page fault issues)
   {
     auto *p = reinterpret_cast<u8 *>(&kbuf);
-    for (usize i = 0; i < sizeof(kbuf); ++i)
+    for (usize i = 0; i < sizeof(kbuf); ++i) {
       p[i] = 0;
+    }
   }
 
   // System summary
@@ -1280,13 +1347,15 @@ long sys_topinfo(long info_addr, long, long, long, long, long) noexcept {
 
   if (g_scheduler) {
     kbuf.total_preemptions = g_scheduler->total_preemptions();
-    if (kbuf.total_context_switches == 0)
+    if (kbuf.total_context_switches == 0) {
       kbuf.total_context_switches = g_scheduler->total_context_switches();
+    }
 
     // Cap to struct array size to avoid out-of-bounds writes
     u32 nr_cpus = arch::MAX_CPUS;
-    if (nr_cpus > topinfo_layout::MAX_CPUS_TOP)
+    if (nr_cpus > topinfo_layout::MAX_CPUS_TOP) {
       nr_cpus = static_cast<u32>(topinfo_layout::MAX_CPUS_TOP);
+    }
 
     for (u32 cpu = 0; cpu < nr_cpus; ++cpu) {
       kbuf.cpu_load[cpu] = g_scheduler->get_cpu_load(cpu);
@@ -1315,8 +1384,9 @@ long sys_topinfo(long info_addr, long, long, long, long, long) noexcept {
   u64 proc_idx = 0;
   if (g_process_manager) {
     g_process_manager->for_each_process([&](ProcessId pid, Process *proc) {
-      if (proc_idx >= topinfo_layout::MAX_PROCS || !proc)
+      if (proc_idx >= topinfo_layout::MAX_PROCS || !proc) {
         return;
+      }
 
       auto &pe = kbuf.procs[proc_idx];
       pe.pid = static_cast<long>(pid);
@@ -1325,8 +1395,9 @@ long sys_topinfo(long info_addr, long, long, long, long, long) noexcept {
 
       // Copy process name
       const char *n = proc->name();
-      for (usize i = 0; i < 15 && n[i]; ++i)
+      for (usize i = 0; i < 15 && n[i]; ++i) {
         pe.name[i] = n[i];
+      }
 
       // Main thread scheduling info
       Thread *main = proc->get_main_thread();
@@ -1350,8 +1421,9 @@ long sys_topinfo(long info_addr, long, long, long, long, long) noexcept {
   {
     auto *dst = reinterpret_cast<volatile u8 *>(static_cast<unsigned long long>(info_addr));
     const auto *src = reinterpret_cast<const u8 *>(&kbuf);
-    for (usize i = 0; i < sizeof(kbuf); ++i)
+    for (usize i = 0; i < sizeof(kbuf); ++i) {
       dst[i] = src[i];
+    }
   }
 
   return 0;
@@ -1398,8 +1470,9 @@ static process::Thread *blocked_reader_ = nullptr;
 static bool buf_empty() noexcept { return rx_head_ == rx_tail_; }
 
 static int buf_get() noexcept {
-  if (buf_empty())
+  if (buf_empty()) {
     return -1;
+  }
   u8 ch = rx_buf_[rx_tail_];
   rx_tail_ = (rx_tail_ + 1) & RX_BUF_MASK;
   return ch;
@@ -1409,8 +1482,9 @@ static int buf_get() noexcept {
 
 static bool buf_put(u8 ch) noexcept {
   usize next_head = (rx_head_ + 1) & RX_BUF_MASK;
-  if (next_head == rx_tail_)
+  if (next_head == rx_tail_) {
     return false; // full — drop char
+  }
   rx_buf_[rx_head_] = ch;
   rx_head_ = next_head;
   return true;
@@ -1451,8 +1525,9 @@ static void uart_rx_irq_handler(u32 /*irq*/, void * /*context*/) noexcept {
 // Called once from console_read() on first invocation.
 extern "C" void console_rx_init() noexcept {
   using namespace console_rx;
-  if (initialized_)
+  if (initialized_) {
     return;
+  }
 
 #if defined(MOSS_ARCH_ARM64)
   // 1. Enable PL011 RXE bit
@@ -1486,8 +1561,9 @@ extern "C" int console_getc_blocking() noexcept {
 
   // Fast path: char already in buffer
   int ch = buf_get();
-  if (ch >= 0)
+  if (ch >= 0) {
     return ch;
+  }
 
 #if defined(MOSS_ARCH_ARM64)
   // Slow path: block until UART IRQ delivers a character

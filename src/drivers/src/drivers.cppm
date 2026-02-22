@@ -307,14 +307,14 @@ public:
   }
 
   [[nodiscard]] VoidResult unregister_device(DeviceId device_id) noexcept {
-    auto device_ptr = devices_.find(device_id);
+    const auto *device_ptr = devices_.find(device_id);
     if (device_ptr == nullptr) {
       return VoidResult{ErrorCode::NotFound};
     }
 
     shared_ptr<Device> device = *device_ptr;
 
-    auto driver_ptr = device_driver_map_.find(device_id);
+    const auto *driver_ptr = device_driver_map_.find(device_id);
     if (driver_ptr != nullptr) {
       Driver *driver = *driver_ptr;
       driver->remove(device.get());
@@ -430,7 +430,7 @@ public:
 
 private:
   [[nodiscard]] VoidResult match_driver(Device *device) noexcept {
-    auto matched_driver_ptr =
+    const auto *matched_driver_ptr =
         drivers_.find_if([device](const Driver *driver) { return driver->is_compatible(device->compatible()); });
 
     if (matched_driver_ptr == nullptr) {
@@ -707,8 +707,9 @@ private:
   }
 
   [[nodiscard]] static u32 string_to_u32(const char *str) noexcept {
-    if (str == nullptr)
+    if (str == nullptr) {
       return 0;
+    }
 
     u32 result = 0;
     while (*str >= '0' && *str <= '9') {
@@ -739,8 +740,9 @@ private:
   static void uart_interrupt_handler(InterruptId irq, void *context) noexcept {
     (void)irq;
     UartDevice *uart = static_cast<UartDevice *>(context);
-    if (uart == nullptr)
+    if (uart == nullptr) {
       return;
+    }
 
     u32 int_status = uart->read_reg(uart_regs::UARTMIS);
 

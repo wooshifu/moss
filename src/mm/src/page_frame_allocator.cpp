@@ -419,8 +419,9 @@ void PageFrameAllocator::dump_memory_layout() noexcept {
 // ============================================================================
 
 void PageFrameAllocator::page_ref_inc(PhysAddr addr) noexcept {
-  if (!page_metadata_ || !memory_regions_)
+  if (!page_metadata_ || !memory_regions_) {
     return;
+  }
   usize idx = addr_to_page(addr - memory_regions_->start_addr);
   if (idx < total_pages_) {
     // AcqRel: inc must be visible before any access to the shared page
@@ -429,8 +430,9 @@ void PageFrameAllocator::page_ref_inc(PhysAddr addr) noexcept {
 }
 
 u32 PageFrameAllocator::page_ref_dec(PhysAddr addr) noexcept {
-  if (!page_metadata_ || !memory_regions_)
+  if (!page_metadata_ || !memory_regions_) {
     return 0;
+  }
   usize idx = addr_to_page(addr - memory_regions_->start_addr);
   if (idx < total_pages_) {
     // AcqRel: dec must synchronize-with the last inc; when result==0 the
@@ -441,8 +443,9 @@ u32 PageFrameAllocator::page_ref_dec(PhysAddr addr) noexcept {
 }
 
 u32 PageFrameAllocator::page_ref_get(PhysAddr addr) noexcept {
-  if (!page_metadata_ || !memory_regions_)
+  if (!page_metadata_ || !memory_regions_) {
     return 0;
+  }
   usize idx = addr_to_page(addr - memory_regions_->start_addr);
   if (idx < total_pages_) {
     // Acquire: reading refcount to decide COW copy vs in-place write —
@@ -453,8 +456,9 @@ u32 PageFrameAllocator::page_ref_get(PhysAddr addr) noexcept {
 }
 
 void PageFrameAllocator::page_ref_set(PhysAddr addr, u32 count) noexcept {
-  if (!page_metadata_ || !memory_regions_)
+  if (!page_metadata_ || !memory_regions_) {
     return;
+  }
   usize idx = addr_to_page(addr - memory_regions_->start_addr);
   if (idx < total_pages_) {
     page_metadata_[idx].ref_count.store(count, containers::MemoryOrder::Relaxed);

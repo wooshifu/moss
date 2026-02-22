@@ -70,8 +70,9 @@ inline constexpr u64 sched_period(u32 nr_running) {
 }
 
 inline constexpr u64 sched_slice(u32 weight, u32 total_weight, u32 nr_running = SCHED_NR_LATENCY) {
-  if (total_weight == 0)
+  if (total_weight == 0) {
     return MIN_GRANULARITY_NS;
+  }
 
   u64 period = sched_period(nr_running);
   u64 slice = (period * weight) / total_weight;
@@ -110,7 +111,7 @@ public:
   IdleTask(IdleTask &&) = delete;
   IdleTask &operator=(IdleTask &&) = delete;
 
-  [[noreturn]] void run() noexcept;
+  [[noreturn]] void run() const noexcept;
 
   u32 get_cpu_id() const noexcept { return cpu_id_; }
 
@@ -183,8 +184,9 @@ void wakeup_idle_cpu(u32 cpu_id) noexcept;
 /// This wakes the target from WFI and causes it to re-examine its runqueue.
 /// Used by load balancer after migrating tasks to an idle or less-loaded CPU.
 inline void send_reschedule_ipi(u32 target_cpu) noexcept {
-  if (target_cpu >= MAX_CPUS || target_cpu == arch::get_current_cpu_id())
+  if (target_cpu >= MAX_CPUS || target_cpu == arch::get_current_cpu_id()) {
     return;
+  }
   u32 target_mask = 1U << target_cpu;
   VirtAddr dist_base = platform::intc_dist_base();
   VirtAddr cpu_base = platform::intc_cpu_base();
@@ -218,8 +220,9 @@ public:
         util_sum_(0), load_avg_(0), util_avg_(0), next_fresh_index_(0), free_list_(nullptr) {}
 
   void enqueue_task(Thread *thread) noexcept {
-    if (thread == nullptr)
+    if (thread == nullptr) {
       return;
+    }
     containers::LockGuard<containers::IrqSpinLock> guard(lock_);
 
     if (thread->se.vruntime == 0) {
@@ -241,13 +244,15 @@ public:
   }
 
   void dequeue_task(Thread *thread) noexcept {
-    if (thread == nullptr)
+    if (thread == nullptr) {
       return;
+    }
     containers::LockGuard<containers::IrqSpinLock> guard(lock_);
 
     auto *node = static_cast<RbNode<Thread> *>(thread->rq_node);
-    if (node == nullptr)
+    if (node == nullptr) {
       return; // not in this queue
+    }
 
     thread->rq_node = nullptr;
     rb_remove(node);
@@ -283,8 +288,9 @@ public:
   }
 
   void update_curr_task(Thread *current, u64 delta_exec) noexcept {
-    if (current == nullptr)
+    if (current == nullptr) {
       return;
+    }
     containers::LockGuard<containers::IrqSpinLock> guard(lock_);
 
     current->se.sum_exec_runtime += delta_exec;
@@ -341,11 +347,7 @@ private:
     // vruntime-based preemption: if leftmost has much lower vruntime, preempt.
     // WAKEUP_GRANULARITY prevents excessive switching on tiny vruntime deltas.
     constexpr u64 WAKEUP_GRANULARITY_NS = 1000000; // 1ms
-    if (current->se.vruntime > leftmost->se.vruntime + WAKEUP_GRANULARITY_NS) {
-      return true;
-    }
-
-    return false;
+    return current->se.vruntime > leftmost->se.vruntime + WAKEUP_GRANULARITY_NS;
   }
 
 public:
@@ -353,11 +355,13 @@ public:
   // to select migration candidates (migrate the least-deserving task).
   [[nodiscard]] Thread *pick_last_task() noexcept {
     containers::LockGuard<containers::IrqSpinLock> guard(lock_);
-    if (rb_root_ == nullptr)
+    if (rb_root_ == nullptr) {
       return nullptr;
+    }
     RbNode<Thread> *node = rb_root_;
-    while (node->right != nullptr)
+    while (node->right != nullptr) {
       node = node->right;
+    }
     return node->data;
   }
 
@@ -398,8 +402,9 @@ private:
   }
 
   [[nodiscard]] u64 calc_delta_fair(u64 delta_exec, Thread *thread) const noexcept {
-    if (thread->se.weight == 0)
+    if (thread->se.weight == 0) {
       return delta_exec;
+    }
 
     return (delta_exec * cfs_params::NICE_TO_WEIGHT[20]) / thread->se.weight;
   }
@@ -407,8 +412,9 @@ private:
   // Simplified PELT (Per-Entity Load Tracking) with geometric decay.
   // Fixed decay factor ~0.98 per tick (Q12 fixed-point, ~32ms half-life).
   void update_load_tracking(Thread *thread, u64 delta_exec) noexcept {
-    if (thread == nullptr)
+    if (thread == nullptr) {
       return;
+    }
 
     constexpr u64 LOAD_AVG_MAX = 47742;
     // Decay factor ~0.98 in Q12 fixed-point: 0.98 * 4096 ≈ 4015
@@ -423,10 +429,12 @@ private:
     thread->se.util_sum += delta_exec;
 
     // Cap to prevent unbounded growth
-    if (thread->se.load_sum > LOAD_AVG_MAX)
+    if (thread->se.load_sum > LOAD_AVG_MAX) {
       thread->se.load_sum = LOAD_AVG_MAX;
-    if (thread->se.util_sum > LOAD_AVG_MAX)
+    }
+    if (thread->se.util_sum > LOAD_AVG_MAX) {
       thread->se.util_sum = LOAD_AVG_MAX;
+    }
 
     // Derive averages
     thread->se.load_avg = thread->se.load_sum >> 10;
@@ -434,8 +442,9 @@ private:
   }
 
   void update_load_stats(Thread *thread, bool add) noexcept {
-    if (thread == nullptr)
+    if (thread == nullptr) {
       return;
+    }
 
     if (add) {
       load_sum_ += thread->se.load_avg;
@@ -450,8 +459,9 @@ private:
   }
 
   void rb_insert(RbNode<Thread> *node) noexcept {
-    if (node == nullptr || node->data == nullptr)
+    if (node == nullptr || node->data == nullptr) {
       return;
+    }
 
     RbNode<Thread> **new_node = &rb_root_;
     RbNode<Thread> *parent = nullptr;
@@ -490,8 +500,9 @@ private:
   }
 
   void rb_remove(RbNode<Thread> *node) noexcept {
-    if (node == nullptr)
+    if (node == nullptr) {
       return;
+    }
 
     // 1. Update leftmost cache BEFORE deletion (node's links still intact)
     if (node == rb_leftmost_) {
@@ -511,8 +522,9 @@ private:
   }
 
   [[nodiscard]] RbNode<Thread> *find_tree_minimum(RbNode<Thread> *root) const noexcept {
-    if (root == nullptr)
+    if (root == nullptr) {
       return nullptr;
+    }
 
     while (root->left != nullptr) {
       root = root->left;
@@ -531,22 +543,20 @@ private:
     }
 
     u32 actual_count = count_tree_nodes(rb_root_);
-    if (actual_count != nr_running_) {
-      return false;
-    }
-
-    return true;
+    return actual_count == nr_running_;
   }
 
   [[nodiscard]] u32 count_tree_nodes(RbNode<Thread> *node) const noexcept {
-    if (node == nullptr)
+    if (node == nullptr) {
       return 0;
+    }
     return 1 + count_tree_nodes(node->left) + count_tree_nodes(node->right);
   }
 
   [[nodiscard]] RbNode<Thread> *rb_next(RbNode<Thread> *node) const noexcept {
-    if (node == nullptr)
+    if (node == nullptr) {
       return nullptr;
+    }
 
     if (node->right != nullptr) {
       node = node->right;
@@ -568,15 +578,17 @@ private:
   void rotate_left(RbNode<Thread> *x) noexcept {
     auto *y = x->right;
     x->right = y->left;
-    if (y->left)
+    if (y->left) {
       y->left->parent = x;
+    }
     y->parent = x->parent;
-    if (!x->parent)
+    if (!x->parent) {
       rb_root_ = y;
-    else if (x == x->parent->left)
+    } else if (x == x->parent->left) {
       x->parent->left = y;
-    else
+    } else {
       x->parent->right = y;
+    }
     y->left = x;
     x->parent = y;
   }
@@ -584,23 +596,26 @@ private:
   void rotate_right(RbNode<Thread> *x) noexcept {
     auto *y = x->left;
     x->left = y->right;
-    if (y->right)
+    if (y->right) {
       y->right->parent = x;
+    }
     y->parent = x->parent;
-    if (!x->parent)
+    if (!x->parent) {
       rb_root_ = y;
-    else if (x == x->parent->right)
+    } else if (x == x->parent->right) {
       x->parent->right = y;
-    else
+    } else {
       x->parent->left = y;
+    }
     y->right = x;
     x->parent = y;
   }
 
   void rb_insert_fixup(RbNode<Thread> *z) noexcept {
     while (z->parent && z->parent->red) {
-      if (z->parent->parent == nullptr)
+      if (z->parent->parent == nullptr) {
         break; // safety: no grandparent
+      }
 
       if (z->parent == z->parent->parent->left) {
         auto *y = z->parent->parent->right; // uncle
@@ -644,8 +659,9 @@ private:
   }
 
   void rb_delete_node(RbNode<Thread> *node) noexcept {
-    if (node == nullptr)
+    if (node == nullptr) {
       return;
+    }
 
     RbNode<Thread> *x = nullptr;        // replacement child for fixup
     RbNode<Thread> *x_parent = nullptr; // x's parent (needed when x is null)
@@ -656,8 +672,9 @@ private:
       x = node->right;
       x_parent = node->parent;
       replace_node_in_parent(node, node->right);
-      if (node->right)
+      if (node->right) {
         node->right->parent = node->parent;
+      }
     } else if (node->right == nullptr) {
       // Case 3: only left child
       x = node->left;
@@ -675,8 +692,9 @@ private:
       } else {
         x_parent = successor->parent;
         replace_node_in_parent(successor, successor->right);
-        if (successor->right)
+        if (successor->right) {
           successor->right->parent = successor->parent;
+        }
         successor->right = node->right;
         successor->right->parent = successor;
       }
@@ -709,8 +727,9 @@ private:
   }
 
   [[nodiscard]] RbNode<Thread> *tree_minimum(RbNode<Thread> *node) const noexcept {
-    if (node == nullptr)
+    if (node == nullptr) {
       return nullptr;
+    }
 
     while (node->left != nullptr) {
       node = node->left;
@@ -723,13 +742,15 @@ private:
   // adapted for nullptr-as-NIL (no sentinel node).
   void rb_delete_fixup(RbNode<Thread> *x, RbNode<Thread> *x_parent) noexcept {
     while (x != rb_root_ && (x == nullptr || !x->red)) {
-      if (x_parent == nullptr)
+      if (x_parent == nullptr) {
         break;
+      }
 
       if (x == x_parent->left) {
         auto *w = x_parent->right; // sibling
-        if (w == nullptr)
+        if (w == nullptr) {
           break;
+        }
 
         if (w->red) {
           // Case 1: sibling is red
@@ -737,8 +758,9 @@ private:
           x_parent->red = true;
           rotate_left(x_parent);
           w = x_parent->right;
-          if (w == nullptr)
+          if (w == nullptr) {
             break;
+          }
         }
         bool left_black = (w->left == nullptr || !w->left->red);
         bool right_black = (w->right == nullptr || !w->right->red);
@@ -750,35 +772,40 @@ private:
         } else {
           if (right_black) {
             // Case 3: left nephew red, right nephew black
-            if (w->left)
+            if (w->left) {
               w->left->red = false;
+            }
             w->red = true;
             rotate_right(w);
             w = x_parent->right;
-            if (w == nullptr)
+            if (w == nullptr) {
               break;
+            }
           }
           // Case 4: right nephew red
           w->red = x_parent->red;
           x_parent->red = false;
-          if (w->right)
+          if (w->right) {
             w->right->red = false;
+          }
           rotate_left(x_parent);
           x = rb_root_; // terminate loop
         }
       } else {
         // Mirror: x is right child of x_parent
         auto *w = x_parent->left; // sibling
-        if (w == nullptr)
+        if (w == nullptr) {
           break;
+        }
 
         if (w->red) {
           w->red = false;
           x_parent->red = true;
           rotate_right(x_parent);
           w = x_parent->left;
-          if (w == nullptr)
+          if (w == nullptr) {
             break;
+          }
         }
         bool left_black = (w->left == nullptr || !w->left->red);
         bool right_black = (w->right == nullptr || !w->right->red);
@@ -788,18 +815,21 @@ private:
           x_parent = x->parent;
         } else {
           if (left_black) {
-            if (w->right)
+            if (w->right) {
               w->right->red = false;
+            }
             w->red = true;
             rotate_left(w);
             w = x_parent->left;
-            if (w == nullptr)
+            if (w == nullptr) {
               break;
+            }
           }
           w->red = x_parent->red;
           x_parent->red = false;
-          if (w->left)
+          if (w->left) {
             w->left->red = false;
+          }
           rotate_right(x_parent);
           x = rb_root_;
         }
@@ -835,8 +865,9 @@ private:
   }
 
   void deallocate_node(RbNode<Thread> *node) noexcept {
-    if (node == nullptr)
+    if (node == nullptr) {
       return;
+    }
 
     // Return node to free list for reuse
     node->data = nullptr;
@@ -875,8 +906,9 @@ public:
   constexpr CfsScheduler() noexcept : idle_tasks_{nullptr} {}
 
   void enqueue_task(Thread *thread, u32 cpu) noexcept {
-    if (thread == nullptr || cpu >= MAX_CPUS)
+    if (thread == nullptr || cpu >= MAX_CPUS) {
       return;
+    }
 
     runqueues_.get_cpu(cpu).enqueue_task(thread);
     thread->cpu = cpu;
@@ -897,8 +929,9 @@ public:
   }
 
   void dequeue_task(Thread *thread) noexcept {
-    if (thread == nullptr)
+    if (thread == nullptr) {
       return;
+    }
 
     u32 cpu = thread->cpu;
     if (cpu < MAX_CPUS) {
@@ -907,8 +940,9 @@ public:
   }
 
   [[nodiscard]] Thread *pick_next_task(u32 cpu) noexcept {
-    if (cpu >= MAX_CPUS)
+    if (cpu >= MAX_CPUS) {
       return nullptr;
+    }
 
     return runqueues_.get_cpu(cpu).pick_next_task();
   }
@@ -916,14 +950,16 @@ public:
   // Pick highest-vruntime task from a CPU's runqueue (for load balancer).
   // Steals the least-deserving task (ran most), preserving CFS fairness.
   [[nodiscard]] Thread *pick_last_task(u32 cpu) noexcept {
-    if (cpu >= MAX_CPUS)
+    if (cpu >= MAX_CPUS) {
       return nullptr;
+    }
     return runqueues_.get_cpu(cpu).pick_last_task();
   }
 
   inline void set_idle_task(u32 cpu_id, IdleTask *idle_task) noexcept {
-    if (cpu_id >= MAX_CPUS)
+    if (cpu_id >= MAX_CPUS) {
       return;
+    }
 
     idle_tasks_.get_cpu(cpu_id) = idle_task;
 
@@ -935,28 +971,32 @@ public:
   }
 
   [[nodiscard]] IdleTask *get_idle_task(u32 cpu_id) const noexcept {
-    if (cpu_id >= MAX_CPUS)
+    if (cpu_id >= MAX_CPUS) {
       return nullptr;
+    }
     return idle_tasks_.get_cpu(cpu_id);
   }
 
   [[nodiscard]] bool has_runnable_tasks(u32 cpu_id) const noexcept {
-    if (cpu_id >= MAX_CPUS)
+    if (cpu_id >= MAX_CPUS) {
       return false;
+    }
     return runqueues_.get_cpu(cpu_id).nr_running() > 0;
   }
 
   // Place entity vruntime for fork or wakeup (before enqueue)
   void place_entity(Thread *thread, u32 cpu, bool is_fork) noexcept {
-    if (cpu >= MAX_CPUS || !thread)
+    if (cpu >= MAX_CPUS || !thread) {
       return;
+    }
     runqueues_.get_cpu(cpu).place_entity(thread, is_fork);
   }
 
   // Get min_vruntime for a specific CPU's runqueue
   [[nodiscard]] u64 get_cpu_min_vruntime(u32 cpu) const noexcept {
-    if (cpu >= MAX_CPUS)
+    if (cpu >= MAX_CPUS) {
       return 0;
+    }
     return runqueues_.get_cpu(cpu).min_vruntime();
   }
 
@@ -965,11 +1005,13 @@ public:
   // starve the task — equivalent to Linux place_entity() for waking tasks.
   void reset_current_to_min_vruntime() noexcept {
     auto *curr = get_current_task();
-    if (!curr)
+    if (!curr) {
       return;
+    }
     u32 cpu = get_current_cpu_id();
-    if (cpu >= MAX_CPUS)
+    if (cpu >= MAX_CPUS) {
       return;
+    }
     u64 min_vr = runqueues_.get_cpu(cpu).min_vruntime();
     if (curr->se.vruntime > min_vr) {
       curr->se.vruntime = min_vr;
@@ -979,8 +1021,9 @@ public:
 
 private:
   void execute_task_simplified(Thread *task, [[maybe_unused]] u32 cpu_id) noexcept {
-    if (task == nullptr)
+    if (task == nullptr) {
       return;
+    }
 
     // Simulate a realistic time slice so vruntime advances fairly.
     // Without this, fake test tasks accumulate negligible vruntime
@@ -993,8 +1036,9 @@ private:
   }
 
   void run_idle_task_simplified(IdleTask *idle_task, u32 cpu_id) noexcept {
-    if (idle_task == nullptr)
+    if (idle_task == nullptr) {
       return;
+    }
 
     mark_cpu_idle(cpu_id, true);
 
@@ -1112,8 +1156,9 @@ public:
 
   // State transition management
   void task_blocked(Thread *task) noexcept {
-    if (task == nullptr)
+    if (task == nullptr) {
       return;
+    }
 
     ProcessState old_state = task->state;
     task->state = ProcessState::Blocked;
@@ -1125,8 +1170,9 @@ public:
   }
 
   void task_wakeup(Thread *task, u32 target_cpu) noexcept {
-    if (task == nullptr || task->state != ProcessState::Blocked)
+    if (task == nullptr || task->state != ProcessState::Blocked) {
       return;
+    }
 
     task->state = ProcessState::Ready;
     // Place entity with wakeup bonus before enqueueing
@@ -1137,8 +1183,9 @@ public:
   }
 
   void task_terminate(Thread *task) noexcept {
-    if (task == nullptr)
+    if (task == nullptr) {
       return;
+    }
 
     ProcessState old_state = task->state;
     task->state = ProcessState::Terminated;
@@ -1150,8 +1197,9 @@ public:
   }
 
   void transition_task_state(Thread *task, ProcessState new_state) noexcept {
-    if (task == nullptr)
+    if (task == nullptr) {
       return;
+    }
 
     ProcessState old_state = task->state;
 
@@ -1190,8 +1238,9 @@ public:
   }
 
   void update_current(Thread *current, u64 delta_exec) noexcept {
-    if (current == nullptr)
+    if (current == nullptr) {
       return;
+    }
 
     u32 cpu = current->cpu;
     if (cpu < MAX_CPUS) {
@@ -1200,25 +1249,29 @@ public:
   }
 
   [[nodiscard]] bool should_preempt_current(Thread *current) noexcept {
-    if (current == nullptr)
+    if (current == nullptr) {
       return false;
+    }
 
     u32 cpu = current->cpu;
-    if (cpu >= MAX_CPUS)
+    if (cpu >= MAX_CPUS) {
       return false;
+    }
 
     return runqueues_.get_cpu(cpu).should_preempt(current);
   }
 
   [[nodiscard]] u32 get_cpu_load(u32 cpu) const noexcept {
-    if (cpu >= MAX_CPUS)
+    if (cpu >= MAX_CPUS) {
       return 0;
+    }
     return runqueues_.get_cpu(cpu).load_avg();
   }
 
   [[nodiscard]] u32 get_cpu_nr_running(u32 cpu) const noexcept {
-    if (cpu >= MAX_CPUS)
+    if (cpu >= MAX_CPUS) {
       return 0;
+    }
     return runqueues_.get_cpu(cpu).nr_running();
   }
 
@@ -1320,8 +1373,9 @@ public:
       // was in a kernel path that masked IRQ (e.g. console_read polling for
       // keyboard input).  Charge at most one tick's worth of vruntime so the
       // task is not starved by CFS after the masked period ends.
-      if (delta > cfs_params::SCHED_LATENCY_NS * 2)
+      if (delta > cfs_params::SCHED_LATENCY_NS * 2) {
         delta = cfs_params::SCHED_LATENCY_NS;
+      }
       curr->se.exec_start = now;
       update_current(curr, delta);
 
@@ -1329,8 +1383,9 @@ public:
       if (should_preempt_current(curr)) {
         // Guard: task may have been marked Terminated by sys_exit
         // between our state==Running check above and here.
-        if (curr->state == ProcessState::Terminated)
+        if (curr->state == ProcessState::Terminated) {
           return;
+        }
 
         curr->need_resched = true;
 
@@ -1407,8 +1462,9 @@ public:
 
           for (u32 s = 0; s < MAX_SCAN; s++) {
             Thread *t = pick_next_task(cpu);
-            if (t == nullptr)
+            if (t == nullptr) {
               break;
+            }
             dequeue_task(t);
             if (t->tid == 1000) {
               init_task = t;
@@ -1467,12 +1523,14 @@ public:
 
 private:
   void context_switch_to_task(Thread *task) noexcept {
-    if (task == nullptr)
+    if (task == nullptr) {
       return;
+    }
 
     // Guard: never switch to a terminated task (e.g. sys_exit race)
-    if (task->state == ProcessState::Terminated)
+    if (task->state == ProcessState::Terminated) {
       return;
+    }
 
 #if defined(MOSS_ARCH_ARM64)
     // Save prev BEFORE updating current — context_switch needs it
@@ -1698,8 +1756,9 @@ extern CfsScheduler *g_scheduler;
 inline Thread *current_thread() noexcept { return CfsScheduler::get_current_task(); }
 inline Process *current_process() noexcept {
   Thread *t = current_thread();
-  if (!t || !g_process_manager)
+  if (!t || !g_process_manager) {
     return nullptr;
+  }
   return g_process_manager->find_process(t->owner_pid);
 }
 

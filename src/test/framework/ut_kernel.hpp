@@ -96,14 +96,18 @@ struct kernel_printer {
 
         int index = 0;
         bool negative = num < 0;
-        if (negative) num = -num;
+        if (negative) {
+          num = -num;
+        }
 
         while (num > 0 && index < 11) {
             buffer[index++] = static_cast<char>('0' + (num % 10));
             num /= 10;
         }
 
-        if (negative) buffer[index++] = '-';
+        if (negative) {
+          buffer[index++] = '-';
+        }
 
         // Reverse string
         for (int i = 0; i < index / 2; ++i) {
@@ -261,7 +265,9 @@ void format_value(T value) {
 
 // Extract short filename from full path (e.g. "cases/boost_ut_demo.cpp" from full path)
 inline const char* short_filename(const char* path) {
-    if (!path) return "unknown";
+  if (!path) {
+    return "unknown";
+  }
     const char* last_slash = path;
     const char* second_last = path;
     for (const char* p = path; *p; ++p) {
@@ -571,8 +577,12 @@ struct bdd_test_factory {
         int name_len = 0;
 
         // Calculate lengths
-        while (prefix[prefix_len] != '\0' && prefix_len < 64) prefix_len++;
-        while (name[name_len] != '\0' && name_len < 60) name_len++;
+        while (prefix[prefix_len] != '\0' && prefix_len < 64) {
+          prefix_len++;
+        }
+        while (name[name_len] != '\0' && name_len < 60) {
+          name_len++;
+        }
 
         // Copy prefix
         for (int i = 0; i < prefix_len && i < 127; ++i) {

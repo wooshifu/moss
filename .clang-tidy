@@ -9,6 +9,16 @@
 Checks: >
   -*,
   readability-identifier-naming,
+  readability-braces-around-statements,
+  readability-else-after-return,
+  readability-simplify-boolean-expr,
+  readability-redundant-access-specifiers,
+  readability-qualified-auto,
+  readability-make-member-function-const,
+  # misc-unused-using-decls — disabled: false positives on module re-exports (using ::sym)
+  modernize-use-nullptr,
+  modernize-redundant-void-arg,
+  modernize-use-using,
 
 HeaderFilterRegex: 'src/.*'
 WarningsAsErrors: '*'

@@ -59,7 +59,8 @@ int memcmp(const void *s1, const void *s2, size_t n) noexcept {
   for (size_t i = 0; i < n; ++i) {
     if (p1[i] < p2[i]) {
       return -1;
-    } else if (p1[i] > p2[i]) {
+    }
+    if (p1[i] > p2[i]) {
       return 1;
     }
   }
@@ -160,20 +161,18 @@ static void *kernel_malloc(size_t size) noexcept {
     // 清零分配的内存
     memset(ptr, 0, size);
     return ptr;
-  } else {
-    // 使用早期静态堆
-    size_t aligned_size = (size + 15UL) & ~15UL; // 16字节对齐
-    if (early_heap_used + aligned_size > sizeof(early_heap_buffer)) {
-      return nullptr; // 早期堆空间不足
-    }
-
-    void *ptr = &early_heap_buffer[early_heap_used];
-    early_heap_used += aligned_size;
-
-    // 清零分配的内存
-    memset(ptr, 0, size);
-    return ptr;
+  } // 使用早期静态堆
+  size_t aligned_size = (size + 15UL) & ~15UL; // 16字节对齐
+  if (early_heap_used + aligned_size > sizeof(early_heap_buffer)) {
+    return nullptr; // 早期堆空间不足
   }
+
+  void *ptr = &early_heap_buffer[early_heap_used];
+  early_heap_used += aligned_size;
+
+  // 清零分配的内存
+  memset(ptr, 0, size);
+  return ptr;
 }
 
 static void kernel_free(void *ptr) noexcept {

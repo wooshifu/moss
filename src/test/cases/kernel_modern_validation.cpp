@@ -61,8 +61,9 @@ extern "C" void force_kernel_test_registration() {
     expect(hello[4] == 'o');
     expect(world[0] == 'W');
     int hello_len = 0;
-    while (hello[hello_len] != '\0')
+    while (hello[hello_len] != '\0') {
       hello_len++;
+    }
     expect(hello_len == 5);
   });
 

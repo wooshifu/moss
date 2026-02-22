@@ -224,8 +224,9 @@ struct AddressSpace {
     // Overlap check via RcuList traversal
     const VmaRegion *overlap =
         vmas.find_if([start, end](const VmaRegion &v) { return start < v.end_addr && end > v.start_addr; });
-    if (overlap)
+    if (overlap) {
       return false;
+    }
 
     vmas.push_front(VmaRegion(start, end, flags, type, backing, b_offset, b_size));
     return true;
