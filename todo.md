@@ -282,20 +282,11 @@ Build system: CMake + Clang C++26 modules, 6 presets (3 arch x debug/release).
 
 ### P1: Basic OS Functionality
 
-- [ ] **mmap() / munmap() system calls** — User-space cannot dynamically map memory. Current heap is a fixed 64KB VMA at 0x100000000.
-  - Need: find free VA range in process address space
-  - Need: create VMA for the mapping
-  - Need: anonymous mmap: demand-zero pages
-  - Need: file-backed mmap: (requires VFS)
-  - Need: munmap: remove VMA, unmap pages, free physical pages
-  - Files: `syscall_table.cpp`, `process.cppm` (AddressSpace), `page_table.cpp`
-  - Complexity: Medium
+- [x] **mmap() / munmap() system calls** — Anonymous private mmap (MAP_ANONYMOUS | MAP_PRIVATE): mmap_next cursor in AddressSpace for VA allocation (starts at 64GB), prot→vma_flags conversion (DEMAND_ZERO), add_vma with overlap check. munmap: exact VMA match only (no partial unmap), per-page unmap_user_page (clear PTE + TLB invalidate + COW-aware refcount free), remove_vma. File-backed mmap deferred.
+  - `src/kernel/src/syscall_table.cpp` (sys_mmap, sys_munmap), `src/process/src/process-types.cppm` (VmaType::MMAP, mmap_next, remove_vma, MMAP_BASE), `src/mm/src/page_table.cpp` (unmap_user_page)
 
-- [ ] **brk() system call** — User-space cannot expand the heap. Currently brk() returns ENOSYS.
-  - Need: track program break per process (initialized to end of BSS)
-  - Need: on brk(new_addr): extend/shrink heap VMA, map/unmap pages as needed
-  - Files: `syscall_table.cpp`, `process.cppm` (AddressSpace)
-  - Complexity: Low-Medium
+- [x] **brk() system call** — Linux-compatible brk(): brk(0) queries current break, brk(addr) expands/shrinks HEAP VMA (page-aligned), demand paging allocates zero pages on access. Max heap 16MB. `brk_base` and `brk_current` tracked in AddressSpace.
+  - `src/kernel/src/syscall_table.cpp` (sys_brk), `src/process/src/process-types.cppm` (AddressSpace fields)
 
 - [ ] **Signal mechanism** — No signal delivery or handling. kill/sigaction/sigprocmask all return ENOSYS.
   - Need: signal pending bitmap per thread
@@ -340,12 +331,8 @@ Build system: CMake + Clang C++26 modules, 6 presets (3 arch x debug/release).
   - Files: `process.cppm` (CfsRunqueue RB-tree methods)
   - Complexity: Medium
 
-- [ ] **Timer system calls** — nanosleep, clock_gettime, clock_getres all return ENOSYS.
-  - Need: clock_gettime(CLOCK_MONOTONIC) → read clocksource and return ns
-  - Need: nanosleep → add HrTimer with wakeup callback, block thread until expiry
-  - Need: clock_getres → return clocksource resolution
-  - Files: `syscall_table.cpp`, `timer.cppm`
-  - Complexity: Low-Medium
+- [x] **Timer system calls (partial)** — clock_gettime(CLOCK_MONOTONIC) reads TimerSubsystem::now_ns(); nanosleep arms one-shot HrTimer + blocks thread via context_switch until expiry. clock_getres remains ENOSYS.
+  - `src/kernel/src/syscall_table.cpp` (sys_clock_gettime, sys_nanosleep)
 
 - [x] **Process exit notification** — `terminate_current_user_process` now uses unified Zombie path (same 7-step flow as sys_exit): process enters Zombie state, parent's WaitQueue is woken, parent can collect exit status via waitpid(). No more zombie accumulation.
   - `src/kernel/src/kernel_main.cpp`
@@ -474,6 +461,6 @@ moss.types ← moss.std ← moss.concepts ← moss.result ← moss.smart_ptr
 - **Total source files**: ~75 (.cppm + .cpp + .S + .c)
 - **Total lines of code**: ~18,000+ (estimated)
 - **Modules**: 25 C++26 modules (including moss.vfs, moss.initramfs)
-- **Syscall table entries**: 130 (27 implemented, ~103 stubs)
+- **Syscall table entries**: 130 (29 implemented, ~101 stubs)
 - **Architectures**: 3 (ARM64 full, x86_64 stub, RISC-V stub)
 - **Build presets**: 6 (3 arch × 2 build types)
