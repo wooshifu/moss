@@ -385,8 +385,5 @@ endif()
 moss_print_config_summary()
 
 message(STATUS "=== 模块化构建配置完成 ===")
-message(
-  STATUS
-    "已启用的模块: containers, mm, drivers, interrupts, ipc, process, kernel, boot")
 message(STATUS "主可执行文件: moss.elf")
 message(STATUS "===============================")
