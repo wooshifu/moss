@@ -29,7 +29,6 @@ import moss.abi;
 import :elf;
 import :syscall_table;
 import :syscall_arch;
-import :cpu_topology;
 
 // ABI symbols used by kernel boot/init
 using moss::abi::syscall_entry_point;
@@ -334,9 +333,6 @@ private:
 
   // Early initialization
   [[nodiscard]] VoidResult initialize_early() noexcept {
-    // Detect CPU count from device tree (needed by other subsystems)
-    cpu_topology::early_cpu_topology_init();
-
     // Initialize container library
     if (!containers::ContainerLibrary::initialize()) {
       return VoidResult{ErrorCode::InternalError};
