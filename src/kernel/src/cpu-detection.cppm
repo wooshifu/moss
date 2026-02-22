@@ -1,10 +1,9 @@
 // CPU Detection Module
 //
-// Implements 4-layer CPU detection architecture with intelligent fallback:
+// Implements 3-layer CPU detection architecture with intelligent fallback:
 // Layer 1: Device Tree (FDT) parsing - highest priority, full topology
 // Layer 2: Hardware register detection - direct CPU register access
-// Layer 3: Architecture defaults - conservative estimates per architecture
-// Layer 4: Safe fallback - minimal 1-CPU configuration guaranteed to work
+// Layer 3: Safe fallback - minimal 1-CPU configuration guaranteed to work
 //
 // Design Goals:
 // - ARM64 deep optimization: MPIDR parsing, big.LITTLE detection, cluster topology
@@ -39,8 +38,7 @@ enum class DetectionStatus : u8 {
 enum class DetectionSource : u8 {
   DeviceTree = 0,   // FDT/DTB parsing (highest confidence)
   HardwareRegs = 1, // Direct CPU register access
-  ArchDefault = 2,  // Architecture-specific defaults
-  SafeFallback = 3  // Minimal safe configuration
+  SafeFallback = 2  // Minimal safe configuration
 };
 
 // Detection result with confidence scoring
@@ -304,48 +302,7 @@ private:
 };
 
 // ============================================================================
-// Layer 3: Architecture Default Detection
-// ============================================================================
-
-class ArchDefaultDetector {
-public:
-  ArchDefaultDetector() = default;
-
-  [[nodiscard]] CpuDetectionResult detect() noexcept {
-    CpuDetectionResult result;
-    result.status = DetectionStatus::Partial;
-    result.source = DetectionSource::ArchDefault;
-    result.confidence_score = 40; // Moderate confidence for defaults
-
-#if defined(MOSS_ARCH_ARM64)
-    result.cpu_count = 4; // Common ARM64 default
-    result.big_cores = 4;
-    result.little_cores = 0;
-    result.detected_clusters = 1;
-    log::klog::info("ARM64 architecture default: {} CPUs", result.cpu_count);
-
-#elif defined(MOSS_ARCH_X86_64)
-    result.cpu_count = 8;         // Common x86_64 default
-    result.detected_clusters = 2; // Assume dual-socket or dual-cluster
-    log::klog::info("x86_64 architecture default: {} CPUs", result.cpu_count);
-
-#elif defined(MOSS_ARCH_RISCV)
-    result.cpu_count = 2; // Conservative RISC-V default
-    result.detected_clusters = 1;
-    log::klog::info("RISC-V architecture default: {} CPUs", result.cpu_count);
-
-#else
-    result.cpu_count = 1; // Ultra-safe fallback
-    result.detected_clusters = 1;
-    log::klog::warn("Unknown architecture, using 1 CPU default");
-#endif
-
-    return result;
-  }
-};
-
-// ============================================================================
-// Layer 4: Safe Fallback Detection
+// Layer 3: Safe Fallback Detection
 // ============================================================================
 
 class SafeFallbackDetector {
@@ -369,14 +326,13 @@ public:
 };
 
 // ============================================================================
-// Main CPU Topology Detector - 4-Layer Architecture
+// Main CPU Topology Detector - 3-Layer Architecture
 // ============================================================================
 
 class CpuTopologyDetector {
 private:
   FdtCpuDetector fdt_detector_;
   HardwareRegisterDetector hardware_detector_;
-  ArchDefaultDetector arch_default_detector_;
   SafeFallbackDetector safe_fallback_detector_;
 
 public:
@@ -384,7 +340,7 @@ public:
 
   // Main detection entry point - tries all layers in priority order
   [[nodiscard]] CpuDetectionResult detect() noexcept {
-    log::klog::info("Starting 4-layer CPU topology detection");
+    log::klog::info("Starting 3-layer CPU topology detection");
 
     // Layer 1: Device Tree (FDT) - highest priority and confidence
     {
@@ -406,21 +362,10 @@ public:
       log::klog::info("Layer 2 (Hardware) detection: {}% confidence, trying next layer", result.confidence_score);
     }
 
-    // Layer 3: Architecture Defaults - conservative estimates
-    {
-      auto result = arch_default_detector_.detect();
-      if (result.confidence_score >= 40) {
-        log::klog::info("Layer 3 (Arch Default) detection succeeded with {}% confidence", result.confidence_score);
-        return result;
-      }
-      log::klog::info("Layer 3 (Arch Default) detection: {}% confidence, using final fallback",
-                      result.confidence_score);
-    }
-
-    // Layer 4: Safe Fallback - always succeeds
+    // Layer 3: Safe Fallback - always succeeds
     {
       auto result = safe_fallback_detector_.detect();
-      log::klog::warn("Using Layer 4 (Safe Fallback): {} CPU", result.cpu_count);
+      log::klog::warn("Using Layer 3 (Safe Fallback): {} CPU", result.cpu_count);
       return result;
     }
   }
@@ -497,8 +442,6 @@ const char *detection_source_to_string(DetectionSource source) noexcept {
     return "DeviceTree";
   case DetectionSource::HardwareRegs:
     return "HardwareRegs";
-  case DetectionSource::ArchDefault:
-    return "ArchDefault";
   case DetectionSource::SafeFallback:
     return "SafeFallback";
   default:
@@ -621,7 +564,7 @@ void cleanup_cpu_detection() noexcept {
     return emergency_result;
   }
 
-  // Perform the actual 4-layer detection
+  // Perform the actual 3-layer detection
   auto result = g_cpu_detector->detect();
 
   // Validate the result

@@ -171,7 +171,7 @@ void init_cpu_masks() noexcept {
 // ============================================================================
 
 void early_cpu_topology_init() noexcept {
-  log::klog::info("Initializing CPU topology with 4-layer detection");
+  log::klog::info("Initializing CPU topology with 3-layer detection");
 
   // TODO: Initialize new CPU detection system
   // cpu_detection::initialize_cpu_detection();
