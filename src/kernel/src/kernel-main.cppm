@@ -30,7 +30,6 @@ import :elf;
 import :syscall_table;
 import :syscall_arch;
 import :cpu_topology;
-import :cpu_mask;
 
 // ABI symbols used by kernel boot/init
 using moss::abi::syscall_entry_point;
