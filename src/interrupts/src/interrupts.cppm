@@ -17,6 +17,10 @@ import moss.logging;
 // ============================================================================
 export namespace moss::kernel::interrupts {
 
+// Import necessary types from moss.types
+using moss::kernel::u32;
+using InterruptId = u32;
+
 namespace log = moss::kernel::logging;
 
 // ========================================================================

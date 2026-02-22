@@ -33,14 +33,14 @@ CfsScheduler *g_scheduler = nullptr;
 // 全局负载均衡器实例
 LoadBalancer *g_load_balancer = nullptr;
 
-// 当前运行任务数组定义 (CfsScheduler类的静态成员)
-Thread *CfsScheduler::current_running_tasks_[MAX_CPUS] = {nullptr};
+// Per-CPU data definitions for CfsScheduler static members
+containers::PerCpuData<Thread *> CfsScheduler::current_running_tasks_{};
 
 // Per-CPU bootstrap context for context_switch when no previous task exists
-CpuContext CfsScheduler::bootstrap_contexts_[MAX_CPUS] = {};
+containers::PerCpuData<CpuContext> CfsScheduler::bootstrap_contexts_{};
 
 // Per-CPU exit stack for schedule_after_exit (avoids use-after-free on dead task's kernel stack)
-alignas(16) u8 CfsScheduler::exit_stacks_[MAX_CPUS][CfsScheduler::EXIT_STACK_SIZE] = {};
+containers::PerCpuData<CfsScheduler::ExitStack> CfsScheduler::exit_stacks_{};
 
 // Process类方法实现
 KernelResult<ThreadId> Process::create_thread(VirtAddr entry_point, VirtAddr stack_base, usize stack_size) noexcept {

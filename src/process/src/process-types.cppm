@@ -332,7 +332,7 @@ struct Thread {
 
   // CPU affinity bitmask: bit N set means task may run on CPU N.
   // Default: all CPUs allowed.
-  u32 cpu_affinity_mask{0xFFFFU};
+  u32 cpu_affinity_mask{0xFFFFFFFFU};
 
   // Per-thread kernel stack: used as SP_EL1 when handling exceptions
   // from this thread's user-mode execution.  For kernel threads, this
@@ -351,7 +351,8 @@ struct Thread {
       : tid(id), owner_pid(pid), context{}, cpu(0), wake_cpu(0), state(ProcessState::Created),
         sched_class(SchedClass::Normal), se{}, rt{}, start_time(0), utime(0), stime(0), stack_base(0), stack_size(0),
         wait_queue(0), signal_mask(0), pending_signals(0), needs_initial_eret(false), is_user_task(false),
-        need_resched(false), cpu_affinity_mask(0xFFFFU), kernel_stack_base(0), kernel_stack_size(0), rq_node(nullptr) {}
+        need_resched(false), cpu_affinity_mask(0xFFFFFFFFU), kernel_stack_base(0), kernel_stack_size(0),
+        rq_node(nullptr) {}
 
   // Returns the top of this thread's kernel stack (for TPIDR_EL1).
   [[nodiscard]] VirtAddr kernel_stack_top() const noexcept { return kernel_stack_base + kernel_stack_size; }

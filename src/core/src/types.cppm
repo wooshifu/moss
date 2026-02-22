@@ -53,7 +53,10 @@ inline bool is_kernel_addr(VirtAddr va) noexcept { return va >= KERNEL_BASE; }
 
 // Hardware constants
 constexpr usize CACHE_LINE_SIZE = 64;
-constexpr usize MAX_CPUS = 8;
+
+// Maximum supported CPUs (compile-time constant, single source of truth).
+// Assembly uses ASM_MAX_CPUS (#define 32) and linker allocates 32×32KB stacks.
+constexpr usize MAX_CPUS = 32;
 
 // Process and Thread IDs
 using ProcessId = u32;

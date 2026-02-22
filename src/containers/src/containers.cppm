@@ -515,6 +515,7 @@ using WorkQueue = MPMCQueue<ProcessId, 4, 128>;
 export namespace moss::kernel::containers {
 
 // Per-CPU data accessor — each slot is cache-line aligned to prevent false sharing
+// TODO: Will be enhanced with hybrid storage later
 template <typename T> class PerCpuData {
 private:
   struct alignas(moss::kernel::CACHE_LINE_SIZE) PaddedSlot {
@@ -556,18 +557,20 @@ public:
 
   [[nodiscard]] const T &get_local() const noexcept { return data_[get_current_cpu_id()].value; }
 
-  [[nodiscard]] T &get_cpu(moss::kernel::usize cpu_id) noexcept { return data_[cpu_id % MAX_CPUS].value; }
+  [[nodiscard]] T &get_cpu(moss::kernel::usize cpu_id) noexcept { return data_[cpu_id % moss::kernel::MAX_CPUS].value; }
 
-  [[nodiscard]] const T &get_cpu(moss::kernel::usize cpu_id) const noexcept { return data_[cpu_id % MAX_CPUS].value; }
+  [[nodiscard]] const T &get_cpu(moss::kernel::usize cpu_id) const noexcept {
+    return data_[cpu_id % moss::kernel::MAX_CPUS].value;
+  }
 
   template <typename Func> void for_each_cpu(Func &&func) {
-    for (moss::kernel::usize i = 0; i < MAX_CPUS; ++i) {
+    for (moss::kernel::usize i = 0; i < moss::kernel::MAX_CPUS; ++i) {
       func(i, data_[i].value);
     }
   }
 
   template <typename Func> void for_each_cpu(Func &&func) const {
-    for (moss::kernel::usize i = 0; i < MAX_CPUS; ++i) {
+    for (moss::kernel::usize i = 0; i < moss::kernel::MAX_CPUS; ++i) {
       func(i, data_[i].value);
     }
   }
@@ -575,7 +578,7 @@ public:
   template <typename Func, typename Result = T>
   [[nodiscard]] Result fold(Func &&func, Result initial = Result{}) const {
     Result result = initial;
-    for (moss::kernel::usize i = 0; i < MAX_CPUS; ++i) {
+    for (moss::kernel::usize i = 0; i < moss::kernel::MAX_CPUS; ++i) {
       result = func(result, data_[i].value);
     }
     return result;
@@ -583,7 +586,7 @@ public:
 
   [[nodiscard]] T sum() const noexcept {
     T total{};
-    for (moss::kernel::usize i = 0; i < MAX_CPUS; ++i) {
+    for (moss::kernel::usize i = 0; i < moss::kernel::MAX_CPUS; ++i) {
       total += data_[i].value;
     }
     return total;
@@ -670,9 +673,8 @@ public:
 
   [[nodiscard]] bool steal_work(T &result) noexcept {
     moss::kernel::usize current_cpu = static_cast<moss::kernel::usize>(moss::kernel::arch::get_current_cpu_id());
-
-    for (moss::kernel::usize i = 1; i < MAX_CPUS; ++i) {
-      moss::kernel::usize target_cpu = (current_cpu + i) % MAX_CPUS;
+    for (moss::kernel::usize i = 1; i < moss::kernel::MAX_CPUS; ++i) {
+      moss::kernel::usize target_cpu = (current_cpu + i) % moss::kernel::MAX_CPUS;
       if (data_.get_cpu(target_cpu).try_dequeue(result)) {
         return true;
       }
