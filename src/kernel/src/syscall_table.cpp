@@ -1313,7 +1313,7 @@ long sys_sched_getaffinity(long pid_arg, long /*unused*/, long mask_addr, long /
 
   if (mask_addr != 0) {
     auto *mask_ptr = reinterpret_cast<u32 *>(static_cast<unsigned long long>(mask_addr));
-    *mask_ptr = target->cpu_affinity_mask;
+    *mask_ptr = target->cpu_affinity_mask.low_word();
   }
 
   return 0;
@@ -1339,8 +1339,8 @@ long sys_sched_setaffinity(long pid_arg, long /*unused*/, long mask_addr, long /
   }
 
   // Mask out CPUs beyond available CPU count
-  constexpr u32 max_cpus = MAX_CPUS;
-  u32 valid_mask = (max_cpus >= 32) ? 0xFFFFFFFFU : ((1U << max_cpus) - 1);
+  u32 num_cpus = g_num_cpus;
+  u32 valid_mask = (num_cpus >= 32) ? 0xFFFFFFFFU : ((1U << num_cpus) - 1);
   new_mask &= valid_mask;
   if (new_mask == 0) {
     return -errc::EINVAL;
@@ -1365,7 +1365,7 @@ long sys_sched_setaffinity(long pid_arg, long /*unused*/, long mask_addr, long /
     return -errc::ESRCH;
   }
 
-  target->cpu_affinity_mask = new_mask;
+  target->cpu_affinity_mask.set_from_u32(new_mask);
 
   log::klog::info("sys_sched_setaffinity: TID={} mask={:#x}", static_cast<u32>(target->tid), new_mask);
   return 0;
@@ -1465,7 +1465,9 @@ long sys_nanosleep(long ns_addr, long /* remaining */, long /*unused*/, long /*u
 // Layout must match exactly (all fields are u64/long on 64-bit).
 namespace topinfo_layout {
 inline constexpr u64 MAX_PROCS = 64;
-inline constexpr u64 MAX_CPUS_TOP = MAX_CPUS;
+// Fixed ABI constant — matches userspace TOP_MAX_CPUS in syscall.h.
+// Independent of kernel BOOT_MAX_CPUS to maintain ABI stability.
+inline constexpr u64 MAX_CPUS_TOP = 32;
 
 struct ProcEntry {
   long pid;
@@ -1529,7 +1531,7 @@ long sys_topinfo(long info_addr, long /*unused*/, long /*unused*/, long /*unused
 
   // System summary
   kbuf.uptime_ns = timer::TimerSubsystem::instance().now_ns();
-  kbuf.nr_cpus = MAX_CPUS < topinfo_layout::MAX_CPUS_TOP ? MAX_CPUS : topinfo_layout::MAX_CPUS_TOP;
+  kbuf.nr_cpus = g_num_cpus < topinfo_layout::MAX_CPUS_TOP ? g_num_cpus : topinfo_layout::MAX_CPUS_TOP;
 
   if (g_process_manager) {
     kbuf.total_processes = g_process_manager->total_processes();
@@ -1545,7 +1547,7 @@ long sys_topinfo(long info_addr, long /*unused*/, long /*unused*/, long /*unused
     }
 
     // Cap to struct array size to avoid out-of-bounds writes
-    u32 nr_cpus = MAX_CPUS;
+    u32 nr_cpus = g_num_cpus;
     if (nr_cpus > topinfo_layout::MAX_CPUS_TOP) {
       nr_cpus = static_cast<u32>(topinfo_layout::MAX_CPUS_TOP);
     }

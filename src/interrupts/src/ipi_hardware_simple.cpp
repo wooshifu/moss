@@ -92,6 +92,10 @@ IpiResult SimpleHardwareIpi::send_ipi(u32 target_cpu, IpiType type) noexcept {
     return IpiResult::InvalidCpu;
   }
 
+  // GICv2 SGIR only supports 8-bit CPU target mask (CPUs 0-7).
+  if (target_cpu >= 8) {
+    return IpiResult::InvalidCpu;
+  }
   IpiSgiId sgi_id = ipi_type_to_sgi(type);
   u32 target_cpu_mask = 1U << target_cpu;
 

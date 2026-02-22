@@ -402,7 +402,7 @@ public:
     // Record size: header + text + '\n' + '\0', padded to 8 bytes
     u32 record_len = (static_cast<u32>(sizeof(LogRecordHeader)) + text_len + 2 + 7) & ~7U;
 
-    u8 cpu = static_cast<u8>(arch::get_current_cpu_id() % moss::kernel::MAX_CPUS); // Phase 4: Dynamic CPU count
+    u8 cpu = static_cast<u8>(arch::get_current_cpu_id() & 0xFF);
     u64 ts = arch::get_timestamp_counter();
 
     {

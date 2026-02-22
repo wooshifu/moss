@@ -58,7 +58,7 @@ IdleTask::IdleTask(u32 cpu_id) noexcept
 }
 
 IdleTask *create_idle_task(u32 cpu_id) noexcept {
-  if (cpu_id >= moss::kernel::MAX_CPUS) {
+  if (cpu_id >= moss::kernel::g_num_cpus) {
     return nullptr;
   }
 
@@ -85,14 +85,14 @@ IdleTask *create_idle_task(u32 cpu_id) noexcept {
 }
 
 bool is_cpu_idle(u32 cpu_id) noexcept {
-  if (cpu_id >= moss::kernel::MAX_CPUS) {
+  if (cpu_id >= moss::kernel::g_num_cpus) {
     return false;
   }
   return g_cpu_idle_status.get_cpu(cpu_id);
 }
 
 void wakeup_idle_cpu(u32 cpu_id) noexcept {
-  if (cpu_id >= moss::kernel::MAX_CPUS) {
+  if (cpu_id >= moss::kernel::g_num_cpus) {
     return;
   }
 
