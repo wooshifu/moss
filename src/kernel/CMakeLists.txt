@@ -23,7 +23,6 @@ target_sources(
            src/kernel-syscall_table.cppm
            src/kernel-syscall_arch.cppm
            src/kernel-main.cppm
-           src/cpu-topology.cppm
     PRIVATE ${KERNEL_SOURCES}
 )
 
