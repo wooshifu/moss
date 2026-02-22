@@ -750,7 +750,4 @@ private:
   [[nodiscard]] static u64 get_current_time() noexcept { return arch::get_timestamp_counter(); }
 };
 
-// Global kernel instance
-extern Kernel *g_kernel;
-
 } // namespace moss::kernel
