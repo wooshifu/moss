@@ -11,7 +11,7 @@ Checks: >
   readability-identifier-naming,
 
 HeaderFilterRegex: 'src/.*'
-WarningsAsErrors: ''
+WarningsAsErrors: '*'
 FormatStyle: file
 
 CheckOptions:
