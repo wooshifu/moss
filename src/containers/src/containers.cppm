@@ -4,9 +4,6 @@
 
 module;
 
-// Global module fragment: arch detection and extern "C" declarations.
-#include "arch_detect.h"
-
 // C-linkage shim for PageFrameAllocator (defined in page_alloc_shim.cpp).
 // Returns 0 on failure, otherwise the allocated physical address.
 extern "C" unsigned long long

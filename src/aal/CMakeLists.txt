@@ -2,7 +2,7 @@
 #
 # Provides module moss.arch with inline implementations for all
 # supported architectures.  The correct code path is selected at
-# compile time via arch_detect.h macros.
+# compile time via CMake-injected MOSS_ARCH_* macros.
 
 add_library(moss_aal OBJECT)
 
@@ -10,9 +10,6 @@ add_library(moss_aal OBJECT)
 # selected by #ifdef at compile time — no per-arch source split needed.
 target_sources(moss_aal PUBLIC FILE_SET CXX_MODULES FILES
     src/arch.cppm)
-
-# Make arch_detect.h findable via #include "arch_detect.h"
-target_include_directories(moss_aal PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 
 # AAL depends on core for moss.std and moss.types
 target_link_libraries(moss_aal PUBLIC moss_core)

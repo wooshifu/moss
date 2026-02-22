@@ -8,8 +8,6 @@
 
 module;
 
-#include "arch_detect.h"
-
 // extern "C" handler symbols called from assembly
 extern "C" void kernel_page_fault_handler(
     unsigned long long esr,

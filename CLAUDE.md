@@ -88,7 +88,6 @@ Use latest C++26 standard and cutting-edge C++ features for development:
 
 `module;` 到 `export module` 之间的区域。只有以下内容可以放在 GMF 中：
 
-- `#include "arch_detect.h"`（架构检测宏）
 - `extern "C" { ... }` 声明（链接器符号、汇编函数）
 - `#include "libfdt.h"` 等 vendored C 头文件
 - 宏定义

@@ -3,8 +3,6 @@
 
 module;
 
-#include "arch_detect.h"
-
 // Linker symbols needed by PageTableManager
 extern "C" {
     extern char _text_start_addr[];

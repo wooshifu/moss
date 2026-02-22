@@ -8,10 +8,6 @@
 // Consumers (CFS scheduler, future nanosleep, etc.) create HrTimer
 // instances and register them with TimerSubsystem.
 
-module;
-
-#include "arch_detect.h"
-
 export module moss.timer;
 
 import moss.std;

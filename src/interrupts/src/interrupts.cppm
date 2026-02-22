@@ -1,11 +1,6 @@
 // MOSS Interrupts Module - Interrupt Management for Kernel
 // Provides GIC driver, IPI mechanisms, and interrupt handling infrastructure.
 
-module;
-
-// Architecture detection
-#include "arch_detect.h"
-
 export module moss.interrupts;
 
 import moss.std;

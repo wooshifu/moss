@@ -3,9 +3,6 @@
 
 module;
 
-// Architecture detection
-#include "arch_detect.h"
-
 // Assembly interop declarations (global module fragment)
 extern "C" void switch_to_user(void* context, unsigned long long user_stack);
 #if defined(__aarch64__) || defined(MOSS_ARCH_ARM64)

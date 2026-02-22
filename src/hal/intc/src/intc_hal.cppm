@@ -13,10 +13,6 @@
 //   - GenericInterruptController high-level class (uses IntcHal ops)
 //   - IPI subsystems (simple, hw_simple)
 
-module;
-
-#include "arch_detect.h"
-
 export module moss.hal.intc;
 
 import moss.std;

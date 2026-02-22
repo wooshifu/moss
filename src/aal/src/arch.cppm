@@ -9,10 +9,6 @@
 // compiler can inline them at every call-site — zero overhead compared to
 // the previous copy-paste approach, but with a single point of maintenance.
 
-module;
-
-#include "arch_detect.h"
-
 export module moss.arch;
 
 import moss.std;
@@ -32,6 +28,10 @@ inline constexpr Architecture CURRENT_ARCH = Architecture::X86_64;
 #elif defined(MOSS_ARCH_RISCV)
 inline constexpr Architecture CURRENT_ARCH = Architecture::RISCV;
 #endif
+
+inline constexpr bool is_arm64  = (CURRENT_ARCH == Architecture::ARM64);
+inline constexpr bool is_x86_64 = (CURRENT_ARCH == Architecture::X86_64);
+inline constexpr bool is_riscv  = (CURRENT_ARCH == Architecture::RISCV);
 
 // Maximum supported CPUs (compile-time constant)
 inline constexpr u32 MAX_CPUS = 16;

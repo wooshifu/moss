@@ -3,9 +3,6 @@
 
 module;
 
-// Architecture detection
-#include "arch_detect.h"
-
 // extern "C" declarations in global module fragment
 extern "C" void early_debug_print(const char* message) noexcept;
 #if defined(__aarch64__) || defined(MOSS_ARCH_ARM64)
