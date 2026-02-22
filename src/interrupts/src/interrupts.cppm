@@ -289,8 +289,10 @@ public:
       }
     });
 
-    return {total_interrupts_.load(containers::MemoryOrder::Relaxed),
-            spurious_interrupts_.load(containers::MemoryOrder::Relaxed), registered, enabled};
+    return {.total_interrupts = total_interrupts_.load(containers::MemoryOrder::Relaxed),
+            .spurious_interrupts = spurious_interrupts_.load(containers::MemoryOrder::Relaxed),
+            .registered_interrupts = registered,
+            .enabled_interrupts = enabled};
   }
 
   [[nodiscard]] const InterruptDescriptor *get_interrupt_info(InterruptId irq) const noexcept {

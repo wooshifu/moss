@@ -228,7 +228,13 @@ template <typename T> constexpr const T &min(const T &a, const T &b) { return (b
 template <typename T> constexpr const T &max(const T &a, const T &b) { return (a < b) ? b : a; }
 
 template <typename T> constexpr const T &clamp(const T &v, const T &lo, const T &hi) {
-  return (v < lo) ? lo : (hi < v) ? hi : v;
+  if (v < lo) {
+    return lo;
+  }
+  if (hi < v) {
+    return hi;
+  }
+  return v;
 }
 
 } // namespace moss

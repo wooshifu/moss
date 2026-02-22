@@ -652,7 +652,7 @@ void PageTableManager::print_pgd_entries() {
       log::klog::debug_chain("PGD[").hex(i).str("] = ").hex(entry.raw).str(" -> L1 table @ ").hex(pud_pa);
 
       // Walk into L1 (PUD) table
-      const auto *pud = static_cast<const PageTable *>(static_cast<const void *>(get_table_from_physical(pud_pa)));
+      const auto *pud = static_cast<const PageTable *>(get_table_from_physical(pud_pa));
       for (usize j = 0; j < PageTable::ENTRIES_PER_TABLE; j++) {
         const auto &l1_entry = pud->entries[j];
         if (!l1_entry.is_valid()) {
@@ -675,11 +675,13 @@ void PageTableManager::print_pgd_entries() {
 
         // Memory type from AttrIndx
         u64 attr_idx = (l1_entry.raw >> 2) & 7;
-        log::klog::debug_chain("    AttrIndx=")
-            .hex(attr_idx)
-            .str(attr_idx == 0   ? " Device"
-                 : attr_idx == 1 ? " Normal"
-                                 : " NC");
+        const char *attr_name = " NC";
+        if (attr_idx == 0) {
+          attr_name = " Device";
+        } else if (attr_idx == 1) {
+          attr_name = " Normal";
+        }
+        log::klog::debug_chain("    AttrIndx=").hex(attr_idx).str(attr_name);
       }
     } else {
       log::klog::debug_chain("PGD[").hex(i).str("] = ").hex(entry.raw).str(" (block - unexpected at L0!)");
@@ -811,7 +813,7 @@ VoidResult PageTableManager::unmap_page(VirtAddr virt_addr) {
 // query_page — walk the page table and return mapping information
 // ============================================================================
 PageTableManager::PageInfo PageTableManager::query_page(VirtAddr virt_addr) {
-  PageInfo info{0, 0, false, 0};
+  PageInfo info{.phys_addr = 0, .attributes = 0, .mapped = false, .level = 0};
 
   if (!kernel_pgd) {
     return info;
