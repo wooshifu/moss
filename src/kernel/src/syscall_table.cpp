@@ -601,9 +601,11 @@ long sys_execve(long pathname_addr, long argv_addr, long /* envp */, long /*unus
   new_as->add_vma(STACK_BOTTOM, user_layout::STACK_TOP, vma_flags::READ | vma_flags::WRITE | vma_flags::DEMAND_ZERO,
                   VmaType::STACK);
 
-  // 10. Add heap VMA (demand-zero)
+  // 10. Add heap VMA (demand-zero) and initialize program break
   new_as->add_vma(user_layout::HEAP_START, user_layout::HEAP_START + user_layout::HEAP_INIT,
                   vma_flags::READ | vma_flags::WRITE | vma_flags::DEMAND_ZERO, VmaType::HEAP);
+  new_as->brk_base = user_layout::HEAP_START;
+  new_as->brk_current = user_layout::HEAP_START;
 
   // 11. Bind new address space to process
   auto set_result = proc->set_address_space(moss::move(new_as));
@@ -988,10 +990,53 @@ long sys_mprotect(long /*unused*/, long /*unused*/, long /*unused*/, long /*unus
   return -errc::ENOSYS;
 }
 
-long sys_brk(long /*unused*/, long /*unused*/, long /*unused*/, long /*unused*/, long /*unused*/,
-             long /*unused*/) noexcept {
-  log::klog::warn("syscall: brk() not implemented");
-  return -errc::ENOSYS;
+long sys_brk(long addr, long /*unused*/, long /*unused*/, long /*unused*/, long /*unused*/, long /*unused*/) noexcept {
+  using namespace moss::kernel::process;
+
+  Thread *cur = CfsScheduler::get_current_task();
+  if (!cur) {
+    return -errc::ESRCH;
+  }
+  Process *proc = g_process_manager ? g_process_manager->find_process(cur->owner_pid) : nullptr;
+  if (!proc) {
+    return -errc::ESRCH;
+  }
+  auto *as = proc->address_space();
+  if (!as) {
+    return -errc::ENOMEM;
+  }
+
+  // brk(0): query current program break
+  if (addr == 0) {
+    return static_cast<long>(as->brk_current);
+  }
+
+  auto new_brk = static_cast<VirtAddr>(static_cast<usize>(addr));
+
+  // Reject addresses below heap base (Linux returns current brk on failure)
+  if (new_brk < as->brk_base) {
+    return static_cast<long>(as->brk_current);
+  }
+
+  // Reject addresses beyond maximum heap size (16MB)
+  constexpr usize MAX_HEAP = 16ULL * 1024 * 1024;
+  if (new_brk > as->brk_base + MAX_HEAP) {
+    return static_cast<long>(as->brk_current);
+  }
+
+  // Expand or shrink the HEAP VMA to cover the new break (page-aligned)
+  VirtAddr aligned_end = (new_brk + PAGE_SIZE - 1) & ~(static_cast<VirtAddr>(PAGE_SIZE) - 1);
+  (void)as->vmas.find_if([&](const VmaRegion &vma) {
+    if (vma.type == VmaType::HEAP) {
+      // NOLINTNEXTLINE(cppcoreguidelines-pro-type-const-cast)
+      const_cast<VmaRegion &>(vma).end_addr = aligned_end;
+      return true;
+    }
+    return false;
+  });
+
+  as->brk_current = new_brk;
+  return static_cast<long>(new_brk);
 }
 
 // 网络通信系统调用 - 框架实现
@@ -1730,7 +1775,7 @@ const SyscallDescriptor SYSCALL_TABLE[static_cast<int>(SyscallNumber::MAX_SYSCAL
     {"munlockall", handlers::sys_not_implemented, 0, false, "解锁所有内存页"},
     {"madvise", handlers::sys_not_implemented, 3, false, "内存使用建议"},
     {"msync", handlers::sys_not_implemented, 3, false, "同步内存映射"},
-    {"brk", handlers::sys_brk, 1, false, "设置数据段大小"},
+    {"brk", handlers::sys_brk, 1, true, "设置数据段大小"},
     {"sbrk", handlers::sys_not_implemented, 1, false, "调整数据段大小"},
     {"mremap", handlers::sys_not_implemented, 5, false, "重新映射内存"},
     {"mincore", handlers::sys_not_implemented, 3, false, "检查页面是否在内存中"},

@@ -625,6 +625,8 @@ private:
     // Heap VMA: small initial region, demand-zero
     as->add_vma(user_layout::HEAP_START, user_layout::HEAP_START + user_layout::HEAP_INIT,
                 vma_flags::READ | vma_flags::WRITE | vma_flags::DEMAND_ZERO, VmaType::HEAP);
+    as->brk_base = user_layout::HEAP_START;
+    as->brk_current = user_layout::HEAP_START;
 
     // Bind AddressSpace to process
     auto set_result = init_proc->set_address_space(moss::move(as));
