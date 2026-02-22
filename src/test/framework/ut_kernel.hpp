@@ -794,9 +794,7 @@ struct test_name_t {
 };
 
 // String literal operator for test names (ut.hpp style)
-constexpr test_name_t operator""_test(const char* name, decltype(sizeof(int))) {
-    return {name};
-}
+constexpr test_name_t operator""_test(const char *name, decltype(sizeof(int)) /*unused*/) { return {name}; }
 
 // ============================================================================
 // Test Suite Support (simplified)
@@ -810,10 +808,8 @@ struct suite_t {
     }
 };
 
-constexpr auto operator""_suite(const char* name, decltype(sizeof(int))) {
-    return [name](auto suite_function) {
-        return suite_t{name, suite_function};
-    };
+constexpr auto operator""_suite(const char *name, decltype(sizeof(int)) /*unused*/) {
+  return [name](auto suite_function) { return suite_t{name, suite_function}; };
 }
 
 // ============================================================================
@@ -868,35 +864,17 @@ struct integral {
     constexpr operator int() const { return value; }
 
     // Support comparison with integral
-    template<typename T>
-    constexpr auto operator==(T other) const -> eq_t<int, T> {
-        return {value, static_cast<T>(other)};
-    }
+    template <typename T> constexpr auto operator==(T other) const -> eq_t<int, T> { return {value, other}; }
 
-    template<typename T>
-    constexpr auto operator!=(T other) const -> ne_t<int, T> {
-        return {value, static_cast<T>(other)};
-    }
+    template <typename T> constexpr auto operator!=(T other) const -> ne_t<int, T> { return {value, other}; }
 
-    template<typename T>
-    constexpr auto operator>(T other) const -> gt_t<int, T> {
-        return {value, static_cast<T>(other)};
-    }
+    template <typename T> constexpr auto operator>(T other) const -> gt_t<int, T> { return {value, other}; }
 
-    template<typename T>
-    constexpr auto operator<(T other) const -> lt_t<int, T> {
-        return {value, static_cast<T>(other)};
-    }
+    template <typename T> constexpr auto operator<(T other) const -> lt_t<int, T> { return {value, other}; }
 
-    template<typename T>
-    constexpr auto operator>=(T other) const -> ge_t<int, T> {
-        return {value, static_cast<T>(other)};
-    }
+    template <typename T> constexpr auto operator>=(T other) const -> ge_t<int, T> { return {value, other}; }
 
-    template<typename T>
-    constexpr auto operator<=(T other) const -> le_t<int, T> {
-        return {value, static_cast<T>(other)};
-    }
+    template <typename T> constexpr auto operator<=(T other) const -> le_t<int, T> { return {value, other}; }
 };
 
 // _i literal operator
@@ -905,35 +883,17 @@ constexpr integral operator""_i(unsigned long long value) {
 }
 
 // Support comparison between any type and integral
-template<typename T>
-constexpr auto operator==(T lhs, integral rhs) -> eq_t<T, int> {
-    return {static_cast<T>(lhs), rhs.value};
-}
+template <typename T> constexpr auto operator==(T lhs, integral rhs) -> eq_t<T, int> { return {lhs, rhs.value}; }
 
-template<typename T>
-constexpr auto operator!=(T lhs, integral rhs) -> ne_t<T, int> {
-    return {static_cast<T>(lhs), rhs.value};
-}
+template <typename T> constexpr auto operator!=(T lhs, integral rhs) -> ne_t<T, int> { return {lhs, rhs.value}; }
 
-template<typename T>
-constexpr auto operator>(T lhs, integral rhs) -> gt_t<T, int> {
-    return {static_cast<T>(lhs), rhs.value};
-}
+template <typename T> constexpr auto operator>(T lhs, integral rhs) -> gt_t<T, int> { return {lhs, rhs.value}; }
 
-template<typename T>
-constexpr auto operator<(T lhs, integral rhs) -> lt_t<T, int> {
-    return {static_cast<T>(lhs), rhs.value};
-}
+template <typename T> constexpr auto operator<(T lhs, integral rhs) -> lt_t<T, int> { return {lhs, rhs.value}; }
 
-template<typename T>
-constexpr auto operator>=(T lhs, integral rhs) -> ge_t<T, int> {
-    return {static_cast<T>(lhs), rhs.value};
-}
+template <typename T> constexpr auto operator>=(T lhs, integral rhs) -> ge_t<T, int> { return {lhs, rhs.value}; }
 
-template<typename T>
-constexpr auto operator<=(T lhs, integral rhs) -> le_t<T, int> {
-    return {static_cast<T>(lhs), rhs.value};
-}
+template <typename T> constexpr auto operator<=(T lhs, integral rhs) -> le_t<T, int> { return {lhs, rhs.value}; }
 
 // ============================================================================
 // Boolean literal wrapper for boost::ut compatibility
@@ -947,36 +907,18 @@ struct boolean {
     constexpr operator bool() const { return value; }
 
     // Support comparison with boolean
-    template<typename T>
-    constexpr auto operator==(T other) const -> eq_t<bool, T> {
-        return {value, static_cast<T>(other)};
-    }
+    template <typename T> constexpr auto operator==(T other) const -> eq_t<bool, T> { return {value, other}; }
 
-    template<typename T>
-    constexpr auto operator!=(T other) const -> ne_t<bool, T> {
-        return {value, static_cast<T>(other)};
-    }
+    template <typename T> constexpr auto operator!=(T other) const -> ne_t<bool, T> { return {value, other}; }
 
     // Boolean-specific comparisons (less meaningful but kept for consistency)
-    template<typename T>
-    constexpr auto operator>(T other) const -> gt_t<bool, T> {
-        return {value, static_cast<T>(other)};
-    }
+    template <typename T> constexpr auto operator>(T other) const -> gt_t<bool, T> { return {value, other}; }
 
-    template<typename T>
-    constexpr auto operator<(T other) const -> lt_t<bool, T> {
-        return {value, static_cast<T>(other)};
-    }
+    template <typename T> constexpr auto operator<(T other) const -> lt_t<bool, T> { return {value, other}; }
 
-    template<typename T>
-    constexpr auto operator>=(T other) const -> ge_t<bool, T> {
-        return {value, static_cast<T>(other)};
-    }
+    template <typename T> constexpr auto operator>=(T other) const -> ge_t<bool, T> { return {value, other}; }
 
-    template<typename T>
-    constexpr auto operator<=(T other) const -> le_t<bool, T> {
-        return {value, static_cast<T>(other)};
-    }
+    template <typename T> constexpr auto operator<=(T other) const -> le_t<bool, T> { return {value, other}; }
 };
 
 // _b literal operator
@@ -985,35 +927,17 @@ constexpr boolean operator""_b(unsigned long long value) {
 }
 
 // Support comparison between any type and boolean
-template<typename T>
-constexpr auto operator==(T lhs, boolean rhs) -> eq_t<T, bool> {
-    return {static_cast<T>(lhs), rhs.value};
-}
+template <typename T> constexpr auto operator==(T lhs, boolean rhs) -> eq_t<T, bool> { return {lhs, rhs.value}; }
 
-template<typename T>
-constexpr auto operator!=(T lhs, boolean rhs) -> ne_t<T, bool> {
-    return {static_cast<T>(lhs), rhs.value};
-}
+template <typename T> constexpr auto operator!=(T lhs, boolean rhs) -> ne_t<T, bool> { return {lhs, rhs.value}; }
 
-template<typename T>
-constexpr auto operator>(T lhs, boolean rhs) -> gt_t<T, bool> {
-    return {static_cast<T>(lhs), rhs.value};
-}
+template <typename T> constexpr auto operator>(T lhs, boolean rhs) -> gt_t<T, bool> { return {lhs, rhs.value}; }
 
-template<typename T>
-constexpr auto operator<(T lhs, boolean rhs) -> lt_t<T, bool> {
-    return {static_cast<T>(lhs), rhs.value};
-}
+template <typename T> constexpr auto operator<(T lhs, boolean rhs) -> lt_t<T, bool> { return {lhs, rhs.value}; }
 
-template<typename T>
-constexpr auto operator>=(T lhs, boolean rhs) -> ge_t<T, bool> {
-    return {static_cast<T>(lhs), rhs.value};
-}
+template <typename T> constexpr auto operator>=(T lhs, boolean rhs) -> ge_t<T, bool> { return {lhs, rhs.value}; }
 
-template<typename T>
-constexpr auto operator<=(T lhs, boolean rhs) -> le_t<T, bool> {
-    return {static_cast<T>(lhs), rhs.value};
-}
+template <typename T> constexpr auto operator<=(T lhs, boolean rhs) -> le_t<T, bool> { return {lhs, rhs.value}; }
 
 // Convenience constants for common usage
 inline constexpr auto true_b = boolean(true);
@@ -1031,35 +955,17 @@ struct character {
     constexpr operator char() const { return value; }
 
     // Support comparison with character
-    template<typename T>
-    constexpr auto operator==(T other) const -> eq_t<char, T> {
-        return {value, static_cast<T>(other)};
-    }
+    template <typename T> constexpr auto operator==(T other) const -> eq_t<char, T> { return {value, other}; }
 
-    template<typename T>
-    constexpr auto operator!=(T other) const -> ne_t<char, T> {
-        return {value, static_cast<T>(other)};
-    }
+    template <typename T> constexpr auto operator!=(T other) const -> ne_t<char, T> { return {value, other}; }
 
-    template<typename T>
-    constexpr auto operator>(T other) const -> gt_t<char, T> {
-        return {value, static_cast<T>(other)};
-    }
+    template <typename T> constexpr auto operator>(T other) const -> gt_t<char, T> { return {value, other}; }
 
-    template<typename T>
-    constexpr auto operator<(T other) const -> lt_t<char, T> {
-        return {value, static_cast<T>(other)};
-    }
+    template <typename T> constexpr auto operator<(T other) const -> lt_t<char, T> { return {value, other}; }
 
-    template<typename T>
-    constexpr auto operator>=(T other) const -> ge_t<char, T> {
-        return {value, static_cast<T>(other)};
-    }
+    template <typename T> constexpr auto operator>=(T other) const -> ge_t<char, T> { return {value, other}; }
 
-    template<typename T>
-    constexpr auto operator<=(T other) const -> le_t<char, T> {
-        return {value, static_cast<T>(other)};
-    }
+    template <typename T> constexpr auto operator<=(T other) const -> le_t<char, T> { return {value, other}; }
 };
 
 // _c literal operator
@@ -1068,35 +974,17 @@ constexpr character operator""_c(char value) {
 }
 
 // Support comparison between any type and character
-template<typename T>
-constexpr auto operator==(T lhs, character rhs) -> eq_t<T, char> {
-    return {static_cast<T>(lhs), rhs.value};
-}
+template <typename T> constexpr auto operator==(T lhs, character rhs) -> eq_t<T, char> { return {lhs, rhs.value}; }
 
-template<typename T>
-constexpr auto operator!=(T lhs, character rhs) -> ne_t<T, char> {
-    return {static_cast<T>(lhs), rhs.value};
-}
+template <typename T> constexpr auto operator!=(T lhs, character rhs) -> ne_t<T, char> { return {lhs, rhs.value}; }
 
-template<typename T>
-constexpr auto operator>(T lhs, character rhs) -> gt_t<T, char> {
-    return {static_cast<T>(lhs), rhs.value};
-}
+template <typename T> constexpr auto operator>(T lhs, character rhs) -> gt_t<T, char> { return {lhs, rhs.value}; }
 
-template<typename T>
-constexpr auto operator<(T lhs, character rhs) -> lt_t<T, char> {
-    return {static_cast<T>(lhs), rhs.value};
-}
+template <typename T> constexpr auto operator<(T lhs, character rhs) -> lt_t<T, char> { return {lhs, rhs.value}; }
 
-template<typename T>
-constexpr auto operator>=(T lhs, character rhs) -> ge_t<T, char> {
-    return {static_cast<T>(lhs), rhs.value};
-}
+template <typename T> constexpr auto operator>=(T lhs, character rhs) -> ge_t<T, char> { return {lhs, rhs.value}; }
 
-template<typename T>
-constexpr auto operator<=(T lhs, character rhs) -> le_t<T, char> {
-    return {static_cast<T>(lhs), rhs.value};
-}
+template <typename T> constexpr auto operator<=(T lhs, character rhs) -> le_t<T, char> { return {lhs, rhs.value}; }
 
 // ============================================================================
 // Double precision literal wrapper for boost::ut compatibility (kernel-safe)
@@ -1197,35 +1085,17 @@ struct double_precision {
     constexpr operator double() const = delete; // Prevent usage when FP unavailable
 
     // Standard comparison operators using integer representation
-    template<typename T>
-    constexpr auto operator==(T other) const -> eq_t<int, T> {
-        return {value / 1000, static_cast<T>(other)};
-    }
+    template <typename T> constexpr auto operator==(T other) const -> eq_t<int, T> { return {value / 1000, other}; }
 
-    template<typename T>
-    constexpr auto operator!=(T other) const -> ne_t<int, T> {
-        return {value / 1000, static_cast<T>(other)};
-    }
+    template <typename T> constexpr auto operator!=(T other) const -> ne_t<int, T> { return {value / 1000, other}; }
 
-    template<typename T>
-    constexpr auto operator>(T other) const -> gt_t<int, T> {
-        return {value / 1000, static_cast<T>(other)};
-    }
+    template <typename T> constexpr auto operator>(T other) const -> gt_t<int, T> { return {value / 1000, other}; }
 
-    template<typename T>
-    constexpr auto operator<(T other) const -> lt_t<int, T> {
-        return {value / 1000, static_cast<T>(other)};
-    }
+    template <typename T> constexpr auto operator<(T other) const -> lt_t<int, T> { return {value / 1000, other}; }
 
-    template<typename T>
-    constexpr auto operator>=(T other) const -> ge_t<int, T> {
-        return {value / 1000, static_cast<T>(other)};
-    }
+    template <typename T> constexpr auto operator>=(T other) const -> ge_t<int, T> { return {value / 1000, other}; }
 
-    template<typename T>
-    constexpr auto operator<=(T other) const -> le_t<int, T> {
-        return {value / 1000, static_cast<T>(other)};
-    }
+    template <typename T> constexpr auto operator<=(T other) const -> le_t<int, T> { return {value / 1000, other}; }
 };
 
 // _d literal operator (fixed-point version) - use unsigned long long for freestanding
@@ -1236,32 +1106,32 @@ constexpr double_precision operator""_d(unsigned long long value) {
 // Support comparison between any type and double_precision
 template<typename T>
 constexpr auto operator==(T lhs, double_precision rhs) -> eq_t<T, int> {
-    return {static_cast<T>(lhs), rhs.value / 1000};
+  return {lhs, rhs.value / 1000};
 }
 
 template<typename T>
 constexpr auto operator!=(T lhs, double_precision rhs) -> ne_t<T, int> {
-    return {static_cast<T>(lhs), rhs.value / 1000};
+  return {lhs, rhs.value / 1000};
 }
 
 template<typename T>
 constexpr auto operator>(T lhs, double_precision rhs) -> gt_t<T, int> {
-    return {static_cast<T>(lhs), rhs.value / 1000};
+  return {lhs, rhs.value / 1000};
 }
 
 template<typename T>
 constexpr auto operator<(T lhs, double_precision rhs) -> lt_t<T, int> {
-    return {static_cast<T>(lhs), rhs.value / 1000};
+  return {lhs, rhs.value / 1000};
 }
 
 template<typename T>
 constexpr auto operator>=(T lhs, double_precision rhs) -> ge_t<T, int> {
-    return {static_cast<T>(lhs), rhs.value / 1000};
+  return {lhs, rhs.value / 1000};
 }
 
 template<typename T>
 constexpr auto operator<=(T lhs, double_precision rhs) -> le_t<T, int> {
-    return {static_cast<T>(lhs), rhs.value / 1000};
+  return {lhs, rhs.value / 1000};
 }
 
 #endif // __ARM_FP

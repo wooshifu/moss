@@ -310,7 +310,7 @@ private:
     if (!thread || cpu >= MAX_CPUS) {
       return false;
     }
-    return (thread->cpu_affinity_mask & (1u << cpu)) != 0;
+    return (thread->cpu_affinity_mask & (1U << cpu)) != 0;
   }
 
   [[nodiscard]] u32 get_thread_numa_node([[maybe_unused]] Thread *thread) const noexcept { return 0; }

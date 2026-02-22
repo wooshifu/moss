@@ -28,7 +28,7 @@ HeapAllocVoidResult RuntimeHeapAllocator::initialize_heap(VirtAddr heap_start, u
   heap_start_ = heap_start & ~(PAGE_SIZE - 1);
   usize aligned_size = align_size(initial_size, PAGE_SIZE);
   heap_end_ = heap_start_ + aligned_size;
-  heap_limit_ = heap_start_ + (256 * 1024 * 1024); // 最大256MB堆空间
+  heap_limit_ = heap_start_ + (256ULL * 1024 * 1024); // 最大256MB堆空间
 
   // 映射初始堆页面
   auto map_result = map_heap_pages(heap_start_, aligned_size);

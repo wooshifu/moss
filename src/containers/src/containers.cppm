@@ -32,7 +32,6 @@ constexpr int to_builtin_order(MemoryOrder order) noexcept {
   case MemoryOrder::AcqRel:
     return __ATOMIC_ACQ_REL;
   case MemoryOrder::SeqCst:
-    return __ATOMIC_SEQ_CST;
   default:
     return __ATOMIC_SEQ_CST;
   }
@@ -1260,11 +1259,11 @@ public:
 
 private:
   template <typename K> [[nodiscard]] static moss::kernel::usize hash_key(const K &key) noexcept {
-    moss::kernel::usize hash = 2166136261u;
+    moss::kernel::usize hash = 2166136261U;
     const u8 *data = reinterpret_cast<const u8 *>(&key);
     for (moss::kernel::usize i = 0; i < sizeof(K); ++i) {
       hash ^= data[i];
-      hash *= 16777619u;
+      hash *= 16777619U;
     }
     return hash;
   }

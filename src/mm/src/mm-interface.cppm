@@ -679,8 +679,8 @@ inline bool initialize_kernel_memory() noexcept {
   UnifiedMemoryManager::SystemConfig config = {};
 
   config.vmalloc_config = {.enable_lazy_free = true,
-                           .lazy_free_threshold = 64 * 1024,
-                           .max_lazy_free_memory = 16 * 1024 * 1024,
+                           .lazy_free_threshold = 64ULL * 1024,
+                           .max_lazy_free_memory = 16ULL * 1024 * 1024,
                            .enable_numa_awareness = true,
                            .default_numa_policy = static_cast<u32>(NUMAPolicy::DEFAULT)};
 
@@ -748,7 +748,7 @@ inline bool initialize_kernel_memory() noexcept {
   config.enable_background_operations = true;
   config.background_interval_ms = 1000;
   config.memory_pressure_threshold = 80;
-  config.min_free_memory = 128 * 1024 * 1024;
+  config.min_free_memory = 128ULL * 1024 * 1024;
 
   auto result = UnifiedMemoryManager::initialize_system(config);
   return result.is_ok();

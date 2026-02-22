@@ -333,10 +333,10 @@ inline void eoi(VirtAddr cpu_base, u32 ack_value) noexcept {
 /// We must read-modify-write to avoid corrupting adjacent IRQ priorities.
 inline void set_priority(VirtAddr dist_base, u32 irq, u8 priority) noexcept {
 #if defined(MOSS_ARCH_ARM64)
-  u32 reg_offset = dist_regs::IPRIORITYR + (irq & ~3u);
-  u32 byte_shift = (irq & 3u) * 8;
+  u32 reg_offset = dist_regs::IPRIORITYR + (irq & ~3U);
+  u32 byte_shift = (irq & 3U) * 8;
   u32 val = read_reg(dist_base, reg_offset);
-  val &= ~(0xFFu << byte_shift);
+  val &= ~(0xFFU << byte_shift);
   val |= (static_cast<u32>(priority) << byte_shift);
   write_reg(dist_base, reg_offset, val);
 
@@ -357,11 +357,11 @@ inline void set_priority(VirtAddr dist_base, u32 irq, u8 priority) noexcept {
 /// We must read-modify-write to avoid corrupting adjacent IRQ targets.
 inline void set_target(VirtAddr dist_base, u32 irq, u32 cpu_mask) noexcept {
 #if defined(MOSS_ARCH_ARM64)
-  u32 reg_offset = dist_regs::ITARGETSR + (irq & ~3u);
-  u32 byte_shift = (irq & 3u) * 8;
+  u32 reg_offset = dist_regs::ITARGETSR + (irq & ~3U);
+  u32 byte_shift = (irq & 3U) * 8;
   u32 val = read_reg(dist_base, reg_offset);
-  val &= ~(0xFFu << byte_shift);
-  val |= ((cpu_mask & 0xFFu) << byte_shift);
+  val &= ~(0xFFU << byte_shift);
+  val |= ((cpu_mask & 0xFFU) << byte_shift);
   write_reg(dist_base, reg_offset, val);
 
 #elif defined(MOSS_ARCH_X86_64)

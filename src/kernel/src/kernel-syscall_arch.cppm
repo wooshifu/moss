@@ -23,21 +23,8 @@ inline bool initialize_architecture_syscalls() noexcept {
   using moss::kernel::arch::is_arm64;
   using moss::kernel::arch::is_riscv;
   using moss::kernel::arch::is_x86_64;
-  if constexpr (is_arm64) {
-    // ARM64: Set up exception vector table to handle SVC instruction
-    // TODO: Set up EL1 exception vector table, point SVC exception to syscall_entry_point
-    return true;
-  } else if constexpr (is_x86_64) {
-    // X86_64: Set up SYSCALL instruction MSR registers
-    // TODO: implement initialize_syscall_support() for x86_64
-    return true;
-  } else if constexpr (is_riscv) {
-    // RISC-V: Set up trap vector table to handle ECALL instruction
-    // TODO: Set up stvec register to point to syscall_entry_point
-    return true;
-  } else {
-    return false;
-  }
+  // TODO: per-arch initialization (exception vectors, MSRs, stvec)
+  return is_arm64 || is_x86_64 || is_riscv;
 }
 
 // Architecture-specific syscall convention information

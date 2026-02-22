@@ -53,23 +53,23 @@ inline constexpr u32 NICE_TO_WEIGHT[] = {
     /*  15 */ 36,    29,    23,    18,    15,
 };
 
-inline constexpr u32 nice_to_weight_index(i32 nice) { return static_cast<u32>(nice + 20); }
+constexpr u32 nice_to_weight_index(i32 nice) { return static_cast<u32>(nice + 20); }
 
-inline constexpr u32 nice_to_weight(i32 nice) {
+constexpr u32 nice_to_weight(i32 nice) {
   u32 index = nice_to_weight_index(nice);
   return (index < 40) ? NICE_TO_WEIGHT[index] : 1;
 }
 
 // Adaptive scheduling period: when nr_running exceeds SCHED_NR_LATENCY,
 // grow linearly to avoid excessively short time slices.
-inline constexpr u64 sched_period(u32 nr_running) {
+constexpr u64 sched_period(u32 nr_running) {
   if (nr_running > SCHED_NR_LATENCY) {
     return static_cast<u64>(nr_running) * MIN_GRANULARITY_NS;
   }
   return SCHED_LATENCY_NS;
 }
 
-inline constexpr u64 sched_slice(u32 weight, u32 total_weight, u32 nr_running = SCHED_NR_LATENCY) {
+constexpr u64 sched_slice(u32 weight, u32 total_weight, u32 nr_running = SCHED_NR_LATENCY) {
   if (total_weight == 0) {
     return MIN_GRANULARITY_NS;
   }
@@ -482,14 +482,9 @@ private:
 
     bool should_update_leftmost = false;
 
-    if (rb_leftmost_ == nullptr) {
+    if (rb_leftmost_ == nullptr || vruntime < rb_leftmost_->data->se.vruntime ||
+        (vruntime == rb_leftmost_->data->se.vruntime && node->data->tid < rb_leftmost_->data->tid)) {
       should_update_leftmost = true;
-    } else if (vruntime < rb_leftmost_->data->se.vruntime) {
-      should_update_leftmost = true;
-    } else if (vruntime == rb_leftmost_->data->se.vruntime) {
-      if (node->data->tid < rb_leftmost_->data->tid) {
-        should_update_leftmost = true;
-      }
     }
 
     if (should_update_leftmost) {
@@ -956,7 +951,7 @@ public:
     return runqueues_.get_cpu(cpu).pick_last_task();
   }
 
-  inline void set_idle_task(u32 cpu_id, IdleTask *idle_task) noexcept {
+  void set_idle_task(u32 cpu_id, IdleTask *idle_task) noexcept {
     if (cpu_id >= MAX_CPUS) {
       return;
     }
@@ -964,7 +959,7 @@ public:
     idle_tasks_.get_cpu(cpu_id) = idle_task;
 
     if (idle_task) {
-      log::klog::info("set idle task CPU{}: TID={}", cpu_id, static_cast<u32>(idle_task->get_cpu_id()));
+      log::klog::info("set idle task CPU{}: TID={}", cpu_id, idle_task->get_cpu_id());
     } else {
       log::klog::info("set idle task CPU{}: TID=NULL", cpu_id);
     }
@@ -1062,7 +1057,7 @@ private:
   }
 
 public:
-  [[noreturn]] inline void cpu_startup_entry(u32 cpu_id) noexcept {
+  [[noreturn]] void cpu_startup_entry(u32 cpu_id) noexcept {
     log::klog::info("CPU{}: per-CPU scheduling loop started", cpu_id);
 
     if (cpu_id >= MAX_CPUS) {
