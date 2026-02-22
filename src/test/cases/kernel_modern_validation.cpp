@@ -141,7 +141,7 @@ extern "C" void force_kernel_test_registration() {
       int x;
       int y;
     };
-    Point p = {10, 20};
+    Point p = {.x = 10, .y = 20};
     expect(p.x == 10);
     expect(p.y == 20);
     p.x = 30;
@@ -153,7 +153,7 @@ extern "C" void force_kernel_test_registration() {
       int i;
       char c2;
     };
-    Mixed m = {'A', 123, 'B'};
+    Mixed m = {.c = 'A', .i = 123, .c2 = 'B'};
     expect(m.c == 'A');
     expect(m.i == 123);
     expect(m.c2 == 'B');

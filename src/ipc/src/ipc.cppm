@@ -254,10 +254,10 @@ public:
   }
 
   [[nodiscard]] SharedMemoryStats get_statistics() const noexcept {
-    return {total_regions_.load(containers::MemoryOrder::Relaxed),
-            total_memory_usage_.load(containers::MemoryOrder::Relaxed),
-            large_pages_used_.load(containers::MemoryOrder::Relaxed),
-            huge_pages_used_.load(containers::MemoryOrder::Relaxed)};
+    return {.total_regions = total_regions_.load(containers::MemoryOrder::Relaxed),
+            .total_memory_usage = total_memory_usage_.load(containers::MemoryOrder::Relaxed),
+            .large_pages_used = large_pages_used_.load(containers::MemoryOrder::Relaxed),
+            .huge_pages_used = huge_pages_used_.load(containers::MemoryOrder::Relaxed)};
   }
 
   void cleanup_process_mappings(ProcessId pid) noexcept {
@@ -731,10 +731,11 @@ public:
   [[nodiscard]] ChannelStats get_statistics() const noexcept {
     auto c2s_stats = client_to_server_->get_statistics();
     auto s2c_stats = server_to_client_->get_statistics();
-    return {messages_sent_.load(containers::MemoryOrder::Relaxed),
-            messages_received_.load(containers::MemoryOrder::Relaxed),
-            bytes_transferred_.load(containers::MemoryOrder::Relaxed), c2s_stats.pending_messages,
-            s2c_stats.pending_messages};
+    return {.messages_sent = messages_sent_.load(containers::MemoryOrder::Relaxed),
+            .messages_received = messages_received_.load(containers::MemoryOrder::Relaxed),
+            .bytes_transferred = bytes_transferred_.load(containers::MemoryOrder::Relaxed),
+            .client_to_server_pending = c2s_stats.pending_messages,
+            .server_to_client_pending = s2c_stats.pending_messages};
   }
 
   [[nodiscard]] ChannelId id() const noexcept { return channel_id_; }
@@ -994,10 +995,10 @@ public:
   }
 
   [[nodiscard]] IpcStats get_statistics() const noexcept {
-    return {total_services_.load(containers::MemoryOrder::Relaxed),
-            total_channels_.load(containers::MemoryOrder::Relaxed),
-            messages_processed_.load(containers::MemoryOrder::Relaxed),
-            bytes_transferred_.load(containers::MemoryOrder::Relaxed)};
+    return {.total_services = total_services_.load(containers::MemoryOrder::Relaxed),
+            .total_channels = total_channels_.load(containers::MemoryOrder::Relaxed),
+            .messages_processed = messages_processed_.load(containers::MemoryOrder::Relaxed),
+            .bytes_transferred = bytes_transferred_.load(containers::MemoryOrder::Relaxed)};
   }
 
   void get_process_connections(ProcessId pid, void (*callback)(const ConnectionDescriptor &, void *),

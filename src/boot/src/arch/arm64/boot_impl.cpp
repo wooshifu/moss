@@ -6,7 +6,7 @@
 module;
 
 // PSCI constants (must be in global module fragment as macros)
-#define PSCI_CPU_ON_64 0xC4000003
+enum { PSCI_CPU_ON_64 = 0xC4000003 };
 
 // Assembly-callable function forward declaration (defined in this file)
 extern "C" [[noreturn]] void secondary_cpu_entry() noexcept;
