@@ -14,9 +14,6 @@ namespace log = moss::kernel::logging;
 
 namespace moss::kernel {
 
-// Global instance definitions
-Kernel *g_kernel = nullptr;
-
 // Subsystem global instances
 containers::ContainerLibrary *g_container_lib = nullptr;
 mm::PageTableManager *g_page_table_manager = nullptr;
@@ -35,8 +32,8 @@ extern "C" {
 
   // Create kernel instance
   log::klog::info("creating kernel instance...");
-  g_kernel = new Kernel();
-  if (!g_kernel) {
+  auto *kernel = new Kernel();
+  if (!kernel) {
     log::klog::panic("kernel instance creation failed, cannot continue");
     while (true) {
       arch::cpu_halt();
@@ -46,7 +43,7 @@ extern "C" {
 
   // Full kernel initialization
   log::klog::info("initializing kernel subsystems...");
-  auto init_result = g_kernel->initialize();
+  auto init_result = kernel->initialize();
   if (!init_result) {
     log::klog::error("kernel initialization failed");
     while (true) {
@@ -57,7 +54,7 @@ extern "C" {
 
   // Display system info
   log::klog::info("=== kernel system status ===");
-  g_kernel->print_system_info();
+  kernel->print_system_info();
 
   // Subsystem verification
   log::klog::info("=== subsystem verification ===");
@@ -114,7 +111,7 @@ extern "C" {
   // Start kernel run system (with real task scheduling)
   log::klog::info("starting kernel run system");
 
-  auto run_result = g_kernel->run();
+  auto run_result = kernel->run();
   if (!run_result) {
     log::klog::panic("kernel run system failed to start");
     while (true) {
