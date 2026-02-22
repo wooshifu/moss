@@ -12,6 +12,9 @@ services:
     build:
       context: ..
       dockerfile: docker/Dockerfile.qemu
+    # Bind-mount source tree so the image stays small and code changes are instant
+    volumes:
+      - ..:/moss
     # Allocate a pseudo-TTY so QEMU serial console works interactively
     stdin_open: true
     tty: true
