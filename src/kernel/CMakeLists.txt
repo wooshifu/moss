@@ -24,7 +24,6 @@ target_sources(
            src/kernel-syscall_arch.cppm
            src/kernel-main.cppm
            src/cpu-topology.cppm
-           src/cpu-mask.cppm
     PRIVATE ${KERNEL_SOURCES}
 )
 

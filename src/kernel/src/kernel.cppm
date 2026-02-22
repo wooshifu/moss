@@ -32,4 +32,3 @@ export import :syscall_table;
 export import :syscall_arch;
 export import :main;
 export import :cpu_topology;
-export import :cpu_mask;
