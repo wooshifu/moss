@@ -220,6 +220,10 @@ public:
   // Used by the COW fault handler to modify PTE in-place.
   [[nodiscard]] static PageTableEntry *get_user_pte(PhysAddr pgd_phys, VirtAddr va);
 
+  // Unmap a single user page: clear PTE, invalidate TLB, free physical page
+  // when refcount drops to 0 (COW-aware).  No-op if the PTE is not mapped.
+  static void unmap_user_page(PhysAddr pgd_phys, VirtAddr va) noexcept;
+
   // Clone a user page table tree for fork().
   // Allocates fresh intermediate tables (PUD/PMD/PTE) for dst_pgd_phys.
   // Leaf pages are shared: both src and dst PTEs are marked READONLY + SW_COW,

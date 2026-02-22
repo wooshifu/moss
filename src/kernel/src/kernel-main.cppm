@@ -627,6 +627,7 @@ private:
                 vma_flags::READ | vma_flags::WRITE | vma_flags::DEMAND_ZERO, VmaType::HEAP);
     as->brk_base = user_layout::HEAP_START;
     as->brk_current = user_layout::HEAP_START;
+    as->mmap_next = user_layout::MMAP_BASE;
 
     // Bind AddressSpace to process
     auto set_result = init_proc->set_address_space(moss::move(as));

@@ -237,8 +237,8 @@ long sys_dup2(long oldfd, long newfd, long arg2, long arg3, long arg4, long arg5
 long sys_pipe(long pipefd_addr, long arg1, long arg2, long arg3, long arg4, long arg5) noexcept;
 
 // Memory management
-long sys_mmap(long arg0, long arg1, long arg2, long arg3, long arg4, long arg5) noexcept;
-long sys_munmap(long arg0, long arg1, long arg2, long arg3, long arg4, long arg5) noexcept;
+long sys_mmap(long addr, long length, long prot, long flags, long fd, long offset) noexcept;
+long sys_munmap(long addr, long length, long arg2, long arg3, long arg4, long arg5) noexcept;
 long sys_mprotect(long arg0, long arg1, long arg2, long arg3, long arg4, long arg5) noexcept;
 long sys_brk(long addr, long arg1, long arg2, long arg3, long arg4, long arg5) noexcept;
 

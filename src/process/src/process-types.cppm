@@ -154,6 +154,7 @@ enum class VmaType : u32 {
   BSS = 2,
   STACK = 3,
   HEAP = 4,
+  MMAP = 5,
 };
 
 // Virtual Memory Area (VMA) — describes a contiguous region in a process's
@@ -208,6 +209,10 @@ struct AddressSpace {
   VirtAddr brk_base{0};
   VirtAddr brk_current{0};
 
+  // Next free virtual address for anonymous mmap allocations.
+  // Starts at MMAP_BASE and advances upward as regions are mapped.
+  VirtAddr mmap_next{0};
+
   AddressSpace(PhysAddr pgd, u16 asid_val) noexcept
       : pgd_phys(pgd), asid(asid_val), vmas{}, total_pages(0), resident_pages(0) {}
 
@@ -242,6 +247,13 @@ struct AddressSpace {
   // Find the VMA containing the given address (const pointer, nullptr if none)
   [[nodiscard]] const VmaRegion *find_vma(VirtAddr addr) const noexcept {
     return vmas.find_if([addr](const VmaRegion &v) { return v.contains(addr); });
+  }
+
+  // Remove a VMA by exact start/end match (used by munmap).
+  // Returns true if the VMA was found and removed.
+  bool remove_vma(VirtAddr start, VirtAddr end) noexcept {
+    // RcuList::remove uses VmaRegion::operator== which compares start_addr and end_addr
+    return vmas.remove(VmaRegion(start, end, 0));
   }
 };
 
@@ -567,6 +579,7 @@ inline constexpr VirtAddr HEAP_START = 0x0000000100000000ULL; // 4GB
 inline constexpr VirtAddr STACK_TOP = 0x00007FFF00000000ULL;  // 128TB boundary - 4GB
 inline constexpr usize STACK_SIZE = 32ULL * 1024;             // 32KB default user stack
 inline constexpr usize HEAP_INIT = 64ULL * 1024;              // 64KB initial heap
+inline constexpr VirtAddr MMAP_BASE = 0x0000001000000000ULL;  // 64GB — anonymous mmap region start
 } // namespace user_layout
 
 // User address space management extensions

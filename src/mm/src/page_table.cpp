@@ -125,6 +125,25 @@ PageTableEntry *PageTableManager::get_user_pte(PhysAddr pgd_phys, VirtAddr va) {
   return &pte->entries[bd.pte_index];
 }
 
+// Unmap a single user page: clear PTE, invalidate TLB, free physical page
+// when refcount drops to 0.  Pattern follows free_user_page_tables leaf cleanup.
+void PageTableManager::unmap_user_page(PhysAddr pgd_phys, VirtAddr va) noexcept {
+  auto *pte_entry = get_user_pte(pgd_phys, va);
+  if (!pte_entry || !pte_entry->is_valid()) {
+    return;
+  }
+
+  PhysAddr pa = pte_entry->get_phys_addr();
+  pte_entry->clear();
+  invalidate_tlb_addr(va);
+
+  // COW-aware: only free the physical page when no more references
+  u32 remaining = PageFrameAllocator::page_ref_dec(pa);
+  if (remaining == 0) {
+    (void)free_pages(pa, 0);
+  }
+}
+
 // Clone user page tables for fork(): deep-copy intermediate tables,
 // share leaf pages via COW (mark READONLY + SW_COW, increment refcount).
 void PageTableManager::clone_user_page_tables(PhysAddr src_pgd_phys, PhysAddr dst_pgd_phys) {
