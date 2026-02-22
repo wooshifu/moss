@@ -240,6 +240,20 @@ struct AddressSpace {
       : pgd_phys(pgd), asid(asid_val), vmas{},
         total_pages(0), resident_pages(0) {}
 
+  // Destructor: free page table hierarchy if still owned.
+  // This ensures no PGD/PUD/PMD/PTE leak when an AddressSpace is
+  // dropped without going through do_exit (e.g. fork error paths).
+  ~AddressSpace() noexcept {
+    if (pgd_phys != 0) {
+      mm::PageTableManager::free_user_page_tables(pgd_phys);
+      pgd_phys = 0;
+    }
+  }
+
+  // Non-copyable (page tables are unique resources)
+  AddressSpace(const AddressSpace&) = delete;
+  AddressSpace& operator=(const AddressSpace&) = delete;
+
   // Add a VMA region (returns false if overlapping with existing)
   bool add_vma(VirtAddr start, VirtAddr end, u32 flags,
                VmaType type = VmaType::DATA,
@@ -424,14 +438,9 @@ public:
 
   ~Process() noexcept {
     cleanup_threads();
-
-    // Free user page tables and demand-paged physical pages.
-    // Must happen AFTER TTBR0 is restored to kernel PGD (done in sys_exit
-    // and terminate_current_user_process) so we don't free active tables.
-    if (address_space_ && address_space_->pgd_phys != 0) {
-      mm::PageTableManager::free_user_page_tables(address_space_->pgd_phys);
-      address_space_->pgd_phys = 0; // Prevent double-free
-    }
+    // Page table cleanup is handled by ~AddressSpace (via unique_ptr).
+    // do_exit() zeroes pgd_phys early to avoid freeing active tables;
+    // if that didn't happen (error path), ~AddressSpace frees them now.
   }
 
   // Non-copyable (deleted copy constructor and copy assignment)
