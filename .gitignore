@@ -18,8 +18,9 @@ wheels/
 # Clangd database file
 compile_commands.json
 
-# Claude files
-.claude/
+# Claude files (ignore everything except skills/)
+.claude/*
+!.claude/skills/
 /docs/plans/*.md
 
 # Jetbrains IDE files
