@@ -68,7 +68,7 @@
  *
  * == Stack Layout ==
  *
- *   256KB total stack space, 32KB per CPU, supporting up to MAX_CPUS=8.
+ *   1MB total stack space, 32KB per CPU, supporting up to ASM_MAX_CPUS CPUs.
  *   CPU 0 stack: _stack_top → _stack_top - 32KB
  *   CPU N stack: _stack_top - N*32KB → _stack_top - (N+1)*32KB
  *
@@ -82,6 +82,9 @@
  *   unhandled_exception_handler(esr, far, elr) — fatal exceptions
  *   unhandled_user_exception_handler(esr, far, elr) — unknown user exceptions
  */
+
+// CPU configuration constants (must match kernel constants)
+#define ASM_MAX_CPUS 32
 
 .section ".text.boot", "ax"
 .global _start
@@ -402,7 +405,7 @@ primary_cpu_continue:
 // =============================================================================
 //
 // After printing a debug message, secondary CPUs validate their CPU ID
-// (must be < MAX_CPUS=8) and jump directly to the C++ secondary_cpu_entry()
+// (must be < ASM_MAX_CPUS) and jump directly to the C++ secondary_cpu_entry()
 // function.  The Linux-style deferred activation mechanism in C++ handles
 // synchronization — no polling loop needed here.
 // =============================================================================
@@ -428,7 +431,7 @@ secondary_cpu_park:
     bl      early_uart_release
 
     // Validate CPU ID is within supported range
-    cmp     x19, #8                     // MAX_CPUS = 8
+    cmp     x19, #ASM_MAX_CPUS          // Configured maximum CPUs
     b.hs    invalid_cpu_id
 
     // ---- Debug: print "DN\n" (D=Direct jump, N=CPU ID) (locked) ----
@@ -473,8 +476,8 @@ invalid_cpu_id:
 .align 8
 cpu_startup_flags:
     // Per-CPU startup control block: [entry_point: 8B] [startup_flag: 8B]
-    // MAX_CPUS=8, each CPU gets 16 bytes
-    .space 8 * 16
+    // ASM_MAX_CPUS CPUs, each CPU gets 16 bytes
+    .space ASM_MAX_CPUS * 16
 
 // =============================================================================
 // Early UART spinlock — shared between assembly and C++ boot code

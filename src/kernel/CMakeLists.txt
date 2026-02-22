@@ -2,7 +2,7 @@
 
 add_library(moss_kernel OBJECT)
 
-set(KERNEL_SOURCES src/kernel_main.cpp src/runtime_support.cpp src/syscall_table.cpp)
+set(KERNEL_SOURCES src/kernel_main.cpp src/runtime_support.cpp src/syscall_table.cpp src/cpu-topology.cpp)
 
 # Architecture-specific assembly files
 if(MOSS_TARGET_ARCH STREQUAL "ARM64")
@@ -23,6 +23,8 @@ target_sources(
            src/kernel-syscall_table.cppm
            src/kernel-syscall_arch.cppm
            src/kernel-main.cppm
+           src/cpu-topology.cppm
+           src/cpu-mask.cppm
     PRIVATE ${KERNEL_SOURCES}
 )
 

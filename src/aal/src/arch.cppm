@@ -33,9 +33,6 @@ inline constexpr bool is_arm64 = (CURRENT_ARCH == Architecture::ARM64);
 inline constexpr bool is_x86_64 = (CURRENT_ARCH == Architecture::X86_64);
 inline constexpr bool is_riscv = (CURRENT_ARCH == Architecture::RISCV);
 
-// Maximum supported CPUs (compile-time constant)
-inline constexpr u32 MAX_CPUS = 16;
-
 // ============================================================================
 // Memory barriers
 // ============================================================================
@@ -162,7 +159,7 @@ inline void cpu_idle_once() noexcept {
 #if defined(MOSS_ARCH_ARM64)
   u64 mpidr;
   asm volatile("mrs %0, mpidr_el1" : "=r"(mpidr));
-  return static_cast<u32>(mpidr & 0xFF) % MAX_CPUS;
+  return static_cast<u32>(mpidr & 0xFF) % moss::kernel::MAX_CPUS;
 #elif defined(MOSS_ARCH_X86_64)
   u32 eax, ebx, ecx, edx;
   asm volatile("cpuid" : "=a"(eax), "=b"(ebx), "=c"(ecx), "=d"(edx) : "a"(1));
@@ -171,7 +168,7 @@ inline void cpu_idle_once() noexcept {
   // S-mode cannot read mhartid; use tp register (set by SBI/bootloader)
   u64 hartid;
   asm volatile("mv %0, tp" : "=r"(hartid));
-  return static_cast<u32>(hartid) % MAX_CPUS;
+  return static_cast<u32>(hartid) % moss::kernel::MAX_CPUS;
 #else
   return 0;
 #endif

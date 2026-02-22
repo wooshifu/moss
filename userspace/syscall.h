@@ -117,7 +117,7 @@ static inline long nanosleep_ns(unsigned long *ns) { return syscall1(SYS_NANOSLE
 // ============================================================================
 
 #define TOP_MAX_PROCS 64
-#define TOP_MAX_CPUS 8
+#define TOP_MAX_CPUS 32
 
 struct TopProcessInfo {
   long pid;
