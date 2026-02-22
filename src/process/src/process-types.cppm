@@ -201,6 +201,13 @@ struct AddressSpace {
   containers::AtomicSize total_pages;
   containers::AtomicSize resident_pages;
 
+  // Program break for brk() syscall — tracks the heap boundary.
+  // brk_base is the initial heap start (= HEAP_START), brk_current is
+  // the current program break.  Expanding brk_current extends the HEAP
+  // VMA; demand paging allocates physical pages lazily on access.
+  VirtAddr brk_base{0};
+  VirtAddr brk_current{0};
+
   AddressSpace(PhysAddr pgd, u16 asid_val) noexcept
       : pgd_phys(pgd), asid(asid_val), vmas{}, total_pages(0), resident_pages(0) {}
 

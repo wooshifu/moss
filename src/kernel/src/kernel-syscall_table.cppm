@@ -240,7 +240,7 @@ long sys_pipe(long pipefd_addr, long arg1, long arg2, long arg3, long arg4, long
 long sys_mmap(long arg0, long arg1, long arg2, long arg3, long arg4, long arg5) noexcept;
 long sys_munmap(long arg0, long arg1, long arg2, long arg3, long arg4, long arg5) noexcept;
 long sys_mprotect(long arg0, long arg1, long arg2, long arg3, long arg4, long arg5) noexcept;
-long sys_brk(long arg0, long arg1, long arg2, long arg3, long arg4, long arg5) noexcept;
+long sys_brk(long addr, long arg1, long arg2, long arg3, long arg4, long arg5) noexcept;
 
 // Network communication - framework implementation
 long sys_socket(long arg0, long arg1, long arg2, long arg3, long arg4, long arg5) noexcept;
