@@ -5,14 +5,17 @@ Uses `git ls-files` so .gitignore is automatically respected.
 All tools come from pyproject.toml dev dependencies (via uv).
 
 Usage:
-    uv run scripts/format.py format              # format everything
-    uv run scripts/format.py format --check      # dry-run (exit 1 if anything changes)
-    uv run scripts/format.py lint                 # lint everything
-    uv run scripts/format.py lint --fix           # lint with auto-fix
+    uv run scripts/format.py                     # format everything (default)
+    uv run scripts/format.py --check             # dry-run (exit 1 if anything changes)
+    uv run scripts/format.py lint                # lint everything
+    uv run scripts/format.py lint --fix          # lint with auto-fix (serial)
 """
 
 import json
+import os
 import subprocess
+import sys
+from concurrent.futures import ProcessPoolExecutor, as_completed
 from pathlib import Path
 
 import typer
@@ -22,15 +25,18 @@ from rich.progress import BarColumn, MofNCompleteColumn, Progress, TextColumn
 console = Console(force_terminal=True)
 app = typer.Typer(help="MOSS code quality tools (respects .gitignore)")
 
-CPP_EXTENSIONS = {".cppm", ".cpp", ".c", ".h"}
+CPP_EXTENSIONS = {".cppm", ".cpp", ".cc", ".c", ".h"}
 # clang-tidy only processes compilation units listed in compile_commands.json
-CLANG_TIDY_EXTENSIONS = {".cppm", ".cpp", ".c"}
+CLANG_TIDY_EXTENSIONS = {".cppm", ".cpp", ".cc", ".c"}
 CMAKE_NAMES = {"CMakeLists.txt"}
 CMAKE_EXTENSIONS = {".cmake"}
 PYTHON_EXTENSIONS = {".py"}
 
 # Vendored third-party code — never format or lint
 EXCLUDE_PREFIXES = ("src/fdt/libfdt/",)
+
+# Worker count: leave 2 cores free for the OS and progress rendering
+MAX_WORKERS = max(1, (os.cpu_count() or 4) - 2)
 
 
 # ── File discovery ──────────────────────────────────────────────────────
@@ -74,74 +80,140 @@ def _make_progress(label: str) -> Progress:
     )
 
 
+# ── Per-file worker functions (run in subprocess pool) ─────────────────
+#
+# Each returns (file_path_str, ok, detail) so the main process can
+# update the progress bar and collect failures.
+
+
+def _worker_clang_format(file: str, *, check: bool) -> tuple[str, bool, str]:
+    cmd = ["clang-format"]
+    cmd += ["--dry-run", "--Werror"] if check else ["-i"]
+    cmd.append(file)
+    r = subprocess.run(cmd, capture_output=True, text=True)
+    return (file, r.returncode == 0, "")
+
+
+def _worker_cmake_format_check(file: str) -> tuple[str, bool, str]:
+    formatted = subprocess.run(["cmake-format", file], capture_output=True, text=True)
+    original = Path(file).read_text()
+    return (file, formatted.stdout == original, "")
+
+
+def _worker_cmake_format_fix(file: str) -> tuple[str, bool, str]:
+    subprocess.run(["cmake-format", "-i", file], capture_output=True, text=True)
+    return (file, True, "")
+
+
+def _worker_ruff_format(file: str, *, check: bool) -> tuple[str, bool, str]:
+    cmd = ["ruff", "format"]
+    if check:
+        cmd += ["--check"]
+    cmd.append(file)
+    r = subprocess.run(cmd, capture_output=True, text=True)
+    return (file, r.returncode == 0, "")
+
+
+def _worker_clang_tidy(file: str, *, clang_tidy: str, build_dir: str) -> tuple[str, bool, str]:
+    cmd = [clang_tidy, "-p", build_dir, file]
+    r = subprocess.run(cmd, capture_output=True, text=True)
+    output = r.stdout + r.stderr
+    issues = [line for line in output.splitlines() if ": warning:" in line or ": error:" in line]
+    return (file, len(issues) == 0, "\n".join(issues))
+
+
+def _worker_ruff_lint(file: str) -> tuple[str, bool, str]:
+    cmd = ["ruff", "check", file]
+    r = subprocess.run(cmd, capture_output=True, text=True)
+    if r.returncode != 0:
+        lines = [line.strip() for line in r.stdout.splitlines() if line.strip()]
+        return (file, False, "\n".join(lines))
+    return (file, True, "")
+
+
+# ── Parallel runner ────────────────────────────────────────────────────
+
+
+def _run_parallel(label: str, files: list[Path], submit_fn) -> tuple[bool, list[str]]:
+    """Run submit_fn for each file using a process pool.
+
+    submit_fn(executor, file) -> Future that resolves to (file, ok, detail).
+    Returns (all_ok, detail_lines).
+    """
+    if not files:
+        return True, []
+
+    details: list[str] = []
+    failed_files: list[str] = []
+
+    with (
+        _make_progress(label) as progress,
+        ProcessPoolExecutor(max_workers=MAX_WORKERS) as pool,
+    ):
+        task = progress.add_task("", total=len(files), current_file="")
+
+        # Submit all jobs
+        future_to_file = {}
+        for f in files:
+            fut = submit_fn(pool, str(f))
+            future_to_file[fut] = f
+
+        # Collect results as they complete
+        for fut in as_completed(future_to_file):
+            f = future_to_file[fut]
+            progress.update(task, current_file=str(f))
+            file_str, ok, detail = fut.result()
+            if not ok:
+                failed_files.append(file_str)
+            if detail:
+                details.extend(detail.splitlines())
+            progress.advance(task)
+
+    # Print failures
+    if failed_files and not details:
+        for f in failed_files:
+            console.print(f"  [yellow]needs formatting:[/] {f}")
+    for line in details:
+        console.print(f"  {line}")
+
+    return len(failed_files) == 0, details
+
+
 # ── Formatters ──────────────────────────────────────────────────────────
 
 
 def run_clang_format(files: list[Path], *, check: bool) -> bool:
-    if not files:
-        return True
-
-    failed: list[Path] = []
-    with _make_progress("clang-format") as progress:
-        task = progress.add_task("", total=len(files), current_file="")
-        for f in files:
-            progress.update(task, current_file=str(f))
-            cmd = ["clang-format"]
-            cmd += ["--dry-run", "--Werror"] if check else ["-i"]
-            cmd.append(str(f))
-            result = subprocess.run(cmd, capture_output=True, text=True)
-            if result.returncode != 0:
-                failed.append(f)
-            progress.advance(task)
-
-    for f in failed:
-        console.print(f"  [yellow]needs formatting:[/] {f}")
-    return len(failed) == 0
+    ok, _ = _run_parallel(
+        "clang-format",
+        files,
+        lambda pool, f: pool.submit(_worker_clang_format, f, check=check),
+    )
+    return ok
 
 
 def run_cmake_format(files: list[Path], *, check: bool) -> bool:
-    if not files:
-        return True
-
-    failed: list[Path] = []
-    with _make_progress("cmake-format") as progress:
-        task = progress.add_task("", total=len(files), current_file="")
-        for f in files:
-            progress.update(task, current_file=str(f))
-            if check:
-                formatted = subprocess.run(["cmake-format", str(f)], capture_output=True, text=True)
-                if formatted.stdout != f.read_text():
-                    failed.append(f)
-            else:
-                subprocess.run(["cmake-format", "-i", str(f)], capture_output=True, text=True)
-            progress.advance(task)
-
-    for f in failed:
-        console.print(f"  [yellow]needs formatting:[/] {f}")
-    return len(failed) == 0
+    if check:
+        ok, _ = _run_parallel(
+            "cmake-format",
+            files,
+            lambda pool, f: pool.submit(_worker_cmake_format_check, f),
+        )
+    else:
+        ok, _ = _run_parallel(
+            "cmake-format",
+            files,
+            lambda pool, f: pool.submit(_worker_cmake_format_fix, f),
+        )
+    return ok
 
 
 def run_ruff_format(files: list[Path], *, check: bool) -> bool:
-    if not files:
-        return True
-
-    failed: list[Path] = []
-    with _make_progress("ruff format") as progress:
-        task = progress.add_task("", total=len(files), current_file="")
-        for f in files:
-            progress.update(task, current_file=str(f))
-            cmd = ["ruff", "format"]
-            if check:
-                cmd += ["--check"]
-            cmd.append(str(f))
-            result = subprocess.run(cmd, capture_output=True, text=True)
-            if result.returncode != 0:
-                failed.append(f)
-            progress.advance(task)
-
-    for f in failed:
-        console.print(f"  [yellow]needs formatting:[/] {f}")
-    return len(failed) == 0
+    ok, _ = _run_parallel(
+        "ruff format",
+        files,
+        lambda pool, f: pool.submit(_worker_ruff_format, f, check=check),
+    )
+    return ok
 
 
 # ── Linters ─────────────────────────────────────────────────────────────
@@ -189,15 +261,31 @@ def run_clang_tidy(files: list[Path], *, fix: bool) -> bool:
         return False
 
     clang_tidy = find_clang_tidy(build_dir)
+
+    if fix:
+        # --fix modifies files → must run serially to avoid conflicts
+        return _run_clang_tidy_serial(tidy_files, clang_tidy=clang_tidy, build_dir=build_dir, fix=True)
+
+    # Read-only analysis → parallel
+    ok, _ = _run_parallel(
+        "clang-tidy",
+        tidy_files,
+        lambda pool, f: pool.submit(_worker_clang_tidy, f, clang_tidy=clang_tidy, build_dir=str(build_dir)),
+    )
+    return ok
+
+
+def _run_clang_tidy_serial(files: list[Path], *, clang_tidy: str, build_dir: Path, fix: bool) -> bool:
+    """Run clang-tidy one file at a time (for --fix mode)."""
     issues: list[str] = []
 
-    with _make_progress("clang-tidy") as progress:
-        task = progress.add_task("", total=len(tidy_files), current_file="")
-        for f in tidy_files:
+    with _make_progress("clang-tidy [fix]") as progress:
+        task = progress.add_task("", total=len(files), current_file="")
+        for f in files:
             progress.update(task, current_file=str(f))
             cmd = [clang_tidy, "-p", str(build_dir)]
             if fix:
-                cmd += ["--fix", "--fix-errors"]
+                cmd += ["--fix", "--fix-errors", "--fix-notes"]
             cmd.append(str(f))
 
             result = subprocess.run(cmd, capture_output=True, text=True)
@@ -216,15 +304,28 @@ def run_ruff_lint(files: list[Path], *, fix: bool) -> bool:
     if not files:
         return True
 
+    if fix:
+        # --fix modifies files → serial
+        return _run_ruff_lint_serial(files, fix=True)
+
+    # Read-only analysis → parallel
+    ok, _ = _run_parallel(
+        "ruff check",
+        files,
+        lambda pool, f: pool.submit(_worker_ruff_lint, f),
+    )
+    return ok
+
+
+def _run_ruff_lint_serial(files: list[Path], *, fix: bool) -> bool:
+    """Run ruff check one file at a time (for --fix mode)."""
     failed: list[str] = []
-    with _make_progress("ruff check") as progress:
+
+    with _make_progress("ruff check [fix]") as progress:
         task = progress.add_task("", total=len(files), current_file="")
         for f in files:
             progress.update(task, current_file=str(f))
-            cmd = ["ruff", "check"]
-            if fix:
-                cmd += ["--fix"]
-            cmd.append(str(f))
+            cmd = ["ruff", "check", "--fix", str(f)]
 
             result = subprocess.run(cmd, capture_output=True, text=True)
             if result.returncode != 0:
@@ -242,10 +343,11 @@ def run_ruff_lint(files: list[Path], *, fix: bool) -> bool:
 
 
 def _print_summary(*, mode: str, cpp: int, cmake: int, python: int) -> None:
-    console.print(f"\n  mode:   [bold]{mode}[/]")
-    console.print(f"  C++:    {cpp} files")
-    console.print(f"  CMake:  {cmake} files")
-    console.print(f"  Python: {python} files\n")
+    console.print(f"\n  mode:    [bold]{mode}[/]")
+    console.print(f"  C++:     {cpp} files")
+    console.print(f"  CMake:   {cmake} files")
+    console.print(f"  Python:  {python} files")
+    console.print(f"  workers: {MAX_WORKERS}\n")
 
 
 def _print_result(label: str, ok: bool) -> None:
@@ -315,7 +417,8 @@ def lint(
         if not py_only:
             py_files = []
 
-    _print_summary(mode="lint --fix" if fix else "lint", cpp=len(cpp_files), cmake=0, python=len(py_files))
+    mode = "lint --fix [serial]" if fix else "lint [parallel]"
+    _print_summary(mode=mode, cpp=len(cpp_files), cmake=0, python=len(py_files))
     all_ok = True
 
     if cpp_files:
@@ -335,4 +438,7 @@ def lint(
 
 
 if __name__ == "__main__":
+    # Default to "format" when no subcommand is given
+    if len(sys.argv) == 1 or (len(sys.argv) > 1 and sys.argv[1].startswith("-")):
+        sys.argv.insert(1, "format")
     app()
