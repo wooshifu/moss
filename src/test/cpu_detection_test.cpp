@@ -1,6 +1,6 @@
 // CPU Detection System Test
 //
-// Tests the 4-layer CPU detection architecture with ARM64 optimization
+// Tests the 3-layer CPU detection architecture with ARM64 optimization
 
 #include "framework/moss_ut.hpp"
 import moss.kernel;
@@ -12,7 +12,7 @@ using namespace moss::kernel::cpu_topology;
 class CpuDetectionTest : public TestCase {
 public:
   void test_detection_layers() {
-    moss::kernel::logging::klog::info("=== Testing 4-Layer CPU Detection Architecture ===");
+    moss::kernel::logging::klog::info("=== Testing 3-Layer CPU Detection Architecture ===");
 
     // Initialize CPU detection system
     initialize_cpu_detection();
@@ -36,17 +36,7 @@ public:
     moss::kernel::logging::klog::info("Hardware Detection: {} CPUs ({}% confidence)", hw_result.cpu_count,
                                       hw_result.confidence_score);
 
-    // Test Layer 3: Architecture Default Detection
-    ArchDefaultDetector arch_detector;
-    auto arch_result = arch_detector.detect();
-
-    assert_true(arch_result.cpu_count >= 1, "Architecture default should return at least 1 CPU");
-    assert_equal(arch_result.confidence_score, 40u, "Architecture default should have 40% confidence");
-
-    moss::kernel::logging::klog::info("Arch Default Detection: {} CPUs ({}% confidence)", arch_result.cpu_count,
-                                      arch_result.confidence_score);
-
-    // Test Layer 4: Safe Fallback Detection
+    // Test Layer 3: Safe Fallback Detection
     SafeFallbackDetector fallback_detector;
     auto fallback_result = fallback_detector.detect();
 
