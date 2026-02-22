@@ -68,8 +68,9 @@ public:
   }
 
   bool idle_balance(u32 cpu, CfsScheduler &scheduler) noexcept {
-    if (cpu >= MAX_CPUS)
+    if (cpu >= MAX_CPUS) {
       return false;
+    }
 
     auto &local_stats = stats_.get_cpu(cpu);
     local_stats.idle_balance_count++;
@@ -103,8 +104,9 @@ public:
   }
 
   [[nodiscard]] u32 select_cpu_for_task(Thread *thread, CfsScheduler &scheduler) noexcept {
-    if (thread == nullptr)
+    if (thread == nullptr) {
       return 0;
+    }
 
     [[maybe_unused]] u32 current_cpu = current_cpu_id();
     u32 prev_cpu = thread->cpu;
@@ -141,8 +143,9 @@ public:
   }
 
   [[nodiscard]] LoadBalanceStats get_stats(u32 cpu) const noexcept {
-    if (cpu >= MAX_CPUS)
+    if (cpu >= MAX_CPUS) {
       return LoadBalanceStats{};
+    }
     return stats_.get_cpu(cpu);
   }
 
@@ -189,8 +192,9 @@ private:
     u32 max_load = scheduler.get_cpu_load(current_cpu);
 
     for (u32 cpu = 0; cpu < MAX_CPUS; ++cpu) {
-      if (cpu == current_cpu)
+      if (cpu == current_cpu) {
         continue;
+      }
 
       u32 load = scheduler.get_cpu_load(cpu);
       u32 nr_running = scheduler.get_cpu_nr_running(cpu);
@@ -284,15 +288,17 @@ private:
     // the most CPU, not the one most in need of CPU time.
     // Only candidates with nr_running > 1 on source are eligible
     // (we never steal the last runnable task).
-    if (scheduler.get_cpu_nr_running(cpu) <= 1)
+    if (scheduler.get_cpu_nr_running(cpu) <= 1) {
       return nullptr;
+    }
     return scheduler.pick_last_task(cpu);
   }
 
   [[nodiscard]] u64 calculate_migration_benefit(Thread *thread, u32 src_cpu, u32 dst_cpu,
                                                 CfsScheduler &scheduler) const noexcept {
-    if (thread == nullptr)
+    if (thread == nullptr) {
       return 0;
+    }
 
     u32 src_load = scheduler.get_cpu_load(src_cpu);
     u32 dst_load = scheduler.get_cpu_load(dst_cpu);
@@ -301,8 +307,9 @@ private:
   }
 
   [[nodiscard]] bool has_cpu_affinity(Thread *thread, u32 cpu) const noexcept {
-    if (!thread || cpu >= MAX_CPUS)
+    if (!thread || cpu >= MAX_CPUS) {
       return false;
+    }
     return (thread->cpu_affinity_mask & (1u << cpu)) != 0;
   }
 
@@ -317,8 +324,9 @@ extern LoadBalancer *g_load_balancer;
 /// Try idle-balance: steal tasks from busiest CPU into the idle CPU.
 /// Call from idle paths when no local tasks are available.
 inline void try_idle_balance(u32 cpu) noexcept {
-  if (g_load_balancer && g_scheduler)
+  if (g_load_balancer && g_scheduler) {
     g_load_balancer->idle_balance(cpu, *g_scheduler);
+  }
 }
 
 } // namespace moss::kernel::process

@@ -27,7 +27,7 @@ IdleTask::IdleTask(u32 cpu_id) noexcept
   this->sched_class = SchedClass::Idle;
 }
 
-[[noreturn]] void IdleTask::run() noexcept {
+[[noreturn]] void IdleTask::run() const noexcept {
   namespace log = moss::kernel::logging;
   log::klog::info("idle task started on CPU{}", cpu_id_);
 

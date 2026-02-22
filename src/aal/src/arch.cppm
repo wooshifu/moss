@@ -411,11 +411,13 @@ inline void setup_kernel_mmu(PhysAddr kernel_pgd_pa) noexcept {
 #endif
 
   auto puts = [&](const char *s) {
-    if (!s)
+    if (!s) {
       return;
+    }
     while (*s) {
-      if (*s == '\n')
+      if (*s == '\n') {
         uart_putc('\r');
+      }
       uart_putc(*s++);
     }
   };

@@ -153,7 +153,7 @@ public:
   [[nodiscard]] KernelResult<VirtAddr>
   map_to_process(ProcessId pid, ShmId region_id, VirtAddr hint_addr = 0,
                  ShmPermission map_permission = ShmPermission::ReadWrite) noexcept {
-    auto region_ptr = regions_.find(region_id);
+    const auto *region_ptr = regions_.find(region_id);
     if (region_ptr == nullptr) {
       return KernelResult<VirtAddr>{KernelError::InvalidArgument};
     }
@@ -180,7 +180,7 @@ public:
   }
 
   [[nodiscard]] VoidResult unmap_from_process(ProcessId pid, ShmId region_id) noexcept {
-    auto region_ptr = regions_.find(region_id);
+    const auto *region_ptr = regions_.find(region_id);
     if (region_ptr == nullptr) {
       return VoidResult{KernelError::InvalidArgument};
     }
@@ -203,7 +203,7 @@ public:
   }
 
   [[nodiscard]] VoidResult destroy_region(ShmId region_id) noexcept {
-    auto region_ptr = regions_.find(region_id);
+    const auto *region_ptr = regions_.find(region_id);
     if (region_ptr == nullptr) {
       return VoidResult{KernelError::InvalidArgument};
     }
@@ -234,7 +234,7 @@ public:
   }
 
   [[nodiscard]] const ShmRegion *get_region_info(ShmId region_id) const noexcept {
-    auto region_ptr = regions_.find(region_id);
+    const auto *region_ptr = regions_.find(region_id);
     if (region_ptr == nullptr) {
       return nullptr;
     }
@@ -242,7 +242,7 @@ public:
   }
 
   void sync_region(ShmId region_id) noexcept {
-    auto region_ptr = regions_.find(region_id);
+    const auto *region_ptr = regions_.find(region_id);
     if (region_ptr == nullptr) {
       return;
     }
@@ -261,7 +261,7 @@ public:
   }
 
   void cleanup_process_mappings(ProcessId pid) noexcept {
-    auto mappings_ptr = process_mappings_.find(pid);
+    const auto *mappings_ptr = process_mappings_.find(pid);
     if (mappings_ptr == nullptr) {
       return;
     }
@@ -353,7 +353,7 @@ private:
 
   void record_process_mapping(ProcessId pid, ShmId region_id, VirtAddr virt_addr, usize size,
                               ShmPermission permission) noexcept {
-    auto mappings_ptr = process_mappings_.find(pid);
+    const auto *mappings_ptr = process_mappings_.find(pid);
     containers::RcuList<ShmMapping> *mappings = nullptr;
     if (mappings_ptr != nullptr) {
       mappings = *mappings_ptr;
@@ -366,7 +366,7 @@ private:
   }
 
   [[nodiscard]] containers::Optional<ShmMapping> find_process_mapping(ProcessId pid, ShmId region_id) noexcept {
-    auto mappings_ptr = process_mappings_.find(pid);
+    const auto *mappings_ptr = process_mappings_.find(pid);
     if (mappings_ptr == nullptr) {
       return containers::Optional<ShmMapping>{};
     }
@@ -380,7 +380,7 @@ private:
   }
 
   void remove_process_mapping(ProcessId pid, ShmId region_id) noexcept {
-    auto mappings_ptr = process_mappings_.find(pid);
+    const auto *mappings_ptr = process_mappings_.find(pid);
     if (mappings_ptr == nullptr) {
       return;
     }
@@ -660,8 +660,8 @@ public:
       return VoidResult{s2c_result.error()};
     }
     server_to_client_shm_ = *s2c_result;
-    auto c2s_region = g_shared_memory_manager->get_region_info(client_to_server_shm_);
-    auto s2c_region = g_shared_memory_manager->get_region_info(server_to_client_shm_);
+    const auto *c2s_region = g_shared_memory_manager->get_region_info(client_to_server_shm_);
+    const auto *s2c_region = g_shared_memory_manager->get_region_info(server_to_client_shm_);
     if (c2s_region == nullptr || s2c_region == nullptr) {
       cleanup();
       return VoidResult{KernelError::InternalError};
@@ -871,7 +871,7 @@ public:
   }
 
   [[nodiscard]] VoidResult unregister_service(ServiceId service_id, ProcessId provider_pid) noexcept {
-    auto service_ptr = services_.find(service_id);
+    const auto *service_ptr = services_.find(service_id);
     if (service_ptr == nullptr) {
       return VoidResult{KernelError::NotFound};
     }
@@ -887,7 +887,7 @@ public:
   }
 
   [[nodiscard]] KernelResult<ChannelId> connect_to_service(ProcessId client_pid, ServiceId service_id) noexcept {
-    auto service_ptr = services_.find(service_id);
+    const auto *service_ptr = services_.find(service_id);
     if (service_ptr == nullptr) {
       return KernelResult<ChannelId>{KernelError::NotFound};
     }
@@ -924,7 +924,7 @@ public:
   }
 
   [[nodiscard]] VoidResult disconnect(ChannelId channel_id, ProcessId requester_pid) noexcept {
-    auto conn_ptr = connections_.find(channel_id);
+    const auto *conn_ptr = connections_.find(channel_id);
     if (conn_ptr == nullptr) {
       return VoidResult{KernelError::NotFound};
     }
@@ -933,7 +933,7 @@ public:
       return VoidResult{KernelError::PermissionDenied};
     }
     channels_.remove(channel_id);
-    auto service_ptr = services_.find(conn->service_id);
+    const auto *service_ptr = services_.find(conn->service_id);
     if (service_ptr != nullptr) {
       ServiceDescriptor *service = *service_ptr;
       (void)service->current_clients.fetch_sub(1, containers::MemoryOrder::AcqRel);
@@ -1004,7 +1004,7 @@ public:
 
   void get_process_connections(ProcessId pid, void (*callback)(const ConnectionDescriptor &, void *),
                                void *context) const noexcept {
-    auto channels_ptr = process_channels_.find(pid);
+    const auto *channels_ptr = process_channels_.find(pid);
     if (channels_ptr == nullptr) {
       return;
     }
@@ -1013,7 +1013,7 @@ public:
       return;
     }
     channels->for_each([this, callback, context](const ChannelId &channel_id) {
-      auto conn_ptr = connections_.find(channel_id);
+      const auto *conn_ptr = connections_.find(channel_id);
       if (conn_ptr != nullptr) {
         callback(**conn_ptr, context);
       }
@@ -1021,7 +1021,7 @@ public:
   }
 
   void cleanup_process_ipc(ProcessId pid) noexcept {
-    auto channels_ptr = process_channels_.find(pid);
+    const auto *channels_ptr = process_channels_.find(pid);
     if (channels_ptr == nullptr) {
       return;
     }
@@ -1060,7 +1060,7 @@ private:
       }
     });
     channels_to_close.for_each([this](const ChannelId &channel_id) {
-      auto conn_ptr = connections_.find(channel_id);
+      const auto *conn_ptr = connections_.find(channel_id);
       if (conn_ptr != nullptr) {
         const ConnectionDescriptor *conn = *conn_ptr;
         (void)disconnect(channel_id, conn->client_pid);
@@ -1069,7 +1069,7 @@ private:
   }
 
   void add_process_channel(ProcessId pid, ChannelId channel_id) noexcept {
-    auto channels_ptr = process_channels_.find(pid);
+    const auto *channels_ptr = process_channels_.find(pid);
     containers::RcuList<ChannelId> *channels = nullptr;
     if (channels_ptr != nullptr) {
       channels = *channels_ptr;
@@ -1082,7 +1082,7 @@ private:
   }
 
   void remove_process_channel(ProcessId pid, ChannelId channel_id) noexcept {
-    auto channels_ptr = process_channels_.find(pid);
+    const auto *channels_ptr = process_channels_.find(pid);
     if (channels_ptr != nullptr) {
       auto *channels = *channels_ptr;
       if (channels != nullptr) {
@@ -1095,7 +1095,7 @@ private:
   }
 
   void update_connection_statistics(ChannelId channel_id, bool is_send, u32 bytes) noexcept {
-    auto conn_ptr = connections_.find(channel_id);
+    const auto *conn_ptr = connections_.find(channel_id);
     if (conn_ptr == nullptr) {
       return;
     }

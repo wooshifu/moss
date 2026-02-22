@@ -26,8 +26,9 @@ struct Dentry {
 
   void ref() noexcept { ++ref_count; }
   void unref() noexcept {
-    if (ref_count > 0)
+    if (ref_count > 0) {
       --ref_count;
+    }
   }
 };
 

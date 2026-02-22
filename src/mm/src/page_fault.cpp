@@ -200,7 +200,7 @@ extern "C" void unhandled_exception_handler(unsigned long long esr, unsigned lon
   // Dump selected registers from the exception frame.
   // Frame layout: x0..x30 at [frame_sp + 0..30*8], ELR/SPSR at [31*8], SP_EL0 at [33*8]
   if (frame_sp != 0) {
-    auto *frame = reinterpret_cast<const u64 *>(frame_sp);
+    const auto *frame = reinterpret_cast<const u64 *>(frame_sp);
     log::klog::panic("--- Exception Frame Dump ---");
     log::klog::panic("frame x0={:#x}  x1={:#x}", frame[0], frame[1]);
     log::klog::panic("frame x8={:#x}  x9={:#x}", frame[8], frame[9]);
@@ -350,17 +350,20 @@ static bool try_cow_fault(moss::kernel::u64 far_addr, unsigned long long elr) no
   constexpr usize PG_SIZE = 4096;
   VirtAddr fault_page = far_addr & ~(static_cast<u64>(PG_SIZE) - 1);
   PhysAddr pgd_phys = get_current_pgd_phys();
-  if (pgd_phys == 0)
+  if (pgd_phys == 0) {
     return false;
+  }
 
   // Walk page tables to get a mutable pointer to the PTE
   auto *pte = mm::PageTableManager::get_user_pte(pgd_phys, fault_page);
-  if (!pte || !pte->is_valid())
+  if (!pte || !pte->is_valid()) {
     return false;
+  }
 
   // Must be a COW-marked page
-  if (!pte->is_cow())
+  if (!pte->is_cow()) {
     return false;
+  }
 
   PhysAddr old_pa = pte->get_phys_addr();
   u32 refcount = mm::PageFrameAllocator::page_ref_get(old_pa);
@@ -374,7 +377,7 @@ static bool try_cow_fault(moss::kernel::u64 far_addr, unsigned long long elr) no
     PhysAddr new_pa = *new_page;
 
     // Copy 4KB from old page to new page
-    auto *src = reinterpret_cast<const u8 *>(phys_to_virt(old_pa));
+    const auto *src = reinterpret_cast<const u8 *>(phys_to_virt(old_pa));
     auto *dst = reinterpret_cast<u8 *>(phys_to_virt(new_pa));
     for (usize i = 0; i < PG_SIZE; i++) {
       dst[i] = src[i];
@@ -427,8 +430,9 @@ static bool try_demand_page(moss::kernel::u64 far_addr, bool is_write, unsigned 
   u64 vma_start = 0;
 
   int found = demand_page_lookup(far_addr, &vma_flags, &backing_data, &backing_offset, &backing_size, &vma_start);
-  if (!found)
+  if (!found) {
     return false;
+  }
 
   // vma_flags bit definitions (must match process::vma_flags)
   constexpr u32 VMA_WRITE = 1u << 1;
@@ -454,8 +458,9 @@ static bool try_demand_page(moss::kernel::u64 far_addr, bool is_write, unsigned 
 
   if (backing_data != nullptr && page_offset < backing_size) {
     u64 copy_size = backing_size - page_offset;
-    if (copy_size > PG_SIZE)
+    if (copy_size > PG_SIZE) {
       copy_size = PG_SIZE;
+    }
     for (u64 i = 0; i < copy_size; i++) {
       page_va[i] = backing_data[backing_offset + page_offset + i];
     }

@@ -66,10 +66,12 @@ struct InterruptDescriptor {
 
 private:
   static constexpr InterruptType determine_type(InterruptId id) noexcept {
-    if (id < 16)
+    if (id < 16) {
       return InterruptType::SGI;
-    if (id < 32)
+    }
+    if (id < 32) {
       return InterruptType::PPI;
+    }
     return InterruptType::SPI;
   }
 };
@@ -164,7 +166,7 @@ public:
   [[nodiscard]] VoidResult unregister_interrupt(InterruptId irq) noexcept {
     containers::LockGuard<containers::IrqSpinLock> guard(table_write_lock_);
 
-    auto desc_ptr = interrupt_table_.find(irq);
+    const auto *desc_ptr = interrupt_table_.find(irq);
     if (desc_ptr == nullptr) {
       return VoidResult{ErrorCode::NotFound};
     }
@@ -184,7 +186,7 @@ public:
 
     ::moss::kernel::hal::intc::enable_irq(distributor_base_, irq);
 
-    auto desc_ptr = interrupt_table_.find(irq);
+    const auto *desc_ptr = interrupt_table_.find(irq);
     if (desc_ptr != nullptr) {
       InterruptDescriptor *desc = *desc_ptr;
       desc->enabled = true;
@@ -200,7 +202,7 @@ public:
 
     ::moss::kernel::hal::intc::disable_irq(distributor_base_, irq);
 
-    auto desc_ptr = interrupt_table_.find(irq);
+    const auto *desc_ptr = interrupt_table_.find(irq);
     if (desc_ptr != nullptr) {
       InterruptDescriptor *desc = *desc_ptr;
       desc->enabled = false;
@@ -216,7 +218,7 @@ public:
 
     ::moss::kernel::hal::intc::set_priority(distributor_base_, irq, priority);
 
-    auto desc_ptr = interrupt_table_.find(irq);
+    const auto *desc_ptr = interrupt_table_.find(irq);
     if (desc_ptr != nullptr) {
       InterruptDescriptor *desc = *desc_ptr;
       desc->priority = priority;
@@ -236,7 +238,7 @@ public:
 
     ::moss::kernel::hal::intc::set_target(distributor_base_, irq, cpu_mask);
 
-    auto desc_ptr = interrupt_table_.find(irq);
+    const auto *desc_ptr = interrupt_table_.find(irq);
     if (desc_ptr != nullptr) {
       InterruptDescriptor *desc = *desc_ptr;
       desc->target_cpu_mask = cpu_mask;
@@ -245,7 +247,7 @@ public:
     return VoidResult{};
   }
 
-  [[nodiscard]] VoidResult send_sgi(InterruptId sgi, u32 target_cpu_mask) noexcept {
+  [[nodiscard]] VoidResult send_sgi(InterruptId sgi, u32 target_cpu_mask) const noexcept {
     return ::moss::kernel::hal::intc::send_sgi(distributor_base_, cpu_interface_base_, sgi, target_cpu_mask);
   }
 
@@ -264,7 +266,7 @@ public:
     (void)total_interrupts_.fetch_add(1, containers::MemoryOrder::Relaxed);
     interrupt_counts_.get_cpu(cpu)++;
 
-    auto desc_ptr = interrupt_table_.find(irq);
+    const auto *desc_ptr = interrupt_table_.find(irq);
     if (desc_ptr != nullptr) {
       InterruptDescriptor *desc = *desc_ptr;
       if (desc->handler != nullptr) {
@@ -292,11 +294,11 @@ public:
   }
 
   [[nodiscard]] const InterruptDescriptor *get_interrupt_info(InterruptId irq) const noexcept {
-    auto desc_ptr = interrupt_table_.find(irq);
+    const auto *desc_ptr = interrupt_table_.find(irq);
     return desc_ptr ? *desc_ptr : nullptr;
   }
 
-  void set_priority_mask(InterruptPriority mask) noexcept {
+  void set_priority_mask(InterruptPriority mask) const noexcept {
     ::moss::kernel::hal::intc::set_priority_mask(cpu_interface_base_, mask);
   }
 
@@ -311,11 +313,11 @@ private:
     return VoidResult{};
   }
 
-  [[nodiscard]] VoidResult initialize_distributor() noexcept {
+  [[nodiscard]] VoidResult initialize_distributor() const noexcept {
     return ::moss::kernel::hal::intc::init_distributor(distributor_base_, max_interrupts_);
   }
 
-  [[nodiscard]] VoidResult initialize_cpu_interface() noexcept {
+  [[nodiscard]] VoidResult initialize_cpu_interface() const noexcept {
     return ::moss::kernel::hal::intc::init_cpu_interface(cpu_interface_base_);
   }
 

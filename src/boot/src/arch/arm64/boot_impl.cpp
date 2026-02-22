@@ -57,7 +57,7 @@ u32 get_current_cpu_id_impl() noexcept;
 
 /// CPU startup control info - aligned with assembly memory layout
 struct CpuStartupInfo {
-  void (*entry_point)(void);
+  void (*entry_point)();
   volatile u32 startup_flag;
   u32 reserved;
   u64 stack_pointer;
