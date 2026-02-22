@@ -4,8 +4,8 @@ version = "0.1.0"
 description = "MOSS Hybrid Kernel Build Tools"
 requires-python = ">=3.12"
 dependencies = [
-    "typer>=0.23.0",
-    "rich>=14.3.2",
+    "typer>=0.24.1",
+    "rich>=14.3.3",
     "packaging>=25.0",
     "pydantic>=2.11",
     "fdt>=0.3.3",
@@ -13,8 +13,26 @@ dependencies = [
 
 [dependency-groups]
 dev = [
+    "clang-format>=21.1.8",
+    "clang-tidy>=21.1.6",
     "cmake>=4.2.1",
     "cmake-format>=0.6.13",
     "ninja>=1.13.0",
     "pytest>=8.0",
+    "ruff>=0.15.2",
 ]
+
+[tool.ruff]
+line-length = 120
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B", "SIM", "RUF"]
+ignore = [
+    "RUF001",  # ambiguous unicode in string — Chinese text is intentional
+    "RUF002",  # ambiguous unicode in docstring
+    "RUF003",  # ambiguous unicode in comment
+    "B008",    # function call in default argument — typer.Option() pattern
+]
+
+[tool.ruff.format]
+quote-style = "double"

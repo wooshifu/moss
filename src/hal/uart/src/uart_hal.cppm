@@ -22,10 +22,10 @@ import moss.platform;
 
 export namespace moss::kernel::hal::uart {
 
-using moss::u8;
 using moss::u16;
 using moss::u32;
 using moss::u64;
+using moss::u8;
 
 // ============================================================================
 // Low-level putc — architecture-specific single character output
@@ -36,11 +36,12 @@ inline void putc(char c) noexcept {
   // PL011 UART: data register at base+0x00, flags register at base+0x18
   // TXFF (TX FIFO Full) is bit 5 of the flags register
   auto base = platform::uart_base();
-  volatile u32 *uart_data  = reinterpret_cast<volatile u32 *>(base);
+  volatile u32 *uart_data = reinterpret_cast<volatile u32 *>(base);
   volatile u32 *uart_flags = reinterpret_cast<volatile u32 *>(base + 0x18);
 
   // Wait for TX FIFO space
-  while (*uart_flags & (1U << 5)) {}
+  while (*uart_flags & (1U << 5)) {
+  }
   *uart_data = static_cast<u32>(static_cast<unsigned char>(c));
 
 #elif defined(MOSS_ARCH_X86_64)
@@ -49,18 +50,19 @@ inline void putc(char c) noexcept {
   for (;;) {
     u8 lsr;
     asm volatile("inb %1, %0" : "=a"(lsr) : "Nd"(static_cast<u16>(0x3FD)));
-    if (lsr & 0x20) break;
+    if (lsr & 0x20)
+      break;
   }
-  asm volatile("outb %0, %1" :: "a"(static_cast<u8>(c)),
-               "Nd"(static_cast<u16>(0x3F8)));
+  asm volatile("outb %0, %1" ::"a"(static_cast<u8>(c)), "Nd"(static_cast<u16>(0x3F8)));
 
 #elif defined(MOSS_ARCH_RISCV)
   // NS16550 UART: TX data register at base+0x00, Line Status at base+0x14
   // Wait for THR empty (bit 5 of LSR) before transmitting
   auto base = platform::uart_base();
   volatile u32 *uart_data = reinterpret_cast<volatile u32 *>(base);
-  volatile u32 *uart_lsr  = reinterpret_cast<volatile u32 *>(base + 0x14);
-  while ((*uart_lsr & (1U << 5)) == 0) {}
+  volatile u32 *uart_lsr = reinterpret_cast<volatile u32 *>(base + 0x14);
+  while ((*uart_lsr & (1U << 5)) == 0) {
+  }
   *uart_data = static_cast<u32>(static_cast<unsigned char>(c));
 #endif
 }
@@ -74,19 +76,19 @@ inline void enable_rx() noexcept {
 #if defined(MOSS_ARCH_ARM64)
   // PL011 register offsets
   auto base = platform::uart_base();
-  volatile u32 *uart_cr   = reinterpret_cast<volatile u32 *>(base + 0x30);  // Control
-  volatile u32 *uart_icr  = reinterpret_cast<volatile u32 *>(base + 0x44);  // IntClear
-  volatile u32 *uart_lcr  = reinterpret_cast<volatile u32 *>(base + 0x2C);  // LineCtrl
+  volatile u32 *uart_cr = reinterpret_cast<volatile u32 *>(base + 0x30);  // Control
+  volatile u32 *uart_icr = reinterpret_cast<volatile u32 *>(base + 0x44); // IntClear
+  volatile u32 *uart_lcr = reinterpret_cast<volatile u32 *>(base + 0x2C); // LineCtrl
 
   // Read CR before modification
   u32 cr_before = *uart_cr;
 
   // Proper PL011 init sequence: disable → configure → re-enable
   // (ARM PL011 TRM requires UARTEN=0 when modifying UARTCR fields)
-  *uart_cr = 0;                                      // 1. Disable UART
-  *uart_icr = 0x7FFU;                                // 2. Clear all pending interrupts
-  *uart_lcr = (0x3U << 5) | (1U << 4);               // 3. 8N1 + FIFO enable (WLEN=11, FEN=1)
-  *uart_cr = (1U << 0) | (1U << 8) | (1U << 9);      // 4. UARTEN | TXE | RXE
+  *uart_cr = 0;                                 // 1. Disable UART
+  *uart_icr = 0x7FFU;                           // 2. Clear all pending interrupts
+  *uart_lcr = (0x3U << 5) | (1U << 4);          // 3. 8N1 + FIFO enable (WLEN=11, FEN=1)
+  *uart_cr = (1U << 0) | (1U << 8) | (1U << 9); // 4. UARTEN | TXE | RXE
 
   // Diagnostic removed — QEMU PL011 model ignores enable bits anyway,
   // but real hardware needs proper UARTEN|TXE|RXE setup.
@@ -99,10 +101,11 @@ inline int getc() noexcept {
   // PL011 UART: data register at base+0x00, flags register at base+0x18
   // RXFE (RX FIFO Empty) is bit 4 of the flags register
   auto base = platform::uart_base();
-  volatile u32 *uart_data  = reinterpret_cast<volatile u32 *>(base);
+  volatile u32 *uart_data = reinterpret_cast<volatile u32 *>(base);
   volatile u32 *uart_flags = reinterpret_cast<volatile u32 *>(base + 0x18);
 
-  if (*uart_flags & (1U << 4)) return -1;  // RXFE: RX FIFO empty
+  if (*uart_flags & (1U << 4))
+    return -1; // RXFE: RX FIFO empty
   return static_cast<int>(*uart_data & 0xFFU);
 
 #elif defined(MOSS_ARCH_X86_64)
@@ -110,7 +113,8 @@ inline int getc() noexcept {
   // DR (Data Ready) is bit 0 of LSR
   u8 lsr;
   asm volatile("inb %1, %0" : "=a"(lsr) : "Nd"(static_cast<u16>(0x3FD)));
-  if (!(lsr & 0x01)) return -1;  // No data ready
+  if (!(lsr & 0x01))
+    return -1; // No data ready
   u8 data;
   asm volatile("inb %1, %0" : "=a"(data) : "Nd"(static_cast<u16>(0x3F8)));
   return static_cast<int>(data);
@@ -120,9 +124,10 @@ inline int getc() noexcept {
   // DR (Data Ready) is bit 0 of LSR
   auto base = platform::uart_base();
   volatile u32 *uart_data = reinterpret_cast<volatile u32 *>(base);
-  volatile u32 *uart_lsr  = reinterpret_cast<volatile u32 *>(base + 0x14);
+  volatile u32 *uart_lsr = reinterpret_cast<volatile u32 *>(base + 0x14);
 
-  if ((*uart_lsr & 0x01) == 0) return -1;  // No data ready
+  if ((*uart_lsr & 0x01) == 0)
+    return -1; // No data ready
   return static_cast<int>(*uart_data & 0xFFU);
 
 #else
@@ -135,9 +140,11 @@ inline int getc() noexcept {
 // ============================================================================
 
 inline void puts(const char *str) noexcept {
-  if (!str) return;
+  if (!str)
+    return;
   while (*str) {
-    if (*str == '\n') putc('\r');
+    if (*str == '\n')
+      putc('\r');
     putc(*str++);
   }
 }

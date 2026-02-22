@@ -17,12 +17,12 @@ import moss.types;
 
 export namespace moss::fdt {
 
-using moss::u8;
 using moss::u32;
 using moss::u64;
+using moss::u8;
 using moss::kernel::PhysAddr;
-using moss::kernel::VirtAddr;
 using moss::kernel::usize;
+using moss::kernel::VirtAddr;
 
 /// Read a big-endian 64-bit value from a potentially unaligned DTB pointer.
 /// DTB property data is only guaranteed 4-byte aligned, so a direct
@@ -31,10 +31,8 @@ using moss::kernel::usize;
 inline u64 read_fdt64_unaligned(const void *ptr) noexcept {
   const auto *p = static_cast<const u8 *>(ptr);
   // DTB is big-endian: first 4 bytes = high word, next 4 = low word
-  auto hi = static_cast<u64>(fdt32_to_cpu(
-      *reinterpret_cast<const fdt32_t *>(p)));
-  auto lo = static_cast<u64>(fdt32_to_cpu(
-      *reinterpret_cast<const fdt32_t *>(p + 4)));
+  auto hi = static_cast<u64>(fdt32_to_cpu(*reinterpret_cast<const fdt32_t *>(p)));
+  auto lo = static_cast<u64>(fdt32_to_cpu(*reinterpret_cast<const fdt32_t *>(p + 4)));
   return (hi << 32) | lo;
 }
 
@@ -89,8 +87,8 @@ struct PlatformInfo {
   const char *stdout_path;
 
   // initramfs 地址（来自 /chosen 节点）
-  PhysAddr initrd_start;   // linux,initrd-start
-  PhysAddr initrd_end;     // linux,initrd-end
+  PhysAddr initrd_start; // linux,initrd-start
+  PhysAddr initrd_end;   // linux,initrd-end
 };
 
 /// 全局平台信息实例（早期启动阶段填充）
@@ -102,9 +100,7 @@ extern PlatformInfo g_platform_info;
 bool parse_dtb(const void *dtb_ptr) noexcept;
 
 /// 获取全局平台信息（只读引用）
-inline auto get_platform_info() noexcept -> const PlatformInfo & {
-  return g_platform_info;
-}
+inline auto get_platform_info() noexcept -> const PlatformInfo & { return g_platform_info; }
 
 } // namespace moss::fdt
 
@@ -122,8 +118,7 @@ PlatformInfo g_platform_info = {};
 // ============================================================================
 
 /// 读取节点的 #address-cells 和 #size-cells 属性
-static void read_cells(const void *fdt, int node, u32 &addr_cells,
-                       u32 &size_cells) noexcept {
+static void read_cells(const void *fdt, int node, u32 &addr_cells, u32 &size_cells) noexcept {
   int len = 0;
   const void *prop = fdt_getprop(fdt, node, "#address-cells", &len);
   if (prop && len >= 4) {
@@ -140,8 +135,7 @@ static void read_cells(const void *fdt, int node, u32 &addr_cells,
 static auto read_cells_value(const u8 *&ptr, u32 num_cells) noexcept -> u64 {
   u64 value = 0;
   for (u32 i = 0; i < num_cells; i++) {
-    value = (value << 32) |
-            fdt32_to_cpu(*reinterpret_cast<const fdt32_t *>(ptr));
+    value = (value << 32) | fdt32_to_cpu(*reinterpret_cast<const fdt32_t *>(ptr));
     ptr += 4;
   }
   return value;
@@ -149,11 +143,9 @@ static auto read_cells_value(const u8 *&ptr, u32 num_cells) noexcept -> u64 {
 
 /// 检查 compatible 属性中是否包含指定的字符串
 /// DTB 的 compatible 是 null-terminated 字符串列表
-static auto compatible_match(const void *fdt, int node,
-                             const char *match) noexcept -> bool {
+static auto compatible_match(const void *fdt, int node, const char *match) noexcept -> bool {
   int len = 0;
-  const char *compat =
-      static_cast<const char *>(fdt_getprop(fdt, node, "compatible", &len));
+  const char *compat = static_cast<const char *>(fdt_getprop(fdt, node, "compatible", &len));
   if (!compat || len <= 0) {
     return false;
   }
@@ -190,8 +182,7 @@ static void parse_cpus(const void *fdt) noexcept {
   fdt_for_each_subnode(node, fdt, cpus_node) {
     // 检查节点类型是否为 "cpu"
     int len = 0;
-    const char *device_type = static_cast<const char *>(
-        fdt_getprop(fdt, node, "device_type", &len));
+    const char *device_type = static_cast<const char *>(fdt_getprop(fdt, node, "device_type", &len));
     if (device_type && len > 0) {
       if (strncmp(device_type, "cpu", 3) == 0) {
         count++;
@@ -219,8 +210,7 @@ static void parse_memory(const void *fdt) noexcept {
   int node = 0;
   fdt_for_each_subnode(node, fdt, root) {
     int len = 0;
-    const char *device_type = static_cast<const char *>(
-        fdt_getprop(fdt, node, "device_type", &len));
+    const char *device_type = static_cast<const char *>(fdt_getprop(fdt, node, "device_type", &len));
     if (device_type && len > 0) {
       if (strncmp(device_type, "memory", 6) == 0) {
         mem_node = node;
@@ -258,8 +248,7 @@ static void parse_memory(const void *fdt) noexcept {
 
   g_platform_info.memory_region_count = region_count;
   if (region_count > 0) {
-    g_platform_info.total_memory_start =
-        g_platform_info.memory_regions[0].base;
+    g_platform_info.total_memory_start = g_platform_info.memory_regions[0].base;
   }
   g_platform_info.total_memory_size = total_size;
 }
@@ -277,8 +266,7 @@ static void parse_uart(const void *fdt) noexcept {
       break;
     }
 
-    if (compatible_match(fdt, offset, "arm,pl011") ||
-        compatible_match(fdt, offset, "ns16550a") ||
+    if (compatible_match(fdt, offset, "arm,pl011") || compatible_match(fdt, offset, "ns16550a") ||
         compatible_match(fdt, offset, "ns16550")) {
       uart_node = offset;
       break;
@@ -319,8 +307,7 @@ static void parse_uart(const void *fdt) noexcept {
   // 尝试读取 clock-frequency 属性
   const void *clk = fdt_getprop(fdt, uart_node, "clock-frequency", &len);
   if (clk && len >= 4) {
-    g_platform_info.uart.clock_freq =
-        fdt32_to_cpu(*static_cast<const fdt32_t *>(clk));
+    g_platform_info.uart.clock_freq = fdt32_to_cpu(*static_cast<const fdt32_t *>(clk));
   }
 
   g_platform_info.uart.valid = true;
@@ -338,10 +325,8 @@ static void parse_intc(const void *fdt) noexcept {
       break;
     }
 
-    if (compatible_match(fdt, offset, "arm,cortex-a15-gic") ||
-        compatible_match(fdt, offset, "arm,gic-400") ||
-        compatible_match(fdt, offset, "arm,gic-v3") ||
-        compatible_match(fdt, offset, "riscv,plic0") ||
+    if (compatible_match(fdt, offset, "arm,cortex-a15-gic") || compatible_match(fdt, offset, "arm,gic-400") ||
+        compatible_match(fdt, offset, "arm,gic-v3") || compatible_match(fdt, offset, "riscv,plic0") ||
         compatible_match(fdt, offset, "sifive,plic-1.0.0")) {
       intc_node = offset;
       break;
@@ -401,10 +386,8 @@ static void parse_chosen(const void *fdt) noexcept {
 
   // bootargs 和 stdout-path 的指针直接指向 DTB blob 内部
   // DTB blob 必须在整个内核生命周期内保持有效
-  g_platform_info.bootargs = static_cast<const char *>(
-      fdt_getprop(fdt, node, "bootargs", nullptr));
-  g_platform_info.stdout_path = static_cast<const char *>(
-      fdt_getprop(fdt, node, "stdout-path", nullptr));
+  g_platform_info.bootargs = static_cast<const char *>(fdt_getprop(fdt, node, "bootargs", nullptr));
+  g_platform_info.stdout_path = static_cast<const char *>(fdt_getprop(fdt, node, "stdout-path", nullptr));
 
   // Parse initramfs address range (QEMU -initrd writes these to DTB)
   int len = 0;
@@ -412,21 +395,17 @@ static void parse_chosen(const void *fdt) noexcept {
   if (prop && len >= 4) {
     // DTB stores as big-endian — can be 4 or 8 bytes depending on #address-cells
     if (len == 8) {
-      g_platform_info.initrd_start = static_cast<PhysAddr>(
-          read_fdt64_unaligned(prop));
+      g_platform_info.initrd_start = static_cast<PhysAddr>(read_fdt64_unaligned(prop));
     } else {
-      g_platform_info.initrd_start = static_cast<PhysAddr>(
-          fdt32_to_cpu(*static_cast<const fdt32_t *>(prop)));
+      g_platform_info.initrd_start = static_cast<PhysAddr>(fdt32_to_cpu(*static_cast<const fdt32_t *>(prop)));
     }
   }
   prop = fdt_getprop(fdt, node, "linux,initrd-end", &len);
   if (prop && len >= 4) {
     if (len == 8) {
-      g_platform_info.initrd_end = static_cast<PhysAddr>(
-          read_fdt64_unaligned(prop));
+      g_platform_info.initrd_end = static_cast<PhysAddr>(read_fdt64_unaligned(prop));
     } else {
-      g_platform_info.initrd_end = static_cast<PhysAddr>(
-          fdt32_to_cpu(*static_cast<const fdt32_t *>(prop)));
+      g_platform_info.initrd_end = static_cast<PhysAddr>(fdt32_to_cpu(*static_cast<const fdt32_t *>(prop)));
     }
   }
 }

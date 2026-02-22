@@ -37,10 +37,10 @@ export namespace moss::kernel::logging {
 
 using moss::i32;
 using moss::i64;
-using moss::u8;
 using moss::u16;
 using moss::u32;
 using moss::u64;
+using moss::u8;
 namespace uart = moss::kernel::hal::uart;
 namespace arch = moss::kernel::arch;
 using containers::AtomicU32;
@@ -53,21 +53,19 @@ using containers::LockGuard;
 // ============================================================================
 
 #if __has_builtin(__builtin_FILE_NAME)
-#  define MOSS_LOG_FILE_BUILTIN __builtin_FILE_NAME()
+#define MOSS_LOG_FILE_BUILTIN __builtin_FILE_NAME()
 inline constexpr bool kFileBuiltinIsBareNameOnly = true;
 #else
-#  define MOSS_LOG_FILE_BUILTIN __builtin_FILE()
+#define MOSS_LOG_FILE_BUILTIN __builtin_FILE()
 inline constexpr bool kFileBuiltinIsBareNameOnly = false;
 #endif
 
 struct FmtStr {
-  const char* value;
-  const char* file;
-  unsigned    line;
+  const char *value;
+  const char *file;
+  unsigned line;
 
-  constexpr FmtStr(const char* s,
-                   const char* f = MOSS_LOG_FILE_BUILTIN,
-                   unsigned    l = __builtin_LINE()) noexcept
+  constexpr FmtStr(const char *s, const char *f = MOSS_LOG_FILE_BUILTIN, unsigned l = __builtin_LINE()) noexcept
       : value(s), file(f), line(l) {}
 };
 
@@ -77,8 +75,8 @@ struct FmtStr {
 
 enum class LogLevel : u8 {
   Debug = 0,
-  Info  = 1,
-  Warn  = 2,
+  Info = 1,
+  Warn = 2,
   Error = 3,
   Panic = 4,
 };
@@ -103,7 +101,8 @@ public:
   }
 
   void append_str(const char *s) noexcept {
-    if (!s) return;
+    if (!s)
+      return;
     while (*s && pos_ < BUFFER_SIZE - 1) {
       buf_[pos_++] = *s++;
     }
@@ -158,16 +157,16 @@ public:
     }
   }
 
-  void append_bool(bool v) noexcept {
-    append_str(v ? "true" : "false");
-  }
+  void append_bool(bool v) noexcept { append_str(v ? "true" : "false"); }
 
   void append_source_loc(const char *file, unsigned line) noexcept {
-    if (!file) return;
+    if (!file)
+      return;
     const char *name = file;
     if constexpr (!kFileBuiltinIsBareNameOnly) {
       for (const char *p = file; *p; p++) {
-        if (*p == '/' || *p == '\\') name = p + 1;
+        if (*p == '/' || *p == '\\')
+          name = p + 1;
       }
     }
     append_str(name);
@@ -178,18 +177,31 @@ public:
 
   void append_level_tag(LogLevel level) noexcept {
     switch (level) {
-    case LogLevel::Debug: append_str("[D] "); break;
-    case LogLevel::Info:  append_str("[I] "); break;
-    case LogLevel::Warn:  append_str("[W] "); break;
-    case LogLevel::Error: append_str("[E] "); break;
-    case LogLevel::Panic: append_str("[P] "); break;
-    default: append_str("[?] "); break;
+    case LogLevel::Debug:
+      append_str("[D] ");
+      break;
+    case LogLevel::Info:
+      append_str("[I] ");
+      break;
+    case LogLevel::Warn:
+      append_str("[W] ");
+      break;
+    case LogLevel::Error:
+      append_str("[E] ");
+      break;
+    case LogLevel::Panic:
+      append_str("[P] ");
+      break;
+    default:
+      append_str("[?] ");
+      break;
     }
   }
 
   // Direct UART flush — used only by the emergency (panic) path.
   void flush_line_direct() noexcept {
-    if (pos_ == 0) return;
+    if (pos_ == 0)
+      return;
     if (pos_ < BUFFER_SIZE - 1) {
       buf_[pos_++] = '\n';
     }
@@ -199,11 +211,11 @@ public:
   }
 
   [[nodiscard]] auto pos() const noexcept -> u32 { return pos_; }
-  [[nodiscard]] auto data() const noexcept -> const char* { return buf_; }
+  [[nodiscard]] auto data() const noexcept -> const char * { return buf_; }
 
 private:
   char buf_[BUFFER_SIZE]{};
-  u32  pos_{0};
+  u32 pos_{0};
 };
 
 // ============================================================================
@@ -226,7 +238,8 @@ inline auto parse_fmt_spec(const char *&p) noexcept -> FmtSpec {
 
   if (*p == ':') {
     p++;
-    if (*p == '#') p++;
+    if (*p == '#')
+      p++;
 
     if (*p == 'x') {
       spec = FmtSpec::Hex;
@@ -237,8 +250,10 @@ inline auto parse_fmt_spec(const char *&p) noexcept -> FmtSpec {
     }
   }
 
-  while (*p && *p != '}') p++;
-  if (*p == '}') p++;
+  while (*p && *p != '}')
+    p++;
+  if (*p == '}')
+    p++;
 
   return spec;
 }
@@ -248,14 +263,21 @@ inline auto parse_fmt_spec(const char *&p) noexcept -> FmtSpec {
 // ============================================================================
 
 inline void format_arg(LogBuffer &buf, FmtSpec spec, u64 value) noexcept {
-  if (spec == FmtSpec::Hex) { buf.append_hex(value); }
-  else if (spec == FmtSpec::Bool) { buf.append_bool(value != 0); }
-  else { buf.append_dec(value); }
+  if (spec == FmtSpec::Hex) {
+    buf.append_hex(value);
+  } else if (spec == FmtSpec::Bool) {
+    buf.append_bool(value != 0);
+  } else {
+    buf.append_dec(value);
+  }
 }
 
 inline void format_arg(LogBuffer &buf, FmtSpec spec, i64 value) noexcept {
-  if (spec == FmtSpec::Hex) { buf.append_hex(static_cast<u64>(value)); }
-  else { buf.append_signed(value); }
+  if (spec == FmtSpec::Hex) {
+    buf.append_hex(static_cast<u64>(value));
+  } else {
+    buf.append_signed(value);
+  }
 }
 
 inline void format_arg(LogBuffer &buf, FmtSpec spec, u32 value) noexcept {
@@ -278,13 +300,9 @@ inline void format_arg(LogBuffer &buf, FmtSpec /*spec*/, const char *value) noex
   buf.append_str(value ? value : "(null)");
 }
 
-inline void format_arg(LogBuffer &buf, FmtSpec /*spec*/, char value) noexcept {
-  buf.append_char(value);
-}
+inline void format_arg(LogBuffer &buf, FmtSpec /*spec*/, char value) noexcept { buf.append_char(value); }
 
-inline void format_arg(LogBuffer &buf, FmtSpec /*spec*/, bool value) noexcept {
-  buf.append_bool(value);
-}
+inline void format_arg(LogBuffer &buf, FmtSpec /*spec*/, bool value) noexcept { buf.append_bool(value); }
 
 inline void format_arg(LogBuffer &buf, FmtSpec spec, const void *value) noexcept {
   (void)spec;
@@ -305,8 +323,10 @@ inline void format_into(LogBuffer &buf, const char *fmt) noexcept {
         continue;
       }
       buf.append_str("<?>");
-      while (*fmt && *fmt != '}') fmt++;
-      if (*fmt == '}') fmt++;
+      while (*fmt && *fmt != '}')
+        fmt++;
+      if (*fmt == '}')
+        fmt++;
     } else if (*fmt == '}' && *(fmt + 1) == '}') {
       buf.append_char('}');
       fmt += 2;
@@ -317,8 +337,7 @@ inline void format_into(LogBuffer &buf, const char *fmt) noexcept {
 }
 
 template <typename T, typename... Rest>
-inline void format_into(LogBuffer &buf, const char *fmt, T value,
-                        Rest... rest) noexcept {
+inline void format_into(LogBuffer &buf, const char *fmt, T value, Rest... rest) noexcept {
   while (*fmt) {
     if (*fmt == '{' && *(fmt + 1)) {
       fmt++;
@@ -350,30 +369,29 @@ inline void format_into(LogBuffer &buf, const char *fmt, T value,
 // ============================================================================
 
 struct LogRecordHeader {
-  u16 total_len;   // header + text + '\0' + padding (8-byte aligned)
-  u8  level;       // LogLevel as u8; 0xFF = skip-marker (padding)
-  u8  cpu_id;      // writer CPU
-  u32 seq;         // monotonic sequence number
-  u64 timestamp;   // arch::get_timestamp_counter()
+  u16 total_len; // header + text + '\0' + padding (8-byte aligned)
+  u8 level;      // LogLevel as u8; 0xFF = skip-marker (padding)
+  u8 cpu_id;     // writer CPU
+  u32 seq;       // monotonic sequence number
+  u64 timestamp; // arch::get_timestamp_counter()
 };
 
-inline constexpr u32 RING_BUFFER_SIZE = 32768;  // 32KB, power of 2
+inline constexpr u32 RING_BUFFER_SIZE = 32768; // 32KB, power of 2
 inline constexpr u32 RING_BUFFER_MASK = RING_BUFFER_SIZE - 1;
-inline constexpr u8  SKIP_MARKER = 0xFF;
+inline constexpr u8 SKIP_MARKER = 0xFF;
 inline constexpr u16 MAX_RECORD_TEXT = 496;
 
 class PrintkRingBuffer {
 public:
   // Write a formatted log line into the ring buffer, then try to drain.
-  void emit(LogLevel level, const char* text, u32 text_len) noexcept {
-    if (text_len > MAX_RECORD_TEXT) text_len = MAX_RECORD_TEXT;
+  void emit(LogLevel level, const char *text, u32 text_len) noexcept {
+    if (text_len > MAX_RECORD_TEXT)
+      text_len = MAX_RECORD_TEXT;
 
     // Record size: header + text + '\n' + '\0', padded to 8 bytes
-    u32 record_len = (static_cast<u32>(sizeof(LogRecordHeader))
-                      + text_len + 2 + 7) & ~7u;
+    u32 record_len = (static_cast<u32>(sizeof(LogRecordHeader)) + text_len + 2 + 7) & ~7u;
 
-    u8 cpu = static_cast<u8>(arch::get_current_cpu_id()
-                              % moss::kernel::MAX_CPUS);
+    u8 cpu = static_cast<u8>(arch::get_current_cpu_id() % moss::kernel::MAX_CPUS);
     u64 ts = arch::get_timestamp_counter();
 
     {
@@ -387,7 +405,7 @@ public:
       // If record would wrap around buffer end, insert skip-marker padding
       if (offset + record_len > RING_BUFFER_SIZE) {
         u32 skip_len = RING_BUFFER_SIZE - offset;
-        auto* skip = reinterpret_cast<LogRecordHeader*>(&buf_[offset]);
+        auto *skip = reinterpret_cast<LogRecordHeader *>(&buf_[offset]);
         skip->total_len = static_cast<u16>(skip_len);
         skip->level = SKIP_MARKER;
         skip->cpu_id = 0;
@@ -400,7 +418,7 @@ public:
       }
 
       // Write record header
-      auto* hdr = reinterpret_cast<LogRecordHeader*>(&buf_[offset]);
+      auto *hdr = reinterpret_cast<LogRecordHeader *>(&buf_[offset]);
       hdr->total_len = static_cast<u16>(record_len);
       hdr->level = static_cast<u8>(level);
       hdr->cpu_id = cpu;
@@ -408,8 +426,9 @@ public:
       hdr->timestamp = ts;
 
       // Copy text after header, append newline + null-terminate
-      char* dst = &buf_[offset + sizeof(LogRecordHeader)];
-      for (u32 i = 0; i < text_len; ++i) dst[i] = text[i];
+      char *dst = &buf_[offset + sizeof(LogRecordHeader)];
+      for (u32 i = 0; i < text_len; ++i)
+        dst[i] = text[i];
       dst[text_len] = '\n';
       dst[text_len + 1] = '\0';
 
@@ -423,7 +442,8 @@ public:
   // Attempt to drain all pending records to UART.
   // Non-blocking: returns immediately if another CPU is already draining.
   void try_drain() noexcept {
-    if (!console_lock_.try_lock()) return;
+    if (!console_lock_.try_lock())
+      return;
 
     // Read write_pos_ snapshot — Acquire pairs with Release in emit().
     u64 wp = write_pos_.load(containers::MemoryOrder::Acquire);
@@ -438,7 +458,7 @@ public:
         offset = static_cast<u32>(read_pos_) & RING_BUFFER_MASK;
       }
 
-      auto* hdr = reinterpret_cast<LogRecordHeader*>(&buf_[offset]);
+      auto *hdr = reinterpret_cast<LogRecordHeader *>(&buf_[offset]);
 
       if (hdr->level == SKIP_MARKER) {
         // Skip padding record
@@ -447,7 +467,7 @@ public:
       }
 
       // Output the text (already null-terminated by emit)
-      const char* text = &buf_[offset + sizeof(LogRecordHeader)];
+      const char *text = &buf_[offset + sizeof(LogRecordHeader)];
       uart::puts(text);
 
       read_pos_ += hdr->total_len;
@@ -457,9 +477,7 @@ public:
   }
 
   // Set emergency mode — all subsequent output goes direct to UART
-  void set_emergency() noexcept {
-    emergency_mode_.store(1, containers::MemoryOrder::Release);
-  }
+  void set_emergency() noexcept { emergency_mode_.store(1, containers::MemoryOrder::Release); }
 
   [[nodiscard]] bool is_emergency() const noexcept {
     return emergency_mode_.load(containers::MemoryOrder::Relaxed) != 0;
@@ -472,9 +490,9 @@ private:
   // write_pos_: updated under write_lock_, read (unsynchronized) in try_drain()
   //   → atomic to avoid data race between writer and drainer.
   // read_pos_: updated only under console_lock_ → plain u64 is fine.
-  alignas(64) AtomicU64 write_pos_;  // updated under write_lock_
-  alignas(64) u64 read_pos_{0};      // protected by console_lock_
-  u32 next_seq_{0};                  // protected by write_lock_
+  alignas(64) AtomicU64 write_pos_; // updated under write_lock_
+  alignas(64) u64 read_pos_{0};     // protected by console_lock_
+  u32 next_seq_{0};                 // protected by write_lock_
 
   alignas(64) IrqSpinLock write_lock_{};
   alignas(64) IrqSpinLock console_lock_{};
@@ -490,17 +508,16 @@ inline PrintkRingBuffer g_printk_rb;
 
 class LogEntry {
 public:
-  LogEntry(LogLevel level, bool active) noexcept
-      : level_(level), active_(active) {
-    if (!active_) return;
+  LogEntry(LogLevel level, bool active) noexcept : level_(level), active_(active) {
+    if (!active_)
+      return;
     buf_.append_level_tag(level);
   }
 
   LogEntry(const LogEntry &) = delete;
   auto operator=(const LogEntry &) -> LogEntry & = delete;
 
-  LogEntry(LogEntry &&other) noexcept
-      : buf_(other.buf_), level_(other.level_), active_(other.active_) {
+  LogEntry(LogEntry &&other) noexcept : buf_(other.buf_), level_(other.level_), active_(other.active_) {
     other.active_ = false;
   }
 
@@ -509,47 +526,56 @@ public:
   // -- Chaining API --
 
   auto str(const char *s) noexcept -> LogEntry & {
-    if (active_) buf_.append_str(s);
+    if (active_)
+      buf_.append_str(s);
     return *this;
   }
 
   auto chr(char c) noexcept -> LogEntry & {
-    if (active_) buf_.append_char(c);
+    if (active_)
+      buf_.append_char(c);
     return *this;
   }
 
   auto u64(moss::u64 value) noexcept -> LogEntry & {
-    if (active_) buf_.append_dec(value);
+    if (active_)
+      buf_.append_dec(value);
     return *this;
   }
 
   auto i64(moss::i64 value) noexcept -> LogEntry & {
-    if (active_) buf_.append_signed(value);
+    if (active_)
+      buf_.append_signed(value);
     return *this;
   }
 
   auto u32(moss::u32 value) noexcept -> LogEntry & {
-    if (active_) buf_.append_dec(static_cast<moss::u64>(value));
+    if (active_)
+      buf_.append_dec(static_cast<moss::u64>(value));
     return *this;
   }
 
   auto i32(moss::i32 value) noexcept -> LogEntry & {
-    if (active_) buf_.append_signed(static_cast<moss::i64>(value));
+    if (active_)
+      buf_.append_signed(static_cast<moss::i64>(value));
     return *this;
   }
 
   auto hex(moss::u64 value) noexcept -> LogEntry & {
-    if (active_) buf_.append_hex(value);
+    if (active_)
+      buf_.append_hex(value);
     return *this;
   }
 
   auto ptr(const void *p) noexcept -> LogEntry & {
-    if (active_) buf_.append_hex(reinterpret_cast<moss::u64>(p));
+    if (active_)
+      buf_.append_hex(reinterpret_cast<moss::u64>(p));
     return *this;
   }
 
   auto boolean(bool v) noexcept -> LogEntry & {
-    if (active_) buf_.append_bool(v);
+    if (active_)
+      buf_.append_bool(v);
     return *this;
   }
 
@@ -559,11 +585,12 @@ private:
   friend struct klog;
 
   LogBuffer buf_{};
-  LogLevel  level_;
-  bool      active_;
+  LogLevel level_;
+  bool active_;
 
   void flush() noexcept {
-    if (!active_) return;
+    if (!active_)
+      return;
     if (level_ == LogLevel::Panic || g_printk_rb.is_emergency()) {
       // Emergency: bypass ring buffer, write directly to UART
       buf_.flush_line_direct();
@@ -582,28 +609,23 @@ private:
 // ============================================================================
 
 struct klog {
-  template <typename... Args>
-  static void debug(FmtStr fmt, Args... args) noexcept {
+  template <typename... Args> static void debug(FmtStr fmt, Args... args) noexcept {
     log_fmt(LogLevel::Debug, fmt, args...);
   }
 
-  template <typename... Args>
-  static void info(FmtStr fmt, Args... args) noexcept {
+  template <typename... Args> static void info(FmtStr fmt, Args... args) noexcept {
     log_fmt(LogLevel::Info, fmt, args...);
   }
 
-  template <typename... Args>
-  static void warn(FmtStr fmt, Args... args) noexcept {
+  template <typename... Args> static void warn(FmtStr fmt, Args... args) noexcept {
     log_fmt(LogLevel::Warn, fmt, args...);
   }
 
-  template <typename... Args>
-  static void error(FmtStr fmt, Args... args) noexcept {
+  template <typename... Args> static void error(FmtStr fmt, Args... args) noexcept {
     log_fmt(LogLevel::Error, fmt, args...);
   }
 
-  template <typename... Args>
-  static void panic(FmtStr fmt, Args... args) noexcept {
+  template <typename... Args> static void panic(FmtStr fmt, Args... args) noexcept {
     log_fmt(LogLevel::Panic, fmt, args...);
   }
 
@@ -611,38 +633,43 @@ struct klog {
 
   static auto debug_chain(const char *prefix = "") noexcept -> LogEntry {
     LogEntry e(LogLevel::Debug, LogLevel::Debug >= g_log_level);
-    if (LogLevel::Debug >= g_log_level) e.buf_.append_str(prefix);
+    if (LogLevel::Debug >= g_log_level)
+      e.buf_.append_str(prefix);
     return e;
   }
 
   static auto info_chain(const char *prefix = "") noexcept -> LogEntry {
     LogEntry e(LogLevel::Info, LogLevel::Info >= g_log_level);
-    if (LogLevel::Info >= g_log_level) e.buf_.append_str(prefix);
+    if (LogLevel::Info >= g_log_level)
+      e.buf_.append_str(prefix);
     return e;
   }
 
   static auto warn_chain(const char *prefix = "") noexcept -> LogEntry {
     LogEntry e(LogLevel::Warn, LogLevel::Warn >= g_log_level);
-    if (LogLevel::Warn >= g_log_level) e.buf_.append_str(prefix);
+    if (LogLevel::Warn >= g_log_level)
+      e.buf_.append_str(prefix);
     return e;
   }
 
   static auto error_chain(const char *prefix = "") noexcept -> LogEntry {
     LogEntry e(LogLevel::Error, LogLevel::Error >= g_log_level);
-    if (LogLevel::Error >= g_log_level) e.buf_.append_str(prefix);
+    if (LogLevel::Error >= g_log_level)
+      e.buf_.append_str(prefix);
     return e;
   }
 
   static auto panic_chain(const char *prefix = "") noexcept -> LogEntry {
     LogEntry e(LogLevel::Panic, LogLevel::Panic >= g_log_level);
-    if (LogLevel::Panic >= g_log_level) e.buf_.append_str(prefix);
+    if (LogLevel::Panic >= g_log_level)
+      e.buf_.append_str(prefix);
     return e;
   }
 
 private:
-  template <typename... Args>
-  static void log_fmt(LogLevel level, FmtStr fmt, Args... args) noexcept {
-    if (level < g_log_level) return;
+  template <typename... Args> static void log_fmt(LogLevel level, FmtStr fmt, Args... args) noexcept {
+    if (level < g_log_level)
+      return;
 
     LogBuffer buf;
     buf.append_level_tag(level);

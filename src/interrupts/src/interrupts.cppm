@@ -35,12 +35,7 @@ enum class InterruptType : u8 {
 };
 
 // Interrupt trigger type
-enum class TriggerType : u8 {
-  EdgeRising = 0,
-  LevelHigh = 1,
-  EdgeFalling = 2,
-  LevelLow = 3
-};
+enum class TriggerType : u8 { EdgeRising = 0, LevelHigh = 1, EdgeFalling = 2, LevelLow = 3 };
 
 // Interrupt priority
 using InterruptPriority = u8;
@@ -62,15 +57,12 @@ struct InterruptDescriptor {
   const char *name;
 
   InterruptDescriptor() noexcept
-      : irq(0), type(InterruptType::SPI), trigger(TriggerType::LevelHigh),
-        priority(128), target_cpu_mask(1), handler(nullptr), context(nullptr),
-        count{}, enabled(false), name(nullptr) {}
+      : irq(0), type(InterruptType::SPI), trigger(TriggerType::LevelHigh), priority(128), target_cpu_mask(1),
+        handler(nullptr), context(nullptr), count{}, enabled(false), name(nullptr) {}
 
-  InterruptDescriptor(InterruptId id, InterruptHandler h, void *ctx,
-                      const char *n) noexcept
-      : irq(id), type(determine_type(id)), trigger(TriggerType::LevelHigh),
-        priority(128), target_cpu_mask(1), handler(h), context(ctx), count{},
-        enabled(false), name(n) {}
+  InterruptDescriptor(InterruptId id, InterruptHandler h, void *ctx, const char *n) noexcept
+      : irq(id), type(determine_type(id)), trigger(TriggerType::LevelHigh), priority(128), target_cpu_mask(1),
+        handler(h), context(ctx), count{}, enabled(false), name(n) {}
 
 private:
   static constexpr InterruptType determine_type(InterruptId id) noexcept {
@@ -95,7 +87,7 @@ private:
   u32 max_cpus_;
 
   containers::RcuHashMap<InterruptId, InterruptDescriptor *> interrupt_table_;
-  containers::IrqSpinLock table_write_lock_;  // Protects interrupt_table_ mutations
+  containers::IrqSpinLock table_write_lock_; // Protects interrupt_table_ mutations
   containers::PerCpuData<u64> interrupt_counts_;
 
   containers::AtomicCounter<u64> total_interrupts_;
@@ -103,19 +95,16 @@ private:
 
 public:
   GenericInterruptController() noexcept
-      : version_(GicVersion::Unknown), distributor_base_(0),
-        cpu_interface_base_(0), max_interrupts_(0), max_cpus_(0),
+      : version_(GicVersion::Unknown), distributor_base_(0), cpu_interface_base_(0), max_interrupts_(0), max_cpus_(0),
         total_interrupts_(0), spurious_interrupts_(0) {}
 
   ~GenericInterruptController() noexcept { cleanup(); }
 
   // Non-copyable, non-movable
   GenericInterruptController(const GenericInterruptController &) = delete;
-  GenericInterruptController &
-  operator=(const GenericInterruptController &) = delete;
+  GenericInterruptController &operator=(const GenericInterruptController &) = delete;
   GenericInterruptController(GenericInterruptController &&) = delete;
-  GenericInterruptController &
-  operator=(GenericInterruptController &&) = delete;
+  GenericInterruptController &operator=(GenericInterruptController &&) = delete;
 
   struct GicStats {
     u64 total_interrupts;
@@ -124,8 +113,7 @@ public:
     u32 enabled_interrupts;
   };
 
-  [[nodiscard]] VoidResult initialize(VirtAddr dist_base,
-                                      VirtAddr cpu_base) noexcept {
+  [[nodiscard]] VoidResult initialize(VirtAddr dist_base, VirtAddr cpu_base) noexcept {
     distributor_base_ = dist_base;
     cpu_interface_base_ = cpu_base;
 
@@ -147,9 +135,8 @@ public:
     return VoidResult{};
   }
 
-  [[nodiscard]] VoidResult
-  register_interrupt(InterruptId irq, InterruptHandler handler, void *context,
-                     const char *name = nullptr) noexcept {
+  [[nodiscard]] VoidResult register_interrupt(InterruptId irq, InterruptHandler handler, void *context,
+                                              const char *name = nullptr) noexcept {
     if (irq >= max_interrupts_) {
       return VoidResult{ErrorCode::InvalidParameter};
     }
@@ -164,8 +151,7 @@ public:
       return VoidResult{ErrorCode::AlreadyExists};
     }
 
-    InterruptDescriptor *desc =
-        new InterruptDescriptor(irq, handler, context, name);
+    InterruptDescriptor *desc = new InterruptDescriptor(irq, handler, context, name);
     if (desc == nullptr) {
       return VoidResult{ErrorCode::OutOfMemory};
     }
@@ -223,8 +209,7 @@ public:
     return VoidResult{};
   }
 
-  [[nodiscard]] VoidResult
-  set_interrupt_priority(InterruptId irq, InterruptPriority priority) noexcept {
+  [[nodiscard]] VoidResult set_interrupt_priority(InterruptId irq, InterruptPriority priority) noexcept {
     if (irq >= max_interrupts_) {
       return VoidResult{ErrorCode::InvalidParameter};
     }
@@ -240,8 +225,7 @@ public:
     return VoidResult{};
   }
 
-  [[nodiscard]] VoidResult set_interrupt_target(InterruptId irq,
-                                                u32 cpu_mask) noexcept {
+  [[nodiscard]] VoidResult set_interrupt_target(InterruptId irq, u32 cpu_mask) noexcept {
     if (irq >= max_interrupts_) {
       return VoidResult{ErrorCode::InvalidParameter};
     }
@@ -261,10 +245,8 @@ public:
     return VoidResult{};
   }
 
-  [[nodiscard]] VoidResult send_sgi(InterruptId sgi,
-                                    u32 target_cpu_mask) noexcept {
-    return ::moss::kernel::hal::intc::send_sgi(
-        distributor_base_, cpu_interface_base_, sgi, target_cpu_mask);
+  [[nodiscard]] VoidResult send_sgi(InterruptId sgi, u32 target_cpu_mask) noexcept {
+    return ::moss::kernel::hal::intc::send_sgi(distributor_base_, cpu_interface_base_, sgi, target_cpu_mask);
   }
 
   void handle_interrupt() noexcept {
@@ -275,8 +257,7 @@ public:
     InterruptId irq = intc_hal::irq_from_ack(ack_val);
 
     if (intc_hal::is_spurious(irq)) {
-      (void)spurious_interrupts_.fetch_add(
-          1, containers::MemoryOrder::Relaxed);
+      (void)spurious_interrupts_.fetch_add(1, containers::MemoryOrder::Relaxed);
       return;
     }
 
@@ -307,12 +288,10 @@ public:
     });
 
     return {total_interrupts_.load(containers::MemoryOrder::Relaxed),
-            spurious_interrupts_.load(containers::MemoryOrder::Relaxed),
-            registered, enabled};
+            spurious_interrupts_.load(containers::MemoryOrder::Relaxed), registered, enabled};
   }
 
-  [[nodiscard]] const InterruptDescriptor *
-  get_interrupt_info(InterruptId irq) const noexcept {
+  [[nodiscard]] const InterruptDescriptor *get_interrupt_info(InterruptId irq) const noexcept {
     auto desc_ptr = interrupt_table_.find(irq);
     return desc_ptr ? *desc_ptr : nullptr;
   }
@@ -321,9 +300,7 @@ public:
     ::moss::kernel::hal::intc::set_priority_mask(cpu_interface_base_, mask);
   }
 
-  [[nodiscard]] static u32 get_current_cpu_id() noexcept {
-    return arch::get_current_cpu_id();
-  }
+  [[nodiscard]] static u32 get_current_cpu_id() noexcept { return arch::get_current_cpu_id(); }
 
 private:
   [[nodiscard]] VoidResult detect_gic_config() noexcept {
@@ -335,8 +312,7 @@ private:
   }
 
   [[nodiscard]] VoidResult initialize_distributor() noexcept {
-    return ::moss::kernel::hal::intc::init_distributor(
-        distributor_base_, max_interrupts_);
+    return ::moss::kernel::hal::intc::init_distributor(distributor_base_, max_interrupts_);
   }
 
   [[nodiscard]] VoidResult initialize_cpu_interface() noexcept {
@@ -389,11 +365,7 @@ namespace simple {
 
 enum class IpiType : u8 { Ping = 3 };
 
-enum class IpiResult : u8 {
-  Success = 0,
-  InvalidCpu = 2,
-  NotInitialized = 3
-};
+enum class IpiResult : u8 { Success = 0, InvalidCpu = 2, NotInitialized = 3 };
 
 struct IpiMessage {
   IpiType type;
@@ -409,10 +381,8 @@ public:
   SimpleInterProcessorInterrupt() noexcept = default;
   ~SimpleInterProcessorInterrupt() noexcept = default;
 
-  SimpleInterProcessorInterrupt(const SimpleInterProcessorInterrupt &) =
-      delete;
-  SimpleInterProcessorInterrupt &
-  operator=(const SimpleInterProcessorInterrupt &) = delete;
+  SimpleInterProcessorInterrupt(const SimpleInterProcessorInterrupt &) = delete;
+  SimpleInterProcessorInterrupt &operator=(const SimpleInterProcessorInterrupt &) = delete;
 
   VoidResult initialize(u32 max_cpus) noexcept;
   IpiResult send_ipi(u32 target_cpu, IpiType type) noexcept;
@@ -442,9 +412,7 @@ VoidResult initialize_simple_ipi_system(u32 max_cpus) noexcept;
 void shutdown_simple_ipi_system() noexcept;
 
 inline IpiResult simple_ipi_ping(u32 target_cpu) noexcept {
-  return g_simple_ipi_manager
-             ? g_simple_ipi_manager->ping_cpu(target_cpu)
-             : IpiResult::NotInitialized;
+  return g_simple_ipi_manager ? g_simple_ipi_manager->ping_cpu(target_cpu) : IpiResult::NotInitialized;
 }
 
 const char *ipi_type_to_string(IpiType type) noexcept;
@@ -457,15 +425,7 @@ const char *ipi_result_to_string(IpiResult result) noexcept;
 // ========================================================================
 namespace hw_simple {
 
-enum class IpiType : u8 {
-  Ping = 0,
-  Reschedule = 1,
-  CallFunction = 2,
-  Stop = 3,
-  WakeUp = 4,
-  Timer = 5,
-  Debug = 6
-};
+enum class IpiType : u8 { Ping = 0, Reschedule = 1, CallFunction = 2, Stop = 3, WakeUp = 4, Timer = 5, Debug = 6 };
 
 enum class IpiResult : u8 {
   Success = 0,
@@ -511,9 +471,8 @@ private:
 
 public:
   SimpleHardwareIpi() noexcept
-      : gic_(nullptr), initialized_(false), max_cpus_(0),
-        total_ipis_sent_{}, message_sequence_{},
-        sgi_send_counts_{}, sgi_receive_counts_{} {
+      : gic_(nullptr), initialized_(false), max_cpus_(0), total_ipis_sent_{}, message_sequence_{}, sgi_send_counts_{},
+        sgi_receive_counts_{} {
     message_sequence_.store(1000, containers::MemoryOrder::Relaxed);
   }
 
@@ -522,8 +481,7 @@ public:
   SimpleHardwareIpi(const SimpleHardwareIpi &) = delete;
   SimpleHardwareIpi &operator=(const SimpleHardwareIpi &) = delete;
 
-  VoidResult initialize(GenericInterruptController *gic,
-                         u32 max_cpus) noexcept;
+  VoidResult initialize(GenericInterruptController *gic, u32 max_cpus) noexcept;
   void shutdown() noexcept;
   bool is_initialized() const noexcept { return initialized_; }
 
@@ -545,8 +503,7 @@ public:
   VoidResult self_test() noexcept;
 
 private:
-  VoidResult send_hardware_sgi(IpiSgiId sgi_id,
-                                u32 target_cpu_mask) noexcept;
+  VoidResult send_hardware_sgi(IpiSgiId sgi_id, u32 target_cpu_mask) noexcept;
   bool is_valid_cpu_id(u32 cpu_id) const noexcept;
   static u32 get_current_cpu_id() noexcept;
   u64 generate_sequence() noexcept;
@@ -554,8 +511,7 @@ private:
 
 extern SimpleHardwareIpi *g_simple_hardware_ipi;
 
-VoidResult initialize_simple_hardware_ipi(GenericInterruptController *gic,
-                                           u32 max_cpus) noexcept;
+VoidResult initialize_simple_hardware_ipi(GenericInterruptController *gic, u32 max_cpus) noexcept;
 void shutdown_simple_hardware_ipi() noexcept;
 
 const char *ipi_type_to_string(IpiType type) noexcept;

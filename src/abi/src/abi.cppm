@@ -62,24 +62,15 @@ extern "C" {
 [[noreturn]] void early_main(void *device_tree_ptr);
 [[noreturn]] void kernel_main(void) noexcept;
 void early_debug_print(const char *message) noexcept;
-long system_call_handler(long syscall_number, long arg0, long arg1,
-                         long arg2, long arg3, long arg4,
+long system_call_handler(long syscall_number, long arg0, long arg1, long arg2, long arg3, long arg4,
                          long arg5) noexcept;
 void irq_handler_c(void) noexcept;
-void kernel_page_fault_handler(unsigned long long esr,
-                               unsigned long long far_addr,
-                               unsigned long long elr) noexcept;
-void user_page_fault_handler(unsigned long long esr,
-                             unsigned long long far_addr,
-                             unsigned long long elr) noexcept;
-void unhandled_exception_handler(unsigned long long esr,
-                                 unsigned long long far_addr,
-                                 unsigned long long elr,
-                                 unsigned long long saved_x30,
-                                 unsigned long long frame_sp) noexcept;
-[[noreturn]] void unhandled_user_exception_handler(
-    unsigned long long esr, unsigned long long far_addr,
-    unsigned long long elr) noexcept;
+void kernel_page_fault_handler(unsigned long long esr, unsigned long long far_addr, unsigned long long elr) noexcept;
+void user_page_fault_handler(unsigned long long esr, unsigned long long far_addr, unsigned long long elr) noexcept;
+void unhandled_exception_handler(unsigned long long esr, unsigned long long far_addr, unsigned long long elr,
+                                 unsigned long long saved_x30, unsigned long long frame_sp) noexcept;
+[[noreturn]] void unhandled_user_exception_handler(unsigned long long esr, unsigned long long far_addr,
+                                                   unsigned long long elr) noexcept;
 void mark_runtime_heap_ready() noexcept;
 }
 
@@ -92,11 +83,8 @@ extern "C" [[noreturn]] void secondary_cpu_entry() noexcept;
 // ============================================================================
 extern "C" {
 // mm <-> kernel bridge
-int demand_page_lookup(unsigned long long fault_addr,
-                       unsigned int *out_flags,
-                       const unsigned char **out_backing_data,
-                       unsigned long long *out_backing_offset,
-                       unsigned long long *out_backing_size,
+int demand_page_lookup(unsigned long long fault_addr, unsigned int *out_flags, const unsigned char **out_backing_data,
+                       unsigned long long *out_backing_offset, unsigned long long *out_backing_size,
                        unsigned long long *out_vma_start) noexcept;
 unsigned long long get_current_pgd_phys() noexcept;
 [[noreturn]] void terminate_current_user_process(int exit_code) noexcept;
@@ -107,8 +95,7 @@ int console_getc_blocking() noexcept;
 
 // containers <-> mm bridge
 unsigned long long moss_slab_alloc_pages(unsigned long long order) noexcept;
-int moss_slab_free_pages(unsigned long long addr,
-                         unsigned long long order) noexcept;
+int moss_slab_free_pages(unsigned long long addr, unsigned long long order) noexcept;
 
 // C string function (runtime_support.cpp)
 int strcmp(const char *s1, const char *s2) noexcept;
@@ -123,54 +110,24 @@ import moss.types;
 // ============================================================================
 export namespace moss::abi::linker {
 
-using moss::kernel::VirtAddr;
 using moss::kernel::usize;
+using moss::kernel::VirtAddr;
 
-inline auto text_start() noexcept -> VirtAddr {
-    return reinterpret_cast<VirtAddr>(_text_start_addr);
-}
-inline auto text_end() noexcept -> VirtAddr {
-    return reinterpret_cast<VirtAddr>(_text_end_addr);
-}
-inline auto rodata_start() noexcept -> VirtAddr {
-    return reinterpret_cast<VirtAddr>(_rodata_start_addr);
-}
-inline auto rodata_end() noexcept -> VirtAddr {
-    return reinterpret_cast<VirtAddr>(_rodata_end_addr);
-}
-inline auto data_start() noexcept -> VirtAddr {
-    return reinterpret_cast<VirtAddr>(_data_start_addr);
-}
-inline auto data_end() noexcept -> VirtAddr {
-    return reinterpret_cast<VirtAddr>(_data_end_addr);
-}
-inline auto bss_start() noexcept -> VirtAddr {
-    return reinterpret_cast<VirtAddr>(_bss_start_addr);
-}
-inline auto bss_end() noexcept -> VirtAddr {
-    return reinterpret_cast<VirtAddr>(_bss_end_addr);
-}
-inline auto stack_bottom() noexcept -> VirtAddr {
-    return reinterpret_cast<VirtAddr>(_stack_bottom_addr);
-}
-inline auto stack_top() noexcept -> VirtAddr {
-    return reinterpret_cast<VirtAddr>(_stack_top_addr);
-}
-inline auto heap_start() noexcept -> VirtAddr {
-    return reinterpret_cast<VirtAddr>(_heap_start_addr);
-}
-inline auto heap_end() noexcept -> VirtAddr {
-    return reinterpret_cast<VirtAddr>(_heap_end_addr);
-}
-inline auto pagetable_start() noexcept -> VirtAddr {
-    return reinterpret_cast<VirtAddr>(_pagetable_start_addr);
-}
-inline auto pagetable_end() noexcept -> VirtAddr {
-    return reinterpret_cast<VirtAddr>(_pagetable_end_addr);
-}
-inline auto kernel_end() noexcept -> VirtAddr {
-    return reinterpret_cast<VirtAddr>(_kernel_end_addr);
-}
+inline auto text_start() noexcept -> VirtAddr { return reinterpret_cast<VirtAddr>(_text_start_addr); }
+inline auto text_end() noexcept -> VirtAddr { return reinterpret_cast<VirtAddr>(_text_end_addr); }
+inline auto rodata_start() noexcept -> VirtAddr { return reinterpret_cast<VirtAddr>(_rodata_start_addr); }
+inline auto rodata_end() noexcept -> VirtAddr { return reinterpret_cast<VirtAddr>(_rodata_end_addr); }
+inline auto data_start() noexcept -> VirtAddr { return reinterpret_cast<VirtAddr>(_data_start_addr); }
+inline auto data_end() noexcept -> VirtAddr { return reinterpret_cast<VirtAddr>(_data_end_addr); }
+inline auto bss_start() noexcept -> VirtAddr { return reinterpret_cast<VirtAddr>(_bss_start_addr); }
+inline auto bss_end() noexcept -> VirtAddr { return reinterpret_cast<VirtAddr>(_bss_end_addr); }
+inline auto stack_bottom() noexcept -> VirtAddr { return reinterpret_cast<VirtAddr>(_stack_bottom_addr); }
+inline auto stack_top() noexcept -> VirtAddr { return reinterpret_cast<VirtAddr>(_stack_top_addr); }
+inline auto heap_start() noexcept -> VirtAddr { return reinterpret_cast<VirtAddr>(_heap_start_addr); }
+inline auto heap_end() noexcept -> VirtAddr { return reinterpret_cast<VirtAddr>(_heap_end_addr); }
+inline auto pagetable_start() noexcept -> VirtAddr { return reinterpret_cast<VirtAddr>(_pagetable_start_addr); }
+inline auto pagetable_end() noexcept -> VirtAddr { return reinterpret_cast<VirtAddr>(_pagetable_end_addr); }
+inline auto kernel_end() noexcept -> VirtAddr { return reinterpret_cast<VirtAddr>(_kernel_end_addr); }
 
 // Computed helpers
 inline auto text_size() noexcept -> usize { return text_end() - text_start(); }
@@ -190,8 +147,8 @@ export namespace moss::abi {
 
 using ::_start;
 using ::context_switch;
-using ::switch_to_user;
 using ::kernel_thread_entry;
+using ::switch_to_user;
 using ::syscall_entry_point;
 using ::syscall_return;
 
@@ -200,25 +157,25 @@ using ::syscall_return;
 #if defined(__aarch64__) || defined(MOSS_ARCH_ARM64)
 export namespace moss::abi::arm64 {
 
-using ::user_eret_trampoline;
-using ::syscall_fast_path;
-using ::flush_tlb_single;
-using ::flush_tlb_all;
-using ::early_uart_lock;
 using ::cpu_startup_flags;
+using ::early_uart_lock;
 using ::exception_vectors;
+using ::flush_tlb_all;
+using ::flush_tlb_single;
+using ::syscall_fast_path;
+using ::user_eret_trampoline;
 
 inline auto user_program_start() noexcept -> const unsigned char * {
-    return reinterpret_cast<const unsigned char *>(::_user_program_start);
+  return reinterpret_cast<const unsigned char *>(::_user_program_start);
 }
 inline auto user_program_end() noexcept -> const unsigned char * {
-    return reinterpret_cast<const unsigned char *>(::_user_program_end);
+  return reinterpret_cast<const unsigned char *>(::_user_program_end);
 }
 inline auto user_program_size() noexcept -> moss::kernel::usize {
-    return static_cast<moss::kernel::usize>(user_program_end() - user_program_start());
+  return static_cast<moss::kernel::usize>(user_program_end() - user_program_start());
 }
 inline auto exception_vectors_addr() noexcept -> moss::kernel::VirtAddr {
-    return reinterpret_cast<moss::kernel::VirtAddr>(::exception_vectors);
+  return reinterpret_cast<moss::kernel::VirtAddr>(::exception_vectors);
 }
 
 } // namespace moss::abi::arm64
@@ -229,14 +186,14 @@ inline auto exception_vectors_addr() noexcept -> moss::kernel::VirtAddr {
 // ============================================================================
 export namespace moss::abi::bridge {
 
+using ::console_getc_blocking;
+using ::console_rx_init;
 using ::demand_page_lookup;
 using ::get_current_pgd_phys;
-using ::terminate_current_user_process;
-using ::console_rx_init;
-using ::console_getc_blocking;
 using ::moss_slab_alloc_pages;
 using ::moss_slab_free_pages;
 using ::strcmp;
+using ::terminate_current_user_process;
 
 } // namespace moss::abi::bridge
 
@@ -245,16 +202,16 @@ using ::strcmp;
 // ============================================================================
 export namespace moss::abi::entry {
 
-using ::early_main;
-using ::kernel_main;
 using ::early_debug_print;
-using ::system_call_handler;
+using ::early_main;
 using ::irq_handler_c;
+using ::kernel_main;
 using ::kernel_page_fault_handler;
-using ::user_page_fault_handler;
+using ::mark_runtime_heap_ready;
+using ::system_call_handler;
 using ::unhandled_exception_handler;
 using ::unhandled_user_exception_handler;
-using ::mark_runtime_heap_ready;
+using ::user_page_fault_handler;
 
 #if defined(__aarch64__) || defined(MOSS_ARCH_ARM64)
 using ::secondary_cpu_entry;

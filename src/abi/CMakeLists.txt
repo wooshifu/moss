@@ -6,10 +6,15 @@
 
 add_library(moss_abi OBJECT)
 
-target_sources(moss_abi PUBLIC FILE_SET CXX_MODULES FILES
-    src/abi.cppm)
+target_sources(
+    moss_abi
+    PUBLIC FILE_SET CXX_MODULES FILES src/abi.cppm
+)
 
 # moss.abi depends only on moss_core (for moss.types → VirtAddr, usize)
-target_link_libraries(moss_abi PUBLIC moss_core)
+target_link_libraries(
+    moss_abi
+    PUBLIC moss_core
+)
 
 message(STATUS "ABI module configured")

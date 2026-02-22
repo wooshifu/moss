@@ -91,15 +91,13 @@ int strcmp(const char *s1, const char *s2) noexcept {
     s1++;
     s2++;
   }
-  return static_cast<int>(static_cast<unsigned char>(*s1) -
-                          static_cast<unsigned char>(*s2));
+  return static_cast<int>(static_cast<unsigned char>(*s1) - static_cast<unsigned char>(*s2));
 }
 
 int strncmp(const char *s1, const char *s2, size_t n) noexcept {
   for (size_t i = 0; i < n; i++) {
     if (s1[i] != s2[i] || s1[i] == '\0') {
-      return static_cast<int>(static_cast<unsigned char>(s1[i]) -
-                              static_cast<unsigned char>(s2[i]));
+      return static_cast<int>(static_cast<unsigned char>(s1[i]) - static_cast<unsigned char>(s2[i]));
     }
   }
   return 0;
@@ -204,9 +202,7 @@ static void kernel_free(void *ptr) noexcept {
 }
 
 // 标记运行时堆已准备好（extern "C" — boot→kernel bridge via abi.cppm）
-extern "C" void mark_runtime_heap_ready() noexcept {
-  runtime_heap_ready = true;
-}
+extern "C" void mark_runtime_heap_ready() noexcept { runtime_heap_ready = true; }
 
 // C++ operator new/delete 实现
 extern "C" {
@@ -293,16 +289,14 @@ void *_ZnamSt11align_val_t(size_t size, size_t alignment) {
   return _ZnwmSt11align_val_t(size, alignment);
 }
 
-void _ZdlPvmSt11align_val_t(void *ptr, [[maybe_unused]] size_t size,
-                            [[maybe_unused]] size_t alignment) {
+void _ZdlPvmSt11align_val_t(void *ptr, [[maybe_unused]] size_t size, [[maybe_unused]] size_t alignment) {
   // operator delete(void*, unsigned long, std::align_val_t) 的修饰符号
   if (ptr) {
     kernel_free(ptr);
   }
 }
 
-void _ZdaPvmSt11align_val_t(void *ptr, [[maybe_unused]] size_t size,
-                            [[maybe_unused]] size_t alignment) {
+void _ZdaPvmSt11align_val_t(void *ptr, [[maybe_unused]] size_t size, [[maybe_unused]] size_t alignment) {
   // operator delete[](void*, unsigned long, std::align_val_t) 的修饰符号
   _ZdlPvmSt11align_val_t(ptr, size, alignment);
 }

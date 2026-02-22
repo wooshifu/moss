@@ -1,8 +1,15 @@
 add_library(moss_timer OBJECT)
 
-target_sources(moss_timer
-  PUBLIC FILE_SET CXX_MODULES FILES
-    src/timer.cppm
+target_sources(
+    moss_timer
+    PUBLIC FILE_SET CXX_MODULES FILES src/timer.cppm
 )
 
-target_link_libraries(moss_timer PRIVATE moss_core moss_aal moss_platform moss_hal_timer moss_containers)
+target_link_libraries(
+    moss_timer
+    PRIVATE moss_core
+            moss_aal
+            moss_platform
+            moss_hal_timer
+            moss_containers
+)

@@ -27,14 +27,12 @@ private:
 
     // Value constructor
     template <typename... Args>
-    constexpr Storage(bool, Args &&...args) noexcept(
-        noexcept(T(forward<Args>(args)...)))
+    constexpr Storage(bool, Args &&...args) noexcept(noexcept(T(forward<Args>(args)...)))
         : value_(forward<Args>(args)...) {}
 
     // Error constructor
     template <typename... Args>
-    constexpr Storage(int, Args &&...args) noexcept(
-        noexcept(E(forward<Args>(args)...)))
+    constexpr Storage(int, Args &&...args) noexcept(noexcept(E(forward<Args>(args)...)))
         : error_(forward<Args>(args)...) {}
 
     // Destructor - does nothing (Result handles destruction)
@@ -61,8 +59,7 @@ public:
   // Constructors
 
   // Default constructor - creates error state with default error
-  constexpr Result() noexcept(noexcept(E()))
-      : storage_(1, E()), has_value_(false) {}
+  constexpr Result() noexcept(noexcept(E())) : storage_(1, E()), has_value_(false) {}
 
   // Value constructor
   template <typename U = T>
@@ -82,8 +79,7 @@ public:
       : storage_(true, forward<U>(value)), has_value_(true) {}
 
   // Ok constructor
-  constexpr Result(const Ok<T> &ok) noexcept(noexcept(T(ok.value_)))
-      : storage_(true, ok.value_), has_value_(true) {}
+  constexpr Result(const Ok<T> &ok) noexcept(noexcept(T(ok.value_))) : storage_(true, ok.value_), has_value_(true) {}
 
   constexpr Result(Ok<T> &&ok) noexcept(noexcept(T(move(ok.value_))))
       : storage_(true, move(ok.value_)), has_value_(true) {}
@@ -98,15 +94,14 @@ public:
       : storage_(1, move(error)), has_value_(false) {}
 
   // Err constructor
-  constexpr Result(const Err<E> &err) noexcept(noexcept(E(err.error_)))
-      : storage_(1, err.error_), has_value_(false) {}
+  constexpr Result(const Err<E> &err) noexcept(noexcept(E(err.error_))) : storage_(1, err.error_), has_value_(false) {}
 
   constexpr Result(Err<E> &&err) noexcept(noexcept(E(move(err.error_))))
       : storage_(1, move(err.error_)), has_value_(false) {}
 
   // Copy constructor
-  constexpr Result(const Result &other) noexcept(
-      noexcept(T(other.storage_.value_)) && noexcept(E(other.storage_.error_)))
+  constexpr Result(const Result &other) noexcept(noexcept(T(other.storage_.value_)) &&
+                                                 noexcept(E(other.storage_.error_)))
       : has_value_(other.has_value_) {
     if (has_value_) {
       new (&storage_.value_) T(other.storage_.value_);
@@ -116,9 +111,8 @@ public:
   }
 
   // Move constructor
-  constexpr Result(Result &&other) noexcept(
-      noexcept(T(move(other.storage_.value_))) &&
-      noexcept(E(move(other.storage_.error_))))
+  constexpr Result(Result &&other) noexcept(noexcept(T(move(other.storage_.value_))) &&
+                                            noexcept(E(move(other.storage_.error_))))
       : has_value_(other.has_value_) {
     if (has_value_) {
       new (&storage_.value_) T(move(other.storage_.value_));
@@ -132,9 +126,8 @@ public:
 
   // Assignment operators
 
-  constexpr Result &
-  operator=(const Result &other) noexcept(noexcept(T(other.storage_.value_)) &&
-                                          noexcept(E(other.storage_.error_))) {
+  constexpr Result &operator=(const Result &other) noexcept(noexcept(T(other.storage_.value_)) &&
+                                                            noexcept(E(other.storage_.error_))) {
     if (this != &other) {
       destroy();
       has_value_ = other.has_value_;
@@ -147,9 +140,8 @@ public:
     return *this;
   }
 
-  constexpr Result &
-  operator=(Result &&other) noexcept(noexcept(T(move(other.storage_.value_))) &&
-                                     noexcept(E(move(other.storage_.error_)))) {
+  constexpr Result &operator=(Result &&other) noexcept(noexcept(T(move(other.storage_.value_))) &&
+                                                       noexcept(E(move(other.storage_.error_)))) {
     if (this != &other) {
       destroy();
       has_value_ = other.has_value_;
@@ -177,8 +169,7 @@ public:
   }
 
   template <typename U = T>
-  constexpr Result &
-  operator=(U &&value) noexcept(noexcept(T(forward<U>(value))))
+  constexpr Result &operator=(U &&value) noexcept(noexcept(T(forward<U>(value))))
     requires(!is_same_v<remove_cv_t<remove_reference_t<U>>, Result> &&
              !is_same_v<remove_cv_t<remove_reference_t<U>>, Ok<T>> &&
              !is_same_v<remove_cv_t<remove_reference_t<U>>, Err<E>> &&
@@ -191,16 +182,14 @@ public:
   }
 
   // Ok assignment
-  constexpr Result &
-  operator=(const Ok<T> &ok) noexcept(noexcept(T(ok.value_))) {
+  constexpr Result &operator=(const Ok<T> &ok) noexcept(noexcept(T(ok.value_))) {
     destroy();
     has_value_ = true;
     new (&storage_.value_) T(ok.value_);
     return *this;
   }
 
-  constexpr Result &
-  operator=(Ok<T> &&ok) noexcept(noexcept(T(move(ok.value_)))) {
+  constexpr Result &operator=(Ok<T> &&ok) noexcept(noexcept(T(move(ok.value_)))) {
     destroy();
     has_value_ = true;
     new (&storage_.value_) T(move(ok.value_));
@@ -208,16 +197,14 @@ public:
   }
 
   // Err assignment
-  constexpr Result &
-  operator=(const Err<E> &err) noexcept(noexcept(E(err.error_))) {
+  constexpr Result &operator=(const Err<E> &err) noexcept(noexcept(E(err.error_))) {
     destroy();
     has_value_ = false;
     new (&storage_.error_) E(err.error_);
     return *this;
   }
 
-  constexpr Result &
-  operator=(Err<E> &&err) noexcept(noexcept(E(move(err.error_)))) {
+  constexpr Result &operator=(Err<E> &&err) noexcept(noexcept(E(move(err.error_)))) {
     destroy();
     has_value_ = false;
     new (&storage_.error_) E(move(err.error_));
@@ -271,17 +258,12 @@ public:
 
   // Value with fallback
   template <typename U>
-  constexpr T value_or(U &&default_value) const & noexcept(
-      noexcept(T(forward<U>(default_value)))) {
-    return has_value_ ? storage_.value_
-                      : static_cast<T>(forward<U>(default_value));
+  constexpr T value_or(U &&default_value) const & noexcept(noexcept(T(forward<U>(default_value)))) {
+    return has_value_ ? storage_.value_ : static_cast<T>(forward<U>(default_value));
   }
 
-  template <typename U>
-  constexpr T value_or(U &&default_value) && noexcept(
-      noexcept(T(forward<U>(default_value)))) {
-    return has_value_ ? move(storage_.value_)
-                      : static_cast<T>(forward<U>(default_value));
+  template <typename U> constexpr T value_or(U &&default_value) && noexcept(noexcept(T(forward<U>(default_value)))) {
+    return has_value_ ? move(storage_.value_) : static_cast<T>(forward<U>(default_value));
   }
 };
 
@@ -302,14 +284,11 @@ public:
   constexpr Result(Ok<void> &&) noexcept : has_value_(true) {}
 
   // Direct error constructor
-  constexpr Result(const E &error) noexcept(noexcept(E(error)))
-      : error_(error), has_value_(false) {}
+  constexpr Result(const E &error) noexcept(noexcept(E(error))) : error_(error), has_value_(false) {}
 
-  constexpr Result(E &&error) noexcept(noexcept(E(move(error))))
-      : error_(move(error)), has_value_(false) {}
+  constexpr Result(E &&error) noexcept(noexcept(E(move(error)))) : error_(move(error)), has_value_(false) {}
 
-  constexpr Result(const Err<E> &err) noexcept(noexcept(E(err.error_)))
-      : error_(err.error_), has_value_(false) {}
+  constexpr Result(const Err<E> &err) noexcept(noexcept(E(err.error_))) : error_(err.error_), has_value_(false) {}
 
   constexpr Result(Err<E> &&err) noexcept(noexcept(E(move(err.error_))))
       : error_(move(err.error_)), has_value_(false) {}
@@ -323,8 +302,7 @@ public:
       : error_(move(other.error_)), has_value_(other.has_value_) {}
 
   // Assignment operators
-  constexpr Result &
-  operator=(const Result &other) noexcept(noexcept(E(other.error_))) {
+  constexpr Result &operator=(const Result &other) noexcept(noexcept(E(other.error_))) {
     if (this != &other) {
       error_ = other.error_;
       has_value_ = other.has_value_;
@@ -332,8 +310,7 @@ public:
     return *this;
   }
 
-  constexpr Result &
-  operator=(Result &&other) noexcept(noexcept(E(move(other.error_)))) {
+  constexpr Result &operator=(Result &&other) noexcept(noexcept(E(move(other.error_)))) {
     if (this != &other) {
       error_ = move(other.error_);
       has_value_ = other.has_value_;
@@ -351,15 +328,13 @@ public:
     return *this;
   }
 
-  constexpr Result &
-  operator=(const Err<E> &err) noexcept(noexcept(E(err.error_))) {
+  constexpr Result &operator=(const Err<E> &err) noexcept(noexcept(E(err.error_))) {
     error_ = err.error_;
     has_value_ = false;
     return *this;
   }
 
-  constexpr Result &
-  operator=(Err<E> &&err) noexcept(noexcept(E(move(err.error_)))) {
+  constexpr Result &operator=(Err<E> &&err) noexcept(noexcept(E(move(err.error_)))) {
     error_ = move(err.error_);
     has_value_ = false;
     return *this;
@@ -394,8 +369,7 @@ public:
   constexpr Ok() noexcept(noexcept(T())) : value_() {}
 
   template <typename U = T>
-  constexpr Ok(U &&value) noexcept(noexcept(T(forward<U>(value))))
-      : value_(forward<U>(value)) {}
+  constexpr Ok(U &&value) noexcept(noexcept(T(forward<U>(value)))) : value_(forward<U>(value)) {}
 };
 
 // Specialization for void
@@ -409,8 +383,7 @@ public:
   E error_;
 
   template <typename U = E>
-  constexpr Err(U &&error) noexcept(noexcept(E(forward<U>(error))))
-      : error_(forward<U>(error)) {}
+  constexpr Err(U &&error) noexcept(noexcept(E(forward<U>(error)))) : error_(forward<U>(error)) {}
 };
 
 // Helper functions for construction - following exact specification naming
@@ -423,26 +396,20 @@ public:
 
 // Ok helper functions - create Result<T, ErrorCode>
 template <typename T>
-constexpr auto make_result_ok(T &&value) noexcept(
-    noexcept(Result<remove_cv_t<remove_reference_t<T>>, ErrorCode>(
-        Ok<remove_cv_t<remove_reference_t<T>>>(forward<T>(value)))))
+constexpr auto make_result_ok(T &&value) noexcept(noexcept(
+    Result<remove_cv_t<remove_reference_t<T>>, ErrorCode>(Ok<remove_cv_t<remove_reference_t<T>>>(forward<T>(value)))))
     -> Result<remove_cv_t<remove_reference_t<T>>, ErrorCode> {
   return Result<remove_cv_t<remove_reference_t<T>>, ErrorCode>(
       Ok<remove_cv_t<remove_reference_t<T>>>(forward<T>(value)));
 }
 
-constexpr Result<void, ErrorCode> make_result_ok() noexcept {
-  return Result<void, ErrorCode>(Ok<void>());
-}
+constexpr Result<void, ErrorCode> make_result_ok() noexcept { return Result<void, ErrorCode>(Ok<void>()); }
 
 // Err helper functions - create Result<void, E>
 template <typename E>
-constexpr auto make_result_err(E &&error) noexcept(
-    noexcept(Result<void, remove_cv_t<remove_reference_t<E>>>(
-        Err<remove_cv_t<remove_reference_t<E>>>(forward<E>(error)))))
-    -> Result<void, remove_cv_t<remove_reference_t<E>>> {
-  return Result<void, remove_cv_t<remove_reference_t<E>>>(
-      Err<remove_cv_t<remove_reference_t<E>>>(forward<E>(error)));
+constexpr auto make_result_err(E &&error) noexcept(noexcept(Result<void, remove_cv_t<remove_reference_t<E>>>(
+    Err<remove_cv_t<remove_reference_t<E>>>(forward<E>(error))))) -> Result<void, remove_cv_t<remove_reference_t<E>>> {
+  return Result<void, remove_cv_t<remove_reference_t<E>>>(Err<remove_cv_t<remove_reference_t<E>>>(forward<E>(error)));
 }
 
 // Convenience type aliases
@@ -454,23 +421,18 @@ using VoidResult = Result<void, ErrorCode>;
 // Specification-compliant helper functions in global namespace to match exact
 // API These functions have the exact signatures specified in the requirements
 
-export template <typename T>
-constexpr moss::kernel::Result<T, moss::kernel::ErrorCode> Ok(T &&value) {
-  return moss::kernel::Result<T, moss::kernel::ErrorCode>(
-      moss::kernel::Ok<T>(forward<T>(value)));
+export template <typename T> constexpr moss::kernel::Result<T, moss::kernel::ErrorCode> Ok(T &&value) {
+  return moss::kernel::Result<T, moss::kernel::ErrorCode>(moss::kernel::Ok<T>(forward<T>(value)));
 }
 
 export constexpr moss::kernel::Result<void, moss::kernel::ErrorCode> Ok() {
-  return moss::kernel::Result<void, moss::kernel::ErrorCode>(
-      moss::kernel::Ok<void>());
+  return moss::kernel::Result<void, moss::kernel::ErrorCode>(moss::kernel::Ok<void>());
 }
 
-export template <typename E>
-constexpr moss::kernel::Result<void, E> Err(E &&error) {
+export template <typename E> constexpr moss::kernel::Result<void, E> Err(E &&error) {
   return moss::kernel::Result<void, E>(moss::kernel::Err<E>(forward<E>(error)));
 }
 
-export template <typename T, typename E>
-constexpr moss::kernel::Result<T, E> Err(E &&error) {
+export template <typename T, typename E> constexpr moss::kernel::Result<T, E> Err(E &&error) {
   return moss::kernel::Result<T, E>(moss::kernel::Err<E>(forward<E>(error)));
 }

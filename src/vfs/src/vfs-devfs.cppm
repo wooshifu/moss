@@ -22,9 +22,9 @@ export namespace moss::kernel::vfs::devfs {
 
 /// Initialize devfs: create superblock, root inode, and device inodes.
 /// Returns the devfs SuperBlock on success, nullptr on failure.
-[[nodiscard]] SuperBlock* devfs_init() noexcept;
+[[nodiscard]] SuperBlock *devfs_init() noexcept;
 
 /// Get the console FileOps (used by vfs_init_stdio to open /dev/console)
-[[nodiscard]] const FileOps& console_file_ops() noexcept;
+[[nodiscard]] const FileOps &console_file_ops() noexcept;
 
 } // namespace moss::kernel::vfs::devfs

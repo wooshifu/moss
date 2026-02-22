@@ -96,8 +96,7 @@ public:
   // Constructors
   constexpr SharedPtr() noexcept : control_(nullptr) {}
 
-  explicit SharedPtr(T *ptr) noexcept
-      : control_(ptr ? new ControlBlock(ptr) : nullptr) {}
+  explicit SharedPtr(T *ptr) noexcept : control_(ptr ? new ControlBlock(ptr) : nullptr) {}
 
   // Copy construct
   SharedPtr(const SharedPtr &other) noexcept : control_(other.control_) {
@@ -107,9 +106,7 @@ public:
   }
 
   // Move construct
-  SharedPtr(SharedPtr &&other) noexcept : control_(other.control_) {
-    other.control_ = nullptr;
-  }
+  SharedPtr(SharedPtr &&other) noexcept : control_(other.control_) { other.control_ = nullptr; }
 
   // Copy assign
   SharedPtr &operator=(const SharedPtr &other) noexcept {
@@ -142,14 +139,10 @@ public:
   T *get() const noexcept { return control_ ? control_->ptr : nullptr; }
 
   // Boolean conversion
-  explicit operator bool() const noexcept {
-    return control_ != nullptr && control_->ptr != nullptr;
-  }
+  explicit operator bool() const noexcept { return control_ != nullptr && control_->ptr != nullptr; }
 
   // Reference count
-  [[nodiscard]] u32 use_count() const noexcept {
-    return control_ ? control_->ref_count.load(memory_order_relaxed) : 0;
-  }
+  [[nodiscard]] u32 use_count() const noexcept { return control_ ? control_->ref_count.load(memory_order_relaxed) : 0; }
 
   // Reset
   void reset(T *new_ptr = nullptr) noexcept {
@@ -166,13 +159,11 @@ public:
 };
 
 // Factory functions
-template <typename T, typename... Args>
-[[nodiscard]] UniquePtr<T> make_unique(Args &&...args) {
+template <typename T, typename... Args> [[nodiscard]] UniquePtr<T> make_unique(Args &&...args) {
   return UniquePtr<T>(new T(forward<Args>(args)...));
 }
 
-template <typename T, typename... Args>
-[[nodiscard]] SharedPtr<T> make_shared(Args &&...args) {
+template <typename T, typename... Args> [[nodiscard]] SharedPtr<T> make_shared(Args &&...args) {
   return SharedPtr<T>(new T(forward<Args>(args)...));
 }
 
