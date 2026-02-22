@@ -8,6 +8,8 @@ export module moss.kernel:cpu_topology;
 
 import moss.std;
 import moss.types;
+import moss.fdt;
+import moss.logging;
 
 export namespace moss::kernel::cpu_topology {
 
@@ -17,7 +19,7 @@ extern u32 num_cpu_ids;
 // Early init: read FDT and set num_cpu_ids
 void early_cpu_topology_init() noexcept;
 
-// Second-phase init (currently logs only; placeholder for future per-CPU setup)
+// Second-phase init (placeholder for future per-CPU setup)
 void initialize_cpu_topology() noexcept;
 
 // Safe accessor
@@ -30,3 +32,29 @@ export namespace moss::kernel {
 using cpu_topology::get_cpu_count;
 using cpu_topology::num_cpu_ids;
 } // namespace moss::kernel
+
+// ============================================================================
+// Implementation
+// ============================================================================
+
+namespace moss::kernel::cpu_topology {
+
+namespace log = moss::kernel::logging;
+
+u32 num_cpu_ids = 1;
+
+void early_cpu_topology_init() noexcept {
+  const auto &plat = moss::fdt::get_platform_info();
+  if (plat.dtb_valid && plat.cpu_count > 0) {
+    num_cpu_ids = plat.cpu_count;
+    if (num_cpu_ids > moss::kernel::MAX_CPUS) {
+      log::klog::warn("DTB reports {} CPUs, capping to {}", num_cpu_ids, moss::kernel::MAX_CPUS);
+      num_cpu_ids = static_cast<u32>(moss::kernel::MAX_CPUS);
+    }
+  }
+  log::klog::info("CPU topology: {} CPUs detected", num_cpu_ids);
+}
+
+void initialize_cpu_topology() noexcept { log::klog::info("CPU topology initialized: {} CPUs", num_cpu_ids); }
+
+} // namespace moss::kernel::cpu_topology
