@@ -39,15 +39,11 @@ RUN dnf install -y --setopt=install_weak_deps=False \
 COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv
 
 # --- Layer 3: Pre-install Python dependencies ---
-# Copy only dependency metadata first for Docker layer caching
+# Copy only dependency metadata first for Docker layer caching.
+# Source tree is bind-mounted at runtime via docker-compose volumes.
 WORKDIR /moss
 COPY pyproject.toml uv.lock ./
 RUN uv sync --frozen --no-install-project
 
-# --- Layer 4: Copy full source tree ---
-COPY . .
-
-# Default: build ARM64 debug and run in QEMU
-# Override via docker compose run or docker run args
 ENTRYPOINT ["/moss/docker/entrypoint.sh"]
 CMD ["run"]
