@@ -36,7 +36,7 @@ export namespace moss::kernel::process {
 namespace log = moss::kernel::logging;
 
 // CFS scheduling parameters
-namespace CfsParams {
+namespace cfs_params {
 inline constexpr u64 SCHED_LATENCY_NS = 6000000;  // 6ms
 inline constexpr u64 MIN_GRANULARITY_NS = 750000; // 0.75ms
 inline constexpr u32 SCHED_NR_LATENCY = 8;
@@ -77,7 +77,7 @@ inline constexpr u64 sched_slice(u32 weight, u32 total_weight, u32 nr_running = 
   u64 slice = (period * weight) / total_weight;
   return (slice < MIN_GRANULARITY_NS) ? MIN_GRANULARITY_NS : slice;
 }
-} // namespace CfsParams
+} // namespace cfs_params
 
 // Red-black tree node (simplified implementation)
 template <typename T> struct RbNode {
@@ -331,7 +331,7 @@ private:
       return false;
     }
 
-    u64 ideal_runtime = CfsParams::sched_slice(current->se.weight, static_cast<u32>(total_weight_), nr_running_);
+    u64 ideal_runtime = cfs_params::sched_slice(current->se.weight, static_cast<u32>(total_weight_), nr_running_);
     u64 delta_exec = current->se.sum_exec_runtime - current->se.prev_sum_exec_runtime;
 
     if (delta_exec > ideal_runtime) {
@@ -375,10 +375,10 @@ public:
     u64 vruntime = min_vruntime_;
     if (is_fork) {
       // Fork: penalty → parent runs first
-      vruntime += CfsParams::SCHED_LATENCY_NS / 2;
+      vruntime += cfs_params::SCHED_LATENCY_NS / 2;
     } else {
       // Wakeup: bonus → reduce wakeup latency
-      u64 thresh = CfsParams::SCHED_LATENCY_NS / 2;
+      u64 thresh = cfs_params::SCHED_LATENCY_NS / 2;
       vruntime = (vruntime > thresh) ? (vruntime - thresh) : 0;
     }
     thread->se.vruntime = vruntime;
@@ -393,7 +393,7 @@ private:
     // New tasks start from current queue watermark (min_vruntime),
     // minus half a scheduling period to give them a slight initial boost
     // (equivalent to Linux CFS place_entity semantics).
-    u64 thresh = CfsParams::SCHED_LATENCY_NS / 2;
+    u64 thresh = cfs_params::SCHED_LATENCY_NS / 2;
     return (min_vruntime_ > thresh) ? (min_vruntime_ - thresh) : min_vruntime_;
   }
 
@@ -401,7 +401,7 @@ private:
     if (thread->se.weight == 0)
       return delta_exec;
 
-    return (delta_exec * CfsParams::NICE_TO_WEIGHT[20]) / thread->se.weight;
+    return (delta_exec * cfs_params::NICE_TO_WEIGHT[20]) / thread->se.weight;
   }
 
   // Simplified PELT (Per-Entity Load Tracking) with geometric decay.
@@ -1320,8 +1320,8 @@ public:
       // was in a kernel path that masked IRQ (e.g. console_read polling for
       // keyboard input).  Charge at most one tick's worth of vruntime so the
       // task is not starved by CFS after the masked period ends.
-      if (delta > CfsParams::SCHED_LATENCY_NS * 2)
-        delta = CfsParams::SCHED_LATENCY_NS;
+      if (delta > cfs_params::SCHED_LATENCY_NS * 2)
+        delta = cfs_params::SCHED_LATENCY_NS;
       curr->se.exec_start = now;
       update_current(curr, delta);
 
@@ -1389,7 +1389,7 @@ public:
       early_debug_print("[sched] arming scheduler tick timer (6ms period)\n");
 
       sched_tick_.init(timer::TimerMode::Periodic, scheduler_tick_callback, this);
-      sched_tick_.start_relative(CfsParams::SCHED_LATENCY_NS);
+      sched_tick_.start_relative(cfs_params::SCHED_LATENCY_NS);
 
       early_debug_print("[sched] tick armed, entering idle loop\n");
 

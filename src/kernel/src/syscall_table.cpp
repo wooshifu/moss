@@ -25,7 +25,7 @@ long sys_debug_print(long arg0, long, long, long, long, long) noexcept {
     moss::kernel::hal::uart::puts(reinterpret_cast<const char *>(arg0));
     return 0;
   }
-  return -Errno::EINVAL;
+  return -errc::EINVAL;
 }
 
 long sys_exit(long exit_code, long, long, long, long, long) noexcept {
@@ -61,7 +61,7 @@ long sys_getpid(long, long, long, long, long, long) noexcept {
   using namespace moss::kernel::process;
   Thread *cur = CfsScheduler::get_current_task();
   if (!cur)
-    return -Errno::ESRCH;
+    return -errc::ESRCH;
   return static_cast<long>(cur->owner_pid);
 }
 
@@ -69,10 +69,10 @@ long sys_getppid(long, long, long, long, long, long) noexcept {
   using namespace moss::kernel::process;
   Thread *cur = CfsScheduler::get_current_task();
   if (!cur)
-    return -Errno::ESRCH;
+    return -errc::ESRCH;
   Process *proc = g_process_manager ? g_process_manager->find_process(cur->owner_pid) : nullptr;
   if (!proc)
-    return -Errno::ESRCH;
+    return -errc::ESRCH;
   return static_cast<long>(proc->parent_pid());
 }
 
@@ -98,13 +98,13 @@ long sys_fork(long, long, long, long, long, long) noexcept {
   Thread *parent_thread = CfsScheduler::get_current_task();
   if (!parent_thread) {
     log::klog::error("sys_fork: no current thread");
-    return -Errno::EAGAIN;
+    return -errc::EAGAIN;
   }
 
   Process *parent_proc = g_process_manager ? g_process_manager->find_process(parent_thread->owner_pid) : nullptr;
   if (!parent_proc || !parent_proc->address_space()) {
     log::klog::error("sys_fork: no parent process or address space");
-    return -Errno::EAGAIN;
+    return -errc::EAGAIN;
   }
 
   AddressSpace *parent_as = parent_proc->address_space();
@@ -121,7 +121,7 @@ long sys_fork(long, long, long, long, long, long) noexcept {
   auto child_proc_result = g_process_manager->create_process(parent_proc->pid());
   if (!child_proc_result) {
     log::klog::error("sys_fork: create_process failed");
-    return -Errno::ENOMEM;
+    return -errc::ENOMEM;
   }
   Process *child_proc = *child_proc_result;
 
@@ -137,7 +137,7 @@ long sys_fork(long, long, long, long, long, long) noexcept {
   if (!child_as_result) {
     log::klog::error("sys_fork: create_user_address_space failed");
     cleanup_child(child_proc);
-    return -Errno::ENOMEM;
+    return -errc::ENOMEM;
   }
   auto child_as = moss::move(*child_as_result);
 
@@ -164,7 +164,7 @@ long sys_fork(long, long, long, long, long, long) noexcept {
     // child_as was moved — if set failed, unique_ptr may still own it
     // and ~AddressSpace will free the page tables.
     cleanup_child(child_proc);
-    return -Errno::ENOMEM;
+    return -errc::ENOMEM;
   }
 
   // 9. Create child thread
@@ -173,7 +173,7 @@ long sys_fork(long, long, long, long, long, long) noexcept {
   if (!child_thread) {
     log::klog::error("sys_fork: thread allocation failed");
     cleanup_child(child_proc);
-    return -Errno::ENOMEM;
+    return -errc::ENOMEM;
   }
 
   // 10. Copy parent's USER-SPACE registers → child context.
@@ -233,7 +233,7 @@ long sys_fork(long, long, long, long, long, long) noexcept {
     log::klog::error("sys_fork: kernel stack alloc failed");
     delete child_thread;
     cleanup_child(child_proc);
-    return -Errno::ENOMEM;
+    return -errc::ENOMEM;
   }
   PhysAddr kstack_phys = *kstack_result;
   child_thread->kernel_stack_base = static_cast<VirtAddr>(kstack_phys);
@@ -279,12 +279,12 @@ long sys_execve(long pathname_addr, long argv_addr, long /* envp */, long, long,
   Thread *cur = g_scheduler ? CfsScheduler::get_current_task() : nullptr;
   if (!cur) {
     log::klog::error("execve: no current task");
-    return -Errno::ESRCH;
+    return -errc::ESRCH;
   }
   Process *proc = g_process_manager ? g_process_manager->find_process(cur->owner_pid) : nullptr;
   if (!proc || !proc->address_space()) {
     log::klog::error("execve: no process or address space");
-    return -Errno::ESRCH;
+    return -errc::ESRCH;
   }
 
   // 2. Copy pathname from user memory into kernel buffer.
@@ -295,7 +295,7 @@ long sys_execve(long pathname_addr, long argv_addr, long /* envp */, long, long,
   {
     const char *user_path = reinterpret_cast<const char *>(static_cast<usize>(pathname_addr));
     if (!user_path) {
-      return -Errno::EFAULT;
+      return -errc::EFAULT;
     }
     usize len = 0;
     while (len < PATH_MAX - 1 && user_path[len] != '\0') {
@@ -351,23 +351,23 @@ long sys_execve(long pathname_addr, long argv_addr, long /* envp */, long, long,
   auto *dentry = moss::kernel::vfs::resolve_path(pathname);
   if (!dentry || !dentry->inode) {
     log::klog::error("execve: '{}' not found via VFS", pathname);
-    return -Errno::ENOENT;
+    return -errc::ENOENT;
   }
   auto *file_inode = dentry->inode;
   if (file_inode->type != moss::kernel::vfs::FileType::Regular) {
     log::klog::error("execve: '{}' is not a regular file", pathname);
-    return -Errno::EACCES;
+    return -errc::EACCES;
   }
   if (file_inode->data == nullptr || file_inode->size == 0) {
     log::klog::error("execve: '{}' has no data", pathname);
-    return -Errno::ENOEXEC;
+    return -errc::ENOEXEC;
   }
 
   // 4. Validate ELF header (inode->data = zero-copy ELF backing)
   auto *elf_hdr = reinterpret_cast<const ElfHeader *>(file_inode->data);
   if (!validate_elf_header(elf_hdr, file_inode->size)) {
     log::klog::error("execve: '{}' is not a valid ELF", pathname);
-    return -Errno::ENOEXEC;
+    return -errc::ENOEXEC;
   }
 
   VirtAddr elf_entry = elf_hdr->e_entry;
@@ -461,11 +461,11 @@ long sys_execve(long pathname_addr, long argv_addr, long /* envp */, long, long,
       }
 
       if (ph.p_flags & PF_R)
-        merged_flags |= VmaFlags::READ;
+        merged_flags |= vma_flags::READ;
       if (ph.p_flags & PF_W)
-        merged_flags |= VmaFlags::WRITE;
+        merged_flags |= vma_flags::WRITE;
       if (ph.p_flags & PF_X)
-        merged_flags |= VmaFlags::EXEC;
+        merged_flags |= vma_flags::EXEC;
     }
 
     // Page-align the overall range
@@ -506,7 +506,7 @@ long sys_execve(long pathname_addr, long argv_addr, long /* envp */, long, long,
       // Merged VMA: one VMA covering all PT_LOAD segments.
       // backing_offset accounts for the gap between page_start and
       // the first byte of file data in the ELF.
-      VmaType vma_type = (merged_flags & VmaFlags::EXEC) ? VmaType::CODE : VmaType::DATA;
+      VmaType vma_type = (merged_flags & vma_flags::EXEC) ? VmaType::CODE : VmaType::DATA;
 
       const u8 *backing = nullptr;
       usize backing_size = 0;
@@ -519,7 +519,7 @@ long sys_execve(long pathname_addr, long argv_addr, long /* envp */, long, long,
       }
 
       if (backing_size == 0)
-        merged_flags |= VmaFlags::DEMAND_ZERO;
+        merged_flags |= vma_flags::DEMAND_ZERO;
 
       new_as->add_vma(page_start, page_end, merged_flags, vma_type, backing, backing_offset, backing_size);
 
@@ -532,11 +532,11 @@ long sys_execve(long pathname_addr, long argv_addr, long /* envp */, long, long,
 
         u32 vma_flags = 0;
         if (ph.p_flags & PF_R)
-          vma_flags |= VmaFlags::READ;
+          vma_flags |= vma_flags::READ;
         if (ph.p_flags & PF_W)
-          vma_flags |= VmaFlags::WRITE;
+          vma_flags |= vma_flags::WRITE;
         if (ph.p_flags & PF_X)
-          vma_flags |= VmaFlags::EXEC;
+          vma_flags |= vma_flags::EXEC;
 
         VmaType vma_type = VmaType::DATA;
         if ((ph.p_flags & PF_X) && !(ph.p_flags & PF_W))
@@ -549,7 +549,7 @@ long sys_execve(long pathname_addr, long argv_addr, long /* envp */, long, long,
         usize b_size = static_cast<usize>(ph.p_filesz);
 
         if (ph.p_filesz == 0)
-          vma_flags |= VmaFlags::DEMAND_ZERO;
+          vma_flags |= vma_flags::DEMAND_ZERO;
 
         new_as->add_vma(seg_start, seg_end, vma_flags, vma_type, backing, 0, b_size);
 
@@ -560,13 +560,13 @@ long sys_execve(long pathname_addr, long argv_addr, long /* envp */, long, long,
   }
 
   // 9. Add stack VMA (demand-zero)
-  constexpr VirtAddr STACK_BOTTOM = UserLayout::STACK_TOP - UserLayout::STACK_SIZE;
-  new_as->add_vma(STACK_BOTTOM, UserLayout::STACK_TOP, VmaFlags::READ | VmaFlags::WRITE | VmaFlags::DEMAND_ZERO,
+  constexpr VirtAddr STACK_BOTTOM = user_layout::STACK_TOP - user_layout::STACK_SIZE;
+  new_as->add_vma(STACK_BOTTOM, user_layout::STACK_TOP, vma_flags::READ | vma_flags::WRITE | vma_flags::DEMAND_ZERO,
                   VmaType::STACK);
 
   // 10. Add heap VMA (demand-zero)
-  new_as->add_vma(UserLayout::HEAP_START, UserLayout::HEAP_START + UserLayout::HEAP_INIT,
-                  VmaFlags::READ | VmaFlags::WRITE | VmaFlags::DEMAND_ZERO, VmaType::HEAP);
+  new_as->add_vma(user_layout::HEAP_START, user_layout::HEAP_START + user_layout::HEAP_INIT,
+                  vma_flags::READ | vma_flags::WRITE | vma_flags::DEMAND_ZERO, VmaType::HEAP);
 
   // 11. Bind new address space to process
   auto set_result = proc->set_address_space(moss::move(new_as));
@@ -609,7 +609,7 @@ long sys_execve(long pathname_addr, long argv_addr, long /* envp */, long, long,
   //   argv[0]
   //   <--- SP (16-byte aligned)
   //
-  VirtAddr user_sp = UserLayout::STACK_TOP - 16;
+  VirtAddr user_sp = user_layout::STACK_TOP - 16;
   if (kernel_argc > 0) {
     // Phase 1: calculate where strings will live on user stack.
     // Strings are placed first (high addresses), then argv[] array below.
@@ -660,7 +660,7 @@ long sys_execve(long pathname_addr, long argv_addr, long /* envp */, long, long,
 #endif
   cur->needs_initial_eret = true; // next dispatch does switch_to_user + eret
   cur->stack_base = STACK_BOTTOM;
-  cur->stack_size = UserLayout::STACK_SIZE;
+  cur->stack_size = user_layout::STACK_SIZE;
 
   // 13. Direct eret to new program image.
   //
@@ -709,15 +709,15 @@ long sys_wait4(long wait_pid, long wstatus_addr, long options, long, long, long)
 
   Thread *cur = CfsScheduler::get_current_task();
   if (!cur)
-    return -Errno::EINVAL;
+    return -errc::EINVAL;
 
   Process *proc = g_process_manager ? g_process_manager->find_process(cur->owner_pid) : nullptr;
   if (!proc)
-    return -Errno::EINVAL;
+    return -errc::EINVAL;
 
   // Must have children
   if (!proc->has_children()) {
-    return -Errno::ECHILD;
+    return -errc::ECHILD;
   }
 
   while (true) {
@@ -755,7 +755,7 @@ long sys_wait4(long wait_pid, long wstatus_addr, long options, long, long, long)
     // No zombie found
     // Check if specified PID is actually a child
     if (wait_pid > 0 && !proc->is_child(static_cast<ProcessId>(wait_pid))) {
-      return -Errno::ECHILD;
+      return -errc::ECHILD;
     }
 
     // WNOHANG: non-blocking, return 0
@@ -794,7 +794,7 @@ long sys_wait4(long wait_pid, long wstatus_addr, long options, long, long, long)
 
     // Check we still have children (might have been reaped by another thread)
     if (!proc->has_children()) {
-      return -Errno::ECHILD;
+      return -errc::ECHILD;
     }
   }
 }
@@ -806,7 +806,7 @@ long sys_waitpid(long pid, long wstatus, long options, long, long, long) noexcep
 
 long sys_kill(long, long, long, long, long, long) noexcept {
   log::klog::warn("syscall: kill() not implemented");
-  return -Errno::ENOSYS;
+  return -errc::ENOSYS;
 }
 
 // ── VFS-backed file system calls ─────────────────────────────────
@@ -824,11 +824,11 @@ static void *get_current_fd_table() noexcept {
 long sys_open(long pathname_addr, long flags, long mode, long, long, long) noexcept {
   void *fdt = get_current_fd_table();
   if (!fdt)
-    return -Errno::EBADF;
+    return -errc::EBADF;
 
   const char *path = reinterpret_cast<const char *>(static_cast<unsigned long long>(pathname_addr));
   if (!path)
-    return -Errno::EFAULT;
+    return -errc::EFAULT;
 
   return moss::kernel::vfs::syscall::do_open(fdt, path, static_cast<u32>(flags), static_cast<u32>(mode));
 }
@@ -836,7 +836,7 @@ long sys_open(long pathname_addr, long flags, long mode, long, long, long) noexc
 long sys_close(long fd, long, long, long, long, long) noexcept {
   void *fdt = get_current_fd_table();
   if (!fdt)
-    return -Errno::EBADF;
+    return -errc::EBADF;
 
   return moss::kernel::vfs::syscall::do_close(fdt, static_cast<int>(fd));
 }
@@ -844,10 +844,10 @@ long sys_close(long fd, long, long, long, long, long) noexcept {
 long sys_read(long fd, long buf_addr, long count, long, long, long) noexcept {
   void *fdt = get_current_fd_table();
   if (!fdt)
-    return -Errno::EBADF;
+    return -errc::EBADF;
 
   if (buf_addr == 0 || count <= 0)
-    return -Errno::EINVAL;
+    return -errc::EINVAL;
 
   auto *buf = reinterpret_cast<u8 *>(static_cast<unsigned long long>(buf_addr));
 
@@ -857,10 +857,10 @@ long sys_read(long fd, long buf_addr, long count, long, long, long) noexcept {
 long sys_write(long fd, long buf_addr, long count, long, long, long) noexcept {
   void *fdt = get_current_fd_table();
   if (!fdt)
-    return -Errno::EBADF;
+    return -errc::EBADF;
 
   if (buf_addr == 0 || count <= 0)
-    return -Errno::EINVAL;
+    return -errc::EINVAL;
 
   const auto *buf = reinterpret_cast<const u8 *>(static_cast<unsigned long long>(buf_addr));
 
@@ -872,16 +872,16 @@ long sys_write(long fd, long buf_addr, long count, long, long, long) noexcept {
 long sys_lseek(long fd, long offset, long whence, long, long, long) noexcept {
   void *fdt = get_current_fd_table();
   if (!fdt)
-    return -Errno::EBADF;
+    return -errc::EBADF;
   return moss::kernel::vfs::syscall::do_lseek(fdt, fd, static_cast<i64>(offset), static_cast<u32>(whence));
 }
 
 long sys_fstat(long fd, long stat_buf_addr, long, long, long, long) noexcept {
   void *fdt = get_current_fd_table();
   if (!fdt)
-    return -Errno::EBADF;
+    return -errc::EBADF;
   if (stat_buf_addr == 0)
-    return -Errno::EFAULT;
+    return -errc::EFAULT;
   auto *stat_buf = reinterpret_cast<void *>(static_cast<unsigned long long>(stat_buf_addr));
   return moss::kernel::vfs::syscall::do_fstat(fdt, fd, stat_buf);
 }
@@ -889,23 +889,23 @@ long sys_fstat(long fd, long stat_buf_addr, long, long, long, long) noexcept {
 long sys_dup(long oldfd, long, long, long, long, long) noexcept {
   void *fdt = get_current_fd_table();
   if (!fdt)
-    return -Errno::EBADF;
+    return -errc::EBADF;
   return moss::kernel::vfs::syscall::do_dup(fdt, oldfd);
 }
 
 long sys_dup2(long oldfd, long newfd, long, long, long, long) noexcept {
   void *fdt = get_current_fd_table();
   if (!fdt)
-    return -Errno::EBADF;
+    return -errc::EBADF;
   return moss::kernel::vfs::syscall::do_dup2(fdt, oldfd, newfd);
 }
 
 long sys_pipe(long pipefd_addr, long, long, long, long, long) noexcept {
   void *fdt = get_current_fd_table();
   if (!fdt)
-    return -Errno::EBADF;
+    return -errc::EBADF;
   if (pipefd_addr == 0)
-    return -Errno::EFAULT;
+    return -errc::EFAULT;
   auto *pipefd = reinterpret_cast<long *>(static_cast<unsigned long long>(pipefd_addr));
   return moss::kernel::vfs::syscall::do_pipe(fdt, pipefd);
 }
@@ -913,43 +913,43 @@ long sys_pipe(long pipefd_addr, long, long, long, long, long) noexcept {
 // 内存管理系统调用
 long sys_mmap(long, long, long, long, long, long) noexcept {
   log::klog::warn("syscall: mmap() not implemented");
-  return -Errno::ENOSYS;
+  return -errc::ENOSYS;
 }
 
 long sys_munmap(long, long, long, long, long, long) noexcept {
   log::klog::warn("syscall: munmap() not implemented");
-  return -Errno::ENOSYS;
+  return -errc::ENOSYS;
 }
 
 long sys_mprotect(long, long, long, long, long, long) noexcept {
   log::klog::warn("syscall: mprotect() not implemented");
-  return -Errno::ENOSYS;
+  return -errc::ENOSYS;
 }
 
 long sys_brk(long, long, long, long, long, long) noexcept {
   log::klog::warn("syscall: brk() not implemented");
-  return -Errno::ENOSYS;
+  return -errc::ENOSYS;
 }
 
 // 网络通信系统调用 - 框架实现
 long sys_socket(long, long, long, long, long, long) noexcept {
   log::klog::warn("syscall: socket() not implemented");
-  return -Errno::ENOSYS;
+  return -errc::ENOSYS;
 }
 
 long sys_bind(long, long, long, long, long, long) noexcept {
   log::klog::warn("syscall: bind() not implemented");
-  return -Errno::ENOSYS;
+  return -errc::ENOSYS;
 }
 
 long sys_listen(long, long, long, long, long, long) noexcept {
   log::klog::warn("syscall: listen() not implemented");
-  return -Errno::ENOSYS;
+  return -errc::ENOSYS;
 }
 
 long sys_accept(long, long, long, long, long, long) noexcept {
   log::klog::warn("syscall: accept() not implemented");
-  return -Errno::ENOSYS;
+  return -errc::ENOSYS;
 }
 
 // ── Scheduling syscalls ───────────────────────────────────────────
@@ -961,18 +961,18 @@ long sys_nice(long increment, long, long, long, long, long) noexcept {
 
   Thread *cur = CfsScheduler::get_current_task();
   if (!cur)
-    return -Errno::ESRCH;
+    return -errc::ESRCH;
 
   i32 new_nice = cur->se.nice + static_cast<i32>(increment);
 
   // Clamp to valid range [-20, 19]
-  if (new_nice < Priority::MIN_NICE)
-    new_nice = Priority::MIN_NICE;
-  if (new_nice > Priority::MAX_NICE)
-    new_nice = Priority::MAX_NICE;
+  if (new_nice < priority::MIN_NICE)
+    new_nice = priority::MIN_NICE;
+  if (new_nice > priority::MAX_NICE)
+    new_nice = priority::MAX_NICE;
 
   cur->se.nice = new_nice;
-  cur->se.weight = CfsParams::nice_to_weight(new_nice);
+  cur->se.weight = cfs_params::nice_to_weight(new_nice);
   cur->se.load_weight = cur->se.weight;
 
   log::klog::info("sys_nice: TID={} nice={} weight={}", static_cast<u32>(cur->tid), new_nice, cur->se.weight);
@@ -987,11 +987,11 @@ long sys_getpriority(long which, long who, long, long, long, long) noexcept {
 
   // Only support PRIO_PROCESS (which == 0) for now
   if (which != 0)
-    return -Errno::EINVAL;
+    return -errc::EINVAL;
 
   Thread *cur = CfsScheduler::get_current_task();
   if (!cur)
-    return -Errno::ESRCH;
+    return -errc::ESRCH;
 
   if (who == 0 || static_cast<ProcessId>(who) == cur->owner_pid) {
     // Return 20 - nice (Linux convention: avoids ambiguity with -errno)
@@ -1000,14 +1000,14 @@ long sys_getpriority(long which, long who, long, long, long, long) noexcept {
 
   // Look up the target process
   if (!g_process_manager)
-    return -Errno::ESRCH;
+    return -errc::ESRCH;
   Process *proc = g_process_manager->find_process(static_cast<ProcessId>(who));
   if (!proc)
-    return -Errno::ESRCH;
+    return -errc::ESRCH;
 
   Thread *main_thread = proc->get_main_thread();
   if (!main_thread)
-    return -Errno::ESRCH;
+    return -errc::ESRCH;
 
   return 20 - static_cast<long>(main_thread->se.nice);
 }
@@ -1020,13 +1020,13 @@ long sys_sched_yield(long, long, long, long, long, long) noexcept {
 
   Thread *cur = CfsScheduler::get_current_task();
   if (!cur || !g_scheduler)
-    return -Errno::ESRCH;
+    return -errc::ESRCH;
 
   u32 cpu = arch::get_current_cpu_id();
 
   // Penalize vruntime so other tasks get priority
   u64 min_vrt = g_scheduler->get_cpu_min_vruntime(cpu);
-  cur->se.vruntime = min_vrt + CfsParams::SCHED_LATENCY_NS;
+  cur->se.vruntime = min_vrt + cfs_params::SCHED_LATENCY_NS;
 
   // Re-enqueue and trigger reschedule
   g_scheduler->enqueue_task(cur, cpu);
@@ -1057,15 +1057,15 @@ long sys_sched_getaffinity(long pid_arg, long, long mask_addr, long, long, long)
     target = CfsScheduler::get_current_task();
   } else {
     if (!g_process_manager)
-      return -Errno::ESRCH;
+      return -errc::ESRCH;
     Process *proc = g_process_manager->find_process(static_cast<ProcessId>(pid_arg));
     if (!proc)
-      return -Errno::ESRCH;
+      return -errc::ESRCH;
     target = proc->get_main_thread();
   }
 
   if (!target)
-    return -Errno::ESRCH;
+    return -errc::ESRCH;
 
   if (mask_addr != 0) {
     auto *mask_ptr = reinterpret_cast<u32 *>(static_cast<unsigned long long>(mask_addr));
@@ -1082,21 +1082,21 @@ long sys_sched_setaffinity(long pid_arg, long, long mask_addr, long, long, long)
   using namespace moss::kernel::process;
 
   if (mask_addr == 0)
-    return -Errno::EFAULT;
+    return -errc::EFAULT;
 
   auto *mask_ptr = reinterpret_cast<const u32 *>(static_cast<unsigned long long>(mask_addr));
   u32 new_mask = *mask_ptr;
 
   // Must allow at least one CPU
   if (new_mask == 0)
-    return -Errno::EINVAL;
+    return -errc::EINVAL;
 
   // Mask out CPUs beyond arch::MAX_CPUS
   constexpr u32 max_cpus = arch::MAX_CPUS;
   u32 valid_mask = (max_cpus >= 32) ? 0xFFFFFFFFu : ((1u << max_cpus) - 1);
   new_mask &= valid_mask;
   if (new_mask == 0)
-    return -Errno::EINVAL;
+    return -errc::EINVAL;
 
   Thread *target = nullptr;
 
@@ -1104,15 +1104,15 @@ long sys_sched_setaffinity(long pid_arg, long, long mask_addr, long, long, long)
     target = CfsScheduler::get_current_task();
   } else {
     if (!g_process_manager)
-      return -Errno::ESRCH;
+      return -errc::ESRCH;
     Process *proc = g_process_manager->find_process(static_cast<ProcessId>(pid_arg));
     if (!proc)
-      return -Errno::ESRCH;
+      return -errc::ESRCH;
     target = proc->get_main_thread();
   }
 
   if (!target)
-    return -Errno::ESRCH;
+    return -errc::ESRCH;
 
   target->cpu_affinity_mask = new_mask;
 
@@ -1126,7 +1126,7 @@ long sys_sched_setaffinity(long pid_arg, long, long mask_addr, long, long, long)
 // Returns monotonic nanoseconds since boot via timer subsystem.
 long sys_clock_gettime(long /* clock_id */, long time_ns_addr, long, long, long, long) noexcept {
   if (time_ns_addr == 0)
-    return -Errno::EFAULT;
+    return -errc::EFAULT;
   auto *ns_ptr = reinterpret_cast<u64 *>(static_cast<unsigned long long>(time_ns_addr));
   *ns_ptr = timer::TimerSubsystem::instance().now_ns();
   return 0;
@@ -1151,7 +1151,7 @@ long sys_nanosleep(long ns_addr, long /* remaining */, long, long, long, long) n
   using namespace moss::kernel::process;
 
   if (ns_addr == 0)
-    return -Errno::EFAULT;
+    return -errc::EFAULT;
   auto *req_ns = reinterpret_cast<const u64 *>(static_cast<unsigned long long>(ns_addr));
   u64 duration = *req_ns;
   if (duration == 0)
@@ -1159,7 +1159,7 @@ long sys_nanosleep(long ns_addr, long /* remaining */, long, long, long, long) n
 
   Thread *cur = CfsScheduler::get_current_task();
   if (!cur || !g_scheduler)
-    return -Errno::ESRCH;
+    return -errc::ESRCH;
 
   // 1. Arm one-shot timer to wake us after `duration` ns.
   //    HrTimer lives on kernel stack — safe because the stack
@@ -1255,7 +1255,7 @@ long sys_topinfo(long info_addr, long, long, long, long, long) noexcept {
   using namespace moss::kernel::process;
 
   if (info_addr == 0)
-    return -Errno::EFAULT;
+    return -errc::EFAULT;
 
   // Kernel-stack buffer (~5920 bytes, kernel stack is 16KB)
   topinfo_layout::Info kbuf;
@@ -1360,7 +1360,7 @@ long sys_topinfo(long info_addr, long, long, long, long, long) noexcept {
 // 未实现系统调用的默认处理器
 long sys_not_implemented(long, long, long, long, long, long) noexcept {
   log::klog::warn("syscall: unknown/unimplemented");
-  return -Errno::ENOSYS;
+  return -errc::ENOSYS;
 }
 } // namespace handlers
 
@@ -1698,7 +1698,7 @@ long SyscallDispatcher::dispatch(long syscall_number, long arg0, long arg1, long
   // 检查系统调用号有效性
   if (!is_valid_syscall(syscall_number)) {
     ++g_syscall_stats.invalid_syscalls;
-    return -Errno::EINVAL;
+    return -errc::EINVAL;
   }
 
   const SyscallDescriptor *desc = &SYSCALL_TABLE[syscall_number];

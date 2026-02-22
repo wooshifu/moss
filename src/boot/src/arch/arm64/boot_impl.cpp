@@ -257,15 +257,15 @@ bool wait_for_cpu_state(u32 cpu_id, CpuState expected_state, u32 timeout_ms) noe
 }
 
 [[noreturn]] void cpu_park(u32 cpu_id) noexcept {
-  volatile u8 *uart_base = reinterpret_cast<volatile u8 *>(0x9000000);
+  volatile u8 *uart_out = reinterpret_cast<volatile u8 *>(0x9000000);
 
   early_uart_lock_acquire();
-  uart_base[0] = 'P';
-  uart_base[0] = 'A';
-  uart_base[0] = 'R';
-  uart_base[0] = 'K';
-  uart_base[0] = '0' + static_cast<u8>(cpu_id % 10);
-  uart_base[0] = 10;
+  uart_out[0] = 'P';
+  uart_out[0] = 'A';
+  uart_out[0] = 'R';
+  uart_out[0] = 'K';
+  uart_out[0] = '0' + static_cast<u8>(cpu_id % 10);
+  uart_out[0] = 10;
   early_uart_lock_release();
 
   // Directly use store_cpu_state + UART (mark_cpu_parked does UART too,
@@ -281,19 +281,19 @@ bool wait_for_cpu_state(u32 cpu_id, CpuState expected_state, u32 timeout_ms) noe
   }
 
   early_uart_lock_acquire();
-  uart_base[0] = 'A';
-  uart_base[0] = 'C';
-  uart_base[0] = 'T';
-  uart_base[0] = 'V';
-  uart_base[0] = '0' + static_cast<u8>(cpu_id % 10);
-  uart_base[0] = 10;
+  uart_out[0] = 'A';
+  uart_out[0] = 'C';
+  uart_out[0] = 'T';
+  uart_out[0] = 'V';
+  uart_out[0] = '0' + static_cast<u8>(cpu_id % 10);
+  uart_out[0] = 10;
 
-  uart_base[0] = 'W';
-  uart_base[0] = 'A';
-  uart_base[0] = 'I';
-  uart_base[0] = 'T';
-  uart_base[0] = '0' + static_cast<u8>(cpu_id % 10);
-  uart_base[0] = 10;
+  uart_out[0] = 'W';
+  uart_out[0] = 'A';
+  uart_out[0] = 'I';
+  uart_out[0] = 'T';
+  uart_out[0] = '0' + static_cast<u8>(cpu_id % 10);
+  uart_out[0] = 10;
   early_uart_lock_release();
 
   while (true) {
@@ -370,7 +370,7 @@ extern "C" [[noreturn]] void secondary_cpu_entry() noexcept {
   moss::kernel::hal::timer::enable();
   u64 counter_now = moss::kernel::hal::timer::read_counter();
   u64 first_tick_cycles = moss::kernel::timer::TimerSubsystem::instance().clocksource().ns_to_cycles(
-      moss::kernel::process::CfsParams::SCHED_LATENCY_NS);
+      moss::kernel::process::cfs_params::SCHED_LATENCY_NS);
   moss::kernel::hal::timer::set_compare(counter_now + first_tick_cycles);
 
   // 6. Mark CPU as online (init complete)
@@ -487,15 +487,15 @@ private:
   static constexpr u32 UART_FR = 0x018;
   static constexpr u32 UART_FR_TXFF = (1 << 5);
 
-  volatile u32 *const uart_base;
+  volatile u32 *const uart_base_;
 
 public:
-  EarlyUart() : uart_base(reinterpret_cast<volatile u32 *>(UART_BASE)) {}
+  EarlyUart() : uart_base_(reinterpret_cast<volatile u32 *>(UART_BASE)) {}
 
   void put_char(char c) const {
-    while (uart_base[UART_FR / 4] & UART_FR_TXFF) {
+    while (uart_base_[UART_FR / 4] & UART_FR_TXFF) {
     }
-    uart_base[UART_DR / 4] = static_cast<u32>(c);
+    uart_base_[UART_DR / 4] = static_cast<u32>(c);
   }
 
   void put_string(const char *str) const {

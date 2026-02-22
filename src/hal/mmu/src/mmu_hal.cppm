@@ -4,7 +4,7 @@
 // configuration, and MMU control operations.
 //
 // What lives here (architecture-specific):
-//   - PTE bit-field definitions (PageAttr, PagePerms)
+//   - PTE bit-field definitions (page_attr, page_perms)
 //   - Address space configuration registers (TCR, MAIR / CR3 / satp)
 //   - Virtual address breakdown (index widths, shift amounts)
 //   - MMU enable/disable and register read-back
@@ -37,7 +37,7 @@ using moss::kernel::VoidResult;
 // ============================================================================
 // Page Table Entry attribute bits — architecture-specific PTE format
 // ============================================================================
-namespace PageAttr {
+namespace page_attr {
 
 #if defined(MOSS_ARCH_ARM64)
 // ARM64 Stage-1 descriptor format (ARMv8-A, 4KB granule)
@@ -113,48 +113,48 @@ inline constexpr u64 GLOBAL = (1ULL << 5);  // G (Global)
 inline constexpr u64 SW_COW = (1ULL << 8);
 #endif
 
-} // namespace PageAttr
+} // namespace page_attr
 
 // ============================================================================
 // Common page permission presets
 // ============================================================================
-namespace PagePerms {
+namespace page_perms {
 
 #if defined(MOSS_ARCH_ARM64)
 inline constexpr u64 KERNEL_RO =
-    PageAttr::VALID | PageAttr::AF | PageAttr::ATTR_NORMAL | PageAttr::READONLY | PageAttr::PXN | PageAttr::XN;
-inline constexpr u64 KERNEL_RW = PageAttr::VALID | PageAttr::AF | PageAttr::ATTR_NORMAL | PageAttr::PXN | PageAttr::XN;
-inline constexpr u64 KERNEL_RX = PageAttr::VALID | PageAttr::AF | PageAttr::ATTR_NORMAL | PageAttr::READONLY;
+    page_attr::VALID | page_attr::AF | page_attr::ATTR_NORMAL | page_attr::READONLY | page_attr::PXN | page_attr::XN;
+inline constexpr u64 KERNEL_RW = page_attr::VALID | page_attr::AF | page_attr::ATTR_NORMAL | page_attr::PXN | page_attr::XN;
+inline constexpr u64 KERNEL_RX = page_attr::VALID | page_attr::AF | page_attr::ATTR_NORMAL | page_attr::READONLY;
 inline constexpr u64 USER_RO =
-    PageAttr::VALID | PageAttr::AF | PageAttr::USER | PageAttr::READONLY | PageAttr::ATTR_NORMAL;
-inline constexpr u64 USER_RW = PageAttr::VALID | PageAttr::AF | PageAttr::USER | PageAttr::ATTR_NORMAL;
+    page_attr::VALID | page_attr::AF | page_attr::USER | page_attr::READONLY | page_attr::ATTR_NORMAL;
+inline constexpr u64 USER_RW = page_attr::VALID | page_attr::AF | page_attr::USER | page_attr::ATTR_NORMAL;
 inline constexpr u64 USER_RX =
-    PageAttr::VALID | PageAttr::AF | PageAttr::USER | PageAttr::READONLY | PageAttr::ATTR_NORMAL;
-inline constexpr u64 DEVICE = PageAttr::VALID | PageAttr::AF | PageAttr::ATTR_DEVICE | PageAttr::XN | PageAttr::PXN;
+    page_attr::VALID | page_attr::AF | page_attr::USER | page_attr::READONLY | page_attr::ATTR_NORMAL;
+inline constexpr u64 DEVICE = page_attr::VALID | page_attr::AF | page_attr::ATTR_DEVICE | page_attr::XN | page_attr::PXN;
 
 #elif defined(MOSS_ARCH_X86_64)
-inline constexpr u64 KERNEL_RO = PageAttr::VALID | PageAttr::AF | PageAttr::ATTR_NORMAL | PageAttr::XN;
+inline constexpr u64 KERNEL_RO = page_attr::VALID | page_attr::AF | page_attr::ATTR_NORMAL | page_attr::XN;
 inline constexpr u64 KERNEL_RW =
-    PageAttr::VALID | PageAttr::AF | PageAttr::ATTR_NORMAL | PageAttr::WRITABLE | PageAttr::XN;
-inline constexpr u64 KERNEL_RX = PageAttr::VALID | PageAttr::AF | PageAttr::ATTR_NORMAL;
-inline constexpr u64 USER_RO = PageAttr::VALID | PageAttr::AF | PageAttr::USER | PageAttr::ATTR_NORMAL | PageAttr::XN;
+    page_attr::VALID | page_attr::AF | page_attr::ATTR_NORMAL | page_attr::WRITABLE | page_attr::XN;
+inline constexpr u64 KERNEL_RX = page_attr::VALID | page_attr::AF | page_attr::ATTR_NORMAL;
+inline constexpr u64 USER_RO = page_attr::VALID | page_attr::AF | page_attr::USER | page_attr::ATTR_NORMAL | page_attr::XN;
 inline constexpr u64 USER_RW =
-    PageAttr::VALID | PageAttr::AF | PageAttr::USER | PageAttr::WRITABLE | PageAttr::ATTR_NORMAL | PageAttr::XN;
-inline constexpr u64 USER_RX = PageAttr::VALID | PageAttr::AF | PageAttr::USER | PageAttr::ATTR_NORMAL;
+    page_attr::VALID | page_attr::AF | page_attr::USER | page_attr::WRITABLE | page_attr::ATTR_NORMAL | page_attr::XN;
+inline constexpr u64 USER_RX = page_attr::VALID | page_attr::AF | page_attr::USER | page_attr::ATTR_NORMAL;
 inline constexpr u64 DEVICE =
-    PageAttr::VALID | PageAttr::AF | PageAttr::ATTR_DEVICE | PageAttr::XN | PageAttr::WRITABLE;
+    page_attr::VALID | page_attr::AF | page_attr::ATTR_DEVICE | page_attr::XN | page_attr::WRITABLE;
 
 #elif defined(MOSS_ARCH_RISCV)
-inline constexpr u64 KERNEL_RO = PageAttr::VALID | PageAttr::AF | PageAttr::READ | PageAttr::GLOBAL;
-inline constexpr u64 KERNEL_RW = PageAttr::VALID | PageAttr::AF | PageAttr::READ | PageAttr::WRITE | PageAttr::GLOBAL;
-inline constexpr u64 KERNEL_RX = PageAttr::VALID | PageAttr::AF | PageAttr::READ | PageAttr::EXECUTE | PageAttr::GLOBAL;
-inline constexpr u64 USER_RO = PageAttr::VALID | PageAttr::AF | PageAttr::USER | PageAttr::READ;
-inline constexpr u64 USER_RW = PageAttr::VALID | PageAttr::AF | PageAttr::USER | PageAttr::READ | PageAttr::WRITE;
-inline constexpr u64 USER_RX = PageAttr::VALID | PageAttr::AF | PageAttr::USER | PageAttr::READ | PageAttr::EXECUTE;
-inline constexpr u64 DEVICE = PageAttr::VALID | PageAttr::AF | PageAttr::READ | PageAttr::WRITE | PageAttr::GLOBAL;
+inline constexpr u64 KERNEL_RO = page_attr::VALID | page_attr::AF | page_attr::READ | page_attr::GLOBAL;
+inline constexpr u64 KERNEL_RW = page_attr::VALID | page_attr::AF | page_attr::READ | page_attr::WRITE | page_attr::GLOBAL;
+inline constexpr u64 KERNEL_RX = page_attr::VALID | page_attr::AF | page_attr::READ | page_attr::EXECUTE | page_attr::GLOBAL;
+inline constexpr u64 USER_RO = page_attr::VALID | page_attr::AF | page_attr::USER | page_attr::READ;
+inline constexpr u64 USER_RW = page_attr::VALID | page_attr::AF | page_attr::USER | page_attr::READ | page_attr::WRITE;
+inline constexpr u64 USER_RX = page_attr::VALID | page_attr::AF | page_attr::USER | page_attr::READ | page_attr::EXECUTE;
+inline constexpr u64 DEVICE = page_attr::VALID | page_attr::AF | page_attr::READ | page_attr::WRITE | page_attr::GLOBAL;
 #endif
 
-} // namespace PagePerms
+} // namespace page_perms
 
 // ============================================================================
 // Virtual address breakdown — index bit positions for 4KB granule 4-level paging
@@ -318,29 +318,29 @@ inline VoidResult enable_mmu(PhysAddr pgd_phys) noexcept {
 /// Build a 1GB block descriptor for device memory.
 [[nodiscard]] inline constexpr u64 make_device_block(PhysAddr block_addr) noexcept {
 #if defined(MOSS_ARCH_ARM64)
-  return (block_addr & PTE_ADDR_MASK) | PageAttr::VALID | PageAttr::AF | PageAttr::ATTR_DEVICE;
+  return (block_addr & PTE_ADDR_MASK) | page_attr::VALID | page_attr::AF | page_attr::ATTR_DEVICE;
 #elif defined(MOSS_ARCH_X86_64)
-  return (block_addr & PTE_ADDR_MASK) | PageAttr::VALID | PageAttr::WRITABLE | PageAttr::AF | PageAttr::ATTR_DEVICE |
-         PageAttr::HUGE_PAGE;
+  return (block_addr & PTE_ADDR_MASK) | page_attr::VALID | page_attr::WRITABLE | page_attr::AF | page_attr::ATTR_DEVICE |
+         page_attr::HUGE_PAGE;
 #elif defined(MOSS_ARCH_RISCV)
   // RISC-V: leaf PTE with R+W, no execute. PPN = phys_addr >> 12, stored at bits[53:10]
-  return ((block_addr >> 2) & PTE_ADDR_MASK) | PageAttr::VALID | PageAttr::AF | PageAttr::READ | PageAttr::WRITE |
-         PageAttr::GLOBAL;
+  return ((block_addr >> 2) & PTE_ADDR_MASK) | page_attr::VALID | page_attr::AF | page_attr::READ | page_attr::WRITE |
+         page_attr::GLOBAL;
 #endif
 }
 
 /// Build a 1GB block descriptor for normal (cacheable) memory.
 [[nodiscard]] inline constexpr u64 make_normal_block(PhysAddr block_addr) noexcept {
 #if defined(MOSS_ARCH_ARM64)
-  return (block_addr & PTE_ADDR_MASK) | PageAttr::VALID | PageAttr::AF | PageAttr::ATTR_NORMAL |
+  return (block_addr & PTE_ADDR_MASK) | page_attr::VALID | page_attr::AF | page_attr::ATTR_NORMAL |
          (3ULL << 8); // Inner Shareable
 #elif defined(MOSS_ARCH_X86_64)
-  return (block_addr & PTE_ADDR_MASK) | PageAttr::VALID | PageAttr::WRITABLE | PageAttr::AF | PageAttr::ATTR_NORMAL |
-         PageAttr::HUGE_PAGE;
+  return (block_addr & PTE_ADDR_MASK) | page_attr::VALID | page_attr::WRITABLE | page_attr::AF | page_attr::ATTR_NORMAL |
+         page_attr::HUGE_PAGE;
 #elif defined(MOSS_ARCH_RISCV)
   // RISC-V: leaf PTE with R+W (no EXECUTE — W^X). PPN = phys_addr >> 12, stored at bits[53:10]
-  return ((block_addr >> 2) & PTE_ADDR_MASK) | PageAttr::VALID | PageAttr::AF | PageAttr::READ | PageAttr::WRITE |
-         PageAttr::GLOBAL;
+  return ((block_addr >> 2) & PTE_ADDR_MASK) | page_attr::VALID | page_attr::AF | page_attr::READ | page_attr::WRITE |
+         page_attr::GLOBAL;
 #endif
 }
 

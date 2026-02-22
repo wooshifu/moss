@@ -35,12 +35,12 @@ private:
   static constexpr VirtAddr UART_BASE = moss::kernel::platform::uart_base();
   static constexpr u32 UART_REG_TXDATA = 0x00;
 
-  volatile u32 *const uart_base;
+  volatile u32 *const uart_base_;
 
 public:
-  EarlyUart() : uart_base(reinterpret_cast<volatile u32 *>(UART_BASE)) {}
+  EarlyUart() : uart_base_(reinterpret_cast<volatile u32 *>(UART_BASE)) {}
 
-  void put_char(char c) const { uart_base[UART_REG_TXDATA / 4] = static_cast<u32>(c); }
+  void put_char(char c) const { uart_base_[UART_REG_TXDATA / 4] = static_cast<u32>(c); }
 
   void put_string(const char *str) const {
     while (*str) {

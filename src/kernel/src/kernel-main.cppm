@@ -609,22 +609,22 @@ private:
     usize code_size = moss::abi::arm64::user_program_size();
 
     // Code VMA: readable + executable, backed by the embedded raw program
-    VirtAddr code_end = (UserLayout::CODE_BASE + code_size + PAGE_SIZE - 1) & ~(static_cast<VirtAddr>(PAGE_SIZE) - 1);
-    as->add_vma(UserLayout::CODE_BASE, code_end, VmaFlags::READ | VmaFlags::EXEC, VmaType::CODE, raw_code, 0,
+    VirtAddr code_end = (user_layout::CODE_BASE + code_size + PAGE_SIZE - 1) & ~(static_cast<VirtAddr>(PAGE_SIZE) - 1);
+    as->add_vma(user_layout::CODE_BASE, code_end, vma_flags::READ | vma_flags::EXEC, VmaType::CODE, raw_code, 0,
                 code_size);
     early_debug_print("[init] VMA code registered\n");
 
-    VirtAddr entry_point = UserLayout::CODE_BASE; // entry = start of raw code
+    VirtAddr entry_point = user_layout::CODE_BASE; // entry = start of raw code
 
     // Stack VMA: demand-zero
-    constexpr VirtAddr STACK_BOTTOM = UserLayout::STACK_TOP - UserLayout::STACK_SIZE;
-    as->add_vma(STACK_BOTTOM, UserLayout::STACK_TOP, VmaFlags::READ | VmaFlags::WRITE | VmaFlags::DEMAND_ZERO,
+    constexpr VirtAddr STACK_BOTTOM = user_layout::STACK_TOP - user_layout::STACK_SIZE;
+    as->add_vma(STACK_BOTTOM, user_layout::STACK_TOP, vma_flags::READ | vma_flags::WRITE | vma_flags::DEMAND_ZERO,
                 VmaType::STACK);
     early_debug_print("[init] VMA stack registered\n");
 
     // Heap VMA: small initial region, demand-zero
-    as->add_vma(UserLayout::HEAP_START, UserLayout::HEAP_START + UserLayout::HEAP_INIT,
-                VmaFlags::READ | VmaFlags::WRITE | VmaFlags::DEMAND_ZERO, VmaType::HEAP);
+    as->add_vma(user_layout::HEAP_START, user_layout::HEAP_START + user_layout::HEAP_INIT,
+                vma_flags::READ | vma_flags::WRITE | vma_flags::DEMAND_ZERO, VmaType::HEAP);
 
     // Bind AddressSpace to process
     auto set_result = init_proc->set_address_space(moss::move(as));
@@ -661,16 +661,16 @@ private:
     // User context: entry point and stack pointer are user-space VAs
     // (demand-paged on first access)
     init_thread->stack_base = STACK_BOTTOM;
-    init_thread->stack_size = UserLayout::STACK_SIZE;
+    init_thread->stack_size = user_layout::STACK_SIZE;
     init_thread->context.pc = entry_point;
-    init_thread->context.sp = UserLayout::STACK_TOP - 16; // 16-byte aligned
+    init_thread->context.sp = user_layout::STACK_TOP - 16; // 16-byte aligned
     init_thread->context.pstate = 0x00000000;             // EL0t
     init_thread->needs_initial_eret = true;               // First dispatch uses switch_to_user + eret
     init_thread->is_user_task = true;                     // Permanent: drives TTBR0 switch on re-dispatch
 
     init_thread->sched_class = SchedClass::Normal;
     init_thread->se.nice = -5;
-    init_thread->se.weight = CfsParams::nice_to_weight(-5);
+    init_thread->se.weight = cfs_params::nice_to_weight(-5);
     init_thread->se.vruntime = 1;
     init_thread->state = ProcessState::Ready;
 

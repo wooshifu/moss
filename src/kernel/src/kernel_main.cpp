@@ -193,7 +193,7 @@ void irq_handler_c(void) noexcept {
     // Reprogram THIS CPU's timer compare for the next tick interval.
     // This ensures the timer keeps firing regardless of what handle_interrupt does.
     auto &ts = ::moss::kernel::timer::TimerSubsystem::instance();
-    u64 tick_ns = ::moss::kernel::process::CfsParams::SCHED_LATENCY_NS;
+    u64 tick_ns = ::moss::kernel::process::cfs_params::SCHED_LATENCY_NS;
     u64 delta_cycles = ts.clocksource().ns_to_cycles(tick_ns);
     u64 counter_now = timer_hal::read_counter();
     timer_hal::set_compare(counter_now + delta_cycles);
