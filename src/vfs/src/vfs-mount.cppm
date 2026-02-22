@@ -18,11 +18,11 @@ export namespace moss::kernel::vfs {
 // ============================================================================
 
 struct MountEntry {
-    char        path[MAX_PATH_LEN];   // mount point path (e.g. "/", "/dev")
-    u32         path_len;              // strlen(path)
-    SuperBlock* sb;                    // filesystem superblock
-    Dentry*     root;                  // root dentry of mounted fs
-    bool        active;                // slot in use?
+  char path[MAX_PATH_LEN]; // mount point path (e.g. "/", "/dev")
+  u32 path_len;            // strlen(path)
+  SuperBlock *sb;          // filesystem superblock
+  Dentry *root;            // root dentry of mounted fs
+  bool active;             // slot in use?
 };
 
 // ============================================================================
@@ -30,9 +30,9 @@ struct MountEntry {
 // ============================================================================
 
 struct MountLookupResult {
-    MountEntry* mount;            // deepest matching mount
-    const char* residual;         // remaining path after mount prefix
-    u32         residual_len;     // strlen(residual)
+  MountEntry *mount;    // deepest matching mount
+  const char *residual; // remaining path after mount prefix
+  u32 residual_len;     // strlen(residual)
 };
 
 // ============================================================================
@@ -41,26 +41,25 @@ struct MountLookupResult {
 
 class MountTable {
 public:
-    /// Initialize all mount slots.
-    void init() noexcept {
-        for (u32 i = 0; i < MAX_MOUNTS; ++i) {
-            mounts_[i].active = false;
-        }
-        count_ = 0;
+  /// Initialize all mount slots.
+  void init() noexcept {
+    for (u32 i = 0; i < MAX_MOUNTS; ++i) {
+      mounts_[i].active = false;
     }
+    count_ = 0;
+  }
 
-    /// Mount a filesystem at the given path.
-    /// Returns 0 on success, negative error on failure.
-    long mount(const char* path, SuperBlock* sb, Dentry* root) noexcept;
+  /// Mount a filesystem at the given path.
+  /// Returns 0 on success, negative error on failure.
+  long mount(const char *path, SuperBlock *sb, Dentry *root) noexcept;
 
-    /// Find the deepest mount point matching the given path.
-    /// Returns true on success (result is filled in), false if no match.
-    [[nodiscard]] bool lookup(const char* path,
-                               MountLookupResult& result) noexcept;
+  /// Find the deepest mount point matching the given path.
+  /// Returns true on success (result is filled in), false if no match.
+  [[nodiscard]] bool lookup(const char *path, MountLookupResult &result) noexcept;
 
 private:
-    MountEntry mounts_[MAX_MOUNTS];
-    u32 count_;
+  MountEntry mounts_[MAX_MOUNTS];
+  u32 count_;
 };
 
 // Global mount table instance
@@ -76,6 +75,6 @@ void vfs_init() noexcept;
 
 /// Open stdin/stdout/stderr (fd 0/1/2) on /dev/console for a process.
 /// `fd_table` is actually a vfs::FdTable* passed as void* from Process.
-void vfs_init_stdio(void* fd_table) noexcept;
+void vfs_init_stdio(void *fd_table) noexcept;
 
 } // namespace moss::kernel::vfs

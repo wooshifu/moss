@@ -20,6 +20,6 @@ export namespace moss::kernel::vfs::ramfs {
 /// Initialize ramfs from the global initramfs archive.
 /// Creates a root directory inode + one regular file inode per archive entry.
 /// Returns the ramfs SuperBlock on success, nullptr on failure.
-[[nodiscard]] SuperBlock* ramfs_init() noexcept;
+[[nodiscard]] SuperBlock *ramfs_init() noexcept;
 
 } // namespace moss::kernel::vfs::ramfs

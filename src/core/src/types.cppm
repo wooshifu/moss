@@ -6,19 +6,18 @@ import moss.std;
 export namespace moss::kernel {
 
 // Re-export basic integer types from moss:: namespace for backward compatibility
-using moss::u8;
-using moss::u16;
-using moss::u32;
-using moss::u64;
-using moss::i8;
 using moss::i16;
 using moss::i32;
 using moss::i64;
+using moss::i8;
+using moss::u16;
+using moss::u32;
+using moss::u64;
+using moss::u8;
 
 // Architecture-dependent size type
 // Must match ABI size_t (unsigned long on LP64) - NOT u64 (unsigned long long)
-#if defined(MOSS_ARCH_ARM64) || defined(MOSS_ARCH_X86_64) ||                   \
-    defined(MOSS_ARCH_RISCV)
+#if defined(MOSS_ARCH_ARM64) || defined(MOSS_ARCH_X86_64) || defined(MOSS_ARCH_RISCV)
 using usize = unsigned long;
 using isize = signed long;
 #else
@@ -34,7 +33,7 @@ using VirtAddr = u64;
 constexpr usize PAGE_SIZE = 4096;
 constexpr usize PAGE_SHIFT = 12;
 constexpr usize LARGE_PAGE_SIZE = 2 * 1024 * 1024;   // 2MB
-constexpr usize HUGE_PAGE_SIZE = 1024 * 1024 * 1024;  // 1GB
+constexpr usize HUGE_PAGE_SIZE = 1024 * 1024 * 1024; // 1GB
 
 // Memory layout constants
 constexpr VirtAddr KERNEL_BASE = 0xFFFF800000000000ULL;
@@ -42,8 +41,8 @@ constexpr VirtAddr USER_BASE = 0x0000000000000000ULL;
 constexpr VirtAddr USER_MAX = 0x0000800000000000ULL;
 
 // Direct-map: physical RAM is mapped at KERNEL_BASE + phys_addr (post-trampoline)
-constexpr VirtAddr KERNEL_DIRECT_MAP_BASE = KERNEL_BASE;  // 0xFFFF800000000000
-constexpr PhysAddr PHYS_BASE = 0x40000000ULL;             // QEMU virt RAM start
+constexpr VirtAddr KERNEL_DIRECT_MAP_BASE = KERNEL_BASE; // 0xFFFF800000000000
+constexpr PhysAddr PHYS_BASE = 0x40000000ULL;            // QEMU virt RAM start
 
 // Address translation: physical ↔ virtual (valid only after boot trampoline)
 inline VirtAddr phys_to_virt(PhysAddr pa) noexcept { return pa + KERNEL_DIRECT_MAP_BASE; }
@@ -115,20 +114,16 @@ const char *error_to_string(ErrorCode error) noexcept;
 
 // Memory alignment utilities
 template <usize Alignment> constexpr usize align_up(usize value) noexcept {
-  static_assert((Alignment & (Alignment - 1)) == 0,
-                "Alignment must be power of 2");
+  static_assert((Alignment & (Alignment - 1)) == 0, "Alignment must be power of 2");
   return (value + Alignment - 1) & ~(Alignment - 1);
 }
 
 template <usize Alignment> constexpr usize align_down(usize value) noexcept {
-  static_assert((Alignment & (Alignment - 1)) == 0,
-                "Alignment must be power of 2");
+  static_assert((Alignment & (Alignment - 1)) == 0, "Alignment must be power of 2");
   return value & ~(Alignment - 1);
 }
 
-constexpr bool is_aligned(usize value, usize alignment) noexcept {
-  return (value & (alignment - 1)) == 0;
-}
+constexpr bool is_aligned(usize value, usize alignment) noexcept { return (value & (alignment - 1)) == 0; }
 
 // Non-copyable and non-movable base class
 class NonCopyable {

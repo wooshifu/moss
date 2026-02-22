@@ -31,8 +31,7 @@ VoidResult SimpleInterProcessorInterrupt::initialize(u32 max_cpus) noexcept {
   return VoidResult{};
 }
 
-IpiResult SimpleInterProcessorInterrupt::send_ipi(u32 target_cpu,
-                                                   IpiType type) noexcept {
+IpiResult SimpleInterProcessorInterrupt::send_ipi(u32 target_cpu, IpiType type) noexcept {
   if (!initialized_) {
     return IpiResult::NotInitialized;
   }
@@ -81,8 +80,7 @@ VoidResult SimpleInterProcessorInterrupt::self_test() noexcept {
   return VoidResult{};
 }
 
-SimpleInterProcessorInterrupt::SystemInfo
-SimpleInterProcessorInterrupt::get_system_info() const noexcept {
+SimpleInterProcessorInterrupt::SystemInfo SimpleInterProcessorInterrupt::get_system_info() const noexcept {
   SystemInfo info{};
   info.initialized = initialized_;
   info.max_cpus = max_cpus_;
@@ -90,13 +88,9 @@ SimpleInterProcessorInterrupt::get_system_info() const noexcept {
   return info;
 }
 
-bool SimpleInterProcessorInterrupt::is_valid_cpu_id(u32 cpu_id) const noexcept {
-  return cpu_id < max_cpus_;
-}
+bool SimpleInterProcessorInterrupt::is_valid_cpu_id(u32 cpu_id) const noexcept { return cpu_id < max_cpus_; }
 
-u32 SimpleInterProcessorInterrupt::get_current_cpu_id() const noexcept {
-  return 0;
-}
+u32 SimpleInterProcessorInterrupt::get_current_cpu_id() const noexcept { return 0; }
 
 // === Global initialization functions ===
 

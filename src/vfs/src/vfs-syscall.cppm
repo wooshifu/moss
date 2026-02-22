@@ -13,30 +13,30 @@ export namespace moss::kernel::vfs::syscall {
 
 /// Open a file by path.  Returns fd on success, negative error on failure.
 /// `fd_table_ptr` is a void* to the current process's FdTable.
-long do_open(void* fd_table_ptr, const char* path, u32 flags, u32 mode) noexcept;
+long do_open(void *fd_table_ptr, const char *path, u32 flags, u32 mode) noexcept;
 
 /// Close a file descriptor.
-long do_close(void* fd_table_ptr, long fd) noexcept;
+long do_close(void *fd_table_ptr, long fd) noexcept;
 
 /// Read from a file descriptor.
-long do_read(void* fd_table_ptr, long fd, u8* buf, usize count) noexcept;
+long do_read(void *fd_table_ptr, long fd, u8 *buf, usize count) noexcept;
 
 /// Write to a file descriptor.
-long do_write(void* fd_table_ptr, long fd, const u8* buf, usize count) noexcept;
+long do_write(void *fd_table_ptr, long fd, const u8 *buf, usize count) noexcept;
 
 /// Seek within a file.
-long do_lseek(void* fd_table_ptr, long fd, i64 offset, u32 whence) noexcept;
+long do_lseek(void *fd_table_ptr, long fd, i64 offset, u32 whence) noexcept;
 
 /// Get file status.
-long do_fstat(void* fd_table_ptr, long fd, void* stat_buf) noexcept;
+long do_fstat(void *fd_table_ptr, long fd, void *stat_buf) noexcept;
 
 /// Duplicate a file descriptor.
-long do_dup(void* fd_table_ptr, long oldfd) noexcept;
+long do_dup(void *fd_table_ptr, long oldfd) noexcept;
 
 /// Duplicate a file descriptor to a specific fd number.
-long do_dup2(void* fd_table_ptr, long oldfd, long newfd) noexcept;
+long do_dup2(void *fd_table_ptr, long oldfd, long newfd) noexcept;
 
 /// Create a pipe.  pipefd[0] = read end, pipefd[1] = write end.
-long do_pipe(void* fd_table_ptr, long* pipefd) noexcept;
+long do_pipe(void *fd_table_ptr, long *pipefd) noexcept;
 
 } // namespace moss::kernel::vfs::syscall

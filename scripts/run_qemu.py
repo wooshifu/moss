@@ -10,12 +10,13 @@ import subprocess
 import sys
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Annotated, Optional
+from typing import Annotated
 
-import fdt
 import typer
 from rich import print as rprint
 from rich.console import Console
+
+import fdt
 
 console = Console()
 
@@ -50,11 +51,11 @@ class QemuConfig:
     arch: str
     kernel_elf: str
     test_elf: str
-    kernel_bin: str       # moss_boot.bin（仅 .text.boot 段）
+    kernel_bin: str  # moss_boot.bin（仅 .text.boot 段）
     kernel_bin_full: str  # moss.bin（完整内核，ARM64 含 Linux Image header）
-    initramfs: str = ""   # initramfs.cpio 路径（ARM64 only）
-    cpu_cores: int = 4    # 从 CMake MOSS_CPU_CORES 变量读取，默认 4
-    qemu_path: str = ""   # CMake 探测到的 QEMU 可执行文件完整路径
+    initramfs: str = ""  # initramfs.cpio 路径（ARM64 only）
+    cpu_cores: int = 4  # 从 CMake MOSS_CPU_CORES 变量读取，默认 4
+    qemu_path: str = ""  # CMake 探测到的 QEMU 可执行文件完整路径
 
     @classmethod
     def from_json(cls, path: Path) -> "QemuConfig":
@@ -78,9 +79,7 @@ class QemuConfig:
 def get_qemu_version(qemu_path: str) -> str:
     """查询 QEMU 可执行文件的版本号"""
     try:
-        result = subprocess.run(
-            [qemu_path, "--version"], capture_output=True, text=True, check=False
-        )
+        result = subprocess.run([qemu_path, "--version"], capture_output=True, text=True, check=False)
         # 首行格式: "QEMU emulator version X.Y.Z ..."
         first_line = result.stdout.strip().splitlines()[0]
         return first_line.split("version", 1)[1].strip()
@@ -88,9 +87,7 @@ def get_qemu_version(qemu_path: str) -> str:
         return "unknown"
 
 
-def resolve_kernel_file(
-    cfg: QemuConfig, *, use_binary: bool, test_mode: bool, debug_mode: bool
-) -> tuple[Path, str]:
+def resolve_kernel_file(cfg: QemuConfig, *, use_binary: bool, test_mode: bool, debug_mode: bool) -> tuple[Path, str]:
     """选择内核文件并返回 (路径, 描述)
 
     启动模式优先级：
@@ -169,10 +166,14 @@ def prepare_dtb(cfg: QemuConfig, *, smp: int) -> Path | None:
     # 用 QEMU 自身导出当前机器配置的 DTB
     dump_args = [
         cfg.qemu_path,
-        "-machine", f"{arch_cfg['machine']},dumpdtb={dtb_path}",
-        "-cpu", arch_cfg["cpu"],
-        "-smp", str(smp),
-        "-m", "256M",
+        "-machine",
+        f"{arch_cfg['machine']},dumpdtb={dtb_path}",
+        "-cpu",
+        arch_cfg["cpu"],
+        "-smp",
+        str(smp),
+        "-m",
+        "256M",
         "-nographic",
     ]
     subprocess.run(dump_args, check=True, capture_output=True)
@@ -194,8 +195,8 @@ DTB_LOAD_ADDR = {
 # Initramfs 加载地址（--bin 模式使用 -device loader 而非 -initrd）
 # 地址选择原则：在 DTB 地址之前，与内核代码（~2MB）不重叠，64KB 对齐。
 INITRD_LOAD_ADDR = {
-    "ARM64": 0x44000000,   # RAM 0x40000000 + 64MB，DTB 在 +128MB
-    "RISCV": 0x82000000,   # RAM 0x80000000 + 32MB，DTB 在 +64MB
+    "ARM64": 0x44000000,  # RAM 0x40000000 + 64MB，DTB 在 +128MB
+    "RISCV": 0x82000000,  # RAM 0x80000000 + 32MB，DTB 在 +64MB
 }
 
 
@@ -237,7 +238,7 @@ def build_qemu_args(
     use_binary: bool,
     test_mode: bool,
     debug_mode: bool,
-    extra_args: Optional[list[str]] = None,
+    extra_args: list[str] | None = None,
 ) -> list[str]:
     """构造完整的 QEMU 命令行参数列表"""
     arch_cfg = ARCH_CONFIG[cfg.arch]
@@ -269,13 +270,20 @@ def build_qemu_args(
         cfg.qemu_path,
         "-nodefaults",
         "-nographic",
-        "-chardev", "stdio,id=char0,mux=on,signal=off",
-        "-serial", "chardev:char0",
-        "-mon", "chardev=char0,mode=readline",
-        "-machine", arch_cfg["machine"],
-        "-cpu", arch_cfg["cpu"],
-        "-smp", str(smp),
-        "-m", "256M",
+        "-chardev",
+        "stdio,id=char0,mux=on,signal=off",
+        "-serial",
+        "chardev:char0",
+        "-mon",
+        "chardev=char0,mode=readline",
+        "-machine",
+        arch_cfg["machine"],
+        "-cpu",
+        arch_cfg["cpu"],
+        "-smp",
+        str(smp),
+        "-m",
+        "256M",
         *kernel_args,
         "-no-reboot",
         *arch_cfg["extra_args"],
@@ -413,7 +421,8 @@ def print_result(exit_code: int, *, test_mode: bool, use_binary: bool) -> None:
         else:
             rprint(f"[red]❌ 内核执行异常，退出码: {exit_code}[/red]")
 
-def collect_extra_qemu_args(ctx: typer.Context, qemu_args: Optional[str]) -> list[str]:
+
+def collect_extra_qemu_args(ctx: typer.Context, qemu_args: str | None) -> list[str]:
     """收集来自两种语法的额外QEMU参数
 
     Args:
@@ -430,15 +439,14 @@ def collect_extra_qemu_args(ctx: typer.Context, qemu_args: Optional[str]) -> lis
         extra_args.extend(shlex.split(qemu_args))
 
     # 方式2：双破折号后的参数
-    if hasattr(ctx, 'args') and ctx.args:
+    if hasattr(ctx, "args") and ctx.args:
         extra_args.extend(ctx.args)
 
     return extra_args
 
 
 app = typer.Typer(
-    help="🖥️ MOSS QEMU 运行工具",
-    context_settings={"allow_extra_args": True, "allow_interspersed_args": False}
+    help="🖥️ MOSS QEMU 运行工具", context_settings={"allow_extra_args": True, "allow_interspersed_args": False}
 )
 
 
@@ -446,20 +454,17 @@ app = typer.Typer(
 def main(
     ctx: typer.Context,
     config: Annotated[
-        Optional[Path],
+        Path | None,
         typer.Option("--config", "-c", help="qemu_config.json 路径"),
     ] = None,
     use_binary: Annotated[bool, typer.Option("--bin", help="使用原始二进制内核")] = False,
     debug_mode: Annotated[bool, typer.Option("--debug", help="启用 GDB 调试")] = False,
     test_mode: Annotated[bool, typer.Option("--test", help="运行单元测试")] = False,
     timeout: Annotated[
-        Optional[int],
+        int | None,
         typer.Option("--timeout", "-t", help="QEMU 运行超时时间（秒），超时后自动终止"),
     ] = None,
-    extra_qemu_args: Annotated[
-        Optional[str],
-        typer.Option("--qemu-args", help="额外的QEMU参数（用空格分隔）")
-    ] = None,
+    extra_qemu_args: Annotated[str | None, typer.Option("--qemu-args", help="额外的QEMU参数（用空格分隔）")] = None,
 ) -> None:
     """启动 QEMU 运行 MOSS 内核
 
@@ -526,7 +531,6 @@ def main(
         test_mode=test_mode,
         timeout=timeout,
     )
-
 
     # 打印完整的 QEMU 命令（可直接复制到终端执行）
     rprint(f"\n[dim]$ {shlex.join(qemu_cmd_args)}[/dim]")

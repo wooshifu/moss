@@ -24,16 +24,11 @@ struct LoadBalanceStats {
   u64 active_balance_count;
 
   constexpr LoadBalanceStats() noexcept
-      : migrations_count(0), steal_attempts(0), steal_success(0),
-        idle_balance_count(0), active_balance_count(0) {}
+      : migrations_count(0), steal_attempts(0), steal_success(0), idle_balance_count(0), active_balance_count(0) {}
 };
 
 // Load balance policy
-enum class BalancePolicy : u8 {
-  Conservative = 0,
-  Aggressive = 1,
-  NUMA_Aware = 2
-};
+enum class BalancePolicy : u8 { Conservative = 0, Aggressive = 1, NUMA_Aware = 2 };
 
 // CPU topology information
 struct CpuTopology {
@@ -43,14 +38,10 @@ struct CpuTopology {
   u32 numa_node;
   bool is_big_core;
 
-  constexpr CpuTopology() noexcept
-      : cpu_id(0), core_id(0), cluster_id(0), numa_node(0), is_big_core(false) {
-  }
+  constexpr CpuTopology() noexcept : cpu_id(0), core_id(0), cluster_id(0), numa_node(0), is_big_core(false) {}
 
-  constexpr CpuTopology(u32 cpu, u32 core, u32 cluster, u32 numa,
-                        bool big) noexcept
-      : cpu_id(cpu), core_id(core), cluster_id(cluster), numa_node(numa),
-        is_big_core(big) {}
+  constexpr CpuTopology(u32 cpu, u32 core, u32 cluster, u32 numa, bool big) noexcept
+      : cpu_id(cpu), core_id(core), cluster_id(cluster), numa_node(numa), is_big_core(big) {}
 };
 
 // Load balancer class
@@ -69,13 +60,8 @@ private:
 
 public:
   LoadBalancer() noexcept
-      : stats_{},
-        topology_{},
-        policy_(BalancePolicy::Conservative),
-        imbalance_threshold_(25),
-        migration_cost_(10000),
-        last_balance_time_(0), balance_interval_(4000000)
-  {
+      : stats_{}, topology_{}, policy_(BalancePolicy::Conservative), imbalance_threshold_(25), migration_cost_(10000),
+        last_balance_time_(0), balance_interval_(4000000) {
     for (u32 i = 0; i < MAX_CPUS; ++i) {
       topology_[i] = CpuTopology(i, i, 0, 0, true);
     }
@@ -116,8 +102,7 @@ public:
     }
   }
 
-  [[nodiscard]] u32 select_cpu_for_task(Thread *thread,
-                                        CfsScheduler &scheduler) noexcept {
+  [[nodiscard]] u32 select_cpu_for_task(Thread *thread, CfsScheduler &scheduler) noexcept {
     if (thread == nullptr)
       return 0;
 
@@ -134,8 +119,7 @@ public:
     return find_best_cpu_for_task(thread, scheduler);
   }
 
-  bool migrate_task(u32 src_cpu, u32 dst_cpu,
-                    CfsScheduler &scheduler) noexcept {
+  bool migrate_task(u32 src_cpu, u32 dst_cpu, CfsScheduler &scheduler) noexcept {
     if (src_cpu >= MAX_CPUS || dst_cpu >= MAX_CPUS || src_cpu == dst_cpu) {
       return false;
     }
@@ -200,8 +184,7 @@ public:
   }
 
 private:
-  [[nodiscard]] u32 find_busiest_cpu(u32 current_cpu,
-                                     CfsScheduler &scheduler) const noexcept {
+  [[nodiscard]] u32 find_busiest_cpu(u32 current_cpu, CfsScheduler &scheduler) const noexcept {
     u32 busiest_cpu = current_cpu;
     u32 max_load = scheduler.get_cpu_load(current_cpu);
 
@@ -226,8 +209,7 @@ private:
     return busiest_cpu;
   }
 
-  [[nodiscard]] u32
-  find_least_loaded_cpu(CfsScheduler &scheduler) const noexcept {
+  [[nodiscard]] u32 find_least_loaded_cpu(CfsScheduler &scheduler) const noexcept {
     u32 least_loaded_cpu = 0;
     u32 min_load = scheduler.get_cpu_load(0);
 
@@ -242,9 +224,7 @@ private:
     return least_loaded_cpu;
   }
 
-  [[nodiscard]] u32
-  find_best_cpu_for_task(Thread *thread,
-                         CfsScheduler &scheduler) const noexcept {
+  [[nodiscard]] u32 find_best_cpu_for_task(Thread *thread, CfsScheduler &scheduler) const noexcept {
     u32 best_cpu = 0;
     u32 min_load = static_cast<u32>(-1);
 
@@ -282,8 +262,7 @@ private:
       return false;
     }
 
-    u64 expected_benefit =
-        calculate_migration_benefit(task, src_cpu, dst_cpu, scheduler);
+    u64 expected_benefit = calculate_migration_benefit(task, src_cpu, dst_cpu, scheduler);
     if (expected_benefit < migration_cost_) {
       return false;
     }
@@ -299,8 +278,7 @@ private:
     return true;
   }
 
-  [[nodiscard]] Thread *select_migration_candidate(
-      u32 cpu, CfsScheduler &scheduler) const noexcept {
+  [[nodiscard]] Thread *select_migration_candidate(u32 cpu, CfsScheduler &scheduler) const noexcept {
     // Pick the highest-vruntime (least-deserving) runnable task on source CPU.
     // This preserves CFS fairness: we migrate the task that has consumed
     // the most CPU, not the one most in need of CPU time.
@@ -311,9 +289,8 @@ private:
     return scheduler.pick_last_task(cpu);
   }
 
-  [[nodiscard]] u64
-  calculate_migration_benefit(Thread *thread, u32 src_cpu, u32 dst_cpu,
-                              CfsScheduler &scheduler) const noexcept {
+  [[nodiscard]] u64 calculate_migration_benefit(Thread *thread, u32 src_cpu, u32 dst_cpu,
+                                                CfsScheduler &scheduler) const noexcept {
     if (thread == nullptr)
       return 0;
 
@@ -323,20 +300,15 @@ private:
     return (src_load > dst_load) ? (src_load - dst_load) * 1000 : 0;
   }
 
-  [[nodiscard]] bool has_cpu_affinity(Thread *thread,
-                                      u32 cpu) const noexcept {
-    if (!thread || cpu >= MAX_CPUS) return false;
+  [[nodiscard]] bool has_cpu_affinity(Thread *thread, u32 cpu) const noexcept {
+    if (!thread || cpu >= MAX_CPUS)
+      return false;
     return (thread->cpu_affinity_mask & (1u << cpu)) != 0;
   }
 
-  [[nodiscard]] u32
-  get_thread_numa_node([[maybe_unused]] Thread *thread) const noexcept {
-    return 0;
-  }
+  [[nodiscard]] u32 get_thread_numa_node([[maybe_unused]] Thread *thread) const noexcept { return 0; }
 
-  [[nodiscard]] static u32 current_cpu_id() noexcept {
-    return arch::get_current_cpu_id();
-  }
+  [[nodiscard]] static u32 current_cpu_id() noexcept { return arch::get_current_cpu_id(); }
 };
 
 /// Global load balancer instance (initialized alongside scheduler)
@@ -345,8 +317,8 @@ extern LoadBalancer *g_load_balancer;
 /// Try idle-balance: steal tasks from busiest CPU into the idle CPU.
 /// Call from idle paths when no local tasks are available.
 inline void try_idle_balance(u32 cpu) noexcept {
-    if (g_load_balancer && g_scheduler)
-        g_load_balancer->idle_balance(cpu, *g_scheduler);
+  if (g_load_balancer && g_scheduler)
+    g_load_balancer->idle_balance(cpu, *g_scheduler);
 }
 
 } // namespace moss::kernel::process

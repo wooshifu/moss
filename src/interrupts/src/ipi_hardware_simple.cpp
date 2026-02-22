@@ -16,8 +16,7 @@ SimpleHardwareIpi *g_simple_hardware_ipi = nullptr;
 
 // === SimpleHardwareIpi core implementation ===
 
-VoidResult SimpleHardwareIpi::initialize(GenericInterruptController *gic,
-                                          u32 max_cpus) noexcept {
+VoidResult SimpleHardwareIpi::initialize(GenericInterruptController *gic, u32 max_cpus) noexcept {
   if (initialized_) {
     return VoidResult{ErrorCode::AlreadyExists};
   }
@@ -37,27 +36,23 @@ VoidResult SimpleHardwareIpi::initialize(GenericInterruptController *gic,
   log::klog::info("Hardware IPI system initializing...");
 
   // Register core IPI SGI handlers to GIC
-  auto ping_result = gic_->register_interrupt(
-      static_cast<InterruptId>(IpiSgiId::Ping), handle_ping_sgi, this,
-      "IPI-Ping");
+  auto ping_result =
+      gic_->register_interrupt(static_cast<InterruptId>(IpiSgiId::Ping), handle_ping_sgi, this, "IPI-Ping");
   if (!ping_result) {
     log::klog::error("Failed to register Ping SGI");
     return ping_result;
   }
 
-  auto reschedule_result = gic_->register_interrupt(
-      static_cast<InterruptId>(IpiSgiId::Reschedule), handle_reschedule_sgi,
-      this, "IPI-Reschedule");
+  auto reschedule_result = gic_->register_interrupt(static_cast<InterruptId>(IpiSgiId::Reschedule),
+                                                    handle_reschedule_sgi, this, "IPI-Reschedule");
   if (!reschedule_result) {
     log::klog::error("Failed to register Reschedule SGI");
     return reschedule_result;
   }
 
   // Enable core IPI SGI interrupts
-  auto enable_ping =
-      gic_->enable_interrupt(static_cast<InterruptId>(IpiSgiId::Ping));
-  auto enable_reschedule =
-      gic_->enable_interrupt(static_cast<InterruptId>(IpiSgiId::Reschedule));
+  auto enable_ping = gic_->enable_interrupt(static_cast<InterruptId>(IpiSgiId::Ping));
+  auto enable_reschedule = gic_->enable_interrupt(static_cast<InterruptId>(IpiSgiId::Reschedule));
 
   if (!enable_ping || !enable_reschedule) {
     log::klog::error("Failed to enable SGI interrupts");
@@ -76,14 +71,10 @@ void SimpleHardwareIpi::shutdown() noexcept {
   }
 
   if (gic_) {
-    (void)gic_->disable_interrupt(
-        static_cast<InterruptId>(IpiSgiId::Ping));
-    (void)gic_->disable_interrupt(
-        static_cast<InterruptId>(IpiSgiId::Reschedule));
-    (void)gic_->unregister_interrupt(
-        static_cast<InterruptId>(IpiSgiId::Ping));
-    (void)gic_->unregister_interrupt(
-        static_cast<InterruptId>(IpiSgiId::Reschedule));
+    (void)gic_->disable_interrupt(static_cast<InterruptId>(IpiSgiId::Ping));
+    (void)gic_->disable_interrupt(static_cast<InterruptId>(IpiSgiId::Reschedule));
+    (void)gic_->unregister_interrupt(static_cast<InterruptId>(IpiSgiId::Ping));
+    (void)gic_->unregister_interrupt(static_cast<InterruptId>(IpiSgiId::Reschedule));
   }
 
   initialized_ = false;
@@ -118,9 +109,7 @@ IpiResult SimpleHardwareIpi::send_ipi(u32 target_cpu, IpiType type) noexcept {
   return IpiResult::Success;
 }
 
-IpiResult SimpleHardwareIpi::ping_cpu(u32 target_cpu) noexcept {
-  return send_ipi(target_cpu, IpiType::Ping);
-}
+IpiResult SimpleHardwareIpi::ping_cpu(u32 target_cpu) noexcept { return send_ipi(target_cpu, IpiType::Ping); }
 
 IpiResult SimpleHardwareIpi::ping_cpus(u32 cpu_mask) noexcept {
   if (!initialized_) {
@@ -143,28 +132,23 @@ IpiResult SimpleHardwareIpi::request_reschedule(u32 target_cpu) noexcept {
   return send_ipi(target_cpu, IpiType::Reschedule);
 }
 
-IpiResult SimpleHardwareIpi::wakeup_cpu(u32 target_cpu) noexcept {
-  return send_ipi(target_cpu, IpiType::WakeUp);
-}
+IpiResult SimpleHardwareIpi::wakeup_cpu(u32 target_cpu) noexcept { return send_ipi(target_cpu, IpiType::WakeUp); }
 
 // === SGI interrupt handler implementations ===
 
-static void handle_ping_sgi(InterruptId /* irq */,
-                             void * /* context */) noexcept {
+static void handle_ping_sgi(InterruptId /* irq */, void * /* context */) noexcept {
   // Ping received on current CPU
   log::klog::debug("Ping SGI received");
 }
 
-static void handle_reschedule_sgi(InterruptId /* irq */,
-                                   void * /* context */) noexcept {
+static void handle_reschedule_sgi(InterruptId /* irq */, void * /* context */) noexcept {
   // Reschedule request received
   log::klog::debug("Reschedule SGI received");
 }
 
 // === Internal helper implementations ===
 
-VoidResult SimpleHardwareIpi::send_hardware_sgi(IpiSgiId sgi_id,
-                                                 u32 target_cpu_mask) noexcept {
+VoidResult SimpleHardwareIpi::send_hardware_sgi(IpiSgiId sgi_id, u32 target_cpu_mask) noexcept {
   if (!gic_) {
     return VoidResult{ErrorCode::InvalidState};
   }
@@ -173,13 +157,9 @@ VoidResult SimpleHardwareIpi::send_hardware_sgi(IpiSgiId sgi_id,
   return gic_->send_sgi(sgi_interrupt_id, target_cpu_mask);
 }
 
-bool SimpleHardwareIpi::is_valid_cpu_id(u32 cpu_id) const noexcept {
-  return cpu_id < max_cpus_;
-}
+bool SimpleHardwareIpi::is_valid_cpu_id(u32 cpu_id) const noexcept { return cpu_id < max_cpus_; }
 
-u32 SimpleHardwareIpi::get_current_cpu_id() noexcept {
-  return GenericInterruptController::get_current_cpu_id();
-}
+u32 SimpleHardwareIpi::get_current_cpu_id() noexcept { return GenericInterruptController::get_current_cpu_id(); }
 
 u64 SimpleHardwareIpi::generate_sequence() noexcept {
   return message_sequence_.fetch_add(1, containers::MemoryOrder::Relaxed);
@@ -187,8 +167,7 @@ u64 SimpleHardwareIpi::generate_sequence() noexcept {
 
 // === Statistics ===
 
-SimpleHardwareIpi::Statistics
-SimpleHardwareIpi::get_statistics() const noexcept {
+SimpleHardwareIpi::Statistics SimpleHardwareIpi::get_statistics() const noexcept {
   Statistics stats{};
   stats.total_sent = total_ipis_sent_.load(containers::MemoryOrder::Relaxed);
   stats.ping_count = sgi_send_counts_[static_cast<u8>(IpiSgiId::Ping)].load(containers::MemoryOrder::Relaxed);
@@ -220,9 +199,7 @@ VoidResult SimpleHardwareIpi::self_test() noexcept {
 
 // === Global functions ===
 
-VoidResult
-initialize_simple_hardware_ipi(GenericInterruptController *gic,
-                                u32 max_cpus) noexcept {
+VoidResult initialize_simple_hardware_ipi(GenericInterruptController *gic, u32 max_cpus) noexcept {
   if (g_simple_hardware_ipi != nullptr) {
     return VoidResult{ErrorCode::AlreadyExists};
   }

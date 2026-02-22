@@ -38,7 +38,7 @@ namespace log = moss::kernel::logging;
 // CFS scheduling parameters
 namespace CfsParams {
 inline constexpr u64 SCHED_LATENCY_NS = 6000000;  // 6ms
-inline constexpr u64 MIN_GRANULARITY_NS = 750000;  // 0.75ms
+inline constexpr u64 MIN_GRANULARITY_NS = 750000; // 0.75ms
 inline constexpr u32 SCHED_NR_LATENCY = 8;
 
 // nice-to-weight mapping table (similar to Linux kernel)
@@ -53,9 +53,7 @@ inline constexpr u32 NICE_TO_WEIGHT[] = {
     /*  15 */ 36,    29,    23,    18,    15,
 };
 
-inline constexpr u32 nice_to_weight_index(i32 nice) {
-  return static_cast<u32>(nice + 20);
-}
+inline constexpr u32 nice_to_weight_index(i32 nice) { return static_cast<u32>(nice + 20); }
 
 inline constexpr u32 nice_to_weight(i32 nice) {
   u32 index = nice_to_weight_index(nice);
@@ -89,12 +87,9 @@ template <typename T> struct RbNode {
   RbNode *parent;
   bool red;
 
-  constexpr RbNode() noexcept
-      : data(nullptr), left(nullptr), right(nullptr), parent(nullptr),
-        red(true) {}
+  constexpr RbNode() noexcept : data(nullptr), left(nullptr), right(nullptr), parent(nullptr), red(true) {}
 
-  constexpr RbNode(T *d) noexcept
-      : data(d), left(nullptr), right(nullptr), parent(nullptr), red(true) {}
+  constexpr RbNode(T *d) noexcept : data(d), left(nullptr), right(nullptr), parent(nullptr), red(true) {}
 };
 
 // ============================================================================
@@ -105,77 +100,77 @@ template <typename T> struct RbNode {
 // Each CPU has an independent idle task that runs when no other tasks are available
 class IdleTask : public Thread {
 public:
-    explicit IdleTask(u32 cpu_id) noexcept;
+  explicit IdleTask(u32 cpu_id) noexcept;
 
-    ~IdleTask() noexcept = default;
+  ~IdleTask() noexcept = default;
 
-    // Non-copyable, non-movable
-    IdleTask(const IdleTask&) = delete;
-    IdleTask& operator=(const IdleTask&) = delete;
-    IdleTask(IdleTask&&) = delete;
-    IdleTask& operator=(IdleTask&&) = delete;
+  // Non-copyable, non-movable
+  IdleTask(const IdleTask &) = delete;
+  IdleTask &operator=(const IdleTask &) = delete;
+  IdleTask(IdleTask &&) = delete;
+  IdleTask &operator=(IdleTask &&) = delete;
 
-    [[noreturn]] void run() noexcept;
+  [[noreturn]] void run() noexcept;
 
-    u32 get_cpu_id() const noexcept { return cpu_id_; }
+  u32 get_cpu_id() const noexcept { return cpu_id_; }
 
-    u64 get_idle_time_ns() const noexcept { return idle_time_ns_; }
+  u64 get_idle_time_ns() const noexcept { return idle_time_ns_; }
 
-    // Snapshot idle time including in-progress idle period (for topinfo)
-    u64 snapshot_idle_time_ns(u64 now_ns) const noexcept {
-      u64 total = idle_time_ns_;
-      u64 start = last_idle_start_;
-      if (start != 0 && now_ns > start) {
-        total += (now_ns - start);
-      }
-      return total;
+  // Snapshot idle time including in-progress idle period (for topinfo)
+  u64 snapshot_idle_time_ns(u64 now_ns) const noexcept {
+    u64 total = idle_time_ns_;
+    u64 start = last_idle_start_;
+    if (start != 0 && now_ns > start) {
+      total += (now_ns - start);
     }
+    return total;
+  }
 
-    void accumulate_idle_time(u64 delta_ns) noexcept { idle_time_ns_ += delta_ns; }
+  void accumulate_idle_time(u64 delta_ns) noexcept { idle_time_ns_ += delta_ns; }
 
-    // Mark idle entry — called when CPU enters idle (before WFI)
-    void enter_idle(u64 now_ns) noexcept { last_idle_start_ = now_ns; }
+  // Mark idle entry — called when CPU enters idle (before WFI)
+  void enter_idle(u64 now_ns) noexcept { last_idle_start_ = now_ns; }
 
-    // Mark idle exit — called when CPU exits idle (WFI returned)
-    void exit_idle(u64 now_ns) noexcept {
-      if (last_idle_start_ != 0 && now_ns > last_idle_start_) {
-        idle_time_ns_ += (now_ns - last_idle_start_);
-      }
-      last_idle_start_ = 0;
+  // Mark idle exit — called when CPU exits idle (WFI returned)
+  void exit_idle(u64 now_ns) noexcept {
+    if (last_idle_start_ != 0 && now_ns > last_idle_start_) {
+      idle_time_ns_ += (now_ns - last_idle_start_);
     }
+    last_idle_start_ = 0;
+  }
 
-    void reset_idle_time() noexcept { idle_time_ns_ = 0; }
+  void reset_idle_time() noexcept { idle_time_ns_ = 0; }
 
 private:
-    u32 cpu_id_;
-    u64 idle_time_ns_;
-    u64 last_idle_start_;
+  u32 cpu_id_;
+  u64 idle_time_ns_;
+  u64 last_idle_start_;
 };
 
 // Linux-style do_idle function
 [[noreturn]] void do_idle(u32 cpu_id) noexcept;
 
 // Create idle task for specified CPU
-IdleTask* create_idle_task(u32 cpu_id) noexcept;
+IdleTask *create_idle_task(u32 cpu_id) noexcept;
 
 // Global idle task management
-extern moss::kernel::containers::PerCpuData<IdleTask*> g_idle_tasks;
+extern moss::kernel::containers::PerCpuData<IdleTask *> g_idle_tasks;
 
 // Get idle task for specified CPU
-inline IdleTask* get_idle_task(u32 cpu_id) noexcept {
-    if (cpu_id >= moss::kernel::MAX_CPUS) {
-        return nullptr;
-    }
-    return g_idle_tasks.get_cpu(cpu_id);
+inline IdleTask *get_idle_task(u32 cpu_id) noexcept {
+  if (cpu_id >= moss::kernel::MAX_CPUS) {
+    return nullptr;
+  }
+  return g_idle_tasks.get_cpu(cpu_id);
 }
 
 // Set idle task for specified CPU
-inline bool set_idle_task(u32 cpu_id, IdleTask* idle_task) noexcept {
-    if (cpu_id >= moss::kernel::MAX_CPUS) {
-        return false;
-    }
-    g_idle_tasks.get_cpu(cpu_id) = idle_task;
-    return true;
+inline bool set_idle_task(u32 cpu_id, IdleTask *idle_task) noexcept {
+  if (cpu_id >= moss::kernel::MAX_CPUS) {
+    return false;
+  }
+  g_idle_tasks.get_cpu(cpu_id) = idle_task;
+  return true;
 }
 
 // Check if specified CPU is running idle task
@@ -188,12 +183,12 @@ void wakeup_idle_cpu(u32 cpu_id) noexcept;
 /// This wakes the target from WFI and causes it to re-examine its runqueue.
 /// Used by load balancer after migrating tasks to an idle or less-loaded CPU.
 inline void send_reschedule_ipi(u32 target_cpu) noexcept {
-    if (target_cpu >= MAX_CPUS || target_cpu == arch::get_current_cpu_id())
-        return;
-    u32 target_mask = 1U << target_cpu;
-    VirtAddr dist_base = platform::intc_dist_base();
-    VirtAddr cpu_base = platform::intc_cpu_base();
-    (void)hal::intc::send_sgi(dist_base, cpu_base, 0, target_mask);  // SGI 0 = Reschedule
+  if (target_cpu >= MAX_CPUS || target_cpu == arch::get_current_cpu_id())
+    return;
+  u32 target_mask = 1U << target_cpu;
+  VirtAddr dist_base = platform::intc_dist_base();
+  VirtAddr cpu_base = platform::intc_cpu_base();
+  (void)hal::intc::send_sgi(dist_base, cpu_base, 0, target_mask); // SGI 0 = Reschedule
 }
 
 // CFS run queue (red-black tree implementation)
@@ -214,14 +209,13 @@ private:
 
   static constexpr usize MAX_NODES = 1024;
   RbNode<Thread> node_pool_[MAX_NODES];
-  usize next_fresh_index_;      // Next unused slot in node_pool_
-  RbNode<Thread> *free_list_;   // Singly-linked free list (reuses `left` ptr)
+  usize next_fresh_index_;    // Next unused slot in node_pool_
+  RbNode<Thread> *free_list_; // Singly-linked free list (reuses `left` ptr)
 
 public:
   constexpr CfsRunqueue() noexcept
-      : rb_root_(nullptr), rb_leftmost_(nullptr), nr_running_(0),
-        min_vruntime_(0), total_weight_(0), load_sum_(0), util_sum_(0),
-        load_avg_(0), util_avg_(0), next_fresh_index_(0), free_list_(nullptr) {}
+      : rb_root_(nullptr), rb_leftmost_(nullptr), nr_running_(0), min_vruntime_(0), total_weight_(0), load_sum_(0),
+        util_sum_(0), load_avg_(0), util_avg_(0), next_fresh_index_(0), free_list_(nullptr) {}
 
   void enqueue_task(Thread *thread) noexcept {
     if (thread == nullptr)
@@ -238,7 +232,7 @@ public:
       return;
     }
 
-    thread->rq_node = static_cast<void*>(node);
+    thread->rq_node = static_cast<void *>(node);
     rb_insert(node);
     nr_running_++;
     total_weight_ += thread->se.weight;
@@ -251,8 +245,9 @@ public:
       return;
     containers::LockGuard<containers::IrqSpinLock> guard(lock_);
 
-    auto *node = static_cast<RbNode<Thread>*>(thread->rq_node);
-    if (node == nullptr) return;  // not in this queue
+    auto *node = static_cast<RbNode<Thread> *>(thread->rq_node);
+    if (node == nullptr)
+      return; // not in this queue
 
     thread->rq_node = nullptr;
     rb_remove(node);
@@ -277,7 +272,8 @@ public:
     static u64 pick_debug = 0;
     pick_debug++;
     if (pick_debug % 1000000 == 0) {
-      log::klog::debug("pick_next_task: selected TID={} vruntime={} nr_running={} min_vruntime={}", static_cast<u32>(next->tid), next->se.vruntime, nr_running_, min_vruntime_);
+      log::klog::debug("pick_next_task: selected TID={} vruntime={} nr_running={} min_vruntime={}",
+                       static_cast<u32>(next->tid), next->se.vruntime, nr_running_, min_vruntime_);
     }
 
     // Linux CFS: only select the task, do not remove it
@@ -297,7 +293,7 @@ public:
     current->se.vruntime += weighted_delta;
 
     // Re-position the node in the tree if vruntime changed
-    auto *node = static_cast<RbNode<Thread>*>(current->rq_node);
+    auto *node = static_cast<RbNode<Thread> *>(current->rq_node);
     if (node != nullptr) {
       rb_remove(node);
       rb_insert(node);
@@ -335,11 +331,8 @@ private:
       return false;
     }
 
-    u64 ideal_runtime = CfsParams::sched_slice(current->se.weight,
-                                               static_cast<u32>(total_weight_),
-                                               nr_running_);
-    u64 delta_exec =
-        current->se.sum_exec_runtime - current->se.prev_sum_exec_runtime;
+    u64 ideal_runtime = CfsParams::sched_slice(current->se.weight, static_cast<u32>(total_weight_), nr_running_);
+    u64 delta_exec = current->se.sum_exec_runtime - current->se.prev_sum_exec_runtime;
 
     if (delta_exec > ideal_runtime) {
       return true;
@@ -347,7 +340,7 @@ private:
 
     // vruntime-based preemption: if leftmost has much lower vruntime, preempt.
     // WAKEUP_GRANULARITY prevents excessive switching on tiny vruntime deltas.
-    constexpr u64 WAKEUP_GRANULARITY_NS = 1000000;  // 1ms
+    constexpr u64 WAKEUP_GRANULARITY_NS = 1000000; // 1ms
     if (current->se.vruntime > leftmost->se.vruntime + WAKEUP_GRANULARITY_NS) {
       return true;
     }
@@ -356,14 +349,15 @@ private:
   }
 
 public:
-
   // Pick the highest-vruntime (rightmost) task — used by load balancer
   // to select migration candidates (migrate the least-deserving task).
   [[nodiscard]] Thread *pick_last_task() noexcept {
     containers::LockGuard<containers::IrqSpinLock> guard(lock_);
-    if (rb_root_ == nullptr) return nullptr;
+    if (rb_root_ == nullptr)
+      return nullptr;
     RbNode<Thread> *node = rb_root_;
-    while (node->right != nullptr) node = node->right;
+    while (node->right != nullptr)
+      node = node->right;
     return node->data;
   }
 
@@ -376,7 +370,7 @@ public:
   // Set initial vruntime for a newly enqueued task.
   // is_fork=true: slight penalty so parent runs first (returns child PID).
   // is_fork=false (wakeup): slight bonus to reduce wakeup latency.
-  void place_entity(Thread* thread, bool is_fork) noexcept {
+  void place_entity(Thread *thread, bool is_fork) noexcept {
     containers::LockGuard<containers::IrqSpinLock> guard(lock_);
     u64 vruntime = min_vruntime_;
     if (is_fork) {
@@ -403,8 +397,7 @@ private:
     return (min_vruntime_ > thresh) ? (min_vruntime_ - thresh) : min_vruntime_;
   }
 
-  [[nodiscard]] u64 calc_delta_fair(u64 delta_exec,
-                                    Thread *thread) const noexcept {
+  [[nodiscard]] u64 calc_delta_fair(u64 delta_exec, Thread *thread) const noexcept {
     if (thread->se.weight == 0)
       return delta_exec;
 
@@ -430,8 +423,10 @@ private:
     thread->se.util_sum += delta_exec;
 
     // Cap to prevent unbounded growth
-    if (thread->se.load_sum > LOAD_AVG_MAX) thread->se.load_sum = LOAD_AVG_MAX;
-    if (thread->se.util_sum > LOAD_AVG_MAX) thread->se.util_sum = LOAD_AVG_MAX;
+    if (thread->se.load_sum > LOAD_AVG_MAX)
+      thread->se.load_sum = LOAD_AVG_MAX;
+    if (thread->se.util_sum > LOAD_AVG_MAX)
+      thread->se.util_sum = LOAD_AVG_MAX;
 
     // Derive averages
     thread->se.load_avg = thread->se.load_sum >> 10;
@@ -446,18 +441,12 @@ private:
       load_sum_ += thread->se.load_avg;
       util_sum_ += thread->se.util_avg;
     } else {
-      load_sum_ = (load_sum_ > thread->se.load_avg)
-                      ? (load_sum_ - thread->se.load_avg)
-                      : 0;
-      util_sum_ = (util_sum_ > thread->se.util_avg)
-                      ? (util_sum_ - thread->se.util_avg)
-                      : 0;
+      load_sum_ = (load_sum_ > thread->se.load_avg) ? (load_sum_ - thread->se.load_avg) : 0;
+      util_sum_ = (util_sum_ > thread->se.util_avg) ? (util_sum_ - thread->se.util_avg) : 0;
     }
 
-    load_avg_ =
-        static_cast<u32>((nr_running_ > 0) ? (load_sum_ / nr_running_) : 0);
-    util_avg_ =
-        static_cast<u32>((nr_running_ > 0) ? (util_sum_ / nr_running_) : 0);
+    load_avg_ = static_cast<u32>((nr_running_ > 0) ? (load_sum_ / nr_running_) : 0);
+    util_avg_ = static_cast<u32>((nr_running_ > 0) ? (util_sum_ / nr_running_) : 0);
   }
 
   void rb_insert(RbNode<Thread> *node) noexcept {
@@ -501,7 +490,8 @@ private:
   }
 
   void rb_remove(RbNode<Thread> *node) noexcept {
-    if (node == nullptr) return;
+    if (node == nullptr)
+      return;
 
     // 1. Update leftmost cache BEFORE deletion (node's links still intact)
     if (node == rb_leftmost_) {
@@ -520,8 +510,9 @@ private:
     }
   }
 
-  [[nodiscard]] RbNode<Thread>* find_tree_minimum(RbNode<Thread>* root) const noexcept {
-    if (root == nullptr) return nullptr;
+  [[nodiscard]] RbNode<Thread> *find_tree_minimum(RbNode<Thread> *root) const noexcept {
+    if (root == nullptr)
+      return nullptr;
 
     while (root->left != nullptr) {
       root = root->left;
@@ -534,7 +525,7 @@ private:
       return rb_leftmost_ == nullptr;
     }
 
-    RbNode<Thread>* actual_min = find_tree_minimum(rb_root_);
+    RbNode<Thread> *actual_min = find_tree_minimum(rb_root_);
     if (rb_leftmost_ != actual_min) {
       return false;
     }
@@ -547,8 +538,9 @@ private:
     return true;
   }
 
-  [[nodiscard]] u32 count_tree_nodes(RbNode<Thread>* node) const noexcept {
-    if (node == nullptr) return 0;
+  [[nodiscard]] u32 count_tree_nodes(RbNode<Thread> *node) const noexcept {
+    if (node == nullptr)
+      return 0;
     return 1 + count_tree_nodes(node->left) + count_tree_nodes(node->right);
   }
 
@@ -573,36 +565,45 @@ private:
     return parent;
   }
 
-  void rotate_left(RbNode<Thread>* x) noexcept {
-    auto* y = x->right;
+  void rotate_left(RbNode<Thread> *x) noexcept {
+    auto *y = x->right;
     x->right = y->left;
-    if (y->left) y->left->parent = x;
+    if (y->left)
+      y->left->parent = x;
     y->parent = x->parent;
-    if (!x->parent) rb_root_ = y;
-    else if (x == x->parent->left) x->parent->left = y;
-    else x->parent->right = y;
+    if (!x->parent)
+      rb_root_ = y;
+    else if (x == x->parent->left)
+      x->parent->left = y;
+    else
+      x->parent->right = y;
     y->left = x;
     x->parent = y;
   }
 
-  void rotate_right(RbNode<Thread>* x) noexcept {
-    auto* y = x->left;
+  void rotate_right(RbNode<Thread> *x) noexcept {
+    auto *y = x->left;
     x->left = y->right;
-    if (y->right) y->right->parent = x;
+    if (y->right)
+      y->right->parent = x;
     y->parent = x->parent;
-    if (!x->parent) rb_root_ = y;
-    else if (x == x->parent->right) x->parent->right = y;
-    else x->parent->left = y;
+    if (!x->parent)
+      rb_root_ = y;
+    else if (x == x->parent->right)
+      x->parent->right = y;
+    else
+      x->parent->left = y;
     y->right = x;
     x->parent = y;
   }
 
   void rb_insert_fixup(RbNode<Thread> *z) noexcept {
     while (z->parent && z->parent->red) {
-      if (z->parent->parent == nullptr) break;  // safety: no grandparent
+      if (z->parent->parent == nullptr)
+        break; // safety: no grandparent
 
       if (z->parent == z->parent->parent->left) {
-        auto* y = z->parent->parent->right;  // uncle
+        auto *y = z->parent->parent->right; // uncle
         if (y && y->red) {
           // Case 1: uncle is red → recolor
           z->parent->red = false;
@@ -622,7 +623,7 @@ private:
         }
       } else {
         // Mirror: parent is right child of grandparent
-        auto* y = z->parent->parent->left;  // uncle
+        auto *y = z->parent->parent->left; // uncle
         if (y && y->red) {
           z->parent->red = false;
           y->red = false;
@@ -643,10 +644,11 @@ private:
   }
 
   void rb_delete_node(RbNode<Thread> *node) noexcept {
-    if (node == nullptr) return;
+    if (node == nullptr)
+      return;
 
-    RbNode<Thread>* x = nullptr;        // replacement child for fixup
-    RbNode<Thread>* x_parent = nullptr;  // x's parent (needed when x is null)
+    RbNode<Thread> *x = nullptr;        // replacement child for fixup
+    RbNode<Thread> *x_parent = nullptr; // x's parent (needed when x is null)
     bool original_red = node->red;
 
     if (node->left == nullptr) {
@@ -654,7 +656,8 @@ private:
       x = node->right;
       x_parent = node->parent;
       replace_node_in_parent(node, node->right);
-      if (node->right) node->right->parent = node->parent;
+      if (node->right)
+        node->right->parent = node->parent;
     } else if (node->right == nullptr) {
       // Case 3: only left child
       x = node->left;
@@ -663,7 +666,7 @@ private:
       node->left->parent = node->parent;
     } else {
       // Case 4: two children — splice out inorder successor
-      RbNode<Thread>* successor = tree_minimum(node->right);
+      RbNode<Thread> *successor = tree_minimum(node->right);
       original_red = successor->red;
       x = successor->right;
 
@@ -672,7 +675,8 @@ private:
       } else {
         x_parent = successor->parent;
         replace_node_in_parent(successor, successor->right);
-        if (successor->right) successor->right->parent = successor->parent;
+        if (successor->right)
+          successor->right->parent = successor->parent;
         successor->right = node->right;
         successor->right->parent = successor;
       }
@@ -694,7 +698,7 @@ private:
     }
   }
 
-  void replace_node_in_parent(RbNode<Thread>* old_node, RbNode<Thread>* new_node) noexcept {
+  void replace_node_in_parent(RbNode<Thread> *old_node, RbNode<Thread> *new_node) noexcept {
     if (old_node->parent == nullptr) {
       rb_root_ = new_node;
     } else if (old_node == old_node->parent->left) {
@@ -704,8 +708,9 @@ private:
     }
   }
 
-  [[nodiscard]] RbNode<Thread>* tree_minimum(RbNode<Thread>* node) const noexcept {
-    if (node == nullptr) return nullptr;
+  [[nodiscard]] RbNode<Thread> *tree_minimum(RbNode<Thread> *node) const noexcept {
+    if (node == nullptr)
+      return nullptr;
 
     while (node->left != nullptr) {
       node = node->left;
@@ -716,13 +721,15 @@ private:
   // Two-parameter rb_delete_fixup: supports x == nullptr (NIL sentinel)
   // by tracking parent explicitly.  This is the standard CLRS algorithm
   // adapted for nullptr-as-NIL (no sentinel node).
-  void rb_delete_fixup(RbNode<Thread>* x, RbNode<Thread>* x_parent) noexcept {
+  void rb_delete_fixup(RbNode<Thread> *x, RbNode<Thread> *x_parent) noexcept {
     while (x != rb_root_ && (x == nullptr || !x->red)) {
-      if (x_parent == nullptr) break;
+      if (x_parent == nullptr)
+        break;
 
       if (x == x_parent->left) {
-        auto* w = x_parent->right;  // sibling
-        if (w == nullptr) break;
+        auto *w = x_parent->right; // sibling
+        if (w == nullptr)
+          break;
 
         if (w->red) {
           // Case 1: sibling is red
@@ -730,7 +737,8 @@ private:
           x_parent->red = true;
           rotate_left(x_parent);
           w = x_parent->right;
-          if (w == nullptr) break;
+          if (w == nullptr)
+            break;
         }
         bool left_black = (w->left == nullptr || !w->left->red);
         bool right_black = (w->right == nullptr || !w->right->red);
@@ -742,30 +750,35 @@ private:
         } else {
           if (right_black) {
             // Case 3: left nephew red, right nephew black
-            if (w->left) w->left->red = false;
+            if (w->left)
+              w->left->red = false;
             w->red = true;
             rotate_right(w);
             w = x_parent->right;
-            if (w == nullptr) break;
+            if (w == nullptr)
+              break;
           }
           // Case 4: right nephew red
           w->red = x_parent->red;
           x_parent->red = false;
-          if (w->right) w->right->red = false;
+          if (w->right)
+            w->right->red = false;
           rotate_left(x_parent);
-          x = rb_root_;  // terminate loop
+          x = rb_root_; // terminate loop
         }
       } else {
         // Mirror: x is right child of x_parent
-        auto* w = x_parent->left;  // sibling
-        if (w == nullptr) break;
+        auto *w = x_parent->left; // sibling
+        if (w == nullptr)
+          break;
 
         if (w->red) {
           w->red = false;
           x_parent->red = true;
           rotate_right(x_parent);
           w = x_parent->left;
-          if (w == nullptr) break;
+          if (w == nullptr)
+            break;
         }
         bool left_black = (w->left == nullptr || !w->left->red);
         bool right_black = (w->right == nullptr || !w->right->red);
@@ -775,15 +788,18 @@ private:
           x_parent = x->parent;
         } else {
           if (left_black) {
-            if (w->right) w->right->red = false;
+            if (w->right)
+              w->right->red = false;
             w->red = true;
             rotate_left(w);
             w = x_parent->left;
-            if (w == nullptr) break;
+            if (w == nullptr)
+              break;
           }
           w->red = x_parent->red;
           x_parent->red = false;
-          if (w->left) w->left->red = false;
+          if (w->left)
+            w->left->red = false;
           rotate_right(x_parent);
           x = rb_root_;
         }
@@ -819,7 +835,8 @@ private:
   }
 
   void deallocate_node(RbNode<Thread> *node) noexcept {
-    if (node == nullptr) return;
+    if (node == nullptr)
+      return;
 
     // Return node to free list for reuse
     node->data = nullptr;
@@ -830,22 +847,16 @@ private:
     free_list_ = node;
   }
 
-  template <typename T>
-  constexpr const T &kernel_max(const T &a, const T &b) noexcept {
-    return (a < b) ? b : a;
-  }
+  template <typename T> constexpr const T &kernel_max(const T &a, const T &b) noexcept { return (a < b) ? b : a; }
 
-  template <typename T>
-  constexpr const T &kernel_min(const T &a, const T &b) noexcept {
-    return (a < b) ? a : b;
-  }
+  template <typename T> constexpr const T &kernel_min(const T &a, const T &b) noexcept { return (a < b) ? a : b; }
 };
 
 // CFS scheduler class
 class CfsScheduler {
 private:
   containers::PerCpuData<CfsRunqueue> runqueues_;
-  containers::PerCpuData<IdleTask*> idle_tasks_;
+  containers::PerCpuData<IdleTask *> idle_tasks_;
 
   containers::PerCpuAtomicCounter<u64> total_switches_;
   containers::PerCpuAtomicCounter<u64> total_preemptions_;
@@ -857,12 +868,10 @@ private:
   // Periodic load balance callback — set by process.cpp to avoid
   // circular partition dependency (scheduler → load_balancer).
   // Signature: void(u64 now, CfsScheduler& sched)
-  void (*balance_callback_)(u64, CfsScheduler*){nullptr};
+  void (*balance_callback_)(u64, CfsScheduler *){nullptr};
 
 public:
-  void set_balance_callback(void (*cb)(u64, CfsScheduler*)) noexcept {
-    balance_callback_ = cb;
-  }
+  void set_balance_callback(void (*cb)(u64, CfsScheduler *)) noexcept { balance_callback_ = cb; }
   constexpr CfsScheduler() noexcept : idle_tasks_{nullptr} {}
 
   void enqueue_task(Thread *thread, u32 cpu) noexcept {
@@ -912,7 +921,7 @@ public:
     return runqueues_.get_cpu(cpu).pick_last_task();
   }
 
-  inline void set_idle_task(u32 cpu_id, IdleTask* idle_task) noexcept {
+  inline void set_idle_task(u32 cpu_id, IdleTask *idle_task) noexcept {
     if (cpu_id >= MAX_CPUS)
       return;
 
@@ -925,7 +934,7 @@ public:
     }
   }
 
-  [[nodiscard]] IdleTask* get_idle_task(u32 cpu_id) const noexcept {
+  [[nodiscard]] IdleTask *get_idle_task(u32 cpu_id) const noexcept {
     if (cpu_id >= MAX_CPUS)
       return nullptr;
     return idle_tasks_.get_cpu(cpu_id);
@@ -938,14 +947,16 @@ public:
   }
 
   // Place entity vruntime for fork or wakeup (before enqueue)
-  void place_entity(Thread* thread, u32 cpu, bool is_fork) noexcept {
-    if (cpu >= MAX_CPUS || !thread) return;
+  void place_entity(Thread *thread, u32 cpu, bool is_fork) noexcept {
+    if (cpu >= MAX_CPUS || !thread)
+      return;
     runqueues_.get_cpu(cpu).place_entity(thread, is_fork);
   }
 
   // Get min_vruntime for a specific CPU's runqueue
   [[nodiscard]] u64 get_cpu_min_vruntime(u32 cpu) const noexcept {
-    if (cpu >= MAX_CPUS) return 0;
+    if (cpu >= MAX_CPUS)
+      return 0;
     return runqueues_.get_cpu(cpu).min_vruntime();
   }
 
@@ -953,10 +964,12 @@ public:
   // Called after an IO polling wait (e.g. console_read) so CFS does not
   // starve the task — equivalent to Linux place_entity() for waking tasks.
   void reset_current_to_min_vruntime() noexcept {
-    auto* curr = get_current_task();
-    if (!curr) return;
+    auto *curr = get_current_task();
+    if (!curr)
+      return;
     u32 cpu = get_current_cpu_id();
-    if (cpu >= MAX_CPUS) return;
+    if (cpu >= MAX_CPUS)
+      return;
     u64 min_vr = runqueues_.get_cpu(cpu).min_vruntime();
     if (curr->se.vruntime > min_vr) {
       curr->se.vruntime = min_vr;
@@ -965,21 +978,23 @@ public:
   }
 
 private:
-  void execute_task_simplified(Thread* task, [[maybe_unused]] u32 cpu_id) noexcept {
-    if (task == nullptr) return;
+  void execute_task_simplified(Thread *task, [[maybe_unused]] u32 cpu_id) noexcept {
+    if (task == nullptr)
+      return;
 
     // Simulate a realistic time slice so vruntime advances fairly.
     // Without this, fake test tasks accumulate negligible vruntime
     // and starve real user tasks (CFS always picks lowest vruntime).
-    constexpr u64 SIMULATED_SLICE_NS = 6000000;  // 6ms = sched latency
+    constexpr u64 SIMULATED_SLICE_NS = 6000000; // 6ms = sched latency
     update_current(task, SIMULATED_SLICE_NS);
 
     set_current_task(task);
     record_context_switch();
   }
 
-  void run_idle_task_simplified(IdleTask* idle_task, u32 cpu_id) noexcept {
-    if (idle_task == nullptr) return;
+  void run_idle_task_simplified(IdleTask *idle_task, u32 cpu_id) noexcept {
+    if (idle_task == nullptr)
+      return;
 
     mark_cpu_idle(cpu_id, true);
 
@@ -993,9 +1008,7 @@ private:
     mark_cpu_idle(cpu_id, false);
   }
 
-  void idle_task_loop([[maybe_unused]] u32 cpu_id) noexcept {
-    arch::cpu_idle_once();
-  }
+  void idle_task_loop([[maybe_unused]] u32 cpu_id) noexcept { arch::cpu_idle_once(); }
 
   void mark_cpu_idle(u32 cpu_id, bool is_idle) noexcept {
     static bool cpu_idle_status[MAX_CPUS] = {false};
@@ -1015,7 +1028,7 @@ public:
       }
     }
 
-    IdleTask* idle_task = get_idle_task(cpu_id);
+    IdleTask *idle_task = get_idle_task(cpu_id);
     if (idle_task == nullptr) {
       log::klog::info("CPU{}: idle task not set, creating default", cpu_id);
 
@@ -1032,7 +1045,7 @@ public:
     constexpr u32 LOG_INTERVAL = 2000000;
 
     while (true) {
-      Thread* next_task = nullptr;
+      Thread *next_task = nullptr;
 
       if (has_runnable_tasks(cpu_id)) {
         next_task = pick_next_task(cpu_id);
@@ -1091,14 +1104,16 @@ public:
 
       u32 total_cycles = active_cycles + idle_cycles;
       if (total_cycles > 0 && total_cycles % (LOG_INTERVAL * 5) == 0) {
-        log::klog::info("[CPU{}] stats: active={} idle={} tasks={}", cpu_id, active_cycles, idle_cycles, get_cpu_nr_running(cpu_id));
+        log::klog::info("[CPU{}] stats: active={} idle={} tasks={}", cpu_id, active_cycles, idle_cycles,
+                        get_cpu_nr_running(cpu_id));
       }
     }
   }
 
   // State transition management
-  void task_blocked(Thread* task) noexcept {
-    if (task == nullptr) return;
+  void task_blocked(Thread *task) noexcept {
+    if (task == nullptr)
+      return;
 
     ProcessState old_state = task->state;
     task->state = ProcessState::Blocked;
@@ -1109,8 +1124,9 @@ public:
     }
   }
 
-  void task_wakeup(Thread* task, u32 target_cpu) noexcept {
-    if (task == nullptr || task->state != ProcessState::Blocked) return;
+  void task_wakeup(Thread *task, u32 target_cpu) noexcept {
+    if (task == nullptr || task->state != ProcessState::Blocked)
+      return;
 
     task->state = ProcessState::Ready;
     // Place entity with wakeup bonus before enqueueing
@@ -1120,8 +1136,9 @@ public:
     log::klog::info("task wakeup and enqueued: TID={} CPU={}", static_cast<u32>(task->tid), target_cpu);
   }
 
-  void task_terminate(Thread* task) noexcept {
-    if (task == nullptr) return;
+  void task_terminate(Thread *task) noexcept {
+    if (task == nullptr)
+      return;
 
     ProcessState old_state = task->state;
     task->state = ProcessState::Terminated;
@@ -1132,44 +1149,43 @@ public:
     }
   }
 
-  void transition_task_state(Thread* task, ProcessState new_state) noexcept {
-    if (task == nullptr) return;
+  void transition_task_state(Thread *task, ProcessState new_state) noexcept {
+    if (task == nullptr)
+      return;
 
     ProcessState old_state = task->state;
 
     bool valid_transition = false;
     switch (old_state) {
-      case ProcessState::Created:
-        valid_transition = (new_state == ProcessState::Ready);
-        break;
-      case ProcessState::Ready:
-        valid_transition = (new_state == ProcessState::Running ||
-                          new_state == ProcessState::Blocked ||
+    case ProcessState::Created:
+      valid_transition = (new_state == ProcessState::Ready);
+      break;
+    case ProcessState::Ready:
+      valid_transition = (new_state == ProcessState::Running || new_state == ProcessState::Blocked ||
                           new_state == ProcessState::Terminated);
-        break;
-      case ProcessState::Running:
-        valid_transition = (new_state == ProcessState::Ready ||
-                          new_state == ProcessState::Blocked ||
+      break;
+    case ProcessState::Running:
+      valid_transition = (new_state == ProcessState::Ready || new_state == ProcessState::Blocked ||
                           new_state == ProcessState::Terminated);
-        break;
-      case ProcessState::Blocked:
-        valid_transition = (new_state == ProcessState::Ready ||
-                          new_state == ProcessState::Terminated);
-        break;
-      case ProcessState::Terminated:
-        valid_transition = (new_state == ProcessState::Zombie);
-        break;
-      case ProcessState::Zombie:
-        valid_transition = false;
-        break;
-      default:
-        valid_transition = false;
+      break;
+    case ProcessState::Blocked:
+      valid_transition = (new_state == ProcessState::Ready || new_state == ProcessState::Terminated);
+      break;
+    case ProcessState::Terminated:
+      valid_transition = (new_state == ProcessState::Zombie);
+      break;
+    case ProcessState::Zombie:
+      valid_transition = false;
+      break;
+    default:
+      valid_transition = false;
     }
 
     if (valid_transition) {
       task->state = new_state;
     } else {
-      log::klog::warn("invalid state transition: {} -> {}", static_cast<u32>(static_cast<u8>(old_state)), static_cast<u32>(static_cast<u8>(new_state)));
+      log::klog::warn("invalid state transition: {} -> {}", static_cast<u32>(static_cast<u8>(old_state)),
+                      static_cast<u32>(static_cast<u8>(new_state)));
     }
   }
 
@@ -1206,13 +1222,9 @@ public:
     return runqueues_.get_cpu(cpu).nr_running();
   }
 
-  [[nodiscard]] u64 total_context_switches() const noexcept {
-    return total_switches_.load_total();
-  }
+  [[nodiscard]] u64 total_context_switches() const noexcept { return total_switches_.load_total(); }
 
-  [[nodiscard]] u64 total_preemptions() const noexcept {
-    return total_preemptions_.load_total();
-  }
+  [[nodiscard]] u64 total_preemptions() const noexcept { return total_preemptions_.load_total(); }
 
   void dump_runqueue(u32 cpu) const noexcept {
     if (cpu < MAX_CPUS) {
@@ -1220,16 +1232,12 @@ public:
     }
   }
 
-  void record_context_switch() noexcept {
-    (void)total_switches_.fetch_add_local(1);
-  }
+  void record_context_switch() noexcept { (void)total_switches_.fetch_add_local(1); }
 
-  void record_preemption() noexcept {
-    (void)total_preemptions_.fetch_add_local(1);
-  }
+  void record_preemption() noexcept { (void)total_preemptions_.fetch_add_local(1); }
 
 private:
-  static Thread* current_running_tasks_[MAX_CPUS];
+  static Thread *current_running_tasks_[MAX_CPUS];
 
   // Per-CPU bootstrap context — used as "prev" save target when there is
   // no current task (e.g. schedule_after_exit or first dispatch).
@@ -1242,28 +1250,26 @@ private:
   // Without this, bootstrap_contexts_[cpu].sp would point to the dead
   // task's kernel stack, creating a use-after-free when that stack is
   // reclaimed by a subsequent fork.
-  static constexpr usize EXIT_STACK_SIZE = 4096;  // 4KB per CPU is plenty
+  static constexpr usize EXIT_STACK_SIZE = 4096; // 4KB per CPU is plenty
   alignas(16) static u8 exit_stacks_[MAX_CPUS][EXIT_STACK_SIZE];
 
 public:
-  static CpuContext& bootstrap_context(u32 cpu) noexcept {
-    return bootstrap_contexts_[cpu % MAX_CPUS];
-  }
+  static CpuContext &bootstrap_context(u32 cpu) noexcept { return bootstrap_contexts_[cpu % MAX_CPUS]; }
 
-  static void set_current_task(Thread* task) noexcept {
+  static void set_current_task(Thread *task) noexcept {
     u32 cpu = CfsScheduler::get_current_cpu_id();
     if (cpu < MAX_CPUS) {
       current_running_tasks_[cpu] = task;
     }
   }
 
-  static Thread* get_current_task() noexcept {
+  static Thread *get_current_task() noexcept {
     u32 cpu = CfsScheduler::get_current_cpu_id();
     return (cpu < MAX_CPUS) ? current_running_tasks_[cpu] : nullptr;
   }
 
   // Get the currently running task on a specific CPU (for topinfo)
-  static Thread* get_current_task_on_cpu(u32 cpu) noexcept {
+  static Thread *get_current_task_on_cpu(u32 cpu) noexcept {
     return (cpu < MAX_CPUS) ? current_running_tasks_[cpu] : nullptr;
   }
 
@@ -1271,7 +1277,7 @@ public:
   // Bridges the hardware interrupt from GIC to the TimerSubsystem.
   // GIC calls this when timer IRQ fires; we ack the hardware timer
   // and dispatch all expired HrTimer callbacks (including sched_tick_).
-  static void timer_irq_handler(u32 /*irq*/, void* /*context*/) noexcept {
+  static void timer_irq_handler(u32 /*irq*/, void * /*context*/) noexcept {
     hal::timer::ack_interrupt();
     timer::TimerSubsystem::instance().handle_interrupt();
   }
@@ -1280,8 +1286,8 @@ public:
   // Called from timer interrupt context every SCHED_LATENCY_NS (6ms).
   // Performs one scheduling round: pick next task, update vruntime,
   // context-switch if needed.
-  static void scheduler_tick_callback(void* data) noexcept {
-    auto* sched = static_cast<CfsScheduler*>(data);
+  static void scheduler_tick_callback(void *data) noexcept {
+    auto *sched = static_cast<CfsScheduler *>(data);
     sched->scheduler_tick();
   }
 
@@ -1314,7 +1320,8 @@ public:
       // was in a kernel path that masked IRQ (e.g. console_read polling for
       // keyboard input).  Charge at most one tick's worth of vruntime so the
       // task is not starved by CFS after the masked period ends.
-      if (delta > CfsParams::SCHED_LATENCY_NS * 2) delta = CfsParams::SCHED_LATENCY_NS;
+      if (delta > CfsParams::SCHED_LATENCY_NS * 2)
+        delta = CfsParams::SCHED_LATENCY_NS;
       curr->se.exec_start = now;
       update_current(curr, delta);
 
@@ -1322,7 +1329,8 @@ public:
       if (should_preempt_current(curr)) {
         // Guard: task may have been marked Terminated by sys_exit
         // between our state==Running check above and here.
-        if (curr->state == ProcessState::Terminated) return;
+        if (curr->state == ProcessState::Terminated)
+          return;
 
         curr->need_resched = true;
 
@@ -1341,7 +1349,6 @@ public:
         }
       }
     }
-
   }
 
   [[noreturn]] void start_scheduling() noexcept {
@@ -1363,8 +1370,7 @@ public:
       early_debug_print("[sched] registering timer IRQ handler\n");
 
       if (interrupts::g_gic) {
-        auto reg_result = interrupts::g_gic->register_interrupt(
-            timer_irq, timer_irq_handler, nullptr, "sched_timer");
+        auto reg_result = interrupts::g_gic->register_interrupt(timer_irq, timer_irq_handler, nullptr, "sched_timer");
         if (!reg_result) {
           early_debug_print("[sched] WARN: failed to register timer IRQ\n");
         } else {
@@ -1382,8 +1388,7 @@ public:
       // Step 2: Arm the periodic scheduler tick HrTimer
       early_debug_print("[sched] arming scheduler tick timer (6ms period)\n");
 
-      sched_tick_.init(timer::TimerMode::Periodic,
-                       scheduler_tick_callback, this);
+      sched_tick_.init(timer::TimerMode::Periodic, scheduler_tick_callback, this);
       sched_tick_.start_relative(CfsParams::SCHED_LATENCY_NS);
 
       early_debug_print("[sched] tick armed, entering idle loop\n");
@@ -1402,7 +1407,8 @@ public:
 
           for (u32 s = 0; s < MAX_SCAN; s++) {
             Thread *t = pick_next_task(cpu);
-            if (t == nullptr) break;
+            if (t == nullptr)
+              break;
             dequeue_task(t);
             if (t->tid == 1000) {
               init_task = t;
@@ -1460,7 +1466,6 @@ public:
   }
 
 private:
-
   void context_switch_to_task(Thread *task) noexcept {
     if (task == nullptr)
       return;
@@ -1476,7 +1481,7 @@ private:
 
     CfsScheduler::set_current_task(task);
     task->state = ProcessState::Running;
-    task->se.exec_start = get_current_time();  // Reset for vruntime accounting
+    task->se.exec_start = get_current_time(); // Reset for vruntime accounting
     record_context_switch();
 
     if (task->needs_initial_eret) {
@@ -1496,8 +1501,8 @@ private:
       // context_switch preserves x19-x28, so these survive the switch.
       u64 user_pc = task->context.pc;
       u64 user_sp = task->context.sp;
-      u64 user_x0 = task->context.x[0];  // fork: 0, execve: argc
-      u64 user_x1 = task->context.x[1];  // fork: 0, execve: argv ptr
+      u64 user_x0 = task->context.x[0]; // fork: 0, execve: argc
+      u64 user_x1 = task->context.x[1]; // fork: 0, execve: argv ptr
 
       // Determine if this is a fork child or execve new program.
       // Fork child: needs full parent register restore (x2-x18, x24-x29).
@@ -1521,7 +1526,7 @@ private:
         // Save parent's original x19-x24 to kernel stack top
         if (task->kernel_stack_base != 0) {
           u64 kstop = task->kernel_stack_top();
-          auto* saved = reinterpret_cast<u64*>(kstop - 48);
+          auto *saved = reinterpret_cast<u64 *>(kstop - 48);
           saved[0] = task->context.x[19];
           saved[1] = task->context.x[20];
           saved[2] = task->context.x[21];
@@ -1533,7 +1538,7 @@ private:
         task->context.x[19] = reinterpret_cast<u64>(task);
         task->context.x[20] = user_pc;
         task->context.x[21] = user_sp;
-        task->context.x[22] = user_x0;  // 0
+        task->context.x[22] = user_x0; // 0
         task->context.x[23] = user_x1;
         task->context.x[24] = reinterpret_cast<u64>(&task->context);
         // x[25]-x[29] retain parent values — context_switch restores them.
@@ -1549,12 +1554,10 @@ private:
       }
 
       u64 trampoline_addr = reinterpret_cast<u64>(&user_eret_trampoline);
-      task->context.x[30] = trampoline_addr;  // LR → ret target
-      task->context.pc    = trampoline_addr;
+      task->context.x[30] = trampoline_addr; // LR → ret target
+      task->context.pc = trampoline_addr;
       // SP = kernel stack top (16-byte aligned)
-      task->context.sp = task->kernel_stack_base != 0
-                           ? task->kernel_stack_top()
-                           : 0;
+      task->context.sp = task->kernel_stack_base != 0 ? task->kernel_stack_top() : 0;
 
       // Fall through to the normal context_switch path below, which will:
       //   1. Save bootstrap_contexts_[cpu] (or prev task)
@@ -1582,9 +1585,8 @@ private:
       if (task->is_user_task) {
         Process *proc = g_process_manager ? g_process_manager->find_process(task->owner_pid) : nullptr;
         if (proc && proc->address_space() && proc->address_space()->pgd_phys != 0) {
-          u64 ttbr0_val = proc->address_space()->pgd_phys
-                        | (static_cast<u64>(proc->address_space()->asid) << 48);
-          asm volatile("msr ttbr0_el1, %0" :: "r"(ttbr0_val));
+          u64 ttbr0_val = proc->address_space()->pgd_phys | (static_cast<u64>(proc->address_space()->asid) << 48);
+          asm volatile("msr ttbr0_el1, %0" ::"r"(ttbr0_val));
           asm volatile("isb" ::: "memory");
         }
 
@@ -1596,7 +1598,7 @@ private:
         // by irq_trampoline exit to verify SP correctness.
         if (task->kernel_stack_base != 0) {
           u64 kstack_top = task->kernel_stack_top();
-          asm volatile("msr tpidr_el1, %0" :: "r"(kstack_top));
+          asm volatile("msr tpidr_el1, %0" ::"r"(kstack_top));
         }
       }
 
@@ -1625,13 +1627,9 @@ private:
     }
   }
 
-  [[nodiscard]] static u32 get_current_cpu_id() noexcept {
-    return arch::get_current_cpu_id();
-  }
+  [[nodiscard]] static u32 get_current_cpu_id() noexcept { return arch::get_current_cpu_id(); }
 
-  [[nodiscard]] static u64 get_current_time() noexcept {
-    return arch::get_timestamp_counter();
-  }
+  [[nodiscard]] static u64 get_current_time() noexcept { return arch::get_timestamp_counter(); }
 
 public:
   // Called after a process exits (sys_exit).  Picks the next runnable task
@@ -1653,7 +1651,7 @@ public:
 #if defined(MOSS_ARCH_ARM64)
     {
       u64 exit_sp = reinterpret_cast<u64>(&exit_stacks_[cpu % MAX_CPUS][EXIT_STACK_SIZE]);
-      asm volatile("mov sp, %0" :: "r"(exit_sp) : "memory");
+      asm volatile("mov sp, %0" ::"r"(exit_sp) : "memory");
     }
 #endif
 
@@ -1697,12 +1695,11 @@ extern CfsScheduler *g_scheduler;
 [[noreturn]] void secondary_cpu_schedule_loop(u32 cpu_id) noexcept;
 
 // current_thread / current_process implementation (needs CfsScheduler to be defined)
-inline Thread *current_thread() noexcept {
-  return CfsScheduler::get_current_task();
-}
+inline Thread *current_thread() noexcept { return CfsScheduler::get_current_task(); }
 inline Process *current_process() noexcept {
   Thread *t = current_thread();
-  if (!t || !g_process_manager) return nullptr;
+  if (!t || !g_process_manager)
+    return nullptr;
   return g_process_manager->find_process(t->owner_pid);
 }
 

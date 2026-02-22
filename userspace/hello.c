@@ -6,7 +6,7 @@
 #include "syscall.h"
 
 void _start(void) {
-    print("Hello from initramfs!\n");
-    print("MOSS execve() works!\n");
-    _exit(0);
+  print("Hello from initramfs!\n");
+  print("MOSS execve() works!\n");
+  _exit(0);
 }
