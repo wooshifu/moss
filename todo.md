@@ -218,6 +218,29 @@ Build system: CMake + Clang C++26 modules, 6 presets (3 arch x debug/release).
 - [x] **Linker scripts** — Kernel: `.text.boot` at 0x40080000, sections: text/rodata/data/bss/stack(256KB)/heap(8MB)/page_tables(2MB). User: base at 0x400000
   - `linker.ld`, `userspace/userspace.ld`
 
+### Virtual File System (VFS)
+
+- [x] **VFS core** — Inode, Dentry, File, SuperBlock abstractions; FdTable per-process (256 fds) with alloc/free/clone for fork; DentryCache (FNV-1a hash, open-addressed); MountTable (16 mounts, longest-prefix lookup); pool-based allocators for Inode/Dentry/File objects
+  - `src/vfs/src/vfs-types.cppm`, `src/vfs/src/vfs-inode.cppm`, `src/vfs/src/vfs-dcache.cppm`, `src/vfs/src/vfs-file.cppm`, `src/vfs/src/vfs-mount.cppm`, `src/vfs/src/vfs_init.cpp`
+- [x] **VFS syscalls** — 9 syscalls fully implemented through VFS layer: `open()`, `close()`, `read()`, `write()`, `lseek()`, `fstat()`, `dup()`, `dup2()`, `pipe()`
+  - `src/vfs/src/vfs_syscall.cpp`, `src/vfs/src/vfs-syscall.cppm`
+- [x] **Path resolution** — Multi-component path traversal through mount table + dcache, absolute path support
+  - `src/vfs/src/vfs_path.cpp`
+- [x] **ramfs** — Read-only filesystem backed by initramfs CPIO archive. Zero-copy: inode data points directly into CPIO memory in RAM. Mounted at `/`
+  - `src/vfs/src/vfs-ramfs.cppm`, `src/vfs/src/vfs_init.cpp`
+- [x] **devfs** — `/dev/console` (UART read+write, line-buffered input, backspace, Ctrl+C), `/dev/null` (discard writes, EOF reads), `/dev/zero` (zero-fill reads). Mounted at `/dev`
+  - `src/vfs/src/vfs-devfs.cppm`, `src/vfs/src/vfs_init.cpp`
+- [x] **pipefs** — Anonymous pipes with 4KB ring buffer, 64-pipe pool, read/write with EOF detection, per-end reference counting and cleanup
+  - `src/vfs/src/vfs-pipefs.cppm`, `src/vfs/src/vfs_init.cpp`
+- [x] **stdio initialization** — `vfs_init_stdio()` opens `/dev/console` as fd 0/1/2 (stdin/stdout/stderr) for init process
+  - `src/vfs/src/vfs_init.cpp`
+
+### initramfs
+
+- [x] **CPIO newc parser** — Parses CPIO "070701" newc format archives from RAM (passed by QEMU `-initrd`), supports up to 64 files, FDT `/chosen/linux,initrd-start` discovery, `lookup()` and `for_each()` APIs
+  - `src/initramfs/src/initramfs.cppm`
+- [x] **VFS integration** — initramfs entries automatically registered as ramfs inodes at boot, zero-copy backing for file reads, execve resolves ELF binaries from initramfs via VFS path
+
 ---
 
 ## Pending Features
@@ -237,14 +260,14 @@ Build system: CMake + Clang C++26 modules, 6 presets (3 arch x debug/release).
 - [x] **Copy-on-Write (COW)** — PTE bit 55 as COW flag, atomic page reference counting (`PageRefCount` array), permission fault handler (DFSC 0x0C-0x0F): if refcount > 1 → allocate new page + copy + map writable + decrement old; if refcount == 1 → flip PTE to writable. `clone_user_page_tables()` marks shared pages and increments refcounts.
   - `src/mm/src/page_fault.cpp` (COW fault path), `src/mm/src/mm.cppm` (PageRefCount), `src/mm/src/page_table.cpp` (clone + COW PTE bit)
 
-- [ ] **execve() system call** — Cannot replace process image. Need to load a new ELF into an existing process.
-  - Need: tear down old address space (free all user page tables + physical pages)
-  - Need: create new address space with new PGD
-  - Need: load new ELF segments as VMAs (reuse existing ELF loader)
-  - Need: reset thread context (new entry point, new stack)
-  - Need: close inherited file descriptors marked CLOEXEC (when FD table exists)
-  - Files: `syscall_table.cpp`, `kernel.cppm` (ElfLoader), `process.cppm`, `page_table.cpp`
-  - Complexity: Medium-High
+- [x] **execve() system call** — 13-step full process image replacement via VFS path resolution:
+  - Copy pathname + argv from user memory before TTBR0 switch
+  - Resolve ELF via VFS `resolve_path()` (ramfs-backed initramfs files)
+  - Validate ELF header, tear down old address space (free user page tables + physical pages)
+  - Create new address space (PGD + ASID), load PT_LOAD segments as VMAs with smart overlap merging
+  - Add stack + heap VMAs (demand-zero), bind new address space, switch TTBR0
+  - Set up user stack with argc/argv (C ABI), direct eret to new entry point
+  - `src/kernel/src/syscall_table.cpp` (sys_execve, lines 289-737)
 
 - [x] **wait4()/waitpid() system calls** — Full blocking wait with Zombie lifecycle:
   - `WaitQueue` primitive in containers (void*-based to avoid module cycle)
@@ -259,15 +282,7 @@ Build system: CMake + Clang C++26 modules, 6 presets (3 arch x debug/release).
 
 ### P1: Basic OS Functionality
 
-- [ ] **VFS (Virtual File System)** — No file system layer at all. This blocks open/close/read/write/stat and everything that depends on file descriptors.
-  - Need: `struct file`, `struct inode`, `struct dentry`, `struct superblock` abstractions
-  - Need: file descriptor table per process (array of `struct file*`)
-  - Need: VFS operations: `open()`, `close()`, `read()`, `write()`, `stat()`, `lseek()`
-  - Need: at minimum a ramfs/tmpfs for in-memory file system
-  - Need: devfs for device nodes (e.g. /dev/console → UART)
-  - Complexity: Very High — this is a major subsystem
-
-- [ ] **mmap() / munmap() system calls** — User-space cannot dynamically map memory. Current heap is a fixed 1MB VMA at 0x800000.
+- [ ] **mmap() / munmap() system calls** — User-space cannot dynamically map memory. Current heap is a fixed 64KB VMA at 0x100000000.
   - Need: find free VA range in process address space
   - Need: create VMA for the mapping
   - Need: anonymous mmap: demand-zero pages
@@ -291,14 +306,6 @@ Build system: CMake + Clang C++26 modules, 6 presets (3 arch x debug/release).
   - Need: default signal actions (SIGKILL→terminate, SIGSEGV→terminate+core, SIGSTOP→stop)
   - Files: `process.cppm` (Thread struct), `start_arm64.S` (check signals before eret), new `signal.cpp`
   - Complexity: High
-
-- [ ] **Pipe IPC** — pipe() returns ENOSYS. No inter-process communication primitive.
-  - Need: kernel buffer (e.g. 4KB ring buffer) shared between read and write ends
-  - Need: file descriptor integration (read end fd, write end fd)
-  - Need: blocking: reader blocks if pipe empty, writer blocks if pipe full
-  - Need: EOF: close write end → reader gets EOF
-  - Dependency: VFS / file descriptor table
-  - Complexity: Medium
 
 - [ ] **User pointer validation** — sys_write does raw `reinterpret_cast` on user-provided buffer address. No `copy_from_user()`/`copy_to_user()` safety.
   - Need: `copy_from_user(kernel_dst, user_src, len)` — validates user pointer falls within process VMA with correct permissions before copying
@@ -384,13 +391,6 @@ Build system: CMake + Clang C++26 modules, 6 presets (3 arch x debug/release).
 
 ### P4: Advanced Features
 
-- [ ] **initramfs / root filesystem** — No storage layer at all. Kernel can only run the single embedded hello.elf.
-  - Need: CPIO archive parser for initramfs (passed by bootloader in memory)
-  - Need: ramfs to hold extracted files
-  - Need: mount as root filesystem
-  - Dependency: VFS
-  - Complexity: Medium
-
 - [ ] **User-space libc** — Current user programs use raw SVC inline assembly. No C library.
   - Need: minimal libc with syscall wrappers (write, exit, mmap, brk, etc.)
   - Need: printf/puts implementation using write()
@@ -458,7 +458,11 @@ moss.types ← moss.std ← moss.concepts ← moss.result ← moss.smart_ptr
                                ↓
                           moss.process
                                ↓
-                          moss.drivers
+                     ┌─────────┼─────────┐
+                     ↓         ↓         ↓
+               moss.drivers  moss.vfs  moss.initramfs
+                     ↓         ↓         ↓
+                     └─────────┼─────────┘
                                ↓
                           moss.kernel ← moss.boot
 ```
@@ -467,9 +471,9 @@ moss.types ← moss.std ← moss.concepts ← moss.result ← moss.smart_ptr
 
 ## File Statistics
 
-- **Total source files**: ~60 (.cppm + .cpp + .S + .c)
-- **Total lines of code**: ~15,000+ (estimated)
-- **Modules**: 23 C++26 modules
-- **Syscall table entries**: 130 (11 implemented, ~119 stubs)
+- **Total source files**: ~75 (.cppm + .cpp + .S + .c)
+- **Total lines of code**: ~18,000+ (estimated)
+- **Modules**: 25 C++26 modules (including moss.vfs, moss.initramfs)
+- **Syscall table entries**: 130 (27 implemented, ~103 stubs)
 - **Architectures**: 3 (ARM64 full, x86_64 stub, RISC-V stub)
 - **Build presets**: 6 (3 arch × 2 build types)
