@@ -43,7 +43,7 @@ enum class ProcessState : u8 { Created = 0, Ready = 1, Running = 2, Blocked = 3,
 enum class SchedClass : u8 { Normal = 0, RealTime = 1, Idle = 2, Batch = 3 };
 
 // Process priority range
-namespace Priority {
+namespace priority {
 inline constexpr i32 MIN_NICE = -20;
 inline constexpr i32 MAX_NICE = 19;
 inline constexpr i32 DEFAULT_NICE = 0;
@@ -51,7 +51,7 @@ inline constexpr i32 DEFAULT_NICE = 0;
 inline constexpr u32 MIN_RT_PRIORITY = 1;
 inline constexpr u32 MAX_RT_PRIORITY = 99;
 inline constexpr u32 DEFAULT_RT_PRIORITY = 50;
-} // namespace Priority
+} // namespace priority
 
 // CPU context structure (multi-architecture support)
 #if defined(__aarch64__) || defined(MOSS_ARCH_ARM64)
@@ -140,12 +140,12 @@ struct alignas(16) CpuContext {
 static_assert(sizeof(CpuContext) <= 1024, "CpuContext should fit in reasonable size");
 
 // VMA permission / type flags
-namespace VmaFlags {
+namespace vma_flags {
 inline constexpr u32 READ = 1u << 0;
 inline constexpr u32 WRITE = 1u << 1;
 inline constexpr u32 EXEC = 1u << 2;
 inline constexpr u32 DEMAND_ZERO = 1u << 3; // allocate zero page on first access
-} // namespace VmaFlags
+} // namespace vma_flags
 
 // VMA region types (what is this VMA for?)
 enum class VmaType : u32 {
@@ -180,7 +180,7 @@ struct VmaRegion {
       : start_addr(start), end_addr(end), flags(region_flags), type(vma_type), backing_data(backing),
         backing_offset(b_offset), backing_size(b_size) {}
 
-  [[nodiscard]] bool is_demand_zero() const noexcept { return (flags & VmaFlags::DEMAND_ZERO) != 0; }
+  [[nodiscard]] bool is_demand_zero() const noexcept { return (flags & vma_flags::DEMAND_ZERO) != 0; }
 
   [[nodiscard]] bool has_backing() const noexcept { return backing_data != nullptr && backing_size > 0; }
 
@@ -267,7 +267,7 @@ struct RtSchedEntity {
   u64 deadline;
   u64 period;
 
-  RtSchedEntity() noexcept : priority(Priority::DEFAULT_RT_PRIORITY), runtime(0), deadline(0), period(0) {}
+  RtSchedEntity() noexcept : priority(priority::DEFAULT_RT_PRIORITY), runtime(0), deadline(0), period(0) {}
 };
 
 // Thread structure
@@ -553,13 +553,13 @@ extern ProcessManager *g_process_manager;
 // Canonical user-space virtual address layout.
 // All components that create user VMAs should reference these constants
 // instead of hardcoding addresses.
-namespace UserLayout {
+namespace user_layout {
 inline constexpr VirtAddr CODE_BASE = 0x0000000200000000ULL;  // 8GB — above kernel identity map
 inline constexpr VirtAddr HEAP_START = 0x0000000100000000ULL; // 4GB
 inline constexpr VirtAddr STACK_TOP = 0x00007FFF00000000ULL;  // 128TB boundary - 4GB
 inline constexpr usize STACK_SIZE = 32 * 1024;                // 32KB default user stack
 inline constexpr usize HEAP_INIT = 64 * 1024;                 // 64KB initial heap
-} // namespace UserLayout
+} // namespace user_layout
 
 // User address space management extensions
 namespace user_space {

@@ -249,6 +249,15 @@ def find_clang_tidy(build_dir: Path) -> str:
     return "clang-tidy"
 
 
+def _compile_commands_files(build_dir: Path) -> set[str]:
+    """Return the set of source file paths listed in compile_commands.json."""
+    cc_json = build_dir / "compile_commands.json"
+    if not cc_json.exists():
+        return set()
+    entries = json.loads(cc_json.read_text())
+    return {e.get("file", "") for e in entries}
+
+
 def run_clang_tidy(files: list[Path], *, fix: bool, build_dir: Path) -> bool:
     """Run clang-tidy on C++ source files. Returns True if no warnings."""
     tidy_files = [f for f in files if f.suffix in CLANG_TIDY_EXTENSIONS]
@@ -258,6 +267,15 @@ def run_clang_tidy(files: list[Path], *, fix: bool, build_dir: Path) -> bool:
     if not (build_dir / "compile_commands.json").exists():
         console.print(f"  [red]compile_commands.json not found in {build_dir} — build first[/]")
         return False
+
+    # Only lint files present in compile_commands.json — cross-arch sources
+    # (e.g. riscv/boot_impl.cpp in an arm64 build) lack correct .pcm modules
+    # and would produce spurious errors.
+    known_files = _compile_commands_files(build_dir)
+    if known_files:
+        tidy_files = [f for f in tidy_files if str(f.resolve()) in known_files]
+    if not tidy_files:
+        return True
 
     clang_tidy = find_clang_tidy(build_dir)
 

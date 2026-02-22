@@ -35,9 +35,9 @@ CheckOptions:
     value: '[a-z][a-z_]+'
   - key: readability-identifier-naming.FunctionCase
     value: lower_case
-  # _start (linker entry), Ok/Err (Rust-style factory functions)
+  # _start (linker entry), Ok/Err (Rust-style factory functions), _Z* (C++ ABI mangled names)
   - key: readability-identifier-naming.FunctionIgnoredRegexp
-    value: '(_[a-z_]+|Ok|Err)'
+    value: '(_[a-z_]+|Ok|Err|_Z[a-zA-Z0-9_]+)'
   - key: readability-identifier-naming.VariableCase
     value: lower_case
   # Linker script symbols (_text_start_addr) and static members (count_) with _ prefix/suffix
