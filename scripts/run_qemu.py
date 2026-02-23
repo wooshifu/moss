@@ -251,6 +251,7 @@ def build_qemu_args(
     cfg: QemuConfig,
     kernel_file: Path,
     *,
+    smp: int,
     use_binary: bool,
     test_mode: bool,
     debug_mode: bool,
@@ -260,7 +261,7 @@ def build_qemu_args(
     """构造完整的 QEMU 命令行参数列表"""
     arch_cfg = ARCH_CONFIG[cfg.arch]
 
-    smp = 1 if test_mode else cfg.cpu_cores
+    smp = 1 if test_mode else smp
     machine = resolve_machine(cfg.arch, smp=smp, force_gic3=force_gic3)
 
     # 内核加载方式
@@ -482,6 +483,7 @@ def main(
         int | None,
         typer.Option("--timeout", "-t", help="QEMU 运行超时时间（秒），超时后自动终止"),
     ] = None,
+    smp: Annotated[int, typer.Option("--smp", help="CPU 核心数（smp>8 时自动启用 GICv3）")] = 8,
     extra_qemu_args: Annotated[str | None, typer.Option("--qemu-args", help="额外的QEMU参数（用空格分隔）")] = None,
     force_gic3: Annotated[bool, typer.Option("--gic3", help="强制使用 GICv3（ARM64 only, smp>8 时自动启用）")] = False,
 ) -> None:
@@ -534,6 +536,7 @@ def main(
     qemu_cmd_args = build_qemu_args(
         cfg,
         kernel_file,
+        smp=smp,
         use_binary=use_binary,
         test_mode=test_mode,
         debug_mode=debug_mode,
