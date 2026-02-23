@@ -134,6 +134,18 @@ SECTIONS
         _data_end = .;
     }
 
+    /* ---- C++ Global Constructors (.init_array) ----
+     * Function pointers for C++ global/static object constructors.
+     * The boot code must iterate from __init_array_start to __init_array_end
+     * and call each entry before entering kernel_main().
+     */
+    .init_array : ALIGN(8) {
+        __init_array_start = .;
+        KEEP(*(.init_array))
+        KEEP(*(SORT(.init_array.*)))
+        __init_array_end = .;
+    }
+
     /* ---- BSS Section (Zero-Initialized Data) ----
      * Uninitialized globals and statics.  Occupies no space in the ELF file;
      * the boot code (start_arm64.S) zeros this region before calling kernel_main.

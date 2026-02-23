@@ -52,6 +52,20 @@ SECTIONS
         _data_end = .;
     }
 
+    .init_array : ALIGN(8) {
+        __init_array_start = .;
+        KEEP(*(.init_array))
+        KEEP(*(SORT(.init_array.*)))
+        __init_array_end = .;
+    }
+
+    /* PVH page tables — used by _pvh_start to build identity map before
+     * enabling paging.  Placed OUTSIDE .bss so that _start's BSS clearing
+     * does not destroy the live page tables we are running on. */
+    .pvh_pagetables (NOLOAD) : ALIGN(4K) {
+        *(.pvh.pagetables)
+    }
+
     .bss : ALIGN(4K) {
         _bss_start = .;
         *(.bss)

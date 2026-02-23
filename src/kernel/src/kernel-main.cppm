@@ -480,7 +480,6 @@ private:
       // This avoids concurrent heap allocation from 16 CPUs simultaneously
       // calling `new IdleTask()` in cpu_startup_entry(), which caused heap
       // corruption (IdleTask::cpu_id_ = 0xFFFFFFFF) under high contention.
-      early_debug_print("[sched] pre-creating idle tasks on BSP...\n");
       for (u32 cpu = 0; cpu < g_num_cpus; ++cpu) {
         auto *idle = process::create_idle_task(cpu);
         if (idle) {
@@ -488,20 +487,14 @@ private:
         }
       }
 
-      early_debug_print("[sched] activating parked secondary CPUs...\n");
-
       // Activate all parked secondary CPUs
       moss::boot::activate_secondary_cpus();
 
       // Wait for secondary CPUs to complete activation
       u32 active_cpus = moss::boot::wait_for_all_cpus_active(5000);
 
-      early_debug_print("[sched] CPU activation complete\n");
-
       if (active_cpus > 1) {
-        early_debug_print("[sched] multi-CPU scheduler started\n");
-      } else {
-        early_debug_print("[sched] single-core mode\n");
+        log::klog::info("SMP: {} CPUs active", active_cpus);
       }
     }
 
@@ -542,19 +535,21 @@ private:
       return VoidResult{ErrorCode::OutOfMemory};
     }
 
-    // Resolve GIC addresses and version from DTB, fall back to platform defaults.
+    // Resolve interrupt controller addresses and version from DTB,
+    // fall back to platform defaults for zero/missing values.
     const auto &plat = ::moss::fdt::get_platform_info();
-    VirtAddr gic_dist_base =
-        (plat.dtb_valid && plat.intc.valid) ? static_cast<VirtAddr>(plat.intc.dist_base) : platform::intc_dist_base();
-    u8 gic_ver = (plat.dtb_valid && plat.intc.valid) ? plat.intc.gic_version : 2;
+    bool have_dtb_intc = plat.dtb_valid && plat.intc.valid;
+
+    VirtAddr gic_dist_base = (have_dtb_intc && plat.intc.dist_base != 0) ? static_cast<VirtAddr>(plat.intc.dist_base)
+                                                                         : platform::intc_dist_base();
+    u8 gic_ver = (have_dtb_intc && plat.intc.gic_version != 0) ? plat.intc.gic_version : 2;
     VirtAddr second_base;
     if (gic_ver >= 3) {
-      second_base = (plat.dtb_valid && plat.intc.valid && plat.intc.redist_base != 0)
-                        ? static_cast<VirtAddr>(plat.intc.redist_base)
-                        : platform::intc_redist_base();
+      second_base = (have_dtb_intc && plat.intc.redist_base != 0) ? static_cast<VirtAddr>(plat.intc.redist_base)
+                                                                  : platform::intc_redist_base();
     } else {
-      second_base =
-          (plat.dtb_valid && plat.intc.valid) ? static_cast<VirtAddr>(plat.intc.cpu_base) : platform::intc_cpu_base();
+      second_base = (have_dtb_intc && plat.intc.cpu_base != 0) ? static_cast<VirtAddr>(plat.intc.cpu_base)
+                                                               : platform::intc_cpu_base();
     }
 
     auto gic_result = gic_->initialize(gic_dist_base, second_base, gic_ver);

@@ -24,6 +24,9 @@ extern char _heap_end_addr[];
 extern char _pagetable_start_addr[];
 extern char _pagetable_end_addr[];
 extern char _kernel_end_addr[];
+// C++ global constructor array (populated by linker from .init_array section)
+extern void (*__init_array_start[])();
+extern void (*__init_array_end[])();
 }
 
 // ============================================================================
@@ -137,6 +140,19 @@ inline auto bss_size() noexcept -> usize { return bss_end() - bss_start(); }
 inline auto stack_size() noexcept -> usize { return stack_top() - stack_bottom(); }
 inline auto heap_size() noexcept -> usize { return heap_end() - heap_start(); }
 inline auto pagetable_size() noexcept -> usize { return pagetable_end() - pagetable_start(); }
+
+// Call all C++ global constructors from the .init_array section.
+// Must be called once during early boot, before kernel_main().
+inline void call_global_constructors() noexcept {
+  using CtorFn = void (*)();
+  CtorFn *start = __init_array_start;
+  CtorFn *end = __init_array_end;
+  for (CtorFn *fn = start; fn < end; ++fn) {
+    if (*fn) {
+      (*fn)();
+    }
+  }
+}
 
 } // namespace moss::abi::linker
 

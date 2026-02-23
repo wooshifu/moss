@@ -171,8 +171,8 @@ _start:
     //   RCX = count in bytes (BSS end - BSS start)
     //   AL  = 0 (fill value)
     //   REP STOSB: store AL to [RDI], increment RDI, decrement RCX, repeat
-    lea __bss_start(%rip), %rdi
-    lea __bss_end(%rip), %rcx
+    lea _bss_start(%rip), %rdi
+    lea _bss_end(%rip), %rcx
     sub %rdi, %rcx                      // RCX = BSS size in bytes
     xor %eax, %eax                      // fill with zeros
     rep stosb                           // zero the entire BSS
@@ -222,9 +222,11 @@ stack_bottom:
 stack_top:
 
 // =============================================================================
-// PVH page tables (24 KB in BSS — zeroed by PVH stub, not startup code)
+// PVH page tables (24 KB — zeroed by PVH stub before enabling paging)
+// Placed in a dedicated section (.pvh.pagetables) to avoid BSS clearing in
+// _start from overwriting these live page tables.
 // =============================================================================
-.section ".bss.pagetables", "aw", @nobits
+.section ".pvh.pagetables", "aw", @nobits
 .align 4096
 pvh_pml4:    .skip 4096
 pvh_pdpt:    .skip 4096
@@ -268,14 +270,5 @@ gdt_ptr:
     .word 0                             // limit (filled at runtime above)
     .quad 0                             // base  (filled at runtime above)
 
-// =============================================================================
-// Weak BSS boundary symbols
-// =============================================================================
-//
-// These are defined as weak so the linker script can override them.
-// If no linker script is used, they default to 0 (no BSS to clear).
-// =============================================================================
-.weak __bss_start
-.weak __bss_end
-__bss_start = 0
-__bss_end = 0
+// Prevent executable stack warning
+.section .note.GNU-stack,"",@progbits
