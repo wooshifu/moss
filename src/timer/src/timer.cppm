@@ -111,7 +111,7 @@ private:
   // Heap index: position of this timer in TimerSubsystem's min-heap array.
   // Enables O(log n) cancel/dequeue without linear search.
   // ~0u (UINT32_MAX) means "not in heap".
-  u32 heap_index_{~0u};
+  u32 heap_index_{~0U};
 };
 
 // ============================================================================
@@ -257,7 +257,7 @@ void HrTimer::init(TimerMode mode, TimerCallback callback, void *data) noexcept 
   callback_ = callback;
   callback_data_ = data;
   active_ = false;
-  heap_index_ = ~0u;
+  heap_index_ = ~0U;
 }
 
 void HrTimer::start(u64 abs_expires_ns) noexcept {
@@ -389,7 +389,7 @@ void TimerSubsystem::enqueue_locked(HrTimer *timer) noexcept {
 
 void TimerSubsystem::dequeue(HrTimer *timer) noexcept {
   containers::LockGuard<containers::IrqSpinLock> guard(queue_lock_);
-  if (heap_size_ == 0 || timer->heap_index_ == ~0u) {
+  if (heap_size_ == 0 || timer->heap_index_ == ~0U) {
     return;
   }
 
@@ -410,7 +410,7 @@ void TimerSubsystem::dequeue(HrTimer *timer) noexcept {
     heap_sift_down(idx);
   }
 
-  timer->heap_index_ = ~0u;
+  timer->heap_index_ = ~0U;
 
   if (was_root) {
     reprogram_next();
@@ -446,7 +446,7 @@ void TimerSubsystem::handle_interrupt() noexcept {
       heap_[0]->heap_index_ = 0;
       heap_sift_down(0);
     }
-    expired->heap_index_ = ~0u;
+    expired->heap_index_ = ~0U;
     expired->active_ = false;
 
     stats_.timers_fired++;
