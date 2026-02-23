@@ -61,8 +61,8 @@ struct InterruptControllerInfo {
   PhysAddr redist_base; // GICv3: GICR redistributor base (0 for GICv2/PLIC)
   u64 dist_size;
   u64 cpu_size;
-  u64 redist_size;   // GICv3: GICR region size
-  u8 gic_version;    // 0=unknown/PLIC, 2=GICv2, 3=GICv3/v4
+  u64 redist_size; // GICv3: GICR region size
+  u8 gic_version;  // 0=unknown/PLIC, 2=GICv2, 3=GICv3/v4
   bool valid;
 };
 

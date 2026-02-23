@@ -80,8 +80,8 @@ inline constexpr u32 ITARGETSR = 0x800;  // GICv2: Interrupt Processor Targets (
 inline constexpr u32 ICFGR = 0xC00;      // Interrupt Configuration (base)
 inline constexpr u32 SGIR = 0xF00;       // GICv2: Software Generated Interrupt
 // GICv3-specific distributor registers
-inline constexpr u32 IROUTER = 0x6100;   // GICv3: Interrupt Routing (64-bit per SPI)
-inline constexpr u32 PIDR2 = 0xFFE8;     // Peripheral ID 2 (ArchRev in bits [7:4])
+inline constexpr u32 IROUTER = 0x6100; // GICv3: Interrupt Routing (64-bit per SPI)
+inline constexpr u32 PIDR2 = 0xFFE8;   // Peripheral ID 2 (ArchRev in bits [7:4])
 // GICv3 GICD_CTLR bit definitions
 inline constexpr u32 CTLR_ENABLE_GRP1_NS = (1U << 1);
 inline constexpr u32 CTLR_ARE_S = (1U << 4);
@@ -135,24 +135,16 @@ namespace icc {
 }
 
 // ICC_EOIR1_EL1 = S3_0_C12_C12_1 — End of Interrupt (Group 1)
-inline void write_eoir1(u32 val) noexcept {
-  asm volatile("msr S3_0_C12_C12_1, %0" ::"r"(static_cast<u64>(val)));
-}
+inline void write_eoir1(u32 val) noexcept { asm volatile("msr S3_0_C12_C12_1, %0" ::"r"(static_cast<u64>(val))); }
 
 // ICC_PMR_EL1 = S3_0_C4_C6_0 — Priority Mask
-inline void write_pmr(u32 val) noexcept {
-  asm volatile("msr S3_0_C4_C6_0, %0" ::"r"(static_cast<u64>(val)));
-}
+inline void write_pmr(u32 val) noexcept { asm volatile("msr S3_0_C4_C6_0, %0" ::"r"(static_cast<u64>(val))); }
 
 // ICC_BPR1_EL1 = S3_0_C12_C12_3 — Binary Point (Group 1)
-inline void write_bpr1(u32 val) noexcept {
-  asm volatile("msr S3_0_C12_C12_3, %0" ::"r"(static_cast<u64>(val)));
-}
+inline void write_bpr1(u32 val) noexcept { asm volatile("msr S3_0_C12_C12_3, %0" ::"r"(static_cast<u64>(val))); }
 
 // ICC_CTLR_EL1 = S3_0_C12_C12_4 — Control
-inline void write_ctlr(u32 val) noexcept {
-  asm volatile("msr S3_0_C12_C12_4, %0" ::"r"(static_cast<u64>(val)));
-}
+inline void write_ctlr(u32 val) noexcept { asm volatile("msr S3_0_C12_C12_4, %0" ::"r"(static_cast<u64>(val))); }
 
 // ICC_SRE_EL1 = S3_0_C12_C12_5 — System Register Enable
 [[nodiscard]] inline u32 read_sre() noexcept {
@@ -161,19 +153,13 @@ inline void write_ctlr(u32 val) noexcept {
   return static_cast<u32>(val);
 }
 
-inline void write_sre(u32 val) noexcept {
-  asm volatile("msr S3_0_C12_C12_5, %0" ::"r"(static_cast<u64>(val)));
-}
+inline void write_sre(u32 val) noexcept { asm volatile("msr S3_0_C12_C12_5, %0" ::"r"(static_cast<u64>(val))); }
 
 // ICC_IGRPEN1_EL1 = S3_0_C12_C12_7 — Interrupt Group 1 Enable
-inline void write_igrpen1(u32 val) noexcept {
-  asm volatile("msr S3_0_C12_C12_7, %0" ::"r"(static_cast<u64>(val)));
-}
+inline void write_igrpen1(u32 val) noexcept { asm volatile("msr S3_0_C12_C12_7, %0" ::"r"(static_cast<u64>(val))); }
 
 // ICC_SGI1R_EL1 = S3_0_C12_C11_5 — SGI Generation (Group 1, 64-bit)
-inline void write_sgi1r(u64 val) noexcept {
-  asm volatile("msr S3_0_C12_C11_5, %0" ::"r"(val));
-}
+inline void write_sgi1r(u64 val) noexcept { asm volatile("msr S3_0_C12_C11_5, %0" ::"r"(val)); }
 
 } // namespace icc
 

@@ -361,9 +361,8 @@ extern "C" [[noreturn]] void secondary_cpu_entry() noexcept {
   const auto &plat = moss::fdt::get_platform_info();
   moss::kernel::VirtAddr gic_cpu_base = 0;
   if (moss::kernel::hal::intc::g_gic_version != moss::kernel::hal::intc::GicVersion::GICv3) {
-    gic_cpu_base = (plat.dtb_valid && plat.intc.valid)
-                       ? static_cast<moss::kernel::VirtAddr>(plat.intc.cpu_base)
-                       : moss::kernel::platform::intc_cpu_base();
+    gic_cpu_base = (plat.dtb_valid && plat.intc.valid) ? static_cast<moss::kernel::VirtAddr>(plat.intc.cpu_base)
+                                                       : moss::kernel::platform::intc_cpu_base();
   }
   (void)moss::kernel::hal::intc::init_cpu_interface(gic_cpu_base);
 
@@ -730,9 +729,8 @@ void update_boot_stage(BootStage stage, ::moss::kernel::ErrorCode error) noexcep
       early_print_hex(second_base);
       early_print(" (v3)\n");
     } else {
-      second_base = (plat.dtb_valid && plat.intc.valid)
-                        ? static_cast<moss::kernel::VirtAddr>(plat.intc.cpu_base)
-                        : moss::kernel::platform::intc_cpu_base();
+      second_base = (plat.dtb_valid && plat.intc.valid) ? static_cast<moss::kernel::VirtAddr>(plat.intc.cpu_base)
+                                                        : moss::kernel::platform::intc_cpu_base();
       early_print("GIC GICD=");
       early_print_hex(gic_dist_base);
       early_print(" GICC=");
