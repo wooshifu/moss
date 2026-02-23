@@ -21,24 +21,33 @@ import fdt
 console = Console()
 
 # 架构 → QEMU 参数映射
+#
+# default_kernel: "bin" = moss.bin (ARM64 Linux Image header), "elf" = moss.elf (PVH/OpenSBI)
+# max_smp: 0 = use cpu_cores from qemu_config.json, >0 = hard cap (SMP not yet supported)
 ARCH_CONFIG = {
     "ARM64": {
         "qemu_system": "qemu-system-aarch64",
         "machine_base": "virt",  # gic-version appended dynamically
-        "cpu": "cortex-a57",
+        "cpu": "cortex-a72",
         "extra_args": ["-semihosting-config", "enable=on,target=native"],
+        "default_kernel": "bin",
+        "max_smp": 0,
     },
     "X86_64": {
         "qemu_system": "qemu-system-x86_64",
-        "machine": "q35",
+        "machine": "microvm",  # PVH boot requires microvm (not q35)
         "cpu": "qemu64",
         "extra_args": ["-device", "isa-debug-exit,iobase=0x501,iosize=2"],
+        "default_kernel": "elf",  # PVH requires ELF (XEN_ELFNOTE_PHYS32_ENTRY)
+        "max_smp": 1,
     },
     "RISCV": {
         "qemu_system": "qemu-system-riscv64",
         "machine": "virt",
         "cpu": "rv64",
-        "extra_args": [],
+        "extra_args": ["-bios", "default"],  # OpenSBI firmware (M-mode → S-mode)
+        "default_kernel": "elf",  # OpenSBI loads ELF kernel
+        "max_smp": 1,
     },
 }
 
@@ -109,7 +118,7 @@ def resolve_kernel_file(cfg: QemuConfig, *, use_binary: bool, test_mode: bool, d
       1. --test  → test ELF (moss.test.elf)
       2. --bin   → 完整二进制 (moss.bin)，device loader 直接加载到 RAM
       3. --debug → moss.elf（保留完整 DWARF 符号，QEMU 从 ELF entry point 启动）
-      4. 默认    → moss.bin（含 Linux Image header，QEMU 自动传递 DTB）
+      4. 默认    → 按架构选择（ARM64: moss.bin, x86_64/RISC-V: moss.elf）
     """
     if test_mode:
         path = Path(cfg.test_elf)
@@ -142,14 +151,22 @@ def resolve_kernel_file(cfg: QemuConfig, *, use_binary: bool, test_mode: bool, d
             raise typer.Exit(1)
         return path, "Debug ELF (moss.elf)"
 
-    # 默认模式：使用 moss.bin
-    # ARM64 的 moss.bin 含 Linux Image header，QEMU 自动识别并传递 DTB。
-    path = Path(cfg.kernel_bin_full)
+    # 默认模式：按架构选择最佳内核格式
+    #   ARM64:  moss.bin — 含 Linux Image header，QEMU 自动识别并通过 x0 传递 DTB
+    #   x86_64: moss.elf — PVH 启动协议要求 ELF（QEMU 读取 XEN_ELFNOTE_PHYS32_ENTRY）
+    #   RISC-V: moss.elf — OpenSBI 加载 ELF 内核到 S-mode
+    arch_cfg = ARCH_CONFIG.get(cfg.arch, {})
+    if arch_cfg.get("default_kernel") == "elf":
+        path = Path(cfg.kernel_elf)
+        desc = "ELF (moss.elf)"
+    else:
+        path = Path(cfg.kernel_bin_full)
+        desc = "Linux Image (moss.bin)"
+
     if not path.exists():
         console.print(f"[red]错误: 内核文件不存在: {path}[/red]")
-        console.print("请先运行构建命令生成 moss.bin")
         raise typer.Exit(1)
-    return path, "Linux Image (moss.bin)"
+    return path, desc
 
 
 def prepare_dtb(cfg: QemuConfig, *, smp: int, force_gic3: bool = False) -> Path | None:
@@ -261,7 +278,17 @@ def build_qemu_args(
     """构造完整的 QEMU 命令行参数列表"""
     arch_cfg = ARCH_CONFIG[cfg.arch]
 
-    smp = 1 if test_mode else smp
+    # SMP resolution:
+    #   smp == 0 (auto) → use cpu_cores from qemu_config.json
+    #   test_mode → always 1
+    #   max_smp > 0 → clamp to architecture limit (x86_64/RISC-V: single-core only)
+    if test_mode:
+        smp = 1
+    elif smp == 0:
+        smp = cfg.cpu_cores
+    max_smp = arch_cfg.get("max_smp", 0)
+    if max_smp > 0:
+        smp = min(smp, max_smp)
     machine = resolve_machine(cfg.arch, smp=smp, force_gic3=force_gic3)
 
     # 内核加载方式
@@ -483,13 +510,16 @@ def main(
         int | None,
         typer.Option("--timeout", "-t", help="QEMU 运行超时时间（秒），超时后自动终止"),
     ] = None,
-    smp: Annotated[int, typer.Option("--smp", help="CPU 核心数（smp>8 时自动启用 GICv3）")] = 8,
+    smp: Annotated[int, typer.Option("--smp", help="CPU 核心数（0=自动从配置读取，smp>8 时自动启用 GICv3）")] = 0,
     extra_qemu_args: Annotated[str | None, typer.Option("--qemu-args", help="额外的QEMU参数（用空格分隔）")] = None,
     force_gic3: Annotated[bool, typer.Option("--gic3", help="强制使用 GICv3（ARM64 only, smp>8 时自动启用）")] = False,
 ) -> None:
     """启动 QEMU 运行 MOSS 内核
 
-    所有模式均使用 moss.bin 启动（ARM64 含 Linux Image header，QEMU 自动传递 DTB）。
+    默认按架构选择最佳启动方式：
+      ARM64:  moss.bin (Linux Image header, QEMU 自动传递 DTB)
+      x86_64: moss.elf (PVH 启动协议, microvm 机型)
+      RISC-V: moss.elf (OpenSBI S-mode 启动)
     --debug 模式额外启动 GDB server（-s -S），GDB 通过 "file moss.elf" 加载符号表。
 
     支持两种方式传递额外的 QEMU 参数：
