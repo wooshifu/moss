@@ -31,8 +31,45 @@
 #define SYS_TOPINFO 111
 
 // ============================================================================
-// Low-level syscall wrappers (ARM64: x8=nr, x0-x5=args, svc #0)
+// Low-level syscall wrappers
 // ============================================================================
+
+#ifdef __riscv
+// RISC-V: a7=nr, a0-a5=args, ecall, return in a0
+
+static inline long syscall0(long number) {
+  register long a7 asm("a7") = number;
+  register long a0 asm("a0");
+  asm volatile("ecall" : "=r"(a0) : "r"(a7) : "memory");
+  return a0;
+}
+
+static inline long syscall1(long number, long arg0) {
+  register long a7 asm("a7") = number;
+  register long a0 asm("a0") = arg0;
+  asm volatile("ecall" : "+r"(a0) : "r"(a7) : "memory");
+  return a0;
+}
+
+static inline long syscall2(long number, long arg0, long arg1) {
+  register long a7 asm("a7") = number;
+  register long a0 asm("a0") = arg0;
+  register long a1 asm("a1") = arg1;
+  asm volatile("ecall" : "+r"(a0) : "r"(a7), "r"(a1) : "memory");
+  return a0;
+}
+
+static inline long syscall3(long number, long arg0, long arg1, long arg2) {
+  register long a7 asm("a7") = number;
+  register long a0 asm("a0") = arg0;
+  register long a1 asm("a1") = arg1;
+  register long a2 asm("a2") = arg2;
+  asm volatile("ecall" : "+r"(a0) : "r"(a7), "r"(a1), "r"(a2) : "memory");
+  return a0;
+}
+
+#else
+// ARM64: x8=nr, x0-x5=args, svc #0, return in x0
 
 static inline long syscall0(long number) {
   register long x8 asm("x8") = number;
@@ -67,6 +104,8 @@ static inline long syscall3(long number, long a0, long a1, long a2) {
   asm volatile("svc #0" : "=r"(ret) : "r"(x8), "r"(x0), "r"(x1), "r"(x2) : "memory");
   return ret;
 }
+
+#endif
 
 // ============================================================================
 // POSIX-like wrapper functions

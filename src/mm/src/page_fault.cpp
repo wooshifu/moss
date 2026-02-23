@@ -500,7 +500,10 @@ static bool try_demand_page(moss::kernel::u64 far_addr, bool is_write, unsigned 
 #elif defined(MOSS_ARCH_RISCV)
   perms |= pa::READ; // Always readable
   if (vma_flags & VMA_WRITE) {
-    perms |= pa::WRITE;
+    // RISC-V: Dirty (D) bit must be pre-set for writable pages.
+    // Without D, the first store triggers a Store Page Fault (scause=15)
+    // even though the page is mapped, creating an infinite fault loop.
+    perms |= pa::WRITE | pa::DIRTY;
   }
   if (vma_flags & VMA_EXEC) {
     perms |= pa::EXECUTE;

@@ -422,6 +422,18 @@ long sys_execve(long pathname_addr, long argv_addr, long /* envp */, long /*unus
       asm volatile("isb" ::: "memory");
     }
   }
+#elif defined(MOSS_ARCH_RISCV)
+  // Switch SATP to kernel PGD before freeing old user page tables.
+  // Sv39: mode=8, PPN = phys >> 12.  Kernel PGD contains identity map.
+  {
+    auto *kpgd = mm::PageTableManager::get_kernel_pgd();
+    if (kpgd) {
+      u64 kpgd_phys = mm::PageTableManager::get_physical_address(kpgd);
+      u64 satp_val = (8ULL << 60) | (kpgd_phys >> 12);
+      asm volatile("csrw satp, %0" ::"r"(satp_val) : "memory");
+      asm volatile("sfence.vma" ::: "memory");
+    }
+  }
 #endif
 
   // 6. Free old user page tables
@@ -646,6 +658,12 @@ long sys_execve(long pathname_addr, long argv_addr, long /* envp */, long /*unus
     asm volatile("dsb sy" ::: "memory");
     asm volatile("isb" ::: "memory");
   }
+#elif defined(MOSS_ARCH_RISCV)
+  if (proc->address_space() && proc->address_space()->pgd_phys != 0) {
+    u64 satp_val = (8ULL << 60) | (proc->address_space()->pgd_phys >> 12);
+    asm volatile("csrw satp, %0" ::"r"(satp_val) : "memory");
+    asm volatile("sfence.vma" ::: "memory");
+  }
 #endif
 
   // 12. Set up user stack with argc/argv, then reset thread context.
@@ -710,6 +728,11 @@ long sys_execve(long pathname_addr, long argv_addr, long /* envp */, long /*unus
   cur->context.x[1] = (kernel_argc > 0) // x1 = argv
                           ? (user_sp)   // argv_base == user_sp
                           : 0;
+#elif defined(MOSS_ARCH_RISCV)
+  cur->context.x[10] = kernel_argc;      // a0 = argc
+  cur->context.x[11] = (kernel_argc > 0) // a1 = argv
+                           ? (user_sp)   // argv_base == user_sp
+                           : 0;
 #endif
   cur->needs_initial_eret = true; // next dispatch does switch_to_user + eret
   cur->stack_base = STACK_BOTTOM;
@@ -739,6 +762,24 @@ long sys_execve(long pathname_addr, long argv_addr, long /* envp */, long /*unus
       u64 kstack_top = cur->kernel_stack_top();
       asm volatile("msr tpidr_el1, %0" ::"r"(kstack_top));
     }
+
+    // eret to new program — never returns
+    switch_to_user(&cur->context, cur->context.sp);
+  }
+#elif defined(MOSS_ARCH_RISCV)
+  {
+    cur->needs_initial_eret = false;
+    cur->state = ProcessState::Running;
+
+    arch::disable_interrupts();
+
+    // SATP already switched to new address space in step 11b.
+
+    // Set sscratch to per-thread kernel stack top so the next U-mode
+    // trap swaps to the correct kernel stack.
+    // (switch_to_user in context_switch.S also writes sscratch, but
+    //  we set it here too for clarity and to match the ARM64 tpidr_el1
+    //  pattern.)
 
     // eret to new program — never returns
     switch_to_user(&cur->context, cur->context.sp);
