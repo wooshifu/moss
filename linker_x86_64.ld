@@ -1,0 +1,109 @@
+/* =============================================================================
+ * MOSS Kernel Linker Script (x86_64 / QEMU q35 platform)
+ * =============================================================================
+ *
+ * Memory layout for x86_64 long mode on QEMU q35 machine.
+ *
+ * x86_64 QEMU q35 memory map:
+ *   0x0000_0000 - 0x0009_FFFF : Conventional memory (640 KB)
+ *   0x000A_0000 - 0x000F_FFFF : VGA + ROM area
+ *   0x0010_0000 - ...         : Extended memory (usable RAM)
+ *
+ * The kernel is loaded at 1 MB (0x0010_0000), the traditional x86 extended
+ * memory start.  The boot stub (start_x86_64.S) runs in 64-bit long mode
+ * assuming the firmware/loader already set up identity-mapped page tables.
+ * ============================================================================= */
+
+ENTRY(_start)
+
+MEMORY
+{
+    RAM (rwx) : ORIGIN = 0x00100000, LENGTH = 255M
+}
+
+KERNEL_VMA = 0xFFFF800000000000;
+
+SECTIONS
+{
+    . = ORIGIN(RAM);
+
+    .text.boot : {
+        *(.text.boot)
+    }
+
+    .text : ALIGN(4K) {
+        _text_start = .;
+        *(.text)
+        *(.text.*)
+        _text_end = .;
+    }
+
+    .rodata : ALIGN(4K) {
+        _rodata_start = .;
+        *(.rodata)
+        *(.rodata.*)
+        _rodata_end = .;
+    }
+
+    .data : ALIGN(4K) {
+        _data_start = .;
+        *(.data)
+        *(.data.*)
+        _data_end = .;
+    }
+
+    .bss : ALIGN(4K) {
+        _bss_start = .;
+        *(.bss)
+        *(.bss.*)
+        *(COMMON)
+        _bss_end = .;
+    }
+
+    .stack (NOLOAD) : ALIGN(4K) {
+        _stack_bottom = .;
+        . += 512K;
+        _stack_top = .;
+    }
+
+    .heap (NOLOAD) : ALIGN(4K) {
+        _heap_start = .;
+        . += 4K;
+        _heap_end = .;
+    }
+
+    .pagetables (NOLOAD) : ALIGN(4K) {
+        _pagetable_start = .;
+        . += 64K;
+        _pagetable_end = .;
+    }
+
+    _kernel_end = .;
+    _kernel_image_size = . - ORIGIN(RAM);
+
+    /* PVH ELF note — QEMU uses this to detect PVH boot protocol */
+    .note.Xen : { *(.note.Xen) }
+
+    /DISCARD/ : {
+        *(.note.GNU-stack)
+        *(.note.gnu*)
+        *(.comment*)
+        *(.eh_frame*)
+    }
+}
+
+PROVIDE(_text_start_addr = _text_start);
+PROVIDE(_text_end_addr = _text_end);
+PROVIDE(_rodata_start_addr = _rodata_start);
+PROVIDE(_rodata_end_addr = _rodata_end);
+PROVIDE(_data_start_addr = _data_start);
+PROVIDE(_data_end_addr = _data_end);
+PROVIDE(_bss_start_addr = _bss_start);
+PROVIDE(_bss_end_addr = _bss_end);
+PROVIDE(_stack_bottom_addr = _stack_bottom);
+PROVIDE(_stack_top_addr = _stack_top);
+PROVIDE(_heap_start_addr = _heap_start);
+PROVIDE(_heap_end_addr = _heap_end);
+PROVIDE(_pagetable_start_addr = _pagetable_start);
+PROVIDE(_pagetable_end_addr = _pagetable_end);
+PROVIDE(_kernel_end_addr = _kernel_end);
