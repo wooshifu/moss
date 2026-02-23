@@ -36,8 +36,29 @@ struct ThreadEntry {
 using moss::kernel::make_unique;
 using moss::kernel::unique_ptr;
 
-// Process states
-enum class ProcessState : u8 { Created = 0, Ready = 1, Running = 2, Blocked = 3, Terminated = 4, Zombie = 5 };
+// Process states — modeled after Linux task_struct states.
+//
+// Sleeping:  TASK_INTERRUPTIBLE   — woken by signal or event (waitpid, read, nanosleep)
+// DiskSleep: TASK_UNINTERRUPTIBLE — woken only by event (page I/O, critical sections)
+// Blocked:   Legacy alias — code that doesn't care about signal-interruptibility
+//            should use Sleeping (the safe default for most waits).
+enum class ProcessState : u8 {
+  Created = 0,
+  Ready = 1,
+  Running = 2,
+  Sleeping = 3,  // TASK_INTERRUPTIBLE: signals can wake this task
+  DiskSleep = 4, // TASK_UNINTERRUPTIBLE: only events wake this task
+  Terminated = 5,
+  Zombie = 6,
+};
+
+// Helper: is the task in any blocked/sleeping state?
+constexpr bool is_blocked_state(ProcessState s) noexcept {
+  return s == ProcessState::Sleeping || s == ProcessState::DiskSleep;
+}
+
+// Helper: can signals wake this task?
+constexpr bool is_signal_wakeable(ProcessState s) noexcept { return s == ProcessState::Sleeping; }
 
 // Scheduling classes
 enum class SchedClass : u8 { Normal = 0, RealTime = 1, Idle = 2, Batch = 3 };
@@ -398,6 +419,12 @@ private:
   // Process name (like Linux task_struct.comm), set by execve
   char name_[16]{};
 
+  // Process group and session IDs (POSIX job control).
+  // Default: pgid = pid (each process is its own group leader),
+  //          sid  = parent's sid (inherited on fork, set by setsid).
+  ProcessId pgid_;
+  ProcessId sid_;
+
   // Children tracking for wait()/waitpid()
   containers::RcuList<ProcessId> children_;
   containers::WaitQueue child_exit_wq_;
@@ -405,8 +432,8 @@ private:
 public:
   Process(ProcessId pid, ProcessId parent = INVALID_PROCESS_ID) noexcept
       : pid_(pid), parent_pid_(parent), address_space_(nullptr), thread_count_(0), main_thread_id_(INVALID_THREAD_ID),
-        state_(ProcessState::Created), exit_code_(0), limits_{}, stats_{}, ref_count_(1), children_{},
-        child_exit_wq_{} {}
+        state_(ProcessState::Created), exit_code_(0), limits_{}, stats_{}, ref_count_(1), pgid_(pid), sid_(0),
+        children_{}, child_exit_wq_{} {}
 
   ~Process() noexcept {
     cleanup_threads();
@@ -428,6 +455,12 @@ public:
   [[nodiscard]] ProcessId parent_pid() const noexcept { return parent_pid_; }
   [[nodiscard]] ProcessState state() const noexcept { return state_; }
   [[nodiscard]] i32 exit_code() const noexcept { return exit_code_; }
+
+  // Process group / session accessors (POSIX job control)
+  [[nodiscard]] ProcessId pgid() const noexcept { return pgid_; }
+  [[nodiscard]] ProcessId sid() const noexcept { return sid_; }
+  void set_pgid(ProcessId pgid) noexcept { pgid_ = pgid; }
+  void set_sid(ProcessId sid) noexcept { sid_ = sid; }
 
   // Process name (set by execve, inherited by fork)
   [[nodiscard]] const char *name() const noexcept { return name_; }
