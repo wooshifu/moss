@@ -223,7 +223,7 @@ long sys_fork(long arg0, long arg1, long arg2, long arg3, long arg4, long arg5) 
 long sys_execve(long pathname_addr, long argv_addr, long arg2, long arg3, long arg4, long arg5) noexcept;
 long sys_wait4(long wait_pid, long wstatus_addr, long options, long arg3, long arg4, long arg5) noexcept;
 long sys_waitpid(long pid, long wstatus, long options, long arg3, long arg4, long arg5) noexcept;
-long sys_kill(long arg0, long arg1, long arg2, long arg3, long arg4, long arg5) noexcept;
+long sys_kill(long pid_arg, long sig_arg, long arg2, long arg3, long arg4, long arg5) noexcept;
 
 // Filesystem - framework implementation
 long sys_open(long pathname_addr, long flags, long mode, long arg3, long arg4, long arg5) noexcept;
