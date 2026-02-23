@@ -1592,6 +1592,13 @@ public:
       return;
     }
 
+    // Preemption guard: if the task holds a spinlock (preempt_count > 0),
+    // do NOT context-switch.  Just mark need_resched and return; the
+    // actual switch happens when preempt_enable() drops the count to 0.
+    // We still update vruntime/time-slice accounting below so CFS and
+    // RR accounting stay accurate even during non-preemptible sections.
+    bool preempt_blocked = (curr->preempt_count > 0);
+
     u64 now = get_current_time();
     u64 delta = (now > curr->se.exec_start) ? (now - curr->se.exec_start) : 1000;
 
@@ -1619,6 +1626,9 @@ public:
           return;
         }
         curr->need_resched = true;
+        if (preempt_blocked) {
+          return; // defer switch until preempt_enable()
+        }
         curr->state = ProcessState::Ready;
         record_preemption();
         enqueue_task(curr, cpu);
@@ -1637,6 +1647,9 @@ public:
       curr->need_resched = true;
       curr->se.exec_start = now;
       update_current(curr, delta);
+      if (preempt_blocked) {
+        return; // defer until preempt_enable()
+      }
       curr->state = ProcessState::Ready;
       record_preemption();
       enqueue_task(curr, cpu);
@@ -1668,6 +1681,10 @@ public:
       }
 
       curr->need_resched = true;
+
+      if (preempt_blocked) {
+        return; // defer until preempt_enable()
+      }
 
       // Reset time-slice accounting so curr gets a fresh slice next time
       curr->se.prev_sum_exec_runtime = curr->se.sum_exec_runtime;

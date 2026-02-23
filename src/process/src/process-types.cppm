@@ -383,6 +383,12 @@ struct Thread {
   // checked at safe points (syscall return, IRQ return).
   bool need_resched{false};
 
+  // Preemption nesting counter.  When > 0, the scheduler must not
+  // context-switch this task away (it holds a spinlock or is in a
+  // critical section).  Incremented by preempt_disable / spinlock
+  // acquire, decremented by preempt_enable / spinlock release.
+  u32 preempt_count{0};
+
   // CPU affinity bitmap: bit N set means task may run on CPU N.
   // Default: all CPUs allowed (set from g_num_cpus at thread creation).
   CpuBitmap cpu_affinity_mask{CpuBitmap::all()};
@@ -413,6 +419,15 @@ struct Thread {
 
   // Returns the top of this thread's kernel stack (for TPIDR_EL1).
   [[nodiscard]] VirtAddr kernel_stack_top() const noexcept { return kernel_stack_base + kernel_stack_size; }
+
+  // Preemption control — called by spinlock acquire/release.
+  void preempt_disable() noexcept { ++preempt_count; }
+  void preempt_enable() noexcept {
+    if (preempt_count > 0) {
+      --preempt_count;
+    }
+  }
+  [[nodiscard]] bool is_preemptible() const noexcept { return preempt_count == 0; }
 };
 
 // Process control block

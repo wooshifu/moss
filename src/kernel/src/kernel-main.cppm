@@ -458,6 +458,22 @@ private:
       }
     });
 
+    // Register preemption hooks so that SpinLock acquire/release bumps
+    // the current thread's preempt_count, preventing context-switch
+    // while a lock is held.
+    containers::g_preempt_disable_fn = +[]() noexcept {
+      auto *t = process::CfsScheduler::get_current_task();
+      if (t != nullptr) {
+        t->preempt_disable();
+      }
+    };
+    containers::g_preempt_enable_fn = +[]() noexcept {
+      auto *t = process::CfsScheduler::get_current_task();
+      if (t != nullptr) {
+        t->preempt_enable();
+      }
+    };
+
     // Linux-style SMP delayed activation: activate secondary CPUs after scheduler is ready
     if (config_.enable_smp) {
       // Pre-create idle tasks for ALL CPUs on BSP (serial, single-threaded).
