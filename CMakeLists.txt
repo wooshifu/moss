@@ -273,14 +273,21 @@ if(MOSS_TARGET_ARCH STREQUAL "ARM64")
 endif()
 message(STATUS "将生成文件: moss.dis, moss.sym, moss.bin, moss_boot.bin, moss_code.bin")
 
-# === Userspace programs + initramfs CPIO (ARM64 only) ===
-if(MOSS_TARGET_ARCH STREQUAL "ARM64")
+# === Userspace programs + initramfs CPIO ===
+if(MOSS_TARGET_ARCH STREQUAL "ARM64" OR MOSS_TARGET_ARCH STREQUAL "RISCV")
     set(USERSPACE_DIR "${CMAKE_SOURCE_DIR}/userspace")
     set(USERSPACE_LD "${USERSPACE_DIR}/userspace.ld")
 
+    # Architecture-specific compiler target and flags
+    if(MOSS_TARGET_ARCH STREQUAL "ARM64")
+        set(USERSPACE_ARCH_FLAGS --target=aarch64-unknown-elf)
+    elseif(MOSS_TARGET_ARCH STREQUAL "RISCV")
+        set(USERSPACE_ARCH_FLAGS --target=riscv64-unknown-elf -march=rv64imac -mabi=lp64 -mcmodel=medany)
+    endif()
+
     # Common compiler flags for userspace programs
     set(USERSPACE_CFLAGS
-        --target=aarch64-unknown-elf
+        ${USERSPACE_ARCH_FLAGS}
         -ffreestanding
         -fno-stack-protector
         -nostdlib
@@ -334,7 +341,7 @@ if(MOSS_TARGET_ARCH STREQUAL "ARM64")
     add_custom_target(initramfs ALL DEPENDS ${CMAKE_BINARY_DIR}/initramfs.cpio)
     add_dependencies(moss.elf initramfs)
 
-    message(STATUS "Userspace + initramfs configured (ARM64)")
+    message(STATUS "Userspace + initramfs configured (${MOSS_TARGET_ARCH})")
 endif()
 
 # === 构建目标 (QEMU) ===

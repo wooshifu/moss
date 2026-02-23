@@ -177,12 +177,20 @@ context_switch:
 .type switch_to_user, @function
 switch_to_user:
     // Configure sstatus for U-mode return: clear SPP bit (bit 8)
-    li      t0, 0x00000000              // SPP=0 → U-mode
+    // Also set SPIE (bit 5) so interrupts are enabled after SRET
+    li      t0, (1 << 5)               // SPIE=1, SPP=0
     csrw    sstatus, t0
 
     // Set exception return address to user entry point
     ld      t0, 256(a0)                 // ctx->pc
     csrw    sepc, t0
+
+    // Save current kernel stack pointer to sscratch.
+    // On the next trap from U-mode, the entry code (riscv_syscall.S)
+    // swaps sp↔sscratch to switch from user stack to this kernel stack.
+    // Without this, sscratch=0 (S-mode sentinel) and the trap entry
+    // would misidentify a U-mode trap as an S-mode trap.
+    csrw    sscratch, sp
 
     // Set user stack pointer
     mv      sp, a1
@@ -223,10 +231,9 @@ switch_to_user:
     ld      x30, 240(a0)              // t5
     ld      x31, 248(a0)              // t6
 
-    // Re-set user stack pointer (may have been clobbered by x2 restore above)
-    mv      sp, a1
-
     // Restore a0 last (it was our context pointer)
+    // Note: sp was already restored via ld x2,16(a0) above.
+    // ctx->x[2] was set to user_sp by the caller (sd a1, 16(a0) at entry).
     ld      x10, 80(a0)               // a0
 
     // Atomically return to U-mode: sets PC=SEPC, privilege=U (SPP=0)

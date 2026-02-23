@@ -109,6 +109,8 @@
 // =============================================================================
 // syscall_entry_point — unified trap handler for RISC-V
 // =============================================================================
+// stvec requires 4-byte aligned address (low 2 bits are mode field)
+.balign 4
 .type syscall_entry_point, @function
 syscall_entry_point:
     // ---- Step 1: Kernel/User stack switch via sscratch ----
