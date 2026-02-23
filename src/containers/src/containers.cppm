@@ -4,6 +4,7 @@
 
 export module moss.containers;
 
+import moss.intrinsics;
 import moss.std;
 import moss.types;
 import moss.result;
@@ -18,22 +19,22 @@ export namespace moss::kernel::containers {
 // Re-export MemoryOrder from moss.std for convenience
 using MemoryOrder = moss::MemoryOrder;
 
-// Convert MemoryOrder to GCC/Clang builtin atomic memory model
-constexpr int to_builtin_order(MemoryOrder order) noexcept {
+// Convert MemoryOrder to intrinsics::atomic::memory_order
+constexpr intrinsics::atomic::memory_order to_intrinsics_order(MemoryOrder order) noexcept {
   switch (order) {
   case MemoryOrder::Relaxed:
-    return __ATOMIC_RELAXED;
+    return intrinsics::atomic::memory_order::relaxed;
   case MemoryOrder::Consume:
-    return __ATOMIC_CONSUME;
+    return intrinsics::atomic::memory_order::consume;
   case MemoryOrder::Acquire:
-    return __ATOMIC_ACQUIRE;
+    return intrinsics::atomic::memory_order::acquire;
   case MemoryOrder::Release:
-    return __ATOMIC_RELEASE;
+    return intrinsics::atomic::memory_order::release;
   case MemoryOrder::AcqRel:
-    return __ATOMIC_ACQ_REL;
+    return intrinsics::atomic::memory_order::acq_rel;
   case MemoryOrder::SeqCst:
   default:
-    return __ATOMIC_SEQ_CST;
+    return intrinsics::atomic::memory_order::seq_cst;
   }
 }
 
@@ -60,27 +61,32 @@ public:
   }
 
   [[nodiscard]] T *load(MemoryOrder order = MemoryOrder::SeqCst) const noexcept {
-    return __atomic_load_n(&ptr_, to_builtin_order(order));
+    // Cast away volatile for intrinsics (atomic ops provide memory visibility)
+    return intrinsics::atomic::load(const_cast<T *const *>(&ptr_), to_intrinsics_order(order));
   }
 
   void store(T *desired, MemoryOrder order = MemoryOrder::SeqCst) noexcept {
-    __atomic_store_n(&ptr_, desired, to_builtin_order(order));
+    // Cast away volatile for intrinsics (atomic ops provide memory visibility)
+    intrinsics::atomic::store(const_cast<T **>(&ptr_), desired, to_intrinsics_order(order));
   }
 
   [[nodiscard]] T *exchange(T *desired, MemoryOrder order = MemoryOrder::SeqCst) noexcept {
-    return __atomic_exchange_n(&ptr_, desired, to_builtin_order(order));
+    // Cast away volatile for intrinsics (atomic ops provide memory visibility)
+    return intrinsics::atomic::exchange(const_cast<T **>(&ptr_), desired, to_intrinsics_order(order));
   }
 
   [[nodiscard]] bool compare_exchange_weak(T *&expected, T *desired, MemoryOrder success = MemoryOrder::SeqCst,
                                            MemoryOrder failure = MemoryOrder::SeqCst) noexcept {
-    return __atomic_compare_exchange_n(&ptr_, &expected, desired, true, to_builtin_order(success),
-                                       to_builtin_order(failure));
+    // Cast away volatile for intrinsics (atomic ops provide memory visibility)
+    return intrinsics::atomic::compare_exchange_weak(const_cast<T **>(&ptr_), &expected, desired,
+                                                     to_intrinsics_order(success), to_intrinsics_order(failure));
   }
 
   [[nodiscard]] bool compare_exchange_strong(T *&expected, T *desired, MemoryOrder success = MemoryOrder::SeqCst,
                                              MemoryOrder failure = MemoryOrder::SeqCst) noexcept {
-    return __atomic_compare_exchange_n(&ptr_, &expected, desired, false, to_builtin_order(success),
-                                       to_builtin_order(failure));
+    // Cast away volatile for intrinsics (atomic ops provide memory visibility)
+    return intrinsics::atomic::compare_exchange_strong(const_cast<T **>(&ptr_), &expected, desired,
+                                                       to_intrinsics_order(success), to_intrinsics_order(failure));
   }
 
   [[nodiscard]] T *operator->() const noexcept { return load(MemoryOrder::Acquire); }
@@ -108,25 +114,30 @@ public:
   AtomicCounter &operator=(const AtomicCounter &) = delete;
 
   [[nodiscard]] T load(MemoryOrder order = MemoryOrder::SeqCst) const noexcept {
-    return __atomic_load_n(&value_, to_builtin_order(order));
+    // Cast away volatile for intrinsics (atomic ops provide memory visibility)
+    return intrinsics::atomic::load(const_cast<const T *>(&value_), to_intrinsics_order(order));
   }
 
   void store(T desired, MemoryOrder order = MemoryOrder::SeqCst) noexcept {
-    __atomic_store_n(&value_, desired, to_builtin_order(order));
+    // Cast away volatile for intrinsics (atomic ops provide memory visibility)
+    intrinsics::atomic::store(const_cast<T *>(&value_), desired, to_intrinsics_order(order));
   }
 
   [[nodiscard]] T fetch_add(T arg, MemoryOrder order = MemoryOrder::SeqCst) noexcept {
-    return __atomic_fetch_add(&value_, arg, to_builtin_order(order));
+    // Cast away volatile for intrinsics (atomic ops provide memory visibility)
+    return intrinsics::atomic::fetch_add(const_cast<T *>(&value_), arg, to_intrinsics_order(order));
   }
 
   [[nodiscard]] T fetch_sub(T arg, MemoryOrder order = MemoryOrder::SeqCst) noexcept {
-    return __atomic_fetch_sub(&value_, arg, to_builtin_order(order));
+    // Cast away volatile for intrinsics (atomic ops provide memory visibility)
+    return intrinsics::atomic::fetch_sub(const_cast<T *>(&value_), arg, to_intrinsics_order(order));
   }
 
   [[nodiscard]] bool compare_exchange_weak(T &expected, T desired, MemoryOrder success = MemoryOrder::SeqCst,
                                            MemoryOrder failure = MemoryOrder::SeqCst) noexcept {
-    return __atomic_compare_exchange_n(&value_, &expected, desired, true, to_builtin_order(success),
-                                       to_builtin_order(failure));
+    // Cast away volatile for intrinsics (atomic ops provide memory visibility)
+    return intrinsics::atomic::compare_exchange_weak(const_cast<T *>(&value_), &expected, desired,
+                                                     to_intrinsics_order(success), to_intrinsics_order(failure));
   }
 
   [[nodiscard]] T operator++() noexcept { return fetch_add(1, MemoryOrder::SeqCst) + 1; }

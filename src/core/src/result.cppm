@@ -6,6 +6,7 @@ module;
 
 export module moss.result;
 
+import moss.intrinsics;
 import moss.std;
 import moss.types;
 
@@ -224,7 +225,7 @@ public:
 
   constexpr const T &value() const & {
     if (!has_value_) {
-      __builtin_unreachable();
+      intrinsics::control::unreachable();
     }
     return storage_.value_;
   }
@@ -236,7 +237,7 @@ public:
 
   constexpr T &value() & {
     if (!has_value_) {
-      __builtin_unreachable();
+      intrinsics::control::unreachable();
     }
     return storage_.value_;
   }
@@ -246,7 +247,7 @@ public:
 
   constexpr T &&value() && {
     if (!has_value_) {
-      __builtin_unreachable();
+      intrinsics::control::unreachable();
     }
     return move(storage_.value_);
   }
@@ -355,7 +356,7 @@ public:
   constexpr void operator*() const noexcept {}
   constexpr void value() const {
     if (!has_value_) {
-      __builtin_unreachable();
+      intrinsics::control::unreachable();
     }
   }
 };

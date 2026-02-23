@@ -9,6 +9,7 @@ export module moss.process:signal;
 
 import :types;
 
+import moss.intrinsics;
 import moss.std;
 import moss.types;
 import moss.arch;
@@ -176,7 +177,7 @@ inline bool send_signal(Thread *thread, u32 signo) noexcept {
   }
 
   // Find lowest set bit (lowest signal number)
-  u32 signo = static_cast<u32>(__builtin_ctzll(pending));
+  u32 signo = static_cast<u32>(intrinsics::bitops::ctzll(pending));
   thread->pending_signals &= ~sig::sigmask(signo);
   return signo;
 }
@@ -194,10 +195,9 @@ inline bool send_signal(Thread *thread, u32 signo) noexcept {
   case SigDefault::Ignore:
     return false;
   case SigDefault::Stop:
-    // TODO: implement process stop/continue
-    log::klog::warn("signal {}: stop not implemented, ignoring", signo);
-    return false;
   case SigDefault::Continue:
+    // TODO: implement process stop/continue
+    log::klog::warn("signal {}: stop/continue not implemented, ignoring", signo);
     return false;
   default:
     return false;

@@ -3,6 +3,7 @@
 
 export module moss.interrupts;
 
+import moss.intrinsics;
 import moss.std;
 import moss.types;
 import moss.result;
