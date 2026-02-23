@@ -159,8 +159,11 @@ syscall_entry_point:
     addi    sp, sp, 256
 
     // ---- Return to caller ----
-    //      TODO: Replace with SRET when true user-space is implemented.
-    //      SRET would atomically restore SSTATUS and branch to SEPC.
+    // Uses RET while all code runs in S-mode.  Switching to SRET requires:
+    //   1. Saving SEPC on entry (ecall address + 4 to skip the ecall instruction)
+    //   2. Restoring SEPC here and clearing SSTATUS.SPP for U-mode return
+    //   3. User-space address space separation with distinct SATP values
+    // When ready: csrw sepc, <saved_sepc>; csrc sstatus, (1<<8); sret
     ret
 .size syscall_entry_point, . - syscall_entry_point
 

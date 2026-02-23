@@ -370,15 +370,25 @@ KernelResult<VirtAddr> allocate_user_heap(Process *process, usize size) noexcept
 
   AddressSpace *as = process->address_space();
 
-  VirtAddr heap_addr = user_layout::HEAP_START;
+  // Use brk_current to track the heap watermark.  First call initializes
+  // from HEAP_START; subsequent calls extend from the current break.
+  if (as->brk_current == 0) {
+    as->brk_base = user_layout::HEAP_START;
+    as->brk_current = user_layout::HEAP_START;
+  }
 
-  // TODO: 实现真正的内存分配和映射
-  // 现在只是创建VMA区域
-  u32 flags = vma_flags::READ | vma_flags::WRITE;
+  VirtAddr heap_addr = as->brk_current;
+
+  // Physical pages are allocated lazily via demand paging (page fault
+  // handler).  Here we only register the VMA so the fault handler knows
+  // the access is legitimate.
+  u32 flags = vma_flags::READ | vma_flags::WRITE | vma_flags::DEMAND_ZERO;
   auto map_result = map_user_memory(as, heap_addr, 0, size, flags);
   if (!map_result) {
     return KernelResult<VirtAddr>{map_result.error()};
   }
+
+  as->brk_current = heap_addr + size;
 
   return KernelResult<VirtAddr>{heap_addr};
 }
