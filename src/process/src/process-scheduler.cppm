@@ -27,6 +27,10 @@ using moss::abi::switch_to_user;
 using moss::abi::entry::early_debug_print;
 #if defined(MOSS_ARCH_ARM64)
 using moss::abi::arm64::user_eret_trampoline;
+#elif defined(MOSS_ARCH_X86_64)
+using moss::abi::x86_64::user_iret_trampoline;
+#elif defined(MOSS_ARCH_RISCV)
+using moss::abi::riscv::user_sret_trampoline;
 #endif
 
 // ============================================================================
@@ -1495,8 +1499,6 @@ public:
       break;
     case ProcessState::Sleeping:
     case ProcessState::DiskSleep:
-      valid_transition = (new_state == ProcessState::Ready || new_state == ProcessState::Terminated);
-      break;
     case ProcessState::Stopped:
       valid_transition = (new_state == ProcessState::Ready || new_state == ProcessState::Terminated);
       break;
@@ -1878,10 +1880,8 @@ private:
       return;
     }
 
-#if defined(MOSS_ARCH_ARM64)
     // Save prev BEFORE updating current — context_switch needs it
     Thread *prev = get_current_task();
-#endif
 
     CfsScheduler::set_current_task(task);
     task->state = ProcessState::Running;
@@ -1894,12 +1894,13 @@ private:
       // properly saved.  Without this, waitpid's context_switch back to
       // bootstrap would restore an all-zero CpuContext and hang.
       //
-      // Strategy: prepare task->context as a *kernel* context whose LR
-      // (x[30]) points to user_eret_trampoline.  The trampoline reads
-      // the saved user PC/SP from callee-saved registers and calls
-      // switch_to_user.  context_switch saves bootstrap, restores this
-      // prepared context, and `ret` jumps to the trampoline.
+      // Strategy: prepare task->context as a *kernel* context whose
+      // return address points to a user-mode trampoline.  The trampoline
+      // reads user PC/SP from callee-saved registers and enters user mode.
+      // context_switch saves bootstrap, restores this prepared context,
+      // and `ret` jumps to the trampoline.
       task->needs_initial_eret = false;
+
 #if defined(MOSS_ARCH_ARM64)
       // Stash user-mode entry point, stack, x0 and x1 in callee-saved regs.
       // context_switch preserves x19-x28, so these survive the switch.
@@ -1960,21 +1961,58 @@ private:
       u64 trampoline_addr = reinterpret_cast<u64>(&user_eret_trampoline);
       task->context.x[30] = trampoline_addr; // LR → ret target
       task->context.pc = trampoline_addr;
-      // SP = kernel stack top (16-byte aligned)
       task->context.sp = task->kernel_stack_base != 0 ? task->kernel_stack_top() : 0;
 
-      // Fall through to the normal context_switch path below, which will:
-      //   1. Save bootstrap_contexts_[cpu] (or prev task)
-      //   2. Restore this prepared context
-      //   3. `ret` to user_eret_trampoline
+#elif defined(MOSS_ARCH_X86_64)
+      // x86_64: stash user entry in callee-saved registers.
+      // context_switch preserves RBX, R12-R15 (System V ABI).
+      // user_iret_trampoline reads: RBX=pc, R12=sp, R13=rdi, R14=rsi
+      {
+        u64 user_pc = task->context.pc;
+        u64 user_sp = task->context.sp;
+        u64 user_rdi = task->context.rdi; // arg0
+        u64 user_rsi = task->context.rsi; // arg1
+
+        task->context = CpuContext{};
+        task->context.rbx = user_pc;  // callee-saved: user entry point
+        task->context.r12 = user_sp;  // callee-saved: user stack pointer
+        task->context.r13 = user_rdi; // callee-saved: user RDI (arg0)
+        task->context.r14 = user_rsi; // callee-saved: user RSI (arg1)
+
+        u64 trampoline_addr = reinterpret_cast<u64>(&user_iret_trampoline);
+        task->context.pc = trampoline_addr;
+        task->context.sp = task->kernel_stack_base != 0 ? task->kernel_stack_top() : 0;
+      }
+
+#elif defined(MOSS_ARCH_RISCV)
+      // RISC-V: stash user entry in callee-saved registers.
+      // context_switch preserves s0-s11 (x8-x9, x18-x27).
+      // user_sret_trampoline reads: s2=pc, s3=sp, s4=a0, s5=a1
+      {
+        u64 user_pc = task->context.pc;
+        u64 user_sp = task->context.sp;
+        // CpuContext RISC-V layout: x[10]=a0, x[11]=a1
+        u64 user_a0 = task->context.x[10]; // arg0
+        u64 user_a1 = task->context.x[11]; // arg1
+
+        task->context = CpuContext{};
+        task->context.x[18] = user_pc; // s2 = user entry point
+        task->context.x[19] = user_sp; // s3 = user stack pointer
+        task->context.x[20] = user_a0; // s4 = user a0
+        task->context.x[21] = user_a1; // s5 = user a1
+
+        u64 trampoline_addr = reinterpret_cast<u64>(&user_sret_trampoline);
+        task->context.pc = trampoline_addr;
+        task->context.x[1] = trampoline_addr; // ra = ret target
+        task->context.sp = task->kernel_stack_base != 0 ? task->kernel_stack_top() : 0;
+      }
 #endif
+      // Fall through to the normal context_switch path below.
     }
     {
-#if defined(MOSS_ARCH_ARM64)
       // Kernel-to-kernel context switch via assembly.
       // When prev is null (e.g. schedule_after_exit) or self-switch,
       // use per-CPU bootstrap context as throwaway save target.
-      // This ensures the new task starts on its OWN stack.
       CpuContext *prev_ctx;
       if (prev != nullptr && prev != task) {
         prev_ctx = &prev->context;
@@ -1983,43 +2021,39 @@ private:
       }
 
       // For user tasks being re-dispatched after preemption:
-      // Set TTBR0 to this process's page tables BEFORE context_switch.
-      // context_switch restores regs → ret into irq_trampoline → eret to EL0.
-      // Without this, the user task would resume with the wrong (or kernel) page tables.
+      // Set page table base to this process's page tables BEFORE context_switch.
       if (task->is_user_task) {
         Process *proc = g_process_manager ? g_process_manager->find_process(task->owner_pid) : nullptr;
         if (proc && proc->address_space() && proc->address_space()->pgd_phys != 0) {
+#if defined(MOSS_ARCH_ARM64)
           u64 ttbr0_val = proc->address_space()->pgd_phys | (static_cast<u64>(proc->address_space()->asid) << 48);
           asm volatile("msr ttbr0_el1, %0" ::"r"(ttbr0_val));
           asm volatile("isb" ::: "memory");
+#elif defined(MOSS_ARCH_X86_64)
+          asm volatile("mov %0, %%cr3" ::"r"(proc->address_space()->pgd_phys) : "memory");
+#elif defined(MOSS_ARCH_RISCV)
+          // Sv39 SATP: mode=8 (Sv39), ASID in bits 44-59, PPN in bits 0-43
+          u64 satp_val = (8ULL << 60) | (proc->address_space()->pgd_phys >> 12);
+          asm volatile("csrw satp, %0" ::"r"(satp_val) : "memory");
+          asm volatile("sfence.vma" ::: "memory");
+#endif
         }
 
+#if defined(MOSS_ARCH_ARM64)
         // Set TPIDR_EL1 for per-thread kernel stack.
-        // After context_switch restores this task → ret into irq_trampoline
-        // → irq_trampoline's add sp + eret → SP_EL1 = kernel_stack_top.
-        // The TPIDR_EL1 value is not used by context_switch itself, but
-        // will be read by switch_to_user on future first-entry paths or
-        // by irq_trampoline exit to verify SP correctness.
         if (task->kernel_stack_base != 0) {
           u64 kstack_top = task->kernel_stack_top();
           asm volatile("msr tpidr_el1, %0" ::"r"(kstack_top));
         }
+#endif
       }
 
       // Mask IRQs before context_switch.  context_switch does NOT
-      // touch DAIF, so the new task inherits IRQ-masked state.
-      // Fresh tasks explicitly unmask in test_task_entry().
-      // Resumed tasks are inside irq_trampoline and eret restores
-      // the pre-IRQ PSTATE (with DAIF=0).
+      // touch interrupt state, so the new task inherits masked state.
       arch::disable_interrupts();
       context_switch(prev_ctx, &task->context);
       // Returns here when prev_ctx is scheduled again.
-      // Re-enable IRQs for the returned-to context.
       arch::enable_interrupts();
-#else
-      // Non-ARM64: no asm context_switch yet — just simulate execution
-      execute_task_simplified(task, get_current_cpu_id());
-#endif
     }
   }
 
@@ -2052,12 +2086,16 @@ public:
     // If we don't switch, context_switch saves this SP into
     // bootstrap_contexts_[cpu], and later restoration reads from
     // freed/reused memory → use-after-free crash.
-#if defined(MOSS_ARCH_ARM64)
     {
       u64 exit_sp = reinterpret_cast<u64>(exit_stacks_.get_cpu(cpu).end());
+#if defined(MOSS_ARCH_ARM64)
       asm volatile("mov sp, %0" ::"r"(exit_sp) : "memory");
-    }
+#elif defined(MOSS_ARCH_X86_64)
+      asm volatile("mov %0, %%rsp" ::"r"(exit_sp) : "memory");
+#elif defined(MOSS_ARCH_RISCV)
+      asm volatile("mv sp, %0" ::"r"(exit_sp) : "memory");
 #endif
+    }
 
     // Ensure interrupts are enabled so timer ticks can fire and
     // re-enqueue tasks while we idle.
