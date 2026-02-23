@@ -1,10 +1,12 @@
 // MOSS Standard Library Module - Freestanding C++26 Implementation
 // Provides all basic types, type traits, and utility functions for kernel use
-// Type traits and memory ops use Clang builtins for correctness and codegen.
+// Type traits and memory ops use Clang intrinsics for correctness and codegen.
 
 module;
 
 export module moss.std;
+
+import moss.intrinsics;
 
 // Basic type definitions
 export namespace moss {
@@ -51,95 +53,95 @@ inline constexpr u64 UINT64_MAX = 18446744073709551615ULL;
 } // namespace moss
 
 // ============================================================================
-// Type traits — Clang builtin type transforms & intrinsics
+// Type traits — delegated to moss.intrinsics
 // ============================================================================
 export namespace moss {
 
-// --- Type transformations (Clang TransformTypeTraits) -----------------------
+// --- Type transformations (via intrinsics::traits) --------------------------
 
-template <typename T> using remove_const_t = __remove_const(T);
+template <typename T> using remove_const_t = intrinsics::traits::remove_const_t<T>;
 template <typename T> struct remove_const {
   using type = remove_const_t<T>;
 };
 
-template <typename T> using remove_volatile_t = __remove_volatile(T);
+template <typename T> using remove_volatile_t = intrinsics::traits::remove_volatile_t<T>;
 template <typename T> struct remove_volatile {
   using type = remove_volatile_t<T>;
 };
 
-template <typename T> using remove_cv_t = __remove_cv(T);
+template <typename T> using remove_cv_t = intrinsics::traits::remove_cv_t<T>;
 template <typename T> struct remove_cv {
   using type = remove_cv_t<T>;
 };
 
-template <typename T> using remove_reference_t = __remove_reference_t(T);
+template <typename T> using remove_reference_t = intrinsics::traits::remove_reference_t<T>;
 template <typename T> struct remove_reference {
   using type = remove_reference_t<T>;
 };
 
-template <typename T> using remove_pointer_t = __remove_pointer(T);
+template <typename T> using remove_pointer_t = intrinsics::traits::remove_pointer_t<T>;
 template <typename T> struct remove_pointer {
   using type = remove_pointer_t<T>;
 };
 
-// --- Type property traits (Clang __is_* intrinsics) -------------------------
+// --- Type property traits (via intrinsics::traits) --------------------------
 
-template <typename T, typename U> inline constexpr bool is_same_v = __is_same(T, U);
+template <typename T, typename U> inline constexpr bool is_same_v = intrinsics::traits::is_same_v<T, U>;
 template <typename T, typename U> struct is_same {
   static constexpr bool value = is_same_v<T, U>;
 };
 
-template <typename T> inline constexpr bool is_const_v = __is_const(T);
+template <typename T> inline constexpr bool is_const_v = intrinsics::traits::is_const_v<T>;
 template <typename T> struct is_const {
   static constexpr bool value = is_const_v<T>;
 };
 
-template <typename T> inline constexpr bool is_volatile_v = __is_volatile(T);
+template <typename T> inline constexpr bool is_volatile_v = intrinsics::traits::is_volatile_v<T>;
 template <typename T> struct is_volatile {
   static constexpr bool value = is_volatile_v<T>;
 };
 
-template <typename T> inline constexpr bool is_void_v = __is_void(T);
+template <typename T> inline constexpr bool is_void_v = intrinsics::traits::is_void_v<T>;
 template <typename T> struct is_void {
   static constexpr bool value = is_void_v<T>;
 };
 
-template <typename T> inline constexpr bool is_integral_v = __is_integral(T);
+template <typename T> inline constexpr bool is_integral_v = intrinsics::traits::is_integral_v<T>;
 template <typename T> struct is_integral {
   static constexpr bool value = is_integral_v<T>;
 };
 
-template <typename T> inline constexpr bool is_floating_point_v = __is_floating_point(T);
+template <typename T> inline constexpr bool is_floating_point_v = intrinsics::traits::is_floating_point_v<T>;
 template <typename T> struct is_floating_point {
   static constexpr bool value = is_floating_point_v<T>;
 };
 
-template <typename T> inline constexpr bool is_array_v = __is_array(T);
+template <typename T> inline constexpr bool is_array_v = intrinsics::traits::is_array_v<T>;
 template <typename T> struct is_array {
   static constexpr bool value = is_array_v<T>;
 };
 
-template <typename T> inline constexpr bool is_pointer_v = __is_pointer(T);
+template <typename T> inline constexpr bool is_pointer_v = intrinsics::traits::is_pointer_v<T>;
 template <typename T> struct is_pointer {
   static constexpr bool value = is_pointer_v<T>;
 };
 
-template <typename T> inline constexpr bool is_lvalue_reference_v = __is_lvalue_reference(T);
+template <typename T> inline constexpr bool is_lvalue_reference_v = intrinsics::traits::is_lvalue_reference_v<T>;
 template <typename T> struct is_lvalue_reference {
   static constexpr bool value = is_lvalue_reference_v<T>;
 };
 
-template <typename T> inline constexpr bool is_rvalue_reference_v = __is_rvalue_reference(T);
+template <typename T> inline constexpr bool is_rvalue_reference_v = intrinsics::traits::is_rvalue_reference_v<T>;
 template <typename T> struct is_rvalue_reference {
   static constexpr bool value = is_rvalue_reference_v<T>;
 };
 
-template <typename T> inline constexpr bool is_reference_v = __is_reference(T);
+template <typename T> inline constexpr bool is_reference_v = intrinsics::traits::is_reference_v<T>;
 template <typename T> struct is_reference {
   static constexpr bool value = is_reference_v<T>;
 };
 
-template <typename T> inline constexpr bool is_function_v = __is_function(T);
+template <typename T> inline constexpr bool is_function_v = intrinsics::traits::is_function_v<T>;
 template <typename T> struct is_function {
   static constexpr bool value = is_function_v<T>;
 };
@@ -160,35 +162,40 @@ template <typename T> struct enable_if<true, T> {
 };
 template <bool B, typename T = void> using enable_if_t = typename enable_if<B, T>::type;
 
-// --- Nothrow traits (Clang __is_nothrow_* intrinsics) -----------------------
+// --- Nothrow traits (via intrinsics::traits) --------------------------------
 
-template <typename T> inline constexpr bool is_nothrow_copy_constructible_v = __is_nothrow_constructible(T, const T &);
+template <typename T>
+inline constexpr bool is_nothrow_copy_constructible_v = intrinsics::traits::is_nothrow_constructible_v<T, const T &>;
 template <typename T> struct is_nothrow_copy_constructible {
   static constexpr bool value = is_nothrow_copy_constructible_v<T>;
 };
 
-template <typename T> inline constexpr bool is_nothrow_move_constructible_v = __is_nothrow_constructible(T, T &&);
+template <typename T>
+inline constexpr bool is_nothrow_move_constructible_v = intrinsics::traits::is_nothrow_constructible_v<T, T &&>;
 template <typename T> struct is_nothrow_move_constructible {
   static constexpr bool value = is_nothrow_move_constructible_v<T>;
 };
 
-template <typename T> inline constexpr bool is_nothrow_copy_assignable_v = __is_nothrow_assignable(T &, const T &);
+template <typename T>
+inline constexpr bool is_nothrow_copy_assignable_v = intrinsics::traits::is_nothrow_assignable_v<T &, const T &>;
 template <typename T> struct is_nothrow_copy_assignable {
   static constexpr bool value = is_nothrow_copy_assignable_v<T>;
 };
 
-template <typename T> inline constexpr bool is_nothrow_move_assignable_v = __is_nothrow_assignable(T &, T &&);
+template <typename T>
+inline constexpr bool is_nothrow_move_assignable_v = intrinsics::traits::is_nothrow_assignable_v<T &, T &&>;
 template <typename T> struct is_nothrow_move_assignable {
   static constexpr bool value = is_nothrow_move_assignable_v<T>;
 };
 
 template <typename T, typename... Args>
-inline constexpr bool is_nothrow_constructible_v = __is_nothrow_constructible(T, Args...);
+inline constexpr bool is_nothrow_constructible_v = intrinsics::traits::is_nothrow_constructible_v<T, Args...>;
 template <typename T, typename... Args> struct is_nothrow_constructible {
   static constexpr bool value = is_nothrow_constructible_v<T, Args...>;
 };
 
-template <typename T, typename U> inline constexpr bool is_nothrow_assignable_v = __is_nothrow_assignable(T, U);
+template <typename T, typename U>
+inline constexpr bool is_nothrow_assignable_v = intrinsics::traits::is_nothrow_assignable_v<T, U>;
 template <typename T, typename U> struct is_nothrow_assignable {
   static constexpr bool value = is_nothrow_assignable_v<T, U>;
 };
@@ -240,22 +247,24 @@ template <typename T> constexpr const T &clamp(const T &v, const T &lo, const T 
 } // namespace moss
 
 // ============================================================================
-// Memory operations — delegated to Clang builtins
+// Memory operations — delegated to moss.intrinsics
 // ============================================================================
 export namespace moss {
 
-constexpr void *memset(void *dest, int ch, size_t count) noexcept { return __builtin_memset(dest, ch, count); }
+constexpr void *memset(void *dest, int ch, size_t count) noexcept {
+  return intrinsics::memory::memset(dest, ch, count);
+}
 
 constexpr void *memcpy(void *dest, const void *src, size_t count) noexcept {
-  return __builtin_memcpy(dest, src, count);
+  return intrinsics::memory::memcpy(dest, src, count);
 }
 
 constexpr void *memmove(void *dest, const void *src, size_t count) noexcept {
-  return __builtin_memmove(dest, src, count);
+  return intrinsics::memory::memmove(dest, src, count);
 }
 
 constexpr int memcmp(const void *lhs, const void *rhs, size_t count) noexcept {
-  return __builtin_memcmp(lhs, rhs, count);
+  return intrinsics::memory::memcmp(lhs, rhs, count);
 }
 
 template <typename T> constexpr T abs(const T &value) noexcept { return (value < 0) ? -value : value; }
@@ -344,53 +353,63 @@ public:
   atomic &operator=(const atomic &) = delete;
 
   T load(memory_order order = memory_order_seq_cst) const noexcept {
-    return __atomic_load_n(&value_, static_cast<int>(order));
+    auto iorder = static_cast<intrinsics::atomic::memory_order>(static_cast<int>(order));
+    return intrinsics::atomic::load(&value_, iorder);
   }
 
   void store(T desired, memory_order order = memory_order_seq_cst) noexcept {
-    __atomic_store_n(&value_, desired, static_cast<int>(order));
+    auto iorder = static_cast<intrinsics::atomic::memory_order>(static_cast<int>(order));
+    intrinsics::atomic::store(&value_, desired, iorder);
   }
 
   T exchange(T desired, memory_order order = memory_order_seq_cst) noexcept {
-    return __atomic_exchange_n(&value_, desired, static_cast<int>(order));
+    auto iorder = static_cast<intrinsics::atomic::memory_order>(static_cast<int>(order));
+    return intrinsics::atomic::exchange(&value_, desired, iorder);
   }
 
   bool compare_exchange_weak(T &expected, T desired, memory_order success = memory_order_seq_cst,
                              memory_order failure = memory_order_seq_cst) noexcept {
-    return __atomic_compare_exchange_n(&value_, &expected, desired, true, static_cast<int>(success),
-                                       static_cast<int>(failure));
+    auto isuccess = static_cast<intrinsics::atomic::memory_order>(static_cast<int>(success));
+    auto ifailure = static_cast<intrinsics::atomic::memory_order>(static_cast<int>(failure));
+    return intrinsics::atomic::compare_exchange_weak(&value_, &expected, desired, isuccess, ifailure);
   }
 
   bool compare_exchange_strong(T &expected, T desired, memory_order success = memory_order_seq_cst,
                                memory_order failure = memory_order_seq_cst) noexcept {
-    return __atomic_compare_exchange_n(&value_, &expected, desired, false, static_cast<int>(success),
-                                       static_cast<int>(failure));
+    auto isuccess = static_cast<intrinsics::atomic::memory_order>(static_cast<int>(success));
+    auto ifailure = static_cast<intrinsics::atomic::memory_order>(static_cast<int>(failure));
+    return intrinsics::atomic::compare_exchange_strong(&value_, &expected, desired, isuccess, ifailure);
   }
 
   // Atomic arithmetic operations (for integral types)
   template <typename U = T>
   enable_if_t<is_integral_v<U>, T> fetch_add(T arg, memory_order order = memory_order_seq_cst) noexcept {
-    return __atomic_fetch_add(&value_, arg, static_cast<int>(order));
+    auto iorder = static_cast<intrinsics::atomic::memory_order>(static_cast<int>(order));
+    return intrinsics::atomic::fetch_add(&value_, arg, iorder);
   }
 
   template <typename U = T>
   enable_if_t<is_integral_v<U>, T> fetch_sub(T arg, memory_order order = memory_order_seq_cst) noexcept {
-    return __atomic_fetch_sub(&value_, arg, static_cast<int>(order));
+    auto iorder = static_cast<intrinsics::atomic::memory_order>(static_cast<int>(order));
+    return intrinsics::atomic::fetch_sub(&value_, arg, iorder);
   }
 
   template <typename U = T>
   enable_if_t<is_integral_v<U>, T> fetch_and(T arg, memory_order order = memory_order_seq_cst) noexcept {
-    return __atomic_fetch_and(&value_, arg, static_cast<int>(order));
+    auto iorder = static_cast<intrinsics::atomic::memory_order>(static_cast<int>(order));
+    return intrinsics::atomic::fetch_and(&value_, arg, iorder);
   }
 
   template <typename U = T>
   enable_if_t<is_integral_v<U>, T> fetch_or(T arg, memory_order order = memory_order_seq_cst) noexcept {
-    return __atomic_fetch_or(&value_, arg, static_cast<int>(order));
+    auto iorder = static_cast<intrinsics::atomic::memory_order>(static_cast<int>(order));
+    return intrinsics::atomic::fetch_or(&value_, arg, iorder);
   }
 
   template <typename U = T>
   enable_if_t<is_integral_v<U>, T> fetch_xor(T arg, memory_order order = memory_order_seq_cst) noexcept {
-    return __atomic_fetch_xor(&value_, arg, static_cast<int>(order));
+    auto iorder = static_cast<intrinsics::atomic::memory_order>(static_cast<int>(order));
+    return intrinsics::atomic::fetch_xor(&value_, arg, iorder);
   }
 
   // Operators

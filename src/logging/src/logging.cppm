@@ -27,6 +27,7 @@
 
 export module moss.logging;
 
+import moss.intrinsics;
 import moss.std;
 import moss.types;
 import moss.hal.uart;
@@ -52,21 +53,23 @@ using containers::LockGuard;
 // FmtStr — format string wrapper that captures source location at call site
 // ============================================================================
 
-#if __has_builtin(__builtin_FILE_NAME)
-#define MOSS_LOG_FILE_BUILTIN __builtin_FILE_NAME()
-inline constexpr bool kFileBuiltinIsBareNameOnly = true;
-#else
-#define MOSS_LOG_FILE_BUILTIN __builtin_FILE()
-inline constexpr bool kFileBuiltinIsBareNameOnly = false;
-#endif
+// Use intrinsics::source for file name (prefers FILE_NAME if available)
+inline constexpr bool kFileBuiltinIsBareNameOnly = intrinsics::source::has_file_name_builtin;
 
 struct FmtStr {
   const char *value;
   const char *file;
   unsigned line;
 
-  constexpr FmtStr(const char *s, const char *f = MOSS_LOG_FILE_BUILTIN, unsigned l = __builtin_LINE()) noexcept
-      : value(s), file(f), line(l) {}
+  constexpr FmtStr(const char *s) noexcept
+      : value(s),
+#if __has_builtin(__builtin_FILE_NAME)
+        file(intrinsics::source::file_name()),
+#else
+        file(intrinsics::source::file()),
+#endif
+        line(intrinsics::source::line()) {
+  }
 };
 
 // ============================================================================

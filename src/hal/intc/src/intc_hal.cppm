@@ -15,6 +15,7 @@
 
 export module moss.hal.intc;
 
+import moss.intrinsics;
 import moss.std;
 import moss.types;
 import moss.result;
@@ -598,7 +599,7 @@ inline void set_target(VirtAddr dist_base, u32 irq, u32 cpu_mask) noexcept {
       return; // SGI/PPI have no target routing in GICv3
     }
     // Route to the lowest-numbered CPU in the mask
-    u32 target_cpu = static_cast<u32>(__builtin_ctz(cpu_mask));
+    u32 target_cpu = static_cast<u32>(intrinsics::bitops::ctz(cpu_mask));
     // IROUTER: Aff0[7:0] = cpu_id (for QEMU virt flat topology)
     u32 irouter_off = dist_regs::IROUTER + (irq - 32) * 8;
     write_reg(dist_base, irouter_off, target_cpu);
@@ -687,7 +688,7 @@ inline VoidResult send_sgi(VirtAddr dist_base, [[maybe_unused]] VirtAddr cpu_bas
   (void)dist_base;
   if (target_cpu_mask != 0) {
     // Find first target CPU from mask
-    u32 dest_apic_id = static_cast<u32>(__builtin_ctz(target_cpu_mask));
+    u32 dest_apic_id = static_cast<u32>(intrinsics::bitops::ctz(target_cpu_mask));
     write_reg(cpu_base, cpu_regs::ICR_HIGH, dest_apic_id << 24);
     write_reg(cpu_base, cpu_regs::ICR_LOW, sgi_id | (1U << 14)); // Fixed delivery
   }

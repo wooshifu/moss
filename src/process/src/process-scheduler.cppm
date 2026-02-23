@@ -5,6 +5,7 @@ export module moss.process:scheduler;
 
 import :types;
 
+import moss.intrinsics;
 import moss.std;
 import moss.types;
 import moss.result;
@@ -126,10 +127,10 @@ private:
   [[nodiscard]] u32 find_highest() const noexcept {
     // Check high word first (priorities 64-99)
     if (bitmap_[1] != 0) {
-      return 64 + 63 - static_cast<u32>(__builtin_clzll(bitmap_[1]));
+      return 64 + 63 - static_cast<u32>(intrinsics::bitops::clzll(bitmap_[1]));
     }
     if (bitmap_[0] != 0) {
-      return 63 - static_cast<u32>(__builtin_clzll(bitmap_[0]));
+      return 63 - static_cast<u32>(intrinsics::bitops::clzll(bitmap_[0]));
     }
     return 0;
   }
