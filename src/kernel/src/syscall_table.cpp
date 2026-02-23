@@ -89,16 +89,24 @@ long sys_getppid(long /*unused*/, long /*unused*/, long /*unused*/, long /*unuse
 
 long sys_getuid(long /*unused*/, long /*unused*/, long /*unused*/, long /*unused*/, long /*unused*/,
                 long /*unused*/) noexcept {
-  // TODO: 从安全子系统获取用户ID
-  // 临时返回 root 用户 (0)
-  return 0;
+  using namespace moss::kernel::process;
+  Thread *cur = CfsScheduler::get_current_task();
+  if (!cur) {
+    return 0;
+  }
+  Process *proc = g_process_manager ? g_process_manager->find_process(cur->owner_pid) : nullptr;
+  return proc ? static_cast<long>(proc->uid()) : 0;
 }
 
 long sys_getgid(long /*unused*/, long /*unused*/, long /*unused*/, long /*unused*/, long /*unused*/,
                 long /*unused*/) noexcept {
-  // TODO: 从安全子系统获取组ID
-  // 临时返回 root 组 (0)
-  return 0;
+  using namespace moss::kernel::process;
+  Thread *cur = CfsScheduler::get_current_task();
+  if (!cur) {
+    return 0;
+  }
+  Process *proc = g_process_manager ? g_process_manager->find_process(cur->owner_pid) : nullptr;
+  return proc ? static_cast<long>(proc->gid()) : 0;
 }
 
 // fork() — create a child process with COW-shared address space.

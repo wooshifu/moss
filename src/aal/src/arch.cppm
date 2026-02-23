@@ -358,9 +358,15 @@ inline void setup_kernel_mmu(PhysAddr kernel_pgd_pa) noexcept {
   asm volatile("msr sctlr_el1, %0" ::"r"(sctlr));
   asm volatile("isb");
 #elif defined(MOSS_ARCH_X86_64)
-  (void)kernel_pgd_pa; // TODO: set CR3
+  // x86_64: load PML4 (page table root) physical address into CR3.
+  // In long mode the MMU is always enabled; writing CR3 activates the new page tables.
+  asm volatile("mov %0, %%cr3" ::"r"(kernel_pgd_pa) : "memory");
 #elif defined(MOSS_ARCH_RISCV)
-  (void)kernel_pgd_pa; // TODO: set satp
+  // RISC-V Sv48: satp = MODE(9) | PPN(kernel_pgd_pa >> 12)
+  constexpr u64 SATP_MODE_SV48 = 9ULL << 60;
+  u64 satp_val = SATP_MODE_SV48 | ((kernel_pgd_pa >> 12) & 0x00000FFFFFFFFFFFULL);
+  asm volatile("csrw satp, %0" ::"r"(satp_val) : "memory");
+  asm volatile("sfence.vma" ::: "memory");
 #endif
 }
 

@@ -126,9 +126,9 @@ inline constexpr PlatformDefaults DEFAULTS{
         },
     .intc =
         {
-            .dist_base = 0,   // TODO: Local APIC at 0xFEE00000
-            .cpu_base = 0,    // TODO: I/O APIC at 0xFEC00000
-            .redist_base = 0, // N/A for x86_64
+            .dist_base = 0xFEE00000, // Local APIC MMIO base
+            .cpu_base = 0xFEC00000,  // I/O APIC MMIO base
+            .redist_base = 0,        // N/A for x86_64
         },
     .memory =
         {

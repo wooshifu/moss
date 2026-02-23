@@ -157,7 +157,16 @@ void update_boot_stage(BootStage stage, ::moss::kernel::ErrorCode error) noexcep
     auto &info = moss::fdt::g_platform_info;
     info = {};
     info.dtb_valid = false;
-    info.cpu_count = 1; // TODO: 可通过 CPUID 扩展检测
+    // Detect logical processor count via CPUID leaf 1, EBX[23:16]
+    {
+      u32 eax1 = 0;
+      u32 ebx1 = 0;
+      u32 ecx1 = 0;
+      u32 edx1 = 0;
+      asm volatile("cpuid" : "=a"(eax1), "=b"(ebx1), "=c"(ecx1), "=d"(edx1) : "a"(1) : "memory");
+      u32 logical_cpus = (ebx1 >> 16) & 0xFF;
+      info.cpu_count = (logical_cpus > 0) ? logical_cpus : 1;
+    }
     info.memory_regions[0] = {moss::kernel::platform::ram_base(), moss::kernel::platform::ram_size()};
     info.memory_region_count = 1;
     info.total_memory_start = moss::kernel::platform::ram_base();
@@ -181,13 +190,91 @@ void update_boot_stage(BootStage stage, ::moss::kernel::ErrorCode error) noexcep
 }
 
 ::moss::kernel::VoidResult moss::boot::X86_64BootImpl::setup_memory_management(BootContext &ctx) noexcept {
-  (void)ctx;
   moss::boot::update_boot_stage(moss::boot::BootStage::MemoryManagement);
 
   moss::boot::early_print("=== x86_64 Memory Management Setup ===\n");
-  moss::boot::early_print("TODO: Implement x86_64 page table and MMU setup\n");
+
+  // In long mode the MMU is always active.  We initialize the unified
+  // memory subsystem (page frame allocator, kernel heap, high-half map)
+  // using the same interface as ARM64.
+  auto mmu_result = ::moss::kernel::mm::setup_mmu();
+  if (!mmu_result) {
+    moss::boot::early_print("  WARNING: setup_mmu failed\n");
+  }
+
+  auto pfa_result = ::moss::kernel::mm::PageFrameAllocator::initialize();
+  if (!pfa_result) {
+    moss::boot::early_print("  WARNING: PageFrameAllocator init failed\n");
+  }
+
+  // Initialize runtime heap allocator with a 256 KB region
+  VirtAddr heap_start = moss::abi::linker::heap_start();
+  ::moss::kernel::usize initial_heap_size = 256ULL * 1024;
+  auto heap_result = ::moss::kernel::mm::RuntimeHeapAllocator::initialize_heap(heap_start, initial_heap_size);
+  if (!heap_result) {
+    moss::boot::early_print("  WARNING: RuntimeHeapAllocator init failed\n");
+  }
+
   moss::boot::early_print("x86_64 memory management setup complete\n\n");
   return ::moss::kernel::VoidResult{};
+}
+
+// IDT entry structure (16 bytes for 64-bit long mode)
+struct [[gnu::packed]] IDTEntry {
+  u16 offset_low;  // Target offset [15:0]
+  u16 selector;    // Code segment selector (0x08 = kernel CS)
+  u8 ist;          // Interrupt Stack Table index (0 for most)
+  u8 type_attr;    // Type + DPL + Present (0x8E = interrupt gate, DPL=0)
+  u16 offset_mid;  // Target offset [31:16]
+  u32 offset_high; // Target offset [63:32]
+  u32 reserved;    // Must be 0
+};
+
+static IDTEntry g_idt[256];
+static struct [[gnu::packed]] {
+  u16 limit;
+  u64 base;
+} g_idtr;
+
+// ISR stub table defined in isr_x86_64.S
+extern "C" void *isr_stub_table[256];
+
+static void setup_idt() {
+  for (u32 i = 0; i < 256; ++i) {
+    u64 addr = reinterpret_cast<u64>(isr_stub_table[i]);
+    g_idt[i].offset_low = static_cast<u16>(addr & 0xFFFF);
+    g_idt[i].selector = 0x08; // kernel code segment
+    g_idt[i].ist = 0;
+    g_idt[i].type_attr = 0x8E; // interrupt gate, present, DPL=0
+    g_idt[i].offset_mid = static_cast<u16>((addr >> 16) & 0xFFFF);
+    g_idt[i].offset_high = static_cast<u32>((addr >> 32) & 0xFFFFFFFF);
+    g_idt[i].reserved = 0;
+  }
+  g_idtr.limit = sizeof(g_idt) - 1;
+  g_idtr.base = reinterpret_cast<u64>(&g_idt[0]);
+  asm volatile("lidt %0" ::"m"(g_idtr));
+}
+
+// C++ interrupt/exception handler called from isr_common (isr_x86_64.S)
+extern "C" void x86_64_interrupt_handler(u64 vector, u64 error_code, [[maybe_unused]] void *frame) noexcept {
+  if (vector < 32) {
+    // CPU exception — log via VGA and halt
+    moss::boot::early_print("x86_64 EXCEPTION: vec=");
+    moss::boot::early_print_hex(vector);
+    moss::boot::early_print(" err=");
+    moss::boot::early_print_hex(error_code);
+    moss::boot::early_print("\n");
+    // Fatal for now: halt
+    asm volatile("cli");
+    while (true) {
+      asm volatile("hlt");
+    }
+  }
+
+  // External IRQ (vector >= 32): send EOI to Local APIC
+  constexpr u64 LAPIC_EOI_ADDR = 0xFEE000B0ULL;
+  auto *lapic_eoi = reinterpret_cast<volatile u32 *>(LAPIC_EOI_ADDR);
+  *lapic_eoi = 0;
 }
 
 ::moss::kernel::VoidResult moss::boot::X86_64BootImpl::setup_interrupts_and_exceptions(BootContext &ctx) noexcept {
@@ -195,7 +282,22 @@ void update_boot_stage(BootStage stage, ::moss::kernel::ErrorCode error) noexcep
   moss::boot::update_boot_stage(moss::boot::BootStage::InterruptsExceptions);
 
   moss::boot::early_print("=== x86_64 Interrupts and Exceptions Setup ===\n");
-  moss::boot::early_print("TODO: Implement IDT and interrupt controller init\n");
+
+  // 1. Load IDT with 256 entries pointing to ISR stubs
+  setup_idt();
+  moss::boot::early_print("  IDT loaded (256 entries)\n");
+
+  // 2. Initialize Local APIC (enable via SVR register)
+  auto *gic = new moss::kernel::interrupts::GenericInterruptController();
+  if (gic) {
+    VirtAddr dist_base = moss::kernel::platform::intc_dist_base(); // Local APIC
+    VirtAddr cpu_base = moss::kernel::platform::intc_cpu_base();   // I/O APIC
+    gic->initialize(dist_base, cpu_base, 0);
+    g_gic_controller = gic;
+    g_gic_hardware_available = true;
+    moss::boot::early_print("  Local APIC initialized\n");
+  }
+
   moss::boot::early_print("x86_64 interrupt/exception setup complete\n\n");
   return ::moss::kernel::VoidResult{};
 }
@@ -204,8 +306,20 @@ void update_boot_stage(BootStage stage, ::moss::kernel::ErrorCode error) noexcep
   moss::boot::update_boot_stage(moss::boot::BootStage::SmpSupport);
 
   moss::boot::early_print("=== x86_64 SMP Support Setup ===\n");
-  ctx.total_cpus = 1;
-  moss::boot::early_print("TODO: Implement x86_64 multi-core boot support\n");
+
+  // Use the CPU count detected via CPUID during hardware_early_init.
+  // AP boot via INIT-SIPI-SIPI requires:
+  //   1. A real-mode trampoline page below 1 MB
+  //   2. ACPI/MP table parsing to discover APIC IDs
+  //   3. Per-AP GDT, page tables, and stack allocation
+  // These prerequisites are substantial; for now we report the detected
+  // count and boot only the BSP.
+  u32 detected = moss::fdt::g_platform_info.cpu_count;
+  ctx.total_cpus = detected;
+
+  moss::boot::early_print("  Detected CPUs: ");
+  moss::boot::early_print_hex(detected);
+  moss::boot::early_print(" (BSP only for now)\n");
   moss::boot::early_print("x86_64 SMP setup complete\n\n");
   return ::moss::kernel::VoidResult{};
 }

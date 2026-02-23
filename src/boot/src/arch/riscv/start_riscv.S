@@ -1,32 +1,22 @@
 // =============================================================================
-// RISC-V 64-bit Kernel Boot Stub
+// RISC-V 64-bit Kernel Boot Entry
 // =============================================================================
 //
-// Minimal bootstrap for RISC-V MOSS kernel.  This is a placeholder — the full
-// RISC-V boot sequence (SBI init, page tables, trap vectors, etc.) is not yet
-// implemented.
+// Bootstrap for RISC-V MOSS kernel running in S-mode (under OpenSBI).
 //
-// Current behavior:
-//   1. Set up the global pointer (GP) register for linker relaxation
-//   2. Set up a temporary 8 KB kernel stack
-//   3. Zero the BSS section
-//   4. Call kernel_main_stub which enters a WFI loop
+// OpenSBI calls _start with:
+//   a0 = hart ID
+//   a1 = DTB (Device Tree Blob) pointer
+//
+// This stub:
+//   1. Saves hart ID in tp register (S-mode convention)
+//   2. Parks non-boot harts in a WFI loop (SBI HSM wakes them later)
+//   3. Sets up global pointer (GP) for linker relaxation
+//   4. Sets up a temporary 8 KB kernel stack
+//   5. Zeroes the BSS section
+//   6. Calls early_main(device_tree_ptr) to enter the unified boot path
 //
 // Entry point: _start (set by the linker via ENTRY(_start) in linker.ld)
-//
-// RISC-V specifics:
-//   - GP (x3) must be set early for linker relaxation to work.  The
-//     `.option norelax` directive prevents the assembler from relaxing the
-//     `la gp, __global_pointer$` instruction itself (chicken-and-egg problem).
-//   - WFI (Wait For Interrupt) is the RISC-V equivalent of ARM's WFI / x86 HLT.
-//
-// TODO:
-//   - Initialize S-mode trap vector (stvec)
-//   - Set up page tables (Sv39/Sv48)
-//   - Initialize PLIC for interrupt routing
-//   - Parse DTB from a0 (passed by OpenSBI/bootloader)
-//   - Boot secondary harts via SBI HSM extension
-//   - Jump to the real kernel_main
 // =============================================================================
 
 .section ".text.boot", "ax"
@@ -34,36 +24,53 @@
 
 .type _start, @function
 _start:
-    // ---- Set up global pointer for linker relaxation ----
-    //
-    // RISC-V uses GP-relative addressing for small data access.
-    // __global_pointer$ is defined by the linker at the center of the
-    // small data section (.sdata).  We must use `.option norelax` here
-    // to prevent the assembler from trying to GP-relax this very
-    // instruction (which would create a circular dependency).
+    // Save hart ID in tp (thread pointer) — S-mode convention.
+    // tp is used by get_current_cpu_id() since mhartid is M-mode only.
+    mv tp, a0
+
+    // Non-boot harts: park in WFI loop.
+    // SBI HSM extension will wake them via sbi_hart_start() when ready.
+    bnez a0, .Lsecondary_park
+
+    // ---- Boot hart (hart 0) only ----
+
+    // Set up global pointer for linker relaxation.
+    // .option norelax prevents the assembler from GP-relaxing this instruction
+    // itself (circular dependency).
     .option push
     .option norelax
     la gp, __global_pointer$
     .option pop
 
-    // ---- Set up temporary kernel stack (8 KB) ----
+    // Set up temporary kernel stack (8 KB)
     la sp, stack_top
 
-    // ---- Zero BSS section ----
-    //   t0 = BSS start, t1 = BSS end
-    //   Loop: store doubleword zeros until t0 >= t1
+    // Zero BSS section
     la t0, __bss_start
     la t1, __bss_end
-    bgeu t0, t1, 2f                    // skip if BSS is empty
+    bgeu t0, t1, 2f
 1:
-    sd zero, (t0)                       // store 8 bytes of zeros
-    addi t0, t0, 8                      // advance pointer
-    bltu t0, t1, 1b                     // loop while t0 < t1
+    sd zero, (t0)
+    addi t0, t0, 8
+    bltu t0, t1, 1b
 2:
 
-    // ---- Jump to stub (full RISC-V boot not yet implemented) ----
-    call kernel_main_stub
+    // Call unified boot entry.
+    // a1 still holds the DTB pointer from OpenSBI → pass as first arg (a0).
+    mv a0, a1
+    call early_main
+
+    // Should not return — WFI loop as safety net
+1:  wfi
+    j 1b
 .size _start, . - _start
+
+// =============================================================================
+// Secondary hart parking loop
+// =============================================================================
+.Lsecondary_park:
+    wfi
+    j .Lsecondary_park
 
 // =============================================================================
 // Temporary kernel stack (8 KB, 16-byte aligned, in BSS)
@@ -75,26 +82,7 @@ stack_bottom:
 stack_top:
 
 // =============================================================================
-// kernel_main_stub — placeholder WFI loop
-// =============================================================================
-//
-// WFI (Wait For Interrupt) puts the hart into a low-power state until the
-// next interrupt.  Since no interrupt handler is set up, this effectively
-// halts the hart permanently.
-// =============================================================================
-.section ".text"
-.type kernel_main_stub, @function
-kernel_main_stub:
-1:  wfi                                 // wait for interrupt (halt)
-    j 1b                                // loop (in case of spurious wakeup)
-.size kernel_main_stub, . - kernel_main_stub
-
-// =============================================================================
 // Weak BSS and GP boundary symbols
-// =============================================================================
-//
-// These are defined as weak so the linker script can override them.
-// If no linker script is used, they default to 0.
 // =============================================================================
 .weak __bss_start
 .weak __bss_end

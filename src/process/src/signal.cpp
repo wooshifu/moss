@@ -79,6 +79,25 @@ bool do_signal_checkpoint(Thread *thread) noexcept {
       if (do_signal_default(thread, signo)) {
         return true; // terminate
       }
+      // After do_signal_default sets Stopped state, dequeue from scheduler
+      if (thread->state == ProcessState::Stopped && g_scheduler) {
+        g_scheduler->dequeue_task(thread);
+      }
+      continue;
+    }
+
+    // SIGCONT is special: it always resumes a stopped task, even if caught/ignored
+    if (signo == sig::SIGCONT && thread->state == ProcessState::Stopped) {
+      thread->state = ProcessState::Ready;
+      if (g_scheduler) {
+        g_scheduler->enqueue_task(thread, thread->wake_cpu);
+      }
+      log::klog::info("signal {}: continued PID={}", signo, static_cast<u32>(thread->owner_pid));
+      // If handler is not SIG_DFL, still execute handler below
+      if (sa != nullptr && sa->handler != SIG_DFL && sa->handler != SIG_IGN) {
+        // User handler will be delivered when sigframe is implemented
+        log::klog::warn("signal {}: user handler {:#x} not yet delivered", signo, sa->handler);
+      }
       continue;
     }
 
@@ -86,6 +105,10 @@ bool do_signal_checkpoint(Thread *thread) noexcept {
       // Default action
       if (do_signal_default(thread, signo)) {
         return true; // terminate
+      }
+      // Handle stop signals (SIGTSTP, SIGTTIN, SIGTTOU) via default action
+      if (thread->state == ProcessState::Stopped && g_scheduler) {
+        g_scheduler->dequeue_task(thread);
       }
     } else if (sa->handler == SIG_IGN) {
       // Explicitly ignored

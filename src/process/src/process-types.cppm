@@ -50,11 +50,12 @@ enum class ProcessState : u8 {
   DiskSleep = 4, // TASK_UNINTERRUPTIBLE: only events wake this task
   Terminated = 5,
   Zombie = 6,
+  Stopped = 7, // SIGSTOP/SIGTSTP: task suspended, resumed by SIGCONT
 };
 
 // Helper: is the task in any blocked/sleeping state?
 constexpr bool is_blocked_state(ProcessState s) noexcept {
-  return s == ProcessState::Sleeping || s == ProcessState::DiskSleep;
+  return s == ProcessState::Sleeping || s == ProcessState::DiskSleep || s == ProcessState::Stopped;
 }
 
 // Helper: can signals wake this task?
@@ -499,6 +500,13 @@ private:
   containers::RcuList<ProcessId> children_;
   containers::WaitQueue child_exit_wq_;
 
+  // POSIX process credentials.
+  // Default: root (0,0). Inherited from parent on fork, set by execve.
+  u32 uid_{0};
+  u32 gid_{0};
+  u32 euid_{0};
+  u32 egid_{0};
+
 public:
   Process(ProcessId pid, ProcessId parent = INVALID_PROCESS_ID) noexcept
       : pid_(pid), parent_pid_(parent), address_space_(nullptr), thread_count_(0), main_thread_id_(INVALID_THREAD_ID),
@@ -531,6 +539,20 @@ public:
   [[nodiscard]] ProcessId sid() const noexcept { return sid_; }
   void set_pgid(ProcessId pgid) noexcept { pgid_ = pgid; }
   void set_sid(ProcessId sid) noexcept { sid_ = sid; }
+
+  // POSIX credentials
+  [[nodiscard]] u32 uid() const noexcept { return uid_; }
+  [[nodiscard]] u32 gid() const noexcept { return gid_; }
+  [[nodiscard]] u32 euid() const noexcept { return euid_; }
+  [[nodiscard]] u32 egid() const noexcept { return egid_; }
+  void set_uid(u32 uid) noexcept {
+    uid_ = uid;
+    euid_ = uid;
+  }
+  void set_gid(u32 gid) noexcept {
+    gid_ = gid;
+    egid_ = gid;
+  }
 
   // Process name (set by execve, inherited by fork)
   [[nodiscard]] const char *name() const noexcept { return name_; }
