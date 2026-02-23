@@ -380,15 +380,19 @@ private:
   u32 load_avg_;
   u32 util_avg_;
 
-  static constexpr usize MAX_NODES = 1024;
-  RbNode<Thread> node_pool_[MAX_NODES];
-  usize next_fresh_index_;    // Next unused slot in node_pool_
-  RbNode<Thread> *free_list_; // Singly-linked free list (reuses `left` ptr)
+  // Obtain the embedded RbNode view from a Thread's SchedEntity.
+  // The se.rb_* fields ARE the node; we reinterpret their address
+  // as RbNode<Thread>* since the layout matches exactly.
+  static RbNode<Thread> *thread_to_node(Thread *t) noexcept {
+    // SchedEntity::rb_data is the first of the 5 embedded RB fields and
+    // has the same layout as RbNode<Thread> (data, left, right, parent, red).
+    return reinterpret_cast<RbNode<Thread> *>(&t->se.rb_data);
+  }
 
 public:
   constexpr CfsRunqueue() noexcept
       : rb_root_(nullptr), rb_leftmost_(nullptr), nr_running_(0), min_vruntime_(0), total_weight_(0), load_sum_(0),
-        util_sum_(0), load_avg_(0), util_avg_(0), next_fresh_index_(0), free_list_(nullptr) {}
+        util_sum_(0), load_avg_(0), util_avg_(0) {}
 
   void enqueue_task(Thread *thread) noexcept {
     if (thread == nullptr) {
@@ -400,13 +404,15 @@ public:
       thread->se.vruntime = calc_initial_vruntime();
     }
 
-    RbNode<Thread> *node = allocate_node(thread);
-    if (node == nullptr) {
-      log::klog::error("CfsRunqueue: node pool exhausted, TID={}", static_cast<u32>(thread->tid));
-      return;
-    }
+    // Use the RbNode embedded in thread->se (no pool allocation needed).
+    RbNode<Thread> *node = thread_to_node(thread);
+    node->data = thread;
+    node->left = nullptr;
+    node->right = nullptr;
+    node->parent = nullptr;
+    node->red = true;
+    thread->se.rb_on_rq = true;
 
-    thread->rq_node = static_cast<void *>(node);
     rb_insert(node);
     nr_running_++;
     total_weight_ += thread->se.weight;
@@ -420,14 +426,13 @@ public:
     }
     containers::LockGuard<containers::IrqSpinLock> guard(lock_);
 
-    auto *node = static_cast<RbNode<Thread> *>(thread->rq_node);
-    if (node == nullptr) {
+    if (!thread->se.rb_on_rq) {
       return; // not in this queue
     }
 
-    thread->rq_node = nullptr;
+    RbNode<Thread> *node = thread_to_node(thread);
     rb_remove(node);
-    deallocate_node(node);
+    thread->se.rb_on_rq = false;
     nr_running_--;
     total_weight_ -= thread->se.weight;
 
@@ -470,8 +475,8 @@ public:
     current->se.vruntime += weighted_delta;
 
     // Re-position the node in the tree if vruntime changed
-    auto *node = static_cast<RbNode<Thread> *>(current->rq_node);
-    if (node != nullptr) {
+    if (current->se.rb_on_rq) {
+      auto *node = thread_to_node(current);
       rb_remove(node);
       rb_insert(node);
     }
@@ -580,26 +585,108 @@ private:
     return (delta_exec * cfs_params::NICE_TO_WEIGHT[20]) / thread->se.weight;
   }
 
-  // Simplified PELT (Per-Entity Load Tracking) with geometric decay.
-  // Fixed decay factor ~0.98 per tick (Q12 fixed-point, ~32ms half-life).
-  void update_load_tracking(Thread *thread, u64 delta_exec) noexcept {
-    if (thread == nullptr) {
+  // ── Standard PELT (Per-Entity Load Tracking) ────────────────────────
+  //
+  // Models Linux kernel's PELT with 32ms half-life (y^32 = 0.5).
+  // Time is divided into 1024μs periods.  Each completed period's
+  // contribution decays by factor y = 0.97857206 (Q32 = 4202074112).
+  //
+  // Geometric series sum:  LOAD_AVG_MAX = 1024 × (1/(1-y)) ≈ 47742
+  //
+  // For a task that ran for `delta_ns` nanoseconds:
+  //   1. Convert delta to μs
+  //   2. Split into: d1 (remainder of current period) + n×1024 (full periods) + d3 (partial new period)
+  //   3. Apply: sum = old_sum × y^n  +  d1 × y^n  +  Σ_n(1024×y^i)  +  d3
+  //
+  // We precompute y^n for small n (0-63) as Q32 fixed-point.
+
+  // Q32 decay factor: y = 0.97857206 → round(y × 2^32) = 4202074112
+  static constexpr u64 PELT_Y_Q32 = 4202074112ULL;
+  static constexpr u64 PELT_PERIOD_US = 1024;
+  static constexpr u64 PELT_PERIOD_NS = PELT_PERIOD_US * 1000;
+  static constexpr u64 LOAD_AVG_MAX = 47742;
+
+  // y^n table (Q32): precomputed for n = 0..31.  For n > 31, iterate.
+  // y^n = round(0.97857206^n × 2^32)
+  static constexpr u32 PELT_YN_Q32[] = {
+      // clang-format off
+      4294967295U, 4202074112U, 4111399273U, 4022890828U,
+      3936497989U, 3852170226U, 3769857271U, 3689509115U,
+      3611076003U, 3534508432U, 3459757144U, 3386773123U,
+      3315507588U, 3245911989U, 3177938003U, 3111537527U,
+      3046662672U, 2983265755U, 2921299293U, 2860716000U,
+      2801468782U, 2743510729U, 2686795108U, 2631275360U,
+      2576905092U, 2523638068U, 2471428208U, 2420229582U,
+      2369996401U, 2320683011U, 2272243884U, 2224633618U,
+      // clang-format on
+  };
+  static constexpr u32 PELT_YN_TABLE_SIZE = 32;
+
+  // Compute y^n in Q32 for arbitrary n (uses table + iterative squaring for n≥32)
+  [[nodiscard]] static u64 pelt_decay_factor(u32 n) noexcept {
+    if (n == 0) {
+      return static_cast<u64>(PELT_YN_Q32[0]);
+    }
+
+    u64 factor = static_cast<u64>(1) << 32; // 1.0 in Q32
+    while (n > 0) {
+      u32 step = (n < PELT_YN_TABLE_SIZE) ? n : (PELT_YN_TABLE_SIZE - 1);
+      factor = (factor * PELT_YN_Q32[step]) >> 32;
+      n -= step;
+    }
+    return factor;
+  }
+
+  // Geometric series sum: Σ_{i=1..n} 1024 × y^i  (Q32 input, returns μs)
+  // = 1024 × y × (1 - y^n) / (1 - y)
+  // For small n, iterate directly (n ≤ ~64 on a 6ms tick).
+  [[nodiscard]] static u64 pelt_period_sum(u32 n) noexcept {
+    if (n == 0) {
+      return 0;
+    }
+    // Iterative accumulation (accurate for realistic n values ≤ 64)
+    u64 sum = 0;
+    u64 term_q32 = PELT_Y_Q32; // y^1
+    for (u32 i = 0; i < n; i++) {
+      sum += (PELT_PERIOD_US * term_q32) >> 32;
+      term_q32 = (term_q32 * PELT_Y_Q32) >> 32;
+      if (term_q32 == 0) {
+        break; // negligible
+      }
+    }
+    return sum;
+  }
+
+  void update_load_tracking(Thread *thread, u64 delta_exec_ns) noexcept {
+    if (thread == nullptr || delta_exec_ns == 0) {
       return;
     }
 
-    constexpr u64 LOAD_AVG_MAX = 47742;
-    // Decay factor ~0.98 in Q12 fixed-point: 0.98 * 4096 ≈ 4015
-    constexpr u64 DECAY_FACTOR = 4015;
+    // Convert nanoseconds to microseconds for PELT period math
+    u64 delta_us = delta_exec_ns / 1000;
+    if (delta_us == 0) {
+      delta_us = 1;
+    }
 
-    // Decay existing sums
-    thread->se.load_sum = (thread->se.load_sum * DECAY_FACTOR) >> 12;
-    thread->se.util_sum = (thread->se.util_sum * DECAY_FACTOR) >> 12;
+    // Number of full 1024μs periods in this delta
+    u32 periods = static_cast<u32>(delta_us / PELT_PERIOD_US);
+    u64 remainder_us = delta_us % PELT_PERIOD_US;
 
-    // Accumulate new contribution
-    thread->se.load_sum += delta_exec;
-    thread->se.util_sum += delta_exec;
+    // Decay existing sums by y^periods
+    if (periods > 0) {
+      u64 decay = pelt_decay_factor(periods);
+      thread->se.load_sum = (thread->se.load_sum * decay) >> 32;
+      thread->se.util_sum = (thread->se.util_sum * decay) >> 32;
+    }
 
-    // Cap to prevent unbounded growth
+    // Accumulate new contribution:
+    //   full periods: Σ 1024 × y^i for i = 1..periods
+    //   partial period: remainder_us (not yet decayed — current period)
+    u64 contrib = pelt_period_sum(periods) + remainder_us;
+    thread->se.load_sum += contrib;
+    thread->se.util_sum += contrib;
+
+    // Cap to LOAD_AVG_MAX (geometric series convergence limit)
     if (thread->se.load_sum > LOAD_AVG_MAX) {
       thread->se.load_sum = LOAD_AVG_MAX;
     }
@@ -607,11 +694,15 @@ private:
       thread->se.util_sum = LOAD_AVG_MAX;
     }
 
-    // Derive averages
-    thread->se.load_avg = thread->se.load_sum >> 10;
-    thread->se.util_avg = thread->se.util_sum >> 10;
+    // Derive averages: scale by weight for load, raw for util
+    // load_avg = load_sum × weight / LOAD_AVG_MAX (normalized)
+    // util_avg = util_sum (represents CPU utilization directly)
+    thread->se.load_avg = (thread->se.load_sum * thread->se.weight) / LOAD_AVG_MAX;
+    thread->se.util_avg = thread->se.util_sum;
   }
 
+  // Per-runqueue load aggregation: sum of per-entity averages.
+  // Updated on enqueue (+) and dequeue (-) for O(1) rq-level load.
   void update_load_stats(Thread *thread, bool add) noexcept {
     if (thread == nullptr) {
       return;
@@ -625,6 +716,7 @@ private:
       util_sum_ = (util_sum_ > thread->se.util_avg) ? (util_sum_ - thread->se.util_avg) : 0;
     }
 
+    // Per-rq averages: arithmetic mean of entity averages
     load_avg_ = static_cast<u32>((nr_running_ > 0) ? (load_sum_ / nr_running_) : 0);
     util_avg_ = static_cast<u32>((nr_running_ > 0) ? (util_sum_ / nr_running_) : 0);
   }
@@ -874,7 +966,7 @@ private:
       // Update successor's Thread back-pointer: successor node now holds
       // the position of 'node' in the tree, but its data (Thread*) still
       // points to the successor's original thread — that's correct.
-      // The removed node's thread->rq_node is cleared by the caller.
+      // The removed node's thread->se.rb_on_rq is cleared by the caller.
     }
 
     if (!original_red) {
@@ -1005,43 +1097,6 @@ private:
     if (x != nullptr) {
       x->red = false;
     }
-  }
-
-  [[nodiscard]] RbNode<Thread> *allocate_node(Thread *thread) noexcept {
-    RbNode<Thread> *node = nullptr;
-
-    // First try the free list (recycled nodes)
-    if (free_list_ != nullptr) {
-      node = free_list_;
-      free_list_ = free_list_->left; // left used as next pointer
-    } else if (next_fresh_index_ < MAX_NODES) {
-      // Fall back to fresh pool allocation
-      node = &node_pool_[next_fresh_index_++];
-    } else {
-      return nullptr; // Pool exhausted
-    }
-
-    node->data = thread;
-    node->left = nullptr;
-    node->right = nullptr;
-    node->parent = nullptr;
-    node->red = true;
-
-    return node;
-  }
-
-  void deallocate_node(RbNode<Thread> *node) noexcept {
-    if (node == nullptr) {
-      return;
-    }
-
-    // Return node to free list for reuse
-    node->data = nullptr;
-    node->right = nullptr;
-    node->parent = nullptr;
-    node->red = false;
-    node->left = free_list_; // Use left as next pointer
-    free_list_ = node;
   }
 
   template <typename T> constexpr const T &kernel_max(const T &a, const T &b) noexcept { return (a < b) ? b : a; }

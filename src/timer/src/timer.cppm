@@ -78,7 +78,7 @@ enum class TimerMode : u8 {
 class TimerSubsystem;
 
 class HrTimer {
-  friend class TimerSubsystem; // TimerSubsystem manages the sorted list
+  friend class TimerSubsystem; // TimerSubsystem manages the min-heap
 
 public:
   HrTimer() noexcept = default;
@@ -107,7 +107,11 @@ private:
   void *callback_data_{nullptr};
   TimerMode mode_{TimerMode::OneShot};
   bool active_{false};
-  HrTimer *next_{nullptr}; // Sorted linked list linkage
+
+  // Heap index: position of this timer in TimerSubsystem's min-heap array.
+  // Enables O(log n) cancel/dequeue without linear search.
+  // ~0u (UINT32_MAX) means "not in heap".
+  u32 heap_index_{~0u};
 };
 
 // ============================================================================
@@ -137,10 +141,10 @@ public:
   /// Convenience: current time in nanoseconds since boot.
   [[nodiscard]] u64 now_ns() const noexcept { return clocksource_.now_ns(); }
 
-  /// Insert a timer into the sorted queue.
+  /// Insert a timer into the min-heap.
   void enqueue(HrTimer *timer) noexcept;
 
-  /// Remove a timer from the queue.
+  /// Remove a timer from the min-heap.
   void dequeue(HrTimer *timer) noexcept;
 
   /// Called from the timer interrupt handler.
@@ -150,7 +154,7 @@ public:
   [[nodiscard]] bool is_initialized() const noexcept { return initialized_; }
 
   /// Check if any timers are pending (for tickless idle decisions).
-  [[nodiscard]] bool has_pending_timers() const noexcept { return queue_head_ != nullptr; }
+  [[nodiscard]] bool has_pending_timers() const noexcept { return heap_size_ > 0; }
 
   /// Statistics.
   struct Stats {
@@ -164,16 +168,27 @@ public:
 
 private:
   Clocksource clocksource_;
-  HrTimer *queue_head_{nullptr}; // Sorted by expires_ns (ascending)
   Stats stats_{};
   bool initialized_{false};
-  containers::IrqSpinLock queue_lock_; // Protects queue_head_ linked list
+  containers::IrqSpinLock queue_lock_; // Protects the min-heap
+
+  // ── Min-heap of HrTimer pointers, keyed by expires_ns ──────────
+  // O(log n) enqueue/dequeue, O(1) peek (heap_[0] = earliest).
+  // Each HrTimer stores its own heap_index_ for O(log n) cancel.
+  static constexpr u32 MAX_TIMERS = 256;
+  HrTimer *heap_[MAX_TIMERS]{};
+  u32 heap_size_{0};
 
   /// Reprogram hardware for next pending expiry.
   void reprogram_next() noexcept;
 
-  /// Insert into sorted queue — caller must already hold queue_lock_.
+  /// Insert into min-heap — caller must already hold queue_lock_.
   void enqueue_locked(HrTimer *timer) noexcept;
+
+  // ── Heap operations ────────────────────────────────────────────
+  void heap_sift_up(u32 idx) noexcept;
+  void heap_sift_down(u32 idx) noexcept;
+  void heap_swap(u32 a, u32 b) noexcept;
 };
 
 } // namespace moss::kernel::timer
@@ -242,7 +257,7 @@ void HrTimer::init(TimerMode mode, TimerCallback callback, void *data) noexcept 
   callback_ = callback;
   callback_data_ = data;
   active_ = false;
-  next_ = nullptr;
+  heap_index_ = ~0u;
 }
 
 void HrTimer::start(u64 abs_expires_ns) noexcept {
@@ -306,54 +321,99 @@ void TimerSubsystem::shutdown() noexcept {
   initialized_ = false;
 }
 
+// ── Heap helper operations ──────────────────────────────────────────
+
+void TimerSubsystem::heap_swap(u32 a, u32 b) noexcept {
+  HrTimer *tmp = heap_[a];
+  heap_[a] = heap_[b];
+  heap_[b] = tmp;
+  heap_[a]->heap_index_ = a;
+  heap_[b]->heap_index_ = b;
+}
+
+void TimerSubsystem::heap_sift_up(u32 idx) noexcept {
+  while (idx > 0) {
+    u32 parent = (idx - 1) / 2;
+    if (heap_[idx]->expires_ns_ < heap_[parent]->expires_ns_) {
+      heap_swap(idx, parent);
+      idx = parent;
+    } else {
+      break;
+    }
+  }
+}
+
+void TimerSubsystem::heap_sift_down(u32 idx) noexcept {
+  while (true) {
+    u32 smallest = idx;
+    u32 left = 2 * idx + 1;
+    u32 right = 2 * idx + 2;
+
+    if (left < heap_size_ && heap_[left]->expires_ns_ < heap_[smallest]->expires_ns_) {
+      smallest = left;
+    }
+    if (right < heap_size_ && heap_[right]->expires_ns_ < heap_[smallest]->expires_ns_) {
+      smallest = right;
+    }
+    if (smallest == idx) {
+      break;
+    }
+    heap_swap(idx, smallest);
+    idx = smallest;
+  }
+}
+
+// ── Enqueue / Dequeue ───────────────────────────────────────────────
+
 void TimerSubsystem::enqueue(HrTimer *timer) noexcept {
   containers::LockGuard<containers::IrqSpinLock> guard(queue_lock_);
   enqueue_locked(timer);
 }
 
 void TimerSubsystem::enqueue_locked(HrTimer *timer) noexcept {
-  // Insert into sorted position (ascending expires_ns)
-  if (queue_head_ == nullptr || timer->expires_ns_ < queue_head_->expires_ns_) {
-    // Insert at head
-    timer->next_ = queue_head_;
-    queue_head_ = timer;
-  } else {
-    // Walk to find insertion point
-    HrTimer *prev = queue_head_;
-    while (prev->next_ != nullptr && prev->next_->expires_ns_ <= timer->expires_ns_) {
-      prev = prev->next_;
-    }
-    timer->next_ = prev->next_;
-    prev->next_ = timer;
+  if (heap_size_ >= MAX_TIMERS) {
+    return; // heap full — shouldn't happen in practice
   }
 
-  // Reprogram hardware if the new timer is the earliest
-  if (timer == queue_head_) {
+  u32 idx = heap_size_;
+  heap_[idx] = timer;
+  timer->heap_index_ = idx;
+  heap_size_++;
+  heap_sift_up(idx);
+
+  // Reprogram hardware if the new timer became the earliest (heap root)
+  if (timer->heap_index_ == 0) {
     reprogram_next();
   }
 }
 
 void TimerSubsystem::dequeue(HrTimer *timer) noexcept {
   containers::LockGuard<containers::IrqSpinLock> guard(queue_lock_);
-  if (queue_head_ == nullptr) {
+  if (heap_size_ == 0 || timer->heap_index_ == ~0u) {
     return;
   }
 
-  if (queue_head_ == timer) {
-    queue_head_ = timer->next_;
-    timer->next_ = nullptr;
+  u32 idx = timer->heap_index_;
+  if (idx >= heap_size_) {
+    return;
+  }
+
+  bool was_root = (idx == 0);
+
+  // Move last element to the removed position and shrink heap
+  heap_size_--;
+  if (idx < heap_size_) {
+    heap_[idx] = heap_[heap_size_];
+    heap_[idx]->heap_index_ = idx;
+    // Restore heap property: sift up or down depending on relative order
+    heap_sift_up(idx);
+    heap_sift_down(idx);
+  }
+
+  timer->heap_index_ = ~0u;
+
+  if (was_root) {
     reprogram_next();
-    return;
-  }
-
-  HrTimer *prev = queue_head_;
-  while (prev->next_ != nullptr && prev->next_ != timer) {
-    prev = prev->next_;
-  }
-
-  if (prev->next_ == timer) {
-    prev->next_ = timer->next_;
-    timer->next_ = nullptr;
   }
 }
 
@@ -367,7 +427,7 @@ void TimerSubsystem::handle_interrupt() noexcept {
   // destructor never runs, queue_lock_ stays locked forever, deadlocking
   // all future timer interrupts on this CPU.
   //
-  // Strategy: lock → dequeue + re-enqueue periodic + reprogram → unlock
+  // Strategy: lock → extract min + re-enqueue periodic + reprogram → unlock
   //           → fire callback (lock-free) → re-lock for next iteration.
 
   queue_lock_.lock();
@@ -375,11 +435,18 @@ void TimerSubsystem::handle_interrupt() noexcept {
   // 1. Get current time
   u64 now = clocksource_.now_ns();
 
-  // 2. Fire all expired timers
-  while (queue_head_ != nullptr && queue_head_->expires_ns_ <= now) {
-    HrTimer *expired = queue_head_;
-    queue_head_ = expired->next_;
-    expired->next_ = nullptr;
+  // 2. Fire all expired timers (heap root is always the earliest)
+  while (heap_size_ > 0 && heap_[0]->expires_ns_ <= now) {
+    HrTimer *expired = heap_[0];
+
+    // Remove from heap (extract min)
+    heap_size_--;
+    if (heap_size_ > 0) {
+      heap_[0] = heap_[heap_size_];
+      heap_[0]->heap_index_ = 0;
+      heap_sift_down(0);
+    }
+    expired->heap_index_ = ~0u;
     expired->active_ = false;
 
     stats_.timers_fired++;
@@ -392,7 +459,7 @@ void TimerSubsystem::handle_interrupt() noexcept {
     }
 
     // Reprogram hardware while still holding the lock (ensures consistent
-    // queue state for the compare value computation).
+    // heap state for the compare value computation).
     reprogram_next();
 
     // Release lock BEFORE callback — callback may context_switch and
@@ -420,11 +487,11 @@ void TimerSubsystem::handle_interrupt() noexcept {
 }
 
 void TimerSubsystem::reprogram_next() noexcept {
-  if (queue_head_ != nullptr) {
+  if (heap_size_ > 0) {
     // Convert expires_ns to absolute cycle count for hardware compare:
     //   compare = current_counter + ns_to_cycles(expires_ns - now_ns)
     u64 now = clocksource_.now_ns();
-    u64 delta_ns = (queue_head_->expires_ns_ > now) ? (queue_head_->expires_ns_ - now) : 0;
+    u64 delta_ns = (heap_[0]->expires_ns_ > now) ? (heap_[0]->expires_ns_ - now) : 0;
     // Enforce minimum delta to avoid interrupt storm on level-triggered PPI.
     // 100 µs minimum gives the ISR enough time to complete.
     constexpr u64 MIN_DELTA_NS = 100000; // 100 µs

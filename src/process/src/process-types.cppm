@@ -310,7 +310,8 @@ struct AddressSpace {
   }
 };
 
-// CFS scheduling entity
+// CFS scheduling entity — includes embedded RB-tree node fields so that
+// enqueue/dequeue never needs pool allocation (mirrors Linux sched_entity).
 struct SchedEntity {
   u64 vruntime;
   u64 exec_start;
@@ -327,9 +328,29 @@ struct SchedEntity {
   u64 load_avg;
   u64 util_avg;
 
+  // ── Embedded RB-tree node (replaces CfsRunqueue::node_pool_) ────────
+  // Intrusive design: the node lives inside the entity, eliminating
+  // fixed-size pool limits and per-enqueue allocation overhead.
+  //
+  // Layout requirement: the first 5 fields (rb_data..rb_red) must be
+  // binary-compatible with RbNode<Thread> { T* data; RbNode *left, *right,
+  // *parent; bool red; }.  CfsRunqueue reinterpret_casts &rb_data as
+  // RbNode<Thread>* for O(1) node access.
+  //
+  // rb_on_rq is separate state (not part of the RB node) and is placed
+  // BEFORE the RB fields to avoid any layout/padding interference.
+  bool rb_on_rq; // true when this node is inserted in a CfsRunqueue
+
+  void *rb_data;   // Thread* back-pointer (void* to avoid circular dep)
+  void *rb_left;   // RbNode* left child
+  void *rb_right;  // RbNode* right child
+  void *rb_parent; // RbNode* parent
+  bool rb_red;     // RB colour (true = red)
+
   SchedEntity() noexcept
       : vruntime(0), exec_start(0), sum_exec_runtime(0), prev_sum_exec_runtime(0), weight(1024), nice(0), prio(120),
-        load_weight(1024), load_sum(0), util_sum(0), load_avg(0), util_avg(0) {}
+        load_weight(1024), load_sum(0), util_sum(0), load_avg(0), util_avg(0), rb_on_rq(false), rb_data(nullptr),
+        rb_left(nullptr), rb_right(nullptr), rb_parent(nullptr), rb_red(true) {}
 };
 
 // Real-time scheduling entity — per-thread RT state.
@@ -401,11 +422,6 @@ struct Thread {
   VirtAddr kernel_stack_base; // low address of allocated region
   usize kernel_stack_size;    // size in bytes (typically 16KB)
 
-  // Scheduler internals: back-pointer to RbNode in CfsRunqueue.
-  // Set by enqueue_task(), cleared by dequeue_task().
-  // Enables O(1) thread→node lookup (avoids O(n) linear tree search).
-  void *rq_node{nullptr};
-
   // RT run queue intrusive list pointer (next task at same priority).
   // Used by RtRunqueue; nullptr when not enqueued in an RT queue.
   Thread *rt_next_{nullptr};
@@ -415,7 +431,10 @@ struct Thread {
         sched_class(SchedClass::Normal), sched_policy(SchedPolicy::Normal), se{}, rt{}, start_time(0), utime(0),
         stime(0), stack_base(0), stack_size(0), wait_queue(0), signal_mask(0), pending_signals(0),
         needs_initial_eret(false), is_user_task(false), need_resched(false), cpu_affinity_mask(CpuBitmap::all()),
-        kernel_stack_base(0), kernel_stack_size(0), rq_node(nullptr) {}
+        kernel_stack_base(0), kernel_stack_size(0) {
+    // Point the embedded RB node back to this Thread (set once, immutable).
+    se.rb_data = static_cast<void *>(this);
+  }
 
   // Returns the top of this thread's kernel stack (for TPIDR_EL1).
   [[nodiscard]] VirtAddr kernel_stack_top() const noexcept { return kernel_stack_base + kernel_stack_size; }
