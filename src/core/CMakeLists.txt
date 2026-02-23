@@ -18,4 +18,11 @@ target_sources(
            src/smart_ptr.cppm
 )
 
+# === Dependencies ===
+# Depend on intrinsics module (zero-dependency foundation)
+target_link_libraries(
+    moss_core
+    PRIVATE moss_intrinsics
+)
+
 message(STATUS "Core module configured (arch moved to AAL)")

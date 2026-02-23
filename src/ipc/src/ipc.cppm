@@ -3,6 +3,7 @@
 
 export module moss.ipc;
 
+import moss.intrinsics;
 import moss.std;
 import moss.types;
 import moss.result;
@@ -599,9 +600,11 @@ public:
   }
 
 private:
-  /// Copy memory safely — uses compiler builtin to handle alignment correctly.
+  /// Copy memory safely — uses intrinsics to handle alignment correctly.
   /// The previous hand-rolled u64 cast violated alignment on ARM64 (UB/fault).
-  static void fast_memcpy(void *dst, const void *src, usize size) noexcept { __builtin_memcpy(dst, src, size); }
+  static void fast_memcpy(void *dst, const void *src, usize size) noexcept {
+    intrinsics::memory::memcpy(dst, src, size);
+  }
 
   static constexpr usize ring_align_up(usize value, usize alignment) noexcept {
     return (value + alignment - 1) & ~(alignment - 1);

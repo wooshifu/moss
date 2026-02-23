@@ -189,6 +189,8 @@ else()
 endif()
 
 # === 添加子模块（按依赖顺序）===
+# intrinsics 是零依赖的基础模块，必须最先编译
+add_subdirectory(src/intrinsics)
 add_subdirectory(src/core)
 add_subdirectory(src/abi)
 add_subdirectory(src/aal)

@@ -126,7 +126,7 @@ IpiResult SimpleHardwareIpi::ping_cpus(u32 cpu_mask) noexcept {
     return IpiResult::HardwareError;
   }
 
-  u32 cpu_count = static_cast<u32>(__builtin_popcount(cpu_mask));
+  u32 cpu_count = static_cast<u32>(intrinsics::bitops::popcount(cpu_mask));
   (void)sgi_send_counts_[static_cast<u8>(IpiSgiId::Ping)].fetch_add(cpu_count, containers::MemoryOrder::Relaxed);
   (void)total_ipis_sent_.fetch_add(cpu_count, containers::MemoryOrder::Relaxed);
 

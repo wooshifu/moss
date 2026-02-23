@@ -9,7 +9,7 @@ target_sources(
 
 target_link_libraries(
     moss_containers
-    PUBLIC moss_core moss_abi moss_aal
+    PUBLIC moss_intrinsics moss_core moss_abi moss_aal
 )
 
 message(STATUS "容器模块配置完成")
