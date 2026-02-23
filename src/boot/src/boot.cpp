@@ -24,9 +24,16 @@ using moss::VirtAddr;
 namespace moss::boot {
 
 // Early boot print function (architecture-independent)
-// Protected by moss::abi::arm64::early_uart_lock on ARM64 to prevent interleaving with
-// secondary CPU debug output during SMP boot.
+// Uses direct hardware access — no heap, no modules, safe before runtime init.
+//
+// ARM64:  PL011 UART (MMIO) with SMP-safe spinlock
+// x86_64: COM1 serial port (I/O 0x3F8)
+// RISC-V: NS16550 UART (MMIO 0x10000000)
 static void boot_print(const char *message) {
+  if (!message) {
+    return;
+  }
+
 #if defined(__aarch64__) || defined(MOSS_ARCH_ARM64)
   // Acquire moss::abi::arm64::early_uart_lock (test-and-set spinlock via LDXR/STXR)
   {
@@ -43,28 +50,55 @@ static void boot_print(const char *message) {
                  : "memory");
   }
 
-  // ARM64 uses UART
   static constexpr VirtAddr UART_BASE = ::moss::kernel::platform::uart_base();
   volatile u32 *uart_base = reinterpret_cast<volatile u32 *>(UART_BASE);
   const char *p = message;
   while (*p) {
     if (*p == '\n') {
-      // Wait for FIFO not full
       while (uart_base[0x018 / 4] & (1 << 5)) {
       }
       uart_base[0x000 / 4] = '\r';
     }
-    // Wait for FIFO not full
     while (uart_base[0x018 / 4] & (1 << 5)) {
     }
     uart_base[0x000 / 4] = *p++;
   }
 
-  // Release moss::abi::arm64::early_uart_lock
   asm volatile("dmb sy" ::: "memory");
   moss::abi::arm64::early_uart_lock = 0;
-#else
-  (void)message;
+
+#elif defined(__x86_64__) || defined(__x86_64) || defined(MOSS_ARCH_X86_64)
+  // COM1 serial port: data at 0x3F8, Line Status Register at 0x3FD
+  const char *p = message;
+  while (*p) {
+    if (*p == '\n') {
+      // Wait for THR empty (bit 5 of LSR)
+      u8 lsr;
+      do {
+        asm volatile("inb %1, %0" : "=a"(lsr) : "Nd"(static_cast<u16>(0x3FD)));
+      } while (!(lsr & 0x20));
+      asm volatile("outb %0, %1" ::"a"(static_cast<u8>('\r')), "Nd"(static_cast<u16>(0x3F8)));
+    }
+    u8 lsr;
+    do {
+      asm volatile("inb %1, %0" : "=a"(lsr) : "Nd"(static_cast<u16>(0x3FD)));
+    } while (!(lsr & 0x20));
+    asm volatile("outb %0, %1" ::"a"(static_cast<u8>(*p)), "Nd"(static_cast<u16>(0x3F8)));
+    ++p;
+  }
+
+#elif defined(__riscv) || defined(__riscv__) || defined(MOSS_ARCH_RISCV)
+  // NS16550 UART: data register at MMIO base 0x10000000
+  static constexpr VirtAddr UART_BASE = ::moss::kernel::platform::uart_base();
+  volatile u32 *uart_data = reinterpret_cast<volatile u32 *>(UART_BASE);
+  const char *p = message;
+  while (*p) {
+    if (*p == '\n') {
+      *uart_data = static_cast<u32>('\r');
+    }
+    *uart_data = static_cast<u32>(static_cast<unsigned char>(*p));
+    ++p;
+  }
 #endif
 }
 
@@ -139,6 +173,12 @@ static void boot_print(const char *message) {
   boot_print("Handing off to architecture-independent system init...\n\n");
 
   // Hand off to architecture-independent system init
+  // Run C++ global constructors (.init_array) before kernel_main.
+  // In freestanding environments there is no CRT to do this automatically.
+  // Run C++ global constructors (.init_array) before kernel_main.
+  // In freestanding environments there is no CRT to do this automatically.
+  moss::abi::linker::call_global_constructors();
+
   boot_print("Launching MOSS kernel main...\n");
 
   // Mark boot complete

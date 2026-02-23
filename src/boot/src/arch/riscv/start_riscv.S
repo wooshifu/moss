@@ -35,10 +35,11 @@ _start:
     // tp is used by get_current_cpu_id() since mhartid is M-mode only.
     mv tp, a0
 
-    // Note: OpenSBI may choose any hart as the boot hart (not necessarily
-    // hart 0).  With SBI HSM extension and SMP>1, OpenSBI only starts one
-    // hart and holds others; all code below is safe for single-hart execution.
-    // Secondary harts will be started later via sbi_hart_start() in C++.
+    // Non-boot harts: park in WFI loop.
+    // OpenSBI starts only the boot hart initially.  If sbi_hart_start()
+    // sends secondary harts here, they must not re-run BSS clearing or
+    // early_main — park them immediately.
+    bnez a0, .Lsecondary_park
 
     // ---- Boot hart (hart 0) only ----
 
