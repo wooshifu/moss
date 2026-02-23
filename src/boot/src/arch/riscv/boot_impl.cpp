@@ -194,12 +194,11 @@ static SbiResult sbi_hart_start(u64 hartid, u64 start_addr, u64 opaque) noexcept
 
   moss::boot::early_print("=== RISC-V Memory Management Setup ===\n");
 
-  // Initialize the unified memory subsystem.
-  // RISC-V Sv48 page tables are set up via setup_kernel_mmu() in arch.cppm.
-  auto mmu_result = ::moss::kernel::mm::setup_mmu();
-  if (!mmu_result) {
-    moss::boot::early_print("  WARNING: setup_mmu failed\n");
-  }
+  // Skip MMU/page-table setup for now: RISC-V S-mode boots with satp=0
+  // (bare/physical addressing).  A proper Sv39/Sv48 identity map requires
+  // RISC-V-specific page table entry format; the current setup_mmu() uses
+  // ARM64 block descriptors.  PFA and heap work fine without virtual memory.
+  moss::boot::early_print("  MMU: skipped (bare mode, satp=0)\n");
 
   auto pfa_result = ::moss::kernel::mm::PageFrameAllocator::initialize();
   if (!pfa_result) {
@@ -224,8 +223,7 @@ static SbiResult sbi_hart_start(u64 hartid, u64 start_addr, u64 opaque) noexcept
   moss::boot::early_print("=== RISC-V Interrupts and Exceptions Setup ===\n");
 
   // 1. Set stvec to point to the trap handler (direct mode)
-  extern "C" void syscall_entry_point();
-  u64 trap_addr = reinterpret_cast<u64>(&syscall_entry_point);
+  u64 trap_addr = reinterpret_cast<u64>(&moss::abi::syscall_entry_point);
   asm volatile("csrw stvec, %0" ::"r"(trap_addr));
   moss::boot::early_print("  stvec configured\n");
 
@@ -238,7 +236,7 @@ static SbiResult sbi_hart_start(u64 hartid, u64 start_addr, u64 opaque) noexcept
     // Threshold/claim registers at: plic_base + 0x200000 + context_id * 0x1000
     VirtAddr ctx_base = plic_base + 0x200000 + 0x1000;
 
-    gic->initialize(plic_base, ctx_base, 0);
+    (void)gic->initialize(plic_base, ctx_base, 0);
     moss::boot::g_gic_controller = gic;
     moss::boot::g_gic_hardware_available = true;
     moss::boot::early_print("  PLIC initialized (S-mode context 1)\n");
@@ -267,8 +265,7 @@ static SbiResult sbi_hart_start(u64 hartid, u64 start_addr, u64 opaque) noexcept
   // for full SMP operation; for now we attempt the HSM call to
   // validate the SBI interface.
   if (ctx.total_cpus > 1) {
-    extern "C" void _start();
-    u64 entry = reinterpret_cast<u64>(&_start);
+    u64 entry = reinterpret_cast<u64>(&moss::abi::_start);
     u32 started = 0;
     for (u32 i = 1; i < ctx.total_cpus; ++i) {
       auto result = moss::boot::sbi_hart_start(i, entry, 0);

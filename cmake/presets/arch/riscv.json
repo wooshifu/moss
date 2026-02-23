@@ -8,6 +8,7 @@
             "inherits": "base-common",
             "displayName": "RISC-V Base Configuration",
             "cacheVariables": {
+                "CMAKE_C_FLAGS": "-march=rv64imac -mabi=lp64 -mcmodel=medany -mstrict-align -ffreestanding -fno-stack-protector -fno-pic -fno-pie",
                 "CMAKE_CXX_FLAGS": "$penv{CMAKE_CXX_FLAGS} -march=rv64imac -mabi=lp64 -mcmodel=medany -mstrict-align",
                 "CMAKE_ASM_FLAGS": "-march=rv64imac",
                 "CMAKE_C_COMPILER_TARGET": "riscv64-unknown-elf",
@@ -15,7 +16,8 @@
                 "CMAKE_ASM_COMPILER_TARGET": "riscv64-unknown-elf",
                 "CMAKE_SYSTEM_PROCESSOR": "riscv64",
                 "CMAKE_CROSSCOMPILING": "TRUE",
-                "MOSS_TARGET_ARCH": "RISCV"
+                "MOSS_TARGET_ARCH": "RISCV",
+                "CMAKE_EXE_LINKER_FLAGS": "-fuse-ld=lld -nostdlib -nostartfiles -static -T ${sourceDir}/linker_riscv.ld"
             }
         },
         {

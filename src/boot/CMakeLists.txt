@@ -4,7 +4,13 @@ aux_source_directory(src BOOT_SOURCES)
 if(MOSS_TARGET_ARCH STREQUAL "ARM64")
     list(APPEND BOOT_SOURCES src/arch/arm64/boot_impl.cpp src/arch/arm64/start_arm64.S)
 elseif(MOSS_TARGET_ARCH STREQUAL "X86_64")
-    list(APPEND BOOT_SOURCES src/arch/x86_64/start_x86_64.S src/arch/x86_64/boot_impl.cpp)
+    list(
+        APPEND
+        BOOT_SOURCES
+        src/arch/x86_64/start_x86_64.S
+        src/arch/x86_64/isr_x86_64.S
+        src/arch/x86_64/boot_impl.cpp
+    )
 elseif(MOSS_TARGET_ARCH STREQUAL "RISCV")
     list(APPEND BOOT_SOURCES src/arch/riscv/start_riscv.S src/arch/riscv/boot_impl.cpp)
 endif()
