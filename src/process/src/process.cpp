@@ -142,8 +142,8 @@ void Process::cleanup_threads() noexcept {
         }
         (void)mm::free_pages(static_cast<PhysAddr>(entry.thread->kernel_stack_base), order);
       }
-      // Clear scheduler back-pointer to avoid dangling reference
-      entry.thread->rq_node = nullptr;
+      // Mark thread as not on any runqueue to avoid dangling reference
+      entry.thread->se.rb_on_rq = false;
       delete entry.thread;
     }
   });
