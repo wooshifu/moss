@@ -61,14 +61,17 @@ struct FmtStr {
   const char *file;
   unsigned line;
 
-  constexpr FmtStr(const char *s) noexcept
-      : value(s),
+  // Default parameters ensure __builtin_* evaluate at the caller's site,
+  // not here.  This is why we use raw builtins instead of the intrinsics
+  // wrappers — each layer of function call would shift the evaluation point.
+  constexpr FmtStr(const char *s,
 #if __has_builtin(__builtin_FILE_NAME)
-        file(intrinsics::source::file_name()),
+                   const char *f = __builtin_FILE_NAME(),
 #else
-        file(intrinsics::source::file()),
+                   const char *f = __builtin_FILE(),
 #endif
-        line(intrinsics::source::line()) {
+                   unsigned l = __builtin_LINE()) noexcept
+      : value(s), file(f), line(l) {
   }
 };
 
