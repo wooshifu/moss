@@ -2045,6 +2045,13 @@ private:
           u64 kstack_top = task->kernel_stack_top();
           asm volatile("msr tpidr_el1, %0" ::"r"(kstack_top));
         }
+#elif defined(MOSS_ARCH_RISCV)
+        // Set sscratch to per-thread kernel stack top.
+        // On trap from U-mode, the entry code swaps sp↔sscratch to get kernel stack.
+        if (task->kernel_stack_base != 0) {
+          u64 kstack_top = task->kernel_stack_top();
+          asm volatile("csrw sscratch, %0" ::"r"(kstack_top));
+        }
 #endif
       }
 

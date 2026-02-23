@@ -27,6 +27,11 @@
 .global user_sret_trampoline
 .type user_sret_trampoline, @function
 user_sret_trampoline:
+    // Save current kernel stack pointer to sscratch.
+    // On the next trap from U-mode, the entry code swaps sp↔sscratch
+    // to switch from user stack to this kernel stack.
+    csrw    sscratch, sp
+
     // Configure sstatus for U-mode return: clear SPP bit (bit 8)
     // Also enable SPIE (bit 5) so interrupts are enabled after SRET
     li      t0, (1 << 5)                // SPIE=1, SPP=0 → U-mode
