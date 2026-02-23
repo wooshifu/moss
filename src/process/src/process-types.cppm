@@ -60,8 +60,34 @@ constexpr bool is_blocked_state(ProcessState s) noexcept {
 // Helper: can signals wake this task?
 constexpr bool is_signal_wakeable(ProcessState s) noexcept { return s == ProcessState::Sleeping; }
 
-// Scheduling classes
+// Scheduling classes (broad category: CFS vs RT vs idle)
 enum class SchedClass : u8 { Normal = 0, RealTime = 1, Idle = 2, Batch = 3 };
+
+// Scheduling policy — selects the dispatch algorithm within a class.
+// Maps to Linux SCHED_* constants used by sched_setscheduler().
+enum class SchedPolicy : u8 {
+  Normal = 0, // SCHED_NORMAL (CFS)
+  Fifo = 1,   // SCHED_FIFO   (RT, runs until block/yield/preempted by higher prio)
+  RR = 2,     // SCHED_RR     (RT, round-robin within same priority)
+  Batch = 3,  // SCHED_BATCH  (CFS, batch-optimized)
+  Idle = 5,   // SCHED_IDLE   (lowest priority)
+};
+
+// Map SchedPolicy → SchedClass for dispatch routing.
+constexpr SchedClass policy_to_class(SchedPolicy policy) noexcept {
+  switch (policy) {
+  case SchedPolicy::Fifo:
+  case SchedPolicy::RR:
+    return SchedClass::RealTime;
+  case SchedPolicy::Batch:
+    return SchedClass::Batch;
+  case SchedPolicy::Idle:
+    return SchedClass::Idle;
+  case SchedPolicy::Normal:
+  default:
+    return SchedClass::Normal;
+  }
+}
 
 // Process priority range
 namespace priority {
@@ -73,6 +99,12 @@ inline constexpr u32 MIN_RT_PRIORITY = 1;
 inline constexpr u32 MAX_RT_PRIORITY = 99;
 inline constexpr u32 DEFAULT_RT_PRIORITY = 50;
 } // namespace priority
+
+// RT scheduling parameters
+namespace rt_params {
+// SCHED_RR default time slice (100ms, matching Linux)
+inline constexpr u64 RR_TIMESLICE_NS = 100000000;
+} // namespace rt_params
 
 // CPU context structure (multi-architecture support)
 #if defined(__aarch64__) || defined(MOSS_ARCH_ARM64)
@@ -300,15 +332,14 @@ struct SchedEntity {
         load_weight(1024), load_sum(0), util_sum(0), load_avg(0), util_avg(0) {}
 };
 
-// Real-time scheduling entity
-// Reserved for future RT scheduling class — currently unused by dispatch logic.
+// Real-time scheduling entity — per-thread RT state.
+// Used by SCHED_FIFO and SCHED_RR policies.
 struct RtSchedEntity {
-  u32 priority;
-  u64 runtime;
-  u64 deadline;
-  u64 period;
+  u32 priority;             // 1-99 (higher = more important, opposite of nice)
+  u64 time_slice_remaining; // SCHED_RR: remaining ns in current quantum
 
-  RtSchedEntity() noexcept : priority(priority::DEFAULT_RT_PRIORITY), runtime(0), deadline(0), period(0) {}
+  RtSchedEntity() noexcept
+      : priority(priority::DEFAULT_RT_PRIORITY), time_slice_remaining(rt_params::RR_TIMESLICE_NS) {}
 };
 
 // Thread structure
@@ -322,6 +353,7 @@ struct Thread {
 
   ProcessState state;
   SchedClass sched_class;
+  SchedPolicy sched_policy;
   SchedEntity se;
   RtSchedEntity rt;
 
@@ -368,12 +400,16 @@ struct Thread {
   // Enables O(1) thread→node lookup (avoids O(n) linear tree search).
   void *rq_node{nullptr};
 
+  // RT run queue intrusive list pointer (next task at same priority).
+  // Used by RtRunqueue; nullptr when not enqueued in an RT queue.
+  Thread *rt_next_{nullptr};
+
   Thread(ThreadId id, ProcessId pid) noexcept
       : tid(id), owner_pid(pid), context{}, cpu(0), wake_cpu(0), state(ProcessState::Created),
-        sched_class(SchedClass::Normal), se{}, rt{}, start_time(0), utime(0), stime(0), stack_base(0), stack_size(0),
-        wait_queue(0), signal_mask(0), pending_signals(0), needs_initial_eret(false), is_user_task(false),
-        need_resched(false), cpu_affinity_mask(CpuBitmap::all()), kernel_stack_base(0), kernel_stack_size(0),
-        rq_node(nullptr) {}
+        sched_class(SchedClass::Normal), sched_policy(SchedPolicy::Normal), se{}, rt{}, start_time(0), utime(0),
+        stime(0), stack_base(0), stack_size(0), wait_queue(0), signal_mask(0), pending_signals(0),
+        needs_initial_eret(false), is_user_task(false), need_resched(false), cpu_affinity_mask(CpuBitmap::all()),
+        kernel_stack_base(0), kernel_stack_size(0), rq_node(nullptr) {}
 
   // Returns the top of this thread's kernel stack (for TPIDR_EL1).
   [[nodiscard]] VirtAddr kernel_stack_top() const noexcept { return kernel_stack_base + kernel_stack_size; }
