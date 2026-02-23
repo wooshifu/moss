@@ -93,7 +93,9 @@ IpiResult SimpleHardwareIpi::send_ipi(u32 target_cpu, IpiType type) noexcept {
   }
 
   // GICv2 SGIR only supports 8-bit CPU target mask (CPUs 0-7).
-  if (target_cpu >= 8) {
+  // GICv3 uses ICC_SGI1R_EL1 with 16-bit TargetList.
+  if (::moss::kernel::hal::intc::g_gic_version != ::moss::kernel::hal::intc::GicVersion::GICv3 &&
+      target_cpu >= 8) {
     return IpiResult::InvalidCpu;
   }
   IpiSgiId sgi_id = ipi_type_to_sgi(type);

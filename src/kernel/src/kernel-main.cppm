@@ -514,14 +514,22 @@ private:
       return VoidResult{ErrorCode::OutOfMemory};
     }
 
-    // 从 DTB 解析结果获取 GIC 地址，若 DTB 无效则回退到 QEMU virt 默认值
+    // Resolve GIC addresses and version from DTB, fall back to platform defaults.
     const auto &plat = ::moss::fdt::get_platform_info();
     VirtAddr gic_dist_base =
         (plat.dtb_valid && plat.intc.valid) ? static_cast<VirtAddr>(plat.intc.dist_base) : platform::intc_dist_base();
-    VirtAddr gic_cpu_base =
-        (plat.dtb_valid && plat.intc.valid) ? static_cast<VirtAddr>(plat.intc.cpu_base) : platform::intc_cpu_base();
+    u8 gic_ver = (plat.dtb_valid && plat.intc.valid) ? plat.intc.gic_version : 2;
+    VirtAddr second_base;
+    if (gic_ver >= 3) {
+      second_base = (plat.dtb_valid && plat.intc.valid && plat.intc.redist_base != 0)
+                        ? static_cast<VirtAddr>(plat.intc.redist_base)
+                        : platform::intc_redist_base();
+    } else {
+      second_base = (plat.dtb_valid && plat.intc.valid) ? static_cast<VirtAddr>(plat.intc.cpu_base)
+                                                        : platform::intc_cpu_base();
+    }
 
-    auto gic_result = gic_->initialize(gic_dist_base, gic_cpu_base);
+    auto gic_result = gic_->initialize(gic_dist_base, second_base, gic_ver);
     if (!gic_result) {
       delete gic_;
       gic_ = nullptr;

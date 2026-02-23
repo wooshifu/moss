@@ -56,10 +56,13 @@ struct UartInfo {
 
 /// 中断控制器信息（GIC / PLIC）
 struct InterruptControllerInfo {
-  PhysAddr dist_base; // GIC distributor 或 PLIC 基地址
-  PhysAddr cpu_base;  // GIC CPU interface（仅 ARM64）
+  PhysAddr dist_base;   // GIC distributor 或 PLIC 基地址
+  PhysAddr cpu_base;    // GICv2: GICC CPU interface; GICv3: unused (0)
+  PhysAddr redist_base; // GICv3: GICR redistributor base (0 for GICv2/PLIC)
   u64 dist_size;
   u64 cpu_size;
+  u64 redist_size;   // GICv3: GICR region size
+  u8 gic_version;    // 0=unknown/PLIC, 2=GICv2, 3=GICv3/v4
   bool valid;
 };
 
@@ -317,18 +320,29 @@ static void parse_uart(const void *fdt) noexcept {
 static void parse_intc(const void *fdt) noexcept {
   int intc_node = -1;
   int offset = -1;
+  u8 detected_version = 0; // 0=unknown/PLIC, 2=GICv2, 3=GICv3/v4
 
   // 查找已知的中断控制器 compatible 字符串
+  // Check GICv3 first — a GICv3 node must not be misidentified as v2
   while (true) {
     offset = fdt_next_node(fdt, offset, nullptr);
     if (offset < 0) {
       break;
     }
 
-    if (compatible_match(fdt, offset, "arm,cortex-a15-gic") || compatible_match(fdt, offset, "arm,gic-400") ||
-        compatible_match(fdt, offset, "arm,gic-v3") || compatible_match(fdt, offset, "riscv,plic0") ||
-        compatible_match(fdt, offset, "sifive,plic-1.0.0")) {
+    if (compatible_match(fdt, offset, "arm,gic-v3")) {
       intc_node = offset;
+      detected_version = 3;
+      break;
+    }
+    if (compatible_match(fdt, offset, "arm,cortex-a15-gic") || compatible_match(fdt, offset, "arm,gic-400")) {
+      intc_node = offset;
+      detected_version = 2;
+      break;
+    }
+    if (compatible_match(fdt, offset, "riscv,plic0") || compatible_match(fdt, offset, "sifive,plic-1.0.0")) {
+      intc_node = offset;
+      detected_version = 0;
       break;
     }
   }
@@ -350,7 +364,7 @@ static void parse_intc(const void *fdt) noexcept {
     }
   }
 
-  // 读取 reg 属性（GIC 有两个区域: distributor + CPU interface）
+  // 读取 reg 属性
   int len = 0;
   const void *reg = fdt_getprop(fdt, intc_node, "reg", &len);
   if (!reg || len <= 0) {
@@ -360,20 +374,33 @@ static void parse_intc(const void *fdt) noexcept {
   u32 entry_size = (addr_cells + size_cells) * 4;
   const u8 *ptr = static_cast<const u8 *>(reg);
 
-  // 第一个 reg 条目 = distributor / PLIC 基地址
+  // 第一个 reg 条目 = distributor (same for GICv2, GICv3, and PLIC)
   u64 dist_base = read_cells_value(ptr, addr_cells);
   u64 dist_size = read_cells_value(ptr, size_cells);
   g_platform_info.intc.dist_base = static_cast<PhysAddr>(dist_base);
   g_platform_info.intc.dist_size = dist_size;
 
-  // 第二个 reg 条目 = CPU interface（如果存在，仅 GICv2）
+  // 第二个 reg 条目: interpretation depends on GIC version
+  //   GICv2: GICC (CPU interface) — MMIO mapped
+  //   GICv3: GICR (redistributor) — per-CPU register frames
   if (static_cast<u32>(len) >= entry_size * 2) {
-    u64 cpu_base = read_cells_value(ptr, addr_cells);
-    u64 cpu_size = read_cells_value(ptr, size_cells);
-    g_platform_info.intc.cpu_base = static_cast<PhysAddr>(cpu_base);
-    g_platform_info.intc.cpu_size = cpu_size;
+    u64 second_base = read_cells_value(ptr, addr_cells);
+    u64 second_size = read_cells_value(ptr, size_cells);
+
+    if (detected_version == 3) {
+      g_platform_info.intc.redist_base = static_cast<PhysAddr>(second_base);
+      g_platform_info.intc.redist_size = second_size;
+      g_platform_info.intc.cpu_base = 0;
+      g_platform_info.intc.cpu_size = 0;
+    } else {
+      g_platform_info.intc.cpu_base = static_cast<PhysAddr>(second_base);
+      g_platform_info.intc.cpu_size = second_size;
+      g_platform_info.intc.redist_base = 0;
+      g_platform_info.intc.redist_size = 0;
+    }
   }
 
+  g_platform_info.intc.gic_version = detected_version;
   g_platform_info.intc.valid = true;
 }
 

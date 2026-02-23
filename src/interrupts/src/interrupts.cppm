@@ -88,7 +88,8 @@ class GenericInterruptController {
 private:
   GicVersion version_;
   VirtAddr distributor_base_;
-  VirtAddr cpu_interface_base_;
+  VirtAddr cpu_interface_base_; // GICv2: GICC base; GICv3: unused (0)
+  VirtAddr redistributor_base_; // GICv3: GICR base; GICv2: unused (0)
   u32 max_interrupts_;
   u32 max_cpus_;
 
@@ -101,8 +102,8 @@ private:
 
 public:
   GenericInterruptController() noexcept
-      : version_(GicVersion::Unknown), distributor_base_(0), cpu_interface_base_(0), max_interrupts_(0), max_cpus_(0),
-        total_interrupts_(0), spurious_interrupts_(0) {}
+      : version_(GicVersion::Unknown), distributor_base_(0), cpu_interface_base_(0), redistributor_base_(0),
+        max_interrupts_(0), max_cpus_(0), total_interrupts_(0), spurious_interrupts_(0) {}
 
   ~GenericInterruptController() noexcept { cleanup(); }
 
@@ -119,11 +120,27 @@ public:
     u32 enabled_interrupts;
   };
 
+  /// Two-argument initialize (backward compatible, assumes GICv2)
   [[nodiscard]] VoidResult initialize(VirtAddr dist_base, VirtAddr cpu_base) noexcept {
-    distributor_base_ = dist_base;
-    cpu_interface_base_ = cpu_base;
+    return initialize(dist_base, cpu_base, 2);
+  }
 
-    auto detect_result = detect_gic_config();
+  /// Three-argument initialize with GIC version hint from DTB.
+  /// @param dist_base      GICD base address (same for v2 and v3)
+  /// @param second_base    GICv2: GICC CPU interface; GICv3: GICR redistributor base
+  /// @param gic_version_hint  2 for GICv2, 3 for GICv3/v4 (from DTB)
+  [[nodiscard]] VoidResult initialize(VirtAddr dist_base, VirtAddr second_base, u8 gic_version_hint) noexcept {
+    distributor_base_ = dist_base;
+
+    if (gic_version_hint == 3) {
+      cpu_interface_base_ = 0;
+      redistributor_base_ = second_base;
+    } else {
+      cpu_interface_base_ = second_base;
+      redistributor_base_ = 0;
+    }
+
+    auto detect_result = detect_gic_config(gic_version_hint);
     if (!detect_result) {
       return detect_result;
     }
@@ -311,11 +328,35 @@ public:
   [[nodiscard]] static u32 get_current_cpu_id() noexcept { return arch::get_current_cpu_id(); }
 
 private:
-  [[nodiscard]] VoidResult detect_gic_config() noexcept {
+  [[nodiscard]] VoidResult detect_gic_config(u8 gic_version_hint) noexcept {
     namespace hal = ::moss::kernel::hal::intc;
+
+#if defined(MOSS_ARCH_ARM64)
+    // Use DTB hint as the primary version source.
+    // GICD_PIDR2 (offset 0xFFE8) is only reliably accessible on GICv3/v4
+    // distributors; QEMU GICv2 does not map that offset and will abort.
+    // So we only read PIDR2 as a sanity check when the hint says v3+.
+    if (gic_version_hint >= 3) {
+      u32 pidr2 = hal::read_reg(distributor_base_, hal::dist_regs::PIDR2);
+      u8 arch_rev = static_cast<u8>((pidr2 >> 4) & 0xF);
+
+      version_ = GicVersion::GICv3;
+      hal::g_gic_version = hal::GicVersion::GICv3;
+      hal::g_redist_base = redistributor_base_;
+      log::klog::info("GIC: GICv3 detected (PIDR2 ArchRev={}, hint={}), GICR={:#x}", arch_rev, gic_version_hint,
+                      redistributor_base_);
+    } else {
+      version_ = GicVersion::GICv2;
+      hal::g_gic_version = hal::GicVersion::GICv2;
+      log::klog::info("GIC: GICv2 (hint={})", gic_version_hint);
+    }
+#else
+    version_ = GicVersion::GICv2;
+    (void)gic_version_hint;
+#endif
+
     max_interrupts_ = hal::read_max_interrupts(distributor_base_);
     max_cpus_ = hal::read_max_cpus(distributor_base_);
-    version_ = GicVersion::GICv2;
     return VoidResult{};
   }
 

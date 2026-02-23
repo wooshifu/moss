@@ -86,7 +86,7 @@
 // Boot-time CPU limit (must match BOOT_MAX_CPUS in types.cppm).
 // Can be overridden via CMake: -DASM_MAX_CPUS=N
 #ifndef ASM_MAX_CPUS
-#define ASM_MAX_CPUS 8
+#define ASM_MAX_CPUS 16
 #endif
 
 .section ".text.boot", "ax"
@@ -224,6 +224,14 @@ el3_entry:
 el2_entry:
     mov     x0, #HCR_EL2_RW
     msr     hcr_el2, x0
+
+    // Enable GICv3 system register access before dropping to EL1.
+    // ICC_SRE_EL2 = S3_4_C12_C9_5: SRE (bit 0) | DFB (bit 1) | DIB (bit 2) = 0x7
+    // This allows EL1 to use ICC_*_EL1 system registers for GICv3 CPU interface.
+    // Safe no-op on GICv2 hardware (the register does not exist, write ignored).
+    mov     x0, #0x7
+    msr     S3_4_C12_C9_5, x0
+    isb
 
     // SPSR_EL2: mask all exceptions, target EL1h
     mov     x0, #(SPSR_EL2_F | SPSR_EL2_I | SPSR_EL2_A | SPSR_EL2_D | 0x05)

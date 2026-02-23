@@ -40,7 +40,7 @@ endif()
 
 # === QEMU 运行环境配置 ===
 if(NOT MOSS_CPU_CORES)
-    set(MOSS_CPU_CORES 8)
+    set(MOSS_CPU_CORES 16)
 endif()
 
 # 根据架构选择 QEMU 命令名
