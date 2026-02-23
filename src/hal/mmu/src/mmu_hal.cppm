@@ -86,7 +86,8 @@ inline constexpr u64 GLOBAL = (1ULL << 8);    // Global
 inline constexpr u64 SW_COW = (1ULL << 52);
 
 #elif defined(MOSS_ARCH_RISCV)
-// RISC-V Sv48 PTE format (RISC-V Privileged Spec, Ch. 4.4)
+// RISC-V Sv39 PTE format (RISC-V Privileged Spec, Ch. 4.4)
+// Leaf vs non-leaf: V=1 + (R|W|X)==0 → non-leaf (table); V=1 + (R|W|X)!=0 → leaf (block/page)
 inline constexpr u64 VALID = (1ULL << 0); // V (Valid)
 inline constexpr u64 TABLE = (1ULL << 0); // V (leaf vs non-leaf determined by RWX)
 inline constexpr u64 USER = (1ULL << 4);  // U (User)
@@ -148,44 +149,60 @@ inline constexpr u64 DEVICE =
     page_attr::VALID | page_attr::AF | page_attr::ATTR_DEVICE | page_attr::XN | page_attr::WRITABLE;
 
 #elif defined(MOSS_ARCH_RISCV)
+// RISC-V: A (Accessed) and D (Dirty) must be pre-set for writable pages to avoid
+// hardware page-fault on first access (QEMU emulates A/D but real hardware may not).
 inline constexpr u64 KERNEL_RO = page_attr::VALID | page_attr::AF | page_attr::READ | page_attr::GLOBAL;
 inline constexpr u64 KERNEL_RW =
-    page_attr::VALID | page_attr::AF | page_attr::READ | page_attr::WRITE | page_attr::GLOBAL;
+    page_attr::VALID | page_attr::AF | page_attr::DIRTY | page_attr::READ | page_attr::WRITE | page_attr::GLOBAL;
 inline constexpr u64 KERNEL_RX =
     page_attr::VALID | page_attr::AF | page_attr::READ | page_attr::EXECUTE | page_attr::GLOBAL;
 inline constexpr u64 USER_RO = page_attr::VALID | page_attr::AF | page_attr::USER | page_attr::READ;
-inline constexpr u64 USER_RW = page_attr::VALID | page_attr::AF | page_attr::USER | page_attr::READ | page_attr::WRITE;
+inline constexpr u64 USER_RW =
+    page_attr::VALID | page_attr::AF | page_attr::DIRTY | page_attr::USER | page_attr::READ | page_attr::WRITE;
 inline constexpr u64 USER_RX =
     page_attr::VALID | page_attr::AF | page_attr::USER | page_attr::READ | page_attr::EXECUTE;
-inline constexpr u64 DEVICE = page_attr::VALID | page_attr::AF | page_attr::READ | page_attr::WRITE | page_attr::GLOBAL;
+inline constexpr u64 DEVICE =
+    page_attr::VALID | page_attr::AF | page_attr::DIRTY | page_attr::READ | page_attr::WRITE | page_attr::GLOBAL;
 #endif
 
 } // namespace page_perms
 
 // ============================================================================
-// Virtual address breakdown — index bit positions for 4KB granule 4-level paging
+// Virtual address breakdown — index bit positions for 4KB granule paging
 // ============================================================================
 //
-// All three architectures use the same 4-level structure with 9-bit indices
-// for 4KB pages (512 entries per table):
-//   ARM64:  PGD[47:39] PUD[38:30] PMD[29:21] PTE[20:12] Offset[11:0]
-//   x86_64: PML4[47:39] PDPT[38:30] PD[29:21] PT[20:12] Offset[11:0]
-//   RISC-V Sv48: L3[47:39] L2[38:30] L1[29:21] L0[20:12] Offset[11:0]
+// ARM64 & x86_64: 4-level, 48-bit VA, 9-bit indices:
+//   PGD[47:39] PUD[38:30] PMD[29:21] PTE[20:12] Offset[11:0]
+//
+// RISC-V Sv39: 3-level, 39-bit VA, 9-bit indices:
+//   L2[38:30] L1[29:21] L0[20:12] Offset[11:0]
+//   Mapped to pgd/pud/pmd fields to reuse 4-level walk code — pte_index=0.
 
 struct VirtualAddressBreakdown {
-  u16 pgd_index;   // Level 4 (ARM64: PGD, x86: PML4, RV: L3)
-  u16 pud_index;   // Level 3 (ARM64: PUD, x86: PDPT, RV: L2)
-  u16 pmd_index;   // Level 2 (ARM64: PMD, x86: PD,   RV: L1)
-  u16 pte_index;   // Level 1 (ARM64: PTE, x86: PT,   RV: L0)
+  u16 pgd_index;   // ARM64/x86: L4[47:39];  RISC-V Sv39: L2[38:30] (root)
+  u16 pud_index;   // ARM64/x86: L3[38:30];  RISC-V Sv39: L1[29:21]
+  u16 pmd_index;   // ARM64/x86: L2[29:21];  RISC-V Sv39: L0[20:12] (leaf)
+  u16 pte_index;   // ARM64/x86: L1[20:12];  RISC-V Sv39: unused (0)
   u16 page_offset; // Offset within page [11:0]
 };
 
 [[nodiscard]] constexpr VirtualAddressBreakdown break_virtual_address(VirtAddr vaddr) noexcept {
+#if defined(MOSS_ARCH_RISCV)
+  // Sv39: 3-level page table.  The root table (satp) is at L2 level
+  // with 512 entries, each covering 1GB.  We map L2→pgd, L1→pud, L0→pmd
+  // so the existing 4-level walk code can reuse the first 3 levels.
+  return {.pgd_index = static_cast<u16>((vaddr >> 30) & 0x1FF),
+          .pud_index = static_cast<u16>((vaddr >> 21) & 0x1FF),
+          .pmd_index = static_cast<u16>((vaddr >> 12) & 0x1FF),
+          .pte_index = 0,
+          .page_offset = static_cast<u16>(vaddr & 0xFFF)};
+#else
   return {.pgd_index = static_cast<u16>((vaddr >> 39) & 0x1FF),
           .pud_index = static_cast<u16>((vaddr >> 30) & 0x1FF),
           .pmd_index = static_cast<u16>((vaddr >> 21) & 0x1FF),
           .pte_index = static_cast<u16>((vaddr >> 12) & 0x1FF),
           .page_offset = static_cast<u16>(vaddr & 0xFFF)};
+#endif
 }
 
 // ============================================================================
@@ -220,8 +237,9 @@ struct AddressSpaceConfig {
   static constexpr u64 MAIR_VALUE = 0; // not applicable
 
 #elif defined(MOSS_ARCH_RISCV)
-  // RISC-V uses satp register; mode=8 for Sv48, mode=9 for Sv57
-  static constexpr u64 SATP_MODE_SV48 = 8ULL << 60;
+  // RISC-V uses satp register; mode=8 for Sv39, mode=9 for Sv48.
+  // QEMU "rv64" CPU only supports Sv39; Sv48/Sv57 require explicit CPU flags.
+  static constexpr u64 SATP_MODE_SV39 = 8ULL << 60;
   static constexpr u64 TCR_VALUE = 0;  // not applicable (satp used instead)
   static constexpr u64 MAIR_VALUE = 0; // RISC-V uses PMA, not MAIR
 #endif
@@ -256,8 +274,8 @@ inline void configure_address_space(PhysAddr pgd_phys) noexcept {
   // x86_64: load CR3 with page table base
   asm volatile("mov %0, %%cr3" ::"r"(pgd_phys) : "memory");
 #elif defined(MOSS_ARCH_RISCV)
-  // RISC-V: set satp register (Sv48 mode + PPN)
-  u64 satp_val = AddressSpaceConfig::SATP_MODE_SV48 | ((pgd_phys >> 12) & 0x00000FFFFFFFFFFFULL);
+  // RISC-V: set satp register (Sv39 mode + PPN)
+  u64 satp_val = AddressSpaceConfig::SATP_MODE_SV39 | ((pgd_phys >> 12) & 0x00000FFFFFFFFFFFULL);
   asm volatile("csrw satp, %0" ::"r"(satp_val) : "memory");
   asm volatile("sfence.vma" ::: "memory");
 #endif
@@ -329,9 +347,9 @@ inline VoidResult enable_mmu(PhysAddr pgd_phys) noexcept {
   return (block_addr & PTE_ADDR_MASK) | page_attr::VALID | page_attr::WRITABLE | page_attr::AF |
          page_attr::ATTR_DEVICE | page_attr::HUGE_PAGE;
 #elif defined(MOSS_ARCH_RISCV)
-  // RISC-V: leaf PTE with R+W, no execute. PPN = phys_addr >> 12, stored at bits[53:10]
-  return ((block_addr >> 2) & PTE_ADDR_MASK) | page_attr::VALID | page_attr::AF | page_attr::READ | page_attr::WRITE |
-         page_attr::GLOBAL;
+  // RISC-V: leaf PTE with R+W+A+D, no execute. PPN = phys_addr >> 12, stored at bits[53:10]
+  return ((block_addr >> 2) & PTE_ADDR_MASK) | page_attr::VALID | page_attr::AF | page_attr::DIRTY | page_attr::READ |
+         page_attr::WRITE | page_attr::GLOBAL;
 #endif
 }
 
@@ -344,9 +362,10 @@ inline VoidResult enable_mmu(PhysAddr pgd_phys) noexcept {
   return (block_addr & PTE_ADDR_MASK) | page_attr::VALID | page_attr::WRITABLE | page_attr::AF |
          page_attr::ATTR_NORMAL | page_attr::HUGE_PAGE;
 #elif defined(MOSS_ARCH_RISCV)
-  // RISC-V: leaf PTE with R+W (no EXECUTE — W^X). PPN = phys_addr >> 12, stored at bits[53:10]
-  return ((block_addr >> 2) & PTE_ADDR_MASK) | page_attr::VALID | page_attr::AF | page_attr::READ | page_attr::WRITE |
-         page_attr::GLOBAL;
+  // RISC-V: leaf PTE with R+W+X+A+D. 1GB boot blocks cover both code and data,
+  // so EXECUTE is required for instruction fetch. Finer W^X comes later with 4KB pages.
+  return ((block_addr >> 2) & PTE_ADDR_MASK) | page_attr::VALID | page_attr::AF | page_attr::DIRTY | page_attr::READ |
+         page_attr::WRITE | page_attr::EXECUTE | page_attr::GLOBAL;
 #endif
 }
 
