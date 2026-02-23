@@ -884,6 +884,13 @@ private:
   template <typename T> constexpr const T &kernel_min(const T &a, const T &b) noexcept { return (a < b) ? a : b; }
 };
 
+// BSP scheduling readiness flag — secondary CPUs idle-wait until BSP
+// finishes creating and dispatching the init process.  Without this gate,
+// secondary CPUs' scheduler_tick() and load balancer can steal/dispatch
+// init before BSP's start_scheduling() finds TID=1000, causing a
+// double-dispatch race (two CPUs execute the same Thread simultaneously).
+inline containers::AtomicBool g_bsp_scheduling_ready{};
+
 // CFS scheduler class
 class CfsScheduler {
 private:
@@ -902,9 +909,18 @@ private:
   // Signature: void(u64 now, CfsScheduler& sched)
   void (*balance_callback_)(u64, CfsScheduler *){nullptr};
 
+  // Init task pointer — set by Kernel::create_init_process() so
+  // start_scheduling() can dispatch it directly instead of searching
+  // by hardcoded TID (which breaks when idle tasks consume TIDs first).
+  Thread *init_task_{nullptr};
+
 public:
   void set_balance_callback(void (*cb)(u64, CfsScheduler *)) noexcept { balance_callback_ = cb; }
   constexpr CfsScheduler() noexcept : idle_tasks_{nullptr} {}
+
+  /// Register the init task for direct dispatch by start_scheduling().
+  /// Called after enqueue_task() so the task is already in the runqueue.
+  void set_init_task(Thread *task) noexcept { init_task_ = task; }
 
   void enqueue_task(Thread *thread, u32 cpu) noexcept {
     if (thread == nullptr || cpu >= g_num_cpus) {
@@ -1078,6 +1094,17 @@ public:
       idle_task = create_idle_task(cpu_id);
       if (idle_task) {
         set_idle_task(cpu_id, idle_task);
+      }
+    }
+
+    // Secondary CPUs: wait for BSP to finish creating and dispatching
+    // the init process.  Without this gate, scheduler_tick() and the
+    // load balancer can steal/dispatch init before BSP finds TID=1000,
+    // leading to double-dispatch (two CPUs executing the same Thread).
+    // BSP (cpu 0) skips this — it sets the flag in start_scheduling().
+    if (cpu_id != 0) {
+      while (!g_bsp_scheduling_ready.load(containers::MemoryOrder::Acquire)) {
+        arch::cpu_idle_once();
       }
     }
 
@@ -1343,6 +1370,13 @@ private:
 
 public:
   void scheduler_tick() noexcept {
+    // Suppress scheduling activity until BSP finishes init dispatch.
+    // Without this, secondary CPUs' timer IRQs trigger load balancing
+    // and task dispatch that race with BSP's start_scheduling().
+    if (!g_bsp_scheduling_ready.load(containers::MemoryOrder::Acquire)) {
+      return;
+    }
+
     tick_count_++;
     u32 cpu = get_current_cpu_id();
 
@@ -1450,43 +1484,26 @@ public:
 
       early_debug_print("[sched] tick armed, entering idle loop\n");
 
-      // Before entering idle, dispatch the init user process (TID=1000).
-      // We explicitly search for it because test tasks may have lower
-      // vruntime values and would otherwise be selected first by CFS.
+      // Before entering idle, dispatch the init user process directly.
+      // init_task_ is set by Kernel::create_init_process() after enqueue.
       {
-        // Scan CPU 0's runqueue for TID=1000
-        Thread *init_task = nullptr;
-        for (u32 cpu = 0; cpu < g_num_cpus && init_task == nullptr; cpu++) {
-          // Try picking tasks from this CPU until we find TID=1000 or exhaust
-          constexpr u32 MAX_SCAN = 32;
-          Thread *stash[MAX_SCAN];
-          u32 stash_count = 0;
-
-          for (u32 s = 0; s < MAX_SCAN; s++) {
-            Thread *t = pick_next_task(cpu);
-            if (t == nullptr) {
-              break;
-            }
-            dequeue_task(t);
-            if (t->tid == 1000) {
-              init_task = t;
-              break;
-            }
-            stash[stash_count++] = t;
-          }
-          // Re-enqueue any tasks we pulled out
-          for (u32 s = 0; s < stash_count; s++) {
-            enqueue_task(stash[s], cpu);
-          }
-        }
+        Thread *init_task = init_task_;
+        init_task_ = nullptr; // consumed
 
         if (init_task != nullptr) {
-          early_debug_print("[sched] dispatching init TID=1000\n");
+          early_debug_print("[sched] dispatching init process\n");
+          dequeue_task(init_task);
+          // Signal secondary CPUs BEFORE dispatching so they start
+          // processing tasks while init is running on BSP.
+          g_bsp_scheduling_ready.store(true, containers::MemoryOrder::Release);
           context_switch_to_task(init_task);
           // Returns here when init is preempted by timer IRQ.
           // scheduler_tick already re-enqueued init; proceed to idle loop.
         } else {
-          early_debug_print("[sched] WARN: init TID=1000 not found\n");
+          early_debug_print("[sched] WARN: init task not registered\n");
+          // Unblock secondary CPUs even when init is missing so they
+          // don't spin forever.
+          g_bsp_scheduling_ready.store(true, containers::MemoryOrder::Release);
         }
       }
 

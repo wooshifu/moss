@@ -525,8 +525,8 @@ private:
                         ? static_cast<VirtAddr>(plat.intc.redist_base)
                         : platform::intc_redist_base();
     } else {
-      second_base = (plat.dtb_valid && plat.intc.valid) ? static_cast<VirtAddr>(plat.intc.cpu_base)
-                                                        : platform::intc_cpu_base();
+      second_base =
+          (plat.dtb_valid && plat.intc.valid) ? static_cast<VirtAddr>(plat.intc.cpu_base) : platform::intc_cpu_base();
     }
 
     auto gic_result = gic_->initialize(gic_dist_base, second_base, gic_ver);
@@ -699,8 +699,9 @@ private:
     // Step 5: Register thread into process's thread list (for cleanup)
     init_proc->register_thread(init_thread);
 
-    // Step 6: Enqueue into scheduler
+    // Step 6: Enqueue into scheduler and register for direct dispatch
     scheduler_->enqueue_task(init_thread, current_cpu());
+    scheduler_->set_init_task(init_thread);
 
     early_debug_print("[init] init process enqueued to scheduler\n");
     (void)code_size;
