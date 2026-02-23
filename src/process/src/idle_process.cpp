@@ -62,10 +62,10 @@ IdleTask *create_idle_task(u32 cpu_id) noexcept {
     return nullptr;
   }
 
-  // 检查是否已经创建过
-  if (g_idle_tasks.get_cpu(cpu_id) != nullptr) {
-    return g_idle_tasks.get_cpu(cpu_id);
-  }
+  // Note: we intentionally do NOT check g_idle_tasks.get_cpu(cpu_id) here.
+  // PerCpuData slots may contain stale non-null values from uninitialized
+  // memory (global constructors run before BSS is fully zeroed on some
+  // targets).  Always create fresh and overwrite.
 
   // 为idle任务分配内存
   // 使用标准的new操作符，后续可以集成更完整的内存分配器

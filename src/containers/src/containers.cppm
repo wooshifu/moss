@@ -559,7 +559,7 @@ public:
 
   // Fill all slots with the same value.
   // If g_num_cpus > BOOT_MAX_CPUS, dynamically allocates.
-  template <typename... Args> explicit PerCpuData(Args &&...args) noexcept {
+  template <typename... Args> explicit PerCpuData(Args &&...args) noexcept : boot_buf_{} {
     u32 target = moss::kernel::g_num_cpus;
     if (target > moss::kernel::BOOT_MAX_CPUS) {
       data_ = new PaddedSlot[target];
