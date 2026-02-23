@@ -10,8 +10,8 @@ namespace moss::kernel::mm {
 
 // BuddyAllocatorV2 stub implementations
 BuddyResult<moss::kernel::PhysAddr> BuddyAllocatorV2::allocate_pages(const PageAllocRequest &request) noexcept {
-  // TODO: Implement full buddy allocator with migration type support
-  // Delegate to PageFrameAllocator for now
+  // Delegates to PageFrameAllocator — full buddy with migration types,
+  // per-CPU caches, and watermark management is a separate project.
   auto result = PageFrameAllocator::allocate_pages(request.order);
   if (!result) {
     return BuddyResult<moss::kernel::PhysAddr>{BuddyError::OutOfMemory};
@@ -199,16 +199,29 @@ UnifiedMemoryManager::SystemPerformanceStats UnifiedMemoryManager::get_performan
 bool UnifiedMemoryManager::is_system_healthy() noexcept { return __atomic_load_n(&initialized_, __ATOMIC_ACQUIRE); }
 
 void UnifiedMemoryManager::reset_performance_counters() noexcept {
-  // TODO: 重置性能计数器
+  // Performance counters (allocation_count_, steal_count_, etc.) live in
+  // BuddyAllocatorV2 which currently delegates to PageFrameAllocator.
+  // The PageFrameAllocator tracks used_pages/free_pages atomically but
+  // has no separate "counter reset" — values reflect cumulative state.
+  // Nothing to reset until real per-interval counters are added.
 }
 
 // 调试和诊断
 void UnifiedMemoryManager::dump_memory_layout() noexcept {
-  // TODO: 内存布局转储
+  namespace log = moss::kernel::logging;
+  auto stats = PageFrameAllocator::get_memory_stats();
+  constexpr moss::kernel::usize PAGE_SIZE = 4096;
+  log::klog::info("=== Memory Layout ===");
+  log::klog::info("  total:  {} pages ({} KB)", stats.total_pages, stats.total_pages * PAGE_SIZE / 1024);
+  log::klog::info("  free:   {} pages ({} KB)", stats.free_pages, stats.free_pages * PAGE_SIZE / 1024);
+  log::klog::info("  used:   {} pages ({} KB)", stats.used_pages, stats.used_pages * PAGE_SIZE / 1024);
+  log::klog::info("  kernel: {} pages ({} KB)", stats.kernel_pages, stats.kernel_pages * PAGE_SIZE / 1024);
 }
 
 void UnifiedMemoryManager::dump_allocation_history() noexcept {
-  // TODO: 分配历史转储
+  // Allocation history tracking requires a ring buffer to record each
+  // allocate/free call with timestamp, size, and caller.  No such
+  // infrastructure exists yet — this is a no-op until then.
 }
 
 MMResult<MemoryLeakDetector::LeakReport> UnifiedMemoryManager::generate_leak_report() noexcept {

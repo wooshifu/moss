@@ -456,7 +456,14 @@ syscall_fast_path:
     cmp     x8, #0x100
     b.ge    syscall_slow_path
 
-    // TODO: Handle fast system calls here (e.g., getpid, clock_gettime)
+    // Fast syscall dispatch is not yet integrated:
+    // 1. The SVC exception vector routes directly to system_call_handler,
+    //    bypassing this function entirely.
+    // 2. TPIDR_EL1 holds kernel_stack_top, not a Thread pointer — reading
+    //    owner_pid requires a Thread* which is not accessible from EL1 asm
+    //    without an additional register or per-CPU variable.
+    // To enable: store Thread* in TPIDRRO_EL0 at context_switch time,
+    // then add a cmp/b.eq chain here for getpid (syscall 2) etc.
 
     // Restore and return
     ldp     x29, x30, [sp], #16

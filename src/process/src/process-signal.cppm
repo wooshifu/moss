@@ -195,9 +195,17 @@ inline bool send_signal(Thread *thread, u32 signo) noexcept {
   case SigDefault::Ignore:
     return false;
   case SigDefault::Stop:
+    // Mark thread as Stopped; scheduler dequeue happens in do_signal_checkpoint()
+    // (this inline function cannot access g_scheduler from the :signal partition).
+    thread->state = ProcessState::Stopped;
+    log::klog::info("signal {}: stopped PID={}", signo, static_cast<u32>(thread->owner_pid));
+    return false;
   case SigDefault::Continue:
-    // TODO: implement process stop/continue
-    log::klog::warn("signal {}: stop/continue not implemented, ignoring", signo);
+    if (thread->state == ProcessState::Stopped) {
+      // Mark Ready; scheduler enqueue happens in do_signal_checkpoint()
+      thread->state = ProcessState::Ready;
+      log::klog::info("signal {}: continued PID={}", signo, static_cast<u32>(thread->owner_pid));
+    }
     return false;
   default:
     return false;

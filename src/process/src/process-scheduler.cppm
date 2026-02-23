@@ -1493,6 +1493,9 @@ public:
     case ProcessState::DiskSleep:
       valid_transition = (new_state == ProcessState::Ready || new_state == ProcessState::Terminated);
       break;
+    case ProcessState::Stopped:
+      valid_transition = (new_state == ProcessState::Ready || new_state == ProcessState::Terminated);
+      break;
     case ProcessState::Terminated:
       valid_transition = (new_state == ProcessState::Zombie);
       break;

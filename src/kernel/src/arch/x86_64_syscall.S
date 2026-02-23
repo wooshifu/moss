@@ -128,9 +128,11 @@ syscall_entry_point:
     popq    %rbp
 
     // ---- Return to caller ----
-    //      TODO: Replace with SYSRET when true user-space is implemented.
-    //      SYSRET would use RCX (user RIP) and R11 (user RFLAGS) to return
-    //      to ring 3 in a single instruction.
+    // Uses RET while all code runs in ring 0.  Switching to SYSRET requires:
+    //   1. GDT reorganization: SYSRET computes CS = STAR[63:48]+16, SS = STAR[63:48]+8
+    //      which needs user CS/DS at specific GDT offsets (Linux uses a 6-entry GDT)
+    //   2. Ring 3 user-space support with separate address spaces
+    // When ready: restore RCX (user RIP) and R11 (user RFLAGS), then `sysretq`.
     ret
 .size syscall_entry_point, . - syscall_entry_point
 

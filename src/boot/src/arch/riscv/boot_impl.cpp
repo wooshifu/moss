@@ -75,9 +75,11 @@ static u64 get_timestamp_counter() noexcept {
 }
 
 static u32 get_current_cpu_id_impl() noexcept {
+  // S-mode cannot read mhartid (M-mode only).
+  // Hart ID is stored in tp register by _start (set from a0 passed by OpenSBI).
   u64 hartid;
-  asm volatile("csrr %0, mhartid" : "=r"(hartid));
-  return static_cast<u32>(hartid & 0xFFFFFFFF);
+  asm volatile("mv %0, tp" : "=r"(hartid));
+  return static_cast<u32>(hartid);
 }
 
 // Boot stage status update
@@ -95,6 +97,34 @@ void update_boot_stage(BootStage stage, ::moss::kernel::ErrorCode error) noexcep
   }
 }
 
+// =============================================================================
+// SBI (Supervisor Binary Interface) call wrapper
+// =============================================================================
+// OpenSBI provides firmware services via ecall from S-mode.
+// Convention: a7 = Extension ID (EID), a6 = Function ID (FID),
+//             a0-a5 = arguments.  Returns: a0 = error, a1 = value.
+struct SbiResult {
+  long error;
+  long value;
+};
+
+static SbiResult sbi_call(u64 eid, u64 fid, u64 a0 = 0, u64 a1 = 0, u64 a2 = 0) noexcept {
+  register u64 r_a0 asm("a0") = a0;
+  register u64 r_a1 asm("a1") = a1;
+  register u64 r_a2 asm("a2") = a2;
+  register u64 r_a6 asm("a6") = fid;
+  register u64 r_a7 asm("a7") = eid;
+  asm volatile("ecall" : "+r"(r_a0), "+r"(r_a1) : "r"(r_a2), "r"(r_a6), "r"(r_a7) : "memory");
+  return {static_cast<long>(r_a0), static_cast<long>(r_a1)};
+}
+
+// SBI HSM (Hart State Management) extension — EID 0x48534D
+static constexpr u64 SBI_EID_HSM = 0x48534D;
+
+static SbiResult sbi_hart_start(u64 hartid, u64 start_addr, u64 opaque) noexcept {
+  return sbi_call(SBI_EID_HSM, 0, hartid, start_addr, opaque);
+}
+
 } // namespace moss::boot
 
 // RISCVBootImpl member function implementations
@@ -108,14 +138,8 @@ void update_boot_stage(BootStage stage, ::moss::kernel::ErrorCode error) noexcep
   moss::boot::early_print_hex(ctx.cpu_id);
   moss::boot::early_print("\n");
 
-  u64 mvendorid, marchid, mimpid;
-  asm volatile("csrr %0, mvendorid" : "=r"(mvendorid));
-  asm volatile("csrr %0, marchid" : "=r"(marchid));
-  asm volatile("csrr %0, mimpid" : "=r"(mimpid));
-
-  moss::boot::early_print("Machine Vendor ID: ");
-  moss::boot::early_print_hex(mvendorid);
-  moss::boot::early_print("\n");
+  // M-mode CSRs (mvendorid, marchid, mimpid) are not accessible from S-mode.
+  // Hardware identification requires SBI probe calls or DTB parsing.
 
   // --- DTB 解析：从 Device Tree 获取真实硬件拓扑 ---
   // OpenSBI 通过 a1 寄存器传递 DTB 指针，已保存在 ctx.device_tree_ptr 中。
@@ -169,7 +193,26 @@ void update_boot_stage(BootStage stage, ::moss::kernel::ErrorCode error) noexcep
   moss::boot::update_boot_stage(moss::boot::BootStage::MemoryManagement);
 
   moss::boot::early_print("=== RISC-V Memory Management Setup ===\n");
-  moss::boot::early_print("TODO: Implement RISC-V page table and MMU setup\n");
+
+  // Initialize the unified memory subsystem.
+  // RISC-V Sv48 page tables are set up via setup_kernel_mmu() in arch.cppm.
+  auto mmu_result = ::moss::kernel::mm::setup_mmu();
+  if (!mmu_result) {
+    moss::boot::early_print("  WARNING: setup_mmu failed\n");
+  }
+
+  auto pfa_result = ::moss::kernel::mm::PageFrameAllocator::initialize();
+  if (!pfa_result) {
+    moss::boot::early_print("  WARNING: PageFrameAllocator init failed\n");
+  }
+
+  VirtAddr heap_start = moss::abi::linker::heap_start();
+  ::moss::kernel::usize initial_heap_size = 256ULL * 1024;
+  auto heap_result = ::moss::kernel::mm::RuntimeHeapAllocator::initialize_heap(heap_start, initial_heap_size);
+  if (!heap_result) {
+    moss::boot::early_print("  WARNING: RuntimeHeapAllocator init failed\n");
+  }
+
   moss::boot::early_print("RISC-V memory management setup complete\n\n");
   return ::moss::kernel::VoidResult{};
 }
@@ -179,7 +222,31 @@ void update_boot_stage(BootStage stage, ::moss::kernel::ErrorCode error) noexcep
   moss::boot::update_boot_stage(moss::boot::BootStage::InterruptsExceptions);
 
   moss::boot::early_print("=== RISC-V Interrupts and Exceptions Setup ===\n");
-  moss::boot::early_print("TODO: Implement RISC-V interrupt controller init\n");
+
+  // 1. Set stvec to point to the trap handler (direct mode)
+  extern "C" void syscall_entry_point();
+  u64 trap_addr = reinterpret_cast<u64>(&syscall_entry_point);
+  asm volatile("csrw stvec, %0" ::"r"(trap_addr));
+  moss::boot::early_print("  stvec configured\n");
+
+  // 2. Initialize PLIC (Platform Level Interrupt Controller)
+  auto *gic = new moss::kernel::interrupts::GenericInterruptController();
+  if (gic) {
+    VirtAddr plic_base = moss::kernel::platform::intc_dist_base(); // 0x0C000000
+
+    // S-mode context for hart 0: context_id = 1 (context 0 is M-mode)
+    // Threshold/claim registers at: plic_base + 0x200000 + context_id * 0x1000
+    VirtAddr ctx_base = plic_base + 0x200000 + 0x1000;
+
+    gic->initialize(plic_base, ctx_base, 0);
+    moss::boot::g_gic_controller = gic;
+    moss::boot::g_gic_hardware_available = true;
+    moss::boot::early_print("  PLIC initialized (S-mode context 1)\n");
+  }
+
+  // 3. Enable S-mode external interrupt enable (SEIE = bit 9 in sie)
+  asm volatile("csrs sie, %0" ::"r"(1ULL << 9));
+
   moss::boot::early_print("RISC-V interrupt/exception setup complete\n\n");
   return ::moss::kernel::VoidResult{};
 }
@@ -188,12 +255,32 @@ void update_boot_stage(BootStage stage, ::moss::kernel::ErrorCode error) noexcep
   moss::boot::update_boot_stage(moss::boot::BootStage::SmpSupport);
 
   moss::boot::early_print("=== RISC-V SMP Support Setup ===\n");
-  // Preserve DTB-derived CPU count (set in hardware_early_init); only default to 1
-  // if it wasn't set. Once RISC-V SMP boot is implemented, this fallback can be removed.
+
+  // Preserve DTB-derived CPU count; default to 1 if not set.
   if (ctx.total_cpus == 0) {
     ctx.total_cpus = 1;
   }
-  moss::boot::early_print("TODO: Implement RISC-V multi-core boot support\n");
+
+  // Use SBI HSM extension to start secondary harts.
+  // Each hart enters _start which parks non-zero harts in WFI.
+  // A future secondary_cpu_entry trampoline (like ARM64) is needed
+  // for full SMP operation; for now we attempt the HSM call to
+  // validate the SBI interface.
+  if (ctx.total_cpus > 1) {
+    extern "C" void _start();
+    u64 entry = reinterpret_cast<u64>(&_start);
+    u32 started = 0;
+    for (u32 i = 1; i < ctx.total_cpus; ++i) {
+      auto result = moss::boot::sbi_hart_start(i, entry, 0);
+      if (result.error == 0) {
+        ++started;
+      }
+    }
+    moss::boot::early_print("  SBI HSM: started ");
+    moss::boot::early_print_hex(started);
+    moss::boot::early_print(" secondary harts\n");
+  }
+
   moss::boot::early_print("RISC-V SMP setup complete\n\n");
   return ::moss::kernel::VoidResult{};
 }

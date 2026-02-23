@@ -1,26 +1,18 @@
 // =============================================================================
-// x86_64 Kernel Boot Stub
+// x86_64 Kernel Boot Entry
 // =============================================================================
 //
-// Minimal bootstrap for x86_64 MOSS kernel.  This is a placeholder — the full
-// x86_64 boot sequence (GDT setup, paging, AP bringup, etc.) is not yet
-// implemented.
+// Bootstrap for x86_64 MOSS kernel in long mode (64-bit).
 //
-// Current behavior:
-//   1. Clear direction flag (CLD) for safe REP string operations
-//   2. Set up a temporary 8 KB kernel stack
-//   3. Zero the BSS section
-//   4. Jump to kernel_main_stub which halts the CPU
+// Assumes the bootloader already placed us in 64-bit long mode with a
+// flat identity map.  This stub:
+//   1. Clears direction flag (CLD) for safe REP string operations
+//   2. Sets up a temporary 8 KB kernel stack
+//   3. Zeroes the BSS section
+//   4. Loads a minimal GDT with kernel/user code+data segments
+//   5. Calls early_main() to enter the unified boot path
 //
 // Entry point: _start (set by the linker via ENTRY(_start) in linker.ld)
-//
-// TODO:
-//   - Set up a proper GDT with kernel/user code+data segments
-//   - Initialize page tables (identity + high-half mapping)
-//   - Set up IDT for exception/interrupt handling
-//   - Parse ACPI/MP tables for multi-core topology
-//   - Boot application processors (APs) via SIPI
-//   - Jump to the real kernel_main
 // =============================================================================
 
 .section ".text.boot", "ax"
@@ -46,8 +38,39 @@ _start:
     xor %eax, %eax                      // fill with zeros
     rep stosb                           // zero the entire BSS
 
-    // Jump to stub (full x86_64 boot not yet implemented)
-    jmp kernel_main_stub
+    // ---- Load GDT ----
+    // Layout: [0] null | [1] kernel CS | [2] kernel DS | [3] user CS | [4] user DS
+    // Selectors: 0x08=KCS, 0x10=KDS, 0x1B=UCS (RPL=3), 0x23=UDS (RPL=3)
+    lea gdt_table(%rip), %rax
+    lea gdt_ptr(%rip), %rbx
+    movw $(gdt_end - gdt_table - 1), (%rbx) // limit
+    movq %rax, 2(%rbx)                      // base
+    lgdt (%rbx)
+
+    // Reload CS via far return (lretq pops RIP then CS)
+    pushq $0x08                              // kernel code segment selector
+    lea .Lreload_cs(%rip), %rax
+    pushq %rax
+    lretq
+.Lreload_cs:
+    // Reload data segment registers with kernel data selector
+    movw $0x10, %ax
+    movw %ax, %ds
+    movw %ax, %es
+    movw %ax, %ss
+    xorw %ax, %ax
+    movw %ax, %fs
+    movw %ax, %gs
+
+    // ---- Call unified boot entry ----
+    // x86_64 has no DTB; pass NULL as device_tree_ptr
+    xorq %rdi, %rdi
+    call early_main
+
+    // Should not return — halt loop as safety net
+    cli
+1:  hlt
+    jmp 1b
 .size _start, . - _start
 
 // =============================================================================
@@ -60,20 +83,39 @@ stack_bottom:
 stack_top:
 
 // =============================================================================
-// kernel_main_stub — placeholder halt loop
+// GDT (Global Descriptor Table)
 // =============================================================================
 //
-// Disables interrupts (CLI) then enters an infinite HLT loop.
-// HLT stops the CPU until the next interrupt, but since interrupts are
-// disabled, it effectively halts permanently.
+// 5-entry GDT for 64-bit long mode:
+//   [0] Null descriptor           (required by x86 architecture)
+//   [1] Kernel Code (0x08)        64-bit, DPL=0, Execute/Read
+//   [2] Kernel Data (0x10)        DPL=0, Read/Write
+//   [3] User Code   (0x18+3=0x1B) 64-bit, DPL=3, Execute/Read
+//   [4] User Data   (0x20+3=0x23) DPL=3, Read/Write
+//
+// Descriptor format (8 bytes each):
+//   Bits [15:0]  = Limit [15:0]     (ignored in 64-bit mode for code/data)
+//   Bits [31:16] = Base [15:0]      (ignored in 64-bit mode for code/data)
+//   Bits [39:32] = Base [23:16]
+//   Bits [47:40] = Access byte      (P=1, DPL, S=1, Type)
+//   Bits [51:48] = Limit [19:16]    (+ flags in [55:52])
+//   Bits [55:52] = Flags            (G, D/B, L, AVL)
+//   Bits [63:56] = Base [31:24]
 // =============================================================================
-.section ".text"
-.type kernel_main_stub, @function
-kernel_main_stub:
-    cli                                 // disable interrupts
-1:  hlt                                 // halt CPU
-    jmp 1b                              // loop (in case of NMI wakeup)
-.size kernel_main_stub, . - kernel_main_stub
+.section ".rodata", "a"
+.align 16
+gdt_table:
+    .quad 0                             // [0] Null descriptor
+    .quad 0x00AF9A000000FFFF            // [1] Kernel Code: L=1(64-bit), DPL=0, P=1, type=0xA(E/R)
+    .quad 0x00CF92000000FFFF            // [2] Kernel Data: DPL=0, P=1, type=0x2(R/W)
+    .quad 0x00AFFA000000FFFF            // [3] User Code:   L=1(64-bit), DPL=3, P=1, type=0xA(E/R)
+    .quad 0x00CFF2000000FFFF            // [4] User Data:   DPL=3, P=1, type=0x2(R/W)
+gdt_end:
+
+.align 16
+gdt_ptr:
+    .word 0                             // limit (filled at runtime above)
+    .quad 0                             // base  (filled at runtime above)
 
 // =============================================================================
 // Weak BSS boundary symbols
