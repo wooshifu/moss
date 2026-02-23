@@ -81,6 +81,171 @@ constexpr u64 sched_slice(u32 weight, u32 total_weight, u32 nr_running = SCHED_N
 }
 } // namespace cfs_params
 
+// ============================================================================
+// RT (Real-Time) run queue — priority-ordered FIFO/RR queue
+//
+// Design: simple array of linked-list heads, one per RT priority level (1-99).
+// pick_next scans from highest to lowest priority (O(1) with bitmap).
+// SCHED_FIFO tasks run until block/yield; SCHED_RR tasks rotate after
+// their time slice expires (100ms default, matching Linux).
+// ============================================================================
+class RtRunqueue {
+private:
+  mutable containers::IrqSpinLock lock_;
+
+  // Per-priority FIFO lists (index 0 unused; priorities 1-99).
+  // Each slot is the head of a singly-linked list using rt_next_.
+  static constexpr u32 NUM_PRIORITIES = 100;
+  Thread *heads_[NUM_PRIORITIES]{};
+  Thread *tails_[NUM_PRIORITIES]{};
+
+  // Bitmap: bit N set iff heads_[N] != nullptr (fast highest-prio scan).
+  // Two 64-bit words cover priorities 0-127 (we use 0-99).
+  u64 bitmap_[2]{};
+
+  u32 nr_running_{0};
+
+  void set_bit(u32 prio) noexcept {
+    if (prio < 64) {
+      bitmap_[0] |= (1ULL << prio);
+    } else {
+      bitmap_[1] |= (1ULL << (prio - 64));
+    }
+  }
+
+  void clear_bit(u32 prio) noexcept {
+    if (prio < 64) {
+      bitmap_[0] &= ~(1ULL << prio);
+    } else {
+      bitmap_[1] &= ~(1ULL << (prio - 64));
+    }
+  }
+
+  // Find highest set bit across both words (highest priority with tasks).
+  // Returns 0 if no bits set (priority 0 is unused).
+  [[nodiscard]] u32 find_highest() const noexcept {
+    // Check high word first (priorities 64-99)
+    if (bitmap_[1] != 0) {
+      return 64 + 63 - static_cast<u32>(__builtin_clzll(bitmap_[1]));
+    }
+    if (bitmap_[0] != 0) {
+      return 63 - static_cast<u32>(__builtin_clzll(bitmap_[0]));
+    }
+    return 0;
+  }
+
+public:
+  constexpr RtRunqueue() noexcept = default;
+
+  // Enqueue an RT task at the tail of its priority list (FIFO order).
+  void enqueue_task(Thread *thread) noexcept {
+    if (thread == nullptr) {
+      return;
+    }
+    containers::LockGuard<containers::IrqSpinLock> guard(lock_);
+
+    u32 prio = thread->rt.priority;
+    if (prio == 0 || prio >= NUM_PRIORITIES) {
+      prio = priority::DEFAULT_RT_PRIORITY;
+    }
+
+    thread->rt_next_ = nullptr;
+
+    if (tails_[prio] != nullptr) {
+      tails_[prio]->rt_next_ = thread;
+    } else {
+      heads_[prio] = thread;
+    }
+    tails_[prio] = thread;
+    set_bit(prio);
+    nr_running_++;
+  }
+
+  // Dequeue a specific RT task from its priority list.
+  void dequeue_task(Thread *thread) noexcept {
+    if (thread == nullptr) {
+      return;
+    }
+    containers::LockGuard<containers::IrqSpinLock> guard(lock_);
+
+    u32 prio = thread->rt.priority;
+    if (prio == 0 || prio >= NUM_PRIORITIES) {
+      prio = priority::DEFAULT_RT_PRIORITY;
+    }
+
+    // Scan list to find and remove thread
+    Thread *prev = nullptr;
+    Thread *cur = heads_[prio];
+    while (cur != nullptr) {
+      if (cur == thread) {
+        if (prev != nullptr) {
+          prev->rt_next_ = cur->rt_next_;
+        } else {
+          heads_[prio] = cur->rt_next_;
+        }
+        if (tails_[prio] == cur) {
+          tails_[prio] = prev;
+        }
+        cur->rt_next_ = nullptr;
+        nr_running_--;
+        if (heads_[prio] == nullptr) {
+          clear_bit(prio);
+        }
+        return;
+      }
+      prev = cur;
+      cur = cur->rt_next_;
+    }
+  }
+
+  // Pick the highest-priority task (peek, does not dequeue).
+  [[nodiscard]] Thread *pick_next_task() noexcept {
+    containers::LockGuard<containers::IrqSpinLock> guard(lock_);
+    u32 prio = find_highest();
+    if (prio == 0) {
+      return nullptr;
+    }
+    return heads_[prio];
+  }
+
+  // SCHED_RR: move the head of a priority list to the tail (round-robin).
+  void requeue_task(Thread *thread) noexcept {
+    if (thread == nullptr) {
+      return;
+    }
+    containers::LockGuard<containers::IrqSpinLock> guard(lock_);
+
+    u32 prio = thread->rt.priority;
+    if (prio == 0 || prio >= NUM_PRIORITIES) {
+      return;
+    }
+
+    // Only requeue if this task is the head (it should be, since it's running)
+    if (heads_[prio] != thread) {
+      return;
+    }
+
+    // Single task — nothing to rotate
+    if (heads_[prio] == tails_[prio]) {
+      return;
+    }
+
+    // Move head to tail
+    heads_[prio] = thread->rt_next_;
+    thread->rt_next_ = nullptr;
+    tails_[prio]->rt_next_ = thread;
+    tails_[prio] = thread;
+  }
+
+  [[nodiscard]] u32 nr_running() const noexcept { return nr_running_; }
+
+  // Highest RT priority among queued tasks (0 = none).
+  [[nodiscard]] u32 highest_priority() const noexcept {
+    containers::LockGuard<containers::IrqSpinLock> guard(lock_);
+    return find_highest();
+  }
+};
+
 // Red-black tree node (simplified implementation)
 template <typename T> struct RbNode {
   T *data;
@@ -891,10 +1056,11 @@ private:
 // double-dispatch race (two CPUs execute the same Thread simultaneously).
 inline containers::AtomicBool g_bsp_scheduling_ready{};
 
-// CFS scheduler class
+// CFS scheduler class (also dispatches RT tasks)
 class CfsScheduler {
 private:
   containers::PerCpuData<CfsRunqueue> runqueues_;
+  containers::PerCpuData<RtRunqueue> rt_runqueues_;
   containers::PerCpuData<IdleTask *> idle_tasks_;
 
   containers::PerCpuAtomicCounter<u64> total_switches_;
@@ -927,16 +1093,28 @@ public:
       return;
     }
 
-    runqueues_.get_cpu(cpu).enqueue_task(thread);
+    // Route to RT or CFS queue based on scheduling class
+    if (thread->sched_class == SchedClass::RealTime) {
+      rt_runqueues_.get_cpu(cpu).enqueue_task(thread);
+    } else {
+      runqueues_.get_cpu(cpu).enqueue_task(thread);
+    }
     thread->cpu = cpu;
     thread->state = ProcessState::Ready;
 
-    // Wakeup preemption check: if the newly enqueued task has lower
-    // vruntime than the current task on the target CPU, mark it for
-    // rescheduling.
+    // Wakeup preemption check:
+    // - RT task always preempts CFS task
+    // - RT task preempts lower-priority RT task
+    // - CFS task preempts if lower vruntime
     Thread *curr = current_running_tasks_.get_cpu(cpu);
-    if (curr != nullptr && thread->se.vruntime < curr->se.vruntime) {
-      curr->need_resched = true;
+    if (curr != nullptr) {
+      if (thread->sched_class == SchedClass::RealTime) {
+        if (curr->sched_class != SchedClass::RealTime || thread->rt.priority > curr->rt.priority) {
+          curr->need_resched = true;
+        }
+      } else if (curr->sched_class != SchedClass::RealTime && thread->se.vruntime < curr->se.vruntime) {
+        curr->need_resched = true;
+      }
     }
 
     // Wake target CPU if idle (tickless idle disables timer PPI,
@@ -952,13 +1130,24 @@ public:
 
     u32 cpu = thread->cpu;
     if (cpu < g_num_cpus) {
-      runqueues_.get_cpu(cpu).dequeue_task(thread);
+      if (thread->sched_class == SchedClass::RealTime) {
+        rt_runqueues_.get_cpu(cpu).dequeue_task(thread);
+      } else {
+        runqueues_.get_cpu(cpu).dequeue_task(thread);
+      }
     }
   }
 
+  // Pick the next task to run — RT tasks always take precedence over CFS.
   [[nodiscard]] Thread *pick_next_task(u32 cpu) noexcept {
     if (cpu >= g_num_cpus) {
       return nullptr;
+    }
+
+    // RT class has strict priority over CFS (like Linux)
+    Thread *rt_next = rt_runqueues_.get_cpu(cpu).pick_next_task();
+    if (rt_next != nullptr) {
+      return rt_next;
     }
 
     return runqueues_.get_cpu(cpu).pick_next_task();
@@ -998,7 +1187,7 @@ public:
     if (cpu_id >= g_num_cpus) {
       return false;
     }
-    return runqueues_.get_cpu(cpu_id).nr_running() > 0;
+    return rt_runqueues_.get_cpu(cpu_id).nr_running() > 0 || runqueues_.get_cpu(cpu_id).nr_running() > 0;
   }
 
   // Place entity vruntime for fork or wakeup (before enqueue)
@@ -1301,7 +1490,7 @@ public:
     if (cpu >= g_num_cpus) {
       return 0;
     }
-    return runqueues_.get_cpu(cpu).nr_running();
+    return rt_runqueues_.get_cpu(cpu).nr_running() + runqueues_.get_cpu(cpu).nr_running();
   }
 
   [[nodiscard]] u64 total_context_switches() const noexcept { return total_switches_.load_total(); }
@@ -1399,44 +1588,99 @@ public:
       return;
     }
 
-    // Update vruntime for the currently running task
-    if (curr->state == ProcessState::Running) {
-      u64 now = get_current_time();
-      u64 delta = (now > curr->se.exec_start) ? (now - curr->se.exec_start) : 1000;
-      // Cap delta to one scheduling period.  scheduler_tick() fires every
-      // SCHED_LATENCY_NS (6ms); a delta much larger than that means the task
-      // was in a kernel path that masked IRQ (e.g. console_read polling for
-      // keyboard input).  Charge at most one tick's worth of vruntime so the
-      // task is not starved by CFS after the masked period ends.
-      if (delta > cfs_params::SCHED_LATENCY_NS * 2) {
-        delta = cfs_params::SCHED_LATENCY_NS;
-      }
-      curr->se.exec_start = now;
-      update_current(curr, delta);
+    if (curr->state != ProcessState::Running) {
+      return;
+    }
 
-      // Check if a higher-priority task is waiting (CFS: lower vruntime)
-      if (should_preempt_current(curr)) {
-        // Guard: task may have been marked Terminated by sys_exit
-        // between our state==Running check above and here.
+    u64 now = get_current_time();
+    u64 delta = (now > curr->se.exec_start) ? (now - curr->se.exec_start) : 1000;
+
+    // ---- RT scheduling tick ----
+    if (curr->sched_class == SchedClass::RealTime) {
+      curr->se.exec_start = now;
+
+      // Check if a higher-priority RT task arrived
+      u32 hp = rt_runqueues_.get_cpu(cpu).highest_priority();
+      bool need_preempt = (hp > curr->rt.priority);
+
+      // SCHED_RR: decrement time slice, rotate on expiry
+      if (!need_preempt && curr->sched_policy == SchedPolicy::RR) {
+        if (delta >= curr->rt.time_slice_remaining) {
+          curr->rt.time_slice_remaining = rt_params::RR_TIMESLICE_NS;
+          need_preempt = true; // time slice expired → rotate
+        } else {
+          curr->rt.time_slice_remaining -= delta;
+        }
+      }
+      // SCHED_FIFO: no time slice — only preempted by higher priority
+
+      if (need_preempt) {
         if (curr->state == ProcessState::Terminated) {
           return;
         }
-
         curr->need_resched = true;
-
-        // Reset time-slice accounting so curr gets a fresh slice next time
-        curr->se.prev_sum_exec_runtime = curr->se.sum_exec_runtime;
         curr->state = ProcessState::Ready;
         record_preemption();
-
-        // Re-enqueue current task, pick the next one
         enqueue_task(curr, cpu);
         Thread *next = pick_next_task(cpu);
         if (next != nullptr && next != curr) {
           dequeue_task(next);
           context_switch_to_task(next);
-          // Returns here when curr is scheduled again.
         }
+      }
+      return;
+    }
+
+    // ---- CFS scheduling tick ----
+    // If an RT task is waiting, preempt CFS immediately
+    if (rt_runqueues_.get_cpu(cpu).nr_running() > 0) {
+      curr->need_resched = true;
+      curr->se.exec_start = now;
+      update_current(curr, delta);
+      curr->state = ProcessState::Ready;
+      record_preemption();
+      enqueue_task(curr, cpu);
+      Thread *next = pick_next_task(cpu);
+      if (next != nullptr && next != curr) {
+        dequeue_task(next);
+        context_switch_to_task(next);
+      }
+      return;
+    }
+
+    // Cap delta to one scheduling period.  scheduler_tick() fires every
+    // SCHED_LATENCY_NS (6ms); a delta much larger than that means the task
+    // was in a kernel path that masked IRQ (e.g. console_read polling for
+    // keyboard input).  Charge at most one tick's worth of vruntime so the
+    // task is not starved by CFS after the masked period ends.
+    if (delta > cfs_params::SCHED_LATENCY_NS * 2) {
+      delta = cfs_params::SCHED_LATENCY_NS;
+    }
+    curr->se.exec_start = now;
+    update_current(curr, delta);
+
+    // Check if a higher-priority task is waiting (CFS: lower vruntime)
+    if (should_preempt_current(curr)) {
+      // Guard: task may have been marked Terminated by sys_exit
+      // between our state==Running check above and here.
+      if (curr->state == ProcessState::Terminated) {
+        return;
+      }
+
+      curr->need_resched = true;
+
+      // Reset time-slice accounting so curr gets a fresh slice next time
+      curr->se.prev_sum_exec_runtime = curr->se.sum_exec_runtime;
+      curr->state = ProcessState::Ready;
+      record_preemption();
+
+      // Re-enqueue current task, pick the next one
+      enqueue_task(curr, cpu);
+      Thread *next = pick_next_task(cpu);
+      if (next != nullptr && next != curr) {
+        dequeue_task(next);
+        context_switch_to_task(next);
+        // Returns here when curr is scheduled again.
       }
     }
   }

@@ -1576,6 +1576,149 @@ long sys_getpriority(long which, long who, long /*unused*/, long /*unused*/, lon
   return 20 - static_cast<long>(main_thread->se.nice);
 }
 
+// sched_setscheduler(pid, policy, rt_priority) — set scheduling policy and RT priority
+// policy: 0=SCHED_NORMAL, 1=SCHED_FIFO, 2=SCHED_RR, 3=SCHED_BATCH, 5=SCHED_IDLE
+// rt_priority: 1-99 for SCHED_FIFO/RR, ignored for other policies
+long sys_sched_setscheduler(long pid_arg, long policy_arg, long rt_prio_arg, long /*unused*/, long /*unused*/,
+                            long /*unused*/) noexcept {
+  using namespace moss::kernel::process;
+
+  Thread *cur = CfsScheduler::get_current_task();
+  if (!cur || !g_scheduler || !g_process_manager) {
+    return -errc::ESRCH;
+  }
+
+  // Find target thread
+  Thread *target = cur;
+  if (pid_arg != 0) {
+    Process *proc = g_process_manager->find_process(static_cast<ProcessId>(pid_arg));
+    if (!proc) {
+      return -errc::ESRCH;
+    }
+    target = proc->get_main_thread();
+    if (!target) {
+      return -errc::ESRCH;
+    }
+  }
+
+  // Validate and map policy
+  auto policy = static_cast<SchedPolicy>(static_cast<u8>(policy_arg));
+  SchedClass new_class = policy_to_class(policy);
+
+  // Validate RT priority
+  u32 rt_prio = static_cast<u32>(rt_prio_arg);
+  if (new_class == SchedClass::RealTime) {
+    if (rt_prio < priority::MIN_RT_PRIORITY || rt_prio > priority::MAX_RT_PRIORITY) {
+      return -errc::EINVAL;
+    }
+  } else {
+    // Non-RT policies: rt_priority must be 0
+    rt_prio = 0;
+  }
+
+  // Validate policy value itself
+  switch (policy) {
+  case SchedPolicy::Normal:
+  case SchedPolicy::Fifo:
+  case SchedPolicy::RR:
+  case SchedPolicy::Batch:
+  case SchedPolicy::Idle:
+    break;
+  default:
+    return -errc::EINVAL;
+  }
+
+  // If class is changing, dequeue from old queue and enqueue to new
+  SchedClass old_class = target->sched_class;
+  bool class_changed = (old_class != new_class);
+
+  if (class_changed && (target->state == ProcessState::Ready || target->state == ProcessState::Running)) {
+    g_scheduler->dequeue_task(target);
+  }
+
+  target->sched_class = new_class;
+  target->sched_policy = policy;
+  target->rt.priority = rt_prio;
+
+  // Reset SCHED_RR time slice
+  if (policy == SchedPolicy::RR) {
+    target->rt.time_slice_remaining = rt_params::RR_TIMESLICE_NS;
+  }
+
+  if (class_changed && (target->state == ProcessState::Ready || target->state == ProcessState::Running)) {
+    u32 cpu = target->cpu;
+    target->state = ProcessState::Ready;
+    g_scheduler->enqueue_task(target, cpu);
+  }
+
+  log::klog::info("sched_setscheduler: PID={} policy={} class={} rt_prio={}", static_cast<u32>(target->owner_pid),
+                  static_cast<u32>(static_cast<u8>(policy)), static_cast<u32>(static_cast<u8>(new_class)), rt_prio);
+  return 0;
+}
+
+// sched_getscheduler(pid) — get scheduling policy
+// Returns the policy (SCHED_NORMAL=0, SCHED_FIFO=1, SCHED_RR=2, etc.)
+long sys_sched_getscheduler(long pid_arg, long /*unused*/, long /*unused*/, long /*unused*/, long /*unused*/,
+                            long /*unused*/) noexcept {
+  using namespace moss::kernel::process;
+
+  Thread *cur = CfsScheduler::get_current_task();
+  if (!cur) {
+    return -errc::ESRCH;
+  }
+
+  Thread *target = cur;
+  if (pid_arg != 0) {
+    if (!g_process_manager) {
+      return -errc::ESRCH;
+    }
+    Process *proc = g_process_manager->find_process(static_cast<ProcessId>(pid_arg));
+    if (!proc) {
+      return -errc::ESRCH;
+    }
+    target = proc->get_main_thread();
+    if (!target) {
+      return -errc::ESRCH;
+    }
+  }
+
+  return static_cast<long>(static_cast<u8>(target->sched_policy));
+}
+
+// sched_get_priority_max(policy) — get maximum RT priority for a policy
+long sys_sched_get_priority_max(long policy_arg, long /*unused*/, long /*unused*/, long /*unused*/, long /*unused*/,
+                                long /*unused*/) noexcept {
+  auto policy = static_cast<process::SchedPolicy>(static_cast<u8>(policy_arg));
+  switch (policy) {
+  case process::SchedPolicy::Fifo:
+  case process::SchedPolicy::RR:
+    return static_cast<long>(process::priority::MAX_RT_PRIORITY);
+  case process::SchedPolicy::Normal:
+  case process::SchedPolicy::Batch:
+  case process::SchedPolicy::Idle:
+    return 0;
+  default:
+    return -errc::EINVAL;
+  }
+}
+
+// sched_get_priority_min(policy) — get minimum RT priority for a policy
+long sys_sched_get_priority_min(long policy_arg, long /*unused*/, long /*unused*/, long /*unused*/, long /*unused*/,
+                                long /*unused*/) noexcept {
+  auto policy = static_cast<process::SchedPolicy>(static_cast<u8>(policy_arg));
+  switch (policy) {
+  case process::SchedPolicy::Fifo:
+  case process::SchedPolicy::RR:
+    return static_cast<long>(process::priority::MIN_RT_PRIORITY);
+  case process::SchedPolicy::Normal:
+  case process::SchedPolicy::Batch:
+  case process::SchedPolicy::Idle:
+    return 0;
+  default:
+    return -errc::EINVAL;
+  }
+}
+
 // sched_yield() — voluntarily give up the CPU
 // Sets current task's vruntime to min_vruntime + SCHED_LATENCY_NS,
 // re-enqueues, then context-switches away.
@@ -1782,6 +1925,74 @@ long sys_nanosleep(long ns_addr, long /* remaining */, long /*unused*/, long /*u
   //    re-dispatched us.  Cancel defensively (already inactive).
   sleep_timer.cancel();
 
+  return 0;
+}
+
+// clock_nanosleep(clockid, flags, ns_addr, remaining)
+// clockid: 0 = CLOCK_REALTIME, 1 = CLOCK_MONOTONIC (we treat both the same)
+// flags:   0 = relative sleep,  1 = TIMER_ABSTIME (absolute deadline)
+// ns_addr: pointer to u64 nanoseconds (relative duration or absolute timestamp)
+long sys_clock_nanosleep(long clockid, long flags, long ns_addr, long /*remaining*/, long /*unused*/,
+                         long /*unused*/) noexcept {
+  using namespace moss::kernel::process;
+
+  // Only support CLOCK_REALTIME (0) and CLOCK_MONOTONIC (1)
+  if (clockid < 0 || clockid > 1) {
+    return -errc::EINVAL;
+  }
+
+  if (ns_addr == 0) {
+    return -errc::EFAULT;
+  }
+  const auto *req_ns = reinterpret_cast<const u64 *>(static_cast<unsigned long long>(ns_addr));
+  u64 target_ns = *req_ns;
+
+  Thread *cur = CfsScheduler::get_current_task();
+  if (!cur || !g_scheduler) {
+    return -errc::ESRCH;
+  }
+
+  // Compute relative duration for the timer
+  constexpr long TIMER_ABSTIME = 1;
+  u64 duration = 0;
+
+  if (flags & TIMER_ABSTIME) {
+    // Absolute: sleep until target_ns timestamp
+    u64 now = timer::TimerSubsystem::instance().now_ns();
+    if (target_ns <= now) {
+      return 0; // deadline already passed
+    }
+    duration = target_ns - now;
+  } else {
+    // Relative: sleep for target_ns nanoseconds (same as nanosleep)
+    duration = target_ns;
+    if (duration == 0) {
+      return 0;
+    }
+  }
+
+  // Same timer + block pattern as sys_nanosleep
+  timer::HrTimer sleep_timer;
+  sleep_timer.init(timer::TimerMode::OneShot, nanosleep_wake_callback, cur);
+  sleep_timer.start_relative(duration);
+
+  cur->state = ProcessState::Sleeping;
+  g_scheduler->dequeue_task(cur);
+
+#if defined(MOSS_ARCH_ARM64)
+  {
+    u32 cpu = arch::get_current_cpu_id();
+    CpuContext *my_ctx = &cur->context;
+    CpuContext *bootstrap = &CfsScheduler::bootstrap_context(cpu);
+
+    CfsScheduler::set_current_task(nullptr);
+    arch::disable_interrupts();
+    context_switch(my_ctx, bootstrap);
+    arch::enable_interrupts();
+  }
+#endif
+
+  sleep_timer.cancel();
   return 0;
 }
 
@@ -2167,10 +2378,10 @@ const SyscallDescriptor SYSCALL_TABLE[static_cast<int>(SyscallNumber::MAX_SYSCAL
     {"sched_yield", handlers::sys_sched_yield, 0, true, "Yield CPU"},
     {"sched_getaffinity", handlers::sys_sched_getaffinity, 3, true, "Get CPU affinity"},
     {"sched_setaffinity", handlers::sys_sched_setaffinity, 3, true, "Set CPU affinity"},
-    {"setuid", handlers::sys_not_implemented, 1, false, "设置用户ID"},
-    {"setgid", handlers::sys_not_implemented, 1, false, "设置组ID"},
-    {"seteuid", handlers::sys_not_implemented, 1, false, "设置有效用户ID"},
-    {"setegid", handlers::sys_not_implemented, 1, false, "设置有效组ID"},
+    {"sched_setscheduler", handlers::sys_sched_setscheduler, 3, true, "Set scheduling policy"},
+    {"sched_getscheduler", handlers::sys_sched_getscheduler, 1, true, "Get scheduling policy"},
+    {"sched_get_priority_max", handlers::sys_sched_get_priority_max, 1, true, "Get max RT priority"},
+    {"sched_get_priority_min", handlers::sys_sched_get_priority_min, 1, true, "Get min RT priority"},
     {"getpgrp", handlers::sys_getpgrp, 0, true, "获取进程组"},
     {"setpgrp", handlers::sys_setpgrp, 0, true, "设置进程组"},
     {"getsid", handlers::sys_getsid, 1, true, "获取会话ID"},
@@ -2239,7 +2450,7 @@ const SyscallDescriptor SYSCALL_TABLE[static_cast<int>(SyscallNumber::MAX_SYSCAL
     {"clock_settime", handlers::sys_not_implemented, 2, false, "设置时钟时间"},
     {"clock_getres", handlers::sys_not_implemented, 2, false, "获取时钟分辨率"},
     {"nanosleep", handlers::sys_nanosleep, 2, true, "Yield-loop nanosleep"},
-    {"timer_create", handlers::sys_not_implemented, 3, false, "创建定时器"},
+    {"clock_nanosleep", handlers::sys_clock_nanosleep, 4, true, "Clock-based nanosleep"},
     {"timer_settime", handlers::sys_not_implemented, 4, false, "设置定时器"},
     {"timer_gettime", handlers::sys_not_implemented, 2, false, "获取定时器状态"},
 
