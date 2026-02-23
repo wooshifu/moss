@@ -8,9 +8,9 @@ set(KERNEL_SOURCES src/kernel_main.cpp src/runtime_support.cpp src/syscall_table
 if(MOSS_TARGET_ARCH STREQUAL "ARM64")
     list(APPEND KERNEL_SOURCES src/arch/arm64_syscall.S src/arch/arm64_user_program.S)
 elseif(MOSS_TARGET_ARCH STREQUAL "X86_64")
-    list(APPEND KERNEL_SOURCES src/arch/x86_64_syscall.S)
+    list(APPEND KERNEL_SOURCES src/arch/x86_64_syscall.S src/arch/x86_64_user_program.S)
 elseif(MOSS_TARGET_ARCH STREQUAL "RISCV")
-    list(APPEND KERNEL_SOURCES src/arch/riscv_syscall.S)
+    list(APPEND KERNEL_SOURCES src/arch/riscv_syscall.S src/arch/riscv_user_program.S)
 endif()
 
 target_sources(

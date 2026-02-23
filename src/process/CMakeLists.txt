@@ -8,9 +8,9 @@ set(PROCESS_SOURCES src/process.cpp src/idle_process.cpp src/signal.cpp)
 if(MOSS_TARGET_ARCH STREQUAL "ARM64")
     list(APPEND PROCESS_SOURCES src/arch/arm64/context_switch.S)
 elseif(MOSS_TARGET_ARCH STREQUAL "X86_64")
-    list(APPEND PROCESS_SOURCES src/arch/x86_64/context_switch.S)
+    list(APPEND PROCESS_SOURCES src/arch/x86_64/context_switch.S src/arch/x86_64/user_trampoline.S)
 elseif(MOSS_TARGET_ARCH STREQUAL "RISCV")
-    list(APPEND PROCESS_SOURCES src/arch/riscv/context_switch.S)
+    list(APPEND PROCESS_SOURCES src/arch/riscv/context_switch.S src/arch/riscv/user_trampoline.S)
 endif()
 
 target_sources(
