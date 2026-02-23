@@ -23,6 +23,9 @@ extern "C" void user_page_fault_handler(unsigned long long esr, unsigned long lo
 extern "C" [[noreturn]] void unhandled_user_exception_handler(unsigned long long esr, unsigned long long far_addr,
                                                               unsigned long long elr) noexcept;
 
+extern "C" void riscv_page_fault_handler(unsigned long long scause, unsigned long long stval,
+                                         unsigned long long sepc) noexcept;
+
 module moss.mm;
 
 import moss.abi;
@@ -574,3 +577,52 @@ extern "C" [[noreturn]] void unhandled_user_exception_handler(unsigned long long
   // Terminate the faulting process and let the scheduler pick the next task.
   terminate_current_user_process(-11); // -11 ≈ SIGSEGV
 }
+
+// ============================================================================
+// RISC-V page fault handler
+//
+// Called from riscv_syscall.S for scause 12 (Instruction Page Fault),
+// 13 (Load Page Fault), and 15 (Store/AMO Page Fault).
+//
+// RISC-V encodes the fault type directly in scause (unlike ARM64 which
+// uses ESR bit-fields).  The faulting address is in stval (≡ FAR_EL1).
+// ============================================================================
+#if defined(MOSS_ARCH_RISCV) || defined(__riscv) || defined(__riscv__)
+extern "C" void riscv_page_fault_handler(unsigned long long scause, unsigned long long stval,
+                                         unsigned long long sepc) noexcept {
+  namespace log = moss::kernel::logging;
+  using namespace moss::kernel;
+
+  bool is_write = (scause == 15); // Store/AMO page fault
+  // scause 12 = Instruction page fault, 13 = Load page fault
+
+  // 1. Try demand paging (handles both U-mode and S-mode faults).
+  //    S-mode faults occur when kernel code (e.g. console_write in sys_write)
+  //    accesses a user buffer whose page hasn't been demand-faulted yet.
+  if (try_demand_page(stval, is_write, sepc)) {
+    return; // Fault resolved — sret retries instruction
+  }
+
+  // 2. Try COW resolution for write faults to read-only mapped pages
+  if (is_write && try_cow_fault(stval, sepc)) {
+    return; // COW resolved — sret retries instruction
+  }
+
+  // 3. Determine if this is a kernel-mode or user-mode fault.
+  //    S-mode faults that reach here are unrecoverable kernel bugs.
+  //    U-mode faults terminate the user process (SIGSEGV equivalent).
+  unsigned long long sstatus_val;
+  asm volatile("csrr %0, sstatus" : "=r"(sstatus_val));
+  bool from_smode = (sstatus_val & (1ULL << 8)) != 0; // SPP bit
+
+  if (from_smode) {
+    log::klog::error("KERNEL PAGE FAULT: scause={:#x} addr={:#x} pc={:#x}", scause, stval, sepc);
+    while (true) {
+      asm volatile("wfi");
+    }
+  }
+
+  log::klog::error("RISC-V PAGE FAULT: scause={:#x} addr={:#x} pc={:#x}", scause, stval, sepc);
+  kill_user_process("RISC-V page fault", stval, sepc);
+}
+#endif // MOSS_ARCH_RISCV

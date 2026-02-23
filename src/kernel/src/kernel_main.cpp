@@ -326,29 +326,24 @@ void riscv_external_handler() noexcept {
   }
 }
 
-// Fatal exception handler — prints scause/sepc/stval and halts.
+// Exception handler for non-ecall, non-page-fault RISC-V exceptions.
+// Page faults (scause 12/13/15) are handled separately by riscv_page_fault_handler.
+// This handler covers illegal instruction, misaligned access, etc.
+// User-mode exceptions terminate the faulting process; kernel-mode exceptions halt.
 [[noreturn]] void riscv_exception_handler(u64 scause, u64 sepc, u64 stval) noexcept {
-  ::moss::kernel::hal::uart::puts("RISC-V EXCEPTION: scause=0x");
+  namespace log = ::moss::kernel::logging;
 
-  // Inline hex print (no printf available)
-  auto print_hex = [](u64 val) {
-    constexpr char hex[] = "0123456789ABCDEF";
-    char buf[17];
-    for (int i = 15; i >= 0; --i) {
-      buf[15 - i] = hex[(val >> (i * 4)) & 0xF];
-    }
-    buf[16] = '\0';
-    ::moss::kernel::hal::uart::puts(buf);
-  };
+  log::klog::error("RISC-V EXCEPTION: scause={:#x} sepc={:#x} stval={:#x}", scause, sepc, stval);
 
-  print_hex(scause);
-  ::moss::kernel::hal::uart::puts(" sepc=0x");
-  print_hex(sepc);
-  ::moss::kernel::hal::uart::puts(" stval=0x");
-  print_hex(stval);
-  ::moss::kernel::hal::uart::puts("\n");
+  // Check if the faulting PC is in user space (below kernel base).
+  // If so, terminate the user process and let the scheduler continue.
+  if (sepc < ::moss::kernel::KERNEL_BASE) {
+    log::klog::error("  User-mode exception, terminating process");
+    ::moss::abi::bridge::terminate_current_user_process(-11);
+  }
 
-  // Halt
+  // Kernel-mode exception — unrecoverable
+  log::klog::error("  Kernel-mode exception, halting");
   while (true) {
     asm volatile("wfi");
   }
