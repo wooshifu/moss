@@ -24,7 +24,7 @@ console = Console()
 ARCH_CONFIG = {
     "ARM64": {
         "qemu_system": "qemu-system-aarch64",
-        "machine": "virt",
+        "machine_base": "virt",  # gic-version appended dynamically
         "cpu": "cortex-a57",
         "extra_args": ["-semihosting-config", "enable=on,target=native"],
     },
@@ -74,6 +74,21 @@ class QemuConfig:
             cpu_cores=data.get("cpu_cores", 4),
             qemu_path=qemu_path,
         )
+
+
+def resolve_machine(arch: str, *, smp: int, force_gic3: bool) -> str:
+    """Resolve the QEMU -machine value for the given architecture.
+
+    For ARM64:
+      - smp > 8 or force_gic3 → "virt,gic-version=3" (GICv2 max 8 CPUs)
+      - otherwise → "virt,gic-version=2" (explicit for clarity)
+    """
+    arch_cfg = ARCH_CONFIG[arch]
+    base = arch_cfg.get("machine_base", arch_cfg.get("machine", "virt"))
+    if arch == "ARM64":
+        gic_ver = 3 if (smp > 8 or force_gic3) else 2
+        return f"{base},gic-version={gic_ver}"
+    return base
 
 
 def get_qemu_version(qemu_path: str) -> str:
@@ -137,7 +152,7 @@ def resolve_kernel_file(cfg: QemuConfig, *, use_binary: bool, test_mode: bool, d
     return path, "Linux Image (moss.bin)"
 
 
-def prepare_dtb(cfg: QemuConfig, *, smp: int) -> Path | None:
+def prepare_dtb(cfg: QemuConfig, *, smp: int, force_gic3: bool = False) -> Path | None:
     """为 ARM64/RISC-V 生成 DTB 文件，供 -device loader 加载到 RAM。
 
     == 为什么需要这一步 ==
@@ -162,12 +177,13 @@ def prepare_dtb(cfg: QemuConfig, *, smp: int) -> Path | None:
 
     arch_cfg = ARCH_CONFIG[cfg.arch]
     dtb_path = Path(cfg.build_dir) / "qemu_virt.dtb"
+    machine = resolve_machine(cfg.arch, smp=smp, force_gic3=force_gic3)
 
     # 用 QEMU 自身导出当前机器配置的 DTB
     dump_args = [
         cfg.qemu_path,
         "-machine",
-        f"{arch_cfg['machine']},dumpdtb={dtb_path}",
+        f"{machine},dumpdtb={dtb_path}",
         "-cpu",
         arch_cfg["cpu"],
         "-smp",
@@ -238,12 +254,14 @@ def build_qemu_args(
     use_binary: bool,
     test_mode: bool,
     debug_mode: bool,
+    force_gic3: bool = False,
     extra_args: list[str] | None = None,
 ) -> list[str]:
     """构造完整的 QEMU 命令行参数列表"""
     arch_cfg = ARCH_CONFIG[cfg.arch]
 
     smp = 1 if test_mode else cfg.cpu_cores
+    machine = resolve_machine(cfg.arch, smp=smp, force_gic3=force_gic3)
 
     # 内核加载方式
     if use_binary:
@@ -277,7 +295,7 @@ def build_qemu_args(
         "-mon",
         "chardev=char0,mode=readline",
         "-machine",
-        arch_cfg["machine"],
+        machine,
         "-cpu",
         arch_cfg["cpu"],
         "-smp",
@@ -301,7 +319,7 @@ def build_qemu_args(
     #   - moss.bin（默认）: QEMU 自动识别 Linux Image header，通过 x0 传递 DTB
     #   - --bin / --debug 模式: 无 Linux Image header，需手动导出 DTB 并加载到 RAM
     if _needs_dtb_loader(use_binary=use_binary, debug_mode=debug_mode):
-        dtb_path = prepare_dtb(cfg, smp=smp)
+        dtb_path = prepare_dtb(cfg, smp=smp, force_gic3=force_gic3)
 
         # --bin 模式: initramfs 也需通过 -device loader 加载（-initrd 需要 -kernel）
         # 同时在 DTB /chosen 中写入 linux,initrd-start/end 让内核定位 initramfs
@@ -465,6 +483,7 @@ def main(
         typer.Option("--timeout", "-t", help="QEMU 运行超时时间（秒），超时后自动终止"),
     ] = None,
     extra_qemu_args: Annotated[str | None, typer.Option("--qemu-args", help="额外的QEMU参数（用空格分隔）")] = None,
+    force_gic3: Annotated[bool, typer.Option("--gic3", help="强制使用 GICv3（ARM64 only, smp>8 时自动启用）")] = False,
 ) -> None:
     """启动 QEMU 运行 MOSS 内核
 
@@ -518,6 +537,7 @@ def main(
         use_binary=use_binary,
         test_mode=test_mode,
         debug_mode=debug_mode,
+        force_gic3=force_gic3,
         extra_args=extra_args,
     )
 

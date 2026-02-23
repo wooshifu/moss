@@ -57,7 +57,7 @@ constexpr usize CACHE_LINE_SIZE = 64;
 // Boot-time maximum CPUs (compile-time constant for assembly/linker only).
 // Assembly uses ASM_MAX_CPUS and linker allocates BOOT_MAX_CPUS × 32KB stacks.
 // This is the upper bound for early boot before the memory allocator is available.
-constexpr usize BOOT_MAX_CPUS = 8;
+constexpr usize BOOT_MAX_CPUS = 16;
 
 // Runtime CPU count — set from FDT during early boot, read-only after SMP init.
 // All per-CPU iteration and bounds checks should use this instead of compile-time constants.

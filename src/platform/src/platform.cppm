@@ -44,8 +44,9 @@ struct UartDefaults {
 // Interrupt controller defaults
 // ============================================================================
 struct IntcDefaults {
-  VirtAddr dist_base; // GIC Distributor / PLIC / APIC base
-  VirtAddr cpu_base;  // GIC CPU Interface (0 if N/A)
+  VirtAddr dist_base;   // GIC Distributor / PLIC / APIC base
+  VirtAddr cpu_base;    // GICv2 CPU Interface (0 if N/A)
+  VirtAddr redist_base; // GICv3 Redistributor (0 if N/A or GICv2)
 };
 
 // ============================================================================
@@ -82,7 +83,7 @@ struct PlatformDefaults {
 
 #if defined(MOSS_ARCH_ARM64)
 // QEMU virt machine for ARM64
-// PL011 UART, GICv2, RAM at 1GB
+// PL011 UART, GICv2/v3 (auto-detected), RAM at 1GB
 inline constexpr PlatformDefaults DEFAULTS{
     .name = "QEMU ARM64 virt",
     .uart =
@@ -94,8 +95,9 @@ inline constexpr PlatformDefaults DEFAULTS{
         },
     .intc =
         {
-            .dist_base = 0x08000000, // GICD
-            .cpu_base = 0x08010000,  // GICC
+            .dist_base = 0x08000000,   // GICD (same for v2 and v3)
+            .cpu_base = 0x08010000,    // GICC (GICv2 only)
+            .redist_base = 0x080a0000, // GICR (GICv3 only, QEMU virt default)
         },
     .memory =
         {
@@ -124,8 +126,9 @@ inline constexpr PlatformDefaults DEFAULTS{
         },
     .intc =
         {
-            .dist_base = 0, // TODO: Local APIC at 0xFEE00000
-            .cpu_base = 0,  // TODO: I/O APIC at 0xFEC00000
+            .dist_base = 0,   // TODO: Local APIC at 0xFEE00000
+            .cpu_base = 0,    // TODO: I/O APIC at 0xFEC00000
+            .redist_base = 0, // N/A for x86_64
         },
     .memory =
         {
@@ -156,6 +159,7 @@ inline constexpr PlatformDefaults DEFAULTS{
         {
             .dist_base = 0x0C000000, // PLIC base
             .cpu_base = 0,           // PLIC has no separate CPU interface
+            .redist_base = 0,        // N/A for RISC-V
         },
     .memory =
         {
@@ -181,8 +185,11 @@ inline constexpr PlatformDefaults DEFAULTS{
 /// Get default GIC/PLIC distributor base address
 [[nodiscard]] constexpr VirtAddr intc_dist_base() noexcept { return DEFAULTS.intc.dist_base; }
 
-/// Get default GIC CPU interface base address (0 on non-ARM)
+/// Get default GIC CPU interface base address (0 on non-ARM or GICv3)
 [[nodiscard]] constexpr VirtAddr intc_cpu_base() noexcept { return DEFAULTS.intc.cpu_base; }
+
+/// Get default GICv3 Redistributor base address (0 on non-ARM or GICv2)
+[[nodiscard]] constexpr VirtAddr intc_redist_base() noexcept { return DEFAULTS.intc.redist_base; }
 
 /// Get default physical RAM start address
 [[nodiscard]] constexpr PhysAddr ram_base() noexcept { return DEFAULTS.memory.ram_base; }

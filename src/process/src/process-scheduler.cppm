@@ -189,8 +189,9 @@ inline void send_reschedule_ipi(u32 target_cpu) noexcept {
     return;
   }
   // GICv2 SGIR only supports 8-bit CPU target mask (CPUs 0-7).
-  if (target_cpu >= 8) {
-    return; // GICv3 affinity routing needed for CPU >= 8
+  // GICv3 uses ICC_SGI1R_EL1 with 16-bit TargetList (CPUs 0-15 in Aff0).
+  if (hal::intc::g_gic_version != hal::intc::GicVersion::GICv3 && target_cpu >= 8) {
+    return;
   }
   u32 target_mask = 1U << target_cpu;
   VirtAddr dist_base = platform::intc_dist_base();
