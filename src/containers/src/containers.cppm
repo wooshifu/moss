@@ -163,6 +163,15 @@ template <typename T> struct alignas(moss::kernel::CACHE_LINE_SIZE) CacheAligned
 };
 
 // ============================================================================
+// Preemption hooks — set by the process module once the scheduler is ready.
+// SpinLock acquire/release calls these to bump the current thread's
+// preempt_count, preventing the scheduler from context-switching while
+// a lock is held.  nullptr until the process module registers them.
+// ============================================================================
+inline void (*g_preempt_disable_fn)() noexcept = nullptr;
+inline void (*g_preempt_enable_fn)() noexcept = nullptr;
+
+// ============================================================================
 // Ticket SpinLock — fair, FIFO-ordered mutual exclusion
 // ============================================================================
 
@@ -182,6 +191,9 @@ public:
   TicketSpinLock &operator=(const TicketSpinLock &) = delete;
 
   void lock() noexcept {
+    if (g_preempt_disable_fn) {
+      g_preempt_disable_fn();
+    }
     u32 my_ticket = next_ticket_.fetch_add(1, MemoryOrder::Acquire);
     while (now_serving_.load(MemoryOrder::Acquire) != my_ticket) {
       moss::kernel::arch::cpu_yield(); // WFE on ARM64
@@ -191,6 +203,9 @@ public:
   void unlock() noexcept {
     (void)now_serving_.fetch_add(1, MemoryOrder::Release);
     // ARM64: store-release generates implicit SEV to wake WFE waiters
+    if (g_preempt_enable_fn) {
+      g_preempt_enable_fn();
+    }
   }
 
   [[nodiscard]] bool try_lock() noexcept {
@@ -1205,10 +1220,11 @@ private:
 // sleep()/wake logic that calls scheduler APIs lives in kernel module
 // bridge functions.
 struct WaitQueueEntry {
-  void *thread; // Actually Thread*, but opaque to avoid module cycle
+  void *thread;   // Actually Thread*, but opaque to avoid module cycle
+  bool exclusive; // If true, wake_up wakes at most one such waiter
 
-  WaitQueueEntry() noexcept : thread(nullptr) {}
-  explicit WaitQueueEntry(void *t) noexcept : thread(t) {}
+  WaitQueueEntry() noexcept : thread(nullptr), exclusive(false) {}
+  explicit WaitQueueEntry(void *t, bool excl = false) noexcept : thread(t), exclusive(excl) {}
 
   bool operator==(const WaitQueueEntry &other) const noexcept { return thread == other.thread; }
 };
@@ -1228,8 +1244,8 @@ public:
   WaitQueue(WaitQueue &&) = delete;
   WaitQueue &operator=(WaitQueue &&) = delete;
 
-  // Add a thread to the wait queue
-  void add_waiter(void *thread) { waiters_.push_front(WaitQueueEntry(thread)); }
+  // Add a thread to the wait queue (non-exclusive by default).
+  void add_waiter(void *thread, bool exclusive = false) { waiters_.push_front(WaitQueueEntry(thread, exclusive)); }
 
   // Remove a specific thread from the wait queue
   void remove_waiter(void *thread) {
@@ -1237,10 +1253,44 @@ public:
     waiters_.remove(WaitQueueEntry(thread));
   }
 
-  // Iterate over all waiters and call func(void* thread) for each.
-  // The kernel module uses this to set state=Ready and enqueue each thread.
+  // Wake ALL waiters — iterates over every entry and calls func(void*).
+  // This is the "thundering herd" path; prefer wake_one() when only
+  // a single waiter should be woken (e.g. waitpid, accept).
   template <typename Func> void for_each_waiter(Func func) const {
     waiters_.for_each([&func](const WaitQueueEntry &entry) { func(entry.thread); });
+  }
+
+  // Wake at most one exclusive waiter + all non-exclusive waiters.
+  // Matches Linux wake_up() semantics: non-exclusive waiters are
+  // always woken; for exclusive waiters, only the first one is woken.
+  // Returns the number of waiters woken.
+  template <typename Func> moss::kernel::u32 wake_up(Func func) const {
+    moss::kernel::u32 woken = 0;
+    bool exclusive_woken = false;
+    waiters_.for_each([&](const WaitQueueEntry &entry) {
+      if (entry.exclusive && exclusive_woken) {
+        return; // already woke one exclusive waiter
+      }
+      func(entry.thread);
+      ++woken;
+      if (entry.exclusive) {
+        exclusive_woken = true;
+      }
+    });
+    return woken;
+  }
+
+  // Wake exactly one waiter (the first in the list, regardless of flags).
+  // Simpler than wake_up() for cases where exactly one consumer is needed.
+  template <typename Func> bool wake_one(Func func) const {
+    bool woken = false;
+    waiters_.for_each([&](const WaitQueueEntry &entry) {
+      if (!woken) {
+        func(entry.thread);
+        woken = true;
+      }
+    });
+    return woken;
   }
 
   // Check if any threads are waiting

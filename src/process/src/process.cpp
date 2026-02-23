@@ -430,7 +430,7 @@ KernelResult<VirtAddr> allocate_user_heap(Process *process, usize size) noexcept
         init_proc->add_child(child_pid);
         // If child is already zombie, wake init's waiters
         if (child->state() == ProcessState::Zombie) {
-          init_proc->child_exit_wait_queue().for_each_waiter([](void *thread_ptr) {
+          init_proc->child_exit_wait_queue().wake_up([](void *thread_ptr) {
             auto *t = static_cast<Thread *>(thread_ptr);
             t->state = ProcessState::Ready;
             if (g_scheduler) {
@@ -446,10 +446,12 @@ KernelResult<VirtAddr> allocate_user_heap(Process *process, usize size) noexcept
   proc->set_exit_code(exit_code);
   proc->set_state(ProcessState::Zombie);
 
-  // 6. Wake parent's wait queue so waitpid() can collect us
+  // 6. Wake parent's wait queue so waitpid() can collect us.
+  //    Use wake_up() which respects exclusive waiters — only wakes
+  //    one exclusive waiter + all non-exclusive ones (avoids thundering herd).
   Process *parent = g_process_manager->find_process(proc->parent_pid());
   if (parent) {
-    parent->child_exit_wait_queue().for_each_waiter([](void *thread_ptr) {
+    parent->child_exit_wait_queue().wake_up([](void *thread_ptr) {
       auto *t = static_cast<Thread *>(thread_ptr);
       t->state = ProcessState::Ready;
       if (g_scheduler) {
