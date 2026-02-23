@@ -355,10 +355,16 @@ extern "C" [[noreturn]] void secondary_cpu_entry() noexcept {
   asm volatile("isb");
 
   // 4. Initialize GIC CPU interface for this CPU
+  // GICv3: init_cpu_interface() uses ICC system registers + GICR internally;
+  //        the cpu_base argument is ignored (pass 0).
+  // GICv2: init_cpu_interface() uses MMIO GICC registers via cpu_base.
   const auto &plat = moss::fdt::get_platform_info();
-  moss::kernel::VirtAddr gic_cpu_base = (plat.dtb_valid && plat.intc.valid)
-                                            ? static_cast<moss::kernel::VirtAddr>(plat.intc.cpu_base)
-                                            : moss::kernel::platform::intc_cpu_base();
+  moss::kernel::VirtAddr gic_cpu_base = 0;
+  if (moss::kernel::hal::intc::g_gic_version != moss::kernel::hal::intc::GicVersion::GICv3) {
+    gic_cpu_base = (plat.dtb_valid && plat.intc.valid)
+                       ? static_cast<moss::kernel::VirtAddr>(plat.intc.cpu_base)
+                       : moss::kernel::platform::intc_cpu_base();
+  }
   (void)moss::kernel::hal::intc::init_cpu_interface(gic_cpu_base);
 
   // Enable timer PPI (IRQ 27) and reschedule SGI (IRQ 0) in per-CPU
@@ -704,22 +710,37 @@ void update_boot_stage(BootStage stage, ::moss::kernel::ErrorCode error) noexcep
     g_gic_hardware_available = false;
     early_print("System will use IPI proof-of-concept mode\n");
   } else {
-    // 从 DTB 解析结果获取 GIC 地址，若 DTB 无效则回退到硬编码默认值
+    // Resolve GIC addresses from DTB with platform defaults fallback.
+    // Determine GIC version hint and choose second_base accordingly:
+    //   GICv3: second_base = GICR redistributor base
+    //   GICv2: second_base = GICC CPU interface base
     const auto &plat = moss::fdt::get_platform_info();
     moss::kernel::VirtAddr gic_dist_base = (plat.dtb_valid && plat.intc.valid)
                                                ? static_cast<moss::kernel::VirtAddr>(plat.intc.dist_base)
                                                : moss::kernel::platform::intc_dist_base();
-    moss::kernel::VirtAddr gic_cpu_base = (plat.dtb_valid && plat.intc.valid)
-                                              ? static_cast<moss::kernel::VirtAddr>(plat.intc.cpu_base)
-                                              : moss::kernel::platform::intc_cpu_base();
+    u8 gic_ver = (plat.dtb_valid && plat.intc.valid) ? plat.intc.gic_version : 2;
+    moss::kernel::VirtAddr second_base;
+    if (gic_ver >= 3) {
+      second_base = (plat.dtb_valid && plat.intc.valid && plat.intc.redist_base != 0)
+                        ? static_cast<moss::kernel::VirtAddr>(plat.intc.redist_base)
+                        : moss::kernel::platform::intc_redist_base();
+      early_print("GIC GICD=");
+      early_print_hex(gic_dist_base);
+      early_print(" GICR=");
+      early_print_hex(second_base);
+      early_print(" (v3)\n");
+    } else {
+      second_base = (plat.dtb_valid && plat.intc.valid)
+                        ? static_cast<moss::kernel::VirtAddr>(plat.intc.cpu_base)
+                        : moss::kernel::platform::intc_cpu_base();
+      early_print("GIC GICD=");
+      early_print_hex(gic_dist_base);
+      early_print(" GICC=");
+      early_print_hex(second_base);
+      early_print(" (v2)\n");
+    }
 
-    early_print("GIC GICD=");
-    early_print_hex(gic_dist_base);
-    early_print(" GICC=");
-    early_print_hex(gic_cpu_base);
-    early_print("\n");
-
-    auto gic_result = g_gic_controller->initialize(gic_dist_base, gic_cpu_base);
+    auto gic_result = g_gic_controller->initialize(gic_dist_base, second_base, gic_ver);
     if (gic_result) {
       early_print("GIC hardware init success\n");
       early_print("GIC features: SGI 0-15, PPI 16-31, SPI 32+\n");

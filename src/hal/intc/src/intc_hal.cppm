@@ -3,7 +3,7 @@
 // Provides architecture-specific interrupt controller register operations.
 //
 // What lives here (architecture-specific):
-//   - GIC register offsets (ARM64: GICv2/GICv3)
+//   - GIC register offsets (ARM64: GICv2/GICv3, runtime dispatch)
 //   - APIC register constants (x86_64) [placeholder]
 //   - PLIC register constants (RISC-V) [placeholder]
 //   - Low-level init, enable/disable IRQ, ack/eoi, send SGI/IPI
@@ -30,11 +30,40 @@ using moss::kernel::VirtAddr;
 using moss::kernel::VoidResult;
 
 // ============================================================================
+// Low-level MMIO register access (needed early for GICR helpers below)
+// ============================================================================
+
+/// Read a 32-bit register at (base + offset).
+[[nodiscard]] inline u32 read_reg(VirtAddr base, u32 offset) noexcept {
+  return *reinterpret_cast<volatile u32 *>(base + offset);
+}
+
+/// Write a 32-bit value to register at (base + offset).
+inline void write_reg(VirtAddr base, u32 offset, u32 value) noexcept {
+  *reinterpret_cast<volatile u32 *>(base + offset) = value;
+}
+
+// ============================================================================
+// GIC version runtime dispatch
+// ============================================================================
+
+#if defined(MOSS_ARCH_ARM64)
+enum class GicVersion : u8 { Unknown = 0, GICv2 = 2, GICv3 = 3 };
+
+// Set once during boot from DTB detection, read-only after.
+inline GicVersion g_gic_version = GicVersion::Unknown;
+
+// GICv3 redistributor base address (set once during boot).
+inline VirtAddr g_redist_base = 0;
+#endif
+
+// ============================================================================
 // Interrupt controller register offsets — architecture-specific
 // ============================================================================
 
 #if defined(MOSS_ARCH_ARM64)
-// GICv2 Distributor registers (offset from distributor base)
+
+// GIC Distributor registers (shared between v2 and v3)
 namespace dist_regs {
 inline constexpr u32 CTLR = 0x000;       // Distributor Control
 inline constexpr u32 TYPER = 0x004;      // Interrupt Controller Type
@@ -47,12 +76,18 @@ inline constexpr u32 ICPENDR = 0x280;    // Interrupt Clear-Pending (base)
 inline constexpr u32 ISACTIVER = 0x300;  // Interrupt Set-Active (base)
 inline constexpr u32 ICACTIVER = 0x380;  // Interrupt Clear-Active (base)
 inline constexpr u32 IPRIORITYR = 0x400; // Interrupt Priority (base)
-inline constexpr u32 ITARGETSR = 0x800;  // Interrupt Processor Targets (base)
+inline constexpr u32 ITARGETSR = 0x800;  // GICv2: Interrupt Processor Targets (base)
 inline constexpr u32 ICFGR = 0xC00;      // Interrupt Configuration (base)
-inline constexpr u32 SGIR = 0xF00;       // Software Generated Interrupt
+inline constexpr u32 SGIR = 0xF00;       // GICv2: Software Generated Interrupt
+// GICv3-specific distributor registers
+inline constexpr u32 IROUTER = 0x6100;   // GICv3: Interrupt Routing (64-bit per SPI)
+inline constexpr u32 PIDR2 = 0xFFE8;     // Peripheral ID 2 (ArchRev in bits [7:4])
+// GICv3 GICD_CTLR bit definitions
+inline constexpr u32 CTLR_ENABLE_GRP1_NS = (1U << 1);
+inline constexpr u32 CTLR_ARE_S = (1U << 4);
 } // namespace dist_regs
 
-// GICv2 CPU Interface registers (offset from CPU interface base)
+// GICv2 CPU Interface registers (offset from CPU interface base, MMIO only)
 namespace cpu_regs {
 inline constexpr u32 CTLR = 0x000;  // CPU Interface Control
 inline constexpr u32 PMR = 0x004;   // Priority Mask
@@ -62,6 +97,127 @@ inline constexpr u32 EOIR = 0x010;  // End of Interrupt
 inline constexpr u32 RPR = 0x014;   // Running Priority
 inline constexpr u32 HPPIR = 0x018; // Highest Priority Pending Interrupt
 } // namespace cpu_regs
+
+// GICv3 Redistributor registers (offset from per-CPU GICR frame)
+namespace redist_regs {
+inline constexpr u32 CTLR = 0x000;
+inline constexpr u32 IIDR = 0x004;
+inline constexpr u32 TYPER_LO = 0x008; // GICR_TYPER low 32 bits
+inline constexpr u32 TYPER_HI = 0x00C; // GICR_TYPER high 32 bits
+inline constexpr u32 WAKER = 0x014;
+inline constexpr u32 WAKER_PROCESSOR_SLEEP = (1U << 1);
+inline constexpr u32 WAKER_CHILDREN_ASLEEP = (1U << 2);
+// SGI/PPI frame offsets (GICR_base + SGI_OFFSET)
+inline constexpr u32 SGI_OFFSET = 0x10000;
+inline constexpr u32 IGROUPR0 = SGI_OFFSET + 0x080;
+inline constexpr u32 ISENABLER0 = SGI_OFFSET + 0x100;
+inline constexpr u32 ICENABLER0 = SGI_OFFSET + 0x180;
+inline constexpr u32 IPRIORITYR0 = SGI_OFFSET + 0x400;
+// Each redistributor frame = 2 × 64KB pages (RD_base + SGI_base)
+inline constexpr u32 FRAME_SIZE = 0x20000;
+// GICR_TYPER bit definitions
+inline constexpr u64 TYPER_LAST = (1ULL << 4);
+} // namespace redist_regs
+
+// ============================================================================
+// GICv3 ICC system register wrappers (ARM64 inline asm)
+// ============================================================================
+// Uses raw SysReg encodings (S<op0>_<op1>_C<CRn>_C<CRm>_<op2>)
+// for maximum toolchain compatibility.
+
+namespace icc {
+
+// ICC_IAR1_EL1 = S3_0_C12_C12_0 — Interrupt Acknowledge (Group 1)
+[[nodiscard]] inline u32 read_iar1() noexcept {
+  u64 val;
+  asm volatile("mrs %0, S3_0_C12_C12_0" : "=r"(val));
+  return static_cast<u32>(val);
+}
+
+// ICC_EOIR1_EL1 = S3_0_C12_C12_1 — End of Interrupt (Group 1)
+inline void write_eoir1(u32 val) noexcept {
+  asm volatile("msr S3_0_C12_C12_1, %0" ::"r"(static_cast<u64>(val)));
+}
+
+// ICC_PMR_EL1 = S3_0_C4_C6_0 — Priority Mask
+inline void write_pmr(u32 val) noexcept {
+  asm volatile("msr S3_0_C4_C6_0, %0" ::"r"(static_cast<u64>(val)));
+}
+
+// ICC_BPR1_EL1 = S3_0_C12_C12_3 — Binary Point (Group 1)
+inline void write_bpr1(u32 val) noexcept {
+  asm volatile("msr S3_0_C12_C12_3, %0" ::"r"(static_cast<u64>(val)));
+}
+
+// ICC_CTLR_EL1 = S3_0_C12_C12_4 — Control
+inline void write_ctlr(u32 val) noexcept {
+  asm volatile("msr S3_0_C12_C12_4, %0" ::"r"(static_cast<u64>(val)));
+}
+
+// ICC_SRE_EL1 = S3_0_C12_C12_5 — System Register Enable
+[[nodiscard]] inline u32 read_sre() noexcept {
+  u64 val;
+  asm volatile("mrs %0, S3_0_C12_C12_5" : "=r"(val));
+  return static_cast<u32>(val);
+}
+
+inline void write_sre(u32 val) noexcept {
+  asm volatile("msr S3_0_C12_C12_5, %0" ::"r"(static_cast<u64>(val)));
+}
+
+// ICC_IGRPEN1_EL1 = S3_0_C12_C12_7 — Interrupt Group 1 Enable
+inline void write_igrpen1(u32 val) noexcept {
+  asm volatile("msr S3_0_C12_C12_7, %0" ::"r"(static_cast<u64>(val)));
+}
+
+// ICC_SGI1R_EL1 = S3_0_C12_C11_5 — SGI Generation (Group 1, 64-bit)
+inline void write_sgi1r(u64 val) noexcept {
+  asm volatile("msr S3_0_C12_C11_5, %0" ::"r"(val));
+}
+
+} // namespace icc
+
+// ============================================================================
+// GICv3 Redistributor helpers
+// ============================================================================
+
+/// Find the GICR frame for the current CPU by matching MPIDR Aff0
+/// against GICR_TYPER affinity fields. Each GICR frame is 128KB.
+[[nodiscard]] inline VirtAddr find_my_redist_frame() noexcept {
+  u64 mpidr;
+  asm volatile("mrs %0, mpidr_el1" : "=r"(mpidr));
+  u32 my_aff0 = static_cast<u32>(mpidr & 0xFF);
+
+  VirtAddr frame = g_redist_base;
+  for (;;) {
+    u64 typer = static_cast<u64>(read_reg(frame, redist_regs::TYPER_LO)) |
+                (static_cast<u64>(read_reg(frame, redist_regs::TYPER_HI)) << 32);
+
+    // GICR_TYPER[39:32] = Aff3, [31:24]=Aff2, [23:16]=Aff1, [15:8]=Aff0
+    u32 aff0 = static_cast<u32>((typer >> 32) & 0xFF);
+    if (aff0 == my_aff0) {
+      return frame;
+    }
+
+    if (typer & redist_regs::TYPER_LAST) {
+      break;
+    }
+    frame += redist_regs::FRAME_SIZE;
+  }
+  return g_redist_base; // Fallback
+}
+
+/// Wake the redistributor for this CPU (clear ProcessorSleep in GICR_WAKER)
+inline void wake_redistributor(VirtAddr redist_frame) noexcept {
+  u32 waker = read_reg(redist_frame, redist_regs::WAKER);
+  waker &= ~redist_regs::WAKER_PROCESSOR_SLEEP;
+  write_reg(redist_frame, redist_regs::WAKER, waker);
+
+  // Wait for ChildrenAsleep to clear
+  while (read_reg(redist_frame, redist_regs::WAKER) & redist_regs::WAKER_CHILDREN_ASLEEP) {
+    asm volatile("yield" ::: "memory");
+  }
+}
 
 #elif defined(MOSS_ARCH_X86_64)
 // x86_64 Local APIC registers (MMIO offsets from APIC base, or MSR addresses)
@@ -101,7 +257,7 @@ inline constexpr u32 CLAIM_OFFSET = 0x200004;     // Claim/Complete
 // Spurious interrupt threshold — architecture-specific
 // ============================================================================
 #if defined(MOSS_ARCH_ARM64)
-inline constexpr u32 SPURIOUS_IRQ_THRESHOLD = 1020;
+inline constexpr u32 SPURIOUS_IRQ_THRESHOLD = 1020; // Same for GICv2 and GICv3
 #elif defined(MOSS_ARCH_X86_64)
 inline constexpr u32 SPURIOUS_IRQ_THRESHOLD = 0xFF; // APIC spurious vector
 #elif defined(MOSS_ARCH_RISCV)
@@ -109,24 +265,11 @@ inline constexpr u32 SPURIOUS_IRQ_THRESHOLD = 0; // PLIC: claim=0 means no pendi
 #endif
 
 // ============================================================================
-// Low-level MMIO register access
-// ============================================================================
-
-/// Read a 32-bit register at (base + offset).
-[[nodiscard]] inline u32 read_reg(VirtAddr base, u32 offset) noexcept {
-  return *reinterpret_cast<volatile u32 *>(base + offset);
-}
-
-/// Write a 32-bit value to register at (base + offset).
-inline void write_reg(VirtAddr base, u32 offset, u32 value) noexcept {
-  *reinterpret_cast<volatile u32 *>(base + offset) = value;
-}
-
-// ============================================================================
 // Interrupt controller configuration query
 // ============================================================================
 
 /// Read the maximum number of supported interrupts from the controller.
+/// GICD_TYPER ITLinesNumber field is the same for both GICv2 and GICv3.
 [[nodiscard]] inline u32 read_max_interrupts(VirtAddr dist_base) noexcept {
 #if defined(MOSS_ARCH_ARM64)
   u32 typer = read_reg(dist_base, dist_regs::TYPER);
@@ -143,6 +286,22 @@ inline void write_reg(VirtAddr base, u32 offset, u32 value) noexcept {
 /// Read the maximum number of supported CPUs from the controller.
 [[nodiscard]] inline u32 read_max_cpus(VirtAddr dist_base) noexcept {
 #if defined(MOSS_ARCH_ARM64)
+  if (g_gic_version == GicVersion::GICv3) {
+    // GICv3: GICD_TYPER[7:5] is reserved. Enumerate redistributor frames.
+    u32 count = 0;
+    VirtAddr frame = g_redist_base;
+    for (;;) {
+      count++;
+      u64 typer = static_cast<u64>(read_reg(frame, redist_regs::TYPER_LO)) |
+                  (static_cast<u64>(read_reg(frame, redist_regs::TYPER_HI)) << 32);
+      if (typer & redist_regs::TYPER_LAST) {
+        break;
+      }
+      frame += redist_regs::FRAME_SIZE;
+    }
+    return count;
+  }
+  // GICv2: CPUNumber field
   u32 typer = read_reg(dist_base, dist_regs::TYPER);
   return ((typer >> 5) & 0x7) + 1;
 #elif defined(MOSS_ARCH_X86_64)
@@ -162,31 +321,58 @@ inline void write_reg(VirtAddr base, u32 offset, u32 value) noexcept {
 /// Disables all interrupts, clears pending, sets default priority and targets.
 inline VoidResult init_distributor(VirtAddr dist_base, u32 max_interrupts) noexcept {
 #if defined(MOSS_ARCH_ARM64)
-  // Disable distributor
-  write_reg(dist_base, dist_regs::CTLR, 0);
+  if (g_gic_version == GicVersion::GICv3) {
+    // GICv3 distributor init — only handles SPIs (IRQ 32+)
+    // SGI/PPI (0-31) are configured via GICR in init_cpu_interface()
+    write_reg(dist_base, dist_regs::CTLR, 0);
 
-  // Clear all enables
-  for (u32 i = 0; i < max_interrupts; i += 32) {
-    write_reg(dist_base, dist_regs::ICENABLER + i / 8, 0xFFFFFFFF);
+    // Clear SPI enables, pending, active
+    for (u32 i = 32; i < max_interrupts; i += 32) {
+      write_reg(dist_base, dist_regs::ICENABLER + i / 8, 0xFFFFFFFF);
+      write_reg(dist_base, dist_regs::ICPENDR + i / 8, 0xFFFFFFFF);
+    }
+
+    // Set SPI default priority
+    for (u32 i = 32; i < max_interrupts; i += 4) {
+      write_reg(dist_base, dist_regs::IPRIORITYR + i, 0x80808080);
+    }
+
+    // Set all SPIs to Group 1 NS
+    for (u32 i = 32; i < max_interrupts; i += 32) {
+      write_reg(dist_base, dist_regs::IGROUPR + i / 8, 0xFFFFFFFF);
+    }
+
+    // Route all SPIs to CPU 0 via IROUTER (64-bit: Aff0=0, Aff1=0, Aff2=0, Aff3=0)
+    for (u32 i = 32; i < max_interrupts; i++) {
+      u32 irouter_off = dist_regs::IROUTER + (i - 32) * 8;
+      write_reg(dist_base, irouter_off, 0);
+      write_reg(dist_base, irouter_off + 4, 0);
+    }
+
+    // Enable distributor with affinity routing
+    write_reg(dist_base, dist_regs::CTLR, dist_regs::CTLR_ARE_S | dist_regs::CTLR_ENABLE_GRP1_NS);
+  } else {
+    // GICv2 distributor init
+    write_reg(dist_base, dist_regs::CTLR, 0);
+
+    for (u32 i = 0; i < max_interrupts; i += 32) {
+      write_reg(dist_base, dist_regs::ICENABLER + i / 8, 0xFFFFFFFF);
+    }
+
+    for (u32 i = 0; i < max_interrupts; i += 32) {
+      write_reg(dist_base, dist_regs::ICPENDR + i / 8, 0xFFFFFFFF);
+    }
+
+    for (u32 i = 0; i < max_interrupts; i += 4) {
+      write_reg(dist_base, dist_regs::IPRIORITYR + i, 0x80808080);
+    }
+
+    for (u32 i = 32; i < max_interrupts; i += 4) {
+      write_reg(dist_base, dist_regs::ITARGETSR + i, 0x01010101);
+    }
+
+    write_reg(dist_base, dist_regs::CTLR, 1);
   }
-
-  // Clear all pending
-  for (u32 i = 0; i < max_interrupts; i += 32) {
-    write_reg(dist_base, dist_regs::ICPENDR + i / 8, 0xFFFFFFFF);
-  }
-
-  // Set default priority (0x80 = medium)
-  for (u32 i = 0; i < max_interrupts; i += 4) {
-    write_reg(dist_base, dist_regs::IPRIORITYR + i, 0x80808080);
-  }
-
-  // Route all SPIs to CPU 0
-  for (u32 i = 32; i < max_interrupts; i += 4) {
-    write_reg(dist_base, dist_regs::ITARGETSR + i, 0x01010101);
-  }
-
-  // Enable distributor
-  write_reg(dist_base, dist_regs::CTLR, 1);
 
 #elif defined(MOSS_ARCH_X86_64)
   // I/O APIC initialization placeholder
@@ -209,12 +395,45 @@ inline VoidResult init_distributor(VirtAddr dist_base, u32 max_interrupts) noexc
 // ============================================================================
 
 /// Initialize the per-CPU interrupt interface.
+/// GICv2: MMIO writes to GICC registers.
+/// GICv3: ICC system registers + GICR redistributor wakeup.
 inline VoidResult init_cpu_interface(VirtAddr cpu_base) noexcept {
 #if defined(MOSS_ARCH_ARM64)
-  // Accept all priorities
-  write_reg(cpu_base, cpu_regs::PMR, 0xFF);
-  // Enable CPU interface
-  write_reg(cpu_base, cpu_regs::CTLR, 1);
+  if (g_gic_version == GicVersion::GICv3) {
+    // 1. Enable SRE at EL1 (should already be set from EL2 setup in start_arm64.S)
+    u32 sre = icc::read_sre();
+    sre |= 0x7; // SRE | DFB | DIB
+    icc::write_sre(sre);
+    asm volatile("isb" ::: "memory");
+
+    // 2. Set priority mask to accept all
+    icc::write_pmr(0xFF);
+
+    // 3. Set BPR for no preemption grouping
+    icc::write_bpr1(0);
+
+    // 4. Enable Group 1 interrupts
+    icc::write_igrpen1(1);
+    asm volatile("isb" ::: "memory");
+
+    // 5. Wake and configure this CPU's redistributor
+    VirtAddr my_redist = find_my_redist_frame();
+    wake_redistributor(my_redist);
+
+    // 6. Set SGI/PPI (IRQ 0-31) to Group 1 NS in the redistributor
+    write_reg(my_redist, redist_regs::IGROUPR0, 0xFFFFFFFF);
+
+    // 7. Set default priority for SGI/PPI (0-31) in redistributor
+    for (u32 i = 0; i < 32; i += 4) {
+      write_reg(my_redist, redist_regs::IPRIORITYR0 + i, 0x80808080);
+    }
+
+    (void)cpu_base;
+  } else {
+    // GICv2: MMIO CPU interface
+    write_reg(cpu_base, cpu_regs::PMR, 0xFF);
+    write_reg(cpu_base, cpu_regs::CTLR, 1);
+  }
 
 #elif defined(MOSS_ARCH_X86_64)
   // Local APIC: enable via SVR
@@ -236,8 +455,15 @@ inline VoidResult init_cpu_interface(VirtAddr cpu_base) noexcept {
 // ============================================================================
 
 /// Enable a specific interrupt line.
+/// GICv3: SGI/PPI (irq < 32) use GICR, SPI (irq >= 32) use GICD.
 inline void enable_irq(VirtAddr dist_base, u32 irq) noexcept {
 #if defined(MOSS_ARCH_ARM64)
+  if (g_gic_version == GicVersion::GICv3 && irq < 32) {
+    VirtAddr my_redist = find_my_redist_frame();
+    write_reg(my_redist, redist_regs::ISENABLER0, 1U << irq);
+    return;
+  }
+  // SPI (irq >= 32) or GICv2: use GICD (same register layout)
   u32 reg_offset = dist_regs::ISENABLER + (irq / 32) * 4;
   write_reg(dist_base, reg_offset, 1U << (irq % 32));
 
@@ -258,6 +484,11 @@ inline void enable_irq(VirtAddr dist_base, u32 irq) noexcept {
 /// Disable a specific interrupt line.
 inline void disable_irq(VirtAddr dist_base, u32 irq) noexcept {
 #if defined(MOSS_ARCH_ARM64)
+  if (g_gic_version == GicVersion::GICv3 && irq < 32) {
+    VirtAddr my_redist = find_my_redist_frame();
+    write_reg(my_redist, redist_regs::ICENABLER0, 1U << irq);
+    return;
+  }
   u32 reg_offset = dist_regs::ICENABLER + (irq / 32) * 4;
   write_reg(dist_base, reg_offset, 1U << (irq % 32));
 
@@ -283,6 +514,9 @@ inline void disable_irq(VirtAddr dist_base, u32 irq) noexcept {
 /// Returns the raw acknowledge register value (contains IRQ ID + source info).
 [[nodiscard]] inline u32 ack_irq(VirtAddr cpu_base) noexcept {
 #if defined(MOSS_ARCH_ARM64)
+  if (g_gic_version == GicVersion::GICv3) {
+    return icc::read_iar1();
+  }
   return read_reg(cpu_base, cpu_regs::IAR);
 
 #elif defined(MOSS_ARCH_X86_64)
@@ -300,6 +534,9 @@ inline void disable_irq(VirtAddr dist_base, u32 irq) noexcept {
 /// Extract the IRQ number from the raw acknowledge value.
 [[nodiscard]] inline u32 irq_from_ack(u32 ack_value) noexcept {
 #if defined(MOSS_ARCH_ARM64)
+  if (g_gic_version == GicVersion::GICv3) {
+    return ack_value & 0xFFFFFF; // GICv3: bits [23:0] (supports LPI)
+  }
   return ack_value & 0x3FF; // GICv2: bits [9:0]
 #elif defined(MOSS_ARCH_X86_64)
   return ack_value; // APIC: vector number directly
@@ -311,6 +548,10 @@ inline void disable_irq(VirtAddr dist_base, u32 irq) noexcept {
 /// Signal end-of-interrupt to the controller.
 inline void eoi(VirtAddr cpu_base, u32 ack_value) noexcept {
 #if defined(MOSS_ARCH_ARM64)
+  if (g_gic_version == GicVersion::GICv3) {
+    icc::write_eoir1(ack_value);
+    return;
+  }
   write_reg(cpu_base, cpu_regs::EOIR, ack_value);
 
 #elif defined(MOSS_ARCH_X86_64)
@@ -333,12 +574,21 @@ inline void eoi(VirtAddr cpu_base, u32 ack_value) noexcept {
 /// We must read-modify-write to avoid corrupting adjacent IRQ priorities.
 inline void set_priority(VirtAddr dist_base, u32 irq, u8 priority) noexcept {
 #if defined(MOSS_ARCH_ARM64)
-  u32 reg_offset = dist_regs::IPRIORITYR + (irq & ~3U);
+  // For GICv3, SGI/PPI priorities are in the redistributor, but we use
+  // the same offset calculation — the base differs for irq < 32.
+  VirtAddr base = dist_base;
+  u32 reg_base = dist_regs::IPRIORITYR;
+  if (g_gic_version == GicVersion::GICv3 && irq < 32) {
+    base = find_my_redist_frame();
+    reg_base = redist_regs::IPRIORITYR0;
+    // irq offset within the GICR IPRIORITYR is the same (byte per IRQ)
+  }
+  u32 reg_offset = reg_base + (irq & ~3U);
   u32 byte_shift = (irq & 3U) * 8;
-  u32 val = read_reg(dist_base, reg_offset);
+  u32 val = read_reg(base, reg_offset);
   val &= ~(0xFFU << byte_shift);
   val |= (static_cast<u32>(priority) << byte_shift);
-  write_reg(dist_base, reg_offset, val);
+  write_reg(base, reg_offset, val);
 
 #elif defined(MOSS_ARCH_X86_64)
   // APIC: priority is embedded in the vector number (upper 4 bits)
@@ -353,10 +603,23 @@ inline void set_priority(VirtAddr dist_base, u32 irq, u8 priority) noexcept {
 }
 
 /// Set the CPU target mask for a specific interrupt (SPIs only).
-/// ITARGETSR registers are byte-accessible (4 IRQs per 32-bit register).
-/// We must read-modify-write to avoid corrupting adjacent IRQ targets.
+/// GICv2: ITARGETSR with 8-bit per-IRQ CPU mask.
+/// GICv3: IROUTER with 64-bit affinity routing per SPI.
 inline void set_target(VirtAddr dist_base, u32 irq, u32 cpu_mask) noexcept {
 #if defined(MOSS_ARCH_ARM64)
+  if (g_gic_version == GicVersion::GICv3) {
+    if (irq < 32) {
+      return; // SGI/PPI have no target routing in GICv3
+    }
+    // Route to the lowest-numbered CPU in the mask
+    u32 target_cpu = static_cast<u32>(__builtin_ctz(cpu_mask));
+    // IROUTER: Aff0[7:0] = cpu_id (for QEMU virt flat topology)
+    u32 irouter_off = dist_regs::IROUTER + (irq - 32) * 8;
+    write_reg(dist_base, irouter_off, target_cpu);
+    write_reg(dist_base, irouter_off + 4, 0);
+    return;
+  }
+  // GICv2: ITARGETSR
   u32 reg_offset = dist_regs::ITARGETSR + (irq & ~3U);
   u32 byte_shift = (irq & 3U) * 8;
   u32 val = read_reg(dist_base, reg_offset);
@@ -381,6 +644,10 @@ inline void set_target(VirtAddr dist_base, u32 irq, u32 cpu_mask) noexcept {
 /// Set the CPU priority mask (minimum priority to deliver).
 inline void set_priority_mask(VirtAddr cpu_base, u8 mask) noexcept {
 #if defined(MOSS_ARCH_ARM64)
+  if (g_gic_version == GicVersion::GICv3) {
+    icc::write_pmr(mask);
+    return;
+  }
   write_reg(cpu_base, cpu_regs::PMR, mask);
 
 #elif defined(MOSS_ARCH_X86_64)
@@ -398,17 +665,34 @@ inline void set_priority_mask(VirtAddr cpu_base, u8 mask) noexcept {
 // ============================================================================
 
 /// Send a software-generated interrupt (IPI) to target CPUs.
-/// For ARM64 GICv2, sgi_id is 0-15 and target_cpu_mask selects destination CPUs.
-/// For x86_64 APIC, this sends an IPI via the ICR register.
-/// For RISC-V, software interrupts are triggered via SIP CSR.
+/// ARM64 GICv2: sgi_id 0-15, target_cpu_mask = 8-bit CPU bitmask via GICD_SGIR.
+/// ARM64 GICv3: sgi_id 0-15, target_cpu_mask = 16-bit TargetList via ICC_SGI1R_EL1.
+/// x86_64 APIC: sends IPI via ICR register.
+/// RISC-V: software interrupts via SBI (placeholder).
 inline VoidResult send_sgi(VirtAddr dist_base, [[maybe_unused]] VirtAddr cpu_base, u32 sgi_id,
                            u32 target_cpu_mask) noexcept {
 #if defined(MOSS_ARCH_ARM64)
   if (sgi_id >= 16) {
     return VoidResult{ErrorCode::InvalidParameter};
   }
-  u32 sgir_value = sgi_id | (target_cpu_mask << 16);
-  write_reg(dist_base, dist_regs::SGIR, sgir_value);
+
+  if (g_gic_version == GicVersion::GICv3) {
+    // ICC_SGI1R_EL1 format (for QEMU virt flat Aff0 topology):
+    //   bits [15:0]  = TargetList (one bit per Aff0 value 0-15)
+    //   bits [23:16] = Aff1 = 0
+    //   bits [27:24] = INTID = sgi_id
+    //   bits [39:32] = Aff2 = 0
+    //   bit  [40]    = IRM = 0 (use target list)
+    //   bits [47:44] = RS (range selector) = 0
+    //   bits [55:48] = Aff3 = 0
+    u64 sgi1r = (static_cast<u64>(sgi_id) << 24) | (static_cast<u64>(target_cpu_mask) & 0xFFFF);
+    icc::write_sgi1r(sgi1r);
+    asm volatile("isb" ::: "memory");
+  } else {
+    // GICv2: SGIR with 8-bit target mask
+    u32 sgir_value = sgi_id | (target_cpu_mask << 16);
+    write_reg(dist_base, dist_regs::SGIR, sgir_value);
+  }
 
 #elif defined(MOSS_ARCH_X86_64)
   // Local APIC ICR: send fixed IPI
@@ -441,7 +725,7 @@ inline VoidResult send_sgi(VirtAddr dist_base, [[maybe_unused]] VirtAddr cpu_bas
 /// Check if the acknowledged IRQ number indicates a spurious interrupt.
 [[nodiscard]] inline bool is_spurious(u32 irq_num) noexcept {
 #if defined(MOSS_ARCH_ARM64)
-  return irq_num >= SPURIOUS_IRQ_THRESHOLD; // GICv2: 1020-1023 are spurious
+  return irq_num >= SPURIOUS_IRQ_THRESHOLD; // Both GICv2 and GICv3: 1020-1023
 #elif defined(MOSS_ARCH_X86_64)
   return irq_num == SPURIOUS_IRQ_THRESHOLD; // APIC spurious vector
 #elif defined(MOSS_ARCH_RISCV)
