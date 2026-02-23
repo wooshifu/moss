@@ -817,7 +817,7 @@ long sys_wait4(long wait_pid, long wstatus_addr, long options, long /*unused*/, 
     // then resumes here (after being re-dispatched by scheduler_tick's
     // context_switch) and loops back to rescan for zombies.
     // Sleeping = TASK_INTERRUPTIBLE: a future signal could wake us early.
-    proc->child_exit_wait_queue().add_waiter(static_cast<void *>(cur));
+    proc->child_exit_wait_queue().add_waiter(static_cast<void *>(cur), /*exclusive=*/true);
     cur->state = ProcessState::Sleeping;
     if (g_scheduler) {
       g_scheduler->dequeue_task(cur);
