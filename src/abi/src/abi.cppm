@@ -42,7 +42,7 @@ void syscall_return(void *context) noexcept;
 }
 
 // ============================================================================
-// ARM64-only assembly symbols
+// Architecture-specific assembly symbols
 // ============================================================================
 #if defined(__aarch64__) || defined(MOSS_ARCH_ARM64)
 extern "C" {
@@ -53,6 +53,18 @@ void flush_tlb_all();
 extern volatile unsigned long long cpu_startup_flags[][2];
 extern unsigned int early_uart_lock;
 extern char exception_vectors[];
+extern char _user_program_start[];
+extern char _user_program_end[];
+}
+#elif defined(__x86_64__) || defined(__x86_64) || defined(MOSS_ARCH_X86_64)
+extern "C" {
+void user_iret_trampoline();
+extern char _user_program_start[];
+extern char _user_program_end[];
+}
+#elif defined(__riscv) || defined(__riscv__) || defined(MOSS_ARCH_RISCV)
+extern "C" {
+void user_sret_trampoline();
 extern char _user_program_start[];
 extern char _user_program_end[];
 }
@@ -195,6 +207,40 @@ inline auto exception_vectors_addr() noexcept -> moss::kernel::VirtAddr {
 }
 
 } // namespace moss::abi::arm64
+
+#elif defined(__x86_64__) || defined(__x86_64) || defined(MOSS_ARCH_X86_64)
+export namespace moss::abi::x86_64 {
+
+using ::user_iret_trampoline;
+
+inline auto user_program_start() noexcept -> const unsigned char * {
+  return reinterpret_cast<const unsigned char *>(::_user_program_start);
+}
+inline auto user_program_end() noexcept -> const unsigned char * {
+  return reinterpret_cast<const unsigned char *>(::_user_program_end);
+}
+inline auto user_program_size() noexcept -> moss::kernel::usize {
+  return static_cast<moss::kernel::usize>(user_program_end() - user_program_start());
+}
+
+} // namespace moss::abi::x86_64
+
+#elif defined(__riscv) || defined(__riscv__) || defined(MOSS_ARCH_RISCV)
+export namespace moss::abi::riscv {
+
+using ::user_sret_trampoline;
+
+inline auto user_program_start() noexcept -> const unsigned char * {
+  return reinterpret_cast<const unsigned char *>(::_user_program_start);
+}
+inline auto user_program_end() noexcept -> const unsigned char * {
+  return reinterpret_cast<const unsigned char *>(::_user_program_end);
+}
+inline auto user_program_size() noexcept -> moss::kernel::usize {
+  return static_cast<moss::kernel::usize>(user_program_end() - user_program_start());
+}
+
+} // namespace moss::abi::riscv
 #endif
 
 // ============================================================================

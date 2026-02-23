@@ -600,11 +600,10 @@ private:
 
   // Create initial user-mode process (TID=1000, the "init" process).
   //
-  // The scheduler's context_switch_to_task() recognises TID=1000 and calls
-  // switch_to_user(), which performs an eret to EL0. The user program is
-  // embedded directly in the kernel binary (arm64_user_program.S).
+  // The scheduler's context_switch_to_task() recognises needs_initial_eret
+  // and prepares a trampoline to enter user mode.  The user program is
+  // embedded directly in the kernel binary (*_user_program.S per arch).
   [[nodiscard]] VoidResult create_init_process() noexcept {
-#if defined(MOSS_ARCH_ARM64)
     using namespace process;
 
     early_debug_print("[init] creating init user process\n");
@@ -636,8 +635,16 @@ private:
     // The embedded user program is raw machine code (not ELF).
     // We place it at a fixed user virtual address and register as a code VMA
     // with backing data pointing to the kernel-resident copy.
+#if defined(MOSS_ARCH_ARM64)
     const auto *raw_code = moss::abi::arm64::user_program_start();
     usize code_size = moss::abi::arm64::user_program_size();
+#elif defined(MOSS_ARCH_X86_64)
+    const auto *raw_code = moss::abi::x86_64::user_program_start();
+    usize code_size = moss::abi::x86_64::user_program_size();
+#elif defined(MOSS_ARCH_RISCV)
+    const auto *raw_code = moss::abi::riscv::user_program_start();
+    usize code_size = moss::abi::riscv::user_program_size();
+#endif
 
     // Code VMA: readable + executable, backed by the embedded raw program
     VirtAddr code_end = (user_layout::CODE_BASE + code_size + PAGE_SIZE - 1) & ~(static_cast<VirtAddr>(PAGE_SIZE) - 1);
@@ -675,9 +682,9 @@ private:
     }
 
     // Allocate per-thread kernel stack (16KB = order 2, 4 pages).
-    // This stack is used as SP_EL1 when handling exceptions from this
-    // thread's user-mode execution — prevents all user processes from
-    // sharing the single boot stack.
+    // This stack is used when handling exceptions from this thread's
+    // user-mode execution — prevents all user processes from sharing
+    // the single boot stack.
     constexpr usize KERNEL_STACK_ORDER = 2; // 4 pages = 16KB
     constexpr usize KERNEL_STACK_SIZE = PAGE_SIZE << KERNEL_STACK_ORDER;
     auto kstack_result = mm::allocate_pages(KERNEL_STACK_ORDER);
@@ -698,9 +705,18 @@ private:
     init_thread->stack_size = user_layout::STACK_SIZE;
     init_thread->context.pc = entry_point;
     init_thread->context.sp = user_layout::STACK_TOP - 16; // 16-byte aligned
-    init_thread->context.pstate = 0x00000000;              // EL0t
-    init_thread->needs_initial_eret = true;                // First dispatch uses switch_to_user + eret
-    init_thread->is_user_task = true;                      // Permanent: drives TTBR0 switch on re-dispatch
+
+    // Architecture-specific user-mode pstate:
+    //   ARM64:  0x0 = EL0t (user mode, all interrupts enabled on eret)
+    //   x86_64: 0x202 = RFLAGS with IF=1 (interrupts enabled on iretq)
+    //   RISC-V: 0x0 = sstatus with SPP=0 (U-mode on sret)
+#if defined(MOSS_ARCH_X86_64)
+    init_thread->context.pstate = 0x202;
+#else
+    init_thread->context.pstate = 0x00000000;
+#endif
+    init_thread->needs_initial_eret = true; // First dispatch uses trampoline → user mode
+    init_thread->is_user_task = true;       // Permanent: drives page table switch on re-dispatch
 
     init_thread->sched_class = SchedClass::Normal;
     init_thread->se.nice = -5;
@@ -728,9 +744,6 @@ private:
 
     early_debug_print("[init] init process enqueued to scheduler\n");
     (void)code_size;
-#else
-    early_debug_print("[init] user process not supported on this arch\n");
-#endif
     return VoidResult{};
   }
 
