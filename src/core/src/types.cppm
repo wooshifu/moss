@@ -36,13 +36,21 @@ constexpr usize LARGE_PAGE_SIZE = 2ULL * 1024 * 1024;       // 2MB
 constexpr usize HUGE_PAGE_SIZE = 1ULL * 1024 * 1024 * 1024; // 1GB
 
 // Memory layout constants
+//
+// RISC-V Sv39: 39-bit VA, kernel half starts at 0xFFFFFFC000000000 (bit[38]=1)
+// ARM64/x86_64: 48-bit VA, kernel half starts at 0xFFFF800000000000 (bit[47]=1)
+#if defined(MOSS_ARCH_RISCV)
+constexpr VirtAddr KERNEL_BASE = 0xFFFFFFC000000000ULL;
+constexpr VirtAddr USER_MAX = 0x0000004000000000ULL; // 256 GB user space (Sv39)
+#else
 constexpr VirtAddr KERNEL_BASE = 0xFFFF800000000000ULL;
-constexpr VirtAddr USER_BASE = 0x0000000000000000ULL;
 constexpr VirtAddr USER_MAX = 0x0000800000000000ULL;
+#endif
+constexpr VirtAddr USER_BASE = 0x0000000000000000ULL;
 
 // Direct-map: physical RAM is mapped at KERNEL_BASE + phys_addr (post-trampoline)
-constexpr VirtAddr KERNEL_DIRECT_MAP_BASE = KERNEL_BASE; // 0xFFFF800000000000
-constexpr PhysAddr PHYS_BASE = 0x40000000ULL;            // QEMU virt RAM start
+constexpr VirtAddr KERNEL_DIRECT_MAP_BASE = KERNEL_BASE;
+constexpr PhysAddr PHYS_BASE = 0x40000000ULL; // QEMU virt RAM start
 
 // Address translation: physical ↔ virtual (valid only after boot trampoline)
 inline VirtAddr phys_to_virt(PhysAddr pa) noexcept { return pa + KERNEL_DIRECT_MAP_BASE; }

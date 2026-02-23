@@ -194,17 +194,46 @@ static SbiResult sbi_hart_start(u64 hartid, u64 start_addr, u64 opaque) noexcept
 
   moss::boot::early_print("=== RISC-V Memory Management Setup ===\n");
 
-  // Skip MMU/page-table setup for now: RISC-V S-mode boots with satp=0
-  // (bare/physical addressing).  A proper Sv39/Sv48 identity map requires
-  // RISC-V-specific page table entry format; the current setup_mmu() uses
-  // ARM64 block descriptors.  PFA and heap work fine without virtual memory.
-  moss::boot::early_print("  MMU: skipped (bare mode, satp=0)\n");
+  // Phase 1: Setup Sv39 identity-mapped page tables + enable MMU
+  // setup_mmu() calls setup_kernel_page_tables() which fills the root table
+  // with 4×1GB gigapage leaf entries, then enable_mmu() writes satp with Sv39 mode.
+  // RISC-V has a single satp register, so identity map and high-half share the root.
+  moss::boot::early_print("  Phase 1: Sv39 page tables + MMU enable\n");
+  auto mmu_result = ::moss::kernel::mm::setup_mmu();
+  if (!mmu_result) {
+    moss::boot::early_print("  MMU setup failed\n");
+    return ::moss::kernel::VoidResult{mmu_result.error()};
+  }
+  moss::boot::early_print("  MMU: Sv39 enabled\n");
 
+  // Phase 2: Initialize PageFrameAllocator (buddy allocator)
+  moss::boot::early_print("  Phase 2: PageFrameAllocator\n");
   auto pfa_result = ::moss::kernel::mm::PageFrameAllocator::initialize();
   if (!pfa_result) {
     moss::boot::early_print("  WARNING: PageFrameAllocator init failed\n");
   }
 
+  // Phase 3: Build high-half kernel page table
+  // Maps physical 0-4GB at KERNEL_DIRECT_MAP_BASE (0xFFFFFFC000000000 for Sv39).
+  // On RISC-V this adds root[256..259] entries to the existing kernel_pgd
+  // (same page table as the identity map, since there's only one satp).
+  moss::boot::early_print("  Phase 3: high-half kernel mapping\n");
+  auto high_result = ::moss::kernel::mm::PageTableManager::setup_kernel_high_half_tables();
+  if (!high_result) {
+    moss::boot::early_print("  High-half page table setup failed\n");
+    return ::moss::kernel::VoidResult{high_result.error()};
+  }
+
+  // Phase 4: Flush TLB to pick up new high-half mappings
+  // RISC-V satp already points to the PGD containing both identity + high-half.
+  asm volatile("sfence.vma" ::: "memory");
+  moss::boot::early_print("  Phase 4: TLB flushed (high-half active)\n");
+
+  // Phase 5: Enable dynamic page table allocation (buddy-backed)
+  ::moss::kernel::mm::PageTableManager::enable_dynamic_alloc();
+  moss::boot::early_print("  Phase 5: dynamic page table alloc enabled\n");
+
+  // Phase 6: Initialize runtime heap
   VirtAddr heap_start = moss::abi::linker::heap_start();
   ::moss::kernel::usize initial_heap_size = 256ULL * 1024;
   auto heap_result = ::moss::kernel::mm::RuntimeHeapAllocator::initialize_heap(heap_start, initial_heap_size);
@@ -212,7 +241,7 @@ static SbiResult sbi_hart_start(u64 hartid, u64 start_addr, u64 opaque) noexcept
     moss::boot::early_print("  WARNING: RuntimeHeapAllocator init failed\n");
   }
 
-  moss::boot::early_print("RISC-V memory management setup complete\n\n");
+  moss::boot::early_print("RISC-V memory management setup complete (Sv39 + high-half active)\n\n");
   return ::moss::kernel::VoidResult{};
 }
 
