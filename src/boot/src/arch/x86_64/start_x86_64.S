@@ -4,22 +4,161 @@
 //
 // Bootstrap for x86_64 MOSS kernel in long mode (64-bit).
 //
-// Assumes the bootloader already placed us in 64-bit long mode with a
-// flat identity map.  This stub:
-//   1. Clears direction flag (CLD) for safe REP string operations
-//   2. Sets up a temporary 8 KB kernel stack
-//   3. Zeroes the BSS section
-//   4. Loads a minimal GDT with kernel/user code+data segments
-//   5. Calls early_main() to enter the unified boot path
+// Boot protocol: PVH (Xen PVH) via ELF note.
+// QEMU's -kernel option detects the XEN_ELFNOTE_PHYS32_ENTRY note and
+// enters the kernel directly in 32-bit protected mode with paging disabled.
+// The PVH entry point (_pvh_start) then sets up 64-bit long mode and
+// jumps to the 64-bit _start entry.
 //
-// Entry point: _start (set by the linker via ENTRY(_start) in linker.ld)
+// This stub:
+//   1. Transitions from 32-bit protected mode to 64-bit long mode (PVH entry)
+//   2. Clears direction flag (CLD) for safe REP string operations
+//   3. Sets up a temporary 8 KB kernel stack
+//   4. Zeroes the BSS section
+//   5. Loads a minimal GDT with kernel/user code+data segments
+//   6. Calls early_main() to enter the unified boot path
+//
+// Entry point: _start (64-bit), _pvh_start (32-bit PVH entry)
 // =============================================================================
 
+// =============================================================================
+// PVH ELF Note — tells QEMU to boot directly via PVH protocol
+// =============================================================================
+// XEN_ELFNOTE_PHYS32_ENTRY (type 18): 32-bit physical entry point address
+// QEMU detects this note in the ELF and enters in 32-bit protected mode
+// with paging disabled, A20 enabled, and BSS NOT zeroed.
+// =============================================================================
+.section ".note.Xen", "a"
+.align 4
+    .long 4                         // namesz = 4 ("Xen\0")
+    .long 4                         // descsz = 4 (32-bit entry address)
+    .long 18                        // type = XEN_ELFNOTE_PHYS32_ENTRY
+    .asciz "Xen"                    // name (4 bytes with NUL)
+    .long _pvh_start                // 32-bit physical entry point
+
+// =============================================================================
+// 32-bit PVH entry point
+// =============================================================================
+// CPU state on PVH entry:
+//   - 32-bit protected mode, paging OFF
+//   - CS = flat 32-bit code segment (base=0, limit=4GB)
+//   - DS/ES/SS = flat 32-bit data segment
+//   - EBX = pointer to hvm_start_info structure (PVH boot info)
+//   - A20 gate enabled
+// =============================================================================
 .section ".text.boot", "ax"
-.global _start
+.code32
+
+.type _pvh_start, @function
+_pvh_start:
+    // Save PVH boot info pointer (EBX) for later use
+    mov %ebx, %esi
+
+    // Disable interrupts
+    cli
+
+    // --- Set up identity-mapped page tables for first 4 GB ---
+    // PML4[0] → PDPT → four 1GB pages (using 1GB huge pages if supported,
+    // otherwise 2MB pages via PD)
+    //
+    // We use 2MB pages for compatibility: PML4 → PDPT → PD (2MB each)
+    //
+    // Page table layout (in .bss.pagetables):
+    //   pvh_pml4:   4096 bytes (512 entries, only [0] used)
+    //   pvh_pdpt:   4096 bytes (512 entries, only [0..3] used for 4GB)
+    //   pvh_pd[4]:  4x4096 bytes (each maps 1GB via 512x2MB pages)
+
+    // Zero page table area (6 pages = 24KB)
+    mov $pvh_pml4, %edi
+    xor %eax, %eax
+    mov $(6 * 4096 / 4), %ecx
+    rep stosl
+
+    // PML4[0] = &pvh_pdpt | PRESENT | WRITABLE
+    mov $pvh_pdpt, %eax
+    or  $0x03, %eax
+    mov %eax, pvh_pml4
+
+    // PDPT[0..3] = &pvh_pd[0..3] | PRESENT | WRITABLE
+    mov $pvh_pd0, %eax
+    or  $0x03, %eax
+    mov %eax, pvh_pdpt + 0*8
+    mov $pvh_pd1, %eax
+    or  $0x03, %eax
+    mov %eax, pvh_pdpt + 1*8
+    mov $pvh_pd2, %eax
+    or  $0x03, %eax
+    mov %eax, pvh_pdpt + 2*8
+    mov $pvh_pd3, %eax
+    or  $0x03, %eax
+    mov %eax, pvh_pdpt + 3*8
+
+    // Fill PD entries: each maps 2MB (PRESENT | WRITABLE | PAGE_SIZE)
+    // PD0: 0x00000000 .. 0x3FFFFFFF (1st GB)
+    // PD1: 0x40000000 .. 0x7FFFFFFF (2nd GB)
+    // PD2: 0x80000000 .. 0xBFFFFFFF (3rd GB)
+    // PD3: 0xC0000000 .. 0xFFFFFFFF (4th GB)
+    mov $pvh_pd0, %edi
+    xor %eax, %eax              // start physical address = 0
+    mov $0x83, %ebx             // flags: PRESENT | WRITABLE | PAGE_SIZE(2MB)
+    mov $(4 * 512), %ecx        // 4 PDs × 512 entries = 2048 entries total
+.Lfill_pd:
+    mov %eax, (%edi)
+    or  %ebx, (%edi)
+    movl $0, 4(%edi)            // high 32 bits = 0 (for low 4GB)
+    add $0x200000, %eax         // next 2MB page
+    add $8, %edi
+    dec %ecx
+    jnz .Lfill_pd
+
+    // --- Enable long mode ---
+
+    // Load PML4 into CR3
+    mov $pvh_pml4, %eax
+    mov %eax, %cr3
+
+    // Enable PAE in CR4
+    mov %cr4, %eax
+    or  $0x20, %eax             // CR4.PAE (bit 5)
+    mov %eax, %cr4
+
+    // Enable long mode in EFER MSR
+    mov $0xC0000080, %ecx       // IA32_EFER
+    rdmsr
+    or  $0x100, %eax            // EFER.LME (bit 8)
+    wrmsr
+
+    // Enable paging in CR0 (activates long mode since EFER.LME is set)
+    mov %cr0, %eax
+    or  $0x80000001, %eax       // CR0.PG (bit 31) | CR0.PE (bit 0)
+    mov %eax, %cr0
+
+    // Load a temporary 64-bit GDT and far-jump to 64-bit code
+    lgdt pvh_gdt_ptr
+
+    ljmp $0x08, $_start         // jump to 64-bit entry with kernel CS
+
+// Temporary GDT for the 32→64 transition (reloaded by _start with full GDT)
+.align 16
+pvh_gdt:
+    .quad 0                             // [0] Null
+    .quad 0x00AF9A000000FFFF            // [1] 64-bit Kernel Code
+    .quad 0x00CF92000000FFFF            // [2] Kernel Data
+pvh_gdt_end:
+
+pvh_gdt_ptr:
+    .word pvh_gdt_end - pvh_gdt - 1
+    .long pvh_gdt
+
+.size _pvh_start, . - _pvh_start
+
+// =============================================================================
+// 64-bit kernel entry (jumped to from PVH stub or called by bootloader)
+// =============================================================================
 .code64
 
 .type _start, @function
+.global _start
 _start:
     // Clear direction flag — required for REP STOSB below to move forward
     cld
@@ -81,6 +220,18 @@ _start:
 stack_bottom:
     .skip 8192                          // 8 KB stack
 stack_top:
+
+// =============================================================================
+// PVH page tables (24 KB in BSS — zeroed by PVH stub, not startup code)
+// =============================================================================
+.section ".bss.pagetables", "aw", @nobits
+.align 4096
+pvh_pml4:    .skip 4096
+pvh_pdpt:    .skip 4096
+pvh_pd0:     .skip 4096
+pvh_pd1:     .skip 4096
+pvh_pd2:     .skip 4096
+pvh_pd3:     .skip 4096
 
 // =============================================================================
 // GDT (Global Descriptor Table)

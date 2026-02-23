@@ -189,18 +189,16 @@ void update_boot_stage(BootStage stage, ::moss::kernel::ErrorCode error) noexcep
   return ::moss::kernel::VoidResult{};
 }
 
-::moss::kernel::VoidResult moss::boot::X86_64BootImpl::setup_memory_management(BootContext &ctx) noexcept {
+::moss::kernel::VoidResult moss::boot::X86_64BootImpl::setup_memory_management(BootContext & /*ctx*/) noexcept {
   moss::boot::update_boot_stage(moss::boot::BootStage::MemoryManagement);
 
   moss::boot::early_print("=== x86_64 Memory Management Setup ===\n");
 
-  // In long mode the MMU is always active.  We initialize the unified
-  // memory subsystem (page frame allocator, kernel heap, high-half map)
-  // using the same interface as ARM64.
-  auto mmu_result = ::moss::kernel::mm::setup_mmu();
-  if (!mmu_result) {
-    moss::boot::early_print("  WARNING: setup_mmu failed\n");
-  }
+  // Skip page-table reconstruction: the PVH stub already set up a 4 GB
+  // identity map with 2 MB pages.  The current setup_mmu() builds ARM64-style
+  // page tables that are incompatible with x86_64 PTE format.  PFA and heap
+  // work correctly without rebuilding page tables.
+  moss::boot::early_print("  MMU: using PVH identity map (4 GB, 2 MB pages)\n");
 
   auto pfa_result = ::moss::kernel::mm::PageFrameAllocator::initialize();
   if (!pfa_result) {
@@ -292,7 +290,7 @@ extern "C" void x86_64_interrupt_handler(u64 vector, u64 error_code, [[maybe_unu
   if (gic) {
     VirtAddr dist_base = moss::kernel::platform::intc_dist_base(); // Local APIC
     VirtAddr cpu_base = moss::kernel::platform::intc_cpu_base();   // I/O APIC
-    gic->initialize(dist_base, cpu_base, 0);
+    (void)gic->initialize(dist_base, cpu_base, 0);
     g_gic_controller = gic;
     g_gic_hardware_available = true;
     moss::boot::early_print("  Local APIC initialized\n");

@@ -185,7 +185,7 @@ isr_common:
 // Array of 256 function pointers, used by setup_idt() in boot_impl.cpp.
 // ---------------------------------------------------------------------------
 .macro STUB_ENTRY n
-    .quad isr_stub_ %+ n
+    .quad isr_stub_\n
 .endm
 
 .section ".rodata", "a"
@@ -194,7 +194,7 @@ isr_common:
 isr_stub_table:
 .set _tbl_i, 0
 .rept 256
-    STUB_ENTRY _tbl_i
+    STUB_ENTRY %_tbl_i
     .set _tbl_i, _tbl_i + 1
 .endr
 

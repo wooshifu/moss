@@ -356,9 +356,13 @@ inline void send_reschedule_ipi(u32 target_cpu) noexcept {
   }
   // GICv2 SGIR only supports 8-bit CPU target mask (CPUs 0-7).
   // GICv3 uses ICC_SGI1R_EL1 with 16-bit TargetList (CPUs 0-15 in Aff0).
+  // This check is ARM64-only; x86_64 (APIC) and RISC-V (PLIC/CLINT) have
+  // different IPI mechanisms without this 8-core limitation.
+#if defined(MOSS_ARCH_ARM64)
   if (hal::intc::g_gic_version != hal::intc::GicVersion::GICv3 && target_cpu >= 8) {
     return;
   }
+#endif
   u32 target_mask = 1U << target_cpu;
   VirtAddr dist_base = platform::intc_dist_base();
   VirtAddr cpu_base = platform::intc_cpu_base();
