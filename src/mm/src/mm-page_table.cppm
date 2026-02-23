@@ -49,7 +49,17 @@ struct [[gnu::packed]] PageTableEntry {
   constexpr PageTableEntry() : raw(0) {}
   constexpr explicit PageTableEntry(u64 value) : raw(value) {}
   [[nodiscard]] constexpr bool is_valid() const { return raw & page_attr::VALID; }
-  [[nodiscard]] constexpr bool is_table() const { return raw & page_attr::TABLE; }
+  [[nodiscard]] constexpr bool is_table() const {
+    // ARM64: TABLE bit (bit 1) distinguishes table vs block descriptors.
+    // RISC-V: VALID=TABLE=bit 0.  Non-leaf = V=1 AND R=W=X=0.
+    //         Leaf (block/page) = V=1 AND (R|W|X)!=0.
+#if defined(MOSS_ARCH_RISCV)
+    constexpr u64 RWX = page_attr::READ | page_attr::WRITE | page_attr::EXECUTE;
+    return (raw & page_attr::VALID) != 0 && (raw & RWX) == 0;
+#else
+    return raw & page_attr::TABLE;
+#endif
+  }
   [[nodiscard]] constexpr bool is_block() const { return is_valid() && !is_table(); }
   [[nodiscard]] constexpr PhysAddr get_phys_addr() const {
     // RISC-V: PPN in bits[53:10], physical addr = PPN << 12 = (pte & mask) << 2
@@ -61,7 +71,8 @@ struct [[gnu::packed]] PageTableEntry {
   }
   constexpr void set_table(PhysAddr next_table_pa) {
 #if defined(MOSS_ARCH_RISCV)
-    raw = ((next_table_pa >> 2) & hal::mmu::PTE_ADDR_MASK) | page_attr::VALID | page_attr::TABLE;
+    // RISC-V non-leaf: V=1, R=W=X=0. TABLE == VALID == bit 0.
+    raw = ((next_table_pa >> 2) & hal::mmu::PTE_ADDR_MASK) | page_attr::VALID;
 #else
     raw = (next_table_pa & hal::mmu::PTE_ADDR_MASK) | page_attr::VALID | page_attr::TABLE;
 #endif
@@ -73,10 +84,11 @@ struct [[gnu::packed]] PageTableEntry {
     raw = (block_pa & hal::mmu::PTE_ADDR_MASK) | attributes | page_attr::VALID;
 #endif
   }
-  // L3 page descriptor: bits[1:0]=0b11 (same encoding as table descriptor)
+  // L3 page descriptor: ARM64/x86 bits[1:0]=0b11; RISC-V leaf PTE (R|W|X ≠ 0).
   constexpr void set_page(PhysAddr page_pa, u64 attributes) {
 #if defined(MOSS_ARCH_RISCV)
-    raw = ((page_pa >> 2) & hal::mmu::PTE_ADDR_MASK) | attributes | page_attr::VALID | page_attr::TABLE;
+    // RISC-V leaf: V=1 + R/W/X from attributes (attributes must include at least R).
+    raw = ((page_pa >> 2) & hal::mmu::PTE_ADDR_MASK) | attributes | page_attr::VALID;
 #else
     raw = (page_pa & hal::mmu::PTE_ADDR_MASK) | attributes | page_attr::VALID | page_attr::TABLE;
 #endif

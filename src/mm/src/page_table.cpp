@@ -46,16 +46,9 @@ KernelResult<PageTable *> PageTableManager::allocate_page_table_dynamic() {
   return KernelResult<PageTable *>{table};
 }
 
-// Build TTBR1 high-half kernel page table: map physical RAM at KERNEL_DIRECT_MAP_BASE
+// Build high-half kernel page table: map physical RAM at KERNEL_DIRECT_MAP_BASE
 VoidResult PageTableManager::setup_kernel_high_half_tables() {
-  // 1. Allocate L0 (PGD) for TTBR1 — using early bump allocator (before dynamic switch)
-  auto pgd_result = allocate_page_table();
-  if (!pgd_result) {
-    return VoidResult{pgd_result.error()};
-  }
-  kernel_high_pgd = *pgd_result;
-
-  // 2. Determine RAM region from DTB (PlatformInfo)
+  // Determine RAM region from DTB (PlatformInfo)
   const auto &plat = moss::fdt::get_platform_info();
   PhysAddr ram_start =
       (plat.dtb_valid && plat.total_memory_size > 0) ? plat.total_memory_start : moss::kernel::platform::ram_base();
@@ -63,11 +56,37 @@ VoidResult PageTableManager::setup_kernel_high_half_tables() {
       (plat.dtb_valid && plat.total_memory_size > 0) ? plat.total_memory_size : moss::kernel::platform::ram_size();
   PhysAddr ram_end = ram_start + ram_size;
 
-  // 3. Map physical address space at KERNEL_DIRECT_MAP_BASE using 1GB blocks.
-  //    TTBR1 handles VA >= 0xFFFF000000000000 (with T1SZ=16).
-  //    PGD index = (va >> 39) & 0x1FF
-  //    For KERNEL_DIRECT_MAP_BASE (0xFFFF800000000000): PGD[256]
-  u16 pgd_idx = static_cast<u16>((KERNEL_DIRECT_MAP_BASE >> 39) & 0x1FF);
+  constexpr u64 ONE_GB = 0x40000000ULL;
+
+  // break_virtual_address gives the correct pgd_index for each arch:
+  //   ARM64/x86: (KERNEL_DIRECT_MAP_BASE >> 39) & 0x1FF = 256
+  //   RISC-V Sv39: (KERNEL_DIRECT_MAP_BASE >> 30) & 0x1FF = 256
+  auto bd = break_virtual_address(KERNEL_DIRECT_MAP_BASE);
+  u16 pgd_idx = bd.pgd_index;
+
+#if defined(MOSS_ARCH_RISCV)
+  // RISC-V Sv39: single satp — high-half gigapages go directly into the same
+  // root table as the identity map (set up by setup_kernel_page_tables).
+  if (!kernel_pgd) {
+    return VoidResult{ErrorCode::InvalidState};
+  }
+  kernel_high_pgd = kernel_pgd;
+
+  // Write 1GB gigapage leaf entries directly into root[pgd_idx .. pgd_idx+3].
+  for (usize i = 0; i < 4; i++) {
+    PhysAddr block_addr = static_cast<PhysAddr>(i * ONE_GB);
+    PhysAddr block_end = block_addr + ONE_GB;
+    bool overlaps_ram = (block_addr < ram_end) && (block_end > ram_start);
+    kernel_pgd->entries[pgd_idx + i].raw = overlaps_ram ? moss::kernel::hal::mmu::make_normal_block(block_addr)
+                                                        : moss::kernel::hal::mmu::make_device_block(block_addr);
+  }
+#else
+  // ARM64/x86_64: separate high-half PGD (ARM64 uses TTBR1)
+  auto pgd_result = allocate_page_table();
+  if (!pgd_result) {
+    return VoidResult{pgd_result.error()};
+  }
+  kernel_high_pgd = *pgd_result;
 
   // Allocate PUD table for this PGD entry
   auto pud_result = allocate_page_table();
@@ -79,23 +98,21 @@ VoidResult PageTableManager::setup_kernel_high_half_tables() {
   PhysAddr pud_pa = get_physical_address(pud);
   kernel_high_pgd->entries[pgd_idx].set_table(pud_pa);
 
-  // 4. Fill PUD entries with 1GB block descriptors covering 0-4GB
-  //    This maps device MMIO (0x00000000-0x3FFFFFFF) + RAM (0x40000000+)
-  constexpr u64 ONE_GB = 0x40000000ULL;
+  // Fill PUD entries with 1GB block descriptors covering 0-4GB
   for (usize i = 0; i < 4; i++) {
     PhysAddr block_addr = static_cast<PhysAddr>(i * ONE_GB);
     PhysAddr block_end = block_addr + ONE_GB;
     bool overlaps_ram = (block_addr < ram_end) && (block_end > ram_start);
-    u64 block_entry = overlaps_ram ? moss::kernel::hal::mmu::make_normal_block(block_addr)
-                                   : moss::kernel::hal::mmu::make_device_block(block_addr);
-    pud->entries[i].raw = block_entry;
+    pud->entries[i].raw = overlaps_ram ? moss::kernel::hal::mmu::make_normal_block(block_addr)
+                                       : moss::kernel::hal::mmu::make_device_block(block_addr);
   }
+#endif
 
-  log::klog::info("high-half page table: PGD[{}] -> PUD with 4x1GB blocks", pgd_idx);
+  log::klog::info("high-half page table: PGD[{}] -> 4x1GB blocks", pgd_idx);
   return VoidResult{};
 }
 
-// Walk user page tables and return a mutable pointer to the L3 PTE.
+// Walk user page tables and return a mutable pointer to the leaf PTE.
 // Returns nullptr if any intermediate table is missing (does not allocate).
 PageTableEntry *PageTableManager::get_user_pte(PhysAddr pgd_phys, VirtAddr va) {
   auto *pgd = get_table_from_physical(pgd_phys);
@@ -116,13 +133,17 @@ PageTableEntry *PageTableManager::get_user_pte(PhysAddr pgd_phys, VirtAddr va) {
   }
   auto *pmd = get_table_from_physical(pude.get_phys_addr());
 
+#if defined(MOSS_ARCH_RISCV)
+  // Sv39: PMD is the final L0 table — pmd_index IS the leaf PTE index.
+  return &pmd->entries[bd.pmd_index];
+#else
   auto &pmde = pmd->entries[bd.pmd_index];
   if (!pmde.is_valid() || !pmde.is_table()) {
     return nullptr;
   }
   auto *pte = get_table_from_physical(pmde.get_phys_addr());
-
   return &pte->entries[bd.pte_index];
+#endif
 }
 
 // Unmap a single user page: clear PTE, invalidate TLB, free physical page
@@ -370,7 +391,8 @@ void PageTableManager::free_user_page_tables(PhysAddr pgd_phys) {
   (void)free_pages(pgd_phys, 0);
 }
 
-// Map a single 4KB page into a user process page table (4-level walk)
+// Map a single 4KB page into a user process page table
+// ARM64/x86_64: 4-level walk;  RISC-V Sv39: 3-level walk
 VoidResult PageTableManager::map_user_page(PhysAddr pgd_phys, VirtAddr va, PhysAddr pa, u64 perms) {
   auto *pgd = get_table_from_physical(pgd_phys);
   auto bd = break_virtual_address(va);
@@ -395,7 +417,11 @@ VoidResult PageTableManager::map_user_page(PhysAddr pgd_phys, VirtAddr va, PhysA
   }
   auto *pmd = get_table_from_physical(pud->entries[bd.pud_index].get_phys_addr());
 
-  // PMD -> PTE table
+#if defined(MOSS_ARCH_RISCV)
+  // Sv39: PMD IS the final L0 table — set 4KB page entry directly.
+  pmd->entries[bd.pmd_index].set_page(pa, perms);
+#else
+  // 4-level: PMD -> PTE table
   if (!pmd->entries[bd.pmd_index].is_valid()) {
     auto result = allocate_page_table_dynamic();
     if (!result) {
@@ -404,46 +430,27 @@ VoidResult PageTableManager::map_user_page(PhysAddr pgd_phys, VirtAddr va, PhysA
     pmd->entries[bd.pmd_index].set_table(get_physical_address(*result));
   }
   auto *pte = get_table_from_physical(pmd->entries[bd.pmd_index].get_phys_addr());
-
-  // Set the final 4KB page entry (L3 uses page descriptor: bits[1:0]=0b11)
   pte->entries[bd.pte_index].set_page(pa, perms);
+#endif
+
   invalidate_tlb_addr(va);
   return VoidResult{};
 }
 
 // 创建内核页表映射
 //
-// ARM64 4KB granule page table walk with T0SZ=16 (48-bit VA):
+// ARM64/x86_64: 4-level page table (48-bit VA)
 //   L0 (PGD): bits[47:39], each entry covers 512GB — table descriptors ONLY
 //   L1 (PUD): bits[38:30], each entry covers 1GB   — block or table
-//   L2 (PMD): bits[29:21], each entry covers 2MB   — block or table
-//   L3 (PTE): bits[20:12], each entry covers 4KB   — page descriptors
+//   We place a table descriptor at PGD[0] → L1 table, then fill L1[0..3]
+//   with 1GB block descriptors for the first 4GB identity map.
 //
-// 1GB block descriptors are valid at L1, NOT at L0.
-// We place a table descriptor at PGD[0] → L1 table, then fill L1[0..3]
-// with 1GB block descriptors for the first 4GB identity map.
+// RISC-V Sv39: 3-level page table (39-bit VA)
+//   Root (L2): bits[38:30], each entry covers 1GB — gigapage leaf or table
+//   The root table IS the PGD; 1GB gigapage entries go directly into it.
+//   No PUD indirection needed.
 VoidResult PageTableManager::setup_kernel_page_tables() {
-  // 1. Allocate L0 (PGD) — root of the 4-level page table
-  auto pgd_result = PageTableManager::allocate_page_table();
-  if (!pgd_result) {
-    return VoidResult{pgd_result.error()};
-  }
-  PageTableManager::kernel_pgd = *pgd_result;
-
-  // 2. Allocate L1 (PUD) — one table is enough for 512 × 1GB = 512GB
-  auto pud_result = PageTableManager::allocate_page_table();
-  if (!pud_result) {
-    return VoidResult{pud_result.error()};
-  }
-  PageTable *pud = *pud_result;
-
-  // 3. PGD[0] → table descriptor pointing to the L1 (PUD) table
-  //    With T0SZ=16, PGD index 0 covers VA [0, 512GB), which contains
-  //    our entire 4GB identity map.
-  PhysAddr pud_pa = PageTableManager::get_physical_address(pud);
-  PageTableManager::kernel_pgd->entries[0].set_table(pud_pa);
-
-  // 4. Determine RAM region from DTB (PlatformInfo)
+  // Determine RAM region from DTB (PlatformInfo)
   const auto &plat = moss::fdt::get_platform_info();
   PhysAddr ram_start =
       (plat.dtb_valid && plat.total_memory_size > 0) ? plat.total_memory_start : moss::kernel::platform::ram_base();
@@ -451,22 +458,50 @@ VoidResult PageTableManager::setup_kernel_page_tables() {
       (plat.dtb_valid && plat.total_memory_size > 0) ? plat.total_memory_size : moss::kernel::platform::ram_size();
   PhysAddr ram_end = ram_start + ram_size;
 
-  // 5. Fill L1 (PUD) entries [0..3] with 1GB block descriptors
-  //    covering 0x00000000 - 0xFFFFFFFF (4GB identity map).
-  //    1GB block descriptors are architecturally valid at L1.
   constexpr u64 ONE_GB = 0x40000000ULL;
+
+#if defined(MOSS_ARCH_RISCV)
+  // Sv39: root table = L2 level (512 × 1GB entries).
+  // kernel_pgd IS the root table; 1GB gigapage entries go directly in it.
+  auto root_result = PageTableManager::allocate_page_table();
+  if (!root_result) {
+    return VoidResult{root_result.error()};
+  }
+  PageTableManager::kernel_pgd = *root_result;
+
+  // Fill root[0..3] with 1GB gigapage leaf entries for identity map (0-4GB).
   for (usize i = 0; i < 4; i++) {
     PhysAddr block_addr = static_cast<PhysAddr>(i * ONE_GB);
     PhysAddr block_end = block_addr + ONE_GB;
-
-    // If this 1GB block overlaps with the RAM region, use Normal memory;
-    // otherwise use Device memory.
     bool overlaps_ram = (block_addr < ram_end) && (block_end > ram_start);
-    u64 block_entry = overlaps_ram ? moss::kernel::hal::mmu::make_normal_block(block_addr)
-                                   : moss::kernel::hal::mmu::make_device_block(block_addr);
-
-    pud->entries[i].raw = block_entry;
+    kernel_pgd->entries[i].raw = overlaps_ram ? moss::kernel::hal::mmu::make_normal_block(block_addr)
+                                              : moss::kernel::hal::mmu::make_device_block(block_addr);
   }
+#else
+  // ARM64/x86_64: 4-level — PGD[0] → PUD with 1GB block entries.
+  auto pgd_result = PageTableManager::allocate_page_table();
+  if (!pgd_result) {
+    return VoidResult{pgd_result.error()};
+  }
+  PageTableManager::kernel_pgd = *pgd_result;
+
+  auto pud_result = PageTableManager::allocate_page_table();
+  if (!pud_result) {
+    return VoidResult{pud_result.error()};
+  }
+  PageTable *pud = *pud_result;
+
+  PhysAddr pud_pa = PageTableManager::get_physical_address(pud);
+  PageTableManager::kernel_pgd->entries[0].set_table(pud_pa);
+
+  for (usize i = 0; i < 4; i++) {
+    PhysAddr block_addr = static_cast<PhysAddr>(i * ONE_GB);
+    PhysAddr block_end = block_addr + ONE_GB;
+    bool overlaps_ram = (block_addr < ram_end) && (block_end > ram_start);
+    pud->entries[i].raw = overlaps_ram ? moss::kernel::hal::mmu::make_normal_block(block_addr)
+                                       : moss::kernel::hal::mmu::make_device_block(block_addr);
+  }
+#endif
 
   return VoidResult{};
 }
@@ -498,61 +533,60 @@ VoidResult PageTableManager::map_region(VirtAddr virt_addr, PhysAddr phys_addr, 
 }
 
 // 映射单个页面
+//
+// ARM64/x86_64: 4-level walk — PGD → PUD → PMD → PTE[pte_index]
+// RISC-V Sv39:  3-level walk — PGD → PUD → final entry at PMD[pmd_index]
+//   (break_virtual_address maps L2→pgd, L1→pud, L0→pmd, pte_index=0)
 VoidResult PageTableManager::map_page(VirtAddr virt_addr, PhysAddr phys_addr, u64 permissions) {
   if (!PageTableManager::kernel_pgd) {
     return VoidResult{ErrorCode::InvalidState};
   }
 
-  auto addr_breakdown = break_virtual_address(virt_addr);
+  auto bd = break_virtual_address(virt_addr);
 
   // 遍历页表层级
   PageTable *current_table = PageTableManager::kernel_pgd;
 
   // PGD -> PUD
-  if (!current_table->entries[addr_breakdown.pgd_index].is_valid()) {
+  if (!current_table->entries[bd.pgd_index].is_valid()) {
     auto pud_result = PageTableManager::allocate_page_table();
     if (!pud_result) {
       return VoidResult{pud_result.error()};
     }
-
     PhysAddr pud_pa = PageTableManager::get_physical_address(*pud_result);
-    current_table->entries[addr_breakdown.pgd_index].set_table(pud_pa);
+    current_table->entries[bd.pgd_index].set_table(pud_pa);
   }
-
-  current_table = get_table_from_physical(current_table->entries[addr_breakdown.pgd_index].get_phys_addr());
+  current_table = get_table_from_physical(current_table->entries[bd.pgd_index].get_phys_addr());
 
   // PUD -> PMD
-  if (!current_table->entries[addr_breakdown.pud_index].is_valid()) {
+  if (!current_table->entries[bd.pud_index].is_valid()) {
     auto pmd_result = PageTableManager::allocate_page_table();
     if (!pmd_result) {
       return VoidResult{pmd_result.error()};
     }
-
     PhysAddr pmd_pa = PageTableManager::get_physical_address(*pmd_result);
-    current_table->entries[addr_breakdown.pud_index].set_table(pmd_pa);
+    current_table->entries[bd.pud_index].set_table(pmd_pa);
   }
+  current_table = get_table_from_physical(current_table->entries[bd.pud_index].get_phys_addr());
 
-  current_table = get_table_from_physical(current_table->entries[addr_breakdown.pud_index].get_phys_addr());
-
-  // PMD -> PTE
-  if (!current_table->entries[addr_breakdown.pmd_index].is_valid()) {
+#if defined(MOSS_ARCH_RISCV)
+  // Sv39: 3 levels — PMD IS the final L0 table.  pmd_index = bits[20:12].
+  current_table->entries[bd.pmd_index].set_page(phys_addr, permissions);
+#else
+  // 4-level: PMD → PTE table
+  if (!current_table->entries[bd.pmd_index].is_valid()) {
     auto pte_result = PageTableManager::allocate_page_table();
     if (!pte_result) {
       return VoidResult{pte_result.error()};
     }
-
     PhysAddr pte_pa = PageTableManager::get_physical_address(*pte_result);
-    current_table->entries[addr_breakdown.pmd_index].set_table(pte_pa);
+    current_table->entries[bd.pmd_index].set_table(pte_pa);
   }
+  current_table = get_table_from_physical(current_table->entries[bd.pmd_index].get_phys_addr());
+  current_table->entries[bd.pte_index].set_page(phys_addr, permissions);
+#endif
 
-  current_table = get_table_from_physical(current_table->entries[addr_breakdown.pmd_index].get_phys_addr());
-
-  // Set final L3 page table entry (must use set_page, not set_block, at L3)
-  current_table->entries[addr_breakdown.pte_index].set_page(phys_addr, permissions);
-
-  // Invalidate stale TLB entry for this VA
   invalidate_tlb_addr(virt_addr);
-
   return VoidResult{};
 }
 
@@ -789,9 +823,8 @@ VoidResult PageTableManager::unmap_page(VirtAddr virt_addr) {
   if (!pgd_entry.is_valid()) {
     return VoidResult{ErrorCode::NotFound};
   }
-  // 1GB block mapping — cannot unmap a single 4KB page from it
   if (!pgd_entry.is_table()) {
-    return VoidResult{ErrorCode::NotSupported};
+    return VoidResult{ErrorCode::NotSupported}; // 1GB block — cannot unmap 4KB from it
   }
 
   // PUD level
@@ -806,6 +839,15 @@ VoidResult PageTableManager::unmap_page(VirtAddr virt_addr) {
 
   // PMD level
   auto *pmd = get_table_from_physical(pud_entry.get_phys_addr());
+
+#if defined(MOSS_ARCH_RISCV)
+  // Sv39: PMD IS the final L0 table — pmd_index is the leaf entry.
+  auto &leaf_entry = pmd->entries[bd.pmd_index];
+  if (!leaf_entry.is_valid()) {
+    return VoidResult{ErrorCode::NotFound};
+  }
+  leaf_entry.clear();
+#else
   auto &pmd_entry = pmd->entries[bd.pmd_index];
   if (!pmd_entry.is_valid()) {
     return VoidResult{ErrorCode::NotFound};
@@ -814,17 +856,15 @@ VoidResult PageTableManager::unmap_page(VirtAddr virt_addr) {
     return VoidResult{ErrorCode::NotSupported}; // 2MB block
   }
 
-  // PTE level — the actual 4KB page
   auto *pte_table = get_table_from_physical(pmd_entry.get_phys_addr());
   auto &pte_entry = pte_table->entries[bd.pte_index];
   if (!pte_entry.is_valid()) {
     return VoidResult{ErrorCode::NotFound};
   }
-
-  // Clear the PTE and invalidate TLB for this address
   pte_entry.clear();
-  invalidate_tlb_addr(virt_addr);
+#endif
 
+  invalidate_tlb_addr(virt_addr);
   return VoidResult{};
 }
 
@@ -840,14 +880,19 @@ PageTableManager::PageInfo PageTableManager::query_page(VirtAddr virt_addr) {
 
   auto bd = break_virtual_address(virt_addr);
 
-  // PGD level
+  // PGD level (RISC-V Sv39: root L2 = 1GB entries)
   auto &pgd_entry = kernel_pgd->entries[bd.pgd_index];
   if (!pgd_entry.is_valid()) {
     return info;
   }
-  // 1GB block mapping
+  // 1GB block/gigapage at root level
   if (!pgd_entry.is_table()) {
+#if defined(MOSS_ARCH_RISCV)
+    // Sv39 root: pgd_index = bits[38:30], so gigapage covers 1GB
     info.phys_addr = pgd_entry.get_phys_addr() | (virt_addr & 0x3FFFFFFFULL);
+#else
+    info.phys_addr = pgd_entry.get_phys_addr() | (virt_addr & 0x3FFFFFFFULL);
+#endif
     info.attributes = pgd_entry.raw;
     info.mapped = true;
     info.level = 1;
@@ -861,11 +906,17 @@ PageTableManager::PageInfo PageTableManager::query_page(VirtAddr virt_addr) {
     return info;
   }
   if (!pud_entry.is_table()) {
-    // 1GB block at PUD level (ARM64 uses this for initial boot mapping)
+#if defined(MOSS_ARCH_RISCV)
+    // Sv39 L1: 2MB megapage
+    info.phys_addr = pud_entry.get_phys_addr() | (virt_addr & 0x1FFFFFULL);
+    info.level = 2;
+#else
+    // ARM64/x86: 1GB block at PUD level
     info.phys_addr = pud_entry.get_phys_addr() | (virt_addr & 0x3FFFFFFFULL);
+    info.level = 1;
+#endif
     info.attributes = pud_entry.raw;
     info.mapped = true;
-    info.level = 1;
     return info;
   }
 
@@ -875,6 +926,15 @@ PageTableManager::PageInfo PageTableManager::query_page(VirtAddr virt_addr) {
   if (!pmd_entry.is_valid()) {
     return info;
   }
+
+#if defined(MOSS_ARCH_RISCV)
+  // Sv39: PMD IS the final L0 table — pmd_index = 4KB leaf PTE.
+  info.phys_addr = pmd_entry.get_phys_addr() | (virt_addr & 0xFFFULL);
+  info.attributes = pmd_entry.raw;
+  info.mapped = true;
+  info.level = 3;
+  return info;
+#else
   if (!pmd_entry.is_table()) {
     // 2MB block mapping
     info.phys_addr = pmd_entry.get_phys_addr() | (virt_addr & 0x1FFFFFULL);
@@ -896,6 +956,7 @@ PageTableManager::PageInfo PageTableManager::query_page(VirtAddr virt_addr) {
   info.mapped = true;
   info.level = 3;
   return info;
+#endif
 }
 
 } // namespace moss::kernel::mm
