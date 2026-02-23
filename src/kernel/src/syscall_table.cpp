@@ -267,6 +267,10 @@ long sys_fork(long /*unused*/, long /*unused*/, long /*unused*/, long /*unused*/
   // 12c. Inherit process name from parent
   child_proc->set_name(parent_proc->name());
 
+  // 12d. Inherit process group and session from parent (POSIX semantics)
+  child_proc->set_pgid(parent_proc->pgid());
+  child_proc->set_sid(parent_proc->sid());
+
   // 13. Register child in parent's children list (for waitpid)
   parent_proc->add_child(child_proc->pid());
 
@@ -807,13 +811,14 @@ long sys_wait4(long wait_pid, long wstatus_addr, long options, long /*unused*/, 
       return 0;
     }
 
-    // Block: add self to wait queue, set Blocked, dequeue from scheduler.
+    // Block: add self to wait queue, set Sleeping (interruptible), dequeue.
     // When a child calls sys_exit, it wakes all waiters on parent's WQ,
     // setting them back to Ready and re-enqueueing them.  The thread
     // then resumes here (after being re-dispatched by scheduler_tick's
     // context_switch) and loops back to rescan for zombies.
+    // Sleeping = TASK_INTERRUPTIBLE: a future signal could wake us early.
     proc->child_exit_wait_queue().add_waiter(static_cast<void *>(cur));
-    cur->state = ProcessState::Blocked;
+    cur->state = ProcessState::Sleeping;
     if (g_scheduler) {
       g_scheduler->dequeue_task(cur);
     }
@@ -848,10 +853,331 @@ long sys_waitpid(long pid, long wstatus, long options, long /*unused*/, long /*u
   return sys_wait4(pid, wstatus, options, 0, 0, 0);
 }
 
-long sys_kill(long /*unused*/, long /*unused*/, long /*unused*/, long /*unused*/, long /*unused*/,
-              long /*unused*/) noexcept {
-  log::klog::warn("syscall: kill() not implemented");
-  return -errc::ENOSYS;
+// kill(pid, sig) — send signal to process.
+//   pid > 0:  send to specific process
+//   pid == 0: send to all processes in caller's process group
+//   pid == -1: send to all processes (except init) — simplified
+//   pid < -1: send to process group |pid|
+long sys_kill(long pid_arg, long sig_arg, long /*unused*/, long /*unused*/, long /*unused*/, long /*unused*/) noexcept {
+  using namespace moss::kernel::process;
+
+  auto signo = static_cast<u32>(sig_arg);
+  if (signo >= sig::NSIG) {
+    return -errc::EINVAL;
+  }
+
+  // sig == 0: permission check only (no signal sent)
+  if (signo == 0) {
+    return 0;
+  }
+
+  Thread *cur = CfsScheduler::get_current_task();
+  if (!cur || !g_process_manager || !g_scheduler) {
+    return -errc::ESRCH;
+  }
+
+  auto pid = static_cast<i64>(pid_arg);
+
+  if (pid > 0) {
+    // Send to specific process
+    Process *target = g_process_manager->find_process(static_cast<ProcessId>(pid));
+    if (!target) {
+      return -errc::ESRCH;
+    }
+    Thread *main_thread = target->get_main_thread();
+    if (!main_thread) {
+      return -errc::ESRCH;
+    }
+    if (!send_signal(main_thread, signo)) {
+      return -errc::EPERM;
+    }
+    // Wake the thread if it was sleeping (interruptible)
+    if (main_thread->state == ProcessState::Sleeping) {
+      g_scheduler->task_wakeup(main_thread, main_thread->cpu);
+    }
+    return 0;
+  }
+
+  if (pid == 0) {
+    // Send to all processes in caller's process group
+    Process *caller = g_process_manager->find_process(cur->owner_pid);
+    if (!caller) {
+      return -errc::ESRCH;
+    }
+    ProcessId my_pgid = caller->pgid();
+    bool sent = false;
+    g_process_manager->for_each_process([&](ProcessId, Process *proc) {
+      if (proc->pgid() == my_pgid) {
+        Thread *thr = proc->get_main_thread();
+        if (thr && send_signal(thr, signo)) {
+          if (thr->state == ProcessState::Sleeping) {
+            g_scheduler->task_wakeup(thr, thr->cpu);
+          }
+          sent = true;
+        }
+      }
+    });
+    return sent ? 0 : -errc::ESRCH;
+  }
+
+  if (pid < -1) {
+    // Send to process group |pid|
+    auto target_pgid = static_cast<ProcessId>(-pid);
+    bool sent = false;
+    g_process_manager->for_each_process([&](ProcessId, Process *proc) {
+      if (proc->pgid() == target_pgid) {
+        Thread *thr = proc->get_main_thread();
+        if (thr && send_signal(thr, signo)) {
+          if (thr->state == ProcessState::Sleeping) {
+            g_scheduler->task_wakeup(thr, thr->cpu);
+          }
+          sent = true;
+        }
+      }
+    });
+    return sent ? 0 : -errc::ESRCH;
+  }
+
+  // pid == -1: send to all (simplified — skip PID 0 and PID 1)
+  bool sent = false;
+  g_process_manager->for_each_process([&](ProcessId proc_pid, Process *proc) {
+    if (proc_pid <= 1) {
+      return; // skip kernel (0) and init (1)
+    }
+    Thread *thr = proc->get_main_thread();
+    if (thr && send_signal(thr, signo)) {
+      if (thr->state == ProcessState::Sleeping) {
+        g_scheduler->task_wakeup(thr, thr->cpu);
+      }
+      sent = true;
+    }
+  });
+  return sent ? 0 : -errc::ESRCH;
+}
+
+// ── Process group / session syscalls (POSIX job control) ──────────
+
+// getpgid(pid) — returns process group ID.
+// pid==0 means "calling process".
+long sys_getpgid(long pid_arg, long /*unused*/, long /*unused*/, long /*unused*/, long /*unused*/,
+                 long /*unused*/) noexcept {
+  using namespace moss::kernel::process;
+  Thread *cur = CfsScheduler::get_current_task();
+  if (!cur || !g_process_manager) {
+    return -errc::ESRCH;
+  }
+
+  ProcessId target = (pid_arg == 0) ? cur->owner_pid : static_cast<ProcessId>(pid_arg);
+  Process *proc = g_process_manager->find_process(target);
+  if (!proc) {
+    return -errc::ESRCH;
+  }
+  return static_cast<long>(proc->pgid());
+}
+
+// getpgrp() — equivalent to getpgid(0).
+long sys_getpgrp(long /*unused*/, long /*unused*/, long /*unused*/, long /*unused*/, long /*unused*/,
+                 long /*unused*/) noexcept {
+  return sys_getpgid(0, 0, 0, 0, 0, 0);
+}
+
+// getsid(pid) — returns session ID.
+// pid==0 means "calling process".
+long sys_getsid(long pid_arg, long /*unused*/, long /*unused*/, long /*unused*/, long /*unused*/,
+                long /*unused*/) noexcept {
+  using namespace moss::kernel::process;
+  Thread *cur = CfsScheduler::get_current_task();
+  if (!cur || !g_process_manager) {
+    return -errc::ESRCH;
+  }
+
+  ProcessId target = (pid_arg == 0) ? cur->owner_pid : static_cast<ProcessId>(pid_arg);
+  Process *proc = g_process_manager->find_process(target);
+  if (!proc) {
+    return -errc::ESRCH;
+  }
+  return static_cast<long>(proc->sid());
+}
+
+// setpgid(pid, pgid) — set process group of `pid` to `pgid`.
+// pid==0 → calling process;  pgid==0 → use pid as new pgid.
+// POSIX restrictions: can only set own or child's pgid, child must not
+// have called execve, and target pgid must exist in caller's session.
+// Simplified: allow setting own or child's pgid within same session.
+long sys_setpgid(long pid_arg, long pgid_arg, long /*unused*/, long /*unused*/, long /*unused*/,
+                 long /*unused*/) noexcept {
+  using namespace moss::kernel::process;
+  Thread *cur = CfsScheduler::get_current_task();
+  if (!cur || !g_process_manager) {
+    return -errc::ESRCH;
+  }
+
+  Process *caller = g_process_manager->find_process(cur->owner_pid);
+  if (!caller) {
+    return -errc::ESRCH;
+  }
+
+  ProcessId target_pid = (pid_arg == 0) ? cur->owner_pid : static_cast<ProcessId>(pid_arg);
+  ProcessId new_pgid = (pgid_arg == 0) ? target_pid : static_cast<ProcessId>(pgid_arg);
+
+  Process *target = g_process_manager->find_process(target_pid);
+  if (!target) {
+    return -errc::ESRCH;
+  }
+
+  // Must be self or a child
+  if (target_pid != cur->owner_pid && !caller->is_child(target_pid)) {
+    return -errc::ESRCH;
+  }
+
+  // Must be in the same session
+  if (target->sid() != caller->sid()) {
+    return -errc::EPERM;
+  }
+
+  target->set_pgid(new_pgid);
+  return 0;
+}
+
+// setpgrp() — equivalent to setpgid(0, 0).
+long sys_setpgrp(long /*unused*/, long /*unused*/, long /*unused*/, long /*unused*/, long /*unused*/,
+                 long /*unused*/) noexcept {
+  return sys_setpgid(0, 0, 0, 0, 0, 0);
+}
+
+// setsid() — create a new session.
+// Fails with EPERM if the caller is already a process group leader.
+long sys_setsid(long /*unused*/, long /*unused*/, long /*unused*/, long /*unused*/, long /*unused*/,
+                long /*unused*/) noexcept {
+  using namespace moss::kernel::process;
+  Thread *cur = CfsScheduler::get_current_task();
+  if (!cur || !g_process_manager) {
+    return -errc::ESRCH;
+  }
+
+  Process *proc = g_process_manager->find_process(cur->owner_pid);
+  if (!proc) {
+    return -errc::ESRCH;
+  }
+
+  // POSIX: cannot setsid() if already a process group leader (pgid == pid)
+  // Exception: allow if also session leader (already own session)
+  if (proc->pgid() == proc->pid() && proc->sid() != proc->pid()) {
+    return -errc::EPERM;
+  }
+
+  // Become session leader and process group leader
+  proc->set_sid(proc->pid());
+  proc->set_pgid(proc->pid());
+  return static_cast<long>(proc->sid());
+}
+
+// ── Signal handling syscalls ─────────────────────────────────────
+
+// User-space sigaction structure (must match userspace/syscall.h layout)
+struct UserSigaction {
+  unsigned long handler; // function pointer or SIG_DFL(0)/SIG_IGN(1)
+  unsigned long mask;    // signals to block during handler
+  unsigned long flags;   // SA_RESTART etc.
+};
+
+// sigaction(signo, act, oldact) — set signal handler.
+// act: pointer to UserSigaction (or nullptr to query only)
+// oldact: pointer to receive old action (or nullptr)
+long sys_sigaction(long sig_arg, long act_addr, long oldact_addr, long /*unused*/, long /*unused*/,
+                   long /*unused*/) noexcept {
+  using namespace moss::kernel::process;
+
+  auto signo = static_cast<u32>(sig_arg);
+  if (signo == 0 || signo >= sig::NSIG) {
+    return -errc::EINVAL;
+  }
+
+  // Cannot change SIGKILL or SIGSTOP handlers
+  if (signo == sig::SIGKILL || signo == sig::SIGSTOP) {
+    return -errc::EINVAL;
+  }
+
+  Thread *cur = CfsScheduler::get_current_task();
+  if (!cur || !g_process_manager) {
+    return -errc::ESRCH;
+  }
+
+  Process *proc = g_process_manager->find_process(cur->owner_pid);
+  if (!proc) {
+    return -errc::ESRCH;
+  }
+
+  SignalState *sigstate = get_signal_state(proc);
+  if (sigstate == nullptr) {
+    // Lazily initialize signal state
+    init_signal_state(proc);
+    sigstate = get_signal_state(proc);
+    if (sigstate == nullptr) {
+      return -errc::ENOMEM;
+    }
+  }
+
+  Sigaction &sa = sigstate->actions[signo];
+
+  // Return old action if requested
+  if (oldact_addr != 0) {
+    auto *oldact = reinterpret_cast<UserSigaction *>(static_cast<unsigned long long>(oldact_addr));
+    oldact->handler = sa.handler;
+    oldact->mask = sa.mask;
+    oldact->flags = sa.flags;
+  }
+
+  // Set new action if provided
+  if (act_addr != 0) {
+    const auto *act = reinterpret_cast<const UserSigaction *>(static_cast<unsigned long long>(act_addr));
+    sa.handler = static_cast<VirtAddr>(act->handler);
+    sa.mask = act->mask;
+    sa.flags = static_cast<u32>(act->flags);
+  }
+
+  return 0;
+}
+
+// sigprocmask(how, set, oldset) — modify thread's signal mask.
+// how: 0=SIG_BLOCK, 1=SIG_UNBLOCK, 2=SIG_SETMASK
+long sys_sigprocmask(long how, long set_addr, long oldset_addr, long /*unused*/, long /*unused*/,
+                     long /*unused*/) noexcept {
+  using namespace moss::kernel::process;
+
+  Thread *cur = CfsScheduler::get_current_task();
+  if (!cur) {
+    return -errc::ESRCH;
+  }
+
+  // Return old mask if requested
+  if (oldset_addr != 0) {
+    auto *oldset = reinterpret_cast<u64 *>(static_cast<unsigned long long>(oldset_addr));
+    *oldset = cur->signal_mask;
+  }
+
+  // Modify mask if set is provided
+  if (set_addr != 0) {
+    auto new_set = *reinterpret_cast<const u64 *>(static_cast<unsigned long long>(set_addr));
+    // SIGKILL and SIGSTOP can never be blocked
+    new_set &= ~sig::UNCATCHABLE_MASK;
+
+    switch (how) {
+    case 0: // SIG_BLOCK
+      cur->signal_mask |= new_set;
+      break;
+    case 1: // SIG_UNBLOCK
+      cur->signal_mask &= ~new_set;
+      break;
+    case 2: // SIG_SETMASK
+      cur->signal_mask = new_set;
+      break;
+    default:
+      return -errc::EINVAL;
+    }
+  }
+
+  return 0;
 }
 
 // ── VFS-backed file system calls ─────────────────────────────────
@@ -1390,7 +1716,7 @@ long sys_clock_gettime(long /* clock_id */, long time_ns_addr, long /*unused*/, 
 static void nanosleep_wake_callback(void *data) noexcept {
   using namespace moss::kernel::process;
   auto *thread = static_cast<Thread *>(data);
-  if (thread && thread->state == ProcessState::Blocked) {
+  if (thread && is_blocked_state(thread->state)) {
     if (g_scheduler) {
       g_scheduler->task_wakeup(thread, thread->cpu);
     }
@@ -1426,11 +1752,11 @@ long sys_nanosleep(long ns_addr, long /* remaining */, long /*unused*/, long /*u
   sleep_timer.init(timer::TimerMode::OneShot, nanosleep_wake_callback, cur);
   sleep_timer.start_relative(duration);
 
-  // 2. Block: set Blocked, dequeue, context-switch to bootstrap.
+  // 2. Block: set Sleeping (interruptible), dequeue, context-switch.
   //    Same pattern as sys_wait4.  After context_switch, the CPU
   //    enters idle (WFI) if no other tasks are runnable, causing
   //    idle_time_ns to accumulate correctly.
-  cur->state = ProcessState::Blocked;
+  cur->state = ProcessState::Sleeping;
   g_scheduler->dequeue_task(cur);
 
 #if defined(MOSS_ARCH_ARM64)
@@ -1704,7 +2030,7 @@ static void uart_rx_irq_handler(u32 /*irq*/, void * /*context*/) noexcept {
   *uart_icr = (1U << 4);
 
   // Wake the blocked reader if any
-  if (blocked_reader_ != nullptr && blocked_reader_->state == process::ProcessState::Blocked) {
+  if (blocked_reader_ != nullptr && process::is_blocked_state(blocked_reader_->state)) {
     auto *thr = blocked_reader_;
     blocked_reader_ = nullptr;
     if (process::g_scheduler) {
@@ -1773,8 +2099,8 @@ extern "C" int console_getc_blocking() noexcept {
   }
 
   while (buf_empty()) {
-    // 1. Set Blocked + dequeue first
-    cur->state = ProcessState::Blocked;
+    // 1. Set Sleeping (interruptible) + dequeue first
+    cur->state = ProcessState::Sleeping;
     g_scheduler->dequeue_task(cur);
 
     // 2. Record as blocked reader — if UART IRQ fires between here
@@ -1826,17 +2152,17 @@ const SyscallDescriptor SYSCALL_TABLE[static_cast<int>(SyscallNumber::MAX_SYSCAL
     {"getgid", handlers::sys_getgid, 0, true, "获取组ID"},
     {"geteuid", handlers::sys_not_implemented, 0, false, "获取有效用户ID"},
     {"getegid", handlers::sys_not_implemented, 0, false, "获取有效组ID"},
-    {"setsid", handlers::sys_not_implemented, 0, false, "设置会话ID"},
-    {"getpgid", handlers::sys_not_implemented, 1, false, "获取进程组ID"},
+    {"setsid", handlers::sys_setsid, 0, true, "创建新会话"},
+    {"getpgid", handlers::sys_getpgid, 1, true, "获取进程组ID"},
 
     // === 进程管理 (10-29) ===
     {"fork", handlers::sys_fork, 0, true, "创建子进程"},
     {"execve", handlers::sys_execve, 3, true, "执行程序"},
     {"wait4", handlers::sys_wait4, 4, true, "等待子进程"},
     {"waitpid", handlers::sys_waitpid, 3, true, "等待指定进程"},
-    {"kill", handlers::sys_kill, 2, false, "发送信号"},
-    {"sigaction", handlers::sys_not_implemented, 3, false, "信号处理设置"},
-    {"sigprocmask", handlers::sys_not_implemented, 3, false, "信号掩码操作"},
+    {"kill", handlers::sys_kill, 2, true, "发送信号"},
+    {"sigaction", handlers::sys_sigaction, 3, true, "信号处理设置"},
+    {"sigprocmask", handlers::sys_sigprocmask, 3, true, "信号掩码操作"},
     {"sigreturn", handlers::sys_not_implemented, 0, false, "信号返回"},
     {"sched_yield", handlers::sys_sched_yield, 0, true, "Yield CPU"},
     {"sched_getaffinity", handlers::sys_sched_getaffinity, 3, true, "Get CPU affinity"},
@@ -1845,9 +2171,9 @@ const SyscallDescriptor SYSCALL_TABLE[static_cast<int>(SyscallNumber::MAX_SYSCAL
     {"setgid", handlers::sys_not_implemented, 1, false, "设置组ID"},
     {"seteuid", handlers::sys_not_implemented, 1, false, "设置有效用户ID"},
     {"setegid", handlers::sys_not_implemented, 1, false, "设置有效组ID"},
-    {"getpgrp", handlers::sys_not_implemented, 0, false, "获取进程组"},
-    {"setpgrp", handlers::sys_not_implemented, 0, false, "设置进程组"},
-    {"getsid", handlers::sys_not_implemented, 1, false, "获取会话ID"},
+    {"getpgrp", handlers::sys_getpgrp, 0, true, "获取进程组"},
+    {"setpgrp", handlers::sys_setpgrp, 0, true, "设置进程组"},
+    {"getsid", handlers::sys_getsid, 1, true, "获取会话ID"},
     {"nice", handlers::sys_nice, 1, true, "Set process nice value"},
     {"getpriority", handlers::sys_getpriority, 2, true, "Get process priority"},
 
@@ -1989,6 +2315,27 @@ long SyscallDispatcher::dispatch(long syscall_number, long arg0, long arg1, long
     ++g_syscall_stats.successful_syscalls;
   } else {
     ++g_syscall_stats.failed_syscalls;
+  }
+
+  // Signal checkpoint: before returning to user-space, check for
+  // pending signals and process them.  If a signal's default action
+  // is Terminate, do_exit() is called (which does not return).
+  {
+    using namespace moss::kernel::process;
+    Thread *cur = CfsScheduler::get_current_task();
+    if (cur != nullptr && signal_pending(cur)) {
+      if (do_signal_checkpoint(cur)) {
+        // Signal caused termination — call do_exit (noreturn)
+        Process *proc = g_process_manager ? g_process_manager->find_process(cur->owner_pid) : nullptr;
+        if (proc) {
+          do_exit(cur, proc, 128 + static_cast<i32>(cur->pending_signals & 0xFF));
+        }
+      }
+      // If a signal interrupted a sleeping syscall, return -EINTR
+      if (result == 0 && is_blocked_state(cur->state)) {
+        result = -errc::EINTR;
+      }
+    }
   }
 
   return result;

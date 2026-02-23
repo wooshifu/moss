@@ -211,6 +211,9 @@ KernelResult<Process *> ProcessManager::create_process(ProcessId parent_pid) noe
 
   processes_.insert_or_update(new_pid, process);
 
+  // Initialize per-process signal state (handlers table)
+  init_signal_state(process);
+
   record_fork();
   return KernelResult<Process *>{process};
 }

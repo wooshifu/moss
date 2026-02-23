@@ -21,5 +21,6 @@ import moss.logging;
 
 // Re-export all partitions
 export import :types;
+export import :signal;
 export import :scheduler;
 export import :load_balancer;

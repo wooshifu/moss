@@ -1179,13 +1179,17 @@ public:
   }
 
   // State transition management
+  //
+  // task_block: transition to Sleeping (interruptible) by default.
+  // Callers that need uninterruptible sleep should set DiskSleep explicitly
+  // before calling dequeue_task().
   void task_blocked(Thread *task) noexcept {
     if (task == nullptr) {
       return;
     }
 
     ProcessState old_state = task->state;
-    task->state = ProcessState::Blocked;
+    task->state = ProcessState::Sleeping;
 
     if (old_state == ProcessState::Running || old_state == ProcessState::Ready) {
       dequeue_task(task);
@@ -1194,7 +1198,7 @@ public:
   }
 
   void task_wakeup(Thread *task, u32 target_cpu) noexcept {
-    if (task == nullptr || task->state != ProcessState::Blocked) {
+    if (task == nullptr || !is_blocked_state(task->state)) {
       return;
     }
 
@@ -1233,14 +1237,15 @@ public:
       valid_transition = (new_state == ProcessState::Ready);
       break;
     case ProcessState::Ready:
-      valid_transition = (new_state == ProcessState::Running || new_state == ProcessState::Blocked ||
-                          new_state == ProcessState::Terminated);
+      valid_transition =
+          (new_state == ProcessState::Running || is_blocked_state(new_state) || new_state == ProcessState::Terminated);
       break;
     case ProcessState::Running:
-      valid_transition = (new_state == ProcessState::Ready || new_state == ProcessState::Blocked ||
-                          new_state == ProcessState::Terminated);
+      valid_transition =
+          (new_state == ProcessState::Ready || is_blocked_state(new_state) || new_state == ProcessState::Terminated);
       break;
-    case ProcessState::Blocked:
+    case ProcessState::Sleeping:
+    case ProcessState::DiskSleep:
       valid_transition = (new_state == ProcessState::Ready || new_state == ProcessState::Terminated);
       break;
     case ProcessState::Terminated:
