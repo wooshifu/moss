@@ -186,8 +186,11 @@ inline void cpu_idle_once() noexcept {
   asm volatile("rdtsc" : "=a"(lo), "=d"(hi));
   return (static_cast<u64>(hi) << 32) | lo;
 #elif defined(MOSS_ARCH_RISCV)
+  // Use rdtime instead of rdcycle: cycle counter may be disabled in S-mode
+  // (requires mcounteren.CY which OpenSBI may not set), but time is always
+  // accessible from S-mode per RISC-V privileged spec.
   u64 val;
-  asm volatile("rdcycle %0" : "=r"(val));
+  asm volatile("rdtime %0" : "=r"(val));
   return val;
 #else
   return 0;

@@ -56,14 +56,14 @@ inline void putc(char c) noexcept {
   asm volatile("outb %0, %1" ::"a"(static_cast<u8>(c)), "Nd"(static_cast<u16>(0x3F8)));
 
 #elif defined(MOSS_ARCH_RISCV)
-  // NS16550 UART: TX data register at base+0x00, Line Status at base+0x14
-  // Wait for THR empty (bit 5 of LSR) before transmitting
+  // NS16550 UART on QEMU virt: byte-stride registers (reg_shift=0).
+  // THR (Transmit Holding Register) at offset 0, LSR at offset 5.
   auto base = platform::uart_base();
-  volatile u32 *uart_data = reinterpret_cast<volatile u32 *>(base);
-  volatile u32 *uart_lsr = reinterpret_cast<volatile u32 *>(base + 0x14);
-  while ((*uart_lsr & (1U << 5)) == 0) {
+  volatile u8 *uart_thr = reinterpret_cast<volatile u8 *>(base);
+  volatile u8 *uart_lsr = reinterpret_cast<volatile u8 *>(base + 5);
+  while ((*uart_lsr & 0x20) == 0) {
   }
-  *uart_data = static_cast<u32>(static_cast<unsigned char>(c));
+  *uart_thr = static_cast<u8>(c);
 #endif
 }
 
@@ -121,15 +121,15 @@ inline int getc() noexcept {
   return static_cast<int>(data);
 
 #elif defined(MOSS_ARCH_RISCV)
-  // NS16550 UART: data register at base+0x00, Line Status at base+0x14
-  // DR (Data Ready) is bit 0 of LSR
+  // NS16550 UART on QEMU virt: byte-stride registers (reg_shift=0).
+  // RBR (Receive Buffer Register) at offset 0, LSR at offset 5.
   auto base = platform::uart_base();
-  volatile u32 *uart_data = reinterpret_cast<volatile u32 *>(base);
-  volatile u32 *uart_lsr = reinterpret_cast<volatile u32 *>(base + 0x14);
+  volatile u8 *uart_rbr = reinterpret_cast<volatile u8 *>(base);
+  volatile u8 *uart_lsr = reinterpret_cast<volatile u8 *>(base + 5);
 
   if ((*uart_lsr & 0x01) == 0)
     return -1; // No data ready
-  return static_cast<int>(*uart_data & 0xFFU);
+  return static_cast<int>(*uart_rbr);
 
 #else
   return -1;

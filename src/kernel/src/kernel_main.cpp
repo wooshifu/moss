@@ -290,6 +290,72 @@ unsigned long long get_current_pgd_phys() noexcept {
   process::do_exit(cur, proc, static_cast<i32>(exit_code));
 }
 
+// ============================================================================
+// RISC-V trap handlers — called from riscv_syscall.S dispatch
+// ============================================================================
+#if defined(MOSS_ARCH_RISCV) || defined(__riscv) || defined(__riscv__)
+
+// S-mode timer interrupt handler.
+// Reprograms stimecmp via HAL and calls scheduler_tick().
+void riscv_timer_handler() noexcept {
+  namespace timer_hal = ::moss::kernel::hal::timer;
+
+  timer_hal::ack_interrupt();
+
+  auto &ts = ::moss::kernel::timer::TimerSubsystem::instance();
+  u64 tick_ns = ::moss::kernel::process::cfs_params::SCHED_LATENCY_NS;
+  u64 delta_cycles = ts.clocksource().ns_to_cycles(tick_ns);
+  u64 counter_now = timer_hal::read_counter();
+  timer_hal::set_compare(counter_now + delta_cycles);
+
+  u32 cpu = ::moss::kernel::arch::get_current_cpu_id();
+  if (cpu == 0) {
+    ts.handle_interrupt();
+  } else {
+    if (::moss::kernel::process::g_scheduler) {
+      ::moss::kernel::process::g_scheduler->scheduler_tick();
+    }
+  }
+}
+
+// S-mode external interrupt handler (PLIC).
+// Claims the IRQ, dispatches via GIC, then completes.
+void riscv_external_handler() noexcept {
+  if (::moss::kernel::interrupts::g_gic) {
+    ::moss::kernel::interrupts::g_gic->handle_interrupt();
+  }
+}
+
+// Fatal exception handler — prints scause/sepc/stval and halts.
+[[noreturn]] void riscv_exception_handler(u64 scause, u64 sepc, u64 stval) noexcept {
+  ::moss::kernel::hal::uart::puts("RISC-V EXCEPTION: scause=0x");
+
+  // Inline hex print (no printf available)
+  auto print_hex = [](u64 val) {
+    constexpr char hex[] = "0123456789ABCDEF";
+    char buf[17];
+    for (int i = 15; i >= 0; --i) {
+      buf[15 - i] = hex[(val >> (i * 4)) & 0xF];
+    }
+    buf[16] = '\0';
+    ::moss::kernel::hal::uart::puts(buf);
+  };
+
+  print_hex(scause);
+  ::moss::kernel::hal::uart::puts(" sepc=0x");
+  print_hex(sepc);
+  ::moss::kernel::hal::uart::puts(" stval=0x");
+  print_hex(stval);
+  ::moss::kernel::hal::uart::puts("\n");
+
+  // Halt
+  while (true) {
+    asm volatile("wfi");
+  }
+}
+
+#endif // MOSS_ARCH_RISCV
+
 } // extern "C"
 
 // Syscall convention info (multi-arch)

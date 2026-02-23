@@ -1,29 +1,23 @@
 // =============================================================================
-// RISC-V 64-bit System Call Entry Point
+// RISC-V 64-bit Trap Entry Point
 // =============================================================================
 //
-// This file implements the low-level system call entry/exit path for RV64.
+// Unified trap handler for RISC-V S-mode.  All traps (interrupts and
+// exceptions) vector here via stvec (direct mode).
 //
-// Execution flow:
-//   1. User-space executes `ecall` → CPU traps to S-mode, SCAUSE = 8
-//      (Environment call from U-mode).
-//   2. The trap vector routes the exception here.
-//   3. syscall_entry_point allocates a 256-byte trap frame on the kernel
-//      stack, saves ALL 32 general-purpose registers plus ra, remaps
-//      arguments from the RISC-V syscall ABI to the standard calling
-//      convention, and calls system_call_handler().
-//   4. On return, the result (in a0) is patched into the saved frame,
-//      registers are restored, and execution returns to user-space.
+// Dispatch logic (based on scause):
+//   bit 63 = 1 → Interrupt:
+//     cause & 0x7F == 5  → S-mode timer interrupt → riscv_timer_handler()
+//     cause & 0x7F == 9  → S-mode external IRQ    → riscv_external_handler()
+//     other              → spurious, ignore
+//   bit 63 = 0 → Exception:
+//     cause == 8 or 9    → ecall (U/S-mode)       → system_call_handler()
+//     other              → fatal exception         → riscv_exception_handler()
 //
 // RISC-V system call ABI (Linux-compatible):
 //   a7 (x17) = system call number
 //   a0 - a5  = arguments 0 - 5
 //   Return value delivered in a0
-//
-// C handler prototype:
-//   extern "C" int64_t system_call_handler(
-//       uint64_t nr, uint64_t a0, uint64_t a1, uint64_t a2,
-//       uint64_t a3, uint64_t a4, uint64_t a5);
 //
 // Trap frame layout (256 bytes, SP-relative offsets):
 //   +0x00  : ra   (x1)      — return address
@@ -47,10 +41,7 @@
 //   +0x90  : s2   (x18)
 //   ...
 //   +0xD8  : s11  (x27)
-//
-// NOTE: Currently uses `ret` instead of `sret` because the kernel runs
-//       all code in S-mode.  A future user-space implementation should
-//       switch to SRET for proper privilege-level return.
+//   +0xE0  : sepc           — saved exception PC
 // =============================================================================
 
 .section .text
@@ -59,54 +50,167 @@
 .global syscall_return
 
 // =============================================================================
-// syscall_entry_point — system call handler for RISC-V
+// syscall_entry_point — unified trap handler for RISC-V
 // =============================================================================
 .type syscall_entry_point, @function
 syscall_entry_point:
     // ---- Allocate 256-byte trap frame on kernel stack ----
     addi    sp, sp, -256
 
-    // ---- Save caller-saved (temporary) registers ----
-    sd      ra, 0(sp)                   // x1  — return address
-    sd      t0, 8(sp)                   // x5  — temporary
-    sd      t1, 16(sp)                  // x6
-    sd      t2, 24(sp)                  // x7
-    sd      t3, 32(sp)                  // x28
-    sd      t4, 40(sp)                  // x29
-    sd      t5, 48(sp)                  // x30
-    sd      t6, 56(sp)                  // x31
+    // ---- Save minimal registers for scause dispatch ----
+    sd      ra, 0(sp)
+    sd      t0, 8(sp)
+    sd      t1, 16(sp)
+    sd      t2, 24(sp)
 
-    // ---- Save argument registers (a0-a7) ----
-    sd      a0, 64(sp)                  // x10 — arg0 / return value slot
-    sd      a1, 72(sp)                  // x11 — arg1
-    sd      a2, 80(sp)                  // x12 — arg2
-    sd      a3, 88(sp)                  // x13 — arg3
-    sd      a4, 96(sp)                  // x14 — arg4
-    sd      a5, 104(sp)                 // x15 — arg5
-    sd      a6, 112(sp)                 // x16 — (unused for syscalls)
-    sd      a7, 120(sp)                 // x17 — syscall number
+    // ---- Read scause to determine trap type ----
+    csrr    t0, scause
 
-    // ---- Save callee-saved registers (s0-s11) ----
-    sd      s0, 128(sp)                 // x8  — frame pointer / s0
-    sd      s1, 136(sp)                 // x9
-    sd      s2, 144(sp)                 // x18
-    sd      s3, 152(sp)                 // x19
-    sd      s4, 160(sp)                 // x20
-    sd      s5, 168(sp)                 // x21
-    sd      s6, 176(sp)                 // x22
-    sd      s7, 184(sp)                 // x23
-    sd      s8, 192(sp)                 // x24
-    sd      s9, 200(sp)                 // x25
-    sd      s10, 208(sp)                // x26
-    sd      s11, 216(sp)                // x27
+    // ---- Save sepc (needed for all paths) ----
+    csrr    t1, sepc
+    sd      t1, 224(sp)                 // +0xE0: saved sepc
 
-    // ---- Remap RISC-V syscall ABI → standard C calling convention ----
-    //
-    //  C prototype: system_call_handler(nr, a0, a1, a2, a3, a4, a5)
-    //               registers:          a0  a1  a2  a3  a4  a5  a6
-    //
-    //  Syscall ABI: a7=nr, a0=arg0, a1=arg1, a2=arg2, a3=arg3, a4=arg4, a5=arg5
-    //
+    // Check bit 63: interrupt (1) vs exception (0)
+    bltz    t0, .Ltrap_interrupt
+
+    // ---- Exception path ----
+    // Check for ecall from U-mode (8) or S-mode (9)
+    li      t1, 8
+    beq     t0, t1, .Ltrap_ecall
+    li      t1, 9
+    beq     t0, t1, .Ltrap_ecall
+
+    // Unknown exception — call C handler and halt
+    // a0 = scause, a1 = sepc, a2 = stval
+    mv      a0, t0
+    ld      a1, 224(sp)
+    csrr    a2, stval
+    call    riscv_exception_handler
+    // Should not return — halt
+    j       .Ltrap_halt
+
+// ---- Interrupt path ----
+.Ltrap_interrupt:
+    // Mask off bit 63 to get interrupt cause number
+    slli    t1, t0, 1
+    srli    t1, t1, 1                   // t1 = cause & 0x7FFFFFFFFFFFFFFF
+
+    // S-mode timer interrupt (cause == 5)
+    li      t2, 5
+    beq     t1, t2, .Ltrap_timer
+
+    // S-mode external interrupt (cause == 9)
+    li      t2, 9
+    beq     t1, t2, .Ltrap_external
+
+    // Other interrupt — spurious, restore and return
+    j       .Ltrap_irq_return
+
+// ---- Timer interrupt ----
+.Ltrap_timer:
+    // Save remaining caller-saved regs (callee-saved regs are preserved by C)
+    sd      t3, 32(sp)
+    sd      t4, 40(sp)
+    sd      t5, 48(sp)
+    sd      t6, 56(sp)
+    sd      a0, 64(sp)
+    sd      a1, 72(sp)
+    sd      a2, 80(sp)
+    sd      a3, 88(sp)
+    sd      a4, 96(sp)
+    sd      a5, 104(sp)
+    sd      a6, 112(sp)
+    sd      a7, 120(sp)
+
+    call    riscv_timer_handler
+
+    // Restore caller-saved regs
+    ld      a7, 120(sp)
+    ld      a6, 112(sp)
+    ld      a5, 104(sp)
+    ld      a4, 96(sp)
+    ld      a3, 88(sp)
+    ld      a2, 80(sp)
+    ld      a1, 72(sp)
+    ld      a0, 64(sp)
+    ld      t6, 56(sp)
+    ld      t5, 48(sp)
+    ld      t4, 40(sp)
+    ld      t3, 32(sp)
+    j       .Ltrap_irq_return
+
+// ---- External interrupt ----
+.Ltrap_external:
+    sd      t3, 32(sp)
+    sd      t4, 40(sp)
+    sd      t5, 48(sp)
+    sd      t6, 56(sp)
+    sd      a0, 64(sp)
+    sd      a1, 72(sp)
+    sd      a2, 80(sp)
+    sd      a3, 88(sp)
+    sd      a4, 96(sp)
+    sd      a5, 104(sp)
+    sd      a6, 112(sp)
+    sd      a7, 120(sp)
+
+    call    riscv_external_handler
+
+    ld      a7, 120(sp)
+    ld      a6, 112(sp)
+    ld      a5, 104(sp)
+    ld      a4, 96(sp)
+    ld      a3, 88(sp)
+    ld      a2, 80(sp)
+    ld      a1, 72(sp)
+    ld      a0, 64(sp)
+    ld      t6, 56(sp)
+    ld      t5, 48(sp)
+    ld      t4, 40(sp)
+    ld      t3, 32(sp)
+    j       .Ltrap_irq_return
+
+// ---- Interrupt return (sret) ----
+.Ltrap_irq_return:
+    // Restore sepc and minimal regs, then sret
+    ld      t1, 224(sp)
+    csrw    sepc, t1
+    ld      t2, 24(sp)
+    ld      t1, 16(sp)
+    ld      t0, 8(sp)
+    ld      ra, 0(sp)
+    addi    sp, sp, 256
+    sret
+
+// ---- Ecall (syscall) path ----
+.Ltrap_ecall:
+    // Save ALL registers for full syscall frame
+    sd      t3, 32(sp)
+    sd      t4, 40(sp)
+    sd      t5, 48(sp)
+    sd      t6, 56(sp)
+    sd      a0, 64(sp)
+    sd      a1, 72(sp)
+    sd      a2, 80(sp)
+    sd      a3, 88(sp)
+    sd      a4, 96(sp)
+    sd      a5, 104(sp)
+    sd      a6, 112(sp)
+    sd      a7, 120(sp)
+    sd      s0, 128(sp)
+    sd      s1, 136(sp)
+    sd      s2, 144(sp)
+    sd      s3, 152(sp)
+    sd      s4, 160(sp)
+    sd      s5, 168(sp)
+    sd      s6, 176(sp)
+    sd      s7, 184(sp)
+    sd      s8, 192(sp)
+    sd      s9, 200(sp)
+    sd      s10, 208(sp)
+    sd      s11, 216(sp)
+
+    // Remap RISC-V syscall ABI → C calling convention
     ld      a0, 120(sp)                 // C arg0 (nr)   ← saved a7
     ld      a1, 64(sp)                  // C arg1 (a0)   ← saved a0
     ld      a2, 72(sp)                  // C arg2 (a1)   ← saved a1
@@ -115,13 +219,12 @@ syscall_entry_point:
     ld      a5, 96(sp)                  // C arg5 (a4)   ← saved a4
     ld      a6, 104(sp)                 // C arg6 (a5)   ← saved a5
 
-    // ---- Call the C system call dispatcher ----
     call    system_call_handler
 
-    // ---- Patch return value into saved a0 slot ----
+    // Patch return value into saved a0 slot
     sd      a0, 64(sp)
 
-    // ---- Restore callee-saved registers (s11 → s0, reverse order) ----
+    // Restore all registers
     ld      s11, 216(sp)
     ld      s10, 208(sp)
     ld      s9, 200(sp)
@@ -134,18 +237,14 @@ syscall_entry_point:
     ld      s2, 144(sp)
     ld      s1, 136(sp)
     ld      s0, 128(sp)
-
-    // ---- Restore argument registers ----
-    ld      a7, 120(sp)                 // syscall number (for diagnostics)
+    ld      a7, 120(sp)
     ld      a6, 112(sp)
     ld      a5, 104(sp)
     ld      a4, 96(sp)
     ld      a3, 88(sp)
     ld      a2, 80(sp)
     ld      a1, 72(sp)
-    ld      a0, 64(sp)                  // return value (patched above)
-
-    // ---- Restore temporary registers ----
+    ld      a0, 64(sp)
     ld      t6, 56(sp)
     ld      t5, 48(sp)
     ld      t4, 40(sp)
@@ -153,18 +252,17 @@ syscall_entry_point:
     ld      t2, 24(sp)
     ld      t1, 16(sp)
     ld      t0, 8(sp)
-    ld      ra, 0(sp)                   // return address
+    ld      ra, 0(sp)
 
-    // ---- Deallocate trap frame ----
     addi    sp, sp, 256
 
-    // ---- Return to caller ----
-    // Uses RET while all code runs in S-mode.  Switching to SRET requires:
-    //   1. Saving SEPC on entry (ecall address + 4 to skip the ecall instruction)
-    //   2. Restoring SEPC here and clearing SSTATUS.SPP for U-mode return
-    //   3. User-space address space separation with distinct SATP values
-    // When ready: csrw sepc, <saved_sepc>; csrc sstatus, (1<<8); sret
+    // Return via ret (all code in S-mode currently)
     ret
+
+// ---- Halt loop for fatal exceptions ----
+.Ltrap_halt:
+    wfi
+    j       .Ltrap_halt
 .size syscall_entry_point, . - syscall_entry_point
 
 // =============================================================================

@@ -52,6 +52,13 @@ SECTIONS
         _data_end = .;
     }
 
+    .init_array : ALIGN(8) {
+        __init_array_start = .;
+        KEEP(*(.init_array))
+        KEEP(*(SORT(.init_array.*)))
+        __init_array_end = .;
+    }
+
     /* RISC-V global pointer for linker relaxation (must be in .sdata range) */
     PROVIDE(__global_pointer$ = .);
     .sdata : {

@@ -32,7 +32,7 @@ ARCH_CONFIG = {
         "qemu_system": "qemu-system-x86_64",
         "machine": "q35",
         "cpu": "qemu64",
-        "extra_args": [],
+        "extra_args": ["-device", "isa-debug-exit,iobase=0x501,iosize=2"],
     },
     "RISCV": {
         "qemu_system": "qemu-system-riscv64",

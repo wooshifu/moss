@@ -158,7 +158,7 @@ inline constexpr PlatformDefaults DEFAULTS{
     .intc =
         {
             .dist_base = 0x0C000000, // PLIC base
-            .cpu_base = 0,           // PLIC has no separate CPU interface
+            .cpu_base = 0x0C201000,  // PLIC S-mode hart 0 context (base + 0x200000 + 1*0x1000)
             .redist_base = 0,        // N/A for RISC-V
         },
     .memory =
