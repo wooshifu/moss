@@ -460,6 +460,18 @@ private:
 
     // Linux-style SMP delayed activation: activate secondary CPUs after scheduler is ready
     if (config_.enable_smp) {
+      // Pre-create idle tasks for ALL CPUs on BSP (serial, single-threaded).
+      // This avoids concurrent heap allocation from 16 CPUs simultaneously
+      // calling `new IdleTask()` in cpu_startup_entry(), which caused heap
+      // corruption (IdleTask::cpu_id_ = 0xFFFFFFFF) under high contention.
+      early_debug_print("[sched] pre-creating idle tasks on BSP...\n");
+      for (u32 cpu = 0; cpu < g_num_cpus; ++cpu) {
+        auto *idle = process::create_idle_task(cpu);
+        if (idle) {
+          scheduler_->set_idle_task(cpu, idle);
+        }
+      }
+
       early_debug_print("[sched] activating parked secondary CPUs...\n");
 
       // Activate all parked secondary CPUs

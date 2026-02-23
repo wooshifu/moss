@@ -981,7 +981,7 @@ public:
     idle_tasks_.get_cpu(cpu_id) = idle_task;
 
     if (idle_task) {
-      log::klog::info("set idle task CPU{}: TID={}", cpu_id, idle_task->get_cpu_id());
+      log::klog::info("set idle task CPU{}: TID={}", cpu_id, static_cast<u32>(idle_task->tid));
     } else {
       log::klog::info("set idle task CPU{}: TID=NULL", cpu_id);
     }
@@ -1087,14 +1087,12 @@ public:
       }
     }
 
+    // Idle tasks are pre-created by BSP in Kernel::initialize_scheduler()
+    // before secondary CPUs are activated.  This avoids concurrent `new`
+    // from 16 CPUs causing heap corruption.
     IdleTask *idle_task = get_idle_task(cpu_id);
     if (idle_task == nullptr) {
-      log::klog::info("CPU{}: idle task not set, creating default", cpu_id);
-
-      idle_task = create_idle_task(cpu_id);
-      if (idle_task) {
-        set_idle_task(cpu_id, idle_task);
-      }
+      log::klog::error("CPU{}: idle task not pre-created by BSP!", cpu_id);
     }
 
     // Secondary CPUs: wait for BSP to finish creating and dispatching
