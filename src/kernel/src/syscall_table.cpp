@@ -1,6 +1,13 @@
 // MOSS内核系统调用表实现
 // 提供完整的系统调用处理和分发机制
 
+module;
+
+#ifdef MOSS_ARCH_X86_64
+// Cross-module interrupt dispatch callback (defined in boot_impl.cpp)
+extern "C" void (*g_x86_64_uart_rx_handler)() noexcept;
+#endif
+
 module moss.kernel;
 
 import moss.abi;
@@ -444,6 +451,15 @@ long sys_execve(long pathname_addr, long argv_addr, long /* envp */, long /*unus
       asm volatile("sfence.vma" ::: "memory");
     }
   }
+#elif defined(MOSS_ARCH_X86_64)
+  // Switch CR3 to kernel PGD before freeing old user page tables.
+  {
+    auto *kpgd = mm::PageTableManager::get_kernel_pgd();
+    if (kpgd) {
+      u64 kpgd_phys = mm::PageTableManager::get_physical_address(kpgd);
+      asm volatile("mov %0, %%cr3" ::"r"(kpgd_phys) : "memory");
+    }
+  }
 #endif
 
   // 6. Free old user page tables
@@ -674,6 +690,11 @@ long sys_execve(long pathname_addr, long argv_addr, long /* envp */, long /*unus
     asm volatile("csrw satp, %0" ::"r"(satp_val) : "memory");
     asm volatile("sfence.vma" ::: "memory");
   }
+#elif defined(MOSS_ARCH_X86_64)
+  if (proc->address_space() && proc->address_space()->pgd_phys != 0) {
+    u64 cr3_val = proc->address_space()->pgd_phys;
+    asm volatile("mov %0, %%cr3" ::"r"(cr3_val) : "memory");
+  }
 #endif
 
   // 12. Set up user stack with argc/argv, then reset thread context.
@@ -743,6 +764,12 @@ long sys_execve(long pathname_addr, long argv_addr, long /* envp */, long /*unus
   cur->context.x[11] = (kernel_argc > 0) // a1 = argv
                            ? (user_sp)   // argv_base == user_sp
                            : 0;
+#elif defined(MOSS_ARCH_X86_64)
+  cur->context.rdi = kernel_argc;      // rdi = argc (System V ABI arg0)
+  cur->context.rsi = (kernel_argc > 0) // rsi = argv (System V ABI arg1)
+                         ? (user_sp)   // argv_base == user_sp
+                         : 0;
+  cur->context.pstate = 0x202; // RFLAGS: IF=1 (interrupts enabled on iretq)
 #endif
   cur->needs_initial_eret = true; // next dispatch does switch_to_user + eret
   cur->stack_base = stack_bottom;
@@ -795,6 +822,26 @@ long sys_execve(long pathname_addr, long argv_addr, long /* envp */, long /*unus
     }
 
     // eret to new program — never returns
+    switch_to_user(&cur->context, cur->context.sp);
+  }
+#elif defined(MOSS_ARCH_X86_64)
+  {
+    cur->needs_initial_eret = false;
+    cur->state = ProcessState::Running;
+
+    arch::disable_interrupts();
+
+    // CR3 already switched to new address space in step 11b.
+
+    // Update TSS RSP0 and SYSCALL kernel stack for the new program.
+    if (cur->kernel_stack_base != 0) {
+      u64 kstack_top = cur->kernel_stack_top();
+      auto *rsp0_ptr = reinterpret_cast<u64 *>(&moss::abi::x86_64::g_tss[4]);
+      *rsp0_ptr = kstack_top;
+      moss::abi::x86_64::g_kernel_rsp = kstack_top;
+    }
+
+    // iretq to new program — never returns
     switch_to_user(&cur->context, cur->context.sp);
   }
 #endif
@@ -2254,9 +2301,9 @@ static volatile usize rx_tail_ = 0; // Written by consumer
 
 static bool initialized_ = false;
 
-#if defined(MOSS_ARCH_ARM64)
+#if defined(MOSS_ARCH_ARM64) || defined(MOSS_ARCH_X86_64)
 // The thread currently blocked waiting for input (at most one reader).
-// ARM64-only: used by uart_rx_irq_handler and console_getc_blocking.
+// Used by uart_rx_irq_handler and console_getc_blocking.
 static process::Thread *blocked_reader_ = nullptr;
 #endif
 
@@ -2271,7 +2318,7 @@ static int buf_get() noexcept {
   return ch;
 }
 
-#if defined(MOSS_ARCH_ARM64)
+#if defined(MOSS_ARCH_ARM64) || defined(MOSS_ARCH_X86_64)
 
 static bool buf_put(u8 ch) noexcept {
   usize next_head = (rx_head_ + 1) & RX_BUF_MASK;
@@ -2283,6 +2330,18 @@ static bool buf_put(u8 ch) noexcept {
   return true;
 }
 
+// Wake the blocked reader (shared by ARM64 and x86_64 IRQ handlers)
+static void wake_blocked_reader() noexcept {
+  if (blocked_reader_ != nullptr && process::is_blocked_state(blocked_reader_->state)) {
+    auto *thr = blocked_reader_;
+    blocked_reader_ = nullptr;
+    if (process::g_scheduler) {
+      process::g_scheduler->task_wakeup(thr, thr->cpu);
+    }
+  }
+}
+
+#if defined(MOSS_ARCH_ARM64)
 // UART RX IRQ handler — called from GIC interrupt context (IRQ 33).
 // Drains PL011 RX FIFO into ring buffer, then wakes the blocked reader.
 static void uart_rx_irq_handler(u32 /*irq*/, void * /*context*/) noexcept {
@@ -2300,17 +2359,34 @@ static void uart_rx_irq_handler(u32 /*irq*/, void * /*context*/) noexcept {
   // Clear RX interrupt (RXIC = bit 4)
   *uart_icr = (1U << 4);
 
-  // Wake the blocked reader if any
-  if (blocked_reader_ != nullptr && process::is_blocked_state(blocked_reader_->state)) {
-    auto *thr = blocked_reader_;
-    blocked_reader_ = nullptr;
-    if (process::g_scheduler) {
-      process::g_scheduler->task_wakeup(thr, thr->cpu);
-    }
-  }
+  wake_blocked_reader();
 }
-
 #endif // MOSS_ARCH_ARM64
+
+#if defined(MOSS_ARCH_X86_64)
+// x86_64 COM1 UART RX handler — called via g_x86_64_uart_rx_handler callback.
+// Reads COM1 RBR while Data Ready (LSR bit 0) is set.
+static void x86_64_uart_rx_dispatch() noexcept {
+  constexpr u16 COM1_RBR = 0x3F8; // Receive Buffer Register
+  constexpr u16 COM1_LSR = 0x3FD; // Line Status Register
+
+  // Drain all available chars from COM1 FIFO
+  for (;;) {
+    u8 lsr;
+    asm volatile("inb %1, %0" : "=a"(lsr) : "Nd"(COM1_LSR));
+    if (!(lsr & 0x01)) { // Data Ready = bit 0
+      break;
+    }
+    u8 ch;
+    asm volatile("inb %1, %0" : "=a"(ch) : "Nd"(COM1_RBR));
+    buf_put(ch);
+  }
+
+  wake_blocked_reader();
+}
+#endif // MOSS_ARCH_X86_64
+
+#endif // MOSS_ARCH_ARM64 || MOSS_ARCH_X86_64
 
 } // namespace console_rx
 
@@ -2341,6 +2417,30 @@ extern "C" void console_rx_init() noexcept {
       (void)interrupts::g_gic->enable_interrupt(uart_irq);
     }
   }
+#elif defined(MOSS_ARCH_X86_64)
+  // 1. Enable COM1 Received Data Available interrupt (IER bit 0)
+  {
+    constexpr u16 COM1_IER = 0x3F9; // Interrupt Enable Register
+    constexpr u16 COM1_MCR = 0x3FC; // Modem Control Register
+    u8 ier;
+    asm volatile("inb %1, %0" : "=a"(ier) : "Nd"(COM1_IER));
+    ier |= 0x01; // Enable Received Data Available interrupt
+    asm volatile("outb %0, %1" ::"a"(ier), "Nd"(COM1_IER));
+
+    // 2. Enable OUT2 in MCR (required for IRQ delivery on ISA/PCI COM ports)
+    u8 mcr;
+    asm volatile("inb %1, %0" : "=a"(mcr) : "Nd"(COM1_MCR));
+    mcr |= 0x08; // OUT2 bit
+    asm volatile("outb %0, %1" ::"a"(mcr), "Nd"(COM1_MCR));
+  }
+
+  // 3. Register UART RX callback for interrupt dispatch
+  g_x86_64_uart_rx_handler = +[]() noexcept { x86_64_uart_rx_dispatch(); };
+
+  // 4. Unmask COM1 IRQ4 in I/O APIC
+  if (interrupts::g_gic) {
+    (void)interrupts::g_gic->enable_interrupt(4);
+  }
 #endif
 
   initialized_ = true;
@@ -2358,13 +2458,17 @@ extern "C" int console_getc_blocking() noexcept {
     return ch;
   }
 
-#if defined(MOSS_ARCH_ARM64)
+#if defined(MOSS_ARCH_ARM64) || defined(MOSS_ARCH_X86_64)
   // Slow path: block until UART IRQ delivers a character
   Thread *cur = CfsScheduler::get_current_task();
   if (!cur || !g_scheduler) {
-    // Fallback: WFI polling if scheduler not available yet
+    // Fallback: WFI/HLT polling if scheduler not available yet
     while (buf_empty()) {
+#if defined(MOSS_ARCH_ARM64)
       asm volatile("wfi" ::: "memory");
+#elif defined(MOSS_ARCH_X86_64)
+      asm volatile("hlt" ::: "memory");
+#endif
     }
     return buf_get();
   }
@@ -2380,7 +2484,7 @@ extern "C" int console_getc_blocking() noexcept {
     //    will pick it back up immediately).
     blocked_reader_ = cur;
 
-    // 3. Context-switch to bootstrap (CPU enters idle → WFI)
+    // 3. Context-switch to bootstrap (CPU enters idle → WFI/HLT)
     {
       u32 cpu = arch::get_current_cpu_id();
       CpuContext *my_ctx = &cur->context;
@@ -2396,18 +2500,13 @@ extern "C" int console_getc_blocking() noexcept {
 
   return buf_get();
 #else
-  // x86_64 / RISC-V: WFI/HLT polling with direct UART read (no GIC/PL011 IRQ).
-  // No IRQ handler populates the ring buffer on these platforms, so poll
-  // hal::uart::getc() directly.
+  // RISC-V: WFI polling with direct UART read (no IRQ handler yet).
   for (;;) {
     int c = hal::uart::getc();
-    if (c >= 0)
+    if (c >= 0) {
       return c;
-#if defined(__x86_64__)
-    asm volatile("hlt" ::: "memory");
-#elif defined(__riscv)
+    }
     asm volatile("wfi" ::: "memory");
-#endif
   }
 #endif
 }

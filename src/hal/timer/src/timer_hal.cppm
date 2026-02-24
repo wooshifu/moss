@@ -77,8 +77,20 @@ inline void set_compare(u64 value) noexcept {
   asm volatile("msr cntv_cval_el0, %0" ::"r"(value));
   asm volatile("isb");
 #elif defined(MOSS_ARCH_X86_64)
-  // APIC Timer: write initial count (placeholder — needs calibration)
-  (void)value;
+  // LAPIC one-shot timer: Initial Count register at 0xFEE00380.
+  // We use divide-by-16, so LAPIC ticks = TSC delta / 16.
+  // The caller passes an absolute TSC target; convert to relative count.
+  {
+    u64 now = read_counter();
+    u64 delta = (value > now) ? (value - now) : 1;
+    // Divide by 16 (matching Divide Configuration = 0x03)
+    u32 initial_count = static_cast<u32>(delta >> 4);
+    if (initial_count == 0) {
+      initial_count = 1;
+    }
+    auto *lapic_init_count = reinterpret_cast<volatile u32 *>(0xFEE00380ULL);
+    *lapic_init_count = initial_count;
+  }
 #elif defined(MOSS_ARCH_RISCV)
   // RISC-V: write stimecmp CSR (Sstc extension)
   asm volatile("csrw stimecmp, %0" ::"r"(value));
@@ -100,7 +112,11 @@ inline void enable() noexcept {
   asm volatile("msr cntv_ctl_el0, %0" ::"r"(ctl));
   asm volatile("isb");
 #elif defined(MOSS_ARCH_X86_64)
-  // Unmask APIC LVT timer entry (placeholder)
+  // Unmask LAPIC LVT Timer (clear bit 16 = mask bit)
+  {
+    auto *lvt_timer = reinterpret_cast<volatile u32 *>(0xFEE00320ULL);
+    *lvt_timer &= ~(1U << 16);
+  }
 #elif defined(MOSS_ARCH_RISCV)
   // Set SIE.STIE (S-mode timer interrupt enable)
   asm volatile("csrs sie, %0" ::"r"(1ULL << 5));
@@ -116,7 +132,11 @@ inline void disable() noexcept {
   asm volatile("msr cntv_ctl_el0, %0" ::"r"(ctl));
   asm volatile("isb");
 #elif defined(MOSS_ARCH_X86_64)
-  // Mask APIC LVT timer entry (placeholder)
+  // Mask LAPIC LVT Timer (set bit 16 = mask bit)
+  {
+    auto *lvt_timer = reinterpret_cast<volatile u32 *>(0xFEE00320ULL);
+    *lvt_timer |= (1U << 16);
+  }
 #elif defined(MOSS_ARCH_RISCV)
   // Clear SIE.STIE
   asm volatile("csrc sie, %0" ::"r"(1ULL << 5));

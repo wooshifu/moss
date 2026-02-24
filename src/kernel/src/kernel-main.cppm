@@ -1,6 +1,14 @@
 // MOSS Kernel Module - Main Partition
 // Kernel class, subsystem states, boot phases, and kernel statistics.
 
+module;
+
+#ifdef MOSS_ARCH_X86_64
+// Cross-module interrupt dispatch callbacks (defined in boot_impl.cpp)
+extern "C" void (*g_x86_64_timer_handler)() noexcept;
+extern "C" void (*g_x86_64_uart_rx_handler)() noexcept;
+#endif
+
 export module moss.kernel:main;
 
 import moss.std;
@@ -169,6 +177,35 @@ public:
     if (!init_result) {
       kernel_panic("Failed to create init process", init_result.error());
     }
+
+#ifdef MOSS_ARCH_X86_64
+    // Register timer dispatch callback for x86_64 LAPIC timer vector.
+    // boot_impl.cpp's interrupt handler calls this on vector 48.
+    {
+      g_x86_64_timer_handler = +[]() noexcept {
+        namespace timer_hal = hal::timer;
+
+        timer_hal::ack_interrupt();
+
+        // Reprogram LAPIC timer for next tick
+        auto &ts = timer::TimerSubsystem::instance();
+        u64 tick_ns = process::cfs_params::SCHED_LATENCY_NS;
+        u64 delta_cycles = ts.clocksource().ns_to_cycles(tick_ns);
+        u64 counter_now = timer_hal::read_counter();
+        timer_hal::set_compare(counter_now + delta_cycles);
+
+        // CPU 0 drives HrTimer queue; others call scheduler_tick directly
+        u32 cpu = arch::get_current_cpu_id();
+        if (cpu == 0) {
+          ts.handle_interrupt();
+        } else {
+          if (process::g_scheduler) {
+            process::g_scheduler->scheduler_tick();
+          }
+        }
+      };
+    }
+#endif
 
     // Enter scheduling loop (start_scheduling is [[noreturn]])
     scheduler_->start_scheduling();

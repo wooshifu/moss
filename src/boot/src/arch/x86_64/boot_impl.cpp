@@ -388,24 +388,32 @@ static void uart_print_hex(u64 value) noexcept {
   early_debug_print(buf);
 }
 
+// Global callbacks for cross-module interrupt dispatch (registered by kernel-main.cppm).
+// extern "C" to avoid module-local mangling — accessible from any translation unit.
+extern "C" void (*g_x86_64_timer_handler)() noexcept = nullptr;
+extern "C" void (*g_x86_64_uart_rx_handler)() noexcept = nullptr;
+
 // C++ interrupt/exception handler called from isr_common (isr_x86_64.S)
 extern "C" void x86_64_interrupt_handler(u64 vector, u64 error_code, [[maybe_unused]] void *frame) noexcept {
   if (vector < 32) {
-    // CPU exception — print diagnostics to UART and halt.
+    // frame layout: R15..RAX (15 regs), then vector, error_code, RIP, CS, RFLAGS, RSP, SS
+    // frame points to saved R15, so RIP is at frame[17] (15 regs + vector + error_code)
+    auto *frame_u64 = reinterpret_cast<u64 *>(frame);
+
+    // Page fault (#PF, vector 14): dispatch to demand paging / COW handler
+    if (vector == 14) {
+      u64 cr2 = 0;
+      asm volatile("mov %%cr2, %0" : "=r"(cr2));
+      u64 rip = frame_u64[17];
+      x86_64_page_fault_handler(error_code, cr2, rip);
+      return; // Handler resolved the fault — iretq retries the instruction
+    }
+
+    // Other CPU exceptions — print diagnostics and halt
     early_debug_print("EXCEPTION vec=");
     uart_print_hex(vector);
     early_debug_print(" err=");
     uart_print_hex(error_code);
-    if (vector == 14) {
-      u64 cr2 = 0;
-      asm volatile("mov %%cr2, %0" : "=r"(cr2));
-      early_debug_print(" CR2=");
-      uart_print_hex(cr2);
-    }
-    // Print RIP from interrupt frame
-    auto *frame_u64 = reinterpret_cast<u64 *>(frame);
-    // frame layout: R15..RAX (15 regs), then vector, error_code, RIP, CS, RFLAGS, RSP, SS
-    // frame points to saved R15, so RIP is at frame[17] (15 regs + vector + error_code)
     early_debug_print(" RIP=");
     uart_print_hex(frame_u64[17]);
     early_debug_print("\nHALTED\n");
@@ -413,10 +421,21 @@ extern "C" void x86_64_interrupt_handler(u64 vector, u64 error_code, [[maybe_unu
     __builtin_unreachable();
   }
 
-  // External IRQ (vector >= 32): send EOI to Local APIC
+  // External IRQ (vector >= 32): send EOI first, then dispatch
   constexpr u64 LAPIC_EOI_ADDR = 0xFEE000B0ULL;
   auto *lapic_eoi = reinterpret_cast<volatile u32 *>(LAPIC_EOI_ADDR);
   *lapic_eoi = 0;
+
+  // LAPIC timer (vector 48)
+  if (vector == 48 && g_x86_64_timer_handler != nullptr) {
+    g_x86_64_timer_handler();
+    return;
+  }
+
+  // COM1 UART RX (vector 36 = IRQ4 routed via I/O APIC)
+  if (vector == 36 && g_x86_64_uart_rx_handler != nullptr) {
+    g_x86_64_uart_rx_handler();
+  }
 }
 
 ::moss::kernel::VoidResult moss::boot::X86_64BootImpl::setup_interrupts_and_exceptions(BootContext &ctx) noexcept {
@@ -438,6 +457,16 @@ extern "C" void x86_64_interrupt_handler(u64 vector, u64 error_code, [[maybe_unu
     g_gic_controller = gic;
     g_gic_hardware_available = true;
     moss::boot::early_print("  Local APIC initialized\n");
+  }
+
+  // 3. Configure LAPIC timer: divide-by-16, one-shot, vector 48, initially masked
+  {
+    constexpr u64 LAPIC_BASE = 0xFEE00000ULL;
+    auto *div_config = reinterpret_cast<volatile u32 *>(LAPIC_BASE + 0x3E0); // Divide Configuration
+    auto *lvt_timer = reinterpret_cast<volatile u32 *>(LAPIC_BASE + 0x320);  // LVT Timer
+    *div_config = 0x03;                                                      // divide by 16
+    *lvt_timer = 48 | (1U << 16); // vector 48, one-shot (bit17=0), masked (bit16=1)
+    moss::boot::early_print("  LAPIC timer configured (vec=48, masked)\n");
   }
 
   moss::boot::early_print("x86_64 interrupt/exception setup complete\n\n");
