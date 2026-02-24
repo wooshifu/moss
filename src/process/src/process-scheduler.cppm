@@ -1901,6 +1901,9 @@ private:
       // context_switch saves bootstrap, restores this prepared context,
       // and `ret` jumps to the trampoline.
       task->needs_initial_eret = false;
+#ifdef MOSS_ARCH_X86_64
+      early_debug_print("[sched] DEBUG: preparing user mode entry for x86_64\n");
+#endif
 
 #if defined(MOSS_ARCH_ARM64)
       // Stash user-mode entry point, stack, x0 and x1 in callee-saved regs.
@@ -1974,6 +1977,21 @@ private:
         u64 user_rdi = task->context.rdi; // arg0
         u64 user_rsi = task->context.rsi; // arg1
 
+        early_debug_print("[sched] DEBUG: x86_64 user PC=0x");
+        char addr_buf[2] = {0, 0};
+        for (int shift = 60; shift >= 0; shift -= 4) {
+          addr_buf[0] = ((user_pc >> shift) & 0xF) + '0';
+          if (addr_buf[0] > '9') addr_buf[0] = addr_buf[0] - '0' - 10 + 'A';
+          early_debug_print(addr_buf);
+        }
+        early_debug_print(" SP=0x");
+        for (int shift = 60; shift >= 0; shift -= 4) {
+          addr_buf[0] = ((user_sp >> shift) & 0xF) + '0';
+          if (addr_buf[0] > '9') addr_buf[0] = addr_buf[0] - '0' - 10 + 'A';
+          early_debug_print(addr_buf);
+        }
+        early_debug_print("\n");
+
         task->context = CpuContext{};
         task->context.rbx = user_pc;  // callee-saved: user entry point
         task->context.r12 = user_sp;  // callee-saved: user stack pointer
@@ -1983,6 +2001,8 @@ private:
         u64 trampoline_addr = reinterpret_cast<u64>(&user_iret_trampoline);
         task->context.pc = trampoline_addr;
         task->context.sp = task->kernel_stack_base != 0 ? task->kernel_stack_top() : 0;
+
+        early_debug_print("[sched] DEBUG: trampoline setup complete, calling context_switch\n");
       }
 
 #elif defined(MOSS_ARCH_RISCV)
@@ -2059,7 +2079,13 @@ private:
       // Mask IRQs before context_switch.  context_switch does NOT
       // touch interrupt state, so the new task inherits masked state.
       arch::disable_interrupts();
+#ifdef MOSS_ARCH_X86_64
+      early_debug_print("[sched] DEBUG: calling context_switch to user task\n");
+#endif
       context_switch(prev_ctx, &task->context);
+#ifdef MOSS_ARCH_X86_64
+      early_debug_print("[sched] DEBUG: returned from context_switch\n");
+#endif
       // Returns here when prev_ctx is scheduled again.
       arch::enable_interrupts();
     }
@@ -2116,8 +2142,6 @@ public:
       if (next != nullptr) {
         dequeue_task(next);
         context_switch_to_task(next);
-        // context_switch returned — bootstrap context restored.
-        // The task was preempted or exited.  Re-clear and retry.
         set_current_task(nullptr);
       } else {
         // No runnable tasks: tickless idle until reschedule IPI.
