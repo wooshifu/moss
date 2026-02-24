@@ -327,8 +327,12 @@ void PageTableManager::clone_user_page_tables(PhysAddr src_pgd_phys, PhysAddr ds
     }
   }
 
-  // PGD[1..511]: pure user-space mappings — allocate fresh PUD per entry.
-  for (usize pgd_i = 1; pgd_i < ENTRIES; pgd_i++) {
+  // PGD[1..ENTRIES/2-1]: user-space mappings — allocate fresh PUD per entry.
+  // Skip PGD[ENTRIES/2..ENTRIES-1]: these are kernel high-half mappings
+  // (e.g. Sv48 PGD[256] = direct map at 0xFFFF800000000000).
+  // create_user_address_space() already copied them from the kernel PGD;
+  // cloning would overwrite them with empty PUDs and break kernel access.
+  for (usize pgd_i = 1; pgd_i < ENTRIES / 2; pgd_i++) {
     auto &src_pge = src_pgd->entries[pgd_i];
     if (!src_pge.is_valid() || !src_pge.is_table()) {
       continue;
@@ -359,6 +363,7 @@ void PageTableManager::clone_user_page_tables(PhysAddr src_pgd_phys, PhysAddr ds
 // Free all user page tables and demand-paged physical pages.
 // Walks PGD→PUD→PMD→PTE, frees leaf pages and intermediate tables.
 // PGD[0] is the shared kernel identity map — skip it.
+// PGD[ENTRIES/2..ENTRIES-1] is the kernel high-half — skip it.
 void PageTableManager::free_user_page_tables(PhysAddr pgd_phys) {
   if (pgd_phys == 0) {
     return;
@@ -372,6 +377,11 @@ void PageTableManager::free_user_page_tables(PhysAddr pgd_phys) {
   constexpr usize ENTRIES = PageTable::ENTRIES_PER_TABLE;
 
   for (usize i0 = 0; i0 < ENTRIES; i0++) {
+    // Skip kernel high-half PGD entries (e.g. Sv48 PGD[256..511]).
+    // These point to shared kernel page tables that must not be freed.
+    if (i0 >= ENTRIES / 2) {
+      continue;
+    }
     auto &pge = pgd->entries[i0];
     if (!pge.is_valid() || !pge.is_table()) {
       continue;
