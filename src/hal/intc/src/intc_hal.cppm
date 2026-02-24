@@ -367,7 +367,34 @@ inline VoidResult init_distributor(VirtAddr dist_base, u32 max_interrupts) noexc
   }
 
 #elif defined(MOSS_ARCH_X86_64)
-  // I/O APIC initialization placeholder
+  // I/O APIC initialization: mask all 24 redirection entries,
+  // then route COM1 IRQ4 → vector 36 (initially masked).
+  // dist_base = LAPIC base (0xFEE00000), cpu_base = I/O APIC base (0xFEC00000)
+  {
+    constexpr VirtAddr IOAPIC_BASE = 0xFEC00000ULL;
+    auto *ioregsel = reinterpret_cast<volatile u32 *>(IOAPIC_BASE);
+    auto *iowin = reinterpret_cast<volatile u32 *>(IOAPIC_BASE + 0x10);
+
+    // Mask all 24 I/O APIC redirection entries (IOREDTBL[0..23])
+    for (u32 i = 0; i < 24; i++) {
+      u32 reg_low = 0x10 + i * 2;  // IOREDTBL[i] low
+      u32 reg_high = 0x11 + i * 2; // IOREDTBL[i] high
+      *ioregsel = reg_low;
+      *iowin = (1U << 16); // masked, vector 0
+      *ioregsel = reg_high;
+      *iowin = 0; // destination APIC ID 0
+    }
+
+    // Route COM1 IRQ4 → vector 36, fixed delivery, physical dest, masked
+    constexpr u32 COM1_IRQ = 4;
+    constexpr u32 COM1_VECTOR = 36;
+    u32 irq4_low = 0x10 + COM1_IRQ * 2;
+    u32 irq4_high = 0x11 + COM1_IRQ * 2;
+    *ioregsel = irq4_low;
+    *iowin = COM1_VECTOR | (1U << 16); // vector 36, masked initially
+    *ioregsel = irq4_high;
+    *iowin = 0; // dest APIC ID 0
+  }
   (void)dist_base;
   (void)max_interrupts;
 
@@ -470,9 +497,19 @@ inline void enable_irq(VirtAddr dist_base, u32 irq) noexcept {
   write_reg(dist_base, reg_offset, 1U << (irq % 32));
 
 #elif defined(MOSS_ARCH_X86_64)
-  // I/O APIC: unmask redirection table entry
+  // I/O APIC: unmask redirection table entry for the given IRQ line
+  {
+    constexpr VirtAddr IOAPIC_BASE = 0xFEC00000ULL;
+    auto *ioregsel = reinterpret_cast<volatile u32 *>(IOAPIC_BASE);
+    auto *iowin = reinterpret_cast<volatile u32 *>(IOAPIC_BASE + 0x10);
+    u32 reg_low = 0x10 + irq * 2;
+    *ioregsel = reg_low;
+    u32 val = *iowin;
+    val &= ~(1U << 16); // clear mask bit
+    *ioregsel = reg_low;
+    *iowin = val;
+  }
   (void)dist_base;
-  (void)irq;
 
 #elif defined(MOSS_ARCH_RISCV)
   // PLIC: set enable bit for context 1 (S-mode, hart 0)
@@ -495,9 +532,19 @@ inline void disable_irq(VirtAddr dist_base, u32 irq) noexcept {
   write_reg(dist_base, reg_offset, 1U << (irq % 32));
 
 #elif defined(MOSS_ARCH_X86_64)
-  // I/O APIC: mask redirection table entry
+  // I/O APIC: mask redirection table entry for the given IRQ line
+  {
+    constexpr VirtAddr IOAPIC_BASE = 0xFEC00000ULL;
+    auto *ioregsel = reinterpret_cast<volatile u32 *>(IOAPIC_BASE);
+    auto *iowin = reinterpret_cast<volatile u32 *>(IOAPIC_BASE + 0x10);
+    u32 reg_low = 0x10 + irq * 2;
+    *ioregsel = reg_low;
+    u32 val = *iowin;
+    val |= (1U << 16); // set mask bit
+    *ioregsel = reg_low;
+    *iowin = val;
+  }
   (void)dist_base;
-  (void)irq;
 
 #elif defined(MOSS_ARCH_RISCV)
   // PLIC: clear enable bit

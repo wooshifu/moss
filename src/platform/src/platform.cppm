@@ -138,7 +138,7 @@ inline constexpr PlatformDefaults DEFAULTS{
         },
     .timer =
         {
-            .irq = 0,       // Local APIC timer (vector, not IRQ line)
+            .irq = 48,      // LAPIC timer vector (assigned in boot)
             .frequency = 0, // Calibrate at runtime
         },
 };
