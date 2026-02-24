@@ -337,12 +337,31 @@ KernelResult<unique_ptr<AddressSpace>> create_user_address_space() noexcept {
     }
   } else {
     // Sv48: RISC-V has a single satp — user PGD must include BOTH the
-    // identity-map entries AND the high-half kernel entries.
-    // Copy all valid PGD entries (table pointers for identity map PGD[0]
-    // and high-half PGD[256]) so kernel code works in user context.
+    // identity-map PGD[0] and the high-half kernel entries PGD[256+].
     if (kernel_pgd && user_pgd) {
       constexpr usize ENTRIES = mm::PageTable::ENTRIES_PER_TABLE;
-      for (usize i = 0; i < ENTRIES; i++) {
+
+      // PGD[0]: allocate a PRIVATE PUD copy so that demand-paging user
+      // pages into the 0-512GB range doesn't pollute the kernel PUD.
+      if (kernel_pgd->entries[0].is_valid() && kernel_pgd->entries[0].is_table()) {
+        auto pud_result = mm::PageTableManager::allocate_page_table_dynamic();
+        if (pud_result) {
+          auto *private_pud = *pud_result;
+          auto *kernel_pud = mm::PageTableManager::get_table_from_physical(kernel_pgd->entries[0].get_phys_addr());
+          if (kernel_pud) {
+            for (usize j = 0; j < ENTRIES; j++) {
+              if (kernel_pud->entries[j].is_valid()) {
+                private_pud->entries[j] = kernel_pud->entries[j];
+              }
+            }
+          }
+          user_pgd->entries[0].set_table(mm::PageTableManager::get_physical_address(private_pud));
+        }
+      }
+
+      // PGD[ENTRIES/2..ENTRIES-1]: high-half kernel direct map — share directly.
+      // PGD[1..ENTRIES/2-1]: user-space region — left empty for demand paging.
+      for (usize i = ENTRIES / 2; i < ENTRIES; i++) {
         if (kernel_pgd->entries[i].is_valid()) {
           user_pgd->entries[i] = kernel_pgd->entries[i];
         }

@@ -274,8 +274,21 @@ void PageTableManager::clone_user_page_tables(PhysAddr src_pgd_phys, PhysAddr ds
         if (!src_pmde.is_valid()) {
           continue;
         }
+
+#if defined(MOSS_ARCH_RISCV)
+        // Sv39: PMD IS the leaf level — COW clone 4KB pages directly.
+        if (hal::mmu::g_mmu_mode == hal::mmu::MmuMode::Sv39) {
+          PhysAddr leaf_pa = src_pmde.get_phys_addr();
+          src_pmde.set_cow();
+          src_pmde.make_readonly();
+          dst_pmd->entries[pmd_i].raw = src_pmde.raw;
+          PageFrameAllocator::page_ref_inc(leaf_pa);
+          continue;
+        }
+#endif
+
         if (!src_pmde.is_table()) {
-          continue; // skip 2MB block descriptors
+          continue; // skip 2MB block descriptors (Sv48/ARM64/x86_64)
         }
 
         auto *src_pte = get_table_from_physical(src_pmde.get_phys_addr());
@@ -422,7 +435,20 @@ void PageTableManager::free_user_page_tables(PhysAddr pgd_phys) {
           continue;
         }
 
-        // Block mapping (2MB) — skip
+#if defined(MOSS_ARCH_RISCV)
+        // Sv39: PMD IS the leaf level — free 4KB leaf pages directly.
+        if (hal::mmu::g_mmu_mode == hal::mmu::MmuMode::Sv39) {
+          PhysAddr leaf_pa = pmde.get_phys_addr();
+          u32 remaining = PageFrameAllocator::page_ref_dec(leaf_pa);
+          if (remaining == 0) {
+            (void)free_pages(leaf_pa, 0);
+          }
+          pmde.clear();
+          continue;
+        }
+#endif
+
+        // Block mapping (2MB) — skip (Sv48/ARM64/x86_64)
         if (pmde.is_block()) {
           continue;
         }
