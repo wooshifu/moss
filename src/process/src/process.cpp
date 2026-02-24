@@ -274,59 +274,27 @@ static u16 allocate_asid() noexcept {
 
 // Create a real user address space with buddy-allocated PGD
 KernelResult<unique_ptr<AddressSpace>> create_user_address_space() noexcept {
-  // DEBUG: Add debugging for x86_64 address space creation
-#ifdef MOSS_ARCH_X86_64
-  early_debug_print("[DEBUG] create_user_address_space: starting\n");
-#endif
-
   // 1. Allocate a physical page for the user PGD (L0 table)
 #if defined(MOSS_ARCH_X86_64) || defined(MOSS_ARCH_ARM64)
-  early_debug_print("[DEBUG] create_user_address_space: allocating PGD (using early allocator)\n");
-  // CRITICAL FIX: Use early allocator which provides writable memory
-  // instead of dynamic allocator which uses read-only identity mapping
   auto pgd_result = mm::PageTableManager::allocate_page_table();
 #else
-  early_debug_print("[DEBUG] create_user_address_space: allocating PGD\n");
   auto pgd_result = mm::PageTableManager::allocate_page_table_dynamic();
 #endif
   if (!pgd_result) {
     return KernelResult<unique_ptr<AddressSpace>>{ErrorCode::OutOfMemory};
   }
 
-#ifdef MOSS_ARCH_X86_64
-  early_debug_print("[DEBUG] create_user_address_space: PGD allocated, getting physical address\n");
-#endif
-  // get_physical_address works on the high-half virtual pointer
   PhysAddr pgd_phys = mm::PageTableManager::get_physical_address(*pgd_result);
-
-#ifdef MOSS_ARCH_X86_64
-  early_debug_print("[DEBUG] using early allocated PGD (should be writable)\n");
-  auto *user_pgd_writable = *pgd_result; // Early allocator gives directly usable pointer
-  early_debug_print("[DEBUG] early PGD addr = 0x");
-  VirtAddr pgd_addr = reinterpret_cast<VirtAddr>(user_pgd_writable);
-  for (int i = 0; i < 16; i++) {
-    char c = ((pgd_addr >> ((15 - i) * 4)) & 0xF);
-    c += (c < 10) ? '0' : 'A' - 10;
-    char hex_char[2] = {c, 0};
-    early_debug_print(hex_char);
-  }
-  early_debug_print("\n");
-#endif
+  auto *user_pgd = *pgd_result;
 
   // 2. Copy kernel mappings into user PGD.
   auto *kernel_pgd = mm::PageTableManager::get_kernel_pgd();
-#ifdef MOSS_ARCH_X86_64
-  // Use the writable PGD pointer for x86_64
-  auto *user_pgd = user_pgd_writable;
-#else
-  auto *user_pgd = *pgd_result;
-#endif
 
 #if defined(MOSS_ARCH_RISCV)
   if (hal::mmu::g_mmu_mode == hal::mmu::MmuMode::Sv39) {
     // Sv39: kernel_pgd contains 1GB gigapage leaf entries directly at
     // indices [0..3] (identity map) and [256..259] (high-half direct map).
-    // Copy all valid kernel entries (both leaf and table) to user PGD.
+    // Copy all valid kernel block entries to user PGD.
     if (kernel_pgd && user_pgd) {
       constexpr usize ENTRIES = mm::PageTable::ENTRIES_PER_TABLE;
       for (usize i = 0; i < ENTRIES; i++) {
@@ -371,24 +339,9 @@ KernelResult<unique_ptr<AddressSpace>> create_user_address_space() noexcept {
 #else
   {
     // ARM64/x86_64: 4-level with separate ttbr1 for kernel.
-    // Only copy identity-map PUD (PGD[0]) to user PGD.
-#ifdef MOSS_ARCH_X86_64
-    early_debug_print("[DEBUG] create_user_address_space: copying kernel mappings\n");
-#endif
-    early_debug_print("[DEBUG] checking kernel PGD conditions\n");
-    if (!kernel_pgd) {
-      early_debug_print("[DEBUG] ERROR: kernel_pgd is NULL!\n");
-    }
-    if (!user_pgd) {
-      early_debug_print("[DEBUG] ERROR: user_pgd is NULL!\n");
-    }
-    if (kernel_pgd && !kernel_pgd->entries[0].is_valid()) {
-      early_debug_print("[DEBUG] ERROR: kernel_pgd->entries[0] is not valid!\n");
-    }
-
+    // Allocate a private PUD for PGD[0] and copy kernel 1GB block entries.
     if (kernel_pgd && user_pgd && kernel_pgd->entries[0].is_valid()) {
 #if defined(MOSS_ARCH_X86_64) || defined(MOSS_ARCH_ARM64)
-      early_debug_print("[DEBUG] create_user_address_space: allocating PUD (using early allocator)\n");
       auto pud_result = mm::PageTableManager::allocate_page_table();
 #else
       auto pud_result = mm::PageTableManager::allocate_page_table_dynamic();
@@ -397,134 +350,31 @@ KernelResult<unique_ptr<AddressSpace>> create_user_address_space() noexcept {
         mm::free_pages(pgd_phys, 0);
         return KernelResult<unique_ptr<AddressSpace>>{ErrorCode::OutOfMemory};
       }
-#ifdef MOSS_ARCH_X86_64
-      early_debug_print("[DEBUG] create_user_address_space: PUD allocated, getting kernel PUD\n");
-#endif
       auto *user_pud = *pud_result;
       auto *kernel_pud = mm::PageTableManager::get_table_from_physical(kernel_pgd->entries[0].get_phys_addr());
 
       if (kernel_pud) {
         constexpr usize ENTRIES = mm::PageTable::ENTRIES_PER_TABLE;
         for (usize i = 0; i < ENTRIES; i++) {
-          // Check if this is a valid 1GB block entry
-          bool is_valid_block;
-#ifdef MOSS_ARCH_X86_64
-          // x86_64: Check for 1GB page manually (Present=1, PageSize=1)
-          u64 kernel_raw = kernel_pud->entries[i].raw;
-          is_valid_block = kernel_pud->entries[i].is_valid() && ((kernel_raw & 0x1) && (kernel_raw & 0x80));
-#else
-          // ARM64/RISC-V: Use the standard is_block() method
-          is_valid_block = kernel_pud->entries[i].is_valid() && kernel_pud->entries[i].is_block();
-#endif
-
-          if (is_valid_block) {
-#ifdef MOSS_ARCH_X86_64
-            // Copy kernel block entry WITHOUT modifying permissions
-            u64 kernel_entry = kernel_pud->entries[i].raw;
-            user_pud->entries[i].raw = kernel_entry;
-#else
-            // ARM64/RISC-V: Copy kernel block entry
+          if (kernel_pud->entries[i].is_valid() && kernel_pud->entries[i].is_block()) {
             user_pud->entries[i] = kernel_pud->entries[i];
-#endif
           }
         }
       }
 
-#ifdef MOSS_ARCH_X86_64
-      early_debug_print("[DEBUG] calling get_physical_address(user_pud)\n");
-#endif
-      PhysAddr pud_phys = mm::PageTableManager::get_physical_address(user_pud);
-
-#ifdef MOSS_ARCH_X86_64
-      early_debug_print("[DEBUG] get_physical_address returned\n");
-      early_debug_print("[DEBUG] x86_64 PGD setup starting\n");
-
-      // Set with x86_64 specific permissions: Present + User + Writable + Accessed
-      u64 pud_entry = (pud_phys & 0x000FFFFFFFFFF000ULL) | (1ULL << 0) | // Present
-                      (1ULL << 1) |                                      // Writable
-                      (1ULL << 2) |                                      // User
-                      (1ULL << 5);                                       // Accessed
-
-      early_debug_print("[DEBUG] pud_phys = 0x");
-      for (int i = 0; i < 16; i++) {
-        char c = ((pud_phys >> ((15 - i) * 4)) & 0xF);
-        c += (c < 10) ? '0' : 'A' - 10;
-        char hex_char[2] = {c, 0};
-        early_debug_print(hex_char);
-      }
-      early_debug_print("\n");
-
-      early_debug_print("[DEBUG] pud_entry = 0x");
-      for (int i = 0; i < 16; i++) {
-        char c = ((pud_entry >> ((15 - i) * 4)) & 0xF);
-        c += (c < 10) ? '0' : 'A' - 10;
-        char hex_char[2] = {c, 0};
-        early_debug_print(hex_char);
-      }
-      early_debug_print("\n");
-
-      early_debug_print("[DEBUG] about to write to user_pgd->entries[0].raw\n");
-      user_pgd->entries[0].raw = pud_entry;
-      early_debug_print("[DEBUG] write operation completed\n");
-
-      // DEBUG: Check user_pgd pointer address
-      VirtAddr user_pgd_addr = reinterpret_cast<VirtAddr>(user_pgd);
-      early_debug_print("[DEBUG] user_pgd addr = 0x");
-      for (int i = 0; i < 16; i++) {
-        char c = ((user_pgd_addr >> ((15 - i) * 4)) & 0xF);
-        c += (c < 10) ? '0' : 'A' - 10;
-        char hex_char[2] = {c, 0};
-        early_debug_print(hex_char);
-      }
-      early_debug_print("\n");
-
-      // DEBUG: Verify the entry was actually written
-      u64 pgd0_check = user_pgd->entries[0].raw;
-      early_debug_print("[DEBUG] immediate check: PGD[0].raw = 0x");
-      for (int i = 0; i < 16; i++) {
-        char c = ((pgd0_check >> ((15 - i) * 4)) & 0xF);
-        c += (c < 10) ? '0' : 'A' - 10;
-        char hex_char[2] = {c, 0};
-        early_debug_print(hex_char);
-      }
-      early_debug_print("\n");
-#else
-      user_pgd->entries[0].set_table(pud_phys);
-#endif
+      user_pgd->entries[0].set_table(mm::PageTableManager::get_physical_address(user_pud));
     }
   }
 #endif
 
-  // 3. Allocate ASID
-#ifdef MOSS_ARCH_X86_64
-  early_debug_print("[DEBUG] create_user_address_space: allocating ASID\n");
-#endif
+  // 3. Allocate ASID and create AddressSpace object
   u16 asid = allocate_asid();
-
-  // 4. Create AddressSpace object — on success, ~AddressSpace owns pgd_phys.
-  //    On failure, we must free the page table hierarchy manually.
-#ifdef MOSS_ARCH_X86_64
-  early_debug_print("[DEBUG] create_user_address_space: creating AddressSpace object\n");
-#endif
   auto address_space = make_unique<AddressSpace>(pgd_phys, asid);
   if (!address_space) {
     mm::PageTableManager::free_user_page_tables(pgd_phys);
     return KernelResult<unique_ptr<AddressSpace>>{ErrorCode::OutOfMemory};
   }
 
-#ifdef MOSS_ARCH_X86_64
-  // VERIFY: Check if PGD[0] is actually set before returning (use writable pointer)
-  u64 pgd0_raw_verify = user_pgd_writable->entries[0].raw;
-  early_debug_print("[DEBUG] VERIFY (writable): PGD[0].raw before return = 0x");
-  for (int i = 0; i < 16; i++) {
-    char c = ((pgd0_raw_verify >> ((15 - i) * 4)) & 0xF);
-    c += (c < 10) ? '0' : 'A' - 10;
-    char hex_char[2] = {c, 0};
-    early_debug_print(hex_char);
-  }
-  early_debug_print("\n");
-  early_debug_print("[DEBUG] create_user_address_space: success!\n");
-#endif
   return KernelResult<unique_ptr<AddressSpace>>{moss::move(address_space)};
 }
 

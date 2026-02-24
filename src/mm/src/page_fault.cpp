@@ -26,6 +26,9 @@ extern "C" [[noreturn]] void unhandled_user_exception_handler(unsigned long long
 extern "C" void riscv_page_fault_handler(unsigned long long scause, unsigned long long stval,
                                          unsigned long long sepc) noexcept;
 
+extern "C" void x86_64_page_fault_handler(unsigned long long error_code, unsigned long long cr2,
+                                          unsigned long long rip) noexcept;
+
 module moss.mm;
 
 import moss.abi;
@@ -629,3 +632,48 @@ extern "C" void riscv_page_fault_handler(unsigned long long scause, unsigned lon
   kill_user_process("RISC-V page fault", stval, sepc);
 }
 #endif // MOSS_ARCH_RISCV
+
+// ============================================================================
+// x86_64 Page Fault Handler (#PF, vector 14)
+//
+// Called from x86_64_interrupt_handler() in boot_impl.cpp.
+// Error code bits:  0=Present  1=Write  2=User  4=InstructionFetch
+// CR2 holds the faulting virtual address.
+// ============================================================================
+#if defined(MOSS_ARCH_X86_64) || defined(__x86_64__) || defined(__x86_64)
+extern "C" void x86_64_page_fault_handler(unsigned long long error_code, unsigned long long cr2,
+                                          unsigned long long rip) noexcept {
+  namespace log = moss::kernel::logging;
+  using namespace moss::kernel;
+
+  bool is_present = (error_code & (1ULL << 0)) != 0;
+  bool is_write = (error_code & (1ULL << 1)) != 0;
+
+  // 1. Not-present fault (translation fault equivalent) — demand paging
+  if (!is_present) {
+    if (try_demand_page(cr2, is_write, rip)) {
+      return; // Demand page resolved — iretq retries instruction
+    }
+  }
+
+  // 2. Protection violation on write — COW resolution
+  if (is_present && is_write) {
+    if (try_cow_fault(cr2, rip)) {
+      return; // COW resolved — iretq retries instruction
+    }
+  }
+
+  // 3. Unresolvable fault
+  bool is_user_mode = (error_code & (1ULL << 2)) != 0;
+
+  if (is_user_mode) {
+    log::klog::error("x86_64 USER PAGE FAULT: addr={:#x} pc={:#x} err={:#x}", cr2, rip, error_code);
+    kill_user_process("page fault", cr2, rip);
+  }
+
+  log::klog::panic("KERNEL PAGE FAULT: addr={:#x} pc={:#x} err={:#x}", cr2, rip, error_code);
+  while (true) {
+    asm volatile("hlt");
+  }
+}
+#endif // MOSS_ARCH_X86_64

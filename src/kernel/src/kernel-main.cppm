@@ -146,136 +146,23 @@ public:
 
   // Kernel main loop
   [[nodiscard]] VoidResult run() noexcept {
-    early_debug_print("[kernel] MOSS kernel starting...\n");
-
     // Enable interrupts
-    early_debug_print("[kernel] DEBUG: about to enable interrupts\n");
     enable_interrupts();
-    early_debug_print("[kernel] DEBUG: interrupts enabled successfully\n");
 
-    // Initialize initramfs if bootloader provided one via DTB
+    // Initialize initramfs if bootloader provided one via DTB / PVH modules
     {
       auto &pi = fdt::g_platform_info;
-      early_debug_print("[kernel] DEBUG: checking initramfs configuration\n");
-      // DEBUG: Force initramfs configuration for x86_64
-#ifdef MOSS_ARCH_X86_64
-      early_debug_print("[kernel] DEBUG: forcing initramfs config for x86_64\n");
-      // Search from even lower memory addresses - QEMU might load initramfs earlier
-      PhysAddr search_start = 0x00020000; // 128KB (skip very low memory but start earlier)
-      PhysAddr search_end = 0x00200000;   // 2MB (focused search in likely range)
-      PhysAddr increment = 0x00001000;    // 4KB increments (page-aligned search)
-      bool found_initramfs = false;
-      early_debug_print("[kernel] DEBUG: starting search from 128KB to 2MB in 4KB increments\n");
-
-      for (PhysAddr base_addr = search_start; base_addr < search_end; base_addr += increment) {
-        // Check for CPIO magic "070701" at this location
-        auto *magic_check = reinterpret_cast<const char *>(base_addr);
-
-        // Debug: Print more frequent samples and check for any non-zero data
-        if ((base_addr & 0x000FFFFF) == 0) { // Every 1MB instead of 16MB
-          early_debug_print("[kernel] DEBUG: at ");
-          char addr_buf[2] = {0, 0};
-          for (int shift = 28; shift >= 0; shift -= 4) {
-            addr_buf[0] = ((base_addr >> shift) & 0xF) + '0';
-            if (addr_buf[0] > '9')
-              addr_buf[0] = addr_buf[0] - '0' - 10 + 'A';
-            early_debug_print(addr_buf);
-          }
-          early_debug_print(" data: ");
-          // Print first 6 bytes as hex
-          for (int i = 0; i < 6; i++) {
-            u8 byte = static_cast<u8>(magic_check[i]);
-            char hex_chars[] = "0123456789ABCDEF";
-            char hex_str[3] = {hex_chars[byte >> 4], hex_chars[byte & 0xF], ' '};
-            early_debug_print(hex_str);
-          }
-          early_debug_print("\n");
-        }
-
-        if (magic_check[0] == '0' && magic_check[1] == '7' && magic_check[2] == '0' && magic_check[3] == '7' &&
-            magic_check[4] == '0' && magic_check[5] == '1') {
-          pi.initrd_start = base_addr;
-          pi.initrd_end = base_addr + (64 * 1024); // 64KB should cover our 41KB file
-          found_initramfs = true;
-          early_debug_print("[kernel] DEBUG: found initramfs at 0x");
-          char addr_buf[2] = {0, 0};
-          for (int shift = 28; shift >= 0; shift -= 4) {
-            addr_buf[0] = ((base_addr >> shift) & 0xF) + '0';
-            if (addr_buf[0] > '9')
-              addr_buf[0] = addr_buf[0] - '0' - 10 + 'A';
-            early_debug_print(addr_buf);
-          }
-          early_debug_print("\n");
-          break;
-        }
-      }
-
-      // If not found in typical range, try extended high memory search
-      if (!found_initramfs) {
-        early_debug_print("[kernel] DEBUG: extending search to high memory ranges\n");
-
-        // Search in several high memory ranges where QEMU might place modules
-        PhysAddr high_ranges[][2] = {
-            {0x02000000, 0x04000000}, // 32MB-64MB
-            {0x04000000, 0x08000000}, // 64MB-128MB
-            {0x08000000, 0x10000000}, // 128MB-256MB
-        };
-
-        for (auto &range : high_ranges) {
-          for (PhysAddr base_addr = range[0]; base_addr < range[1] && !found_initramfs; base_addr += 0x00001000) {
-            auto *magic_check = reinterpret_cast<const char *>(base_addr);
-
-            // Print samples to see what's actually in high memory
-            if ((base_addr & 0x007FFFFF) == 0) { // Every 8MB
-              early_debug_print("[kernel] DEBUG: high mem ");
-              char addr_buf[2] = {0, 0};
-              for (int shift = 28; shift >= 0; shift -= 4) {
-                addr_buf[0] = ((base_addr >> shift) & 0xF) + '0';
-                if (addr_buf[0] > '9')
-                  addr_buf[0] = addr_buf[0] - '0' - 10 + 'A';
-                early_debug_print(addr_buf);
-              }
-              early_debug_print(" data: ");
-              for (int i = 0; i < 6; i++) {
-                u8 byte = static_cast<u8>(magic_check[i]);
-                char hex_chars[] = "0123456789ABCDEF";
-                char hex_str[3] = {hex_chars[byte >> 4], hex_chars[byte & 0xF], ' '};
-                early_debug_print(hex_str);
-              }
-              early_debug_print("\n");
-            }
-
-            if (magic_check[0] == '0' && magic_check[1] == '7' && magic_check[2] == '0' && magic_check[3] == '7' &&
-                magic_check[4] == '0' && magic_check[5] == '1') {
-              pi.initrd_start = base_addr;
-              pi.initrd_end = base_addr + (64 * 1024);
-              found_initramfs = true;
-              early_debug_print("[kernel] DEBUG: found initramfs in high memory!\n");
-              break;
-            }
-          }
-        }
-      }
-      if (!found_initramfs) {
-        early_debug_print("[kernel] DEBUG: initramfs not found in search ranges, using fallback\n");
-        pi.initrd_start = 0x01000000;              // 16MB fallback
-        pi.initrd_end = 0x01000000 + (128 * 1024); // 128KB fallback
-      }
-#endif
       if (pi.initrd_start != 0 && pi.initrd_end > pi.initrd_start) {
         usize initrd_size = static_cast<usize>(pi.initrd_end - pi.initrd_start);
-        early_debug_print("[kernel] DEBUG: initramfs detected, initializing\n");
         log::klog::info("initramfs: found at {:#x}-{:#x} ({} bytes)", pi.initrd_start, pi.initrd_end, initrd_size);
         initramfs::g_initramfs.init(pi.initrd_start, initrd_size);
       } else {
-        early_debug_print("[kernel] DEBUG: no initramfs found\n");
         log::klog::info("initramfs: not present (no -initrd passed to QEMU)");
       }
     }
 
     // Initialize VFS: mount root (ramfs) + devfs
     vfs::vfs_init();
-    early_debug_print("[kernel] VFS initialized\n");
 
     // Create initial user process
     auto init_result = create_init_process();
@@ -284,7 +171,6 @@ public:
     }
 
     // Enter scheduling loop (start_scheduling is [[noreturn]])
-    early_debug_print("[kernel] Entering scheduling loop\n");
     scheduler_->start_scheduling();
   }
 
@@ -717,31 +603,26 @@ private:
   [[nodiscard]] VoidResult create_init_process() noexcept {
     using namespace process;
 
-    early_debug_print("[init] creating init user process\n");
+    log::klog::info("creating init user process");
 
     // Step 1: Create process
     if (!process_manager_) {
-      early_debug_print("[init] ERROR: process manager not initialized\n");
       return VoidResult{ErrorCode::InvalidState};
     }
     auto proc_result = process_manager_->create_process(0);
     if (!proc_result) {
-      early_debug_print("[init] ERROR: failed to create init process\n");
       return VoidResult{proc_result.error()};
     }
     Process *init_proc = proc_result.value();
     ProcessId init_pid = init_proc->pid();
-    early_debug_print("[init] init process registered\n");
 
     // Step 2: Create real AddressSpace with buddy-allocated PGD
-    early_debug_print("[init] DEBUG: creating address space\n");
     auto as_result = user_space::create_user_address_space();
     if (!as_result) {
-      early_debug_print("[init] ERROR: failed to create address space\n");
+      log::klog::error("failed to create address space for init");
       return VoidResult{as_result.error()};
     }
     auto as = moss::move(*as_result);
-    early_debug_print("[init] DEBUG: address space created successfully\n");
 
     // Step 3: Register VMA regions for demand paging
     //
@@ -751,36 +632,9 @@ private:
 #if defined(MOSS_ARCH_ARM64)
     const auto *raw_code = moss::abi::arm64::user_program_start();
     usize code_size = moss::abi::arm64::user_program_size();
-    early_debug_print("[init] DEBUG: ARM64 code_size = ");
-    // Simple size output
-    if (code_size == 0) {
-      early_debug_print("0 - ERROR: no user program!\n");
-    } else if (code_size < 1000) {
-      early_debug_print("small (<1KB)\n");
-    } else {
-      early_debug_print("normal (>1KB)\n");
-    }
 #elif defined(MOSS_ARCH_X86_64)
     const auto *raw_code = moss::abi::x86_64::user_program_start();
     usize code_size = moss::abi::x86_64::user_program_size();
-    early_debug_print("[init] DEBUG: raw_code physical address = 0x");
-    u64 raw_code_addr = reinterpret_cast<u64>(raw_code);
-    char addr_str[17] = {0};
-    for (int i = 0; i < 16; i++) {
-      u8 nibble = (raw_code_addr >> ((15 - i) * 4)) & 0xF;
-      addr_str[i] = (nibble < 10) ? ('0' + nibble) : ('A' + nibble - 10);
-    }
-    early_debug_print(addr_str);
-    early_debug_print("\n");
-    early_debug_print("[init] DEBUG: x86_64 user program size = ");
-    char size_str[16] = {0};
-    for (int i = 0; i < 8; i++) {
-      size_str[i] = ((code_size >> ((7 - i) * 4)) & 0xF) + '0';
-      if (size_str[i] > '9')
-        size_str[i] = size_str[i] - '0' - 10 + 'A';
-    }
-    early_debug_print(size_str);
-    early_debug_print(" bytes\n");
 #elif defined(MOSS_ARCH_RISCV)
     const auto *raw_code = moss::abi::riscv::user_program_start();
     usize code_size = moss::abi::riscv::user_program_size();
@@ -790,23 +644,6 @@ private:
     VirtAddr code_end = (user_layout::CODE_BASE + code_size + PAGE_SIZE - 1) & ~(static_cast<VirtAddr>(PAGE_SIZE) - 1);
     as->add_vma(user_layout::CODE_BASE, code_end, vma_flags::READ | vma_flags::EXEC, VmaType::CODE, raw_code, 0,
                 code_size);
-    early_debug_print("[init] VMA code registered: 0x");
-    // Print CODE_BASE in hex
-    u64 base_addr = user_layout::CODE_BASE;
-    char addr_hex[17] = {0};
-    for (int i = 0; i < 16; i++) {
-      u8 nibble = (base_addr >> ((15 - i) * 4)) & 0xF;
-      addr_hex[i] = (nibble < 10) ? ('0' + nibble) : ('A' + nibble - 10);
-    }
-    early_debug_print(addr_hex);
-    early_debug_print(" to 0x");
-    // Print code_end in hex
-    for (int i = 0; i < 16; i++) {
-      u8 nibble = (code_end >> ((15 - i) * 4)) & 0xF;
-      addr_hex[i] = (nibble < 10) ? ('0' + nibble) : ('A' + nibble - 10);
-    }
-    early_debug_print(addr_hex);
-    early_debug_print("\n");
 
 #ifdef MOSS_ARCH_X86_64
     // x86_64: Pre-map user code and stack pages.
@@ -816,7 +653,6 @@ private:
       // Allocate physical page for user code and copy program into it
       auto code_frame_result = mm::allocate_pages(0);
       if (!code_frame_result) {
-        early_debug_print("[init] ERROR: failed to allocate code page frame\n");
         return ErrorCode::OutOfMemory;
       }
       PhysAddr code_pa = *code_frame_result;
@@ -831,25 +667,20 @@ private:
       auto map_code = mm::PageTableManager::map_user_page(as->pgd_phys, user_layout::CODE_BASE, code_pa,
                                                           hal::mmu::page_perms::USER_RX);
       if (!map_code) {
-        early_debug_print("[init] ERROR: failed to map user code page\n");
         return ErrorCode::OutOfMemory;
       }
-      early_debug_print("[init] user code mapped at CODE_BASE\n");
 
       // Map user stack page at STACK_TOP - PAGE_SIZE
       auto stack_frame_result = mm::allocate_pages(0);
       if (!stack_frame_result) {
-        early_debug_print("[init] ERROR: failed to allocate stack page frame\n");
         return ErrorCode::OutOfMemory;
       }
       VirtAddr stack_page = user_layout::STACK_TOP - PAGE_SIZE;
       auto map_stack = mm::PageTableManager::map_user_page(as->pgd_phys, stack_page, *stack_frame_result,
                                                            hal::mmu::page_perms::USER_RW);
       if (!map_stack) {
-        early_debug_print("[init] ERROR: failed to map user stack page\n");
         return ErrorCode::OutOfMemory;
       }
-      early_debug_print("[init] user stack mapped at STACK_TOP\n");
     }
 #endif
 
@@ -859,7 +690,6 @@ private:
     const VirtAddr stack_bottom = user_layout::STACK_TOP - user_layout::STACK_SIZE;
     as->add_vma(stack_bottom, user_layout::STACK_TOP, vma_flags::READ | vma_flags::WRITE | vma_flags::DEMAND_ZERO,
                 VmaType::STACK);
-    early_debug_print("[init] VMA stack registered\n");
 
     // Heap VMA: small initial region, demand-zero
     as->add_vma(user_layout::HEAP_START, user_layout::HEAP_START + user_layout::HEAP_INIT,
@@ -871,7 +701,6 @@ private:
     // Bind AddressSpace to process
     auto set_result = init_proc->set_address_space(moss::move(as));
     if (!set_result) {
-      early_debug_print("[init] ERROR: failed to set address space\n");
       return VoidResult{set_result.error()};
     }
 
@@ -890,7 +719,6 @@ private:
     constexpr usize KERNEL_STACK_SIZE = PAGE_SIZE << KERNEL_STACK_ORDER;
     auto kstack_result = mm::allocate_pages(KERNEL_STACK_ORDER);
     if (!kstack_result) {
-      early_debug_print("[init] ERROR: failed to allocate kernel stack\n");
       delete init_thread;
       return VoidResult{ErrorCode::OutOfMemory};
     }
@@ -898,7 +726,6 @@ private:
     PhysAddr kstack_phys = *kstack_result;
     init_thread->kernel_stack_base = static_cast<VirtAddr>(kstack_phys);
     init_thread->kernel_stack_size = KERNEL_STACK_SIZE;
-    early_debug_print("[init] kernel stack allocated\n");
 
     // User context: entry point and stack pointer are user-space VAs
     // (demand-paged on first access)
@@ -933,7 +760,6 @@ private:
       fdt->init();
       init_proc->set_fd_table(fdt);
       vfs::vfs_init_stdio(fdt);
-      early_debug_print("[init] VFS fd table initialized (fd 0/1/2)\n");
     }
 
     // Step 5: Register thread into process's thread list (for cleanup)
@@ -943,7 +769,7 @@ private:
     scheduler_->enqueue_task(init_thread, current_cpu());
     scheduler_->set_init_task(init_thread);
 
-    early_debug_print("[init] init process enqueued to scheduler\n");
+    log::klog::info("init process created: PID={} entry={:#x}", init_pid, entry_point);
     (void)code_size;
     return VoidResult{};
   }
