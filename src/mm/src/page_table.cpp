@@ -65,46 +65,69 @@ VoidResult PageTableManager::setup_kernel_high_half_tables() {
   u16 pgd_idx = bd.pgd_index;
 
 #if defined(MOSS_ARCH_RISCV)
-  // RISC-V Sv39: single satp — high-half gigapages go directly into the same
-  // root table as the identity map (set up by setup_kernel_page_tables).
+  // RISC-V has a single satp register (no separate ttbr0/ttbr1), so the
+  // high-half entries MUST go into the same root table as the identity map.
   if (!kernel_pgd) {
     return VoidResult{ErrorCode::InvalidState};
   }
   kernel_high_pgd = kernel_pgd;
 
-  // Write 1GB gigapage leaf entries directly into root[pgd_idx .. pgd_idx+3].
-  for (usize i = 0; i < 4; i++) {
-    PhysAddr block_addr = static_cast<PhysAddr>(i * ONE_GB);
-    PhysAddr block_end = block_addr + ONE_GB;
-    bool overlaps_ram = (block_addr < ram_end) && (block_end > ram_start);
-    kernel_pgd->entries[pgd_idx + i].raw = overlaps_ram ? moss::kernel::hal::mmu::make_normal_block(block_addr)
-                                                        : moss::kernel::hal::mmu::make_device_block(block_addr);
+  if (hal::mmu::g_mmu_mode == hal::mmu::MmuMode::Sv39) {
+    // Sv39: root entries are 1GB gigapages — add directly at pgd_idx.
+    for (usize i = 0; i < 4; i++) {
+      PhysAddr block_addr = static_cast<PhysAddr>(i * ONE_GB);
+      PhysAddr block_end = block_addr + ONE_GB;
+      bool overlaps_ram = (block_addr < ram_end) && (block_end > ram_start);
+      kernel_pgd->entries[pgd_idx + i].raw =
+          overlaps_ram ? hal::mmu::make_normal_block(block_addr) : hal::mmu::make_device_block(block_addr);
+    }
+  } else {
+    // Sv48: root entries are table pointers — allocate a PUD and fill with
+    // 1GB gigapage leaves, then point kernel_pgd[pgd_idx] at it.
+    auto pud_result = allocate_page_table();
+    if (!pud_result) {
+      return VoidResult{pud_result.error()};
+    }
+    PageTable *pud = *pud_result;
+
+    for (usize i = 0; i < 4; i++) {
+      PhysAddr block_addr = static_cast<PhysAddr>(i * ONE_GB);
+      PhysAddr block_end = block_addr + ONE_GB;
+      bool overlaps_ram = (block_addr < ram_end) && (block_end > ram_start);
+      pud->entries[i].raw =
+          overlaps_ram ? hal::mmu::make_normal_block(block_addr) : hal::mmu::make_device_block(block_addr);
+    }
+
+    PhysAddr pud_pa = get_physical_address(pud);
+    kernel_pgd->entries[pgd_idx].set_table(pud_pa);
   }
 #else
-  // ARM64/x86_64: separate high-half PGD (ARM64 uses TTBR1)
-  auto pgd_result = allocate_page_table();
-  if (!pgd_result) {
-    return VoidResult{pgd_result.error()};
-  }
-  kernel_high_pgd = *pgd_result;
+  {
+    // ARM64/x86_64: separate high-half PGD (ARM64 uses ttbr1)
+    auto pgd_result = allocate_page_table();
+    if (!pgd_result) {
+      return VoidResult{pgd_result.error()};
+    }
+    kernel_high_pgd = *pgd_result;
 
-  // Allocate PUD table for this PGD entry
-  auto pud_result = allocate_page_table();
-  if (!pud_result) {
-    return VoidResult{pud_result.error()};
-  }
-  PageTable *pud = *pud_result;
+    // Allocate PUD table for this PGD entry
+    auto pud_result = allocate_page_table();
+    if (!pud_result) {
+      return VoidResult{pud_result.error()};
+    }
+    PageTable *pud = *pud_result;
 
-  PhysAddr pud_pa = get_physical_address(pud);
-  kernel_high_pgd->entries[pgd_idx].set_table(pud_pa);
+    PhysAddr pud_pa = get_physical_address(pud);
+    kernel_high_pgd->entries[pgd_idx].set_table(pud_pa);
 
-  // Fill PUD entries with 1GB block descriptors covering 0-4GB
-  for (usize i = 0; i < 4; i++) {
-    PhysAddr block_addr = static_cast<PhysAddr>(i * ONE_GB);
-    PhysAddr block_end = block_addr + ONE_GB;
-    bool overlaps_ram = (block_addr < ram_end) && (block_end > ram_start);
-    pud->entries[i].raw = overlaps_ram ? moss::kernel::hal::mmu::make_normal_block(block_addr)
-                                       : moss::kernel::hal::mmu::make_device_block(block_addr);
+    // Fill PUD entries with 1GB block descriptors covering 0-4GB
+    for (usize i = 0; i < 4; i++) {
+      PhysAddr block_addr = static_cast<PhysAddr>(i * ONE_GB);
+      PhysAddr block_end = block_addr + ONE_GB;
+      bool overlaps_ram = (block_addr < ram_end) && (block_end > ram_start);
+      pud->entries[i].raw =
+          overlaps_ram ? hal::mmu::make_normal_block(block_addr) : hal::mmu::make_device_block(block_addr);
+    }
   }
 #endif
 
@@ -134,16 +157,17 @@ PageTableEntry *PageTableManager::get_user_pte(PhysAddr pgd_phys, VirtAddr va) {
   auto *pmd = get_table_from_physical(pude.get_phys_addr());
 
 #if defined(MOSS_ARCH_RISCV)
-  // Sv39: PMD is the final L0 table — pmd_index IS the leaf PTE index.
-  return &pmd->entries[bd.pmd_index];
-#else
+  if (hal::mmu::g_mmu_mode == hal::mmu::MmuMode::Sv39) {
+    // Sv39: PMD is the final L0 table — pmd_index IS the leaf PTE index.
+    return &pmd->entries[bd.pmd_index];
+  }
+#endif
   auto &pmde = pmd->entries[bd.pmd_index];
   if (!pmde.is_valid() || !pmde.is_table()) {
     return nullptr;
   }
   auto *pte = get_table_from_physical(pmde.get_phys_addr());
   return &pte->entries[bd.pte_index];
-#endif
 }
 
 // Unmap a single user page: clear PTE, invalidate TLB, free physical page
@@ -418,20 +442,23 @@ VoidResult PageTableManager::map_user_page(PhysAddr pgd_phys, VirtAddr va, PhysA
   auto *pmd = get_table_from_physical(pud->entries[bd.pud_index].get_phys_addr());
 
 #if defined(MOSS_ARCH_RISCV)
-  // Sv39: PMD IS the final L0 table — set 4KB page entry directly.
-  pmd->entries[bd.pmd_index].set_page(pa, perms);
-#else
-  // 4-level: PMD -> PTE table
-  if (!pmd->entries[bd.pmd_index].is_valid()) {
-    auto result = allocate_page_table_dynamic();
-    if (!result) {
-      return VoidResult{ErrorCode::OutOfMemory};
-    }
-    pmd->entries[bd.pmd_index].set_table(get_physical_address(*result));
-  }
-  auto *pte = get_table_from_physical(pmd->entries[bd.pmd_index].get_phys_addr());
-  pte->entries[bd.pte_index].set_page(pa, perms);
+  if (hal::mmu::g_mmu_mode == hal::mmu::MmuMode::Sv39) {
+    // Sv39: PMD IS the final L0 table — set 4KB page entry directly.
+    pmd->entries[bd.pmd_index].set_page(pa, perms);
+  } else
 #endif
+  {
+    // 4-level: PMD -> PTE table
+    if (!pmd->entries[bd.pmd_index].is_valid()) {
+      auto result = allocate_page_table_dynamic();
+      if (!result) {
+        return VoidResult{ErrorCode::OutOfMemory};
+      }
+      pmd->entries[bd.pmd_index].set_table(get_physical_address(*result));
+    }
+    auto *pte = get_table_from_physical(pmd->entries[bd.pmd_index].get_phys_addr());
+    pte->entries[bd.pte_index].set_page(pa, perms);
+  }
 
   invalidate_tlb_addr(va);
   return VoidResult{};
@@ -439,16 +466,11 @@ VoidResult PageTableManager::map_user_page(PhysAddr pgd_phys, VirtAddr va, PhysA
 
 // 创建内核页表映射
 //
-// ARM64/x86_64: 4-level page table (48-bit VA)
-//   L0 (PGD): bits[47:39], each entry covers 512GB — table descriptors ONLY
-//   L1 (PUD): bits[38:30], each entry covers 1GB   — block or table
-//   We place a table descriptor at PGD[0] → L1 table, then fill L1[0..3]
-//   with 1GB block descriptors for the first 4GB identity map.
+// 4-level (ARM64, x86_64, RISC-V Sv48): 48-bit VA
+//   PGD[0] → PUD with 1GB block entries for the first 4GB identity map.
 //
-// RISC-V Sv39: 3-level page table (39-bit VA)
-//   Root (L2): bits[38:30], each entry covers 1GB — gigapage leaf or table
-//   The root table IS the PGD; 1GB gigapage entries go directly into it.
-//   No PUD indirection needed.
+// 3-level (RISC-V Sv39): 39-bit VA
+//   Root table = L2 level; 1GB gigapage entries go directly into root[0..3].
 VoidResult PageTableManager::setup_kernel_page_tables() {
   // Determine RAM region from DTB (PlatformInfo)
   const auto &plat = moss::fdt::get_platform_info();
@@ -461,47 +483,50 @@ VoidResult PageTableManager::setup_kernel_page_tables() {
   constexpr u64 ONE_GB = 0x40000000ULL;
 
 #if defined(MOSS_ARCH_RISCV)
-  // Sv39: root table = L2 level (512 × 1GB entries).
-  // kernel_pgd IS the root table; 1GB gigapage entries go directly in it.
-  auto root_result = PageTableManager::allocate_page_table();
-  if (!root_result) {
-    return VoidResult{root_result.error()};
-  }
-  PageTableManager::kernel_pgd = *root_result;
+  if (hal::mmu::g_mmu_mode == hal::mmu::MmuMode::Sv39) {
+    // Sv39: root table = L2 level (512 × 1GB entries).
+    // kernel_pgd IS the root table; 1GB gigapage entries go directly in it.
+    auto root_result = PageTableManager::allocate_page_table();
+    if (!root_result) {
+      return VoidResult{root_result.error()};
+    }
+    PageTableManager::kernel_pgd = *root_result;
 
-  // Fill root[0..3] with 1GB gigapage leaf entries for identity map (0-4GB).
-  for (usize i = 0; i < 4; i++) {
-    PhysAddr block_addr = static_cast<PhysAddr>(i * ONE_GB);
-    PhysAddr block_end = block_addr + ONE_GB;
-    bool overlaps_ram = (block_addr < ram_end) && (block_end > ram_start);
-    kernel_pgd->entries[i].raw = overlaps_ram ? moss::kernel::hal::mmu::make_normal_block(block_addr)
-                                              : moss::kernel::hal::mmu::make_device_block(block_addr);
-  }
-#else
-  // ARM64/x86_64: 4-level — PGD[0] → PUD with 1GB block entries.
-  auto pgd_result = PageTableManager::allocate_page_table();
-  if (!pgd_result) {
-    return VoidResult{pgd_result.error()};
-  }
-  PageTableManager::kernel_pgd = *pgd_result;
-
-  auto pud_result = PageTableManager::allocate_page_table();
-  if (!pud_result) {
-    return VoidResult{pud_result.error()};
-  }
-  PageTable *pud = *pud_result;
-
-  PhysAddr pud_pa = PageTableManager::get_physical_address(pud);
-  PageTableManager::kernel_pgd->entries[0].set_table(pud_pa);
-
-  for (usize i = 0; i < 4; i++) {
-    PhysAddr block_addr = static_cast<PhysAddr>(i * ONE_GB);
-    PhysAddr block_end = block_addr + ONE_GB;
-    bool overlaps_ram = (block_addr < ram_end) && (block_end > ram_start);
-    pud->entries[i].raw = overlaps_ram ? moss::kernel::hal::mmu::make_normal_block(block_addr)
-                                       : moss::kernel::hal::mmu::make_device_block(block_addr);
-  }
+    // Fill root[0..3] with 1GB gigapage leaf entries for identity map (0-4GB).
+    for (usize i = 0; i < 4; i++) {
+      PhysAddr block_addr = static_cast<PhysAddr>(i * ONE_GB);
+      PhysAddr block_end = block_addr + ONE_GB;
+      bool overlaps_ram = (block_addr < ram_end) && (block_end > ram_start);
+      kernel_pgd->entries[i].raw =
+          overlaps_ram ? hal::mmu::make_normal_block(block_addr) : hal::mmu::make_device_block(block_addr);
+    }
+  } else
 #endif
+  {
+    // 4-level: PGD[0] → PUD with 1GB block entries.
+    auto pgd_result = PageTableManager::allocate_page_table();
+    if (!pgd_result) {
+      return VoidResult{pgd_result.error()};
+    }
+    PageTableManager::kernel_pgd = *pgd_result;
+
+    auto pud_result = PageTableManager::allocate_page_table();
+    if (!pud_result) {
+      return VoidResult{pud_result.error()};
+    }
+    PageTable *pud = *pud_result;
+
+    PhysAddr pud_pa = PageTableManager::get_physical_address(pud);
+    PageTableManager::kernel_pgd->entries[0].set_table(pud_pa);
+
+    for (usize i = 0; i < 4; i++) {
+      PhysAddr block_addr = static_cast<PhysAddr>(i * ONE_GB);
+      PhysAddr block_end = block_addr + ONE_GB;
+      bool overlaps_ram = (block_addr < ram_end) && (block_end > ram_start);
+      pud->entries[i].raw =
+          overlaps_ram ? hal::mmu::make_normal_block(block_addr) : hal::mmu::make_device_block(block_addr);
+    }
+  }
 
   return VoidResult{};
 }
@@ -534,9 +559,8 @@ VoidResult PageTableManager::map_region(VirtAddr virt_addr, PhysAddr phys_addr, 
 
 // 映射单个页面
 //
-// ARM64/x86_64: 4-level walk — PGD → PUD → PMD → PTE[pte_index]
-// RISC-V Sv39:  3-level walk — PGD → PUD → final entry at PMD[pmd_index]
-//   (break_virtual_address maps L2→pgd, L1→pud, L0→pmd, pte_index=0)
+// 4-level walk: PGD → PUD → PMD → PTE[pte_index]
+// RISC-V Sv39 (3-level): PGD → PUD → final entry at PMD[pmd_index]
 VoidResult PageTableManager::map_page(VirtAddr virt_addr, PhysAddr phys_addr, u64 permissions) {
   if (!PageTableManager::kernel_pgd) {
     return VoidResult{ErrorCode::InvalidState};
@@ -570,21 +594,24 @@ VoidResult PageTableManager::map_page(VirtAddr virt_addr, PhysAddr phys_addr, u6
   current_table = get_table_from_physical(current_table->entries[bd.pud_index].get_phys_addr());
 
 #if defined(MOSS_ARCH_RISCV)
-  // Sv39: 3 levels — PMD IS the final L0 table.  pmd_index = bits[20:12].
-  current_table->entries[bd.pmd_index].set_page(phys_addr, permissions);
-#else
-  // 4-level: PMD → PTE table
-  if (!current_table->entries[bd.pmd_index].is_valid()) {
-    auto pte_result = PageTableManager::allocate_page_table();
-    if (!pte_result) {
-      return VoidResult{pte_result.error()};
-    }
-    PhysAddr pte_pa = PageTableManager::get_physical_address(*pte_result);
-    current_table->entries[bd.pmd_index].set_table(pte_pa);
-  }
-  current_table = get_table_from_physical(current_table->entries[bd.pmd_index].get_phys_addr());
-  current_table->entries[bd.pte_index].set_page(phys_addr, permissions);
+  if (hal::mmu::g_mmu_mode == hal::mmu::MmuMode::Sv39) {
+    // Sv39: 3 levels — PMD IS the final L0 table.
+    current_table->entries[bd.pmd_index].set_page(phys_addr, permissions);
+  } else
 #endif
+  {
+    // 4-level: PMD → PTE table
+    if (!current_table->entries[bd.pmd_index].is_valid()) {
+      auto pte_result = PageTableManager::allocate_page_table();
+      if (!pte_result) {
+        return VoidResult{pte_result.error()};
+      }
+      PhysAddr pte_pa = PageTableManager::get_physical_address(*pte_result);
+      current_table->entries[bd.pmd_index].set_table(pte_pa);
+    }
+    current_table = get_table_from_physical(current_table->entries[bd.pmd_index].get_phys_addr());
+    current_table->entries[bd.pte_index].set_page(phys_addr, permissions);
+  }
 
   invalidate_tlb_addr(virt_addr);
   return VoidResult{};
@@ -841,28 +868,31 @@ VoidResult PageTableManager::unmap_page(VirtAddr virt_addr) {
   auto *pmd = get_table_from_physical(pud_entry.get_phys_addr());
 
 #if defined(MOSS_ARCH_RISCV)
-  // Sv39: PMD IS the final L0 table — pmd_index is the leaf entry.
-  auto &leaf_entry = pmd->entries[bd.pmd_index];
-  if (!leaf_entry.is_valid()) {
-    return VoidResult{ErrorCode::NotFound};
-  }
-  leaf_entry.clear();
-#else
-  auto &pmd_entry = pmd->entries[bd.pmd_index];
-  if (!pmd_entry.is_valid()) {
-    return VoidResult{ErrorCode::NotFound};
-  }
-  if (!pmd_entry.is_table()) {
-    return VoidResult{ErrorCode::NotSupported}; // 2MB block
-  }
-
-  auto *pte_table = get_table_from_physical(pmd_entry.get_phys_addr());
-  auto &pte_entry = pte_table->entries[bd.pte_index];
-  if (!pte_entry.is_valid()) {
-    return VoidResult{ErrorCode::NotFound};
-  }
-  pte_entry.clear();
+  if (hal::mmu::g_mmu_mode == hal::mmu::MmuMode::Sv39) {
+    // Sv39: PMD IS the final L0 table — pmd_index is the leaf entry.
+    auto &leaf_entry = pmd->entries[bd.pmd_index];
+    if (!leaf_entry.is_valid()) {
+      return VoidResult{ErrorCode::NotFound};
+    }
+    leaf_entry.clear();
+  } else
 #endif
+  {
+    auto &pmd_entry = pmd->entries[bd.pmd_index];
+    if (!pmd_entry.is_valid()) {
+      return VoidResult{ErrorCode::NotFound};
+    }
+    if (!pmd_entry.is_table()) {
+      return VoidResult{ErrorCode::NotSupported}; // 2MB block
+    }
+
+    auto *pte_table = get_table_from_physical(pmd_entry.get_phys_addr());
+    auto &pte_entry = pte_table->entries[bd.pte_index];
+    if (!pte_entry.is_valid()) {
+      return VoidResult{ErrorCode::NotFound};
+    }
+    pte_entry.clear();
+  }
 
   invalidate_tlb_addr(virt_addr);
   return VoidResult{};
@@ -880,19 +910,14 @@ PageTableManager::PageInfo PageTableManager::query_page(VirtAddr virt_addr) {
 
   auto bd = break_virtual_address(virt_addr);
 
-  // PGD level (RISC-V Sv39: root L2 = 1GB entries)
+  // PGD level
   auto &pgd_entry = kernel_pgd->entries[bd.pgd_index];
   if (!pgd_entry.is_valid()) {
     return info;
   }
-  // 1GB block/gigapage at root level
+  // 1GB block/gigapage at root level (Sv39 root or Sv48/ARM64 PGD block)
   if (!pgd_entry.is_table()) {
-#if defined(MOSS_ARCH_RISCV)
-    // Sv39 root: pgd_index = bits[38:30], so gigapage covers 1GB
     info.phys_addr = pgd_entry.get_phys_addr() | (virt_addr & 0x3FFFFFFFULL);
-#else
-    info.phys_addr = pgd_entry.get_phys_addr() | (virt_addr & 0x3FFFFFFFULL);
-#endif
     info.attributes = pgd_entry.raw;
     info.mapped = true;
     info.level = 1;
@@ -907,14 +932,17 @@ PageTableManager::PageInfo PageTableManager::query_page(VirtAddr virt_addr) {
   }
   if (!pud_entry.is_table()) {
 #if defined(MOSS_ARCH_RISCV)
-    // Sv39 L1: 2MB megapage
-    info.phys_addr = pud_entry.get_phys_addr() | (virt_addr & 0x1FFFFFULL);
-    info.level = 2;
-#else
-    // ARM64/x86: 1GB block at PUD level
-    info.phys_addr = pud_entry.get_phys_addr() | (virt_addr & 0x3FFFFFFFULL);
-    info.level = 1;
+    if (hal::mmu::g_mmu_mode == hal::mmu::MmuMode::Sv39) {
+      // Sv39 L1: 2MB megapage
+      info.phys_addr = pud_entry.get_phys_addr() | (virt_addr & 0x1FFFFFULL);
+      info.level = 2;
+    } else
 #endif
+    {
+      // 4-level: 1GB block at PUD level
+      info.phys_addr = pud_entry.get_phys_addr() | (virt_addr & 0x3FFFFFFFULL);
+      info.level = 1;
+    }
     info.attributes = pud_entry.raw;
     info.mapped = true;
     return info;
@@ -928,13 +956,16 @@ PageTableManager::PageInfo PageTableManager::query_page(VirtAddr virt_addr) {
   }
 
 #if defined(MOSS_ARCH_RISCV)
-  // Sv39: PMD IS the final L0 table — pmd_index = 4KB leaf PTE.
-  info.phys_addr = pmd_entry.get_phys_addr() | (virt_addr & 0xFFFULL);
-  info.attributes = pmd_entry.raw;
-  info.mapped = true;
-  info.level = 3;
-  return info;
-#else
+  if (hal::mmu::g_mmu_mode == hal::mmu::MmuMode::Sv39) {
+    // Sv39: PMD IS the final L0 table — pmd_index = 4KB leaf PTE.
+    info.phys_addr = pmd_entry.get_phys_addr() | (virt_addr & 0xFFFULL);
+    info.attributes = pmd_entry.raw;
+    info.mapped = true;
+    info.level = 3;
+    return info;
+  }
+#endif
+
   if (!pmd_entry.is_table()) {
     // 2MB block mapping
     info.phys_addr = pmd_entry.get_phys_addr() | (virt_addr & 0x1FFFFFULL);
@@ -956,7 +987,6 @@ PageTableManager::PageInfo PageTableManager::query_page(VirtAddr virt_addr) {
   info.mapped = true;
   info.level = 3;
   return info;
-#endif
 }
 
 } // namespace moss::kernel::mm

@@ -75,6 +75,9 @@ struct PlatformInfo {
   u32 cpu_count;
   u32 boot_cpu_id;
 
+  // RISC-V MMU type from DTB (3 = Sv39, 4 = Sv48, 5 = Sv57; 0 = unknown)
+  u8 mmu_levels;
+
   // 物理内存区域（来自 /memory 节点）
   MemoryRegion memory_regions[MAX_MEMORY_REGIONS];
   u32 memory_region_count;
@@ -172,7 +175,7 @@ static auto compatible_match(const void *fdt, int node, const char *match) noexc
 // 各节点的解析函数
 // ============================================================================
 
-/// 解析 /cpus 节点，获取 CPU 数量
+/// 解析 /cpus 节点，获取 CPU 数量和 MMU 类型
 static void parse_cpus(const void *fdt) noexcept {
   int cpus_node = fdt_path_offset(fdt, "/cpus");
   if (cpus_node < 0) {
@@ -181,6 +184,7 @@ static void parse_cpus(const void *fdt) noexcept {
   }
 
   u32 count = 0;
+  bool mmu_detected = false;
   int node = 0;
   fdt_for_each_subnode(node, fdt, cpus_node) {
     // 检查节点类型是否为 "cpu"
@@ -189,6 +193,34 @@ static void parse_cpus(const void *fdt) noexcept {
     if (device_type && len > 0) {
       if (strncmp(device_type, "cpu", 3) == 0) {
         count++;
+
+        // Read mmu-type from first CPU node (e.g. "riscv,sv39", "riscv,sv48")
+        if (!mmu_detected) {
+          int mmu_len = 0;
+          const char *mmu_type = static_cast<const char *>(fdt_getprop(fdt, node, "mmu-type", &mmu_len));
+          if (mmu_type && mmu_len > 0) {
+            // Parse "riscv,svNN" — look for the digit after "sv"
+            // Valid values: "riscv,sv39" → 3, "riscv,sv48" → 4, "riscv,sv57" → 5
+            for (int i = 0; i + 1 < mmu_len; i++) {
+              if (mmu_type[i] == 's' && mmu_type[i + 1] == 'v') {
+                // Parse the number: sv39→39, sv48→48, sv57→57
+                u32 bits = 0;
+                for (int j = i + 2; j < mmu_len && mmu_type[j] >= '0' && mmu_type[j] <= '9'; j++) {
+                  bits = bits * 10 + static_cast<u32>(mmu_type[j] - '0');
+                }
+                if (bits == 39) {
+                  g_platform_info.mmu_levels = 3;
+                } else if (bits == 48) {
+                  g_platform_info.mmu_levels = 4;
+                } else if (bits == 57) {
+                  g_platform_info.mmu_levels = 5;
+                }
+                mmu_detected = true;
+                break;
+              }
+            }
+          }
+        }
       }
     }
   }

@@ -13,6 +13,7 @@ import moss.smart_ptr;
 import moss.arch;
 import moss.containers;
 import moss.mm;
+import moss.hal.mmu;
 import moss.interrupts;
 import moss.abi;
 import moss.platform;
@@ -2032,8 +2033,8 @@ private:
 #elif defined(MOSS_ARCH_X86_64)
           asm volatile("mov %0, %%cr3" ::"r"(proc->address_space()->pgd_phys) : "memory");
 #elif defined(MOSS_ARCH_RISCV)
-          // Sv39 SATP: mode=8 (Sv39), ASID in bits 44-59, PPN in bits 0-43
-          u64 satp_val = (8ULL << 60) | (proc->address_space()->pgd_phys >> 12);
+          // SATP: runtime Sv39/Sv48 mode, PPN in bits 0-43
+          u64 satp_val = hal::mmu::make_satp_value(proc->address_space()->pgd_phys);
           asm volatile("csrw satp, %0" ::"r"(satp_val) : "memory");
           asm volatile("sfence.vma" ::: "memory");
 #endif

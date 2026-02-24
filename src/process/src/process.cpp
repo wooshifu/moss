@@ -287,46 +287,57 @@ KernelResult<unique_ptr<AddressSpace>> create_user_address_space() noexcept {
   auto *user_pgd = *pgd_result;
 
 #if defined(MOSS_ARCH_RISCV)
-  // RISC-V Sv39: kernel_pgd contains 1GB gigapage leaf entries directly at
-  // indices [0..3] (identity map) and [256..259] (high-half direct map).
-  // Copy all block (leaf) entries and the high-half entries to the user PGD.
-  // User PGD entries that are not kernel blocks start empty (demand paging).
-  if (kernel_pgd && user_pgd) {
-    constexpr usize ENTRIES = mm::PageTable::ENTRIES_PER_TABLE;
-    for (usize i = 0; i < ENTRIES; i++) {
-      if (kernel_pgd->entries[i].is_valid() && kernel_pgd->entries[i].is_block()) {
-        user_pgd->entries[i] = kernel_pgd->entries[i];
+  if (hal::mmu::g_mmu_mode == hal::mmu::MmuMode::Sv39) {
+    // Sv39: kernel_pgd contains 1GB gigapage leaf entries directly at
+    // indices [0..3] (identity map) and [256..259] (high-half direct map).
+    // Copy all valid kernel entries (both leaf and table) to user PGD.
+    if (kernel_pgd && user_pgd) {
+      constexpr usize ENTRIES = mm::PageTable::ENTRIES_PER_TABLE;
+      for (usize i = 0; i < ENTRIES; i++) {
+        if (kernel_pgd->entries[i].is_valid() && kernel_pgd->entries[i].is_block()) {
+          user_pgd->entries[i] = kernel_pgd->entries[i];
+        }
+      }
+    }
+  } else {
+    // Sv48: RISC-V has a single satp — user PGD must include BOTH the
+    // identity-map entries AND the high-half kernel entries.
+    // Copy all valid PGD entries (table pointers for identity map PGD[0]
+    // and high-half PGD[256]) so kernel code works in user context.
+    if (kernel_pgd && user_pgd) {
+      constexpr usize ENTRIES = mm::PageTable::ENTRIES_PER_TABLE;
+      for (usize i = 0; i < ENTRIES; i++) {
+        if (kernel_pgd->entries[i].is_valid()) {
+          user_pgd->entries[i] = kernel_pgd->entries[i];
+        }
       }
     }
   }
 #else
-  // ARM64/x86_64: kernel PGD[0] → L1 table contains both:
-  //   - 1GB block mappings (L1[0..3]) for device/RAM identity map
-  //   - L1 entries for user addresses (e.g. L1[8] for 0x200000000)
-  //
-  // Allocate a SEPARATE L1 (PUD) for each user process and copy ONLY
-  // the kernel 1GB block descriptors.  User addresses start with empty
-  // L1 entries → translation fault → demand paging.
-  if (kernel_pgd && user_pgd && kernel_pgd->entries[0].is_valid()) {
-    auto pud_result = mm::PageTableManager::allocate_page_table_dynamic();
-    if (!pud_result) {
-      mm::free_pages(pgd_phys, 0);
-      return KernelResult<unique_ptr<AddressSpace>>{ErrorCode::OutOfMemory};
-    }
-    auto *user_pud = *pud_result;
-    auto *kernel_pud = mm::PageTableManager::get_table_from_physical(kernel_pgd->entries[0].get_phys_addr());
+  {
+    // ARM64/x86_64: 4-level with separate ttbr1 for kernel.
+    // Only copy identity-map PUD (PGD[0]) to user PGD.
+    if (kernel_pgd && user_pgd && kernel_pgd->entries[0].is_valid()) {
+      auto pud_result = mm::PageTableManager::allocate_page_table_dynamic();
+      if (!pud_result) {
+        mm::free_pages(pgd_phys, 0);
+        return KernelResult<unique_ptr<AddressSpace>>{ErrorCode::OutOfMemory};
+      }
+      auto *user_pud = *pud_result;
+      auto *kernel_pud = mm::PageTableManager::get_table_from_physical(kernel_pgd->entries[0].get_phys_addr());
 
-    if (kernel_pud) {
-      constexpr usize ENTRIES = mm::PageTable::ENTRIES_PER_TABLE;
-      for (usize i = 0; i < ENTRIES; i++) {
-        if (kernel_pud->entries[i].is_valid() && kernel_pud->entries[i].is_block()) {
-          user_pud->entries[i] = kernel_pud->entries[i];
+      if (kernel_pud) {
+        constexpr usize ENTRIES = mm::PageTable::ENTRIES_PER_TABLE;
+        for (usize i = 0; i < ENTRIES; i++) {
+          if (kernel_pud->entries[i].is_valid() && kernel_pud->entries[i].is_block()) {
+            user_pud->entries[i] = kernel_pud->entries[i];
+          }
         }
       }
-    }
 
-    PhysAddr pud_phys = mm::PageTableManager::get_physical_address(user_pud);
-    user_pgd->entries[0].set_table(pud_phys);
+      PhysAddr pud_phys = mm::PageTableManager::get_physical_address(user_pud);
+      user_pgd->entries[0].set_table(pud_phys);
+    }
   }
 #endif
 

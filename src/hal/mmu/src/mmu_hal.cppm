@@ -35,6 +35,48 @@ using moss::kernel::VirtAddr;
 using moss::kernel::VoidResult;
 
 // ============================================================================
+// Runtime MMU mode — Sv39 (3-level) vs Sv48 (4-level) detection for RISC-V
+// ============================================================================
+// ARM64/x86_64 always use 4-level page tables.  RISC-V supports multiple
+// modes; the kernel probes hardware at boot to select the highest supported.
+enum class MmuMode : u8 { Sv39, Sv48 };
+
+#if defined(MOSS_ARCH_RISCV)
+constinit inline MmuMode g_mmu_mode = MmuMode::Sv39; // default, updated by detect_mmu_mode()
+constinit inline u64 g_satp_mode_bits = 8ULL << 60;  // Sv39 default
+#else
+inline constexpr MmuMode g_mmu_mode = MmuMode::Sv48; // ARM64/x86 always 4-level
+inline constexpr u64 g_satp_mode_bits = 0;           // not used on ARM64/x86
+#endif
+
+// MMU mode detection is done via DTB mmu-type property in boot_impl.cpp
+// (direct satp probing requires identity-mapped page tables to be set up first,
+//  which creates a chicken-and-egg problem for early boot).
+
+/// Build a RISC-V satp register value from a PGD physical address.
+/// Uses the runtime-detected mode (Sv39 or Sv48).
+[[nodiscard]] inline u64 make_satp_value(PhysAddr pgd_phys) noexcept {
+  return g_satp_mode_bits | ((pgd_phys >> 12) & 0x00000FFFFFFFFFFFULL);
+}
+
+/// Initialize address-space layout globals based on detected MMU mode.
+/// Sets KERNEL_BASE, USER_MAX, KERNEL_DIRECT_MAP_BASE (in types.cppm)
+/// and user_layout::STACK_TOP (in process-types.cppm).
+/// Must be called after detect_mmu_mode() and before setup_mmu().
+inline void init_riscv_address_layout([[maybe_unused]] MmuMode mode) noexcept {
+#if defined(MOSS_ARCH_RISCV)
+  if (mode == MmuMode::Sv48) {
+    moss::kernel::KERNEL_BASE = 0xFFFF800000000000ULL;
+    moss::kernel::USER_MAX = 0x0000800000000000ULL;
+  } else {
+    moss::kernel::KERNEL_BASE = 0xFFFFFFC000000000ULL;
+    moss::kernel::USER_MAX = 0x0000004000000000ULL;
+  }
+  moss::kernel::KERNEL_DIRECT_MAP_BASE = moss::kernel::KERNEL_BASE;
+#endif
+}
+
+// ============================================================================
 // Page Table Entry attribute bits — architecture-specific PTE format
 // ============================================================================
 namespace page_attr {
@@ -86,7 +128,8 @@ inline constexpr u64 GLOBAL = (1ULL << 8);    // Global
 inline constexpr u64 SW_COW = (1ULL << 52);
 
 #elif defined(MOSS_ARCH_RISCV)
-// RISC-V Sv39 PTE format (RISC-V Privileged Spec, Ch. 4.4)
+// RISC-V Sv39/Sv48 PTE format (RISC-V Privileged Spec, Ch. 4.4)
+// PTE bits are identical for Sv39 and Sv48; only the number of page table levels differs.
 // Leaf vs non-leaf: V=1 + (R|W|X)==0 → non-leaf (table); V=1 + (R|W|X)!=0 → leaf (block/page)
 inline constexpr u64 VALID = (1ULL << 0); // V (Valid)
 inline constexpr u64 TABLE = (1ULL << 0); // V (leaf vs non-leaf determined by RWX)
@@ -171,26 +214,32 @@ inline constexpr u64 DEVICE =
 // Virtual address breakdown — index bit positions for 4KB granule paging
 // ============================================================================
 //
-// ARM64 & x86_64: 4-level, 48-bit VA, 9-bit indices:
+// 4-level (ARM64, x86_64, RISC-V Sv48): 48-bit VA, 9-bit indices:
 //   PGD[47:39] PUD[38:30] PMD[29:21] PTE[20:12] Offset[11:0]
 //
-// RISC-V Sv39: 3-level, 39-bit VA, 9-bit indices:
+// 3-level (RISC-V Sv39): 39-bit VA, 9-bit indices:
 //   L2[38:30] L1[29:21] L0[20:12] Offset[11:0]
 //   Mapped to pgd/pud/pmd fields to reuse 4-level walk code — pte_index=0.
 
 struct VirtualAddressBreakdown {
-  u16 pgd_index;   // ARM64/x86: L4[47:39];  RISC-V Sv39: L2[38:30] (root)
-  u16 pud_index;   // ARM64/x86: L3[38:30];  RISC-V Sv39: L1[29:21]
-  u16 pmd_index;   // ARM64/x86: L2[29:21];  RISC-V Sv39: L0[20:12] (leaf)
-  u16 pte_index;   // ARM64/x86: L1[20:12];  RISC-V Sv39: unused (0)
+  u16 pgd_index;   // 4-level: [47:39];  Sv39: [38:30] (root)
+  u16 pud_index;   // 4-level: [38:30];  Sv39: [29:21]
+  u16 pmd_index;   // 4-level: [29:21];  Sv39: [20:12] (leaf)
+  u16 pte_index;   // 4-level: [20:12];  Sv39: unused (0)
   u16 page_offset; // Offset within page [11:0]
 };
 
-[[nodiscard]] constexpr VirtualAddressBreakdown break_virtual_address(VirtAddr vaddr) noexcept {
+[[nodiscard]] inline VirtualAddressBreakdown break_virtual_address(VirtAddr vaddr) noexcept {
 #if defined(MOSS_ARCH_RISCV)
-  // Sv39: 3-level page table.  The root table (satp) is at L2 level
-  // with 512 entries, each covering 1GB.  We map L2→pgd, L1→pud, L0→pmd
-  // so the existing 4-level walk code can reuse the first 3 levels.
+  if (g_mmu_mode == MmuMode::Sv48) {
+    // Sv48: 4-level, same layout as ARM64/x86_64
+    return {.pgd_index = static_cast<u16>((vaddr >> 39) & 0x1FF),
+            .pud_index = static_cast<u16>((vaddr >> 30) & 0x1FF),
+            .pmd_index = static_cast<u16>((vaddr >> 21) & 0x1FF),
+            .pte_index = static_cast<u16>((vaddr >> 12) & 0x1FF),
+            .page_offset = static_cast<u16>(vaddr & 0xFFF)};
+  }
+  // Sv39: 3-level fallback.  Map L2→pgd, L1→pud, L0→pmd; pte_index=0.
   return {.pgd_index = static_cast<u16>((vaddr >> 30) & 0x1FF),
           .pud_index = static_cast<u16>((vaddr >> 21) & 0x1FF),
           .pmd_index = static_cast<u16>((vaddr >> 12) & 0x1FF),
@@ -237,9 +286,8 @@ struct AddressSpaceConfig {
   static constexpr u64 MAIR_VALUE = 0; // not applicable
 
 #elif defined(MOSS_ARCH_RISCV)
-  // RISC-V uses satp register; mode=8 for Sv39, mode=9 for Sv48.
-  // QEMU "rv64" CPU only supports Sv39; Sv48/Sv57 require explicit CPU flags.
-  static constexpr u64 SATP_MODE_SV39 = 8ULL << 60;
+  // RISC-V uses satp register; mode is detected at runtime (g_satp_mode_bits).
+  // Use make_satp_value() to build the register value.
   static constexpr u64 TCR_VALUE = 0;  // not applicable (satp used instead)
   static constexpr u64 MAIR_VALUE = 0; // RISC-V uses PMA, not MAIR
 #endif
@@ -274,8 +322,8 @@ inline void configure_address_space(PhysAddr pgd_phys) noexcept {
   // x86_64: load CR3 with page table base
   asm volatile("mov %0, %%cr3" ::"r"(pgd_phys) : "memory");
 #elif defined(MOSS_ARCH_RISCV)
-  // RISC-V: set satp register (Sv39 mode + PPN)
-  u64 satp_val = AddressSpaceConfig::SATP_MODE_SV39 | ((pgd_phys >> 12) & 0x00000FFFFFFFFFFFULL);
+  // RISC-V: set satp register (runtime-detected Sv39 or Sv48 mode + PPN)
+  u64 satp_val = make_satp_value(pgd_phys);
   asm volatile("csrw satp, %0" ::"r"(satp_val) : "memory");
   asm volatile("sfence.vma" ::: "memory");
 #endif
