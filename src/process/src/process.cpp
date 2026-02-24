@@ -323,51 +323,30 @@ KernelResult<unique_ptr<AddressSpace>> create_user_address_space() noexcept {
 #endif
 
 #if defined(MOSS_ARCH_RISCV)
-  early_debug_print("[DEBUG] RISC-V kernel mapping copy starting\n");
   if (hal::mmu::g_mmu_mode == hal::mmu::MmuMode::Sv39) {
-    early_debug_print("[DEBUG] RISC-V Sv39 mode kernel mapping copy\n");
     // Sv39: kernel_pgd contains 1GB gigapage leaf entries directly at
     // indices [0..3] (identity map) and [256..259] (high-half direct map).
     // Copy all valid kernel entries (both leaf and table) to user PGD.
     if (kernel_pgd && user_pgd) {
       constexpr usize ENTRIES = mm::PageTable::ENTRIES_PER_TABLE;
-      usize copied_count = 0;
       for (usize i = 0; i < ENTRIES; i++) {
         if (kernel_pgd->entries[i].is_valid() && kernel_pgd->entries[i].is_block()) {
           user_pgd->entries[i] = kernel_pgd->entries[i];
-          copied_count++;
         }
       }
-      early_debug_print("[DEBUG] RISC-V Sv39: copied ");
-      char count_str[4] = {0};
-      count_str[0] = '0' + static_cast<char>(copied_count / 100);
-      count_str[1] = '0' + static_cast<char>((copied_count / 10) % 10);
-      count_str[2] = '0' + static_cast<char>(copied_count % 10);
-      early_debug_print(count_str);
-      early_debug_print(" entries\n");
     }
   } else {
-    early_debug_print("[DEBUG] RISC-V Sv48 mode kernel mapping copy\n");
     // Sv48: RISC-V has a single satp — user PGD must include BOTH the
     // identity-map entries AND the high-half kernel entries.
     // Copy all valid PGD entries (table pointers for identity map PGD[0]
     // and high-half PGD[256]) so kernel code works in user context.
     if (kernel_pgd && user_pgd) {
       constexpr usize ENTRIES = mm::PageTable::ENTRIES_PER_TABLE;
-      usize copied_count = 0;
       for (usize i = 0; i < ENTRIES; i++) {
         if (kernel_pgd->entries[i].is_valid()) {
           user_pgd->entries[i] = kernel_pgd->entries[i];
-          copied_count++;
         }
       }
-      early_debug_print("[DEBUG] RISC-V Sv48: copied ");
-      char count_str[4] = {0};
-      count_str[0] = '0' + static_cast<char>(copied_count / 100);
-      count_str[1] = '0' + static_cast<char>((copied_count / 10) % 10);
-      count_str[2] = '0' + static_cast<char>(copied_count % 10);
-      early_debug_print(count_str);
-      early_debug_print(" entries\n");
     }
   }
 #else
@@ -407,30 +386,12 @@ KernelResult<unique_ptr<AddressSpace>> create_user_address_space() noexcept {
 
       if (kernel_pud) {
         constexpr usize ENTRIES = mm::PageTable::ENTRIES_PER_TABLE;
-        early_debug_print("[DEBUG] checking kernel PUD entries for copying\n");
-
-        // Only check first 16 entries to avoid excessive debug output
-        usize max_entries = (ENTRIES > 16) ? 16 : ENTRIES;
-        for (usize i = 0; i < max_entries; i++) {
-          u64 kernel_raw = kernel_pud->entries[i].raw;
-          if (kernel_raw != 0) {
-            early_debug_print("[DEBUG] kernel PUD[");
-            char idx_str[2] = {'0' + static_cast<char>(i), 0};
-            early_debug_print(idx_str);
-            early_debug_print("] = 0x");
-            for (int j = 15; j >= 0; j--) {
-              u8 nibble = (kernel_raw >> (j * 4)) & 0xF;
-              char hex_char = (nibble < 10) ? ('0' + nibble) : ('A' + nibble - 10);
-              char hex_str[2] = {hex_char, 0};
-              early_debug_print(hex_str);
-            }
-            early_debug_print("\n");
-          }
-
+        for (usize i = 0; i < ENTRIES; i++) {
           // Check if this is a valid 1GB block entry
           bool is_valid_block;
 #ifdef MOSS_ARCH_X86_64
           // x86_64: Check for 1GB page manually (Present=1, PageSize=1)
+          u64 kernel_raw = kernel_pud->entries[i].raw;
           is_valid_block = kernel_pud->entries[i].is_valid() && ((kernel_raw & 0x1) && (kernel_raw & 0x80));
 #else
           // ARM64/RISC-V: Use the standard is_block() method
@@ -440,27 +401,12 @@ KernelResult<unique_ptr<AddressSpace>> create_user_address_space() noexcept {
           if (is_valid_block) {
 #ifdef MOSS_ARCH_X86_64
             // Copy kernel block entry WITHOUT modifying permissions
-            // Kernel mappings should retain kernel permissions (no USER bit)
-            // Only user-specific mappings should have USER bit
             u64 kernel_entry = kernel_pud->entries[i].raw;
-            user_pud->entries[i].raw = kernel_entry; // Direct copy, no USER bit modification
-            early_debug_print("[DEBUG] x86_64 PUD[");
-            char idx_str2[2] = {'0' + static_cast<char>(i), 0};
-            early_debug_print(idx_str2);
-            early_debug_print("] copied preserving kernel permissions\n");
+            user_pud->entries[i].raw = kernel_entry;
 #else
             // ARM64/RISC-V: Copy kernel block entry
             user_pud->entries[i] = kernel_pud->entries[i];
-            early_debug_print("[DEBUG] ARM64/RISC-V PUD[");
-            char idx_str3[2] = {'0' + static_cast<char>(i), 0};
-            early_debug_print(idx_str3);
-            early_debug_print("] copied\n");
 #endif
-          } else if (kernel_raw != 0) {
-            early_debug_print("[DEBUG] kernel PUD[");
-            char idx_str3[2] = {'0' + static_cast<char>(i), 0};
-            early_debug_print(idx_str3);
-            early_debug_print("] exists but not valid block - skipped\n");
           }
         }
       }
