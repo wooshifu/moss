@@ -2051,7 +2051,108 @@ private:
           asm volatile("msr ttbr0_el1, %0" ::"r"(ttbr0_val));
           asm volatile("isb" ::: "memory");
 #elif defined(MOSS_ARCH_X86_64)
-          asm volatile("mov %0, %%cr3" ::"r"(proc->address_space()->pgd_phys) : "memory");
+          early_debug_print("[sched] DEBUG: setting CR3 with improved page table\n");
+          u64 pgd_phys = proc->address_space()->pgd_phys;
+
+          // Verify alignment and validity before setting CR3
+          if ((pgd_phys & 0xFFF) != 0) {
+            early_debug_print("[sched] ERROR: PGD not 4KB aligned, skipping CR3 set\n");
+          } else if (pgd_phys < 0x200000 || pgd_phys > 0x20000000) {
+            early_debug_print("[sched] ERROR: PGD physical address out of range, skipping CR3 set\n");
+          } else {
+            early_debug_print("[sched] DEBUG: CR3 will be set to 0x");
+            char hex_buf[17];
+            for (int i = 15; i >= 0; i--) {
+              u8 nibble = (pgd_phys >> (i * 4)) & 0xF;
+              hex_buf[15-i] = (nibble < 10) ? ('0' + nibble) : ('A' + nibble - 10);
+            }
+            hex_buf[16] = '\0';
+            early_debug_print(hex_buf);
+            early_debug_print("\n");
+
+            // PHASE 1: DIAGNOSTIC - Validate page table structure before CR3 switch
+            early_debug_print("[sched] DEBUG: validating page table structure before CR3\n");
+
+            // Check if PGD physical address is accessible
+            u64 *pgd_virt = reinterpret_cast<u64*>(pgd_phys);  // Using identity mapping
+            early_debug_print("[sched] DEBUG: PGD virtual addr = 0x");
+            char hex_buf2[17];
+            u64 addr_check = reinterpret_cast<u64>(pgd_virt);
+            for (int i = 15; i >= 0; i--) {
+              u8 nibble = (addr_check >> (i * 4)) & 0xF;
+              hex_buf2[15-i] = (nibble < 10) ? ('0' + nibble) : ('A' + nibble - 10);
+            }
+            hex_buf2[16] = '\0';
+            early_debug_print(hex_buf2);
+            early_debug_print("\n");
+
+            // Validate first few PGD entries
+            early_debug_print("[sched] DEBUG: PGD[0] = 0x");
+            u64 pgd0 = pgd_virt[0];
+            for (int i = 15; i >= 0; i--) {
+              u8 nibble = (pgd0 >> (i * 4)) & 0xF;
+              hex_buf2[15-i] = (nibble < 10) ? ('0' + nibble) : ('A' + nibble - 10);
+            }
+            hex_buf2[16] = '\0';
+            early_debug_print(hex_buf2);
+            early_debug_print("\n");
+
+            // Check if PGD[0] is valid (should have Present bit set)
+            if ((pgd0 & 0x1) == 0) {
+              early_debug_print("[sched] ERROR: PGD[0] not present, aborting CR3 set\n");
+            } else {
+              early_debug_print("[sched] DEBUG: PGD[0] is present, continuing\n");
+
+              // PHASE 3: Validate PUD table contents
+              early_debug_print("[sched] DEBUG: validating PUD table contents\n");
+              u64 pud_phys = pgd0 & 0x000FFFFFFFFFF000ULL; // Extract physical address
+              u64 *pud_virt = reinterpret_cast<u64*>(pud_phys); // Identity mapping
+
+              early_debug_print("[sched] DEBUG: PUD[0] = 0x");
+              u64 pud0 = pud_virt[0];
+              for (int i = 15; i >= 0; i--) {
+                u8 nibble = (pud0 >> (i * 4)) & 0xF;
+                hex_buf2[15-i] = (nibble < 10) ? ('0' + nibble) : ('A' + nibble - 10);
+              }
+              hex_buf2[16] = '\0';
+              early_debug_print(hex_buf2);
+              early_debug_print("\n");
+
+              // Check if PUD[0] covers our current RIP address (0x128996)
+              if ((pud0 & 0x1) == 0) {
+                early_debug_print("[sched] ERROR: PUD[0] not present - RIP not mapped!\n");
+              } else if ((pud0 & 0x80) != 0) { // Check if it's a 1GB block
+                early_debug_print("[sched] DEBUG: PUD[0] is 1GB block mapping\n");
+              } else {
+                early_debug_print("[sched] DEBUG: PUD[0] points to PMD table\n");
+              }
+
+              // Flush TLB before switching page table
+              early_debug_print("[sched] DEBUG: flushing TLB before CR3 switch\n");
+              asm volatile("mov %%cr3, %%rax; mov %%rax, %%cr3" ::: "rax", "memory");
+
+              // PHASE 2: Check current code address before CR3 switch
+              u64 current_rip;
+              asm volatile("lea (%%rip), %0" : "=r"(current_rip));
+              early_debug_print("[sched] DEBUG: current RIP = 0x");
+              for (int i = 15; i >= 0; i--) {
+                u8 nibble = (current_rip >> (i * 4)) & 0xF;
+                hex_buf2[15-i] = (nibble < 10) ? ('0' + nibble) : ('A' + nibble - 10);
+              }
+              hex_buf2[16] = '\0';
+              early_debug_print(hex_buf2);
+              early_debug_print("\n");
+
+              // Check if this address is mapped in user page table
+              early_debug_print("[sched] DEBUG: checking if RIP is mapped in user page table\n");
+
+              // Set CR3 with the new page table
+              early_debug_print("[sched] DEBUG: setting CR3 now\n");
+              asm volatile("mov %0, %%cr3" ::"r"(pgd_phys) : "memory");
+              early_debug_print("[sched] DEBUG: CR3 set successfully!\n");
+            }
+            early_debug_print("[sched] DEBUG: CR3 set successfully!\n");
+          }
 #elif defined(MOSS_ARCH_RISCV)
           // SATP: runtime Sv39/Sv48 mode, PPN in bits 0-43
           u64 satp_val = hal::mmu::make_satp_value(proc->address_space()->pgd_phys);
@@ -2078,9 +2179,12 @@ private:
 
       // Mask IRQs before context_switch.  context_switch does NOT
       // touch interrupt state, so the new task inherits masked state.
+#ifdef MOSS_ARCH_X86_64
+      early_debug_print("[sched] DEBUG: about to disable interrupts\n");
+#endif
       arch::disable_interrupts();
 #ifdef MOSS_ARCH_X86_64
-      early_debug_print("[sched] DEBUG: calling context_switch to user task\n");
+      early_debug_print("[sched] DEBUG: interrupts disabled, calling context_switch to user task\n");
 #endif
       context_switch(prev_ctx, &task->context);
 #ifdef MOSS_ARCH_X86_64

@@ -54,6 +54,22 @@
 .global context_switch
 .type context_switch, @function
 context_switch:
+    // DEBUG: Print context_switch entry
+    pushq   %rax
+    pushq   %rcx
+    pushq   %rdx
+    pushq   %rdi
+    pushq   %rsi
+
+    leaq    .Lctx_switch_msg(%rip), %rdi
+    call    early_debug_print
+
+    popq    %rsi
+    popq    %rdi
+    popq    %rdx
+    popq    %rcx
+    popq    %rax
+
     // ---- Phase 1: Save current (prev) context ----
 
     // Save all general-purpose registers into prev CpuContext
@@ -108,6 +124,25 @@ context_switch:
 
     // Push saved PC as return address so `ret` will jump there
     movq    136(%rsi), %r10            // next->pc
+
+    // DEBUG: Print PC that we're about to jump to
+    pushq   %rax
+    pushq   %rcx
+    pushq   %rdx
+    pushq   %rdi
+    pushq   %rsi
+    pushq   %r10
+
+    leaq    .Lctx_jump_msg(%rip), %rdi
+    call    early_debug_print
+
+    popq    %r10
+    popq    %rsi
+    popq    %rdi
+    popq    %rdx
+    popq    %rcx
+    popq    %rax
+
     pushq   %r10
 
     // Restore RDI and RSI last (they are our base pointers)
@@ -207,3 +242,10 @@ kernel_thread_entry:
     syscall
 
 .size kernel_thread_entry, .-kernel_thread_entry
+
+// Debug messages
+.section .rodata
+.Lctx_switch_msg:
+    .asciz "[ctx_switch] DEBUG: context_switch called\n"
+.Lctx_jump_msg:
+    .asciz "[ctx_switch] DEBUG: about to ret to new PC\n"

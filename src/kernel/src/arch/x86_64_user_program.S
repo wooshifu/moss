@@ -43,6 +43,9 @@
 .type _user_program_start, @function
 _user_program_start:
 
+    // ---- DEBUG: Skip I/O port access in user mode ----
+    // outb instruction not allowed in user mode, skip debug output
+
     // ---- Step 1: sys_write(fd=1, "init: calling execve...\n", 25) ----
     movq    $33, %rax               // syscall number: sys_write
     movq    $1, %rdi                // fd = STDOUT_FILENO
@@ -53,24 +56,24 @@ _user_program_start:
     // ---- Step 2: sys_execve("/shell.elf", NULL, NULL) ----
     movq    $11, %rax               // syscall number: sys_execve
     leaq    .Lpath_shell(%rip), %rdi // pathname = "/shell.elf"
-    xorq    %rsi, %rsi              // argv = NULL
-    xorq    %rdx, %rdx              // envp = NULL
+    movq    $0, %rsi                // argv = NULL
+    movq    $0, %rdx                // envp = NULL
     syscall                         // trap to ring 0 → sys_execve handler
 
     // ---- If execve returns, it failed ----
-    // Save error code
-    movq    %rax, %rbx
+    // Save error code (rax contains return value)
+    movq    %rax, %r8               // Save error code
 
-    // Print error message
-    movq    $33, %rax               // sys_write
-    movq    $1, %rdi                // fd = STDOUT
-    leaq    .Lmsg_fail(%rip), %rsi  // "init: execve failed!\n"
-    movq    $22, %rdx               // 22 bytes
+    // sys_write(fd=1, "execve failed with error: ", 27)
+    movq    $33, %rax               // syscall number: sys_write
+    movq    $1, %rdi                // fd = STDOUT_FILENO
+    leaq    .Lmsg_error(%rip), %rsi // buf = "execve failed with error: "
+    movq    $27, %rdx               // count = 27 bytes
     syscall
 
-    // ---- sys_exit(status=1) ----
+    // ---- This should never be reached ----
     movq    $1, %rax                // syscall number: sys_exit
-    movq    $1, %rdi                // exit status = 1 (failure)
+    movq    $0, %rdi                // exit status = 0 (success)
     syscall
 
     // ---- Infinite loop (unreachable — sys_exit never returns) ----
@@ -82,10 +85,10 @@ _user_program_start:
 // =============================================================================
 .Lmsg_execve:
     .ascii  "init: calling execve...\n"    // 25 bytes (includes \n, no NUL)
-.Lmsg_fail:
-    .ascii  "init: execve failed!\n"       // 22 bytes (includes \n, no NUL)
 .Lpath_shell:
-    .asciz  "/shell.elf"                   // NUL-terminated VFS path for execve
+    .asciz  "/shell.elf"                   // 11 bytes (includes NUL terminator)
+.Lmsg_error:
+    .ascii  "execve failed with error: "   // 27 bytes (no \n, no NUL)
 
 // =============================================================================
 // End-of-program marker

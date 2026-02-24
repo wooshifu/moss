@@ -51,8 +51,21 @@
 
 .type _pvh_start, @function
 _pvh_start:
+    // Debug: Write 'P' to VGA to show PVH entry was called
+    movb $0x50, 0xb8000        // 'P' character
+    movb $0x0F, 0xb8001        // bright white on black
+
+    // Mark that PVH entry was called by setting a sentinel value
+    movl $0xDEADBEEF, pvh_temp_info_32
+
     // Save PVH boot info pointer (EBX) for later use
     mov %ebx, %esi
+
+    // If EBX is non-zero, store it; otherwise keep sentinel
+    test %ebx, %ebx
+    jz .Lskip_pvh_save
+    mov %esi, pvh_temp_info_32
+.Lskip_pvh_save:
 
     // Disable interrupts
     cli
@@ -177,6 +190,14 @@ _start:
     xor %eax, %eax                      // fill with zeros
     rep stosb                           // zero the entire BSS
 
+    // Mark that _start was called (after BSS clearing)
+    movq $0xCAFEBABE, %rax
+    movq %rax, pvh_boot_info_ptr(%rip)
+
+    // Debug: Write 'S' to VGA to show _start was called
+    movb $0x53, 0xb8000        // 'S' character
+    movb $0x0F, 0xb8001        // bright white on black
+
     // ---- Load GDT ----
     // Layout: [0] null | [1] kernel CS | [2] kernel DS | [3] user CS | [4] user DS
     // Selectors: 0x08=KCS, 0x10=KDS, 0x1B=UCS (RPL=3), 0x23=UDS (RPL=3)
@@ -201,9 +222,15 @@ _start:
     movw %ax, %fs
     movw %ax, %gs
 
+    // ---- Retrieve PVH boot info from 32-bit temp location ----
+    // Zero-extend the 32-bit PVH pointer to 64 bits and store it properly
+    movl pvh_temp_info_32(%rip), %eax  // Load 32-bit value
+    movq %rax, pvh_boot_info_ptr(%rip) // Store as 64-bit (zero-extended)
+
     // ---- Call unified boot entry ----
-    // x86_64 has no DTB; pass NULL as device_tree_ptr
-    xorq %rdi, %rdi
+    // Pass PVH boot info pointer as device_tree_ptr for x86_64
+    movq pvh_boot_info_ptr(%rip), %rdi
+
     call early_main
 
     // Should not return — halt loop as safety net
@@ -220,6 +247,15 @@ _start:
 stack_bottom:
     .skip 8192                          // 8 KB stack
 stack_top:
+
+// PVH boot info (saved from 32-bit mode)
+.align 8
+pvh_boot_info_ptr:
+    .quad 0                             // 64-bit pointer to hvm_start_info structure
+
+.align 4
+pvh_temp_info_32:
+    .long 0                             // 32-bit temporary storage for PVH pointer
 
 // =============================================================================
 // PVH page tables (24 KB — zeroed by PVH stub before enabling paging)

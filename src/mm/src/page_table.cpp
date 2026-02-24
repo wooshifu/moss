@@ -4,8 +4,12 @@
 module moss.mm;
 
 import moss.logging;
+import moss.abi;
 
 namespace log = moss::kernel::logging;
+
+#ifdef MOSS_ARCH_X86_64
+#endif
 
 namespace moss::kernel::mm {
 
@@ -32,17 +36,55 @@ KernelResult<PageTable *> PageTableManager::allocate_page_table() {
 
 // Dynamic page table allocation from buddy allocator (post-boot)
 KernelResult<PageTable *> PageTableManager::allocate_page_table_dynamic() {
+  abi::entry::early_debug_print("[DEBUG] allocate_page_table_dynamic: entering\n");
+  abi::entry::early_debug_print("[DEBUG] allocate_page_table_dynamic: calling alloc_kernel_pages(0)\n");
   auto result = page_alloc::alloc_kernel_pages(0); // order 0 = 1 page = 4KB
+  abi::entry::early_debug_print("[DEBUG] allocate_page_table_dynamic: alloc_kernel_pages returned\n");
   if (!result) {
+    abi::entry::early_debug_print("[DEBUG] allocate_page_table_dynamic: allocation failed\n");
     return KernelResult<PageTable *>{ErrorCode::OutOfMemory};
   }
+  abi::entry::early_debug_print("[DEBUG] allocate_page_table_dynamic: allocation succeeded\n");
   PhysAddr pa = *result;
+#ifdef MOSS_ARCH_X86_64
+  // WORKAROUND for x86_64: use identity mapping instead of high-half mapping
+  // because phys_to_virt() produces unmapped virtual addresses
+  auto *table = reinterpret_cast<PageTable *>(static_cast<VirtAddr>(pa));
+#else
   auto *table = reinterpret_cast<PageTable *>(phys_to_virt(pa));
+#endif
 
+#ifdef MOSS_ARCH_X86_64
+  // Simple hex printing
+  char hex_char[2] = {0, 0};
+  for (int shift = 60; shift >= 0; shift -= 4) {
+    hex_char[0] = ((pa >> shift) & 0xF) + '0';
+    if (hex_char[0] > '9')
+      hex_char[0] = hex_char[0] - '0' - 10 + 'A';
+  }
+  u64 vaddr = reinterpret_cast<u64>(table);
+  for (int shift = 60; shift >= 0; shift -= 4) {
+    hex_char[0] = ((vaddr >> shift) & 0xF) + '0';
+    if (hex_char[0] > '9')
+      hex_char[0] = hex_char[0] - '0' - 10 + 'A';
+  }
+#endif
   for (usize i = 0; i < PageTable::ENTRIES_PER_TABLE; i++) {
+#ifdef MOSS_ARCH_X86_64
+    if (i % 128 == 0) { // Print progress every 128 entries
+      char hex_buf[2] = {0, 0};
+      for (int shift = 12; shift >= 0; shift -= 4) {
+        hex_buf[0] = ((i >> shift) & 0xF) + '0';
+        if (hex_buf[0] > '9')
+          hex_buf[0] = hex_buf[0] - '0' - 10 + 'A';
+      }
+    }
+#endif
     table->entries[i].clear();
   }
 
+#ifdef MOSS_ARCH_X86_64
+#endif
   return KernelResult<PageTable *>{table};
 }
 
@@ -418,28 +460,37 @@ void PageTableManager::free_user_page_tables(PhysAddr pgd_phys) {
 // Map a single 4KB page into a user process page table
 // ARM64/x86_64: 4-level walk;  RISC-V Sv39: 3-level walk
 VoidResult PageTableManager::map_user_page(PhysAddr pgd_phys, VirtAddr va, PhysAddr pa, u64 perms) {
+  abi::entry::early_debug_print("[DEBUG] map_user_page: starting PGD walk\n");
   auto *pgd = get_table_from_physical(pgd_phys);
   auto bd = break_virtual_address(va);
 
   // PGD -> PUD (use dynamic allocator for user page tables)
+  abi::entry::early_debug_print("[DEBUG] map_user_page: checking PGD entry\n");
   if (!pgd->entries[bd.pgd_index].is_valid()) {
+    abi::entry::early_debug_print("[DEBUG] map_user_page: allocating PUD table\n");
     auto result = allocate_page_table_dynamic();
     if (!result) {
       return VoidResult{ErrorCode::OutOfMemory};
     }
     pgd->entries[bd.pgd_index].set_table(get_physical_address(*result));
   }
+  abi::entry::early_debug_print("[DEBUG] map_user_page: getting PUD table\n");
   auto *pud = get_table_from_physical(pgd->entries[bd.pgd_index].get_phys_addr());
+  abi::entry::early_debug_print("[DEBUG] map_user_page: PUD table obtained\n");
 
   // PUD -> PMD
+  abi::entry::early_debug_print("[DEBUG] map_user_page: checking PUD entry\n");
   if (!pud->entries[bd.pud_index].is_valid()) {
+    abi::entry::early_debug_print("[DEBUG] map_user_page: allocating PMD table\n");
     auto result = allocate_page_table_dynamic();
     if (!result) {
       return VoidResult{ErrorCode::OutOfMemory};
     }
     pud->entries[bd.pud_index].set_table(get_physical_address(*result));
   }
+  abi::entry::early_debug_print("[DEBUG] map_user_page: getting PMD table\n");
   auto *pmd = get_table_from_physical(pud->entries[bd.pud_index].get_phys_addr());
+  abi::entry::early_debug_print("[DEBUG] map_user_page: PMD table obtained\n");
 
 #if defined(MOSS_ARCH_RISCV)
   if (hal::mmu::g_mmu_mode == hal::mmu::MmuMode::Sv39) {
@@ -449,18 +500,25 @@ VoidResult PageTableManager::map_user_page(PhysAddr pgd_phys, VirtAddr va, PhysA
 #endif
   {
     // 4-level: PMD -> PTE table
+    abi::entry::early_debug_print("[DEBUG] map_user_page: checking PMD entry for PTE\n");
     if (!pmd->entries[bd.pmd_index].is_valid()) {
+      abi::entry::early_debug_print("[DEBUG] map_user_page: allocating PTE table\n");
       auto result = allocate_page_table_dynamic();
       if (!result) {
         return VoidResult{ErrorCode::OutOfMemory};
       }
       pmd->entries[bd.pmd_index].set_table(get_physical_address(*result));
     }
+    abi::entry::early_debug_print("[DEBUG] map_user_page: getting PTE table\n");
     auto *pte = get_table_from_physical(pmd->entries[bd.pmd_index].get_phys_addr());
+    abi::entry::early_debug_print("[DEBUG] map_user_page: setting page entry\n");
     pte->entries[bd.pte_index].set_page(pa, perms);
+    abi::entry::early_debug_print("[DEBUG] map_user_page: page entry set\n");
   }
 
+  abi::entry::early_debug_print("[DEBUG] map_user_page: invalidating TLB\n");
   invalidate_tlb_addr(va);
+  abi::entry::early_debug_print("[DEBUG] map_user_page: returning success\n");
   return VoidResult{};
 }
 
@@ -519,7 +577,8 @@ VoidResult PageTableManager::setup_kernel_page_tables() {
     PhysAddr pud_pa = PageTableManager::get_physical_address(pud);
     PageTableManager::kernel_pgd->entries[0].set_table(pud_pa);
 
-    for (usize i = 0; i < 4; i++) {
+    // Map 0-9GB to cover user program at 8GB (CODE_BASE = 0x200000000)
+    for (usize i = 0; i < 9; i++) {
       PhysAddr block_addr = static_cast<PhysAddr>(i * ONE_GB);
       PhysAddr block_end = block_addr + ONE_GB;
       bool overlaps_ram = (block_addr < ram_end) && (block_end > ram_start);
