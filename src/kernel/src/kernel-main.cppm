@@ -172,7 +172,7 @@ public:
         auto *magic_check = reinterpret_cast<const char *>(base_addr);
 
         // Debug: Print more frequent samples and check for any non-zero data
-        if ((base_addr & 0x000FFFFF) == 0) {  // Every 1MB instead of 16MB
+        if ((base_addr & 0x000FFFFF) == 0) { // Every 1MB instead of 16MB
           early_debug_print("[kernel] DEBUG: at ");
           char addr_buf[2] = {0, 0};
           for (int shift = 28; shift >= 0; shift -= 4) {
@@ -216,9 +216,9 @@ public:
 
         // Search in several high memory ranges where QEMU might place modules
         PhysAddr high_ranges[][2] = {
-          {0x02000000, 0x04000000},  // 32MB-64MB
-          {0x04000000, 0x08000000},  // 64MB-128MB
-          {0x08000000, 0x10000000},  // 128MB-256MB
+            {0x02000000, 0x04000000}, // 32MB-64MB
+            {0x04000000, 0x08000000}, // 64MB-128MB
+            {0x08000000, 0x10000000}, // 128MB-256MB
         };
 
         for (auto &range : high_ranges) {
@@ -226,7 +226,7 @@ public:
             auto *magic_check = reinterpret_cast<const char *>(base_addr);
 
             // Print samples to see what's actually in high memory
-            if ((base_addr & 0x007FFFFF) == 0) {  // Every 8MB
+            if ((base_addr & 0x007FFFFF) == 0) { // Every 8MB
               early_debug_print("[kernel] DEBUG: high mem ");
               char addr_buf[2] = {0, 0};
               for (int shift = 28; shift >= 0; shift -= 4) {
@@ -343,7 +343,7 @@ public:
     stats.uptime = get_current_time() - boot_start_time_;
 
     if (process_manager_) {
-      // stats.active_processes = process_manager_->get_process_count();
+      stats.active_processes = static_cast<u32>(process_manager_->total_processes());
     }
 
     if (gic_) {
@@ -813,7 +813,7 @@ private:
     early_debug_print("[init] DEBUG: x86_64 pre-mapping user code pages\n");
 
     // Allocate physical page for user code and map it
-    auto code_frame_result = mm::allocate_pages(0);  // order 0 = single page
+    auto code_frame_result = mm::allocate_pages(0); // order 0 = single page
     if (!code_frame_result) {
       early_debug_print("[init] ERROR: failed to allocate code page frame\n");
       return ErrorCode::OutOfMemory;
@@ -881,7 +881,7 @@ private:
 
       // Get the PUD from PGD[0] - this should work since it's kernel mapping
       auto kernel_pud_pa = pgd->entries[bd.pgd_index].get_phys_addr();
-      auto *pud = reinterpret_cast<mm::PageTable*>(static_cast<VirtAddr>(kernel_pud_pa));
+      auto *pud = reinterpret_cast<mm::PageTable *>(static_cast<VirtAddr>(kernel_pud_pa));
 
       early_debug_print("[init] DEBUG: accessed PUD table directly\n");
 
