@@ -577,8 +577,14 @@ VoidResult PageTableManager::setup_kernel_page_tables() {
     PhysAddr pud_pa = PageTableManager::get_physical_address(pud);
     PageTableManager::kernel_pgd->entries[0].set_table(pud_pa);
 
-    // Map 0-9GB to cover user program at 8GB (CODE_BASE = 0x200000000)
-    for (usize i = 0; i < 9; i++) {
+    // x86_64: Map 0-9GB to cover pre-mapped user code at 8GB (CODE_BASE)
+    // ARM64/RISC-V: Map 0-4GB only; user code uses demand paging
+#ifdef MOSS_ARCH_X86_64
+    constexpr usize PUD_ENTRY_COUNT = 9;
+#else
+    constexpr usize PUD_ENTRY_COUNT = 4;
+#endif
+    for (usize i = 0; i < PUD_ENTRY_COUNT; i++) {
       PhysAddr block_addr = static_cast<PhysAddr>(i * ONE_GB);
       PhysAddr block_end = block_addr + ONE_GB;
       bool overlaps_ram = (block_addr < ram_end) && (block_end > ram_start);

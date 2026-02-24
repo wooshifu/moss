@@ -142,8 +142,8 @@ long system_call_handler(long syscall_number, long arg0, long arg1, long arg2, l
     char single_digit[2] = {'0' + static_cast<char>(syscall_number), '\0'};
     early_debug_print(single_digit);
   } else if (syscall_number < 100) {
-    char two_digits[3] = {'0' + static_cast<char>(syscall_number / 10),
-                         '0' + static_cast<char>(syscall_number % 10), '\0'};
+    char two_digits[3] = {'0' + static_cast<char>(syscall_number / 10), '0' + static_cast<char>(syscall_number % 10),
+                          '\0'};
     early_debug_print(two_digits);
   } else {
     early_debug_print("??"); // For large numbers
