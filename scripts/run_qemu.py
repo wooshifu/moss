@@ -111,14 +111,17 @@ def get_qemu_version(qemu_path: str) -> str:
         return "unknown"
 
 
-def resolve_kernel_file(cfg: QemuConfig, *, use_binary: bool, test_mode: bool, debug_mode: bool) -> tuple[Path, str]:
+def resolve_kernel_file(
+    cfg: QemuConfig, *, use_binary: bool, use_elf: bool, test_mode: bool, debug_mode: bool
+) -> tuple[Path, str]:
     """选择内核文件并返回 (路径, 描述)
 
     启动模式优先级：
       1. --test  → test ELF (moss.test.elf)
       2. --bin   → 完整二进制 (moss.bin)，device loader 直接加载到 RAM
-      3. --debug → moss.elf（保留完整 DWARF 符号，QEMU 从 ELF entry point 启动）
-      4. 默认    → 按架构选择（ARM64: moss.bin, x86_64/RISC-V: moss.elf）
+      3. --elf   → moss.elf（强制使用 ELF，QEMU -kernel 直接加载）
+      4. --debug → moss.elf（保留完整 DWARF 符号，QEMU 从 ELF entry point 启动）
+      5. 默认    → 按架构选择（ARM64: moss.bin, x86_64/RISC-V: moss.elf）
     """
     if test_mode:
         path = Path(cfg.test_elf)
@@ -137,6 +140,14 @@ def resolve_kernel_file(cfg: QemuConfig, *, use_binary: bool, test_mode: bool, d
             console.print("请先运行构建命令生成 moss.bin")
             raise typer.Exit(1)
         return path, "原始二进制 (moss.bin)"
+
+    if use_elf:
+        path = Path(cfg.kernel_elf)
+        if not path.exists():
+            console.print(f"[red]错误: 内核 ELF 文件不存在: {path}[/red]")
+            console.print("请先运行构建命令生成 moss.elf")
+            raise typer.Exit(1)
+        return path, "ELF (moss.elf)"
 
     if debug_mode:
         # 调试模式：使用 moss.elf（保留 DWARF 调试符号）
@@ -252,16 +263,17 @@ def patch_dtb_initrd(dtb_path: Path, initrd_start: int, initrd_size: int) -> Non
     dtb_path.write_bytes(dt.to_dtb())
 
 
-def _needs_dtb_loader(*, use_binary: bool, debug_mode: bool) -> bool:
+def _needs_dtb_loader(*, use_binary: bool, use_elf: bool, debug_mode: bool) -> bool:
     """判断是否需要手动加载 DTB（通过 -device loader）
 
     需要手动加载 DTB 的场景：
       - --bin 模式：原始二进制没有 Linux Image header
+      - --elf 模式：ELF 文件没有 Linux Image header
       - --debug 模式：ELF 文件没有 Linux Image header
     默认的 moss.bin 模式不需要——QEMU 识别 ARM64 Linux Image header 后
     自动通过 x0 寄存器传递 DTB 地址。
     """
-    return use_binary or debug_mode
+    return use_binary or use_elf or debug_mode
 
 
 def build_qemu_args(
@@ -270,6 +282,7 @@ def build_qemu_args(
     *,
     smp: int,
     use_binary: bool,
+    use_elf: bool,
     test_mode: bool,
     debug_mode: bool,
     force_gic3: bool = False,
@@ -335,23 +348,25 @@ def build_qemu_args(
         *arch_cfg["extra_args"],
     ]
 
-    # Initramfs: pass CPIO archive to QEMU via -initrd
-    # QEMU loads it into guest RAM and records the address in DTB /chosen node
-    # as linux,initrd-start / linux,initrd-end (read by the kernel FDT parser)
-    if cfg.initramfs and not test_mode and not use_binary:
+    # Initramfs: 仅在默认模式（非 --bin/--elf/--debug）下使用 -initrd。
+    # 默认模式下 QEMU 自动识别 Linux Image header 并在 DTB 中记录 initrd 地址。
+    # --bin/--elf/--debug 模式使用手动导出的 DTB，需通过 -device loader 加载 initramfs
+    # 并手动 patch DTB（见下方 DTB 处理段）。
+    needs_manual_dtb = _needs_dtb_loader(use_binary=use_binary, use_elf=use_elf, debug_mode=debug_mode)
+    if cfg.initramfs and not test_mode and not use_binary and not needs_manual_dtb:
         initrd_path = Path(cfg.initramfs)
         if initrd_path.exists():
             args += ["-initrd", str(initrd_path)]
 
     # DTB 处理：
     #   - moss.bin（默认）: QEMU 自动识别 Linux Image header，通过 x0 传递 DTB
-    #   - --bin / --debug 模式: 无 Linux Image header，需手动导出 DTB 并加载到 RAM
-    if _needs_dtb_loader(use_binary=use_binary, debug_mode=debug_mode):
+    #   - --bin / --elf / --debug 模式: 无 Linux Image header，需手动导出 DTB 并加载到 RAM
+    if needs_manual_dtb:
         dtb_path = prepare_dtb(cfg, smp=smp, force_gic3=force_gic3)
 
-        # --bin 模式: initramfs 也需通过 -device loader 加载（-initrd 需要 -kernel）
+        # --bin/--elf/--debug 模式: initramfs 需通过 -device loader 加载（手动 DTB 不含 initrd 信息）
         # 同时在 DTB /chosen 中写入 linux,initrd-start/end 让内核定位 initramfs
-        if use_binary and cfg.initramfs and not test_mode:
+        if cfg.initramfs and not test_mode:
             initrd_path = Path(cfg.initramfs)
             if initrd_path.exists() and dtb_path and cfg.arch in INITRD_LOAD_ADDR:
                 initrd_addr = INITRD_LOAD_ADDR[cfg.arch]
@@ -383,6 +398,7 @@ def print_banner(
     kernel_type: str,
     *,
     use_binary: bool,
+    use_elf: bool,
     debug_mode: bool,
     test_mode: bool,
     timeout: int | None = None,
@@ -424,7 +440,7 @@ def print_banner(
             rprint("[yellow]Initramfs:  configured but not built[/yellow]")
 
     # DTB 传递方式提示
-    if _needs_dtb_loader(use_binary=use_binary, debug_mode=debug_mode):
+    if _needs_dtb_loader(use_binary=use_binary, use_elf=use_elf, debug_mode=debug_mode):
         rprint("DTB 传递:   -device loader + RAM 扫描")
         if use_binary and cfg.initramfs and cfg.arch in INITRD_LOAD_ADDR:
             rprint(f"Initrd:     -device loader @ {hex(INITRD_LOAD_ADDR[cfg.arch])}")
@@ -504,6 +520,7 @@ def main(
         typer.Option("--config", "-c", help="qemu_config.json 路径"),
     ] = None,
     use_binary: Annotated[bool, typer.Option("--bin", help="使用原始二进制内核")] = False,
+    use_elf: Annotated[bool, typer.Option("--elf", help="强制使用 ELF 内核 (moss.elf)")] = False,
     debug_mode: Annotated[bool, typer.Option("--debug", help="启用 GDB 调试")] = False,
     test_mode: Annotated[bool, typer.Option("--test", help="运行单元测试")] = False,
     timeout: Annotated[
@@ -556,7 +573,7 @@ def main(
 
     # 选择内核文件
     kernel_file, kernel_type = resolve_kernel_file(
-        cfg, use_binary=use_binary, test_mode=test_mode, debug_mode=debug_mode
+        cfg, use_binary=use_binary, use_elf=use_elf, test_mode=test_mode, debug_mode=debug_mode
     )
 
     # 收集额外的 QEMU 参数
@@ -568,6 +585,7 @@ def main(
         kernel_file,
         smp=smp,
         use_binary=use_binary,
+        use_elf=use_elf,
         test_mode=test_mode,
         debug_mode=debug_mode,
         force_gic3=force_gic3,
@@ -580,6 +598,7 @@ def main(
         kernel_file,
         kernel_type,
         use_binary=use_binary,
+        use_elf=use_elf,
         debug_mode=debug_mode,
         test_mode=test_mode,
         timeout=timeout,

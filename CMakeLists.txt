@@ -239,8 +239,9 @@ target_link_libraries(
             moss_vfs
 )
 
-# 设置输出目录
+# 设置输出目录；Release 构建时让链接器直接 strip 符号
 set_target_properties(moss.elf PROPERTIES RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
+target_link_options(moss.elf PRIVATE $<$<CONFIG:Release>:-Wl,--strip-all>)
 
 # LLVM tool paths are set by moss_check_prerequisites() in ensure_prerequisites.cmake
 set(OBJDUMP_CMD "${MOSS_LLVM_OBJDUMP}")
@@ -294,12 +295,24 @@ if(MOSS_TARGET_ARCH STREQUAL "ARM64"
         set(USERSPACE_ARCH_FLAGS --target=x86_64-unknown-elf -mcmodel=large -fPIC)
     endif()
 
-    # Compile flags (clang -c) and link flags (ld.lld) are separate to avoid macOS clang
-    # driver injecting Mach-O linker arguments when cross-compiling to ELF targets.
+    # Compile flags (clang -c) and link flags (ld.lld) are separate to avoid macOS clang driver injecting Mach-O linker
+    # arguments when cross-compiling to ELF targets.
     set(USERSPACE_COMPILE_FLAGS
-        ${USERSPACE_ARCH_FLAGS} -ffreestanding -fno-stack-protector -O2 -Wall -I${USERSPACE_DIR} -c
+        ${USERSPACE_ARCH_FLAGS}
+        -ffreestanding
+        -fno-stack-protector
+        -O2
+        -Wall
+        -I${USERSPACE_DIR}
+        -c
     )
-    set(USERSPACE_LINK_FLAGS -T ${USERSPACE_LD} --oformat=elf -nostdlib -static)
+    set(USERSPACE_LINK_FLAGS
+        -T
+        ${USERSPACE_LD}
+        --oformat=elf
+        -nostdlib
+        -static
+    )
 
     # Helper: compile .c to .o then link to .elf
     function(add_userspace_program NAME)
