@@ -7,5 +7,9 @@ target_sources(
 
 target_link_libraries(
     moss_logging
-    PUBLIC moss_core moss_hal_uart moss_aal moss_containers
+    PUBLIC moss_core
+           moss_hal_uart
+           moss_aal
+           moss_containers
+           moss_timer
 )
