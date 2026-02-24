@@ -393,7 +393,7 @@ inline VoidResult enable_mmu(PhysAddr pgd_phys) noexcept {
   return (block_addr & PTE_ADDR_MASK) | page_attr::VALID | page_attr::AF | page_attr::ATTR_DEVICE;
 #elif defined(MOSS_ARCH_X86_64)
   return (block_addr & PTE_ADDR_MASK) | page_attr::VALID | page_attr::WRITABLE | page_attr::AF |
-         page_attr::ATTR_DEVICE | page_attr::HUGE_PAGE;
+         page_attr::ATTR_DEVICE | page_attr::HUGE_PAGE | page_attr::USER;
 #elif defined(MOSS_ARCH_RISCV)
   // RISC-V: leaf PTE with R+W+A+D, no execute. PPN = phys_addr >> 12, stored at bits[53:10]
   return ((block_addr >> 2) & PTE_ADDR_MASK) | page_attr::VALID | page_attr::AF | page_attr::DIRTY | page_attr::READ |
@@ -408,7 +408,7 @@ inline VoidResult enable_mmu(PhysAddr pgd_phys) noexcept {
          (3ULL << 8); // Inner Shareable
 #elif defined(MOSS_ARCH_X86_64)
   return (block_addr & PTE_ADDR_MASK) | page_attr::VALID | page_attr::WRITABLE | page_attr::AF |
-         page_attr::ATTR_NORMAL | page_attr::HUGE_PAGE;
+         page_attr::ATTR_NORMAL | page_attr::HUGE_PAGE | page_attr::USER;
 #elif defined(MOSS_ARCH_RISCV)
   // RISC-V: leaf PTE with R+W+X+A+D. 1GB boot blocks cover both code and data,
   // so EXECUTE is required for instruction fetch. Finer W^X comes later with 4KB pages.

@@ -89,7 +89,13 @@ public:
   /// @param size  Total size of the archive in bytes
   /// @return true if at least one file was found
   bool init(PhysAddr base, usize size) noexcept {
-    base_ = reinterpret_cast<const u8 *>(base);
+#ifdef MOSS_ARCH_X86_64
+    // WORKAROUND for x86_64: use identity mapping instead of high-half mapping
+    // because phys_to_virt() produces unmapped virtual addresses
+    base_ = reinterpret_cast<const u8 *>(static_cast<VirtAddr>(base));
+#else
+    base_ = reinterpret_cast<const u8 *>(phys_to_virt(base));
+#endif
     archive_size_ = size;
     file_count_ = 0;
 
@@ -103,6 +109,13 @@ public:
 
     while (ptr + sizeof(CpioNewcHeader) <= end && file_count_ < MAX_INITRAMFS_FILES) {
       const auto *hdr = reinterpret_cast<const CpioNewcHeader *>(ptr);
+
+      // DEBUG: Print first 16 bytes of data for debugging
+      if (ptr == base_) {
+        log::klog::warn("initramfs: DEBUG first 16 bytes: {:#02x} {:#02x} {:#02x} {:#02x} {:#02x} {:#02x} {:#02x} {:#02x} {:#02x} {:#02x} {:#02x} {:#02x} {:#02x} {:#02x} {:#02x} {:#02x}",
+          ptr[0], ptr[1], ptr[2], ptr[3], ptr[4], ptr[5], ptr[6], ptr[7],
+          ptr[8], ptr[9], ptr[10], ptr[11], ptr[12], ptr[13], ptr[14], ptr[15]);
+      }
 
       // Verify magic
       if (hdr->c_magic[0] != '0' || hdr->c_magic[1] != '7' || hdr->c_magic[2] != '0' || hdr->c_magic[3] != '7' ||

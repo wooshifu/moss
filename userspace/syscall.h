@@ -68,6 +68,39 @@ static inline long syscall3(long number, long arg0, long arg1, long arg2) {
   return a0;
 }
 
+#elif defined(__x86_64__)
+// x86_64: RAX=nr, RDI/RSI/RDX/R10/R8/R9=args, syscall, return in RAX
+
+static inline long syscall0(long number) {
+  register long rax asm("rax") = number;
+  asm volatile("syscall" : "+r"(rax) : : "rcx", "r11", "memory");
+  return rax;
+}
+
+static inline long syscall1(long number, long arg0) {
+  register long rax asm("rax") = number;
+  register long rdi asm("rdi") = arg0;
+  asm volatile("syscall" : "+r"(rax) : "r"(rdi) : "rcx", "r11", "memory");
+  return rax;
+}
+
+static inline long syscall2(long number, long arg0, long arg1) {
+  register long rax asm("rax") = number;
+  register long rdi asm("rdi") = arg0;
+  register long rsi asm("rsi") = arg1;
+  asm volatile("syscall" : "+r"(rax) : "r"(rdi), "r"(rsi) : "rcx", "r11", "memory");
+  return rax;
+}
+
+static inline long syscall3(long number, long arg0, long arg1, long arg2) {
+  register long rax asm("rax") = number;
+  register long rdi asm("rdi") = arg0;
+  register long rsi asm("rsi") = arg1;
+  register long rdx asm("rdx") = arg2;
+  asm volatile("syscall" : "+r"(rax) : "r"(rdi), "r"(rsi), "r"(rdx) : "rcx", "r11", "memory");
+  return rax;
+}
+
 #else
 // ARM64: x8=nr, x0-x5=args, svc #0, return in x0
 

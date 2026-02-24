@@ -12,6 +12,7 @@ import moss.platform;
 import moss.hal.uart;
 import moss.hal.intc;
 import moss.hal.timer;
+import moss.hal.mmu;
 import moss.containers;
 import moss.mm;
 import moss.interrupts;
@@ -148,16 +149,126 @@ public:
     early_debug_print("[kernel] MOSS kernel starting...\n");
 
     // Enable interrupts
+    early_debug_print("[kernel] DEBUG: about to enable interrupts\n");
     enable_interrupts();
+    early_debug_print("[kernel] DEBUG: interrupts enabled successfully\n");
 
     // Initialize initramfs if bootloader provided one via DTB
     {
       auto &pi = fdt::g_platform_info;
+      early_debug_print("[kernel] DEBUG: checking initramfs configuration\n");
+      // DEBUG: Force initramfs configuration for x86_64
+#ifdef MOSS_ARCH_X86_64
+      early_debug_print("[kernel] DEBUG: forcing initramfs config for x86_64\n");
+      // Search from even lower memory addresses - QEMU might load initramfs earlier
+      PhysAddr search_start = 0x00020000; // 128KB (skip very low memory but start earlier)
+      PhysAddr search_end = 0x00200000;   // 2MB (focused search in likely range)
+      PhysAddr increment = 0x00001000;    // 4KB increments (page-aligned search)
+      bool found_initramfs = false;
+      early_debug_print("[kernel] DEBUG: starting search from 128KB to 2MB in 4KB increments\n");
+
+      for (PhysAddr base_addr = search_start; base_addr < search_end; base_addr += increment) {
+        // Check for CPIO magic "070701" at this location
+        auto *magic_check = reinterpret_cast<const char *>(base_addr);
+
+        // Debug: Print more frequent samples and check for any non-zero data
+        if ((base_addr & 0x000FFFFF) == 0) {  // Every 1MB instead of 16MB
+          early_debug_print("[kernel] DEBUG: at ");
+          char addr_buf[2] = {0, 0};
+          for (int shift = 28; shift >= 0; shift -= 4) {
+            addr_buf[0] = ((base_addr >> shift) & 0xF) + '0';
+            if (addr_buf[0] > '9')
+              addr_buf[0] = addr_buf[0] - '0' - 10 + 'A';
+            early_debug_print(addr_buf);
+          }
+          early_debug_print(" data: ");
+          // Print first 6 bytes as hex
+          for (int i = 0; i < 6; i++) {
+            u8 byte = static_cast<u8>(magic_check[i]);
+            char hex_chars[] = "0123456789ABCDEF";
+            char hex_str[3] = {hex_chars[byte >> 4], hex_chars[byte & 0xF], ' '};
+            early_debug_print(hex_str);
+          }
+          early_debug_print("\n");
+        }
+
+        if (magic_check[0] == '0' && magic_check[1] == '7' && magic_check[2] == '0' && magic_check[3] == '7' &&
+            magic_check[4] == '0' && magic_check[5] == '1') {
+          pi.initrd_start = base_addr;
+          pi.initrd_end = base_addr + (64 * 1024); // 64KB should cover our 41KB file
+          found_initramfs = true;
+          early_debug_print("[kernel] DEBUG: found initramfs at 0x");
+          char addr_buf[2] = {0, 0};
+          for (int shift = 28; shift >= 0; shift -= 4) {
+            addr_buf[0] = ((base_addr >> shift) & 0xF) + '0';
+            if (addr_buf[0] > '9')
+              addr_buf[0] = addr_buf[0] - '0' - 10 + 'A';
+            early_debug_print(addr_buf);
+          }
+          early_debug_print("\n");
+          break;
+        }
+      }
+
+      // If not found in typical range, try extended high memory search
+      if (!found_initramfs) {
+        early_debug_print("[kernel] DEBUG: extending search to high memory ranges\n");
+
+        // Search in several high memory ranges where QEMU might place modules
+        PhysAddr high_ranges[][2] = {
+          {0x02000000, 0x04000000},  // 32MB-64MB
+          {0x04000000, 0x08000000},  // 64MB-128MB
+          {0x08000000, 0x10000000},  // 128MB-256MB
+        };
+
+        for (auto &range : high_ranges) {
+          for (PhysAddr base_addr = range[0]; base_addr < range[1] && !found_initramfs; base_addr += 0x00001000) {
+            auto *magic_check = reinterpret_cast<const char *>(base_addr);
+
+            // Print samples to see what's actually in high memory
+            if ((base_addr & 0x007FFFFF) == 0) {  // Every 8MB
+              early_debug_print("[kernel] DEBUG: high mem ");
+              char addr_buf[2] = {0, 0};
+              for (int shift = 28; shift >= 0; shift -= 4) {
+                addr_buf[0] = ((base_addr >> shift) & 0xF) + '0';
+                if (addr_buf[0] > '9')
+                  addr_buf[0] = addr_buf[0] - '0' - 10 + 'A';
+                early_debug_print(addr_buf);
+              }
+              early_debug_print(" data: ");
+              for (int i = 0; i < 6; i++) {
+                u8 byte = static_cast<u8>(magic_check[i]);
+                char hex_chars[] = "0123456789ABCDEF";
+                char hex_str[3] = {hex_chars[byte >> 4], hex_chars[byte & 0xF], ' '};
+                early_debug_print(hex_str);
+              }
+              early_debug_print("\n");
+            }
+
+            if (magic_check[0] == '0' && magic_check[1] == '7' && magic_check[2] == '0' && magic_check[3] == '7' &&
+                magic_check[4] == '0' && magic_check[5] == '1') {
+              pi.initrd_start = base_addr;
+              pi.initrd_end = base_addr + (64 * 1024);
+              found_initramfs = true;
+              early_debug_print("[kernel] DEBUG: found initramfs in high memory!\n");
+              break;
+            }
+          }
+        }
+      }
+      if (!found_initramfs) {
+        early_debug_print("[kernel] DEBUG: initramfs not found in search ranges, using fallback\n");
+        pi.initrd_start = 0x01000000;              // 16MB fallback
+        pi.initrd_end = 0x01000000 + (128 * 1024); // 128KB fallback
+      }
+#endif
       if (pi.initrd_start != 0 && pi.initrd_end > pi.initrd_start) {
         usize initrd_size = static_cast<usize>(pi.initrd_end - pi.initrd_start);
+        early_debug_print("[kernel] DEBUG: initramfs detected, initializing\n");
         log::klog::info("initramfs: found at {:#x}-{:#x} ({} bytes)", pi.initrd_start, pi.initrd_end, initrd_size);
         initramfs::g_initramfs.init(pi.initrd_start, initrd_size);
       } else {
+        early_debug_print("[kernel] DEBUG: no initramfs found\n");
         log::klog::info("initramfs: not present (no -initrd passed to QEMU)");
       }
     }
@@ -623,12 +734,14 @@ private:
     early_debug_print("[init] init process registered\n");
 
     // Step 2: Create real AddressSpace with buddy-allocated PGD
+    early_debug_print("[init] DEBUG: creating address space\n");
     auto as_result = user_space::create_user_address_space();
     if (!as_result) {
       early_debug_print("[init] ERROR: failed to create address space\n");
       return VoidResult{as_result.error()};
     }
     auto as = moss::move(*as_result);
+    early_debug_print("[init] DEBUG: address space created successfully\n");
 
     // Step 3: Register VMA regions for demand paging
     //
@@ -641,6 +754,24 @@ private:
 #elif defined(MOSS_ARCH_X86_64)
     const auto *raw_code = moss::abi::x86_64::user_program_start();
     usize code_size = moss::abi::x86_64::user_program_size();
+    early_debug_print("[init] DEBUG: raw_code physical address = 0x");
+    u64 raw_code_addr = reinterpret_cast<u64>(raw_code);
+    char addr_str[17] = {0};
+    for (int i = 0; i < 16; i++) {
+      u8 nibble = (raw_code_addr >> ((15 - i) * 4)) & 0xF;
+      addr_str[i] = (nibble < 10) ? ('0' + nibble) : ('A' + nibble - 10);
+    }
+    early_debug_print(addr_str);
+    early_debug_print("\n");
+    early_debug_print("[init] DEBUG: x86_64 user program size = ");
+    char size_str[16] = {0};
+    for (int i = 0; i < 8; i++) {
+      size_str[i] = ((code_size >> ((7 - i) * 4)) & 0xF) + '0';
+      if (size_str[i] > '9')
+        size_str[i] = size_str[i] - '0' - 10 + 'A';
+    }
+    early_debug_print(size_str);
+    early_debug_print(" bytes\n");
 #elif defined(MOSS_ARCH_RISCV)
     const auto *raw_code = moss::abi::riscv::user_program_start();
     usize code_size = moss::abi::riscv::user_program_size();
@@ -651,6 +782,180 @@ private:
     as->add_vma(user_layout::CODE_BASE, code_end, vma_flags::READ | vma_flags::EXEC, VmaType::CODE, raw_code, 0,
                 code_size);
     early_debug_print("[init] VMA code registered\n");
+
+#ifdef MOSS_ARCH_X86_64
+    // x86_64: Pre-map user code pages since we don't have full page fault handling yet
+    early_debug_print("[init] DEBUG: x86_64 pre-mapping user code pages\n");
+
+    // Allocate physical page for user code and map it
+    auto code_frame_result = mm::allocate_pages(0);  // order 0 = single page
+    if (!code_frame_result) {
+      early_debug_print("[init] ERROR: failed to allocate code page frame\n");
+      return ErrorCode::OutOfMemory;
+    }
+    PhysAddr code_pa = *code_frame_result;
+    early_debug_print("[init] DEBUG: allocated code frame at PA 0x");
+    // Print physical address in hex
+    for (int i = 0; i < 16; i++) {
+      char c = ((code_pa >> ((15 - i) * 4)) & 0xF);
+      c += (c < 10) ? '0' : 'A' - 10;
+      char hex_char[2] = {c, 0};
+      early_debug_print(hex_char);
+    }
+    early_debug_print("\n");
+
+    // Copy user program code to the allocated page
+    auto *code_dest = reinterpret_cast<u8 *>(static_cast<VirtAddr>(code_pa));
+    for (usize i = 0; i < code_size; i++) {
+      code_dest[i] = static_cast<const u8 *>(raw_code)[i];
+    }
+    early_debug_print("[init] DEBUG: copied user code to physical frame\n");
+
+    // SIMPLIFIED MAPPING: Try to use early page table allocator instead of dynamic
+    early_debug_print("[init] DEBUG: attempting simplified user code mapping\n");
+
+    // Use the EXISTING PGD[0] mapping which includes identity map
+    // Since user CODE_BASE (8GB) is within PGD[0] range (0-512GB),
+    // we can try to map directly in the identity region
+    early_debug_print("[init] DEBUG: user PGD physical address = 0x");
+    for (int i = 0; i < 16; i++) {
+      char c = ((as->pgd_phys >> ((15 - i) * 4)) & 0xF);
+      c += (c < 10) ? '0' : 'A' - 10;
+      char hex_char[2] = {c, 0};
+      early_debug_print(hex_char);
+    }
+    early_debug_print("\n");
+
+    auto *pgd = mm::PageTableManager::get_table_from_physical(as->pgd_phys);
+    early_debug_print("[init] DEBUG: user PGD virtual address = 0x");
+    VirtAddr pgd_va = reinterpret_cast<VirtAddr>(pgd);
+    for (int i = 0; i < 16; i++) {
+      char c = ((pgd_va >> ((15 - i) * 4)) & 0xF);
+      c += (c < 10) ? '0' : 'A' - 10;
+      char hex_char[2] = {c, 0};
+      early_debug_print(hex_char);
+    }
+    early_debug_print("\n");
+
+    auto bd = hal::mmu::break_virtual_address(user_layout::CODE_BASE);
+    early_debug_print("[init] DEBUG: VA breakdown complete, checking PGD[0]\n");
+
+    // Let's check the raw value of PGD[0]
+    u64 pgd0_raw = pgd->entries[0].raw;
+    early_debug_print("[init] DEBUG: PGD[0].raw = 0x");
+    for (int i = 0; i < 16; i++) {
+      char c = ((pgd0_raw >> ((15 - i) * 4)) & 0xF);
+      c += (c < 10) ? '0' : 'A' - 10;
+      char hex_char[2] = {c, 0};
+      early_debug_print(hex_char);
+    }
+    early_debug_print("\n");
+
+    if (pgd->entries[bd.pgd_index].is_valid()) {
+      early_debug_print("[init] DEBUG: PGD[0] exists (kernel identity map)\n");
+
+      // Get the PUD from PGD[0] - this should work since it's kernel mapping
+      auto kernel_pud_pa = pgd->entries[bd.pgd_index].get_phys_addr();
+      auto *pud = reinterpret_cast<mm::PageTable*>(static_cast<VirtAddr>(kernel_pud_pa));
+
+      early_debug_print("[init] DEBUG: accessed PUD table directly\n");
+
+      // Check if we need to create a PUD entry for our VA range
+      if (!pud->entries[bd.pud_index].is_valid()) {
+        early_debug_print("[init] DEBUG: need to create PUD entry for user code\n");
+
+        // Allocate PMD using early allocator to avoid dynamic allocation issues
+        auto pmd_result = mm::PageTableManager::allocate_page_table();
+        if (!pmd_result) {
+          early_debug_print("[init] ERROR: failed to allocate PMD table\n");
+        } else {
+          early_debug_print("[init] DEBUG: allocated PMD table using early allocator\n");
+          auto *pmd = *pmd_result;
+          PhysAddr pmd_pa = mm::PageTableManager::get_physical_address(pmd);
+
+          // Set PUD entry to point to our PMD
+          pud->entries[bd.pud_index].set_table(pmd_pa);
+          early_debug_print("[init] DEBUG: linked PUD->PMD\n");
+
+          // Now set PMD entry to point to a PTE table
+          auto pte_result = mm::PageTableManager::allocate_page_table();
+          if (!pte_result) {
+            early_debug_print("[init] ERROR: failed to allocate PTE table\n");
+          } else {
+            early_debug_print("[init] DEBUG: allocated PTE table\n");
+            auto *pte = *pte_result;
+            PhysAddr pte_pa = mm::PageTableManager::get_physical_address(pte);
+
+            pmd->entries[bd.pmd_index].set_table(pte_pa);
+            early_debug_print("[init] DEBUG: linked PMD->PTE\n");
+
+            // Finally, set the PTE entry to point to our code page
+            pte->entries[bd.pte_index].set_page(code_pa, hal::mmu::page_perms::USER_RX);
+            early_debug_print("[init] DEBUG: set PTE entry for user code\n");
+
+            // VERIFY: Check the PTE entry was set correctly
+            u64 pte_raw = pte->entries[bd.pte_index].raw;
+            early_debug_print("[init] DEBUG: PTE entry raw = 0x");
+            for (int i = 0; i < 16; i++) {
+              char c = ((pte_raw >> ((15 - i) * 4)) & 0xF);
+              c += (c < 10) ? '0' : 'A' - 10;
+              char hex_char[2] = {c, 0};
+              early_debug_print(hex_char);
+            }
+            early_debug_print("\n");
+
+            mm::PageTableManager::invalidate_tlb_addr(user_layout::CODE_BASE);
+            early_debug_print("[init] DEBUG: x86_64 code mapping successful\n");
+
+            // CRITICAL: Also map the user stack page
+            early_debug_print("[init] DEBUG: mapping user stack page\n");
+            auto stack_frame_result = mm::allocate_pages(0);
+            if (stack_frame_result) {
+              PhysAddr stack_pa = *stack_frame_result;
+
+              // Map stack at stack top - PAGE_SIZE (last page of stack region)
+              VirtAddr stack_page = user_layout::STACK_TOP - PAGE_SIZE;
+
+              // Use simplified manual mapping for stack too
+              auto bd_stack = hal::mmu::break_virtual_address(stack_page);
+
+              // Check if we need new PUD/PMD/PTE tables for stack
+              if (!pud->entries[bd_stack.pud_index].is_valid()) {
+                early_debug_print("[init] DEBUG: need new PUD entry for stack\n");
+                auto stack_pmd_result = mm::PageTableManager::allocate_page_table();
+                if (stack_pmd_result) {
+                  auto *stack_pmd = *stack_pmd_result;
+                  PhysAddr stack_pmd_pa = mm::PageTableManager::get_physical_address(stack_pmd);
+                  pud->entries[bd_stack.pud_index].set_table(stack_pmd_pa);
+
+                  // Now create PTE table
+                  auto stack_pte_result = mm::PageTableManager::allocate_page_table();
+                  if (stack_pte_result) {
+                    auto *stack_pte = *stack_pte_result;
+                    PhysAddr stack_pte_pa = mm::PageTableManager::get_physical_address(stack_pte);
+                    stack_pmd->entries[bd_stack.pmd_index].set_table(stack_pte_pa);
+
+                    // Set stack page with read/write permissions
+                    stack_pte->entries[bd_stack.pte_index].set_page(stack_pa, hal::mmu::page_perms::USER_RW);
+                    early_debug_print("[init] DEBUG: user stack page mapped successfully\n");
+                  }
+                }
+              } else {
+                early_debug_print("[init] DEBUG: stack can reuse existing PUD entry\n");
+                // TODO: Handle case where PUD exists but we need new PMD/PTE
+              }
+            }
+
+            early_debug_print("[init] DEBUG: x86_64 user space mapping completed\n");
+          }
+        }
+      } else {
+        early_debug_print("[init] DEBUG: PUD entry already exists - TODO: handle existing mapping\n");
+      }
+    } else {
+      early_debug_print("[init] ERROR: PGD[0] not valid - kernel identity map missing!\n");
+    }
+#endif
 
     VirtAddr entry_point = user_layout::CODE_BASE; // entry = start of raw code
 
