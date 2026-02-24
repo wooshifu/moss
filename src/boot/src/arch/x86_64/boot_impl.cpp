@@ -10,6 +10,14 @@ module;
 #define MOSS_ARCH_X86_64
 #endif
 
+// Assembly-defined symbols used by x86_64_setup_tss() below
+extern "C" {
+extern unsigned char g_tss[];                         // 104-byte TSS in start_x86_64.S .bss.tss
+extern unsigned long long gdt_table[];                // GDT in start_x86_64.S .data
+extern unsigned char _stack_top_addr[];               // Boot stack top (linker symbol)
+void early_debug_print(const char *message) noexcept; // UART output (kernel_main.cpp)
+}
+
 module moss.boot;
 
 import moss.abi;
@@ -21,6 +29,58 @@ using moss::u32;
 using moss::u64;
 using moss::u8;
 using moss::VirtAddr;
+
+// =============================================================================
+// TSS setup — called from start_x86_64.S before early_main()
+// =============================================================================
+// x86_64 Task State Segment (104 bytes, defined in start_x86_64.S .bss.tss)
+struct [[gnu::packed]] TSS64 {
+  u32 reserved0;
+  u64 rsp0; // Kernel stack for ring 3 → ring 0 transitions
+  u64 rsp1;
+  u64 rsp2;
+  u64 reserved1;
+  u64 ist[7]; // Interrupt Stack Table entries
+  u64 reserved2;
+  u16 reserved3;
+  u16 iomap_base;
+};
+
+extern "C" void x86_64_setup_tss() noexcept {
+  auto *tss = reinterpret_cast<TSS64 *>(g_tss);
+
+  // Zero the TSS
+  auto *bytes = reinterpret_cast<u8 *>(tss);
+  for (u32 i = 0; i < sizeof(TSS64); i++) {
+    bytes[i] = 0;
+  }
+
+  // Set RSP0 to boot stack top (updated per-task by scheduler later)
+  tss->rsp0 = reinterpret_cast<u64>(_stack_top_addr);
+  tss->iomap_base = static_cast<u16>(sizeof(TSS64));
+
+  // Build TSS descriptor (16 bytes = 2 GDT slots) at GDT[5-6] (selector 0x28)
+  u64 tss_addr = reinterpret_cast<u64>(tss);
+  u32 tss_limit = sizeof(TSS64) - 1;
+
+  // Low 8 bytes: limit[15:0], base[23:0], type=0x89(available 64-bit TSS, P=1), limit[19:16], base[31:24]
+  u64 desc_lo = 0;
+  desc_lo |= static_cast<u64>(tss_limit & 0xFFFF);
+  desc_lo |= (tss_addr & 0xFFFF) << 16;
+  desc_lo |= ((tss_addr >> 16) & 0xFF) << 32;
+  desc_lo |= 0x89ULL << 40; // Type=9(available TSS), P=1
+  desc_lo |= static_cast<u64>((tss_limit >> 16) & 0xF) << 48;
+  desc_lo |= ((tss_addr >> 24) & 0xFF) << 56;
+
+  // High 8 bytes: base[63:32]
+  u64 desc_hi = (tss_addr >> 32) & 0xFFFFFFFF;
+
+  gdt_table[5] = desc_lo;
+  gdt_table[6] = desc_hi;
+
+  // Load the Task Register with TSS selector (0x28)
+  asm volatile("ltr %w0" ::"r"(static_cast<u16>(0x28)));
+}
 
 namespace moss::boot {
 
@@ -309,23 +369,46 @@ static void setup_idt() {
   asm volatile("lidt %0" ::"m"(g_idtr));
 }
 
+// Helper: print hex value to UART
+static void uart_print_hex(u64 value) noexcept {
+  constexpr char hex[] = "0123456789ABCDEF";
+  char buf[19] = "0x";
+  for (int i = 15; i >= 0; i--) {
+    buf[2 + (15 - i)] = hex[(value >> (i * 4)) & 0xF];
+  }
+  buf[18] = '\0';
+  early_debug_print(buf);
+}
+
 // C++ interrupt/exception handler called from isr_common (isr_x86_64.S)
 extern "C" void x86_64_interrupt_handler(u64 vector, u64 error_code, [[maybe_unused]] void *frame) noexcept {
-  // DEBUG: Log all interrupts to help diagnose the hang issue
-  moss::boot::EarlyVGA::put_string("INT: vec=");
-  moss::boot::early_print_hex(vector);
-  moss::boot::EarlyVGA::put_string(" err=");
-  moss::boot::early_print_hex(error_code);
-  moss::boot::EarlyVGA::put_string("\n");
-
   if (vector < 32) {
-    // CPU exception — this might be the cause of the hang
-    moss::boot::EarlyVGA::put_string("x86_64 EXCEPTION DETECTED!\n");
-    // Don't halt immediately, try to continue for debugging
-    return;
+    // CPU exception — print diagnostics to UART and halt.
+    early_debug_print("EXCEPTION vec=");
+    uart_print_hex(vector);
+    early_debug_print(" err=");
+    uart_print_hex(error_code);
+    if (vector == 14) {
+      u64 cr2 = 0;
+      asm volatile("mov %%cr2, %0" : "=r"(cr2));
+      early_debug_print(" CR2=");
+      uart_print_hex(cr2);
+    }
+    // Print RIP from interrupt frame
+    auto *frame_u64 = reinterpret_cast<u64 *>(frame);
+    // frame layout: R15..RAX (15 regs), then vector, error_code, RIP, CS, RFLAGS, RSP, SS
+    // frame points to saved R15, so RIP is at frame[17] (15 regs + vector + error_code)
+    early_debug_print(" RIP=");
+    uart_print_hex(frame_u64[17]);
+    early_debug_print("\nHALTED\n");
+    asm volatile("cli; hlt");
+    __builtin_unreachable();
   }
 
-  // External IRQ (vector >= 32): send EOI to Local APIC
+  // External IRQ (vector >= 32): log and send EOI to Local APIC
+  early_debug_print("[IRQ] vec=");
+  uart_print_hex(vector);
+  early_debug_print("\n");
   constexpr u64 LAPIC_EOI_ADDR = 0xFEE000B0ULL;
   auto *lapic_eoi = reinterpret_cast<volatile u32 *>(LAPIC_EOI_ADDR);
   *lapic_eoi = 0;

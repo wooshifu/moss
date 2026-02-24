@@ -133,7 +133,7 @@ inline constexpr PlatformDefaults DEFAULTS{
     .memory =
         {
             .ram_base = 0x00100000,           // 1 MB (above real-mode area)
-            .ram_size = 256ULL * 1024 * 1024, // 256 MB default
+            .ram_size = 255ULL * 1024 * 1024, // 255 MB (256 MB total minus 1 MB base)
             .kernel_virt = 0xFFFF800000000000ULL,
         },
     .timer =

@@ -27,41 +27,17 @@
 .global user_iret_trampoline
 .type user_iret_trampoline, @function
 user_iret_trampoline:
-    // DEBUG: Add debug output before IRET
-    pushq   %rax
-    pushq   %rcx
-    pushq   %rdx
-    pushq   %rsi
-    pushq   %rdi
-    pushq   %rbx
-    pushq   %r12
-
-    // Call early_debug_print to log trampoline entry
-    leaq    .Ltrampoline_msg(%rip), %rdi
-    call    early_debug_print
-
-    // Print the user entry point
-    leaq    .Lentry_msg(%rip), %rdi
-    call    early_debug_print
-
-    popq    %r12
-    popq    %rbx
-    popq    %rdi
-    popq    %rsi
-    popq    %rdx
-    popq    %rcx
-    popq    %rax
-
     // Build IRETQ frame on the current kernel stack.
     // IRETQ pops: RIP, CS, RFLAGS, RSP, SS (bottom to top of stack)
-    pushq   $0x23                       // SS  (user data segment, RPL=3)
+    // GDT layout: [3]=User Data(0x1B), [4]=User Code(0x23)
+    pushq   $0x1B                       // SS  (user data segment, RPL=3)
     pushq   %r12                        // RSP (user stack pointer)
     pushq   $0x202                      // RFLAGS (IF=1, reserved bit 1 = 1)
-    pushq   $0x1B                       // CS  (user code segment, RPL=3)
+    pushq   $0x23                       // CS  (user code segment, RPL=3)
     pushq   %rbx                        // RIP (user entry point)
 
     // Set all data segment registers to user data segment
-    movw    $0x23, %ax
+    movw    $0x1B, %ax
     movw    %ax, %ds
     movw    %ax, %es
 
@@ -88,13 +64,6 @@ user_iret_trampoline:
     iretq
 
 .size user_iret_trampoline, .-user_iret_trampoline
-
-// Debug messages
-.section .rodata
-.Ltrampoline_msg:
-    .asciz "[trampoline] DEBUG: entering user_iret_trampoline\n"
-.Lentry_msg:
-    .asciz "[trampoline] DEBUG: about to IRET to user mode\n"
 
 // Prevent executable stack warning from the GNU linker
 .section .note.GNU-stack,"",@progbits
