@@ -55,8 +55,9 @@ inline constexpr u64 g_satp_mode_bits = 0;           // not used on ARM64/x86
 
 /// Build a RISC-V satp register value from a PGD physical address.
 /// Uses the runtime-detected mode (Sv39 or Sv48).
-[[nodiscard]] inline u64 make_satp_value(PhysAddr pgd_phys) noexcept {
-  return g_satp_mode_bits | ((pgd_phys >> 12) & 0x00000FFFFFFFFFFFULL);
+/// @param asid  Address Space Identifier (bits 44-59 of satp).
+[[nodiscard]] inline u64 make_satp_value(PhysAddr pgd_phys, u16 asid = 0) noexcept {
+  return g_satp_mode_bits | (static_cast<u64>(asid) << 44) | ((pgd_phys >> 12) & 0x00000FFFFFFFFFFFULL);
 }
 
 /// Initialize address-space layout globals based on detected MMU mode.

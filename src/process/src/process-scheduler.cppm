@@ -2034,8 +2034,8 @@ private:
           u64 pgd_phys = proc->address_space()->pgd_phys;
           asm volatile("mov %0, %%cr3" ::"r"(pgd_phys) : "memory");
 #elif defined(MOSS_ARCH_RISCV)
-          // SATP: runtime Sv39/Sv48 mode, PPN in bits 0-43
-          u64 satp_val = hal::mmu::make_satp_value(proc->address_space()->pgd_phys);
+          // SATP: runtime Sv39/Sv48 mode, ASID in bits 44-59, PPN in bits 0-43
+          u64 satp_val = hal::mmu::make_satp_value(proc->address_space()->pgd_phys, proc->address_space()->asid);
           asm volatile("csrw satp, %0" ::"r"(satp_val) : "memory");
           asm volatile("sfence.vma" ::: "memory");
 #endif

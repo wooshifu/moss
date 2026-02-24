@@ -670,7 +670,7 @@ long sys_execve(long pathname_addr, long argv_addr, long /* envp */, long /*unus
   }
 #elif defined(MOSS_ARCH_RISCV)
   if (proc->address_space() && proc->address_space()->pgd_phys != 0) {
-    u64 satp_val = hal::mmu::make_satp_value(proc->address_space()->pgd_phys);
+    u64 satp_val = hal::mmu::make_satp_value(proc->address_space()->pgd_phys, proc->address_space()->asid);
     asm volatile("csrw satp, %0" ::"r"(satp_val) : "memory");
     asm volatile("sfence.vma" ::: "memory");
   }
