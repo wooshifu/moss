@@ -131,12 +131,28 @@ long sys_fork(long /*unused*/, long /*unused*/, long /*unused*/, long /*unused*/
 
   AddressSpace *parent_as = parent_proc->address_space();
 
-  // 2. Capture user-mode PC and SP (preserved in EL1 system registers)
+  // 2. Capture user-mode PC and SP from the trap frame on the kernel stack.
+  //
+  //    parent_thread->context contains kernel-mode register state (saved by
+  //    context_switch), NOT user-space GP registers.  The actual user state
+  //    was saved by the trap entry code into a frame at the top of the
+  //    per-thread kernel stack.
   u64 user_pc = 0;
   u64 user_sp = 0;
 #if defined(MOSS_ARCH_ARM64)
   asm volatile("mrs %0, elr_el1" : "=r"(user_pc));
   asm volatile("mrs %0, sp_el0" : "=r"(user_sp));
+#elif defined(MOSS_ARCH_RISCV)
+  // RISC-V trap frame layout (from riscv_syscall.S, FRAME_SIZE = 288):
+  //   OFF_SEPC = 0xE0: saved sepc (already +4 to skip ecall instruction)
+  //   OFF_USP  = 0xF0: saved user sp (from sscratch swap on trap entry)
+  // The trap frame sits at kernel_stack_top - 288.
+  {
+    u64 kstop = parent_thread->kernel_stack_top();
+    const auto *trap_frame = reinterpret_cast<const u64 *>(kstop - 288);
+    user_pc = trap_frame[0xE0 / 8]; // sepc (+4, past ecall)
+    user_sp = trap_frame[0xF0 / 8]; // user sp
+  }
 #endif
 
   // 3. Create child process
@@ -302,7 +318,6 @@ long sys_execve(long pathname_addr, long argv_addr, long /* envp */, long /*unus
                 long /*unused*/) noexcept {
   using namespace moss::kernel::process;
   using namespace moss::kernel::elf;
-
   // 1. Get current thread and process
   Thread *cur = g_scheduler ? CfsScheduler::get_current_task() : nullptr;
   if (!cur) {
@@ -775,10 +790,13 @@ long sys_execve(long pathname_addr, long argv_addr, long /* envp */, long /*unus
     // SATP already switched to new address space in step 11b.
 
     // Set sscratch to per-thread kernel stack top so the next U-mode
-    // trap swaps to the correct kernel stack.
-    // (switch_to_user in context_switch.S also writes sscratch, but
-    //  we set it here too for clarity and to match the ARM64 tpidr_el1
-    //  pattern.)
+    // trap entry swaps to the correct kernel stack.  switch_to_user
+    // also writes sscratch, but with the *current* sp (which is the
+    // C call stack, not kernel_stack_top).  We must override it.
+    if (cur->kernel_stack_base != 0) {
+      u64 kstack_top = cur->kernel_stack_top();
+      asm volatile("csrw sscratch, %0" ::"r"(kstack_top) : "memory");
+    }
 
     // eret to new program — never returns
     switch_to_user(&cur->context, cur->context.sp);
@@ -874,7 +892,6 @@ long sys_wait4(long wait_pid, long wstatus_addr, long options, long /*unused*/, 
     // Yield CPU: switch to bootstrap context, let scheduler pick next task.
     // When this thread is woken (state=Ready, re-enqueued), scheduler_tick
     // will context_switch back and we resume after this point.
-#if defined(MOSS_ARCH_ARM64)
     {
       u32 cpu = arch::get_current_cpu_id();
       CpuContext *my_ctx = &cur->context;
@@ -885,7 +902,6 @@ long sys_wait4(long wait_pid, long wstatus_addr, long options, long /*unused*/, 
       context_switch(my_ctx, bootstrap);
       arch::enable_interrupts();
     }
-#endif
     // Resumed — remove self from wait queue and rescan
     proc->child_exit_wait_queue().remove_waiter(static_cast<void *>(cur));
 

@@ -185,12 +185,12 @@ switch_to_user:
     ld      t0, 256(a0)                 // ctx->pc
     csrw    sepc, t0
 
-    // Save current kernel stack pointer to sscratch.
-    // On the next trap from U-mode, the entry code (riscv_syscall.S)
-    // swaps sp↔sscratch to switch from user stack to this kernel stack.
-    // Without this, sscratch=0 (S-mode sentinel) and the trap entry
-    // would misidentify a U-mode trap as an S-mode trap.
-    csrw    sscratch, sp
+    // NOTE: sscratch must be set by the caller to the per-thread
+    // kernel stack top BEFORE calling this function.  The trap entry
+    // (riscv_syscall.S) swaps sp↔sscratch to switch from user stack
+    // to kernel stack.  We do NOT set sscratch here because the caller
+    // may be deep in a C call stack — sp would point to a mid-stack
+    // frame instead of the clean kernel_stack_top.
 
     // Set user stack pointer
     mv      sp, a1
