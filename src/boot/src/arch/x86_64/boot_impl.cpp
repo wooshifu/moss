@@ -16,6 +16,9 @@ extern unsigned char g_tss[];                         // 104-byte TSS in start_x
 extern unsigned long long gdt_table[];                // GDT in start_x86_64.S .data
 extern unsigned char _stack_top_addr[];               // Boot stack top (linker symbol)
 void early_debug_print(const char *message) noexcept; // UART output (kernel_main.cpp)
+
+// Page fault handler in mm module (page_fault.cpp)
+void x86_64_page_fault_handler(unsigned long long error_code, unsigned long long cr2, unsigned long long rip) noexcept;
 }
 
 module moss.boot;
@@ -272,7 +275,12 @@ void update_boot_stage(BootStage stage, ::moss::kernel::ErrorCode error) noexcep
   // 后续可扩展为 ACPI/E820 内存映射解析。
   {
     auto &info = moss::fdt::g_platform_info;
+    // Preserve initrd addresses discovered from PVH modules above
+    PhysAddr saved_initrd_start = info.initrd_start;
+    PhysAddr saved_initrd_end = info.initrd_end;
     info = {};
+    info.initrd_start = saved_initrd_start;
+    info.initrd_end = saved_initrd_end;
     info.dtb_valid = false;
     // Detect logical processor count via CPUID leaf 1, EBX[23:16]
     {
@@ -405,10 +413,7 @@ extern "C" void x86_64_interrupt_handler(u64 vector, u64 error_code, [[maybe_unu
     __builtin_unreachable();
   }
 
-  // External IRQ (vector >= 32): log and send EOI to Local APIC
-  early_debug_print("[IRQ] vec=");
-  uart_print_hex(vector);
-  early_debug_print("\n");
+  // External IRQ (vector >= 32): send EOI to Local APIC
   constexpr u64 LAPIC_EOI_ADDR = 0xFEE000B0ULL;
   auto *lapic_eoi = reinterpret_cast<volatile u32 *>(LAPIC_EOI_ADDR);
   *lapic_eoi = 0;
