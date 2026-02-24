@@ -809,176 +809,47 @@ private:
     early_debug_print("\n");
 
 #ifdef MOSS_ARCH_X86_64
-    // x86_64: Pre-map user code pages since we don't have full page fault handling yet
-    early_debug_print("[init] DEBUG: x86_64 pre-mapping user code pages\n");
-
-    // Allocate physical page for user code and map it
-    auto code_frame_result = mm::allocate_pages(0); // order 0 = single page
-    if (!code_frame_result) {
-      early_debug_print("[init] ERROR: failed to allocate code page frame\n");
-      return ErrorCode::OutOfMemory;
-    }
-    PhysAddr code_pa = *code_frame_result;
-    early_debug_print("[init] DEBUG: allocated code frame at PA 0x");
-    // Print physical address in hex
-    for (int i = 0; i < 16; i++) {
-      char c = ((code_pa >> ((15 - i) * 4)) & 0xF);
-      c += (c < 10) ? '0' : 'A' - 10;
-      char hex_char[2] = {c, 0};
-      early_debug_print(hex_char);
-    }
-    early_debug_print("\n");
-
-    // Copy user program code to the allocated page
-    auto *code_dest = reinterpret_cast<u8 *>(static_cast<VirtAddr>(code_pa));
-    for (usize i = 0; i < code_size; i++) {
-      code_dest[i] = static_cast<const u8 *>(raw_code)[i];
-    }
-    early_debug_print("[init] DEBUG: copied user code to physical frame\n");
-
-    // SIMPLIFIED MAPPING: Try to use early page table allocator instead of dynamic
-    early_debug_print("[init] DEBUG: attempting simplified user code mapping\n");
-
-    // Use the EXISTING PGD[0] mapping which includes identity map
-    // Since user CODE_BASE (8GB) is within PGD[0] range (0-512GB),
-    // we can try to map directly in the identity region
-    early_debug_print("[init] DEBUG: user PGD physical address = 0x");
-    for (int i = 0; i < 16; i++) {
-      char c = ((as->pgd_phys >> ((15 - i) * 4)) & 0xF);
-      c += (c < 10) ? '0' : 'A' - 10;
-      char hex_char[2] = {c, 0};
-      early_debug_print(hex_char);
-    }
-    early_debug_print("\n");
-
-    auto *pgd = mm::PageTableManager::get_table_from_physical(as->pgd_phys);
-    early_debug_print("[init] DEBUG: user PGD virtual address = 0x");
-    VirtAddr pgd_va = reinterpret_cast<VirtAddr>(pgd);
-    for (int i = 0; i < 16; i++) {
-      char c = ((pgd_va >> ((15 - i) * 4)) & 0xF);
-      c += (c < 10) ? '0' : 'A' - 10;
-      char hex_char[2] = {c, 0};
-      early_debug_print(hex_char);
-    }
-    early_debug_print("\n");
-
-    auto bd = hal::mmu::break_virtual_address(user_layout::CODE_BASE);
-    early_debug_print("[init] DEBUG: VA breakdown complete, checking PGD[0]\n");
-
-    // Let's check the raw value of PGD[0]
-    u64 pgd0_raw = pgd->entries[0].raw;
-    early_debug_print("[init] DEBUG: PGD[0].raw = 0x");
-    for (int i = 0; i < 16; i++) {
-      char c = ((pgd0_raw >> ((15 - i) * 4)) & 0xF);
-      c += (c < 10) ? '0' : 'A' - 10;
-      char hex_char[2] = {c, 0};
-      early_debug_print(hex_char);
-    }
-    early_debug_print("\n");
-
-    if (pgd->entries[bd.pgd_index].is_valid()) {
-      early_debug_print("[init] DEBUG: PGD[0] exists (kernel identity map)\n");
-
-      // Get the PUD from PGD[0] - this should work since it's kernel mapping
-      auto kernel_pud_pa = pgd->entries[bd.pgd_index].get_phys_addr();
-      auto *pud = reinterpret_cast<mm::PageTable *>(static_cast<VirtAddr>(kernel_pud_pa));
-
-      early_debug_print("[init] DEBUG: accessed PUD table directly\n");
-
-      // Check if we need to create a PUD entry for our VA range
-      if (!pud->entries[bd.pud_index].is_valid()) {
-        early_debug_print("[init] DEBUG: need to create PUD entry for user code\n");
-
-        // Allocate PMD using early allocator to avoid dynamic allocation issues
-        auto pmd_result = mm::PageTableManager::allocate_page_table();
-        if (!pmd_result) {
-          early_debug_print("[init] ERROR: failed to allocate PMD table\n");
-        } else {
-          early_debug_print("[init] DEBUG: allocated PMD table using early allocator\n");
-          auto *pmd = *pmd_result;
-          PhysAddr pmd_pa = mm::PageTableManager::get_physical_address(pmd);
-
-          // Set PUD entry to point to our PMD
-          pud->entries[bd.pud_index].set_table(pmd_pa);
-          early_debug_print("[init] DEBUG: linked PUD->PMD\n");
-
-          // Now set PMD entry to point to a PTE table
-          auto pte_result = mm::PageTableManager::allocate_page_table();
-          if (!pte_result) {
-            early_debug_print("[init] ERROR: failed to allocate PTE table\n");
-          } else {
-            early_debug_print("[init] DEBUG: allocated PTE table\n");
-            auto *pte = *pte_result;
-            PhysAddr pte_pa = mm::PageTableManager::get_physical_address(pte);
-
-            pmd->entries[bd.pmd_index].set_table(pte_pa);
-            early_debug_print("[init] DEBUG: linked PMD->PTE\n");
-
-            // Finally, set the PTE entry to point to our code page
-            pte->entries[bd.pte_index].set_page(code_pa, hal::mmu::page_perms::USER_RX);
-            early_debug_print("[init] DEBUG: set PTE entry for user code\n");
-
-            // VERIFY: Check the PTE entry was set correctly
-            u64 pte_raw = pte->entries[bd.pte_index].raw;
-            early_debug_print("[init] DEBUG: PTE entry raw = 0x");
-            for (int i = 0; i < 16; i++) {
-              char c = ((pte_raw >> ((15 - i) * 4)) & 0xF);
-              c += (c < 10) ? '0' : 'A' - 10;
-              char hex_char[2] = {c, 0};
-              early_debug_print(hex_char);
-            }
-            early_debug_print("\n");
-
-            mm::PageTableManager::invalidate_tlb_addr(user_layout::CODE_BASE);
-            early_debug_print("[init] DEBUG: x86_64 code mapping successful\n");
-
-            // CRITICAL: Also map the user stack page
-            early_debug_print("[init] DEBUG: mapping user stack page\n");
-            auto stack_frame_result = mm::allocate_pages(0);
-            if (stack_frame_result) {
-              PhysAddr stack_pa = *stack_frame_result;
-
-              // Map stack at stack top - PAGE_SIZE (last page of stack region)
-              VirtAddr stack_page = user_layout::STACK_TOP - PAGE_SIZE;
-
-              // Use simplified manual mapping for stack too
-              auto bd_stack = hal::mmu::break_virtual_address(stack_page);
-
-              // Check if we need new PUD/PMD/PTE tables for stack
-              if (!pud->entries[bd_stack.pud_index].is_valid()) {
-                early_debug_print("[init] DEBUG: need new PUD entry for stack\n");
-                auto stack_pmd_result = mm::PageTableManager::allocate_page_table();
-                if (stack_pmd_result) {
-                  auto *stack_pmd = *stack_pmd_result;
-                  PhysAddr stack_pmd_pa = mm::PageTableManager::get_physical_address(stack_pmd);
-                  pud->entries[bd_stack.pud_index].set_table(stack_pmd_pa);
-
-                  // Now create PTE table
-                  auto stack_pte_result = mm::PageTableManager::allocate_page_table();
-                  if (stack_pte_result) {
-                    auto *stack_pte = *stack_pte_result;
-                    PhysAddr stack_pte_pa = mm::PageTableManager::get_physical_address(stack_pte);
-                    stack_pmd->entries[bd_stack.pmd_index].set_table(stack_pte_pa);
-
-                    // Set stack page with read/write permissions
-                    stack_pte->entries[bd_stack.pte_index].set_page(stack_pa, hal::mmu::page_perms::USER_RW);
-                    early_debug_print("[init] DEBUG: user stack page mapped successfully\n");
-                  }
-                }
-              } else {
-                early_debug_print("[init] DEBUG: stack can reuse existing PUD entry\n");
-                // TODO: Handle case where PUD exists but we need new PMD/PTE
-              }
-            }
-
-            early_debug_print("[init] DEBUG: x86_64 user space mapping completed\n");
-          }
-        }
-      } else {
-        early_debug_print("[init] DEBUG: PUD entry already exists - TODO: handle existing mapping\n");
+    // x86_64: Pre-map user code and stack pages.
+    // Uses map_user_page() which handles full PGD→PUD→PMD→PTE walk,
+    // allocating intermediate tables as needed for any virtual address.
+    {
+      // Allocate physical page for user code and copy program into it
+      auto code_frame_result = mm::allocate_pages(0);
+      if (!code_frame_result) {
+        early_debug_print("[init] ERROR: failed to allocate code page frame\n");
+        return ErrorCode::OutOfMemory;
       }
-    } else {
-      early_debug_print("[init] ERROR: PGD[0] not valid - kernel identity map missing!\n");
+      PhysAddr code_pa = *code_frame_result;
+
+      // Copy user program to the allocated page (identity-mapped region)
+      auto *code_dest = reinterpret_cast<u8 *>(static_cast<VirtAddr>(code_pa));
+      for (usize i = 0; i < code_size; i++) {
+        code_dest[i] = static_cast<const u8 *>(raw_code)[i];
+      }
+
+      // Map user code page at CODE_BASE (8GB)
+      auto map_code = mm::PageTableManager::map_user_page(as->pgd_phys, user_layout::CODE_BASE, code_pa,
+                                                          hal::mmu::page_perms::USER_RX);
+      if (!map_code) {
+        early_debug_print("[init] ERROR: failed to map user code page\n");
+        return ErrorCode::OutOfMemory;
+      }
+      early_debug_print("[init] user code mapped at CODE_BASE\n");
+
+      // Map user stack page at STACK_TOP - PAGE_SIZE
+      auto stack_frame_result = mm::allocate_pages(0);
+      if (!stack_frame_result) {
+        early_debug_print("[init] ERROR: failed to allocate stack page frame\n");
+        return ErrorCode::OutOfMemory;
+      }
+      VirtAddr stack_page = user_layout::STACK_TOP - PAGE_SIZE;
+      auto map_stack = mm::PageTableManager::map_user_page(as->pgd_phys, stack_page, *stack_frame_result,
+                                                           hal::mmu::page_perms::USER_RW);
+      if (!map_stack) {
+        early_debug_print("[init] ERROR: failed to map user stack page\n");
+        return ErrorCode::OutOfMemory;
+      }
+      early_debug_print("[init] user stack mapped at STACK_TOP\n");
     }
 #endif
 

@@ -51,11 +51,15 @@ struct [[gnu::packed]] PageTableEntry {
   [[nodiscard]] constexpr bool is_valid() const { return raw & page_attr::VALID; }
   [[nodiscard]] constexpr bool is_table() const {
     // ARM64: TABLE bit (bit 1) distinguishes table vs block descriptors.
+    // x86_64: VALID=TABLE=bit 0 (same bit).  Use HUGE_PAGE (PS, bit 7) to
+    //         distinguish: table pointer has PS=0, block/hugepage has PS=1.
     // RISC-V: VALID=TABLE=bit 0.  Non-leaf = V=1 AND R=W=X=0.
     //         Leaf (block/page) = V=1 AND (R|W|X)!=0.
 #if defined(MOSS_ARCH_RISCV)
     constexpr u64 RWX = page_attr::READ | page_attr::WRITE | page_attr::EXECUTE;
     return (raw & page_attr::VALID) != 0 && (raw & RWX) == 0;
+#elif defined(MOSS_ARCH_X86_64)
+    return (raw & page_attr::VALID) != 0 && (raw & page_attr::HUGE_PAGE) == 0;
 #else
     return raw & page_attr::TABLE;
 #endif
@@ -73,6 +77,12 @@ struct [[gnu::packed]] PageTableEntry {
 #if defined(MOSS_ARCH_RISCV)
     // RISC-V non-leaf: V=1, R=W=X=0. TABLE == VALID == bit 0.
     raw = ((next_table_pa >> 2) & hal::mmu::PTE_ADDR_MASK) | page_attr::VALID;
+#elif defined(MOSS_ARCH_X86_64)
+    // x86_64 non-leaf entries must propagate User + Writable + Accessed.
+    // Permission bits are AND-ed across levels: if a PUD/PMD lacks User,
+    // ring 3 cannot access any page below it even if the leaf PTE has User.
+    raw = (next_table_pa & hal::mmu::PTE_ADDR_MASK) | page_attr::VALID | page_attr::WRITABLE | page_attr::USER |
+          page_attr::AF;
 #else
     raw = (next_table_pa & hal::mmu::PTE_ADDR_MASK) | page_attr::VALID | page_attr::TABLE;
 #endif

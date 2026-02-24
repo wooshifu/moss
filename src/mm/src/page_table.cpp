@@ -587,13 +587,9 @@ VoidResult PageTableManager::setup_kernel_page_tables() {
     PhysAddr pud_pa = PageTableManager::get_physical_address(pud);
     PageTableManager::kernel_pgd->entries[0].set_table(pud_pa);
 
-    // x86_64: Map 0-9GB to cover pre-mapped user code at 8GB (CODE_BASE)
-    // ARM64/RISC-V: Map 0-4GB only; user code uses demand paging
-#ifdef MOSS_ARCH_X86_64
-    constexpr usize PUD_ENTRY_COUNT = 9;
-#else
+    // All architectures: identity-map 0-4GB only.
+    // User code at CODE_BASE (8GB) is mapped via map_user_page() / demand paging.
     constexpr usize PUD_ENTRY_COUNT = 4;
-#endif
     for (usize i = 0; i < PUD_ENTRY_COUNT; i++) {
       PhysAddr block_addr = static_cast<PhysAddr>(i * ONE_GB);
       PhysAddr block_end = block_addr + ONE_GB;
