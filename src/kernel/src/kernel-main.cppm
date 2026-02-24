@@ -751,6 +751,15 @@ private:
 #if defined(MOSS_ARCH_ARM64)
     const auto *raw_code = moss::abi::arm64::user_program_start();
     usize code_size = moss::abi::arm64::user_program_size();
+    early_debug_print("[init] DEBUG: ARM64 code_size = ");
+    // Simple size output
+    if (code_size == 0) {
+      early_debug_print("0 - ERROR: no user program!\n");
+    } else if (code_size < 1000) {
+      early_debug_print("small (<1KB)\n");
+    } else {
+      early_debug_print("normal (>1KB)\n");
+    }
 #elif defined(MOSS_ARCH_X86_64)
     const auto *raw_code = moss::abi::x86_64::user_program_start();
     usize code_size = moss::abi::x86_64::user_program_size();
@@ -781,7 +790,23 @@ private:
     VirtAddr code_end = (user_layout::CODE_BASE + code_size + PAGE_SIZE - 1) & ~(static_cast<VirtAddr>(PAGE_SIZE) - 1);
     as->add_vma(user_layout::CODE_BASE, code_end, vma_flags::READ | vma_flags::EXEC, VmaType::CODE, raw_code, 0,
                 code_size);
-    early_debug_print("[init] VMA code registered\n");
+    early_debug_print("[init] VMA code registered: 0x");
+    // Print CODE_BASE in hex
+    u64 base_addr = user_layout::CODE_BASE;
+    char addr_hex[17] = {0};
+    for (int i = 0; i < 16; i++) {
+      u8 nibble = (base_addr >> ((15 - i) * 4)) & 0xF;
+      addr_hex[i] = (nibble < 10) ? ('0' + nibble) : ('A' + nibble - 10);
+    }
+    early_debug_print(addr_hex);
+    early_debug_print(" to 0x");
+    // Print code_end in hex
+    for (int i = 0; i < 16; i++) {
+      u8 nibble = (code_end >> ((15 - i) * 4)) & 0xF;
+      addr_hex[i] = (nibble < 10) ? ('0' + nibble) : ('A' + nibble - 10);
+    }
+    early_debug_print(addr_hex);
+    early_debug_print("\n");
 
 #ifdef MOSS_ARCH_X86_64
     // x86_64: Pre-map user code pages since we don't have full page fault handling yet
