@@ -37,11 +37,15 @@ constexpr usize HUGE_PAGE_SIZE = 1ULL * 1024 * 1024 * 1024; // 1GB
 
 // Memory layout constants
 //
-// RISC-V Sv39: 39-bit VA, kernel half starts at 0xFFFFFFC000000000 (bit[38]=1)
 // ARM64/x86_64: 48-bit VA, kernel half starts at 0xFFFF800000000000 (bit[47]=1)
+// RISC-V: runtime-detected Sv39 (39-bit) or Sv48 (48-bit) — set during early boot.
+//   Sv39: KERNEL_BASE = 0xFFFFFFC000000000, USER_MAX = 256GB
+//   Sv48: KERNEL_BASE = 0xFFFF800000000000, USER_MAX = 128TB (same as ARM64/x86)
 #if defined(MOSS_ARCH_RISCV)
-constexpr VirtAddr KERNEL_BASE = 0xFFFFFFC000000000ULL;
-constexpr VirtAddr USER_MAX = 0x0000004000000000ULL; // 256 GB user space (Sv39)
+// Runtime variables — set by init_riscv_address_layout() before MMU enable.
+// constinit: guarantees constant initialisation (no __cxa_guard in freestanding).
+constinit inline VirtAddr KERNEL_BASE = 0xFFFFFFC000000000ULL; // Sv39 default
+constinit inline VirtAddr USER_MAX = 0x0000004000000000ULL;    // 256GB default
 #else
 constexpr VirtAddr KERNEL_BASE = 0xFFFF800000000000ULL;
 constexpr VirtAddr USER_MAX = 0x0000800000000000ULL;
@@ -49,7 +53,11 @@ constexpr VirtAddr USER_MAX = 0x0000800000000000ULL;
 constexpr VirtAddr USER_BASE = 0x0000000000000000ULL;
 
 // Direct-map: physical RAM is mapped at KERNEL_BASE + phys_addr (post-trampoline)
+#if defined(MOSS_ARCH_RISCV)
+constinit inline VirtAddr KERNEL_DIRECT_MAP_BASE = 0xFFFFFFC000000000ULL; // = KERNEL_BASE default
+#else
 constexpr VirtAddr KERNEL_DIRECT_MAP_BASE = KERNEL_BASE;
+#endif
 constexpr PhysAddr PHYS_BASE = 0x40000000ULL; // QEMU virt RAM start
 
 // Address translation: physical ↔ virtual (valid only after boot trampoline)

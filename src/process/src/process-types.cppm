@@ -700,27 +700,23 @@ extern ProcessManager *g_process_manager;
 // All components that create user VMAs should reference these constants
 // instead of hardcoding addresses.
 //
-// Address ranges are architecture-dependent because RISC-V Sv39 only has
-// 39-bit VA (user space: 0..256GB), while ARM64/x86_64 have 48-bit VA
-// (user space: 0..128TB).  All addresses must fit within the user-half
-// of the respective address space.
+// RISC-V: STACK_TOP is a runtime variable set by init_riscv_address_layout()
+// based on detected MMU mode (Sv39: 252GB, Sv48: 128TB-4GB).
+// ARM64/x86_64 always use 48-bit VA (128TB user space).
+// CODE_BASE, HEAP_START, MMAP_BASE are below 64GB and identical for all modes.
 namespace user_layout {
+inline constexpr VirtAddr CODE_BASE = 0x0000000200000000ULL;  // 8GB — above kernel identity map
+inline constexpr VirtAddr HEAP_START = 0x0000000100000000ULL; // 4GB
+inline constexpr usize STACK_SIZE = 32ULL * 1024;             // 32KB default user stack
+inline constexpr usize HEAP_INIT = 64ULL * 1024;              // 64KB initial heap
+inline constexpr VirtAddr MMAP_BASE = 0x0000001000000000ULL;  // 64GB — anonymous mmap region start
+
 #if defined(MOSS_ARCH_RISCV)
-// RISC-V Sv39: 39-bit VA → user space 0x0000_0000_0000 .. 0x003F_FFFF_FFFF (256GB)
-inline constexpr VirtAddr CODE_BASE = 0x0000000200000000ULL;  // 8GB — above kernel identity map
-inline constexpr VirtAddr HEAP_START = 0x0000000100000000ULL; // 4GB
-inline constexpr VirtAddr STACK_TOP = 0x0000003F00000000ULL;  // 252GB — near top of Sv39 user space
-inline constexpr usize STACK_SIZE = 32ULL * 1024;             // 32KB default user stack
-inline constexpr usize HEAP_INIT = 64ULL * 1024;              // 64KB initial heap
-inline constexpr VirtAddr MMAP_BASE = 0x0000001000000000ULL;  // 64GB — anonymous mmap region start
+// Runtime variable — set by init_riscv_address_layout() during early boot.
+// Sv39: 0x3F00000000 (252GB), Sv48: 0x7FFF00000000 (128TB - 4GB)
+constinit inline VirtAddr STACK_TOP = 0x0000003F00000000ULL; // Sv39 default
 #else
-// ARM64/x86_64: 48-bit VA → user space 0..128TB
-inline constexpr VirtAddr CODE_BASE = 0x0000000200000000ULL;  // 8GB — above kernel identity map
-inline constexpr VirtAddr HEAP_START = 0x0000000100000000ULL; // 4GB
-inline constexpr VirtAddr STACK_TOP = 0x00007FFF00000000ULL;  // 128TB boundary - 4GB
-inline constexpr usize STACK_SIZE = 32ULL * 1024;             // 32KB default user stack
-inline constexpr usize HEAP_INIT = 64ULL * 1024;              // 64KB initial heap
-inline constexpr VirtAddr MMAP_BASE = 0x0000001000000000ULL;  // 64GB — anonymous mmap region start
+inline constexpr VirtAddr STACK_TOP = 0x00007FFF00000000ULL; // 128TB boundary - 4GB
 #endif
 } // namespace user_layout
 

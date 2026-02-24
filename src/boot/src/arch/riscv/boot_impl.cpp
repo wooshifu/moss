@@ -194,17 +194,43 @@ static SbiResult sbi_hart_start(u64 hartid, u64 start_addr, u64 opaque) noexcept
 
   moss::boot::early_print("=== RISC-V Memory Management Setup ===\n");
 
-  // Phase 1: Setup Sv39 identity-mapped page tables + enable MMU
+  // Phase 0: Detect page table mode from DTB mmu-type property.
+  // Direct satp probing (MODE=Sv48+PPN=0) hangs QEMU because the write takes
+  // effect immediately and the CPU tries to walk a page table at physical
+  // address 0.  Linux works around this by building a temporary identity-map
+  // first, which is overkill for us.  The DTB's mmu-type is equally reliable.
+  namespace mmu_hal = ::moss::kernel::hal::mmu;
+
+  {
+    const auto &info = moss::fdt::get_platform_info();
+    if (info.mmu_levels >= 4) {
+      mmu_hal::g_mmu_mode = mmu_hal::MmuMode::Sv48;
+      mmu_hal::g_satp_mode_bits = 9ULL << 60;
+    } else {
+      mmu_hal::g_mmu_mode = mmu_hal::MmuMode::Sv39;
+      mmu_hal::g_satp_mode_bits = 8ULL << 60;
+    }
+  }
+  mmu_hal::init_riscv_address_layout(mmu_hal::g_mmu_mode);
+  // Also update STACK_TOP for the detected mode
+  if (mmu_hal::g_mmu_mode == mmu_hal::MmuMode::Sv48) {
+    ::moss::kernel::process::user_layout::STACK_TOP = 0x00007FFF00000000ULL;
+    moss::boot::early_print("  MMU mode: Sv48 (4-level page table)\n");
+  } else {
+    moss::boot::early_print("  MMU mode: Sv39 (3-level page table)\n");
+  }
+
+  // Phase 1: Setup identity-mapped page tables + enable MMU
   // setup_mmu() calls setup_kernel_page_tables() which fills the root table
-  // with 4×1GB gigapage leaf entries, then enable_mmu() writes satp with Sv39 mode.
+  // with 1GB gigapage leaf entries, then enable_mmu() writes satp with detected mode.
   // RISC-V has a single satp register, so identity map and high-half share the root.
-  moss::boot::early_print("  Phase 1: Sv39 page tables + MMU enable\n");
+  moss::boot::early_print("  Phase 1: page tables + MMU enable\n");
   auto mmu_result = ::moss::kernel::mm::setup_mmu();
   if (!mmu_result) {
     moss::boot::early_print("  MMU setup failed\n");
     return ::moss::kernel::VoidResult{mmu_result.error()};
   }
-  moss::boot::early_print("  MMU: Sv39 enabled\n");
+  moss::boot::early_print("  MMU enabled\n");
 
   // Phase 2: Initialize PageFrameAllocator (buddy allocator)
   moss::boot::early_print("  Phase 2: PageFrameAllocator\n");
@@ -214,9 +240,9 @@ static SbiResult sbi_hart_start(u64 hartid, u64 start_addr, u64 opaque) noexcept
   }
 
   // Phase 3: Build high-half kernel page table
-  // Maps physical 0-4GB at KERNEL_DIRECT_MAP_BASE (0xFFFFFFC000000000 for Sv39).
-  // On RISC-V this adds root[256..259] entries to the existing kernel_pgd
-  // (same page table as the identity map, since there's only one satp).
+  // Maps physical 0-4GB at KERNEL_DIRECT_MAP_BASE.
+  // Sv39: KERNEL_DIRECT_MAP_BASE = 0xFFFFFFC000000000 (adds root[256..259] gigapages)
+  // Sv48: KERNEL_DIRECT_MAP_BASE = 0xFFFF800000000000 (adds PGD→PUD, like ARM64)
   moss::boot::early_print("  Phase 3: high-half kernel mapping\n");
   auto high_result = ::moss::kernel::mm::PageTableManager::setup_kernel_high_half_tables();
   if (!high_result) {
@@ -241,7 +267,7 @@ static SbiResult sbi_hart_start(u64 hartid, u64 start_addr, u64 opaque) noexcept
     moss::boot::early_print("  WARNING: RuntimeHeapAllocator init failed\n");
   }
 
-  moss::boot::early_print("RISC-V memory management setup complete (Sv39 + high-half active)\n\n");
+  moss::boot::early_print("RISC-V memory management setup complete (high-half active)\n\n");
   return ::moss::kernel::VoidResult{};
 }
 

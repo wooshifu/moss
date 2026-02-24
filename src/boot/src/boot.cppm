@@ -10,6 +10,7 @@ import moss.fdt;
 import moss.platform;
 import moss.arch;
 import moss.mm;
+import moss.hal.mmu;
 import moss.interrupts;
 import moss.hal.intc;
 import moss.hal.timer;

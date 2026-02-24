@@ -365,9 +365,16 @@ inline void setup_kernel_mmu(PhysAddr kernel_pgd_pa) noexcept {
   // In long mode the MMU is always enabled; writing CR3 activates the new page tables.
   asm volatile("mov %0, %%cr3" ::"r"(kernel_pgd_pa) : "memory");
 #elif defined(MOSS_ARCH_RISCV)
-  // RISC-V Sv39: satp = MODE(8) | PPN(kernel_pgd_pa >> 12)
-  constexpr u64 SATP_MODE_SV39 = 8ULL << 60;
-  u64 satp_val = SATP_MODE_SV39 | ((kernel_pgd_pa >> 12) & 0x00000FFFFFFFFFFFULL);
+  // RISC-V: satp = MODE(runtime Sv39/Sv48) | PPN(kernel_pgd_pa >> 12)
+  // Read current satp to preserve MODE bits (set by detect_mmu_mode at boot).
+  u64 current_satp;
+  asm volatile("csrr %0, satp" : "=r"(current_satp));
+  u64 mode_bits = current_satp & (0xFULL << 60);
+  // If MMU not yet enabled (mode=0), default to Sv39.
+  if (mode_bits == 0) {
+    mode_bits = 8ULL << 60;
+  }
+  u64 satp_val = mode_bits | ((kernel_pgd_pa >> 12) & 0x00000FFFFFFFFFFFULL);
   asm volatile("csrw satp, %0" ::"r"(satp_val) : "memory");
   asm volatile("sfence.vma" ::: "memory");
 #endif

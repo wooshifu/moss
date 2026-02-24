@@ -655,8 +655,8 @@ private:
     VirtAddr entry_point = user_layout::CODE_BASE; // entry = start of raw code
 
     // Stack VMA: demand-zero
-    constexpr VirtAddr STACK_BOTTOM = user_layout::STACK_TOP - user_layout::STACK_SIZE;
-    as->add_vma(STACK_BOTTOM, user_layout::STACK_TOP, vma_flags::READ | vma_flags::WRITE | vma_flags::DEMAND_ZERO,
+    const VirtAddr stack_bottom = user_layout::STACK_TOP - user_layout::STACK_SIZE;
+    as->add_vma(stack_bottom, user_layout::STACK_TOP, vma_flags::READ | vma_flags::WRITE | vma_flags::DEMAND_ZERO,
                 VmaType::STACK);
     early_debug_print("[init] VMA stack registered\n");
 
@@ -701,7 +701,7 @@ private:
 
     // User context: entry point and stack pointer are user-space VAs
     // (demand-paged on first access)
-    init_thread->stack_base = STACK_BOTTOM;
+    init_thread->stack_base = stack_bottom;
     init_thread->stack_size = user_layout::STACK_SIZE;
     init_thread->context.pc = entry_point;
     init_thread->context.sp = user_layout::STACK_TOP - 16; // 16-byte aligned

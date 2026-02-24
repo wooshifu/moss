@@ -424,12 +424,11 @@ long sys_execve(long pathname_addr, long argv_addr, long /* envp */, long /*unus
   }
 #elif defined(MOSS_ARCH_RISCV)
   // Switch SATP to kernel PGD before freeing old user page tables.
-  // Sv39: mode=8, PPN = phys >> 12.  Kernel PGD contains identity map.
   {
     auto *kpgd = mm::PageTableManager::get_kernel_pgd();
     if (kpgd) {
       u64 kpgd_phys = mm::PageTableManager::get_physical_address(kpgd);
-      u64 satp_val = (8ULL << 60) | (kpgd_phys >> 12);
+      u64 satp_val = hal::mmu::make_satp_value(kpgd_phys);
       asm volatile("csrw satp, %0" ::"r"(satp_val) : "memory");
       asm volatile("sfence.vma" ::: "memory");
     }
@@ -621,8 +620,8 @@ long sys_execve(long pathname_addr, long argv_addr, long /* envp */, long /*unus
   }
 
   // 9. Add stack VMA (demand-zero)
-  constexpr VirtAddr STACK_BOTTOM = user_layout::STACK_TOP - user_layout::STACK_SIZE;
-  new_as->add_vma(STACK_BOTTOM, user_layout::STACK_TOP, vma_flags::READ | vma_flags::WRITE | vma_flags::DEMAND_ZERO,
+  const VirtAddr stack_bottom = user_layout::STACK_TOP - user_layout::STACK_SIZE;
+  new_as->add_vma(stack_bottom, user_layout::STACK_TOP, vma_flags::READ | vma_flags::WRITE | vma_flags::DEMAND_ZERO,
                   VmaType::STACK);
 
   // 10. Add heap VMA (demand-zero) and initialize program break
@@ -660,7 +659,7 @@ long sys_execve(long pathname_addr, long argv_addr, long /* envp */, long /*unus
   }
 #elif defined(MOSS_ARCH_RISCV)
   if (proc->address_space() && proc->address_space()->pgd_phys != 0) {
-    u64 satp_val = (8ULL << 60) | (proc->address_space()->pgd_phys >> 12);
+    u64 satp_val = hal::mmu::make_satp_value(proc->address_space()->pgd_phys);
     asm volatile("csrw satp, %0" ::"r"(satp_val) : "memory");
     asm volatile("sfence.vma" ::: "memory");
   }
@@ -735,7 +734,7 @@ long sys_execve(long pathname_addr, long argv_addr, long /* envp */, long /*unus
                            : 0;
 #endif
   cur->needs_initial_eret = true; // next dispatch does switch_to_user + eret
-  cur->stack_base = STACK_BOTTOM;
+  cur->stack_base = stack_bottom;
   cur->stack_size = user_layout::STACK_SIZE;
 
   // 13. Direct eret to new program image.

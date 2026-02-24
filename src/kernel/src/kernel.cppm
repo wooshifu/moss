@@ -16,6 +16,7 @@ import moss.hal.intc;
 import moss.hal.timer;
 import moss.containers;
 import moss.mm;
+import moss.hal.mmu;
 import moss.interrupts;
 import moss.drivers;
 import moss.fdt;
