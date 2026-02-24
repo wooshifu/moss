@@ -159,14 +159,26 @@ public:
 
   [[nodiscard]] static PhysAddr get_physical_address(const PageTable *table) {
     auto va = reinterpret_cast<VirtAddr>(table);
+#ifdef MOSS_ARCH_X86_64
+    // WORKAROUND for x86_64: use identity mapping instead of high-half mapping
+    // because virt_to_phys() doesn't work with identity-mapped dynamic allocations
+    return static_cast<PhysAddr>(va);
+#else
     if (is_kernel_addr(va)) {
       return virt_to_phys(va);
     }
     return static_cast<PhysAddr>(va); // identity-mapped (early boot)
+#endif
   }
   [[nodiscard]] static PageTable *get_table_from_physical(PhysAddr pa) {
     if (use_dynamic_alloc) {
+#ifdef MOSS_ARCH_X86_64
+      // WORKAROUND for x86_64: use identity mapping instead of high-half mapping
+      // because phys_to_virt() produces unmapped virtual addresses
+      return reinterpret_cast<PageTable *>(static_cast<VirtAddr>(pa));
+#else
       return reinterpret_cast<PageTable *>(phys_to_virt(pa));
+#endif
     }
     return reinterpret_cast<PageTable *>(pa); // identity-mapped (early boot)
   }

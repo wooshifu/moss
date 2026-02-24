@@ -274,7 +274,10 @@ endif()
 message(STATUS "将生成文件: moss.dis, moss.sym, moss.bin, moss_boot.bin, moss_code.bin")
 
 # === Userspace programs + initramfs CPIO ===
-if(MOSS_TARGET_ARCH STREQUAL "ARM64" OR MOSS_TARGET_ARCH STREQUAL "RISCV")
+if(MOSS_TARGET_ARCH STREQUAL "ARM64"
+   OR MOSS_TARGET_ARCH STREQUAL "RISCV"
+   OR MOSS_TARGET_ARCH STREQUAL "X86_64"
+)
     set(USERSPACE_DIR "${CMAKE_SOURCE_DIR}/userspace")
     set(USERSPACE_LD "${USERSPACE_DIR}/userspace.ld")
 
@@ -283,6 +286,8 @@ if(MOSS_TARGET_ARCH STREQUAL "ARM64" OR MOSS_TARGET_ARCH STREQUAL "RISCV")
         set(USERSPACE_ARCH_FLAGS --target=aarch64-unknown-elf)
     elseif(MOSS_TARGET_ARCH STREQUAL "RISCV")
         set(USERSPACE_ARCH_FLAGS --target=riscv64-unknown-elf -march=rv64imac -mabi=lp64 -mcmodel=medany)
+    elseif(MOSS_TARGET_ARCH STREQUAL "X86_64")
+        set(USERSPACE_ARCH_FLAGS --target=x86_64-unknown-elf -mcmodel=large -fPIC)
     endif()
 
     # Common compiler flags for userspace programs

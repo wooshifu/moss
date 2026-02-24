@@ -13,6 +13,7 @@ module;
 module moss.boot;
 
 import moss.abi;
+import moss.fdt;
 
 using moss::PhysAddr;
 using moss::u16;
@@ -22,6 +23,29 @@ using moss::u8;
 using moss::VirtAddr;
 
 namespace moss::boot {
+
+// PVH (Xen PVH) Boot Info Structure
+// This structure is passed by QEMU when using PVH boot protocol
+struct HvmStartInfo {
+  u32 magic;          // HVM_START_MAGIC_VALUE (0x336ec578)
+  u32 version;        // version of this structure
+  u32 flags;          // SIF_xxx flags
+  u32 nr_modules;     // number of modules passed to domain
+  u64 modlist_paddr;  // physical address of module info (struct hvm_modlist_entry)
+  u64 cmdline_paddr;  // physical address of the command line
+  u64 rsdp_paddr;     // physical address of RSDP ACPI data structure
+  u64 memmap_paddr;   // physical address of memory map
+  u32 memmap_entries; // number of memory map entries
+  u32 reserved;       // must be zero
+};
+
+// HVM Module List Entry (for initramfs)
+struct HvmModlistEntry {
+  u64 paddr;         // physical address of module
+  u64 size;          // size of module in bytes
+  u64 cmdline_paddr; // physical address of command line
+  u64 reserved;      // must be zero
+};
 
 // Global boot status
 BootStatus g_boot_status = {.current_stage = BootStage::PreInit,
@@ -138,18 +162,51 @@ void update_boot_stage(BootStage stage, ::moss::kernel::ErrorCode error) noexcep
   moss::boot::update_boot_stage(moss::boot::BootStage::HardwareInit);
 
   moss::boot::EarlyVGA::clear();
-  moss::boot::early_print("=== x86_64 Hardware Early Init ===\n");
+  moss::boot::EarlyVGA::put_string("=== x86_64 Hardware Early Init ===\n");
+  moss::boot::EarlyVGA::put_string("Checking initramfs locations...\n");
+
+  // Try to get initramfs location from PVH boot info first
+  // QEMU passes modules via PVH start_info structure
+  bool found_pvh_initramfs = false;
+
+  // PVH start_info is typically passed at a fixed location by QEMU
+  // Check common PVH start_info locations
+  for (PhysAddr pvh_addr = 0x6000; pvh_addr <= 0x10000; pvh_addr += 0x1000) {
+    const auto *start_info = reinterpret_cast<const HvmStartInfo *>(pvh_addr);
+
+    if (start_info->magic == 0x336ec578 && start_info->nr_modules > 0) {
+      moss::boot::EarlyVGA::put_string("Found PVH start_info with modules!\n");
+
+      // Get first module (should be initramfs)
+      const auto *modlist = reinterpret_cast<const HvmModlistEntry *>(start_info->modlist_paddr);
+      if (modlist->paddr != 0 && modlist->size > 0) {
+        moss::fdt::g_platform_info.initrd_start = modlist->paddr;
+        moss::fdt::g_platform_info.initrd_end = modlist->paddr + modlist->size;
+        found_pvh_initramfs = true;
+
+        moss::boot::EarlyVGA::put_string("PVH initramfs: addr=0x");
+        moss::boot::early_print_hex(modlist->paddr);
+        moss::boot::EarlyVGA::put_string(" size=");
+        moss::boot::early_print_hex(modlist->size);
+        moss::boot::EarlyVGA::put_string("\n");
+        break;
+      }
+    }
+  }
+
+  // Fallback if PVH info not found
+  if (!found_pvh_initramfs) {
+    moss::boot::EarlyVGA::put_string("No PVH initramfs found, using fallback\n");
+    moss::fdt::g_platform_info.initrd_start = 0x01000000;              // 16MB
+    moss::fdt::g_platform_info.initrd_end = 0x01000000 + (100 * 1024); // 100K buffer for safety
+  }
 
   ctx.cpu_id = moss::boot::get_current_cpu_id_impl();
-  moss::boot::early_print("CPU ID: ");
-  moss::boot::early_print_hex(ctx.cpu_id);
-  moss::boot::early_print("\n");
+  moss::boot::EarlyVGA::put_string("CPU initialized\n");
 
   u32 eax, ebx, ecx, edx;
   asm volatile("cpuid" : "=a"(eax), "=b"(ebx), "=c"(ecx), "=d"(edx) : "a"(0x00000001) : "memory");
-  moss::boot::early_print("CPUID Features: ");
-  moss::boot::early_print_hex(edx);
-  moss::boot::early_print("\n");
+  moss::boot::EarlyVGA::put_string("CPUID detected\n");
 
   // x86_64 QEMU q35 不提供 DTB，静态填充 PlatformInfo 以统一子系统接口。
   // 后续可扩展为 ACPI/E820 内存映射解析。
@@ -179,13 +236,8 @@ void update_boot_stage(BootStage stage, ::moss::kernel::ErrorCode error) noexcep
 
   ctx.kernel_virt_base = moss::boot::arch_constants::KERNEL_VIRT_BASE;
 
-  moss::boot::early_print("Memory range: ");
-  moss::boot::early_print_hex(ctx.memory_start);
-  moss::boot::early_print(" - ");
-  moss::boot::early_print_hex(ctx.memory_start + ctx.memory_size);
-  moss::boot::early_print("\n");
-
-  moss::boot::early_print("x86_64 hardware init complete\n\n");
+  moss::boot::EarlyVGA::put_string("Memory mapping configured\n");
+  moss::boot::EarlyVGA::put_string("x86_64 hardware init complete\n\n");
   return ::moss::kernel::VoidResult{};
 }
 
@@ -194,11 +246,15 @@ void update_boot_stage(BootStage stage, ::moss::kernel::ErrorCode error) noexcep
 
   moss::boot::early_print("=== x86_64 Memory Management Setup ===\n");
 
-  // Skip page-table reconstruction: the PVH stub already set up a 4 GB
-  // identity map with 2 MB pages.  The current setup_mmu() builds ARM64-style
-  // page tables that are incompatible with x86_64 PTE format.  PFA and heap
-  // work correctly without rebuilding page tables.
-  moss::boot::early_print("  MMU: using PVH identity map (4 GB, 2 MB pages)\n");
+  // Initialize kernel page tables for user space support
+  // This is required for creating user address spaces even though PVH already provides identity mapping
+  moss::boot::early_print("  Phase 1: kernel page table setup\n");
+  auto mmu_result = ::moss::kernel::mm::setup_mmu();
+  if (!mmu_result) {
+    moss::boot::early_print("  ERROR: MMU setup failed\n");
+    return ::moss::kernel::VoidResult{mmu_result.error()};
+  }
+  moss::boot::early_print("  Phase 1 complete: kernel PGD initialized\n");
 
   auto pfa_result = ::moss::kernel::mm::PageFrameAllocator::initialize();
   if (!pfa_result) {
@@ -255,18 +311,18 @@ static void setup_idt() {
 
 // C++ interrupt/exception handler called from isr_common (isr_x86_64.S)
 extern "C" void x86_64_interrupt_handler(u64 vector, u64 error_code, [[maybe_unused]] void *frame) noexcept {
+  // DEBUG: Log all interrupts to help diagnose the hang issue
+  moss::boot::EarlyVGA::put_string("INT: vec=");
+  moss::boot::early_print_hex(vector);
+  moss::boot::EarlyVGA::put_string(" err=");
+  moss::boot::early_print_hex(error_code);
+  moss::boot::EarlyVGA::put_string("\n");
+
   if (vector < 32) {
-    // CPU exception — log via VGA and halt
-    moss::boot::early_print("x86_64 EXCEPTION: vec=");
-    moss::boot::early_print_hex(vector);
-    moss::boot::early_print(" err=");
-    moss::boot::early_print_hex(error_code);
-    moss::boot::early_print("\n");
-    // Fatal for now: halt
-    asm volatile("cli");
-    while (true) {
-      asm volatile("hlt");
-    }
+    // CPU exception — this might be the cause of the hang
+    moss::boot::EarlyVGA::put_string("x86_64 EXCEPTION DETECTED!\n");
+    // Don't halt immediately, try to continue for debugging
+    return;
   }
 
   // External IRQ (vector >= 32): send EOI to Local APIC
