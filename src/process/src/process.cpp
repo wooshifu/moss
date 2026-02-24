@@ -280,7 +280,7 @@ KernelResult<unique_ptr<AddressSpace>> create_user_address_space() noexcept {
 #endif
 
   // 1. Allocate a physical page for the user PGD (L0 table)
-#ifdef MOSS_ARCH_X86_64
+#if defined(MOSS_ARCH_X86_64) || defined(MOSS_ARCH_ARM64)
   early_debug_print("[DEBUG] create_user_address_space: allocating PGD (using early allocator)\n");
   // CRITICAL FIX: Use early allocator which provides writable memory
   // instead of dynamic allocator which uses read-only identity mapping
@@ -301,7 +301,7 @@ KernelResult<unique_ptr<AddressSpace>> create_user_address_space() noexcept {
 
 #ifdef MOSS_ARCH_X86_64
   early_debug_print("[DEBUG] using early allocated PGD (should be writable)\n");
-  auto *user_pgd_writable = *pgd_result;  // Early allocator gives directly usable pointer
+  auto *user_pgd_writable = *pgd_result; // Early allocator gives directly usable pointer
   early_debug_print("[DEBUG] early PGD addr = 0x");
   VirtAddr pgd_addr = reinterpret_cast<VirtAddr>(user_pgd_writable);
   for (int i = 0; i < 16; i++) {
@@ -368,7 +368,7 @@ KernelResult<unique_ptr<AddressSpace>> create_user_address_space() noexcept {
     }
 
     if (kernel_pgd && user_pgd && kernel_pgd->entries[0].is_valid()) {
-#ifdef MOSS_ARCH_X86_64
+#if defined(MOSS_ARCH_X86_64) || defined(MOSS_ARCH_ARM64)
       early_debug_print("[DEBUG] create_user_address_space: allocating PUD (using early allocator)\n");
       auto pud_result = mm::PageTableManager::allocate_page_table();
 #else
@@ -421,11 +421,10 @@ KernelResult<unique_ptr<AddressSpace>> create_user_address_space() noexcept {
       early_debug_print("[DEBUG] x86_64 PGD setup starting\n");
 
       // Set with x86_64 specific permissions: Present + User + Writable + Accessed
-      u64 pud_entry = (pud_phys & 0x000FFFFFFFFFF000ULL) |
-                      (1ULL << 0) |  // Present
-                      (1ULL << 1) |  // Writable
-                      (1ULL << 2) |  // User
-                      (1ULL << 5);   // Accessed
+      u64 pud_entry = (pud_phys & 0x000FFFFFFFFFF000ULL) | (1ULL << 0) | // Present
+                      (1ULL << 1) |                                      // Writable
+                      (1ULL << 2) |                                      // User
+                      (1ULL << 5);                                       // Accessed
 
       early_debug_print("[DEBUG] pud_phys = 0x");
       for (int i = 0; i < 16; i++) {
