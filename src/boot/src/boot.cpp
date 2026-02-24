@@ -110,18 +110,6 @@ static void boot_print(const char *message) {
   boot_print(MOSS_CURRENT_ARCH);
   boot_print("\n");
 
-  // DEBUG: Show device_tree_ptr value
-  boot_print("DEBUG: device_tree_ptr = 0x");
-  auto ptr_value = reinterpret_cast<uintptr_t>(device_tree_ptr);
-  // Simple hex printing (8 digits)
-  char hex_buffer[2] = {0, 0};
-  for (int i = 28; i >= 0; i -= 4) {
-    auto nibble = (ptr_value >> i) & 0xF;
-    hex_buffer[0] = static_cast<char>(nibble < 10 ? '0' + nibble : 'A' + (nibble - 10));
-    boot_print(hex_buffer);
-  }
-  boot_print("\n");
-
   // Initialize boot context
   BootContext ctx{.device_tree_ptr = device_tree_ptr,
                   .memory_start = 0,
