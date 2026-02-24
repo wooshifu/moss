@@ -1981,13 +1981,15 @@ private:
         char addr_buf[2] = {0, 0};
         for (int shift = 60; shift >= 0; shift -= 4) {
           addr_buf[0] = ((user_pc >> shift) & 0xF) + '0';
-          if (addr_buf[0] > '9') addr_buf[0] = addr_buf[0] - '0' - 10 + 'A';
+          if (addr_buf[0] > '9')
+            addr_buf[0] = addr_buf[0] - '0' - 10 + 'A';
           early_debug_print(addr_buf);
         }
         early_debug_print(" SP=0x");
         for (int shift = 60; shift >= 0; shift -= 4) {
           addr_buf[0] = ((user_sp >> shift) & 0xF) + '0';
-          if (addr_buf[0] > '9') addr_buf[0] = addr_buf[0] - '0' - 10 + 'A';
+          if (addr_buf[0] > '9')
+            addr_buf[0] = addr_buf[0] - '0' - 10 + 'A';
           early_debug_print(addr_buf);
         }
         early_debug_print("\n");
@@ -2064,7 +2066,7 @@ private:
             char hex_buf[17];
             for (int i = 15; i >= 0; i--) {
               u8 nibble = (pgd_phys >> (i * 4)) & 0xF;
-              hex_buf[15-i] = (nibble < 10) ? ('0' + nibble) : ('A' + nibble - 10);
+              hex_buf[15 - i] = (nibble < 10) ? ('0' + nibble) : ('A' + nibble - 10);
             }
             hex_buf[16] = '\0';
             early_debug_print(hex_buf);
@@ -2074,13 +2076,13 @@ private:
             early_debug_print("[sched] DEBUG: validating page table structure before CR3\n");
 
             // Check if PGD physical address is accessible
-            u64 *pgd_virt = reinterpret_cast<u64*>(pgd_phys);  // Using identity mapping
+            u64 *pgd_virt = reinterpret_cast<u64 *>(pgd_phys); // Using identity mapping
             early_debug_print("[sched] DEBUG: PGD virtual addr = 0x");
             char hex_buf2[17];
             u64 addr_check = reinterpret_cast<u64>(pgd_virt);
             for (int i = 15; i >= 0; i--) {
               u8 nibble = (addr_check >> (i * 4)) & 0xF;
-              hex_buf2[15-i] = (nibble < 10) ? ('0' + nibble) : ('A' + nibble - 10);
+              hex_buf2[15 - i] = (nibble < 10) ? ('0' + nibble) : ('A' + nibble - 10);
             }
             hex_buf2[16] = '\0';
             early_debug_print(hex_buf2);
@@ -2091,7 +2093,7 @@ private:
             u64 pgd0 = pgd_virt[0];
             for (int i = 15; i >= 0; i--) {
               u8 nibble = (pgd0 >> (i * 4)) & 0xF;
-              hex_buf2[15-i] = (nibble < 10) ? ('0' + nibble) : ('A' + nibble - 10);
+              hex_buf2[15 - i] = (nibble < 10) ? ('0' + nibble) : ('A' + nibble - 10);
             }
             hex_buf2[16] = '\0';
             early_debug_print(hex_buf2);
@@ -2105,14 +2107,14 @@ private:
 
               // PHASE 3: Validate PUD table contents
               early_debug_print("[sched] DEBUG: validating PUD table contents\n");
-              u64 pud_phys = pgd0 & 0x000FFFFFFFFFF000ULL; // Extract physical address
-              u64 *pud_virt = reinterpret_cast<u64*>(pud_phys); // Identity mapping
+              u64 pud_phys = pgd0 & 0x000FFFFFFFFFF000ULL;       // Extract physical address
+              u64 *pud_virt = reinterpret_cast<u64 *>(pud_phys); // Identity mapping
 
               early_debug_print("[sched] DEBUG: PUD[0] = 0x");
               u64 pud0 = pud_virt[0];
               for (int i = 15; i >= 0; i--) {
                 u8 nibble = (pud0 >> (i * 4)) & 0xF;
-                hex_buf2[15-i] = (nibble < 10) ? ('0' + nibble) : ('A' + nibble - 10);
+                hex_buf2[15 - i] = (nibble < 10) ? ('0' + nibble) : ('A' + nibble - 10);
               }
               hex_buf2[16] = '\0';
               early_debug_print(hex_buf2);
@@ -2137,7 +2139,7 @@ private:
               early_debug_print("[sched] DEBUG: current RIP = 0x");
               for (int i = 15; i >= 0; i--) {
                 u8 nibble = (current_rip >> (i * 4)) & 0xF;
-                hex_buf2[15-i] = (nibble < 10) ? ('0' + nibble) : ('A' + nibble - 10);
+                hex_buf2[15 - i] = (nibble < 10) ? ('0' + nibble) : ('A' + nibble - 10);
               }
               hex_buf2[16] = '\0';
               early_debug_print(hex_buf2);
