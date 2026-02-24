@@ -7,11 +7,13 @@
 // Execution flow:
 //   1. User-space executes `syscall` → CPU loads RIP from LSTAR MSR (points
 //      here), saves user RIP in RCX and RFLAGS in R11, switches to ring 0.
-//   2. syscall_entry_point saves all general-purpose registers onto the
-//      kernel stack, remaps arguments from the syscall ABI to the System V
-//      AMD64 C calling convention, and calls system_call_handler().
+//   2. syscall_entry_point switches to the per-task kernel stack (from
+//      g_kernel_rsp), saves all general-purpose registers, remaps arguments
+//      from the syscall ABI to System V AMD64 C calling convention, and calls
+//      system_call_handler().
 //   3. On return, the result (in RAX) is patched into the saved frame,
-//      registers are restored, and execution returns to user-space.
+//      registers are restored, user RSP is restored, and SYSRETQ returns
+//      to ring 3 (using RCX=user RIP, R11=user RFLAGS).
 //
 // x86_64 system call ABI (Linux-compatible):
 //   RAX       = system call number
@@ -26,23 +28,6 @@
 //   extern "C" int64_t system_call_handler(
 //       uint64_t nr, uint64_t a0, uint64_t a1, uint64_t a2,
 //       uint64_t a3, uint64_t a4, uint64_t a5);
-//
-// Stack frame layout after saving all registers (RSP-relative offsets):
-//   +0x00 : R11 (user RFLAGS)
-//   +0x08 : RCX (user RIP)
-//   +0x10 : R9  (arg5)
-//   +0x18 : R8  (arg4)
-//   +0x20 : R10 (arg3)
-//   +0x28 : RDX (arg2/a1)
-//   +0x30 : RSI (arg1/a0)
-//   +0x38 : RDI (arg0/user a0)
-//   +0x40 : RAX (syscall number)
-//   +0x48 : R15 ... R12, RBX  (callee-saved)
-//   +0x70 : RBP (frame pointer)
-//
-// NOTE: Currently uses `ret` instead of `sysret` because the kernel runs
-//       all code in ring 0.  A future user-space implementation should
-//       switch to SYSRET for proper privilege-level return.
 // =============================================================================
 
 .section .text
@@ -55,6 +40,12 @@
 // =============================================================================
 .type syscall_entry_point, @function
 syscall_entry_point:
+    // SYSCALL does NOT change RSP.  When entered from ring 3, RSP still
+    // points to the user stack.  Switch to the per-task kernel stack.
+    // g_kernel_rsp is set by the scheduler before dispatching a user task.
+    movq    %rsp, g_user_rsp_save(%rip) // save user RSP
+    movq    g_kernel_rsp(%rip), %rsp    // load kernel stack
+
     // ---- Establish stack frame ----
     pushq   %rbp
     movq    %rsp, %rbp
@@ -86,16 +77,19 @@ syscall_entry_point:
     //
     //  Syscall ABI: RAX=nr, RDI=a0, RSI=a1, RDX=a2, R10=a3, R8=a4, R9=a5
     //
-    //  Read saved values from stack (offsets from current RSP):
-    movq    72(%rsp), %rdi              // C arg0 (nr)   ← saved RAX
-    movq    64(%rsp), %rsi              // C arg1 (a0)   ← saved RDI
-    movq    56(%rsp), %rdx              // C arg2 (a1)   ← saved RSI
-    movq    48(%rsp), %rcx              // C arg3 (a2)   ← saved RDX
-    movq    40(%rsp), %r8               // C arg4 (a3)   ← saved R10
-    movq    32(%rsp), %r9               // C arg5 (a4)   ← saved R8
+    //  Read saved values from stack (offsets from current RSP after 15 pushes):
+    //  [rsp+0]=R11, [rsp+8]=RCX, [rsp+16]=R9, [rsp+24]=R8, [rsp+32]=R10,
+    //  [rsp+40]=RDX, [rsp+48]=RSI, [rsp+56]=RDI, [rsp+64]=RAX(nr),
+    //  [rsp+72]=R15, [rsp+80]=R14, ...
+    movq    64(%rsp), %rdi              // C arg0 (nr)   ← saved RAX
+    movq    56(%rsp), %rsi              // C arg1 (a0)   ← saved RDI
+    movq    48(%rsp), %rdx              // C arg2 (a1)   ← saved RSI
+    movq    40(%rsp), %rcx              // C arg3 (a2)   ← saved RDX
+    movq    32(%rsp), %r8               // C arg4 (a3)   ← saved R10
+    movq    24(%rsp), %r9               // C arg5 (a4)   ← saved R8
 
     // C arg6 (a5) passed on the stack per System V ABI
-    pushq   24(%rsp)                    // push saved R9 (arg5)
+    pushq   16(%rsp)                    // push saved R9 (arg5)
 
     // ---- Call the C system call dispatcher ----
     call    system_call_handler
@@ -103,8 +97,8 @@ syscall_entry_point:
     // ---- Clean up stack arg (arg5) ----
     addq    $8, %rsp
 
-    // ---- Patch return value into saved RAX slot ----
-    movq    %rax, 72(%rsp)
+    // ---- Patch return value into saved RAX slot (at rsp+64 after 15 pushes) ----
+    movq    %rax, 64(%rsp)
 
     // ---- Restore all registers (reverse of save order) ----
     popq    %r11                        // user RFLAGS
@@ -127,13 +121,9 @@ syscall_entry_point:
     // ---- Tear down stack frame ----
     popq    %rbp
 
-    // ---- Return to caller ----
-    // Uses RET while all code runs in ring 0.  Switching to SYSRET requires:
-    //   1. GDT reorganization: SYSRET computes CS = STAR[63:48]+16, SS = STAR[63:48]+8
-    //      which needs user CS/DS at specific GDT offsets (Linux uses a 6-entry GDT)
-    //   2. Ring 3 user-space support with separate address spaces
-    // When ready: restore RCX (user RIP) and R11 (user RFLAGS), then `sysretq`.
-    ret
+    // ---- Restore user RSP and return to user-space ----
+    movq    g_user_rsp_save(%rip), %rsp
+    sysretq
 .size syscall_entry_point, . - syscall_entry_point
 
 // =============================================================================
@@ -160,6 +150,17 @@ syscall_return:
     movq    $-1, %rax                   // error sentinel
     ret
 .size syscall_return, . - syscall_return
+
+// =============================================================================
+// Per-CPU kernel stack pointer for SYSCALL entry (single-CPU for now)
+// =============================================================================
+.section .bss
+.align 8
+.global g_kernel_rsp
+g_kernel_rsp:
+    .quad 0                             // Set by scheduler before dispatching user task
+g_user_rsp_save:
+    .quad 0                             // Saved user RSP during syscall
 
 // Prevent executable stack warning from the GNU linker
 .section .note.GNU-stack,"",@progbits

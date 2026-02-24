@@ -2,16 +2,10 @@
 // x86_64 Context Switch Implementation
 // =============================================================================
 //
-// This file provides the core process/thread switching primitives for x86_64:
-//
-//   context_switch(prev, next) — save prev's CPU state, restore next's
-//   switch_to_user(ctx, usp)  — enter ring 3 user mode via IRETQ
-//   kernel_thread_entry()     — trampoline for newly created kernel threads
-//
 // CpuContext structure layout (defined in moss.process module):
 //   Offset  Size   Field
 //   ------  ----   -----
-//   0x00    8      rax       (also used for syscall return value)
+//   0x00    8      rax
 //   0x08    8      rbx
 //   0x10    8      rcx
 //   0x18    8      rdx
@@ -38,9 +32,6 @@
 
 .section .text
 
-.extern current_thread_ptr
-.extern next_thread_ptr
-
 // =============================================================================
 // context_switch — save current thread, restore next thread
 // =============================================================================
@@ -54,22 +45,6 @@
 .global context_switch
 .type context_switch, @function
 context_switch:
-    // DEBUG: Print context_switch entry
-    pushq   %rax
-    pushq   %rcx
-    pushq   %rdx
-    pushq   %rdi
-    pushq   %rsi
-
-    leaq    .Lctx_switch_msg(%rip), %rdi
-    call    early_debug_print
-
-    popq    %rsi
-    popq    %rdi
-    popq    %rdx
-    popq    %rcx
-    popq    %rax
-
     // ---- Phase 1: Save current (prev) context ----
 
     // Save all general-purpose registers into prev CpuContext
@@ -123,27 +98,7 @@ context_switch:
     movq    120(%rsi), %r15            // next->r15
 
     // Push saved PC as return address so `ret` will jump there
-    movq    136(%rsi), %r10            // next->pc
-
-    // DEBUG: Print PC that we're about to jump to
-    pushq   %rax
-    pushq   %rcx
-    pushq   %rdx
-    pushq   %rdi
-    pushq   %rsi
-    pushq   %r10
-
-    leaq    .Lctx_jump_msg(%rip), %rdi
-    call    early_debug_print
-
-    popq    %r10
-    popq    %rsi
-    popq    %rdi
-    popq    %rdx
-    popq    %rcx
-    popq    %rax
-
-    pushq   %r10
+    pushq   136(%rsi)
 
     // Restore RDI and RSI last (they are our base pointers)
     movq    40(%rsi), %rdi             // next->rdi
@@ -160,38 +115,23 @@ context_switch:
 //
 // Prototype: extern "C" void switch_to_user(CpuContext* ctx, uint64_t user_sp);
 //
-// Parameters:
-//   RDI = ctx     — pointer to user task's CpuContext
-//   RSI = user_sp — user-space stack pointer
-//
-// IRETQ expects the following stack layout (pushed in order, top = lowest addr):
-//   [RSP+0]  RIP     — user entry point
-//   [RSP+8]  CS      — user code segment selector (0x1B = ring 3, GDT index 3)
-//   [RSP+16] RFLAGS  — 0x202 = IF (interrupt enable) set
-//   [RSP+24] RSP     — user stack pointer
-//   [RSP+32] SS      — user stack segment selector (0x23 = ring 3, GDT index 4)
-//
-// GDT segment selectors:
-//   0x1B = (3 << 3) | 3  — user code segment, RPL=3
-//   0x23 = (4 << 3) | 3  — user data segment, RPL=3
+// GDT layout: [3]=User Data(0x1B), [4]=User Code(0x23)
 // =============================================================================
 .global switch_to_user
 .type switch_to_user, @function
 switch_to_user:
     // Build IRETQ frame on the kernel stack
-    pushq   $0x23                       // SS  (user data segment)
+    pushq   $0x1B                       // SS  (user data segment, RPL=3)
     pushq   %rsi                        // RSP (user stack pointer)
     pushq   $0x202                      // RFLAGS (IF=1, reserved bit 1 = 1)
-    pushq   $0x1B                       // CS  (user code segment)
+    pushq   $0x23                       // CS  (user code segment, RPL=3)
     movq    136(%rdi), %rax             // ctx->pc = user entry point
     pushq   %rax                        // RIP
 
     // Set all data segment registers to user data segment
-    movw    $0x23, %ax
+    movw    $0x1B, %ax
     movw    %ax, %ds
     movw    %ax, %es
-    movw    %ax, %fs
-    movw    %ax, %gs
 
     // Restore general-purpose registers from ctx
     movq    0(%rdi), %rax
@@ -218,17 +158,6 @@ switch_to_user:
 // =============================================================================
 // kernel_thread_entry — trampoline for newly created kernel threads
 // =============================================================================
-//
-// The thread creator sets up the context so that when context_switch returns,
-// it "returns" to this trampoline with:
-//   RDI = function pointer
-//   RSI = argument
-//
-// Flow:
-//   1. Save func in R11, move arg to RDI (first C argument)
-//   2. Call func(arg)
-//   3. If func returns, invoke sys_exit(0) via SYSCALL
-// =============================================================================
 .global kernel_thread_entry
 .type kernel_thread_entry, @function
 kernel_thread_entry:
@@ -236,16 +165,12 @@ kernel_thread_entry:
     movq    %rsi, %rdi                  // arg → first C argument
     callq   *%r11                       // call func(arg)
 
-    // Thread returned — invoke exit (should not normally reach here)
+    // Thread returned — invoke exit
     movq    $60, %rax                   // x86_64 exit syscall number
     movq    $0, %rdi                    // exit code = 0
     syscall
 
 .size kernel_thread_entry, .-kernel_thread_entry
 
-// Debug messages
-.section .rodata
-.Lctx_switch_msg:
-    .asciz "[ctx_switch] DEBUG: context_switch called\n"
-.Lctx_jump_msg:
-    .asciz "[ctx_switch] DEBUG: about to ret to new PC\n"
+// Prevent executable stack warning from the GNU linker
+.section .note.GNU-stack,"",@progbits

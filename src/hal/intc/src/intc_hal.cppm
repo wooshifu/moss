@@ -215,14 +215,19 @@ inline constexpr u32 IOWIN = 0x10;    // I/O Window
 } // namespace dist_regs
 
 namespace cpu_regs {
-// Local APIC MMIO offsets
-inline constexpr u32 ID = 0x020;       // Local APIC ID
-inline constexpr u32 VERSION = 0x030;  // Local APIC Version
-inline constexpr u32 TPR = 0x080;      // Task Priority
-inline constexpr u32 EOI = 0x0B0;      // End of Interrupt
-inline constexpr u32 SVR = 0x0F0;      // Spurious Interrupt Vector
-inline constexpr u32 ICR_LOW = 0x300;  // Interrupt Command (low 32 bits)
-inline constexpr u32 ICR_HIGH = 0x310; // Interrupt Command (high 32 bits)
+// Local APIC MMIO offsets (from LAPIC base 0xFEE00000)
+inline constexpr u32 ID = 0x020;         // Local APIC ID
+inline constexpr u32 VERSION = 0x030;    // Local APIC Version
+inline constexpr u32 TPR = 0x080;        // Task Priority
+inline constexpr u32 EOI = 0x0B0;        // End of Interrupt
+inline constexpr u32 SVR = 0x0F0;        // Spurious Interrupt Vector
+inline constexpr u32 LVT_TIMER = 0x320;  // LVT Timer Register
+inline constexpr u32 LVT_LINT0 = 0x350;  // LVT LINT0 Register
+inline constexpr u32 LVT_LINT1 = 0x360;  // LVT LINT1 Register
+inline constexpr u32 LVT_ERROR = 0x370;  // LVT Error Register
+inline constexpr u32 ICR_LOW = 0x300;    // Interrupt Command (low 32 bits)
+inline constexpr u32 ICR_HIGH = 0x310;   // Interrupt Command (high 32 bits)
+inline constexpr u32 LVT_MASK = 0x10000; // Mask bit for LVT entries
 } // namespace cpu_regs
 
 #elif defined(MOSS_ARCH_RISCV)
@@ -423,11 +428,21 @@ inline VoidResult init_cpu_interface(VirtAddr cpu_base) noexcept {
   }
 
 #elif defined(MOSS_ARCH_X86_64)
-  // Local APIC: enable via SVR
-  u32 svr = read_reg(cpu_base, cpu_regs::SVR);
+  // Local APIC base is fixed at 0xFEE00000 (cpu_base is I/O APIC on x86_64)
+  (void)cpu_base;
+  constexpr VirtAddr LAPIC_BASE = 0xFEE00000ULL;
+
+  // Mask all LVT entries to prevent spurious interrupts before proper setup
+  write_reg(LAPIC_BASE, cpu_regs::LVT_TIMER, cpu_regs::LVT_MASK);
+  write_reg(LAPIC_BASE, cpu_regs::LVT_LINT0, cpu_regs::LVT_MASK);
+  write_reg(LAPIC_BASE, cpu_regs::LVT_LINT1, cpu_regs::LVT_MASK);
+  write_reg(LAPIC_BASE, cpu_regs::LVT_ERROR, cpu_regs::LVT_MASK);
+
+  // Enable Local APIC via SVR with spurious vector 0xFF
+  u32 svr = read_reg(LAPIC_BASE, cpu_regs::SVR);
   svr |= 0x100; // APIC Enable bit
-  svr |= 0xFF;  // Spurious vector
-  write_reg(cpu_base, cpu_regs::SVR, svr);
+  svr |= 0xFF;  // Spurious vector = 255
+  write_reg(LAPIC_BASE, cpu_regs::SVR, svr);
 
 #elif defined(MOSS_ARCH_RISCV)
   // PLIC: set threshold to 0 (accept all priorities)

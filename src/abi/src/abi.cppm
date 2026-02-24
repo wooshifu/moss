@@ -61,6 +61,10 @@ extern "C" {
 void user_iret_trampoline();
 extern char _user_program_start[];
 extern char _user_program_end[];
+// TSS (104 bytes, defined in start_x86_64.S .bss.tss)
+extern unsigned char g_tss[];
+// Per-task kernel stack pointer for SYSCALL entry (defined in x86_64_syscall.S)
+extern unsigned long long g_kernel_rsp;
 }
 #elif defined(__riscv) || defined(__riscv__) || defined(MOSS_ARCH_RISCV)
 extern "C" {
@@ -211,6 +215,8 @@ inline auto exception_vectors_addr() noexcept -> moss::kernel::VirtAddr {
 #elif defined(__x86_64__) || defined(__x86_64) || defined(MOSS_ARCH_X86_64)
 export namespace moss::abi::x86_64 {
 
+using ::g_kernel_rsp;
+using ::g_tss;
 using ::user_iret_trampoline;
 
 inline auto user_program_start() noexcept -> const unsigned char * {

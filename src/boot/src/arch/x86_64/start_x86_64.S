@@ -227,6 +227,9 @@ _start:
     movl pvh_temp_info_32(%rip), %eax  // Load 32-bit value
     movq %rax, pvh_boot_info_ptr(%rip) // Store as 64-bit (zero-extended)
 
+    // ---- Set up TSS for ring 3 → ring 0 transitions ----
+    call x86_64_setup_tss
+
     // ---- Call unified boot entry ----
     // Pass PVH boot info pointer as device_tree_ptr for x86_64
     movq pvh_boot_info_ptr(%rip), %rdi
@@ -275,36 +278,46 @@ pvh_pd3:     .skip 4096
 // GDT (Global Descriptor Table)
 // =============================================================================
 //
-// 5-entry GDT for 64-bit long mode:
+// 7-entry GDT for 64-bit long mode with TSS:
 //   [0] Null descriptor           (required by x86 architecture)
 //   [1] Kernel Code (0x08)        64-bit, DPL=0, Execute/Read
 //   [2] Kernel Data (0x10)        DPL=0, Read/Write
-//   [3] User Code   (0x18+3=0x1B) 64-bit, DPL=3, Execute/Read
-//   [4] User Data   (0x20+3=0x23) DPL=3, Read/Write
+//   [3] User Data   (0x18+3=0x1B) DPL=3, Read/Write      (SYSRET: SS = STAR[63:48]+8)
+//   [4] User Code   (0x20+3=0x23) 64-bit, DPL=3, Exec/Read (SYSRET: CS = STAR[63:48]+16)
+//   [5-6] TSS descriptor (0x28)   16-byte system descriptor, filled at runtime
 //
-// Descriptor format (8 bytes each):
-//   Bits [15:0]  = Limit [15:0]     (ignored in 64-bit mode for code/data)
-//   Bits [31:16] = Base [15:0]      (ignored in 64-bit mode for code/data)
-//   Bits [39:32] = Base [23:16]
-//   Bits [47:40] = Access byte      (P=1, DPL, S=1, Type)
-//   Bits [51:48] = Limit [19:16]    (+ flags in [55:52])
-//   Bits [55:52] = Flags            (G, D/B, L, AVL)
-//   Bits [63:56] = Base [31:24]
+// NOTE: User Data MUST precede User Code for SYSRETQ compatibility.
+// SYSRETQ computes: SS = STAR[63:48]+8, CS = STAR[63:48]+16 (both OR'd with RPL=3).
+// With STAR[63:48]=0x0010: SS=0x0018|3=0x1B (User Data), CS=0x0020|3=0x23 (User Code).
+//
+// Placed in .data (writable) so the TSS descriptor can be written at runtime.
 // =============================================================================
-.section ".rodata", "a"
+.section ".data", "aw"
 .align 16
+.global gdt_table
 gdt_table:
     .quad 0                             // [0] Null descriptor
-    .quad 0x00AF9A000000FFFF            // [1] Kernel Code: L=1(64-bit), DPL=0, P=1, type=0xA(E/R)
-    .quad 0x00CF92000000FFFF            // [2] Kernel Data: DPL=0, P=1, type=0x2(R/W)
-    .quad 0x00AFFA000000FFFF            // [3] User Code:   L=1(64-bit), DPL=3, P=1, type=0xA(E/R)
-    .quad 0x00CFF2000000FFFF            // [4] User Data:   DPL=3, P=1, type=0x2(R/W)
+    .quad 0x00AF9A000000FFFF            // [1] Kernel Code (0x08): L=1, DPL=0, P=1, type=0xA(E/R)
+    .quad 0x00CF92000000FFFF            // [2] Kernel Data (0x10): DPL=0, P=1, type=0x2(R/W)
+    .quad 0x00CFF2000000FFFF            // [3] User Data   (0x18): DPL=3, P=1, type=0x2(R/W)
+    .quad 0x00AFFA000000FFFF            // [4] User Code   (0x20): L=1, DPL=3, P=1, type=0xA(E/R)
+    .quad 0                             // [5] TSS low  (0x28) — filled by x86_64_setup_tss
+    .quad 0                             // [6] TSS high (0x30) — filled by x86_64_setup_tss
 gdt_end:
 
 .align 16
 gdt_ptr:
     .word 0                             // limit (filled at runtime above)
     .quad 0                             // base  (filled at runtime above)
+
+// =============================================================================
+// TSS (Task State Segment) — 104 bytes, zeroed in BSS, filled at runtime
+// =============================================================================
+.section ".bss.tss", "aw", @nobits
+.align 16
+.global g_tss
+g_tss:
+    .skip 104                           // x86_64 TSS is 104 bytes
 
 // Prevent executable stack warning
 .section .note.GNU-stack,"",@progbits
