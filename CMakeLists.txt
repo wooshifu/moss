@@ -281,6 +281,10 @@ if(MOSS_TARGET_ARCH STREQUAL "ARM64"
     set(USERSPACE_DIR "${CMAKE_SOURCE_DIR}/userspace")
     set(USERSPACE_LD "${USERSPACE_DIR}/userspace.ld")
 
+    # Find ld.lld next to the C compiler (avoid macOS ld64.lld which lacks ELF support)
+    get_filename_component(_compiler_dir "${CMAKE_C_COMPILER}" DIRECTORY)
+    find_program(LLD_LINKER ld.lld HINTS "${_compiler_dir}" REQUIRED)
+
     # Architecture-specific compiler target and flags
     if(MOSS_TARGET_ARCH STREQUAL "ARM64")
         set(USERSPACE_ARCH_FLAGS --target=aarch64-unknown-elf)
@@ -290,46 +294,37 @@ if(MOSS_TARGET_ARCH STREQUAL "ARM64"
         set(USERSPACE_ARCH_FLAGS --target=x86_64-unknown-elf -mcmodel=large -fPIC)
     endif()
 
-    # Common compiler flags for userspace programs
-    set(USERSPACE_CFLAGS
-        ${USERSPACE_ARCH_FLAGS}
-        -ffreestanding
-        -fno-stack-protector
-        -nostdlib
-        -nostartfiles
-        -fuse-ld=lld
-        -O2
-        -Wall
-        -I${USERSPACE_DIR}
-        -Wl,-T,${USERSPACE_LD}
+    # Compile flags (clang -c) and link flags (ld.lld) are separate to avoid macOS clang
+    # driver injecting Mach-O linker arguments when cross-compiling to ELF targets.
+    set(USERSPACE_COMPILE_FLAGS
+        ${USERSPACE_ARCH_FLAGS} -ffreestanding -fno-stack-protector -O2 -Wall -I${USERSPACE_DIR} -c
     )
+    set(USERSPACE_LINK_FLAGS -T ${USERSPACE_LD} --oformat=elf -nostdlib -static)
 
-    # Build hello.elf userspace program
-    add_custom_command(
-        OUTPUT ${CMAKE_BINARY_DIR}/userspace/hello.elf
-        COMMAND ${CMAKE_COMMAND} -E make_directory ${CMAKE_BINARY_DIR}/userspace
-        COMMAND ${CMAKE_C_COMPILER} ${USERSPACE_CFLAGS} -o ${CMAKE_BINARY_DIR}/userspace/hello.elf
-                ${USERSPACE_DIR}/hello.c
-        DEPENDS ${USERSPACE_DIR}/hello.c ${USERSPACE_DIR}/syscall.h ${USERSPACE_LD}
-        COMMENT "Building userspace hello.elf"
-    )
+    # Helper: compile .c to .o then link to .elf
+    function(add_userspace_program NAME)
+        set(_src ${USERSPACE_DIR}/${NAME}.c)
+        set(_obj ${CMAKE_BINARY_DIR}/userspace/${NAME}.o)
+        set(_elf ${CMAKE_BINARY_DIR}/userspace/${NAME}.elf)
 
-    # Build shell.elf interactive shell
-    add_custom_command(
-        OUTPUT ${CMAKE_BINARY_DIR}/userspace/shell.elf
-        COMMAND ${CMAKE_C_COMPILER} ${USERSPACE_CFLAGS} -o ${CMAKE_BINARY_DIR}/userspace/shell.elf
-                ${USERSPACE_DIR}/shell.c
-        DEPENDS ${USERSPACE_DIR}/shell.c ${USERSPACE_DIR}/syscall.h ${USERSPACE_LD}
-        COMMENT "Building userspace shell.elf"
-    )
+        add_custom_command(
+            OUTPUT ${_obj}
+            COMMAND ${CMAKE_COMMAND} -E make_directory ${CMAKE_BINARY_DIR}/userspace
+            COMMAND ${CMAKE_C_COMPILER} ${USERSPACE_COMPILE_FLAGS} -o ${_obj} ${_src}
+            DEPENDS ${_src} ${USERSPACE_DIR}/syscall.h
+            COMMENT "Compiling userspace ${NAME}.o"
+        )
+        add_custom_command(
+            OUTPUT ${_elf}
+            COMMAND ${LLD_LINKER} ${USERSPACE_LINK_FLAGS} -o ${_elf} ${_obj}
+            DEPENDS ${_obj} ${USERSPACE_LD}
+            COMMENT "Linking userspace ${NAME}.elf"
+        )
+    endfunction()
 
-    # Build top.elf system monitoring program
-    add_custom_command(
-        OUTPUT ${CMAKE_BINARY_DIR}/userspace/top.elf
-        COMMAND ${CMAKE_C_COMPILER} ${USERSPACE_CFLAGS} -o ${CMAKE_BINARY_DIR}/userspace/top.elf ${USERSPACE_DIR}/top.c
-        DEPENDS ${USERSPACE_DIR}/top.c ${USERSPACE_DIR}/syscall.h ${USERSPACE_LD}
-        COMMENT "Building userspace top.elf"
-    )
+    add_userspace_program(hello)
+    add_userspace_program(shell)
+    add_userspace_program(top)
 
     # Generate initramfs.cpio from all userspace programs Uses GNU cpio "newc" format (070701 magic, required by the
     # CPIO parser)
