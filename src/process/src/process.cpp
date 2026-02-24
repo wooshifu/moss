@@ -4,6 +4,7 @@
 module moss.process;
 
 import moss.abi;
+import moss.hal.mmu;
 
 // Assembly/entry symbols from moss.abi
 using moss::abi::context_switch;
@@ -273,12 +274,23 @@ static u16 allocate_asid() noexcept {
 
 // Create a real user address space with buddy-allocated PGD
 KernelResult<unique_ptr<AddressSpace>> create_user_address_space() noexcept {
+  // DEBUG: Add debugging for x86_64 address space creation
+#ifdef MOSS_ARCH_X86_64
+  early_debug_print("[DEBUG] create_user_address_space: starting\n");
+#endif
+
   // 1. Allocate a physical page for the user PGD (L0 table)
+#ifdef MOSS_ARCH_X86_64
+  early_debug_print("[DEBUG] create_user_address_space: allocating PGD\n");
+#endif
   auto pgd_result = mm::PageTableManager::allocate_page_table_dynamic();
   if (!pgd_result) {
     return KernelResult<unique_ptr<AddressSpace>>{ErrorCode::OutOfMemory};
   }
 
+#ifdef MOSS_ARCH_X86_64
+  early_debug_print("[DEBUG] create_user_address_space: PGD allocated, getting physical address\n");
+#endif
   // get_physical_address works on the high-half virtual pointer
   PhysAddr pgd_phys = mm::PageTableManager::get_physical_address(*pgd_result);
 
@@ -317,12 +329,21 @@ KernelResult<unique_ptr<AddressSpace>> create_user_address_space() noexcept {
   {
     // ARM64/x86_64: 4-level with separate ttbr1 for kernel.
     // Only copy identity-map PUD (PGD[0]) to user PGD.
+#ifdef MOSS_ARCH_X86_64
+    early_debug_print("[DEBUG] create_user_address_space: copying kernel mappings\n");
+#endif
     if (kernel_pgd && user_pgd && kernel_pgd->entries[0].is_valid()) {
+#ifdef MOSS_ARCH_X86_64
+      early_debug_print("[DEBUG] create_user_address_space: allocating PUD\n");
+#endif
       auto pud_result = mm::PageTableManager::allocate_page_table_dynamic();
       if (!pud_result) {
         mm::free_pages(pgd_phys, 0);
         return KernelResult<unique_ptr<AddressSpace>>{ErrorCode::OutOfMemory};
       }
+#ifdef MOSS_ARCH_X86_64
+      early_debug_print("[DEBUG] create_user_address_space: PUD allocated, getting kernel PUD\n");
+#endif
       auto *user_pud = *pud_result;
       auto *kernel_pud = mm::PageTableManager::get_table_from_physical(kernel_pgd->entries[0].get_phys_addr());
 
@@ -342,16 +363,25 @@ KernelResult<unique_ptr<AddressSpace>> create_user_address_space() noexcept {
 #endif
 
   // 3. Allocate ASID
+#ifdef MOSS_ARCH_X86_64
+  early_debug_print("[DEBUG] create_user_address_space: allocating ASID\n");
+#endif
   u16 asid = allocate_asid();
 
   // 4. Create AddressSpace object — on success, ~AddressSpace owns pgd_phys.
   //    On failure, we must free the page table hierarchy manually.
+#ifdef MOSS_ARCH_X86_64
+  early_debug_print("[DEBUG] create_user_address_space: creating AddressSpace object\n");
+#endif
   auto address_space = make_unique<AddressSpace>(pgd_phys, asid);
   if (!address_space) {
     mm::PageTableManager::free_user_page_tables(pgd_phys);
     return KernelResult<unique_ptr<AddressSpace>>{ErrorCode::OutOfMemory};
   }
 
+#ifdef MOSS_ARCH_X86_64
+  early_debug_print("[DEBUG] create_user_address_space: success!\n");
+#endif
   return KernelResult<unique_ptr<AddressSpace>>{moss::move(address_space)};
 }
 
@@ -422,7 +452,7 @@ KernelResult<VirtAddr> allocate_user_heap(Process *process, usize size) noexcept
     g_scheduler->dequeue_task(cur);
   }
 
-  // 2. Restore TTBR0 to kernel PGD BEFORE freeing user page tables
+  // 2. Restore page table base to kernel PGD BEFORE freeing user page tables
 #if defined(__aarch64__) || defined(MOSS_ARCH_ARM64)
   {
     auto *kpgd = mm::PageTableManager::get_kernel_pgd();
@@ -431,6 +461,18 @@ KernelResult<VirtAddr> allocate_user_heap(Process *process, usize size) noexcept
       asm volatile("msr ttbr0_el1, %0" ::"r"(kpgd_phys));
       asm volatile("dsb ish" ::: "memory");
       asm volatile("isb" ::: "memory");
+    }
+  }
+#elif defined(MOSS_ARCH_RISCV)
+  {
+    // RISC-V has a single satp register (no separate user/kernel page table base).
+    // Switch satp back to kernel PGD before freeing user page tables.
+    auto *kpgd = mm::PageTableManager::get_kernel_pgd();
+    if (kpgd) {
+      u64 kpgd_phys = mm::PageTableManager::get_physical_address(kpgd);
+      u64 satp_val = hal::mmu::make_satp_value(kpgd_phys);
+      asm volatile("csrw satp, %0" ::"r"(satp_val) : "memory");
+      asm volatile("sfence.vma" ::: "memory");
     }
   }
 #endif
@@ -473,13 +515,17 @@ KernelResult<VirtAddr> allocate_user_heap(Process *process, usize size) noexcept
   //    one exclusive waiter + all non-exclusive ones (avoids thundering herd).
   Process *parent = g_process_manager->find_process(proc->parent_pid());
   if (parent) {
+    log::klog::info("do_exit: PID={} waking parent PID={}", pid, proc->parent_pid());
     parent->child_exit_wait_queue().wake_up([](void *thread_ptr) {
       auto *t = static_cast<Thread *>(thread_ptr);
+      log::klog::info("do_exit: wake waiter TID={} state->{}", static_cast<u32>(t->tid), "Ready");
       t->state = ProcessState::Ready;
       if (g_scheduler) {
         g_scheduler->enqueue_task(t, t->wake_cpu);
       }
     });
+  } else {
+    log::klog::error("do_exit: PID={} parent PID={} NOT FOUND", pid, proc->parent_pid());
   }
 
   log::klog::info("do_exit: PID={} -> Zombie, exit_code={}", pid, exit_code);

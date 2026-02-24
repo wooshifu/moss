@@ -38,8 +38,6 @@ long sys_exit(long exit_code, long /*unused*/, long /*unused*/, long /*unused*/,
   using namespace moss::kernel::process;
   namespace log = moss::kernel::logging;
 
-  log::klog::info("sys_exit: exit_code={}", exit_code);
-
   Thread *cur = CfsScheduler::get_current_task();
   if (!cur) {
     log::klog::error("sys_exit: no current thread");
@@ -49,8 +47,6 @@ long sys_exit(long exit_code, long /*unused*/, long /*unused*/, long /*unused*/,
   }
 
   ProcessId pid = cur->owner_pid;
-  log::klog::info("sys_exit: PID={} TID={}", pid, static_cast<u32>(cur->tid));
-
   Process *proc = g_process_manager ? g_process_manager->find_process(pid) : nullptr;
   if (!proc) {
     log::klog::error("sys_exit: process not found PID={}", pid);
