@@ -33,6 +33,7 @@ import moss.types;
 import moss.hal.uart;
 import moss.arch;
 import moss.containers;
+import moss.timer;
 
 export namespace moss::kernel::logging {
 
@@ -60,6 +61,7 @@ struct FmtStr {
   const char *value;
   const char *file;
   unsigned line;
+  const char *function;
 
   // Default parameters ensure __builtin_* evaluate at the caller's site,
   // not here.  This is why we use raw builtins instead of the intrinsics
@@ -70,8 +72,8 @@ struct FmtStr {
 #else
                    const char *f = __builtin_FILE(),
 #endif
-                   unsigned l = __builtin_LINE()) noexcept
-      : value(s), file(f), line(l) {
+                   unsigned l = __builtin_LINE(), const char *fn = __builtin_FUNCTION()) noexcept
+      : value(s), file(f), line(l), function(fn) {
   }
 };
 
@@ -166,43 +168,75 @@ public:
 
   void append_bool(bool v) noexcept { append_str(v ? "true" : "false"); }
 
-  void append_source_loc(const char *file, unsigned line) noexcept {
-    if (!file) {
-      return;
+  void append_source_loc(const char *file, unsigned line, const char *function = nullptr) noexcept {
+    // Add timestamp [time.ms]
+    namespace timer_ns = moss::kernel::timer;
+    auto &timer_sys = timer_ns::TimerSubsystem::instance();
+    if (timer_sys.is_initialized()) {
+      u64 time_us = timer_sys.clocksource().now_us();
+      u64 sec = time_us / 1000000;
+      u64 ms = (time_us % 1000000) / 1000;
+      append_char('[');
+      append_dec(sec);
+      append_char('.');
+      // Ensure milliseconds part is 3 digits
+      if (ms < 100) {
+        append_char('0');
+      }
+      if (ms < 10) {
+        append_char('0');
+      }
+      append_dec(ms);
+      append_char(']');
     }
-    const char *name = file;
-    if constexpr (!kFileBuiltinIsBareNameOnly) {
-      for (const char *p = file; *p; p++) {
-        if (*p == '/' || *p == '\\') {
-          name = p + 1;
+
+    // Add file and line [filename:line(@function)]
+    append_char('[');
+    if (!file) {
+      append_str("unknown:0");
+    } else {
+      const char *name = file;
+      if constexpr (!kFileBuiltinIsBareNameOnly) {
+        for (const char *p = file; *p; p++) {
+          if (*p == '/' || *p == '\\') {
+            name = p + 1;
+          }
         }
       }
+      append_str(name);
+      append_char(':');
+      append_dec(static_cast<u64>(line));
+
+      // Add function name if available
+      if (function && *function) {
+        append_str("(@");
+        append_str(function);
+        append_char(')');
+      }
     }
-    append_str(name);
-    append_char(':');
-    append_dec(static_cast<u64>(line));
+    append_char(']');
     append_char(' ');
   }
 
   void append_level_tag(LogLevel level) noexcept {
     switch (level) {
     case LogLevel::Debug:
-      append_str("[D] ");
+      append_str("[D]");
       break;
     case LogLevel::Info:
-      append_str("[I] ");
+      append_str("[I]");
       break;
     case LogLevel::Warn:
-      append_str("[W] ");
+      append_str("[W]");
       break;
     case LogLevel::Error:
-      append_str("[E] ");
+      append_str("[E]");
       break;
     case LogLevel::Panic:
-      append_str("[P] ");
+      append_str("[P]");
       break;
     default:
-      append_str("[?] ");
+      append_str("[?]");
       break;
     }
   }
@@ -709,7 +743,7 @@ private:
 
     LogBuffer buf;
     buf.append_level_tag(level);
-    buf.append_source_loc(fmt.file, fmt.line);
+    buf.append_source_loc(fmt.file, fmt.line, fmt.function);
     format_into(buf, fmt.value, args...);
 
     if (level == LogLevel::Panic || g_printk_rb.is_emergency()) {
