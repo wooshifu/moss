@@ -15,6 +15,11 @@ export module moss.fdt;
 import moss.std;
 import moss.types;
 
+// Wrap TU-local fdt32_to_cpu (macro/inline from libfdt) in a module-internal
+// function. Must be non-static and outside export blocks to avoid both
+// TU-locality and exposure diagnostics (-WTU-local-entity-exposure).
+moss::u32 moss_fdt32_to_cpu(fdt32_t val) noexcept { return fdt32_to_cpu(val); }
+
 export namespace moss::fdt {
 
 using moss::u32;
@@ -28,11 +33,11 @@ using moss::kernel::VirtAddr;
 /// DTB property data is only guaranteed 4-byte aligned, so a direct
 /// *(fdt64_t*)ptr can fault with strict alignment (QEMU 10 / SCTLR.A=1).
 /// We read two aligned 32-bit halves and combine them.
-inline u64 read_fdt64_unaligned(const void *ptr) noexcept {
+u64 read_fdt64_unaligned(const void *ptr) noexcept {
   const auto *p = static_cast<const u8 *>(ptr);
   // DTB is big-endian: first 4 bytes = high word, next 4 = low word
-  auto hi = static_cast<u64>(fdt32_to_cpu(*reinterpret_cast<const fdt32_t *>(p)));
-  auto lo = static_cast<u64>(fdt32_to_cpu(*reinterpret_cast<const fdt32_t *>(p + 4)));
+  auto hi = static_cast<u64>(moss_fdt32_to_cpu(*reinterpret_cast<const fdt32_t *>(p)));
+  auto lo = static_cast<u64>(moss_fdt32_to_cpu(*reinterpret_cast<const fdt32_t *>(p + 4)));
   return (hi << 32) | lo;
 }
 
@@ -128,12 +133,12 @@ static void read_cells(const void *fdt, int node, u32 &addr_cells, u32 &size_cel
   int len = 0;
   const void *prop = fdt_getprop(fdt, node, "#address-cells", &len);
   if (prop && len >= 4) {
-    addr_cells = fdt32_to_cpu(*static_cast<const fdt32_t *>(prop));
+    addr_cells = moss_fdt32_to_cpu(*static_cast<const fdt32_t *>(prop));
   }
 
   prop = fdt_getprop(fdt, node, "#size-cells", &len);
   if (prop && len >= 4) {
-    size_cells = fdt32_to_cpu(*static_cast<const fdt32_t *>(prop));
+    size_cells = moss_fdt32_to_cpu(*static_cast<const fdt32_t *>(prop));
   }
 }
 
@@ -141,7 +146,7 @@ static void read_cells(const void *fdt, int node, u32 &addr_cells, u32 &size_cel
 static auto read_cells_value(const u8 *&ptr, u32 num_cells) noexcept -> u64 {
   u64 value = 0;
   for (u32 i = 0; i < num_cells; i++) {
-    value = (value << 32) | fdt32_to_cpu(*reinterpret_cast<const fdt32_t *>(ptr));
+    value = (value << 32) | moss_fdt32_to_cpu(*reinterpret_cast<const fdt32_t *>(ptr));
     ptr += 4;
   }
   return value;
@@ -342,7 +347,7 @@ static void parse_uart(const void *fdt) noexcept {
   // 尝试读取 clock-frequency 属性
   const void *clk = fdt_getprop(fdt, uart_node, "clock-frequency", &len);
   if (clk && len >= 4) {
-    g_platform_info.uart.clock_freq = fdt32_to_cpu(*static_cast<const fdt32_t *>(clk));
+    g_platform_info.uart.clock_freq = moss_fdt32_to_cpu(*static_cast<const fdt32_t *>(clk));
   }
 
   g_platform_info.uart.valid = true;
@@ -456,7 +461,7 @@ static void parse_chosen(const void *fdt) noexcept {
     if (len == 8) {
       g_platform_info.initrd_start = static_cast<PhysAddr>(read_fdt64_unaligned(prop));
     } else {
-      g_platform_info.initrd_start = static_cast<PhysAddr>(fdt32_to_cpu(*static_cast<const fdt32_t *>(prop)));
+      g_platform_info.initrd_start = static_cast<PhysAddr>(moss_fdt32_to_cpu(*static_cast<const fdt32_t *>(prop)));
     }
   }
   prop = fdt_getprop(fdt, node, "linux,initrd-end", &len);
@@ -464,7 +469,7 @@ static void parse_chosen(const void *fdt) noexcept {
     if (len == 8) {
       g_platform_info.initrd_end = static_cast<PhysAddr>(read_fdt64_unaligned(prop));
     } else {
-      g_platform_info.initrd_end = static_cast<PhysAddr>(fdt32_to_cpu(*static_cast<const fdt32_t *>(prop)));
+      g_platform_info.initrd_end = static_cast<PhysAddr>(moss_fdt32_to_cpu(*static_cast<const fdt32_t *>(prop)));
     }
   }
 }
