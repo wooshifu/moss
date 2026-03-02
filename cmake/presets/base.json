@@ -22,7 +22,7 @@
                 "MOSS_TARGET_PLATFORM": "QEMU_VIRT",
                 "CMAKE_C_FLAGS": "",
                 "CMAKE_CXX_FLAGS": "",
-                "CMAKE_EXE_LINKER_FLAGS": "-fuse-ld=lld -nostdlib -nostartfiles -static -T ${sourceDir}/linker.ld",
+                "CMAKE_EXE_LINKER_FLAGS": "-fuse-ld=lld -nostdlib -nostartfiles -static -T ${sourceDir}/src/linker/kernel_arm64.ld",
                 "CMAKE_SHARED_LINKER_FLAGS": "-fuse-ld=lld -nostdlib"
             },
             "environment": {

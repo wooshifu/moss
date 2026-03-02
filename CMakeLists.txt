@@ -279,8 +279,8 @@ if(MOSS_TARGET_ARCH STREQUAL "ARM64"
    OR MOSS_TARGET_ARCH STREQUAL "RISCV"
    OR MOSS_TARGET_ARCH STREQUAL "X86_64"
 )
-    set(USERSPACE_DIR "${CMAKE_SOURCE_DIR}/userspace")
-    set(USERSPACE_LD "${USERSPACE_DIR}/userspace.ld")
+    set(USERSPACE_DIR "${CMAKE_SOURCE_DIR}/src/userspace")
+    set(USERSPACE_LD "${USERSPACE_DIR}/linker/userspace.ld")
 
     # Find ld.lld next to the C compiler (avoid macOS ld64.lld which lacks ELF support)
     get_filename_component(_compiler_dir "${CMAKE_C_COMPILER}" DIRECTORY)
