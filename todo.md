@@ -298,11 +298,8 @@ Build system: CMake + Clang C++26 modules, 6 presets (3 arch x debug/release).
   - Files: `process.cppm` (Thread struct), `start_arm64.S` (check signals before eret), new `signal.cpp`
   - Complexity: High
 
-- [ ] **User pointer validation** — sys_write does raw `reinterpret_cast` on user-provided buffer address. No `copy_from_user()`/`copy_to_user()` safety.
-  - Need: `copy_from_user(kernel_dst, user_src, len)` — validates user pointer falls within process VMA with correct permissions before copying
-  - Need: `copy_to_user(user_dst, kernel_src, len)` — same for kernel→user direction
-  - Need: use in all syscalls that access user memory
-  - Files: new helper functions, `syscall_table.cpp` (all user-pointer syscalls)
+- [x] **User pointer validation** — `copy_from_user()`/`copy_to_user()`/`copy_string_from_user()` with VMA range + permission checks; `validate_user_range()` for large buffers passed to VFS. All syscalls that access user memory now validate pointers: debug_print, execve (pathname + argv), open, read, write, fstat, pipe, wait4, sigaction, sigprocmask, sched_getaffinity, sched_setaffinity, clock_gettime, nanosleep, clock_nanosleep, topinfo.
+  - Files: `syscall_table.cpp` (5 helper functions + 14 syscall retrofits)
   - Complexity: Low-Medium
 
 ### P2: System Robustness
