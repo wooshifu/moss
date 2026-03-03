@@ -708,6 +708,7 @@ namespace user_layout {
 inline constexpr VirtAddr CODE_BASE = 0x0000000200000000ULL;  // 8GB — above kernel identity map
 inline constexpr VirtAddr HEAP_START = 0x0000000100000000ULL; // 4GB
 inline constexpr usize STACK_SIZE = 32ULL * 1024;             // 32KB default user stack
+inline constexpr usize STACK_MAX = 8ULL * 1024 * 1024;        // 8MB max stack (auto-growth limit)
 inline constexpr usize HEAP_INIT = 64ULL * 1024;              // 64KB initial heap
 inline constexpr VirtAddr MMAP_BASE = 0x0000001000000000ULL;  // 64GB — anonymous mmap region start
 

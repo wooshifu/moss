@@ -250,6 +250,51 @@ int demand_page_lookup(unsigned long long fault_addr, unsigned int *out_flags, c
   return 1;
 }
 
+// Try to grow the user stack VMA downward to cover fault_addr.
+// Returns 1 if the stack was successfully extended, 0 otherwise.
+// Called from page_fault.cpp when demand_page_lookup fails — the caller
+// retries demand_page_lookup after a successful growth so the new region
+// gets a demand-zero page as usual.
+int try_grow_user_stack(unsigned long long fault_addr) noexcept {
+  using namespace moss::kernel;
+
+  auto *proc = process::current_process();
+  if (!proc || !proc->address_space()) {
+    return 0;
+  }
+  auto *as = proc->address_space();
+
+  // 1. Find the STACK VMA
+  const process::VmaRegion *stack_vma =
+      as->vmas.find_if([](const process::VmaRegion &v) { return v.type == process::VmaType::STACK; });
+  if (!stack_vma) {
+    return 0;
+  }
+
+  // 2. fault_addr must be below current stack start but above the max growth limit
+  const VirtAddr stack_limit = process::user_layout::STACK_TOP - process::user_layout::STACK_MAX;
+  if (fault_addr >= stack_vma->start_addr || fault_addr < stack_limit) {
+    return 0;
+  }
+
+  // 3. Page-align the new stack bottom downward
+  constexpr u64 PG_SIZE = 4096;
+  const VirtAddr new_start = fault_addr & ~(PG_SIZE - 1);
+
+  // 4. Extend VMA start_addr (const_cast pattern, same as sys_brk)
+  // NOLINTNEXTLINE(cppcoreguidelines-pro-type-const-cast)
+  const_cast<process::VmaRegion *>(stack_vma)->start_addr = new_start;
+
+  // 5. Update thread metadata
+  auto *thread = process::current_thread();
+  if (thread) {
+    thread->stack_base = new_start;
+    thread->stack_size = process::user_layout::STACK_TOP - new_start;
+  }
+
+  return 1;
+}
+
 unsigned long long get_current_pgd_phys() noexcept {
   using namespace moss::kernel;
 

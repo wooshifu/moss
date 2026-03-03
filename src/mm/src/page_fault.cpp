@@ -165,6 +165,7 @@ static auto dfsc_to_string(u64 dfsc) noexcept -> const char * {
 using moss::abi::bridge::demand_page_lookup;
 using moss::abi::bridge::get_current_pgd_phys;
 using moss::abi::bridge::terminate_current_user_process;
+using moss::abi::bridge::try_grow_user_stack;
 
 // Forward declarations for static helpers used by both kernel and user handlers
 [[noreturn]] static void kill_user_process(const char *reason, unsigned long long far_addr,
@@ -437,7 +438,13 @@ static bool try_demand_page(moss::kernel::u64 far_addr, bool is_write, unsigned 
 
   int found = demand_page_lookup(far_addr, &vma_flags, &backing_data, &backing_offset, &backing_size, &vma_start);
   if (!found) {
-    return false;
+    // Attempt automatic stack growth: extend the STACK VMA downward, then retry
+    if (try_grow_user_stack(far_addr)) {
+      found = demand_page_lookup(far_addr, &vma_flags, &backing_data, &backing_offset, &backing_size, &vma_start);
+    }
+    if (!found) {
+      return false;
+    }
   }
 
   // vma_flags bit definitions (must match process::vma_flags)
