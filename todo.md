@@ -314,12 +314,11 @@ Build system: CMake + Clang C++26 modules, 6 presets (3 arch x debug/release).
   - Alternative: use TTBR1 for kernel (already done) and make TTBR0 user-only — but current kernel code runs at identity-mapped low addresses, which requires TTBR0
   - Complexity: High — requires rethinking kernel address space layout
 
-- [ ] **Stack growth** — User stack is fixed at 64KB. Stack overflow causes page fault → process termination, no automatic growth.
-  - Need: guard page below stack VMA (unmapped, triggers page fault on access)
-  - Need: on page fault in guard region: extend stack VMA downward, map new page, move guard page
-  - Need: configurable stack limit (e.g. 8MB max)
-  - Files: `page_fault.cpp`, `process.cppm` (VMA management)
-  - Complexity: Low-Medium
+- [x] **Stack auto-growth** — User stack starts at 32KB, automatically grows downward on page fault up to 8MB max. `try_grow_user_stack()` bridge function extends STACK VMA start_addr on translation fault below current stack bottom. No explicit guard page needed — faults below `STACK_TOP - STACK_MAX` simply fail growth and terminate the process. Growth granularity is per-page (demand-zero).
+  - `src/process/src/process-types.cppm` (STACK_MAX constant)
+  - `src/kernel/src/kernel_main.cpp` (try_grow_user_stack bridge)
+  - `src/mm/src/page_fault.cpp` (stack growth retry in try_demand_page)
+  - `src/abi/src/abi.cppm` (bridge declaration)
 
 - [x] **Proper getpid/getppid** — Return real values from `CfsScheduler::get_current_task()` → `owner_pid` / `find_process()` → `parent_pid()`. getuid/getgid still return 0 (root) pending credential structure.
   - `src/kernel/src/syscall_table.cpp`

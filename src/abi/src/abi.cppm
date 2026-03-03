@@ -105,6 +105,7 @@ extern "C" {
 int demand_page_lookup(unsigned long long fault_addr, unsigned int *out_flags, const unsigned char **out_backing_data,
                        unsigned long long *out_backing_offset, unsigned long long *out_backing_size,
                        unsigned long long *out_vma_start) noexcept;
+int try_grow_user_stack(unsigned long long fault_addr) noexcept;
 unsigned long long get_current_pgd_phys() noexcept;
 [[noreturn]] void terminate_current_user_process(int exit_code) noexcept;
 
@@ -262,6 +263,7 @@ using ::moss_slab_alloc_pages;
 using ::moss_slab_free_pages;
 using ::strcmp;
 using ::terminate_current_user_process;
+using ::try_grow_user_stack;
 
 } // namespace moss::abi::bridge
 
