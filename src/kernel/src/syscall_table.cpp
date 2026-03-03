@@ -30,14 +30,135 @@ SyscallStats g_syscall_stats = {.total_syscalls = 0,
 namespace handlers {
 namespace log = moss::kernel::logging;
 
+// ── User pointer validation (copy_from_user / copy_to_user) ────────────
+//
+// Every syscall that dereferences a user-space pointer MUST first validate
+// that the entire range falls inside a legitimate VMA with the correct
+// permissions.  This prevents a malicious program from tricking the kernel
+// into reading/writing arbitrary physical memory.
+
+/// Return the calling process's AddressSpace, or nullptr.
+static process::AddressSpace *get_current_address_space() noexcept {
+  using namespace moss::kernel::process;
+  Thread *cur = CfsScheduler::get_current_task();
+  if (!cur) {
+    return nullptr;
+  }
+  Process *proc = g_process_manager ? g_process_manager->find_process(cur->owner_pid) : nullptr;
+  if (!proc) {
+    return nullptr;
+  }
+  return proc->address_space();
+}
+
+/// Validate that [user_addr, user_addr+len) lies within a single VMA that
+/// has the given permission flags (vma_flags::READ / WRITE).
+static bool validate_user_range(u64 user_addr, usize len, u32 required_flags) noexcept {
+  using namespace moss::kernel::process;
+  if (len == 0) {
+    return true;
+  }
+  if (user_addr == 0) {
+    return false;
+  }
+  // Overflow check
+  if (user_addr + len < user_addr) {
+    return false;
+  }
+  auto *as = get_current_address_space();
+  if (!as) {
+    return false;
+  }
+  const auto *vma = as->find_vma(static_cast<VirtAddr>(user_addr));
+  if (!vma) {
+    return false;
+  }
+  // Entire range must stay inside the same VMA
+  if (static_cast<VirtAddr>(user_addr + len) > vma->end_addr) {
+    return false;
+  }
+  // Permission check
+  if ((vma->flags & required_flags) != required_flags) {
+    return false;
+  }
+  return true;
+}
+
+/// Copy `len` bytes from validated user address to a kernel buffer.
+/// Returns 0 on success, -EFAULT if the range is invalid.
+static long copy_from_user(void *kernel_dst, u64 user_src, usize len) noexcept {
+  using namespace moss::kernel::process;
+  if (!validate_user_range(user_src, len, vma_flags::READ)) {
+    return -errc::EFAULT;
+  }
+  const auto *src = reinterpret_cast<const u8 *>(static_cast<usize>(user_src));
+  auto *dst = static_cast<u8 *>(kernel_dst);
+  for (usize i = 0; i < len; ++i) {
+    dst[i] = src[i];
+  }
+  return 0;
+}
+
+/// Copy `len` bytes from a kernel buffer to a validated user address.
+/// Returns 0 on success, -EFAULT if the range is invalid.
+static long copy_to_user(u64 user_dst, const void *kernel_src, usize len) noexcept {
+  using namespace moss::kernel::process;
+  if (!validate_user_range(user_dst, len, vma_flags::WRITE)) {
+    return -errc::EFAULT;
+  }
+  auto *dst = reinterpret_cast<volatile u8 *>(static_cast<usize>(user_dst));
+  const auto *src = static_cast<const u8 *>(kernel_src);
+  for (usize i = 0; i < len; ++i) {
+    dst[i] = src[i];
+  }
+  return 0;
+}
+
+/// Copy a NUL-terminated string from user space into a kernel buffer.
+/// Validates VMA read permission.  Copies at most `max_len - 1` bytes
+/// plus a trailing '\0'.  Returns 0 on success, -EFAULT on bad pointer.
+static long copy_string_from_user(char *kernel_dst, u64 user_src, usize max_len) noexcept {
+  using namespace moss::kernel::process;
+  if (user_src == 0 || max_len == 0) {
+    return -errc::EFAULT;
+  }
+  auto *as = get_current_address_space();
+  if (!as) {
+    return -errc::EFAULT;
+  }
+  const auto *vma = as->find_vma(static_cast<VirtAddr>(user_src));
+  if (!vma || (vma->flags & vma_flags::READ) == 0) {
+    return -errc::EFAULT;
+  }
+
+  const auto *src = reinterpret_cast<const char *>(static_cast<usize>(user_src));
+  VirtAddr vma_end = vma->end_addr;
+  usize i = 0;
+  for (; i < max_len - 1; ++i) {
+    if (static_cast<VirtAddr>(user_src + i) >= vma_end) {
+      return -errc::EFAULT;
+    }
+    kernel_dst[i] = src[i];
+    if (src[i] == '\0') {
+      return 0;
+    }
+  }
+  kernel_dst[i] = '\0';
+  return 0; // truncated but valid
+}
+
 // 基础系统调用处理函数
 long sys_debug_print(long arg0, long /*unused*/, long /*unused*/, long /*unused*/, long /*unused*/,
                      long /*unused*/) noexcept {
-  if (arg0 != 0) {
-    moss::kernel::hal::uart::puts(reinterpret_cast<const char *>(arg0));
-    return 0;
+  if (arg0 == 0) {
+    return -errc::EINVAL;
   }
-  return -errc::EINVAL;
+  char buf[256];
+  if (copy_string_from_user(buf, static_cast<u64>(arg0), sizeof(buf)) < 0) {
+    return -errc::EFAULT;
+  }
+  moss::kernel::hal::uart::puts(buf);
+  return 0;
 }
 
 long sys_exit(long exit_code, long /*unused*/, long /*unused*/, long /*unused*/, long /*unused*/,
@@ -333,26 +454,17 @@ long sys_execve(long pathname_addr, long argv_addr, long /* envp */, long /*unus
     return -errc::ESRCH;
   }
 
-  // 2. Copy pathname from user memory into kernel buffer.
+  // 2. Copy pathname from user memory into kernel buffer (with VMA validation).
   //    After step 5 switches TTBR0 to the kernel PGD, user addresses
   //    are no longer accessible, so we must capture the string now.
   constexpr usize PATH_MAX = 256;
   char pathname_buf[PATH_MAX];
-  {
-    const char *user_path = reinterpret_cast<const char *>(static_cast<usize>(pathname_addr));
-    if (!user_path) {
-      return -errc::EFAULT;
-    }
-    usize len = 0;
-    while (len < PATH_MAX - 1 && user_path[len] != '\0') {
-      pathname_buf[len] = user_path[len];
-      len++;
-    }
-    pathname_buf[len] = '\0';
+  if (copy_string_from_user(pathname_buf, static_cast<u64>(pathname_addr), PATH_MAX) < 0) {
+    return -errc::EFAULT;
   }
   const char *pathname = pathname_buf;
 
-  // 2a. Copy argv strings from user memory into kernel buffer.
+  // 2a. Copy argv strings from user memory into kernel buffer (with VMA validation).
   //     Must be done before TTBR0 switch (user addresses become invalid).
   constexpr usize MAX_ARGS = 16;
   constexpr usize ARGV_BUF_SIZE = 512;
@@ -362,24 +474,31 @@ long sys_execve(long pathname_addr, long argv_addr, long /* envp */, long /*unus
   usize argv_buf_pos = 0;
 
   if (argv_addr != 0) {
-    const auto *user_argv = reinterpret_cast<const char *const *>(static_cast<usize>(argv_addr));
+    // Validate the argv pointer array itself (up to MAX_ARGS pointers + null terminator)
+    // Read each pointer individually via copy_from_user
     for (usize ai = 0; ai < MAX_ARGS; ++ai) {
-      const char *arg = user_argv[ai];
-      if (arg == nullptr) {
-        break;
+      usize arg_ptr = 0;
+      u64 ptr_addr = static_cast<u64>(argv_addr) + ai * sizeof(usize);
+      if (copy_from_user(&arg_ptr, ptr_addr, sizeof(arg_ptr)) < 0) {
+        return -errc::EFAULT;
+      }
+      if (arg_ptr == 0) {
+        break; // null terminator
       }
       argv_offsets[kernel_argc] = argv_buf_pos;
-      // Copy string
-      for (usize ci = 0; ci < ARGV_BUF_SIZE - argv_buf_pos - 1; ++ci) {
-        char ch = arg[ci];
-        argv_buf[argv_buf_pos++] = ch;
-        if (ch == '\0') {
-          break;
-        }
+      usize remaining = ARGV_BUF_SIZE - argv_buf_pos;
+      if (remaining <= 1) {
+        break; // buffer exhausted
       }
-      // Ensure null-termination
-      if (argv_buf_pos > 0 && argv_buf[argv_buf_pos - 1] != '\0') {
-        argv_buf[argv_buf_pos++] = '\0';
+      if (copy_string_from_user(&argv_buf[argv_buf_pos], static_cast<u64>(arg_ptr), remaining) < 0) {
+        return -errc::EFAULT;
+      }
+      // Advance past the copied string (including null terminator)
+      while (argv_buf_pos < ARGV_BUF_SIZE && argv_buf[argv_buf_pos] != '\0') {
+        ++argv_buf_pos;
+      }
+      if (argv_buf_pos < ARGV_BUF_SIZE) {
+        ++argv_buf_pos; // skip '\0'
       }
       ++kernel_argc;
     }
@@ -902,8 +1021,10 @@ long sys_wait4(long wait_pid, long wstatus_addr, long options, long /*unused*/, 
       // Write status to user space if pointer is non-null
       // Linux WEXITSTATUS encoding: (exit_code & 0xFF) << 8
       if (wstatus_addr != 0) {
-        auto *wstatus_ptr = reinterpret_cast<int *>(static_cast<unsigned long long>(wstatus_addr));
-        *wstatus_ptr = (static_cast<int>(child_exit_code) & 0xFF) << 8;
+        int wstatus = (static_cast<int>(child_exit_code) & 0xFF) << 8;
+        if (copy_to_user(static_cast<u64>(wstatus_addr), &wstatus, sizeof(wstatus)) < 0) {
+          return -errc::EFAULT;
+        }
       }
 
       return static_cast<long>(result_pid);
@@ -1229,18 +1350,24 @@ long sys_sigaction(long sig_arg, long act_addr, long oldact_addr, long /*unused*
 
   // Return old action if requested
   if (oldact_addr != 0) {
-    auto *oldact = reinterpret_cast<UserSigaction *>(static_cast<unsigned long long>(oldact_addr));
-    oldact->handler = sa.handler;
-    oldact->mask = sa.mask;
-    oldact->flags = sa.flags;
+    UserSigaction kold;
+    kold.handler = sa.handler;
+    kold.mask = sa.mask;
+    kold.flags = sa.flags;
+    if (copy_to_user(static_cast<u64>(oldact_addr), &kold, sizeof(kold)) < 0) {
+      return -errc::EFAULT;
+    }
   }
 
   // Set new action if provided
   if (act_addr != 0) {
-    const auto *act = reinterpret_cast<const UserSigaction *>(static_cast<unsigned long long>(act_addr));
-    sa.handler = static_cast<VirtAddr>(act->handler);
-    sa.mask = act->mask;
-    sa.flags = static_cast<u32>(act->flags);
+    UserSigaction kact;
+    if (copy_from_user(&kact, static_cast<u64>(act_addr), sizeof(kact)) < 0) {
+      return -errc::EFAULT;
+    }
+    sa.handler = static_cast<VirtAddr>(kact.handler);
+    sa.mask = kact.mask;
+    sa.flags = static_cast<u32>(kact.flags);
   }
 
   return 0;
@@ -1259,13 +1386,18 @@ long sys_sigprocmask(long how, long set_addr, long oldset_addr, long /*unused*/,
 
   // Return old mask if requested
   if (oldset_addr != 0) {
-    auto *oldset = reinterpret_cast<u64 *>(static_cast<unsigned long long>(oldset_addr));
-    *oldset = cur->signal_mask;
+    u64 old_mask = cur->signal_mask;
+    if (copy_to_user(static_cast<u64>(oldset_addr), &old_mask, sizeof(old_mask)) < 0) {
+      return -errc::EFAULT;
+    }
   }
 
   // Modify mask if set is provided
   if (set_addr != 0) {
-    auto new_set = *reinterpret_cast<const u64 *>(static_cast<unsigned long long>(set_addr));
+    u64 new_set = 0;
+    if (copy_from_user(&new_set, static_cast<u64>(set_addr), sizeof(new_set)) < 0) {
+      return -errc::EFAULT;
+    }
     // SIGKILL and SIGSTOP can never be blocked
     new_set &= ~sig::UNCATCHABLE_MASK;
 
@@ -1306,12 +1438,12 @@ long sys_open(long pathname_addr, long flags, long mode, long /*unused*/, long /
     return -errc::EBADF;
   }
 
-  const char *path = reinterpret_cast<const char *>(static_cast<unsigned long long>(pathname_addr));
-  if (!path) {
+  char path_buf[256];
+  if (copy_string_from_user(path_buf, static_cast<u64>(pathname_addr), sizeof(path_buf)) < 0) {
     return -errc::EFAULT;
   }
 
-  return moss::kernel::vfs::syscall::do_open(fdt, path, static_cast<u32>(flags), static_cast<u32>(mode));
+  return moss::kernel::vfs::syscall::do_open(fdt, path_buf, static_cast<u32>(flags), static_cast<u32>(mode));
 }
 
 long sys_close(long fd, long /*unused*/, long /*unused*/, long /*unused*/, long /*unused*/, long /*unused*/) noexcept {
@@ -1324,6 +1456,7 @@ long sys_close(long fd, long /*unused*/, long /*unused*/, long /*unused*/, long 
 }
 
 long sys_read(long fd, long buf_addr, long count, long /*unused*/, long /*unused*/, long /*unused*/) noexcept {
+  using namespace moss::kernel::process;
   void *fdt = get_current_fd_table();
   if (!fdt) {
     return -errc::EBADF;
@@ -1333,12 +1466,17 @@ long sys_read(long fd, long buf_addr, long count, long /*unused*/, long /*unused
     return -errc::EINVAL;
   }
 
-  auto *buf = reinterpret_cast<u8 *>(static_cast<unsigned long long>(buf_addr));
+  // Validate user buffer is writable before passing to VFS layer
+  if (!validate_user_range(static_cast<u64>(buf_addr), static_cast<usize>(count), vma_flags::WRITE)) {
+    return -errc::EFAULT;
+  }
 
+  auto *buf = reinterpret_cast<u8 *>(static_cast<usize>(buf_addr));
   return moss::kernel::vfs::syscall::do_read(fdt, static_cast<int>(fd), buf, static_cast<usize>(count));
 }
 
 long sys_write(long fd, long buf_addr, long count, long /*unused*/, long /*unused*/, long /*unused*/) noexcept {
+  using namespace moss::kernel::process;
   void *fdt = get_current_fd_table();
   if (!fdt) {
     return -errc::EBADF;
@@ -1348,8 +1486,12 @@ long sys_write(long fd, long buf_addr, long count, long /*unused*/, long /*unuse
     return -errc::EINVAL;
   }
 
-  const auto *buf = reinterpret_cast<const u8 *>(static_cast<unsigned long long>(buf_addr));
+  // Validate user buffer is readable before passing to VFS layer
+  if (!validate_user_range(static_cast<u64>(buf_addr), static_cast<usize>(count), vma_flags::READ)) {
+    return -errc::EFAULT;
+  }
 
+  const auto *buf = reinterpret_cast<const u8 *>(static_cast<usize>(buf_addr));
   return moss::kernel::vfs::syscall::do_write(fdt, static_cast<int>(fd), buf, static_cast<usize>(count));
 }
 
@@ -1372,8 +1514,16 @@ long sys_fstat(long fd, long stat_buf_addr, long /*unused*/, long /*unused*/, lo
   if (stat_buf_addr == 0) {
     return -errc::EFAULT;
   }
-  auto *stat_buf = reinterpret_cast<void *>(static_cast<unsigned long long>(stat_buf_addr));
-  return moss::kernel::vfs::syscall::do_fstat(fdt, fd, stat_buf);
+  // Use kernel-stack buffer, then copy to validated user address
+  moss::kernel::vfs::Stat kstat{};
+  long ret = moss::kernel::vfs::syscall::do_fstat(fdt, fd, &kstat);
+  if (ret < 0) {
+    return ret;
+  }
+  if (copy_to_user(static_cast<u64>(stat_buf_addr), &kstat, sizeof(kstat)) < 0) {
+    return -errc::EFAULT;
+  }
+  return 0;
 }
 
 long sys_dup(long oldfd, long /*unused*/, long /*unused*/, long /*unused*/, long /*unused*/, long /*unused*/) noexcept {
@@ -1401,8 +1551,16 @@ long sys_pipe(long pipefd_addr, long /*unused*/, long /*unused*/, long /*unused*
   if (pipefd_addr == 0) {
     return -errc::EFAULT;
   }
-  auto *pipefd = reinterpret_cast<long *>(static_cast<unsigned long long>(pipefd_addr));
-  return moss::kernel::vfs::syscall::do_pipe(fdt, pipefd);
+  // Use kernel-stack buffer, then copy to validated user address
+  long kpipefd[2] = {0, 0};
+  long ret = moss::kernel::vfs::syscall::do_pipe(fdt, kpipefd);
+  if (ret < 0) {
+    return ret;
+  }
+  if (copy_to_user(static_cast<u64>(pipefd_addr), kpipefd, sizeof(kpipefd)) < 0) {
+    return -errc::EFAULT;
+  }
+  return 0;
 }
 
 // 内存管理系统调用
@@ -1888,8 +2046,10 @@ long sys_sched_getaffinity(long pid_arg, long /*unused*/, long mask_addr, long /
   }
 
   if (mask_addr != 0) {
-    auto *mask_ptr = reinterpret_cast<u32 *>(static_cast<unsigned long long>(mask_addr));
-    *mask_ptr = target->cpu_affinity_mask.low_word();
+    u32 mask_val = target->cpu_affinity_mask.low_word();
+    if (copy_to_user(static_cast<u64>(mask_addr), &mask_val, sizeof(mask_val)) < 0) {
+      return -errc::EFAULT;
+    }
   }
 
   return 0;
@@ -1906,8 +2066,10 @@ long sys_sched_setaffinity(long pid_arg, long /*unused*/, long mask_addr, long /
     return -errc::EFAULT;
   }
 
-  const auto *mask_ptr = reinterpret_cast<const u32 *>(static_cast<unsigned long long>(mask_addr));
-  u32 new_mask = *mask_ptr;
+  u32 new_mask = 0;
+  if (copy_from_user(&new_mask, static_cast<u64>(mask_addr), sizeof(new_mask)) < 0) {
+    return -errc::EFAULT;
+  }
 
   // Must allow at least one CPU
   if (new_mask == 0) {
@@ -1956,8 +2118,10 @@ long sys_clock_gettime(long /* clock_id */, long time_ns_addr, long /*unused*/, 
   if (time_ns_addr == 0) {
     return -errc::EFAULT;
   }
-  auto *ns_ptr = reinterpret_cast<u64 *>(static_cast<unsigned long long>(time_ns_addr));
-  *ns_ptr = timer::TimerSubsystem::instance().now_ns();
+  u64 ns = timer::TimerSubsystem::instance().now_ns();
+  if (copy_to_user(static_cast<u64>(time_ns_addr), &ns, sizeof(ns)) < 0) {
+    return -errc::EFAULT;
+  }
   return 0;
 }
 
@@ -1983,8 +2147,10 @@ long sys_nanosleep(long ns_addr, long /* remaining */, long /*unused*/, long /*u
   if (ns_addr == 0) {
     return -errc::EFAULT;
   }
-  const auto *req_ns = reinterpret_cast<const u64 *>(static_cast<unsigned long long>(ns_addr));
-  u64 duration = *req_ns;
+  u64 duration = 0;
+  if (copy_from_user(&duration, static_cast<u64>(ns_addr), sizeof(duration)) < 0) {
+    return -errc::EFAULT;
+  }
   if (duration == 0) {
     return 0;
   }
@@ -2051,8 +2217,10 @@ long sys_clock_nanosleep(long clockid, long flags, long ns_addr, long /*remainin
   if (ns_addr == 0) {
     return -errc::EFAULT;
   }
-  const auto *req_ns = reinterpret_cast<const u64 *>(static_cast<unsigned long long>(ns_addr));
-  u64 target_ns = *req_ns;
+  u64 target_ns = 0;
+  if (copy_from_user(&target_ns, static_cast<u64>(ns_addr), sizeof(target_ns)) < 0) {
+    return -errc::EFAULT;
+  }
 
   Thread *cur = CfsScheduler::get_current_task();
   if (!cur || !g_scheduler) {
@@ -2254,15 +2422,9 @@ long sys_topinfo(long info_addr, long /*unused*/, long /*unused*/, long /*unused
   }
   kbuf.nr_processes = proc_idx;
 
-  // Single bulk copy from kernel stack to user space.
-  // Any demand-page faults happen here, but the source data
-  // (kbuf) is safe on the kernel stack and won't be affected.
-  {
-    auto *dst = reinterpret_cast<volatile u8 *>(static_cast<unsigned long long>(info_addr));
-    const auto *src = reinterpret_cast<const u8 *>(&kbuf);
-    for (usize i = 0; i < sizeof(kbuf); ++i) {
-      dst[i] = src[i];
-    }
+  // Single bulk copy from kernel stack to user space (with VMA validation).
+  if (copy_to_user(static_cast<u64>(info_addr), &kbuf, sizeof(kbuf)) < 0) {
+    return -errc::EFAULT;
   }
 
   return 0;
