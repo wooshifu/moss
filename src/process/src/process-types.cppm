@@ -423,16 +423,29 @@ struct Thread {
   VirtAddr kernel_stack_base; // low address of allocated region
   usize kernel_stack_size;    // size in bytes (typically 16KB)
 
+  // Trap frame pointer: set by system_call_handler on each syscall entry.
+  // Points to the 34-slot register save area on the kernel stack.
+  // Used by signal delivery (setup_sigframe) and sigreturn to read/modify
+  // the user-space register state that will be restored on eret.
+  u64 trap_frame{0};
+
   // RT run queue intrusive list pointer (next task at same priority).
   // Used by RtRunqueue; nullptr when not enqueued in an RT queue.
   Thread *rt_next_{nullptr};
+
+  // Signal alternate stack (sigaltstack)
+  VirtAddr alt_stack_sp{0};     // alternate stack base address
+  usize alt_stack_size{0};      // alternate stack size in bytes
+  u32 alt_stack_flags{2};       // SS_DISABLE=2 by default
+  bool on_alt_stack{false};     // true when executing handler on altstack
 
   Thread(ThreadId id, ProcessId pid) noexcept
       : tid(id), owner_pid(pid), context{}, cpu(0), wake_cpu(0), state(ProcessState::Created),
         sched_class(SchedClass::Normal), sched_policy(SchedPolicy::Normal), se{}, rt{}, start_time(0), utime(0),
         stime(0), stack_base(0), stack_size(0), wait_queue(0), signal_mask(0), pending_signals(0),
         needs_initial_eret(false), is_user_task(false), need_resched(false), cpu_affinity_mask(CpuBitmap::all()),
-        kernel_stack_base(0), kernel_stack_size(0) {
+        kernel_stack_base(0), kernel_stack_size(0), trap_frame(0),
+        alt_stack_sp(0), alt_stack_size(0), alt_stack_flags(2), on_alt_stack(false) {
     // Point the embedded RB node back to this Thread (set once, immutable).
     se.rb_data = static_cast<void *>(this);
   }
