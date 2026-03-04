@@ -16,27 +16,27 @@ namespace log = moss::kernel::logging;
 // ============================================================================
 #if defined(__aarch64__) || defined(MOSS_ARCH_ARM64)
 static void save_neon_state(u64 *neon_buf) noexcept {
-  asm volatile(
-    ".arch_extension fp\n"
-    "stp q0,  q1,  [%0, #(0  * 16)]\n"
-    "stp q2,  q3,  [%0, #(2  * 16)]\n"
-    "stp q4,  q5,  [%0, #(4  * 16)]\n"
-    "stp q6,  q7,  [%0, #(6  * 16)]\n"
-    "stp q8,  q9,  [%0, #(8  * 16)]\n"
-    "stp q10, q11, [%0, #(10 * 16)]\n"
-    "stp q12, q13, [%0, #(12 * 16)]\n"
-    "stp q14, q15, [%0, #(14 * 16)]\n"
-    "stp q16, q17, [%0, #(16 * 16)]\n"
-    "stp q18, q19, [%0, #(18 * 16)]\n"
-    "stp q20, q21, [%0, #(20 * 16)]\n"
-    "stp q22, q23, [%0, #(22 * 16)]\n"
-    "stp q24, q25, [%0, #(24 * 16)]\n"
-    "stp q26, q27, [%0, #(26 * 16)]\n"
-    "stp q28, q29, [%0, #(28 * 16)]\n"
-    "stp q30, q31, [%0, #(30 * 16)]\n"
-    ".arch_extension nofp\n"
-    : : "r"(neon_buf) : "memory"
-  );
+  asm volatile(".arch_extension fp\n"
+               "stp q0,  q1,  [%0, #(0  * 16)]\n"
+               "stp q2,  q3,  [%0, #(2  * 16)]\n"
+               "stp q4,  q5,  [%0, #(4  * 16)]\n"
+               "stp q6,  q7,  [%0, #(6  * 16)]\n"
+               "stp q8,  q9,  [%0, #(8  * 16)]\n"
+               "stp q10, q11, [%0, #(10 * 16)]\n"
+               "stp q12, q13, [%0, #(12 * 16)]\n"
+               "stp q14, q15, [%0, #(14 * 16)]\n"
+               "stp q16, q17, [%0, #(16 * 16)]\n"
+               "stp q18, q19, [%0, #(18 * 16)]\n"
+               "stp q20, q21, [%0, #(20 * 16)]\n"
+               "stp q22, q23, [%0, #(22 * 16)]\n"
+               "stp q24, q25, [%0, #(24 * 16)]\n"
+               "stp q26, q27, [%0, #(26 * 16)]\n"
+               "stp q28, q29, [%0, #(28 * 16)]\n"
+               "stp q30, q31, [%0, #(30 * 16)]\n"
+               ".arch_extension nofp\n"
+               :
+               : "r"(neon_buf)
+               : "memory");
 }
 
 static u64 read_fpsr() noexcept {
@@ -54,36 +54,32 @@ static u64 read_fpcr() noexcept {
 }
 
 static void restore_neon_state(const u64 *neon_buf) noexcept {
-  asm volatile(
-    ".arch_extension fp\n"
-    "ldp q0,  q1,  [%0, #(0  * 16)]\n"
-    "ldp q2,  q3,  [%0, #(2  * 16)]\n"
-    "ldp q4,  q5,  [%0, #(4  * 16)]\n"
-    "ldp q6,  q7,  [%0, #(6  * 16)]\n"
-    "ldp q8,  q9,  [%0, #(8  * 16)]\n"
-    "ldp q10, q11, [%0, #(10 * 16)]\n"
-    "ldp q12, q13, [%0, #(12 * 16)]\n"
-    "ldp q14, q15, [%0, #(14 * 16)]\n"
-    "ldp q16, q17, [%0, #(16 * 16)]\n"
-    "ldp q18, q19, [%0, #(18 * 16)]\n"
-    "ldp q20, q21, [%0, #(20 * 16)]\n"
-    "ldp q22, q23, [%0, #(22 * 16)]\n"
-    "ldp q24, q25, [%0, #(24 * 16)]\n"
-    "ldp q26, q27, [%0, #(26 * 16)]\n"
-    "ldp q28, q29, [%0, #(28 * 16)]\n"
-    "ldp q30, q31, [%0, #(30 * 16)]\n"
-    ".arch_extension nofp\n"
-    : : "r"(neon_buf) : "memory"
-  );
+  asm volatile(".arch_extension fp\n"
+               "ldp q0,  q1,  [%0, #(0  * 16)]\n"
+               "ldp q2,  q3,  [%0, #(2  * 16)]\n"
+               "ldp q4,  q5,  [%0, #(4  * 16)]\n"
+               "ldp q6,  q7,  [%0, #(6  * 16)]\n"
+               "ldp q8,  q9,  [%0, #(8  * 16)]\n"
+               "ldp q10, q11, [%0, #(10 * 16)]\n"
+               "ldp q12, q13, [%0, #(12 * 16)]\n"
+               "ldp q14, q15, [%0, #(14 * 16)]\n"
+               "ldp q16, q17, [%0, #(16 * 16)]\n"
+               "ldp q18, q19, [%0, #(18 * 16)]\n"
+               "ldp q20, q21, [%0, #(20 * 16)]\n"
+               "ldp q22, q23, [%0, #(22 * 16)]\n"
+               "ldp q24, q25, [%0, #(24 * 16)]\n"
+               "ldp q26, q27, [%0, #(26 * 16)]\n"
+               "ldp q28, q29, [%0, #(28 * 16)]\n"
+               "ldp q30, q31, [%0, #(30 * 16)]\n"
+               ".arch_extension nofp\n"
+               :
+               : "r"(neon_buf)
+               : "memory");
 }
 
-static void write_fpsr(u64 val) noexcept {
-  asm volatile("msr s3_3_c4_c4_1, %0" : : "r"(val));
-}
+static void write_fpsr(u64 val) noexcept { asm volatile("msr s3_3_c4_c4_1, %0" : : "r"(val)); }
 
-static void write_fpcr(u64 val) noexcept {
-  asm volatile("msr s3_3_c4_c4_0, %0" : : "r"(val));
-}
+static void write_fpcr(u64 val) noexcept { asm volatile("msr s3_3_c4_c4_0, %0" : : "r"(val)); }
 #endif
 
 // Per-process signal state storage.
@@ -140,8 +136,7 @@ bool setup_sigframe(Thread *thread, u32 signo, const Sigaction &sa) noexcept {
   u64 user_sp = frame[33]; // SP_EL0 from trap frame
 
   bool use_altstack = false;
-  if ((sa.flags & sa_flags::SA_ONSTACK) != 0 &&
-      thread->alt_stack_flags != ss_flags::SS_DISABLE &&
+  if ((sa.flags & sa_flags::SA_ONSTACK) != 0 && thread->alt_stack_flags != ss_flags::SS_DISABLE &&
       !thread->on_alt_stack) {
     user_sp = thread->alt_stack_sp + thread->alt_stack_size;
     use_altstack = true;
@@ -183,9 +178,9 @@ bool setup_sigframe(Thread *thread, u32 signo, const Sigaction &sa) noexcept {
   moss::memcpy(dst, &sf, sizeof(sf));
 
   // 5. Modify trap frame for handler dispatch
-  frame[31] = sa.handler;      // ELR -> handler address
-  frame[33] = sigframe_sp;     // SP_EL0 -> sigframe base
-  frame[0] = signo;            // x0 -> signal number (first arg to handler)
+  frame[31] = sa.handler;  // ELR -> handler address
+  frame[33] = sigframe_sp; // SP_EL0 -> sigframe base
+  frame[0] = signo;        // x0 -> signal number (first arg to handler)
   // LR (x30) -> trampoline address so handler return triggers sigreturn
   // trampoline is at byte offset 824 from start of sigframe:
   //   magic(8) + gp_regs(248) + elr(8) + spsr(8) + sp(8) + fpsr(8) +
@@ -223,7 +218,7 @@ long do_sigreturn(Thread *thread) noexcept {
 
   // Read sigframe from user space
   SignalFrame sf{};
-  auto *src = reinterpret_cast<const SignalFrame *>(sigframe_addr);
+  const auto *src = reinterpret_cast<const SignalFrame *>(sigframe_addr);
   moss::memcpy(&sf, src, sizeof(sf));
 
   // Validate magic
@@ -309,8 +304,8 @@ bool do_signal_checkpoint(Thread *thread) noexcept {
       // If handler is not SIG_DFL, still execute handler below
       if (sa != nullptr && sa->handler != SIG_DFL && sa->handler != SIG_IGN) {
         if (!setup_sigframe(thread, signo, *sa)) {
-          log::klog::warn("signal {}: sigframe setup failed on SIGCONT for PID={}",
-                          signo, static_cast<u32>(thread->owner_pid));
+          log::klog::warn("signal {}: sigframe setup failed on SIGCONT for PID={}", signo,
+                          static_cast<u32>(thread->owner_pid));
         }
         return false;
       }
@@ -332,8 +327,8 @@ bool do_signal_checkpoint(Thread *thread) noexcept {
     } else {
       // User-space signal handler — set up sigframe for delivery
       if (!setup_sigframe(thread, signo, *sa)) {
-        log::klog::warn("signal {}: sigframe setup failed for PID={}, terminating",
-                        signo, static_cast<u32>(thread->owner_pid));
+        log::klog::warn("signal {}: sigframe setup failed for PID={}, terminating", signo,
+                        static_cast<u32>(thread->owner_pid));
         return true; // terminate
       }
       // Deliver only one signal per checkpoint — after handler returns via
