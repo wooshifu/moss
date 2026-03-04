@@ -130,8 +130,8 @@ extern "C" {
 void early_debug_print(const char *message) noexcept { ::moss::kernel::hal::uart::puts(message); }
 
 // Syscall entry
-long system_call_handler(long syscall_number, long arg0, long arg1, long arg2, long arg3, long arg4,
-                         long arg5, long trap_frame) noexcept {
+long system_call_handler(long syscall_number, long arg0, long arg1, long arg2, long arg3, long arg4, long arg5,
+                         long trap_frame) noexcept {
   using namespace moss::kernel;
 
   // Store trap frame pointer in current thread for signal delivery
