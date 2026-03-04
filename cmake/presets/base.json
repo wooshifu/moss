@@ -26,7 +26,6 @@
                 "CMAKE_SHARED_LINKER_FLAGS": "-fuse-ld=lld -nostdlib"
             },
             "environment": {
-                "CXX": "clang++"
             }
         }
     ]
