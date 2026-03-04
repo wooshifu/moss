@@ -52,6 +52,38 @@ static u64 read_fpcr() noexcept {
   asm volatile("mrs %0, s3_3_c4_c4_0" : "=r"(val));
   return val;
 }
+
+static void restore_neon_state(const u64 *neon_buf) noexcept {
+  asm volatile(
+    ".arch_extension fp\n"
+    "ldp q0,  q1,  [%0, #(0  * 16)]\n"
+    "ldp q2,  q3,  [%0, #(2  * 16)]\n"
+    "ldp q4,  q5,  [%0, #(4  * 16)]\n"
+    "ldp q6,  q7,  [%0, #(6  * 16)]\n"
+    "ldp q8,  q9,  [%0, #(8  * 16)]\n"
+    "ldp q10, q11, [%0, #(10 * 16)]\n"
+    "ldp q12, q13, [%0, #(12 * 16)]\n"
+    "ldp q14, q15, [%0, #(14 * 16)]\n"
+    "ldp q16, q17, [%0, #(16 * 16)]\n"
+    "ldp q18, q19, [%0, #(18 * 16)]\n"
+    "ldp q20, q21, [%0, #(20 * 16)]\n"
+    "ldp q22, q23, [%0, #(22 * 16)]\n"
+    "ldp q24, q25, [%0, #(24 * 16)]\n"
+    "ldp q26, q27, [%0, #(26 * 16)]\n"
+    "ldp q28, q29, [%0, #(28 * 16)]\n"
+    "ldp q30, q31, [%0, #(30 * 16)]\n"
+    ".arch_extension nofp\n"
+    : : "r"(neon_buf) : "memory"
+  );
+}
+
+static void write_fpsr(u64 val) noexcept {
+  asm volatile("msr s3_3_c4_c4_1, %0" : : "r"(val));
+}
+
+static void write_fpcr(u64 val) noexcept {
+  asm volatile("msr s3_3_c4_c4_0, %0" : : "r"(val));
+}
 #endif
 
 // Per-process signal state storage.
@@ -172,6 +204,62 @@ bool setup_sigframe(Thread *thread, u32 signo, const Sigaction &sa) noexcept {
                   static_cast<u32>(thread->owner_pid));
 
   return true;
+}
+
+// Linux EFAULT errno value for sigreturn error returns.
+// We define it locally because the errc namespace lives in moss.kernel:syscall_table
+// which is not imported by this module.
+static constexpr long SIGRETURN_EFAULT = 14;
+
+long do_sigreturn(Thread *thread) noexcept {
+  if (thread == nullptr || thread->trap_frame == 0) {
+    return -SIGRETURN_EFAULT;
+  }
+
+  auto *frame = reinterpret_cast<u64 *>(thread->trap_frame);
+
+  // The sigframe is at the current SP_EL0 (which points to our sigframe)
+  u64 sigframe_addr = frame[33]; // SP_EL0
+
+  // Read sigframe from user space
+  SignalFrame sf{};
+  auto *src = reinterpret_cast<const SignalFrame *>(sigframe_addr);
+  moss::memcpy(&sf, src, sizeof(sf));
+
+  // Validate magic
+  if (sf.magic != SignalFrame::MAGIC) {
+    log::klog::warn("sigreturn: invalid magic {:#x} at {:#x}", sf.magic, sigframe_addr);
+    return -SIGRETURN_EFAULT;
+  }
+
+  // Restore GP registers to trap frame
+  for (u32 i = 0; i < 31; ++i) {
+    frame[i] = sf.gp_regs[i];
+  }
+  frame[31] = sf.elr;  // Restore PC
+  frame[32] = sf.spsr; // Restore SPSR
+  frame[33] = sf.sp;   // Restore original SP_EL0
+
+  // Restore NEON/FP state
+#if defined(__aarch64__) || defined(MOSS_ARCH_ARM64)
+  write_fpsr(sf.fpsr);
+  write_fpcr(sf.fpcr);
+  restore_neon_state(sf.neon);
+#endif
+
+  // Restore signal mask
+  thread->signal_mask = sf.saved_mask;
+
+  // Clear on_alt_stack flag
+  thread->on_alt_stack = false;
+
+  log::klog::info("sigreturn: restored context for PID={}, PC={:#x}", static_cast<u32>(thread->owner_pid), sf.elr);
+
+  // Return the original x0 from the sigframe — this is what the trap frame
+  // restore will put in x0 after eret. The syscall dispatch normally writes
+  // the return value into frame[0], but since we already set frame[0] = sf.gp_regs[0],
+  // we return that same value so the dispatch doesn't overwrite it.
+  return static_cast<long>(sf.gp_regs[0]);
 }
 
 bool do_signal_checkpoint(Thread *thread) noexcept {
