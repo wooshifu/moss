@@ -6,6 +6,54 @@ namespace moss::kernel::process {
 
 namespace log = moss::kernel::logging;
 
+// ============================================================================
+// NEON/FP state save helpers (ARM64 only)
+//
+// The kernel is compiled with -mgeneral-regs-only, so we must use
+// .arch_extension fp to temporarily enable FP/NEON instructions within
+// inline asm blocks, and use the raw system register encoding for
+// fpsr (s3_3_c4_c4_1) and fpcr (s3_3_c4_c4_0).
+// ============================================================================
+#if defined(__aarch64__) || defined(MOSS_ARCH_ARM64)
+static void save_neon_state(u64 *neon_buf) noexcept {
+  asm volatile(
+    ".arch_extension fp\n"
+    "stp q0,  q1,  [%0, #(0  * 16)]\n"
+    "stp q2,  q3,  [%0, #(2  * 16)]\n"
+    "stp q4,  q5,  [%0, #(4  * 16)]\n"
+    "stp q6,  q7,  [%0, #(6  * 16)]\n"
+    "stp q8,  q9,  [%0, #(8  * 16)]\n"
+    "stp q10, q11, [%0, #(10 * 16)]\n"
+    "stp q12, q13, [%0, #(12 * 16)]\n"
+    "stp q14, q15, [%0, #(14 * 16)]\n"
+    "stp q16, q17, [%0, #(16 * 16)]\n"
+    "stp q18, q19, [%0, #(18 * 16)]\n"
+    "stp q20, q21, [%0, #(20 * 16)]\n"
+    "stp q22, q23, [%0, #(22 * 16)]\n"
+    "stp q24, q25, [%0, #(24 * 16)]\n"
+    "stp q26, q27, [%0, #(26 * 16)]\n"
+    "stp q28, q29, [%0, #(28 * 16)]\n"
+    "stp q30, q31, [%0, #(30 * 16)]\n"
+    ".arch_extension nofp\n"
+    : : "r"(neon_buf) : "memory"
+  );
+}
+
+static u64 read_fpsr() noexcept {
+  u64 val;
+  // fpsr = S3_3_C4_C4_1 — raw encoding works with -mgeneral-regs-only
+  asm volatile("mrs %0, s3_3_c4_c4_1" : "=r"(val));
+  return val;
+}
+
+static u64 read_fpcr() noexcept {
+  u64 val;
+  // fpcr = S3_3_C4_C4_0 — raw encoding works with -mgeneral-regs-only
+  asm volatile("mrs %0, s3_3_c4_c4_0" : "=r"(val));
+  return val;
+}
+#endif
+
 // Per-process signal state storage.
 // Stored as void* inside Process to avoid circular header dependencies;
 // we cast here in the implementation.  Signal state is allocated once
@@ -47,6 +95,83 @@ void init_signal_state(Process *proc) noexcept {
   }
   g_signal_states[pid] = SignalState{};
   g_signal_state_used[pid] = true;
+}
+
+bool setup_sigframe(Thread *thread, u32 signo, const Sigaction &sa) noexcept {
+  if (thread == nullptr || thread->trap_frame == 0) {
+    return false;
+  }
+
+  auto *frame = reinterpret_cast<u64 *>(thread->trap_frame);
+
+  // 1. Determine signal stack
+  u64 user_sp = frame[33]; // SP_EL0 from trap frame
+
+  bool use_altstack = false;
+  if ((sa.flags & sa_flags::SA_ONSTACK) != 0 &&
+      thread->alt_stack_flags != ss_flags::SS_DISABLE &&
+      !thread->on_alt_stack) {
+    user_sp = thread->alt_stack_sp + thread->alt_stack_size;
+    use_altstack = true;
+  }
+
+  // 2. Allocate sigframe on user stack (grows downward, 16-byte aligned)
+  u64 sigframe_sp = (user_sp - SignalFrame::FRAME_SIZE) & ~static_cast<u64>(0xF);
+
+  // 3. Build sigframe in kernel buffer
+  SignalFrame sf{};
+  sf.magic = SignalFrame::MAGIC;
+
+  // Copy GP regs from trap frame
+  for (u32 i = 0; i < 31; ++i) {
+    sf.gp_regs[i] = frame[i];
+  }
+  sf.elr = frame[31];
+  sf.spsr = frame[32];
+  sf.sp = frame[33];
+
+  // Save NEON/FP state (still live from user-space since kernel doesn't use NEON)
+#if defined(__aarch64__) || defined(MOSS_ARCH_ARM64)
+  sf.fpsr = read_fpsr();
+  sf.fpcr = read_fpcr();
+  save_neon_state(sf.neon);
+#endif
+
+  sf.signo = signo;
+  sf.saved_mask = thread->signal_mask;
+
+  // Sigreturn trampoline: mov x8, #17; svc #0
+  sf.trampoline[0] = 0xD2800228U; // mov x8, #0x11 (17 = SYS_SIGRETURN)
+  sf.trampoline[1] = 0xD4000001U; // svc #0
+
+  // 4. Write sigframe to user stack
+  // We are in EL1 with TTBR0 set to this process's page tables,
+  // so we can directly access user-space addresses.
+  auto *dst = reinterpret_cast<SignalFrame *>(sigframe_sp);
+  moss::memcpy(dst, &sf, sizeof(sf));
+
+  // 5. Modify trap frame for handler dispatch
+  frame[31] = sa.handler;      // ELR -> handler address
+  frame[33] = sigframe_sp;     // SP_EL0 -> sigframe base
+  frame[0] = signo;            // x0 -> signal number (first arg to handler)
+  // LR (x30) -> trampoline address so handler return triggers sigreturn
+  // trampoline is at byte offset 824 from start of sigframe:
+  //   magic(8) + gp_regs(248) + elr(8) + spsr(8) + sp(8) + fpsr(8) +
+  //   fpcr(8) + neon(512) + signo(8) + saved_mask(8) = 824
+  frame[30] = sigframe_sp + 824;
+
+  // 6. Block signals during handler execution
+  thread->signal_mask |= sa.mask | sig::sigmask(signo);
+  thread->signal_mask &= ~sig::UNCATCHABLE_MASK;
+
+  if (use_altstack) {
+    thread->on_alt_stack = true;
+  }
+
+  log::klog::info("signal {}: delivering to handler {:#x} for PID={}", signo, sa.handler,
+                  static_cast<u32>(thread->owner_pid));
+
+  return true;
 }
 
 bool do_signal_checkpoint(Thread *thread) noexcept {
@@ -95,8 +220,11 @@ bool do_signal_checkpoint(Thread *thread) noexcept {
       log::klog::info("signal {}: continued PID={}", signo, static_cast<u32>(thread->owner_pid));
       // If handler is not SIG_DFL, still execute handler below
       if (sa != nullptr && sa->handler != SIG_DFL && sa->handler != SIG_IGN) {
-        // User handler will be delivered when sigframe is implemented
-        log::klog::warn("signal {}: user handler {:#x} not yet delivered", signo, sa->handler);
+        if (!setup_sigframe(thread, signo, *sa)) {
+          log::klog::warn("signal {}: sigframe setup failed on SIGCONT for PID={}",
+                          signo, static_cast<u32>(thread->owner_pid));
+        }
+        return false;
       }
       continue;
     }
@@ -114,14 +242,15 @@ bool do_signal_checkpoint(Thread *thread) noexcept {
       // Explicitly ignored
       continue;
     } else {
-      // User-space signal handler — for now, log and use default action.
-      // Full user-space signal delivery (sigframe + sigreturn) requires
-      // manipulating the user-space stack and registers, which will be
-      // implemented as a follow-up when we have the sigreturn syscall.
-      log::klog::warn("signal {}: user handler {:#x} not yet delivered, using default", signo, sa->handler);
-      if (do_signal_default(thread, signo)) {
-        return true;
+      // User-space signal handler — set up sigframe for delivery
+      if (!setup_sigframe(thread, signo, *sa)) {
+        log::klog::warn("signal {}: sigframe setup failed for PID={}, terminating",
+                        signo, static_cast<u32>(thread->owner_pid));
+        return true; // terminate
       }
+      // Deliver only one signal per checkpoint — after handler returns via
+      // sigreturn, the next syscall return will check for more pending signals.
+      return false;
     }
   }
 
