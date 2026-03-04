@@ -338,15 +338,16 @@ if(MOSS_TARGET_ARCH STREQUAL "ARM64"
     add_userspace_program(hello)
     add_userspace_program(shell)
     add_userspace_program(top)
+    add_userspace_program(signal_test)
 
     # Generate initramfs.cpio from all userspace programs Uses GNU cpio "newc" format (070701 magic, required by the
     # CPIO parser)
     add_custom_command(
         OUTPUT ${CMAKE_BINARY_DIR}/initramfs.cpio
         COMMAND uv run ${CMAKE_SOURCE_DIR}/scripts/gen_initramfs.py ${CMAKE_BINARY_DIR}/initramfs.cpio
-                ${CMAKE_BINARY_DIR}/userspace hello.elf shell.elf top.elf
+                ${CMAKE_BINARY_DIR}/userspace hello.elf shell.elf top.elf signal_test.elf
         DEPENDS ${CMAKE_BINARY_DIR}/userspace/hello.elf ${CMAKE_BINARY_DIR}/userspace/shell.elf
-                ${CMAKE_BINARY_DIR}/userspace/top.elf
+                ${CMAKE_BINARY_DIR}/userspace/top.elf ${CMAKE_BINARY_DIR}/userspace/signal_test.elf
         WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
         COMMENT "Generating initramfs.cpio"
     )
