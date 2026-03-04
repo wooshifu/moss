@@ -288,15 +288,14 @@ Build system: CMake + Clang C++26 modules, 6 presets (3 arch x debug/release).
 - [x] **brk() system call** — Linux-compatible brk(): brk(0) queries current break, brk(addr) expands/shrinks HEAP VMA (page-aligned), demand paging allocates zero pages on access. Max heap 16MB. `brk_base` and `brk_current` tracked in AddressSpace.
   - `src/kernel/src/syscall_table.cpp` (sys_brk), `src/process/src/process-types.cppm` (AddressSpace fields)
 
-- [ ] **Signal mechanism** — No signal delivery or handling. kill/sigaction/sigprocmask all return ENOSYS.
-  - Need: signal pending bitmap per thread
-  - Need: signal handler registration (sigaction)
-  - Need: signal delivery on return to user-space (check pending signals before eret)
-  - Need: signal handler execution (set up signal frame on user stack, redirect ELR to handler)
-  - Need: sigreturn (restore original context from signal frame)
-  - Need: default signal actions (SIGKILL→terminate, SIGSEGV→terminate+core, SIGSTOP→stop)
-  - Files: `process.cppm` (Thread struct), `start_arm64.S` (check signals before eret), new `signal.cpp`
-  - Complexity: High
+- [x] **Signal mechanism** — Full POSIX signal delivery with user-space handler execution via classic sigframe approach. Supports nested signals, sigaltstack, sigprocmask block/unblock, SIG_IGN/SIG_DFL, and sigreturn context restoration including NEON/FP state.
+  - kill/sigaction/sigprocmask: register handlers, modify signal masks, send signals
+  - setup_sigframe: saves GP regs + NEON + PC/SP/SPSR to user stack, writes sigreturn trampoline, redirects eret to handler
+  - sigreturn (syscall 17): restores full context from SignalFrame with magic validation
+  - sigaltstack (syscall 21): configure alternate signal stack for handler execution
+  - Signal checkpoint on every syscall return path (do_signal_checkpoint)
+  - Files: `signal.cpp`, `process-signal.cppm`, `process-types.cppm`, `syscall_table.cpp`, `start_arm64.S`, `syscall.h`, `signal_test.c`
+  - Design: `docs/plans/2026-03-04-signal-mechanism-design.md`
 
 - [x] **User pointer validation** — `copy_from_user()`/`copy_to_user()`/`copy_string_from_user()` with VMA range + permission checks; `validate_user_range()` for large buffers passed to VFS. All syscalls that access user memory now validate pointers: debug_print, execve (pathname + argv), open, read, write, fstat, pipe, wait4, sigaction, sigprocmask, sched_getaffinity, sched_setaffinity, clock_gettime, nanosleep, clock_nanosleep, topinfo.
   - Files: `syscall_table.cpp` (5 helper functions + 14 syscall retrofits)
