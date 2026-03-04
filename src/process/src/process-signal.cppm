@@ -145,7 +145,7 @@ struct SignalFrame {
   static constexpr u64 MAGIC = 0xDEAD'5164'5346'524DULL;
   static constexpr usize FRAME_SIZE = 848;
 
-  u64 magic;          // 0x000
+  u64 magic;         // 0x000
   u64 gp_regs[31];   // 0x008
   u64 elr;           // 0x100
   u64 spsr;          // 0x108
@@ -175,20 +175,14 @@ inline bool send_signal(Thread *thread, u32 signo) noexcept {
 
   u64 mask = sig::sigmask(signo);
 
-  // Check if the signal is blocked by the thread's signal mask
-  // (SIGKILL and SIGSTOP can never be blocked)
-  if ((mask & sig::UNCATCHABLE_MASK) == 0 && (thread->signal_mask & mask) != 0) {
-    return false; // signal is blocked
-  }
-
+  // Always pend the signal — even if currently blocked.  POSIX requires
+  // blocked signals to remain pending until the mask is lifted.
   thread->pending_signals |= mask;
 
-  // If the thread is in interruptible sleep, wake it up so it can
-  // process the signal at the next checkpoint.
-  if (thread->state == ProcessState::Sleeping) {
-    // The actual wakeup (enqueue to runqueue) must be done by the
-    // scheduler; we just mark need_resched here.  The caller
-    // (sys_kill) will call task_wakeup() if needed.
+  // If the signal is deliverable right now (not blocked, or uncatchable),
+  // wake a sleeping thread so it can process the signal.
+  bool deliverable = (mask & sig::UNCATCHABLE_MASK) != 0 || (thread->signal_mask & mask) == 0;
+  if (deliverable && thread->state == ProcessState::Sleeping) {
     thread->need_resched = true;
   }
 

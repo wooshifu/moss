@@ -181,11 +181,10 @@ bool setup_sigframe(Thread *thread, u32 signo, const Sigaction &sa) noexcept {
   frame[31] = sa.handler;  // ELR -> handler address
   frame[33] = sigframe_sp; // SP_EL0 -> sigframe base
   frame[0] = signo;        // x0 -> signal number (first arg to handler)
-  // LR (x30) -> trampoline address so handler return triggers sigreturn
-  // trampoline is at byte offset 824 from start of sigframe:
-  //   magic(8) + gp_regs(248) + elr(8) + spsr(8) + sp(8) + fpsr(8) +
-  //   fpcr(8) + neon(512) + signo(8) + saved_mask(8) = 824
-  frame[30] = sigframe_sp + 824;
+  // LR (x30) -> sigreturn trampoline page (read+exec, mapped in every process).
+  // The trampoline contains: mov x8, #17; svc #0 (triggers sigreturn syscall).
+  // Using a fixed executable page avoids needing execute permission on the user stack.
+  frame[30] = user_layout::SIGRETURN_PAGE;
 
   // 6. Block signals during handler execution
   thread->signal_mask |= sa.mask | sig::sigmask(signo);
