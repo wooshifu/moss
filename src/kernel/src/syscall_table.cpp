@@ -1419,6 +1419,78 @@ long sys_sigprocmask(long how, long set_addr, long oldset_addr, long /*unused*/,
   return 0;
 }
 
+// sigreturn() — restore interrupted context from signal frame on user stack.
+long sys_sigreturn(long /*unused*/, long /*unused*/, long /*unused*/, long /*unused*/, long /*unused*/,
+                   long /*unused*/) noexcept {
+  using namespace moss::kernel::process;
+  Thread *cur = CfsScheduler::get_current_task();
+  if (!cur) {
+    return -errc::EFAULT;
+  }
+  return do_sigreturn(cur);
+}
+
+// sigaltstack(ss, old_ss) — set/query alternate signal stack.
+// ss:     pointer to UserStack describing new alternate stack (or 0 to query only)
+// old_ss: pointer to receive current alternate stack state (or 0 to skip)
+
+// User-space sigaltstack structure
+struct UserStack {
+  unsigned long ss_sp;
+  unsigned long ss_size;
+  unsigned long ss_flags;
+};
+
+long sys_sigaltstack(long ss_addr, long old_ss_addr, long /*unused*/, long /*unused*/, long /*unused*/,
+                     long /*unused*/) noexcept {
+  using namespace moss::kernel::process;
+
+  Thread *cur = CfsScheduler::get_current_task();
+  if (!cur) {
+    return -errc::ESRCH;
+  }
+
+  // Return current altstack if requested
+  if (old_ss_addr != 0) {
+    UserStack old_ss;
+    old_ss.ss_sp = cur->alt_stack_sp;
+    old_ss.ss_size = cur->alt_stack_size;
+    old_ss.ss_flags = cur->alt_stack_flags;
+    if (cur->on_alt_stack) {
+      old_ss.ss_flags |= ss_flags::SS_ONSTACK;
+    }
+    if (copy_to_user(static_cast<u64>(old_ss_addr), &old_ss, sizeof(old_ss)) < 0) {
+      return -errc::EFAULT;
+    }
+  }
+
+  // Set new altstack if provided
+  if (ss_addr != 0) {
+    // Cannot change altstack while executing on it
+    if (cur->on_alt_stack) {
+      return -errc::EPERM;
+    }
+    UserStack new_ss;
+    if (copy_from_user(&new_ss, static_cast<u64>(ss_addr), sizeof(new_ss)) < 0) {
+      return -errc::EFAULT;
+    }
+    if (new_ss.ss_flags & ss_flags::SS_DISABLE) {
+      cur->alt_stack_sp = 0;
+      cur->alt_stack_size = 0;
+      cur->alt_stack_flags = ss_flags::SS_DISABLE;
+    } else {
+      if (new_ss.ss_size < 2048) { // MINSIGSTKSZ
+        return -errc::ENOMEM;
+      }
+      cur->alt_stack_sp = static_cast<VirtAddr>(new_ss.ss_sp);
+      cur->alt_stack_size = static_cast<usize>(new_ss.ss_size);
+      cur->alt_stack_flags = 0;
+    }
+  }
+
+  return 0;
+}
+
 // ── VFS-backed file system calls ─────────────────────────────────
 
 /// Helper: get the calling process's VFS fd_table (void*).
@@ -2695,11 +2767,11 @@ const SyscallDescriptor SYSCALL_TABLE[static_cast<int>(SyscallNumber::MAX_SYSCAL
     {"kill", handlers::sys_kill, 2, true, "发送信号"},
     {"sigaction", handlers::sys_sigaction, 3, true, "信号处理设置"},
     {"sigprocmask", handlers::sys_sigprocmask, 3, true, "信号掩码操作"},
-    {"sigreturn", handlers::sys_not_implemented, 0, false, "信号返回"},
+    {"sigreturn", handlers::sys_sigreturn, 0, true, "信号返回"},
     {"sched_yield", handlers::sys_sched_yield, 0, true, "Yield CPU"},
     {"sched_getaffinity", handlers::sys_sched_getaffinity, 3, true, "Get CPU affinity"},
     {"sched_setaffinity", handlers::sys_sched_setaffinity, 3, true, "Set CPU affinity"},
-    {"sched_setscheduler", handlers::sys_sched_setscheduler, 3, true, "Set scheduling policy"},
+    {"sigaltstack", handlers::sys_sigaltstack, 2, true, "设置信号备用栈"},
     {"sched_getscheduler", handlers::sys_sched_getscheduler, 1, true, "Get scheduling policy"},
     {"sched_get_priority_max", handlers::sys_sched_get_priority_max, 1, true, "Get max RT priority"},
     {"sched_get_priority_min", handlers::sys_sched_get_priority_min, 1, true, "Get min RT priority"},
