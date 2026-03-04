@@ -16,7 +16,12 @@
 #define SYS_EXECVE 11
 #define SYS_WAIT4 12
 #define SYS_WAITPID 13
+#define SYS_KILL 14
+#define SYS_SIGACTION 15
+#define SYS_SIGPROCMASK 16
+#define SYS_SIGRETURN 17
 #define SYS_SCHED_YIELD 18
+#define SYS_SIGALTSTACK 21
 #define SYS_OPEN 30
 #define SYS_CLOSE 31
 #define SYS_READ 32
@@ -141,6 +146,59 @@ static inline long syscall3(long number, long a0, long a1, long a2) {
 #endif
 
 // ============================================================================
+// Signal constants
+// ============================================================================
+
+#define SIGHUP 1
+#define SIGINT 2
+#define SIGQUIT 3
+#define SIGILL 4
+#define SIGTRAP 5
+#define SIGABRT 6
+#define SIGBUS 7
+#define SIGFPE 8
+#define SIGKILL 9
+#define SIGUSR1 10
+#define SIGSEGV 11
+#define SIGUSR2 12
+#define SIGPIPE 13
+#define SIGALRM 14
+#define SIGTERM 15
+#define SIGCHLD 17
+#define SIGCONT 18
+#define SIGSTOP 19
+
+// Special handler values
+#define SIG_DFL 0
+#define SIG_IGN 1
+
+// sigprocmask 'how' values
+#define SIG_BLOCK 0
+#define SIG_UNBLOCK 1
+#define SIG_SETMASK 2
+
+// sigaction flags
+#define SA_ONSTACK 0x1
+
+// sigaltstack flags
+#define SS_ONSTACK 1
+#define SS_DISABLE 2
+
+// Sigaction structure (must match kernel UserSigaction layout)
+struct sigaction_t {
+  unsigned long handler; // function pointer or SIG_DFL(0)/SIG_IGN(1)
+  unsigned long mask;    // signals to block during handler
+  unsigned long flags;   // SA_ONSTACK, etc.
+};
+
+// Sigaltstack structure (must match kernel UserStack layout)
+struct stack_t {
+  unsigned long ss_sp;
+  unsigned long ss_size;
+  unsigned long ss_flags;
+};
+
+// ============================================================================
 // POSIX-like wrapper functions
 // ============================================================================
 
@@ -178,6 +236,20 @@ static inline long dup2(int oldfd, int newfd) { return syscall2(SYS_DUP2, oldfd,
 static inline long pipe(long pipefd[2]) { return syscall1(SYS_PIPE, (long)pipefd); }
 
 static inline long sched_yield(void) { return syscall0(SYS_SCHED_YIELD); }
+
+static inline long kill(long pid, int sig) { return syscall2(SYS_KILL, pid, (long)sig); }
+
+static inline long moss_sigaction(int sig, const struct sigaction_t *act, struct sigaction_t *oldact) {
+  return syscall3(SYS_SIGACTION, (long)sig, (long)act, (long)oldact);
+}
+
+static inline long sigprocmask(int how, const unsigned long *set, unsigned long *oldset) {
+  return syscall3(SYS_SIGPROCMASK, (long)how, (long)set, (long)oldset);
+}
+
+static inline long sigaltstack(const struct stack_t *ss, struct stack_t *old_ss) {
+  return syscall2(SYS_SIGALTSTACK, (long)ss, (long)old_ss);
+}
 
 static inline long clock_gettime_ns(unsigned long *ns) { return syscall1(SYS_CLOCK_GETTIME, (long)ns); }
 
