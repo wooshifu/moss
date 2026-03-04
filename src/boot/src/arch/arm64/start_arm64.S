@@ -861,7 +861,7 @@ lower_el_sync_dispatch:
     // ---- System call dispatch ----
     //
     // User registers are saved on the stack.  Remap to C calling convention:
-    //   system_call_handler(nr, a0, a1, a2, a3, a4, a5)
+    //   system_call_handler(nr, a0, a1, a2, a3, a4, a5, trap_frame)
     //
     // Saved register frame offsets:
     //   x0 at SP+(0*8), x1 at SP+(1*8), ..., x8 at SP+(8*8)
@@ -873,6 +873,7 @@ lower_el_sync_dispatch:
     ldr     x4, [sp, #(3  * 8)]        // arg4 (a3)  ← saved x3
     ldr     x5, [sp, #(4  * 8)]        // arg5 (a4)  ← saved x4
     ldr     x6, [sp, #(5  * 8)]        // arg6 (a5)  ← saved x5
+    mov     x7, sp                      // arg7: trap frame pointer for signal delivery
     bl      system_call_handler
 
     // Store return value into the saved x0 slot.

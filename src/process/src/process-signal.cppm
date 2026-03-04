@@ -55,6 +55,19 @@ constexpr u64 sigmask(u32 signo) noexcept { return (signo > 0 && signo < NSIG) ?
 inline constexpr u64 UNCATCHABLE_MASK = sigmask(SIGKILL) | sigmask(SIGSTOP);
 } // namespace sig
 
+// sigaction flags
+namespace sa_flags {
+inline constexpr u32 SA_ONSTACK = 0x1; // use alternate signal stack
+inline constexpr u32 SA_RESTART = 0x2; // restart interrupted syscalls (reserved)
+inline constexpr u32 SA_SIGINFO = 0x4; // reserved for siginfo_t
+} // namespace sa_flags
+
+// sigaltstack flags
+namespace ss_flags {
+inline constexpr u32 SS_ONSTACK = 1;
+inline constexpr u32 SS_DISABLE = 2;
+} // namespace ss_flags
+
 // ============================================================================
 // Signal action — per-signal handler configuration
 // ============================================================================
@@ -115,6 +128,38 @@ struct SignalState {
 
   constexpr SignalState() noexcept = default;
 };
+
+// SignalFrame — saved on user stack during signal delivery.
+// Layout must match exactly what setup_sigframe() writes and sigreturn reads.
+//
+// Memory layout (all fields naturally aligned):
+//   0x000: magic (8)
+//   0x008: x0-x30 GP registers (31 x 8 = 248)
+//   0x100: elr (8), spsr (8), sp (8)
+//   0x118: fpsr (8), fpcr (8)
+//   0x128: neon Q0-Q31 (32 x 16 = 512)
+//   0x328: signo (8), saved_mask (8)
+//   0x338: trampoline (8), padding (16)
+//   Total: 0x350 = 848, 16-byte aligned
+struct SignalFrame {
+  static constexpr u64 MAGIC = 0xDEAD'5164'5346'524DULL;
+  static constexpr usize FRAME_SIZE = 848;
+
+  u64 magic;          // 0x000
+  u64 gp_regs[31];   // 0x008
+  u64 elr;           // 0x100
+  u64 spsr;          // 0x108
+  u64 sp;            // 0x110
+  u64 fpsr;          // 0x118
+  u64 fpcr;          // 0x120
+  u64 neon[64];      // 0x128: Q0-Q31 as 64 x u64 (32 x 128-bit regs)
+  u64 signo;         // 0x328
+  u64 saved_mask;    // 0x330
+  u32 trampoline[2]; // 0x338
+  u32 pad_[4];       // 0x340: pad to 848
+};
+
+static_assert(sizeof(SignalFrame) == SignalFrame::FRAME_SIZE, "SignalFrame size must match FRAME_SIZE");
 
 // ============================================================================
 // Signal operations — send, check, deliver
@@ -223,5 +268,14 @@ void init_signal_state(Process *proc) noexcept;
 // This is the main signal delivery entry point.
 // Returns true if the thread should be terminated (SIGKILL or default terminate).
 bool do_signal_checkpoint(Thread *thread) noexcept;
+
+// Set up a signal frame on the user stack and modify the trap frame
+// to dispatch to the signal handler on eret.
+// Returns true on success, false if the user stack is invalid.
+bool setup_sigframe(Thread *thread, u32 signo, const Sigaction &sa) noexcept;
+
+// Restore interrupted context from sigframe on user stack (sigreturn syscall).
+// Returns the original x0 value from the sigframe.
+long do_sigreturn(Thread *thread) noexcept;
 
 } // namespace moss::kernel::process

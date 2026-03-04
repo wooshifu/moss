@@ -82,7 +82,7 @@ extern "C" {
 [[noreturn]] void kernel_main(void) noexcept;
 void early_debug_print(const char *message) noexcept;
 long system_call_handler(long syscall_number, long arg0, long arg1, long arg2, long arg3, long arg4,
-                         long arg5) noexcept;
+                         long arg5, long trap_frame) noexcept;
 void irq_handler_c(void) noexcept;
 void kernel_page_fault_handler(unsigned long long esr, unsigned long long far_addr, unsigned long long elr) noexcept;
 void user_page_fault_handler(unsigned long long esr, unsigned long long far_addr, unsigned long long elr) noexcept;
