@@ -131,8 +131,17 @@ void early_debug_print(const char *message) noexcept { ::moss::kernel::hal::uart
 
 // Syscall entry
 long system_call_handler(long syscall_number, long arg0, long arg1, long arg2, long arg3, long arg4,
-                         long arg5) noexcept {
+                         long arg5, long trap_frame) noexcept {
   using namespace moss::kernel;
+
+  // Store trap frame pointer in current thread for signal delivery
+  {
+    using namespace process;
+    Thread *cur = CfsScheduler::get_current_task();
+    if (cur != nullptr) {
+      cur->trap_frame = static_cast<u64>(trap_frame);
+    }
+  }
 
   // syscall 0 = debug_print (raw UART output from userspace)
   if (syscall_number == 0) {
