@@ -724,6 +724,9 @@ inline constexpr usize STACK_SIZE = 32ULL * 1024;             // 32KB default us
 inline constexpr usize STACK_MAX = 8ULL * 1024 * 1024;        // 8MB max stack (auto-growth limit)
 inline constexpr usize HEAP_INIT = 64ULL * 1024;              // 64KB initial heap
 inline constexpr VirtAddr MMAP_BASE = 0x0000001000000000ULL;  // 64GB — anonymous mmap region start
+// Sigreturn trampoline: a single read+exec page containing the sigreturn stub.
+// Mapped into every user process; signal handler LR points here.
+inline constexpr VirtAddr SIGRETURN_PAGE = 0x0000000180000000ULL; // 6GB — below CODE_BASE
 
 #if defined(MOSS_ARCH_RISCV)
 // Runtime variable — set by init_riscv_address_layout() during early boot.

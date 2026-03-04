@@ -765,7 +765,17 @@ long sys_execve(long pathname_addr, long argv_addr, long /* envp */, long /*unus
     }
   }
 
-  // 9. Add stack VMA (demand-zero)
+  // 9a. Sigreturn trampoline VMA (read + exec) — signal handler LR points here
+  {
+    static constexpr u8 sigreturn_stub[] = {
+        0x28, 0x02, 0x80, 0xD2, // mov x8, #0x11 (17 = SYS_SIGRETURN)
+        0x01, 0x00, 0x00, 0xD4, // svc #0
+    };
+    new_as->add_vma(user_layout::SIGRETURN_PAGE, user_layout::SIGRETURN_PAGE + PAGE_SIZE,
+                    vma_flags::READ | vma_flags::EXEC, VmaType::CODE, sigreturn_stub, 0, sizeof(sigreturn_stub));
+  }
+
+  // 9b. Add stack VMA (demand-zero)
   const VirtAddr stack_bottom = user_layout::STACK_TOP - user_layout::STACK_SIZE;
   new_as->add_vma(stack_bottom, user_layout::STACK_TOP, vma_flags::READ | vma_flags::WRITE | vma_flags::DEMAND_ZERO,
                   VmaType::STACK);
