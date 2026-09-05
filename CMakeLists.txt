@@ -143,6 +143,13 @@ set(MOSS_WARNING_SUPPRESSIONS
     -Wno-covered-switch-default
     -Wno-nrvo
 )
+# Lifetime annotation suggestions are API adoption hints; keep dangling-pointer diagnostics enabled. Probe support so
+# older supported Clang versions do not fail on an unknown warning option.
+include(CheckCXXCompilerFlag)
+check_cxx_compiler_flag("-Wlifetime-safety-suggestions" MOSS_HAS_LIFETIME_SAFETY_SUGGESTIONS)
+if(MOSS_HAS_LIFETIME_SAFETY_SUGGESTIONS)
+    list(APPEND MOSS_WARNING_SUPPRESSIONS -Wno-lifetime-safety-suggestions)
+endif()
 string(JOIN " " MOSS_WARNING_STR ${MOSS_WARNING_SUPPRESSIONS})
 # Compiler flags configuration for strict code quality enforcement -Weverything: Enables ALL available compiler warnings
 # to ensure maximum code quality and maintainability. This is especially critical for kernel-level development where
