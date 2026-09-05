@@ -22,7 +22,18 @@ target_sources(
 
 # Architecture-specific memory management settings
 if(MOSS_TARGET_ARCH STREQUAL "ARM64")
-    target_compile_options(moss_mm PRIVATE -mgeneral-regs-only)
+    # CMake rebuilds moss.fdt with these options. Its vendored C headers need warning suppressions in that BMI too.
+    target_compile_options(
+        moss_mm
+        PRIVATE -mgeneral-regs-only
+                -Wno-c99-extensions
+                -Wno-documentation
+                -Wno-documentation-unknown-command
+                -Wno-implicit-int-conversion
+                -Wno-old-style-cast
+                -Wno-shorten-64-to-32
+                -Wno-sign-conversion
+    )
 endif()
 
 target_link_libraries(

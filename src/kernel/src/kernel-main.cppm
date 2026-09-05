@@ -593,9 +593,6 @@ private:
       return gic_result;
     }
 
-    // Set global GIC pointer so other subsystems can access it
-    ::moss::kernel::interrupts::g_gic = gic_;
-
     // Create device manager
     device_manager_ = new drivers::DeviceManager();
     if (!device_manager_) {
@@ -603,6 +600,9 @@ private:
       gic_ = nullptr;
       return VoidResult{ErrorCode::OutOfMemory};
     }
+
+    // Publish the GIC only after allocations that can roll it back have succeeded.
+    ::moss::kernel::interrupts::g_gic = gic_;
 
     // Initialize multi-architecture syscall support
     log::klog::info("Initializing multi-architecture syscall support...");

@@ -155,11 +155,7 @@ long system_call_handler(long syscall_number, long arg0, long arg1, long arg2, l
 
 // IRQ handler called from assembly irq_trampoline.
 // Kept minimal — no logging in hot ISR path.
-static u64 irq_count = 0;
-
 void irq_handler_c(void) noexcept {
-  irq_count++;
-
   namespace intc_hal = ::moss::kernel::hal::intc;
   namespace timer_hal = ::moss::kernel::hal::timer;
 
