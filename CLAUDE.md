@@ -43,7 +43,8 @@ Use latest C++26 standard and cutting-edge C++ features for development:
 
 提交前必须通过所有检查，零错误零警告：
 
-- **Lint**：`uv run scripts/format.py lint`（clang-tidy + ruff，`WarningsAsErrors: '*'`）
+- **C++ Lint**：`uv run lint.py --check`（系统 clang-tidy，`WarningsAsErrors: '*'`；其他架构用 `--preset <name>`）
+- **Python Lint**：`uv run ruff check .`
 - **Format**：`uv run scripts/format.py format --check`（clang-format + cmake-format + ruff format）
 
 详见 `moss-quality-gate` skill。
