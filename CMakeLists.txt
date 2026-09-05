@@ -162,11 +162,9 @@ set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Weverything -Werror ${MOSS_WARNING_STR}
 
 # 优化级别设置
 set(CMAKE_CXX_FLAGS_DEBUG "-Og -g3")
-set(CMAKE_CXX_FLAGS_RELEASE "-g0 -O3 -DNDEBUG")
 
 # 汇编文件调试信息：生成 DWARF .debug_line 行号表， 使 GDB 的 next/step 命令能在汇编代码中正常工作。 （.type/.size 只提供 ELF 符号边界，行号表才是 GDB 单步调试的依据）
 set(CMAKE_ASM_FLAGS_DEBUG "-g3")
-set(CMAKE_ASM_FLAGS_RELEASE "-g0")
 
 # === 架构特定配置 ===
 if(MOSS_TARGET_ARCH STREQUAL "ARM64")
@@ -246,9 +244,8 @@ target_link_libraries(
             moss_vfs
 )
 
-# 设置输出目录；Release 构建时让链接器直接 strip 符号
+# 设置输出目录
 set_target_properties(moss.elf PROPERTIES RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
-target_link_options(moss.elf PRIVATE $<$<CONFIG:Release>:-Wl,--strip-all>)
 
 # LLVM tool paths are set by moss_check_prerequisites() in ensure_prerequisites.cmake
 set(OBJDUMP_CMD "${MOSS_LLVM_OBJDUMP}")

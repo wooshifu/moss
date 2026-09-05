@@ -41,13 +41,9 @@ asm(".section .text.boot, \"ax\"\n"
     "    bl _test_entry\n"
     "    b .\n");
 #elif defined(MOSS_ARCH_X86_64)
-asm(".section .text.boot, \"ax\"\n"
-    ".global _start\n"
-    "_start:\n"
-    "    leaq _stack_top(%rip), %rsp\n"
-    "    call _test_entry\n"
-    "    hlt\n"
-    "    jmp .\n");
+// The test target reuses the production Xen PVH bootstrap.  QEMU enters that
+// bootstrap in 32-bit mode; it establishes long mode before calling the test
+// adapters below.
 #elif defined(MOSS_ARCH_RISCV)
 asm(".section .text.boot, \"ax\"\n"
     ".global _start\n"
@@ -61,6 +57,15 @@ extern "C" [[noreturn]] void _test_entry() noexcept {
   clear_bss();
   test_kernel_main();
 }
+
+#if defined(MOSS_ARCH_X86_64)
+// The standalone tests do not exercise privilege transitions, so they do not
+// need the production TSS setup performed after entering long mode.
+extern "C" void x86_64_setup_tss() noexcept {}
+
+// Adapter expected by the shared production bootstrap.
+extern "C" [[noreturn]] void early_main(void *) { _test_entry(); }
+#endif
 
 // ============================================================================
 // Test Main Function

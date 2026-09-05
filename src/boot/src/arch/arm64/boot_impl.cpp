@@ -497,15 +497,14 @@ private:
   static constexpr u32 UART_FR = 0x018;
   static constexpr u32 UART_FR_TXFF = (1 << 5);
 
-  volatile u32 *const uart_base_;
+  [[nodiscard]] static volatile u32 *registers() noexcept { return reinterpret_cast<volatile u32 *>(UART_BASE); }
 
 public:
-  EarlyUart() : uart_base_(reinterpret_cast<volatile u32 *>(UART_BASE)) {}
-
   void put_char(char c) const {
-    while (uart_base_[UART_FR / 4] & UART_FR_TXFF) {
+    volatile u32 *uart_base = registers();
+    while (uart_base[UART_FR / 4] & UART_FR_TXFF) {
     }
-    uart_base_[UART_DR / 4] = static_cast<u32>(c);
+    uart_base[UART_DR / 4] = static_cast<u32>(c);
   }
 
   void put_string(const char *str) const {
