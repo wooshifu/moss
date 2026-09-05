@@ -32,6 +32,7 @@ uv run lint.py --check --preset riscv-qemu-debug
 
 # Restrict files or check changes since merge-base(HEAD, origin/master).
 uv run lint.py --check src/core -j 4
+uv run lint.py --check src/userspace --preset arm64-qemu-debug
 uv run lint.py --check --changed
 
 # Collect fixes in parallel, apply once, rebuild BMIs, and check again.
@@ -49,12 +50,13 @@ following the repository's CMake preset layout; configure that preset first.
 updates build artifacts. `--fix-errors` allows fixes despite clang-tidy compiler
 diagnostics and requires `--fix`; CMake build failures always stop execution.
 
-Full checks use Git-indexed C/C++ files under `src/`, including `.cppm` and tests,
+Full checks use Git-indexed C/C++ files under `src/`, including `.cppm`, tests and userspace,
 intersected with the selected compilation database. `lint.toml` excludes vendored
 libfdt sources and header diagnostics. Missing entries are reported explicitly:
-other architectures' boot implementations and the four userspace C programs are
-currently outside each database's coverage. Lint does not invent compile flags
-for those files.
+other architectures' boot implementations are outside each database's coverage.
+The four userspace C programs use CMake compilation targets, so their actual
+target and freestanding flags are available to the same lint command. Lint does
+not invent compile flags for missing entries.
 
 `--changed` includes committed, staged, unstaged and untracked changes, falling
 back to HEAD if `origin/master` is unavailable. Headers, module interfaces and
