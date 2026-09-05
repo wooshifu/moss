@@ -98,7 +98,8 @@ SECTIONS
      * vector table installation, BSS clearing, stack setup, and jump to kernel_main.
      */
     .text.boot : {
-        *(.text.boot)
+        KEEP(*(.text.boot))
+        KEEP(*(.text.boot.*))
     }
 
     /* ---- Kernel Code Section ----
@@ -146,12 +147,16 @@ SECTIONS
         __init_array_end = .;
     }
 
+    /* Last byte that must be present in the flat on-disk image.  Everything
+     * below this marker is runtime-only storage and must remain NOLOAD. */
+    _kernel_file_end = .;
+
     /* ---- BSS Section (Zero-Initialized Data) ----
      * Uninitialized globals and statics.  Occupies no space in the ELF file;
      * the boot code (start_arm64.S) zeros this region before calling kernel_main.
      * Also includes .bss.* subsections and COMMON symbols (C tentative definitions).
      */
-    .bss : ALIGN(4K) {
+    .bss (NOLOAD) : ALIGN(4K) {
         _bss_start = .;
         *(.bss)
         *(.bss.*)
@@ -209,10 +214,11 @@ SECTIONS
      * Everything after this address is free RAM available for runtime allocation
      * (page frame allocator, slab allocator, user-space memory, etc.)
      */
-    _kernel_end = .;
+    _kernel_memory_end = .;
+    _kernel_end = _kernel_memory_end;
 
     /* Total kernel image size in bytes (used by Linux ARM64 Image header) */
-    _kernel_image_size = . - ORIGIN(RAM);
+    _kernel_image_size = _kernel_memory_end - ORIGIN(RAM);
 
     /* ---- Discarded Sections ----
      * Remove sections that are unnecessary for a freestanding kernel:
@@ -226,6 +232,9 @@ SECTIONS
         *(.eh_frame*)
     }
 }
+
+ASSERT(_kernel_file_end <= _bss_start, "file-backed section placed after ARM64 runtime-only storage")
+ASSERT(_kernel_memory_end <= ORIGIN(RAM) + LENGTH(RAM), "ARM64 kernel exceeds its RAM region")
 
 /* =============================================================================
  * Exported Symbols for C++ Code

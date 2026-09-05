@@ -27,10 +27,10 @@ namespace moss::kernel {
             *uart_base = *str++;
         }
 #elif defined(MOSS_ARCH_X86_64)
-        // x86_64 serial port output (COM1 at 0x3F8, 8-bit data register)
-        volatile unsigned char* serial = reinterpret_cast<volatile unsigned char*>(0x3F8);
+        // x86_64 serial port output (COM1 data register at I/O port 0x3F8)
         while (*str) {
-            *serial = static_cast<unsigned char>(*str++);
+            const auto value = static_cast<unsigned char>(*str++);
+            asm volatile("outb %0, %1" : : "a"(value), "Nd"(static_cast<unsigned short>(0x3F8)));
         }
 #elif defined(MOSS_ARCH_RISCV)
         // RISC-V UART output (QEMU virt platform)
@@ -75,13 +75,16 @@ namespace moss::kernel {
         // x86_64: use ISA debug exit device (port 0x501)
         // QEMU -device isa-debug-exit maps port writes to exit code
         // Formula: QEMU exit code = (value << 1) | 1
-        // For exit_code=0: write 0 -> QEMU exits with 1 (handled in script)
+        // Reserve values below 0x10 for real QEMU failures so the runner can
+        // distinguish a successful test exit from QEMU's ordinary exit code 1.
+        constexpr int qemu_debug_exit_base = 0x10;
+        const int qemu_exit_value = qemu_debug_exit_base + exit_code;
         asm volatile(
             "mov $0x501, %%dx\n"
             "mov %0, %%eax\n"
             "outb %%al, %%dx\n"
             :
-            : "r"(exit_code)
+            : "r"(qemu_exit_value)
             : "eax", "edx"
         );
 #elif defined(MOSS_ARCH_RISCV)
@@ -115,4 +118,3 @@ namespace moss::kernel {
 // ========================================================================
 
 // Note: using namespace moved to individual test files to avoid header hygiene issues
-
