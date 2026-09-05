@@ -1,5 +1,14 @@
 cmake_minimum_required(VERSION 3.31)
 
+if(NOT MOSS_CONFIGURED_BY_PRESET)
+    message(FATAL_ERROR "Moss must be configured with a CMake preset. Run: cmake --preset <name>")
+endif()
+
+set(_SUPPORTED_BUILD_TYPES "Debug" "Release" "RelWithDebInfo")
+if(NOT CMAKE_BUILD_TYPE IN_LIST _SUPPORTED_BUILD_TYPES)
+    message(FATAL_ERROR "Unsupported CMAKE_BUILD_TYPE: ${CMAKE_BUILD_TYPE}. Supported: ${_SUPPORTED_BUILD_TYPES}")
+endif()
+
 project(
     moss
     VERSION 0.9.9
@@ -97,74 +106,6 @@ else()
     set(MOSS_QEMU_RUNNER "bash")
     set(MOSS_QEMU_RUNNER_ARGS "${CMAKE_BINARY_DIR}/run_qemu.sh")
 endif()
-
-# === 通用内核编译标志 ===
-# freestanding 环境标志（所有架构通用）
-set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -ffreestanding -fno-exceptions -fno-rtti")
-# 内核开发编译器标志配置
-#
-# -fno-stack-protector: 禁用栈保护机制 原因: 内核代码运行在特权模式下,栈保护需要额外的运行时支持(如__stack_chk_fail函数) 在内核初始化阶段这些支持可能尚未就绪,且内核有自己的安全机制
-#
-# -fno-pic: 禁用位置无关代码(Position Independent Code) 原因: 内核代码运行在固定的虚拟地址空间,不需要重定位 PIC会引入额外的间接寻址开销,影响内核性能
-# 内核使用自己的加载和链接机制,不需要动态链接器支持
-#
-# -fno-pie: 禁用位置无关可执行文件(Position Independent Executable) 原因: 内核不是普通的用户空间可执行文件,有固定的加载地址
-# PIE是为了实现ASLR(地址空间布局随机化),但内核有自己的KASLR机制 避免生成不必要的重定位信息,减小内核镜像大小
-set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -fno-stack-protector -fno-pic -fno-pie")
-
-# === Clang -Weverything 终极严格模式 ===
-set(MOSS_WARNING_SUPPRESSIONS
-    # C++ 兼容性警告（项目专门使用 C++26）
-    -Wno-c++-compat
-    -Wno-c++98-compat
-    -Wno-c++98-compat-pedantic
-    -Wno-c++11-compat
-    -Wno-c++14-compat
-    -Wno-c++17-compat
-    -Wno-c++20-compat
-    # 不适用于内核开发的警告
-    -Wno-padded
-    -Wno-unsafe-buffer-usage
-    # GNU/Microsoft 扩展警告
-    -Wno-gnu-zero-variadic-macro-arguments
-    -Wno-gnu-anonymous-struct
-    -Wno-nested-anon-types
-    # 内核环境中常见但可接受的警告
-    -Wno-missing-prototypes
-    -Wno-missing-variable-declarations
-    -Wno-global-constructors
-    -Wno-exit-time-destructors
-    -Wno-weak-vtables
-    -Wno-inline
-    # 宏和预处理器警告
-    -Wno-reserved-identifier
-    -Wno-reserved-macro-identifier
-    # Switch 和 NRVO 相关
-    -Wno-covered-switch-default
-    -Wno-nrvo
-)
-# Lifetime annotation suggestions are API adoption hints; keep dangling-pointer diagnostics enabled. Probe support so
-# older supported Clang versions do not fail on an unknown warning option.
-include(CheckCXXCompilerFlag)
-check_cxx_compiler_flag("-Wlifetime-safety-suggestions" MOSS_HAS_LIFETIME_SAFETY_SUGGESTIONS)
-if(MOSS_HAS_LIFETIME_SAFETY_SUGGESTIONS)
-    list(APPEND MOSS_WARNING_SUPPRESSIONS -Wno-lifetime-safety-suggestions)
-endif()
-string(JOIN " " MOSS_WARNING_STR ${MOSS_WARNING_SUPPRESSIONS})
-# Compiler flags configuration for strict code quality enforcement -Weverything: Enables ALL available compiler warnings
-# to ensure maximum code quality and maintainability. This is especially critical for kernel-level development where
-# bugs can have severe system-wide consequences. -Werror: Treats all warnings as errors, enforcing zero-tolerance policy
-# for potential issues during the build process.
-#
-# Note: The -Weverything flag is used to maintain the rigor required for kernel code development, where reliability,
-# safety, and correctness are paramount.
-set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Weverything -Werror ${MOSS_WARNING_STR}")
-
-# 优化级别设置
-set(CMAKE_CXX_FLAGS_DEBUG "-Og -g3")
-
-# 汇编文件调试信息：生成 DWARF .debug_line 行号表， 使 GDB 的 next/step 命令能在汇编代码中正常工作。 （.type/.size 只提供 ELF 符号边界，行号表才是 GDB 单步调试的依据）
-set(CMAKE_ASM_FLAGS_DEBUG "-g3")
 
 # === 架构特定配置 ===
 if(MOSS_TARGET_ARCH STREQUAL "ARM64")

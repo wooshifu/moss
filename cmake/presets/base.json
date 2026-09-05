@@ -20,12 +20,39 @@
                 "CMAKE_ASM_COMPILER": "clang",
                 "CMAKE_SYSTEM_NAME": "Generic",
                 "MOSS_TARGET_PLATFORM": "QEMU_VIRT",
-                "CMAKE_C_FLAGS": "",
-                "CMAKE_CXX_FLAGS": "",
-                "CMAKE_EXE_LINKER_FLAGS": "-fuse-ld=lld -nostdlib -nostartfiles -static -T ${sourceDir}/src/linker/kernel_arm64.ld",
+                "MOSS_CONFIGURED_BY_PRESET": "ON",
                 "CMAKE_SHARED_LINKER_FLAGS": "-fuse-ld=lld -nostdlib"
             },
             "environment": {
+            }
+        },
+        {
+            "name": "build-debug",
+            "hidden": true,
+            "cacheVariables": {
+                "CMAKE_BUILD_TYPE": "Debug"
+            }
+        },
+        {
+            "name": "build-release",
+            "hidden": true,
+            "cacheVariables": {
+                "CMAKE_BUILD_TYPE": "Release",
+                "CMAKE_C_FLAGS_RELEASE": "-g0 -Os -DNDEBUG -ffunction-sections -fdata-sections",
+                "CMAKE_CXX_FLAGS_RELEASE": "-g0 -Os -DNDEBUG -ffunction-sections -fdata-sections",
+                "CMAKE_ASM_FLAGS_RELEASE": "-g0",
+                "CMAKE_EXE_LINKER_FLAGS_RELEASE": "-Wl,-z,max-page-size=0x1000 -Wl,--gc-sections -Wl,--strip-all"
+            }
+        },
+        {
+            "name": "build-relwithdebinfo",
+            "hidden": true,
+            "cacheVariables": {
+                "CMAKE_BUILD_TYPE": "RelWithDebInfo",
+                "CMAKE_C_FLAGS_RELWITHDEBINFO": "-O2 -g3 -DNDEBUG -ffunction-sections -fdata-sections",
+                "CMAKE_CXX_FLAGS_RELWITHDEBINFO": "-O2 -g3 -DNDEBUG -ffunction-sections -fdata-sections",
+                "CMAKE_ASM_FLAGS_RELWITHDEBINFO": "-g3",
+                "CMAKE_EXE_LINKER_FLAGS_RELWITHDEBINFO": "-Wl,-z,max-page-size=0x1000 -Wl,--gc-sections"
             }
         }
     ]
