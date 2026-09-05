@@ -28,7 +28,10 @@ HeapAllocVoidResult RuntimeHeapAllocator::initialize_heap(VirtAddr heap_start, u
   heap_start_ = heap_start & ~(PAGE_SIZE - 1);
   usize aligned_size = align_size(initial_size, PAGE_SIZE);
   heap_end_ = heap_start_ + aligned_size;
-  heap_limit_ = heap_start_ + (256ULL * 1024 * 1024); // 最大256MB堆空间
+  heap_limit_ = moss::abi::linker::heap_end();
+  if (heap_end_ < heap_start_ || heap_end_ > heap_limit_) {
+    return HeapAllocVoidResult{HeapAllocError::OutOfMemory};
+  }
 
   // 映射初始堆页面
   auto map_result = map_heap_pages(heap_start_, aligned_size);
@@ -161,7 +164,7 @@ HeapAllocVoidResult RuntimeHeapAllocator::expand_heap(usize additional_size) noe
   VirtAddr new_end = heap_end_ + aligned_size;
 
   // 检查是否超过堆限制
-  if (new_end > heap_limit_) {
+  if (new_end < heap_end_ || new_end > heap_limit_) {
     return HeapAllocVoidResult{HeapAllocError::OutOfMemory};
   }
 

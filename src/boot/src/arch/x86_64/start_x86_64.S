@@ -138,7 +138,7 @@ _pvh_start:
     // Enable long mode in EFER MSR
     mov $0xC0000080, %ecx       // IA32_EFER
     rdmsr
-    or  $0x100, %eax            // EFER.LME (bit 8)
+    or  $0x900, %eax            // EFER.LME and NXE (user data PTEs use NX)
     wrmsr
 
     // Enable paging in CR0 (activates long mode since EFER.LME is set)
@@ -252,6 +252,7 @@ stack_bottom:
 stack_top:
 
 // PVH boot info (saved from 32-bit mode)
+.section .data.boot_info, "aw"
 .align 8
 pvh_boot_info_ptr:
     .quad 0                             // 64-bit pointer to hvm_start_info structure
@@ -321,3 +322,67 @@ g_tss:
 
 // Prevent executable stack warning
 .section .note.GNU-stack,"",@progbits
+
+// Relocated by the BSP to physical 0x8000. All intra-page references use
+// offsets from the copy; the final target is an absolute 64-bit kernel address.
+.section .text.boot.ap, "ax"
+.balign 16
+.global x86_ap_trampoline_start
+.global x86_ap_trampoline_end
+.code16
+x86_ap_trampoline_start:
+    cli
+    cld
+    xor %ax, %ax
+    mov %ax, %ds
+    mov %ax, %es
+    mov %ax, %ss
+    lgdt (0x8000 + .Lap_gdtr - x86_ap_trampoline_start)
+    mov %cr0, %eax
+    or $1, %eax
+    mov %eax, %cr0
+    ljmpl $0x08, $(0x8000 + .Lap_protected - x86_ap_trampoline_start)
+.code32
+.Lap_protected:
+    mov $0x10, %ax
+    mov %ax, %ds
+    mov %ax, %es
+    mov %ax, %ss
+    mov (0x8000 + .Lap_cr3 - x86_ap_trampoline_start), %eax
+    mov %eax, %cr3
+    mov %cr4, %eax
+    or $0x620, %eax
+    mov %eax, %cr4
+    mov $0xC0000080, %ecx
+    rdmsr
+    or $0x900, %eax
+    wrmsr
+    mov %cr0, %eax
+    and $~0xC, %eax
+    or $0x80000003, %eax
+    mov %eax, %cr0
+    ljmpl $0x18, $(0x8000 + .Lap_long - x86_ap_trampoline_start)
+.code64
+.Lap_long:
+    mov (0x8000 + .Lap_stack - x86_ap_trampoline_start), %rsp
+    movabs $x86_secondary_entry, %rax
+    jmp *%rax
+.balign 8
+.Lap_gdt:
+    .quad 0
+    .quad 0x00CF9A000000FFFF
+    .quad 0x00CF92000000FFFF
+    .quad 0x00AF9A000000FFFF
+.Lap_gdtr:
+    .word 31
+    .long (0x8000 + .Lap_gdt - x86_ap_trampoline_start)
+.balign 8
+.global x86_ap_cr3
+x86_ap_cr3:
+.Lap_cr3:
+    .quad 0
+.global x86_ap_stack
+x86_ap_stack:
+.Lap_stack:
+    .quad 0
+x86_ap_trampoline_end:

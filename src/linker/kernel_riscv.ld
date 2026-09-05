@@ -88,7 +88,7 @@ SECTIONS
 
     .heap (NOLOAD) : ALIGN(4K) {
         _heap_start = .;
-        . += 4K;
+        . += 8M;
         _heap_end = .;
     }
 

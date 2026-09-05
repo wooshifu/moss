@@ -16,6 +16,8 @@ extern unsigned char g_tss[];                         // 104-byte TSS in start_x
 extern unsigned long long gdt_table[];                // GDT in start_x86_64.S .data
 extern unsigned char _stack_top_addr[];               // Boot stack top (linker symbol)
 void early_debug_print(const char *message) noexcept; // UART output (kernel_main.cpp)
+extern unsigned char x86_ap_trampoline_start[], x86_ap_trampoline_end[], x86_ap_cr3[], x86_ap_stack[];
+[[noreturn]] void x86_secondary_entry() noexcept;
 
 // Page fault handler in mm module (page_fault.cpp)
 void x86_64_page_fault_handler(unsigned long long error_code, unsigned long long cr2, unsigned long long rip) noexcept;
@@ -48,6 +50,28 @@ struct [[gnu::packed]] TSS64 {
   u16 reserved3;
   u16 iomap_base;
 };
+
+struct alignas(16) X86CpuRuntime {
+  u64 kernel_rsp;
+  u64 user_rsp_scratch;
+  TSS64 *tss;
+};
+static X86CpuRuntime cpu_runtime[16];
+static TSS64 ap_tss[16];
+static u64 ap_gdt[16][7];
+alignas(4096) static u8 ap_stacks[16][32768];
+
+static void set_gs_runtime(u32 cpu, TSS64 *tss) noexcept {
+  cpu_runtime[cpu].tss = tss;
+  u64 base = reinterpret_cast<u64>(&cpu_runtime[cpu]);
+  asm volatile("wrmsr" ::"c"(0xC0000101U), "a"(static_cast<u32>(base)), "d"(static_cast<u32>(base >> 32)) : "memory");
+}
+
+extern "C" void x86_64_set_kernel_stack(u64 top) noexcept {
+  auto cpu = moss::kernel::arch::get_current_cpu_id();
+  cpu_runtime[cpu].kernel_rsp = top;
+  cpu_runtime[cpu].tss->rsp0 = top;
+}
 
 extern "C" void x86_64_setup_tss() noexcept {
   auto *tss = reinterpret_cast<TSS64 *>(g_tss);
@@ -83,6 +107,7 @@ extern "C" void x86_64_setup_tss() noexcept {
 
   // Load the Task Register with TSS selector (0x28)
   asm volatile("ltr %w0" ::"r"(static_cast<u16>(0x28)));
+  set_gs_runtime(0, tss);
 }
 
 namespace moss::boot {
@@ -201,7 +226,7 @@ static u64 get_timestamp_counter() noexcept {
   return (static_cast<u64>(high) << 32) | low;
 }
 
-static u32 get_current_cpu_id_impl() noexcept { return 0; }
+static u32 get_current_cpu_id_impl() noexcept { return moss::kernel::arch::get_current_cpu_id(); }
 
 // Boot stage status update
 void update_boot_stage(BootStage stage, ::moss::kernel::ErrorCode error) noexcept {
@@ -213,7 +238,7 @@ void update_boot_stage(BootStage stage, ::moss::kernel::ErrorCode error) noexcep
     g_boot_status.stage_timestamps[stage_index] = get_timestamp_counter();
 
     if (error == ::moss::kernel::ErrorCode::Success) {
-      g_boot_status.completed_stages_mask |= (1u << stage_index);
+      g_boot_status.completed_stages_mask |= (1U << stage_index);
     }
   }
 }
@@ -221,7 +246,7 @@ void update_boot_stage(BootStage stage, ::moss::kernel::ErrorCode error) noexcep
 } // namespace moss::boot
 
 // x86_64BootImpl member function implementations
-::moss::kernel::VoidResult moss::boot::X86_64BootImpl::hardware_early_init(BootContext &ctx) noexcept {
+::moss::kernel::VoidResult moss::boot::X86BootImpl::hardware_early_init(BootContext &ctx) noexcept {
   moss::boot::update_boot_stage(moss::boot::BootStage::HardwareInit);
 
   moss::boot::EarlyVGA::clear();
@@ -234,8 +259,11 @@ void update_boot_stage(BootStage stage, ::moss::kernel::ErrorCode error) noexcep
 
   // PVH start_info is typically passed at a fixed location by QEMU
   // Check common PVH start_info locations
-  for (PhysAddr pvh_addr = 0x6000; pvh_addr <= 0x10000; pvh_addr += 0x1000) {
-    const auto *start_info = reinterpret_cast<const HvmStartInfo *>(pvh_addr);
+  const auto *start_info = static_cast<const HvmStartInfo *>(ctx.device_tree_ptr);
+  if (!start_info || start_info->magic != 0x336ec578 || start_info->version < 1) {
+    return ::moss::kernel::VoidResult{::moss::kernel::ErrorCode::InvalidArgument};
+  }
+  {
 
     if (start_info->magic == 0x336ec578 && start_info->nr_modules > 0) {
       moss::boot::EarlyVGA::put_string("Found PVH start_info with modules!\n");
@@ -252,7 +280,6 @@ void update_boot_stage(BootStage stage, ::moss::kernel::ErrorCode error) noexcep
         moss::boot::EarlyVGA::put_string(" size=");
         moss::boot::early_print_hex(modlist->size);
         moss::boot::EarlyVGA::put_string("\n");
-        break;
       }
     }
   }
@@ -260,8 +287,8 @@ void update_boot_stage(BootStage stage, ::moss::kernel::ErrorCode error) noexcep
   // Fallback if PVH info not found
   if (!found_pvh_initramfs) {
     moss::boot::EarlyVGA::put_string("No PVH initramfs found, using fallback\n");
-    moss::fdt::g_platform_info.initrd_start = 0x01000000;              // 16MB
-    moss::fdt::g_platform_info.initrd_end = 0x01000000 + (100 * 1024); // 100K buffer for safety
+    moss::fdt::g_platform_info.initrd_start = 0;
+    moss::fdt::g_platform_info.initrd_end = 0;
   }
 
   ctx.cpu_id = moss::boot::get_current_cpu_id_impl();
@@ -289,13 +316,41 @@ void update_boot_stage(BootStage stage, ::moss::kernel::ErrorCode error) noexcep
       u32 ecx1 = 0;
       u32 edx1 = 0;
       asm volatile("cpuid" : "=a"(eax1), "=b"(ebx1), "=c"(ecx1), "=d"(edx1) : "a"(1) : "memory");
-      u32 logical_cpus = (ebx1 >> 16) & 0xFF;
+      // The microvm profile uses one socket and dense APIC IDs. fw_cfg's
+      // NB_CPUS describes present CPUs, unlike CPUID's topology capacity.
+      asm volatile("outw %0, %1" ::"a"(static_cast<u16>(5)), "Nd"(static_cast<u16>(0x510)));
+      u8 low = 0;
+      u8 high = 0;
+      asm volatile("inb %1, %0" : "=a"(low) : "Nd"(static_cast<u16>(0x511)));
+      asm volatile("inb %1, %0" : "=a"(high) : "Nd"(static_cast<u16>(0x511)));
+      u32 logical_cpus = low | (static_cast<u32>(high) << 8);
+      if (logical_cpus == 0 || logical_cpus > 16) {
+        return ::moss::kernel::VoidResult{::moss::kernel::ErrorCode::InvalidArgument};
+      }
       info.cpu_count = (logical_cpus > 0) ? logical_cpus : 1;
     }
-    info.memory_regions[0] = {moss::kernel::platform::ram_base(), moss::kernel::platform::ram_size()};
-    info.memory_region_count = 1;
-    info.total_memory_start = moss::kernel::platform::ram_base();
-    info.total_memory_size = moss::kernel::platform::ram_size();
+    struct PvhMemoryEntry {
+      u64 base;
+      u64 size;
+      u32 type;
+      u32 reserved;
+    };
+    if (!start_info->memmap_paddr || start_info->memmap_entries > 128) {
+      return ::moss::kernel::VoidResult{::moss::kernel::ErrorCode::InvalidArgument};
+    }
+    const auto *map = reinterpret_cast<const PvhMemoryEntry *>(start_info->memmap_paddr);
+    for (u32 i = 0; i < start_info->memmap_entries; ++i) {
+      if (map[i].type == 1 && map[i].size) {
+        if (info.memory_region_count == moss::fdt::MAX_MEMORY_REGIONS) {
+          return ::moss::kernel::VoidResult{::moss::kernel::ErrorCode::InvalidArgument};
+        }
+        info.memory_regions[info.memory_region_count++] = {.base = map[i].base, .size = map[i].size};
+        info.total_memory_size += map[i].size;
+      }
+    }
+    info.memory_map_valid = info.memory_region_count > 0;
+    info.total_memory_start = info.memory_regions[0].base;
+    info.bootargs = reinterpret_cast<const char *>(start_info->cmdline_paddr);
 
     ctx.memory_start = info.total_memory_start;
     ctx.memory_size = info.total_memory_size;
@@ -309,7 +364,7 @@ void update_boot_stage(BootStage stage, ::moss::kernel::ErrorCode error) noexcep
   return ::moss::kernel::VoidResult{};
 }
 
-::moss::kernel::VoidResult moss::boot::X86_64BootImpl::setup_memory_management(BootContext & /*ctx*/) noexcept {
+::moss::kernel::VoidResult moss::boot::X86BootImpl::setup_memory_management(BootContext & /*ctx*/) noexcept {
   moss::boot::update_boot_stage(moss::boot::BootStage::MemoryManagement);
 
   moss::boot::early_print("=== x86_64 Memory Management Setup ===\n");
@@ -326,8 +381,13 @@ void update_boot_stage(BootStage stage, ::moss::kernel::ErrorCode error) noexcep
 
   auto pfa_result = ::moss::kernel::mm::PageFrameAllocator::initialize();
   if (!pfa_result) {
-    moss::boot::early_print("  WARNING: PageFrameAllocator init failed\n");
+    return ::moss::kernel::VoidResult{::moss::kernel::ErrorCode::OutOfMemory};
   }
+  auto high_result = ::moss::kernel::mm::PageTableManager::setup_kernel_high_half_tables();
+  if (!high_result) {
+    return high_result;
+  }
+  ::moss::kernel::mm::PageTableManager::enable_dynamic_alloc();
 
   // Initialize runtime heap allocator with a 256 KB region
   VirtAddr heap_start = moss::abi::linker::heap_start();
@@ -438,7 +498,7 @@ extern "C" void x86_64_interrupt_handler(u64 vector, u64 error_code, [[maybe_unu
   }
 }
 
-::moss::kernel::VoidResult moss::boot::X86_64BootImpl::setup_interrupts_and_exceptions(BootContext &ctx) noexcept {
+::moss::kernel::VoidResult moss::boot::X86BootImpl::setup_interrupts_and_exceptions(BootContext &ctx) noexcept {
   (void)ctx;
   moss::boot::update_boot_stage(moss::boot::BootStage::InterruptsExceptions);
 
@@ -473,7 +533,7 @@ extern "C" void x86_64_interrupt_handler(u64 vector, u64 error_code, [[maybe_unu
   return ::moss::kernel::VoidResult{};
 }
 
-::moss::kernel::VoidResult moss::boot::X86_64BootImpl::setup_smp_support(BootContext &ctx) noexcept {
+::moss::kernel::VoidResult moss::boot::X86BootImpl::setup_smp_support(BootContext &ctx) noexcept {
   moss::boot::update_boot_stage(moss::boot::BootStage::SmpSupport);
 
   moss::boot::early_print("=== x86_64 SMP Support Setup ===\n");
@@ -487,6 +547,7 @@ extern "C" void x86_64_interrupt_handler(u64 vector, u64 error_code, [[maybe_unu
   // count and boot only the BSP.
   u32 detected = moss::fdt::g_platform_info.cpu_count;
   ctx.total_cpus = detected;
+  moss::kernel::g_num_cpus = detected;
 
   moss::boot::early_print("  Detected CPUs: ");
   moss::boot::early_print_hex(detected);
@@ -495,7 +556,7 @@ extern "C" void x86_64_interrupt_handler(u64 vector, u64 error_code, [[maybe_unu
   return ::moss::kernel::VoidResult{};
 }
 
-::moss::kernel::VoidResult moss::boot::X86_64BootImpl::finalize_arch_init(BootContext &ctx) noexcept {
+::moss::kernel::VoidResult moss::boot::X86BootImpl::finalize_arch_init(BootContext &ctx) noexcept {
   (void)ctx;
   moss::boot::update_boot_stage(moss::boot::BootStage::ArchFinalize);
 
@@ -509,14 +570,14 @@ extern "C" void x86_64_interrupt_handler(u64 vector, u64 error_code, [[maybe_unu
   return ::moss::kernel::VoidResult{};
 }
 
-::moss::kernel::VoidResult moss::boot::X86_64BootImpl::detect_memory_layout(BootContext &ctx) noexcept {
+::moss::kernel::VoidResult moss::boot::X86BootImpl::detect_memory_layout(BootContext &ctx) noexcept {
   (void)ctx;
   return ::moss::kernel::VoidResult{};
 }
 
-u32 moss::boot::X86_64BootImpl::get_current_cpu_id() noexcept { return moss::boot::get_current_cpu_id_impl(); }
+u32 moss::boot::X86BootImpl::get_current_cpu_id() noexcept { return moss::boot::get_current_cpu_id_impl(); }
 
-[[noreturn]] void moss::boot::X86_64BootImpl::arch_panic(const char *message) noexcept {
+[[noreturn]] void moss::boot::X86BootImpl::arch_panic(const char *message) noexcept {
   moss::boot::early_print("\n=== x86_64 PANIC ===\n");
   moss::boot::early_print(message);
   moss::boot::early_print("\n====================\n");
@@ -535,8 +596,109 @@ namespace moss::boot {
 moss::kernel::interrupts::GenericInterruptController *g_gic_controller = nullptr;
 bool g_gic_hardware_available = false;
 
-void activate_secondary_cpus() noexcept { early_print("[x86_64] SMP activation not yet implemented\n"); }
+static void ap_delay() noexcept {
+  // INIT must precede SIPI by at least 10 ms. A bounded PIT channel-0
+  // countdown is independent of the uncalibrated TSC and leaves IRQ0 masked.
+  auto out = [](u16 port, u8 value) { asm volatile("outb %0, %1" ::"a"(value), "Nd"(port)); };
+  auto in = [](u16 port) {
+    u8 value;
+    asm volatile("inb %1, %0" : "=a"(value) : "Nd"(port));
+    return value;
+  };
+  out(0x43, 0x30);
+  out(0x40, 0x00);
+  out(0x40, 0x40);
+  for (u32 i = 0; i < 10000000; ++i) {
+    out(0x43, 0xE2); // Read-back status only, channel 0.
+    if (in(0x40) & 0x80) {
+      return;
+    }
+  }
+}
 
-u32 wait_for_all_cpus_active([[maybe_unused]] u32 timeout_ms) noexcept { return 1; }
+void activate_secondary_cpus() noexcept {
+  auto *copy = reinterpret_cast<u8 *>(0x8000);
+  u64 size = static_cast<u64>(x86_ap_trampoline_end - x86_ap_trampoline_start);
+  if (size > 4096) {
+    return;
+  }
+  for (u64 i = 0; i < size; ++i) {
+    copy[i] = x86_ap_trampoline_start[i];
+  }
+  u64 cr3;
+  asm volatile("mov %%cr3, %0" : "=r"(cr3));
+  *reinterpret_cast<u64 *>(copy + (x86_ap_cr3 - x86_ap_trampoline_start)) = cr3;
+  auto *icr_lo = reinterpret_cast<volatile u32 *>(0xFEE00300ULL);
+  auto *icr_hi = reinterpret_cast<volatile u32 *>(0xFEE00310ULL);
+  for (u32 cpu = 1; cpu < moss::kernel::g_num_cpus; ++cpu) {
+    *reinterpret_cast<u64 *>(copy + (x86_ap_stack - x86_ap_trampoline_start)) =
+        reinterpret_cast<u64>(&ap_stacks[cpu][32768]);
+    moss::kernel::arch::memory_barrier();
+    *icr_hi = cpu << 24;
+    *icr_lo = 0x0000C500; // INIT, level assert.
+    ap_delay();
+    *icr_hi = cpu << 24;
+    *icr_lo = 0x00008500; // INIT deassert.
+    ap_delay();
+    *icr_hi = cpu << 24;
+    *icr_lo = 0x00000608; // SIPI vector 8, physical 0x8000.
+    ap_delay();
+    if (!(__atomic_load_n(&online_cpu_mask, __ATOMIC_ACQUIRE) & (1ULL << cpu))) {
+      *icr_hi = cpu << 24;
+      *icr_lo = 0x00000608;
+    }
+    for (u32 retry = 0; retry < 100000000; ++retry) {
+      if (__atomic_load_n(&online_cpu_mask, __ATOMIC_ACQUIRE) & (1ULL << cpu)) {
+        break;
+      }
+      moss::kernel::arch::cpu_yield();
+    }
+  }
+}
+
+u32 wait_for_all_cpus_active([[maybe_unused]] u32 timeout_ms) noexcept {
+  return static_cast<u32>(__builtin_popcountll(__atomic_load_n(&online_cpu_mask, __ATOMIC_ACQUIRE)));
+}
 
 } // namespace moss::boot
+
+extern "C" [[noreturn]] void x86_secondary_entry() noexcept {
+  auto cpu = moss::kernel::arch::get_current_cpu_id();
+  if (cpu == 0 || cpu >= 16) {
+    for (;;) {
+      asm volatile("cli; hlt");
+    }
+  }
+  for (u32 i = 0; i < 5; ++i) {
+    ap_gdt[cpu][i] = gdt_table[i];
+  }
+  auto *tss = &ap_tss[cpu];
+  tss->rsp0 = reinterpret_cast<u64>(&ap_stacks[cpu][32768]);
+  tss->iomap_base = sizeof(TSS64);
+  u64 base = reinterpret_cast<u64>(tss);
+  ap_gdt[cpu][5] = (sizeof(TSS64) - 1) | ((base & 0xFFFFFF) << 16) | (0x89ULL << 40) | (((base >> 24) & 0xFF) << 56);
+  ap_gdt[cpu][6] = base >> 32;
+  struct [[gnu::packed]] {
+    u16 limit;
+    u64 base;
+  } gdtr{.limit = 55, .base = reinterpret_cast<u64>(ap_gdt[cpu])};
+  asm volatile("lgdt %0" ::"m"(gdtr) : "memory");
+  asm volatile("pushq $8; leaq 1f(%%rip), %%rax; pushq %%rax; lretq; 1:" ::: "rax", "memory");
+  asm volatile("ltr %w0" ::"r"(static_cast<u16>(0x28)));
+  set_gs_runtime(cpu, tss);
+  asm volatile("lidt %0" ::"m"(g_idtr));
+  *reinterpret_cast<volatile u32 *>(0xFEE000F0ULL) = 0x1FF;
+  *reinterpret_cast<volatile u32 *>(0xFEE00080ULL) = 0;
+  *reinterpret_cast<volatile u32 *>(0xFEE003E0ULL) = 3;
+  *reinterpret_cast<volatile u32 *>(0xFEE00320ULL) = 48;
+  u64 entry = reinterpret_cast<u64>(&moss::abi::syscall_entry_point);
+  asm volatile("wrmsr" ::"c"(0xC0000082U), "a"(static_cast<u32>(entry)), "d"(static_cast<u32>(entry >> 32)));
+  asm volatile("wrmsr" ::"c"(0xC0000081U), "a"(0U), "d"(0x00100008U));
+  asm volatile("wrmsr" ::"c"(0xC0000084U), "a"(0x700U), "d"(0U));
+  u32 lo, hi;
+  asm volatile("rdmsr" : "=a"(lo), "=d"(hi) : "c"(0xC0000080U));
+  asm volatile("wrmsr" ::"c"(0xC0000080U), "a"(lo | 1U), "d"(hi));
+  moss::boot::record_cpu_online();
+  moss::kernel::hal::timer::set_compare(moss::kernel::hal::timer::read_counter() + 10000000);
+  moss::kernel::process::secondary_cpu_schedule_loop(cpu);
+}

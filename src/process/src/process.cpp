@@ -367,6 +367,12 @@ KernelResult<unique_ptr<AddressSpace>> create_user_address_space() noexcept {
   }
 #endif
 
+#if defined(MOSS_ARCH_X86_64)
+  for (usize i = 256; i < mm::PageTable::ENTRIES_PER_TABLE; ++i) {
+    user_pgd->entries[i] = kernel_pgd->entries[i];
+  }
+#endif
+
   // 3. Allocate ASID and create AddressSpace object
   u16 asid = allocate_asid();
   auto address_space = make_unique<AddressSpace>(pgd_phys, asid);

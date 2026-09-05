@@ -183,15 +183,10 @@ SECTIONS
         _stack_top = .;
     }
 
-    /* ---- Kernel Heap Placeholder ----
-     * NOLOAD: reserves a small placeholder region for the runtime heap.
-     * The actual heap is managed by RuntimeHeapAllocator which may extend
-     * beyond this 4K region into free RAM after _kernel_end.
-     * The 4K placeholder prevents overlap with the page table region below.
-     */
+    /* Reserved identity-mapped runtime heap, disjoint from page allocator RAM. */
     .heap (NOLOAD) : ALIGN(4K) {
         _heap_start = .;
-        . += 4K;
+        . += 8M;
         _heap_end = .;
     }
 

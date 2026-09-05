@@ -23,12 +23,18 @@ drivers::DeviceManager *g_device_manager = nullptr;
 
 extern "C" {
 
+[[gnu::weak]] void moss_validation_boot() noexcept {}
+[[gnu::weak]] long moss_validation_call([[maybe_unused]] long op, [[maybe_unused]] long arg1,
+                                        [[maybe_unused]] long arg2) noexcept {
+  return -38;
+}
+
 // Kernel main entry (called from boot assembly)
 [[noreturn]] void kernel_main(void) noexcept {
   using namespace moss::kernel;
 
   log::klog::info("=== MOSS kernel main starting ===");
-  log::klog::info("single-core mode (SMP disabled)");
+  log::klog::info("detected CPUs: {}", g_num_cpus);
 
   // Create kernel instance
   log::klog::info("creating kernel instance...");
@@ -141,6 +147,11 @@ long system_call_handler(long syscall_number, long arg0, long arg1, long arg2, l
     if (cur != nullptr) {
       cur->trap_frame = static_cast<u64>(trap_frame);
     }
+  }
+
+  // Only the dedicated validation image overrides this ENOSYS hook.
+  if (syscall_number == 511) {
+    return moss_validation_call(arg0, arg1, arg2);
   }
 
   // syscall 0 = debug_print (raw UART output from userspace)

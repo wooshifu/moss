@@ -11,8 +11,9 @@
 
 static int starts_with(const char *str, const char *prefix) {
   while (*prefix) {
-    if (*str != *prefix)
+    if (*str != *prefix) {
       return 0;
+    }
     str++;
     prefix++;
   }
@@ -21,8 +22,9 @@ static int starts_with(const char *str, const char *prefix) {
 
 // Skip leading whitespace, return pointer to first non-space
 static const char *skip_spaces(const char *s) {
-  while (*s == ' ' || *s == '\t')
+  while (*s == ' ' || *s == '\t') {
     s++;
+  }
   return s;
 }
 
@@ -82,7 +84,7 @@ static void cmd_pid(void) {
 // ============================================================================
 
 // Maximum number of arguments (including program name)
-#define MAX_ARGS 16
+enum { MAX_ARGS = 16 };
 
 static void run_external(const char *cmd) {
   // Parse command line into argv[] (split on whitespace).
@@ -103,21 +105,26 @@ static void run_external(const char *cmd) {
   char *p = argbuf;
   while (*p && argc < MAX_ARGS) {
     // Skip whitespace
-    while (*p == ' ' || *p == '\t')
+    while (*p == ' ' || *p == '\t') {
       p++;
-    if (*p == '\0')
+    }
+    if (*p == '\0') {
       break;
+    }
     argv[argc++] = p;
     // Find end of token
-    while (*p && *p != ' ' && *p != '\t')
+    while (*p && *p != ' ' && *p != '\t') {
       p++;
-    if (*p)
+    }
+    if (*p) {
       *p++ = '\0';
+    }
   }
   argv[argc] = (char *)0; // NULL-terminate argv
 
-  if (argc == 0)
+  if (argc == 0) {
     return;
+  }
 
   // Build absolute path from argv[0]: prepend '/' if needed
   char path[64];
@@ -172,18 +179,21 @@ void _start(void) {
 
     // Read one line from stdin (line-buffered by console_read)
     long n = read(0, buf, sizeof(buf) - 1);
-    if (n <= 0)
+    if (n <= 0) {
       continue;
+    }
 
     // Strip trailing newline
-    if (n > 0 && buf[n - 1] == '\n')
+    if (n > 0 && buf[n - 1] == '\n') {
       n--;
+    }
     buf[n] = '\0';
 
     // Skip empty lines
     const char *cmd = skip_spaces(buf);
-    if (*cmd == '\0')
+    if (*cmd == '\0') {
       continue;
+    }
 
     // Dispatch built-in commands
     if (streq(cmd, "exit")) {

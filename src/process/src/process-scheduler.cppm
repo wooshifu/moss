@@ -1965,47 +1965,31 @@ private:
       task->context.sp = task->kernel_stack_base != 0 ? task->kernel_stack_top() : 0;
 
 #elif defined(MOSS_ARCH_X86_64)
-      // x86_64: stash user entry in callee-saved registers.
-      // context_switch preserves RBX, R12-R15 (System V ABI).
-      // user_iret_trampoline reads: RBX=pc, R12=sp, R13=rdi, R14=rsi
+      // Keep a complete user context above the initial kernel stack frame.
       {
-        u64 user_pc = task->context.pc;
-        u64 user_sp = task->context.sp;
-        u64 user_rdi = task->context.rdi; // arg0
-        u64 user_rsi = task->context.rsi; // arg1
-
+        u64 saved_address = (task->kernel_stack_top() - sizeof(CpuContext)) & ~15ULL;
+        auto *saved = reinterpret_cast<CpuContext *>(saved_address);
+        *saved = task->context;
         task->context = CpuContext{};
-        task->context.rbx = user_pc;  // callee-saved: user entry point
-        task->context.r12 = user_sp;  // callee-saved: user stack pointer
-        task->context.r13 = user_rdi; // callee-saved: user RDI (arg0)
-        task->context.r14 = user_rsi; // callee-saved: user RSI (arg1)
-
+        task->context.rbx = saved_address;
         u64 trampoline_addr = reinterpret_cast<u64>(&user_iret_trampoline);
         task->context.pc = trampoline_addr;
-        task->context.sp = task->kernel_stack_base != 0 ? task->kernel_stack_top() : 0;
+        task->context.sp = saved_address;
       }
 
 #elif defined(MOSS_ARCH_RISCV)
-      // RISC-V: stash user entry in callee-saved registers.
-      // context_switch preserves s0-s11 (x8-x9, x18-x27).
-      // user_sret_trampoline reads: s2=pc, s3=sp, s4=a0, s5=a1
+      // The top 16 bytes remain reserved for the CPU identity on trap entry.
       {
-        u64 user_pc = task->context.pc;
-        u64 user_sp = task->context.sp;
-        // CpuContext RISC-V layout: x[10]=a0, x[11]=a1
-        u64 user_a0 = task->context.x[10]; // arg0
-        u64 user_a1 = task->context.x[11]; // arg1
-
+        u64 saved_address = (task->kernel_stack_top() - 16 - sizeof(CpuContext)) & ~15ULL;
+        auto *saved = reinterpret_cast<CpuContext *>(saved_address);
+        *saved = task->context;
         task->context = CpuContext{};
-        task->context.x[18] = user_pc; // s2 = user entry point
-        task->context.x[19] = user_sp; // s3 = user stack pointer
-        task->context.x[20] = user_a0; // s4 = user a0
-        task->context.x[21] = user_a1; // s5 = user a1
-
+        task->context.x[18] = saved_address;
+        task->context.x[19] = task->kernel_stack_top() - 16;
         u64 trampoline_addr = reinterpret_cast<u64>(&user_sret_trampoline);
         task->context.pc = trampoline_addr;
         task->context.x[1] = trampoline_addr; // ra = ret target
-        task->context.sp = task->kernel_stack_base != 0 ? task->kernel_stack_top() : 0;
+        task->context.sp = saved_address;
       }
 #endif
       // Fall through to the normal context_switch path below.
@@ -2052,18 +2036,14 @@ private:
         // On trap from U-mode, the entry code swaps sp↔sscratch to get kernel stack.
         if (task->kernel_stack_base != 0) {
           u64 kstack_top = task->kernel_stack_top();
-          asm volatile("csrw sscratch, %0" ::"r"(kstack_top));
+          arch::set_user_kernel_stack(kstack_top);
         }
 #elif defined(MOSS_ARCH_X86_64)
         // Update TSS RSP0 so hardware interrupts from ring 3 use this task's kernel stack.
         // Also update the SYSCALL kernel stack global for syscall_entry_point.
         if (task->kernel_stack_base != 0) {
           u64 kstack_top = task->kernel_stack_top();
-          // TSS RSP0 is at offset 4 in the 104-byte TSS structure
-          auto *rsp0_ptr = reinterpret_cast<u64 *>(&moss::abi::x86_64::g_tss[4]);
-          *rsp0_ptr = kstack_top;
-          // Kernel stack for SYSCALL entry (global variable in x86_64_syscall.S)
-          moss::abi::x86_64::g_kernel_rsp = kstack_top;
+          moss::abi::x86_64::set_kernel_stack(kstack_top);
         }
 #endif
       }
@@ -2095,57 +2075,14 @@ public:
   // and switches to it.  Never returns to the caller because the exited
   // task's context is no longer valid.
   [[noreturn]] void schedule_after_exit() noexcept {
+    arch::disable_interrupts();
     u32 cpu = get_current_cpu_id();
-
-    // Clear current task — the old one is dead
     set_current_task(nullptr);
-
-    // CRITICAL: Switch SP to a safe per-CPU exit stack BEFORE any
-    // context_switch.  We are currently running on the exited process's
-    // kernel stack, which will be freed by the parent's waitpid →
-    // terminate_process → cleanup_threads → free_pages().
-    // If we don't switch, context_switch saves this SP into
-    // bootstrap_contexts_[cpu], and later restoration reads from
-    // freed/reused memory → use-after-free crash.
-    {
-      u64 exit_sp = reinterpret_cast<u64>(exit_stacks_.get_cpu(cpu).end());
-#if defined(MOSS_ARCH_ARM64)
-      asm volatile("mov sp, %0" ::"r"(exit_sp) : "memory");
-#elif defined(MOSS_ARCH_X86_64)
-      asm volatile("mov %0, %%rsp" ::"r"(exit_sp) : "memory");
-#elif defined(MOSS_ARCH_RISCV)
-      asm volatile("mv sp, %0" ::"r"(exit_sp) : "memory");
-#endif
-    }
-
-    // Ensure interrupts are enabled so timer ticks can fire and
-    // re-enqueue tasks while we idle.
-    arch::enable_interrupts();
-
-    // Loop: find a runnable task, switch to it.  When bootstrap context
-    // is restored (the task was preempted away or exited), try next.
-    while (true) {
-      Thread *next = pick_next_task(cpu);
-      if (next != nullptr) {
-        dequeue_task(next);
-        context_switch_to_task(next);
-        set_current_task(nullptr);
-      } else {
-        // No runnable tasks: tickless idle until reschedule IPI.
-        // Only disable the timer if there are no pending HrTimers
-        // (e.g. nanosleep).  If there are pending timers, keep the
-        // timer enabled so the ISR can fire and wake blocked threads.
-        bool timer_disabled = false;
-        if (!timer::TimerSubsystem::instance().has_pending_timers()) {
-          hal::timer::disable();
-          timer_disabled = true;
-        }
-        arch::cpu_idle_once();
-        if (timer_disabled) {
-          hal::timer::enable();
-        }
-      }
-    }
+    // The bootstrap context already owns a live scheduler stack. Do not
+    // overwrite it with a dying task, or change SP inside a C++ frame.
+    CpuContext discarded{};
+    context_switch(&discarded, &bootstrap_contexts_.get_cpu(cpu));
+    arch::kernel_panic("terminated task resumed");
   }
 };
 

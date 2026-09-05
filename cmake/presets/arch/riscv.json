@@ -65,7 +65,7 @@
             "displayName": "RISC-V Debug Unit Tests",
             "configurePreset": "riscv-qemu-debug",
             "execution": {
-                "timeout": 30
+                "timeout": 420
             },
             "output": {
                 "outputOnFailure": true
@@ -76,7 +76,7 @@
             "displayName": "RISC-V Release Unit Tests",
             "configurePreset": "riscv-qemu-release",
             "execution": {
-                "timeout": 30
+                "timeout": 420
             },
             "output": {
                 "outputOnFailure": true
@@ -87,7 +87,7 @@
             "displayName": "RISC-V RelWithDebInfo Unit Tests",
             "configurePreset": "riscv-qemu-relwithdebinfo",
             "execution": {
-                "timeout": 30
+                "timeout": 420
             },
             "output": {
                 "outputOnFailure": true

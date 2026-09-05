@@ -78,8 +78,9 @@ static void print_header(struct TopInfo *info) {
 // Print memory information
 static void print_memory(struct TopInfo *info) {
   unsigned long page_kb = info->page_size / 1024;
-  if (page_kb == 0)
+  if (page_kb == 0) {
     page_kb = 4; // default 4KB pages
+  }
 
   unsigned long total_kb = info->mem_total_pages * page_kb;
   unsigned long used_kb = info->mem_used_pages * page_kb;
@@ -87,20 +88,22 @@ static void print_memory(struct TopInfo *info) {
 
   // Calculate usage percentage
   unsigned long usage_pct = 0;
-  if (info->mem_total_pages > 0)
+  if (info->mem_total_pages > 0) {
     usage_pct = (info->mem_used_pages * 100) / info->mem_total_pages;
+  }
 
   print(ESC_BOLD "Memory:" ESC_RESET " ");
   print_ulong(total_kb);
   print("KB total  ");
 
   // Color used memory: green < 50%, yellow 50-80%, red > 80%
-  if (usage_pct > 80)
+  if (usage_pct > 80) {
     print(ESC_RED);
-  else if (usage_pct > 50)
+  } else if (usage_pct > 50) {
     print(ESC_YELLOW);
-  else
+  } else {
     print(ESC_GREEN);
+  }
   print_ulong(used_kb);
   print("KB used");
   print(ESC_RESET "  ");
@@ -114,27 +117,30 @@ static void print_memory(struct TopInfo *info) {
 // Print CPU load information with usage percentages
 static void print_cpus(struct TopInfo *info, struct TopInfo *prev) {
   unsigned long nr_cpus = info->nr_cpus;
-  if (nr_cpus > TOP_MAX_CPUS)
+  if (nr_cpus > TOP_MAX_CPUS) {
     nr_cpus = TOP_MAX_CPUS;
+  }
 
   // Calculate total CPU usage across all CPUs
   unsigned long total_load = 0;
   unsigned long active_cpus = 0;
   for (unsigned long i = 0; i < nr_cpus; i++) {
     total_load += info->cpu_load[i];
-    if (info->cpu_nr_running[i] > 0)
+    if (info->cpu_nr_running[i] > 0) {
       active_cpus++;
+    }
   }
   unsigned long avg_load = (nr_cpus > 0) ? (total_load / nr_cpus) : 0;
 
   // Overall CPU usage line
   print(ESC_BOLD "CPU:" ESC_RESET " avg_load=");
-  if (avg_load > 70)
+  if (avg_load > 70) {
     print(ESC_RED);
-  else if (avg_load > 40)
+  } else if (avg_load > 40) {
     print(ESC_YELLOW);
-  else
+  } else {
     print(ESC_GREEN);
+  }
   print_ulong(avg_load);
   print("%");
   print(ESC_RESET);
@@ -145,16 +151,18 @@ static void print_cpus(struct TopInfo *info, struct TopInfo *prev) {
 
   // Total running tasks
   unsigned long total_running = 0;
-  for (unsigned long i = 0; i < nr_cpus; i++)
+  for (unsigned long i = 0; i < nr_cpus; i++) {
     total_running += info->cpu_nr_running[i];
+  }
   print("  tasks_running=");
   print_ulong(total_running);
   print("\n");
 
   // Per-CPU lines: 4 CPUs per line
   for (unsigned long i = 0; i < nr_cpus; i++) {
-    if (i % 4 == 0)
+    if (i % 4 == 0) {
       print("  ");
+    }
 
     // CPU label
     print("CPU");
@@ -163,12 +171,13 @@ static void print_cpus(struct TopInfo *info, struct TopInfo *prev) {
 
     // Load with color coding
     unsigned long load = info->cpu_load[i];
-    if (load > 70)
+    if (load > 70) {
       print(ESC_RED);
-    else if (load > 40)
+    } else if (load > 40) {
       print(ESC_YELLOW);
-    else
+    } else {
       print(ESC_GREEN);
+    }
     print_num_padded(load, 3);
     print("%");
     print(ESC_RESET);
@@ -182,20 +191,23 @@ static void print_cpus(struct TopInfo *info, struct TopInfo *prev) {
       if (dt > 0) {
         unsigned long idle_delta = info->cpu_idle_time_ns[i] - prev->cpu_idle_time_ns[i];
         unsigned long busy_pct = 0;
-        if (dt > idle_delta)
+        if (dt > idle_delta) {
           busy_pct = ((dt - idle_delta) * 100) / dt;
-        if (busy_pct > 100)
+        }
+        if (busy_pct > 100) {
           busy_pct = 100;
+        }
         print(" use=");
         print_ulong(busy_pct);
         print("%");
       }
     }
 
-    if ((i + 1) % 4 == 0 || i == nr_cpus - 1)
+    if ((i + 1) % 4 == 0 || i == nr_cpus - 1) {
       print("\n");
-    else
+    } else {
       print(" | ");
+    }
   }
 }
 
@@ -256,20 +268,21 @@ static void print_process_table(struct TopInfo *info, struct TopInfo *prev) {
     // State
     print(" ");
     unsigned long st = p->state;
-    if (st == 2)
+    if (st == 2) {
       print(ESC_GREEN); // Running
-    else if (st == 3)
+    } else if (st == 3) {
       print(ESC_YELLOW); // Blocked
-    else if (st >= 4)
+    } else if (st >= 4) {
       print(ESC_RED); // Dead/Zombie
+    }
     print(state_name(st));
     print(ESC_RESET);
     print("  ");
 
     // Name
-    if (p->name[0])
+    if (p->name[0]) {
       print(p->name);
-    else {
+    } else {
       print("pid=");
       print_ulong((unsigned long)p->pid);
     }
@@ -297,22 +310,25 @@ void _start(long argc, char **argv) {
     if (argv[i][0] == '-' && argv[i][1] == 'd' && argv[i][2] == '\0') {
       if (i + 1 < argc) {
         interval_ms = parse_ulong(argv[++i]);
-        if (interval_ms == 0)
+        if (interval_ms == 0) {
           interval_ms = 100; // minimum 100ms
+        }
       }
     } else if (argv[i][0] == '-' && argv[i][1] == 't' && argv[i][2] == '\0') {
       if (i + 1 < argc) {
         duration_s = parse_ulong(argv[++i]);
-        if (duration_s == 0)
+        if (duration_s == 0) {
           duration_s = 1;
+        }
       }
     }
   }
 
   unsigned long sleep_ns = interval_ms * 1000000UL;
   unsigned long total_iterations = (duration_s * 1000) / interval_ms;
-  if (total_iterations == 0)
+  if (total_iterations == 0) {
     total_iterations = 1;
+  }
 
   // Two TopInfo buffers for delta calculation
   struct TopInfo info_a;

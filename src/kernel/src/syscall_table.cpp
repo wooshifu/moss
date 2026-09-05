@@ -270,13 +270,17 @@ long sys_fork(long /*unused*/, long /*unused*/, long /*unused*/, long /*unused*/
   // RISC-V trap frame layout (from riscv_syscall.S, FRAME_SIZE = 288):
   //   OFF_SEPC = 0xE0: saved sepc (already +4 to skip ecall instruction)
   //   OFF_USP  = 0xF0: saved user sp (from sscratch swap on trap entry)
-  // The trap frame sits at kernel_stack_top - 288.
+  // The final 16 bytes preserve the CPU identity across user-mode traps.
   {
     u64 kstop = parent_thread->kernel_stack_top();
-    const auto *trap_frame = reinterpret_cast<const u64 *>(kstop - 288);
+    const auto *trap_frame = reinterpret_cast<const u64 *>(kstop - 16 - 288);
     user_pc = trap_frame[0xE0 / 8]; // sepc (+4, past ecall)
     user_sp = trap_frame[0xF0 / 8]; // user sp
   }
+#elif defined(MOSS_ARCH_X86_64)
+  const auto *syscall_frame = reinterpret_cast<const u64 *>(parent_thread->kernel_stack_top() - 128);
+  user_pc = syscall_frame[1];
+  user_sp = syscall_frame[15];
 #endif
 
   // 3. Create child process
@@ -315,6 +319,10 @@ long sys_fork(long /*unused*/, long /*unused*/, long /*unused*/, long /*unused*/
     asm volatile("dsb ish" ::: "memory");
     asm volatile("isb" ::: "memory");
   }
+#elif defined(MOSS_ARCH_RISCV)
+  asm volatile("sfence.vma" ::: "memory");
+#elif defined(MOSS_ARCH_X86_64)
+  asm volatile("mov %0, %%cr3" ::"r"(parent_as->pgd_phys) : "memory");
 #endif
 
   // 7. Copy VMAs from parent to child via RcuList iteration
@@ -368,11 +376,43 @@ long sys_fork(long /*unused*/, long /*unused*/, long /*unused*/, long /*unused*/
     child_thread->context.x[0] = 0;
   }
 #elif defined(MOSS_ARCH_X86_64)
-  child_thread->context = parent_thread->context;
-  child_thread->context.rax = 0; // x86_64: rax = fork return
+  auto &context = child_thread->context;
+  context.rax = 0;
+  context.r11 = syscall_frame[0];
+  context.rcx = syscall_frame[1];
+  context.r9 = syscall_frame[2];
+  context.r8 = syscall_frame[3];
+  context.r10 = syscall_frame[4];
+  context.rdx = syscall_frame[5];
+  context.rsi = syscall_frame[6];
+  context.rdi = syscall_frame[7];
+  context.r15 = syscall_frame[9];
+  context.r14 = syscall_frame[10];
+  context.r13 = syscall_frame[11];
+  context.r12 = syscall_frame[12];
+  context.rbx = syscall_frame[13];
+  context.rbp = syscall_frame[14];
 #elif defined(MOSS_ARCH_RISCV)
-  child_thread->context = parent_thread->context;
-  child_thread->context.x[10] = 0; // RISC-V: a0 (x10) = fork return
+  const auto *frame = reinterpret_cast<const u64 *>(parent_thread->kernel_stack_top() - 16 - 288);
+  auto &registers = child_thread->context.x;
+  registers[1] = frame[0];
+  registers[3] = frame[0x108 / 8];
+  registers[4] = frame[0x100 / 8];
+  for (unsigned i = 0; i < 3; ++i) {
+    registers[5 + i] = frame[1 + i];
+  }
+  for (unsigned i = 0; i < 4; ++i) {
+    registers[28 + i] = frame[4 + i];
+  }
+  for (unsigned i = 1; i < 8; ++i) {
+    registers[10 + i] = frame[8 + i];
+  }
+  registers[8] = frame[16];
+  registers[9] = frame[17];
+  for (unsigned i = 0; i < 10; ++i) {
+    registers[18 + i] = frame[18 + i];
+  }
+  registers[10] = 0;
 #endif
   child_thread->context.pc = user_pc; // return to instruction after SVC
   child_thread->context.sp = user_sp; // same user stack
@@ -947,7 +987,7 @@ long sys_execve(long pathname_addr, long argv_addr, long /* envp */, long /*unus
     // C call stack, not kernel_stack_top).  We must override it.
     if (cur->kernel_stack_base != 0) {
       u64 kstack_top = cur->kernel_stack_top();
-      asm volatile("csrw sscratch, %0" ::"r"(kstack_top) : "memory");
+      arch::set_user_kernel_stack(kstack_top);
     }
 
     // eret to new program — never returns
@@ -965,9 +1005,7 @@ long sys_execve(long pathname_addr, long argv_addr, long /* envp */, long /*unus
     // Update TSS RSP0 and SYSCALL kernel stack for the new program.
     if (cur->kernel_stack_base != 0) {
       u64 kstack_top = cur->kernel_stack_top();
-      auto *rsp0_ptr = reinterpret_cast<u64 *>(&moss::abi::x86_64::g_tss[4]);
-      *rsp0_ptr = kstack_top;
-      moss::abi::x86_64::g_kernel_rsp = kstack_top;
+      moss::abi::x86_64::set_kernel_stack(kstack_top);
     }
 
     // iretq to new program — never returns

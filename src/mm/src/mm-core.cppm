@@ -141,6 +141,7 @@ private:
   static FreeBlock *free_lists_[MAX_ORDER + 1];
   static PageMetadata *page_metadata_;
   static usize total_pages_;
+  static usize metadata_pages_;
   static moss::kernel::containers::AtomicSize free_pages_;
   static moss::kernel::containers::AtomicSize used_pages_;
 

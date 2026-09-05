@@ -385,6 +385,7 @@ extern "C" [[noreturn]] void secondary_cpu_entry() noexcept {
 
   // 6. Mark CPU as online (init complete)
   // mark_cpu_online uses __ATOMIC_RELEASE for state + __ATOMIC_ACQ_REL for count
+  moss::boot::record_cpu_online();
   mark_cpu_online(cpu_id);
   asm volatile("sev" ::: "memory"); // wake CPU 0's wait_for_cpu_state
 
