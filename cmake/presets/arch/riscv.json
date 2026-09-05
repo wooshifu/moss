@@ -9,7 +9,7 @@
             "displayName": "RISC-V Base Configuration",
             "cacheVariables": {
                 "CMAKE_C_FLAGS": "-march=rv64imac -mabi=lp64 -mcmodel=medany -mstrict-align -ffreestanding -fno-stack-protector -fno-pic -fno-pie",
-                "CMAKE_CXX_FLAGS": "$penv{CMAKE_CXX_FLAGS} -march=rv64imac -mabi=lp64 -mcmodel=medany -mstrict-align",
+                "CMAKE_CXX_FLAGS": "-march=rv64imac -mabi=lp64 -mcmodel=medany -mstrict-align -ffreestanding -fno-exceptions -fno-rtti -fno-stack-protector -fno-pic -fno-pie -Weverything -Werror -Wno-c++-compat -Wno-c++98-compat -Wno-c++98-compat-pedantic -Wno-c++11-compat -Wno-c++14-compat -Wno-c++17-compat -Wno-c++20-compat -Wno-padded -Wno-unsafe-buffer-usage -Wno-gnu-zero-variadic-macro-arguments -Wno-gnu-anonymous-struct -Wno-nested-anon-types -Wno-missing-prototypes -Wno-missing-variable-declarations -Wno-global-constructors -Wno-exit-time-destructors -Wno-weak-vtables -Wno-inline -Wno-reserved-identifier -Wno-reserved-macro-identifier -Wno-covered-switch-default -Wno-nrvo -Wno-lifetime-safety-suggestions",
                 "CMAKE_ASM_FLAGS": "-march=rv64imac",
                 "CMAKE_C_COMPILER_TARGET": "riscv64-unknown-elf",
                 "CMAKE_CXX_COMPILER_TARGET": "riscv64-unknown-elf",
@@ -24,24 +24,19 @@
             "name": "riscv-qemu-debug",
             "displayName": "RISC-V QEMU Debug",
             "description": "RISC-V 64 debug build for QEMU virt platform",
-            "inherits": "riscv-base",
-            "cacheVariables": {
-                "CMAKE_BUILD_TYPE": "Debug",
-                "CMAKE_CXX_FLAGS_DEBUG": "-Og -g3"
-            }
+            "inherits": ["riscv-base", "build-debug"]
         },
         {
             "name": "riscv-qemu-release",
             "displayName": "RISC-V QEMU Release",
             "description": "RISC-V 64 release build for QEMU virt platform",
-            "inherits": "riscv-base",
-            "cacheVariables": {
-                "CMAKE_BUILD_TYPE": "Release",
-                "CMAKE_C_FLAGS_RELEASE": "-g0 -Os -DNDEBUG -ffunction-sections -fdata-sections",
-                "CMAKE_CXX_FLAGS_RELEASE": "-g0 -Os -DNDEBUG -ffunction-sections -fdata-sections",
-                "CMAKE_ASM_FLAGS_RELEASE": "-g0",
-                "CMAKE_EXE_LINKER_FLAGS_RELEASE": "-Wl,-z,max-page-size=0x1000 -Wl,--gc-sections -Wl,--strip-all"
-            }
+            "inherits": ["riscv-base", "build-release"]
+        },
+        {
+            "name": "riscv-qemu-relwithdebinfo",
+            "displayName": "RISC-V QEMU RelWithDebInfo",
+            "description": "RISC-V 64 optimized build with debug information for QEMU virt platform",
+            "inherits": ["riscv-base", "build-relwithdebinfo"]
         }
     ],
     "buildPresets": [
@@ -55,6 +50,12 @@
             "name": "riscv-qemu-release",
             "displayName": "RISC-V QEMU Release Build",
             "configurePreset": "riscv-qemu-release",
+            "targets": ["moss.elf", "moss.test.elf"]
+        },
+        {
+            "name": "riscv-qemu-relwithdebinfo",
+            "displayName": "RISC-V QEMU RelWithDebInfo Build",
+            "configurePreset": "riscv-qemu-relwithdebinfo",
             "targets": ["moss.elf", "moss.test.elf"]
         }
     ],
@@ -80,6 +81,17 @@
             "output": {
                 "outputOnFailure": true
             }
+        },
+        {
+            "name": "riscv-qemu-relwithdebinfo-test",
+            "displayName": "RISC-V RelWithDebInfo Unit Tests",
+            "configurePreset": "riscv-qemu-relwithdebinfo",
+            "execution": {
+                "timeout": 30
+            },
+            "output": {
+                "outputOnFailure": true
+            }
         }
     ],
     "workflowPresets": [
@@ -99,6 +111,15 @@
             "steps": [
                 { "type": "configure", "name": "riscv-qemu-release" },
                 { "type": "build", "name": "riscv-qemu-release" }
+            ]
+        },
+        {
+            "name": "riscv-qemu-relwithdebinfo",
+            "displayName": "RISC-V QEMU RelWithDebInfo Workflow",
+            "description": "Configure and build (moss.elf + moss.test.elf)",
+            "steps": [
+                { "type": "configure", "name": "riscv-qemu-relwithdebinfo" },
+                { "type": "build", "name": "riscv-qemu-relwithdebinfo" }
             ]
         }
     ]

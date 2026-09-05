@@ -8,7 +8,8 @@
             "inherits": "base-common",
             "displayName": "x86_64 Base Configuration",
             "cacheVariables": {
-                "CMAKE_CXX_FLAGS": "$penv{CMAKE_CXX_FLAGS} -mno-red-zone -mno-mmx -mno-sse -mno-sse2 -mno-sse3 -mno-ssse3 -mno-sse4.1 -mno-sse4.2 -mno-avx -mno-avx2 -mno-80387 -mno-fp-ret-in-387 -mtune=x86-64 -mcmodel=kernel",
+                "CMAKE_C_FLAGS": "",
+                "CMAKE_CXX_FLAGS": "-mno-red-zone -mno-mmx -mno-sse -mno-sse2 -mno-sse3 -mno-ssse3 -mno-sse4.1 -mno-sse4.2 -mno-avx -mno-avx2 -mno-80387 -mno-fp-ret-in-387 -mtune=x86-64 -mcmodel=kernel -ffreestanding -fno-exceptions -fno-rtti -fno-stack-protector -fno-pic -fno-pie -Weverything -Werror -Wno-c++-compat -Wno-c++98-compat -Wno-c++98-compat-pedantic -Wno-c++11-compat -Wno-c++14-compat -Wno-c++17-compat -Wno-c++20-compat -Wno-padded -Wno-unsafe-buffer-usage -Wno-gnu-zero-variadic-macro-arguments -Wno-gnu-anonymous-struct -Wno-nested-anon-types -Wno-missing-prototypes -Wno-missing-variable-declarations -Wno-global-constructors -Wno-exit-time-destructors -Wno-weak-vtables -Wno-inline -Wno-reserved-identifier -Wno-reserved-macro-identifier -Wno-covered-switch-default -Wno-nrvo -Wno-lifetime-safety-suggestions",
                 "CMAKE_ASM_FLAGS": "-m64",
                 "CMAKE_C_COMPILER_TARGET": "x86_64-unknown-linux-elf",
                 "CMAKE_CXX_COMPILER_TARGET": "x86_64-unknown-linux-elf",
@@ -23,24 +24,19 @@
             "name": "x86_64-qemu-debug",
             "displayName": "x86-64 QEMU Debug",
             "description": "x86-64 debug build for QEMU platform",
-            "inherits": "x86_64-base",
-            "cacheVariables": {
-                "CMAKE_BUILD_TYPE": "Debug",
-                "CMAKE_CXX_FLAGS_DEBUG": "-Og -g3"
-            }
+            "inherits": ["x86_64-base", "build-debug"]
         },
         {
             "name": "x86_64-qemu-release",
             "displayName": "x86-64 QEMU Release",
             "description": "x86-64 release build for QEMU platform",
-            "inherits": "x86_64-base",
-            "cacheVariables": {
-                "CMAKE_BUILD_TYPE": "Release",
-                "CMAKE_C_FLAGS_RELEASE": "-g0 -Os -DNDEBUG -ffunction-sections -fdata-sections",
-                "CMAKE_CXX_FLAGS_RELEASE": "-g0 -Os -DNDEBUG -ffunction-sections -fdata-sections",
-                "CMAKE_ASM_FLAGS_RELEASE": "-g0",
-                "CMAKE_EXE_LINKER_FLAGS_RELEASE": "-Wl,-z,max-page-size=0x1000 -Wl,--gc-sections -Wl,--strip-all"
-            }
+            "inherits": ["x86_64-base", "build-release"]
+        },
+        {
+            "name": "x86_64-qemu-relwithdebinfo",
+            "displayName": "x86-64 QEMU RelWithDebInfo",
+            "description": "x86-64 optimized build with debug information for QEMU platform",
+            "inherits": ["x86_64-base", "build-relwithdebinfo"]
         }
     ],
     "buildPresets": [
@@ -54,6 +50,12 @@
             "name": "x86_64-qemu-release",
             "displayName": "x86-64 QEMU Release Build",
             "configurePreset": "x86_64-qemu-release",
+            "targets": ["moss.elf", "moss.test.elf"]
+        },
+        {
+            "name": "x86_64-qemu-relwithdebinfo",
+            "displayName": "x86-64 QEMU RelWithDebInfo Build",
+            "configurePreset": "x86_64-qemu-relwithdebinfo",
             "targets": ["moss.elf", "moss.test.elf"]
         }
     ],
@@ -79,6 +81,17 @@
             "output": {
                 "outputOnFailure": true
             }
+        },
+        {
+            "name": "x86_64-qemu-relwithdebinfo-test",
+            "displayName": "x86-64 RelWithDebInfo Unit Tests",
+            "configurePreset": "x86_64-qemu-relwithdebinfo",
+            "execution": {
+                "timeout": 30
+            },
+            "output": {
+                "outputOnFailure": true
+            }
         }
     ],
     "workflowPresets": [
@@ -98,6 +111,15 @@
             "steps": [
                 { "type": "configure", "name": "x86_64-qemu-release" },
                 { "type": "build", "name": "x86_64-qemu-release" }
+            ]
+        },
+        {
+            "name": "x86_64-qemu-relwithdebinfo",
+            "displayName": "x86-64 QEMU RelWithDebInfo Workflow",
+            "description": "Configure and build (moss.elf + moss.test.elf)",
+            "steps": [
+                { "type": "configure", "name": "x86_64-qemu-relwithdebinfo" },
+                { "type": "build", "name": "x86_64-qemu-relwithdebinfo" }
             ]
         }
     ]
