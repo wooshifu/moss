@@ -23,7 +23,6 @@ console = Console()
 # 架构 → QEMU 参数映射
 #
 # default_kernel: "bin" = moss.bin (ARM64 Linux Image header), "elf" = moss.elf (PVH/OpenSBI)
-# max_smp: 0 = use cpu_cores from qemu_config.json, >0 = hard cap (SMP not yet supported)
 ARCH_CONFIG = {
     "ARM64": {
         "qemu_system": "qemu-system-aarch64",
@@ -31,15 +30,13 @@ ARCH_CONFIG = {
         "cpu": "cortex-a72",
         "extra_args": ["-semihosting-config", "enable=on,target=native"],
         "default_kernel": "bin",
-        "max_smp": 0,
     },
     "X86_64": {
         "qemu_system": "qemu-system-x86_64",
-        "machine": "microvm",  # PVH boot requires microvm (not q35)
+        "machine": "microvm,pit=on",  # PVH boot; PIT is also the independent TSC reference.
         "cpu": "qemu64",
         "extra_args": ["-device", "isa-debug-exit,iobase=0x501,iosize=2"],
         "default_kernel": "elf",  # PVH requires ELF (XEN_ELFNOTE_PHYS32_ENTRY)
-        "max_smp": 1,
     },
     "RISCV": {
         "qemu_system": "qemu-system-riscv64",
@@ -47,7 +44,6 @@ ARCH_CONFIG = {
         "cpu": "rv64",
         "extra_args": ["-bios", "default"],  # OpenSBI firmware (M-mode → S-mode)
         "default_kernel": "elf",  # OpenSBI loads ELF kernel
-        "max_smp": 1,
     },
 }
 
@@ -180,7 +176,7 @@ def resolve_kernel_file(
     return path, desc
 
 
-def prepare_dtb(cfg: QemuConfig, *, smp: int, force_gic3: bool = False) -> Path | None:
+def prepare_dtb(cfg: QemuConfig, *, smp: int, memory_mib: int = 2048, force_gic3: bool = False) -> Path | None:
     """为 ARM64/RISC-V 生成 DTB 文件，供 -device loader 加载到 RAM。
 
     == 为什么需要这一步 ==
@@ -217,10 +213,10 @@ def prepare_dtb(cfg: QemuConfig, *, smp: int, force_gic3: bool = False) -> Path 
         "-smp",
         str(smp),
         "-m",
-        "256M",
+        f"{memory_mib}M",
         "-nographic",
     ]
-    subprocess.run(dump_args, check=True, capture_output=True)
+    subprocess.run(dump_args, check=True, capture_output=True, timeout=30)
 
     if dtb_path.exists():
         return dtb_path
@@ -286,22 +282,20 @@ def build_qemu_args(
     test_mode: bool,
     debug_mode: bool,
     force_gic3: bool = False,
+    memory_mib: int = 2048,
     extra_args: list[str] | None = None,
 ) -> list[str]:
     """构造完整的 QEMU 命令行参数列表"""
     arch_cfg = ARCH_CONFIG[cfg.arch]
 
-    # SMP resolution:
-    #   smp == 0 (auto) → use cpu_cores from qemu_config.json
-    #   test_mode → always 1
-    #   max_smp > 0 → clamp to architecture limit (x86_64/RISC-V: single-core only)
-    if test_mode:
-        smp = 1
-    elif smp == 0:
+    if smp == 0:
         smp = cfg.cpu_cores
-    max_smp = arch_cfg.get("max_smp", 0)
-    if max_smp > 0:
-        smp = min(smp, max_smp)
+    if not 1 <= smp <= 16:
+        raise ValueError("Moss boot supports 1..16 CPUs; the requested count will not be clamped")
+    # Identity and direct mappings currently cover physical addresses below 4 GiB.
+    max_memory = {"ARM64": 3072, "X86_64": 3072, "RISCV": 2048}[cfg.arch]
+    if not 256 <= memory_mib <= max_memory:
+        raise ValueError(f"{cfg.arch} supports 256..{max_memory} MiB in this boot profile")
     machine = resolve_machine(cfg.arch, smp=smp, force_gic3=force_gic3)
 
     # 内核加载方式
@@ -340,9 +334,11 @@ def build_qemu_args(
         "-cpu",
         arch_cfg["cpu"],
         "-smp",
-        str(smp),
+        f"cpus={smp},sockets=1,cores={smp},threads=1",
         "-m",
-        "256M",
+        f"{memory_mib}M",
+        "-accel",
+        "tcg",
         *kernel_args,
         "-no-reboot",
         *arch_cfg["extra_args"],
@@ -352,7 +348,9 @@ def build_qemu_args(
     # 默认模式下 QEMU 自动识别 Linux Image header 并在 DTB 中记录 initrd 地址。
     # --bin/--elf/--debug 模式使用手动导出的 DTB，需通过 -device loader 加载 initramfs
     # 并手动 patch DTB（见下方 DTB 处理段）。
-    needs_manual_dtb = _needs_dtb_loader(use_binary=use_binary, use_elf=use_elf, debug_mode=debug_mode)
+    needs_manual_dtb = (
+        cfg.arch == "ARM64" and _needs_dtb_loader(use_binary=use_binary, use_elf=use_elf, debug_mode=debug_mode)
+    ) or (cfg.arch == "RISCV" and use_binary)
     if cfg.initramfs and not test_mode and not use_binary and not needs_manual_dtb:
         initrd_path = Path(cfg.initramfs)
         if initrd_path.exists():
@@ -362,7 +360,7 @@ def build_qemu_args(
     #   - moss.bin（默认）: QEMU 自动识别 Linux Image header，通过 x0 传递 DTB
     #   - --bin / --elf / --debug 模式: 无 Linux Image header，需手动导出 DTB 并加载到 RAM
     if needs_manual_dtb:
-        dtb_path = prepare_dtb(cfg, smp=smp, force_gic3=force_gic3)
+        dtb_path = prepare_dtb(cfg, smp=smp, memory_mib=memory_mib, force_gic3=force_gic3)
 
         # --bin/--elf/--debug 模式: initramfs 需通过 -device loader 加载（手动 DTB 不含 initrd 信息）
         # 同时在 DTB /chosen 中写入 linux,initrd-start/end 让内核定位 initramfs
@@ -536,6 +534,7 @@ def main(
         typer.Option("--timeout", "-t", help="QEMU 运行超时时间（秒），超时后自动终止"),
     ] = None,
     smp: Annotated[int, typer.Option("--smp", help="CPU 核心数（0=自动从配置读取，smp>8 时自动启用 GICv3）")] = 0,
+    memory_mib: Annotated[int, typer.Option("--memory-mib", help="Guest RAM in MiB (default: 2048)")] = 2048,
     extra_qemu_args: Annotated[str | None, typer.Option("--qemu-args", help="额外的QEMU参数（用空格分隔）")] = None,
     force_gic3: Annotated[bool, typer.Option("--gic3", help="强制使用 GICv3（ARM64 only, smp>8 时自动启用）")] = False,
 ) -> None:
@@ -575,6 +574,16 @@ def main(
 
     cfg = QemuConfig.from_json(config)
 
+    if test_mode:
+        if use_binary or use_elf or debug_mode or extra_qemu_args or ctx.args or force_gic3:
+            raise typer.BadParameter("--test uses the validated guest profile; use kernel_validation.py for selection")
+        try:
+            from .kernel_validation import run
+        except ImportError:
+            from kernel_validation import run
+        run(config=config, cpus=smp or cfg.cpu_cores, memory_mib=memory_mib, guest_timeout=timeout or 60)
+        return
+
     if cfg.arch not in ARCH_CONFIG:
         console.print(f"[red]错误: 不支持的架构 {cfg.arch}[/red]")
         raise typer.Exit(1)
@@ -597,6 +606,7 @@ def main(
         test_mode=test_mode,
         debug_mode=debug_mode,
         force_gic3=force_gic3,
+        memory_mib=memory_mib,
         extra_args=extra_args,
     )
 

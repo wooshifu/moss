@@ -10,6 +10,9 @@ module;
 #define MOSS_ARCH_RISCV
 #endif
 
+extern "C" void riscv_secondary_start();
+extern "C" [[noreturn]] void riscv_secondary_entry() noexcept;
+
 module moss.boot;
 
 import moss.abi;
@@ -77,7 +80,7 @@ static u32 get_current_cpu_id_impl() noexcept {
   // Hart ID is stored in tp register by _start (set from a0 passed by OpenSBI).
   u64 hartid;
   asm volatile("mv %0, tp" : "=r"(hartid));
-  return static_cast<u32>(hartid);
+  return moss::kernel::arch::riscv_hart_id(static_cast<u32>(hartid));
 }
 
 // Boot stage status update
@@ -90,7 +93,7 @@ void update_boot_stage(BootStage stage, ::moss::kernel::ErrorCode error) noexcep
     g_boot_status.stage_timestamps[stage_index] = get_timestamp_counter();
 
     if (error == ::moss::kernel::ErrorCode::Success) {
-      g_boot_status.completed_stages_mask |= (1u << stage_index);
+      g_boot_status.completed_stages_mask |= (1U << stage_index);
     }
   }
 }
@@ -113,7 +116,7 @@ static SbiResult sbi_call(u64 eid, u64 fid, u64 a0 = 0, u64 a1 = 0, u64 a2 = 0) 
   register u64 r_a6 asm("a6") = fid;
   register u64 r_a7 asm("a7") = eid;
   asm volatile("ecall" : "+r"(r_a0), "+r"(r_a1) : "r"(r_a2), "r"(r_a6), "r"(r_a7) : "memory");
-  return {static_cast<long>(r_a0), static_cast<long>(r_a1)};
+  return {.error = static_cast<long>(r_a0), .value = static_cast<long>(r_a1)};
 }
 
 // SBI HSM (Hart State Management) extension — EID 0x48534D
@@ -131,6 +134,9 @@ static SbiResult sbi_hart_start(u64 hartid, u64 start_addr, u64 opaque) noexcept
 
   moss::boot::early_print("=== RISC-V Hardware Early Init ===\n");
 
+  u64 boot_hart;
+  asm volatile("mv %0, tp" : "=r"(boot_hart));
+  moss::kernel::arch::riscv_boot_hart_id = static_cast<u32>(boot_hart);
   ctx.cpu_id = moss::boot::get_current_cpu_id_impl();
   moss::boot::early_print("CPU ID (Hart ID): ");
   moss::boot::early_print_hex(ctx.cpu_id);
@@ -287,7 +293,7 @@ static SbiResult sbi_hart_start(u64 hartid, u64 start_addr, u64 opaque) noexcept
 
     // S-mode context for hart 0: context_id = 1 (context 0 is M-mode)
     // Threshold/claim registers at: plic_base + 0x200000 + context_id * 0x1000
-    VirtAddr ctx_base = plic_base + 0x200000 + 0x1000;
+    VirtAddr ctx_base = plic_base + 0x200000 + (2ULL * moss::kernel::arch::riscv_boot_hart_id + 1) * 0x1000;
 
     (void)gic->initialize(plic_base, ctx_base, 0);
     moss::boot::g_gic_controller = gic;
@@ -312,24 +318,10 @@ static SbiResult sbi_hart_start(u64 hartid, u64 start_addr, u64 opaque) noexcept
     ctx.total_cpus = 1;
   }
 
-  // Use SBI HSM extension to start secondary harts.
-  // Each hart enters _start which parks non-zero harts in WFI.
-  // A future secondary_cpu_entry trampoline (like ARM64) is needed
-  // for full SMP operation; for now we attempt the HSM call to
-  // validate the SBI interface.
-  if (ctx.total_cpus > 1) {
-    u64 entry = reinterpret_cast<u64>(&moss::abi::_start);
-    u32 started = 0;
-    for (u32 i = 1; i < ctx.total_cpus; ++i) {
-      auto result = moss::boot::sbi_hart_start(i, entry, 0);
-      if (result.error == 0) {
-        ++started;
-      }
-    }
-    moss::boot::early_print("  SBI HSM: started ");
-    moss::boot::early_print_hex(started);
-    moss::boot::early_print(" secondary harts\n");
+  if (ctx.total_cpus > moss::kernel::BOOT_MAX_CPUS) {
+    return ::moss::kernel::VoidResult{::moss::kernel::ErrorCode::InvalidArgument};
   }
+  moss::kernel::g_num_cpus = ctx.total_cpus;
 
   moss::boot::early_print("RISC-V SMP setup complete\n\n");
   return ::moss::kernel::VoidResult{};
@@ -379,8 +371,48 @@ namespace moss::boot {
 moss::kernel::interrupts::GenericInterruptController *g_gic_controller = nullptr;
 bool g_gic_hardware_available = false;
 
-void activate_secondary_cpus() noexcept { early_print("[RISC-V] SMP activation not yet implemented\n"); }
+alignas(4096) static u8 secondary_stacks[16][32768];
+struct HartStartContext {
+  u64 stack;
+  u64 satp;
+};
+static HartStartContext hart_contexts[16];
 
-u32 wait_for_all_cpus_active([[maybe_unused]] u32 timeout_ms) noexcept { return 1; }
+void activate_secondary_cpus() noexcept {
+  u64 satp;
+  asm volatile("csrr %0, satp" : "=r"(satp));
+  for (u32 cpu = 1; cpu < moss::kernel::g_num_cpus; ++cpu) {
+    hart_contexts[cpu] = {.stack = reinterpret_cast<u64>(&secondary_stacks[cpu][32768]), .satp = satp};
+    moss::kernel::arch::memory_barrier();
+    auto result = sbi_hart_start(moss::kernel::arch::riscv_hart_id(cpu), reinterpret_cast<u64>(&riscv_secondary_start),
+                                 reinterpret_cast<u64>(&hart_contexts[cpu]));
+    if (result.error != 0) {
+      early_print("SBI HSM start failed\n");
+    }
+  }
+}
+
+u32 wait_for_all_cpus_active(u32 timeout_ms) noexcept {
+  u64 start = get_timestamp_counter();
+  u64 ticks = moss::fdt::get_platform_info().timebase_frequency * timeout_ms / 1000;
+  for (u32 retry = 0; retry < 100000000; ++retry) {
+    auto online = static_cast<u32>(__builtin_popcountll(__atomic_load_n(&online_cpu_mask, __ATOMIC_ACQUIRE)));
+    if (online == moss::kernel::g_num_cpus || (ticks && get_timestamp_counter() - start >= ticks)) {
+      return online;
+    }
+    moss::kernel::arch::cpu_yield();
+  }
+  return static_cast<u32>(__builtin_popcountll(__atomic_load_n(&online_cpu_mask, __ATOMIC_ACQUIRE)));
+}
 
 } // namespace moss::boot
+
+extern "C" [[noreturn]] void riscv_secondary_entry() noexcept {
+  u64 trap = reinterpret_cast<u64>(&moss::abi::syscall_entry_point);
+  asm volatile("csrw stvec, %0; csrw sscratch, zero" ::"r"(trap) : "memory");
+  // Enable supervisor software IPIs and timer interrupts on this hart.
+  asm volatile("csrs sie, %0" ::"r"((1ULL << 1) | (1ULL << 5)));
+  moss::kernel::hal::timer::set_compare(moss::kernel::hal::timer::read_counter() + 100000);
+  moss::boot::record_cpu_online();
+  moss::kernel::process::secondary_cpu_schedule_loop(moss::kernel::arch::get_current_cpu_id());
+}

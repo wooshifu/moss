@@ -55,7 +55,8 @@ context_switch:
     movq    %rsi, 32(%rdi)             // prev->rsi
     movq    %rdi, 40(%rdi)             // prev->rdi
     movq    %rbp, 48(%rdi)             // prev->rbp
-    movq    %rsp, 56(%rdi)             // prev->sp
+    leaq    8(%rsp), %rax              // caller SP after this call returns
+    movq    %rax, 56(%rdi)
     movq    %r8, 64(%rdi)              // prev->r8
     movq    %r9, 72(%rdi)              // prev->r9
     movq    %r10, 80(%rdi)             // prev->r10
@@ -78,6 +79,7 @@ context_switch:
 
     // Restore RFLAGS from next->pstate
     movq    128(%rsi), %rax
+    andq    $-513, %rax                // caller reenables interrupts after the switch
     pushq   %rax
     popfq
 

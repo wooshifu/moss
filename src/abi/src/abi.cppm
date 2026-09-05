@@ -65,6 +65,7 @@ extern char _user_program_end[];
 extern unsigned char g_tss[];
 // Per-task kernel stack pointer for SYSCALL entry (defined in x86_64_syscall.S)
 extern unsigned long long g_kernel_rsp;
+void x86_64_set_kernel_stack(unsigned long long top) noexcept;
 }
 #elif defined(__riscv) || defined(__riscv__) || defined(MOSS_ARCH_RISCV)
 extern "C" {
@@ -218,6 +219,7 @@ export namespace moss::abi::x86_64 {
 
 using ::g_kernel_rsp;
 using ::g_tss;
+inline void set_kernel_stack(unsigned long long top) noexcept { ::x86_64_set_kernel_stack(top); }
 using ::user_iret_trampoline;
 
 inline auto user_program_start() noexcept -> const unsigned char * {

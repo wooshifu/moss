@@ -3,6 +3,8 @@
 
 module;
 
+extern "C" void moss_validation_boot() noexcept;
+
 #ifdef MOSS_ARCH_X86_64
 // Cross-module interrupt dispatch callbacks (defined in boot_impl.cpp)
 extern "C" void (*g_x86_64_timer_handler)() noexcept;
@@ -171,6 +173,7 @@ public:
 
     // Initialize VFS: mount root (ramfs) + devfs
     vfs::vfs_init();
+    moss_validation_boot();
 
     // Create initial user process
     auto init_result = create_init_process();

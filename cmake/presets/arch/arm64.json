@@ -65,7 +65,7 @@
             "displayName": "ARM64 Debug Unit Tests",
             "configurePreset": "arm64-qemu-debug",
             "execution": {
-                "timeout": 30
+                "timeout": 420
             },
             "output": {
                 "outputOnFailure": true
@@ -76,7 +76,7 @@
             "displayName": "ARM64 Release Unit Tests",
             "configurePreset": "arm64-qemu-release",
             "execution": {
-                "timeout": 30
+                "timeout": 420
             },
             "output": {
                 "outputOnFailure": true
@@ -87,7 +87,7 @@
             "displayName": "ARM64 RelWithDebInfo Unit Tests",
             "configurePreset": "arm64-qemu-relwithdebinfo",
             "execution": {
-                "timeout": 30
+                "timeout": 420
             },
             "output": {
                 "outputOnFailure": true

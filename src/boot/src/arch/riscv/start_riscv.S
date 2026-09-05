@@ -39,7 +39,7 @@ _start:
     // OpenSBI starts only the boot hart initially.  If sbi_hart_start()
     // sends secondary harts here, they must not re-run BSS clearing or
     // early_main — park them immediately.
-    bnez a0, .Lsecondary_park
+    // OpenSBI elects one boot hart; it need not be physical hart zero.
 
     // ---- Boot hart (hart 0) only ----
 
@@ -87,6 +87,23 @@ _start:
 .Lsecondary_park:
     wfi
     j .Lsecondary_park
+
+.balign 4
+.global riscv_secondary_start
+.type riscv_secondary_start, @function
+riscv_secondary_start:
+    mv tp, a0
+    .option push
+    .option norelax
+    la gp, __global_pointer$
+    .option pop
+    ld sp, 0(a1)
+    ld t0, 8(a1)
+    csrw satp, t0
+    sfence.vma
+    csrw sscratch, zero
+    tail riscv_secondary_entry
+.size riscv_secondary_start, . - riscv_secondary_start
 
 // =============================================================================
 // Address data pool (placed in .text.boot, adjacent to code for PC-relative access)

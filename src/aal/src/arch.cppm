@@ -156,6 +156,18 @@ inline void cpu_idle_once() noexcept {
 
 // Get current CPU ID from hardware (raw, unclamped).
 // Callers (e.g. PerCpuData) are responsible for bounds checking.
+#if defined(MOSS_ARCH_RISCV)
+inline u32 riscv_boot_hart_id = 0;
+[[nodiscard]] inline u32 riscv_hart_id(u32 logical) noexcept {
+  return logical == 0 ? riscv_boot_hart_id : (logical == riscv_boot_hart_id ? 0 : logical);
+}
+inline void set_user_kernel_stack(u64 top) noexcept {
+  u64 hart;
+  asm volatile("mv %0, tp" : "=r"(hart));
+  *reinterpret_cast<u64 *>(top - 16) = hart;
+  asm volatile("csrw sscratch, %0" ::"r"(top - 16) : "memory");
+}
+#endif
 [[nodiscard]] inline u32 get_current_cpu_id() noexcept {
 #if defined(MOSS_ARCH_ARM64)
   u64 mpidr;
@@ -169,7 +181,7 @@ inline void cpu_idle_once() noexcept {
   // S-mode cannot read mhartid; use tp register (set by SBI/bootloader)
   u64 hartid;
   asm volatile("mv %0, tp" : "=r"(hartid));
-  return static_cast<u32>(hartid);
+  return riscv_hart_id(static_cast<u32>(hartid));
 #else
   return 0;
 #endif

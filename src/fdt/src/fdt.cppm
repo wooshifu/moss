@@ -74,11 +74,13 @@ struct InterruptControllerInfo {
 /// 完整的平台硬件信息，从 DTB 解析填充
 struct PlatformInfo {
   // DTB 有效性
-  bool dtb_valid; // DTB 存在且解析成功
+  bool dtb_valid;        // DTB 存在且解析成功
+  bool memory_map_valid; // Firmware RAM discovery, independent of the boot protocol.
 
   // CPU 拓扑（来自 /cpus 节点）
   u32 cpu_count;
   u32 boot_cpu_id;
+  u64 timebase_frequency;
 
   // RISC-V MMU type from DTB (3 = Sv39, 4 = Sv48, 5 = Sv57; 0 = unknown)
   u8 mmu_levels;
@@ -88,6 +90,8 @@ struct PlatformInfo {
   u32 memory_region_count;
   PhysAddr total_memory_start; // 第一个区域的基地址
   u64 total_memory_size;       // 所有区域大小之和
+  MemoryRegion reserved_regions[32];
+  u32 reserved_region_count;
 
   // 设备信息
   UartInfo uart;
@@ -189,6 +193,11 @@ static void parse_cpus(const void *fdt) noexcept {
   }
 
   u32 count = 0;
+  int timebase_len = 0;
+  const auto *timebase = static_cast<const fdt32_t *>(fdt_getprop(fdt, cpus_node, "timebase-frequency", &timebase_len));
+  if (timebase && timebase_len == 4) {
+    g_platform_info.timebase_frequency = fdt32_to_cpu(*timebase);
+  }
   bool mmu_detected = false;
   int node = 0;
   fdt_for_each_subnode(node, fdt, cpus_node) {
@@ -271,9 +280,12 @@ static void parse_memory(const void *fdt) noexcept {
   }
 
   u32 entry_size = (addr_cells + size_cells) * 4;
+  if (addr_cells < 1 || addr_cells > 2 || size_cells < 1 || size_cells > 2 || static_cast<u32>(len) % entry_size != 0) {
+    return;
+  }
   u32 region_count = static_cast<u32>(len) / entry_size;
   if (region_count > MAX_MEMORY_REGIONS) {
-    region_count = MAX_MEMORY_REGIONS;
+    return;
   }
 
   const u8 *ptr = static_cast<const u8 *>(reg);
@@ -499,6 +511,54 @@ bool parse_dtb(const void *dtb_ptr) noexcept {
   parse_uart(dtb_ptr);
   parse_intc(dtb_ptr);
   parse_chosen(dtb_ptr);
+
+  g_platform_info.memory_map_valid = g_platform_info.memory_region_count > 0;
+  auto reserve = [](PhysAddr base, u64 size) {
+    auto &info = g_platform_info;
+    if (!size) {
+      return;
+    }
+    if (base + size < base || info.reserved_region_count == 32) {
+      info.memory_map_valid = false;
+      return;
+    }
+    info.reserved_regions[info.reserved_region_count++] = {.base = base, .size = size};
+  };
+  reserve(reinterpret_cast<PhysAddr>(dtb_ptr), fdt_totalsize(dtb_ptr));
+  for (int i = 0; i < fdt_num_mem_rsv(dtb_ptr); ++i) {
+    uint64_t base = 0;
+    uint64_t size = 0;
+    if (fdt_get_mem_rsv(dtb_ptr, i, &base, &size) == 0) {
+      reserve(base, size);
+    }
+  }
+  int reserved = fdt_path_offset(dtb_ptr, "/reserved-memory");
+  if (reserved >= 0) {
+    u32 address_cells = 2, size_cells = 2;
+    read_cells(dtb_ptr, reserved, address_cells, size_cells);
+    if (address_cells < 1 || address_cells > 2 || size_cells < 1 || size_cells > 2) {
+      g_platform_info.memory_map_valid = false;
+    } else {
+      int node;
+      fdt_for_each_subnode(node, dtb_ptr, reserved) {
+        int length = 0;
+        const auto *data = static_cast<const u8 *>(fdt_getprop(dtb_ptr, node, "reg", &length));
+        u32 stride = (address_cells + size_cells) * 4;
+        if (!data || length <= 0 || static_cast<u32>(length) % stride != 0) {
+          g_platform_info.memory_map_valid = false;
+          continue;
+        }
+        for (u32 i = 0; i < static_cast<u32>(length) / stride; ++i) {
+          u64 base = read_cells_value(data, address_cells);
+          u64 size = read_cells_value(data, size_cells);
+          reserve(base, size);
+        }
+      }
+    }
+  }
+  if (g_platform_info.initrd_end < g_platform_info.initrd_start || fdt_num_mem_rsv(dtb_ptr) < 0) {
+    g_platform_info.memory_map_valid = false;
+  }
 
   return true;
 }

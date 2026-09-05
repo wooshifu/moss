@@ -9,31 +9,33 @@
 // Syscall numbers (must match kernel-syscall_table.cppm SyscallNumber enum)
 // ============================================================================
 
-#define SYS_EXIT 1
-#define SYS_GETPID 2
-#define SYS_GETPPID 3
-#define SYS_FORK 10
-#define SYS_EXECVE 11
-#define SYS_WAIT4 12
-#define SYS_WAITPID 13
-#define SYS_KILL 14
-#define SYS_SIGACTION 15
-#define SYS_SIGPROCMASK 16
-#define SYS_SIGRETURN 17
-#define SYS_SCHED_YIELD 18
-#define SYS_SIGALTSTACK 21
-#define SYS_OPEN 30
-#define SYS_CLOSE 31
-#define SYS_READ 32
-#define SYS_WRITE 33
-#define SYS_LSEEK 34
-#define SYS_FSTAT 36
-#define SYS_DUP 42
-#define SYS_DUP2 43
-#define SYS_PIPE 44
-#define SYS_CLOCK_GETTIME 83
-#define SYS_NANOSLEEP 86
-#define SYS_TOPINFO 111
+enum {
+  SYS_EXIT = 1,
+  SYS_GETPID = 2,
+  SYS_GETPPID = 3,
+  SYS_FORK = 10,
+  SYS_EXECVE = 11,
+  SYS_WAIT4 = 12,
+  SYS_WAITPID = 13,
+  SYS_KILL = 14,
+  SYS_SIGACTION = 15,
+  SYS_SIGPROCMASK = 16,
+  SYS_SIGRETURN = 17,
+  SYS_SCHED_YIELD = 18,
+  SYS_SIGALTSTACK = 21,
+  SYS_OPEN = 30,
+  SYS_CLOSE = 31,
+  SYS_READ = 32,
+  SYS_WRITE = 33,
+  SYS_LSEEK = 34,
+  SYS_FSTAT = 36,
+  SYS_DUP = 42,
+  SYS_DUP2 = 43,
+  SYS_PIPE = 44,
+  SYS_CLOCK_GETTIME = 83,
+  SYS_NANOSLEEP = 86,
+  SYS_TOPINFO = 111
+};
 
 // ============================================================================
 // Low-level syscall wrappers
@@ -150,39 +152,37 @@ static inline long syscall3(long number, long a0, long a1, long a2) {
 // ============================================================================
 
 #define SIGHUP 1
-#define SIGINT 2
-#define SIGQUIT 3
-#define SIGILL 4
-#define SIGTRAP 5
-#define SIGABRT 6
-#define SIGBUS 7
-#define SIGFPE 8
-#define SIGKILL 9
-#define SIGUSR1 10
-#define SIGSEGV 11
-#define SIGUSR2 12
-#define SIGPIPE 13
-#define SIGALRM 14
-#define SIGTERM 15
-#define SIGCHLD 17
-#define SIGCONT 18
-#define SIGSTOP 19
+enum {
+  SIGINT = 2,
+  SIGQUIT = 3,
+  SIGILL = 4,
+  SIGTRAP = 5,
+  SIGABRT = 6,
+  SIGBUS = 7,
+  SIGFPE = 8,
+  SIGKILL = 9,
+  SIGUSR1 = 10,
+  SIGSEGV = 11,
+  SIGUSR2 = 12,
+  SIGPIPE = 13,
+  SIGALRM = 14,
+  SIGTERM = 15,
+  SIGCHLD = 17,
+  SIGCONT = 18,
+  SIGSTOP = 19
+};
 
 // Special handler values
-#define SIG_DFL 0
-#define SIG_IGN 1
+enum { SIG_DFL = 0, SIG_IGN = 1 };
 
 // sigprocmask 'how' values
-#define SIG_BLOCK 0
-#define SIG_UNBLOCK 1
-#define SIG_SETMASK 2
+enum { SIG_BLOCK = 0, SIG_UNBLOCK = 1, SIG_SETMASK = 2 };
 
 // sigaction flags
-#define SA_ONSTACK 0x1
+enum { SA_ONSTACK = 0x1 };
 
 // sigaltstack flags
-#define SS_ONSTACK 1
-#define SS_DISABLE 2
+enum { SS_ONSTACK = 1, SS_DISABLE = 2 };
 
 // Sigaction structure (must match kernel UserSigaction layout)
 struct sigaction_t {
@@ -260,8 +260,7 @@ static inline long nanosleep_ns(unsigned long *ns) { return syscall1(SYS_NANOSLE
 // Layout must match kernel-side topinfo_layout exactly.
 // ============================================================================
 
-#define TOP_MAX_PROCS 64
-#define TOP_MAX_CPUS 32
+enum { TOP_MAX_PROCS = 64, TOP_MAX_CPUS = 32 };
 
 struct TopProcessInfo {
   long pid;
@@ -303,15 +302,17 @@ static inline long topinfo(struct TopInfo *info) { return syscall1(SYS_TOPINFO, 
 
 static inline int strlen(const char *s) {
   int n = 0;
-  while (s[n])
+  while (s[n]) {
     n++;
+  }
   return n;
 }
 
 static inline int streq(const char *a, const char *b) {
   while (*a && *b) {
-    if (*a != *b)
+    if (*a != *b) {
       return 0;
+    }
     a++;
     b++;
   }
@@ -320,17 +321,20 @@ static inline int streq(const char *a, const char *b) {
 
 static inline int strncmp(const char *a, const char *b, int n) {
   for (int i = 0; i < n; i++) {
-    if (a[i] != b[i])
+    if (a[i] != b[i]) {
       return a[i] - b[i];
-    if (a[i] == '\0')
+    }
+    if (a[i] == '\0') {
       return 0;
+    }
   }
   return 0;
 }
 
 static inline void strcpy(char *dst, const char *src) {
-  while (*src)
+  while (*src) {
     *dst++ = *src++;
+  }
   *dst = '\0';
 }
 
@@ -344,8 +348,9 @@ static inline void eprint(const char *msg) { write(2, msg, strlen(msg)); }
 
 // Convert unsigned long to decimal string, return length written
 static inline int ultoa(unsigned long val, char *buf, int bufsize) {
-  if (bufsize <= 0)
+  if (bufsize <= 0) {
     return 0;
+  }
   if (val == 0) {
     buf[0] = '0';
     buf[1] = '\0';
@@ -357,18 +362,21 @@ static inline int ultoa(unsigned long val, char *buf, int bufsize) {
     tmp[len++] = '0' + (int)(val % 10);
     val /= 10;
   }
-  if (len >= bufsize)
+  if (len >= bufsize) {
     len = bufsize - 1;
-  for (int i = 0; i < len; i++)
+  }
+  for (int i = 0; i < len; i++) {
     buf[i] = tmp[len - 1 - i];
+  }
   buf[len] = '\0';
   return len;
 }
 
 // Convert signed long to decimal string, return length written
 static inline int ltoa(long val, char *buf, int bufsize) {
-  if (bufsize <= 1)
+  if (bufsize <= 1) {
     return 0;
+  }
   if (val < 0) {
     buf[0] = '-';
     return 1 + ultoa((unsigned long)(-val), buf + 1, bufsize - 1);
@@ -394,8 +402,9 @@ static inline void print_long(long val) {
 static inline void print_num_padded(unsigned long val, int width) {
   char buf[20];
   int len = ultoa(val, buf, 20);
-  for (int i = len; i < width; i++)
+  for (int i = len; i < width; i++) {
     print(" ");
+  }
   print(buf);
 }
 
@@ -403,8 +412,9 @@ static inline void print_num_padded(unsigned long val, int width) {
 static inline void print_snum_padded(long val, int width) {
   char buf[21];
   int len = ltoa(val, buf, 21);
-  for (int i = len; i < width; i++)
+  for (int i = len; i < width; i++) {
     print(" ");
+  }
   print(buf);
 }
 
@@ -412,6 +422,7 @@ static inline void print_snum_padded(long val, int width) {
 static inline void print_str_padded(const char *s, int width) {
   int len = strlen(s);
   print(s);
-  for (int i = len; i < width; i++)
+  for (int i = len; i < width; i++) {
     print(" ");
+  }
 }

@@ -23,6 +23,26 @@ using moss::VirtAddr;
 
 namespace moss::boot {
 
+void record_cpu_online() noexcept {
+  u32 cpu = moss::kernel::arch::get_current_cpu_id();
+  if (cpu >= moss::kernel::BOOT_MAX_CPUS) {
+    return;
+  }
+  // Exercise the shared production allocator, owned memory, and cleanup on
+  // the calling CPU before publishing its readiness evidence.
+  auto page = moss::kernel::mm::PageFrameAllocator::allocate_pages(0);
+  if (page) {
+    auto *value = reinterpret_cast<volatile u64 *>(*page);
+    *value = 0x4d4f535300000000ULL | cpu;
+    bool valid = *value == (0x4d4f535300000000ULL | cpu);
+    auto released = moss::kernel::mm::PageFrameAllocator::free_pages(*page, 0);
+    if (valid && released) {
+      __atomic_fetch_or(&cpu_work_mask, 1ULL << cpu, __ATOMIC_RELEASE);
+    }
+  }
+  __atomic_fetch_or(&online_cpu_mask, 1ULL << cpu, __ATOMIC_RELEASE);
+}
+
 // Early boot print function (architecture-independent)
 // Uses direct hardware access — no heap, no modules, safe before runtime init.
 //
@@ -152,8 +172,7 @@ static void boot_print(const char *message) {
   boot_print("Stage 4: SMP support setup\n");
   auto smp_result = ArchBoot::setup_smp_support(ctx);
   if (!smp_result) {
-    boot_print("Warning: SMP setup failed, falling back to single-core\n");
-    ctx.total_cpus = 1;
+    ArchBoot::arch_panic("SMP setup failed; refusing silent single-core fallback");
   }
   boot_print("Stage 4: SMP support setup complete\n");
 
@@ -178,6 +197,8 @@ static void boot_print(const char *message) {
   // Run C++ global constructors (.init_array) before kernel_main.
   // In freestanding environments there is no CRT to do this automatically.
   moss::abi::linker::call_global_constructors();
+
+  record_cpu_online();
 
   boot_print("Launching MOSS kernel main...\n");
 

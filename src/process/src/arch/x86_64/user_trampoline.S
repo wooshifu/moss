@@ -1,69 +1,11 @@
-// =============================================================================
-// x86_64 User IRET Trampoline — first-time entry to ring 3 via context_switch
-// =============================================================================
-//
-// This trampoline is the target of `ret` after context_switch restores a
-// freshly-prepared CpuContext for a user task that has never entered ring 3
-// (needs_initial_eret).
-//
-// By going through context_switch instead of calling switch_to_user directly,
-// the caller's bootstrap context is properly saved.  This allows waitpid's
-// context_switch(my_ctx, bootstrap) to correctly return to the idle loop.
-//
-// Callee-saved registers set by context_switch_to_task before context_switch:
-//   RBX = user entry point (RIP for IRETQ)
-//   R12 = user stack pointer (RSP for ring 3)
-//   R13 = user RDI value (arg0: fork=0, execve=argc)
-//   R14 = user RSI value (arg1: fork=0, execve=argv)
-//   R15 = 0 (reserved)
-//
-// Preconditions (set by context_switch_to_task's normal path):
-//   - CR3 already points to this process's page tables (if user task)
-//   - IRQs are masked (context_switch path masks them)
-// =============================================================================
-
+// RBX points to the complete user context preserved on the kernel stack.
+// Enter through context_switch so the scheduler's bootstrap context is saved.
 .section .text
-
 .global user_iret_trampoline
 .type user_iret_trampoline, @function
 user_iret_trampoline:
-    // Build IRETQ frame on the current kernel stack.
-    // IRETQ pops: RIP, CS, RFLAGS, RSP, SS (bottom to top of stack)
-    // GDT layout: [3]=User Data(0x1B), [4]=User Code(0x23)
-    pushq   $0x1B                       // SS  (user data segment, RPL=3)
-    pushq   %r12                        // RSP (user stack pointer)
-    pushq   $0x202                      // RFLAGS (IF=1, reserved bit 1 = 1)
-    pushq   $0x23                       // CS  (user code segment, RPL=3)
-    pushq   %rbx                        // RIP (user entry point)
-
-    // Set all data segment registers to user data segment
-    movw    $0x1B, %ax
-    movw    %ax, %ds
-    movw    %ax, %es
-
-    // Set user arguments in the standard calling convention registers
-    movq    %r13, %rdi                  // arg0 (fork: 0, execve: argc)
-    movq    %r14, %rsi                  // arg1 (fork: 0, execve: argv)
-
-    // Zero remaining user-visible GP registers for clean entry
-    xorq    %rax, %rax
-    xorq    %rbx, %rbx
-    xorq    %rcx, %rcx
-    xorq    %rdx, %rdx
-    xorq    %rbp, %rbp
-    xorq    %r8, %r8
-    xorq    %r9, %r9
-    xorq    %r10, %r10
-    xorq    %r11, %r11
-    xorq    %r12, %r12
-    xorq    %r13, %r13
-    xorq    %r14, %r14
-    xorq    %r15, %r15
-
-    // Atomically switch to ring 3: pops RIP, CS, RFLAGS, RSP, SS
-    iretq
-
+    movq %rbx, %rdi
+    movq 56(%rbx), %rsi
+    jmp switch_to_user
 .size user_iret_trampoline, .-user_iret_trampoline
-
-// Prevent executable stack warning from the GNU linker
 .section .note.GNU-stack,"",@progbits

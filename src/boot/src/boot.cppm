@@ -85,6 +85,11 @@ void activate_secondary_cpus() noexcept;
 /// Wait for all CPUs to become active
 u32 wait_for_all_cpus_active(u32 timeout_ms = 5000) noexcept;
 
+// Published by each CPU after its architecture runtime is ready.
+inline u64 online_cpu_mask = 0;
+inline u64 cpu_work_mask = 0;
+void record_cpu_online() noexcept;
+
 } // namespace moss::boot
 
 // ============================================================================
@@ -111,7 +116,7 @@ using ArchBoot = ARM64BootImpl;
 
 #elif defined(__x86_64__) || defined(__x86_64) || defined(MOSS_ARCH_X86_64)
 
-class X86_64BootImpl : public ArchBootInterface {
+class X86BootImpl : public ArchBootInterface {
 public:
   static moss::kernel::VoidResult hardware_early_init(BootContext &ctx) noexcept;
   static moss::kernel::VoidResult setup_memory_management(BootContext &ctx) noexcept;
@@ -122,7 +127,7 @@ public:
   static u32 get_current_cpu_id() noexcept;
   [[noreturn]] static void arch_panic(const char *message) noexcept;
 };
-using ArchBoot = X86_64BootImpl;
+using ArchBoot = X86BootImpl;
 
 #elif defined(__riscv) || defined(__riscv__) || defined(MOSS_ARCH_RISCV)
 

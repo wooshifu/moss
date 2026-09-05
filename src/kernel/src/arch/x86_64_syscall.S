@@ -43,8 +43,9 @@ syscall_entry_point:
     // SYSCALL does NOT change RSP.  When entered from ring 3, RSP still
     // points to the user stack.  Switch to the per-task kernel stack.
     // g_kernel_rsp is set by the scheduler before dispatching a user task.
-    movq    %rsp, g_user_rsp_save(%rip) // save user RSP
-    movq    g_kernel_rsp(%rip), %rsp    // load kernel stack
+    movq    %rsp, %gs:8
+    movq    %gs:0, %rsp
+    pushq   %gs:8                      // Own the saved user SP across scheduling.
 
     // ---- Establish stack frame ----
     pushq   %rbp
@@ -89,13 +90,14 @@ syscall_entry_point:
     movq    24(%rsp), %r9               // C arg5 (a4)   ← saved R8
 
     // C arg6 (a5) passed on the stack per System V ABI
-    pushq   16(%rsp)                    // push saved R9 (arg5)
+    pushq   $0                         // trap frame (not yet supplied by this entry)
+    pushq   24(%rsp)                    // saved R9 after the preceding push
 
     // ---- Call the C system call dispatcher ----
     call    system_call_handler
 
     // ---- Clean up stack arg (arg5) ----
-    addq    $8, %rsp
+    addq    $16, %rsp
 
     // ---- Patch return value into saved RAX slot (at rsp+64 after 15 pushes) ----
     movq    %rax, 64(%rsp)
@@ -122,7 +124,7 @@ syscall_entry_point:
     popq    %rbp
 
     // ---- Restore user RSP and return to user-space ----
-    movq    g_user_rsp_save(%rip), %rsp
+    popq    %rsp
     sysretq
 .size syscall_entry_point, . - syscall_entry_point
 

@@ -138,6 +138,16 @@ syscall_entry_point:
     sd      t1,  OFF_T1(sp)
     sd      t2,  OFF_T2(sp)
 
+    sd      tp, 0x100(sp)
+    sd      gp, 0x108(sp)
+    csrr    t0, sscratch
+    beqz    t0, .Lkernel_identity_ready
+    ld      tp, FRAME_SIZE(sp)
+    .option push
+    .option norelax
+    la      gp, __global_pointer$
+    .option pop
+.Lkernel_identity_ready:
     // Save sepc, sstatus, scause
     csrr    t0, sepc
     sd      t0, OFF_SEPC(sp)
@@ -202,6 +212,9 @@ syscall_entry_point:
     // S-mode external interrupt (cause == 9)
     li      t2, 9
     beq     t1, t2, .Ltrap_external
+    li      t2, 1
+    bne     t1, t2, .Ltrap_return
+    csrci   sip, 2
 
     // Other interrupt — spurious, return immediately
     j       .Ltrap_return
@@ -291,6 +304,8 @@ syscall_entry_point:
     // ---- Return to U-mode ----
     // Stash user sp in sscratch temporarily; we'll swap sp↔sscratch later.
     csrw    sscratch, t0
+    ld      tp, 0x100(sp)
+    ld      gp, 0x108(sp)
 
     // Now restore ALL minimal registers (t0 gets the user's real value)
     ld      t2, OFF_T2(sp)

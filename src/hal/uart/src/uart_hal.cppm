@@ -27,11 +27,49 @@ using moss::u32;
 using moss::u64;
 using moss::u8;
 
+inline u32 transmit_lock = 0;
+
+// UART is below the containers/arch modules. Keep its lock freestanding and
+// mask local IRQs so an interrupt cannot recursively wait on its own writer.
+class TransmitGuard {
+  u64 flags_ = 0;
+
+public:
+  TransmitGuard() noexcept {
+#if defined(MOSS_ARCH_ARM64)
+    asm volatile("mrs %0, daif; msr daifset, #2" : "=r"(flags_)::"memory");
+#elif defined(MOSS_ARCH_X86_64)
+    asm volatile("pushfq; popq %0; cli" : "=r"(flags_)::"memory");
+#else
+    asm volatile("csrrc %0, sstatus, %1" : "=r"(flags_) : "r"(2ULL) : "memory");
+#endif
+    while (__atomic_exchange_n(&transmit_lock, 1U, __ATOMIC_ACQUIRE)) {
+      while (__atomic_load_n(&transmit_lock, __ATOMIC_RELAXED)) {
+        asm volatile("" ::: "memory");
+      }
+    }
+  }
+  ~TransmitGuard() {
+    __atomic_store_n(&transmit_lock, 0U, __ATOMIC_RELEASE);
+#if defined(MOSS_ARCH_ARM64)
+    asm volatile("msr daif, %0" ::"r"(flags_) : "memory");
+#elif defined(MOSS_ARCH_X86_64)
+    if (flags_ & (1ULL << 9)) {
+      asm volatile("sti" ::: "memory");
+    }
+#else
+    if (flags_ & 2) {
+      asm volatile("csrsi sstatus, 2" ::: "memory");
+    }
+#endif
+  }
+};
+
 // ============================================================================
 // Low-level putc — architecture-specific single character output
 // ============================================================================
 
-inline void putc(char c) noexcept {
+inline void putc_unlocked(char c) noexcept {
 #if defined(MOSS_ARCH_ARM64)
   // PL011 UART: data register at base+0x00, flags register at base+0x18
   // TXFF (TX FIFO Full) is bit 5 of the flags register
@@ -65,6 +103,11 @@ inline void putc(char c) noexcept {
   }
   *uart_thr = static_cast<u8>(c);
 #endif
+}
+
+inline void putc(char c) noexcept {
+  TransmitGuard guard;
+  putc_unlocked(c);
 }
 
 // ============================================================================
@@ -144,11 +187,12 @@ inline void puts(const char *str) noexcept {
   if (!str) {
     return;
   }
+  TransmitGuard guard;
   while (*str) {
     if (*str == '\n') {
-      putc('\r');
+      putc_unlocked('\r');
     }
-    putc(*str++);
+    putc_unlocked(*str++);
   }
 }
 
