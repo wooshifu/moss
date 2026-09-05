@@ -15,7 +15,7 @@ English only. No Co-Authored-By line.
 **Before staging any files**, verify the `moss-quality-gate` skill passes:
 
 1. `cmake --build build/arm64-qemu-debug` — zero warnings
-2. `uv run scripts/format.py lint` — zero issues
+2. `uv run lint.py --check` and `uv run ruff check .` — zero issues
 3. `uv run scripts/format.py format --check` — zero diffs
 
 Do not commit until all three pass. If any fail, fix and re-verify.

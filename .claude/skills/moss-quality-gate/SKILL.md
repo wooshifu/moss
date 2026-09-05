@@ -25,18 +25,20 @@ The project uses `-Weverything -Werror`. Any warning is a build failure. Fix all
 ### Step 2 — Lint
 
 ```bash
-uv run scripts/format.py lint
+uv run lint.py --check
+uv run ruff check .
 ```
 
-Runs clang-tidy (C++) and ruff check (Python). All clang-tidy warnings are errors (`WarningsAsErrors: '*'`).
+Runs system clang-tidy (C++, including modules) and ruff check (Python). All clang-tidy warnings are errors (`WarningsAsErrors: '*'`). The C++ entrypoint incrementally builds before checking to refresh BMIs; use `--preset <name>` for another configured architecture.
 
 If there are violations, fix them. For auto-fixable issues:
 
 ```bash
-uv run scripts/format.py lint --fix
+uv run lint.py --fix
+uv run ruff check --fix .
 ```
 
-After `--fix`, **always rebuild** (Step 1) to confirm the fixes compile, then re-run lint without `--fix` to verify clean.
+`lint.py --fix` collects replacements in parallel, applies them once, then automatically rebuilds and runs a final check. A nonzero exit means the operation did not finish cleanly.
 
 ### Step 3 — Format
 
@@ -58,20 +60,20 @@ Then re-run `format --check` to verify clean.
 
 | Goal | Command |
 |------|---------|
-| Full quality check | Build, then `lint`, then `format --check` |
-| Auto-fix lint issues | `uv run scripts/format.py lint --fix` |
+| Full quality check | Build, then `uv run lint.py --check`, `uv run ruff check .`, then `format --check` |
+| Auto-fix C++ lint issues | `uv run lint.py --fix` |
 | Auto-fix format issues | `uv run scripts/format.py format` |
-| C++ only lint | `uv run scripts/format.py lint --cpp-only` |
-| Python only lint | `uv run scripts/format.py lint --py-only` |
+| C++ only lint | `uv run lint.py --check` |
+| Python only lint | `uv run ruff check .` |
 
 ## Rules
 
 | Rule | Reason |
 |------|--------|
-| Build before lint | clang-tidy reads `.pcm` files; stale modules cause false positives |
+| Build before lint | The lint entrypoint updates BMIs; stale modules can hide source changes |
 | Lint before format | clang-tidy `--fix` may change code that needs reformatting |
 | Never skip checks | `WarningsAsErrors: '*'` means CI will reject unclean code |
-| Rebuild after `--fix` | `--fix` modifies source but not `.pcm`; rebuild refreshes module AST |
+| Rebuild after `--fix` | The lint entrypoint rebuilds before the final check to refresh module ASTs |
 
 ## What Gets Checked
 

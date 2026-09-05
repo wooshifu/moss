@@ -3,8 +3,8 @@
 # Freestanding kernel: no standard library, no exceptions, no RTTI.
 # Checks are chosen to catch real bugs without false-positive noise.
 #
-# Run: uv run scripts/format.py lint
-# Fix: uv run scripts/format.py lint --fix
+# Run: uv run lint.py --check
+# Fix: uv run lint.py --fix
 
 Checks: >
   -*,
