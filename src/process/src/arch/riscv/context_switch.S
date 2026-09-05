@@ -109,7 +109,9 @@ context_switch:
 
     // Restore sstatus from next->pstate
     ld      t0, 264(a1)
+    andi    t0, t0, -3                 // never enable IRQs halfway through a switch
     csrw    sstatus, t0
+    csrw    sscratch, zero             // resumed code is still running in S-mode
 
     // Restore stack pointer from dedicated sp field and sync to x[2]
     ld      t1, 272(a1)                 // next->sp
@@ -118,8 +120,7 @@ context_switch:
     // Restore all general-purpose registers
     ld      x1, 8(a1)                  // ra
     ld      x2, 16(a1)                // sp
-    ld      x3, 24(a1)                // gp
-    ld      x4, 32(a1)                // tp
+    // Kernel gp and physical hart tp belong to the CPU, not the task.
     ld      x5, 40(a1)                // t0
     ld      x6, 48(a1)                // t1
     ld      x7, 56(a1)                // t2

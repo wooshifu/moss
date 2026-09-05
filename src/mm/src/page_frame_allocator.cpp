@@ -15,6 +15,7 @@ PageFrameAllocator::MemoryRegion *PageFrameAllocator::memory_regions_ = nullptr;
 PageFrameAllocator::FreeBlock *PageFrameAllocator::free_lists_[MAX_ORDER + 1] = {nullptr};
 PageFrameAllocator::PageMetadata *PageFrameAllocator::page_metadata_ = nullptr;
 usize PageFrameAllocator::total_pages_ = 0;
+usize PageFrameAllocator::metadata_pages_ = 0;
 moss::kernel::containers::AtomicSize PageFrameAllocator::free_pages_{0};
 moss::kernel::containers::AtomicSize PageFrameAllocator::used_pages_{0};
 
@@ -89,7 +90,7 @@ PageAllocResult<PhysAddr> PageFrameAllocator::allocate_pages(usize order) noexce
   // Initialize reference count to 1 for COW tracking, and mark as allocated
   if (page_metadata_ && memory_regions_) {
     usize page_idx = addr_to_page(allocated_addr - memory_regions_->start_addr);
-    if (page_idx < total_pages_) {
+    if (page_idx < metadata_pages_) {
       page_metadata_[page_idx].ref_count.store(1, containers::MemoryOrder::Relaxed);
     }
 
@@ -97,7 +98,7 @@ PageAllocResult<PhysAddr> PageFrameAllocator::allocate_pages(usize order) noexce
     for (usize pi = 0; pi < pages_allocated; pi++) {
       PhysAddr pa = allocated_addr + pi * PAGE_SIZE;
       usize idx = addr_to_page(pa - memory_regions_->start_addr);
-      if (idx < total_pages_) {
+      if (idx < metadata_pages_) {
         // Use CAS loop since AtomicCounter lacks fetch_or
         u32 expected = page_metadata_[idx].flags.load(containers::MemoryOrder::Relaxed);
         while (true) {
@@ -137,7 +138,7 @@ PageAllocVoidResult PageFrameAllocator::free_pages(PhysAddr addr, usize order) n
     for (usize pi = 0; pi < pages_freed; pi++) {
       PhysAddr pa = addr + pi * PAGE_SIZE;
       usize idx = addr_to_page(pa - memory_regions_->start_addr);
-      if (idx < total_pages_) {
+      if (idx < metadata_pages_) {
         // Use CAS loop since AtomicCounter lacks fetch_and
         u32 expected = page_metadata_[idx].flags.load(containers::MemoryOrder::Relaxed);
         while (true) {
@@ -176,15 +177,22 @@ PageFrameAllocator::MemoryStats PageFrameAllocator::get_memory_stats() noexcept 
 
 // 解析内核内存布局
 PageAllocVoidResult PageFrameAllocator::parse_memory_layout() noexcept {
-  // 从 DTB 解析结果获取物理内存范围，若 DTB 无效则回退到 256MB 默认值。
-  // DTB 解析在 hardware_early_init() 中完成，此处仅读取结果。
+  // Firmware RAM discovery must complete before allocator initialization.
   const auto &plat = ::moss::fdt::get_platform_info();
 
   PhysAddr kernel_end = moss::abi::linker::kernel_end();
-  PhysAddr memory_end =
-      (plat.dtb_valid && plat.memory_region_count > 0)
-          ? static_cast<PhysAddr>(plat.total_memory_start + plat.total_memory_size)
-          : static_cast<PhysAddr>(moss::kernel::platform::ram_base() + moss::kernel::platform::ram_size());
+  PhysAddr memory_end = 0;
+  // Use the actual contiguous RAM bank containing the kernel, never bridge a firmware hole.
+  for (u32 i = 0; i < plat.memory_region_count; ++i) {
+    const auto &region = plat.memory_regions[i];
+    if (kernel_end >= region.base && kernel_end < region.base + region.size) {
+      memory_end = region.base + region.size;
+      break;
+    }
+  }
+  if (!plat.memory_map_valid || memory_end == 0 || memory_end > 0x100000000ULL) {
+    return PageAllocVoidResult{PageAllocError::InitializationFailed};
+  }
 
   // 对齐到页面边界
   PhysAddr available_start = (kernel_end + PAGE_SIZE - 1) & ~(PAGE_SIZE - 1);
@@ -201,6 +209,31 @@ PageAllocVoidResult PageFrameAllocator::parse_memory_layout() noexcept {
   // Each page needs a PageMetadata struct for COW reference counting.
   usize metadata_bytes = raw_total_pages * sizeof(PageMetadata);
   usize metadata_pages = (metadata_bytes + PAGE_SIZE - 1) / PAGE_SIZE;
+
+  // Find room for metadata without overwriting bootloader-owned data.
+  auto reserved_end = [&](PhysAddr begin, PhysAddr end) -> PhysAddr {
+    PhysAddr skip_to = begin;
+    auto check = [&](PhysAddr base, u64 size) {
+      if (size && begin < base + size && end > base && base + size > skip_to) {
+        skip_to = (base + size + PAGE_SIZE - 1) & ~(PAGE_SIZE - 1);
+      }
+    };
+    check(plat.initrd_start, plat.initrd_end - plat.initrd_start);
+    for (u32 i = 0; i < plat.reserved_region_count; ++i) {
+      check(plat.reserved_regions[i].base, plat.reserved_regions[i].size);
+    }
+    return skip_to;
+  };
+  while (available_start < available_end) {
+    PhysAddr next = reserved_end(available_start, available_start + metadata_pages * PAGE_SIZE);
+    if (next == available_start) {
+      break;
+    }
+    available_start = next;
+  }
+  if (available_start >= available_end || metadata_pages * PAGE_SIZE >= available_end - available_start) {
+    return PageAllocVoidResult{PageAllocError::InitializationFailed};
+  }
 
   page_metadata_ = reinterpret_cast<PageMetadata *>(available_start);
 
@@ -219,6 +252,7 @@ PageAllocVoidResult PageFrameAllocator::parse_memory_layout() noexcept {
 
   // Final page count (after metadata reservation)
   total_pages_ = (available_end - available_start) / PAGE_SIZE;
+  metadata_pages_ = total_pages_;
   free_pages_.store(total_pages_);
   used_pages_.store(0);
 
@@ -241,26 +275,41 @@ void PageFrameAllocator::initialize_free_lists() noexcept {
     free_lists_[i] = nullptr;
   }
 
-  // 将所有可用内存添加到最大阶的空闲列表
+  const auto &plat = ::moss::fdt::get_platform_info();
+  auto reserved = [&](PhysAddr begin, PhysAddr end) {
+    if (plat.initrd_end > plat.initrd_start && begin < plat.initrd_end && end > plat.initrd_start) {
+      return true;
+    }
+    for (u32 i = 0; i < plat.reserved_region_count; ++i) {
+      const auto &r = plat.reserved_regions[i];
+      if (begin < r.base + r.size && end > r.base) {
+        return true;
+      }
+    }
+    return false;
+  };
+  usize usable_pages = 0;
+  // Do not publish any block spanning reserved data or misaligned to its order.
   MemoryRegion *region = memory_regions_;
   while (region != nullptr) {
     PhysAddr current_addr = region->start_addr;
     usize remaining_pages = region->page_count;
 
     while (remaining_pages > 0) {
+      if (reserved(current_addr, current_addr + PAGE_SIZE)) {
+        current_addr += PAGE_SIZE;
+        --remaining_pages;
+        continue;
+      }
       // 找到最大的可用块大小
       usize order = MAX_ORDER;
-      while (order > 0 && (1UL << order) > remaining_pages) {
+      while (order > 0 && ((1UL << order) > remaining_pages || (current_addr & ((PAGE_SIZE << order) - 1)) != 0 ||
+                           reserved(current_addr, current_addr + (PAGE_SIZE << order)))) {
         order--;
       }
 
       // 确保地址对齐到块大小
       usize block_size = 1UL << order;
-      usize addr_offset = addr_to_page(current_addr) & (block_size - 1);
-      if (addr_offset != 0) {
-        order--;
-        block_size = 1UL << order;
-      }
 
       // 添加块到空闲列表
       FreeBlock *block = reinterpret_cast<FreeBlock *>(current_addr);
@@ -268,10 +317,13 @@ void PageFrameAllocator::initialize_free_lists() noexcept {
 
       current_addr += block_size * PAGE_SIZE;
       remaining_pages -= block_size;
+      usable_pages += block_size;
     }
 
     region = region->next;
   }
+  total_pages_ = usable_pages;
+  free_pages_.store(usable_pages);
 }
 
 // 将块分割为两个小块
@@ -423,7 +475,7 @@ void PageFrameAllocator::page_ref_inc(PhysAddr addr) noexcept {
     return;
   }
   usize idx = addr_to_page(addr - memory_regions_->start_addr);
-  if (idx < total_pages_) {
+  if (idx < metadata_pages_) {
     // AcqRel: inc must be visible before any access to the shared page
     (void)page_metadata_[idx].ref_count.fetch_add(1, containers::MemoryOrder::AcqRel);
   }
@@ -434,7 +486,7 @@ u32 PageFrameAllocator::page_ref_dec(PhysAddr addr) noexcept {
     return 0;
   }
   usize idx = addr_to_page(addr - memory_regions_->start_addr);
-  if (idx < total_pages_) {
+  if (idx < metadata_pages_) {
     // AcqRel: dec must synchronize-with the last inc; when result==0 the
     // caller frees the page — Acquire ensures all prior writes are visible.
     return page_metadata_[idx].ref_count.fetch_sub(1, containers::MemoryOrder::AcqRel) - 1;
@@ -447,7 +499,7 @@ u32 PageFrameAllocator::page_ref_get(PhysAddr addr) noexcept {
     return 0;
   }
   usize idx = addr_to_page(addr - memory_regions_->start_addr);
-  if (idx < total_pages_) {
+  if (idx < metadata_pages_) {
     // Acquire: reading refcount to decide COW copy vs in-place write —
     // must see all prior increments to avoid premature free.
     return page_metadata_[idx].ref_count.load(containers::MemoryOrder::Acquire);
@@ -460,7 +512,7 @@ void PageFrameAllocator::page_ref_set(PhysAddr addr, u32 count) noexcept {
     return;
   }
   usize idx = addr_to_page(addr - memory_regions_->start_addr);
-  if (idx < total_pages_) {
+  if (idx < metadata_pages_) {
     page_metadata_[idx].ref_count.store(count, containers::MemoryOrder::Relaxed);
   }
 }

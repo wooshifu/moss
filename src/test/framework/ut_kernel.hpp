@@ -2,7 +2,7 @@
 
 /**
  * @file ut_kernel.hpp
- * @brief Kernel-optimized version of Boost.UT testing framework
+ * @brief unit_kenel (ut_kernel), a freestanding Boost.UT-style framework.
  *
  * This is a simplified version of ut.hpp (Boost.UT) specifically optimized for
  * freestanding kernel environments. It removes features not needed in kernel:
@@ -374,8 +374,8 @@ DEFINE_COMPARISON_EXPECTATION(le_t, "<=", ">")
 template<typename T>
 constexpr auto expect_impl(T&& value, const char* expr, const char* file, int line) {
     auto exp = expectation<T>{static_cast<T&&>(value), expr, file, line};
-    (void)static_cast<bool>(exp);
-    return exp;
+    // Return a value, not an accounting proxy: guards must not count twice.
+    return static_cast<bool>(exp);
 }
 
 // Macro to capture file/line at call site
@@ -460,12 +460,17 @@ bool expect_no_error_impl(T result, const char* expr, const char* file, int line
 // ============================================================================
 
 // Non-templated base for test registration to avoid template instantiation issues
+inline const char *registration_error();
 struct test_base {
     const char* name;
     void (*test_function)();
     test_base* next;
+    const char *suite_name = "default";
 
     static inline test_base* head = nullptr;
+    static inline test_base *tail = nullptr;
+
+    constexpr test_base() : name(nullptr), test_function(nullptr), next(nullptr) {}
 
     test_base(const char* n, void (*f)()) : name(n), test_function(f), next(head) {
         head = this;
@@ -494,6 +499,9 @@ struct test_base {
     }
 
     [[noreturn]] static void run_all() {
+      if (!head || registration_error()) {
+        moss::kernel::kernel_test_exit(2);
+      }
         kernel_printer::print("\n=== Kernel UT Test Execution ===\n");
 
         // Count and show registered tests
@@ -512,6 +520,9 @@ struct test_base {
         current = head;
         while (current) {
             current->run();
+            if (test_result::tests_failed) {
+              break;
+            }
             current = current->next;
         }
 
@@ -530,10 +541,9 @@ struct test_base {
         if (test_result::tests_failed == 0) {
             kernel_printer::print("🎉 All tests passed!\n");
             moss::kernel::kernel_test_exit(0);
-        } else {
-            kernel_printer::print("❌ Some tests failed!\n");
-            moss::kernel::kernel_test_exit(1);
         }
+        kernel_printer::print("❌ Some tests failed!\n");
+        moss::kernel::kernel_test_exit(1);
     }
 };
 
@@ -542,22 +552,120 @@ struct test_base {
 // ============================================================================
 
 // Simple registration function
-inline void register_test(const char* name, void (*test_func)()) {
-    static int test_count = 0;
+inline bool same_id(const char *a, const char *b) {
+  if (!a || !b) {
+    return false;
+  }
+  while (*a && *a == *b) {
+    ++a;
+    ++b;
+  }
+  return *a == *b;
+}
 
-    kernel_printer::print("DEBUG: Registering test: ");
-    kernel_printer::print(name);
-    kernel_printer::print("\n");
-
-    if (test_count < 64) {
-        // Create test_base instance which automatically registers itself via constructor
-        new test_base(name, test_func);
-        test_count++;
-
-        kernel_printer::print("DEBUG: Test registered, count now: ");
-        kernel_printer::print_number(test_count);
-        kernel_printer::print("\n");
+inline bool valid_id(const char *id) {
+  if (!id || !*id) {
+    return false;
+  }
+  unsigned length = 0;
+  for (; *id; ++id) {
+    ++length;
+    bool allowed = (*id >= 'a' && *id <= 'z') || (*id >= 'A' && *id <= 'Z') || (*id >= '0' && *id <= '9') ||
+                   *id == '_' || *id == '-' || *id == '.' || *id == '/' || *id == '=';
+    if (length > 80 || !allowed) {
+      return false;
     }
+  }
+  return true;
+}
+
+struct Registry {
+  static constexpr unsigned case_capacity = 128;
+  static constexpr unsigned suite_capacity = 16;
+  test_base cases[case_capacity]{};
+  const char *suites[suite_capacity]{};
+  unsigned case_count = 0;
+  unsigned suite_count = 0;
+  const char *active_suite = nullptr;
+  const char *error = nullptr;
+
+  bool begin_suite(const char *name) {
+    if (error) {
+      return false;
+    }
+    if (!valid_id(name) || active_suite) {
+      error = "invalid_suite";
+      return false;
+    }
+    for (unsigned i = 0; i < suite_count; ++i) {
+      if (same_id(name, suites[i])) {
+        error = "duplicate_suite";
+        return false;
+      }
+    }
+    if (suite_count == suite_capacity) {
+      error = "suite_capacity";
+      return false;
+    }
+    suites[suite_count++] = name;
+    active_suite = name;
+    return true;
+  }
+
+  void add_test(const char *name, void (*function)()) {
+    if (error) {
+      return;
+    }
+    if (!valid_id(name) || !function || !active_suite) {
+      error = "invalid_case";
+      return;
+    }
+    for (unsigned i = 0; i < case_count; ++i) {
+      if (same_id(name, cases[i].name) && same_id(active_suite, cases[i].suite_name)) {
+        error = "duplicate_case";
+        return;
+      }
+    }
+    if (case_count == case_capacity) {
+      error = "case_capacity";
+      return;
+    }
+    auto &item = cases[case_count++];
+    item.name = name;
+    item.test_function = function;
+    item.suite_name = active_suite;
+  }
+};
+
+inline Registry registry{};
+inline const char *registration_error() { return registry.error; }
+
+template <typename Declaration> inline void register_suite(const char *name, Declaration declare) {
+  if (registry.begin_suite(name)) {
+    declare();
+    registry.active_suite = nullptr;
+  }
+}
+
+inline void register_test(const char *name, void (*test_func)()) {
+  bool implicit_suite = !registry.active_suite;
+  if (implicit_suite) {
+    registry.active_suite = "default";
+  }
+  unsigned previous = registry.case_count;
+  registry.add_test(name, test_func);
+  if (implicit_suite) {
+    registry.active_suite = nullptr;
+  }
+  if (registry.case_count > previous) {
+    auto *item = &registry.cases[previous];
+    if (test_base::tail) {
+      test_base::tail->next = item;
+    } else {
+      test_base::head = item;
+    }
+    test_base::tail = item;
+  }
 }
 
 // ============================================================================
@@ -1341,4 +1449,3 @@ namespace moss::test {
         boost::ut::run_all_tests();
     }
 }
-

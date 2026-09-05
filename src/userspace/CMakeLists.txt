@@ -60,6 +60,22 @@ add_userspace_program(hello)
 add_userspace_program(shell)
 add_userspace_program(top)
 add_userspace_program(signal_test)
+if(MOSS_BUILD_TESTS)
+    add_userspace_program(validation)
+    add_userspace_program(validation_child)
+
+    add_custom_command(
+        OUTPUT ${CMAKE_BINARY_DIR}/validation-initramfs.cpio
+        COMMAND
+            uv run ${CMAKE_SOURCE_DIR}/scripts/gen_validation_initramfs.py ${CMAKE_BINARY_DIR}/validation-initramfs.cpio
+            ${CMAKE_BINARY_DIR}/userspace/validation.elf ${CMAKE_BINARY_DIR}/userspace/validation_child.elf
+        DEPENDS ${CMAKE_BINARY_DIR}/userspace/validation.elf ${CMAKE_BINARY_DIR}/userspace/validation_child.elf
+                ${CMAKE_SOURCE_DIR}/scripts/gen_validation_initramfs.py ${CMAKE_SOURCE_DIR}/scripts/gen_initramfs.py
+        WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+        VERBATIM
+    )
+    add_custom_target(validation-initramfs DEPENDS ${CMAKE_BINARY_DIR}/validation-initramfs.cpio)
+endif()
 
 # GNU cpio newc format (070701), consumed by the kernel's CPIO parser.
 add_custom_command(

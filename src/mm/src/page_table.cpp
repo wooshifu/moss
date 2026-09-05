@@ -52,10 +52,10 @@ KernelResult<PageTable *> PageTableManager::allocate_page_table_dynamic() {
 VoidResult PageTableManager::setup_kernel_high_half_tables() {
   // Determine RAM region from DTB (PlatformInfo)
   const auto &plat = moss::fdt::get_platform_info();
-  PhysAddr ram_start =
-      (plat.dtb_valid && plat.total_memory_size > 0) ? plat.total_memory_start : moss::kernel::platform::ram_base();
-  u64 ram_size =
-      (plat.dtb_valid && plat.total_memory_size > 0) ? plat.total_memory_size : moss::kernel::platform::ram_size();
+  PhysAddr ram_start = (plat.memory_map_valid && plat.total_memory_size > 0) ? plat.total_memory_start
+                                                                             : moss::kernel::platform::ram_base();
+  u64 ram_size = (plat.memory_map_valid && plat.total_memory_size > 0) ? plat.total_memory_size
+                                                                       : moss::kernel::platform::ram_size();
   PhysAddr ram_end = ram_start + ram_size;
 
   constexpr u64 ONE_GB = 0x40000000ULL;
@@ -121,6 +121,10 @@ VoidResult PageTableManager::setup_kernel_high_half_tables() {
 
     PhysAddr pud_pa = get_physical_address(pud);
     kernel_high_pgd->entries[pgd_idx].set_table(pud_pa);
+#if defined(MOSS_ARCH_X86_64)
+    // CR3 is shared by user and kernel mode; there is no separate TTBR1.
+    kernel_pgd->entries[pgd_idx] = kernel_high_pgd->entries[pgd_idx];
+#endif
 
     // Fill PUD entries with 1GB block descriptors covering 0-4GB
     for (usize i = 0; i < 4; i++) {
@@ -512,10 +516,10 @@ VoidResult PageTableManager::map_user_page(PhysAddr pgd_phys, VirtAddr va, PhysA
 VoidResult PageTableManager::setup_kernel_page_tables() {
   // Determine RAM region from DTB (PlatformInfo)
   const auto &plat = moss::fdt::get_platform_info();
-  PhysAddr ram_start =
-      (plat.dtb_valid && plat.total_memory_size > 0) ? plat.total_memory_start : moss::kernel::platform::ram_base();
-  u64 ram_size =
-      (plat.dtb_valid && plat.total_memory_size > 0) ? plat.total_memory_size : moss::kernel::platform::ram_size();
+  PhysAddr ram_start = (plat.memory_map_valid && plat.total_memory_size > 0) ? plat.total_memory_start
+                                                                             : moss::kernel::platform::ram_base();
+  u64 ram_size = (plat.memory_map_valid && plat.total_memory_size > 0) ? plat.total_memory_size
+                                                                       : moss::kernel::platform::ram_size();
   PhysAddr ram_end = ram_start + ram_size;
 
   constexpr u64 ONE_GB = 0x40000000ULL;

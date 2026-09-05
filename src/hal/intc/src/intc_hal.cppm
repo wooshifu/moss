@@ -20,6 +20,7 @@ import moss.std;
 import moss.types;
 import moss.result;
 import moss.platform;
+import moss.arch;
 
 export namespace moss::kernel::hal::intc {
 
@@ -751,8 +752,8 @@ inline VoidResult send_sgi(VirtAddr dist_base, [[maybe_unused]] VirtAddr cpu_bas
   if (target_cpu_mask != 0) {
     // Find first target CPU from mask
     u32 dest_apic_id = static_cast<u32>(intrinsics::bitops::ctz(target_cpu_mask));
-    write_reg(cpu_base, cpu_regs::ICR_HIGH, dest_apic_id << 24);
-    write_reg(cpu_base, cpu_regs::ICR_LOW, sgi_id | (1U << 14)); // Fixed delivery
+    write_reg(dist_base, cpu_regs::ICR_HIGH, dest_apic_id << 24);
+    write_reg(dist_base, cpu_regs::ICR_LOW, (64 + sgi_id) | (1U << 14));
   }
 
 #elif defined(MOSS_ARCH_RISCV)
@@ -761,7 +762,20 @@ inline VoidResult send_sgi(VirtAddr dist_base, [[maybe_unused]] VirtAddr cpu_bas
   (void)dist_base;
   (void)cpu_base;
   (void)sgi_id;
-  (void)target_cpu_mask;
+  u64 hart_mask = 0;
+  for (u32 cpu = 0; cpu < 16; ++cpu) {
+    if (target_cpu_mask & (1U << cpu)) {
+      hart_mask |= 1ULL << arch::riscv_hart_id(cpu);
+    }
+  }
+  register u64 a0 asm("a0") = hart_mask;
+  register u64 a1 asm("a1") = 0;
+  register u64 a6 asm("a6") = 0;
+  register u64 a7 asm("a7") = 0x735049;
+  asm volatile("ecall" : "+r"(a0), "+r"(a1) : "r"(a6), "r"(a7) : "memory");
+  if (a0 != 0) {
+    return VoidResult{ErrorCode::InvalidState};
+  }
 #endif
 
   return VoidResult{};

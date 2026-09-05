@@ -49,7 +49,7 @@ endif()
 
 # === QEMU 运行环境配置 ===
 if(NOT MOSS_CPU_CORES)
-    set(MOSS_CPU_CORES 16)
+    set(MOSS_CPU_CORES 4)
 endif()
 
 # 根据架构选择 QEMU 命令名
@@ -224,6 +224,7 @@ if(MOSS_TARGET_ARCH STREQUAL "ARM64"
    OR MOSS_TARGET_ARCH STREQUAL "RISCV"
    OR MOSS_TARGET_ARCH STREQUAL "X86_64"
 )
+    option(MOSS_BUILD_TESTS "构建MOSS内核单元测试" ON)
     add_subdirectory(src/userspace)
     add_dependencies(moss.elf initramfs)
 endif()
@@ -263,13 +264,53 @@ if(MOSS_BUILD_TESTS)
 
     if(MOSS_QEMU_RUNNER)
         enable_testing()
-        add_test(NAME moss-unit-tests COMMAND ${MOSS_QEMU_RUNNER} ${MOSS_QEMU_RUNNER_ARGS} --test)
-        set_tests_properties(moss-unit-tests PROPERTIES TIMEOUT 30)
+        set(_validation
+            uv
+            run
+            ${CMAKE_SOURCE_DIR}/scripts/kernel_validation.py
+            run
+            --config
+            ${CMAKE_BINARY_DIR}/qemu_config.json
+        )
+        add_test(NAME moss-functional COMMAND ${_validation})
+        add_test(NAME moss-framework COMMAND ${_validation} --selftest)
+        set_tests_properties(
+            moss-functional moss-framework
+            PROPERTIES TIMEOUT
+                       300
+                       RUN_SERIAL
+                       TRUE
+                       LABELS
+                       "kernel"
+                       WORKING_DIRECTORY
+                       ${CMAKE_SOURCE_DIR}
+        )
+        if(CMAKE_BUILD_TYPE STREQUAL "Release")
+            add_test(NAME moss-benchmark COMMAND ${_validation} --benchmark)
+            set_tests_properties(
+                moss-benchmark
+                PROPERTIES TIMEOUT
+                           420
+                           RUN_SERIAL
+                           TRUE
+                           LABELS
+                           "benchmark"
+                           WORKING_DIRECTORY
+                           ${CMAKE_SOURCE_DIR}
+            )
+            add_custom_target(
+                benchmark-kernel
+                COMMAND ${_validation} --benchmark
+                DEPENDS moss.test.elf
+                WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+            )
+        endif()
 
         add_custom_target(
             test-kernel
-            COMMAND ${MOSS_QEMU_RUNNER} ${MOSS_QEMU_RUNNER_ARGS} --test
+            COMMAND ${CMAKE_CTEST_COMMAND} --test-dir ${CMAKE_BINARY_DIR} -L kernel --output-on-failure
             DEPENDS moss.test.elf
+            WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
             COMMENT "Running MOSS unit tests in QEMU (${MOSS_TARGET_ARCH})"
         )
     else()
