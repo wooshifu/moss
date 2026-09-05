@@ -264,8 +264,8 @@ def main(
         console.print(f"[red]❌ 不支持的架构: {arch}，支持的架构: arm64, x86_64, riscv[/red]")
         raise typer.Exit(1)
 
-    if build_type and build_type not in ["debug", "release"]:
-        console.print(f"[red]❌ 不支持的构建类型: {build_type}，支持的类型: debug, release[/red]")
+    if build_type and build_type not in ["debug", "release", "relwithdebinfo"]:
+        console.print(f"[red]❌ 不支持的构建类型: {build_type}，支持的类型: debug, release, relwithdebinfo[/red]")
         raise typer.Exit(1)
 
     # 环境检查
