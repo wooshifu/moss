@@ -286,83 +286,8 @@ if(MOSS_TARGET_ARCH STREQUAL "ARM64"
    OR MOSS_TARGET_ARCH STREQUAL "RISCV"
    OR MOSS_TARGET_ARCH STREQUAL "X86_64"
 )
-    set(USERSPACE_DIR "${CMAKE_SOURCE_DIR}/src/userspace")
-    set(USERSPACE_LD "${USERSPACE_DIR}/linker/userspace.ld")
-
-    # Find ld.lld next to the C compiler (avoid macOS ld64.lld which lacks ELF support)
-    get_filename_component(_compiler_dir "${CMAKE_C_COMPILER}" DIRECTORY)
-    find_program(LLD_LINKER ld.lld HINTS "${_compiler_dir}" REQUIRED)
-
-    # Architecture-specific compiler target and flags
-    if(MOSS_TARGET_ARCH STREQUAL "ARM64")
-        set(USERSPACE_ARCH_FLAGS --target=aarch64-unknown-elf)
-    elseif(MOSS_TARGET_ARCH STREQUAL "RISCV")
-        set(USERSPACE_ARCH_FLAGS --target=riscv64-unknown-elf -march=rv64imac -mabi=lp64 -mcmodel=medany)
-    elseif(MOSS_TARGET_ARCH STREQUAL "X86_64")
-        set(USERSPACE_ARCH_FLAGS --target=x86_64-unknown-elf -mcmodel=large -fPIC)
-    endif()
-
-    # Compile flags (clang -c) and link flags (ld.lld) are separate to avoid macOS clang driver injecting Mach-O linker
-    # arguments when cross-compiling to ELF targets.
-    set(USERSPACE_COMPILE_FLAGS
-        ${USERSPACE_ARCH_FLAGS}
-        -ffreestanding
-        -fno-stack-protector
-        -O2
-        -Wall
-        -I${USERSPACE_DIR}
-        -c
-    )
-    set(USERSPACE_LINK_FLAGS
-        -T
-        ${USERSPACE_LD}
-        --oformat=elf
-        -nostdlib
-        -static
-    )
-
-    # Helper: compile .c to .o then link to .elf
-    function(add_userspace_program NAME)
-        set(_src ${USERSPACE_DIR}/${NAME}.c)
-        set(_obj ${CMAKE_BINARY_DIR}/userspace/${NAME}.o)
-        set(_elf ${CMAKE_BINARY_DIR}/userspace/${NAME}.elf)
-
-        add_custom_command(
-            OUTPUT ${_obj}
-            COMMAND ${CMAKE_COMMAND} -E make_directory ${CMAKE_BINARY_DIR}/userspace
-            COMMAND ${CMAKE_C_COMPILER} ${USERSPACE_COMPILE_FLAGS} -o ${_obj} ${_src}
-            DEPENDS ${_src} ${USERSPACE_DIR}/syscall.h
-            COMMENT "Compiling userspace ${NAME}.o"
-        )
-        add_custom_command(
-            OUTPUT ${_elf}
-            COMMAND ${LLD_LINKER} ${USERSPACE_LINK_FLAGS} -o ${_elf} ${_obj}
-            DEPENDS ${_obj} ${USERSPACE_LD}
-            COMMENT "Linking userspace ${NAME}.elf"
-        )
-    endfunction()
-
-    add_userspace_program(hello)
-    add_userspace_program(shell)
-    add_userspace_program(top)
-    add_userspace_program(signal_test)
-
-    # Generate initramfs.cpio from all userspace programs Uses GNU cpio "newc" format (070701 magic, required by the
-    # CPIO parser)
-    add_custom_command(
-        OUTPUT ${CMAKE_BINARY_DIR}/initramfs.cpio
-        COMMAND uv run ${CMAKE_SOURCE_DIR}/scripts/gen_initramfs.py ${CMAKE_BINARY_DIR}/initramfs.cpio
-                ${CMAKE_BINARY_DIR}/userspace hello.elf shell.elf top.elf signal_test.elf
-        DEPENDS ${CMAKE_BINARY_DIR}/userspace/hello.elf ${CMAKE_BINARY_DIR}/userspace/shell.elf
-                ${CMAKE_BINARY_DIR}/userspace/top.elf ${CMAKE_BINARY_DIR}/userspace/signal_test.elf
-        WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
-        COMMENT "Generating initramfs.cpio"
-    )
-
-    add_custom_target(initramfs ALL DEPENDS ${CMAKE_BINARY_DIR}/initramfs.cpio)
+    add_subdirectory(src/userspace)
     add_dependencies(moss.elf initramfs)
-
-    message(STATUS "Userspace + initramfs configured (${MOSS_TARGET_ARCH})")
 endif()
 
 # === 构建目标 (QEMU) ===
