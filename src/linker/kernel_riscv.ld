@@ -28,7 +28,8 @@ SECTIONS
     . = ORIGIN(RAM);
 
     .text.boot : {
-        *(.text.boot)
+        KEEP(*(.text.boot))
+        KEEP(*(.text.boot.*))
     }
 
     .text : ALIGN(4K) {
@@ -66,7 +67,10 @@ SECTIONS
         *(.sdata.*)
     }
 
-    .bss : ALIGN(4K) {
+    /* Last byte stored in moss.bin. Runtime-only allocations follow. */
+    _kernel_file_end = .;
+
+    .bss (NOLOAD) : ALIGN(4K) {
         _bss_start = .;
         *(.sbss)
         *(.sbss.*)
@@ -94,8 +98,9 @@ SECTIONS
         _pagetable_end = .;
     }
 
-    _kernel_end = .;
-    _kernel_image_size = . - ORIGIN(RAM);
+    _kernel_memory_end = .;
+    _kernel_end = _kernel_memory_end;
+    _kernel_image_size = _kernel_memory_end - ORIGIN(RAM);
 
     /DISCARD/ : {
         *(.note*)
@@ -103,6 +108,9 @@ SECTIONS
         *(.eh_frame*)
     }
 }
+
+ASSERT(_kernel_file_end <= _bss_start, "file-backed section placed after RISC-V runtime-only storage")
+ASSERT(_kernel_memory_end <= ORIGIN(RAM) + LENGTH(RAM), "RISC-V kernel exceeds its RAM region")
 
 PROVIDE(_text_start_addr = _text_start);
 PROVIDE(_text_end_addr = _text_end);

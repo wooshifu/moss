@@ -484,6 +484,14 @@ def print_result(exit_code: int, *, test_mode: bool, use_binary: bool) -> None:
             rprint(f"[red]❌ 内核执行异常，退出码: {exit_code}[/red]")
 
 
+def normalize_test_exit_code(exit_code: int, arch: str) -> int:
+    """Decode the x86 ISA debug-exit status used by the test payload."""
+    x86_debug_exit_success = (0x10 << 1) | 1
+    if arch == "X86_64" and exit_code >= x86_debug_exit_success and exit_code & 1:
+        return ((exit_code - 1) >> 1) - 0x10
+    return exit_code
+
+
 def collect_extra_qemu_args(ctx: typer.Context, qemu_args: str | None) -> list[str]:
     """收集来自两种语法的额外QEMU参数
 
@@ -617,9 +625,11 @@ def main(
         rprint(f"\n[red]⏰ QEMU 运行超时（{timeout}s），已终止进程[/red]")
         sys.exit(124)  # 与 GNU timeout 一致的退出码
 
+    exit_code = normalize_test_exit_code(result.returncode, cfg.arch) if test_mode else result.returncode
+
     # 打印结果
-    print_result(result.returncode, test_mode=test_mode, use_binary=use_binary)
-    sys.exit(result.returncode)
+    print_result(exit_code, test_mode=test_mode, use_binary=use_binary)
+    sys.exit(exit_code)
 
 
 if __name__ == "__main__":

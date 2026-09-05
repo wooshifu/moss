@@ -28,7 +28,8 @@ SECTIONS
     . = ORIGIN(RAM);
 
     .text.boot : {
-        *(.text.boot)
+        KEEP(*(.text.boot))
+        KEEP(*(.text.boot.*))
     }
 
     .text : ALIGN(4K) {
@@ -59,14 +60,23 @@ SECTIONS
         __init_array_end = .;
     }
 
+    /* QEMU discovers the 32-bit PVH entry through this ELF note. Keep it in
+     * the file-backed prefix: placing it after NOBITS sections makes objcopy
+     * materialize the entire intervening runtime address range in moss.bin. */
+    .note.Xen : ALIGN(4) {
+        KEEP(*(.note.Xen))
+    }
+
+    _kernel_file_end = .;
+
     /* PVH page tables — used by _pvh_start to build identity map before
      * enabling paging.  Placed OUTSIDE .bss so that _start's BSS clearing
      * does not destroy the live page tables we are running on. */
     .pvh_pagetables (NOLOAD) : ALIGN(4K) {
-        *(.pvh.pagetables)
+        KEEP(*(.pvh.pagetables))
     }
 
-    .bss : ALIGN(4K) {
+    .bss (NOLOAD) : ALIGN(4K) {
         _bss_start = .;
         *(.bss)
         *(.bss.*)
@@ -92,11 +102,9 @@ SECTIONS
         _pagetable_end = .;
     }
 
-    _kernel_end = .;
-    _kernel_image_size = . - ORIGIN(RAM);
-
-    /* PVH ELF note — QEMU uses this to detect PVH boot protocol */
-    .note.Xen : { *(.note.Xen) }
+    _kernel_memory_end = .;
+    _kernel_end = _kernel_memory_end;
+    _kernel_image_size = _kernel_memory_end - ORIGIN(RAM);
 
     /DISCARD/ : {
         *(.note.GNU-stack)
@@ -105,6 +113,9 @@ SECTIONS
         *(.eh_frame*)
     }
 }
+
+ASSERT(_kernel_file_end <= ADDR(.pvh_pagetables), "file-backed section placed after x86_64 runtime-only storage")
+ASSERT(_kernel_memory_end <= ORIGIN(RAM) + LENGTH(RAM), "x86_64 kernel exceeds its RAM region")
 
 PROVIDE(_text_start_addr = _text_start);
 PROVIDE(_text_end_addr = _text_end);
