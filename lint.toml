@@ -1,0 +1,6 @@
+# Repository-relative POSIX paths, using Git ignore semantics via pathspec.
+# Every exclusion must match a Git-indexed C/C++ file; reinclusion (!) is disabled.
+# Excluded headers are also filtered out of clang-tidy diagnostics and fixes.
+exclude = [
+    "src/fdt/libfdt/**", # Vendored libfdt
+]

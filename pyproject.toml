@@ -17,6 +17,8 @@ dev = [
     "cmake>=4.4.3",
     "cmake-format>=0.6.13",
     "ninja>=1.13.0",
+    "pathspec>=1.1.1",
+    "pygit2>=1.19.2",
     "pytest>=8.0",
     "ruff>=0.15.2",
 ]
@@ -35,3 +37,7 @@ ignore = [
 
 [tool.ruff.format]
 quote-style = "double"
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+testpaths = ["scripts/tests"]
