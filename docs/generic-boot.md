@@ -133,8 +133,12 @@ and [acceptance evidence](generic-boot-acceptance.md).
 These limits describe this implementation, not Linux's full hardware coverage:
 
 - At most 16 CPUs and 8 firmware RAM regions. Early physical mappings cover
-  addresses below 4 GiB. Page allocation uses one eligible contiguous RAM bank;
-  it does not combine discontiguous banks. The existing early direct maps use
+  addresses below 4 GiB. Page allocation combines eligible banks above
+  `kernel_end`, merges adjacent entries and excludes physical holes and reserved
+  data. Metadata must fit within one bank; dense PFN metadata spans holes and
+  consumes at most 16 MiB under the current address limit. The boot prefix below
+  `kernel_end` remains conservatively reserved until all boot protocols describe
+  their live low-memory buffers and trampolines explicitly. The existing early direct maps use
   coarse 1 GiB blocks, so mixed RAM/MMIO within one block still needs finer
   mappings before claiming arbitrary SoC layouts. Firmware reservations,
   kernel storage, DTB and initramfs must not be reused as free pages.

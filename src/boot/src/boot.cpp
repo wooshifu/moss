@@ -44,6 +44,22 @@ void record_cpu_online() noexcept {
   __atomic_fetch_or(&online_cpu_mask, 1ULL << cpu, __ATOMIC_RELEASE);
 }
 
+u32 wait_for_all_cpus_active(u32 timeout_ms) noexcept {
+  using namespace moss::kernel;
+  const u64 start = hal::timer::read_counter();
+  const u64 ticks = hal::timer::frequency() / 1000 * timeout_ms;
+  const u64 expected = (1ULL << g_num_cpus) - 1;
+  for (;;) {
+    // Only a CPU that completed its own runtime initialization publishes online.
+    // A firmware start request or the BSP's activation flag is not readiness.
+    const u64 online = __atomic_load_n(&online_cpu_mask, __ATOMIC_ACQUIRE) & expected;
+    if (online == expected || hal::timer::read_counter() - start >= ticks) {
+      return static_cast<u32>(__builtin_popcountll(online));
+    }
+    arch::cpu_yield();
+  }
+}
+
 // Output is unavailable until firmware discovery configures a console.
 static void boot_print(const char *message) { moss::kernel::hal::uart::puts(message); }
 

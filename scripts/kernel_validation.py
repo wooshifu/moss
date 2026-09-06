@@ -37,6 +37,8 @@ except ImportError:
 CATALOG = {
     "resources": ["cpu_memory"],
     "mm": ["orders_alignment", "reuse"],
+    "pfa": ["release_contract", "exhaustion"],
+    "heap": ["alignment", "invalid_requests", "release_contract", "reuse", "exhaustion"],
     "vfs": ["read_position_eof", "errors_readonly"],
     "users": ["syscall_values", "fork_exec_exit_reap"],
     "self": ["accounting_registration", "registry_limits", "cleanup_guards", "heap_bounds"],
@@ -45,7 +47,7 @@ CATALOG = {
     "self.timeout": ["intentional_timeout"],
     **{f"bench.{name}": [f"bench.{name}"] for name in ("allocate", "release", "combined", "read", "getpid")},
 }
-FUNCTIONAL = ["resources", "mm", "vfs", "users"]
+FUNCTIONAL = ["resources", "mm", "pfa", "heap", "vfs", "users"]
 BENCHMARKS = [name for name in CATALOG if name.startswith("bench.")]
 SELFTESTS = ["self", "self.fail", "self.panic", "self.timeout"]
 
