@@ -32,10 +32,8 @@ namespace log = moss::kernel::logging;
 
 // ── User pointer validation (copy_from_user / copy_to_user) ────────────
 //
-// Every syscall that dereferences a user-space pointer MUST first validate
-// that the entire range falls inside a legitimate VMA with the correct
-// permissions.  This prevents a malicious program from tricking the kernel
-// into reading/writing arbitrary physical memory.
+// VMA policy is checked separately from residency. These copies still need
+// architecture fault fixups and VM lifetime protection before they are fault-safe.
 
 /// Return the calling process's AddressSpace, or nullptr.
 static process::AddressSpace *get_current_address_space() noexcept {
@@ -44,44 +42,20 @@ static process::AddressSpace *get_current_address_space() noexcept {
   if (!cur) {
     return nullptr;
   }
-  Process *proc = g_process_manager ? g_process_manager->find_process(cur->owner_pid) : nullptr;
+  auto proc = g_process_manager ? g_process_manager->find_process(cur->owner_pid) : shared_ptr<Process>{};
   if (!proc) {
     return nullptr;
   }
   return proc->address_space();
 }
 
-/// Validate that [user_addr, user_addr+len) lies within a single VMA that
-/// has the given permission flags (vma_flags::READ / WRITE).
+/// Check the user address domain and every VMA covering the complete range.
 static bool validate_user_range(u64 user_addr, usize len, u32 required_flags) noexcept {
-  using namespace moss::kernel::process;
   if (len == 0) {
     return true;
   }
-  if (user_addr == 0) {
-    return false;
-  }
-  // Overflow check
-  if (user_addr + len < user_addr) {
-    return false;
-  }
   auto *as = get_current_address_space();
-  if (!as) {
-    return false;
-  }
-  const auto *vma = as->find_vma(static_cast<VirtAddr>(user_addr));
-  if (!vma) {
-    return false;
-  }
-  // Entire range must stay inside the same VMA
-  if (static_cast<VirtAddr>(user_addr + len) > vma->end_addr) {
-    return false;
-  }
-  // Permission check
-  if ((vma->flags & required_flags) != required_flags) {
-    return false;
-  }
-  return true;
+  return as && as->allows_user_access(user_addr, len, required_flags);
 }
 
 /// Copy `len` bytes from validated user address to a kernel buffer.
@@ -115,36 +89,21 @@ static long copy_to_user(u64 user_dst, const void *kernel_src, usize len) noexce
 }
 
 /// Copy a NUL-terminated string from user space into a kernel buffer.
-/// Validates VMA read permission.  Copies at most `max_len - 1` bytes
-/// plus a trailing '\0'.  Returns 0 on success, -EFAULT on bad pointer.
+/// Check each byte through the shared copy policy, including across VMAs.
+/// No NUL within the bounded buffer is an error, not a truncated pathname.
 static long copy_string_from_user(char *kernel_dst, u64 user_src, usize max_len) noexcept {
-  using namespace moss::kernel::process;
-  if (user_src == 0 || max_len == 0) {
+  if (!mm::PageTableManager::is_user_range(user_src, 1) || max_len == 0) {
     return -errc::EFAULT;
   }
-  auto *as = get_current_address_space();
-  if (!as) {
-    return -errc::EFAULT;
-  }
-  const auto *vma = as->find_vma(static_cast<VirtAddr>(user_src));
-  if (!vma || (vma->flags & vma_flags::READ) == 0) {
-    return -errc::EFAULT;
-  }
-
-  const auto *src = reinterpret_cast<const char *>(static_cast<usize>(user_src));
-  VirtAddr vma_end = vma->end_addr;
-  usize i = 0;
-  for (; i < max_len - 1; ++i) {
-    if (static_cast<VirtAddr>(user_src + i) >= vma_end) {
+  for (usize i = 0; i < max_len; ++i) {
+    if (copy_from_user(&kernel_dst[i], user_src + i, 1) < 0) {
       return -errc::EFAULT;
     }
-    kernel_dst[i] = src[i];
-    if (src[i] == '\0') {
+    if (kernel_dst[i] == '\0') {
       return 0;
     }
   }
-  kernel_dst[i] = '\0';
-  return 0; // truncated but valid
+  return -errc::ENAMETOOLONG;
 }
 
 // 基础系统调用处理函数
@@ -154,8 +113,9 @@ long sys_debug_print(long arg0, long /*unused*/, long /*unused*/, long /*unused*
     return -errc::EINVAL;
   }
   char buf[256];
-  if (copy_string_from_user(buf, static_cast<u64>(arg0), sizeof(buf)) < 0) {
-    return -errc::EFAULT;
+  const long copied = copy_string_from_user(buf, static_cast<u64>(arg0), sizeof(buf));
+  if (copied < 0) {
+    return copied;
   }
   moss::kernel::hal::uart::puts(buf);
   return 0;
@@ -175,7 +135,7 @@ long sys_exit(long exit_code, long /*unused*/, long /*unused*/, long /*unused*/,
   }
 
   ProcessId pid = cur->owner_pid;
-  Process *proc = g_process_manager ? g_process_manager->find_process(pid) : nullptr;
+  auto proc = g_process_manager ? g_process_manager->find_process(pid) : shared_ptr<Process>{};
   if (!proc) {
     log::klog::error("sys_exit: process not found PID={}", pid);
     while (true) {
@@ -184,7 +144,7 @@ long sys_exit(long exit_code, long /*unused*/, long /*unused*/, long /*unused*/,
   }
 
   // Delegate to shared Zombie transition (never returns)
-  do_exit(cur, proc, static_cast<i32>(exit_code));
+  do_exit(cur, moss::move(proc), static_cast<i32>(exit_code));
 }
 
 long sys_getpid(long /*unused*/, long /*unused*/, long /*unused*/, long /*unused*/, long /*unused*/,
@@ -204,7 +164,7 @@ long sys_getppid(long /*unused*/, long /*unused*/, long /*unused*/, long /*unuse
   if (!cur) {
     return -errc::ESRCH;
   }
-  Process *proc = g_process_manager ? g_process_manager->find_process(cur->owner_pid) : nullptr;
+  auto proc = g_process_manager ? g_process_manager->find_process(cur->owner_pid) : shared_ptr<Process>{};
   if (!proc) {
     return -errc::ESRCH;
   }
@@ -218,7 +178,7 @@ long sys_getuid(long /*unused*/, long /*unused*/, long /*unused*/, long /*unused
   if (!cur) {
     return 0;
   }
-  Process *proc = g_process_manager ? g_process_manager->find_process(cur->owner_pid) : nullptr;
+  auto proc = g_process_manager ? g_process_manager->find_process(cur->owner_pid) : shared_ptr<Process>{};
   return proc ? static_cast<long>(proc->uid()) : 0;
 }
 
@@ -229,7 +189,7 @@ long sys_getgid(long /*unused*/, long /*unused*/, long /*unused*/, long /*unused
   if (!cur) {
     return 0;
   }
-  Process *proc = g_process_manager ? g_process_manager->find_process(cur->owner_pid) : nullptr;
+  auto proc = g_process_manager ? g_process_manager->find_process(cur->owner_pid) : shared_ptr<Process>{};
   return proc ? static_cast<long>(proc->gid()) : 0;
 }
 
@@ -247,7 +207,8 @@ long sys_fork(long /*unused*/, long /*unused*/, long /*unused*/, long /*unused*/
     return -errc::EAGAIN;
   }
 
-  Process *parent_proc = g_process_manager ? g_process_manager->find_process(parent_thread->owner_pid) : nullptr;
+  auto parent_proc =
+      g_process_manager ? g_process_manager->find_process(parent_thread->owner_pid) : shared_ptr<Process>{};
   if (!parent_proc || !parent_proc->address_space()) {
     log::klog::error("sys_fork: no parent process or address space");
     return -errc::EAGAIN;
@@ -289,7 +250,7 @@ long sys_fork(long /*unused*/, long /*unused*/, long /*unused*/, long /*unused*/
     log::klog::error("sys_fork: create_process failed");
     return -errc::ENOMEM;
   }
-  Process *child_proc = *child_proc_result;
+  auto child_proc = *child_proc_result;
 
   // Helper: clean up the child process on error (removes from process
   // table and triggers ~Process which frees address space, threads, etc.)
@@ -303,7 +264,7 @@ long sys_fork(long /*unused*/, long /*unused*/, long /*unused*/, long /*unused*/
   auto child_as_result = user_space::create_user_address_space();
   if (!child_as_result) {
     log::klog::error("sys_fork: create_user_address_space failed");
-    cleanup_child(child_proc);
+    cleanup_child(child_proc.get());
     return -errc::ENOMEM;
   }
   auto child_as = moss::move(*child_as_result);
@@ -325,7 +286,7 @@ long sys_fork(long /*unused*/, long /*unused*/, long /*unused*/, long /*unused*/
   asm volatile("mov %0, %%cr3" ::"r"(parent_as->pgd_phys) : "memory");
 #endif
 
-  // 7. Copy VMAs from parent to child via RcuList iteration
+  // 7. Copy VMAs from parent to child via LockedList iteration
   parent_as->vmas.for_each([&child_as](const process::VmaRegion &vma) { child_as->vmas.push_front(vma); });
 
   // 8. Bind address space to child process
@@ -334,7 +295,7 @@ long sys_fork(long /*unused*/, long /*unused*/, long /*unused*/, long /*unused*/
     log::klog::error("sys_fork: set_address_space failed");
     // child_as was moved — if set failed, unique_ptr may still own it
     // and ~AddressSpace will free the page tables.
-    cleanup_child(child_proc);
+    cleanup_child(child_proc.get());
     return -errc::ENOMEM;
   }
 
@@ -343,7 +304,7 @@ long sys_fork(long /*unused*/, long /*unused*/, long /*unused*/, long /*unused*/
   auto *child_thread = new Thread(child_tid, child_proc->pid());
   if (!child_thread) {
     log::klog::error("sys_fork: thread allocation failed");
-    cleanup_child(child_proc);
+    cleanup_child(child_proc.get());
     return -errc::ENOMEM;
   }
 
@@ -377,6 +338,9 @@ long sys_fork(long /*unused*/, long /*unused*/, long /*unused*/, long /*unused*/
   }
 #elif defined(MOSS_ARCH_X86_64)
   auto &context = child_thread->context;
+  // Kernel C++ never uses FP/SIMD; the live registers still belong to the caller.
+  // Its last scheduled-out snapshot may predate the syscall by arbitrary time.
+  asm volatile("fxsave64 %0" : "=m"(context.fp)::"memory");
   context.rax = 0;
   context.r11 = syscall_frame[0];
   context.rcx = syscall_frame[1];
@@ -435,7 +399,7 @@ long sys_fork(long /*unused*/, long /*unused*/, long /*unused*/, long /*unused*/
   if (!kstack_result) {
     log::klog::error("sys_fork: kernel stack alloc failed");
     delete child_thread;
-    cleanup_child(child_proc);
+    cleanup_child(child_proc.get());
     return -errc::ENOMEM;
   }
   PhysAddr kstack_phys = *kstack_result;
@@ -488,7 +452,7 @@ long sys_execve(long pathname_addr, long argv_addr, long /* envp */, long /*unus
     log::klog::error("execve: no current task");
     return -errc::ESRCH;
   }
-  Process *proc = g_process_manager ? g_process_manager->find_process(cur->owner_pid) : nullptr;
+  auto proc = g_process_manager ? g_process_manager->find_process(cur->owner_pid) : shared_ptr<Process>{};
   if (!proc || !proc->address_space()) {
     log::klog::error("execve: no process or address space");
     return -errc::ESRCH;
@@ -499,8 +463,9 @@ long sys_execve(long pathname_addr, long argv_addr, long /* envp */, long /*unus
   //    are no longer accessible, so we must capture the string now.
   constexpr usize PATH_MAX = 256;
   char pathname_buf[PATH_MAX];
-  if (copy_string_from_user(pathname_buf, static_cast<u64>(pathname_addr), PATH_MAX) < 0) {
-    return -errc::EFAULT;
+  const long copied_path = copy_string_from_user(pathname_buf, static_cast<u64>(pathname_addr), PATH_MAX);
+  if (copied_path < 0) {
+    return copied_path;
   }
   const char *pathname = pathname_buf;
 
@@ -530,8 +495,9 @@ long sys_execve(long pathname_addr, long argv_addr, long /* envp */, long /*unus
       if (remaining <= 1) {
         break; // buffer exhausted
       }
-      if (copy_string_from_user(&argv_buf[argv_buf_pos], static_cast<u64>(arg_ptr), remaining) < 0) {
-        return -errc::EFAULT;
+      const long copied_arg = copy_string_from_user(&argv_buf[argv_buf_pos], static_cast<u64>(arg_ptr), remaining);
+      if (copied_arg < 0) {
+        return copied_arg;
       }
       // Advance past the copied string (including null terminator)
       while (argv_buf_pos < ARGV_BUF_SIZE && argv_buf[argv_buf_pos] != '\0') {
@@ -635,7 +601,7 @@ long sys_execve(long pathname_addr, long argv_addr, long /* envp */, long /*unus
     cur->state = ProcessState::Terminated;
     if (g_scheduler) {
       g_scheduler->dequeue_task(cur);
-      g_scheduler->schedule_after_exit();
+      g_scheduler->schedule_after_exit(moss::move(proc));
     }
     while (true) {
       ::moss::kernel::arch::cpu_halt();
@@ -812,7 +778,7 @@ long sys_execve(long pathname_addr, long argv_addr, long /* envp */, long /*unus
         0x01, 0x00, 0x00, 0xD4, // svc #0
     };
     new_as->add_vma(user_layout::SIGRETURN_PAGE, user_layout::SIGRETURN_PAGE + PAGE_SIZE,
-                    vma_flags::READ | vma_flags::EXEC, VmaType::CODE, sigreturn_stub, 0, sizeof(sigreturn_stub));
+                    vma_flags::READ | vma_flags::EXEC, VmaType::SIGRETURN, sigreturn_stub, 0, sizeof(sigreturn_stub));
   }
 
   // 9b. Add stack VMA (demand-zero)
@@ -834,7 +800,7 @@ long sys_execve(long pathname_addr, long argv_addr, long /* envp */, long /*unus
     cur->state = ProcessState::Terminated;
     if (g_scheduler) {
       g_scheduler->dequeue_task(cur);
-      g_scheduler->schedule_after_exit();
+      g_scheduler->schedule_after_exit(moss::move(proc));
     }
     while (true) {
       ::moss::kernel::arch::cpu_halt();
@@ -868,7 +834,8 @@ long sys_execve(long pathname_addr, long argv_addr, long /* envp */, long /*unus
 
   // 12. Set up user stack with argc/argv, then reset thread context.
   //
-  // Standard C ABI: _start receives argc in x0, argv in x1.
+  // Moss calls _start(argc, argv) using each ISA's C function ABI, not the
+  // Linux ELF process-entry stack ABI.
   // We place the argv string data and pointer array on the user stack:
   //
   //   [STACK_TOP - 16]  (alignment padding)
@@ -938,6 +905,10 @@ long sys_execve(long pathname_addr, long argv_addr, long /* envp */, long /*unus
   cur->context.rsi = (kernel_argc > 0) // rsi = argv (System V ABI arg1)
                          ? (user_sp)   // argv_base == user_sp
                          : 0;
+  // Model a C call's return-address slot without moving argv. A fresh x86 C
+  // entry expects RSP % 16 == 8; fork must keep its interrupted SP unchanged.
+  cur->context.sp -= sizeof(u64);
+  *reinterpret_cast<volatile u64 *>(cur->context.sp) = 0;
   cur->context.pstate = 0x202; // RFLAGS: IF=1 (interrupts enabled on iretq)
 #endif
   cur->needs_initial_eret = true; // next dispatch does switch_to_user + eret
@@ -969,6 +940,9 @@ long sys_execve(long pathname_addr, long argv_addr, long /* envp */, long /*unus
       asm volatile("msr tpidr_el1, %0" ::"r"(kstack_top));
     }
 
+    // The process table owns this Running process. Do not leak a local reference
+    // on the syscall stack that switch_to_user abandons.
+    proc.reset();
     // eret to new program — never returns
     switch_to_user(&cur->context, cur->context.sp);
   }
@@ -990,6 +964,7 @@ long sys_execve(long pathname_addr, long argv_addr, long /* envp */, long /*unus
       arch::set_user_kernel_stack(kstack_top);
     }
 
+    proc.reset();
     // eret to new program — never returns
     switch_to_user(&cur->context, cur->context.sp);
   }
@@ -1008,6 +983,7 @@ long sys_execve(long pathname_addr, long argv_addr, long /* envp */, long /*unus
       moss::abi::x86_64::set_kernel_stack(kstack_top);
     }
 
+    proc.reset();
     // iretq to new program — never returns
     switch_to_user(&cur->context, cur->context.sp);
   }
@@ -1034,7 +1010,7 @@ long sys_wait4(long wait_pid, long wstatus_addr, long options, long /*unused*/, 
     return -errc::EINVAL;
   }
 
-  Process *proc = g_process_manager ? g_process_manager->find_process(cur->owner_pid) : nullptr;
+  auto proc = g_process_manager ? g_process_manager->find_process(cur->owner_pid) : shared_ptr<Process>{};
   if (!proc) {
     return -errc::EINVAL;
   }
@@ -1050,7 +1026,7 @@ long sys_wait4(long wait_pid, long wstatus_addr, long options, long /*unused*/, 
 
     if (zombie_pid != INVALID_PROCESS_ID) {
       // Found a zombie — reap it
-      Process *zombie = g_process_manager->find_process(zombie_pid);
+      auto zombie = g_process_manager->find_process(zombie_pid);
       if (!zombie) {
         // Race: already reaped by another thread, retry
         continue;
@@ -1156,7 +1132,7 @@ long sys_kill(long pid_arg, long sig_arg, long /*unused*/, long /*unused*/, long
 
   if (pid > 0) {
     // Send to specific process
-    Process *target = g_process_manager->find_process(static_cast<ProcessId>(pid));
+    auto target = g_process_manager->find_process(static_cast<ProcessId>(pid));
     if (!target) {
       return -errc::ESRCH;
     }
@@ -1176,7 +1152,7 @@ long sys_kill(long pid_arg, long sig_arg, long /*unused*/, long /*unused*/, long
 
   if (pid == 0) {
     // Send to all processes in caller's process group
-    Process *caller = g_process_manager->find_process(cur->owner_pid);
+    auto caller = g_process_manager->find_process(cur->owner_pid);
     if (!caller) {
       return -errc::ESRCH;
     }
@@ -1244,7 +1220,7 @@ long sys_getpgid(long pid_arg, long /*unused*/, long /*unused*/, long /*unused*/
   }
 
   ProcessId target = (pid_arg == 0) ? cur->owner_pid : static_cast<ProcessId>(pid_arg);
-  Process *proc = g_process_manager->find_process(target);
+  auto proc = g_process_manager->find_process(target);
   if (!proc) {
     return -errc::ESRCH;
   }
@@ -1268,7 +1244,7 @@ long sys_getsid(long pid_arg, long /*unused*/, long /*unused*/, long /*unused*/,
   }
 
   ProcessId target = (pid_arg == 0) ? cur->owner_pid : static_cast<ProcessId>(pid_arg);
-  Process *proc = g_process_manager->find_process(target);
+  auto proc = g_process_manager->find_process(target);
   if (!proc) {
     return -errc::ESRCH;
   }
@@ -1288,7 +1264,7 @@ long sys_setpgid(long pid_arg, long pgid_arg, long /*unused*/, long /*unused*/, 
     return -errc::ESRCH;
   }
 
-  Process *caller = g_process_manager->find_process(cur->owner_pid);
+  auto caller = g_process_manager->find_process(cur->owner_pid);
   if (!caller) {
     return -errc::ESRCH;
   }
@@ -1296,7 +1272,7 @@ long sys_setpgid(long pid_arg, long pgid_arg, long /*unused*/, long /*unused*/, 
   ProcessId target_pid = (pid_arg == 0) ? cur->owner_pid : static_cast<ProcessId>(pid_arg);
   ProcessId new_pgid = (pgid_arg == 0) ? target_pid : static_cast<ProcessId>(pgid_arg);
 
-  Process *target = g_process_manager->find_process(target_pid);
+  auto target = g_process_manager->find_process(target_pid);
   if (!target) {
     return -errc::ESRCH;
   }
@@ -1331,7 +1307,7 @@ long sys_setsid(long /*unused*/, long /*unused*/, long /*unused*/, long /*unused
     return -errc::ESRCH;
   }
 
-  Process *proc = g_process_manager->find_process(cur->owner_pid);
+  auto proc = g_process_manager->find_process(cur->owner_pid);
   if (!proc) {
     return -errc::ESRCH;
   }
@@ -1379,16 +1355,16 @@ long sys_sigaction(long sig_arg, long act_addr, long oldact_addr, long /*unused*
     return -errc::ESRCH;
   }
 
-  Process *proc = g_process_manager->find_process(cur->owner_pid);
+  auto proc = g_process_manager->find_process(cur->owner_pid);
   if (!proc) {
     return -errc::ESRCH;
   }
 
-  SignalState *sigstate = get_signal_state(proc);
+  SignalState *sigstate = get_signal_state(proc.get());
   if (sigstate == nullptr) {
     // Lazily initialize signal state
-    init_signal_state(proc);
-    sigstate = get_signal_state(proc);
+    init_signal_state(proc.get());
+    sigstate = get_signal_state(proc.get());
     if (sigstate == nullptr) {
       return -errc::ENOMEM;
     }
@@ -1548,7 +1524,7 @@ static void *get_current_fd_table() noexcept {
   if (!cur) {
     return nullptr;
   }
-  Process *proc = g_process_manager ? g_process_manager->find_process(cur->owner_pid) : nullptr;
+  auto proc = g_process_manager ? g_process_manager->find_process(cur->owner_pid) : shared_ptr<Process>{};
   return proc ? proc->fd_table() : nullptr;
 }
 
@@ -1559,8 +1535,9 @@ long sys_open(long pathname_addr, long flags, long mode, long /*unused*/, long /
   }
 
   char path_buf[256];
-  if (copy_string_from_user(path_buf, static_cast<u64>(pathname_addr), sizeof(path_buf)) < 0) {
-    return -errc::EFAULT;
+  const long copied = copy_string_from_user(path_buf, static_cast<u64>(pathname_addr), sizeof(path_buf));
+  if (copied < 0) {
+    return copied;
   }
 
   return moss::kernel::vfs::syscall::do_open(fdt, path_buf, static_cast<u32>(flags), static_cast<u32>(mode));
@@ -1685,14 +1662,14 @@ long sys_pipe(long pipefd_addr, long /*unused*/, long /*unused*/, long /*unused*
 
 // 内存管理系统调用
 
-// Anonymous mmap constants (AArch64 Linux ABI values)
+// Moss anonymous mmap constants (same numeric values on each supported ISA).
 constexpr long PROT_READ = 0x1;
 constexpr long PROT_WRITE = 0x2;
 constexpr long PROT_EXEC = 0x4;
 constexpr long MAP_PRIVATE = 0x02;
 constexpr long MAP_ANONYMOUS = 0x20;
 
-long sys_mmap(long addr, long length, long prot, long flags, long fd, long /*offset*/) noexcept {
+long sys_mmap(long addr, long length, long prot, long flags, long fd, long offset) noexcept {
   using namespace moss::kernel::process;
 
   // Only support MAP_ANONYMOUS | MAP_PRIVATE (no file-backed mmap yet)
@@ -1702,10 +1679,8 @@ long sys_mmap(long addr, long length, long prot, long flags, long fd, long /*off
   if (!(flags & MAP_ANONYMOUS)) {
     return -errc::ENOSYS;
   }
-  if (!(flags & MAP_PRIVATE)) {
-    return -errc::EINVAL;
-  }
-  if (fd != -1) {
+  if (flags != (MAP_ANONYMOUS | MAP_PRIVATE) || (prot & ~(PROT_READ | PROT_WRITE | PROT_EXEC)) != 0 || fd != -1 ||
+      offset != 0) {
     return -errc::EINVAL;
   }
 
@@ -1713,7 +1688,7 @@ long sys_mmap(long addr, long length, long prot, long flags, long fd, long /*off
   if (!cur) {
     return -errc::ESRCH;
   }
-  Process *proc = g_process_manager ? g_process_manager->find_process(cur->owner_pid) : nullptr;
+  auto proc = g_process_manager ? g_process_manager->find_process(cur->owner_pid) : shared_ptr<Process>{};
   if (!proc) {
     return -errc::ESRCH;
   }
@@ -1724,6 +1699,9 @@ long sys_mmap(long addr, long length, long prot, long flags, long fd, long /*off
 
   // Page-align length upward
   auto map_len = static_cast<usize>(length);
+  if (map_len > USER_MAX - mm::PageTableManager::KERNEL_IDENTITY_END) {
+    return -errc::ENOMEM;
+  }
   map_len = (map_len + PAGE_SIZE - 1) & ~(PAGE_SIZE - 1);
 
   // Choose mapping address
@@ -1733,6 +1711,10 @@ long sys_mmap(long addr, long length, long prot, long flags, long fd, long /*off
   } else {
     // Use hint address (page-aligned), not MAP_FIXED
     map_addr = static_cast<VirtAddr>(static_cast<usize>(addr)) & ~(static_cast<VirtAddr>(PAGE_SIZE) - 1);
+  }
+  if (!mm::PageTableManager::is_user_range(map_addr, map_len) ||
+      !AddressSpace::valid_vma_range(map_addr, map_addr + map_len, VmaType::MMAP)) {
+    return -errc::EINVAL;
   }
 
   // Convert prot flags to VMA flags
@@ -1747,9 +1729,14 @@ long sys_mmap(long addr, long length, long prot, long flags, long fd, long /*off
     vflags |= vma_flags::EXEC;
   }
 
-  // Add VMA (overlap check built in)
+  // A valid hint never replaces an existing VMA. On collision try the cursor;
+  // MAP_FIXED and unknown flags were rejected above, not silently downgraded.
   if (!as->add_vma(map_addr, map_addr + map_len, vflags, VmaType::MMAP)) {
-    return -errc::ENOMEM;
+    map_addr = as->mmap_next;
+    if (addr == 0 || !mm::PageTableManager::is_user_range(map_addr, map_len) ||
+        !as->add_vma(map_addr, map_addr + map_len, vflags, VmaType::MMAP)) {
+      return -errc::ENOMEM;
+    }
   }
 
   // Advance mmap cursor past this mapping
@@ -1772,13 +1759,20 @@ long sys_munmap(long addr, long length, long /*unused*/, long /*unused*/, long /
     return -errc::EINVAL;
   }
   auto map_len = static_cast<usize>(length);
+  if (map_len > USER_MAX - mm::PageTableManager::KERNEL_IDENTITY_END) {
+    return -errc::EINVAL;
+  }
   map_len = (map_len + PAGE_SIZE - 1) & ~(PAGE_SIZE - 1);
+  if (!mm::PageTableManager::is_user_range(map_addr, map_len) ||
+      !AddressSpace::valid_vma_range(map_addr, map_addr + map_len, VmaType::MMAP)) {
+    return -errc::EINVAL;
+  }
 
   Thread *cur = CfsScheduler::get_current_task();
   if (!cur) {
     return -errc::ESRCH;
   }
-  Process *proc = g_process_manager ? g_process_manager->find_process(cur->owner_pid) : nullptr;
+  auto proc = g_process_manager ? g_process_manager->find_process(cur->owner_pid) : shared_ptr<Process>{};
   if (!proc) {
     return -errc::ESRCH;
   }
@@ -1788,7 +1782,7 @@ long sys_munmap(long addr, long length, long /*unused*/, long /*unused*/, long /
   }
 
   // Find VMA containing the unmap address
-  const auto *vma = as->find_vma(map_addr);
+  auto vma = as->find_vma(map_addr);
   if (!vma) {
     return -errc::EINVAL;
   }
@@ -1824,7 +1818,7 @@ long sys_brk(long addr, long /*unused*/, long /*unused*/, long /*unused*/, long 
   if (!cur) {
     return -errc::ESRCH;
   }
-  Process *proc = g_process_manager ? g_process_manager->find_process(cur->owner_pid) : nullptr;
+  auto proc = g_process_manager ? g_process_manager->find_process(cur->owner_pid) : shared_ptr<Process>{};
   if (!proc) {
     return -errc::ESRCH;
   }
@@ -1847,20 +1841,17 @@ long sys_brk(long addr, long /*unused*/, long /*unused*/, long /*unused*/, long 
 
   // Reject addresses beyond maximum heap size (16MB)
   constexpr usize MAX_HEAP = 16ULL * 1024 * 1024;
-  if (new_brk > as->brk_base + MAX_HEAP) {
+  if (new_brk - as->brk_base > MAX_HEAP || !mm::PageTableManager::is_user_range(as->brk_base, new_brk - as->brk_base)) {
     return static_cast<long>(as->brk_current);
   }
 
   // Expand or shrink the HEAP VMA to cover the new break (page-aligned)
   VirtAddr aligned_end = (new_brk + PAGE_SIZE - 1) & ~(static_cast<VirtAddr>(PAGE_SIZE) - 1);
-  (void)as->vmas.find_if([&](const VmaRegion &vma) {
-    if (vma.type == VmaType::HEAP) {
-      // NOLINTNEXTLINE(cppcoreguidelines-pro-type-const-cast)
-      const_cast<VmaRegion &>(vma).end_addr = aligned_end;
-      return true;
-    }
-    return false;
-  });
+  if (aligned_end != as->brk_base && !AddressSpace::valid_vma_range(as->brk_base, aligned_end, VmaType::HEAP)) {
+    return static_cast<long>(as->brk_current);
+  }
+  (void)as->vmas.update_if([](const VmaRegion &vma) { return vma.type == VmaType::HEAP; },
+                           [&](VmaRegion &vma) { vma.end_addr = aligned_end; });
 
   as->brk_current = new_brk;
   return static_cast<long>(new_brk);
@@ -1948,7 +1939,7 @@ long sys_getpriority(long which, long who, long /*unused*/, long /*unused*/, lon
   if (!g_process_manager) {
     return -errc::ESRCH;
   }
-  Process *proc = g_process_manager->find_process(static_cast<ProcessId>(who));
+  auto proc = g_process_manager->find_process(static_cast<ProcessId>(who));
   if (!proc) {
     return -errc::ESRCH;
   }
@@ -1974,9 +1965,10 @@ long sys_sched_setscheduler(long pid_arg, long policy_arg, long rt_prio_arg, lon
   }
 
   // Find target thread
+  shared_ptr<Process> proc; // Own target threads throughout this syscall.
   Thread *target = cur;
   if (pid_arg != 0) {
-    Process *proc = g_process_manager->find_process(static_cast<ProcessId>(pid_arg));
+    proc = g_process_manager->find_process(static_cast<ProcessId>(pid_arg));
     if (!proc) {
       return -errc::ESRCH;
     }
@@ -2052,12 +2044,13 @@ long sys_sched_getscheduler(long pid_arg, long /*unused*/, long /*unused*/, long
     return -errc::ESRCH;
   }
 
+  shared_ptr<Process> proc; // Own target threads throughout this syscall.
   Thread *target = cur;
   if (pid_arg != 0) {
     if (!g_process_manager) {
       return -errc::ESRCH;
     }
-    Process *proc = g_process_manager->find_process(static_cast<ProcessId>(pid_arg));
+    proc = g_process_manager->find_process(static_cast<ProcessId>(pid_arg));
     if (!proc) {
       return -errc::ESRCH;
     }
@@ -2146,6 +2139,7 @@ long sys_sched_getaffinity(long pid_arg, long /*unused*/, long mask_addr, long /
                            long /*unused*/) noexcept {
   using namespace moss::kernel::process;
 
+  shared_ptr<Process> proc; // Own target threads throughout this syscall.
   Thread *target = nullptr;
 
   if (pid_arg == 0) {
@@ -2154,7 +2148,7 @@ long sys_sched_getaffinity(long pid_arg, long /*unused*/, long mask_addr, long /
     if (!g_process_manager) {
       return -errc::ESRCH;
     }
-    Process *proc = g_process_manager->find_process(static_cast<ProcessId>(pid_arg));
+    proc = g_process_manager->find_process(static_cast<ProcessId>(pid_arg));
     if (!proc) {
       return -errc::ESRCH;
     }
@@ -2204,6 +2198,7 @@ long sys_sched_setaffinity(long pid_arg, long /*unused*/, long mask_addr, long /
     return -errc::EINVAL;
   }
 
+  shared_ptr<Process> proc; // Own target threads throughout this syscall.
   Thread *target = nullptr;
 
   if (pid_arg == 0) {
@@ -2212,7 +2207,7 @@ long sys_sched_setaffinity(long pid_arg, long /*unused*/, long mask_addr, long /
     if (!g_process_manager) {
       return -errc::ESRCH;
     }
-    Process *proc = g_process_manager->find_process(static_cast<ProcessId>(pid_arg));
+    proc = g_process_manager->find_process(static_cast<ProcessId>(pid_arg));
     if (!proc) {
       return -errc::ESRCH;
     }
@@ -2939,9 +2934,9 @@ long SyscallDispatcher::dispatch(long syscall_number, long arg0, long arg1, long
     if (cur != nullptr && signal_pending(cur)) {
       if (do_signal_checkpoint(cur)) {
         // Signal caused termination — call do_exit (noreturn)
-        Process *proc = g_process_manager ? g_process_manager->find_process(cur->owner_pid) : nullptr;
+        auto proc = g_process_manager ? g_process_manager->find_process(cur->owner_pid) : shared_ptr<Process>{};
         if (proc) {
-          do_exit(cur, proc, 128 + static_cast<i32>(cur->pending_signals & 0xFF));
+          do_exit(cur, moss::move(proc), 128 + static_cast<i32>(cur->pending_signals & 0xFF));
         }
       }
       // If a signal interrupted a sleeping syscall, return -EINTR

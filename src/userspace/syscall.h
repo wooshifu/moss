@@ -10,6 +10,7 @@
 // ============================================================================
 
 enum {
+  SYS_DEBUG_PRINT = 0,
   SYS_EXIT = 1,
   SYS_GETPID = 2,
   SYS_GETPPID = 3,
@@ -32,6 +33,8 @@ enum {
   SYS_DUP = 42,
   SYS_DUP2 = 43,
   SYS_PIPE = 44,
+  SYS_MMAP = 60,
+  SYS_MUNMAP = 61,
   SYS_CLOCK_GETTIME = 83,
   SYS_NANOSLEEP = 86,
   SYS_TOPINFO = 111
@@ -75,6 +78,18 @@ static inline long syscall3(long number, long arg0, long arg1, long arg2) {
   return a0;
 }
 
+static inline long syscall6(long number, long arg0, long arg1, long arg2, long arg3, long arg4, long arg5) {
+  register long a7 asm("a7") = number;
+  register long a0 asm("a0") = arg0;
+  register long a1 asm("a1") = arg1;
+  register long a2 asm("a2") = arg2;
+  register long a3 asm("a3") = arg3;
+  register long a4 asm("a4") = arg4;
+  register long a5 asm("a5") = arg5;
+  asm volatile("ecall" : "+r"(a0) : "r"(a7), "r"(a1), "r"(a2), "r"(a3), "r"(a4), "r"(a5) : "memory");
+  return a0;
+}
+
 #elif defined(__x86_64__)
 // x86_64: RAX=nr, RDI/RSI/RDX/R10/R8/R9=args, syscall, return in RAX
 
@@ -105,6 +120,21 @@ static inline long syscall3(long number, long arg0, long arg1, long arg2) {
   register long rsi asm("rsi") = arg1;
   register long rdx asm("rdx") = arg2;
   asm volatile("syscall" : "+r"(rax) : "r"(rdi), "r"(rsi), "r"(rdx) : "rcx", "r11", "memory");
+  return rax;
+}
+
+static inline long syscall6(long number, long arg0, long arg1, long arg2, long arg3, long arg4, long arg5) {
+  register long rax asm("rax") = number;
+  register long rdi asm("rdi") = arg0;
+  register long rsi asm("rsi") = arg1;
+  register long rdx asm("rdx") = arg2;
+  register long r10 asm("r10") = arg3;
+  register long r8 asm("r8") = arg4;
+  register long r9 asm("r9") = arg5;
+  asm volatile("syscall"
+               : "+r"(rax)
+               : "r"(rdi), "r"(rsi), "r"(rdx), "r"(r10), "r"(r8), "r"(r9)
+               : "rcx", "r11", "memory");
   return rax;
 }
 
@@ -143,6 +173,18 @@ static inline long syscall3(long number, long a0, long a1, long a2) {
   register long ret asm("x0");
   asm volatile("svc #0" : "=r"(ret) : "r"(x8), "r"(x0), "r"(x1), "r"(x2) : "memory");
   return ret;
+}
+
+static inline long syscall6(long number, long arg0, long arg1, long arg2, long arg3, long arg4, long arg5) {
+  register long x8 asm("x8") = number;
+  register long x0 asm("x0") = arg0;
+  register long x1 asm("x1") = arg1;
+  register long x2 asm("x2") = arg2;
+  register long x3 asm("x3") = arg3;
+  register long x4 asm("x4") = arg4;
+  register long x5 asm("x5") = arg5;
+  asm volatile("svc #0" : "+r"(x0) : "r"(x8), "r"(x1), "r"(x2), "r"(x3), "r"(x4), "r"(x5) : "memory");
+  return x0;
 }
 
 #endif

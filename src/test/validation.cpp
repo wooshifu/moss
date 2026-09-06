@@ -53,6 +53,164 @@ unsigned current_cpu() noexcept { return arch::get_current_cpu_id(); }
 namespace {
 constexpr usize page_size = moss::kernel::PAGE_SIZE;
 
+// Inspect the real kernel/user tables without exposing kernel pointers to EL0.
+struct KernelPermissions {
+  unsigned root_shift = 39;
+  u64 kernel_bytes = 0;
+  usize user_leaves = 0;
+  bool check_wx = false;
+
+  KernelPermissions() {
+#if defined(MOSS_ARCH_RISCV)
+    if (hal::mmu::g_mmu_mode == hal::mmu::MmuMode::Sv39) {
+      root_shift = 30;
+    }
+#endif
+  }
+
+  void walk(PhysAddr root, unsigned shift, u64 prefix, bool user_root, bool user_access = true) {
+    using Tables = mm::PageTableManager;
+    const auto *table = Tables::get_table_from_physical(root);
+    if (!ut::expect(root && table && (root & (page_size - 1)) == 0)) {
+      return;
+    }
+    for (usize i = 0; i < mm::PageTable::ENTRIES_PER_TABLE; ++i) {
+      const auto &entry = table->entries[i];
+      if (!entry.is_valid()) {
+        continue;
+      }
+      const u64 base = prefix | (static_cast<u64>(i) << shift);
+      const bool high_half = (base & (1ULL << (root_shift + 8))) != 0;
+      bool descendant_user_access = user_access;
+#if defined(MOSS_ARCH_X86_64)
+      descendant_user_access = user_access && (entry.raw & mm::page_attr::USER) != 0;
+#endif
+      if (shift > 12 && entry.is_table()) {
+#if defined(MOSS_ARCH_X86_64)
+        // The user's low root can mix kernel and user descendants; its leaf
+        // permissions are checked below. Kernel-only branches need no USER bit.
+        if (!user_root || high_half) {
+          ut::expect((entry.raw & mm::page_attr::USER) == 0);
+        }
+#endif
+        walk(entry.get_phys_addr(), shift - 9, base, user_root, descendant_user_access);
+      } else if (!user_root || high_half || base < 0x100000000ULL) {
+        ut::expect((entry.raw & mm::page_attr::USER) == 0);
+        if (check_wx) {
+#if defined(MOSS_ARCH_ARM64)
+          const bool writable = (entry.raw & mm::page_attr::READONLY) == 0;
+          const bool executable = (entry.raw & mm::page_attr::PXN) == 0;
+          ut::expect((entry.raw & mm::page_attr::XN) != 0);
+#elif defined(MOSS_ARCH_X86_64)
+          const bool writable = (entry.raw & mm::page_attr::WRITABLE) != 0;
+          const bool executable = (entry.raw & mm::page_attr::XN) == 0;
+#else
+          const bool writable = (entry.raw & mm::page_attr::WRITE) != 0;
+          const bool executable = (entry.raw & mm::page_attr::EXECUTE) != 0;
+#endif
+          namespace linker = moss::abi::linker;
+          const PhysAddr pa = entry.get_phys_addr();
+          const u64 end = pa + (1ULL << shift);
+          ut::expect(!(writable && executable));
+          ut::expect(!executable || (!high_half && pa >= linker::text_start() && end <= linker::text_end()));
+          if ((pa < linker::text_end() && end > linker::text_start()) ||
+              (pa < linker::rodata_end() && end > linker::rodata_start())) {
+            ut::expect(!writable);
+          }
+        }
+        kernel_bytes += 1ULL << shift;
+      } else {
+        ut::expect(descendant_user_access && (entry.raw & mm::page_attr::USER) != 0);
+        ++user_leaves;
+      }
+    }
+  }
+};
+
+void table_permission_defaults() {
+  using Tables = mm::PageTableManager;
+  const auto root = Tables::get_physical_address(Tables::get_kernel_pgd());
+  mm::PageTableEntry entry;
+  entry.set_table(root);
+  ut::expect(entry.is_valid() && entry.is_table() && entry.get_phys_addr() == root &&
+             (entry.raw & mm::page_attr::USER) == 0);
+  entry.set_table(root, true);
+  ut::expect(entry.is_valid() && entry.is_table() && entry.get_phys_addr() == root);
+#if defined(MOSS_ARCH_X86_64)
+  ut::expect((entry.raw & mm::page_attr::USER) != 0);
+#else
+  // ARM64/RISC-V user permission belongs to the leaf, not this table descriptor.
+  ut::expect((entry.raw & mm::page_attr::USER) == 0);
+#endif
+  entry.set_block(0, mm::page_perms::KERNEL_RW);
+  ut::expect(entry.is_valid() && entry.is_block() && (entry.raw & mm::page_attr::USER) == 0);
+  entry.set_page(root, mm::page_perms::KERNEL_RW);
+  ut::expect(entry.is_valid() && entry.get_phys_addr() == root && (entry.raw & mm::page_attr::USER) == 0);
+  const auto rejected = Tables::map_page(0, 0, mm::page_perms::USER_RW);
+  ut::expect(!rejected && rejected.error() == ErrorCode::InvalidParameter);
+}
+
+void kernel_mapping_permissions() {
+  using Tables = mm::PageTableManager;
+  KernelPermissions kernel;
+  kernel.walk(Tables::get_physical_address(Tables::get_kernel_pgd()), kernel.root_shift, 0, false);
+  // This verifies the current 0-4 GiB identity/direct-map contract, not a board map.
+#if defined(MOSS_ARCH_ARM64)
+  constexpr u64 kernel_bytes = 0x100000000ULL;
+#else
+  constexpr u64 kernel_bytes = 0x200000000ULL;
+#endif
+  ut::expect(kernel.kernel_bytes == kernel_bytes && kernel.user_leaves == 0);
+  KernelPermissions high;
+  high.walk(Tables::get_physical_address(Tables::get_kernel_high_pgd()), high.root_shift, 0, false);
+#if defined(MOSS_ARCH_RISCV)
+  ut::expect(high.kernel_bytes == kernel_bytes);
+#else
+  ut::expect(high.kernel_bytes == 0x100000000ULL);
+#endif
+}
+
+void active_user_mapping_permissions() {
+  PhysAddr active_root = 0;
+#if defined(MOSS_ARCH_ARM64)
+  asm volatile("mrs %0, ttbr0_el1" : "=r"(active_root));
+  active_root &= hal::mmu::PTE_ADDR_MASK;
+#elif defined(MOSS_ARCH_X86_64)
+  asm volatile("mov %%cr3, %0" : "=r"(active_root));
+  active_root &= hal::mmu::PTE_ADDR_MASK;
+#else
+  asm volatile("csrr %0, satp" : "=r"(active_root));
+  active_root = (active_root & 0x00000FFFFFFFFFFFULL) << 12;
+#endif
+  if (!ut::expect(active_root && active_root == moss::abi::bridge::get_current_pgd_phys())) {
+    return;
+  }
+  KernelPermissions user;
+  user.walk(active_root, user.root_shift, 0, true);
+#if defined(MOSS_ARCH_ARM64)
+  ut::expect(user.kernel_bytes == 0x100000000ULL && user.user_leaves > 0);
+  PhysAddr high_root;
+  asm volatile("mrs %0, ttbr1_el1" : "=r"(high_root));
+  ut::expect((high_root & hal::mmu::PTE_ADDR_MASK) ==
+             mm::PageTableManager::get_physical_address(mm::PageTableManager::get_kernel_high_pgd()));
+#else
+  ut::expect(user.kernel_bytes == 0x200000000ULL && user.user_leaves > 0);
+#endif
+}
+
+void kernel_wx_permissions() {
+  using Tables = mm::PageTableManager;
+  KernelPermissions check;
+  check.check_wx = true;
+  check.walk(Tables::get_physical_address(Tables::get_kernel_pgd()), check.root_shift, 0, false);
+  check.walk(Tables::get_physical_address(Tables::get_kernel_high_pgd()), check.root_shift, 0, false);
+#if defined(MOSS_ARCH_X86_64)
+  u64 cr0;
+  asm volatile("mov %%cr0, %0" : "=r"(cr0));
+  ut::expect((cr0 & (1ULL << 16)) != 0); // Supervisor writes must obey RO PTEs.
+#endif
+}
+
 bool ram_contains(PhysAddr begin, PhysAddr end) {
   const auto &info = moss::fdt::get_platform_info();
   while (begin < end) {
@@ -76,6 +234,21 @@ u64 memory_hash(PhysAddr begin, usize size) {
   const auto *bytes = reinterpret_cast<volatile u8 *>(begin);
   for (usize i = 0; i < size; ++i) {
     hash = (hash ^ bytes[i]) * 1099511628211ULL;
+  }
+  return hash;
+}
+
+u64 page_table_hash(PhysAddr address) {
+  // Hardware may set Accessed/Dirty while the mapping and its owner stay intact.
+  // Keep address, U/S, R/W, NX, software ownership and all other bits in the hash.
+  u64 hardware_bits = mm::page_attr::AF;
+#if !defined(MOSS_ARCH_ARM64)
+  hardware_bits |= mm::page_attr::DIRTY;
+#endif
+  u64 hash = 14695981039346656037ULL;
+  const auto *table = reinterpret_cast<const mm::PageTable *>(address);
+  for (const auto &entry : table->entries) {
+    hash = (hash ^ (entry.raw & ~hardware_bits)) * 1099511628211ULL;
   }
   return hash;
 }
@@ -115,7 +288,7 @@ struct LayoutSnapshot {
       valid = false;
       return false;
     }
-    tables[count++] = {.address = address, .hash = memory_hash(address, page_size)};
+    tables[count++] = {.address = address, .hash = page_table_hash(address)};
     return true;
   }
 
@@ -190,10 +363,108 @@ struct LayoutSnapshot {
     ut::expect(memory_hash(pfa.metadata_start, pfa.metadata_size) == metadata_hash);
     ut::expect(memory_hash(linker::pagetable_start(), linker::pagetable_size()) == boot_tables_hash);
     for (usize i = 0; i < count; ++i) {
-      ut::expect(memory_hash(tables[i].address, page_size) == tables[i].hash);
+      ut::expect(page_table_hash(tables[i].address) == tables[i].hash);
     }
   }
 };
+
+void address_space_ownership() {
+  using Tables = mm::PageTableManager;
+  using Pfa = mm::PageFrameAllocator;
+  LayoutSnapshot layout;
+  if (!layout.capture()) {
+    return;
+  }
+  const auto free_before = Pfa::get_memory_stats().free_pages;
+  {
+    auto parent = process::user_space::create_user_address_space();
+    auto child = process::user_space::create_user_address_space();
+    if (!ut::expect(parent && child)) {
+      return;
+    }
+    const auto parent_root = (*parent)->pgd_phys;
+    const auto child_root = (*child)->pgd_phys;
+    auto page = mm::allocate_pages(0);
+    if (!ut::expect(page.has_value())) {
+      return;
+    }
+    constexpr VirtAddr user_va = process::user_layout::CODE_BASE;
+    auto mapped = Tables::map_user_page(parent_root, user_va, *page, mm::page_perms::USER_RW);
+    if (!ut::expect(mapped.has_value())) {
+      (void)mm::free_pages(*page, 0);
+      return;
+    }
+    // Rejected requests cannot descend into shared kernel page-table storage.
+    ut::expect(!Tables::map_user_page(parent_root, moss::abi::linker::text_start(), *page, mm::page_perms::USER_RW));
+    ut::expect(!Tables::map_user_page(parent_root, USER_MAX, *page, mm::page_perms::USER_RW));
+    ut::expect(Tables::get_user_pte(parent_root, moss::abi::linker::text_start()) == nullptr);
+    Tables::clone_user_page_tables(parent_root, child_root);
+    const auto *parent_pte = Tables::get_user_pte(parent_root, user_va);
+    const auto *child_pte = Tables::get_user_pte(child_root, user_va);
+    ut::expect(parent_pte && child_pte && parent_pte->is_cow() && child_pte->is_cow() &&
+               parent_pte->get_phys_addr() == *page && child_pte->get_phys_addr() == *page &&
+               Pfa::page_ref_get(*page) == 2);
+    KernelPermissions inherited;
+    inherited.check_wx = true;
+    inherited.walk(child_root, inherited.root_shift, 0, true);
+#if defined(MOSS_ARCH_ARM64)
+    ut::expect(inherited.kernel_bytes == 0x100000000ULL);
+#else
+    ut::expect(inherited.kernel_bytes == 0x200000000ULL);
+#endif
+    (*child).reset();
+    ut::expect(Pfa::page_ref_get(*page) == 1);
+  }
+  ut::expect(Pfa::get_memory_stats().free_pages == free_before);
+  layout.verify();
+}
+
+void vma_boundaries() {
+  using namespace process;
+  const auto before = mm::PageFrameAllocator::get_memory_stats().free_pages;
+  {
+    auto created = user_space::create_user_address_space();
+    if (!ut::expect(created.has_value())) {
+      return;
+    }
+    auto &space = **created;
+    constexpr auto base = user_layout::MMAP_BASE;
+    const VirtAddr invalid[][2] = {
+        {0, page_size},
+        {mm::PageTableManager::KERNEL_IDENTITY_END - page_size, mm::PageTableManager::KERNEL_IDENTITY_END},
+        {USER_MAX, USER_MAX + page_size},
+        {USER_MAX - page_size, USER_MAX + page_size},
+        {~VirtAddr{0} - page_size + 1, page_size},
+        {base, base},
+        {base + page_size, base},
+        {base + 1, base + page_size},
+        {user_layout::SIGRETURN_PAGE, user_layout::SIGRETURN_PAGE + page_size},
+    };
+    for (const auto &range : invalid) {
+      const bool added = space.add_vma(range[0], range[1], vma_flags::READ, VmaType::MMAP);
+      ut::expect(!added);
+      if (added) {
+        ut::expect(space.remove_vma(range[0], range[1]));
+      }
+    }
+    ut::expect(space.add_vma(base, base + page_size, vma_flags::READ, VmaType::MMAP));
+    ut::expect(!space.add_vma(base, base + page_size, vma_flags::WRITE, VmaType::MMAP));
+    ut::expect(space.remove_vma(base, base + page_size));
+    ut::expect(!space.add_vma(base, base + page_size, ~u32{0}, VmaType::MMAP));
+    ut::expect(space.add_vma(base, base + page_size, vma_flags::READ | vma_flags::WRITE, VmaType::MMAP));
+    ut::expect(space.add_vma(base + page_size, base + 2 * page_size, vma_flags::READ, VmaType::MMAP));
+    ut::expect(space.allows_user_access(base + page_size - 8, 16, vma_flags::READ));
+    ut::expect(!space.allows_user_access(base + page_size - 8, 16, vma_flags::WRITE));
+    ut::expect(!space.allows_user_access(base + 2 * page_size - 8, 16, vma_flags::READ));
+    ut::expect(!space.allows_user_access(0, 1, vma_flags::READ));
+    ut::expect(!space.allows_user_access(USER_MAX - 1, 2, vma_flags::READ));
+    ut::expect(space.allows_user_access(0, 0, vma_flags::READ));
+    const auto stub = user_layout::SIGRETURN_PAGE;
+    ut::expect(!space.add_vma(stub, stub + page_size, vma_flags::WRITE, VmaType::SIGRETURN));
+    ut::expect(space.add_vma(stub, stub + page_size, vma_flags::READ | vma_flags::EXEC, VmaType::SIGRETURN));
+  }
+  ut::expect(mm::PageFrameAllocator::get_memory_stats().free_pages == before);
+}
 
 char selection[81]{};
 const char *active_case = nullptr;
@@ -569,7 +840,7 @@ void page_exhaustion() {
 
 void *fd_table() {
   auto *thread = process::CfsScheduler::get_current_task();
-  auto *proc = process::g_process_manager->find_process(thread->owner_pid);
+  auto proc = process::g_process_manager->find_process(thread->owner_pid);
   return proc->fd_table();
 }
 
@@ -675,6 +946,34 @@ void cleanup_guards() {
                             return false;
                           });
   ut::expect(!context.valid && called == 1 && cleaned == 2);
+
+  // An uninstalled descriptor checks the snapshot filter, not MMU behavior.
+  mm::PageTable table;
+  auto &entry = table.entries[0];
+  entry.set_page(page_size, mm::page_perms::USER_RW);
+  const auto address = reinterpret_cast<PhysAddr>(&table);
+  const auto original = entry.raw;
+  const auto hash = page_table_hash(address);
+  entry.raw ^= mm::page_attr::AF;
+#if !defined(MOSS_ARCH_ARM64)
+  entry.raw ^= mm::page_attr::DIRTY;
+#endif
+  ut::expect(page_table_hash(address) == hash);
+  entry.raw = original ^ mm::page_attr::USER;
+  ut::expect(page_table_hash(address) != hash);
+  entry.raw = original ^ mm::page_attr::SW_COW;
+  ut::expect(page_table_hash(address) != hash);
+  entry.raw = original;
+  entry.make_readonly();
+  ut::expect(page_table_hash(address) != hash);
+#if defined(MOSS_ARCH_RISCV)
+  entry.raw = original ^ mm::page_attr::EXECUTE;
+#else
+  entry.raw = original ^ mm::page_attr::XN;
+#endif
+  ut::expect(page_table_hash(address) != hash);
+  entry.set_page(2 * page_size, mm::page_perms::USER_RW);
+  ut::expect(page_table_hash(address) != hash);
 }
 void heap_bounds() {
   auto before = mm::RuntimeHeapAllocator::get_heap_end();
@@ -891,25 +1190,16 @@ struct ContainerValue {
   u32 *destroyed;
   ContainerValue(u32 v, u32 *counter) : value(v), destroyed(counter) {}
   ~ContainerValue() { ++*destroyed; }
-  bool operator==(const ContainerValue &other) const { return value == other.value; }
 };
 
 void container_ownership() {
-  // The single test worker has already exec'd; retire that old image's detached
-  // nodes before measuring this case's allocations. This is test-only cleanup,
-  // not a production reclamation loop or a claim of concurrent-reader safety.
-  containers::RcuCallbackQueue::process_callbacks();
   const auto before = mm::RuntimeHeapAllocator::get_heap_stats().allocated_bytes;
   u32 destroyed = 0;
   // If reachable nodes have already been reclaimed, do not walk them again
   // during failed-case cleanup. The host discards this suite's kernel.
-  auto *list = new containers::RcuList<ContainerValue>();
+  auto *list = new containers::LockedList<ContainerValue>();
   for (u32 value = 1; value <= 3; ++value) {
     list->push_front(value, &destroyed);
-  }
-  {
-    containers::RcuReadLock read_lock;
-    containers::RcuCallbackQueue::process_callbacks();
   }
   logging::klog::info("Container ownership: {} reachable values destroyed after insertion", destroyed);
   if (!ut::expect(destroyed == 0)) {
@@ -923,7 +1213,6 @@ void container_ownership() {
   });
   ut::expect(count == 3 && sum == 6);
   delete list;
-  containers::RcuCallbackQueue::process_callbacks();
   ut::expect(destroyed == 3);
   ut::expect(mm::RuntimeHeapAllocator::get_heap_stats().allocated_bytes == before);
 }
@@ -931,7 +1220,7 @@ void container_ownership() {
 void container_release_reuse() {
   const auto before = mm::RuntimeHeapAllocator::get_heap_stats().allocated_bytes;
   u32 destroyed = 0;
-  auto *list = new containers::RcuList<ContainerValue>();
+  auto *list = new containers::LockedList<ContainerValue>();
   constexpr u32 length = 1024;
   for (u32 i = 0; i < length; ++i) {
     list->push_front(i, &destroyed);
@@ -939,25 +1228,19 @@ void container_release_reuse() {
       return;
     }
   }
-  containers::RcuCallbackQueue::process_callbacks();
   if (!ut::expect(destroyed == 0 && list->size() == length)) {
     return;
   }
   constexpr u32 removed[] = {0, 511, length - 1}; // Tail, interior, head.
   u32 deleted = 0;
   for (u32 id : removed) {
-    {
-      containers::RcuReadLock read_lock;
-      const auto *value = list->find_if([&](const ContainerValue &item) { return item.value == id; });
-      if (!ut::expect(value && list->remove(*value))) {
-        return;
-      }
+    if (!ut::expect(list->remove_if([&](const ContainerValue &item) { return item.value == id; }))) {
+      return;
     }
-    containers::RcuCallbackQueue::process_callbacks();
     if (!ut::expect(destroyed == ++deleted)) {
       return;
     }
-    ut::expect(list->find_if([&](const ContainerValue &item) { return item.value == id; }) == nullptr);
+    list->for_each([&](const ContainerValue &item) { ut::expect(item.value != id); });
   }
   u32 count = 0;
   u32 sum = 0;
@@ -966,15 +1249,13 @@ void container_release_reuse() {
     sum += value.value;
   });
   ut::expect(count == length - 3 && sum == length * (length - 1) / 2 - 511 - (length - 1));
-  list->clear(); // Exceeds the existing 512-slot queue, without active borrowers.
-  containers::RcuCallbackQueue::process_callbacks();
+  list->clear(); // No bounded retirement queue remains.
   if (!ut::expect(destroyed == length && list->empty() && list->size() == 0)) {
     return;
   }
   list->push_front(length, &destroyed);
   ut::expect(list->size() == 1 && destroyed == length);
   delete list;
-  containers::RcuCallbackQueue::process_callbacks();
   ut::expect(destroyed == length + 1);
   ut::expect(mm::RuntimeHeapAllocator::get_heap_stats().allocated_bytes == before);
 }
@@ -983,21 +1264,19 @@ void container_map_ownership() {
   const auto before = mm::RuntimeHeapAllocator::get_heap_stats().allocated_bytes;
   u32 destroyed = 0;
   // Force collisions and use real owned values, as the IPC channel map does.
-  auto *map = new containers::RcuHashMap<u32, unique_ptr<ContainerValue>, 1>();
+  auto *map = new containers::LockedHashMap<u32, shared_ptr<ContainerValue>, 1>();
   for (u32 key = 1; key <= 3; ++key) {
-    map->insert_or_update(key, make_unique<ContainerValue>(key, &destroyed));
+    map->insert_or_update(key, make_shared<ContainerValue>(key, &destroyed));
   }
-  containers::RcuCallbackQueue::process_callbacks();
   if (!ut::expect(destroyed == 0 && map->size() == 3)) {
     return;
   }
-  map->insert_or_update(u32{2}, make_unique<ContainerValue>(u32{20}, &destroyed));
-  containers::RcuCallbackQueue::process_callbacks();
+  map->insert_or_update(u32{2}, make_shared<ContainerValue>(u32{20}, &destroyed));
   if (!ut::expect(destroyed == 1 && map->size() == 3)) {
     return;
   }
   for (u32 key = 1; key <= 3; ++key) {
-    const auto *value = map->find(key);
+    auto value = map->find(key);
     ut::expect(value && *value && (*value)->value == (key == 2 ? 20 : key));
   }
   u32 deleted = 1;
@@ -1005,17 +1284,186 @@ void container_map_ownership() {
   for (u32 key : keys) {
     ut::expect(map->remove(key));
     ut::expect(!map->remove(key));
-    containers::RcuCallbackQueue::process_callbacks();
-    if (!ut::expect(destroyed == ++deleted && map->find(key) == nullptr)) {
+    if (!ut::expect(destroyed == ++deleted && !map->find(key))) {
       return;
     }
   }
   ut::expect(map->empty());
   delete map;
-  containers::RcuCallbackQueue::process_callbacks();
   ut::expect(destroyed == 4);
   ut::expect(mm::RuntimeHeapAllocator::get_heap_stats().allocated_bytes == before);
 }
+void container_held_reader() {
+  const auto before = mm::RuntimeHeapAllocator::get_heap_stats().allocated_bytes;
+  u32 destroyed = 0;
+  auto *map = new containers::LockedHashMap<u32, shared_ptr<ContainerValue>, 1>();
+  map->insert_or_update(u32{1}, make_shared<ContainerValue>(u32{1}, &destroyed));
+  {
+    auto borrowed = map->find(u32{1});
+    if (!ut::expect(borrowed && *borrowed)) {
+      return;
+    }
+    ut::expect(map->remove(u32{1}));
+    logging::klog::info("Container held reader: {} values destroyed before reader release", destroyed);
+    if (!ut::expect(destroyed == 0)) {
+      return; // Do not dereference reclaimed storage; discard this failed suite.
+    }
+    ut::expect((*borrowed)->value == 1);
+  }
+  delete map;
+  ut::expect(destroyed == 1);
+  ut::expect(mm::RuntimeHeapAllocator::get_heap_stats().allocated_bytes == before);
+}
+
+struct ReentrantValue {
+  using Map = containers::LockedHashMap<u32, shared_ptr<ReentrantValue>, 1>;
+  Map *owner;
+  u32 *destroyed;
+  ReentrantValue(Map *map, u32 *counter) : owner(map), destroyed(counter) {}
+  ~ReentrantValue() {
+    // This would deadlock if remove/replacement invoked destructors under the map lock.
+    ut::expect(owner->size() <= 1);
+    ++*destroyed;
+  }
+};
+
+void container_reentry() {
+  const auto before = mm::RuntimeHeapAllocator::get_heap_stats().allocated_bytes;
+  {
+    containers::LockedList<u32> list;
+    list.push_front(u32{1});
+    auto copy = list.find(u32{1});
+    ut::expect(list.update_if([](u32 value) { return value == 1; }, [](u32 &value) { value = 2; }));
+    ut::expect(copy && *copy == 1 && !list.find(u32{1}));
+    ut::expect(!list.push_front_unless([](u32 value) { return value == 2; }, u32{3}));
+    list.push_front(u32{3});
+    u32 count = 0;
+    list.for_each_snapshot([&](u32 value) {
+      ut::expect(list.remove(value));
+      ++count;
+    });
+    ut::expect(count == 2 && list.empty());
+
+    containers::LockedHashMap<u32, u32, 1> values;
+    ut::expect(values.get_or_insert(u32{1}, [] { return u32{10}; }) == 10);
+    ut::expect(values.get_or_insert(u32{1}, [] { return u32{20}; }) == 10);
+    values.insert_or_update(u32{2}, u32{20});
+    auto wider_key = values.find(u64{1});
+    ut::expect(wider_key && *wider_key == 10);
+    count = 0;
+    values.for_each_snapshot([&](const auto &entry) {
+      ut::expect(values.remove(entry.key));
+      ++count;
+    });
+    ut::expect(count == 2 && values.empty());
+
+    ReentrantValue::Map map;
+    u32 destroyed = 0;
+    map.insert_or_update(u32{1}, make_shared<ReentrantValue>(&map, &destroyed));
+    map.insert_or_update(u32{1}, make_shared<ReentrantValue>(&map, &destroyed));
+    ut::expect(destroyed == 1);
+    auto held = map.find(u32{1});
+    map.clear();
+    ut::expect(held && destroyed == 1);
+    held.reset();
+    ut::expect(destroyed == 2);
+  }
+  ut::expect(mm::RuntimeHeapAllocator::get_heap_stats().allocated_bytes == before);
+}
+
+struct ConcurrentValue {
+  u32 *destroyed;
+  explicit ConcurrentValue(u32 *counter) : destroyed(counter) {}
+  ~ConcurrentValue() { __atomic_fetch_add(destroyed, 1U, __ATOMIC_RELEASE); }
+};
+
+// Two real userspace threads enter this test through the validation syscall.
+// Only CPU0 records assertions; acquire/release handshakes publish peer results.
+struct ContainerInterleaving {
+  containers::LockedHashMap<u32, shared_ptr<ConcurrentValue>, 1> map;
+  containers::LockedList<u32> list;
+  u32 phase = 0;
+  u32 factories = 0;
+  u32 inserted = 0;
+  u32 destroyed = 0;
+  u32 peer_cpu = 0;
+  bool peer_ok = false;
+  bool peer_inserted = false;
+  bool peer_removed = false;
+  bool peer_unlinked = false;
+  VirtAddr peer_value = 0;
+
+  static void wait_for(const u32 &value, u32 expected) {
+    // The host's case deadline bounds a stuck peer; no guest-clock dependency.
+    while (__atomic_load_n(&value, __ATOMIC_ACQUIRE) != expected) {
+    }
+  }
+
+  shared_ptr<ConcurrentValue> race_insert(bool &list_inserted, u32 actor) {
+    list_inserted = list.push_front_unless([](u32 value) { return value == 42; }, u32{42});
+    auto result = map.get_or_insert(u32{2}, [&] {
+      auto candidate = make_shared<ConcurrentValue>(&destroyed);
+      __atomic_fetch_add(&factories, 1U, __ATOMIC_RELEASE);
+      wait_for(factories, 2); // Force both creators past the initial lookup.
+      return candidate;
+    });
+    if (actor == 2)
+      peer_value = reinterpret_cast<VirtAddr>(result.get());
+    __atomic_fetch_or(&inserted, actor, __ATOMIC_RELEASE);
+    wait_for(inserted, 3);
+    return result;
+  }
+
+  bool peer() {
+    peer_cpu = arch::get_current_cpu_id();
+    auto *thread = process::CfsScheduler::get_current_task();
+    peer_ok = peer_cpu == 1 && thread && thread->cpu_affinity_mask.low_word() == 2;
+    wait_for(phase, 1);
+    auto held = map.find(u32{1});
+    peer_ok = peer_ok && held && *held;
+    __atomic_store_n(&phase, 2U, __ATOMIC_RELEASE);
+    wait_for(phase, 3);
+    const bool alive = __atomic_load_n(&destroyed, __ATOMIC_ACQUIRE) == 0;
+    peer_ok = peer_ok && alive;
+    if (held && alive)
+      peer_ok = peer_ok && (*held)->destroyed == &destroyed;
+    held.reset();
+    __atomic_store_n(&phase, 4U, __ATOMIC_RELEASE);
+    wait_for(phase, 5);
+    auto winner = race_insert(peer_inserted, 2);
+    peer_removed = map.remove(u32{2});
+    peer_unlinked = list.remove(u32{42});
+    winner.reset();
+    __atomic_store_n(&phase, 6U, __ATOMIC_RELEASE);
+    return peer_ok;
+  }
+
+  void owner() {
+    __atomic_store_n(&phase, 1U, __ATOMIC_RELEASE);
+    wait_for(phase, 2);
+    ut::expect(map.remove(u32{1}));
+    ut::expect(__atomic_load_n(&destroyed, __ATOMIC_ACQUIRE) == 0);
+    __atomic_store_n(&phase, 3U, __ATOMIC_RELEASE);
+    wait_for(phase, 4);
+    ut::expect(__atomic_load_n(&destroyed, __ATOMIC_ACQUIRE) == 1);
+    __atomic_store_n(&phase, 5U, __ATOMIC_RELEASE);
+    bool list_inserted = false;
+    auto winner = race_insert(list_inserted, 1);
+    ut::expect(reinterpret_cast<VirtAddr>(winner.get()) == peer_value);
+    const bool removed = map.remove(u32{2});
+    const bool unlinked = list.remove(u32{42});
+    winner.reset();
+    wait_for(phase, 6);
+    ut::expect(peer_ok && peer_cpu == 1 && affinity_valid());
+    ut::expect(list_inserted != peer_inserted && removed != peer_removed && unlinked != peer_unlinked);
+    ut::expect(map.empty() && list.empty());
+    ut::expect(__atomic_load_n(&destroyed, __ATOMIC_ACQUIRE) == 3);
+    logging::klog::info("Container interleaving: owner CPU0, reader CPU{}, {} values destroyed", peer_cpu,
+                        __atomic_load_n(&destroyed, __ATOMIC_ACQUIRE));
+  }
+};
+ContainerInterleaving *container_interleaving = nullptr;
+
 void failing_case() { ut::expect(false); }
 [[noreturn]] void panic_case() {
   Event("fatal").str("case", active_case).str("kind", "panic").send();
@@ -1050,14 +1498,29 @@ void declare_cases() {
     ut::register_test("ownership", container_ownership);
     ut::register_test("release_reuse", container_release_reuse);
     ut::register_test("map_ownership", container_map_ownership);
+    ut::register_test("held_reader", container_held_reader);
+    ut::register_test("reentry", container_reentry);
   });
+  ut::register_suite("containers.smp", [] { ut::register_test("interleaving", empty_case); });
   ut::register_suite("vfs", [] {
     ut::register_test("read_position_eof", file_read);
     ut::register_test("errors_readonly", file_errors);
   });
   ut::register_suite("users", [] {
     ut::register_test("syscall_values", empty_case);
+    ut::register_test("user_ranges", empty_case);
     ut::register_test("fork_exec_exit_reap", empty_case);
+  });
+#if defined(MOSS_ARCH_X86_64)
+  ut::register_suite("users.simd_fault", [] { ut::register_test("isolation", empty_case); });
+#endif
+  ut::register_suite("mm.permissions", [] {
+    ut::register_test("table_defaults", table_permission_defaults);
+    ut::register_test("kernel_mappings", kernel_mapping_permissions);
+    ut::register_test("active_user_mappings", active_user_mapping_permissions);
+    ut::register_test("kernel_wx", kernel_wx_permissions);
+    ut::register_test("address_space_ownership", address_space_ownership);
+    ut::register_test("vma_boundaries", vma_boundaries);
   });
   ut::register_suite("self", [] {
     ut::register_test("accounting_registration", accounting);
@@ -1358,6 +1821,21 @@ extern "C" long moss_validation_call(long op, long arg1, [[maybe_unused]] long a
     if (ut::same_id(selection, "users")) {
       return 1;
     }
+    if (ut::same_id(selection, "users.simd_fault")) {
+      start_case("isolation");
+      return 4;
+    }
+    if (ut::same_id(selection, "containers.smp")) {
+      start_case("interleaving");
+      if (!ut::expect(g_num_cpus >= 2)) {
+        end_case();
+        finish("requires_smp");
+      }
+      container_interleaving = new ContainerInterleaving();
+      container_interleaving->map.insert_or_update(u32{1},
+                                                   make_shared<ConcurrentValue>(&container_interleaving->destroyed));
+      return 3;
+    }
     if (selected_benchmark) {
       start_case(selection);
       prepare_clock();
@@ -1403,10 +1881,13 @@ extern "C" long moss_validation_call(long op, long arg1, [[maybe_unused]] long a
     finish();
   }
   if (op == 1 && ut::same_id(selection, "users") && !failed && !active_case && arg1 == static_cast<long>(completed)) {
-    start_case(arg1 == 0 ? "syscall_values" : "fork_exec_exit_reap");
+    start_case(arg1 == 0 ? "syscall_values" : (arg1 == 1 ? "user_ranges" : "fork_exec_exit_reap"));
     return 0;
   }
-  if (op == 2 && active_case && ut::same_id(selection, "users")) {
+  if (op == 2 && active_case && (ut::same_id(selection, "users") || ut::same_id(selection, "users.simd_fault"))) {
+    if (arg2 != 0) {
+      logging::klog::error("users checks failed: mask={:#x}", static_cast<u64>(arg2));
+    }
     ut::expect(arg1 != 0 && affinity_valid());
     end_case();
     return failed ? 0 : 1;
@@ -1440,6 +1921,28 @@ extern "C" long moss_validation_call(long op, long arg1, [[maybe_unused]] long a
   if (op == 6 && ut::same_id(selection, "bench.getpid") && arg1 >= 0) {
     syscall_overhead = static_cast<u64>(arg1);
     return 0;
+  }
+  if (ut::same_id(selection, "containers.smp") && active_case && container_interleaving) {
+    if (op == 7 && arg1 == 0) {
+      arch::enable_interrupts();
+      return container_interleaving->peer() ? 1 : 0;
+    }
+    if (op == 8) {
+      if (!ut::expect(arg1 && affinity_valid())) {
+        end_case();
+        finish("worker_setup");
+      }
+      arch::enable_interrupts();
+      container_interleaving->owner();
+      return 0;
+    }
+    if (op == 9) {
+      ut::expect(arg1 && affinity_valid());
+      delete container_interleaving;
+      container_interleaving = nullptr;
+      end_case();
+      finish();
+    }
   }
   failed = true;
   finish("invalid_control");

@@ -154,13 +154,6 @@ long system_call_handler(long syscall_number, long arg0, long arg1, long arg2, l
     return moss_validation_call(arg0, arg1, arg2);
   }
 
-  // syscall 0 = debug_print (raw UART output from userspace)
-  if (syscall_number == 0) {
-    if (arg0 != 0) {
-      hal::uart::puts(reinterpret_cast<const char *>(arg0));
-    }
-  }
-
   return syscall::SyscallDispatcher::dispatch(syscall_number, arg0, arg1, arg2, arg3, arg4, arg5);
 }
 
@@ -230,8 +223,8 @@ void irq_handler_c(void) noexcept {
     // Look up the registered handler for this IRQ and call it directly.
     // We cannot call g_gic->handle_interrupt() because it would do its
     // own ACK+EOI (already done above).  Instead, look up and invoke.
-    const auto *desc = ::moss::kernel::interrupts::g_gic->get_interrupt_info(irq);
-    if (desc != nullptr && desc->handler != nullptr) {
+    auto desc = ::moss::kernel::interrupts::g_gic->get_interrupt_info(irq);
+    if (static_cast<bool>(desc) && desc->handler != nullptr) {
       desc->handler(irq, desc->context);
     }
   }
@@ -248,12 +241,12 @@ int demand_page_lookup(unsigned long long fault_addr, unsigned int *out_flags, c
                        unsigned long long *out_vma_start) noexcept {
   using namespace moss::kernel;
 
-  auto *proc = process::current_process();
+  auto proc = process::current_process();
   if (!proc || !proc->address_space()) {
     return 0;
   }
 
-  const auto *vma = proc->address_space()->find_vma(static_cast<VirtAddr>(fault_addr));
+  auto vma = proc->address_space()->find_vma(static_cast<VirtAddr>(fault_addr));
   if (!vma) {
     return 0;
   }
@@ -274,32 +267,29 @@ int demand_page_lookup(unsigned long long fault_addr, unsigned int *out_flags, c
 int try_grow_user_stack(unsigned long long fault_addr) noexcept {
   using namespace moss::kernel;
 
-  auto *proc = process::current_process();
+  auto proc = process::current_process();
   if (!proc || !proc->address_space()) {
     return 0;
   }
   auto *as = proc->address_space();
 
-  // 1. Find the STACK VMA
-  const process::VmaRegion *stack_vma =
-      as->vmas.find_if([](const process::VmaRegion &v) { return v.type == process::VmaType::STACK; });
-  if (!stack_vma) {
-    return 0;
-  }
-
-  // 2. fault_addr must be below current stack start but above the max growth limit
   const VirtAddr stack_limit = process::user_layout::STACK_TOP - process::user_layout::STACK_MAX;
-  if (fault_addr >= stack_vma->start_addr || fault_addr < stack_limit) {
+  if (fault_addr < stack_limit) {
     return 0;
   }
 
   // 3. Page-align the new stack bottom downward
   constexpr u64 PG_SIZE = 4096;
   const VirtAddr new_start = fault_addr & ~(PG_SIZE - 1);
+  if (!process::AddressSpace::valid_vma_range(new_start, process::user_layout::STACK_TOP, process::VmaType::STACK)) {
+    return 0;
+  }
 
-  // 4. Extend VMA start_addr (const_cast pattern, same as sys_brk)
-  // NOLINTNEXTLINE(cppcoreguidelines-pro-type-const-cast)
-  const_cast<process::VmaRegion *>(stack_vma)->start_addr = new_start;
+  if (!as->vmas.update_if(
+          [&](const process::VmaRegion &v) { return v.type == process::VmaType::STACK && fault_addr < v.start_addr; },
+          [&](process::VmaRegion &v) { v.start_addr = new_start; })) {
+    return 0;
+  }
 
   // 5. Update thread metadata
   auto *thread = process::current_thread();
@@ -314,7 +304,7 @@ int try_grow_user_stack(unsigned long long fault_addr) noexcept {
 unsigned long long get_current_pgd_phys() noexcept {
   using namespace moss::kernel;
 
-  auto *proc = process::current_process();
+  auto proc = process::current_process();
   if (!proc || !proc->address_space()) {
     return 0;
   }
@@ -338,7 +328,8 @@ unsigned long long get_current_pgd_phys() noexcept {
   ProcessId pid = cur->owner_pid;
   log::klog::info("terminate_user_process: PID={} TID={} exit_code={}", pid, static_cast<u32>(cur->tid), exit_code);
 
-  process::Process *proc = process::g_process_manager ? process::g_process_manager->find_process(pid) : nullptr;
+  auto proc =
+      process::g_process_manager ? process::g_process_manager->find_process(pid) : shared_ptr<process::Process>{};
 
   if (!proc) {
     log::klog::panic("terminate_user_process: process not found PID={}", pid);
@@ -348,7 +339,7 @@ unsigned long long get_current_pgd_phys() noexcept {
   }
 
   // Delegate to shared Zombie transition (never returns)
-  process::do_exit(cur, proc, static_cast<i32>(exit_code));
+  process::do_exit(cur, moss::move(proc), static_cast<i32>(exit_code));
 }
 
 // ============================================================================

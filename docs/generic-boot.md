@@ -138,10 +138,25 @@ These limits describe this implementation, not Linux's full hardware coverage:
   data. Metadata must fit within one bank; dense PFN metadata spans holes and
   consumes at most 16 MiB under the current address limit. The boot prefix below
   `kernel_end` remains conservatively reserved until all boot protocols describe
-  their live low-memory buffers and trampolines explicitly. The existing early direct maps use
-  coarse 1 GiB blocks, so mixed RAM/MMIO within one block still needs finer
-  mappings before claiming arbitrary SoC layouts. Firmware reservations,
+  their live low-memory buffers and trampolines explicitly. Final identity/direct
+  maps split 1 GiB blocks into 2 MiB/4 KiB leaves at RAM and image-permission
+  boundaries. Kernel text (including boot text) is RX, rodata is RO/NX, and
+  other RAM/device mappings are RW/NX. All direct-map aliases are NX and aliases
+  of text/rodata are read-only. The existing 64-page early table pool remains a
+  hard limit; this does not establish arbitrary SoC layout coverage. Firmware reservations,
   kernel storage, DTB and initramfs must not be reused as free pages.
+- User address-space creation, cloning and teardown borrow kernel VA ranges by
+  ownership, not by leaf size. The four-level mixed low PUD remains private to
+  each process. x86 APs use the temporary PVH map only to leave the low-memory
+  trampoline, then install the final tables and CR0.WP before going online.
+  Runtime permission checks do not constitute complete uaccess, signal-return
+  or malicious-user exception-isolation acceptance.
+- User mappings occupy the canonical positive range above the 4 GiB identity
+  map, bounded by the active MMU's USER_MAX. Ordinary VMAs cannot cover the
+  kernel-installed sigreturn page. Anonymous mmap supports only PRIVATE with
+  zero offset and fd=-1; unsupported flags (including FIXED) are rejected.
+  Valid nonzero hints do not replace mappings and may fall back to the monotonic
+  mmap cursor. This is not Linux ABI compatibility or a complete VM transaction model.
 - ARM64: ARMv8-A baseline, 4 KiB pages, PL011/16550 console, GICv2 or one standard
   GICv3 redistributor region, architectural virtual timer, PSCI 0.2+ (HVC/SMC) or
   spin-table startup. GICv4 strides, GICv3 range selection for Aff0 >= 16 and
@@ -154,6 +169,18 @@ These limits describe this implementation, not Linux's full hardware coverage:
   BIOS data area, and PIT-based TSC/APIC timer calibration. No x2APIC, complete
   ACPI AML subsystem, UEFI loader, or general PCI discovery is provided. The
   current secondary trampoline reserves physical address `0x8000`.
+- x86_64 enables baseline x87/FXSR/SSE2 on every CPU and eagerly saves/restores
+  the 512-byte legacy state at context switches. Fork snapshots live user state;
+  exec installs default state. AVX/XSAVE, complete extended-state signal frames
+  and hardware acceptance remain open. CPU setup follows the
+  [Intel system programming contract](https://cdrdv2-public.intel.com/812386/253668-sdm-vol-3a.pdf).
+- Freestanding ELF programs currently enter `_start(argc, argv)` using the ISA's
+  C function ABI, not Linux's initial process-stack ABI. x86 uses a zero return
+  slot below argv so entry RSP is 8 modulo 16, as required by the
+  [SysV function-call convention](https://gitlab.com/x86-psABIs/x86-64-ABI/-/blob/master/x86-64-ABI/low-level-sys-info.tex).
+  The shared userspace linker script page-separates RX, R and RW sections,
+  including x86 large-model and RISC-V small-data sections. The kernel ELF
+  loader's general overlap/permission validation is still incomplete.
 - No physical board has been accepted by this change. QEMU `raspi4b` results are
   not proof of real Raspberry Pi firmware/device behavior. Early failures may
   need a debugger if firmware did not describe a usable console.

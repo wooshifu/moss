@@ -11,6 +11,7 @@ import moss.arch;
 import moss.platform;
 import moss.hal.intc;
 import moss.containers;
+import moss.smart_ptr;
 import moss.logging;
 
 // ============================================================================
@@ -94,7 +95,7 @@ private:
   u32 max_interrupts_;
   u32 max_cpus_;
 
-  containers::RcuHashMap<InterruptId, InterruptDescriptor *> interrupt_table_;
+  containers::LockedHashMap<InterruptId, shared_ptr<InterruptDescriptor>> interrupt_table_;
   containers::IrqSpinLock table_write_lock_; // Protects interrupt_table_ mutations
   containers::PerCpuData<u64> interrupt_counts_;
 
@@ -171,12 +172,12 @@ public:
 
     containers::LockGuard<containers::IrqSpinLock> guard(table_write_lock_);
 
-    if (interrupt_table_.find(irq) != nullptr) {
+    if (static_cast<bool>(interrupt_table_.find(irq))) {
       return VoidResult{ErrorCode::AlreadyExists};
     }
 
-    InterruptDescriptor *desc = new InterruptDescriptor(irq, handler, context, name);
-    if (desc == nullptr) {
+    auto desc = make_shared<InterruptDescriptor>(irq, handler, context, name);
+    if (!desc) {
       return VoidResult{ErrorCode::OutOfMemory};
     }
 
@@ -188,15 +189,14 @@ public:
   [[nodiscard]] VoidResult unregister_interrupt(InterruptId irq) noexcept {
     containers::LockGuard<containers::IrqSpinLock> guard(table_write_lock_);
 
-    const auto *desc_ptr = interrupt_table_.find(irq);
-    if (desc_ptr == nullptr) {
+    auto desc_ptr = interrupt_table_.find(irq);
+    if (!desc_ptr) {
       return VoidResult{ErrorCode::NotFound};
     }
-    InterruptDescriptor *desc = *desc_ptr;
+    auto desc = *desc_ptr;
 
     (void)disable_interrupt(irq);
     interrupt_table_.remove(irq);
-    delete desc;
 
     return VoidResult{};
   }
@@ -208,9 +208,9 @@ public:
 
     ::moss::kernel::hal::intc::enable_irq(distributor_base_, irq);
 
-    const auto *desc_ptr = interrupt_table_.find(irq);
-    if (desc_ptr != nullptr) {
-      InterruptDescriptor *desc = *desc_ptr;
+    auto desc_ptr = interrupt_table_.find(irq);
+    if (static_cast<bool>(desc_ptr)) {
+      auto desc = *desc_ptr;
       desc->enabled = true;
     }
 
@@ -224,9 +224,9 @@ public:
 
     ::moss::kernel::hal::intc::disable_irq(distributor_base_, irq);
 
-    const auto *desc_ptr = interrupt_table_.find(irq);
-    if (desc_ptr != nullptr) {
-      InterruptDescriptor *desc = *desc_ptr;
+    auto desc_ptr = interrupt_table_.find(irq);
+    if (static_cast<bool>(desc_ptr)) {
+      auto desc = *desc_ptr;
       desc->enabled = false;
     }
 
@@ -240,9 +240,9 @@ public:
 
     ::moss::kernel::hal::intc::set_priority(distributor_base_, irq, priority);
 
-    const auto *desc_ptr = interrupt_table_.find(irq);
-    if (desc_ptr != nullptr) {
-      InterruptDescriptor *desc = *desc_ptr;
+    auto desc_ptr = interrupt_table_.find(irq);
+    if (static_cast<bool>(desc_ptr)) {
+      auto desc = *desc_ptr;
       desc->priority = priority;
     }
 
@@ -260,9 +260,9 @@ public:
 
     ::moss::kernel::hal::intc::set_target(distributor_base_, irq, cpu_mask);
 
-    const auto *desc_ptr = interrupt_table_.find(irq);
-    if (desc_ptr != nullptr) {
-      InterruptDescriptor *desc = *desc_ptr;
+    auto desc_ptr = interrupt_table_.find(irq);
+    if (static_cast<bool>(desc_ptr)) {
+      auto desc = *desc_ptr;
       desc->target_cpu_mask = cpu_mask;
     }
 
@@ -288,9 +288,9 @@ public:
     (void)total_interrupts_.fetch_add(1, containers::MemoryOrder::Relaxed);
     interrupt_counts_.get_cpu(cpu)++;
 
-    const auto *desc_ptr = interrupt_table_.find(irq);
-    if (desc_ptr != nullptr) {
-      InterruptDescriptor *desc = *desc_ptr;
+    auto desc_ptr = interrupt_table_.find(irq);
+    if (static_cast<bool>(desc_ptr)) {
+      auto desc = *desc_ptr;
       if (desc->handler != nullptr) {
         desc->handler(irq, desc->context);
         (void)desc->count.fetch_add(1, containers::MemoryOrder::Relaxed);
@@ -317,9 +317,9 @@ public:
             .enabled_interrupts = enabled};
   }
 
-  [[nodiscard]] const InterruptDescriptor *get_interrupt_info(InterruptId irq) const noexcept {
-    const auto *desc_ptr = interrupt_table_.find(irq);
-    return desc_ptr ? *desc_ptr : nullptr;
+  [[nodiscard]] shared_ptr<InterruptDescriptor> get_interrupt_info(InterruptId irq) const noexcept {
+    auto desc_ptr = interrupt_table_.find(irq);
+    return desc_ptr ? *desc_ptr : shared_ptr<InterruptDescriptor>{};
   }
 
   void set_priority_mask(InterruptPriority mask) const noexcept {
@@ -386,9 +386,7 @@ private:
     ::moss::kernel::hal::intc::write_reg(cpu_interface_base_, offset, value);
   }
 
-  void cleanup() noexcept {
-    interrupt_table_.for_each([](const auto &entry) { delete entry.value; });
-  }
+  void cleanup() noexcept { interrupt_table_.clear(); }
 };
 
 // Global GIC instance pointer

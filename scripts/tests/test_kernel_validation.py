@@ -87,6 +87,47 @@ def test_full_functional_completion_and_exit_are_both_required():
         emit(state, "end", completed=2, selected=2, failed=0)
 
 
+@pytest.mark.parametrize("workload", [None, ["containers.smp"]])
+def test_smp_workload_rejects_one_cpu_before_loading_artifacts(workload):
+    with pytest.raises(kv.typer.BadParameter, match="requires at least 2 CPUs"):
+        kv.run(manifest=Path("not-loaded.json"), workload=workload, cpus=1)
+
+
+def test_simd_fault_is_explicit_and_failure_is_not_an_expected_pass():
+    assert "users.simd_fault" not in kv.FUNCTIONAL
+    state = ready("users.simd_fault")
+    finish(state, failed=True)
+    assert state.outcome("protocol_end", 0, b"") == ("failed", "assertion")
+
+
+def test_simd_fault_rejects_other_architectures_before_launch(tmp_path, monkeypatch):
+    cfg = Artifacts(tmp_path / "manifest.json", "ARM64", "linux-image", {}, {})
+    monkeypatch.setattr(Artifacts, "load", lambda _: cfg)
+    with pytest.raises(kv.typer.BadParameter, match="requires x86_64"):
+        kv.run(manifest=cfg.manifest, workload=["users.simd_fault"])
+
+
+def test_case_duration_uses_host_observation_time(monkeypatch):
+    observed = iter([10.0, 10.75])
+    monkeypatch.setattr(kv.time, "monotonic", lambda: next(observed))
+    state = ready()
+    emit(state, "case_start", case=state.expected[0])
+    emit(state, "case_end", case=state.expected[0], passed=1, failed=0)
+    assert state.cases[0]["elapsed_seconds"] == 0.75
+
+
+@pytest.mark.parametrize(
+    "workload,override,expected", [("pfa", None, 30), ("mm", None, 5), ("pfa", 0.1, 0.1), ("pfa", 40, 40)]
+)
+def test_workload_deadline_is_recorded_and_explicit_override_wins(tmp_path, monkeypatch, workload, override, expected):
+    monkeypatch.setattr(kv, "build_qemu_args", lambda *_args, **_kwargs: [str(tmp_path / "missing-qemu")])
+    cfg = Artifacts(tmp_path / "manifest.json", "ARM64", "linux-image", {}, {})
+    settings = dict(cpus=4, memory_mib=2048, warmup=1, samples=2, order=0, case_timeout=override)
+    result = kv.run_guest(cfg, workload, tmp_path / "guest", settings, 0)
+    assert result["case_timeout_seconds"] == expected
+    assert result["status"] == "error"  # Selecting a budget must never turn launch failure into success.
+
+
 @pytest.mark.parametrize(
     "line",
     [
@@ -319,7 +360,11 @@ def test_host_child_lifecycle_reaps_every_spawn(monkeypatch, tmp_path, mode):
     assert Path(result["serial_log"]).exists()
     if mode in ("timeout", "ignore_term"):
         assert result["observed"] == "case_timeout"
+        assert result["cases"][0]["elapsed_seconds"] >= 0.1
+        if mode == "ignore_term":
+            assert result["elapsed_seconds"] - result["cases"][0]["elapsed_seconds"] >= 2
         assert result["cases"][1]["status"] == "not_run"
+        assert "elapsed_seconds" not in result["cases"][1]
     if mode == "cancel":
         assert result["observed"] == "cancelled"
 

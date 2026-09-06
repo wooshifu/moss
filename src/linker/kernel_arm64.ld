@@ -24,6 +24,7 @@ SECTIONS
 {
     /* Start placing sections at the beginning of RAM */
     . = ORIGIN(RAM);
+    _text_start = .; /* Boot code and ordinary text share the RX protection range. */
 
     /* ---- Boot Code Section ----
      * MUST be the first section so that _start (the entry point) is located
@@ -41,9 +42,9 @@ SECTIONS
      * 4K-aligned so it can be mapped as read-only + executable in page tables.
      */
     .text : ALIGN(4K) {
-        _text_start = .;
         *(.text)
         *(.text.*)
+        . = ALIGN(4K);
         _text_end = .;
     }
 
@@ -55,6 +56,7 @@ SECTIONS
         _rodata_start = .;
         *(.rodata)
         *(.rodata.*)
+        . = ALIGN(4K);
         _rodata_end = .;
     }
 

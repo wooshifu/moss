@@ -261,12 +261,12 @@ bool do_signal_checkpoint(Thread *thread) noexcept {
     return false;
   }
 
-  Process *proc = g_process_manager ? g_process_manager->find_process(thread->owner_pid) : nullptr;
-  if (proc == nullptr) {
+  auto proc = g_process_manager ? g_process_manager->find_process(thread->owner_pid) : shared_ptr<Process>{};
+  if (!proc) {
     return false;
   }
 
-  SignalState *sigstate = get_signal_state(proc);
+  SignalState *sigstate = get_signal_state(proc.get());
 
   // Process all pending signals (lowest numbered first)
   while (signal_pending(thread)) {

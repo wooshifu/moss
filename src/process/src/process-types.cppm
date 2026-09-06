@@ -22,7 +22,7 @@ namespace log = moss::kernel::logging;
 // Forward declarations
 struct Thread;
 
-// Thread entry for RcuList storage
+// Thread entry for LockedList storage
 struct ThreadEntry {
   ThreadId tid;
   Thread *thread;
@@ -139,6 +139,24 @@ struct alignas(16) CpuContext {
 };
 
 #elif defined(__x86_64__) || defined(__x86_64) || defined(MOSS_ARCH_X86_64)
+// Architectural FXSAVE64 image. Baseline x87/MMX/SSE state; AVX is not enabled.
+struct alignas(16) X86FpState {
+  u16 control = 0x037f;
+  u16 status = 0;
+  u8 tag = 0;
+  u8 reserved = 0;
+  u16 opcode = 0;
+  u64 ip = 0;
+  u64 data = 0;
+  u32 mxcsr = 0x1f80;
+  u32 mxcsr_mask = 0;
+  u8 st[128]{};
+  u8 xmm[256]{};
+  u8 reserved_tail[96]{};
+};
+static_assert(sizeof(X86FpState) == 512 && __builtin_offsetof(X86FpState, mxcsr) == 24 &&
+              __builtin_offsetof(X86FpState, xmm) == 160);
+
 // x86_64 CPU context
 struct alignas(16) CpuContext {
   // General purpose registers
@@ -160,14 +178,13 @@ struct alignas(16) CpuContext {
   // Segment registers
   u16 cs, ds, es, fs, gs, ss;
 
-  // Floating point register state
-  u64 mxcsr;
-  u64 fcw;
+  X86FpState fp;
 
   constexpr CpuContext() noexcept
       : rax(0), rbx(0), rcx(0), rdx(0), rsi(0), rdi(0), rbp(0), sp(0), r8(0), r9(0), r10(0), r11(0), r12(0), r13(0),
-        r14(0), r15(0), pstate(0x202), pc(0), cs(0), ds(0), es(0), fs(0), gs(0), ss(0), mxcsr(0), fcw(0) {}
+        r14(0), r15(0), pstate(0x202), pc(0), cs(0), ds(0), es(0), fs(0), gs(0), ss(0), fp{} {}
 };
+static_assert(__builtin_offsetof(CpuContext, fp) == 160);
 
 #elif defined(__riscv) || defined(__riscv__) || defined(MOSS_ARCH_RISCV)
 // RISC-V CPU context
@@ -193,6 +210,22 @@ struct alignas(16) CpuContext {
 
 static_assert(sizeof(CpuContext) <= 1024, "CpuContext should fit in reasonable size");
 
+// Canonical user layout; the MMU's runtime USER_MAX selects Sv39/Sv48 bounds.
+namespace user_layout {
+inline constexpr VirtAddr CODE_BASE = 0x0000000200000000ULL;  // 8 GiB
+inline constexpr VirtAddr HEAP_START = 0x0000000100000000ULL; // 4 GiB, above identity map
+inline constexpr usize STACK_SIZE = 32ULL * 1024;
+inline constexpr usize STACK_MAX = 8ULL * 1024 * 1024;
+inline constexpr usize HEAP_INIT = 64ULL * 1024;
+inline constexpr VirtAddr MMAP_BASE = 0x0000001000000000ULL;      // 64 GiB
+inline constexpr VirtAddr SIGRETURN_PAGE = 0x0000000180000000ULL; // kernel-installed RX user stub
+#if defined(MOSS_ARCH_RISCV)
+constinit inline VirtAddr STACK_TOP = 0x0000003F00000000ULL; // updated during early boot
+#else
+inline constexpr VirtAddr STACK_TOP = 0x00007FFF00000000ULL;
+#endif
+} // namespace user_layout
+
 // VMA permission / type flags
 namespace vma_flags {
 inline constexpr u32 READ = 1U << 0;
@@ -209,6 +242,7 @@ enum class VmaType : u32 {
   STACK = 3,
   HEAP = 4,
   MMAP = 5,
+  SIGRETURN = 6,
 };
 
 // Virtual Memory Area (VMA) — describes a contiguous region in a process's
@@ -251,7 +285,7 @@ struct AddressSpace {
   PhysAddr pgd_phys; // physical address of the L0 (PGD) page table
   u16 asid;          // Address Space ID (0 = kernel, 1-255 = user)
 
-  containers::RcuList<VmaRegion> vmas; // dynamic VMA list (was: fixed array)
+  containers::LockedList<VmaRegion> vmas; // dynamic VMA list (was: fixed array)
 
   containers::AtomicSize total_pages;
   containers::AtomicSize resident_pages;
@@ -284,29 +318,62 @@ struct AddressSpace {
   AddressSpace(const AddressSpace &) = delete;
   AddressSpace &operator=(const AddressSpace &) = delete;
 
-  // Add a VMA region (returns false if overlapping with existing)
-  bool add_vma(VirtAddr start, VirtAddr end, u32 flags, VmaType type = VmaType::DATA, const u8 *backing = nullptr,
-               usize b_offset = 0, usize b_size = 0) noexcept {
-    // Overlap check via RcuList traversal
-    const VmaRegion *overlap =
-        vmas.find_if([start, end](const VmaRegion &v) { return start < v.end_addr && end > v.start_addr; });
-    if (overlap) {
+  [[nodiscard]] static bool valid_vma_range(VirtAddr start, VirtAddr end, VmaType type) noexcept {
+    if (start >= end || ((start | end) & (PAGE_SIZE - 1)) != 0 ||
+        !mm::PageTableManager::is_user_range(start, end - start)) {
       return false;
     }
-
-    vmas.push_front(VmaRegion(start, end, flags, type, backing, b_offset, b_size));
-    return true;
+    constexpr auto stub = user_layout::SIGRETURN_PAGE;
+    if (type == VmaType::SIGRETURN) {
+      return start == stub && end == stub + PAGE_SIZE;
+    }
+    return end <= stub || start >= stub + PAGE_SIZE;
   }
 
-  // Find the VMA containing the given address (const pointer, nullptr if none)
-  [[nodiscard]] const VmaRegion *find_vma(VirtAddr addr) const noexcept {
+  // Admission policy is independent of whether a user page is resident.
+  bool add_vma(VirtAddr start, VirtAddr end, u32 flags, VmaType type = VmaType::DATA, const u8 *backing = nullptr,
+               usize b_offset = 0, usize b_size = 0) noexcept {
+    constexpr u32 allowed = vma_flags::READ | vma_flags::WRITE | vma_flags::EXEC | vma_flags::DEMAND_ZERO;
+    if (!valid_vma_range(start, end, type) || (flags & ~allowed) != 0 ||
+        (type == VmaType::SIGRETURN && flags != (vma_flags::READ | vma_flags::EXEC))) {
+      return false;
+    }
+    return vmas.push_front_unless([start, end](const VmaRegion &v) { return start < v.end_addr && end > v.start_addr; },
+                                  start, end, flags, type, backing, b_offset, b_size);
+  }
+
+  // Copy metadata while locked; callers never borrow a list node.
+  [[nodiscard]] containers::Optional<VmaRegion> find_vma(VirtAddr addr) const noexcept {
+    if (!mm::PageTableManager::is_user_range(addr, 1)) {
+      return {};
+    }
     return vmas.find_if([addr](const VmaRegion &v) { return v.contains(addr); });
+  }
+
+  // Metadata check only: this neither pins pages nor recovers a CPU access fault.
+  [[nodiscard]] bool allows_user_access(VirtAddr start, usize length, u32 required_flags) const noexcept {
+    if (length == 0) {
+      return true;
+    }
+    if (!mm::PageTableManager::is_user_range(start, length)) {
+      return false;
+    }
+    const VirtAddr end = start + length;
+    // ponytail: linear VMA lookup; use an interval index if VMA counts make scans costly.
+    while (start < end) {
+      auto vma = find_vma(start);
+      if (!vma || (vma->flags & required_flags) != required_flags || vma->end_addr <= start) {
+        return false;
+      }
+      start = vma->end_addr < end ? vma->end_addr : end;
+    }
+    return true;
   }
 
   // Remove a VMA by exact start/end match (used by munmap).
   // Returns true if the VMA was found and removed.
   bool remove_vma(VirtAddr start, VirtAddr end) noexcept {
-    // RcuList::remove uses VmaRegion::operator== which compares start_addr and end_addr
+    // LockedList::remove uses VmaRegion::operator== which compares start_addr and end_addr
     return vmas.remove(VmaRegion(start, end, 0));
   }
 };
@@ -471,7 +538,7 @@ private:
 
   unique_ptr<AddressSpace> address_space_;
 
-  containers::RcuList<ThreadEntry> threads_;
+  containers::LockedList<ThreadEntry> threads_;
   containers::AtomicCounter<u32> thread_count_;
   ThreadId main_thread_id_;
 
@@ -494,8 +561,6 @@ private:
     u32 nonvoluntary_ctxt_switches;
   } stats_;
 
-  mutable containers::AtomicU32 ref_count_;
-
   // VFS: per-process file descriptor table (vfs::FdTable*)
   // Stored as void* to avoid circular dependency on moss.vfs
   void *fd_table_ = nullptr;
@@ -510,7 +575,7 @@ private:
   ProcessId sid_;
 
   // Children tracking for wait()/waitpid()
-  containers::RcuList<ProcessId> children_;
+  containers::LockedList<ProcessId> children_;
   containers::WaitQueue child_exit_wq_;
 
   // POSIX process credentials.
@@ -523,8 +588,8 @@ private:
 public:
   Process(ProcessId pid, ProcessId parent = INVALID_PROCESS_ID) noexcept
       : pid_(pid), parent_pid_(parent), address_space_(nullptr), thread_count_(0), main_thread_id_(INVALID_THREAD_ID),
-        state_(ProcessState::Created), exit_code_(0), limits_{}, stats_{}, ref_count_(1), pgid_(pid), sid_(0),
-        children_{}, child_exit_wq_{} {}
+        state_(ProcessState::Created), exit_code_(0), limits_{}, stats_{}, pgid_(pid), sid_(0), children_{},
+        child_exit_wq_{} {}
 
   ~Process() noexcept {
     cleanup_threads();
@@ -600,17 +665,6 @@ public:
   void record_context_switch(bool voluntary) noexcept;
   void record_page_fault(bool major) noexcept;
 
-  // Reference counting
-  void add_ref() const noexcept { (void)ref_count_.fetch_add(1, containers::MemoryOrder::Relaxed); }
-
-  void release() const noexcept {
-    if (ref_count_.fetch_sub(1, containers::MemoryOrder::AcqRel) == 1) {
-      delete this;
-    }
-  }
-
-  [[nodiscard]] u32 ref_count() const noexcept { return ref_count_.load(containers::MemoryOrder::Acquire); }
-
   // Allocate a globally unique thread ID (static atomic counter).
   // Public so that fork() and other kernel code can create threads directly.
   [[nodiscard]] static ThreadId allocate_thread_id() noexcept;
@@ -623,10 +677,7 @@ public:
 
   void add_child(ProcessId child_pid) { children_.push_front(child_pid); }
 
-  void remove_child(ProcessId child_pid) {
-    containers::RcuReadLock lock;
-    children_.remove(child_pid);
-  }
+  void remove_child(ProcessId child_pid) { children_.remove(child_pid); }
 
   [[nodiscard]] bool has_children() const noexcept { return !children_.empty(); }
 
@@ -637,13 +688,13 @@ public:
   [[nodiscard]] ProcessId find_zombie_child(i64 wait_pid) const noexcept;
 
   // Check if a specific PID is in this process's children list
-  [[nodiscard]] bool is_child(ProcessId pid) const noexcept { return children_.find(pid) != nullptr; }
+  [[nodiscard]] bool is_child(ProcessId pid) const noexcept { return static_cast<bool>(children_.find(pid)); }
 
   // Access wait queue for child exit notification
   containers::WaitQueue &child_exit_wait_queue() noexcept { return child_exit_wq_; }
 
   // Iterate children (for reparenting in sys_exit)
-  template <typename Func> void for_each_child(Func func) const { children_.for_each(func); }
+  template <typename Func> void for_each_child(Func func) const { children_.for_each_snapshot(func); }
 
   // Parent PID setter (for reparenting)
   void set_parent_pid(ProcessId pid) noexcept { parent_pid_ = pid; }
@@ -659,7 +710,7 @@ private:
 // Process manager
 class ProcessManager {
 private:
-  containers::RcuHashMap<ProcessId, Process *> processes_;
+  containers::LockedHashMap<ProcessId, shared_ptr<Process>> processes_;
   containers::AtomicCounter<ProcessId> next_pid_;
 
   containers::PerCpuAtomicCounter<u64> total_context_switches_;
@@ -669,10 +720,10 @@ private:
 public:
   ProcessManager() noexcept : next_pid_(1) {}
 
-  [[nodiscard]] KernelResult<Process *> create_process(ProcessId parent_pid = INVALID_PROCESS_ID) noexcept;
+  [[nodiscard]] KernelResult<shared_ptr<Process>> create_process(ProcessId parent_pid = INVALID_PROCESS_ID) noexcept;
   [[nodiscard]] VoidResult terminate_process(ProcessId pid, i32 exit_code) noexcept;
 
-  [[nodiscard]] Process *find_process(ProcessId pid) const noexcept;
+  [[nodiscard]] shared_ptr<Process> find_process(ProcessId pid) const noexcept;
   [[nodiscard]] bool process_exists(ProcessId pid) const noexcept;
 
   [[nodiscard]] u64 total_processes() const noexcept;
@@ -681,7 +732,7 @@ public:
   [[nodiscard]] u64 total_exits() const noexcept { return total_exits_; }
 
   template <typename Func> void for_each_process(Func &&func) const {
-    processes_.for_each([&func](const auto &entry) { func(entry.key, entry.value); });
+    processes_.for_each_snapshot([&func](const auto &entry) { func(entry.key, entry.value.get()); });
   }
 
 private:
@@ -695,7 +746,7 @@ extern ProcessManager *g_process_manager;
 
 // Convenience functions (defined after CfsScheduler — see :scheduler partition)
 [[nodiscard]] Thread *current_thread() noexcept;
-[[nodiscard]] Process *current_process() noexcept;
+[[nodiscard]] shared_ptr<Process> current_process() noexcept;
 
 [[nodiscard]] inline u32 current_cpu() noexcept { return arch::get_current_cpu_id(); }
 
@@ -707,35 +758,7 @@ extern ProcessManager *g_process_manager;
 //   - `cur` is the currently running thread (will be marked Terminated)
 //   - `proc` is the Process owning `cur` (will transition to Zombie)
 //   - Caller must have already validated cur/proc are non-null
-[[noreturn]] void do_exit(Thread *cur, Process *proc, i32 exit_code) noexcept;
-
-// Canonical user-space virtual address layout.
-// All components that create user VMAs should reference these constants
-// instead of hardcoding addresses.
-//
-// RISC-V: STACK_TOP is a runtime variable set by init_riscv_address_layout()
-// based on detected MMU mode (Sv39: 252GB, Sv48: 128TB-4GB).
-// ARM64/x86_64 always use 48-bit VA (128TB user space).
-// CODE_BASE, HEAP_START, MMAP_BASE are below 64GB and identical for all modes.
-namespace user_layout {
-inline constexpr VirtAddr CODE_BASE = 0x0000000200000000ULL;  // 8GB — above kernel identity map
-inline constexpr VirtAddr HEAP_START = 0x0000000100000000ULL; // 4GB
-inline constexpr usize STACK_SIZE = 32ULL * 1024;             // 32KB default user stack
-inline constexpr usize STACK_MAX = 8ULL * 1024 * 1024;        // 8MB max stack (auto-growth limit)
-inline constexpr usize HEAP_INIT = 64ULL * 1024;              // 64KB initial heap
-inline constexpr VirtAddr MMAP_BASE = 0x0000001000000000ULL;  // 64GB — anonymous mmap region start
-// Sigreturn trampoline: a single read+exec page containing the sigreturn stub.
-// Mapped into every user process; signal handler LR points here.
-inline constexpr VirtAddr SIGRETURN_PAGE = 0x0000000180000000ULL; // 6GB — below CODE_BASE
-
-#if defined(MOSS_ARCH_RISCV)
-// Runtime variable — set by init_riscv_address_layout() during early boot.
-// Sv39: 0x3F00000000 (252GB), Sv48: 0x7FFF00000000 (128TB - 4GB)
-constinit inline VirtAddr STACK_TOP = 0x0000003F00000000ULL; // Sv39 default
-#else
-inline constexpr VirtAddr STACK_TOP = 0x00007FFF00000000ULL; // 128TB boundary - 4GB
-#endif
-} // namespace user_layout
+[[noreturn]] void do_exit(Thread *cur, shared_ptr<Process> proc, i32 exit_code) noexcept;
 
 // User address space management extensions
 namespace user_space {

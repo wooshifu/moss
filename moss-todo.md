@@ -1,7 +1,7 @@
 # Moss 内核设计与实现审计报告及修复清单
 
 > 原始审计：2026-09-05，源码基线：`e0e2bbc920b66f91e18802a46106ca5811e588b1`。
-> 状态复核：2026-09-06，提交基线：`040d773`。第 3.4～3.7 节保留该提交前的工作区实测及当时状态；后续进展见第 3.8 节。本文与 [todo.md](todo.md) 同步。
+> 状态复核：2026-09-07，提交基线：`4cde9b3`。第 3.4～3.8 节保留此前实测及当时状态；当前工作区进展见第 3.9～3.14 节。本文与 [todo.md](todo.md) 同步。
 > 第 3.1～3.2 节保留原始运行证据；第 5～9 节未标新日期的“位置与事实”、地址和行号属于原始审计，不能当作当前仍然失败的运行结果。当前状态以第 4 节及各项更新说明为准。
 
 ## 1. 当前结论
@@ -10,8 +10,8 @@ Moss 已具备三架构真实启动、SMP、用户态与进程执行路径。后
 
 但“能启动、能完成一次 fork/exec/wait”仍不等于可靠的多架构研究内核：
 
-1. **隔离缺陷仍在。** x86 内核块映射保留 USER；syscall 0 原始 UART 指针旁路仍存在；信号帧仍按 ARM64 布局解释并直接恢复用户可修改的状态。
-2. **部分基础修复已落地，但所有权验收未完成。** `040d773` 已验证 heap/PFA 对齐与释放、保留洞和多 bank 耗尽、当前布局及页表/元数据哨兵。工作区另修复了 RCU 指针发布导致可达节点被析构；容器借用/并发回收、页引用并发及完整启动保留集合仍待完成。
+1. **隔离缺陷尚未全部闭合。** 当前工作区已修复内核映射 USER，并收紧三架构最终内核 W^X；syscall 0 原始 UART 指针旁路已删除，用户地址域/VMA 准入与跨 VMA 权限校验已补。复制尚无异常 fixup，信号帧仍按 ARM64 布局解释并直接恢复用户可修改的状态；策略检查通过不等于用户异常隔离验收完成。
+2. **部分基础修复已落地，但所有权验收未完成。** `040d773` 已验证 heap/PFA 对齐与释放、保留洞和多 bank 耗尽、当前布局及页表/元数据哨兵。`4cde9b3` 修复指针发布误删可达节点；当前工作区已删除伪 RCU，迁移锁保护的拥有型容器并补持有读者、重入与双 CPU 交错测试。IRQ/驱动/IPC 复合生命周期、页引用并发及完整启动保留集合仍待完成。
 3. **跨架构正常路径改善不等于契约统一。** RV64/x86 首次用户返回和部分 fork 现场已补；x86 syscall 第八参数仅传 null，RV64 仍未传有效 TrapFrame。信号、nanosleep、COW/PPN 与 VM 事务问题没有被本轮启动重构解决。
 4. **旧停滞记录应保留，不能直接当作当前复现。** 退出已改为经 `context_switch` 返回活跃 bootstrap 栈，不再在 C++ 帧中直接修改 SP。第 28 次停滞的原版本对照、1,000 次生命周期与资源稳定性尚无完整关闭证据。
 5. **测试已从基础语言检查升级为真实内核检查，覆盖仍有边界。** 三架构 Debug/Release 已有功能、框架自检和 Release 基准证据；当前功能套件未覆盖恶意信号帧、uaccess、COW 权限、长循环或确定性调度竞争。
@@ -35,7 +35,7 @@ Moss 已具备三架构真实启动、SMP、用户态与进程执行路径。后
 
 P0 是本项目的实现优先级，不是 CVSS 评级。研究内核也需要隔离错误进程；这里不要求它立即具备生产操作系统的全部安全机制。
 
-原审计行号指 `e0e2bbc`，初次更新说明中的符号和路径按 `b57422d` 核对；后续提交和工作区修复另标。请用“路径 + 符号 + 不变量”定位。每项完整验收仍是关闭要求；只有第 3.3～3.8 节明确列出的覆盖可以算已执行，不能把新增普通测试外推成所有审计验收通过。`[x]` 只关闭该行限定的子任务，`[ ]` 包括待实现、部分实现及待专项验收。
+原审计行号指 `e0e2bbc`，初次更新说明中的符号和路径按 `b57422d` 核对；后续提交和工作区修复另标。请用“路径 + 符号 + 不变量”定位。每项完整验收仍是关闭要求；只有第 3.3～3.14 节明确列出的覆盖可以算已执行，不能把新增普通测试外推成所有审计验收通过。`[x]` 只关闭该行限定的子任务，`[ ]` 包括待实现、部分实现及待专项验收。
 
 ### 2.2 原审计方法与本次复核
 
@@ -295,7 +295,7 @@ early table pool 位于 BSS，与表中链接预留区分开；动态用户页�
 
 默认 RV64 为 Sv48；另以同一镜像执行 `uv run scripts/kernel_validation.py run --manifest build/<preset>/moss-artifacts.json --cpu rv64,sv48=false --workload heap --workload pfa`。Debug 报告 `1788699127367993000`、Release 报告 `1788699133296375000` 的两套件均通过，原始串口明确为 `MMU mode: Sv39 (3-level page table)`，镜像 hash 与对应默认配置一致；覆盖三层与四层页表遍历。
 
-范围限制：覆盖当前启动/单 worker 工作负载下的所有活动页表树、early pool、链接页表区及元数据，不外推到多进程创建/销毁交错或页引用 SMP 生命周期。kernel_end 以下精确保留/回收仍属 MOSS-005，不能因本节边界检查通过而关闭。修改尚未提交。
+范围限制：覆盖当前启动/单 worker 工作负载下的所有活动页表树、early pool、链接页表区及元数据，不外推到多进程创建/销毁交错或页引用 SMP 生命周期。kernel_end 以下精确保留/回收仍属 MOSS-005，不能因本节边界检查通过而关闭。
 
 ### 3.8 发布指针不等于放弃节点所有权（2026-09-06，工作区）
 
@@ -330,16 +330,192 @@ x86_64 Release 的 bench.allocate 在准备阶段发出 `clock frequency=0, sour
 
 尚未关闭的真实契约：回调队列没有宽限期，池满会主动执行；RcuReadLock 不固定 CPU/禁止抢占；find/find_if 可返回已退出借用期的裸指针；list 的多写者 remove 仍无完整串行化。下一步必须迁移拥有型锁容器与 scoped borrowing，并覆盖 AddressSpace/VMA、Process/线程/子进程表、WaitQueue、IRQ 描述符、DeviceManager 和两类 IPC 管理器。已有读者持有对象及确定性并发增删查仍需红绿对照，不能以本节单 worker 结果关闭 MOSS-006/A4。
 
+### 3.9 拥有型锁容器、真实双 CPU 交错与从核 MMU（2026-09-06，工作区）
+
+接续 `4cde9b3`，生产容器改为复用现有 IrqSpinLock 的 LockedList/LockedHashMap；删除 RcuReadLock、回调队列/池和 RCU 容器，不保留同名兼容层。节点由容器拥有，查找返回 Optional 值副本；共享对象使用现有 shared_ptr 保持查找后的生命周期。发布、查找、摘除在锁内，节点析构在锁外；scoped for_each/update_if 不允许阻塞、重入或外逸引用，可能重入的调用者使用锁外 for_each_snapshot。快照为 O(n) 临时复制，不引入新的回收框架。
+
+已迁移 VMA/线程/子进程列表、ProcessManager、WaitQueue、IRQ 表、DeviceManager 和两个 IPC 管理器。VMA 重叠检查与插入合并为 push_front_unless，brk/栈增长用 update_if 修改元数据；Process、IRQ 描述符、IPC 对象及嵌套进程列表使用拥有型查找，get_or_insert 保留并发创建的唯一赢家，extract 认领一次摘除。退出进程的引用转交 per-CPU scheduler 状态，返回活跃 bootstrap 栈后再释放，避免释放仍在执行的内核栈；成功 exec 放弃旧 syscall 栈前释放局部引用。
+
+持有读者红例：`uv run scripts/kernel_validation.py run --manifest build/arm64-debug/moss-artifacts.json --workload containers`。在旧生产容器中持有 RcuReadLock，find 后删除并处理回调，仍出现 `1 values destroyed before reader release`；报告 `1788701992102814000`、重复 `1788702034245676000`。仅把裸借用改成 shared_ptr 值副本的探针 `1788702074071464000` 通过，证明旧 read guard 不保留对象；探针已移除，新 API 直接返回拥有者副本，原 held_reader 用例通过（首次锁容器报告 `1788702982808043000`）。上述 ID 均位于 `build/arm64-debug/validation/<ID>/results.json`。
+
+当前 `containers` 五项：ownership、release_reuse、map_ownership、held_reader、reentry。覆盖 A/B/C 可达、1,024 次清空/复用、强制单 bucket 替换/删除、持有读者、同容器快照回调/析构重入以及实际 heap 计数恢复。map_ownership 现使用 shared_ptr，旧 3.8 的 unique_ptr/回调 drain 描述只适用于当时实现。
+
+新增 `containers.smp.interleaving` 通过真实 fork 继承 CPU1 affinity，主线程恢复 CPU0 affinity。两个线程从用户态进入验证 syscall，acquire/release 屏障强制“CPU1 持有 → CPU0 删除 → CPU1 释放”，以及两个创建者都越过同 key 初次查找，再竞争发布、删除。只有 CPU0 记录断言，检查真实 CPU ID、同一个赢家、恰好一次删除/析构，waitpid 回收子进程后才删除测试对象。没有替代调度器、host 模拟容器或定时 sleep；缺少对端进度由宿主 case deadline 判失败。默认 CTest 功能集合现为 **8 套件/20 用例**；至少需要 2 CPU，单 CPU 必须显式选择单 worker 套件。
+
+该真实从核路径先暴露 ARM64 启动缺陷：`1788704095049991000`、`1788704118068808000` 在 CPU1 首次用户指令 `0x200000224` 发生 instruction abort，随后访问内核直映地址 `0xffff800048039000` panic，未到容器交错阶段。探针报告 `1788704281432256000` 显示三个从核 `SCTLR.M=0`；原 secondary_cpu_entry 没有配置/开启各 CPU 的 MMU，主核的寄存器状态不会共享。现在在从核发布 online 前复用 hal::mmu::enable_mmu 与 arch::setup_kernel_mmu，安装现有 identity/high-half 页表，并修正汇编注释。只加此修复后 ARM64 `1788704346538492000` 通过；RV64 `1788704363943481000`、x86_64 `1788704385995799000` 同一交错用例通过。临时 `[DEBUG-moss006-smp]` 日志已删除；不是 QEMU 特判，也没有放宽地址权限或改变固件假设。
+
+最终六配置均构建通过；串行 CTest **14/15**，不是全绿。六配置的 containers、containers.smp 及 framework 全部通过，三配置 Release benchmark 全部通过；RV64 Debug 的 pfa.exhaustion 仍超时，其余功能套件通过。日志为 `build/<preset>/locked-final-ctest.log`，报告为 `build/<preset>/validation/<ID>/results.json`，均 finalized、无遗漏的请求套件，镜像 hash 与对应当前产物一致：
+
+| 预设 | functional ID / 结果 | framework ID | benchmark ID |
+| --- | --- | --- | --- |
+| arm64-debug | 1788704603964592000 / passed | 1788704614995840000 | — |
+| riscv-debug | 1788704628804793000 / pfa.exhaustion timeout | 1788704646016996000 | — |
+| x86_64-debug | 1788704660990548000 / passed | 1788704673307549000 | — |
+| arm64-release | 1788704686353442000 / passed | 1788704692133979000 | 1788704703729661000 |
+| riscv-release | 1788704706069904000 / passed | 1788704711287132000 | 1788704723019396000 |
+| x86_64-release | 1788704725409350000 / passed | 1788704731795402000 | 1788704744118072000 |
+
+宿主 `uv run pytest -q scripts/tests` **104 passed in 85.01s**，含新增的单 CPU 拒绝检查；Ruff、受改 C/C++ clang-format dry-run 和 diff whitespace 检查通过。本轮未重跑 26 项固件/6 项坏布局矩阵，不把此前镜像的结果当作当前镜像的完整硬件验收。
+
+本轮保留的非全绿记录：最初 RV64 Debug `1788703299066126000`、x86_64 Debug `1788703300483634000` 的 pfa.exhaustion 在默认 5 秒 case deadline 超时（当时并行构建 Release）；相同镜像单独执行 pfa 的 `1788703689411365000`、`1788703710300045000` 通过。但 x86_64 Debug 后续 `1788704051110135000` 又超时；最终串行矩阵 RV64 `1788704628804793000` 仍超时，因此不能仅归因于并行构建负载，也不能凭重跑通过认定修复。未改超时阈值、未增加自动重试；这些报告与 3.8 的 x86 benchmark 校准拒绝均继续保留（028/029/032）。
+
+**MOSS-006/A4 尚不关闭。** 该轮建立容器节点和查找引用契约，不保证 IRQ 注销后外部 context 已停止使用、Driver 裸指针/设备绑定的生命周期、IPC connect/unregister、map/destroy、cleanup/new-entry 等复合事务。共享内存的既有占位实现仍属 030；Process/Thread 状态与资源转换、VMA/PTE 事务、WaitQueue lost wakeup 和跨管理器锁序仍需相应专项验收。双 CPU 容器测试不替代 017/023 的单一运行者与长循环验收，也不证明真实硬件正确。
+
+### 3.10 PFA 耗尽的宿主执行预算与逐用例观测（2026-09-06，工作区）
+
+本节处理 3.9 遗留的 pfa.exhaustion 超时，不修改生产分配器、内存大小、断言、校验和或退出判定。全部诊断使用相同 RV64 Debug 镜像，SHA-256 为 `b59a48cb6f095b8cb5790bb0e135f7d26fa9e6094a6b69629ce4a822ef8e96a8`。单独运行五次均通过（1788705008101108000、1788705012852382000、1788705017586258000、1788705022268892000、1788705027083954000）；后续带逐用例观测的 `1788705318227165000` 显示 exhaustion 为 3.294 s，整套 guest 为 4.059 s。
+
+提高复现率的方法是同时运行四个独立的 4-vCPU/2-GiB guest，保持每个 guest 的工作量和执行路径不变。命令为四个并行的 `uv run scripts/kernel_validation.py run --manifest build/riscv-debug/moss-artifacts.json --workload pfa`，不是同一内核内增加测试线程。旧 5 s 预算稳定出现 **4/4 case_timeout**；再仅指定 `--case-timeout 20`，四个相同镜像都完成了逐页模式、保留区、元数据、耗尽/释放和计数校验。该实验说明宿主资源压力下正常的全 RAM 工作会超过 5 s，不支持把这些超时直接称为内核死锁；不能据此断言所有历史停滞均有同一原因。
+
+| 固定四并发实验 | pfa.exhaustion 宿主观测耗时 | 结果 | 报告 ID（`build/riscv-debug/validation/<ID>/results.json`） |
+| --- | --- | --- | --- |
+| 原 5 s 预算 | 5.002～5.011 s 后终止 | 4/4 timeout | 1788705363893964000、1788705363911709000、1788705363900111000、1788705363923710000 |
+| 显式 20 s 诊断窗口 | 14.369～14.443 s | 4/4 passed | 1788705547579098000、1788705547579164000、1788705547579184000、1788705547579166000 |
+| 修复后的默认 PFA 30 s | 10.709～10.802 s | 4/4 passed | 1788705720540865000、1788705720545937000、1788705720552271000、1788705720577501000 |
+
+宿主为 16 GiB RAM；`/usr/bin/time -l` 记录单独运行峰值 RSS 约 2.17 GB、约 56 万次 page reclaim，20 s 并发诊断约 93～95 万次 reclaim、1,069～3,052 次 page fault。不同批次宿主压力会变化，上表 **不是 14 s → 10 s 的内核性能改进**，也不是硬件性能测量。
+
+修复在独立 runner：PFA 默认 case 预算为 30 s，其他 workload 保留 5 s；显式 `--case-timeout` 无条件优先。JSON 的每个 guest 记录实际 `case_timeout_seconds`；执行过的 case 记录从宿主观察 case_start 到 case_end/终止决定的 `elapsed_seconds`，未运行的 case 不伪造耗时，超时耗时不含 SIGTERM/SIGKILL 等待。观测有轮询/调度误差，不冒充内核精确计时。CTest 的 functional/framework 外层总时限改为 600 s，覆盖八个最多 60 s 的 guest 及报告/回收；配置后实际 CTest 属性已核验。CMake 不读取机器配置，编译和生产内核不因此依赖 QEMU。
+
+显式短预算仍能失败：新 runner 加 `--case-timeout 0.1` 的 `1788705954378643000` 返回非零及 case_timeout，结果仍记录为 error，不改写成成功。宿主回归先分别暴露缺少逐 case 耗时/实际预算字段，再由修复通过；最终 **109 项宿主测试通过（35.75 s）**，覆盖预算选择、显式覆盖、超时/未运行耗时区分和子进程回收。没有加自动重试，所有旧失败报告保留；MOSS-028 的其他审计覆盖和 MOSS-029 的历史校准拒绝仍未关闭。
+
+重新 configure/build 六配置后，串行 CTest **15/15 通过**，每个 functional 仍是 8 套件/20 用例。日志 `build/<preset>/deadline-{build,ctest}.log`；以下报告均 finalized、无缺失的请求套件，实际 deadline 为 PFA 30 s/其他 5 s，镜像 hash 与对应当前产物一致：
+
+| 预设 | functional ID | framework ID | benchmark ID |
+| --- | --- | --- | --- |
+| arm64-debug | 1788706012771337000 | 1788706020779256000 | — |
+| riscv-debug | 1788706033163678000 | 1788706043183702000 | — |
+| x86_64-debug | 1788706056063223000 | 1788706064949004000 | — |
+| arm64-release | 1788706077903344000 | 1788706083059769000 | 1788706094791591000 |
+| riscv-release | 1788706097147162000 | 1788706102679866000 | 1788706114682616000 |
+| x86_64-release | 1788706117504457000 | 1788706123770470000 | 1788706136268248000 |
+
+报告路径为 `build/<preset>/validation/<ID>/results.json`。这关闭的是本节可复现的 PFA 执行预算不足，不是并发分配器、所有平台输入、真实硬件或全部审计项的验收；3.8/3.9 的旧失败记录没有被重写。
+
+### 3.11 内核映射默认 supervisor-only（2026-09-06，工作区）
+
+本节关闭 B1 的 U/S 构造与最终页表结构检查，不关闭整个 MOSS-001。x86 的 normal/device 内核块不再设置 USER；`PageTableEntry::set_table()` 默认构造内核专用上级表，只有 `create_user_address_space`、`map_user_page` 和 `clone_user_page_tables` 显式启用用户权限。用户低地址根中共享的内核叶子仍为 supervisor-only。`map_page` 修改内核 PGD，现直接拒绝 USER 属性；没有替代页表、QEMU 特判或向用户态暴露内核指针的验证接口。
+
+真实结构红例：仅加入页表检查、尚未修改生产构造时，运行 `uv run scripts/kernel_validation.py run --manifest build/x86_64-debug/moss-artifacts.json --workload mm.permissions`，`kernel_mappings` 记录 **15 个失败断言**，后续用例为 not_run，报告 `1788707394008747000`。修复后的同一入口与 users、containers.smp 联合通过（`1788707497164923000`）。两份报告均在 `build/x86_64-debug/validation/<ID>/results.json`；旧失败不改写。
+
+默认 functional 新增 `mm.permissions`，现为 **9 套件/23 用例**。新增三项复用真实页表和生产用户线程：table_defaults 检查安全默认/显式用户分支与内核 API 拒绝；kernel_mappings 遍历 kernel identity/direct-map；active_user_mappings 从 CR3/TTBR0/satp 读取实际根，与当前进程核对后检查继承的内核叶子和 x86 用户完整 U/S 权限链，ARM64 另核对活动 TTBR1。检查涵盖当前 0-4 GiB identity/direct-map 契约，不是任意物理布局证明。
+
+重建全部六配置，串行 CTest **15/15 通过**；宿主 `uv run pytest -q scripts/tests` **109 passed in 45.72s**，Ruff、受改测试区间 clang-format dry-run 与 `git diff --check` 通过。日志 `build/<preset>/permissions-{final-build,ctest}.log`，所有报告 finalized、没有缺失的请求套件、镜像 hash 与当前产物一致：
+
+| 预设 | functional ID | framework ID | benchmark ID |
+| --- | --- | --- | --- |
+| arm64-debug | 1788707600770441000 | 1788707615847250000 | — |
+| riscv-debug | 1788707636220283000 | 1788707649586226000 | — |
+| x86_64-debug | 1788707668171058000 | 1788707677878692000 | — |
+| arm64-release | 1788707704099898000 | 1788707712156786000 | 1788707724226817000 |
+| riscv-release | 1788707737422859000 | 1788707747453394000 | 1788707760308970000 |
+| x86_64-release | 1788707763721405000 | 1788707777699426000 | 1788707790687286000 |
+
+默认 RV64 为 Sv48。保持各自镜像不变，增加运行参数 `--cpu rv64,sv48=false --workload mm.permissions --workload users --workload containers.smp`，Debug（`1788707833244672000`）和 Release（`1788707836364967000`）的 Sv39 三层页表及合法用户路径也通过。以上报告均位于 `build/<preset>/validation/<ID>/results.json`。
+
+**本阶段保留边界：** 当时未收紧 text/rodata 的 RO、data/MMIO 的 NX 或直映别名 W^X，也未移除共享内核映射对 block/table 形状的依赖；后续修复见 3.12。本阶段没有重跑固件/坏布局矩阵或实机。这不是用户违规访存/异常终止隔离的完整验收，B 阶段整体退出条件、MOSS-001/002 仍未满足；3.8 的历史基准校准拒绝继续保留待定位。
+
+### 3.12 最终内核 W^X 与共享页表归属（2026-09-06，工作区）
+
+- [x] `PageTableManager::create_user_page_tables` 统一构造用户根表，process 层不再复制架构页表。create/clone/free 按内核 VA 范围判断共享归属，不再把 block 形状当所有权；四层模式保留每进程私有的混合低 PUD，Sv39 直接借用内核根项。用户映射入口拒绝内核根、内核 VA、非对齐地址和缺少 USER 的权限。
+- [x] 三架构最终 identity/direct-map 在固件 RAM 和链接权限边界按需拆分 1 GiB → 2 MiB → 4 KiB。包含 boot text 的代码范围 RX，rodata 为 RO/NX，其余 RAM/device 为 RW/NX；直映全部 NX，text/rodata 的直映别名也只读。删除旧宽权限 normal/device block helper，复用现有 PTE 构造和 64 页 early pool，不增加板型开关。
+- [x] x86 开启 CR0.WP；AP 只在离开低地址 trampoline 前使用现有 PVH 临时页表，进入 C++ 入口后安装最终页表并设置 WP，再发布 online。最终映射不为 trampoline 保留 RWX 例外。
+- [x] `mm.permissions` 增加 kernel_wx 和 address_space_ownership：遍历生产页表，检查叶子权限与直映别名；实际创建两个地址空间、映射用户页、clone 后核对引用、销毁并核对 PFA 计数与共享表快照。默认 functional 现为 **9 套件/25 用例**，不是仅测静态权限常量。
+
+W^X 的真实结构红例：只增加检查、尚未收紧生产映射时，ARM64 Debug `1788708649766301000` 的 kernel_wx 有 **26 个失败断言**。这不运行越权用户程序，也没有新增内核指针暴露接口。报告保存在 `build/arm64-debug/validation/<ID>/results.json`。
+
+拆页后 x86 Debug 的 PFA/heap 耗尽又暴露快照误报：`1788709086648885000` 分别有 2/3 个页表 hash 断言失败；探针 `1788709372722382000` 保留失败断言，并证明三次变化忽略硬件 A/D 位后 hash 完全一致。快照现只过滤架构 Accessed/Dirty 状态，仍包含地址、USER、读写、执行和 COW 位；self.cleanup_guards 用未安装的本地表验证这些位的变化仍能被发现。PFA 元数据和链接预留区仍按原字节校验，不改分配器、不重试、不扩大预算。删除临时探针后 `1788709589819331000` 的 permissions/pfa/heap/self 全部通过。以上报告在 `build/x86_64-debug/validation/<ID>/results.json`，原失败保留。
+
+最终重建六配置，串行 CTest **15/15 通过**；每个 functional 为 9/25，framework 为 4/8，Release benchmark 为 5/5。日志 `build/<preset>/wx-{final-build,ctest}.log`，下列报告全部 finalized、not_run 为空，镜像 SHA-256 与本轮最终产物一致：
+
+| 预设 | functional ID | framework ID | benchmark ID |
+| --- | --- | --- | --- |
+| arm64-debug | 1788709701428902000 | 1788709710394146000 | — |
+| riscv-debug | 1788709737323140000 | 1788709753128364000 | — |
+| x86_64-debug | 1788709771770096000 | 1788709786682531000 | — |
+| arm64-release | 1788709819877226000 | 1788709828168390000 | 1788709840645049000 |
+| riscv-release | 1788709861533332000 | 1788709874086716000 | 1788709890014452000 |
+| x86_64-release | 1788709916783675000 | 1788709926529837000 | 1788709939838580000 |
+
+所有报告位于 `build/<preset>/validation/<ID>/results.json`。宿主 `uv run pytest -q scripts/tests` 为 **109 passed in 44.53s**（`build/wx-host-tests.log`）；Ruff 和 `git diff --check` 通过。
+
+保持各自最终镜像不变，RV64 增加 `--cpu rv64,sv48=false --workload mm.permissions --workload users --workload containers.smp`，Debug `1788710167407561000`、Release `1788710171026805000` 均通过；串口确认为 Sv39，报告 hash 与各自默认 Sv48 镜像一致。
+
+`uv run scripts/check_pfa_firmware.py --manifest build/<preset>/moss-artifacts.json` 重跑 ARM64/RV64 Debug/Release 共 **26 项**：ARM64 各 4 项，RV64 各 9 项。非对齐保留区、多 bank/洞、乱序八段、后续 bank 元数据和相邻段实际耗尽通过；保留区极值/回绕、容量溢出则匹配指定启动错误且不发布 ready。所有报告 hash 与各自最终镜像一致。`check_heap_layout.py` 六配置临时重链接坏 heap_end，全部在 ready 前报告 `PFA: invalid linker memory layout` 与内存初始化失败；原始产物未修改。负向报告中的 panic/missing_completion/startup_timeout 是 runner 的终止分类，脚本必须另核对上述具体错误，不能仅凭超时视为通过。
+
+| 预设 | pfa-firmware 目录 ID | 坏布局目录 |
+| --- | --- | --- |
+| arm64-debug | 1788710173614904000 | heap-layout-8spmxm64 |
+| riscv-debug | 1788710189217031000 | heap-layout-gt2y8f5f |
+| x86_64-debug | — | heap-layout-99yek664 |
+| arm64-release | 1788710214706234000 | heap-layout-cf9i8nzi |
+| riscv-release | 1788710229165539000 | heap-layout-qlkx3emn |
+| x86_64-release | — | heap-layout-ltfvqss2 |
+
+固件原始报告：`build/<preset>/pfa-firmware/<ID>/<case>/results.json`；坏布局报告：`build/<preset>/<坏布局目录>/report/results.json`。汇总日志为 `build/<preset>/wx-{firmware,heap-layout}.log`。
+
+**保留边界：** 当前只覆盖 0–4 GiB identity/direct-map、64 页 early pool 与已声明固件布局；不证明任意 SoC、真实硬件或 RelWithDebInfo。用户违规访问的受控异常/终止隔离、uaccess、信号返回、用户 COW 权限和 clone OOM 回滚均未因此完成；MOSS-001 整项及 B 阶段退出条件保持打开。3.8 的历史校准失败不因本轮 benchmark 通过而关闭。
+
+### 3.13 用户地址域与跨 VMA 访问策略（2026-09-07，工作区）
+
+- [x] 删除 `system_call_handler` 分发前的原始 puts；syscall 0 只经过现有有界字符串处理函数，不再输出两次或先访问后校验。未增加兼容旁路。
+- [x] `PageTableManager::is_user_range` 用减法检查完整区间，统一排除低 4 GiB 内核 identity 区和 active USER_MAX 以外的非规范/内核地址；页表入口、VMA 查询/准入和用户复制检查复用该接口，RV64 上界随 Sv39/Sv48 确定。
+- [x] `AddressSpace::valid_vma_range/add_vma` 拒绝空、倒置、非页对齐、越界及未知权限；sigreturn 页有独立 VmaType，只有精确范围的只读可执行 stub VMA 可覆盖。mmap/munmap 限制完整范围；mmap 明确只支持 ANONYMOUS|PRIVATE、fd=-1、offset=0，拒绝 FIXED/未知 flags/prot，合法冲突 hint 可尝试单调 cursor 而不替换原映射。堆增长辅助与 brk/栈增长补地址域检查，但不标为完整 VM 事务。
+- [x] `AddressSpace::allows_user_access` 检查完整跨 VMA 范围，缺口或任一权限不符则失败；字符串逐字节复用现有 copy-in 策略，未在上限内遇到 NUL 返回 ENAMETOOLONG，不再静默截断 pathname。无新 VM 管理器或测试专用复制实现。
+
+真实结构红例：仅加入 `mm.permissions.vma_boundaries`、尚未修改生产准入时，ARM64 Debug 报告 `1788710845613280000` 有 **9 个失败断言**，对应 9 类非法 VMA 均被接受。用例只登记/删除元数据，不访问非法地址。修复后增加相邻 VMA、跨段只读/可写、缺口、未知 flags 和保留 stub 检查，仍通过生产地址空间创建/回收路径。
+
+`users.user_ranges` 使用三架构真实 syscall 入口：拒绝坏 debug 指针、内核/越界/reserved mmap、FIXED/未知权限与只读/PROT_NONE 输出；实际创建相邻匿名页，跨 VMA 执行 affinity copy-in、时钟 copy-out 和字符串 open，移除第二 VMA 后要求 EFAULT，并核对冲突 hint 不覆盖原映射、最后 munmap 成功。默认 functional 现为 **9 套件/27 用例**，其中 permissions 6 项、users 3 项；不是 27 组完整安全验收。
+
+首轮 users 报告 `1788711165303037000` 失败掩码为 `0x400004`。核对生产 ABI 后确认测试假设有误：Moss clock_gettime 输出单个 u64 纳秒值，原 offset=4088 并未跨页；只把 offset 改为 4092 后，`1788711273193033000` 仅剩 `0x4`，证明移除 VMA 的拒绝已通过。最后按当前 read/write 对零长度返回 EINVAL 的约定修正期望，没有改 ABI 或删除该检查。ARM64 Debug `1788711360810565000` 的 permissions/users/containers.smp 全部通过。以上报告均在 `build/arm64-debug/validation/<ID>/results.json`，失败记录保留。
+
+该阶段宿主 `uv run pytest -q scripts/tests` **109 passed in 35.87s**（`build/user-range-host-tests.log`）；Ruff 与 `git diff --check` 通过。首轮六配置 CTest **13/15**：ARM64/RV64 通过，x86 Debug/Release 的 users 在编译器生成的 `movaps` 处 #UD，报告分别为 `1788711542287028000` / `1788711651067986000`。这是继续执行用例后暴露的 CPU 状态缺口，修复及后续验证见 3.14；不以早期 ARM64 单架构绿例冒充完整矩阵。
+
+**保留边界：** MOSS-002 整项仍打开。当前复制和 VFS 缓冲区访问仍是普通 load/store，没有架构异常 fixup、页固定或完整 VM 并发事务；合法 VMA 内驻留/权限故障及 OOM 仍可能终止进程或 panic，不能宣称 fault-safe uaccess。fork 元数据复制、brk 空堆/缩堆、增长重叠和 rollback 等原问题仍属于 010/012/014～016，未以重验准入替代它们。信号复制/返回净化、错误进程故障隔离、真实硬件与 RelWithDebInfo 未验收。
+
+### 3.14 x86 基础 FP 状态、入口栈和 userspace 段布局（2026-09-07，工作区）
+
+- [x] BSP/AP 按 CPU 能力启用 x87/FXSR/SSE2，清 EM/TS，配置 OSFXSR/OSXMMEXCPT；不启用尚无保存协议的 AVX/XSAVE。复用 CpuContext 内嵌的 16 字节对齐 FXSAVE64 状态，每次切换保存/恢复；fork 复制调用者的实时 FP 状态，exec 重置默认状态，没有 lazy-owner 管理器或 QEMU 特判。
+- [x] AP 汇编通过 C 调用进入 `x86_secondary_entry`。新 ELF 按 Moss 现有 `_start(argc, argv)` C ABI 准备 x86 栈（RSP mod 16 = 8），不改 fork 恢复 SP 或内嵌汇编 init 的入口约定。
+- [x] 公共 userspace 链接脚本收拢 `.ltext/.lrodata/.ldata/.lbss`、small-data 和 GOT，并按页分离 RX/R/RW。自有 ELF 不再因代码/常量/数据共页触发加载器权限 OR；这不修复任意外来 ELF 的重叠/加载事务（015/016 仍打开）。
+- [x] x86 users 检查 x87 数据/控制字、MXCSR、XMM15 经 yield/fork 的继承、子修改不污染父进程、exec 默认状态与 argc/argv；SMP 检查真实 CPU1 子进程的 FP 继承。用户 #MF 走已有进程终止路径，父进程 wait 后继续且 FP 状态不变。
+- [ ] SIMD #XM 隔离的真实验收、全扩展状态/信号帧、ARM64/RV64 扩展状态与硬件覆盖；不因 legacy x86 子检查通过关闭 001/007/014。
+
+逐步保留的 x86 Debug 证据（`build/x86_64-debug/validation/<ID>/results.json`）：
+
+| 报告 ID | 实测结果与处理 |
+| --- | --- |
+| 1788712115790861000 | FP 初始化加入后启动提前退出；CPU trace 在 AP `initialize_fpu` 的 `fxrstor64` 处 #GP，缓冲区地址仅 8 字节对齐，继而三重故障。修 AP 跳转的 C 栈约定，不取消 FP 指令。 |
+| 1788712540532469000 | AP 修正后 SMP/permissions 通过，users 的 `movaps` 写栈 #GP；修 exec 新 C 入口栈。 |
+| 1788712615521632000 | users 能继续，掩码 `0x20`：只读 literal 所在页实际被合并为 RWX；readelf 验证大模型段共页，修公共链接布局。 |
+| 1788712702927877000 | users/containers.smp/mm.permissions 全部通过，readelf 显示 RX/R/RW 页分离。 |
+| 1788712770776836000、1788712870013673000 | 新增浮点异常验收失败；细化阶段掩码为 `0x8`，仅 SIMD 异常项失败，不能记为完整通过。 |
+| 1788713116723580000 | 默认 users/containers.smp/mm.permissions 通过，含 FP 状态、x87 异常和 argv 检查。 |
+| 1788713120635633000 | 显式 `users.simd_fault` 保留为 failed/assertion，不转换为 expected pass。 |
+
+`build/x86_64-debug/fpu-fault-cpu.log` 的 CPU 记录只有受控 #MF，没有 #XM；本机 QEMU 11.1.1 TCG 在未屏蔽的 `divss 0/0` 后继续执行。该观察与 [QEMU 上游对状态位和陷阱支持的区分](https://github.com/qemu/qemu/commit/418b0f93d12a1589d5031405de857844f32e9ccc) 一致，但不是实机内核 #XM 已通过的证据。完整断言留在非默认 `users.simd_fault` 专项；kernel 不检测 emulator，不合成软件异常，不禁用 SIMD。
+
+提交前单独执行全部 9 个 preset 的 configure/build，再逐一执行 `cmake --build --preset <preset> --clean-first`，ARM64/x86_64/RV64 的 Debug、Release、RelWithDebInfo 全部编译通过，未复现新的编译错误。日志为 `build/<preset>/commit-{configure,build,clean-build}.log`。这是编译验证，RelWithDebInfo 运行时尚未由本轮独立验收。
+
+宿主测试 **111 passed in 44.95s**（`build/fpu-host-tests.log`），Ruff、修改行格式检查及 `git diff --check` 通过。六配置 Debug/Release 的两轮 CTest 均为 **14/15**，不能报告整体验收通过：
+
+- 首轮 `build/<preset>/fpu-matrix-ctest.log`：ARM64 Release benchmark 入口失败，报告 `1788713325136420000` 的 `bench.read` 在执行基准前因 CPU3 未上线而 panic，其余测试通过。无并发构建后同镜像连续 20 次 `resources` 启动通过（`fpu-smp-boot-probe.log`），不是启动故障已修复的证据。
+- 无并发构建的隔离复测 `build/<preset>/fpu-isolated-ctest.log`：ARM64 Debug functional 失败，报告 `1788713649870304000` 的 `containers.smp` 完成容器交错、子进程记录 Zombie/exit 37 后发生 `case_timeout`；其余 14 个 CTest 入口通过。保留 5 秒用例期限，不通过加时或重试把该失败变绿。启动协调和 wait/调度竞争的根因尚未确认，MOSS-017/018 仍打开。
+
+同镜像附加 `mm.permissions/users/containers.smp` 全部通过：RV64 Sv39 Debug/Release 报告 `1788713808806661000` / `1788713827343812000`；x86 `pc`、16 CPU、1 GiB Debug/Release 报告 `1788713819212658000` / `1788713835773807000`。默认与附加配置使用各自相同构建产物；不外推到实机。
+
+**保留边界：** 默认集合仍为 9 套件/27 用例；额外 SIMD 专项单独计数且当前失败。MOSS-002 的 fault-safe copy、014 的全部状态继承、015/016 的 exec/ELF 事务、上述 SMP 间歇失败及真实硬件验收未完成。
+
 ## 4. 问题总表与当前状态
 
 | 编号 | 优先级 | 审计主题 | 当前状态与下一步 |
 | --- | --- | --- | --- |
-| MOSS-001 | P0 | 内核映射 USER / W^X | 未修复；`mmu_hal.cppm::make_device_block/make_normal_block` 仍传播 USER，需最终页权限验收。 |
-| MOSS-002 | P0 | 用户域 / uaccess / 调试旁路 | 未修复；`kernel_main.cpp::system_call_handler` 仍直接 puts 用户指针，VMA copy 不是 fault-safe。 |
+| MOSS-001 | P0 | 内核映射 USER / W^X | 部分修复（工作区）；U/S、三架构最终内核 W^X/RO/NX、直映别名与共享页表归属已修复并加入默认检查。用户违规访问的受控异常隔离验收仍未完成，见 3.11～3.12。 |
+| MOSS-002 | P0 | 用户域 / uaccess / 调试旁路 | 部分修复（工作区 3.13）；原始 puts 旁路已删除，统一地址域与 VMA 准入、跨 VMA 权限/有界字符串检查已补；异常 fixup、页/VM 生命周期与 fault-safe copy 仍未完成。 |
 | MOSS-003 | P0 | 信号帧与特权状态恢复 | 未修复；`signal.cpp::do_sigreturn` 仍直接复制并恢复 sf.spsr/PC/SP。 |
 | MOSS-004 | P0 | 堆与页表/PFA 所有权重叠 | 已关闭（`040d773`）；当前布局、活动页表树/早期表池及元数据哨兵、耗尽、坏布局启动拒绝专项验收通过，见 3.7。 |
 | MOSS-005 | P0 | 启动保留区未排除 | 多 bank、保留洞、非对齐/重叠、容量/溢出及耗尽已验证；低地址启动区仍保守保留，PVH 异常表/完整保留集合待补，见 3.5～3.6。 |
-| MOSS-006 | P0 | RCU 退休和宽限期 | 部分修复（工作区）；RcuPtr 已删除，发布不再删除可达节点；锁、借用有效期和并发回收未闭合，见 3.8。 |
+| MOSS-006 | P0 | 容器与使用者的所有权 | 部分修复（工作区）；伪 RCU 已替换为 LockedList/LockedHashMap，查找复制拥有者，锁外析构/快照回调；持有读者与双 CPU 交错有实测，IRQ/驱动/IPC 复合协议未闭合，见 3.9。 |
 | MOSS-007 | P0 | 跨 ISA TrapFrame / syscall 参数 | 部分实现；x86 第八参数为 null，RV64 未传有效帧，共通信号布局仍为 ARM64。 |
 | MOSS-008 | P0 | 只读页被 COW 放宽权限 | 未修复；clone 对有效叶子设置 COW，`try_cow_fault` 未检查可写 VMA。 |
 | MOSS-009 | P1 | RV64 fault 分类 / PPN | 未修复；仍先 demand 后 COW，共用代码直接拼 new_pa。 |
@@ -347,7 +523,7 @@ x86_64 Release 的 bench.allocate 在准备阶段发出 `clock frequency=0, sour
 | MOSS-011 | P1 | 活跃 ASID 回绕重用 | 未修复；`allocate_asid` 仍在 255 后重置计数，没有活跃租约。 |
 | MOSS-012 | P1 | brk/VMA/PTE 权限生命周期 | 未修复；`sys_brk` 仍只改 VMA 端点，无缩堆 PTE/ref/TLB 事务。 |
 | MOSS-013 | P1 | 对齐 / buddy / 释放契约 | 已关闭（`040d773`）；heap/PFA 对齐、释放归属、保留洞分段/耗尽专项验收通过；页引用并发不在此结论内，见 3.4～3.5。 |
-| MOSS-014 | P1 | fork 用户现场与继承状态 | 部分实现；RV64/x86 GP 快照和首次返回已补，VM/凭据/信号/扩展状态及失败验收仍缺。 |
+| MOSS-014 | P1 | fork 用户现场与继承状态 | 部分实现；RV64/x86 GP 快照和首次返回已补，x86 legacy FP 经 yield/fork/exec/SMP 有子项验证（3.14）；VM/凭据/信号/其余扩展状态及失败验收仍缺。 |
 | MOSS-015 | P1 | exec 原子替换 | 未修复；`sys_execve` 仍先释放旧地址空间，进程名也提前变更。 |
 | MOSS-016 | P1 | ELF 校验与分段策略 | 未修复；header/段范围、checked arithmetic、入口及重叠权限缺口仍在。 |
 | MOSS-017 | P1 | 运行队列 / 迁移 / on-CPU | 未修复；pick 与 dequeue、源/目标迁移分开，check_need_resched 未闭合；已有 RB 平衡算法应保留。 |
@@ -373,9 +549,11 @@ x86_64 Release 的 bench.allocate 在准备阶段发出 `clock frequency=0, sour
 
 ### MOSS-001 · x86_64 内核页表允许用户态访问内核映射
 
-**位置与事实：** `src/hal/mmu/src/mmu_hal.cppm:392` 的 device block 和 `:410` 附近的 normal block 构造包含 `USER | WRITABLE | HUGE_PAGE`；`src/mm/src/mm-page_table.cppm:76` 的 x86 表项也传播 USER/WRITABLE。`src/process/src/process.cpp:276` 创建用户页表时复制低地址的内核 identity blocks。检查到的内核 PUD 块值包括 `0xe7`，上级表项也允许用户访问。
+**当前状态：** U/S 构造、三架构最终内核 W^X/RO/NX、直映别名及共享页表归属已修复，生产结构/生命周期检查见 3.11～3.12；整个 MOSS-001 尚未关闭，受控用户异常隔离的完整验收仍待完成。MOSS-002 的用户域/uaccess 旁路不因本项修复而关闭。
 
-**影响：** 硬件权限链允许 CPL3 访问同一映射中的内核 RAM、代码/数据、页表或 MMIO。这里的问题是页表 U/S 权限错误，不是只有侧信道威胁模型下才需要讨论的 KPTI。当前 x86 用户态启动还有 MOSS-027 阻塞；没有在本次执行 CPL3 攻击程序。
+**原始审计证据（修复前）：** `src/hal/mmu/src/mmu_hal.cppm:392` 的 device block 和 `:410` 附近的 normal block 构造包含 `USER | WRITABLE | HUGE_PAGE`；`src/mm/src/mm-page_table.cppm:76` 的 x86 表项也传播 USER/WRITABLE。`src/process/src/process.cpp:276` 创建用户页表时复制低地址的内核 identity blocks。检查到的内核 PUD 块值包括 `0xe7`，上级表项也允许用户访问。
+
+**原始影响：** 硬件权限链允许 CPL3 访问同一映射中的内核 RAM、代码/数据、页表或 MMIO。这里的问题是页表 U/S 权限错误，不是只有侧信道威胁模型下才需要讨论的 KPTI。原审计时 x86 用户态启动还有 MOSS-027 阻塞；当时没有执行 CPL3 攻击程序。
 
 **修复：**
 
@@ -383,13 +561,15 @@ x86_64 Release 的 bench.allocate 在准备阶段发出 `clock frequency=0, sour
 - 将内核 text、rodata、data、MMIO 权限分别表达；可执行代码 RX，数据 RW 且 NX，避免整个大块可写可执行。
 - 在页表构造接口区分用户映射与内核映射，调用者不能用默认属性意外获得 USER。
 
-还需要在三个架构共同收紧运行态内核 W^X：同一 `make_normal_block()` 中 ARM64 大块未按 text/data 拆分权限，RISC-V 分支明确同时设置 READ/WRITE/EXECUTE。早期启动的临时宽权限不应自然成为最终运行映射；这项加固应在明确最终映射所有者后进行。
+原 `make_normal_block()` 的 ARM64 大块未按 text/data 拆分权限，RISC-V 同时设置 READ/WRITE/EXECUTE；该 helper 已删除。3.12 先把用户页表创建/clone/free 改为按 VA 范围借用内核映射，再拆分最终页表；早期临时宽权限不再成为最终运行权限。用户 huge page 生命周期、COW 权限和分配失败事务仍属待办，不因共享内核子树的创建/回收通过而关闭。
 
 **验收：** x86 用户态恢复后，用户程序读取/写入内核 text、data、页表和 MMIO 地址均产生可控用户异常，只终止该进程；合法用户页仍可读写。增加最终页表的 U/S、RW、NX 结构检查。权限语义参见 [Intel SDM Volume 3A](https://cdrdv2-public.intel.com/874249/253668-090-sdm-vol-3a.pdf)。
 
 ### MOSS-002 · 用户地址合法性不等于“找到一个 VMA”
 
-**位置与事实：** `src/kernel/src/syscall_table.cpp:56` 的 `validate_user_range()` 主要检查溢出及一个 VMA 的覆盖/标志；`:89` 和 `:104` 的复制仍是直接访存。`:1657` 的 `sys_mmap()` 接受用户给出的地址，但没有完整限制到架构用户地址域。`src/process/src/process-types.cppm:288` 的 `add_vma()` 没有承担地址域、有效区间等统一约束。
+**当前状态：** 第 3.13 节已补地址域、VMA 准入/跨段权限检查和字符串长度错误，删除 syscall 0 先 puts 后分发的旁路；可恢复复制和 VM 生命周期未完成，整项不关闭。
+
+**原始位置与事实（准入修复前）：** `src/kernel/src/syscall_table.cpp:56` 的 `validate_user_range()` 主要检查溢出及一个 VMA 的覆盖/标志；`:89` 和 `:104` 的复制为直接访存。`:1657` 的 `sys_mmap()` 接受用户给出的地址，但没有完整限制到架构用户地址域。`src/process/src/process-types.cppm:288` 的 `add_vma()` 没有承担地址域、有效区间等统一约束。
 
 更直接的旁路在 `src/kernel/src/kernel_main.cpp:133`：系统调用 0 在正常 dispatcher 校验前，使用参数指针调用 UART `puts()`。因此，即使修复 `sys_debug_print()` 的普通 handler，这条入口仍可读取内核地址或因坏指针故障。
 
@@ -458,7 +638,7 @@ _kernel_end / _pagetable_end    0x403fd000
 
 ### MOSS-006 · 当前 RCU 容器既没有安全退休语义，也没有宽限期
 
-**2026-09-06 更新：部分修复，工作区。** 已删除 RcuPtr，链表 head/next 复用现有 AtomicPtr；发布不承担析构，只有 remove/clear 显式摘除后安排节点删除。第 3.8 节保留真实可达对象析构的前后对照。以下无宽限期回收、多个写者及 find/find_if 返回裸借用的问题仍然成立；本项和 A4 均不关闭。
+**2026-09-06 更新：部分修复，工作区。** `4cde9b3` 的指针发布修复见 3.8；当前已删除 RcuList/RcuHashMap、读锁和回调池，使用 IRQ-safe LockedList/LockedHashMap，查找返回值副本或 shared_ptr。VMA、进程、WaitQueue、IRQ、驱动和 IPC 调用者已迁移；析构与可能重入的快照回调在解锁后执行，3.9 保留持有读者的红绿对照及真实双 CPU 交错证据。下列旧 RCU 源码是原始审计事实，不再代表当前实现；所有使用者的复合生命周期尚未验收，本项和 A4 仍不关闭。
 
 **位置与事实：** `src/containers/src/containers.cppm:1075` 的 `RcuPtr::store_rcu/compare_exchange_rcu` 对替换下来的指针自动排队删除。`:1129` 的 `RcuList::push_front()` 把旧 head 接到新节点 next 后替换 head，于是**仍通过 next 可达的旧 head 被安排删除**。CAS 重试中对 next 的替换也混淆了发布与所有权释放。
 
@@ -557,6 +737,8 @@ _kernel_end / _pagetable_end    0x403fd000
 
 ### MOSS-014 · fork 应复制用户执行状态，不应复制再清空内核切换现场
 
+**2026-09-07 工作区更新：** x86 legacy FP 的实时 fork 快照、切换恢复和 exec 默认化已补，限定状态及红绿证据见 3.14。完整继承表、其他 ISA 扩展状态、信号及 OOM 回滚仍未完成。
+
 **2026-09-06 更新：部分实现。** `44dedc2` 的 `sys_fork` 已提取 x86 PC/SP、RV64/x86 GP 寄存器；首次运行先在新内核栈保存完整 CpuContext，再经架构 trampoline 返回用户态。三架构 `validation.c` 的一次 fork/exec/exit/wait 已通过。尚需 fork 不立即 exec 的快照验证、VM 元数据/凭据/信号继承、FP/SIMD 状态与资源失败回滚；共用 syscall 仍手写架构槽位。
 
 **位置与事实：** `src/kernel/src/syscall_table.cpp:238` 的 fork 初始化用户 PC/SP 为 0；ARM64、RISC-V 有部分提取，x86 路径没有补齐用户 PC/SP。RISC-V/x86 的部分处理复制内核保存上下文，但 `src/process/src/process-scheduler.cppm:1874` 的首次运行路径重新清空上下文并只重建部分参数寄存器。这不是对父用户寄存器现场的完整克隆。
@@ -585,6 +767,8 @@ fork 对 VMA 有复制，但未完整继承 `brk_base/brk_current/mmap_next` 等
 **验收：** 不存在文件、损坏 ELF、参数过大、每一级分配失败都保留原进程继续运行能力；成功 exec 后旧页全部回收，继承 FD 按已声明语义保留。不要用“exec 一律关闭全部 FD”修补退出泄漏。
 
 ### MOSS-016 · ELF 映射需要按文件区间和页权限生成加载计划
+
+**2026-09-07 工作区更新：** 自有 userspace ELF 已按页分离 RX/R/RW，包含 x86 large-model 段；外来 ELF 的以下加载器问题仍未修复，不以约束构建产物替代输入验证。
 
 **位置与事实：** `src/kernel/src/kernel-elf.cppm:81` 检查 ELF 基本标识和部分 program header 范围，但没有完整覆盖 `e_phentsize`、所有加乘溢出、每段文件范围、`filesz <= memsz`、用户地址域、对齐和入口可执行性。`src/kernel/src/syscall_table.cpp:441` 的加载还存在最多若干段的固定处理和重叠时聚合策略：用总区间及合并权限表示多个段，隐含文件偏移与虚拟地址具有相同平移关系。
 
@@ -833,6 +1017,7 @@ DeviceManager 的框架存在、运行时设备计数为 0 与 UART 实际通过
 - [x] A1a：建立生产内核功能套件、框架失败/panic/timeout 自检、串口协议和宿主报告；六配置已有通过记录（028，`44dedc2` / `6252484`）。
 - [ ] A1b：补 ARM64 原重复失败的可重放脚本、未覆盖装载/skip 负向用例和审计 T01～T12，不把当前 14 个功能用例当完整覆盖（028）。
 - [x] A1c：修复 Active/Online 混淆和循环次数超时造成的 CPU 就绪误报；统一三架构等待，六配置 CTest、ARM64 四核 10 次与 16 核 heap 通过（3.4）。
+- [x] A1d：逐 case 宿主耗时与实际 deadline 可观测；PFA 全 RAM 耗尽预算按真实工作量调整，四并发红绿对照和显式短超时负向检查通过，不减少断言或忽略失败（028，工作区 3.10）。
 - [x] A2a：三个 linker 预留 8 MiB heap，起始 arena/扩容不得越过 heap_end；加入并通过 heap_bounds（004，`44dedc2`）。
 - [x] A2b：PFA 选择真实 RAM bank，metadata 和自由块跳过 initrd/固件保留区（005，`44dedc2` / `6252484`）；这里只标实现，不标穷尽验收。
 - [ ] A2c：完成堆边界/耗尽哨兵与保留区多段/洞/重叠/容量/算术验收（004、005）。
@@ -846,15 +1031,21 @@ DeviceManager 的框架存在、运行时设备计数为 0 与 UART 实际通过
   - [x] 共享 RuntimeHeapAllocator 的对齐、溢出、错误释放与计数/复用回归（3.4）。
   - [x] PFA 原分配头/order/范围校验及保留洞后的分段、拆分/合并至耗尽（3.5）。
 - [ ] A4：替换错误的自动退休容器；先用明确锁与拥有关系闭合生命周期（006）。
-  - [x] 指针发布复用 AtomicPtr，不自动析构仍通过 next 可达的旧节点；删除由显式 unlink/clear 所有者安排（工作区，3.8）。
-  - [ ] 迁移到锁保护的拥有型容器及有作用域的借用；处理全部使用者的删除、重入与跨锁顺序，补持有读者及确定性交错验收。
+  - [x] 指针发布不自动析构仍通过 next 可达的旧节点（`4cde9b3`，3.8）。
+  - [x] 删除伪 RCU，迁移 LockedList/LockedHashMap；查找复制值/拥有者，摘除与发布受锁保护，析构/快照回调移到锁外（工作区，3.9）。
+  - [x] 持有读者的真实红绿对照、同容器回调/析构重入、双 CPU 查找—删除与同 key 创建/删除交错（工作区，3.9）。
+  - [ ] 闭合所有使用者的复合操作、外部对象生命周期及跨锁顺序：IRQ context、驱动绑定、IPC 创建/销毁/清理等；补针对这些协议的交错验收。
 
 **退出条件：** 分配至边界/耗尽和失败注入不越界；对象插入/删除压力不释放可达节点；已有 ARM64 基础路径保持可运行。不要为了通过这一步增加 heap/回调池大小。
 
 ### 阶段 B：封闭权限边界与架构异常入口
 
-- [ ] B1：x86 内核页权限改为 supervisor-only，补最终页表检查（001）。
+- [x] B1：x86 内核页权限改为 supervisor-only，补最终页表结构检查（001，工作区 3.11）；不代表 W^X 或用户异常隔离完整验收。
+- [x] B1a：三架构最终内核 W^X/RO/NX，全部直映 NX 且 text/rodata 别名只读，用户页表按 VA 归属共享内核子树；生产结构与创建/clone/回收检查、六配置 CTest 通过（001，工作区 3.12）。
+- [ ] B1b：受控用户违规访问/异常终止隔离验收，不以结构检查替代。
 - [ ] B2：统一用户地址域与可恢复 uaccess，移除 syscall 0 调试旁路（002）。
+  - [x] 统一 MM 用户地址域和 VMA 准入/跨段权限策略；删除入口原始 puts，字符串有界且不静默截断（工作区，3.13）。
+  - [ ] 三架构异常 fixup、页/VM 生命周期、VFS 用户缓冲区迁移，以及合法 VMA 内不可恢复故障的 EFAULT 验收。
 - [x] B3a：RV64/x86 首次用户返回与基本 fork 用户 GP 现场恢复已补，三架构真实 users 套件通过（007、014，`44dedc2`）。
 - [ ] B3b：三个 ISA 有效 TrapFrame 传参、布局断言、完整用户现场、信号桩及安全返回仍待统一（007）。
 - [ ] B4：信号帧复制与返回状态净化，修复结果/handler 参数写回顺序（003、020 的入口部分）。
