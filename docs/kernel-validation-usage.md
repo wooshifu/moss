@@ -53,6 +53,18 @@ Negative checks require the expected boot diagnostic and no `ready` event. Their
 raw guest reports remain errors; the check script succeeds only when rejection is
 verified. They do not count an unexecuted functional test as passed.
 
+## Container Ownership
+
+The `containers` suite runs production list and hash-map code: reachable values
+must survive insertion, explicit unlink/replacement must destroy each owned value
+once, and a 1,024-node clear/reuse must restore heap accounting. It is part of the
+default functional selection, or run it alone with `--workload containers`.
+
+These are single-worker tests. They explicitly drain the existing callback queue
+to observe destruction; the production kernel does not gain a periodic drain.
+The queue still has no reader grace period, and scoped borrowing/concurrent
+deletion remain open in MOSS-006. Passing this suite does not establish RCU safety.
+
 ## Single-Function Measurements
 
 The five built-ins are `bench.allocate`, `bench.release`, `bench.combined`, `bench.read`, and `bench.getpid`. Allocation and release support orders 0 through 4. `bench.read` measures 256-byte reads from a real 64 KiB ramfs file. `bench.getpid` brackets real user-to-kernel-to-user calls from userspace, rather than calling a handler directly.

@@ -7,6 +7,8 @@ import moss.fdt;
 import moss.mm;
 import moss.vfs;
 import moss.process;
+import moss.containers;
+import moss.smart_ptr;
 import moss.hal.uart;
 import moss.hal.mmu;
 import moss.logging;
@@ -884,6 +886,136 @@ void heap_exhaustion() {
   }
   ut::expect(Heap::get_heap_stats().allocated_bytes == before);
 }
+struct ContainerValue {
+  u32 value;
+  u32 *destroyed;
+  ContainerValue(u32 v, u32 *counter) : value(v), destroyed(counter) {}
+  ~ContainerValue() { ++*destroyed; }
+  bool operator==(const ContainerValue &other) const { return value == other.value; }
+};
+
+void container_ownership() {
+  // The single test worker has already exec'd; retire that old image's detached
+  // nodes before measuring this case's allocations. This is test-only cleanup,
+  // not a production reclamation loop or a claim of concurrent-reader safety.
+  containers::RcuCallbackQueue::process_callbacks();
+  const auto before = mm::RuntimeHeapAllocator::get_heap_stats().allocated_bytes;
+  u32 destroyed = 0;
+  // If reachable nodes have already been reclaimed, do not walk them again
+  // during failed-case cleanup. The host discards this suite's kernel.
+  auto *list = new containers::RcuList<ContainerValue>();
+  for (u32 value = 1; value <= 3; ++value) {
+    list->push_front(value, &destroyed);
+  }
+  {
+    containers::RcuReadLock read_lock;
+    containers::RcuCallbackQueue::process_callbacks();
+  }
+  logging::klog::info("Container ownership: {} reachable values destroyed after insertion", destroyed);
+  if (!ut::expect(destroyed == 0)) {
+    return;
+  }
+  u32 count = 0;
+  u32 sum = 0;
+  list->for_each([&](const ContainerValue &value) {
+    ++count;
+    sum += value.value;
+  });
+  ut::expect(count == 3 && sum == 6);
+  delete list;
+  containers::RcuCallbackQueue::process_callbacks();
+  ut::expect(destroyed == 3);
+  ut::expect(mm::RuntimeHeapAllocator::get_heap_stats().allocated_bytes == before);
+}
+
+void container_release_reuse() {
+  const auto before = mm::RuntimeHeapAllocator::get_heap_stats().allocated_bytes;
+  u32 destroyed = 0;
+  auto *list = new containers::RcuList<ContainerValue>();
+  constexpr u32 length = 1024;
+  for (u32 i = 0; i < length; ++i) {
+    list->push_front(i, &destroyed);
+    if (!ut::expect(destroyed == 0)) {
+      return;
+    }
+  }
+  containers::RcuCallbackQueue::process_callbacks();
+  if (!ut::expect(destroyed == 0 && list->size() == length)) {
+    return;
+  }
+  constexpr u32 removed[] = {0, 511, length - 1}; // Tail, interior, head.
+  u32 deleted = 0;
+  for (u32 id : removed) {
+    {
+      containers::RcuReadLock read_lock;
+      const auto *value = list->find_if([&](const ContainerValue &item) { return item.value == id; });
+      if (!ut::expect(value && list->remove(*value))) {
+        return;
+      }
+    }
+    containers::RcuCallbackQueue::process_callbacks();
+    if (!ut::expect(destroyed == ++deleted)) {
+      return;
+    }
+    ut::expect(list->find_if([&](const ContainerValue &item) { return item.value == id; }) == nullptr);
+  }
+  u32 count = 0;
+  u32 sum = 0;
+  list->for_each([&](const ContainerValue &value) {
+    ++count;
+    sum += value.value;
+  });
+  ut::expect(count == length - 3 && sum == length * (length - 1) / 2 - 511 - (length - 1));
+  list->clear(); // Exceeds the existing 512-slot queue, without active borrowers.
+  containers::RcuCallbackQueue::process_callbacks();
+  if (!ut::expect(destroyed == length && list->empty() && list->size() == 0)) {
+    return;
+  }
+  list->push_front(length, &destroyed);
+  ut::expect(list->size() == 1 && destroyed == length);
+  delete list;
+  containers::RcuCallbackQueue::process_callbacks();
+  ut::expect(destroyed == length + 1);
+  ut::expect(mm::RuntimeHeapAllocator::get_heap_stats().allocated_bytes == before);
+}
+
+void container_map_ownership() {
+  const auto before = mm::RuntimeHeapAllocator::get_heap_stats().allocated_bytes;
+  u32 destroyed = 0;
+  // Force collisions and use real owned values, as the IPC channel map does.
+  auto *map = new containers::RcuHashMap<u32, unique_ptr<ContainerValue>, 1>();
+  for (u32 key = 1; key <= 3; ++key) {
+    map->insert_or_update(key, make_unique<ContainerValue>(key, &destroyed));
+  }
+  containers::RcuCallbackQueue::process_callbacks();
+  if (!ut::expect(destroyed == 0 && map->size() == 3)) {
+    return;
+  }
+  map->insert_or_update(u32{2}, make_unique<ContainerValue>(u32{20}, &destroyed));
+  containers::RcuCallbackQueue::process_callbacks();
+  if (!ut::expect(destroyed == 1 && map->size() == 3)) {
+    return;
+  }
+  for (u32 key = 1; key <= 3; ++key) {
+    const auto *value = map->find(key);
+    ut::expect(value && *value && (*value)->value == (key == 2 ? 20 : key));
+  }
+  u32 deleted = 1;
+  constexpr u32 keys[] = {1, 3, 2};
+  for (u32 key : keys) {
+    ut::expect(map->remove(key));
+    ut::expect(!map->remove(key));
+    containers::RcuCallbackQueue::process_callbacks();
+    if (!ut::expect(destroyed == ++deleted && map->find(key) == nullptr)) {
+      return;
+    }
+  }
+  ut::expect(map->empty());
+  delete map;
+  containers::RcuCallbackQueue::process_callbacks();
+  ut::expect(destroyed == 4);
+  ut::expect(mm::RuntimeHeapAllocator::get_heap_stats().allocated_bytes == before);
+}
 void failing_case() { ut::expect(false); }
 [[noreturn]] void panic_case() {
   Event("fatal").str("case", active_case).str("kind", "panic").send();
@@ -913,6 +1045,11 @@ void declare_cases() {
     ut::register_test("release_contract", heap_release_contract);
     ut::register_test("reuse", heap_reuse);
     ut::register_test("exhaustion", heap_exhaustion);
+  });
+  ut::register_suite("containers", [] {
+    ut::register_test("ownership", container_ownership);
+    ut::register_test("release_reuse", container_release_reuse);
+    ut::register_test("map_ownership", container_map_ownership);
   });
   ut::register_suite("vfs", [] {
     ut::register_test("read_position_eof", file_read);
