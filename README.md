@@ -5,7 +5,7 @@ Moss is a modern multi-architecture hybrid kernel operating system supporting AR
 ## Quick Start
 
 ```bash
-# Build all architectures
+# Configure, build and test all workflows (QEMU required for tests)
 uv run build.py
 
 # List available build presets
@@ -14,10 +14,15 @@ uv run build.py list
 
 ## Testing
 
-CMake only builds; QEMU is an optional, separate run dependency. Each architecture
-produces its own native kernel (not one cross-ISA binary).
+CMake configure/build do not require QEMU; workflows also run CTest through the
+independent QEMU runner. Each architecture produces its own native kernel (not
+one cross-ISA binary).
 
 ```sh
+# Configure, build and test in one workflow
+uv run cmake --workflow --preset arm64-debug
+
+# Or run each stage separately
 uv run cmake --preset arm64-debug
 uv run cmake --build --preset arm64-debug
 uv run scripts/run_qemu.py --manifest build/arm64-debug/moss-artifacts.json

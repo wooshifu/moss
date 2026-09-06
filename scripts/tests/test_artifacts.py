@@ -101,12 +101,21 @@ def test_riscv_header_and_relative_relocation_contract():
             verify_relocations(elf, 4096, 243)
 
 
-def test_build_presets_do_not_require_a_runner_or_disabled_test_target():
+def test_workflows_reuse_matching_build_and_test_presets():
     root = Path(__file__).resolve().parents[2]
     for arch in ("arm64", "riscv", "x86_64"):
         data = json.loads((root / "cmake" / "presets" / "arch" / f"{arch}.json").read_text())
         assert "qemu" not in json.dumps(data).lower()
         assert all("targets" not in preset for preset in data["buildPresets"])
-        assert all(
-            step["type"] in ("configure", "build") for workflow in data["workflowPresets"] for step in workflow["steps"]
-        )
+        tests = {preset["name"]: preset for preset in data["testPresets"]}
+        assert {workflow["name"] for workflow in data["workflowPresets"]} == {
+            preset["name"] for preset in data["buildPresets"]
+        }
+        for workflow in data["workflowPresets"]:
+            name = workflow["name"]
+            assert workflow["steps"] == [
+                {"type": "configure", "name": name},
+                {"type": "build", "name": name},
+                {"type": "test", "name": f"{name}-test"},
+            ]
+            assert tests[f"{name}-test"]["configurePreset"] == name
