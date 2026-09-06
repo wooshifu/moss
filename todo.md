@@ -1,6 +1,6 @@
 # MOSS 内核能力与待办
 
-> 更新日期：2026-09-06；提交基线：`b57422d`，包含后续工作区的堆、CPU 就绪、PFA 多 bank 与布局所有权修复。
+> 更新日期：2026-09-06；提交基线：`040d773`（堆、CPU 就绪、PFA 多 bank 与布局所有权修复）；后续工作区进展另标。
 > 本文取代旧清单中“完成即可靠”“x86/RISC-V 仅为启动桩”的描述。
 > 审计问题的原始证据、当前状态及完整验收条件见 [moss-todo.md](moss-todo.md)；MOSS-001～032 沿用原编号，不重新编号。
 
@@ -57,7 +57,7 @@ uv run scripts/run_qemu.py --manifest build/arm64-debug/moss-artifacts.json
 | 子系统 | 已有实现 | 剩余可靠性任务 |
 | --- | --- | --- |
 | Boot / AAL / HAL | 三架构启动、CPU 身份、per-CPU 栈与上下文、异常/IRQ、用户返回、UART；DTB 或 PVH/ACPI 资源发现、SMP/IPI、硬件定时器 | 001、007、023、027、029；真机和未知设备仍需适配/验收 |
-| 物理内存与堆 | Buddy PFA、页引用、order 分配/释放、统计；链接预留 8 MiB NOLOAD 堆，256 KiB 起始 arena，扩容限制在预留内；SlabCache/SlabAllocator 代码 | 004、005、013；不能再描述为“不受限的动态堆”或用较大堆证明回收正确 |
+| 物理内存与堆 | Buddy PFA、页引用、order 分配/释放、统计；链接预留 8 MiB NOLOAD 堆，256 KiB 起始 arena，扩容限制在预留内；SlabCache/SlabAllocator 代码 | 005 及 008～010/028 的页引用生命周期；004/013 已按限定验收关闭，不能据此声称 COW 或 Slab 并发可靠 |
 | 虚拟内存 | 动态页表、用户地址空间、TTBR/CR3/satp 切换、VMA、demand paging、COW、匿名 private mmap、整段匹配 munmap、brk、栈增长与故障诊断 | 002、008～012；ASID 回绕、RO/NONE 权限、缩堆解映射及失败事务未闭合 |
 | 进程与调度 | ProcessManager、PID/PPID、每线程内核栈、CFS vruntime/权重、内嵌 RB 节点、插入/删除旋转与着色、idle、负载均衡和 affinity；fork/exec/wait/exit/Zombie | 014～019、021～023；有 RB 算法不代表调度队列所有权已正确 |
 | 信号与系统调用 | syscall dispatcher、kill/sigaction/sigprocmask/sigaltstack/sigreturn、ARM64 handler/嵌套/备用栈路径、VMA-based copy helper、clock_gettime/nanosleep 入口 | 002、003、007、019～021、031；不是“完整 POSIX 信号”或 fault-safe uaccess，nanosleep 切换仍仅 ARM64 |
@@ -75,14 +75,15 @@ uv run scripts/run_qemu.py --manifest build/arm64-debug/moss-artifacts.json
 - [ ] **MOSS-001**：x86 内核映射去掉 USER；收紧三架构最终内核 W^X，验证 supervisor/RO/NX 权限。
 - [ ] **MOSS-002**：统一用户地址域，限制 VMA/mmap，移除 syscall 0 原始 UART 指针旁路；实现可恢复、跨页/跨 VMA 的 uaccess。
 - [ ] **MOSS-003**：将用户信号帧/altstack 当不可信输入，安全复制并净化 PC/SP/特权状态。
-- [ ] **MOSS-004（专项验收已通过，待修复提交）**：当前堆、活动页表树/early pool/链接表区、PFA 元数据布局与耗尽校验和，以及坏布局启动拒绝已验证；不外推到并发进程页表生命周期。
+- [x] **MOSS-004（`040d773`）**：当前堆、活动页表树/early pool/链接表区、PFA 元数据布局与耗尽校验和，以及坏布局启动拒绝已验证；不外推到并发进程页表生命周期。
   - [x] heap 耗尽返回失败，缓冲区模式/PFA 页哨兵及页计数不变，释放后可重新分配合并大块。
   - [x] 4/64/256 KiB 边界写入及堆/PFA 耗尽时检查页表与元数据；三架构 Debug/Release 拒绝重叠堆布局（[证据](moss-todo.md#37-堆页表与-pfa-元数据所有权2026-09-06工作区)）。
 - [ ] **MOSS-005（部分验收）**：保留洞、区间重叠/非对齐、容量/溢出、多 bank 耗尽及当前布局已验证；仍保守保留 kernel_end 以下，需补完整启动保留集合、回收和 x86 PVH 非法内存表。
   - [x] 三架构 PFA 耗尽不返回保留页；逐页模式、initrd 校验和及释放后页数恢复通过。
   - [x] ARM64/RV64 Debug/Release 固件输入共 18 项检查；有效区间末端 UINT64_MAX 在裁剪前取整导致回绕的问题已修复，异常输入在启动阶段拒绝（[证据](moss-todo.md#35-pfa-分配归属与固件边界2026-09-06工作区)）。
   - [x] PFA 联合管理 kernel_end 以上多 bank、排序/合并相邻段、独立排除元数据；RV64 实际 DTB 验证两段/乱序八段、元数据放入后续 bank、非对齐相邻段及 RAM 表溢出（[证据](moss-todo.md#36-多-ram-bank-分配2026-09-06工作区)）。
-- [ ] **MOSS-006**：修复 RcuPtr 自动删除仍可达节点、回调池耗尽及无宽限期问题；先闭合锁和所有权，不靠周期 drain 或扩大池。
+- [ ] **MOSS-006（部分修复，工作区）**：指针发布已改用不拥有对象的 AtomicPtr；锁保护、借用外逸、回调池无宽限期及并发删除仍待修复，不能声称 RCU 安全。
+  - [x] 删除 RcuPtr 隐式析构；链表仅在显式摘除节点后安排删除。A/B/C 插入的“2 个可达值被析构”已复现并修复，完整证据见 moss-todo.md 第 3.8 节。
 - [ ] **MOSS-007（部分实现）**：x86 第八参数目前是 null，RV64 未传有效帧；仍需每 ISA 的完整 TrapFrame、信号桩、偏移/返回状态校验。
 - [ ] **MOSS-008**：仅可写私有页允许 COW；RO/text/NX/NONE 不能因 fork 或 fault 被放宽权限。
 
@@ -92,7 +93,7 @@ uv run scripts/run_qemu.py --manifest build/arm64-debug/moss-artifacts.json
 - [ ] **MOSS-010**：页表 clone/map 显式失败、完整回滚；不得发布部分成功的 fork。
 - [ ] **MOSS-011**：活跃 ASID 租约与跨 CPU TLB 失效；超过 255 次地址空间创建仍隔离。
 - [ ] **MOSS-012**：brk/mmap/munmap 同步维护 VMA/PTE/引用/TLB；覆盖 PROT_NONE 与增长冲突。部分 munmap 仍作为明确的后续兼容能力。
-- [ ] **MOSS-013（专项验收已通过，待修复提交）**：heap 对齐/极值/错误释放和 PFA 原分配头/order、边界、保留洞分段及耗尽/合并已验证；SMP 页引用生命周期仍归 008～010/028，不能以此声称 COW 安全。
+- [x] **MOSS-013（`040d773`）**：heap 对齐/极值/错误释放和 PFA 原分配头/order、边界、保留洞分段及耗尽/合并已验证；SMP 页引用生命周期仍归 008～010/028，不能以此声称 COW 安全。
   - [x] PFA 拒绝错误 order、内部/非对齐地址、重复释放及仍有共享引用的整块释放，失败不部分改变元数据、数据或统计。
   - [x] heap 返回地址对齐、溢出拒绝、原块/请求大小追踪与错误释放检查；4,096 次混合分配/释放和计数恢复，六配置真实内核测试通过。
 - [ ] **MOSS-014（部分实现）**：RV64/x86 首次用户返回及 GP 快照已补；补 fork 不立即 exec 的寄存器、VM 游标、凭据、FD、信号及扩展状态继承。
@@ -138,7 +139,7 @@ uv run scripts/run_qemu.py --manifest build/arm64-debug/moss-artifacts.json
 - [ ] **共享内存 IPC**：真实页面/映射/引用及进程退出清理；选择 shm API 或 MAP_SHARED 后再公开用户能力。
 - [ ] **多用户/权限**：复用 Process 已有 uid/gid/euid/egid 字段，补继承、鉴权、setuid/setgid 和文件权限，不再新增重复凭据字段。
 
-## 本次核对的验证证据
+## `040d773` 内存修复的验证证据
 
 - [x] 布局修复后运行 `uv run pytest -q scripts/tests`：**102 passed**（37.84 s），验证宿主工具与构建回归，不代表 102 个内核功能均已验收。
 - [x] 布局修复后重建三架构 Debug/Release 并执行各自 CTest：Debug 各 2 项、Release 各 3 项，全部 15 个入口通过；日志 `build/<preset>/layout-{build,ctest}.log`，原始报告见 [布局修复证据](moss-todo.md#37-堆页表与-pfa-元数据所有权2026-09-06工作区)。
@@ -150,5 +151,7 @@ uv run scripts/run_qemu.py --manifest build/arm64-debug/moss-artifacts.json
 - [x] 9 个 workflow/test preset 的匹配由 `scripts/tests/test_artifacts.py` 回归覆盖；仅六个 Debug/Release 有上述运行证据。
 - [ ] RelWithDebInfo 三架构完整运行验收。
 - [ ] 审计 T01～T12 的完整覆盖、资源耗尽/故障注入、长时间 SMP 和真实硬件验收。
+
+后续工作区新增 containers 的 ownership/release_reuse/map_ownership 三项默认功能用例，当前目录为 7 套件/17 用例；六配置功能与框架检查通过，宿主 102 项通过。该轮 CTest **14/15**：x86_64 Release 的 bench.allocate 一次校准失败，后续同镜像 10 次通过但不覆盖原失败，具体拒绝原因仍待定位（028/029/032）。红绿对照与报告见 [moss-todo.md](moss-todo.md) 第 3.8 节，不混用上面旧镜像的验收结果。
 
 原始通用启动/同镜像记录见 [generic-boot-acceptance.md](docs/generic-boot-acceptance.md)；更早的 [kernel-validation-acceptance.md](docs/kernel-validation-acceptance.md) 已标历史，其旧预设命令不再使用。后续关闭任务需附修复提交、对应原始结果和未覆盖边界，不能只改勾选。
