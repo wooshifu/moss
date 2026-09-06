@@ -329,9 +329,20 @@ extern "C" [[noreturn]] void secondary_cpu_entry() noexcept {
 
   // --- Phase 2: Full subsystem initialization (GIC/timer are ready) ---
 
-  // 2. Set exception vectors (same as CPU 0)
+  // 2. Set exception vectors (same as CPU 0), including for MMU activation.
   asm volatile("msr vbar_el1, %0" ::"r"(exception_vectors));
   asm volatile("isb");
+
+  // Page tables are shared, but MMU registers and enable state are per CPU.
+  // Activate both the identity map and the kernel direct map before any user
+  // dispatch or page-table walk through a high-half address on this CPU.
+  using Tables = moss::kernel::mm::PageTableManager;
+  auto *kernel_pgd = Tables::get_kernel_pgd();
+  auto *high_pgd = Tables::get_kernel_high_pgd();
+  if (!kernel_pgd || !high_pgd || !moss::kernel::hal::mmu::enable_mmu(Tables::get_physical_address(kernel_pgd))) {
+    moss::kernel::arch::kernel_panic("secondary CPU MMU initialization failed");
+  }
+  moss::kernel::arch::setup_kernel_mmu(Tables::get_physical_address(high_pgd));
 
   // 3. Enable FP/NEON access
   u64 cpacr = (3ULL << 20);
@@ -544,7 +555,7 @@ void update_boot_stage(BootStage stage, ::moss::kernel::ErrorCode error) noexcep
 
   early_print("=== ARM64 Memory Management Setup ===\n");
 
-  // Phase 1: Setup identity-mapped page tables in TTBR0 (existing 4×1GB blocks)
+  // Phase 1: Setup permission-separated identity mappings in TTBR0.
   auto mmu_result = ::moss::kernel::mm::setup_mmu();
   if (!mmu_result) {
     early_print("MMU setup failed\n");

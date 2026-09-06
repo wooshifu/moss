@@ -39,16 +39,26 @@ CATALOG = {
     "mm": ["orders_alignment", "reuse"],
     "pfa": ["release_contract", "exhaustion"],
     "heap": ["alignment", "invalid_requests", "release_contract", "reuse", "exhaustion"],
-    "containers": ["ownership", "release_reuse", "map_ownership"],
+    "containers": ["ownership", "release_reuse", "map_ownership", "held_reader", "reentry"],
+    "containers.smp": ["interleaving"],
     "vfs": ["read_position_eof", "errors_readonly"],
-    "users": ["syscall_values", "fork_exec_exit_reap"],
+    "users": ["syscall_values", "user_ranges", "fork_exec_exit_reap"],
+    "users.simd_fault": ["isolation"],  # Explicit x86 acceptance; TCG may not deliver #XM.
+    "mm.permissions": [
+        "table_defaults",
+        "kernel_mappings",
+        "active_user_mappings",
+        "kernel_wx",
+        "address_space_ownership",
+        "vma_boundaries",
+    ],
     "self": ["accounting_registration", "registry_limits", "cleanup_guards", "heap_bounds"],
     "self.fail": ["intentional_assertion", "not_run"],
     "self.panic": ["intentional_panic"],
     "self.timeout": ["intentional_timeout"],
     **{f"bench.{name}": [f"bench.{name}"] for name in ("allocate", "release", "combined", "read", "getpid")},
 }
-FUNCTIONAL = ["resources", "mm", "pfa", "heap", "containers", "vfs", "users"]
+FUNCTIONAL = ["resources", "mm", "mm.permissions", "pfa", "heap", "containers", "containers.smp", "vfs", "users"]
 BENCHMARKS = [name for name in CATALOG if name.startswith("bench.")]
 SELFTESTS = ["self", "self.fail", "self.panic", "self.timeout"]
 
@@ -162,7 +172,14 @@ class Protocol:
             if not passed and not count and not self.workload.startswith("bench."):
                 raise ValueError("case has no assertions")
             self.failed |= count > 0
-            self.cases.append({"name": self.active, "status": "failed" if count else "passed", "assertions": record})
+            self.cases.append(
+                {
+                    "name": self.active,
+                    "status": "failed" if count else "passed",
+                    "assertions": record,
+                    "elapsed_seconds": time.monotonic() - self.case_started,
+                }
+            )
             self.active = None
             self.case_started = None
         elif event == "clock":
@@ -278,6 +295,11 @@ def sha256(path: Path) -> str:
 
 def run_guest(cfg: Artifacts, workload: str, directory: Path, settings: dict, iterations: int) -> dict:
     directory.mkdir()
+    case_timeout = settings.get("case_timeout")
+    if case_timeout is None:
+        # Exhaustion touches all 2 GiB of guest RAM; host memory pressure can
+        # take it past the ordinary 5 s budget without a kernel failure.
+        case_timeout = 30.0 if workload == "pfa" else 5.0
     state = Protocol(
         workload,
         settings["cpus"],
@@ -344,7 +366,7 @@ def run_guest(cfg: Artifacts, workload: str, directory: Path, settings: dict, it
                     break
                 if not state.ready and now - start >= settings["startup_timeout"]:
                     reason = "startup_timeout"
-                elif state.case_started and now - state.case_started >= settings["case_timeout"]:
+                elif state.case_started and now - state.case_started >= case_timeout:
                     reason = "case_timeout"
                 elif now - start >= settings["guest_timeout"]:
                     reason = "guest_timeout"
@@ -357,6 +379,7 @@ def run_guest(cfg: Artifacts, workload: str, directory: Path, settings: dict, it
     except KeyboardInterrupt:
         reason = "cancelled"
     finally:
+        observed_end = time.monotonic()  # Exclude termination/reaping from an unfinished case's duration.
         if process and process.poll() is None:
             process.terminate()
             try:
@@ -385,6 +408,8 @@ def run_guest(cfg: Artifacts, workload: str, directory: Path, settings: dict, it
     cases = list(state.cases)
     for name in state.expected[len(cases) :]:
         cases.append({"name": name, "status": "error" if name == state.active else "not_run", "reason": observed})
+        if name == state.active and state.case_started is not None:
+            cases[-1]["elapsed_seconds"] = observed_end - state.case_started
     result = {
         "workload": workload,
         "version": 1,
@@ -401,6 +426,7 @@ def run_guest(cfg: Artifacts, workload: str, directory: Path, settings: dict, it
         "termination": termination,
         "completion": state.end,
         "elapsed_seconds": time.monotonic() - start,
+        "case_timeout_seconds": case_timeout,
         "qemu_args": args,
         "serial_log": str(serial_path),
         "qemu_log": str(error_path),
@@ -584,7 +610,7 @@ def run(
     iterations: int = 0,
     order: int = 0,
     startup_timeout: float = 30,
-    case_timeout: float = 5,
+    case_timeout: float | None = None,
     guest_timeout: float = 60,
 ) -> None:
     """One fresh guest per suite/scenario; samples reuse that guest."""
@@ -597,12 +623,20 @@ def run(
         1 <= cpus <= 16 and 0 <= warmup <= 100 and 1 <= samples <= 1000 and 0 <= iterations <= 65536 and 0 <= order <= 4
     ):
         raise typer.BadParameter("invalid resource or sampling parameters")
-    if any(not math.isfinite(value) or value <= 0 for value in (startup_timeout, case_timeout, guest_timeout)):
+    if "containers.smp" in selected and cpus < 2:
+        raise typer.BadParameter("containers.smp requires at least 2 CPUs; select single-worker workloads for 1 CPU")
+    if any(
+        not math.isfinite(value) or value <= 0
+        for value in (startup_timeout, case_timeout, guest_timeout)
+        if value is not None
+    ):
         raise typer.BadParameter("deadlines must be positive")
     expected_ram_mib = memory_mib if expected_ram_mib is None else expected_ram_mib
     if not 256 <= expected_ram_mib <= memory_mib:
         raise typer.BadParameter("expected firmware RAM must be between 256 MiB and installed RAM")
     cfg = Artifacts.load(manifest)
+    if "users.simd_fault" in selected and cfg.arch != "X86_64":
+        raise typer.BadParameter("users.simd_fault requires x86_64")
     build = cfg.manifest.parent
     metadata = cfg.build
     qemu = resolve_qemu(cfg.arch, qemu)

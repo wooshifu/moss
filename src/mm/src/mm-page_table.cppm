@@ -73,16 +73,15 @@ struct [[gnu::packed]] PageTableEntry {
     return raw & hal::mmu::PTE_ADDR_MASK;
 #endif
   }
-  constexpr void set_table(PhysAddr next_table_pa) {
+  // Kernel-only by default. User page-table builders explicitly opt in.
+  constexpr void set_table(PhysAddr next_table_pa, [[maybe_unused]] bool user_mapping = false) {
 #if defined(MOSS_ARCH_RISCV)
     // RISC-V non-leaf: V=1, R=W=X=0. TABLE == VALID == bit 0.
     raw = ((next_table_pa >> 2) & hal::mmu::PTE_ADDR_MASK) | page_attr::VALID;
 #elif defined(MOSS_ARCH_X86_64)
-    // x86_64 non-leaf entries must propagate User + Writable + Accessed.
-    // Permission bits are AND-ed across levels: if a PUD/PMD lacks User,
-    // ring 3 cannot access any page below it even if the leaf PTE has User.
-    raw = (next_table_pa & hal::mmu::PTE_ADDR_MASK) | page_attr::VALID | page_attr::WRITABLE | page_attr::USER |
-          page_attr::AF;
+    // U/S is AND-ed across levels; only branches containing user pages need U/S.
+    raw = (next_table_pa & hal::mmu::PTE_ADDR_MASK) | page_attr::VALID | page_attr::WRITABLE | page_attr::AF |
+          (user_mapping ? page_attr::USER : 0);
 #else
     raw = (next_table_pa & hal::mmu::PTE_ADDR_MASK) | page_attr::VALID | page_attr::TABLE;
 #endif
@@ -90,6 +89,8 @@ struct [[gnu::packed]] PageTableEntry {
   constexpr void set_block(PhysAddr block_pa, u64 attributes) {
 #if defined(MOSS_ARCH_RISCV)
     raw = ((block_pa >> 2) & hal::mmu::PTE_ADDR_MASK) | attributes | page_attr::VALID;
+#elif defined(MOSS_ARCH_X86_64)
+    raw = (block_pa & hal::mmu::PTE_ADDR_MASK) | attributes | page_attr::VALID | page_attr::HUGE_PAGE;
 #else
     raw = (block_pa & hal::mmu::PTE_ADDR_MASK) | attributes | page_attr::VALID;
 #endif
@@ -162,7 +163,17 @@ private:
   static inline bool use_dynamic_alloc = false;       // Switch to buddy-backed alloc
 
 public:
+  // Current identity-map extent, independent of firmware RAM placement.
+  static constexpr VirtAddr KERNEL_IDENTITY_END = 1ULL << 32;
+
+  // Canonical positive user half, excluding the shared kernel identity map.
+  // Subtraction checks the complete range without overflowing start + length.
+  [[nodiscard]] static bool is_user_range(VirtAddr start, usize length) noexcept {
+    return start >= KERNEL_IDENTITY_END && start < USER_MAX && length <= USER_MAX - start;
+  }
+
   [[nodiscard]] static KernelResult<PageTable *> allocate_page_table();
+  [[nodiscard]] static KernelResult<PhysAddr> create_user_page_tables();
 
   // Dynamically allocate a page table from buddy allocator (post-boot only)
   [[nodiscard]] static KernelResult<PageTable *> allocate_page_table_dynamic();
@@ -244,7 +255,7 @@ public:
 
   // Free all user page tables and demand-paged physical pages for a process.
   // Walks PGD->PUD->PMD->PTE, frees leaf pages and intermediate tables.
-  // Skips PGD[0] (shared kernel identity map).
+  // Shared kernel VA ranges are skipped even when they contain lower-level tables.
   // The PGD page itself is also freed.
   // COW-aware: only frees physical pages when refcount drops to 0.
   static void free_user_page_tables(PhysAddr pgd_phys);
@@ -262,7 +273,7 @@ public:
   // Allocates fresh intermediate tables (PUD/PMD/PTE) for dst_pgd_phys.
   // Leaf pages are shared: both src and dst PTEs are marked READONLY + SW_COW,
   // and physical page refcounts are incremented.
-  // PGD[0] (kernel identity map) is skipped (already copied by create_user_address_space).
+  // Kernel-owned VA ranges are borrowed unchanged from create_user_page_tables().
   static void clone_user_page_tables(PhysAddr src_pgd_phys, PhysAddr dst_pgd_phys);
 
   // Invalidate TLB entry for a single virtual address

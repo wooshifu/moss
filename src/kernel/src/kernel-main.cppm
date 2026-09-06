@@ -649,7 +649,7 @@ private:
     if (!proc_result) {
       return VoidResult{proc_result.error()};
     }
-    Process *init_proc = proc_result.value();
+    auto init_proc = proc_result.value();
     ProcessId init_pid = init_proc->pid();
 
     // Step 2: Create real AddressSpace with buddy-allocated PGD
@@ -731,7 +731,7 @@ private:
           0x01, 0x00, 0x00, 0xD4, // svc #0
       };
       as->add_vma(user_layout::SIGRETURN_PAGE, user_layout::SIGRETURN_PAGE + PAGE_SIZE,
-                  vma_flags::READ | vma_flags::EXEC, VmaType::CODE, sigreturn_stub, 0, sizeof(sigreturn_stub));
+                  vma_flags::READ | vma_flags::EXEC, VmaType::SIGRETURN, sigreturn_stub, 0, sizeof(sigreturn_stub));
     }
 
     // Stack VMA: demand-zero

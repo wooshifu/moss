@@ -204,7 +204,7 @@ if(MOSS_BUILD_TESTS)
     set_tests_properties(
         moss-functional moss-framework
         PROPERTIES TIMEOUT
-                   300
+                   600 # Nine guests may each use 60 s, plus process cleanup/reporting.
                    RUN_SERIAL
                    TRUE
                    LABELS

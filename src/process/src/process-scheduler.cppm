@@ -1581,6 +1581,8 @@ private:
   // context_switch() saves the caller's registers here; the new task
   // starts on its own stack.  Restoring bootstrap returns to the caller.
   static containers::PerCpuData<CpuContext> bootstrap_contexts_;
+  // Keep the exiting task's owner alive until we are back on the scheduler stack.
+  containers::PerCpuData<shared_ptr<Process>> exiting_processes_;
 
   // Per-CPU exit stack — used by schedule_after_exit() to avoid running
   // on the exited process's kernel stack (which will be freed by waitpid).
@@ -2008,7 +2010,7 @@ private:
       // For user tasks being re-dispatched after preemption:
       // Set page table base to this process's page tables BEFORE context_switch.
       if (task->is_user_task) {
-        Process *proc = g_process_manager ? g_process_manager->find_process(task->owner_pid) : nullptr;
+        auto proc = g_process_manager ? g_process_manager->find_process(task->owner_pid) : shared_ptr<Process>{};
         if (proc && proc->address_space() && proc->address_space()->pgd_phys != 0) {
 #if defined(MOSS_ARCH_ARM64)
           u64 ttbr0_val = proc->address_space()->pgd_phys | (static_cast<u64>(proc->address_space()->asid) << 48);
@@ -2054,6 +2056,7 @@ private:
 
       context_switch(prev_ctx, &task->context);
       // Returns here when prev_ctx is scheduled again.
+      exiting_processes_.get_local().reset();
       arch::enable_interrupts();
     }
   }
@@ -2074,9 +2077,10 @@ public:
   // Called after a process exits (sys_exit).  Picks the next runnable task
   // and switches to it.  Never returns to the caller because the exited
   // task's context is no longer valid.
-  [[noreturn]] void schedule_after_exit() noexcept {
+  [[noreturn]] void schedule_after_exit(shared_ptr<Process> process) noexcept {
     arch::disable_interrupts();
     u32 cpu = get_current_cpu_id();
+    exiting_processes_.get_cpu(cpu) = moss::move(process);
     set_current_task(nullptr);
     // The bootstrap context already owns a live scheduler stack. Do not
     // overwrite it with a dying task, or change SP inside a C++ frame.
@@ -2094,10 +2098,10 @@ extern CfsScheduler *g_scheduler;
 
 // current_thread / current_process implementation (needs CfsScheduler to be defined)
 inline Thread *current_thread() noexcept { return CfsScheduler::get_current_task(); }
-inline Process *current_process() noexcept {
+inline shared_ptr<Process> current_process() noexcept {
   Thread *t = current_thread();
   if (!t || !g_process_manager) {
-    return nullptr;
+    return {};
   }
   return g_process_manager->find_process(t->owner_pid);
 }

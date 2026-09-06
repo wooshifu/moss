@@ -105,10 +105,10 @@ protected:
   const char *name_;
   const char *compatible_;
   Device *parent_;
-  containers::RcuList<Device *> children_;
+  containers::LockedList<Device *> children_;
 
-  containers::RcuList<DeviceResource> resources_;
-  containers::RcuList<DeviceProperty> properties_;
+  containers::LockedList<DeviceResource> resources_;
+  containers::LockedList<DeviceProperty> properties_;
 
   u64 init_time_;
   u64 last_access_time_;
@@ -153,19 +153,17 @@ public:
   [[nodiscard]] containers::Optional<DeviceResource> get_resource(DeviceResource::Type type,
                                                                   usize index = 0) const noexcept {
     usize found_count = 0;
-    const DeviceResource *found = nullptr;
+    containers::Optional<DeviceResource> found;
 
     resources_.for_each([type, index, &found_count, &found](const DeviceResource &res) {
-      if (res.type == type) {
-        if (found_count == index) {
-          found = &res;
-          return;
+      if (!found && res.type == type) {
+        if (found_count++ == index) {
+          found = res;
         }
-        found_count++;
       }
     });
 
-    return found ? containers::Optional<DeviceResource>{*found} : containers::Optional<DeviceResource>{};
+    return found;
   }
 
   // Property management
@@ -174,7 +172,7 @@ public:
   }
 
   [[nodiscard]] const char *get_property(const char *name) const noexcept {
-    const DeviceProperty *found = properties_.find_if(
+    auto found = properties_.find_if(
         [name](const DeviceProperty &prop) { return moss::abi::bridge::strcmp(prop.name, name) == 0; });
 
     return found ? found->value : nullptr;
@@ -259,10 +257,10 @@ public:
 
 class DeviceManager {
 private:
-  containers::RcuHashMap<DeviceId, shared_ptr<Device>> devices_;
-  containers::RcuHashMap<const char *, DeviceId> device_name_map_;
-  containers::RcuList<Driver *> drivers_;
-  containers::RcuHashMap<DeviceId, Driver *> device_driver_map_;
+  containers::LockedHashMap<DeviceId, shared_ptr<Device>> devices_;
+  containers::LockedHashMap<const char *, DeviceId> device_name_map_;
+  containers::LockedList<Driver *> drivers_;
+  containers::LockedHashMap<DeviceId, Driver *> device_driver_map_;
 
   containers::AtomicCounter<DeviceId> next_device_id_;
   containers::AtomicCounter<u32> total_devices_;
@@ -303,21 +301,19 @@ public:
   }
 
   [[nodiscard]] VoidResult unregister_device(DeviceId device_id) noexcept {
-    const auto *device_ptr = devices_.find(device_id);
-    if (device_ptr == nullptr) {
+    auto device_ptr = devices_.extract(device_id);
+    if (!device_ptr) {
       return VoidResult{ErrorCode::NotFound};
     }
 
     shared_ptr<Device> device = *device_ptr;
 
-    const auto *driver_ptr = device_driver_map_.find(device_id);
-    if (driver_ptr != nullptr) {
+    auto driver_ptr = device_driver_map_.extract(device_id);
+    if (static_cast<bool>(driver_ptr)) {
       Driver *driver = *driver_ptr;
       driver->remove(device.get());
-      device_driver_map_.remove(device_id);
     }
 
-    devices_.remove(device_id);
     if (device->name() != nullptr) {
       device_name_map_.remove(device->name());
     }
@@ -339,7 +335,7 @@ public:
     drivers_.push_front(driver);
     (void)registered_drivers_.fetch_add(1, containers::MemoryOrder::Relaxed);
 
-    devices_.for_each([this, driver](const auto &entry) {
+    devices_.for_each_snapshot([this, driver](const auto &entry) {
       Device *device = entry.value.get();
       if (device->state() == DeviceState::Uninitialized && driver->is_compatible(device->compatible())) {
 
@@ -356,13 +352,13 @@ public:
   }
 
   [[nodiscard]] shared_ptr<Device> get_device(DeviceId device_id) const noexcept {
-    const auto *device_ptr = devices_.find(device_id);
+    auto device_ptr = devices_.find(device_id);
     return device_ptr ? *device_ptr : shared_ptr<Device>{};
   }
 
   [[nodiscard]] shared_ptr<Device> get_device_by_name(const char *name) const noexcept {
-    const DeviceId *device_id_ptr = device_name_map_.find(name);
-    if (device_id_ptr == nullptr) {
+    auto device_id_ptr = device_name_map_.find(name);
+    if (!device_id_ptr) {
       return shared_ptr<Device>{};
     }
 
@@ -382,7 +378,7 @@ public:
   }
 
   void list_devices(void (*callback)(const Device &, void *), void *context) const noexcept {
-    devices_.for_each([callback, context](const auto &entry) {
+    devices_.for_each_snapshot([callback, context](const auto &entry) {
       const Device &device = *entry.value;
       callback(device, context);
     });
@@ -391,7 +387,7 @@ public:
   [[nodiscard]] VoidResult suspend_all_devices() noexcept {
     bool success = true;
 
-    devices_.for_each([&success](const auto &entry) {
+    devices_.for_each_snapshot([&success](const auto &entry) {
       Device *device = entry.value.get();
       if (device->state() == DeviceState::Active) {
         auto result = device->suspend();
@@ -409,7 +405,7 @@ public:
   [[nodiscard]] VoidResult resume_all_devices() noexcept {
     bool success = true;
 
-    devices_.for_each([&success](const auto &entry) {
+    devices_.for_each_snapshot([&success](const auto &entry) {
       Device *device = entry.value.get();
       if (device->state() == DeviceState::Suspended) {
         auto result = device->resume();
@@ -426,10 +422,10 @@ public:
 
 private:
   [[nodiscard]] VoidResult match_driver(Device *device) noexcept {
-    const auto *matched_driver_ptr =
+    auto matched_driver_ptr =
         drivers_.find_if([device](const Driver *driver) { return driver->is_compatible(device->compatible()); });
 
-    if (matched_driver_ptr == nullptr) {
+    if (!matched_driver_ptr) {
       return VoidResult{ErrorCode::NotFound};
     }
 
@@ -445,7 +441,7 @@ private:
   }
 
   void cleanup() noexcept {
-    devices_.for_each([](const auto &entry) { entry.value->shutdown(); });
+    devices_.for_each_snapshot([](const auto &entry) { entry.value->shutdown(); });
   }
 };
 

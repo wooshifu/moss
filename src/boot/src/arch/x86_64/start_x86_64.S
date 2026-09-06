@@ -268,6 +268,7 @@ pvh_temp_info_32:
 // =============================================================================
 .section ".pvh.pagetables", "aw", @nobits
 .align 4096
+.global pvh_pml4
 pvh_pml4:    .skip 4096
 pvh_pdpt:    .skip 4096
 pvh_pd0:     .skip 4096
@@ -366,7 +367,9 @@ x86_ap_trampoline_start:
 .Lap_long:
     mov (0x8000 + .Lap_stack - x86_ap_trampoline_start), %rsp
     movabs $x86_secondary_entry, %rax
-    jmp *%rax
+    // SysV C entry requires RSP % 16 == 8, including noreturn functions.
+    call *%rax
+    ud2
 .balign 8
 .Lap_gdt:
     .quad 0

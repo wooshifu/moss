@@ -17,6 +17,7 @@ extern unsigned long long gdt_table[];                // GDT in start_x86_64.S .
 extern unsigned char _stack_top_addr[];               // Boot stack top (linker symbol)
 void early_debug_print(const char *message) noexcept; // UART output (kernel_main.cpp)
 extern unsigned char x86_ap_trampoline_start[], x86_ap_trampoline_end[], x86_ap_cr3[], x86_ap_stack[];
+extern unsigned char pvh_pml4[];
 [[noreturn]] void x86_secondary_entry() noexcept;
 
 // Page fault handler in mm module (page_fault.cpp)
@@ -35,6 +36,24 @@ using moss::u32;
 using moss::u64;
 using moss::u8;
 using moss::VirtAddr;
+
+static bool initialize_fpu() noexcept {
+  u32 a, b, c, d;
+  asm volatile("cpuid" : "=a"(a), "=b"(b), "=c"(c), "=d"(d) : "a"(1), "c"(0));
+  constexpr u32 required = (1U << 0) | (1U << 24) | (1U << 25) | (1U << 26); // x87, FXSR, SSE, SSE2
+  if ((d & required) != required) {
+    return false;
+  }
+  u64 cr0, cr4;
+  asm volatile("mov %%cr0, %0; mov %%cr4, %1" : "=r"(cr0), "=r"(cr4));
+  cr0 = (cr0 & ~u64{0xc}) | 0x22; // clear EM/TS, enable MP/NE
+  // Eager legacy-state switching; do not expose AVX until XSAVE ownership exists.
+  cr4 = (cr4 & ~(1ULL << 18)) | 0x600; // OSFXSR + OSXMMEXCPT, no OSXSAVE
+  asm volatile("mov %0, %%cr0; mov %1, %%cr4" ::"r"(cr0), "r"(cr4) : "memory");
+  const moss::kernel::process::X86FpState initial{};
+  asm volatile("fxrstor64 %0" ::"m"(initial) : "memory");
+  return true;
+}
 
 // =============================================================================
 // TSS setup — called from start_x86_64.S before early_main()
@@ -355,6 +374,9 @@ static bool discover_acpi(u64 address) noexcept {
 ::moss::kernel::VoidResult moss::boot::X86BootImpl::hardware_early_init(BootContext &ctx) noexcept {
   using namespace moss::kernel::platform;
   update_boot_stage(BootStage::HardwareInit);
+  if (!initialize_fpu()) {
+    return ::moss::kernel::VoidResult{::moss::kernel::ErrorCode::NotSupported};
+  }
   hardware = {};
   for (u32 i = 0; i < 16; ++i) {
     hardware.isa_gsi[i] = i;
@@ -538,6 +560,11 @@ extern "C" void x86_64_interrupt_handler(u64 vector, u64 error_code, [[maybe_unu
       return; // Handler resolved the fault — iretq retries the instruction
     }
 
+    // User x87/SIMD arithmetic faults belong to the process, not the kernel.
+    if ((vector == 16 || vector == 19) && (frame_u64[18] & 3) == 3) {
+      moss::abi::bridge::terminate_current_user_process(-8); // SIGFPE-equivalent termination
+    }
+
     // Other CPU exceptions — print diagnostics and halt
     early_debug_print("EXCEPTION vec=");
     uart_print_hex(vector);
@@ -696,8 +723,9 @@ void activate_secondary_cpus() noexcept {
   for (u64 i = 0; i < size; ++i) {
     copy[i] = x86_ap_trampoline_start[i];
   }
-  u64 cr3;
-  asm volatile("mov %%cr3, %0" : "=r"(cr3));
+  // The temporary PVH map covers the real-mode trampoline. The AP switches to
+  // final W^X tables after leaving that page, before publishing itself online.
+  u64 cr3 = reinterpret_cast<u64>(pvh_pml4);
   *reinterpret_cast<u64 *>(copy + (x86_ap_cr3 - x86_ap_trampoline_start)) = cr3;
   auto *icr_lo = reinterpret_cast<volatile u32 *>(moss::kernel::platform::intc_dist_base() + 0x300);
   auto *icr_hi = reinterpret_cast<volatile u32 *>(moss::kernel::platform::intc_dist_base() + 0x310);
@@ -730,6 +758,13 @@ void activate_secondary_cpus() noexcept {
 } // namespace moss::boot
 
 extern "C" [[noreturn]] void x86_secondary_entry() noexcept {
+  using Tables = moss::kernel::mm::PageTableManager;
+  if (!moss::kernel::hal::mmu::enable_mmu(Tables::get_physical_address(Tables::get_kernel_pgd()))) {
+    moss::kernel::arch::kernel_panic("secondary CPU MMU initialization failed");
+  }
+  if (!initialize_fpu()) {
+    moss::kernel::arch::kernel_panic("secondary CPU lacks x87/FXSR/SSE2");
+  }
   auto cpu = moss::kernel::arch::get_current_cpu_id();
   if (cpu == 0 || cpu >= 16) {
     for (;;) {

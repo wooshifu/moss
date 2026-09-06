@@ -9,15 +9,83 @@ namespace log = moss::kernel::logging;
 
 namespace moss::kernel::mm {
 
+static unsigned root_shift() noexcept { return hal::mmu::g_mmu_mode == hal::mmu::MmuMode::Sv39 ? 30 : 39; }
+
+// A whole entry is shared only when its entire VA range belongs to the kernel.
+// The low 4 GiB and upper half stay kernel-owned whether mapped by blocks or pages.
+static bool shared_kernel_entry(u64 base, unsigned shift) noexcept {
+  constexpr u64 end = PageTableManager::KERNEL_IDENTITY_END;
+  return base >= USER_MAX || (base < end && (1ULL << shift) <= end - base);
+}
+
 static bool overlaps_ram(PhysAddr start, PhysAddr end) noexcept {
   const auto &hardware = moss::kernel::platform::hardware;
   for (u32 i = 0; i < hardware.memory_region_count; ++i) {
     const auto &region = hardware.memory_regions[i];
-    if (start < region.base + region.size && end > region.base) {
+    if (region.size && (start >= region.base ? start - region.base < region.size : end > region.base)) {
       return true;
     }
   }
   return false;
+}
+
+static bool permission_boundary(PhysAddr begin, PhysAddr end) noexcept {
+  namespace linker = moss::abi::linker;
+  auto inside = [&](PhysAddr boundary) { return begin < boundary && boundary < end; };
+  if (inside(linker::text_start()) || inside(linker::text_end()) || inside(linker::rodata_start()) ||
+      inside(linker::rodata_end())) {
+    return true;
+  }
+  const auto &hardware = moss::kernel::platform::hardware;
+  for (u32 i = 0; i < hardware.memory_region_count; ++i) {
+    const auto &region = hardware.memory_regions[i];
+    if (region.base < PageTableManager::KERNEL_IDENTITY_END && region.size) {
+      // Clip before rounding so a valid RAM end near UINT64_MAX cannot wrap.
+      const u64 room = PageTableManager::KERNEL_IDENTITY_END - region.base;
+      const u64 limit = region.base + (region.size < room ? region.size : room);
+      if (inside(region.base & ~(PAGE_SIZE - 1)) || inside((limit + PAGE_SIZE - 1) & ~(PAGE_SIZE - 1))) {
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
+// Keep large leaves where permissions are uniform; split only at image/RAM edges.
+static VoidResult build_kernel_entry(PageTableEntry &entry, PhysAddr pa, unsigned shift, bool direct_map) {
+  namespace linker = moss::abi::linker;
+  using Tables = PageTableManager;
+  const u64 size = 1ULL << shift;
+  if (shift > PAGE_SHIFT && permission_boundary(pa, pa + size)) {
+    auto result = Tables::allocate_page_table();
+    if (!result) {
+      return VoidResult{result.error()};
+    }
+    auto *table = *result;
+    for (usize i = 0; i < PageTable::ENTRIES_PER_TABLE; ++i) {
+      auto mapped =
+          build_kernel_entry(table->entries[i], pa + (static_cast<u64>(i) << (shift - 9)), shift - 9, direct_map);
+      if (!mapped) {
+        return mapped;
+      }
+    }
+    entry.set_table(Tables::get_physical_address(table));
+    return VoidResult{};
+  }
+  u64 attributes;
+  if (pa >= linker::text_start() && pa < linker::text_end()) {
+    attributes = direct_map ? page_perms::KERNEL_RO : page_perms::KERNEL_RX;
+  } else if (pa >= linker::rodata_start() && pa < linker::rodata_end()) {
+    attributes = page_perms::KERNEL_RO;
+  } else {
+    attributes = overlaps_ram(pa, pa + PAGE_SIZE) ? page_perms::KERNEL_RW : page_perms::DEVICE;
+  }
+  if (shift == PAGE_SHIFT) {
+    entry.set_page(pa, attributes);
+  } else {
+    entry.set_block(pa, attributes);
+  }
+  return VoidResult{};
 }
 
 // PageTableManager 方法实现 — routes to early bump or dynamic buddy allocator
@@ -81,17 +149,16 @@ VoidResult PageTableManager::setup_kernel_high_half_tables() {
   kernel_high_pgd = kernel_pgd;
 
   if (hal::mmu::g_mmu_mode == hal::mmu::MmuMode::Sv39) {
-    // Sv39: root entries are 1GB gigapages — add directly at pgd_idx.
+    // Sv39: each root entry covers 1 GiB, using blocks or lower-level tables.
     for (usize i = 0; i < 4; i++) {
       PhysAddr block_addr = static_cast<PhysAddr>(i * ONE_GB);
-      PhysAddr block_end = block_addr + ONE_GB;
-      kernel_pgd->entries[pgd_idx + i].raw = overlaps_ram(block_addr, block_end)
-                                                 ? hal::mmu::make_normal_block(block_addr)
-                                                 : hal::mmu::make_device_block(block_addr);
+      auto mapped = build_kernel_entry(kernel_pgd->entries[pgd_idx + i], block_addr, 30, true);
+      if (!mapped) {
+        return mapped;
+      }
     }
   } else {
-    // Sv48: root entries are table pointers — allocate a PUD and fill with
-    // 1GB gigapage leaves, then point kernel_pgd[pgd_idx] at it.
+    // Sv48: allocate a PUD for the direct map's blocks and split subtrees.
     auto pud_result = allocate_page_table();
     if (!pud_result) {
       return VoidResult{pud_result.error()};
@@ -100,9 +167,10 @@ VoidResult PageTableManager::setup_kernel_high_half_tables() {
 
     for (usize i = 0; i < 4; i++) {
       PhysAddr block_addr = static_cast<PhysAddr>(i * ONE_GB);
-      PhysAddr block_end = block_addr + ONE_GB;
-      pud->entries[i].raw = overlaps_ram(block_addr, block_end) ? hal::mmu::make_normal_block(block_addr)
-                                                                : hal::mmu::make_device_block(block_addr);
+      auto mapped = build_kernel_entry(pud->entries[i], block_addr, 30, true);
+      if (!mapped) {
+        return mapped;
+      }
     }
 
     PhysAddr pud_pa = get_physical_address(pud);
@@ -131,23 +199,28 @@ VoidResult PageTableManager::setup_kernel_high_half_tables() {
     kernel_pgd->entries[pgd_idx] = kernel_high_pgd->entries[pgd_idx];
 #endif
 
-    // Fill PUD entries with 1GB block descriptors covering 0-4GB
+    // Cover 0-4 GiB, splitting at physical memory and protection boundaries.
     for (usize i = 0; i < 4; i++) {
       PhysAddr block_addr = static_cast<PhysAddr>(i * ONE_GB);
-      PhysAddr block_end = block_addr + ONE_GB;
-      pud->entries[i].raw = overlaps_ram(block_addr, block_end) ? hal::mmu::make_normal_block(block_addr)
-                                                                : hal::mmu::make_device_block(block_addr);
+      auto mapped = build_kernel_entry(pud->entries[i], block_addr, 30, true);
+      if (!mapped) {
+        return mapped;
+      }
     }
   }
 #endif
 
-  log::klog::info("high-half page table: PGD[{}] -> 4x1GB blocks", pgd_idx);
+  log::klog::info("high-half page table: PGD[{}] -> NX direct map", pgd_idx);
   return VoidResult{};
 }
 
 // Walk user page tables and return a mutable pointer to the leaf PTE.
 // Returns nullptr if any intermediate table is missing (does not allocate).
 PageTableEntry *PageTableManager::get_user_pte(PhysAddr pgd_phys, VirtAddr va) {
+  if (!pgd_phys || !is_user_range(va, 1) || pgd_phys == get_physical_address(kernel_pgd) ||
+      pgd_phys == get_physical_address(kernel_high_pgd)) {
+    return nullptr;
+  }
   auto *pgd = get_table_from_physical(pgd_phys);
   if (!pgd) {
     return nullptr;
@@ -199,6 +272,50 @@ void PageTableManager::unmap_user_page(PhysAddr pgd_phys, VirtAddr va) noexcept 
   }
 }
 
+KernelResult<PhysAddr> PageTableManager::create_user_page_tables() {
+  if (!kernel_pgd || !use_dynamic_alloc) {
+    return KernelResult<PhysAddr>{ErrorCode::InvalidState};
+  }
+  auto result = allocate_page_table_dynamic();
+  if (!result) {
+    return KernelResult<PhysAddr>{result.error()};
+  }
+  auto *root = *result;
+  const PhysAddr root_pa = get_physical_address(root);
+  const unsigned shift = root_shift();
+  for (usize i = 0; i < PageTable::ENTRIES_PER_TABLE; ++i) {
+    const auto &source = kernel_pgd->entries[i];
+    if (!source.is_valid()) {
+      continue;
+    }
+    const u64 base = static_cast<u64>(i) << shift;
+    if (shared_kernel_entry(base, shift)) {
+      root->entries[i] = source;
+      continue;
+    }
+    // In four-level mode, root[0] mixes the identity map with future user VAs.
+    // Its PUD is private; the kernel-owned children are shared without descent.
+    if (shift != 39 || i != 0 || !source.is_table()) {
+      free_user_page_tables(root_pa);
+      return KernelResult<PhysAddr>{ErrorCode::InvalidState};
+    }
+    auto private_result = allocate_page_table_dynamic();
+    if (!private_result) {
+      free_user_page_tables(root_pa);
+      return KernelResult<PhysAddr>{private_result.error()};
+    }
+    auto *private_table = *private_result;
+    const auto *kernel_table = get_table_from_physical(source.get_phys_addr());
+    for (usize j = 0; j < PageTable::ENTRIES_PER_TABLE; ++j) {
+      if (shared_kernel_entry(base | (static_cast<u64>(j) << (shift - 9)), shift - 9)) {
+        private_table->entries[j] = kernel_table->entries[j];
+      }
+    }
+    root->entries[i].set_table(get_physical_address(private_table), true);
+  }
+  return KernelResult<PhysAddr>{root_pa};
+}
+
 // Clone user page tables for fork(): deep-copy intermediate tables,
 // share leaf pages via COW (mark READONLY + SW_COW, increment refcount).
 void PageTableManager::clone_user_page_tables(PhysAddr src_pgd_phys, PhysAddr dst_pgd_phys) {
@@ -210,12 +327,13 @@ void PageTableManager::clone_user_page_tables(PhysAddr src_pgd_phys, PhysAddr ds
 
   constexpr usize ENTRIES = PageTable::ENTRIES_PER_TABLE;
 
-  // Helper: clone PUD→PMD→PTE user mappings from src_pud into dst_pud.
-  // Only table descriptors (pointing to PMD/PTE) are cloned with COW.
-  // 1GB block descriptors (kernel identity map) are skipped — they are
-  // already present in dst_pud (copied by create_user_address_space).
-  auto clone_pud_user_entries = [&](PageTable *src_pud, PageTable *dst_pud) {
+  const unsigned shift = root_shift();
+  // Shared kernel subtrees must never be cloned or marked COW, even after splitting.
+  auto clone_pud_user_entries = [&](PageTable *src_pud, PageTable *dst_pud, u64 base) {
     for (usize pud_i = 0; pud_i < ENTRIES; pud_i++) {
+      if (shared_kernel_entry(base | (static_cast<u64>(pud_i) << (shift - 9)), shift - 9)) {
+        continue;
+      }
       auto &src_pude = src_pud->entries[pud_i];
       if (!src_pude.is_valid()) {
         continue;
@@ -235,7 +353,7 @@ void PageTableManager::clone_user_page_tables(PhysAddr src_pgd_phys, PhysAddr ds
         return;
       }
       auto *dst_pmd = *pmd_result;
-      dst_pud->entries[pud_i].set_table(get_physical_address(dst_pmd));
+      dst_pud->entries[pud_i].set_table(get_physical_address(dst_pmd), true);
 
       for (usize pmd_i = 0; pmd_i < ENTRIES; pmd_i++) {
         auto &src_pmde = src_pmd->entries[pmd_i];
@@ -270,7 +388,7 @@ void PageTableManager::clone_user_page_tables(PhysAddr src_pgd_phys, PhysAddr ds
           return;
         }
         auto *dst_pte = *pte_result;
-        dst_pmd->entries[pmd_i].set_table(get_physical_address(dst_pte));
+        dst_pmd->entries[pmd_i].set_table(get_physical_address(dst_pte), true);
 
         for (usize pte_i = 0; pte_i < ENTRIES; pte_i++) {
           auto &src_ptee = src_pte->entries[pte_i];
@@ -294,17 +412,14 @@ void PageTableManager::clone_user_page_tables(PhysAddr src_pgd_phys, PhysAddr ds
     }
   };
 
-  // PGD[0] special case: contains both kernel 1GB block descriptors and
-  // user page-table entries (e.g. 0x200000000 = PUD[8]).
-  // create_user_address_space already set up dst PGD[0] with a private PUD
-  // that has the kernel 1GB block descriptors.  We must additionally clone
-  // user table descriptors (PMD→PTE chains) from parent's PGD[0] PUD.
-  if (src_pgd->entries[0].is_valid() && src_pgd->entries[0].is_table() && dst_pgd->entries[0].is_valid() &&
-      dst_pgd->entries[0].is_table()) {
+  // Four-level root[0] has a private PUD mixing borrowed kernel subtrees and
+  // user entries. Sv39 root[0] is entirely kernel-owned and must not be traversed.
+  if (!shared_kernel_entry(0, shift) && src_pgd->entries[0].is_valid() && src_pgd->entries[0].is_table() &&
+      dst_pgd->entries[0].is_valid() && dst_pgd->entries[0].is_table()) {
     auto *src_pud = get_table_from_physical(src_pgd->entries[0].get_phys_addr());
     auto *dst_pud = get_table_from_physical(dst_pgd->entries[0].get_phys_addr());
     if (src_pud && dst_pud) {
-      clone_pud_user_entries(src_pud, dst_pud);
+      clone_pud_user_entries(src_pud, dst_pud, 0);
     }
   }
 
@@ -314,6 +429,9 @@ void PageTableManager::clone_user_page_tables(PhysAddr src_pgd_phys, PhysAddr ds
   // create_user_address_space() already copied them from the kernel PGD;
   // cloning would overwrite them with empty PUDs and break kernel access.
   for (usize pgd_i = 1; pgd_i < ENTRIES / 2; pgd_i++) {
+    if (shared_kernel_entry(static_cast<u64>(pgd_i) << shift, shift)) {
+      continue;
+    }
     auto &src_pge = src_pgd->entries[pgd_i];
     if (!src_pge.is_valid() || !src_pge.is_table()) {
       continue;
@@ -330,9 +448,9 @@ void PageTableManager::clone_user_page_tables(PhysAddr src_pgd_phys, PhysAddr ds
       return;
     }
     auto *dst_pud = *pud_result;
-    dst_pgd->entries[pgd_i].set_table(get_physical_address(dst_pud));
+    dst_pgd->entries[pgd_i].set_table(get_physical_address(dst_pud), true);
 
-    clone_pud_user_entries(src_pud, dst_pud);
+    clone_pud_user_entries(src_pud, dst_pud, static_cast<u64>(pgd_i) << shift);
   }
 
   // Parent PTEs were changed to read-only + COW — flush stale writable TLB entries.
@@ -343,10 +461,10 @@ void PageTableManager::clone_user_page_tables(PhysAddr src_pgd_phys, PhysAddr ds
 
 // Free all user page tables and demand-paged physical pages.
 // Walks PGD→PUD→PMD→PTE, frees leaf pages and intermediate tables.
-// PGD[0] is the shared kernel identity map — skip it.
-// PGD[ENTRIES/2..ENTRIES-1] is the kernel high-half — skip it.
+// Skip kernel-owned VA ranges at each mixed level, regardless of leaf size.
 void PageTableManager::free_user_page_tables(PhysAddr pgd_phys) {
-  if (pgd_phys == 0) {
+  if (pgd_phys == 0 || pgd_phys == get_physical_address(kernel_pgd) ||
+      pgd_phys == get_physical_address(kernel_high_pgd)) {
     return;
   }
 
@@ -356,11 +474,12 @@ void PageTableManager::free_user_page_tables(PhysAddr pgd_phys) {
   }
 
   constexpr usize ENTRIES = PageTable::ENTRIES_PER_TABLE;
-
+  const unsigned shift = root_shift();
   for (usize i0 = 0; i0 < ENTRIES; i0++) {
     // Skip kernel high-half PGD entries (e.g. Sv48 PGD[256..511]).
     // These point to shared kernel page tables that must not be freed.
-    if (i0 >= ENTRIES / 2) {
+    const u64 base = static_cast<u64>(i0) << shift;
+    if (shared_kernel_entry(base, shift)) {
       continue;
     }
     auto &pge = pgd->entries[i0];
@@ -368,12 +487,8 @@ void PageTableManager::free_user_page_tables(PhysAddr pgd_phys) {
       continue;
     }
 
-    // PGD[0] now points to a per-process private PUD that contains
-    // copies of the kernel 1GB block descriptors.  The loop below
-    // correctly handles this: is_block() entries (kernel identity map)
-    // are skipped, while table descriptors (user L2/L3 from demand
-    // paging) are recursively freed.  The PUD page itself is freed
-    // at the end of this iteration.
+    // A four-level process owns the mixed low PUD, but not the kernel children
+    // it references. Only user descendants and the private PUD are freed.
 
     auto *pud = get_table_from_physical(pge.get_phys_addr());
     if (!pud) {
@@ -381,13 +496,15 @@ void PageTableManager::free_user_page_tables(PhysAddr pgd_phys) {
     }
 
     for (usize i1 = 0; i1 < ENTRIES; i1++) {
+      if (shared_kernel_entry(base | (static_cast<u64>(i1) << (shift - 9)), shift - 9)) {
+        continue;
+      }
       auto &pude = pud->entries[i1];
       if (!pude.is_valid()) {
         continue;
       }
 
-      // Block mapping (1GB) — don't free the underlying physical memory
-      // (it belongs to device or kernel identity map)
+      // User huge pages are not supported by this teardown path.
       if (pude.is_block()) {
         continue;
       }
@@ -464,6 +581,11 @@ void PageTableManager::free_user_page_tables(PhysAddr pgd_phys) {
 // Map a single 4KB page into a user process page table
 // ARM64/x86_64: 4-level walk;  RISC-V Sv39: 3-level walk
 VoidResult PageTableManager::map_user_page(PhysAddr pgd_phys, VirtAddr va, PhysAddr pa, u64 perms) {
+  if (!pgd_phys || pgd_phys == get_physical_address(kernel_pgd) || pgd_phys == get_physical_address(kernel_high_pgd) ||
+      !is_user_range(va, PAGE_SIZE) || ((va | pa | pgd_phys) & (PAGE_SIZE - 1)) != 0 ||
+      (perms & page_attr::USER) == 0) {
+    return VoidResult{ErrorCode::InvalidParameter};
+  }
   auto *pgd = get_table_from_physical(pgd_phys);
   auto bd = break_virtual_address(va);
 
@@ -473,7 +595,7 @@ VoidResult PageTableManager::map_user_page(PhysAddr pgd_phys, VirtAddr va, PhysA
     if (!result) {
       return VoidResult{ErrorCode::OutOfMemory};
     }
-    pgd->entries[bd.pgd_index].set_table(get_physical_address(*result));
+    pgd->entries[bd.pgd_index].set_table(get_physical_address(*result), true);
   }
   auto *pud = get_table_from_physical(pgd->entries[bd.pgd_index].get_phys_addr());
 
@@ -483,7 +605,7 @@ VoidResult PageTableManager::map_user_page(PhysAddr pgd_phys, VirtAddr va, PhysA
     if (!result) {
       return VoidResult{ErrorCode::OutOfMemory};
     }
-    pud->entries[bd.pud_index].set_table(get_physical_address(*result));
+    pud->entries[bd.pud_index].set_table(get_physical_address(*result), true);
   }
   auto *pmd = get_table_from_physical(pud->entries[bd.pud_index].get_phys_addr());
 
@@ -500,7 +622,7 @@ VoidResult PageTableManager::map_user_page(PhysAddr pgd_phys, VirtAddr va, PhysA
       if (!result) {
         return VoidResult{ErrorCode::OutOfMemory};
       }
-      pmd->entries[bd.pmd_index].set_table(get_physical_address(*result));
+      pmd->entries[bd.pmd_index].set_table(get_physical_address(*result), true);
     }
     auto *pte = get_table_from_physical(pmd->entries[bd.pmd_index].get_phys_addr());
     pte->entries[bd.pte_index].set_page(pa, perms);
@@ -513,15 +635,23 @@ VoidResult PageTableManager::map_user_page(PhysAddr pgd_phys, VirtAddr va, PhysA
 // 创建内核页表映射
 //
 // 4-level (ARM64, x86_64, RISC-V Sv48): 48-bit VA
-//   PGD[0] → PUD with 1GB block entries for the first 4GB identity map.
+//   PGD[0] → PUD for the first 4 GiB identity map.
 //
 // 3-level (RISC-V Sv39): 39-bit VA
-//   Root table = L2 level; 1GB gigapage entries go directly into root[0..3].
+//   Root table = L2 level; root[0..3] cover the identity map.
+// Both layouts split leaves at permission/firmware boundaries.
 VoidResult PageTableManager::setup_kernel_page_tables() {
   if (!moss::kernel::platform::hardware.memory_map_valid) {
     return VoidResult{ErrorCode::InvalidState};
   }
   constexpr u64 ONE_GB = 0x40000000ULL;
+  namespace linker = moss::abi::linker;
+  if (((linker::text_start() | linker::text_end() | linker::rodata_start() | linker::rodata_end()) & (PAGE_SIZE - 1)) !=
+          0 ||
+      linker::text_start() >= linker::text_end() || linker::text_end() > linker::rodata_start() ||
+      linker::rodata_end() > linker::data_start() || linker::kernel_end() > KERNEL_IDENTITY_END) {
+    return VoidResult{ErrorCode::InvalidState};
+  }
 
 #if defined(MOSS_ARCH_RISCV)
   if (hal::mmu::g_mmu_mode == hal::mmu::MmuMode::Sv39) {
@@ -533,17 +663,18 @@ VoidResult PageTableManager::setup_kernel_page_tables() {
     }
     PageTableManager::kernel_pgd = *root_result;
 
-    // Fill root[0..3] with 1GB gigapage leaf entries for identity map (0-4GB).
+    // Each root entry covers 1 GiB; build smaller leaves where required.
     for (usize i = 0; i < 4; i++) {
       PhysAddr block_addr = static_cast<PhysAddr>(i * ONE_GB);
-      PhysAddr block_end = block_addr + ONE_GB;
-      kernel_pgd->entries[i].raw = overlaps_ram(block_addr, block_end) ? hal::mmu::make_normal_block(block_addr)
-                                                                       : hal::mmu::make_device_block(block_addr);
+      auto mapped = build_kernel_entry(kernel_pgd->entries[i], block_addr, 30, false);
+      if (!mapped) {
+        return mapped;
+      }
     }
   } else
 #endif
   {
-    // 4-level: PGD[0] → PUD with 1GB block entries.
+    // 4-level: PGD[0] → PUD covering the identity map.
     auto pgd_result = PageTableManager::allocate_page_table();
     if (!pgd_result) {
       return VoidResult{pgd_result.error()};
@@ -564,9 +695,10 @@ VoidResult PageTableManager::setup_kernel_page_tables() {
     constexpr usize PUD_ENTRY_COUNT = 4;
     for (usize i = 0; i < PUD_ENTRY_COUNT; i++) {
       PhysAddr block_addr = static_cast<PhysAddr>(i * ONE_GB);
-      PhysAddr block_end = block_addr + ONE_GB;
-      pud->entries[i].raw = overlaps_ram(block_addr, block_end) ? hal::mmu::make_normal_block(block_addr)
-                                                                : hal::mmu::make_device_block(block_addr);
+      auto mapped = build_kernel_entry(pud->entries[i], block_addr, 30, false);
+      if (!mapped) {
+        return mapped;
+      }
     }
   }
 
@@ -604,6 +736,10 @@ VoidResult PageTableManager::map_region(VirtAddr virt_addr, PhysAddr phys_addr, 
 // 4-level walk: PGD → PUD → PMD → PTE[pte_index]
 // RISC-V Sv39 (3-level): PGD → PUD → final entry at PMD[pmd_index]
 VoidResult PageTableManager::map_page(VirtAddr virt_addr, PhysAddr phys_addr, u64 permissions) {
+  // This entry point modifies the kernel PGD; user mappings have their own API.
+  if (permissions & page_attr::USER) {
+    return VoidResult{ErrorCode::InvalidParameter};
+  }
   if (!PageTableManager::kernel_pgd) {
     return VoidResult{ErrorCode::InvalidState};
   }
