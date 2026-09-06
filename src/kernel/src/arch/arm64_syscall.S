@@ -60,20 +60,6 @@ syscall_entry_point:
     // ---- Save frame pointer and link register (outermost pair) ----
     stp     x29, x30, [sp, #-16]!
 
-    // ---- Early diagnostic: write "SYS!\n" to PL011 UART at 0x0900_0000 ----
-    //      Useful during bringup to confirm the entry point is reached.
-    mov     x10, #0x09000000            // QEMU virt PL011 UART base address
-    mov     x11, #'S'
-    str     w11, [x10]
-    mov     x11, #'Y'
-    str     w11, [x10]
-    mov     x11, #'S'
-    str     w11, [x10]
-    mov     x11, #'!'
-    str     w11, [x10]
-    mov     x11, #'\n'
-    str     w11, [x10]
-
     // ---- Save callee-saved and caller-saved general-purpose registers ----
     //      Registers are pushed in descending order so that x0 ends up at
     //      the lowest address (SP after all pushes).  Each `stp` decrements

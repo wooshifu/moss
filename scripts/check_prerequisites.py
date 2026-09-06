@@ -84,11 +84,6 @@ LLVM_TOOLS: list[ToolSpec] = [
     ToolSpec(name="llvm-size", description="size analyzer", requirement=Requirement.OPTIONAL),
 ]
 
-QEMU_ARCH_MAP: dict[str, str] = {
-    "ARM64": "qemu-system-aarch64",
-    "X86_64": "qemu-system-x86_64",
-    "RISCV": "qemu-system-riscv64",
-}
 
 # ---------------------------------------------------------------------------
 # Platform-specific search paths
@@ -116,20 +111,6 @@ def _llvm_search_paths() -> list[Path]:
         local = os.environ.get("LOCALAPPDATA")
         if local:
             candidates.append(Path(local) / "Programs" / "LLVM" / "bin")
-    return [p for p in candidates if p.is_dir()]
-
-
-def _qemu_search_paths() -> list[Path]:
-    """Return platform-specific QEMU search directories."""
-    host = platform.system()
-    candidates: list[Path] = []
-    if host == "Windows":
-        candidates = [Path("C:/Program Files/qemu")]
-        local = os.environ.get("LOCALAPPDATA")
-        if local:
-            candidates.append(Path(local) / "Programs" / "qemu")
-    elif host == "Darwin":
-        candidates = [Path("/opt/homebrew/bin"), Path("/usr/local/bin")]
     return [p for p in candidates if p.is_dir()]
 
 
@@ -221,7 +202,6 @@ def check_all(arch: str | None = None) -> CheckResult:
     """Run all prerequisite checks and return a structured result."""
     result = CheckResult()
     llvm_dirs = _llvm_search_paths()
-    qemu_dirs = _qemu_search_paths()
     llvm_bin_dir: Path | None = None
 
     # --- LLVM tools ---
@@ -245,15 +225,6 @@ def check_all(arch: str | None = None) -> CheckResult:
 
         if exe and not llvm_bin_dir and is_required:
             llvm_bin_dir = exe.parent
-
-    # --- QEMU (optional, arch-specific) ---
-    qemu_names = [QEMU_ARCH_MAP[arch]] if arch and arch in QEMU_ARCH_MAP else list(QEMU_ARCH_MAP.values())
-    for qname in qemu_names:
-        exe, ver = _resolve_tool(qname, "8.0", qemu_dirs)
-        result.optional_tools[qname] = ToolInfo(
-            path=exe.as_posix() if exe else "",
-            version=str(ver) if ver else "",
-        )
 
     # --- Finalise ---
     result.llvm_bin_dir = llvm_bin_dir.as_posix() if llvm_bin_dir else ""

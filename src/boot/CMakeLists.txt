@@ -1,6 +1,6 @@
 # src/boot/CMakeLists.txt
 
-aux_source_directory(src BOOT_SOURCES)
+set(BOOT_SOURCES src/boot.cpp)
 if(MOSS_TARGET_ARCH STREQUAL "ARM64")
     list(APPEND BOOT_SOURCES src/arch/arm64/boot_impl.cpp src/arch/arm64/start_arm64.S)
 elseif(MOSS_TARGET_ARCH STREQUAL "X86_64")

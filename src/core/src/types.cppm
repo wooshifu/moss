@@ -58,7 +58,6 @@ constinit inline VirtAddr KERNEL_DIRECT_MAP_BASE = 0xFFFFFFC000000000ULL; // = K
 #else
 constexpr VirtAddr KERNEL_DIRECT_MAP_BASE = KERNEL_BASE;
 #endif
-constexpr PhysAddr PHYS_BASE = 0x40000000ULL; // QEMU virt RAM start
 
 // Address translation: physical ↔ virtual (valid only after boot trampoline)
 inline VirtAddr phys_to_virt(PhysAddr pa) noexcept { return pa + KERNEL_DIRECT_MAP_BASE; }

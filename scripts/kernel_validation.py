@@ -9,7 +9,6 @@ import statistics
 import subprocess
 import time
 import xml.etree.ElementTree as ET
-from dataclasses import replace
 from pathlib import Path
 from typing import Annotated, Any, Literal
 
@@ -17,22 +16,22 @@ import typer
 from pydantic import BaseModel, ConfigDict
 
 try:
+    from .artifacts import Artifacts
     from .run_qemu import (
         ARCH_CONFIG,
-        QemuConfig,
         build_qemu_args,
         get_qemu_version,
-        normalize_test_exit_code,
         resolve_machine,
+        resolve_qemu,
     )
 except ImportError:
+    from artifacts import Artifacts
     from run_qemu import (
         ARCH_CONFIG,
-        QemuConfig,
         build_qemu_args,
         get_qemu_version,
-        normalize_test_exit_code,
         resolve_machine,
+        resolve_qemu,
     )
 
 CATALOG = {
@@ -225,7 +224,7 @@ class Protocol:
                     raise ValueError("missing calibration evidence")
             self.end = record
 
-    def outcome(self, exit_code: int | None, reason: str | None, serial: bytes) -> tuple[str, str]:
+    def outcome(self, termination: str | None, reason: str | None, serial: bytes) -> tuple[str, str]:
         if reason == "cancelled":
             return "error", "cancelled"
         expected = {"self.fail": "assertion", "self.panic": "panic", "self.timeout": "timeout"}.get(
@@ -258,8 +257,8 @@ class Protocol:
             return "error", reason
         if not self.end:
             return "error", "missing_completion"
-        if exit_code != int(self.failed):
-            return "error", "exit_status_mismatch"
+        if termination != "protocol_end":
+            return "error", "unexpected_process_exit"
         if self.failed:
             return ("passed", "assertion") if expected == "assertion" else ("failed", "assertion")
         return ("passed", "pass") if expected == "pass" else ("failed", "expected_failure_not_observed")
@@ -274,42 +273,21 @@ def sha256(path: Path) -> str:
         return hashlib.file_digest(stream, "sha256").hexdigest()
 
 
-def build_metadata(build: Path) -> dict:
-    cache = {}
-    for line in (build / "CMakeCache.txt").read_text().splitlines():
-        if line and not line.startswith(("#", "//")) and "=" in line:
-            key, value = line.split("=", 1)
-            cache[key.split(":", 1)[0]] = value
-    build_type = cache["CMAKE_BUILD_TYPE"]
-    return {
-        "type": build_type,
-        "compiler": command_output([cache["CMAKE_CXX_COMPILER"], "--version"]),
-        "flags": {
-            key: value
-            for key, value in cache.items()
-            if key
-            in (
-                "CMAKE_CXX_FLAGS",
-                f"CMAKE_CXX_FLAGS_{build_type.upper()}",
-                "CMAKE_EXE_LINKER_FLAGS",
-                f"CMAKE_EXE_LINKER_FLAGS_{build_type.upper()}",
-            )
-        },
-    }
-
-
-def run_guest(cfg: QemuConfig, workload: str, directory: Path, settings: dict, iterations: int) -> dict:
+def run_guest(cfg: Artifacts, workload: str, directory: Path, settings: dict, iterations: int) -> dict:
     directory.mkdir()
-    state = Protocol(workload, settings["cpus"], settings["memory_mib"], settings["warmup"], settings["samples"])
-    build = Path(cfg.build_dir)
-    image = build / ("moss.test.bin" if cfg.arch == "ARM64" else "bin/moss.test.elf")
-    cfg = replace(cfg, initramfs=str(build / "validation-initramfs.cpio"))
+    state = Protocol(
+        workload,
+        settings["cpus"],
+        settings.get("expected_ram_mib", settings["memory_mib"]),
+        settings["warmup"],
+        settings["samples"],
+    )
     bootargs = " ".join(
         f"moss.{k}={v}"
         for k, v in {
             "validation": workload,
             "cpus": settings["cpus"],
-            "memory": settings["memory_mib"],
+            "memory": settings.get("expected_ram_mib", settings["memory_mib"]),
             "warmup": settings["warmup"],
             "samples": settings["samples"],
             "iterations": iterations,
@@ -318,21 +296,19 @@ def run_guest(cfg: QemuConfig, workload: str, directory: Path, settings: dict, i
     )
     args = build_qemu_args(
         cfg,
-        image,
         smp=settings["cpus"],
         memory_mib=settings["memory_mib"],
-        use_binary=False,
-        use_elf=False,
-        test_mode=False,
+        validation=True,
+        qemu=settings.get("qemu"),
+        machine=settings.get("machine"),
+        cpu=settings.get("cpu"),
+        dtb=settings.get("dtb"),
         debug_mode=False,
         extra_args=["-append", bootargs],
     )
-    # Avoid monitor multiplexing in machine-readable sessions.
-    args[args.index("stdio,id=char0,mux=on,signal=off")] = "stdio,id=char0,signal=off"
-    mon = args.index("-mon")
-    del args[mon : mon + 2]
     serial_path, error_path = directory / "serial.log", directory / "qemu.log"
     reason, raw_exit, process = None, None, None
+    termination = "process_exit"
     pending = b""
     start = time.monotonic()
     try:
@@ -351,12 +327,17 @@ def run_guest(cfg: QemuConfig, workload: str, directory: Path, settings: dict, i
                     state.accept(line.rstrip(b"\r"))
                 if len(pending) > 65536:
                     raise ValueError("unbounded partial serial line")
+                if state.end:
+                    termination = "protocol_end"
+                    break
                 raw_exit = process.poll()
                 now = time.monotonic()
                 if raw_exit is not None:
                     pending += serial_in.read()
                     for line in pending.splitlines():
                         state.accept(line)
+                    if state.end:
+                        termination = "protocol_end"
                     break
                 if not state.ready and now - start >= settings["startup_timeout"]:
                     reason = "startup_timeout"
@@ -365,6 +346,7 @@ def run_guest(cfg: QemuConfig, workload: str, directory: Path, settings: dict, i
                 elif now - start >= settings["guest_timeout"]:
                     reason = "guest_timeout"
                 if reason:
+                    termination = "timeout"
                     break
                 time.sleep(0.02)
     except (OSError, ValueError) as error:
@@ -382,10 +364,21 @@ def run_guest(cfg: QemuConfig, workload: str, directory: Path, settings: dict, i
         if process:
             raw_exit = process.returncode
     serial = serial_path.read_bytes() if serial_path.exists() else b""
-    normalized = normalize_test_exit_code(raw_exit, cfg.arch) if raw_exit is not None else None
-    if cfg.arch == "X86_64" and reason is None and raw_exit not in (33, 35):
-        reason = "missing_debug_exit"
-    status, observed = state.outcome(normalized, reason, serial)
+    # Recheck the complete log after reaping, including records written during termination.
+    if termination == "protocol_end":
+        try:
+            replay = Protocol(
+                workload,
+                settings["cpus"],
+                settings.get("expected_ram_mib", settings["memory_mib"]),
+                settings["warmup"],
+                settings["samples"],
+            )
+            for line in serial.splitlines():
+                replay.accept(line)
+        except ValueError as error:
+            reason = f"infrastructure: {error}"
+    status, observed = state.outcome(termination, reason, serial)
     cases = list(state.cases)
     for name in state.expected[len(cases) :]:
         cases.append({"name": name, "status": "error" if name == state.active else "not_run", "reason": observed})
@@ -402,7 +395,7 @@ def run_guest(cfg: QemuConfig, workload: str, directory: Path, settings: dict, i
         "calibration": state.calibration,
         "batches": state.batches,
         "raw_exit": raw_exit,
-        "exit": normalized,
+        "termination": termination,
         "completion": state.end,
         "elapsed_seconds": time.monotonic() - start,
         "qemu_args": args,
@@ -427,7 +420,7 @@ def run_guest(cfg: QemuConfig, workload: str, directory: Path, settings: dict, i
 
 
 def validate_report(report: dict) -> None:
-    if integer(report, "schema_version") != 1 or report.get("finalized") is not True:
+    if integer(report, "schema_version") != 2 or report.get("finalized") is not True:
         raise ValueError("unsupported or unfinished report")
     requested, guests = report.get("requested"), report.get("guests")
     if not isinstance(requested, list) or not requested or any(name not in CATALOG for name in requested):
@@ -454,14 +447,15 @@ def saved_measurement(report: dict, item: dict) -> float | None:
         }
         if item["clock"]["source"] not in sources[arch]:
             return None
-        raw_exit = integer(item, "raw_exit", 0, 255)
-        if raw_exit != (33 if arch == "X86_64" else 0):
-            return None
-        if integer(item, "exit") != normalize_test_exit_code(raw_exit, arch):
+        if item.get("termination") != "protocol_end":
             return None
         settings = environment["settings"]
         state = Protocol(
-            item["workload"], settings["cpus"], settings["memory_mib"], settings["warmup"], settings["samples"]
+            item["workload"],
+            settings["cpus"],
+            settings.get("expected_ram_mib", settings["memory_mib"]),
+            settings["warmup"],
+            settings["samples"],
         )
 
         def accept(record: dict) -> None:
@@ -480,7 +474,7 @@ def saved_measurement(report: dict, item: dict) -> float | None:
             accept(record)
         accept(item["cases"][0]["assertions"])
         accept(item["completion"])
-        if state.outcome(item["exit"], None, b"") != ("passed", "pass"):
+        if state.outcome(item["termination"], None, b"") != ("passed", "pass"):
             return None
         values = [
             b["ticks"] * 1e9 / state.clock["frequency"] / b["operations"] for b in state.batches if not b["warmup"]
@@ -569,7 +563,11 @@ def compare(baseline: Path, current: Path) -> None:
 
 @app.command()
 def run(
-    config: Annotated[Path, typer.Option()],
+    manifest: Annotated[Path, typer.Option()],
+    machine: str | None = None,
+    cpu: str | None = None,
+    qemu: str | None = None,
+    dtb: Path | None = None,
     output: Annotated[Path | None, typer.Option()] = None,
     workload: Annotated[list[str] | None, typer.Option()] = None,
     benchmark: bool = False,
@@ -577,6 +575,7 @@ def run(
     baseline: Annotated[Path | None, typer.Option()] = None,
     cpus: int = 4,
     memory_mib: int = 2048,
+    expected_ram_mib: int | None = None,
     warmup: int = 5,
     samples: int = 30,
     iterations: int = 0,
@@ -597,9 +596,15 @@ def run(
         raise typer.BadParameter("invalid resource or sampling parameters")
     if any(not math.isfinite(value) or value <= 0 for value in (startup_timeout, case_timeout, guest_timeout)):
         raise typer.BadParameter("deadlines must be positive")
-    cfg = QemuConfig.from_json(config.resolve())
-    build = Path(cfg.build_dir)
-    metadata = build_metadata(build)
+    expected_ram_mib = memory_mib if expected_ram_mib is None else expected_ram_mib
+    if not 256 <= expected_ram_mib <= memory_mib:
+        raise typer.BadParameter("expected firmware RAM must be between 256 MiB and installed RAM")
+    cfg = Artifacts.load(manifest)
+    build = cfg.manifest.parent
+    metadata = cfg.build
+    qemu = resolve_qemu(cfg.arch, qemu)
+    image = cfg.require("validation_kernel")
+    initrd = cfg.require("validation_initramfs")
     if any(name.startswith("bench.") for name in selected) and metadata["type"] != "Release":
         raise typer.BadParameter("benchmarks require the production Release build policy")
     prior = load_json(baseline.read_text()) if baseline else None
@@ -608,6 +613,7 @@ def run(
     settings = dict(
         cpus=cpus,
         memory_mib=memory_mib,
+        expected_ram_mib=expected_ram_mib,
         warmup=warmup,
         samples=samples,
         order=order,
@@ -618,19 +624,18 @@ def run(
     environment = {
         "arch": cfg.arch,
         "build": metadata,
-        "qemu": get_qemu_version(cfg.qemu_path),
+        "qemu": get_qemu_version(qemu),
         "host": platform.uname()._asdict(),
         "settings": settings,
         "accelerator": "tcg",
         "clock_policy": 1,
-        "fixture_sha256": sha256(build / "validation-initramfs.cpio")
-        if (build / "validation-initramfs.cpio").is_file()
-        else None,
+        "fixture_sha256": sha256(initrd),
+        "dtb_sha256": sha256(dtb) if dtb else None,
     }
-    environment["machine"] = resolve_machine(cfg.arch, smp=cpus, force_gic3=False)
-    environment["cpu_model"] = ARCH_CONFIG[cfg.arch]["cpu"]
+    environment["machine"] = resolve_machine(cfg.arch, smp=cpus, machine=machine)
+    environment["cpu_model"] = cpu or ARCH_CONFIG[cfg.arch]["cpu"]
     report: dict[str, Any] = {
-        "schema_version": 1,
+        "schema_version": 2,
         "finalized": False,
         "requested": selected,
         "guests": [],
@@ -638,10 +643,8 @@ def run(
         "provenance": {
             "revision": command_output(["git", "rev-parse", "HEAD"]),
             "dirty": bool(command_output(["git", "status", "--porcelain"])),
-            "image_sha256": sha256(image)
-            if (image := build / ("moss.test.bin" if cfg.arch == "ARM64" else "bin/moss.test.elf")).is_file()
-            else None,
-            "config": str(config.resolve()),
+            "image_sha256": sha256(image),
+            "manifest": str(cfg.manifest),
         },
     }
     output = (output or build / "validation" / str(time.time_ns())).resolve()
@@ -660,7 +663,8 @@ def run(
                 old = next((g for g in prior["guests"] if g["workload"] == name and g.get("measurement")), None)
                 if old and saved_measurement(prior, old) is not None:
                     count = old["batches"][0]["operations"]
-            result = run_guest(cfg, name, output / name, settings, count)
+            execution = dict(settings, qemu=qemu, machine=machine, cpu=cpu, dtb=dtb)
+            result = run_guest(cfg, name, output / name, execution, count)
             report["guests"].append(result)
             write_reports(report, output)
             typer.echo(f"{name}: {result['status']} ({result['observed']})")

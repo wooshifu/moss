@@ -1,24 +1,10 @@
-/* =============================================================================
- * MOSS Kernel Linker Script (RISC-V 64 / QEMU virt platform)
- * =============================================================================
- *
- * Memory layout for RISC-V 64-bit on QEMU virt machine.
- *
- * RISC-V QEMU virt memory map:
- *   0x0000_0000 - 0x7FFF_FFFF : I/O devices (PLIC, UART, etc.)
- *   0x8000_0000 - ...         : RAM start
- *   0x8000_0000 - 0x801F_FFFF : OpenSBI firmware (first 2 MB)
- *   0x8020_0000 - ...         : Kernel load address
- *
- * OpenSBI occupies the first 2 MB of RAM, so the kernel is loaded at
- * RAM + 2 MB (0x8020_0000).  The DTB pointer is passed in a1 by OpenSBI.
- * ============================================================================= */
+/* RV64 relocatable Linux Image. SBI firmware supplies hart ID and DTB. */
 
 ENTRY(_start)
 
 MEMORY
 {
-    RAM (rwx) : ORIGIN = 0x80200000, LENGTH = 254M
+    RAM (rwx) : ORIGIN = 0, LENGTH = 256M
 }
 
 KERNEL_VMA = 0xFFFF800000000000;
@@ -67,6 +53,19 @@ SECTIONS
         *(.sdata.*)
     }
 
+    /* Relocations are applied once by the boot CPU before using absolute pointers. */
+    .got : ALIGN(8) { *(.got) *(.got.*) }
+    .dynamic : { *(.dynamic) }
+    .dynsym : { *(.dynsym) }
+    .dynstr : { *(.dynstr) }
+    .hash : { *(.hash) }
+    .gnu.hash : { *(.gnu.hash) }
+    .rela.dyn : ALIGN(8) {
+        _rela_start = .;
+        *(.rela.dyn)
+        _rela_end = .;
+    }
+
     /* Last byte stored in moss.bin. Runtime-only allocations follow. */
     _kernel_file_end = .;
 
@@ -100,7 +99,7 @@ SECTIONS
 
     _kernel_memory_end = .;
     _kernel_end = _kernel_memory_end;
-    _kernel_image_size = _kernel_memory_end - ORIGIN(RAM);
+    _kernel_image_size = ABSOLUTE(_kernel_memory_end - ORIGIN(RAM));
 
     /DISCARD/ : {
         *(.note*)

@@ -27,6 +27,7 @@ module moss.boot;
 
 import moss.abi;
 import moss.fdt;
+import moss.hal.uart;
 
 using moss::PhysAddr;
 using moss::u16;
@@ -141,72 +142,7 @@ BootStatus g_boot_status = {.current_stage = BootStage::PreInit,
                             .stage_timestamps = {0},
                             .last_error = ::moss::kernel::ErrorCode::Success};
 
-// Early VGA text output (x86_64 specific)
-class EarlyVGA {
-private:
-  static u16 *const VGA_BUFFER;
-  static constexpr u8 VGA_WIDTH = 80;
-  static constexpr u8 VGA_HEIGHT = 25;
-  static constexpr u8 VGA_COLOR = 0x07;
-
-  static u8 cursor_row;
-  static u8 cursor_col;
-
-public:
-  static void put_char(char c) {
-    if (c == '\n') {
-      cursor_col = 0;
-      cursor_row++;
-      if (cursor_row >= VGA_HEIGHT) {
-        cursor_row = VGA_HEIGHT - 1;
-        for (u8 row = 0; row < VGA_HEIGHT - 1; row++) {
-          for (u8 col = 0; col < VGA_WIDTH; col++) {
-            VGA_BUFFER[row * VGA_WIDTH + col] = VGA_BUFFER[(row + 1) * VGA_WIDTH + col];
-          }
-        }
-        for (u8 col = 0; col < VGA_WIDTH; col++) {
-          VGA_BUFFER[(VGA_HEIGHT - 1) * VGA_WIDTH + col] = (VGA_COLOR << 8) | ' ';
-        }
-      }
-      return;
-    }
-
-    if (cursor_col >= VGA_WIDTH) {
-      cursor_col = 0;
-      cursor_row++;
-    }
-
-    if (cursor_row >= VGA_HEIGHT) {
-      cursor_row = VGA_HEIGHT - 1;
-    }
-
-    VGA_BUFFER[cursor_row * VGA_WIDTH + cursor_col] = (VGA_COLOR << 8) | static_cast<u8>(c);
-    cursor_col++;
-  }
-
-  static void put_string(const char *str) {
-    while (*str) {
-      put_char(*str++);
-    }
-  }
-
-  static void clear() {
-    for (u8 row = 0; row < VGA_HEIGHT; row++) {
-      for (u8 col = 0; col < VGA_WIDTH; col++) {
-        VGA_BUFFER[row * VGA_WIDTH + col] = (VGA_COLOR << 8) | ' ';
-      }
-    }
-    cursor_row = 0;
-    cursor_col = 0;
-  }
-};
-
-// Static member definitions
-u16 *const EarlyVGA::VGA_BUFFER = reinterpret_cast<u16 *>(0xB8000);
-u8 EarlyVGA::cursor_row = 0;
-u8 EarlyVGA::cursor_col = 0;
-
-static void early_print(const char *str) { EarlyVGA::put_string(str); }
+static void early_print(const char *str) { moss::kernel::hal::uart::puts(str); }
 
 static void early_print_hex(u64 value) {
   constexpr char hex_chars[] = "0123456789ABCDEF";
@@ -246,121 +182,253 @@ void update_boot_stage(BootStage stage, ::moss::kernel::ErrorCode error) noexcep
 } // namespace moss::boot
 
 // x86_64BootImpl member function implementations
-::moss::kernel::VoidResult moss::boot::X86BootImpl::hardware_early_init(BootContext &ctx) noexcept {
-  moss::boot::update_boot_stage(moss::boot::BootStage::HardwareInit);
-
-  moss::boot::EarlyVGA::clear();
-  moss::boot::EarlyVGA::put_string("=== x86_64 Hardware Early Init ===\n");
-  moss::boot::EarlyVGA::put_string("Checking initramfs locations...\n");
-
-  // Try to get initramfs location from PVH boot info first
-  // QEMU passes modules via PVH start_info structure
-  bool found_pvh_initramfs = false;
-
-  // PVH start_info is typically passed at a fixed location by QEMU
-  // Check common PVH start_info locations
-  const auto *start_info = static_cast<const HvmStartInfo *>(ctx.device_tree_ptr);
-  if (!start_info || start_info->magic != 0x336ec578 || start_info->version < 1) {
-    return ::moss::kernel::VoidResult{::moss::kernel::ErrorCode::InvalidArgument};
+// ACPI tables are firmware data, not emulator configuration. All early physical
+// accesses are bounded by the currently supported 4-GiB identity mapping.
+static bool physical_range(u64 base, u64 size) noexcept {
+  return base && base < 0x100000000ULL && size <= 0x100000000ULL - base;
+}
+static u64 acpi_value(const u8 *p, u32 bytes) noexcept {
+  u64 value = 0;
+  for (u32 i = 0; i < bytes; ++i) {
+    value |= static_cast<u64>(p[i]) << (i * 8);
   }
-  {
-
-    if (start_info->magic == 0x336ec578 && start_info->nr_modules > 0) {
-      moss::boot::EarlyVGA::put_string("Found PVH start_info with modules!\n");
-
-      // Get first module (should be initramfs)
-      const auto *modlist = reinterpret_cast<const HvmModlistEntry *>(start_info->modlist_paddr);
-      if (modlist->paddr != 0 && modlist->size > 0) {
-        moss::fdt::g_platform_info.initrd_start = modlist->paddr;
-        moss::fdt::g_platform_info.initrd_end = modlist->paddr + modlist->size;
-        found_pvh_initramfs = true;
-
-        moss::boot::EarlyVGA::put_string("PVH initramfs: addr=0x");
-        moss::boot::early_print_hex(modlist->paddr);
-        moss::boot::EarlyVGA::put_string(" size=");
-        moss::boot::early_print_hex(modlist->size);
-        moss::boot::EarlyVGA::put_string("\n");
+  return value;
+}
+static bool signature(const u8 *p, const char *text, u32 length) noexcept {
+  for (u32 i = 0; i < length; ++i) {
+    if (p[i] != static_cast<u8>(text[i])) {
+      return false;
+    }
+  }
+  return true;
+}
+static bool checksum(const u8 *p, u32 length) noexcept {
+  u8 sum = 0;
+  for (u32 i = 0; i < length; ++i) {
+    sum = static_cast<u8>(sum + p[i]);
+  }
+  return sum == 0;
+}
+static const u8 *acpi_table(u64 address) noexcept {
+  if (!physical_range(address, 36)) {
+    return nullptr;
+  }
+  const auto *p = reinterpret_cast<const u8 *>(address);
+  u64 size = acpi_value(p + 4, 4);
+  if (size < 36 || size > 1024 * 1024 || !physical_range(address, size) || !checksum(p, static_cast<u32>(size))) {
+    return nullptr;
+  }
+  return p;
+}
+static const u8 *rsdp_at(u64 address) noexcept {
+  if (!physical_range(address, 36)) {
+    return nullptr;
+  }
+  const auto *p = reinterpret_cast<const u8 *>(address);
+  if (!signature(p, "RSD PTR ", 8) || !checksum(p, 20)) {
+    return nullptr;
+  }
+  if (p[15] >= 2) {
+    u64 size = acpi_value(p + 20, 4);
+    if (size < 36 || size > 4096 || !physical_range(address, size) || !checksum(p, static_cast<u32>(size))) {
+      return nullptr;
+    }
+  }
+  return p;
+}
+static bool discover_acpi(u64 address) noexcept {
+  using namespace moss::kernel::platform;
+  const u8 *rsdp = address ? rsdp_at(address) : nullptr;
+  if (address && !rsdp) {
+    return false;
+  }
+  if (!address) {
+    // ACPI's IA-PC discovery contract: EBDA first KiB, then BIOS ROM area.
+    u64 ebda = static_cast<u64>(*reinterpret_cast<volatile u16 *>(0x40E)) << 4;
+    if (ebda >= 0x80000 && ebda <= 0x9FC00) {
+      for (u64 p = ebda; p < ebda + 1024 && !rsdp; p += 16) {
+        rsdp = rsdp_at(p);
       }
     }
+    for (u64 p = 0xE0000; p < 0x100000 && !rsdp; p += 16) {
+      rsdp = rsdp_at(p);
+    }
   }
-
-  // Fallback if PVH info not found
-  if (!found_pvh_initramfs) {
-    moss::boot::EarlyVGA::put_string("No PVH initramfs found, using fallback\n");
-    moss::fdt::g_platform_info.initrd_start = 0;
-    moss::fdt::g_platform_info.initrd_end = 0;
+  if (!rsdp) {
+    return false;
   }
-
-  ctx.cpu_id = moss::boot::get_current_cpu_id_impl();
-  moss::boot::EarlyVGA::put_string("CPU initialized\n");
-
-  u32 eax, ebx, ecx, edx;
-  asm volatile("cpuid" : "=a"(eax), "=b"(ebx), "=c"(ecx), "=d"(edx) : "a"(0x00000001) : "memory");
-  moss::boot::EarlyVGA::put_string("CPUID detected\n");
-
-  // x86_64 QEMU q35 不提供 DTB，静态填充 PlatformInfo 以统一子系统接口。
-  // 后续可扩展为 ACPI/E820 内存映射解析。
-  {
-    auto &info = moss::fdt::g_platform_info;
-    // Preserve initrd addresses discovered from PVH modules above
-    PhysAddr saved_initrd_start = info.initrd_start;
-    PhysAddr saved_initrd_end = info.initrd_end;
-    info = {};
-    info.initrd_start = saved_initrd_start;
-    info.initrd_end = saved_initrd_end;
-    info.dtb_valid = false;
-    // Detect logical processor count via CPUID leaf 1, EBX[23:16]
-    {
-      u32 eax1 = 0;
-      u32 ebx1 = 0;
-      u32 ecx1 = 0;
-      u32 edx1 = 0;
-      asm volatile("cpuid" : "=a"(eax1), "=b"(ebx1), "=c"(ecx1), "=d"(edx1) : "a"(1) : "memory");
-      // The microvm profile uses one socket and dense APIC IDs. fw_cfg's
-      // NB_CPUS describes present CPUs, unlike CPUID's topology capacity.
-      asm volatile("outw %0, %1" ::"a"(static_cast<u16>(5)), "Nd"(static_cast<u16>(0x510)));
-      u8 low = 0;
-      u8 high = 0;
-      asm volatile("inb %1, %0" : "=a"(low) : "Nd"(static_cast<u16>(0x511)));
-      asm volatile("inb %1, %0" : "=a"(high) : "Nd"(static_cast<u16>(0x511)));
-      u32 logical_cpus = low | (static_cast<u32>(high) << 8);
-      if (logical_cpus == 0 || logical_cpus > 16) {
-        return ::moss::kernel::VoidResult{::moss::kernel::ErrorCode::InvalidArgument};
+  bool extended = rsdp[15] >= 2 && acpi_value(rsdp + 24, 8);
+  const auto *root = acpi_table(acpi_value(rsdp + (extended ? 24 : 16), extended ? 8 : 4));
+  if (!root || !signature(root, extended ? "XSDT" : "RSDT", 4)) {
+    return false;
+  }
+  u32 size = static_cast<u32>(acpi_value(root + 4, 4));
+  u32 stride = extended ? 8U : 4U;
+  if ((size - 36) % stride) {
+    return false;
+  }
+  bool madt_found = false;
+  for (u32 offset = 36; offset < size; offset += stride) {
+    const auto *table = acpi_table(acpi_value(root + offset, stride));
+    if (!table) {
+      return false;
+    }
+    u32 length = static_cast<u32>(acpi_value(table + 4, 4));
+    if (signature(table, "APIC", 4)) {
+      if (madt_found || length < 44) {
+        return false;
       }
-      info.cpu_count = (logical_cpus > 0) ? logical_cpus : 1;
-    }
-    struct PvhMemoryEntry {
-      u64 base;
-      u64 size;
-      u32 type;
-      u32 reserved;
-    };
-    if (!start_info->memmap_paddr || start_info->memmap_entries > 128) {
-      return ::moss::kernel::VoidResult{::moss::kernel::ErrorCode::InvalidArgument};
-    }
-    const auto *map = reinterpret_cast<const PvhMemoryEntry *>(start_info->memmap_paddr);
-    for (u32 i = 0; i < start_info->memmap_entries; ++i) {
-      if (map[i].type == 1 && map[i].size) {
-        if (info.memory_region_count == moss::fdt::MAX_MEMORY_REGIONS) {
-          return ::moss::kernel::VoidResult{::moss::kernel::ErrorCode::InvalidArgument};
+      madt_found = true;
+      hardware.intc.dist_base = acpi_value(table + 36, 4);
+      for (u32 pos = 44; pos < length;) {
+        if (length - pos < 2 || table[pos + 1] < 2 || table[pos + 1] > length - pos) {
+          return false;
         }
-        info.memory_regions[info.memory_region_count++] = {.base = map[i].base, .size = map[i].size};
-        info.total_memory_size += map[i].size;
+        const u8 *entry = table + pos;
+        u32 len = entry[1];
+        if (entry[0] == 0) {
+          if (len != 8) {
+            return false;
+          }
+          if (acpi_value(entry + 4, 4) & 1) {
+            if (hardware.cpu_count == 16) {
+              return false;
+            }
+            hardware.cpus[hardware.cpu_count++].hardware_id = entry[3];
+          }
+        } else if (entry[0] == 1) {
+          // ponytail: one GSI-zero I/O APIC; add multiple domains when required.
+          if (len != 12 || hardware.intc.cpu_base || acpi_value(entry + 8, 4) != 0) {
+            return false;
+          }
+          hardware.intc.cpu_base = acpi_value(entry + 4, 4);
+        } else if (entry[0] == 2) {
+          if (len != 10 || entry[2] != 0 || entry[3] >= 16) {
+            return false;
+          }
+          hardware.isa_gsi[entry[3]] = static_cast<u32>(acpi_value(entry + 4, 4));
+          hardware.isa_flags[entry[3]] = static_cast<u16>(acpi_value(entry + 8, 2));
+        } else if (entry[0] == 5) {
+          if (len != 12) {
+            return false;
+          }
+          hardware.intc.dist_base = acpi_value(entry + 4, 8);
+        } else if (entry[0] == 9) {
+          // x2APIC is a separate driver capability, not a guessed xAPIC ID.
+          if (len != 16 || (acpi_value(entry + 8, 4) & 1)) {
+            return false;
+          }
+        }
+        pos += len;
+      }
+    } else if (signature(table, "SPCR", 4) && length >= 80) {
+      // 16550, System I/O or MMIO, byte-wide registers, legacy ISA IRQ.
+      u64 base = acpi_value(table + 44, 8);
+      if (table[36] <= 1 && table[40] <= 1 && table[41] == 8 && !table[42] && (table[52] & 1) && table[53] > 0 &&
+          table[53] < 16 && base && (table[40] ? base <= 0xFFF8 : physical_range(base, 8))) {
+        hardware.uart = {.kind = UartKind::Ns16550,
+                         .reg_shift = 0,
+                         .reg_width = 1,
+                         .port_io = table[40] == 1,
+                         .base_addr = base,
+                         .size = 8,
+                         .clock_freq = 0,
+                         .irq = table[53],
+                         .valid = true};
       }
     }
-    info.memory_map_valid = info.memory_region_count > 0;
-    info.total_memory_start = info.memory_regions[0].base;
-    info.bootargs = reinterpret_cast<const char *>(start_info->cmdline_paddr);
-
-    ctx.memory_start = info.total_memory_start;
-    ctx.memory_size = info.total_memory_size;
-    ctx.kernel_phys_base = info.total_memory_start;
   }
+  if (!madt_found || !physical_range(hardware.intc.dist_base, 4096) || !physical_range(hardware.intc.cpu_base, 32)) {
+    return false;
+  }
+  u32 lo, hi;
+  asm volatile("rdmsr" : "=a"(lo), "=d"(hi) : "c"(0x1BU));
+  u64 apic_base = (static_cast<u64>(hi) << 32) | lo;
+  if (!(apic_base & (1U << 11)) || (apic_base & (1U << 10)) ||
+      (apic_base & 0xFFFFFF000ULL) != hardware.intc.dist_base) {
+    return false;
+  }
+  hardware.intc.valid = true;
+  return true;
+}
 
+::moss::kernel::VoidResult moss::boot::X86BootImpl::hardware_early_init(BootContext &ctx) noexcept {
+  using namespace moss::kernel::platform;
+  update_boot_stage(BootStage::HardwareInit);
+  hardware = {};
+  for (u32 i = 0; i < 16; ++i) {
+    hardware.isa_gsi[i] = i;
+  }
+  // Legacy serial resource from BIOS data, never a guessed COM1 base.
+  u16 serial = *reinterpret_cast<volatile u16 *>(0x400);
+  if (serial && serial <= 0xFFF8) {
+    hardware.uart = {.kind = UartKind::Ns16550,
+                     .reg_shift = 0,
+                     .reg_width = 1,
+                     .port_io = true,
+                     .base_addr = serial,
+                     .size = 8,
+                     .clock_freq = 0,
+                     .irq = 4,
+                     .valid = true};
+  }
+  const auto *start = static_cast<const HvmStartInfo *>(ctx.device_tree_ptr);
+  auto invalid = [] { return ::moss::kernel::VoidResult{::moss::kernel::ErrorCode::InvalidArgument}; };
+  if (!start || !physical_range(reinterpret_cast<u64>(start), sizeof(*start)) || start->magic != 0x336ec578 ||
+      start->version < 1 || !start->memmap_entries || start->memmap_entries > 128) {
+    return invalid();
+  }
+  struct PvhMemoryEntry {
+    u64 base;
+    u64 size;
+    u32 type;
+    u32 reserved;
+  };
+  if (!physical_range(start->memmap_paddr, start->memmap_entries * sizeof(PvhMemoryEntry))) {
+    return invalid();
+  }
+  const auto *map = reinterpret_cast<const PvhMemoryEntry *>(start->memmap_paddr);
+  for (u32 i = 0; i < start->memmap_entries; ++i) {
+    if (map[i].type != 1 || !map[i].size) {
+      continue;
+    }
+    if (hardware.memory_region_count == MAX_MEMORY_REGIONS || map[i].base >= 0x100000000ULL ||
+        map[i].size > 0x100000000ULL - map[i].base) {
+      return invalid();
+    }
+    hardware.memory_regions[hardware.memory_region_count++] = {.base = map[i].base, .size = map[i].size};
+    hardware.total_memory_size += map[i].size;
+  }
+  hardware.memory_map_valid = hardware.memory_region_count > 0;
+  hardware.total_memory_start = hardware.memory_regions[0].base;
+  if (start->nr_modules) {
+    if (!physical_range(start->modlist_paddr, sizeof(HvmModlistEntry))) {
+      return invalid();
+    }
+    const auto *module = reinterpret_cast<const HvmModlistEntry *>(start->modlist_paddr);
+    if (!physical_range(module->paddr, module->size)) {
+      return invalid();
+    }
+    hardware.initrd_start = module->paddr;
+    hardware.initrd_end = module->paddr + module->size;
+  }
+  if (!hardware.memory_map_valid || !discover_acpi(start->rsdp_paddr)) {
+    early_print("BOOT ERROR: valid PVH memory map and ACPI MADT required\n");
+    return invalid();
+  }
+  u32 eax, ebx, ecx, edx;
+  asm volatile("cpuid" : "=a"(eax), "=b"(ebx), "=c"(ecx), "=d"(edx) : "a"(1));
+  if (!order_cpus((ebx >> 24) & 0xFF)) {
+    return invalid();
+  }
+  hardware.bootargs = reinterpret_cast<const char *>(start->cmdline_paddr);
+  ctx.cpu_id = 0;
+  ctx.total_cpus = hardware.cpu_count;
+  ctx.memory_start = hardware.total_memory_start;
+  ctx.memory_size = hardware.total_memory_size;
+  ctx.kernel_phys_base = reinterpret_cast<PhysAddr>(moss::abi::_start);
   ctx.kernel_virt_base = moss::boot::arch_constants::KERNEL_VIRT_BASE;
-
-  moss::boot::EarlyVGA::put_string("Memory mapping configured\n");
-  moss::boot::EarlyVGA::put_string("x86_64 hardware init complete\n\n");
+  early_print("PVH memory and ACPI hardware discovered\n");
   return ::moss::kernel::VoidResult{};
 }
 
@@ -482,7 +550,7 @@ extern "C" void x86_64_interrupt_handler(u64 vector, u64 error_code, [[maybe_unu
   }
 
   // External IRQ (vector >= 32): send EOI first, then dispatch
-  constexpr u64 LAPIC_EOI_ADDR = 0xFEE000B0ULL;
+  const u64 LAPIC_EOI_ADDR = moss::kernel::platform::intc_dist_base() + 0x0B0;
   auto *lapic_eoi = reinterpret_cast<volatile u32 *>(LAPIC_EOI_ADDR);
   *lapic_eoi = 0;
 
@@ -493,7 +561,7 @@ extern "C" void x86_64_interrupt_handler(u64 vector, u64 error_code, [[maybe_unu
   }
 
   // COM1 UART RX (vector 36 = IRQ4 routed via I/O APIC)
-  if (vector == 36 && g_x86_64_uart_rx_handler != nullptr) {
+  if (vector == 32 + moss::kernel::platform::hardware.uart.irq && g_x86_64_uart_rx_handler != nullptr) {
     g_x86_64_uart_rx_handler();
   }
 }
@@ -521,7 +589,7 @@ extern "C" void x86_64_interrupt_handler(u64 vector, u64 error_code, [[maybe_unu
 
   // 3. Configure LAPIC timer: divide-by-16, one-shot, vector 48, initially masked
   {
-    constexpr u64 LAPIC_BASE = 0xFEE00000ULL;
+    const u64 LAPIC_BASE = moss::kernel::platform::intc_dist_base() + 0x000;
     auto *div_config = reinterpret_cast<volatile u32 *>(LAPIC_BASE + 0x3E0); // Divide Configuration
     auto *lvt_timer = reinterpret_cast<volatile u32 *>(LAPIC_BASE + 0x320);  // LVT Timer
     *div_config = 0x03;                                                      // divide by 16
@@ -529,6 +597,10 @@ extern "C" void x86_64_interrupt_handler(u64 vector, u64 error_code, [[maybe_unu
     moss::boot::early_print("  LAPIC timer configured (vec=48, masked)\n");
   }
 
+  if (!moss::kernel::hal::timer::calibrate()) {
+    moss::boot::early_print("BOOT ERROR: PIT/TSC/APIC clock calibration failed\n");
+    return ::moss::kernel::VoidResult{::moss::kernel::ErrorCode::NotSupported};
+  }
   moss::boot::early_print("x86_64 interrupt/exception setup complete\n\n");
   return ::moss::kernel::VoidResult{};
 }
@@ -582,8 +654,6 @@ u32 moss::boot::X86BootImpl::get_current_cpu_id() noexcept { return moss::boot::
   moss::boot::early_print(message);
   moss::boot::early_print("\n====================\n");
 
-  asm volatile("outw %0, %1" : : "a"(static_cast<u16>(0x2000)), "d"(static_cast<u16>(0x604)) : "memory");
-
   asm volatile("cli");
   while (true) {
     asm volatile("hlt");
@@ -628,23 +698,23 @@ void activate_secondary_cpus() noexcept {
   u64 cr3;
   asm volatile("mov %%cr3, %0" : "=r"(cr3));
   *reinterpret_cast<u64 *>(copy + (x86_ap_cr3 - x86_ap_trampoline_start)) = cr3;
-  auto *icr_lo = reinterpret_cast<volatile u32 *>(0xFEE00300ULL);
-  auto *icr_hi = reinterpret_cast<volatile u32 *>(0xFEE00310ULL);
+  auto *icr_lo = reinterpret_cast<volatile u32 *>(moss::kernel::platform::intc_dist_base() + 0x300);
+  auto *icr_hi = reinterpret_cast<volatile u32 *>(moss::kernel::platform::intc_dist_base() + 0x310);
   for (u32 cpu = 1; cpu < moss::kernel::g_num_cpus; ++cpu) {
     *reinterpret_cast<u64 *>(copy + (x86_ap_stack - x86_ap_trampoline_start)) =
         reinterpret_cast<u64>(&ap_stacks[cpu][32768]);
     moss::kernel::arch::memory_barrier();
-    *icr_hi = cpu << 24;
+    *icr_hi = static_cast<u32>(moss::kernel::platform::hardware.cpus[cpu].hardware_id) << 24;
     *icr_lo = 0x0000C500; // INIT, level assert.
     ap_delay();
-    *icr_hi = cpu << 24;
+    *icr_hi = static_cast<u32>(moss::kernel::platform::hardware.cpus[cpu].hardware_id) << 24;
     *icr_lo = 0x00008500; // INIT deassert.
     ap_delay();
-    *icr_hi = cpu << 24;
+    *icr_hi = static_cast<u32>(moss::kernel::platform::hardware.cpus[cpu].hardware_id) << 24;
     *icr_lo = 0x00000608; // SIPI vector 8, physical 0x8000.
     ap_delay();
     if (!(__atomic_load_n(&online_cpu_mask, __ATOMIC_ACQUIRE) & (1ULL << cpu))) {
-      *icr_hi = cpu << 24;
+      *icr_hi = static_cast<u32>(moss::kernel::platform::hardware.cpus[cpu].hardware_id) << 24;
       *icr_lo = 0x00000608;
     }
     for (u32 retry = 0; retry < 100000000; ++retry) {
@@ -687,10 +757,10 @@ extern "C" [[noreturn]] void x86_secondary_entry() noexcept {
   asm volatile("ltr %w0" ::"r"(static_cast<u16>(0x28)));
   set_gs_runtime(cpu, tss);
   asm volatile("lidt %0" ::"m"(g_idtr));
-  *reinterpret_cast<volatile u32 *>(0xFEE000F0ULL) = 0x1FF;
-  *reinterpret_cast<volatile u32 *>(0xFEE00080ULL) = 0;
-  *reinterpret_cast<volatile u32 *>(0xFEE003E0ULL) = 3;
-  *reinterpret_cast<volatile u32 *>(0xFEE00320ULL) = 48;
+  *reinterpret_cast<volatile u32 *>(moss::kernel::platform::intc_dist_base() + 0x0F0) = 0x1FF;
+  *reinterpret_cast<volatile u32 *>(moss::kernel::platform::intc_dist_base() + 0x080) = 0;
+  *reinterpret_cast<volatile u32 *>(moss::kernel::platform::intc_dist_base() + 0x3E0) = 3;
+  *reinterpret_cast<volatile u32 *>(moss::kernel::platform::intc_dist_base() + 0x320) = 48;
   u64 entry = reinterpret_cast<u64>(&moss::abi::syscall_entry_point);
   asm volatile("wrmsr" ::"c"(0xC0000082U), "a"(static_cast<u32>(entry)), "d"(static_cast<u32>(entry >> 32)));
   asm volatile("wrmsr" ::"c"(0xC0000081U), "a"(0U), "d"(0x00100008U));

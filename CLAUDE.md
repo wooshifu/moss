@@ -55,4 +55,4 @@ Use latest C++26 standard and cutting-edge C++ features for development:
 
 ## 构建与测试
 
-详见 `moss-build` skill。快速参考：`uv run build.py`（全架构），`cmake --workflow --preset arm64-qemu-debug`（单架构）。
+详见 `moss-build` skill。快速参考：`uv run build.py`（全架构），`cmake --workflow --preset arm64-debug`（单架构）。

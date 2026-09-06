@@ -50,6 +50,7 @@ inline void write_reg(VirtAddr base, u32 offset, u32 value) noexcept {
 // ============================================================================
 
 #if defined(MOSS_ARCH_ARM64)
+inline u32 g_gic_cpu_masks[16]{};
 enum class GicVersion : u8 { Unknown = 0, GICv2 = 2, GICv3 = 3 };
 
 // Set once during boot from DTB detection, read-only after.
@@ -174,16 +175,21 @@ inline void write_sgi1r(u64 val) noexcept { asm volatile("msr S3_0_C12_C11_5, %0
 [[nodiscard]] inline VirtAddr find_my_redist_frame() noexcept {
   u64 mpidr;
   asm volatile("mrs %0, mpidr_el1" : "=r"(mpidr));
-  u32 my_aff0 = static_cast<u32>(mpidr & 0xFF);
+  u32 my_affinity = static_cast<u32>(mpidr) & 0xFFFFFF;
+  my_affinity |= static_cast<u32>((mpidr >> 32) & 0xFF) << 24;
 
   VirtAddr frame = g_redist_base;
-  for (;;) {
+  for (u64 remaining = platform::hardware.intc.redist_size; remaining >= redist_regs::FRAME_SIZE;
+       remaining -= redist_regs::FRAME_SIZE) {
     u64 typer = static_cast<u64>(read_reg(frame, redist_regs::TYPER_LO)) |
                 (static_cast<u64>(read_reg(frame, redist_regs::TYPER_HI)) << 32);
 
-    // GICR_TYPER[39:32] = Aff3, [31:24]=Aff2, [23:16]=Aff1, [15:8]=Aff0
-    u32 aff0 = static_cast<u32>((typer >> 32) & 0xFF);
-    if (aff0 == my_aff0) {
+    if (typer & (1ULL << 1)) {
+      return 0; // GICv4 VLPIS changes the redistributor stride; unsupported.
+    }
+    // GICR_TYPER[63:32] contains Aff3:Aff2:Aff1:Aff0.
+    u32 affinity = static_cast<u32>(typer >> 32);
+    if (affinity == my_affinity) {
       return frame;
     }
 
@@ -192,7 +198,7 @@ inline void write_sgi1r(u64 val) noexcept { asm volatile("msr S3_0_C12_C11_5, %0
     }
     frame += redist_regs::FRAME_SIZE;
   }
-  return g_redist_base; // Fallback
+  return 0; // Never configure another CPU's frame when the description is incomplete.
 }
 
 /// Wake the redistributor for this CPU (clear ProcessorSleep in GICR_WAKER)
@@ -216,7 +222,7 @@ inline constexpr u32 IOWIN = 0x10;    // I/O Window
 } // namespace dist_regs
 
 namespace cpu_regs {
-// Local APIC MMIO offsets (from LAPIC base 0xFEE00000)
+// Local APIC register offsets (relative to the discovered MMIO base)
 inline constexpr u32 ID = 0x020;         // Local APIC ID
 inline constexpr u32 VERSION = 0x030;    // Local APIC Version
 inline constexpr u32 TPR = 0x080;        // Task Priority
@@ -280,19 +286,8 @@ inline constexpr u32 SPURIOUS_IRQ_THRESHOLD = 0; // PLIC: claim=0 means no pendi
 [[nodiscard]] inline u32 read_max_cpus(VirtAddr dist_base) noexcept {
 #if defined(MOSS_ARCH_ARM64)
   if (g_gic_version == GicVersion::GICv3) {
-    // GICv3: GICD_TYPER[7:5] is reserved. Enumerate redistributor frames.
-    u32 count = 0;
-    VirtAddr frame = g_redist_base;
-    for (;;) {
-      count++;
-      u64 typer = static_cast<u64>(read_reg(frame, redist_regs::TYPER_LO)) |
-                  (static_cast<u64>(read_reg(frame, redist_regs::TYPER_HI)) << 32);
-      if (typer & redist_regs::TYPER_LAST) {
-        break;
-      }
-      frame += redist_regs::FRAME_SIZE;
-    }
-    return count;
+    (void)dist_base;
+    return platform::hardware.cpu_count; // Enumerated from firmware, not MMIO guesses.
   }
   // GICv2: CPUNumber field
   u32 typer = read_reg(dist_base, dist_regs::TYPER);
@@ -302,7 +297,7 @@ inline constexpr u32 SPURIOUS_IRQ_THRESHOLD = 0; // PLIC: claim=0 means no pendi
   return 256; // APIC ID space
 #elif defined(MOSS_ARCH_RISCV)
   (void)dist_base;
-  return 64; // Typical PLIC hart limit
+  return platform::hardware.cpu_count;
 #endif
 }
 
@@ -338,8 +333,9 @@ inline VoidResult init_distributor(VirtAddr dist_base, u32 max_interrupts) noexc
     // Route all SPIs to CPU 0 via IROUTER (64-bit: Aff0=0, Aff1=0, Aff2=0, Aff3=0)
     for (u32 i = 32; i < max_interrupts; i++) {
       u32 irouter_off = dist_regs::IROUTER + (i - 32) * 8;
-      write_reg(dist_base, irouter_off, 0);
-      write_reg(dist_base, irouter_off + 4, 0);
+      u64 affinity = platform::hardware.cpus[0].hardware_id;
+      write_reg(dist_base, irouter_off, static_cast<u32>(affinity));
+      write_reg(dist_base, irouter_off + 4, static_cast<u32>(affinity >> 32));
     }
 
     // Enable distributor with affinity routing
@@ -360,41 +356,33 @@ inline VoidResult init_distributor(VirtAddr dist_base, u32 max_interrupts) noexc
       write_reg(dist_base, dist_regs::IPRIORITYR + i, 0x80808080);
     }
 
+    u32 boot_mask = read_reg(dist_base, dist_regs::ITARGETSR) & 0xFF;
     for (u32 i = 32; i < max_interrupts; i += 4) {
-      write_reg(dist_base, dist_regs::ITARGETSR + i, 0x01010101);
+      write_reg(dist_base, dist_regs::ITARGETSR + i, boot_mask * 0x01010101);
     }
 
     write_reg(dist_base, dist_regs::CTLR, 1);
   }
 
 #elif defined(MOSS_ARCH_X86_64)
-  // I/O APIC initialization: mask all 24 redirection entries,
-  // then route COM1 IRQ4 → vector 36 (initially masked).
-  // dist_base = LAPIC base (0xFEE00000), cpu_base = I/O APIC base (0xFEC00000)
   {
-    constexpr VirtAddr IOAPIC_BASE = 0xFEC00000ULL;
-    auto *ioregsel = reinterpret_cast<volatile u32 *>(IOAPIC_BASE);
-    auto *iowin = reinterpret_cast<volatile u32 *>(IOAPIC_BASE + 0x10);
-
-    // Mask all 24 I/O APIC redirection entries (IOREDTBL[0..23])
-    for (u32 i = 0; i < 24; i++) {
-      u32 reg_low = 0x10 + i * 2;  // IOREDTBL[i] low
-      u32 reg_high = 0x11 + i * 2; // IOREDTBL[i] high
-      *ioregsel = reg_low;
-      *iowin = (1U << 16); // masked, vector 0
-      *ioregsel = reg_high;
-      *iowin = 0; // destination APIC ID 0
+    auto *select = reinterpret_cast<volatile u32 *>(platform::intc_cpu_base());
+    auto *window = reinterpret_cast<volatile u32 *>(platform::intc_cpu_base() + 0x10);
+    *select = 1; // IOAPICVER: maximum redirection entry.
+    u32 count = ((*window >> 16) & 0xFF) + 1;
+    for (u32 i = 0; i < count; ++i) {
+      *select = 0x10 + i * 2;
+      *window = 1U << 16;
+      *select = 0x11 + i * 2;
+      *window = static_cast<u32>(platform::hardware.cpus[0].hardware_id) << 24;
     }
-
-    // Route COM1 IRQ4 → vector 36, fixed delivery, physical dest, masked
-    constexpr u32 COM1_IRQ = 4;
-    constexpr u32 COM1_VECTOR = 36;
-    u32 irq4_low = 0x10 + COM1_IRQ * 2;
-    u32 irq4_high = 0x11 + COM1_IRQ * 2;
-    *ioregsel = irq4_low;
-    *iowin = COM1_VECTOR | (1U << 16); // vector 36, masked initially
-    *ioregsel = irq4_high;
-    *iowin = 0; // dest APIC ID 0
+    u32 irq = platform::hardware.uart.irq;
+    if (platform::hardware.uart.valid && irq < 16 && platform::hardware.isa_gsi[irq] < count) {
+      u32 flags = platform::hardware.isa_flags[irq];
+      u32 mode = ((flags & 3) == 3 ? 1U << 13 : 0) | ((flags & 12) == 12 ? 1U << 15 : 0);
+      *select = 0x10 + platform::hardware.isa_gsi[irq] * 2;
+      *window = (32 + irq) | (1U << 16) | mode;
+    }
   }
   (void)dist_base;
   (void)max_interrupts;
@@ -438,6 +426,9 @@ inline VoidResult init_cpu_interface(VirtAddr cpu_base) noexcept {
 
     // 5. Wake and configure this CPU's redistributor
     VirtAddr my_redist = find_my_redist_frame();
+    if (!my_redist) {
+      return VoidResult{ErrorCode::InvalidArgument};
+    }
     wake_redistributor(my_redist);
 
     // 6. Set SGI/PPI (IRQ 0-31) to Group 1 NS in the redistributor
@@ -450,15 +441,17 @@ inline VoidResult init_cpu_interface(VirtAddr cpu_base) noexcept {
 
     (void)cpu_base;
   } else {
+    // GICv2: banked ITARGETSR identifies this CPU independently of MPIDR.
+    g_gic_cpu_masks[arch::get_current_cpu_id()] = read_reg(platform::intc_dist_base(), dist_regs::ITARGETSR) & 0xFF;
     // GICv2: MMIO CPU interface
     write_reg(cpu_base, cpu_regs::PMR, 0xFF);
     write_reg(cpu_base, cpu_regs::CTLR, 1);
   }
 
 #elif defined(MOSS_ARCH_X86_64)
-  // Local APIC base is fixed at 0xFEE00000 (cpu_base is I/O APIC on x86_64)
+  // cpu_base is the discovered I/O APIC; the Local APIC has its own resource.
   (void)cpu_base;
-  constexpr VirtAddr LAPIC_BASE = 0xFEE00000ULL;
+  const VirtAddr LAPIC_BASE = platform::intc_dist_base();
 
   // Mask all LVT entries to prevent spurious interrupts before proper setup
   write_reg(LAPIC_BASE, cpu_regs::LVT_TIMER, cpu_regs::LVT_MASK);
@@ -490,6 +483,9 @@ inline void enable_irq(VirtAddr dist_base, u32 irq) noexcept {
 #if defined(MOSS_ARCH_ARM64)
   if (g_gic_version == GicVersion::GICv3 && irq < 32) {
     VirtAddr my_redist = find_my_redist_frame();
+    if (!my_redist) {
+      return;
+    }
     write_reg(my_redist, redist_regs::ISENABLER0, 1U << irq);
     return;
   }
@@ -500,10 +496,11 @@ inline void enable_irq(VirtAddr dist_base, u32 irq) noexcept {
 #elif defined(MOSS_ARCH_X86_64)
   // I/O APIC: unmask redirection table entry for the given IRQ line
   {
-    constexpr VirtAddr IOAPIC_BASE = 0xFEC00000ULL;
+    const VirtAddr IOAPIC_BASE = platform::intc_cpu_base();
     auto *ioregsel = reinterpret_cast<volatile u32 *>(IOAPIC_BASE);
     auto *iowin = reinterpret_cast<volatile u32 *>(IOAPIC_BASE + 0x10);
-    u32 reg_low = 0x10 + irq * 2;
+    u32 gsi = irq < 16 ? platform::hardware.isa_gsi[irq] : irq;
+    u32 reg_low = 0x10 + gsi * 2;
     *ioregsel = reg_low;
     u32 val = *iowin;
     val &= ~(1U << 16); // clear mask bit
@@ -513,8 +510,9 @@ inline void enable_irq(VirtAddr dist_base, u32 irq) noexcept {
   (void)dist_base;
 
 #elif defined(MOSS_ARCH_RISCV)
-  // PLIC: set enable bit for context 1 (S-mode, hart 0)
-  u32 reg_offset = dist_regs::ENABLE_BASE + 0x80 + (irq / 32) * 4;
+  // PLIC: use the current CPU's firmware-described supervisor context.
+  u32 reg_offset =
+      dist_regs::ENABLE_BASE + platform::hardware.plic_contexts[arch::get_current_cpu_id()] * 0x80 + (irq / 32) * 4;
   u32 val = read_reg(dist_base, reg_offset);
   val |= (1U << (irq % 32));
   write_reg(dist_base, reg_offset, val);
@@ -526,6 +524,9 @@ inline void disable_irq(VirtAddr dist_base, u32 irq) noexcept {
 #if defined(MOSS_ARCH_ARM64)
   if (g_gic_version == GicVersion::GICv3 && irq < 32) {
     VirtAddr my_redist = find_my_redist_frame();
+    if (!my_redist) {
+      return;
+    }
     write_reg(my_redist, redist_regs::ICENABLER0, 1U << irq);
     return;
   }
@@ -535,10 +536,11 @@ inline void disable_irq(VirtAddr dist_base, u32 irq) noexcept {
 #elif defined(MOSS_ARCH_X86_64)
   // I/O APIC: mask redirection table entry for the given IRQ line
   {
-    constexpr VirtAddr IOAPIC_BASE = 0xFEC00000ULL;
+    const VirtAddr IOAPIC_BASE = platform::intc_cpu_base();
     auto *ioregsel = reinterpret_cast<volatile u32 *>(IOAPIC_BASE);
     auto *iowin = reinterpret_cast<volatile u32 *>(IOAPIC_BASE + 0x10);
-    u32 reg_low = 0x10 + irq * 2;
+    u32 gsi = irq < 16 ? platform::hardware.isa_gsi[irq] : irq;
+    u32 reg_low = 0x10 + gsi * 2;
     *ioregsel = reg_low;
     u32 val = *iowin;
     val |= (1U << 16); // set mask bit
@@ -549,7 +551,8 @@ inline void disable_irq(VirtAddr dist_base, u32 irq) noexcept {
 
 #elif defined(MOSS_ARCH_RISCV)
   // PLIC: clear enable bit
-  u32 reg_offset = dist_regs::ENABLE_BASE + 0x80 + (irq / 32) * 4;
+  u32 reg_offset =
+      dist_regs::ENABLE_BASE + platform::hardware.plic_contexts[arch::get_current_cpu_id()] * 0x80 + (irq / 32) * 4;
   u32 val = read_reg(dist_base, reg_offset);
   val &= ~(1U << (irq % 32));
   write_reg(dist_base, reg_offset, val);
@@ -630,6 +633,9 @@ inline void set_priority(VirtAddr dist_base, u32 irq, u8 priority) noexcept {
   u32 reg_base = dist_regs::IPRIORITYR;
   if (g_gic_version == GicVersion::GICv3 && irq < 32) {
     base = find_my_redist_frame();
+    if (!base) {
+      return;
+    }
     reg_base = redist_regs::IPRIORITYR0;
     // irq offset within the GICR IPRIORITYR is the same (byte per IRQ)
   }
@@ -663,18 +669,25 @@ inline void set_target(VirtAddr dist_base, u32 irq, u32 cpu_mask) noexcept {
     }
     // Route to the lowest-numbered CPU in the mask
     u32 target_cpu = static_cast<u32>(intrinsics::bitops::ctz(cpu_mask));
-    // IROUTER: Aff0[7:0] = cpu_id (for QEMU virt flat topology)
+    // IROUTER uses the target CPU's full hardware affinity.
     u32 irouter_off = dist_regs::IROUTER + (irq - 32) * 8;
-    write_reg(dist_base, irouter_off, target_cpu);
-    write_reg(dist_base, irouter_off + 4, 0);
+    u64 affinity = platform::hardware.cpus[target_cpu].hardware_id;
+    write_reg(dist_base, irouter_off, static_cast<u32>(affinity));
+    write_reg(dist_base, irouter_off + 4, static_cast<u32>(affinity >> 32));
     return;
+  }
+  u32 physical_mask = 0;
+  for (u32 cpu = 0; cpu < platform::hardware.cpu_count; ++cpu) {
+    if (cpu_mask & (1U << cpu)) {
+      physical_mask |= g_gic_cpu_masks[cpu];
+    }
   }
   // GICv2: ITARGETSR
   u32 reg_offset = dist_regs::ITARGETSR + (irq & ~3U);
   u32 byte_shift = (irq & 3U) * 8;
   u32 val = read_reg(dist_base, reg_offset);
   val &= ~(0xFFU << byte_shift);
-  val |= ((cpu_mask & 0xFFU) << byte_shift);
+  val |= ((physical_mask & 0xFFU) << byte_shift);
   write_reg(dist_base, reg_offset, val);
 
 #elif defined(MOSS_ARCH_X86_64)
@@ -727,20 +740,32 @@ inline VoidResult send_sgi(VirtAddr dist_base, [[maybe_unused]] VirtAddr cpu_bas
   }
 
   if (g_gic_version == GicVersion::GICv3) {
-    // ICC_SGI1R_EL1 format (for QEMU virt flat Aff0 topology):
+    // ICC_SGI1R_EL1 format:
     //   bits [15:0]  = TargetList (one bit per Aff0 value 0-15)
-    //   bits [23:16] = Aff1 = 0
+    //   bits [23:16] = Aff1
     //   bits [27:24] = INTID = sgi_id
-    //   bits [39:32] = Aff2 = 0
+    //   bits [39:32] = Aff2
     //   bit  [40]    = IRM = 0 (use target list)
     //   bits [47:44] = RS (range selector) = 0
-    //   bits [55:48] = Aff3 = 0
-    u64 sgi1r = (static_cast<u64>(sgi_id) << 24) | (static_cast<u64>(target_cpu_mask) & 0xFFFF);
-    icc::write_sgi1r(sgi1r);
+    //   bits [55:48] = Aff3
+    for (u32 cpu = 0; cpu < platform::hardware.cpu_count; ++cpu) {
+      if (!(target_cpu_mask & (1U << cpu))) {
+        continue;
+      }
+      u64 id = platform::hardware.cpus[cpu].hardware_id;
+      u64 sgi1r = (static_cast<u64>(sgi_id) << 24) | (1ULL << (id & 15)) | ((id & 0xFF00) << 8) |
+                  ((id & 0xFF0000) << 16) | ((id & 0xFF00000000) << 16);
+      icc::write_sgi1r(sgi1r);
+    }
     asm volatile("isb" ::: "memory");
   } else {
-    // GICv2: SGIR with 8-bit target mask
-    u32 sgir_value = sgi_id | (target_cpu_mask << 16);
+    u32 physical_mask = 0;
+    for (u32 cpu = 0; cpu < platform::hardware.cpu_count; ++cpu) {
+      if (target_cpu_mask & (1U << cpu)) {
+        physical_mask |= g_gic_cpu_masks[cpu];
+      }
+    }
+    u32 sgir_value = sgi_id | (physical_mask << 16);
     write_reg(dist_base, dist_regs::SGIR, sgir_value);
   }
 
@@ -751,7 +776,8 @@ inline VoidResult send_sgi(VirtAddr dist_base, [[maybe_unused]] VirtAddr cpu_bas
   (void)dist_base;
   if (target_cpu_mask != 0) {
     // Find first target CPU from mask
-    u32 dest_apic_id = static_cast<u32>(intrinsics::bitops::ctz(target_cpu_mask));
+    u32 target = static_cast<u32>(intrinsics::bitops::ctz(target_cpu_mask));
+    u32 dest_apic_id = static_cast<u32>(platform::hardware.cpus[target].hardware_id);
     write_reg(dist_base, cpu_regs::ICR_HIGH, dest_apic_id << 24);
     write_reg(dist_base, cpu_regs::ICR_LOW, (64 + sgi_id) | (1U << 14));
   }
@@ -762,19 +788,18 @@ inline VoidResult send_sgi(VirtAddr dist_base, [[maybe_unused]] VirtAddr cpu_bas
   (void)dist_base;
   (void)cpu_base;
   (void)sgi_id;
-  u64 hart_mask = 0;
-  for (u32 cpu = 0; cpu < 16; ++cpu) {
-    if (target_cpu_mask & (1U << cpu)) {
-      hart_mask |= 1ULL << arch::riscv_hart_id(cpu);
+  for (u32 cpu = 0; cpu < platform::hardware.cpu_count; ++cpu) {
+    if (!(target_cpu_mask & (1U << cpu))) {
+      continue;
     }
-  }
-  register u64 a0 asm("a0") = hart_mask;
-  register u64 a1 asm("a1") = 0;
-  register u64 a6 asm("a6") = 0;
-  register u64 a7 asm("a7") = 0x735049;
-  asm volatile("ecall" : "+r"(a0), "+r"(a1) : "r"(a6), "r"(a7) : "memory");
-  if (a0 != 0) {
-    return VoidResult{ErrorCode::InvalidState};
+    register u64 a0 asm("a0") = 1;
+    register u64 a1 asm("a1") = arch::riscv_hart_id(cpu);
+    register u64 a6 asm("a6") = 0;
+    register u64 a7 asm("a7") = 0x735049;
+    asm volatile("ecall" : "+r"(a0), "+r"(a1) : "r"(a6), "r"(a7) : "memory");
+    if (a0 != 0) {
+      return VoidResult{ErrorCode::InvalidState};
+    }
   }
 #endif
 

@@ -1,3 +1,0 @@
-#!/bin/bash
-# Auto-generated wrapper — delegates to scripts/run_qemu.py
-exec uv run "@CMAKE_SOURCE_DIR@/scripts/run_qemu.py" --config "@CMAKE_BINARY_DIR@/qemu_config.json" "$@"

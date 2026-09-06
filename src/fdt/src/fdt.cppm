@@ -14,6 +14,7 @@ export module moss.fdt;
 
 import moss.std;
 import moss.types;
+import moss.platform;
 
 // Wrap TU-local fdt32_to_cpu (macro/inline from libfdt) in a module-internal
 // function. Must be non-static and outside export blocks to avoid both
@@ -41,73 +42,14 @@ u64 read_fdt64_unaligned(const void *ptr) noexcept {
   return (hi << 32) | lo;
 }
 
-/// DTB 中最大支持的内存区域数
-constexpr u32 MAX_MEMORY_REGIONS = 8;
-
-/// 单个物理内存区域（来自 /memory 节点的 reg 属性）
-struct MemoryRegion {
-  PhysAddr base;
-  u64 size;
-};
-
-/// UART 设备信息（来自 compatible = "arm,pl011" / "ns16550a" 节点）
-struct UartInfo {
-  PhysAddr base_addr;
-  u64 size;
-  u32 clock_freq;
-  u32 irq;
-  bool valid;
-};
-
-/// 中断控制器信息（GIC / PLIC）
-struct InterruptControllerInfo {
-  PhysAddr dist_base;   // GIC distributor 或 PLIC 基地址
-  PhysAddr cpu_base;    // GICv2: GICC CPU interface; GICv3: unused (0)
-  PhysAddr redist_base; // GICv3: GICR redistributor base (0 for GICv2/PLIC)
-  u64 dist_size;
-  u64 cpu_size;
-  u64 redist_size; // GICv3: GICR region size
-  u8 gic_version;  // 0=unknown/PLIC, 2=GICv2, 3=GICv3/v4
-  bool valid;
-};
-
-/// 完整的平台硬件信息，从 DTB 解析填充
-struct PlatformInfo {
-  // DTB 有效性
-  bool dtb_valid;        // DTB 存在且解析成功
-  bool memory_map_valid; // Firmware RAM discovery, independent of the boot protocol.
-
-  // CPU 拓扑（来自 /cpus 节点）
-  u32 cpu_count;
-  u32 boot_cpu_id;
-  u64 timebase_frequency;
-
-  // RISC-V MMU type from DTB (3 = Sv39, 4 = Sv48, 5 = Sv57; 0 = unknown)
-  u8 mmu_levels;
-
-  // 物理内存区域（来自 /memory 节点）
-  MemoryRegion memory_regions[MAX_MEMORY_REGIONS];
-  u32 memory_region_count;
-  PhysAddr total_memory_start; // 第一个区域的基地址
-  u64 total_memory_size;       // 所有区域大小之和
-  MemoryRegion reserved_regions[32];
-  u32 reserved_region_count;
-
-  // 设备信息
-  UartInfo uart;
-  InterruptControllerInfo intc;
-
-  // 启动参数（来自 /chosen 节点，指针指向 DTB blob 内部）
-  const char *bootargs;
-  const char *stdout_path;
-
-  // initramfs 地址（来自 /chosen 节点）
-  PhysAddr initrd_start; // linux,initrd-start
-  PhysAddr initrd_end;   // linux,initrd-end
-};
-
-/// 全局平台信息实例（早期启动阶段填充）
-extern PlatformInfo g_platform_info;
+using moss::kernel::platform::CpuEnableMethod;
+using moss::kernel::platform::InterruptControllerInfo;
+using moss::kernel::platform::MAX_MEMORY_REGIONS;
+using moss::kernel::platform::MemoryRegion;
+using moss::kernel::platform::PlatformInfo;
+using moss::kernel::platform::UartInfo;
+using moss::kernel::platform::UartKind;
+inline auto &g_platform_info = moss::kernel::platform::hardware;
 
 /// 解析 DTB blob 并填充 PlatformInfo
 /// @param dtb_ptr 指向内存中 DTB blob 的指针
@@ -126,7 +68,6 @@ inline auto get_platform_info() noexcept -> const PlatformInfo & { return g_plat
 namespace moss::fdt {
 
 // 全局平台信息实例
-PlatformInfo g_platform_info = {};
 
 // ============================================================================
 // 内部辅助函数
@@ -136,13 +77,13 @@ PlatformInfo g_platform_info = {};
 static void read_cells(const void *fdt, int node, u32 &addr_cells, u32 &size_cells) noexcept {
   int len = 0;
   const void *prop = fdt_getprop(fdt, node, "#address-cells", &len);
-  if (prop && len >= 4) {
-    addr_cells = moss_fdt32_to_cpu(*static_cast<const fdt32_t *>(prop));
+  if (prop) {
+    addr_cells = len == 4 ? moss_fdt32_to_cpu(*static_cast<const fdt32_t *>(prop)) : 0;
   }
 
   prop = fdt_getprop(fdt, node, "#size-cells", &len);
-  if (prop && len >= 4) {
-    size_cells = moss_fdt32_to_cpu(*static_cast<const fdt32_t *>(prop));
+  if (prop) {
+    size_cells = len == 4 ? moss_fdt32_to_cpu(*static_cast<const fdt32_t *>(prop)) : 0;
   }
 }
 
@@ -161,23 +102,133 @@ static auto read_cells_value(const u8 *&ptr, u32 num_cells) noexcept -> u64 {
 static auto compatible_match(const void *fdt, int node, const char *match) noexcept -> bool {
   int len = 0;
   const char *compat = static_cast<const char *>(fdt_getprop(fdt, node, "compatible", &len));
-  if (!compat || len <= 0) {
+  return compat && len > 0 && fdt_stringlist_contains(compat, len, match);
+}
+
+static bool enabled(const void *fdt, int node) noexcept {
+  int length = 0;
+  const char *status = static_cast<const char *>(fdt_getprop(fdt, node, "status", &length));
+  return !status || (length == 3 && strncmp(status, "ok", 3) == 0) || (length == 5 && strncmp(status, "okay", 5) == 0);
+}
+
+static bool property_u32(const void *fdt, int node, const char *name, u32 &value) noexcept {
+  int length = 0;
+  const auto *data = static_cast<const u8 *>(fdt_getprop(fdt, node, name, &length));
+  if (!data || length != 4) {
     return false;
   }
+  value = static_cast<u32>(read_cells_value(data, 1));
+  return true;
+}
 
-  const char *p = compat;
-  const char *end = compat + len;
-  while (p < end) {
-    if (fdt_stringlist_contains(compat, len, match)) {
-      return true;
-    }
-    // 遍历到下一个 null-terminated 字符串
-    while (p < end && *p) {
-      p++;
-    }
-    p++; // 跳过 null 终结符
+// Translate a bus-relative reg through every ancestor's ranges.
+// An absent ranges is not an identity mapping; an empty ranges is.
+static bool read_reg(const void *fdt, int node, u32 index, u64 &base, u64 &size) noexcept {
+  int bus = fdt_parent_offset(fdt, node);
+  if (bus < 0) {
+    return false;
   }
-  return false;
+  u32 ac = 2, sc = 1;
+  read_cells(fdt, bus, ac, sc);
+  int length = 0;
+  const auto *data = static_cast<const u8 *>(fdt_getprop(fdt, node, "reg", &length));
+  if (!data || ac < 1 || ac > 2 || sc < 1 || sc > 2 || length <= 0) {
+    return false;
+  }
+  u32 stride = (ac + sc) * 4;
+  if (static_cast<u32>(length) % stride || index >= static_cast<u32>(length) / stride) {
+    return false;
+  }
+  data += index * stride;
+  base = read_cells_value(data, ac);
+  size = read_cells_value(data, sc);
+  if (!size || base + size < base) {
+    return false;
+  }
+  while (bus > 0) {
+    int parent = fdt_parent_offset(fdt, bus);
+    u32 pac = 2, psc = 1;
+    read_cells(fdt, parent, pac, psc);
+    const auto *ranges = static_cast<const u8 *>(fdt_getprop(fdt, bus, "ranges", &length));
+    if (!ranges || ac < 1 || ac > 2 || pac < 1 || pac > 2 || sc < 1 || sc > 2) {
+      return false;
+    }
+    if (length) {
+      stride = (ac + pac + sc) * 4;
+      if (length < 0 || static_cast<u32>(length) % stride) {
+        return false;
+      }
+      bool found = false;
+      for (u32 i = 0; i < static_cast<u32>(length) / stride; ++i) {
+        u64 child = read_cells_value(ranges, ac);
+        u64 translated = read_cells_value(ranges, pac);
+        u64 extent = read_cells_value(ranges, sc);
+        if (base >= child && base - child <= extent && size <= extent - (base - child)) {
+          u64 offset = base - child;
+          if (translated + offset < translated || translated + offset + size < translated + offset) {
+            return false;
+          }
+          base = translated + offset;
+          found = true;
+          break;
+        }
+      }
+      if (!found) {
+        return false;
+      }
+    }
+    bus = parent;
+    ac = pac;
+    sc = psc;
+  }
+  return base < 0x100000000ULL && size <= 0x100000000ULL - base;
+}
+
+static u32 interrupt_number(const void *fdt, int node, u32 index = 0) noexcept {
+  int parent_node = node;
+  u32 phandle = 0;
+  while (parent_node >= 0 && !property_u32(fdt, parent_node, "interrupt-parent", phandle)) {
+    parent_node = fdt_parent_offset(fdt, parent_node);
+  }
+  int controller = fdt_node_offset_by_phandle(fdt, phandle);
+  u32 cells = 0;
+  if (controller < 0 || !property_u32(fdt, controller, "#interrupt-cells", cells) || (cells != 1 && cells != 3)) {
+    return 0;
+  }
+  int length = 0;
+  const auto *data = static_cast<const u8 *>(fdt_getprop(fdt, node, "interrupts", &length));
+  if (!data || length <= 0 || static_cast<u32>(length) < (index + 1) * cells * 4) {
+    return 0;
+  }
+  data += index * cells * 4;
+  u32 first = static_cast<u32>(read_cells_value(data, 1));
+  if (cells == 1) {
+    return first;
+  }
+  u32 number = static_cast<u32>(read_cells_value(data, 1));
+  return first <= 1 ? number + (first == 0 ? 32 : 16) : 0;
+}
+
+static void parse_timer_and_firmware(const void *fdt) noexcept {
+  int node = -1;
+  while ((node = fdt_next_node(fdt, node, nullptr)) >= 0) {
+    if (!enabled(fdt, node)) {
+      continue;
+    }
+    if (compatible_match(fdt, node, "arm,armv8-timer")) {
+      g_platform_info.timer_interrupt = interrupt_number(fdt, node, 2); // virtual timer PPI
+    }
+    if (compatible_match(fdt, node, "arm,psci-0.2") || compatible_match(fdt, node, "arm,psci-1.0")) {
+      int length = 0;
+      const char *method = static_cast<const char *>(fdt_getprop(fdt, node, "method", &length));
+      g_platform_info.psci_smc = method && length == 4 && strncmp(method, "smc", 4) == 0;
+      g_platform_info.psci_valid =
+          g_platform_info.psci_smc || (method && length == 4 && strncmp(method, "hvc", 4) == 0);
+    }
+  }
+#if defined(MOSS_ARCH_RISCV)
+  g_platform_info.timer_interrupt = 5; // architectural supervisor timer interrupt
+#endif
 }
 
 // ============================================================================
@@ -188,7 +239,6 @@ static auto compatible_match(const void *fdt, int node, const char *match) noexc
 static void parse_cpus(const void *fdt) noexcept {
   int cpus_node = fdt_path_offset(fdt, "/cpus");
   if (cpus_node < 0) {
-    g_platform_info.cpu_count = 1; // 默认单核
     return;
   }
 
@@ -206,6 +256,35 @@ static void parse_cpus(const void *fdt) noexcept {
     const char *device_type = static_cast<const char *>(fdt_getprop(fdt, node, "device_type", &len));
     if (device_type && len > 0) {
       if (strncmp(device_type, "cpu", 3) == 0) {
+        if (!enabled(fdt, node)) {
+          continue;
+        }
+        if (count == 16) {
+          g_platform_info.cpu_count = 17; // Fail at the boot contract boundary.
+          return;
+        }
+        u32 address_cells = 1, size_cells = 0;
+        read_cells(fdt, cpus_node, address_cells, size_cells);
+        const auto *reg = static_cast<const u8 *>(fdt_getprop(fdt, node, "reg", &len));
+        if (!reg || address_cells < 1 || address_cells > 2 || len != static_cast<int>(address_cells * 4)) {
+          g_platform_info.cpu_count = 0;
+          return;
+        }
+        auto &cpu = g_platform_info.cpus[count];
+        cpu.hardware_id = read_cells_value(reg, address_cells);
+        const char *method = static_cast<const char *>(fdt_getprop(fdt, node, "enable-method", &len));
+        if (method && len == 5 && strncmp(method, "psci", 5) == 0) {
+          cpu.enable_method = CpuEnableMethod::Psci;
+        } else if (method && len == 11 && strncmp(method, "spin-table", 11) == 0) {
+          cpu.enable_method = CpuEnableMethod::SpinTable;
+          const auto *release = fdt_getprop(fdt, node, "cpu-release-addr", &len);
+          if (release && len == 8) {
+            cpu.release_address = read_fdt64_unaligned(release);
+          }
+        }
+#if defined(MOSS_ARCH_RISCV)
+        cpu.enable_method = CpuEnableMethod::Sbi;
+#endif
         count++;
 
         // Read mmu-type from first CPU node (e.g. "riscv,sv39", "riscv,sv48")
@@ -239,130 +318,100 @@ static void parse_cpus(const void *fdt) noexcept {
     }
   }
 
-  g_platform_info.cpu_count = (count > 0) ? count : 1;
+  g_platform_info.cpu_count = count;
 }
 
 /// 解析 /memory 节点，获取物理内存布局
 static void parse_memory(const void *fdt) noexcept {
-  // 读取根节点的 address/size cells
-  int root = fdt_path_offset(fdt, "/");
-  if (root < 0) {
-    return;
-  }
-
-  u32 addr_cells = 2;
-  u32 size_cells = 2;
-  read_cells(fdt, root, addr_cells, size_cells);
-
-  // 查找 /memory 或 /memory@xxx 节点
-  int mem_node = -1;
   int node = 0;
-  fdt_for_each_subnode(node, fdt, root) {
-    int len = 0;
-    const char *device_type = static_cast<const char *>(fdt_getprop(fdt, node, "device_type", &len));
-    if (device_type && len > 0) {
-      if (strncmp(device_type, "memory", 6) == 0) {
-        mem_node = node;
-        break;
+  auto &info = g_platform_info;
+  fdt_for_each_subnode(node, fdt, 0) {
+    int length = 0;
+    const auto *type = static_cast<const char *>(fdt_getprop(fdt, node, "device_type", &length));
+    if (!type || length != 7 || strncmp(type, "memory", 7) || !enabled(fdt, node)) {
+      continue;
+    }
+    const void *reg = fdt_getprop(fdt, node, "reg", &length);
+    u32 addresses = 2, sizes = 1;
+    read_cells(fdt, 0, addresses, sizes);
+    u32 cells = addresses + sizes;
+    if (!reg || length <= 0 || addresses < 1 || addresses > 2 || sizes < 1 || sizes > 2 ||
+        static_cast<u32>(length) % (cells * 4)) {
+      info.memory_region_count = 0;
+      return;
+    }
+    for (u32 index = 0; index < static_cast<u32>(length) / (cells * 4); ++index) {
+      u64 base = 0, size = 0;
+      if (info.memory_region_count == MAX_MEMORY_REGIONS || !read_reg(fdt, node, index, base, size) ||
+          base >= 0x100000000ULL || size > 0x100000000ULL - base) {
+        info.memory_region_count = 0;
+        return;
       }
+      for (u32 i = 0; i < info.memory_region_count; ++i) {
+        const auto &other = info.memory_regions[i];
+        if (base < other.base + other.size && other.base < base + size) {
+          info.memory_region_count = 0;
+          return;
+        }
+      }
+      if (!info.memory_region_count || base < info.total_memory_start) {
+        info.total_memory_start = base;
+      }
+      info.memory_regions[info.memory_region_count++] = {.base = base, .size = size};
+      info.total_memory_size += size;
     }
   }
-
-  if (mem_node < 0) {
-    return;
-  }
-
-  // 读取 reg 属性
-  int len = 0;
-  const void *reg = fdt_getprop(fdt, mem_node, "reg", &len);
-  if (!reg || len <= 0) {
-    return;
-  }
-
-  u32 entry_size = (addr_cells + size_cells) * 4;
-  if (addr_cells < 1 || addr_cells > 2 || size_cells < 1 || size_cells > 2 || static_cast<u32>(len) % entry_size != 0) {
-    return;
-  }
-  u32 region_count = static_cast<u32>(len) / entry_size;
-  if (region_count > MAX_MEMORY_REGIONS) {
-    return;
-  }
-
-  const u8 *ptr = static_cast<const u8 *>(reg);
-  u64 total_size = 0;
-
-  for (u32 i = 0; i < region_count; i++) {
-    u64 base = read_cells_value(ptr, addr_cells);
-    u64 size = read_cells_value(ptr, size_cells);
-    g_platform_info.memory_regions[i] = {.base = static_cast<PhysAddr>(base), .size = size};
-    total_size += size;
-  }
-
-  g_platform_info.memory_region_count = region_count;
-  if (region_count > 0) {
-    g_platform_info.total_memory_start = g_platform_info.memory_regions[0].base;
-  }
-  g_platform_info.total_memory_size = total_size;
 }
 
 /// 解析 UART 设备节点
 /// 支持 ARM PL011 (arm,pl011) 和 NS16550 (ns16550a) 兼容设备
 static void parse_uart(const void *fdt) noexcept {
-  // 遍历所有节点，查找 UART compatible
-  int uart_node = -1;
-  int offset = -1;
-
-  while (true) {
-    offset = fdt_next_node(fdt, offset, nullptr);
-    if (offset < 0) {
-      break;
+  int node = -1;
+  if (g_platform_info.stdout_path) {
+    const char *path = g_platform_info.stdout_path;
+    int length = 0;
+    while (path[length] && path[length] != ':') {
+      ++length;
     }
-
-    if (compatible_match(fdt, offset, "arm,pl011") || compatible_match(fdt, offset, "ns16550a") ||
-        compatible_match(fdt, offset, "ns16550")) {
-      uart_node = offset;
-      break;
-    }
-  }
-
-  if (uart_node < 0) {
-    return;
-  }
-
-  // 获取父节点的 cells 信息
-  int parent = fdt_parent_offset(fdt, uart_node);
-  u32 addr_cells = 2;
-  u32 size_cells = 2;
-  if (parent >= 0) {
-    read_cells(fdt, parent, addr_cells, size_cells);
+    node = fdt_path_offset_namelen(fdt, path, length);
   } else {
-    int root = fdt_path_offset(fdt, "/");
-    if (root >= 0) {
-      read_cells(fdt, root, addr_cells, size_cells);
+    while ((node = fdt_next_node(fdt, node, nullptr)) >= 0) {
+      if (enabled(fdt, node) && (compatible_match(fdt, node, "arm,pl011") || compatible_match(fdt, node, "ns16550a") ||
+                                 compatible_match(fdt, node, "ns16550"))) {
+        break;
+      }
     }
   }
-
-  // 读取 reg 属性
-  int len = 0;
-  const void *reg = fdt_getprop(fdt, uart_node, "reg", &len);
-  if (!reg || len <= 0) {
+  if (node < 0 || !enabled(fdt, node)) {
     return;
   }
-
-  const u8 *ptr = static_cast<const u8 *>(reg);
-  u64 base = read_cells_value(ptr, addr_cells);
-  u64 size = read_cells_value(ptr, size_cells);
-
-  g_platform_info.uart.base_addr = static_cast<PhysAddr>(base);
-  g_platform_info.uart.size = size;
-
-  // 尝试读取 clock-frequency 属性
-  const void *clk = fdt_getprop(fdt, uart_node, "clock-frequency", &len);
-  if (clk && len >= 4) {
-    g_platform_info.uart.clock_freq = moss_fdt32_to_cpu(*static_cast<const fdt32_t *>(clk));
+  auto &uart = g_platform_info.uart;
+  if (compatible_match(fdt, node, "arm,pl011")) {
+    uart.kind = UartKind::Pl011;
+    uart.reg_width = 4;
+  } else if (compatible_match(fdt, node, "ns16550a") || compatible_match(fdt, node, "ns16550")) {
+    uart.kind = UartKind::Ns16550;
+    u32 shift = 0, width = 1;
+    (void)property_u32(fdt, node, "reg-shift", shift);
+    (void)property_u32(fdt, node, "reg-io-width", width);
+    if (shift > 3 || (width != 1 && width != 4)) {
+      return;
+    }
+    uart.reg_shift = static_cast<u8>(shift);
+    uart.reg_width = static_cast<u8>(width);
+  } else {
+    return;
   }
-
-  g_platform_info.uart.valid = true;
+  u64 base = 0, size = 0;
+  if (!read_reg(fdt, node, 0, base, size) ||
+      size < (uart.kind == UartKind::Pl011 ? 0x48ULL : (8ULL << uart.reg_shift))) {
+    return;
+  }
+  uart.base_addr = base;
+  uart.size = size;
+  uart.irq = interrupt_number(fdt, node);
+  (void)property_u32(fdt, node, "clock-frequency", uart.clock_freq);
+  uart.valid = true;
 }
 
 /// 解析中断控制器节点（ARM GIC / RISC-V PLIC）
@@ -379,6 +428,9 @@ static void parse_intc(const void *fdt) noexcept {
       break;
     }
 
+    if (!enabled(fdt, offset)) {
+      continue;
+    }
     if (compatible_match(fdt, offset, "arm,gic-v3")) {
       intc_node = offset;
       detected_version = 3;
@@ -400,55 +452,71 @@ static void parse_intc(const void *fdt) noexcept {
     return;
   }
 
-  // 获取父节点的 cells 信息
-  int parent = fdt_parent_offset(fdt, intc_node);
-  u32 addr_cells = 2;
-  u32 size_cells = 2;
-  if (parent >= 0) {
-    read_cells(fdt, parent, addr_cells, size_cells);
-  } else {
-    int root = fdt_path_offset(fdt, "/");
-    if (root >= 0) {
-      read_cells(fdt, root, addr_cells, size_cells);
-    }
-  }
-
-  // 读取 reg 属性
-  int len = 0;
-  const void *reg = fdt_getprop(fdt, intc_node, "reg", &len);
-  if (!reg || len <= 0) {
+  auto &intc = g_platform_info.intc;
+  if (!read_reg(fdt, intc_node, 0, intc.dist_base, intc.dist_size)) {
     return;
   }
-
-  u32 entry_size = (addr_cells + size_cells) * 4;
-  const u8 *ptr = static_cast<const u8 *>(reg);
-
-  // 第一个 reg 条目 = distributor (same for GICv2, GICv3, and PLIC)
-  u64 dist_base = read_cells_value(ptr, addr_cells);
-  u64 dist_size = read_cells_value(ptr, size_cells);
-  g_platform_info.intc.dist_base = static_cast<PhysAddr>(dist_base);
-  g_platform_info.intc.dist_size = dist_size;
-
-  // 第二个 reg 条目: interpretation depends on GIC version
-  //   GICv2: GICC (CPU interface) — MMIO mapped
-  //   GICv3: GICR (redistributor) — per-CPU register frames
-  if (static_cast<u32>(len) >= entry_size * 2) {
-    u64 second_base = read_cells_value(ptr, addr_cells);
-    u64 second_size = read_cells_value(ptr, size_cells);
-
-    if (detected_version == 3) {
-      g_platform_info.intc.redist_base = static_cast<PhysAddr>(second_base);
-      g_platform_info.intc.redist_size = second_size;
-      g_platform_info.intc.cpu_base = 0;
-      g_platform_info.intc.cpu_size = 0;
-    } else {
-      g_platform_info.intc.cpu_base = static_cast<PhysAddr>(second_base);
-      g_platform_info.intc.cpu_size = second_size;
-      g_platform_info.intc.redist_base = 0;
-      g_platform_info.intc.redist_size = 0;
+  if (detected_version == 3) {
+    if (!read_reg(fdt, intc_node, 1, intc.redist_base, intc.redist_size)) {
+      return;
+    }
+    // ponytail: one standard GICv3 RD/SGI region; add stride/multiple-region support when needed.
+    int length = 0;
+    const auto *stride = static_cast<const void *>(fdt_getprop(fdt, intc_node, "redistributor-stride", &length));
+    u32 regions = 1;
+    (void)property_u32(fdt, intc_node, "#redistributor-regions", regions);
+    if (regions != 1 || (stride && (length != 8 || read_fdt64_unaligned(stride) != 0x20000)) ||
+        intc.redist_size < 0x20000) {
+      return;
+    }
+  } else if (detected_version == 2) {
+    if (!read_reg(fdt, intc_node, 1, intc.cpu_base, intc.cpu_size)) {
+      return;
     }
   }
-
+  if (detected_version == 0) {
+    // PLIC contexts are the positions in interrupts-extended, not hart*2+1.
+    int len = 0;
+    const auto *interrupts = static_cast<const fdt32_t *>(fdt_getprop(fdt, intc_node, "interrupts-extended", &len));
+    if (!interrupts || len < 8 || len % 8 || !g_platform_info.cpu_count || g_platform_info.cpu_count > 16) {
+      return;
+    }
+    for (u32 cpu = 0; cpu < g_platform_info.cpu_count; ++cpu) {
+      g_platform_info.plic_contexts[cpu] = ~0U;
+    }
+    for (int index = 0; index < len / 8; ++index) {
+      int controller = fdt_node_offset_by_phandle(fdt, fdt32_to_cpu(interrupts[index * 2]));
+      u32 interrupt_cells = 0;
+      if (controller < 0 || !property_u32(fdt, controller, "#interrupt-cells", interrupt_cells) ||
+          interrupt_cells != 1) {
+        return;
+      }
+      if (fdt32_to_cpu(interrupts[index * 2 + 1]) != 9) {
+        continue; // Supervisor external interrupt.
+      }
+      int cpu_node = fdt_parent_offset(fdt, controller);
+      int cpus_node = fdt_parent_offset(fdt, cpu_node);
+      u32 cells = 1;
+      (void)property_u32(fdt, cpus_node, "#address-cells", cells);
+      int reg_len = 0;
+      const auto *reg = static_cast<const u8 *>(fdt_getprop(fdt, cpu_node, "reg", &reg_len));
+      if (!reg || cells < 1 || cells > 2 || reg_len != static_cast<int>(cells * 4)) {
+        return;
+      }
+      u64 hart = read_cells_value(reg, cells);
+      for (u32 cpu = 0; cpu < g_platform_info.cpu_count; ++cpu) {
+        if (g_platform_info.cpus[cpu].hardware_id == hart) {
+          g_platform_info.plic_contexts[cpu] = static_cast<u32>(index);
+        }
+      }
+    }
+    for (u32 cpu = 0; cpu < g_platform_info.cpu_count; ++cpu) {
+      u64 context_end = 0x200000ULL + (static_cast<u64>(g_platform_info.plic_contexts[cpu]) + 1) * 0x1000;
+      if (context_end > intc.dist_size) {
+        return;
+      }
+    }
+  }
   g_platform_info.intc.gic_version = detected_version;
   g_platform_info.intc.valid = true;
 }
@@ -462,8 +530,13 @@ static void parse_chosen(const void *fdt) noexcept {
 
   // bootargs 和 stdout-path 的指针直接指向 DTB blob 内部
   // DTB blob 必须在整个内核生命周期内保持有效
-  g_platform_info.bootargs = static_cast<const char *>(fdt_getprop(fdt, node, "bootargs", nullptr));
-  g_platform_info.stdout_path = static_cast<const char *>(fdt_getprop(fdt, node, "stdout-path", nullptr));
+  auto string_property = [&](const char *name) -> const char * {
+    int length = 0;
+    const auto *value = static_cast<const char *>(fdt_getprop(fdt, node, name, &length));
+    return value && length > 0 && value[length - 1] == '\0' ? value : nullptr;
+  };
+  g_platform_info.bootargs = string_property("bootargs");
+  g_platform_info.stdout_path = string_property("stdout-path");
 
   // Parse initramfs address range (QEMU -initrd writes these to DTB)
   int len = 0;
@@ -491,6 +564,7 @@ static void parse_chosen(const void *fdt) noexcept {
 // ============================================================================
 
 bool parse_dtb(const void *dtb_ptr) noexcept {
+  g_platform_info = {};
   if (!dtb_ptr) {
     return false;
   }
@@ -508,9 +582,10 @@ bool parse_dtb(const void *dtb_ptr) noexcept {
   // 按顺序解析各节点
   parse_cpus(dtb_ptr);
   parse_memory(dtb_ptr);
-  parse_uart(dtb_ptr);
-  parse_intc(dtb_ptr);
   parse_chosen(dtb_ptr);
+  parse_intc(dtb_ptr);
+  parse_uart(dtb_ptr);
+  parse_timer_and_firmware(dtb_ptr);
 
   g_platform_info.memory_map_valid = g_platform_info.memory_region_count > 0;
   auto reserve = [](PhysAddr base, u64 size) {
@@ -541,6 +616,9 @@ bool parse_dtb(const void *dtb_ptr) noexcept {
     } else {
       int node;
       fdt_for_each_subnode(node, dtb_ptr, reserved) {
+        if (!enabled(dtb_ptr, node)) {
+          continue;
+        }
         int length = 0;
         const auto *data = static_cast<const u8 *>(fdt_getprop(dtb_ptr, node, "reg", &length));
         u32 stride = (address_cells + size_cells) * 4;
