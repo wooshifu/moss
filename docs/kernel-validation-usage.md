@@ -28,6 +28,31 @@ Use the actual `moss-artifacts.json` path printed by your preset if using an ove
 
 `--cpus`, `--memory-mib`, `--warmup`, `--samples`, `--iterations`, and `--order` are explicit overrides. `--machine`, `--cpu`, `--qemu` and `--dtb` select the runtime environment. `--expected-ram-mib` explicitly checks firmware-visible RAM when firmware reserves part of the installed RAM; it defaults to `--memory-mib` and is recorded separately. Initial deadlines are `--startup-timeout 30`, `--case-timeout 5`, and `--guest-timeout 60`, in host seconds. Increase the case limit for intentionally longer workloads. Ctrl-C or SIGTERM finalizes partial reports and terminates/reaps QEMU; workloads not started are recorded as such.
 
+## Memory Ownership and Boot Inputs
+
+The `heap` and `pfa` suites check real allocation/release and exhaustion. They
+snapshot PFA metadata, the early table pool and current page-table trees; heap
+writes must not change them, and PFA must never return their pages as free memory.
+These are single-worker ownership checks, not concurrent allocator/COW acceptance.
+
+Additional boot-input checks run independently of CMake configure/build:
+
+```sh
+uv run scripts/check_pfa_firmware.py --manifest build/riscv-debug/moss-artifacts.json
+uv run scripts/check_heap_layout.py --manifest build/arm64-debug/moss-artifacts.json
+```
+
+The firmware check requires QEMU and dtc's `fdtget`/`fdtput`. It reuses an unchanged
+image with altered DTBs; ARM64 tests reserved regions, while RV64 also tests RAM
+bank shape/order/capacity. The heap-layout check requires an existing Ninja build
+and LLVM tools. It reuses that build's actual link command to create a disposable
+image with an overlapping heap limit; original artifacts and sources are untouched.
+Generated images, manifests, DTBs and reports remain under the supplied build directory.
+
+Negative checks require the expected boot diagnostic and no `ready` event. Their
+raw guest reports remain errors; the check script succeeds only when rejection is
+verified. They do not count an unexecuted functional test as passed.
+
 ## Single-Function Measurements
 
 The five built-ins are `bench.allocate`, `bench.release`, `bench.combined`, `bench.read`, and `bench.getpid`. Allocation and release support orders 0 through 4. `bench.read` measures 256-byte reads from a real 64 KiB ramfs file. `bench.getpid` brackets real user-to-kernel-to-user calls from userspace, rather than calling a handler directly.

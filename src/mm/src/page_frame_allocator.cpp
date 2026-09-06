@@ -33,8 +33,15 @@ PageAllocVoidResult PageFrameAllocator::initialize() noexcept {
 
   // 初始化空闲列表
   initialize_free_lists();
+  if (total_pages_ == 0) {
+    return PageAllocVoidResult{PageAllocError::InitializationFailed};
+  }
 
   initialized_ = true;
+  log::klog::info("PFA layout: heap={:x}..{:x}, tables={:x}..{:x}, metadata={:x} ({} bytes), {} pages",
+                  moss::abi::linker::heap_start(), moss::abi::linker::heap_end(), moss::abi::linker::pagetable_start(),
+                  moss::abi::linker::pagetable_end(), reinterpret_cast<PhysAddr>(page_metadata_),
+                  (metadata_pages_ * sizeof(PageMetadata) + PAGE_SIZE - 1) & ~(PAGE_SIZE - 1), total_pages_);
 
 #ifdef DEBUG
   dump_memory_layout();
@@ -45,6 +52,8 @@ PageAllocVoidResult PageFrameAllocator::initialize() noexcept {
 
 // Allocated flag bit in PageMetadata::flags
 static constexpr u32 PAGE_FLAG_ALLOCATED = 1U << 0;
+static constexpr u32 PAGE_FLAG_HEAD = 1U << 1;
+static constexpr u32 PAGE_ORDER_SHIFT = 2;
 
 // 分配物理页面
 PageAllocResult<PhysAddr> PageFrameAllocator::allocate_pages(usize order) noexcept {
@@ -87,31 +96,23 @@ PageAllocResult<PhysAddr> PageFrameAllocator::allocate_pages(usize order) noexce
 
   PhysAddr allocated_addr = reinterpret_cast<PhysAddr>(block);
 
-  // Initialize reference count to 1 for COW tracking, and mark as allocated
-  if (page_metadata_ && memory_regions_) {
-    usize page_idx = addr_to_page(allocated_addr - memory_regions_->start_addr);
-    if (page_idx < metadata_pages_) {
-      page_metadata_[page_idx].ref_count.store(1, containers::MemoryOrder::Relaxed);
+  const usize page_idx = addr_to_page(allocated_addr - memory_regions_->start_addr);
+  if ((allocated_addr & ((PAGE_SIZE << order) - 1)) != 0 || page_idx >= metadata_pages_ ||
+      pages_allocated > metadata_pages_ - page_idx) {
+    log::klog::panic("PFA: free-list block outside allocation boundaries");
+  }
+  // The allocator lock owns flags. Record one head and the original order;
+  // allocated tail pages are not independently releasable allocations.
+  for (usize pi = 0; pi < pages_allocated; ++pi) {
+    auto &metadata = page_metadata_[page_idx + pi];
+    if (metadata.flags.load(containers::MemoryOrder::Relaxed) & PAGE_FLAG_ALLOCATED) {
+      log::klog::panic("PFA: double-alloc page 0x{:x} order={}", static_cast<u64>(allocated_addr + pi * PAGE_SIZE),
+                       order);
     }
-
-    // Guard: mark all pages in this allocation as ALLOCATED
-    for (usize pi = 0; pi < pages_allocated; pi++) {
-      PhysAddr pa = allocated_addr + pi * PAGE_SIZE;
-      usize idx = addr_to_page(pa - memory_regions_->start_addr);
-      if (idx < metadata_pages_) {
-        // Use CAS loop since AtomicCounter lacks fetch_or
-        u32 expected = page_metadata_[idx].flags.load(containers::MemoryOrder::Relaxed);
-        while (true) {
-          if (expected & PAGE_FLAG_ALLOCATED) {
-            log::klog::panic("PFA: double-alloc page 0x{:x} idx={} order={}", static_cast<u64>(pa), idx, order);
-          }
-          u32 desired = expected | PAGE_FLAG_ALLOCATED;
-          if (page_metadata_[idx].flags.compare_exchange_weak(expected, desired, containers::MemoryOrder::Relaxed)) {
-            break;
-          }
-        }
-      }
-    }
+    metadata.ref_count.store(1, containers::MemoryOrder::Relaxed);
+    metadata.flags.store(PAGE_FLAG_ALLOCATED |
+                             (pi == 0 ? PAGE_FLAG_HEAD | static_cast<u32>(order) << PAGE_ORDER_SHIFT : 0),
+                         containers::MemoryOrder::Relaxed);
   }
 
   return PageAllocResult<PhysAddr>{allocated_addr};
@@ -132,26 +133,32 @@ PageAllocVoidResult PageFrameAllocator::free_pages(PhysAddr addr, usize order) n
     return PageAllocVoidResult{PageAllocError::InvalidAddress};
   }
 
-  // Guard: verify pages are actually allocated before freeing
-  usize pages_freed = 1UL << order;
-  if (page_metadata_ && memory_regions_) {
-    for (usize pi = 0; pi < pages_freed; pi++) {
-      PhysAddr pa = addr + pi * PAGE_SIZE;
-      usize idx = addr_to_page(pa - memory_regions_->start_addr);
-      if (idx < metadata_pages_) {
-        // Use CAS loop since AtomicCounter lacks fetch_and
-        u32 expected = page_metadata_[idx].flags.load(containers::MemoryOrder::Relaxed);
-        while (true) {
-          if (!(expected & PAGE_FLAG_ALLOCATED)) {
-            log::klog::panic("PFA: double-free page 0x{:x} idx={} order={}", static_cast<u64>(pa), idx, order);
-          }
-          u32 desired = expected & ~PAGE_FLAG_ALLOCATED;
-          if (page_metadata_[idx].flags.compare_exchange_weak(expected, desired, containers::MemoryOrder::Relaxed)) {
-            break;
-          }
-        }
-      }
+  const usize page_idx = addr_to_page(addr - memory_regions_->start_addr);
+  const u32 head_flags = page_metadata_[page_idx].flags.load(containers::MemoryOrder::Relaxed);
+  if ((head_flags & (PAGE_FLAG_ALLOCATED | PAGE_FLAG_HEAD)) != (PAGE_FLAG_ALLOCATED | PAGE_FLAG_HEAD)) {
+    return PageAllocVoidResult{PageAllocError::InvalidAddress};
+  }
+  if ((head_flags >> PAGE_ORDER_SHIFT) != order) {
+    return PageAllocVoidResult{PageAllocError::InvalidOrder};
+  }
+  const usize pages_freed = 1UL << order;
+  if ((addr & ((PAGE_SIZE << order) - 1)) != 0 || pages_freed > metadata_pages_ - page_idx) {
+    return PageAllocVoidResult{PageAllocError::InvalidAddress};
+  }
+  // Validate the complete allocation before mutating any flag, refcount or list.
+  for (usize pi = 0; pi < pages_freed; ++pi) {
+    const auto &metadata = page_metadata_[page_idx + pi];
+    const u32 expected_flags = pi == 0 ? head_flags : PAGE_FLAG_ALLOCATED;
+    if (metadata.flags.load(containers::MemoryOrder::Relaxed) != expected_flags) {
+      return PageAllocVoidResult{PageAllocError::InvalidAddress};
     }
+    if (metadata.ref_count.load(containers::MemoryOrder::Acquire) > 1) {
+      return PageAllocVoidResult{PageAllocError::PageInUse};
+    }
+  }
+  for (usize pi = 0; pi < pages_freed; ++pi) {
+    page_metadata_[page_idx + pi].flags.store(0, containers::MemoryOrder::Relaxed);
+    page_metadata_[page_idx + pi].ref_count.store(0, containers::MemoryOrder::Relaxed);
   }
 
   // 将地址转换为FreeBlock
@@ -169,10 +176,14 @@ PageAllocVoidResult PageFrameAllocator::free_pages(PhysAddr addr, usize order) n
 
 // 获取内存统计信息
 PageFrameAllocator::MemoryStats PageFrameAllocator::get_memory_stats() noexcept {
-  return MemoryStats{.total_pages = total_pages_,
-                     .free_pages = free_pages_.load(),
-                     .used_pages = used_pages_.load(),
-                     .kernel_pages = total_pages_ - free_pages_.load() - used_pages_.load()};
+  containers::LockGuard<containers::IrqSpinLock> guard(lock_);
+  return MemoryStats{
+      .total_pages = total_pages_,
+      .free_pages = free_pages_.load(),
+      .used_pages = used_pages_.load(),
+      .kernel_pages = total_pages_ - free_pages_.load() - used_pages_.load(),
+      .metadata_start = reinterpret_cast<PhysAddr>(page_metadata_),
+      .metadata_size = initialized_ ? (metadata_pages_ * sizeof(PageMetadata) + PAGE_SIZE - 1) & ~(PAGE_SIZE - 1) : 0};
 }
 
 // 解析内核内存布局
@@ -181,41 +192,104 @@ PageAllocVoidResult PageFrameAllocator::parse_memory_layout() noexcept {
   const auto &plat = ::moss::fdt::get_platform_info();
 
   PhysAddr kernel_end = moss::abi::linker::kernel_end();
-  PhysAddr memory_end = 0;
-  // Use the actual contiguous RAM bank containing the kernel, never bridge a firmware hole.
+  namespace linker = moss::abi::linker;
+  if (linker::bss_end() > linker::heap_start() || linker::heap_start() >= linker::heap_end() ||
+      linker::heap_end() > linker::pagetable_start() || linker::pagetable_start() >= linker::pagetable_end() ||
+      linker::pagetable_end() > kernel_end) {
+    log::klog::error("PFA: invalid linker memory layout");
+    return PageAllocVoidResult{PageAllocError::InitializationFailed};
+  }
+  if (!plat.memory_map_valid || plat.memory_region_count == 0 ||
+      plat.memory_region_count > sizeof(plat.memory_regions) / sizeof(plat.memory_regions[0]) ||
+      plat.reserved_region_count > sizeof(plat.reserved_regions) / sizeof(plat.reserved_regions[0]) ||
+      plat.initrd_end < plat.initrd_start || kernel_end >= 0x100000000ULL) {
+    return PageAllocVoidResult{PageAllocError::InitializationFailed};
+  }
+  // Firmware entries are inputs, including maps supplied by non-DTB boot paths.
   for (u32 i = 0; i < plat.memory_region_count; ++i) {
     const auto &region = plat.memory_regions[i];
-    if (kernel_end >= region.base && kernel_end < region.base + region.size) {
-      memory_end = region.base + region.size;
-      break;
+    if (!region.size || region.size > ~u64{0} - region.base) {
+      return PageAllocVoidResult{PageAllocError::InitializationFailed};
     }
   }
-  if (!plat.memory_map_valid || memory_end == 0 || memory_end > 0x100000000ULL) {
+  for (u32 i = 0; i < plat.reserved_region_count; ++i) {
+    const auto &region = plat.reserved_regions[i];
+    if (region.size > ~u64{0} - region.base) {
+      return PageAllocVoidResult{PageAllocError::InitializationFailed};
+    }
+  }
+  constexpr usize capacity = sizeof(plat.memory_regions) / sizeof(plat.memory_regions[0]);
+  struct Range {
+    PhysAddr begin;
+    PhysAddr end;
+  };
+  Range ranges[capacity]{};
+  usize count = 0;
+  bool contains_kernel_end = false;
+  for (u32 i = 0; i < plat.memory_region_count; ++i) {
+    const auto &region = plat.memory_regions[i];
+    const PhysAddr end = region.base + region.size;
+    if (end > 0x100000000ULL) {
+      return PageAllocVoidResult{PageAllocError::InitializationFailed};
+    }
+    contains_kernel_end = contains_kernel_end || (region.base <= kernel_end && kernel_end < end);
+    usize at = count++;
+    while (at && ranges[at - 1].begin > region.base) {
+      ranges[at] = ranges[at - 1];
+      --at;
+    }
+    ranges[at] = {.begin = region.base, .end = end};
+  }
+  if (!contains_kernel_end) {
     return PageAllocVoidResult{PageAllocError::InitializationFailed};
   }
-
-  // 对齐到页面边界
-  PhysAddr available_start = (kernel_end + PAGE_SIZE - 1) & ~(PAGE_SIZE - 1);
-  PhysAddr available_end = memory_end & ~(PAGE_SIZE - 1);
-
-  if (available_start >= available_end) {
+  // Adjacent firmware entries form one bank, including partial edge pages.
+  // Reject overlapping usable entries consistently with the DTB parser.
+  usize merged = 0;
+  for (usize i = 0; i < count; ++i) {
+    if (merged && ranges[i].begin < ranges[merged - 1].end) {
+      return PageAllocVoidResult{PageAllocError::InitializationFailed};
+    }
+    if (merged && ranges[i].begin == ranges[merged - 1].end) {
+      ranges[merged - 1].end = ranges[i].end;
+    } else {
+      ranges[merged++] = ranges[i];
+    }
+  }
+  static MemoryRegion regions[capacity];
+  count = 0;
+  for (usize i = 0; i < merged; ++i) {
+    // ponytail: retain the boot prefix below kernel_end until every boot
+    // protocol explicitly reserves its live low-memory buffers/trampolines.
+    const auto base = ranges[i].begin > kernel_end ? ranges[i].begin : kernel_end;
+    const PhysAddr begin = (base + PAGE_SIZE - 1) & ~(PAGE_SIZE - 1);
+    const PhysAddr end = ranges[i].end & ~(PAGE_SIZE - 1);
+    if (begin < end) {
+      regions[count++] = {.start_addr = begin, .page_count = (end - begin) / PAGE_SIZE, .next = nullptr};
+    }
+  }
+  if (!count) {
     return PageAllocVoidResult{PageAllocError::InitializationFailed};
   }
+  for (usize i = 1; i < count; ++i) {
+    regions[i - 1].next = &regions[i];
+  }
+  memory_regions_ = regions;
+  const PhysAddr span_end = regions[count - 1].start_addr + regions[count - 1].page_count * PAGE_SIZE;
+  // ponytail: dense PFN metadata spans holes, bounded to 16 MiB by the current
+  // 4-GiB physical mapping. Use per-bank metadata when high/sparse RAM is supported.
+  metadata_pages_ = (span_end - regions[0].start_addr) / PAGE_SIZE;
+  const usize metadata_bytes = (metadata_pages_ * sizeof(PageMetadata) + PAGE_SIZE - 1) & ~(PAGE_SIZE - 1);
 
-  // 计算可用页面数 (preliminary, before reserving metadata)
-  usize raw_total_pages = (available_end - available_start) / PAGE_SIZE;
-
-  // Reserve space for page metadata array at the start of available memory.
-  // Each page needs a PageMetadata struct for COW reference counting.
-  usize metadata_bytes = raw_total_pages * sizeof(PageMetadata);
-  usize metadata_pages = (metadata_bytes + PAGE_SIZE - 1) / PAGE_SIZE;
-
-  // Find room for metadata without overwriting bootloader-owned data.
-  auto reserved_end = [&](PhysAddr begin, PhysAddr end) -> PhysAddr {
+  // Metadata must fit wholly in a real bank, not merely in the total RAM span.
+  auto reserved_end = [&](PhysAddr begin, PhysAddr end, PhysAddr bank_end) -> PhysAddr {
     PhysAddr skip_to = begin;
     auto check = [&](PhysAddr base, u64 size) {
       if (size && begin < base + size && end > base && base + size > skip_to) {
-        skip_to = (base + size + PAGE_SIZE - 1) & ~(PAGE_SIZE - 1);
+        // Clip before rounding: a valid exclusive end of UINT64_MAX must not
+        // wrap the metadata placement to address zero.
+        const auto clipped_end = base + size < bank_end ? base + size : bank_end;
+        skip_to = (clipped_end + PAGE_SIZE - 1) & ~(PAGE_SIZE - 1);
       }
     };
     check(plat.initrd_start, plat.initrd_end - plat.initrd_start);
@@ -224,48 +298,25 @@ PageAllocVoidResult PageFrameAllocator::parse_memory_layout() noexcept {
     }
     return skip_to;
   };
-  while (available_start < available_end) {
-    PhysAddr next = reserved_end(available_start, available_start + metadata_pages * PAGE_SIZE);
-    if (next == available_start) {
-      break;
+  page_metadata_ = nullptr;
+  for (usize i = 0; i < count; ++i) {
+    PhysAddr begin = regions[i].start_addr;
+    const PhysAddr end = begin + regions[i].page_count * PAGE_SIZE;
+    while (begin < end && metadata_bytes <= end - begin) {
+      const auto next = reserved_end(begin, begin + metadata_bytes, end);
+      if (next == begin) {
+        page_metadata_ = reinterpret_cast<PageMetadata *>(begin);
+        auto *bytes = reinterpret_cast<u8 *>(begin);
+        for (usize byte = 0; byte < metadata_bytes; ++byte) {
+          bytes[byte] = 0;
+        }
+        used_pages_.store(0);
+        return PageAllocVoidResult{};
+      }
+      begin = next;
     }
-    available_start = next;
   }
-  if (available_start >= available_end || metadata_pages * PAGE_SIZE >= available_end - available_start) {
-    return PageAllocVoidResult{PageAllocError::InitializationFailed};
-  }
-
-  page_metadata_ = reinterpret_cast<PageMetadata *>(available_start);
-
-  // Zero-initialize metadata
-  auto *raw_ptr = reinterpret_cast<u8 *>(available_start);
-  for (usize i = 0; i < metadata_pages * PAGE_SIZE; i++) {
-    raw_ptr[i] = 0;
-  }
-
-  // Advance available_start past metadata region
-  available_start += metadata_pages * PAGE_SIZE;
-
-  if (available_start >= available_end) {
-    return PageAllocVoidResult{PageAllocError::InitializationFailed};
-  }
-
-  // Final page count (after metadata reservation)
-  total_pages_ = (available_end - available_start) / PAGE_SIZE;
-  metadata_pages_ = total_pages_;
-  free_pages_.store(total_pages_);
-  used_pages_.store(0);
-
-  // 创建单一内存区域 (简化实现)
-  // 在实际系统中，这里应该解析设备树或UEFI内存映射
-  static MemoryRegion main_region;
-  main_region.start_addr = available_start;
-  main_region.page_count = total_pages_;
-  main_region.next = nullptr;
-
-  memory_regions_ = &main_region;
-
-  return PageAllocVoidResult{};
+  return PageAllocVoidResult{PageAllocError::InitializationFailed};
 }
 
 // 初始化空闲列表
@@ -276,7 +327,13 @@ void PageFrameAllocator::initialize_free_lists() noexcept {
   }
 
   const auto &plat = ::moss::fdt::get_platform_info();
+  const PhysAddr metadata_start = reinterpret_cast<PhysAddr>(page_metadata_);
+  const PhysAddr metadata_end =
+      metadata_start + ((metadata_pages_ * sizeof(PageMetadata) + PAGE_SIZE - 1) & ~(PAGE_SIZE - 1));
   auto reserved = [&](PhysAddr begin, PhysAddr end) {
+    if (begin < metadata_end && end > metadata_start) {
+      return true;
+    }
     if (plat.initrd_end > plat.initrd_start && begin < plat.initrd_end && end > plat.initrd_start) {
       return true;
     }
