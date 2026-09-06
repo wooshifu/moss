@@ -9,6 +9,17 @@ namespace log = moss::kernel::logging;
 
 namespace moss::kernel::mm {
 
+static bool overlaps_ram(PhysAddr start, PhysAddr end) noexcept {
+  const auto &hardware = moss::kernel::platform::hardware;
+  for (u32 i = 0; i < hardware.memory_region_count; ++i) {
+    const auto &region = hardware.memory_regions[i];
+    if (start < region.base + region.size && end > region.base) {
+      return true;
+    }
+  }
+  return false;
+}
+
 // PageTableManager 方法实现 — routes to early bump or dynamic buddy allocator
 KernelResult<PageTable *> PageTableManager::allocate_page_table() {
   if (use_dynamic_alloc) {
@@ -50,14 +61,9 @@ KernelResult<PageTable *> PageTableManager::allocate_page_table_dynamic() {
 
 // Build high-half kernel page table: map physical RAM at KERNEL_DIRECT_MAP_BASE
 VoidResult PageTableManager::setup_kernel_high_half_tables() {
-  // Determine RAM region from DTB (PlatformInfo)
-  const auto &plat = moss::fdt::get_platform_info();
-  PhysAddr ram_start = (plat.memory_map_valid && plat.total_memory_size > 0) ? plat.total_memory_start
-                                                                             : moss::kernel::platform::ram_base();
-  u64 ram_size = (plat.memory_map_valid && plat.total_memory_size > 0) ? plat.total_memory_size
-                                                                       : moss::kernel::platform::ram_size();
-  PhysAddr ram_end = ram_start + ram_size;
-
+  if (!moss::kernel::platform::hardware.memory_map_valid) {
+    return VoidResult{ErrorCode::InvalidState};
+  }
   constexpr u64 ONE_GB = 0x40000000ULL;
 
   // break_virtual_address gives the correct pgd_index for each arch:
@@ -79,9 +85,9 @@ VoidResult PageTableManager::setup_kernel_high_half_tables() {
     for (usize i = 0; i < 4; i++) {
       PhysAddr block_addr = static_cast<PhysAddr>(i * ONE_GB);
       PhysAddr block_end = block_addr + ONE_GB;
-      bool overlaps_ram = (block_addr < ram_end) && (block_end > ram_start);
-      kernel_pgd->entries[pgd_idx + i].raw =
-          overlaps_ram ? hal::mmu::make_normal_block(block_addr) : hal::mmu::make_device_block(block_addr);
+      kernel_pgd->entries[pgd_idx + i].raw = overlaps_ram(block_addr, block_end)
+                                                 ? hal::mmu::make_normal_block(block_addr)
+                                                 : hal::mmu::make_device_block(block_addr);
     }
   } else {
     // Sv48: root entries are table pointers — allocate a PUD and fill with
@@ -95,9 +101,8 @@ VoidResult PageTableManager::setup_kernel_high_half_tables() {
     for (usize i = 0; i < 4; i++) {
       PhysAddr block_addr = static_cast<PhysAddr>(i * ONE_GB);
       PhysAddr block_end = block_addr + ONE_GB;
-      bool overlaps_ram = (block_addr < ram_end) && (block_end > ram_start);
-      pud->entries[i].raw =
-          overlaps_ram ? hal::mmu::make_normal_block(block_addr) : hal::mmu::make_device_block(block_addr);
+      pud->entries[i].raw = overlaps_ram(block_addr, block_end) ? hal::mmu::make_normal_block(block_addr)
+                                                                : hal::mmu::make_device_block(block_addr);
     }
 
     PhysAddr pud_pa = get_physical_address(pud);
@@ -130,9 +135,8 @@ VoidResult PageTableManager::setup_kernel_high_half_tables() {
     for (usize i = 0; i < 4; i++) {
       PhysAddr block_addr = static_cast<PhysAddr>(i * ONE_GB);
       PhysAddr block_end = block_addr + ONE_GB;
-      bool overlaps_ram = (block_addr < ram_end) && (block_end > ram_start);
-      pud->entries[i].raw =
-          overlaps_ram ? hal::mmu::make_normal_block(block_addr) : hal::mmu::make_device_block(block_addr);
+      pud->entries[i].raw = overlaps_ram(block_addr, block_end) ? hal::mmu::make_normal_block(block_addr)
+                                                                : hal::mmu::make_device_block(block_addr);
     }
   }
 #endif
@@ -514,14 +518,9 @@ VoidResult PageTableManager::map_user_page(PhysAddr pgd_phys, VirtAddr va, PhysA
 // 3-level (RISC-V Sv39): 39-bit VA
 //   Root table = L2 level; 1GB gigapage entries go directly into root[0..3].
 VoidResult PageTableManager::setup_kernel_page_tables() {
-  // Determine RAM region from DTB (PlatformInfo)
-  const auto &plat = moss::fdt::get_platform_info();
-  PhysAddr ram_start = (plat.memory_map_valid && plat.total_memory_size > 0) ? plat.total_memory_start
-                                                                             : moss::kernel::platform::ram_base();
-  u64 ram_size = (plat.memory_map_valid && plat.total_memory_size > 0) ? plat.total_memory_size
-                                                                       : moss::kernel::platform::ram_size();
-  PhysAddr ram_end = ram_start + ram_size;
-
+  if (!moss::kernel::platform::hardware.memory_map_valid) {
+    return VoidResult{ErrorCode::InvalidState};
+  }
   constexpr u64 ONE_GB = 0x40000000ULL;
 
 #if defined(MOSS_ARCH_RISCV)
@@ -538,9 +537,8 @@ VoidResult PageTableManager::setup_kernel_page_tables() {
     for (usize i = 0; i < 4; i++) {
       PhysAddr block_addr = static_cast<PhysAddr>(i * ONE_GB);
       PhysAddr block_end = block_addr + ONE_GB;
-      bool overlaps_ram = (block_addr < ram_end) && (block_end > ram_start);
-      kernel_pgd->entries[i].raw =
-          overlaps_ram ? hal::mmu::make_normal_block(block_addr) : hal::mmu::make_device_block(block_addr);
+      kernel_pgd->entries[i].raw = overlaps_ram(block_addr, block_end) ? hal::mmu::make_normal_block(block_addr)
+                                                                       : hal::mmu::make_device_block(block_addr);
     }
   } else
 #endif
@@ -567,9 +565,8 @@ VoidResult PageTableManager::setup_kernel_page_tables() {
     for (usize i = 0; i < PUD_ENTRY_COUNT; i++) {
       PhysAddr block_addr = static_cast<PhysAddr>(i * ONE_GB);
       PhysAddr block_end = block_addr + ONE_GB;
-      bool overlaps_ram = (block_addr < ram_end) && (block_end > ram_start);
-      pud->entries[i].raw =
-          overlaps_ram ? hal::mmu::make_normal_block(block_addr) : hal::mmu::make_device_block(block_addr);
+      pud->entries[i].raw = overlaps_ram(block_addr, block_end) ? hal::mmu::make_normal_block(block_addr)
+                                                                : hal::mmu::make_device_block(block_addr);
     }
   }
 
@@ -854,7 +851,8 @@ void PageTableManager::print_page_table_details() {
 
   // 5. 地址转换示例 (L0→L1 1GB block mapping)
   log::klog::info("=== 地址转换示例 (L0→L1 1GB block mapping) ===");
-  VirtAddr test_addrs[] = {0x00000000, 0x09000000, 0x40000000, 0x80000000, 0xC0000000};
+  VirtAddr test_addrs[] = {moss::kernel::platform::ram_base(), moss::kernel::platform::uart_base(), 0x40000000,
+                           0x80000000, 0xC0000000};
   const char *addr_names[] = {"RAM start", "UART MMIO", "1GB boundary", "2GB boundary", "3GB boundary"};
 
   for (size_t i = 0; i < 5; i++) {

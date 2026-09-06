@@ -2627,19 +2627,10 @@ static void wake_blocked_reader() noexcept {
 // UART RX IRQ handler — called from GIC interrupt context (IRQ 33).
 // Drains PL011 RX FIFO into ring buffer, then wakes the blocked reader.
 static void uart_rx_irq_handler(u32 /*irq*/, void * /*context*/) noexcept {
-  auto base = platform::uart_base();
-  auto *uart_flags = reinterpret_cast<volatile u32 *>(base + 0x18);
-  auto *uart_data = reinterpret_cast<volatile u32 *>(base);
-  auto *uart_icr = reinterpret_cast<volatile u32 *>(base + 0x44);
-
-  // Drain all available chars from RX FIFO
-  while (!((*uart_flags) & (1U << 4))) { // while RXFE == 0
-    u32 dr = *uart_data;
-    buf_put(static_cast<u8>(dr & 0xFF));
+  for (int ch = hal::uart::getc(); ch >= 0; ch = hal::uart::getc()) {
+    buf_put(static_cast<u8>(ch));
   }
-
-  // Clear RX interrupt (RXIC = bit 4)
-  *uart_icr = (1U << 4);
+  hal::uart::ack_rx_interrupt();
 
   wake_blocked_reader();
 }
@@ -2649,19 +2640,8 @@ static void uart_rx_irq_handler(u32 /*irq*/, void * /*context*/) noexcept {
 // x86_64 COM1 UART RX handler — called via g_x86_64_uart_rx_handler callback.
 // Reads COM1 RBR while Data Ready (LSR bit 0) is set.
 static void x86_64_uart_rx_dispatch() noexcept {
-  constexpr u16 COM1_RBR = 0x3F8; // Receive Buffer Register
-  constexpr u16 COM1_LSR = 0x3FD; // Line Status Register
-
-  // Drain all available chars from COM1 FIFO
-  for (;;) {
-    u8 lsr;
-    asm volatile("inb %1, %0" : "=a"(lsr) : "Nd"(COM1_LSR));
-    if (!(lsr & 0x01)) { // Data Ready = bit 0
-      break;
-    }
-    u8 ch;
-    asm volatile("inb %1, %0" : "=a"(ch) : "Nd"(COM1_RBR));
-    buf_put(ch);
+  for (int ch = hal::uart::getc(); ch >= 0; ch = hal::uart::getc()) {
+    buf_put(static_cast<u8>(ch));
   }
 
   wake_blocked_reader();
@@ -2684,44 +2664,25 @@ extern "C" void console_rx_init() noexcept {
   // 1. Enable PL011 RXE bit
   hal::uart::enable_rx();
 
-  // 2. Enable PL011 RX interrupt (RXIM = bit 4 of UARTIMSC register)
-  auto base = platform::uart_base();
-  auto *uart_imsc = reinterpret_cast<volatile u32 *>(base + 0x38);
-  u32 imsc = *uart_imsc;
-  imsc |= (1U << 4); // Set RXIM — enables RX interrupt
-  *uart_imsc = imsc;
+  hal::uart::enable_rx_interrupt();
 
   // 3. Register IRQ handler with GIC and enable UART IRQ (SPI 33)
   if (interrupts::g_gic) {
-    u32 uart_irq = platform::DEFAULTS.uart.irq; // 33
+    u32 uart_irq = platform::hardware.uart.irq;
     auto reg = interrupts::g_gic->register_interrupt(uart_irq, uart_rx_irq_handler, nullptr, "uart_rx");
     if (reg) {
       (void)interrupts::g_gic->enable_interrupt(uart_irq);
     }
   }
 #elif defined(MOSS_ARCH_X86_64)
-  // 1. Enable COM1 Received Data Available interrupt (IER bit 0)
-  {
-    constexpr u16 COM1_IER = 0x3F9; // Interrupt Enable Register
-    constexpr u16 COM1_MCR = 0x3FC; // Modem Control Register
-    u8 ier;
-    asm volatile("inb %1, %0" : "=a"(ier) : "Nd"(COM1_IER));
-    ier |= 0x01; // Enable Received Data Available interrupt
-    asm volatile("outb %0, %1" ::"a"(ier), "Nd"(COM1_IER));
-
-    // 2. Enable OUT2 in MCR (required for IRQ delivery on ISA/PCI COM ports)
-    u8 mcr;
-    asm volatile("inb %1, %0" : "=a"(mcr) : "Nd"(COM1_MCR));
-    mcr |= 0x08; // OUT2 bit
-    asm volatile("outb %0, %1" ::"a"(mcr), "Nd"(COM1_MCR));
-  }
+  hal::uart::enable_rx_interrupt();
 
   // 3. Register UART RX callback for interrupt dispatch
   g_x86_64_uart_rx_handler = +[]() noexcept { x86_64_uart_rx_dispatch(); };
 
   // 4. Unmask COM1 IRQ4 in I/O APIC
   if (interrupts::g_gic) {
-    (void)interrupts::g_gic->enable_interrupt(4);
+    (void)interrupts::g_gic->enable_interrupt(platform::hardware.uart.irq);
   }
 #endif
 

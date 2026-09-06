@@ -1,18 +1,9 @@
-/* =============================================================================
- * MOSS Kernel Linker Script (x86_64 / QEMU q35 platform)
- * =============================================================================
- *
- * Memory layout for x86_64 long mode on QEMU q35 machine.
- *
- * x86_64 QEMU q35 memory map:
- *   0x0000_0000 - 0x0009_FFFF : Conventional memory (640 KB)
- *   0x000A_0000 - 0x000F_FFFF : VGA + ROM area
- *   0x0010_0000 - ...         : Extended memory (usable RAM)
- *
- * The kernel is loaded at 1 MB (0x0010_0000), the traditional x86 extended
- * memory start.  The boot stub (start_x86_64.S) runs in 64-bit long mode
- * assuming the firmware/loader already set up identity-mapped page tables.
- * ============================================================================= */
+/* MOSS x86_64 Xen PVH ELF layout.
+ * The loader must reserve and load the ELF PT_LOAD segments at their physical
+ * addresses. _pvh_start enters in 32-bit protected mode, builds its own early
+ * identity map and switches to long mode. RAM/device discovery comes from PVH
+ * and ACPI, not this image placement. The 255M region limits image capacity.
+ */
 
 ENTRY(_start)
 
@@ -60,7 +51,7 @@ SECTIONS
         __init_array_end = .;
     }
 
-    /* QEMU discovers the 32-bit PVH entry through this ELF note. Keep it in
+    /* A PVH loader discovers the 32-bit entry through this ELF note. Keep it in
      * the file-backed prefix: placing it after NOBITS sections makes objcopy
      * materialize the entire intervening runtime address range in moss.bin. */
     .note.Xen : ALIGN(4) {

@@ -7,26 +7,26 @@ The validation executable links the same production object modules and follows t
 Run from the repository root. Replace `arm64` with `x86_64` or `riscv` for the other architectures.
 
 ```sh
-uv run cmake --preset arm64-qemu-debug
-uv run cmake --build --preset arm64-qemu-debug
-uv run ctest --preset arm64-qemu-debug-test
+uv run cmake --preset arm64-debug
+uv run cmake --build --preset arm64-debug
+uv run ctest --preset arm64-debug-test
 ```
 
-CTest runs `moss-functional` and `moss-framework`. Release also provides `moss-benchmark`. The `test-kernel` build target runs functional and framework tests; `benchmark-kernel` runs benchmarks in Release. `run_qemu.py --test` delegates to the same functional runner. Configure with `-DMOSS_BUILD_TESTS=OFF` to exclude validation images and validation userspace programs.
+CTest runs `moss-functional` and `moss-framework`. Release also provides `moss-benchmark`. The `test-kernel` build target runs functional and framework tests; `benchmark-kernel` runs benchmarks in Release. Use `kernel_validation.py run` for validation; the normal runner does not dispatch tests. Configure with `-DMOSS_BUILD_TESTS=OFF` to exclude validation images and validation userspace programs.
 
-The default is QEMU TCG with four real online vCPUs and 2048 MiB RAM. CPU count is never silently clamped. The resource suite verifies work executed on every requested CPU and writes to owned memory beyond the old 256 MiB window. The present low physical map limits ARM64/x86_64 to 3072 MiB and RISC-V to 2048 MiB. Only the default profile is the acceptance profile; smaller diagnostic profiles do not replace it.
+The default is QEMU TCG with four real online vCPUs and 2048 MiB RAM. CPU count is never silently clamped. The resource suite verifies work executed on every requested CPU and writes to owned memory beyond the old 256 MiB window. The present early mappings require RAM/device addresses below 4 GiB; the largest usable RAM size therefore depends on the firmware's physical layout. The default resource profile remains the baseline regression; additional machine/layout profiles verify image portability.
 
 Each functional suite boots once, executes its cases sequentially, and stops after failure. Subsequent suites get fresh guests. Panic and timeout self-checks each use their own guest. Five warmups and thirty recorded benchmark batches share one guest per scenario, not one boot per sample.
 
 ```sh
-uv run scripts/kernel_validation.py run --config build/arm64-qemu-debug/qemu_config.json --workload mm
-uv run scripts/kernel_validation.py run --config build/arm64-qemu-debug/qemu_config.json --selftest
-uv run scripts/kernel_validation.py run --config build/arm64-qemu-release/qemu_config.json --benchmark --order 2 --output build/results/order2
+uv run scripts/kernel_validation.py run --manifest build/arm64-debug/moss-artifacts.json --workload mm
+uv run scripts/kernel_validation.py run --manifest build/arm64-debug/moss-artifacts.json --selftest
+uv run scripts/kernel_validation.py run --manifest build/arm64-release/moss-artifacts.json --benchmark --order 2 --output build/results/order2
 ```
 
-Use the actual `qemu_config.json` path printed by your preset if using an overridden build directory. With no `--output`, each run creates a unique directory under `<build>/validation/`. Explicit output directories must not already exist. The terminal prints the canonical report path.
+Use the actual `moss-artifacts.json` path printed by your preset if using an overridden build directory. With no `--output`, each run creates a unique directory under `<build>/validation/`. Explicit output directories must not already exist. The terminal prints the canonical report path.
 
-`--cpus`, `--memory-mib`, `--warmup`, `--samples`, `--iterations`, and `--order` are explicit overrides. Initial deadlines are `--startup-timeout 30`, `--case-timeout 5`, and `--guest-timeout 60`, in host seconds. Increase the case limit for intentionally longer workloads. Ctrl-C or SIGTERM finalizes partial reports and terminates/reaps QEMU; workloads not started are recorded as such.
+`--cpus`, `--memory-mib`, `--warmup`, `--samples`, `--iterations`, and `--order` are explicit overrides. `--machine`, `--cpu`, `--qemu` and `--dtb` select the runtime environment. `--expected-ram-mib` explicitly checks firmware-visible RAM when firmware reserves part of the installed RAM; it defaults to `--memory-mib` and is recorded separately. Initial deadlines are `--startup-timeout 30`, `--case-timeout 5`, and `--guest-timeout 60`, in host seconds. Increase the case limit for intentionally longer workloads. Ctrl-C or SIGTERM finalizes partial reports and terminates/reaps QEMU; workloads not started are recorded as such.
 
 ## Single-Function Measurements
 
@@ -54,11 +54,11 @@ Raw ticks and empty-loop/counter overhead are retained, without exact overhead s
 
 ## Reports and Baselines
 
-Every run retains `results.json`, per-case `junit.xml`, and original `<workload>/serial.log` and `qemu.log`. The JSON records build/compiler flags, revision, dirty state, image/fixture hashes, QEMU arguments, resources, clock calibration, raw batches, completion and normalized exit status. Expected fatal self-checks retain both the expected and observed outcome.
+Every run retains `results.json`, per-case `junit.xml`, and original `<workload>/serial.log` and `qemu.log`. The JSON records build/compiler flags, revision, dirty state, image/fixture hashes, QEMU arguments, resources, clock calibration, raw batches, completion, host termination reason and raw child exit status. Expected fatal self-checks retain both the expected and observed outcome.
 
 ```sh
-uv run scripts/kernel_validation.py run --config build/arm64-qemu-release/qemu_config.json --benchmark --output build/results/baseline
-uv run scripts/kernel_validation.py run --config build/arm64-qemu-release/qemu_config.json --benchmark --baseline build/results/baseline/results.json --output build/results/current
+uv run scripts/kernel_validation.py run --manifest build/arm64-release/moss-artifacts.json --benchmark --output build/results/baseline
+uv run scripts/kernel_validation.py run --manifest build/arm64-release/moss-artifacts.json --benchmark --baseline build/results/baseline/results.json --output build/results/current
 uv run scripts/kernel_validation.py compare build/results/baseline/results.json build/results/current/results.json
 ```
 

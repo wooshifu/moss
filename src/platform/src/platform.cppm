@@ -1,220 +1,154 @@
-// MOSS Platform Support Package (PSP)
-//
-// Compile-time hardware defaults for each supported platform.
-//
-// Every kernel consumer that previously hardcoded addresses like 0x09000000
-// (PL011 UART) or 0x08000000 (GIC distributor) should now use these
-// constants as their fallback when the DTB/FDT runtime discovery is
-// unavailable or invalid.
-//
-// Design:
-//   - All constants are `inline constexpr` — zero runtime cost.
-//   - One `PlatformDefaults` struct per platform, selected at compile time
-//     via arch_detect.h macros.
-//   - The DTB/FDT system (moss.fdt) provides *runtime* hardware discovery;
-//     this module provides *compile-time* fallback defaults.
-//   - Consumer pattern:
-//       auto addr = (plat.dtb_valid && plat.uart.valid)
-//                       ? plat.uart.base_addr
-//                       : platform::defaults::UART_BASE;
-
+// Runtime hardware resources. Firmware parsers populate these before driver use.
 export module moss.platform;
-
 import moss.std;
 import moss.types;
 
 export namespace moss::kernel::platform {
-
+using moss::u16;
 using moss::u32;
 using moss::u64;
-using moss::kernel::PhysAddr;
-using moss::kernel::VirtAddr;
+using moss::u8;
+/// DTB 中最大支持的内存区域数
+constexpr u32 MAX_MEMORY_REGIONS = 8;
 
-// ============================================================================
-// UART defaults (serial console)
-// ============================================================================
-struct UartDefaults {
-  VirtAddr base;  // Data register address
-  VirtAddr flags; // Status/flags register address (0 if N/A)
-  u32 irq;        // Default IRQ number
-  u32 clock_freq; // Default clock frequency in Hz
+/// 单个物理内存区域（来自 /memory 节点的 reg 属性）
+struct MemoryRegion {
+  PhysAddr base;
+  u64 size;
 };
 
-// ============================================================================
-// Interrupt controller defaults
-// ============================================================================
-struct IntcDefaults {
-  VirtAddr dist_base;   // GIC Distributor / PLIC / APIC base
-  VirtAddr cpu_base;    // GICv2 CPU Interface (0 if N/A)
-  VirtAddr redist_base; // GICv3 Redistributor (0 if N/A or GICv2)
+/// UART 设备信息（来自 compatible = "arm,pl011" / "ns16550a" 节点）
+enum class UartKind : u8 { None, Pl011, Ns16550 };
+
+struct UartInfo {
+  UartKind kind;
+  u8 reg_shift;
+  u8 reg_width;
+  bool port_io;
+  PhysAddr base_addr;
+  u64 size;
+  u32 clock_freq;
+  u32 irq;
+  bool valid;
 };
 
-// ============================================================================
-// Memory layout defaults
-// ============================================================================
-struct MemoryDefaults {
-  PhysAddr ram_base;    // Physical RAM start
-  u64 ram_size;         // Default RAM size (bytes)
-  VirtAddr kernel_virt; // Kernel virtual base address
+/// 中断控制器信息（GIC / PLIC）
+struct InterruptControllerInfo {
+  PhysAddr dist_base;   // GIC distributor 或 PLIC 基地址
+  PhysAddr cpu_base;    // GICv2: GICC CPU interface; GICv3: unused (0)
+  PhysAddr redist_base; // GICv3: GICR redistributor base (0 for GICv2/PLIC)
+  u64 dist_size;
+  u64 cpu_size;
+  u64 redist_size; // GICv3: GICR region size
+  u8 gic_version;  // 0=unknown/PLIC, 2=GICv2, 3=GICv3/v4
+  bool valid;
 };
 
-// ============================================================================
-// Timer defaults
-// ============================================================================
-struct TimerDefaults {
-  u32 irq;       // Timer IRQ number (PPI for ARM64, etc.)
-  u64 frequency; // Timer frequency in Hz (0 = read from hardware)
+/// 完整的平台硬件信息，从 DTB 解析填充
+enum class CpuEnableMethod : u8 { None, Psci, SpinTable, Sbi };
+struct CpuInfo {
+  u64 hardware_id;
+  u64 release_address;
+  CpuEnableMethod enable_method;
 };
 
-// ============================================================================
-// Aggregate: all platform defaults in one struct
-// ============================================================================
-struct PlatformDefaults {
-  const char *name;
-  UartDefaults uart;
-  IntcDefaults intc;
-  MemoryDefaults memory;
-  TimerDefaults timer;
+struct PlatformInfo {
+  CpuInfo cpus[16];
+  bool psci_valid;
+  bool psci_smc;
+  u32 timer_interrupt;
+  u32 plic_contexts[16];
+  u32 isa_gsi[16];
+  u16 isa_flags[16];
+  // DTB 有效性
+  bool dtb_valid;        // DTB 存在且解析成功
+  bool memory_map_valid; // Firmware RAM discovery, independent of the boot protocol.
+
+  // CPU 拓扑（来自 /cpus 节点）
+  u32 cpu_count;
+  u32 boot_cpu_id;
+  u64 timebase_frequency;
+
+  // RISC-V MMU type from DTB (3 = Sv39, 4 = Sv48, 5 = Sv57; 0 = unknown)
+  u8 mmu_levels;
+
+  // 物理内存区域（来自 /memory 节点）
+  MemoryRegion memory_regions[MAX_MEMORY_REGIONS];
+  u32 memory_region_count;
+  PhysAddr total_memory_start; // 第一个区域的基地址
+  u64 total_memory_size;       // 所有区域大小之和
+  MemoryRegion reserved_regions[32];
+  u32 reserved_region_count;
+
+  // 设备信息
+  UartInfo uart;
+  InterruptControllerInfo intc;
+
+  // 启动参数（来自 /chosen 节点，指针指向 DTB blob 内部）
+  const char *bootargs;
+  const char *stdout_path;
+
+  // initramfs 地址（来自 /chosen 节点）
+  PhysAddr initrd_start; // linux,initrd-start
+  PhysAddr initrd_end;   // linux,initrd-end
 };
 
-// ============================================================================
-// Platform definitions — one per target
-// ============================================================================
-
-#if defined(MOSS_ARCH_ARM64)
-// QEMU virt machine for ARM64
-// PL011 UART, GICv2/v3 (auto-detected), RAM at 1GB
-inline constexpr PlatformDefaults DEFAULTS{
-    .name = "QEMU ARM64 virt",
-    .uart =
-        {
-            .base = 0x09000000,
-            .flags = 0x09000018,    // PL011 FR (Flag Register)
-            .irq = 33,              // SPI #1 (32 + 1)
-            .clock_freq = 24000000, // 24 MHz
-        },
-    .intc =
-        {
-            .dist_base = 0x08000000,   // GICD (same for v2 and v3)
-            .cpu_base = 0x08010000,    // GICC (GICv2 only)
-            .redist_base = 0x080a0000, // GICR (GICv3 only, QEMU virt default)
-        },
-    .memory =
-        {
-            .ram_base = 0x40000000,                // 1 GB mark
-            .ram_size = 1ULL * 1024 * 1024 * 1024, // 1 GB default
-            .kernel_virt = 0xFFFF000000000000ULL,
-        },
-    .timer =
-        {
-            .irq = 27,      // PPI #11 (virtual timer, non-secure EL1)
-            .frequency = 0, // Read from cntfrq_el0 at runtime
-        },
-};
-
-#elif defined(MOSS_ARCH_X86_64)
-// QEMU virt machine for x86_64
-// COM1 serial (I/O port 0x3F8), no MMIO interrupt controller yet, RAM at 0
-inline constexpr PlatformDefaults DEFAULTS{
-    .name = "QEMU x86_64 virt",
-    .uart =
-        {
-            .base = 0x3F8,         // COM1 data port
-            .flags = 0x3FD,        // COM1 Line Status Register
-            .irq = 4,              // COM1 IRQ
-            .clock_freq = 1843200, // 1.8432 MHz
-        },
-    .intc =
-        {
-            .dist_base = 0xFEE00000, // Local APIC MMIO base
-            .cpu_base = 0xFEC00000,  // I/O APIC MMIO base
-            .redist_base = 0,        // N/A for x86_64
-        },
-    .memory =
-        {
-            .ram_base = 0x00100000,           // 1 MB (above real-mode area)
-            .ram_size = 255ULL * 1024 * 1024, // 255 MB (256 MB total minus 1 MB base)
-            .kernel_virt = 0xFFFF800000000000ULL,
-        },
-    .timer =
-        {
-            .irq = 48,      // LAPIC timer vector (assigned in boot)
-            .frequency = 0, // Calibrate at runtime
-        },
-};
-
-#elif defined(MOSS_ARCH_RISCV)
-// QEMU virt machine for RISC-V 64
-// NS16550A UART, PLIC, RAM at 0x80000000
-inline constexpr PlatformDefaults DEFAULTS{
-    .name = "QEMU RISC-V virt",
-    .uart =
-        {
-            .base = 0x10000000,
-            .flags = 0x10000005,   // NS16550 LSR
-            .irq = 10,             // PLIC IRQ for UART0
-            .clock_freq = 3686400, // 3.6864 MHz
-        },
-    .intc =
-        {
-            .dist_base = 0x0C000000, // PLIC base
-            .cpu_base = 0x0C201000,  // PLIC S-mode hart 0 context (base + 0x200000 + 1*0x1000)
-            .redist_base = 0,        // N/A for RISC-V
-        },
-    .memory =
-        {
-            .ram_base = 0x80000000,           // 2 GB mark
-            .ram_size = 256ULL * 1024 * 1024, // 256 MB default
-            .kernel_virt = 0xFFFFFFFF80000000ULL,
-        },
-    .timer =
-        {
-            .irq = 5,              // S-mode timer interrupt
-            .frequency = 10000000, // 10 MHz (QEMU virt default from DTB)
-        },
-};
-#endif
-
-// ============================================================================
-// Convenience accessors — shorthand for common lookups
-// ============================================================================
-
-/// Get default UART base address for the current platform
-[[nodiscard]] constexpr VirtAddr uart_base() noexcept { return DEFAULTS.uart.base; }
-
-/// Get default GIC/PLIC distributor base address
-[[nodiscard]] constexpr VirtAddr intc_dist_base() noexcept { return DEFAULTS.intc.dist_base; }
-
-/// Get default GIC CPU interface base address (0 on non-ARM or GICv3)
-[[nodiscard]] constexpr VirtAddr intc_cpu_base() noexcept { return DEFAULTS.intc.cpu_base; }
-
-/// Get default GICv3 Redistributor base address (0 on non-ARM or GICv2)
-[[nodiscard]] constexpr VirtAddr intc_redist_base() noexcept { return DEFAULTS.intc.redist_base; }
-
-/// Get default physical RAM start address
-[[nodiscard]] constexpr PhysAddr ram_base() noexcept { return DEFAULTS.memory.ram_base; }
-
-/// Get default RAM size in bytes
-[[nodiscard]] constexpr u64 ram_size() noexcept { return DEFAULTS.memory.ram_size; }
-
-/// Get kernel virtual base address
-[[nodiscard]] constexpr VirtAddr kernel_virt_base() noexcept { return DEFAULTS.memory.kernel_virt; }
-
-/// Get default timer IRQ number
-[[nodiscard]] constexpr u32 timer_irq() noexcept { return DEFAULTS.timer.irq; }
-
-/// Get default timer frequency (0 = discover at runtime)
-[[nodiscard]] constexpr u64 timer_frequency() noexcept { return DEFAULTS.timer.frequency; }
-
-// ============================================================================
-// Helper: resolve DTB value with platform fallback
-// ============================================================================
-
-/// Return `dtb_value` if `valid` is true, otherwise the platform fallback.
-/// This replaces the repetitive ternary pattern throughout the kernel:
-///   (plat.dtb_valid && plat.xxx.valid) ? plat.xxx.addr : 0xHARDCODED
-[[nodiscard]] constexpr u64 resolve(bool valid, u64 dtb_value, u64 fallback) noexcept {
-  return valid ? dtb_value : fallback;
+inline PlatformInfo hardware{};
+// Logical CPU zero is always the boot CPU; firmware IDs need not be dense.
+[[nodiscard]] inline bool order_cpus(u64 boot_id) noexcept {
+  if (!hardware.cpu_count || hardware.cpu_count > 16) {
+    return false;
+  }
+  u32 boot = 16;
+  for (u32 i = 0; i < hardware.cpu_count; ++i) {
+    if (hardware.cpus[i].hardware_id == boot_id) {
+      boot = i;
+    }
+    for (u32 j = 0; j < i; ++j) {
+      if (hardware.cpus[i].hardware_id == hardware.cpus[j].hardware_id) {
+        return false;
+      }
+    }
+  }
+  if (boot == 16) {
+    return false;
+  }
+  auto first = hardware.cpus[0];
+  hardware.cpus[0] = hardware.cpus[boot];
+  hardware.cpus[boot] = first;
+  auto context = hardware.plic_contexts[0];
+  hardware.plic_contexts[0] = hardware.plic_contexts[boot];
+  hardware.plic_contexts[boot] = context;
+  return true;
 }
+[[nodiscard]] inline u32 logical_cpu(u64 hardware_id) noexcept {
+  if (!hardware.cpu_count) {
+    return 0; // Before firmware discovery only the boot CPU can enter C++.
+  }
+  for (u32 i = 0; i < hardware.cpu_count; ++i) {
+    if (hardware.cpus[i].hardware_id == hardware_id) {
+      return i;
+    }
+  }
+  return 16; // Invalid ID; callers must not index per-CPU storage.
+}
+[[nodiscard]] inline VirtAddr uart_base() noexcept { return hardware.uart.base_addr; }
+[[nodiscard]] inline VirtAddr intc_dist_base() noexcept { return hardware.intc.dist_base; }
+[[nodiscard]] inline VirtAddr intc_cpu_base() noexcept { return hardware.intc.cpu_base; }
+[[nodiscard]] inline VirtAddr intc_redist_base() noexcept { return hardware.intc.redist_base; }
+[[nodiscard]] inline PhysAddr ram_base() noexcept { return hardware.total_memory_start; }
+[[nodiscard]] inline u64 ram_size() noexcept { return hardware.total_memory_size; }
+[[nodiscard]] inline u32 timer_irq() noexcept { return hardware.timer_interrupt; }
+[[nodiscard]] inline u64 timer_frequency() noexcept { return hardware.timebase_frequency; }
 
+// Virtual address layout is an architecture policy, independent of physical RAM.
+[[nodiscard]] constexpr VirtAddr kernel_virt_base() noexcept {
+#if defined(MOSS_ARCH_ARM64)
+  return 0xFFFF000000000000ULL;
+#elif defined(MOSS_ARCH_RISCV)
+  return 0xFFFFFFFF80000000ULL;
+#else
+  return 0xFFFF800000000000ULL;
+#endif
+}
 } // namespace moss::kernel::platform

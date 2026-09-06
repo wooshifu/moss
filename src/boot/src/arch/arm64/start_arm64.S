@@ -6,7 +6,7 @@
  * This is the primary assembly file for the ARM64 MOSS kernel.  It handles:
  *
  *   1. BOOT SEQUENCE
- *      - Linux ARM64 Image header (enables QEMU DTB auto-generation)
+ *      - Linux ARM64 Image boot protocol
  *      - Exception level descent: EL3 → EL2 → EL1
  *      - BSS clearing, stack setup, DTB discovery
  *      - Primary CPU → early_main()
@@ -36,22 +36,8 @@
  *      - Secondary CPUs skip cold boot, set up per-CPU stack, jump to C++
  *      - Early UART spinlock for safe multi-core boot messages
  *
- * == DTB (Device Tree Blob) Dual Discovery ==
- *
- * MOSS supports two DTB discovery methods, tried in priority order:
- *
- *   Method 1 (preferred): Linux boot protocol — x0 register
- *     Bootloader/QEMU passes DTB physical address via x0.  QEMU -kernel mode
- *     follows this protocol when it detects a Linux ARM64 Image (checks "MZ"
- *     and "ARM\x64" magic).  Validation: x0 non-zero AND DTB magic matches.
- *
- *   Method 2 (fallback): RAM linear scan
- *     When x0 is 0 or doesn't point to a valid DTB, scan from RAM top
- *     downward in 64KB steps looking for DTB magic (0xD00DFEED big-endian).
- *
- * Both methods complement each other: Linux Image mode uses Method 1,
- * bare ELF mode uses Method 2.  If both fail, C++ FDT parser has
- * hardcoded fallback values.
+ * DTB is supplied through x0 by the ARM64 Linux Image boot protocol.
+ * No machine-specific memory scan or early MMIO is performed.
  *
  * == Register Frame Layout (34 slots × 8 bytes = 272 bytes) ==
  *
@@ -98,9 +84,8 @@
 // =============================================================================
 //
 // This header makes the kernel binary compatible with the Linux ARM64 boot
-// protocol.  QEMU checks for the magic "ARM\x64" at offset 0x38 to identify
-// the image format.  When detected, QEMU automatically generates a DTB and
-// passes its address via x0, eliminating the need for manual DTB generation.
+// protocol. The loader recognizes the Image magic and passes the runtime
+// hardware description (DTB) in x0. Image placement belongs to the loader.
 //
 // The `b _start` instruction at offset 0 branches over the header to the
 // actual kernel entry point.  For ELF boot (where this header is not at the
@@ -109,9 +94,9 @@
 _linux_header:
     b       _start                      // code0: branch to actual entry
     .word   0                           // code1: reserved
-    .quad   0                           // text_offset: load at RAM base + 0
+    .quad   0                           // text_offset: zero offset from loader-selected aligned base
     .quad   _kernel_image_size          // image_size: filled by linker
-    .quad   0                           // flags: little-endian, 4K pages
+    .quad   10                          // flags: little-endian, 4K pages, arbitrary placement
     .quad   0                           // res2
     .quad   0                           // res3
     .quad   0                           // res4
@@ -171,14 +156,31 @@ _linux_header:
 _start:
     // Preserve x0 (potential DTB pointer) in callee-saved x20.
     // Linux boot protocol: bootloader passes DTB address via x0.
-    // QEMU bare ELF mode: x0 = 0 (no DTB, will use RAM scan fallback).
     mov     x20, x0
 
-    // Read CPU ID from MPIDR_EL1 (Multiprocessor Affinity Register)
-    // Aff0 field [7:0] gives the core number within the cluster.
-    mrs     x19, mpidr_el1
-    and     x19, x19, #0xFF
+    mov     x19, #0                     // Logical boot CPU, irrespective of MPIDR.
+    b       boot_exception_level
 
+.global arm64_secondary_start
+arm64_secondary_start:
+    // PSCI and spin-table both enter here. Resolve affinity before using a stack.
+    mrs     x2, mpidr_el1
+    ubfx    x3, x2, #32, #8
+    and     x2, x2, #0xFFFFFF
+    bfi     x2, x3, #32, #8
+    adrp    x1, boot_cpu_hardware_ids
+    add     x1, x1, :lo12:boot_cpu_hardware_ids
+    mov     x19, #1
+1:
+    cmp     x19, #ASM_MAX_CPUS
+    b.hs    halt
+    ldr     x3, [x1, x19, lsl #3]
+    cmp     x2, x3
+    b.eq    boot_exception_level
+    add     x19, x19, #1
+    b       1b
+
+boot_exception_level:
     // Determine current Exception Level and route accordingly.
     // CurrentEL register bits [3:2] encode the EL: 1=EL1, 2=EL2, 3=EL3.
     mrs     x0, CurrentEL
@@ -225,13 +227,17 @@ el2_entry:
     mov     x0, #HCR_EL2_RW
     msr     hcr_el2, x0
 
+    // Only access GIC system registers when the CPU implements them.
+    mrs     x0, id_aa64pfr0_el1
+    ubfx    x0, x0, #24, #4
+    cbz     x0, 1f
     // Enable GICv3 system register access before dropping to EL1.
     // ICC_SRE_EL2 = S3_4_C12_C9_5: SRE (bit 0) | DFB (bit 1) | DIB (bit 2) = 0x7
     // This allows EL1 to use ICC_*_EL1 system registers for GICv3 CPU interface.
-    // Safe no-op on GICv2 hardware (the register does not exist, write ignored).
-    mov     x0, #0x7
+    mov     x0, #0xF
     msr     S3_4_C12_C9_5, x0
     isb
+1:
 
     // SPSR_EL2: mask all exceptions, target EL1h
     mov     x0, #(SPSR_EL2_F | SPSR_EL2_I | SPSR_EL2_A | SPSR_EL2_D | 0x05)
@@ -274,6 +280,28 @@ el1_entry:
     mov     x0, #CPACR_EL1_FPEN
     msr     cpacr_el1, x0
 
+    // The image is linked at zero. Patch only ELF64 RELATIVE relocations;
+    // PC-relative code already runs at the firmware-selected physical address.
+    adr     x4, _linux_header
+    adrp    x0, _rela_start
+    add     x0, x0, :lo12:_rela_start
+    adrp    x1, _rela_end
+    add     x1, x1, :lo12:_rela_end
+1:
+    cmp     x0, x1
+    b.hs    2f
+    ldp     x2, x3, [x0], #16
+    ldr     x5, [x0], #8
+    cmp     x3, #1027                // R_AARCH64_RELATIVE, symbol index zero
+    b.ne    halt
+    add     x2, x2, x4
+    add     x5, x5, x4
+    str     x5, [x2]
+    b       1b
+2:
+    dsb     sy
+    isb
+
     // Zero BSS section (CPU 0 only — secondary CPUs skip this)
     ldr     x0, =_bss_start_addr
     ldr     x1, =_bss_end_addr
@@ -288,18 +316,6 @@ bss_cleared:
     ldr     x0, =_stack_top_addr
     mov     sp, x0
 
-    // ---- Debug: print "[0]\n" to UART (with spinlock for multi-core safety) ----
-    bl      early_uart_acquire
-    mov     x25, #0x09000000            // QEMU virt PL011 UART base
-    mov     x26, #'['
-    str     w26, [x25]
-    mov     x26, #'0'                   // CPU 0
-    str     w26, [x25]
-    mov     x26, #']'
-    str     w26, [x25]
-    mov     x26, #10                    // newline
-    str     w26, [x25]
-    bl      early_uart_release
 
     b       primary_cpu_continue
 
@@ -325,18 +341,6 @@ secondary_el1_entry:
     mul     x1, x19, x1                // CPU_ID * stack_size
     sub     sp, x0, x1
 
-    // ---- Debug: print "[N]\n" to UART (locked) ----
-    bl      early_uart_acquire
-    mov     x25, #0x09000000
-    mov     x26, #'['
-    str     w26, [x25]
-    add     x26, x19, #'0'             // CPU ID → ASCII digit
-    str     w26, [x25]
-    mov     x26, #']'
-    str     w26, [x25]
-    mov     x26, #10
-    str     w26, [x25]
-    bl      early_uart_release
 
     b       secondary_cpu_park
 
@@ -345,64 +349,8 @@ secondary_el1_entry:
 // =============================================================================
 primary_cpu_continue:
 
-    // ---- Debug: print "MAIN\n" (locked) ----
-    bl      early_uart_acquire
-    mov     x25, #0x09000000
-    mov     x26, #'M'
-    str     w26, [x25]
-    mov     x26, #'A'
-    str     w26, [x25]
-    mov     x26, #'I'
-    str     w26, [x25]
-    mov     x26, #'N'
-    str     w26, [x25]
-    mov     x26, #10
-    str     w26, [x25]
-    bl      early_uart_release
 
-    // ---- DTB dual discovery mechanism ----
-    //
-    // DTB magic bytes: big-endian 0xD00DFEED
-    // In memory (little-endian ldr): reads as 0xEDFE0DD0
-    //
-    // Strategy:
-    //   1. If x20 != 0 (bootloader passed DTB), verify its magic
-    //   2. If x20 == 0 or magic mismatch, scan RAM from top downward
-    //   3. If both fail, x20 = 0 → C++ layer uses hardcoded fallback
-    //
-    movz    w21, #0x0DD0                // DTB magic low 16 bits
-    movk    w21, #0xEDFE, lsl #16      // complete: 0xEDFE0DD0
-
-    // ---- Method 1: Validate bootloader-provided DTB pointer ----
-    cbz     x20, .Ldtb_ram_scan         // x0 was 0 → skip to RAM scan
-
-    ldr     w26, [x20]                  // read first 4 bytes at x20
-    cmp     w26, w21                    // compare with DTB magic
-    b.eq    .Ldtb_ready                 // match → use this DTB
-    mov     x20, xzr                    // mismatch → clear, fall through to scan
-
-    // ---- Method 2: RAM linear scan (fallback) ----
-.Ldtb_ram_scan:
-    // Scan from near RAM top downward, 64KB steps.
-    // QEMU virt machine: RAM at 0x4000_0000, default 256MB → top ≈ 0x4FFF_0000
-    movz    x24, #0x4FFF, lsl #16      // scan start: 0x4FFF_0000
-    movz    x22, #0x4000, lsl #16      // scan end:   0x4000_0000
-
-.Ldtb_scan_loop:
-    cmp     x24, x22
-    b.lo    .Ldtb_ready                 // exhausted scan → x20=0, C++ fallback
-
-    ldr     w26, [x24]
-    cmp     w26, w21                    // check DTB magic
-    b.eq    .Ldtb_match
-
-    sub     x24, x24, #0x10000         // step down 64KB
-    b       .Ldtb_scan_loop
-
-.Ldtb_match:
-    mov     x20, x24                    // record found DTB physical address
-
-.Ldtb_ready:
+    // x20 is the DTB supplied by the boot protocol; C++ validates it.
     // ---- Jump to C++ kernel entry ----
     mov     x0, x20                     // arg0: DTB physical address (or 0)
     bl      early_main
@@ -422,39 +370,11 @@ primary_cpu_continue:
 // =============================================================================
 .type secondary_cpu_park, @function
 secondary_cpu_park:
-    // ---- Debug: print "CPUN:S\n" (locked) ----
-    bl      early_uart_acquire
-    mov     x25, #0x09000000
-    mov     x26, #'C'
-    str     w26, [x25]
-    mov     x26, #'P'
-    str     w26, [x25]
-    mov     x26, #'U'
-    str     w26, [x25]
-    add     x26, x19, #'0'             // CPU ID → ASCII
-    str     w26, [x25]
-    mov     x26, #':'
-    str     w26, [x25]
-    mov     x26, #'S'                   // S = Started
-    str     w26, [x25]
-    mov     x26, #10
-    str     w26, [x25]
-    bl      early_uart_release
 
     // Validate CPU ID is within supported range
     cmp     x19, #ASM_MAX_CPUS          // Configured maximum CPUs
     b.hs    invalid_cpu_id
 
-    // ---- Debug: print "DN\n" (D=Direct jump, N=CPU ID) (locked) ----
-    bl      early_uart_acquire
-    mov     x25, #0x09000000
-    mov     x26, #'D'
-    str     w26, [x25]
-    add     x26, x19, #'0'
-    str     w26, [x25]
-    mov     x26, #10
-    str     w26, [x25]
-    bl      early_uart_release
 
     // Jump directly to C++ secondary_cpu_entry (no polling needed)
     adr     x23, secondary_cpu_entry_wrapper
@@ -489,6 +409,10 @@ cpu_startup_flags:
     // Per-CPU startup control block: [entry_point: 8B] [startup_flag: 8B]
     // ASM_MAX_CPUS CPUs, each CPU gets 16 bytes
     .space ASM_MAX_CPUS * 16
+
+.global boot_cpu_hardware_ids
+boot_cpu_hardware_ids:
+    .space ASM_MAX_CPUS * 8
 
 // =============================================================================
 // Early UART spinlock — shared between assembly and C++ boot code

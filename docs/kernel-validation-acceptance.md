@@ -1,5 +1,9 @@
 # Kernel Validation Acceptance
 
+This is historical pre-ADR-0005 evidence. Its `*-qemu-*` presets, build-time CPU
+setting and old runner contract have been removed. Current commands and image
+portability evidence are in [generic boot acceptance](generic-boot-acceptance.md).
+
 Recorded on 2026-09-06. This accepts the initial production-backed workloads and framework on QEMU TCG, four vCPUs, and 2048 MiB. It is not a claim that every kernel feature is tested or that QEMU timings predict native hardware performance. See [usage](kernel-validation-usage.md) for normal preset commands and extension examples.
 
 ## Build and Execution Matrix

@@ -19,18 +19,9 @@ namespace bench = moss::bench;
 
 namespace moss::kernel {
 void kernel_uart_puts(const char *str) noexcept { hal::uart::puts(str); }
-[[noreturn]] void kernel_test_exit(int code) noexcept {
+[[noreturn]] void kernel_test_exit([[maybe_unused]] int code) noexcept {
+  // The host observes the completed serial protocol and owns process termination.
   arch::disable_interrupts();
-#if defined(MOSS_ARCH_ARM64)
-  u64 block[2]{0x20026, static_cast<u64>(code)};
-  register u64 x0 asm("x0") = 0x20;
-  register u64 x1 asm("x1") = reinterpret_cast<u64>(block);
-  asm volatile("hlt #0xf000" : "+r"(x0) : "r"(x1) : "memory");
-#elif defined(MOSS_ARCH_X86_64)
-  asm volatile("outw %0, %1" ::"a"(static_cast<u16>(0x10 + code)), "Nd"(static_cast<u16>(0x501)) : "memory");
-#else
-  *reinterpret_cast<volatile u32 *>(0x100000) = code == 0 ? 0x5555U : (static_cast<u32>(code) << 16) | 0x3333U;
-#endif
   for (;;) {
     arch::cpu_halt();
   }

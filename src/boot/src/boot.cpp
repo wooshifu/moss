@@ -16,6 +16,7 @@ module;
 module moss.boot;
 
 import moss.abi;
+import moss.hal.uart;
 
 using moss::u32;
 using moss::u64;
@@ -43,84 +44,8 @@ void record_cpu_online() noexcept {
   __atomic_fetch_or(&online_cpu_mask, 1ULL << cpu, __ATOMIC_RELEASE);
 }
 
-// Early boot print function (architecture-independent)
-// Uses direct hardware access — no heap, no modules, safe before runtime init.
-//
-// ARM64:  PL011 UART (MMIO) with SMP-safe spinlock
-// x86_64: COM1 serial port (I/O 0x3F8)
-// RISC-V: NS16550 UART (MMIO 0x10000000)
-static void boot_print(const char *message) {
-  if (!message) {
-    return;
-  }
-
-#if defined(__aarch64__) || defined(MOSS_ARCH_ARM64)
-  // Acquire moss::abi::arm64::early_uart_lock (test-and-set spinlock via LDXR/STXR)
-  {
-    unsigned int val, status;
-    asm volatile("1:\n"
-                 "   ldxr  %w0, [%2]\n"
-                 "   cbnz  %w0, 1b\n"
-                 "   mov   %w0, #1\n"
-                 "   stxr  %w1, %w0, [%2]\n"
-                 "   cbnz  %w1, 1b\n"
-                 "   dmb   sy\n"
-                 : "=&r"(val), "=&r"(status)
-                 : "r"(&moss::abi::arm64::early_uart_lock)
-                 : "memory");
-  }
-
-  static constexpr VirtAddr UART_BASE = ::moss::kernel::platform::uart_base();
-  volatile u32 *uart_base = reinterpret_cast<volatile u32 *>(UART_BASE);
-  const char *p = message;
-  while (*p) {
-    if (*p == '\n') {
-      while (uart_base[0x018 / 4] & (1 << 5)) {
-      }
-      uart_base[0x000 / 4] = '\r';
-    }
-    while (uart_base[0x018 / 4] & (1 << 5)) {
-    }
-    uart_base[0x000 / 4] = *p++;
-  }
-
-  asm volatile("dmb sy" ::: "memory");
-  moss::abi::arm64::early_uart_lock = 0;
-
-#elif defined(__x86_64__) || defined(__x86_64) || defined(MOSS_ARCH_X86_64)
-  // COM1 serial port: data at 0x3F8, Line Status Register at 0x3FD
-  const char *p = message;
-  while (*p) {
-    if (*p == '\n') {
-      // Wait for THR empty (bit 5 of LSR)
-      u8 lsr;
-      do {
-        asm volatile("inb %1, %0" : "=a"(lsr) : "Nd"(static_cast<u16>(0x3FD)));
-      } while (!(lsr & 0x20));
-      asm volatile("outb %0, %1" ::"a"(static_cast<u8>('\r')), "Nd"(static_cast<u16>(0x3F8)));
-    }
-    u8 lsr;
-    do {
-      asm volatile("inb %1, %0" : "=a"(lsr) : "Nd"(static_cast<u16>(0x3FD)));
-    } while (!(lsr & 0x20));
-    asm volatile("outb %0, %1" ::"a"(static_cast<u8>(*p)), "Nd"(static_cast<u16>(0x3F8)));
-    ++p;
-  }
-
-#elif defined(__riscv) || defined(__riscv__) || defined(MOSS_ARCH_RISCV)
-  // NS16550 UART: data register at MMIO base 0x10000000
-  static constexpr VirtAddr UART_BASE = ::moss::kernel::platform::uart_base();
-  volatile u32 *uart_data = reinterpret_cast<volatile u32 *>(UART_BASE);
-  const char *p = message;
-  while (*p) {
-    if (*p == '\n') {
-      *uart_data = static_cast<u32>('\r');
-    }
-    *uart_data = static_cast<u32>(static_cast<unsigned char>(*p));
-    ++p;
-  }
-#endif
-}
+// Output is unavailable until firmware discovery configures a console.
+static void boot_print(const char *message) { moss::kernel::hal::uart::puts(message); }
 
 /// Unified boot main function
 /// All architectures go through this unified entry

@@ -17,23 +17,56 @@
 //   6. Calls early_main(device_tree_ptr) to enter the unified boot path
 //
 // Address loading strategy:
-//   RISC-V auipc+addi (la) has a ±1 MB PC-relative range.  When the kernel
-//   image exceeds this, .text.boot cannot directly reference symbols in .bss
-//   or .stack.  We work around this by placing 64-bit address constants in a
-//   data pool within .text.boot and loading them with auipc+ld (always in
-//   range since the pool is adjacent to the code).
+//   PC-relative instructions find the image and relocation table. Absolute
+//   address pools are relocated before use; the kernel does not assume a
+//   machine-specific RAM base.
 //
 // Entry point: _start (set by the linker via ENTRY(_start))
 // =============================================================================
 
 .section ".text.boot", "ax"
 .global _start
+.option nopic
+.option norelax
+.option norvc
+_linux_header:
+    j _start
+    .word 0
+    .quad 0x200000                 // RV64 Linux Image placement offset
+    .quad _kernel_image_size
+    .quad 0
+    .word 2                       // header version 0.2
+    .word 0
+    .quad 0
+    .quad 0x5643534952
+    .word 0x05435352
+    .word 0
 
 .type _start, @function
 _start:
     // Save hart ID in tp (thread pointer) — S-mode convention.
     // tp is used by get_current_cpu_id() since mhartid is M-mode only.
     mv tp, a0
+
+    // ELF64 RELATIVE relocations. Firmware selects the physical image base.
+    lla t2, _linux_header
+    lla t0, _rela_start
+    lla t1, _rela_end
+1:
+    bgeu t0, t1, 2f
+    ld t3, 0(t0)
+    ld t4, 8(t0)
+    ld t5, 16(t0)
+    li t6, 3                     // R_RISCV_RELATIVE, symbol index zero
+    bne t4, t6, .Lhalt
+    add t3, t3, t2
+    add t5, t5, t2
+    sd t5, 0(t3)
+    addi t0, t0, 24
+    j 1b
+2:
+    fence rw, rw
+    fence.i
 
     // Non-boot harts: park in WFI loop.
     // OpenSBI starts only the boot hart initially.  If sbi_hart_start()

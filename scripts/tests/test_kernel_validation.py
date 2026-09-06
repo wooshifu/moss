@@ -10,7 +10,7 @@ from pathlib import Path
 import pytest
 
 from scripts import kernel_validation as kv
-from scripts.run_qemu import QemuConfig, normalize_test_exit_code
+from scripts.artifacts import Artifacts
 
 
 def event(workload, event_type, **fields):
@@ -48,7 +48,7 @@ def benchmark_report():
     emit(state, "case_end", case=state.workload, passed=0, failed=0)
     emit(state, "end", completed=1, selected=1, failed=0)
     return {
-        "schema_version": 1,
+        "schema_version": 2,
         "finalized": True,
         "requested": [state.workload],
         "not_run": [],
@@ -69,7 +69,7 @@ def benchmark_report():
                 cases=state.cases,
                 completion=state.end,
                 raw_exit=0,
-                exit=0,
+                termination="protocol_end",
                 parameters={},
             )
         ],
@@ -78,11 +78,11 @@ def benchmark_report():
 
 def test_full_functional_completion_and_exit_are_both_required():
     state = ready()
-    assert state.outcome(0, None, b"PASS")[0] == "error"
+    assert state.outcome("protocol_end", None, b"PASS")[0] == "error"
     finish(state)
-    assert state.outcome(0, None, b"") == ("passed", "pass")
-    assert state.outcome(1, None, b"")[0] == "error"
-    assert state.outcome(0, None, b"[P] allocator corruption") == ("error", "unexpected_kernel_panic")
+    assert state.outcome("protocol_end", None, b"") == ("passed", "pass")
+    assert state.outcome("process_exit", None, b"")[0] == "error"
+    assert state.outcome("protocol_end", None, b"[P] allocator corruption") == ("error", "unexpected_kernel_panic")
     with pytest.raises(ValueError):
         emit(state, "end", completed=2, selected=2, failed=0)
 
@@ -141,8 +141,8 @@ def test_assertion_failure_stops_suite_without_losing_not_run_cases():
     state = ready("self.fail")
     finish(state, failed=True)
     assert len(state.cases) == 1
-    assert state.outcome(1, None, b"") == ("passed", "assertion")
-    assert state.outcome(0, None, b"")[0] == "error"
+    assert state.outcome("protocol_end", None, b"") == ("passed", "assertion")
+    assert state.outcome("process_exit", None, b"")[0] == "error"
 
 
 def test_expected_panic_needs_matching_case_and_actual_panic_evidence():
@@ -153,14 +153,6 @@ def test_expected_panic_needs_matching_case_and_actual_panic_evidence():
     panic = b"[P] validation intentional panic\nKERNEL PANIC: validation intentional panic"
     assert state.outcome(None, "case_timeout", panic) == ("passed", "panic")
     assert state.outcome(None, "cancelled", b"[P] validation intentional panic")[0] == "error"
-
-
-@pytest.mark.parametrize(
-    "arch,raw,normalized",
-    [("X86_64", 33, 0), ("X86_64", 35, 1), ("X86_64", -15, -15), ("ARM64", 1, 1), ("RISCV", 0, 0)],
-)
-def test_architecture_exit_normalization(arch, raw, normalized):
-    assert normalize_test_exit_code(raw, arch) == normalized
 
 
 def test_offline_comparison_recomputes_samples_and_allows_revision_changes():
@@ -176,20 +168,19 @@ def test_offline_comparison_recomputes_samples_and_allows_revision_changes():
     assert result["informational_only"]
 
 
-@pytest.mark.parametrize("raw_exit", [1, 33, -15, None, True])
-def test_saved_measurement_rejects_inconsistent_raw_exit(raw_exit):
+@pytest.mark.parametrize("termination", ["process_exit", "timeout", None, True])
+def test_saved_measurement_requires_protocol_termination(termination):
     report = benchmark_report()
-    report["guests"][0]["raw_exit"] = raw_exit
+    report["guests"][0]["termination"] = termination
     assert kv.comparison(report, report)[0]["status"] == "not_comparable"
 
 
-def test_saved_measurement_requires_architecture_specific_clock_and_exit():
+def test_saved_measurement_requires_architecture_specific_clock():
     report = benchmark_report()
     report["comparison_environment"]["arch"] = "X86_64"
     guest = report["guests"][0]
     guest["clock"]["source"] = "cpuid.15"
-    assert kv.comparison(report, report)[0]["status"] == "not_comparable"
-    guest["raw_exit"] = 33
+    guest["raw_exit"] = -15  # Host-owned termination is not a test result.
     assert kv.comparison(report, report)[0]["status"] == "comparable"
     guest["clock"]["source"] = "cntfrq_el0"
     assert kv.comparison(report, report)[0]["status"] == "not_comparable"
@@ -262,15 +253,29 @@ def test_junit_preserves_failed_and_unstarted_cases(tmp_path):
     assert json.loads((tmp_path / "results.json").read_text()) == report
 
 
-@pytest.mark.parametrize("mode", ["early_exit", "malformed", "timeout", "ignore_term", "cancel", "launch_failure"])
+@pytest.mark.parametrize(
+    "mode",
+    ["early_exit", "malformed", "timeout", "ignore_term", "cancel", "launch_failure", "complete", "duplicate_end"],
+)
 def test_host_child_lifecycle_reaps_every_spawn(monkeypatch, tmp_path, mode):
     prefix = ""
-    if mode in ("timeout", "ignore_term", "cancel"):
+    if mode in ("timeout", "ignore_term", "cancel", "complete", "duplicate_end"):
         records = [
             event("mm", "ready", detected_cpus=4, online_mask=15, work_mask=15, ram_bytes=2**31, managed_pages=500000)
         ]
         records += [event("mm", "catalog", case=name) for name in kv.CATALOG["mm"]]
-        records += [event("mm", "worker", cpu=0, affinity=1), event("mm", "case_start", case="orders_alignment")]
+        records += [event("mm", "worker", cpu=0, affinity=1)]
+        if mode in ("complete", "duplicate_end"):
+            for name in kv.CATALOG["mm"]:
+                records += [
+                    event("mm", "case_start", case=name),
+                    event("mm", "case_end", case=name, passed=1, failed=0),
+                ]
+            records += [event("mm", "end", completed=len(kv.CATALOG["mm"]), selected=len(kv.CATALOG["mm"]), failed=0)]
+            if mode == "duplicate_end":
+                records += [records[-1]]
+        else:
+            records += [event("mm", "case_start", case="orders_alignment")]
         prefix = "".join(f"print({('@@MOSS ' + json.dumps(record))!r}, flush=True);" for record in records)
     if mode == "ignore_term":
         prefix = "import signal;signal.signal(signal.SIGTERM, signal.SIG_IGN);" + prefix
@@ -302,12 +307,14 @@ def test_host_child_lifecycle_reaps_every_spawn(monkeypatch, tmp_path, mode):
         return child
 
     monkeypatch.setattr(kv.subprocess, "Popen", spawn)
-    cfg = QemuConfig(str(tmp_path), "ARM64", "", "", "", "")
+    cfg = Artifacts(tmp_path / "manifest.json", "ARM64", "linux-image", {}, {})
     settings = dict(
         cpus=4, memory_mib=2048, warmup=1, samples=2, order=0, startup_timeout=1, case_timeout=0.1, guest_timeout=2
     )
     result = kv.run_guest(cfg, "mm", tmp_path / "guest", settings, 0)
-    assert result["status"] == "error"
+    assert result["status"] == ("passed" if mode == "complete" else "error")
+    if mode == "complete":
+        assert result["termination"] == "protocol_end"
     assert all(child.poll() is not None for child in children)
     assert Path(result["serial_log"]).exists()
     if mode in ("timeout", "ignore_term"):

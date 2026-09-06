@@ -207,14 +207,14 @@ Build system: CMake + Clang C++26 modules, 6 presets (3 arch x debug/release).
 
 - [x] **CMake build** — Top-level project with Clang cross-compilation, `-Weverything -Werror`, freestanding C++26 (`-std=c++26 -fmodules -ffreestanding -fno-exceptions -fno-rtti`), per-architecture toolchain flags
   - `CMakeLists.txt`, `cmake/arch_support.cmake`
-- [x] **6 build presets** — arm64-qemu-{debug,release}, x86_64-qemu-{debug,release}, riscv-qemu-{debug,release}, each with configure→build→test workflow
+- [x] **Architecture build presets** — `<arch>-{debug,release,relwithdebinfo}`; configure→build only, validation is explicit (ADR-0005)
   - `CMakePresets.json`
 - [x] **Python build orchestrator** — `build.py` using Typer/Rich, supports `--arch`, `--build-type`, `--all`, `--dry-run`, `list` subcommand, parallel build, summary table
   - `build.py`, `pyproject.toml`
 - [x] **Test framework** — Kernel-optimized Boost.UT adaptation, standalone `moss.test.elf` with per-architecture `_start`, semihosting exit codes (ARM64 SYS_EXIT, x86_64 port 0x501, RISC-V HTIF)
-  - `src/test/framework/ut_kernel.hpp`, `src/test/framework/moss_ut.hpp`, `src/test/test_main.cpp`
+  - `src/test/framework/ut_kernel.hpp`, `src/test/validation.cpp`
 - [x] **QEMU run scripts** — Auto-generated per build preset, correct machine/CPU/memory flags
-  - `build/<preset>/run_qemu.sh`
+  - `uv run scripts/run_qemu.py --manifest build/<preset>/moss-artifacts.json`
 - [x] **Linker scripts** — Kernel: `.text.boot` at 0x40080000, sections: text/rodata/data/bss/stack(256KB)/heap(8MB)/page_tables(2MB). User: base at 0x400000
   - `linker.ld`, `userspace/userspace.ld`
 

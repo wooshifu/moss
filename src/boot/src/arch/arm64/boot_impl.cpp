@@ -10,10 +10,13 @@ enum { PSCI_CPU_ON_64 = 0xC4000003 };
 
 // Assembly-callable function forward declaration (defined in this file)
 extern "C" [[noreturn]] void secondary_cpu_entry() noexcept;
+extern "C" void arm64_secondary_start();
+extern "C" unsigned long long boot_cpu_hardware_ids[16];
 
 module moss.boot;
 
 import moss.abi;
+import moss.hal.uart;
 
 // Bring assembly/linker symbols into scope via moss.abi
 using moss::abi::_start;
@@ -105,18 +108,7 @@ static u32 probe_available_cpus() noexcept {
     return count;
   }
 
-  // Priority 2: Estimate from linker-allocated stack space
-  auto total_stack_size =
-      static_cast<u64>(moss::abi::linker::stack_top()) - static_cast<u64>(moss::abi::linker::stack_bottom());
-  u32 stack_based = static_cast<u32>(total_stack_size / (32ULL * 1024));
-  if (stack_based >= 1 && stack_based <= moss::kernel::BOOT_MAX_CPUS) {
-    moss::kernel::g_num_cpus = stack_based;
-    return stack_based;
-  }
-
-  // Fallback: single core
-  moss::kernel::g_num_cpus = 1;
-  return 1;
+  return 0; // CPU topology must be provided by firmware.
 }
 
 static u64 get_timestamp() noexcept {
@@ -163,19 +155,18 @@ static void initialize_cpu_startup_info(u32 detected_cpus) noexcept {
   u32 iteration = 0;
   u32 max_iterations = timeout_ms * 10;
 
-  volatile u8 *uart_debug = reinterpret_cast<volatile u8 *>(0x9000000);
   early_uart_lock_acquire();
-  uart_debug[0] = 'W';
-  uart_debug[0] = '0' + static_cast<u8>(cpu_id % 10);
-  uart_debug[0] = 10;
+  moss::kernel::hal::uart::putc(static_cast<char>('W'));
+  moss::kernel::hal::uart::putc(static_cast<char>('0' + static_cast<u8>(cpu_id % 10)));
+  moss::kernel::hal::uart::putc(static_cast<char>(10));
   early_uart_lock_release();
 
   while (load_cpu_state(cpu_id) != CpuState::Parked) {
     if (iteration >= max_iterations) {
       early_uart_lock_acquire();
-      uart_debug[0] = 'T';
-      uart_debug[0] = '0' + static_cast<u8>(cpu_id % 10);
-      uart_debug[0] = 10;
+      moss::kernel::hal::uart::putc(static_cast<char>('T'));
+      moss::kernel::hal::uart::putc(static_cast<char>('0' + static_cast<u8>(cpu_id % 10)));
+      moss::kernel::hal::uart::putc(static_cast<char>(10));
       early_uart_lock_release();
 
       store_cpu_state(cpu_id, CpuState::Failed);
@@ -189,18 +180,18 @@ static void initialize_cpu_startup_info(u32 detected_cpus) noexcept {
 
     if (iteration % 1000 == 0) {
       early_uart_lock_acquire();
-      uart_debug[0] = 'C';
-      uart_debug[0] = '0' + static_cast<u8>(cpu_id % 10);
-      uart_debug[0] = '0' + static_cast<u8>(load_cpu_state(cpu_id));
-      uart_debug[0] = 10;
+      moss::kernel::hal::uart::putc(static_cast<char>('C'));
+      moss::kernel::hal::uart::putc(static_cast<char>('0' + static_cast<u8>(cpu_id % 10)));
+      moss::kernel::hal::uart::putc(static_cast<char>('0' + static_cast<u8>(load_cpu_state(cpu_id))));
+      moss::kernel::hal::uart::putc(static_cast<char>(10));
       early_uart_lock_release();
     }
   }
 
   early_uart_lock_acquire();
-  uart_debug[0] = 'S';
-  uart_debug[0] = '0' + static_cast<u8>(cpu_id % 10);
-  uart_debug[0] = 10;
+  moss::kernel::hal::uart::putc(static_cast<char>('S'));
+  moss::kernel::hal::uart::putc(static_cast<char>('0' + static_cast<u8>(cpu_id % 10)));
+  moss::kernel::hal::uart::putc(static_cast<char>(10));
   early_uart_lock_release();
 
   return true;
@@ -220,11 +211,10 @@ void mark_cpu_parked(u32 cpu_id) noexcept {
     // Release store: makes all prior initialization visible to CPU 0
     store_cpu_state(cpu_id, CpuState::Parked);
 
-    volatile u8 *uart_debug = reinterpret_cast<volatile u8 *>(0x9000000);
     early_uart_lock_acquire();
-    uart_debug[0] = 'M';
-    uart_debug[0] = '0' + static_cast<u8>(cpu_id % 10);
-    uart_debug[0] = 10;
+    moss::kernel::hal::uart::putc(static_cast<char>('M'));
+    moss::kernel::hal::uart::putc(static_cast<char>('0' + static_cast<u8>(cpu_id % 10)));
+    moss::kernel::hal::uart::putc(static_cast<char>(10));
     early_uart_lock_release();
   }
 }
@@ -262,15 +252,14 @@ bool wait_for_cpu_state(u32 cpu_id, CpuState expected_state, u32 timeout_ms) noe
 }
 
 [[noreturn]] void cpu_park(u32 cpu_id) noexcept {
-  volatile u8 *uart_out = reinterpret_cast<volatile u8 *>(0x9000000);
 
   early_uart_lock_acquire();
-  uart_out[0] = 'P';
-  uart_out[0] = 'A';
-  uart_out[0] = 'R';
-  uart_out[0] = 'K';
-  uart_out[0] = '0' + static_cast<u8>(cpu_id % 10);
-  uart_out[0] = 10;
+  moss::kernel::hal::uart::putc(static_cast<char>('P'));
+  moss::kernel::hal::uart::putc(static_cast<char>('A'));
+  moss::kernel::hal::uart::putc(static_cast<char>('R'));
+  moss::kernel::hal::uart::putc(static_cast<char>('K'));
+  moss::kernel::hal::uart::putc(static_cast<char>('0' + static_cast<u8>(cpu_id % 10)));
+  moss::kernel::hal::uart::putc(static_cast<char>(10));
   early_uart_lock_release();
 
   // Directly use store_cpu_state + UART (mark_cpu_parked does UART too,
@@ -286,19 +275,19 @@ bool wait_for_cpu_state(u32 cpu_id, CpuState expected_state, u32 timeout_ms) noe
   }
 
   early_uart_lock_acquire();
-  uart_out[0] = 'A';
-  uart_out[0] = 'C';
-  uart_out[0] = 'T';
-  uart_out[0] = 'V';
-  uart_out[0] = '0' + static_cast<u8>(cpu_id % 10);
-  uart_out[0] = 10;
+  moss::kernel::hal::uart::putc(static_cast<char>('A'));
+  moss::kernel::hal::uart::putc(static_cast<char>('C'));
+  moss::kernel::hal::uart::putc(static_cast<char>('T'));
+  moss::kernel::hal::uart::putc(static_cast<char>('V'));
+  moss::kernel::hal::uart::putc(static_cast<char>('0' + static_cast<u8>(cpu_id % 10)));
+  moss::kernel::hal::uart::putc(static_cast<char>(10));
 
-  uart_out[0] = 'W';
-  uart_out[0] = 'A';
-  uart_out[0] = 'I';
-  uart_out[0] = 'T';
-  uart_out[0] = '0' + static_cast<u8>(cpu_id % 10);
-  uart_out[0] = 10;
+  moss::kernel::hal::uart::putc(static_cast<char>('W'));
+  moss::kernel::hal::uart::putc(static_cast<char>('A'));
+  moss::kernel::hal::uart::putc(static_cast<char>('I'));
+  moss::kernel::hal::uart::putc(static_cast<char>('T'));
+  moss::kernel::hal::uart::putc(static_cast<char>('0' + static_cast<u8>(cpu_id % 10)));
+  moss::kernel::hal::uart::putc(static_cast<char>(10));
   early_uart_lock_release();
 
   while (true) {
@@ -314,16 +303,13 @@ bool wait_for_cpu_state(u32 cpu_id, CpuState expected_state, u32 timeout_ms) noe
 // on activation by CPU 0 (after GIC distributor and timer are ready).
 extern "C" [[noreturn]] void secondary_cpu_entry() noexcept {
   // 1. Read CPU ID from hardware
-  u64 mpidr;
-  asm volatile("mrs %0, mpidr_el1" : "=r"(mpidr));
-  u32 cpu_id = static_cast<u32>(mpidr & 0xFF);
+  u32 cpu_id = moss::kernel::arch::get_current_cpu_id();
 
   // Minimal UART output (locked)
-  volatile u8 *uart_out = reinterpret_cast<volatile u8 *>(0x09000000);
   early_uart_lock_acquire();
-  uart_out[0] = 'S';
-  uart_out[0] = '0' + static_cast<u8>(cpu_id % 10);
-  uart_out[0] = '\n';
+  moss::kernel::hal::uart::putc(static_cast<char>('S'));
+  moss::kernel::hal::uart::putc(static_cast<char>('0' + static_cast<u8>(cpu_id % 10)));
+  moss::kernel::hal::uart::putc(static_cast<char>('\n'));
   early_uart_lock_release();
 
   // --- Phase 1: Park and wait for CPU 0 to finish initialization ---
@@ -338,9 +324,9 @@ extern "C" [[noreturn]] void secondary_cpu_entry() noexcept {
   }
 
   early_uart_lock_acquire();
-  uart_out[0] = 'I';
-  uart_out[0] = '0' + static_cast<u8>(cpu_id % 10);
-  uart_out[0] = '\n';
+  moss::kernel::hal::uart::putc(static_cast<char>('I'));
+  moss::kernel::hal::uart::putc(static_cast<char>('0' + static_cast<u8>(cpu_id % 10)));
+  moss::kernel::hal::uart::putc(static_cast<char>('\n'));
   early_uart_lock_release();
 
   // --- Phase 2: Full subsystem initialization (GIC/timer are ready) ---
@@ -361,16 +347,13 @@ extern "C" [[noreturn]] void secondary_cpu_entry() noexcept {
   const auto &plat = moss::fdt::get_platform_info();
   moss::kernel::VirtAddr gic_cpu_base = 0;
   if (moss::kernel::hal::intc::g_gic_version != moss::kernel::hal::intc::GicVersion::GICv3) {
-    gic_cpu_base = (plat.dtb_valid && plat.intc.valid) ? static_cast<moss::kernel::VirtAddr>(plat.intc.cpu_base)
-                                                       : moss::kernel::platform::intc_cpu_base();
+    gic_cpu_base = plat.intc.cpu_base;
   }
   (void)moss::kernel::hal::intc::init_cpu_interface(gic_cpu_base);
 
   // Enable timer PPI (IRQ 27) and reschedule SGI (IRQ 0) in per-CPU
   // banked GICD_ISENABLER.  PPI/SGI registers are per-CPU in GICv2.
-  moss::kernel::VirtAddr gic_dist_base = (plat.dtb_valid && plat.intc.valid)
-                                             ? static_cast<moss::kernel::VirtAddr>(plat.intc.dist_base)
-                                             : moss::kernel::platform::intc_dist_base();
+  moss::kernel::VirtAddr gic_dist_base = plat.intc.dist_base;
   moss::kernel::hal::intc::enable_irq(gic_dist_base, moss::kernel::platform::timer_irq());
   moss::kernel::hal::intc::enable_irq(gic_dist_base, 0); // SGI 0 = Reschedule IPI
 
@@ -390,9 +373,9 @@ extern "C" [[noreturn]] void secondary_cpu_entry() noexcept {
   asm volatile("sev" ::: "memory"); // wake CPU 0's wait_for_cpu_state
 
   early_uart_lock_acquire();
-  uart_out[0] = 'R';
-  uart_out[0] = '0' + static_cast<u8>(cpu_id % 10);
-  uart_out[0] = '\n';
+  moss::kernel::hal::uart::putc(static_cast<char>('R'));
+  moss::kernel::hal::uart::putc(static_cast<char>('0' + static_cast<u8>(cpu_id % 10)));
+  moss::kernel::hal::uart::putc(static_cast<char>('\n'));
   early_uart_lock_release();
 
   // 7. Enable IRQs and enter scheduling loop (never returns)
@@ -466,20 +449,17 @@ u32 wait_for_all_cpus_active(u32 timeout_ms) noexcept {
 
 // ARM64 PSCI call function
 static u64 psci_call(u32 function_id, u64 arg0 = 0, u64 arg1 = 0, u64 arg2 = 0, u64 arg3 = 0) noexcept {
-  u64 result;
-
-  asm volatile("mov x0, %1\n"
-               "mov x1, %2\n"
-               "mov x2, %3\n"
-               "mov x3, %4\n"
-               "mov x4, %5\n"
-               "hvc #0\n"
-               "mov %0, x0\n"
-               : "=r"(result)
-               : "r"(static_cast<u64>(function_id)), "r"(arg0), "r"(arg1), "r"(arg2), "r"(arg3)
-               : "x0", "x1", "x2", "x3", "x4", "memory");
-
-  return result;
+  register u64 x0 asm("x0") = function_id;
+  register u64 x1 asm("x1") = arg0;
+  register u64 x2 asm("x2") = arg1;
+  register u64 x3 asm("x3") = arg2;
+  register u64 x4 asm("x4") = arg3;
+  if (moss::kernel::platform::hardware.psci_smc) {
+    asm volatile("smc #0" : "+r"(x0) : "r"(x1), "r"(x2), "r"(x3), "r"(x4) : "memory");
+  } else {
+    asm volatile("hvc #0" : "+r"(x0) : "r"(x1), "r"(x2), "r"(x3), "r"(x4) : "memory");
+  }
+  return x0;
 }
 
 namespace moss::boot {
@@ -489,36 +469,6 @@ BootStatus g_boot_status = {.current_stage = BootStage::PreInit,
                             .completed_stages_mask = 0,
                             .stage_timestamps = {0},
                             .last_error = ::moss::kernel::ErrorCode::Success};
-
-// Early UART output
-class EarlyUart {
-private:
-  static constexpr VirtAddr UART_BASE = moss::kernel::platform::uart_base();
-  static constexpr u32 UART_DR = 0x000;
-  static constexpr u32 UART_FR = 0x018;
-  static constexpr u32 UART_FR_TXFF = (1 << 5);
-
-  [[nodiscard]] static volatile u32 *registers() noexcept { return reinterpret_cast<volatile u32 *>(UART_BASE); }
-
-public:
-  void put_char(char c) const {
-    volatile u32 *uart_base = registers();
-    while (uart_base[UART_FR / 4] & UART_FR_TXFF) {
-    }
-    uart_base[UART_DR / 4] = static_cast<u32>(c);
-  }
-
-  void put_string(const char *str) const {
-    while (*str) {
-      if (*str == '\n') {
-        put_char('\r');
-      }
-      put_char(*str++);
-    }
-  }
-};
-
-static EarlyUart early_uart;
 
 // RAII guard — holds early_uart_lock for the lifetime of the scope.
 // Use to group multiple early_print() calls into one atomic output block.
@@ -532,7 +482,7 @@ struct EarlyPrintGuard {
 // early_print / early_print_hex: raw output, NO lock.
 // Caller must hold early_uart_lock (via EarlyPrintGuard) when concurrent
 // CPUs may be printing.  Before SMP starts there is no contention.
-static void early_print(const char *str) { early_uart.put_string(str); }
+static void early_print(const char *str) { moss::kernel::hal::uart::puts(str); }
 
 static void early_print_hex(u64 value) {
   constexpr char hex_chars[] = "0123456789ABCDEF";
@@ -552,11 +502,7 @@ static u64 get_timestamp_counter() noexcept {
   return counter;
 }
 
-u32 get_current_cpu_id_impl() noexcept {
-  u64 mpidr;
-  asm volatile("mrs %0, mpidr_el1" : "=r"(mpidr));
-  return static_cast<u32>(mpidr & 0xFF);
-}
+u32 get_current_cpu_id_impl() noexcept { return moss::kernel::arch::get_current_cpu_id(); }
 
 // Boot stage status update implementation
 void update_boot_stage(BootStage stage, ::moss::kernel::ErrorCode error) noexcept {
@@ -586,41 +532,33 @@ void update_boot_stage(BootStage stage, ::moss::kernel::ErrorCode error) noexcep
   early_print_hex(ctx.cpu_id);
   early_print("\n");
 
-  // --- DTB 解析：从 Device Tree 获取真实硬件拓扑 ---
-  // QEMU 通过 x0 寄存器传递 DTB 指针，已保存在 ctx.device_tree_ptr 中。
-  // 解析成功后用真实值填充 BootContext，否则回退到硬编码默认值。
-  if (ctx.device_tree_ptr) {
-    early_print("DTB pointer: ");
-    early_print_hex(reinterpret_cast<u64>(ctx.device_tree_ptr));
-    early_print("\n");
-
-    if (moss::fdt::parse_dtb(ctx.device_tree_ptr)) {
-      const auto &info = moss::fdt::get_platform_info();
-
-      early_print("DTB parse OK: ");
-      early_print_hex(info.cpu_count);
-      early_print(" CPUs, memory ");
-      early_print_hex(info.total_memory_start);
-      early_print(" + ");
-      early_print_hex(info.total_memory_size);
-      early_print("\n");
-
-      ctx.memory_start = info.total_memory_start;
-      ctx.memory_size = info.total_memory_size;
-      ctx.kernel_phys_base = info.total_memory_start;
-      ctx.total_cpus = info.cpu_count;
-    } else {
-      early_print("DTB parse failed, using platform defaults\n");
-      ctx.memory_start = moss::kernel::platform::ram_base();
-      ctx.memory_size = moss::kernel::platform::ram_size();
-      ctx.kernel_phys_base = moss::kernel::platform::ram_base();
-    }
-  } else {
-    early_print("No DTB pointer, using platform defaults\n");
-    ctx.memory_start = moss::kernel::platform::ram_base();
-    ctx.memory_size = moss::kernel::platform::ram_size();
-    ctx.kernel_phys_base = moss::kernel::platform::ram_base();
+  if (!moss::fdt::parse_dtb(ctx.device_tree_ptr)) {
+    return ::moss::kernel::VoidResult{::moss::kernel::ErrorCode::InvalidArgument};
   }
+  const auto &info = moss::fdt::get_platform_info();
+  if (!info.memory_map_valid || !info.intc.valid || !info.cpu_count || info.cpu_count > 16 || !info.timer_interrupt) {
+    return ::moss::kernel::VoidResult{::moss::kernel::ErrorCode::InvalidArgument};
+  }
+  u64 boot_id;
+  asm volatile("mrs %0, mpidr_el1" : "=r"(boot_id));
+  if (!moss::kernel::platform::order_cpus(boot_id & 0xFF00FFFFFFULL)) {
+    return ::moss::kernel::VoidResult{::moss::kernel::ErrorCode::InvalidArgument};
+  }
+  for (u32 i = 0; i < info.cpu_count; ++i) {
+    // ICC_SGI1R range selection (Aff0 >= 16) is not implemented yet.
+    if ((info.intc.gic_version == 3 && (info.cpus[i].hardware_id & 0xFF) >= 16) ||
+        (i && info.cpus[i].enable_method == moss::kernel::platform::CpuEnableMethod::Psci && !info.psci_valid)) {
+      return ::moss::kernel::VoidResult{::moss::kernel::ErrorCode::InvalidArgument};
+    }
+    boot_cpu_hardware_ids[i] = info.cpus[i].hardware_id;
+    asm volatile("dc cvac, %0" ::"r"(&boot_cpu_hardware_ids[i]) : "memory");
+  }
+  asm volatile("dsb sy" ::: "memory");
+  ctx.memory_start = info.total_memory_start;
+  ctx.memory_size = info.total_memory_size;
+  ctx.kernel_phys_base = reinterpret_cast<PhysAddr>(moss::abi::_start);
+  ctx.total_cpus = info.cpu_count;
+  early_print("DTB hardware discovered\n");
 
   ctx.kernel_virt_base = moss::boot::arch_constants::KERNEL_VIRT_BASE;
 
@@ -700,66 +638,20 @@ void update_boot_stage(BootStage stage, ::moss::kernel::ErrorCode error) noexcep
 
   early_print("=== ARM64 Interrupts and Exceptions Setup ===\n");
 
-  early_print("ARM64 GIC hardware init...\n");
-
   using namespace moss::kernel::interrupts;
   g_gic_controller = new GenericInterruptController();
   if (!g_gic_controller) {
-    early_print("GIC controller memory allocation failed\n");
-    g_gic_hardware_available = false;
-    early_print("System will use IPI proof-of-concept mode\n");
-  } else {
-    // Resolve GIC addresses from DTB with platform defaults fallback.
-    // Determine GIC version hint and choose second_base accordingly:
-    //   GICv3: second_base = GICR redistributor base
-    //   GICv2: second_base = GICC CPU interface base
-    const auto &plat = moss::fdt::get_platform_info();
-    moss::kernel::VirtAddr gic_dist_base = (plat.dtb_valid && plat.intc.valid)
-                                               ? static_cast<moss::kernel::VirtAddr>(plat.intc.dist_base)
-                                               : moss::kernel::platform::intc_dist_base();
-    u8 gic_ver = (plat.dtb_valid && plat.intc.valid) ? plat.intc.gic_version : 2;
-    moss::kernel::VirtAddr second_base;
-    if (gic_ver >= 3) {
-      second_base = (plat.dtb_valid && plat.intc.valid && plat.intc.redist_base != 0)
-                        ? static_cast<moss::kernel::VirtAddr>(plat.intc.redist_base)
-                        : moss::kernel::platform::intc_redist_base();
-      early_print("GIC GICD=");
-      early_print_hex(gic_dist_base);
-      early_print(" GICR=");
-      early_print_hex(second_base);
-      early_print(" (v3)\n");
-    } else {
-      second_base = (plat.dtb_valid && plat.intc.valid) ? static_cast<moss::kernel::VirtAddr>(plat.intc.cpu_base)
-                                                        : moss::kernel::platform::intc_cpu_base();
-      early_print("GIC GICD=");
-      early_print_hex(gic_dist_base);
-      early_print(" GICC=");
-      early_print_hex(second_base);
-      early_print(" (v2)\n");
-    }
-
-    auto gic_result = g_gic_controller->initialize(gic_dist_base, second_base, gic_ver);
-    if (gic_result) {
-      early_print("GIC hardware init success\n");
-      early_print("GIC features: SGI 0-15, PPI 16-31, SPI 32+\n");
-      g_gic_hardware_available = true;
-
-      early_print("GIC SGI verification...\n");
-      early_print("SGI 0-15 available for IPI communication\n");
-    } else {
-      early_print("GIC hardware init failed\n");
-      delete g_gic_controller;
-      g_gic_controller = nullptr;
-      g_gic_hardware_available = false;
-      early_print("System will use IPI proof-of-concept mode\n");
-    }
+    return ::moss::kernel::VoidResult{::moss::kernel::ErrorCode::OutOfMemory};
   }
-
-  if (g_gic_hardware_available) {
-    early_print("GIC hardware integration success - real hardware IPI available\n");
-  } else {
-    early_print("GIC hardware unavailable - will use proof-of-concept mode\n");
+  const auto &intc = moss::kernel::platform::hardware.intc;
+  auto result = g_gic_controller->initialize(intc.dist_base, intc.gic_version >= 3 ? intc.redist_base : intc.cpu_base,
+                                             intc.gic_version);
+  if (!result) {
+    delete g_gic_controller;
+    g_gic_controller = nullptr;
+    return result;
   }
+  g_gic_hardware_available = true;
 
   early_print("ARM64 interrupt/exception setup complete\n\n");
   return ::moss::kernel::VoidResult{};
@@ -802,7 +694,7 @@ void update_boot_stage(BootStage stage, ::moss::kernel::ErrorCode error) noexcep
         EarlyPrintGuard g;
         early_print("   Starting CPU ");
         early_print_hex(static_cast<u64>(cpu_id));
-        early_print(" via PSCI...\n");
+        early_print(" via firmware enable-method...\n");
       }
 
       // Mark Starting BEFORE PSCI call to avoid race: secondary CPU
@@ -822,24 +714,34 @@ void update_boot_stage(BootStage stage, ::moss::kernel::ErrorCode error) noexcep
 
       asm volatile("sev" ::: "memory");
 
-      u64 target_mpidr = static_cast<u64>(cpu_id);
-      u64 entry_addr = reinterpret_cast<u64>(_start);
+      const auto &cpu = moss::kernel::platform::hardware.cpus[cpu_id];
+      u64 target_mpidr = cpu.hardware_id;
+      u64 entry_addr = reinterpret_cast<u64>(arm64_secondary_start);
       u64 context_id = static_cast<u64>(cpu_id);
 
       {
         EarlyPrintGuard g;
-        early_print("   PSCI_CPU_ON: target=");
+        early_print("   CPU start: target=");
         early_print_hex(target_mpidr);
         early_print(" entry=");
         early_print_hex(entry_addr);
         early_print("\n");
       }
 
-      u64 psci_result = psci_call(PSCI_CPU_ON_64, target_mpidr, entry_addr, context_id);
+      u64 psci_result = ~0ULL;
+      if (cpu.enable_method == moss::kernel::platform::CpuEnableMethod::Psci) {
+        psci_result = psci_call(PSCI_CPU_ON_64, target_mpidr, entry_addr, context_id);
+      } else if (cpu.enable_method == moss::kernel::platform::CpuEnableMethod::SpinTable && cpu.release_address &&
+                 !(cpu.release_address & 7) && cpu.release_address < 0x100000000ULL) {
+        auto *release = reinterpret_cast<volatile u64 *>(cpu.release_address);
+        *release = entry_addr;
+        asm volatile("dc cvac, %0; dsb sy; sev" ::"r"(release) : "memory");
+        psci_result = 0;
+      }
 
       {
         EarlyPrintGuard g;
-        early_print("   PSCI result: ");
+        early_print("   CPU start result: ");
         early_print_hex(psci_result);
         early_print(psci_result == 0 ? " (success)\n" : " (failed)\n");
       }

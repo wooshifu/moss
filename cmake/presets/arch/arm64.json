@@ -1,6 +1,8 @@
 {
     "version": 6,
-    "include": ["../base.json"],
+    "include": [
+        "../base.json"
+    ],
     "configurePresets": [
         {
             "name": "arm64-base",
@@ -8,8 +10,8 @@
             "inherits": "base-common",
             "displayName": "ARM64 Base Configuration",
             "cacheVariables": {
-                "CMAKE_C_FLAGS": "",
-                "CMAKE_CXX_FLAGS": "-mcpu=cortex-a57 -march=armv8-a -mgeneral-regs-only -mstrict-align -ffreestanding -fno-exceptions -fno-rtti -fno-stack-protector -fno-pic -fno-pie -Weverything -Werror -Wno-c++-compat -Wno-c++98-compat -Wno-c++98-compat-pedantic -Wno-c++11-compat -Wno-c++14-compat -Wno-c++17-compat -Wno-c++20-compat -Wno-padded -Wno-unsafe-buffer-usage -Wno-gnu-zero-variadic-macro-arguments -Wno-gnu-anonymous-struct -Wno-nested-anon-types -Wno-missing-prototypes -Wno-missing-variable-declarations -Wno-global-constructors -Wno-exit-time-destructors -Wno-weak-vtables -Wno-inline -Wno-reserved-identifier -Wno-reserved-macro-identifier -Wno-covered-switch-default -Wno-nrvo -Wno-lifetime-safety-suggestions",
+                "CMAKE_C_FLAGS": "-march=armv8-a -mgeneral-regs-only -mstrict-align -ffreestanding -fno-stack-protector -fpie",
+                "CMAKE_CXX_FLAGS": "-march=armv8-a -mgeneral-regs-only -mstrict-align -ffreestanding -fno-exceptions -fno-rtti -fno-stack-protector -fpie -Weverything -Werror -Wno-c++-compat -Wno-c++98-compat -Wno-c++98-compat-pedantic -Wno-c++11-compat -Wno-c++14-compat -Wno-c++17-compat -Wno-c++20-compat -Wno-padded -Wno-unsafe-buffer-usage -Wno-gnu-zero-variadic-macro-arguments -Wno-gnu-anonymous-struct -Wno-nested-anon-types -Wno-missing-prototypes -Wno-missing-variable-declarations -Wno-global-constructors -Wno-exit-time-destructors -Wno-weak-vtables -Wno-inline -Wno-reserved-identifier -Wno-reserved-macro-identifier -Wno-covered-switch-default -Wno-nrvo -Wno-lifetime-safety-suggestions",
                 "CMAKE_ASM_FLAGS": "-march=armv8-a -mno-outline-atomics",
                 "CMAKE_C_COMPILER_TARGET": "aarch64-unknown-elf",
                 "CMAKE_CXX_COMPILER_TARGET": "aarch64-unknown-elf",
@@ -17,53 +19,59 @@
                 "CMAKE_SYSTEM_PROCESSOR": "aarch64",
                 "CMAKE_CROSSCOMPILING": "TRUE",
                 "MOSS_TARGET_ARCH": "ARM64",
-                "CMAKE_EXE_LINKER_FLAGS": "-fuse-ld=lld -nostdlib -nostartfiles -static -T ${sourceDir}/src/linker/kernel_arm64.ld"
+                "CMAKE_EXE_LINKER_FLAGS": "-fuse-ld=lld -nostdlib -nostartfiles -Wl,-pie,--no-dynamic-linker,-z,notext,-Bsymbolic -T ${sourceDir}/src/linker/kernel_arm64.ld"
             }
         },
         {
-            "name": "arm64-qemu-debug",
-            "displayName": "ARM64 QEMU Debug",
-            "description": "ARM64 debug build for QEMU virt platform",
-            "inherits": ["arm64-base", "build-debug"]
+            "name": "arm64-debug",
+            "displayName": "ARM64 Debug",
+            "description": "ARM64 debug build",
+            "inherits": [
+                "arm64-base",
+                "build-debug"
+            ]
         },
         {
-            "name": "arm64-qemu-release",
-            "displayName": "ARM64 QEMU Release",
-            "description": "ARM64 release build for QEMU virt platform",
-            "inherits": ["arm64-base", "build-release"]
+            "name": "arm64-release",
+            "displayName": "ARM64 Release",
+            "description": "ARM64 release build",
+            "inherits": [
+                "arm64-base",
+                "build-release"
+            ]
         },
         {
-            "name": "arm64-qemu-relwithdebinfo",
-            "displayName": "ARM64 QEMU RelWithDebInfo",
-            "description": "ARM64 optimized build with debug information for QEMU virt platform",
-            "inherits": ["arm64-base", "build-relwithdebinfo"]
+            "name": "arm64-relwithdebinfo",
+            "displayName": "ARM64 RelWithDebInfo",
+            "description": "ARM64 optimized build with debug information",
+            "inherits": [
+                "arm64-base",
+                "build-relwithdebinfo"
+            ]
         }
     ],
     "buildPresets": [
         {
-            "name": "arm64-qemu-debug",
-            "displayName": "ARM64 QEMU Debug Build",
-            "configurePreset": "arm64-qemu-debug",
-            "targets": ["moss.elf", "moss.test.elf"]
+            "name": "arm64-debug",
+            "displayName": "ARM64 Debug Build",
+            "configurePreset": "arm64-debug"
         },
         {
-            "name": "arm64-qemu-release",
-            "displayName": "ARM64 QEMU Release Build",
-            "configurePreset": "arm64-qemu-release",
-            "targets": ["moss.elf", "moss.test.elf"]
+            "name": "arm64-release",
+            "displayName": "ARM64 Release Build",
+            "configurePreset": "arm64-release"
         },
         {
-            "name": "arm64-qemu-relwithdebinfo",
-            "displayName": "ARM64 QEMU RelWithDebInfo Build",
-            "configurePreset": "arm64-qemu-relwithdebinfo",
-            "targets": ["moss.elf", "moss.test.elf"]
+            "name": "arm64-relwithdebinfo",
+            "displayName": "ARM64 RelWithDebInfo Build",
+            "configurePreset": "arm64-relwithdebinfo"
         }
     ],
     "testPresets": [
         {
-            "name": "arm64-qemu-debug-test",
+            "name": "arm64-debug-test",
             "displayName": "ARM64 Debug Unit Tests",
-            "configurePreset": "arm64-qemu-debug",
+            "configurePreset": "arm64-debug",
             "execution": {
                 "timeout": 420
             },
@@ -72,9 +80,9 @@
             }
         },
         {
-            "name": "arm64-qemu-release-test",
+            "name": "arm64-release-test",
             "displayName": "ARM64 Release Unit Tests",
-            "configurePreset": "arm64-qemu-release",
+            "configurePreset": "arm64-release",
             "execution": {
                 "timeout": 420
             },
@@ -83,9 +91,9 @@
             }
         },
         {
-            "name": "arm64-qemu-relwithdebinfo-test",
+            "name": "arm64-relwithdebinfo-test",
             "displayName": "ARM64 RelWithDebInfo Unit Tests",
-            "configurePreset": "arm64-qemu-relwithdebinfo",
+            "configurePreset": "arm64-relwithdebinfo",
             "execution": {
                 "timeout": 420
             },
@@ -96,33 +104,48 @@
     ],
     "workflowPresets": [
         {
-            "name": "arm64-qemu-debug",
-            "displayName": "ARM64 QEMU Debug Workflow",
-            "description": "Configure, build (moss.elf + moss.test.elf), and run tests",
+            "name": "arm64-debug",
+            "displayName": "ARM64 Debug Workflow",
+            "description": "Configure and build kernel artifacts",
             "steps": [
-                { "type": "configure", "name": "arm64-qemu-debug" },
-                { "type": "build", "name": "arm64-qemu-debug" },
-                { "type": "test", "name": "arm64-qemu-debug-test" }
+                {
+                    "type": "configure",
+                    "name": "arm64-debug"
+                },
+                {
+                    "type": "build",
+                    "name": "arm64-debug"
+                }
             ]
         },
         {
-            "name": "arm64-qemu-release",
-            "displayName": "ARM64 QEMU Release Workflow",
-            "description": "Configure, build (moss.elf + moss.test.elf), and run tests",
+            "name": "arm64-release",
+            "displayName": "ARM64 Release Workflow",
+            "description": "Configure and build kernel artifacts",
             "steps": [
-                { "type": "configure", "name": "arm64-qemu-release" },
-                { "type": "build", "name": "arm64-qemu-release" },
-                { "type": "test", "name": "arm64-qemu-release-test" }
+                {
+                    "type": "configure",
+                    "name": "arm64-release"
+                },
+                {
+                    "type": "build",
+                    "name": "arm64-release"
+                }
             ]
         },
         {
-            "name": "arm64-qemu-relwithdebinfo",
-            "displayName": "ARM64 QEMU RelWithDebInfo Workflow",
-            "description": "Configure, build (moss.elf + moss.test.elf), and run tests",
+            "name": "arm64-relwithdebinfo",
+            "displayName": "ARM64 RelWithDebInfo Workflow",
+            "description": "Configure and build kernel artifacts",
             "steps": [
-                { "type": "configure", "name": "arm64-qemu-relwithdebinfo" },
-                { "type": "build", "name": "arm64-qemu-relwithdebinfo" },
-                { "type": "test", "name": "arm64-qemu-relwithdebinfo-test" }
+                {
+                    "type": "configure",
+                    "name": "arm64-relwithdebinfo"
+                },
+                {
+                    "type": "build",
+                    "name": "arm64-relwithdebinfo"
+                }
             ]
         }
     ]

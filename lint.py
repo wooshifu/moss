@@ -91,7 +91,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--preset",
-        default="arm64-qemu-debug",
+        default="arm64-debug",
         metavar="NAME",
         help="Configured CMake preset in build/<name> (default: %(default)s)",
     )
