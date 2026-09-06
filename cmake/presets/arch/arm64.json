@@ -106,7 +106,7 @@
         {
             "name": "arm64-debug",
             "displayName": "ARM64 Debug Workflow",
-            "description": "Configure and build kernel artifacts",
+            "description": "Configure, build and test kernel artifacts",
             "steps": [
                 {
                     "type": "configure",
@@ -115,13 +115,17 @@
                 {
                     "type": "build",
                     "name": "arm64-debug"
+                },
+                {
+                    "type": "test",
+                    "name": "arm64-debug-test"
                 }
             ]
         },
         {
             "name": "arm64-release",
             "displayName": "ARM64 Release Workflow",
-            "description": "Configure and build kernel artifacts",
+            "description": "Configure, build and test kernel artifacts",
             "steps": [
                 {
                     "type": "configure",
@@ -130,13 +134,17 @@
                 {
                     "type": "build",
                     "name": "arm64-release"
+                },
+                {
+                    "type": "test",
+                    "name": "arm64-release-test"
                 }
             ]
         },
         {
             "name": "arm64-relwithdebinfo",
             "displayName": "ARM64 RelWithDebInfo Workflow",
-            "description": "Configure and build kernel artifacts",
+            "description": "Configure, build and test kernel artifacts",
             "steps": [
                 {
                     "type": "configure",
@@ -145,6 +153,10 @@
                 {
                     "type": "build",
                     "name": "arm64-relwithdebinfo"
+                },
+                {
+                    "type": "test",
+                    "name": "arm64-relwithdebinfo-test"
                 }
             ]
         }

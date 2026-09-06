@@ -106,7 +106,7 @@
         {
             "name": "riscv-debug",
             "displayName": "RISC-V Debug Workflow",
-            "description": "Configure and build kernel artifacts",
+            "description": "Configure, build and test kernel artifacts",
             "steps": [
                 {
                     "type": "configure",
@@ -115,13 +115,17 @@
                 {
                     "type": "build",
                     "name": "riscv-debug"
+                },
+                {
+                    "type": "test",
+                    "name": "riscv-debug-test"
                 }
             ]
         },
         {
             "name": "riscv-release",
             "displayName": "RISC-V Release Workflow",
-            "description": "Configure and build kernel artifacts",
+            "description": "Configure, build and test kernel artifacts",
             "steps": [
                 {
                     "type": "configure",
@@ -130,13 +134,17 @@
                 {
                     "type": "build",
                     "name": "riscv-release"
+                },
+                {
+                    "type": "test",
+                    "name": "riscv-release-test"
                 }
             ]
         },
         {
             "name": "riscv-relwithdebinfo",
             "displayName": "RISC-V RelWithDebInfo Workflow",
-            "description": "Configure and build kernel artifacts",
+            "description": "Configure, build and test kernel artifacts",
             "steps": [
                 {
                     "type": "configure",
@@ -145,6 +153,10 @@
                 {
                     "type": "build",
                     "name": "riscv-relwithdebinfo"
+                },
+                {
+                    "type": "test",
+                    "name": "riscv-relwithdebinfo-test"
                 }
             ]
         }

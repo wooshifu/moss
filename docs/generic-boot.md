@@ -29,8 +29,15 @@ uv run cmake --build --preset arm64-debug
 ```
 
 Replace `arm64` with `riscv` or `x86_64`, and `debug` with `release` or
-`relwithdebinfo`. `build.py` and CMake workflows configure/build only. Pass
-`-DMOSS_BUILD_TESTS=OFF` when configuring to omit validation artifacts. The old
+`relwithdebinfo`. `build.py` and CMake workflows run configure, build and CTest:
+
+```sh
+uv run cmake --workflow --preset arm64-debug
+```
+
+The workflow's test stage requires QEMU; the separate configure/build commands
+above do not. Pass `-DMOSS_BUILD_TESTS=OFF` when configuring to omit validation
+artifacts, and use those separate commands for a build-only invocation. The old
 `*-qemu-*` presets and generated launch wrappers/config are removed, without
 aliases.
 

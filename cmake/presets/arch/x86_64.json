@@ -106,7 +106,7 @@
         {
             "name": "x86_64-debug",
             "displayName": "x86-64 Debug Workflow",
-            "description": "Configure and build kernel artifacts",
+            "description": "Configure, build and test kernel artifacts",
             "steps": [
                 {
                     "type": "configure",
@@ -115,13 +115,17 @@
                 {
                     "type": "build",
                     "name": "x86_64-debug"
+                },
+                {
+                    "type": "test",
+                    "name": "x86_64-debug-test"
                 }
             ]
         },
         {
             "name": "x86_64-release",
             "displayName": "x86-64 Release Workflow",
-            "description": "Configure and build kernel artifacts",
+            "description": "Configure, build and test kernel artifacts",
             "steps": [
                 {
                     "type": "configure",
@@ -130,13 +134,17 @@
                 {
                     "type": "build",
                     "name": "x86_64-release"
+                },
+                {
+                    "type": "test",
+                    "name": "x86_64-release-test"
                 }
             ]
         },
         {
             "name": "x86_64-relwithdebinfo",
             "displayName": "x86-64 RelWithDebInfo Workflow",
-            "description": "Configure and build kernel artifacts",
+            "description": "Configure, build and test kernel artifacts",
             "steps": [
                 {
                     "type": "configure",
@@ -145,6 +153,10 @@
                 {
                     "type": "build",
                     "name": "x86_64-relwithdebinfo"
+                },
+                {
+                    "type": "test",
+                    "name": "x86_64-relwithdebinfo-test"
                 }
             ]
         }
