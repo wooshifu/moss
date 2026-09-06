@@ -64,7 +64,7 @@ SECTIONS
      * Page permissions: Read + Execute (no write)
      */
     .text : {
-        *(.text*)
+        *(.text* .ltext*)
     }
 
     /* ---- Read-Only Data Section ----
@@ -73,8 +73,10 @@ SECTIONS
      *
      * Page permissions: Read-only (no write, no execute)
      */
-    .rodata : {
-        *(.rodata*)
+    /* Distinct permissions must never share a hardware page. Include x86
+     * large-model sections as well as the other ISAs' ordinary sections. */
+    .rodata ALIGN(4096) : {
+        *(.rodata* .lrodata*)
     }
 
     /* ---- Initialized Data Section ----
@@ -83,8 +85,8 @@ SECTIONS
      *
      * Page permissions: Read + Write (no execute)
      */
-    .data : {
-        *(.data*)
+    .data ALIGN(4096) : {
+        *(.data* .ldata* .sdata* .got*)
     }
 
     /* ---- BSS Section (Zero-Initialized Data) ----
@@ -93,8 +95,8 @@ SECTIONS
      *
      * Page permissions: Read + Write (no execute)
      */
-    .bss : {
-        *(.bss*)
+    .bss ALIGN(4096) : {
+        *(.bss* .lbss* .sbss*)
         *(COMMON)
     }
 

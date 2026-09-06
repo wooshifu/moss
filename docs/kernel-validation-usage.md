@@ -26,7 +26,7 @@ uv run scripts/kernel_validation.py run --manifest build/arm64-release/moss-arti
 
 Use the actual `moss-artifacts.json` path printed by your preset if using an overridden build directory. With no `--output`, each run creates a unique directory under `<build>/validation/`. Explicit output directories must not already exist. The terminal prints the canonical report path.
 
-`--cpus`, `--memory-mib`, `--warmup`, `--samples`, `--iterations`, and `--order` are explicit overrides. `--machine`, `--cpu`, `--qemu` and `--dtb` select the runtime environment. `--expected-ram-mib` explicitly checks firmware-visible RAM when firmware reserves part of the installed RAM; it defaults to `--memory-mib` and is recorded separately. Initial deadlines are `--startup-timeout 30`, `--case-timeout 5`, and `--guest-timeout 60`, in host seconds. Increase the case limit for intentionally longer workloads. Ctrl-C or SIGTERM finalizes partial reports and terminates/reaps QEMU; workloads not started are recorded as such.
+`--cpus`, `--memory-mib`, `--warmup`, `--samples`, `--iterations`, and `--order` are explicit overrides. `--machine`, `--cpu`, `--qemu` and `--dtb` select the runtime environment. `--expected-ram-mib` explicitly checks firmware-visible RAM when firmware reserves part of the installed RAM; it defaults to `--memory-mib` and is recorded separately. Default host deadlines are 30 s for startup, 60 s per guest, and 5 s per case except `pfa` (30 s: exhaustive 2 GiB memory access can exceed 5 s under host pressure). An explicit `--case-timeout` overrides either case default, including a shorter value. Reports retain the effective `case_timeout_seconds` per guest and host-observed `elapsed_seconds` per executed case; these include observation/polling effects and are not kernel microbenchmarks. CTest allows 600 s for the functional/framework runner to finish its guests, cleanup and reports. Ctrl-C or SIGTERM finalizes partial reports and terminates/reaps QEMU; workloads not started are recorded as such.
 
 ## Memory Ownership and Boot Inputs
 
@@ -53,17 +53,88 @@ Negative checks require the expected boot diagnostic and no `ready` event. Their
 raw guest reports remain errors; the check script succeeds only when rejection is
 verified. They do not count an unexecuted functional test as passed.
 
+## Page Permission Boundaries
+
+`mm.permissions` is part of the default functional run. It checks supervisor-only
+table defaults, rejects USER attributes in the kernel mapping API, and walks the
+production kernel identity/direct-map trees and the current process's hardware
+page-table root. Kernel leaves must not carry USER; x86 user mappings must retain
+USER throughout their permission chain. ARM64 also verifies the active TTBR1 root.
+`kernel_wx` checks that executable kernel leaves are read-only and confined to
+the linked text range (including boot text), all direct-map aliases are NX,
+and no alias of text/rodata is writable. x86 also checks CR0.WP. The
+`address_space_ownership` case creates, COW-clones and destroys real address
+spaces, checking inherited kernel permissions, physical-page references,
+page-count recovery and unchanged shared kernel tables.
+`vma_boundaries` exercises production AddressSpace admission: complete user
+address bounds, alignment, empty/reversed ranges, permissions and the reserved
+sigreturn page. It also checks access across adjacent VMAs and rejection at a
+gap or incompatible permission.
+
+This is structural U/S and W^X evidence for the present 0-4 GiB mapping contract,
+not complete malicious-user fault containment or physical-hardware acceptance.
+Ownership snapshots ignore only hardware Accessed/Dirty state; address, permission
+and software ownership bits remain protected by the hash. Framework self-checks
+verify this distinction without modifying an installed page table.
+
+The `users.user_ranges` case uses actual architecture syscalls to reject invalid
+debug pointers, kernel/overflow/reserved mmap ranges, unsupported flags and
+read-only/PROT_NONE output. It creates two adjacent anonymous VMAs and exercises
+copy-in, copy-out and pathname copying across their boundary, then removes one
+VMA and requires EFAULT. Bounded strings without a NUL return ENAMETOOLONG instead
+of silently using a truncated name. This follows the current Moss ABI:
+clock_gettime writes one u64 nanosecond value; zero-count read/write return EINVAL.
+These are policy checks, not recoverable CPU-fault tests: copy helpers and VFS
+buffer accesses still need fault fixups and VM lifetime protection (MOSS-002).
+The subsequent users case covers fork/exec/reaping; containers.smp covers CPU1.
+
+## User Floating-Point State
+
+On x86_64, `users.fork_exec_exit_reap` also checks x87 data/control, MXCSR and
+XMM15 across yield and fork, child state changes without parent contamination,
+default state after exec, and real x87 invalid-operation termination followed by
+parent continuation. Exec validates argc/argv. `containers.smp` additionally
+checks inherited FP state on its actual CPU1 child and the surviving CPU0 parent.
+These checks do not cover every extended register, signal frame or CPU feature.
+
+The additional `users.simd_fault` workload requires a real unmasked SSE invalid
+operation to terminate only the child. It is explicit, not part of the default
+functional set, and a missing exception remains a failure:
+
+```sh
+uv run scripts/kernel_validation.py run --manifest build/x86_64-debug/moss-artifacts.json \
+  --workload users.simd_fault
+```
+
+The current QEMU 11.1.1 TCG run fails this assertion: its CPU trace records #MF
+but no #XM. QEMU's [upstream explanation](https://github.com/qemu/qemu/commit/418b0f93d12a1589d5031405de857844f32e9ccc)
+distinguishes SSE status-flag emulation from trapping support. Do not replace the
+arithmetic with a software interrupt or classify its early return as a pass.
+SIMD-fault isolation remains unaccepted until exercised in a suitable environment.
+
 ## Container Ownership
 
-The `containers` suite runs production list and hash-map code: reachable values
-must survive insertion, explicit unlink/replacement must destroy each owned value
-once, and a 1,024-node clear/reuse must restore heap accounting. It is part of the
-default functional selection, or run it alone with `--workload containers`.
+The `containers` suite runs production `LockedList` and `LockedHashMap`: reachable
+values survive insertion, unlink/replacement destroys each owned value once, and
+a 1,024-node clear/reuse restores heap accounting. Lookup returns a value copy
+(a retained `shared_ptr` for owned objects), not node storage. The `held_reader`
+case keeps that owner across removal; `reentry` checks snapshot callbacks and
+destructors accessing the same container after its lock is released. The fake
+RCU reader/callback queue has been removed, not given a periodic drain.
 
-These are single-worker tests. They explicitly drain the existing callback queue
-to observe destruction; the production kernel does not gain a periodic drain.
-The queue still has no reader grace period, and scoped borrowing/concurrent
-deletion remain open in MOSS-006. Passing this suite does not establish RCU safety.
+`containers.smp` forks a real userspace child with inherited CPU1 affinity. CPU0
+removes an object while CPU1 retains it, then barriers force two creators past
+the same-key lookup and race insertion/removal. Assertions verify the actual CPU
+IDs, a single published value, exactly one successful removal and final destruction.
+Only CPU0 records assertions; the peer publishes results with acquire/release
+handshakes. The parent reaps the child before destroying the fixture. A stuck
+handshake fails the host case deadline; there are no timed sleeps or mock workers.
+
+Both suites are in the default functional selection (nine suites, twenty-seven cases).
+Run either alone with `--workload containers` or `--workload containers.smp`.
+The SMP suite requires at least two CPUs; for `--cpus 1`, explicitly select
+single-worker workloads. This is bounded container/SMP boot coverage, not full
+scheduler, IRQ-context, driver or IPC lifecycle acceptance; MOSS-006 remains open.
 
 ## Single-Function Measurements
 

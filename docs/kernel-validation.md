@@ -49,10 +49,17 @@ Framework self-validation covers deferred case execution, catalog completeness, 
 | Area | Required Behavior |
 | --- | --- |
 | Physical memory | Allocate pages of different orders; verify alignment and non-overlap of live allocations; release pages and exercise repeated reuse. |
+| Page permission boundary | Inspect production kernel and active user roots for supervisor-only kernel leaves, x86 user permission chains, kernel W^X and read-only/NX direct-map aliases. Create/clone/free address spaces without changing shared kernel tables. This is not complete user-fault containment acceptance. |
 | VFS | Open and read real files; verify contents, file position, EOF, close, and error handling, including rejected writes to the current read-only ramfs. |
-| Userspace and processes | Verify syscall return values and the process creation, execution, exit, and reaping lifecycle. |
+| Userspace and processes | Verify syscall return values, user-domain/VMA policy, bounded strings, cross-VMA copies and rejection, then process creation, execution, exit and reaping. Policy rejection is not CPU-fault recovery or complete uaccess acceptance. |
 
 Physical-memory cases must exercise the production page allocator. VFS cases must use the real mounted filesystem environment. Tests that claim userspace syscall coverage must invoke the architecture's real user-to-kernel entry path; directly calling a syscall handler does not establish that coverage.
+
+x86 users tests also exercise legacy FP state through yield/fork/exec and x87
+exception termination; the SMP case checks inheritance on CPU1. The explicit
+`users.simd_fault` workload is separate from the default set because the current
+TCG execution does not deliver #XM. Its assertion remains a failure, not an
+expected-pass classification; it does not establish SIMD-fault acceptance.
 
 Framework self-validation must include intentional assertion failures, kernel panics, and timeouts, and must verify that failures reach the host and CTest. Startup and image-loading failures must remain distinguishable from completed test results, as required by ADR-0001.
 
@@ -86,6 +93,15 @@ The resource requirement and concrete defaults of four vCPUs and 2 GiB are confi
 | Recorded samples | Thirty completed batches for each scenario. |
 | Batch sizing | For a new baseline, a bounded pilot targets approximately 1 ms per batch, subject to the scenario's declared iteration and resource capacity. The resulting operation count is fixed for the recorded batches. |
 | Host deadlines | At most 30 s for validation startup, 5 s per ordinary functional case including its setup and cleanup, and 60 s total per guest. Explicit workload metadata or runner options can override these limits. |
+
+The PFA exhaustion workload now declares a 30 s case default: on 2026-09-06,
+four concurrent 2 GiB RV64 Debug guests all hit the old 5 s deadline, but the same
+images completed all ownership checks in about 16 s with a diagnostic 20 s limit.
+Other workloads retain 5 s; explicit `--case-timeout` wins. This changes a host
+execution budget, not allocation correctness or a performance threshold. Effective
+budgets and host-observed case durations are recorded, and historical failures remain
+failures. Functional/framework CTest has a 600 s outer guard for up to nine guests
+and cleanup. Evidence and limitations are in `moss-todo.md`, section 3.10.
 
 A baseline comparison reuses the baseline's fixed operation count when the workload and resource capacity permit it. It must not independently change allocator occupancy or other batch preconditions and silently call the results comparable. A caller may also specify a fixed operation count directly. Pilot work and its cleanup are outside the recorded samples; any operation or cleanup failure during a pilot or warmup still fails the scenario.
 

@@ -73,7 +73,7 @@ KernelResult<ThreadId> Process::create_thread(VirtAddr entry_point, VirtAddr sta
   thread->state = ProcessState::Ready;
   thread->start_time = get_current_time();
 
-  // 添加到线程列表 (使用RcuList的push_front)
+  // 添加到线程列表 (使用LockedList的push_front)
   ThreadEntry entry(tid, thread);
   threads_.push_front(entry);
 
@@ -95,7 +95,7 @@ KernelResult<ThreadId> Process::create_thread(VirtAddr entry_point, VirtAddr sta
 }
 
 Thread *Process::get_thread(ThreadId tid) const noexcept {
-  const ThreadEntry *entry = threads_.find_if([tid](const ThreadEntry &e) { return e.tid == tid; });
+  auto entry = threads_.find_if([tid](const ThreadEntry &e) { return e.tid == tid; });
   return entry ? entry->thread : nullptr;
 }
 
@@ -181,7 +181,7 @@ ProcessId Process::find_zombie_child(i64 wait_pid) const noexcept {
       return; // Already found one
     }
 
-    Process *child = g_process_manager->find_process(child_pid);
+    auto child = g_process_manager->find_process(child_pid);
     if (!child) {
       return;
     }
@@ -199,52 +199,46 @@ ProcessId Process::find_zombie_child(i64 wait_pid) const noexcept {
 }
 
 // ProcessManager类方法实现
-KernelResult<Process *> ProcessManager::create_process(ProcessId parent_pid) noexcept {
+KernelResult<shared_ptr<Process>> ProcessManager::create_process(ProcessId parent_pid) noexcept {
   ProcessId new_pid = allocate_pid();
   if (new_pid == INVALID_PROCESS_ID) {
-    return KernelResult<Process *>{ErrorCode::ResourceExhausted};
+    return KernelResult<shared_ptr<Process>>{ErrorCode::ResourceExhausted};
   }
 
-  auto *process = new Process(new_pid, parent_pid);
+  auto process = make_shared<Process>(new_pid, parent_pid);
   if (!process) {
-    return KernelResult<Process *>{ErrorCode::OutOfMemory};
+    return KernelResult<shared_ptr<Process>>{ErrorCode::OutOfMemory};
   }
 
   processes_.insert_or_update(new_pid, process);
 
   // Initialize per-process signal state (handlers table)
-  init_signal_state(process);
+  init_signal_state(process.get());
 
   record_fork();
-  return KernelResult<Process *>{process};
+  return KernelResult<shared_ptr<Process>>{process};
 }
 
 VoidResult ProcessManager::terminate_process(ProcessId pid, i32 exit_code) noexcept {
-  Process *const *entry = processes_.find(pid);
+  auto entry = processes_.extract(pid);
   if (!entry) {
     return VoidResult{ErrorCode::NotFound};
   }
 
-  Process *process = *entry;
+  auto process = *entry;
   process->set_state(ProcessState::Terminated);
   process->set_exit_code(exit_code);
-
-  // 从进程表中移除
-  (void)processes_.remove(pid);
-
-  // 释放引用（可能会删除进程对象）
-  process->release();
 
   record_exit();
   return VoidResult{};
 }
 
-Process *ProcessManager::find_process(ProcessId pid) const noexcept {
-  Process *const *entry = processes_.find(pid);
-  return entry ? *entry : nullptr;
+shared_ptr<Process> ProcessManager::find_process(ProcessId pid) const noexcept {
+  auto entry = processes_.find(pid);
+  return entry ? *entry : shared_ptr<Process>{};
 }
 
-bool ProcessManager::process_exists(ProcessId pid) const noexcept { return find_process(pid) != nullptr; }
+bool ProcessManager::process_exists(ProcessId pid) const noexcept { return static_cast<bool>(find_process(pid)); }
 
 u64 ProcessManager::total_processes() const noexcept { return processes_.size(); }
 
@@ -272,122 +266,24 @@ static u16 allocate_asid() noexcept {
   return static_cast<u16>(val);
 }
 
-// Create a real user address space with buddy-allocated PGD
+// Page-table ownership and architecture layout belong to the MM module.
 KernelResult<unique_ptr<AddressSpace>> create_user_address_space() noexcept {
-  // 1. Allocate a physical page for the user PGD (L0 table)
-#if defined(MOSS_ARCH_X86_64) || defined(MOSS_ARCH_ARM64)
-  auto pgd_result = mm::PageTableManager::allocate_page_table();
-#else
-  auto pgd_result = mm::PageTableManager::allocate_page_table_dynamic();
-#endif
-  if (!pgd_result) {
-    return KernelResult<unique_ptr<AddressSpace>>{ErrorCode::OutOfMemory};
+  auto tables = mm::PageTableManager::create_user_page_tables();
+  if (!tables) {
+    return KernelResult<unique_ptr<AddressSpace>>{tables.error()};
   }
-
-  PhysAddr pgd_phys = mm::PageTableManager::get_physical_address(*pgd_result);
-  auto *user_pgd = *pgd_result;
-
-  // 2. Copy kernel mappings into user PGD.
-  auto *kernel_pgd = mm::PageTableManager::get_kernel_pgd();
-
-#if defined(MOSS_ARCH_RISCV)
-  if (hal::mmu::g_mmu_mode == hal::mmu::MmuMode::Sv39) {
-    // Sv39: kernel_pgd contains 1GB gigapage leaf entries directly at
-    // indices [0..3] (identity map) and [256..259] (high-half direct map).
-    // Copy all valid kernel block entries to user PGD.
-    if (kernel_pgd && user_pgd) {
-      constexpr usize ENTRIES = mm::PageTable::ENTRIES_PER_TABLE;
-      for (usize i = 0; i < ENTRIES; i++) {
-        if (kernel_pgd->entries[i].is_valid() && kernel_pgd->entries[i].is_block()) {
-          user_pgd->entries[i] = kernel_pgd->entries[i];
-        }
-      }
-    }
-  } else {
-    // Sv48: RISC-V has a single satp — user PGD must include BOTH the
-    // identity-map PGD[0] and the high-half kernel entries PGD[256+].
-    if (kernel_pgd && user_pgd) {
-      constexpr usize ENTRIES = mm::PageTable::ENTRIES_PER_TABLE;
-
-      // PGD[0]: allocate a PRIVATE PUD copy so that demand-paging user
-      // pages into the 0-512GB range doesn't pollute the kernel PUD.
-      if (kernel_pgd->entries[0].is_valid() && kernel_pgd->entries[0].is_table()) {
-        auto pud_result = mm::PageTableManager::allocate_page_table_dynamic();
-        if (pud_result) {
-          auto *private_pud = *pud_result;
-          auto *kernel_pud = mm::PageTableManager::get_table_from_physical(kernel_pgd->entries[0].get_phys_addr());
-          if (kernel_pud) {
-            for (usize j = 0; j < ENTRIES; j++) {
-              if (kernel_pud->entries[j].is_valid()) {
-                private_pud->entries[j] = kernel_pud->entries[j];
-              }
-            }
-          }
-          user_pgd->entries[0].set_table(mm::PageTableManager::get_physical_address(private_pud));
-        }
-      }
-
-      // PGD[ENTRIES/2..ENTRIES-1]: high-half kernel direct map — share directly.
-      // PGD[1..ENTRIES/2-1]: user-space region — left empty for demand paging.
-      for (usize i = ENTRIES / 2; i < ENTRIES; i++) {
-        if (kernel_pgd->entries[i].is_valid()) {
-          user_pgd->entries[i] = kernel_pgd->entries[i];
-        }
-      }
-    }
-  }
-#else
-  {
-    // ARM64/x86_64: 4-level with separate ttbr1 for kernel.
-    // Allocate a private PUD for PGD[0] and copy kernel 1GB block entries.
-    if (kernel_pgd && user_pgd && kernel_pgd->entries[0].is_valid()) {
-#if defined(MOSS_ARCH_X86_64) || defined(MOSS_ARCH_ARM64)
-      auto pud_result = mm::PageTableManager::allocate_page_table();
-#else
-      auto pud_result = mm::PageTableManager::allocate_page_table_dynamic();
-#endif
-      if (!pud_result) {
-        mm::free_pages(pgd_phys, 0);
-        return KernelResult<unique_ptr<AddressSpace>>{ErrorCode::OutOfMemory};
-      }
-      auto *user_pud = *pud_result;
-      auto *kernel_pud = mm::PageTableManager::get_table_from_physical(kernel_pgd->entries[0].get_phys_addr());
-
-      if (kernel_pud) {
-        constexpr usize ENTRIES = mm::PageTable::ENTRIES_PER_TABLE;
-        for (usize i = 0; i < ENTRIES; i++) {
-          if (kernel_pud->entries[i].is_valid() && kernel_pud->entries[i].is_block()) {
-            user_pud->entries[i] = kernel_pud->entries[i];
-          }
-        }
-      }
-
-      user_pgd->entries[0].set_table(mm::PageTableManager::get_physical_address(user_pud));
-    }
-  }
-#endif
-
-#if defined(MOSS_ARCH_X86_64)
-  for (usize i = 256; i < mm::PageTable::ENTRIES_PER_TABLE; ++i) {
-    user_pgd->entries[i] = kernel_pgd->entries[i];
-  }
-#endif
-
-  // 3. Allocate ASID and create AddressSpace object
-  u16 asid = allocate_asid();
-  auto address_space = make_unique<AddressSpace>(pgd_phys, asid);
+  auto address_space = make_unique<AddressSpace>(*tables, allocate_asid());
   if (!address_space) {
-    mm::PageTableManager::free_user_page_tables(pgd_phys);
+    mm::PageTableManager::free_user_page_tables(*tables);
     return KernelResult<unique_ptr<AddressSpace>>{ErrorCode::OutOfMemory};
   }
-
   return KernelResult<unique_ptr<AddressSpace>>{moss::move(address_space)};
 }
 
 // 映射内存区域到用户地址空间
 VoidResult map_user_memory(AddressSpace *as, VirtAddr vaddr, [[maybe_unused]] PhysAddr paddr, usize size,
                            u32 flags) noexcept {
-  if (!as || vaddr == 0 || size == 0) {
+  if (!as || size == 0 || !mm::PageTableManager::is_user_range(vaddr, size)) {
     return VoidResult{ErrorCode::InvalidArgument};
   }
 
@@ -440,7 +336,7 @@ KernelResult<VirtAddr> allocate_user_heap(Process *process, usize size) noexcept
 // Shared Zombie transition — called by sys_exit and terminate_current_user_process
 // ============================================================================
 
-[[noreturn]] void do_exit(Thread *cur, Process *proc, i32 exit_code) noexcept {
+[[noreturn]] void do_exit(Thread *cur, shared_ptr<Process> proc, i32 exit_code) noexcept {
   namespace log = moss::kernel::logging;
 
   ProcessId pid = cur->owner_pid;
@@ -494,9 +390,9 @@ KernelResult<VirtAddr> allocate_user_heap(Process *process, usize size) noexcept
   }
 
   // 4. Reparent children to init (PID 1)
-  Process *init_proc = g_process_manager->find_process(1);
+  auto init_proc = g_process_manager->find_process(1);
   proc->for_each_child([&](ProcessId child_pid) {
-    Process *child = g_process_manager->find_process(child_pid);
+    auto child = g_process_manager->find_process(child_pid);
     if (child) {
       child->set_parent_pid(1);
       if (init_proc) {
@@ -522,7 +418,7 @@ KernelResult<VirtAddr> allocate_user_heap(Process *process, usize size) noexcept
   // 6. Wake parent's wait queue so waitpid() can collect us.
   //    Use wake_up() which respects exclusive waiters — only wakes
   //    one exclusive waiter + all non-exclusive ones (avoids thundering herd).
-  Process *parent = g_process_manager->find_process(proc->parent_pid());
+  auto parent = g_process_manager->find_process(proc->parent_pid());
   if (parent) {
     log::klog::info("do_exit: PID={} waking parent PID={}", pid, proc->parent_pid());
     parent->child_exit_wait_queue().wake_up([](void *thread_ptr) {
@@ -540,8 +436,10 @@ KernelResult<VirtAddr> allocate_user_heap(Process *process, usize size) noexcept
   log::klog::info("do_exit: PID={} -> Zombie, exit_code={}", pid, exit_code);
 
   // 7. Hand control to scheduler (never returns)
+  parent.reset();
+  init_proc.reset();
   if (g_scheduler) {
-    g_scheduler->schedule_after_exit();
+    g_scheduler->schedule_after_exit(moss::move(proc));
   }
 
   // Fallback halt (should never be reached)

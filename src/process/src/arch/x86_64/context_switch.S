@@ -23,6 +23,7 @@
 //   0x78    8      r15       (callee-saved)
 //   0x80    8      pstate    (RFLAGS)
 //   0x88    8      pc        (RIP / return address)
+//   0xA0    512    fp        (16-byte-aligned FXSAVE64 image)
 //
 // x86_64 calling convention (System V AMD64 ABI):
 //   Arguments: RDI, RSI, RDX, RCX, R8, R9, [stack]
@@ -46,6 +47,7 @@
 .type context_switch, @function
 context_switch:
     // ---- Phase 1: Save current (prev) context ----
+    fxsave64 160(%rdi)
 
     // Save all general-purpose registers into prev CpuContext
     movq    %rax, 0(%rdi)              // prev->rax
@@ -76,6 +78,7 @@ context_switch:
     movq    %rax, 136(%rdi)
 
     // ---- Phase 2: Restore next context ----
+    fxrstor64 160(%rsi)
 
     // Restore RFLAGS from next->pstate
     movq    128(%rsi), %rax
@@ -122,6 +125,8 @@ context_switch:
 .global switch_to_user
 .type switch_to_user, @function
 switch_to_user:
+    // First entry / exec must install this process's state, not the last owner.
+    fxrstor64 160(%rdi)
     // Build IRETQ frame on the kernel stack
     pushq   $0x1B                       // SS  (user data segment, RPL=3)
     pushq   %rsi                        // RSP (user stack pointer)

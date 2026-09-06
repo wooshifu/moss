@@ -184,8 +184,8 @@ static SbiResult sbi_hart_start(u64 hartid, u64 start_addr, u64 opaque) noexcept
   }
 
   // Phase 1: Setup identity-mapped page tables + enable MMU
-  // setup_mmu() calls setup_kernel_page_tables() which fills the root table
-  // with 1GB gigapage leaf entries, then enable_mmu() writes satp with detected mode.
+  // setup_mmu() builds permission-separated blocks/pages, then enable_mmu()
+  // writes satp with the detected mode.
   // RISC-V has a single satp register, so identity map and high-half share the root.
   moss::boot::early_print("  Phase 1: page tables + MMU enable\n");
   auto mmu_result = ::moss::kernel::mm::setup_mmu();
@@ -205,7 +205,7 @@ static SbiResult sbi_hart_start(u64 hartid, u64 start_addr, u64 opaque) noexcept
 
   // Phase 3: Build high-half kernel page table
   // Maps physical 0-4GB at KERNEL_DIRECT_MAP_BASE.
-  // Sv39: KERNEL_DIRECT_MAP_BASE = 0xFFFFFFC000000000 (adds root[256..259] gigapages)
+  // Sv39: KERNEL_DIRECT_MAP_BASE = 0xFFFFFFC000000000 (uses root[256..259])
   // Sv48: KERNEL_DIRECT_MAP_BASE = 0xFFFF800000000000 (adds PGD→PUD, like ARM64)
   moss::boot::early_print("  Phase 3: high-half kernel mapping\n");
   auto high_result = ::moss::kernel::mm::PageTableManager::setup_kernel_high_half_tables();

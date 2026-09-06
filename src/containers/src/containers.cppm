@@ -1,5 +1,5 @@
 // MOSS Containers Module - High-Performance Kernel Data Structures
-// Provides lock-free queues, atomic types, per-CPU data, RCU structures,
+// Provides lock-free queues, atomic types, per-CPU data, locked owning containers,
 // slab allocator, and related utilities for kernel use.
 
 export module moss.containers;
@@ -7,6 +7,7 @@ export module moss.containers;
 import moss.intrinsics;
 import moss.std;
 import moss.types;
+import moss.smart_ptr;
 import moss.result;
 import moss.arch;
 import moss.abi;
@@ -829,86 +830,6 @@ public:
   }
 };
 
-// Simplified Per-CPU RCU callback system
-struct RcuCallback {
-  void (*callback)();
-  u64 grace_period;
-
-  RcuCallback() noexcept : callback(nullptr), grace_period(0) {}
-  RcuCallback(void (*func)(), u64 gp) noexcept : callback(func), grace_period(gp) {}
-};
-
-class PerCpuRcuCallbacks {
-private:
-  static constexpr moss::kernel::usize MAX_CALLBACKS = 1024;
-
-  struct CallbackArray {
-    RcuCallback callbacks[MAX_CALLBACKS];
-    AtomicCounter<moss::kernel::usize> head{0};
-    AtomicCounter<moss::kernel::usize> tail{0};
-
-    [[nodiscard]] bool enqueue(const RcuCallback &cb) noexcept {
-      moss::kernel::usize current_tail = tail.load(MemoryOrder::Relaxed);
-      moss::kernel::usize next_tail = (current_tail + 1) % MAX_CALLBACKS;
-
-      if (next_tail == head.load(MemoryOrder::Acquire)) {
-        return false;
-      }
-
-      callbacks[current_tail] = cb;
-      tail.store(next_tail, MemoryOrder::Release);
-      return true;
-    }
-
-    [[nodiscard]] bool dequeue(RcuCallback &cb) noexcept {
-      moss::kernel::usize current_head = head.load(MemoryOrder::Relaxed);
-
-      if (current_head == tail.load(MemoryOrder::Acquire)) {
-        return false;
-      }
-
-      cb = callbacks[current_head];
-      head.store((current_head + 1) % MAX_CALLBACKS, MemoryOrder::Release);
-      return true;
-    }
-  };
-
-  PerCpuData<CallbackArray> callback_arrays_;
-  PerCpuAtomicCounter<u64> grace_period_counter_;
-
-public:
-  constexpr PerCpuRcuCallbacks() noexcept = default;
-
-  [[nodiscard]] bool schedule_callback(void (*func)()) noexcept {
-    if (func == nullptr) {
-      return false;
-    }
-
-    u64 current_gp = grace_period_counter_.load_total();
-    RcuCallback callback(func, current_gp + 1);
-    return callback_arrays_.get_local().enqueue(callback);
-  }
-
-  void process_callbacks() noexcept {
-    u64 current_gp = grace_period_counter_.load_total();
-    auto &local_array = callback_arrays_.get_local();
-
-    RcuCallback callback;
-    while (local_array.dequeue(callback)) {
-      if (callback.grace_period <= current_gp) {
-        if (callback.callback != nullptr) {
-          callback.callback();
-        }
-      } else {
-        (void)local_array.enqueue(callback);
-        break;
-      }
-    }
-  }
-
-  void advance_grace_period() noexcept { (void)grace_period_counter_.fetch_add_local(1); }
-};
-
 // Per-CPU type aliases
 using PerCpuU32Counter = PerCpuAtomicCounter<u32>;
 using PerCpuU64Counter = PerCpuAtomicCounter<u64>;
@@ -920,262 +841,147 @@ using InterruptWorkQueue = PerCpuWorkQueue<InterruptId, 64>;
 } // namespace moss::kernel::containers
 
 // ============================================================================
-// RCU (Read-Copy-Update) protected data structures
+// Lock-protected owning data structures
 // ============================================================================
 export namespace moss::kernel::containers {
 
-// Deferred node deletion. Only an owning container may enqueue an unlinked node.
-// This queue does NOT provide a reader grace period; MOSS-006 tracks replacement
-// with locked owning containers and scoped borrowing before concurrent reclamation.
-//
-// Storage is at namespace scope with constinit to guarantee constant
-// initialization and avoid __cxa_guard_acquire/release runtime calls.
+// Lookup returns an independent value, never storage inside a node. For owned
+// pointees use shared_ptr values; raw pointer values remain externally owned.
+template <typename T> class Optional;
 
-struct RcuDeferredEntry {
-  void (*fn)(void *);
-  void *arg;
-  RcuDeferredEntry *next;
-
-  constexpr RcuDeferredEntry() noexcept : fn(nullptr), arg(nullptr), next(nullptr) {}
-};
-
-namespace rcu_detail {
-inline constexpr moss::kernel::usize RCU_POOL_SIZE = 512;
-
-struct alignas(16) RcuNodePool {
-  RcuDeferredEntry nodes[RCU_POOL_SIZE];
-  bool used[RCU_POOL_SIZE];
-  IrqSpinLock pool_lock;
-
-  constexpr RcuNodePool() noexcept : nodes{}, used{}, pool_lock{} {}
-};
-
-// All storage is constinit — zero/constant-initialized at load time,
-// no runtime guard needed.
-constinit inline RcuNodePool g_rcu_pool{};
-constinit inline RcuDeferredEntry *g_rcu_pending = nullptr;
-constinit inline moss::kernel::usize g_rcu_pending_count = 0;
-constinit inline IrqSpinLock g_rcu_lock{};
-} // namespace rcu_detail
-
-class RcuCallbackQueue {
-public:
-  static void enqueue(void (*fn)(void *), void *arg) noexcept {
-    auto *cb = alloc_node();
-    if (cb == nullptr) {
-      // Pool exhausted — drain completed callbacks to reclaim nodes, then retry.
-      process_callbacks();
-      cb = alloc_node();
-    }
-    if (cb == nullptr) {
-      // Still exhausted after draining.  Synchronous execution risks
-      // use-after-free if an RCU reader is active, but is the last resort
-      // to avoid leaking memory.  In practice this should not happen with
-      // a 512-entry pool unless the system is severely overloaded.
-      fn(arg);
-      return;
-    }
-    cb->fn = fn;
-    cb->arg = arg;
-    cb->next = nullptr;
-
-    LockGuard<IrqSpinLock> guard(rcu_detail::g_rcu_lock);
-    cb->next = rcu_detail::g_rcu_pending;
-    rcu_detail::g_rcu_pending = cb;
-    ++rcu_detail::g_rcu_pending_count;
-  }
-
-  static void process_callbacks() noexcept {
-    RcuDeferredEntry *list = nullptr;
-    {
-      LockGuard<IrqSpinLock> guard(rcu_detail::g_rcu_lock);
-      list = rcu_detail::g_rcu_pending;
-      rcu_detail::g_rcu_pending = nullptr;
-      rcu_detail::g_rcu_pending_count = 0;
-    }
-    while (list != nullptr) {
-      RcuDeferredEntry *next = list->next;
-      list->fn(list->arg);
-      free_node(list);
-      list = next;
-    }
-  }
-
-  [[nodiscard]] static moss::kernel::usize pending_count() noexcept { return rcu_detail::g_rcu_pending_count; }
-
-private:
-  static RcuDeferredEntry *alloc_node() noexcept {
-    LockGuard<IrqSpinLock> guard(rcu_detail::g_rcu_pool.pool_lock);
-    for (moss::kernel::usize i = 0; i < rcu_detail::RCU_POOL_SIZE; ++i) {
-      if (!rcu_detail::g_rcu_pool.used[i]) {
-        rcu_detail::g_rcu_pool.used[i] = true;
-        return &rcu_detail::g_rcu_pool.nodes[i];
-      }
-    }
-    return nullptr;
-  }
-
-  static void free_node(RcuDeferredEntry *cb) noexcept {
-    auto offset = static_cast<moss::kernel::usize>(cb - rcu_detail::g_rcu_pool.nodes);
-    if (offset < rcu_detail::RCU_POOL_SIZE) {
-      LockGuard<IrqSpinLock> guard(rcu_detail::g_rcu_pool.pool_lock);
-      rcu_detail::g_rcu_pool.used[offset] = false;
-    }
-  }
-};
-
-// Public API for draining RCU callbacks (called from scheduler/timer).
-inline void rcu_process_callbacks() noexcept { RcuCallbackQueue::process_callbacks(); }
-
-// RCU read-side critical section guard
-class RcuReadLock {
-private:
-  // Per-CPU read depth counter (replaces thread_local, unavailable in kernel)
-  static inline PerCpuData<u32> read_depth_{};
+// ponytail: one IRQ-safe lock per container; split locks only after contention measurements.
+// Scoped callbacks run under the lock: no blocking, reentry or escaping references.
+// Destructors and snapshot callbacks run after unlocking. Destroy the container
+// itself only after all operations on it have stopped.
+template <typename T> class LockedList {
+  struct Node {
+    Node *next{nullptr};
+    T data;
+    template <typename... Args> explicit Node(Args &&...args) : data(moss::forward<Args>(args)...) {}
+  };
+  Node *head_{nullptr};
+  usize size_{0};
+  mutable IrqSpinLock lock_{};
 
 public:
-  RcuReadLock() noexcept { enter_read_side(); }
-  ~RcuReadLock() noexcept { exit_read_side(); }
-
-  RcuReadLock(const RcuReadLock &) = delete;
-  RcuReadLock &operator=(const RcuReadLock &) = delete;
-  RcuReadLock(RcuReadLock &&) = delete;
-  RcuReadLock &operator=(RcuReadLock &&) = delete;
-
-private:
-  static void enter_read_side() noexcept {
-    ++read_depth_.get_local();
-    moss::kernel::arch::read_barrier();
-  }
-
-  static void exit_read_side() noexcept {
-    moss::kernel::arch::read_barrier();
-    --read_depth_.get_local();
-  }
-
-public:
-  static bool in_read_side() noexcept { return read_depth_.get_local() > 0; }
-};
-
-// Legacy RCU-named list node; the links publish addresses without owning them.
-template <typename T> struct RcuListNode {
-  AtomicPtr<RcuListNode<T>> next;
-  T data;
-
-  template <typename... Args>
-  constexpr RcuListNode(Args &&...args) noexcept(moss::is_nothrow_constructible_v<T, Args...>)
-      : next(nullptr), data(moss::forward<Args>(args)...) {}
-};
-
-// Legacy RCU-named owning list. Reader lifetime and concurrent unlink are not
-// yet safe (MOSS-006); non-owning atomic links alone do not provide RCU.
-template <typename T> class RcuList {
-private:
-  AtomicPtr<RcuListNode<T>> head_;
-  moss::kernel::containers::AtomicCounter<moss::kernel::usize> size_;
-
-public:
-  constexpr RcuList() noexcept : head_(nullptr), size_(0) {}
-
-  ~RcuList() noexcept { clear(); }
-
-  RcuList(const RcuList &) = delete;
-  RcuList &operator=(const RcuList &) = delete;
-  RcuList(RcuList &&) = delete;
-  RcuList &operator=(RcuList &&) = delete;
+  constexpr LockedList() noexcept = default;
+  ~LockedList() { clear(); }
+  LockedList(const LockedList &) = delete;
+  LockedList &operator=(const LockedList &) = delete;
 
   template <typename... Args> void push_front(Args &&...args) {
-    auto new_node = new RcuListNode<T>(moss::forward<Args>(args)...);
+    auto *node = new Node(moss::forward<Args>(args)...);
+    LockGuard<IrqSpinLock> guard(lock_);
+    node->next = head_;
+    head_ = node;
+    ++size_;
+  }
 
-    RcuListNode<T> *old_head = head_.load(MemoryOrder::Acquire);
-    do {
-      // Publishing a link does not transfer ownership of the old head: it
-      // remains reachable through next, including after a failed CAS retry.
-      new_node->next.store(old_head, MemoryOrder::Relaxed);
-    } while (!head_.compare_exchange_weak(old_head, new_node, MemoryOrder::AcqRel, MemoryOrder::Acquire));
+  // Test and publication are one transaction (e.g. rejecting overlapping VMAs).
+  template <typename Predicate, typename... Args> bool push_front_unless(Predicate conflicts, Args &&...args) {
+    auto node = make_unique<Node>(moss::forward<Args>(args)...);
+    bool inserted = true;
+    {
+      LockGuard<IrqSpinLock> guard(lock_);
+      for (auto *it = head_; it; it = it->next) {
+        if (conflicts(static_cast<const T &>(it->data))) {
+          inserted = false;
+          break;
+        }
+      }
+      if (inserted) {
+        node->next = head_;
+        head_ = node.release();
+        ++size_;
+      }
+    }
+    return inserted;
+  }
 
-    (void)size_.fetch_add(1, MemoryOrder::Relaxed);
+  template <typename Predicate> bool remove_if(Predicate pred) {
+    Node *removed = nullptr;
+    {
+      LockGuard<IrqSpinLock> guard(lock_);
+      for (auto **link = &head_; *link; link = &(*link)->next) {
+        if (pred(static_cast<const T &>((*link)->data))) {
+          removed = *link;
+          *link = removed->next;
+          --size_;
+          break;
+        }
+      }
+    }
+    delete removed;
+    return removed != nullptr;
   }
 
   bool remove(const T &value) {
-    RcuListNode<T> *prev = nullptr;
-    RcuListNode<T> *current = head_.load(MemoryOrder::Acquire);
+    return remove_if([&](const T &item) { return item == value; });
+  }
 
-    while (current != nullptr) {
-      if (current->data == value) {
-        RcuListNode<T> *next = current->next.load(MemoryOrder::Acquire);
+  template <typename Predicate> [[nodiscard]] Optional<T> find_if(Predicate pred) const {
+    LockGuard<IrqSpinLock> guard(lock_);
+    for (auto *node = head_; node; node = node->next)
+      if (pred(static_cast<const T &>(node->data)))
+        return node->data;
+    return {};
+  }
 
-        if (prev == nullptr) {
-          if (head_.compare_exchange_weak(current, next, MemoryOrder::AcqRel, MemoryOrder::Acquire)) {
-            (void)size_.fetch_sub(1, MemoryOrder::Relaxed);
-            schedule_rcu_delete(current);
-            return true;
-          }
-        } else {
-          prev->next.store(next, MemoryOrder::Release);
-          (void)size_.fetch_sub(1, MemoryOrder::Relaxed);
-          schedule_rcu_delete(current);
-          return true;
-        }
+  [[nodiscard]] Optional<T> find(const T &value) const {
+    return find_if([&](const T &item) { return item == value; });
+  }
+
+  template <typename Predicate, typename Func> bool update_if(Predicate pred, Func update) {
+    LockGuard<IrqSpinLock> guard(lock_);
+    for (auto *node = head_; node; node = node->next) {
+      if (pred(static_cast<const T &>(node->data))) {
+        update(node->data);
+        return true;
       }
-      prev = current;
-      current = current->next.load(MemoryOrder::Acquire);
     }
     return false;
   }
 
-  template <typename Predicate> [[nodiscard]] const T *find_if(Predicate pred) const {
-    RcuReadLock read_lock;
-
-    RcuListNode<T> *current = head_.load(MemoryOrder::Acquire);
-    while (current != nullptr) {
-      if (pred(current->data)) {
-        return &current->data;
-      }
-      current = current->next.load(MemoryOrder::Acquire);
-    }
-    return nullptr;
-  }
-
-  [[nodiscard]] const T *find(const T &value) const {
-    return find_if([&value](const T &item) { return item == value; });
-  }
-
   template <typename Func> void for_each(Func func) const {
-    RcuReadLock read_lock;
+    LockGuard<IrqSpinLock> guard(lock_);
+    for (auto *node = head_; node; node = node->next)
+      func(static_cast<const T &>(node->data));
+  }
 
-    RcuListNode<T> *current = head_.load(MemoryOrder::Acquire);
-    while (current != nullptr) {
-      func(current->data);
-      current = current->next.load(MemoryOrder::Acquire);
+  // O(n) temporary storage buys a stable iteration with no lock held by callers.
+  template <typename Func> void for_each_snapshot(Func func) const {
+    LockedList snapshot;
+    {
+      LockGuard<IrqSpinLock> guard(lock_);
+      auto **tail = &snapshot.head_;
+      for (auto *node = head_; node; node = node->next) {
+        *tail = new Node(node->data);
+        tail = &(*tail)->next;
+        ++snapshot.size_;
+      }
     }
+    for (auto *node = snapshot.head_; node; node = node->next)
+      func(static_cast<const T &>(node->data));
   }
 
-  [[nodiscard]] moss::kernel::usize size() const noexcept { return size_.load(MemoryOrder::Relaxed); }
-
-  [[nodiscard]] bool empty() const noexcept {
-    RcuReadLock read_lock;
-    return head_.load(MemoryOrder::Acquire) == nullptr;
+  [[nodiscard]] usize size() const noexcept {
+    LockGuard<IrqSpinLock> guard(lock_);
+    return size_;
   }
+  [[nodiscard]] bool empty() const noexcept { return size() == 0; }
 
   void clear() {
-    RcuListNode<T> *current = head_.exchange(nullptr, MemoryOrder::AcqRel);
-    size_.store(0, MemoryOrder::Relaxed);
-
-    while (current != nullptr) {
-      RcuListNode<T> *next = current->next.load(MemoryOrder::Relaxed);
-      schedule_rcu_delete(current);
-      current = next;
+    Node *nodes;
+    {
+      LockGuard<IrqSpinLock> guard(lock_);
+      nodes = head_;
+      head_ = nullptr;
+      size_ = 0;
     }
-  }
-
-private:
-  // Type-erased destructor for RcuListNode<T>.
-  static void destroy_node(void *ptr) noexcept { delete static_cast<RcuListNode<T> *>(ptr); }
-
-  static void schedule_rcu_delete(RcuListNode<T> *ptr) noexcept {
-    if (ptr != nullptr) {
-      RcuCallbackQueue::enqueue(&destroy_node, static_cast<void *>(ptr));
+    while (nodes) {
+      auto *next = nodes->next;
+      delete nodes;
+      nodes = next;
     }
   }
 };
@@ -1204,7 +1010,7 @@ struct WaitQueueEntry {
 // so it is implemented as bridge functions in the kernel module.
 class WaitQueue {
 private:
-  RcuList<WaitQueueEntry> waiters_;
+  LockedList<WaitQueueEntry> waiters_;
 
 public:
   constexpr WaitQueue() noexcept = default;
@@ -1218,10 +1024,7 @@ public:
   void add_waiter(void *thread, bool exclusive = false) { waiters_.push_front(WaitQueueEntry(thread, exclusive)); }
 
   // Remove a specific thread from the wait queue
-  void remove_waiter(void *thread) {
-    RcuReadLock lock;
-    waiters_.remove(WaitQueueEntry(thread));
-  }
+  void remove_waiter(void *thread) { waiters_.remove(WaitQueueEntry(thread)); }
 
   // Wake ALL waiters — iterates over every entry and calls func(void*).
   // This is the "thundering herd" path; prefer wake_one() when only
@@ -1270,108 +1073,167 @@ public:
   void clear() { waiters_.clear(); }
 };
 
-// RCU-protected hash map
-template <typename Key, typename Value, moss::kernel::usize BucketCount = 256> class RcuHashMap {
-private:
-  static_assert((BucketCount & (BucketCount - 1)) == 0, "BucketCount must be power of 2");
-  static constexpr moss::kernel::usize BUCKET_MASK = BucketCount - 1;
-
+// Node ownership, lookup copies and write serialization share one lock.
+template <typename Key, typename Value, usize BucketCount = 256> class LockedHashMap {
+  static_assert(BucketCount != 0 && (BucketCount & (BucketCount - 1)) == 0,
+                "BucketCount must be a nonzero power of two");
   struct Entry {
     Key key;
     Value value;
-
-    template <typename K, typename V>
-    Entry(K &&k,
-          V &&v) noexcept(moss::is_nothrow_constructible_v<Key, K &&> && moss::is_nothrow_constructible_v<Value, V &&>)
-        : key(moss::forward<K>(k)), value(moss::forward<V>(v)) {}
-
-    bool operator==(const Entry &other) const noexcept { return key == other.key; }
+    template <typename K, typename V> Entry(K &&k, V &&v) : key(moss::forward<K>(k)), value(moss::forward<V>(v)) {}
   };
+  struct Node {
+    Node *next{nullptr};
+    Entry entry;
+    template <typename K, typename V> Node(K &&k, V &&v) : entry(moss::forward<K>(k), moss::forward<V>(v)) {}
+  };
+  Node *buckets_[BucketCount]{};
+  usize size_{0};
+  mutable IrqSpinLock lock_{};
 
-  RcuList<Entry> buckets_[BucketCount];
-  moss::kernel::containers::AtomicCounter<moss::kernel::usize> size_;
-  mutable moss::kernel::containers::IrqSpinLock write_lock_;
-
-public:
-  constexpr RcuHashMap() noexcept : size_(0), write_lock_{} {}
-
-  template <typename K, typename V> void insert_or_update(K &&key, V &&value) {
-    moss::kernel::containers::LockGuard<moss::kernel::containers::IrqSpinLock> guard(write_lock_);
-
-    moss::kernel::usize bucket_idx = hash_key(key) & BUCKET_MASK;
-
-    bool replaced = false;
-    {
-      RcuReadLock read_lock;
-      const Entry *existing = buckets_[bucket_idx].find_if([&key](const Entry &entry) { return entry.key == key; });
-
-      if (existing != nullptr) {
-        buckets_[bucket_idx].remove(*existing);
-        replaced = true;
-      }
-    }
-
-    buckets_[bucket_idx].push_front(static_cast<K &&>(key), static_cast<V &&>(value));
-    if (!replaced) {
-      (void)size_.fetch_add(1, MemoryOrder::Relaxed);
-    }
-  }
-
-  template <typename K> [[nodiscard]] const Value *find(const K &key) const {
-    moss::kernel::usize bucket_idx = hash_key(key) & BUCKET_MASK;
-
-    const Entry *entry = buckets_[bucket_idx].find_if([&key](const Entry &e) { return e.key == key; });
-
-    return entry ? &entry->value : nullptr;
-  }
-
-  template <typename K> bool remove(const K &key) {
-    moss::kernel::containers::LockGuard<moss::kernel::containers::IrqSpinLock> guard(write_lock_);
-
-    moss::kernel::usize bucket_idx = hash_key(key) & BUCKET_MASK;
-
-    bool removed;
-    {
-      RcuReadLock read_lock;
-      removed = buckets_[bucket_idx].remove(Entry{key, Value{}});
-    }
-    if (removed) {
-      (void)size_.fetch_sub(1, MemoryOrder::Relaxed);
-    }
-    return removed;
-  }
-
-  [[nodiscard]] moss::kernel::usize size() const noexcept { return size_.load(MemoryOrder::Relaxed); }
-
-  [[nodiscard]] bool empty() const noexcept { return size() == 0; }
-
-  template <typename Func> void for_each(Func &&func) const {
-    for (moss::kernel::usize i = 0; i < BucketCount; ++i) {
-      buckets_[i].for_each([&func](const Entry &entry) {
-        struct KeyValue {
-          const Key &key;
-          const Value &value;
-        };
-        func(KeyValue{entry.key, entry.value});
-      });
-    }
-  }
-
-private:
-  template <typename K> [[nodiscard]] static moss::kernel::usize hash_key(const K &key) noexcept {
-    moss::kernel::usize hash = 2166136261U;
-    const u8 *data = reinterpret_cast<const u8 *>(&key);
-    for (moss::kernel::usize i = 0; i < sizeof(K); ++i) {
+  template <typename K> static usize bucket(const K &key) noexcept {
+    // Normalize lookup keys to the stored type before hashing their bytes.
+    Key stored_key = static_cast<Key>(key);
+    usize hash = 2166136261U;
+    auto *data = reinterpret_cast<const u8 *>(&stored_key);
+    for (usize i = 0; i < sizeof(Key); ++i) {
       hash ^= data[i];
       hash *= 16777619U;
     }
-    return hash;
+    return hash & (BucketCount - 1);
+  }
+
+public:
+  constexpr LockedHashMap() noexcept = default;
+  ~LockedHashMap() { clear(); }
+  LockedHashMap(const LockedHashMap &) = delete;
+  LockedHashMap &operator=(const LockedHashMap &) = delete;
+
+  template <typename K, typename V> void insert_or_update(K &&key, V &&value) {
+    auto *node = new Node(moss::forward<K>(key), moss::forward<V>(value));
+    Node *old = nullptr;
+    {
+      LockGuard<IrqSpinLock> guard(lock_);
+      auto **link = &buckets_[bucket(node->entry.key)];
+      while (*link && !((*link)->entry.key == node->entry.key))
+        link = &(*link)->next;
+      old = *link;
+      node->next = old ? old->next : nullptr;
+      *link = node;
+      if (!old)
+        ++size_;
+    }
+    delete old;
+  }
+
+  template <typename K> [[nodiscard]] Optional<Value> find(const K &key) const {
+    LockGuard<IrqSpinLock> guard(lock_);
+    for (auto *node = buckets_[bucket(key)]; node; node = node->next)
+      if (node->entry.key == key)
+        return node->entry.value;
+    return {};
+  }
+
+  // Factory/destruction run outside the lock; concurrent creators share the winner.
+  template <typename Factory> Value get_or_insert(const Key &key, Factory factory) {
+    if (auto found = find(key))
+      return *found;
+    auto *candidate = new Node(key, factory());
+    Value result;
+    {
+      LockGuard<IrqSpinLock> guard(lock_);
+      auto **link = &buckets_[bucket(key)];
+      while (*link && !((*link)->entry.key == key))
+        link = &(*link)->next;
+      if (!*link) {
+        *link = candidate;
+        candidate = nullptr;
+        ++size_;
+      }
+      result = (*link)->entry.value;
+    }
+    delete candidate;
+    return result;
+  }
+
+  template <typename K> [[nodiscard]] Optional<Value> extract(const K &key) {
+    Node *node = nullptr;
+    Optional<Value> result;
+    {
+      LockGuard<IrqSpinLock> guard(lock_);
+      auto **link = &buckets_[bucket(key)];
+      while (*link && !((*link)->entry.key == key))
+        link = &(*link)->next;
+      if (*link) {
+        node = *link;
+        *link = node->next;
+        --size_;
+        result.emplace(moss::move(node->entry.value));
+      }
+    }
+    delete node;
+    return result;
+  }
+
+  template <typename K> bool remove(const K &key) { return static_cast<bool>(extract(key)); }
+
+  [[nodiscard]] usize size() const noexcept {
+    LockGuard<IrqSpinLock> guard(lock_);
+    return size_;
+  }
+  [[nodiscard]] bool empty() const noexcept { return size() == 0; }
+
+  // Scoped callback: no blocking, reentry or retaining references to entries.
+  template <typename Func> void for_each(Func func) const {
+    LockGuard<IrqSpinLock> guard(lock_);
+    for (const auto *head : buckets_)
+      for (auto *node = head; node; node = node->next)
+        func(node->entry);
+  }
+
+  template <typename Func> void for_each_snapshot(Func func) const {
+    Node *snapshot = nullptr;
+    auto **tail = &snapshot;
+    {
+      LockGuard<IrqSpinLock> guard(lock_);
+      for (const auto *head : buckets_)
+        for (auto *node = head; node; node = node->next) {
+          *tail = new Node(node->entry.key, node->entry.value);
+          tail = &(*tail)->next;
+        }
+    }
+    while (snapshot) {
+      auto *next = snapshot->next;
+      func(static_cast<const Entry &>(snapshot->entry));
+      delete snapshot;
+      snapshot = next;
+    }
+  }
+
+  void clear() {
+    Node *nodes = nullptr;
+    {
+      LockGuard<IrqSpinLock> guard(lock_);
+      for (auto *&head : buckets_) {
+        while (head) {
+          auto *next = head->next;
+          head->next = nodes;
+          nodes = head;
+          head = next;
+        }
+      }
+      size_ = 0;
+    }
+    while (nodes) {
+      auto *next = nodes->next;
+      delete nodes;
+      nodes = next;
+    }
   }
 };
 
-// RCU type aliases
-using ProcessList = RcuList<moss::kernel::ProcessId>;
-using DeviceRegistry = RcuHashMap<moss::kernel::DeviceId, moss::kernel::VirtAddr>;
+using ProcessList = LockedList<moss::kernel::ProcessId>;
+using DeviceRegistry = LockedHashMap<moss::kernel::DeviceId, moss::kernel::VirtAddr>;
 
 } // namespace moss::kernel::containers
 
@@ -1957,7 +1819,7 @@ public:
 // Common type aliases
 namespace common_types {
 using ProcessQueue = SPSCQueue<ProcessId, 256>;
-using ProcessList = RcuList<ProcessId>;
+using ProcessList = LockedList<ProcessId>;
 using ProcessWorkQueue = PerCpuWorkQueue<ProcessId, 128>;
 using ProcessCounter = PerCpuAtomicCounter<u64>;
 
@@ -1965,11 +1827,11 @@ using PageQueue = SPSCQueue<PhysAddr, 1024>;
 using MemoryCounter = PerCpuAtomicCounter<usize>;
 
 using InterruptQueue = MPSCQueue<u8>;
-using DeviceRegistry = RcuHashMap<DeviceId, VirtAddr>;
+using DeviceRegistry = LockedHashMap<DeviceId, VirtAddr>;
 using InterruptCounter = PerCpuAtomicCounter<u64>;
 
 using MessageQueue = SPSCQueue<u64, 512>;
-using EndpointRegistry = RcuHashMap<EndpointId, ProcessId>;
+using EndpointRegistry = LockedHashMap<EndpointId, ProcessId>;
 
 struct SystemStats {
   u64 context_switches = 0;
@@ -1992,7 +1854,6 @@ struct ContainerConfig {
   static constexpr usize SLAB_NUM_CACHES = 32;
 
   static constexpr usize MAX_WORK_QUEUE_SIZE = 256;
-  static constexpr usize MAX_RCU_CALLBACKS = 1024;
 
   static constexpr bool ENABLE_STATISTICS = true;
   static constexpr bool ENABLE_DEBUG_CHECKS = false;

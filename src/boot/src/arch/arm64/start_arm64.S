@@ -254,7 +254,7 @@ el2_entry:
 // =============================================================================
 el1_entry:
     // Secondary CPUs must NOT re-run cold-boot initialization (BSS clear,
-    // MMU disable, etc.) because CPU 0 has already set up the system.
+    // relocations, etc.). C++ activates their per-CPU MMU using shared tables.
     // They only need a stack and then jump to secondary_cpu_park.
     cbnz    x19, secondary_el1_entry
 
@@ -324,7 +324,7 @@ bss_cleared:
 // =============================================================================
 //
 // Secondary CPUs arrive here after going through EL3→EL2→EL1 descent.
-// They must NOT touch BSS or MMU settings (CPU 0 already set up everything).
+// They must NOT clear BSS. C++ configures their MMU after CPU 0 publishes tables.
 // Each CPU gets a 32KB stack slice below _stack_top.
 // =============================================================================
 secondary_el1_entry:

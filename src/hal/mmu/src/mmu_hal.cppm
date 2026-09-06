@@ -166,11 +166,12 @@ inline constexpr u64 SW_COW = (1ULL << 8);
 namespace page_perms {
 
 #if defined(MOSS_ARCH_ARM64)
-inline constexpr u64 KERNEL_RO =
-    page_attr::VALID | page_attr::AF | page_attr::ATTR_NORMAL | page_attr::READONLY | page_attr::PXN | page_attr::XN;
+inline constexpr u64 KERNEL_RO = page_attr::VALID | page_attr::AF | page_attr::ATTR_NORMAL | page_attr::READONLY |
+                                 page_attr::PXN | page_attr::XN | (3ULL << 8);
 inline constexpr u64 KERNEL_RW =
-    page_attr::VALID | page_attr::AF | page_attr::ATTR_NORMAL | page_attr::PXN | page_attr::XN;
-inline constexpr u64 KERNEL_RX = page_attr::VALID | page_attr::AF | page_attr::ATTR_NORMAL | page_attr::READONLY;
+    page_attr::VALID | page_attr::AF | page_attr::ATTR_NORMAL | page_attr::PXN | page_attr::XN | (3ULL << 8);
+inline constexpr u64 KERNEL_RX =
+    page_attr::VALID | page_attr::AF | page_attr::ATTR_NORMAL | page_attr::READONLY | page_attr::XN | (3ULL << 8);
 inline constexpr u64 USER_RO =
     page_attr::VALID | page_attr::AF | page_attr::USER | page_attr::READONLY | page_attr::ATTR_NORMAL;
 inline constexpr u64 USER_RW = page_attr::VALID | page_attr::AF | page_attr::USER | page_attr::ATTR_NORMAL;
@@ -355,6 +356,10 @@ inline VoidResult enable_mmu(PhysAddr pgd_phys) noexcept {
 
 #elif defined(MOSS_ARCH_X86_64)
   // x86_64: MMU is always on in long mode; loading CR3 activates new tables
+  u64 cr0;
+  asm volatile("mov %%cr0, %0" : "=r"(cr0));
+  cr0 |= 1ULL << 16; // WP: supervisor stores must honor read-only mappings.
+  asm volatile("mov %0, %%cr0" ::"r"(cr0) : "memory");
   configure_address_space(pgd_phys);
 
 #elif defined(MOSS_ARCH_RISCV)
@@ -381,40 +386,6 @@ inline VoidResult enable_mmu(PhysAddr pgd_phys) noexcept {
   return ((satp >> 60) & 0xF) != 0; // non-zero mode = paging on
 #else
   return false;
-#endif
-}
-
-// ============================================================================
-// Early block mapping helpers — for initial 1GB identity mapping
-// ============================================================================
-
-/// Build a 1GB block descriptor for device memory.
-[[nodiscard]] constexpr u64 make_device_block(PhysAddr block_addr) noexcept {
-#if defined(MOSS_ARCH_ARM64)
-  return (block_addr & PTE_ADDR_MASK) | page_attr::VALID | page_attr::AF | page_attr::ATTR_DEVICE;
-#elif defined(MOSS_ARCH_X86_64)
-  return (block_addr & PTE_ADDR_MASK) | page_attr::VALID | page_attr::WRITABLE | page_attr::AF |
-         page_attr::ATTR_DEVICE | page_attr::HUGE_PAGE | page_attr::USER;
-#elif defined(MOSS_ARCH_RISCV)
-  // RISC-V: leaf PTE with R+W+A+D, no execute. PPN = phys_addr >> 12, stored at bits[53:10]
-  return ((block_addr >> 2) & PTE_ADDR_MASK) | page_attr::VALID | page_attr::AF | page_attr::DIRTY | page_attr::READ |
-         page_attr::WRITE | page_attr::GLOBAL;
-#endif
-}
-
-/// Build a 1GB block descriptor for normal (cacheable) memory.
-[[nodiscard]] constexpr u64 make_normal_block(PhysAddr block_addr) noexcept {
-#if defined(MOSS_ARCH_ARM64)
-  return (block_addr & PTE_ADDR_MASK) | page_attr::VALID | page_attr::AF | page_attr::ATTR_NORMAL |
-         (3ULL << 8); // Inner Shareable
-#elif defined(MOSS_ARCH_X86_64)
-  return (block_addr & PTE_ADDR_MASK) | page_attr::VALID | page_attr::WRITABLE | page_attr::AF |
-         page_attr::ATTR_NORMAL | page_attr::HUGE_PAGE | page_attr::USER;
-#elif defined(MOSS_ARCH_RISCV)
-  // RISC-V: leaf PTE with R+W+X+A+D. 1GB boot blocks cover both code and data,
-  // so EXECUTE is required for instruction fetch. Finer W^X comes later with 4KB pages.
-  return ((block_addr >> 2) & PTE_ADDR_MASK) | page_attr::VALID | page_attr::AF | page_attr::DIRTY | page_attr::READ |
-         page_attr::WRITE | page_attr::EXECUTE | page_attr::GLOBAL;
 #endif
 }
 

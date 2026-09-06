@@ -17,6 +17,7 @@ KERNEL_VMA = 0xFFFF800000000000;
 SECTIONS
 {
     . = ORIGIN(RAM);
+    _text_start = .; /* Boot code and ordinary text share the RX protection range. */
 
     .text.boot : {
         KEEP(*(.text.boot))
@@ -24,9 +25,9 @@ SECTIONS
     }
 
     .text : ALIGN(4K) {
-        _text_start = .;
         *(.text)
         *(.text.*)
+        . = ALIGN(4K);
         _text_end = .;
     }
 
@@ -34,6 +35,7 @@ SECTIONS
         _rodata_start = .;
         *(.rodata)
         *(.rodata.*)
+        . = ALIGN(4K);
         _rodata_end = .;
     }
 
