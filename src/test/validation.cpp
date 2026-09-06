@@ -8,6 +8,7 @@ import moss.mm;
 import moss.vfs;
 import moss.process;
 import moss.hal.uart;
+import moss.hal.mmu;
 import moss.logging;
 
 #include "framework/benchmark.hpp"
@@ -49,6 +50,149 @@ unsigned current_cpu() noexcept { return arch::get_current_cpu_id(); }
 
 namespace {
 constexpr usize page_size = moss::kernel::PAGE_SIZE;
+
+bool ram_contains(PhysAddr begin, PhysAddr end) {
+  const auto &info = moss::fdt::get_platform_info();
+  while (begin < end) {
+    PhysAddr next = begin;
+    for (u32 i = 0; i < info.memory_region_count; ++i) {
+      const auto &region = info.memory_regions[i];
+      if (region.base <= begin && region.base + region.size > next) {
+        next = region.base + region.size;
+      }
+    }
+    if (next == begin) {
+      return false;
+    }
+    begin = next;
+  }
+  return true;
+}
+
+u64 memory_hash(PhysAddr begin, usize size) {
+  u64 hash = 14695981039346656037ULL;
+  const auto *bytes = reinterpret_cast<volatile u8 *>(begin);
+  for (usize i = 0; i < size; ++i) {
+    hash = (hash ^ bytes[i]) * 1099511628211ULL;
+  }
+  return hash;
+}
+
+// Snapshot only immutable ownership data, not counters or arbitrary kernel BSS.
+// The suite has one userspace worker; other CPUs are online and idle.
+struct LayoutSnapshot {
+  struct Table {
+    PhysAddr address;
+    u64 hash;
+  } tables[128]{};
+  usize count = 0;
+  mm::PageFrameAllocator::MemoryStats pfa{};
+  u64 metadata_hash = 0;
+  u64 boot_tables_hash = 0;
+  bool valid = true;
+
+  static bool disjoint(PhysAddr begin, PhysAddr end, PhysAddr other, usize size) {
+    return !size || end <= other || begin >= other + size;
+  }
+
+  bool protect(PhysAddr address) {
+    for (usize i = 0; i < count; ++i) {
+      if (tables[i].address == address) {
+        return false; // Shared kernel tables are recorded only once.
+      }
+    }
+    namespace linker = moss::abi::linker;
+    if (!ut::expect(count < 128 && address && (address & (page_size - 1)) == 0 && address < 0x100000000ULL &&
+                    ram_contains(address, address + page_size) &&
+                    disjoint(address, address + page_size, linker::heap_start(), linker::heap_size()) &&
+                    disjoint(address, address + page_size, pfa.metadata_start, pfa.metadata_size))) {
+      valid = false;
+      return false;
+    }
+    if (address >= linker::kernel_end() && !ut::expect(mm::PageFrameAllocator::page_ref_get(address) > 0)) {
+      valid = false;
+      return false;
+    }
+    tables[count++] = {.address = address, .hash = memory_hash(address, page_size)};
+    return true;
+  }
+
+  void walk(PhysAddr root, unsigned levels) {
+    if (!protect(root)) {
+      return;
+    }
+    if (levels > 1) {
+      const auto *table = reinterpret_cast<const mm::PageTable *>(root);
+      for (const auto &entry : table->entries) {
+        if (entry.is_valid() && entry.is_table()) {
+          walk(entry.get_phys_addr(), levels - 1);
+        }
+      }
+    }
+  }
+
+  bool capture() {
+    namespace linker = moss::abi::linker;
+    using Tables = mm::PageTableManager;
+    pfa = mm::PageFrameAllocator::get_memory_stats();
+    if (!ut::expect(linker::bss_end() <= linker::heap_start() && linker::heap_start() < linker::heap_end() &&
+                    linker::heap_end() <= linker::pagetable_start() &&
+                    linker::pagetable_start() < linker::pagetable_end() &&
+                    linker::pagetable_end() <= linker::kernel_end() && pfa.metadata_start >= linker::kernel_end() &&
+                    pfa.metadata_start < 0x100000000ULL && pfa.metadata_size &&
+                    pfa.metadata_size <= 0x100000000ULL - pfa.metadata_start &&
+                    ((pfa.metadata_start | pfa.metadata_size) & (page_size - 1)) == 0 &&
+                    ram_contains(pfa.metadata_start, pfa.metadata_start + pfa.metadata_size))) {
+      return false;
+    }
+    const auto &info = moss::fdt::get_platform_info();
+    valid = ut::expect(disjoint(pfa.metadata_start, pfa.metadata_start + pfa.metadata_size, info.initrd_start,
+                                info.initrd_end - info.initrd_start));
+    for (u32 i = 0; i < info.reserved_region_count; ++i) {
+      const auto &region = info.reserved_regions[i];
+      valid =
+          ut::expect(disjoint(pfa.metadata_start, pfa.metadata_start + pfa.metadata_size, region.base, region.size)) &&
+          valid;
+    }
+    const unsigned levels = hal::mmu::g_mmu_mode == hal::mmu::MmuMode::Sv39 ? 3 : 4;
+    walk(Tables::get_physical_address(Tables::get_kernel_pgd()), levels);
+    walk(Tables::get_physical_address(Tables::get_kernel_high_pgd()), levels);
+    walk(moss::abi::bridge::get_current_pgd_phys(), levels);
+    // Include unused early-table slots too; heap must not borrow their storage.
+    for (usize i = 0;; ++i) {
+      auto *table = Tables::get_table_by_index(i);
+      if (!table) {
+        break;
+      }
+      (void)protect(Tables::get_physical_address(table));
+    }
+    metadata_hash = memory_hash(pfa.metadata_start, pfa.metadata_size);
+    boot_tables_hash = memory_hash(linker::pagetable_start(), linker::pagetable_size());
+    return valid;
+  }
+
+  bool excludes(PhysAddr begin, PhysAddr end) const {
+    if (!disjoint(begin, end, pfa.metadata_start, pfa.metadata_size)) {
+      return false;
+    }
+    for (usize i = 0; i < count; ++i) {
+      if (!disjoint(begin, end, tables[i].address, page_size)) {
+        return false;
+      }
+    }
+    return true;
+  }
+
+  void verify() const {
+    namespace linker = moss::abi::linker;
+    ut::expect(memory_hash(pfa.metadata_start, pfa.metadata_size) == metadata_hash);
+    ut::expect(memory_hash(linker::pagetable_start(), linker::pagetable_size()) == boot_tables_hash);
+    for (usize i = 0; i < count; ++i) {
+      ut::expect(memory_hash(tables[i].address, page_size) == tables[i].hash);
+    }
+  }
+};
+
 char selection[81]{};
 const char *active_case = nullptr;
 bool failed = false;
@@ -268,6 +412,159 @@ void reuse_pages() {
   ut::expect(!invalid_address && invalid_address.error() == mm::PageAllocError::InvalidAddress);
 }
 
+void page_release_contract() {
+  using Pfa = mm::PageFrameAllocator;
+  const auto before = Pfa::get_memory_stats();
+  for (usize order = 0; order <= MAX_ORDER; ++order) {
+    auto allocation = Pfa::allocate_pages(order);
+    if (!ut::expect(static_cast<bool>(allocation))) {
+      return;
+    }
+    const usize pages_owned = usize{1} << order;
+    const auto live = Pfa::get_memory_stats();
+    ut::expect((*allocation & ((page_size << order) - 1)) == 0);
+    ut::expect(live.used_pages == before.used_pages + pages_owned);
+    ut::expect(live.free_pages + pages_owned == before.free_pages);
+    for (usize i = 0; i < pages_owned; ++i) {
+      *reinterpret_cast<volatile u64 *>(*allocation + i * page_size) = *allocation ^ i;
+      ut::expect(Pfa::page_ref_get(*allocation + i * page_size) == 1);
+    }
+    const usize wrong = order == 0 ? 1 : order - 1;
+    auto wrong_order = Pfa::free_pages(*allocation, wrong);
+    if (!ut::expect(!wrong_order)) {
+      return; // A broken free may already have mutated part of the live block.
+    }
+    ut::expect(wrong_order.error() == mm::PageAllocError::InvalidOrder);
+    ut::expect(!Pfa::free_pages(*allocation, MAX_ORDER + 1));
+    ut::expect(!Pfa::free_pages(*allocation + 1, order));
+    if (order != 0) {
+      ut::expect(!Pfa::free_pages(*allocation + page_size, 0));
+      // The last page being shared must reject the whole free, not partially
+      // release preceding pages before discovering the outstanding reference.
+      const auto last = *allocation + (pages_owned - 1) * page_size;
+      Pfa::page_ref_inc(last);
+      auto shared = Pfa::free_pages(*allocation, order);
+      if (!ut::expect(!shared)) {
+        return;
+      }
+      ut::expect(shared.error() == mm::PageAllocError::PageInUse);
+      ut::expect(Pfa::page_ref_dec(last) == 1);
+    }
+    ut::expect(Pfa::get_memory_stats().free_pages == live.free_pages);
+    ut::expect(Pfa::get_memory_stats().used_pages == live.used_pages);
+    for (usize i = 0; i < pages_owned; ++i) {
+      ut::expect(*reinterpret_cast<volatile u64 *>(*allocation + i * page_size) == (*allocation ^ i));
+      ut::expect(Pfa::page_ref_get(*allocation + i * page_size) == 1);
+    }
+    ut::expect(static_cast<bool>(Pfa::free_pages(*allocation, order)));
+    ut::expect(!Pfa::free_pages(*allocation, order));
+    ut::expect(Pfa::page_ref_get(*allocation) == 0);
+    ut::expect(Pfa::get_memory_stats().free_pages == before.free_pages);
+    ut::expect(Pfa::get_memory_stats().used_pages == before.used_pages);
+  }
+  ut::expect(!Pfa::free_pages(moss::abi::linker::heap_start(), 0));
+  // kernel_end is exclusive and may now be usable when metadata is elsewhere.
+  ut::expect(!Pfa::free_pages(moss::abi::linker::kernel_end() - page_size, 0));
+  ut::expect(!Pfa::free_pages(~PhysAddr{0} & ~(page_size - 1), 0));
+  const auto &info = moss::fdt::get_platform_info();
+  if (info.initrd_end > info.initrd_start) {
+    ut::expect(!Pfa::free_pages(info.initrd_start & ~(page_size - 1), 0));
+  }
+  for (u32 i = 0; i < info.reserved_region_count; ++i) {
+    ut::expect(!Pfa::free_pages(info.reserved_regions[i].base & ~(page_size - 1), 0));
+  }
+  ut::expect(Pfa::get_memory_stats().free_pages == before.free_pages);
+  ut::expect(Pfa::get_memory_stats().used_pages == before.used_pages);
+}
+
+void page_exhaustion() {
+  using Pfa = mm::PageFrameAllocator;
+  LayoutSnapshot layout;
+  if (!layout.capture()) {
+    return;
+  }
+  struct Owned {
+    PhysAddr address;
+    usize order;
+  };
+  // Store only block descriptors, not one pointer per page. This covers the
+  // current below-4-GiB allocator without consuming the test worker's stack.
+  static Owned owned[2048]{};
+  const auto &info = moss::fdt::get_platform_info();
+  auto initrd_hash = [&] {
+    u64 hash = 14695981039346656037ULL;
+    for (PhysAddr address = info.initrd_start; address < info.initrd_end; ++address) {
+      hash = (hash ^ *reinterpret_cast<volatile u8 *>(address)) * 1099511628211ULL;
+    }
+    return hash;
+  };
+  const auto before = Pfa::get_memory_stats();
+  const u64 original_hash = initrd_hash();
+  usize count = 0;
+  usize pages_owned = 0;
+  bool valid = true;
+  for (usize order_plus_one = MAX_ORDER + 1; order_plus_one != 0 && valid; --order_plus_one) {
+    const usize order = order_plus_one - 1;
+    for (;;) {
+      auto allocation = Pfa::allocate_pages(order);
+      if (!allocation) {
+        valid = allocation.error() == mm::PageAllocError::OutOfMemory;
+        break;
+      }
+      if (count == 2048) {
+        ut::expect(static_cast<bool>(Pfa::free_pages(*allocation, order)));
+        valid = false;
+        break;
+      }
+      const PhysAddr begin = *allocation;
+      const PhysAddr end = begin + (page_size << order);
+      valid = valid && (begin & ((page_size << order) - 1)) == 0 && begin >= moss::abi::linker::kernel_end();
+      valid = valid && ram_contains(begin, end) && layout.excludes(begin, end) &&
+              (end <= info.initrd_start || begin >= info.initrd_end);
+      for (u32 i = 0; i < info.reserved_region_count; ++i) {
+        const auto &region = info.reserved_regions[i];
+        valid = valid && (end <= region.base || begin >= region.base + region.size);
+      }
+      for (usize i = 0; i < count; ++i) {
+        valid = valid && (end <= owned[i].address || begin >= owned[i].address + (page_size << owned[i].order));
+      }
+      owned[count++] = {.address = begin, .order = order};
+      if (!valid) {
+        break; // Never write into a block found to overlap reserved or live memory.
+      }
+      pages_owned += usize{1} << order;
+      for (PhysAddr page = begin; page < end; page += page_size) {
+        *reinterpret_cast<volatile u64 *>(page) = page ^ 0x5eed1234ULL;
+        *reinterpret_cast<volatile u64 *>(page + page_size - sizeof(u64)) = ~page;
+      }
+    }
+  }
+  ut::expect(valid && pages_owned == before.free_pages);
+  ut::expect(Pfa::get_memory_stats().free_pages == 0);
+  ut::expect(Pfa::get_memory_stats().used_pages == before.used_pages + pages_owned);
+  ut::expect(!Pfa::allocate_pages(0));
+  ut::expect(initrd_hash() == original_hash);
+  while (count) {
+    const auto &block = owned[--count];
+    if (valid) {
+      for (PhysAddr page = block.address; page < block.address + (page_size << block.order); page += page_size) {
+        valid = valid && *reinterpret_cast<volatile u64 *>(page) == (page ^ 0x5eed1234ULL) &&
+                *reinterpret_cast<volatile u64 *>(page + page_size - sizeof(u64)) == ~page;
+      }
+    }
+    ut::expect(static_cast<bool>(Pfa::free_pages(block.address, block.order)));
+  }
+  ut::expect(valid);
+  ut::expect(Pfa::get_memory_stats().free_pages == before.free_pages);
+  ut::expect(Pfa::get_memory_stats().used_pages == before.used_pages);
+  auto merged = Pfa::allocate_pages(MAX_ORDER);
+  if (ut::expect(static_cast<bool>(merged))) {
+    ut::expect(static_cast<bool>(Pfa::free_pages(*merged, MAX_ORDER)));
+  }
+  ut::expect(Pfa::get_memory_stats().free_pages == before.free_pages);
+  layout.verify();
+}
+
 void *fd_table() {
   auto *thread = process::CfsScheduler::get_current_task();
   auto *proc = process::g_process_manager->find_process(thread->owner_pid);
@@ -383,6 +680,210 @@ void heap_bounds() {
   ut::expect(!mm::RuntimeHeapAllocator::expand_heap(1ULL << 40));
   ut::expect(before == mm::RuntimeHeapAllocator::get_heap_end());
 }
+void heap_alignment() {
+  const usize alignments[] = {1, 2, 4, 8, 16, 32, 64, 256, 4096};
+  const auto before = mm::RuntimeHeapAllocator::get_heap_stats().allocated_bytes;
+  for (usize alignment : alignments) {
+    auto allocation = mm::RuntimeHeapAllocator::allocate_aligned(73, alignment);
+    if (!ut::expect(static_cast<bool>(allocation))) {
+      return;
+    }
+    auto address = reinterpret_cast<usize>(*allocation);
+    const bool aligned = ut::expect(address % alignment == 0);
+    auto *bytes = static_cast<volatile u8 *>(*allocation);
+    bytes[0] = 0x35;
+    bytes[72] = 0x79;
+    ut::expect(bytes[0] == 0x35 && bytes[72] == 0x79);
+    ut::expect(static_cast<bool>(mm::RuntimeHeapAllocator::deallocate(*allocation, 73)));
+    if (!aligned) {
+      return;
+    }
+  }
+  ut::expect(mm::RuntimeHeapAllocator::get_heap_stats().allocated_bytes == before);
+}
+void heap_invalid_requests() {
+  using Heap = mm::RuntimeHeapAllocator;
+  const auto before = Heap::get_heap_stats();
+  const usize maximum = ~usize{0};
+  ut::expect(!Heap::allocate(0));
+  ut::expect(!Heap::allocate_aligned(16, 0));
+  ut::expect(!Heap::allocate_aligned(16, 3));
+  ut::expect(!Heap::allocate(maximum));
+  ut::expect(!Heap::allocate(maximum - 31));
+  ut::expect(!Heap::allocate_aligned(16, maximum));
+  ut::expect(!Heap::allocate_aligned(16, usize{1} << 63));
+  ut::expect(!Heap::expand_heap(0));
+  ut::expect(!Heap::expand_heap(maximum));
+  ut::expect(!Heap::expand_heap(maximum - page_size));
+  const auto after = Heap::get_heap_stats();
+  ut::expect(after.total_heap_size == before.total_heap_size);
+  ut::expect(after.allocated_bytes == before.allocated_bytes);
+  ut::expect(after.largest_free_block == before.largest_free_block);
+}
+void heap_release_contract() {
+  using Heap = mm::RuntimeHeapAllocator;
+  const auto before = Heap::get_heap_stats().allocated_bytes;
+  auto allocation = Heap::allocate_aligned(73, page_size);
+  if (!ut::expect(static_cast<bool>(allocation))) {
+    return;
+  }
+  auto *bytes = static_cast<volatile u8 *>(*allocation);
+  bytes[0] = 0x39;
+  bytes[72] = 0x81;
+  const auto live = Heap::get_heap_stats().allocated_bytes;
+  ut::expect(static_cast<bool>(Heap::deallocate(nullptr, 0)));
+  ut::expect(!Heap::deallocate(reinterpret_cast<void *>(Heap::get_heap_start()), 0));
+  ut::expect(!Heap::deallocate(reinterpret_cast<void *>(Heap::get_heap_end()), 0));
+  ut::expect(!Heap::deallocate(static_cast<u8 *>(*allocation) + 1, 0));
+  ut::expect(!Heap::deallocate(static_cast<u8 *>(*allocation) + 16, 0));
+  if (!ut::expect(!Heap::deallocate(*allocation, 72))) {
+    return; // A broken sized free may already have released the allocation.
+  }
+  ut::expect(Heap::get_heap_stats().allocated_bytes == live);
+  ut::expect(bytes[0] == 0x39 && bytes[72] == 0x81);
+  ut::expect(static_cast<bool>(Heap::deallocate(*allocation, 73)));
+  ut::expect(!Heap::deallocate(*allocation, 0));
+  ut::expect(Heap::get_heap_stats().allocated_bytes == before);
+}
+void heap_reuse() {
+  using Heap = mm::RuntimeHeapAllocator;
+  struct Slot {
+    void *pointer = nullptr;
+    usize size = 0;
+    u8 pattern = 0;
+  };
+  Slot slots[32]{};
+  const auto before = Heap::get_heap_stats().allocated_bytes;
+  u32 seed = 0x5eed;
+  bool valid = true;
+  for (usize step = 0; step < 4096 && valid; ++step) {
+    seed = seed * 1664525U + 1013904223U;
+    auto &slot = slots[(seed >> 16) % 32];
+    if (slot.pointer) {
+      auto *bytes = static_cast<volatile u8 *>(slot.pointer);
+      for (usize i = 0; i < slot.size; ++i) {
+        valid = valid && bytes[i] == slot.pattern;
+      }
+      valid = valid && static_cast<bool>(Heap::deallocate(slot.pointer, slot.size));
+      slot.pointer = nullptr;
+    } else {
+      slot.size = 1 + (seed >> 8) % 1024;
+      const usize alignment = usize{1} << (3 + (seed >> 24) % 10);
+      auto allocation = Heap::allocate_aligned(slot.size, alignment);
+      if (!ut::expect(static_cast<bool>(allocation))) {
+        valid = false;
+        break;
+      }
+      slot.pointer = *allocation;
+      slot.pattern = static_cast<u8>(step);
+      const auto address = reinterpret_cast<usize>(slot.pointer);
+      valid = valid && address % alignment == 0;
+      for (const auto &other : slots) {
+        if (other.pointer && &other != &slot) {
+          const auto other_address = reinterpret_cast<usize>(other.pointer);
+          valid = valid && (address + slot.size <= other_address || other_address + other.size <= address);
+        }
+      }
+      auto *bytes = static_cast<volatile u8 *>(slot.pointer);
+      for (usize i = 0; i < slot.size; ++i) {
+        bytes[i] = slot.pattern;
+      }
+    }
+  }
+  for (const auto &slot : slots) {
+    if (slot.pointer) {
+      auto *bytes = static_cast<volatile u8 *>(slot.pointer);
+      for (usize i = 0; i < slot.size; ++i) {
+        valid = valid && bytes[i] == slot.pattern;
+      }
+      ut::expect(static_cast<bool>(Heap::deallocate(slot.pointer, slot.size)));
+    }
+  }
+  ut::expect(valid);
+  ut::expect(Heap::get_heap_stats().allocated_bytes == before);
+}
+void heap_exhaustion() {
+  using Heap = mm::RuntimeHeapAllocator;
+  constexpr usize chunk_size = 64 * 1024;
+  void *owned[128]{};
+  auto sentinel = mm::PageFrameAllocator::allocate_pages(0);
+  if (!ut::expect(static_cast<bool>(sentinel))) {
+    return;
+  }
+  auto *page = reinterpret_cast<volatile u64 *>(*sentinel);
+  for (usize i = 0; i < page_size / sizeof(u64); ++i) {
+    page[i] = 0x123456789abcdef0ULL ^ i;
+  }
+  LayoutSnapshot layout;
+  if (!layout.capture()) {
+    ut::expect(static_cast<bool>(mm::PageFrameAllocator::free_pages(*sentinel, 0)));
+    return;
+  }
+  const auto before = Heap::get_heap_stats().allocated_bytes;
+  const auto free_pages = mm::PageFrameAllocator::get_memory_stats().free_pages;
+  // Hold these together to write beyond the old 4/64/256-KiB boundaries.
+  constexpr usize probes[] = {4 * 1024, 64 * 1024, 256 * 1024};
+  usize probe_count = 0;
+  for (usize size : probes) {
+    auto allocation = Heap::allocate(size);
+    if (!ut::expect(static_cast<bool>(allocation))) {
+      break;
+    }
+    owned[probe_count++] = *allocation;
+    auto *bytes = static_cast<volatile u8 *>(*allocation);
+    for (usize i = 0; i < size; ++i) {
+      bytes[i] = 0xa5;
+    }
+    layout.verify();
+  }
+  while (probe_count) {
+    --probe_count;
+    ut::expect(static_cast<bool>(Heap::deallocate(owned[probe_count], probes[probe_count])));
+  }
+  usize count = 0;
+  bool exhausted = false;
+  bool valid = true;
+  while (count < 128) {
+    auto allocation = Heap::allocate(chunk_size);
+    if (!allocation) {
+      exhausted = allocation.error() == mm::HeapAllocError::OutOfMemory;
+      break;
+    }
+    owned[count++] = *allocation;
+    const auto address = reinterpret_cast<usize>(*allocation);
+    valid =
+        valid && address >= moss::abi::linker::heap_start() && address + chunk_size <= moss::abi::linker::heap_end();
+    auto *bytes = static_cast<volatile u8 *>(*allocation);
+    for (usize i = 0; i < chunk_size; ++i) {
+      bytes[i] = static_cast<u8>(count);
+    }
+  }
+  ut::expect(exhausted && count > 0);
+  ut::expect(Heap::get_heap_end() == moss::abi::linker::heap_end());
+  ut::expect(!Heap::expand_heap(page_size));
+  layout.verify();
+  while (count) {
+    auto *bytes = static_cast<volatile u8 *>(owned[count - 1]);
+    for (usize i = 0; i < chunk_size; ++i) {
+      valid = valid && bytes[i] == static_cast<u8>(count);
+    }
+    ut::expect(static_cast<bool>(Heap::deallocate(owned[--count], chunk_size)));
+  }
+  for (usize i = 0; i < page_size / sizeof(u64); ++i) {
+    valid = valid && page[i] == (0x123456789abcdef0ULL ^ i);
+  }
+  ut::expect(valid);
+  ut::expect(Heap::get_heap_stats().allocated_bytes == before);
+  ut::expect(mm::PageFrameAllocator::get_memory_stats().free_pages == free_pages);
+  layout.verify();
+  ut::expect(static_cast<bool>(mm::PageFrameAllocator::free_pages(*sentinel, 0)));
+  // A large allocation after release requires the split blocks to coalesce.
+  auto reused = Heap::allocate(1024 * 1024);
+  if (ut::expect(static_cast<bool>(reused))) {
+    ut::expect(static_cast<bool>(Heap::deallocate(*reused, 0)));
+  }
+  ut::expect(Heap::get_heap_stats().allocated_bytes == before);
+}
 void failing_case() { ut::expect(false); }
 [[noreturn]] void panic_case() {
   Event("fatal").str("case", active_case).str("kind", "panic").send();
@@ -401,6 +902,17 @@ void declare_cases() {
   ut::register_suite("mm", [] {
     ut::register_test("orders_alignment", pages);
     ut::register_test("reuse", reuse_pages);
+  });
+  ut::register_suite("pfa", [] {
+    ut::register_test("release_contract", page_release_contract);
+    ut::register_test("exhaustion", page_exhaustion);
+  });
+  ut::register_suite("heap", [] {
+    ut::register_test("alignment", heap_alignment);
+    ut::register_test("invalid_requests", heap_invalid_requests);
+    ut::register_test("release_contract", heap_release_contract);
+    ut::register_test("reuse", heap_reuse);
+    ut::register_test("exhaustion", heap_exhaustion);
   });
   ut::register_suite("vfs", [] {
     ut::register_test("read_position_eof", file_read);

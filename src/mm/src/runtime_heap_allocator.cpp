@@ -1,5 +1,5 @@
 // 运行时堆分配器实现
-// 提供动态内存分配功能，基于虚拟内存和物理页面管理
+// 从链接脚本预留且已映射的 arena 分配；不借用或释放 PFA 的页面。
 // Module implementation unit
 
 module;
@@ -20,24 +20,27 @@ usize RuntimeHeapAllocator::total_allocations_ = 0;
 
 // 初始化堆分配器
 HeapAllocVoidResult RuntimeHeapAllocator::initialize_heap(VirtAddr heap_start, usize initial_size) noexcept {
+  containers::LockGuard<containers::IrqSpinLock> guard(lock_);
   if (initialized_) {
     return HeapAllocVoidResult{};
   }
 
-  // 对齐堆起始地址和大小到页面边界
-  heap_start_ = heap_start & ~(PAGE_SIZE - 1);
-  usize aligned_size = align_size(initial_size, PAGE_SIZE);
-  heap_end_ = heap_start_ + aligned_size;
-  heap_limit_ = moss::abi::linker::heap_end();
-  if (heap_end_ < heap_start_ || heap_end_ > heap_limit_) {
+  const auto limit = moss::abi::linker::heap_end();
+  if (heap_start != moss::abi::linker::heap_start() || (heap_start & (PAGE_SIZE - 1)) != 0 || limit <= heap_start ||
+      limit > 0x100000000ULL || (limit & (PAGE_SIZE - 1)) != 0) {
+    return HeapAllocVoidResult{HeapAllocError::InvalidAddress};
+  }
+  if (initial_size == 0) {
+    return HeapAllocVoidResult{HeapAllocError::InvalidSize};
+  }
+  // Bound before rounding or addition. The reserved arena is below 4 GiB.
+  if (initial_size > limit - heap_start) {
     return HeapAllocVoidResult{HeapAllocError::OutOfMemory};
   }
-
-  // 映射初始堆页面
-  auto map_result = map_heap_pages(heap_start_, aligned_size);
-  if (!map_result) {
-    return HeapAllocVoidResult{map_result.error()};
-  }
+  const usize aligned_size = align_size(initial_size, PAGE_SIZE);
+  heap_start_ = heap_start;
+  heap_end_ = heap_start + aligned_size;
+  heap_limit_ = limit;
 
   // 创建初始空闲块
   FreeBlock *initial_block = reinterpret_cast<FreeBlock *>(heap_start_);
@@ -58,74 +61,81 @@ HeapAllocResult<void *> RuntimeHeapAllocator::allocate(usize size) noexcept {
 
 // 分配对齐内存块
 HeapAllocResult<void *> RuntimeHeapAllocator::allocate_aligned(usize size, usize alignment) noexcept {
+  containers::LockGuard<containers::IrqSpinLock> guard(lock_);
   if (!initialized_) {
     return HeapAllocResult<void *>{HeapAllocError::InitializationFailed};
   }
-  containers::LockGuard<containers::IrqSpinLock> guard(lock_);
-
-  if (size == 0) {
+  if (size == 0 || alignment == 0 || (alignment & (alignment - 1)) != 0) {
     return HeapAllocResult<void *>{HeapAllocError::InvalidSize};
   }
 
-  // 计算实际需要的大小（包括头部和对齐）
-  usize header_size = sizeof(AllocatedBlock);
-  usize aligned_size = align_size(size + header_size, alignment);
-
-  // 确保最小块大小
-  if (aligned_size < MIN_BLOCK_SIZE) {
-    aligned_size = MIN_BLOCK_SIZE;
+  const usize capacity = heap_limit_ - heap_start_;
+  if (size > capacity - sizeof(AllocatedBlock) || alignment > heap_limit_) {
+    return HeapAllocResult<void *>{HeapAllocError::OutOfMemory};
+  }
+  if (alignment < BLOCK_ALIGN) {
+    alignment = BLOCK_ALIGN;
+  }
+  const usize payload_size = align_size(size, BLOCK_ALIGN);
+  const auto first_payload = align_size(heap_start_ + sizeof(AllocatedBlock), alignment);
+  if (first_payload > heap_limit_ || payload_size > heap_limit_ - first_payload) {
+    return HeapAllocResult<void *>{HeapAllocError::OutOfMemory};
   }
 
   // 查找合适的空闲块
-  FreeBlock *suitable_block = find_suitable_block(aligned_size);
+  FreeBlock *suitable_block = find_suitable_block(payload_size, alignment);
   if (suitable_block == nullptr) {
-    // 尝试扩展堆
-    usize expand_size = align_size(aligned_size * 2, PAGE_SIZE);
-    auto expand_result = expand_heap(expand_size);
+    // Include worst-case leading padding, but never grow outside the arena.
+    const usize remaining = heap_limit_ - heap_end_;
+    usize expand_size = align_size(payload_size + sizeof(AllocatedBlock) + alignment - BLOCK_ALIGN, PAGE_SIZE);
+    if (expand_size > remaining) {
+      expand_size = remaining;
+    }
+    if (expand_size == 0) {
+      return HeapAllocResult<void *>{HeapAllocError::OutOfMemory};
+    }
+    auto expand_result = expand_heap_locked(expand_size);
     if (!expand_result) {
       return HeapAllocResult<void *>{HeapAllocError::OutOfMemory};
     }
 
     // 再次尝试查找
-    suitable_block = find_suitable_block(aligned_size);
+    suitable_block = find_suitable_block(payload_size, alignment);
     if (suitable_block == nullptr) {
       return HeapAllocResult<void *>{HeapAllocError::OutOfMemory};
     }
   }
 
-  // 从空闲列表移除块
+  const auto block_start = reinterpret_cast<VirtAddr>(suitable_block);
+  const auto user_address = align_size(block_start + sizeof(AllocatedBlock), alignment);
+  const usize required_size = user_address - block_start + payload_size;
   remove_from_free_list(suitable_block);
+  split_block(suitable_block, required_size);
 
-  // 如果块太大，分割它
-  if (suitable_block->size > aligned_size + MIN_BLOCK_SIZE) {
-    split_block(suitable_block, aligned_size);
-  }
-
-  // 将空闲块转换为已分配块
-  AllocatedBlock *alloc_block = reinterpret_cast<AllocatedBlock *>(suitable_block);
-  new (alloc_block) AllocatedBlock(suitable_block->size);
+  // The header immediately precedes the aligned payload and owns its padding.
+  const usize block_size = suitable_block->size;
+  auto *alloc_block = reinterpret_cast<AllocatedBlock *>(user_address - sizeof(AllocatedBlock));
+  new (alloc_block) AllocatedBlock(block_size, block_start, size);
 
   // 更新统计信息
   allocated_bytes_ += alloc_block->size;
   total_allocations_++;
 
-  // 返回用户数据指针（跳过头部）
-  void *user_ptr = reinterpret_cast<char *>(alloc_block) + sizeof(AllocatedBlock);
-  return HeapAllocResult<void *>{user_ptr};
+  return HeapAllocResult<void *>{reinterpret_cast<void *>(user_address)};
 }
 
 // 释放内存块
-HeapAllocVoidResult RuntimeHeapAllocator::deallocate(void *ptr, [[maybe_unused]] usize size) noexcept {
+HeapAllocVoidResult RuntimeHeapAllocator::deallocate(void *ptr, usize size) noexcept {
+  containers::LockGuard<containers::IrqSpinLock> guard(lock_);
   if (!initialized_) {
     return HeapAllocVoidResult{HeapAllocError::InitializationFailed};
   }
-  containers::LockGuard<containers::IrqSpinLock> guard(lock_);
-
   if (ptr == nullptr) {
     return HeapAllocVoidResult{}; // 释放nullptr是合法的
   }
 
-  if (!is_heap_address(ptr)) {
+  const auto address = reinterpret_cast<VirtAddr>(ptr);
+  if (address < heap_start_ + sizeof(AllocatedBlock) || address >= heap_end_ || (address & (BLOCK_ALIGN - 1)) != 0) {
     return HeapAllocVoidResult{HeapAllocError::InvalidAddress};
   }
 
@@ -136,13 +146,26 @@ HeapAllocVoidResult RuntimeHeapAllocator::deallocate(void *ptr, [[maybe_unused]]
   if (!alloc_block->is_valid()) {
     return HeapAllocVoidResult{HeapAllocError::HeapCorruption};
   }
+  const auto start = alloc_block->block_start;
+  const usize block_size = alloc_block->size;
+  if (start < heap_start_ || start > address - sizeof(AllocatedBlock) || (start & (BLOCK_ALIGN - 1)) != 0 ||
+      block_size > heap_end_ - start || (block_size & (BLOCK_ALIGN - 1)) != 0 || block_size < address - start ||
+      alloc_block->requested_size == 0 || alloc_block->requested_size > block_size - (address - start) ||
+      block_size > allocated_bytes_) {
+    return HeapAllocVoidResult{HeapAllocError::HeapCorruption};
+  }
+  // A zero size is the existing unsized-delete contract.
+  if (size != 0 && size != alloc_block->requested_size) {
+    return HeapAllocVoidResult{HeapAllocError::InvalidSize};
+  }
 
   // 更新统计信息
-  allocated_bytes_ -= alloc_block->size;
+  allocated_bytes_ -= block_size;
+  alloc_block->magic = 0; // Also invalidate a header placed inside alignment padding.
 
   // 将已分配块转换为空闲块
-  FreeBlock *free_block = reinterpret_cast<FreeBlock *>(alloc_block);
-  new (free_block) FreeBlock(alloc_block->size);
+  FreeBlock *free_block = reinterpret_cast<FreeBlock *>(start);
+  new (free_block) FreeBlock(block_size);
 
   // 添加到空闲列表
   add_to_free_list(free_block);
@@ -155,24 +178,24 @@ HeapAllocVoidResult RuntimeHeapAllocator::deallocate(void *ptr, [[maybe_unused]]
 
 // 扩展堆空间
 HeapAllocVoidResult RuntimeHeapAllocator::expand_heap(usize additional_size) noexcept {
+  containers::LockGuard<containers::IrqSpinLock> guard(lock_);
+  return expand_heap_locked(additional_size);
+}
+
+HeapAllocVoidResult RuntimeHeapAllocator::expand_heap_locked(usize additional_size) noexcept {
   if (!initialized_) {
     return HeapAllocVoidResult{HeapAllocError::InitializationFailed};
   }
 
-  // 对齐大小到页面边界
-  usize aligned_size = align_size(additional_size, PAGE_SIZE);
-  VirtAddr new_end = heap_end_ + aligned_size;
-
-  // 检查是否超过堆限制
-  if (new_end < heap_end_ || new_end > heap_limit_) {
+  if (additional_size == 0) {
+    return HeapAllocVoidResult{HeapAllocError::InvalidSize};
+  }
+  if (additional_size > heap_limit_ - heap_end_) {
     return HeapAllocVoidResult{HeapAllocError::OutOfMemory};
   }
 
-  // 映射新页面
-  auto map_result = map_heap_pages(heap_end_, aligned_size);
-  if (!map_result) {
-    return HeapAllocVoidResult{map_result.error()};
-  }
+  const usize aligned_size = align_size(additional_size, PAGE_SIZE);
+  const VirtAddr new_end = heap_end_ + aligned_size;
 
   // 创建新的空闲块
   FreeBlock *new_block = reinterpret_cast<FreeBlock *>(heap_end_);
@@ -192,7 +215,8 @@ HeapAllocVoidResult RuntimeHeapAllocator::expand_heap(usize additional_size) noe
 
 // 获取堆统计信息
 RuntimeHeapAllocator::HeapStats RuntimeHeapAllocator::get_heap_stats() noexcept {
-  usize total_size = get_heap_size();
+  containers::LockGuard<containers::IrqSpinLock> guard(lock_);
+  usize total_size = heap_end_ - heap_start_;
   usize free_bytes = total_size - allocated_bytes_;
 
   // 计算碎片化比例（简化版本）
@@ -200,14 +224,12 @@ RuntimeHeapAllocator::HeapStats RuntimeHeapAllocator::get_heap_stats() noexcept 
   usize largest_free = 0;
 
   if (free_bytes > 0 && free_list_head_ != nullptr) {
-    [[maybe_unused]] usize free_block_count = 0;
     FreeBlock *current = free_list_head_;
 
     while (current != nullptr) {
       if (current->size > largest_free) {
         largest_free = current->size;
       }
-      free_block_count++;
       current = current->next;
     }
 
@@ -224,50 +246,30 @@ RuntimeHeapAllocator::HeapStats RuntimeHeapAllocator::get_heap_stats() noexcept 
                    .largest_free_block = largest_free};
 }
 
-// 映射堆页面 - 简化实现，使用恒等映射
-HeapAllocVoidResult RuntimeHeapAllocator::map_heap_pages(VirtAddr start, usize size) noexcept {
-  // 在MOSS内核中，我们已经通过MMU设置了0-4GB的恒等映射
-  // 因此虚拟地址直接对应物理地址，无需额外的页面映射操作
-
-  // 验证地址范围合理（在0-4GB范围内）
-  if (start >= 0x100000000ULL || (start + size) >= 0x100000000ULL) {
-    return HeapAllocVoidResult{HeapAllocError::InvalidAddress};
-  }
-
-  // 确保大小是页面对齐的
-  if (size == 0 || (size & (PAGE_SIZE - 1)) != 0) {
-    return HeapAllocVoidResult{HeapAllocError::InvalidSize};
-  }
-
-  // 在恒等映射模式下，堆虚拟地址空间已经由MMU建立映射
-  // 我们只需要确保这段内存区域在内核可用范围内（已通过地址检查确认）
-
-  // 简化实现：直接返回成功，因为MMU已经建立了所需的映射
-  return HeapAllocVoidResult{};
+VirtAddr RuntimeHeapAllocator::get_heap_start() noexcept {
+  containers::LockGuard<containers::IrqSpinLock> guard(lock_);
+  return heap_start_;
 }
 
-// 取消映射堆页面 - 简化实现
-HeapAllocVoidResult RuntimeHeapAllocator::unmap_heap_pages(VirtAddr start, usize size) noexcept {
-  // 简化实现：在恒等映射的情况下，我们只需要释放物理页面
-  [[maybe_unused]] VirtAddr heap_addr = start; // 避免未使用参数警告
+VirtAddr RuntimeHeapAllocator::get_heap_end() noexcept {
+  containers::LockGuard<containers::IrqSpinLock> guard(lock_);
+  return heap_end_;
+}
 
-  usize page_count = size / PAGE_SIZE;
-
-  for (usize i = 0; i < page_count; i++) {
-    // 在简化实现中，我们假设虚拟地址直接对应物理地址
-    PhysAddr phys_addr = static_cast<PhysAddr>(start + i * PAGE_SIZE);
-    [[maybe_unused]] auto free_result = PageFrameAllocator::free_pages(phys_addr, 0);
-  }
-
-  return HeapAllocVoidResult{};
+usize RuntimeHeapAllocator::get_heap_size() noexcept {
+  containers::LockGuard<containers::IrqSpinLock> guard(lock_);
+  return heap_end_ - heap_start_;
 }
 
 // 查找合适的空闲块
-RuntimeHeapAllocator::FreeBlock *RuntimeHeapAllocator::find_suitable_block(usize required_size) noexcept {
+RuntimeHeapAllocator::FreeBlock *RuntimeHeapAllocator::find_suitable_block(usize payload_size,
+                                                                           usize alignment) noexcept {
   FreeBlock *current = free_list_head_;
 
   while (current != nullptr) {
-    if (current->is_valid() && current->size >= required_size) {
+    const auto start = reinterpret_cast<VirtAddr>(current);
+    const usize prefix = align_size(start + sizeof(AllocatedBlock), alignment) - start;
+    if (current->is_valid() && prefix <= current->size && payload_size <= current->size - prefix) {
       return current;
     }
     current = current->next;
@@ -320,6 +322,7 @@ void RuntimeHeapAllocator::remove_from_free_list(FreeBlock *block) noexcept {
 
 // 合并相邻空闲块
 void RuntimeHeapAllocator::merge_free_blocks() noexcept {
+  // ponytail: O(n^2) coalescing in the bounded arena; use an address-ordered list if measured contention warrants it.
   FreeBlock *current = free_list_head_;
 
   while (current != nullptr) {
@@ -348,36 +351,5 @@ void RuntimeHeapAllocator::merge_free_blocks() noexcept {
     }
   }
 }
-
-// 检查地址是否在堆范围内
-bool RuntimeHeapAllocator::is_heap_address(void *ptr) noexcept {
-  VirtAddr addr = reinterpret_cast<VirtAddr>(ptr);
-  return addr >= heap_start_ && addr < heap_end_;
-}
-
-#ifdef DEBUG
-// 验证堆完整性 - 简化版本
-void RuntimeHeapAllocator::validate_heap() noexcept {
-  // 简化实现：只验证关键数据结构，不输出调试信息
-  FreeBlock *current = free_list_head_;
-  usize free_count = 0;
-
-  while (current != nullptr && free_count < 1000) { // 防止无限循环
-    if (!current->is_valid()) {
-      // 检测到损坏但不输出，在实际内核中应该触发panic
-      return;
-    }
-
-    free_count++;
-    current = current->next;
-  }
-  // 验证完成，无需输出
-}
-
-// 输出堆布局信息 - 简化版本
-void RuntimeHeapAllocator::dump_heap_layout() noexcept {
-  // 简化实现：不输出调试信息，在实际内核中应该使用统一的日志系统
-}
-#endif
 
 } // namespace moss::kernel::mm

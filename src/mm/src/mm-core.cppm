@@ -84,7 +84,13 @@ inline constexpr u32 MAX_NUMA_NODES = 16;
 // page_frame_allocator.hpp
 // ========================================================================
 
-enum class PageAllocError : u32 { OutOfMemory = 1, InvalidOrder = 2, InvalidAddress = 3, InitializationFailed = 4 };
+enum class PageAllocError : u32 {
+  OutOfMemory = 1,
+  InvalidOrder = 2,
+  InvalidAddress = 3,
+  InitializationFailed = 4,
+  PageInUse = 5
+};
 
 template <typename T> using PageAllocResult = moss::kernel::Result<T, PageAllocError>;
 using PageAllocVoidResult = moss::kernel::Result<void, PageAllocError>;
@@ -106,6 +112,8 @@ public:
     usize free_pages;
     usize used_pages;
     usize kernel_pages;
+    PhysAddr metadata_start;
+    usize metadata_size; // Reserved bytes, including page-alignment padding.
   };
 
   [[nodiscard]] static MemoryStats get_memory_stats() noexcept;
@@ -367,7 +375,6 @@ public:
   [[nodiscard]] static HeapAllocResult<void *> allocate_aligned(usize size, usize alignment) noexcept;
   static HeapAllocVoidResult deallocate(void *ptr, usize size) noexcept;
   static HeapAllocVoidResult expand_heap(usize additional_size) noexcept;
-  static HeapAllocVoidResult shrink_heap() noexcept;
 
   struct HeapStats {
     usize total_heap_size;
@@ -378,9 +385,9 @@ public:
   };
 
   [[nodiscard]] static HeapStats get_heap_stats() noexcept;
-  [[nodiscard]] static VirtAddr get_heap_start() noexcept { return heap_start_; }
-  [[nodiscard]] static VirtAddr get_heap_end() noexcept { return heap_end_; }
-  [[nodiscard]] static usize get_heap_size() noexcept { return static_cast<usize>(heap_end_ - heap_start_); }
+  [[nodiscard]] static VirtAddr get_heap_start() noexcept;
+  [[nodiscard]] static VirtAddr get_heap_end() noexcept;
+  [[nodiscard]] static usize get_heap_size() noexcept;
 
 private:
   struct FreeBlock {
@@ -393,11 +400,14 @@ private:
     [[nodiscard]] bool is_valid() const noexcept { return magic == MAGIC; }
   };
 
-  struct AllocatedBlock {
+  struct alignas(16) AllocatedBlock {
     usize size;
+    VirtAddr block_start;
+    usize requested_size;
     u32 magic;
     static constexpr u32 MAGIC = 0xBEEFF00D;
-    AllocatedBlock(usize block_size) noexcept : size(block_size), magic(MAGIC) {}
+    AllocatedBlock(usize block_size, VirtAddr start, usize requested) noexcept
+        : size(block_size), block_start(start), requested_size(requested), magic(MAGIC) {}
     [[nodiscard]] bool is_valid() const noexcept { return magic == MAGIC; }
   };
 
@@ -416,14 +426,12 @@ private:
     return (size + alignment - 1) & ~(alignment - 1);
   }
 
-  static HeapAllocVoidResult map_heap_pages(VirtAddr start, usize size) noexcept;
-  static HeapAllocVoidResult unmap_heap_pages(VirtAddr start, usize size) noexcept;
-  static FreeBlock *find_suitable_block(usize required_size) noexcept;
+  static HeapAllocVoidResult expand_heap_locked(usize additional_size) noexcept;
+  static FreeBlock *find_suitable_block(usize payload_size, usize alignment) noexcept;
   static void split_block(FreeBlock *block, usize required_size) noexcept;
   static void merge_free_blocks() noexcept;
   static void add_to_free_list(FreeBlock *block) noexcept;
   static void remove_from_free_list(FreeBlock *block) noexcept;
-  static bool is_heap_address(void *ptr) noexcept;
 };
 
 } // namespace moss::kernel::mm

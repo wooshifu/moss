@@ -237,15 +237,13 @@ bool wait_for_cpu_state(u32 cpu_id, CpuState expected_state, u32 timeout_ms) noe
     return false;
   }
 
-  u32 elapsed = 0;
-  while (elapsed < timeout_ms) {
+  const u64 start = get_timestamp();
+  const u64 ticks = moss::kernel::hal::timer::frequency() / 1000 * timeout_ms;
+  while (get_timestamp() - start < ticks) {
     if (load_cpu_state(cpu_id) == expected_state) {
       return true;
     }
-    for (volatile u32 i = 0; i < 10000; i = i + 1) {
-      asm volatile("nop");
-    }
-    elapsed += 10;
+    moss::kernel::arch::cpu_yield();
   }
 
   return load_cpu_state(cpu_id) == expected_state;
@@ -417,32 +415,6 @@ void activate_secondary_cpus() noexcept {
   }
 
   __atomic_store_n(&g_cpu_topology.online_cpus, 1 + successfully_activated, __ATOMIC_RELAXED);
-}
-
-u32 wait_for_all_cpus_active(u32 timeout_ms) noexcept {
-  u32 active_count = 1;
-  u32 elapsed = 0;
-
-  while (elapsed < timeout_ms) {
-    active_count = 1;
-
-    for (u32 cpu_id = 1; cpu_id < g_cpu_topology.total_cpus; ++cpu_id) {
-      if (is_cpu_in_state(cpu_id, CpuState::Active) || is_cpu_in_state(cpu_id, CpuState::Online)) {
-        active_count++;
-      }
-    }
-
-    if (active_count >= g_cpu_topology.total_cpus) {
-      break;
-    }
-
-    for (volatile u32 i = 0; i < 100000; i = i + 1) {
-      asm volatile("nop");
-    }
-    elapsed += 10;
-  }
-
-  return active_count;
 }
 
 } // namespace moss::boot

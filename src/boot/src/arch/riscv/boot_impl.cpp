@@ -199,7 +199,8 @@ static SbiResult sbi_hart_start(u64 hartid, u64 start_addr, u64 opaque) noexcept
   moss::boot::early_print("  Phase 2: PageFrameAllocator\n");
   auto pfa_result = ::moss::kernel::mm::PageFrameAllocator::initialize();
   if (!pfa_result) {
-    moss::boot::early_print("  WARNING: PageFrameAllocator init failed\n");
+    moss::boot::early_print("  PageFrameAllocator init failed\n");
+    return ::moss::kernel::VoidResult{::moss::kernel::ErrorCode::OutOfMemory};
   }
 
   // Phase 3: Build high-half kernel page table
@@ -227,7 +228,8 @@ static SbiResult sbi_hart_start(u64 hartid, u64 start_addr, u64 opaque) noexcept
   ::moss::kernel::usize initial_heap_size = 256ULL * 1024;
   auto heap_result = ::moss::kernel::mm::RuntimeHeapAllocator::initialize_heap(heap_start, initial_heap_size);
   if (!heap_result) {
-    moss::boot::early_print("  WARNING: RuntimeHeapAllocator init failed\n");
+    moss::boot::early_print("  RuntimeHeapAllocator init failed\n");
+    return ::moss::kernel::VoidResult{::moss::kernel::ErrorCode::OutOfMemory};
   }
 
   moss::boot::early_print("RISC-V memory management setup complete (high-half active)\n\n");
@@ -349,19 +351,6 @@ void activate_secondary_cpus() noexcept {
       early_print("SBI HSM start failed\n");
     }
   }
-}
-
-u32 wait_for_all_cpus_active(u32 timeout_ms) noexcept {
-  u64 start = get_timestamp_counter();
-  u64 ticks = moss::fdt::get_platform_info().timebase_frequency * timeout_ms / 1000;
-  for (u32 retry = 0; retry < 100000000; ++retry) {
-    auto online = static_cast<u32>(__builtin_popcountll(__atomic_load_n(&online_cpu_mask, __ATOMIC_ACQUIRE)));
-    if (online == moss::kernel::g_num_cpus || (ticks && get_timestamp_counter() - start >= ticks)) {
-      return online;
-    }
-    moss::kernel::arch::cpu_yield();
-  }
-  return static_cast<u32>(__builtin_popcountll(__atomic_load_n(&online_cpu_mask, __ATOMIC_ACQUIRE)));
 }
 
 } // namespace moss::boot

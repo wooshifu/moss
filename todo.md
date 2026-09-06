@@ -1,461 +1,154 @@
-# MOSS Kernel - Feature Tracking
+# MOSS 内核能力与待办
 
-## Architecture Overview
+> 更新日期：2026-09-06；提交基线：`b57422d`，包含后续工作区的堆、CPU 就绪、PFA 多 bank 与布局所有权修复。
+> 本文取代旧清单中“完成即可靠”“x86/RISC-V 仅为启动桩”的描述。
+> 审计问题的原始证据、当前状态及完整验收条件见 [moss-todo.md](moss-todo.md)；MOSS-001～032 沿用原编号，不重新编号。
 
-MOSS is a C++26 freestanding hybrid kernel targeting QEMU virtual machines.
-Primary architecture: ARM64 (aarch64-unknown-elf), with x86_64 and RISC-V stubs.
-Build system: CMake + Clang C++26 modules, 6 presets (3 arch x debug/release).
+## 状态口径
 
----
+- `[x]`：这一行限定的实现或验证已完成，不代表整个子系统已可靠。
+- `[ ]`：仍有实现或验收工作；“部分实现”“待专项验收”不算关闭。
+- “已有代码”与“实测通过”分别列出。单次 fork/exec、四核启动和宿主测试通过，不能代替隔离、并发、失败回滚或长循环验收。
+- 原清单重复列出的 fork/exec/wait、信号、内存等能力已按下面的能力表和审计任务归并；不再维护估算行数、过时源码行号及手绘模块依赖图。
 
-## Completed Features
+## 当前架构与构建边界
 
-### Boot & Initialization
+MOSS 当前是 C++26 freestanding 的模块化单体研究内核。ARM64、RV64、x86_64 都有实际启动、中断、调度及用户态执行路径，不是两个待从零开发的端口。
 
-- [x] **ARM64 full boot sequence** — EL3→EL2→EL1 transition, BSS clear, stack setup (256KB), FPU/NEON enable, exception vector table installation
-  - `src/boot/src/arch/arm64/start_arm64.S`
-- [x] **SMP boot (ARM64)** — CPU topology detection via DTB, PSCI `CPU_ON` for secondary CPUs, per-CPU stack allocation (32KB each), secondary CPU parking/activation protocol, supports up to 8 CPUs
-  - `src/boot/src/arch/arm64/boot_impl.cpp`
-- [x] **Device Tree (FDT) parsing** — libfdt-based parser, discovers UART base, GIC distributor/CPU base, memory regions, CPU count, timer frequency at runtime; dual DTB discovery (bootloader pointer + RAM scan)
-  - `src/fdt/src/fdt.cppm`
-- [x] **x86_64 boot stub** — Multiboot2 header, BSS clear, stack setup, jump to `early_main`, UART init, then halts
-  - `src/boot/src/arch/x86_64/start_x86_64.S`, `src/boot/src/arch/x86_64/boot_impl.cpp`
-- [x] **RISC-V boot stub** — BSS clear, stack setup, jump to `early_main`, UART init, then halts
-  - `src/boot/src/arch/riscv/start_riscv.S`, `src/boot/src/arch/riscv/boot_impl.cpp`
+按 [ADR-0005](docs/adr/0005-generic-kernels-and-independent-runners.md)，同一源码树生成三个 ISA 各自的原生镜像；**同一 ISA 的镜像在满足已支持启动协议和设备契约的机器间复用，不是一个二进制跨三个 ISA 运行**。
 
-### Hardware Abstraction Layer (HAL)
+| 架构 | 当前启动和硬件发现 | 已有运行证据 | 尚不能声称 |
+| --- | --- | --- | --- |
+| ARM64 | Linux Image + DTB；PL011/16550；GICv2/v3；PSCI 或 spin-table | Debug/Release 默认四核真实内核测试；GICv3 16 核资源测试；同镜像 QEMU `raspi4b` 合成 DTB 测试 | 任意 SoC、真实树莓派、完整信号隔离验收 |
+| RV64 | Linux Image + DTB/SBI；Sv39/Sv48；16550、PLIC、SBI TIME/IPI/HSM | Debug/Release 默认四核真实内核测试；同镜像 `sstc=false` 双核配置 | 完整信号、COW 正确性、AIA/IMSIC/APLIC 支持 |
+| x86_64 | PVH + 内存表、最小 ACPI MADT/SPCR/BDA 发现；IDT、xAPIC/I/O APIC、PIT 校准、SYSCALL、AP 启动 | Debug/Release 默认四核真实内核测试；同镜像 `q35`/`pc`；正常镜像 shell | 安全的用户/内核页权限、完整信号、UEFI/x2APIC/完整 ACPI |
 
-- [x] **UART HAL** — 3-architecture support:
-  - ARM64: PL011 at 0x09000000, flag register polling
-  - x86_64: COM1 8250/16550 at I/O port 0x3F8
-  - RISC-V: NS16550 at 0x10000000
-  - API: `init()`, `putc()`, `getc()`, `puts()`, `is_readable()`, `is_writable()`
-  - `src/hal/uart/src/uart_hal.cppm`
-- [x] **Timer HAL (ARM64)** — Generic Timer: `cntvct_el0` counter read, `cntfrq_el0` frequency, `cntv_cval_el0` compare, `cntv_ctl_el0` control, `ack_interrupt()`, `set_compare()`, `enable()`/`disable()`
-  - `src/hal/timer/src/timer_hal.cppm`
-- [x] **Interrupt Controller HAL (ARM64)** — GICv2: distributor register offsets (GICD\_\*), CPU interface offsets (GICC\_\*), `init_distributor()`, `init_cpu_interface()`, `enable_irq()`, `disable_irq()`, `ack_irq()`, `eoi()`, `send_sgi()`
-  - `src/hal/intc/src/intc_hal.cppm`
-- [x] **MMU HAL** — 3-architecture PTE bit definitions:
-  - ARM64: 4-level (L0-L3), 48-bit VA, `PageAttr::VALID|TABLE|AF|SH_INNER|NORMAL_MEMORY`, `PagePerms::KERNEL_RWX|USER_RWX|READ_ONLY|NO_EXEC`
-  - x86_64: 4-level (PML4→PDPT→PD→PT), x86 PTE bits (PRESENT, WRITABLE, USER)
-  - RISC-V: Sv48 4-level, PTE bits (V, R, W, X, U, G, A, D)
-  - API: `VirtualAddressBreakdown`, `break_virtual_address()`, `AddressSpaceConfig`
-  - `src/hal/mmu/src/mmu_hal.cppm`
-- [x] **Platform defaults** — Compile-time hardware constants per platform (UART base, GIC base, RAM base/size, timer frequency) for ARM64-QEMU-virt, x86_64-QEMU, RISC-V-QEMU-virt
-  - `src/platform/src/platform.cppm`
+表中运行证据来自 [通用启动验收记录](docs/generic-boot-acceptance.md)，有配置与范围限制，不自动推广到所有机器。当前最多 16 CPU、8 个固件 RAM 区域，早期物理映射低于 4 GiB；工作区 PFA 已联合管理 kernel_end 以上的合格 RAM bank，保留物理洞。kernel_end 以下仍整体保留，尚不能声称精确回收全部启动内存。
 
-### Memory Management
+### 已完成的构建与运行拆分
 
-- [x] **Buddy page frame allocator** — Orders 0-10 (4KB→4MB), free list per order, split on alloc, coalesce on free, watermark tracking (min/low/high), max pages 131072 (512MB), bitmap tracking for buddy coalescing
-  - `src/mm/src/mm.cppm` (`PageFrameAllocator`), `src/mm/src/page_frame_allocator.cpp`
-- [x] **Runtime kernel heap** — `operator new` / `operator delete` backed by buddy allocator, block header with size tracking, supports arbitrary allocation sizes
-  - `src/kernel/src/runtime_support.cpp`
-- [x] **Slab allocator** — `SlabCache` with partial/full/empty page lists, CAS lock-free allocation, `SlabAllocator` with multiple size classes, backed by buddy allocator via C shim (`moss_slab_alloc_pages`/`moss_slab_free_pages`)
-  - `src/containers/src/containers.cppm` (lines 1292-1806), `src/mm/src/page_alloc_shim.cpp`
-- [x] **4-level page tables (ARM64)** — PGD→PUD→PMD→PTE, 4KB granule:
-  - Early boot: 64 statically-allocated page tables in BSS
-  - Post-boot: Dynamic allocation from buddy allocator (`allocate_page_table_dynamic()`)
-  - `setup_kernel_page_tables()`: identity map 4×1GB blocks (PUD[0]=Device, PUD[1]=Normal RAM, PUD[2-3]=Device)
-  - `setup_kernel_high_half_tables()`: TTBR1 high-half kernel mapping
-  - `src/mm/src/mm.cppm` (lines 557-658), `src/mm/src/page_table.cpp`
-- [x] **MMU enable** — Full MMU setup: MAIR (AttrIndx 0=Device-nGnRnE, 1=Normal WB), TCR_EL1 (T0SZ=16, T1SZ=16, 4KB granule, inner/outer shareable WB-WA), TTBR0 + TTBR1 write, TLB flush, SCTLR_EL1 M-bit set
-  - `src/mm/src/page_table.cpp`
-- [x] **Per-process page tables** — PGD dynamically allocated from buddy, kernel PGD[0] copied into user PGD for shared identity mapping, ASID allocation (8-bit, wraps with global TLB flush at 256)
-  - `src/process/src/process.cpp` (`create_user_address_space()`)
-- [x] **TTBR0 switching** — Complete lifecycle:
-  - First eret: set TTBR0 to process PGD in `needs_initial_eret` path (with IRQ disabled)
-  - Re-dispatch after preemption: set TTBR0 in `context_switch_to_task()` else branch for `is_user_task` threads
-  - Process exit: restore TTBR0 to kernel PGD in `sys_exit` and `terminate_current_user_process`
-  - `src/process/src/process.cppm` (`context_switch_to_task`), `src/kernel/src/syscall_table.cpp`, `src/kernel/src/kernel_main.cpp`
-- [x] **Demand paging** — Page fault handler for EL0 translation faults (DFSC 0x04-0x07):
-  - VMA lookup via `demand_page_lookup()` bridge function (mm↔process module boundary)
-  - Physical page allocation from buddy allocator (order-0)
-  - Page content: copy from ELF backing data + zero-fill remainder, or full zero page
-  - PTE construction: AP[1]=1 (EL0 access), AF=1, nG=1, SH=Inner Shareable, PXN=1, AttrIndx=1 (Normal), AP[2] for read-only, UXN for non-exec
-  - TLB invalidate on faulting address after map
-  - `src/mm/src/page_fault.cpp` (`try_demand_page`, `user_page_fault_handler`)
-- [x] **map_user_page()** — 4-level walk on user PGD, allocates intermediate tables dynamically, sets L3 page descriptor (bits[1:0]=0b11)
-  - `src/mm/src/page_table.cpp`
-- [x] **free_user_page_tables()** — Recursive 4-level walk: frees leaf physical pages (demand-paged), then PTE/PMD/PUD table pages, then PGD page; skips PGD[0] (shared kernel identity map)
-  - `src/mm/src/page_table.cpp`
-- [x] **VMA management** — `AddressSpace` struct with `RcuList<VmaRegion>` (dynamic, unlimited), `add_vma()` with overlap check via `find_if()`, `find_vma()` for fault lookup, VMA types: CODE/DATA/BSS/STACK/HEAP, VMA flags: READ/WRITE/EXEC/DEMAND_ZERO, backing data for ELF segments
-  - `src/process/src/process-types.cppm` (`AddressSpace`, `VmaRegion`)
-- [x] **Page fault diagnostics** — EC-to-string, DFSC/IFSC-to-string, kernel fault handler with TLB invalidate retry for stale entries, permission fault logging
-  - `src/mm/src/page_fault.cpp`
-- [x] **Memory statistics** — `MemoryStats` class tracking allocation counts, free pages, watermarks, memory pressure levels (LOW/MEDIUM/HIGH/CRITICAL), `is_memory_system_healthy()`, `get_memory_pressure()`
-  - `src/mm/src/mm.cppm`
+- [x] 架构预设共 9 个：`{arm64,riscv,x86_64}-{debug,release,relwithdebinfo}`；每个 workflow 为 configure → build → matching CTest preset（`b57422d`）。
+- [x] 独立 configure/build 不查找、不启动 QEMU；workflow 的 test 阶段通过独立 runner 使用 QEMU。
+- [x] CMake 产出版本化、相对路径的 `moss-artifacts.json`，只描述架构、构建与产物；机器、CPU、RAM、SMP、固件选项由 runner 决定。
+- [x] 删除旧 `*-qemu-*` 预设、生成的 QEMU wrapper/config 和内核平台默认地址；以启动信息填充 `platform::hardware`。
+- [x] ARM64/RV64 Image 启动重定位及静态头/重定位校验；x86_64 使用 PVH ELF。
+- [x] 独立验证镜像复用生产内核模块与启动路径，使用 `@@MOSS` 串口协议；宿主负责终止、回收 QEMU，不使用 guest 端模拟器退出设备。
+- [x] userspace 是真实 CMake 编译目标，进入编译数据库；正常/验证 initramfs 分离。
 
-### Process Management & Scheduling
+入口：`CMakeLists.txt`、`cmake/presets/arch/`、`build.py`、`scripts/artifacts.py`、`scripts/run_qemu.py`、`scripts/kernel_validation.py`、`src/userspace/CMakeLists.txt`。
 
-- [x] **CFS scheduler** — Full Linux-style Completely Fair Scheduler:
-  - Red-black tree runqueue per CPU (`CfsRunqueue`), pool-based node allocation (MAX_NODES=1024/CPU), free list recycling
-  - Virtual runtime (vruntime) tracking, weighted fair scheduling using 40-entry nice-to-weight table (nice -20 to +19)
-  - `rb_leftmost_` cache for O(1) `pick_next_task()`
-  - Parameters: `SCHED_LATENCY_NS=6ms`, `SCHED_MIN_GRANULARITY_NS=0.75ms`, `SCHED_WAKEUP_GRANULARITY_NS=1ms`
-  - `src/process/src/process.cppm` (lines 700-1185)
-- [x] **Timer-driven preemption** — Timer PPI IRQ 27 fires periodically → `irq_handler_c()` reprograms next compare → CPU 0 dispatches via `TimerSubsystem::handle_interrupt()` → HrTimer callback → `scheduler_tick()`; secondary CPUs call `scheduler_tick()` directly
-  - `src/kernel/src/kernel_main.cpp` (lines 266-293)
-- [x] **scheduler_tick()** — Updates vruntime of current task, checks `should_preempt_current()` (vruntime comparison vs leftmost in RB tree), resets time-slice accounting (`prev_sum_exec_runtime`), records preemption stats, context-switches to next task
-  - `src/process/src/process.cppm` (lines 1664-1706)
-- [x] **context_switch (ARM64)** — Assembly: saves all 31 GP regs + SP + LR + DAIF + FPSR/FPCR + 32 NEON Q-regs + TPIDR_EL0; restores everything except DAIF (left to eret); uses `ret` to saved LR
-  - `src/process/src/context_switch.S`
-- [x] **switch_to_user (ARM64)** — Assembly: sets SPSR_EL1=0 (EL0t), SP_EL0, ELR_EL1 from context.pc, restores all GP/NEON/TPIDR, `eret` to user mode
-  - `src/process/src/context_switch.S`
-- [x] **Per-CPU bootstrap contexts** — Throwaway `CpuContext` per CPU for `context_switch()` when no previous task exists (e.g. `schedule_after_exit`, first dispatch)
-  - `src/process/src/process.cppm` (`bootstrap_contexts_[]`), `src/process/src/process.cpp`
-- [x] **Load balancer** — `LoadBalancer` class with idle balancing, periodic rebalancing, task migration between CPUs, CPU affinity support, configurable policies (Conservative/Aggressive/NUMA-Aware), per-CPU imbalance calculation, `try_idle_balance()` for work stealing
-  - `src/process/src/process.cppm` (lines 2055-2260+)
-- [x] **Reschedule IPI** — SGI 0 as reschedule IPI, `send_reschedule_ipi()` for cross-CPU task migration notification, handled in `irq_handler_c` with early return after EOI
-  - `src/kernel/src/kernel_main.cpp` (lines 257-259)
-- [x] **ProcessManager** — Process creation with PID allocation (atomic counter), process termination (mark + remove from table + release refcount), process table via `RcuHashMap`, `find_process()`, `process_exists()`
-  - `src/process/src/process.cpp`
-- [x] **Process destructor cleanup** — `~Process()` calls `cleanup_threads()` (delete all thread objects) + `free_user_page_tables()` (recursive page table/physical page release)
-  - `src/process/src/process.cppm`
-- [x] **Idle tasks** — `IdleTask` class with per-CPU idle process, `cpu_idle_once()` using WFI (ARM64) / HLT (x86_64) / WFI (RISC-V)
-  - `src/process/src/idle_process.cpp`
-- [x] **Secondary CPU scheduling loop** — `secondary_cpu_schedule_loop()`: per-CPU pick_next_task + context_switch loop, timer-driven via `irq_handler_c` recognizing per-CPU timer PPI, idle balance + WFI when no tasks
-  - `src/process/src/process.cpp`
+```sh
+# 仅编译，不要求安装 QEMU
+uv run cmake --preset arm64-debug
+uv run cmake --build --preset arm64-debug
 
-### ELF Loader & User-Space Execution
+# 完整 workflow，包括 CTest；测试阶段需要 QEMU
+uv run cmake --workflow --preset arm64-debug
 
-- [x] **ELF loader** — Validates ELF64 header (magic, class, endianness, type ET_EXEC), checks architecture compatibility (EM_AARCH64/EM_X86_64/EM_RISCV), parses PT_LOAD program headers, registers VMA regions with correct types (CODE/DATA/BSS) and permissions (R/W/X), stores backing data pointer for demand paging
-  - `src/kernel/src/elf_loader.cpp`, `src/kernel/src/kernel.cppm`
-- [x] **Embedded user program** — `hello.elf` compiled from `userspace/hello.c`, embedded via `.incbin` in `arm64_user_program.S`, linked with `userspace/userspace.ld` (base 0x400000)
-  - `src/kernel/src/arch/arm64_user_program.S`, `userspace/hello.c`, `userspace/userspace.ld`
-- [x] **Init process creation** — Allocates per-process address space (PGD + ASID), creates process + thread, sets entry point from ELF, registers stack/heap VMAs, sets `needs_initial_eret=true` + `is_user_task=true`, enqueues into CFS scheduler
-  - `src/kernel/src/kernel.cppm` (lines ~1140-1220)
-- [x] **User-space VMA layout** — CODE (0x400000, RX), DATA (after code, RW), BSS (after data, RW), STACK (0xFFFF0000-0x10000, 64KB, RW), HEAP (0x800000, 1MB, RW)
-  - `src/kernel/src/kernel.cppm`
-
-### Interrupt & Exception Handling
-
-- [x] **GIC driver** — `GenericInterruptController` class: distributor init (group 0/1, target routing, priority), CPU interface init (priority mask, binary point), per-IRQ enable/disable, priority config, handler registration (function pointer + context), IPI via SGI
-  - `src/interrupts/src/interrupts.cppm`
-- [x] **IRQ trampoline (ARM64)** — 34-slot frame (x0-x30 + ELR_EL1 + SPSR_EL1 + pad = 272 bytes), full save, call `irq_handler_c`, full restore, `eret`; same frame used for both same-EL and lower-EL IRQs
-  - `src/boot/src/arch/arm64/start_arm64.S` (lines 422-476)
-- [x] **Exception vector table (ARM64)** — 4×4 vector table at `.balign 2048`: Current EL SP0 (sync/irq/fiq/serror), Current EL SPx (sync→exception_handler, irq→irq_trampoline), Lower EL AArch64 (sync→lower_el_sync_dispatch, irq→irq_trampoline), Lower EL AArch32
-  - `src/boot/src/arch/arm64/start_arm64.S` (lines 373-417)
-- [x] **Lower EL sync dispatch** — Routes by EC: EC=0x15→SVC handler (syscall), EC=0x24/0x20→user page fault handler, other→unhandled user exception handler; full register save/restore + eret
-  - `src/boot/src/arch/arm64/start_arm64.S` (lines 578-678)
-- [x] **EOI ordering** — GIC EOI sent BEFORE timer dispatch in `irq_handler_c`, ensuring GIC is ready for next interrupt even if `context_switch` suspends handler mid-execution
-  - `src/kernel/src/kernel_main.cpp` (line 250)
-- [x] **User fault termination** — `kill_user_process()` and `unhandled_user_exception_handler()` call `terminate_current_user_process()` bridge function → mark Terminated → dequeue → restore kernel TTBR0 → `schedule_after_exit()`, instead of WFI halt
-  - `src/mm/src/page_fault.cpp`, `src/kernel/src/kernel_main.cpp`
-
-### System Calls
-
-- [x] **SVC dispatch (ARM64)** — `lower_el_sync_dispatch` in start_arm64.S extracts x8 as syscall number, x0-x5 as args, calls `system_call_handler()` in C, stores return value in saved x0 slot, eret back to EL0
-  - `src/boot/src/arch/arm64/start_arm64.S` (lines 627-641)
-- [x] **Syscall table** — 130 entries in `SYSCALL_TABLE[]`, each with name, handler function pointer, arg count, implemented flag, description
-  - `src/kernel/src/syscall_table.cpp`
-- [x] **sys_debug_print (0)** — Writes string at arg0 to UART via `early_debug_print()`
-- [x] **sys_exit (1)** — 7-step Zombie transition: mark thread terminated → dequeue → restore TTBR0 → free user page tables → reparent children to init → set Zombie state + exit code → wake parent's WaitQueue → `schedule_after_exit()` ([[noreturn]]). Process stays in table for waitpid() to reap.
-- [x] **sys_fork (10)** — Full COW fork: clone PGD, copy VMAs, duplicate thread context (child x0=0), allocate kernel stack, register child in parent's children list, enqueue child into CFS
-- [x] **sys_wait4 (12)** — Blocking wait for child exit: zombie scan, WNOHANG support, blocking via context_switch to bootstrap context, reap zombie (remove child + terminate + WEXITSTATUS encoding)
-- [x] **sys_waitpid (13)** — Thin wrapper over sys_wait4
-- [x] **sys_write (33)** — Writes `count` bytes from `buf` to UART for fd=1 (stdout) and fd=2 (stderr); returns byte count or -EBADF/-EINVAL
-- [x] **sys_getpid/getppid (2-3)** — Return real PID/PPID from current thread/process via CfsScheduler::get_current_task()
-- [x] **sys_getuid/getgid (4-5)** — Return 0 (root); credential structure not yet implemented
-
-### Timer Subsystem
-
-- [x] **Clocksource** — Reads ARM64 generic timer (`cntvct_el0`), frequency from `cntfrq_el0` or DTB, nanosecond conversion via `ns_to_cycles()` / `cycles_to_ns()`
-  - `src/timer/src/timer.cppm`
-- [x] **HrTimer** — High-resolution timer: callback + context, expiry time (ns), one-shot/periodic modes, armed/disarmed state
-  - `src/timer/src/timer.cppm`
-- [x] **TimerSubsystem** — Singleton managing clocksource + timer queue, `handle_interrupt()` checks expired timers and fires callbacks, drives scheduler tick on CPU 0 via periodic HrTimer, calibration at init
-  - `src/timer/src/timer.cppm`
-
-### Logging
-
-- [x] **klog** — Type-safe kernel logging with `{}` format placeholders, severity levels (DEBUG/INFO/WARN/ERROR/PANIC), outputs via UART HAL, supports u32/u64/i32/i64/const char\*/bool/pointer formatting, hex (`{:#x}`), binary (`{:#b}`) output
-  - `src/logging/src/logging.cppm`
-
-### Synchronization & Data Structures
-
-- [x] **TicketSpinLock** — Fair FIFO spinlock using atomic ticket counter (next/now), `lock()`/`unlock()`/`try_lock()`
-- [x] **IrqSpinLock** — Spinlock that saves and disables IRQs on `lock()`, restores on `unlock()` (uses DAIF on ARM64)
-- [x] **LockGuard** — RAII lock guard template
-- [x] **AtomicPtr<T>** — Atomic pointer operations via `__atomic_*` builtins: `load()`, `store()`, `compare_exchange_weak()`
-- [x] **AtomicCounter<T>** — Atomic integer operations: `load()`, `store()`, `fetch_add()`, `fetch_sub()`, `compare_exchange_weak()`
-- [x] **PerCpuData<T>** — Per-CPU data storage (array indexed by CPU ID, up to MAX_CPUS=8)
-- [x] **PerCpuAtomicCounter<T>** — Per-CPU atomic counters with `aggregate()` to sum across CPUs
-- [x] **PerCpuWorkQueue<T, N>** — Per-CPU bounded work queues (SPSC ring buffer)
-- [x] **MpscQueue<T>** — Multi-producer single-consumer lock-free queue
-- [x] **RcuList<T>** — RCU-protected singly-linked list: `push_front()`, `remove()`, `find_if()`, `for_each()`
-- [x] **RcuHashMap<K, V>** — RCU-protected hash map: `insert_or_update()`, `find()`, `remove()`, `size()`
-- [x] **WaitQueue** — Generic blocking primitive using `RcuList<WaitQueueEntry>` with `void*` thread pointers (avoids module cycle), `add_waiter()`, `remove_waiter()`, `for_each_waiter()`, `has_waiters()`
-  - All in `src/containers/src/containers.cppm`
-
-### Core Infrastructure
-
-- [x] **C++26 module system** — 23 modules with clean dependency graph, module partition support
-- [x] **Freestanding types** — `u8/u16/u32/u64`, `i8/i16/i32/i64`, `usize/isize`, `PhysAddr/VirtAddr`, `ProcessId/ThreadId`, `ErrorCode` enum (28 error codes)
-  - `src/core/src/types.cppm`
-- [x] **Result<T, E>** — Rust-style error handling: `has_value()`, `value()`, `error()`, `operator*`, implicit conversion from T, explicit from ErrorCode
-  - `src/core/src/result.cppm`
-- [x] **Smart pointers** — `unique_ptr<T>` with `make_unique<T>()` for freestanding environment, move semantics, `get()`, `release()`, `reset()`
-  - `src/core/src/smart_ptr.cppm`
-- [x] **Concepts** — C++20 concepts: `Integral`, `FloatingPoint`, `Unsigned`, `Signed`, `Pointer`, `Arithmetic`, `Comparable`, `Swappable`, `Trivial`, `TriviallyCopyable`
-  - `src/core/src/concepts.cppm`
-- [x] **Freestanding stdlib** — `memcpy`, `memset`, `memmove`, `strlen`, `strcmp`, `strncmp`, `strncpy`, `min/max`, `MemoryOrder` enum
-  - `src/core/src/std.cppm`
-- [x] **Architecture abstraction** — `cpu_halt()`, `cpu_yield()`, `cpu_idle_once()`, `disable_all_interrupts()`, `disable_interrupts()`, `enable_interrupts()`, `get_current_cpu_id()`, `get_current_el()`, `get_timestamp_counter()`, `flush_tlb()`, `send_sgi()`
-  - `src/aal/src/arch.cppm`
-
-### Build System & Testing
-
-- [x] **CMake build** — Top-level project with Clang cross-compilation, `-Weverything -Werror`, freestanding C++26 (`-std=c++26 -fmodules -ffreestanding -fno-exceptions -fno-rtti`), per-architecture toolchain flags
-  - `CMakeLists.txt`, `cmake/arch_support.cmake`
-- [x] **Architecture build presets** — `<arch>-{debug,release,relwithdebinfo}`; configure→build only, validation is explicit (ADR-0005)
-  - `CMakePresets.json`
-- [x] **Python build orchestrator** — `build.py` using Typer/Rich, supports `--arch`, `--build-type`, `--all`, `--dry-run`, `list` subcommand, parallel build, summary table
-  - `build.py`, `pyproject.toml`
-- [x] **Test framework** — Kernel-optimized Boost.UT adaptation, standalone `moss.test.elf` with per-architecture `_start`, semihosting exit codes (ARM64 SYS_EXIT, x86_64 port 0x501, RISC-V HTIF)
-  - `src/test/framework/ut_kernel.hpp`, `src/test/validation.cpp`
-- [x] **QEMU run scripts** — Auto-generated per build preset, correct machine/CPU/memory flags
-  - `uv run scripts/run_qemu.py --manifest build/<preset>/moss-artifacts.json`
-- [x] **Linker scripts** — Kernel: `.text.boot` at 0x40080000, sections: text/rodata/data/bss/stack(256KB)/heap(8MB)/page_tables(2MB). User: base at 0x400000
-  - `linker.ld`, `userspace/userspace.ld`
-
-### Virtual File System (VFS)
-
-- [x] **VFS core** — Inode, Dentry, File, SuperBlock abstractions; FdTable per-process (256 fds) with alloc/free/clone for fork; DentryCache (FNV-1a hash, open-addressed); MountTable (16 mounts, longest-prefix lookup); pool-based allocators for Inode/Dentry/File objects
-  - `src/vfs/src/vfs-types.cppm`, `src/vfs/src/vfs-inode.cppm`, `src/vfs/src/vfs-dcache.cppm`, `src/vfs/src/vfs-file.cppm`, `src/vfs/src/vfs-mount.cppm`, `src/vfs/src/vfs_init.cpp`
-- [x] **VFS syscalls** — 9 syscalls fully implemented through VFS layer: `open()`, `close()`, `read()`, `write()`, `lseek()`, `fstat()`, `dup()`, `dup2()`, `pipe()`
-  - `src/vfs/src/vfs_syscall.cpp`, `src/vfs/src/vfs-syscall.cppm`
-- [x] **Path resolution** — Multi-component path traversal through mount table + dcache, absolute path support
-  - `src/vfs/src/vfs_path.cpp`
-- [x] **ramfs** — Read-only filesystem backed by initramfs CPIO archive. Zero-copy: inode data points directly into CPIO memory in RAM. Mounted at `/`
-  - `src/vfs/src/vfs-ramfs.cppm`, `src/vfs/src/vfs_init.cpp`
-- [x] **devfs** — `/dev/console` (UART read+write, line-buffered input, backspace, Ctrl+C), `/dev/null` (discard writes, EOF reads), `/dev/zero` (zero-fill reads). Mounted at `/dev`
-  - `src/vfs/src/vfs-devfs.cppm`, `src/vfs/src/vfs_init.cpp`
-- [x] **pipefs** — Anonymous pipes with 4KB ring buffer, 64-pipe pool, read/write with EOF detection, per-end reference counting and cleanup
-  - `src/vfs/src/vfs-pipefs.cppm`, `src/vfs/src/vfs_init.cpp`
-- [x] **stdio initialization** — `vfs_init_stdio()` opens `/dev/console` as fd 0/1/2 (stdin/stdout/stderr) for init process
-  - `src/vfs/src/vfs_init.cpp`
-
-### initramfs
-
-- [x] **CPIO newc parser** — Parses CPIO "070701" newc format archives from RAM (passed by QEMU `-initrd`), supports up to 64 files, FDT `/chosen/linux,initrd-start` discovery, `lookup()` and `for_each()` APIs
-  - `src/initramfs/src/initramfs.cppm`
-- [x] **VFS integration** — initramfs entries automatically registered as ramfs inodes at boot, zero-copy backing for file reads, execve resolves ELF binaries from initramfs via VFS path
-
----
-
-## Pending Features
-
-### P0: Multi-Process Support (Prerequisite for any real OS)
-
-- [x] **Per-process kernel stack** — Each user-mode thread gets its own 16KB kernel stack (order 2 from buddy allocator). SP_EL1 is set to the per-thread kernel stack top before entering EL0 (via TPIDR_EL1 in `switch_to_user`). SP_EL1 is preserved across eret, so when exceptions from EL0 arrive, SP already points to the correct per-thread kernel stack.
-  - Thread struct: `kernel_stack_base`, `kernel_stack_size`, `kernel_stack_top()` method
-  - Allocation: buddy allocator order 2 (16KB = 4 pages) in `kernel.cppm` user process creation
-  - TPIDR_EL1 set in `context_switch_to_task()` before `switch_to_user` and before `context_switch` for user task re-dispatch
-  - `switch_to_user` assembly: reads TPIDR_EL1 → sets SP before eret
-  - Files: `process.cppm` (Thread struct), `kernel.cppm`, `context_switch.S`, `start_arm64.S`
-
-- [x] **fork() system call** — Full COW fork: copies Process object, clones PGD with `clone_user_page_tables()` (marks all writable PTEs as read-only + COW bit 55), copies CpuContext with child x0=0, allocates per-thread kernel stack (16KB), registers child in parent's children list, enqueues into CFS scheduler. Parent returns child PID, child returns 0.
-  - `src/kernel/src/syscall_table.cpp` (sys_fork, 14-step implementation)
-
-- [x] **Copy-on-Write (COW)** — PTE bit 55 as COW flag, atomic page reference counting (`PageRefCount` array), permission fault handler (DFSC 0x0C-0x0F): if refcount > 1 → allocate new page + copy + map writable + decrement old; if refcount == 1 → flip PTE to writable. `clone_user_page_tables()` marks shared pages and increments refcounts.
-  - `src/mm/src/page_fault.cpp` (COW fault path), `src/mm/src/mm.cppm` (PageRefCount), `src/mm/src/page_table.cpp` (clone + COW PTE bit)
-
-- [x] **execve() system call** — 13-step full process image replacement via VFS path resolution:
-  - Copy pathname + argv from user memory before TTBR0 switch
-  - Resolve ELF via VFS `resolve_path()` (ramfs-backed initramfs files)
-  - Validate ELF header, tear down old address space (free user page tables + physical pages)
-  - Create new address space (PGD + ASID), load PT_LOAD segments as VMAs with smart overlap merging
-  - Add stack + heap VMAs (demand-zero), bind new address space, switch TTBR0
-  - Set up user stack with argc/argv (C ABI), direct eret to new entry point
-  - `src/kernel/src/syscall_table.cpp` (sys_execve, lines 289-737)
-
-- [x] **wait4()/waitpid() system calls** — Full blocking wait with Zombie lifecycle:
-  - `WaitQueue` primitive in containers (void*-based to avoid module cycle)
-  - `RcuList<ProcessId>` children tracking + `WaitQueue` child_exit_wq in Process
-  - sys_exit: 7-step Zombie transition (dequeue → restore TTBR0 → free page tables → reparent children to init → set Zombie → wake parent WQ → schedule_after_exit)
-  - sys_wait4: zombie scan → WNOHANG → blocking via context_switch to bootstrap context → reap (remove child + terminate_process + WEXITSTATUS encoding)
-  - sys_waitpid: thin wrapper over sys_wait4
-  - terminate_current_user_process: unified Zombie path (same as sys_exit)
-  - Dynamic VMA: AddressSpace migrated from fixed array to `RcuList<VmaRegion>`
-  - getpid/getppid: return real values from current thread/process
-  - `src/kernel/src/syscall_table.cpp`, `src/process/src/process-types.cppm`, `src/process/src/process.cpp`, `src/containers/src/containers.cppm`, `src/kernel/src/kernel_main.cpp`
-
-### P1: Basic OS Functionality
-
-- [x] **mmap() / munmap() system calls** — Anonymous private mmap (MAP_ANONYMOUS | MAP_PRIVATE): mmap_next cursor in AddressSpace for VA allocation (starts at 64GB), prot→vma_flags conversion (DEMAND_ZERO), add_vma with overlap check. munmap: exact VMA match only (no partial unmap), per-page unmap_user_page (clear PTE + TLB invalidate + COW-aware refcount free), remove_vma. File-backed mmap deferred.
-  - `src/kernel/src/syscall_table.cpp` (sys_mmap, sys_munmap), `src/process/src/process-types.cppm` (VmaType::MMAP, mmap_next, remove_vma, MMAP_BASE), `src/mm/src/page_table.cpp` (unmap_user_page)
-
-- [x] **brk() system call** — Linux-compatible brk(): brk(0) queries current break, brk(addr) expands/shrinks HEAP VMA (page-aligned), demand paging allocates zero pages on access. Max heap 16MB. `brk_base` and `brk_current` tracked in AddressSpace.
-  - `src/kernel/src/syscall_table.cpp` (sys_brk), `src/process/src/process-types.cppm` (AddressSpace fields)
-
-- [x] **Signal mechanism** — Full POSIX signal delivery with user-space handler execution via classic sigframe approach. Supports nested signals, sigaltstack, sigprocmask block/unblock, SIG_IGN/SIG_DFL, and sigreturn context restoration including NEON/FP state.
-  - kill/sigaction/sigprocmask: register handlers, modify signal masks, send signals
-  - setup_sigframe: saves GP regs + NEON + PC/SP/SPSR to user stack, writes sigreturn trampoline, redirects eret to handler
-  - sigreturn (syscall 17): restores full context from SignalFrame with magic validation
-  - sigaltstack (syscall 21): configure alternate signal stack for handler execution
-  - Signal checkpoint on every syscall return path (do_signal_checkpoint)
-  - Files: `signal.cpp`, `process-signal.cppm`, `process-types.cppm`, `syscall_table.cpp`, `start_arm64.S`, `syscall.h`, `signal_test.c`
-  - Design: `docs/plans/2026-03-04-signal-mechanism-design.md`
-
-- [x] **User pointer validation** — `copy_from_user()`/`copy_to_user()`/`copy_string_from_user()` with VMA range + permission checks; `validate_user_range()` for large buffers passed to VFS. All syscalls that access user memory now validate pointers: debug_print, execve (pathname + argv), open, read, write, fstat, pipe, wait4, sigaction, sigprocmask, sched_getaffinity, sched_setaffinity, clock_gettime, nanosleep, clock_nanosleep, topinfo.
-  - Files: `syscall_table.cpp` (5 helper functions + 14 syscall retrofits)
-  - Complexity: Low-Medium
-
-### P2: System Robustness
-
-- [ ] **KPTI (Kernel Page Table Isolation)** — Currently user PGD[0] contains complete kernel identity map via shared PGD entry. User-mode code can potentially read kernel memory via speculative execution (Meltdown).
-  - Need: separate user and kernel page tables — user PGD should NOT contain kernel mappings
-  - Need: on exception entry from EL0, switch to kernel page tables (modify exception vector to load kernel TTBR0 first)
-  - Need: on eret to EL0, switch back to user page tables
-  - Alternative: use TTBR1 for kernel (already done) and make TTBR0 user-only — but current kernel code runs at identity-mapped low addresses, which requires TTBR0
-  - Complexity: High — requires rethinking kernel address space layout
-
-- [x] **Stack auto-growth** — User stack starts at 32KB, automatically grows downward on page fault up to 8MB max. `try_grow_user_stack()` bridge function extends STACK VMA start_addr on translation fault below current stack bottom. No explicit guard page needed — faults below `STACK_TOP - STACK_MAX` simply fail growth and terminate the process. Growth granularity is per-page (demand-zero).
-  - `src/process/src/process-types.cppm` (STACK_MAX constant)
-  - `src/kernel/src/kernel_main.cpp` (try_grow_user_stack bridge)
-  - `src/mm/src/page_fault.cpp` (stack growth retry in try_demand_page)
-  - `src/abi/src/abi.cppm` (bridge declaration)
-
-- [x] **Proper getpid/getppid** — Return real values from `CfsScheduler::get_current_task()` → `owner_pid` / `find_process()` → `parent_pid()`. getuid/getgid still return 0 (root) pending credential structure.
-  - `src/kernel/src/syscall_table.cpp`
-
-- [ ] **Red-black tree full rebalancing** — `rb_insert_fixup()` only sets root black (no rotations or uncle-based recoloring). `rb_delete_fixup()` is also simplified. Under adversarial insertion patterns, tree degrades to O(n).
-  - Need: implement full left/right rotation
-  - Need: implement 3-case insert fixup (uncle red → recolor, uncle black → rotate)
-  - Need: implement 4-case delete fixup
-  - Files: `process.cppm` (CfsRunqueue RB-tree methods)
-  - Complexity: Medium
-
-- [x] **Timer system calls (partial)** — clock_gettime(CLOCK_MONOTONIC) reads TimerSubsystem::now_ns(); nanosleep arms one-shot HrTimer + blocks thread via context_switch until expiry. clock_getres remains ENOSYS.
-  - `src/kernel/src/syscall_table.cpp` (sys_clock_gettime, sys_nanosleep)
-
-- [x] **Process exit notification** — `terminate_current_user_process` now uses unified Zombie path (same 7-step flow as sys_exit): process enters Zombie state, parent's WaitQueue is woken, parent can collect exit status via waitpid(). No more zombie accumulation.
-  - `src/kernel/src/kernel_main.cpp`
-
-### P3: Platform Extension
-
-- [ ] **x86_64 full kernel** — Only UART HAL and boot stub exist. Everything else is missing.
-  - Need: MMU setup (CR3, 4-level paging, PAE)
-  - Need: IDT (Interrupt Descriptor Table) setup
-  - Need: APIC initialization (Local APIC + I/O APIC)
-  - Need: Timer setup (APIC timer or HPET)
-  - Need: context_switch.S (x86_64 calling convention, RSP/RIP save/restore)
-  - Need: syscall entry (SYSCALL/SYSRET or INT 0x80)
-  - Need: exception handlers (page fault via ISR 14, etc.)
-  - Need: SMP boot (AP startup via SIPI)
-  - Complexity: Very High — essentially a second kernel port
-
-- [ ] **RISC-V full kernel** — Same situation as x86_64, only UART HAL and boot stub.
-  - Need: MMU setup (satp register, Sv48 page tables)
-  - Need: Trap handler setup (stvec, scause dispatch)
-  - Need: PLIC initialization
-  - Need: Timer setup (mtime/mtimecmp via SBI)
-  - Need: context_switch.S (RISC-V calling convention)
-  - Need: ecall entry for syscalls
-  - Need: SMP boot (via SBI HSM extension)
-  - Complexity: Very High
-
-- [ ] **Block device driver** — No storage device support. Needed for any persistent file system.
-  - Need: virtio-blk driver for QEMU
-  - Need: block layer abstraction (read/write sector)
-  - Complexity: High
-
-- [ ] **Network device driver** — No networking. All 20 network syscalls are stubs.
-  - Need: virtio-net driver for QEMU
-  - Need: network stack (at minimum: Ethernet frame handling, ARP, IP, UDP)
-  - Complexity: Very High
-
-- [ ] **Device driver framework** — `DeviceManager` exists as a framework but has no actual drivers registered.
-  - Need: device tree-driven probe (match compatible strings to driver init functions)
-  - Need: interrupt routing from GIC to driver handlers
-  - Need: DMA-capable memory allocation for device buffers
-  - Complexity: Medium
-
-### P4: Advanced Features
-
-- [ ] **User-space libc** — Current user programs use raw SVC inline assembly. No C library.
-  - Need: minimal libc with syscall wrappers (write, exit, mmap, brk, etc.)
-  - Need: printf/puts implementation using write()
-  - Need: malloc/free using brk() or mmap()
-  - Need: _start entry point that calls main() and then exit()
-  - Complexity: Medium
-
-- [ ] **NUMA actual support** — Framework exists (policy manager, distance matrix, node states) but no multi-node hardware detection or cross-node allocation.
-  - Need: SRAT/SLIT ACPI table parsing (x86_64) or DTB NUMA node parsing (ARM64)
-  - Need: per-node buddy allocator zones
-  - Need: NUMA-aware page allocation policy
-  - Complexity: High
-
-- [ ] **Huge page support** — Interface defined for 2MB/1GB pages but not connected to allocation paths.
-  - Need: PMD-level block mapping for 2MB pages
-  - Need: PUD-level block mapping for 1GB pages
-  - Need: THP (Transparent Huge Pages) or explicit hugetlbfs
-  - Complexity: Medium
-
-- [ ] **Memory reclaimer** — Class exists but no actual reclaim algorithm.
-  - Need: LRU page list tracking
-  - Need: page eviction under memory pressure
-  - Need: reclaim watermark triggers
-  - Dependency: Useful mainly after mmap/file-backed pages exist
-  - Complexity: High
-
-- [ ] **Memory compactor** — Class exists but no actual compaction.
-  - Need: page migration (copy content, update PTE, flush TLB)
-  - Need: free page scanner + movable page scanner
-  - Need: compaction trigger (high-order allocation failure)
-  - Complexity: High
-
-- [ ] **Shared memory IPC** — `SharedMemoryManager` exists in `moss.ipc` module but is not connected to any syscall or user-facing API.
-  - Need: shmget/shmat/shmdt syscalls or mmap(MAP_SHARED)
-  - Need: physical page sharing between processes
-  - Dependency: mmap, VFS
-  - Complexity: Medium
-
-- [ ] **Multi-user support** — No credential structure, no permission checking.
-  - Need: uid/gid/euid/egid in Process
-  - Need: capability-based permission checking
-  - Need: setuid/setgid syscalls
-  - Complexity: Medium
-
----
-
-## Module Dependency Graph
-
-```
-moss.types ← moss.std ← moss.concepts ← moss.result ← moss.smart_ptr
-                                              ↓
-                                          moss.arch
-                                              ↓
-                               ┌──────────────┼──────────────┐
-                               ↓              ↓              ↓
-                          moss.platform   moss.logging   moss.fdt
-                               ↓              ↓
-                          moss.hal.*     moss.containers
-                               ↓              ↓
-                    ┌──────────┼──────────────┼──────────┐
-                    ↓          ↓              ↓          ↓
-               moss.mm   moss.interrupts  moss.timer  moss.ipc
-                    ↓          ↓              ↓
-                    └──────────┼──────────────┘
-                               ↓
-                          moss.process
-                               ↓
-                     ┌─────────┼─────────┐
-                     ↓         ↓         ↓
-               moss.drivers  moss.vfs  moss.initramfs
-                     ↓         ↓         ↓
-                     └─────────┼─────────┘
-                               ↓
-                          moss.kernel ← moss.boot
+# 单独测试 / 启动已有正常内核
+uv run ctest --preset arm64-debug-test
+uv run scripts/run_qemu.py --manifest build/arm64-debug/moss-artifacts.json
 ```
 
----
+仅需正常内核时，在 configure 加 `-DMOSS_BUILD_TESTS=OFF`，随后使用独立 build；不要将此配置的“无测试”视为验收通过。当前产物：ARM64/RV64 `moss.bin`，x86_64 `bin/moss.elf`。完整用法和限制见 [generic-boot.md](docs/generic-boot.md)。
 
-## File Statistics
+## 已接通的功能，不等于可靠性任务已关闭
 
-- **Total source files**: ~75 (.cppm + .cpp + .S + .c)
-- **Total lines of code**: ~18,000+ (estimated)
-- **Modules**: 25 C++26 modules (including moss.vfs, moss.initramfs)
-- **Syscall table entries**: 130 (29 implemented, ~101 stubs)
-- **Architectures**: 3 (ARM64 full, x86_64 stub, RISC-V stub)
-- **Build presets**: 6 (3 arch × 2 build types)
+| 子系统 | 已有实现 | 剩余可靠性任务 |
+| --- | --- | --- |
+| Boot / AAL / HAL | 三架构启动、CPU 身份、per-CPU 栈与上下文、异常/IRQ、用户返回、UART；DTB 或 PVH/ACPI 资源发现、SMP/IPI、硬件定时器 | 001、007、023、027、029；真机和未知设备仍需适配/验收 |
+| 物理内存与堆 | Buddy PFA、页引用、order 分配/释放、统计；链接预留 8 MiB NOLOAD 堆，256 KiB 起始 arena，扩容限制在预留内；SlabCache/SlabAllocator 代码 | 004、005、013；不能再描述为“不受限的动态堆”或用较大堆证明回收正确 |
+| 虚拟内存 | 动态页表、用户地址空间、TTBR/CR3/satp 切换、VMA、demand paging、COW、匿名 private mmap、整段匹配 munmap、brk、栈增长与故障诊断 | 002、008～012；ASID 回绕、RO/NONE 权限、缩堆解映射及失败事务未闭合 |
+| 进程与调度 | ProcessManager、PID/PPID、每线程内核栈、CFS vruntime/权重、内嵌 RB 节点、插入/删除旋转与着色、idle、负载均衡和 affinity；fork/exec/wait/exit/Zombie | 014～019、021～023；有 RB 算法不代表调度队列所有权已正确 |
+| 信号与系统调用 | syscall dispatcher、kill/sigaction/sigprocmask/sigaltstack/sigreturn、ARM64 handler/嵌套/备用栈路径、VMA-based copy helper、clock_gettime/nanosleep 入口 | 002、003、007、019～021、031；不是“完整 POSIX 信号”或 fault-safe uaccess，nanosleep 切换仍仅 ARM64 |
+| ELF / userspace / initramfs | ELF64 基本检查、PT_LOAD/VMA 后备、按 ISA 的 trampoline 和 syscall wrapper；CPIO newc、shell/hello/top/signal_test、VFS exec；真正 getpid/getppid | 014～016、027；不是所有 ELF 布局或所有进程继承语义已验收 |
+| VFS | inode/dentry/File/FdTable、路径/mount/dcache、ramfs、devfs(console/null/zero)、stdio、open/close/read/write/lseek/fstat/dup/dup2/pipe 和匿名 pipefs | 022、024～026；只读 ramfs 测试不证明 FD 模式和 pipe 阻塞语义 |
+| 核心与同步 | C++ 模块、freestanding types/std/concepts、Result、unique_ptr、klog；ticket/IRQ spinlock、RAII guard、atomics、PerCpuData/计数/队列、MPSC、RCU 容器、WaitQueue | 尤其 006、017、018；RCU 名称不等于正确的退休/宽限期，不能标成并发安全 |
+| 扩展框架 | DeviceManager/UartDriver、NUMA/hugepage/reclaim/compaction/共享内存接口；Process 已有 uid/gid/euid/egid 字段 | 030～032 及后续功能清单；字段、框架或空成功返回不等于可用能力 |
+
+主要实现分别位于 `src/boot/`、`src/aal/`、`src/hal/`、`src/mm/`、`src/containers/`、`src/process/`、`src/kernel/`、`src/vfs/`、`src/userspace/`。下面以稳定审计编号追踪未完成工作，详细源码符号见 [审计状态表](moss-todo.md#4-问题总表与当前状态)。
+
+## P0：隔离与基础所有权
+
+优先级沿用审计，不沿用旧清单按“新增功能”划分的 P0/P1。
+
+- [ ] **MOSS-001**：x86 内核映射去掉 USER；收紧三架构最终内核 W^X，验证 supervisor/RO/NX 权限。
+- [ ] **MOSS-002**：统一用户地址域，限制 VMA/mmap，移除 syscall 0 原始 UART 指针旁路；实现可恢复、跨页/跨 VMA 的 uaccess。
+- [ ] **MOSS-003**：将用户信号帧/altstack 当不可信输入，安全复制并净化 PC/SP/特权状态。
+- [ ] **MOSS-004（专项验收已通过，待修复提交）**：当前堆、活动页表树/early pool/链接表区、PFA 元数据布局与耗尽校验和，以及坏布局启动拒绝已验证；不外推到并发进程页表生命周期。
+  - [x] heap 耗尽返回失败，缓冲区模式/PFA 页哨兵及页计数不变，释放后可重新分配合并大块。
+  - [x] 4/64/256 KiB 边界写入及堆/PFA 耗尽时检查页表与元数据；三架构 Debug/Release 拒绝重叠堆布局（[证据](moss-todo.md#37-堆页表与-pfa-元数据所有权2026-09-06工作区)）。
+- [ ] **MOSS-005（部分验收）**：保留洞、区间重叠/非对齐、容量/溢出、多 bank 耗尽及当前布局已验证；仍保守保留 kernel_end 以下，需补完整启动保留集合、回收和 x86 PVH 非法内存表。
+  - [x] 三架构 PFA 耗尽不返回保留页；逐页模式、initrd 校验和及释放后页数恢复通过。
+  - [x] ARM64/RV64 Debug/Release 固件输入共 18 项检查；有效区间末端 UINT64_MAX 在裁剪前取整导致回绕的问题已修复，异常输入在启动阶段拒绝（[证据](moss-todo.md#35-pfa-分配归属与固件边界2026-09-06工作区)）。
+  - [x] PFA 联合管理 kernel_end 以上多 bank、排序/合并相邻段、独立排除元数据；RV64 实际 DTB 验证两段/乱序八段、元数据放入后续 bank、非对齐相邻段及 RAM 表溢出（[证据](moss-todo.md#36-多-ram-bank-分配2026-09-06工作区)）。
+- [ ] **MOSS-006**：修复 RcuPtr 自动删除仍可达节点、回调池耗尽及无宽限期问题；先闭合锁和所有权，不靠周期 drain 或扩大池。
+- [ ] **MOSS-007（部分实现）**：x86 第八参数目前是 null，RV64 未传有效帧；仍需每 ISA 的完整 TrapFrame、信号桩、偏移/返回状态校验。
+- [ ] **MOSS-008**：仅可写私有页允许 COW；RO/text/NX/NONE 不能因 fork 或 fault 被放宽权限。
+
+## P1：VM、进程、并发、VFS 与验收
+
+- [ ] **MOSS-009**：修正 RV64 demand/COW 分类及 PPN 编码；已驻留页不得被缺页路径重新填充。
+- [ ] **MOSS-010**：页表 clone/map 显式失败、完整回滚；不得发布部分成功的 fork。
+- [ ] **MOSS-011**：活跃 ASID 租约与跨 CPU TLB 失效；超过 255 次地址空间创建仍隔离。
+- [ ] **MOSS-012**：brk/mmap/munmap 同步维护 VMA/PTE/引用/TLB；覆盖 PROT_NONE 与增长冲突。部分 munmap 仍作为明确的后续兼容能力。
+- [ ] **MOSS-013（专项验收已通过，待修复提交）**：heap 对齐/极值/错误释放和 PFA 原分配头/order、边界、保留洞分段及耗尽/合并已验证；SMP 页引用生命周期仍归 008～010/028，不能以此声称 COW 安全。
+  - [x] PFA 拒绝错误 order、内部/非对齐地址、重复释放及仍有共享引用的整块释放，失败不部分改变元数据、数据或统计。
+  - [x] heap 返回地址对齐、溢出拒绝、原块/请求大小追踪与错误释放检查；4,096 次混合分配/释放和计数恢复，六配置真实内核测试通过。
+- [ ] **MOSS-014（部分实现）**：RV64/x86 首次用户返回及 GP 快照已补；补 fork 不立即 exec 的寄存器、VM 游标、凭据、FD、信号及扩展状态继承。
+- [ ] **MOSS-015**：exec 先准备新映像再提交；失败保留旧进程，统一回滚/退出路径。
+- [ ] **MOSS-016**：ELF checked arithmetic、段/入口/权限校验、边界页与明确重叠策略；逐点分配失败验证。
+- [ ] **MOSS-017**：原子取任务、去重入队、on-CPU 交接、迁移锁序和 affinity；对已有 RB 算法补不变量/交错测试，不重写一套。
+- [ ] **MOSS-018**：wait/console 条件检查—登记—睡眠统一协议；多读者、信号中断、坏 status 后可重试。
+- [ ] **MOSS-019**：三架构真实 nanosleep；timer 满队列显式失败、同步取消/回调生命周期与 deadline 溢出检查。`clock_getres` 仍是 ENOSYS，按明确的 Moss ABI 补实现与测试。
+- [ ] **MOSS-020**：统一 syscall/IRQ 返回信号检查；修正 signo/返回值写回，补 CPU-bound 投递、STOP/CONT/SIGCHLD 和阻塞中断。
+- [ ] **MOSS-021**：信号状态绑定进程/线程生命周期，不按绝对 PID 索引 256 槽；验证 fork/exec/exit 及复用。
+- [ ] **MOSS-022**：进入 Zombie 前关闭 FD，回收恰好一次；父不 wait 也释放运行资源，exec 保留约定继承的 FD。
+- [ ] **MOSS-023（部分实现）**：已复用 `context_switch` 返回活跃 bootstrap 栈；补原第 28 次停滞的前后对照，以及 Debug/Release、支持的 1/4/16 CPU 配置下至少 1,000 次生命周期和资源检查。
+- [ ] **MOSS-024**：FD 访问模式、稳定 File 引用、共享 offset、池分配/关闭并发保护。
+- [ ] **MOSS-025**：pipe 空但有 writer 时阻塞，最后 writer 关闭才 EOF；满缓冲区、EPIPE、信号及多读写者协议。
+- [ ] **MOSS-026**：inode/pipe/File/FD 槽可复用；创建各阶段及用户复制失败回滚，1,000 次 pipe 创建/关闭不耗尽。
+- [ ] **MOSS-027（正常路径已修复，负向验收待补）**：PVH 模块表取代扫描/fallback；补改变 initrd 大小/位置、缺失/非法模块和必需 init 失败的明确错误验证。
+- [ ] **MOSS-028（框架已落地，覆盖待补）**：保留真实内核套件、协议、失败/panic/timeout 自检；逐项补审计 T01～T12，特别是信号、坏指针、COW、资源长循环、失败回滚及确定性交错；纳入持续验收。
+
+## P2：能力契约与文档
+
+- [ ] **MOSS-029（部分实现）**：x86 TSC/LAPIC 分别用 PIT 校准，RV64 使用 SBI TIME 且已有 `sstc=false` 验收；补缺失 SBI/计时设备、失败返回、时钟误差与 CPU 能力变化测试。
+- [ ] **MOSS-030**：内存/IPC 未实现操作返回 Unsupported，不返回固定地址、假成功率或假压力；初始化 Ready 只能在实例发布后可见。
+- [ ] **MOSS-031**：收敛 UserAccess/AddressSpace/TrapFrame/ProcessResources/ExecLoader 等已有职责；明确 Moss ABI、号表、定长结构与错误语义，不把同名 syscall 宣称为 Linux/POSIX ABI。
+- [ ] **MOSS-032（本文档部分已更新）**：持续同步代码、启动错误、统计和 pass/fail/skip；本次清单更新不关闭 MOSS-030 的假能力或其他验收缺口。
+
+依赖顺序及每阶段退出条件见 [审计实施顺序](moss-todo.md#11-实施顺序与可交付阶段)。各编号只有满足原验收条件后才整体关闭；上面的“已修复”子问题不免除同项剩余工作。
+
+## 后续功能：保留需求，但不抢在 P0/P1 之前
+
+- [ ] **KPTI / 高半区布局**：作为后续隔离加固；先修 MOSS-001 的直接 U/S 权限错误，再设计用户/内核页表和入口切换，不能把直接越权仅描述成 Meltdown。
+- [ ] **栈增长加固与 VM 兼容扩展**：已有 demand-zero 栈增长；补 guard/边界/冲突测试。文件后备 mmap、MAP_SHARED、部分 munmap 在 VM 事务稳定后实现。
+- [ ] **x86_64 端口完善**：复用已有 IDT、MMU、APIC、timer、context switch、SYSCALL、fault 和 AP startup；先完成 001/007/014/019 等跨架构契约，不再从 boot stub 重写。
+- [ ] **RV64 端口完善**：复用已有 satp/trap/PLIC/SBI/context switch/ecall/HSM；先完成 007/009/014/019，按需求另增 AIA 等驱动。
+- [ ] **同 ISA 通用镜像扩展与真机验收**：已有低于 4 GiB 的多 RAM bank 分配；继续精确回收启动区、细粒度 RAM/MMIO 映射、更多启动协议/设备与真机固件交接，以不变镜像 hash 验收，不能退回 virt/板名编译矩阵。
+- [ ] **块设备与持久文件系统**：块层和实际设备驱动；virtio-blk 可作为首个可验证设备契约，不是内核对 QEMU 的依赖。
+- [ ] **网络设备与协议栈**：设备驱动（可先 virtio-net）、Ethernet/ARP/IP/UDP 与实际 socket 路径。
+- [ ] **设备框架整合**：已有运行时 compatible/资源匹配及 HAL 驱动；按需要接入 DeviceManager 的 probe/生命周期/IRQ/DMA，不能依据设备计数 0 宣称没有 UART 驱动。
+- [ ] **最小 userspace libc**：已有三个 ISA 的裸 syscall wrapper 和程序自身 `_start`；提取统一启动、格式化输出与 malloc/free，保留内核/用户 ABI 一致性。
+- [ ] **NUMA**：固件拓扑、per-node zones 与实际分配策略；现有策略/距离矩阵不是完整 NUMA。
+- [ ] **Huge pages**：已有早期大块映射和管理接口；补用户大页分配/回收与 PMD/PUD 映射。THP/hugetlbfs 按需求单列。
+- [ ] **Memory reclaim**：实际 LRU、可回收页和水位触发；依赖可信所有权及文件后备页等可回收对象。
+- [ ] **Memory compaction**：迁移、PTE/TLB 更新和扫描/触发；先修空成功接口，再接真实算法。
+- [ ] **共享内存 IPC**：真实页面/映射/引用及进程退出清理；选择 shm API 或 MAP_SHARED 后再公开用户能力。
+- [ ] **多用户/权限**：复用 Process 已有 uid/gid/euid/egid 字段，补继承、鉴权、setuid/setgid 和文件权限，不再新增重复凭据字段。
+
+## 本次核对的验证证据
+
+- [x] 布局修复后运行 `uv run pytest -q scripts/tests`：**102 passed**（37.84 s），验证宿主工具与构建回归，不代表 102 个内核功能均已验收。
+- [x] 布局修复后重建三架构 Debug/Release 并执行各自 CTest：Debug 各 2 项、Release 各 3 项，全部 15 个入口通过；日志 `build/<preset>/layout-{build,ctest}.log`，原始报告见 [布局修复证据](moss-todo.md#37-堆页表与-pfa-元数据所有权2026-09-06工作区)。
+- [x] ARM64/RV64 Debug/Release 共 26 项固件输入检查符合预期；同配置镜像 hash 不变，正向真实耗尽，负向准确失败且不发布 ready。
+- [x] `check_heap_layout.py` 的 6 项重叠布局负向检查符合预期；实际链接输入复用，默认产物不变，临时坏镜像明确启动失败。
+- [x] RV64 Debug/Release 同镜像补跑 Sv39 的 heap/pfa，两套件通过；默认矩阵为 Sv48，串口模式与镜像 hash 均已核对。
+- [x] 对照生产内核测试和 runner：默认功能是 resources/mm/pfa/heap/vfs/users 共 14 个用例；heap 5 项、pfa 2 项，进程仍只是一次 fork/exec/exit/wait，不是 1,000 次压力或完整信号测试。
+- [x] 修复实测暴露的 CPU 就绪误报：统一等待从核发布 online、真实时钟超时，缺核不再假成功；ARM64 四核 heap 连续 10 次和 GICv3 16 核通过，保留原失败报告。
+- [x] 9 个 workflow/test preset 的匹配由 `scripts/tests/test_artifacts.py` 回归覆盖；仅六个 Debug/Release 有上述运行证据。
+- [ ] RelWithDebInfo 三架构完整运行验收。
+- [ ] 审计 T01～T12 的完整覆盖、资源耗尽/故障注入、长时间 SMP 和真实硬件验收。
+
+原始通用启动/同镜像记录见 [generic-boot-acceptance.md](docs/generic-boot-acceptance.md)；更早的 [kernel-validation-acceptance.md](docs/kernel-validation-acceptance.md) 已标历史，其旧预设命令不再使用。后续关闭任务需附修复提交、对应原始结果和未覆盖边界，不能只改勾选。

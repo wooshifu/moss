@@ -529,7 +529,10 @@ private:
 
       // Wait for secondary CPUs to complete activation
       u32 active_cpus = moss::boot::wait_for_all_cpus_active(5000);
-
+      if (active_cpus != g_num_cpus) {
+        log::klog::error("SMP startup timed out: {} of {} CPUs online", active_cpus, g_num_cpus);
+        return VoidResult{ErrorCode::Timeout};
+      }
       if (active_cpus > 1) {
         log::klog::info("SMP: {} CPUs active", active_cpus);
       }

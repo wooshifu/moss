@@ -462,7 +462,8 @@ static bool discover_acpi(u64 address) noexcept {
   ::moss::kernel::usize initial_heap_size = 256ULL * 1024;
   auto heap_result = ::moss::kernel::mm::RuntimeHeapAllocator::initialize_heap(heap_start, initial_heap_size);
   if (!heap_result) {
-    moss::boot::early_print("  WARNING: RuntimeHeapAllocator init failed\n");
+    moss::boot::early_print("  RuntimeHeapAllocator init failed\n");
+    return ::moss::kernel::VoidResult{::moss::kernel::ErrorCode::OutOfMemory};
   }
 
   moss::boot::early_print("x86_64 memory management setup complete\n\n");
@@ -724,10 +725,6 @@ void activate_secondary_cpus() noexcept {
       moss::kernel::arch::cpu_yield();
     }
   }
-}
-
-u32 wait_for_all_cpus_active([[maybe_unused]] u32 timeout_ms) noexcept {
-  return static_cast<u32>(__builtin_popcountll(__atomic_load_n(&online_cpu_mask, __ATOMIC_ACQUIRE)));
 }
 
 } // namespace moss::boot
