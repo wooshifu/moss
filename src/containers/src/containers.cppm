@@ -924,8 +924,9 @@ using InterruptWorkQueue = PerCpuWorkQueue<InterruptId, 64>;
 // ============================================================================
 export namespace moss::kernel::containers {
 
-// RCU deferred callback queue — type-erased callbacks scheduled by RcuPtr
-// and executed after a grace period via rcu_process_callbacks().
+// Deferred node deletion. Only an owning container may enqueue an unlinked node.
+// This queue does NOT provide a reader grace period; MOSS-006 tracks replacement
+// with locked owning containers and scoped borrowing before concurrent reclamation.
 //
 // Storage is at namespace scope with constinit to guarantee constant
 // initialization and avoid __cxa_guard_acquire/release runtime calls.
@@ -1056,79 +1057,9 @@ public:
   static bool in_read_side() noexcept { return read_depth_.get_local() > 0; }
 };
 
-// RCU-protected pointer
-template <typename T> class RcuPtr {
-private:
-  moss::kernel::containers::AtomicPtr<T> ptr_;
-
-public:
-  constexpr RcuPtr() noexcept : ptr_(nullptr) {}
-  constexpr RcuPtr(T *p) noexcept : ptr_(p) {}
-
-  RcuPtr(const RcuPtr &) = delete;
-  RcuPtr &operator=(const RcuPtr &) = delete;
-
-  RcuPtr(RcuPtr &&other) noexcept : ptr_(other.ptr_.exchange(nullptr)) {}
-  RcuPtr &operator=(RcuPtr &&other) noexcept {
-    if (this != &other) {
-      T *old_ptr = ptr_.exchange(other.ptr_.exchange(nullptr));
-      schedule_rcu_delete(old_ptr);
-    }
-    return *this;
-  }
-
-  [[nodiscard]] T *load_rcu() const noexcept {
-#ifndef NDEBUG
-    if (!RcuReadLock::in_read_side()) {
-#if defined(MOSS_ARCH_ARM64)
-      asm volatile("brk #1");
-#elif defined(MOSS_ARCH_X86_64)
-      asm volatile("int3");
-#elif defined(MOSS_ARCH_RISCV)
-      asm volatile("ebreak");
-#else
-      while (1) {
-      }
-#endif
-    }
-#endif
-    return ptr_.load(MemoryOrder::Consume);
-  }
-
-  void store_rcu(T *new_ptr) noexcept {
-    T *old_ptr = ptr_.exchange(new_ptr, MemoryOrder::Release);
-    schedule_rcu_delete(old_ptr);
-  }
-
-  [[nodiscard]] bool compare_exchange_rcu(T *&expected, T *desired) noexcept {
-    if (ptr_.compare_exchange_weak(expected, desired, MemoryOrder::Release, MemoryOrder::Consume)) {
-      schedule_rcu_delete(expected);
-      return true;
-    }
-    return false;
-  }
-
-  [[nodiscard]] T *exchange(T *new_ptr, MemoryOrder order = MemoryOrder::AcqRel) noexcept {
-    return ptr_.exchange(new_ptr, order);
-  }
-
-  [[nodiscard]] T *load(MemoryOrder order = MemoryOrder::Acquire) const noexcept { return ptr_.load(order); }
-
-private:
-  // Type-erased destructor: casts void* back to T* and deletes.
-  static void destroy_callback(void *ptr) noexcept { delete static_cast<T *>(ptr); }
-
-  // Enqueue deferred deletion of old_ptr via RcuCallbackQueue.
-  static void schedule_rcu_delete(T *old_ptr) noexcept {
-    if (old_ptr != nullptr) {
-      RcuCallbackQueue::enqueue(&destroy_callback, static_cast<void *>(old_ptr));
-    }
-  }
-};
-
-// RCU-protected linked list node
+// Legacy RCU-named list node; the links publish addresses without owning them.
 template <typename T> struct RcuListNode {
-  RcuPtr<RcuListNode<T>> next;
+  AtomicPtr<RcuListNode<T>> next;
   T data;
 
   template <typename... Args>
@@ -1136,10 +1067,11 @@ template <typename T> struct RcuListNode {
       : next(nullptr), data(moss::forward<Args>(args)...) {}
 };
 
-// RCU-protected linked list
+// Legacy RCU-named owning list. Reader lifetime and concurrent unlink are not
+// yet safe (MOSS-006); non-owning atomic links alone do not provide RCU.
 template <typename T> class RcuList {
 private:
-  RcuPtr<RcuListNode<T>> head_;
+  AtomicPtr<RcuListNode<T>> head_;
   moss::kernel::containers::AtomicCounter<moss::kernel::usize> size_;
 
 public:
@@ -1155,35 +1087,39 @@ public:
   template <typename... Args> void push_front(Args &&...args) {
     auto new_node = new RcuListNode<T>(moss::forward<Args>(args)...);
 
-    RcuListNode<T> *old_head = head_.load(MemoryOrder::Relaxed);
+    RcuListNode<T> *old_head = head_.load(MemoryOrder::Acquire);
     do {
-      new_node->next.store_rcu(old_head);
-    } while (!head_.compare_exchange_rcu(old_head, new_node));
+      // Publishing a link does not transfer ownership of the old head: it
+      // remains reachable through next, including after a failed CAS retry.
+      new_node->next.store(old_head, MemoryOrder::Relaxed);
+    } while (!head_.compare_exchange_weak(old_head, new_node, MemoryOrder::AcqRel, MemoryOrder::Acquire));
 
     (void)size_.fetch_add(1, MemoryOrder::Relaxed);
   }
 
   bool remove(const T &value) {
     RcuListNode<T> *prev = nullptr;
-    RcuListNode<T> *current = head_.load_rcu();
+    RcuListNode<T> *current = head_.load(MemoryOrder::Acquire);
 
     while (current != nullptr) {
       if (current->data == value) {
-        RcuListNode<T> *next = current->next.load_rcu();
+        RcuListNode<T> *next = current->next.load(MemoryOrder::Acquire);
 
         if (prev == nullptr) {
-          if (head_.compare_exchange_rcu(current, next)) {
+          if (head_.compare_exchange_weak(current, next, MemoryOrder::AcqRel, MemoryOrder::Acquire)) {
             (void)size_.fetch_sub(1, MemoryOrder::Relaxed);
+            schedule_rcu_delete(current);
             return true;
           }
         } else {
-          prev->next.store_rcu(next);
+          prev->next.store(next, MemoryOrder::Release);
           (void)size_.fetch_sub(1, MemoryOrder::Relaxed);
+          schedule_rcu_delete(current);
           return true;
         }
       }
       prev = current;
-      current = current->next.load_rcu();
+      current = current->next.load(MemoryOrder::Acquire);
     }
     return false;
   }
@@ -1191,12 +1127,12 @@ public:
   template <typename Predicate> [[nodiscard]] const T *find_if(Predicate pred) const {
     RcuReadLock read_lock;
 
-    RcuListNode<T> *current = head_.load_rcu();
+    RcuListNode<T> *current = head_.load(MemoryOrder::Acquire);
     while (current != nullptr) {
       if (pred(current->data)) {
         return &current->data;
       }
-      current = current->next.load_rcu();
+      current = current->next.load(MemoryOrder::Acquire);
     }
     return nullptr;
   }
@@ -1208,10 +1144,10 @@ public:
   template <typename Func> void for_each(Func func) const {
     RcuReadLock read_lock;
 
-    RcuListNode<T> *current = head_.load_rcu();
+    RcuListNode<T> *current = head_.load(MemoryOrder::Acquire);
     while (current != nullptr) {
       func(current->data);
-      current = current->next.load_rcu();
+      current = current->next.load(MemoryOrder::Acquire);
     }
   }
 
@@ -1219,7 +1155,7 @@ public:
 
   [[nodiscard]] bool empty() const noexcept {
     RcuReadLock read_lock;
-    return head_.load_rcu() == nullptr;
+    return head_.load(MemoryOrder::Acquire) == nullptr;
   }
 
   void clear() {
