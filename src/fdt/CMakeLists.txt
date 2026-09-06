@@ -42,7 +42,7 @@ target_include_directories(moss_fdt SYSTEM PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/l
 
 target_link_libraries(
     moss_fdt
-    PRIVATE moss_core moss_libfdt_c
+    PRIVATE moss_core moss_platform moss_libfdt_c
 )
 
 message(STATUS "FDT 模块配置完成 (libfdt + moss.fdt)")

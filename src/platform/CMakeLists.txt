@@ -5,8 +5,8 @@ target_sources(
     PUBLIC FILE_SET CXX_MODULES FILES src/platform.cppm
 )
 
-# Needs arch_detect.h from AAL and types from core
+# Firmware data has no dependency on architecture operations.
 target_link_libraries(
     moss_platform
-    PUBLIC moss_core moss_aal
+    PUBLIC moss_core
 )

@@ -1,5 +1,0 @@
-# Auto-generated wrapper — delegates to scripts/run_qemu.py
-[Console]::OutputEncoding = [System.Text.Encoding]::UTF8
-$env:PYTHONIOENCODING = "utf-8"
-& uv run "@CMAKE_SOURCE_DIR@/scripts/run_qemu.py" --config "@CMAKE_BINARY_DIR@/qemu_config.json" @args
-exit $LASTEXITCODE

@@ -16,7 +16,7 @@ target_sources(
 # AAL depends on core for moss.std and moss.types
 target_link_libraries(
     moss_aal
-    PUBLIC moss_core
+    PUBLIC moss_core moss_platform moss_hal_uart
 )
 
 message(STATUS "AAL (Architecture Abstraction Layer) configured")

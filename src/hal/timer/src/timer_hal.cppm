@@ -20,8 +20,10 @@ import moss.platform;
 
 export namespace moss::kernel::hal::timer {
 
+using moss::u16;
 using moss::u32;
 using moss::u64;
+using moss::u8;
 
 // ============================================================================
 // Timer frequency — read from hardware or platform defaults
@@ -37,11 +39,11 @@ using moss::u64;
 #elif defined(MOSS_ARCH_X86_64)
   // x86_64: TSC frequency must be calibrated (placeholder: return platform default)
   u64 plat_freq = platform::timer_frequency();
-  return (plat_freq != 0) ? plat_freq : 1000000000ULL; // fallback 1 GHz
+  return plat_freq;
 #elif defined(MOSS_ARCH_RISCV)
   // RISC-V: typically from DTB timebase-frequency; use platform default
   u64 plat_freq = platform::timer_frequency();
-  return (plat_freq != 0) ? plat_freq : 10000000ULL; // fallback 10 MHz
+  return plat_freq;
 #endif
 }
 
@@ -66,6 +68,48 @@ using moss::u64;
 #endif
 }
 
+#if defined(MOSS_ARCH_X86_64)
+inline u64 lapic_frequency = 0; // Counter frequency after the configured divide-by-16.
+
+[[nodiscard]] inline bool calibrate() noexcept {
+  // Measure TSC and LAPIC against the legacy PIT reference clock. This profile
+  // requires a working PIT; no guessed GHz value is used if it is unavailable.
+  auto out = [](u16 port, u8 value) { asm volatile("outb %0, %1" ::"a"(value), "Nd"(port)); };
+  auto in = [](u16 port) {
+    u8 value;
+    asm volatile("inb %1, %0" : "=a"(value) : "Nd"(port));
+    return value;
+  };
+  auto count = [&] {
+    out(0x43, 0);
+    u16 low = in(0x40);
+    return static_cast<u16>(low | (static_cast<u16>(in(0x40)) << 8));
+  };
+  auto *initial = reinterpret_cast<volatile u32 *>(platform::intc_dist_base() + 0x380);
+  auto *current = reinterpret_cast<volatile u32 *>(platform::intc_dist_base() + 0x390);
+  out(0x43, 0x30);
+  out(0x40, 0xFF);
+  out(0x40, 0xFF);
+  u16 first = count(), last = first;
+  u64 tsc_start = read_counter();
+  *initial = ~0U;
+  for (u32 retry = 0; retry < 1000000 && first - last < 20000; ++retry) {
+    last = count();
+  }
+  u64 apic_ticks = ~0U - *current;
+  u64 tsc_ticks = read_counter() - tsc_start;
+  *initial = 0;
+  if (last > first || first - last < 20000 || first - last > 60000 || !tsc_ticks || !apic_ticks) {
+    return false;
+  }
+  u64 reference_ticks = static_cast<u64>(first - last);
+  platform::hardware.timebase_frequency = tsc_ticks * 1193182ULL / reference_ticks;
+  lapic_frequency = apic_ticks * 1193182ULL / reference_ticks;
+  return frequency() >= 1000 && frequency() <= 100000000000ULL && lapic_frequency >= 1000 &&
+         lapic_frequency <= 100000000ULL;
+}
+#endif
+
 // ============================================================================
 // Compare value — program next interrupt
 // ============================================================================
@@ -77,23 +121,25 @@ inline void set_compare(u64 value) noexcept {
   asm volatile("msr cntv_cval_el0, %0" ::"r"(value));
   asm volatile("isb");
 #elif defined(MOSS_ARCH_X86_64)
-  // LAPIC one-shot timer: Initial Count register at 0xFEE00380.
-  // We use divide-by-16, so LAPIC ticks = TSC delta / 16.
-  // The caller passes an absolute TSC target; convert to relative count.
   {
     u64 now = read_counter();
-    u64 delta = (value > now) ? (value - now) : 1;
-    // Divide by 16 (matching Divide Configuration = 0x03)
-    u32 initial_count = static_cast<u32>(delta >> 4);
-    if (initial_count == 0) {
-      initial_count = 1;
+    u64 delta = value > now ? value - now : 1;
+    u64 seconds = delta / frequency();
+    u64 ticks = seconds > 0xFFFFFFFFULL / lapic_frequency
+                    ? 0xFFFFFFFFULL
+                    : seconds * lapic_frequency + (delta % frequency()) * lapic_frequency / frequency();
+    if (ticks > 0xFFFFFFFFULL) {
+      ticks = 0xFFFFFFFFULL;
     }
-    auto *lapic_init_count = reinterpret_cast<volatile u32 *>(0xFEE00380ULL);
-    *lapic_init_count = initial_count;
+    *reinterpret_cast<volatile u32 *>(platform::intc_dist_base() + 0x380) = static_cast<u32>(ticks ? ticks : 1);
   }
 #elif defined(MOSS_ARCH_RISCV)
-  // RISC-V: write stimecmp CSR (Sstc extension)
-  asm volatile("csrw stimecmp, %0" ::"r"(value));
+  // SBI TIME works with and without the optional Sstc extension.
+  register u64 a0 asm("a0") = value;
+  register u64 a1 asm("a1") = 0;
+  register u64 a6 asm("a6") = 0;
+  register u64 a7 asm("a7") = 0x54494D45;
+  asm volatile("ecall" : "+r"(a0), "+r"(a1) : "r"(a6), "r"(a7) : "memory");
 #endif
 }
 
@@ -114,7 +160,7 @@ inline void enable() noexcept {
 #elif defined(MOSS_ARCH_X86_64)
   // Unmask LAPIC LVT Timer (clear bit 16 = mask bit)
   {
-    auto *lvt_timer = reinterpret_cast<volatile u32 *>(0xFEE00320ULL);
+    auto *lvt_timer = reinterpret_cast<volatile u32 *>(platform::intc_dist_base() + 0x320);
     *lvt_timer &= ~(1U << 16);
   }
 #elif defined(MOSS_ARCH_RISCV)
@@ -134,7 +180,7 @@ inline void disable() noexcept {
 #elif defined(MOSS_ARCH_X86_64)
   // Mask LAPIC LVT Timer (set bit 16 = mask bit)
   {
-    auto *lvt_timer = reinterpret_cast<volatile u32 *>(0xFEE00320ULL);
+    auto *lvt_timer = reinterpret_cast<volatile u32 *>(platform::intc_dist_base() + 0x320);
     *lvt_timer |= (1U << 16);
   }
 #elif defined(MOSS_ARCH_RISCV)

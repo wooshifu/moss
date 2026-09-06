@@ -13,6 +13,8 @@ export module moss.arch;
 
 import moss.std;
 import moss.types;
+import moss.platform;
+import moss.hal.uart;
 
 export namespace moss::kernel::arch {
 
@@ -157,10 +159,7 @@ inline void cpu_idle_once() noexcept {
 // Get current CPU ID from hardware (raw, unclamped).
 // Callers (e.g. PerCpuData) are responsible for bounds checking.
 #if defined(MOSS_ARCH_RISCV)
-inline u32 riscv_boot_hart_id = 0;
-[[nodiscard]] inline u32 riscv_hart_id(u32 logical) noexcept {
-  return logical == 0 ? riscv_boot_hart_id : (logical == riscv_boot_hart_id ? 0 : logical);
-}
+[[nodiscard]] inline u64 riscv_hart_id(u32 logical) noexcept { return platform::hardware.cpus[logical].hardware_id; }
 inline void set_user_kernel_stack(u64 top) noexcept {
   u64 hart;
   asm volatile("mv %0, tp" : "=r"(hart));
@@ -172,16 +171,16 @@ inline void set_user_kernel_stack(u64 top) noexcept {
 #if defined(MOSS_ARCH_ARM64)
   u64 mpidr;
   asm volatile("mrs %0, mpidr_el1" : "=r"(mpidr));
-  return static_cast<u32>(mpidr & 0xFF);
+  return platform::logical_cpu(mpidr & 0xFF00FFFFFFULL);
 #elif defined(MOSS_ARCH_X86_64)
   u32 eax, ebx, ecx, edx;
   asm volatile("cpuid" : "=a"(eax), "=b"(ebx), "=c"(ecx), "=d"(edx) : "a"(1));
-  return (ebx >> 24) & 0xFF;
+  return platform::logical_cpu((ebx >> 24) & 0xFF);
 #elif defined(MOSS_ARCH_RISCV)
   // S-mode cannot read mhartid; use tp register (set by SBI/bootloader)
   u64 hartid;
   asm volatile("mv %0, tp" : "=r"(hartid));
-  return riscv_hart_id(static_cast<u32>(hartid));
+  return platform::logical_cpu(hartid);
 #else
   return 0;
 #endif
@@ -396,62 +395,24 @@ inline void setup_kernel_mmu(PhysAddr kernel_pgd_pa) noexcept {
 // Debug / panic
 // ============================================================================
 
-// NOTE: kernel_panic intentionally hardcodes the UART address per architecture
-// because this function must work even when PlatformInfo / DTB is corrupted.
-// The addresses match QEMU virt defaults and typical bootloader setups.
+// Panic uses the discovered console without taking a possibly held TX lock.
+// Before discovery there may be no console; never probe a guessed MMIO address.
 [[noreturn]] inline void kernel_panic(const char *message) noexcept {
   disable_all_interrupts();
-
-#if defined(MOSS_ARCH_ARM64)
-  // PL011 UART at QEMU virt default 0x09000000
-  volatile u32 *uart_data = reinterpret_cast<volatile u32 *>(0x09000000ULL);
-  volatile u32 *uart_flags = reinterpret_cast<volatile u32 *>(0x09000018ULL);
-
-  auto uart_putc = [&](char c) {
-    while (*uart_flags & (1U << 5)) {
-    }
-    *uart_data = static_cast<u32>(static_cast<unsigned char>(c));
-  };
-#elif defined(MOSS_ARCH_X86_64)
-  // COM1 at I/O port 0x3F8
-  auto uart_putc = [](char c) {
-    // Wait for TX empty (bit 5 of Line Status Register)
-    for (;;) {
-      u8 lsr;
-      asm volatile("inb %1, %0" : "=a"(lsr) : "Nd"(static_cast<u16>(0x3FD)));
-      if (lsr & 0x20)
-        break;
-    }
-    asm volatile("outb %0, %1" ::"a"(static_cast<u8>(c)), "Nd"(static_cast<u16>(0x3F8)));
-  };
-#elif defined(MOSS_ARCH_RISCV)
-  // NS16550 UART at QEMU virt default 0x10000000
-  volatile u8 *uart_data = reinterpret_cast<volatile u8 *>(0x10000000ULL);
-  volatile u8 *uart_lsr = reinterpret_cast<volatile u8 *>(0x10000005ULL);
-
-  auto uart_putc = [&](char c) {
-    while (!(*uart_lsr & 0x20)) {
-    }
-    *uart_data = static_cast<u8>(c);
-  };
-#endif
-
-  auto puts = [&](const char *s) {
-    if (!s) {
+  auto puts = [](const char *text) {
+    if (!text) {
       return;
     }
-    while (*s) {
-      if (*s == '\n') {
-        uart_putc('\r');
+    while (*text) {
+      if (*text == '\n') {
+        hal::uart::putc_unlocked('\r');
       }
-      uart_putc(*s++);
+      hal::uart::putc_unlocked(*text++);
     }
   };
-
   puts("\r\nKERNEL PANIC: ");
   puts(message);
   puts("\r\n");
-
   while (true) {
     cpu_halt();
   }

@@ -15,6 +15,9 @@ This accepted design applies to functional tests and is not yet implemented. The
 
 ## Startup Observation
 
+The commands and hashes below are historical observations. For the current build
+and runner contract, see [ADR-0005](0005-generic-kernels-and-independent-runners.md).
+
 On 2026-09-05, five sequential launches of the existing `arm64-qemu-debug` production image reached the real userspace shell prompt in the times below. The experiment copied the existing kernel and initramfs to a temporary directory and reused `scripts/run_qemu.py` to construct normal boot arguments: QEMU 11.1.1, `virt` with GICv2, `cortex-a72`, one CPU, and 256 MiB RAM. Each launch used a new QEMU process, which was terminated and reaped after the prompt was observed.
 
 | Launch | Seconds to First Shell Prompt |

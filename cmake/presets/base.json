@@ -19,7 +19,6 @@
                 "CMAKE_CXX_COMPILER": "clang++",
                 "CMAKE_ASM_COMPILER": "clang",
                 "CMAKE_SYSTEM_NAME": "Generic",
-                "MOSS_TARGET_PLATFORM": "QEMU_VIRT",
                 "MOSS_CONFIGURED_BY_PRESET": "ON",
                 "CMAKE_SHARED_LINKER_FLAGS": "-fuse-ld=lld -nostdlib"
             },

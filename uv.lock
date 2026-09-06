@@ -202,15 +202,6 @@ wheels = [
 ]
 
 [[package]]
-name = "fdt"
-version = "0.3.3"
-source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/0b/69/ab0f63a898c7b8c9d350416222a20dffc8f9b8798830b3c0a2cf155e6bac/fdt-0.3.3.tar.gz", hash = "sha256:81a215930fef2ab8894913c4f474105bb53e14f07129fe07cb6eff2d5fdf26d2", size = 23125, upload-time = "2022-07-08T07:03:47.956Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/c7/ff/fcbe672acd848caddb5877225446fdf0fc1bc0c6c437343e2bde8f7b0aa9/fdt-0.3.3-py3-none-any.whl", hash = "sha256:6b2fae2e8dfa38e9b0f9666aa001dd25be74e893d293a8d60001438f732e9e47", size = 23911, upload-time = "2022-07-08T07:03:46.348Z" },
-]
-
-[[package]]
 name = "iniconfig"
 version = "2.3.0"
 source = { registry = "https://pypi.org/simple" }
@@ -245,7 +236,6 @@ name = "moss"
 version = "0.1.0"
 source = { virtual = "." }
 dependencies = [
-    { name = "fdt" },
     { name = "packaging" },
     { name = "pydantic" },
     { name = "rich" },
@@ -266,7 +256,6 @@ dev = [
 
 [package.metadata]
 requires-dist = [
-    { name = "fdt", specifier = ">=0.3.3" },
     { name = "packaging", specifier = ">=25.0" },
     { name = "pydantic", specifier = ">=2.11" },
     { name = "rich", specifier = ">=14.3.3" },

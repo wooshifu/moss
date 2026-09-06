@@ -1,76 +1,10 @@
-/* =============================================================================
- * MOSS Kernel Linker Script (ARM64 / QEMU virt platform)
- * =============================================================================
- *
- * This linker script defines the physical memory layout for the MOSS kernel
- * image when running on the QEMU "virt" machine for AArch64.
- *
- * Memory Map Overview (physical addresses):
- * ┌──────────────────────────────────────────────────────────────┐
- * │ 0x4000_0000  RAM start (QEMU virt platform)                  │
- * │ ...          QEMU stub loader / DTB (first 2 MB)             │
- * │ 0x4020_0000  ┌─────────────────┐  Kernel load address        │
- * │              │ .text.boot       │  Boot code (entry point)   │
- * │              ├─────────────────┤  4K aligned                 │
- * │              │ .text            │  Kernel code               │
- * │              ├─────────────────┤  4K aligned                 │
- * │              │ .rodata          │  Read-only data            │
- * │              ├─────────────────┤  4K aligned                 │
- * │              │ .data            │  Initialized data          │
- * │              ├─────────────────┤  4K aligned                 │
- * │              │ .bss             │  Zero-initialized data     │
- * │              ├─────────────────┤  4K aligned                 │
- * │              │ .stack (NOLOAD)  │ 1024 KB (32 CPUs × 32 KB) │
- * │              ├─────────────────┤  4K aligned                 │
- * │              │ .heap  (NOLOAD)  │  4 KB placeholder          │
- * │              ├─────────────────┤  4K aligned                 │
- * │              │ .pagetables      │  64 KB early page tables   │
- * │              ├─────────────────┤                             │
- * │              │ _kernel_end      │  End of kernel image       │
- * │              └─────────────────┘                             │
- * │ ...          Free RAM for runtime allocation                 │
- * │ 0x4FFF_FFFF  End of 256 MB RAM region                       │
- * └──────────────────────────────────────────────────────────────┘
- *
- * Key design decisions:
- *   - All sections are 4K-aligned for page-granularity protection
- *   - .text.boot is placed FIRST so _start is at the load address (0x4020_0000)
- *   - NOLOAD sections (.stack, .heap, .pagetables) don't occupy ELF file space
- *   - KERNEL_VMA is defined for future high-half kernel mapping (0xFFFF_8000_0000_0000)
- *   - Symbols exported via PROVIDE() are referenced by C++ code through extern "C"
- *
- * Platform notes:
- *   - QEMU "virt" places RAM at 0x4000_0000 (1 GB mark)
- *   - DTB is passed by QEMU in x0 register at boot
- *   - The Linux ARM64 Image header in start_arm64.S references _kernel_image_size
- *
- * Referenced by:
- *   - start_arm64.S: _start entry, _bss_start/_bss_end, _stack_top, _pagetable_start
- *   - boot module C++ code: all PROVIDE'd _*_addr symbols via extern "C"
- *   - mm module: _heap_start_addr, _pagetable_start_addr for runtime allocators
- * ============================================================================= */
+/* ARM64 relocatable Linux Image. Link at zero; firmware chooses physical RAM. */
 
-/* Entry point: _start is defined in start_arm64.S (.text.boot section) */
 ENTRY(_start)
 
-/* =============================================================================
- * Physical Memory Region
- * =============================================================================
- * QEMU virt machine memory map:
- *   0x0000_0000 - 0x3FFF_FFFF : I/O devices (GIC, UART, etc.)
- *   0x4000_0000 - 0x4FFF_FFFF : RAM (256 MB, configurable with -m)
- *
- * QEMU's Linux Image loader places the kernel at RAM + 2 MB (0x4020_0000)
- * when text_offset = 0, reserving the first 2 MB for the stub loader and DTB.
- * The ORIGIN must match this actual load address so that absolute addresses
- * (function pointers, global variables, vtables) resolve correctly.
- *
- * The (rwx) attributes allow read/write/execute for all sections.
- * Fine-grained permissions are enforced at the page table level, not here.
- * ============================================================================= */
 MEMORY
 {
-    RAM (rwx) : ORIGIN = 0x40200000, LENGTH = 254M
+    RAM (rwx) : ORIGIN = 0, LENGTH = 256M
 }
 
 /* =============================================================================
@@ -93,7 +27,7 @@ SECTIONS
 
     /* ---- Boot Code Section ----
      * MUST be the first section so that _start (the entry point) is located
-     * exactly at ORIGIN(RAM) = 0x4000_0000.  The bootloader / QEMU jumps here.
+     * exactly at the image base.  The bootloader jumps here.
      * Contains: Linux ARM64 Image header, EL3→EL2→EL1 transition, exception
      * vector table installation, BSS clearing, stack setup, and jump to kernel_main.
      */
@@ -145,6 +79,19 @@ SECTIONS
         KEEP(*(.init_array))
         KEEP(*(SORT(.init_array.*)))
         __init_array_end = .;
+    }
+
+    /* Relocations are applied once by the boot CPU before using absolute pointers. */
+    .got : ALIGN(8) { *(.got) *(.got.*) }
+    .dynamic : { *(.dynamic) }
+    .dynsym : { *(.dynsym) }
+    .dynstr : { *(.dynstr) }
+    .hash : { *(.hash) }
+    .gnu.hash : { *(.gnu.hash) }
+    .rela.dyn : ALIGN(8) {
+        _rela_start = .;
+        *(.rela.dyn)
+        _rela_end = .;
     }
 
     /* Last byte that must be present in the flat on-disk image.  Everything
@@ -213,7 +160,7 @@ SECTIONS
     _kernel_end = _kernel_memory_end;
 
     /* Total kernel image size in bytes (used by Linux ARM64 Image header) */
-    _kernel_image_size = _kernel_memory_end - ORIGIN(RAM);
+    _kernel_image_size = ABSOLUTE(_kernel_memory_end - ORIGIN(RAM));
 
     /* ---- Discarded Sections ----
      * Remove sections that are unnecessary for a freestanding kernel:

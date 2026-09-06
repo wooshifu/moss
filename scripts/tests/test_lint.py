@@ -33,7 +33,7 @@ def commit(repo: pygit2.Repository) -> pygit2.Oid:
     return repo.create_commit("HEAD", author, author, "fixture", repo.index.write_tree(), parents)
 
 
-def database(root: Path, files: list[str], preset: str = "arm64-qemu-debug") -> Path:
+def database(root: Path, files: list[str], preset: str = "arm64-debug") -> Path:
     build = root / "build" / preset
     entries = [{"directory": str(root), "file": path, "arguments": ["clang++", "-c", path]} for path in files]
     write(build, "compile_commands.json", json.dumps(entries))
@@ -88,9 +88,9 @@ def fake_tools(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
 def test_full_selection_uses_index_and_database_and_keeps_cppm(project, fake_tools, capsys):
     root, _repo = project
     write(root, "src/untracked.cpp")
-    build = database(root, ["src/main.cpp", "src/api.cppm", "src/untracked.cpp"], preset="x86_64-qemu-debug")
+    build = database(root, ["src/main.cpp", "src/api.cppm", "src/untracked.cpp"], preset="x86_64-debug")
     _tools, calls, _outcomes = fake_tools
-    assert lint.run(["--check", "--preset", "x86_64-qemu-debug", "-j", "2"], repository_root=root, cwd=root) == 0
+    assert lint.run(["--check", "--preset", "x86_64-debug", "-j", "2"], repository_root=root, cwd=root) == 0
     checked = {path for path, _argv, _live in calls if path.startswith("src/")}
     assert checked == {"src/main.cpp", "src/api.cppm"}
     assert "skipped: src/other.cpp" in capsys.readouterr().err
@@ -176,7 +176,7 @@ def test_subdirectory_filters_and_outside_paths(project, fake_tools):
 
 def test_database_preserves_duplicate_commands_and_response_files(project):
     root, _repo = project
-    build = root / "build/arm64-qemu-debug"
+    build = root / "build/arm64-debug"
     command = ["/system llvm/clang++", "--target=aarch64-unknown-elf", "@module.modmap", "-c", "../../src/api.cppm"]
     entry = {"directory": str(build), "file": "../../src/api.cppm", "command": shlex.join(command)}
     write(build, "compile_commands.json", json.dumps([entry, {**entry, "arguments": command, "command": "ignored"}]))
@@ -188,7 +188,7 @@ def test_database_preserves_duplicate_commands_and_response_files(project):
 @pytest.mark.parametrize("entries", [None, [], [{}], [{"file": "src/a.cpp", "directory": ".", "command": []}], [42]])
 def test_invalid_database_is_configuration_error(project, entries):
     root, _repo = project
-    build = root / "build/arm64-qemu-debug"
+    build = root / "build/arm64-debug"
     write(build, "compile_commands.json", json.dumps(entries))
     with pytest.raises(lint.LintError):
         lint.load_compilation_database(root, build)
@@ -425,7 +425,7 @@ target_sources(example PRIVATE src/main.cpp PUBLIC FILE_SET CXX_MODULES FILES sr
 """,
     )
     commit(repo)
-    build = root / "build/arm64-qemu-debug"
+    build = root / "build/arm64-debug"
     result = subprocess.run(
         ["cmake", "-S", str(root), "-B", str(build), "-G", "Ninja", f"-DCMAKE_CXX_COMPILER={compiler}"],
         capture_output=True,

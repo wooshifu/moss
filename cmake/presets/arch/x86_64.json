@@ -1,6 +1,8 @@
 {
     "version": 6,
-    "include": ["../base.json"],
+    "include": [
+        "../base.json"
+    ],
     "configurePresets": [
         {
             "name": "x86_64-base",
@@ -21,49 +23,55 @@
             }
         },
         {
-            "name": "x86_64-qemu-debug",
-            "displayName": "x86-64 QEMU Debug",
-            "description": "x86-64 debug build for QEMU platform",
-            "inherits": ["x86_64-base", "build-debug"]
+            "name": "x86_64-debug",
+            "displayName": "x86-64 Debug",
+            "description": "x86-64 debug build for platform",
+            "inherits": [
+                "x86_64-base",
+                "build-debug"
+            ]
         },
         {
-            "name": "x86_64-qemu-release",
-            "displayName": "x86-64 QEMU Release",
-            "description": "x86-64 release build for QEMU platform",
-            "inherits": ["x86_64-base", "build-release"]
+            "name": "x86_64-release",
+            "displayName": "x86-64 Release",
+            "description": "x86-64 release build for platform",
+            "inherits": [
+                "x86_64-base",
+                "build-release"
+            ]
         },
         {
-            "name": "x86_64-qemu-relwithdebinfo",
-            "displayName": "x86-64 QEMU RelWithDebInfo",
-            "description": "x86-64 optimized build with debug information for QEMU platform",
-            "inherits": ["x86_64-base", "build-relwithdebinfo"]
+            "name": "x86_64-relwithdebinfo",
+            "displayName": "x86-64 RelWithDebInfo",
+            "description": "x86-64 optimized build with debug information for platform",
+            "inherits": [
+                "x86_64-base",
+                "build-relwithdebinfo"
+            ]
         }
     ],
     "buildPresets": [
         {
-            "name": "x86_64-qemu-debug",
-            "displayName": "x86-64 QEMU Debug Build",
-            "configurePreset": "x86_64-qemu-debug",
-            "targets": ["moss.elf", "moss.test.elf"]
+            "name": "x86_64-debug",
+            "displayName": "x86-64 Debug Build",
+            "configurePreset": "x86_64-debug"
         },
         {
-            "name": "x86_64-qemu-release",
-            "displayName": "x86-64 QEMU Release Build",
-            "configurePreset": "x86_64-qemu-release",
-            "targets": ["moss.elf", "moss.test.elf"]
+            "name": "x86_64-release",
+            "displayName": "x86-64 Release Build",
+            "configurePreset": "x86_64-release"
         },
         {
-            "name": "x86_64-qemu-relwithdebinfo",
-            "displayName": "x86-64 QEMU RelWithDebInfo Build",
-            "configurePreset": "x86_64-qemu-relwithdebinfo",
-            "targets": ["moss.elf", "moss.test.elf"]
+            "name": "x86_64-relwithdebinfo",
+            "displayName": "x86-64 RelWithDebInfo Build",
+            "configurePreset": "x86_64-relwithdebinfo"
         }
     ],
     "testPresets": [
         {
-            "name": "x86_64-qemu-debug-test",
+            "name": "x86_64-debug-test",
             "displayName": "x86-64 Debug Unit Tests",
-            "configurePreset": "x86_64-qemu-debug",
+            "configurePreset": "x86_64-debug",
             "execution": {
                 "timeout": 420
             },
@@ -72,9 +80,9 @@
             }
         },
         {
-            "name": "x86_64-qemu-release-test",
+            "name": "x86_64-release-test",
             "displayName": "x86-64 Release Unit Tests",
-            "configurePreset": "x86_64-qemu-release",
+            "configurePreset": "x86_64-release",
             "execution": {
                 "timeout": 420
             },
@@ -83,9 +91,9 @@
             }
         },
         {
-            "name": "x86_64-qemu-relwithdebinfo-test",
+            "name": "x86_64-relwithdebinfo-test",
             "displayName": "x86-64 RelWithDebInfo Unit Tests",
-            "configurePreset": "x86_64-qemu-relwithdebinfo",
+            "configurePreset": "x86_64-relwithdebinfo",
             "execution": {
                 "timeout": 420
             },
@@ -96,30 +104,48 @@
     ],
     "workflowPresets": [
         {
-            "name": "x86_64-qemu-debug",
-            "displayName": "x86-64 QEMU Debug Workflow",
-            "description": "Configure and build (moss.elf + moss.test.elf)",
+            "name": "x86_64-debug",
+            "displayName": "x86-64 Debug Workflow",
+            "description": "Configure and build kernel artifacts",
             "steps": [
-                { "type": "configure", "name": "x86_64-qemu-debug" },
-                { "type": "build", "name": "x86_64-qemu-debug" }
+                {
+                    "type": "configure",
+                    "name": "x86_64-debug"
+                },
+                {
+                    "type": "build",
+                    "name": "x86_64-debug"
+                }
             ]
         },
         {
-            "name": "x86_64-qemu-release",
-            "displayName": "x86-64 QEMU Release Workflow",
-            "description": "Configure and build (moss.elf + moss.test.elf)",
+            "name": "x86_64-release",
+            "displayName": "x86-64 Release Workflow",
+            "description": "Configure and build kernel artifacts",
             "steps": [
-                { "type": "configure", "name": "x86_64-qemu-release" },
-                { "type": "build", "name": "x86_64-qemu-release" }
+                {
+                    "type": "configure",
+                    "name": "x86_64-release"
+                },
+                {
+                    "type": "build",
+                    "name": "x86_64-release"
+                }
             ]
         },
         {
-            "name": "x86_64-qemu-relwithdebinfo",
-            "displayName": "x86-64 QEMU RelWithDebInfo Workflow",
-            "description": "Configure and build (moss.elf + moss.test.elf)",
+            "name": "x86_64-relwithdebinfo",
+            "displayName": "x86-64 RelWithDebInfo Workflow",
+            "description": "Configure and build kernel artifacts",
             "steps": [
-                { "type": "configure", "name": "x86_64-qemu-relwithdebinfo" },
-                { "type": "build", "name": "x86_64-qemu-relwithdebinfo" }
+                {
+                    "type": "configure",
+                    "name": "x86_64-relwithdebinfo"
+                },
+                {
+                    "type": "build",
+                    "name": "x86_64-relwithdebinfo"
+                }
             ]
         }
     ]

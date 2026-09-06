@@ -167,7 +167,7 @@ public:
         log::klog::info("initramfs: found at {:#x}-{:#x} ({} bytes)", pi.initrd_start, pi.initrd_end, initrd_size);
         initramfs::g_initramfs.init(pi.initrd_start, initrd_size);
       } else {
-        log::klog::info("initramfs: not present (no -initrd passed to QEMU)");
+        log::klog::info("initramfs: not provided by bootloader");
       }
     }
 
@@ -572,22 +572,15 @@ private:
       return VoidResult{ErrorCode::OutOfMemory};
     }
 
-    // Resolve interrupt controller addresses and version from DTB,
-    // fall back to platform defaults for zero/missing values.
-    const auto &plat = ::moss::fdt::get_platform_info();
-    bool have_dtb_intc = plat.dtb_valid && plat.intc.valid;
-
-    VirtAddr gic_dist_base = (have_dtb_intc && plat.intc.dist_base != 0) ? static_cast<VirtAddr>(plat.intc.dist_base)
-                                                                         : platform::intc_dist_base();
-    u8 gic_ver = (have_dtb_intc && plat.intc.gic_version != 0) ? plat.intc.gic_version : 2;
-    VirtAddr second_base;
-    if (gic_ver >= 3) {
-      second_base = (have_dtb_intc && plat.intc.redist_base != 0) ? static_cast<VirtAddr>(plat.intc.redist_base)
-                                                                  : platform::intc_redist_base();
-    } else {
-      second_base = (have_dtb_intc && plat.intc.cpu_base != 0) ? static_cast<VirtAddr>(plat.intc.cpu_base)
-                                                               : platform::intc_cpu_base();
+    const auto &intc = platform::hardware.intc;
+    if (!intc.valid) {
+      delete gic_;
+      gic_ = nullptr;
+      return VoidResult{ErrorCode::NotSupported};
     }
+    VirtAddr gic_dist_base = intc.dist_base;
+    u8 gic_ver = intc.gic_version;
+    VirtAddr second_base = gic_ver >= 3 ? intc.redist_base : intc.cpu_base;
 
     auto gic_result = gic_->initialize(gic_dist_base, second_base, gic_ver);
     if (!gic_result) {

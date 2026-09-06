@@ -16,6 +16,7 @@ extern "C" [[noreturn]] void riscv_secondary_entry() noexcept;
 module moss.boot;
 
 import moss.abi;
+import moss.hal.uart;
 
 using moss::PhysAddr;
 using moss::u16;
@@ -32,30 +33,7 @@ BootStatus g_boot_status = {.current_stage = BootStage::PreInit,
                             .stage_timestamps = {0},
                             .last_error = ::moss::kernel::ErrorCode::Success};
 
-// Early UART output (RISC-V specific)
-class EarlyUart {
-private:
-  static constexpr VirtAddr UART_BASE = moss::kernel::platform::uart_base();
-  static constexpr u32 UART_REG_TXDATA = 0x00;
-
-  static auto registers() noexcept -> volatile u32 * { return reinterpret_cast<volatile u32 *>(UART_BASE); }
-
-public:
-  void put_char(char c) const { registers()[UART_REG_TXDATA / 4] = static_cast<u32>(c); }
-
-  void put_string(const char *str) const {
-    while (*str) {
-      if (*str == '\n') {
-        put_char('\r');
-      }
-      put_char(*str++);
-    }
-  }
-};
-
-static EarlyUart early_uart;
-
-static void early_print(const char *str) { early_uart.put_string(str); }
+static void early_print(const char *str) { moss::kernel::hal::uart::puts(str); }
 
 static void early_print_hex(u64 value) {
   constexpr char hex_chars[] = "0123456789ABCDEF";
@@ -80,7 +58,7 @@ static u32 get_current_cpu_id_impl() noexcept {
   // Hart ID is stored in tp register by _start (set from a0 passed by OpenSBI).
   u64 hartid;
   asm volatile("mv %0, tp" : "=r"(hartid));
-  return moss::kernel::arch::riscv_hart_id(static_cast<u32>(hartid));
+  return moss::kernel::platform::logical_cpu(hartid);
 }
 
 // Boot stage status update
@@ -136,7 +114,6 @@ static SbiResult sbi_hart_start(u64 hartid, u64 start_addr, u64 opaque) noexcept
 
   u64 boot_hart;
   asm volatile("mv %0, tp" : "=r"(boot_hart));
-  moss::kernel::arch::riscv_boot_hart_id = static_cast<u32>(boot_hart);
   ctx.cpu_id = moss::boot::get_current_cpu_id_impl();
   moss::boot::early_print("CPU ID (Hart ID): ");
   moss::boot::early_print_hex(ctx.cpu_id);
@@ -145,40 +122,22 @@ static SbiResult sbi_hart_start(u64 hartid, u64 start_addr, u64 opaque) noexcept
   // M-mode CSRs (mvendorid, marchid, mimpid) are not accessible from S-mode.
   // Hardware identification requires SBI probe calls or DTB parsing.
 
-  // --- DTB 解析：从 Device Tree 获取真实硬件拓扑 ---
-  // OpenSBI 通过 a1 寄存器传递 DTB 指针，已保存在 ctx.device_tree_ptr 中。
-  if (ctx.device_tree_ptr) {
-    moss::boot::early_print("DTB pointer: ");
-    moss::boot::early_print_hex(reinterpret_cast<u64>(ctx.device_tree_ptr));
-    moss::boot::early_print("\n");
-
-    if (moss::fdt::parse_dtb(ctx.device_tree_ptr)) {
-      const auto &info = moss::fdt::get_platform_info();
-
-      moss::boot::early_print("DTB parse OK: ");
-      moss::boot::early_print_hex(info.cpu_count);
-      moss::boot::early_print(" CPUs, memory ");
-      moss::boot::early_print_hex(info.total_memory_start);
-      moss::boot::early_print(" + ");
-      moss::boot::early_print_hex(info.total_memory_size);
-      moss::boot::early_print("\n");
-
-      ctx.memory_start = info.total_memory_start;
-      ctx.memory_size = info.total_memory_size;
-      ctx.kernel_phys_base = info.total_memory_start;
-      ctx.total_cpus = info.cpu_count;
-    } else {
-      moss::boot::early_print("DTB parse failed, using platform defaults\n");
-      ctx.memory_start = moss::kernel::platform::ram_base();
-      ctx.memory_size = moss::kernel::platform::ram_size();
-      ctx.kernel_phys_base = moss::kernel::platform::ram_base();
-    }
-  } else {
-    moss::boot::early_print("No DTB pointer, using platform defaults\n");
-    ctx.memory_start = moss::kernel::platform::ram_base();
-    ctx.memory_size = moss::kernel::platform::ram_size();
-    ctx.kernel_phys_base = moss::kernel::platform::ram_base();
+  if (!moss::fdt::parse_dtb(ctx.device_tree_ptr)) {
+    return ::moss::kernel::VoidResult{::moss::kernel::ErrorCode::InvalidArgument};
   }
+  const auto &info = moss::fdt::get_platform_info();
+  if (!info.memory_map_valid || !info.intc.valid || !info.cpu_count || info.cpu_count > 16 ||
+      !info.timebase_frequency) {
+    return ::moss::kernel::VoidResult{::moss::kernel::ErrorCode::InvalidArgument};
+  }
+  if (!moss::kernel::platform::order_cpus(boot_hart)) {
+    return ::moss::kernel::VoidResult{::moss::kernel::ErrorCode::InvalidArgument};
+  }
+  moss::kernel::platform::hardware.intc.cpu_base = info.intc.dist_base + 0x200000 + info.plic_contexts[0] * 0x1000ULL;
+  ctx.memory_start = info.total_memory_start;
+  ctx.memory_size = info.total_memory_size;
+  ctx.kernel_phys_base = reinterpret_cast<PhysAddr>(moss::abi::_start);
+  ctx.total_cpus = info.cpu_count;
 
   ctx.kernel_virt_base = moss::boot::arch_constants::KERNEL_VIRT_BASE;
 
@@ -289,11 +248,11 @@ static SbiResult sbi_hart_start(u64 hartid, u64 start_addr, u64 opaque) noexcept
   // 2. Initialize PLIC (Platform Level Interrupt Controller)
   auto *gic = new moss::kernel::interrupts::GenericInterruptController();
   if (gic) {
-    VirtAddr plic_base = moss::kernel::platform::intc_dist_base(); // 0x0C000000
+    VirtAddr plic_base = moss::kernel::platform::intc_dist_base();
 
     // S-mode context for hart 0: context_id = 1 (context 0 is M-mode)
     // Threshold/claim registers at: plic_base + 0x200000 + context_id * 0x1000
-    VirtAddr ctx_base = plic_base + 0x200000 + (2ULL * moss::kernel::arch::riscv_boot_hart_id + 1) * 0x1000;
+    VirtAddr ctx_base = plic_base + 0x200000 + moss::kernel::platform::hardware.plic_contexts[0] * 0x1000ULL;
 
     (void)gic->initialize(plic_base, ctx_base, 0);
     moss::boot::g_gic_controller = gic;

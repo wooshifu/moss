@@ -33,7 +33,7 @@ parse_args() {
     REMAINING_ARGS=("${args[@]+"${args[@]}"}")
 }
 
-PRESET="${ARCH}-qemu-${BUILD_TYPE}"
+PRESET="${ARCH}-${BUILD_TYPE}"
 
 do_build() {
     echo "=== Building MOSS kernel (preset: ${PRESET}) ==="
@@ -44,22 +44,22 @@ do_run() {
     do_build
     echo ""
     echo "=== Running MOSS kernel in QEMU ==="
-    local config="build/${PRESET}/qemu_config.json"
-    uv run scripts/run_qemu.py --config "${config}" "${REMAINING_ARGS[@]+"${REMAINING_ARGS[@]}"}"
+    local manifest="build/${PRESET}/moss-artifacts.json"
+    uv run scripts/run_qemu.py --manifest "${manifest}" "${REMAINING_ARGS[@]+"${REMAINING_ARGS[@]}"}"
 }
 
 do_test() {
     do_build
     echo ""
     echo "=== Running MOSS kernel tests in QEMU ==="
-    local config="build/${PRESET}/qemu_config.json"
-    uv run scripts/run_qemu.py --config "${config}" --test --timeout 60 "${REMAINING_ARGS[@]+"${REMAINING_ARGS[@]}"}"
+    local manifest="build/${PRESET}/moss-artifacts.json"
+    uv run scripts/kernel_validation.py run --manifest "${manifest}" --guest-timeout 60 "${REMAINING_ARGS[@]+"${REMAINING_ARGS[@]}"}"
 }
 
 COMMAND="${1:-run}"
 shift || true
 parse_args "$@"
-PRESET="${ARCH}-qemu-${BUILD_TYPE}"
+PRESET="${ARCH}-${BUILD_TYPE}"
 
 case "${COMMAND}" in
     run)
@@ -76,7 +76,7 @@ case "${COMMAND}" in
         ;;
     *)
         echo "Unknown command: ${COMMAND}"
-        echo "Usage: entrypoint.sh {run|test|build|shell} [--arch arm64|x86_64|riscv] [extra-qemu-args...]"
+        echo "Usage: entrypoint.sh {run|test|build|shell} [--arch arm64|x86_64|riscv] [extra-args...]"
         exit 1
         ;;
 esac

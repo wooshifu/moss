@@ -14,7 +14,19 @@ uv run build.py list
 
 ## Testing
 
-Built kernels can be tested using QEMU with the generated run scripts in `build/*/run_qemu.sh`.
+CMake only builds; QEMU is an optional, separate run dependency. Each architecture
+produces its own native kernel (not one cross-ISA binary).
+
+```sh
+uv run cmake --preset arm64-debug
+uv run cmake --build --preset arm64-debug
+uv run scripts/run_qemu.py --manifest build/arm64-debug/moss-artifacts.json
+uv run ctest --preset arm64-debug-test
+```
+
+Replace `arm64` with `riscv` or `x86_64`. Machine, CPU, RAM and firmware
+are runner options, not build options. See [generic boot](docs/generic-boot.md)
+and [ADR-0005](docs/adr/0005-generic-kernels-and-independent-runners.md).
 
 ## Lint and formatting
 
@@ -25,14 +37,14 @@ beside the build compiler and then PATH. Python dependencies are managed by uv.
 
 ```bash
 # Configure once; lint incrementally builds to refresh module mappings and BMIs.
-uv run cmake --preset arm64-qemu-debug
+uv run cmake --preset arm64-debug
 uv run lint.py --check
-uv run lint.py --check --preset x86_64-qemu-debug
-uv run lint.py --check --preset riscv-qemu-debug
+uv run lint.py --check --preset x86_64-debug
+uv run lint.py --check --preset riscv-debug
 
 # Restrict files or check changes since merge-base(HEAD, origin/master).
 uv run lint.py --check src/core -j 4
-uv run lint.py --check src/userspace --preset arm64-qemu-debug
+uv run lint.py --check src/userspace --preset arm64-debug
 uv run lint.py --check --changed
 
 # Collect fixes in parallel, apply once, rebuild BMIs, and check again.
@@ -44,7 +56,7 @@ uv run scripts/format.py --check
 uv run python -m pytest
 ```
 
-The default preset is `arm64-qemu-debug`. `--preset NAME` selects `build/NAME`,
+The default preset is `arm64-debug`. `--preset NAME` selects `build/NAME`,
 following the repository's CMake preset layout; configure that preset first.
 `--check` leaves source files untouched, but
 updates build artifacts. `--fix-errors` allows fixes despite clang-tidy compiler
