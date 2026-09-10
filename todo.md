@@ -1,6 +1,6 @@
 # MOSS 内核能力与待办
 
-> 更新日期：2026-09-10；提交基线：`a5ff24f`；历史实现与实测保留原日期，最新启动同步与 COW 进展见 moss-todo.md 第 3.15～3.16 节。
+> 更新日期：2026-09-10；提交基线：`3acac43`；历史实现与实测保留原日期，最新页表失败事务进展见 moss-todo.md 第 3.17 节。
 > 本文取代旧清单中“完成即可靠”“x86/RISC-V 仅为启动桩”的描述。
 > 审计问题的原始证据、当前状态及完整验收条件见 [moss-todo.md](moss-todo.md)；MOSS-001～032 沿用原编号，不重新编号。
 
@@ -94,6 +94,7 @@ uv run qemu.py --manifest build/arm64-debug/moss-artifacts.json
   - [x] LockedList/LockedHashMap 查找复制值/拥有者，串行化摘除与发布；析构及快照回调在锁外执行（工作区，3.9）。
   - [x] 持有读者、1,024 次清空/复用、回调/析构重入与真实双 CPU 同 key 创建/删除交错用例（工作区，3.9）。
 - [ ] **MOSS-007（部分实现）**：x86 第八参数目前是 null，RV64 未传有效帧；仍需每 ISA 的完整 TrapFrame、信号桩、偏移/返回状态校验。
+  - [ ] RV64 Debug 新捕获：四核 ready 后、验证 worker 启动前，PID 1 在 `pc=0` 取指异常退出；首次用户执行/陷阱返回/抢占根因未确定，报告 `1789054088760333000`，不能归为 COW 断言失败（3.17）。
 - [ ] **MOSS-008**：仅可写私有页允许 COW；RO/text/NX/NONE 不能因 fork 或 fault 被放宽权限。
   - [x] clone 保留真实只读页，fault 检查可写 VMA；真实页表三代引用/释放及用户态多代 COW、最后引用写入、fork 后 text/rodata 写入拒绝，三架构九配置默认回归通过（3.16）。
   - [ ] 同时写故障、fork/unmap 交错的 VMA/PTE/ref/TLB 事务锁及 OOM 回滚；fork 前只读写入和遗留 COW/VMA 权限冲突的独立异常验收。
@@ -104,6 +105,9 @@ uv run qemu.py --manifest build/arm64-debug/moss-artifacts.json
   - [x] fault 区分读/写/执行，demand 拒绝驻留页与无权限访问，COW 使用 HAL PTE 编码；匿名页内容隔离、PROT_NONE/NX 拒绝在三架构及 RV64 Sv39/Sv48 上通过（3.16）。
   - [ ] 补多物理地址编码往返、拒绝访问零额外分配，以及覆盖/失败时的页引用生命周期专项；不以一次普通回归替代并发与故障注入。
 - [ ] **MOSS-010**：页表 clone/map 显式失败、完整回滚；不得发布部分成功的 fork。
+  - [x] map 拒绝已有叶子与中间 block；完整缺失路径准备失败不改原树/数据页引用，逐级真实 PFA 耗尽与恢复后成功通过（3.17）。
+  - [x] clone 校验与表页分配先于 PTE/引用修改，显式返回错误且 fork 检查结果；跨表级/分支的逐点 PFA 耗尽、父页权限/数据/引用保持、目标拒绝及恰好足够预算成功，三架构九配置与 Sv39 专项通过（3.17）。
+  - [ ] 把 clone 成功后的 kernel-stack、VMA、FD 等失败纳入整次 fork 的事务，补真实系统调用逐点 OOM 验收；统一地址空间锁与并发故障交错仍待完成。
 - [ ] **MOSS-011**：活跃 ASID 租约与跨 CPU TLB 失效；超过 255 次地址空间创建仍隔离。
 - [ ] **MOSS-012**：brk/mmap/munmap 同步维护 VMA/PTE/引用/TLB；覆盖 PROT_NONE 与增长冲突。部分 munmap 仍作为明确的后续兼容能力。
 - [x] **MOSS-013（`040d773`）**：heap 对齐/极值/错误释放和 PFA 原分配头/order、边界、保留洞分段及耗尽/合并已验证；SMP 页引用生命周期仍归 008～010/028，不能以此声称 COW 安全。
