@@ -419,6 +419,57 @@ void address_space_ownership() {
   layout.verify();
 }
 
+void cow_clone_permissions() {
+  using Tables = mm::PageTableManager;
+  using Pfa = mm::PageFrameAllocator;
+  const auto free_before = Pfa::get_memory_stats().free_pages;
+  {
+    auto parent = process::user_space::create_user_address_space();
+    auto child = process::user_space::create_user_address_space();
+    auto grandchild = process::user_space::create_user_address_space();
+    if (!ut::expect(parent && child && grandchild)) {
+      return;
+    }
+    const PhysAddr roots[] = {(*parent)->pgd_phys, (*child)->pgd_phys, (*grandchild)->pgd_phys};
+    constexpr u64 permissions[] = {mm::page_perms::USER_RO | mm::page_attr::XN, mm::page_perms::USER_RX,
+                                   mm::page_perms::USER_RW | mm::page_attr::XN};
+    constexpr VirtAddr base = process::user_layout::CODE_BASE;
+    PhysAddr physical[3]{};
+    mm::PageTableEntry expected[3];
+    for (usize i = 0; i < 3; ++i) {
+      auto page = mm::allocate_pages(0);
+      if (!ut::expect(page.has_value())) {
+        return;
+      }
+      physical[i] = *page;
+      if (!ut::expect(Tables::map_user_page(roots[0], base + i * page_size, *page, permissions[i]).has_value())) {
+        (void)mm::free_pages(*page, 0);
+        return;
+      }
+      expected[i].set_page(*page, permissions[i]);
+      if (i == 2) { // Only the originally writable private page is COW-eligible.
+        expected[i].set_cow();
+        expected[i].make_readonly();
+      }
+    }
+    Tables::clone_user_page_tables(roots[0], roots[1]);
+    Tables::clone_user_page_tables(roots[1], roots[2]);
+    for (usize i = 0; i < 3; ++i) {
+      for (const PhysAddr root : roots) {
+        const auto *pte = Tables::get_user_pte(root, base + i * page_size);
+        ut::expect(pte && pte->raw == expected[i].raw && pte->get_phys_addr() == physical[i]);
+      }
+      ut::expect(Pfa::page_ref_get(physical[i]) == 3);
+    }
+    (*parent).reset();
+    (*child).reset();
+    for (const PhysAddr page : physical) {
+      ut::expect(Pfa::page_ref_get(page) == 1);
+    }
+  }
+  ut::expect(Pfa::get_memory_stats().free_pages == free_before);
+}
+
 void vma_boundaries() {
   using namespace process;
   const auto before = mm::PageFrameAllocator::get_memory_stats().free_pages;
@@ -1511,6 +1562,11 @@ void declare_cases() {
     ut::register_test("user_ranges", empty_case);
     ut::register_test("fork_exec_exit_reap", empty_case);
   });
+  ut::register_suite("users.vm", [] {
+    ut::register_test("private_cow", empty_case);
+    ut::register_test("readonly_cow", empty_case);
+    ut::register_test("access_permissions", empty_case);
+  });
 #if defined(MOSS_ARCH_X86_64)
   ut::register_suite("users.simd_fault", [] { ut::register_test("isolation", empty_case); });
 #endif
@@ -1520,6 +1576,7 @@ void declare_cases() {
     ut::register_test("active_user_mappings", active_user_mapping_permissions);
     ut::register_test("kernel_wx", kernel_wx_permissions);
     ut::register_test("address_space_ownership", address_space_ownership);
+    ut::register_test("cow_clone_permissions", cow_clone_permissions);
     ut::register_test("vma_boundaries", vma_boundaries);
   });
   ut::register_suite("self", [] {
@@ -1821,6 +1878,9 @@ extern "C" long moss_validation_call(long op, long arg1, [[maybe_unused]] long a
     if (ut::same_id(selection, "users")) {
       return 1;
     }
+    if (ut::same_id(selection, "users.vm")) {
+      return 5;
+    }
     if (ut::same_id(selection, "users.simd_fault")) {
       start_case("isolation");
       return 4;
@@ -1880,11 +1940,18 @@ extern "C" long moss_validation_call(long op, long arg1, [[maybe_unused]] long a
     }
     finish();
   }
-  if (op == 1 && ut::same_id(selection, "users") && !failed && !active_case && arg1 == static_cast<long>(completed)) {
-    start_case(arg1 == 0 ? "syscall_values" : (arg1 == 1 ? "user_ranges" : "fork_exec_exit_reap"));
+  if (op == 1 && (ut::same_id(selection, "users") || ut::same_id(selection, "users.vm")) && !failed && !active_case &&
+      arg1 == static_cast<long>(completed) && arg1 >= 0 && arg1 < 3) {
+    if (ut::same_id(selection, "users.vm")) {
+      start_case(arg1 == 0 ? "private_cow" : (arg1 == 1 ? "readonly_cow" : "access_permissions"));
+    } else {
+      start_case(arg1 == 0 ? "syscall_values" : (arg1 == 1 ? "user_ranges" : "fork_exec_exit_reap"));
+    }
     return 0;
   }
-  if (op == 2 && active_case && (ut::same_id(selection, "users") || ut::same_id(selection, "users.simd_fault"))) {
+  if (op == 2 && active_case &&
+      (ut::same_id(selection, "users") || ut::same_id(selection, "users.vm") ||
+       ut::same_id(selection, "users.simd_fault"))) {
     if (arg2 != 0) {
       logging::klog::error("users checks failed: mask={:#x}", static_cast<u64>(arg2));
     }

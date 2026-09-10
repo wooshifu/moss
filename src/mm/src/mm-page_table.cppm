@@ -111,6 +111,16 @@ struct [[gnu::packed]] PageTableEntry {
   constexpr void set_cow() { raw |= page_attr::SW_COW; }
   constexpr void clear_cow() { raw &= ~page_attr::SW_COW; }
 
+  [[nodiscard]] constexpr bool is_writable() const {
+#if defined(MOSS_ARCH_ARM64)
+    return is_valid() && (raw & page_attr::READONLY) == 0;
+#elif defined(MOSS_ARCH_X86_64)
+    return is_valid() && (raw & page_attr::WRITABLE) != 0;
+#else
+    return is_valid() && (raw & page_attr::WRITE) != 0;
+#endif
+  }
+
   // Make page read-only (architecture-specific bit manipulation)
   constexpr void make_readonly() {
 #if defined(MOSS_ARCH_ARM64)

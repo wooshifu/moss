@@ -1,6 +1,6 @@
 # MOSS 内核能力与待办
 
-> 更新日期：2026-09-06；提交基线：`4cde9b3`（内存布局与指针发布所有权修复）；当前工作区的锁容器与从核 MMU 修复另标。
+> 更新日期：2026-09-10；提交基线：`a5ff24f`；历史实现与实测保留原日期，最新启动同步与 COW 进展见 moss-todo.md 第 3.15～3.16 节。
 > 本文取代旧清单中“完成即可靠”“x86/RISC-V 仅为启动桩”的描述。
 > 审计问题的原始证据、当前状态及完整验收条件见 [moss-todo.md](moss-todo.md)；MOSS-001～032 沿用原编号，不重新编号。
 
@@ -95,10 +95,14 @@ uv run scripts/run_qemu.py --manifest build/arm64-debug/moss-artifacts.json
   - [x] 持有读者、1,024 次清空/复用、回调/析构重入与真实双 CPU 同 key 创建/删除交错用例（工作区，3.9）。
 - [ ] **MOSS-007（部分实现）**：x86 第八参数目前是 null，RV64 未传有效帧；仍需每 ISA 的完整 TrapFrame、信号桩、偏移/返回状态校验。
 - [ ] **MOSS-008**：仅可写私有页允许 COW；RO/text/NX/NONE 不能因 fork 或 fault 被放宽权限。
+  - [x] clone 保留真实只读页，fault 检查可写 VMA；真实页表三代引用/释放及用户态多代 COW、最后引用写入、fork 后 text/rodata 写入拒绝，三架构九配置默认回归通过（3.16）。
+  - [ ] 同时写故障、fork/unmap 交错的 VMA/PTE/ref/TLB 事务锁及 OOM 回滚；fork 前只读写入和遗留 COW/VMA 权限冲突的独立异常验收。
 
 ## P1：VM、进程、并发、VFS 与验收
 
 - [ ] **MOSS-009**：修正 RV64 demand/COW 分类及 PPN 编码；已驻留页不得被缺页路径重新填充。
+  - [x] fault 区分读/写/执行，demand 拒绝驻留页与无权限访问，COW 使用 HAL PTE 编码；匿名页内容隔离、PROT_NONE/NX 拒绝在三架构及 RV64 Sv39/Sv48 上通过（3.16）。
+  - [ ] 补多物理地址编码往返、拒绝访问零额外分配，以及覆盖/失败时的页引用生命周期专项；不以一次普通回归替代并发与故障注入。
 - [ ] **MOSS-010**：页表 clone/map 显式失败、完整回滚；不得发布部分成功的 fork。
 - [ ] **MOSS-011**：活跃 ASID 租约与跨 CPU TLB 失效；超过 255 次地址空间创建仍隔离。
 - [ ] **MOSS-012**：brk/mmap/munmap 同步维护 VMA/PTE/引用/TLB；覆盖 PROT_NONE 与增长冲突。部分 munmap 仍作为明确的后续兼容能力。
@@ -113,8 +117,10 @@ uv run scripts/run_qemu.py --manifest build/arm64-debug/moss-artifacts.json
   - [x] 自有 userspace 链接产物 RX/R/RW 页分离，覆盖 x86 large-model/small-data/GOT；不关闭外来 ELF 加载器校验（3.14）。
 - [ ] **MOSS-017**：原子取任务、去重入队、on-CPU 交接、迁移锁序和 affinity；对已有 RB 算法补不变量/交错测试，不重写一套。
   - [x] 修复实际双 CPU 用例暴露的 ARM64 从核未开启 MMU：复用主核已建页表，在各从核配置 MMU 和高地址直映后才发布 online（工作区，3.9）；不代表运行队列所有权或运行中任务迁移已完成。
+  - [x] ARM64 激活从核时补齐 `Active` 发布后的 `DSB SY → SEV` 完成顺序；三模式构建、Debug/Release CTest 5/5 与实际指令检查通过，偶发挂起完整验收另列（3.15）。
 - [ ] **MOSS-018**：wait/console 条件检查—登记—睡眠统一协议；多读者、信号中断、坏 status 后可重试。
-  - [ ] 当前 ARM64 Debug `containers.smp` 出现子进程 Zombie 后超时；ARM64 Release 曾在基准执行前因从核未上线失败。两轮六配置 CTest 均 14/15，根因未确认，不能关闭 SMP 验收（moss-todo.md 第 3.14 节）。
+  - [ ] ARM64 Debug `containers.smp` 子进程 Zombie 后超时仍未解决。启动失败已另抓到 CPU3 为 Active 却停在 WFE 的现场；补屏障不等于两个故障都已修复。历史两轮六配置 CTest 均 14/15，不能关闭 SMP 验收（3.14～3.15）。
+  - [x] 独立诊断确认本机 QEMU MTTCG 事件已置位但宿主线程仍睡眠；不加载 Moss 也能稳定复现，仅补宿主 kick 即继续。该诊断不算内核修复或 SMP 验收，正式 runner 模式不变（3.15）。
 - [ ] **MOSS-019**：三架构真实 nanosleep；timer 满队列显式失败、同步取消/回调生命周期与 deadline 溢出检查。`clock_getres` 仍是 ENOSYS，按明确的 Moss ABI 补实现与测试。
 - [ ] **MOSS-020**：统一 syscall/IRQ 返回信号检查；修正 signo/返回值写回，补 CPU-bound 投递、STOP/CONT/SIGCHLD 和阻塞中断。
 - [ ] **MOSS-021**：信号状态绑定进程/线程生命周期，不按绝对 PID 索引 256 槽；验证 fork/exec/exit 及复用。
