@@ -1,6 +1,6 @@
 # MOSS 内核能力与待办
 
-> 更新日期：2026-09-10；提交基线：`3acac43`；历史实现与实测保留原日期，最新页表失败事务进展见 moss-todo.md 第 3.17 节。
+> 更新日期：2026-09-11；提交基线：`16e3aa3`；历史实现与实测保留原日期，最新调度 IRQ 临界区进展见 moss-todo.md 第 3.18 节。
 > 本文取代旧清单中“完成即可靠”“x86/RISC-V 仅为启动桩”的描述。
 > 审计问题的原始证据、当前状态及完整验收条件见 [moss-todo.md](moss-todo.md)；MOSS-001～032 沿用原编号，不重新编号。
 
@@ -94,7 +94,8 @@ uv run qemu.py --manifest build/arm64-debug/moss-artifacts.json
   - [x] LockedList/LockedHashMap 查找复制值/拥有者，串行化摘除与发布；析构及快照回调在锁外执行（工作区，3.9）。
   - [x] 持有读者、1,024 次清空/复用、回调/析构重入与真实双 CPU 同 key 创建/删除交错用例（工作区，3.9）。
 - [ ] **MOSS-007（部分实现）**：x86 第八参数目前是 null，RV64 未传有效帧；仍需每 ISA 的完整 TrapFrame、信号桩、偏移/返回状态校验。
-  - [ ] RV64 Debug 新捕获：四核 ready 后、验证 worker 启动前，PID 1 在 `pc=0` 取指异常退出；首次用户执行/陷阱返回/抢占根因未确定，报告 `1789054088760333000`，不能归为 COW 断言失败（3.17）。
+  - [x] 首次上下文/入口栈发布提前关 IRQ，恢复调用者原有 IRQ 状态；已捕获 RV64 `sd tp, 256(sp)` 覆盖初始 PC 的真实交错。修复前 1/4 CPU 注入均失败，修复后各 10 次通过，Sv39 另 3 次同镜像通过，均包含完整 users.vm（3.18）。
+  - [ ] 完整异常入口与抢占交错验收；最初自然 `pc=0` 报告 `1789054088760333000` 未抓寄存器现场，不能以本次确认的一个原因宣称所有历史/后续启动故障已解决。
 - [ ] **MOSS-008**：仅可写私有页允许 COW；RO/text/NX/NONE 不能因 fork 或 fault 被放宽权限。
   - [x] clone 保留真实只读页，fault 检查可写 VMA；真实页表三代引用/释放及用户态多代 COW、最后引用写入、fork 后 text/rodata 写入拒绝，三架构九配置默认回归通过（3.16）。
   - [ ] 同时写故障、fork/unmap 交错的 VMA/PTE/ref/TLB 事务锁及 OOM 回滚；fork 前只读写入和遗留 COW/VMA 权限冲突的独立异常验收。
@@ -120,6 +121,7 @@ uv run qemu.py --manifest build/arm64-debug/moss-artifacts.json
 - [ ] **MOSS-016**：ELF checked arithmetic、段/入口/权限校验、边界页与明确重叠策略；逐点分配失败验证。
   - [x] 自有 userspace 链接产物 RX/R/RW 页分离，覆盖 x86 large-model/small-data/GOT；不关闭外来 ELF 加载器校验（3.14）。
 - [ ] **MOSS-017**：原子取任务、去重入队、on-CPU 交接、迁移锁序和 affinity；对已有 RB 算法补不变量/交错测试，不重写一套。
+  - [x] current task、初始上下文、地址空间及入口栈在本 CPU 的同一 IRQ 临界区内发布；这不替代跨 CPU 的运行队列/on-CPU 所有权协议（3.18）。
   - [x] 修复实际双 CPU 用例暴露的 ARM64 从核未开启 MMU：复用主核已建页表，在各从核配置 MMU 和高地址直映后才发布 online（工作区，3.9）；不代表运行队列所有权或运行中任务迁移已完成。
   - [x] ARM64 激活从核时补齐 `Active` 发布后的 `DSB SY → SEV` 完成顺序；三模式构建、Debug/Release CTest 5/5 与实际指令检查通过，偶发挂起完整验收另列（3.15）。
 - [ ] **MOSS-018**：wait/console 条件检查—登记—睡眠统一协议；多读者、信号中断、坏 status 后可重试。
@@ -135,6 +137,7 @@ uv run qemu.py --manifest build/arm64-debug/moss-artifacts.json
 - [ ] **MOSS-026**：inode/pipe/File/FD 槽可复用；创建各阶段及用户复制失败回滚，1,000 次 pipe 创建/关闭不耗尽。
 - [ ] **MOSS-027（正常路径已修复，负向验收待补）**：PVH 模块表取代扫描/fallback；补改变 initrd 大小/位置、缺失/非法模块和必需 init 失败的明确错误验证。
 - [ ] **MOSS-028（框架已落地，覆盖待补）**：保留真实内核套件、协议、失败/panic/timeout 自检；逐项补审计 T01～T12，特别是信号、坏指针、COW、资源长循环、失败回滚及确定性交错；纳入持续验收。
+  - [ ] 最新九配置编译通过，但 CTest 20/21：RV64 Debug 的 `mm.transactions.map_allocation_rollback` 在 5.012 秒超时；报告 `1789058648884619000` 保留，单独复测通过不关闭该失败（3.18）。
   - [x] 记录逐 case 宿主观测耗时及实际 deadline；四并发复现并修复 PFA 全 RAM 工作超过普通预算的问题，保留短超时拒绝和所有旧失败（工作区，3.10）。
 
 ## P2：能力契约与文档

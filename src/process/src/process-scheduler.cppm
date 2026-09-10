@@ -1883,6 +1883,13 @@ private:
       return;
     }
 
+    // Task identity, initial context, address space and entry stack must be
+    // published as one local IRQ-masked transition. In particular, RV64's
+    // nonzero sscratch would otherwise make an S-mode IRQ use (and overwrite)
+    // the incoming task's initial user context as its trap frame.
+    const bool restore_irqs = arch::interrupts_enabled();
+    arch::disable_interrupts();
+
     // Save prev BEFORE updating current — context_switch needs it
     Thread *prev = get_current_task();
 
@@ -2050,14 +2057,14 @@ private:
 #endif
       }
 
-      // Mask IRQs before context_switch.  context_switch does NOT
-      // touch interrupt state, so the new task inherits masked state.
-      arch::disable_interrupts();
-
       context_switch(prev_ctx, &task->context);
       // Returns here when prev_ctx is scheduled again.
       exiting_processes_.get_local().reset();
-      arch::enable_interrupts();
+      // An IRQ caller must finish restoring its trap frame with IRQs masked.
+      // Ordinary scheduler callers regain their original enabled state.
+      if (restore_irqs) {
+        arch::enable_interrupts();
+      }
     }
   }
 

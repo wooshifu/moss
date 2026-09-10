@@ -161,6 +161,8 @@ inline void cpu_idle_once() noexcept {
 #if defined(MOSS_ARCH_RISCV)
 [[nodiscard]] inline u64 riscv_hart_id(u32 logical) noexcept { return platform::hardware.cpus[logical].hardware_id; }
 inline void set_user_kernel_stack(u64 top) noexcept {
+  // The caller must keep IRQs masked until the S-mode switch or user return
+  // consumes this value: nonzero sscratch selects a user-origin trap stack.
   u64 hart;
   asm volatile("mv %0, tp" : "=r"(hart));
   *reinterpret_cast<u64 *>(top - 16) = hart;

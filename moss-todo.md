@@ -1,7 +1,7 @@
 # Moss 内核设计与实现审计报告及修复清单
 
 > 原始审计：2026-09-05，源码基线：`e0e2bbc920b66f91e18802a46106ca5811e588b1`。
-> 状态复核：2026-09-10，提交基线：`3acac43`。第 3.4～3.16 节保留此前实测及当时状态；最新工作区进展见第 3.17 节。本文与 [todo.md](todo.md) 同步。
+> 状态复核：2026-09-11，提交基线：`16e3aa3`。第 3.4～3.17 节保留此前实测及当时状态；最新工作区进展见第 3.18 节。本文与 [todo.md](todo.md) 同步。
 > 第 3.1～3.2 节保留原始运行证据；第 5～9 节未标新日期的“位置与事实”、地址和行号属于原始审计，不能当作当前仍然失败的运行结果。当前状态以第 4 节及各项更新说明为准。
 
 ## 1. 当前结论
@@ -636,6 +636,57 @@ LLDB 检查本机 QEMU 11.1.1 进程时，CPU3 为 `halted=1, halt_reason=HALT_W
 
 **MOSS-010 仍为部分完成：** 当前测试证明页表函数在稳定源、自有未激活目标条件下的分配失败契约。接口尚依赖调用方排除并发修改，统一 VMA/PTE/ref/TLB 锁与跨 CPU 生命周期仍属 MOSS-008/011/028。`sys_fork` 的页表错误传播已实现，但完整系统调用的逐点 OOM 专项尚未运行；页表 clone 成功后的 kernel-stack、VMA、FD 等后续失败仍需纳入整次 fork 的事务。没有以这些表级用例关闭整个 fork 或完整内核目标，实机与长期 SMP 验收仍待补。
 
+### 3.18 首次用户调度的 IRQ 临界区（2026-09-11，工作区）
+
+继续 MOSS-007/017，确认并修复一个会损坏首次用户返回现场的真实交错，不以普通启动偶然通过作为修复依据。
+
+**根因与修复：** `CfsScheduler::context_switch_to_task` 原来先发布 current task、准备首次上下文、切换地址空间和内核入口栈，最后才屏蔽 IRQ。RV64 的 `set_user_kernel_stack` 写入非零 `sscratch` 后，如果此时从 S-mode 进入 IRQ，统一异常入口会将其当作用户来源栈进行交换。待恢复的初始 `CpuContext` 与新陷阱帧占用同一栈区，`sd tp, 256(sp)` 将用户 PC 覆盖成当前 hart ID。hart 0 会产生 `pc=0`；hart 2 对照产生 `pc=2`。这不是 ELF 入口值最初为零，也不是 COW 断言失败。
+
+现在在发布 current task 之前屏蔽本 CPU 的 IRQ；保护范围覆盖上下文、地址空间、入口栈和汇编切换。返回时仅恢复调用者原有的 IRQ 使能状态，IRQ 调用者不能在陷阱帧恢复前被无条件重新开中断。改动在三 ISA 共用的调度路径中，RV64 栈设置接口补充该前置条件；`sys_execve` 的调用点已有显式关中断。没有新增板名、QEMU 地址或模拟器依赖。
+
+**真实写入现场：** `build/riscv-debug/diagnostics/first-user-7v4ry6vu/0001/gdb.log` 保留硬件观察点：用户 PC 从 `0x200000000` 变成 `2`，写入者为 `syscall_entry_point` 的 `sd tp, 256(sp)`，`sstatus.SPP=1`，`sepc` 指向仍在 S-mode 的栈发布函数；随后用户在地址 2 取指失败。此前不带断点的自然失败仍保留在 `first-user-f9tfl9ga/0027`（前 26 次到达 worker，第 27 次 `PC=0`）。最初报告 `1789054088760333000` 没有寄存器现场，因此不能声称本路径已证明是每一次历史 `PC=0` 的唯一原因。
+
+新增独立回归 `scripts/check_riscv_dispatch.py`：GDB 在生产栈发布函数的返回点设置真实 SSIP pending/enable，不修改内核代码、PC、栈数据或调度器实现；验证初始 PC 未改变、切换期间 IRQ 关闭，以及 SSIP 仅在首次 SRET 后以正确用户 PC/SP 进入真实异常入口，最后必须完成全部 `users.vm` 用例。软件 IRQ 的 pending/enable 语义依据 [RISC-V Supervisor ISA](https://docs.riscv.org/reference/isa/priv/supervisor.html)。脚本使用已有 artifact reader、QEMU runner 和严格串口协议解析，冻结 kernel/initramfs/symbols 并记录 SHA-256；每次 fresh guest，第一次失败即停止并保留报告。它是需要 RISC-V GDB 的专项入口，尚未加入默认 CTest，不把它计入默认测试数量。
+
+```sh
+uv run python scripts/check_riscv_dispatch.py \
+  --manifest build/riscv-debug/moss-artifacts.json \
+  --symbols build/riscv-debug/bin/moss.test.elf --cpus 4 --runs 10
+# 同一镜像再用 --cpus 1，或 --cpu rv64,sv48=false
+```
+
+环境为 QEMU 11.1.1 TCG、GDB 17.2、2 GiB RAM；`virt`/OpenSBI 装载地址仅属于上述专项 runner fixture。报告路径为 `build/riscv-debug/dispatch-irq/<目录>/results.json`，各 guest 的串口及 GDB 现场在其编号子目录：
+
+| 镜像与条件 | 报告目录 | 结果 |
+| --- | --- | --- |
+| 修复前，4 CPU，默认 Sv48 | `run-_m9opl74` | 首次 PC 被改成 2，专项失败 |
+| 修复前，1 CPU，默认 Sv48 | `run-2o526_hw` | 首次 PC 被改成 0，专项失败 |
+| 修复后，4 CPU，默认 Sv48 | `run-7fg12n67` | 10/10，包含 IRQ 时序检查及完整 users.vm |
+| 修复后，1 CPU，默认 Sv48 | `run-q_qukbyk` | 10/10，包含 IRQ 时序检查及完整 users.vm |
+| 修复后，4 CPU，Sv39 | `run-vig8w16h` | 3/3，同一镜像，包含 IRQ 时序检查及完整 users.vm |
+
+修复前 RV64 Debug image SHA-256 为 `17b86cc71619491d9d1870d9d305fa27c91cffa529fe2be44c3fc4eb6afc4388`，修复后为 `b19256bbf48e53f356f0b70af71b3408b688508b9ec6716366c0d22eeb3a92ad`。不带调试器的后置启动循环 `build/riscv-debug/diagnostics/first-user-hv92vdc0/results.json` 为 100/100 到达 worker；这个循环只证明到达用户执行，不能算作 100 次完整功能套件。旧镜像带“未处理缺页分支”断点的 100 次循环也未复现自然失败，说明断点会影响时序；修复依据是上述确定性交错的前后对照，不是重试到绿。
+
+**三架构回归：** `uv run build.py --jobs 3` 的九配置 configure/build 全通过，完整 workflow **8/9**、CTest **20/21**。三架构九配置的 `users`、`users.vm` 均通过。宿主 pytest **121/121**，新增脚本 Ruff 与格式检查、改动行 clang-format 及 diff 检查通过。各报告为 `build/<preset>/validation/<ID>/results.json`：
+
+| preset | functional | framework | benchmark |
+| --- | --- | --- | --- |
+| arm64-debug | 1789058556614572000 | 1789058571568943000 | 不适用 |
+| arm64-release | 1789058557674388000 | 1789058566914500000 | 1789058578854512000 |
+| arm64-relwithdebinfo | 1789058559449795000 | 1789058568421515000 | 不适用 |
+| x86_64-debug | 1789058605929820000 | 1789058627285295000 | 不适用 |
+| x86_64-release | 1789058609642577000 | 1789058622808073000 | 1789058635901872000 |
+| x86_64-relwithdebinfo | 1789058617151552000 | 1789058627790634000 | 不适用 |
+| riscv-debug | **1789058648884619000，mm.transactions 超时** | 1789058680175489000 | 不适用 |
+| riscv-release | 1789058673907584000 | 1789058685608673000 | 1789058698620711000 |
+| riscv-relwithdebinfo | 1789058676734790000 | 1789058688003835000 | 不适用 |
+
+失败 guest 已 ready 且启动 worker，`map_preserves_existing` 通过，随后 `map_allocation_rollback` 在 5.012 秒超时，其后三例 not_run；没有捕获 PC 或断言失败。该矩阵与部分诊断循环并行执行，宿主压力、页分配耗尽速度或内核交错均未完成因果对照，不能擅自归为环境问题。同一镜像另一次定向 `mm.transactions` 报告 `1789058733949855000` 通过，但不抵消原失败，也没有放宽原期限。
+
+- [x] 限定关闭：首次用户上下文在入口栈发布与汇编切换之间被本 CPU IRQ 覆盖的路径；真实 IRQ 注入前后对照已完成。
+- [ ] 完整 TrapFrame/syscall/信号返回仍属 MOSS-007；跨 CPU 的原子取任务、on-CPU 交接、迁移与等待所有权仍属 MOSS-017/018，本地 IRQ 屏蔽不能替代它们。
+- [ ] 上述 `mm.transactions` 超时、历史 ARM64 启动/wait 超时及 x86 时钟校准失败仍待独立查因；真机、全异常入口交错及长期 SMP 验收未完成。
+
 ## 4. 问题总表与当前状态
 
 | 编号 | 优先级 | 审计主题 | 当前状态与下一步 |
@@ -646,7 +697,7 @@ LLDB 检查本机 QEMU 11.1.1 进程时，CPU3 为 `halted=1, halt_reason=HALT_W
 | MOSS-004 | P0 | 堆与页表/PFA 所有权重叠 | 已关闭（`040d773`）；当前布局、活动页表树/早期表池及元数据哨兵、耗尽、坏布局启动拒绝专项验收通过，见 3.7。 |
 | MOSS-005 | P0 | 启动保留区未排除 | 多 bank、保留洞、非对齐/重叠、容量/溢出及耗尽已验证；低地址启动区仍保守保留，PVH 异常表/完整保留集合待补，见 3.5～3.6。 |
 | MOSS-006 | P0 | 容器与使用者的所有权 | 部分修复（工作区）；伪 RCU 已替换为 LockedList/LockedHashMap，查找复制拥有者，锁外析构/快照回调；持有读者与双 CPU 交错有实测，IRQ/驱动/IPC 复合协议未闭合，见 3.9。 |
-| MOSS-007 | P0 | 跨 ISA TrapFrame / syscall 参数 | 部分实现；x86 第八参数为 null，RV64 未传有效帧，共通信号布局仍为 ARM64。 |
+| MOSS-007 | P0 | 跨 ISA TrapFrame / syscall 参数 | 部分实现；首次用户调度的 IRQ 栈覆盖路径已修复并注入验收（3.18）；x86 第八参数为 null，RV64 未传有效帧，共通信号布局仍为 ARM64。 |
 | MOSS-008 | P0 | 只读页被 COW 放宽权限 | 部分修复；clone 保留真实只读页，fault 检查可写 VMA，多代 COW/用户异常回归通过；并发事务与 OOM 验收待补，见 3.16。 |
 | MOSS-009 | P1 | RV64 fault 分类 / PPN | 部分修复；访问类型与驻留检查、COW 优先和 HAL PPN 编码已补，Sv39/Sv48 回归通过；分配/引用失败专项仍待补，见 3.16。 |
 | MOSS-010 | P1 | 页表 clone/map 回滚 | 部分修复（3.17）；map/clone 表页准备失败不改原树和数据页引用，clone 返回结果并由 fork 检查，三架构逐点 PFA 耗尽通过；完整 fork 后续失败事务与并发锁待补。 |
@@ -656,7 +707,7 @@ LLDB 检查本机 QEMU 11.1.1 进程时，CPU3 为 `halted=1, halt_reason=HALT_W
 | MOSS-014 | P1 | fork 用户现场与继承状态 | 部分实现；RV64/x86 GP 快照和首次返回已补，x86 legacy FP 经 yield/fork/exec/SMP 有子项验证（3.14）；VM/凭据/信号/其余扩展状态及失败验收仍缺。 |
 | MOSS-015 | P1 | exec 原子替换 | 未修复；`sys_execve` 仍先释放旧地址空间，进程名也提前变更。 |
 | MOSS-016 | P1 | ELF 校验与分段策略 | 未修复；header/段范围、checked arithmetic、入口及重叠权限缺口仍在。 |
-| MOSS-017 | P1 | 运行队列 / 迁移 / on-CPU | 未修复；pick 与 dequeue、源/目标迁移分开，check_need_resched 未闭合；已有 RB 平衡算法应保留。 |
+| MOSS-017 | P1 | 运行队列 / 迁移 / on-CPU | 调度发布的本地 IRQ 临界区已补（3.18）；pick 与 dequeue、源/目标迁移仍分开，on-CPU/check_need_resched 未闭合；已有 RB 平衡算法应保留。 |
 | MOSS-018 | P1 | wait/console 丢失唤醒 | 未修复；条件检查与等待登记分离，wait 仍先 reap 后复制 status。 |
 | MOSS-019 | P1 | nanosleep / timer 生命周期 | 未修复；切换仅 ARM64，先 arm 后 Sleeping，队列满无错误与 cancel 竞态仍在。 |
 | MOSS-020 | P1 | 信号投递 / STOP/CONT/SIGCHLD | 未修复；ARM64 返回值仍覆盖 frame[0]，默认测试未验这些信号语义。 |
@@ -1178,6 +1229,7 @@ DeviceManager 的框架存在、运行时设备计数为 0 与 UART 实际通过
   - [ ] 三架构异常 fixup、页/VM 生命周期、VFS 用户缓冲区迁移，以及合法 VMA 内不可恢复故障的 EFAULT 验收。
 - [x] B3a：RV64/x86 首次用户返回与基本 fork 用户 GP 现场恢复已补，三架构真实 users 套件通过（007、014，`44dedc2`）。
 - [ ] B3b：三个 ISA 有效 TrapFrame 传参、布局断言、完整用户现场、信号桩及安全返回仍待统一（007）。
+- [x] B3c：修复首次上下文/入口栈发布的本地 IRQ 覆盖；RV64 Sv48 的 1/4 CPU 注入前后对照、Sv39 的 4 CPU 后置回归及 users.vm 通过（007/017，工作区 3.18）。
 - [ ] B4：信号帧复制与返回状态净化，修复结果/handler 参数写回顺序（003、020 的入口部分）。
 
 **退出条件：** 各架构静态页表/布局检查通过；能运行用户态的架构上，坏指针、坏栈、特权状态和只读映射攻击只影响调用进程。x86 正常用户态已接通，可直接补隔离测试；普通 users 套件没有执行这些攻击，不能勾为通过。
