@@ -7,6 +7,7 @@ import platform
 import signal
 import statistics
 import subprocess
+import sys
 import time
 import xml.etree.ElementTree as ET
 from pathlib import Path
@@ -15,24 +16,11 @@ from typing import Annotated, Any, Literal
 import typer
 from pydantic import BaseModel, ConfigDict
 
-try:
-    from .artifacts import Artifacts
-    from .run_qemu import (
-        ARCH_CONFIG,
-        build_qemu_args,
-        get_qemu_version,
-        resolve_machine,
-        resolve_qemu,
-    )
-except ImportError:
-    from artifacts import Artifacts
-    from run_qemu import (
-        ARCH_CONFIG,
-        build_qemu_args,
-        get_qemu_version,
-        resolve_machine,
-        resolve_qemu,
-    )
+if __package__ in (None, ""):
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
+from qemu import ARCH_CONFIG, build_qemu_args, get_qemu_version, resolve_machine, resolve_qemu
+from scripts.artifacts import Artifacts
 
 CATALOG = {
     "resources": ["cpu_memory"],

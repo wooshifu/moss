@@ -9,10 +9,7 @@ from typing import Annotated
 
 import typer
 
-try:
-    from .artifacts import Artifacts
-except ImportError:
-    from artifacts import Artifacts
+from scripts.artifacts import Artifacts
 
 ARCH_CONFIG = {
     "ARM64": {"qemu_system": "qemu-system-aarch64", "machine": "virt", "cpu": "cortex-a72"},

@@ -45,7 +45,7 @@ do_run() {
     echo ""
     echo "=== Running MOSS kernel in QEMU ==="
     local manifest="build/${PRESET}/moss-artifacts.json"
-    uv run scripts/run_qemu.py --manifest "${manifest}" "${REMAINING_ARGS[@]+"${REMAINING_ARGS[@]}"}"
+    uv run qemu.py --manifest "${manifest}" "${REMAINING_ARGS[@]+"${REMAINING_ARGS[@]}"}"
 }
 
 do_test() {

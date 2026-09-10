@@ -5,14 +5,12 @@ Uses `git ls-files` so .gitignore is automatically respected.
 All tools come from pyproject.toml dev dependencies (via uv).
 
 Usage:
-    uv run scripts/format.py                     # format everything (default)
-    uv run scripts/format.py --check             # dry-run (exit 1 if anything changes)
-    uv run scripts/format.py format --check      # explicit format subcommand
+    uv run format                       # format everything
+    uv run format --check               # dry-run (exit 1 if anything changes)
 """
 
 import os
 import subprocess
-import sys
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from pathlib import Path
 
@@ -46,7 +44,7 @@ def git_tracked_files() -> list[Path]:
         text=True,
         check=True,
     )
-    return [Path(line) for line in result.stdout.splitlines() if line]
+    return [Path(line) for line in result.stdout.splitlines() if line and Path(line).is_file()]
 
 
 def classify_files(files: list[Path]) -> tuple[list[Path], list[Path], list[Path]]:
@@ -211,13 +209,8 @@ def _print_result(label: str, ok: bool) -> None:
     console.print(f"  [bold]{label}[/] {status}")
 
 
-@app.callback()
-def main() -> None:
-    """Format source files; C++ lint lives in the root lint.py."""
-
-
 @app.command()
-def format(
+def main(
     check: bool = typer.Option(False, "--check", help="Check only, don't modify (exit 1 if diff)"),
     cpp_only: bool = typer.Option(False, "--cpp-only", help="Format C++ files only"),
     cmake_only: bool = typer.Option(False, "--cmake-only", help="Format CMake files only"),
@@ -255,16 +248,11 @@ def format(
         all_ok &= ok
 
     if check and not all_ok:
-        console.print("\n[red]Some files need formatting.[/] Run: uv run scripts/format.py format\n")
+        console.print("\n[red]Some files need formatting.[/] Run: uv run format\n")
         raise typer.Exit(1)
     if not check:
         console.print("\n[green]Done.[/]\n")
 
 
 if __name__ == "__main__":
-    # Default to "format" when no subcommand is given
-    if len(sys.argv) > 1 and sys.argv[1] in ("help", "--help", "-h"):
-        sys.argv[1:] = ["--help"]
-    elif len(sys.argv) == 1 or (len(sys.argv) > 1 and sys.argv[1].startswith("-")):
-        sys.argv.insert(1, "format")
     app()
