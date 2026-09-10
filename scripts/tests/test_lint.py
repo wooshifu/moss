@@ -378,16 +378,18 @@ def test_interrupt_terminates_running_tool_and_children(tmp_path):
             process.wait()
 
 
-def test_format_cli_keeps_both_default_and_explicit_forms(monkeypatch):
+def test_format_cli_uses_root_command_without_subcommand(monkeypatch):
     from typer.testing import CliRunner
 
-    from scripts import format as formatter
+    import format as formatter
 
     monkeypatch.setattr(formatter, "git_tracked_files", lambda: [])
-    result = CliRunner().invoke(formatter.app, ["format", "--check"])
-    assert result.exit_code == 0, result.output
+    for arguments in ([], ["--check"]):
+        result = CliRunner().invoke(formatter.app, arguments)
+        assert result.exit_code == 0, result.output
     help_result = CliRunner().invoke(formatter.app, ["--help"])
     assert help_result.exit_code == 0
+    assert "--check" in help_result.output
     assert "lint " not in help_result.output
 
 
