@@ -4,8 +4,8 @@ from pathlib import Path
 
 import pytest
 
+from qemu import build_qemu_args, resolve_qemu
 from scripts.artifacts import Artifacts
-from scripts.run_qemu import build_qemu_args, resolve_qemu
 from scripts.verify_linux_image import verify_arm64_header, verify_relocations, verify_riscv_header
 
 
@@ -61,7 +61,7 @@ def test_no_implicit_image_fallback_and_qemu_is_only_a_run_dependency(tmp_path, 
     (tmp_path / "Image").unlink()
     with pytest.raises(ValueError, match="not built"):
         build_qemu_args(artifacts)
-    monkeypatch.setattr("scripts.run_qemu.shutil.which", lambda _: None)
+    monkeypatch.setattr("qemu.shutil.which", lambda _: None)
     with pytest.raises(ValueError, match="QEMU executable not found"):
         resolve_qemu("ARM64")
     # Reading build artifacts must not require an emulator.

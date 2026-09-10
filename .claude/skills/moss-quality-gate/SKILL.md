@@ -43,7 +43,7 @@ uv run ruff check --fix .
 ### Step 3 — Format
 
 ```bash
-uv run scripts/format.py format --check
+uv run format --check
 ```
 
 Runs clang-format (C++), cmake-format (CMake), and ruff format (Python) in check mode.
@@ -51,7 +51,7 @@ Runs clang-format (C++), cmake-format (CMake), and ruff format (Python) in check
 If files need formatting:
 
 ```bash
-uv run scripts/format.py format
+uv run format
 ```
 
 Then re-run `format --check` to verify clean.
@@ -62,7 +62,7 @@ Then re-run `format --check` to verify clean.
 |------|---------|
 | Full quality check | Build, then `uv run lint.py --check`, `uv run ruff check .`, then `format --check` |
 | Auto-fix C++ lint issues | `uv run lint.py --fix` |
-| Auto-fix format issues | `uv run scripts/format.py format` |
+| Auto-fix format issues | `uv run format` |
 | C++ only lint | `uv run lint.py --check` |
 | Python only lint | `uv run ruff check .` |
 

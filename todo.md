@@ -35,7 +35,7 @@ MOSS 当前是 C++26 freestanding 的模块化单体研究内核。ARM64、RV64�
 - [x] 独立验证镜像复用生产内核模块与启动路径，使用 `@@MOSS` 串口协议；宿主负责终止、回收 QEMU，不使用 guest 端模拟器退出设备。
 - [x] userspace 是真实 CMake 编译目标，进入编译数据库；正常/验证 initramfs 分离。
 
-入口：`CMakeLists.txt`、`cmake/presets/arch/`、`build.py`、`scripts/artifacts.py`、`scripts/run_qemu.py`、`scripts/kernel_validation.py`、`src/userspace/CMakeLists.txt`。
+入口：`CMakeLists.txt`、`cmake/presets/arch/`、`build.py`、`scripts/artifacts.py`、`qemu.py`、`scripts/kernel_validation.py`、`src/userspace/CMakeLists.txt`。
 
 ```sh
 # 仅编译，不要求安装 QEMU
@@ -47,7 +47,7 @@ uv run cmake --workflow --preset arm64-debug
 
 # 单独测试 / 启动已有正常内核
 uv run ctest --preset arm64-debug-test
-uv run scripts/run_qemu.py --manifest build/arm64-debug/moss-artifacts.json
+uv run qemu.py --manifest build/arm64-debug/moss-artifacts.json
 ```
 
 仅需正常内核时，在 configure 加 `-DMOSS_BUILD_TESTS=OFF`，随后使用独立 build；不要将此配置的“无测试”视为验收通过。当前产物：ARM64/RV64 `moss.bin`，x86_64 `bin/moss.elf`。完整用法和限制见 [generic-boot.md](docs/generic-boot.md)。

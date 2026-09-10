@@ -16,7 +16,7 @@ English only. No Co-Authored-By line.
 
 1. `cmake --build build/arm64-qemu-debug` — zero warnings
 2. `uv run lint.py --check` and `uv run ruff check .` — zero issues
-3. `uv run scripts/format.py format --check` — zero diffs
+3. `uv run format --check` — zero diffs
 
 Do not commit until all three pass. If any fail, fix and re-verify.
 

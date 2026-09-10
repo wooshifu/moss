@@ -10,6 +10,22 @@ dependencies = [
     "pydantic>=2.11",
 ]
 
+[project.scripts]
+format = "format:app"
+build = "build:app"
+lint = "lint:run"
+qemu = "qemu:app"
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+py-modules = ["format", "build", "lint", "qemu"]
+
+[tool.setuptools.packages.find]
+include = ["scripts"]
+
 [dependency-groups]
 dev = [
     "clang-format>=23.1.0",
