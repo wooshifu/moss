@@ -5,12 +5,19 @@ Moss is a modern multi-architecture hybrid kernel operating system supporting AR
 ## Quick Start
 
 ```bash
-# Configure, build and test all workflows (QEMU required for tests)
+# Configure, build and test all workflows concurrently (QEMU required for tests)
 uv run build.py
 
+# Limit concurrent presets (use --jobs 1 for sequential workflows)
+uv run build.py --jobs 2
+
 # List available build presets
-uv run build.py list
+uv run cmake --list-presets workflow
 ```
+
+`--jobs` / `-j` limits simultaneous preset workflows; it does not change the
+compiler parallelism within each preset. Architecture and build-type filters
+still apply. Verbose output is grouped by preset and printed when it finishes.
 
 ## Testing
 
