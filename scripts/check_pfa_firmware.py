@@ -14,12 +14,11 @@ import sys
 import time
 from pathlib import Path
 
-try:
-    from .artifacts import Artifacts
-    from .run_qemu import build_qemu_args, resolve_machine, resolve_qemu
-except ImportError:
-    from artifacts import Artifacts
-    from run_qemu import build_qemu_args, resolve_machine, resolve_qemu
+if __package__ in (None, ""):
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
+from qemu import build_qemu_args, resolve_machine, resolve_qemu
+from scripts.artifacts import Artifacts
 
 CASES = (
     "unaligned_reserved",

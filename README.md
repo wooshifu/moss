@@ -32,7 +32,7 @@ uv run cmake --workflow --preset arm64-debug
 # Or run each stage separately
 uv run cmake --preset arm64-debug
 uv run cmake --build --preset arm64-debug
-uv run scripts/run_qemu.py --manifest build/arm64-debug/moss-artifacts.json
+uv run qemu --manifest build/arm64-debug/moss-artifacts.json
 uv run ctest --preset arm64-debug-test
 ```
 
@@ -64,7 +64,7 @@ uv run lint.py --fix
 
 # Python lint and source formatting are separate commands.
 uv run ruff check .
-uv run scripts/format.py --check
+uv run format --check
 uv run python -m pytest
 ```
 

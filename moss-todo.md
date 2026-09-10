@@ -101,7 +101,7 @@ Error loading uncompressed kernel without PVH ELF Note
 基础启动命令形式：
 
 ```sh
-uv run --frozen scripts/run_qemu.py \
+uv run --frozen qemu.py \
   --config build/arm64-qemu-debug/qemu_config.json \
   --timeout 20 --smp 1
 ```
@@ -173,7 +173,7 @@ PC 解析为 `src/aal/src/arch.cppm:143` 的 `cpu_idle_once()`；X30 解析到 `
 ```sh
 uv run cmake --workflow --preset arm64-debug
 uv run ctest --preset arm64-debug-test
-uv run scripts/run_qemu.py --manifest build/arm64-debug/moss-artifacts.json
+uv run qemu.py --manifest build/arm64-debug/moss-artifacts.json
 ```
 
 `src/test/CMakeLists.txt` 复用生产内核模块；该提交的功能 catalog 是 resources/mm/vfs/users，共 7 个用例。`src/userspace/validation.c` 实际执行一次 fork → exec child → exit(37) → wait → 拒绝重复 reap。框架自检有真实断言失败、panic、timeout、未运行后续 case 和堆边界检查；`scripts/kernel_validation.py` 用完整 `@@MOSS` 记录判定并由宿主回收 QEMU，不再采用旧模拟器退出设备编码。
@@ -985,7 +985,7 @@ wait4 还有先 reap 后向用户复制 status 的顺序问题：复制失败后
 
 **位置与事实：** `src/test/CMakeLists.txt:3` 的独立测试主要链接 `moss_core`；`src/test/cases/kernel_modern_validation.cpp:19` 的 12 个测试、63 个断言主要覆盖算术、指针、循环、常量、局部缓冲区等，不能证明真实 PFA、页表、调度器、VFS 和生命周期正确。`src/test/test_main.cpp:35` 的独立 `_start` 没有普通 x86 内核入口所需的完整 PVH 启动转换，本次两个 x86 CTest 均未运行到断言。
 
-`src/test/framework/moss_ut.hpp:74` 的 x86 `isa-debug-exit` 成功值会被 QEMU 编码成非零退出状态，而 `scripts/run_qemu.py:591` 的普通返回处理直接传播进程状态；这会在装载问题修复后继续产生假失败。不能简单把所有退出 1 当成功，因为装载失败也可返回 1。
+`src/test/framework/moss_ut.hpp:74` 的 x86 `isa-debug-exit` 成功值会被 QEMU 编码成非零退出状态，而 `qemu.py:591` 的普通返回处理直接传播进程状态；这会在装载问题修复后继续产生假失败。不能简单把所有退出 1 当成功，因为装载失败也可返回 1。
 
 同一测试框架 `:87` 的 RISC-V SBI reset 路径没有根据测试失败设置不同失败 reason，存在失败仍退出成功的风险，需要故意失败用例确认端到端效果。`src/userspace/signal_test.c` 的 SIGCHLD 为 SKIP，末尾仍输出 ALL TESTS PASSED，也夸大覆盖。
 

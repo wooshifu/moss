@@ -71,11 +71,11 @@ section dumps, not alternative boot images.
 Install QEMU only on the host that will execute it:
 
 ```sh
-uv run scripts/run_qemu.py --manifest build/arm64-debug/moss-artifacts.json
-uv run scripts/run_qemu.py --manifest build/arm64-debug/moss-artifacts.json \
+uv run qemu.py --manifest build/arm64-debug/moss-artifacts.json
+uv run qemu.py --manifest build/arm64-debug/moss-artifacts.json \
   --machine virt,gic-version=3 --smp 16 --memory-mib 1024
-uv run scripts/run_qemu.py --manifest build/x86_64-debug/moss-artifacts.json --machine pc
-uv run scripts/run_qemu.py --manifest build/riscv-debug/moss-artifacts.json --cpu rv64,sstc=false
+uv run qemu.py --manifest build/x86_64-debug/moss-artifacts.json --machine pc
+uv run qemu.py --manifest build/riscv-debug/moss-artifacts.json --cpu rv64,sstc=false
 ```
 
 Defaults (`virt` / `q35`, 4 CPUs, 2048 MiB, TCG) are runner policy, not kernel
@@ -119,7 +119,7 @@ No rebuild occurs between these invocations. This QEMU model requires 4 CPUs and
 2048 MiB installed RAM; its direct-kernel loader describes 960 MiB to the guest.
 `--expected-ram-mib 960` makes that expectation explicit and recorded, instead of
 silently reducing an assertion to whatever the guest reports. Use the same
-`run_qemu.py` options (without `--expected-ram-mib`) to boot the normal shell image.
+`qemu.py` options (without `--expected-ram-mib`) to boot the normal shell image.
 
 Compare `provenance` image hashes in the saved `results.json` files, not just their
 filenames. The runner records the actual machine, resources, CPU, DTB hash and
