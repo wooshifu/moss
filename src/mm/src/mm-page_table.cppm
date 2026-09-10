@@ -44,7 +44,7 @@ enum class PageSize : u64 { Size4KB = PAGE_SIZE, Size2MB = 2ULL * 1024 * 1024, S
 namespace page_attr = ::moss::kernel::hal::mmu::page_attr;
 namespace page_perms = ::moss::kernel::hal::mmu::page_perms;
 
-struct [[gnu::packed]] PageTableEntry {
+struct PageTableEntry {
   u64 raw;
   constexpr PageTableEntry() : raw(0) {}
   constexpr explicit PageTableEntry(u64 value) : raw(value) {}
@@ -144,6 +144,8 @@ struct [[gnu::packed]] PageTableEntry {
   }
 };
 
+static_assert(sizeof(PageTableEntry) == sizeof(u64) && alignof(PageTableEntry) == alignof(u64));
+
 static_assert(sizeof(PageTableEntry) == 8, "PageTableEntry must be 8 bytes");
 
 struct alignas(PAGE_SIZE) PageTable {
@@ -237,7 +239,10 @@ public:
   // Build TTBR1 kernel page table: map physical RAM at KERNEL_DIRECT_MAP_BASE
   [[nodiscard]] static VoidResult setup_kernel_high_half_tables();
 
-  // Map a 4KB page into a user process page table (operates on user PGD, not kernel PGD)
+  // Map a 4KB page into an empty user leaf; the caller serializes changes to
+  // this address space. Success transfers the caller's frame reference to it.
+  // Failure preserves all existing entries and leaves frame ownership with
+  // the caller. Existing leaves and intermediate blocks are never replaced.
   [[nodiscard]] static VoidResult map_user_page(PhysAddr pgd_phys, VirtAddr va, PhysAddr pa, u64 perms);
 
   static void invalidate_tlb() { moss::kernel::arch::flush_tlb(); }
@@ -279,12 +284,12 @@ public:
   // when refcount drops to 0 (COW-aware).  No-op if the PTE is not mapped.
   static void unmap_user_page(PhysAddr pgd_phys, VirtAddr va) noexcept;
 
-  // Clone a user page table tree for fork().
-  // Allocates fresh intermediate tables (PUD/PMD/PTE) for dst_pgd_phys.
-  // Leaf pages are shared: both src and dst PTEs are marked READONLY + SW_COW,
-  // and physical page refcounts are incremented.
-  // Kernel-owned VA ranges are borrowed unchanged from create_user_page_tables().
-  static void clone_user_page_tables(PhysAddr src_pgd_phys, PhysAddr dst_pgd_phys);
+  // Clone into an owned, inactive destination with no user leaves. The caller
+  // must exclude concurrent source/destination changes. Kernel ranges remain
+  // borrowed. Originally writable leaves become COW; genuine RO leaves stay RO.
+  // All table allocations/validation precede changes to PTEs or data-page refs:
+  // any error leaves both trees and their frame references unchanged.
+  [[nodiscard]] static VoidResult clone_user_page_tables(PhysAddr src_pgd_phys, PhysAddr dst_pgd_phys);
 
   // Invalidate TLB entry for a single virtual address
   static void invalidate_tlb_addr(VirtAddr virt_addr) {

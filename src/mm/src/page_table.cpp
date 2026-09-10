@@ -18,6 +18,45 @@ static bool shared_kernel_entry(u64 base, unsigned shift) noexcept {
   return base >= USER_MAX || (base < end && (1ULL << shift) <= end - base);
 }
 
+// Staging uses the allocated tables themselves as a private linked list.
+// An allocation failure cannot leave a published table or consume a data-page
+// reference. No heap allocation or fixed maximum address-space size is needed.
+class TableReserve {
+  PageTable *head_ = nullptr;
+
+public:
+  TableReserve() = default;
+  TableReserve(const TableReserve &) = delete;
+  TableReserve &operator=(const TableReserve &) = delete;
+  ~TableReserve() {
+    while (head_) {
+      (void)free_pages(PageTableManager::get_physical_address(take()), 0);
+    }
+  }
+
+  VoidResult add() {
+    auto result = PageTableManager::allocate_page_table_dynamic();
+    if (!result)
+      return VoidResult{result.error()};
+    (*result)->entries[0].raw = head_ ? PageTableManager::get_physical_address(head_) : 0;
+    head_ = *result;
+    return VoidResult{};
+  }
+
+  PageTable *take() noexcept {
+    auto *table = head_;
+    const PhysAddr next = table->entries[0].raw;
+    head_ = next ? PageTableManager::get_table_from_physical(next) : nullptr;
+    table->entries[0].clear();
+    return table;
+  }
+};
+
+static void publish_entry(PageTableEntry &entry, PageTableEntry value) noexcept {
+  // Publish a naturally aligned, whole descriptor after initializing its tree.
+  __atomic_store_n(&entry.raw, value.raw, __ATOMIC_RELEASE);
+}
+
 static bool overlaps_ram(PhysAddr start, PhysAddr end) noexcept {
   const auto &hardware = moss::kernel::platform::hardware;
   for (u32 i = 0; i < hardware.memory_region_count; ++i) {
@@ -318,151 +357,121 @@ KernelResult<PhysAddr> PageTableManager::create_user_page_tables() {
 
 // Clone user page tables for fork(): deep-copy intermediate tables,
 // share leaf pages via COW (mark READONLY + SW_COW, increment refcount).
-void PageTableManager::clone_user_page_tables(PhysAddr src_pgd_phys, PhysAddr dst_pgd_phys) {
-  auto *src_pgd = get_table_from_physical(src_pgd_phys);
-  auto *dst_pgd = get_table_from_physical(dst_pgd_phys);
-  if (!src_pgd || !dst_pgd) {
-    return;
+static VoidResult check_empty_user_tables(const PageTable *table, unsigned shift, u64 base) {
+  for (usize i = 0; i < PageTable::ENTRIES_PER_TABLE; ++i) {
+    const u64 address = base | (static_cast<u64>(i) << shift);
+    if (shared_kernel_entry(address, shift))
+      continue;
+    const auto &entry = table->entries[i];
+    if (!entry.is_valid())
+      continue;
+    if (shift == 12)
+      return VoidResult{ErrorCode::AlreadyExists};
+    if (!entry.is_table())
+      return VoidResult{ErrorCode::NotSupported};
+    auto result =
+        check_empty_user_tables(PageTableManager::get_table_from_physical(entry.get_phys_addr()), shift - 9, address);
+    if (!result)
+      return result;
   }
+  return VoidResult{};
+}
 
-  constexpr usize ENTRIES = PageTable::ENTRIES_PER_TABLE;
-
-  const unsigned shift = root_shift();
-  // Shared kernel subtrees must never be cloned or marked COW, even after splitting.
-  auto clone_pud_user_entries = [&](PageTable *src_pud, PageTable *dst_pud, u64 base) {
-    for (usize pud_i = 0; pud_i < ENTRIES; pud_i++) {
-      if (shared_kernel_entry(base | (static_cast<u64>(pud_i) << (shift - 9)), shift - 9)) {
-        continue;
-      }
-      auto &src_pude = src_pud->entries[pud_i];
-      if (!src_pude.is_valid()) {
-        continue;
-      }
-      if (!src_pude.is_table()) {
-        continue; // skip 1GB block descriptors
-      }
-
-      auto *src_pmd = get_table_from_physical(src_pude.get_phys_addr());
-      if (!src_pmd) {
-        continue;
-      }
-
-      // Allocate fresh PMD for child
-      auto pmd_result = allocate_page_table_dynamic();
-      if (!pmd_result) {
-        return;
-      }
-      auto *dst_pmd = *pmd_result;
-      dst_pud->entries[pud_i].set_table(get_physical_address(dst_pmd), true);
-
-      for (usize pmd_i = 0; pmd_i < ENTRIES; pmd_i++) {
-        auto &src_pmde = src_pmd->entries[pmd_i];
-        if (!src_pmde.is_valid()) {
-          continue;
-        }
-
+static VoidResult prepare_user_clone(const PageTable *src, const PageTable *dst, unsigned shift, u64 base,
+                                     TableReserve &reserve) {
+  for (usize i = 0; i < PageTable::ENTRIES_PER_TABLE; ++i) {
+    const u64 address = base | (static_cast<u64>(i) << shift);
+    if (shared_kernel_entry(address, shift))
+      continue;
+    const auto &entry = src->entries[i];
+    if (!entry.is_valid())
+      continue;
+    if (shift == 12) {
 #if defined(MOSS_ARCH_RISCV)
-        // Sv39: PMD IS the leaf level — COW clone 4KB pages directly.
-        if (hal::mmu::g_mmu_mode == hal::mmu::MmuMode::Sv39) {
-          PhysAddr leaf_pa = src_pmde.get_phys_addr();
-          if (src_pmde.is_writable()) {
-            src_pmde.set_cow();
-            src_pmde.make_readonly();
-          }
-          dst_pmd->entries[pmd_i].raw = src_pmde.raw;
-          PageFrameAllocator::page_ref_inc(leaf_pa);
-          continue;
-        }
+      if (entry.is_table())
+        return VoidResult{ErrorCode::NotSupported};
+#elif defined(MOSS_ARCH_ARM64)
+      if (!entry.is_table())
+        return VoidResult{ErrorCode::NotSupported};
 #endif
-
-        if (!src_pmde.is_table()) {
-          continue; // skip 2MB block descriptors (Sv48/ARM64/x86_64)
-        }
-
-        auto *src_pte = get_table_from_physical(src_pmde.get_phys_addr());
-        if (!src_pte) {
-          continue;
-        }
-
-        // Allocate fresh PTE table for child
-        auto pte_result = allocate_page_table_dynamic();
-        if (!pte_result) {
-          return;
-        }
-        auto *dst_pte = *pte_result;
-        dst_pmd->entries[pmd_i].set_table(get_physical_address(dst_pte), true);
-
-        for (usize pte_i = 0; pte_i < ENTRIES; pte_i++) {
-          auto &src_ptee = src_pte->entries[pte_i];
-          if (!src_ptee.is_valid()) {
-            continue;
-          }
-
-          PhysAddr leaf_pa = src_ptee.get_phys_addr();
-
-          // User mappings are private (MAP_SHARED is not supported). Preserve
-          // genuine read-only mappings and COW inherited from an earlier fork.
-          // Only an originally writable page gains permission to copy on write.
-          if (src_ptee.is_writable()) {
-            src_ptee.set_cow();
-            src_ptee.make_readonly();
-          }
-
-          // Child gets same PTE value (COW + read-only)
-          dst_pte->entries[pte_i].raw = src_ptee.raw;
-
-          // Increment physical page refcount (now shared)
-          PageFrameAllocator::page_ref_inc(leaf_pa);
-        }
+      if ((entry.raw & page_attr::USER) == 0 || PageFrameAllocator::page_ref_get(entry.get_phys_addr()) == 0) {
+        return VoidResult{ErrorCode::InvalidState};
       }
+      continue;
     }
-  };
+    if (!entry.is_table())
+      return VoidResult{ErrorCode::NotSupported};
+    const PageTable *dst_child = nullptr;
+    if (dst && dst->entries[i].is_valid()) {
+      dst_child = PageTableManager::get_table_from_physical(dst->entries[i].get_phys_addr());
+    } else {
+      auto result = reserve.add();
+      if (!result)
+        return result;
+    }
+    auto result = prepare_user_clone(PageTableManager::get_table_from_physical(entry.get_phys_addr()), dst_child,
+                                     shift - 9, address, reserve);
+    if (!result)
+      return result;
+  }
+  return VoidResult{};
+}
 
-  // Four-level root[0] has a private PUD mixing borrowed kernel subtrees and
-  // user entries. Sv39 root[0] is entirely kernel-owned and must not be traversed.
-  if (!shared_kernel_entry(0, shift) && src_pgd->entries[0].is_valid() && src_pgd->entries[0].is_table() &&
-      dst_pgd->entries[0].is_valid() && dst_pgd->entries[0].is_table()) {
-    auto *src_pud = get_table_from_physical(src_pgd->entries[0].get_phys_addr());
-    auto *dst_pud = get_table_from_physical(dst_pgd->entries[0].get_phys_addr());
-    if (src_pud && dst_pud) {
-      clone_pud_user_entries(src_pud, dst_pud, 0);
+// All fallible work precedes this traversal. The caller keeps the source stable
+// and the destination unpublished throughout preparation and commit.
+static void commit_user_clone(PageTable *src, PageTable *dst, unsigned shift, u64 base, TableReserve &reserve) {
+  for (usize i = 0; i < PageTable::ENTRIES_PER_TABLE; ++i) {
+    const u64 address = base | (static_cast<u64>(i) << shift);
+    if (shared_kernel_entry(address, shift))
+      continue;
+    auto &source = src->entries[i];
+    if (!source.is_valid())
+      continue;
+    auto &target = dst->entries[i];
+    if (shift == 12) {
+      auto value = source;
+      if (value.is_writable()) {
+        value.set_cow();
+        value.make_readonly();
+        publish_entry(source, value);
+      }
+      PageFrameAllocator::page_ref_inc(value.get_phys_addr());
+      publish_entry(target, value);
+      continue;
+    }
+    const bool allocated = !target.is_valid();
+    auto *child = allocated ? reserve.take() : PageTableManager::get_table_from_physical(target.get_phys_addr());
+    commit_user_clone(PageTableManager::get_table_from_physical(source.get_phys_addr()), child, shift - 9, address,
+                      reserve);
+    if (allocated) {
+      PageTableEntry link;
+      link.set_table(PageTableManager::get_physical_address(child), true);
+      publish_entry(target, link);
     }
   }
+}
 
-  // PGD[1..ENTRIES/2-1]: user-space mappings — allocate fresh PUD per entry.
-  // Skip PGD[ENTRIES/2..ENTRIES-1]: these are kernel high-half mappings
-  // (e.g. Sv48 PGD[256] = direct map at 0xFFFF800000000000).
-  // create_user_address_space() already copied them from the kernel PGD;
-  // cloning would overwrite them with empty PUDs and break kernel access.
-  for (usize pgd_i = 1; pgd_i < ENTRIES / 2; pgd_i++) {
-    if (shared_kernel_entry(static_cast<u64>(pgd_i) << shift, shift)) {
-      continue;
-    }
-    auto &src_pge = src_pgd->entries[pgd_i];
-    if (!src_pge.is_valid() || !src_pge.is_table()) {
-      continue;
-    }
-
-    auto *src_pud = get_table_from_physical(src_pge.get_phys_addr());
-    if (!src_pud) {
-      continue;
-    }
-
-    // Allocate fresh PUD for child
-    auto pud_result = allocate_page_table_dynamic();
-    if (!pud_result) {
-      return;
-    }
-    auto *dst_pud = *pud_result;
-    dst_pgd->entries[pgd_i].set_table(get_physical_address(dst_pud), true);
-
-    clone_pud_user_entries(src_pud, dst_pud, static_cast<u64>(pgd_i) << shift);
+VoidResult PageTableManager::clone_user_page_tables(PhysAddr src_pgd_phys, PhysAddr dst_pgd_phys) {
+  const auto kernel = get_physical_address(kernel_pgd);
+  const auto high = get_physical_address(kernel_high_pgd);
+  if (!src_pgd_phys || !dst_pgd_phys || src_pgd_phys == dst_pgd_phys ||
+      ((src_pgd_phys | dst_pgd_phys) & (PAGE_SIZE - 1)) || src_pgd_phys == kernel || src_pgd_phys == high ||
+      dst_pgd_phys == kernel || dst_pgd_phys == high) {
+    return VoidResult{ErrorCode::InvalidParameter};
   }
-
-  // Parent PTEs were changed to read-only + COW — flush stale writable TLB entries.
-  // Without this, the parent can silently write through a stale writable TLB entry,
-  // bypassing COW and corrupting the shared page.
+  auto *src = get_table_from_physical(src_pgd_phys);
+  auto *dst = get_table_from_physical(dst_pgd_phys);
+  const unsigned shift = root_shift();
+  auto empty = check_empty_user_tables(dst, shift, 0);
+  if (!empty)
+    return empty;
+  TableReserve reserve;
+  auto prepared = prepare_user_clone(src, dst, shift, 0, reserve);
+  if (!prepared)
+    return prepared;
+  commit_user_clone(src, dst, shift, 0, reserve);
   invalidate_tlb();
+  return VoidResult{};
 }
 
 // Free all user page tables and demand-paged physical pages.
@@ -592,48 +601,44 @@ VoidResult PageTableManager::map_user_page(PhysAddr pgd_phys, VirtAddr va, PhysA
       (perms & page_attr::USER) == 0) {
     return VoidResult{ErrorCode::InvalidParameter};
   }
-  auto *pgd = get_table_from_physical(pgd_phys);
-  auto bd = break_virtual_address(va);
-
-  // PGD -> PUD
-  if (!pgd->entries[bd.pgd_index].is_valid()) {
-    auto result = allocate_page_table_dynamic();
-    if (!result) {
-      return VoidResult{ErrorCode::OutOfMemory};
+  auto *table = get_table_from_physical(pgd_phys);
+  for (unsigned shift = root_shift(); shift > 12; shift -= 9) {
+    auto &entry = table->entries[(va >> shift) & 511];
+    if (entry.is_valid()) {
+      if (!entry.is_table())
+        return VoidResult{ErrorCode::NotSupported};
+      table = get_table_from_physical(entry.get_phys_addr());
+      continue;
     }
-    pgd->entries[bd.pgd_index].set_table(get_physical_address(*result), true);
-  }
-  auto *pud = get_table_from_physical(pgd->entries[bd.pgd_index].get_phys_addr());
 
-  // PUD -> PMD
-  if (!pud->entries[bd.pud_index].is_valid()) {
-    auto result = allocate_page_table_dynamic();
-    if (!result) {
-      return VoidResult{ErrorCode::OutOfMemory};
+    TableReserve reserve;
+    for (unsigned remaining = shift; remaining > 12; remaining -= 9) {
+      auto result = reserve.add();
+      if (!result)
+        return result;
     }
-    pud->entries[bd.pud_index].set_table(get_physical_address(*result), true);
-  }
-  auto *pmd = get_table_from_physical(pud->entries[bd.pud_index].get_phys_addr());
-
-#if defined(MOSS_ARCH_RISCV)
-  if (hal::mmu::g_mmu_mode == hal::mmu::MmuMode::Sv39) {
-    // Sv39: PMD IS the final L0 table — set 4KB page entry directly.
-    pmd->entries[bd.pmd_index].set_page(pa, perms);
-  } else
-#endif
-  {
-    // 4-level: PMD -> PTE table
-    if (!pmd->entries[bd.pmd_index].is_valid()) {
-      auto result = allocate_page_table_dynamic();
-      if (!result) {
-        return VoidResult{ErrorCode::OutOfMemory};
-      }
-      pmd->entries[bd.pmd_index].set_table(get_physical_address(*result), true);
+    // Build the whole missing path offline, then publish just its first link.
+    auto *first = reserve.take();
+    table = first;
+    for (unsigned child_shift = shift - 9; child_shift > 12; child_shift -= 9) {
+      auto *next = reserve.take();
+      table->entries[(va >> child_shift) & 511].set_table(get_physical_address(next), true);
+      table = next;
     }
-    auto *pte = get_table_from_physical(pmd->entries[bd.pmd_index].get_phys_addr());
-    pte->entries[bd.pte_index].set_page(pa, perms);
+    table->entries[(va >> 12) & 511].set_page(pa, perms);
+    PageTableEntry link;
+    link.set_table(get_physical_address(first), true);
+    publish_entry(entry, link);
+    invalidate_tlb_addr(va);
+    return VoidResult{};
   }
 
+  auto &leaf = table->entries[(va >> 12) & 511];
+  if (leaf.is_valid())
+    return VoidResult{ErrorCode::AlreadyExists};
+  PageTableEntry value;
+  value.set_page(pa, perms);
+  publish_entry(leaf, value);
   invalidate_tlb_addr(va);
   return VoidResult{};
 }
