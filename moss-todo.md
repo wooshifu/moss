@@ -1,7 +1,7 @@
 # Moss 内核设计与实现审计报告及修复清单
 
 > 原始审计：2026-09-05，源码基线：`e0e2bbc920b66f91e18802a46106ca5811e588b1`。
-> 状态复核：2026-09-10，提交基线：`a5ff24f`。第 3.4～3.14 节保留此前实测及当时状态；最新进展见第 3.15～3.16 节。本文与 [todo.md](todo.md) 同步。
+> 状态复核：2026-09-10，提交基线：`3acac43`。第 3.4～3.16 节保留此前实测及当时状态；最新工作区进展见第 3.17 节。本文与 [todo.md](todo.md) 同步。
 > 第 3.1～3.2 节保留原始运行证据；第 5～9 节未标新日期的“位置与事实”、地址和行号属于原始审计，不能当作当前仍然失败的运行结果。当前状态以第 4 节及各项更新说明为准。
 
 ## 1. 当前结论
@@ -571,6 +571,71 @@ LLDB 检查本机 QEMU 11.1.1 进程时，CPU3 为 `halted=1, halt_reason=HALT_W
 
 **仍不关闭 MOSS-008/009：** 尚无统一 VMA/PTE/ref/TLB 事务锁、同时写故障与 fork/unmap 交错验收、OOM 逐点注入及完整回滚。`map_user_page` 的有效叶子覆盖与 block/table 冲突仍归 MOSS-010；本次 demand 的驻留检查不是并发防覆盖协议。用户异常测试证明访问被拒绝，但未直接计量拒绝路径没有额外分配，也未单独强制构造 VMA 不可写而 PTE 遗留 COW 的故障。fork 前的独立 text/rodata 写入、多物理地址 PTE 编解码专项及实机验证仍待补。普通矩阵通过不取消 3.15 的偶发启动失败，也不替代显式 `users.simd_fault` 或完整 SMP 验收。
 
+### 3.17 页表 map/clone 分配失败事务（2026-09-10，工作区）
+
+本轮继续 MOSS-010，保留页表模块的职责：调用者不管理分配日志或手工回滚。新增内部 `TableReserve`，用尚未发布的表页自身保存分配链，不增加 heap 依赖或固定地址空间容量上限。
+
+- `map_user_page` 拒绝覆盖有效叶子，遇到中间 block 返回 `NotSupported`。缺失路径的所有表页先分配并初始化，成功后才发布第一个连接；失败释放暂存表页，原树与调用者的数据页引用不变。
+- `clone_user_page_tables` 改为显式 `VoidResult`。先检查目标无用户叶子、源描述符受支持，并分配所需表页；这些步骤不改父子 PTE 或数据页引用。之后进入不再分配的提交阶段，保留只读/COW 语义及借用的内核分支。`sys_fork` 检查结果，页表 OOM 返回 ENOMEM，不继续绑定或调度部分克隆。
+- PTE 保持 8 字节大小并改为自然对齐，新描述符通过 release 原子存储发布；ARM64 Debug 反汇编确认 `publish_entry` 使用 `stlr x8, [x9]`。这是发布顺序的局部修正，不是完整的并发页表/TLB 协议。通用内存顺序动机参考 [Linux memory barriers](https://docs.kernel.org/core-api/wrappers/memory-barriers.html)。
+
+**反例保留：** 同一命令 `uv run scripts/kernel_validation.py run --manifest build/arm64-debug/moss-artifacts.json --workload mm.transactions` 逐步验证真实实现：
+
+| 报告 ID | 当时改动 | 结果 |
+| --- | --- | --- |
+| 1789052486817825000 | 仅添加已有映射保护用例 | map 覆盖已有叶子，断言失败 |
+| 1789052641489739000 | 只补 map 占用与 block 检查 | 已有映射用例通过 |
+| 1789052743297182000 | 添加真实 PFA 耗尽用例 | map 分配失败仍留下中间表，4 个断言失败 |
+| 1789052880007688000 | map 离线准备后发布 | map 事务、权限及 users.vm 通过 |
+| 1789052954564607000 | 添加 clone 逐点耗尽用例 | clone 改动父 PTE/引用/子树后失败，44 个断言失败 |
+| 1789053200083831000 | clone 先准备后提交并返回结果 | 事务、权限、users.vm 与 users 通过 |
+
+`mm.transactions` 的五项默认回归覆盖已有叶子/非空目标/源目标别名拒绝、各级 block 拒绝、map 每次表页分配处的 OOM、跨多个表级/分支的 clone 每次表页分配处 OOM，以及释放后再次成功。`PagePressure` 持有真实 PFA 页块，再逐个放回预算页；没有 allocator mock、返回假失败的 hook 或替代 fork。clone 用例检查失败前后原父页权限/物理内容/引用、目标根与混合低地址 PUD，以及空闲页计数；恰好足够的预算能成功，最终释放恢复基线。测试里的 block 描述符只放入自有、未激活的真实页表中，用于验证软件 walker 拒绝，不代表支持用户大页。
+
+**表级修复首轮矩阵：** 三架构 Debug/Release/RelWithDebInfo 九配置 configure/build 全部通过；默认 functional 为 **11 个 suite、36 个 case**，九配置全部通过。CTest 合计 **20/21**，不是全绿；宿主 pytest **111/111**，Ruff、clang-format 与 diff 检查通过。日志 `build/<preset>/vm-transaction-workflow.log`，报告 `build/<preset>/validation/<ID>/results.json`：
+
+| preset | functional | framework | benchmark |
+| --- | --- | --- | --- |
+| arm64-debug | 1789053472180227000 | 1789053488576058000 | 不适用 |
+| arm64-release | 1789053520114647000 | **1789053530620345000，启动失败** | 1789053572642324000 |
+| arm64-relwithdebinfo | 1789053653778603000 | 1789053659725116000 | 不适用 |
+| riscv-debug | 1789053482209345000 | 1789053502105309000 | 不适用 |
+| riscv-release | 1789053535175189000 | 1789053543011577000 | 1789053554967769000 |
+| riscv-relwithdebinfo | 1789053576105731000 | 1789053583289946000 | 不适用 |
+| x86_64-debug | 1789053483246643000 | 1789053501791029000 | 不适用 |
+| x86_64-release | 1789053534781109000 | 1789053543786539000 | 1789053556268329000 |
+| x86_64-relwithdebinfo | 1789053577773257000 | 1789053585959764000 | 不适用 |
+
+首轮 21 份报告均 finalized，报告层 not_run 为空，image SHA-256 已与该轮对应产物逐项核对。失败报告的 `self` guest 尚未 ready，四个用例均 not_run：串口显示 CPU1/2 进入调度循环，CPU3 未打印激活后的标记，8 秒后 `SMP startup timed out: 3 of 4 CPUs online`，随后初始化 panic；其余三个 framework guest 达到各自预期结果。本次没有抓 CPU PC，不能仅凭症状将根因归于 3.15 的 QEMU 问题，也没有覆盖该失败报告。
+
+首轮同一 RISC-V Debug 镜像还通过 `--cpu rv64,sv48=false --workload mm.transactions --workload mm.permissions --workload users.vm`，报告 `1789053613334273000`，SHA-256 `420e49589a30d3b3f5f6586fc033b4648a45889879cf1c36a5cf5ca0b56b8db1`。这验证了 Sv39 与默认 Sv48 的同镜像路径，不是另一个板级构建。
+
+**调用方收尾与最终矩阵：** 继续核对调用者后，补齐 `kernel-main.cppm::create_init_process` 中 x86 原始程序路径 map 失败时的数据页释放，并保留具体错误码；该原始启动分支没有定点 OOM 运行证据，不能算作表级测试已经覆盖。此修改后重建并运行全部九配置，构建全部通过，CTest 仍为 **20/21**，但失败位置不同；不能用后一轮 ARM64 通过抵消首轮的失败。最终 `mm.transactions` 五项在九配置均通过。
+
+| preset | functional | framework | benchmark |
+| --- | --- | --- | --- |
+| arm64-debug | 1789054087674031000 | 1789054099456243000 | 不适用 |
+| arm64-release | 1789054123333753000 | 1789054131311932000 | 1789054143167372000 |
+| arm64-relwithdebinfo | 1789054156785267000 | 1789054164878569000 | 不适用 |
+| riscv-debug | **1789054088760333000，users.vm 启动失败** | 1789054163951238000 | 不适用 |
+| riscv-release | 1789054249091880000 | 1789054255886792000 | 1789054268353760000 |
+| riscv-relwithdebinfo | 1789054281927732000 | 1789054289449191000 | 不适用 |
+| x86_64-debug | 1789054089639000000 | 1789054105013620000 | 不适用 |
+| x86_64-release | 1789054129001330000 | 1789054138518509000 | 1789054151584601000 |
+| x86_64-relwithdebinfo | 1789054166991979000 | 1789054176481668000 | 不适用 |
+
+最终日志为 `build/<preset>/vm-transaction-caller-workflow.log`；报告均 finalized，报告层 not_run 为空，image SHA-256 与最终 manifest 对应产物逐项一致。RISC-V 失败 guest 已 ready、四核上线，但没有 worker 事件，三个 VM case 均 not_run；串口显示首次调度 PID 1 后 `scause=0xc, addr=0, pc=0`，进程以 -11 退出成 Zombie，最终被 host 记为 `guest_timeout`。本次没有保留现场寄存器，根因尚未确定；应继续排查首次用户执行/陷阱返回/抢占路径，不能误称 COW 用例断言失败或直接归因于模拟器。两轮失败均保留。
+
+最终 RISC-V Debug 镜像的 Sv39 专项也通过，报告 `1789054394589676000`，SHA-256 `17b86cc71619491d9d1870d9d305fa27c91cffa529fe2be44c3fc4eb6afc4388`，与最终默认 Sv48 报告使用同一产物。该不同 MMU 模式的成功不消除默认模式那次首次取指失败。
+
+宿主 111/111 的全量结果发生在并行 `README.md`、`build.py`、`scripts/tests/test_build.py` 修改出现之前；收尾重新运行本轮相关的 `scripts/tests/test_kernel_validation.py` 为 **57/57**，不代替并行构建脚本改动的验收。
+
+**提交前复核（2026-09-10，基线 `204914e`）：** `uv run build.py --jobs 3` 的九配置 configure/build 全部通过，未复现编译器或链接器错误；完整 workflow 为 **8/9**，CTest 为 **19/21**。`mm.transactions` 五项在九配置均通过。x86_64 Release 的两个失败均发生在运行阶段：functional 报告 `1789055109377273000` 中，VFS guest 在 ready 前因 `PIT/TSC/APIC clock calibration failed` 启动失败，尚未执行 VFS 用例；benchmark 报告 `1789055177434585000` 中，`bench.release` 发出 `frequency=0, source=invalid` 并以 `invalid_clock` 结束。报告位于 `build/x86_64-release/validation/<ID>/results.json`，保留原始串口记录，未通过重试、放宽超时或跳过 CTest 将其改判成功。它们不证明 VFS 或页表事务断言失败，也不能直接归因于 QEMU。当前运行时失败仍待排查；相关宿主测试再次通过 **57/57**。
+
+另外对 `arm64-relwithdebinfo`、`x86_64-release`、`riscv-debug` 分别运行 `cmake --build --preset <preset> --clean-first --parallel 4`，三者干净编译均通过。重新生成的镜像各自通过 `mm.transactions`、`mm.permissions`、`users.vm` 专项，报告依次为 `1789055337050159000`、`1789055338287025000`、`1789055339719556000`。这些专项不覆盖上述时钟失败，不是完整 CTest 转绿的证据。
+
+**MOSS-010 仍为部分完成：** 当前测试证明页表函数在稳定源、自有未激活目标条件下的分配失败契约。接口尚依赖调用方排除并发修改，统一 VMA/PTE/ref/TLB 锁与跨 CPU 生命周期仍属 MOSS-008/011/028。`sys_fork` 的页表错误传播已实现，但完整系统调用的逐点 OOM 专项尚未运行；页表 clone 成功后的 kernel-stack、VMA、FD 等后续失败仍需纳入整次 fork 的事务。没有以这些表级用例关闭整个 fork 或完整内核目标，实机与长期 SMP 验收仍待补。
+
 ## 4. 问题总表与当前状态
 
 | 编号 | 优先级 | 审计主题 | 当前状态与下一步 |
@@ -584,7 +649,7 @@ LLDB 检查本机 QEMU 11.1.1 进程时，CPU3 为 `halted=1, halt_reason=HALT_W
 | MOSS-007 | P0 | 跨 ISA TrapFrame / syscall 参数 | 部分实现；x86 第八参数为 null，RV64 未传有效帧，共通信号布局仍为 ARM64。 |
 | MOSS-008 | P0 | 只读页被 COW 放宽权限 | 部分修复；clone 保留真实只读页，fault 检查可写 VMA，多代 COW/用户异常回归通过；并发事务与 OOM 验收待补，见 3.16。 |
 | MOSS-009 | P1 | RV64 fault 分类 / PPN | 部分修复；访问类型与驻留检查、COW 优先和 HAL PPN 编码已补，Sv39/Sv48 回归通过；分配/引用失败专项仍待补，见 3.16。 |
-| MOSS-010 | P1 | 页表 clone/map 回滚 | 未修复；clone 仍返回 void，分配失败不能向 fork 传播完整失败。 |
+| MOSS-010 | P1 | 页表 clone/map 回滚 | 部分修复（3.17）；map/clone 表页准备失败不改原树和数据页引用，clone 返回结果并由 fork 检查，三架构逐点 PFA 耗尽通过；完整 fork 后续失败事务与并发锁待补。 |
 | MOSS-011 | P1 | 活跃 ASID 回绕重用 | 未修复；`allocate_asid` 仍在 255 后重置计数，没有活跃租约。 |
 | MOSS-012 | P1 | brk/VMA/PTE 权限生命周期 | 未修复；`sys_brk` 仍只改 VMA 端点，无缩堆 PTE/ref/TLB 事务。 |
 | MOSS-013 | P1 | 对齐 / buddy / 释放契约 | 已关闭（`040d773`）；heap/PFA 对齐、释放归属、保留洞分段/耗尽专项验收通过；页引用并发不在此结论内，见 3.4～3.5。 |

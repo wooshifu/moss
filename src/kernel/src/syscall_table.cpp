@@ -270,7 +270,11 @@ long sys_fork(long /*unused*/, long /*unused*/, long /*unused*/, long /*unused*/
   auto child_as = moss::move(*child_as_result);
 
   // 5. Clone page tables with COW
-  mm::PageTableManager::clone_user_page_tables(parent_as->pgd_phys, child_as->pgd_phys);
+  auto cloned = mm::PageTableManager::clone_user_page_tables(parent_as->pgd_phys, child_as->pgd_phys);
+  if (!cloned) {
+    cleanup_child(child_proc.get());
+    return cloned.error() == ErrorCode::OutOfMemory ? -errc::ENOMEM : -errc::EFAULT;
+  }
 
   // 6. Flush parent TLB (PTEs changed to readonly/COW)
 #if defined(MOSS_ARCH_ARM64)

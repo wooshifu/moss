@@ -703,7 +703,8 @@ private:
       auto map_code = mm::PageTableManager::map_user_page(as->pgd_phys, user_layout::CODE_BASE, code_pa,
                                                           hal::mmu::page_perms::USER_RX);
       if (!map_code) {
-        return ErrorCode::OutOfMemory;
+        (void)mm::free_pages(code_pa, 0);
+        return map_code.error();
       }
 
       // Map user stack page at STACK_TOP - PAGE_SIZE
@@ -715,7 +716,8 @@ private:
       auto map_stack = mm::PageTableManager::map_user_page(as->pgd_phys, stack_page, *stack_frame_result,
                                                            hal::mmu::page_perms::USER_RW);
       if (!map_stack) {
-        return ErrorCode::OutOfMemory;
+        (void)mm::free_pages(*stack_frame_result, 0);
+        return map_stack.error();
       }
     }
 #endif
