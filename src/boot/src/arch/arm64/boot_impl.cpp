@@ -413,11 +413,13 @@ void activate_secondary_cpus() noexcept {
       continue;
     }
 
-    // Unblock secondary CPU from its WFE loop
-    // store_cpu_state uses __ATOMIC_RELEASE, so the state is visible
-    // before SEV wakes the secondary CPU from WFE.
+    // Publish the activation before sending the wake-up event. A release
+    // store orders memory accesses, but does not ensure completion before
+    // SEV: the secondary could consume the event, read Parked and sleep
+    // again with no subsequent event to wake it. Use the full-system scope
+    // because the secondary has not enabled its MMU yet.
     mark_cpu_active(cpu_id);
-    asm volatile("sev" ::: "memory");
+    asm volatile("dsb sy\n\tsev" ::: "memory");
 
     // Wait for it to finish init and reach Online state
     if (wait_for_cpu_state(cpu_id, CpuState::Online, 3000)) {

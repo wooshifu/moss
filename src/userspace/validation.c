@@ -2,6 +2,93 @@
 
 static long control(long op, long a, long b) { return syscall3(511, op, a, b); }
 
+static const unsigned char vm_rodata[4096] __attribute__((aligned(4096))) = {0x5a};
+__attribute__((noinline)) static void vm_text(void) { asm volatile("" ::: "memory"); }
+
+static int wait_exit(long child, int code) {
+  int status = 0;
+  return child > 1 && syscall3(SYS_WAITPID, child, (long)&status, 0) == child && ((status >> 8) & 255) == code;
+}
+
+static int vm_fault(long address, int access) {
+  long child = syscall0(SYS_FORK);
+  if (child == 0) {
+    if (access == 2) {
+      ((void (*)(void))address)();
+    } else if (access == 1) {
+      // An architectural write attempt, including to text/const data: do not
+      // rely on undefined C writes to const objects surviving optimization.
+#if defined(__aarch64__)
+      asm volatile("strb wzr, [%0]" : : "r"(address) : "memory");
+#elif defined(__x86_64__)
+      asm volatile("movb $0, (%0)" : : "r"(address) : "memory");
+#else
+      asm volatile("sb zero, 0(%0)" : : "r"(address) : "memory");
+#endif
+    } else {
+      unsigned char value = *(volatile unsigned char *)address;
+      asm volatile("" : : "r"(value) : "memory");
+    }
+    _exit(94); // A forbidden access must fault, not reach this exit.
+  }
+  return wait_exit(child, 245); // Moss page faults exit -11, not POSIX wait status.
+}
+
+static unsigned long vm_private_cow(void) {
+  long area = syscall6(SYS_MMAP, 0, 8192, 3, 0x22, -1, 0);
+  if (area <= 0)
+    return 1;
+  volatile unsigned char *data = (volatile unsigned char *)area;
+  data[0] = 11;
+  data[4096] = 22;
+  data[8191] = 33;
+  long child = syscall0(SYS_FORK);
+  if (child == 0) {
+    if (data[0] != 11 || data[4096] != 22 || data[8191] != 33)
+      _exit(91);
+    data[0] = 44;
+    long grandchild = syscall0(SYS_FORK);
+    if (grandchild == 0) {
+      data[4096] = 55;
+      _exit(data[0] == 44 && data[4096] == 55 && data[8191] == 33 ? 31 : 92);
+    }
+    _exit(wait_exit(grandchild, 31) && data[0] == 44 && data[4096] == 22 && data[8191] == 33 ? 33 : 93);
+  }
+  unsigned long errors = !wait_exit(child, 33);
+  errors |= (unsigned long)!(data[0] == 11 && data[4096] == 22 && data[8191] == 33) << 1;
+  data[0] = 77; // Last-reference COW after descendants have exited.
+  errors |= (unsigned long)(data[0] != 77) << 2;
+  errors |= (unsigned long)(syscall2(SYS_MUNMAP, area, 8192) != 0) << 3;
+  return errors;
+}
+
+static unsigned long vm_readonly_cow(void) {
+  unsigned long errors = *(const volatile unsigned char *)vm_rodata != 0x5a;
+  vm_text(); // Both mappings are resident before fork.
+  errors |= (unsigned long)!vm_fault((long)vm_rodata, 1) << 1;
+  errors |= (unsigned long)!vm_fault((long)vm_text, 1) << 2;
+  errors |= (unsigned long)(*(const volatile unsigned char *)vm_rodata != 0x5a) << 3;
+  return errors;
+}
+
+static unsigned long vm_access_permissions(void) {
+  long none = syscall6(SYS_MMAP, 0, 4096, 0, 0x22, -1, 0);
+  long nx = syscall6(SYS_MMAP, 0, 4096, 3, 0x22, -1, 0);
+  unsigned long errors = none <= 0 || nx <= 0;
+  if (none > 0) {
+    errors |= (unsigned long)!vm_fault(none, 0) << 1;
+    errors |= (unsigned long)!vm_fault(none, 1) << 2;
+    errors |= (unsigned long)(syscall2(SYS_MUNMAP, none, 4096) != 0) << 3;
+  }
+  if (nx > 0) {
+    // Keep this page absent: an instruction miss must check EXEC before any
+    // demand allocation. Otherwise it can allocate then fault indefinitely.
+    errors |= (unsigned long)!vm_fault(nx, 2) << 4;
+    errors |= (unsigned long)(syscall2(SYS_MUNMAP, nx, 4096) != 0) << 5;
+  }
+  return errors;
+}
+
 static unsigned long user_ranges(void) {
   unsigned check = 0;
   unsigned long failures = 0;
@@ -132,7 +219,15 @@ void _start(void) {
   unsigned mask = 1;
   long affinity = syscall3(20, 0, sizeof(mask), (long)&mask);
   long mode = control(0, affinity, 0);
-  if (mode == 1) {
+  if (mode == 5) {
+    for (long test = 0; test < 3; ++test) {
+      control(1, test, 0);
+      unsigned long errors = test == 0 ? vm_private_cow() : test == 1 ? vm_readonly_cow() : vm_access_permissions();
+      if (!control(2, errors == 0, (long)errors))
+        break;
+    }
+    control(3, 0, 0);
+  } else if (mode == 1) {
     long pid = getpid();
     control(1, 0, 0);
     if (control(2, pid == 1 && syscall0(SYS_GETPPID) == 0 && syscall0(510) < 0, 0)) {

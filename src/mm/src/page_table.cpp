@@ -365,8 +365,10 @@ void PageTableManager::clone_user_page_tables(PhysAddr src_pgd_phys, PhysAddr ds
         // Sv39: PMD IS the leaf level — COW clone 4KB pages directly.
         if (hal::mmu::g_mmu_mode == hal::mmu::MmuMode::Sv39) {
           PhysAddr leaf_pa = src_pmde.get_phys_addr();
-          src_pmde.set_cow();
-          src_pmde.make_readonly();
+          if (src_pmde.is_writable()) {
+            src_pmde.set_cow();
+            src_pmde.make_readonly();
+          }
           dst_pmd->entries[pmd_i].raw = src_pmde.raw;
           PageFrameAllocator::page_ref_inc(leaf_pa);
           continue;
@@ -398,9 +400,13 @@ void PageTableManager::clone_user_page_tables(PhysAddr src_pgd_phys, PhysAddr ds
 
           PhysAddr leaf_pa = src_ptee.get_phys_addr();
 
-          // Mark parent PTE as COW + read-only
-          src_ptee.set_cow();
-          src_ptee.make_readonly();
+          // User mappings are private (MAP_SHARED is not supported). Preserve
+          // genuine read-only mappings and COW inherited from an earlier fork.
+          // Only an originally writable page gains permission to copy on write.
+          if (src_ptee.is_writable()) {
+            src_ptee.set_cow();
+            src_ptee.make_readonly();
+          }
 
           // Child gets same PTE value (COW + read-only)
           dst_pte->entries[pte_i].raw = src_ptee.raw;

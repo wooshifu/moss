@@ -43,6 +43,7 @@ CATALOG = {
     "containers.smp": ["interleaving"],
     "vfs": ["read_position_eof", "errors_readonly"],
     "users": ["syscall_values", "user_ranges", "fork_exec_exit_reap"],
+    "users.vm": ["private_cow", "readonly_cow", "access_permissions"],
     "users.simd_fault": ["isolation"],  # Explicit x86 acceptance; TCG may not deliver #XM.
     "mm.permissions": [
         "table_defaults",
@@ -50,6 +51,7 @@ CATALOG = {
         "active_user_mappings",
         "kernel_wx",
         "address_space_ownership",
+        "cow_clone_permissions",
         "vma_boundaries",
     ],
     "self": ["accounting_registration", "registry_limits", "cleanup_guards", "heap_bounds"],
@@ -58,7 +60,18 @@ CATALOG = {
     "self.timeout": ["intentional_timeout"],
     **{f"bench.{name}": [f"bench.{name}"] for name in ("allocate", "release", "combined", "read", "getpid")},
 }
-FUNCTIONAL = ["resources", "mm", "mm.permissions", "pfa", "heap", "containers", "containers.smp", "vfs", "users"]
+FUNCTIONAL = [
+    "resources",
+    "mm",
+    "mm.permissions",
+    "pfa",
+    "heap",
+    "containers",
+    "containers.smp",
+    "vfs",
+    "users",
+    "users.vm",
+]
 BENCHMARKS = [name for name in CATALOG if name.startswith("bench.")]
 SELFTESTS = ["self", "self.fail", "self.panic", "self.timeout"]
 

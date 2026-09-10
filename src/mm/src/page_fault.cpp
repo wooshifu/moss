@@ -171,7 +171,8 @@ using moss::abi::bridge::try_grow_user_stack;
 [[noreturn]] static void kill_user_process(const char *reason, unsigned long long far_addr,
                                            unsigned long long elr) noexcept;
 static bool try_cow_fault(moss::kernel::u64 far_addr, unsigned long long elr) noexcept;
-static bool try_demand_page(moss::kernel::u64 far_addr, bool is_write, unsigned long long elr) noexcept;
+enum class FaultAccess { Read, Write, Execute };
+static bool try_demand_page(moss::kernel::u64 far_addr, FaultAccess access, unsigned long long elr) noexcept;
 
 // ============================================================================
 // Unhandled exception handler — print diagnostics, then return to asm (halt)
@@ -241,6 +242,7 @@ extern "C" void kernel_page_fault_handler(unsigned long long esr, unsigned long 
   u64 ec = (esr >> 26) & 0x3F;
   u64 dfsc = esr & 0x3F;
   [[maybe_unused]] bool is_write = ((esr >> 6) & 1) != 0;
+  const auto access = ec == 0x21 ? FaultAccess::Execute : is_write ? FaultAccess::Write : FaultAccess::Read;
 
   // Translation faults: DFSC 0x04-0x07 (L0-L3 translation miss)
   bool is_translation_fault = (dfsc >= 0x04 && dfsc <= 0x07);
@@ -258,7 +260,7 @@ extern "C" void kernel_page_fault_handler(unsigned long long esr, unsigned long 
     // to a user-provided TopInfo pointer on the demand-zero stack), attempt
     // demand paging exactly like user_page_fault_handler would.
     if (is_user_address) {
-      if (try_demand_page(far_addr, is_write, elr)) {
+      if (try_demand_page(far_addr, access, elr)) {
         return; // Demand page resolved — eret retries instruction
       }
       // No VMA found — this is a bad user pointer passed to syscall.
@@ -293,7 +295,7 @@ extern "C" void kernel_page_fault_handler(unsigned long long esr, unsigned long 
 
   if (is_permission_fault) {
     // User address with permission fault: try COW resolution
-    if (is_user_address && is_write) {
+    if (is_user_address && access == FaultAccess::Write) {
       if (try_cow_fault(far_addr, elr)) {
         return; // COW resolved — eret retries instruction
       }
@@ -355,6 +357,19 @@ static bool try_cow_fault(moss::kernel::u64 far_addr, unsigned long long elr) no
   using moss::kernel::VirtAddr;
 
   constexpr usize PG_SIZE = 4096;
+  if (!mm::PageTableManager::is_user_range(far_addr, 1)) {
+    return false;
+  }
+  // A software COW marker does not grant permissions. All currently supported
+  // VMAs are private; shared mmap is rejected by sys_mmap. Recheck the current
+  // VMA as well as the PTE before allowing any write-protection relaxation.
+  u32 vma_flags = 0;
+  const u8 *backing = nullptr;
+  u64 backing_offset = 0, backing_size = 0, vma_start = 0;
+  if (!demand_page_lookup(far_addr, &vma_flags, &backing, &backing_offset, &backing_size, &vma_start) ||
+      (vma_flags & (1U << 1)) == 0) {
+    return false;
+  }
   VirtAddr fault_page = far_addr & ~(static_cast<u64>(PG_SIZE) - 1);
   PhysAddr pgd_phys = get_current_pgd_phys();
   if (pgd_phys == 0) {
@@ -363,7 +378,7 @@ static bool try_cow_fault(moss::kernel::u64 far_addr, unsigned long long elr) no
 
   // Walk page tables to get a mutable pointer to the PTE
   auto *pte = mm::PageTableManager::get_user_pte(pgd_phys, fault_page);
-  if (!pte || !pte->is_valid()) {
+  if (!pte || !pte->is_valid() || (pte->raw & mm::page_attr::USER) == 0 || pte->is_writable()) {
     return false;
   }
 
@@ -374,6 +389,9 @@ static bool try_cow_fault(moss::kernel::u64 far_addr, unsigned long long elr) no
 
   PhysAddr old_pa = pte->get_phys_addr();
   u32 refcount = mm::PageFrameAllocator::page_ref_get(old_pa);
+  if (refcount == 0) {
+    return false; // Never manufacture ownership for an unreferenced frame.
+  }
 
   if (refcount > 1) {
     // Shared page: allocate new page, copy content, remap writable
@@ -390,21 +408,19 @@ static bool try_cow_fault(moss::kernel::u64 far_addr, unsigned long long elr) no
       dst[i] = src[i];
     }
 
-    // Decrement old page refcount
-    mm::PageFrameAllocator::page_ref_dec(old_pa);
-    // New page has refcount=1 (set by allocator)
-
-    // Update PTE: new physical page, clear COW, make writable
-    u64 attrs = pte->raw & ~::moss::kernel::hal::mmu::PTE_ADDR_MASK;
-    attrs &= ~mm::page_attr::SW_COW;
-#if defined(MOSS_ARCH_ARM64)
-    attrs &= ~mm::page_attr::READONLY;
-#elif defined(MOSS_ARCH_X86_64)
-    attrs |= mm::page_attr::WRITABLE;
-#elif defined(MOSS_ARCH_RISCV)
-    attrs |= mm::page_attr::WRITE;
-#endif
-    pte->raw = (new_pa & ::moss::kernel::hal::mmu::PTE_ADDR_MASK) | attrs;
+    // Reuse the architecture's PTE encoder (RISC-V stores PPN, not PA).
+    // Keep permissions/cache attributes unchanged except COW and writability.
+    auto replacement = *pte;
+    replacement.clear_cow();
+    replacement.make_writable();
+    pte->set_page(new_pa, replacement.raw & ~::moss::kernel::hal::mmu::PTE_ADDR_MASK);
+    mm::PageTableManager::invalidate_tlb_addr(fault_page);
+    // The mapping owns the new frame now; release the old frame only after
+    // replacing this mapping and invalidating its translation.
+    if (mm::PageFrameAllocator::page_ref_dec(old_pa) == 0) {
+      (void)mm::free_pages(old_pa, 0);
+    }
+    return true;
   } else {
     // Last reference: just clear COW flag and make writable
     pte->clear_cow();
@@ -418,7 +434,7 @@ static bool try_cow_fault(moss::kernel::u64 far_addr, unsigned long long elr) no
 
 // Attempt demand paging for a user translation fault.
 // Returns true if the fault was resolved (caller should return to eret).
-static bool try_demand_page(moss::kernel::u64 far_addr, bool is_write, unsigned long long elr) noexcept {
+static bool try_demand_page(moss::kernel::u64 far_addr, FaultAccess access, unsigned long long elr) noexcept {
   namespace mm = moss::kernel::mm;
   using moss::kernel::phys_to_virt;
   using moss::kernel::PhysAddr;
@@ -429,6 +445,16 @@ static bool try_demand_page(moss::kernel::u64 far_addr, bool is_write, unsigned 
   using moss::kernel::VirtAddr;
 
   namespace log = moss::kernel::logging;
+
+  const PhysAddr pgd_phys = get_current_pgd_phys();
+  if (!pgd_phys || !mm::PageTableManager::is_user_range(far_addr, 1)) {
+    return false;
+  }
+  // A resident page's permission fault is not a request to refill its contents.
+  const auto *existing = mm::PageTableManager::get_user_pte(pgd_phys, far_addr);
+  if (existing && existing->is_valid()) {
+    return false;
+  }
 
   u32 vma_flags = 0;
   const u8 *backing_data = nullptr;
@@ -448,12 +474,13 @@ static bool try_demand_page(moss::kernel::u64 far_addr, bool is_write, unsigned 
   }
 
   // vma_flags bit definitions (must match process::vma_flags)
+  constexpr u32 VMA_READ = 1U << 0;
   constexpr u32 VMA_WRITE = 1U << 1;
   constexpr u32 VMA_EXEC = 1U << 2;
 
-  // Permission check: write to read-only VMA
-  if (is_write && !(vma_flags & VMA_WRITE)) {
-    kill_user_process("write to read-only VMA", far_addr, elr);
+  const u32 required = access == FaultAccess::Execute ? VMA_EXEC : access == FaultAccess::Write ? VMA_WRITE : VMA_READ;
+  if ((vma_flags & required) == 0) {
+    return false; // Deny READ/WRITE/EXEC before allocating, including PROT_NONE.
   }
 
   // Allocate a physical page
@@ -520,9 +547,9 @@ static bool try_demand_page(moss::kernel::u64 far_addr, bool is_write, unsigned 
   }
 #endif
 
-  PhysAddr pgd_phys = get_current_pgd_phys();
   auto map_result = mm::PageTableManager::map_user_page(pgd_phys, fault_page, page_pa, perms);
   if (!map_result) {
+    (void)mm::free_pages(page_pa, 0); // The failed mapping did not acquire this frame.
     kill_user_process("map_user_page failed", far_addr, elr);
   }
 
@@ -539,10 +566,11 @@ extern "C" void user_page_fault_handler(unsigned long long esr, unsigned long lo
   u64 dfsc = esr & 0x3F;
   u64 ec = (esr >> 26) & 0x3F;
   bool is_write = ((esr >> 6) & 1) != 0;
+  const auto access = ec == 0x20 ? FaultAccess::Execute : is_write ? FaultAccess::Write : FaultAccess::Read;
 
   // Permission faults (DFSC 0x0C-0x0F): try COW resolution first
   bool is_permission_fault = (dfsc >= 0x0C && dfsc <= 0x0F);
-  if (is_permission_fault && is_write) {
+  if (is_permission_fault && access == FaultAccess::Write) {
     if (try_cow_fault(far_addr, elr)) {
       return; // COW resolved — eret retries instruction
     }
@@ -552,7 +580,7 @@ extern "C" void user_page_fault_handler(unsigned long long esr, unsigned long lo
   bool is_translation_fault = (dfsc >= 0x04 && dfsc <= 0x07);
 
   if (is_translation_fault) {
-    if (try_demand_page(far_addr, is_write, elr)) {
+    if (try_demand_page(far_addr, access, elr)) {
       return; // Fault resolved — eret retries instruction
     }
   }
@@ -607,18 +635,19 @@ extern "C" void riscv_page_fault_handler(unsigned long long scause, unsigned lon
   using namespace moss::kernel;
 
   bool is_write = (scause == 15); // Store/AMO page fault
+  const auto access = scause == 12 ? FaultAccess::Execute : is_write ? FaultAccess::Write : FaultAccess::Read;
   // scause 12 = Instruction page fault, 13 = Load page fault
 
-  // 1. Try demand paging (handles both U-mode and S-mode faults).
-  //    S-mode faults occur when kernel code (e.g. console_write in sys_write)
-  //    accesses a user buffer whose page hasn't been demand-faulted yet.
-  if (try_demand_page(stval, is_write, sepc)) {
-    return; // Fault resolved — sret retries instruction
+  // 1. Resolve a resident, COW-marked write fault without refilling the page.
+  if (is_write && try_cow_fault(stval, sepc)) {
+    return;
   }
 
-  // 2. Try COW resolution for write faults to read-only mapped pages
-  if (is_write && try_cow_fault(stval, sepc)) {
-    return; // COW resolved — sret retries instruction
+  // 2. Try demand paging only for absent pages (U-mode and S-mode accesses).
+  //    S-mode faults occur when kernel code (e.g. console_write in sys_write)
+  //    accesses a user buffer whose page hasn't been demand-faulted yet.
+  if (try_demand_page(stval, access, sepc)) {
+    return; // Fault resolved — sret retries instruction
   }
 
   // 3. Determine if this is a kernel-mode or user-mode fault.
@@ -655,16 +684,19 @@ extern "C" void x86_64_page_fault_handler(unsigned long long error_code, unsigne
 
   bool is_present = (error_code & (1ULL << 0)) != 0;
   bool is_write = (error_code & (1ULL << 1)) != 0;
+  const bool is_execute = (error_code & (1ULL << 4)) != 0;
+  const bool reserved_bit_fault = (error_code & (1ULL << 3)) != 0;
+  const auto access = is_execute ? FaultAccess::Execute : is_write ? FaultAccess::Write : FaultAccess::Read;
 
   // 1. Not-present fault (translation fault equivalent) — demand paging
-  if (!is_present) {
-    if (try_demand_page(cr2, is_write, rip)) {
+  if (!is_present && !reserved_bit_fault) {
+    if (try_demand_page(cr2, access, rip)) {
       return; // Demand page resolved — iretq retries instruction
     }
   }
 
   // 2. Protection violation on write — COW resolution
-  if (is_present && is_write) {
+  if (is_present && access == FaultAccess::Write && !reserved_bit_fault) {
     if (try_cow_fault(cr2, rip)) {
       return; // COW resolved — iretq retries instruction
     }
