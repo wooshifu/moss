@@ -1,7 +1,7 @@
 # Moss 内核设计与实现审计报告及修复清单
 
 > 原始审计：2026-09-05，源码基线：`e0e2bbc920b66f91e18802a46106ca5811e588b1`。
-> 状态复核：2026-09-07，提交基线：`4cde9b3`。第 3.4～3.8 节保留此前实测及当时状态；当前工作区进展见第 3.9～3.14 节。本文与 [todo.md](todo.md) 同步。
+> 状态复核：2026-09-10，提交基线：`a5ff24f`。第 3.4～3.14 节保留此前实测及当时状态；最新进展见第 3.15～3.16 节。本文与 [todo.md](todo.md) 同步。
 > 第 3.1～3.2 节保留原始运行证据；第 5～9 节未标新日期的“位置与事实”、地址和行号属于原始审计，不能当作当前仍然失败的运行结果。当前状态以第 4 节及各项更新说明为准。
 
 ## 1. 当前结论
@@ -35,7 +35,7 @@ Moss 已具备三架构真实启动、SMP、用户态与进程执行路径。后
 
 P0 是本项目的实现优先级，不是 CVSS 评级。研究内核也需要隔离错误进程；这里不要求它立即具备生产操作系统的全部安全机制。
 
-原审计行号指 `e0e2bbc`，初次更新说明中的符号和路径按 `b57422d` 核对；后续提交和工作区修复另标。请用“路径 + 符号 + 不变量”定位。每项完整验收仍是关闭要求；只有第 3.3～3.14 节明确列出的覆盖可以算已执行，不能把新增普通测试外推成所有审计验收通过。`[x]` 只关闭该行限定的子任务，`[ ]` 包括待实现、部分实现及待专项验收。
+原审计行号指 `e0e2bbc`，初次更新说明中的符号和路径按 `b57422d` 核对；后续提交和工作区修复另标。请用“路径 + 符号 + 不变量”定位。每项完整验收仍是关闭要求；只有第 3.3～3.15 节明确列出的覆盖可以算已执行，不能把新增普通测试外推成所有审计验收通过。`[x]` 只关闭该行限定的子任务，`[ ]` 包括待实现、部分实现及待专项验收。
 
 ### 2.2 原审计方法与本次复核
 
@@ -506,6 +506,71 @@ W^X 的真实结构红例：只增加检查、尚未收紧生产映射时，ARM6
 
 **保留边界：** 默认集合仍为 9 套件/27 用例；额外 SIMD 专项单独计数且当前失败。MOSS-002 的 fault-safe copy、014 的全部状态继承、015/016 的 exec/ELF 事务、上述 SMP 间歇失败及真实硬件验收未完成。
 
+### 3.15 ARM64 启动事件发布与停机现场（2026-09-10，工作区）
+
+- [x] `activate_secondary_cpus` 在发布 `Active` 后、`SEV` 前执行 `DSB SY`，不再把 release store 当作事件发送前的完成屏障。ARM64 Debug 构建和修改行格式检查通过，实际指令为 `mark_cpu_active → dsb sy → sev`。
+- [ ] 从核启动偶发挂起的完整根因与回归验收；以下现场定位不能独自证明补屏障已解决 QEMU 上的全部挂起。
+- [ ] `containers.smp` 子进程 Zombie 后的 wait/调度超时仍单独跟踪，MOSS-017/018 不关闭。
+
+未修改 `a5ff24f` 内核时，ARM64 Debug `containers.smp` 连续运行前 24 次通过，第 25 次在测试开始前发生 `unexpected_kernel_panic`；报告 `build/arm64-debug/validation/1789049114268692000/results.json` 的 ready 为空、用例为 not_run。不能把它归因于 waitpid，因为用户测试还没有运行。
+
+缩小到默认四核、2 GiB、GICv2 的 `resources` 启动后，60 次标准 runner 检查通过；加 GDB socket 的首批 100 次启动完成，下一批在第 484 次抓到同样的启动失败。调试脚本只以协议 end 作为正常停止点，其 completed 数不是完整功能验收。原始串口与停机现场保留在 `build/arm64-debug/smp-gdb-anyhz67j/484.{serial,gdb}.log`：
+
+```text
+CPU0: kernel_panic("Kernel initialization failed", Timeout)
+CPU1/CPU2: cpu_idle_once / cpu_startup_entry
+CPU3: secondary_cpu_entry, PC=0x4020b438, halted at activation WFE
+g_cpu_topology: online_cpus=3, cpu_states={Online,Online,Online,Active,...}
+early_uart_lock=0
+```
+
+因此已排除本次失败卡在 UART 锁或从核 MMU/GIC 初始化内部：CPU3 尚未越过激活等待。原符号 ELF SHA-256 为 `36fc35d481cdf1cc6fdd82f1f7ac1f32b59e71b555485e30e9fc64cc1e65c21c`。`DSB` 补齐的是独立可确认的架构契约：release 对内存访问排序，不保证非访存 `SEV` 等到写入完成；依据 [Armv8-A Memory Systems 第 16 页](https://documentation-service.arm.com/static/62d6777531ea212bb6627683?token=)。这不是 QEMU 检测或机器特判，也没有加超时、重试或替代调度器。
+
+**反证保留：** 只补 `DSB SY` 后，相同调试循环的前 646 次完成，第 647 次仍失败；`build/arm64-debug/smp-gdb-df2j_8kb/647.{serial,gdb}.log` 显示同一 CPU3 PC、Active 状态和空闲 UART 锁。因此“仅缺少屏障即可解释本机偶发启动挂起”的假设已被反例否定；屏障修正不能记为该故障修复。此候选 validation image SHA-256 为 `fe94a26bc87807c9752bb58bd67f71034dd5debb1d2280d76618d10e06f738da`，符号 ELF 为 `078942a5f8f1d4c85fcd61ca8cefde3cf02ab2c822ad22b82e4d622fe8c33753`。没有把前 646 次完成或一次普通回归通过作为启动可靠性的证明。
+
+**独立模拟器诊断，不计入内核功能覆盖：** 临时 `build/arm64-debug/event-probe.{S,py}` 不加载 Moss，仅用 CPU0/CPU3、acquire/release 序号、发送侧 `DSB SY; SEV` 和等待侧 `DSB SY; WFE` 握手，无 MMU、定时中断、分配器、调度器或 UART 锁。相同 428 字节镜像 SHA-256 `efa58102c5abab1fc037a01b515cfadcea74c522426e815a00ac6936e875c2df`，连续三次多线程 TCG 分别在 request/ack 为 324/323、42/41、71/70 时超时；单线程 TCG 三次均完成 100,000 次握手。日志 `event-probe-{multi,single}-{1,2,3}.log`；这不是把失败重试成成功，而是只改变执行模式的独立对照。
+
+LLDB 检查本机 QEMU 11.1.1 进程时，CPU3 为 `halted=1, halt_reason=HALT_WFE(3), event_register=1`，对应宿主线程仍在 `qemu_process_cpu_events → qemu_cond_wait_impl → pthread_cond_wait`。不修改 guest 状态，仅调试调用一次该 CPU 的 `qemu_cpu_kick` 后，CPU3 消费了待处理 request，ack 追上 request；见 `event-probe-host-debug.log`、`event-probe-host-kick{-2,}.log`。宿主字段偏移按本机二进制反汇编核对，不假定任意 QEMU 版本 ABI 相同。该独立复现确认本机模拟器存在事件已发布但宿主等待线程未被唤醒的问题；Moss 的 WFE 现场与之相符，但还没有用修正后的模拟器完成原始长循环对照，不能关闭启动验收。
+
+本机反汇编确认 `helper_sev` 设置事件并广播，但没有与宿主 idle 检查/条件等待使用同一锁；这也与上游 [SEV helper](https://github.com/qemu/qemu/blob/master/target/arm/tcg/op_helper.c) 和 [CPU 事件等待](https://github.com/qemu/qemu/blob/master/system/cpus.c) 的结构一致。未改动安装的 QEMU，未把正式 runner 改成单线程，未在内核加入 emulator 分支、重复 SEV 或轮询绕过；独立诊断保留在明确的 build 调试目录，不进入正常构建与 CTest。
+
+**本轮普通回归：** ARM64 Debug/Release/RelWithDebInfo 三配置构建通过（`build/<preset>/smp-event-build.log`）；Debug/Release CTest **5/5 通过**（`smp-event-ctest.log`）。原始报告均 finalized、not_run 为空，hash 与当前产物一致：
+
+| preset | functional | framework | benchmark |
+| --- | --- | --- | --- |
+| arm64-debug | 1789050194173601000 | 1789050204916237000 | 不适用 |
+| arm64-release | 1789050217496590000 | 1789050223438748000 | 1789050235251722000 |
+
+报告路径为 `build/<preset>/validation/<ID>/results.json`。Release image SHA-256 为 `41bc35a71e26f15f4d26611cbb8dd45cd7e139b8587fbc525c12e0119479f5aa`；Debug 同上述反例镜像，说明普通 CTest 通过并不能消除偶发失败。修改行 clang-format 与 `git diff --check` 通过；本轮没有改动 x86/RV64，也没有重跑它们的完整矩阵或实机验证。下一步内核等待/调度修复仍按 MOSS-017/018 的真实生产路径执行，不能把模拟器问题当作所有 wait 超时的解释。
+
+### 3.16 COW 权限与缺页分类（2026-09-10，部分修复）
+
+`clone_user_page_tables` 现在只给原本可写的用户叶子新增 COW，保留真正只读页及多代 fork 已有的 COW 标志。当前 mmap 仅支持私有映射。`try_cow_fault` 重新检查用户地址域、可写 VMA、用户只读 COW PTE 和非零页引用；替换物理页通过 `PageTableEntry::set_page` 编码，避免把 RISC-V PPN 当作直接物理地址字段。替换并失效本地翻译后才释放旧引用。
+
+三个 ISA 的故障入口区分读、写、执行访问；demand 路径拒绝已有有效叶子，并在分配前检查对应 VMA 权限。RISC-V 先处理合法 COW 写故障，避免把驻留页重新填充；x86 保留位错误不进入 demand/COW。映射失败时释放尚未交给页表的新数据页，不代表中间表页已经具有完整回滚。
+
+**先失败再修复的证据：** ARM64 Debug 报告 `1789050943430875000` 的新 `cow_clone_permissions` 用例为 17 个断言通过、6 个失败，后续用例未运行。只修 clone 后，ARM64 报告 `1789051244969892000` 的页表检查通过，但 `users.vm.access_permissions` 仍以 `mask=0x2` 失败（PROT_NONE 读取被允许）；RISC-V 报告 `1789051245994490000` 的 `users.vm.private_cow` 以 `mask=0x1` 失败，后两项未运行。这些原始失败报告保留，不用成功重跑覆盖。
+
+补齐 fault 修复后，ARM64/RISC-V Debug 的 `mm.permissions` 与 `users.vm` 均通过，报告分别为 `1789051673139223000`、`1789051674378797000`。新增测试使用真实页表/PFA 和真实用户 fork、mmap、访问异常、wait、munmap：检查三代页权限、引用与释放计数，多页数据隔离，最后引用的 COW 写入，驻留 text/rodata 写入拒绝，以及 PROT_NONE 读写和 NX 执行拒绝。`users.vm` 已加入默认 functional 集合；默认共 10 个 suite、31 个 case。
+
+**构建和普通回归：** `cmake --workflow --preset <preset>` 的九配置全部完成 configure/build/test，CTest 合计 **21/21**；格式收尾后的最终产物再次完成九配置 workflow，仍为 **21/21**。两轮日志分别为 `build/<preset>/compile-fix-workflow.log` 和 `compile-fix-final-workflow.log`。宿主 `uv run pytest -q` **111/111**，Ruff、clang-format 与 diff 格式检查通过。本次未复现新的 C/C++ 编译错误，收尾修正了新增测试的格式及 Python 超长行。下表为最终报告，均 finalized、not_run 为空，且报告中的 image SHA-256 与对应 manifest 指向的当前测试镜像逐项一致。
+
+| preset | functional | framework | benchmark |
+| --- | --- | --- | --- |
+| arm64-debug | 1789051963930521000 | 1789051973639017000 | 不适用 |
+| arm64-release | 1789051990335243000 | 1789051996832263000 | 1789052008456881000 |
+| arm64-relwithdebinfo | 1789052014689405000 | 1789052020290759000 | 不适用 |
+| riscv-debug | 1789051965173596000 | 1789051976560858000 | 不适用 |
+| riscv-release | 1789051994096733000 | 1789052000906683000 | 1789052012893911000 |
+| riscv-relwithdebinfo | 1789052019698245000 | 1789052026522714000 | 不适用 |
+| x86_64-debug | 1789051966308835000 | 1789051977866715000 | 不适用 |
+| x86_64-release | 1789051995767787000 | 1789052003693917000 | 1789052016156046000 |
+| x86_64-relwithdebinfo | 1789052024576747000 | 1789052033219927000 | 不适用 |
+
+报告路径为 `build/<preset>/validation/<ID>/results.json`。另以同一 RISC-V Debug 镜像运行 `--cpu rv64,sv48=false --workload mm.permissions --workload users.vm`，Sv39 专项通过，最终报告 `1789051963203443000`；镜像 SHA-256 为 `a686d3b5708e1b15a9672d91eab657ff2dba87e215caac516da0a68b2156b580`。
+
+**仍不关闭 MOSS-008/009：** 尚无统一 VMA/PTE/ref/TLB 事务锁、同时写故障与 fork/unmap 交错验收、OOM 逐点注入及完整回滚。`map_user_page` 的有效叶子覆盖与 block/table 冲突仍归 MOSS-010；本次 demand 的驻留检查不是并发防覆盖协议。用户异常测试证明访问被拒绝，但未直接计量拒绝路径没有额外分配，也未单独强制构造 VMA 不可写而 PTE 遗留 COW 的故障。fork 前的独立 text/rodata 写入、多物理地址 PTE 编解码专项及实机验证仍待补。普通矩阵通过不取消 3.15 的偶发启动失败，也不替代显式 `users.simd_fault` 或完整 SMP 验收。
+
 ## 4. 问题总表与当前状态
 
 | 编号 | 优先级 | 审计主题 | 当前状态与下一步 |
@@ -517,8 +582,8 @@ W^X 的真实结构红例：只增加检查、尚未收紧生产映射时，ARM6
 | MOSS-005 | P0 | 启动保留区未排除 | 多 bank、保留洞、非对齐/重叠、容量/溢出及耗尽已验证；低地址启动区仍保守保留，PVH 异常表/完整保留集合待补，见 3.5～3.6。 |
 | MOSS-006 | P0 | 容器与使用者的所有权 | 部分修复（工作区）；伪 RCU 已替换为 LockedList/LockedHashMap，查找复制拥有者，锁外析构/快照回调；持有读者与双 CPU 交错有实测，IRQ/驱动/IPC 复合协议未闭合，见 3.9。 |
 | MOSS-007 | P0 | 跨 ISA TrapFrame / syscall 参数 | 部分实现；x86 第八参数为 null，RV64 未传有效帧，共通信号布局仍为 ARM64。 |
-| MOSS-008 | P0 | 只读页被 COW 放宽权限 | 未修复；clone 对有效叶子设置 COW，`try_cow_fault` 未检查可写 VMA。 |
-| MOSS-009 | P1 | RV64 fault 分类 / PPN | 未修复；仍先 demand 后 COW，共用代码直接拼 new_pa。 |
+| MOSS-008 | P0 | 只读页被 COW 放宽权限 | 部分修复；clone 保留真实只读页，fault 检查可写 VMA，多代 COW/用户异常回归通过；并发事务与 OOM 验收待补，见 3.16。 |
+| MOSS-009 | P1 | RV64 fault 分类 / PPN | 部分修复；访问类型与驻留检查、COW 优先和 HAL PPN 编码已补，Sv39/Sv48 回归通过；分配/引用失败专项仍待补，见 3.16。 |
 | MOSS-010 | P1 | 页表 clone/map 回滚 | 未修复；clone 仍返回 void，分配失败不能向 fork 传播完整失败。 |
 | MOSS-011 | P1 | 活跃 ASID 回绕重用 | 未修复；`allocate_asid` 仍在 255 后重置计数，没有活跃租约。 |
 | MOSS-012 | P1 | brk/VMA/PTE 权限生命周期 | 未修复；`sys_brk` 仍只改 VMA 端点，无缩堆 PTE/ref/TLB 事务。 |
