@@ -125,27 +125,9 @@ void init_signal_state(Process *proc) noexcept {
   g_signal_state_used[pid] = true;
 }
 
-// Use the address space's admission check before touching user memory.
-// This retains the existing demand-paging copy mechanism; exception-table
-// fixups and a concurrent VMA/PTE lifetime protocol remain separate work.
-static bool signal_copy(Thread *thread, u64 address, void *buffer, usize size, bool to_user) noexcept {
-  auto proc = g_process_manager ? g_process_manager->find_process(thread->owner_pid) : shared_ptr<Process>{};
-  auto *as = proc ? proc->address_space() : nullptr;
-  if (!as || !as->allows_user_access(address, size, to_user ? vma_flags::WRITE : vma_flags::READ)) {
-    return false;
-  }
-  auto *user = reinterpret_cast<volatile u8 *>(address);
-  auto *kernel = static_cast<u8 *>(buffer);
-  for (usize i = 0; i < size; ++i) {
-    if (to_user) {
-      user[i] = kernel[i];
-    } else {
-      kernel[i] = user[i];
-    }
-  }
-  return true;
-}
-
+// Called on the current thread's user-return path. Shared uaccess handles
+// admission and recoverable faults; concurrent VMA/PTE lifetime synchronization
+// remains a separate responsibility.
 bool setup_sigframe(Thread *thread, u32 signo, const Sigaction &sa) noexcept {
   if (!thread || !thread->trap_frame || !thread->trap_frame->from_user()) {
     return false;
@@ -193,7 +175,7 @@ bool setup_sigframe(Thread *thread, u32 signo, const Sigaction &sa) noexcept {
   sf.signo = signo;
   sf.saved_mask = thread->signal_mask;
   sf.saved_on_alt_stack = thread->on_alt_stack;
-  if (!signal_copy(thread, sigframe_sp, &sf, sizeof(sf), true)) {
+  if (copy_to_user(sigframe_sp, &sf, sizeof(sf)) != 0) {
     return false;
   }
   u64 handler_sp = sigframe_sp;
@@ -201,7 +183,7 @@ bool setup_sigframe(Thread *thread, u32 signo, const Sigaction &sa) noexcept {
   // A normal C handler returns with RET, leaving RSP at the signal frame.
   handler_sp -= 8;
   u64 link = user_layout::SIGRETURN_PAGE;
-  if (!signal_copy(thread, handler_sp, &link, sizeof(link), true)) {
+  if (copy_to_user(handler_sp, &link, sizeof(link)) != 0) {
     return false;
   }
 #elif defined(MOSS_ARCH_ARM64)
@@ -225,7 +207,7 @@ long do_sigreturn(Thread *thread) noexcept {
   }
   auto &frame = *thread->trap_frame;
   SignalFrame sf{};
-  if ((frame.sp & 15) || !signal_copy(thread, frame.sp, &sf, sizeof(sf), false) || sf.magic != SignalFrame::MAGIC ||
+  if ((frame.sp & 15) || copy_from_user(&sf, frame.sp, sizeof(sf)) != 0 || sf.magic != SignalFrame::MAGIC ||
       !mm::PageTableManager::is_user_range(sf.elr, 1) || !mm::PageTableManager::is_user_range(sf.sp, 1)) {
     return -SIGRETURN_EFAULT;
   }

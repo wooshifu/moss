@@ -33,7 +33,17 @@ CATALOG = {
     "users": ["syscall_values", "user_ranges", "fork_exec_exit_reap"],
     "users.vm": ["private_cow", "readonly_cow", "access_permissions"],
     "users.frame": ["native_frame", "fork_registers", "signal_return"],
-    "users.uaccess": ["allocation_fault"],
+    "users.uaccess": [
+        "allocation_fault",
+        "write_fault",
+        "read_fault",
+        "partial_read",
+        "partial_write",
+        "partial_pipe_read",
+        "sigframe_fault",
+        "sigreturn_fault",
+        "devices",
+    ],
     "users.simd_fault": ["isolation"],  # Explicit x86 acceptance; TCG may not deliver #XM.
     "mm.permissions": [
         "table_defaults",

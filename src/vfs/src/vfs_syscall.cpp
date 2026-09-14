@@ -70,8 +70,8 @@ long do_close(void *fd_table_ptr, long fd) noexcept {
   return fdt->close_fd(fd);
 }
 
-long do_read(void *fd_table_ptr, long fd, u8 *buf, usize count) noexcept {
-  if (fd_table_ptr == nullptr || buf == nullptr) {
+long do_read(void *fd_table_ptr, long fd, OutputBuffer buffer) noexcept {
+  if (fd_table_ptr == nullptr || !buffer.valid()) {
     return -static_cast<long>(VfsError::InvalidArg);
   }
   auto *fdt = static_cast<FdTable *>(fd_table_ptr);
@@ -82,11 +82,11 @@ long do_read(void *fd_table_ptr, long fd, u8 *buf, usize count) noexcept {
   if (file->f_ops == nullptr || file->f_ops->read == nullptr) {
     return -static_cast<long>(VfsError::NotSupported);
   }
-  return file->f_ops->read(file, buf, count);
+  return file->f_ops->read(file, buffer);
 }
 
-long do_write(void *fd_table_ptr, long fd, const u8 *buf, usize count) noexcept {
-  if (fd_table_ptr == nullptr || buf == nullptr) {
+long do_write(void *fd_table_ptr, long fd, InputBuffer buffer) noexcept {
+  if (fd_table_ptr == nullptr || !buffer.valid()) {
     return -static_cast<long>(VfsError::InvalidArg);
   }
   auto *fdt = static_cast<FdTable *>(fd_table_ptr);
@@ -97,7 +97,7 @@ long do_write(void *fd_table_ptr, long fd, const u8 *buf, usize count) noexcept 
   if (file->f_ops == nullptr || file->f_ops->write == nullptr) {
     return -static_cast<long>(VfsError::NotSupported);
   }
-  return file->f_ops->write(file, buf, count);
+  return file->f_ops->write(file, buffer);
 }
 
 long do_lseek(void *fd_table_ptr, long fd, i64 offset, u32 whence) noexcept {

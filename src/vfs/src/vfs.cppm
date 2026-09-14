@@ -20,6 +20,7 @@ import moss.containers;
 import moss.logging;
 
 export import :types;
+export import :buffer;
 export import :inode;
 export import :dcache;
 export import :file;

@@ -9,9 +9,9 @@ shared_ptr<Process> current_owner() noexcept {
 }
 } // namespace
 
-bool copy_from_user(void *destination, u64 source, usize size) noexcept {
+usize copy_from_user(void *destination, u64 source, usize size) noexcept {
   if (!size)
-    return true;
+    return 0;
   auto owner = current_owner();
   auto *as = owner ? owner->address_space() : nullptr;
   usize remaining = size;
@@ -21,15 +21,16 @@ bool copy_from_user(void *destination, u64 source, usize size) noexcept {
   auto *tail = static_cast<u8 *>(destination) + (size - remaining);
   for (usize i = 0; i < remaining; ++i)
     tail[i] = 0;
-  return remaining == 0;
+  return remaining;
 }
 
-bool copy_to_user(u64 destination, const void *source, usize size) noexcept {
+usize copy_to_user(u64 destination, const void *source, usize size) noexcept {
   if (!size)
-    return true;
+    return 0;
   auto owner = current_owner();
   auto *as = owner ? owner->address_space() : nullptr;
-  return as && as->allows_user_access(destination, size, vma_flags::WRITE) &&
-         moss::abi::uaccess::moss_raw_copy_to_user(reinterpret_cast<void *>(destination), source, size) == 0;
+  if (!as || !as->allows_user_access(destination, size, vma_flags::WRITE))
+    return size;
+  return moss::abi::uaccess::moss_raw_copy_to_user(reinterpret_cast<void *>(destination), source, size);
 }
 } // namespace moss::kernel::process

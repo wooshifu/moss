@@ -64,7 +64,9 @@ SECTIONS
      * Page permissions: Read + Execute (no write)
      */
     .text : {
+        __user_text_start = .;
         *(.text* .ltext*)
+        __user_text_end = .;
     }
 
     /* ---- Read-Only Data Section ----
