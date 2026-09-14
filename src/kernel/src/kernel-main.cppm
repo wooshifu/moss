@@ -725,15 +725,12 @@ private:
     VirtAddr entry_point = user_layout::CODE_BASE; // entry = start of raw code
 
     // Sigreturn trampoline VMA: read + exec, backed by static stub code.
-    // Contains: mov x8, #17; svc #0 (sigreturn syscall invocation).
-    // Signal handler LR points here so handler return triggers sigreturn.
+    // Native code comes from the ABI module, not architecture-specific bytes
+    // embedded in process creation or exec.
     {
-      static constexpr u8 sigreturn_stub[] = {
-          0x28, 0x02, 0x80, 0xD2, // mov x8, #0x11 (17 = SYS_SIGRETURN)
-          0x01, 0x00, 0x00, 0xD4, // svc #0
-      };
       as->add_vma(user_layout::SIGRETURN_PAGE, user_layout::SIGRETURN_PAGE + PAGE_SIZE,
-                  vma_flags::READ | vma_flags::EXEC, VmaType::SIGRETURN, sigreturn_stub, 0, sizeof(sigreturn_stub));
+                  vma_flags::READ | vma_flags::EXEC, VmaType::SIGRETURN, moss::abi::signal::trampoline(), 0,
+                  moss::abi::signal::trampoline_size());
     }
 
     // Stack VMA: demand-zero

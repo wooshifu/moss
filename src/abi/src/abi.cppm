@@ -39,6 +39,8 @@ void switch_to_user(void *context, unsigned long long user_stack);
 void kernel_thread_entry();
 void syscall_entry_point() noexcept;
 void syscall_return(void *context) noexcept;
+extern const unsigned char moss_sigreturn_start[];
+extern const unsigned char moss_sigreturn_end[];
 }
 
 // ============================================================================
@@ -82,8 +84,8 @@ extern "C" {
 [[noreturn]] void early_main(void *device_tree_ptr);
 [[noreturn]] void kernel_main(void) noexcept;
 void early_debug_print(const char *message) noexcept;
-long system_call_handler(long syscall_number, long arg0, long arg1, long arg2, long arg3, long arg4, long arg5,
-                         long trap_frame) noexcept;
+void system_call_handler(void *trap_frame) noexcept;
+void user_return_handler(void *trap_frame) noexcept;
 void irq_handler_c(void) noexcept;
 void kernel_page_fault_handler(unsigned long long esr, unsigned long long far_addr, unsigned long long elr) noexcept;
 void user_page_fault_handler(unsigned long long esr, unsigned long long far_addr, unsigned long long elr) noexcept;
@@ -123,8 +125,16 @@ int strcmp(const char *s1, const char *s2) noexcept;
 }
 
 export module moss.abi;
+export import :trap_frame;
 
 import moss.types;
+
+export namespace moss::abi::signal {
+inline const unsigned char *trampoline() noexcept { return ::moss_sigreturn_start; }
+inline moss::kernel::usize trampoline_size() noexcept {
+  return static_cast<moss::kernel::usize>(::moss_sigreturn_end - ::moss_sigreturn_start);
+}
+} // namespace moss::abi::signal
 
 // ============================================================================
 // Typed linker symbol accessors
@@ -284,6 +294,7 @@ using ::system_call_handler;
 using ::unhandled_exception_handler;
 using ::unhandled_user_exception_handler;
 using ::user_page_fault_handler;
+using ::user_return_handler;
 
 #if defined(__aarch64__) || defined(MOSS_ARCH_ARM64)
 using ::secondary_cpu_entry;

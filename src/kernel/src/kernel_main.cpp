@@ -136,25 +136,54 @@ extern "C" {
 void early_debug_print(const char *message) noexcept { ::moss::kernel::hal::uart::puts(message); }
 
 // Syscall entry
-long system_call_handler(long syscall_number, long arg0, long arg1, long arg2, long arg3, long arg4, long arg5,
-                         long trap_frame) noexcept {
+void system_call_handler(void *raw_frame) noexcept {
   using namespace moss::kernel;
+  auto &frame = *static_cast<moss::abi::TrapFrame *>(raw_frame);
+  auto *thread = process::CfsScheduler::get_current_task();
+  auto *previous = thread ? thread->trap_frame : nullptr;
+  if (thread) {
+    thread->trap_frame = &frame;
+  }
+  const long nr = static_cast<long>(frame.syscall_number());
+  // Only the dedicated validation image overrides this ENOSYS hook.
+  const long result =
+      nr == 511 ? moss_validation_call(static_cast<long>(frame.argument(0)), static_cast<long>(frame.argument(1)),
+                                       static_cast<long>(frame.argument(2)))
+                : syscall::SyscallDispatcher::dispatch(
+                      nr, static_cast<long>(frame.argument(0)), static_cast<long>(frame.argument(1)),
+                      static_cast<long>(frame.argument(2)), static_cast<long>(frame.argument(3)),
+                      static_cast<long>(frame.argument(4)), static_cast<long>(frame.argument(5)));
+  // Commit the result before delivery saves the interrupted context or sets
+  // the handler argument. Assembly restores this frame; it never patches it.
+  frame.result() = static_cast<u64>(result);
+  if (thread) {
+    thread->trap_frame = previous;
+  }
+}
 
-  // Store trap frame pointer in current thread for signal delivery
-  {
-    using namespace process;
-    Thread *cur = CfsScheduler::get_current_task();
-    if (cur != nullptr) {
-      cur->trap_frame = static_cast<u64>(trap_frame);
+void user_return_handler(void *raw_frame) noexcept {
+  using namespace moss::kernel;
+  using namespace moss::kernel::process;
+  auto &frame = *static_cast<moss::abi::TrapFrame *>(raw_frame);
+  if (!frame.from_user()) {
+    return;
+  }
+  Thread *thread = CfsScheduler::get_current_task();
+  if (!thread) {
+    return;
+  }
+  auto *previous = thread->trap_frame;
+  thread->trap_frame = &frame;
+  if (signal_pending(thread)) {
+    const u32 signo = do_signal_checkpoint(thread);
+    if (signo) {
+      auto proc = g_process_manager ? g_process_manager->find_process(thread->owner_pid) : shared_ptr<Process>{};
+      if (proc) {
+        do_exit(thread, moss::move(proc), 128 + static_cast<i32>(signo));
+      }
     }
   }
-
-  // Only the dedicated validation image overrides this ENOSYS hook.
-  if (syscall_number == 511) {
-    return moss_validation_call(arg0, arg1, arg2);
-  }
-
-  return syscall::SyscallDispatcher::dispatch(syscall_number, arg0, arg1, arg2, arg3, arg4, arg5);
+  thread->trap_frame = previous;
 }
 
 // IRQ handler called from assembly irq_trampoline.

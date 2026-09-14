@@ -25,6 +25,7 @@
 //   [RSP + 168] = SS             (if privilege change)
 // =============================================================================
 
+#include "moss/trap_frame_offsets.h"
 .section .text
 
 // Enable alternate macro mode for .rept variable expansion
@@ -150,10 +151,18 @@ isr_common:
     pushq   %r15
 
     // Call C++ handler: x86_64_interrupt_handler(vector, error_code, frame)
-    movq    120(%rsp), %rdi             // arg0: vector number
-    movq    128(%rsp), %rsi             // arg1: error code
+    cld
+    movq    MOSS_TF_VECTOR(%rsp), %rdi
+    movq    MOSS_TF_ERROR(%rsp), %rsi
     movq    %rsp, %rdx                  // arg2: pointer to saved register frame
+    // The interrupted kernel stack need not have call-site alignment.
+    movq    %rsp, %rbx
+    andq    $-16, %rsp
     call    x86_64_interrupt_handler
+    cli
+    movq    %rbx, %rdi
+    call    user_return_handler
+    movq    %rbx, %rsp
 
     // Restore all GPRs (reverse order)
     popq    %r15

@@ -1,6 +1,31 @@
 #include "syscall.h"
 
 static long control(long op, long a, long b) { return syscall3(511, op, a, b); }
+long frame_register_probe(long number);
+static volatile int handled_signo;
+static volatile long handler_pid;
+#if defined(__x86_64__)
+static void set_fp_state(int child);
+static int parent_fp_state(void);
+#endif
+static void frame_signal_handler(int signo) {
+  handled_signo = signo;
+  handler_pid = getpid(); // nested syscall must borrow its own frame
+#if defined(__x86_64__)
+  set_fp_state(1);
+#endif
+}
+
+static unsigned long frame_signal_return(void) {
+  struct sigaction_t action = {(unsigned long)frame_signal_handler, 0, 0};
+  unsigned long errors = moss_sigaction(SIGUSR1, &action, 0) != 0;
+  long result = frame_register_probe(SYS_KILL);
+  errors |= (unsigned long)(result != 0 || handled_signo != SIGUSR1 || handler_pid != getpid()) << 1;
+  errors |= (unsigned long)(frame_register_probe(SYS_GETPID) != getpid()) << 2;
+  action.handler = SIG_DFL;
+  errors |= (unsigned long)(moss_sigaction(SIGUSR1, &action, 0) != 0) << 3;
+  return errors;
+}
 
 static const unsigned char vm_rodata[4096] __attribute__((aligned(4096))) = {0x5a};
 __attribute__((noinline)) static void vm_text(void) { asm volatile("" ::: "memory"); }
@@ -219,7 +244,31 @@ void _start(void) {
   unsigned mask = 1;
   long affinity = syscall3(20, 0, sizeof(mask), (long)&mask);
   long mode = control(0, affinity, 0);
-  if (mode == 5) {
+  if (mode == 6) {
+    control(1, 0, 0);
+    long probe = frame_register_probe(SYS_GETPID);
+    if (!control(2, syscall6(511, 10, 11, 22, 33, 44, 55) == 12345 && probe == getpid(), probe == getpid() ? 0 : probe))
+      control(3, 0, 0);
+    control(1, 1, 0);
+    long child = frame_register_probe(SYS_FORK);
+    if (getpid() != 1)
+      _exit(child == 0 ? 37 : (int)(90 - child - 1000));
+    int child_status = 0;
+    long waited = child > 0 ? syscall3(SYS_WAITPID, child, (long)&child_status, 0) : -1;
+    if (!control(2, waited == child && child > 0 && ((child_status >> 8) & 255) == 37,
+                 child < 0 ? child : child_status))
+      control(3, 0, 0);
+    control(1, 2, 0);
+#if defined(__x86_64__)
+    set_fp_state(0);
+#endif
+    unsigned long errors = frame_signal_return();
+#if defined(__x86_64__)
+    errors |= (unsigned long)!parent_fp_state() << 4;
+#endif
+    control(2, errors == 0, (long)errors);
+    control(3, 0, 0);
+  } else if (mode == 5) {
     for (long test = 0; test < 3; ++test) {
       control(1, test, 0);
       unsigned long errors = test == 0 ? vm_private_cow() : test == 1 ? vm_readonly_cow() : vm_access_permissions();

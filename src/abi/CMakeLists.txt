@@ -4,12 +4,13 @@
 # cross-module bridges).  Consumer modules `import moss.abi;` instead of
 # duplicating extern "C" declarations in their own GMFs.
 
-add_library(moss_abi OBJECT)
+add_library(moss_abi OBJECT src/sigreturn.S)
 
 target_sources(
     moss_abi
-    PUBLIC FILE_SET CXX_MODULES FILES src/abi.cppm
+    PUBLIC FILE_SET CXX_MODULES FILES src/abi.cppm src/trap_frame.cppm
 )
+target_include_directories(moss_abi PUBLIC include)
 
 # moss.abi depends only on moss_core (for moss.types → VirtAddr, usize)
 target_link_libraries(

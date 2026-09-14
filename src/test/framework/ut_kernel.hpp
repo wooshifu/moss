@@ -581,7 +581,7 @@ inline bool valid_id(const char *id) {
 
 struct Registry {
   static constexpr unsigned case_capacity = 128;
-  static constexpr unsigned suite_capacity = 16;
+  static constexpr unsigned suite_capacity = 32;
   test_base cases[case_capacity]{};
   const char *suites[suite_capacity]{};
   unsigned case_count = 0;

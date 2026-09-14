@@ -1,3 +1,5 @@
+#include "moss/trap_frame_offsets.h"
+
 /*
  * =============================================================================
  * ARM64 Kernel Boot and Exception Handling
@@ -556,65 +558,78 @@ exception_vectors:
 .type irq_trampoline, @function
 irq_trampoline:
     // Allocate 34-slot frame: x0-x30, ELR, SPSR, SP_EL0
-    sub     sp, sp, #(34 * 8)
+    sub     sp, sp, #MOSS_TF_SIZE
 
     // Save all general-purpose registers
-    stp     x0,  x1,  [sp, #(0  * 8)]
-    stp     x2,  x3,  [sp, #(2  * 8)]
-    stp     x4,  x5,  [sp, #(4  * 8)]
-    stp     x6,  x7,  [sp, #(6  * 8)]
-    stp     x8,  x9,  [sp, #(8  * 8)]
-    stp     x10, x11, [sp, #(10 * 8)]
-    stp     x12, x13, [sp, #(12 * 8)]
-    stp     x14, x15, [sp, #(14 * 8)]
-    stp     x16, x17, [sp, #(16 * 8)]
-    stp     x18, x19, [sp, #(18 * 8)]
-    stp     x20, x21, [sp, #(20 * 8)]
-    stp     x22, x23, [sp, #(22 * 8)]
-    stp     x24, x25, [sp, #(24 * 8)]
-    stp     x26, x27, [sp, #(26 * 8)]
-    stp     x28, x29, [sp, #(28 * 8)]
-    str     x30,       [sp, #(30 * 8)]
+    stp     x0,  x1,  [sp, #MOSS_TF_X0]
+    stp     x2,  x3,  [sp, #MOSS_TF_X2]
+    stp     x4,  x5,  [sp, #MOSS_TF_X4]
+    stp     x6,  x7,  [sp, #MOSS_TF_X6]
+    stp     x8,  x9,  [sp, #MOSS_TF_X8]
+    stp     x10, x11, [sp, #MOSS_TF_X10]
+    stp     x12, x13, [sp, #MOSS_TF_X12]
+    stp     x14, x15, [sp, #MOSS_TF_X14]
+    stp     x16, x17, [sp, #MOSS_TF_X16]
+    stp     x18, x19, [sp, #MOSS_TF_X18]
+    stp     x20, x21, [sp, #MOSS_TF_X20]
+    stp     x22, x23, [sp, #MOSS_TF_X22]
+    stp     x24, x25, [sp, #MOSS_TF_X24]
+    stp     x26, x27, [sp, #MOSS_TF_X26]
+    stp     x28, x29, [sp, #MOSS_TF_X28]
+    str     x30,       [sp, #MOSS_TF_X30]
 
     // Save exception return state + user stack pointer
     mrs     x0, elr_el1                 // exception return address
     mrs     x1, spsr_el1                // saved processor state
-    stp     x0,  x1,  [sp, #(31 * 8)]
-    mrs     x0, sp_el0                  // user-mode stack pointer
-    str     x0,        [sp, #(33 * 8)]
+    stp     x0,  x1,  [sp, #MOSS_TF_PC]
+    tst     x1, #15
+    b.eq    .Lirq_user_sp
+    add     x0, sp, #MOSS_TF_SIZE       // interrupted kernel SP
+    b       .Lirq_save_sp
+.Lirq_user_sp:
+    mrs     x0, sp_el0
+.Lirq_save_sp:
+    str     x0,        [sp, #MOSS_TF_SP]
 
     // Call C++ interrupt handler
     bl      irq_handler_c
+    msr     daifset, #0xf
+    mov     x0, sp
+    bl      user_return_handler
 
     // Restore user stack pointer (before GP regs clobber temporaries)
-    ldr     x0,        [sp, #(33 * 8)]
+    ldr     x1,        [sp, #MOSS_TF_STATUS]
+    tst     x1, #15
+    b.ne    .Lirq_restore_state
+    ldr     x0,        [sp, #MOSS_TF_SP]
     msr     sp_el0, x0
 
     // Restore exception return state
-    ldp     x0,  x1,  [sp, #(31 * 8)]
+.Lirq_restore_state:
+    ldp     x0,  x1,  [sp, #MOSS_TF_PC]
     msr     elr_el1, x0
     msr     spsr_el1, x1
 
     // Restore all general-purpose registers
-    ldp     x0,  x1,  [sp, #(0  * 8)]
-    ldp     x2,  x3,  [sp, #(2  * 8)]
-    ldp     x4,  x5,  [sp, #(4  * 8)]
-    ldp     x6,  x7,  [sp, #(6  * 8)]
-    ldp     x8,  x9,  [sp, #(8  * 8)]
-    ldp     x10, x11, [sp, #(10 * 8)]
-    ldp     x12, x13, [sp, #(12 * 8)]
-    ldp     x14, x15, [sp, #(14 * 8)]
-    ldp     x16, x17, [sp, #(16 * 8)]
-    ldp     x18, x19, [sp, #(18 * 8)]
-    ldp     x20, x21, [sp, #(20 * 8)]
-    ldp     x22, x23, [sp, #(22 * 8)]
-    ldp     x24, x25, [sp, #(24 * 8)]
-    ldp     x26, x27, [sp, #(26 * 8)]
-    ldp     x28, x29, [sp, #(28 * 8)]
-    ldr     x30,       [sp, #(30 * 8)]
+    ldp     x0,  x1,  [sp, #MOSS_TF_X0]
+    ldp     x2,  x3,  [sp, #MOSS_TF_X2]
+    ldp     x4,  x5,  [sp, #MOSS_TF_X4]
+    ldp     x6,  x7,  [sp, #MOSS_TF_X6]
+    ldp     x8,  x9,  [sp, #MOSS_TF_X8]
+    ldp     x10, x11, [sp, #MOSS_TF_X10]
+    ldp     x12, x13, [sp, #MOSS_TF_X12]
+    ldp     x14, x15, [sp, #MOSS_TF_X14]
+    ldp     x16, x17, [sp, #MOSS_TF_X16]
+    ldp     x18, x19, [sp, #MOSS_TF_X18]
+    ldp     x20, x21, [sp, #MOSS_TF_X20]
+    ldp     x22, x23, [sp, #MOSS_TF_X22]
+    ldp     x24, x25, [sp, #MOSS_TF_X24]
+    ldp     x26, x27, [sp, #MOSS_TF_X26]
+    ldp     x28, x29, [sp, #MOSS_TF_X28]
+    ldr     x30,       [sp, #MOSS_TF_X30]
 
     // Deallocate frame and return from exception
-    add     sp, sp, #(34 * 8)
+    add     sp, sp, #MOSS_TF_SIZE
     eret
 .size irq_trampoline, . - irq_trampoline
 
@@ -634,28 +649,30 @@ irq_trampoline:
 .type exception_handler, @function
 exception_handler:
     // Save all registers (same frame as irq_trampoline)
-    sub     sp, sp, #(34 * 8)
+    sub     sp, sp, #MOSS_TF_SIZE
 
-    stp     x0,  x1,  [sp, #(0  * 8)]
-    stp     x2,  x3,  [sp, #(2  * 8)]
-    stp     x4,  x5,  [sp, #(4  * 8)]
-    stp     x6,  x7,  [sp, #(6  * 8)]
-    stp     x8,  x9,  [sp, #(8  * 8)]
-    stp     x10, x11, [sp, #(10 * 8)]
-    stp     x12, x13, [sp, #(12 * 8)]
-    stp     x14, x15, [sp, #(14 * 8)]
-    stp     x16, x17, [sp, #(16 * 8)]
-    stp     x18, x19, [sp, #(18 * 8)]
-    stp     x20, x21, [sp, #(20 * 8)]
-    stp     x22, x23, [sp, #(22 * 8)]
-    stp     x24, x25, [sp, #(24 * 8)]
-    stp     x26, x27, [sp, #(26 * 8)]
-    stp     x28, x29, [sp, #(28 * 8)]
-    str     x30,       [sp, #(30 * 8)]
+    stp     x0,  x1,  [sp, #MOSS_TF_X0]
+    stp     x2,  x3,  [sp, #MOSS_TF_X2]
+    stp     x4,  x5,  [sp, #MOSS_TF_X4]
+    stp     x6,  x7,  [sp, #MOSS_TF_X6]
+    stp     x8,  x9,  [sp, #MOSS_TF_X8]
+    stp     x10, x11, [sp, #MOSS_TF_X10]
+    stp     x12, x13, [sp, #MOSS_TF_X12]
+    stp     x14, x15, [sp, #MOSS_TF_X14]
+    stp     x16, x17, [sp, #MOSS_TF_X16]
+    stp     x18, x19, [sp, #MOSS_TF_X18]
+    stp     x20, x21, [sp, #MOSS_TF_X20]
+    stp     x22, x23, [sp, #MOSS_TF_X22]
+    stp     x24, x25, [sp, #MOSS_TF_X24]
+    stp     x26, x27, [sp, #MOSS_TF_X26]
+    stp     x28, x29, [sp, #MOSS_TF_X28]
+    str     x30,       [sp, #MOSS_TF_X30]
 
     mrs     x0, elr_el1
     mrs     x1, spsr_el1
-    stp     x0,  x1,  [sp, #(31 * 8)]
+    stp     x0,  x1,  [sp, #MOSS_TF_PC]
+    add     x0, sp, #MOSS_TF_SIZE
+    str     x0, [sp, #MOSS_TF_SP]
 
     // Read exception syndrome registers for C handler arguments
     mrs     x0, esr_el1                 // arg0: Exception Syndrome Register
@@ -676,10 +693,10 @@ exception_handler:
     // All other exceptions: fatal → print diagnostics and halt
     // Pass saved x30 (frame offset 30*8=0xF0) as arg3 for diagnostics:
     // unhandled_exception_handler(esr, far, elr, saved_x30, frame_sp)
-    ldr     x3, [sp, #(30 * 8)]        // arg3: saved x30 from faulting code
+    ldr     x3, [sp, #MOSS_TF_X30]        // arg3: saved x30 from faulting code
     mov     x4, sp                      // arg4: exception frame pointer
     bl      unhandled_exception_handler
-    add     sp, sp, #(34 * 8)
+    add     sp, sp, #MOSS_TF_SIZE
     b       halt
 
 .Lcall_page_fault:
@@ -687,28 +704,28 @@ exception_handler:
     bl      kernel_page_fault_handler
 
     // If handler returns, the fault was resolved — restore and continue
-    ldp     x0,  x1,  [sp, #(31 * 8)]
+    ldp     x0,  x1,  [sp, #MOSS_TF_PC]
     msr     elr_el1, x0
     msr     spsr_el1, x1
 
-    ldp     x0,  x1,  [sp, #(0  * 8)]
-    ldp     x2,  x3,  [sp, #(2  * 8)]
-    ldp     x4,  x5,  [sp, #(4  * 8)]
-    ldp     x6,  x7,  [sp, #(6  * 8)]
-    ldp     x8,  x9,  [sp, #(8  * 8)]
-    ldp     x10, x11, [sp, #(10 * 8)]
-    ldp     x12, x13, [sp, #(12 * 8)]
-    ldp     x14, x15, [sp, #(14 * 8)]
-    ldp     x16, x17, [sp, #(16 * 8)]
-    ldp     x18, x19, [sp, #(18 * 8)]
-    ldp     x20, x21, [sp, #(20 * 8)]
-    ldp     x22, x23, [sp, #(22 * 8)]
-    ldp     x24, x25, [sp, #(24 * 8)]
-    ldp     x26, x27, [sp, #(26 * 8)]
-    ldp     x28, x29, [sp, #(28 * 8)]
-    ldr     x30,       [sp, #(30 * 8)]
+    ldp     x0,  x1,  [sp, #MOSS_TF_X0]
+    ldp     x2,  x3,  [sp, #MOSS_TF_X2]
+    ldp     x4,  x5,  [sp, #MOSS_TF_X4]
+    ldp     x6,  x7,  [sp, #MOSS_TF_X6]
+    ldp     x8,  x9,  [sp, #MOSS_TF_X8]
+    ldp     x10, x11, [sp, #MOSS_TF_X10]
+    ldp     x12, x13, [sp, #MOSS_TF_X12]
+    ldp     x14, x15, [sp, #MOSS_TF_X14]
+    ldp     x16, x17, [sp, #MOSS_TF_X16]
+    ldp     x18, x19, [sp, #MOSS_TF_X18]
+    ldp     x20, x21, [sp, #MOSS_TF_X20]
+    ldp     x22, x23, [sp, #MOSS_TF_X22]
+    ldp     x24, x25, [sp, #MOSS_TF_X24]
+    ldp     x26, x27, [sp, #MOSS_TF_X26]
+    ldp     x28, x29, [sp, #MOSS_TF_X28]
+    ldr     x30,       [sp, #MOSS_TF_X30]
 
-    add     sp, sp, #(34 * 8)
+    add     sp, sp, #MOSS_TF_SIZE
     eret
 .size exception_handler, . - exception_handler
 
@@ -730,33 +747,34 @@ exception_handler:
 //
 //   Other EC: → unhandled_user_exception_handler(esr, far, elr)
 // =============================================================================
+.global lower_el_sync_dispatch
 .type lower_el_sync_dispatch, @function
 lower_el_sync_dispatch:
     // Save full register frame
-    sub     sp, sp, #(34 * 8)
+    sub     sp, sp, #MOSS_TF_SIZE
 
-    stp     x0,  x1,  [sp, #(0  * 8)]
-    stp     x2,  x3,  [sp, #(2  * 8)]
-    stp     x4,  x5,  [sp, #(4  * 8)]
-    stp     x6,  x7,  [sp, #(6  * 8)]
-    stp     x8,  x9,  [sp, #(8  * 8)]
-    stp     x10, x11, [sp, #(10 * 8)]
-    stp     x12, x13, [sp, #(12 * 8)]
-    stp     x14, x15, [sp, #(14 * 8)]
-    stp     x16, x17, [sp, #(16 * 8)]
-    stp     x18, x19, [sp, #(18 * 8)]
-    stp     x20, x21, [sp, #(20 * 8)]
-    stp     x22, x23, [sp, #(22 * 8)]
-    stp     x24, x25, [sp, #(24 * 8)]
-    stp     x26, x27, [sp, #(26 * 8)]
-    stp     x28, x29, [sp, #(28 * 8)]
-    str     x30,       [sp, #(30 * 8)]
+    stp     x0,  x1,  [sp, #MOSS_TF_X0]
+    stp     x2,  x3,  [sp, #MOSS_TF_X2]
+    stp     x4,  x5,  [sp, #MOSS_TF_X4]
+    stp     x6,  x7,  [sp, #MOSS_TF_X6]
+    stp     x8,  x9,  [sp, #MOSS_TF_X8]
+    stp     x10, x11, [sp, #MOSS_TF_X10]
+    stp     x12, x13, [sp, #MOSS_TF_X12]
+    stp     x14, x15, [sp, #MOSS_TF_X14]
+    stp     x16, x17, [sp, #MOSS_TF_X16]
+    stp     x18, x19, [sp, #MOSS_TF_X18]
+    stp     x20, x21, [sp, #MOSS_TF_X20]
+    stp     x22, x23, [sp, #MOSS_TF_X22]
+    stp     x24, x25, [sp, #MOSS_TF_X24]
+    stp     x26, x27, [sp, #MOSS_TF_X26]
+    stp     x28, x29, [sp, #MOSS_TF_X28]
+    str     x30,       [sp, #MOSS_TF_X30]
 
     mrs     x0, elr_el1
     mrs     x1, spsr_el1
-    stp     x0,  x1,  [sp, #(31 * 8)]
+    stp     x0,  x1,  [sp, #MOSS_TF_PC]
     mrs     x0, sp_el0                  // save user-mode stack pointer
-    str     x0,        [sp, #(33 * 8)]
+    str     x0,        [sp, #MOSS_TF_SP]
 
     // Read ESR_EL1 and extract Exception Class
     mrs     x9, esr_el1                 // save ESR in callee-saved-safe x9
@@ -782,27 +800,8 @@ lower_el_sync_dispatch:
     b       .Llower_restore_eret
 
 .Llower_syscall:
-    // ---- System call dispatch ----
-    //
-    // User registers are saved on the stack.  Remap to C calling convention:
-    //   system_call_handler(nr, a0, a1, a2, a3, a4, a5, trap_frame)
-    //
-    // Saved register frame offsets:
-    //   x0 at SP+(0*8), x1 at SP+(1*8), ..., x8 at SP+(8*8)
-    //
-    ldr     x0, [sp, #(8  * 8)]        // arg0 (nr)  ← saved x8
-    ldr     x1, [sp, #(0  * 8)]        // arg1 (a0)  ← saved x0
-    ldr     x2, [sp, #(1  * 8)]        // arg2 (a1)  ← saved x1
-    ldr     x3, [sp, #(2  * 8)]        // arg3 (a2)  ← saved x2
-    ldr     x4, [sp, #(3  * 8)]        // arg4 (a3)  ← saved x3
-    ldr     x5, [sp, #(4  * 8)]        // arg5 (a4)  ← saved x4
-    ldr     x6, [sp, #(5  * 8)]        // arg6 (a5)  ← saved x5
-    mov     x7, sp                      // arg7: trap frame pointer for signal delivery
+    mov     x0, sp
     bl      system_call_handler
-
-    // Store return value into the saved x0 slot.
-    // When we restore registers and eret, user-space will see this in x0.
-    str     x0, [sp, #(0  * 8)]
     b       .Llower_restore_eret
 
 .Llower_page_fault:
@@ -816,33 +815,36 @@ lower_el_sync_dispatch:
     b       .Llower_restore_eret
 
 .Llower_restore_eret:
+    msr     daifset, #0xf
+    mov     x0, sp
+    bl      user_return_handler
     // ---- Common restore path for all lower-EL exceptions ----
     // Restore user SP_EL0 first (may have changed via context_switch)
-    ldr     x0,        [sp, #(33 * 8)]
+    ldr     x0,        [sp, #MOSS_TF_SP]
     msr     sp_el0, x0
 
-    ldp     x0,  x1,  [sp, #(31 * 8)]
+    ldp     x0,  x1,  [sp, #MOSS_TF_PC]
     msr     elr_el1, x0
     msr     spsr_el1, x1
 
-    ldp     x0,  x1,  [sp, #(0  * 8)]
-    ldp     x2,  x3,  [sp, #(2  * 8)]
-    ldp     x4,  x5,  [sp, #(4  * 8)]
-    ldp     x6,  x7,  [sp, #(6  * 8)]
-    ldp     x8,  x9,  [sp, #(8  * 8)]
-    ldp     x10, x11, [sp, #(10 * 8)]
-    ldp     x12, x13, [sp, #(12 * 8)]
-    ldp     x14, x15, [sp, #(14 * 8)]
-    ldp     x16, x17, [sp, #(16 * 8)]
-    ldp     x18, x19, [sp, #(18 * 8)]
-    ldp     x20, x21, [sp, #(20 * 8)]
-    ldp     x22, x23, [sp, #(22 * 8)]
-    ldp     x24, x25, [sp, #(24 * 8)]
-    ldp     x26, x27, [sp, #(26 * 8)]
-    ldp     x28, x29, [sp, #(28 * 8)]
-    ldr     x30,       [sp, #(30 * 8)]
+    ldp     x0,  x1,  [sp, #MOSS_TF_X0]
+    ldp     x2,  x3,  [sp, #MOSS_TF_X2]
+    ldp     x4,  x5,  [sp, #MOSS_TF_X4]
+    ldp     x6,  x7,  [sp, #MOSS_TF_X6]
+    ldp     x8,  x9,  [sp, #MOSS_TF_X8]
+    ldp     x10, x11, [sp, #MOSS_TF_X10]
+    ldp     x12, x13, [sp, #MOSS_TF_X12]
+    ldp     x14, x15, [sp, #MOSS_TF_X14]
+    ldp     x16, x17, [sp, #MOSS_TF_X16]
+    ldp     x18, x19, [sp, #MOSS_TF_X18]
+    ldp     x20, x21, [sp, #MOSS_TF_X20]
+    ldp     x22, x23, [sp, #MOSS_TF_X22]
+    ldp     x24, x25, [sp, #MOSS_TF_X24]
+    ldp     x26, x27, [sp, #MOSS_TF_X26]
+    ldp     x28, x29, [sp, #MOSS_TF_X28]
+    ldr     x30,       [sp, #MOSS_TF_X30]
 
-    add     sp, sp, #(34 * 8)
+    add     sp, sp, #MOSS_TF_SIZE
     eret
 .size lower_el_sync_dispatch, . - lower_el_sync_dispatch
 

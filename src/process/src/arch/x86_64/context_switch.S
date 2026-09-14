@@ -31,6 +31,7 @@
 //   Return value: RAX
 // =============================================================================
 
+#include "moss/trap_frame_offsets.h"
 .section .text
 
 // =============================================================================
@@ -130,7 +131,10 @@ switch_to_user:
     // Build IRETQ frame on the kernel stack
     pushq   $0x1B                       // SS  (user data segment, RPL=3)
     pushq   %rsi                        // RSP (user stack pointer)
-    pushq   $0x202                      // RFLAGS (IF=1, reserved bit 1 = 1)
+    movq    128(%rdi), %rax
+    andq    $MOSS_USER_STATUS_MASK, %rax
+    orq     $MOSS_USER_STATUS_FIXED, %rax
+    pushq   %rax                        // preserve user condition codes across fork
     pushq   $0x23                       // CS  (user code segment, RPL=3)
     movq    136(%rdi), %rax             // ctx->pc = user entry point
     pushq   %rax                        // RIP
