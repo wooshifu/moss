@@ -1,6 +1,28 @@
 #include "syscall.h"
 
 static long control(long op, long a, long b) { return syscall3(511, op, a, b); }
+
+static unsigned long uaccess_allocation_fault(void) {
+  unsigned long now = 0;
+  unsigned long errors = syscall2(SYS_CLOCK_GETTIME, 0, (long)&now) != 0;
+  long area = syscall6(SYS_MMAP, 0, 4096, 3, 0x22, -1, 0);
+  if (area <= 0)
+    return errors | 2;
+  // Keep this valid, writable VMA absent while the real allocator is exhausted.
+  if (control(12, area, 0)) {
+    long result = syscall2(SYS_CLOCK_GETTIME, 0, area);
+    control(13, area, 0);
+    errors |= (unsigned long)(result != -14) << 2;
+    // Failure must preserve the process and mapping: retry after recovery.
+    errors |= (unsigned long)(syscall2(SYS_CLOCK_GETTIME, 0, area) != 0) << 3;
+    errors |= (unsigned long)(*(volatile unsigned long *)area == 0) << 4;
+  } else {
+    errors |= 32;
+  }
+  errors |= (unsigned long)(syscall2(SYS_MUNMAP, area, 4096) != 0) << 6;
+  return errors;
+}
+
 long frame_register_probe(long number);
 static volatile int handled_signo;
 static volatile long handler_pid;
@@ -244,7 +266,12 @@ void _start(void) {
   unsigned mask = 1;
   long affinity = syscall3(20, 0, sizeof(mask), (long)&mask);
   long mode = control(0, affinity, 0);
-  if (mode == 6) {
+  if (mode == 7) {
+    control(1, 0, 0);
+    unsigned long errors = uaccess_allocation_fault();
+    control(2, errors == 0, (long)errors);
+    control(3, 0, 0);
+  } else if (mode == 6) {
     control(1, 0, 0);
     long probe = frame_register_probe(SYS_GETPID);
     if (!control(2, syscall6(511, 10, 11, 22, 33, 44, 55) == 12345 && probe == getpid(), probe == getpid() ? 0 : probe))

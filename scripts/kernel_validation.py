@@ -33,6 +33,7 @@ CATALOG = {
     "users": ["syscall_values", "user_ranges", "fork_exec_exit_reap"],
     "users.vm": ["private_cow", "readonly_cow", "access_permissions"],
     "users.frame": ["native_frame", "fork_registers", "signal_return"],
+    "users.uaccess": ["allocation_fault"],
     "users.simd_fault": ["isolation"],  # Explicit x86 acceptance; TCG may not deliver #XM.
     "mm.permissions": [
         "table_defaults",
@@ -69,6 +70,7 @@ FUNCTIONAL = [
     "users",
     "users.vm",
     "users.frame",
+    "users.uaccess",
 ]
 BENCHMARKS = [name for name in CATALOG if name.startswith("bench.")]
 SELFTESTS = ["self", "self.fail", "self.panic", "self.timeout"]

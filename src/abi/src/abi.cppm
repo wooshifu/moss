@@ -41,6 +41,10 @@ void syscall_entry_point() noexcept;
 void syscall_return(void *context) noexcept;
 extern const unsigned char moss_sigreturn_start[];
 extern const unsigned char moss_sigreturn_end[];
+unsigned long long moss_raw_copy_from_user(void *dst, const void *src, unsigned long long size) noexcept;
+unsigned long long moss_raw_copy_to_user(void *dst, const void *src, unsigned long long size) noexcept;
+extern const int moss_uaccess_table_start[];
+extern const int moss_uaccess_table_end[];
 }
 
 // ============================================================================
@@ -87,7 +91,12 @@ void early_debug_print(const char *message) noexcept;
 void system_call_handler(void *trap_frame) noexcept;
 void user_return_handler(void *trap_frame) noexcept;
 void irq_handler_c(void) noexcept;
-void kernel_page_fault_handler(unsigned long long esr, unsigned long long far_addr, unsigned long long elr) noexcept;
+void kernel_page_fault_handler(unsigned long long esr, unsigned long long far_addr, unsigned long long elr,
+                               void *trap_frame) noexcept;
+void riscv_page_fault_handler(unsigned long long cause, unsigned long long address, unsigned long long pc,
+                              void *trap_frame) noexcept;
+void x86_64_page_fault_handler(unsigned long long error, unsigned long long address, unsigned long long pc,
+                               void *trap_frame) noexcept;
 void user_page_fault_handler(unsigned long long esr, unsigned long long far_addr, unsigned long long elr) noexcept;
 void unhandled_exception_handler(unsigned long long esr, unsigned long long far_addr, unsigned long long elr,
                                  unsigned long long saved_x30, unsigned long long frame_sp) noexcept;
@@ -128,6 +137,31 @@ export module moss.abi;
 export import :trap_frame;
 
 import moss.types;
+
+export namespace moss::abi::uaccess {
+// Raw primitives return bytes not copied. Policy/lifetime checks belong to
+// process::copy_*_user; only the user operand's instruction has a fixup.
+using ::moss_raw_copy_from_user;
+using ::moss_raw_copy_to_user;
+
+inline bool fixup(TrapFrame &frame) noexcept {
+  using moss::kernel::i64;
+  using moss::kernel::u64;
+  if (frame.from_user())
+    return false;
+  static_assert(sizeof(int) == 4);
+  // Each signed displacement is relative to its own field, so boot image
+  // relocation needs no writable pointers or machine-specific load address.
+  for (auto *entry = ::moss_uaccess_table_start; entry < ::moss_uaccess_table_end; entry += 2) {
+    const u64 instruction = reinterpret_cast<u64>(entry) + static_cast<u64>(static_cast<i64>(entry[0]));
+    if (frame.pc == instruction) {
+      frame.pc = reinterpret_cast<u64>(entry + 1) + static_cast<u64>(static_cast<i64>(entry[1]));
+      return true;
+    }
+  }
+  return false;
+}
+} // namespace moss::abi::uaccess
 
 export namespace moss::abi::signal {
 inline const unsigned char *trampoline() noexcept { return ::moss_sigreturn_start; }
@@ -290,11 +324,13 @@ using ::irq_handler_c;
 using ::kernel_main;
 using ::kernel_page_fault_handler;
 using ::mark_runtime_heap_ready;
+using ::riscv_page_fault_handler;
 using ::system_call_handler;
 using ::unhandled_exception_handler;
 using ::unhandled_user_exception_handler;
 using ::user_page_fault_handler;
 using ::user_return_handler;
+using ::x86_64_page_fault_handler;
 
 #if defined(__aarch64__) || defined(MOSS_ARCH_ARM64)
 using ::secondary_cpu_entry;
