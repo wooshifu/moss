@@ -8,6 +8,7 @@ import moss.types;
 import moss.result;
 import moss.smart_ptr;
 import moss.arch;
+import moss.abi;
 import moss.containers;
 import moss.mm;
 import moss.logging;
@@ -209,6 +210,17 @@ struct alignas(16) CpuContext {
 #endif
 
 static_assert(sizeof(CpuContext) <= 1024, "CpuContext should fit in reasonable size");
+#if defined(MOSS_ARCH_ARM64)
+static_assert(__builtin_offsetof(CpuContext, sp) == 248 && __builtin_offsetof(CpuContext, pc) == 256 &&
+              __builtin_offsetof(CpuContext, pstate) == 264 && __builtin_offsetof(CpuContext, v) == 288 &&
+              __builtin_offsetof(CpuContext, tpidr_el0) == 800);
+#elif defined(MOSS_ARCH_RISCV)
+static_assert(__builtin_offsetof(CpuContext, pc) == 256 && __builtin_offsetof(CpuContext, pstate) == 264 &&
+              __builtin_offsetof(CpuContext, sp) == 272);
+#elif defined(MOSS_ARCH_X86_64)
+static_assert(__builtin_offsetof(CpuContext, sp) == 56 && __builtin_offsetof(CpuContext, pstate) == 128 &&
+              __builtin_offsetof(CpuContext, pc) == 136);
+#endif
 
 // Canonical user layout; the MMU's runtime USER_MAX selects Sv39/Sv48 bounds.
 namespace user_layout {
@@ -490,11 +502,9 @@ struct Thread {
   VirtAddr kernel_stack_base; // low address of allocated region
   usize kernel_stack_size;    // size in bytes (typically 16KB)
 
-  // Trap frame pointer: set by system_call_handler on each syscall entry.
-  // Points to the 34-slot register save area on the kernel stack.
-  // Used by signal delivery (setup_sigframe) and sigreturn to read/modify
-  // the user-space register state that will be restored on eret.
-  u64 trap_frame{0};
+  // Borrowed only during syscall dispatch or the user-return checkpoint.
+  // Nested kernel exceptions must not replace this user frame.
+  moss::abi::TrapFrame *trap_frame{nullptr};
 
   // RT run queue intrusive list pointer (next task at same priority).
   // Used by RtRunqueue; nullptr when not enqueued in an RT queue.
@@ -511,7 +521,7 @@ struct Thread {
         sched_class(SchedClass::Normal), sched_policy(SchedPolicy::Normal), se{}, rt{}, start_time(0), utime(0),
         stime(0), stack_base(0), stack_size(0), wait_queue(0), signal_mask(0), pending_signals(0),
         needs_initial_eret(false), is_user_task(false), need_resched(false), cpu_affinity_mask(CpuBitmap::all()),
-        kernel_stack_base(0), kernel_stack_size(0), trap_frame(0), alt_stack_sp(0), alt_stack_size(0),
+        kernel_stack_base(0), kernel_stack_size(0), trap_frame(nullptr), alt_stack_sp(0), alt_stack_size(0),
         alt_stack_flags(2), on_alt_stack(false) {
     // Point the embedded RB node back to this Thread (set once, immutable).
     se.rb_data = static_cast<void *>(this);

@@ -33,6 +33,7 @@
 //     * test_task_entry (fresh tasks run with caller's IRQ state naturally)
 // =============================================================================
 
+#include "moss/trap_frame_offsets.h"
 .section .text
 
 .extern current_thread_ptr
@@ -200,8 +201,9 @@ context_switch:
 .global switch_to_user
 .type switch_to_user, @function
 switch_to_user:
-    // Configure exception return to EL0t (user mode, interrupts enabled)
-    mov     x2, #0x0
+    // Only NZCV is inherited; privilege and IRQ controls always select EL0t.
+    ldr     x2, [x0, #264]
+    and     x2, x2, #MOSS_USER_STATUS_MASK
     msr     spsr_el1, x2
 
     // Set user stack pointer (EL0 uses SP_EL0)
@@ -317,120 +319,14 @@ kernel_thread_entry:
 // the caller's bootstrap context is properly saved.  This allows waitpid's
 // context_switch(my_ctx, bootstrap) to correctly return to the idle loop.
 //
-// Callee-saved registers set by context_switch_to_task before context_switch:
-//   x19 = (reserved — Thread*)
-//   x20 = user entry point (ELR_EL1)
-//   x21 = user stack pointer (SP_EL0)
-//   x22 = user x0 value (fork: 0, execve: argc)
-//   x23 = user x1 value (fork: 0, execve: argv pointer)
-//   x24 = CpuContext pointer (fork: non-zero, execve: 0)
-//
-// Two modes:
-//   x24 == 0 (execve): zero all user GP regs except x0/x1 (clean slate)
-//   x24 != 0 (fork):   restore parent's full GP regs from CpuContext at x24
-//
-// Preconditions (set by context_switch_to_task's normal path):
-//   - TTBR0_EL1 already points to this process's page tables
-//   - TPIDR_EL1 already holds this thread's kernel stack top
-//   - IRQs are masked (context_switch path masks them)
-// =============================================================================
+// x19 points to an immutable complete user CpuContext on the kernel stack.
+// The bootstrap context has been saved and IRQs remain masked.
 .global user_eret_trampoline
 .type user_eret_trampoline, @function
 user_eret_trampoline:
-    // Set SPSR_EL1 = 0x0 (EL0t, all interrupts enabled upon eret)
-    mov     x0, #0
-    msr     spsr_el1, x0
-
-    // Set user stack pointer
-    msr     sp_el0, x21
-
-    // Set user entry point
-    msr     elr_el1, x20
-
-    // Set SP_EL1 to per-thread kernel stack (from TPIDR_EL1).
-    // Future exceptions from EL0 will use this stack.
-    mrs     x0, tpidr_el1
-    mov     sp, x0
-
-    // Check x24: fork (non-zero) vs execve (zero)
-    cbnz    x24, .Lfork_restore
-
-    // ---- Execve path: clean register slate ----
-    // Set user x0 and x1 from callee-saved registers.
-    mov     x0, x22
-    mov     x1, x23
-
-    // Zero remaining user-visible GP registers for clean entry.
-    mov     x2, #0
-    mov     x3, #0
-    mov     x4, #0
-    mov     x5, #0
-    mov     x6, #0
-    mov     x7, #0
-    mov     x8, #0
-    mov     x9, #0
-    mov     x10, #0
-    mov     x11, #0
-    mov     x12, #0
-    mov     x13, #0
-    mov     x14, #0
-    mov     x15, #0
-    mov     x16, #0
-    mov     x17, #0
-    mov     x18, #0
-    mov     x19, #0
-    mov     x20, #0
-    mov     x21, #0
-    mov     x22, #0
-    mov     x23, #0
-    mov     x24, #0
-    mov     x25, #0
-    mov     x26, #0
-    mov     x27, #0
-    mov     x28, #0
-    mov     x29, #0
-    mov     x30, #0
-    eret
-
-    // ---- Fork path: restore parent's full GP registers ----
-    // x24 = pointer to CpuContext (in Thread.context)
-    // CpuContext layout: x[0] at offset 0, x[1] at 8, ..., x[30] at 240
-    //
-    // Parent's original x[19]-x[24] were saved to kernel stack before
-    // context_switch_to_task overwrote them with trampoline args.
-    // Location: [SP - 48] (SP = kernel_stack_top after mov sp above)
-.Lfork_restore:
-    // x0 = fork return value (always 0 for child)
-    mov     x0, #0
-
-    // Restore x1 from parent's saved context
-    ldr     x1, [x24, #8]              // parent x[1]
-
-    // Restore x2-x18 from CpuContext (these were NOT overwritten)
-    ldp     x2, x3, [x24, #16]
-    ldp     x4, x5, [x24, #32]
-    ldp     x6, x7, [x24, #48]
-    ldp     x8, x9, [x24, #64]
-    ldp     x10, x11, [x24, #80]
-    ldp     x12, x13, [x24, #96]
-    ldp     x14, x15, [x24, #112]
-    ldp     x16, x17, [x24, #128]
-    ldr     x18, [x24, #144]
-
-    // Restore x25-x29, x30 from CpuContext (NOT overwritten by trampoline setup)
-    ldr     x25, [x24, #200]           // parent x[25]
-    ldp     x26, x27, [x24, #208]      // parent x[26], x[27]
-    ldp     x28, x29, [x24, #224]      // parent x[28], x[29] (FP)
-    ldr     x30, [x24, #240]           // parent x[30] (LR)
-
-    // Restore x19-x24 from kernel stack save area.
-    // These were saved by context_switch_to_task BEFORE overwriting with
-    // trampoline args.  SP = kernel_stack_top, saved at [SP - 48].
-    ldp     x19, x20, [sp, #-48]       // parent x[19], x[20]
-    ldp     x21, x22, [sp, #-32]       // parent x[21], x[22]
-    ldp     x23, x24, [sp, #-16]       // parent x[23], x[24]
-
-    eret
+    mov x0, x19
+    ldr x1, [x0, #248]
+    b switch_to_user
 
 .size user_eret_trampoline, .-user_eret_trampoline
 
@@ -448,31 +344,8 @@ user_eret_trampoline:
 .global syscall_fast_path
 .type syscall_fast_path, @function
 syscall_fast_path:
-    // Minimal save: only FP and LR
-    stp     x29, x30, [sp, #-16]!
-    mov     x29, sp
-
-    // Check if this is a "fast" syscall (number < 0x100)
-    cmp     x8, #0x100
-    b.ge    syscall_slow_path
-
-    // Fast syscall dispatch is not yet integrated:
-    // 1. The SVC exception vector routes directly to system_call_handler,
-    //    bypassing this function entirely.
-    // 2. TPIDR_EL1 holds kernel_stack_top, not a Thread pointer — reading
-    //    owner_pid requires a Thread* which is not accessible from EL1 asm
-    //    without an additional register or per-CPU variable.
-    // To enable: store Thread* in TPIDRRO_EL0 at context_switch time,
-    // then add a cmp/b.eq chain here for getpid (syscall 2) etc.
-
-    // Restore and return
-    ldp     x29, x30, [sp], #16
-    ret
-
-syscall_slow_path:
-    // Fall through to full system call handling
-    ldp     x29, x30, [sp], #16
-    b       system_call_handler         // external: full syscall dispatcher
+    // No separate partial-frame fast path. Enter the native EL0 save path.
+    b lower_el_sync_dispatch
 
 .size syscall_fast_path, .-syscall_fast_path
 

@@ -62,6 +62,7 @@ add_userspace_program(top)
 add_userspace_program(signal_test)
 if(MOSS_BUILD_TESTS)
     add_userspace_program(validation)
+    target_sources(moss_userspace_validation PRIVATE validation_frame.S)
     add_userspace_program(validation_child)
 
     add_custom_command(

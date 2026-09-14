@@ -216,33 +216,13 @@ long sys_fork(long /*unused*/, long /*unused*/, long /*unused*/, long /*unused*/
 
   AddressSpace *parent_as = parent_proc->address_space();
 
-  // 2. Capture user-mode PC and SP from the trap frame on the kernel stack.
-  //
-  //    parent_thread->context contains kernel-mode register state (saved by
-  //    context_switch), NOT user-space GP registers.  The actual user state
-  //    was saved by the trap entry code into a frame at the top of the
-  //    per-thread kernel stack.
-  u64 user_pc = 0;
-  u64 user_sp = 0;
-#if defined(MOSS_ARCH_ARM64)
-  asm volatile("mrs %0, elr_el1" : "=r"(user_pc));
-  asm volatile("mrs %0, sp_el0" : "=r"(user_sp));
-#elif defined(MOSS_ARCH_RISCV)
-  // RISC-V trap frame layout (from riscv_syscall.S, FRAME_SIZE = 288):
-  //   OFF_SEPC = 0xE0: saved sepc (already +4 to skip ecall instruction)
-  //   OFF_USP  = 0xF0: saved user sp (from sscratch swap on trap entry)
-  // The final 16 bytes preserve the CPU identity across user-mode traps.
-  {
-    u64 kstop = parent_thread->kernel_stack_top();
-    const auto *trap_frame = reinterpret_cast<const u64 *>(kstop - 16 - 288);
-    user_pc = trap_frame[0xE0 / 8]; // sepc (+4, past ecall)
-    user_sp = trap_frame[0xF0 / 8]; // user sp
+  // The live entry owns the frame; never infer it from a stack-top offset.
+  auto *frame = parent_thread->trap_frame;
+  if (!frame || !frame->from_user()) {
+    return -errc::EAGAIN;
   }
-#elif defined(MOSS_ARCH_X86_64)
-  const auto *syscall_frame = reinterpret_cast<const u64 *>(parent_thread->kernel_stack_top() - 128);
-  user_pc = syscall_frame[1];
-  user_sp = syscall_frame[15];
-#endif
+  const u64 user_pc = frame->pc;
+  const u64 user_sp = frame->sp;
 
   // 3. Create child process
   auto child_proc_result = g_process_manager->create_process(parent_proc->pid());
@@ -312,79 +292,40 @@ long sys_fork(long /*unused*/, long /*unused*/, long /*unused*/, long /*unused*/
     return -errc::ENOMEM;
   }
 
-  // 10. Copy parent's USER-SPACE registers → child context.
-  //
-  // parent_thread->context contains KERNEL-mode state (from the last
-  // context_switch), NOT user-space GP registers.  The actual user
-  // registers were saved by lower_el_sync_dispatch in a 34-slot frame
-  // at the top of the kernel stack:
-  //   [kstop - 272 + 0*8] = user x0
-  //   [kstop - 272 + 1*8] = user x1
-  //   ...
-  //   [kstop - 272 + 30*8] = user x30
-  //   [kstop - 272 + 31*8] = ELR_EL1
-  //   [kstop - 272 + 32*8] = SPSR_EL1
-  //   [kstop - 272 + 33*8] = SP_EL0
-#if defined(MOSS_ARCH_ARM64)
-  {
-    // Read user GP registers from the syscall entry frame on
-    // the parent's kernel stack.
-    u64 kstop = parent_thread->kernel_stack_top();
-    const auto *trap_frame = reinterpret_cast<const u64 *>(kstop - 34ULL * 8);
-
-    // Copy all 31 GP registers (x0-x30) from trap frame
-    for (int i = 0; i < 31; ++i) {
-      child_thread->context.x[i] = trap_frame[i];
-    }
-
-    // Child fork returns 0
-    child_thread->context.x[0] = 0;
-  }
-#elif defined(MOSS_ARCH_X86_64)
+  // Convert user GP state to the scheduler's initial-return context.
   auto &context = child_thread->context;
-  // Kernel C++ never uses FP/SIMD; the live registers still belong to the caller.
-  // Its last scheduled-out snapshot may predate the syscall by arbitrary time.
-  asm volatile("fxsave64 %0" : "=m"(context.fp)::"memory");
-  context.rax = 0;
-  context.r11 = syscall_frame[0];
-  context.rcx = syscall_frame[1];
-  context.r9 = syscall_frame[2];
-  context.r8 = syscall_frame[3];
-  context.r10 = syscall_frame[4];
-  context.rdx = syscall_frame[5];
-  context.rsi = syscall_frame[6];
-  context.rdi = syscall_frame[7];
-  context.r15 = syscall_frame[9];
-  context.r14 = syscall_frame[10];
-  context.r13 = syscall_frame[11];
-  context.r12 = syscall_frame[12];
-  context.rbx = syscall_frame[13];
-  context.rbp = syscall_frame[14];
+#if defined(MOSS_ARCH_ARM64)
+  for (u32 i = 0; i < moss::abi::TrapFrame::GPR_COUNT; ++i) {
+    context.x[i] = frame->gpr(i);
+  }
+  context.x[0] = 0;
 #elif defined(MOSS_ARCH_RISCV)
-  const auto *frame = reinterpret_cast<const u64 *>(parent_thread->kernel_stack_top() - 16 - 288);
-  auto &registers = child_thread->context.x;
-  registers[1] = frame[0];
-  registers[3] = frame[0x108 / 8];
-  registers[4] = frame[0x100 / 8];
-  for (unsigned i = 0; i < 3; ++i) {
-    registers[5 + i] = frame[1 + i];
+  for (u32 i = 0; i < moss::abi::TrapFrame::GPR_COUNT; ++i) {
+    context.x[i + 1] = frame->gpr(i);
   }
-  for (unsigned i = 0; i < 4; ++i) {
-    registers[28 + i] = frame[4 + i];
-  }
-  for (unsigned i = 1; i < 8; ++i) {
-    registers[10 + i] = frame[8 + i];
-  }
-  registers[8] = frame[16];
-  registers[9] = frame[17];
-  for (unsigned i = 0; i < 10; ++i) {
-    registers[18 + i] = frame[18 + i];
-  }
-  registers[10] = 0;
+  context.x[10] = 0;
+#elif defined(MOSS_ARCH_X86_64)
+  // Kernel C++ does not use FP/SIMD; capture the caller's live state.
+  asm volatile("fxsave64 %0" : "=m"(context.fp)::"memory");
+  context.rbx = frame->rbx;
+  context.rcx = frame->rcx;
+  context.rdx = frame->rdx;
+  context.rsi = frame->rsi;
+  context.rdi = frame->rdi;
+  context.rbp = frame->rbp;
+  context.r8 = frame->r8;
+  context.r9 = frame->r9;
+  context.r10 = frame->r10;
+  context.r11 = frame->r11;
+  context.r12 = frame->r12;
+  context.r13 = frame->r13;
+  context.r14 = frame->r14;
+  context.r15 = frame->r15;
+  context.rax = 0;
 #endif
-  child_thread->context.pc = user_pc; // return to instruction after SVC
-  child_thread->context.sp = user_sp; // same user stack
-  child_thread->context.pstate = 0;   // EL0t, all interrupts enabled
+  context.pc = user_pc;
+  context.sp = user_sp;
+  context.pstate = frame->user_status();
 
   child_thread->stack_base = parent_thread->stack_base;
   child_thread->stack_size = parent_thread->stack_size;
@@ -777,12 +718,9 @@ long sys_execve(long pathname_addr, long argv_addr, long /* envp */, long /*unus
 
   // 9a. Sigreturn trampoline VMA (read + exec) — signal handler LR points here
   {
-    static constexpr u8 sigreturn_stub[] = {
-        0x28, 0x02, 0x80, 0xD2, // mov x8, #0x11 (17 = SYS_SIGRETURN)
-        0x01, 0x00, 0x00, 0xD4, // svc #0
-    };
     new_as->add_vma(user_layout::SIGRETURN_PAGE, user_layout::SIGRETURN_PAGE + PAGE_SIZE,
-                    vma_flags::READ | vma_flags::EXEC, VmaType::SIGRETURN, sigreturn_stub, 0, sizeof(sigreturn_stub));
+                    vma_flags::READ | vma_flags::EXEC, VmaType::SIGRETURN, moss::abi::signal::trampoline(), 0,
+                    moss::abi::signal::trampoline_size());
   }
 
   // 9b. Add stack VMA (demand-zero)
@@ -915,6 +853,9 @@ long sys_execve(long pathname_addr, long argv_addr, long /* envp */, long /*unus
   *reinterpret_cast<volatile u64 *>(cur->context.sp) = 0;
   cur->context.pstate = 0x202; // RFLAGS: IF=1 (interrupts enabled on iretq)
 #endif
+  // Successful exec abandons the syscall stack without returning through its
+  // ordinary frame-borrow cleanup.
+  cur->trap_frame = nullptr;
   cur->needs_initial_eret = true; // next dispatch does switch_to_user + eret
   cur->stack_base = stack_bottom;
   cur->stack_size = user_layout::STACK_SIZE;
@@ -2927,27 +2868,6 @@ long SyscallDispatcher::dispatch(long syscall_number, long arg0, long arg1, long
     ++g_syscall_stats.successful_syscalls;
   } else {
     ++g_syscall_stats.failed_syscalls;
-  }
-
-  // Signal checkpoint: before returning to user-space, check for
-  // pending signals and process them.  If a signal's default action
-  // is Terminate, do_exit() is called (which does not return).
-  {
-    using namespace moss::kernel::process;
-    Thread *cur = CfsScheduler::get_current_task();
-    if (cur != nullptr && signal_pending(cur)) {
-      if (do_signal_checkpoint(cur)) {
-        // Signal caused termination — call do_exit (noreturn)
-        auto proc = g_process_manager ? g_process_manager->find_process(cur->owner_pid) : shared_ptr<Process>{};
-        if (proc) {
-          do_exit(cur, moss::move(proc), 128 + static_cast<i32>(cur->pending_signals & 0xFF));
-        }
-      }
-      // If a signal interrupted a sleeping syscall, return -EINTR
-      if (result == 0 && is_blocked_state(cur->state)) {
-        result = -errc::EINTR;
-      }
-    }
   }
 
   return result;

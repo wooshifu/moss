@@ -547,21 +547,19 @@ extern "C" void (*g_x86_64_uart_rx_handler)() noexcept = nullptr;
 // C++ interrupt/exception handler called from isr_common (isr_x86_64.S)
 extern "C" void x86_64_interrupt_handler(u64 vector, u64 error_code, [[maybe_unused]] void *frame) noexcept {
   if (vector < 32) {
-    // frame layout: R15..RAX (15 regs), then vector, error_code, RIP, CS, RFLAGS, RSP, SS
-    // frame points to saved R15, so RIP is at frame[17] (15 regs + vector + error_code)
-    auto *frame_u64 = reinterpret_cast<u64 *>(frame);
+    auto &saved = *static_cast<moss::abi::TrapFrame *>(frame);
 
     // Page fault (#PF, vector 14): dispatch to demand paging / COW handler
     if (vector == 14) {
       u64 cr2 = 0;
       asm volatile("mov %%cr2, %0" : "=r"(cr2));
-      u64 rip = frame_u64[17];
+      u64 rip = saved.pc;
       x86_64_page_fault_handler(error_code, cr2, rip);
       return; // Handler resolved the fault — iretq retries the instruction
     }
 
     // User x87/SIMD arithmetic faults belong to the process, not the kernel.
-    if ((vector == 16 || vector == 19) && (frame_u64[18] & 3) == 3) {
+    if ((vector == 16 || vector == 19) && saved.from_user()) {
       moss::abi::bridge::terminate_current_user_process(-8); // SIGFPE-equivalent termination
     }
 
@@ -571,7 +569,7 @@ extern "C" void x86_64_interrupt_handler(u64 vector, u64 error_code, [[maybe_unu
     early_debug_print(" err=");
     uart_print_hex(error_code);
     early_debug_print(" RIP=");
-    uart_print_hex(frame_u64[17]);
+    uart_print_hex(saved.pc);
     early_debug_print("\nHALTED\n");
     asm volatile("cli; hlt");
     __builtin_unreachable();

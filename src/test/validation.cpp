@@ -1274,11 +1274,11 @@ void registry_limits() {
   }
   ut::expect(local.case_count == 128 && ut::same_id(local.error, "case_capacity"));
   local = {};
-  for (unsigned i = 0; i < 17; ++i) {
+  for (unsigned i = 0; i <= ut::Registry::suite_capacity; ++i) {
     local.begin_suite(ids[i]);
     local.active_suite = nullptr;
   }
-  ut::expect(local.suite_count == 16 && ut::same_id(local.error, "suite_capacity"));
+  ut::expect(local.suite_count == ut::Registry::suite_capacity && ut::same_id(local.error, "suite_capacity"));
   local = {};
   local.begin_suite("duplicate");
   local.active_suite = nullptr;
@@ -1875,6 +1875,11 @@ void declare_cases() {
     ut::register_test("user_ranges", empty_case);
     ut::register_test("fork_exec_exit_reap", empty_case);
   });
+  ut::register_suite("users.frame", [] {
+    ut::register_test("native_frame", empty_case);
+    ut::register_test("fork_registers", empty_case);
+    ut::register_test("signal_return", empty_case);
+  });
   ut::register_suite("users.vm", [] {
     ut::register_test("private_cow", empty_case);
     ut::register_test("readonly_cow", empty_case);
@@ -2201,6 +2206,9 @@ extern "C" long moss_validation_call(long op, long arg1, [[maybe_unused]] long a
     if (ut::same_id(selection, "users.vm")) {
       return 5;
     }
+    if (ut::same_id(selection, "users.frame")) {
+      return 6;
+    }
     if (ut::same_id(selection, "users.simd_fault")) {
       start_case("isolation");
       return 4;
@@ -2260,9 +2268,12 @@ extern "C" long moss_validation_call(long op, long arg1, [[maybe_unused]] long a
     }
     finish();
   }
-  if (op == 1 && (ut::same_id(selection, "users") || ut::same_id(selection, "users.vm")) && !failed && !active_case &&
+  if (op == 1 && (ut::same_id(selection, "users") || ut::same_id(selection, "users.vm") ||
+                 ut::same_id(selection, "users.frame")) && !failed && !active_case &&
       arg1 == static_cast<long>(completed) && arg1 >= 0 && arg1 < 3) {
-    if (ut::same_id(selection, "users.vm")) {
+    if (ut::same_id(selection, "users.frame")) {
+      start_case(arg1 == 0 ? "native_frame" : (arg1 == 1 ? "fork_registers" : "signal_return"));
+    } else if (ut::same_id(selection, "users.vm")) {
       start_case(arg1 == 0 ? "private_cow" : (arg1 == 1 ? "readonly_cow" : "access_permissions"));
     } else {
       start_case(arg1 == 0 ? "syscall_values" : (arg1 == 1 ? "user_ranges" : "fork_exec_exit_reap"));
@@ -2271,7 +2282,7 @@ extern "C" long moss_validation_call(long op, long arg1, [[maybe_unused]] long a
   }
   if (op == 2 && active_case &&
       (ut::same_id(selection, "users") || ut::same_id(selection, "users.vm") ||
-       ut::same_id(selection, "users.simd_fault"))) {
+       ut::same_id(selection, "users.simd_fault") || ut::same_id(selection, "users.frame"))) {
     if (arg2 != 0) {
       logging::klog::error("users checks failed: mask={:#x}", static_cast<u64>(arg2));
     }
@@ -2281,6 +2292,29 @@ extern "C" long moss_validation_call(long op, long arg1, [[maybe_unused]] long a
   }
   if (op == 3) {
     finish();
+  }
+  if (op == 10 && ut::same_id(selection, "users.frame") && active_case) {
+    auto *thread = process::CfsScheduler::get_current_task();
+    const u64 address = thread ? reinterpret_cast<u64>(thread->trap_frame) : 0;
+    // Validate ownership before dereferencing: the old RV entry supplies 511,
+    // and the old x86 entry supplies null, neither is a kernel-stack frame.
+    const bool owned = thread && address >= thread->kernel_stack_base &&
+                       address <= thread->kernel_stack_top() - sizeof(moss::abi::TrapFrame) && (address & 15) == 0;
+    if (!owned && thread) {
+      logging::klog::error("frame validation: frame={:#x}, stack=[{:#x}, {:#x})", address,
+                          thread->kernel_stack_base, thread->kernel_stack_top());
+    }
+    ut::expect(owned);
+    if (owned) {
+      auto &frame = *thread->trap_frame;
+      ut::expect(frame.from_user() && frame.syscall_number() == 511);
+      for (u32 i = 0; i < 6; ++i) {
+        ut::expect(frame.argument(i) == (i == 0 ? 10 : i * 11));
+      }
+      ut::expect(mm::PageTableManager::is_user_range(frame.pc, 1));
+      ut::expect(mm::PageTableManager::is_user_range(frame.sp, 1));
+    }
+    return owned ? 12345 : -1;
   }
   if (op == 4 && ut::same_id(selection, "bench.getpid")) {
     if (sample_index >= warmup_count + sample_count) {
