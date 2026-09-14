@@ -19,9 +19,6 @@ void early_debug_print(const char *message) noexcept; // UART output (kernel_mai
 extern unsigned char x86_ap_trampoline_start[], x86_ap_trampoline_end[], x86_ap_cr3[], x86_ap_stack[];
 extern unsigned char pvh_pml4[];
 [[noreturn]] void x86_secondary_entry() noexcept;
-
-// Page fault handler in mm module (page_fault.cpp)
-void x86_64_page_fault_handler(unsigned long long error_code, unsigned long long cr2, unsigned long long rip) noexcept;
 }
 
 module moss.boot;
@@ -554,7 +551,7 @@ extern "C" void x86_64_interrupt_handler(u64 vector, u64 error_code, [[maybe_unu
       u64 cr2 = 0;
       asm volatile("mov %%cr2, %0" : "=r"(cr2));
       u64 rip = saved.pc;
-      x86_64_page_fault_handler(error_code, cr2, rip);
+      moss::abi::entry::x86_64_page_fault_handler(error_code, cr2, rip, &saved);
       return; // Handler resolved the fault — iretq retries the instruction
     }
 

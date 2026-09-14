@@ -77,6 +77,10 @@ syscall_entry_point:
     beq t0, t1, .Lfault
     li t1, 15
     beq t0, t1, .Lfault
+    li t1, 5
+    beq t0, t1, .Lfault
+    li t1, 7
+    beq t0, t1, .Lfault
     mv a0, t0
     ld a1, MOSS_TF_PC(sp)
     csrr a2, stval
@@ -88,6 +92,7 @@ syscall_entry_point:
     mv a0, t0
     csrr a1, stval
     ld a2, MOSS_TF_PC(sp)
+    mv a3, sp
     call riscv_page_fault_handler
     j .Lreturn
 .Lsyscall:

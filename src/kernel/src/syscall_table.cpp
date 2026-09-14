@@ -32,8 +32,8 @@ namespace log = moss::kernel::logging;
 
 // ── User pointer validation (copy_from_user / copy_to_user) ────────────
 //
-// VMA policy is checked separately from residency. These copies still need
-// architecture fault fixups and VM lifetime protection before they are fault-safe.
+// Shared process uaccess owns VMA admission and fault-contained copies.
+// The syscall layer translates its failure to the Moss EFAULT return value.
 
 /// Return the calling process's AddressSpace, or nullptr.
 static process::AddressSpace *get_current_address_space() noexcept {
@@ -61,31 +61,13 @@ static bool validate_user_range(u64 user_addr, usize len, u32 required_flags) no
 /// Copy `len` bytes from validated user address to a kernel buffer.
 /// Returns 0 on success, -EFAULT if the range is invalid.
 static long copy_from_user(void *kernel_dst, u64 user_src, usize len) noexcept {
-  using namespace moss::kernel::process;
-  if (!validate_user_range(user_src, len, vma_flags::READ)) {
-    return -errc::EFAULT;
-  }
-  const auto *src = reinterpret_cast<const u8 *>(static_cast<usize>(user_src));
-  auto *dst = static_cast<u8 *>(kernel_dst);
-  for (usize i = 0; i < len; ++i) {
-    dst[i] = src[i];
-  }
-  return 0;
+  return process::copy_from_user(kernel_dst, user_src, len) ? 0 : -errc::EFAULT;
 }
 
 /// Copy `len` bytes from a kernel buffer to a validated user address.
 /// Returns 0 on success, -EFAULT if the range is invalid.
 static long copy_to_user(u64 user_dst, const void *kernel_src, usize len) noexcept {
-  using namespace moss::kernel::process;
-  if (!validate_user_range(user_dst, len, vma_flags::WRITE)) {
-    return -errc::EFAULT;
-  }
-  auto *dst = reinterpret_cast<volatile u8 *>(static_cast<usize>(user_dst));
-  const auto *src = static_cast<const u8 *>(kernel_src);
-  for (usize i = 0; i < len; ++i) {
-    dst[i] = src[i];
-  }
-  return 0;
+  return process::copy_to_user(user_dst, kernel_src, len) ? 0 : -errc::EFAULT;
 }
 
 /// Copy a NUL-terminated string from user space into a kernel buffer.

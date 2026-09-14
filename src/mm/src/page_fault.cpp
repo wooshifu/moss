@@ -170,9 +170,14 @@ using moss::abi::bridge::try_grow_user_stack;
 // Forward declarations for static helpers used by both kernel and user handlers
 [[noreturn]] static void kill_user_process(const char *reason, unsigned long long far_addr,
                                            unsigned long long elr) noexcept;
-static bool try_cow_fault(moss::kernel::u64 far_addr, unsigned long long elr) noexcept;
+static bool try_cow_fault(moss::kernel::u64 far_addr) noexcept;
 enum class FaultAccess { Read, Write, Execute };
-static bool try_demand_page(moss::kernel::u64 far_addr, FaultAccess access, unsigned long long elr) noexcept;
+static bool try_demand_page(moss::kernel::u64 far_addr, FaultAccess access) noexcept;
+
+static bool fixup_user_access(void *raw_frame, moss::kernel::u64 address) noexcept {
+  return raw_frame && moss::kernel::mm::PageTableManager::is_user_range(address, 1) &&
+         moss::abi::uaccess::fixup(*static_cast<moss::abi::TrapFrame *>(raw_frame));
+}
 
 // ============================================================================
 // Unhandled exception handler — print diagnostics, then return to asm (halt)
@@ -233,8 +238,8 @@ extern "C" void unhandled_exception_handler(unsigned long long esr, unsigned lon
 //    the fault address is in user VA range — resolve via demand paging / COW.
 // 2. Genuine kernel fault (bug): address is in kernel VA range — panic.
 // ============================================================================
-extern "C" void kernel_page_fault_handler(unsigned long long esr, unsigned long long far_addr,
-                                          unsigned long long elr) noexcept {
+extern "C" void kernel_page_fault_handler(unsigned long long esr, unsigned long long far_addr, unsigned long long elr,
+                                          void *raw_frame) noexcept {
   namespace log = moss::kernel::logging;
   namespace mm = moss::kernel::mm;
   using moss::u64;
@@ -253,16 +258,18 @@ extern "C" void kernel_page_fault_handler(unsigned long long esr, unsigned long 
   // Detect user-space address: kernel code (e.g. syscall handler) accessing
   // user pointer triggers a same-EL fault, but the address belongs to the
   // current process's user address space and should be handled like a user fault.
-  bool is_user_address = !moss::kernel::is_kernel_addr(far_addr);
+  bool is_user_address = mm::PageTableManager::is_user_range(far_addr, 1);
 
   if (is_translation_fault) {
     // For user addresses accessed from kernel mode (e.g. sys_topinfo writing
     // to a user-provided TopInfo pointer on the demand-zero stack), attempt
     // demand paging exactly like user_page_fault_handler would.
     if (is_user_address) {
-      if (try_demand_page(far_addr, access, elr)) {
+      if (try_demand_page(far_addr, access)) {
         return; // Demand page resolved — eret retries instruction
       }
+      if (ec == 0x25 && fixup_user_access(raw_frame, far_addr))
+        return;
       // No VMA found — this is a bad user pointer passed to syscall.
       // Terminate the faulting user process instead of panicking the kernel.
       kill_user_process("kernel access to unmapped user addr", far_addr, elr);
@@ -296,10 +303,12 @@ extern "C" void kernel_page_fault_handler(unsigned long long esr, unsigned long 
   if (is_permission_fault) {
     // User address with permission fault: try COW resolution
     if (is_user_address && access == FaultAccess::Write) {
-      if (try_cow_fault(far_addr, elr)) {
+      if (try_cow_fault(far_addr)) {
         return; // COW resolved — eret retries instruction
       }
     }
+    if (ec == 0x25 && fixup_user_access(raw_frame, far_addr))
+      return;
     log::klog::panic("KERNEL PERMISSION FAULT: addr={:#x} pc={:#x} write={:#b}", far_addr, elr, is_write);
     log::klog::panic("  DFSC: {:#x} ({})", dfsc, mm::dfsc_to_string(dfsc));
     while (true) {
@@ -310,6 +319,8 @@ extern "C" void kernel_page_fault_handler(unsigned long long esr, unsigned long 
   }
 
   // Other DFSC values (alignment, external abort, etc.)
+  if (ec == 0x25 && fixup_user_access(raw_frame, far_addr))
+    return;
   log::klog::panic("KERNEL FAULT: unhandled dfsc={:#x} ({}) addr={:#x} pc={:#x}", dfsc, mm::dfsc_to_string(dfsc),
                    far_addr, elr);
   while (true) {
@@ -345,7 +356,7 @@ extern "C" void kernel_page_fault_handler(unsigned long long esr, unsigned long 
 
 // Attempt COW (Copy-on-Write) resolution for a write permission fault.
 // Returns true if the fault was a COW page and has been resolved.
-static bool try_cow_fault(moss::kernel::u64 far_addr, unsigned long long elr) noexcept {
+static bool try_cow_fault(moss::kernel::u64 far_addr) noexcept {
   namespace mm = moss::kernel::mm;
   namespace log = moss::kernel::logging;
   using moss::kernel::phys_to_virt;
@@ -397,7 +408,7 @@ static bool try_cow_fault(moss::kernel::u64 far_addr, unsigned long long elr) no
     // Shared page: allocate new page, copy content, remap writable
     auto new_page = mm::page_alloc::alloc_kernel_pages(0);
     if (!new_page) {
-      kill_user_process("COW: out of memory", far_addr, elr);
+      return false; // The entry decides between user termination and copy fixup.
     }
     PhysAddr new_pa = *new_page;
 
@@ -434,7 +445,7 @@ static bool try_cow_fault(moss::kernel::u64 far_addr, unsigned long long elr) no
 
 // Attempt demand paging for a user translation fault.
 // Returns true if the fault was resolved (caller should return to eret).
-static bool try_demand_page(moss::kernel::u64 far_addr, FaultAccess access, unsigned long long elr) noexcept {
+static bool try_demand_page(moss::kernel::u64 far_addr, FaultAccess access) noexcept {
   namespace mm = moss::kernel::mm;
   using moss::kernel::phys_to_virt;
   using moss::kernel::PhysAddr;
@@ -487,7 +498,7 @@ static bool try_demand_page(moss::kernel::u64 far_addr, FaultAccess access, unsi
   constexpr usize PG_SIZE = 4096;
   auto page_result = mm::page_alloc::alloc_kernel_pages(0);
   if (!page_result) {
-    kill_user_process("out of memory", far_addr, elr);
+    return false;
   }
   PhysAddr page_pa = *page_result;
   auto *page_va = reinterpret_cast<u8 *>(phys_to_virt(page_pa));
@@ -550,7 +561,7 @@ static bool try_demand_page(moss::kernel::u64 far_addr, FaultAccess access, unsi
   auto map_result = mm::PageTableManager::map_user_page(pgd_phys, fault_page, page_pa, perms);
   if (!map_result) {
     (void)mm::free_pages(page_pa, 0); // The failed mapping did not acquire this frame.
-    kill_user_process("map_user_page failed", far_addr, elr);
+    return false;
   }
 
   mm::PageTableManager::invalidate_tlb_addr(fault_page);
@@ -571,7 +582,7 @@ extern "C" void user_page_fault_handler(unsigned long long esr, unsigned long lo
   // Permission faults (DFSC 0x0C-0x0F): try COW resolution first
   bool is_permission_fault = (dfsc >= 0x0C && dfsc <= 0x0F);
   if (is_permission_fault && access == FaultAccess::Write) {
-    if (try_cow_fault(far_addr, elr)) {
+    if (try_cow_fault(far_addr)) {
       return; // COW resolved — eret retries instruction
     }
   }
@@ -580,7 +591,7 @@ extern "C" void user_page_fault_handler(unsigned long long esr, unsigned long lo
   bool is_translation_fault = (dfsc >= 0x04 && dfsc <= 0x07);
 
   if (is_translation_fault) {
-    if (try_demand_page(far_addr, access, elr)) {
+    if (try_demand_page(far_addr, access)) {
       return; // Fault resolved — eret retries instruction
     }
   }
@@ -629,33 +640,34 @@ extern "C" [[noreturn]] void unhandled_user_exception_handler(unsigned long long
 // uses ESR bit-fields).  The faulting address is in stval (≡ FAR_EL1).
 // ============================================================================
 #if defined(MOSS_ARCH_RISCV) || defined(__riscv) || defined(__riscv__)
-extern "C" void riscv_page_fault_handler(unsigned long long scause, unsigned long long stval,
-                                         unsigned long long sepc) noexcept {
+extern "C" void riscv_page_fault_handler(unsigned long long scause, unsigned long long stval, unsigned long long sepc,
+                                         void *raw_frame) noexcept {
   namespace log = moss::kernel::logging;
   using namespace moss::kernel;
 
-  bool is_write = (scause == 15); // Store/AMO page fault
+  bool is_write = scause == 15 || scause == 7; // Store/AMO page or access fault
   const auto access = scause == 12 ? FaultAccess::Execute : is_write ? FaultAccess::Write : FaultAccess::Read;
   // scause 12 = Instruction page fault, 13 = Load page fault
 
   // 1. Resolve a resident, COW-marked write fault without refilling the page.
-  if (is_write && try_cow_fault(stval, sepc)) {
+  if (scause == 15 && try_cow_fault(stval)) {
     return;
   }
 
   // 2. Try demand paging only for absent pages (U-mode and S-mode accesses).
   //    S-mode faults occur when kernel code (e.g. console_write in sys_write)
   //    accesses a user buffer whose page hasn't been demand-faulted yet.
-  if (try_demand_page(stval, access, sepc)) {
+  if (scause >= 12 && try_demand_page(stval, access)) {
     return; // Fault resolved — sret retries instruction
   }
+
+  if (access != FaultAccess::Execute && fixup_user_access(raw_frame, stval))
+    return;
 
   // 3. Determine if this is a kernel-mode or user-mode fault.
   //    S-mode faults that reach here are unrecoverable kernel bugs.
   //    U-mode faults terminate the user process (SIGSEGV equivalent).
-  unsigned long long sstatus_val;
-  asm volatile("csrr %0, sstatus" : "=r"(sstatus_val));
-  bool from_smode = (sstatus_val & (1ULL << 8)) != 0; // SPP bit
+  bool from_smode = !static_cast<moss::abi::TrapFrame *>(raw_frame)->from_user();
 
   if (from_smode) {
     log::klog::error("KERNEL PAGE FAULT: scause={:#x} addr={:#x} pc={:#x}", scause, stval, sepc);
@@ -677,8 +689,8 @@ extern "C" void riscv_page_fault_handler(unsigned long long scause, unsigned lon
 // CR2 holds the faulting virtual address.
 // ============================================================================
 #if defined(MOSS_ARCH_X86_64) || defined(__x86_64__) || defined(__x86_64)
-extern "C" void x86_64_page_fault_handler(unsigned long long error_code, unsigned long long cr2,
-                                          unsigned long long rip) noexcept {
+extern "C" void x86_64_page_fault_handler(unsigned long long error_code, unsigned long long cr2, unsigned long long rip,
+                                          void *raw_frame) noexcept {
   namespace log = moss::kernel::logging;
   using namespace moss::kernel;
 
@@ -690,17 +702,20 @@ extern "C" void x86_64_page_fault_handler(unsigned long long error_code, unsigne
 
   // 1. Not-present fault (translation fault equivalent) — demand paging
   if (!is_present && !reserved_bit_fault) {
-    if (try_demand_page(cr2, access, rip)) {
+    if (try_demand_page(cr2, access)) {
       return; // Demand page resolved — iretq retries instruction
     }
   }
 
   // 2. Protection violation on write — COW resolution
   if (is_present && access == FaultAccess::Write && !reserved_bit_fault) {
-    if (try_cow_fault(cr2, rip)) {
+    if (try_cow_fault(cr2)) {
       return; // COW resolved — iretq retries instruction
     }
   }
+
+  if (!is_execute && !reserved_bit_fault && fixup_user_access(raw_frame, cr2))
+    return;
 
   // 3. Unresolvable fault
   bool is_user_mode = (error_code & (1ULL << 2)) != 0;
