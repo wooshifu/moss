@@ -125,145 +125,153 @@ void init_signal_state(Process *proc) noexcept {
   g_signal_state_used[pid] = true;
 }
 
-bool setup_sigframe(Thread *thread, u32 signo, const Sigaction &sa) noexcept {
-  if (thread == nullptr || thread->trap_frame == 0) {
+// Use the address space's admission check before touching user memory.
+// This retains the existing demand-paging copy mechanism; exception-table
+// fixups and a concurrent VMA/PTE lifetime protocol remain separate work.
+static bool signal_copy(Thread *thread, u64 address, void *buffer, usize size, bool to_user) noexcept {
+  auto proc = g_process_manager ? g_process_manager->find_process(thread->owner_pid) : shared_ptr<Process>{};
+  auto *as = proc ? proc->address_space() : nullptr;
+  if (!as || !as->allows_user_access(address, size, to_user ? vma_flags::WRITE : vma_flags::READ)) {
     return false;
   }
-
-  auto *frame = reinterpret_cast<u64 *>(thread->trap_frame);
-
-  // 1. Determine signal stack
-  u64 user_sp = frame[33]; // SP_EL0 from trap frame
-
-  bool use_altstack = false;
-  if ((sa.flags & sa_flags::SA_ONSTACK) != 0 && thread->alt_stack_flags != ss_flags::SS_DISABLE &&
-      !thread->on_alt_stack) {
-    user_sp = thread->alt_stack_sp + thread->alt_stack_size;
-    use_altstack = true;
+  auto *user = reinterpret_cast<volatile u8 *>(address);
+  auto *kernel = static_cast<u8 *>(buffer);
+  for (usize i = 0; i < size; ++i) {
+    if (to_user) {
+      user[i] = kernel[i];
+    } else {
+      kernel[i] = user[i];
+    }
   }
-
-  // 2. Allocate sigframe on user stack (grows downward, 16-byte aligned)
-  u64 sigframe_sp = (user_sp - SignalFrame::FRAME_SIZE) & ~static_cast<u64>(0xF);
-
-  // 3. Build sigframe in kernel buffer
-  SignalFrame sf{};
-  sf.magic = SignalFrame::MAGIC;
-
-  // Copy GP regs from trap frame
-  for (u32 i = 0; i < 31; ++i) {
-    sf.gp_regs[i] = frame[i];
-  }
-  sf.elr = frame[31];
-  sf.spsr = frame[32];
-  sf.sp = frame[33];
-
-  // Save NEON/FP state (still live from user-space since kernel doesn't use NEON)
-#if defined(__aarch64__) || defined(MOSS_ARCH_ARM64)
-  sf.fpsr = read_fpsr();
-  sf.fpcr = read_fpcr();
-  save_neon_state(sf.neon);
-#endif
-
-  sf.signo = signo;
-  sf.saved_mask = thread->signal_mask;
-
-  // Sigreturn trampoline: mov x8, #17; svc #0
-  sf.trampoline[0] = 0xD2800228U; // mov x8, #0x11 (17 = SYS_SIGRETURN)
-  sf.trampoline[1] = 0xD4000001U; // svc #0
-
-  // 4. Write sigframe to user stack
-  // We are in EL1 with TTBR0 set to this process's page tables,
-  // so we can directly access user-space addresses.
-  auto *dst = reinterpret_cast<SignalFrame *>(sigframe_sp);
-  moss::memcpy(dst, &sf, sizeof(sf));
-
-  // 5. Modify trap frame for handler dispatch
-  frame[31] = sa.handler;  // ELR -> handler address
-  frame[33] = sigframe_sp; // SP_EL0 -> sigframe base
-  frame[0] = signo;        // x0 -> signal number (first arg to handler)
-  // LR (x30) -> sigreturn trampoline page (read+exec, mapped in every process).
-  // The trampoline contains: mov x8, #17; svc #0 (triggers sigreturn syscall).
-  // Using a fixed executable page avoids needing execute permission on the user stack.
-  frame[30] = user_layout::SIGRETURN_PAGE;
-
-  // 6. Block signals during handler execution
-  thread->signal_mask |= sa.mask | sig::sigmask(signo);
-  thread->signal_mask &= ~sig::UNCATCHABLE_MASK;
-
-  if (use_altstack) {
-    thread->on_alt_stack = true;
-  }
-
-  log::klog::info("signal {}: delivering to handler {:#x} for PID={}", signo, sa.handler,
-                  static_cast<u32>(thread->owner_pid));
-
   return true;
 }
 
-// Linux EFAULT errno value for sigreturn error returns.
-// We define it locally because the errc namespace lives in moss.kernel:syscall_table
-// which is not imported by this module.
+bool setup_sigframe(Thread *thread, u32 signo, const Sigaction &sa) noexcept {
+  if (!thread || !thread->trap_frame || !thread->trap_frame->from_user()) {
+    return false;
+  }
+  auto &frame = *thread->trap_frame;
+  u64 user_sp = frame.sp;
+  bool use_altstack =
+      (sa.flags & sa_flags::SA_ONSTACK) && thread->alt_stack_flags != ss_flags::SS_DISABLE && !thread->on_alt_stack;
+  if (use_altstack) {
+    if (thread->alt_stack_size > ~thread->alt_stack_sp) {
+      return false;
+    }
+    user_sp = thread->alt_stack_sp + thread->alt_stack_size;
+  }
+#if defined(MOSS_ARCH_X86_64)
+  // SysV's red zone belongs to the interrupted user function.
+  constexpr u64 red_zone = 128;
+#else
+  constexpr u64 red_zone = 0;
+#endif
+  if (user_sp < SignalFrame::FRAME_SIZE + red_zone + 16) {
+    return false;
+  }
+  const u64 sigframe_sp = (user_sp - red_zone - SignalFrame::FRAME_SIZE) & ~15ULL;
+  auto proc = g_process_manager ? g_process_manager->find_process(thread->owner_pid) : shared_ptr<Process>{};
+  auto *as = proc ? proc->address_space() : nullptr;
+  if (!as || !as->allows_user_access(sa.handler, 1, vma_flags::EXEC)) {
+    return false;
+  }
+  SignalFrame sf{};
+  sf.magic = SignalFrame::MAGIC;
+  for (u32 i = 0; i < moss::abi::TrapFrame::GPR_COUNT; ++i) {
+    sf.gp_regs[i] = frame.gpr(i);
+  }
+  sf.elr = frame.pc;
+  sf.spsr = frame.status;
+  sf.sp = frame.sp;
+#if defined(MOSS_ARCH_ARM64)
+  sf.fpsr = read_fpsr();
+  sf.fpcr = read_fpcr();
+  save_neon_state(sf.fp);
+#elif defined(MOSS_ARCH_X86_64)
+  asm volatile("fxsave64 %0" : "=m"(sf.fp)::"memory");
+#endif
+  sf.signo = signo;
+  sf.saved_mask = thread->signal_mask;
+  sf.saved_on_alt_stack = thread->on_alt_stack;
+  if (!signal_copy(thread, sigframe_sp, &sf, sizeof(sf), true)) {
+    return false;
+  }
+  u64 handler_sp = sigframe_sp;
+#if defined(MOSS_ARCH_X86_64)
+  // A normal C handler returns with RET, leaving RSP at the signal frame.
+  handler_sp -= 8;
+  u64 link = user_layout::SIGRETURN_PAGE;
+  if (!signal_copy(thread, handler_sp, &link, sizeof(link), true)) {
+    return false;
+  }
+#elif defined(MOSS_ARCH_ARM64)
+  frame.x30 = user_layout::SIGRETURN_PAGE;
+#elif defined(MOSS_ARCH_RISCV)
+  frame.ra = user_layout::SIGRETURN_PAGE;
+#endif
+  frame.pc = sa.handler;
+  frame.sp = handler_sp;
+  frame.argument(0) = signo;
+  thread->signal_mask = (thread->signal_mask | sa.mask | sig::sigmask(signo)) & ~sig::UNCATCHABLE_MASK;
+  thread->on_alt_stack = use_altstack || thread->on_alt_stack;
+  return true;
+}
+
 static constexpr long SIGRETURN_EFAULT = 14;
 
 long do_sigreturn(Thread *thread) noexcept {
-  if (thread == nullptr || thread->trap_frame == 0) {
+  if (!thread || !thread->trap_frame) {
     return -SIGRETURN_EFAULT;
   }
-
-  auto *frame = reinterpret_cast<u64 *>(thread->trap_frame);
-
-  // The sigframe is at the current SP_EL0 (which points to our sigframe)
-  u64 sigframe_addr = frame[33]; // SP_EL0
-
-  // Read sigframe from user space
+  auto &frame = *thread->trap_frame;
   SignalFrame sf{};
-  const auto *src = reinterpret_cast<const SignalFrame *>(sigframe_addr);
-  moss::memcpy(&sf, src, sizeof(sf));
-
-  // Validate magic
-  if (sf.magic != SignalFrame::MAGIC) {
-    log::klog::warn("sigreturn: invalid magic {:#x} at {:#x}", sf.magic, sigframe_addr);
+  if ((frame.sp & 15) || !signal_copy(thread, frame.sp, &sf, sizeof(sf), false) || sf.magic != SignalFrame::MAGIC ||
+      !mm::PageTableManager::is_user_range(sf.elr, 1) || !mm::PageTableManager::is_user_range(sf.sp, 1)) {
     return -SIGRETURN_EFAULT;
   }
-
-  // Restore GP registers to trap frame
-  for (u32 i = 0; i < 31; ++i) {
-    frame[i] = sf.gp_regs[i];
+#if defined(MOSS_ARCH_ARM64)
+  if ((sf.elr & 3) || (sf.sp & 15)) {
+    return -SIGRETURN_EFAULT;
   }
-  frame[31] = sf.elr;  // Restore PC
-  frame[32] = sf.spsr; // Restore SPSR
-  frame[33] = sf.sp;   // Restore original SP_EL0
-
-  // Restore NEON/FP state
-#if defined(__aarch64__) || defined(MOSS_ARCH_ARM64)
+#elif defined(MOSS_ARCH_RISCV)
+  if (sf.elr & 1) {
+    return -SIGRETURN_EFAULT;
+  }
+#elif defined(MOSS_ARCH_X86_64)
+  X86FpState current;
+  asm volatile("fxsave64 %0" : "=m"(current)::"memory");
+  const u32 mask = current.mxcsr_mask ? current.mxcsr_mask : 0xffbfU;
+  if (static_cast<u32>(sf.fp[3]) & ~mask) {
+    return -SIGRETURN_EFAULT;
+  }
+#endif
+  for (u32 i = 0; i < moss::abi::TrapFrame::GPR_COUNT; ++i) {
+    frame.gpr(i) = sf.gp_regs[i];
+  }
+  frame.pc = sf.elr;
+  frame.sp = sf.sp;
+  frame.status = sf.spsr;
+  frame.status = frame.user_status(); // never restore user-supplied privilege/IRQ controls
+#if defined(MOSS_ARCH_ARM64)
   write_fpsr(sf.fpsr);
   write_fpcr(sf.fpcr);
-  restore_neon_state(sf.neon);
+  restore_neon_state(sf.fp);
+#elif defined(MOSS_ARCH_X86_64)
+  asm volatile("fxrstor64 %0" ::"m"(sf.fp) : "memory");
 #endif
-
-  // Restore signal mask
-  thread->signal_mask = sf.saved_mask;
-
-  // Clear on_alt_stack flag
-  thread->on_alt_stack = false;
-
-  log::klog::info("sigreturn: restored context for PID={}, PC={:#x}", static_cast<u32>(thread->owner_pid), sf.elr);
-
-  // Return the original x0 from the sigframe — this is what the trap frame
-  // restore will put in x0 after eret. The syscall dispatch normally writes
-  // the return value into frame[0], but since we already set frame[0] = sf.gp_regs[0],
-  // we return that same value so the dispatch doesn't overwrite it.
-  return static_cast<long>(sf.gp_regs[0]);
+  thread->signal_mask = sf.saved_mask & ~sig::UNCATCHABLE_MASK;
+  thread->on_alt_stack = sf.saved_on_alt_stack != 0;
+  return static_cast<long>(frame.result());
 }
 
-bool do_signal_checkpoint(Thread *thread) noexcept {
+u32 do_signal_checkpoint(Thread *thread) noexcept {
   if (thread == nullptr || !signal_pending(thread)) {
-    return false;
+    return 0;
   }
 
   auto proc = g_process_manager ? g_process_manager->find_process(thread->owner_pid) : shared_ptr<Process>{};
   if (!proc) {
-    return false;
+    return 0;
   }
 
   SignalState *sigstate = get_signal_state(proc.get());
@@ -284,7 +292,7 @@ bool do_signal_checkpoint(Thread *thread) noexcept {
     // SIGKILL/SIGSTOP: always default action, cannot be caught
     if (signo == sig::SIGKILL || signo == sig::SIGSTOP) {
       if (do_signal_default(thread, signo)) {
-        return true; // terminate
+        return signo; // terminate
       }
       // After do_signal_default sets Stopped state, dequeue from scheduler
       if (thread->state == ProcessState::Stopped && g_scheduler) {
@@ -306,7 +314,7 @@ bool do_signal_checkpoint(Thread *thread) noexcept {
           log::klog::warn("signal {}: sigframe setup failed on SIGCONT for PID={}", signo,
                           static_cast<u32>(thread->owner_pid));
         }
-        return false;
+        return 0;
       }
       continue;
     }
@@ -314,7 +322,7 @@ bool do_signal_checkpoint(Thread *thread) noexcept {
     if (sa == nullptr || sa->handler == SIG_DFL) {
       // Default action
       if (do_signal_default(thread, signo)) {
-        return true; // terminate
+        return signo; // terminate
       }
       // Handle stop signals (SIGTSTP, SIGTTIN, SIGTTOU) via default action
       if (thread->state == ProcessState::Stopped && g_scheduler) {
@@ -328,15 +336,15 @@ bool do_signal_checkpoint(Thread *thread) noexcept {
       if (!setup_sigframe(thread, signo, *sa)) {
         log::klog::warn("signal {}: sigframe setup failed for PID={}, terminating", signo,
                         static_cast<u32>(thread->owner_pid));
-        return true; // terminate
+        return signo; // terminate
       }
       // Deliver only one signal per checkpoint — after handler returns via
       // sigreturn, the next syscall return will check for more pending signals.
-      return false;
+      return 0;
     }
   }
 
-  return false;
+  return 0;
 }
 
 } // namespace moss::kernel::process

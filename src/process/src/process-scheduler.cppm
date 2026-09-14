@@ -1912,66 +1912,18 @@ private:
       task->needs_initial_eret = false;
 
 #if defined(MOSS_ARCH_ARM64)
-      // Stash user-mode entry point, stack, x0 and x1 in callee-saved regs.
-      // context_switch preserves x19-x28, so these survive the switch.
-      u64 user_pc = task->context.pc;
-      u64 user_sp = task->context.sp;
-      u64 user_x0 = task->context.x[0]; // fork: 0, execve: argc
-      u64 user_x1 = task->context.x[1]; // fork: 0, execve: argv ptr
-
-      // Determine if this is a fork child or execve new program.
-      // Fork child: needs full parent register restore (x2-x18, x24-x29).
-      // Execve: clean slate — zero all user-visible registers.
-      bool is_fork = (user_x0 == 0);
-
-      if (is_fork) {
-        // Fork child: preserve parent's GP registers in context.
-        // Only x[19]-x[24] and x[30] are overwritten for trampoline args.
-        // Parent's original x[19]-x[24] are saved to the top of the
-        // child's kernel stack so the trampoline can restore them.
-        //
-        // x[24] = non-zero flag → trampoline uses fork restore path
-        //         (pointer to CpuContext for x2-x18, x25-x30 restore)
-        //
-        // Parent's x[19]-x[24] saved at [kernel_stack_top - 48]:
-        //   [kstop - 48] = parent x19   [kstop - 40] = parent x20
-        //   [kstop - 32] = parent x21   [kstop - 24] = parent x22
-        //   [kstop - 16] = parent x23   [kstop -  8] = parent x24
-
-        // Save parent's original x19-x24 to kernel stack top
-        if (task->kernel_stack_base != 0) {
-          u64 kstop = task->kernel_stack_top();
-          auto *saved = reinterpret_cast<u64 *>(kstop - 48);
-          saved[0] = task->context.x[19];
-          saved[1] = task->context.x[20];
-          saved[2] = task->context.x[21];
-          saved[3] = task->context.x[22];
-          saved[4] = task->context.x[23];
-          saved[5] = task->context.x[24];
-        }
-
-        task->context.x[19] = reinterpret_cast<u64>(task);
-        task->context.x[20] = user_pc;
-        task->context.x[21] = user_sp;
-        task->context.x[22] = user_x0; // 0
-        task->context.x[23] = user_x1;
-        task->context.x[24] = reinterpret_cast<u64>(&task->context);
-        // x[25]-x[29] retain parent values — context_switch restores them.
-      } else {
-        // Execve: clean slate — zero all registers, set only trampoline args.
+      // Keep the user context separate from the kernel trampoline context.
+      {
+        u64 saved_address = (task->kernel_stack_top() - sizeof(CpuContext)) & ~15ULL;
+        auto *saved = reinterpret_cast<CpuContext *>(saved_address);
+        *saved = task->context;
         task->context = CpuContext{};
-        task->context.x[19] = reinterpret_cast<u64>(task);
-        task->context.x[20] = user_pc;
-        task->context.x[21] = user_sp;
-        task->context.x[22] = user_x0;
-        task->context.x[23] = user_x1;
-        // x[24] = 0 → trampoline uses "clean" path (zero all regs)
+        task->context.x[19] = saved_address;
+        u64 trampoline_addr = reinterpret_cast<u64>(&user_eret_trampoline);
+        task->context.x[30] = trampoline_addr;
+        task->context.pc = trampoline_addr;
+        task->context.sp = saved_address;
       }
-
-      u64 trampoline_addr = reinterpret_cast<u64>(&user_eret_trampoline);
-      task->context.x[30] = trampoline_addr; // LR → ret target
-      task->context.pc = trampoline_addr;
-      task->context.sp = task->kernel_stack_base != 0 ? task->kernel_stack_top() : 0;
 
 #elif defined(MOSS_ARCH_X86_64)
       // Keep a complete user context above the initial kernel stack frame.
