@@ -136,6 +136,7 @@ enum class VfsError : u32 {
   BadFd = 9,         // EBADF
   NoMemory = 12,     // ENOMEM
   PermDenied = 13,   // EACCES
+  BadAddress = 14,   // EFAULT
   FileExists = 17,   // EEXIST
   NotDirectory = 20, // ENOTDIR
   IsDirectory = 21,  // EISDIR

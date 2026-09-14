@@ -564,6 +564,10 @@ struct PagePressure {
 
 PagePressure *uaccess_pressure = nullptr;
 usize uaccess_free_before = 0;
+constexpr const char *uaccess_cases[] = {"allocation_fault", "write_fault",     "read_fault",
+                                         "partial_read",     "partial_write",   "partial_pipe_read",
+                                         "sigframe_fault",   "sigreturn_fault", "devices"};
+constexpr long uaccess_case_count = sizeof(uaccess_cases) / sizeof(uaccess_cases[0]);
 
 void map_allocation_rollback() {
   using Tables = mm::PageTableManager;
@@ -1218,7 +1222,7 @@ void file_read() {
     return;
   }
   u8 bytes[256]{};
-  ut::expect(vfs::syscall::do_read(table, fd, bytes, sizeof(bytes)) == 256);
+  ut::expect(vfs::syscall::do_read(table, fd, vfs::OutputBuffer::kernel(bytes, sizeof(bytes))) == 256);
   bool content = true;
   for (unsigned i = 0; i < 256; ++i) {
     content = content && bytes[i] == i;
@@ -1226,7 +1230,7 @@ void file_read() {
   ut::expect(content);
   ut::expect(vfs::syscall::do_lseek(table, fd, 0, 1) == 256);
   ut::expect(vfs::syscall::do_lseek(table, fd, 65536, 0) == 65536);
-  ut::expect(vfs::syscall::do_read(table, fd, bytes, sizeof(bytes)) == 0);
+  ut::expect(vfs::syscall::do_read(table, fd, vfs::OutputBuffer::kernel(bytes, sizeof(bytes))) == 0);
   ut::expect(vfs::syscall::do_close(table, fd) == 0);
   ut::expect(vfs::syscall::do_close(table, fd) == -static_cast<long>(vfs::VfsError::BadFd));
 }
@@ -1239,7 +1243,8 @@ void file_errors() {
     return;
   }
   const u8 byte = 7;
-  ut::expect(vfs::syscall::do_write(table, fd, &byte, 1) == -static_cast<long>(vfs::VfsError::PermDenied));
+  ut::expect(vfs::syscall::do_write(table, fd, vfs::InputBuffer::kernel(&byte, 1)) ==
+             -static_cast<long>(vfs::VfsError::PermDenied));
   ut::expect(vfs::syscall::do_close(table, fd) == 0);
 }
 
@@ -1883,7 +1888,10 @@ void declare_cases() {
     ut::register_test("fork_registers", empty_case);
     ut::register_test("signal_return", empty_case);
   });
-  ut::register_suite("users.uaccess", [] { ut::register_test("allocation_fault", empty_case); });
+  ut::register_suite("users.uaccess", [] {
+    for (auto *name : uaccess_cases)
+      ut::register_test(name, empty_case);
+  });
   ut::register_suite("users.vm", [] {
     ut::register_test("private_cow", empty_case);
     ut::register_test("readonly_cow", empty_case);
@@ -2130,7 +2138,9 @@ void read_benchmark(bench::Context &context) {
         valid = true;
         return vfs::syscall::do_lseek(table, fd, 0, 0) == 0;
       },
-      [&](usize i) { valid = (vfs::syscall::do_read(table, fd, bytes + i * 256, 256) == 256) && valid; },
+      [&](usize i) {
+        valid = (vfs::syscall::do_read(table, fd, vfs::OutputBuffer::kernel(bytes + i * 256, 256)) == 256) && valid;
+      },
       [&](usize count) {
         for (usize i = 0; i < count * 256; ++i) {
           valid = valid && bytes[i] == i % 256;
@@ -2279,9 +2289,9 @@ extern "C" long moss_validation_call(long op, long arg1, [[maybe_unused]] long a
       (ut::same_id(selection, "users") || ut::same_id(selection, "users.vm") || ut::same_id(selection, "users.frame") ||
        ut::same_id(selection, "users.uaccess")) &&
       !failed && !active_case && arg1 == static_cast<long>(completed) && arg1 >= 0 &&
-      arg1 < (ut::same_id(selection, "users.uaccess") ? 1 : 3)) {
+      arg1 < (ut::same_id(selection, "users.uaccess") ? uaccess_case_count : 3)) {
     if (ut::same_id(selection, "users.uaccess")) {
-      start_case("allocation_fault");
+      start_case(uaccess_cases[arg1]);
     } else if (ut::same_id(selection, "users.frame")) {
       start_case(arg1 == 0 ? "native_frame" : (arg1 == 1 ? "fork_registers" : "signal_return"));
     } else if (ut::same_id(selection, "users.vm")) {
@@ -2315,6 +2325,7 @@ extern "C" long moss_validation_call(long op, long arg1, [[maybe_unused]] long a
       return 0;
     auto *leaf = mm::PageTableManager::get_user_pte(as->pgd_phys, address);
     ut::expect(!leaf || !leaf->is_valid());
+    usize released_pages = 0;
     if (op == 12) {
       if (!ut::expect(uaccess_pressure == nullptr))
         return 0;
@@ -2324,12 +2335,27 @@ extern "C" long moss_validation_call(long op, long arg1, [[maybe_unused]] long a
         return 1;
     } else {
       ut::expect(uaccess_pressure != nullptr);
-      ut::expect(mm::PageFrameAllocator::get_memory_stats().free_pages == 0);
+      released_pages = mm::PageFrameAllocator::get_memory_stats().free_pages;
+      // The sigframe test reaps its child before releasing the pressure.
+      // Account for those newly freed, non-fixture pages without relaxing the
+      // zero-free-page invariant of the other fault cases.
+      if (!(arg2 == 1 && ut::same_id(active_case, "sigframe_fault")))
+        ut::expect(released_pages == 0);
     }
     delete uaccess_pressure;
     uaccess_pressure = nullptr;
-    ut::expect(mm::PageFrameAllocator::get_memory_stats().free_pages == uaccess_free_before);
+    ut::expect(mm::PageFrameAllocator::get_memory_stats().free_pages == uaccess_free_before + released_pages);
     return 0;
+  }
+  if (op == 14 && ut::same_id(selection, "users.uaccess") && ut::same_id(active_case, "partial_read") &&
+      uaccess_pressure) {
+    u8 bytes[8];
+    for (auto &byte : bytes)
+      byte = 0xa5;
+    bool valid = ut::expect(process::copy_from_user(bytes, static_cast<u64>(arg1), sizeof(bytes)) == 4);
+    for (usize i = 0; i < sizeof(bytes); ++i)
+      valid = ut::expect(bytes[i] == (i < 4 ? i : 0)) && valid;
+    return valid ? 1 : 0;
   }
   if (op == 10 && ut::same_id(selection, "users.frame") && active_case) {
     auto *thread = process::CfsScheduler::get_current_task();

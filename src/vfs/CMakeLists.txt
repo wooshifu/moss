@@ -9,6 +9,7 @@ target_sources(
            FILES
            src/vfs.cppm
            src/vfs-types.cppm
+           src/vfs-buffer.cppm
            src/vfs-inode.cppm
            src/vfs-dcache.cppm
            src/vfs-file.cppm

@@ -3,6 +3,35 @@
 // or -(1000 + register index) on corruption. Fork executes the same checks in
 // both processes, before any exec or userspace C code can hide the difference.
 .text
+// A malformed sigreturn must fail without touching the supplied user stack.
+// Keep the real C stack in a syscall-preserved register until the error returns.
+.global uaccess_sigreturn_probe
+.type uaccess_sigreturn_probe, @function
+uaccess_sigreturn_probe:
+#if defined(__aarch64__)
+    mov x9, sp
+    mov sp, x0
+    mov x8, #17
+    svc #0
+    mov sp, x9
+    ret
+#elif defined(__riscv)
+    mv t0, sp
+    mv sp, a0
+    li a7, 17
+    ecall
+    mv sp, t0
+    ret
+#elif defined(__x86_64__)
+    movq %rsp, %r8
+    movq %rdi, %rsp
+    movq $17, %rax
+    syscall
+    movq %r8, %rsp
+    ret
+#endif
+.size uaccess_sigreturn_probe, . - uaccess_sigreturn_probe
+
 .global frame_register_probe
 .type frame_register_probe, @function
 frame_register_probe:

@@ -61,13 +61,13 @@ static bool validate_user_range(u64 user_addr, usize len, u32 required_flags) no
 /// Copy `len` bytes from validated user address to a kernel buffer.
 /// Returns 0 on success, -EFAULT if the range is invalid.
 static long copy_from_user(void *kernel_dst, u64 user_src, usize len) noexcept {
-  return process::copy_from_user(kernel_dst, user_src, len) ? 0 : -errc::EFAULT;
+  return process::copy_from_user(kernel_dst, user_src, len) == 0 ? 0 : -errc::EFAULT;
 }
 
 /// Copy `len` bytes from a kernel buffer to a validated user address.
 /// Returns 0 on success, -EFAULT if the range is invalid.
 static long copy_to_user(u64 user_dst, const void *kernel_src, usize len) noexcept {
-  return process::copy_to_user(user_dst, kernel_src, len) ? 0 : -errc::EFAULT;
+  return process::copy_to_user(user_dst, kernel_src, len) == 0 ? 0 : -errc::EFAULT;
 }
 
 /// Copy a NUL-terminated string from user space into a kernel buffer.
@@ -1495,8 +1495,9 @@ long sys_read(long fd, long buf_addr, long count, long /*unused*/, long /*unused
     return -errc::EFAULT;
   }
 
-  auto *buf = reinterpret_cast<u8 *>(static_cast<usize>(buf_addr));
-  return moss::kernel::vfs::syscall::do_read(fdt, static_cast<int>(fd), buf, static_cast<usize>(count));
+  auto buffer = moss::kernel::vfs::OutputBuffer::user(static_cast<u64>(buf_addr), static_cast<usize>(count),
+                                                      process::copy_to_user);
+  return moss::kernel::vfs::syscall::do_read(fdt, static_cast<int>(fd), buffer);
 }
 
 long sys_write(long fd, long buf_addr, long count, long /*unused*/, long /*unused*/, long /*unused*/) noexcept {
@@ -1515,8 +1516,9 @@ long sys_write(long fd, long buf_addr, long count, long /*unused*/, long /*unuse
     return -errc::EFAULT;
   }
 
-  const auto *buf = reinterpret_cast<const u8 *>(static_cast<usize>(buf_addr));
-  return moss::kernel::vfs::syscall::do_write(fdt, static_cast<int>(fd), buf, static_cast<usize>(count));
+  auto buffer = moss::kernel::vfs::InputBuffer::user(static_cast<u64>(buf_addr), static_cast<usize>(count),
+                                                     process::copy_from_user);
+  return moss::kernel::vfs::syscall::do_write(fdt, static_cast<int>(fd), buffer);
 }
 
 // ── Additional VFS syscalls (dup, dup2, pipe, lseek, fstat) ────
