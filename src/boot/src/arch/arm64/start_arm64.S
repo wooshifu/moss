@@ -701,6 +701,7 @@ exception_handler:
 
 .Lcall_page_fault:
     // x0=esr, x1=far, x2=elr already set by mrs above
+    mov     x3, sp                      // native frame for a contained uaccess fixup
     bl      kernel_page_fault_handler
 
     // If handler returns, the fault was resolved — restore and continue

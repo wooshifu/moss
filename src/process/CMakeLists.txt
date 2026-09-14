@@ -2,7 +2,7 @@
 
 add_library(moss_process OBJECT)
 
-set(PROCESS_SOURCES src/process.cpp src/idle_process.cpp src/signal.cpp)
+set(PROCESS_SOURCES src/process.cpp src/idle_process.cpp src/signal.cpp src/user_access.cpp)
 
 # Architecture-specific assembly files
 if(MOSS_TARGET_ARCH STREQUAL "ARM64")
@@ -21,6 +21,7 @@ target_sources(
            src/process.cppm
            src/process-types.cppm
            src/process-signal.cppm
+           src/process-uaccess.cppm
            src/process-scheduler.cppm
            src/process-load_balancer.cppm
     PRIVATE ${PROCESS_SOURCES}

@@ -562,6 +562,9 @@ struct PagePressure {
   ~PagePressure() { release(); }
 };
 
+PagePressure *uaccess_pressure = nullptr;
+usize uaccess_free_before = 0;
+
 void map_allocation_rollback() {
   using Tables = mm::PageTableManager;
   using Pfa = mm::PageFrameAllocator;
@@ -1880,6 +1883,7 @@ void declare_cases() {
     ut::register_test("fork_registers", empty_case);
     ut::register_test("signal_return", empty_case);
   });
+  ut::register_suite("users.uaccess", [] { ut::register_test("allocation_fault", empty_case); });
   ut::register_suite("users.vm", [] {
     ut::register_test("private_cow", empty_case);
     ut::register_test("readonly_cow", empty_case);
@@ -2209,6 +2213,9 @@ extern "C" long moss_validation_call(long op, long arg1, [[maybe_unused]] long a
     if (ut::same_id(selection, "users.frame")) {
       return 6;
     }
+    if (ut::same_id(selection, "users.uaccess")) {
+      return 7;
+    }
     if (ut::same_id(selection, "users.simd_fault")) {
       start_case("isolation");
       return 4;
@@ -2268,10 +2275,14 @@ extern "C" long moss_validation_call(long op, long arg1, [[maybe_unused]] long a
     }
     finish();
   }
-  if (op == 1 && (ut::same_id(selection, "users") || ut::same_id(selection, "users.vm") ||
-                 ut::same_id(selection, "users.frame")) && !failed && !active_case &&
-      arg1 == static_cast<long>(completed) && arg1 >= 0 && arg1 < 3) {
-    if (ut::same_id(selection, "users.frame")) {
+  if (op == 1 &&
+      (ut::same_id(selection, "users") || ut::same_id(selection, "users.vm") || ut::same_id(selection, "users.frame") ||
+       ut::same_id(selection, "users.uaccess")) &&
+      !failed && !active_case && arg1 == static_cast<long>(completed) && arg1 >= 0 &&
+      arg1 < (ut::same_id(selection, "users.uaccess") ? 1 : 3)) {
+    if (ut::same_id(selection, "users.uaccess")) {
+      start_case("allocation_fault");
+    } else if (ut::same_id(selection, "users.frame")) {
       start_case(arg1 == 0 ? "native_frame" : (arg1 == 1 ? "fork_registers" : "signal_return"));
     } else if (ut::same_id(selection, "users.vm")) {
       start_case(arg1 == 0 ? "private_cow" : (arg1 == 1 ? "readonly_cow" : "access_permissions"));
@@ -2282,7 +2293,8 @@ extern "C" long moss_validation_call(long op, long arg1, [[maybe_unused]] long a
   }
   if (op == 2 && active_case &&
       (ut::same_id(selection, "users") || ut::same_id(selection, "users.vm") ||
-       ut::same_id(selection, "users.simd_fault") || ut::same_id(selection, "users.frame"))) {
+       ut::same_id(selection, "users.simd_fault") || ut::same_id(selection, "users.frame") ||
+       ut::same_id(selection, "users.uaccess"))) {
     if (arg2 != 0) {
       logging::klog::error("users checks failed: mask={:#x}", static_cast<u64>(arg2));
     }
@@ -2293,6 +2305,32 @@ extern "C" long moss_validation_call(long op, long arg1, [[maybe_unused]] long a
   if (op == 3) {
     finish();
   }
+  if ((op == 12 || op == 13) && ut::same_id(selection, "users.uaccess") && active_case) {
+    auto *thread = process::CfsScheduler::get_current_task();
+    auto owner = thread && process::g_process_manager ? process::g_process_manager->find_process(thread->owner_pid)
+                                                      : shared_ptr<process::Process>{};
+    auto *as = owner ? owner->address_space() : nullptr;
+    const u64 address = static_cast<u64>(arg1);
+    if (!ut::expect(as && as->allows_user_access(address, 8, process::vma_flags::WRITE)))
+      return 0;
+    auto *leaf = mm::PageTableManager::get_user_pte(as->pgd_phys, address);
+    ut::expect(!leaf || !leaf->is_valid());
+    if (op == 12) {
+      if (!ut::expect(uaccess_pressure == nullptr))
+        return 0;
+      uaccess_pressure = new PagePressure{};
+      uaccess_free_before = mm::PageFrameAllocator::get_memory_stats().free_pages;
+      if (ut::expect(uaccess_pressure && uaccess_pressure->acquire(0)))
+        return 1;
+    } else {
+      ut::expect(uaccess_pressure != nullptr);
+      ut::expect(mm::PageFrameAllocator::get_memory_stats().free_pages == 0);
+    }
+    delete uaccess_pressure;
+    uaccess_pressure = nullptr;
+    ut::expect(mm::PageFrameAllocator::get_memory_stats().free_pages == uaccess_free_before);
+    return 0;
+  }
   if (op == 10 && ut::same_id(selection, "users.frame") && active_case) {
     auto *thread = process::CfsScheduler::get_current_task();
     const u64 address = thread ? reinterpret_cast<u64>(thread->trap_frame) : 0;
@@ -2301,8 +2339,8 @@ extern "C" long moss_validation_call(long op, long arg1, [[maybe_unused]] long a
     const bool owned = thread && address >= thread->kernel_stack_base &&
                        address <= thread->kernel_stack_top() - sizeof(moss::abi::TrapFrame) && (address & 15) == 0;
     if (!owned && thread) {
-      logging::klog::error("frame validation: frame={:#x}, stack=[{:#x}, {:#x})", address,
-                          thread->kernel_stack_base, thread->kernel_stack_top());
+      logging::klog::error("frame validation: frame={:#x}, stack=[{:#x}, {:#x})", address, thread->kernel_stack_base,
+                           thread->kernel_stack_top());
     }
     ut::expect(owned);
     if (owned) {
