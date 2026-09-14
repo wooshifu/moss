@@ -9,6 +9,7 @@ export module moss.vfs:inode;
 import moss.std;
 import moss.types;
 import :types;
+import :buffer;
 
 export namespace moss::kernel::vfs {
 
@@ -29,8 +30,8 @@ struct SuperBlock;
 struct FileOps {
   long (*open)(File *file, Inode *inode, u32 flags) noexcept;
   long (*release)(File *file) noexcept;
-  long (*read)(File *file, u8 *buf, usize count) noexcept;
-  long (*write)(File *file, const u8 *buf, usize count) noexcept;
+  long (*read)(File *file, OutputBuffer buffer) noexcept;
+  long (*write)(File *file, InputBuffer buffer) noexcept;
   long (*lseek)(File *file, i64 offset, SeekWhence whence) noexcept;
   long (*ioctl)(File *file, u32 cmd, u64 arg) noexcept;
 };

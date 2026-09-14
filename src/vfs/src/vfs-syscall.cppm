@@ -8,6 +8,7 @@ export module moss.vfs:syscall;
 import moss.std;
 import moss.types;
 import :types;
+import :buffer;
 
 export namespace moss::kernel::vfs::syscall {
 
@@ -19,10 +20,10 @@ long do_open(void *fd_table_ptr, const char *path, u32 flags, u32 mode) noexcept
 long do_close(void *fd_table_ptr, long fd) noexcept;
 
 /// Read from a file descriptor.
-long do_read(void *fd_table_ptr, long fd, u8 *buf, usize count) noexcept;
+long do_read(void *fd_table_ptr, long fd, OutputBuffer buffer) noexcept;
 
 /// Write to a file descriptor.
-long do_write(void *fd_table_ptr, long fd, const u8 *buf, usize count) noexcept;
+long do_write(void *fd_table_ptr, long fd, InputBuffer buffer) noexcept;
 
 /// Seek within a file.
 long do_lseek(void *fd_table_ptr, long fd, i64 offset, u32 whence) noexcept;

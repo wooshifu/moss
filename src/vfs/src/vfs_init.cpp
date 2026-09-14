@@ -357,7 +357,7 @@ static long pipe_read_release(File *file) noexcept {
   return 0;
 }
 
-static long pipe_read(File *file, u8 *buf, usize count) noexcept {
+static long pipe_read(File *file, OutputBuffer buffer) noexcept {
   if (file == nullptr || file->private_data == nullptr) {
     return -static_cast<long>(VfsError::InvalidArg);
   }
@@ -374,22 +374,24 @@ static long pipe_read(File *file, u8 *buf, usize count) noexcept {
   }
 
   // Read up to min(count, available)
+  usize count = buffer.size();
   usize avail = ps->count;
   if (count > avail) {
     count = avail;
   }
 
-  for (usize i = 0; i < count; ++i) {
-    buf[i] = ps->buffer[ps->read_pos];
+  usize copied = 0;
+  for (; copied < count; ++copied) {
+    if (buffer.copy_from(copied, &ps->buffer[ps->read_pos], 1) != 1)
+      break;
     ps->read_pos = (ps->read_pos + 1) % PipeState::PIPE_BUF_SIZE;
   }
-  ps->count -= static_cast<u32>(count);
+  ps->count -= static_cast<u32>(copied);
 
-  return static_cast<long>(count);
+  return !copied && count ? -static_cast<long>(VfsError::BadAddress) : static_cast<long>(copied);
 }
 
-static long pipe_read_write([[maybe_unused]] File *file, [[maybe_unused]] const u8 *buf,
-                            [[maybe_unused]] usize count) noexcept {
+static long pipe_read_write([[maybe_unused]] File *file, [[maybe_unused]] InputBuffer buffer) noexcept {
   return -static_cast<long>(VfsError::BadFd); // cannot write to read end
 }
 
@@ -423,7 +425,7 @@ static long pipe_write_release(File *file) noexcept {
   return 0;
 }
 
-static long pipe_write(File *file, const u8 *buf, usize count) noexcept {
+static long pipe_write(File *file, InputBuffer buffer) noexcept {
   if (file == nullptr || file->private_data == nullptr) {
     return -static_cast<long>(VfsError::InvalidArg);
   }
@@ -435,6 +437,7 @@ static long pipe_write(File *file, const u8 *buf, usize count) noexcept {
   }
 
   // Write up to min(count, free space)
+  usize count = buffer.size();
   u32 free_space = PipeState::PIPE_BUF_SIZE - ps->count;
   if (count > free_space) {
     count = free_space;
@@ -443,17 +446,18 @@ static long pipe_write(File *file, const u8 *buf, usize count) noexcept {
     return 0; // buffer full, non-blocking
   }
 
-  for (usize i = 0; i < count; ++i) {
-    ps->buffer[ps->write_pos] = buf[i];
+  usize copied = 0;
+  for (; copied < count; ++copied) {
+    if (buffer.copy_to(copied, &ps->buffer[ps->write_pos], 1) != 1)
+      break;
     ps->write_pos = (ps->write_pos + 1) % PipeState::PIPE_BUF_SIZE;
   }
-  ps->count += static_cast<u32>(count);
+  ps->count += static_cast<u32>(copied);
 
-  return static_cast<long>(count);
+  return !copied ? -static_cast<long>(VfsError::BadAddress) : static_cast<long>(copied);
 }
 
-static long pipe_write_read([[maybe_unused]] File *file, [[maybe_unused]] u8 *buf,
-                            [[maybe_unused]] usize count) noexcept {
+static long pipe_write_read([[maybe_unused]] File *file, [[maybe_unused]] OutputBuffer buffer) noexcept {
   return -static_cast<long>(VfsError::BadFd); // cannot read from write end
 }
 
@@ -545,7 +549,7 @@ static long console_open([[maybe_unused]] File *file, [[maybe_unused]] Inode *in
 
 static long console_release([[maybe_unused]] File *file) noexcept { return 0; }
 
-static long console_read([[maybe_unused]] File *file, u8 *buf, usize count) noexcept {
+static long console_read([[maybe_unused]] File *file, OutputBuffer buffer) noexcept {
   // One-time init: enable PL011 RX interrupt, register GIC handler,
   // set up ring buffer.  All heavy lifting is in syscall_table.cpp.
   static bool inited = false;
@@ -559,6 +563,7 @@ static long console_read([[maybe_unused]] File *file, u8 *buf, usize count) noex
   // ring buffer (fast path) or blocks the calling thread until the UART
   // RX interrupt delivers a character (slow path).  The CPU enters idle
   // (WFI) while blocked, so host CPU usage is ~0%.
+  const usize count = buffer.size();
   usize pos = 0;
   while (pos < count) {
     int ch = moss::abi::bridge::console_getc_blocking();
@@ -589,25 +594,32 @@ static long console_read([[maybe_unused]] File *file, u8 *buf, usize count) noex
 
     // Handle Enter (CR or LF)
     if (ch == '\r' || ch == '\n') {
+      const u8 newline = '\n';
+      if (buffer.copy_from(pos, &newline, 1) != 1)
+        return pos ? static_cast<long>(pos) : -static_cast<long>(VfsError::BadAddress);
+      ++pos;
       uart::putc('\r');
       uart::putc('\n');
-      if (pos < count) {
-        buf[pos++] = '\n';
-      }
       break;
     }
 
     // Echo printable characters and store in buffer
+    const auto byte = static_cast<u8>(ch);
+    if (buffer.copy_from(pos, &byte, 1) != 1)
+      return pos ? static_cast<long>(pos) : -static_cast<long>(VfsError::BadAddress);
     uart::putc(static_cast<char>(ch));
-    buf[pos++] = static_cast<u8>(ch);
+    ++pos;
   }
 
   return static_cast<long>(pos);
 }
 
-static long console_write([[maybe_unused]] File *file, const u8 *buf, usize count) noexcept {
+static long console_write([[maybe_unused]] File *file, InputBuffer buffer) noexcept {
+  const usize count = buffer.size();
   for (usize i = 0; i < count; ++i) {
-    char c = static_cast<char>(buf[i]);
+    char c = 0;
+    if (buffer.copy_to(i, &c, 1) != 1)
+      return i ? static_cast<long>(i) : -static_cast<long>(VfsError::BadAddress);
     if (c == '\n') {
       uart::putc('\r');
     }
@@ -632,12 +644,12 @@ static const FileOps g_console_fops = {
 
 // -- /dev/null file operations --
 
-static long null_read([[maybe_unused]] File *file, [[maybe_unused]] u8 *buf, [[maybe_unused]] usize count) noexcept {
+static long null_read([[maybe_unused]] File *file, [[maybe_unused]] OutputBuffer buffer) noexcept {
   return 0; // EOF
 }
 
-static long null_write([[maybe_unused]] File *file, [[maybe_unused]] const u8 *buf, usize count) noexcept {
-  return static_cast<long>(count); // discard
+static long null_write([[maybe_unused]] File *file, InputBuffer buffer) noexcept {
+  return static_cast<long>(buffer.size()); // discard without accessing the source
 }
 
 static const FileOps g_null_fops = {
@@ -651,11 +663,20 @@ static const FileOps g_null_fops = {
 
 // -- /dev/zero file operations --
 
-static long zero_read([[maybe_unused]] File *file, u8 *buf, usize count) noexcept {
-  for (usize i = 0; i < count; ++i) {
-    buf[i] = 0;
+static long zero_read([[maybe_unused]] File *file, OutputBuffer buffer) noexcept {
+  const u8 zeros[128]{};
+  usize copied = 0;
+  const usize count = buffer.size();
+  while (copied < count) {
+    usize chunk = count - copied;
+    if (chunk > sizeof(zeros))
+      chunk = sizeof(zeros);
+    const usize done = buffer.copy_from(copied, zeros, chunk);
+    copied += done;
+    if (done != chunk)
+      break;
   }
-  return static_cast<long>(count);
+  return !copied && count ? -static_cast<long>(VfsError::BadAddress) : static_cast<long>(copied);
 }
 
 static const FileOps g_zero_fops = {
@@ -795,7 +816,7 @@ static constexpr InodeNumber RAMFS_ROOT_INO = 1;
 
 // -- ramfs regular file operations --
 
-static long ramfs_read(File *file, u8 *buf, usize count) noexcept {
+static long ramfs_read(File *file, OutputBuffer buffer) noexcept {
   if (file == nullptr || file->inode == nullptr) {
     return -static_cast<long>(VfsError::InvalidArg);
   }
@@ -811,20 +832,17 @@ static long ramfs_read(File *file, u8 *buf, usize count) noexcept {
   }
 
   usize avail = static_cast<usize>(inode->size - pos);
+  usize count = buffer.size();
   if (count > avail) {
     count = avail;
   }
 
-  const u8 *src = inode->data + pos;
-  for (usize i = 0; i < count; ++i) {
-    buf[i] = src[i];
-  }
-  file->pos += static_cast<i64>(count);
-  return static_cast<long>(count);
+  const usize copied = buffer.copy_from(0, inode->data + pos, count);
+  file->pos += static_cast<i64>(copied);
+  return !copied && count ? -static_cast<long>(VfsError::BadAddress) : static_cast<long>(copied);
 }
 
-static long ramfs_write([[maybe_unused]] File *file, [[maybe_unused]] const u8 *buf,
-                        [[maybe_unused]] usize count) noexcept {
+static long ramfs_write([[maybe_unused]] File *file, [[maybe_unused]] InputBuffer buffer) noexcept {
   return -static_cast<long>(VfsError::PermDenied); // read-only
 }
 
