@@ -33,3 +33,7 @@ compile_commands.json
 
 # CMake files
 /CMakeUserPresets.json
+
+# AI
+.codebase-memory/
+
