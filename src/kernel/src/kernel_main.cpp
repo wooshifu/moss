@@ -372,13 +372,13 @@ unsigned long long get_current_pgd_phys() noexcept {
 }
 
 // ============================================================================
-// RISC-V trap handlers — called from riscv_syscall.S dispatch
+// RISC-V 64 trap handlers — called from riscv64_syscall.S dispatch
 // ============================================================================
-#if defined(MOSS_ARCH_RISCV) || defined(__riscv) || defined(__riscv__)
+#if defined(MOSS_ARCH_RISCV64) || defined(__riscv) || defined(__riscv__)
 
 // S-mode timer interrupt handler.
 // Reprograms stimecmp via HAL and calls scheduler_tick().
-void riscv_timer_handler() noexcept {
+void riscv64_timer_handler() noexcept {
   namespace timer_hal = ::moss::kernel::hal::timer;
 
   timer_hal::ack_interrupt();
@@ -401,20 +401,20 @@ void riscv_timer_handler() noexcept {
 
 // S-mode external interrupt handler (PLIC).
 // Claims the IRQ, dispatches via GIC, then completes.
-void riscv_external_handler() noexcept {
+void riscv64_external_handler() noexcept {
   if (::moss::kernel::interrupts::g_gic) {
     ::moss::kernel::interrupts::g_gic->handle_interrupt();
   }
 }
 
-// Exception handler for non-ecall, non-page-fault RISC-V exceptions.
-// Page faults (scause 12/13/15) are handled separately by riscv_page_fault_handler.
+// Exception handler for non-ecall, non-page-fault RISC-V 64 exceptions.
+// Page faults (scause 12/13/15) are handled separately by riscv64_page_fault_handler.
 // This handler covers illegal instruction, misaligned access, etc.
 // User-mode exceptions terminate the faulting process; kernel-mode exceptions halt.
-[[noreturn]] void riscv_exception_handler(u64 scause, u64 sepc, u64 stval) noexcept {
+[[noreturn]] void riscv64_exception_handler(u64 scause, u64 sepc, u64 stval) noexcept {
   namespace log = ::moss::kernel::logging;
 
-  log::klog::error("RISC-V EXCEPTION: scause={:#x} sepc={:#x} stval={:#x}", scause, sepc, stval);
+  log::klog::error("RISC-V 64 EXCEPTION: scause={:#x} sepc={:#x} stval={:#x}", scause, sepc, stval);
 
   // Check if the faulting PC is in user space (below kernel base).
   // If so, terminate the user process and let the scheduler continue.
@@ -430,7 +430,7 @@ void riscv_external_handler() noexcept {
   }
 }
 
-#endif // MOSS_ARCH_RISCV
+#endif // MOSS_ARCH_RISCV64
 
 } // extern "C"
 

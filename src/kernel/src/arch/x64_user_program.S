@@ -1,5 +1,5 @@
 // =============================================================================
-// x86_64 Embedded Userspace Program — execve() Trampoline
+// x64 Embedded Userspace Program — execve() Trampoline
 // =============================================================================
 //
 // This is a minimal, self-contained user-mode program compiled directly into
@@ -11,7 +11,7 @@
 //      the shell.elf program from initramfs CPIO archive
 //   3. On failure: sys_write(stdout, error message) → sys_exit(1)
 //
-// x86_64 MOSS syscall convention:
+// x64 MOSS syscall convention:
 //   RAX     = syscall number
 //   RDI     = arg0
 //   RSI     = arg1

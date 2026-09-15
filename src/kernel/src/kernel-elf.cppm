@@ -18,9 +18,9 @@ inline constexpr u8 ELF_VERSION = 1;         // ELF version 1
 
 // Supported architectures
 inline constexpr u16 EM_NONE = 0;      // Unspecified
-inline constexpr u16 EM_X86_64 = 62;   // AMD64/x86_64
+inline constexpr u16 EM_X64 = 62;   // AMD64/x64
 inline constexpr u16 EM_AARCH64 = 183; // ARM64/AArch64
-inline constexpr u16 EM_RISCV = 243;   // RISC-V
+inline constexpr u16 EM_RISCV64 = 243;   // RISC-V 64
 
 // File types
 inline constexpr u16 ET_NONE = 0; // Unknown type
@@ -105,18 +105,18 @@ struct [[gnu::packed]] ProgramHeader {
 
   // Check architecture
   using moss::kernel::arch::is_arm64;
-  using moss::kernel::arch::is_riscv;
-  using moss::kernel::arch::is_x86_64;
+  using moss::kernel::arch::is_riscv64;
+  using moss::kernel::arch::is_x64;
   if constexpr (is_arm64) {
     if (hdr->e_machine != EM_AARCH64) {
       return false;
     }
-  } else if constexpr (is_x86_64) {
-    if (hdr->e_machine != EM_X86_64) {
+  } else if constexpr (is_x64) {
+    if (hdr->e_machine != EM_X64) {
       return false;
     }
-  } else if constexpr (is_riscv) {
-    if (hdr->e_machine != EM_RISCV) {
+  } else if constexpr (is_riscv64) {
+    if (hdr->e_machine != EM_RISCV64) {
       return false;
     }
   }

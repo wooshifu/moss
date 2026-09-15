@@ -9,9 +9,9 @@ add_library(moss_libfdt_c OBJECT libfdt/fdt.c libfdt/fdt_ro.c libfdt/fdt_strerro
 # 架构特定的 C 编译标志（与 CXX 预设保持一致）
 if(MOSS_TARGET_ARCH STREQUAL "ARM64")
     set(LIBFDT_ARCH_FLAGS -mcpu=cortex-a57 -march=armv8-a -mgeneral-regs-only -mstrict-align)
-elseif(MOSS_TARGET_ARCH STREQUAL "X86_64")
+elseif(MOSS_TARGET_ARCH STREQUAL "X64")
     set(LIBFDT_ARCH_FLAGS "")
-elseif(MOSS_TARGET_ARCH STREQUAL "RISCV")
+elseif(MOSS_TARGET_ARCH STREQUAL "RISCV64")
     set(LIBFDT_ARCH_FLAGS -march=rv64imac_zicsr_zifencei -mabi=lp64)
 endif()
 

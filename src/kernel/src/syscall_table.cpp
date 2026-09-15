@@ -3,9 +3,9 @@
 
 module;
 
-#ifdef MOSS_ARCH_X86_64
+#ifdef MOSS_ARCH_X64
 // Cross-module interrupt dispatch callback (defined in boot_impl.cpp)
-extern "C" void (*g_x86_64_uart_rx_handler)() noexcept;
+extern "C" void (*g_x64_uart_rx_handler)() noexcept;
 #endif
 
 module moss.kernel;
@@ -246,9 +246,9 @@ long sys_fork(long /*unused*/, long /*unused*/, long /*unused*/, long /*unused*/
     asm volatile("dsb ish" ::: "memory");
     asm volatile("isb" ::: "memory");
   }
-#elif defined(MOSS_ARCH_RISCV)
+#elif defined(MOSS_ARCH_RISCV64)
   asm volatile("sfence.vma" ::: "memory");
-#elif defined(MOSS_ARCH_X86_64)
+#elif defined(MOSS_ARCH_X64)
   asm volatile("mov %0, %%cr3" ::"r"(parent_as->pgd_phys) : "memory");
 #endif
 
@@ -281,12 +281,12 @@ long sys_fork(long /*unused*/, long /*unused*/, long /*unused*/, long /*unused*/
     context.x[i] = frame->gpr(i);
   }
   context.x[0] = 0;
-#elif defined(MOSS_ARCH_RISCV)
+#elif defined(MOSS_ARCH_RISCV64)
   for (u32 i = 0; i < moss::abi::TrapFrame::GPR_COUNT; ++i) {
     context.x[i + 1] = frame->gpr(i);
   }
   context.x[10] = 0;
-#elif defined(MOSS_ARCH_X86_64)
+#elif defined(MOSS_ARCH_X64)
   // Kernel C++ does not use FP/SIMD; capture the caller's live state.
   asm volatile("fxsave64 %0" : "=m"(context.fp)::"memory");
   context.rbx = frame->rbx;
@@ -492,7 +492,7 @@ long sys_execve(long pathname_addr, long argv_addr, long /* envp */, long /*unus
       asm volatile("isb" ::: "memory");
     }
   }
-#elif defined(MOSS_ARCH_RISCV)
+#elif defined(MOSS_ARCH_RISCV64)
   // Switch SATP to kernel PGD before freeing old user page tables.
   {
     auto *kpgd = mm::PageTableManager::get_kernel_pgd();
@@ -503,7 +503,7 @@ long sys_execve(long pathname_addr, long argv_addr, long /* envp */, long /*unus
       asm volatile("sfence.vma" ::: "memory");
     }
   }
-#elif defined(MOSS_ARCH_X86_64)
+#elif defined(MOSS_ARCH_X64)
   // Switch CR3 to kernel PGD before freeing old user page tables.
   {
     auto *kpgd = mm::PageTableManager::get_kernel_pgd();
@@ -743,13 +743,13 @@ long sys_execve(long pathname_addr, long argv_addr, long /* envp */, long /*unus
     asm volatile("dsb sy" ::: "memory");
     asm volatile("isb" ::: "memory");
   }
-#elif defined(MOSS_ARCH_RISCV)
+#elif defined(MOSS_ARCH_RISCV64)
   if (proc->address_space() && proc->address_space()->pgd_phys != 0) {
     u64 satp_val = hal::mmu::make_satp_value(proc->address_space()->pgd_phys, proc->address_space()->asid);
     asm volatile("csrw satp, %0" ::"r"(satp_val) : "memory");
     asm volatile("sfence.vma" ::: "memory");
   }
-#elif defined(MOSS_ARCH_X86_64)
+#elif defined(MOSS_ARCH_X64)
   if (proc->address_space() && proc->address_space()->pgd_phys != 0) {
     u64 cr3_val = proc->address_space()->pgd_phys;
     asm volatile("mov %0, %%cr3" ::"r"(cr3_val) : "memory");
@@ -819,12 +819,12 @@ long sys_execve(long pathname_addr, long argv_addr, long /* envp */, long /*unus
   cur->context.x[1] = (kernel_argc > 0) // x1 = argv
                           ? (user_sp)   // argv_base == user_sp
                           : 0;
-#elif defined(MOSS_ARCH_RISCV)
+#elif defined(MOSS_ARCH_RISCV64)
   cur->context.x[10] = kernel_argc;      // a0 = argc
   cur->context.x[11] = (kernel_argc > 0) // a1 = argv
                            ? (user_sp)   // argv_base == user_sp
                            : 0;
-#elif defined(MOSS_ARCH_X86_64)
+#elif defined(MOSS_ARCH_X64)
   cur->context.rdi = kernel_argc;      // rdi = argc (System V ABI arg0)
   cur->context.rsi = (kernel_argc > 0) // rsi = argv (System V ABI arg1)
                          ? (user_sp)   // argv_base == user_sp
@@ -873,7 +873,7 @@ long sys_execve(long pathname_addr, long argv_addr, long /* envp */, long /*unus
     // eret to new program — never returns
     switch_to_user(&cur->context, cur->context.sp);
   }
-#elif defined(MOSS_ARCH_RISCV)
+#elif defined(MOSS_ARCH_RISCV64)
   {
     cur->needs_initial_eret = false;
     cur->state = ProcessState::Running;
@@ -895,7 +895,7 @@ long sys_execve(long pathname_addr, long argv_addr, long /* envp */, long /*unus
     // eret to new program — never returns
     switch_to_user(&cur->context, cur->context.sp);
   }
-#elif defined(MOSS_ARCH_X86_64)
+#elif defined(MOSS_ARCH_X64)
   {
     cur->needs_initial_eret = false;
     cur->state = ProcessState::Running;
@@ -907,7 +907,7 @@ long sys_execve(long pathname_addr, long argv_addr, long /* envp */, long /*unus
     // Update TSS RSP0 and SYSCALL kernel stack for the new program.
     if (cur->kernel_stack_base != 0) {
       u64 kstack_top = cur->kernel_stack_top();
-      moss::abi::x86_64::set_kernel_stack(kstack_top);
+      moss::abi::x64::set_kernel_stack(kstack_top);
     }
 
     proc.reset();
@@ -2507,7 +2507,7 @@ static volatile usize rx_tail_ = 0; // Written by consumer
 
 static bool initialized_ = false;
 
-#if defined(MOSS_ARCH_ARM64) || defined(MOSS_ARCH_X86_64)
+#if defined(MOSS_ARCH_ARM64) || defined(MOSS_ARCH_X64)
 // The thread currently blocked waiting for input (at most one reader).
 // Used by uart_rx_irq_handler and console_getc_blocking.
 static process::Thread *blocked_reader_ = nullptr;
@@ -2524,7 +2524,7 @@ static int buf_get() noexcept {
   return ch;
 }
 
-#if defined(MOSS_ARCH_ARM64) || defined(MOSS_ARCH_X86_64)
+#if defined(MOSS_ARCH_ARM64) || defined(MOSS_ARCH_X64)
 
 static bool buf_put(u8 ch) noexcept {
   usize next_head = (rx_head_ + 1) & RX_BUF_MASK;
@@ -2536,7 +2536,7 @@ static bool buf_put(u8 ch) noexcept {
   return true;
 }
 
-// Wake the blocked reader (shared by ARM64 and x86_64 IRQ handlers)
+// Wake the blocked reader (shared by ARM64 and x64 IRQ handlers)
 static void wake_blocked_reader() noexcept {
   if (blocked_reader_ != nullptr && process::is_blocked_state(blocked_reader_->state)) {
     auto *thr = blocked_reader_;
@@ -2560,19 +2560,19 @@ static void uart_rx_irq_handler(u32 /*irq*/, void * /*context*/) noexcept {
 }
 #endif // MOSS_ARCH_ARM64
 
-#if defined(MOSS_ARCH_X86_64)
-// x86_64 COM1 UART RX handler — called via g_x86_64_uart_rx_handler callback.
+#if defined(MOSS_ARCH_X64)
+// x64 COM1 UART RX handler — called via g_x64_uart_rx_handler callback.
 // Reads COM1 RBR while Data Ready (LSR bit 0) is set.
-static void x86_64_uart_rx_dispatch() noexcept {
+static void x64_uart_rx_dispatch() noexcept {
   for (int ch = hal::uart::getc(); ch >= 0; ch = hal::uart::getc()) {
     buf_put(static_cast<u8>(ch));
   }
 
   wake_blocked_reader();
 }
-#endif // MOSS_ARCH_X86_64
+#endif // MOSS_ARCH_X64
 
-#endif // MOSS_ARCH_ARM64 || MOSS_ARCH_X86_64
+#endif // MOSS_ARCH_ARM64 || MOSS_ARCH_X64
 
 } // namespace console_rx
 
@@ -2598,11 +2598,11 @@ extern "C" void console_rx_init() noexcept {
       (void)interrupts::g_gic->enable_interrupt(uart_irq);
     }
   }
-#elif defined(MOSS_ARCH_X86_64)
+#elif defined(MOSS_ARCH_X64)
   hal::uart::enable_rx_interrupt();
 
   // 3. Register UART RX callback for interrupt dispatch
-  g_x86_64_uart_rx_handler = +[]() noexcept { x86_64_uart_rx_dispatch(); };
+  g_x64_uart_rx_handler = +[]() noexcept { x64_uart_rx_dispatch(); };
 
   // 4. Unmask COM1 IRQ4 in I/O APIC
   if (interrupts::g_gic) {
@@ -2625,7 +2625,7 @@ extern "C" int console_getc_blocking() noexcept {
     return ch;
   }
 
-#if defined(MOSS_ARCH_ARM64) || defined(MOSS_ARCH_X86_64)
+#if defined(MOSS_ARCH_ARM64) || defined(MOSS_ARCH_X64)
   // Slow path: block until UART IRQ delivers a character
   Thread *cur = CfsScheduler::get_current_task();
   if (!cur || !g_scheduler) {
@@ -2633,7 +2633,7 @@ extern "C" int console_getc_blocking() noexcept {
     while (buf_empty()) {
 #if defined(MOSS_ARCH_ARM64)
       asm volatile("wfi" ::: "memory");
-#elif defined(MOSS_ARCH_X86_64)
+#elif defined(MOSS_ARCH_X64)
       asm volatile("hlt" ::: "memory");
 #endif
     }
@@ -2667,7 +2667,7 @@ extern "C" int console_getc_blocking() noexcept {
 
   return buf_get();
 #else
-  // RISC-V: WFI polling with direct UART read (no IRQ handler yet).
+  // RISC-V 64: WFI polling with direct UART read (no IRQ handler yet).
   for (;;) {
     int c = hal::uart::getc();
     if (c >= 0) {

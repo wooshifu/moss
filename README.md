@@ -1,6 +1,6 @@
 # Moss
 
-Moss is a modern multi-architecture hybrid kernel operating system supporting ARM64, x86_64, and RISC-V architectures. Built with C++26 using latest techniques, it emphasizes performance, modularity, and a clean codebase.
+Moss is a modern multi-architecture hybrid kernel operating system supporting ARM64, x64, and RISC-V 64 architectures. Built with C++26 using latest techniques, it emphasizes performance, modularity, and a clean codebase.
 
 ## Quick Start
 
@@ -36,7 +36,7 @@ uv run qemu --manifest build/arm64-debug/moss-artifacts.json
 uv run ctest --preset arm64-debug-test
 ```
 
-Replace `arm64` with `riscv` or `x86_64`. Machine, CPU, RAM and firmware
+Replace `arm64` with `riscv64` or `x64`. Machine, CPU, RAM and firmware
 are runner options, not build options. See [generic boot](docs/generic-boot.md)
 and [ADR-0005](docs/adr/0005-generic-kernels-and-independent-runners.md).
 
@@ -51,8 +51,8 @@ beside the build compiler and then PATH. Python dependencies are managed by uv.
 # Configure once; lint incrementally builds to refresh module mappings and BMIs.
 uv run cmake --preset arm64-debug
 uv run lint.py --check
-uv run lint.py --check --preset x86_64-debug
-uv run lint.py --check --preset riscv-debug
+uv run lint.py --check --preset x64-debug
+uv run lint.py --check --preset riscv64-debug
 
 # Restrict files or check changes since merge-base(HEAD, origin/master).
 uv run lint.py --check src/core -j 4

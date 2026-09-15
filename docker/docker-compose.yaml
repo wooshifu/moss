@@ -4,7 +4,7 @@
 #   docker compose -f docker/docker-compose.yaml build
 #   docker compose -f docker/docker-compose.yaml run moss-qemu              # ARM64 kernel
 #   docker compose -f docker/docker-compose.yaml run moss-qemu test         # run tests
-#   docker compose -f docker/docker-compose.yaml run moss-qemu run --arch x86_64
+#   docker compose -f docker/docker-compose.yaml run moss-qemu run --arch x64
 #   docker compose -f docker/docker-compose.yaml run moss-qemu shell        # interactive shell
 
 services:

@@ -19,7 +19,7 @@ add_custom_command(
     COMMAND ${OBJCOPY_CMD} -O binary $<TARGET_FILE:moss.test.elf> ${CMAKE_BINARY_DIR}/moss.test.bin
     VERBATIM
 )
-if(MOSS_TARGET_ARCH STREQUAL "ARM64" OR MOSS_TARGET_ARCH STREQUAL "RISCV")
+if(MOSS_TARGET_ARCH STREQUAL "ARM64" OR MOSS_TARGET_ARCH STREQUAL "RISCV64")
     add_custom_command(
         TARGET moss.test.elf
         POST_BUILD

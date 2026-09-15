@@ -4,8 +4,8 @@
 //
 // What lives here (architecture-specific):
 //   - ARM64: Generic Timer (cntvct_el0, cntv_cval_el0, cntv_ctl_el0)
-//   - x86_64: Local APIC Timer / TSC [placeholder]
-//   - RISC-V: SBI Timer / stimecmp CSR [placeholder]
+//   - x64: Local APIC Timer / TSC [placeholder]
+//   - RISC-V 64: SBI Timer / stimecmp CSR [placeholder]
 //
 // What stays in timer.cppm (architecture-independent):
 //   - Clocksource class (mult/shift conversion)
@@ -36,12 +36,12 @@ using moss::u8;
   u64 freq;
   asm volatile("mrs %0, cntfrq_el0" : "=r"(freq));
   return freq;
-#elif defined(MOSS_ARCH_X86_64)
-  // x86_64: TSC frequency must be calibrated (placeholder: return platform default)
+#elif defined(MOSS_ARCH_X64)
+  // x64: TSC frequency must be calibrated (placeholder: return platform default)
   u64 plat_freq = platform::timer_frequency();
   return plat_freq;
-#elif defined(MOSS_ARCH_RISCV)
-  // RISC-V: typically from DTB timebase-frequency; use platform default
+#elif defined(MOSS_ARCH_RISCV64)
+  // RISC-V 64: typically from DTB timebase-frequency; use platform default
   u64 plat_freq = platform::timer_frequency();
   return plat_freq;
 #endif
@@ -57,18 +57,18 @@ using moss::u8;
   u64 val;
   asm volatile("mrs %0, cntvct_el0" : "=r"(val));
   return val;
-#elif defined(MOSS_ARCH_X86_64)
+#elif defined(MOSS_ARCH_X64)
   u32 lo, hi;
   asm volatile("rdtsc" : "=a"(lo), "=d"(hi));
   return (static_cast<u64>(hi) << 32) | lo;
-#elif defined(MOSS_ARCH_RISCV)
+#elif defined(MOSS_ARCH_RISCV64)
   u64 val;
   asm volatile("rdtime %0" : "=r"(val));
   return val;
 #endif
 }
 
-#if defined(MOSS_ARCH_X86_64)
+#if defined(MOSS_ARCH_X64)
 inline u64 lapic_frequency = 0; // Counter frequency after the configured divide-by-16.
 
 [[nodiscard]] inline bool calibrate() noexcept {
@@ -120,7 +120,7 @@ inline void set_compare(u64 value) noexcept {
   // ARM64: write virtual timer compare value
   asm volatile("msr cntv_cval_el0, %0" ::"r"(value));
   asm volatile("isb");
-#elif defined(MOSS_ARCH_X86_64)
+#elif defined(MOSS_ARCH_X64)
   {
     u64 now = read_counter();
     u64 delta = value > now ? value - now : 1;
@@ -133,7 +133,7 @@ inline void set_compare(u64 value) noexcept {
     }
     *reinterpret_cast<volatile u32 *>(platform::intc_dist_base() + 0x380) = static_cast<u32>(ticks ? ticks : 1);
   }
-#elif defined(MOSS_ARCH_RISCV)
+#elif defined(MOSS_ARCH_RISCV64)
   // SBI TIME works with and without the optional Sstc extension.
   register u64 a0 asm("a0") = value;
   register u64 a1 asm("a1") = 0;
@@ -157,13 +157,13 @@ inline void enable() noexcept {
   ctl &= ~(1ULL << 1); // Clear IMASK
   asm volatile("msr cntv_ctl_el0, %0" ::"r"(ctl));
   asm volatile("isb");
-#elif defined(MOSS_ARCH_X86_64)
+#elif defined(MOSS_ARCH_X64)
   // Unmask LAPIC LVT Timer (clear bit 16 = mask bit)
   {
     auto *lvt_timer = reinterpret_cast<volatile u32 *>(platform::intc_dist_base() + 0x320);
     *lvt_timer &= ~(1U << 16);
   }
-#elif defined(MOSS_ARCH_RISCV)
+#elif defined(MOSS_ARCH_RISCV64)
   // Set SIE.STIE (S-mode timer interrupt enable)
   asm volatile("csrs sie, %0" ::"r"(1ULL << 5));
 #endif
@@ -177,13 +177,13 @@ inline void disable() noexcept {
   ctl |= (1ULL << 1); // Set IMASK
   asm volatile("msr cntv_ctl_el0, %0" ::"r"(ctl));
   asm volatile("isb");
-#elif defined(MOSS_ARCH_X86_64)
+#elif defined(MOSS_ARCH_X64)
   // Mask LAPIC LVT Timer (set bit 16 = mask bit)
   {
     auto *lvt_timer = reinterpret_cast<volatile u32 *>(platform::intc_dist_base() + 0x320);
     *lvt_timer |= (1U << 16);
   }
-#elif defined(MOSS_ARCH_RISCV)
+#elif defined(MOSS_ARCH_RISCV64)
   // Clear SIE.STIE
   asm volatile("csrc sie, %0" ::"r"(1ULL << 5));
 #endif
@@ -201,10 +201,10 @@ inline void ack_interrupt() noexcept {
 #if defined(MOSS_ARCH_ARM64)
   // ARM64: ISTATUS clears when cntv_cval_el0 > cntvct_el0 or timer disabled.
   // The caller will set a new compare value, which clears ISTATUS.
-#elif defined(MOSS_ARCH_X86_64)
+#elif defined(MOSS_ARCH_X64)
   // APIC EOI — handled by intc_hal::eoi, not duplicated here
-#elif defined(MOSS_ARCH_RISCV)
-  // On RISC-V with Sstc, writing stimecmp clears the pending timer interrupt.
+#elif defined(MOSS_ARCH_RISCV64)
+  // On RISC-V 64 with Sstc, writing stimecmp clears the pending timer interrupt.
   // No explicit SIP.STIP clear needed — the caller will set a new compare value.
 #endif
 }

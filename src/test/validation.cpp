@@ -37,7 +37,7 @@ Tick read_counter() noexcept {
   Tick value;
   asm volatile("dsb ish; isb; mrs %0, cntvct_el0; isb" : "=r"(value) : : "memory");
   return value;
-#elif defined(MOSS_ARCH_X86_64)
+#elif defined(MOSS_ARCH_X64)
   unsigned lo, hi;
   asm volatile("mfence; lfence; rdtsc; lfence" : "=a"(lo), "=d"(hi) : : "memory");
   return (static_cast<Tick>(hi) << 32) | lo;
@@ -61,7 +61,7 @@ struct KernelPermissions {
   bool check_wx = false;
 
   KernelPermissions() {
-#if defined(MOSS_ARCH_RISCV)
+#if defined(MOSS_ARCH_RISCV64)
     if (hal::mmu::g_mmu_mode == hal::mmu::MmuMode::Sv39) {
       root_shift = 30;
     }
@@ -82,11 +82,11 @@ struct KernelPermissions {
       const u64 base = prefix | (static_cast<u64>(i) << shift);
       const bool high_half = (base & (1ULL << (root_shift + 8))) != 0;
       bool descendant_user_access = user_access;
-#if defined(MOSS_ARCH_X86_64)
+#if defined(MOSS_ARCH_X64)
       descendant_user_access = user_access && (entry.raw & mm::page_attr::USER) != 0;
 #endif
       if (shift > 12 && entry.is_table()) {
-#if defined(MOSS_ARCH_X86_64)
+#if defined(MOSS_ARCH_X64)
         // The user's low root can mix kernel and user descendants; its leaf
         // permissions are checked below. Kernel-only branches need no USER bit.
         if (!user_root || high_half) {
@@ -101,7 +101,7 @@ struct KernelPermissions {
           const bool writable = (entry.raw & mm::page_attr::READONLY) == 0;
           const bool executable = (entry.raw & mm::page_attr::PXN) == 0;
           ut::expect((entry.raw & mm::page_attr::XN) != 0);
-#elif defined(MOSS_ARCH_X86_64)
+#elif defined(MOSS_ARCH_X64)
           const bool writable = (entry.raw & mm::page_attr::WRITABLE) != 0;
           const bool executable = (entry.raw & mm::page_attr::XN) == 0;
 #else
@@ -136,10 +136,10 @@ void table_permission_defaults() {
              (entry.raw & mm::page_attr::USER) == 0);
   entry.set_table(root, true);
   ut::expect(entry.is_valid() && entry.is_table() && entry.get_phys_addr() == root);
-#if defined(MOSS_ARCH_X86_64)
+#if defined(MOSS_ARCH_X64)
   ut::expect((entry.raw & mm::page_attr::USER) != 0);
 #else
-  // ARM64/RISC-V user permission belongs to the leaf, not this table descriptor.
+  // ARM64/RISC-V 64 user permission belongs to the leaf, not this table descriptor.
   ut::expect((entry.raw & mm::page_attr::USER) == 0);
 #endif
   entry.set_block(0, mm::page_perms::KERNEL_RW);
@@ -163,7 +163,7 @@ void kernel_mapping_permissions() {
   ut::expect(kernel.kernel_bytes == kernel_bytes && kernel.user_leaves == 0);
   KernelPermissions high;
   high.walk(Tables::get_physical_address(Tables::get_kernel_high_pgd()), high.root_shift, 0, false);
-#if defined(MOSS_ARCH_RISCV)
+#if defined(MOSS_ARCH_RISCV64)
   ut::expect(high.kernel_bytes == kernel_bytes);
 #else
   ut::expect(high.kernel_bytes == 0x100000000ULL);
@@ -175,7 +175,7 @@ void active_user_mapping_permissions() {
 #if defined(MOSS_ARCH_ARM64)
   asm volatile("mrs %0, ttbr0_el1" : "=r"(active_root));
   active_root &= hal::mmu::PTE_ADDR_MASK;
-#elif defined(MOSS_ARCH_X86_64)
+#elif defined(MOSS_ARCH_X64)
   asm volatile("mov %%cr3, %0" : "=r"(active_root));
   active_root &= hal::mmu::PTE_ADDR_MASK;
 #else
@@ -204,7 +204,7 @@ void kernel_wx_permissions() {
   check.check_wx = true;
   check.walk(Tables::get_physical_address(Tables::get_kernel_pgd()), check.root_shift, 0, false);
   check.walk(Tables::get_physical_address(Tables::get_kernel_high_pgd()), check.root_shift, 0, false);
-#if defined(MOSS_ARCH_X86_64)
+#if defined(MOSS_ARCH_X64)
   u64 cr0;
   asm volatile("mov %%cr0, %0" : "=r"(cr0));
   ut::expect((cr0 & (1ULL << 16)) != 0); // Supervisor writes must obey RO PTEs.
@@ -1338,7 +1338,7 @@ void cleanup_guards() {
   entry.raw = original;
   entry.make_readonly();
   ut::expect(page_table_hash(address) != hash);
-#if defined(MOSS_ARCH_RISCV)
+#if defined(MOSS_ARCH_RISCV64)
   entry.raw = original ^ mm::page_attr::EXECUTE;
 #else
   entry.raw = original ^ mm::page_attr::XN;
@@ -1897,7 +1897,7 @@ void declare_cases() {
     ut::register_test("readonly_cow", empty_case);
     ut::register_test("access_permissions", empty_case);
   });
-#if defined(MOSS_ARCH_X86_64)
+#if defined(MOSS_ARCH_X64)
   ut::register_suite("users.simd_fault", [] { ut::register_test("isolation", empty_case); });
 #endif
   ut::register_suite("mm.permissions", [] {
@@ -1952,7 +1952,7 @@ bench::Clock discover_clock() {
 #if defined(MOSS_ARCH_ARM64)
   asm volatile("mrs %0, cntfrq_el0" : "=r"(result.frequency));
   result.source = "cntfrq_el0";
-#elif defined(MOSS_ARCH_RISCV)
+#elif defined(MOSS_ARCH_RISCV64)
   result.frequency = moss::fdt::get_platform_info().timebase_frequency;
   result.source = "dtb.timebase-frequency";
 #else

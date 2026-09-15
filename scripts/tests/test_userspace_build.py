@@ -14,8 +14,8 @@ import pytest
     "arch,triple,machine",
     [
         ("ARM64", "aarch64-unknown-elf", 183),
-        ("X86_64", "x86_64-unknown-linux-elf", 62),
-        ("RISCV", "riscv64-unknown-elf", 243),
+        ("X64", "x86_64-unknown-linux-elf", 62),
+        ("RISCV64", "riscv64-unknown-elf", 243),
     ],
 )
 def test_userspace_compile_database_and_incremental_dependencies(tmp_path, arch, triple, machine):

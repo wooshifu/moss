@@ -6,8 +6,8 @@
 //
 // Output backends:
 //   ARM64:  PL011 UART (MMIO, with TXFF wait)
-//   x86_64: COM1 serial port (I/O ports 0x3F8/0x3FD)
-//   RISC-V: NS16550 UART (MMIO)
+//   x64: COM1 serial port (I/O ports 0x3F8/0x3FD)
+//   RISC-V 64: NS16550 UART (MMIO)
 //
 // Usage:
 //   import moss.hal.uart;
@@ -38,7 +38,7 @@ public:
   TransmitGuard() noexcept {
 #if defined(MOSS_ARCH_ARM64)
     asm volatile("mrs %0, daif; msr daifset, #2" : "=r"(flags_)::"memory");
-#elif defined(MOSS_ARCH_X86_64)
+#elif defined(MOSS_ARCH_X64)
     asm volatile("pushfq; popq %0; cli" : "=r"(flags_)::"memory");
 #else
     asm volatile("csrrc %0, sstatus, %1" : "=r"(flags_) : "r"(2ULL) : "memory");
@@ -53,7 +53,7 @@ public:
     __atomic_store_n(&transmit_lock, 0U, __ATOMIC_RELEASE);
 #if defined(MOSS_ARCH_ARM64)
     asm volatile("msr daif, %0" ::"r"(flags_) : "memory");
-#elif defined(MOSS_ARCH_X86_64)
+#elif defined(MOSS_ARCH_X64)
     if (flags_ & (1ULL << 9)) {
       asm volatile("sti" ::: "memory");
     }
@@ -72,7 +72,7 @@ public:
 inline u32 read_register(u32 offset) noexcept {
   const auto &uart = platform::hardware.uart;
   auto address = uart.base_addr + (static_cast<u64>(offset) << uart.reg_shift);
-#if defined(MOSS_ARCH_X86_64)
+#if defined(MOSS_ARCH_X64)
   if (uart.port_io) {
     u8 value;
     asm volatile("inb %1, %0" : "=a"(value) : "Nd"(static_cast<u16>(address)));
@@ -85,7 +85,7 @@ inline u32 read_register(u32 offset) noexcept {
 inline void write_register(u32 offset, u32 value) noexcept {
   const auto &uart = platform::hardware.uart;
   auto address = uart.base_addr + (static_cast<u64>(offset) << uart.reg_shift);
-#if defined(MOSS_ARCH_X86_64)
+#if defined(MOSS_ARCH_X64)
   if (uart.port_io) {
     asm volatile("outb %0, %1" : : "a"(static_cast<u8>(value)), "Nd"(static_cast<u16>(address)));
     return;

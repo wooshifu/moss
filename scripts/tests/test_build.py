@@ -9,7 +9,7 @@ from pathlib import Path
 import pytest
 
 BUILD_SCRIPT = Path(__file__).resolve().parents[2] / "build.py"
-PRESETS = ["arm64-debug", "x86_64-debug", "riscv-debug"]
+PRESETS = ["arm64-debug", "x64-debug", "riscv64-debug"]
 
 
 @pytest.fixture
@@ -25,7 +25,7 @@ import sys
 import time
 from pathlib import Path
 
-presets = ["arm64-debug", "x86_64-debug", "riscv-debug"]
+presets = ["arm64-debug", "x64-debug", "riscv64-debug"]
 if "--list-presets" in sys.argv:
     for preset in presets:
         print(f'  "{preset}"')
@@ -100,7 +100,7 @@ def test_filter_and_dry_run(build_cli):
     result = run("--arch", "arm64", "--jobs", "2")
     assert result.returncode == 0, result.stdout + result.stderr
     assert (root / "arm64-debug.json").exists()
-    assert not (root / "x86_64-debug.json").exists()
+    assert not (root / "x64-debug.json").exists()
     (root / "arm64-debug.json").unlink()
     result = run("--dry-run", "--clean", "--jobs", "2")
     assert result.returncode == 0, result.stdout + result.stderr

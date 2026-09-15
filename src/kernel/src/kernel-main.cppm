@@ -5,10 +5,10 @@ module;
 
 extern "C" void moss_validation_boot() noexcept;
 
-#ifdef MOSS_ARCH_X86_64
+#ifdef MOSS_ARCH_X64
 // Cross-module interrupt dispatch callbacks (defined in boot_impl.cpp)
-extern "C" void (*g_x86_64_timer_handler)() noexcept;
-extern "C" void (*g_x86_64_uart_rx_handler)() noexcept;
+extern "C" void (*g_x64_timer_handler)() noexcept;
+extern "C" void (*g_x64_uart_rx_handler)() noexcept;
 #endif
 
 export module moss.kernel:main;
@@ -181,11 +181,11 @@ public:
       kernel_panic("Failed to create init process", init_result.error());
     }
 
-#ifdef MOSS_ARCH_X86_64
-    // Register timer dispatch callback for x86_64 LAPIC timer vector.
+#ifdef MOSS_ARCH_X64
+    // Register timer dispatch callback for x64 LAPIC timer vector.
     // boot_impl.cpp's interrupt handler calls this on vector 48.
     {
-      g_x86_64_timer_handler = +[]() noexcept {
+      g_x64_timer_handler = +[]() noexcept {
         namespace timer_hal = hal::timer;
 
         timer_hal::ack_interrupt();
@@ -668,12 +668,12 @@ private:
 #if defined(MOSS_ARCH_ARM64)
     const auto *raw_code = moss::abi::arm64::user_program_start();
     usize code_size = moss::abi::arm64::user_program_size();
-#elif defined(MOSS_ARCH_X86_64)
-    const auto *raw_code = moss::abi::x86_64::user_program_start();
-    usize code_size = moss::abi::x86_64::user_program_size();
-#elif defined(MOSS_ARCH_RISCV)
-    const auto *raw_code = moss::abi::riscv::user_program_start();
-    usize code_size = moss::abi::riscv::user_program_size();
+#elif defined(MOSS_ARCH_X64)
+    const auto *raw_code = moss::abi::x64::user_program_start();
+    usize code_size = moss::abi::x64::user_program_size();
+#elif defined(MOSS_ARCH_RISCV64)
+    const auto *raw_code = moss::abi::riscv64::user_program_start();
+    usize code_size = moss::abi::riscv64::user_program_size();
 #endif
 
     // Code VMA: readable + executable, backed by the embedded raw program
@@ -681,8 +681,8 @@ private:
     as->add_vma(user_layout::CODE_BASE, code_end, vma_flags::READ | vma_flags::EXEC, VmaType::CODE, raw_code, 0,
                 code_size);
 
-#ifdef MOSS_ARCH_X86_64
-    // x86_64: Pre-map user code and stack pages.
+#ifdef MOSS_ARCH_X64
+    // x64: Pre-map user code and stack pages.
     // Uses map_user_page() which handles full PGD→PUD→PMD→PTE walk,
     // allocating intermediate tables as needed for any virtual address.
     {
@@ -783,9 +783,9 @@ private:
 
     // Architecture-specific user-mode pstate:
     //   ARM64:  0x0 = EL0t (user mode, all interrupts enabled on eret)
-    //   x86_64: 0x202 = RFLAGS with IF=1 (interrupts enabled on iretq)
-    //   RISC-V: 0x0 = sstatus with SPP=0 (U-mode on sret)
-#if defined(MOSS_ARCH_X86_64)
+    //   x64: 0x202 = RFLAGS with IF=1 (interrupts enabled on iretq)
+    //   RISC-V 64: 0x0 = sstatus with SPP=0 (U-mode on sret)
+#if defined(MOSS_ARCH_X64)
     init_thread->context.pstate = 0x202;
 #else
     init_thread->context.pstate = 0x00000000;

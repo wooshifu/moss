@@ -88,9 +88,9 @@ def fake_tools(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
 def test_full_selection_uses_index_and_database_and_keeps_cppm(project, fake_tools, capsys):
     root, _repo = project
     write(root, "src/untracked.cpp")
-    build = database(root, ["src/main.cpp", "src/api.cppm", "src/untracked.cpp"], preset="x86_64-debug")
+    build = database(root, ["src/main.cpp", "src/api.cppm", "src/untracked.cpp"], preset="x64-debug")
     _tools, calls, _outcomes = fake_tools
-    assert lint.run(["--check", "--preset", "x86_64-debug", "-j", "2"], repository_root=root, cwd=root) == 0
+    assert lint.run(["--check", "--preset", "x64-debug", "-j", "2"], repository_root=root, cwd=root) == 0
     checked = {path for path, _argv, _live in calls if path.startswith("src/")}
     assert checked == {"src/main.cpp", "src/api.cppm"}
     assert "skipped: src/other.cpp" in capsys.readouterr().err

@@ -515,7 +515,7 @@ volatile u8 *uart_out = reinterpret_cast<volatile u8 *>(
 **Step 3: Build all 6 presets**
 
 Run: `uv run build.py`
-Expected: All compile. x86_64 and RISC-V unchanged (phys_to_virt/virt_to_phys are no-ops for now).
+Expected: All compile. x64 and RISC-V 64 unchanged (phys_to_virt/virt_to_phys are no-ops for now).
 
 **Step 4: QEMU test**
 
@@ -1033,7 +1033,7 @@ git commit -m "[mm][vm] complete high-half kernel + per-process virtual memory i
 | Demand paging works | `demand page: mapped va=...` logs |
 | Process isolation | Two processes have different TTBR0 |
 | Invalid access kills process | No VMA → process terminated, kernel continues |
-| All 6 presets compile | ARM64/x86_64/RISC-V × debug/release |
+| All 6 presets compile | ARM64/x64/RISC-V 64 × debug/release |
 
 ## Risk Summary
 

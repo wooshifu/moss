@@ -528,7 +528,7 @@ Expected: Secondary CPUs print "SMP0", "SMP1", etc. and "RDY1", "RDY2", etc. The
 **Step 9: Build all 6 presets**
 
 Run: `uv run build.py`
-Expected: All 6 presets pass (x86_64/RISC-V stubs may need `#if defined(MOSS_ARCH_ARM64)` guards)
+Expected: All 6 presets pass (x64/RISC-V 64 stubs may need `#if defined(MOSS_ARCH_ARM64)` guards)
 
 **Step 10: Commit**
 
@@ -846,5 +846,5 @@ git tag -a smp-v1.0 -m "Full SMP multi-core support: 8 CPUs with spinlocks, per-
 | Timer not ticking on CPUs 1-7 | GIC CPU interface not initialized | Verify `init_cpu_interface()` in secondary_cpu_entry |
 | Tasks only on CPU 0 | Tasks not distributed to other CPUs | Check `i % 8` in create_test_task |
 | Heap corruption | Missing allocator lock | Verify LockGuard in RuntimeHeapAllocator methods |
-| Build fails on x86_64/RISC-V | ARM64-specific code without `#ifdef` | Guard ARM64 asm with `#if defined(MOSS_ARCH_ARM64)` |
+| Build fails on x64/RISC-V 64 | ARM64-specific code without `#ifdef` | Guard ARM64 asm with `#if defined(MOSS_ARCH_ARM64)` |
 | WFI never wakes | SEV not sent after SGI | Verify send_sgi in enqueue_task for remote CPUs |

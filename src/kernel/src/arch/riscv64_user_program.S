@@ -1,5 +1,5 @@
 // =============================================================================
-// RISC-V Embedded Userspace Program — execve() Trampoline
+// RISC-V 64 Embedded Userspace Program — execve() Trampoline
 // =============================================================================
 //
 // This is a minimal, self-contained user-mode program compiled directly into
@@ -11,7 +11,7 @@
 //      the shell.elf program from initramfs CPIO archive
 //   3. On failure: sys_write(stdout, error message) → sys_exit(1)
 //
-// RISC-V MOSS syscall convention:
+// RISC-V 64 MOSS syscall convention:
 //   a7 (x17) = syscall number
 //   a0 - a5  = arguments 0 - 5
 //   Invoke via ECALL instruction

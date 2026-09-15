@@ -103,7 +103,7 @@ def test_simd_fault_is_explicit_and_failure_is_not_an_expected_pass():
 def test_simd_fault_rejects_other_architectures_before_launch(tmp_path, monkeypatch):
     cfg = Artifacts(tmp_path / "manifest.json", "ARM64", "linux-image", {}, {})
     monkeypatch.setattr(Artifacts, "load", lambda _: cfg)
-    with pytest.raises(kv.typer.BadParameter, match="requires x86_64"):
+    with pytest.raises(kv.typer.BadParameter, match="requires x64"):
         kv.run(manifest=cfg.manifest, workload=["users.simd_fault"])
 
 
@@ -218,7 +218,7 @@ def test_saved_measurement_requires_protocol_termination(termination):
 
 def test_saved_measurement_requires_architecture_specific_clock():
     report = benchmark_report()
-    report["comparison_environment"]["arch"] = "X86_64"
+    report["comparison_environment"]["arch"] = "X64"
     guest = report["guests"][0]
     guest["clock"]["source"] = "cpuid.15"
     guest["raw_exit"] = -15  # Host-owned termination is not a test result.

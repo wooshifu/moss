@@ -1,8 +1,8 @@
 // =============================================================================
-// x86_64 Kernel Boot Entry
+// x64 Kernel Boot Entry
 // =============================================================================
 //
-// Bootstrap for x86_64 MOSS kernel in long mode (64-bit).
+// Bootstrap for x64 MOSS kernel in long mode (64-bit).
 //
 // Boot protocol: PVH (Xen PVH) via ELF note.
 // QEMU's -kernel option detects the XEN_ELFNOTE_PHYS32_ENTRY note and
@@ -228,10 +228,10 @@ _start:
     movq %rax, pvh_boot_info_ptr(%rip) // Store as 64-bit (zero-extended)
 
     // ---- Set up TSS for ring 3 → ring 0 transitions ----
-    call x86_64_setup_tss
+    call x64_setup_tss
 
     // ---- Call unified boot entry ----
-    // Pass PVH boot info pointer as device_tree_ptr for x86_64
+    // Pass PVH boot info pointer as device_tree_ptr for x64
     movq pvh_boot_info_ptr(%rip), %rdi
 
     call early_main
@@ -303,8 +303,8 @@ gdt_table:
     .quad 0x00CF92000000FFFF            // [2] Kernel Data (0x10): DPL=0, P=1, type=0x2(R/W)
     .quad 0x00CFF2000000FFFF            // [3] User Data   (0x18): DPL=3, P=1, type=0x2(R/W)
     .quad 0x00AFFA000000FFFF            // [4] User Code   (0x20): L=1, DPL=3, P=1, type=0xA(E/R)
-    .quad 0                             // [5] TSS low  (0x28) — filled by x86_64_setup_tss
-    .quad 0                             // [6] TSS high (0x30) — filled by x86_64_setup_tss
+    .quad 0                             // [5] TSS low  (0x28) — filled by x64_setup_tss
+    .quad 0                             // [6] TSS high (0x30) — filled by x64_setup_tss
 gdt_end:
 
 .align 16
@@ -319,7 +319,7 @@ gdt_ptr:
 .align 16
 .global g_tss
 g_tss:
-    .skip 104                           // x86_64 TSS is 104 bytes
+    .skip 104                           // x64 TSS is 104 bytes
 
 // Prevent executable stack warning
 .section .note.GNU-stack,"",@progbits

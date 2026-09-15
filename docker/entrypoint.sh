@@ -2,9 +2,9 @@
 # MOSS Docker entrypoint — build kernel and run in QEMU
 #
 # Usage:
-#   entrypoint.sh run [--arch arm64|x86_64|riscv] [qemu-args...]
-#   entrypoint.sh test [--arch arm64|x86_64|riscv]
-#   entrypoint.sh build [--arch arm64|x86_64|riscv]
+#   entrypoint.sh run [--arch arm64|x64|riscv64] [qemu-args...]
+#   entrypoint.sh test [--arch arm64|x64|riscv64]
+#   entrypoint.sh build [--arch arm64|x64|riscv64]
 #   entrypoint.sh shell
 set -euo pipefail
 
@@ -76,7 +76,7 @@ case "${COMMAND}" in
         ;;
     *)
         echo "Unknown command: ${COMMAND}"
-        echo "Usage: entrypoint.sh {run|test|build|shell} [--arch arm64|x86_64|riscv] [extra-args...]"
+        echo "Usage: entrypoint.sh {run|test|build|shell} [--arch arm64|x64|riscv64] [extra-args...]"
         exit 1
         ;;
 esac

@@ -280,7 +280,7 @@ class Protocol:
             return "error", "unexpected_kernel_panic"
         if any(
             marker in serial
-            for marker in (b"KERNEL PAGE FAULT", b"HALTED", b"RISC-V EXCEPTION", b"UNHANDLED USER EXCEPTION")
+            for marker in (b"KERNEL PAGE FAULT", b"HALTED", b"RISC-V 64 EXCEPTION", b"UNHANDLED USER EXCEPTION")
         ):
             return "error", "unexpected_kernel_panic"
         if (
@@ -294,7 +294,7 @@ class Protocol:
             return "passed", "panic"
         if expected == "timeout" and self.fatal == "timeout" and reason == "case_timeout":
             return "passed", "timeout"
-        if any(marker in serial for marker in (b"[P]", b"KERNEL PAGE FAULT", b"HALTED", b"RISC-V EXCEPTION")):
+        if any(marker in serial for marker in (b"[P]", b"KERNEL PAGE FAULT", b"HALTED", b"RISC-V 64 EXCEPTION")):
             return "error", "unexpected_kernel_panic"
         if reason:
             return "error", reason
@@ -494,8 +494,8 @@ def saved_measurement(report: dict, item: dict) -> float | None:
         arch = environment["arch"]
         sources = {
             "ARM64": ("cntfrq_el0",),
-            "RISCV": ("dtb.timebase-frequency",),
-            "X86_64": ("cpuid.15", "pit.channel0"),
+            "RISCV64": ("dtb.timebase-frequency",),
+            "X64": ("cpuid.15", "pit.channel0"),
         }
         if item["clock"]["source"] not in sources[arch]:
             return None
@@ -658,8 +658,8 @@ def run(
     if not 256 <= expected_ram_mib <= memory_mib:
         raise typer.BadParameter("expected firmware RAM must be between 256 MiB and installed RAM")
     cfg = Artifacts.load(manifest)
-    if "users.simd_fault" in selected and cfg.arch != "X86_64":
-        raise typer.BadParameter("users.simd_fault requires x86_64")
+    if "users.simd_fault" in selected and cfg.arch != "X64":
+        raise typer.BadParameter("users.simd_fault requires x64")
     build = cfg.manifest.parent
     metadata = cfg.build
     qemu = resolve_qemu(cfg.arch, qemu)

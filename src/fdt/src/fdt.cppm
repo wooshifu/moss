@@ -226,7 +226,7 @@ static void parse_timer_and_firmware(const void *fdt) noexcept {
           g_platform_info.psci_smc || (method && length == 4 && strncmp(method, "hvc", 4) == 0);
     }
   }
-#if defined(MOSS_ARCH_RISCV)
+#if defined(MOSS_ARCH_RISCV64)
   g_platform_info.timer_interrupt = 5; // architectural supervisor timer interrupt
 #endif
 }
@@ -282,18 +282,18 @@ static void parse_cpus(const void *fdt) noexcept {
             cpu.release_address = read_fdt64_unaligned(release);
           }
         }
-#if defined(MOSS_ARCH_RISCV)
+#if defined(MOSS_ARCH_RISCV64)
         cpu.enable_method = CpuEnableMethod::Sbi;
 #endif
         count++;
 
-        // Read mmu-type from first CPU node (e.g. "riscv,sv39", "riscv,sv48")
+        // Read mmu-type from first CPU node (e.g. "riscv64,sv39", "riscv64,sv48")
         if (!mmu_detected) {
           int mmu_len = 0;
           const char *mmu_type = static_cast<const char *>(fdt_getprop(fdt, node, "mmu-type", &mmu_len));
           if (mmu_type && mmu_len > 0) {
-            // Parse "riscv,svNN" — look for the digit after "sv"
-            // Valid values: "riscv,sv39" → 3, "riscv,sv48" → 4, "riscv,sv57" → 5
+            // Parse "riscv64,svNN" — look for the digit after "sv"
+            // Valid values: "riscv64,sv39" → 3, "riscv64,sv48" → 4, "riscv64,sv57" → 5
             for (int i = 0; i + 1 < mmu_len; i++) {
               if (mmu_type[i] == 's' && mmu_type[i + 1] == 'v') {
                 // Parse the number: sv39→39, sv48→48, sv57→57
@@ -414,7 +414,7 @@ static void parse_uart(const void *fdt) noexcept {
   uart.valid = true;
 }
 
-/// 解析中断控制器节点（ARM GIC / RISC-V PLIC）
+/// 解析中断控制器节点（ARM GIC / RISC-V 64 PLIC）
 static void parse_intc(const void *fdt) noexcept {
   int intc_node = -1;
   int offset = -1;
@@ -441,7 +441,7 @@ static void parse_intc(const void *fdt) noexcept {
       detected_version = 2;
       break;
     }
-    if (compatible_match(fdt, offset, "riscv,plic0") || compatible_match(fdt, offset, "sifive,plic-1.0.0")) {
+    if (compatible_match(fdt, offset, "riscv64,plic0") || compatible_match(fdt, offset, "sifive,plic-1.0.0")) {
       intc_node = offset;
       detected_version = 0;
       break;

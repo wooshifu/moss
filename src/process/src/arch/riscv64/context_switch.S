@@ -17,7 +17,7 @@
 //   0x108   8      pstate   — supervisor status register (sstatus)
 //   0x110   8      sp       — dedicated stack pointer field
 //
-// RISC-V register naming:
+// RISC-V 64 register naming:
 //   x0  = zero (hardwired 0)    x16 = a6
 //   x1  = ra (return address)   x17 = a7
 //   x2  = sp (stack pointer)    x18 = s2
@@ -35,7 +35,7 @@
 //   x14 = a4                    x30 = t5
 //   x15 = a5                    x31 = t6
 //
-// RISC-V calling convention:
+// RISC-V 64 calling convention:
 //   Arguments:    a0-a7 (x10-x17)
 //   Callee-saved: s0-s11 (x8-x9, x18-x27), ra (x1), sp (x2)
 //   Return value: a0 (x10)
@@ -188,7 +188,7 @@ switch_to_user:
 
     // NOTE: sscratch must be set by the caller to the per-thread
     // kernel stack top BEFORE calling this function.  The trap entry
-    // (riscv_syscall.S) swaps sp↔sscratch to switch from user stack
+    // (riscv64_syscall.S) swaps sp↔sscratch to switch from user stack
     // to kernel stack.  We do NOT set sscratch here because the caller
     // may be deep in a C call stack — sp would point to a mid-stack
     // frame instead of the clean kernel_stack_top.
@@ -264,7 +264,7 @@ kernel_thread_entry:
     jalr    ra, t0, 0                   // call func(arg)
 
     // Thread returned — invoke exit (should not normally reach here)
-    li      a7, 93                      // RISC-V Linux exit syscall number
+    li      a7, 93                      // RISC-V 64 Linux exit syscall number
     li      a0, 0                       // exit code = 0
     ecall
 

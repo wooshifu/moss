@@ -15,9 +15,9 @@ find_program(LLD_LINKER ld.lld HINTS "${_compiler_dir}" REQUIRED)
 
 if(MOSS_TARGET_ARCH STREQUAL "ARM64")
     set(USERSPACE_ARCH_FLAGS --target=aarch64-unknown-elf)
-elseif(MOSS_TARGET_ARCH STREQUAL "RISCV")
+elseif(MOSS_TARGET_ARCH STREQUAL "RISCV64")
     set(USERSPACE_ARCH_FLAGS --target=riscv64-unknown-elf -march=rv64imac -mabi=lp64 -mcmodel=medany)
-elseif(MOSS_TARGET_ARCH STREQUAL "X86_64")
+elseif(MOSS_TARGET_ARCH STREQUAL "X64")
     set(USERSPACE_ARCH_FLAGS --target=x86_64-unknown-elf -mcmodel=large -fPIC)
 endif()
 

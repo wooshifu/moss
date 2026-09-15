@@ -20,8 +20,8 @@ inline void do_syscall_return(SyscallContext *context) noexcept {
 
 // Unified syscall initialization interface.
 // ARM64: VBAR_EL1 is set in start_arm64.S; no runtime init needed here.
-// x86_64: Write LSTAR, STAR, SFMASK, EFER MSRs for SYSCALL instruction.
-// RISC-V: Write stvec CSR to point to the trap handler.
+// x64: Write LSTAR, STAR, SFMASK, EFER MSRs for SYSCALL instruction.
+// RISC-V 64: Write stvec CSR to point to the trap handler.
 //
 // Uses #if instead of if constexpr because inline asm constraints are
 // validated at parse time regardless of constexpr branch elimination.
@@ -29,7 +29,7 @@ inline bool initialize_architecture_syscalls() noexcept {
 #if defined(MOSS_ARCH_ARM64)
   // VBAR_EL1 already configured in start_arm64.S during early boot.
   return true;
-#elif defined(MOSS_ARCH_X86_64)
+#elif defined(MOSS_ARCH_X64)
   // syscall_entry_point is declared in moss.abi
   u64 lstar = reinterpret_cast<u64>(&moss::abi::syscall_entry_point);
   u32 lo = static_cast<u32>(lstar);
@@ -53,7 +53,7 @@ inline bool initialize_architecture_syscalls() noexcept {
   asm volatile("wrmsr" ::"c"(0xC0000080U), "a"(efer_lo), "d"(efer_hi));
 
   return true;
-#elif defined(MOSS_ARCH_RISCV)
+#elif defined(MOSS_ARCH_RISCV64)
   // Set stvec to point to syscall_entry_point (direct mode)
   u64 addr = reinterpret_cast<u64>(&moss::abi::syscall_entry_point);
   asm volatile("csrw stvec, %0" ::"r"(addr));
@@ -74,8 +74,8 @@ struct SyscallConvention {
 
 inline const SyscallConvention &get_syscall_convention() noexcept {
   using moss::kernel::arch::is_arm64;
-  using moss::kernel::arch::is_riscv;
-  using moss::kernel::arch::is_x86_64;
+  using moss::kernel::arch::is_riscv64;
+  using moss::kernel::arch::is_x64;
   if constexpr (is_arm64) {
     static const SyscallConvention conv = {.arch_name = "ARM64",
                                            .syscall_instruction = "SVC",
@@ -83,15 +83,15 @@ inline const SyscallConvention &get_syscall_convention() noexcept {
                                            .return_register = "x0",
                                            .arg_registers = {"x0", "x1", "x2", "x3", "x4", "x5"}};
     return conv;
-  } else if constexpr (is_x86_64) {
-    static const SyscallConvention conv = {.arch_name = "x86_64",
+  } else if constexpr (is_x64) {
+    static const SyscallConvention conv = {.arch_name = "x64",
                                            .syscall_instruction = "SYSCALL",
                                            .syscall_nr_register = "rax",
                                            .return_register = "rax",
                                            .arg_registers = {"rdi", "rsi", "rdx", "r10", "r8", "r9"}};
     return conv;
-  } else if constexpr (is_riscv) {
-    static const SyscallConvention conv = {.arch_name = "RISC-V",
+  } else if constexpr (is_riscv64) {
+    static const SyscallConvention conv = {.arch_name = "RISC-V 64",
                                            .syscall_instruction = "ECALL",
                                            .syscall_nr_register = "a7",
                                            .return_register = "a0",

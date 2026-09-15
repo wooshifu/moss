@@ -41,7 +41,7 @@ def main() -> None:
     link.append("-Wl,--defsym=_heap_end_addr=_kernel_end_addr+4096")
     subprocess.run(link, cwd=base, check=True, timeout=60)
     image = elf
-    if artifacts.arch != "X86_64":
+    if artifacts.arch != "X64":
         objcopy = shutil.which("llvm-objcopy")
         assert objcopy, "llvm-objcopy is required"
         image = output / "moss.test.bin"

@@ -40,7 +40,7 @@
 #define MOSS_TF_STATUS 256
 #define MOSS_TF_SP 264
 #define MOSS_TF_SIZE 272
-#elif defined(MOSS_ARCH_RISCV)
+#elif defined(MOSS_ARCH_RISCV64)
 #define MOSS_USER_STATUS_MASK 0
 #define MOSS_USER_STATUS_FIXED 0x200000020
 #define MOSS_TF_RA 0
@@ -80,7 +80,7 @@
 #define MOSS_TF_RESERVED0 272
 #define MOSS_TF_RESERVED1 280
 #define MOSS_TF_SIZE 288
-#elif defined(MOSS_ARCH_X86_64)
+#elif defined(MOSS_ARCH_X64)
 #define MOSS_USER_STATUS_MASK 0xcd5
 #define MOSS_USER_STATUS_FIXED 0x202
 #define MOSS_TF_R15 0

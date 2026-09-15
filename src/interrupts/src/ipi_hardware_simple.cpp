@@ -94,7 +94,7 @@ IpiResult SimpleHardwareIpi::send_ipi(u32 target_cpu, IpiType type) noexcept {
 
   // GICv2 SGIR only supports 8-bit CPU target mask (CPUs 0-7).
   // GICv3 uses ICC_SGI1R_EL1 with 16-bit TargetList.
-  // This check is ARM64-only; x86_64 (APIC) and RISC-V (PLIC/CLINT) have
+  // This check is ARM64-only; x64 (APIC) and RISC-V 64 (PLIC/CLINT) have
   // different IPI mechanisms without this 8-core limitation.
 #if defined(MOSS_ARCH_ARM64)
   if (::moss::kernel::hal::intc::g_gic_version != ::moss::kernel::hal::intc::GicVersion::GICv3 && target_cpu >= 8) {
