@@ -69,7 +69,7 @@ struct PlatformInfo {
   u32 boot_cpu_id;
   u64 timebase_frequency;
 
-  // RISC-V MMU type from DTB (3 = Sv39, 4 = Sv48, 5 = Sv57; 0 = unknown)
+  // RISC-V 64 MMU type from DTB (3 = Sv39, 4 = Sv48, 5 = Sv57; 0 = unknown)
   u8 mmu_levels;
 
   // 物理内存区域（来自 /memory 节点）
@@ -145,7 +145,7 @@ inline PlatformInfo hardware{};
 [[nodiscard]] constexpr VirtAddr kernel_virt_base() noexcept {
 #if defined(MOSS_ARCH_ARM64)
   return 0xFFFF000000000000ULL;
-#elif defined(MOSS_ARCH_RISCV)
+#elif defined(MOSS_ARCH_RISCV64)
   return 0xFFFFFFFF80000000ULL;
 #else
   return 0xFFFF800000000000ULL;

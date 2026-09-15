@@ -155,7 +155,7 @@ KernelResult<PageTable *> PageTableManager::allocate_page_table_dynamic() {
     return KernelResult<PageTable *>{ErrorCode::OutOfMemory};
   }
   PhysAddr pa = *result;
-#ifdef MOSS_ARCH_X86_64
+#ifdef MOSS_ARCH_X64
   auto *table = reinterpret_cast<PageTable *>(static_cast<VirtAddr>(pa));
 #else
   auto *table = reinterpret_cast<PageTable *>(phys_to_virt(pa));
@@ -175,12 +175,12 @@ VoidResult PageTableManager::setup_kernel_high_half_tables() {
 
   // break_virtual_address gives the correct pgd_index for each arch:
   //   ARM64/x86: (KERNEL_DIRECT_MAP_BASE >> 39) & 0x1FF = 256
-  //   RISC-V Sv39: (KERNEL_DIRECT_MAP_BASE >> 30) & 0x1FF = 256
+  //   RISC-V 64 Sv39: (KERNEL_DIRECT_MAP_BASE >> 30) & 0x1FF = 256
   auto bd = break_virtual_address(KERNEL_DIRECT_MAP_BASE);
   u16 pgd_idx = bd.pgd_index;
 
-#if defined(MOSS_ARCH_RISCV)
-  // RISC-V has a single satp register (no separate ttbr0/ttbr1), so the
+#if defined(MOSS_ARCH_RISCV64)
+  // RISC-V 64 has a single satp register (no separate ttbr0/ttbr1), so the
   // high-half entries MUST go into the same root table as the identity map.
   if (!kernel_pgd) {
     return VoidResult{ErrorCode::InvalidState};
@@ -217,7 +217,7 @@ VoidResult PageTableManager::setup_kernel_high_half_tables() {
   }
 #else
   {
-    // ARM64/x86_64: separate high-half PGD (ARM64 uses ttbr1)
+    // ARM64/x64: separate high-half PGD (ARM64 uses ttbr1)
     auto pgd_result = allocate_page_table();
     if (!pgd_result) {
       return VoidResult{pgd_result.error()};
@@ -233,7 +233,7 @@ VoidResult PageTableManager::setup_kernel_high_half_tables() {
 
     PhysAddr pud_pa = get_physical_address(pud);
     kernel_high_pgd->entries[pgd_idx].set_table(pud_pa);
-#if defined(MOSS_ARCH_X86_64)
+#if defined(MOSS_ARCH_X64)
     // CR3 is shared by user and kernel mode; there is no separate TTBR1.
     kernel_pgd->entries[pgd_idx] = kernel_high_pgd->entries[pgd_idx];
 #endif
@@ -278,7 +278,7 @@ PageTableEntry *PageTableManager::get_user_pte(PhysAddr pgd_phys, VirtAddr va) {
   }
   auto *pmd = get_table_from_physical(pude.get_phys_addr());
 
-#if defined(MOSS_ARCH_RISCV)
+#if defined(MOSS_ARCH_RISCV64)
   if (hal::mmu::g_mmu_mode == hal::mmu::MmuMode::Sv39) {
     // Sv39: PMD is the final L0 table — pmd_index IS the leaf PTE index.
     return &pmd->entries[bd.pmd_index];
@@ -387,7 +387,7 @@ static VoidResult prepare_user_clone(const PageTable *src, const PageTable *dst,
     if (!entry.is_valid())
       continue;
     if (shift == 12) {
-#if defined(MOSS_ARCH_RISCV)
+#if defined(MOSS_ARCH_RISCV64)
       if (entry.is_table())
         return VoidResult{ErrorCode::NotSupported};
 #elif defined(MOSS_ARCH_ARM64)
@@ -535,7 +535,7 @@ void PageTableManager::free_user_page_tables(PhysAddr pgd_phys) {
           continue;
         }
 
-#if defined(MOSS_ARCH_RISCV)
+#if defined(MOSS_ARCH_RISCV64)
         // Sv39: PMD IS the leaf level — free 4KB leaf pages directly.
         if (hal::mmu::g_mmu_mode == hal::mmu::MmuMode::Sv39) {
           PhysAddr leaf_pa = pmde.get_phys_addr();
@@ -548,7 +548,7 @@ void PageTableManager::free_user_page_tables(PhysAddr pgd_phys) {
         }
 #endif
 
-        // Block mapping (2MB) — skip (Sv48/ARM64/x86_64)
+        // Block mapping (2MB) — skip (Sv48/ARM64/x64)
         if (pmde.is_block()) {
           continue;
         }
@@ -594,7 +594,7 @@ void PageTableManager::free_user_page_tables(PhysAddr pgd_phys) {
 }
 
 // Map a single 4KB page into a user process page table
-// ARM64/x86_64: 4-level walk;  RISC-V Sv39: 3-level walk
+// ARM64/x64: 4-level walk;  RISC-V 64 Sv39: 3-level walk
 VoidResult PageTableManager::map_user_page(PhysAddr pgd_phys, VirtAddr va, PhysAddr pa, u64 perms) {
   if (!pgd_phys || pgd_phys == get_physical_address(kernel_pgd) || pgd_phys == get_physical_address(kernel_high_pgd) ||
       !is_user_range(va, PAGE_SIZE) || ((va | pa | pgd_phys) & (PAGE_SIZE - 1)) != 0 ||
@@ -645,10 +645,10 @@ VoidResult PageTableManager::map_user_page(PhysAddr pgd_phys, VirtAddr va, PhysA
 
 // 创建内核页表映射
 //
-// 4-level (ARM64, x86_64, RISC-V Sv48): 48-bit VA
+// 4-level (ARM64, x64, RISC-V 64 Sv48): 48-bit VA
 //   PGD[0] → PUD for the first 4 GiB identity map.
 //
-// 3-level (RISC-V Sv39): 39-bit VA
+// 3-level (RISC-V 64 Sv39): 39-bit VA
 //   Root table = L2 level; root[0..3] cover the identity map.
 // Both layouts split leaves at permission/firmware boundaries.
 VoidResult PageTableManager::setup_kernel_page_tables() {
@@ -664,7 +664,7 @@ VoidResult PageTableManager::setup_kernel_page_tables() {
     return VoidResult{ErrorCode::InvalidState};
   }
 
-#if defined(MOSS_ARCH_RISCV)
+#if defined(MOSS_ARCH_RISCV64)
   if (hal::mmu::g_mmu_mode == hal::mmu::MmuMode::Sv39) {
     // Sv39: root table = L2 level (512 × 1GB entries).
     // kernel_pgd IS the root table; 1GB gigapage entries go directly in it.
@@ -745,7 +745,7 @@ VoidResult PageTableManager::map_region(VirtAddr virt_addr, PhysAddr phys_addr, 
 // 映射单个页面
 //
 // 4-level walk: PGD → PUD → PMD → PTE[pte_index]
-// RISC-V Sv39 (3-level): PGD → PUD → final entry at PMD[pmd_index]
+// RISC-V 64 Sv39 (3-level): PGD → PUD → final entry at PMD[pmd_index]
 VoidResult PageTableManager::map_page(VirtAddr virt_addr, PhysAddr phys_addr, u64 permissions) {
   // This entry point modifies the kernel PGD; user mappings have their own API.
   if (permissions & page_attr::USER) {
@@ -782,7 +782,7 @@ VoidResult PageTableManager::map_page(VirtAddr virt_addr, PhysAddr phys_addr, u6
   }
   current_table = get_table_from_physical(current_table->entries[bd.pud_index].get_phys_addr());
 
-#if defined(MOSS_ARCH_RISCV)
+#if defined(MOSS_ARCH_RISCV64)
   if (hal::mmu::g_mmu_mode == hal::mmu::MmuMode::Sv39) {
     // Sv39: 3 levels — PMD IS the final L0 table.
     current_table->entries[bd.pmd_index].set_page(phys_addr, permissions);
@@ -1057,7 +1057,7 @@ VoidResult PageTableManager::unmap_page(VirtAddr virt_addr) {
   // PMD level
   auto *pmd = get_table_from_physical(pud_entry.get_phys_addr());
 
-#if defined(MOSS_ARCH_RISCV)
+#if defined(MOSS_ARCH_RISCV64)
   if (hal::mmu::g_mmu_mode == hal::mmu::MmuMode::Sv39) {
     // Sv39: PMD IS the final L0 table — pmd_index is the leaf entry.
     auto &leaf_entry = pmd->entries[bd.pmd_index];
@@ -1121,7 +1121,7 @@ PageTableManager::PageInfo PageTableManager::query_page(VirtAddr virt_addr) {
     return info;
   }
   if (!pud_entry.is_table()) {
-#if defined(MOSS_ARCH_RISCV)
+#if defined(MOSS_ARCH_RISCV64)
     if (hal::mmu::g_mmu_mode == hal::mmu::MmuMode::Sv39) {
       // Sv39 L1: 2MB megapage
       info.phys_addr = pud_entry.get_phys_addr() | (virt_addr & 0x1FFFFFULL);
@@ -1145,7 +1145,7 @@ PageTableManager::PageInfo PageTableManager::query_page(VirtAddr virt_addr) {
     return info;
   }
 
-#if defined(MOSS_ARCH_RISCV)
+#if defined(MOSS_ARCH_RISCV64)
   if (hal::mmu::g_mmu_mode == hal::mmu::MmuMode::Sv39) {
     // Sv39: PMD IS the final L0 table — pmd_index = 4KB leaf PTE.
     info.phys_addr = pmd_entry.get_phys_addr() | (virt_addr & 0xFFFULL);

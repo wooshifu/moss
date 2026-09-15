@@ -112,7 +112,7 @@ CheckOptions:
     value: '_'
   - key: readability-identifier-naming.ProtectedMemberSuffix
     value: '_'
-  # Enum constants: mostly CamelCase (EdgeRising, Success) but some UPPER_CASE (X86_64)
+  # Enum constants: mostly CamelCase (EdgeRising, Success) but some UPPER_CASE (X64)
   - key: readability-identifier-naming.EnumConstantCase
     value: aNy_CasE
   - key: readability-identifier-naming.ScopedEnumConstantCase

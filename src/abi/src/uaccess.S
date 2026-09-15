@@ -17,7 +17,7 @@ moss_raw_copy_from_user:
 .Lfrom_done:
     mov x0, x2
     ret
-#elif defined(MOSS_ARCH_RISCV)
+#elif defined(MOSS_ARCH_RISCV64)
     beqz a2, .Lfrom_done
 .Lfrom_loop:
 .Lfrom_user:
@@ -30,7 +30,7 @@ moss_raw_copy_from_user:
 .Lfrom_done:
     mv a0, a2
     ret
-#elif defined(MOSS_ARCH_X86_64)
+#elif defined(MOSS_ARCH_X64)
     testq %rdx, %rdx
     jz .Lfrom_done
 .Lfrom_loop:
@@ -63,7 +63,7 @@ moss_raw_copy_to_user:
 .Lto_done:
     mov x0, x2
     ret
-#elif defined(MOSS_ARCH_RISCV)
+#elif defined(MOSS_ARCH_RISCV64)
     beqz a2, .Lto_done
 .Lto_loop:
     lbu t0, 0(a1)
@@ -76,7 +76,7 @@ moss_raw_copy_to_user:
 .Lto_done:
     mv a0, a2
     ret
-#elif defined(MOSS_ARCH_X86_64)
+#elif defined(MOSS_ARCH_X64)
     testq %rdx, %rdx
     jz .Lto_done
 .Lto_loop:

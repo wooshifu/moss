@@ -246,7 +246,7 @@ load_elf_from_memory(elf_data, elf_size):
 | Page faults resolve | Code/stack/heap faults logged and resolved |
 | Process isolation | Two processes have different TTBR0 values |
 | Invalid access → process killed | No VMA → process terminated, kernel continues |
-| All 6 presets compile | ARM64/x86_64/RISC-V × debug/release |
+| All 6 presets compile | ARM64/x64/RISC-V 64 × debug/release |
 
 ## 8. Risks and Mitigations
 
@@ -266,4 +266,4 @@ load_elf_from_memory(elf_data, elf_size):
 - Swap / page reclaim
 - Huge pages (2MB/1GB) for user space
 - NUMA-aware allocation
-- High-half kernel for x86_64 / RISC-V (ARM64 only)
+- High-half kernel for x64 / RISC-V 64 (ARM64 only)

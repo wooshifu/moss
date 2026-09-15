@@ -6,7 +6,7 @@
 
 **Architecture:** Four-layer design — HAL/Timer (arch-specific register ops as free functions), Clocksource (divide-free ns conversion), HrTimer (individual timer instances), TimerSubsystem (singleton manager with sorted queue). The CFS scheduler becomes the first hrtimer consumer, replacing its cooperative busy-wait loop with a periodic 6ms timer tick.
 
-**Tech Stack:** C++26 Modules, freestanding environment (no stdlib), inline assembly for ARM64/x86_64/RISC-V timer registers.
+**Tech Stack:** C++26 Modules, freestanding environment (no stdlib), inline assembly for ARM64/x64/RISC-V 64 timer registers.
 
 ---
 
@@ -46,8 +46,8 @@ Set per-platform timer values in each `DEFAULTS` instance:
 | Platform | IRQ | Frequency |
 |----------|-----|-----------|
 | ARM64 QEMU virt | `27` (PPI #11, virtual timer) | `0` (read `cntfrq_el0` at runtime) |
-| x86_64 QEMU | `0` (PIT/APIC placeholder) | `0` (calibrate at runtime) |
-| RISC-V QEMU virt | `5` (S-mode timer) | `10000000` (10 MHz from DTB) |
+| x64 QEMU | `0` (PIT/APIC placeholder) | `0` (calibrate at runtime) |
+| RISC-V 64 QEMU virt | `5` (S-mode timer) | `10000000` (10 MHz from DTB) |
 
 ARM64 example:
 ```cpp
@@ -119,8 +119,8 @@ This module provides architecture-specific timer register operations as free fun
 //
 // What lives here (architecture-specific):
 //   - ARM64: Generic Timer (cntvct_el0, cntv_cval_el0, cntv_ctl_el0)
-//   - x86_64: Local APIC Timer / TSC [placeholder]
-//   - RISC-V: SBI Timer / stimecmp CSR [placeholder]
+//   - x64: Local APIC Timer / TSC [placeholder]
+//   - RISC-V 64: SBI Timer / stimecmp CSR [placeholder]
 //
 // What stays in timer.cppm (architecture-independent):
 //   - Clocksource class (mult/shift conversion)
@@ -153,12 +153,12 @@ using moss::u64;
   u64 freq;
   asm volatile("mrs %0, cntfrq_el0" : "=r"(freq));
   return freq;
-#elif defined(MOSS_ARCH_X86_64)
-  // x86_64: TSC frequency must be calibrated (placeholder: return platform default)
+#elif defined(MOSS_ARCH_X64)
+  // x64: TSC frequency must be calibrated (placeholder: return platform default)
   u64 plat_freq = platform::timer_frequency();
   return (plat_freq != 0) ? plat_freq : 1000000000ULL; // fallback 1 GHz
-#elif defined(MOSS_ARCH_RISCV)
-  // RISC-V: typically from DTB timebase-frequency; use platform default
+#elif defined(MOSS_ARCH_RISCV64)
+  // RISC-V 64: typically from DTB timebase-frequency; use platform default
   u64 plat_freq = platform::timer_frequency();
   return (plat_freq != 0) ? plat_freq : 10000000ULL; // fallback 10 MHz
 #endif
@@ -174,11 +174,11 @@ using moss::u64;
   u64 val;
   asm volatile("mrs %0, cntvct_el0" : "=r"(val));
   return val;
-#elif defined(MOSS_ARCH_X86_64)
+#elif defined(MOSS_ARCH_X64)
   u32 lo, hi;
   asm volatile("rdtsc" : "=a"(lo), "=d"(hi));
   return (static_cast<u64>(hi) << 32) | lo;
-#elif defined(MOSS_ARCH_RISCV)
+#elif defined(MOSS_ARCH_RISCV64)
   u64 val;
   asm volatile("rdtime %0" : "=r"(val));
   return val;
@@ -195,11 +195,11 @@ inline void set_compare(u64 value) noexcept {
   // ARM64: write virtual timer compare value, then ensure timer is enabled
   asm volatile("msr cntv_cval_el0, %0" :: "r"(value));
   asm volatile("isb");
-#elif defined(MOSS_ARCH_X86_64)
+#elif defined(MOSS_ARCH_X64)
   // APIC Timer: write initial count (placeholder — needs calibration)
   (void)value;
-#elif defined(MOSS_ARCH_RISCV)
-  // RISC-V: write stimecmp CSR (if available) or SBI call
+#elif defined(MOSS_ARCH_RISCV64)
+  // RISC-V 64: write stimecmp CSR (if available) or SBI call
   // Placeholder — SBI set_timer
   (void)value;
 #endif
@@ -219,9 +219,9 @@ inline void enable() noexcept {
   ctl &= ~(1ULL << 1);   // Clear IMASK
   asm volatile("msr cntv_ctl_el0, %0" :: "r"(ctl));
   asm volatile("isb");
-#elif defined(MOSS_ARCH_X86_64)
+#elif defined(MOSS_ARCH_X64)
   // Unmask APIC LVT timer entry (placeholder)
-#elif defined(MOSS_ARCH_RISCV)
+#elif defined(MOSS_ARCH_RISCV64)
   // Set SIE.STIE (S-mode timer interrupt enable)
   // asm volatile("csrs sie, %0" :: "r"(1ULL << 5));
 #endif
@@ -235,9 +235,9 @@ inline void disable() noexcept {
   ctl |= (1ULL << 1);    // Set IMASK
   asm volatile("msr cntv_ctl_el0, %0" :: "r"(ctl));
   asm volatile("isb");
-#elif defined(MOSS_ARCH_X86_64)
+#elif defined(MOSS_ARCH_X64)
   // Mask APIC LVT timer entry (placeholder)
-#elif defined(MOSS_ARCH_RISCV)
+#elif defined(MOSS_ARCH_RISCV64)
   // Clear SIE.STIE
   // asm volatile("csrc sie, %0" :: "r"(1ULL << 5));
 #endif
@@ -256,9 +256,9 @@ inline void ack_interrupt() noexcept {
   // ARM64: ISTATUS clears when cntv_cval_el0 > cntvct_el0 or timer disabled.
   // The caller (TimerSubsystem::handle_interrupt) will set a new compare value,
   // which clears ISTATUS. Nothing extra needed here.
-#elif defined(MOSS_ARCH_X86_64)
+#elif defined(MOSS_ARCH_X64)
   // APIC EOI — handled by intc_hal::eoi, not duplicated here
-#elif defined(MOSS_ARCH_RISCV)
+#elif defined(MOSS_ARCH_RISCV64)
   // Clear SIP.STIP (S-mode timer interrupt pending)
   // asm volatile("csrc sip, %0" :: "r"(1ULL << 5));
 #endif

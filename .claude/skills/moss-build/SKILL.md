@@ -10,7 +10,7 @@ Build → Run → Test — always in this order.
 Build with cmake presets, run/test with the generated QEMU wrapper script.
 ```
 
-Moss targets 3 architectures (ARM64, x86_64, RISC-V) × 2 build types (debug, release) = 6 presets. Each preset builds, generates QEMU scripts, and optionally runs tests in a single workflow.
+Moss targets 3 architectures (ARM64, x64, RISC-V 64) × 2 build types (debug, release) = 6 presets. Each preset builds, generates QEMU scripts, and optionally runs tests in a single workflow.
 
 ## Step 1 — Build
 
@@ -25,7 +25,7 @@ Pick the right command based on scope:
 | Preview what would build | `uv run build.py --dry-run` |
 | List available presets | `uv run build.py list` |
 
-Available presets: `arm64-qemu-debug`, `arm64-qemu-release`, `x86_64-qemu-debug`, `x86_64-qemu-release`, `riscv-qemu-debug`, `riscv-qemu-release`.
+Available presets: `arm64-qemu-debug`, `arm64-qemu-release`, `x64-qemu-debug`, `x64-qemu-release`, `riscv64-qemu-debug`, `riscv64-qemu-release`.
 
 The project uses `-Weverything -Werror` — every warning is a build failure. Fix all warnings before proceeding.
 
@@ -98,7 +98,7 @@ Build and test inside Docker without installing Clang or QEMU locally:
 docker compose -f docker/docker-compose.yaml build                           # build image
 docker compose -f docker/docker-compose.yaml run moss-qemu                   # build + run
 docker compose -f docker/docker-compose.yaml run moss-qemu test              # unit tests
-docker compose -f docker/docker-compose.yaml run moss-qemu run --arch x86_64 # specific arch
+docker compose -f docker/docker-compose.yaml run moss-qemu run --arch x64 # specific arch
 docker compose -f docker/docker-compose.yaml run moss-qemu shell             # interactive
 ```
 

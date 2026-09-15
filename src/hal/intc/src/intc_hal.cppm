@@ -4,8 +4,8 @@
 //
 // What lives here (architecture-specific):
 //   - GIC register offsets (ARM64: GICv2/GICv3, runtime dispatch)
-//   - APIC register constants (x86_64) [placeholder]
-//   - PLIC register constants (RISC-V) [placeholder]
+//   - APIC register constants (x64) [placeholder]
+//   - PLIC register constants (RISC-V 64) [placeholder]
 //   - Low-level init, enable/disable IRQ, ack/eoi, send SGI/IPI
 //
 // What stays in interrupts.cppm (architecture-independent):
@@ -213,8 +213,8 @@ inline void wake_redistributor(VirtAddr redist_frame) noexcept {
   }
 }
 
-#elif defined(MOSS_ARCH_X86_64)
-// x86_64 Local APIC registers (MMIO offsets from APIC base, or MSR addresses)
+#elif defined(MOSS_ARCH_X64)
+// x64 Local APIC registers (MMIO offsets from APIC base, or MSR addresses)
 namespace dist_regs {
 // Placeholder — I/O APIC registers for SPI routing
 inline constexpr u32 IOREGSEL = 0x00; // I/O Register Select
@@ -237,8 +237,8 @@ inline constexpr u32 ICR_HIGH = 0x310;   // Interrupt Command (high 32 bits)
 inline constexpr u32 LVT_MASK = 0x10000; // Mask bit for LVT entries
 } // namespace cpu_regs
 
-#elif defined(MOSS_ARCH_RISCV)
-// RISC-V PLIC registers (Platform-Level Interrupt Controller)
+#elif defined(MOSS_ARCH_RISCV64)
+// RISC-V 64 PLIC registers (Platform-Level Interrupt Controller)
 namespace dist_regs {
 inline constexpr u32 PRIORITY_BASE = 0x000000; // Priority for each source
 inline constexpr u32 PENDING_BASE = 0x001000;  // Pending bits
@@ -257,9 +257,9 @@ inline constexpr u32 CLAIM_OFFSET = 0x200004;     // Claim/Complete
 // ============================================================================
 #if defined(MOSS_ARCH_ARM64)
 inline constexpr u32 SPURIOUS_IRQ_THRESHOLD = 1020; // Same for GICv2 and GICv3
-#elif defined(MOSS_ARCH_X86_64)
+#elif defined(MOSS_ARCH_X64)
 inline constexpr u32 SPURIOUS_IRQ_THRESHOLD = 0xFF; // APIC spurious vector
-#elif defined(MOSS_ARCH_RISCV)
+#elif defined(MOSS_ARCH_RISCV64)
 inline constexpr u32 SPURIOUS_IRQ_THRESHOLD = 0; // PLIC: claim=0 means no pending
 #endif
 
@@ -273,10 +273,10 @@ inline constexpr u32 SPURIOUS_IRQ_THRESHOLD = 0; // PLIC: claim=0 means no pendi
 #if defined(MOSS_ARCH_ARM64)
   u32 typer = read_reg(dist_base, dist_regs::TYPER);
   return ((typer & 0x1F) + 1) * 32;
-#elif defined(MOSS_ARCH_X86_64)
+#elif defined(MOSS_ARCH_X64)
   (void)dist_base;
   return 256; // x86 supports up to 256 interrupt vectors
-#elif defined(MOSS_ARCH_RISCV)
+#elif defined(MOSS_ARCH_RISCV64)
   (void)dist_base;
   return 1024; // PLIC can support up to 1024 sources
 #endif
@@ -292,10 +292,10 @@ inline constexpr u32 SPURIOUS_IRQ_THRESHOLD = 0; // PLIC: claim=0 means no pendi
   // GICv2: CPUNumber field
   u32 typer = read_reg(dist_base, dist_regs::TYPER);
   return ((typer >> 5) & 0x7) + 1;
-#elif defined(MOSS_ARCH_X86_64)
+#elif defined(MOSS_ARCH_X64)
   (void)dist_base;
   return 256; // APIC ID space
-#elif defined(MOSS_ARCH_RISCV)
+#elif defined(MOSS_ARCH_RISCV64)
   (void)dist_base;
   return platform::hardware.cpu_count;
 #endif
@@ -364,7 +364,7 @@ inline VoidResult init_distributor(VirtAddr dist_base, u32 max_interrupts) noexc
     write_reg(dist_base, dist_regs::CTLR, 1);
   }
 
-#elif defined(MOSS_ARCH_X86_64)
+#elif defined(MOSS_ARCH_X64)
   {
     auto *select = reinterpret_cast<volatile u32 *>(platform::intc_cpu_base());
     auto *window = reinterpret_cast<volatile u32 *>(platform::intc_cpu_base() + 0x10);
@@ -387,7 +387,7 @@ inline VoidResult init_distributor(VirtAddr dist_base, u32 max_interrupts) noexc
   (void)dist_base;
   (void)max_interrupts;
 
-#elif defined(MOSS_ARCH_RISCV)
+#elif defined(MOSS_ARCH_RISCV64)
   // PLIC: set all priorities to 0 (disabled)
   for (u32 i = 1; i <= max_interrupts && i <= 1024; i++) {
     write_reg(dist_base, dist_regs::PRIORITY_BASE + i * 4, 0);
@@ -448,7 +448,7 @@ inline VoidResult init_cpu_interface(VirtAddr cpu_base) noexcept {
     write_reg(cpu_base, cpu_regs::CTLR, 1);
   }
 
-#elif defined(MOSS_ARCH_X86_64)
+#elif defined(MOSS_ARCH_X64)
   // cpu_base is the discovered I/O APIC; the Local APIC has its own resource.
   (void)cpu_base;
   const VirtAddr LAPIC_BASE = platform::intc_dist_base();
@@ -465,7 +465,7 @@ inline VoidResult init_cpu_interface(VirtAddr cpu_base) noexcept {
   svr |= 0xFF;  // Spurious vector = 255
   write_reg(LAPIC_BASE, cpu_regs::SVR, svr);
 
-#elif defined(MOSS_ARCH_RISCV)
+#elif defined(MOSS_ARCH_RISCV64)
   // PLIC: set threshold to 0 (accept all priorities)
   write_reg(cpu_base, 0, 0); // threshold register at context base
 #endif
@@ -493,7 +493,7 @@ inline void enable_irq(VirtAddr dist_base, u32 irq) noexcept {
   u32 reg_offset = dist_regs::ISENABLER + (irq / 32) * 4;
   write_reg(dist_base, reg_offset, 1U << (irq % 32));
 
-#elif defined(MOSS_ARCH_X86_64)
+#elif defined(MOSS_ARCH_X64)
   // I/O APIC: unmask redirection table entry for the given IRQ line
   {
     const VirtAddr IOAPIC_BASE = platform::intc_cpu_base();
@@ -509,7 +509,7 @@ inline void enable_irq(VirtAddr dist_base, u32 irq) noexcept {
   }
   (void)dist_base;
 
-#elif defined(MOSS_ARCH_RISCV)
+#elif defined(MOSS_ARCH_RISCV64)
   // PLIC: use the current CPU's firmware-described supervisor context.
   u32 reg_offset =
       dist_regs::ENABLE_BASE + platform::hardware.plic_contexts[arch::get_current_cpu_id()] * 0x80 + (irq / 32) * 4;
@@ -533,7 +533,7 @@ inline void disable_irq(VirtAddr dist_base, u32 irq) noexcept {
   u32 reg_offset = dist_regs::ICENABLER + (irq / 32) * 4;
   write_reg(dist_base, reg_offset, 1U << (irq % 32));
 
-#elif defined(MOSS_ARCH_X86_64)
+#elif defined(MOSS_ARCH_X64)
   // I/O APIC: mask redirection table entry for the given IRQ line
   {
     const VirtAddr IOAPIC_BASE = platform::intc_cpu_base();
@@ -549,7 +549,7 @@ inline void disable_irq(VirtAddr dist_base, u32 irq) noexcept {
   }
   (void)dist_base;
 
-#elif defined(MOSS_ARCH_RISCV)
+#elif defined(MOSS_ARCH_RISCV64)
   // PLIC: clear enable bit
   u32 reg_offset =
       dist_regs::ENABLE_BASE + platform::hardware.plic_contexts[arch::get_current_cpu_id()] * 0x80 + (irq / 32) * 4;
@@ -572,13 +572,13 @@ inline void disable_irq(VirtAddr dist_base, u32 irq) noexcept {
   }
   return read_reg(cpu_base, cpu_regs::IAR);
 
-#elif defined(MOSS_ARCH_X86_64)
+#elif defined(MOSS_ARCH_X64)
   // APIC: interrupt vector is delivered via IDT, not read from a register.
   // The vector number is passed by the CPU hardware to the ISR.
   (void)cpu_base;
   return 0;
 
-#elif defined(MOSS_ARCH_RISCV)
+#elif defined(MOSS_ARCH_RISCV64)
   // PLIC: claim the highest-priority pending interrupt
   return read_reg(cpu_base, 4); // claim register at context base + 4
 #endif
@@ -591,9 +591,9 @@ inline void disable_irq(VirtAddr dist_base, u32 irq) noexcept {
     return ack_value & 0xFFFFFF; // GICv3: bits [23:0] (supports LPI)
   }
   return ack_value & 0x3FF; // GICv2: bits [9:0]
-#elif defined(MOSS_ARCH_X86_64)
+#elif defined(MOSS_ARCH_X64)
   return ack_value; // APIC: vector number directly
-#elif defined(MOSS_ARCH_RISCV)
+#elif defined(MOSS_ARCH_RISCV64)
   return ack_value; // PLIC: source ID directly
 #endif
 }
@@ -607,12 +607,12 @@ inline void eoi(VirtAddr cpu_base, u32 ack_value) noexcept {
   }
   write_reg(cpu_base, cpu_regs::EOIR, ack_value);
 
-#elif defined(MOSS_ARCH_X86_64)
+#elif defined(MOSS_ARCH_X64)
   // Local APIC EOI: write any value to EOI register
   write_reg(cpu_base, cpu_regs::EOI, 0);
   (void)ack_value;
 
-#elif defined(MOSS_ARCH_RISCV)
+#elif defined(MOSS_ARCH_RISCV64)
   // PLIC: complete by writing the source ID back
   write_reg(cpu_base, 4, ack_value); // complete register at context base + 4
 #endif
@@ -646,13 +646,13 @@ inline void set_priority(VirtAddr dist_base, u32 irq, u8 priority) noexcept {
   val |= (static_cast<u32>(priority) << byte_shift);
   write_reg(base, reg_offset, val);
 
-#elif defined(MOSS_ARCH_X86_64)
+#elif defined(MOSS_ARCH_X64)
   // APIC: priority is embedded in the vector number (upper 4 bits)
   (void)dist_base;
   (void)irq;
   (void)priority;
 
-#elif defined(MOSS_ARCH_RISCV)
+#elif defined(MOSS_ARCH_RISCV64)
   // PLIC: write priority register for source
   write_reg(dist_base, dist_regs::PRIORITY_BASE + irq * 4, priority);
 #endif
@@ -690,13 +690,13 @@ inline void set_target(VirtAddr dist_base, u32 irq, u32 cpu_mask) noexcept {
   val |= ((physical_mask & 0xFFU) << byte_shift);
   write_reg(dist_base, reg_offset, val);
 
-#elif defined(MOSS_ARCH_X86_64)
+#elif defined(MOSS_ARCH_X64)
   // I/O APIC: destination field in redirection table entry
   (void)dist_base;
   (void)irq;
   (void)cpu_mask;
 
-#elif defined(MOSS_ARCH_RISCV)
+#elif defined(MOSS_ARCH_RISCV64)
   // PLIC: enable bits per context control routing
   (void)dist_base;
   (void)irq;
@@ -713,11 +713,11 @@ inline void set_priority_mask(VirtAddr cpu_base, u8 mask) noexcept {
   }
   write_reg(cpu_base, cpu_regs::PMR, mask);
 
-#elif defined(MOSS_ARCH_X86_64)
+#elif defined(MOSS_ARCH_X64)
   // Local APIC: Task Priority Register
   write_reg(cpu_base, cpu_regs::TPR, mask);
 
-#elif defined(MOSS_ARCH_RISCV)
+#elif defined(MOSS_ARCH_RISCV64)
   // PLIC: threshold register
   write_reg(cpu_base, 0, mask);
 #endif
@@ -730,8 +730,8 @@ inline void set_priority_mask(VirtAddr cpu_base, u8 mask) noexcept {
 /// Send a software-generated interrupt (IPI) to target CPUs.
 /// ARM64 GICv2: sgi_id 0-15, target_cpu_mask = 8-bit CPU bitmask via GICD_SGIR.
 /// ARM64 GICv3: sgi_id 0-15, target_cpu_mask = 16-bit TargetList via ICC_SGI1R_EL1.
-/// x86_64 APIC: sends IPI via ICR register.
-/// RISC-V: software interrupts via SBI (placeholder).
+/// x64 APIC: sends IPI via ICR register.
+/// RISC-V 64: software interrupts via SBI (placeholder).
 inline VoidResult send_sgi(VirtAddr dist_base, [[maybe_unused]] VirtAddr cpu_base, u32 sgi_id,
                            u32 target_cpu_mask) noexcept {
 #if defined(MOSS_ARCH_ARM64)
@@ -769,7 +769,7 @@ inline VoidResult send_sgi(VirtAddr dist_base, [[maybe_unused]] VirtAddr cpu_bas
     write_reg(dist_base, dist_regs::SGIR, sgir_value);
   }
 
-#elif defined(MOSS_ARCH_X86_64)
+#elif defined(MOSS_ARCH_X64)
   // Local APIC ICR: send fixed IPI
   // ICR high: destination APIC ID
   // ICR low: vector | delivery mode
@@ -782,8 +782,8 @@ inline VoidResult send_sgi(VirtAddr dist_base, [[maybe_unused]] VirtAddr cpu_bas
     write_reg(dist_base, cpu_regs::ICR_LOW, (64 + sgi_id) | (1U << 14));
   }
 
-#elif defined(MOSS_ARCH_RISCV)
-  // RISC-V: software interrupts via SBI or direct CSR write
+#elif defined(MOSS_ARCH_RISCV64)
+  // RISC-V 64: software interrupts via SBI or direct CSR write
   // Placeholder — SBI ecall for IPI
   (void)dist_base;
   (void)cpu_base;
@@ -793,7 +793,7 @@ inline VoidResult send_sgi(VirtAddr dist_base, [[maybe_unused]] VirtAddr cpu_bas
       continue;
     }
     register u64 a0 asm("a0") = 1;
-    register u64 a1 asm("a1") = arch::riscv_hart_id(cpu);
+    register u64 a1 asm("a1") = arch::riscv64_hart_id(cpu);
     register u64 a6 asm("a6") = 0;
     register u64 a7 asm("a7") = 0x735049;
     asm volatile("ecall" : "+r"(a0), "+r"(a1) : "r"(a6), "r"(a7) : "memory");
@@ -814,9 +814,9 @@ inline VoidResult send_sgi(VirtAddr dist_base, [[maybe_unused]] VirtAddr cpu_bas
 [[nodiscard]] inline bool is_spurious(u32 irq_num) noexcept {
 #if defined(MOSS_ARCH_ARM64)
   return irq_num >= SPURIOUS_IRQ_THRESHOLD; // Both GICv2 and GICv3: 1020-1023
-#elif defined(MOSS_ARCH_X86_64)
+#elif defined(MOSS_ARCH_X64)
   return irq_num == SPURIOUS_IRQ_THRESHOLD; // APIC spurious vector
-#elif defined(MOSS_ARCH_RISCV)
+#elif defined(MOSS_ARCH_RISCV64)
   return irq_num == 0; // PLIC: claim=0 means no pending interrupt
 #endif
 }

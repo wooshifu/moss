@@ -1,7 +1,7 @@
 # MOSS 内核能力与待办
 
 > 更新日期：2026-09-14；提交基线：`dd6a099`；历史实现与实测保留原日期，最新 VFS/信号 uaccess 进展见 moss-todo.md 第 3.21 节。
-> 本文取代旧清单中“完成即可靠”“x86/RISC-V 仅为启动桩”的描述。
+> 本文取代旧清单中“完成即可靠”“x86/RISC-V 64 仅为启动桩”的描述。
 > 审计问题的原始证据、当前状态及完整验收条件见 [moss-todo.md](moss-todo.md)；MOSS-001～032 沿用原编号，不重新编号。
 
 ## 状态口径
@@ -13,7 +13,7 @@
 
 ## 当前架构与构建边界
 
-MOSS 当前是 C++26 freestanding 的模块化单体研究内核。ARM64、RV64、x86_64 都有实际启动、中断、调度及用户态执行路径，不是两个待从零开发的端口。
+MOSS 当前是 C++26 freestanding 的模块化单体研究内核。ARM64、RV64、x64 都有实际启动、中断、调度及用户态执行路径，不是两个待从零开发的端口。
 
 按 [ADR-0005](docs/adr/0005-generic-kernels-and-independent-runners.md)，同一源码树生成三个 ISA 各自的原生镜像；**同一 ISA 的镜像在满足已支持启动协议和设备契约的机器间复用，不是一个二进制跨三个 ISA 运行**。
 
@@ -21,17 +21,17 @@ MOSS 当前是 C++26 freestanding 的模块化单体研究内核。ARM64、RV64�
 | --- | --- | --- | --- |
 | ARM64 | Linux Image + DTB；PL011/16550；GICv2/v3；PSCI 或 spin-table | Debug/Release 默认四核真实内核测试；GICv3 16 核资源测试；同镜像 QEMU `raspi4b` 合成 DTB 测试 | 任意 SoC、真实树莓派、完整信号隔离验收 |
 | RV64 | Linux Image + DTB/SBI；Sv39/Sv48；16550、PLIC、SBI TIME/IPI/HSM | Debug/Release 默认四核真实内核测试；同镜像 `sstc=false` 双核配置 | 完整信号、COW 正确性、AIA/IMSIC/APLIC 支持 |
-| x86_64 | PVH + 内存表、最小 ACPI MADT/SPCR/BDA 发现；IDT、xAPIC/I/O APIC、PIT 校准、SYSCALL、AP 启动 | Debug/Release 默认四核真实内核测试；同镜像 `q35`/`pc`；正常镜像 shell | 安全的用户/内核页权限、完整信号、UEFI/x2APIC/完整 ACPI |
+| x64 | PVH + 内存表、最小 ACPI MADT/SPCR/BDA 发现；IDT、xAPIC/I/O APIC、PIT 校准、SYSCALL、AP 启动 | Debug/Release 默认四核真实内核测试；同镜像 `q35`/`pc`；正常镜像 shell | 安全的用户/内核页权限、完整信号、UEFI/x2APIC/完整 ACPI |
 
 表中运行证据来自 [通用启动验收记录](docs/generic-boot-acceptance.md)，有配置与范围限制，不自动推广到所有机器。当前最多 16 CPU、8 个固件 RAM 区域，早期物理映射低于 4 GiB；工作区 PFA 已联合管理 kernel_end 以上的合格 RAM bank，保留物理洞。kernel_end 以下仍整体保留，尚不能声称精确回收全部启动内存。
 
 ### 已完成的构建与运行拆分
 
-- [x] 架构预设共 9 个：`{arm64,riscv,x86_64}-{debug,release,relwithdebinfo}`；每个 workflow 为 configure → build → matching CTest preset（`b57422d`）。
+- [x] 架构预设共 9 个：`{arm64,riscv64,x64}-{debug,release,relwithdebinfo}`；每个 workflow 为 configure → build → matching CTest preset（`b57422d`）。
 - [x] 独立 configure/build 不查找、不启动 QEMU；workflow 的 test 阶段通过独立 runner 使用 QEMU。
 - [x] CMake 产出版本化、相对路径的 `moss-artifacts.json`，只描述架构、构建与产物；机器、CPU、RAM、SMP、固件选项由 runner 决定。
 - [x] 删除旧 `*-qemu-*` 预设、生成的 QEMU wrapper/config 和内核平台默认地址；以启动信息填充 `platform::hardware`。
-- [x] ARM64/RV64 Image 启动重定位及静态头/重定位校验；x86_64 使用 PVH ELF。
+- [x] ARM64/RV64 Image 启动重定位及静态头/重定位校验；x64 使用 PVH ELF。
 - [x] 独立验证镜像复用生产内核模块与启动路径，使用 `@@MOSS` 串口协议；宿主负责终止、回收 QEMU，不使用 guest 端模拟器退出设备。
 - [x] userspace 是真实 CMake 编译目标，进入编译数据库；正常/验证 initramfs 分离。
 
@@ -50,7 +50,7 @@ uv run ctest --preset arm64-debug-test
 uv run qemu.py --manifest build/arm64-debug/moss-artifacts.json
 ```
 
-仅需正常内核时，在 configure 加 `-DMOSS_BUILD_TESTS=OFF`，随后使用独立 build；不要将此配置的“无测试”视为验收通过。当前产物：ARM64/RV64 `moss.bin`，x86_64 `bin/moss.elf`。完整用法和限制见 [generic-boot.md](docs/generic-boot.md)。
+仅需正常内核时，在 configure 加 `-DMOSS_BUILD_TESTS=OFF`，随后使用独立 build；不要将此配置的“无测试”视为验收通过。当前产物：ARM64/RV64 `moss.bin`，x64 `bin/moss.elf`。完整用法和限制见 [generic-boot.md](docs/generic-boot.md)。
 
 ## 已接通的功能，不等于可靠性任务已关闭
 
@@ -165,7 +165,7 @@ uv run qemu.py --manifest build/arm64-debug/moss-artifacts.json
 
 - [ ] **KPTI / 高半区布局**：作为后续隔离加固；先修 MOSS-001 的直接 U/S 权限错误，再设计用户/内核页表和入口切换，不能把直接越权仅描述成 Meltdown。
 - [ ] **栈增长加固与 VM 兼容扩展**：已有 demand-zero 栈增长；补 guard/边界/冲突测试。文件后备 mmap、MAP_SHARED、部分 munmap 在 VM 事务稳定后实现。
-- [ ] **x86_64 端口完善**：复用已有 IDT、MMU、APIC、timer、context switch、SYSCALL、fault 和 AP startup；先完成 001/007/014/019 等跨架构契约，不再从 boot stub 重写。
+- [ ] **x64 端口完善**：复用已有 IDT、MMU、APIC、timer、context switch、SYSCALL、fault 和 AP startup；先完成 001/007/014/019 等跨架构契约，不再从 boot stub 重写。
 - [ ] **RV64 端口完善**：复用已有 satp/trap/PLIC/SBI/context switch/ecall/HSM；先完成 007/009/014/019，按需求另增 AIA 等驱动。
 - [ ] **同 ISA 通用镜像扩展与真机验收**：已有低于 4 GiB 的多 RAM bank 分配；继续精确回收启动区、细粒度 RAM/MMIO 映射、更多启动协议/设备与真机固件交接，以不变镜像 hash 验收，不能退回 virt/板名编译矩阵。
 - [ ] **块设备与持久文件系统**：块层和实际设备驱动；virtio-blk 可作为首个可验证设备契约，不是内核对 QEMU 的依赖。
@@ -192,7 +192,7 @@ uv run qemu.py --manifest build/arm64-debug/moss-artifacts.json
 - [x] RelWithDebInfo 三架构默认功能/框架 workflow 已在 `0e88344` 提交前完成（3.19）；完整审计/真机验收仍列于下一项。
 - [ ] 审计 T01～T12 的完整覆盖、资源耗尽/故障注入、长时间 SMP 和真实硬件验收。
 
-`4cde9b3` 阶段新增 containers 三项用例，当时为 7 套件/17 用例。该轮 CTest **14/15**：x86_64 Release 的 bench.allocate 一次校准失败，后续同镜像 10 次通过但不覆盖原失败，具体拒绝原因仍待定位（028/029/032）。历史报告见 [moss-todo.md](moss-todo.md) 第 3.8 节。
+`4cde9b3` 阶段新增 containers 三项用例，当时为 7 套件/17 用例。该轮 CTest **14/15**：x64 Release 的 bench.allocate 一次校准失败，后续同镜像 10 次通过但不覆盖原失败，具体拒绝原因仍待定位（028/029/032）。历史报告见 [moss-todo.md](moss-todo.md) 第 3.8 节。
 
 3.9 阶段新增 held_reader、reentry 和 containers.smp.interleaving，当时默认为 **8 套件/20 用例**，实际运行记录及未覆盖范围见第 3.9 节。完整默认集合至少需要 2 CPU；单 CPU 时显式选择单 worker 套件。三架构双 CPU 交错通过不等于长时间 SMP、运行队列竞争或所有管理器生命周期验收。
 

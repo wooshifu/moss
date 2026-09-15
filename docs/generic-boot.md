@@ -2,7 +2,7 @@
 
 [ADR-0005](adr/0005-generic-kernels-and-independent-runners.md) defines the boundary:
 one source tree, one native image **per architecture**, reusable on machines that
-satisfy that image's supported boot and device contracts. ARM64, RV64 and x86_64
+satisfy that image's supported boot and device contracts. ARM64, RV64 and x64
 instructions are different; they do not share one executable binary.
 
 ## Ownership
@@ -28,7 +28,7 @@ uv run cmake --preset arm64-debug
 uv run cmake --build --preset arm64-debug
 ```
 
-Replace `arm64` with `riscv` or `x86_64`, and `debug` with `release` or
+Replace `arm64` with `riscv64` or `x64`, and `debug` with `release` or
 `relwithdebinfo`. `build.py` and CMake workflows run configure, build and CTest:
 
 ```sh
@@ -58,7 +58,7 @@ runner uses `kernel`, not a guessed filename or the validation executable.
 | --- | --- | --- |
 | ARM64 | `moss.bin` | Linux Image, DTB in `x0`, firmware-selected placement, EL1/EL2 entry |
 | RV64 | `moss.bin` | Linux Image, supervisor mode, boot hart in `a0`, DTB in `a1`, SBI |
-| x86_64 | `bin/moss.elf` | Xen PVH ELF, 32-bit protected-mode entry, PVH memory map and ACPI |
+| x64 | `bin/moss.elf` | Xen PVH ELF, 32-bit protected-mode entry, PVH memory map and ACPI |
 
 ARM64/RV64 are PIE images: the entry stub applies relative relocations before
 using absolute pointers. CMake verifies the static Image header and every dynamic
@@ -74,8 +74,8 @@ Install QEMU only on the host that will execute it:
 uv run qemu.py --manifest build/arm64-debug/moss-artifacts.json
 uv run qemu.py --manifest build/arm64-debug/moss-artifacts.json \
   --machine virt,gic-version=3 --smp 16 --memory-mib 1024
-uv run qemu.py --manifest build/x86_64-debug/moss-artifacts.json --machine pc
-uv run qemu.py --manifest build/riscv-debug/moss-artifacts.json --cpu rv64,sstc=false
+uv run qemu.py --manifest build/x64-debug/moss-artifacts.json --machine pc
+uv run qemu.py --manifest build/riscv64-debug/moss-artifacts.json --cpu rv64,sstc=false
 ```
 
 Defaults (`virt` / `q35`, 4 CPUs, 2048 MiB, TCG) are runner policy, not kernel
@@ -164,12 +164,12 @@ These limits describe this implementation, not Linux's full hardware coverage:
 - RV64: the configured RV64 ISA baseline, Sv39/Sv48, 16550 console and PLIC.
   CPU IDs/context numbers and timer frequency come from DTB; timer/IPI/HSM use
   SBI, so Sstc is not required. AIA/IMSIC/APLIC need separate drivers.
-- x86_64: PVH plus minimal ACPI RSDT/XSDT/MADT discovery, xAPIC and one I/O APIC
+- x64: PVH plus minimal ACPI RSDT/XSDT/MADT discovery, xAPIC and one I/O APIC
   covering GSI zero, legacy ISA interrupt overrides, 16550 console via SPCR or
   BIOS data area, and PIT-based TSC/APIC timer calibration. No x2APIC, complete
   ACPI AML subsystem, UEFI loader, or general PCI discovery is provided. The
   current secondary trampoline reserves physical address `0x8000`.
-- x86_64 enables baseline x87/FXSR/SSE2 on every CPU and eagerly saves/restores
+- x64 enables baseline x87/FXSR/SSE2 on every CPU and eagerly saves/restores
   the 512-byte legacy state at context switches. Fork snapshots live user state;
   exec installs default state. AVX/XSAVE, complete extended-state signal frames
   and hardware acceptance remain open. CPU setup follows the
@@ -177,9 +177,9 @@ These limits describe this implementation, not Linux's full hardware coverage:
 - Freestanding ELF programs currently enter `_start(argc, argv)` using the ISA's
   C function ABI, not Linux's initial process-stack ABI. x86 uses a zero return
   slot below argv so entry RSP is 8 modulo 16, as required by the
-  [SysV function-call convention](https://gitlab.com/x86-psABIs/x86-64-ABI/-/blob/master/x86-64-ABI/low-level-sys-info.tex).
+  [SysV function-call convention](https://gitlab.com/x86-psABIs/x64-ABI/-/blob/master/x64-ABI/low-level-sys-info.tex).
   The shared userspace linker script page-separates RX, R and RW sections,
-  including x86 large-model and RISC-V small-data sections. The kernel ELF
+  including x86 large-model and RISC-V 64 small-data sections. The kernel ELF
   loader's general overlap/permission validation is still incomplete.
 - No physical board has been accepted by this change. QEMU `raspi4b` results are
   not proof of real Raspberry Pi firmware/device behavior. Early failures may

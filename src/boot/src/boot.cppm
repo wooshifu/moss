@@ -114,7 +114,7 @@ public:
 };
 using ArchBoot = ARM64BootImpl;
 
-#elif defined(__x86_64__) || defined(__x86_64) || defined(MOSS_ARCH_X86_64)
+#elif defined(__x86_64__) || defined(__x86_64) || defined(MOSS_ARCH_X64)
 
 class X86BootImpl : public ArchBootInterface {
 public:
@@ -129,9 +129,9 @@ public:
 };
 using ArchBoot = X86BootImpl;
 
-#elif defined(__riscv) || defined(__riscv__) || defined(MOSS_ARCH_RISCV)
+#elif defined(__riscv) || defined(__riscv__) || defined(MOSS_ARCH_RISCV64)
 
-class RISCVBootImpl : public ArchBootInterface {
+class RISCV64BootImpl : public ArchBootInterface {
 public:
   static moss::kernel::VoidResult hardware_early_init(BootContext &ctx) noexcept;
   static moss::kernel::VoidResult setup_memory_management(BootContext &ctx) noexcept;
@@ -142,7 +142,7 @@ public:
   static u32 get_current_cpu_id() noexcept;
   [[noreturn]] static void arch_panic(const char *message) noexcept;
 };
-using ArchBoot = RISCVBootImpl;
+using ArchBoot = RISCV64BootImpl;
 
 #else
 #error "Unsupported target architecture"
@@ -159,10 +159,10 @@ struct ArchInfo {
 constexpr ArchInfo get_current_arch_info() noexcept {
 #if defined(__aarch64__) || defined(MOSS_ARCH_ARM64)
   return ArchInfo{.name = "ARM64", .id = 1, .description = "ARM 64-bit (AArch64) Architecture"};
-#elif defined(__x86_64__) || defined(__x86_64) || defined(MOSS_ARCH_X86_64)
-  return ArchInfo{.name = "x86_64", .id = 2, .description = "x86-64 (AMD64) Architecture"};
-#elif defined(__riscv) || defined(__riscv__) || defined(MOSS_ARCH_RISCV)
-  return ArchInfo{.name = "RISC-V", .id = 3, .description = "RISC-V 64-bit Architecture"};
+#elif defined(__x86_64__) || defined(__x86_64) || defined(MOSS_ARCH_X64)
+  return ArchInfo{.name = "x64", .id = 2, .description = "x64 (AMD64) Architecture"};
+#elif defined(__riscv) || defined(__riscv__) || defined(MOSS_ARCH_RISCV64)
+  return ArchInfo{.name = "RISC-V 64", .id = 3, .description = "RISC-V 64-bit Architecture"};
 #endif
 }
 

@@ -38,7 +38,7 @@ def verify_arm64_header(data: bytes) -> bool:
     )
 
 
-def verify_riscv_header(data: bytes) -> bool:
+def verify_riscv64_header(data: bytes) -> bool:
     if len(data) < HEADER_SIZE:
         return False
     offset, size, flags, version = struct.unpack_from("<QQQI", data, 8)
@@ -94,7 +94,7 @@ def main(
     payload = input_bin.read_bytes()
 
     arm64 = verify_arm64_header(payload)
-    if not arm64 and not verify_riscv_header(payload):
+    if not arm64 and not verify_riscv64_header(payload):
         rprint("[red]Error: invalid ARM64/RV64 Linux Image header or static image size[/red]")
         raise typer.Exit(1)
 

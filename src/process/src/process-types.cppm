@@ -139,7 +139,7 @@ struct alignas(16) CpuContext {
   constexpr CpuContext() noexcept : x{}, sp(0), pc(0), pstate(0), fpsr(0), fpcr(0), v{}, tpidr_el0(0) {}
 };
 
-#elif defined(__x86_64__) || defined(__x86_64) || defined(MOSS_ARCH_X86_64)
+#elif defined(__x86_64__) || defined(__x86_64) || defined(MOSS_ARCH_X64)
 // Architectural FXSAVE64 image. Baseline x87/MMX/SSE state; AVX is not enabled.
 struct alignas(16) X86FpState {
   u16 control = 0x037f;
@@ -158,7 +158,7 @@ struct alignas(16) X86FpState {
 static_assert(sizeof(X86FpState) == 512 && __builtin_offsetof(X86FpState, mxcsr) == 24 &&
               __builtin_offsetof(X86FpState, xmm) == 160);
 
-// x86_64 CPU context
+// x64 CPU context
 struct alignas(16) CpuContext {
   // General purpose registers
   u64 rax, rbx, rcx, rdx;
@@ -187,8 +187,8 @@ struct alignas(16) CpuContext {
 };
 static_assert(__builtin_offsetof(CpuContext, fp) == 160);
 
-#elif defined(__riscv) || defined(__riscv__) || defined(MOSS_ARCH_RISCV)
-// RISC-V CPU context
+#elif defined(__riscv) || defined(__riscv__) || defined(MOSS_ARCH_RISCV64)
+// RISC-V 64 CPU context
 struct alignas(16) CpuContext {
   // General purpose registers x0-x31
   u64 x[32];
@@ -206,7 +206,7 @@ struct alignas(16) CpuContext {
 };
 
 #else
-#error "Unsupported target architecture: please compile on ARM64, x86_64 or RISC-V"
+#error "Unsupported target architecture: please compile on ARM64, x64 or RISC-V 64"
 #endif
 
 static_assert(sizeof(CpuContext) <= 1024, "CpuContext should fit in reasonable size");
@@ -214,10 +214,10 @@ static_assert(sizeof(CpuContext) <= 1024, "CpuContext should fit in reasonable s
 static_assert(__builtin_offsetof(CpuContext, sp) == 248 && __builtin_offsetof(CpuContext, pc) == 256 &&
               __builtin_offsetof(CpuContext, pstate) == 264 && __builtin_offsetof(CpuContext, v) == 288 &&
               __builtin_offsetof(CpuContext, tpidr_el0) == 800);
-#elif defined(MOSS_ARCH_RISCV)
+#elif defined(MOSS_ARCH_RISCV64)
 static_assert(__builtin_offsetof(CpuContext, pc) == 256 && __builtin_offsetof(CpuContext, pstate) == 264 &&
               __builtin_offsetof(CpuContext, sp) == 272);
-#elif defined(MOSS_ARCH_X86_64)
+#elif defined(MOSS_ARCH_X64)
 static_assert(__builtin_offsetof(CpuContext, sp) == 56 && __builtin_offsetof(CpuContext, pstate) == 128 &&
               __builtin_offsetof(CpuContext, pc) == 136);
 #endif
@@ -231,7 +231,7 @@ inline constexpr usize STACK_MAX = 8ULL * 1024 * 1024;
 inline constexpr usize HEAP_INIT = 64ULL * 1024;
 inline constexpr VirtAddr MMAP_BASE = 0x0000001000000000ULL;      // 64 GiB
 inline constexpr VirtAddr SIGRETURN_PAGE = 0x0000000180000000ULL; // kernel-installed RX user stub
-#if defined(MOSS_ARCH_RISCV)
+#if defined(MOSS_ARCH_RISCV64)
 constinit inline VirtAddr STACK_TOP = 0x0000003F00000000ULL; // updated during early boot
 #else
 inline constexpr VirtAddr STACK_TOP = 0x00007FFF00000000ULL;

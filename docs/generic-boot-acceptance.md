@@ -13,11 +13,11 @@ images passed static Linux Image header and ELF relative-relocation checks.
 | Preset | Functional | Framework self-checks | Five benchmark scenarios |
 | --- | --- | --- | --- |
 | `arm64-debug` | Pass | Pass | Not registered |
-| `riscv-debug` | Pass | Pass | Not registered |
-| `x86_64-debug` | Pass | Pass | Not registered |
+| `riscv64-debug` | Pass | Pass | Not registered |
+| `x64-debug` | Pass | Pass | Not registered |
 | `arm64-release` | Pass | Pass | Pass |
-| `riscv-release` | Pass | Pass | Pass |
-| `x86_64-release` | Pass | Pass | Pass |
+| `riscv64-release` | Pass | Pass | Pass |
+| `x64-release` | Pass | Pass | Pass |
 
 Run `uv run ctest --preset <preset>-test`. Each functional invocation runs
 `resources`, `mm`, `vfs` and `users`; framework checks exercise normal completion,
@@ -31,7 +31,7 @@ Final Debug reports, relative to `build/<preset>/validation/`:
 | --- | --- | --- |
 | ARM64 | `1788689927811538000` | `1788689930150756000` |
 | RV64 | `1788689928943169000` | `1788689931612920000` |
-| x86_64 | `1788689928550106000` | `1788689931593479000` |
+| x64 | `1788689928550106000` | `1788689931593479000` |
 
 Final Release reports use the same location convention:
 
@@ -39,7 +39,7 @@ Final Release reports use the same location convention:
 | --- | --- | --- | --- |
 | ARM64 | `1788689979913480000` | `1788689981694999000` | `1788689993652649000` |
 | RV64 | `1788689998022797000` | `1788690001061832000` | `1788690013011157000` |
-| x86_64 | `1788690015935908000` | `1788690018311666000` | `1788690030727661000` |
+| x64 | `1788690015935908000` | `1788690018311666000` | `1788690030727661000` |
 
 The host suite passed **102 tests** (`uv run pytest -q scripts/tests`). It covers
 manifest validation, same-image normal/debug invocation, optional QEMU lookup,
@@ -85,15 +85,15 @@ Commands are in [generic boot](generic-boot.md#validate-image-reuse).
 | ARM64 `raspi4b`, same resources | All framework checks pass, including panic | `1788689963389513000` |
 | RV64 `virt`, `rv64`, 4 CPUs, 2048 MiB | Four functional suites pass | `1788689928943169000` |
 | RV64 `virt`, `rv64,sstc=false`, 2 CPUs, 1024 MiB | Four functional suites pass | `1788689962189453000` |
-| x86_64 `q35`, 4 CPUs, 2048 MiB | Four functional suites pass | `1788689928550106000` |
-| x86_64 `pc`, 2 CPUs, 1024 MiB | Four functional suites pass | `1788689961037932000` |
+| x64 `q35`, 4 CPUs, 2048 MiB | Four functional suites pass | `1788689928550106000` |
+| x64 `pc`, 2 CPUs, 1024 MiB | Four functional suites pass | `1788689961037932000` |
 
 Validation image SHA-256:
 
 ```text
 ARM64   cb4df3406d3d073d33b4ce14ceab0ea8c53b75e88babdc1238a445d7e470a6f2
 RV64    70a0a2ac92009921a4d8642c36839d00df3a519efdc87eecee827ef9504d10ab
-x86_64  459bb7adf5765e27e342ab85d8efe2827c12a7a97a76da5a1250a802ecead810
+x64  459bb7adf5765e27e342ab85d8efe2827c12a7a97a76da5a1250a802ecead810
 ```
 
 The synthetic `raspi4b` fixture exercises different load/RAM/UART/GIC addresses,

@@ -21,19 +21,19 @@ export namespace moss::kernel::arch {
 // ============================================================================
 // Architecture identification
 // ============================================================================
-enum class Architecture { ARM64, X86_64, RISCV };
+enum class Architecture { ARM64, X64, RISCV64 };
 
 #if defined(MOSS_ARCH_ARM64)
 inline constexpr Architecture CURRENT_ARCH = Architecture::ARM64;
-#elif defined(MOSS_ARCH_X86_64)
-inline constexpr Architecture CURRENT_ARCH = Architecture::X86_64;
-#elif defined(MOSS_ARCH_RISCV)
-inline constexpr Architecture CURRENT_ARCH = Architecture::RISCV;
+#elif defined(MOSS_ARCH_X64)
+inline constexpr Architecture CURRENT_ARCH = Architecture::X64;
+#elif defined(MOSS_ARCH_RISCV64)
+inline constexpr Architecture CURRENT_ARCH = Architecture::RISCV64;
 #endif
 
 inline constexpr bool is_arm64 = (CURRENT_ARCH == Architecture::ARM64);
-inline constexpr bool is_x86_64 = (CURRENT_ARCH == Architecture::X86_64);
-inline constexpr bool is_riscv = (CURRENT_ARCH == Architecture::RISCV);
+inline constexpr bool is_x64 = (CURRENT_ARCH == Architecture::X64);
+inline constexpr bool is_riscv64 = (CURRENT_ARCH == Architecture::RISCV64);
 
 // ============================================================================
 // Memory barriers
@@ -43,9 +43,9 @@ inline constexpr bool is_riscv = (CURRENT_ARCH == Architecture::RISCV);
 inline void memory_barrier() noexcept {
 #if defined(MOSS_ARCH_ARM64)
   asm volatile("dmb sy" ::: "memory");
-#elif defined(MOSS_ARCH_X86_64)
+#elif defined(MOSS_ARCH_X64)
   asm volatile("mfence" ::: "memory");
-#elif defined(MOSS_ARCH_RISCV)
+#elif defined(MOSS_ARCH_RISCV64)
   asm volatile("fence rw,rw" ::: "memory");
 #endif
 }
@@ -54,9 +54,9 @@ inline void memory_barrier() noexcept {
 inline void read_barrier() noexcept {
 #if defined(MOSS_ARCH_ARM64)
   asm volatile("dmb ld" ::: "memory");
-#elif defined(MOSS_ARCH_X86_64)
+#elif defined(MOSS_ARCH_X64)
   asm volatile("lfence" ::: "memory");
-#elif defined(MOSS_ARCH_RISCV)
+#elif defined(MOSS_ARCH_RISCV64)
   asm volatile("fence r,r" ::: "memory");
 #endif
 }
@@ -65,9 +65,9 @@ inline void read_barrier() noexcept {
 inline void write_barrier() noexcept {
 #if defined(MOSS_ARCH_ARM64)
   asm volatile("dmb st" ::: "memory");
-#elif defined(MOSS_ARCH_X86_64)
+#elif defined(MOSS_ARCH_X64)
   asm volatile("sfence" ::: "memory");
-#elif defined(MOSS_ARCH_RISCV)
+#elif defined(MOSS_ARCH_RISCV64)
   asm volatile("fence w,w" ::: "memory");
 #endif
 }
@@ -76,9 +76,9 @@ inline void write_barrier() noexcept {
 inline void data_sync_barrier() noexcept {
 #if defined(MOSS_ARCH_ARM64)
   asm volatile("dsb sy" ::: "memory");
-#elif defined(MOSS_ARCH_X86_64)
+#elif defined(MOSS_ARCH_X64)
   asm volatile("mfence" ::: "memory");
-#elif defined(MOSS_ARCH_RISCV)
+#elif defined(MOSS_ARCH_RISCV64)
   asm volatile("fence iorw,iorw" ::: "memory");
 #endif
 }
@@ -87,9 +87,9 @@ inline void data_sync_barrier() noexcept {
 inline void instruction_barrier() noexcept {
 #if defined(MOSS_ARCH_ARM64)
   asm volatile("isb" ::: "memory");
-#elif defined(MOSS_ARCH_X86_64)
+#elif defined(MOSS_ARCH_X64)
   asm volatile("" ::: "memory"); // x86 serialises via CPUID; lightweight barrier here
-#elif defined(MOSS_ARCH_RISCV)
+#elif defined(MOSS_ARCH_RISCV64)
   asm volatile("fence.i" ::: "memory");
 #endif
 }
@@ -98,9 +98,9 @@ inline void instruction_barrier() noexcept {
 inline void io_barrier() noexcept {
 #if defined(MOSS_ARCH_ARM64)
   asm volatile("dsb sy" ::: "memory");
-#elif defined(MOSS_ARCH_X86_64)
+#elif defined(MOSS_ARCH_X64)
   asm volatile("mfence" ::: "memory");
-#elif defined(MOSS_ARCH_RISCV)
+#elif defined(MOSS_ARCH_RISCV64)
   asm volatile("fence iorw,iorw" ::: "memory");
 #endif
 }
@@ -113,10 +113,10 @@ inline void io_barrier() noexcept {
 inline void cpu_yield() noexcept {
 #if defined(MOSS_ARCH_ARM64)
   asm volatile("yield" ::: "memory");
-#elif defined(MOSS_ARCH_X86_64)
+#elif defined(MOSS_ARCH_X64)
   asm volatile("pause" ::: "memory");
-#elif defined(MOSS_ARCH_RISCV)
-  asm volatile("" ::: "memory"); // no yield hint on RISC-V
+#elif defined(MOSS_ARCH_RISCV64)
+  asm volatile("" ::: "memory"); // no yield hint on RISC-V 64
 #endif
 }
 
@@ -124,9 +124,9 @@ inline void cpu_yield() noexcept {
 inline void cpu_halt() noexcept {
 #if defined(MOSS_ARCH_ARM64)
   asm volatile("wfi");
-#elif defined(MOSS_ARCH_X86_64)
+#elif defined(MOSS_ARCH_X64)
   asm volatile("hlt");
-#elif defined(MOSS_ARCH_RISCV)
+#elif defined(MOSS_ARCH_RISCV64)
   asm volatile("wfi");
 #endif
 }
@@ -135,7 +135,7 @@ inline void cpu_halt() noexcept {
 // (used by scheduler idle tasks)
 inline void cpu_idle_once() noexcept {
 #if defined(MOSS_ARCH_ARM64)
-  // Match x86_64 (sti;hlt;cli) and RISC-V (csrsi;wfi;csrci) pattern:
+  // Match x64 (sti;hlt;cli) and RISC-V 64 (csrsi;wfi;csrci) pattern:
   // enable IRQ → WFI → disable IRQ.
   // Without explicit IRQ enable, WFI returns immediately when DAIF.I=1
   // (IRQs masked), causing a busy-loop that pins host CPU at 100%.
@@ -144,11 +144,11 @@ inline void cpu_idle_once() noexcept {
   asm volatile("wfi" ::: "memory");
   asm volatile("msr daifset, #0x2" ::: "memory"); // disable IRQ (set DAIF.I)
   asm volatile("isb" ::: "memory");
-#elif defined(MOSS_ARCH_X86_64)
+#elif defined(MOSS_ARCH_X64)
   asm volatile("sti" ::: "memory");
   asm volatile("hlt" ::: "memory");
   asm volatile("cli" ::: "memory");
-#elif defined(MOSS_ARCH_RISCV)
+#elif defined(MOSS_ARCH_RISCV64)
   // S-mode: use sstatus.SIE (bit 1), not mstatus.MIE (bit 3)
   asm volatile("csrsi sstatus, 0x2" ::: "memory");
   asm volatile("wfi" ::: "memory");
@@ -158,8 +158,8 @@ inline void cpu_idle_once() noexcept {
 
 // Get current CPU ID from hardware (raw, unclamped).
 // Callers (e.g. PerCpuData) are responsible for bounds checking.
-#if defined(MOSS_ARCH_RISCV)
-[[nodiscard]] inline u64 riscv_hart_id(u32 logical) noexcept { return platform::hardware.cpus[logical].hardware_id; }
+#if defined(MOSS_ARCH_RISCV64)
+[[nodiscard]] inline u64 riscv64_hart_id(u32 logical) noexcept { return platform::hardware.cpus[logical].hardware_id; }
 inline void set_user_kernel_stack(u64 top) noexcept {
   // The caller must keep IRQs masked until the S-mode switch or user return
   // consumes this value: nonzero sscratch selects a user-origin trap stack.
@@ -174,11 +174,11 @@ inline void set_user_kernel_stack(u64 top) noexcept {
   u64 mpidr;
   asm volatile("mrs %0, mpidr_el1" : "=r"(mpidr));
   return platform::logical_cpu(mpidr & 0xFF00FFFFFFULL);
-#elif defined(MOSS_ARCH_X86_64)
+#elif defined(MOSS_ARCH_X64)
   u32 eax, ebx, ecx, edx;
   asm volatile("cpuid" : "=a"(eax), "=b"(ebx), "=c"(ecx), "=d"(edx) : "a"(1));
   return platform::logical_cpu((ebx >> 24) & 0xFF);
-#elif defined(MOSS_ARCH_RISCV)
+#elif defined(MOSS_ARCH_RISCV64)
   // S-mode cannot read mhartid; use tp register (set by SBI/bootloader)
   u64 hartid;
   asm volatile("mv %0, tp" : "=r"(hartid));
@@ -194,14 +194,14 @@ inline void set_user_kernel_stack(u64 top) noexcept {
   u64 val;
   asm volatile("mrs %0, cntvct_el0" : "=r"(val));
   return val;
-#elif defined(MOSS_ARCH_X86_64)
+#elif defined(MOSS_ARCH_X64)
   u32 lo, hi;
   asm volatile("rdtsc" : "=a"(lo), "=d"(hi));
   return (static_cast<u64>(hi) << 32) | lo;
-#elif defined(MOSS_ARCH_RISCV)
+#elif defined(MOSS_ARCH_RISCV64)
   // Use rdtime instead of rdcycle: cycle counter may be disabled in S-mode
   // (requires mcounteren.CY which OpenSBI may not set), but time is always
-  // accessible from S-mode per RISC-V privileged spec.
+  // accessible from S-mode per RISC-V 64 privileged spec.
   u64 val;
   asm volatile("rdtime %0" : "=r"(val));
   return val;
@@ -217,9 +217,9 @@ inline void set_user_kernel_stack(u64 top) noexcept {
 inline void enable_interrupts() noexcept {
 #if defined(MOSS_ARCH_ARM64)
   asm volatile("msr daifclr, #0x2" ::: "memory");
-#elif defined(MOSS_ARCH_X86_64)
+#elif defined(MOSS_ARCH_X64)
   asm volatile("sti" ::: "memory");
-#elif defined(MOSS_ARCH_RISCV)
+#elif defined(MOSS_ARCH_RISCV64)
   asm volatile("csrsi sstatus, 0x2" ::: "memory"); // SIE = bit 1
 #endif
 }
@@ -227,9 +227,9 @@ inline void enable_interrupts() noexcept {
 inline void disable_interrupts() noexcept {
 #if defined(MOSS_ARCH_ARM64)
   asm volatile("msr daifset, #0x2" ::: "memory");
-#elif defined(MOSS_ARCH_X86_64)
+#elif defined(MOSS_ARCH_X64)
   asm volatile("cli" ::: "memory");
-#elif defined(MOSS_ARCH_RISCV)
+#elif defined(MOSS_ARCH_RISCV64)
   asm volatile("csrci sstatus, 0x2" ::: "memory"); // clear SIE
 #endif
 }
@@ -238,9 +238,9 @@ inline void disable_interrupts() noexcept {
 inline void disable_all_interrupts() noexcept {
 #if defined(MOSS_ARCH_ARM64)
   asm volatile("msr daifset, #0xf" ::: "memory");
-#elif defined(MOSS_ARCH_X86_64)
+#elif defined(MOSS_ARCH_X64)
   asm volatile("cli" ::: "memory");
-#elif defined(MOSS_ARCH_RISCV)
+#elif defined(MOSS_ARCH_RISCV64)
   asm volatile("csrci sstatus, 0x2" ::: "memory"); // clear SIE
 #endif
 }
@@ -250,11 +250,11 @@ inline void disable_all_interrupts() noexcept {
   u64 daif;
   asm volatile("mrs %0, daif" : "=r"(daif));
   return (daif & (1 << 7)) == 0; // IRQ mask bit
-#elif defined(MOSS_ARCH_X86_64)
+#elif defined(MOSS_ARCH_X64)
   u64 flags;
   asm volatile("pushfq; pop %0" : "=r"(flags));
   return (flags & (1 << 9)) != 0; // IF flag
-#elif defined(MOSS_ARCH_RISCV)
+#elif defined(MOSS_ARCH_RISCV64)
   u64 sstatus;
   asm volatile("csrr %0, sstatus" : "=r"(sstatus));
   return (sstatus & 0x2) != 0; // SIE = bit 1
@@ -272,12 +272,12 @@ inline void flush_tlb() noexcept {
   asm volatile("tlbi vmalle1is" ::: "memory");
   asm volatile("dsb sy");
   asm volatile("isb");
-#elif defined(MOSS_ARCH_X86_64)
+#elif defined(MOSS_ARCH_X64)
   // Reload CR3 to flush entire TLB
   u64 cr3;
   asm volatile("mov %%cr3, %0" : "=r"(cr3));
   asm volatile("mov %0, %%cr3" ::"r"(cr3) : "memory");
-#elif defined(MOSS_ARCH_RISCV)
+#elif defined(MOSS_ARCH_RISCV64)
   asm volatile("sfence.vma" ::: "memory");
 #endif
 }
@@ -287,9 +287,9 @@ inline void flush_tlb_addr(VirtAddr addr) noexcept {
   asm volatile("tlbi vae1is, %0" ::"r"(addr >> 12) : "memory");
   asm volatile("dsb sy");
   asm volatile("isb");
-#elif defined(MOSS_ARCH_X86_64)
+#elif defined(MOSS_ARCH_X64)
   asm volatile("invlpg (%0)" ::"r"(addr) : "memory");
-#elif defined(MOSS_ARCH_RISCV)
+#elif defined(MOSS_ARCH_RISCV64)
   asm volatile("sfence.vma %0, zero" ::"r"(addr) : "memory");
 #endif
 }
@@ -303,10 +303,10 @@ inline void invalidate_icache() noexcept {
   asm volatile("ic iallu" ::: "memory");
   asm volatile("dsb sy");
   asm volatile("isb");
-#elif defined(MOSS_ARCH_X86_64)
+#elif defined(MOSS_ARCH_X64)
   // x86 has coherent I-cache; compiler barrier suffices
   asm volatile("" ::: "memory");
-#elif defined(MOSS_ARCH_RISCV)
+#elif defined(MOSS_ARCH_RISCV64)
   asm volatile("fence.i" ::: "memory");
 #endif
 }
@@ -314,10 +314,10 @@ inline void invalidate_icache() noexcept {
 inline void flush_cache_line(VirtAddr addr) noexcept {
 #if defined(MOSS_ARCH_ARM64)
   asm volatile("dc civac, %0" ::"r"(addr) : "memory");
-#elif defined(MOSS_ARCH_X86_64)
+#elif defined(MOSS_ARCH_X64)
   asm volatile("clflush (%0)" ::"r"(addr) : "memory");
-#elif defined(MOSS_ARCH_RISCV)
-  (void)addr; // RISC-V cache flush is implementation-specific
+#elif defined(MOSS_ARCH_RISCV64)
+  (void)addr; // RISC-V 64 cache flush is implementation-specific
 #endif
 }
 
@@ -328,9 +328,9 @@ inline void flush_cache_line(VirtAddr addr) noexcept {
 inline void switch_to_kernel_stack(void *stack_ptr) noexcept {
 #if defined(MOSS_ARCH_ARM64)
   asm volatile("mov sp, %0" ::"r"(stack_ptr) : "memory");
-#elif defined(MOSS_ARCH_X86_64)
+#elif defined(MOSS_ARCH_X64)
   asm volatile("mov %0, %%rsp" ::"r"(stack_ptr) : "memory");
-#elif defined(MOSS_ARCH_RISCV)
+#elif defined(MOSS_ARCH_RISCV64)
   asm volatile("mv sp, %0" ::"r"(stack_ptr) : "memory");
 #endif
 }
@@ -339,9 +339,9 @@ inline void switch_to_kernel_stack(void *stack_ptr) noexcept {
   void *sp;
 #if defined(MOSS_ARCH_ARM64)
   asm volatile("mov %0, sp" : "=r"(sp));
-#elif defined(MOSS_ARCH_X86_64)
+#elif defined(MOSS_ARCH_X64)
   asm volatile("mov %%rsp, %0" : "=r"(sp));
-#elif defined(MOSS_ARCH_RISCV)
+#elif defined(MOSS_ARCH_RISCV64)
   asm volatile("mv %0, sp" : "=r"(sp));
 #endif
   return sp;
@@ -352,16 +352,16 @@ inline void switch_to_kernel_stack(void *stack_ptr) noexcept {
   u64 fp = 0;
 #if defined(MOSS_ARCH_ARM64)
   asm volatile("mov %0, x29" : "=r"(fp));
-#elif defined(MOSS_ARCH_X86_64)
+#elif defined(MOSS_ARCH_X64)
   asm volatile("mov %%rbp, %0" : "=r"(fp));
-#elif defined(MOSS_ARCH_RISCV)
+#elif defined(MOSS_ARCH_RISCV64)
   asm volatile("mv %0, s0" : "=r"(fp));
 #endif
   return fp;
 }
 
 // ============================================================================
-// MMU setup (ARM64-specific details; x86_64 and RISC-V will add their own)
+// MMU setup (ARM64-specific details; x64 and RISC-V 64 will add their own)
 // ============================================================================
 
 inline void setup_kernel_mmu(PhysAddr kernel_pgd_pa) noexcept {
@@ -373,12 +373,12 @@ inline void setup_kernel_mmu(PhysAddr kernel_pgd_pa) noexcept {
   sctlr |= (1 << 0) | (1 << 2) | (1 << 12); // MMU + D-cache + I-cache
   asm volatile("msr sctlr_el1, %0" ::"r"(sctlr));
   asm volatile("isb");
-#elif defined(MOSS_ARCH_X86_64)
-  // x86_64: load PML4 (page table root) physical address into CR3.
+#elif defined(MOSS_ARCH_X64)
+  // x64: load PML4 (page table root) physical address into CR3.
   // In long mode the MMU is always enabled; writing CR3 activates the new page tables.
   asm volatile("mov %0, %%cr3" ::"r"(kernel_pgd_pa) : "memory");
-#elif defined(MOSS_ARCH_RISCV)
-  // RISC-V: satp = MODE(runtime Sv39/Sv48) | PPN(kernel_pgd_pa >> 12)
+#elif defined(MOSS_ARCH_RISCV64)
+  // RISC-V 64: satp = MODE(runtime Sv39/Sv48) | PPN(kernel_pgd_pa >> 12)
   // Read current satp to preserve MODE bits (set by detect_mmu_mode at boot).
   u64 current_satp;
   asm volatile("csrr %0, satp" : "=r"(current_satp));
@@ -436,19 +436,19 @@ inline void early_arch_init() noexcept {
     u64 spsr = (1 << 0) | (1 << 2) | (1 << 6) | (1 << 7) | (1 << 8) | (1 << 9);
     asm volatile("msr spsr_el3, %0" ::"r"(spsr));
   }
-#elif defined(MOSS_ARCH_X86_64)
-  // x86_64 early init handled by boot code
-#elif defined(MOSS_ARCH_RISCV)
-  // RISC-V early init handled by boot code
+#elif defined(MOSS_ARCH_X64)
+  // x64 early init handled by boot code
+#elif defined(MOSS_ARCH_RISCV64)
+  // RISC-V 64 early init handled by boot code
 #endif
 }
 
 inline void arch_init() noexcept {
 #if defined(MOSS_ARCH_ARM64)
   invalidate_icache();
-#elif defined(MOSS_ARCH_X86_64)
+#elif defined(MOSS_ARCH_X64)
   // Nothing needed
-#elif defined(MOSS_ARCH_RISCV)
+#elif defined(MOSS_ARCH_RISCV64)
   // Nothing needed
 #endif
 }

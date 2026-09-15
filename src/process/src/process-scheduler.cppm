@@ -28,10 +28,10 @@ using moss::abi::switch_to_user;
 using moss::abi::entry::early_debug_print;
 #if defined(MOSS_ARCH_ARM64)
 using moss::abi::arm64::user_eret_trampoline;
-#elif defined(MOSS_ARCH_X86_64)
-using moss::abi::x86_64::user_iret_trampoline;
-#elif defined(MOSS_ARCH_RISCV)
-using moss::abi::riscv::user_sret_trampoline;
+#elif defined(MOSS_ARCH_X64)
+using moss::abi::x64::user_iret_trampoline;
+#elif defined(MOSS_ARCH_RISCV64)
+using moss::abi::riscv64::user_sret_trampoline;
 #endif
 
 // ============================================================================
@@ -361,7 +361,7 @@ inline void send_reschedule_ipi(u32 target_cpu) noexcept {
   }
   // GICv2 SGIR only supports 8-bit CPU target mask (CPUs 0-7).
   // GICv3 uses ICC_SGI1R_EL1 with 16-bit TargetList (CPUs 0-15 in Aff0).
-  // This check is ARM64-only; x86_64 (APIC) and RISC-V (PLIC/CLINT) have
+  // This check is ARM64-only; x64 (APIC) and RISC-V 64 (PLIC/CLINT) have
   // different IPI mechanisms without this 8-core limitation.
 #if defined(MOSS_ARCH_ARM64)
   if (hal::intc::g_gic_version != hal::intc::GicVersion::GICv3 && target_cpu >= 8) {
@@ -1925,7 +1925,7 @@ private:
         task->context.sp = saved_address;
       }
 
-#elif defined(MOSS_ARCH_X86_64)
+#elif defined(MOSS_ARCH_X64)
       // Keep a complete user context above the initial kernel stack frame.
       {
         u64 saved_address = (task->kernel_stack_top() - sizeof(CpuContext)) & ~15ULL;
@@ -1938,7 +1938,7 @@ private:
         task->context.sp = saved_address;
       }
 
-#elif defined(MOSS_ARCH_RISCV)
+#elif defined(MOSS_ARCH_RISCV64)
       // The top 16 bytes remain reserved for the CPU identity on trap entry.
       {
         u64 saved_address = (task->kernel_stack_top() - 16 - sizeof(CpuContext)) & ~15ULL;
@@ -1975,10 +1975,10 @@ private:
           u64 ttbr0_val = proc->address_space()->pgd_phys | (static_cast<u64>(proc->address_space()->asid) << 48);
           asm volatile("msr ttbr0_el1, %0" ::"r"(ttbr0_val));
           asm volatile("isb" ::: "memory");
-#elif defined(MOSS_ARCH_X86_64)
+#elif defined(MOSS_ARCH_X64)
           u64 pgd_phys = proc->address_space()->pgd_phys;
           asm volatile("mov %0, %%cr3" ::"r"(pgd_phys) : "memory");
-#elif defined(MOSS_ARCH_RISCV)
+#elif defined(MOSS_ARCH_RISCV64)
           // SATP: runtime Sv39/Sv48 mode, ASID in bits 44-59, PPN in bits 0-43
           u64 satp_val = hal::mmu::make_satp_value(proc->address_space()->pgd_phys, proc->address_space()->asid);
           asm volatile("csrw satp, %0" ::"r"(satp_val) : "memory");
@@ -1992,19 +1992,19 @@ private:
           u64 kstack_top = task->kernel_stack_top();
           asm volatile("msr tpidr_el1, %0" ::"r"(kstack_top));
         }
-#elif defined(MOSS_ARCH_RISCV)
+#elif defined(MOSS_ARCH_RISCV64)
         // Set sscratch to per-thread kernel stack top.
         // On trap from U-mode, the entry code swaps sp↔sscratch to get kernel stack.
         if (task->kernel_stack_base != 0) {
           u64 kstack_top = task->kernel_stack_top();
           arch::set_user_kernel_stack(kstack_top);
         }
-#elif defined(MOSS_ARCH_X86_64)
+#elif defined(MOSS_ARCH_X64)
         // Update TSS RSP0 so hardware interrupts from ring 3 use this task's kernel stack.
         // Also update the SYSCALL kernel stack global for syscall_entry_point.
         if (task->kernel_stack_base != 0) {
           u64 kstack_top = task->kernel_stack_top();
-          moss::abi::x86_64::set_kernel_stack(kstack_top);
+          moss::abi::x64::set_kernel_stack(kstack_top);
         }
 #endif
       }

@@ -99,7 +99,7 @@ static_assert(__builtin_offsetof(TrapFrame, x30) == MOSS_TF_X30);
 static_assert(__builtin_offsetof(TrapFrame, pc) == MOSS_TF_PC);
 static_assert(__builtin_offsetof(TrapFrame, status) == MOSS_TF_STATUS);
 static_assert(__builtin_offsetof(TrapFrame, sp) == MOSS_TF_SP);
-#elif defined(MOSS_ARCH_RISCV)
+#elif defined(MOSS_ARCH_RISCV64)
 struct alignas(16) TrapFrame {
   u64 ra;
   u64 t0;
@@ -191,7 +191,7 @@ static_assert(__builtin_offsetof(TrapFrame, tp) == MOSS_TF_TP);
 static_assert(__builtin_offsetof(TrapFrame, gp) == MOSS_TF_GP);
 static_assert(__builtin_offsetof(TrapFrame, reserved0) == MOSS_TF_RESERVED0);
 static_assert(__builtin_offsetof(TrapFrame, reserved1) == MOSS_TF_RESERVED1);
-#elif defined(MOSS_ARCH_X86_64)
+#elif defined(MOSS_ARCH_X64)
 struct alignas(16) TrapFrame {
   u64 r15;
   u64 r14;

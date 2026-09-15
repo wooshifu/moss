@@ -35,13 +35,13 @@ using moss::kernel::VirtAddr;
 using moss::kernel::VoidResult;
 
 // ============================================================================
-// Runtime MMU mode — Sv39 (3-level) vs Sv48 (4-level) detection for RISC-V
+// Runtime MMU mode — Sv39 (3-level) vs Sv48 (4-level) detection for RISC-V 64
 // ============================================================================
-// ARM64/x86_64 always use 4-level page tables.  RISC-V supports multiple
+// ARM64/x64 always use 4-level page tables.  RISC-V 64 supports multiple
 // modes; the kernel probes hardware at boot to select the highest supported.
 enum class MmuMode : u8 { Sv39, Sv48 };
 
-#if defined(MOSS_ARCH_RISCV)
+#if defined(MOSS_ARCH_RISCV64)
 constinit inline MmuMode g_mmu_mode = MmuMode::Sv39; // default, updated by detect_mmu_mode()
 constinit inline u64 g_satp_mode_bits = 8ULL << 60;  // Sv39 default
 #else
@@ -53,7 +53,7 @@ inline constexpr u64 g_satp_mode_bits = 0;           // not used on ARM64/x86
 // (direct satp probing requires identity-mapped page tables to be set up first,
 //  which creates a chicken-and-egg problem for early boot).
 
-/// Build a RISC-V satp register value from a PGD physical address.
+/// Build a RISC-V 64 satp register value from a PGD physical address.
 /// Uses the runtime-detected mode (Sv39 or Sv48).
 /// @param asid  Address Space Identifier (bits 44-59 of satp).
 [[nodiscard]] inline u64 make_satp_value(PhysAddr pgd_phys, u16 asid = 0) noexcept {
@@ -64,8 +64,8 @@ inline constexpr u64 g_satp_mode_bits = 0;           // not used on ARM64/x86
 /// Sets KERNEL_BASE, USER_MAX, KERNEL_DIRECT_MAP_BASE (in types.cppm)
 /// and user_layout::STACK_TOP (in process-types.cppm).
 /// Must be called after detect_mmu_mode() and before setup_mmu().
-inline void init_riscv_address_layout([[maybe_unused]] MmuMode mode) noexcept {
-#if defined(MOSS_ARCH_RISCV)
+inline void init_riscv64_address_layout([[maybe_unused]] MmuMode mode) noexcept {
+#if defined(MOSS_ARCH_RISCV64)
   if (mode == MmuMode::Sv48) {
     moss::kernel::KERNEL_BASE = 0xFFFF800000000000ULL;
     moss::kernel::USER_MAX = 0x0000800000000000ULL;
@@ -102,8 +102,8 @@ inline constexpr u64 ATTR_NORMAL_NC = (2ULL << ATTR_IDX_SHIFT); // MAIR index 2
 // Software-defined: Copy-on-Write marker (bits 55-58 are software-available)
 inline constexpr u64 SW_COW = (1ULL << 55);
 
-#elif defined(MOSS_ARCH_X86_64)
-// x86_64 4-level paging PTE format (Intel SDM Vol.3, Ch.4)
+#elif defined(MOSS_ARCH_X64)
+// x64 4-level paging PTE format (Intel SDM Vol.3, Ch.4)
 inline constexpr u64 VALID = (1ULL << 0); // Present
 inline constexpr u64 TABLE = (1ULL << 0); // Present (same bit for tables)
 inline constexpr u64 USER = (1ULL << 2);  // U/S (User/Supervisor)
@@ -128,26 +128,26 @@ inline constexpr u64 GLOBAL = (1ULL << 8);    // Global
 // Software-defined: Copy-on-Write marker (bit 52 is software-available)
 inline constexpr u64 SW_COW = (1ULL << 52);
 
-#elif defined(MOSS_ARCH_RISCV)
-// RISC-V Sv39/Sv48 PTE format (RISC-V Privileged Spec, Ch. 4.4)
+#elif defined(MOSS_ARCH_RISCV64)
+// RISC-V 64 Sv39/Sv48 PTE format (RISC-V 64 Privileged Spec, Ch. 4.4)
 // PTE bits are identical for Sv39 and Sv48; only the number of page table levels differs.
 // Leaf vs non-leaf: V=1 + (R|W|X)==0 → non-leaf (table); V=1 + (R|W|X)!=0 → leaf (block/page)
 inline constexpr u64 VALID = (1ULL << 0); // V (Valid)
 inline constexpr u64 TABLE = (1ULL << 0); // V (leaf vs non-leaf determined by RWX)
 inline constexpr u64 USER = (1ULL << 4);  // U (User)
-inline constexpr u64 READONLY = 0;        // RISC-V uses explicit R/W/X
+inline constexpr u64 READONLY = 0;        // RISC-V 64 uses explicit R/W/X
 inline constexpr u64 SHARED = 0;          // No direct equivalent
 inline constexpr u64 AF = (1ULL << 6);    // A (Accessed)
 inline constexpr u64 NG = 0;              // No direct equivalent
 inline constexpr u64 PXN = 0;             // No PXN concept
-inline constexpr u64 XN = 0;              // RISC-V uses explicit X bit
+inline constexpr u64 XN = 0;              // RISC-V 64 uses explicit X bit
 
 inline constexpr u64 ATTR_IDX_SHIFT = 0;
-inline constexpr u64 ATTR_DEVICE = 0; // RISC-V uses PMA, not PTE attrs
+inline constexpr u64 ATTR_DEVICE = 0; // RISC-V 64 uses PMA, not PTE attrs
 inline constexpr u64 ATTR_NORMAL = 0;
 inline constexpr u64 ATTR_NORMAL_NC = 0;
 
-// RISC-V-specific: explicit permission bits
+// RISC-V 64-specific: explicit permission bits
 inline constexpr u64 READ = (1ULL << 1);    // R
 inline constexpr u64 WRITE = (1ULL << 2);   // W
 inline constexpr u64 EXECUTE = (1ULL << 3); // X
@@ -180,7 +180,7 @@ inline constexpr u64 USER_RX =
 inline constexpr u64 DEVICE =
     page_attr::VALID | page_attr::AF | page_attr::ATTR_DEVICE | page_attr::XN | page_attr::PXN;
 
-#elif defined(MOSS_ARCH_X86_64)
+#elif defined(MOSS_ARCH_X64)
 inline constexpr u64 KERNEL_RO = page_attr::VALID | page_attr::AF | page_attr::ATTR_NORMAL | page_attr::XN;
 inline constexpr u64 KERNEL_RW =
     page_attr::VALID | page_attr::AF | page_attr::ATTR_NORMAL | page_attr::WRITABLE | page_attr::XN;
@@ -193,8 +193,8 @@ inline constexpr u64 USER_RX = page_attr::VALID | page_attr::AF | page_attr::USE
 inline constexpr u64 DEVICE =
     page_attr::VALID | page_attr::AF | page_attr::ATTR_DEVICE | page_attr::XN | page_attr::WRITABLE;
 
-#elif defined(MOSS_ARCH_RISCV)
-// RISC-V: A (Accessed) and D (Dirty) must be pre-set for writable pages to avoid
+#elif defined(MOSS_ARCH_RISCV64)
+// RISC-V 64: A (Accessed) and D (Dirty) must be pre-set for writable pages to avoid
 // hardware page-fault on first access (QEMU emulates A/D but real hardware may not).
 inline constexpr u64 KERNEL_RO = page_attr::VALID | page_attr::AF | page_attr::READ | page_attr::GLOBAL;
 inline constexpr u64 KERNEL_RW =
@@ -216,10 +216,10 @@ inline constexpr u64 DEVICE =
 // Virtual address breakdown — index bit positions for 4KB granule paging
 // ============================================================================
 //
-// 4-level (ARM64, x86_64, RISC-V Sv48): 48-bit VA, 9-bit indices:
+// 4-level (ARM64, x64, RISC-V 64 Sv48): 48-bit VA, 9-bit indices:
 //   PGD[47:39] PUD[38:30] PMD[29:21] PTE[20:12] Offset[11:0]
 //
-// 3-level (RISC-V Sv39): 39-bit VA, 9-bit indices:
+// 3-level (RISC-V 64 Sv39): 39-bit VA, 9-bit indices:
 //   L2[38:30] L1[29:21] L0[20:12] Offset[11:0]
 //   Mapped to pgd/pud/pmd fields to reuse 4-level walk code — pte_index=0.
 
@@ -232,9 +232,9 @@ struct VirtualAddressBreakdown {
 };
 
 [[nodiscard]] inline VirtualAddressBreakdown break_virtual_address(VirtAddr vaddr) noexcept {
-#if defined(MOSS_ARCH_RISCV)
+#if defined(MOSS_ARCH_RISCV64)
   if (g_mmu_mode == MmuMode::Sv48) {
-    // Sv48: 4-level, same layout as ARM64/x86_64
+    // Sv48: 4-level, same layout as ARM64/x64
     return {.pgd_index = static_cast<u16>((vaddr >> 39) & 0x1FF),
             .pud_index = static_cast<u16>((vaddr >> 30) & 0x1FF),
             .pmd_index = static_cast<u16>((vaddr >> 21) & 0x1FF),
@@ -282,16 +282,16 @@ struct AddressSpaceConfig {
   static constexpr u64 MAIR_NORMAL_NC = 0x44ULL;
   static constexpr u64 MAIR_VALUE = (MAIR_DEVICE_nGnRnE << 0) | (MAIR_NORMAL_WBWA << 8) | (MAIR_NORMAL_NC << 16);
 
-#elif defined(MOSS_ARCH_X86_64)
-  // x86_64 does not use MAIR/TCR; page attributes are directly in PTE bits
+#elif defined(MOSS_ARCH_X64)
+  // x64 does not use MAIR/TCR; page attributes are directly in PTE bits
   static constexpr u64 TCR_VALUE = 0;  // not applicable
   static constexpr u64 MAIR_VALUE = 0; // not applicable
 
-#elif defined(MOSS_ARCH_RISCV)
-  // RISC-V uses satp register; mode is detected at runtime (g_satp_mode_bits).
+#elif defined(MOSS_ARCH_RISCV64)
+  // RISC-V 64 uses satp register; mode is detected at runtime (g_satp_mode_bits).
   // Use make_satp_value() to build the register value.
   static constexpr u64 TCR_VALUE = 0;  // not applicable (satp used instead)
-  static constexpr u64 MAIR_VALUE = 0; // RISC-V uses PMA, not MAIR
+  static constexpr u64 MAIR_VALUE = 0; // RISC-V 64 uses PMA, not MAIR
 #endif
 };
 
@@ -300,9 +300,9 @@ struct AddressSpaceConfig {
 // ============================================================================
 #if defined(MOSS_ARCH_ARM64)
 inline constexpr u64 PTE_ADDR_MASK = 0x0000FFFFFFFFF000ULL; // bits [47:12]
-#elif defined(MOSS_ARCH_X86_64)
+#elif defined(MOSS_ARCH_X64)
 inline constexpr u64 PTE_ADDR_MASK = 0x000FFFFFFFFFF000ULL; // bits [51:12]
-#elif defined(MOSS_ARCH_RISCV)
+#elif defined(MOSS_ARCH_RISCV64)
 inline constexpr u64 PTE_ADDR_MASK = 0x003FFFFFFFFFFC00ULL; // PPN in bits [53:10], shift <<2 for addr
 #endif
 
@@ -320,11 +320,11 @@ inline void configure_address_space(PhysAddr pgd_phys) noexcept {
   asm volatile("msr ttbr1_el1, %0" ::"r"(pgd_phys));
   // Ensure writes are visible
   asm volatile("isb" ::: "memory");
-#elif defined(MOSS_ARCH_X86_64)
-  // x86_64: load CR3 with page table base
+#elif defined(MOSS_ARCH_X64)
+  // x64: load CR3 with page table base
   asm volatile("mov %0, %%cr3" ::"r"(pgd_phys) : "memory");
-#elif defined(MOSS_ARCH_RISCV)
-  // RISC-V: set satp register (runtime-detected Sv39 or Sv48 mode + PPN)
+#elif defined(MOSS_ARCH_RISCV64)
+  // RISC-V 64: set satp register (runtime-detected Sv39 or Sv48 mode + PPN)
   u64 satp_val = make_satp_value(pgd_phys);
   asm volatile("csrw satp, %0" ::"r"(satp_val) : "memory");
   asm volatile("sfence.vma" ::: "memory");
@@ -354,16 +354,16 @@ inline VoidResult enable_mmu(PhysAddr pgd_phys) noexcept {
   asm volatile("dsb sy");
   asm volatile("isb");
 
-#elif defined(MOSS_ARCH_X86_64)
-  // x86_64: MMU is always on in long mode; loading CR3 activates new tables
+#elif defined(MOSS_ARCH_X64)
+  // x64: MMU is always on in long mode; loading CR3 activates new tables
   u64 cr0;
   asm volatile("mov %%cr0, %0" : "=r"(cr0));
   cr0 |= 1ULL << 16; // WP: supervisor stores must honor read-only mappings.
   asm volatile("mov %0, %%cr0" ::"r"(cr0) : "memory");
   configure_address_space(pgd_phys);
 
-#elif defined(MOSS_ARCH_RISCV)
-  // RISC-V: writing satp with non-zero mode enables virtual memory
+#elif defined(MOSS_ARCH_RISCV64)
+  // RISC-V 64: writing satp with non-zero mode enables virtual memory
   configure_address_space(pgd_phys);
   asm volatile("sfence.vma" ::: "memory");
 #endif
@@ -377,10 +377,10 @@ inline VoidResult enable_mmu(PhysAddr pgd_phys) noexcept {
   u64 sctlr;
   asm volatile("mrs %0, sctlr_el1" : "=r"(sctlr));
   return (sctlr & (1ULL << 0)) != 0;
-#elif defined(MOSS_ARCH_X86_64)
+#elif defined(MOSS_ARCH_X64)
   // In long mode, paging is always enabled
   return true;
-#elif defined(MOSS_ARCH_RISCV)
+#elif defined(MOSS_ARCH_RISCV64)
   u64 satp;
   asm volatile("csrr %0, satp" : "=r"(satp));
   return ((satp >> 60) & 0xF) != 0; // non-zero mode = paging on

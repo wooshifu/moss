@@ -45,7 +45,7 @@ enum {
 // ============================================================================
 
 #ifdef __riscv
-// RISC-V: a7=nr, a0-a5=args, ecall, return in a0
+// RISC-V 64: a7=nr, a0-a5=args, ecall, return in a0
 
 static inline long syscall0(long number) {
   register long a7 asm("a7") = number;
@@ -91,7 +91,7 @@ static inline long syscall6(long number, long arg0, long arg1, long arg2, long a
 }
 
 #elif defined(__x86_64__)
-// x86_64: RAX=nr, RDI/RSI/RDX/R10/R8/R9=args, syscall, return in RAX
+// x64: RAX=nr, RDI/RSI/RDX/R10/R8/R9=args, syscall, return in RAX
 
 static inline long syscall0(long number) {
   register long rax asm("rax") = number;

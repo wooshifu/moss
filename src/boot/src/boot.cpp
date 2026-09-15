@@ -7,10 +7,10 @@ module;
 
 #if defined(__aarch64__) || defined(MOSS_ARCH_ARM64)
 #define MOSS_CURRENT_ARCH "ARM64"
-#elif defined(__x86_64__) || defined(__x86_64) || defined(MOSS_ARCH_X86_64)
-#define MOSS_CURRENT_ARCH "x86_64"
-#elif defined(__riscv) || defined(__riscv__) || defined(MOSS_ARCH_RISCV)
-#define MOSS_CURRENT_ARCH "RISC-V"
+#elif defined(__x86_64__) || defined(__x86_64) || defined(MOSS_ARCH_X64)
+#define MOSS_CURRENT_ARCH "x64"
+#elif defined(__riscv) || defined(__riscv__) || defined(MOSS_ARCH_RISCV64)
+#define MOSS_CURRENT_ARCH "RISC-V 64"
 #endif
 
 module moss.boot;

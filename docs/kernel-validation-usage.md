@@ -4,7 +4,7 @@ The validation executable links the same production object modules and follows t
 
 ## Build and Test
 
-Run from the repository root. Replace `arm64` with `x86_64` or `riscv` for the other architectures.
+Run from the repository root. Replace `arm64` with `x64` or `riscv64` for the other architectures.
 
 ```sh
 uv run cmake --preset arm64-debug
@@ -38,7 +38,7 @@ These are single-worker ownership checks, not concurrent allocator/COW acceptanc
 Additional boot-input checks run independently of CMake configure/build:
 
 ```sh
-uv run scripts/check_pfa_firmware.py --manifest build/riscv-debug/moss-artifacts.json
+uv run scripts/check_pfa_firmware.py --manifest build/riscv64-debug/moss-artifacts.json
 uv run scripts/check_heap_layout.py --manifest build/arm64-debug/moss-artifacts.json
 ```
 
@@ -90,7 +90,7 @@ The subsequent users case covers fork/exec/reaping; containers.smp covers CPU1.
 
 ## User Floating-Point State
 
-On x86_64, `users.fork_exec_exit_reap` also checks x87 data/control, MXCSR and
+On x64, `users.fork_exec_exit_reap` also checks x87 data/control, MXCSR and
 XMM15 across yield and fork, child state changes without parent contamination,
 default state after exec, and real x87 invalid-operation termination followed by
 parent continuation. Exec validates argc/argv. `containers.smp` additionally
@@ -102,7 +102,7 @@ operation to terminate only the child. It is explicit, not part of the default
 functional set, and a missing exception remains a failure:
 
 ```sh
-uv run scripts/kernel_validation.py run --manifest build/x86_64-debug/moss-artifacts.json \
+uv run scripts/kernel_validation.py run --manifest build/x64-debug/moss-artifacts.json \
   --workload users.simd_fault
 ```
 
@@ -156,7 +156,7 @@ The three application-specific functions above are author-provided: prepare and 
 
 Add the stable scenario ID to the host `CATALOG` in `scripts/kernel_validation.py`. Similarly, add functional cases with `ut::register_test` inside an explicit `ut::register_suite`, then update that suite's host catalog. IDs and descriptor strings must have static lifetime and use ASCII letters/digits or `_-.=/`, at most 80 characters. Capacities are 128 cases, 16 suites and 16 benchmarks. Change the workload version when changing its definition or fixture semantics.
 
-Counters are ordered and frequencies are validated: ARM64 CNTFRQ/CNTVCT, RISC-V DTB timebase/time, and x86 CPUID.15 or three bounded PIT-channel-0 calibration samples. A bounded pilot selects an operation count, then all batches keep it fixed. The worker is pinned to CPU 0; other CPUs stay online and normal interrupts remain enabled during measured kernel operations.
+Counters are ordered and frequencies are validated: ARM64 CNTFRQ/CNTVCT, RISC-V 64 DTB timebase/time, and x86 CPUID.15 or three bounded PIT-channel-0 calibration samples. A bounded pilot selects an operation count, then all batches keep it fixed. The worker is pinned to CPU 0; other CPUs stay online and normal interrupts remain enabled during measured kernel operations.
 
 Raw ticks and empty-loop/counter overhead are retained, without exact overhead subtraction. Reported medians summarize batch-average elapsed time per operation, including callees and residual loop/result-storage costs. They are not per-call latency percentiles, exclusive function CPU time, hardware CPU cycles, or native-hardware performance claims. Do not run other benchmark runners concurrently when collecting comparison data.
 

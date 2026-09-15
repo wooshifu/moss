@@ -4,7 +4,7 @@
 // and prints diagnostic information for all other unhandled exceptions.
 //
 // Called from the ARM64 exception vector table in start_arm64.S.
-// x86_64 and RISC-V stubs are provided for link compatibility.
+// x64 and RISC-V 64 stubs are provided for link compatibility.
 
 module;
 
@@ -23,10 +23,10 @@ extern "C" void user_page_fault_handler(unsigned long long esr, unsigned long lo
 extern "C" [[noreturn]] void unhandled_user_exception_handler(unsigned long long esr, unsigned long long far_addr,
                                                               unsigned long long elr) noexcept;
 
-extern "C" void riscv_page_fault_handler(unsigned long long scause, unsigned long long stval,
+extern "C" void riscv64_page_fault_handler(unsigned long long scause, unsigned long long stval,
                                          unsigned long long sepc) noexcept;
 
-extern "C" void x86_64_page_fault_handler(unsigned long long error_code, unsigned long long cr2,
+extern "C" void x64_page_fault_handler(unsigned long long error_code, unsigned long long cr2,
                                           unsigned long long rip) noexcept;
 
 module moss.mm;
@@ -419,7 +419,7 @@ static bool try_cow_fault(moss::kernel::u64 far_addr) noexcept {
       dst[i] = src[i];
     }
 
-    // Reuse the architecture's PTE encoder (RISC-V stores PPN, not PA).
+    // Reuse the architecture's PTE encoder (RISC-V 64 stores PPN, not PA).
     // Keep permissions/cache attributes unchanged except COW and writability.
     auto replacement = *pte;
     replacement.clear_cow();
@@ -538,17 +538,17 @@ static bool try_demand_page(moss::kernel::u64 far_addr, FaultAccess access) noex
   if (!(vma_flags & VMA_EXEC)) {
     perms |= pa::XN; // UXN → no user execute
   }
-#elif defined(MOSS_ARCH_X86_64)
+#elif defined(MOSS_ARCH_X64)
   if (vma_flags & VMA_WRITE) {
     perms |= pa::WRITABLE;
   }
   if (!(vma_flags & VMA_EXEC)) {
     perms |= pa::XN; // NX bit
   }
-#elif defined(MOSS_ARCH_RISCV)
+#elif defined(MOSS_ARCH_RISCV64)
   perms |= pa::READ; // Always readable
   if (vma_flags & VMA_WRITE) {
-    // RISC-V: Dirty (D) bit must be pre-set for writable pages.
+    // RISC-V 64: Dirty (D) bit must be pre-set for writable pages.
     // Without D, the first store triggers a Store Page Fault (scause=15)
     // even though the page is mapped, creating an infinite fault loop.
     perms |= pa::WRITE | pa::DIRTY;
@@ -631,16 +631,16 @@ extern "C" [[noreturn]] void unhandled_user_exception_handler(unsigned long long
 }
 
 // ============================================================================
-// RISC-V page fault handler
+// RISC-V 64 page fault handler
 //
-// Called from riscv_syscall.S for scause 12 (Instruction Page Fault),
+// Called from riscv64_syscall.S for scause 12 (Instruction Page Fault),
 // 13 (Load Page Fault), and 15 (Store/AMO Page Fault).
 //
-// RISC-V encodes the fault type directly in scause (unlike ARM64 which
+// RISC-V 64 encodes the fault type directly in scause (unlike ARM64 which
 // uses ESR bit-fields).  The faulting address is in stval (≡ FAR_EL1).
 // ============================================================================
-#if defined(MOSS_ARCH_RISCV) || defined(__riscv) || defined(__riscv__)
-extern "C" void riscv_page_fault_handler(unsigned long long scause, unsigned long long stval, unsigned long long sepc,
+#if defined(MOSS_ARCH_RISCV64) || defined(__riscv) || defined(__riscv__)
+extern "C" void riscv64_page_fault_handler(unsigned long long scause, unsigned long long stval, unsigned long long sepc,
                                          void *raw_frame) noexcept {
   namespace log = moss::kernel::logging;
   using namespace moss::kernel;
@@ -676,20 +676,20 @@ extern "C" void riscv_page_fault_handler(unsigned long long scause, unsigned lon
     }
   }
 
-  log::klog::error("RISC-V PAGE FAULT: scause={:#x} addr={:#x} pc={:#x}", scause, stval, sepc);
-  kill_user_process("RISC-V page fault", stval, sepc);
+  log::klog::error("RISC-V 64 PAGE FAULT: scause={:#x} addr={:#x} pc={:#x}", scause, stval, sepc);
+  kill_user_process("RISC-V 64 page fault", stval, sepc);
 }
-#endif // MOSS_ARCH_RISCV
+#endif // MOSS_ARCH_RISCV64
 
 // ============================================================================
-// x86_64 Page Fault Handler (#PF, vector 14)
+// x64 Page Fault Handler (#PF, vector 14)
 //
-// Called from x86_64_interrupt_handler() in boot_impl.cpp.
+// Called from x64_interrupt_handler() in boot_impl.cpp.
 // Error code bits:  0=Present  1=Write  2=User  4=InstructionFetch
 // CR2 holds the faulting virtual address.
 // ============================================================================
-#if defined(MOSS_ARCH_X86_64) || defined(__x86_64__) || defined(__x86_64)
-extern "C" void x86_64_page_fault_handler(unsigned long long error_code, unsigned long long cr2, unsigned long long rip,
+#if defined(MOSS_ARCH_X64) || defined(__x86_64__) || defined(__x86_64)
+extern "C" void x64_page_fault_handler(unsigned long long error_code, unsigned long long cr2, unsigned long long rip,
                                           void *raw_frame) noexcept {
   namespace log = moss::kernel::logging;
   using namespace moss::kernel;
@@ -721,7 +721,7 @@ extern "C" void x86_64_page_fault_handler(unsigned long long error_code, unsigne
   bool is_user_mode = (error_code & (1ULL << 2)) != 0;
 
   if (is_user_mode) {
-    log::klog::error("x86_64 USER PAGE FAULT: addr={:#x} pc={:#x} err={:#x}", cr2, rip, error_code);
+    log::klog::error("x64 USER PAGE FAULT: addr={:#x} pc={:#x} err={:#x}", cr2, rip, error_code);
     kill_user_process("page fault", cr2, rip);
   }
 
@@ -730,4 +730,4 @@ extern "C" void x86_64_page_fault_handler(unsigned long long error_code, unsigne
     asm volatile("hlt");
   }
 }
-#endif // MOSS_ARCH_X86_64
+#endif // MOSS_ARCH_X64

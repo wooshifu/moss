@@ -358,9 +358,9 @@ KernelResult<VirtAddr> allocate_user_heap(Process *process, usize size) noexcept
       asm volatile("isb" ::: "memory");
     }
   }
-#elif defined(MOSS_ARCH_X86_64)
+#elif defined(MOSS_ARCH_X64)
   {
-    // x86_64 uses a single CR3 register — switch back to kernel PGD
+    // x64 uses a single CR3 register — switch back to kernel PGD
     // before freeing the user page tables to avoid use-after-free faults.
     auto *kpgd = mm::PageTableManager::get_kernel_pgd();
     if (kpgd) {
@@ -368,9 +368,9 @@ KernelResult<VirtAddr> allocate_user_heap(Process *process, usize size) noexcept
       asm volatile("mov %0, %%cr3" ::"r"(kpgd_phys) : "memory");
     }
   }
-#elif defined(MOSS_ARCH_RISCV)
+#elif defined(MOSS_ARCH_RISCV64)
   {
-    // RISC-V has a single satp register (no separate user/kernel page table base).
+    // RISC-V 64 has a single satp register (no separate user/kernel page table base).
     // Switch satp back to kernel PGD before freeing user page tables.
     auto *kpgd = mm::PageTableManager::get_kernel_pgd();
     if (kpgd) {

@@ -5,7 +5,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-BOOT_PROTOCOLS = {"ARM64": "linux-image", "RISCV": "sbi", "X86_64": "xen-pvh"}
+BOOT_PROTOCOLS = {"ARM64": "linux-image", "RISCV64": "sbi", "X64": "xen-pvh"}
 
 
 @dataclass(frozen=True)

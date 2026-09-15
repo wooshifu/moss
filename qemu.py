@@ -13,8 +13,8 @@ from scripts.artifacts import Artifacts
 
 ARCH_CONFIG = {
     "ARM64": {"qemu_system": "qemu-system-aarch64", "machine": "virt", "cpu": "cortex-a72"},
-    "X86_64": {"qemu_system": "qemu-system-x86_64", "machine": "q35", "cpu": "qemu64"},
-    "RISCV": {"qemu_system": "qemu-system-riscv64", "machine": "virt", "cpu": "rv64"},
+    "X64": {"qemu_system": "qemu-system-x86_64", "machine": "q35", "cpu": "qemu64"},
+    "RISCV64": {"qemu_system": "qemu-system-riscv64", "machine": "virt", "cpu": "rv64"},
 }
 
 
@@ -84,7 +84,7 @@ def build_qemu_args(
     ]
     if not validation:
         args += ["-mon", "chardev=char0,mode=readline"]
-    if artifacts.arch == "RISCV":
+    if artifacts.arch == "RISCV64":
         args += ["-bios", "default"]
     initrd = "validation_initramfs" if validation else "initramfs"
     if artifacts.files[initrd] is not None:
@@ -132,7 +132,7 @@ def main(
         typer.echo(shlex.join(args))
         if debug:
             typer.echo(f"Symbols: {artifacts.require('debug_symbols')}; target remote localhost:1234")
-            if artifacts.arch in ("ARM64", "RISCV"):
+            if artifacts.arch in ("ARM64", "RISCV64"):
                 typer.echo("PIE symbols need the firmware-selected Image load offset; see docs/generic-boot.md.")
         if dry_run:
             return

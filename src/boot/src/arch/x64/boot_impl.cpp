@@ -1,19 +1,19 @@
 /*
- * x86_64 architecture-specific boot implementation - module implementation unit
- * Implements the unified boot interface for x86_64
+ * x64 architecture-specific boot implementation - module implementation unit
+ * Implements the unified boot interface for x64
  */
 
 module;
 
 // Architecture detection (global module fragment)
-#ifndef MOSS_ARCH_X86_64
-#define MOSS_ARCH_X86_64
+#ifndef MOSS_ARCH_X64
+#define MOSS_ARCH_X64
 #endif
 
-// Assembly-defined symbols used by x86_64_setup_tss() below
+// Assembly-defined symbols used by x64_setup_tss() below
 extern "C" {
-extern unsigned char g_tss[];                         // 104-byte TSS in start_x86_64.S .bss.tss
-extern unsigned long long gdt_table[];                // GDT in start_x86_64.S .data
+extern unsigned char g_tss[];                         // 104-byte TSS in start_x64.S .bss.tss
+extern unsigned long long gdt_table[];                // GDT in start_x64.S .data
 extern unsigned char _stack_top_addr[];               // Boot stack top (linker symbol)
 void early_debug_print(const char *message) noexcept; // UART output (kernel_main.cpp)
 extern unsigned char x86_ap_trampoline_start[], x86_ap_trampoline_end[], x86_ap_cr3[], x86_ap_stack[];
@@ -53,9 +53,9 @@ static bool initialize_fpu() noexcept {
 }
 
 // =============================================================================
-// TSS setup — called from start_x86_64.S before early_main()
+// TSS setup — called from start_x64.S before early_main()
 // =============================================================================
-// x86_64 Task State Segment (104 bytes, defined in start_x86_64.S .bss.tss)
+// x64 Task State Segment (104 bytes, defined in start_x64.S .bss.tss)
 struct [[gnu::packed]] TSS64 {
   u32 reserved0;
   u64 rsp0; // Kernel stack for ring 3 → ring 0 transitions
@@ -84,13 +84,13 @@ static void set_gs_runtime(u32 cpu, TSS64 *tss) noexcept {
   asm volatile("wrmsr" ::"c"(0xC0000101U), "a"(static_cast<u32>(base)), "d"(static_cast<u32>(base >> 32)) : "memory");
 }
 
-extern "C" void x86_64_set_kernel_stack(u64 top) noexcept {
+extern "C" void x64_set_kernel_stack(u64 top) noexcept {
   auto cpu = moss::kernel::arch::get_current_cpu_id();
   cpu_runtime[cpu].kernel_rsp = top;
   cpu_runtime[cpu].tss->rsp0 = top;
 }
 
-extern "C" void x86_64_setup_tss() noexcept {
+extern "C" void x64_setup_tss() noexcept {
   auto *tss = reinterpret_cast<TSS64 *>(g_tss);
 
   // Zero the TSS
@@ -197,7 +197,7 @@ void update_boot_stage(BootStage stage, ::moss::kernel::ErrorCode error) noexcep
 
 } // namespace moss::boot
 
-// x86_64BootImpl member function implementations
+// x64BootImpl member function implementations
 // ACPI tables are firmware data, not emulator configuration. All early physical
 // accesses are bounded by the currently supported 4-GiB identity mapping.
 static bool physical_range(u64 base, u64 size) noexcept {
@@ -454,7 +454,7 @@ static bool discover_acpi(u64 address) noexcept {
 ::moss::kernel::VoidResult moss::boot::X86BootImpl::setup_memory_management(BootContext & /*ctx*/) noexcept {
   moss::boot::update_boot_stage(moss::boot::BootStage::MemoryManagement);
 
-  moss::boot::early_print("=== x86_64 Memory Management Setup ===\n");
+  moss::boot::early_print("=== x64 Memory Management Setup ===\n");
 
   // Initialize kernel page tables for user space support
   // This is required for creating user address spaces even though PVH already provides identity mapping
@@ -485,7 +485,7 @@ static bool discover_acpi(u64 address) noexcept {
     return ::moss::kernel::VoidResult{::moss::kernel::ErrorCode::OutOfMemory};
   }
 
-  moss::boot::early_print("x86_64 memory management setup complete\n\n");
+  moss::boot::early_print("x64 memory management setup complete\n\n");
   return ::moss::kernel::VoidResult{};
 }
 
@@ -506,7 +506,7 @@ static struct [[gnu::packed]] {
   u64 base;
 } g_idtr;
 
-// ISR stub table defined in isr_x86_64.S
+// ISR stub table defined in isr_x64.S
 extern "C" void *isr_stub_table[256];
 
 static void setup_idt() {
@@ -538,11 +538,11 @@ static void uart_print_hex(u64 value) noexcept {
 
 // Global callbacks for cross-module interrupt dispatch (registered by kernel-main.cppm).
 // extern "C" to avoid module-local mangling — accessible from any translation unit.
-extern "C" void (*g_x86_64_timer_handler)() noexcept = nullptr;
-extern "C" void (*g_x86_64_uart_rx_handler)() noexcept = nullptr;
+extern "C" void (*g_x64_timer_handler)() noexcept = nullptr;
+extern "C" void (*g_x64_uart_rx_handler)() noexcept = nullptr;
 
-// C++ interrupt/exception handler called from isr_common (isr_x86_64.S)
-extern "C" void x86_64_interrupt_handler(u64 vector, u64 error_code, [[maybe_unused]] void *frame) noexcept {
+// C++ interrupt/exception handler called from isr_common (isr_x64.S)
+extern "C" void x64_interrupt_handler(u64 vector, u64 error_code, [[maybe_unused]] void *frame) noexcept {
   if (vector < 32) {
     auto &saved = *static_cast<moss::abi::TrapFrame *>(frame);
 
@@ -551,7 +551,7 @@ extern "C" void x86_64_interrupt_handler(u64 vector, u64 error_code, [[maybe_unu
       u64 cr2 = 0;
       asm volatile("mov %%cr2, %0" : "=r"(cr2));
       u64 rip = saved.pc;
-      moss::abi::entry::x86_64_page_fault_handler(error_code, cr2, rip, &saved);
+      moss::abi::entry::x64_page_fault_handler(error_code, cr2, rip, &saved);
       return; // Handler resolved the fault — iretq retries the instruction
     }
 
@@ -578,14 +578,14 @@ extern "C" void x86_64_interrupt_handler(u64 vector, u64 error_code, [[maybe_unu
   *lapic_eoi = 0;
 
   // LAPIC timer (vector 48)
-  if (vector == 48 && g_x86_64_timer_handler != nullptr) {
-    g_x86_64_timer_handler();
+  if (vector == 48 && g_x64_timer_handler != nullptr) {
+    g_x64_timer_handler();
     return;
   }
 
   // COM1 UART RX (vector 36 = IRQ4 routed via I/O APIC)
-  if (vector == 32 + moss::kernel::platform::hardware.uart.irq && g_x86_64_uart_rx_handler != nullptr) {
-    g_x86_64_uart_rx_handler();
+  if (vector == 32 + moss::kernel::platform::hardware.uart.irq && g_x64_uart_rx_handler != nullptr) {
+    g_x64_uart_rx_handler();
   }
 }
 
@@ -593,7 +593,7 @@ extern "C" void x86_64_interrupt_handler(u64 vector, u64 error_code, [[maybe_unu
   (void)ctx;
   moss::boot::update_boot_stage(moss::boot::BootStage::InterruptsExceptions);
 
-  moss::boot::early_print("=== x86_64 Interrupts and Exceptions Setup ===\n");
+  moss::boot::early_print("=== x64 Interrupts and Exceptions Setup ===\n");
 
   // 1. Load IDT with 256 entries pointing to ISR stubs
   setup_idt();
@@ -624,14 +624,14 @@ extern "C" void x86_64_interrupt_handler(u64 vector, u64 error_code, [[maybe_unu
     moss::boot::early_print("BOOT ERROR: PIT/TSC/APIC clock calibration failed\n");
     return ::moss::kernel::VoidResult{::moss::kernel::ErrorCode::NotSupported};
   }
-  moss::boot::early_print("x86_64 interrupt/exception setup complete\n\n");
+  moss::boot::early_print("x64 interrupt/exception setup complete\n\n");
   return ::moss::kernel::VoidResult{};
 }
 
 ::moss::kernel::VoidResult moss::boot::X86BootImpl::setup_smp_support(BootContext &ctx) noexcept {
   moss::boot::update_boot_stage(moss::boot::BootStage::SmpSupport);
 
-  moss::boot::early_print("=== x86_64 SMP Support Setup ===\n");
+  moss::boot::early_print("=== x64 SMP Support Setup ===\n");
 
   // Use the CPU count detected via CPUID during hardware_early_init.
   // AP boot via INIT-SIPI-SIPI requires:
@@ -647,7 +647,7 @@ extern "C" void x86_64_interrupt_handler(u64 vector, u64 error_code, [[maybe_unu
   moss::boot::early_print("  Detected CPUs: ");
   moss::boot::early_print_hex(detected);
   moss::boot::early_print(" (BSP only for now)\n");
-  moss::boot::early_print("x86_64 SMP setup complete\n\n");
+  moss::boot::early_print("x64 SMP setup complete\n\n");
   return ::moss::kernel::VoidResult{};
 }
 
@@ -655,13 +655,13 @@ extern "C" void x86_64_interrupt_handler(u64 vector, u64 error_code, [[maybe_unu
   (void)ctx;
   moss::boot::update_boot_stage(moss::boot::BootStage::ArchFinalize);
 
-  moss::boot::early_print("=== x86_64 Architecture Init Complete ===\n");
+  moss::boot::early_print("=== x64 Architecture Init Complete ===\n");
 
   // Mark runtime heap as ready so operator new uses RuntimeHeapAllocator
   moss::abi::entry::mark_runtime_heap_ready();
   moss::boot::early_print("Runtime heap marked ready\n");
 
-  moss::boot::early_print("x86_64 architecture-specific init all complete\n\n");
+  moss::boot::early_print("x64 architecture-specific init all complete\n\n");
   return ::moss::kernel::VoidResult{};
 }
 
@@ -673,7 +673,7 @@ extern "C" void x86_64_interrupt_handler(u64 vector, u64 error_code, [[maybe_unu
 u32 moss::boot::X86BootImpl::get_current_cpu_id() noexcept { return moss::boot::get_current_cpu_id_impl(); }
 
 [[noreturn]] void moss::boot::X86BootImpl::arch_panic(const char *message) noexcept {
-  moss::boot::early_print("\n=== x86_64 PANIC ===\n");
+  moss::boot::early_print("\n=== x64 PANIC ===\n");
   moss::boot::early_print(message);
   moss::boot::early_print("\n====================\n");
 
@@ -683,7 +683,7 @@ u32 moss::boot::X86BootImpl::get_current_cpu_id() noexcept { return moss::boot::
   }
 }
 
-// === Boot global variables (x86_64 stubs) ===
+// === Boot global variables (x64 stubs) ===
 namespace moss::boot {
 
 moss::kernel::interrupts::GenericInterruptController *g_gic_controller = nullptr;

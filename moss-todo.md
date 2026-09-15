@@ -6,7 +6,7 @@
 
 ## 1. 当前结论
 
-Moss 已具备三架构真实启动、SMP、用户态与进程执行路径。后续提交 `44dedc2` 建立了生产内核验证和函数基准；`6252484` 实现了同 ISA 通用镜像、运行时硬件发现与独立 runner；`b57422d` 恢复了全部 9 个 CMake workflow 的 CTest 步骤。RISC-V/x86_64 不是启动桩，旧 x86 测试 ELF 装载失败和 initramfs fallback 也不再代表当前正常路径。
+Moss 已具备三架构真实启动、SMP、用户态与进程执行路径。后续提交 `44dedc2` 建立了生产内核验证和函数基准；`6252484` 实现了同 ISA 通用镜像、运行时硬件发现与独立 runner；`b57422d` 恢复了全部 9 个 CMake workflow 的 CTest 步骤。RISC-V 64/x64 不是启动桩，旧 x86 测试 ELF 装载失败和 initramfs fallback 也不再代表当前正常路径。
 
 但“能启动、能完成一次 fork/exec/wait”仍不等于可靠的多架构研究内核：
 
@@ -41,8 +41,8 @@ P0 是本项目的实现优先级，不是 CVSS 评级。研究内核也需要�
 
 - 优先使用 codebase-memory-mcp 的符号搜索、调用关系和源码片段，检查索引覆盖及引用路径；对汇编、链接脚本、部分解析范围和负向结论补充直接源码检查。
 - 从启动到用户态、系统调用到缺页、fork/exec 到退出回收追踪实际路径，而非只看接口声明或 `todo.md`。
-- 对已有六个 QEMU 构建目录执行增量构建和 CTest，并进行 ARM64/RISC-V 用户态交互；对重复执行停滞使用 QEMU 寄存器采样和 `llvm-addr2line` 定位。
-- 对页权限、异常返回、RISC-V PTE、PVH 和 RCU 契约参考官方资料。知识图谱覆盖是辅助信号，不是源码完整性证明。
+- 对已有六个 QEMU 构建目录执行增量构建和 CTest，并进行 ARM64/RISC-V 64 用户态交互；对重复执行停滞使用 QEMU 寄存器采样和 `llvm-addr2line` 定位。
+- 对页权限、异常返回、RISC-V 64 PTE、PVH 和 RCU 契约参考官方资料。知识图谱覆盖是辅助信号，不是源码完整性证明。
 
 2026-09-06 复核先比较 `e0e2bbc..b57422d`，再对相关符号、调用链和当前源码进行检查。知识图谱使用 Tier 2，初始 generation 为 `2026-09-06T10:43:22Z`；已检查证据路径覆盖，并直接读取汇编、链接脚本及部分解析范围。对于图谱未捕获的全限定 C++ 方法，使用直接源码确认。此次更新不是重新执行全部历史故障实验。
 
@@ -81,16 +81,16 @@ uv run --frozen ctest --test-dir build/<preset> --output-on-failure
 | --- | --- | --- | --- |
 | arm64-qemu-debug | 退出 0，ninja 无工作 | 通过，约 0.70 s | 独立基础测试可运行 |
 | arm64-qemu-release | 退出 0，ninja 无工作 | 通过，约 1.11 s | 同上 |
-| riscv-qemu-debug | 退出 0，ninja 无工作 | 通过，约 0.59 s | 同上，不代表进程/信号正确 |
-| riscv-qemu-release | 退出 0，ninja 无工作 | 通过，约 1.29 s | 同上 |
-| x86_64-qemu-debug | 退出 0，ninja 无工作 | 失败，ctest 退出 8 | QEMU 拒绝测试 ELF |
-| x86_64-qemu-release | 退出 0，ninja 无工作 | 失败，ctest 退出 8 | 同上 |
+| riscv64-qemu-debug | 退出 0，ninja 无工作 | 通过，约 0.59 s | 同上，不代表进程/信号正确 |
+| riscv64-qemu-release | 退出 0，ninja 无工作 | 通过，约 1.29 s | 同上 |
+| x64-qemu-debug | 退出 0，ninja 无工作 | 失败，ctest 退出 8 | QEMU 拒绝测试 ELF |
+| x64-qemu-release | 退出 0，ninja 无工作 | 失败，ctest 退出 8 | 同上 |
 
 这六次构建是**已有产物的增量检查，不是清空目录后的完整重建**。不能据此宣称全新机器配置、依赖下载和完整编译矩阵均已验证。CTest 日志位于对应构建目录的 `Testing/Temporary/LastTest.log`，后续运行会覆盖。
 
 整理报告期间，工作区另外出现了 lint/格式化脚本、Python 依赖及说明文档的并行改动；本次没有修改或回退它们。上述运行结果对应审计时的配置与源码基线，不自动覆盖这些后续工具配置变更。最终检查时未发现本文引用的内核源码有并行修改。
 
-x86_64 两个测试的装载错误：
+x64 两个测试的装载错误：
 
 ```text
 Error loading uncompressed kernel without PVH ELF Note
@@ -114,12 +114,12 @@ uv run --frozen qemu.py \
 | ARM64 debug，SMP 4 / GICv2 | 同上 | 多核启动及一次交互可运行，不证明迁移竞争正确 |
 | ARM64 debug，SMP 16 / GICv3 | 同上 | GICv3 配置的基本路径可运行 |
 | ARM64 debug / release，signal_test | basic、nested、mask、altstack、ignore 报告通过；SIGCHLD 为 SKIP | 只覆盖正常形状；不能称完整信号验收 |
-| RISC-V debug，hello | hello 输出后非法指令，PID 1 被终止，无新提示符 | 退出/调度路径未闭环 |
-| RISC-V debug，signal_test | 第一个 basic 测试出现 load access fault | 信号路径无法工作 |
-| x86_64 debug，正常内核 | initramfs magic 错误，0 个条目，shell 不存在，PID 1 退出 | 正常内核能进入初始化，但用户态启动失败 |
+| RISC-V 64 debug，hello | hello 输出后非法指令，PID 1 被终止，无新提示符 | 退出/调度路径未闭环 |
+| RISC-V 64 debug，signal_test | 第一个 basic 测试出现 load access fault | 信号路径无法工作 |
+| x64 debug，正常内核 | initramfs magic 错误，0 个条目，shell 不存在，PID 1 退出 | 正常内核能进入初始化，但用户态启动失败 |
 | ARM64 debug，连续 hello | 两次均在第 28 个 hello 输出后不再返回提示符 | 明确的重复执行可靠性缺陷，根因仍需专项验证 |
 
-RISC-V 信号故障摘录：
+RISC-V 64 信号故障摘录：
 
 ```text
 scause=0x5 sepc=0x802195d4 stval=0x116
@@ -149,22 +149,22 @@ PC 解析为 `src/aal/src/arch.cppm:143` 的 `cpu_idle_once()`；X30 解析到 `
 | 预设 | workflow CTest 结果 | 日志中的总时长 |
 | --- | --- | --- |
 | arm64-debug | functional / framework：2/2 通过 | 14.45 s |
-| riscv-debug | functional / framework：2/2 通过 | 15.15 s |
-| x86_64-debug | functional / framework：2/2 通过 | 16.18 s |
+| riscv64-debug | functional / framework：2/2 通过 | 15.15 s |
+| x64-debug | functional / framework：2/2 通过 | 16.18 s |
 | arm64-release | functional / framework / benchmark：3/3 通过 | 18.09 s |
-| riscv-release | functional / framework / benchmark：3/3 通过 | 16.73 s |
-| x86_64-release | functional / framework / benchmark：3/3 通过 | 18.23 s |
+| riscv64-release | functional / framework / benchmark：3/3 通过 | 16.73 s |
+| x64-release | functional / framework / benchmark：3/3 通过 | 18.23 s |
 
 本次复核到的结果报告如下，目录为 `build/<preset>/validation/<ID>/results.json`；它们是保留的运行记录，不是本轮重新执行的结果。各报告均 finalized，guest 的 expected/observed 一致；故意失败自检的 case 仍保留 failed/error/not_run，不伪装成普通 case 通过。
 
 | 预设 | functional ID | framework ID | benchmark ID |
 | --- | --- | --- | --- |
 | arm64-debug | 1788691226372005000 | 1788691228631333000 | — |
-| riscv-debug | 1788691163475287000 | 1788691166023132000 | — |
-| x86_64-debug | 1788691183675696000 | 1788691186651464000 | — |
+| riscv64-debug | 1788691163475287000 | 1788691166023132000 | — |
+| x64-debug | 1788691183675696000 | 1788691186651464000 | — |
 | arm64-release | 1788691294814863000 | 1788691296162780000 | 1788691307751560000 |
-| riscv-release | 1788691231717949000 | 1788691234013457000 | 1788691245874994000 |
-| x86_64-release | 1788691253466864000 | 1788691255947137000 | 1788691268354819000 |
+| riscv64-release | 1788691231717949000 | 1788691234013457000 | 1788691245874994000 |
+| x64-release | 1788691253466864000 | 1788691255947137000 | 1788691268354819000 |
 
 原始报告是 ignored 构建产物，清理后可能不再存在；上表保留本次查验位置。修复后应生成新记录，而不是覆盖旧记录或修改其 provenance。
 
@@ -199,11 +199,11 @@ SMP 原失败：堆修复后的第一次并行 Debug CTest 中，ARM64 的 heap 
 | 预设 | functional ID | framework ID | benchmark ID |
 | --- | --- | --- | --- |
 | arm64-debug | 1788694074154549000 | 1788694077820841000 | — |
-| riscv-debug | 1788694075453235000 | 1788694079547809000 | — |
-| x86_64-debug | 1788694076553963000 | 1788694080593837000 | — |
+| riscv64-debug | 1788694075453235000 | 1788694079547809000 | — |
+| x64-debug | 1788694076553963000 | 1788694080593837000 | — |
 | arm64-release | 1788694154176555000 | 1788694156140490000 | 1788694167811780000 |
-| riscv-release | 1788694170383590000 | 1788694172571935000 | 1788694184478034000 |
-| x86_64-release | 1788694187347547000 | 1788694190433892000 | 1788694202800013000 |
+| riscv64-release | 1788694170383590000 | 1788694172571935000 | 1788694184478034000 |
+| x64-release | 1788694187347547000 | 1788694190433892000 | 1788694202800013000 |
 
 宿主 `uv run pytest -q scripts/tests`：102 passed（38.00 s）；Ruff、受改 C++ 的 clang-format dry-run 和 `git diff --check` 通过。仍未完成页表/PFA 元数据的专项哨兵及全布局不重叠检查、所有保留区耗尽、PFA 错误 order、分配器 SMP 确定性交错、真实硬件或 RelWithDebInfo 验收。因此这里只关闭已验收子项，004/005/013/028/032 整项保持未完成。
 
@@ -223,13 +223,13 @@ SMP 原失败：堆修复后的第一次并行 Debug CTest 中，ARM64 的 heap 
 | 预设 | functional ID | framework ID | benchmark ID |
 | --- | --- | --- | --- |
 | arm64-debug | 1788696137021848000 | 1788696144046044000 | — |
-| riscv-debug | 1788696156600819000 | 1788696164022112000 | — |
-| x86_64-debug | 1788696176947198000 | 1788696184039990000 | — |
+| riscv64-debug | 1788696156600819000 | 1788696164022112000 | — |
+| x64-debug | 1788696176947198000 | 1788696184039990000 | — |
 | arm64-release | 1788696274818062000 | 1788696279255332000 | 1788696290823541000 |
-| riscv-release | 1788696293475764000 | 1788696298257648000 | 1788696310262940000 |
-| x86_64-release | 1788696314241398000 | 1788696319728458000 | 1788696332465375000 |
+| riscv64-release | 1788696293475764000 | 1788696298257648000 | 1788696310262940000 |
+| x64-release | 1788696314241398000 | 1788696319728458000 | 1788696332465375000 |
 
-固件命令：`uv run scripts/check_pfa_firmware.py --manifest build/<preset>/moss-artifacts.json`。结果为 `build/<preset>/pfa-firmware/<ID>/<case>/results.json`；arm64-debug `1788696135083326000`、riscv-debug `1788696151466299000`、arm64-release `1788696335929927000`、riscv-release `1788696351084913000`。ARM64 QEMU loader 会重建 `/memory`，所以此脚本明确拒绝 ARM64 ram_hole 夹具，只在 RV64 核验真实 RAM bank 输入；原理见 [QEMU arm_load_dtb](https://github.com/qemu/qemu/blob/master/hw/arm/boot.c)。早期未核对 RAM 大小的 ARM64 “ram_hole 通过”不作为证据。
+固件命令：`uv run scripts/check_pfa_firmware.py --manifest build/<preset>/moss-artifacts.json`。结果为 `build/<preset>/pfa-firmware/<ID>/<case>/results.json`；arm64-debug `1788696135083326000`、riscv64-debug `1788696151466299000`、arm64-release `1788696335929927000`、riscv64-release `1788696351084913000`。ARM64 QEMU loader 会重建 `/memory`，所以此脚本明确拒绝 ARM64 ram_hole 夹具，只在 RV64 核验真实 RAM bank 输入；原理见 [QEMU arm_load_dtb](https://github.com/qemu/qemu/blob/master/hw/arm/boot.c)。早期未核对 RAM 大小的 ARM64 “ram_hole 通过”不作为证据。
 
 宿主 pytest：102 passed（38.76 s）；脚本 Ruff 和 `git diff --check` 通过。该轮未验证全布局和页表/PFA 元数据哨兵；当时 PFA 只管理包含 kernel_end 的一个 bank，RV64 两 bank 测试核对管理容量低于首 bank 的 512 MiB，不能据此宣称联合管理（后续扩展见 3.6）。页引用增减本身的并发/下溢、完整 COW 生命周期、x86 PVH 非法表、真实硬件及 RelWithDebInfo 仍待完成。MOSS-013 的所列对齐/释放/耗尽专项验收通过，修复尚未提交；005/028 等整项不关闭。
 
@@ -239,22 +239,22 @@ SMP 原失败：堆修复后的第一次并行 Debug CTest 中，ARM64 的 heap 
 - [x] 元数据按物理 PFN 跨度索引，必须完整放在一个真实且未保留的 RAM 区域；首 bank 无空间时继续查找后续 bank。元数据自身单独从自由页中排除，其前方未保留空间不再跟着整段丢弃；无可用页明确失败。
 - [x] 加强 `check_pfa_firmware.py`：正向多 bank 夹具同时验证实际 RAM 大小、管理容量和真实分配至耗尽。RV64 新增乱序 8 段 RAM、首 bank 全保留而元数据放到后续 bank、非页对齐相邻段、9 段 RAM 容量溢出检查；ARM64 仍只执行其 loader 不重写的 4 个保留区夹具。
 
-根因回归：仅将原 ram_hole 的容量断言改为应利用其余 bank 后，命令 `uv run scripts/check_pfa_firmware.py --manifest build/riscv-debug/moss-artifacts.json --case ram_hole` 在原实现失败。固件报告 2,147,373,047 字节，PFA 仅管理 127,335 页；报告 `build/riscv-debug/pfa-firmware/1788696910064555000/ram_hole/results.json` 保留，guest 的局部 PFA 套件虽通过，宿主容量断言仍正确失败。修复后同形状 DTB 管理 518,966 页，两个 bank 的分配/释放和洞检查均通过；乱序 8 段管理 518,963 页，首 bank 全保留的后续元数据布局管理 391,131 页。
+根因回归：仅将原 ram_hole 的容量断言改为应利用其余 bank 后，命令 `uv run scripts/check_pfa_firmware.py --manifest build/riscv64-debug/moss-artifacts.json --case ram_hole` 在原实现失败。固件报告 2,147,373,047 字节，PFA 仅管理 127,335 页；报告 `build/riscv64-debug/pfa-firmware/1788696910064555000/ram_hole/results.json` 保留，guest 的局部 PFA 套件虽通过，宿主容量断言仍正确失败。修复后同形状 DTB 管理 518,966 页，两个 bank 的分配/释放和洞检查均通过；乱序 8 段管理 518,963 页，首 bank 全保留的后续元数据布局管理 391,131 页。
 
-同时修正一个测试假设：kernel_end 是排他末端，不保证它是保留页。元数据移到别处后，该地址可能已合法分配给运行中的对象，测试不可盲目释放它。原断言失败报告 `build/riscv-debug/pfa-firmware/1788697163577302000/unaligned_reserved/results.json` 保留；现在用 kernel_end 前的最后一个内核页验证拒绝释放，并让耗尽测试按固件 RAM 的并集检查跨相邻条目的块，不把相邻条目误判成物理洞。
+同时修正一个测试假设：kernel_end 是排他末端，不保证它是保留页。元数据移到别处后，该地址可能已合法分配给运行中的对象，测试不可盲目释放它。原断言失败报告 `build/riscv64-debug/pfa-firmware/1788697163577302000/unaligned_reserved/results.json` 保留；现在用 kernel_end 前的最后一个内核页验证拒绝释放，并让耗尽测试按固件 RAM 的并集检查跨相邻条目的块，不把相邻条目误判成物理洞。
 
 最终重新构建三架构 Debug/Release、执行全部 15 个 CTest 入口，全部通过；报告镜像 hash 已逐项与当前产物核对。命令与 3.5 相同，日志换为 `build/<preset>/pfa-banks-{build,ctest}.log`，报告路径仍为 `build/<preset>/validation/<ID>/results.json`：
 
 | 预设 | functional ID | framework ID | benchmark ID |
 | --- | --- | --- | --- |
 | arm64-debug | 1788697295243791000 | 1788697301095081000 | — |
-| riscv-debug | 1788697313646863000 | 1788697320813879000 | — |
-| x86_64-debug | 1788697333684843000 | 1788697340440754000 | — |
+| riscv64-debug | 1788697313646863000 | 1788697320813879000 | — |
+| x64-debug | 1788697333684843000 | 1788697340440754000 | — |
 | arm64-release | 1788697342860846000 | 1788697347048032000 | 1788697358726459000 |
-| riscv-release | 1788697361286381000 | 1788697366014494000 | 1788697377879375000 |
-| x86_64-release | 1788697380684124000 | 1788697385839136000 | 1788697398387624000 |
+| riscv64-release | 1788697361286381000 | 1788697366014494000 | 1788697377879375000 |
+| x64-release | 1788697380684124000 | 1788697385839136000 | 1788697398387624000 |
 
-同镜像固件检查共 26 项（每模式 ARM64 4、RV64 9），全部满足预期；负向条目仍保留 error/no-ready 和对应启动错误，未当作已运行通过。目录 `build/<preset>/pfa-firmware/<ID>/`：arm64-debug `1788697353153873000`、riscv-debug `1788697239915258000`、arm64-release `1788697401600645000`、riscv-release `1788697416149442000`。`uv run pytest -q scripts/tests` 为 **102 passed in 34.72s**，Ruff、受改 C++ 的 clang-format dry-run 和 `git diff --check` 通过。
+同镜像固件检查共 26 项（每模式 ARM64 4、RV64 9），全部满足预期；负向条目仍保留 error/no-ready 和对应启动错误，未当作已运行通过。目录 `build/<preset>/pfa-firmware/<ID>/`：arm64-debug `1788697353153873000`、riscv64-debug `1788697239915258000`、arm64-release `1788697401600645000`、riscv64-release `1788697416149442000`。`uv run pytest -q scripts/tests` 为 **102 passed in 34.72s**，Ruff、受改 C++ 的 clang-format dry-run 和 `git diff --check` 通过。
 
 剩余边界：仍只支持低于 4 GiB 的物理映射；稠密元数据包含洞的索引，当前最多约 16 MiB，稀疏/高地址 RAM 后续改为分 bank 元数据。kernel_end 以下继续整体保留，因为 PVH 低地址启动参数和 AP trampoline 等尚未完全进入显式保留集合；不能冒充精确回收所有启动 RAM。全布局/页表与元数据哨兵、页引用并发、PVH 异常内存表、真机和 RelWithDebInfo 仍待完成，MOSS-004/005 整项不关闭。
 
@@ -273,11 +273,11 @@ SMP 原失败：堆修复后的第一次并行 Debug CTest 中，ARM64 的 heap 
 | 预设 | functional ID | framework ID | benchmark ID |
 | --- | --- | --- | --- |
 | arm64-debug | 1788698806689573000 | 1788698814284499000 | — |
-| riscv-debug | 1788698826905793000 | 1788698834196268000 | — |
-| x86_64-debug | 1788698847245567000 | 1788698854693428000 | — |
+| riscv64-debug | 1788698826905793000 | 1788698834196268000 | — |
+| x64-debug | 1788698847245567000 | 1788698854693428000 | — |
 | arm64-release | 1788698999637122000 | 1788699005387653000 | 1788699018976215000 |
-| riscv-release | 1788699024688094000 | 1788699033076453000 | 1788699045819398000 |
-| x86_64-release | 1788699049843855000 | 1788699055676250000 | 1788699068170407000 |
+| riscv64-release | 1788699024688094000 | 1788699033076453000 | 1788699045819398000 |
+| x64-release | 1788699049843855000 | 1788699055676250000 | 1788699068170407000 |
 
 当前 Debug 真实布局（全部地址为物理/恒等映射地址）：
 
@@ -285,13 +285,13 @@ SMP 原失败：堆修复后的第一次并行 Debug CTest 中，ARM64 的 heap 
 | --- | --- | --- | --- |
 | ARM64 | 0x40440000..0x40c40000 | 0x40c40000..0x40c50000 | 0x40c50000 / 8,339,456 |
 | RV64 | 0x80497000..0x80c97000 | 0x80c97000..0x80ca7000 | 0x80ca7000 / 8,339,456 |
-| x86_64 | 0x003ba000..0x00bba000 | 0x00bba000..0x00bca000 | 0x00bca000 / 8,343,552 |
+| x64 | 0x003ba000..0x00bba000 | 0x00bba000..0x00bca000 | 0x00bca000 / 8,343,552 |
 
 early table pool 位于 BSS，与表中链接预留区分开；动态用户页表由 PFA 拥有，不应假定所有表页都在链接预留区。测试从实际根表递归发现它们并逐页核对，而非仅检查上表三个区间。
 
-26 项同镜像固件检查全部符合预期，目录 `build/<preset>/pfa-firmware/<ID>/`：arm64-debug `1788698867301499000`、riscv-debug `1788698884809182000`、arm64-release `1788698957764323000`、riscv-release `1788698974637652000`。其中多 bank、后续 bank 元数据布局也执行了新增校验和检查。
+26 项同镜像固件检查全部符合预期，目录 `build/<preset>/pfa-firmware/<ID>/`：arm64-debug `1788698867301499000`、riscv64-debug `1788698884809182000`、arm64-release `1788698957764323000`、riscv64-release `1788698974637652000`。其中多 bank、后续 bank 元数据布局也执行了新增校验和检查。
 
-6 项坏布局拒绝检查全部符合预期，报告为 `build/<preset>/<目录>/report/results.json`：arm64-debug `heap-layout-84e7bjam`、riscv-debug `heap-layout-v8n77vyl`、x86_64-debug `heap-layout-olg3r29b`、arm64-release `heap-layout-bafzsfis`、riscv-release `heap-layout-uh7v9kx8`、x86_64-release `heap-layout-kbb90upr`。宿主 pytest **102 passed in 37.84s**；Ruff、受改 C++ 的 clang-format dry-run 和 `git diff --check` 通过。
+6 项坏布局拒绝检查全部符合预期，报告为 `build/<preset>/<目录>/report/results.json`：arm64-debug `heap-layout-84e7bjam`、riscv64-debug `heap-layout-v8n77vyl`、x64-debug `heap-layout-olg3r29b`、arm64-release `heap-layout-bafzsfis`、riscv64-release `heap-layout-uh7v9kx8`、x64-release `heap-layout-kbb90upr`。宿主 pytest **102 passed in 37.84s**；Ruff、受改 C++ 的 clang-format dry-run 和 `git diff --check` 通过。
 
 默认 RV64 为 Sv48；另以同一镜像执行 `uv run scripts/kernel_validation.py run --manifest build/<preset>/moss-artifacts.json --cpu rv64,sv48=false --workload heap --workload pfa`。Debug 报告 `1788699127367993000`、Release 报告 `1788699133296375000` 的两套件均通过，原始串口明确为 `MMU mode: Sv39 (3-level page table)`，镜像 hash 与对应默认配置一致；覆盖三层与四层页表遍历。
 
@@ -311,22 +311,22 @@ early table pool 位于 BSS，与表中链接预留区分开；动态用户页�
 
 每项验证实际 heap allocated_bytes 恢复。扩展检查初次暴露全局计数基线差异：`1788700641829247000` 开始已有 4 个待处理回调，heap 从 105,744 降至 105,360 字节，不能将这 384 字节算作本用例资源。将测试开始前已摘除节点的回收放在计数基线之前后，三项通过（`1788700698067821000`）。这只在单 worker 测试环境清理旧状态，不是给生产代码增加回收循环；临时诊断已删除。
 
-最终重建三架构 Debug/Release；六配置的 functional（各 7 套件/17 用例）及 framework 全部通过，报告已 finalized，镜像 hash 均与当前产物核对一致。全部 CTest 入口为 **14/15 通过**，不是全绿：x86_64 Release 的 benchmark 因一次时钟校准拒绝失败，详情见下。日志 `build/<preset>/containers-{build,ctest}.log`，原始报告 `build/<preset>/validation/<ID>/results.json`：
+最终重建三架构 Debug/Release；六配置的 functional（各 7 套件/17 用例）及 framework 全部通过，报告已 finalized，镜像 hash 均与当前产物核对一致。全部 CTest 入口为 **14/15 通过**，不是全绿：x64 Release 的 benchmark 因一次时钟校准拒绝失败，详情见下。日志 `build/<preset>/containers-{build,ctest}.log`，原始报告 `build/<preset>/validation/<ID>/results.json`：
 
 | 预设 | functional ID | framework ID | benchmark ID / 结果 |
 | --- | --- | --- | --- |
 | arm64-debug | 1788700799828016000 | 1788700808754441000 | — |
-| riscv-debug | 1788700834423828000 | 1788700843243004000 | — |
-| x86_64-debug | 1788700867108318000 | 1788700875456561000 | — |
+| riscv64-debug | 1788700834423828000 | 1788700843243004000 | — |
+| x64-debug | 1788700867108318000 | 1788700875456561000 | — |
 | arm64-release | 1788700916125328000 | 1788700921062133000 | 1788700932786773000 / passed |
-| riscv-release | 1788700935553499000 | 1788700942985985000 | 1788700954978055000 / passed |
-| x86_64-release | 1788700958018677000 | 1788700964124686000 | 1788700976895209000 / error |
+| riscv64-release | 1788700935553499000 | 1788700942985985000 | 1788700954978055000 / passed |
+| x64-release | 1788700958018677000 | 1788700964124686000 | 1788700976895209000 / error |
 
 宿主 `uv run pytest -q scripts/tests`：**102 passed in 41.47s**；Ruff、clang-format dry-run 及 `git diff --check` 通过。本轮没有重跑上一节的 26 项固件/6 项坏布局输入矩阵，不将旧镜像 hash 当作新镜像验收。
 
-x86_64 Release 的 bench.allocate 在准备阶段发出 `clock frequency=0, source=invalid` 和 `reason=invalid_clock`，其余四个函数基准通过。沿调用路径确认拒绝来自测试镜像 `discover_clock()`，该 x86 路径自行读取 CPUID 或用 PIT 取样，不读取启动期 HAL 的 frequency 值；不能把这个 0 直接断言为运行时定时器频率为 0，也未证明由本次容器修改导致。该函数有样本区间、三样本离散度、计数器单调性/频率范围等拒绝分支，当前失败记录未保留具体分支和原始校准样本，根因仍待定位（028/029/032）。
+x64 Release 的 bench.allocate 在准备阶段发出 `clock frequency=0, source=invalid` 和 `reason=invalid_clock`，其余四个函数基准通过。沿调用路径确认拒绝来自测试镜像 `discover_clock()`，该 x86 路径自行读取 CPUID 或用 PIT 取样，不读取启动期 HAL 的 frequency 值；不能把这个 0 直接断言为运行时定时器频率为 0，也未证明由本次容器修改导致。该函数有样本区间、三样本离散度、计数器单调性/频率范围等拒绝分支，当前失败记录未保留具体分支和原始校准样本，根因仍待定位（028/029/032）。
 
-保持相同 x86_64 Release 镜像 SHA-256 `ede1df1622754bd56e2de29294eabbc2e02562a8a57d836f37d9e962aab23517`，串行运行上述 runner 加 `--workload bench.allocate` 共 10 次，均通过；这不改写原失败，也不视作已修复。报告 ID：1788701026818659000、1788701028048282000、1788701029450754000、1788701030695773000、1788701031932169000、1788701033090776000、1788701034119988000、1788701035108861000、1788701036073295000、1788701037006896000。后续应先让拒绝保留准确诊断，再用同镜像重复或受控计时扰动复现，不能增加重试到成功或放松有效性阈值。
+保持相同 x64 Release 镜像 SHA-256 `ede1df1622754bd56e2de29294eabbc2e02562a8a57d836f37d9e962aab23517`，串行运行上述 runner 加 `--workload bench.allocate` 共 10 次，均通过；这不改写原失败，也不视作已修复。报告 ID：1788701026818659000、1788701028048282000、1788701029450754000、1788701030695773000、1788701031932169000、1788701033090776000、1788701034119988000、1788701035108861000、1788701036073295000、1788701037006896000。后续应先让拒绝保留准确诊断，再用同镜像重复或受控计时扰动复现，不能增加重试到成功或放松有效性阈值。
 
 尚未关闭的真实契约：回调队列没有宽限期，池满会主动执行；RcuReadLock 不固定 CPU/禁止抢占；find/find_if 可返回已退出借用期的裸指针；list 的多写者 remove 仍无完整串行化。下一步必须迁移拥有型锁容器与 scoped borrowing，并覆盖 AddressSpace/VMA、Process/线程/子进程表、WaitQueue、IRQ 描述符、DeviceManager 和两类 IPC 管理器。已有读者持有对象及确定性并发增删查仍需红绿对照，不能以本节单 worker 结果关闭 MOSS-006/A4。
 
@@ -342,22 +342,22 @@ x86_64 Release 的 bench.allocate 在准备阶段发出 `clock frequency=0, sour
 
 新增 `containers.smp.interleaving` 通过真实 fork 继承 CPU1 affinity，主线程恢复 CPU0 affinity。两个线程从用户态进入验证 syscall，acquire/release 屏障强制“CPU1 持有 → CPU0 删除 → CPU1 释放”，以及两个创建者都越过同 key 初次查找，再竞争发布、删除。只有 CPU0 记录断言，检查真实 CPU ID、同一个赢家、恰好一次删除/析构，waitpid 回收子进程后才删除测试对象。没有替代调度器、host 模拟容器或定时 sleep；缺少对端进度由宿主 case deadline 判失败。默认 CTest 功能集合现为 **8 套件/20 用例**；至少需要 2 CPU，单 CPU 必须显式选择单 worker 套件。
 
-该真实从核路径先暴露 ARM64 启动缺陷：`1788704095049991000`、`1788704118068808000` 在 CPU1 首次用户指令 `0x200000224` 发生 instruction abort，随后访问内核直映地址 `0xffff800048039000` panic，未到容器交错阶段。探针报告 `1788704281432256000` 显示三个从核 `SCTLR.M=0`；原 secondary_cpu_entry 没有配置/开启各 CPU 的 MMU，主核的寄存器状态不会共享。现在在从核发布 online 前复用 hal::mmu::enable_mmu 与 arch::setup_kernel_mmu，安装现有 identity/high-half 页表，并修正汇编注释。只加此修复后 ARM64 `1788704346538492000` 通过；RV64 `1788704363943481000`、x86_64 `1788704385995799000` 同一交错用例通过。临时 `[DEBUG-moss006-smp]` 日志已删除；不是 QEMU 特判，也没有放宽地址权限或改变固件假设。
+该真实从核路径先暴露 ARM64 启动缺陷：`1788704095049991000`、`1788704118068808000` 在 CPU1 首次用户指令 `0x200000224` 发生 instruction abort，随后访问内核直映地址 `0xffff800048039000` panic，未到容器交错阶段。探针报告 `1788704281432256000` 显示三个从核 `SCTLR.M=0`；原 secondary_cpu_entry 没有配置/开启各 CPU 的 MMU，主核的寄存器状态不会共享。现在在从核发布 online 前复用 hal::mmu::enable_mmu 与 arch::setup_kernel_mmu，安装现有 identity/high-half 页表，并修正汇编注释。只加此修复后 ARM64 `1788704346538492000` 通过；RV64 `1788704363943481000`、x64 `1788704385995799000` 同一交错用例通过。临时 `[DEBUG-moss006-smp]` 日志已删除；不是 QEMU 特判，也没有放宽地址权限或改变固件假设。
 
 最终六配置均构建通过；串行 CTest **14/15**，不是全绿。六配置的 containers、containers.smp 及 framework 全部通过，三配置 Release benchmark 全部通过；RV64 Debug 的 pfa.exhaustion 仍超时，其余功能套件通过。日志为 `build/<preset>/locked-final-ctest.log`，报告为 `build/<preset>/validation/<ID>/results.json`，均 finalized、无遗漏的请求套件，镜像 hash 与对应当前产物一致：
 
 | 预设 | functional ID / 结果 | framework ID | benchmark ID |
 | --- | --- | --- | --- |
 | arm64-debug | 1788704603964592000 / passed | 1788704614995840000 | — |
-| riscv-debug | 1788704628804793000 / pfa.exhaustion timeout | 1788704646016996000 | — |
-| x86_64-debug | 1788704660990548000 / passed | 1788704673307549000 | — |
+| riscv64-debug | 1788704628804793000 / pfa.exhaustion timeout | 1788704646016996000 | — |
+| x64-debug | 1788704660990548000 / passed | 1788704673307549000 | — |
 | arm64-release | 1788704686353442000 / passed | 1788704692133979000 | 1788704703729661000 |
-| riscv-release | 1788704706069904000 / passed | 1788704711287132000 | 1788704723019396000 |
-| x86_64-release | 1788704725409350000 / passed | 1788704731795402000 | 1788704744118072000 |
+| riscv64-release | 1788704706069904000 / passed | 1788704711287132000 | 1788704723019396000 |
+| x64-release | 1788704725409350000 / passed | 1788704731795402000 | 1788704744118072000 |
 
 宿主 `uv run pytest -q scripts/tests` **104 passed in 85.01s**，含新增的单 CPU 拒绝检查；Ruff、受改 C/C++ clang-format dry-run 和 diff whitespace 检查通过。本轮未重跑 26 项固件/6 项坏布局矩阵，不把此前镜像的结果当作当前镜像的完整硬件验收。
 
-本轮保留的非全绿记录：最初 RV64 Debug `1788703299066126000`、x86_64 Debug `1788703300483634000` 的 pfa.exhaustion 在默认 5 秒 case deadline 超时（当时并行构建 Release）；相同镜像单独执行 pfa 的 `1788703689411365000`、`1788703710300045000` 通过。但 x86_64 Debug 后续 `1788704051110135000` 又超时；最终串行矩阵 RV64 `1788704628804793000` 仍超时，因此不能仅归因于并行构建负载，也不能凭重跑通过认定修复。未改超时阈值、未增加自动重试；这些报告与 3.8 的 x86 benchmark 校准拒绝均继续保留（028/029/032）。
+本轮保留的非全绿记录：最初 RV64 Debug `1788703299066126000`、x64 Debug `1788703300483634000` 的 pfa.exhaustion 在默认 5 秒 case deadline 超时（当时并行构建 Release）；相同镜像单独执行 pfa 的 `1788703689411365000`、`1788703710300045000` 通过。但 x64 Debug 后续 `1788704051110135000` 又超时；最终串行矩阵 RV64 `1788704628804793000` 仍超时，因此不能仅归因于并行构建负载，也不能凭重跑通过认定修复。未改超时阈值、未增加自动重试；这些报告与 3.8 的 x86 benchmark 校准拒绝均继续保留（028/029/032）。
 
 **MOSS-006/A4 尚不关闭。** 该轮建立容器节点和查找引用契约，不保证 IRQ 注销后外部 context 已停止使用、Driver 裸指针/设备绑定的生命周期、IPC connect/unregister、map/destroy、cleanup/new-entry 等复合事务。共享内存的既有占位实现仍属 030；Process/Thread 状态与资源转换、VMA/PTE 事务、WaitQueue lost wakeup 和跨管理器锁序仍需相应专项验收。双 CPU 容器测试不替代 017/023 的单一运行者与长循环验收，也不证明真实硬件正确。
 
@@ -365,9 +365,9 @@ x86_64 Release 的 bench.allocate 在准备阶段发出 `clock frequency=0, sour
 
 本节处理 3.9 遗留的 pfa.exhaustion 超时，不修改生产分配器、内存大小、断言、校验和或退出判定。全部诊断使用相同 RV64 Debug 镜像，SHA-256 为 `b59a48cb6f095b8cb5790bb0e135f7d26fa9e6094a6b69629ce4a822ef8e96a8`。单独运行五次均通过（1788705008101108000、1788705012852382000、1788705017586258000、1788705022268892000、1788705027083954000）；后续带逐用例观测的 `1788705318227165000` 显示 exhaustion 为 3.294 s，整套 guest 为 4.059 s。
 
-提高复现率的方法是同时运行四个独立的 4-vCPU/2-GiB guest，保持每个 guest 的工作量和执行路径不变。命令为四个并行的 `uv run scripts/kernel_validation.py run --manifest build/riscv-debug/moss-artifacts.json --workload pfa`，不是同一内核内增加测试线程。旧 5 s 预算稳定出现 **4/4 case_timeout**；再仅指定 `--case-timeout 20`，四个相同镜像都完成了逐页模式、保留区、元数据、耗尽/释放和计数校验。该实验说明宿主资源压力下正常的全 RAM 工作会超过 5 s，不支持把这些超时直接称为内核死锁；不能据此断言所有历史停滞均有同一原因。
+提高复现率的方法是同时运行四个独立的 4-vCPU/2-GiB guest，保持每个 guest 的工作量和执行路径不变。命令为四个并行的 `uv run scripts/kernel_validation.py run --manifest build/riscv64-debug/moss-artifacts.json --workload pfa`，不是同一内核内增加测试线程。旧 5 s 预算稳定出现 **4/4 case_timeout**；再仅指定 `--case-timeout 20`，四个相同镜像都完成了逐页模式、保留区、元数据、耗尽/释放和计数校验。该实验说明宿主资源压力下正常的全 RAM 工作会超过 5 s，不支持把这些超时直接称为内核死锁；不能据此断言所有历史停滞均有同一原因。
 
-| 固定四并发实验 | pfa.exhaustion 宿主观测耗时 | 结果 | 报告 ID（`build/riscv-debug/validation/<ID>/results.json`） |
+| 固定四并发实验 | pfa.exhaustion 宿主观测耗时 | 结果 | 报告 ID（`build/riscv64-debug/validation/<ID>/results.json`） |
 | --- | --- | --- | --- |
 | 原 5 s 预算 | 5.002～5.011 s 后终止 | 4/4 timeout | 1788705363893964000、1788705363911709000、1788705363900111000、1788705363923710000 |
 | 显式 20 s 诊断窗口 | 14.369～14.443 s | 4/4 passed | 1788705547579098000、1788705547579164000、1788705547579184000、1788705547579166000 |
@@ -384,11 +384,11 @@ x86_64 Release 的 bench.allocate 在准备阶段发出 `clock frequency=0, sour
 | 预设 | functional ID | framework ID | benchmark ID |
 | --- | --- | --- | --- |
 | arm64-debug | 1788706012771337000 | 1788706020779256000 | — |
-| riscv-debug | 1788706033163678000 | 1788706043183702000 | — |
-| x86_64-debug | 1788706056063223000 | 1788706064949004000 | — |
+| riscv64-debug | 1788706033163678000 | 1788706043183702000 | — |
+| x64-debug | 1788706056063223000 | 1788706064949004000 | — |
 | arm64-release | 1788706077903344000 | 1788706083059769000 | 1788706094791591000 |
-| riscv-release | 1788706097147162000 | 1788706102679866000 | 1788706114682616000 |
-| x86_64-release | 1788706117504457000 | 1788706123770470000 | 1788706136268248000 |
+| riscv64-release | 1788706097147162000 | 1788706102679866000 | 1788706114682616000 |
+| x64-release | 1788706117504457000 | 1788706123770470000 | 1788706136268248000 |
 
 报告路径为 `build/<preset>/validation/<ID>/results.json`。这关闭的是本节可复现的 PFA 执行预算不足，不是并发分配器、所有平台输入、真实硬件或全部审计项的验收；3.8/3.9 的旧失败记录没有被重写。
 
@@ -396,7 +396,7 @@ x86_64 Release 的 bench.allocate 在准备阶段发出 `clock frequency=0, sour
 
 本节关闭 B1 的 U/S 构造与最终页表结构检查，不关闭整个 MOSS-001。x86 的 normal/device 内核块不再设置 USER；`PageTableEntry::set_table()` 默认构造内核专用上级表，只有 `create_user_address_space`、`map_user_page` 和 `clone_user_page_tables` 显式启用用户权限。用户低地址根中共享的内核叶子仍为 supervisor-only。`map_page` 修改内核 PGD，现直接拒绝 USER 属性；没有替代页表、QEMU 特判或向用户态暴露内核指针的验证接口。
 
-真实结构红例：仅加入页表检查、尚未修改生产构造时，运行 `uv run scripts/kernel_validation.py run --manifest build/x86_64-debug/moss-artifacts.json --workload mm.permissions`，`kernel_mappings` 记录 **15 个失败断言**，后续用例为 not_run，报告 `1788707394008747000`。修复后的同一入口与 users、containers.smp 联合通过（`1788707497164923000`）。两份报告均在 `build/x86_64-debug/validation/<ID>/results.json`；旧失败不改写。
+真实结构红例：仅加入页表检查、尚未修改生产构造时，运行 `uv run scripts/kernel_validation.py run --manifest build/x64-debug/moss-artifacts.json --workload mm.permissions`，`kernel_mappings` 记录 **15 个失败断言**，后续用例为 not_run，报告 `1788707394008747000`。修复后的同一入口与 users、containers.smp 联合通过（`1788707497164923000`）。两份报告均在 `build/x64-debug/validation/<ID>/results.json`；旧失败不改写。
 
 默认 functional 新增 `mm.permissions`，现为 **9 套件/23 用例**。新增三项复用真实页表和生产用户线程：table_defaults 检查安全默认/显式用户分支与内核 API 拒绝；kernel_mappings 遍历 kernel identity/direct-map；active_user_mappings 从 CR3/TTBR0/satp 读取实际根，与当前进程核对后检查继承的内核叶子和 x86 用户完整 U/S 权限链，ARM64 另核对活动 TTBR1。检查涵盖当前 0-4 GiB identity/direct-map 契约，不是任意物理布局证明。
 
@@ -405,11 +405,11 @@ x86_64 Release 的 bench.allocate 在准备阶段发出 `clock frequency=0, sour
 | 预设 | functional ID | framework ID | benchmark ID |
 | --- | --- | --- | --- |
 | arm64-debug | 1788707600770441000 | 1788707615847250000 | — |
-| riscv-debug | 1788707636220283000 | 1788707649586226000 | — |
-| x86_64-debug | 1788707668171058000 | 1788707677878692000 | — |
+| riscv64-debug | 1788707636220283000 | 1788707649586226000 | — |
+| x64-debug | 1788707668171058000 | 1788707677878692000 | — |
 | arm64-release | 1788707704099898000 | 1788707712156786000 | 1788707724226817000 |
-| riscv-release | 1788707737422859000 | 1788707747453394000 | 1788707760308970000 |
-| x86_64-release | 1788707763721405000 | 1788707777699426000 | 1788707790687286000 |
+| riscv64-release | 1788707737422859000 | 1788707747453394000 | 1788707760308970000 |
+| x64-release | 1788707763721405000 | 1788707777699426000 | 1788707790687286000 |
 
 默认 RV64 为 Sv48。保持各自镜像不变，增加运行参数 `--cpu rv64,sv48=false --workload mm.permissions --workload users --workload containers.smp`，Debug（`1788707833244672000`）和 Release（`1788707836364967000`）的 Sv39 三层页表及合法用户路径也通过。以上报告均位于 `build/<preset>/validation/<ID>/results.json`。
 
@@ -424,18 +424,18 @@ x86_64 Release 的 bench.allocate 在准备阶段发出 `clock frequency=0, sour
 
 W^X 的真实结构红例：只增加检查、尚未收紧生产映射时，ARM64 Debug `1788708649766301000` 的 kernel_wx 有 **26 个失败断言**。这不运行越权用户程序，也没有新增内核指针暴露接口。报告保存在 `build/arm64-debug/validation/<ID>/results.json`。
 
-拆页后 x86 Debug 的 PFA/heap 耗尽又暴露快照误报：`1788709086648885000` 分别有 2/3 个页表 hash 断言失败；探针 `1788709372722382000` 保留失败断言，并证明三次变化忽略硬件 A/D 位后 hash 完全一致。快照现只过滤架构 Accessed/Dirty 状态，仍包含地址、USER、读写、执行和 COW 位；self.cleanup_guards 用未安装的本地表验证这些位的变化仍能被发现。PFA 元数据和链接预留区仍按原字节校验，不改分配器、不重试、不扩大预算。删除临时探针后 `1788709589819331000` 的 permissions/pfa/heap/self 全部通过。以上报告在 `build/x86_64-debug/validation/<ID>/results.json`，原失败保留。
+拆页后 x86 Debug 的 PFA/heap 耗尽又暴露快照误报：`1788709086648885000` 分别有 2/3 个页表 hash 断言失败；探针 `1788709372722382000` 保留失败断言，并证明三次变化忽略硬件 A/D 位后 hash 完全一致。快照现只过滤架构 Accessed/Dirty 状态，仍包含地址、USER、读写、执行和 COW 位；self.cleanup_guards 用未安装的本地表验证这些位的变化仍能被发现。PFA 元数据和链接预留区仍按原字节校验，不改分配器、不重试、不扩大预算。删除临时探针后 `1788709589819331000` 的 permissions/pfa/heap/self 全部通过。以上报告在 `build/x64-debug/validation/<ID>/results.json`，原失败保留。
 
 最终重建六配置，串行 CTest **15/15 通过**；每个 functional 为 9/25，framework 为 4/8，Release benchmark 为 5/5。日志 `build/<preset>/wx-{final-build,ctest}.log`，下列报告全部 finalized、not_run 为空，镜像 SHA-256 与本轮最终产物一致：
 
 | 预设 | functional ID | framework ID | benchmark ID |
 | --- | --- | --- | --- |
 | arm64-debug | 1788709701428902000 | 1788709710394146000 | — |
-| riscv-debug | 1788709737323140000 | 1788709753128364000 | — |
-| x86_64-debug | 1788709771770096000 | 1788709786682531000 | — |
+| riscv64-debug | 1788709737323140000 | 1788709753128364000 | — |
+| x64-debug | 1788709771770096000 | 1788709786682531000 | — |
 | arm64-release | 1788709819877226000 | 1788709828168390000 | 1788709840645049000 |
-| riscv-release | 1788709861533332000 | 1788709874086716000 | 1788709890014452000 |
-| x86_64-release | 1788709916783675000 | 1788709926529837000 | 1788709939838580000 |
+| riscv64-release | 1788709861533332000 | 1788709874086716000 | 1788709890014452000 |
+| x64-release | 1788709916783675000 | 1788709926529837000 | 1788709939838580000 |
 
 所有报告位于 `build/<preset>/validation/<ID>/results.json`。宿主 `uv run pytest -q scripts/tests` 为 **109 passed in 44.53s**（`build/wx-host-tests.log`）；Ruff 和 `git diff --check` 通过。
 
@@ -446,11 +446,11 @@ W^X 的真实结构红例：只增加检查、尚未收紧生产映射时，ARM6
 | 预设 | pfa-firmware 目录 ID | 坏布局目录 |
 | --- | --- | --- |
 | arm64-debug | 1788710173614904000 | heap-layout-8spmxm64 |
-| riscv-debug | 1788710189217031000 | heap-layout-gt2y8f5f |
-| x86_64-debug | — | heap-layout-99yek664 |
+| riscv64-debug | 1788710189217031000 | heap-layout-gt2y8f5f |
+| x64-debug | — | heap-layout-99yek664 |
 | arm64-release | 1788710214706234000 | heap-layout-cf9i8nzi |
-| riscv-release | 1788710229165539000 | heap-layout-qlkx3emn |
-| x86_64-release | — | heap-layout-ltfvqss2 |
+| riscv64-release | 1788710229165539000 | heap-layout-qlkx3emn |
+| x64-release | — | heap-layout-ltfvqss2 |
 
 固件原始报告：`build/<preset>/pfa-firmware/<ID>/<case>/results.json`；坏布局报告：`build/<preset>/<坏布局目录>/report/results.json`。汇总日志为 `build/<preset>/wx-{firmware,heap-layout}.log`。
 
@@ -481,7 +481,7 @@ W^X 的真实结构红例：只增加检查、尚未收紧生产映射时，ARM6
 - [x] x86 users 检查 x87 数据/控制字、MXCSR、XMM15 经 yield/fork 的继承、子修改不污染父进程、exec 默认状态与 argc/argv；SMP 检查真实 CPU1 子进程的 FP 继承。用户 #MF 走已有进程终止路径，父进程 wait 后继续且 FP 状态不变。
 - [ ] SIMD #XM 隔离的真实验收、全扩展状态/信号帧、ARM64/RV64 扩展状态与硬件覆盖；不因 legacy x86 子检查通过关闭 001/007/014。
 
-逐步保留的 x86 Debug 证据（`build/x86_64-debug/validation/<ID>/results.json`）：
+逐步保留的 x86 Debug 证据（`build/x64-debug/validation/<ID>/results.json`）：
 
 | 报告 ID | 实测结果与处理 |
 | --- | --- |
@@ -493,9 +493,9 @@ W^X 的真实结构红例：只增加检查、尚未收紧生产映射时，ARM6
 | 1788713116723580000 | 默认 users/containers.smp/mm.permissions 通过，含 FP 状态、x87 异常和 argv 检查。 |
 | 1788713120635633000 | 显式 `users.simd_fault` 保留为 failed/assertion，不转换为 expected pass。 |
 
-`build/x86_64-debug/fpu-fault-cpu.log` 的 CPU 记录只有受控 #MF，没有 #XM；本机 QEMU 11.1.1 TCG 在未屏蔽的 `divss 0/0` 后继续执行。该观察与 [QEMU 上游对状态位和陷阱支持的区分](https://github.com/qemu/qemu/commit/418b0f93d12a1589d5031405de857844f32e9ccc) 一致，但不是实机内核 #XM 已通过的证据。完整断言留在非默认 `users.simd_fault` 专项；kernel 不检测 emulator，不合成软件异常，不禁用 SIMD。
+`build/x64-debug/fpu-fault-cpu.log` 的 CPU 记录只有受控 #MF，没有 #XM；本机 QEMU 11.1.1 TCG 在未屏蔽的 `divss 0/0` 后继续执行。该观察与 [QEMU 上游对状态位和陷阱支持的区分](https://github.com/qemu/qemu/commit/418b0f93d12a1589d5031405de857844f32e9ccc) 一致，但不是实机内核 #XM 已通过的证据。完整断言留在非默认 `users.simd_fault` 专项；kernel 不检测 emulator，不合成软件异常，不禁用 SIMD。
 
-提交前单独执行全部 9 个 preset 的 configure/build，再逐一执行 `cmake --build --preset <preset> --clean-first`，ARM64/x86_64/RV64 的 Debug、Release、RelWithDebInfo 全部编译通过，未复现新的编译错误。日志为 `build/<preset>/commit-{configure,build,clean-build}.log`。这是编译验证，RelWithDebInfo 运行时尚未由本轮独立验收。
+提交前单独执行全部 9 个 preset 的 configure/build，再逐一执行 `cmake --build --preset <preset> --clean-first`，ARM64/x64/RV64 的 Debug、Release、RelWithDebInfo 全部编译通过，未复现新的编译错误。日志为 `build/<preset>/commit-{configure,build,clean-build}.log`。这是编译验证，RelWithDebInfo 运行时尚未由本轮独立验收。
 
 宿主测试 **111 passed in 44.95s**（`build/fpu-host-tests.log`），Ruff、修改行格式检查及 `git diff --check` 通过。六配置 Debug/Release 的两轮 CTest 均为 **14/15**，不能报告整体验收通过：
 
@@ -545,13 +545,13 @@ LLDB 检查本机 QEMU 11.1.1 进程时，CPU3 为 `halted=1, halt_reason=HALT_W
 
 ### 3.16 COW 权限与缺页分类（2026-09-10，部分修复）
 
-`clone_user_page_tables` 现在只给原本可写的用户叶子新增 COW，保留真正只读页及多代 fork 已有的 COW 标志。当前 mmap 仅支持私有映射。`try_cow_fault` 重新检查用户地址域、可写 VMA、用户只读 COW PTE 和非零页引用；替换物理页通过 `PageTableEntry::set_page` 编码，避免把 RISC-V PPN 当作直接物理地址字段。替换并失效本地翻译后才释放旧引用。
+`clone_user_page_tables` 现在只给原本可写的用户叶子新增 COW，保留真正只读页及多代 fork 已有的 COW 标志。当前 mmap 仅支持私有映射。`try_cow_fault` 重新检查用户地址域、可写 VMA、用户只读 COW PTE 和非零页引用；替换物理页通过 `PageTableEntry::set_page` 编码，避免把 RISC-V 64 PPN 当作直接物理地址字段。替换并失效本地翻译后才释放旧引用。
 
-三个 ISA 的故障入口区分读、写、执行访问；demand 路径拒绝已有有效叶子，并在分配前检查对应 VMA 权限。RISC-V 先处理合法 COW 写故障，避免把驻留页重新填充；x86 保留位错误不进入 demand/COW。映射失败时释放尚未交给页表的新数据页，不代表中间表页已经具有完整回滚。
+三个 ISA 的故障入口区分读、写、执行访问；demand 路径拒绝已有有效叶子，并在分配前检查对应 VMA 权限。RISC-V 64 先处理合法 COW 写故障，避免把驻留页重新填充；x86 保留位错误不进入 demand/COW。映射失败时释放尚未交给页表的新数据页，不代表中间表页已经具有完整回滚。
 
-**先失败再修复的证据：** ARM64 Debug 报告 `1789050943430875000` 的新 `cow_clone_permissions` 用例为 17 个断言通过、6 个失败，后续用例未运行。只修 clone 后，ARM64 报告 `1789051244969892000` 的页表检查通过，但 `users.vm.access_permissions` 仍以 `mask=0x2` 失败（PROT_NONE 读取被允许）；RISC-V 报告 `1789051245994490000` 的 `users.vm.private_cow` 以 `mask=0x1` 失败，后两项未运行。这些原始失败报告保留，不用成功重跑覆盖。
+**先失败再修复的证据：** ARM64 Debug 报告 `1789050943430875000` 的新 `cow_clone_permissions` 用例为 17 个断言通过、6 个失败，后续用例未运行。只修 clone 后，ARM64 报告 `1789051244969892000` 的页表检查通过，但 `users.vm.access_permissions` 仍以 `mask=0x2` 失败（PROT_NONE 读取被允许）；RISC-V 64 报告 `1789051245994490000` 的 `users.vm.private_cow` 以 `mask=0x1` 失败，后两项未运行。这些原始失败报告保留，不用成功重跑覆盖。
 
-补齐 fault 修复后，ARM64/RISC-V Debug 的 `mm.permissions` 与 `users.vm` 均通过，报告分别为 `1789051673139223000`、`1789051674378797000`。新增测试使用真实页表/PFA 和真实用户 fork、mmap、访问异常、wait、munmap：检查三代页权限、引用与释放计数，多页数据隔离，最后引用的 COW 写入，驻留 text/rodata 写入拒绝，以及 PROT_NONE 读写和 NX 执行拒绝。`users.vm` 已加入默认 functional 集合；默认共 10 个 suite、31 个 case。
+补齐 fault 修复后，ARM64/RISC-V 64 Debug 的 `mm.permissions` 与 `users.vm` 均通过，报告分别为 `1789051673139223000`、`1789051674378797000`。新增测试使用真实页表/PFA 和真实用户 fork、mmap、访问异常、wait、munmap：检查三代页权限、引用与释放计数，多页数据隔离，最后引用的 COW 写入，驻留 text/rodata 写入拒绝，以及 PROT_NONE 读写和 NX 执行拒绝。`users.vm` 已加入默认 functional 集合；默认共 10 个 suite、31 个 case。
 
 **构建和普通回归：** `cmake --workflow --preset <preset>` 的九配置全部完成 configure/build/test，CTest 合计 **21/21**；格式收尾后的最终产物再次完成九配置 workflow，仍为 **21/21**。两轮日志分别为 `build/<preset>/compile-fix-workflow.log` 和 `compile-fix-final-workflow.log`。宿主 `uv run pytest -q` **111/111**，Ruff、clang-format 与 diff 格式检查通过。本次未复现新的 C/C++ 编译错误，收尾修正了新增测试的格式及 Python 超长行。下表为最终报告，均 finalized、not_run 为空，且报告中的 image SHA-256 与对应 manifest 指向的当前测试镜像逐项一致。
 
@@ -560,14 +560,14 @@ LLDB 检查本机 QEMU 11.1.1 进程时，CPU3 为 `halted=1, halt_reason=HALT_W
 | arm64-debug | 1789051963930521000 | 1789051973639017000 | 不适用 |
 | arm64-release | 1789051990335243000 | 1789051996832263000 | 1789052008456881000 |
 | arm64-relwithdebinfo | 1789052014689405000 | 1789052020290759000 | 不适用 |
-| riscv-debug | 1789051965173596000 | 1789051976560858000 | 不适用 |
-| riscv-release | 1789051994096733000 | 1789052000906683000 | 1789052012893911000 |
-| riscv-relwithdebinfo | 1789052019698245000 | 1789052026522714000 | 不适用 |
-| x86_64-debug | 1789051966308835000 | 1789051977866715000 | 不适用 |
-| x86_64-release | 1789051995767787000 | 1789052003693917000 | 1789052016156046000 |
-| x86_64-relwithdebinfo | 1789052024576747000 | 1789052033219927000 | 不适用 |
+| riscv64-debug | 1789051965173596000 | 1789051976560858000 | 不适用 |
+| riscv64-release | 1789051994096733000 | 1789052000906683000 | 1789052012893911000 |
+| riscv64-relwithdebinfo | 1789052019698245000 | 1789052026522714000 | 不适用 |
+| x64-debug | 1789051966308835000 | 1789051977866715000 | 不适用 |
+| x64-release | 1789051995767787000 | 1789052003693917000 | 1789052016156046000 |
+| x64-relwithdebinfo | 1789052024576747000 | 1789052033219927000 | 不适用 |
 
-报告路径为 `build/<preset>/validation/<ID>/results.json`。另以同一 RISC-V Debug 镜像运行 `--cpu rv64,sv48=false --workload mm.permissions --workload users.vm`，Sv39 专项通过，最终报告 `1789051963203443000`；镜像 SHA-256 为 `a686d3b5708e1b15a9672d91eab657ff2dba87e215caac516da0a68b2156b580`。
+报告路径为 `build/<preset>/validation/<ID>/results.json`。另以同一 RISC-V 64 Debug 镜像运行 `--cpu rv64,sv48=false --workload mm.permissions --workload users.vm`，Sv39 专项通过，最终报告 `1789051963203443000`；镜像 SHA-256 为 `a686d3b5708e1b15a9672d91eab657ff2dba87e215caac516da0a68b2156b580`。
 
 **仍不关闭 MOSS-008/009：** 尚无统一 VMA/PTE/ref/TLB 事务锁、同时写故障与 fork/unmap 交错验收、OOM 逐点注入及完整回滚。`map_user_page` 的有效叶子覆盖与 block/table 冲突仍归 MOSS-010；本次 demand 的驻留检查不是并发防覆盖协议。用户异常测试证明访问被拒绝，但未直接计量拒绝路径没有额外分配，也未单独强制构造 VMA 不可写而 PTE 遗留 COW 的故障。fork 前的独立 text/rodata 写入、多物理地址 PTE 编解码专项及实机验证仍待补。普通矩阵通过不取消 3.15 的偶发启动失败，也不替代显式 `users.simd_fault` 或完整 SMP 验收。
 
@@ -599,16 +599,16 @@ LLDB 检查本机 QEMU 11.1.1 进程时，CPU3 为 `halted=1, halt_reason=HALT_W
 | arm64-debug | 1789053472180227000 | 1789053488576058000 | 不适用 |
 | arm64-release | 1789053520114647000 | **1789053530620345000，启动失败** | 1789053572642324000 |
 | arm64-relwithdebinfo | 1789053653778603000 | 1789053659725116000 | 不适用 |
-| riscv-debug | 1789053482209345000 | 1789053502105309000 | 不适用 |
-| riscv-release | 1789053535175189000 | 1789053543011577000 | 1789053554967769000 |
-| riscv-relwithdebinfo | 1789053576105731000 | 1789053583289946000 | 不适用 |
-| x86_64-debug | 1789053483246643000 | 1789053501791029000 | 不适用 |
-| x86_64-release | 1789053534781109000 | 1789053543786539000 | 1789053556268329000 |
-| x86_64-relwithdebinfo | 1789053577773257000 | 1789053585959764000 | 不适用 |
+| riscv64-debug | 1789053482209345000 | 1789053502105309000 | 不适用 |
+| riscv64-release | 1789053535175189000 | 1789053543011577000 | 1789053554967769000 |
+| riscv64-relwithdebinfo | 1789053576105731000 | 1789053583289946000 | 不适用 |
+| x64-debug | 1789053483246643000 | 1789053501791029000 | 不适用 |
+| x64-release | 1789053534781109000 | 1789053543786539000 | 1789053556268329000 |
+| x64-relwithdebinfo | 1789053577773257000 | 1789053585959764000 | 不适用 |
 
 首轮 21 份报告均 finalized，报告层 not_run 为空，image SHA-256 已与该轮对应产物逐项核对。失败报告的 `self` guest 尚未 ready，四个用例均 not_run：串口显示 CPU1/2 进入调度循环，CPU3 未打印激活后的标记，8 秒后 `SMP startup timed out: 3 of 4 CPUs online`，随后初始化 panic；其余三个 framework guest 达到各自预期结果。本次没有抓 CPU PC，不能仅凭症状将根因归于 3.15 的 QEMU 问题，也没有覆盖该失败报告。
 
-首轮同一 RISC-V Debug 镜像还通过 `--cpu rv64,sv48=false --workload mm.transactions --workload mm.permissions --workload users.vm`，报告 `1789053613334273000`，SHA-256 `420e49589a30d3b3f5f6586fc033b4648a45889879cf1c36a5cf5ca0b56b8db1`。这验证了 Sv39 与默认 Sv48 的同镜像路径，不是另一个板级构建。
+首轮同一 RISC-V 64 Debug 镜像还通过 `--cpu rv64,sv48=false --workload mm.transactions --workload mm.permissions --workload users.vm`，报告 `1789053613334273000`，SHA-256 `420e49589a30d3b3f5f6586fc033b4648a45889879cf1c36a5cf5ca0b56b8db1`。这验证了 Sv39 与默认 Sv48 的同镜像路径，不是另一个板级构建。
 
 **调用方收尾与最终矩阵：** 继续核对调用者后，补齐 `kernel-main.cppm::create_init_process` 中 x86 原始程序路径 map 失败时的数据页释放，并保留具体错误码；该原始启动分支没有定点 OOM 运行证据，不能算作表级测试已经覆盖。此修改后重建并运行全部九配置，构建全部通过，CTest 仍为 **20/21**，但失败位置不同；不能用后一轮 ARM64 通过抵消首轮的失败。最终 `mm.transactions` 五项在九配置均通过。
 
@@ -617,22 +617,22 @@ LLDB 检查本机 QEMU 11.1.1 进程时，CPU3 为 `halted=1, halt_reason=HALT_W
 | arm64-debug | 1789054087674031000 | 1789054099456243000 | 不适用 |
 | arm64-release | 1789054123333753000 | 1789054131311932000 | 1789054143167372000 |
 | arm64-relwithdebinfo | 1789054156785267000 | 1789054164878569000 | 不适用 |
-| riscv-debug | **1789054088760333000，users.vm 启动失败** | 1789054163951238000 | 不适用 |
-| riscv-release | 1789054249091880000 | 1789054255886792000 | 1789054268353760000 |
-| riscv-relwithdebinfo | 1789054281927732000 | 1789054289449191000 | 不适用 |
-| x86_64-debug | 1789054089639000000 | 1789054105013620000 | 不适用 |
-| x86_64-release | 1789054129001330000 | 1789054138518509000 | 1789054151584601000 |
-| x86_64-relwithdebinfo | 1789054166991979000 | 1789054176481668000 | 不适用 |
+| riscv64-debug | **1789054088760333000，users.vm 启动失败** | 1789054163951238000 | 不适用 |
+| riscv64-release | 1789054249091880000 | 1789054255886792000 | 1789054268353760000 |
+| riscv64-relwithdebinfo | 1789054281927732000 | 1789054289449191000 | 不适用 |
+| x64-debug | 1789054089639000000 | 1789054105013620000 | 不适用 |
+| x64-release | 1789054129001330000 | 1789054138518509000 | 1789054151584601000 |
+| x64-relwithdebinfo | 1789054166991979000 | 1789054176481668000 | 不适用 |
 
-最终日志为 `build/<preset>/vm-transaction-caller-workflow.log`；报告均 finalized，报告层 not_run 为空，image SHA-256 与最终 manifest 对应产物逐项一致。RISC-V 失败 guest 已 ready、四核上线，但没有 worker 事件，三个 VM case 均 not_run；串口显示首次调度 PID 1 后 `scause=0xc, addr=0, pc=0`，进程以 -11 退出成 Zombie，最终被 host 记为 `guest_timeout`。本次没有保留现场寄存器，根因尚未确定；应继续排查首次用户执行/陷阱返回/抢占路径，不能误称 COW 用例断言失败或直接归因于模拟器。两轮失败均保留。
+最终日志为 `build/<preset>/vm-transaction-caller-workflow.log`；报告均 finalized，报告层 not_run 为空，image SHA-256 与最终 manifest 对应产物逐项一致。RISC-V 64 失败 guest 已 ready、四核上线，但没有 worker 事件，三个 VM case 均 not_run；串口显示首次调度 PID 1 后 `scause=0xc, addr=0, pc=0`，进程以 -11 退出成 Zombie，最终被 host 记为 `guest_timeout`。本次没有保留现场寄存器，根因尚未确定；应继续排查首次用户执行/陷阱返回/抢占路径，不能误称 COW 用例断言失败或直接归因于模拟器。两轮失败均保留。
 
-最终 RISC-V Debug 镜像的 Sv39 专项也通过，报告 `1789054394589676000`，SHA-256 `17b86cc71619491d9d1870d9d305fa27c91cffa529fe2be44c3fc4eb6afc4388`，与最终默认 Sv48 报告使用同一产物。该不同 MMU 模式的成功不消除默认模式那次首次取指失败。
+最终 RISC-V 64 Debug 镜像的 Sv39 专项也通过，报告 `1789054394589676000`，SHA-256 `17b86cc71619491d9d1870d9d305fa27c91cffa529fe2be44c3fc4eb6afc4388`，与最终默认 Sv48 报告使用同一产物。该不同 MMU 模式的成功不消除默认模式那次首次取指失败。
 
 宿主 111/111 的全量结果发生在并行 `README.md`、`build.py`、`scripts/tests/test_build.py` 修改出现之前；收尾重新运行本轮相关的 `scripts/tests/test_kernel_validation.py` 为 **57/57**，不代替并行构建脚本改动的验收。
 
-**提交前复核（2026-09-10，基线 `204914e`）：** `uv run build.py --jobs 3` 的九配置 configure/build 全部通过，未复现编译器或链接器错误；完整 workflow 为 **8/9**，CTest 为 **19/21**。`mm.transactions` 五项在九配置均通过。x86_64 Release 的两个失败均发生在运行阶段：functional 报告 `1789055109377273000` 中，VFS guest 在 ready 前因 `PIT/TSC/APIC clock calibration failed` 启动失败，尚未执行 VFS 用例；benchmark 报告 `1789055177434585000` 中，`bench.release` 发出 `frequency=0, source=invalid` 并以 `invalid_clock` 结束。报告位于 `build/x86_64-release/validation/<ID>/results.json`，保留原始串口记录，未通过重试、放宽超时或跳过 CTest 将其改判成功。它们不证明 VFS 或页表事务断言失败，也不能直接归因于 QEMU。当前运行时失败仍待排查；相关宿主测试再次通过 **57/57**。
+**提交前复核（2026-09-10，基线 `204914e`）：** `uv run build.py --jobs 3` 的九配置 configure/build 全部通过，未复现编译器或链接器错误；完整 workflow 为 **8/9**，CTest 为 **19/21**。`mm.transactions` 五项在九配置均通过。x64 Release 的两个失败均发生在运行阶段：functional 报告 `1789055109377273000` 中，VFS guest 在 ready 前因 `PIT/TSC/APIC clock calibration failed` 启动失败，尚未执行 VFS 用例；benchmark 报告 `1789055177434585000` 中，`bench.release` 发出 `frequency=0, source=invalid` 并以 `invalid_clock` 结束。报告位于 `build/x64-release/validation/<ID>/results.json`，保留原始串口记录，未通过重试、放宽超时或跳过 CTest 将其改判成功。它们不证明 VFS 或页表事务断言失败，也不能直接归因于 QEMU。当前运行时失败仍待排查；相关宿主测试再次通过 **57/57**。
 
-另外对 `arm64-relwithdebinfo`、`x86_64-release`、`riscv-debug` 分别运行 `cmake --build --preset <preset> --clean-first --parallel 4`，三者干净编译均通过。重新生成的镜像各自通过 `mm.transactions`、`mm.permissions`、`users.vm` 专项，报告依次为 `1789055337050159000`、`1789055338287025000`、`1789055339719556000`。这些专项不覆盖上述时钟失败，不是完整 CTest 转绿的证据。
+另外对 `arm64-relwithdebinfo`、`x64-release`、`riscv64-debug` 分别运行 `cmake --build --preset <preset> --clean-first --parallel 4`，三者干净编译均通过。重新生成的镜像各自通过 `mm.transactions`、`mm.permissions`、`users.vm` 专项，报告依次为 `1789055337050159000`、`1789055338287025000`、`1789055339719556000`。这些专项不覆盖上述时钟失败，不是完整 CTest 转绿的证据。
 
 **MOSS-010 仍为部分完成：** 当前测试证明页表函数在稳定源、自有未激活目标条件下的分配失败契约。接口尚依赖调用方排除并发修改，统一 VMA/PTE/ref/TLB 锁与跨 CPU 生命周期仍属 MOSS-008/011/028。`sys_fork` 的页表错误传播已实现，但完整系统调用的逐点 OOM 专项尚未运行；页表 clone 成功后的 kernel-stack、VMA、FD 等后续失败仍需纳入整次 fork 的事务。没有以这些表级用例关闭整个 fork 或完整内核目标，实机与长期 SMP 验收仍待补。
 
@@ -644,18 +644,18 @@ LLDB 检查本机 QEMU 11.1.1 进程时，CPU3 为 `halted=1, halt_reason=HALT_W
 
 现在在发布 current task 之前屏蔽本 CPU 的 IRQ；保护范围覆盖上下文、地址空间、入口栈和汇编切换。返回时仅恢复调用者原有的 IRQ 使能状态，IRQ 调用者不能在陷阱帧恢复前被无条件重新开中断。改动在三 ISA 共用的调度路径中，RV64 栈设置接口补充该前置条件；`sys_execve` 的调用点已有显式关中断。没有新增板名、QEMU 地址或模拟器依赖。
 
-**真实写入现场：** `build/riscv-debug/diagnostics/first-user-7v4ry6vu/0001/gdb.log` 保留硬件观察点：用户 PC 从 `0x200000000` 变成 `2`，写入者为 `syscall_entry_point` 的 `sd tp, 256(sp)`，`sstatus.SPP=1`，`sepc` 指向仍在 S-mode 的栈发布函数；随后用户在地址 2 取指失败。此前不带断点的自然失败仍保留在 `first-user-f9tfl9ga/0027`（前 26 次到达 worker，第 27 次 `PC=0`）。最初报告 `1789054088760333000` 没有寄存器现场，因此不能声称本路径已证明是每一次历史 `PC=0` 的唯一原因。
+**真实写入现场：** `build/riscv64-debug/diagnostics/first-user-7v4ry6vu/0001/gdb.log` 保留硬件观察点：用户 PC 从 `0x200000000` 变成 `2`，写入者为 `syscall_entry_point` 的 `sd tp, 256(sp)`，`sstatus.SPP=1`，`sepc` 指向仍在 S-mode 的栈发布函数；随后用户在地址 2 取指失败。此前不带断点的自然失败仍保留在 `first-user-f9tfl9ga/0027`（前 26 次到达 worker，第 27 次 `PC=0`）。最初报告 `1789054088760333000` 没有寄存器现场，因此不能声称本路径已证明是每一次历史 `PC=0` 的唯一原因。
 
-新增独立回归 `scripts/check_riscv_dispatch.py`：GDB 在生产栈发布函数的返回点设置真实 SSIP pending/enable，不修改内核代码、PC、栈数据或调度器实现；验证初始 PC 未改变、切换期间 IRQ 关闭，以及 SSIP 仅在首次 SRET 后以正确用户 PC/SP 进入真实异常入口，最后必须完成全部 `users.vm` 用例。软件 IRQ 的 pending/enable 语义依据 [RISC-V Supervisor ISA](https://docs.riscv.org/reference/isa/priv/supervisor.html)。脚本使用已有 artifact reader、QEMU runner 和严格串口协议解析，冻结 kernel/initramfs/symbols 并记录 SHA-256；每次 fresh guest，第一次失败即停止并保留报告。它是需要 RISC-V GDB 的专项入口，尚未加入默认 CTest，不把它计入默认测试数量。
+新增独立回归 `scripts/check_riscv64_dispatch.py`：GDB 在生产栈发布函数的返回点设置真实 SSIP pending/enable，不修改内核代码、PC、栈数据或调度器实现；验证初始 PC 未改变、切换期间 IRQ 关闭，以及 SSIP 仅在首次 SRET 后以正确用户 PC/SP 进入真实异常入口，最后必须完成全部 `users.vm` 用例。软件 IRQ 的 pending/enable 语义依据 [RISC-V 64 Supervisor ISA](https://docs.riscv.org/reference/isa/priv/supervisor.html)。脚本使用已有 artifact reader、QEMU runner 和严格串口协议解析，冻结 kernel/initramfs/symbols 并记录 SHA-256；每次 fresh guest，第一次失败即停止并保留报告。它是需要 RISC-V 64 GDB 的专项入口，尚未加入默认 CTest，不把它计入默认测试数量。
 
 ```sh
-uv run python scripts/check_riscv_dispatch.py \
-  --manifest build/riscv-debug/moss-artifacts.json \
-  --symbols build/riscv-debug/bin/moss.test.elf --cpus 4 --runs 10
+uv run python scripts/check_riscv64_dispatch.py \
+  --manifest build/riscv64-debug/moss-artifacts.json \
+  --symbols build/riscv64-debug/bin/moss.test.elf --cpus 4 --runs 10
 # 同一镜像再用 --cpus 1，或 --cpu rv64,sv48=false
 ```
 
-环境为 QEMU 11.1.1 TCG、GDB 17.2、2 GiB RAM；`virt`/OpenSBI 装载地址仅属于上述专项 runner fixture。报告路径为 `build/riscv-debug/dispatch-irq/<目录>/results.json`，各 guest 的串口及 GDB 现场在其编号子目录：
+环境为 QEMU 11.1.1 TCG、GDB 17.2、2 GiB RAM；`virt`/OpenSBI 装载地址仅属于上述专项 runner fixture。报告路径为 `build/riscv64-debug/dispatch-irq/<目录>/results.json`，各 guest 的串口及 GDB 现场在其编号子目录：
 
 | 镜像与条件 | 报告目录 | 结果 |
 | --- | --- | --- |
@@ -665,7 +665,7 @@ uv run python scripts/check_riscv_dispatch.py \
 | 修复后，1 CPU，默认 Sv48 | `run-q_qukbyk` | 10/10，包含 IRQ 时序检查及完整 users.vm |
 | 修复后，4 CPU，Sv39 | `run-vig8w16h` | 3/3，同一镜像，包含 IRQ 时序检查及完整 users.vm |
 
-修复前 RV64 Debug image SHA-256 为 `17b86cc71619491d9d1870d9d305fa27c91cffa529fe2be44c3fc4eb6afc4388`，修复后为 `b19256bbf48e53f356f0b70af71b3408b688508b9ec6716366c0d22eeb3a92ad`。不带调试器的后置启动循环 `build/riscv-debug/diagnostics/first-user-hv92vdc0/results.json` 为 100/100 到达 worker；这个循环只证明到达用户执行，不能算作 100 次完整功能套件。旧镜像带“未处理缺页分支”断点的 100 次循环也未复现自然失败，说明断点会影响时序；修复依据是上述确定性交错的前后对照，不是重试到绿。
+修复前 RV64 Debug image SHA-256 为 `17b86cc71619491d9d1870d9d305fa27c91cffa529fe2be44c3fc4eb6afc4388`，修复后为 `b19256bbf48e53f356f0b70af71b3408b688508b9ec6716366c0d22eeb3a92ad`。不带调试器的后置启动循环 `build/riscv64-debug/diagnostics/first-user-hv92vdc0/results.json` 为 100/100 到达 worker；这个循环只证明到达用户执行，不能算作 100 次完整功能套件。旧镜像带“未处理缺页分支”断点的 100 次循环也未复现自然失败，说明断点会影响时序；修复依据是上述确定性交错的前后对照，不是重试到绿。
 
 **三架构回归：** `uv run build.py --jobs 3` 的九配置 configure/build 全通过，完整 workflow **8/9**、CTest **20/21**。三架构九配置的 `users`、`users.vm` 均通过。宿主 pytest **121/121**，新增脚本 Ruff 与格式检查、改动行 clang-format 及 diff 检查通过。各报告为 `build/<preset>/validation/<ID>/results.json`：
 
@@ -674,12 +674,12 @@ uv run python scripts/check_riscv_dispatch.py \
 | arm64-debug | 1789058556614572000 | 1789058571568943000 | 不适用 |
 | arm64-release | 1789058557674388000 | 1789058566914500000 | 1789058578854512000 |
 | arm64-relwithdebinfo | 1789058559449795000 | 1789058568421515000 | 不适用 |
-| x86_64-debug | 1789058605929820000 | 1789058627285295000 | 不适用 |
-| x86_64-release | 1789058609642577000 | 1789058622808073000 | 1789058635901872000 |
-| x86_64-relwithdebinfo | 1789058617151552000 | 1789058627790634000 | 不适用 |
-| riscv-debug | **1789058648884619000，mm.transactions 超时** | 1789058680175489000 | 不适用 |
-| riscv-release | 1789058673907584000 | 1789058685608673000 | 1789058698620711000 |
-| riscv-relwithdebinfo | 1789058676734790000 | 1789058688003835000 | 不适用 |
+| x64-debug | 1789058605929820000 | 1789058627285295000 | 不适用 |
+| x64-release | 1789058609642577000 | 1789058622808073000 | 1789058635901872000 |
+| x64-relwithdebinfo | 1789058617151552000 | 1789058627790634000 | 不适用 |
+| riscv64-debug | **1789058648884619000，mm.transactions 超时** | 1789058680175489000 | 不适用 |
+| riscv64-release | 1789058673907584000 | 1789058685608673000 | 1789058698620711000 |
+| riscv64-relwithdebinfo | 1789058676734790000 | 1789058688003835000 | 不适用 |
 
 失败 guest 已 ready 且启动 worker，`map_preserves_existing` 通过，随后 `map_allocation_rollback` 在 5.012 秒超时，其后三例 not_run；没有捕获 PC 或断言失败。该矩阵与部分诊断循环并行执行，宿主压力、页分配耗尽速度或内核交错均未完成因果对照，不能擅自归为环境问题。同一镜像另一次定向 `mm.transactions` 报告 `1789058733949855000` 通过，但不抵消原失败，也没有放宽原期限。
 
@@ -704,12 +704,12 @@ uv run python scripts/check_riscv_dispatch.py \
 | arm64-debug | 1789394530915195000 | 1789394556420772000 | 不适用 |
 | arm64-release | 1789394555145071000 | 1789394565341261000 | 1789394577090541000 |
 | arm64-relwithdebinfo | 1789394556723693000 | 1789394563451235000 | 不适用 |
-| x86_64-debug | 1789394574398580000 | 1789394601647936000 | 不适用 |
-| x86_64-release | 1789394604935876000 | 1789394614483541000 | 1789394627074884000 |
-| x86_64-relwithdebinfo | 1789394611011849000 | 1789394619524257000 | 不适用 |
-| riscv-debug | 1789394620691560000 | 1789394636139993000 | 不适用 |
-| riscv-release | 1789394662261567000 | 1789394669778572000 | 1789394681757791000 |
-| riscv-relwithdebinfo | 1789394664061012000 | 1789394671552789000 | 不适用 |
+| x64-debug | 1789394574398580000 | 1789394601647936000 | 不适用 |
+| x64-release | 1789394604935876000 | 1789394614483541000 | 1789394627074884000 |
+| x64-relwithdebinfo | 1789394611011849000 | 1789394619524257000 | 不适用 |
+| riscv64-debug | 1789394620691560000 | 1789394636139993000 | 不适用 |
+| riscv64-release | 1789394662261567000 | 1789394669778572000 | 1789394681757791000 |
+| riscv64-relwithdebinfo | 1789394664061012000 | 1789394671552789000 | 不适用 |
 
 - [ ] 全异常/抢占交错、全部 FP/TLS fork 继承、恶意/嵌套/备用信号帧、可恢复复制、CPU-bound 投递及 STOP/CONT/SIGCHLD 仍待实现或专项验收；MOSS-002/003/007/014/020 整项不关闭。
 - [ ] 本轮全绿不取消 3.18 的 mm.transactions 超时、历史 ARM64 启动/wait 及 x86 校准失败，也不等于重新完成 IRQ 注入、真机或长期 SMP 验收。
@@ -726,8 +726,8 @@ uv run python scripts/check_riscv_dispatch.py \
 | preset | 修复前（case_timeout） | 修复后（passed） |
 | --- | --- | --- |
 | arm64-debug | 1789395097579673000 | 1789396191884195000 |
-| x86_64-debug | 1789395098712892000 | 1789396191912766000 |
-| riscv-debug | 1789395079843119000 | 1789395851917794000 |
+| x64-debug | 1789395098712892000 | 1789396191912766000 |
+| riscv64-debug | 1789395079843119000 | 1789395851917794000 |
 
 **提交前回归：** `NO_COLOR=1 TERM=dumb uv run build.py --jobs 3` 九个 configure/build/test workflow 全通过（158.0 s），CTest **21/21**；每个配置的默认功能包含 `users.uaccess`。宿主 `uv run pytest -q scripts/tests` **121/121**；全仓格式检查、新增模块文件的 clang-format 检查、runner Ruff 检查和 diff 检查通过。原始报告均基于 `0e88344`、dirty=true；本轮通过不取消 3.18 的间歇失败记录。
 
@@ -736,12 +736,12 @@ uv run python scripts/check_riscv_dispatch.py \
 | arm64-debug | 1789396307743705000 | 1789396322976302000 | 不适用 |
 | arm64-release | 1789396308602584000 | 1789396317458047000 | 1789396329267466000 |
 | arm64-relwithdebinfo | 1789396309807560000 | 1789396318523582000 | 不适用 |
-| x86_64-debug | 1789396350173698000 | 1789396366978318000 | 不适用 |
-| x86_64-release | 1789396352782328000 | 1789396362910295000 | 1789396375573153000 |
-| x86_64-relwithdebinfo | 1789396358435391000 | 1789396367506679000 | 不适用 |
-| riscv-debug | 1789396407444576000 | 1789396425003863000 | 不适用 |
-| riscv-release | 1789396409285437000 | 1789396418079184000 | 1789396430373237000 |
-| riscv-relwithdebinfo | 1789396410819718000 | 1789396419489860000 | 不适用 |
+| x64-debug | 1789396350173698000 | 1789396366978318000 | 不适用 |
+| x64-release | 1789396352782328000 | 1789396362910295000 | 1789396375573153000 |
+| x64-relwithdebinfo | 1789396358435391000 | 1789396367506679000 | 不适用 |
+| riscv64-debug | 1789396407444576000 | 1789396425003863000 | 不适用 |
+| riscv64-release | 1789396409285437000 | 1789396418079184000 | 1789396430373237000 |
+| riscv64-relwithdebinfo | 1789396410819718000 | 1789396419489860000 | 不适用 |
 
 - [ ] VFS read/write 和信号帧仍需迁移；输入复制/COW 的 OOM、部分跨页复制、恶意/嵌套信号帧尚无本轮专项验收。
 - [ ] 复制允许部分前缀成功，不是事务；持有 Process 也不等于锁定 AddressSpace 或页表，不能替代并发 exec/unmap/COW 的 VM 生命周期协议。MOSS-002/003 整项不关闭。
@@ -759,8 +759,8 @@ uv run python scripts/check_riscv_dispatch.py \
 | preset | ramfs read 红灯 | pipe write 红灯 | 信号帧写出红灯 | sigreturn 读回红灯 |
 | --- | --- | --- | --- | --- |
 | arm64-debug | 1789397160755843000 | 1789397479168774000 | 1789399751019719000 | 1789400279490114000 |
-| x86_64-debug | 1789397160788187000 | 1789397478854227000 | 1789400171632712000 | 1789400278428979000 |
-| riscv-debug | 1789397160736720000 | 1789397479229565000 | 1789399751011447000 | 1789400436091370000 |
+| x64-debug | 1789397160788187000 | 1789397478854227000 | 1789400171632712000 | 1789400278428979000 |
+| riscv64-debug | 1789397160736720000 | 1789397479229565000 | 1789399751011447000 | 1789400436091370000 |
 
 **测试前置条件与未关闭失败：**
 
@@ -775,12 +775,12 @@ uv run python scripts/check_riscv_dispatch.py \
 | arm64-debug | 1789400691668343000 | 1789400720701503000 | 不适用 |
 | arm64-release | 1789400702316033000 | 1789400716065800000 | 1789400729351502000 |
 | arm64-relwithdebinfo | 1789400703142982000 | 1789400716068330000 | 不适用 |
-| x86_64-debug | 1789400737610084000 | 1789400782316832000 | 不适用 |
-| x86_64-release | 1789400759557543000 | 1789400775876334000 | 1789400789428980000 |
-| x86_64-relwithdebinfo | 1789400762485254000 | 1789400776974079000 | 不适用 |
-| riscv-debug | 1789400798321803000 | 1789400847297282000 | 不适用 |
-| riscv-release | 1789400800985703000 | 1789400822744553000 | 1789400836409062000 |
-| riscv-relwithdebinfo | 1789400823508709000 | 1789400835455385000 | 不适用 |
+| x64-debug | 1789400737610084000 | 1789400782316832000 | 不适用 |
+| x64-release | 1789400759557543000 | 1789400775876334000 | 1789400789428980000 |
+| x64-relwithdebinfo | 1789400762485254000 | 1789400776974079000 | 不适用 |
+| riscv64-debug | 1789400798321803000 | 1789400847297282000 | 不适用 |
+| riscv64-release | 1789400800985703000 | 1789400822744553000 | 1789400836409062000 |
+| riscv64-relwithdebinfo | 1789400823508709000 | 1789400835455385000 | 不适用 |
 
 - [ ] COW OOM、并发 exec/unmap/COW、AddressSpace/PTE/页引用生命周期仍未闭合；持有 Process 和借用缓冲区视图不等于锁定页或 VM。
 - [ ] 信号特权字段攻击、全部嵌套/备用栈边界、console_read 真实串口输入故障未专项验收；本轮不关闭 MOSS-002/003，也不宣称所有用户访问路径均已穷尽验证。
@@ -827,7 +827,7 @@ uv run python scripts/check_riscv_dispatch.py \
 
 ## 5. 隔离与基础内存
 
-### MOSS-001 · x86_64 内核页表允许用户态访问内核映射
+### MOSS-001 · x64 内核页表允许用户态访问内核映射
 
 **当前状态：** U/S 构造、三架构最终内核 W^X/RO/NX、直映别名及共享页表归属已修复，生产结构/生命周期检查见 3.11～3.12；整个 MOSS-001 尚未关闭，受控用户异常隔离的完整验收仍待完成。MOSS-002 的用户域/uaccess 旁路不因本项修复而关闭。
 
@@ -841,7 +841,7 @@ uv run python scripts/check_riscv_dispatch.py \
 - 将内核 text、rodata、data、MMIO 权限分别表达；可执行代码 RX，数据 RW 且 NX，避免整个大块可写可执行。
 - 在页表构造接口区分用户映射与内核映射，调用者不能用默认属性意外获得 USER。
 
-原 `make_normal_block()` 的 ARM64 大块未按 text/data 拆分权限，RISC-V 同时设置 READ/WRITE/EXECUTE；该 helper 已删除。3.12 先把用户页表创建/clone/free 改为按 VA 范围借用内核映射，再拆分最终页表；早期临时宽权限不再成为最终运行权限。用户 huge page 生命周期、COW 权限和分配失败事务仍属待办，不因共享内核子树的创建/回收通过而关闭。
+原 `make_normal_block()` 的 ARM64 大块未按 text/data 拆分权限，RISC-V 64 同时设置 READ/WRITE/EXECUTE；该 helper 已删除。3.12 先把用户页表创建/clone/free 改为按 VA 范围借用内核映射，再拆分最终页表；早期临时宽权限不再成为最终运行权限。用户 huge page 生命周期、COW 权限和分配失败事务仍属待办，不因共享内核子树的创建/回收通过而关闭。
 
 **验收：** x86 用户态恢复后，用户程序读取/写入内核 text、data、页表和 MMIO 地址均产生可控用户异常，只终止该进程；合法用户页仍可读写。增加最终页表的 U/S、RW、NX 结构检查。权限语义参见 [Intel SDM Volume 3A](https://cdrdv2-public.intel.com/874249/253668-090-sdm-vol-3a.pdf)。
 
@@ -883,7 +883,7 @@ uv run python scripts/check_riscv_dispatch.py \
 
 **后续工作区修复：** 第 3.4 节覆盖预留堆耗尽、块内模式、独立 PFA 页哨兵和页计数；3.7 补全当前单 worker 下的区域布局、页表/元数据哨兵和失败启动检查。不将这些结果推广为多进程/SMP 引用正确性；完整启动保留集合仍属 MOSS-005。
 
-**位置与事实：** 三个 BootImpl 分别在 `src/boot/src/arch/arm64/boot_impl.cpp:682`、`src/boot/src/arch/riscv/boot_impl.cpp:260`、`src/boot/src/arch/x86_64/boot_impl.cpp:330` 用 `_heap_start` 初始化 256 KiB 堆。ARM64 链接脚本 `src/linker/kernel_arm64.ld:187` 只为 heap 保留 4 KiB，之后紧邻页表预留区。`src/mm/src/page_frame_allocator.cpp:178` 把 PFA 元数据放到 `_kernel_end` 后。
+**位置与事实：** 三个 BootImpl 分别在 `src/boot/src/arch/arm64/boot_impl.cpp:682`、`src/boot/src/arch/riscv64/boot_impl.cpp:260`、`src/boot/src/arch/x64/boot_impl.cpp:330` 用 `_heap_start` 初始化 256 KiB 堆。ARM64 链接脚本 `src/linker/kernel_arm64.ld:187` 只为 heap 保留 4 KiB，之后紧邻页表预留区。`src/mm/src/page_frame_allocator.cpp:178` 把 PFA 元数据放到 `_kernel_end` 后。
 
 本次 ARM64 debug ELF 的实际符号：
 
@@ -938,18 +938,18 @@ _kernel_end / _pagetable_end    0x403fd000
 
 **2026-09-06 更新：部分实现，入口契约仍未完成。** x86 已显式压入第八参数，但值是 `$0`，不是 TrapFrame；RV64 入口恢复 CPU 身份/用户 gp/tp 的代码已补，调用 dispatcher 前仍仅安排 a0～a6。`signal.cpp` 没有改成按 ISA 的帧访问。基础 syscall 和 fork/exec 通过不能关闭信号/完整寄存器返回任务；不要再把“x86 少压一个参数”当唯一剩余修复。
 
-**位置与事实：** `src/abi/src/abi.cppm:84` 和 `src/kernel/src/kernel_main.cpp:133` 的系统调用处理入口已有第八个 `trap_frame` 参数。ARM64 入口 `src/boot/src/arch/arm64/start_arm64.S:876` 传入当前 SP；RISC-V 的 `src/kernel/src/arch/riscv_syscall.S:417` 只安排 a0–a6，没有把 a7 改成帧指针；x86_64 的 `src/kernel/src/arch/x86_64_syscall.S:91` 只安排第七个栈参数，缺少第八个参数。
+**位置与事实：** `src/abi/src/abi.cppm:84` 和 `src/kernel/src/kernel_main.cpp:133` 的系统调用处理入口已有第八个 `trap_frame` 参数。ARM64 入口 `src/boot/src/arch/arm64/start_arm64.S:876` 传入当前 SP；RISC-V 64 的 `src/kernel/src/arch/riscv64_syscall.S:417` 只安排 a0–a6，没有把 a7 改成帧指针；x64 的 `src/kernel/src/arch/x64_syscall.S:91` 只安排第七个栈参数，缺少第八个参数。
 
-与此同时 `src/process/src/signal.cpp:136` 一律把该参数解释为 ARM64 的 34 个槽位。RISC-V 信号测试在读取这里时出现 `stval=0x116`，与错误参数被当成指针的路径吻合。
+与此同时 `src/process/src/signal.cpp:136` 一律把该参数解释为 ARM64 的 34 个槽位。RISC-V 64 信号测试在读取这里时出现 `stval=0x116`，与错误参数被当成指针的路径吻合。
 
 **修复：**
 
 - 为每个 ISA 定义自己的 `TrapFrame` 和编译期偏移校验；汇编入口保存完整用户状态，准确满足 C 调用约定、栈对齐和全部参数传递。
 - `SwitchContext` 仅表示内核调度切换现场，不能代替用户异常现场。
 - 共同代码通过 `user_pc()`、`user_sp()`、`set_syscall_result()`、`sanitize_user_return()` 等小接口操作，布局转换由架构层承担。
-- 信号 trampoline、sigreturn 以及 fork 用户返回都按 ISA 实现。当前 exec 中写入的 ARM 指令序列不能在 RISC-V/x86 被当作通用信号返回桩。
+- 信号 trampoline、sigreturn 以及 fork 用户返回都按 ISA 实现。当前 exec 中写入的 ARM 指令序列不能在 RISC-V 64/x86 被当作通用信号返回桩。
 
-**验收：** 每架构用全部参数和哨兵寄存器往返系统调用；触发信号前后验证通用寄存器、PC/SP、返回值、合法状态位；RISC-V basic signal 不再读取低地址假指针；x86 缺失栈参数有结构性回归检查。
+**验收：** 每架构用全部参数和哨兵寄存器往返系统调用；触发信号前后验证通用寄存器、PC/SP、返回值、合法状态位；RISC-V 64 basic signal 不再读取低地址假指针；x86 缺失栈参数有结构性回归检查。
 
 ## 6. 虚拟内存、分配器与加载
 
@@ -963,15 +963,15 @@ _kernel_end / _pagetable_end    0x403fd000
 
 **验收：** fork 前后写 text/rodata 都失败；写私有数据只改变写入方；多代 fork、引用计数为 1 的快速路径、同时写故障及分配失败均不放宽只读权限。
 
-### MOSS-009 · RISC-V 缺页必须区分“没有页”和“已有页但权限不符”
+### MOSS-009 · RISC-V 64 缺页必须区分“没有页”和“已有页但权限不符”
 
-**位置与事实：** `src/mm/src/page_fault.cpp:604` 的 RISC-V 路径先尝试 demand paging，再尝试 COW。demand 路径并不以“叶子不存在”为充分前置条件，可能重新分配/填充页面；`src/mm/src/page_table.cpp:458` 的 `map_user_page()` 又允许覆盖已有项。`:346` 的共用 COW 路径在替换物理地址时直接把 `new_pa & PTE_ADDR_MASK` 写入 raw PTE，但 RISC-V PPN 编码与 ARM/x86 的地址字段不同。
+**位置与事实：** `src/mm/src/page_fault.cpp:604` 的 RISC-V 64 路径先尝试 demand paging，再尝试 COW。demand 路径并不以“叶子不存在”为充分前置条件，可能重新分配/填充页面；`src/mm/src/page_table.cpp:458` 的 `map_user_page()` 又允许覆盖已有项。`:346` 的共用 COW 路径在替换物理地址时直接把 `new_pa & PTE_ADDR_MASK` 写入 raw PTE，但 RISC-V 64 PPN 编码与 ARM/x86 的地址字段不同。
 
 **影响：** COW 写故障可能先被当作首次映射，丢失已修改的栈/数据并漏掉旧页引用；错误 PPN 会指向错误物理地址。执行权限故障如果被重复当作 demand fault，还可能反复分配而不消除真正原因。
 
 **修复：** 根据异常原因和页表 walk 结果生成明确的 `FaultInfo`：访问类型、来源特权级、页不存在或权限错误。仅缺页进入 demand；合法 COW 写故障进入 COW；其他权限错误终止用户访问。所有 PTE 编解码调用对应 HAL 构造函数，禁止在共用代码手工拼某一 ISA 的地址位。
 
-**验收：** 已修改匿名页 fork 后分别写入仍保留原内容；执行 NX、写 RO、读 PROT_NONE 不新增替代页；PTE 编解码对多个物理地址双向一致；旧页引用在覆盖/失败路径正确变化。编码及访问检查依据见 [RISC-V Supervisor 规范](https://docs.riscv.org/reference/isa/priv/supervisor.html)。
+**验收：** 已修改匿名页 fork 后分别写入仍保留原内容；执行 NX、写 RO、读 PROT_NONE 不新增替代页；PTE 编解码对多个物理地址双向一致；旧页引用在覆盖/失败路径正确变化。编码及访问检查依据见 [RISC-V 64 Supervisor 规范](https://docs.riscv.org/reference/isa/priv/supervisor.html)。
 
 ### MOSS-010 · 页表克隆失败不能以“部分成功”发布子进程
 
@@ -1025,7 +1025,7 @@ _kernel_end / _pagetable_end    0x403fd000
 
 **2026-09-06 更新：部分实现。** `44dedc2` 的 `sys_fork` 已提取 x86 PC/SP、RV64/x86 GP 寄存器；首次运行先在新内核栈保存完整 CpuContext，再经架构 trampoline 返回用户态。三架构 `validation.c` 的一次 fork/exec/exit/wait 已通过。尚需 fork 不立即 exec 的快照验证、VM 元数据/凭据/信号继承、FP/SIMD 状态与资源失败回滚；共用 syscall 仍手写架构槽位。
 
-**位置与事实：** `src/kernel/src/syscall_table.cpp:238` 的 fork 初始化用户 PC/SP 为 0；ARM64、RISC-V 有部分提取，x86 路径没有补齐用户 PC/SP。RISC-V/x86 的部分处理复制内核保存上下文，但 `src/process/src/process-scheduler.cppm:1874` 的首次运行路径重新清空上下文并只重建部分参数寄存器。这不是对父用户寄存器现场的完整克隆。
+**位置与事实：** `src/kernel/src/syscall_table.cpp:238` 的 fork 初始化用户 PC/SP 为 0；ARM64、RISC-V 64 有部分提取，x86 路径没有补齐用户 PC/SP。RISC-V 64/x86 的部分处理复制内核保存上下文，但 `src/process/src/process-scheduler.cppm:1874` 的首次运行路径重新清空上下文并只重建部分参数寄存器。这不是对父用户寄存器现场的完整克隆。
 
 fork 对 VMA 有复制，但未完整继承 `brk_base/brk_current/mmap_next` 等 VM 状态，以及凭据、信号动作/掩码/备用栈。ARM64 的通用寄存器路径更完整，也仍需核对 FP/SIMD 等扩展状态的复制与首次使用语义。
 
@@ -1093,7 +1093,7 @@ wait4 还有先 reap 后向用户复制 status 的顺序问题：复制失败后
 
 ### MOSS-019 · nanosleep 和定时器缺少可失败、可取消的生命周期
 
-**位置与事实：** `src/kernel/src/syscall_table.cpp:2225` 在任务进入 Sleeping 前启动定时器，若提前到期，回调可能看不到应唤醒状态。实际切换代码仅在 ARM64 条件分支；x86/RISC-V 可在已改为 Sleeping 的情况下取消定时器并返回。
+**位置与事实：** `src/kernel/src/syscall_table.cpp:2225` 在任务进入 Sleeping 前启动定时器，若提前到期，回调可能看不到应唤醒状态。实际切换代码仅在 ARM64 条件分支；x86/RISC-V 64 可在已改为 Sleeping 的情况下取消定时器并返回。
 
 `src/timer/src/timer.cppm:373` 的固定队列满时直接返回，但启动接口没有向调用者报告失败，定时器可能已被标为 active；`:420` 的到期处理从锁内取出回调、锁外执行，取消并不自动等待已取出的回调结束。nanosleep 使用局部定时器及当前任务指针，返回与正在执行的回调需要额外生命周期保证。
 
@@ -1141,7 +1141,7 @@ wait4 还有先 reap 后向用户复制 status 的顺序问题：复制失败后
 
 **位置与事实：** `src/process/src/process-scheduler.cppm:2097` 的 `schedule_after_exit()` 在普通 C++ 函数内部直接用 inline asm 修改 SP/RSP，然后继续执行 C++ 循环和函数调用。编译器已经建立的帧、局部变量和寄存器溢出位置不能依赖这种换栈后仍正确；仅添加 `memory` clobber 不会建立新的 C++ 调用帧契约。
 
-**运行事实：** 第 3 节的 ARM64 重复执行停滞采样就在此函数调用的 `cpu_idle_once()`。RISC-V hello 之后也不能返回 shell。换栈方式是应修复的独立风险，但本次没有证明它就是这些运行故障的唯一根因。
+**运行事实：** 第 3 节的 ARM64 重复执行停滞采样就在此函数调用的 `cpu_idle_once()`。RISC-V 64 hello 之后也不能返回 shell。换栈方式是应修复的独立风险，但本次没有证明它就是这些运行故障的唯一根因。
 
 **修复：**
 
@@ -1186,13 +1186,13 @@ wait4 还有先 reap 后向用户复制 status 的顺序问题：复制失败后
 
 ## 9. 启动、测试与架构能力
 
-### MOSS-027 · x86_64 启动应消费真实 PVH 信息，不能猜 initramfs
+### MOSS-027 · x64 启动应消费真实 PVH 信息，不能猜 initramfs
 
 **2026-09-06 更新：正常路径已修复，负向验收待补。** `X86BootImpl::hardware_early_init` 已校验 PVH start info/memory map，直接消费 `HvmModlistEntry` 的真实 initrd 地址/大小；扫描和固定 fallback 已移除。普通 shell、验证镜像 users 套件及 q35/pc 同镜像已有通过记录。继续验证 initrd 大小/位置变化、无/坏模块与必需 init 缺失；不能只用正常路径通过证明所有启动错误被拒绝。旧独立测试入口已删除，MOSS-028 使用生产启动路径。
 
-**位置与事实：** `src/boot/src/arch/x86_64/boot_impl.cpp:233` 的 initramfs 发现扫描低内存 magic，失败后退到固定 `0x1000000` 和 `102400` 字节。实际运行打印该 fallback，但当前镜像约 46.2 KiB，随后出现 `bad magic at offset 0x0`、解析 0 条目、`/shell.elf` 不存在。
+**位置与事实：** `src/boot/src/arch/x64/boot_impl.cpp:233` 的 initramfs 发现扫描低内存 magic，失败后退到固定 `0x1000000` 和 `102400` 字节。实际运行打印该 fallback，但当前镜像约 46.2 KiB，随后出现 `bad magic at offset 0x0`、解析 0 条目、`/shell.elf` 不存在。
 
-启动汇编 `src/boot/src/arch/x86_64/start_x86_64.S:61` 已有保存 PVH EBX 指针的尝试。因此不能简单断言“EBX 从未保存”；需要修复的是从 PVH 入口、跨模式转换、早期数据生命周期到 BootInfo 消费的完整传递链。
+启动汇编 `src/boot/src/arch/x64/start_x64.S:61` 已有保存 PVH EBX 指针的尝试。因此不能简单断言“EBX 从未保存”；需要修复的是从 PVH 入口、跨模式转换、早期数据生命周期到 BootInfo 消费的完整传递链。
 
 **修复：** 严格按 PVH 启动信息的真实指针和模块表取得 initrd 地址/长度，校验 magic、结构范围与模块范围；不要扫描候选地址代替协议，也不要把猜测的镜像区间当成功。无 initrd、格式错误或缺少必需 init 进程时给出明确启动失败，不能继续显示完整初始化成功。协议依据见 [Xen PVH boot ABI](https://xenbits.xenproject.org/docs/unstable/misc/pvh.html)。
 
@@ -1206,7 +1206,7 @@ wait4 还有先 reap 后向用户复制 status 的顺序问题：复制失败后
 
 `src/test/framework/moss_ut.hpp:74` 的 x86 `isa-debug-exit` 成功值会被 QEMU 编码成非零退出状态，而 `qemu.py:591` 的普通返回处理直接传播进程状态；这会在装载问题修复后继续产生假失败。不能简单把所有退出 1 当成功，因为装载失败也可返回 1。
 
-同一测试框架 `:87` 的 RISC-V SBI reset 路径没有根据测试失败设置不同失败 reason，存在失败仍退出成功的风险，需要故意失败用例确认端到端效果。`src/userspace/signal_test.c` 的 SIGCHLD 为 SKIP，末尾仍输出 ALL TESTS PASSED，也夸大覆盖。
+同一测试框架 `:87` 的 RISC-V 64 SBI reset 路径没有根据测试失败设置不同失败 reason，存在失败仍退出成功的风险，需要故意失败用例确认端到端效果。`src/userspace/signal_test.c` 的 SIGCHLD 为 SKIP，末尾仍输出 ALL TESTS PASSED，也夸大覆盖。
 
 **修复：**
 
@@ -1221,7 +1221,7 @@ wait4 还有先 reap 后向用户复制 status 的顺序问题：复制失败后
 
 **2026-09-06 更新：主要平台假设已移除，验收未齐。** `timer_hal.cppm::calibrate` 用 PIT 分别测 TSC 和 LAPIC，`set_compare` 使用独立频率换算；RV64 改为 SBI TIME，DTB 提供 timebase，已有 `sstc=false` 记录。仍需验证缺失/失败的固件计时能力、SBI 错误返回、多个间隔误差和 CPU 能力变化，不把“无 Sstc 可启动”扩大成任意计时硬件已支持。
 
-**位置与事实：** `src/hal/timer/src/timer_hal.cppm:31` 的 x86 时间换算使用平台假定频率，LAPIC 事件设置又以固定关系换算 TSC delta。RISC-V 路径使用 stimecmp，但没有完整的 Sstc 能力检查和不支持时的 SBI fallback 协议。
+**位置与事实：** `src/hal/timer/src/timer_hal.cppm:31` 的 x86 时间换算使用平台假定频率，LAPIC 事件设置又以固定关系换算 TSC delta。RISC-V 64 路径使用 stimecmp，但没有完整的 Sstc 能力检查和不支持时的 SBI fallback 协议。
 
 **影响：** clock_gettime/nanosleep/调度时间在频率不同或扩展缺失的平台上失真或异常。现有 QEMU 配置可运行不能证明硬件能力探测正确；本次未做真实硬件计时误差测量。
 
@@ -1267,7 +1267,7 @@ wait4 还有先 reap 后向用户复制 status 的顺序问题：复制失败后
 
 **2026-09-06 更新：清单与能力矩阵已同步，整项未关闭。** `todo.md` 现区分已有实现、通过配置和待验收；不再要求重做 RB 平衡或从零实现 RV64/x86，workflow 也已注明 configure/build/test。本文保留旧故障与新基线，不将历史 timeout 当当前失败。`mm_interface_impl.cpp` 的固定统计、部分启动阶段继续成功及独立 signal_test 的 SKIP 表达仍需修复；文档更新不能替代这些实现。
 
-**事实：** 原审计时的 `todo.md` 中“x86/RISC-V 只有桩”“红黑树平衡未实现”等表述不准确：调度器 `src/process/src/process-scheduler.cppm:882` 有插入平衡，`:1011` 有删除平衡；三个架构也都有大量真实代码。反过来，凭据结构存在不代表完整权限策略，信号正常例子通过不代表完整信号语义，存在 validate helper 不代表所有用户指针都安全。
+**事实：** 原审计时的 `todo.md` 中“x86/RISC-V 64 只有桩”“红黑树平衡未实现”等表述不准确：调度器 `src/process/src/process-scheduler.cppm:882` 有插入平衡，`:1011` 有删除平衡；三个架构也都有大量真实代码。反过来，凭据结构存在不代表完整权限策略，信号正常例子通过不代表完整信号语义，存在 validate helper 不代表所有用户指针都安全。
 
 DeviceManager 的框架存在、运行时设备计数为 0 与 UART 实际通过 HAL 工作可以同时成立；不能据计数断言“没有驱动”，也不能据框架声明断言动态设备管理已经完整可用。启动阶段打印成功、固定统计和末尾 ALL TESTS PASSED 同样需要与真实条件绑定。
 
@@ -1348,7 +1348,7 @@ DeviceManager 的框架存在、运行时设备计数为 0 与 UART 实际通过
 
 - [x] C1a：正常 PVH 模块发现、用户态基本闭环及复用生产启动的验证镜像已接通（027、028，`44dedc2` / `6252484`）。
 - [ ] C1b：补 initrd 大小/位置变化、缺失/非法模块、关键 init 失败的负向验证（027）。
-- [ ] C2：统一 fault 分类，修复 COW 权限、RISC-V PPN、页表 walk 和克隆回滚（008–010）。
+- [ ] C2：统一 fault 分类，修复 COW 权限、RISC-V 64 PPN、页表 walk 和克隆回滚（008–010）。
 - [ ] C3：实现 ASID 活跃租约和 VMA/PTE 一致的 brk/map/unmap（011、012）。
 - [ ] C4：修复 fork 用户现场/继承状态、ELF LoadPlan 和 exec 原子提交（014–016）。
 

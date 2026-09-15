@@ -12,14 +12,14 @@ moss_sigreturn_start:
     mov x0, #-14
     svc #0
     b .
-#elif defined(MOSS_ARCH_RISCV)
+#elif defined(MOSS_ARCH_RISCV64)
     li a7, 17
     ecall
     li a7, 1
     li a0, -14
     ecall
     j .
-#elif defined(MOSS_ARCH_X86_64)
+#elif defined(MOSS_ARCH_X64)
     movq $17, %rax
     syscall
     movq $1, %rax

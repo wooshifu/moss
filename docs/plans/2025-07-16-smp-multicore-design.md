@@ -194,7 +194,7 @@ The existing `LoadBalancer` class has `idle_balance()` and periodic balance hook
 | Multi-CPU task interleaving | Task logs from different CPUs interleaved |
 | Load balancing | Idle CPUs steal tasks from busy CPUs |
 | No deadlocks | System runs 30+ seconds without hang |
-| All 6 presets compile | ARM64/x86_64/RISC-V × debug/release |
+| All 6 presets compile | ARM64/x64/RISC-V 64 × debug/release |
 
 ## 6. Risks and Mitigations
 

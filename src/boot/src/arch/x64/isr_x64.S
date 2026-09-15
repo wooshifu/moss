@@ -1,12 +1,12 @@
 // =============================================================================
-// x86_64 Interrupt Service Routine Stubs
+// x64 Interrupt Service Routine Stubs
 // =============================================================================
 //
 // Provides 256 ISR entry points for the IDT.  Each stub pushes a uniform
 // frame (vector number + error code) then jumps to isr_common, which saves
 // all GPRs and calls the C++ handler:
 //
-//   extern "C" void x86_64_interrupt_handler(
+//   extern "C" void x64_interrupt_handler(
 //       uint64_t vector, uint64_t error_code, void* frame);
 //
 // CPU exceptions that push an error code: 8, 10, 11, 12, 13, 14, 17, 21, 29, 30.
@@ -150,7 +150,7 @@ isr_common:
     pushq   %r14
     pushq   %r15
 
-    // Call C++ handler: x86_64_interrupt_handler(vector, error_code, frame)
+    // Call C++ handler: x64_interrupt_handler(vector, error_code, frame)
     cld
     movq    MOSS_TF_VECTOR(%rsp), %rdi
     movq    MOSS_TF_ERROR(%rsp), %rsi
@@ -158,7 +158,7 @@ isr_common:
     // The interrupted kernel stack need not have call-site alignment.
     movq    %rsp, %rbx
     andq    $-16, %rsp
-    call    x86_64_interrupt_handler
+    call    x64_interrupt_handler
     cli
     movq    %rbx, %rdi
     call    user_return_handler

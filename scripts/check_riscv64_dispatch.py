@@ -28,7 +28,7 @@ from scripts.kernel_validation import Protocol
 GDB_COMMANDS = r"""
 set pagination off
 set confirm off
-set architecture riscv:rv64
+set architecture riscv64:rv64
 symbol-file -o @LOAD_BASE@ @SYMBOLS@
 set remotetimeout 5
 set tcp auto-retry on
@@ -209,10 +209,10 @@ def main():
     parser.add_argument("--load-base", type=lambda number: int(number, 0), default=0x80200000)
     options = parser.parse_args()
     artifacts = Artifacts.load(options.manifest)
-    if artifacts.arch != "RISCV" or artifacts.build["type"] != "Debug":
+    if artifacts.arch != "RISCV64" or artifacts.build["type"] != "Debug":
         parser.error("requires an RV64 Debug image (unoptimized publication boundary)")
     if options.runs < 1 or not shutil.which(options.gdb):
-        parser.error("requires --runs >= 1 and a RISC-V-capable GDB")
+        parser.error("requires --runs >= 1 and a RISC-V 64-capable GDB")
     root = artifacts.manifest.parent / "dispatch-irq"
     root.mkdir(exist_ok=True)
     output = Path(tempfile.mkdtemp(prefix="run-", dir=root))
