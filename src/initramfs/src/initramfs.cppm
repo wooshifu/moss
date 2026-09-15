@@ -89,8 +89,8 @@ public:
   /// @param size  Total size of the archive in bytes
   /// @return true if at least one file was found
   bool init(PhysAddr base, usize size) noexcept {
-#ifdef MOSS_ARCH_X86_64
-    // WORKAROUND for x86_64: use identity mapping instead of high-half mapping
+#ifdef MOSS_ARCH_X64
+    // WORKAROUND for x64: use identity mapping instead of high-half mapping
     // because phys_to_virt() produces unmapped virtual addresses
     base_ = reinterpret_cast<const u8 *>(static_cast<VirtAddr>(base));
 #else

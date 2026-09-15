@@ -39,7 +39,7 @@ enum class PageSize : u64 { Size4KB = PAGE_SIZE, Size2MB = 2ULL * 1024 * 1024, S
 
 // page_attr and page_perms are re-exported from the MMU HAL.
 // This provides architecture-specific PTE bit-field definitions
-// (ARM64 descriptors, x86_64 PTE bits, RISC-V Sv48 PTE bits)
+// (ARM64 descriptors, x64 PTE bits, RISC-V 64 Sv48 PTE bits)
 // from a single source of truth in moss.hal.mmu.
 namespace page_attr = ::moss::kernel::hal::mmu::page_attr;
 namespace page_perms = ::moss::kernel::hal::mmu::page_perms;
@@ -51,14 +51,14 @@ struct PageTableEntry {
   [[nodiscard]] constexpr bool is_valid() const { return raw & page_attr::VALID; }
   [[nodiscard]] constexpr bool is_table() const {
     // ARM64: TABLE bit (bit 1) distinguishes table vs block descriptors.
-    // x86_64: VALID=TABLE=bit 0 (same bit).  Use HUGE_PAGE (PS, bit 7) to
+    // x64: VALID=TABLE=bit 0 (same bit).  Use HUGE_PAGE (PS, bit 7) to
     //         distinguish: table pointer has PS=0, block/hugepage has PS=1.
-    // RISC-V: VALID=TABLE=bit 0.  Non-leaf = V=1 AND R=W=X=0.
+    // RISC-V 64: VALID=TABLE=bit 0.  Non-leaf = V=1 AND R=W=X=0.
     //         Leaf (block/page) = V=1 AND (R|W|X)!=0.
-#if defined(MOSS_ARCH_RISCV)
+#if defined(MOSS_ARCH_RISCV64)
     constexpr u64 RWX = page_attr::READ | page_attr::WRITE | page_attr::EXECUTE;
     return (raw & page_attr::VALID) != 0 && (raw & RWX) == 0;
-#elif defined(MOSS_ARCH_X86_64)
+#elif defined(MOSS_ARCH_X64)
     return (raw & page_attr::VALID) != 0 && (raw & page_attr::HUGE_PAGE) == 0;
 #else
     return raw & page_attr::TABLE;
@@ -66,8 +66,8 @@ struct PageTableEntry {
   }
   [[nodiscard]] constexpr bool is_block() const { return is_valid() && !is_table(); }
   [[nodiscard]] constexpr PhysAddr get_phys_addr() const {
-    // RISC-V: PPN in bits[53:10], physical addr = PPN << 12 = (pte & mask) << 2
-#if defined(MOSS_ARCH_RISCV)
+    // RISC-V 64: PPN in bits[53:10], physical addr = PPN << 12 = (pte & mask) << 2
+#if defined(MOSS_ARCH_RISCV64)
     return (raw & hal::mmu::PTE_ADDR_MASK) << 2;
 #else
     return raw & hal::mmu::PTE_ADDR_MASK;
@@ -75,10 +75,10 @@ struct PageTableEntry {
   }
   // Kernel-only by default. User page-table builders explicitly opt in.
   constexpr void set_table(PhysAddr next_table_pa, [[maybe_unused]] bool user_mapping = false) {
-#if defined(MOSS_ARCH_RISCV)
-    // RISC-V non-leaf: V=1, R=W=X=0. TABLE == VALID == bit 0.
+#if defined(MOSS_ARCH_RISCV64)
+    // RISC-V 64 non-leaf: V=1, R=W=X=0. TABLE == VALID == bit 0.
     raw = ((next_table_pa >> 2) & hal::mmu::PTE_ADDR_MASK) | page_attr::VALID;
-#elif defined(MOSS_ARCH_X86_64)
+#elif defined(MOSS_ARCH_X64)
     // U/S is AND-ed across levels; only branches containing user pages need U/S.
     raw = (next_table_pa & hal::mmu::PTE_ADDR_MASK) | page_attr::VALID | page_attr::WRITABLE | page_attr::AF |
           (user_mapping ? page_attr::USER : 0);
@@ -87,18 +87,18 @@ struct PageTableEntry {
 #endif
   }
   constexpr void set_block(PhysAddr block_pa, u64 attributes) {
-#if defined(MOSS_ARCH_RISCV)
+#if defined(MOSS_ARCH_RISCV64)
     raw = ((block_pa >> 2) & hal::mmu::PTE_ADDR_MASK) | attributes | page_attr::VALID;
-#elif defined(MOSS_ARCH_X86_64)
+#elif defined(MOSS_ARCH_X64)
     raw = (block_pa & hal::mmu::PTE_ADDR_MASK) | attributes | page_attr::VALID | page_attr::HUGE_PAGE;
 #else
     raw = (block_pa & hal::mmu::PTE_ADDR_MASK) | attributes | page_attr::VALID;
 #endif
   }
-  // L3 page descriptor: ARM64/x86 bits[1:0]=0b11; RISC-V leaf PTE (R|W|X ≠ 0).
+  // L3 page descriptor: ARM64/x86 bits[1:0]=0b11; RISC-V 64 leaf PTE (R|W|X ≠ 0).
   constexpr void set_page(PhysAddr page_pa, u64 attributes) {
-#if defined(MOSS_ARCH_RISCV)
-    // RISC-V leaf: V=1 + R/W/X from attributes (attributes must include at least R).
+#if defined(MOSS_ARCH_RISCV64)
+    // RISC-V 64 leaf: V=1 + R/W/X from attributes (attributes must include at least R).
     raw = ((page_pa >> 2) & hal::mmu::PTE_ADDR_MASK) | attributes | page_attr::VALID;
 #else
     raw = (page_pa & hal::mmu::PTE_ADDR_MASK) | attributes | page_attr::VALID | page_attr::TABLE;
@@ -114,7 +114,7 @@ struct PageTableEntry {
   [[nodiscard]] constexpr bool is_writable() const {
 #if defined(MOSS_ARCH_ARM64)
     return is_valid() && (raw & page_attr::READONLY) == 0;
-#elif defined(MOSS_ARCH_X86_64)
+#elif defined(MOSS_ARCH_X64)
     return is_valid() && (raw & page_attr::WRITABLE) != 0;
 #else
     return is_valid() && (raw & page_attr::WRITE) != 0;
@@ -125,9 +125,9 @@ struct PageTableEntry {
   constexpr void make_readonly() {
 #if defined(MOSS_ARCH_ARM64)
     raw |= page_attr::READONLY; // AP[2]=1 -> read-only
-#elif defined(MOSS_ARCH_X86_64)
+#elif defined(MOSS_ARCH_X64)
     raw &= ~page_attr::WRITABLE; // Clear R/W bit -> read-only
-#elif defined(MOSS_ARCH_RISCV)
+#elif defined(MOSS_ARCH_RISCV64)
     raw &= ~page_attr::WRITE; // Clear W bit -> read-only
 #endif
   }
@@ -136,9 +136,9 @@ struct PageTableEntry {
   constexpr void make_writable() {
 #if defined(MOSS_ARCH_ARM64)
     raw &= ~page_attr::READONLY; // Clear AP[2] -> read-write
-#elif defined(MOSS_ARCH_X86_64)
+#elif defined(MOSS_ARCH_X64)
     raw |= page_attr::WRITABLE; // Set R/W bit -> read-write
-#elif defined(MOSS_ARCH_RISCV)
+#elif defined(MOSS_ARCH_RISCV64)
     raw |= page_attr::WRITE; // Set W bit -> read-write
 #endif
   }
@@ -192,8 +192,8 @@ public:
 
   [[nodiscard]] static PhysAddr get_physical_address(const PageTable *table) {
     auto va = reinterpret_cast<VirtAddr>(table);
-#ifdef MOSS_ARCH_X86_64
-    // WORKAROUND for x86_64: use identity mapping instead of high-half mapping
+#ifdef MOSS_ARCH_X64
+    // WORKAROUND for x64: use identity mapping instead of high-half mapping
     // because virt_to_phys() doesn't work with identity-mapped dynamic allocations
     return static_cast<PhysAddr>(va);
 #else
@@ -205,8 +205,8 @@ public:
   }
   [[nodiscard]] static PageTable *get_table_from_physical(PhysAddr pa) {
     if (use_dynamic_alloc) {
-#ifdef MOSS_ARCH_X86_64
-      // WORKAROUND for x86_64: use identity mapping instead of high-half mapping
+#ifdef MOSS_ARCH_X64
+      // WORKAROUND for x64: use identity mapping instead of high-half mapping
       // because phys_to_virt() produces unmapped virtual addresses
       return reinterpret_cast<PageTable *>(static_cast<VirtAddr>(pa));
 #else
@@ -298,9 +298,9 @@ public:
     asm volatile("tlbi vale1is, %0" ::"r"(virt_addr >> 12) : "memory");
     asm volatile("dsb ish" ::: "memory");
     asm volatile("isb" ::: "memory");
-#elif defined(MOSS_ARCH_X86_64)
+#elif defined(MOSS_ARCH_X64)
     asm volatile("invlpg (%0)" ::"r"(virt_addr) : "memory");
-#elif defined(MOSS_ARCH_RISCV)
+#elif defined(MOSS_ARCH_RISCV64)
     asm volatile("sfence.vma %0, zero" ::"r"(virt_addr) : "memory");
 #endif
   }

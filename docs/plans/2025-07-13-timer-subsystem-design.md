@@ -17,8 +17,8 @@ real-world time units.
    divide-free mult/shift conversion.
 3. **hrtimer framework** -- register/cancel high-resolution timers with
    callbacks, supporting one-shot and periodic modes.
-4. **Multi-architecture** -- ARM64 Generic Timer (primary), x86_64 Local APIC
-   Timer and RISC-V SBI Timer (placeholders, compilable stubs).
+4. **Multi-architecture** -- ARM64 Generic Timer (primary), x64 Local APIC
+   Timer and RISC-V 64 SBI Timer (placeholders, compilable stubs).
 
 ## Non-Goals
 
@@ -75,7 +75,7 @@ export namespace moss::kernel::hal::timer {
 
 Per-architecture mapping:
 
-| Op | ARM64 | x86_64 | RISC-V |
+| Op | ARM64 | x64 | RISC-V 64 |
 |----|-------|--------|--------|
 | `frequency()` | `mrs cntfrq_el0` | TSC calibration | DTB `timebase-frequency` |
 | `read_counter()` | `mrs cntvct_el0` | `rdtsc` | `rdtime` |
@@ -331,8 +331,8 @@ struct TimerDefaults {
 | Platform | IRQ | Frequency |
 |----------|-----|-----------|
 | ARM64 QEMU virt | 27 | 0 (read `cntfrq_el0`) |
-| x86_64 QEMU | 0 | 0 (calibrate) |
-| RISC-V QEMU virt | 5 | 10000000 (10 MHz from DTB) |
+| x64 QEMU | 0 | 0 (calibrate) |
+| RISC-V 64 QEMU virt | 5 | 10000000 (10 MHz from DTB) |
 
 ### Class Interaction Diagram
 

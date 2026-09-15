@@ -3,16 +3,16 @@
 set(BOOT_SOURCES src/boot.cpp)
 if(MOSS_TARGET_ARCH STREQUAL "ARM64")
     list(APPEND BOOT_SOURCES src/arch/arm64/boot_impl.cpp src/arch/arm64/start_arm64.S)
-elseif(MOSS_TARGET_ARCH STREQUAL "X86_64")
+elseif(MOSS_TARGET_ARCH STREQUAL "X64")
     list(
         APPEND
         BOOT_SOURCES
-        src/arch/x86_64/start_x86_64.S
-        src/arch/x86_64/isr_x86_64.S
-        src/arch/x86_64/boot_impl.cpp
+        src/arch/x64/start_x64.S
+        src/arch/x64/isr_x64.S
+        src/arch/x64/boot_impl.cpp
     )
-elseif(MOSS_TARGET_ARCH STREQUAL "RISCV")
-    list(APPEND BOOT_SOURCES src/arch/riscv/start_riscv.S src/arch/riscv/boot_impl.cpp)
+elseif(MOSS_TARGET_ARCH STREQUAL "RISCV64")
+    list(APPEND BOOT_SOURCES src/arch/riscv64/start_riscv64.S src/arch/riscv64/boot_impl.cpp)
 endif()
 add_library(moss_boot OBJECT ${BOOT_SOURCES})
 

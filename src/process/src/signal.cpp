@@ -142,7 +142,7 @@ bool setup_sigframe(Thread *thread, u32 signo, const Sigaction &sa) noexcept {
     }
     user_sp = thread->alt_stack_sp + thread->alt_stack_size;
   }
-#if defined(MOSS_ARCH_X86_64)
+#if defined(MOSS_ARCH_X64)
   // SysV's red zone belongs to the interrupted user function.
   constexpr u64 red_zone = 128;
 #else
@@ -169,7 +169,7 @@ bool setup_sigframe(Thread *thread, u32 signo, const Sigaction &sa) noexcept {
   sf.fpsr = read_fpsr();
   sf.fpcr = read_fpcr();
   save_neon_state(sf.fp);
-#elif defined(MOSS_ARCH_X86_64)
+#elif defined(MOSS_ARCH_X64)
   asm volatile("fxsave64 %0" : "=m"(sf.fp)::"memory");
 #endif
   sf.signo = signo;
@@ -179,7 +179,7 @@ bool setup_sigframe(Thread *thread, u32 signo, const Sigaction &sa) noexcept {
     return false;
   }
   u64 handler_sp = sigframe_sp;
-#if defined(MOSS_ARCH_X86_64)
+#if defined(MOSS_ARCH_X64)
   // A normal C handler returns with RET, leaving RSP at the signal frame.
   handler_sp -= 8;
   u64 link = user_layout::SIGRETURN_PAGE;
@@ -188,7 +188,7 @@ bool setup_sigframe(Thread *thread, u32 signo, const Sigaction &sa) noexcept {
   }
 #elif defined(MOSS_ARCH_ARM64)
   frame.x30 = user_layout::SIGRETURN_PAGE;
-#elif defined(MOSS_ARCH_RISCV)
+#elif defined(MOSS_ARCH_RISCV64)
   frame.ra = user_layout::SIGRETURN_PAGE;
 #endif
   frame.pc = sa.handler;
@@ -215,11 +215,11 @@ long do_sigreturn(Thread *thread) noexcept {
   if ((sf.elr & 3) || (sf.sp & 15)) {
     return -SIGRETURN_EFAULT;
   }
-#elif defined(MOSS_ARCH_RISCV)
+#elif defined(MOSS_ARCH_RISCV64)
   if (sf.elr & 1) {
     return -SIGRETURN_EFAULT;
   }
-#elif defined(MOSS_ARCH_X86_64)
+#elif defined(MOSS_ARCH_X64)
   X86FpState current;
   asm volatile("fxsave64 %0" : "=m"(current)::"memory");
   const u32 mask = current.mxcsr_mask ? current.mxcsr_mask : 0xffbfU;
@@ -238,7 +238,7 @@ long do_sigreturn(Thread *thread) noexcept {
   write_fpsr(sf.fpsr);
   write_fpcr(sf.fpcr);
   restore_neon_state(sf.fp);
-#elif defined(MOSS_ARCH_X86_64)
+#elif defined(MOSS_ARCH_X64)
   asm volatile("fxrstor64 %0" ::"m"(sf.fp) : "memory");
 #endif
   thread->signal_mask = sf.saved_mask & ~sig::UNCATCHABLE_MASK;

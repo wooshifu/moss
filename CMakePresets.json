@@ -2,7 +2,7 @@
     "version": 6,
     "include": [
         "cmake/presets/arch/arm64.json",
-        "cmake/presets/arch/x86_64.json",
-        "cmake/presets/arch/riscv.json"
+        "cmake/presets/arch/x64.json",
+        "cmake/presets/arch/riscv64.json"
     ]
 }

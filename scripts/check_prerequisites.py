@@ -273,7 +273,7 @@ def main(
         None,
         "--arch",
         "-a",
-        help="Target architecture (ARM64, X86_64, RISCV)",
+        help="Target architecture (ARM64, X64, RISCV64)",
     ),
     build_dir: Path | None = typer.Option(
         None,

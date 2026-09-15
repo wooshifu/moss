@@ -1,5 +1,5 @@
 // =============================================================================
-// x86_64 Context Switch Implementation
+// x64 Context Switch Implementation
 // =============================================================================
 //
 // CpuContext structure layout (defined in moss.process module):
@@ -25,7 +25,7 @@
 //   0x88    8      pc        (RIP / return address)
 //   0xA0    512    fp        (16-byte-aligned FXSAVE64 image)
 //
-// x86_64 calling convention (System V AMD64 ABI):
+// x64 calling convention (System V AMD64 ABI):
 //   Arguments: RDI, RSI, RDX, RCX, R8, R9, [stack]
 //   Callee-saved: RBX, RBP, R12-R15
 //   Return value: RAX
@@ -177,7 +177,7 @@ kernel_thread_entry:
     callq   *%r11                       // call func(arg)
 
     // Thread returned — invoke exit
-    movq    $60, %rax                   // x86_64 exit syscall number
+    movq    $60, %rax                   // x64 exit syscall number
     movq    $0, %rdi                    // exit code = 0
     syscall
 

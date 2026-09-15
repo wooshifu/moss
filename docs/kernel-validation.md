@@ -1,10 +1,10 @@
 # Kernel Validation Design
 
-Status: implemented and validated on 2026-09-06 for ARM64, x86_64, and RISC-V under QEMU TCG with four vCPUs and 2 GiB. This includes the required SMP and enlarged-memory repairs. See the [usage guide](kernel-validation-usage.md) and [acceptance record](kernel-validation-acceptance.md) for executable commands, evidence, and remaining limits.
+Status: implemented and validated on 2026-09-06 for ARM64, x64, and RISC-V 64 under QEMU TCG with four vCPUs and 2 GiB. This includes the required SMP and enlarged-memory repairs. See the [usage guide](kernel-validation-usage.md) and [acceptance record](kernel-validation-acceptance.md) for executable commands, evidence, and remaining limits.
 
 ## Confirmed Decisions
 
-- [ADR-0001](adr/0001-validate-real-kernel-functions.md): validate real kernel functions on ARM64, x86_64, and RISC-V, with reliable failure reporting and an initial set of real workloads.
+- [ADR-0001](adr/0001-validate-real-kernel-functions.md): validate real kernel functions on ARM64, x64, and RISC-V 64, with reliable failure reporting and an initial set of real workloads.
 - [ADR-0002](adr/0002-dedicated-kernel-validation-image.md): run validation workloads in a dedicated image that reuses production kernel startup and subsystem implementations.
 - [ADR-0003](adr/0003-suite-level-kernel-test-isolation.md): use one fresh QEMU instance per functional suite, with separate instances for destructive cases and explicit reporting of cases not run after a failure.
 - [ADR-0004](adr/0004-compare-kernel-performance-in-qemu.md): compare kernel revisions under fixed QEMU conditions and report results with their environment.
@@ -117,10 +117,10 @@ Deadlines are enforced by the host rather than relying on the guest clock under 
 
 The initial source inspection on 2026-09-06 found the following prerequisites. They have since been repaired and exercised in the acceptance matrix; this list records why changing QEMU arguments alone was insufficient:
 
-- `scripts/run_qemu.py::build_qemu_args` forced test mode to one vCPU and used 256 MiB; its architecture configuration also capped x86_64 and RISC-V at one vCPU.
-- `src/boot/src/arch/x86_64/boot_impl.cpp` and `src/boot/src/arch/riscv/boot_impl.cpp` left secondary-CPU activation unimplemented, and their `wait_for_all_cpus_active` functions returned one.
+- `scripts/run_qemu.py::build_qemu_args` forced test mode to one vCPU and used 256 MiB; its architecture configuration also capped x64 and RISC-V 64 at one vCPU.
+- `src/boot/src/arch/x64/boot_impl.cpp` and `src/boot/src/arch/riscv64/boot_impl.cpp` left secondary-CPU activation unimplemented, and their `wait_for_all_cpus_active` functions returned one.
 - ARM64 already had secondary-CPU initialization, but the four-vCPU, 2 GiB profile needed real execution evidence.
-- x86_64 hardware initialization populated RAM information from platform defaults rather than the requested QEMU RAM size. Actual boot memory discovery and usable mappings needed adaptation for the enlarged profile.
+- x64 hardware initialization populated RAM information from platform defaults rather than the requested QEMU RAM size. Actual boot memory discovery and usable mappings needed adaptation for the enlarged profile.
 
 The confirmed prerequisite work is to complete the missing secondary-CPU startup and required per-CPU runtime integration, verify CPU identity and affinity behavior, and make memory discovery and mapping reflect the actual boot environment. This explicitly includes implementation beyond changing the test runner's defaults.
 
@@ -134,13 +134,13 @@ Do not silently clamp the new profile to one CPU or the old memory limit. Missin
 
 The architecture-specific frequency sources and calibration policy below are implemented and exercised by the Release benchmark matrix.
 
-The current `hal::timer::frequency()` in `src/hal/timer/src/timer_hal.cppm` reads the ARM64 frequency register, but the x86_64 path contains a 1 GHz placeholder fallback and the RISC-V path uses a platform default. Those defaults are not sufficient evidence for benchmark time conversion. The existing counter reads also need architecture-appropriate ordering for measurement boundaries.
+The current `hal::timer::frequency()` in `src/hal/timer/src/timer_hal.cppm` reads the ARM64 frequency register, but the x64 path contains a 1 GHz placeholder fallback and the RISC-V 64 path uses a platform default. Those defaults are not sufficient evidence for benchmark time conversion. The existing counter reads also need architecture-appropriate ordering for measurement boundaries.
 
 | Architecture | Counter and Frequency Source |
 | --- | --- |
 | ARM64 | Ordered `CNTVCT_EL0` reads with a nonzero `CNTFRQ_EL0` frequency. [Arm documents these counter and frequency registers](https://learn.arm.com/learning-paths/servers-and-cloud-computing/arm_pmu/assembly/). |
-| RISC-V | Ordered `time` CSR reads with a validated `/cpus/timebase-frequency` property from the actual boot device tree. [Linux's RISC-V initialization](https://raw.githubusercontent.com/torvalds/linux/master/arch/riscv/kernel/time.c) uses this property; do not substitute the current fixed 10 MHz value when it is missing. |
-| x86_64 | Ordered TSC reads. Use CPUID leaf `0x15` only when its ratio and crystal-frequency information are complete and nonzero, as specified in the [Intel architecture manual](https://cdrdv2-public.intel.com/868137/325462-089-sdm-vol-1-2abcd-3abcd-4.pdf). Otherwise calibrate against the explicitly enabled QEMU microvm i8254 PIT. [QEMU documents the optional PIT device](https://www.qemu.org/docs/master/system/i386/microvm.html). |
+| RISC-V 64 | Ordered `time` CSR reads with a validated `/cpus/timebase-frequency` property from the actual boot device tree. [Linux's RISC-V 64 initialization](https://raw.githubusercontent.com/torvalds/linux/master/arch/riscv/kernel/time.c) uses this property; do not substitute the current fixed 10 MHz value when it is missing. |
+| x64 | Ordered TSC reads. Use CPUID leaf `0x15` only when its ratio and crystal-frequency information are complete and nonzero, as specified in the [Intel architecture manual](https://cdrdv2-public.intel.com/868137/325462-089-sdm-vol-1-2abcd-3abcd-4.pdf). Otherwise calibrate against the explicitly enabled QEMU microvm i8254 PIT. [QEMU documents the optional PIT device](https://www.qemu.org/docs/master/system/i386/microvm.html). |
 
 Frequency discovery or calibration runs once during each scenario's guest preparation, before warmup, and is reused by its batches. It does not require an additional QEMU instance per batch. Record the frequency source and value; a calibrated frequency additionally retains its reference-counter samples and uncertainty checks. PIT calibration must use the counter facilities actually available in microvm, preserve the runtime's timer requirements, bound retries and waiting, and reject ambiguous or inconsistent samples. The existing kernel clock derived from the same unverified TSC frequency is not an independent calibration reference.
 
@@ -228,7 +228,7 @@ The following sequence records the implemented plan. The evidence checklist is s
 
 ### Implementation Order
 
-1. Establish genuine multi-vCPU and enlarged-memory readiness on all three architectures, including missing x86_64 and RISC-V secondary-CPU startup and required memory discovery and mapping changes. Preserve existing unrelated worktree changes throughout.
+1. Establish genuine multi-vCPU and enlarged-memory readiness on all three architectures, including missing x64 and RISC-V 64 secondary-CPU startup and required memory discovery and mapping changes. Preserve existing unrelated worktree changes throughout.
 2. Extend `ut_kernel` registration, assertion accounting, case lifecycle, and catalog validation. Add focused tests for the host-side event parser, report schema, timeout handling, and architecture-specific exit normalization. Host test doubles validate host tooling only, not kernel functionality.
 3. Integrate the dedicated validation image with production architecture startup and real subsystem initialization. Add explicit validation dispatch at the appropriate readiness points and real guest failure reporting. Keep validation behavior out of normal production execution.
 4. Connect guest execution to the host runner and CTest. Prove ordinary pass and failure, actual kernel panic, timeout, startup failure, suite stop behavior, and subsequent-suite isolation before treating kernel-suite results as trustworthy.
@@ -240,7 +240,7 @@ The following sequence records the implemented plan. The evidence checklist is s
 
 | Area | Required Evidence |
 | --- | --- |
-| Builds and startup | Production and validation images build for ARM64, x86_64, and RISC-V. Normal production startup remains usable. Validation startup reaches the actual subsystem prerequisites rather than a substitute test-only implementation. |
+| Builds and startup | Production and validation images build for ARM64, x64, and RISC-V 64. Normal production startup remains usable. Validation startup reaches the actual subsystem prerequisites rather than a substitute test-only implementation. |
 | Multi-vCPU and enlarged memory | The requested CPUs actually come online and each executes real kernel work. The enlarged memory is discovered, mapped, and usable through owned allocations, with reservations accounted for. The single-function benchmark's declared CPU affinity is enforced. Single-core or old-memory fallback does not satisfy the revised profile. |
 | Framework reliability | On all three architectures, real guest pass, assertion failure, panic, and timeout produce the declared host outcomes. Launch failure, empty selection, malformed or missing completion records, duplicate registration, and registry overflow cannot report success. Expected fatal self-checks must identify their intended case and failure, not accept any unrelated crash as success. |
 | Isolation and cleanup | A failing case stops its suite, remaining cases are reported not run, and a later suite starts in a fresh guest. Resource-owning cases verify cleanup. Observed process launches follow the suite/scenario isolation policy, with no new QEMU process per ordinary case or measurement batch. Timeout and cancellation leave no owned QEMU process running. |

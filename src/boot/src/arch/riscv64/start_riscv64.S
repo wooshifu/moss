@@ -2,7 +2,7 @@
 // RISC-V 64-bit Kernel Boot Entry
 // =============================================================================
 //
-// Bootstrap for RISC-V MOSS kernel running in S-mode (under OpenSBI).
+// Bootstrap for RISC-V 64 MOSS kernel running in S-mode (under OpenSBI).
 //
 // OpenSBI calls _start with:
 //   a0 = hart ID
@@ -57,7 +57,7 @@ _start:
     ld t3, 0(t0)
     ld t4, 8(t0)
     ld t5, 16(t0)
-    li t6, 3                     // R_RISCV_RELATIVE, symbol index zero
+    li t6, 3                     // R_RISCV64_RELATIVE, symbol index zero
     bne t4, t6, .Lhalt
     add t3, t3, t2
     add t5, t5, t2
@@ -122,9 +122,9 @@ _start:
     j .Lsecondary_park
 
 .balign 4
-.global riscv_secondary_start
-.type riscv_secondary_start, @function
-riscv_secondary_start:
+.global riscv64_secondary_start
+.type riscv64_secondary_start, @function
+riscv64_secondary_start:
     mv tp, a0
     .option push
     .option norelax
@@ -135,8 +135,8 @@ riscv_secondary_start:
     csrw satp, t0
     sfence.vma
     csrw sscratch, zero
-    tail riscv_secondary_entry
-.size riscv_secondary_start, . - riscv_secondary_start
+    tail riscv64_secondary_entry
+.size riscv64_secondary_start, . - riscv64_secondary_start
 
 // =============================================================================
 // Address data pool (placed in .text.boot, adjacent to code for PC-relative access)

@@ -40,9 +40,9 @@ moss_initialize_clang_toolchain(${MOSS_TARGET_ARCH})
 
 # Validate target architecture
 if(NOT MOSS_TARGET_ARCH)
-    message(FATAL_ERROR "MOSS_TARGET_ARCH must be set. Supported: ARM64, X86_64, RISCV")
+    message(FATAL_ERROR "MOSS_TARGET_ARCH must be set. Supported: ARM64, X64, RISCV64")
 endif()
-set(_SUPPORTED_ARCHITECTURES "ARM64" "X86_64" "RISCV")
+set(_SUPPORTED_ARCHITECTURES "ARM64" "X64" "RISCV64")
 if(NOT MOSS_TARGET_ARCH IN_LIST _SUPPORTED_ARCHITECTURES)
     message(FATAL_ERROR "Unsupported architecture: ${MOSS_TARGET_ARCH}. Supported: ${_SUPPORTED_ARCHITECTURES}")
 endif()
@@ -50,25 +50,25 @@ endif()
 # === 架构特定配置 ===
 if(MOSS_TARGET_ARCH STREQUAL "ARM64")
     add_compile_definitions(MOSS_ARCH_ARM64=1)
-elseif(MOSS_TARGET_ARCH STREQUAL "X86_64")
-    add_compile_definitions(MOSS_ARCH_X86_64=1)
-elseif(MOSS_TARGET_ARCH STREQUAL "RISCV")
-    add_compile_definitions(MOSS_ARCH_RISCV=1)
-    # RISC-V ISA extension feature macros (derived from CMAKE_CXX_FLAGS -march=)
+elseif(MOSS_TARGET_ARCH STREQUAL "X64")
+    add_compile_definitions(MOSS_ARCH_X64=1)
+elseif(MOSS_TARGET_ARCH STREQUAL "RISCV64")
+    add_compile_definitions(MOSS_ARCH_RISCV64=1)
+    # RISC-V 64 ISA extension feature macros (derived from CMAKE_CXX_FLAGS -march=)
     if(CMAKE_CXX_FLAGS MATCHES "-march=rv64[^ ]*m")
-        add_compile_definitions(MOSS_RISCV_M_EXT=1)
+        add_compile_definitions(MOSS_RISCV64_M_EXT=1)
     endif()
     if(CMAKE_CXX_FLAGS MATCHES "-march=rv64[^ ]*a")
-        add_compile_definitions(MOSS_RISCV_A_EXT=1)
+        add_compile_definitions(MOSS_RISCV64_A_EXT=1)
     endif()
     if(CMAKE_CXX_FLAGS MATCHES "-march=rv64[^ ]*c")
-        add_compile_definitions(MOSS_RISCV_C_EXT=1)
+        add_compile_definitions(MOSS_RISCV64_C_EXT=1)
     endif()
     if(CMAKE_CXX_FLAGS MATCHES "-march=rv64[^ ]*f")
-        add_compile_definitions(MOSS_RISCV_F_EXT=1)
+        add_compile_definitions(MOSS_RISCV64_F_EXT=1)
     endif()
     if(CMAKE_CXX_FLAGS MATCHES "-march=rv64[^ ]*d")
-        add_compile_definitions(MOSS_RISCV_D_EXT=1)
+        add_compile_definitions(MOSS_RISCV64_D_EXT=1)
     endif()
 else()
     message(FATAL_ERROR "Unsupported architecture: ${MOSS_TARGET_ARCH}")
@@ -154,7 +154,7 @@ add_custom_command(
 )
 
 # Check the static boot header and every runtime relocation before handoff.
-if(MOSS_TARGET_ARCH STREQUAL "ARM64" OR MOSS_TARGET_ARCH STREQUAL "RISCV")
+if(MOSS_TARGET_ARCH STREQUAL "ARM64" OR MOSS_TARGET_ARCH STREQUAL "RISCV64")
     add_custom_command(
         TARGET moss.elf
         POST_BUILD
@@ -168,8 +168,8 @@ message(STATUS "将生成文件: moss.dis, moss.sym, moss.bin, moss_boot.bin, mo
 
 # === Userspace programs + initramfs CPIO ===
 if(MOSS_TARGET_ARCH STREQUAL "ARM64"
-   OR MOSS_TARGET_ARCH STREQUAL "RISCV"
-   OR MOSS_TARGET_ARCH STREQUAL "X86_64"
+   OR MOSS_TARGET_ARCH STREQUAL "RISCV64"
+   OR MOSS_TARGET_ARCH STREQUAL "X64"
 )
     option(MOSS_BUILD_TESTS "构建MOSS内核单元测试" ON)
     add_subdirectory(src/userspace)
@@ -249,7 +249,7 @@ if(MOSS_TARGET_ARCH STREQUAL "ARM64")
     set(_boot_protocol "linux-image")
     set(_kernel_image "moss.bin")
     set(_validation_image "moss.test.bin")
-elseif(MOSS_TARGET_ARCH STREQUAL "RISCV")
+elseif(MOSS_TARGET_ARCH STREQUAL "RISCV64")
     set(_boot_protocol "sbi")
     set(_kernel_image "moss.bin")
     set(_validation_image "moss.test.bin")

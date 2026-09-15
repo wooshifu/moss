@@ -1,10 +1,15 @@
-/* RV64 relocatable Linux Image. SBI firmware supplies hart ID and DTB. */
+/* MOSS x64 Xen PVH ELF layout.
+ * The loader must reserve and load the ELF PT_LOAD segments at their physical
+ * addresses. _pvh_start enters in 32-bit protected mode, builds its own early
+ * identity map and switches to long mode. RAM/device discovery comes from PVH
+ * and ACPI, not this image placement. The 255M region limits image capacity.
+ */
 
 ENTRY(_start)
 
 MEMORY
 {
-    RAM (rwx) : ORIGIN = 0, LENGTH = 256M
+    RAM (rwx) : ORIGIN = 0x00100000, LENGTH = 255M
 }
 
 KERNEL_VMA = 0xFFFF800000000000;
@@ -48,33 +53,24 @@ SECTIONS
         __init_array_end = .;
     }
 
-    /* RISC-V global pointer for linker relaxation (must be in .sdata range) */
-    PROVIDE(__global_pointer$ = .);
-    .sdata : {
-        *(.sdata)
-        *(.sdata.*)
+    /* A PVH loader discovers the 32-bit entry through this ELF note. Keep it in
+     * the file-backed prefix: placing it after NOBITS sections makes objcopy
+     * materialize the entire intervening runtime address range in moss.bin. */
+    .note.Xen : ALIGN(4) {
+        KEEP(*(.note.Xen))
     }
 
-    /* Relocations are applied once by the boot CPU before using absolute pointers. */
-    .got : ALIGN(8) { *(.got) *(.got.*) }
-    .dynamic : { *(.dynamic) }
-    .dynsym : { *(.dynsym) }
-    .dynstr : { *(.dynstr) }
-    .hash : { *(.hash) }
-    .gnu.hash : { *(.gnu.hash) }
-    .rela.dyn : ALIGN(8) {
-        _rela_start = .;
-        *(.rela.dyn)
-        _rela_end = .;
-    }
-
-    /* Last byte stored in moss.bin. Runtime-only allocations follow. */
     _kernel_file_end = .;
+
+    /* PVH page tables — used by _pvh_start to build identity map before
+     * enabling paging.  Placed OUTSIDE .bss so that _start's BSS clearing
+     * does not destroy the live page tables we are running on. */
+    .pvh_pagetables (NOLOAD) : ALIGN(4K) {
+        KEEP(*(.pvh.pagetables))
+    }
 
     .bss (NOLOAD) : ALIGN(4K) {
         _bss_start = .;
-        *(.sbss)
-        *(.sbss.*)
         *(.bss)
         *(.bss.*)
         *(COMMON)
@@ -101,17 +97,18 @@ SECTIONS
 
     _kernel_memory_end = .;
     _kernel_end = _kernel_memory_end;
-    _kernel_image_size = ABSOLUTE(_kernel_memory_end - ORIGIN(RAM));
+    _kernel_image_size = _kernel_memory_end - ORIGIN(RAM);
 
     /DISCARD/ : {
-        *(.note*)
+        *(.note.GNU-stack)
+        *(.note.gnu*)
         *(.comment*)
         *(.eh_frame*)
     }
 }
 
-ASSERT(_kernel_file_end <= _bss_start, "file-backed section placed after RISC-V runtime-only storage")
-ASSERT(_kernel_memory_end <= ORIGIN(RAM) + LENGTH(RAM), "RISC-V kernel exceeds its RAM region")
+ASSERT(_kernel_file_end <= ADDR(.pvh_pagetables), "file-backed section placed after x64 runtime-only storage")
+ASSERT(_kernel_memory_end <= ORIGIN(RAM) + LENGTH(RAM), "x64 kernel exceeds its RAM region")
 
 PROVIDE(_text_start_addr = _text_start);
 PROVIDE(_text_end_addr = _text_end);

@@ -1,17 +1,17 @@
 /*
- * RISC-V architecture-specific boot implementation - module implementation unit
- * Implements the unified boot interface for RISC-V
+ * RISC-V 64 architecture-specific boot implementation - module implementation unit
+ * Implements the unified boot interface for RISC-V 64
  */
 
 module;
 
 // Architecture detection (global module fragment)
-#ifndef MOSS_ARCH_RISCV
-#define MOSS_ARCH_RISCV
+#ifndef MOSS_ARCH_RISCV64
+#define MOSS_ARCH_RISCV64
 #endif
 
-extern "C" void riscv_secondary_start();
-extern "C" [[noreturn]] void riscv_secondary_entry() noexcept;
+extern "C" void riscv64_secondary_start();
+extern "C" [[noreturn]] void riscv64_secondary_entry() noexcept;
 
 module moss.boot;
 
@@ -106,11 +106,11 @@ static SbiResult sbi_hart_start(u64 hartid, u64 start_addr, u64 opaque) noexcept
 
 } // namespace moss::boot
 
-// RISCVBootImpl member function implementations
-::moss::kernel::VoidResult moss::boot::RISCVBootImpl::hardware_early_init(BootContext &ctx) noexcept {
+// RISCV64BootImpl member function implementations
+::moss::kernel::VoidResult moss::boot::RISCV64BootImpl::hardware_early_init(BootContext &ctx) noexcept {
   moss::boot::update_boot_stage(moss::boot::BootStage::HardwareInit);
 
-  moss::boot::early_print("=== RISC-V Hardware Early Init ===\n");
+  moss::boot::early_print("=== RISC-V 64 Hardware Early Init ===\n");
 
   u64 boot_hart;
   asm volatile("mv %0, tp" : "=r"(boot_hart));
@@ -147,15 +147,15 @@ static SbiResult sbi_hart_start(u64 hartid, u64 start_addr, u64 opaque) noexcept
   moss::boot::early_print_hex(ctx.memory_start + ctx.memory_size);
   moss::boot::early_print("\n");
 
-  moss::boot::early_print("RISC-V hardware init complete\n\n");
+  moss::boot::early_print("RISC-V 64 hardware init complete\n\n");
   return ::moss::kernel::VoidResult{};
 }
 
-::moss::kernel::VoidResult moss::boot::RISCVBootImpl::setup_memory_management(BootContext &ctx) noexcept {
+::moss::kernel::VoidResult moss::boot::RISCV64BootImpl::setup_memory_management(BootContext &ctx) noexcept {
   (void)ctx;
   moss::boot::update_boot_stage(moss::boot::BootStage::MemoryManagement);
 
-  moss::boot::early_print("=== RISC-V Memory Management Setup ===\n");
+  moss::boot::early_print("=== RISC-V 64 Memory Management Setup ===\n");
 
   // Phase 0: Detect page table mode from DTB mmu-type property.
   // Direct satp probing (MODE=Sv48+PPN=0) hangs QEMU because the write takes
@@ -174,7 +174,7 @@ static SbiResult sbi_hart_start(u64 hartid, u64 start_addr, u64 opaque) noexcept
       mmu_hal::g_satp_mode_bits = 8ULL << 60;
     }
   }
-  mmu_hal::init_riscv_address_layout(mmu_hal::g_mmu_mode);
+  mmu_hal::init_riscv64_address_layout(mmu_hal::g_mmu_mode);
   // Also update STACK_TOP for the detected mode
   if (mmu_hal::g_mmu_mode == mmu_hal::MmuMode::Sv48) {
     ::moss::kernel::process::user_layout::STACK_TOP = 0x00007FFF00000000ULL;
@@ -186,7 +186,7 @@ static SbiResult sbi_hart_start(u64 hartid, u64 start_addr, u64 opaque) noexcept
   // Phase 1: Setup identity-mapped page tables + enable MMU
   // setup_mmu() builds permission-separated blocks/pages, then enable_mmu()
   // writes satp with the detected mode.
-  // RISC-V has a single satp register, so identity map and high-half share the root.
+  // RISC-V 64 has a single satp register, so identity map and high-half share the root.
   moss::boot::early_print("  Phase 1: page tables + MMU enable\n");
   auto mmu_result = ::moss::kernel::mm::setup_mmu();
   if (!mmu_result) {
@@ -215,7 +215,7 @@ static SbiResult sbi_hart_start(u64 hartid, u64 start_addr, u64 opaque) noexcept
   }
 
   // Phase 4: Flush TLB to pick up new high-half mappings
-  // RISC-V satp already points to the PGD containing both identity + high-half.
+  // RISC-V 64 satp already points to the PGD containing both identity + high-half.
   asm volatile("sfence.vma" ::: "memory");
   moss::boot::early_print("  Phase 4: TLB flushed (high-half active)\n");
 
@@ -232,15 +232,15 @@ static SbiResult sbi_hart_start(u64 hartid, u64 start_addr, u64 opaque) noexcept
     return ::moss::kernel::VoidResult{::moss::kernel::ErrorCode::OutOfMemory};
   }
 
-  moss::boot::early_print("RISC-V memory management setup complete (high-half active)\n\n");
+  moss::boot::early_print("RISC-V 64 memory management setup complete (high-half active)\n\n");
   return ::moss::kernel::VoidResult{};
 }
 
-::moss::kernel::VoidResult moss::boot::RISCVBootImpl::setup_interrupts_and_exceptions(BootContext &ctx) noexcept {
+::moss::kernel::VoidResult moss::boot::RISCV64BootImpl::setup_interrupts_and_exceptions(BootContext &ctx) noexcept {
   (void)ctx;
   moss::boot::update_boot_stage(moss::boot::BootStage::InterruptsExceptions);
 
-  moss::boot::early_print("=== RISC-V Interrupts and Exceptions Setup ===\n");
+  moss::boot::early_print("=== RISC-V 64 Interrupts and Exceptions Setup ===\n");
 
   // 1. Set stvec to point to the trap handler (direct mode)
   u64 trap_addr = reinterpret_cast<u64>(&moss::abi::syscall_entry_point);
@@ -265,14 +265,14 @@ static SbiResult sbi_hart_start(u64 hartid, u64 start_addr, u64 opaque) noexcept
   // 3. Enable S-mode external interrupt enable (SEIE = bit 9 in sie)
   asm volatile("csrs sie, %0" ::"r"(1ULL << 9));
 
-  moss::boot::early_print("RISC-V interrupt/exception setup complete\n\n");
+  moss::boot::early_print("RISC-V 64 interrupt/exception setup complete\n\n");
   return ::moss::kernel::VoidResult{};
 }
 
-::moss::kernel::VoidResult moss::boot::RISCVBootImpl::setup_smp_support(BootContext &ctx) noexcept {
+::moss::kernel::VoidResult moss::boot::RISCV64BootImpl::setup_smp_support(BootContext &ctx) noexcept {
   moss::boot::update_boot_stage(moss::boot::BootStage::SmpSupport);
 
-  moss::boot::early_print("=== RISC-V SMP Support Setup ===\n");
+  moss::boot::early_print("=== RISC-V 64 SMP Support Setup ===\n");
 
   // Preserve DTB-derived CPU count; default to 1 if not set.
   if (ctx.total_cpus == 0) {
@@ -284,33 +284,33 @@ static SbiResult sbi_hart_start(u64 hartid, u64 start_addr, u64 opaque) noexcept
   }
   moss::kernel::g_num_cpus = ctx.total_cpus;
 
-  moss::boot::early_print("RISC-V SMP setup complete\n\n");
+  moss::boot::early_print("RISC-V 64 SMP setup complete\n\n");
   return ::moss::kernel::VoidResult{};
 }
 
-::moss::kernel::VoidResult moss::boot::RISCVBootImpl::finalize_arch_init(BootContext &ctx) noexcept {
+::moss::kernel::VoidResult moss::boot::RISCV64BootImpl::finalize_arch_init(BootContext &ctx) noexcept {
   (void)ctx;
   moss::boot::update_boot_stage(moss::boot::BootStage::ArchFinalize);
 
-  moss::boot::early_print("=== RISC-V Architecture Init Complete ===\n");
+  moss::boot::early_print("=== RISC-V 64 Architecture Init Complete ===\n");
 
   // Mark runtime heap as ready so operator new uses RuntimeHeapAllocator
   moss::abi::entry::mark_runtime_heap_ready();
   moss::boot::early_print("Runtime heap marked ready\n");
 
-  moss::boot::early_print("RISC-V architecture-specific init all complete\n\n");
+  moss::boot::early_print("RISC-V 64 architecture-specific init all complete\n\n");
   return ::moss::kernel::VoidResult{};
 }
 
-::moss::kernel::VoidResult moss::boot::RISCVBootImpl::detect_memory_layout(BootContext &ctx) noexcept {
+::moss::kernel::VoidResult moss::boot::RISCV64BootImpl::detect_memory_layout(BootContext &ctx) noexcept {
   (void)ctx;
   return ::moss::kernel::VoidResult{};
 }
 
-u32 moss::boot::RISCVBootImpl::get_current_cpu_id() noexcept { return moss::boot::get_current_cpu_id_impl(); }
+u32 moss::boot::RISCV64BootImpl::get_current_cpu_id() noexcept { return moss::boot::get_current_cpu_id_impl(); }
 
-[[noreturn]] void moss::boot::RISCVBootImpl::arch_panic(const char *message) noexcept {
-  moss::boot::early_print("\n=== RISC-V PANIC ===\n");
+[[noreturn]] void moss::boot::RISCV64BootImpl::arch_panic(const char *message) noexcept {
+  moss::boot::early_print("\n=== RISC-V 64 PANIC ===\n");
   moss::boot::early_print(message);
   moss::boot::early_print("\n===================\n");
 
@@ -326,7 +326,7 @@ u32 moss::boot::RISCVBootImpl::get_current_cpu_id() noexcept { return moss::boot
   }
 }
 
-// === Boot global variables (RISC-V stubs) ===
+// === Boot global variables (RISC-V 64 stubs) ===
 namespace moss::boot {
 
 moss::kernel::interrupts::GenericInterruptController *g_gic_controller = nullptr;
@@ -345,7 +345,7 @@ void activate_secondary_cpus() noexcept {
   for (u32 cpu = 1; cpu < moss::kernel::g_num_cpus; ++cpu) {
     hart_contexts[cpu] = {.stack = reinterpret_cast<u64>(&secondary_stacks[cpu][32768]), .satp = satp};
     moss::kernel::arch::memory_barrier();
-    auto result = sbi_hart_start(moss::kernel::arch::riscv_hart_id(cpu), reinterpret_cast<u64>(&riscv_secondary_start),
+    auto result = sbi_hart_start(moss::kernel::arch::riscv64_hart_id(cpu), reinterpret_cast<u64>(&riscv64_secondary_start),
                                  reinterpret_cast<u64>(&hart_contexts[cpu]));
     if (result.error != 0) {
       early_print("SBI HSM start failed\n");
@@ -355,7 +355,7 @@ void activate_secondary_cpus() noexcept {
 
 } // namespace moss::boot
 
-extern "C" [[noreturn]] void riscv_secondary_entry() noexcept {
+extern "C" [[noreturn]] void riscv64_secondary_entry() noexcept {
   u64 trap = reinterpret_cast<u64>(&moss::abi::syscall_entry_point);
   asm volatile("csrw stvec, %0; csrw sscratch, zero" ::"r"(trap) : "memory");
   // Enable supervisor software IPIs and timer interrupts on this hart.

@@ -84,7 +84,7 @@ syscall_entry_point:
     mv a0, t0
     ld a1, MOSS_TF_PC(sp)
     csrr a2, stval
-    call riscv_exception_handler
+    call riscv64_exception_handler
 .Lhalt:
     wfi
     j .Lhalt
@@ -93,7 +93,7 @@ syscall_entry_point:
     csrr a1, stval
     ld a2, MOSS_TF_PC(sp)
     mv a3, sp
-    call riscv_page_fault_handler
+    call riscv64_page_fault_handler
     j .Lreturn
 .Lsyscall:
     ld t0, MOSS_TF_PC(sp)
@@ -114,10 +114,10 @@ syscall_entry_point:
     csrci sip, 2
     j .Lreturn
 .Ltimer:
-    call riscv_timer_handler
+    call riscv64_timer_handler
     j .Lreturn
 .Lexternal:
-    call riscv_external_handler
+    call riscv64_external_handler
 .Lreturn:
     csrci sstatus, 2
     mv a0, sp

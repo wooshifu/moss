@@ -169,8 +169,8 @@ def main(
     """
 
     # 参数验证
-    if arch and arch not in ["arm64", "x86_64", "riscv"]:
-        console.print(f"[red]❌ 不支持的架构: {arch}，支持的架构: arm64, x86_64, riscv[/red]")
+    if arch and arch not in ["arm64", "x64", "riscv64"]:
+        console.print(f"[red]❌ 不支持的架构: {arch}，支持的架构: arm64, x64, riscv64[/red]")
         raise typer.Exit(1)
 
     if build_type and build_type not in ["debug", "release", "relwithdebinfo"]:

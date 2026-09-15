@@ -6,7 +6,7 @@ import pytest
 
 from qemu import build_qemu_args, resolve_qemu
 from scripts.artifacts import Artifacts
-from scripts.verify_linux_image import verify_arm64_header, verify_relocations, verify_riscv_header
+from scripts.verify_linux_image import verify_arm64_header, verify_relocations, verify_riscv64_header
 
 
 def manifest(tmp_path: Path) -> Path:
@@ -80,14 +80,14 @@ def test_image_header_requires_static_size_before_boot_relocation():
     assert not verify_arm64_header(data)
 
 
-def test_riscv_header_and_relative_relocation_contract():
+def test_riscv64_header_and_relative_relocation_contract():
     data = bytearray(128)
     struct.pack_into("<I", data, 0, 0x6F)
     struct.pack_into("<QQQI", data, 8, 0x200000, 4096, 0, 2)
     struct.pack_into("<I", data, 56, 0x05435352)
-    assert verify_riscv_header(data)
+    assert verify_riscv64_header(data)
     struct.pack_into("<Q", data, 16, 0)
-    assert not verify_riscv_header(data)
+    assert not verify_riscv64_header(data)
 
     # One allocated ELF64 RELA section, with a bootstrap-supported relocation.
     elf = bytearray(152)
@@ -103,7 +103,7 @@ def test_riscv_header_and_relative_relocation_contract():
 
 def test_workflows_reuse_matching_build_and_test_presets():
     root = Path(__file__).resolve().parents[2]
-    for arch in ("arm64", "riscv", "x86_64"):
+    for arch in ("arm64", "riscv64", "x64"):
         data = json.loads((root / "cmake" / "presets" / "arch" / f"{arch}.json").read_text())
         assert "qemu" not in json.dumps(data).lower()
         assert all("targets" not in preset for preset in data["buildPresets"])

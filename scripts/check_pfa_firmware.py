@@ -58,7 +58,7 @@ def main() -> None:
     parser.add_argument("--case", choices=CASES)
     args = parser.parse_args()
     artifacts = Artifacts.load(args.manifest)
-    if artifacts.arch not in ("ARM64", "RISCV"):
+    if artifacts.arch not in ("ARM64", "RISCV64"):
         parser.error("DTB fixtures apply to ARM64/RV64; x86 uses the default PVH PFA suite")
     if artifacts.arch == "ARM64" and args.case and args.case.startswith("ram_"):
         parser.error("QEMU's ARM boot loader regenerates /memory; use RV64 for the RAM-bank fixture")
@@ -94,7 +94,7 @@ def main() -> None:
         expected_ram = size
         reserved_bytes = 0
         if name == "unaligned_reserved":
-            if artifacts.arch == "RISCV":
+            if artifacts.arch == "RISCV64":
                 expected_ram = size - 3 * 4096 - 27
                 put(dtb, memory, "reg", *cells(start + 3 * 4096, expected_ram))
             reserve(dtb, 0, start + 16 * 2**20 + 19, 4097)

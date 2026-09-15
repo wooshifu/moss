@@ -62,18 +62,18 @@ extern char exception_vectors[];
 extern char _user_program_start[];
 extern char _user_program_end[];
 }
-#elif defined(__x86_64__) || defined(__x86_64) || defined(MOSS_ARCH_X86_64)
+#elif defined(__x86_64__) || defined(__x86_64) || defined(MOSS_ARCH_X64)
 extern "C" {
 void user_iret_trampoline();
 extern char _user_program_start[];
 extern char _user_program_end[];
-// TSS (104 bytes, defined in start_x86_64.S .bss.tss)
+// TSS (104 bytes, defined in start_x64.S .bss.tss)
 extern unsigned char g_tss[];
-// Per-task kernel stack pointer for SYSCALL entry (defined in x86_64_syscall.S)
+// Per-task kernel stack pointer for SYSCALL entry (defined in x64_syscall.S)
 extern unsigned long long g_kernel_rsp;
-void x86_64_set_kernel_stack(unsigned long long top) noexcept;
+void x64_set_kernel_stack(unsigned long long top) noexcept;
 }
-#elif defined(__riscv) || defined(__riscv__) || defined(MOSS_ARCH_RISCV)
+#elif defined(__riscv) || defined(__riscv__) || defined(MOSS_ARCH_RISCV64)
 extern "C" {
 void user_sret_trampoline();
 extern char _user_program_start[];
@@ -93,9 +93,9 @@ void user_return_handler(void *trap_frame) noexcept;
 void irq_handler_c(void) noexcept;
 void kernel_page_fault_handler(unsigned long long esr, unsigned long long far_addr, unsigned long long elr,
                                void *trap_frame) noexcept;
-void riscv_page_fault_handler(unsigned long long cause, unsigned long long address, unsigned long long pc,
+void riscv64_page_fault_handler(unsigned long long cause, unsigned long long address, unsigned long long pc,
                               void *trap_frame) noexcept;
-void x86_64_page_fault_handler(unsigned long long error, unsigned long long address, unsigned long long pc,
+void x64_page_fault_handler(unsigned long long error, unsigned long long address, unsigned long long pc,
                                void *trap_frame) noexcept;
 void user_page_fault_handler(unsigned long long esr, unsigned long long far_addr, unsigned long long elr) noexcept;
 void unhandled_exception_handler(unsigned long long esr, unsigned long long far_addr, unsigned long long elr,
@@ -258,12 +258,12 @@ inline auto exception_vectors_addr() noexcept -> moss::kernel::VirtAddr {
 
 } // namespace moss::abi::arm64
 
-#elif defined(__x86_64__) || defined(__x86_64) || defined(MOSS_ARCH_X86_64)
-export namespace moss::abi::x86_64 {
+#elif defined(__x86_64__) || defined(__x86_64) || defined(MOSS_ARCH_X64)
+export namespace moss::abi::x64 {
 
 using ::g_kernel_rsp;
 using ::g_tss;
-inline void set_kernel_stack(unsigned long long top) noexcept { ::x86_64_set_kernel_stack(top); }
+inline void set_kernel_stack(unsigned long long top) noexcept { ::x64_set_kernel_stack(top); }
 using ::user_iret_trampoline;
 
 inline auto user_program_start() noexcept -> const unsigned char * {
@@ -276,10 +276,10 @@ inline auto user_program_size() noexcept -> moss::kernel::usize {
   return static_cast<moss::kernel::usize>(user_program_end() - user_program_start());
 }
 
-} // namespace moss::abi::x86_64
+} // namespace moss::abi::x64
 
-#elif defined(__riscv) || defined(__riscv__) || defined(MOSS_ARCH_RISCV)
-export namespace moss::abi::riscv {
+#elif defined(__riscv) || defined(__riscv__) || defined(MOSS_ARCH_RISCV64)
+export namespace moss::abi::riscv64 {
 
 using ::user_sret_trampoline;
 
@@ -293,7 +293,7 @@ inline auto user_program_size() noexcept -> moss::kernel::usize {
   return static_cast<moss::kernel::usize>(user_program_end() - user_program_start());
 }
 
-} // namespace moss::abi::riscv
+} // namespace moss::abi::riscv64
 #endif
 
 // ============================================================================
@@ -324,13 +324,13 @@ using ::irq_handler_c;
 using ::kernel_main;
 using ::kernel_page_fault_handler;
 using ::mark_runtime_heap_ready;
-using ::riscv_page_fault_handler;
+using ::riscv64_page_fault_handler;
 using ::system_call_handler;
 using ::unhandled_exception_handler;
 using ::unhandled_user_exception_handler;
 using ::user_page_fault_handler;
 using ::user_return_handler;
-using ::x86_64_page_fault_handler;
+using ::x64_page_fault_handler;
 
 #if defined(__aarch64__) || defined(MOSS_ARCH_ARM64)
 using ::secondary_cpu_entry;

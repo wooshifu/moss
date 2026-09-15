@@ -173,8 +173,8 @@ For arch-specific modules, select `.cpp` files with `if(MOSS_TARGET_ARCH)`:
 # src/boot/CMakeLists.txt
 if(MOSS_TARGET_ARCH STREQUAL "ARM64")
     list(APPEND BOOT_SOURCES src/arch/arm64/boot_impl.cpp)
-elseif(MOSS_TARGET_ARCH STREQUAL "X86_64")
-    list(APPEND BOOT_SOURCES src/arch/x86_64/boot_impl.cpp)
+elseif(MOSS_TARGET_ARCH STREQUAL "X64")
+    list(APPEND BOOT_SOURCES src/arch/x64/boot_impl.cpp)
 endif()
 
 target_sources(moss_boot PUBLIC FILE_SET CXX_MODULES FILES src/boot.cppm)

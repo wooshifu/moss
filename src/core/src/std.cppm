@@ -298,9 +298,9 @@ constexpr int memory_order_to_int(memory_order order) noexcept { return static_c
 inline void atomic_thread_fence(MemoryOrder /*order*/) noexcept {
 #if defined(MOSS_ARCH_ARM64)
   asm volatile("dmb sy" ::: "memory");
-#elif defined(MOSS_ARCH_X86_64)
+#elif defined(MOSS_ARCH_X64)
   asm volatile("mfence" ::: "memory");
-#elif defined(MOSS_ARCH_RISCV)
+#elif defined(MOSS_ARCH_RISCV64)
   asm volatile("fence rw,rw" ::: "memory");
 #else
   asm volatile("" ::: "memory"); // compiler barrier fallback
@@ -310,9 +310,9 @@ inline void atomic_thread_fence(MemoryOrder /*order*/) noexcept {
 inline void atomic_thread_fence(memory_order /*order*/) noexcept {
 #if defined(MOSS_ARCH_ARM64)
   asm volatile("dmb sy" ::: "memory");
-#elif defined(MOSS_ARCH_X86_64)
+#elif defined(MOSS_ARCH_X64)
   asm volatile("mfence" ::: "memory");
-#elif defined(MOSS_ARCH_RISCV)
+#elif defined(MOSS_ARCH_RISCV64)
   asm volatile("fence rw,rw" ::: "memory");
 #else
   asm volatile("" ::: "memory"); // compiler barrier fallback
@@ -322,9 +322,9 @@ inline void atomic_thread_fence(memory_order /*order*/) noexcept {
 inline void atomic_thread_fence(int /*order*/) noexcept {
 #if defined(MOSS_ARCH_ARM64)
   asm volatile("dmb sy" ::: "memory");
-#elif defined(MOSS_ARCH_X86_64)
+#elif defined(MOSS_ARCH_X64)
   asm volatile("mfence" ::: "memory");
-#elif defined(MOSS_ARCH_RISCV)
+#elif defined(MOSS_ARCH_RISCV64)
   asm volatile("fence rw,rw" ::: "memory");
 #else
   asm volatile("" ::: "memory"); // compiler barrier fallback
