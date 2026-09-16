@@ -364,8 +364,9 @@ void activate_secondary_cpus() noexcept {
   for (u32 cpu = 1; cpu < moss::kernel::g_num_cpus; ++cpu) {
     hart_contexts[cpu] = {.stack = reinterpret_cast<u64>(&secondary_stacks[cpu][32768]), .satp = satp};
     moss::kernel::arch::memory_barrier();
-    auto result = sbi_hart_start(moss::kernel::arch::riscv64_hart_id(cpu), reinterpret_cast<u64>(&riscv64_secondary_start),
-                                 reinterpret_cast<u64>(&hart_contexts[cpu]));
+    auto result =
+        sbi_hart_start(moss::kernel::arch::riscv64_hart_id(cpu), reinterpret_cast<u64>(&riscv64_secondary_start),
+                       reinterpret_cast<u64>(&hart_contexts[cpu]));
     if (result.error != 0) {
       early_print("SBI HSM start failed\n");
     }
