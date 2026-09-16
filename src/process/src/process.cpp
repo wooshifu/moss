@@ -36,6 +36,8 @@ Thread::~Thread() {
 VoidResult Thread::allocate_kernel_stack() noexcept {
   if (kernel_stack_base || kernel_stack_size)
     return VoidResult{ErrorCode::InvalidState};
+  // 2 阶分配得到 4 个 4 KiB 页，即固定 16 KiB 异常/系统调用栈；
+  // 实测栈深度的选值依据尚未记录，扩大该值会增加每线程常驻内存。
   constexpr usize order = 2;
   auto block = mm::allocate_pages(order);
   if (!block)
@@ -223,7 +225,8 @@ void Process::cleanup_threads() noexcept {
 }
 
 ThreadId Process::allocate_thread_id() noexcept {
-  // 简化实现：从当前线程数量+1开始分配
+  // 独立的全局原子 32 位计数器，从 1000 起步；不是“当前线程数+1”。起始值的
+  // 依据尚未记录，调用方不能靠它推断 init TID（idle 也会消耗 ID）。
   static containers::AtomicU32 next_tid{1000};
   return next_tid.fetch_add(1, containers::MemoryOrder::Relaxed);
 }
@@ -340,6 +343,7 @@ void release_asid(u16 tag) noexcept {
     return;
   containers::LockGuard<containers::IrqSpinLock> guard(asid_lock);
 #if defined(MOSS_ARCH_ARM64)
+  // ARM64 TLBI 的 ASID 位于操作数 [63:48]，故左移 48，而不是页号位移。
   // Finish invalidation on every CPU before another space can take this tag.
   asm volatile("dsb ishst; tlbi aside1is, %0; dsb ish; isb" : : "r"(static_cast<u64>(tag) << 48) : "memory");
 #endif

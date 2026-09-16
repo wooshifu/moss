@@ -162,6 +162,8 @@ struct LeakTrackingInfo {
     bool is_suspicious;
   };
 
+  // Fixed report-storage budget of 4096 entries; increasing it enlarges each
+  // LeakTrackingInfo. The original capacity justification is not recorded.
   static constexpr usize MAX_TRACKED_ALLOCATIONS = 4096;
   LeakEntry entries[MAX_TRACKED_ALLOCATIONS];
   usize entry_count;
@@ -217,6 +219,7 @@ public:
   struct LeakReport {
     usize total_leaked_bytes;
     u32 leak_count;
+    // Bound report output to 16 entries; the choice of report length is unrecorded.
     LeakTrackingInfo::LeakEntry top_leaks[16];
     u64 report_timestamp;
 
@@ -280,6 +283,8 @@ public:
 
 private:
   ProfilerConfig config_;
+  // Fixed in-object sample capacity, also used by the default profiler config;
+  // changing 1024 changes storage and history length. Sizing evidence is unrecorded.
   static constexpr usize MAX_PROFILE_SAMPLES = 1024;
   ProfileSample samples_[MAX_PROFILE_SAMPLES];
   usize sample_count_;
@@ -678,12 +683,18 @@ inline void *krealloc(void *ptr, usize old_size, usize new_size) noexcept {
 inline bool initialize_kernel_memory() noexcept {
   UnifiedMemoryManager::SystemConfig config = {};
 
+  // Retained subsystem defaults: initialize_system currently stores this
+  // config without starting these declared subsystems. Exact threshold/pool
+  // sizing evidence is not recorded; validate memory budgets before activating.
+  // Lazy-free values are bytes: trigger at 64 KiB and retain at most 16 MiB.
   config.vmalloc_config = {.enable_lazy_free = true,
                            .lazy_free_threshold = 64ULL * 1024,
                            .max_lazy_free_memory = 16ULL * 1024 * 1024,
                            .enable_numa_awareness = true,
                            .default_numa_policy = static_cast<u32>(NUMAPolicy::DEFAULT)};
 
+  // Reclaim defaults specify 1024/4096 base pages (4/16 MiB) and a 5 s check;
+  // their intended latency-versus-reserve tradeoff has no recorded calibration.
   config.reclaim_config = {.scan_config = {},
                            .pressure_config = {},
                            .default_policy = ReclaimPolicy::BALANCED,
@@ -692,6 +703,8 @@ inline bool initialize_kernel_memory() noexcept {
                            .enable_background_reclaim = true,
                            .background_reclaim_interval_ms = 5000};
 
+  // Compaction defaults specify a 5 s cadence and score threshold 70. Its
+  // scale and the choice of both defaults need evidence from an implementation.
   config.compaction_config = {.scan_config = {},
                               .migration_config = {},
                               .cma_config = {},
@@ -700,6 +713,8 @@ inline bool initialize_kernel_memory() noexcept {
                               .compaction_interval_ms = 5000,
                               .fragmentation_threshold = 70};
 
+  // NUMA defaults check every 2 s and use ratio 0.8 (80%). The exact choices
+  // of imbalance 25 and migration limit 1000, including rate units, are unrecorded.
   config.numa_config = {.balancer_config = {.balance_interval_ms = 2000,
                                             .imbalance_threshold = 25,
                                             .migration_rate_limit = 1000,
@@ -708,6 +723,10 @@ inline bool initialize_kernel_memory() noexcept {
                         .enable_migration = true,
                         .default_policy = NUMAPolicy::DEFAULT};
 
+  // Pool/reserve counts are huge pages of the named size, not base pages:
+  // e.g. four 1 GiB pages already request 4 GiB. These are inactive defaults,
+  // not a RAM-aware budget. Exact counts and the 10 s/4096-page THP scan
+  // policy have no recorded sizing or tuning evidence.
   config.hugepages_config = {.pool_config = {.initial_2mb_pages = 128,
                                              .initial_1gb_pages = 4,
                                              .max_2mb_pages = 1024,
@@ -729,6 +748,9 @@ inline bool initialize_kernel_memory() noexcept {
                              .enable_thp = true,
                              .enable_hugetlb = true};
 
+  // Monitoring defaults allow 1024 records/samples, flag allocations aged
+  // 600000 ms (10 min), samples every 500 ms and collects stats every 1 s.
+  // max_samples matches the fixed profiler array; other choices have no recorded calibration.
   config.monitoring_config = {.leak_config = {.enable_tracking = true,
                                               .max_tracked_allocations = 1024,
                                               .suspicious_age_ms = 600000,
@@ -744,6 +766,8 @@ inline bool initialize_kernel_memory() noexcept {
                               .enable_leak_detection = true,
                               .enable_profiling = true};
 
+  // Global defaults: 1 s maintenance, threshold 80 and 128 MiB free-memory
+  // floor. The score scale and reasons for these exact defaults are unrecorded.
   config.enable_aggressive_optimization = true;
   config.enable_background_operations = true;
   config.background_interval_ms = 1000;

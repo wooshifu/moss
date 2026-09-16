@@ -26,7 +26,7 @@ extern "C" {
 [[gnu::weak]] void moss_validation_boot() noexcept {}
 [[gnu::weak]] long moss_validation_call([[maybe_unused]] long op, [[maybe_unused]] long arg1,
                                         [[maybe_unused]] long arg2) noexcept {
-  return -38;
+  return -38; // Native ENOSYS: production images do not implement validation calls.
 }
 
 // Kernel main entry (called from boot assembly)
@@ -141,11 +141,14 @@ void system_call_handler(void *raw_frame) noexcept {
   auto &frame = *static_cast<moss::abi::TrapFrame *>(raw_frame);
   auto *thread = process::CfsScheduler::get_current_task();
   auto *previous = thread ? thread->trap_frame : nullptr;
+  // A nested trap must restore the previous borrowed frame: this frame lives
+  // on the current entry stack and must not escape after assembly returns.
   if (thread) {
     thread->trap_frame = &frame;
   }
   const long nr = static_cast<long>(frame.syscall_number());
-  // Only the dedicated validation image overrides this ENOSYS hook.
+  // 511 is the validation-only syscall slot, outside the production table.
+  // It must match validation.c; production retains the ENOSYS weak hook.
   const long result =
       nr == 511 ? moss_validation_call(static_cast<long>(frame.argument(0)), static_cast<long>(frame.argument(1)),
                                        static_cast<long>(frame.argument(2)))
@@ -179,6 +182,7 @@ void user_return_handler(void *raw_frame) noexcept {
     if (signo) {
       auto proc = g_process_manager ? g_process_manager->find_process(thread->owner_pid) : shared_ptr<Process>{};
       if (proc) {
+        // Preserve the shell convention of 128 + signal number for a fatal signal.
         do_exit(thread, moss::move(proc), 128 + static_cast<i32>(signo));
       }
     }
@@ -307,7 +311,8 @@ int try_grow_user_stack(unsigned long long fault_addr) noexcept {
     return 0;
   }
 
-  // 3. Page-align the new stack bottom downward
+  // 4096 bytes is the MM subsystem's base page granule; VMA growth must
+  // admit the complete faulting page before demand-zero mapping retries.
   constexpr u64 PG_SIZE = 4096;
   const VirtAddr new_start = fault_addr & ~(PG_SIZE - 1);
   if (!process::AddressSpace::valid_vma_range(new_start, process::user_layout::STACK_TOP, process::VmaType::STACK)) {
@@ -420,6 +425,7 @@ void riscv64_external_handler() noexcept {
   // If so, terminate the user process and let the scheduler continue.
   if (sepc < ::moss::kernel::KERNEL_BASE) {
     log::klog::error("  User-mode exception, terminating process");
+    // Legacy fatal-user-fault code: -SIGSEGV (11), not an errno result.
     ::moss::abi::bridge::terminate_current_user_process(-11);
   }
 

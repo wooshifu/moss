@@ -107,7 +107,9 @@ void DentryCache::init() noexcept {
 }
 
 u32 DentryCache::hash(const Dentry *parent, const char *name, u32 name_len) noexcept {
-  // FNV-1a inspired hash
+  // FNV-1a's 32-bit offset basis (2166136261) and prime (16777619).
+  // Hash all eight bytes of the 64-bit parent identity, then name bytes;
+  // 0xFF and shifts by 8 extract each byte without conflating equal names.
   u32 h = 2166136261U;
   // Mix in parent address
   auto addr = reinterpret_cast<u64>(parent);
@@ -174,6 +176,9 @@ void DentryCache::remove(Dentry *dentry) noexcept {
 
 // -- Inode / Dentry / File pool allocators --
 
+// Fixed 256-slot pools avoid allocating namespace metadata on tree updates.
+// Their exact capacity derivation is not recorded; unlinked retained entries
+// still occupy slots, so workload limits differ from visible directory size.
 static constexpr u32 MAX_INODES = 256;
 static constexpr u32 MAX_DENTRIES = 256;
 
@@ -415,6 +420,8 @@ struct PipeWaiter {
 
 /// Pipe internal state — 4KB ring buffer shared between read and write ends.
 struct PipeState {
+  // Match vfs::PIPE_BUF_SIZE: one 4096-byte base page is also the small-write
+  // reservation boundary. Changing it alters atomicity/capacity expectations.
   static constexpr u32 PIPE_BUF_SIZE = 4096;
 
   containers::IrqSpinLock lock;
@@ -428,6 +435,8 @@ struct PipeState {
   u32 writers; // number of open write-end File objects
 };
 
+// 64 simultaneous pipe states reserve 256 KiB of ring payload statically.
+// The exact slot budget is not documented; exhausting it returns ENOMEM.
 static constexpr u32 MAX_PIPES = 64;
 static PipeState g_pipe_pool[MAX_PIPES];
 static bool g_pipe_used[MAX_PIPES];
@@ -456,6 +465,8 @@ struct PipeGuard {
     lock.unlock();
     moss::abi::bridge::moss_commit_io_wait();
     lock.lock();
+    // Wakeup borrows the node; only its sleeping owner removes it under the
+    // lock before returning, so no list pointer can outlive this stack frame.
     auto **link = &head;
     while (*link != &waiter)
       link = &(*link)->next;
@@ -544,6 +555,8 @@ static long pipe_read(File *file, OutputBuffer buffer) noexcept {
   }
 
   usize copied = 0;
+  // Copy one byte before consuming it: a user fault must leave the unread
+  // suffix in the ring and return any successfully delivered prefix.
   for (; copied < count; ++copied) {
     if (buffer.copy_from(copied, &ps->buffer[ps->read_pos], 1) != 1)
       break;
@@ -608,7 +621,8 @@ static long pipe_write(File *file, InputBuffer buffer) noexcept {
 
     const usize free_space = PipeState::PIPE_BUF_SIZE - ps->count;
     // Small writes reserve their entire record; larger writes can stream as
-    // readers drain the ring. Nonblocking writes never wait for capacity.
+    // readers drain the ring; their minimum is one byte to ensure progress.
+    // Nonblocking writes never wait for capacity.
     const usize needed = buffer.size() <= PipeState::PIPE_BUF_SIZE ? buffer.size() : 1;
     if (free_space < needed) {
       if (file->flags & O_NONBLOCK)
@@ -621,6 +635,8 @@ static long pipe_write(File *file, InputBuffer buffer) noexcept {
     if (count > free_space)
       count = free_space;
     usize copied = 0;
+    // Commit only bytes copied successfully from the user: on a fault, readers
+    // may observe the valid prefix but must never see an uninitialized suffix.
     for (; copied < count; ++copied) {
       if (buffer.copy_to(written + copied, &ps->buffer[ps->write_pos], 1) != 1)
         break;
@@ -651,6 +667,8 @@ static const FileOps g_pipe_write_fops = {
 
 // -- Pipe inode (shared between read/write ends) --
 
+// Legacy namespace base for anonymous pipe identities; 10000 is not a
+// capacity or wire tag. The reason for this exact starting value is unrecorded.
 static constexpr InodeNumber PIPEFS_BASE_INO = 10000;
 static InodeNumber g_pipefs_next_ino = PIPEFS_BASE_INO;
 
@@ -720,6 +738,8 @@ namespace devfs {
 namespace uart = moss::kernel::hal::uart;
 
 // -- Inode number assignments --
+// Fixed devfs identities distinguish the root and its three devices. The exact
+// 100-based numbering is unrecorded; filesystem identity also includes st_dev.
 static constexpr InodeNumber DEVFS_ROOT_INO = 100;
 static constexpr InodeNumber DEVFS_CONSOLE_INO = 101;
 static constexpr InodeNumber DEVFS_NULL_INO = 102;
@@ -739,7 +759,7 @@ static long console_read([[maybe_unused]] File *file, OutputBuffer buffer) noexc
   // Each moss::abi::bridge::console_getc_blocking() call either returns instantly from the
   // ring buffer (fast path) or blocks the calling thread until the UART
   // RX interrupt delivers a character (slow path).  The CPU enters idle
-  // (WFI) while blocked, so host CPU usage is ~0%.
+  // (WFI/HLT) while blocked; actual host CPU usage depends on the platform.
   const usize count = buffer.size();
   usize pos = 0;
   while (pos < count) {
@@ -847,6 +867,8 @@ static const FileOps g_null_fops = {
 // -- /dev/zero file operations --
 
 static long zero_read([[maybe_unused]] File *file, OutputBuffer buffer) noexcept {
+  // Reuse a 128-byte zero chunk so a large read does not grow the kernel stack
+  // with the request size. The exact chunk-size performance basis is unrecorded.
   const u8 zeros[128]{};
   usize copied = 0;
   const usize count = buffer.size();
@@ -911,7 +933,7 @@ SuperBlock *devfs_init() noexcept {
 
   // Create devfs superblock
   g_devfs_sb.fs_name = "devfs";
-  g_devfs_sb.device = 2;
+  g_devfs_sb.device = 2; // Fixed filesystem ID distinct from ramfs (1), never a kernel pointer.
   g_devfs_sb.block_size = PAGE_SIZE;
   g_devfs_sb.fs_private = nullptr;
 
@@ -991,7 +1013,7 @@ const FileOps &console_file_ops() noexcept { return g_console_fops; }
 } // namespace devfs
 
 // ====================================================================
-// ramfs implementation — read-only FS backed by initramfs CPIO
+// ramfs implementation — immutable CPIO files and mutable runtime-created files
 // ====================================================================
 
 namespace ramfs {
@@ -1040,6 +1062,8 @@ static long ramfs_write(File *file, InputBuffer buffer) noexcept {
   if (!buffer.size())
     return 0;
   const u64 position = file->flags & O_APPEND ? inode->size : static_cast<u64>(file->pos);
+  // 2^63 - 1 is the largest representable signed file offset; keep successful
+  // positions positive and separate from negative syscall error values.
   if (position > 0x7fffffffffffffffULL || buffer.size() > 0x7fffffffffffffffULL - position)
     return -static_cast<long>(VfsError::FileTooLarge);
   const usize end = position + buffer.size();
@@ -1049,6 +1073,8 @@ static long ramfs_write(File *file, InputBuffer buffer) noexcept {
   if (grows) {
     // ponytail: contiguous, geometrically grown file buffers; use page-backed
     // storage if large/sparse files exhaust contiguous kernel heap space.
+    // 2^62 - 1 is half the signed-offset limit: doubling below it is safe.
+    // Geometric growth amortizes reallocations; its exact tuning is unrecorded.
     capacity = capacity && capacity <= 0x3fffffffffffffffULL ? capacity * 2 : end;
     if (capacity < end)
       capacity = end;
@@ -1068,6 +1094,8 @@ static long ramfs_write(File *file, InputBuffer buffer) noexcept {
       (void)mm::RuntimeHeapAllocator::deallocate(data, capacity);
     return -static_cast<long>(VfsError::BadAddress);
   }
+  // A failed first-byte copy rolls back the new allocation. Once a prefix
+  // succeeds, publish only that prefix's offset/size as the partial-write result.
   if (grows) {
     if (inode->data)
       (void)mm::RuntimeHeapAllocator::deallocate(const_cast<u8 *>(inode->data), inode->data_capacity);
@@ -1186,6 +1214,8 @@ static long ramfs_create(Inode *dir, const char *name, u32 length, FileType type
     return -static_cast<long>(VfsError::NoMemory);
   inode->ino = g_ramfs_next_ino++;
   inode->type = type;
+  // 0777 retains only the three rwx triplets; file type comes from the validated
+  // argument. A new directory starts with its parent name and "." links (2).
   inode->mode = (type == FileType::Directory ? S_IFDIR : S_IFREG) | (mode & 0777U);
   inode->nlink = type == FileType::Directory ? 2 : 1;
   inode->sb = dir->sb;
@@ -1281,7 +1311,7 @@ SuperBlock *ramfs_init() noexcept {
   }
 
   g_ramfs_sb.fs_name = "ramfs";
-  g_ramfs_sb.device = 1;
+  g_ramfs_sb.device = 1; // Fixed root-filesystem identity; devfs uses 2.
   g_ramfs_sb.block_size = moss::kernel::PAGE_SIZE;
   g_ramfs_sb.fs_private = nullptr;
 
@@ -1315,6 +1345,8 @@ SuperBlock *ramfs_init() noexcept {
 
       file_inode->ino = g_ramfs_next_ino++;
       file_inode->type = FileType::Regular;
+      // Preserve archive rwx permission triplets (0777); archive content stays
+      // borrowed and immutable even if its permission bits include write.
       file_inode->mode = S_IFREG | (entry.mode & 0777U);
       file_inode->size = entry.data_size;
       file_inode->data = entry.data;

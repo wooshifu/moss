@@ -27,7 +27,7 @@ constexpr void *memcpy(void *dest, const void *src, size_t n) noexcept { return 
 constexpr void *memset(void *dest, int ch, size_t n) noexcept { return __builtin_memset(dest, ch, n); }
 
 /// Copy n bytes from src to dest (handles overlapping regions correctly).
-/// Slower than memcpy but safe for overlapping memory.
+/// Use when overlap is possible; relative cost depends on target and copy size.
 /// Can be evaluated at compile time.
 constexpr void *memmove(void *dest, const void *src, size_t n) noexcept { return __builtin_memmove(dest, src, n); }
 

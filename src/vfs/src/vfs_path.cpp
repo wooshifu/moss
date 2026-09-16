@@ -97,9 +97,8 @@ Dentry *resolve_path_locked(const char *path, VfsError *error, Dentry *start, u3
       }
     }
 
-    // Not found — try cross-mount lookup
-    // Build the full sub-path and check if another fs is mounted there
-    // For now, simple linear scan of children
+    // Fall back to the bounded child array if neither cache nor filesystem
+    // lookup found the entry; mount transitions were already handled above.
     bool found = false;
     for (u32 i = 0; i < current->inode->child_count; ++i) {
       Dentry *d = current->inode->children[i];

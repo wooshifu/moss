@@ -206,6 +206,9 @@ private:
   // ── Min-heap of HrTimer pointers, keyed by expires_ns ──────────
   // O(log n) enqueue/dequeue, O(1) peek (heap_[0] = earliest).
   // Each HrTimer stores its own heap_index_ for O(log n) cancel.
+  // 256 bounds fixed queue storage without interrupt-time allocation; enqueue
+  // returns ResourceExhausted when full. The workload basis for 256 is not
+  // recorded, so increasing concurrency requires revisiting this capacity.
   static constexpr u32 MAX_TIMERS = 256;
   HrTimer *heap_[MAX_TIMERS]{};
   u32 heap_size_{0};
@@ -244,7 +247,8 @@ VoidResult Clocksource::initialize() noexcept {
   // Compute mult and shift for: ns = (cycles * mult) >> shift
   // Formula: mult = (10^9 << shift) / freq_hz
   // Choose shift to maximize precision without 64-bit overflow.
-  // For frequencies < 4 GHz, shift=32 works well.
+  // Q32 preserves fractional precision, but (freq_hz << 32) below fits u64
+  // only for freq_hz < 2^32 Hz; higher rates need a separate conversion review.
   // 1000000000 << 32 = 0x3B9ACA00_00000000 — fits in u64.
   shift_ = 32;
   u64 ns_per_sec = 1000000000ULL;
@@ -263,7 +267,8 @@ VoidResult Clocksource::initialize() noexcept {
 u64 Clocksource::now_ns() const noexcept {
   u64 current = hal::timer::read_counter();
   u64 delta = current - boot_cycles_;
-  // Use 128-bit multiply to prevent overflow (u64 * u64 overflows after ~69s at 62MHz)
+  // Multiply before shifting in 128 bits: Q32's unshifted product can exceed
+  // u64 after only a few seconds even though the final nanosecond value fits.
   return static_cast<u64>((static_cast<__uint128_t>(delta) * mult_) >> shift_);
 }
 
@@ -336,8 +341,9 @@ VoidResult TimerSubsystem::initialize() noexcept {
   // 2. Enable hardware timer
   hal::timer::enable();
 
-  // 3. Set compare far in the future to avoid spurious interrupt before
-  //    any timer is enqueued
+  // 3. Park the compare one second (10^9 ns) ahead until work is enqueued.
+  // This is a finite quiet interval, not a disabled timer; the empty-queue ISR
+  // rearms the same interval. Its exact policy rationale is not recorded.
   u64 now = hal::timer::read_counter();
   hal::timer::set_compare(now + clocksource_.ns_to_cycles(1000000000ULL));
 
@@ -461,6 +467,9 @@ void TimerSubsystem::dequeue(HrTimer *timer) noexcept {
 
 void TimerSubsystem::cancel_sync(HrTimer *timer) noexcept {
   dequeue(timer);
+  // The callback runs outside queue_lock_; cancellation removes future work
+  // but cannot revoke a callback already extracted by another CPU. Waiting
+  // without holding the lock lets that callback publish completion safely.
   for (;;) {
     {
       containers::LockGuard<containers::IrqSpinLock> guard(queue_lock_);
@@ -550,7 +559,9 @@ void TimerSubsystem::reprogram_next() noexcept {
     u64 now = clocksource_.now_ns();
     u64 delta_ns = (heap_[0]->expires_ns_ > now) ? (heap_[0]->expires_ns_ - now) : 0;
     // Enforce minimum delta to avoid interrupt storm on level-triggered PPI.
-    // 100 µs minimum gives the ISR enough time to complete.
+    // 100 us (10^5 ns) is a latency/coalescing policy, not measured worst-case
+    // ISR time. Its tuning basis is not recorded; increasing it delays timers,
+    // while reducing it needs interrupt-storm and handler-duration validation.
     constexpr u64 MIN_DELTA_NS = 100000; // 100 µs
     if (delta_ns < MIN_DELTA_NS) {
       delta_ns = MIN_DELTA_NS;
@@ -560,7 +571,7 @@ void TimerSubsystem::reprogram_next() noexcept {
     u64 compare = counter_now + delta_cycles;
     hal::timer::set_compare(compare);
   } else {
-    // No pending timers — set compare far in the future
+    // No pending timers: rearm the same one-second quiet interval used at init.
     u64 now_counter = hal::timer::read_counter();
     hal::timer::set_compare(now_counter + clocksource_.ns_to_cycles(1000000000ULL));
   }

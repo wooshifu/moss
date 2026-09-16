@@ -128,6 +128,7 @@ long do_open(void *fd_table_ptr, const char *path, u32 flags, u32 mode, u32 uid,
     }
     // Existing files require the requested access before a driver can truncate
     // them. A newly created file's mode does not restrict its initial open.
+    // Native access masks: read=4, write=2, read+write=6, independent of O_* bits.
     const u32 requested = (flags & O_ACCMODE) == O_RDONLY ? 4U : (flags & O_ACCMODE) == O_WRONLY ? 2U : 6U;
     if (dentry && dentry->inode && !can_access(*dentry->inode, uid, gid, requested)) {
       free_file(file);
@@ -415,6 +416,8 @@ long do_getdents(void *fd_table_ptr, long fd, OutputBuffer buffer) noexcept {
   if (file->pos < 0)
     return -static_cast<long>(VfsError::InvalidArg);
   Dentry *child = nullptr;
+  // Cookies 0/1 emit "."/"..". Real children use inode + 2, and the next
+  // cookie adds 3 so the next search starts at inode + 1 without revisiting it.
   if (file->pos < 2) {
     child = file->pos == 1 && file->dentry->parent ? file->dentry->parent : file->dentry;
   } else {
@@ -429,6 +432,7 @@ long do_getdents(void *fd_table_ptr, long fd, OutputBuffer buffer) noexcept {
     }
     if (!child)
       return 0;
+    // 2^63 - 4 leaves room for the +3 cookie in a signed 64-bit file position.
     if (child->inode->ino > 0x7ffffffffffffffcULL)
       return -static_cast<long>(VfsError::Overflow);
   }
@@ -436,6 +440,8 @@ long do_getdents(void *fd_table_ptr, long fd, OutputBuffer buffer) noexcept {
   entry.ino = child->inode->ino;
   entry.offset = file->pos < 2 ? file->pos + 1 : static_cast<i64>(child->inode->ino + 3);
   entry.record_size = sizeof(entry);
+  // DT_* wire values match the pinned mlibc dirent prefix; the internal
+  // FileType enum has different ordinals and must be translated explicitly.
   switch (child->inode->type) {
   case FileType::Regular:
     entry.type = 8;
@@ -499,6 +505,8 @@ long do_ioctl(void *fd_table_ptr, long fd, long command, u64 argument) noexcept 
   auto file = fdt ? fdt->acquire_file(fd) : FileRef{};
   if (!file)
     return -static_cast<long>(VfsError::BadFd);
+  // Device operations accept a u32 command; reject high bits instead of silently
+  // truncating a different userspace request into a supported 32-bit command.
   if (command < 0 || static_cast<u64>(command) > 0xffffffffULL)
     return -static_cast<long>(VfsError::InvalidArg);
   if (!file->f_ops || !file->f_ops->ioctl)
@@ -508,6 +516,8 @@ long do_ioctl(void *fd_table_ptr, long fd, long command, u64 argument) noexcept 
 
 long do_fcntl(void *fd_table_ptr, long fd, long command, long argument) noexcept {
   auto *fdt = static_cast<FdTable *>(fd_table_ptr);
+  // F_* command numbers use the Linux-style native ABI shared with mlibc;
+  // 1030 requests the duplicate with FD_CLOEXEC already installed atomically.
   if (command == 0 || command == 1030) { // F_DUPFD / F_DUPFD_CLOEXEC
     const long result = fdt ? fdt->duplicate(fd, argument, command == 1030) : -static_cast<long>(VfsError::BadFd);
     if (result >= 0)
@@ -580,6 +590,9 @@ long do_pipe(void *fd_table_ptr, OutputBuffer buffer) noexcept {
     return ret;
   }
 
+  // The native pipe ABI copies two 64-bit longs (read end, write end), not
+  // libc's two ints. Reservations remain invisible until the full copy succeeds;
+  // a partial copy may expose numbers in user memory but installs neither fd.
   const long ends[2] = {first.fd(), second.fd()};
   moss_validation_pipe_copyout(fdt, ends[0], ends[1]);
   ret = buffer.copy_from(0, ends, sizeof(ends)) == sizeof(ends) ? first.install_pair(second, read_file, write_file)

@@ -71,6 +71,8 @@ struct ShmRegion {
             ProcessId pid) noexcept
       : id(region_id), phys_base(phys), virt_base(virt), size(sz), type(t), permission(perm), ref_count{},
         owner_pid(pid), creation_time(0), attributes{}, page_size(PAGE_SIZE) {
+    // 独立于 shared_ptr 的区域引用：初始 1 为创建者保留，映射再各加 1。
+    // 当前接口未显式释放创建者引用，因此只撤销映射不会使区域可销毁。
     ref_count.store(1, containers::MemoryOrder::Relaxed);
   }
 };
@@ -102,6 +104,8 @@ private:
   containers::AtomicCounter<usize> large_pages_used_;
   containers::AtomicCounter<usize> huge_pages_used_;
 
+  // 4 GiB 是接口接纳上限，不代表占位分配器真能提供相应存储；具体限值
+  // 的选取依据尚未记录。2 MiB/1 GiB 是 4 KiB 页表的两级块大小。
   static constexpr usize MAX_SHM_SIZE = 1ULL << 32;
   static constexpr usize SHM_LARGE_PAGE_SIZE = 2ULL * 1024 * 1024;
   static constexpr usize SHM_HUGE_PAGE_SIZE = 1ULL * 1024 * 1024 * 1024;
@@ -211,8 +215,10 @@ public:
     if (!region) {
       return VoidResult{KernelError::InvalidArgument};
     }
-    // Atomically claim ownership for destruction: CAS ref_count 0→UINT32_MAX.
-    // This prevents TOCTOU between the check and the actual teardown.
+    // UINT32_MAX (all 32 bits set) marks destruction after a zero-reference
+    // claim, preventing competing destroyers from claiming the same region.
+    // map_to_process still increments unconditionally; callers must serialize
+    // mapping against teardown rather than treating this CAS as a lifetime lock.
     // Loop on spurious failure (compare_exchange_weak) but not on real failure.
     u32 expected = 0;
     while (!region->ref_count.compare_exchange_weak(
@@ -303,12 +309,14 @@ private:
 
   [[nodiscard]] KernelResult<PhysAddr> allocate_physical_memory([[maybe_unused]] usize size,
                                                                 [[maybe_unused]] usize page_size) noexcept {
+    // 占位地址 2 GiB，未执行物理分配；每次返回相同地址，选择依据尚未记录。
     return KernelResult<PhysAddr>{static_cast<PhysAddr>(0x80000000)};
   }
 
   void free_physical_memory([[maybe_unused]] PhysAddr addr, [[maybe_unused]] usize size) noexcept {}
 
   [[nodiscard]] VirtAddr allocate_kernel_virtual_address([[maybe_unused]] usize size) noexcept {
+    // 占位的 48 位高半区起点，未预留/映射该地址，不能证明存储可解引用。
     return 0xFFFF800000000000ULL;
   }
 
@@ -316,6 +324,8 @@ private:
 
   [[nodiscard]] VirtAddr allocate_user_virtual_address([[maybe_unused]] ProcessId pid, [[maybe_unused]] usize size,
                                                        [[maybe_unused]] VirtAddr hint) noexcept {
+    // 占位 4 MiB 地址，未分配 VMA，且低于当前进程接口的 4 GiB 用户下界；
+    // 原始选址依据尚未记录，启用真实映射前须接入统一地址空间规则。
     return 0x400000;
   }
 
@@ -411,7 +421,9 @@ extern SharedMemoryManager *g_shared_memory_manager;
 // 消息类型
 enum class MessageType : u8 { Data = 0, Request = 1, Response = 2, Notification = 3, Capability = 4 };
 
-// 消息头部结构
+// 固定 64 字节消息布局；显式尾填充保留协议大小，而不是有效 payload。
+// 64 字节对齐只约束对象本身，环内 8 字节步进并不保证每条消息同样对齐。
+// 此协议大小及对齐的精确选值依据尚未记录。
 struct alignas(64) MessageHeader {
   MessageId msg_id;
   u64 sequence;
@@ -442,12 +454,19 @@ struct MessageSlot {
 };
 
 // 零拷贝通道环形缓冲区
+// 默认名义环长 64 KiB、完整消息上限 4 KiB（含头和填充），选值依据尚未
+// 记录。游标 CAS 先于内容复制：它只预留位置，不发布完整消息，也不等待读
+// 完后回收；在加入提交/回收协议前，读写活动仍须由调用方在外部串行化。
 template <usize BufferSize = 64 * 1024, usize MaxMessageSize = 4096> class ZeroCopyRingBuffer {
 private:
   static_assert((BufferSize & (BufferSize - 1)) == 0, "BufferSize must be power of 2");
+  // 单条消息至多占名义容量四分之一，避免独占环；具体比例依据尚未记录。
   static_assert(MaxMessageSize <= BufferSize / 4, "MaxMessageSize too large");
   static constexpr usize BUFFER_MASK = BufferSize - 1;
 
+  // 四个 8 字节原子字段加四个保留字构成 64 字节控制块；共享区起点
+  // 也须满足该对齐，改变布局会同时影响 buffer_ 的起点与对端解释。
+  // 64 字节布局/对齐的选值依据尚未记录。
   struct alignas(64) RingControl {
     containers::AtomicU64 write_pos;
     containers::AtomicU64 read_pos;
@@ -480,6 +499,8 @@ public:
 
   [[nodiscard]] bool try_send(const MessageHeader &header, const void *payload) noexcept {
     usize total_size = sizeof(MessageHeader) + header.payload_size;
+    // 双端按 8 字节字边界前进，确保可计算相同的下一消息起点；这是记录
+    // 格式约束，不能替代 MessageHeader 自身要求的 64 字节对象对齐。
     total_size = ring_align_up(total_size, 8);
     if (total_size > MaxMessageSize) {
       return false;
@@ -496,8 +517,9 @@ public:
     usize buffer_pos = static_cast<usize>(write_pos) & BUFFER_MASK;
     usize space_to_end = BufferSize - buffer_pos;
 
-    // Serialize header + payload into contiguous temp, then copy with wrap
-    // Header is small and fixed-size — safe to stack-allocate.
+    // Wrapped records use MaxMessageSize bytes of temporary stack storage.
+    // Direct and temporary header casts require MessageHeader alignment,
+    // which neither an 8-byte cursor nor a plain u8 array establishes.
     if (space_to_end >= total_size) {
       // Fast path: entire message fits without wrapping
       MessageHeader *msg_header = reinterpret_cast<MessageHeader *>(&buffer_[buffer_pos]);
@@ -525,8 +547,9 @@ public:
   }
 
   [[nodiscard]] bool try_receive(MessageHeader &header, void *payload, usize max_payload_size) noexcept {
-    // Use CAS to atomically claim a read position, preventing two
-    // concurrent readers from consuming the same message.
+    // CAS gives one claimant for this cursor range. It advances before payload
+    // copying finishes, so reuse must still obey the external serialization
+    // described on the class; this is not a committed-message protocol.
     u64 read_pos = control_->read_pos.load(containers::MemoryOrder::Acquire);
     for (;;) {
       u64 write_pos = control_->write_pos.load(containers::MemoryOrder::Acquire);
@@ -634,6 +657,8 @@ public:
   ZeroCopyChannel &operator=(ZeroCopyChannel &&) = delete;
 
   [[nodiscard]] VoidResult initialize() noexcept {
+    // 两个方向均保留默认 64 KiB 的名义数据容量；额外空间经共享区页对齐。
+    // 这是固定默认值，按消息负载实测的容量依据尚未记录。
     auto c2s_result = g_shared_memory_manager->create_region(client_pid_, sizeof(ZeroCopyRingBuffer<>) + 64ULL * 1024,
                                                              ShmType::Normal, ShmPermission::ReadWrite);
     if (!c2s_result) {
@@ -701,6 +726,8 @@ public:
 
   [[nodiscard]] bool wait_for_message(ProcessId receiver_pid, MessageHeader &header, void *payload,
                                       usize max_payload_size, u64 timeout_ns = static_cast<u64>(-1)) noexcept {
+    // u64 最大值表示无限等待，普通值以 ns 计时；每轮最多轮询 1 ms 通知
+    // 后重查环内容，以免仅依赖一次通知快照。1 ms 的精确选值依据未记录。
     u64 start_time = get_current_time_ns();
     while (true) {
       if (receive_message(receiver_pid, header, payload, max_payload_size)) {
@@ -780,13 +807,14 @@ struct ServiceDescriptor {
   ServiceId service_id;
   ProcessId provider_pid;
   EndpointId endpoint_id;
-  const char *service_name;
+  const char *service_name; // 借用名称字符串，注册者须保证它比服务描述符存活更久。
   u32 max_clients;
   containers::AtomicU32 current_clients;
   bool is_public;
   u64 creation_time;
 
   ServiceDescriptor(ServiceId id, ProcessId pid, const char *name) noexcept
+      // 默认最多 256 客户端限制每服务连接增长，具体容量的选取依据未记录。
       : service_id(id), provider_pid(pid), endpoint_id(0), service_name(name), max_clients(256), current_clients{},
         is_public(true), creation_time(0) {}
 };
@@ -844,6 +872,7 @@ public:
 
   [[nodiscard]] KernelResult<ServiceId> register_service(ProcessId provider_pid, const char *service_name,
                                                          u32 max_clients = 256) noexcept {
+    // 默认值与 ServiceDescriptor 的 256 客户端预算一致；非硬件协议上限。
     if (service_name == nullptr) {
       return KernelResult<ServiceId>{KernelError::InvalidArgument};
     }

@@ -10,7 +10,7 @@
 //
 // This stub:
 //   1. Saves hart ID in tp register (S-mode convention)
-//   2. Parks non-boot harts in a WFI loop (SBI HSM wakes them later)
+//   2. Applies boot-image relocations on the firmware-elected boot hart
 //   3. Sets up global pointer (GP) for linker relaxation
 //   4. Sets up kernel stack via linker script _stack_top
 //   5. Zeroes the BSS section
@@ -29,6 +29,9 @@
 .option nopic
 .option norelax
 .option norvc
+// Fixed-width boot instructions preserve the 64-byte Linux Image header;
+// text_offset=2 MiB follows RV64 Linux placement, and flags=0 selects little-endian.
+// Header version 2 encodes major 0/minor 2, not the kernel version.
 _linux_header:
     j _start
     .word 0
@@ -38,8 +41,8 @@ _linux_header:
     .word 2                       // header version 0.2
     .word 0
     .quad 0
-    .quad 0x5643534952
-    .word 0x05435352
+    .quad 0x5643534952             // legacy little-endian "RISCV" header magic
+    .word 0x05435352               // v0.2 little-endian "RSC\x05" loader magic
     .word 0
 
 .type _start, @function
@@ -49,6 +52,8 @@ _start:
     mv tp, a0
 
     // ELF64 RELATIVE relocations. Firmware selects the physical image base.
+    // Rela fields at +0/+8/+16 are offset/info/addend; 24 bytes is one entry.
+    // Type 3 is R_RISCV_RELATIVE; require symbol zero before adding the load base.
     lla t2, _linux_header
     lla t0, _rela_start
     lla t1, _rela_end
@@ -57,7 +62,7 @@ _start:
     ld t3, 0(t0)
     ld t4, 8(t0)
     ld t5, 16(t0)
-    li t6, 3                     // R_RISCV64_RELATIVE, symbol index zero
+    li t6, 3                     // R_RISCV_RELATIVE, symbol index zero
     bne t4, t6, .Lhalt
     add t3, t3, t2
     add t5, t5, t2
@@ -68,13 +73,9 @@ _start:
     fence rw, rw
     fence.i
 
-    // Non-boot harts: park in WFI loop.
-    // OpenSBI starts only the boot hart initially.  If sbi_hart_start()
-    // sends secondary harts here, they must not re-run BSS clearing or
-    // early_main — park them immediately.
-    // OpenSBI elects one boot hart; it need not be physical hart zero.
-
-    // ---- Boot hart (hart 0) only ----
+    // Firmware must enter _start only on its elected boot hart (not necessarily
+    // hart zero). HSM targets riscv64_secondary_start below; entering a secondary
+    // here would repeat relocations and BSS clearing, since there is no hart gate.
 
     // Set up global pointer for linker relaxation.
     // .option norelax prevents the assembler from GP-relaxing this instruction
@@ -85,7 +86,7 @@ _start:
     .option pop
 
     // Load addresses from the nearby data pool (PC-relative, always in range)
-    // Each "ld rX, .Lpool_xxx - .(%rip)" uses auipc+ld with tiny offset.
+    // The auipc/ld pairs use RISC-V %pcrel_hi/%pcrel_lo to reach nearby pools.
 1:  auipc  sp, %pcrel_hi(.Lpool_stack_top)
     ld     sp, %pcrel_lo(1b)(sp)
 
@@ -125,6 +126,8 @@ _start:
 .global riscv64_secondary_start
 .type riscv64_secondary_start, @function
 riscv64_secondary_start:
+    // HSM passes hart ID in a0 and opaque HartStartContext* in a1; its two
+    // u64 slots at +0/+8 are stack and satp. Establish these before C++ runs.
     mv tp, a0
     .option push
     .option norelax
@@ -143,9 +146,11 @@ riscv64_secondary_start:
 // =============================================================================
 // These .quad entries hold 64-bit absolute addresses that are resolved by the
 // linker.  The code above uses auipc+ld to read them with a tiny PC-relative
-// offset, avoiding the ±1 MB limit of auipc+addi.
+// offset. Keeping data pools nearby avoids instruction-range assumptions for
+// firmware-selected absolute addresses; AUIPC itself is not limited to ±1 MiB.
 // =============================================================================
 .align 3
+// RISC-V .align 3 means 2^3=8 bytes, matching the .quad absolute-address slots.
 .Lpool_stack_top:
     .quad _stack_top
 .Lpool_bss_start:

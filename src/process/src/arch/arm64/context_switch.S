@@ -14,13 +14,16 @@
 // CpuContext structure layout (defined in moss.process module):
 //   Offset  Size   Field
 //   ------  ----   -----
-//   0x000   256    x[32]     — general-purpose registers x0-x31 (8 bytes each)
-//   0x100   8      sp        — stack pointer (offset 248 in x[] is LR=x30)
-//   0x108   8      pc        — program counter (saved/restored as LR)
-//   0x110   8      pstate    — DAIF mask (from mrs/msr daif)
-//   0x118   16     fpsr/fpcr — floating-point status/control registers
+//   0x000   248    x[31]     — general-purpose registers x0-x30 (8 bytes each)
+//   0x0F8   8      sp        — stack pointer (x30/LR is at 0x0F0)
+//   0x100   8      pc        — program counter (saved/restored as LR)
+//   0x108   8      pstate    — DAIF mask (from mrs/msr daif)
+//   0x110   16     fpsr/fpcr — floating-point status/control registers
 //   0x120   512    q[32]     — NEON/FP registers v0-v31 (128-bit each)
 //   0x320   8      tpidr_el0 — thread-local storage pointer (user TLS)
+// All immediates below are byte offsets in this C++ layout, checked by the
+// CpuContext static assertions. GP pairs advance 16 bytes (2*8); Q pairs
+// advance 32 bytes (2*16). Change assembly and structure together.
 //
 // IMPORTANT — DAIF handling during context_switch:
 //   The DAIF (interrupt mask) register is NOT restored during context_switch.
@@ -30,7 +33,8 @@
 //     task's stack would allow a nested IRQ to corrupt that stack.
 //   - The correct unmask happens via:
 //     * irq_trampoline's eret (restores SPSR_EL1 which has pre-IRQ PSTATE)
-//     * test_task_entry (fresh tasks run with caller's IRQ state naturally)
+//     * the scheduler continuation for ordinary kernel dispatch
+//     * kernel_thread_entry explicitly enables IRQs for a fresh kernel thread
 // =============================================================================
 
 #include "moss/trap_frame_offsets.h"
@@ -191,7 +195,7 @@ context_switch:
 //   x1 = user_sp — user-space stack pointer to load into SP_EL0
 //
 // This function:
-//   1. Sets SPSR_EL1 = 0x0 (EL0t with all interrupts enabled)
+//   1. Masks saved PSTATE to user NZCV, selecting EL0t with interrupts enabled
 //   2. Loads the user entry point from ctx->pc into ELR_EL1
 //   3. Restores all GP, FP/NEON, and TLS registers from ctx
 //   4. Sets SP_EL1 to the per-thread kernel stack (from TPIDR_EL1) so that
@@ -296,7 +300,8 @@ kernel_thread_entry:
     mov     x0, x19                     // arg  (stashed by thread creator)
     mov     x1, x20                     // func (stashed by thread creator)
 
-    // Enable IRQ — context_switch caller was IRQ-masked
+    // DAIFCLR immediate bit 1 (value 2) clears only the IRQ mask, preserving
+    // the debug/SError/FIQ masks inherited from the switch caller.
     msr     daifclr, #2
 
     // Call the kernel thread function: func(arg)
@@ -334,8 +339,8 @@ user_eret_trampoline:
 // syscall_fast_path — optimized entry for lightweight system calls
 // =============================================================================
 //
-// Intended for high-frequency syscalls (number < 0x100) that can be handled
-// without a full register save/restore.  Currently a stub.
+// Currently aliases the full native syscall save/restore path; no syscall
+// number threshold or partial-context fast path is implemented here.
 //
 // Prototype: extern "C" void syscall_fast_path();
 //

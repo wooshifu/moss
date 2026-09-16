@@ -1,5 +1,8 @@
 // Read-only backing bytes for each process's RX signal-return page.
 // A rejected signal frame terminates the caller; never execute padding.
+// These are Moss syscall IDs (SYS_SIGRETURN=17, SYS_EXIT=1), not Linux IDs.
+// -14 is the EFAULT fallback exit status if signal restoration unexpectedly
+// returns; keep these bytes synchronized with kernel-syscall_table.cppm.
 .section .rodata
 .balign 16
 .global moss_sigreturn_start

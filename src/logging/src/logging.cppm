@@ -6,9 +6,9 @@
 //      (concurrent, no lock needed — each CPU has its own stack).
 //
 //   2. RING BUFFER LAYER: Formatted text is copied into a global 32KB
-//      lockless ring buffer as complete log records (LogRecordHeader +
+//      ring buffer as complete log records (LogRecordHeader +
 //      text). A brief IrqSpinLock (write_lock_) serializes the copy
-//      (~sub-microsecond hold time).
+//      with UART output deferred until after releasing the write lock.
 //
 //   3. CONSOLE LAYER: After writing a record, the writer tries to acquire
 //      console_lock_ (IrqSpinLock, non-blocking try_lock). If acquired,
@@ -100,6 +100,9 @@ inline auto get_log_level() noexcept -> LogLevel { return g_log_level; }
 
 class LogBuffer {
 public:
+  // A 512-byte stack budget avoids heap allocation in logging and IRQ paths.
+  // It is a truncation policy, not a hardware limit; append reserves one byte
+  // for '\0', so increasing it also increases each caller's stack usage.
   static constexpr u32 BUFFER_SIZE = 512;
 
   void append_char(char c) noexcept {
@@ -122,6 +125,8 @@ public:
       append_char('0');
       return;
     }
+    // A u64 needs at most 20 decimal digits; 21 leaves one spare byte. Decimal
+    // division below uses base 10; this scratch buffer is reversed, not a C string.
     char tmp[21];
     u32 len = 0;
     while (value > 0) {
@@ -136,6 +141,7 @@ public:
   void append_signed(i64 value) noexcept {
     if (value < 0) {
       append_char('-');
+      // -2^63 has no positive i64 counterpart; avoid overflowing unary minus.
       if (value == (-9223372036854775807LL - 1)) {
         append_str("9223372036854775808");
         return;
@@ -156,6 +162,8 @@ public:
       return;
     }
 
+    // Sixteen 4-bit nibbles span a u64; its highest nibble begins at bit 60,
+    // and 0xF isolates one hexadecimal digit before each four-bit step.
     int shift = 60;
     while (shift > 0 && ((value >> shift) & 0xF) == 0) {
       shift -= 4;
@@ -413,7 +421,7 @@ inline void format_into(LogBuffer &buf, const char *fmt, T value, Rest... rest) 
 // PrintkRingBuffer — Linux-style log record ring buffer
 //
 // Records are stored as LogRecordHeader (16 bytes) + text + padding.
-// write_lock_ serializes writes (held ~sub-μs for memcpy).
+// write_lock_ serializes record copies; its hold time depends on record length.
 // console_lock_ serializes UART drain (held for uart::puts duration).
 // emergency_mode_ bypasses everything for panic output.
 // ============================================================================
@@ -426,9 +434,15 @@ struct LogRecordHeader {
   u64 timestamp; // arch::get_timestamp_counter()
 };
 
-inline constexpr u32 RING_BUFFER_SIZE = 32768; // 32KB, power of 2
+// A fixed 32 KiB budget avoids allocation during logging; its exact capacity is
+// policy rather than a measured guarantee. Power-of-two size is required by
+// masked positions, and wrap padding must remain representable by u16 total_len.
+inline constexpr u32 RING_BUFFER_SIZE = 32768;
 inline constexpr u32 RING_BUFFER_MASK = RING_BUFFER_SIZE - 1;
-inline constexpr u8 SKIP_MARKER = 0xFF;
+inline constexpr u8 SKIP_MARKER = 0xFF; // Outside LogLevel's 0-4 values, marking wrap padding.
+// Local text truncation policy; the reason for choosing exactly 496 is not
+// recorded. A 16-byte header plus '\n'/'\0' and alignment makes a full record
+// 520 bytes, so this is not a 512-byte total-record limit.
 inline constexpr u16 MAX_RECORD_TEXT = 496;
 
 class PrintkRingBuffer {
@@ -439,9 +453,11 @@ public:
       text_len = MAX_RECORD_TEXT;
     }
 
-    // Record size: header + text + '\n' + '\0', padded to 8 bytes
+    // Two bytes hold '\n' and '\0'; adding 7 and clearing its three low bits
+    // rounds up to the header's eight-byte alignment before the next record.
     u32 record_len = (static_cast<u32>(sizeof(LogRecordHeader)) + text_len + 2 + 7) & ~7U;
 
+    // The record stores only an eight-bit CPU tag; IDs above 255 are truncated.
     u8 cpu = static_cast<u8>(arch::get_current_cpu_id() & 0xFF);
     u64 ts = arch::get_timestamp_counter();
 
@@ -537,6 +553,7 @@ public:
   }
 
 private:
+  // Match the kernel's cache-line padding assumption for this contended buffer.
   alignas(64) char buf_[RING_BUFFER_SIZE]{};
 
   // Cursor positions (monotonically increasing, masked for buffer access).
@@ -572,6 +589,8 @@ public:
   auto operator=(const LogEntry &) -> LogEntry & = delete;
 
   LogEntry(LogEntry &&other) noexcept : buf_(other.buf_), level_(other.level_), active_(other.active_) {
+    // Only the destination may flush; leaving the source active duplicates the
+    // log when its destructor runs after the move.
     other.active_ = false;
   }
 

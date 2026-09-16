@@ -5,13 +5,14 @@
 // MOSS Kernel - Intrinsics Module (Hub)
 //
 // This module provides type-safe wrappers around Clang compiler intrinsics.
-// All operations are zero-cost abstractions that compile to efficient hardware instructions.
+// Lowering depends on the target and argument types; some builtins need multiple
+// instructions or runtime helpers, as documented by the individual partitions.
 //
 // Partitions:
 // - bitops:  Bit manipulation (clz, ctz, popcount, ffs, parity)
 // - bswap:   Byte swapping for endianness conversion
 // - memory:  Memory operations (memcpy, memset, memmove, memcmp)
-// - atomic:  Lock-free atomic operations with memory ordering
+// - atomic:  Atomic operations with memory ordering
 // - source:  Source location capture (file, line, function)
 // - traits:  Compile-time type introspection
 // - control: Control flow optimization (unreachable, likely, unlikely)

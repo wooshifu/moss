@@ -50,7 +50,8 @@ PageAllocVoidResult PageFrameAllocator::initialize() noexcept {
   return PageAllocVoidResult{};
 }
 
-// Allocated flag bit in PageMetadata::flags
+// Private metadata encoding: bits 0/1 record allocation/head state; the order
+// starts at bit 2 so free_pages can reject a tail page or a mismatched order.
 static constexpr u32 PAGE_FLAG_ALLOCATED = 1U << 0;
 static constexpr u32 PAGE_FLAG_HEAD = 1U << 1;
 static constexpr u32 PAGE_ORDER_SHIFT = 2;
@@ -188,6 +189,8 @@ PageFrameAllocator::MemoryStats PageFrameAllocator::get_memory_stats() noexcept 
 
 // 解析内核内存布局
 PageAllocVoidResult PageFrameAllocator::parse_memory_layout() noexcept {
+  // Current identity/direct maps cover only [0, 4 GiB). Every 0x100000000
+  // bound below excludes RAM/kernel addresses the allocator cannot dereference.
   // Firmware RAM discovery must complete before allocator initialization.
   const auto &plat = ::moss::fdt::get_platform_info();
 
@@ -426,6 +429,8 @@ void PageFrameAllocator::merge_buddies(FreeBlock *block, usize order) noexcept {
 PageFrameAllocator::FreeBlock *PageFrameAllocator::find_buddy(FreeBlock *block, usize order) noexcept {
   usize block_size = PAGE_SIZE << order;
   usize block_addr = reinterpret_cast<usize>(block);
+  // Flipping the order's size bit selects the other half of the same aligned
+  // parent. Relative-to-bank XOR would pair incorrectly at an unaligned bank.
   usize buddy_addr = block_addr ^ block_size;
 
   // 检查buddy是否在空闲列表中
@@ -499,6 +504,8 @@ void PageFrameAllocator::validate_free_lists() noexcept {
     FreeBlock *block = free_lists_[order];
     usize count = 0;
 
+    // 调试扫描最多 1000 个节点，避免损坏链表使诊断挂死；选值依据尚未记录，
+    // 因此到达上限不代表完整验证了该阶的全部空闲块。
     while (block != nullptr && count < 1000) { // 防止无限循环
       // 验证块的阶数
       if (block->order != order) {
@@ -526,6 +533,9 @@ void PageFrameAllocator::dump_memory_layout() noexcept {
 // ============================================================================
 // Page reference counting for COW (Copy-on-Write)
 // ============================================================================
+// Counts describe frame ownership, not VMA/PTE lifetime. Callers must already
+// own a live frame and serialize mapping changes; atomics alone cannot make a
+// refcount==1 COW fast path safe against a concurrent clone or unmap.
 
 void PageFrameAllocator::page_ref_inc(PhysAddr addr) noexcept {
   if (!page_metadata_ || !memory_regions_) {
@@ -533,7 +543,8 @@ void PageFrameAllocator::page_ref_inc(PhysAddr addr) noexcept {
   }
   usize idx = addr_to_page(addr - memory_regions_->start_addr);
   if (idx < metadata_pages_) {
-    // AcqRel: inc must be visible before any access to the shared page
+    // AcqRel orders local setup/access around the ownership update; the caller
+    // must publish the new mapping and prevent increments of a released frame.
     (void)page_metadata_[idx].ref_count.fetch_add(1, containers::MemoryOrder::AcqRel);
   }
 }
@@ -544,8 +555,8 @@ u32 PageFrameAllocator::page_ref_dec(PhysAddr addr) noexcept {
   }
   usize idx = addr_to_page(addr - memory_regions_->start_addr);
   if (idx < metadata_pages_) {
-    // AcqRel: dec must synchronize-with the last inc; when result==0 the
-    // caller frees the page — Acquire ensures all prior writes are visible.
+    // Release orders this owner's page accesses before relinquishing it. The
+    // final decrement acquires earlier releases before the caller reclaims it.
     return page_metadata_[idx].ref_count.fetch_sub(1, containers::MemoryOrder::AcqRel) - 1;
   }
   return 0;
@@ -557,8 +568,8 @@ u32 PageFrameAllocator::page_ref_get(PhysAddr addr) noexcept {
   }
   usize idx = addr_to_page(addr - memory_regions_->start_addr);
   if (idx < metadata_pages_) {
-    // Acquire: reading refcount to decide COW copy vs in-place write —
-    // must see all prior increments to avoid premature free.
+    // Acquire pairs with published ownership updates. The caller's mapping
+    // protocol must still prevent a new owner between this read and a COW write.
     return page_metadata_[idx].ref_count.load(containers::MemoryOrder::Acquire);
   }
   return 0;

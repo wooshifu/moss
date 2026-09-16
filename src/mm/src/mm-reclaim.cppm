@@ -164,6 +164,8 @@ private:
     u32 refault_count;
   };
 
+  // Fixed 1024-entry history limits detector storage and retained accesses;
+  // the original working-set/window sizing evidence is not recorded.
   static constexpr usize ACCESS_HISTORY_SIZE = 1024;
   PageAccessInfo access_history_[ACCESS_HISTORY_SIZE];
   moss::kernel::containers::AtomicSize history_index_;
@@ -456,6 +458,8 @@ private:
 
 class CMAAllocator {
 public:
+  // Fixed region-descriptor capacity; eight is a software storage budget,
+  // not a discovered DMA/hardware limit. Its sizing rationale is unrecorded.
   static constexpr usize MAX_CMA_REGIONS = 8;
 
   struct CMAConfig {
@@ -596,17 +600,20 @@ enum class HugePageSize : u32 {
   COUNT = 4      // Total number of sizes
 };
 
-// Huge page size constants
+// Byte sizes for the declared huge-page variants. With 4 KiB base pages,
+// 2 MiB/1 GiB leaves correspond to the next two 9-bit page-table levels;
+// 16/32 MiB declarations do not imply the active mapper supports those sizes;
+// the reason for retaining those two variants is not recorded.
 inline constexpr usize HUGE_PAGE_2MB = 2ULL * 1024 * 1024;
 inline constexpr usize HUGE_PAGE_1GB = 1ULL * 1024 * 1024 * 1024;
 inline constexpr usize HUGE_PAGE_16MB = 16ULL * 1024 * 1024;
 inline constexpr usize HUGE_PAGE_32MB = 32ULL * 1024 * 1024;
 
 inline constexpr usize HUGE_PAGE_2MB_SIZE = 2ULL * 1024 * 1024;
-inline constexpr usize HUGE_PAGE_2MB_SHIFT = 21;
+inline constexpr usize HUGE_PAGE_2MB_SHIFT = 21; // log2(2 MiB); mask keeps the block-offset bits.
 inline constexpr usize HUGE_PAGE_2MB_MASK = HUGE_PAGE_2MB_SIZE - 1;
 inline constexpr usize HUGE_PAGE_1GB_SIZE = 1ULL * 1024 * 1024 * 1024;
-inline constexpr usize HUGE_PAGE_1GB_SHIFT = 30;
+inline constexpr usize HUGE_PAGE_1GB_SHIFT = 30; // log2(1 GiB); mask keeps the block-offset bits.
 inline constexpr usize HUGE_PAGE_1GB_MASK = HUGE_PAGE_1GB_SIZE - 1;
 inline constexpr usize PAGES_PER_2MB = HUGE_PAGE_2MB_SIZE / PAGE_SIZE;
 inline constexpr usize PAGES_PER_1GB = HUGE_PAGE_1GB_SIZE / PAGE_SIZE;

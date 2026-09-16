@@ -10,7 +10,8 @@
 export module moss.intrinsics:bitops;
 
 /// Bit manipulation operations using Clang intrinsics.
-/// All operations compile to single hardware instructions on modern CPUs.
+/// Instruction selection depends on target features; unsupported operations
+/// may expand into multiple instructions or compiler-runtime calls.
 export namespace moss::intrinsics::bitops {
 
 // ============================================================================

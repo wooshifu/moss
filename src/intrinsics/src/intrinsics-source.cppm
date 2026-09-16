@@ -54,8 +54,7 @@ constexpr unsigned line(unsigned ln = __builtin_LINE()) noexcept { return ln; }
 // ============================================================================
 
 /// Get current function name.
-/// Returns function signature for C++, plain name for C.
-/// Example: "void moss::kernel::process::schedule()"
+/// __builtin_FUNCTION() captures the name, not the full C++ function signature.
 constexpr const char *function(const char *fn = __builtin_FUNCTION()) noexcept { return fn; }
 
 } // namespace moss::intrinsics::source

@@ -17,7 +17,7 @@ export namespace moss::intrinsics::traits {
 // Type Properties
 // ============================================================================
 
-/// Check if two types are the same (ignoring cv-qualifiers).
+/// Check exact type identity, including cv-qualifiers.
 template <typename T, typename U> inline constexpr bool is_same_v = __is_same(T, U);
 
 /// Check if type is const-qualified.

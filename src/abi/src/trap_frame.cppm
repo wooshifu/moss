@@ -11,6 +11,8 @@ using moss::kernel::u8;
 
 // Owned by the exception entry's kernel stack. Valid only until that entry
 // returns. GP numbering is native: ARM x0-x30, RV x1-x31, x86 as CpuContext.
+// The 16-byte alignment matches the native call-stack contract used by entry
+// assembly; the assertions below prevent a C++ layout change from corrupting it.
 #if defined(MOSS_ARCH_ARM64)
 struct alignas(16) TrapFrame {
   u64 x0;
@@ -48,6 +50,7 @@ struct alignas(16) TrapFrame {
   u64 status;
   u64 sp;
   static constexpr u32 GPR_COUNT = 31;
+  // SPSR.M[3:0]=0 identifies EL0t; EL1t/EL1h are privileged origins.
   [[nodiscard]] bool from_user() const noexcept { return (status & 15) == 0; }
   [[nodiscard]] u64 syscall_number() const noexcept { return x8; }
   u64 &result() noexcept { return x0; }
@@ -138,6 +141,7 @@ struct alignas(16) TrapFrame {
   u64 reserved0;
   u64 reserved1;
   static constexpr u32 GPR_COUNT = 31;
+  // sstatus.SPP (bit 8) records the privilege before the supervisor trap.
   [[nodiscard]] bool from_user() const noexcept { return (status & (1ULL << 8)) == 0; }
   [[nodiscard]] u64 syscall_number() const noexcept { return a7; }
   u64 &result() noexcept { return a0; }

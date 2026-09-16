@@ -57,6 +57,9 @@ inline constexpr u64 g_satp_mode_bits = 0;           // not used on ARM64/x86
 /// Uses the runtime-detected mode (Sv39 or Sv48).
 /// @param asid  Address Space Identifier (bits 44-59 of satp).
 [[nodiscard]] inline u64 make_satp_value(PhysAddr pgd_phys, u16 asid = 0) noexcept {
+  // RV64 satp packs MODE[63:60], ASID[59:44] and a 44-bit PPN[43:0].
+  // The 12-bit shift removes the 4 KiB page offset; using a byte address here
+  // would make hardware walk the wrong physical page table.
   return g_satp_mode_bits | (static_cast<u64>(asid) << 44) | ((pgd_phys >> 12) & 0x00000FFFFFFFFFFFULL);
 }
 
@@ -67,6 +70,8 @@ inline constexpr u64 g_satp_mode_bits = 0;           // not used on ARM64/x86
 inline void init_riscv64_address_layout([[maybe_unused]] MmuMode mode) noexcept {
 #if defined(MOSS_ARCH_RISCV64)
   if (mode == MmuMode::Sv48) {
+    // Canonical Sv48 halves meet at 2^47; Sv39 halves meet at 2^38. Keep
+    // USER_MAX exclusive and sign-extend the upper-half base for the mode.
     moss::kernel::KERNEL_BASE = 0xFFFF800000000000ULL;
     moss::kernel::USER_MAX = 0x0000800000000000ULL;
   } else {
@@ -166,6 +171,8 @@ inline constexpr u64 SW_COW = (1ULL << 8);
 namespace page_perms {
 
 #if defined(MOSS_ARCH_ARM64)
+// SH[9:8]=3 selects inner-shareable mappings for coherent kernel RAM.
+// This must agree with the table-walk shareability configuration below.
 inline constexpr u64 KERNEL_RO = page_attr::VALID | page_attr::AF | page_attr::ATTR_NORMAL | page_attr::READONLY |
                                  page_attr::PXN | page_attr::XN | (3ULL << 8);
 inline constexpr u64 KERNEL_RW =
@@ -261,13 +268,16 @@ struct VirtualAddressBreakdown {
 // ============================================================================
 struct AddressSpaceConfig {
 #if defined(MOSS_ARCH_ARM64)
-  // TCR_EL1 register value for 48-bit VA, 4KB granule, Inner Shareable
+  // T0SZ/T1SZ=16 means 64-16=48 address bits; IPS=5 selects 48-bit PA.
+  // TG0 and TG1 have different encodings: TG1=0 below is reserved, not the
+  // architected 4 KiB encoding (2). Its use has no recorded rationale; review
+  // that value separately from comment maintenance (Arm TCR_EL1[31:30]).
   static constexpr u64 TCR_VALUE = (16ULL << 0) |  // T0SZ: 48-bit TTBR0 region
                                    (16ULL << 16) | // T1SZ: 48-bit TTBR1 region
                                    (0ULL << 6) |   // not used
                                    (0ULL << 23) |  // not used
                                    (0ULL << 14) |  // TG0: 4KB granule
-                                   (0ULL << 30) |  // TG1: 4KB granule
+                                   (0ULL << 30) |  // TG1: reserved encoding; see caveat above
                                    (1ULL << 8) |   // IRGN0: WB-WA
                                    (1ULL << 10) |  // ORGN0: WB-WA
                                    (3ULL << 12) |  // SH0: Inner Shareable
@@ -277,6 +287,9 @@ struct AddressSpaceConfig {
                                    (5ULL << 32);   // IPS: 48-bit PA
 
   // MAIR_EL1: Memory Attribute Indirection Register
+  // Attribute bytes encode device nGnRnE=0x00, normal WBWA=0xff and normal
+  // non-cacheable=0x44. Slots 0/1/2 must match page_attr::ATTR_* indices;
+  // changing slot order silently changes the memory type of existing PTEs.
   static constexpr u64 MAIR_DEVICE_nGnRnE = 0x00ULL;
   static constexpr u64 MAIR_NORMAL_WBWA = 0xFFULL;
   static constexpr u64 MAIR_NORMAL_NC = 0x44ULL;

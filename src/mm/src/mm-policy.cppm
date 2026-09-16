@@ -49,6 +49,9 @@ enum class NUMAPolicy : u32 { DEFAULT = 0, BIND = 1, INTERLEAVE = 2, PREFERRED =
 enum class NodeState : u8 { OFFLINE = 0, ONLINE = 1, PARTIAL = 2, RESERVED = 3 };
 
 struct NUMADistance {
+  // Relative distance scores, not time units: local=10, remote=20 and the
+  // largest u8 (255) marks unknown/unreachable. The provenance of the
+  // 10/20 normalization is not recorded; no measured topology is implied.
   static constexpr u8 LOCAL_DISTANCE = 10;
   static constexpr u8 REMOTE_DISTANCE = 20;
   static constexpr u8 UNREACHABLE_DISTANCE = 255;
@@ -491,6 +494,8 @@ private:
   usize pending_count_;
   usize pending_size_;
   moss::kernel::containers::IrqSpinLock lock_;
+  // Bound declared deferred-free retention by both bytes and list entries.
+  // Exact budgets (64 MiB/256 entries) have no recorded sizing evidence.
   static constexpr usize MAX_PENDING_SIZE = 64ULL * 1024 * 1024; // 64MB
   static constexpr usize MAX_PENDING_COUNT = 256;
 
@@ -517,6 +522,8 @@ public:
   [[nodiscard]] static VmallocResult<void *> ioremap(PhysAddr phys_addr, usize size) noexcept;
   static VmallocVoidResult iounmap(void *addr) noexcept;
 
+  // Declaration's default is 16 base pages (64 KiB), independent of Thread's
+  // active 16 KiB stack allocator. The reason for this separate size is unrecorded.
   [[nodiscard]] static VmallocResult<void *> alloc_kernel_stack(usize stack_size = 16 * PAGE_SIZE) noexcept;
   static VmallocVoidResult free_kernel_stack(void *stack_base) noexcept;
 
@@ -558,6 +565,7 @@ inline VmallocVoidResult free(void *addr) noexcept { return VmallocAllocator::vf
   return VmallocAllocator::ioremap(phys_addr, size);
 }
 inline VmallocVoidResult iounmap(void *addr) noexcept { return VmallocAllocator::iounmap(addr); }
+// Keep the convenience default equal to alloc_kernel_stack's declared 64 KiB budget.
 [[nodiscard]] inline VmallocResult<void *> alloc_stack(usize size = 16 * PAGE_SIZE) noexcept {
   return VmallocAllocator::alloc_kernel_stack(size);
 }

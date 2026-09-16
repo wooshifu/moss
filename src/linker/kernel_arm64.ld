@@ -4,6 +4,9 @@ ENTRY(_start)
 
 MEMORY
 {
+    /* 256 MiB is link-image capacity, not discovered RAM. Origin zero permits
+     * firmware relocation; physical memory availability is validated at boot.
+     * The exact capacity budget has no recorded sizing derivation. */
     RAM (rwx) : ORIGIN = 0, LENGTH = 256M
 }
 
@@ -27,9 +30,9 @@ SECTIONS
     _text_start = .; /* Boot code and ordinary text share the RX protection range. */
 
     /* ---- Boot Code Section ----
-     * MUST be the first section so that _start (the entry point) is located
-     * exactly at the image base.  The bootloader jumps here.
-     * Contains: Linux ARM64 Image header, EL3→EL2→EL1 transition, exception
+     * MUST be first so the Linux Image header is exactly at image base;
+     * its branch reaches _start after the header. ELF entry uses _start directly.
+     * Contains: Linux ARM64 Image header, EL descent (EL3 caveat at el3_entry), exception
      * vector table installation, BSS clearing, stack setup, and jump to kernel_main.
      */
     .text.boot : {
@@ -132,7 +135,9 @@ SECTIONS
         _stack_top = .;
     }
 
-    /* Reserved identity-mapped runtime heap, disjoint from page allocator RAM. */
+    /* 8 MiB is the fixed runtime heap reserve, disjoint from page allocator RAM;
+     * boot initially admits only 256 KiB. The 8 MiB budget has no recorded
+     * workload derivation; growing it increases the loader's reserved image span. */
     .heap (NOLOAD) : ALIGN(4K) {
         _heap_start = .;
         . += 8M;
@@ -147,6 +152,8 @@ SECTIONS
      * Size calculation:
      *   - 1 L1 table (4 KB) + several L2/L3 tables
      *   - 64 KB supports ~16 page table pages, sufficient for early boot
+     * This fixed bootstrap pool uses 4 KiB tables; exhaustion is a boot failure.
+     * The exact 16-page capacity has no recorded worst-case mapping derivation.
      */
     .pagetables (NOLOAD) : ALIGN(4K) {
         _pagetable_start = .;

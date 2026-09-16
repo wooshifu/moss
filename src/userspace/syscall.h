@@ -1,6 +1,6 @@
 // MOSS userspace syscall wrappers — shared header for all user programs
 //
-// Provides inline ARM64 syscall stubs and POSIX-like wrapper functions.
+// Provides inline ARM64, x64 and RV64 stubs for the Moss-native syscall ABI.
 // All user programs should #include "syscall.h" instead of defining their own.
 
 #pragma once
@@ -61,10 +61,14 @@ enum {
 };
 
 // No payload; succeeds only on a terminal. Not a Linux termios command.
+// 0x4d01 is a Moss-specific command ID shared with vfs:types; its exact
+// allocation rationale is unrecorded. Do not substitute a Linux termios opcode.
 enum { MOSS_IOCTL_ISATTY = 0x4d01 };
 
 // ============================================================================
 // Low-level syscall wrappers
+// The memory clobber prevents moving user-buffer accesses across the trap.
+// x64 additionally clobbers RCX/R11 because SYSCALL uses them for return PC/flags.
 // ============================================================================
 
 #ifdef __riscv
@@ -245,6 +249,8 @@ enum { SIG_DFL = 0, SIG_IGN = 1 };
 // sigprocmask 'how' values
 enum { SIG_BLOCK = 0, SIG_UNBLOCK = 1, SIG_SETMASK = 2 };
 
+// Moss-native flags, translated by mlibc: SA_ONSTACK here is bit 0, unlike
+// libc's public encoding. Handler/mask/stack layouts below must match the kernel.
 // sigaction flags
 enum { SA_ONSTACK = 0x1 };
 
@@ -318,6 +324,8 @@ static inline long sigaltstack(const struct stack_t *ss, struct stack_t *old_ss)
   return syscall2(SYS_SIGALTSTACK, (long)ss, (long)old_ss);
 }
 
+// Clock ID 1 selects monotonic time. Moss returns a single u64 nanosecond
+// count, not a POSIX timespec; mlibc performs that representation conversion.
 static inline long clock_gettime_ns(unsigned long *ns) { return syscall2(SYS_CLOCK_GETTIME, 1, (long)ns); }
 
 static inline long nanosleep_ns(unsigned long *ns) { return syscall2(SYS_NANOSLEEP, (long)ns, 0); }
@@ -329,6 +337,9 @@ static inline long nanosleep_ns(unsigned long *ns) { return syscall2(SYS_NANOSLE
 // Layout must match kernel-side topinfo_layout exactly.
 // ============================================================================
 
+// Fixed ABI capacities and 16-byte names below match topinfo_layout; they bound
+// the returned snapshot independently of the kernel's actual task/CPU limits.
+// Any change requires rebuilding both producer and consumer with the same layout.
 enum { TOP_MAX_PROCS = 64, TOP_MAX_CPUS = 32 };
 
 struct TopProcessInfo {
@@ -438,6 +449,8 @@ static inline int ultoa(unsigned long val, char *buf, int bufsize) {
     buf[1] = '\0';
     return 1;
   }
+  // A 64-bit unsigned value needs at most 20 decimal digits (2^64 - 1).
+  // This scratch array holds digits only; the caller buffer must also allow NUL.
   char tmp[20];
   int len = 0;
   while (val > 0 && len < 20) {
@@ -466,6 +479,9 @@ static inline int ltoa(long val, char *buf, int bufsize) {
   return ultoa((unsigned long)val, buf, bufsize);
 }
 
+// Decimal buffers include NUL: unsigned 20-byte buffers can truncate a full
+// 20-digit u64 value. Signed 21-byte buffers fit 19 digits, sign and NUL; the
+// original unsigned budget has no recorded rationale.
 // Print an unsigned long as decimal
 static inline void print_ulong(unsigned long val) {
   char buf[20];

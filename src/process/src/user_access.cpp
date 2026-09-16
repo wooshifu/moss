@@ -13,12 +13,16 @@ usize copy_from_user(void *destination, u64 source, usize size) noexcept {
   if (!size)
     return 0;
   auto owner = current_owner();
+  // Keep the Process alive while inspecting its address-space metadata. This
+  // owner reference does not exclude exec/unmap or pin VMA/PTE/data pages.
   auto *as = owner ? owner->address_space() : nullptr;
   usize remaining = size;
   if (as && as->allows_user_access(source, size, vma_flags::READ)) {
     remaining = moss::abi::uaccess::moss_raw_copy_from_user(destination, reinterpret_cast<const void *>(source), size);
   }
   auto *tail = static_cast<u8 *>(destination) + (size - remaining);
+  // A raw copy can fault after a prefix. Clear the uncopied input tail so a
+  // caller inspecting the whole kernel buffer cannot consume recycled bytes.
   for (usize i = 0; i < remaining; ++i)
     tail[i] = 0;
   return remaining;

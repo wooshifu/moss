@@ -39,7 +39,8 @@ inline constexpr bool is_riscv64 = (CURRENT_ARCH == Architecture::RISCV64);
 // Memory barriers
 // ============================================================================
 
-// Full memory barrier (data + instruction ordering)
+// Full data-memory ordering barrier. Instruction publication needs the
+// architecture's instruction/cache synchronization as well.
 inline void memory_barrier() noexcept {
 #if defined(MOSS_ARCH_ARM64)
   asm volatile("dmb sy" ::: "memory");
@@ -88,7 +89,7 @@ inline void instruction_barrier() noexcept {
 #if defined(MOSS_ARCH_ARM64)
   asm volatile("isb" ::: "memory");
 #elif defined(MOSS_ARCH_X64)
-  asm volatile("" ::: "memory"); // x86 serialises via CPUID; lightweight barrier here
+  asm volatile("" ::: "memory"); // Compiler barrier only; this does not execute serializing CPUID.
 #elif defined(MOSS_ARCH_RISCV64)
   asm volatile("fence.i" ::: "memory");
 #endif
@@ -110,6 +111,8 @@ inline void io_barrier() noexcept {
 // ============================================================================
 
 // Hint the CPU to yield execution (spin-wait optimisation)
+// This never schedules a thread or waits for an event; spin loops must keep
+// checking their condition and cannot rely on a matching SEV notification.
 inline void cpu_yield() noexcept {
 #if defined(MOSS_ARCH_ARM64)
   asm volatile("yield" ::: "memory");
@@ -137,8 +140,8 @@ inline void cpu_idle_once() noexcept {
 #if defined(MOSS_ARCH_ARM64)
   // Match x64 (sti;hlt;cli) and RISC-V 64 (csrsi;wfi;csrci) pattern:
   // enable IRQ → WFI → disable IRQ.
-  // Without explicit IRQ enable, WFI returns immediately when DAIF.I=1
-  // (IRQs masked), causing a busy-loop that pins host CPU at 100%.
+  // Enable IRQ delivery so wakeups can run their handlers; keep the caller's
+  // scheduler bookkeeping after this sequence protected by masking again.
   asm volatile("dsb sy" ::: "memory");
   asm volatile("msr daifclr, #0x2" ::: "memory"); // enable IRQ (clear DAIF.I)
   asm volatile("wfi" ::: "memory");
@@ -156,13 +159,15 @@ inline void cpu_idle_once() noexcept {
 #endif
 }
 
-// Get current CPU ID from hardware (raw, unclamped).
-// Callers (e.g. PerCpuData) are responsible for bounds checking.
+// Translate firmware hardware IDs into logical per-CPU indices. Missing IDs
+// return platform's out-of-range sentinel; callers must still bounds-check.
 #if defined(MOSS_ARCH_RISCV64)
 [[nodiscard]] inline u64 riscv64_hart_id(u32 logical) noexcept { return platform::hardware.cpus[logical].hardware_id; }
 inline void set_user_kernel_stack(u64 top) noexcept {
   // The caller must keep IRQs masked until the S-mode switch or user return
   // consumes this value: nonzero sscratch selects a user-origin trap stack.
+  // Reserve 16 bytes at stack top for the saved kernel tp slot plus alignment;
+  // riscv64_syscall.S reads the slot before building the native TrapFrame.
   u64 hart;
   asm volatile("mv %0, tp" : "=r"(hart));
   *reinterpret_cast<u64 *>(top - 16) = hart;
@@ -173,9 +178,11 @@ inline void set_user_kernel_stack(u64 top) noexcept {
 #if defined(MOSS_ARCH_ARM64)
   u64 mpidr;
   asm volatile("mrs %0, mpidr_el1" : "=r"(mpidr));
+  // Retain MPIDR Aff3[39:32] and Aff2:Aff0[23:0], excluding status/reserved bits.
   return platform::logical_cpu(mpidr & 0xFF00FFFFFFULL);
 #elif defined(MOSS_ARCH_X64)
   u32 eax, ebx, ecx, edx;
+  // CPUID leaf 1 EBX[31:24] is the legacy initial APIC ID (x2APIC is unsupported).
   asm volatile("cpuid" : "=a"(eax), "=b"(ebx), "=c"(ecx), "=d"(edx) : "a"(1));
   return platform::logical_cpu((ebx >> 24) & 0xFF);
 #elif defined(MOSS_ARCH_RISCV64)
@@ -200,8 +207,8 @@ inline void set_user_kernel_stack(u64 top) noexcept {
   return (static_cast<u64>(hi) << 32) | lo;
 #elif defined(MOSS_ARCH_RISCV64)
   // Use rdtime instead of rdcycle: cycle counter may be disabled in S-mode
-  // (requires mcounteren.CY which OpenSBI may not set), but time is always
-  // accessible from S-mode per RISC-V 64 privileged spec.
+  // (requires mcounteren.CY). rdtime also requires firmware to grant counter
+  // access or emulate it; the boot profile supplies that firmware contract.
   u64 val;
   asm volatile("rdtime %0" : "=r"(val));
   return val;
@@ -285,6 +292,8 @@ inline void flush_tlb() noexcept {
 
 inline void flush_tlb_addr(VirtAddr addr) noexcept {
 #if defined(MOSS_ARCH_ARM64)
+  // TLBI's VA operand uses address bits [55:12], not a byte address. The
+  // 12-bit shift follows the 4 KiB page granule used by the kernel mappings.
   asm volatile("tlbi vae1is, %0" ::"r"(addr >> 12) : "memory");
   asm volatile("dsb sy");
   asm volatile("isb");
@@ -386,6 +395,7 @@ inline void setup_kernel_mmu(PhysAddr kernel_pgd_pa) noexcept {
   u64 mode_bits = current_satp & (0xFULL << 60);
   // If MMU not yet enabled (mode=0), default to Sv39.
   if (mode_bits == 0) {
+    // RV64 satp.MODE=8 is Sv39; MODE occupies bits [63:60].
     mode_bits = 8ULL << 60;
   }
   u64 satp_val = mode_bits | ((kernel_pgd_pa >> 12) & 0x00000FFFFFFFFFFFULL);
@@ -432,8 +442,10 @@ inline void early_arch_init() noexcept {
   currentel = (currentel >> 2) & 3;
 
   if (currentel == 3) {
+    // SCR.NS/HCE/RW (bits 0/8/10) select non-secure AArch64 and permit HVC.
     u64 scr = (1 << 0) | (1 << 8) | (1 << 10);
     asm volatile("msr scr_el3, %0" ::"r"(scr));
+    // SPSR.M=5 selects EL1h; bits 6..9 mask FIQ/IRQ/SError/debug during setup.
     u64 spsr = (1 << 0) | (1 << 2) | (1 << 6) | (1 << 7) | (1 << 8) | (1 << 9);
     asm volatile("msr spsr_el3, %0" ::"r"(spsr));
   }

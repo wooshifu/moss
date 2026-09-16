@@ -69,10 +69,15 @@ struct [[gnu::packed]] TSS64 {
 };
 
 struct alignas(16) X86CpuRuntime {
+  // GS offsets 0/8 are consumed by x64_syscall.S for kernel RSP/user scratch.
+  // Reordering these fields requires updating the assembly entry contract.
   u64 kernel_rsp;
   u64 user_rsp_scratch;
   TSS64 *tss;
 };
+// Sixteen entries match BOOT_MAX_CPUS. Each AP gets seven GDT slots (five
+// segments plus a two-slot TSS) and a page-aligned 32 KiB boot stack; stack
+// budget is a fixed policy with no recorded maximum-depth measurement.
 static X86CpuRuntime cpu_runtime[16];
 static TSS64 ap_tss[16];
 static u64 ap_gdt[16][7];
@@ -81,6 +86,8 @@ alignas(4096) static u8 ap_stacks[16][32768];
 static void set_gs_runtime(u32 cpu, TSS64 *tss) noexcept {
   cpu_runtime[cpu].tss = tss;
   u64 base = reinterpret_cast<u64>(&cpu_runtime[cpu]);
+  // IA32_GS_BASE MSR=0xc0000101 selects this CPU's SYSCALL scratch storage;
+  // WRMSR takes the 64-bit address as EDX:EAX.
   asm volatile("wrmsr" ::"c"(0xC0000101U), "a"(static_cast<u32>(base)), "d"(static_cast<u32>(base >> 32)) : "memory");
 }
 
@@ -162,7 +169,7 @@ static void early_print(const char *str) { moss::kernel::hal::uart::puts(str); }
 
 static void early_print_hex(u64 value) {
   constexpr char hex_chars[] = "0123456789ABCDEF";
-  char buffer[19] = "0x";
+  char buffer[19] = "0x"; // 2 prefix bytes + 16 u64 hex digits + NUL.
 
   for (int i = 15; i >= 0; i--) {
     buffer[2 + (15 - i)] = hex_chars[(value >> (i * 4)) & 0xF];
@@ -226,6 +233,9 @@ static bool checksum(const u8 *p, u32 length) noexcept {
   return sum == 0;
 }
 static const u8 *acpi_table(u64 address) noexcept {
+  // ACPI SDT headers are 36 bytes; Length is a little-endian u32 at +4.
+  // The 1 MiB maximum bounds malformed-table scans, not ACPI table size by
+  // specification; its exact policy threshold has no recorded derivation.
   if (!physical_range(address, 36)) {
     return nullptr;
   }
@@ -237,6 +247,9 @@ static const u8 *acpi_table(u64 address) noexcept {
   return p;
 }
 static const u8 *rsdp_at(u64 address) noexcept {
+  // RSDP revision (+15) >=2 adds Length(+20) and XSDT address(+24) to the
+  // original 20-byte checksum prefix; the extended minimum is 36 bytes.
+  // The 4096-byte scan ceiling is a local rejection policy, not an ACPI limit.
   if (!physical_range(address, 36)) {
     return nullptr;
   }
@@ -259,7 +272,9 @@ static bool discover_acpi(u64 address) noexcept {
     return false;
   }
   if (!address) {
-    // ACPI's IA-PC discovery contract: EBDA first KiB, then BIOS ROM area.
+    // IA-PC RSDP discovery checks 16-byte boundaries in EBDA's first KiB,
+    // then ROM 0xe0000..0xfffff. BDA 0x40e stores the EBDA segment (*16).
+    // The 0x80000..0x9fc00 EBDA admission window is a local safety policy.
     u64 ebda = static_cast<u64>(*reinterpret_cast<volatile u16 *>(0x40E)) << 4;
     if (ebda >= 0x80000 && ebda <= 0x9FC00) {
       for (u64 p = ebda; p < ebda + 1024 && !rsdp; p += 16) {
@@ -274,6 +289,7 @@ static bool discover_acpi(u64 address) noexcept {
     return false;
   }
   bool extended = rsdp[15] >= 2 && acpi_value(rsdp + 24, 8);
+  // XSDT entries are 8-byte physical addresses; legacy RSDT entries are 4-byte.
   const auto *root = acpi_table(acpi_value(rsdp + (extended ? 24 : 16), extended ? 8 : 4));
   if (!root || !signature(root, extended ? "XSDT" : "RSDT", 4)) {
     return false;
@@ -291,6 +307,8 @@ static bool discover_acpi(u64 address) noexcept {
     }
     u32 length = static_cast<u32>(acpi_value(table + 4, 4));
     if (signature(table, "APIC", 4)) {
+      // MADT follows its 36-byte header with LAPIC address(+36), flags(+40),
+      // then records at +44. Each record begins with one-byte Type and Length.
       if (madt_found || length < 44) {
         return false;
       }
@@ -303,6 +321,7 @@ static bool discover_acpi(u64 address) noexcept {
         const u8 *entry = table + pos;
         u32 len = entry[1];
         if (entry[0] == 0) {
+          // Type 0: 8-byte Local APIC, APIC ID +3, enabled flag bit 0 at +4.
           if (len != 8) {
             return false;
           }
@@ -313,24 +332,27 @@ static bool discover_acpi(u64 address) noexcept {
             hardware.cpus[hardware.cpu_count++].hardware_id = entry[3];
           }
         } else if (entry[0] == 1) {
-          // ponytail: one GSI-zero I/O APIC; add multiple domains when required.
+          // Type 1: 12-byte I/O APIC, MMIO address +4 and GSI base +8.
+          // This profile accepts one GSI-zero domain; more need routing support.
           if (len != 12 || hardware.intc.cpu_base || acpi_value(entry + 8, 4) != 0) {
             return false;
           }
           hardware.intc.cpu_base = acpi_value(entry + 4, 4);
         } else if (entry[0] == 2) {
+          // Type 2: 10-byte ISA override, bus +2, IRQ +3, GSI +4, flags +8.
           if (len != 10 || entry[2] != 0 || entry[3] >= 16) {
             return false;
           }
           hardware.isa_gsi[entry[3]] = static_cast<u32>(acpi_value(entry + 4, 4));
           hardware.isa_flags[entry[3]] = static_cast<u16>(acpi_value(entry + 8, 2));
         } else if (entry[0] == 5) {
+          // Type 5: 12-byte LAPIC address override with a 64-bit address at +4.
           if (len != 12) {
             return false;
           }
           hardware.intc.dist_base = acpi_value(entry + 4, 8);
         } else if (entry[0] == 9) {
-          // x2APIC is a separate driver capability, not a guessed xAPIC ID.
+          // Type 9: 16-byte x2APIC, flags +8; enabled x2APIC needs another driver.
           if (len != 16 || (acpi_value(entry + 8, 4) & 1)) {
             return false;
           }
@@ -338,7 +360,8 @@ static bool discover_acpi(u64 address) noexcept {
         pos += len;
       }
     } else if (signature(table, "SPCR", 4) && length >= 80) {
-      // 16550, System I/O or MMIO, byte-wide registers, legacy ISA IRQ.
+      // SPCR: interface +36, GAS +40 (space/width/offset, address +44),
+      // interrupt kind +52, legacy IRQ +53. Require the supported 16550 layout.
       u64 base = acpi_value(table + 44, 8);
       if (table[36] <= 1 && table[40] <= 1 && table[41] == 8 && !table[42] && (table[52] & 1) && table[53] > 0 &&
           table[53] < 16 && base && (table[40] ? base <= 0xFFF8 : physical_range(base, 8))) {
@@ -358,6 +381,8 @@ static bool discover_acpi(u64 address) noexcept {
     return false;
   }
   u32 lo, hi;
+  // IA32_APIC_BASE MSR=0x1b: bit 11 enables APIC, bit 10 selects x2APIC;
+  // bits [35:12] locate xAPIC MMIO and must agree with MADT discovery.
   asm volatile("rdmsr" : "=a"(lo), "=d"(hi) : "c"(0x1BU));
   u64 apic_base = (static_cast<u64>(hi) << 32) | lo;
   if (!(apic_base & (1U << 11)) || (apic_base & (1U << 10)) ||
@@ -378,7 +403,8 @@ static bool discover_acpi(u64 address) noexcept {
   for (u32 i = 0; i < 16; ++i) {
     hardware.isa_gsi[i] = i;
   }
-  // Legacy serial resource from BIOS data, never a guessed COM1 base.
+  // BDA 0x400 supplies the first serial I/O base; eight register ports must
+  // fit the 16-bit I/O space (base<=0xfff8). IRQ4 is this legacy serial policy.
   u16 serial = *reinterpret_cast<volatile u16 *>(0x400);
   if (serial && serial <= 0xFFF8) {
     hardware.uart = {.kind = UartKind::Ns16550,
@@ -392,6 +418,9 @@ static bool discover_acpi(u64 address) noexcept {
                      .valid = true};
   }
   const auto *start = static_cast<const HvmStartInfo *>(ctx.device_tree_ptr);
+  // Xen PVH magic=0x336ec578; version>=1 adds the memory map. The 128-entry
+  // admission cap bounds firmware scans and has no recorded sizing derivation;
+  // map type 1 denotes usable RAM, other types must not enter the allocator.
   auto invalid = [] { return ::moss::kernel::VoidResult{::moss::kernel::ErrorCode::InvalidArgument}; };
   if (!start || !physical_range(reinterpret_cast<u64>(start), sizeof(*start)) || start->magic != 0x336ec578 ||
       start->version < 1 || !start->memmap_entries || start->memmap_entries > 128) {
@@ -476,7 +505,8 @@ static bool discover_acpi(u64 address) noexcept {
   }
   ::moss::kernel::mm::PageTableManager::enable_dynamic_alloc();
 
-  // Initialize runtime heap allocator with a 256 KB region
+  // 256 KiB initializes the allocator inside the linker's 8 MiB heap reserve;
+  // it is an initial policy, not all available RAM. Exact sizing evidence is absent.
   VirtAddr heap_start = moss::abi::linker::heap_start();
   ::moss::kernel::usize initial_heap_size = 256ULL * 1024;
   auto heap_result = ::moss::kernel::mm::RuntimeHeapAllocator::initialize_heap(heap_start, initial_heap_size);
@@ -572,7 +602,8 @@ extern "C" void x64_interrupt_handler(u64 vector, u64 error_code, [[maybe_unused
     __builtin_unreachable();
   }
 
-  // External IRQ (vector >= 32): send EOI first, then dispatch
+  // EOI before dispatch because the timer callback may context-switch away
+  // before returning; deferring EOI could leave the local interrupt in service.
   const u64 LAPIC_EOI_ADDR = moss::kernel::platform::intc_dist_base() + 0x0B0;
   auto *lapic_eoi = reinterpret_cast<volatile u32 *>(LAPIC_EOI_ADDR);
   *lapic_eoi = 0;
@@ -583,7 +614,7 @@ extern "C" void x64_interrupt_handler(u64 vector, u64 error_code, [[maybe_unused
     return;
   }
 
-  // COM1 UART RX (vector 36 = IRQ4 routed via I/O APIC)
+  // Firmware UART IRQ n is routed to IDT 32+n, beyond CPU exception vectors.
   if (vector == 32 + moss::kernel::platform::hardware.uart.irq && g_x64_uart_rx_handler != nullptr) {
     g_x64_uart_rx_handler();
   }
@@ -640,13 +671,8 @@ extern "C" void x64_interrupt_handler(u64 vector, u64 error_code, [[maybe_unused
 
   moss::boot::early_print("=== x64 SMP Support Setup ===\n");
 
-  // Use the CPU count detected via CPUID during hardware_early_init.
-  // AP boot via INIT-SIPI-SIPI requires:
-  //   1. A real-mode trampoline page below 1 MB
-  //   2. ACPI/MP table parsing to discover APIC IDs
-  //   3. Per-AP GDT, page tables, and stack allocation
-  // These prerequisites are substantial; for now we report the detected
-  // count and boot only the BSP.
+  // ACPI MADT already supplied the CPU count. Defer INIT/SIPI activation until
+  // the kernel calls activate_secondary_cpus(), after shared runtime setup.
   u32 detected = moss::fdt::g_platform_info.cpu_count;
   ctx.total_cpus = detected;
   moss::kernel::g_num_cpus = detected;
@@ -706,6 +732,9 @@ static void ap_delay() noexcept {
     return value;
   };
   out(0x43, 0x30);
+  // PIT channel 0 mode 0, low byte 0/high byte 0x40: 16384 reference ticks
+  // (~13.7 ms at 1193182 Hz). The 10000000 read-back polls only bound a
+  // stalled counter; their exact count is uncalibrated and not a timeout in ms.
   out(0x40, 0x00);
   out(0x40, 0x40);
   for (u32 i = 0; i < 10000000; ++i) {
@@ -717,6 +746,9 @@ static void ap_delay() noexcept {
 }
 
 void activate_secondary_cpus() noexcept {
+  // SIPI carries a 4 KiB page vector below 1 MiB: vector 8 enters at 0x8000.
+  // This fixed trampoline address must match every relocated reference in
+  // start_x64.S; the current boot profile assumes firmware leaves it available.
   auto *copy = reinterpret_cast<u8 *>(0x8000);
   u64 size = static_cast<u64>(x86_ap_trampoline_end - x86_ap_trampoline_start);
   if (size > 4096) {
@@ -748,6 +780,8 @@ void activate_secondary_cpus() noexcept {
       *icr_hi = static_cast<u32>(moss::kernel::platform::hardware.cpus[cpu].hardware_id) << 24;
       *icr_lo = 0x00000608;
     }
+    // Bound readiness spinning to 100000000 CPU hints; this is a poll budget
+    // with no measured wall-clock rationale, separate from the final timed wait.
     for (u32 retry = 0; retry < 100000000; ++retry) {
       if (__atomic_load_n(&online_cpu_mask, __ATOMIC_ACQUIRE) & (1ULL << cpu)) {
         break;
@@ -785,7 +819,7 @@ extern "C" [[noreturn]] void x86_secondary_entry() noexcept {
   struct [[gnu::packed]] {
     u16 limit;
     u64 base;
-  } gdtr{.limit = 55, .base = reinterpret_cast<u64>(ap_gdt[cpu])};
+  } gdtr{.limit = 55, .base = reinterpret_cast<u64>(ap_gdt[cpu])}; // 7 * 8 GDT bytes - 1.
   asm volatile("lgdt %0" ::"m"(gdtr) : "memory");
   asm volatile("pushq $8; leaq 1f(%%rip), %%rax; pushq %%rax; lretq; 1:" ::: "rax", "memory");
   asm volatile("ltr %w0" ::"r"(static_cast<u16>(0x28)));
@@ -796,6 +830,9 @@ extern "C" [[noreturn]] void x86_secondary_entry() noexcept {
   *reinterpret_cast<volatile u32 *>(moss::kernel::platform::intc_dist_base() + 0x3E0) = 3;
   *reinterpret_cast<volatile u32 *>(moss::kernel::platform::intc_dist_base() + 0x320) = 48;
   u64 entry = reinterpret_cast<u64>(&moss::abi::syscall_entry_point);
+  // SYSCALL MSRs: LSTAR=0xc0000082, STAR=0xc0000081, FMASK=0xc0000084,
+  // EFER=0xc0000080. STAR high=0x00100008 selects kernel CS 8 and SYSRET
+  // base 0x10; FMASK=0x700 clears TF/IF/DF on entry and EFER.SCE bit 0 enables it.
   asm volatile("wrmsr" ::"c"(0xC0000082U), "a"(static_cast<u32>(entry)), "d"(static_cast<u32>(entry >> 32)));
   asm volatile("wrmsr" ::"c"(0xC0000081U), "a"(0U), "d"(0x00100008U));
   asm volatile("wrmsr" ::"c"(0xC0000084U), "a"(0x700U), "d"(0U));
@@ -803,6 +840,8 @@ extern "C" [[noreturn]] void x86_secondary_entry() noexcept {
   asm volatile("rdmsr" : "=a"(lo), "=d"(hi) : "c"(0xC0000080U));
   asm volatile("wrmsr" ::"c"(0xC0000080U), "a"(lo | 1U), "d"(hi));
   moss::boot::record_cpu_online();
+  // 10000000 is TSC ticks, not ns: initial delay=10000000/calibrated_TSC_Hz s.
+  // The specific first-compare tick budget has no recorded tuning rationale.
   moss::kernel::hal::timer::set_compare(moss::kernel::hal::timer::read_counter() + 10000000);
   moss::kernel::process::secondary_cpu_schedule_loop(cpu);
 }

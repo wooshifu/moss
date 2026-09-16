@@ -46,6 +46,8 @@ inline constexpr u32 SIGTSTP = 20;
 inline constexpr u32 SIGTTIN = 21;
 inline constexpr u32 SIGTTOU = 22;
 
+// Native action storage has 32 slots: zero is unused, leaving signals 1..31.
+// The mask uses the same signal-number bit positions, including unused bit 0.
 inline constexpr u32 NSIG = 32; // max signal number (1-31 valid)
 
 // Bit mask for a signal number (1-based)
@@ -55,7 +57,8 @@ constexpr u64 sigmask(u32 signo) noexcept { return (signo > 0 && signo < NSIG) ?
 inline constexpr u64 UNCATCHABLE_MASK = sigmask(SIGKILL) | sigmask(SIGSTOP);
 } // namespace sig
 
-// sigaction flags
+// Native sigaction ABI assigns independent bits 0/1/2; keep these positions
+// in sync with userspace. Only ONSTACK is active; the other flags are reserved.
 namespace sa_flags {
 inline constexpr u32 SA_ONSTACK = 0x1; // use alternate signal stack
 inline constexpr u32 SA_RESTART = 0x2; // restart interrupted syscalls (reserved)
@@ -117,7 +120,12 @@ constexpr SigDefault default_action(u32 signo) noexcept {
 // Only user state is serialized; no kernel frame pointer or entry metadata.
 // FP storage is aligned for FXSAVE64 on x86 and Q0-Q31 on ARM64.
 struct alignas(16) SignalFrame {
+  // A recognizable/versioned sentinel rejects foreign or obsolete layouts;
+  // its exact spelling is an ABI identifier, not a numeric tuning choice.
   static constexpr u64 MAGIC = 0xDEAD'5164'5346'5232ULL;
+  // 31 eight-byte GPR slots plus state, 512-byte FP storage and trailing
+  // signal/mask/link fields round to 848 bytes at 16-byte alignment. Keep
+  // this native ABI size in sync with userspace signal-frame consumers.
   static constexpr usize FRAME_SIZE = 848;
   u64 magic;
   u64 gp_regs[31];
@@ -126,7 +134,7 @@ struct alignas(16) SignalFrame {
   u64 sp;
   u64 fpsr;
   u64 fpcr;
-  alignas(16) u64 fp[64];
+  alignas(16) u64 fp[64]; // 64 * 8 bytes: FXSAVE64 or 32 * 16-byte ARM64 Q registers.
   u64 signo;
   u64 saved_mask;
   u64 saved_on_alt_stack;

@@ -9,7 +9,8 @@
 //   1. sys_write(stdout, "init: calling execve...\n") — announce trampoline
 //   2. sys_execve("/shell.elf", NULL, NULL) — replace process image with
 //      the shell.elf program from initramfs CPIO archive
-//   3. On failure: sys_write(stdout, error message) → sys_exit(1)
+//   3. On failure: sys_write(stdout, error prefix) → sys_exit(0)
+//      The legacy success status after failed exec has no recorded rationale.
 //
 // x64 MOSS syscall convention:
 //   RAX     = syscall number
@@ -50,7 +51,7 @@ _user_program_start:
     movq    $33, %rax               // syscall number: sys_write
     movq    $1, %rdi                // fd = STDOUT_FILENO
     leaq    .Lmsg_execve(%rip), %rsi // buf = address of message string
-    movq    $25, %rdx               // count = 25 bytes
+    movq    $25, %rdx               // Legacy count 25 exceeds the 23-byte string by 2; rationale unrecorded.
     syscall                         // trap to ring 0 → system_call_handler
 
     // ---- Step 2: sys_execve("/shell.elf", NULL, NULL) ----
@@ -68,10 +69,11 @@ _user_program_start:
     movq    $33, %rax               // syscall number: sys_write
     movq    $1, %rdi                // fd = STDOUT_FILENO
     leaq    .Lmsg_error(%rip), %rsi // buf = "execve failed with error: "
-    movq    $27, %rdx               // count = 27 bytes
+    movq    $27, %rdx               // Legacy count 27 exceeds this 25-byte string; rationale unrecorded.
     syscall
 
-    // ---- This should never be reached ----
+    // ---- Legacy failure path currently reports exit status 0 ----
+    // Successful exec never returns; changing this status alters failure reporting.
     movq    $1, %rax                // syscall number: sys_exit
     movq    $0, %rdi                // exit status = 0 (success)
     syscall
@@ -84,11 +86,11 @@ _user_program_start:
 // Read-only string data (placed inline to allow RIP-relative addressing)
 // =============================================================================
 .Lmsg_execve:
-    .ascii  "init: calling execve...\n"    // 25 bytes (includes \n, no NUL)
+    .ascii  "init: calling execve...\n"    // 23 bytes (includes \n, no NUL)
 .Lpath_shell:
     .asciz  "/shell.elf"                   // 11 bytes (includes NUL terminator)
 .Lmsg_error:
-    .ascii  "execve failed with error: "   // 27 bytes (no \n, no NUL)
+    .ascii  "execve failed with error: "   // 25 bytes (no \n, no NUL)
 
 // =============================================================================
 // End-of-program marker

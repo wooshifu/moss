@@ -4,8 +4,10 @@
 //
 // MOSS Kernel - Intrinsics Module: Atomic Operations
 //
-// This partition provides lock-free atomic operations using Clang intrinsics.
+// This partition provides atomic operations using Clang intrinsics.
 // All operations are sequentially consistent by default but support relaxed orderings.
+// Lock freedom depends on type width/alignment and target support; callers in
+// this freestanding kernel must not assume arbitrary T avoids runtime helpers.
 
 export module moss.intrinsics:atomic;
 
@@ -64,6 +66,9 @@ template <typename T> [[nodiscard]] T exchange(T *ptr, T val, memory_order order
 // ============================================================================
 // Compare-And-Swap (CAS)
 // ============================================================================
+// Failure ordering applies to a load: it cannot be release/acq_rel or stronger
+// than success. When weakening success from seq_cst, also choose a valid failure
+// order instead of accidentally retaining the seq_cst default.
 
 /// Atomically compare *ptr with *expected, replace with desired if equal.
 /// Strong variant: never spuriously fails.

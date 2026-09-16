@@ -12,6 +12,8 @@ unsigned current_cpu() noexcept;
 struct Clock {
   Tick frequency = 0;
   const char *source = "invalid";
+  // Three calibration samples permit selecting the median and reporting spread;
+  // this fixed array length must agree with discover_clock() in validation.cpp.
   Tick calibration_ticks[3]{};
   Tick reference_ticks[3]{};
   unsigned uncertainty_ppm = 0;
@@ -20,6 +22,9 @@ struct Clock {
 struct Context {
   const Clock &clock;
   Count iterations = 0;
+  // Fixed defaults bound fixture resources and sampling work: 256 operations,
+  // five discarded warmups and 30 recorded samples. These are policy defaults,
+  // not evidence of statistical convergence; boot options can override sampling.
   Count capacity = 256;
   unsigned warmup = 5;
   unsigned samples = 30;
@@ -55,6 +60,8 @@ struct Context {
       iterations = 1;
       while (valid) {
         Tick elapsed = batch(iterations);
+        // Aim for at least 1 ms per batch to reduce counter overhead's share;
+        // stop at the fixture capacity even if the target duration is unmet.
         if (elapsed >= clock.frequency / 1000 || iterations >= capacity) {
           break;
         }
@@ -81,6 +88,8 @@ struct Scenario {
 };
 
 struct Registry {
+  // Sixteen entries bound static registration storage without using the heap;
+  // exceeding this policy budget is reported instead of silently dropping a case.
   Scenario scenarios[16]{};
   unsigned count = 0;
   const char *error = nullptr;

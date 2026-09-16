@@ -16,13 +16,22 @@
 #define MOSS_SYSCALL_RAW_ONLY
 #include "syscall.h"
 
+// Fixture exit protocol: 37 reports a completed runtime/permission worker;
+// 39 proves a selected exec continuation ran. Other nonzero returns identify
+// failed checks (some add a subsystem base) and must match validation.c.
+// Patterns 0xa5/0x5a and distinct TLS sentinels reveal unchanged, zeroed or
+// aliased storage. Page fixtures use the kernel's 4096-byte granule.
 extern char **environ;
 
+// A nonzero .tdata initializer and a separate .tbss zero initializer exercise
+// both halves of TLS startup; the marker is deliberately unlike later writes.
 static _Thread_local volatile unsigned long tls_value = 0x12345678;
 static _Thread_local volatile unsigned long tls_zero;
 
 // Separate cold read-only pages: neither copying the file nor starting its
 // new image faults these pages in before the backing file is destroyed.
+// 8192 bytes span two base pages; distinct markers at bytes 0/8191 check both
+// ends after destruction rather than merely verifying the first mapped page.
 static const unsigned char snapshot_canary[8192] __attribute__((aligned(4096))) = {[0] = 0x37, [8191] = 0xa9};
 
 static volatile sig_atomic_t delivered;
@@ -43,6 +52,8 @@ static int uname_runtime(void) {
 #else
   const char *machine = "riscv64";
 #endif
+  // The native uname layout has six fixed 65-byte fields (64 chars + NUL).
+  // Sixteen-byte guards and 0xa5 fill expose writes beyond or short of that ABI.
   _Static_assert(sizeof(struct utsname) == 6 * 65, "Moss uname ABI");
   const char *expected[] = {"Moss", "moss", MOSS_TEST_RELEASE, MOSS_TEST_VERSION, machine, ""};
   for (unsigned i = 0; i < 6; ++i) {
@@ -93,6 +104,10 @@ static int uname_runtime(void) {
 }
 
 static int filesystem_permissions_runtime(void) {
+  // Directory modes 0555/0777/0700 distinguish search-only, public mutation
+  // and owner-only search; file modes 0600/0000 separate owner access from
+  // the initial create-open exception. Control 511/38 drops this child to UID/GID
+  // 99, a non-root identity distinct from the parent-owned fixture (UID/GID 0).
   if (mkdir("/permission-lock", 0555) || mkdir("/permission-open", 0777) || mkdir("/permission-hidden", 0700) ||
       mkdir("/permission-lock/sub", 0777))
     return 1;
@@ -216,6 +231,8 @@ static int terminal_runtime(void) {
   int console = open("/dev/console", O_WRONLY);
   if (console < 0)
     return 1;
+  // Choose a high valid fd (200 < native MAX_FDS 256) to exercise descriptor
+  // identity separately from stdio and the just-opened console slot.
   int duplicate = fcntl(console, F_DUPFD, 200);
   if (duplicate < 200 || close(console) || isatty(duplicate) != 1)
     return 2;
@@ -284,6 +301,8 @@ static int working_directory_runtime(void) {
   char cwd[256];
   if (getcwd(cwd, sizeof(cwd)) != cwd || strcmp(cwd, "/"))
     return 1;
+  // Root requires exactly two bytes ("/" plus NUL); the third-byte sentinel
+  // proves an exact-sized output does not overrun, while size 1 must fail.
   char exact[3] = {'x', 'y', 'z'};
   if (getcwd(exact, 2) != exact || exact[0] != '/' || exact[1] || exact[2] != 'z')
     return 5;
@@ -298,6 +317,8 @@ static int working_directory_runtime(void) {
   memset(too_long, 'x', sizeof(too_long));
   if (syscall1(SYS_CHDIR, (long)too_long) != -ENAMETOOLONG)
     return 17;
+  // The native path snapshot is 1024 bytes; libc's pinned adapter separately
+  // caps path strings at 256, so test both boundaries rather than equating them.
   too_long[256] = 0;
   errno = 0;
   if (chdir(too_long) != -1 || errno != ENAMETOOLONG)
@@ -408,6 +429,8 @@ static int pipe_runtime(void) {
   struct {
     int fds[2];
     unsigned long guard;
+    // libc expects two 32-bit ints; native pipe copies two 64-bit longs into
+    // adapter storage. The adjacent nonzero guard catches copying them here directly.
   } pipe_result = {{-1, -1}, 0x12345678};
   if (pipe(pipe_result.fds) || pipe_result.guard != 0x12345678)
     return 0;
@@ -444,6 +467,8 @@ static int descriptor_runtime(void) {
   if (boundary_fd < 0 || write(boundary_fd, "fd", 2) != 2 || lseek(boundary_fd, 0, SEEK_SET) != 0)
     return 7;
   // Cross the real syscall entry with values that must not alias this live FD.
+  // 256 is the exclusive table bound. +/-2^32 preserve the live descriptor
+  // if incorrectly narrowed to 32 bits, exposing aliasing instead of a true EBADF.
   const long invalid_fds[] = {-1, 256, boundary_fd + (1L << 32), boundary_fd - (1L << 32)};
   for (unsigned i = 0; i < sizeof(invalid_fds) / sizeof(invalid_fds[0]); ++i) {
     unsigned char byte = 0xa5;
@@ -472,6 +497,8 @@ static int descriptor_runtime(void) {
       stat("/mode-uncreated", &absent) != -1 || errno != ENOENT ||
       syscall3(SYS_OPEN, (long)"/dev/null", 1L << 32, 0) != -EINVAL)
     return 6;
+  // 200/201 are adjacent high valid slots reused by the fd-after-exec selector:
+  // the CLOEXEC duplicate disappears only on successful exec; its peer survives.
   int fd = open("/dev/null", O_RDONLY | O_CLOEXEC);
   if (fd < 0 || fcntl(fd, F_GETFD) != FD_CLOEXEC || fcntl(fd, F_DUPFD_CLOEXEC, 200) != 200 ||
       fcntl(fd, F_DUPFD, 201) != 201 || fcntl(200, F_GETFD) != FD_CLOEXEC || fcntl(201, F_GETFD) != 0 ||
@@ -596,6 +623,8 @@ static int rename_runtime(void) {
       stat("/libc-rename-source", &current) || current.st_ino != original.st_ino ||
       stat("/libc-rename-target", &current) || current.st_ino != replaced.st_ino)
     return 2;
+  // Slash + 256-byte component + NUL needs 258 bytes; shortening the component
+  // by one next checks the native 255-byte MAX_NAME_LEN acceptance boundary.
   char leaf[258];
   leaf[0] = '/';
   memset(leaf + 1, 'x', 256);
@@ -679,6 +708,8 @@ static int directory_runtime(void) {
 
 static int directory_entries_runtime(void) {
   struct dirent entry;
+  // Native record: 19-byte dirent prefix + 256-byte name + 5 explicit tail bytes.
+  // A 280-byte fixed record must match vfs::DirEntry and the pinned mlibc layout.
   _Static_assert(sizeof(entry) == 280, "Moss fixed directory record");
   if (mkdir("/libc-entries", 0700) || mkdir("/libc-entries/one", 0700) || mkdir("/libc-entries/two", 0700))
     return 1;
@@ -696,6 +727,9 @@ static int directory_entries_runtime(void) {
   char *area = mmap(NULL, 4096, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
   char *guard = mmap(NULL, 4096, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
   // Native mmap advances a cursor; unmap the second complete VMA to leave a known hole.
+  // Place the record 100 bytes before the boundary: a 280-byte copy then crosses
+  // it. Exact offset 100 is a fixture choice; any value strictly inside the record
+  // width forces full-range admission to fail before altering user memory.
   if (area == MAP_FAILED || guard == MAP_FAILED || guard != area + 4096 || munmap(guard, 4096) ||
       syscall3(SYS_GETDENTS, fd, (long)(area + 4096 - 100), sizeof(entry)) != -EFAULT || munmap(area, 4096))
     return 4;
@@ -743,6 +777,9 @@ int main(int argc, char **argv) {
     return 90;
   if (!argc)
     return argv && !argv[0] && !environ[0] ? 39 : 111;
+  // Match exec_probe's exact limit fixtures: 64 argv plus 64 environment strings
+  // hit 128 total; "bytes" plus NUL uses 6 bytes and 16377 'a's plus NUL use
+  // 16378, totaling the inclusive 16384-byte native exec budget.
   if (!strcmp(argv[0], "count")) {
     if (argc != 64 || argv[64])
       return 112;
@@ -840,6 +877,8 @@ int main(int argc, char **argv) {
       syscall2(SYS_ARCH_PRCTL, 0x1003, 1) != -EFAULT || syscall2(SYS_ARCH_PRCTL, 0x1003, (long)&after) || after != base)
     return 103;
 #endif
+  // Two pages test allocator startup and a later byte (4096) beyond the first
+  // page; independent parent/child TLS markers verify COW isolation after fork.
   char *buffer = malloc(8192);
   if (!buffer)
     return 91;
@@ -858,6 +897,8 @@ int main(int argc, char **argv) {
     longjmp(saved, 37);
   if (jump != 37)
     return 95;
+  // Binary-exact inputs/results avoid rounding tolerance and cover compiler-rt
+  // arithmetic/conversion paths across float, double, long double and integers.
   volatile float single = 1.5f;
   volatile double twice = 2.0;
   volatile long double wide = 4.0L;
@@ -888,6 +929,8 @@ int main(int argc, char **argv) {
     tls_value = 101;
     tls_zero = 202;
     errno = EDOM;
+    // Thirty-two yields provide repeated save/restore opportunities; this
+    // bounded fixture count is not proof that every CPU interleaving occurs.
     for (int i = 0; i < 32; ++i) {
       sched_yield();
       if (!tls_matches(101, 202, EDOM))

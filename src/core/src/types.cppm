@@ -29,7 +29,9 @@ using isize = ptrdiff_t;
 using PhysAddr = u64;
 using VirtAddr = u64;
 
-// Page-related constants
+// The boot mappings and page-table walkers on all supported architectures use
+// 4 KiB base pages (2^12 bytes). Changing this requires matching MMU and linker
+// layouts; the 2 MiB/1 GiB sizes span one/two additional 9-bit table levels.
 constexpr usize PAGE_SIZE = 4096;
 constexpr usize PAGE_SHIFT = 12;
 constexpr usize LARGE_PAGE_SIZE = 2ULL * 1024 * 1024;       // 2MB
@@ -66,7 +68,9 @@ inline PhysAddr virt_to_phys(VirtAddr va) noexcept { return va - KERNEL_DIRECT_M
 // Check if an address is in the high-half kernel region
 inline bool is_kernel_addr(VirtAddr va) noexcept { return va >= KERNEL_BASE; }
 
-// Hardware constants
+// Padding granularity for per-CPU storage and contended atomics. The kernel
+// assumes 64-byte cache lines; this is not a runtime probe, so larger hardware
+// lines can still cause false sharing between adjacent padded slots.
 constexpr usize CACHE_LINE_SIZE = 64;
 
 // Boot-time maximum CPUs (compile-time constant for assembly/linker only).
@@ -82,6 +86,7 @@ inline u32 g_num_cpus = 1;
 // Uses a single inline u64 for ≤64 CPUs (zero heap allocation).
 // For >64 CPUs, dynamically allocates via operator new.
 class CpuBitmap {
+  // One bit per CPU in each u64; division/modulo below must use its bit width.
   static constexpr u32 BITS_PER_WORD = 64;
 
   u64 inline_word_{0};
@@ -153,6 +158,8 @@ public:
 
   // Move
   CpuBitmap(CpuBitmap &&other) noexcept : inline_word_{0}, words_{&inline_word_}, num_words_{other.num_words_} {
+    // Only heap storage can be transferred: an inline word belongs to the
+    // source object and must never leave words_ pointing into a moved-from object.
     if (num_words_ > 1) {
       words_ = other.words_;
       other.words_ = &other.inline_word_;
@@ -262,12 +269,14 @@ using ChannelId = u32;
 using ShmId = u32;
 using ServiceId = u32;
 
-// Special ID values
+// Zero denotes an absent ID when checked against these sentinel constants.
+// This convention is specific to those checks, not a ban on zero in every ID namespace.
 constexpr ProcessId INVALID_PROCESS_ID = 0;
 constexpr ThreadId INVALID_THREAD_ID = 0;
 constexpr EndpointId INVALID_ENDPOINT_ID = 0;
 
-// Error codes (superset of both types.hpp and result.hpp)
+// Internal error identifiers, not the Linux errno numbers exposed by syscalls.
+// Existing numeric assignments are retained so callers comparing stored codes agree.
 enum class ErrorCode : u32 {
   Success = 0,
   OutOfMemory = 1,
@@ -293,7 +302,7 @@ enum class ErrorCode : u32 {
   ResourceExhausted = 20,
   Busy = 21,
   InternalError = 22,
-  Unknown = 0xFFFFFFFF
+  Unknown = 0xFFFFFFFF // All u32 bits set keeps the sentinel outside ordinary error IDs.
 };
 
 // Kernel error type alias
@@ -306,7 +315,8 @@ constexpr Handle INVALID_HANDLE = 0;
 // Error code to string conversion
 const char *error_to_string(ErrorCode error) noexcept;
 
-// Memory alignment utilities
+// Power-of-two alignment clears the low address bits. align_up's addition must
+// not overflow; callers handling untrusted sizes must validate before rounding.
 template <usize Alignment> constexpr usize align_up(usize value) noexcept {
   static_assert((Alignment & (Alignment - 1)) == 0, "Alignment must be power of 2");
   return (value + Alignment - 1) & ~(Alignment - 1);

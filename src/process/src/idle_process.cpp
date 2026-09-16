@@ -13,7 +13,8 @@ static moss::kernel::containers::PerCpuData<bool> g_cpu_idle_status{false};
 IdleTask::IdleTask(u32 cpu_id) noexcept
     : Thread(Process::allocate_thread_id(), ProcessId{0}), cpu_id_(cpu_id), idle_time_ns_(0), last_idle_start_(0) {
 
-  // idle任务的调度参数设置
+  // 与 CFS nice-to-weight 表的末项一致：nice=19 对应 weight=15，表示
+  // 最低普通权重；真正的 idle 调度选择还依赖独立的 Idle 类。
   this->se.nice = 19;    // 最低优先级
   this->se.weight = 15;  // 最小权重
   this->se.vruntime = 0; // 虚拟运行时间为0

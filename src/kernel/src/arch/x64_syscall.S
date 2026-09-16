@@ -5,13 +5,19 @@
 .global syscall_entry_point
 .type syscall_entry_point, @function
 syscall_entry_point:
+    // X86CpuRuntime starts with kernel_rsp at GS+0 and user_rsp_scratch at
+    // GS+8 (one u64 each). Save user SP before switching to this CPU's kernel stack.
     movq %rsp, %gs:8
     movq %gs:0, %rsp
+    // IRET selectors match the boot GDT: user data is index 3 with RPL3
+    // (3*8+3=0x1b), user code is index 4 with RPL3 (4*8+3=0x23).
     pushq $0x1b
     pushq %gs:8
     pushq %r11
     pushq $0x23
     pushq %rcx
+    // SYSCALL supplies no interrupt vector or error code; reserve two u64
+    // zero slots to preserve the native IDT TrapFrame layout.
     pushq $0
     pushq $0
     pushq %rax
@@ -49,7 +55,7 @@ syscall_entry_point:
     popq %rcx
     popq %rbx
     popq %rax
-    addq $16, %rsp
+    addq $16, %rsp // Discard the two 8-byte synthetic vector/error slots before IRETQ.
     iretq
 .size syscall_entry_point, . - syscall_entry_point
 
@@ -58,6 +64,8 @@ syscall_entry_point:
 syscall_return:
     testq %rdi, %rdi
     jz .Lreturn_error
+    // Legacy opaque SyscallContext byte offset (slot 7), not MOSS_TF_RAX.
+    // Its defining layout is not recorded here; native return consumes the frame.
     movq 56(%rdi), %rax
     ret
 .Lreturn_error:

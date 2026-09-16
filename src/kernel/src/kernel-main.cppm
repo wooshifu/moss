@@ -83,7 +83,7 @@ class Kernel {
 private:
   // Boot state
   BootPhase current_phase_;
-  [[maybe_unused]] SubsystemState subsystem_states_[8]; // Per-subsystem states
+  [[maybe_unused]] SubsystemState subsystem_states_[8]; // Unused fixed bookkeeping budget; exact sizing is unrecorded.
 
   // Core subsystem instances
   containers::ContainerLibrary *container_lib_;
@@ -98,7 +98,7 @@ private:
 
   // Boot time recording
   u64 boot_start_time_;
-  u64 phase_start_times_[8];
+  u64 phase_start_times_[8]; // Indexed by the eight BootPhase ordinals, not subsystem counts.
 
   // Kernel configuration
   struct KernelConfig {
@@ -117,12 +117,14 @@ public:
         page_table_manager_(nullptr), process_manager_(nullptr), scheduler_(nullptr), load_balancer_(nullptr),
         shared_memory_manager_(nullptr), ipc_manager_(nullptr), gic_(nullptr), device_manager_(nullptr),
         boot_start_time_(0), phase_start_times_{0} {
-    // Initialize kernel configuration
+    // Fixed default budgets: 256 processes, 16 threads/process, 16 MiB heap
+    // and a 10 ms configured timeslice. Their exact sizing/tuning evidence
+    // is not recorded here; review the consuming subsystem before changing them.
     config_ = {.enable_smp = true,
                .enable_preemption = true,
                .max_processes = 256,
                .max_threads_per_process = 16,
-               .kernel_heap_size = 16ULL * 1024 * 1024, // 16MB
+               .kernel_heap_size = 16ULL * 1024 * 1024, // 16 MiB
                .enable_debug_output = true,
                .scheduler_timeslice_ms = 10};
   }
@@ -312,12 +314,16 @@ private:
     const char *phase_names[] = {"Early init",        "Memory management", "Scheduler",  "IPC system",
                                  "Device management", "System services",   "User-space", "Complete"};
 
+    // Ordinals 0..6 perform initialization; Completed=7 is set by initialize()
+    // only after all stages succeed. Keep this bound synchronized with BootPhase.
     for (int phase = 0; phase < 7; ++phase) {
       current_phase_ = static_cast<BootPhase>(phase);
       phase_start_times_[phase] = get_current_time();
 
       // Direct UART: avoid klog lock contention after secondary CPUs start
       early_debug_print("[boot] Phase ");
+      // Current stage ordinals fit one decimal digit plus NUL; extending phases
+      // past 9 also requires replacing this fixed two-byte diagnostic format.
       char ph[2] = {static_cast<char>('0' + phase), '\0'};
       early_debug_print(ph);
       early_debug_print(": ");
@@ -527,7 +533,8 @@ private:
       // Activate all parked secondary CPUs
       moss::boot::activate_secondary_cpus();
 
-      // Wait for secondary CPUs to complete activation
+      // Bound the online handshake to 5000 ms (5 s) so a missing CPU cannot
+      // stall boot indefinitely. The exact timeout calibration is not recorded.
       u32 active_cpus = moss::boot::wait_for_all_cpus_active(5000);
       if (active_cpus != g_num_cpus) {
         log::klog::error("SMP startup timed out: {} of {} CPUs online", active_cpus, g_num_cpus);
@@ -755,7 +762,7 @@ private:
     init_thread->stack_base = stack_bottom;
     init_thread->stack_size = user_layout::STACK_SIZE;
     init_thread->context.pc = entry_point;
-    init_thread->context.sp = user_layout::STACK_TOP - 16; // 16-byte aligned
+    init_thread->context.sp = user_layout::STACK_TOP - 16; // Keep SP inside the VMA and 16-byte aligned.
 
     // Architecture-specific user-mode pstate:
     //   ARM64:  0x0 = EL0t (user mode, all interrupts enabled on eret)
@@ -770,6 +777,8 @@ private:
     init_thread->is_user_task = true;       // Permanent: drives page table switch on re-dispatch
 
     init_thread->sched_class = SchedClass::Normal;
+    // -5 gives init a higher CFS weight than default nice 0. The exact
+    // priority choice is not documented; changing it affects descendant scheduling.
     init_thread->se.nice = -5;
     init_thread->se.weight = cfs_params::nice_to_weight(-5);
     init_thread->se.vruntime = 1;
@@ -835,6 +844,8 @@ private:
 
     u64 fp = arch::get_frame_pointer();
 
+    // Cap panic output at ten frames to bound traversal even for a cyclic
+    // frame chain; the cap does not validate that a saved pointer is readable.
     for (int i = 0; i < 10 && fp != 0; i++) {
       u64 *frame = reinterpret_cast<u64 *>(fp);
       if (frame != nullptr) {

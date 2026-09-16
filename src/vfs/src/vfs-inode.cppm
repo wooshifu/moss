@@ -93,6 +93,8 @@ struct Inode {
 
   // -- Directory children (used by ramfs/devfs directory inodes) --
   // Simple inline array to avoid dynamic allocation for small dirs.
+  // This 64-entry inline budget bounds directory memory and namespace scans.
+  // Its exact sizing evidence is not recorded; exhaustion rejects new children.
   static constexpr u32 MAX_CHILDREN = 64;
   Dentry *children[MAX_CHILDREN];
   u32 child_count;
