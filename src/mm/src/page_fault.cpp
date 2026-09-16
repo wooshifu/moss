@@ -22,10 +22,10 @@ extern "C" [[noreturn]] void unhandled_user_exception_handler(unsigned long long
                                                               unsigned long long elr) noexcept;
 
 extern "C" void riscv64_page_fault_handler(unsigned long long scause, unsigned long long stval,
-                                         unsigned long long sepc) noexcept;
+                                           unsigned long long sepc) noexcept;
 
 extern "C" void x64_page_fault_handler(unsigned long long error_code, unsigned long long cr2,
-                                          unsigned long long rip) noexcept;
+                                       unsigned long long rip) noexcept;
 
 module moss.mm;
 
@@ -649,7 +649,7 @@ extern "C" [[noreturn]] void unhandled_user_exception_handler(unsigned long long
 // ============================================================================
 #if defined(MOSS_ARCH_RISCV64) || defined(__riscv) || defined(__riscv__)
 extern "C" void riscv64_page_fault_handler(unsigned long long scause, unsigned long long stval, unsigned long long sepc,
-                                         void *raw_frame) noexcept {
+                                           void *raw_frame) noexcept {
   namespace log = moss::kernel::logging;
   using namespace moss::kernel;
 
@@ -698,7 +698,7 @@ extern "C" void riscv64_page_fault_handler(unsigned long long scause, unsigned l
 // ============================================================================
 #if defined(MOSS_ARCH_X64) || defined(__x86_64__) || defined(__x86_64)
 extern "C" void x64_page_fault_handler(unsigned long long error_code, unsigned long long cr2, unsigned long long rip,
-                                          void *raw_frame) noexcept {
+                                       void *raw_frame) noexcept {
   namespace log = moss::kernel::logging;
   using namespace moss::kernel;
 

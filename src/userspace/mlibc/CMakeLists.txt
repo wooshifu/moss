@@ -58,8 +58,8 @@ target_link_options(
     -nostdlib
     -static
     -fuse-ld=lld
-    # Match userspace.ld: 8 GiB keeps code above inherited kernel identity mappings;
-    # 4096-byte segment alignment permits distinct permissions on base pages.
+    # Match userspace.ld: 8 GiB keeps code above inherited kernel identity mappings; 4096-byte segment alignment permits
+    # distinct permissions on base pages.
     -Wl,--image-base=0x200000000,-z,max-page-size=4096
 )
 set_target_properties(
