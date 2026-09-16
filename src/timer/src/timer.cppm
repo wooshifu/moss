@@ -36,6 +36,9 @@ public:
   /// Initialize from hardware: read frequency, compute mult/shift.
   [[nodiscard]] VoidResult initialize() noexcept;
 
+  /// Initialize from calibrated counter metadata without reading hardware.
+  [[nodiscard]] VoidResult initialize(u64 frequency_hz, u64 boot_counter) noexcept;
+
   /// Monotonic time since boot (nanoseconds).
   [[nodiscard]] u64 now_ns() const noexcept;
 
@@ -238,28 +241,37 @@ namespace moss::kernel::timer {
 // ============================================================================
 
 VoidResult Clocksource::initialize() noexcept {
-  // Read hardware frequency
-  freq_hz_ = hal::timer::frequency();
-  if (freq_hz_ == 0) {
+  const u64 frequency_hz = hal::timer::frequency();
+  if (frequency_hz == 0) {
     return VoidResult{ErrorCode::InvalidState};
   }
+  return initialize(frequency_hz, hal::timer::read_counter());
+}
+
+VoidResult Clocksource::initialize(u64 frequency_hz, u64 boot_counter) noexcept {
+  // Q32 has 32 fractional bits; 10^9 converts Hz to cycles per nanosecond.
+  constexpr u32 shift = 32;
+  constexpr u64 ns_per_sec = 1000000000ULL;
+  // Reject rates whose integral Q32 inverse would not fit u64; the HAL's
+  // supported frequencies are well below this representation limit.
+  if (frequency_hz == 0 || frequency_hz / ns_per_sec > (~u64{0} >> shift)) {
+    return VoidResult{ErrorCode::InvalidState};
+  }
+  freq_hz_ = frequency_hz;
+  shift_ = shift;
 
   // Compute mult and shift for: ns = (cycles * mult) >> shift
   // Formula: mult = (10^9 << shift) / freq_hz
-  // Choose shift to maximize precision without 64-bit overflow.
-  // Q32 preserves fractional precision, but (freq_hz << 32) below fits u64
-  // only for freq_hz < 2^32 Hz; higher rates need a separate conversion review.
   // 1000000000 << 32 = 0x3B9ACA00_00000000 — fits in u64.
-  shift_ = 32;
-  u64 ns_per_sec = 1000000000ULL;
   mult_ = (ns_per_sec << shift_) / freq_hz_;
 
-  // Compute inverse: cycles = (ns * inv_mult) >> shift
-  // inv_mult = (freq_hz << shift) / 10^9
-  inv_mult_ = (freq_hz_ << shift_) / ns_per_sec;
+  // floor(freq*2^32/10^9) = (freq/10^9)*2^32 + floor((freq%10^9)*2^32/10^9).
+  // Divide the whole units before shifting; the remaining numerator is below
+  // 10^9*2^32, so each intermediate fits even at the HAL's 100 GHz ceiling.
+  // Avoid >=2^32 Hz overflow without introducing freestanding __udivti3.
+  inv_mult_ = ((freq_hz_ / ns_per_sec) << shift_) + ((freq_hz_ % ns_per_sec) << shift_) / ns_per_sec;
 
-  // Record boot timestamp
-  boot_cycles_ = hal::timer::read_counter();
+  boot_cycles_ = boot_counter;
 
   return VoidResult{};
 }

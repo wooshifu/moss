@@ -47,18 +47,14 @@ file(
     "enum { COMMON_BUFSIZE = 1024 };\nextern char bb_common_bufsiz1[];\n#define setup_common_bufsiz() ((void)0)\n"
     @ONLY
 )
-file(
-    GLOB
-    generation_inputs
-    CONFIGURE_DEPENDS
-    "*/*.c"
-    "*/*/*.c"
-    "include/*.src.h"
-)
+# The Moss BusyBox profile has an explicit source list. Keeping the generator dependencies explicit avoids CMake's
+# per-build glob verification while still regenerating applet metadata when a supported source or template changes.
+set(BUSYBOX_GENERATION_INPUTS ${BUSYBOX_SOURCES} applets/applets.c include/applets.src.h include/usage.src.h)
+list(TRANSFORM BUSYBOX_GENERATION_INPUTS PREPEND "${BUSYBOX_SOURCE_DIR}/")
 add_custom_command(
     OUTPUT "${BUSYBOX_BINARY_DIR}/include/applets.h" "${BUSYBOX_BINARY_DIR}/include/usage.h"
     COMMAND sh "${BUSYBOX_SOURCE_DIR}/scripts/gen_build_files.sh" "${BUSYBOX_SOURCE_DIR}" "${BUSYBOX_BINARY_DIR}"
-    DEPENDS ${generation_inputs} scripts/gen_build_files.sh
+    DEPENDS ${BUSYBOX_GENERATION_INPUTS} "${BUSYBOX_SOURCE_DIR}/scripts/gen_build_files.sh"
     VERBATIM
 )
 add_custom_target(
@@ -103,6 +99,8 @@ foreach(target busybox-lib busybox-validation)
                 -funsigned-char
                 -fno-unwind-tables
                 -fno-asynchronous-unwind-tables
+                # BusyBox intentionally uses string-literal offsets to omit fixed prefixes.
+                -Wno-string-plus-int
                 -include
                 "${BUSYBOX_BINARY_DIR}/include/autoconf.h"
                 -Wno-constant-conversion

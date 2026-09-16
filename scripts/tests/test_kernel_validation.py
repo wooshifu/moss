@@ -652,7 +652,7 @@ def test_host_child_lifecycle_reaps_every_spawn(monkeypatch, tmp_path, mode):
             if mode == "duplicate_end":
                 records += [records[-1]]
         else:
-            records += [event("mm", "case_start", case="orders_alignment")]
+            records += [event("mm", "case_start", case=kv.CATALOG["mm"][0])]
         prefix = "".join(f"print({('@@MOSS ' + json.dumps(record))!r}, flush=True);" for record in records)
     if mode == "ignore_term":
         prefix = "import signal;signal.signal(signal.SIGTERM, signal.SIG_IGN);" + prefix

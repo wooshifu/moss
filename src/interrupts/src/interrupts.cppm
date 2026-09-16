@@ -419,7 +419,9 @@ namespace simple {
 
 enum class IpiType : u8 { Ping = 3 };
 
-enum class IpiResult : u8 { Success = 0, InvalidCpu = 2, NotInitialized = 3 };
+// Preserve existing result values; 1/4 distinguish invalid types and failed
+// hardware requests so Success never merely means metadata was constructed.
+enum class IpiResult : u8 { Success = 0, InvalidType = 1, InvalidCpu = 2, NotInitialized = 3, HardwareError = 4 };
 
 struct IpiMessage {
   IpiType type;
@@ -453,7 +455,6 @@ public:
 private:
   bool initialized_ = false;
   u32 max_cpus_ = 0;
-  containers::AtomicU64 message_sequence_;
   containers::AtomicU64 total_pings_sent_;
 
   bool is_valid_cpu_id(u32 cpu_id) const noexcept;

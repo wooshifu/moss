@@ -416,18 +416,19 @@ public:
   [[nodiscard]] static constexpr moss::kernel::usize capacity() noexcept { return Capacity - 1; }
 };
 
-// MPSC (Multiple Producer Single Consumer) intrusive queue. The returned node
-// becomes head_, so it must remain alive until a later dequeue advances head_.
-// Recycling also requires synchronization with in-flight producer links; this
-// container does not implement reclamation or transfer lifetime ownership.
+// Intrusive MPSC queue with blocking IRQ-safe serialization. Removing the
+// actual head under the same lock as producer links leaves no retained dummy
+// reference: a returned node can immediately be destroyed or enqueued again.
+// Callers exclusively own nodes outside the queue and must not enqueue a node
+// twice without dequeuing it. The lock also permits multiple pool allocators.
 template <typename T> class MPSCQueue {
 private:
-  alignas(moss::kernel::CACHE_LINE_SIZE) AtomicPtr<QueueNode<T>> head_;
-  alignas(moss::kernel::CACHE_LINE_SIZE) AtomicPtr<QueueNode<T>> tail_;
-  QueueNode<T> stub_;
+  QueueNode<T> *head_{nullptr};
+  QueueNode<T> *tail_{nullptr};
+  alignas(moss::kernel::CACHE_LINE_SIZE) mutable IrqSpinLock lock_;
 
 public:
-  MPSCQueue() noexcept : head_(&stub_), tail_(&stub_) { stub_.next.store(nullptr, MemoryOrder::Relaxed); }
+  constexpr MPSCQueue() noexcept = default;
 
   MPSCQueue(const MPSCQueue &) = delete;
   MPSCQueue &operator=(const MPSCQueue &) = delete;
@@ -435,29 +436,33 @@ public:
   MPSCQueue &operator=(MPSCQueue &&) = delete;
 
   void enqueue(QueueNode<T> *node) noexcept {
+    LockGuard<IrqSpinLock> guard(lock_);
     node->next.store(nullptr, MemoryOrder::Relaxed);
-    QueueNode<T> *prev_tail = tail_.exchange(node, MemoryOrder::AcqRel);
-    // Exchange reserves a producer position; the release link makes the node
-    // visible. Until that link appears, the consumer may temporarily see empty.
-    prev_tail->next.store(node, MemoryOrder::Release);
+    if (tail_ != nullptr) {
+      tail_->next.store(node, MemoryOrder::Relaxed);
+    } else {
+      head_ = node;
+    }
+    tail_ = node;
   }
 
   [[nodiscard]] QueueNode<T> *try_dequeue() noexcept {
-    QueueNode<T> *head = head_.load(MemoryOrder::Relaxed);
-    QueueNode<T> *next = head->next.load(MemoryOrder::Acquire);
-
-    if (next == nullptr) {
+    LockGuard<IrqSpinLock> guard(lock_);
+    QueueNode<T> *node = head_;
+    if (node == nullptr) {
       return nullptr;
     }
-
-    head_.store(next, MemoryOrder::Relaxed);
-    return next;
+    head_ = node->next.load(MemoryOrder::Relaxed);
+    if (head_ == nullptr) {
+      tail_ = nullptr;
+    }
+    node->next.store(nullptr, MemoryOrder::Relaxed);
+    return node;
   }
 
   [[nodiscard]] bool empty() const noexcept {
-    QueueNode<T> *head = head_.load(MemoryOrder::Acquire);
-    QueueNode<T> *next = head->next.load(MemoryOrder::Acquire);
-    return next == nullptr;
+    LockGuard<IrqSpinLock> guard(lock_);
+    return head_ == nullptr;
   }
 };
 
@@ -466,13 +471,9 @@ template <typename T, moss::kernel::usize PoolSize>
   requires(PoolSize > 0 && (PoolSize & (PoolSize - 1)) == 0)
 class ObjectPool {
 private:
-  struct PoolNode : public QueueNode<T> {
-    template <typename... Args>
-    constexpr PoolNode(Args &&...args) noexcept(moss::is_nothrow_constructible_v<T, Args...>)
-        : QueueNode<T>(moss::forward<Args>(args)...) {}
-  };
-
-  alignas(PAGE_SIZE) PoolNode pool_[PoolSize];
+  // Rebuild the same complete array-element type when returning a node, so
+  // destruction at pool teardown still observes live QueueNode<T> objects.
+  alignas(PAGE_SIZE) QueueNode<T> pool_[PoolSize];
   MPSCQueue<T> free_list_;
 
 public:
@@ -486,9 +487,15 @@ public:
 
   void deallocate(QueueNode<T> *node) noexcept {
     if (node != nullptr) {
+      // Only a checked-out node from this pool may be returned, exactly once.
+      // Reset its payload before publication; another allocator can take it
+      // immediately after enqueue releases the free-list lock.
+      // Derive the pool slot before ending node's lifetime. Reconstructing via
+      // pool_ avoids reusing an invalidated pointer and preserves its array slot.
+      const auto slot = static_cast<moss::kernel::usize>(node - pool_);
       node->~QueueNode<T>();
-      new (node) QueueNode<T>();
-      free_list_.enqueue(node);
+      auto *reset_node = new (&pool_[slot]) QueueNode<T>();
+      free_list_.enqueue(reset_node);
     }
   }
 
@@ -497,14 +504,16 @@ public:
   [[nodiscard]] static constexpr moss::kernel::usize pool_size() noexcept { return PoolSize; }
 };
 
-// Queue distributor built from SPSC lanes. Round-robin selects a lane but does
-// not serialize producers or consumers; callers must enforce each lane's SPSC
-// contract, including when using try_dequeue_any() to steal work.
+// MPMC distributor over SPSC lanes. Round-robin routes work; a blocking IRQ
+// lock per lane serializes all producers/consumers, including work stealing,
+// so the SPSC index reservation and value move cannot collide. Payload moves
+// run with IRQs disabled and must remain bounded without reentering this queue.
 template <typename T, moss::kernel::usize NumConsumers, moss::kernel::usize QueueCapacity>
   requires(QueueCapacity > 0 && (QueueCapacity & (QueueCapacity - 1)) == 0) && (NumConsumers > 0)
 class MPMCQueue {
 private:
   SPSCQueue<T, QueueCapacity> queues_[NumConsumers];
+  IrqSpinLock lane_locks_[NumConsumers];
   AtomicCounter<moss::kernel::usize> round_robin_counter_;
 
 public:
@@ -520,6 +529,7 @@ public:
 
     for (moss::kernel::usize i = 0; i < NumConsumers; ++i) {
       moss::kernel::usize queue_idx = (start_idx + i) % NumConsumers;
+      LockGuard<IrqSpinLock> guard(lane_locks_[queue_idx]);
       if (queues_[queue_idx].try_enqueue(moss::forward<U>(item))) {
         return true;
       }
@@ -531,6 +541,7 @@ public:
     if (consumer_id >= NumConsumers) {
       return false;
     }
+    LockGuard<IrqSpinLock> guard(lane_locks_[consumer_id]);
     return queues_[consumer_id].try_dequeue(result);
   }
 
@@ -539,6 +550,7 @@ public:
 
     for (moss::kernel::usize i = 0; i < NumConsumers; ++i) {
       moss::kernel::usize queue_idx = (start_idx + i) % NumConsumers;
+      LockGuard<IrqSpinLock> guard(lane_locks_[queue_idx]);
       if (queues_[queue_idx].try_dequeue(result)) {
         return true;
       }
@@ -547,6 +559,8 @@ public:
   }
 
   [[nodiscard]] bool empty() const noexcept {
+    // Concurrent queries are advisory: lanes are sampled separately, without
+    // a simultaneous snapshot of producer/consumer progress across all lanes.
     for (moss::kernel::usize i = 0; i < NumConsumers; ++i) {
       if (!queues_[i].empty()) {
         return false;

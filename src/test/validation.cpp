@@ -13,9 +13,14 @@ import moss.smart_ptr;
 import moss.hal.uart;
 import moss.hal.mmu;
 import moss.logging;
+import moss.ipc;
 
 #include "framework/benchmark.hpp"
 #include "framework/ut_kernel.hpp"
+#include "hardware_regression.hpp"
+#include "ipc_regression.hpp"
+#include "queue_regression.hpp"
+#include "scheduler_regression.hpp"
 
 using namespace moss::kernel;
 namespace ut = boost::ut;
@@ -1433,6 +1438,54 @@ struct HeapPressure {
   }
   ~HeapPressure() { release(); }
 };
+
+void ipc_heap_rollback() {
+  const auto heap_baseline = mm::RuntimeHeapAllocator::get_heap_stats().allocated_bytes;
+  const auto page_baseline = mm::PageFrameAllocator::get_memory_stats().free_pages;
+  ipc::SharedMemoryManager manager;
+  bool recovered = false;
+  unsigned failures = 0;
+  {
+    HeapPressure pressure;
+    if (!ut::expect(pressure.acquire(sizeof(void *))))
+      return;
+    // Restore heap capacity one real allocation at a time. Descriptor,
+    // control-block and tracking-node failures must all return the backing.
+    for (;;) {
+      const auto heap = mm::RuntimeHeapAllocator::get_heap_stats().allocated_bytes;
+      auto created = manager.create_region(0, page_size);
+      if (created) {
+        recovered = true;
+        ut::expect(manager.destroy_region(*created).has_value());
+      } else {
+        ++failures;
+        ut::expect(created.error() == KernelError::OutOfMemory);
+      }
+      ut::expect(manager.get_statistics().total_regions == 0);
+      ut::expect(mm::RuntimeHeapAllocator::get_heap_stats().allocated_bytes == heap);
+      ut::expect(mm::PageFrameAllocator::get_memory_stats().free_pages == page_baseline);
+      if (recovered || !ut::expect(pressure.release_one()))
+        break;
+    }
+  }
+  ut::expect(failures > 0 && recovered);
+  {
+    HeapPressure pressure;
+    usize exhausted_pages = 0;
+    {
+      ipc::SharedMemoryManager teardown;
+      auto created = teardown.create_region(0, page_size);
+      if (!ut::expect(created.has_value()) || !ut::expect(pressure.acquire(sizeof(void *))))
+        return;
+      exhausted_pages = mm::PageFrameAllocator::get_memory_stats().free_pages;
+      // The manager leaves scope while every heap allocation still fails.
+      // Teardown must not allocate a snapshot just to release existing regions.
+    }
+    ut::expect(mm::PageFrameAllocator::get_memory_stats().free_pages == exhausted_pages + 1);
+  }
+  ut::expect(mm::RuntimeHeapAllocator::get_heap_stats().allocated_bytes == heap_baseline);
+  ut::expect(mm::PageFrameAllocator::get_memory_stats().free_pages == page_baseline);
+}
 
 void process_heap_rollback() {
   auto &manager = *process::g_process_manager;
@@ -3588,15 +3641,56 @@ void migration_current_owner() {
   scheduler->dequeue_task(&current);
   scheduler->dequeue_task(&peer);
   CfsScheduler::set_current_task(original);
+
+  // A pinned highest-vruntime task must not hide another eligible task.
+  // These local queues never dispatch the synthetic contexts on the target.
+  current.cpu_affinity_mask = CpuBitmap::single(source);
+  scheduler->enqueue_task(&peer, source);
+  scheduler->enqueue_task(&current, source);
+  const bool eligible_peer = balancer->migrate_task(source, target, *scheduler) && current.cpu == source &&
+                             peer.cpu == target && scheduler->get_cpu_nr_running(source) == 1 &&
+                             scheduler->get_cpu_nr_running(target) == 1;
+  scheduler->dequeue_task(&current);
+  scheduler->dequeue_task(&peer);
+
+  current.cpu_affinity_mask.set(target);
+  scheduler->enqueue_task(&peer, source);
+  scheduler->enqueue_task(&current, source);
+  const bool moved = balancer->migrate_task(source, target, *scheduler) && current.cpu == target &&
+                     peer.cpu == source && scheduler->get_cpu_nr_running(source) == 1 &&
+                     scheduler->get_cpu_nr_running(target) == 1;
+  scheduler->dequeue_task(&peer);
+  scheduler->enqueue_task(&peer, target);
+  // Exercise a remote source queue from this CPU, retaining one task there.
+  const bool moved_back = balancer->migrate_task(target, source, *scheduler) && current.cpu == source &&
+                          peer.cpu == target && scheduler->get_cpu_nr_running(source) == 1 &&
+                          scheduler->get_cpu_nr_running(target) == 1;
+  scheduler->dequeue_task(&current);
+  scheduler->dequeue_task(&peer);
+
+  current.cpu_affinity_mask = peer.cpu_affinity_mask = CpuBitmap::single(source);
+  scheduler->enqueue_task(&peer, source);
+  scheduler->enqueue_task(&current, source);
+  const bool pinned = !balancer->migrate_task(source, target, *scheduler) && current.cpu == source &&
+                      peer.cpu == source && scheduler->get_cpu_nr_running(source) == 2 &&
+                      scheduler->get_cpu_nr_running(target) == 0;
+  scheduler->dequeue_task(&current);
+  scheduler->dequeue_task(&peer);
   if (restore_irqs)
     arch::enable_interrupts();
   ut::expect(retained);
+  ut::expect(eligible_peer);
+  ut::expect(moved);
+  ut::expect(moved_back);
+  ut::expect(pinned);
   ut::expect(scheduler->get_cpu_nr_running(source) == 0 && scheduler->get_cpu_nr_running(target) == 0);
 }
 
 void declare_cases() {
   ut::register_suite("resources", [] { ut::register_test("cpu_memory", resources); });
   ut::register_suite("mm", [] {
+    ut::register_test("pageblock_units", moss::test::scheduler_regression::pageblock_units);
+    ut::register_test("mmu_granule", [] { ut::expect(moss::test::hardware::arm64_mmu_granule_regression()); });
     ut::register_test("orders_alignment", pages);
     ut::register_test("reuse", reuse_pages);
   });
@@ -3612,6 +3706,12 @@ void declare_cases() {
     ut::register_test("exhaustion", heap_exhaustion);
   });
   ut::register_suite("containers", [] {
+    ut::register_test("queue_reuse", moss::test::queue_regression::run);
+    ut::register_test("ipc_heap_rollback", ipc_heap_rollback);
+    ut::register_test("ipc_shared_backing", moss::test::ipc_regression::shared_backing);
+    ut::register_test("ipc_shared_lifecycle", moss::test::ipc_regression::shared_lifecycle);
+    ut::register_test("ipc_ring_wrap", moss::test::ipc_regression::ring_wrap);
+    ut::register_test("ipc_ring_geometry", moss::test::ipc_regression::ring_geometry);
     ut::register_test("ownership", container_ownership);
     ut::register_test("release_reuse", container_release_reuse);
     ut::register_test("map_ownership", container_map_ownership);
@@ -3634,11 +3734,17 @@ void declare_cases() {
     ut::register_test("working_directory_lifecycle", working_directory_lifecycle);
   });
   ut::register_suite("timers", [] {
+    ut::register_test("clocksource_high_frequency",
+                      [] { ut::expect(moss::test::hardware::clocksource_high_frequency_regression()); });
     ut::register_test("contracts", timer_contracts);
     ut::register_test("dispatch", timer_dispatch);
     ut::register_test("capacity", timer_capacity);
   });
   ut::register_suite("scheduler", [] {
+    ut::register_test("pelt_large_runtime", moss::test::scheduler_regression::pelt_large_runtime);
+    ut::register_test("pelt_partitioned_runtime", moss::test::scheduler_regression::pelt_partitioned_runtime);
+    ut::register_test("pelt_half_life", moss::test::scheduler_regression::pelt_half_life);
+    ut::register_test("pelt_continuous_normalization", moss::test::scheduler_regression::pelt_continuous_normalization);
     ut::register_test("kernel_stack_initialization", kernel_stack_initialization);
     ut::register_test("cfs_self_selection", [] { scheduler_self_selection(false); });
     ut::register_test("rr_self_selection", [] { scheduler_self_selection(true); });

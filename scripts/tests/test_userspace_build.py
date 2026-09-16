@@ -100,7 +100,9 @@ add_custom_target(userspace-fixture DEPENDS
         assert elf[:6] == b"\x7fELF\x02\x01"  # ELF64, little endian
         assert struct.unpack_from("<H", elf, 18)[0] == machine
         assert struct.unpack_from("<Q", elf, 24)[0] >= 0x200000000
-    assert "no work to do" in run(*build_argv)
+    no_op = run(*build_argv)
+    assert "no work to do" in no_op
+    assert "Re-checking globbed directories" not in no_op
 
     # Header dependency tracking must rebuild all objects and relink their ELFs,
     # including in a clean build without legacy .o files.

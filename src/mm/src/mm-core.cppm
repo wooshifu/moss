@@ -171,12 +171,16 @@ private:
 // buddy_allocator_v2.hpp
 // ========================================================================
 
-// Retained migration declarations: these formulas currently produce 512 for
-// SIZE and zero for PAGES with 4 KiB pages. The intended byte/page convention
-// and choice of order 9 are not recorded; resolve them before using pageblocks.
+// Buddy orders count base pages: order 9 spans 512 pages, or 2 MiB with the
+// 4 KiB granule. Keep page counts distinct from byte sizes in migration/CMA
+// consumers. The original choice of grouping order 9 remains unrecorded.
 inline constexpr usize PAGEBLOCK_ORDER = 9;
-inline constexpr usize PAGEBLOCK_SIZE = (1UL << PAGEBLOCK_ORDER);
-inline constexpr usize PAGEBLOCK_PAGES = PAGEBLOCK_SIZE >> PAGE_SHIFT;
+inline constexpr usize PAGEBLOCK_PAGES = usize{1} << PAGEBLOCK_ORDER;
+inline constexpr usize PAGEBLOCK_SIZE = PAGEBLOCK_PAGES * ::moss::kernel::PAGE_SIZE;
+// A pageblock must be representable by the buddy allocator and contain whole
+// pages; this also catches a future mismatch between byte and shift granules.
+static_assert(PAGEBLOCK_ORDER <= ::MAX_ORDER);
+static_assert(PAGEBLOCK_PAGES > 0 && (PAGEBLOCK_SIZE >> ::PAGE_SHIFT) == PAGEBLOCK_PAGES);
 
 enum class MigrationType : u32 { UNMOVABLE = 0, MOVABLE = 1, RECLAIMABLE = 2, TYPES_COUNT = 3 };
 

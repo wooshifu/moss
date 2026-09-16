@@ -9,8 +9,8 @@
 //   1. sys_write(stdout, "init: calling execve...\n") — announce trampoline
 //   2. sys_execve("/shell.elf", NULL, NULL) — replace process image with
 //      the shell.elf program from initramfs CPIO archive
-//   3. On failure: sys_write(stdout, error prefix) → sys_exit(0)
-//      The legacy success status after failed exec has no recorded rationale.
+//   3. On failure: sys_write(stdout, error prefix) → sys_exit(1)
+//      A nonzero status lets the parent distinguish launch failure from success.
 //
 // x64 MOSS syscall convention:
 //   RAX     = syscall number
@@ -47,11 +47,12 @@ _user_program_start:
     // ---- DEBUG: Skip I/O port access in user mode ----
     // outb instruction not allowed in user mode, skip debug output
 
-    // ---- Step 1: sys_write(fd=1, "init: calling execve...\n", 25) ----
+    // ---- Step 1: sys_write(fd=1, "init: calling execve...\n", message length) ----
     movq    $33, %rax               // syscall number: sys_write
     movq    $1, %rdi                // fd = STDOUT_FILENO
     leaq    .Lmsg_execve(%rip), %rsi // buf = address of message string
-    movq    $25, %rdx               // Legacy count 25 exceeds the 23-byte string by 2; rationale unrecorded.
+    // Label differences exclude adjacent inline strings and alignment padding.
+    movq    $(.Lmsg_execve_end - .Lmsg_execve), %rdx
     syscall                         // trap to ring 0 → system_call_handler
 
     // ---- Step 2: sys_execve("/shell.elf", NULL, NULL) ----
@@ -65,17 +66,16 @@ _user_program_start:
     // Save error code (rax contains return value)
     movq    %rax, %r8               // Save error code
 
-    // sys_write(fd=1, "execve failed with error: ", 27)
+    // sys_write(fd=1, "execve failed with error: ", message length)
     movq    $33, %rax               // syscall number: sys_write
     movq    $1, %rdi                // fd = STDOUT_FILENO
     leaq    .Lmsg_error(%rip), %rsi // buf = "execve failed with error: "
-    movq    $27, %rdx               // Legacy count 27 exceeds this 25-byte string; rationale unrecorded.
+    movq    $(.Lmsg_error_end - .Lmsg_error), %rdx
     syscall
 
-    // ---- Legacy failure path currently reports exit status 0 ----
-    // Successful exec never returns; changing this status alters failure reporting.
+    // ---- execve failed: report the same nonzero status as ARM64/RV64 ----
     movq    $1, %rax                // syscall number: sys_exit
-    movq    $0, %rdi                // exit status = 0 (success)
+    movq    $1, %rdi                // exit status = 1 (launch failure)
     syscall
 
     // ---- Infinite loop (unreachable — sys_exit never returns) ----
@@ -86,11 +86,13 @@ _user_program_start:
 // Read-only string data (placed inline to allow RIP-relative addressing)
 // =============================================================================
 .Lmsg_execve:
-    .ascii  "init: calling execve...\n"    // 23 bytes (includes \n, no NUL)
+    .ascii  "init: calling execve...\n"    // Includes newline, no NUL.
+.Lmsg_execve_end:
 .Lpath_shell:
     .asciz  "/shell.elf"                   // 11 bytes (includes NUL terminator)
 .Lmsg_error:
-    .ascii  "execve failed with error: "   // 25 bytes (no \n, no NUL)
+    .ascii  "execve failed with error: "   // No newline or NUL.
+.Lmsg_error_end:
 
 // =============================================================================
 // End-of-program marker

@@ -439,67 +439,69 @@ static inline void eprint(const char *msg) { write(2, msg, strlen(msg)); }
 // Number formatting utilities (no printf available)
 // ============================================================================
 
-// Convert unsigned long to decimal string, return length written
+// A 64-bit unsigned long needs 20 digits; signed long needs at most 19 digits
+// plus a sign. Both caller buffers need one additional byte for the NUL.
+enum { MOSS_DECIMAL_BUFFER_SIZE = 21 };
+
+// Return the number of characters stored, excluding NUL. Positive buffer sizes
+// always produce a terminated string; short buffers retain the decimal prefix.
 static inline int ultoa(unsigned long val, char *buf, int bufsize) {
   if (bufsize <= 0) {
     return 0;
   }
-  if (val == 0) {
-    buf[0] = '0';
-    buf[1] = '\0';
-    return 1;
-  }
-  // A 64-bit unsigned value needs at most 20 decimal digits (2^64 - 1).
-  // This scratch array holds digits only; the caller buffer must also allow NUL.
-  char tmp[20];
+  // Reverse only the digits; the caller's terminator is handled separately.
+  char tmp[MOSS_DECIMAL_BUFFER_SIZE - 1];
   int len = 0;
-  while (val > 0 && len < 20) {
+  do {
     tmp[len++] = '0' + (int)(val % 10);
     val /= 10;
-  }
-  if (len >= bufsize) {
-    len = bufsize - 1;
-  }
-  for (int i = 0; i < len; i++) {
+  } while (val > 0);
+  // Keep the full digit count for the reversal. Reducing len itself would
+  // discard high digits and print the numeric suffix when capacity is short.
+  int written = len < bufsize ? len : bufsize - 1;
+  for (int i = 0; i < written; i++) {
     buf[i] = tmp[len - 1 - i];
   }
-  buf[len] = '\0';
-  return len;
+  buf[written] = '\0';
+  return written;
 }
 
-// Convert signed long to decimal string, return length written
+// Same NUL/prefix contract as ultoa, with the sign included in the stored length.
 static inline int ltoa(long val, char *buf, int bufsize) {
-  if (bufsize <= 1) {
+  if (bufsize <= 0) {
+    return 0;
+  }
+  if (bufsize == 1) {
+    buf[0] = '\0';
     return 0;
   }
   if (val < 0) {
     buf[0] = '-';
-    return 1 + ultoa((unsigned long)(-val), buf + 1, bufsize - 1);
+    // LONG_MIN has no positive signed counterpart. Unsigned subtraction wraps
+    // by definition, so casting before negation obtains its magnitude safely.
+    return 1 + ultoa(0UL - (unsigned long)val, buf + 1, bufsize - 1);
   }
   return ultoa((unsigned long)val, buf, bufsize);
 }
 
-// Decimal buffers include NUL: unsigned 20-byte buffers can truncate a full
-// 20-digit u64 value. Signed 21-byte buffers fit 19 digits, sign and NUL; the
-// original unsigned budget has no recorded rationale.
 // Print an unsigned long as decimal
 static inline void print_ulong(unsigned long val) {
-  char buf[20];
-  ultoa(val, buf, 20);
+  char buf[MOSS_DECIMAL_BUFFER_SIZE];
+  ultoa(val, buf, sizeof(buf));
   print(buf);
 }
 
 // Print a signed long as decimal
 static inline void print_long(long val) {
-  char buf[21];
-  ltoa(val, buf, 21);
+  char buf[MOSS_DECIMAL_BUFFER_SIZE];
+  ltoa(val, buf, sizeof(buf));
   print(buf);
 }
 
 // Print unsigned long right-aligned in a field of given width
 static inline void print_num_padded(unsigned long val, int width) {
-  char buf[20];
-  int len = ultoa(val, buf, 20);
+  char buf[MOSS_DECIMAL_BUFFER_SIZE];
+  int len = ultoa(val, buf, sizeof(buf));
   for (int i = len; i < width; i++) {
     print(" ");
   }
@@ -508,8 +510,8 @@ static inline void print_num_padded(unsigned long val, int width) {
 
 // Print signed long right-aligned in a field of given width
 static inline void print_snum_padded(long val, int width) {
-  char buf[21];
-  int len = ltoa(val, buf, 21);
+  char buf[MOSS_DECIMAL_BUFFER_SIZE];
+  int len = ltoa(val, buf, sizeof(buf));
   for (int i = len; i < width; i++) {
     print(" ");
   }

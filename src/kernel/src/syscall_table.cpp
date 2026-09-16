@@ -2548,28 +2548,31 @@ extern "C" int console_getc_blocking() noexcept {
     return buf_get();
   }
 
+  const bool restore_irqs = arch::interrupts_enabled();
+  arch::disable_interrupts();
   while (buf_empty()) {
-    // 1. Set Sleeping (interruptible) + dequeue first
-    cur->state = ProcessState::Sleeping;
-    g_scheduler->dequeue_task(cur);
-
-    // 2. Record as blocked reader — if UART IRQ fires between here
-    //    and context_switch, handler calls task_wakeup (safe: thread
-    //    is already Blocked, wakeup re-enqueues it, and bootstrap
-    //    will pick it back up immediately).
+    // Defer early wakeups until bootstrap confirms the saved continuation.
+    // Affinity may direct a UART wake to another CPU, which must not execute
+    // this thread while it is still registering its reader on the old CPU.
+    g_scheduler->prepare_sleep();
     blocked_reader_ = cur;
-
-    // 3. Context-switch to bootstrap (CPU enters idle → WFI/HLT)
-    {
-      arch::disable_interrupts();
-      CfsScheduler::switch_to_bootstrap(cur->context);
-      arch::enable_interrupts();
+    // The UART producer may run on another CPU despite our local IRQ mask.
+    // Recheck after registration so a byte arriving before it cannot leave
+    // the reader asleep with buffered input and no subsequent UART wake.
+    if (!buf_empty()) {
+      wake_blocked_reader();
     }
-
-    // 4. Resumed after task_wakeup — loop re-checks buf_empty()
+    g_scheduler->commit_sleep();
+    // A signal can resume the reader without passing through the UART wake.
+    // Retire that registration before rechecking input or preparing again.
+    blocked_reader_ = nullptr;
   }
 
-  return buf_get();
+  ch = buf_get();
+  if (restore_irqs) {
+    arch::enable_interrupts();
+  }
+  return ch;
 #else
   // RISC-V 64: WFI polling with direct UART read (no IRQ handler yet).
   for (;;) {
