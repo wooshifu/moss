@@ -74,11 +74,11 @@ quit
     )
     child, debugger, stage, pending = None, None, 0, b""
     # Require the real ash, applet lookup, pipelines and mutable files as well
-    # as an independent ELF and a subsequent command after child reaping.
+    # as explicit BusyBox ELF execution and a command after child reaping.
     steps = [
         (b"built-in shell (ash)", None),
-        (b"moss$ ", b"hello.elf\n"),
-        (b"MOSS execve() works!\n", None),
+        (b"moss$ ", b"/busybox.elf ash -c 'printf \"MOSS_EXEC_READY\\n\"'\n"),
+        (b"\nMOSS_EXEC_READY\n", None),
         (
             b"moss$ ",
             b"mkdir /shell-check && printf 'moss\\nskip\\nmoss\\n' > /shell-check/input && "
