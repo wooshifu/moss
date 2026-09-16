@@ -11,7 +11,7 @@ primary interface (.cppm), partition interface (-part.cppm), or implementation u
 Pick the right one BEFORE writing any code.
 ```
 
-Moss uses C++26 named modules with Clang 21 and CMake. Modules replace headers entirely — there are no `.h` files in this project. The freestanding environment means no standard library headers; everything flows through `import moss.std`.
+Moss uses C++26 named modules with Clang 23 or newer and CMake. Modules replace headers entirely — there are no `.h` files in this project. The freestanding environment means no standard library headers; everything flows through `import moss.std`.
 
 ## Step 1 — Choose Module Strategy
 

@@ -9,8 +9,9 @@
 # Public API:
 #   moss_initialize_clang_toolchain(arch)
 
-# Minimum version shared with the Python checker
-set(MOSS_MIN_LLVM_VERSION "21.0")
+# The project toolchain baseline is LLVM 23.0; keep this minimum in sync with ToolSpec.min_version in
+# scripts/check_prerequisites.py.
+set(MOSS_MIN_LLVM_VERSION "23.0")
 
 # =============================================================================
 # Clang compiler validation (uses CMake built-in variables from project())
