@@ -229,7 +229,7 @@ long sys_arch_prctl(long operation, long address, long arg2, long arg3, long arg
 
 // Process management - framework implementation
 long sys_fork(long arg0, long arg1, long arg2, long arg3, long arg4, long arg5) noexcept;
-long sys_execve(long pathname_addr, long argv_addr, long arg2, long arg3, long arg4, long arg5) noexcept;
+long sys_execve(long pathname_addr, long argv_addr, long envp_addr, long arg3, long arg4, long arg5) noexcept;
 long sys_wait4(long wait_pid, long wstatus_addr, long options, long arg3, long arg4, long arg5) noexcept;
 long sys_waitpid(long pid, long wstatus, long options, long arg3, long arg4, long arg5) noexcept;
 long sys_kill(long pid_arg, long sig_arg, long arg2, long arg3, long arg4, long arg5) noexcept;
@@ -250,7 +250,7 @@ long sys_getdents(long fd, long buffer, long size, long arg3, long arg4, long ar
 long sys_dup(long oldfd, long arg1, long arg2, long arg3, long arg4, long arg5) noexcept;
 long sys_dup2(long oldfd, long newfd, long arg2, long arg3, long arg4, long arg5) noexcept;
 long sys_pipe(long pipefd_addr, long arg1, long arg2, long arg3, long arg4, long arg5) noexcept;
-long sys_fcntl(long fd, long command, long arg2, long arg3, long arg4, long arg5) noexcept;
+long sys_fcntl(long fd, long command, long argument, long arg3, long arg4, long arg5) noexcept;
 
 // Memory management
 long sys_mmap(long addr, long length, long prot, long flags, long fd, long offset) noexcept;

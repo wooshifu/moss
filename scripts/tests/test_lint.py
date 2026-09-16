@@ -101,6 +101,47 @@ def test_full_selection_uses_index_and_database_and_keeps_cppm(project, fake_too
     assert any(arg.startswith("--exclude-header-filter=") and "vendor" in arg for arg in command)
 
 
+@pytest.mark.parametrize("changed", [False, True])
+def test_selection_and_exclusions_cover_the_whole_repository(project, fake_tools, capsys, changed):
+    root, repo = project
+    write(root, "third_party/library/api.h")
+    write(root, "third_party/library/vendor.c")
+    write(root, "tools/helper.cpp")
+    commit(repo)
+    repo.create_reference("refs/remotes/origin/master", repo.head.target)
+    write(root, "lint.toml", 'exclude = ["src/vendor/**", "third_party/**"]\n')
+    database(
+        root, ["src/main.cpp", "src/other.cpp", "src/api.cppm", "third_party/library/vendor.c", "tools/helper.cpp"]
+    )
+
+    argv = ["--check", "--changed"] if changed else ["--check"]
+    assert lint.run(argv, repository_root=root, cwd=root) == 0
+    calls = fake_tools[1]
+    checked = {path for path, _argv, _live in calls if path.endswith(tuple(lint.SOURCE_SUFFIXES))}
+    assert checked == {"src/main.cpp", "src/other.cpp", "src/api.cppm", "tools/helper.cpp"}
+    assert "skipped:" not in capsys.readouterr().err
+    command = next(argv for path, argv, _live in calls if path == "src/main.cpp")
+    header_filter = next(arg for arg in command if arg.startswith("--exclude-header-filter="))
+    assert "src/vendor/api" in header_filter
+    assert "third_party/library/api" in header_filter
+
+
+@pytest.mark.parametrize("path", ["tools/helper.cpp", "tools/api.hpp", "tools/api.cppm"])
+def test_changed_files_outside_src_trigger_analysis(project, fake_tools, path):
+    root, repo = project
+    write(root, path)
+    commit(repo)
+    files = {"src/main.cpp", "src/other.cpp", "src/api.cppm"}
+    if Path(path).suffix in lint.SOURCE_SUFFIXES:
+        files.add(path)
+    database(root, sorted(files))
+    write(root, path, "// changed\n")
+
+    assert lint.run(["--check", "--changed"], repository_root=root, cwd=root) == 0
+    checked = {name for name, _, _live in fake_tools[1] if name.endswith(tuple(lint.SOURCE_SUFFIXES))}
+    assert checked == ({path} if path.endswith(".cpp") else files)
+
+
 def test_changed_includes_committed_staged_unstaged_and_untracked(project, fake_tools):
     root, repo = project
     repo.create_reference("refs/remotes/origin/master", repo.head.target)

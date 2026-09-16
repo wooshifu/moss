@@ -5,8 +5,9 @@
 
 void _start(long argc, const char **argv) {
   if (argc != 1 || !argv || !argv[0] || argv[1] || argv[0][0] != 'e' || argv[0][1] != 'x' || argv[0][2] != 'e' ||
-      argv[0][3] != 'c' || argv[0][4])
+      argv[0][3] != 'c' || argv[0][4]) {
     _exit(95);
+  }
 #if defined(__x86_64__)
   unsigned short cw, status;
   unsigned mxcsr;

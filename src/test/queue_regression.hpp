@@ -16,12 +16,14 @@ inline void run() {
   containers::QueueNode<unsigned> first(1U), second(2U);
   intrusive.enqueue(&first);
   intrusive.enqueue(&second);
-  if (!boost::ut::expect(intrusive.try_dequeue() == &first))
+  if (!boost::ut::expect(intrusive.try_dequeue() == &first)) {
     return;
+  }
   // Returning the old head must not replace the unread node's next link.
   intrusive.enqueue(&first);
-  if (!boost::ut::expect(intrusive.try_dequeue() == &second && intrusive.try_dequeue() == &first))
+  if (!boost::ut::expect(intrusive.try_dequeue() == &second && intrusive.try_dequeue() == &first)) {
     return;
+  }
   boost::ut::expect(intrusive.empty() && intrusive.try_dequeue() == nullptr);
 
   // Four nodes leave three unread links when the first node is returned.
@@ -36,22 +38,26 @@ inline void run() {
       ~Cleanup() { pool->~Pool(); }
     } cleanup{pool};
     auto *node = pool->allocate();
-    if (!boost::ut::expect(node != nullptr))
+    if (!boost::ut::expect(node != nullptr)) {
       return;
+    }
     node->data.value = 99; // Nonzero payload detects a missing default reset.
     pool->deallocate(node);
     containers::QueueNode<PoolValue> *nodes[Pool::pool_size()]{};
     for (moss::kernel::usize i = 0; i < Pool::pool_size(); ++i) {
       nodes[i] = pool->allocate();
-      if (!boost::ut::expect(nodes[i] != nullptr))
+      if (!boost::ut::expect(nodes[i] != nullptr)) {
         return;
+      }
       boost::ut::expect(nodes[i]->data.value == 0);
-      for (moss::kernel::usize previous = 0; previous < i; ++previous)
+      for (moss::kernel::usize previous = 0; previous < i; ++previous) {
         boost::ut::expect(nodes[i] != nodes[previous]);
+      }
     }
     boost::ut::expect(!pool->has_available() && pool->allocate() == nullptr);
-    for (auto *entry : nodes)
+    for (auto *entry : nodes) {
       pool->deallocate(entry);
+    }
     boost::ut::expect(pool->has_available() && PoolValue::live == Pool::pool_size());
   }
   boost::ut::expect(PoolValue::live == 0);
@@ -60,16 +66,19 @@ inline void run() {
   // then steal the remaining lane to check full/empty and reuse paths.
   containers::MPMCQueue<unsigned, 2, 4> distributed;
   constexpr unsigned capacity = 2 * containers::SPSCQueue<unsigned, 4>::capacity();
-  for (unsigned value = 0; value < capacity; ++value)
+  for (unsigned value = 0; value < capacity; ++value) {
     boost::ut::expect(distributed.try_enqueue(value));
+  }
   boost::ut::expect(!distributed.try_enqueue(capacity));
   bool seen[capacity]{};
   for (unsigned i = 0; i < capacity; ++i) {
     unsigned value = capacity;
-    if (!boost::ut::expect(i < capacity / 2 ? distributed.try_dequeue(0, value) : distributed.try_dequeue_any(value)))
+    if (!boost::ut::expect(i < capacity / 2 ? distributed.try_dequeue(0, value) : distributed.try_dequeue_any(value))) {
       return;
-    if (!boost::ut::expect(value < capacity))
+    }
+    if (!boost::ut::expect(value < capacity)) {
       return;
+    }
     boost::ut::expect(!seen[value]);
     seen[value] = true;
   }

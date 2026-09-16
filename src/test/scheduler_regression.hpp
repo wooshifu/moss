@@ -5,7 +5,8 @@ namespace moss::test::scheduler_regression {
 
 // Keep the largest fixture below half of the 16 KiB kernel stack, leaving
 // room for the validation framework and the production update call chain.
-static_assert(2 * sizeof(kernel::process::Thread) + 2 * sizeof(kernel::process::CfsRunqueue) <= 8 * 1024);
+static_assert(2 * sizeof(kernel::process::Thread) + 2 * sizeof(kernel::process::CfsRunqueue) <=
+              static_cast<kernel::usize>(8) * 1024);
 
 // The specified 1024 us period uses exact 1000 ns/us conversion in Moss.
 inline constexpr kernel::u64 period_ns = 1024ULL * 1000;
@@ -24,8 +25,9 @@ inline void pelt_partitioned_runtime() {
   // periods across calls; dropping each remainder prevents any decay.
   constexpr u64 slice = period_ns / 4;
   whole_queue.update_curr_task(&whole, elapsed);
-  for (u64 time = 0; time < elapsed; time += slice)
+  for (u64 time = 0; time < elapsed; time += slice) {
     split_queue.update_curr_task(&split, slice);
+  }
   // Integer decay can lose one us per crossed period when updates are split:
   // 32 periods * 1 us gives the rounding bound. The old missing-phase result
   // differs by about 16 Ki-us, so this bound still independently catches it.
@@ -39,8 +41,9 @@ inline void pelt_partitioned_runtime() {
   // call up to one us, which doubles the contribution at this sampling rate.
   constexpr u64 sub_us_slice_ns = 1000 / 2;
   whole_queue.update_curr_task(&whole, period_ns);
-  for (u64 time = 0; time < period_ns; time += sub_us_slice_ns)
+  for (u64 time = 0; time < period_ns; time += sub_us_slice_ns) {
     split_queue.update_curr_task(&split, sub_us_slice_ns);
+  }
   constexpr u64 final_bound = rounding_bound + 1; // One additional crossed period.
   boost::ut::expect(whole.se.load_sum + final_bound >= split.se.load_sum &&
                     split.se.load_sum + final_bound >= whole.se.load_sum);
@@ -71,8 +74,9 @@ inline void pelt_continuous_normalization() {
   process::Thread current(0, 0);
   // Sixteen half-lives reduce startup bias on the 1024 scale to 1/64 of a
   // unit; an inconsistent divisor remains visible after this warmup.
-  for (u64 period = 0; period < 32 * 16; ++period)
+  for (u64 period = 0; period < static_cast<u64>(32 * 16); ++period) {
     queue.update_curr_task(&current, period_ns);
+  }
   boost::ut::expect(current.se.load_avg + 1 >= current.se.weight && current.se.load_avg <= current.se.weight);
   boost::ut::expect(current.se.util_avg + 1 >= 1024 && current.se.util_avg <= 1024);
   // The current quarter-period is elapsed running time. A fixed full-period

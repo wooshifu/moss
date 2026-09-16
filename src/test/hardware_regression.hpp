@@ -11,27 +11,32 @@ inline bool clocksource_high_frequency_regression() noexcept {
   constexpr u64 ns_per_second = 1000000000ULL;
   constexpr u64 ns_per_millisecond = ns_per_second / 1000;
   Clocksource clock;
-  if (clock.initialize(0, 0))
+  if (clock.initialize(0, 0)) {
     return false; // A zero-frequency counter has no meaningful conversion.
+  }
 
   for (u64 frequency : frequencies) {
-    if (!clock.initialize(frequency, 0))
+    if (!clock.initialize(frequency, 0)) {
       return false;
+    }
     const u64 cycles_per_ms = clock.ns_to_cycles(ns_per_millisecond);
     const u64 expected = frequency / 1000;
     // Truncating Q32 can lose at most one cycle over these <=1 s samples.
-    if (cycles_per_ms > expected || expected - cycles_per_ms > 1)
+    if (cycles_per_ms > expected || expected - cycles_per_ms > 1) {
       return false;
+    }
     const u64 cycles_per_second = clock.ns_to_cycles(ns_per_second);
-    if (cycles_per_second > frequency || frequency - cycles_per_second > 1)
+    if (cycles_per_second > frequency || frequency - cycles_per_second > 1) {
       return false;
+    }
 
     const u64 converted_ns = clock.cycles_to_ns(frequency);
     // The forward multiplier truncates by <1/2^32 ns per cycle. For one
     // second, ceil(frequency/2^32) bounds the accumulated nanosecond error.
     const u64 error_bound = frequency / (1ULL << 32) + (frequency % (1ULL << 32) != 0);
-    if (converted_ns > ns_per_second || ns_per_second - converted_ns > error_bound)
+    if (converted_ns > ns_per_second || ns_per_second - converted_ns > error_bound) {
       return false;
+    }
   }
   return true;
 }

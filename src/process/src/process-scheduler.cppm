@@ -572,20 +572,24 @@ public:
   [[nodiscard]] Thread *pick_migration_task(u32 destination, Thread *current) noexcept {
     containers::LockGuard<containers::IrqSpinLock> guard(lock_);
     auto *node = rb_root_;
-    if (!node)
+    if (!node) {
       return nullptr;
-    while (node->right)
+    }
+    while (node->right) {
       node = node->right;
+    }
     while (node) {
       auto *task = node->data;
-      if (task && task != current && task->state == ProcessState::Ready && task->cpu_affinity_mask.test(destination))
+      if (task && task != current && task->state == ProcessState::Ready && task->cpu_affinity_mask.test(destination)) {
         return task;
+      }
       // Walk predecessors so a pinned or executing rightmost task does not
       // prevent another eligible task from leaving the source queue.
       if (node->left) {
         node = node->left;
-        while (node->right)
+        while (node->right) {
           node = node->right;
+        }
       } else {
         auto *parent = node->parent;
         while (parent && node == parent->left) {
@@ -693,8 +697,9 @@ private:
     u64 sum = PELT_PERIOD_US;
     for (;;) {
       const u64 next = ((sum * PELT_Y_Q32) >> PELT_Q32_SHIFT) + PELT_PERIOD_US;
-      if (next == sum)
+      if (next == sum) {
         return sum;
+      }
       sum = next;
     }
   }();
@@ -703,19 +708,22 @@ private:
   [[nodiscard]] static u64 pelt_decay_sum(u64 sum, u64 periods) noexcept {
     // A u64 has no bits left after 64 halvings; guard the shift width.
     const u64 halves = periods / PELT_HALF_LIFE_PERIODS;
-    if (halves >= 64)
+    if (halves >= 64) {
       return 0;
+    }
     sum >>= halves;
     const u32 remainder = static_cast<u32>(periods % PELT_HALF_LIFE_PERIODS);
-    if (remainder == 0)
+    if (remainder == 0) {
       return sum;
+    }
     // Sums are bounded by LOAD_AVG_MAX, so the Q32 product fits in u64.
     return (sum * PELT_YN_Q32[remainder]) >> PELT_Q32_SHIFT;
   }
 
   void update_load_tracking(Thread *thread, u64 delta_exec_ns) noexcept {
-    if (thread == nullptr || delta_exec_ns == 0)
+    if (thread == nullptr || delta_exec_ns == 0) {
       return;
+    }
 
     // update_curr_task already advanced this persistent execution counter.
     // Convert the endpoints, retaining both sub-us time and period phase
@@ -723,8 +731,9 @@ private:
     const u64 end_us = thread->se.sum_exec_runtime / PELT_NS_PER_US;
     const u64 start_us = (thread->se.sum_exec_runtime - delta_exec_ns) / PELT_NS_PER_US;
     const u64 delta_us = end_us - start_us;
-    if (delta_us == 0)
+    if (delta_us == 0) {
       return;
+    }
     const u64 start_phase = start_us % PELT_PERIOD_US;
     const u64 end_phase = end_us % PELT_PERIOD_US;
     const u64 periods = (start_phase + delta_us) / PELT_PERIOD_US;
@@ -1237,26 +1246,31 @@ public:
   // Dispatch consumes the selection under the same lock used by migration.
   // A returned task is no longer visible to a remote CPU's ready-queue scan.
   [[nodiscard]] Thread *take_next_task(u32 cpu) noexcept {
-    if (cpu >= g_num_cpus)
+    if (cpu >= g_num_cpus) {
       return nullptr;
+    }
     containers::LockGuard<containers::IrqSpinLock> guard(task_transition_lock_);
     auto *task = pick_next_task_unlocked(cpu);
-    if (task)
+    if (task) {
       dequeue_task_unlocked(task);
+    }
     return task;
   }
 
   bool migrate_ready_task(u32 source, u32 destination) noexcept {
-    if (source >= g_num_cpus || destination >= g_num_cpus || source == destination)
+    if (source >= g_num_cpus || destination >= g_num_cpus || source == destination) {
       return false;
+    }
     {
       containers::LockGuard<containers::IrqSpinLock> guard(task_transition_lock_);
       // Retain the last queued task, matching the load balancer's policy.
-      if (get_cpu_nr_running(source) <= 1)
+      if (get_cpu_nr_running(source) <= 1) {
         return false;
+      }
       auto *task = runqueues_.get_cpu(source).pick_migration_task(destination, get_current_task_on_cpu(source));
-      if (!task)
+      if (!task) {
         return false;
+      }
       dequeue_task_unlocked(task);
       // Moving a Ready node changes placement, not its state. Do not overwrite
       // a concurrent stop/termination while publishing it on the target queue.
@@ -1341,19 +1355,22 @@ public:
 private:
   [[nodiscard]] Thread *pick_next_task_unlocked(u32 cpu) noexcept {
     // RT class has strict priority over CFS (like Linux).
-    if (auto *task = rt_runqueues_.get_cpu(cpu).pick_next_task())
+    if (auto *task = rt_runqueues_.get_cpu(cpu).pick_next_task()) {
       return task;
+    }
     return runqueues_.get_cpu(cpu).pick_next_task();
   }
 
   void dequeue_task_unlocked(Thread *thread) noexcept {
     const u32 cpu = thread->cpu;
-    if (cpu >= g_num_cpus)
+    if (cpu >= g_num_cpus) {
       return;
-    if (thread->sched_class == SchedClass::RealTime)
+    }
+    if (thread->sched_class == SchedClass::RealTime) {
       rt_runqueues_.get_cpu(cpu).dequeue_task(thread);
-    else
+    } else {
       runqueues_.get_cpu(cpu).dequeue_task(thread);
+    }
   }
 
   void enqueue_task_unlocked(Thread *thread, u32 cpu) noexcept {
@@ -1361,16 +1378,18 @@ private:
     // placement before linking the node so a target CPU cannot observe an
     // intrusive node with the old CPU after acquiring that same lock.
     thread->cpu = cpu;
-    if (thread->sched_class == SchedClass::RealTime)
+    if (thread->sched_class == SchedClass::RealTime) {
       rt_runqueues_.get_cpu(cpu).enqueue_task(thread);
-    else
+    } else {
       runqueues_.get_cpu(cpu).enqueue_task(thread);
+    }
 
     // RT preempts CFS/lower-priority RT; CFS preempts a higher vruntime.
     if (auto *current = get_current_task_on_cpu(cpu)) {
       if (thread->sched_class == SchedClass::RealTime) {
-        if (current->sched_class != SchedClass::RealTime || thread->rt.priority > current->rt.priority)
+        if (current->sched_class != SchedClass::RealTime || thread->rt.priority > current->rt.priority) {
           current->need_resched = true;
+        }
       } else if (current->sched_class != SchedClass::RealTime && thread->se.vruntime < current->se.vruntime) {
         current->need_resched = true;
       }
@@ -1559,10 +1578,12 @@ public:
     // must select an allowed CPU, not just the load balancer's migrations.
     if (!task->cpu_affinity_mask.test(target_cpu)) {
       target_cpu = 0;
-      while (target_cpu < g_num_cpus && !task->cpu_affinity_mask.test(target_cpu))
+      while (target_cpu < g_num_cpus && !task->cpu_affinity_mask.test(target_cpu)) {
         ++target_cpu;
-      if (target_cpu == g_num_cpus)
+      }
+      if (target_cpu == g_num_cpus) {
         return;
+      }
     }
 
     // Several child exits, signals or timer callbacks may wake the same task.
@@ -1718,8 +1739,9 @@ public:
 
   static void use_kernel_address_space() noexcept {
     auto *pgd = mm::PageTableManager::get_kernel_pgd();
-    if (!pgd)
+    if (!pgd) {
       arch::kernel_panic("kernel page table unavailable");
+    }
     const u64 physical = mm::PageTableManager::get_physical_address(pgd);
 #if defined(MOSS_ARCH_ARM64)
     asm volatile("msr ttbr0_el1, %0\n\tdsb ish\n\tisb" ::"r"(physical) : "memory");
@@ -1753,8 +1775,9 @@ public:
 
   // Get the currently running task on a specific CPU (for topinfo)
   static Thread *get_current_task_on_cpu(u32 cpu) noexcept {
-    if (cpu >= g_num_cpus)
+    if (cpu >= g_num_cpus) {
       return nullptr;
+    }
     return intrinsics::atomic::load(&current_running_tasks_.get_cpu(cpu), intrinsics::atomic::memory_order::acquire);
   }
 
@@ -1762,8 +1785,9 @@ public:
   // before unlocking and committing, so condition changes cannot be lost.
   Thread *prepare_sleep() noexcept {
     auto *task = get_current_task();
-    if (!task || arch::interrupts_enabled())
+    if (!task || arch::interrupts_enabled()) {
       return nullptr;
+    }
     containers::LockGuard<containers::IrqSpinLock> guard(task->sleep_lock);
     task->sleep_handoff.store(1);
     task->wake_cpu = get_current_cpu_id();
@@ -2194,8 +2218,9 @@ private:
       if (auto *sleeper = sleeping_tasks_.get_local()) {
         sleeping_tasks_.get_local() = nullptr;
         // The continuation is now saved; release publication to a waking CPU.
-        if (sleeper->sleep_handoff.exchange(0) == 2)
+        if (sleeper->sleep_handoff.exchange(0) == 2) {
           task_wakeup(sleeper, sleeper->wake_cpu);
+        }
       }
       exiting_processes_.get_local().reset();
       // An IRQ caller must finish restoring its trap frame with IRQs masked.

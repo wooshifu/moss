@@ -39,8 +39,9 @@ public:
 
   VoidResult add() {
     auto result = PageTableManager::allocate_page_table_dynamic();
-    if (!result)
+    if (!result) {
       return VoidResult{result.error()};
+    }
     (*result)->entries[0].raw = head_ ? PageTableManager::get_physical_address(head_) : 0;
     head_ = *result;
     return VoidResult{};
@@ -298,19 +299,22 @@ PageTableEntry *PageTableManager::get_user_pte(PhysAddr pgd_phys, VirtAddr va) {
 }
 
 static void prune_empty_user_tables(PageTable *table, unsigned shift, VirtAddr va) noexcept {
-  if (shift == PAGE_SHIFT)
+  if (shift == PAGE_SHIFT) {
     return;
+  }
   auto &entry = table->entries[(va >> shift) & 511];
-  if (!entry.is_valid() || !entry.is_table())
+  if (!entry.is_valid() || !entry.is_table()) {
     return;
+  }
   const PhysAddr child_pa = entry.get_phys_addr();
   auto *child = PageTableManager::get_table_from_physical(child_pa);
   prune_empty_user_tables(child, shift - 9, va);
   // ponytail: scan at most three 512-entry tables; add occupancy counters only
   // if measured unmap throughput justifies maintaining them on every update.
   for (const auto &leaf : child->entries) {
-    if (leaf.is_valid())
+    if (leaf.is_valid()) {
       return;
+    }
   }
   entry.clear();
   // A non-leaf removal needs walk-cache invalidation, not only leaf TLBI.
@@ -389,19 +393,24 @@ KernelResult<PhysAddr> PageTableManager::create_user_page_tables() {
 static VoidResult check_empty_user_tables(const PageTable *table, unsigned shift, u64 base) {
   for (usize i = 0; i < PageTable::ENTRIES_PER_TABLE; ++i) {
     const u64 address = base | (static_cast<u64>(i) << shift);
-    if (shared_kernel_entry(address, shift))
+    if (shared_kernel_entry(address, shift)) {
       continue;
+    }
     const auto &entry = table->entries[i];
-    if (!entry.is_valid())
+    if (!entry.is_valid()) {
       continue;
-    if (shift == 12)
+    }
+    if (shift == 12) {
       return VoidResult{ErrorCode::AlreadyExists};
-    if (!entry.is_table())
+    }
+    if (!entry.is_table()) {
       return VoidResult{ErrorCode::NotSupported};
+    }
     auto result =
         check_empty_user_tables(PageTableManager::get_table_from_physical(entry.get_phys_addr()), shift - 9, address);
-    if (!result)
+    if (!result) {
       return result;
+    }
   }
   return VoidResult{};
 }
@@ -410,38 +419,44 @@ static VoidResult prepare_user_clone(const PageTable *src, const PageTable *dst,
                                      TableReserve &reserve) {
   for (usize i = 0; i < PageTable::ENTRIES_PER_TABLE; ++i) {
     const u64 address = base | (static_cast<u64>(i) << shift);
-    if (shared_kernel_entry(address, shift))
+    if (shared_kernel_entry(address, shift)) {
       continue;
+    }
     const auto &entry = src->entries[i];
-    if (!entry.is_valid())
+    if (!entry.is_valid()) {
       continue;
+    }
     if (shift == 12) {
 #if defined(MOSS_ARCH_RISCV64)
       if (entry.is_table())
         return VoidResult{ErrorCode::NotSupported};
 #elif defined(MOSS_ARCH_ARM64)
-      if (!entry.is_table())
+      if (!entry.is_table()) {
         return VoidResult{ErrorCode::NotSupported};
+      }
 #endif
       if ((entry.raw & page_attr::USER) == 0 || PageFrameAllocator::page_ref_get(entry.get_phys_addr()) == 0) {
         return VoidResult{ErrorCode::InvalidState};
       }
       continue;
     }
-    if (!entry.is_table())
+    if (!entry.is_table()) {
       return VoidResult{ErrorCode::NotSupported};
+    }
     const PageTable *dst_child = nullptr;
     if (dst && dst->entries[i].is_valid()) {
       dst_child = PageTableManager::get_table_from_physical(dst->entries[i].get_phys_addr());
     } else {
       auto result = reserve.add();
-      if (!result)
+      if (!result) {
         return result;
+      }
     }
     auto result = prepare_user_clone(PageTableManager::get_table_from_physical(entry.get_phys_addr()), dst_child,
                                      shift - 9, address, reserve);
-    if (!result)
+    if (!result) {
       return result;
+    }
   }
   return VoidResult{};
 }
@@ -451,11 +466,13 @@ static VoidResult prepare_user_clone(const PageTable *src, const PageTable *dst,
 static void commit_user_clone(PageTable *src, PageTable *dst, unsigned shift, u64 base, TableReserve &reserve) {
   for (usize i = 0; i < PageTable::ENTRIES_PER_TABLE; ++i) {
     const u64 address = base | (static_cast<u64>(i) << shift);
-    if (shared_kernel_entry(address, shift))
+    if (shared_kernel_entry(address, shift)) {
       continue;
+    }
     auto &source = src->entries[i];
-    if (!source.is_valid())
+    if (!source.is_valid()) {
       continue;
+    }
     auto &target = dst->entries[i];
     if (shift == 12) {
       auto value = source;
@@ -492,12 +509,14 @@ VoidResult PageTableManager::clone_user_page_tables(PhysAddr src_pgd_phys, PhysA
   auto *dst = get_table_from_physical(dst_pgd_phys);
   const unsigned shift = root_shift();
   auto empty = check_empty_user_tables(dst, shift, 0);
-  if (!empty)
+  if (!empty) {
     return empty;
+  }
   TableReserve reserve;
   auto prepared = prepare_user_clone(src, dst, shift, 0, reserve);
-  if (!prepared)
+  if (!prepared) {
     return prepared;
+  }
   commit_user_clone(src, dst, shift, 0, reserve);
   invalidate_tlb();
   return VoidResult{};
@@ -636,8 +655,9 @@ VoidResult PageTableManager::map_user_page(PhysAddr pgd_phys, VirtAddr va, PhysA
   for (unsigned shift = root_shift(); shift > 12; shift -= 9) {
     auto &entry = table->entries[(va >> shift) & 511];
     if (entry.is_valid()) {
-      if (!entry.is_table())
+      if (!entry.is_table()) {
         return VoidResult{ErrorCode::NotSupported};
+      }
       table = get_table_from_physical(entry.get_phys_addr());
       continue;
     }
@@ -645,8 +665,9 @@ VoidResult PageTableManager::map_user_page(PhysAddr pgd_phys, VirtAddr va, PhysA
     TableReserve reserve;
     for (unsigned remaining = shift; remaining > 12; remaining -= 9) {
       auto result = reserve.add();
-      if (!result)
+      if (!result) {
         return result;
+      }
     }
     // Build the whole missing path offline, then publish just its first link.
     auto *first = reserve.take();
@@ -665,8 +686,9 @@ VoidResult PageTableManager::map_user_page(PhysAddr pgd_phys, VirtAddr va, PhysA
   }
 
   auto &leaf = table->entries[(va >> 12) & 511];
-  if (leaf.is_valid())
+  if (leaf.is_valid()) {
     return VoidResult{ErrorCode::AlreadyExists};
+  }
   PageTableEntry value;
   value.set_page(pa, perms);
   publish_entry(leaf, value);

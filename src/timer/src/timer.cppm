@@ -56,17 +56,19 @@ public:
 
   /// First raw counter value at which now_ns() reaches an absolute deadline.
   [[nodiscard]] u64 deadline_counter(u64 deadline_ns) const noexcept {
-    if (!mult_)
+    if (!mult_) {
       return 0;
+    }
     // Exact bounded inversion, without a freestanding 128-bit division runtime.
     const auto target = static_cast<__uint128_t>(deadline_ns) << shift_;
     u64 low = 0, high = ~u64{0};
     while (low < high) {
       const auto middle = low + (high - low) / 2;
-      if (static_cast<__uint128_t>(middle) * mult_ >= target)
+      if (static_cast<__uint128_t>(middle) * mult_ >= target) {
         high = middle;
-      else
+      } else {
         low = middle + 1;
+      }
     }
     return boot_cycles_ + low;
   }

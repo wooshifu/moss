@@ -915,8 +915,9 @@ public:
 
   template <typename... Args> [[nodiscard]] bool try_push_front(Args &&...args) {
     auto *storage = moss::abi::bridge::moss_heap_allocate(sizeof(Node), alignof(Node));
-    if (!storage)
+    if (!storage) {
       return false;
+    }
     publish(new (storage) Node(moss::forward<Args>(args)...));
     return true;
   }
@@ -924,8 +925,9 @@ public:
   // Test and publication are one transaction (e.g. rejecting overlapping VMAs).
   template <typename Predicate, typename... Args> bool push_front_unless(Predicate conflicts, Args &&...args) {
     auto *storage = moss::abi::bridge::moss_heap_allocate(sizeof(Node), alignof(Node));
-    if (!storage)
+    if (!storage) {
       return false;
+    }
     auto node = unique_ptr<Node>(new (storage) Node(moss::forward<Args>(args)...));
     bool inserted = true;
     {
@@ -968,9 +970,11 @@ public:
 
   template <typename Predicate> [[nodiscard]] Optional<T> find_if(Predicate pred) const {
     LockGuard<IrqSpinLock> guard(lock_);
-    for (auto *node = head_; node; node = node->next)
-      if (pred(static_cast<const T &>(node->data)))
+    for (auto *node = head_; node; node = node->next) {
+      if (pred(static_cast<const T &>(node->data))) {
         return node->data;
+      }
+    }
     return {};
   }
 
@@ -991,8 +995,9 @@ public:
 
   template <typename Func> void for_each(Func func) const {
     LockGuard<IrqSpinLock> guard(lock_);
-    for (auto *node = head_; node; node = node->next)
+    for (auto *node = head_; node; node = node->next) {
       func(static_cast<const T &>(node->data));
+    }
   }
 
   // O(n) temporary storage buys a stable iteration with no lock held by callers.
@@ -1007,8 +1012,9 @@ public:
         ++snapshot.size_;
       }
     }
-    for (auto *node = snapshot.head_; node; node = node->next)
+    for (auto *node = snapshot.head_; node; node = node->next) {
       func(static_cast<const T &>(node->data));
+    }
   }
 
   [[nodiscard]] usize size() const noexcept {
@@ -1147,7 +1153,7 @@ template <typename Key, typename Value, usize BucketCount = 256> class LockedHas
     // usize may be wider than 32 bits; only masked low bits select the bucket.
     // Constants: https://www.rfc-editor.org/rfc/rfc9923.html#section-5
     usize hash = 2166136261U;
-    auto *data = reinterpret_cast<const u8 *>(&stored_key);
+    const auto *data = reinterpret_cast<const u8 *>(&stored_key);
     for (usize i = 0; i < sizeof(Key); ++i) {
       hash ^= data[i];
       hash *= 16777619U;
@@ -1160,13 +1166,15 @@ template <typename Key, typename Value, usize BucketCount = 256> class LockedHas
     {
       LockGuard<IrqSpinLock> guard(lock_);
       auto **link = &buckets_[bucket(node->entry.key)];
-      while (*link && !((*link)->entry.key == node->entry.key))
+      while (*link && !((*link)->entry.key == node->entry.key)) {
         link = &(*link)->next;
+      }
       old = *link;
       node->next = old ? old->next : nullptr;
       *link = node;
-      if (!old)
+      if (!old) {
         ++size_;
+      }
     }
     delete old;
   }
@@ -1183,31 +1191,36 @@ public:
 
   template <typename K, typename V> [[nodiscard]] bool try_insert_or_update(K &&key, V &&value) {
     auto *storage = moss::abi::bridge::moss_heap_allocate(sizeof(Node), alignof(Node));
-    if (!storage)
+    if (!storage) {
       return false;
+    }
     publish(new (storage) Node(moss::forward<K>(key), moss::forward<V>(value)));
     return true;
   }
 
   template <typename K> [[nodiscard]] Optional<Value> find(const K &key) const {
     LockGuard<IrqSpinLock> guard(lock_);
-    for (auto *node = buckets_[bucket(key)]; node; node = node->next)
-      if (node->entry.key == key)
+    for (auto *node = buckets_[bucket(key)]; node; node = node->next) {
+      if (node->entry.key == key) {
         return node->entry.value;
+      }
+    }
     return {};
   }
 
   // Factory/destruction run outside the lock; concurrent creators share the winner.
   template <typename Factory> Value get_or_insert(const Key &key, Factory factory) {
-    if (auto found = find(key))
+    if (auto found = find(key)) {
       return *found;
+    }
     auto *candidate = new Node(key, factory());
     Value result;
     {
       LockGuard<IrqSpinLock> guard(lock_);
       auto **link = &buckets_[bucket(key)];
-      while (*link && !((*link)->entry.key == key))
+      while (*link && !((*link)->entry.key == key)) {
         link = &(*link)->next;
+      }
       if (!*link) {
         *link = candidate;
         candidate = nullptr;
@@ -1225,8 +1238,9 @@ public:
     {
       LockGuard<IrqSpinLock> guard(lock_);
       auto **link = &buckets_[bucket(key)];
-      while (*link && !((*link)->entry.key == key))
+      while (*link && !((*link)->entry.key == key)) {
         link = &(*link)->next;
+      }
       if (*link) {
         node = *link;
         *link = node->next;
@@ -1249,9 +1263,11 @@ public:
   // Scoped callback: no blocking, reentry or retaining references to entries.
   template <typename Func> void for_each(Func func) const {
     LockGuard<IrqSpinLock> guard(lock_);
-    for (const auto *head : buckets_)
-      for (auto *node = head; node; node = node->next)
+    for (const auto *head : buckets_) {
+      for (auto *node = head; node; node = node->next) {
         func(node->entry);
+      }
+    }
   }
 
   template <typename Func> void for_each_snapshot(Func func) const {
@@ -1259,11 +1275,12 @@ public:
     auto **tail = &snapshot;
     {
       LockGuard<IrqSpinLock> guard(lock_);
-      for (const auto *head : buckets_)
+      for (const auto *head : buckets_) {
         for (auto *node = head; node; node = node->next) {
           *tail = new Node(node->entry.key, node->entry.value);
           tail = &(*tail)->next;
         }
+      }
     }
     while (snapshot) {
       auto *next = snapshot->next;
