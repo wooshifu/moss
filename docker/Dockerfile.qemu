@@ -21,7 +21,7 @@ RUN dnf install -y --setopt=install_weak_deps=False \
         qemu-system-aarch64 \
         qemu-system-x86 \
         qemu-system-riscv64 \
-        # LLVM / Clang toolchain (C++26 modules require Clang 21+)
+        # LLVM / Clang toolchain (Moss requires Clang/LLVM 23+)
         clang \
         clang-tools-extra \
         lld \

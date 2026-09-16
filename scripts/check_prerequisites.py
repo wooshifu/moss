@@ -41,7 +41,9 @@ class ToolSpec(BaseModel):
     name: str
     description: str
     requirement: Requirement = Requirement.REQUIRED
-    min_version: str = "21.0"
+    # LLVM 23.0 is the project toolchain baseline; keep the CMake compiler check
+    # in cmake/toolchain_detection.cmake in sync with this minimum.
+    min_version: str = "23.0"
 
 
 class ToolInfo(BaseModel):
@@ -96,9 +98,7 @@ def _llvm_search_paths() -> list[Path]:
     candidates: list[Path] = []
     if host == "Linux":
         candidates = [
-            Path("/usr/lib/llvm-21/bin"),
-            Path("/usr/lib/llvm-20/bin"),
-            Path("/usr/lib/llvm-19/bin"),
+            Path("/usr/lib/llvm-23/bin"),
             Path("/usr/local/llvm/bin"),
         ]
     elif host == "Darwin":
@@ -139,6 +139,8 @@ def _get_version(executable: Path) -> Version | None:
             [str(executable), "--version"],
             capture_output=True,
             text=True,
+            # Bound hung version probes; the original rationale for the
+            # ten-second limit is not documented.
             timeout=10,
         )
         m = _VERSION_RE.search(proc.stdout + proc.stderr)
@@ -244,15 +246,15 @@ def _build_install_guide(missing: list[str], ver_errors: list[str]) -> str:
         lines.append(f"  Version errors: {'; '.join(ver_errors)}")
     lines += [
         "",
-        "Install LLVM 21 toolchain:",
-        "  Ubuntu/Debian : sudo apt install llvm-21 clang-21 lld-21",
+        "Install LLVM 23 or newer toolchain:",
+        "  Ubuntu/Debian : sudo apt install llvm-23 clang-23 lld-23",
         "  Fedora/RHEL   : sudo dnf install llvm clang lld",
         "  Arch Linux    : sudo pacman -S llvm clang lld",
         "  macOS         : brew install llvm",
         "  Windows       : winget install LLVM.LLVM",
         "",
         "Ensure LLVM binaries are on PATH:",
-        '  Linux  : export PATH="/usr/lib/llvm-21/bin:$PATH"',
+        '  Linux  : export PATH="/usr/lib/llvm-23/bin:$PATH"',
         '  macOS  : export PATH="$(brew --prefix llvm)/bin:$PATH"',
         "  Windows: add LLVM bin directory to system PATH",
     ]
