@@ -597,6 +597,11 @@ irq_trampoline:
     mov     x0, sp
     bl      user_return_handler
 
+    // C handlers may schedule and resume with IRQs enabled. Keep return-state
+    // publication atomic: an IRQ after MSR ELR/SPSR would overwrite that state.
+    // ERET restores the interrupted context's original interrupt mask.
+    msr     daifset, #2
+
     // Restore user stack pointer (before GP regs clobber temporaries)
     ldr     x1,        [sp, #MOSS_TF_STATUS]
     tst     x1, #15
@@ -705,6 +710,7 @@ exception_handler:
     bl      kernel_page_fault_handler
 
     // If handler returns, the fault was resolved — restore and continue
+    msr     daifset, #2                 // protect ELR/SPSR until ERET
     ldp     x0,  x1,  [sp, #MOSS_TF_PC]
     msr     elr_el1, x0
     msr     spsr_el1, x1
@@ -820,6 +826,9 @@ lower_el_sync_dispatch:
     mov     x0, sp
     bl      user_return_handler
     // ---- Common restore path for all lower-EL exceptions ----
+    // A blocking syscall can resume with IRQs enabled. Mask before publishing
+    // ELR/SPSR so nested IRQs cannot replace the user return with a kernel PC.
+    msr     daifset, #2
     // Restore user SP_EL0 first (may have changed via context_switch)
     ldr     x0,        [sp, #MOSS_TF_SP]
     msr     sp_el0, x0

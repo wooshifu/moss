@@ -18,9 +18,9 @@ inline constexpr u8 ELF_VERSION = 1;         // ELF version 1
 
 // Supported architectures
 inline constexpr u16 EM_NONE = 0;      // Unspecified
-inline constexpr u16 EM_X64 = 62;   // AMD64/x64
+inline constexpr u16 EM_X64 = 62;      // AMD64/x64
 inline constexpr u16 EM_AARCH64 = 183; // ARM64/AArch64
-inline constexpr u16 EM_RISCV64 = 243;   // RISC-V 64
+inline constexpr u16 EM_RISCV64 = 243; // RISC-V 64
 
 // File types
 inline constexpr u16 ET_NONE = 0; // Unknown type
@@ -122,10 +122,11 @@ struct [[gnu::packed]] ProgramHeader {
   }
 
   // Check program header table
-  if (hdr->e_phoff == 0 || hdr->e_phnum == 0) {
+  if (hdr->e_ident[6] != ELF_VERSION || hdr->e_version != ELF_VERSION || hdr->e_ehsize != sizeof(ElfHeader) ||
+      hdr->e_phentsize != sizeof(ProgramHeader) || hdr->e_phoff < sizeof(ElfHeader) || hdr->e_phnum == 0) {
     return false;
   }
-  if (hdr->e_phoff + static_cast<u64>(hdr->e_phnum) * hdr->e_phentsize > data_size) {
+  if (hdr->e_phoff > data_size || static_cast<u64>(hdr->e_phnum) > (data_size - hdr->e_phoff) / sizeof(ProgramHeader)) {
     return false;
   }
 

@@ -10,7 +10,8 @@ set_target_properties(moss.test.elf PROPERTIES RUNTIME_OUTPUT_DIRECTORY ${CMAKE_
 set_property(
     TARGET moss.test.elf
     APPEND
-    PROPERTY LINK_DEPENDS "${MOSS_LINKER_SCRIPT}"
+    PROPERTY LINK_DEPENDS "${MOSS_LINKER_SCRIPT}" "${CMAKE_BINARY_DIR}/validation-initramfs.cpio"
+             "${CMAKE_SOURCE_DIR}/scripts/artifacts.py"
 )
 add_dependencies(moss.test.elf validation-initramfs)
 add_custom_command(
@@ -28,3 +29,10 @@ if(MOSS_TARGET_ARCH STREQUAL "ARM64" OR MOSS_TARGET_ARCH STREQUAL "RISCV64")
         VERBATIM
     )
 endif()
+add_custom_command(
+    TARGET moss.test.elf
+    POST_BUILD
+    COMMAND uv run ${CMAKE_SOURCE_DIR}/scripts/artifacts.py --manifest ${CMAKE_BINARY_DIR}/moss-artifacts.json --source
+            ${CMAKE_SOURCE_DIR}
+    VERBATIM
+)

@@ -12,6 +12,20 @@ import pytest
 from scripts import kernel_validation as kv
 from scripts.artifacts import Artifacts
 
+LIFECYCLE_RESOURCES = dict(
+    heap_bytes=4096,
+    free_pages=100000,
+    processes=1,
+    threads=1,
+    descriptors=3,
+    file_refs=3,
+    user_pages=8,
+    stack_pages=2,
+    vfs_inodes=30,
+    vfs_dentries=30,
+    vfs_files=3,
+)
+
 
 def event(workload, event_type, **fields):
     return dict(v=1, event=event_type, workload=workload, **fields)
@@ -21,8 +35,8 @@ def emit(state, event_type, **fields):
     state.accept(b"@@MOSS " + json.dumps(event(state.workload, event_type, **fields)).encode())
 
 
-def ready(workload="mm", warmup=1, samples=2):
-    state = kv.Protocol(workload, 4, 2048, warmup, samples)
+def ready(workload="mm", warmup=1, samples=2, stability=False):
+    state = kv.Protocol(workload, 4, 2048, warmup, samples, stability)
     emit(state, "ready", detected_cpus=4, online_mask=15, work_mask=15, ram_bytes=2**31, managed_pages=500000)
     for name in kv.CATALOG[workload]:
         emit(state, "catalog", case=name)
@@ -76,6 +90,46 @@ def benchmark_report():
     }
 
 
+def test_required_performance_catalog_covers_all_core_paths():
+    assert set(kv.BENCHMARKS) == {
+        f"bench.{name}"
+        for name in (
+            "allocate",
+            "release",
+            "combined",
+            "read",
+            "getpid",
+            "fault",
+            "cow",
+            "switch",
+            "wakeup",
+            "timer",
+            "lifecycle",
+            "signal",
+            "pipe",
+        )
+    }
+
+
+def test_latency_batches_require_explicit_measurement_semantics():
+    state = ready("bench.signal")
+    emit(state, "case_start", case=state.workload)
+    emit(state, "clock", source="cntfrq_el0", frequency=1000000, uncertainty_ppm=0)
+    with pytest.raises(ValueError, match="measurement kind"):
+        emit(state, "batch", index=0, ticks=100, operations=4, warmup=1, cpu=0, overhead_ticks=1)
+    emit(
+        state,
+        "batch",
+        index=0,
+        ticks=100,
+        operations=4,
+        warmup=1,
+        cpu=0,
+        overhead_ticks=1,
+        measurement_kind="event_sum",
+    )
+
+
 def test_full_functional_completion_and_exit_are_both_required():
     state = ready()
     assert state.outcome("protocol_end", None, b"PASS")[0] == "error"
@@ -87,10 +141,276 @@ def test_full_functional_completion_and_exit_are_both_required():
         emit(state, "end", completed=2, selected=2, failed=0)
 
 
-@pytest.mark.parametrize("workload", [None, ["containers.smp"]])
+@pytest.mark.parametrize(
+    "field", ["application_cycles", "user_pages", "stack_pages", "vfs_inodes", "vfs_dentries", "vfs_files"]
+)
+def test_lifecycle_requires_application_and_pool_evidence(field):
+    state = ready("users.lifecycle")
+    case = state.expected[0]
+    emit(state, "case_start", case=case)
+    fields = LIFECYCLE_RESOURCES | {"application_cycles": 0}
+    del fields[field]
+    with pytest.raises(ValueError, match=field):
+        emit(state, "checkpoint", case=case, cycles=0, elapsed_ns=0, **fields)
+
+
+@pytest.mark.parametrize("application_cycles", [None, -1, True, 9, 11])
+def test_lifecycle_rejects_unmatched_application_cycles(application_cycles):
+    state = ready("users.applications")
+    case = state.expected[0]
+    emit(state, "case_start", case=case)
+    emit(state, "checkpoint", case=case, cycles=0, application_cycles=0, elapsed_ns=0, **LIFECYCLE_RESOURCES)
+    with pytest.raises(ValueError, match="application_cycles"):
+        emit(
+            state,
+            "checkpoint",
+            case=case,
+            cycles=10,
+            application_cycles=application_cycles,
+            elapsed_ns=10**9,
+            **LIFECYCLE_RESOURCES,
+        )
+
+
+@pytest.mark.parametrize("mode", ["complete", "missing", "duplicate", "wrong_case", *LIFECYCLE_RESOURCES])
+@pytest.mark.parametrize("workload", ["users.lifecycle", "users.applications"])
+def test_lifecycle_requires_ordered_resource_recovery_evidence(mode, workload):
+    state = ready(workload)
+    interval = kv.LIFECYCLE_INTERVAL[workload]
+    case = state.expected[0]
+    emit(state, "case_start", case=case)
+    fields = LIFECYCLE_RESOURCES
+    if mode in ("duplicate", "wrong_case"):
+        emit(state, "checkpoint", case=case, cycles=0, application_cycles=0, elapsed_ns=0, **fields)
+        with pytest.raises(ValueError):
+            emit(
+                state,
+                "checkpoint",
+                case="wrong" if mode == "wrong_case" else case,
+                cycles=0,
+                application_cycles=0,
+                elapsed_ns=0,
+                **fields,
+            )
+        return
+    for cycle in range(0, 1001, interval):
+        if mode == "missing" and cycle == 1000:
+            break
+        emit(
+            state,
+            "checkpoint",
+            case=case,
+            cycles=cycle,
+            application_cycles=cycle if workload == "users.applications" else 0,
+            elapsed_ns=cycle * 10**6,
+            **(fields | {mode: fields[mode] + 1} if mode in fields and cycle else fields),
+        )
+    if mode != "complete":
+        with pytest.raises(ValueError, match="resource recovery"):
+            emit(state, "case_end", case=case, passed=1, failed=0)
+        return
+    emit(state, "case_end", case=case, passed=1, failed=0)
+    emit(state, "end", completed=1, selected=1, failed=0)
+    assert state.outcome("protocol_end", None, b"") == ("passed", "pass")
+    assert len(state.checkpoints) == 1000 // interval + 1
+
+
+@pytest.mark.parametrize("workload", [None, ["containers.smp"], ["vfs.smp"], ["scheduler"]])
 def test_smp_workload_rejects_one_cpu_before_loading_artifacts(workload):
     with pytest.raises(kv.typer.BadParameter, match="requires at least 2 CPUs"):
         kv.run(manifest=Path("not-loaded.json"), workload=workload, cpus=1)
+
+
+@pytest.mark.parametrize("cycles,seconds", [(9900, 1800), (10000, 1799), (10000, 1800), (12000, 1900)])
+@pytest.mark.parametrize("workload", ["users.lifecycle", "users.applications"])
+def test_stability_requires_both_duration_and_complete_cycles(cycles, seconds, workload):
+    state = ready(workload, stability=True)
+    case = state.expected[0]
+    emit(state, "case_start", case=case)
+    for cycle in range(0, cycles + 1, kv.LIFECYCLE_INTERVAL[workload]):
+        emit(
+            state,
+            "checkpoint",
+            case=case,
+            cycles=cycle,
+            application_cycles=cycle if workload == "users.applications" else 0,
+            elapsed_ns=seconds * 10**9 * cycle // cycles,
+            **LIFECYCLE_RESOURCES,
+        )
+    if cycles < 10000 or seconds < 1800:
+        with pytest.raises(ValueError, match="resource recovery"):
+            emit(state, "case_end", case=case, passed=1, failed=0)
+    else:
+        emit(state, "case_end", case=case, passed=1, failed=0)
+        emit(state, "end", completed=1, selected=1, failed=0)
+        assert state.outcome("protocol_end", None, b"") == ("passed", "pass")
+
+
+@pytest.mark.parametrize("mode", ["stalled", "false_time", "false_time_exit"])
+def test_stability_host_rejects_stalls_and_instant_guest_duration(tmp_path, monkeypatch, mode):
+    workload = "users.lifecycle"
+    case = kv.CATALOG[workload][0]
+    records = [
+        event(workload, "ready", detected_cpus=4, online_mask=15, work_mask=15, ram_bytes=2**31, managed_pages=500000),
+        event(workload, "catalog", case=case),
+        event(workload, "worker", cpu=0, affinity=1),
+        event(workload, "case_start", case=case),
+    ]
+    for cycle in range(0, 1 if mode == "stalled" else 10001, 100):
+        records.append(
+            event(
+                workload,
+                "checkpoint",
+                case=case,
+                cycles=cycle,
+                application_cycles=0,
+                elapsed_ns=cycle * 180000000,
+                **LIFECYCLE_RESOURCES,
+            )
+        )
+    if mode != "stalled":
+        records += [
+            event(workload, "case_end", case=case, passed=1, failed=0),
+            event(workload, "end", completed=1, selected=1, failed=0),
+        ]
+    script = "\n".join(f"print({('@@MOSS ' + json.dumps(record))!r}, flush=True)" for record in records)
+    if mode != "false_time_exit":
+        script += "\nimport time; time.sleep(30)"
+    monkeypatch.setattr(kv, "build_qemu_args", lambda *_a, **_kw: [sys.executable, "-c", script])
+    cfg = Artifacts(tmp_path / "manifest.json", "ARM64", "linux-image", {}, {})
+    settings = dict(
+        cpus=4,
+        memory_mib=2048,
+        warmup=1,
+        samples=2,
+        order=0,
+        startup_timeout=1,
+        case_timeout=0.1,
+        guest_timeout=2,
+        stability=True,
+    )
+    result = kv.run_guest(cfg, workload, tmp_path / "guest", settings, 0)
+    assert result["status"] == "error"
+    assert result["observed"] == (
+        "no_progress_timeout"
+        if mode == "stalled"
+        else "infrastructure: stability guest completed before 30 host minutes"
+    )
+
+
+@pytest.mark.parametrize("workload", ["users.lifecycle", "users.applications"])
+def test_stability_host_releases_live_guest_only_after_duration_and_cycles(tmp_path, monkeypatch, workload):
+    case = kv.CATALOG[workload][0]
+    records = [
+        event(workload, "ready", detected_cpus=4, online_mask=15, work_mask=15, ram_bytes=2**31, managed_pages=500000),
+        event(workload, "catalog", case=case),
+        event(workload, "worker", cpu=0, affinity=1),
+        event(workload, "case_start", case=case),
+    ]
+    script = "import sys, json\n" + "\n".join(
+        f"print({('@@MOSS ' + json.dumps(record))!r}, flush=True)" for record in records
+    )
+    # Generate in the child: 1001 literal print statements exceed Linux's
+    # single-argument size limit for python -c, independently of the runner.
+    checkpoint = event(workload, "checkpoint", case=case, **LIFECYCLE_RESOURCES)
+    script += (
+        f"\nfor cycle in range(0, 10001, {kv.LIFECYCLE_INTERVAL[workload]}):\n"
+        f" record = {checkpoint!r} | dict(cycles=cycle, application_cycles="
+        f"cycle if {workload == 'users.applications'} else 0, elapsed_ns=cycle * 180000000)\n"
+        " print('@@MOSS ' + json.dumps(record), flush=True)\n"
+    )
+    script += "\nassert sys.stdin.buffer.read(1) == b'S'\n"
+    for record in [
+        event(workload, "case_end", case=case, passed=1, failed=0),
+        event(workload, "end", completed=1, selected=1, failed=0),
+    ]:
+        script += f"print({('@@MOSS ' + json.dumps(record))!r}, flush=True)\n"
+    script += "import time; time.sleep(30)\n"
+    real_clock, offset = kv.time.monotonic, [0]
+    monkeypatch.setattr(kv.time, "monotonic", lambda: real_clock() + offset[0])
+    original_accept = kv.Protocol.accept
+
+    def accept(state, line):
+        if b'"cycles": 10000' in line:
+            offset[0] = 1800
+        original_accept(state, line)
+
+    monkeypatch.setattr(kv.Protocol, "accept", accept)
+    monkeypatch.setattr(kv, "build_qemu_args", lambda *_a, **_kw: [sys.executable, "-c", script])
+    cfg = Artifacts(tmp_path / "manifest.json", "ARM64", "linux-image", {}, {})
+    settings = dict(
+        cpus=4,
+        memory_mib=2048,
+        warmup=1,
+        samples=2,
+        order=0,
+        startup_timeout=1,
+        case_timeout=1,
+        guest_timeout=1805,
+        stability=True,
+    )
+    result = kv.run_guest(cfg, workload, tmp_path / "guest", settings, 0)
+    assert result["status"] == "passed", result["observed"]
+    assert result["stability_release_seconds"] >= 1800
+    assert result["cases"][0]["elapsed_seconds"] >= 1800
+
+
+@pytest.mark.parametrize("mode", ["progress", "stalled", "total_limit"])
+def test_application_watchdog_requires_progress_and_a_total_bound(tmp_path, monkeypatch, mode):
+    workload, case = "users.applications", "core_application_recovery"
+    records = [
+        event(workload, "ready", detected_cpus=4, online_mask=15, work_mask=15, ram_bytes=2**31, managed_pages=500000),
+        event(workload, "catalog", case=case),
+        event(workload, "worker", cpu=0, affinity=1),
+        event(workload, "case_start", case=case),
+    ]
+    script = "import time, json\n" + "\n".join(
+        f"print({('@@MOSS ' + json.dumps(record))!r}, flush=True)" for record in records
+    )
+    checkpoint = event(workload, "checkpoint", case=case, **LIFECYCLE_RESOURCES)
+    script += (
+        f"\nfor cycle in range(0, {1 if mode == 'stalled' else 1001}, 10):\n"
+        f" record = {checkpoint!r} | dict(cycles=cycle, application_cycles=cycle, elapsed_ns=cycle * 10**8)\n"
+        " print('@@MOSS ' + json.dumps(record), flush=True)\n time.sleep(0.01)\n"
+    )
+    if mode != "stalled":
+        for record in [
+            event(workload, "case_end", case=case, passed=1, failed=0),
+            event(workload, "end", completed=1, selected=1, failed=0),
+        ]:
+            script += f"print({('@@MOSS ' + json.dumps(record))!r}, flush=True)\n"
+    script += "time.sleep(30)\n"
+    real_clock, offset = kv.time.monotonic, [0]
+    monkeypatch.setattr(kv.time, "monotonic", lambda: real_clock() + offset[0])
+    original_accept = kv.Protocol.accept
+
+    def accept(state, line):
+        if b'"event": "checkpoint"' in line:
+            offset[0] = json.loads(line[7:])["cycles"] / 10
+        original_accept(state, line)
+
+    monkeypatch.setattr(kv.Protocol, "accept", accept)
+    monkeypatch.setattr(kv, "build_qemu_args", lambda *_a, **_kw: [sys.executable, "-c", script])
+    cfg = Artifacts(tmp_path / "manifest.json", "ARM64", "linux-image", {}, {})
+    settings = dict(
+        cpus=4,
+        memory_mib=2048,
+        warmup=1,
+        samples=2,
+        order=0,
+        startup_timeout=30,
+        case_timeout=2,
+        guest_timeout=5 if mode == "total_limit" else None,
+    )
+    result = kv.run_guest(cfg, workload, tmp_path / "guest", settings, 0)
+    assert (
+        result["observed"]
+        == {"progress": "pass", "stalled": "no_progress_timeout", "total_limit": "guest_timeout"}[mode]
+    )
+    assert result["case_timeout_kind"] == "no_progress"
+    if mode == "progress":
+        assert result["cases"][0]["elapsed_seconds"] >= 100
+        assert result["guest_timeout_seconds"] == 232
 
 
 def test_simd_fault_is_explicit_and_failure_is_not_an_expected_pass():
@@ -152,7 +472,8 @@ def test_malformed_protocol_fails_closed(line):
         ("online_mask", 7),
         ("work_mask", 7),
         ("ram_bytes", 2**28),
-        ("managed_pages", 65536),
+        ("managed_pages", 0),
+        ("managed_pages", 524289),
         ("detected_cpus", True),
     ],
 )
@@ -161,6 +482,16 @@ def test_reported_resources_must_match_real_profile(field, value):
     fields[field] = value
     with pytest.raises(ValueError):
         emit(kv.Protocol("mm", 4, 2048, 1, 2), "ready", **fields)
+
+
+def test_small_memory_profile_has_valid_allocator_accounting():
+    state = kv.Protocol("mm", 4, 256, 1, 2)
+    emit(state, "ready", detected_cpus=4, online_mask=15, work_mask=15, ram_bytes=256 * 2**20, managed_pages=60000)
+    for name in kv.CATALOG["mm"]:
+        emit(state, "catalog", case=name)
+    emit(state, "worker", cpu=0, affinity=1)
+    finish(state)
+    assert state.outcome("protocol_end", None, b"") == ("passed", "pass")
 
 
 @pytest.mark.parametrize(
@@ -267,10 +598,15 @@ def test_unfinished_or_duplicate_reports_are_rejected():
         kv.comparison(report, report)
 
 
-def test_environment_changes_are_not_comparable():
+@pytest.mark.parametrize("change", ["cpus", "governor"])
+def test_environment_changes_are_not_comparable(change):
     before = benchmark_report()
+    before["comparison_environment"]["host"] = {"cpu_governors": {"8": "ondemand"}}
     after = copy.deepcopy(before)
-    after["comparison_environment"]["settings"]["cpus"] = 8
+    if change == "cpus":
+        after["comparison_environment"]["settings"]["cpus"] = 8
+    else:
+        after["comparison_environment"]["host"]["cpu_governors"]["8"] = "performance"
     assert kv.comparison(before, after)[0]["status"] == "not_comparable"
 
 
@@ -290,7 +626,7 @@ def test_junit_preserves_failed_and_unstarted_cases(tmp_path):
     kv.write_reports(report, tmp_path)
     xml = ET.parse(tmp_path / "junit.xml")
     assert len(xml.findall(".//failure")) == 1
-    assert len(xml.findall(".//skipped")) == 3
+    assert len(xml.findall(".//skipped")) == 1 + len(kv.CATALOG["vfs"])
     assert json.loads((tmp_path / "results.json").read_text()) == report
 
 
@@ -349,8 +685,10 @@ def test_host_child_lifecycle_reaps_every_spawn(monkeypatch, tmp_path, mode):
 
     monkeypatch.setattr(kv.subprocess, "Popen", spawn)
     cfg = Artifacts(tmp_path / "manifest.json", "ARM64", "linux-image", {}, {})
+    # This checks post-startup timeout/reaping, not Python launch latency under
+    # concurrent cross-compilation. Keep the case and termination deadlines tight.
     settings = dict(
-        cpus=4, memory_mib=2048, warmup=1, samples=2, order=0, startup_timeout=1, case_timeout=0.1, guest_timeout=2
+        cpus=4, memory_mib=2048, warmup=1, samples=2, order=0, startup_timeout=30, case_timeout=0.1, guest_timeout=35
     )
     result = kv.run_guest(cfg, "mm", tmp_path / "guest", settings, 0)
     assert result["status"] == ("passed" if mode == "complete" else "error")

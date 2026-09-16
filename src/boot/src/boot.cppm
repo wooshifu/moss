@@ -182,7 +182,7 @@ constexpr VirtAddr KERNEL_VIRT_BASE = ::moss::kernel::platform::kernel_virt_base
 
 export namespace moss::boot {
 
-/// Global GIC controller instance (initialized during boot, ARM64 only)
+/// Boot-owned interrupt controller, shared with the running kernel.
 extern moss::kernel::interrupts::GenericInterruptController *g_gic_controller;
 
 /// GIC hardware availability flag

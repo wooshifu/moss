@@ -7,6 +7,7 @@ import moss.fdt;
 import moss.mm;
 import moss.vfs;
 import moss.process;
+import moss.timer;
 import moss.containers;
 import moss.smart_ptr;
 import moss.hal.uart;
@@ -514,6 +515,48 @@ void map_preserves_existing() {
   ut::expect(Pfa::get_memory_stats().free_pages == free_before);
 }
 
+void unmap_reclaims_tables() {
+  using Tables = mm::PageTableManager;
+  using Pfa = mm::PageFrameAllocator;
+  auto space = process::user_space::create_user_address_space();
+  if (!ut::expect(space.has_value()))
+    return;
+  const PhysAddr root = (*space)->pgd_phys;
+  const auto baseline = Pfa::get_memory_stats().free_pages;
+  constexpr VirtAddr base = process::user_layout::CODE_BASE;
+  // Adjacent leaves share a table; distant leaves also exercise parent-table
+  // reclamation. Unmapping one must preserve the other and all kernel entries.
+  constexpr VirtAddr offsets[] = {page_size, 1ULL << 21, 1ULL << 30};
+  for (const auto offset : offsets) {
+    auto first = mm::allocate_pages(0);
+    auto second = mm::allocate_pages(0);
+    if (!ut::expect(first && second)) {
+      if (first)
+        (void)mm::free_pages(*first, 0);
+      if (second)
+        (void)mm::free_pages(*second, 0);
+      return;
+    }
+    const auto a = Tables::map_user_page(root, base, *first, mm::page_perms::USER_RW);
+    const auto b = Tables::map_user_page(root, base + offset, *second, mm::page_perms::USER_RO);
+    if (!ut::expect(a && b)) {
+      if (!a)
+        (void)mm::free_pages(*first, 0);
+      if (!b)
+        (void)mm::free_pages(*second, 0);
+      return;
+    }
+    Tables::unmap_user_page(root, base);
+    auto *neighbor = Tables::get_user_pte(root, base + offset);
+    ut::expect(neighbor && neighbor->is_valid() && neighbor->get_phys_addr() == *second);
+    ut::expect(Pfa::page_ref_get(*first) == 0 && Pfa::page_ref_get(*second) == 1);
+    Tables::unmap_user_page(root, base + offset);
+    Tables::unmap_user_page(root, base + offset); // Repeated unmap is harmless.
+    if (!ut::expect(Pfa::get_memory_stats().free_pages == baseline))
+      return;
+  }
+}
+
 // Own real PFA blocks while leaving a precisely controlled number of pages
 // available to the production allocator. No allocation failure hook or mock.
 struct PagePressure {
@@ -567,7 +610,6 @@ usize uaccess_free_before = 0;
 constexpr const char *uaccess_cases[] = {"allocation_fault", "write_fault",     "read_fault",
                                          "partial_read",     "partial_write",   "partial_pipe_read",
                                          "sigframe_fault",   "sigreturn_fault", "devices"};
-constexpr long uaccess_case_count = sizeof(uaccess_cases) / sizeof(uaccess_cases[0]);
 
 void map_allocation_rollback() {
   using Tables = mm::PageTableManager;
@@ -790,6 +832,51 @@ void clone_allocation_rollback() {
   ut::expect(Pfa::get_memory_stats().free_pages == free_before);
 }
 
+void asid_leases() {
+  using namespace process;
+  const auto before = mm::PageFrameAllocator::get_memory_stats().free_pages;
+  auto *thread = CfsScheduler::get_current_task();
+  auto proc = g_process_manager->find_process(thread->owner_pid);
+  const auto active_asid = proc->address_space()->asid;
+  {
+    unique_ptr<AddressSpace> spaces[255];
+    bool used[256]{};
+    used[active_asid] = true;
+    unsigned count = 0;
+    for (; count < 255; ++count) {
+      auto next = user_space::create_user_address_space();
+      if (!next) {
+        ut::expect(next.error() == ErrorCode::ResourceExhausted);
+        break;
+      }
+      const auto tag = (*next)->asid;
+      if (!ut::expect(tag > 0 && tag < 256 && !used[tag])) {
+        return;
+      }
+      used[tag] = true;
+      spaces[count] = moss::move(*next);
+    }
+    ut::expect(count == 254); // One live lease belongs to this worker.
+    if (count != 254)
+      return;
+    for (unsigned i = 0; i < count; i += 2) {
+      used[spaces[i]->asid] = false;
+      spaces[i].reset();
+    }
+    for (unsigned i = 0; i < count; i += 2) {
+      auto next = user_space::create_user_address_space();
+      if (!ut::expect(next.has_value()))
+        return;
+      const auto tag = (*next)->asid;
+      if (!ut::expect(tag > 0 && tag < 256 && !used[tag]))
+        return;
+      used[tag] = true;
+      spaces[i] = moss::move(*next);
+    }
+  }
+  ut::expect(mm::PageFrameAllocator::get_memory_stats().free_pages == before);
+}
+
 void vma_boundaries() {
   using namespace process;
   const auto before = mm::PageFrameAllocator::get_memory_stats().free_pages;
@@ -846,11 +933,28 @@ unsigned sample_index = 0;
 unsigned warmup_count = 5;
 unsigned sample_count = 30;
 usize fixed_iterations = 0;
+bool stability = false;
+bool is_lifecycle() {
+  return ut::same_id(selection, "users.lifecycle") || ut::same_id(selection, "users.applications");
+}
 bench::Clock clock_info;
 bench::Scenario *selected_benchmark = nullptr;
 usize syscall_iterations = 1;
 bool syscall_pilot = true;
 u64 syscall_overhead = 0;
+usize syscall_capacity = 65536;
+const char *const user_benchmark_names[] = {"bench.fault",     "bench.cow",    "bench.switch",
+                                            "bench.lifecycle", "bench.signal", "bench.pipe"};
+
+long user_benchmark_mode() {
+  if (ut::same_id(selection, "bench.getpid"))
+    return 2;
+  for (long i = 0; i < 6; ++i) {
+    if (ut::same_id(selection, user_benchmark_names[i]))
+      return 11 + i;
+  }
+  return 0;
+}
 
 // All strings come from the bounded catalog or fixed diagnostic identifiers.
 // One complete record per UART write avoids allocating a formatting buffer.
@@ -992,7 +1096,8 @@ void resources() {
   ut::expect(info.memory_map_valid);
   ut::expect(info.total_memory_size <= memory && info.total_memory_size + 0x200000 >= memory);
   auto stats = mm::PageFrameAllocator::get_memory_stats();
-  ut::expect(stats.total_pages * page_size > 256UL * 1024 * 1024);
+  const u64 probe_offset = memory > 256UL * 1024 * 1024 ? 256UL * 1024 * 1024 : memory / 2;
+  ut::expect(stats.total_pages * page_size > probe_offset);
   PhysAddr owned[129]{};
   usize count = 0;
   bool high = false;
@@ -1003,7 +1108,7 @@ void resources() {
     }
     owned[count++] = *page;
     ut::expect((*page & ((page_size << 9) - 1)) == 0);
-    high = *page >= info.total_memory_start + 256UL * 1024 * 1024;
+    high = *page >= info.total_memory_start + probe_offset;
     auto *values = reinterpret_cast<volatile u64 *>(*page);
     values[0] = *page;
     values[(page_size << 9) / sizeof(u64) - 1] = ~*page;
@@ -1215,6 +1320,198 @@ void *fd_table() {
   return proc->fd_table();
 }
 
+struct LifecycleResources {
+  u64 heap_bytes = 0, free_pages = 0, processes = 0, threads = 0, descriptors = 0, file_refs = 0;
+  u64 user_pages = 0, stack_pages = 0;
+  vfs::PoolUsage vfs_pools;
+
+  static LifecycleResources capture() {
+    LifecycleResources result;
+    process::g_process_manager->for_each_process([&](auto, process::Process *proc) {
+      ++result.processes;
+      result.threads += proc->thread_count();
+      if (auto *as = proc->address_space()) {
+        as->vmas.for_each([&](const process::VmaRegion &vma) {
+          for (VirtAddr va = vma.start_addr; va < vma.end_addr; va += page_size) {
+            auto *pte = mm::PageTableManager::get_user_pte(as->pgd_phys, va);
+            if (pte && pte->is_valid()) {
+              ++result.user_pages;
+              result.stack_pages += vma.type == process::VmaType::STACK;
+            }
+          }
+        });
+      }
+    });
+    auto *table = static_cast<vfs::FdTable *>(fd_table());
+    for (u32 fd = 0; table && fd < vfs::MAX_FDS; ++fd) {
+      if (auto *file = table->get_file(fd)) {
+        ++result.descriptors;
+        result.file_refs += file->ref_count;
+      }
+    }
+    // Snapshot iteration owns temporary storage. Account only after it is freed.
+    result.heap_bytes = mm::RuntimeHeapAllocator::get_heap_stats().allocated_bytes;
+    result.free_pages = mm::PageFrameAllocator::get_memory_stats().free_pages;
+    result.vfs_pools = vfs::pool_usage();
+    return result;
+  }
+  bool operator==(const LifecycleResources &) const = default;
+};
+
+// Store ownership in the real allocations themselves: exhausting the heap
+// must not need another allocation to remember how to release it.
+struct HeapPressure {
+  void *head = nullptr;
+
+  bool acquire(usize size) {
+    for (;;) {
+      auto allocation = mm::RuntimeHeapAllocator::allocate(size);
+      if (!allocation)
+        return allocation.error() == mm::HeapAllocError::OutOfMemory;
+      *static_cast<void **>(*allocation) = head;
+      head = *allocation;
+    }
+  }
+  bool release_one() {
+    if (!head)
+      return false;
+    void *block = head;
+    head = *static_cast<void **>(block);
+    return ut::expect(mm::RuntimeHeapAllocator::deallocate(block, 0).has_value());
+  }
+  void release() {
+    while (head)
+      release_one();
+  }
+  ~HeapPressure() { release(); }
+};
+
+void process_heap_rollback() {
+  auto &manager = *process::g_process_manager;
+  const auto baseline = LifecycleResources::capture();
+  const auto forks = manager.total_forks();
+  const auto exits = manager.total_exits();
+  bool recovered = false;
+  unsigned failures = 0;
+  {
+    HeapPressure pressure;
+    if (!ut::expect(pressure.acquire(sizeof(void *))))
+      return;
+    // Gradually restore real capacity through the public creation boundary;
+    // intermediate failures must release every partially constructed object.
+    for (usize attempt = 0; attempt < sizeof(process::Process) / sizeof(void *) + 16; ++attempt) {
+      const auto heap = mm::RuntimeHeapAllocator::get_heap_stats().allocated_bytes;
+      {
+        auto created = manager.create_process();
+        if (!created) {
+          ++failures;
+          ut::expect(created.error() == ErrorCode::OutOfMemory);
+          ut::expect(manager.total_forks() == forks && manager.total_exits() == exits);
+        } else {
+          recovered = true;
+          auto &proc = *created;
+          ut::expect(manager.total_processes() == baseline.processes + 1);
+          ut::expect(manager.find_process(proc->pid()).get() == proc.get());
+          ut::expect(manager.terminate_process(proc->pid(), 37).has_value());
+          ut::expect(!manager.process_exists(proc->pid()));
+        }
+      }
+      ut::expect(manager.total_processes() == baseline.processes);
+      ut::expect(mm::RuntimeHeapAllocator::get_heap_stats().allocated_bytes == heap);
+      ut::expect(mm::PageFrameAllocator::get_memory_stats().free_pages == baseline.free_pages);
+      if (recovered || !ut::expect(pressure.release_one()))
+        break;
+    }
+  }
+  ut::expect(failures > 0 && recovered);
+  ut::expect(manager.total_forks() == forks + 1 && manager.total_exits() == exits + 1);
+  ut::expect(LifecycleResources::capture() == baseline);
+}
+
+void address_space_heap_rollback() {
+  const auto heap = mm::RuntimeHeapAllocator::get_heap_stats().allocated_bytes;
+  const auto pages = mm::PageFrameAllocator::get_memory_stats().free_pages;
+  {
+    HeapPressure pressure;
+    if (!ut::expect(pressure.acquire(sizeof(process::AddressSpace))))
+      return;
+    // More attempts than the ASID capacity: even a one-lease-per-failure leak
+    // must fail here, before pressure is removed and normal allocation resumes.
+    for (unsigned attempt = 0; attempt < 256; ++attempt) {
+      auto space = process::user_space::create_user_address_space();
+      if (!ut::expect(!space && space.error() == ErrorCode::OutOfMemory))
+        break;
+      ut::expect(mm::PageFrameAllocator::get_memory_stats().free_pages == pages);
+    }
+  }
+  ut::expect(mm::RuntimeHeapAllocator::get_heap_stats().allocated_bytes == heap);
+  // Reuse the existing public-boundary capacity check to require all 254 free
+  // leases, not merely one successful retry after the failures.
+  asid_leases();
+  ut::expect(mm::PageFrameAllocator::get_memory_stats().free_pages == pages);
+  ut::expect(mm::RuntimeHeapAllocator::get_heap_stats().allocated_bytes == heap);
+}
+
+void vma_heap_rollback() {
+  using namespace process;
+  const auto heap = mm::RuntimeHeapAllocator::get_heap_stats().allocated_bytes;
+  const auto pages = mm::PageFrameAllocator::get_memory_stats().free_pages;
+  {
+    auto created = user_space::create_user_address_space();
+    if (!ut::expect(created.has_value()))
+      return;
+    auto &space = **created;
+    constexpr auto base = user_layout::MMAP_BASE;
+    if (!ut::expect(space.add_vma(base, base + page_size, vma_flags::READ, VmaType::MMAP)))
+      return;
+    const auto populated = mm::RuntimeHeapAllocator::get_heap_stats().allocated_bytes;
+    {
+      HeapPressure pressure;
+      if (!ut::expect(pressure.acquire(sizeof(VmaRegion))))
+        return;
+      ut::expect(!space.add_vma(base + page_size, base + 2 * page_size, vma_flags::WRITE, VmaType::MMAP));
+      ut::expect(!space.find_vma(base + page_size) && space.vmas.size() == 1);
+      ut::expect(space.allows_user_access(base, page_size, vma_flags::READ) &&
+                 !space.allows_user_access(base, page_size, vma_flags::WRITE));
+    }
+    ut::expect(mm::RuntimeHeapAllocator::get_heap_stats().allocated_bytes == populated);
+    ut::expect(space.add_vma(base + page_size, base + 2 * page_size, vma_flags::WRITE, VmaType::MMAP));
+    ut::expect(space.allows_user_access(base + page_size, page_size, vma_flags::WRITE));
+    ut::expect(space.remove_vma(base + page_size, base + 2 * page_size) && space.vmas.size() == 1);
+    ut::expect(mm::RuntimeHeapAllocator::get_heap_stats().allocated_bytes == populated);
+  }
+  ut::expect(mm::RuntimeHeapAllocator::get_heap_stats().allocated_bytes == heap);
+  ut::expect(mm::PageFrameAllocator::get_memory_stats().free_pages == pages);
+}
+
+LifecycleResources lifecycle_baseline;
+struct ForkMetadataPressure {
+  LifecycleResources baseline;
+  HeapPressure heap;
+  unsigned stage = 0, vmas = 0;
+  bool holding = false, exhausted = false;
+};
+ForkMetadataPressure *fork_metadata_pressure = nullptr;
+HeapPressure *fork_clone_pressure = nullptr;
+LifecycleResources fork_clone_baseline;
+bool fork_clone_exhausted = false;
+HeapPressure *user_heap_pressure = nullptr;
+LifecycleResources user_heap_baseline;
+PagePressure *exec_pressure = nullptr;
+LifecycleResources exec_baseline;
+process::AddressSpace *exec_original = nullptr;
+PhysAddr exec_root = 0;
+u64 exec_root_hash = 0;
+char exec_name[16]{};
+LifecycleResources benchmark_resources;
+bool benchmark_warmed = false;
+u64 benchmark_switches = 0;
+u64 lifecycle_checkpoint = 0;
+u64 lifecycle_started_ns = 0;
+bool lifecycle_started = false;
+bool lifecycle_complete = false;
+bool lifecycle_host_released = false;
+
 void file_read() {
   void *table = fd_table();
   long fd = vfs::syscall::do_open(table, "/fixture.bin", 0, 0);
@@ -1248,6 +1545,753 @@ void file_errors() {
   ut::expect(vfs::syscall::do_close(table, fd) == 0);
 }
 
+void fd_boundaries() {
+  vfs::FdTable table;
+  long fd = vfs::syscall::do_open(&table, "/fixture.bin", 0, 0);
+  if (!ut::expect(fd >= 0)) {
+    return;
+  }
+  constexpr long bad_fd = 1L << 32;
+  auto *file = table.get_file(fd);
+  bool valid = ut::expect(table.get_file(bad_fd + fd) == nullptr);
+  valid = ut::expect(table.close_fd(bad_fd + fd) == -static_cast<long>(vfs::VfsError::BadFd)) && valid;
+  if (valid) {
+    ut::expect(vfs::syscall::do_dup2(&table, fd, bad_fd + fd) == -static_cast<long>(vfs::VfsError::BadFd));
+    ut::expect(table.get_file(fd) == file && file->ref_count == 1);
+  }
+  {
+    vfs::FdTable::Reservation pending(table);
+    ut::expect(pending.fd() == 1 && table.get_file(1) == nullptr);
+    ut::expect(table.close_fd(1) == -static_cast<long>(vfs::VfsError::BadFd));
+    ut::expect(table.descriptor_flags(1) == -static_cast<long>(vfs::VfsError::BadFd));
+    ut::expect(vfs::syscall::do_dup2(&table, fd, 1) == -static_cast<long>(vfs::VfsError::Busy));
+    table.close_on_exec();
+    ut::expect(vfs::syscall::do_dup(&table, fd) == 2);
+    ut::expect(table.close_fd(2) == 0);
+    long ends[2] = {-1, -1};
+    if (ut::expect(vfs::syscall::do_pipe(&table, ends) == 0)) {
+      ut::expect(ends[0] == 2 && ends[1] == 3 && table.get_file(1) == nullptr);
+      ut::expect(table.close_fd(ends[0]) == 0);
+      ut::expect(table.close_fd(ends[1]) == 0);
+    }
+    auto *copy = table.clone();
+    ut::expect(copy->get_file(1) == nullptr && vfs::syscall::do_dup(copy, fd) == 1);
+    copy->close_all();
+    delete copy;
+  }
+  ut::expect(file->ref_count == 1 && vfs::syscall::do_dup(&table, fd) == 1);
+  ut::expect(table.close_fd(1) == 0);
+  {
+    vfs::FdTable::Reservation pending(table);
+    ut::expect(pending.fd() == 1 && pending.install(file, true) == 1);
+  }
+  ut::expect(table.get_file(1) == file && table.descriptor_flags(1) == 1);
+  table.close_on_exec();
+  ut::expect(table.get_file(1) == nullptr && file->ref_count == 1);
+  for (unsigned attempt = 0; attempt < vfs::MAX_FDS; ++attempt)
+    ut::expect(vfs::syscall::do_open(&table, "/missing-open-reservation", 0, 0) ==
+               -static_cast<long>(vfs::VfsError::NoEntry));
+  const u32 occupied = vfs::file_pool_usage();
+  auto **held = new vfs::File *[vfs::MAX_FILES] {};
+  u32 count = 0;
+  while (count < vfs::MAX_FILES && (held[count] = vfs::alloc_file()) != nullptr)
+    ++count;
+  ut::expect(count == vfs::MAX_FILES - occupied);
+  long pipe_ends[2] = {-37, -73};
+  ut::expect(vfs::syscall::do_pipe(&table, pipe_ends) == -static_cast<long>(vfs::VfsError::NoMemory));
+  ut::expect(pipe_ends[0] == -37 && pipe_ends[1] == -73);
+  // One available File cannot build both endpoints; return that temporary
+  // File as well as both reserved descriptors on the second allocation error.
+  if (count) {
+    vfs::release_file(held[--count]);
+    ut::expect(vfs::syscall::do_pipe(&table, pipe_ends) == -static_cast<long>(vfs::VfsError::NoMemory));
+    ut::expect(pipe_ends[0] == -37 && pipe_ends[1] == -73);
+    ut::expect(vfs::file_pool_usage() == vfs::MAX_FILES - 1);
+    held[count] = vfs::alloc_file();
+    if (ut::expect(held[count] != nullptr))
+      ++count;
+  }
+  ut::expect(vfs::syscall::do_open(&table, "/uncreated-open-reservation", vfs::O_RDWR | vfs::O_CREAT, 0600) ==
+             -static_cast<long>(vfs::VfsError::NoMemory));
+  vfs::Stat missing{};
+  ut::expect(vfs::syscall::do_stat("/uncreated-open-reservation", &missing) ==
+             -static_cast<long>(vfs::VfsError::NoEntry));
+  for (u32 i = 0; i < count; ++i)
+    vfs::release_file(held[i]);
+  delete[] held;
+  ut::expect(vfs::file_pool_usage() == occupied);
+  if (ut::expect(vfs::syscall::do_pipe(&table, pipe_ends) == 0)) {
+    ut::expect(pipe_ends[0] == 1 && pipe_ends[1] == 2);
+    ut::expect(table.close_fd(pipe_ends[0]) == 0);
+    ut::expect(table.close_fd(pipe_ends[1]) == 0);
+  }
+  ut::expect(vfs::syscall::do_dup(&table, fd) == 1);
+  table.close_all();
+
+  // A failed fork-table allocation must not acquire any file/CWD references
+  // or modify the source. Once memory is returned, the same clone can succeed.
+  const auto pools = vfs::pool_usage();
+  const auto heap = mm::RuntimeHeapAllocator::get_heap_stats().allocated_bytes;
+  fd = vfs::syscall::do_open(&table, "/fixture.bin", vfs::O_CLOEXEC, 0);
+  if (!ut::expect(fd == 0 && vfs::syscall::do_chdir(&table, "/") == 0))
+    return;
+  auto *source = table.get_file(fd);
+  const auto populated = vfs::pool_usage();
+  const auto populated_heap = mm::RuntimeHeapAllocator::get_heap_stats().allocated_bytes;
+  const auto cwd_refs = table.working_directory()->ref_count;
+  {
+    HeapPressure pressure;
+    if (ut::expect(pressure.acquire(sizeof(vfs::FdTable)))) {
+      auto *copy = table.clone();
+      ut::expect(copy == nullptr);
+      if (copy)
+        copy->close_all();
+      delete copy;
+      ut::expect(table.get_file(fd) == source && source->ref_count == 1 && table.descriptor_flags(fd) == 1);
+      ut::expect(table.working_directory()->ref_count == cwd_refs && vfs::pool_usage() == populated);
+    }
+  }
+  ut::expect(mm::RuntimeHeapAllocator::get_heap_stats().allocated_bytes == populated_heap);
+  auto *copy = table.clone();
+  if (ut::expect(copy != nullptr)) {
+    ut::expect(copy->get_file(fd) == source && source->ref_count == 2 && copy->descriptor_flags(fd) == 1);
+    ut::expect(copy->working_directory() == table.working_directory() &&
+               table.working_directory()->ref_count == cwd_refs + 1);
+    copy->close_all();
+    delete copy;
+  }
+  ut::expect(source->ref_count == 1 && table.working_directory()->ref_count == cwd_refs);
+  u8 byte = 255;
+  ut::expect(vfs::syscall::do_read(&table, fd, vfs::OutputBuffer::kernel(&byte, 1)) == 1 && byte == 0);
+  table.close_all();
+  ut::expect(vfs::pool_usage() == pools && mm::RuntimeHeapAllocator::get_heap_stats().allocated_bytes == heap);
+}
+
+void pipe_reuse() {
+  vfs::FdTable table;
+  const u8 sent[] = {0, 1, 2, 255};
+  u8 received[sizeof(sent)]{};
+  for (unsigned cycle = 0; cycle < 1000; ++cycle) {
+    long ends[2] = {-1, -1};
+    if (!ut::expect(vfs::syscall::do_pipe(&table, ends) == 0)) {
+      break;
+    }
+    bool valid = ut::expect(vfs::syscall::do_write(&table, ends[1], vfs::InputBuffer::kernel(sent, sizeof(sent))) ==
+                            sizeof(sent));
+    valid = ut::expect(vfs::syscall::do_close(&table, ends[1]) == 0) && valid;
+    valid = ut::expect(vfs::syscall::do_read(&table, ends[0], vfs::OutputBuffer::kernel(received, sizeof(received))) ==
+                       sizeof(received)) &&
+            valid;
+    valid = ut::expect(__builtin_memcmp(sent, received, sizeof(sent)) == 0) && valid;
+    valid = ut::expect(vfs::syscall::do_read(&table, ends[0], vfs::OutputBuffer::kernel(received, 1)) == 0) && valid;
+    table.close_all();
+    if (!valid) {
+      break;
+    }
+  }
+  table.close_all();
+}
+
+void pipe_fd_rollback() {
+  for (unsigned free_slots = 0; free_slots < 2; ++free_slots) {
+    vfs::FdTable table;
+    long file = vfs::syscall::do_open(&table, "/fixture.bin", 0, 0);
+    if (!ut::expect(file == 0)) {
+      table.close_all();
+      return;
+    }
+    for (u32 fd = 1; fd < vfs::MAX_FDS - free_slots; ++fd) {
+      ut::expect(vfs::syscall::do_dup(&table, file) == static_cast<long>(fd));
+    }
+    bool valid = true;
+    // Exceed the pipe-state capacity while every failed attempt must roll back.
+    for (unsigned attempt = 0; valid && attempt < 1000; ++attempt) {
+      long ends[2] = {-1, -1};
+      valid = ut::expect(vfs::syscall::do_pipe(&table, ends) == -static_cast<long>(vfs::VfsError::TooManyFiles));
+      valid = ut::expect(ends[0] == -1 && ends[1] == -1) && valid;
+    }
+    table.close_all();
+    long ends[2] = {-1, -1};
+    ut::expect(vfs::syscall::do_pipe(&table, ends) == 0);
+    table.close_all();
+    if (!valid) {
+      return;
+    }
+  }
+}
+
+void writable_lifecycle() {
+  const auto baseline = vfs::pool_usage();
+  const auto heap = mm::RuntimeHeapAllocator::get_heap_stats().allocated_bytes;
+  vfs::FdTable table;
+  constexpr u32 create = vfs::O_RDWR | vfs::O_CREAT | vfs::O_EXCL;
+  constexpr const char *path = "/writable";
+  constexpr u8 payload[] = {0, 1, 2, 0xff};
+  long fd = vfs::syscall::do_open(&table, path, create, 0600, 0, 43);
+  if (!ut::expect(fd == 0))
+    return;
+  vfs::Stat original{}, status{};
+  ut::expect(vfs::syscall::do_fstat(&table, fd, &original) == 0 && original.st_size == 0 && original.st_uid == 0 &&
+             original.st_gid == 43 && (original.st_mode & 0777) == 0600);
+  ut::expect(vfs::syscall::do_open(&table, path, create, 0600) == -static_cast<long>(vfs::VfsError::FileExists));
+  ut::expect(vfs::syscall::do_write(&table, fd, vfs::InputBuffer::kernel(payload, sizeof(payload))) == 4);
+  long duplicate = vfs::syscall::do_dup(&table, fd);
+  ut::expect(duplicate == 1 && vfs::syscall::do_lseek(&table, duplicate, 0, 0) == 0);
+  u8 bytes[5]{};
+  ut::expect(vfs::syscall::do_read(&table, fd, vfs::OutputBuffer::kernel(bytes, 4)) == 4 &&
+             __builtin_memcmp(bytes, payload, 4) == 0 && vfs::syscall::do_lseek(&table, duplicate, 0, 1) == 4);
+  ut::expect(vfs::syscall::do_lseek(&table, fd, 4096, 0) == 4096);
+  ut::expect(vfs::syscall::do_write(&table, fd, vfs::InputBuffer::kernel(payload, 4)) == 4);
+  ut::expect(vfs::syscall::do_lseek(&table, fd, 4095, 0) == 4095);
+  ut::expect(vfs::syscall::do_read(&table, fd, vfs::OutputBuffer::kernel(bytes, 5)) == 5 && !bytes[0] &&
+             __builtin_memcmp(bytes + 1, payload, 4) == 0);
+  const auto populated_heap = mm::RuntimeHeapAllocator::get_heap_stats().allocated_bytes;
+  const auto populated_pool = vfs::pool_usage();
+  ut::expect(vfs::syscall::do_lseek(&table, fd, 16384, 0) == 16384);
+  auto rejected = vfs::InputBuffer::user(1, 4, [](void *, u64, usize size) noexcept { return size; });
+  ut::expect(vfs::syscall::do_write(&table, fd, rejected) == -static_cast<long>(vfs::VfsError::BadAddress));
+  ut::expect(vfs::syscall::do_lseek(&table, fd, 0, 1) == 16384 && vfs::syscall::do_fstat(&table, fd, &status) == 0 &&
+             status.st_size == 4100);
+  ut::expect(mm::RuntimeHeapAllocator::get_heap_stats().allocated_bytes == populated_heap &&
+             vfs::pool_usage() == populated_pool);
+  ut::expect(vfs::syscall::do_lseek(&table, fd, 1LL << 40, 0) == (1LL << 40));
+  ut::expect(vfs::syscall::do_write(&table, fd, vfs::InputBuffer::kernel(payload, 1)) ==
+             -static_cast<long>(vfs::VfsError::NoMemory));
+  ut::expect(vfs::syscall::do_lseek(&table, fd, 0, 1) == (1LL << 40) &&
+             mm::RuntimeHeapAllocator::get_heap_stats().allocated_bytes == populated_heap &&
+             vfs::pool_usage() == populated_pool);
+  constexpr i64 max_offset = 0x7fffffffffffffffLL;
+  ut::expect(vfs::syscall::do_lseek(&table, fd, max_offset, 0) == max_offset);
+  ut::expect(vfs::syscall::do_lseek(&table, fd, 1, 1) == -static_cast<long>(vfs::VfsError::Overflow));
+  ut::expect(vfs::syscall::do_lseek(&table, fd, max_offset, 2) == -static_cast<long>(vfs::VfsError::Overflow));
+  ut::expect(vfs::syscall::do_lseek(&table, fd, 0, 1) == max_offset);
+  ut::expect(vfs::syscall::do_write(&table, fd, vfs::InputBuffer::kernel(payload, 1)) ==
+             -static_cast<long>(vfs::VfsError::FileTooLarge));
+  ut::expect(vfs::syscall::do_lseek(&table, fd, -1, 0) == -static_cast<long>(vfs::VfsError::InvalidArg));
+  for (u32 next = 2; next < vfs::MAX_FDS; ++next)
+    ut::expect(vfs::syscall::do_dup(&table, fd) == static_cast<long>(next));
+  ut::expect(vfs::syscall::do_open(&table, "/uncreated", create, 0600) ==
+             -static_cast<long>(vfs::VfsError::TooManyFiles));
+  ut::expect(vfs::syscall::do_stat("/uncreated", &status) == -static_cast<long>(vfs::VfsError::NoEntry));
+  ut::expect(vfs::syscall::do_open(&table, path, vfs::O_WRONLY | vfs::O_TRUNC, 0) ==
+             -static_cast<long>(vfs::VfsError::TooManyFiles));
+  ut::expect(vfs::syscall::do_fstat(&table, fd, &status) == 0 && status.st_size == 4100 &&
+             mm::RuntimeHeapAllocator::get_heap_stats().allocated_bytes == populated_heap);
+  table.close_all();
+  fd = vfs::syscall::do_open(&table, path, vfs::O_RDONLY, 0);
+  long append = vfs::syscall::do_open(&table, path, vfs::O_WRONLY | vfs::O_APPEND, 0);
+  ut::expect(vfs::syscall::do_write(&table, fd, vfs::InputBuffer::kernel(payload, 4)) ==
+             -static_cast<long>(vfs::VfsError::BadFd));
+  ut::expect(vfs::syscall::do_read(&table, append, vfs::OutputBuffer::kernel(bytes, 4)) ==
+             -static_cast<long>(vfs::VfsError::BadFd));
+  ut::expect(vfs::syscall::do_lseek(&table, append, 0, 0) == 0 &&
+             vfs::syscall::do_write(&table, append, vfs::InputBuffer::kernel(payload, 4)) == 4 &&
+             vfs::syscall::do_lseek(&table, append, 0, 1) == 4104);
+  ut::expect(vfs::syscall::do_unlink(path) == 0);
+  ut::expect(vfs::syscall::do_stat(path, &status) == -static_cast<long>(vfs::VfsError::NoEntry));
+  ut::expect(vfs::syscall::do_fstat(&table, fd, &status) == 0 && status.st_ino == original.st_ino &&
+             status.st_nlink == 0 && status.st_size == 4104);
+  ut::expect(vfs::syscall::do_read(&table, fd, vfs::OutputBuffer::kernel(bytes, 4)) == 4 &&
+             __builtin_memcmp(bytes, payload, 4) == 0);
+  long replacement = vfs::syscall::do_open(&table, path, create, 0644);
+  ut::expect(replacement >= 0 && vfs::syscall::do_fstat(&table, replacement, &status) == 0 &&
+             status.st_ino != original.st_ino && status.st_size == 0);
+  auto partial =
+      vfs::InputBuffer::user(reinterpret_cast<u64>(payload), 4, [](void *target, u64 source, usize count) noexcept {
+        __builtin_memcpy(target, reinterpret_cast<const void *>(source), 2);
+        return count - 2;
+      });
+  ut::expect(vfs::syscall::do_write(&table, replacement, partial) == 2 &&
+             vfs::syscall::do_fstat(&table, replacement, &status) == 0 && status.st_size == 2);
+  ut::expect(vfs::syscall::do_lseek(&table, replacement, 0, 0) == 0 &&
+             vfs::syscall::do_read(&table, replacement, vfs::OutputBuffer::kernel(bytes, 4)) == 2 &&
+             __builtin_memcmp(bytes, payload, 2) == 0);
+  long truncate = vfs::syscall::do_open(&table, path, vfs::O_WRONLY | vfs::O_TRUNC, 0);
+  ut::expect(truncate >= 0 && vfs::syscall::do_fstat(&table, replacement, &status) == 0 && status.st_size == 0 &&
+             vfs::syscall::do_read(&table, replacement, vfs::OutputBuffer::kernel(bytes, 4)) == 0);
+  ut::expect(vfs::syscall::do_unlink(path) == 0);
+  table.close_all();
+  ut::expect(vfs::pool_usage() == baseline && mm::RuntimeHeapAllocator::get_heap_stats().allocated_bytes == heap);
+  for (unsigned cycle = 0; cycle < 1000; ++cycle) {
+    fd = vfs::syscall::do_open(&table, path, create, 0600);
+    ut::expect(fd == 0 && vfs::syscall::do_write(&table, fd, vfs::InputBuffer::kernel(payload, 4)) == 4);
+    ut::expect(vfs::syscall::do_unlink(path) == 0 && vfs::syscall::do_lseek(&table, fd, 0, 0) == 0);
+    ut::expect(vfs::syscall::do_read(&table, fd, vfs::OutputBuffer::kernel(bytes, 4)) == 4 &&
+               __builtin_memcmp(bytes, payload, 4) == 0);
+    table.close_all();
+    if (!ut::expect(vfs::pool_usage() == baseline &&
+                    mm::RuntimeHeapAllocator::get_heap_stats().allocated_bytes == heap))
+      break;
+  }
+}
+
+void rename_lifecycle() {
+  const auto baseline = vfs::pool_usage();
+  const auto heap = mm::RuntimeHeapAllocator::get_heap_stats().allocated_bytes;
+  vfs::FdTable table;
+  ut::expect(vfs::syscall::do_mkdir("/rename-a", 0777, 0, 0) == 0);
+  ut::expect(vfs::syscall::do_mkdir("/rename-b", 0700, 0, 0) == 0);
+  const auto directories = vfs::pool_usage();
+  constexpr u32 create = vfs::O_RDWR | vfs::O_CREAT | vfs::O_EXCL;
+  constexpr u8 source_bytes[] = {0, 37, 0xff}, target_bytes[] = {91, 0, 17};
+  for (unsigned cycle = 0; cycle < 1000; ++cycle) {
+    long source = vfs::syscall::do_open(&table, "/rename-a/source", create, 0600, 42, 43);
+    long target = vfs::syscall::do_open(&table, "/rename-b/target", create, 0644);
+    ut::expect(source == 0 && target == 1);
+    ut::expect(vfs::syscall::do_write(&table, source, vfs::InputBuffer::kernel(source_bytes, 3)) == 3);
+    ut::expect(vfs::syscall::do_write(&table, target, vfs::InputBuffer::kernel(target_bytes, 3)) == 3);
+    vfs::Stat before{}, replaced{}, current{};
+    ut::expect(vfs::syscall::do_stat("/rename-a/source", &before) == 0 &&
+               vfs::syscall::do_stat("/rename-b/target", &replaced) == 0);
+    const auto populated = vfs::pool_usage();
+    const auto populated_heap = mm::RuntimeHeapAllocator::get_heap_stats().allocated_bytes;
+    ut::expect(vfs::syscall::do_rename("/rename-a/source", "/rename-b/target") == 0);
+    ut::expect(vfs::pool_usage() == populated &&
+               mm::RuntimeHeapAllocator::get_heap_stats().allocated_bytes == populated_heap);
+    ut::expect(vfs::syscall::do_stat("/rename-a/source", &current) == -static_cast<long>(vfs::VfsError::NoEntry));
+    ut::expect(vfs::syscall::do_stat("/rename-b/target", &current) == 0 && current.st_ino == before.st_ino &&
+               current.st_nlink == 1 && current.st_size == 3 && current.st_uid == 42 && current.st_gid == 43);
+    ut::expect(vfs::syscall::do_fstat(&table, target, &current) == 0 && current.st_ino == replaced.st_ino &&
+               current.st_nlink == 0 && current.st_size == 3);
+    u8 bytes[3]{};
+    ut::expect(vfs::syscall::do_lseek(&table, source, 0, 0) == 0 &&
+               vfs::syscall::do_read(&table, source, vfs::OutputBuffer::kernel(bytes, 3)) == 3 &&
+               __builtin_memcmp(bytes, source_bytes, 3) == 0);
+    ut::expect(vfs::syscall::do_lseek(&table, target, 0, 0) == 0 &&
+               vfs::syscall::do_read(&table, target, vfs::OutputBuffer::kernel(bytes, 3)) == 3 &&
+               __builtin_memcmp(bytes, target_bytes, 3) == 0);
+    ut::expect(vfs::syscall::do_rename("/rename-b/target", "/rename-b/target") == 0);
+    ut::expect(vfs::syscall::do_unlink("/rename-b/target") == 0);
+    table.close_all();
+    if (!ut::expect(vfs::pool_usage() == directories &&
+                    mm::RuntimeHeapAllocator::get_heap_stats().allocated_bytes == heap))
+      break;
+  }
+  ut::expect(vfs::syscall::do_rmdir("/rename-a") == 0 && vfs::syscall::do_rmdir("/rename-b") == 0);
+  ut::expect(vfs::pool_usage() == baseline && mm::RuntimeHeapAllocator::get_heap_stats().allocated_bytes == heap);
+}
+
+void rename_boundaries() {
+  const auto baseline = vfs::pool_usage();
+  const auto heap = mm::RuntimeHeapAllocator::get_heap_stats().allocated_bytes;
+  vfs::FdTable table;
+  constexpr const char *paths[] = {"/rename-a", "/rename-b", "/rename-a/source", "/rename-a/source/leaf",
+                                   "/rename-b/target"};
+  for (auto *path : paths)
+    ut::expect(vfs::syscall::do_mkdir(path, 0700, 0, 0) == 0);
+  long held = vfs::syscall::do_open(&table, "/rename-b/target", vfs::O_RDONLY, 0);
+  long file = vfs::syscall::do_open(&table, "/rename-a/file", vfs::O_RDWR | vfs::O_CREAT, 0600);
+  vfs::Stat source{}, target{}, current{}, parent{};
+  ut::expect(held >= 0 && file >= 0 && vfs::syscall::do_stat("/rename-a/source", &source) == 0 &&
+             vfs::syscall::do_stat("/rename-b/target", &target) == 0);
+  ut::expect(vfs::syscall::do_rename("/rename-a/source", "/rename-b/target") == 0);
+  ut::expect(vfs::syscall::do_stat("/rename-b/target", &current) == 0 && current.st_ino == source.st_ino &&
+             current.st_nlink == 3 && vfs::syscall::do_stat("/rename-b/target/leaf", &current) == 0);
+  ut::expect(vfs::syscall::do_fstat(&table, held, &current) == 0 && current.st_ino == target.st_ino &&
+             current.st_nlink == 0);
+  ut::expect(vfs::syscall::do_stat("/rename-a", &parent) == 0 && parent.st_nlink == 2);
+  ut::expect(vfs::syscall::do_stat("/rename-b", &parent) == 0 && parent.st_nlink == 3);
+  struct Rejection {
+    const char *old_path;
+    const char *new_path;
+    vfs::VfsError error;
+  };
+  const Rejection rejections[] = {
+      {"/rename-b/target", "/rename-b/target/leaf/cycle", vfs::VfsError::InvalidArg},
+      {"/rename-a/file", "/rename-b/target", vfs::VfsError::IsDirectory},
+      {"/rename-b/target", "/rename-a/file", vfs::VfsError::NotDirectory},
+      {"/rename-a", "/rename-b", vfs::VfsError::NotEmpty},
+      {"/rename-a/file", "/dev/null", vfs::VfsError::CrossDevice},
+      {"/", "/rename-a/root", vfs::VfsError::Busy},
+      {"/rename-a/file", "/", vfs::VfsError::Busy},
+      {"/dev", "/rename-a/device", vfs::VfsError::Busy},
+      {"/rename-a/file", "/dev", vfs::VfsError::Busy},
+      {"/rename-a/file/", "/rename-a/new", vfs::VfsError::NotDirectory},
+      {"/rename-a/file", "/rename-a/new/", vfs::VfsError::NotDirectory},
+      {"/rename-a/file", "/rename-a/file/child/new", vfs::VfsError::NotDirectory},
+      {"/rename-a/.", "/rename-a/new", vfs::VfsError::InvalidArg},
+      {"/rename-a/file", "/rename-a/..", vfs::VfsError::InvalidArg},
+      {"/rename-a/missing", "/rename-a/new", vfs::VfsError::NoEntry},
+      {"/rename-a/file", "", vfs::VfsError::NoEntry},
+  };
+  const auto populated = vfs::pool_usage();
+  for (const auto &rejection : rejections) {
+    ut::expect(vfs::syscall::do_rename(rejection.old_path, rejection.new_path) == -static_cast<long>(rejection.error));
+    ut::expect(vfs::pool_usage() == populated && mm::RuntimeHeapAllocator::get_heap_stats().allocated_bytes == heap);
+    ut::expect(vfs::syscall::do_stat("/rename-b/target", &current) == 0 && current.st_ino == source.st_ino &&
+               current.st_nlink == 3 && vfs::syscall::do_stat("/rename-a/file", &current) == 0);
+  }
+  // A full destination must reject a cross-directory insertion without losing
+  // the source. Same-directory renaming and replacement need no extra slot.
+  ut::expect(vfs::syscall::do_mkdir("/rename-full", 0700, 0, 0) == 0);
+  char path[] = "/rename-full/00";
+  for (u32 i = 0; i < vfs::Inode::MAX_CHILDREN; ++i) {
+    path[13] = static_cast<char>('0' + i / 10);
+    path[14] = static_cast<char>('0' + i % 10);
+    ut::expect(vfs::syscall::do_mkdir(path, 0700, 0, 0) == 0);
+  }
+  const auto full = vfs::pool_usage();
+  for (unsigned attempt = 0; attempt < 300; ++attempt) {
+    ut::expect(vfs::syscall::do_rename("/rename-b/target", "/rename-full/overflow") ==
+               -static_cast<long>(vfs::VfsError::NoMemory));
+    ut::expect(vfs::pool_usage() == full && vfs::syscall::do_stat("/rename-b/target/leaf", &current) == 0);
+  }
+  ut::expect(vfs::syscall::do_rename("/rename-full/00", "/rename-full/renamed") == 0);
+  ut::expect(vfs::syscall::do_rename("/rename-full/renamed", "/rename-full/00") == 0);
+  ut::expect(vfs::syscall::do_rename("/rename-b/target", "/rename-full/00") == 0);
+  ut::expect(vfs::syscall::do_stat("/rename-full/00", &current) == 0 && current.st_ino == source.st_ino &&
+             vfs::syscall::do_stat("/rename-full/00/leaf", &current) == 0);
+  ut::expect(vfs::syscall::do_rmdir("/rename-full/00/leaf") == 0);
+  for (u32 i = 0; i < vfs::Inode::MAX_CHILDREN; ++i) {
+    path[13] = static_cast<char>('0' + i / 10);
+    path[14] = static_cast<char>('0' + i % 10);
+    ut::expect(vfs::syscall::do_rmdir(path) == 0);
+  }
+  table.close_all();
+  ut::expect(vfs::syscall::do_unlink("/rename-a/file") == 0);
+  constexpr const char *directories[] = {"/rename-a", "/rename-b", "/rename-full"};
+  for (auto *directory : directories)
+    ut::expect(vfs::syscall::do_rmdir(directory) == 0);
+  ut::expect(vfs::pool_usage() == baseline && mm::RuntimeHeapAllocator::get_heap_stats().allocated_bytes == heap);
+}
+
+void access_permissions() {
+  using namespace vfs;
+  const auto baseline = pool_usage();
+  const auto heap = mm::RuntimeHeapAllocator::get_heap_stats().allocated_bytes;
+  constexpr long denied = -static_cast<long>(VfsError::PermDenied);
+  for (unsigned cycle = 0; cycle < 64; ++cycle) {
+    {
+      FdTable table;
+      // Root provides a writable arena; unprivileged creation must not rely on
+      // bypassing the namespace root's 0755 permissions.
+      if (!ut::expect(vfs::syscall::do_mkdir("/access-arena", 0777, 0, 0) == 0 &&
+                      vfs::syscall::do_chdir(&table, "/access-arena") == 0))
+        return;
+      auto create = [&](const char *path, u32 mode) {
+        const long fd = vfs::syscall::do_open(&table, path, O_CREAT | O_EXCL | O_RDWR, mode, 42, 43);
+        return fd >= 0 && vfs::syscall::do_close(&table, fd) == 0;
+      };
+      if (!ut::expect(create("owner", 0640) && create("group", 0040) && create("exec", 0010) &&
+                      create("others", 0066) && vfs::syscall::do_mkdir("tree", 0710, 42, 43, &table) == 0 &&
+                      create("tree/leaf", 0600) && vfs::syscall::do_mkdir("tree/empty", 0700, 42, 43, &table) == 0))
+        return;
+      ut::expect(vfs::syscall::do_access(&table, "owner", 6, 42, 99) == 0);
+      ut::expect(vfs::syscall::do_access(&table, "owner", 4, 99, 43) == 0);
+      ut::expect(vfs::syscall::do_access(&table, "owner", 2, 99, 43) == denied);
+      ut::expect(vfs::syscall::do_access(&table, "owner", 4, 99, 99) == denied);
+      auto open_as = [&](const char *path, u32 flags, u32 uid, u32 gid, bool permitted) {
+        const long fd = vfs::syscall::do_open(&table, path, flags, 0, uid, gid);
+        ut::expect(permitted ? fd >= 0 : fd == denied);
+        if (fd >= 0)
+          ut::expect(vfs::syscall::do_close(&table, fd) == 0);
+      };
+      const long owner = vfs::syscall::do_open(&table, "owner", O_RDWR, 0, 42, 43);
+      constexpr u8 payload[] = {37, 0, 0xff};
+      if (!ut::expect(owner >= 0 && vfs::syscall::do_write(&table, owner, InputBuffer::kernel(payload, 3)) == 3))
+        return;
+      Stat original{}, current{}, original_leaf{};
+      ut::expect(vfs::syscall::do_fstat(&table, owner, &original) == 0 && original.st_uid == 42 &&
+                 original.st_gid == 43 && vfs::syscall::do_stat("tree", &current, &table) == 0 &&
+                 current.st_uid == 42 && current.st_gid == 43 &&
+                 vfs::syscall::do_stat("tree/leaf", &original_leaf, &table) == 0);
+      const auto populated = pool_usage();
+      const auto populated_heap = mm::RuntimeHeapAllocator::get_heap_stats().allocated_bytes;
+      open_as("owner", O_RDONLY, 99, 99, false);
+      open_as("owner", O_RDONLY, 99, 43, true);
+      open_as("owner", O_RDWR, 42, 99, true);
+      open_as("owner", O_WRONLY | O_TRUNC, 99, 43, false);
+      open_as("owner", O_RDWR, 99, 43, false);
+      open_as("group", O_RDONLY, 42, 43, false); // Owner bits take precedence over group.
+      open_as("group", O_RDONLY, 99, 43, true);
+      open_as("others", O_RDWR, 99, 99, true);
+      open_as("others", O_RDONLY, 42, 99, false);
+      open_as("group", O_RDWR, 0, 99, true);
+      open_as("tree/../others", O_RDONLY, 99, 99, false); // Do not normalize away a denied search.
+      open_as("tree/../others", O_RDONLY, 99, 43, true);
+      open_as("/access-uncreated", O_CREAT | O_WRONLY, 99, 99, false);
+      if (vfs::syscall::do_stat("/access-uncreated", &current) == 0)
+        ut::expect(vfs::syscall::do_unlink("/access-uncreated") == 0);
+      // Group search alone cannot authorize namespace changes. Rejections must
+      // preserve both rename endpoints and the populated resource baseline.
+      open_as("tree/uncreated", O_CREAT | O_WRONLY, 99, 43, false);
+      ut::expect(vfs::syscall::do_mkdir("tree/uncreated", 0700, 99, 43, &table) == denied);
+      ut::expect(vfs::syscall::do_unlink("tree/leaf", &table, 99, 43) == denied);
+      ut::expect(vfs::syscall::do_rmdir("tree/empty", &table, 99, 43) == denied);
+      ut::expect(vfs::syscall::do_rename("tree/leaf", "owner", &table, 99, 43) == denied);
+      ut::expect(vfs::syscall::do_rename("owner", "tree/leaf", &table, 99, 43) == denied);
+      ut::expect(vfs::syscall::do_stat("tree/../owner", &current, &table, 99, 99) == denied);
+      ut::expect(vfs::syscall::do_stat("tree/leaf", &current, &table, 99, 43) == 0 &&
+                 current.st_ino == original_leaf.st_ino && current.st_size == original_leaf.st_size);
+      u8 bytes[3]{};
+      ut::expect(vfs::syscall::do_fstat(&table, owner, &current) == 0 && current.st_ino == original.st_ino &&
+                 current.st_size == 3 && vfs::syscall::do_lseek(&table, owner, 0, 0) == 0 &&
+                 vfs::syscall::do_read(&table, owner, OutputBuffer::kernel(bytes, 3)) == 3 &&
+                 __builtin_memcmp(bytes, payload, 3) == 0);
+      ut::expect(pool_usage() == populated &&
+                 mm::RuntimeHeapAllocator::get_heap_stats().allocated_bytes == populated_heap);
+      ut::expect(vfs::syscall::do_close(&table, owner) == 0);
+      ut::expect(vfs::syscall::do_access(&table, "group", 4, 42, 43) == denied);
+      ut::expect(vfs::syscall::do_access(&table, "group", 4, 99, 43) == 0);
+      ut::expect(vfs::syscall::do_access(&table, "owner", 6, 0, 0) == 0);
+      ut::expect(vfs::syscall::do_access(&table, "owner", 1, 0, 0) == denied);
+      ut::expect(vfs::syscall::do_access(&table, "exec", 1, 0, 0) == 0);
+      ut::expect(vfs::syscall::do_access(&table, "/fixture.bin", 2, 0, 0) == denied);
+      ut::expect(vfs::syscall::do_access(&table, "tree", 0, 99, 99) == 0);
+      ut::expect(vfs::syscall::do_access(&table, "tree", 1, 99, 99) == denied);
+      ut::expect(vfs::syscall::do_access(&table, "tree/leaf", 0, 99, 99) == denied);
+      ut::expect(vfs::syscall::do_access(&table, "tree/leaf", 0, 99, 43) == 0);
+      ut::expect(vfs::syscall::do_access(&table, "tree/leaf", 4, 99, 43) == denied);
+      ut::expect(vfs::syscall::do_access(&table, "owner", 8, 42, 43) == -static_cast<long>(VfsError::InvalidArg));
+      ut::expect(vfs::syscall::do_chdir(&table, "tree", 42, 43) == 0 &&
+                 vfs::syscall::do_access(&table, "leaf", 6, 42, 43) == 0 && vfs::syscall::do_chdir(&table, "..") == 0);
+      ut::expect(vfs::syscall::do_unlink("owner", &table) == 0 && vfs::syscall::do_unlink("group", &table) == 0 &&
+                 vfs::syscall::do_unlink("exec", &table) == 0 && vfs::syscall::do_unlink("others", &table) == 0 &&
+                 vfs::syscall::do_unlink("tree/leaf", &table) == 0 &&
+                 vfs::syscall::do_rmdir("tree/empty", &table) == 0 && vfs::syscall::do_rmdir("tree", &table) == 0 &&
+                 vfs::syscall::do_chdir(&table, "/") == 0 && vfs::syscall::do_rmdir("/access-arena") == 0);
+    }
+    if (!ut::expect(pool_usage() == baseline && mm::RuntimeHeapAllocator::get_heap_stats().allocated_bytes == heap))
+      return;
+  }
+}
+
+void working_directory_lifecycle() {
+  const auto baseline = vfs::pool_usage();
+  const auto heap = mm::RuntimeHeapAllocator::get_heap_stats().allocated_bytes;
+  auto root_references = [] {
+    containers::LockGuard<containers::IrqSpinLock> guard(vfs::namespace_lock);
+    auto *root = vfs::resolve_path_locked("/");
+    return root ? root->ref_count : 0;
+  };
+  const auto root_refs = root_references();
+  for (unsigned cycle = 0; cycle < 1000; ++cycle) {
+    {
+      vfs::FdTable table;
+      if (!ut::expect(vfs::syscall::do_mkdir("/cwd-tree", 0710, 0, 43) == 0 &&
+                      vfs::syscall::do_mkdir("/cwd-tree/leaf", 0755, 0, 43) == 0))
+        return;
+      // Both the final directory and each searched ancestor require access.
+      ut::expect(vfs::syscall::do_chdir(&table, "/cwd-tree", 99, 44) == -static_cast<long>(vfs::VfsError::PermDenied));
+      ut::expect(vfs::syscall::do_chdir(&table, "/cwd-tree/leaf", 99, 44) ==
+                 -static_cast<long>(vfs::VfsError::PermDenied));
+      if (!ut::expect(vfs::syscall::do_chdir(&table, "/cwd-tree/leaf", 99, 43) == 0))
+        return;
+      auto *child = table.clone();
+      if (!ut::expect(child != nullptr))
+        return;
+      char path[vfs::MAX_PATH_LEN];
+      auto output = vfs::OutputBuffer::kernel(path, sizeof(path));
+      ut::expect(vfs::syscall::do_getcwd(child, output) == 0 && ut::same_id(path, "/cwd-tree/leaf"));
+      ut::expect(vfs::syscall::do_rename("/cwd-tree", "/cwd-moved") == 0 &&
+                 vfs::syscall::do_getcwd(child, output) == 0 && ut::same_id(path, "/cwd-moved/leaf"));
+      ut::expect(vfs::syscall::do_rmdir("/cwd-moved/leaf") == 0 && vfs::syscall::do_rmdir("/cwd-moved") == 0);
+      vfs::Stat status{};
+      ut::expect(vfs::syscall::do_getcwd(child, output) == -static_cast<long>(vfs::VfsError::NoEntry) &&
+                 vfs::syscall::do_stat(".", &status, child) == 0 && status.st_nlink == 0);
+      ut::expect(vfs::syscall::do_open(child, "ghost", vfs::O_CREAT | vfs::O_WRONLY, 0600) ==
+                 -static_cast<long>(vfs::VfsError::NoEntry));
+      ut::expect(vfs::syscall::do_chdir(&table, "/") == 0 && vfs::pool_usage().dentries == baseline.dentries + 2);
+      // The child still owns both detached directories, even after its parent
+      // leaves. Moving upward must not read a freed/reused parent pointer.
+      ut::expect(vfs::syscall::do_chdir(child, "..") == 0 &&
+                 vfs::syscall::do_getcwd(child, output) == -static_cast<long>(vfs::VfsError::NoEntry));
+      delete child;
+    }
+    if (!ut::expect(root_references() == root_refs && vfs::pool_usage() == baseline &&
+                    mm::RuntimeHeapAllocator::get_heap_stats().allocated_bytes == heap))
+      return;
+  }
+}
+
+void directory_capacity() {
+  const auto baseline = vfs::pool_usage();
+  vfs::FdTable table;
+  ut::expect(vfs::syscall::do_open(&table, "/", vfs::O_WRONLY, 0) == -static_cast<long>(vfs::VfsError::IsDirectory));
+  ut::expect(vfs::syscall::do_open(&table, "/", vfs::O_RDWR, 0) == -static_cast<long>(vfs::VfsError::IsDirectory));
+  ut::expect(vfs::syscall::do_open(&table, "/", 3, 0) == -static_cast<long>(vfs::VfsError::InvalidArg));
+  table.close_all();
+  ut::expect(vfs::pool_usage() == baseline);
+  vfs::Stat root{}, full{}, current{};
+  ut::expect(vfs::syscall::do_stat("/", &root) == 0);
+  if (!ut::expect(vfs::syscall::do_mkdir("/capacity", 0700, 0, 43) == 0))
+    return;
+  char path[] = "/capacity/00";
+  u32 created = 0;
+  for (; created < vfs::Inode::MAX_CHILDREN; ++created) {
+    path[10] = static_cast<char>('0' + created / 10);
+    path[11] = static_cast<char>('0' + created % 10);
+    if (!ut::expect(vfs::syscall::do_mkdir(path, 0700, 0, 43) == 0))
+      break;
+  }
+  ut::expect(vfs::syscall::do_stat("/capacity", &full) == 0);
+  ut::expect(full.st_nlink == created + 2 && full.st_uid == 0 && full.st_gid == 43);
+  if (created == vfs::Inode::MAX_CHILDREN) {
+    const auto capacity = vfs::pool_usage();
+    for (unsigned attempt = 0; attempt < 300; ++attempt) {
+      ut::expect(vfs::syscall::do_mkdir("/capacity/overflow", 0700, 0, 0) ==
+                 -static_cast<long>(vfs::VfsError::NoMemory));
+      ut::expect(vfs::pool_usage() == capacity);
+    }
+    ut::expect(vfs::syscall::do_mkdir(path, 0700, 0, 0) == -static_cast<long>(vfs::VfsError::FileExists));
+    ut::expect(vfs::syscall::do_rmdir("/capacity") == -static_cast<long>(vfs::VfsError::NotEmpty));
+    ut::expect(vfs::syscall::do_stat("/capacity", &current) == 0 && current.st_nlink == full.st_nlink);
+    ut::expect(vfs::pool_usage() == capacity);
+  }
+  while (created) {
+    --created;
+    path[10] = static_cast<char>('0' + created / 10);
+    path[11] = static_cast<char>('0' + created % 10);
+    ut::expect(vfs::syscall::do_rmdir(path) == 0);
+  }
+  long held = vfs::syscall::do_open(&table, "/capacity", 0, 0);
+  if (ut::expect(held == 0)) {
+    auto *file = table.get_file(held);
+    for (u32 fd = 1; fd < vfs::MAX_FDS; ++fd)
+      ut::expect(vfs::syscall::do_dup(&table, held) == static_cast<long>(fd));
+    const auto installed = vfs::pool_usage();
+    const auto inode_refs = file->inode->ref_count, dentry_refs = file->dentry->ref_count;
+    for (unsigned attempt = 0; attempt < 300; ++attempt) {
+      ut::expect(vfs::syscall::do_open(&table, "/capacity", 0, 0) == -static_cast<long>(vfs::VfsError::TooManyFiles));
+      ut::expect(vfs::pool_usage() == installed);
+      ut::expect(file->inode->ref_count == inode_refs && file->dentry->ref_count == dentry_refs);
+    }
+    ut::expect(vfs::syscall::do_rmdir("/capacity") == 0);
+    ut::expect(vfs::syscall::do_fstat(&table, held, &current) == 0 && current.st_ino == full.st_ino &&
+               current.st_nlink == 0);
+    ut::expect(vfs::syscall::do_mkdir("/capacity", 0700, 0, 0) == 0);
+    ut::expect(vfs::syscall::do_stat("/capacity", &current) == 0 && current.st_ino != full.st_ino);
+    ut::expect(vfs::pool_usage().inodes == baseline.inodes + 2 && vfs::pool_usage().dentries == baseline.dentries + 2);
+  }
+  table.close_all();
+  ut::expect(vfs::syscall::do_rmdir("/capacity") == 0);
+  ut::expect(vfs::pool_usage() == baseline);
+  ut::expect(vfs::syscall::do_stat("/", &current) == 0 && current.st_nlink == root.st_nlink);
+}
+
+void timer_contracts() {
+  ut::expect(timer::Clocksource{}.deadline_counter(0) == 0);
+  const auto &clock = timer::TimerSubsystem::instance().clocksource();
+  for (unsigned i = 0; i < 16; ++i) {
+    const auto before = bench::read_counter();
+    const auto at_deadline = clock.deadline_counter(clock.now_ns());
+    const auto after = bench::read_counter();
+    ut::expect(at_deadline >= before && at_deadline <= after);
+  }
+  timer::HrTimer test;
+  test.init(timer::TimerMode::OneShot, nullptr);
+  auto result = test.start_relative(1);
+  ut::expect(!result && result.error() == ErrorCode::InvalidParameter && !test.is_active());
+  test.init(timer::TimerMode::OneShot, [](void *) noexcept {});
+  result = test.start_relative(~u64{0});
+  ut::expect(!result && result.error() == ErrorCode::InvalidParameter && !test.is_active());
+  const auto expiry = timer::TimerSubsystem::instance().now_ns() + 1000000000ULL;
+  ut::expect(static_cast<bool>(test.start(expiry)));
+  result = test.start_relative(1);
+  ut::expect(!result && result.error() == ErrorCode::InvalidState && test.is_active() && test.expires_ns() == expiry);
+  test.cancel();
+  test.cancel();
+  ut::expect(!test.is_active());
+  test.init(timer::TimerMode::Periodic, [](void *) noexcept {});
+  result = test.start_relative(0);
+  ut::expect(!result && result.error() == ErrorCode::InvalidParameter && !test.is_active());
+  result = test.start(expiry);
+  ut::expect(!result && result.error() == ErrorCode::InvalidParameter && !test.is_active());
+  ut::expect(static_cast<bool>(test.start_relative(1000000000ULL)));
+  test.cancel();
+}
+
+struct TimerObservation {
+  unsigned count = 0;
+  u64 first_ns = 0;
+  static void fired(void *data) noexcept {
+    auto *self = static_cast<TimerObservation *>(data);
+    if (__atomic_load_n(&self->count, __ATOMIC_RELAXED) == 0) {
+      self->first_ns = timer::TimerSubsystem::instance().now_ns();
+    }
+    __atomic_add_fetch(&self->count, 1U, __ATOMIC_RELEASE);
+  }
+  unsigned calls() const { return __atomic_load_n(&count, __ATOMIC_ACQUIRE); }
+};
+
+void timer_dispatch() {
+  auto &subsystem = timer::TimerSubsystem::instance();
+  for (unsigned phase = 0; phase != 2; ++phase) {
+    TimerObservation once, periodic;
+    timer::HrTimer one_shot, repeating;
+    one_shot.init(timer::TimerMode::OneShot, TimerObservation::fired, &once);
+    repeating.init(timer::TimerMode::Periodic, TimerObservation::fired, &periodic);
+    const auto deadline = subsystem.now_ns() + 2000000ULL;
+    ut::expect(static_cast<bool>(one_shot.start(deadline)));
+    if (phase != 0) {
+      // Model preemption between arming the two independent timers.
+      while (subsystem.now_ns() < deadline + 100000000ULL)
+        arch::cpu_yield();
+    }
+    const auto first_period = subsystem.now_ns() + 1000000ULL;
+    ut::expect(static_cast<bool>(repeating.start_relative(1000000ULL)));
+    // Each timer gets the same observation window, even after preemption
+    // between registrations. Setup time is not periodic dispatch time.
+    const auto observation_end = subsystem.now_ns() + 100000000ULL;
+    while ((once.calls() == 0 || periodic.calls() < 3) && subsystem.now_ns() < observation_end) {
+      arch::cpu_yield();
+    }
+    one_shot.cancel();
+    repeating.cancel();
+    ut::expect(ut::eq(once.calls(), 1U));
+    ut::expect(ut::ge(once.first_ns, deadline));
+    const auto stopped_count = periodic.calls();
+    ut::expect(ut::ge(stopped_count, 3U));
+    ut::expect(ut::ge(periodic.first_ns, first_period));
+    const auto after_cancel = subsystem.now_ns() + 5000000ULL;
+    while (subsystem.now_ns() < after_cancel) {
+      arch::cpu_yield();
+    }
+    ut::expect(once.calls() == 1 && periodic.calls() == stopped_count);
+  }
+}
+
+struct TimerCapacity {
+  timer::HrTimer *timers = new timer::HrTimer[257];
+  bool full = false;
+
+  TimerCapacity() {
+    if (!ut::expect(timers != nullptr))
+      return;
+    unsigned active = 0;
+    for (unsigned i = 0; i < 257; ++i) {
+      timers[i].init(timer::TimerMode::OneShot, [](void *) noexcept {});
+      auto started = timers[i].start_relative(1000000000000ULL);
+      ut::expect(started ? timers[i].is_active()
+                         : started.error() == ErrorCode::ResourceExhausted && !timers[i].is_active());
+      full = full || (!started && started.error() == ErrorCode::ResourceExhausted);
+      active += timers[i].is_active();
+    }
+    // The production heap has 256 slots, including its scheduler tick.
+    ut::expect(full && active < 256);
+  }
+
+  ~TimerCapacity() {
+    if (!timers)
+      return;
+    for (unsigned i = 0; i < 257; ++i) {
+      timers[i].cancel_sync();
+      ut::expect(!timers[i].is_active());
+    }
+    delete[] timers;
+  }
+};
+TimerCapacity *sleep_capacity = nullptr;
+u64 sleep_capacity_heap_before = 0;
+
+void timer_capacity() {
+  const auto before = mm::RuntimeHeapAllocator::get_heap_stats().allocated_bytes;
+  {
+    TimerCapacity fixture;
+  }
+  ut::expect(mm::RuntimeHeapAllocator::get_heap_stats().allocated_bytes == before);
+}
+
 void empty_case() {}
 unsigned deferred_calls = 0;
 void deferred_case() { ++deferred_calls; }
@@ -1269,30 +2313,32 @@ void accounting() {
 }
 void registry_limits() {
   static ut::Registry local;
-  static char ids[129][5];
-  for (unsigned i = 0; i < 129; ++i) {
+  static const ut::Registry empty; // Avoid reset temporaries on the 16 KiB kernel stack.
+  static_assert(ut::Registry::suite_capacity <= ut::Registry::case_capacity);
+  static char ids[ut::Registry::case_capacity + 1][5];
+  for (unsigned i = 0; i <= ut::Registry::case_capacity; ++i) {
     ids[i][0] = 'c';
     ids[i][1] = static_cast<char>('0' + i / 100);
     ids[i][2] = static_cast<char>('0' + i / 10 % 10);
     ids[i][3] = static_cast<char>('0' + i % 10);
   }
   local.begin_suite("limit");
-  for (unsigned i = 0; i < 129; ++i) {
+  for (unsigned i = 0; i <= ut::Registry::case_capacity; ++i) {
     local.add_test(ids[i], empty_case);
   }
-  ut::expect(local.case_count == 128 && ut::same_id(local.error, "case_capacity"));
-  local = {};
+  ut::expect(local.case_count == ut::Registry::case_capacity && ut::same_id(local.error, "case_capacity"));
+  local = empty;
   for (unsigned i = 0; i <= ut::Registry::suite_capacity; ++i) {
     local.begin_suite(ids[i]);
     local.active_suite = nullptr;
   }
   ut::expect(local.suite_count == ut::Registry::suite_capacity && ut::same_id(local.error, "suite_capacity"));
-  local = {};
+  local = empty;
   local.begin_suite("duplicate");
   local.active_suite = nullptr;
   local.begin_suite("duplicate");
   ut::expect(ut::same_id(local.error, "duplicate_suite"));
-  local = {};
+  local = empty;
   local.begin_suite("invalid id");
   ut::expect(ut::same_id(local.error, "invalid_suite"));
   bench::Registry benchmarks;
@@ -1766,8 +2812,10 @@ struct ContainerInterleaving {
   VirtAddr peer_value = 0;
 
   static void wait_for(const u32 &value, u32 expected) {
+    // These milestones only increase without wrapping. A later phase also
+    // satisfies the barrier; equality could miss a fast owner's transition.
     // The host's case deadline bounds a stuck peer; no guest-clock dependency.
-    while (__atomic_load_n(&value, __ATOMIC_ACQUIRE) != expected) {
+    while (__atomic_load_n(&value, __ATOMIC_ACQUIRE) < expected) {
     }
   }
 
@@ -1836,10 +2884,470 @@ struct ContainerInterleaving {
 };
 ContainerInterleaving *container_interleaving = nullptr;
 
+void end_case();
+
+// Independent fork-style tables share a real endpoint, not a synthetic counter.
+// Barriers align contention and make ownership checks quiescent; they do not
+// force a particular instruction-level interleaving inside ref()/release_file().
+struct FileReferences {
+  vfs::FdTable reader, writers[2];
+  u32 phase = 0, arrived = 0;
+  u32 peer_cpu = ~0U;
+  process::Thread *peer_thread = nullptr;
+  long shared_read_fd = -1, shared_read_result = -1;
+  long shared_write_fd = -1, shared_write_result = -1;
+  long shared_open_result = -1;
+  long shared_pipe_result = -1, shared_pipe_fds[2] = {-37, -73};
+  u32 pipe_published = 0;
+  vfs::FdTable *native_table = nullptr;
+  long native_result = 0, native_fds[2] = {-1, -1};
+  u32 copyout_ready = 0;
+  u32 dup_ready = 0;
+  long dup_result = -1;
+  u8 shared_byte = 0;
+  static constexpr u32 cycles = 1000, copies = 64;
+
+  template <typename Condition> static void require(Condition valid) {
+    if (!ut::expect(static_cast<Condition &&>(valid))) {
+      // Ownership may already be corrupt. Preserve the failure and discard this
+      // guest without releasing suspect pointers or leaving a peer unbounded.
+      end_case();
+      finish("file_ownership");
+    }
+  }
+
+  static void require_refs(vfs::File *file, u32 expected, u32 cycle) {
+    const u32 actual = file->ref_count;
+    if (actual != expected)
+      logging::klog::error("File references cycle {}: expected {}, observed {}", cycle, expected, actual);
+    require(actual == expected);
+  }
+
+  long peer() {
+    peer_cpu = arch::get_current_cpu_id();
+    __atomic_store_n(&arrived, 1U, __ATOMIC_RELEASE);
+    for (u32 cycle = 0; cycle < cycles; ++cycle) {
+      const u32 start = 2 * cycle + 1;
+      ContainerInterleaving::wait_for(phase, start);
+      auto *copy = writers[1].clone();
+      __atomic_store_n(&arrived, start + 1, __ATOMIC_RELEASE);
+      ContainerInterleaving::wait_for(phase, start + 1);
+      copy->close_all();
+      delete copy;
+      __atomic_store_n(&arrived, start + 2, __ATOMIC_RELEASE);
+    }
+    ContainerInterleaving::wait_for(phase, 2 * cycles + 1);
+    writers[1].close_all();
+    __atomic_store_n(&arrived, 2 * cycles + 2, __ATOMIC_RELEASE);
+    ContainerInterleaving::wait_for(phase, 2 * cycles + 2);
+    peer_thread = process::CfsScheduler::get_current_task();
+    __atomic_store_n(&arrived, 2 * cycles + 3, __ATOMIC_RELEASE);
+    ContainerInterleaving::wait_for(phase, 2 * cycles + 3);
+    shared_read_result = vfs::syscall::do_read(&reader, shared_read_fd, vfs::OutputBuffer::kernel(&shared_byte, 1));
+    __atomic_store_n(&arrived, 2 * cycles + 4, __ATOMIC_RELEASE);
+    ContainerInterleaving::wait_for(phase, 2 * cycles + 4);
+    ContainerInterleaving::wait_for(phase, 2 * cycles + 5);
+    const u8 sent = 73;
+    shared_write_result = vfs::syscall::do_write(&reader, shared_write_fd, vfs::InputBuffer::kernel(&sent, 1));
+    __atomic_store_n(&arrived, 2 * cycles + 6, __ATOMIC_RELEASE);
+    // Force the valid interleaving where this peer resumes only after the owner
+    // advances past its intermediate release. The earlier milestone is not lost.
+    ContainerInterleaving::wait_for(phase, 2 * cycles + 7);
+    ContainerInterleaving::wait_for(phase, 2 * cycles + 6);
+    shared_open_result = vfs::syscall::do_open(&reader, "/shared-open", vfs::O_WRONLY | vfs::O_TRUNC, 0);
+    __atomic_store_n(&arrived, 2 * cycles + 8, __ATOMIC_RELEASE);
+    ContainerInterleaving::wait_for(phase, 2 * cycles + 8);
+    ContainerInterleaving::wait_for(phase, 2 * cycles + 9);
+    shared_pipe_result = vfs::syscall::do_pipe(&reader, shared_pipe_fds);
+    __atomic_store_n(&arrived, 2 * cycles + 11, __ATOMIC_RELEASE);
+    ContainerInterleaving::wait_for(phase, 2 * cycles + 11);
+    ContainerInterleaving::wait_for(phase, 2 * cycles + 12);
+    shared_pipe_result = vfs::syscall::do_pipe(&reader, shared_pipe_fds);
+    __atomic_store_n(&arrived, 2 * cycles + 14, __ATOMIC_RELEASE);
+    ContainerInterleaving::wait_for(phase, 2 * cycles + 14);
+    auto proc = process::current_process();
+    require(proc && proc->fd_table());
+    native_table = static_cast<vfs::FdTable *>(proc->fd_table());
+    __atomic_store_n(&arrived, 2 * cycles + 15, __ATOMIC_RELEASE);
+    ContainerInterleaving::wait_for(phase, 2 * cycles + 15);
+    return 2; // Continue through the real userspace pipe syscall, not a mock.
+  }
+
+  bool dup_peer() {
+    for (u32 kind = 0; kind < 4; ++kind) {
+      const u32 start = 2 * cycles + 18 + 3 * kind;
+      ContainerInterleaving::wait_for(phase, start);
+      if (kind == 0)
+        dup_result = vfs::syscall::do_dup(&reader, 0);
+      else if (kind == 1)
+        dup_result = vfs::syscall::do_dup2(&reader, 0, 2);
+      else
+        dup_result = vfs::syscall::do_fcntl(&reader, 0, kind == 2 ? 0 : 1030, 0);
+      __atomic_store_n(&arrived, start + 2, __ATOMIC_RELEASE);
+      ContainerInterleaving::wait_for(phase, start + 2);
+    }
+    return arch::get_current_cpu_id() == 1;
+  }
+
+  void owner() {
+    ContainerInterleaving::wait_for(arrived, 1);
+    require(peer_cpu == 1 && affinity_valid());
+    const auto baseline = vfs::pool_usage();
+    const auto heap = mm::RuntimeHeapAllocator::get_heap_stats().allocated_bytes;
+    long ends[2] = {-1, -1};
+    require(vfs::syscall::do_pipe(&reader, ends) == 0);
+    auto *file = reader.get_file(ends[1]);
+    for (auto &table : writers)
+      for (u32 fd = 0; fd < copies; ++fd)
+        require(table.alloc_fd(file) == static_cast<long>(fd));
+    require(reader.close_fd(ends[1]) == 0);
+    const auto populated = vfs::pool_usage();
+    for (u32 cycle = 0; cycle < cycles; ++cycle) {
+      const u32 start = 2 * cycle + 1;
+      __atomic_store_n(&phase, start, __ATOMIC_RELEASE);
+      auto *copy = writers[0].clone();
+      ContainerInterleaving::wait_for(arrived, start + 1);
+      require_refs(file, 4 * copies, cycle);
+      __atomic_store_n(&phase, start + 1, __ATOMIC_RELEASE);
+      copy->close_all();
+      delete copy;
+      ContainerInterleaving::wait_for(arrived, start + 2);
+      require_refs(file, 2 * copies, cycle);
+      const u8 sent = static_cast<u8>(cycle);
+      u8 received = 0;
+      require(vfs::syscall::do_write(&writers[0], 0, vfs::InputBuffer::kernel(&sent, 1)) == 1);
+      require(vfs::syscall::do_read(&reader, ends[0], vfs::OutputBuffer::kernel(&received, 1)) == 1 &&
+              received == sent);
+      require(vfs::pool_usage() == populated && mm::RuntimeHeapAllocator::get_heap_stats().allocated_bytes == heap);
+    }
+    __atomic_store_n(&phase, 2 * cycles + 1, __ATOMIC_RELEASE);
+    writers[0].close_all();
+    ContainerInterleaving::wait_for(arrived, 2 * cycles + 2);
+    u8 byte = 0;
+    require(vfs::syscall::do_read(&reader, ends[0], vfs::OutputBuffer::kernel(&byte, 1)) == 0);
+    reader.close_all();
+    require(vfs::pool_usage() == baseline && mm::RuntimeHeapAllocator::get_heap_stats().allocated_bytes == heap);
+    logging::klog::info("File references: CPU0/CPU{}, {} clone/close cycles, EOF and pools restored", peer_cpu, cycles);
+
+    // A blocked I/O must retain its endpoint after another CPU closes and
+    // reuses that descriptor in the very same table.
+    require(vfs::syscall::do_pipe(&reader, ends) == 0);
+    shared_read_fd = ends[0];
+    __atomic_store_n(&phase, 2 * cycles + 2, __ATOMIC_RELEASE);
+    ContainerInterleaving::wait_for(arrived, 2 * cycles + 3);
+    require(peer_thread != nullptr);
+    __atomic_store_n(&phase, 2 * cycles + 3, __ATOMIC_RELEASE);
+    for (;;) {
+      {
+        containers::LockGuard<containers::IrqSpinLock> guard(peer_thread->sleep_lock);
+        if (peer_thread->state == process::ProcessState::Sleeping && peer_thread->sleep_handoff.load() == 0)
+          break;
+      }
+      if (__atomic_load_n(&arrived, __ATOMIC_ACQUIRE) == 2 * cycles + 4)
+        require(false); // Returning before data or EOF is available is a failure.
+      arch::cpu_yield();
+    }
+    require(ut::eq(reader.close_fd(ends[0]), 0L));
+    require(ut::eq(vfs::syscall::do_open(&reader, "/dev/null", 0, 0), ends[0]));
+    const u8 sent = 37;
+    require(ut::eq(vfs::syscall::do_write(&reader, ends[1], vfs::InputBuffer::kernel(&sent, 1)), 1L));
+    ContainerInterleaving::wait_for(arrived, 2 * cycles + 4);
+    require(ut::eq(shared_read_result, 1L));
+    require(ut::eq(shared_byte, sent));
+    require(vfs::syscall::do_read(&reader, ends[0], vfs::OutputBuffer::kernel(&byte, 1)) == 0);
+    reader.close_all();
+    require(vfs::pool_usage() == baseline && mm::RuntimeHeapAllocator::get_heap_stats().allocated_bytes == heap);
+    __atomic_store_n(&phase, 2 * cycles + 4, __ATOMIC_RELEASE);
+
+    require(vfs::syscall::do_pipe(&reader, ends) == 0);
+    // Fill the real 4096-byte pipe without a page-sized kernel stack temporary.
+    u8 bytes[64] = {};
+    for (unsigned i = 0; i < 64; ++i)
+      require(ut::eq(vfs::syscall::do_write(&reader, ends[1], vfs::InputBuffer::kernel(bytes, sizeof(bytes))), 64L));
+    shared_write_fd = ends[1];
+    __atomic_store_n(&phase, 2 * cycles + 5, __ATOMIC_RELEASE);
+    for (;;) {
+      {
+        containers::LockGuard<containers::IrqSpinLock> guard(peer_thread->sleep_lock);
+        if (peer_thread->state == process::ProcessState::Sleeping && peer_thread->sleep_handoff.load() == 0)
+          break;
+      }
+      if (__atomic_load_n(&arrived, __ATOMIC_ACQUIRE) == 2 * cycles + 6)
+        require(false); // A full pipe cannot accept the peer's byte yet.
+      arch::cpu_yield();
+    }
+    require(ut::eq(reader.close_fd(ends[1]), 0L));
+    require(ut::eq(vfs::syscall::do_open(&reader, "/dev/null", vfs::O_WRONLY, 0), ends[1]));
+    // Reader, active writer and replacement descriptor each still own a File.
+    require(ut::eq(vfs::pool_usage().files, baseline.files + 3U));
+    for (unsigned i = 0; i < 64; ++i) {
+      require(ut::eq(vfs::syscall::do_read(&reader, ends[0], vfs::OutputBuffer::kernel(bytes, sizeof(bytes))), 64L));
+      for (u8 value : bytes)
+        require(ut::eq(value, u8{0}));
+    }
+    ContainerInterleaving::wait_for(arrived, 2 * cycles + 6);
+    require(ut::eq(shared_write_result, 1L));
+    require(ut::eq(vfs::syscall::do_read(&reader, ends[0], vfs::OutputBuffer::kernel(&byte, 1)), 1L));
+    require(ut::eq(byte, u8{73}));
+    require(ut::eq(vfs::syscall::do_read(&reader, ends[0], vfs::OutputBuffer::kernel(&byte, 1)), 0L));
+    require(ut::eq(vfs::syscall::do_write(&reader, ends[1], vfs::InputBuffer::kernel(&byte, 1)), 1L));
+    reader.close_all();
+    require(vfs::pool_usage() == baseline && mm::RuntimeHeapAllocator::get_heap_stats().allocated_bytes == heap);
+    __atomic_store_n(&phase, 2 * cycles + 6, __ATOMIC_RELEASE);
+
+    require(ut::eq(vfs::syscall::do_open(&reader, "/shared-open", vfs::O_RDWR | vfs::O_CREAT | vfs::O_EXCL, 0600), 0L));
+    require(ut::eq(vfs::syscall::do_write(&reader, 0, vfs::InputBuffer::kernel(&sent, 1)), 1L));
+    vfs::Stat original{}, after{};
+    require(ut::eq(vfs::syscall::do_fstat(&reader, 0, &original), 0L));
+    require(ut::eq(original.st_size, u64{1}));
+    for (u32 fd = 1; fd + 1 < vfs::MAX_FDS; ++fd)
+      require(ut::eq(vfs::syscall::do_dup(&reader, 0), static_cast<long>(fd)));
+    const auto files_before_open = vfs::file_pool_usage();
+    long competitor = -1;
+    {
+      // Hold mutation before launching the real open. File allocation makes
+      // its progress observable without borrowing an unpublished object.
+      containers::LockGuard<containers::IrqSpinLock> guard(vfs::namespace_lock);
+      __atomic_store_n(&phase, 2 * cycles + 7, __ATOMIC_RELEASE);
+      while (vfs::file_pool_usage() == files_before_open) {
+        if (__atomic_load_n(&arrived, __ATOMIC_ACQUIRE) == 2 * cycles + 8)
+          require(false);
+        arch::cpu_yield();
+      }
+      require(ut::eq(vfs::file_pool_usage(), files_before_open + 1U));
+      competitor = vfs::syscall::do_dup(&reader, 0);
+    }
+    ContainerInterleaving::wait_for(arrived, 2 * cycles + 8);
+    const long full = -static_cast<long>(vfs::VfsError::TooManyFiles);
+    const long last = vfs::MAX_FDS - 1;
+    require((competitor == last && shared_open_result == full) || (competitor == full && shared_open_result == last));
+    require(ut::eq(vfs::syscall::do_lseek(&reader, 0, 0, 0), 0L));
+    const long expected_bytes = shared_open_result == full ? 1 : 0;
+    require(ut::eq(vfs::syscall::do_fstat(&reader, 0, &after), 0L));
+    require(ut::eq(after.st_ino, original.st_ino));
+    require(ut::eq(after.st_size, static_cast<u64>(expected_bytes)));
+    require(ut::eq(vfs::syscall::do_read(&reader, 0, vfs::OutputBuffer::kernel(&byte, 1)), expected_bytes));
+    if (expected_bytes)
+      require(ut::eq(byte, sent));
+    reader.close_all();
+    require(ut::eq(vfs::syscall::do_unlink("/shared-open"), 0L));
+    require(vfs::pool_usage() == baseline && mm::RuntimeHeapAllocator::get_heap_stats().allocated_bytes == heap);
+    __atomic_store_n(&phase, 2 * cycles + 8, __ATOMIC_RELEASE);
+
+    require(ut::eq(vfs::syscall::do_open(&reader, "/dev/null", vfs::O_RDWR, 0), 0L));
+    for (u32 fd = 1; fd + 1 < vfs::MAX_FDS; ++fd)
+      require(ut::eq(vfs::syscall::do_dup(&reader, 0), static_cast<long>(fd)));
+    __atomic_store_n(&phase, 2 * cycles + 9, __ATOMIC_RELEASE);
+    while (!__atomic_load_n(&pipe_published, __ATOMIC_ACQUIRE) &&
+           __atomic_load_n(&arrived, __ATOMIC_ACQUIRE) != 2 * cycles + 11)
+      arch::cpu_yield();
+    const bool published = __atomic_load_n(&pipe_published, __ATOMIC_ACQUIRE) != 0;
+    if (published)
+      require(ut::eq(reader.close_fd(last), 0L));
+    require(ut::eq(vfs::syscall::do_dup(&reader, 0), last));
+    require(ut::eq(vfs::syscall::do_write(&reader, last, vfs::InputBuffer::kernel(&sent, 1)), 1L));
+    __atomic_store_n(&phase, 2 * cycles + 10, __ATOMIC_RELEASE);
+    ContainerInterleaving::wait_for(arrived, 2 * cycles + 11);
+    require(ut::eq(shared_pipe_result, full));
+    require(ut::eq(shared_pipe_fds[0], -37L));
+    require(ut::eq(shared_pipe_fds[1], -73L));
+    require(ut::eq(vfs::syscall::do_write(&reader, 0, vfs::InputBuffer::kernel(&sent, 1)), 1L));
+    // A failed pipe must not close a descriptor installed by the other CPU,
+    // nor transiently expose just one endpoint of the unsuccessful pair.
+    require(ut::eq(vfs::syscall::do_write(&reader, last, vfs::InputBuffer::kernel(&sent, 1)), 1L));
+    require(!published);
+    reader.close_all();
+    require(vfs::pool_usage() == baseline && mm::RuntimeHeapAllocator::get_heap_stats().allocated_bytes == heap);
+    __atomic_store_n(&phase, 2 * cycles + 11, __ATOMIC_RELEASE);
+
+    // With two slots available, another CPU must see and clone both endpoints
+    // together, even before the publishing syscall returns.
+    __atomic_store_n(&pipe_published, 0U, __ATOMIC_RELEASE);
+    require(ut::eq(vfs::syscall::do_open(&reader, "/dev/null", vfs::O_RDWR, 0), 0L));
+    for (u32 fd = 1; fd + 2 < vfs::MAX_FDS; ++fd)
+      require(ut::eq(vfs::syscall::do_dup(&reader, 0), static_cast<long>(fd)));
+    __atomic_store_n(&phase, 2 * cycles + 12, __ATOMIC_RELEASE);
+    while (!__atomic_load_n(&pipe_published, __ATOMIC_ACQUIRE) &&
+           __atomic_load_n(&arrived, __ATOMIC_ACQUIRE) != 2 * cycles + 14)
+      arch::cpu_yield();
+    require(__atomic_load_n(&pipe_published, __ATOMIC_ACQUIRE) != 0);
+    require(reader.get_file(last - 1) != nullptr && reader.get_file(last) != nullptr);
+    require(ut::eq(vfs::syscall::do_fcntl(&reader, last - 1, 3, 0), static_cast<long>(vfs::O_RDONLY)));
+    require(ut::eq(vfs::syscall::do_fcntl(&reader, last, 3, 0), static_cast<long>(vfs::O_WRONLY)));
+    require(reader.descriptor_flags(last - 1) == 0 && reader.descriptor_flags(last) == 0);
+    auto *copy = reader.clone();
+    require(copy->get_file(last - 1) != nullptr && copy->get_file(last) != nullptr);
+    require(ut::eq(vfs::syscall::do_write(&reader, last, vfs::InputBuffer::kernel(&sent, 1)), 1L));
+    require(ut::eq(vfs::syscall::do_read(copy, last - 1, vfs::OutputBuffer::kernel(&byte, 1)), 1L));
+    require(ut::eq(byte, sent));
+    copy->close_all();
+    delete copy;
+    __atomic_store_n(&phase, 2 * cycles + 13, __ATOMIC_RELEASE);
+    ContainerInterleaving::wait_for(arrived, 2 * cycles + 14);
+    require(ut::eq(shared_pipe_result, 0L));
+    require(ut::eq(shared_pipe_fds[0], last - 1));
+    require(ut::eq(shared_pipe_fds[1], last));
+    require(ut::eq(reader.close_fd(last), 0L));
+    require(ut::eq(vfs::syscall::do_read(&reader, last - 1, vfs::OutputBuffer::kernel(&byte, 1)), 0L));
+    reader.close_all();
+    require(vfs::pool_usage() == baseline && mm::RuntimeHeapAllocator::get_heap_stats().allocated_bytes == heap);
+    __atomic_store_n(&phase, 2 * cycles + 14, __ATOMIC_RELEASE);
+
+    ContainerInterleaving::wait_for(arrived, 2 * cycles + 15);
+    require(native_table != nullptr);
+    const long anchor = vfs::syscall::do_open(native_table, "/dev/null", vfs::O_RDWR, 0);
+    require(ut::eq(anchor, 3L));
+    __atomic_store_n(&phase, 2 * cycles + 15, __ATOMIC_RELEASE);
+    while (!__atomic_load_n(&copyout_ready, __ATOMIC_ACQUIRE) &&
+           __atomic_load_n(&arrived, __ATOMIC_ACQUIRE) != 2 * cycles + 17)
+      arch::cpu_yield();
+    require(__atomic_load_n(&copyout_ready, __ATOMIC_ACQUIRE) != 0);
+    require(native_fds[0] == 4 && native_fds[1] == 5);
+    const bool visible = native_table->get_file(native_fds[0]) != nullptr;
+    for (const long fd : native_fds) {
+      if (visible) {
+        require(ut::eq(native_table->close_fd(fd), 0L));
+        require(ut::eq(vfs::syscall::do_dup2(native_table, anchor, fd), fd));
+        require(ut::eq(vfs::syscall::do_write(native_table, fd, vfs::InputBuffer::kernel(&sent, 1)), 1L));
+      } else {
+        require(native_table->get_file(fd) == nullptr);
+        require(ut::eq(native_table->close_fd(fd), -static_cast<long>(vfs::VfsError::BadFd)));
+        require(ut::eq(vfs::syscall::do_dup2(native_table, anchor, fd), -static_cast<long>(vfs::VfsError::Busy)));
+      }
+    }
+    if (!visible) {
+      auto *pending_copy = native_table->clone();
+      require(pending_copy->get_file(native_fds[0]) == nullptr && pending_copy->get_file(native_fds[1]) == nullptr);
+      require(ut::eq(vfs::syscall::do_dup(pending_copy, anchor), native_fds[0]));
+      pending_copy->close_all();
+      delete pending_copy;
+    }
+    __atomic_store_n(&phase, 2 * cycles + 16, __ATOMIC_RELEASE);
+    ContainerInterleaving::wait_for(arrived, 2 * cycles + 17);
+    require(ut::eq(native_result, -14L)); // The native copy into read-only user memory must fail.
+    require(ut::eq(vfs::syscall::do_write(native_table, anchor, vfs::InputBuffer::kernel(&sent, 1)), 1L));
+    for (const long fd : native_fds) {
+      if (!visible)
+        require(ut::eq(vfs::syscall::do_dup(native_table, anchor), fd));
+      require(ut::eq(vfs::syscall::do_write(native_table, fd, vfs::InputBuffer::kernel(&sent, 1)), 1L));
+    }
+    require(!visible);
+    for (const long fd : native_fds)
+      require(ut::eq(native_table->close_fd(fd), 0L));
+    require(ut::eq(native_table->close_fd(anchor), 0L));
+    require(vfs::pool_usage() == baseline && mm::RuntimeHeapAllocator::get_heap_stats().allocated_bytes == heap);
+    __atomic_store_n(&phase, 2 * cycles + 17, __ATOMIC_RELEASE);
+    for (u32 kind = 0; kind < 4; ++kind) {
+      const u32 start = 2 * cycles + 18 + 3 * kind;
+      require(ut::eq(vfs::syscall::do_open(&reader, "/fixture.bin", vfs::O_RDONLY, 0), 0L));
+      require(ut::eq(vfs::syscall::do_open(&reader, "/dev/null", vfs::O_WRONLY, 0), 1L));
+      __atomic_store_n(&dup_ready, 0U, __ATOMIC_RELEASE);
+      __atomic_store_n(&phase, start, __ATOMIC_RELEASE);
+      while (!__atomic_load_n(&dup_ready, __ATOMIC_ACQUIRE) && __atomic_load_n(&arrived, __ATOMIC_ACQUIRE) != start + 2)
+        arch::cpu_yield();
+      require(__atomic_load_n(&dup_ready, __ATOMIC_ACQUIRE) != 0);
+      require(ut::eq(reader.close_fd(0), 0L));
+      require(reader.get_file(0) == nullptr);
+      require(ut::eq(vfs::syscall::do_dup2(&reader, 1, 2), 2L));
+      require(ut::eq(vfs::syscall::do_write(&reader, 2, vfs::InputBuffer::kernel(&sent, 1)), 1L));
+      __atomic_store_n(&phase, start + 1, __ATOMIC_RELEASE);
+      ContainerInterleaving::wait_for(arrived, start + 2);
+      // Atomic duplication either precedes source close, or sees EBADF. It
+      // cannot resurrect source FD 0 or overwrite the later target replacement.
+      require(dup_result == 2 || dup_result == -static_cast<long>(vfs::VfsError::BadFd));
+      require(reader.get_file(0) == nullptr);
+      require(ut::eq(vfs::syscall::do_write(&reader, 1, vfs::InputBuffer::kernel(&sent, 1)), 1L));
+      require(ut::eq(vfs::syscall::do_write(&reader, 2, vfs::InputBuffer::kernel(&sent, 1)), 1L));
+      require(ut::eq(reader.descriptor_flags(2), 0L));
+      reader.close_all();
+      require(vfs::pool_usage() == baseline && mm::RuntimeHeapAllocator::get_heap_stats().allocated_bytes == heap);
+      __atomic_store_n(&phase, start + 2, __ATOMIC_RELEASE);
+    }
+  }
+};
+FileReferences *file_references = nullptr;
+
+struct TimerCancellation {
+  timer::HrTimer pending;
+  u32 peers_ready = 0, callback_cpu = ~0U;
+  u32 entered = 0, release = 0, callback_returned = 0, cancel_returned = 0, observer_returned = 0;
+  bool cancel_ok = false, observer_ok = false;
+
+  static void callback(void *data) noexcept {
+    auto &self = *static_cast<TimerCancellation *>(data);
+    __atomic_store_n(&self.callback_cpu, arch::get_current_cpu_id(), __ATOMIC_RELAXED);
+    __atomic_store_n(&self.entered, 1U, __ATOMIC_RELEASE);
+    ContainerInterleaving::wait_for(self.release, 1);
+    __atomic_store_n(&self.callback_returned, 1U, __ATOMIC_RELEASE);
+  }
+
+  bool peer(long actor) {
+    if (actor < 1 || actor > 2 || arch::get_current_cpu_id() != static_cast<u32>(actor)) {
+      return false;
+    }
+    // The timer queue is global: a timer IRQ must not take over either actor
+    // whose progress the deliberately held callback needs. Publish readiness
+    // only after masking local IRQs, before the owner arms the real timer.
+    const bool restore_irqs = arch::interrupts_enabled();
+    arch::disable_interrupts();
+    __atomic_fetch_or(&peers_ready, 1U << static_cast<u32>(actor), __ATOMIC_RELEASE);
+    ContainerInterleaving::wait_for(entered, 1);
+    if (actor == 1) {
+      pending.cancel_sync();
+      cancel_ok = __atomic_load_n(&callback_returned, __ATOMIC_ACQUIRE) == 1;
+      __atomic_store_n(&cancel_returned, 1U, __ATOMIC_RELEASE);
+      if (restore_irqs)
+        arch::enable_interrupts();
+      return cancel_ok;
+    }
+    // A periodic timer remains queued while its callback runs. Inactive thus
+    // proves CPU1 has reached cancellation, not merely its pre-call barrier.
+    while (pending.is_active()) {
+      arch::cpu_yield();
+    }
+    const auto restarted = pending.start_relative(1000000000ULL);
+    observer_ok = !restarted && restarted.error() == ErrorCode::InvalidState;
+    // Hold the callback across a bounded observation window. Cancellation may
+    // not return during it; the host deadline still bounds every peer barrier.
+    auto &clock = timer::TimerSubsystem::instance();
+    const u64 until = clock.now_ns() + 2000000ULL;
+    while (!__atomic_load_n(&cancel_returned, __ATOMIC_ACQUIRE) && clock.now_ns() < until) {
+      arch::cpu_yield();
+    }
+    observer_ok = observer_ok && !__atomic_load_n(&cancel_returned, __ATOMIC_ACQUIRE);
+    __atomic_store_n(&release, 1U, __ATOMIC_RELEASE);
+    __atomic_store_n(&observer_returned, 1U, __ATOMIC_RELEASE);
+    if (restore_irqs)
+      arch::enable_interrupts();
+    return observer_ok;
+  }
+
+  bool owner() {
+    ContainerInterleaving::wait_for(peers_ready, 6);
+    pending.init(timer::TimerMode::Periodic, callback, this);
+    if (!pending.start_relative(1000000ULL)) {
+      return false;
+    }
+    ContainerInterleaving::wait_for(cancel_returned, 1);
+    ContainerInterleaving::wait_for(observer_returned, 1);
+    pending.cancel_sync();
+    const u32 cpu = __atomic_load_n(&callback_cpu, __ATOMIC_ACQUIRE);
+    return cancel_ok && observer_ok && callback_returned == 1 && !pending.is_active() && cpu != 1 && cpu != 2;
+  }
+};
+TimerCancellation *timer_cancellation = nullptr;
+process::Thread *early_sleep_thread = nullptr;
+u32 early_sleep_visits = 0;
+bool early_sleep_woken = true;
+bool dispatch_boundary_checked = false;
+
 void failing_case() { ut::expect(false); }
 [[noreturn]] void panic_case() {
   Event("fatal").str("case", active_case).str("kind", "panic").send();
   logging::klog::panic("validation intentional panic");
+  // Exercise the emergency path with TX already locked by this CPU. It must
+  // still reach the real panic/halt; peers cannot interleave its diagnostic.
+  hal::uart::TransmitGuard guard;
   arch::kernel_panic("validation intentional panic");
 }
 [[noreturn]] void timeout_case() {
@@ -1847,6 +3355,134 @@ void failing_case() { ut::expect(false); }
   for (;;) {
     arch::cpu_yield();
   }
+}
+
+void kernel_stack_initialization() {
+  process::Process owner(0);
+  auto *thread = new process::Thread(0, 0);
+  if (!ut::expect(thread != nullptr))
+    return;
+  if (!ut::expect(owner.register_thread(thread).has_value())) {
+    delete thread;
+    return;
+  }
+  constexpr usize order = 2;
+  constexpr usize size = page_size << order;
+  auto dirty = mm::allocate_pages(order);
+  if (!ut::expect(dirty.has_value()))
+    return;
+  auto *words = reinterpret_cast<u64 *>(phys_to_virt(*dirty));
+  for (usize i = 0; i < size / sizeof(u64); ++i)
+    words[i] = 0xfeedfacecafebeefULL;
+
+  // Exhaust the real allocator, then offer only the poisoned block. This
+  // checks rollback and recycled-page initialization without allocation hooks.
+  PagePressure pressure;
+  ut::expect(pressure.acquire(0));
+  auto exhausted = thread->allocate_kernel_stack();
+  ut::expect(!exhausted && exhausted.error() == ErrorCode::OutOfMemory);
+  ut::expect(thread->kernel_stack_base == 0 && thread->kernel_stack_size == 0);
+  ut::expect(mm::free_pages(*dirty, order).has_value());
+  auto allocated = thread->allocate_kernel_stack();
+  pressure.release();
+  if (!ut::expect(allocated.has_value()))
+    return;
+  const auto base = thread->kernel_stack_base;
+  if (!ut::expect(base != 0 && base % size == 0 && thread->kernel_stack_size == size))
+    return;
+  words = reinterpret_cast<u64 *>(base);
+  bool zeroed = true;
+  for (usize i = 0; i < size / sizeof(u64); ++i)
+    zeroed = zeroed && words[i] == 0;
+  ut::expect(zeroed);
+  ut::expect(thread->kernel_stack_top() == base + size);
+  auto repeated = thread->allocate_kernel_stack();
+  ut::expect(!repeated && repeated.error() == ErrorCode::InvalidState);
+  ut::expect(thread->kernel_stack_base == base && thread->kernel_stack_size == size);
+}
+
+void scheduler_self_selection(bool realtime) {
+  using namespace process;
+  unique_ptr<CfsScheduler> scheduler(new CfsScheduler());
+  if (!ut::expect(scheduler.get() != nullptr))
+    return;
+  Thread current(0, 0), peer(1, 0);
+  const auto cpu = arch::get_current_cpu_id();
+  current.cpu = peer.cpu = cpu;
+  current.cpu_affinity_mask.set(cpu);
+  peer.cpu_affinity_mask.set(cpu);
+  current.state = ProcessState::Running;
+  current.se.vruntime = 1;
+  current.se.sum_exec_runtime = 2 * cfs_params::SCHED_LATENCY_NS;
+  peer.se.vruntime = 1000000000ULL;
+  if (realtime) {
+    current.sched_class = SchedClass::RealTime;
+    current.sched_policy = SchedPolicy::RR;
+    current.rt.priority = priority::DEFAULT_RT_PRIORITY;
+    current.rt.time_slice_remaining = 0;
+  }
+
+  // Exercise the production tick with local queues, without dispatching a
+  // synthetic context or exposing it to this CPU's real timer interrupt.
+  const bool restore_irqs = arch::interrupts_enabled();
+  arch::disable_interrupts();
+  auto *original = CfsScheduler::get_current_task();
+  CfsScheduler::set_current_task(&current);
+  if (!realtime)
+    scheduler->enqueue_task(&peer, cpu);
+  scheduler->scheduler_tick();
+  const bool running = current.state == ProcessState::Running;
+  const bool unqueued = !current.se.rb_on_rq && scheduler->get_cpu_nr_running(cpu) == (realtime ? 0U : 1U);
+  const bool reselected = scheduler->total_preemptions() == 1;
+  // Also clean up the unfixed self-selection state, so a failed assertion
+  // remains a reportable failure rather than a second insertion hanging.
+  scheduler->dequeue_task(&current);
+  if (!realtime)
+    scheduler->dequeue_task(&peer);
+  CfsScheduler::set_current_task(original);
+  if (restore_irqs)
+    arch::enable_interrupts();
+  ut::expect(reselected);
+  ut::expect(running);
+  ut::expect(unqueued);
+  ut::expect(scheduler->get_cpu_nr_running(cpu) == 0);
+}
+
+void migration_current_owner() {
+  using namespace process;
+  if (!ut::expect(g_num_cpus >= 2))
+    return;
+  unique_ptr<CfsScheduler> scheduler(new CfsScheduler());
+  unique_ptr<LoadBalancer> balancer(new LoadBalancer());
+  if (!ut::expect(scheduler && balancer))
+    return;
+  Thread current(0, 0), peer(1, 0);
+  const auto source = arch::get_current_cpu_id();
+  const auto target = (source + 1) % g_num_cpus;
+  current.cpu_affinity_mask.set(source);
+  current.cpu_affinity_mask.set(target);
+  peer.cpu_affinity_mask.set(source);
+  peer.cpu_affinity_mask.set(target);
+  current.se.vruntime = cfs_params::SCHED_LATENCY_NS;
+  peer.se.vruntime = 1;
+
+  // Reproduce yield/preemption's published-Ready, unsaved-continuation window
+  // through real queues and migration, without dispatching synthetic contexts.
+  const bool restore_irqs = arch::interrupts_enabled();
+  arch::disable_interrupts();
+  auto *original = CfsScheduler::get_current_task();
+  CfsScheduler::set_current_task(&current);
+  scheduler->enqueue_task(&peer, source);
+  scheduler->enqueue_task(&current, source);
+  (void)balancer->migrate_task(source, target, *scheduler);
+  const bool retained = current.cpu == source && scheduler->pick_next_task(target) != &current;
+  scheduler->dequeue_task(&current);
+  scheduler->dequeue_task(&peer);
+  CfsScheduler::set_current_task(original);
+  if (restore_irqs)
+    arch::enable_interrupts();
+  ut::expect(retained);
+  ut::expect(scheduler->get_cpu_nr_running(source) == 0 && scheduler->get_cpu_nr_running(target) == 0);
 }
 
 void declare_cases() {
@@ -1874,14 +3510,47 @@ void declare_cases() {
     ut::register_test("reentry", container_reentry);
   });
   ut::register_suite("containers.smp", [] { ut::register_test("interleaving", empty_case); });
+  ut::register_suite("vfs.smp", [] { ut::register_test("shared_references", empty_case); });
   ut::register_suite("vfs", [] {
     ut::register_test("read_position_eof", file_read);
     ut::register_test("errors_readonly", file_errors);
+    ut::register_test("fd_boundaries", fd_boundaries);
+    ut::register_test("pipe_reuse", pipe_reuse);
+    ut::register_test("pipe_fd_rollback", pipe_fd_rollback);
+    ut::register_test("directory_capacity", directory_capacity);
+    ut::register_test("writable_lifecycle", writable_lifecycle);
+    ut::register_test("rename_lifecycle", rename_lifecycle);
+    ut::register_test("rename_boundaries", rename_boundaries);
+    ut::register_test("access_permissions", access_permissions);
+    ut::register_test("working_directory_lifecycle", working_directory_lifecycle);
   });
+  ut::register_suite("timers", [] {
+    ut::register_test("contracts", timer_contracts);
+    ut::register_test("dispatch", timer_dispatch);
+    ut::register_test("capacity", timer_capacity);
+  });
+  ut::register_suite("scheduler", [] {
+    ut::register_test("kernel_stack_initialization", kernel_stack_initialization);
+    ut::register_test("cfs_self_selection", [] { scheduler_self_selection(false); });
+    ut::register_test("rr_self_selection", [] { scheduler_self_selection(true); });
+    ut::register_test("migration_current_owner", migration_current_owner);
+  });
+  ut::register_suite("process", [] { ut::register_test("heap_rollback", process_heap_rollback); });
   ut::register_suite("users", [] {
     ut::register_test("syscall_values", empty_case);
     ut::register_test("user_ranges", empty_case);
     ut::register_test("fork_exec_exit_reap", empty_case);
+    ut::register_test("pipe_output_rollback", empty_case);
+    ut::register_test("yield_reuse", empty_case);
+    ut::register_test("wait_status_rollback", empty_case);
+    ut::register_test("pipe_waits_for_writer", empty_case);
+    ut::register_test("pipe_cross_cpu_roundtrip", empty_case);
+    ut::register_test("pipe_waits_for_reader", empty_case);
+    ut::register_test("cross_cpu_exit_reap", empty_case);
+    ut::register_test("fork_fd_allocation_rollback", empty_case);
+    ut::register_test("mmap_heap_rollback", empty_case);
+    ut::register_test("fork_process_allocation_rollback", empty_case);
+    ut::register_test("fork_metadata_allocation_rollback", empty_case);
   });
   ut::register_suite("users.frame", [] {
     ut::register_test("native_frame", empty_case);
@@ -1896,6 +3565,57 @@ void declare_cases() {
     ut::register_test("private_cow", empty_case);
     ut::register_test("readonly_cow", empty_case);
     ut::register_test("access_permissions", empty_case);
+  });
+  ut::register_suite("users.lifecycle", [] { ut::register_test("core_paths_recovery", empty_case); });
+  ut::register_suite("users.applications", [] { ut::register_test("core_application_recovery", empty_case); });
+  ut::register_suite("users.timers", [] {
+    ut::register_test("relative_sleep", empty_case);
+    ut::register_test("absolute_sleep", empty_case);
+    ut::register_test("invalid_arguments", empty_case);
+    ut::register_test("short_reuse", empty_case);
+    ut::register_test("cancel_in_flight", empty_case);
+    ut::register_test("early_wakeup", empty_case);
+    ut::register_test("arm_failure_recovery", empty_case);
+  });
+  ut::register_suite("users.libc", [] {
+    ut::register_test("static_runtime", empty_case);
+    ut::register_test("filesystem_permissions", empty_case);
+  });
+  ut::register_suite("users.exec", [] {
+    constexpr const char *names[] = {"rejects_invalid_entry", "rejects_phentsize", "rejects_load_size",
+                                     "bad_env_vector",        "bad_env_string",    "argument_count_limit",
+                                     "combined_count_limit",  "string_byte_limit", "exact_combined_count",
+                                     "exact_string_bytes",    "empty_vectors",     "allocation_rollback"};
+    for (auto *name : names)
+      ut::register_test(name, empty_case);
+  });
+  ut::register_suite("users.busybox", [] {
+    ut::register_test("ash_exit", empty_case);
+    ut::register_test("ash_substitution", empty_case);
+    ut::register_test("ash_exec_environment", empty_case);
+    ut::register_test("text_pipeline", empty_case);
+    ut::register_test("directory_lifecycle", empty_case);
+    ut::register_test("file_redirection", empty_case);
+    ut::register_test("file_copy", empty_case);
+    ut::register_test("file_rename", empty_case);
+    ut::register_test("application_workflow", empty_case);
+  });
+  ut::register_suite("users.signals", [] {
+    ut::register_test("basic_handler", empty_case);
+    ut::register_test("nested_signals", empty_case);
+    ut::register_test("sigchld", empty_case);
+    ut::register_test("sigprocmask", empty_case);
+    ut::register_test("sigaltstack", empty_case);
+    ut::register_test("sig_ign", empty_case);
+    ut::register_test("invalid_arguments", empty_case);
+    ut::register_test("frame_validation", empty_case);
+    ut::register_test("inheritance", empty_case);
+    ut::register_test("pid_lifecycle", empty_case);
+    ut::register_test("pipe_sigpipe", empty_case);
+    ut::register_test("pipe_interrupted", empty_case);
+    ut::register_test("pipe_noninterrupting_signals", empty_case);
+    ut::register_test("pipe_partial_interrupt", empty_case);
+    ut::register_test("signal_wakeup_affinity", empty_case);
   });
 #if defined(MOSS_ARCH_X64)
   ut::register_suite("users.simd_fault", [] { ut::register_test("isolation", empty_case); });
@@ -1915,6 +3635,10 @@ void declare_cases() {
     ut::register_test("map_rejects_blocks", map_rejects_blocks);
     ut::register_test("clone_preserves_destination", clone_preserves_destination);
     ut::register_test("clone_allocation_rollback", clone_allocation_rollback);
+    ut::register_test("address_space_heap_rollback", address_space_heap_rollback);
+    ut::register_test("vma_heap_rollback", vma_heap_rollback);
+    ut::register_test("asid_leases", asid_leases);
+    ut::register_test("unmap_reclaims_tables", unmap_reclaims_tables);
   });
   ut::register_suite("self", [] {
     ut::register_test("accounting_registration", accounting);
@@ -2036,7 +3760,93 @@ void record_batch(u64 ticks, usize operations, bool warmup, u64 overhead) {
       .number("warmup", warmup ? 1 : 0)
       .number("overhead_ticks", overhead)
       .number("cpu", arch::get_current_cpu_id())
+      .str("measurement_kind", ut::same_id(selection, "bench.signal") || ut::same_id(selection, "bench.timer") ||
+                                       ut::same_id(selection, "bench.wakeup")
+                                   ? "event_sum"
+                                   : "elapsed_batch")
       .send();
+}
+
+struct TimerBenchmark {
+  timer::HrTimer pending;
+  process::Thread *sleeper = nullptr;
+  u64 observed = 0;
+
+  static void callback(void *data) noexcept {
+    const auto now = bench::read_counter();
+    auto &self = *static_cast<TimerBenchmark *>(data);
+    __atomic_store_n(&self.observed, now, __ATOMIC_RELEASE);
+    if (self.sleeper)
+      process::g_scheduler->task_wakeup(self.sleeper, 0);
+  }
+
+  u64 measure(bool wakeup) {
+    auto &subsystem = timer::TimerSubsystem::instance();
+    const auto deadline = subsystem.now_ns() + 1000000ULL;
+    const auto expected = subsystem.clocksource().deadline_counter(deadline);
+    observed = 0;
+    sleeper = wakeup ? process::CfsScheduler::get_current_task() : nullptr;
+    const bool restore_irqs = arch::interrupts_enabled();
+    arch::disable_interrupts();
+    if (sleeper)
+      sleeper->state = process::ProcessState::Sleeping;
+    pending.init(timer::TimerMode::OneShot, callback, this);
+    if (!pending.start(deadline)) {
+      if (sleeper)
+        sleeper->state = process::ProcessState::Running;
+      if (restore_irqs)
+        arch::enable_interrupts();
+      return 0;
+    }
+    u64 resumed = 0;
+    if (sleeper) {
+      process::g_scheduler->dequeue_task(sleeper);
+      process::CfsScheduler::switch_to_bootstrap(sleeper->context);
+      resumed = bench::read_counter();
+    }
+    if (restore_irqs)
+      arch::enable_interrupts();
+    while (!__atomic_load_n(&observed, __ATOMIC_ACQUIRE))
+      arch::cpu_yield();
+    pending.cancel_sync();
+    const auto fired = __atomic_load_n(&observed, __ATOMIC_ACQUIRE);
+    if (!ut::expect(fired >= expected && affinity_valid() && (!sleeper || resumed > fired)))
+      return 0;
+    return sleeper ? resumed - fired : fired - expected;
+  }
+};
+
+void timer_benchmark(bench::Context &context, bool wakeup) {
+  TimerBenchmark fixture;
+  const auto before = LifecycleResources::capture();
+  auto batch = [&](usize count) {
+    u64 ticks = 0;
+    for (usize i = 0; i < count; ++i) {
+      const auto elapsed = fixture.measure(wakeup);
+      if (!elapsed)
+        context.valid = false;
+      ticks += elapsed;
+    }
+    return ticks;
+  };
+  constexpr usize capacity = 64;
+  if (context.iterations > capacity) {
+    context.valid = false;
+    return;
+  }
+  if (!context.iterations) {
+    context.iterations = 1;
+    while (context.valid && batch(context.iterations) < context.clock.frequency / 1000 && context.iterations < capacity)
+      context.iterations *= 2;
+  }
+  for (unsigned i = 0; context.valid && i < context.warmup + context.samples; ++i) {
+    const auto ticks = batch(context.iterations);
+    const auto begin = bench::read_counter();
+    const auto overhead = (bench::read_counter() - begin) * context.iterations;
+    context.valid = context.valid && LifecycleResources::capture() == before;
+    if (context.valid)
+      record_batch(ticks, context.iterations, i < context.warmup, overhead);
+  }
 }
 
 void prepare_clock() {
@@ -2160,6 +3970,12 @@ extern "C" void moss_validation_boot() noexcept {
   warmup_count = static_cast<unsigned>(numeric_option("moss.warmup", 5));
   sample_count = static_cast<unsigned>(numeric_option("moss.samples", 30));
   fixed_iterations = static_cast<usize>(numeric_option("moss.iterations", 0));
+  const u64 stability_option = numeric_option("moss.stability", 0);
+  if (stability_option > 1 || (stability_option && !is_lifecycle())) {
+    failed = true;
+    finish("invalid_stability_parameters");
+  }
+  stability = stability_option == 1;
   if (!sample_count || sample_count > 1000 || warmup_count > 100 || fixed_iterations > 65536) {
     failed = true;
     finish("invalid_parameters");
@@ -2170,6 +3986,11 @@ extern "C" void moss_validation_boot() noexcept {
   bench::register_benchmark("bench.combined", [](bench::Context &context) { allocation_benchmark(context, 2); });
   bench::register_benchmark("bench.read", read_benchmark);
   bench::register_benchmark("bench.getpid", [](bench::Context &) {});
+  for (const char *name : user_benchmark_names) {
+    bench::register_benchmark(name, [](bench::Context &) {});
+  }
+  bench::register_benchmark("bench.wakeup", [](bench::Context &context) { timer_benchmark(context, true); });
+  bench::register_benchmark("bench.timer", [](bench::Context &context) { timer_benchmark(context, false); });
   if (bench::registry.error) {
     failed = true;
     finish(bench::registry.error);
@@ -2206,6 +4027,92 @@ extern "C" void moss_validation_boot() noexcept {
   }
 }
 
+extern "C" void moss_validation_dispatch_selected() noexcept {
+  if (is_lifecycle() && active_case) {
+    dispatch_boundary_checked = true;
+    // A timer IRQ must not consume this cached selection before it is dispatched.
+    ut::expect(!arch::interrupts_enabled());
+  }
+}
+
+extern "C" void moss_validation_pipe_published(void *table) noexcept {
+  if (!file_references || table != &file_references->reader)
+    return;
+  const u32 phase = __atomic_load_n(&file_references->phase, __ATOMIC_ACQUIRE);
+  if (phase != 2 * FileReferences::cycles + 9 && phase != 2 * FileReferences::cycles + 12)
+    return;
+  __atomic_store_n(&file_references->pipe_published, 1U, __ATOMIC_RELEASE);
+  ContainerInterleaving::wait_for(file_references->phase, phase + 1);
+}
+
+extern "C" void moss_validation_pipe_copyout(void *table, long first, long second) noexcept {
+  if (!file_references || table != file_references->native_table ||
+      __atomic_load_n(&file_references->phase, __ATOMIC_ACQUIRE) != 2 * FileReferences::cycles + 15)
+    return;
+  file_references->native_fds[0] = first;
+  file_references->native_fds[1] = second;
+  __atomic_store_n(&file_references->copyout_ready, 1U, __ATOMIC_RELEASE);
+  ContainerInterleaving::wait_for(file_references->phase, 2 * FileReferences::cycles + 16);
+}
+
+extern "C" void moss_validation_dup_selected(void *table) noexcept {
+  if (!file_references || table != &file_references->reader || arch::get_current_cpu_id() != 1)
+    return;
+  const u32 phase = __atomic_load_n(&file_references->phase, __ATOMIC_ACQUIRE);
+  const u32 offset = phase - (2 * FileReferences::cycles + 18);
+  if (offset >= 12 || offset % 3 != 0)
+    return;
+  __atomic_store_n(&file_references->dup_ready, 1U, __ATOMIC_RELEASE);
+  ContainerInterleaving::wait_for(file_references->phase, phase + 1);
+}
+
+extern "C" void moss_validation_sleep_armed(void *pending) noexcept {
+  auto *thread = process::CfsScheduler::get_current_task();
+  if (!thread || thread != early_sleep_thread)
+    return;
+  ++early_sleep_visits;
+  auto &armed = *static_cast<timer::HrTimer *>(pending);
+  // Local IRQs are masked by the real sleep syscall. Another CPU must expire
+  // its timer before this caller saves its context. The host bounds the wait.
+  while (armed.is_active())
+    arch::cpu_yield();
+  armed.cancel_sync();
+  early_sleep_woken = early_sleep_woken && !arch::interrupts_enabled() &&
+                      (thread->state == process::ProcessState::Ready || thread->sleep_handoff.load() == 2);
+}
+
+extern "C" void moss_validation_fd_clone(bool entering) noexcept {
+  if (!fork_clone_pressure || fork_clone_exhausted)
+    return;
+  if (entering) {
+    ut::expect(fork_clone_pressure->acquire(sizeof(vfs::FdTable)));
+  } else {
+    fork_clone_pressure->release();
+    fork_clone_exhausted = true;
+  }
+}
+
+extern "C" void moss_validation_fork_metadata(unsigned stage, bool entering) noexcept {
+  auto *probe = fork_metadata_pressure;
+  if (!probe || probe->stage != stage || probe->exhausted)
+    return;
+  if (entering) {
+    // Fail after one successful VMA copy, not only before any work is owned.
+    if (stage == 0 && probe->vmas++ == 0)
+      return;
+    const usize size = stage == 0   ? sizeof(process::VmaRegion)
+                       : stage == 1 ? sizeof(process::Thread)
+                       : stage == 2 ? sizeof(process::ThreadEntry)
+                                    : sizeof(void *);
+    probe->holding = true;
+    ut::expect(probe->heap.acquire(size));
+  } else if (probe->holding) {
+    probe->heap.release();
+    probe->holding = false;
+    probe->exhausted = true;
+  }
+}
+
 extern "C" long moss_validation_call(long op, long arg1, [[maybe_unused]] long arg2) noexcept {
   // Invoked only after the production scheduler and a real userspace exec.
   if (op == 0) {
@@ -2226,6 +4133,27 @@ extern "C" long moss_validation_call(long op, long arg1, [[maybe_unused]] long a
     if (ut::same_id(selection, "users.uaccess")) {
       return 7;
     }
+    if (ut::same_id(selection, "users.signals")) {
+      return 8;
+    }
+    if (ut::same_id(selection, "users.lifecycle")) {
+      return 9;
+    }
+    if (ut::same_id(selection, "users.applications")) {
+      return 23;
+    }
+    if (ut::same_id(selection, "users.timers")) {
+      return 10;
+    }
+    if (ut::same_id(selection, "users.libc")) {
+      return 20;
+    }
+    if (ut::same_id(selection, "users.exec")) {
+      return 22;
+    }
+    if (ut::same_id(selection, "users.busybox")) {
+      return 21;
+    }
     if (ut::same_id(selection, "users.simd_fault")) {
       start_case("isolation");
       return 4;
@@ -2241,10 +4169,16 @@ extern "C" long moss_validation_call(long op, long arg1, [[maybe_unused]] long a
                                                    make_shared<ConcurrentValue>(&container_interleaving->destroyed));
       return 3;
     }
+    if (ut::same_id(selection, "vfs.smp")) {
+      start_case("shared_references");
+      FileReferences::require(g_num_cpus >= 2);
+      file_references = new FileReferences();
+      return 3; // Reuse the existing CPU0/CPU1 fork, control and reap protocol.
+    }
     if (selected_benchmark) {
       start_case(selection);
       prepare_clock();
-      if (ut::same_id(selection, "bench.getpid")) {
+      if (const long mode = user_benchmark_mode()) {
 #if defined(MOSS_ARCH_ARM64)
         u64 control;
         asm volatile("mrs %0, cntkctl_el1" : "=r"(control));
@@ -2252,8 +4186,13 @@ extern "C" long moss_validation_call(long op, long arg1, [[maybe_unused]] long a
         asm volatile("msr cntkctl_el1, %0; isb" ::"r"(control) : "memory");
 #endif
         syscall_pilot = fixed_iterations == 0;
+        syscall_capacity = mode == 2 || mode == 13 || mode == 15 || mode == 16 ? 65536 : 64;
+        if (fixed_iterations > syscall_capacity) {
+          failed = true;
+          finish("invalid_iterations");
+        }
         syscall_iterations = fixed_iterations ? fixed_iterations : 1;
-        return 2;
+        return mode;
       }
       // Restore ordinary interrupts during the in-kernel workload. The pinned
       // thread still uses the real scheduler, locks, and syscall return path.
@@ -2285,35 +4224,190 @@ extern "C" long moss_validation_call(long op, long arg1, [[maybe_unused]] long a
     }
     finish();
   }
-  if (op == 1 &&
-      (ut::same_id(selection, "users") || ut::same_id(selection, "users.vm") || ut::same_id(selection, "users.frame") ||
-       ut::same_id(selection, "users.uaccess")) &&
-      !failed && !active_case && arg1 == static_cast<long>(completed) && arg1 >= 0 &&
-      arg1 < (ut::same_id(selection, "users.uaccess") ? uaccess_case_count : 3)) {
-    if (ut::same_id(selection, "users.uaccess")) {
-      start_case(uaccess_cases[arg1]);
-    } else if (ut::same_id(selection, "users.frame")) {
-      start_case(arg1 == 0 ? "native_frame" : (arg1 == 1 ? "fork_registers" : "signal_return"));
-    } else if (ut::same_id(selection, "users.vm")) {
-      start_case(arg1 == 0 ? "private_cow" : (arg1 == 1 ? "readonly_cow" : "access_permissions"));
-    } else {
-      start_case(arg1 == 0 ? "syscall_values" : (arg1 == 1 ? "user_ranges" : "fork_exec_exit_reap"));
+  const bool user_suite = ut::same_id(selection, "users") || ut::same_id(selection, "users.vm") ||
+                          ut::same_id(selection, "users.frame") || ut::same_id(selection, "users.uaccess") ||
+                          ut::same_id(selection, "users.signals") || is_lifecycle() ||
+                          ut::same_id(selection, "users.timers") || ut::same_id(selection, "users.libc") ||
+                          ut::same_id(selection, "users.busybox") || ut::same_id(selection, "users.exec");
+  if (op == 1 && user_suite && !failed && !active_case && arg1 == static_cast<long>(completed) && arg1 >= 0) {
+    long index = 0;
+    for (unsigned i = 0; i < ut::registry.case_count; ++i) {
+      const auto &item = ut::registry.cases[i];
+      if (ut::same_id(item.suite_name, selection) && index++ == arg1) {
+        start_case(item.name);
+        return 0;
+      }
     }
-    return 0;
   }
-  if (op == 2 && active_case &&
-      (ut::same_id(selection, "users") || ut::same_id(selection, "users.vm") ||
-       ut::same_id(selection, "users.simd_fault") || ut::same_id(selection, "users.frame") ||
-       ut::same_id(selection, "users.uaccess"))) {
+  if (op == 2 && active_case && (user_suite || ut::same_id(selection, "users.simd_fault"))) {
     if (arg2 != 0) {
       logging::klog::error("users checks failed: mask={:#x}", static_cast<u64>(arg2));
     }
     ut::expect(arg1 != 0 && affinity_valid());
+    if (is_lifecycle()) {
+      ut::expect(lifecycle_complete && dispatch_boundary_checked);
+    }
     end_case();
     return failed ? 0 : 1;
   }
   if (op == 3) {
     finish();
+  }
+  if (ut::same_id(selection, "users") && ut::same_id(active_case, "fork_fd_allocation_rollback") && affinity_valid()) {
+    if (op == 40 && !fork_clone_pressure) {
+      fork_clone_baseline = LifecycleResources::capture();
+      fork_clone_exhausted = false;
+      fork_clone_pressure = new HeapPressure{};
+      return 1;
+    }
+    if (op == 41 && fork_clone_pressure) {
+      const bool exercised = ut::expect(fork_clone_exhausted);
+      delete fork_clone_pressure;
+      fork_clone_pressure = nullptr;
+      return ut::expect(LifecycleResources::capture() == fork_clone_baseline) && exercised;
+    }
+  }
+  if (ut::same_id(selection, "users") && ut::same_id(active_case, "fork_metadata_allocation_rollback") &&
+      affinity_valid()) {
+    if (op == 46 && arg1 >= 0 && arg1 < 4 && !fork_metadata_pressure) {
+      const auto baseline = LifecycleResources::capture();
+      fork_metadata_pressure = new ForkMetadataPressure{};
+      fork_metadata_pressure->baseline = baseline;
+      fork_metadata_pressure->stage = static_cast<unsigned>(arg1);
+      return 1;
+    }
+    if (op == 47 && fork_metadata_pressure) {
+      const auto baseline = fork_metadata_pressure->baseline;
+      const bool exercised = ut::expect(fork_metadata_pressure->exhausted && !fork_metadata_pressure->holding);
+      delete fork_metadata_pressure;
+      fork_metadata_pressure = nullptr;
+      return ut::expect(LifecycleResources::capture() == baseline) && exercised;
+    }
+  }
+  const bool mmap_pressure_case = ut::same_id(active_case, "mmap_heap_rollback");
+  if (ut::same_id(selection, "users") &&
+      (mmap_pressure_case || ut::same_id(active_case, "fork_process_allocation_rollback")) && affinity_valid()) {
+    if (op == (mmap_pressure_case ? 42 : 44) && !user_heap_pressure) {
+      user_heap_baseline = LifecycleResources::capture();
+      user_heap_pressure = new HeapPressure{};
+      if (user_heap_pressure->acquire(mmap_pressure_case ? sizeof(process::VmaRegion) : sizeof(process::Process)))
+        return 1;
+      delete user_heap_pressure;
+      user_heap_pressure = nullptr;
+      return 0;
+    }
+    if (op == (mmap_pressure_case ? 43 : 45) && user_heap_pressure) {
+      delete user_heap_pressure;
+      user_heap_pressure = nullptr;
+      return ut::expect(LifecycleResources::capture() == user_heap_baseline);
+    }
+  }
+  if (op == 39 && ut::same_id(selection, "users.signals") &&
+      (ut::same_id(active_case, "pipe_interrupted") || ut::same_id(active_case, "pipe_noninterrupting_signals"))) {
+    if (arg1 == 0 && arg2 == 0)
+      return 1; // The production image's weak hook still returns ENOSYS.
+    auto caller = process::current_process();
+    if (!caller || arg1 != static_cast<long>(caller->parent_pid()) || arg2 < 0 || arg2 >= vfs::MAX_FDS)
+      return -1;
+    auto parent = process::g_process_manager->find_process(caller->parent_pid());
+    auto *thread = parent ? parent->get_main_thread() : nullptr;
+    if (!thread)
+      return -1;
+    containers::LockGuard<containers::IrqSpinLock> guard(thread->sleep_lock);
+    if (thread->state != process::ProcessState::Sleeping || thread->sleep_handoff.load() != 0)
+      return 0;
+    // Do not mistake the parent's preparation nanosleep for the intended I/O.
+    auto *frame = thread->trap_frame;
+    return frame && (frame->syscall_number() == 32 || frame->syscall_number() == 33) &&
+           frame->argument(0) == static_cast<u64>(arg2);
+  }
+  if (op == 38 && arg1 == 0 && arg2 == 0 && ut::same_id(selection, "users.libc") &&
+      ut::same_id(active_case, "filesystem_permissions")) {
+    auto owner = process::current_process();
+    if (!owner || owner->euid() != 0)
+      return -1;
+    // Test precondition, not a production identity-management interface.
+    owner->set_uid(99);
+    owner->set_gid(99);
+    return 0;
+  }
+  if (ut::same_id(selection, "users.exec") && ut::same_id(active_case, "allocation_rollback") && affinity_valid()) {
+    const long stages = mm::PageTableManager::is_user_range(1ULL << 39, page_size) ? 5 : 4;
+    if (op == 35)
+      return stages; // Root, stack leaf, then every missing intermediate table.
+    auto *thread = process::CfsScheduler::get_current_task();
+    auto owner = process::g_process_manager->find_process(thread->owner_pid);
+    auto *as = owner ? owner->address_space() : nullptr;
+    if (op == 36 && !exec_pressure && as && arg1 >= 0 && arg1 < stages) {
+      exec_baseline = LifecycleResources::capture();
+      exec_original = as;
+      exec_root = as->pgd_phys;
+      exec_root_hash = page_table_hash(exec_root);
+      __builtin_memcpy(exec_name, owner->name(), sizeof(exec_name));
+      exec_pressure = new PagePressure{};
+      bool ready = ut::expect(exec_pressure && exec_pressure->acquire(static_cast<usize>(arg1)));
+      while (ready && exec_pressure->count)
+        exec_pressure->give_one();
+      if (ready)
+        return 1;
+      delete exec_pressure;
+      exec_pressure = nullptr;
+      return 0;
+    }
+    if (op == 37 && exec_pressure) {
+      bool valid = ut::expect(mm::PageFrameAllocator::get_memory_stats().free_pages == static_cast<usize>(arg1));
+      valid = ut::expect(as && as == exec_original && as->pgd_phys == exec_root &&
+                         page_table_hash(exec_root) == exec_root_hash &&
+                         __builtin_memcmp(exec_name, owner->name(), sizeof(exec_name)) == 0) &&
+              valid;
+      delete exec_pressure;
+      exec_pressure = nullptr;
+      valid = ut::expect(LifecycleResources::capture() == exec_baseline) && valid;
+      return valid ? 1 : 0;
+    }
+  }
+  if (ut::same_id(selection, "users.timers") && ut::same_id(active_case, "arm_failure_recovery") && affinity_valid()) {
+    if (op == 28 && !sleep_capacity) {
+      sleep_capacity_heap_before = mm::RuntimeHeapAllocator::get_heap_stats().allocated_bytes;
+      sleep_capacity = new TimerCapacity();
+      return sleep_capacity && sleep_capacity->full;
+    }
+    if (op == 29 && sleep_capacity) {
+      delete sleep_capacity;
+      sleep_capacity = nullptr;
+      return mm::RuntimeHeapAllocator::get_heap_stats().allocated_bytes == sleep_capacity_heap_before;
+    }
+  }
+  if (ut::same_id(selection, "users.timers") && ut::same_id(active_case, "early_wakeup")) {
+    if (op == 24 && !early_sleep_thread && arch::get_current_cpu_id() == 1) {
+      early_sleep_visits = 0;
+      early_sleep_woken = true;
+      early_sleep_thread = process::CfsScheduler::get_current_task();
+      return g_num_cpus >= 2;
+    }
+    if (op == 25 && early_sleep_thread == process::CfsScheduler::get_current_task()) {
+      early_sleep_thread = nullptr;
+      return early_sleep_woken && early_sleep_visits == 2;
+    }
+  }
+  if (ut::same_id(selection, "users.timers") && ut::same_id(active_case, "cancel_in_flight")) {
+    if (op == 20 && !timer_cancellation && affinity_valid()) {
+      timer_cancellation = new TimerCancellation();
+      return timer_cancellation && g_num_cpus >= 3;
+    }
+    if (op == 21 && timer_cancellation) {
+      arch::enable_interrupts();
+      return timer_cancellation->peer(arg1);
+    }
+    if (op == 22 && timer_cancellation && affinity_valid()) {
+      arch::enable_interrupts();
+      return timer_cancellation->owner();
+    }
+    if (op == 23 && timer_cancellation && affinity_valid()) {
+      delete timer_cancellation;
+      timer_cancellation = nullptr;
+      return 1;
+    }
   }
   if ((op == 12 || op == 13) && ut::same_id(selection, "users.uaccess") && active_case) {
     auto *thread = process::CfsScheduler::get_current_task();
@@ -2380,20 +4474,20 @@ extern "C" long moss_validation_call(long op, long arg1, [[maybe_unused]] long a
     }
     return owned ? 12345 : -1;
   }
-  if (op == 4 && ut::same_id(selection, "bench.getpid")) {
+  if (op == 4 && user_benchmark_mode()) {
     if (sample_index >= warmup_count + sample_count) {
       end_case();
       return 0;
     }
     return static_cast<long>(syscall_iterations);
   }
-  if (op == 5 && ut::same_id(selection, "bench.getpid")) {
+  if (op == 5 && user_benchmark_mode()) {
     if (arg1 <= 0 || !arg2 || !affinity_valid()) {
       failed = true;
       finish("invalid_sample");
     }
     if (syscall_pilot) {
-      if (static_cast<u64>(arg1) >= clock_info.frequency / 1000 || syscall_iterations == 65536) {
+      if (static_cast<u64>(arg1) >= clock_info.frequency / 1000 || syscall_iterations == syscall_capacity) {
         syscall_pilot = false;
       } else {
         syscall_iterations *= 2;
@@ -2403,9 +4497,112 @@ extern "C" long moss_validation_call(long op, long arg1, [[maybe_unused]] long a
     }
     return 0;
   }
-  if (op == 6 && ut::same_id(selection, "bench.getpid") && arg1 >= 0) {
+  if (op == 6 && user_benchmark_mode() && arg1 >= 0) {
     syscall_overhead = static_cast<u64>(arg1);
     return 0;
+  }
+  if (op == 30 && user_benchmark_mode() >= 11 && active_case && affinity_valid()) {
+    const auto now = LifecycleResources::capture();
+    if (arg1 == 0) {
+      benchmark_resources = now;
+      benchmark_switches = process::g_scheduler->total_context_switches();
+      return 1;
+    }
+    bool valid = !benchmark_warmed || now == benchmark_resources;
+    benchmark_warmed = true;
+    if (ut::same_id(selection, "bench.switch")) {
+      valid = valid && process::g_scheduler->total_context_switches() >= benchmark_switches + syscall_iterations;
+    }
+    return ut::expect(valid) ? 1 : 0;
+  }
+  if (op == 31 && (ut::same_id(selection, "bench.fault") || ut::same_id(selection, "bench.cow")) && active_case) {
+    auto *thread = process::CfsScheduler::get_current_task();
+    auto owner = process::g_process_manager->find_process(thread->owner_pid);
+    auto *as = owner ? owner->address_space() : nullptr;
+    bool valid =
+        as && arg2 > 0 && arg2 <= 64 &&
+        as->allows_user_access(static_cast<u64>(arg1), static_cast<usize>(arg2) * page_size, process::vma_flags::WRITE);
+    for (long i = 0; valid && i < arg2; ++i) {
+      const auto *pte =
+          mm::PageTableManager::get_user_pte(as->pgd_phys, static_cast<u64>(arg1) + static_cast<u64>(i) * page_size);
+      valid = ut::same_id(selection, "bench.fault")
+                  ? !pte || !pte->is_valid()
+                  : pte && pte->is_valid() && pte->is_cow() &&
+                        mm::PageFrameAllocator::page_ref_get(pte->get_phys_addr()) >= 2;
+    }
+    return ut::expect(valid) ? 1 : 0;
+  }
+  if (op == 10 && is_lifecycle() && active_case) {
+    const bool applications = ut::same_id(selection, "users.applications");
+    const u64 interval = applications ? 10 : 100;
+    if (!ut::expect(arg1 >= 0 && arg2 == (applications ? arg1 : 0)))
+      return 0; // Each declared core cycle must also complete its BusyBox child.
+    const auto now = LifecycleResources::capture();
+    const u64 time_ns = timer::TimerSubsystem::instance().now_ns();
+    if (arg1 == 0 && !lifecycle_started)
+      lifecycle_started_ns = time_ns;
+    const u64 elapsed_ns = time_ns - lifecycle_started_ns;
+    Event("checkpoint")
+        .str("case", active_case)
+        .number("cycles", static_cast<u64>(arg1))
+        .number("application_cycles", static_cast<u64>(arg2))
+        .number("elapsed_ns", elapsed_ns)
+        .number("heap_bytes", now.heap_bytes)
+        .number("free_pages", now.free_pages)
+        .number("processes", now.processes)
+        .number("threads", now.threads)
+        .number("user_pages", now.user_pages)
+        .number("stack_pages", now.stack_pages)
+        .number("descriptors", now.descriptors)
+        .number("file_refs", now.file_refs)
+        .number("vfs_inodes", now.vfs_pools.inodes)
+        .number("vfs_dentries", now.vfs_pools.dentries)
+        .number("vfs_files", now.vfs_pools.files)
+        .send();
+    if (arg1 == 0 && !lifecycle_started) {
+      lifecycle_baseline = now;
+      lifecycle_started = true;
+      return 1;
+    }
+    if (!ut::expect(lifecycle_started && !lifecycle_complete &&
+                    arg1 == static_cast<long>(lifecycle_checkpoint + interval) && now == lifecycle_baseline)) {
+      return 0;
+    }
+    lifecycle_checkpoint = static_cast<u64>(arg1);
+    if (stability && !lifecycle_host_released) {
+      lifecycle_host_released = moss::abi::bridge::console_try_getc() == 'S';
+    }
+    // Guest clocks may drift relative to the host (e.g. calibrated x86 TSC).
+    // Keep doing complete cycles until both clocks and the host agree to stop.
+    lifecycle_complete = lifecycle_checkpoint >= (stability ? 10000U : 1000U) &&
+                         elapsed_ns >= (stability ? 1800000000000ULL : 0) && (!stability || lifecycle_host_released);
+    return lifecycle_complete ? 2 : 1;
+  }
+  if (ut::same_id(selection, "vfs.smp") && active_case && file_references) {
+    if (op == 7 && arg1 == 0) {
+      arch::enable_interrupts();
+      return file_references->peer();
+    }
+    if (op == 7 && arg1 == 1) {
+      file_references->native_result = arg2;
+      __atomic_store_n(&file_references->arrived, 2 * FileReferences::cycles + 17, __ATOMIC_RELEASE);
+      arch::enable_interrupts();
+      ContainerInterleaving::wait_for(file_references->phase, 2 * FileReferences::cycles + 17);
+      return file_references->dup_peer();
+    }
+    if (op == 8) {
+      FileReferences::require(arg1 && affinity_valid());
+      arch::enable_interrupts();
+      file_references->owner();
+      return 0;
+    }
+    if (op == 9) {
+      ut::expect(arg1 && affinity_valid());
+      delete file_references;
+      file_references = nullptr;
+      end_case();
+      finish();
+    }
   }
   if (ut::same_id(selection, "containers.smp") && active_case && container_interleaving) {
     if (op == 7 && arg1 == 0) {

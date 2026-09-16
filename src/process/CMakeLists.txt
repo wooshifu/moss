@@ -41,6 +41,7 @@ target_link_libraries(
             moss_hal_timer
             moss_logging
             moss_platform
+            moss_vfs
 )
 
 message(STATUS "进程模块配置完成")

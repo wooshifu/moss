@@ -281,7 +281,9 @@ public:
   [[nodiscard]] static PageTableEntry *get_user_pte(PhysAddr pgd_phys, VirtAddr va);
 
   // Unmap a single user page: clear PTE, invalidate TLB, free physical page
-  // when refcount drops to 0 (COW-aware).  No-op if the PTE is not mapped.
+  // when refcount drops to 0 (COW-aware), and reclaim empty private tables.
+  // No-op if the PTE is not mapped. Caller excludes concurrent address-space
+  // changes and execution on other CPUs (no cross-CPU x86/RISC-V 64 shootdown yet).
   static void unmap_user_page(PhysAddr pgd_phys, VirtAddr va) noexcept;
 
   // Clone into an owned, inactive destination with no user leaves. The caller

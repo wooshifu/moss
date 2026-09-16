@@ -646,7 +646,7 @@ LLDB 检查本机 QEMU 11.1.1 进程时，CPU3 为 `halted=1, halt_reason=HALT_W
 
 **真实写入现场：** `build/riscv64-debug/diagnostics/first-user-7v4ry6vu/0001/gdb.log` 保留硬件观察点：用户 PC 从 `0x200000000` 变成 `2`，写入者为 `syscall_entry_point` 的 `sd tp, 256(sp)`，`sstatus.SPP=1`，`sepc` 指向仍在 S-mode 的栈发布函数；随后用户在地址 2 取指失败。此前不带断点的自然失败仍保留在 `first-user-f9tfl9ga/0027`（前 26 次到达 worker，第 27 次 `PC=0`）。最初报告 `1789054088760333000` 没有寄存器现场，因此不能声称本路径已证明是每一次历史 `PC=0` 的唯一原因。
 
-新增独立回归 `scripts/check_riscv64_dispatch.py`：GDB 在生产栈发布函数的返回点设置真实 SSIP pending/enable，不修改内核代码、PC、栈数据或调度器实现；验证初始 PC 未改变、切换期间 IRQ 关闭，以及 SSIP 仅在首次 SRET 后以正确用户 PC/SP 进入真实异常入口，最后必须完成全部 `users.vm` 用例。软件 IRQ 的 pending/enable 语义依据 [RISC-V 64 Supervisor ISA](https://docs.riscv.org/reference/isa/priv/supervisor.html)。脚本使用已有 artifact reader、QEMU runner 和严格串口协议解析，冻结 kernel/initramfs/symbols 并记录 SHA-256；每次 fresh guest，第一次失败即停止并保留报告。它是需要 RISC-V 64 GDB 的专项入口，尚未加入默认 CTest，不把它计入默认测试数量。
+新增独立回归 `scripts/check_riscv64_dispatch.py`：GDB 在生产栈发布函数的返回点设置真实 SSIP pending/enable，不修改内核代码、PC、栈数据或调度器实现；验证初始 PC 未改变、切换期间 IRQ 关闭，以及 SSIP 仅在首次 SRET 后以正确用户 PC/SP 进入真实异常入口，最后必须完成全部 `users.vm` 用例。软件 IRQ 的 pending/enable 语义依据 [RISC-V 64 Supervisor ISA](riscv64_SUPERVISOR_DOC)。脚本使用已有 artifact reader、QEMU runner 和严格串口协议解析，冻结 kernel/initramfs/symbols 并记录 SHA-256；每次 fresh guest，第一次失败即停止并保留报告。它是需要 RISC-V 64 GDB 的专项入口，尚未加入默认 CTest，不把它计入默认测试数量。
 
 ```sh
 uv run python scripts/check_riscv64_dispatch.py \
@@ -806,9 +806,9 @@ uv run python scripts/check_riscv64_dispatch.py \
 | MOSS-014 | P1 | fork 用户现场与继承状态 | 部分实现；三 ISA 实际用户帧 GP 复制、ARM64 x30 和 x86 CF 修复有不立即 exec 的回归（3.19）；VM/凭据/信号/全部 FP/TLS 继承及失败验收仍缺。 |
 | MOSS-015 | P1 | exec 原子替换 | 未修复；`sys_execve` 仍先释放旧地址空间，进程名也提前变更。 |
 | MOSS-016 | P1 | ELF 校验与分段策略 | 未修复；header/段范围、checked arithmetic、入口及重叠权限缺口仍在。 |
-| MOSS-017 | P1 | 运行队列 / 迁移 / on-CPU | 调度发布的本地 IRQ 临界区已补（3.18）；pick 与 dequeue、源/目标迁移仍分开，on-CPU/check_need_resched 未闭合；已有 RB 平衡算法应保留。 |
-| MOSS-018 | P1 | wait/console 丢失唤醒 | 未修复；条件检查与等待登记分离，wait 仍先 reap 后复制 status。 |
-| MOSS-019 | P1 | nanosleep / timer 生命周期 | 未修复；切换仅 ARM64，先 arm 后 Sleeping，队列满无错误与 cancel 竞态仍在。 |
+| MOSS-017 | P1 | 运行队列 / 迁移 / on-CPU | 部分修复（工作区）；三 ISA yield 真切换、退出通知共享原子唤醒已回归；pick/dequeue、迁移及 on-CPU/check_need_resched 仍未闭合，见当前验收记录。 |
+| MOSS-018 | P1 | wait/console 丢失唤醒 | 部分修复（工作区）；wait 的 status EFAULT 可重试，选项/PID 边界已回归；条件检查与等待登记仍分离，丢失唤醒和信号中断未关闭。 |
+| MOSS-019 | P1 | nanosleep / timer 生命周期 | 部分修复（工作区）；三 ISA 切换、先 Sleeping 后 arm、容量失败及同步取消已回归；跨 CPU 交接与信号中断仍未闭合。 |
 | MOSS-020 | P1 | 信号投递 / STOP/CONT/SIGCHLD | 部分修复（3.19）；统一用户返回检查点、结果/handler 参数写回顺序及终止信号编号已补；CPU-bound、STOP/CONT/SIGCHLD 和阻塞中断仍待闭合。 |
 | MOSS-021 | P1 | 信号状态生命周期 | 未修复；`g_signal_states[256]` 仍以绝对 PID 索引。 |
 | MOSS-022 | P1 | 退出 FD 关闭 | 未修复；`do_exit`/Process 析构没有接入 `FdTable::close_all`。 |
@@ -971,7 +971,7 @@ _kernel_end / _pagetable_end    0x403fd000
 
 **修复：** 根据异常原因和页表 walk 结果生成明确的 `FaultInfo`：访问类型、来源特权级、页不存在或权限错误。仅缺页进入 demand；合法 COW 写故障进入 COW；其他权限错误终止用户访问。所有 PTE 编解码调用对应 HAL 构造函数，禁止在共用代码手工拼某一 ISA 的地址位。
 
-**验收：** 已修改匿名页 fork 后分别写入仍保留原内容；执行 NX、写 RO、读 PROT_NONE 不新增替代页；PTE 编解码对多个物理地址双向一致；旧页引用在覆盖/失败路径正确变化。编码及访问检查依据见 [RISC-V 64 Supervisor 规范](https://docs.riscv.org/reference/isa/priv/supervisor.html)。
+**验收：** 已修改匿名页 fork 后分别写入仍保留原内容；执行 NX、写 RO、读 PROT_NONE 不新增替代页；PTE 编解码对多个物理地址双向一致；旧页引用在覆盖/失败路径正确变化。编码及访问检查依据见 [RISC-V 64 Supervisor 规范](riscv64_SUPERVISOR_DOC)。
 
 ### MOSS-010 · 页表克隆失败不能以“部分成功”发布子进程
 
@@ -1085,13 +1085,15 @@ fork 对 VMA 有复制，但未完整继承 `brk_base/brk_current/mmap_next` 等
 
 **位置与事实：** `src/kernel/src/syscall_table.cpp:988` 的 wait4 先扫描 Zombie，再登记等待和改变状态；子进程可在这段窗口退出，使唤醒早于有效等待登记。`:2695` 的 console 阻塞路径也把缓冲区检查、状态/队列修改和单个 `blocked_reader` 注册分开；另一个 CPU 的 RX 可穿过窗口，且单指针无法支持多个等待者。
 
-wait4 还有先 reap 后向用户复制 status 的顺序问题：复制失败后返回 EFAULT，但子退出结果已经被消费。信号唤醒等待者后若只重新循环睡眠，也不能得到明确的 EINTR/重启语义。
+原先 wait4 先 reap 后复制 status 的问题已在工作区修复：现在先 copyout，成功后才提交回收。`users/wait_status_rollback` 的旧实现失败及 16 次错误重试/回收回归见[当前验收记录](docs/kernel-validation.md#continued-acceptance-on-2026-09-15)。这不关闭原子等待协议；信号唤醒后若只重新循环睡眠，仍没有明确的 EINTR/重启语义。
 
 **修复：** 为条件变量对应的等待队列定义原子协议：持锁检查条件 → 登记等待者和状态 → 安全释放并调度；唤醒方在同一协议下发布条件。醒来后重新检查条件并识别退出、数据、信号或超时原因。console 使用多等待者队列。wait 先保证输出可交付或保留可重试的退出结果，再完成不可逆 reap。
 
 **验收：** 在检查条件与登记等待之间强制 child exit/RX；每次都能结束等待。覆盖“事件已经发生后才调用 wait”、多个读者、信号中断、坏 status 指针后再次 wait。不能用固定 sleep 避开竞争窗口作为修复。
 
 ### MOSS-019 · nanosleep 和定时器缺少可失败、可取消的生命周期
+
+**2026-09-15 工作区进展：** 下述原始缺陷中的三 ISA 实际切换、先 Sleeping 后 arm、队列容量 Result 和 in-flight callback 同步取消已修复并回归；三 CPU 持有回调的负向注入能检出提前返回。跨 CPU 上下文交接与信号中断仍待闭合，不能整体关闭。证据见[当前验收记录](docs/kernel-validation.md#continued-acceptance-on-2026-09-15)及该节之前的定时器记录。
 
 **位置与事实：** `src/kernel/src/syscall_table.cpp:2225` 在任务进入 Sleeping 前启动定时器，若提前到期，回调可能看不到应唤醒状态。实际切换代码仅在 ARM64 条件分支；x86/RISC-V 64 可在已改为 Sleeping 的情况下取消定时器并返回。
 

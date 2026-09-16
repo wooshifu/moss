@@ -61,6 +61,9 @@ add_userspace_program(shell)
 add_userspace_program(top)
 add_userspace_program(signal_test)
 if(MOSS_BUILD_TESTS)
+    add_subdirectory(mlibc)
+    set(LIBC_VALIDATION_ELF ${CMAKE_CURRENT_BINARY_DIR}/mlibc/libc_validation.elf)
+    set(BUSYBOX_ELF ${CMAKE_CURRENT_BINARY_DIR}/mlibc/busybox/busybox)
     add_userspace_program(validation)
     target_sources(moss_userspace_validation PRIVATE validation_frame.S)
     add_userspace_program(validation_child)
@@ -70,8 +73,16 @@ if(MOSS_BUILD_TESTS)
         COMMAND
             uv run ${CMAKE_SOURCE_DIR}/scripts/gen_validation_initramfs.py ${CMAKE_BINARY_DIR}/validation-initramfs.cpio
             ${CMAKE_BINARY_DIR}/userspace/validation.elf ${CMAKE_BINARY_DIR}/userspace/validation_child.elf
-        DEPENDS ${CMAKE_BINARY_DIR}/userspace/validation.elf ${CMAKE_BINARY_DIR}/userspace/validation_child.elf
-                ${CMAKE_SOURCE_DIR}/scripts/gen_validation_initramfs.py ${CMAKE_SOURCE_DIR}/scripts/gen_initramfs.py
+            ${CMAKE_BINARY_DIR}/userspace/signal_test.elf ${LIBC_VALIDATION_ELF} ${BUSYBOX_ELF}
+        DEPENDS ${CMAKE_BINARY_DIR}/userspace/validation.elf
+                ${CMAKE_BINARY_DIR}/userspace/validation_child.elf
+                ${CMAKE_BINARY_DIR}/userspace/signal_test.elf
+                mlibc-validation
+                ${LIBC_VALIDATION_ELF}
+                busybox-validation
+                ${BUSYBOX_ELF}
+                ${CMAKE_SOURCE_DIR}/scripts/gen_validation_initramfs.py
+                ${CMAKE_SOURCE_DIR}/scripts/gen_initramfs.py
         WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
         VERBATIM
     )

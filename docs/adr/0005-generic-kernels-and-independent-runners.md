@@ -21,6 +21,6 @@ Implementation and current acceptance limits are recorded in [Generic boot](../g
 
 ## Basis and trade-off
 
-Linux uses [runtime hardware descriptions](https://docs.kernel.org/devicetree/usage-model.html) and [device/driver matching](https://docs.kernel.org/driver-api/driver-model/binding.html). Its [ARM64](https://docs.kernel.org/arch/arm64/booting.html) and [RISC-V 64](https://docs.kernel.org/arch/riscv/boot.html) boot contracts separate firmware duties from kernel entry. QEMU's [virt documentation](https://www.qemu.org/docs/master/system/arm/virt.html) also directs guests to discover device resources from its DTB.
+Linux uses [runtime hardware descriptions](https://docs.kernel.org/devicetree/usage-model.html) and [device/driver matching](https://docs.kernel.org/driver-api/driver-model/binding.html). Its [ARM64](https://docs.kernel.org/arch/arm64/booting.html) and [RISC-V 64](riscv64_KERNEL_DOC) boot contracts separate firmware duties from kernel entry. QEMU's [virt documentation](https://www.qemu.org/docs/master/system/arm/virt.html) also directs guests to discover device resources from its DTB.
 
 We accept runtime discovery and a larger compiled driver set in exchange for image reuse. Zephyr's [build-time devicetree model](https://docs.zephyrproject.org/latest/build/dts/intro-input-output.html) and per-board static configuration optimize different constraints and are not the model for MOSS image portability. No board registry, platform factory or board-specific linker-script matrix is introduced.

@@ -43,6 +43,9 @@ inline constexpr u32 MAX_PATH_LEN = 1024;
 /// Pipe buffer size (one page)
 inline constexpr u32 PIPE_BUF_SIZE = 4096;
 
+/// Moss-native, no-payload terminal query; not a Linux termios ioctl.
+inline constexpr u32 MOSS_IOCTL_ISATTY = 0x4d01;
+
 // ============================================================================
 // Inode / file identity types
 // ============================================================================
@@ -131,20 +134,31 @@ inline constexpr u32 S_IXOTH = 00001;
 
 enum class VfsError : u32 {
   None = 0,
-  NoEntry = 2,       // ENOENT
-  IoError = 5,       // EIO
-  BadFd = 9,         // EBADF
-  NoMemory = 12,     // ENOMEM
-  PermDenied = 13,   // EACCES
-  BadAddress = 14,   // EFAULT
-  FileExists = 17,   // EEXIST
-  NotDirectory = 20, // ENOTDIR
-  IsDirectory = 21,  // EISDIR
-  InvalidArg = 22,   // EINVAL
-  TooManyFiles = 24, // EMFILE
-  NameTooLong = 36,  // ENAMETOOLONG
-  NotSupported = 95, // EOPNOTSUPP
-  IsPipe = 29,       // ESPIPE  (illegal seek on pipe)
+  NoEntry = 2,         // ENOENT
+  Interrupted = 4,     // EINTR
+  IoError = 5,         // EIO
+  BadFd = 9,           // EBADF
+  WouldBlock = 11,     // EAGAIN
+  NoMemory = 12,       // ENOMEM
+  PermDenied = 13,     // EACCES
+  BadAddress = 14,     // EFAULT
+  Busy = 16,           // EBUSY
+  FileExists = 17,     // EEXIST
+  CrossDevice = 18,    // EXDEV
+  NotDirectory = 20,   // ENOTDIR
+  IsDirectory = 21,    // EISDIR
+  InvalidArg = 22,     // EINVAL
+  TooManyFiles = 24,   // EMFILE
+  NotTerminal = 25,    // ENOTTY
+  FileTooLarge = 27,   // EFBIG
+  BrokenPipe = 32,     // EPIPE
+  Range = 34,          // ERANGE
+  NameTooLong = 36,    // ENAMETOOLONG
+  NotImplemented = 38, // ENOSYS
+  NotEmpty = 39,       // ENOTEMPTY
+  Overflow = 75,       // EOVERFLOW
+  NotSupported = 95,   // EOPNOTSUPP
+  IsPipe = 29,         // ESPIPE  (illegal seek on pipe)
 };
 
 // ============================================================================
@@ -165,6 +179,22 @@ struct Stat {
   u32 st_nlink;
   u64 st_size;
   DeviceNumber st_rdev;
+  u32 st_uid, st_gid;
+  u32 reserved;
+  u64 st_dev;
 };
+static_assert(sizeof(Stat) == 48 && __builtin_offsetof(Stat, st_dev) == 40);
+
+// Native fixed-size directory record. Offsets match the pinned mlibc dirent
+// prefix; syscall numbers and record batching remain Moss-specific.
+struct DirEntry {
+  u64 ino;
+  i64 offset;
+  u16 record_size;
+  u8 type;
+  char name[MAX_NAME_LEN + 1];
+  u8 reserved[5]; // Explicitly initialized bytes instead of implicit ABI tail padding.
+};
+static_assert(sizeof(DirEntry) == 280 && __builtin_offsetof(DirEntry, name) == 19);
 
 } // namespace moss::kernel::vfs

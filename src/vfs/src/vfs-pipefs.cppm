@@ -14,7 +14,7 @@ export namespace moss::kernel::vfs::pipefs {
 
 /// Create a pipe: two File* objects (read end + write end).
 /// Returns 0 on success, negative VfsError on failure.
-/// On success, read_file and write_file are set.
+/// On success, read_file and write_file each carry one caller-owned reference.
 long create_pipe(File *&read_file, File *&write_file) noexcept;
 
 } // namespace moss::kernel::vfs::pipefs

@@ -249,14 +249,21 @@ static SbiResult sbi_hart_start(u64 hartid, u64 start_addr, u64 opaque) noexcept
 
   // 2. Initialize PLIC (Platform Level Interrupt Controller)
   auto *gic = new moss::kernel::interrupts::GenericInterruptController();
-  if (gic) {
+  if (!gic) {
+    return ::moss::kernel::VoidResult{::moss::kernel::ErrorCode::OutOfMemory};
+  }
+  {
     VirtAddr plic_base = moss::kernel::platform::intc_dist_base();
 
     // S-mode context for hart 0: context_id = 1 (context 0 is M-mode)
     // Threshold/claim registers at: plic_base + 0x200000 + context_id * 0x1000
     VirtAddr ctx_base = plic_base + 0x200000 + moss::kernel::platform::hardware.plic_contexts[0] * 0x1000ULL;
 
-    (void)gic->initialize(plic_base, ctx_base, 0);
+    auto result = gic->initialize(plic_base, ctx_base, 0);
+    if (!result) {
+      delete gic;
+      return result;
+    }
     moss::boot::g_gic_controller = gic;
     moss::boot::g_gic_hardware_available = true;
     moss::boot::early_print("  PLIC initialized (S-mode context 1)\n");
