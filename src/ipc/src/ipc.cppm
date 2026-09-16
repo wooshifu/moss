@@ -11,6 +11,7 @@ import moss.smart_ptr;
 import moss.arch;
 import moss.containers;
 import moss.mm;
+import moss.timer;
 import moss.abi;
 
 export namespace moss::kernel::ipc {
@@ -66,13 +67,15 @@ struct ShmRegion {
   u64 creation_time;
   mm::MemoryAttributes attributes;
   usize page_size;
+  usize allocation_order;
+  containers::IrqSpinLock lifecycle_lock;
 
   ShmRegion(ShmId region_id, PhysAddr phys, VirtAddr virt, usize sz, ShmType t, ShmPermission perm,
             ProcessId pid) noexcept
       : id(region_id), phys_base(phys), virt_base(virt), size(sz), type(t), permission(perm), ref_count{},
-        owner_pid(pid), creation_time(0), attributes{}, page_size(PAGE_SIZE) {
-    // 独立于 shared_ptr 的区域引用：初始 1 为创建者保留，映射再各加 1。
-    // 当前接口未显式释放创建者引用，因此只撤销映射不会使区域可销毁。
+        owner_pid(pid), creation_time(0), attributes{}, page_size(PAGE_SIZE), allocation_order(0), lifecycle_lock{} {
+    // The creator owns one backing reference until destroy_region() consumes it.
+    // Descriptor shared_ptr references do not independently retain physical pages.
     ref_count.store(1, containers::MemoryOrder::Relaxed);
   }
 };
@@ -97,23 +100,19 @@ struct ShmMapping {
 class SharedMemoryManager {
 private:
   containers::LockedHashMap<ShmId, shared_ptr<ShmRegion>> regions_;
-  containers::LockedHashMap<ProcessId, shared_ptr<containers::LockedList<ShmMapping>>> process_mappings_;
   containers::AtomicCounter<ShmId> next_shm_id_;
   containers::AtomicCounter<u64> total_regions_;
   containers::AtomicCounter<usize> total_memory_usage_;
-  containers::AtomicCounter<usize> large_pages_used_;
-  containers::AtomicCounter<usize> huge_pages_used_;
 
-  // 4 GiB 是接口接纳上限，不代表占位分配器真能提供相应存储；具体限值
-  // 的选取依据尚未记录。2 MiB/1 GiB 是 4 KiB 页表的两级块大小。
+  // Preserve the interface's 4 GiB request ceiling. Actual contiguous storage
+  // is limited by the existing buddy allocator to PAGE_SIZE << MAX_ORDER.
   static constexpr usize MAX_SHM_SIZE = 1ULL << 32;
-  static constexpr usize SHM_LARGE_PAGE_SIZE = 2ULL * 1024 * 1024;
-  static constexpr usize SHM_HUGE_PAGE_SIZE = 1ULL * 1024 * 1024 * 1024;
+  // All u32 bits set mark an already released backing allocation. The
+  // descriptor can outlive backing while a caller retains get_region_info().
+  static constexpr u32 DESTROYED_REFS = 0xFFFFFFFFU;
 
 public:
-  SharedMemoryManager() noexcept
-      : next_shm_id_(1), total_regions_(0), total_memory_usage_(0), large_pages_used_(0), huge_pages_used_(0) {}
-
+  SharedMemoryManager() noexcept : next_shm_id_(1), total_regions_(0), total_memory_usage_(0) {}
   ~SharedMemoryManager() noexcept { cleanup_all_regions(); }
 
   SharedMemoryManager(const SharedMemoryManager &) = delete;
@@ -123,291 +122,148 @@ public:
 
   [[nodiscard]] KernelResult<ShmId> create_region(ProcessId creator_pid, usize size, ShmType type = ShmType::Normal,
                                                   ShmPermission permission = ShmPermission::ReadWrite) noexcept {
-    if (size == 0 || size > MAX_SHM_SIZE) {
+    if (size == 0 || size > MAX_SHM_SIZE)
       return KernelResult<ShmId>{KernelError::InvalidArgument};
-    }
-    ShmId region_id = next_shm_id_.fetch_add(1, containers::MemoryOrder::Relaxed);
-    usize page_size = select_page_size(size, type);
-    usize aligned_size = align_up_to_page(size, page_size);
-    auto phys_result = allocate_physical_memory(aligned_size, page_size);
-    if (!phys_result) {
-      return KernelResult<ShmId>{phys_result.error()};
-    }
-    PhysAddr phys_addr = *phys_result;
-    VirtAddr virt_addr = allocate_kernel_virtual_address(aligned_size);
-    if (virt_addr == 0) {
-      free_physical_memory(phys_addr, aligned_size);
+    // The RAM direct map already supplies cacheable base-page mappings. Device,
+    // DMA and requested huge-page attributes require a real mapping backend;
+    // returning a RAM allocation would falsely promise those capabilities.
+    if (type != ShmType::Normal)
+      return KernelResult<ShmId>{KernelError::NotSupported};
+    const usize aligned_size = (size + PAGE_SIZE - 1) & ~(PAGE_SIZE - 1);
+    const usize pages = aligned_size / PAGE_SIZE;
+    usize order = 0;
+    while (order <= ::MAX_ORDER && (usize{1} << order) < pages)
+      ++order;
+    if (order > ::MAX_ORDER)
+      return KernelResult<ShmId>{KernelError::OutOfMemory};
+    auto allocation = mm::PageFrameAllocator::allocate_pages(order);
+    if (!allocation)
+      return KernelResult<ShmId>{allocation.error() == mm::PageAllocError::InitializationFailed
+                                     ? KernelError::InvalidState
+                                     : KernelError::OutOfMemory};
+    const PhysAddr phys = *allocation;
+    const VirtAddr virt = phys_to_virt(phys);
+    const ShmId id = next_shm_id_.fetch_add(1, containers::MemoryOrder::Relaxed);
+    auto region = shared_ptr<ShmRegion>::try_make(
+        [](usize bytes, usize alignment) -> void * {
+          auto storage = mm::RuntimeHeapAllocator::allocate_aligned(bytes, alignment);
+          return storage ? *storage : nullptr;
+        },
+        id, phys, virt, aligned_size, type, permission, creator_pid);
+    if (!region) {
+      (void)mm::PageFrameAllocator::free_pages(phys, order);
       return KernelResult<ShmId>{KernelError::OutOfMemory};
     }
-    auto region = make_shared<ShmRegion>(region_id, phys_addr, virt_addr, aligned_size, type, permission, creator_pid);
-    region->page_size = page_size;
-    region->attributes = get_memory_attributes(type);
-    auto map_result = map_kernel_memory(virt_addr, phys_addr, aligned_size, region->attributes, page_size);
-    if (!map_result) {
-      free_physical_memory(phys_addr, aligned_size);
-      return KernelResult<ShmId>{map_result.error()};
+    // A non-power-of-two logical region still owns a whole buddy block. Retain
+    // the original order so destruction releases that exact allocation.
+    region->allocation_order = order;
+    region->attributes = mm::MemoryAttributes::NORMAL_CACHEABLE;
+    intrinsics::memory::memset(reinterpret_cast<void *>(virt), 0, aligned_size);
+    // Tracking is the third fallible heap allocation. Ordinary new would panic
+    // here after backing was acquired, bypassing the public OOM rollback.
+    if (!regions_.try_insert_or_update(id, region)) {
+      (void)mm::PageFrameAllocator::free_pages(phys, order);
+      return KernelResult<ShmId>{KernelError::OutOfMemory};
     }
-    regions_.insert_or_update(region_id, region);
     (void)total_regions_.fetch_add(1, containers::MemoryOrder::Relaxed);
     (void)total_memory_usage_.fetch_add(aligned_size, containers::MemoryOrder::Relaxed);
-    update_page_statistics(page_size, 1);
-    return KernelResult<ShmId>{region_id};
+    return KernelResult<ShmId>{id};
   }
 
   [[nodiscard]] KernelResult<VirtAddr>
-  map_to_process(ProcessId pid, ShmId region_id, VirtAddr hint_addr = 0,
+  map_to_process([[maybe_unused]] ProcessId pid, ShmId region_id, [[maybe_unused]] VirtAddr hint_addr = 0,
                  ShmPermission map_permission = ShmPermission::ReadWrite) noexcept {
-    auto region_ptr = regions_.find(region_id);
-    if (!region_ptr) {
+    auto region = get_region_info(region_id);
+    if (!region)
       return KernelResult<VirtAddr>{KernelError::InvalidArgument};
-    }
-    auto region = *region_ptr;
-    if (!region) {
+    containers::LockGuard<containers::IrqSpinLock> guard(region->lifecycle_lock);
+    if (region->ref_count.load(containers::MemoryOrder::Relaxed) == DESTROYED_REFS)
       return KernelResult<VirtAddr>{KernelError::InvalidArgument};
-    }
-    if ((region->permission & map_permission) != map_permission) {
+    if ((region->permission & map_permission) != map_permission)
       return KernelResult<VirtAddr>{KernelError::PermissionDenied};
-    }
-    VirtAddr user_virt_addr = allocate_user_virtual_address(pid, region->size, hint_addr);
-    if (user_virt_addr == 0) {
-      return KernelResult<VirtAddr>{KernelError::OutOfMemory};
-    }
-    auto map_result =
-        map_user_memory(pid, user_virt_addr, region->phys_base, region->size, region->attributes, region->page_size);
-    if (!map_result) {
-      free_user_virtual_address(pid, user_virt_addr, region->size);
-      return KernelResult<VirtAddr>{map_result.error()};
-    }
-    (void)region->ref_count.fetch_add(1, containers::MemoryOrder::AcqRel);
-    record_process_mapping(pid, region_id, user_virt_addr, region->size, map_permission);
-    return KernelResult<VirtAddr>{user_virt_addr};
+    // No shared VMA/PTE ownership backend exists. A fixed success address
+    // cannot grant access, and must not create a reference to unmapped memory.
+    return KernelResult<VirtAddr>{KernelError::NotSupported};
   }
 
-  [[nodiscard]] VoidResult unmap_from_process(ProcessId pid, ShmId region_id) noexcept {
-    auto region_ptr = regions_.find(region_id);
-    if (!region_ptr) {
+  [[nodiscard]] VoidResult unmap_from_process([[maybe_unused]] ProcessId pid, ShmId region_id) noexcept {
+    auto region = get_region_info(region_id);
+    if (!region)
       return VoidResult{KernelError::InvalidArgument};
-    }
-    auto region = *region_ptr;
-    if (!region) {
-      return VoidResult{KernelError::InvalidArgument};
-    }
-    auto mapping = find_process_mapping(pid, region_id);
-    if (!mapping) {
-      return VoidResult{KernelError::NotFound};
-    }
-    unmap_user_memory(pid, mapping->virt_addr, mapping->size);
-    free_user_virtual_address(pid, mapping->virt_addr, mapping->size);
-    u32 old_rc = region->ref_count.fetch_sub(1, containers::MemoryOrder::AcqRel);
-    remove_process_mapping(pid, region_id);
-    if (old_rc == 1) {
-      (void)destroy_region(region_id);
-    }
-    return VoidResult{};
+    // map_to_process cannot create mappings until its backend is implemented.
+    return VoidResult{KernelError::NotFound};
   }
 
   [[nodiscard]] VoidResult destroy_region(ShmId region_id) noexcept {
-    auto region_ptr = regions_.find(region_id);
-    if (!region_ptr) {
+    auto region = get_region_info(region_id);
+    if (!region)
       return VoidResult{KernelError::InvalidArgument};
-    }
-    auto region = *region_ptr;
-    if (!region) {
+    // Serialize backing release with cache operations and future map admission.
+    // One reference belongs to the creator; destruction consumes it. Waiting
+    // for zero would leave every newly created region permanently busy.
+    containers::LockGuard<containers::IrqSpinLock> guard(region->lifecycle_lock);
+    const u32 references = region->ref_count.load(containers::MemoryOrder::Relaxed);
+    if (references == DESTROYED_REFS)
       return VoidResult{KernelError::InvalidArgument};
-    }
-    // UINT32_MAX (all 32 bits set) marks destruction after a zero-reference
-    // claim, preventing competing destroyers from claiming the same region.
-    // map_to_process still increments unconditionally; callers must serialize
-    // mapping against teardown rather than treating this CAS as a lifetime lock.
-    // Loop on spurious failure (compare_exchange_weak) but not on real failure.
-    u32 expected = 0;
-    while (!region->ref_count.compare_exchange_weak(
-        expected, static_cast<u32>(0xFFFFFFFFU), containers::MemoryOrder::AcqRel, containers::MemoryOrder::Acquire)) {
-      if (expected != 0) {
-        return VoidResult{KernelError::Busy};
-      }
-      // Spurious failure with expected still 0 — retry.
-    }
-    unmap_kernel_memory(region->virt_base, region->size);
-    free_physical_memory(region->phys_base, region->size);
-    free_kernel_virtual_address(region->virt_base, region->size);
+    if (references != 1)
+      return VoidResult{KernelError::Busy};
+    auto released = mm::PageFrameAllocator::free_pages(region->phys_base, region->allocation_order);
+    if (!released)
+      return VoidResult{KernelError::InternalError};
+    region->ref_count.store(DESTROYED_REFS, containers::MemoryOrder::Release);
+    regions_.remove(region_id);
     (void)total_regions_.fetch_sub(1, containers::MemoryOrder::Relaxed);
     (void)total_memory_usage_.fetch_sub(region->size, containers::MemoryOrder::Relaxed);
-    update_page_statistics(region->page_size, -1);
-    regions_.remove(region_id);
     return VoidResult{};
   }
 
+  // This handle retains the descriptor. Backing access requires the creator to
+  // keep the region alive and stop users before destroy_region(); a metadata
+  // shared_ptr alone does not pin physical pages or quiesce ring operations.
   [[nodiscard]] shared_ptr<ShmRegion> get_region_info(ShmId region_id) const noexcept {
-    auto region_ptr = regions_.find(region_id);
-    if (!region_ptr) {
-      return {};
-    }
-    return *region_ptr;
+    auto found = regions_.find(region_id);
+    return found ? *found : shared_ptr<ShmRegion>{};
   }
 
   void sync_region(ShmId region_id) noexcept {
-    auto region_ptr = regions_.find(region_id);
-    if (!region_ptr) {
+    auto region = get_region_info(region_id);
+    if (!region)
       return;
-    }
-    auto region = *region_ptr;
-    if (!region) {
+    containers::LockGuard<containers::IrqSpinLock> guard(region->lifecycle_lock);
+    if (region->ref_count.load(containers::MemoryOrder::Relaxed) == DESTROYED_REFS)
       return;
-    }
-    flush_cache_range(region->virt_base, region->size);
+    const VirtAddr end = region->virt_base + region->size;
+    for (VirtAddr address = region->virt_base; address < end; address += CACHE_LINE_SIZE)
+      arch::flush_cache_line(address);
+    arch::memory_barrier();
   }
 
   [[nodiscard]] SharedMemoryStats get_statistics() const noexcept {
     return {.total_regions = total_regions_.load(containers::MemoryOrder::Relaxed),
             .total_memory_usage = total_memory_usage_.load(containers::MemoryOrder::Relaxed),
-            .large_pages_used = large_pages_used_.load(containers::MemoryOrder::Relaxed),
-            .huge_pages_used = huge_pages_used_.load(containers::MemoryOrder::Relaxed)};
+            .large_pages_used = 0,
+            .huge_pages_used = 0};
   }
 
-  void cleanup_process_mappings(ProcessId pid) noexcept {
-    auto mappings_ptr = process_mappings_.find(pid);
-    if (!mappings_ptr) {
-      return;
-    }
-    auto mappings = *mappings_ptr;
-    if (!mappings) {
-      return;
-    }
-    mappings->for_each_snapshot(
-        [this, pid](const ShmMapping &mapping) { (void)unmap_from_process(pid, mapping.region_id); });
-    process_mappings_.remove(pid);
+  void cleanup_process_mappings([[maybe_unused]] ProcessId pid) noexcept {
+    // There are no successful process mappings to revoke in the current backend.
   }
 
 private:
-  [[nodiscard]] usize select_page_size(usize size, ShmType type) const noexcept {
-    if (type == ShmType::LargePage || size >= SHM_HUGE_PAGE_SIZE) {
-      return SHM_HUGE_PAGE_SIZE;
-    }
-    if (size >= SHM_LARGE_PAGE_SIZE) {
-      return SHM_LARGE_PAGE_SIZE;
-    }
-    return PAGE_SIZE;
-  }
-
-  [[nodiscard]] static usize align_up_to_page(usize size, usize page_size) noexcept {
-    return (size + page_size - 1) & ~(page_size - 1);
-  }
-
-  [[nodiscard]] static mm::MemoryAttributes get_memory_attributes(ShmType type) noexcept {
-    switch (type) {
-    case ShmType::DeviceMemory:
-      return mm::MemoryAttributes::DEVICE_nGnRnE;
-    case ShmType::DMA_Coherent:
-      return mm::MemoryAttributes::NORMAL_NON_CACHEABLE;
-    case ShmType::Normal:
-    case ShmType::LargePage:
-    default:
-      return mm::MemoryAttributes::NORMAL_CACHEABLE;
-    }
-  }
-
-  [[nodiscard]] KernelResult<PhysAddr> allocate_physical_memory([[maybe_unused]] usize size,
-                                                                [[maybe_unused]] usize page_size) noexcept {
-    // 占位地址 2 GiB，未执行物理分配；每次返回相同地址，选择依据尚未记录。
-    return KernelResult<PhysAddr>{static_cast<PhysAddr>(0x80000000)};
-  }
-
-  void free_physical_memory([[maybe_unused]] PhysAddr addr, [[maybe_unused]] usize size) noexcept {}
-
-  [[nodiscard]] VirtAddr allocate_kernel_virtual_address([[maybe_unused]] usize size) noexcept {
-    // 占位的 48 位高半区起点，未预留/映射该地址，不能证明存储可解引用。
-    return 0xFFFF800000000000ULL;
-  }
-
-  void free_kernel_virtual_address([[maybe_unused]] VirtAddr addr, [[maybe_unused]] usize size) noexcept {}
-
-  [[nodiscard]] VirtAddr allocate_user_virtual_address([[maybe_unused]] ProcessId pid, [[maybe_unused]] usize size,
-                                                       [[maybe_unused]] VirtAddr hint) noexcept {
-    // 占位 4 MiB 地址，未分配 VMA，且低于当前进程接口的 4 GiB 用户下界；
-    // 原始选址依据尚未记录，启用真实映射前须接入统一地址空间规则。
-    return 0x400000;
-  }
-
-  void free_user_virtual_address([[maybe_unused]] ProcessId pid, [[maybe_unused]] VirtAddr addr,
-                                 [[maybe_unused]] usize size) noexcept {}
-
-  [[nodiscard]] VoidResult map_kernel_memory([[maybe_unused]] VirtAddr virt, [[maybe_unused]] PhysAddr phys,
-                                             [[maybe_unused]] usize size, [[maybe_unused]] mm::MemoryAttributes attr,
-                                             [[maybe_unused]] usize page_size) noexcept {
-    return VoidResult{};
-  }
-
-  void unmap_kernel_memory([[maybe_unused]] VirtAddr virt, [[maybe_unused]] usize size) noexcept {}
-
-  [[nodiscard]] VoidResult map_user_memory([[maybe_unused]] ProcessId pid, [[maybe_unused]] VirtAddr virt,
-                                           [[maybe_unused]] PhysAddr phys, [[maybe_unused]] usize size,
-                                           [[maybe_unused]] mm::MemoryAttributes attr,
-                                           [[maybe_unused]] usize page_size) noexcept {
-    return VoidResult{};
-  }
-
-  void unmap_user_memory([[maybe_unused]] ProcessId pid, [[maybe_unused]] VirtAddr virt,
-                         [[maybe_unused]] usize size) noexcept {}
-
-  void flush_cache_range(VirtAddr addr, usize size) noexcept {
-    VirtAddr end = addr + size;
-    for (VirtAddr va = addr; va < end; va += CACHE_LINE_SIZE) {
-      arch::flush_cache_line(va);
-    }
-    arch::memory_barrier();
-  }
-
-  void record_process_mapping(ProcessId pid, ShmId region_id, VirtAddr virt_addr, usize size,
-                              ShmPermission permission) noexcept {
-    auto mappings =
-        process_mappings_.get_or_insert(pid, [] { return make_shared<containers::LockedList<ShmMapping>>(); });
-    mappings->push_front(ShmMapping(region_id, virt_addr, size, permission));
-  }
-
-  [[nodiscard]] containers::Optional<ShmMapping> find_process_mapping(ProcessId pid, ShmId region_id) noexcept {
-    auto mappings_ptr = process_mappings_.find(pid);
-    if (!mappings_ptr) {
-      return containers::Optional<ShmMapping>{};
-    }
-    auto mappings = *mappings_ptr;
-    if (!mappings) {
-      return containers::Optional<ShmMapping>{};
-    }
-    auto found = mappings->find_if([region_id](const ShmMapping &mapping) { return mapping.region_id == region_id; });
-    return found ? containers::Optional<ShmMapping>{*found} : containers::Optional<ShmMapping>{};
-  }
-
-  void remove_process_mapping(ProcessId pid, ShmId region_id) noexcept {
-    auto mappings_ptr = process_mappings_.find(pid);
-    if (!mappings_ptr) {
-      return;
-    }
-    auto mappings = *mappings_ptr;
-    if (!mappings) {
-      return;
-    }
-    mappings->remove_if([region_id](const ShmMapping &mapping) { return mapping.region_id == region_id; });
-  }
-
-  void update_page_statistics(usize page_size, i32 delta) noexcept {
-    if (page_size == SHM_LARGE_PAGE_SIZE) {
-      if (delta > 0) {
-        (void)large_pages_used_.fetch_add(static_cast<usize>(delta), containers::MemoryOrder::Relaxed);
-      } else {
-        (void)large_pages_used_.fetch_sub(static_cast<usize>(-delta), containers::MemoryOrder::Relaxed);
-      }
-    } else if (page_size == SHM_HUGE_PAGE_SIZE) {
-      if (delta > 0) {
-        (void)huge_pages_used_.fetch_add(static_cast<usize>(delta), containers::MemoryOrder::Relaxed);
-      } else {
-        (void)huge_pages_used_.fetch_sub(static_cast<usize>(-delta), containers::MemoryOrder::Relaxed);
-      }
-    }
-  }
-
   void cleanup_all_regions() noexcept {
-    regions_.for_each_snapshot([this](const auto &entry) { (void)destroy_region(entry.key); });
+    // Destruction requires quiesced callers. Iterate without allocating a
+    // snapshot, so teardown still works with an exhausted heap. The callback
+    // must not reenter this map; detach/delete its nodes after iteration.
+    regions_.for_each([](const auto &entry) {
+      auto &region = *entry.value;
+      containers::LockGuard<containers::IrqSpinLock> guard(region.lifecycle_lock);
+      if (region.ref_count.load(containers::MemoryOrder::Relaxed) == 1 &&
+          mm::PageFrameAllocator::free_pages(region.phys_base, region.allocation_order))
+        region.ref_count.store(DESTROYED_REFS, containers::MemoryOrder::Release);
+    });
+    regions_.clear();
+    total_regions_.store(0, containers::MemoryOrder::Relaxed);
+    total_memory_usage_.store(0, containers::MemoryOrder::Relaxed);
   }
 };
 
@@ -453,31 +309,33 @@ struct MessageSlot {
   enum State : u32 { Empty = 0, Writing = 1, Ready = 2, Reading = 3 };
 };
 
-// 零拷贝通道环形缓冲区
-// 默认名义环长 64 KiB、完整消息上限 4 KiB（含头和填充），选值依据尚未
-// 记录。游标 CAS 先于内容复制：它只预留位置，不发布完整消息，也不等待读
-// 完后回收；在加入提交/回收协议前，读写活动仍须由调用方在外部串行化。
+// Variable-length records share one IRQ-safe lock in the control block. Hold
+// it through copying and cursor publication/reclamation: reserving a cursor
+// alone cannot make an incomplete record readable or a busy slot reusable.
+// The default 64 KiB/4 KiB budgets retain the existing policy; exact sizing
+// evidence is unrecorded. Record boundaries use eight-byte wire alignment.
 template <usize BufferSize = 64 * 1024, usize MaxMessageSize = 4096> class ZeroCopyRingBuffer {
 private:
-  static_assert((BufferSize & (BufferSize - 1)) == 0, "BufferSize must be power of 2");
-  // 单条消息至多占名义容量四分之一，避免独占环；具体比例依据尚未记录。
-  static_assert(MaxMessageSize <= BufferSize / 4, "MaxMessageSize too large");
+  static_assert(BufferSize != 0 && (BufferSize & (BufferSize - 1)) == 0, "BufferSize must be power of 2");
+  static_assert(MaxMessageSize >= sizeof(MessageHeader) && MaxMessageSize <= BufferSize / 4,
+                "Message budget must fit a header and at most one quarter of the ring");
   static constexpr usize BUFFER_MASK = BufferSize - 1;
-
-  // 四个 8 字节原子字段加四个保留字构成 64 字节控制块；共享区起点
-  // 也须满足该对齐，改变布局会同时影响 buffer_ 的起点与对端解释。
-  // 64 字节布局/对齐的选值依据尚未记录。
-  struct alignas(64) RingControl {
+  // Keep the existing 64-byte control extent; use its formerly reserved bytes
+  // for the shared lock so separate views serialize on the same ownership.
+  static constexpr usize CONTROL_BYTES = 64;
+  static_assert(sizeof(containers::IrqSpinLock) < CONTROL_BYTES - 4 * sizeof(u64));
+  struct alignas(CONTROL_BYTES) RingControl {
     containers::AtomicU64 write_pos;
     containers::AtomicU64 read_pos;
     containers::AtomicU64 write_count;
     containers::AtomicU64 read_count;
-    u64 reserved[4];
+    containers::IrqSpinLock lock;
+    u8 reserved[CONTROL_BYTES - 4 * sizeof(u64) - sizeof(containers::IrqSpinLock)]{};
   };
+  static_assert(sizeof(RingControl) == CONTROL_BYTES);
 
-  RingControl *control_;
-  u8 *buffer_;
-  usize buffer_size_;
+  RingControl *control_{nullptr};
+  u8 *buffer_{nullptr};
 
 public:
   struct RingBufferStats {
@@ -487,132 +345,100 @@ public:
     usize used_space;
   };
 
-  ZeroCopyRingBuffer(void *shared_memory, usize size) noexcept : buffer_size_(size - sizeof(RingControl)) {
+  [[nodiscard]] static constexpr usize storage_size() noexcept { return CONTROL_BYTES + BufferSize; }
+
+  // A creator constructs the control block once. Later views attach with
+  // initialize_control=false while its lifetime remains externally owned.
+  ZeroCopyRingBuffer(void *shared_memory, usize size, bool initialize_control = true) noexcept {
+    if (!shared_memory || size < storage_size() ||
+        (reinterpret_cast<usize>(shared_memory) & (alignof(RingControl) - 1)))
+      return;
     control_ = static_cast<RingControl *>(shared_memory);
-    buffer_ = static_cast<u8 *>(shared_memory) + sizeof(RingControl);
-    // Initialize control block in-place.  Caller is responsible for
-    // ensuring this constructor is only invoked once per shared-memory
-    // region; the old file-scope `static bool` was both racy and wrong
-    // (it prevented a second *distinct* ring from being initialized).
-    new (control_) RingControl{};
+    buffer_ = static_cast<u8 *>(shared_memory) + CONTROL_BYTES;
+    if (initialize_control)
+      new (control_) RingControl{};
   }
 
-  [[nodiscard]] bool try_send(const MessageHeader &header, const void *payload) noexcept {
-    usize total_size = sizeof(MessageHeader) + header.payload_size;
-    // 双端按 8 字节字边界前进，确保可计算相同的下一消息起点；这是记录
-    // 格式约束，不能替代 MessageHeader 自身要求的 64 字节对象对齐。
-    total_size = ring_align_up(total_size, 8);
-    if (total_size > MaxMessageSize) {
-      return false;
-    }
-    u64 write_pos = control_->write_pos.load(containers::MemoryOrder::Acquire);
-    u64 read_pos = control_->read_pos.load(containers::MemoryOrder::Acquire);
-    if (write_pos - read_pos + total_size > buffer_size_) {
-      return false;
-    }
-    if (!control_->write_pos.compare_exchange_weak(write_pos, write_pos + total_size,
-                                                   containers::MemoryOrder::AcqRel)) {
-      return false;
-    }
-    usize buffer_pos = static_cast<usize>(write_pos) & BUFFER_MASK;
-    usize space_to_end = BufferSize - buffer_pos;
+  [[nodiscard]] bool is_valid() const noexcept { return control_ != nullptr; }
 
-    // Wrapped records use MaxMessageSize bytes of temporary stack storage.
-    // Direct and temporary header casts require MessageHeader alignment,
-    // which neither an 8-byte cursor nor a plain u8 array establishes.
-    if (space_to_end >= total_size) {
-      // Fast path: entire message fits without wrapping
-      MessageHeader *msg_header = reinterpret_cast<MessageHeader *>(&buffer_[buffer_pos]);
-      *msg_header = header;
-      if (header.payload_size > 0 && payload != nullptr) {
-        fast_memcpy(&buffer_[buffer_pos + sizeof(MessageHeader)], payload, header.payload_size);
-      }
-    } else {
-      // Slow path: message wraps around ring boundary.
-      // Build message into temp buffer, then split-copy.
-      u8 temp[MaxMessageSize];
-      auto *tmp_hdr = reinterpret_cast<MessageHeader *>(temp);
-      *tmp_hdr = header;
-      if (header.payload_size > 0 && payload != nullptr) {
-        fast_memcpy(temp + sizeof(MessageHeader), payload, header.payload_size);
-      }
-      // Copy part 1: up to buffer end
-      fast_memcpy(&buffer_[buffer_pos], temp, space_to_end);
-      // Copy part 2: wrap to buffer start
-      fast_memcpy(&buffer_[0], temp + space_to_end, total_size - space_to_end);
-    }
-    atomic_thread_fence(memory_order_release);
+  [[nodiscard]] bool try_send(const MessageHeader &header, const void *payload) noexcept {
+    if (!is_valid() || header.payload_size > MaxMessageSize - sizeof(MessageHeader) ||
+        (header.payload_size && !payload))
+      return false;
+    const usize total_size = ring_align_up(sizeof(MessageHeader) + header.payload_size, 8);
+    if (total_size > MaxMessageSize)
+      return false; // Wire padding is part of the declared record budget.
+    containers::LockGuard<containers::IrqSpinLock> guard(control_->lock);
+    const u64 write_pos = control_->write_pos.load(containers::MemoryOrder::Relaxed);
+    const u64 read_pos = control_->read_pos.load(containers::MemoryOrder::Relaxed);
+    // Capacity is the masked ring extent, never the caller's larger allocation.
+    if (write_pos - read_pos > BufferSize - total_size)
+      return false;
+    copy_to_ring(write_pos, &header, sizeof(header));
+    if (header.payload_size)
+      copy_to_ring(write_pos + sizeof(header), payload, header.payload_size);
+    // Publish only after header and payload are complete. The shared lock
+    // covers competing writers/readers as well as the release-store ordering.
+    control_->write_pos.store(write_pos + total_size, containers::MemoryOrder::Release);
     (void)control_->write_count.fetch_add(1, containers::MemoryOrder::Relaxed);
     return true;
   }
 
   [[nodiscard]] bool try_receive(MessageHeader &header, void *payload, usize max_payload_size) noexcept {
-    // CAS gives one claimant for this cursor range. It advances before payload
-    // copying finishes, so reuse must still obey the external serialization
-    // described on the class; this is not a committed-message protocol.
-    u64 read_pos = control_->read_pos.load(containers::MemoryOrder::Acquire);
-    for (;;) {
-      u64 write_pos = control_->write_pos.load(containers::MemoryOrder::Acquire);
-      if (read_pos >= write_pos) {
-        return false;
-      }
-
-      // Peek at header to compute total message size
-      usize buffer_pos = static_cast<usize>(read_pos) & BUFFER_MASK;
-      usize space_to_end = BufferSize - buffer_pos;
-
-      if (space_to_end >= sizeof(MessageHeader)) {
-        const auto *msg_header = reinterpret_cast<const MessageHeader *>(&buffer_[buffer_pos]);
-        header = *msg_header;
-      } else {
-        u8 temp[sizeof(MessageHeader)];
-        fast_memcpy(temp, &buffer_[buffer_pos], space_to_end);
-        fast_memcpy(temp + space_to_end, &buffer_[0], sizeof(MessageHeader) - space_to_end);
-        header = *reinterpret_cast<const MessageHeader *>(temp);
-      }
-      if (header.payload_size > max_payload_size) {
-        return false;
-      }
-
-      usize total_size = ring_align_up(sizeof(MessageHeader) + header.payload_size, 8);
-
-      // CAS: claim [read_pos, read_pos + total_size)
-      u64 new_pos = read_pos + total_size;
-      if (control_->read_pos.compare_exchange_weak(read_pos, new_pos, containers::MemoryOrder::AcqRel)) {
-        // Successfully claimed — read payload
-        if (header.payload_size > 0 && payload != nullptr) {
-          usize payload_start = (buffer_pos + sizeof(MessageHeader)) & BUFFER_MASK;
-          usize space_from_payload = BufferSize - payload_start;
-          if (space_from_payload >= header.payload_size) {
-            fast_memcpy(payload, &buffer_[payload_start], header.payload_size);
-          } else {
-            fast_memcpy(payload, &buffer_[payload_start], space_from_payload);
-            fast_memcpy(static_cast<u8 *>(payload) + space_from_payload, &buffer_[0],
-                        header.payload_size - space_from_payload);
-          }
-        }
-        (void)control_->read_count.fetch_add(1, containers::MemoryOrder::Relaxed);
-        return true;
-      }
-      // CAS failed — read_pos was updated by compare_exchange_weak, retry
-    }
+    if (!is_valid())
+      return false;
+    containers::LockGuard<containers::IrqSpinLock> guard(control_->lock);
+    const u64 read_pos = control_->read_pos.load(containers::MemoryOrder::Relaxed);
+    const u64 write_pos = control_->write_pos.load(containers::MemoryOrder::Relaxed);
+    const u64 available = write_pos - read_pos;
+    if (available < sizeof(MessageHeader) || available > BufferSize)
+      return false;
+    // Copy the wire representation into an aligned live object. Eight-byte
+    // record offsets and wrapped fragments cannot be cast to a 64-byte header.
+    MessageHeader candidate{};
+    copy_from_ring(&candidate, read_pos, sizeof(candidate));
+    if (candidate.payload_size > MaxMessageSize - sizeof(MessageHeader) || candidate.payload_size > max_payload_size ||
+        (candidate.payload_size && !payload))
+      return false;
+    const usize total_size = ring_align_up(sizeof(MessageHeader) + candidate.payload_size, 8);
+    if (total_size > MaxMessageSize || total_size > available)
+      return false;
+    if (candidate.payload_size)
+      copy_from_ring(payload, read_pos + sizeof(candidate), candidate.payload_size);
+    header = candidate;
+    // Reclaim storage only after consumption, preventing a writer from
+    // overwriting payload that a reader has claimed but has not copied yet.
+    control_->read_pos.store(read_pos + total_size, containers::MemoryOrder::Release);
+    (void)control_->read_count.fetch_add(1, containers::MemoryOrder::Relaxed);
+    return true;
   }
 
   [[nodiscard]] RingBufferStats get_statistics() const noexcept {
-    u64 write_pos = control_->write_pos.load(containers::MemoryOrder::Relaxed);
-    u64 read_pos = control_->read_pos.load(containers::MemoryOrder::Relaxed);
-    return {control_->write_count.load(containers::MemoryOrder::Relaxed),
-            control_->read_count.load(containers::MemoryOrder::Relaxed),
-            control_->write_count.load(containers::MemoryOrder::Relaxed) -
-                control_->read_count.load(containers::MemoryOrder::Relaxed),
-            static_cast<usize>(write_pos - read_pos)};
+    if (!is_valid())
+      return {};
+    containers::LockGuard<containers::IrqSpinLock> guard(control_->lock);
+    const u64 written = control_->write_count.load(containers::MemoryOrder::Relaxed);
+    const u64 read = control_->read_count.load(containers::MemoryOrder::Relaxed);
+    return {written, read, written - read,
+            static_cast<usize>(control_->write_pos.load(containers::MemoryOrder::Relaxed) -
+                               control_->read_pos.load(containers::MemoryOrder::Relaxed))};
   }
 
 private:
-  /// Copy memory safely — uses intrinsics to handle alignment correctly.
-  /// The previous hand-rolled u64 cast violated alignment on ARM64 (UB/fault).
-  static void fast_memcpy(void *dst, const void *src, usize size) noexcept {
-    intrinsics::memory::memcpy(dst, src, size);
+  void copy_to_ring(u64 position, const void *source, usize size) noexcept {
+    const usize offset = static_cast<usize>(position) & BUFFER_MASK;
+    const usize first = (size < BufferSize - offset) ? size : BufferSize - offset;
+    intrinsics::memory::memcpy(buffer_ + offset, source, first);
+    if (size > first)
+      intrinsics::memory::memcpy(buffer_, static_cast<const u8 *>(source) + first, size - first);
+  }
+
+  void copy_from_ring(void *destination, u64 position, usize size) const noexcept {
+    const usize offset = static_cast<usize>(position) & BUFFER_MASK;
+    const usize first = (size < BufferSize - offset) ? size : BufferSize - offset;
+    intrinsics::memory::memcpy(destination, buffer_ + offset, first);
+    if (size > first)
+      intrinsics::memory::memcpy(static_cast<u8 *>(destination) + first, buffer_, size - first);
   }
 
   static constexpr usize ring_align_up(usize value, usize alignment) noexcept {
@@ -657,18 +483,22 @@ public:
   ZeroCopyChannel &operator=(ZeroCopyChannel &&) = delete;
 
   [[nodiscard]] VoidResult initialize() noexcept {
-    // 两个方向均保留默认 64 KiB 的名义数据容量；额外空间经共享区页对齐。
-    // 这是固定默认值，按消息负载实测的容量依据尚未记录。
-    auto c2s_result = g_shared_memory_manager->create_region(client_pid_, sizeof(ZeroCopyRingBuffer<>) + 64ULL * 1024,
+    if (!g_shared_memory_manager)
+      return VoidResult{KernelError::InvalidState};
+    if (client_to_server_shm_ || server_to_client_shm_)
+      return VoidResult{KernelError::Busy};
+    // The backing contains the shared control block and masked data extent;
+    // sizeof the local view contains neither and cannot describe wire storage.
+    auto c2s_result = g_shared_memory_manager->create_region(client_pid_, ZeroCopyRingBuffer<>::storage_size(),
                                                              ShmType::Normal, ShmPermission::ReadWrite);
     if (!c2s_result) {
       return VoidResult{c2s_result.error()};
     }
     client_to_server_shm_ = *c2s_result;
-    auto s2c_result = g_shared_memory_manager->create_region(server_pid_, sizeof(ZeroCopyRingBuffer<>) + 64ULL * 1024,
+    auto s2c_result = g_shared_memory_manager->create_region(server_pid_, ZeroCopyRingBuffer<>::storage_size(),
                                                              ShmType::Normal, ShmPermission::ReadWrite);
     if (!s2c_result) {
-      (void)g_shared_memory_manager->destroy_region(client_to_server_shm_);
+      cleanup();
       return VoidResult{s2c_result.error()};
     }
     server_to_client_shm_ = *s2c_result;
@@ -678,13 +508,24 @@ public:
       cleanup();
       return VoidResult{KernelError::InternalError};
     }
-    client_to_server_ =
-        make_unique<ZeroCopyRingBuffer<>>(reinterpret_cast<void *>(c2s_region->virt_base), c2s_region->size);
-    server_to_client_ =
-        make_unique<ZeroCopyRingBuffer<>>(reinterpret_cast<void *>(s2c_region->virt_base), s2c_region->size);
+    // Views also need fallible storage: make_unique uses ordinary new and
+    // would panic on OOM before the channel could release both regions.
+    auto create_view = [](const ShmRegion &region) {
+      auto storage =
+          mm::RuntimeHeapAllocator::allocate_aligned(sizeof(ZeroCopyRingBuffer<>), alignof(ZeroCopyRingBuffer<>));
+      return storage ? unique_ptr<ZeroCopyRingBuffer<>>{new (*storage) ZeroCopyRingBuffer<>(
+                           reinterpret_cast<void *>(region.virt_base), region.size)}
+                     : unique_ptr<ZeroCopyRingBuffer<>>{};
+    };
+    client_to_server_ = create_view(*c2s_region);
+    server_to_client_ = create_view(*s2c_region);
     if (!client_to_server_ || !server_to_client_) {
       cleanup();
       return VoidResult{KernelError::OutOfMemory};
+    }
+    if (!client_to_server_->is_valid() || !server_to_client_->is_valid()) {
+      cleanup();
+      return VoidResult{KernelError::InternalError};
     }
     return VoidResult{};
   }
@@ -698,7 +539,7 @@ public:
     } else {
       return false;
     }
-    if (buffer->try_send(header, payload)) {
+    if (buffer && buffer->try_send(header, payload)) {
       (void)messages_sent_.fetch_add(1, containers::MemoryOrder::Relaxed);
       (void)bytes_transferred_.fetch_add(header.payload_size, containers::MemoryOrder::Relaxed);
       notify_receiver(sender_pid);
@@ -717,7 +558,7 @@ public:
     } else {
       return false;
     }
-    if (buffer->try_receive(header, payload, max_payload_size)) {
+    if (buffer && buffer->try_receive(header, payload, max_payload_size)) {
       (void)messages_received_.fetch_add(1, containers::MemoryOrder::Relaxed);
       return true;
     }
@@ -726,6 +567,9 @@ public:
 
   [[nodiscard]] bool wait_for_message(ProcessId receiver_pid, MessageHeader &header, void *payload,
                                       usize max_payload_size, u64 timeout_ns = static_cast<u64>(-1)) noexcept {
+    if (!client_to_server_ || !server_to_client_ || (receiver_pid != client_pid_ && receiver_pid != server_pid_) ||
+        !timer::TimerSubsystem::instance().is_initialized())
+      return false;
     // u64 最大值表示无限等待，普通值以 ns 计时；每轮最多轮询 1 ms 通知
     // 后重查环内容，以免仅依赖一次通知快照。1 ms 的精确选值依据未记录。
     u64 start_time = get_current_time_ns();
@@ -745,6 +589,8 @@ public:
   }
 
   [[nodiscard]] ChannelStats get_statistics() const noexcept {
+    if (!client_to_server_ || !server_to_client_)
+      return {};
     auto c2s_stats = client_to_server_->get_statistics();
     auto s2c_stats = server_to_client_->get_statistics();
     return {.messages_sent = messages_sent_.load(containers::MemoryOrder::Relaxed),
@@ -779,9 +625,17 @@ private:
     }
   }
 
-  [[nodiscard]] static u64 get_current_time_ns() noexcept { return arch::get_timestamp_counter(); }
+  [[nodiscard]] static u64 get_current_time_ns() noexcept {
+    // Architectural counters return cycles, not ns; use the calibrated timer
+    // clock so timeout budgets mean the same duration on every architecture.
+    return timer::TimerSubsystem::instance().now_ns();
+  }
 
   void cleanup() noexcept {
+    // Callers quiesce users before teardown; release local views before freeing
+    // their backing so no surviving member points at a returned buddy block.
+    client_to_server_.reset();
+    server_to_client_.reset();
     if (client_to_server_shm_ != 0) {
       (void)g_shared_memory_manager->destroy_region(client_to_server_shm_);
       client_to_server_shm_ = 0;
@@ -790,8 +644,6 @@ private:
       (void)g_shared_memory_manager->destroy_region(server_to_client_shm_);
       server_to_client_shm_ = 0;
     }
-    client_to_server_.reset();
-    server_to_client_.reset();
   }
 };
 

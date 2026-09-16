@@ -37,11 +37,12 @@
 .type _user_program_start, @function
 _user_program_start:
 
-    // ---- Step 1: sys_write(fd=1, "init: calling execve...\n", 25) ----
+    // ---- Step 1: sys_write(fd=1, "init: calling execve...\n", message length) ----
     mov     x8, #33                 // syscall number: sys_write
     mov     x0, #1                  // fd = STDOUT_FILENO
     adr     x1, .Lmsg_execve        // buf = address of message string
-    mov     x2, #25                 // Legacy count 25 exceeds the 23-byte string by 2; rationale unrecorded.
+    // Label differences include the newline and exclude adjacent inline data.
+    mov     x2, #(.Lmsg_execve_end - .Lmsg_execve)
     svc     #0                      // trap to EL1 → system_call_handler
 
     // ---- Step 2: sys_execve("/shell.elf", NULL, NULL) ----
@@ -59,7 +60,7 @@ _user_program_start:
     mov     x8, #33                 // sys_write
     mov     x0, #1                  // fd = STDOUT
     adr     x1, .Lmsg_fail          // "init: execve failed!\n"
-    mov     x2, #22                 // Legacy count 22 also reads 2 bytes of the following path; rationale unrecorded.
+    mov     x2, #(.Lmsg_fail_end - .Lmsg_fail)
     svc     #0
 
     // ---- sys_exit(status=1) ----
@@ -75,9 +76,11 @@ _user_program_start:
 // Read-only string data (placed inline to allow PC-relative addressing via ADR)
 // =============================================================================
 .Lmsg_execve:
-    .ascii  "init: calling execve...\n"    // 23 bytes (includes \n, no NUL)
+    .ascii  "init: calling execve...\n"    // Includes newline, no NUL.
+.Lmsg_execve_end:
 .Lmsg_fail:
-    .ascii  "init: execve failed!\n"       // 20 bytes (includes \n, no NUL)
+    .ascii  "init: execve failed!\n"       // Includes newline, no NUL.
+.Lmsg_fail_end:
 .Lpath_shell:
     .asciz  "/shell.elf"                   // NUL-terminated VFS path for execve
 

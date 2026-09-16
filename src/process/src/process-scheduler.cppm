@@ -566,6 +566,38 @@ public:
     return node->data;
   }
 
+  // The scheduler holds its transition lock until this candidate is removed.
+  // Ready can still describe the source CPU's unsaved continuation, so CPU
+  // ownership, rather than state alone, determines whether it may move.
+  [[nodiscard]] Thread *pick_migration_task(u32 destination, Thread *current) noexcept {
+    containers::LockGuard<containers::IrqSpinLock> guard(lock_);
+    auto *node = rb_root_;
+    if (!node)
+      return nullptr;
+    while (node->right)
+      node = node->right;
+    while (node) {
+      auto *task = node->data;
+      if (task && task != current && task->state == ProcessState::Ready && task->cpu_affinity_mask.test(destination))
+        return task;
+      // Walk predecessors so a pinned or executing rightmost task does not
+      // prevent another eligible task from leaving the source queue.
+      if (node->left) {
+        node = node->left;
+        while (node->right)
+          node = node->right;
+      } else {
+        auto *parent = node->parent;
+        while (parent && node == parent->left) {
+          node = parent;
+          parent = parent->parent;
+        }
+        node = parent;
+      }
+    }
+    return nullptr;
+  }
+
   [[nodiscard]] u32 nr_running() const noexcept { return nr_running_; }
   [[nodiscard]] u64 min_vruntime() const noexcept { return min_vruntime_; }
   [[nodiscard]] u64 total_weight() const noexcept { return total_weight_; }
@@ -609,123 +641,114 @@ private:
       return delta_exec;
     }
 
-    // Index 20 is nice 0: charge wall time in neutral-weight vruntime units.
-    return (delta_exec * cfs_params::NICE_TO_WEIGHT[20]) / thread->se.weight;
+    // Index 20 is nice 0: normalize charged execution to neutral-weight units.
+    // Divide before multiplying so intermediates fit whenever the final u64
+    // delta fits. The remainder is below a u32 weight, so scaling it by the
+    // neutral 1024 weight fits u64 without a freestanding 128-bit division.
+    const u64 weight = thread->se.weight;
+    const u64 neutral_weight = cfs_params::NICE_TO_WEIGHT[20];
+    const u64 quotient = delta_exec / weight;
+    const u64 remainder = delta_exec % weight;
+    return quotient * neutral_weight + (remainder * neutral_weight) / weight;
   }
 
-  // ── Standard PELT (Per-Entity Load Tracking) ────────────────────────
+  // ── PELT (Per-Entity Load Tracking) ─────────────────────────────────
   //
-  // PELT-style tracking uses 1024 us periods and Q32 coefficients (divide by
-  // 2^32 to interpret them). The scalar below is about 0.97837162, giving
-  // roughly one-half decay over 32 periods (32.768 ms). This implementation
-  // splits each delta into full periods plus a remainder, without tracking a
-  // partially elapsed period across calls. Exact coefficient provenance is unrecorded.
-
-  // Keep scalar, table and normalization consistent when changing decay policy.
-  static constexpr u64 PELT_Y_Q32 = 4202074112ULL;
+  // Linux documents 1024 us periods and y^32 = 1/2. Moss uses exact us,
+  // rather than Linux's fast 1024 ns approximation, and tracks charged
+  // execution here; this is not blocked/runnable wall-clock accounting.
+  // Reference: kernel/sched/pelt.c and Documentation/scheduler/sched-pelt.c
+  // in https://github.com/torvalds/linux.
   static constexpr u64 PELT_PERIOD_US = 1024;
-  static constexpr u64 PELT_PERIOD_NS = PELT_PERIOD_US * 1000;
-  // Existing normalization/cap. Its exact derivation is unrecorded and it is
-  // not 1024/(1-y) for the scalar above (approximately 47345).
-  static constexpr u64 LOAD_AVG_MAX = 47742;
+  static constexpr u64 PELT_NS_PER_US = 1000; // Exact ns-to-us unit conversion.
+  static constexpr u64 PELT_PERIOD_NS = PELT_PERIOD_US * PELT_NS_PER_US;
+  static constexpr u32 PELT_HALF_LIFE_PERIODS = 32;
+  // Q32 coefficients store 32 fractional bits in u32; full utilization uses
+  // Linux's 2^10 capacity scale, independent of a task's nice weight.
+  static constexpr u32 PELT_Q32_SHIFT = 32;
+  static constexpr u64 PELT_UTIL_SCALE = 1024;
 
-  // Stored Q32 coefficients for n=0..31; their generation method is unrecorded.
-  // Entry zero approximates 1 with UINT32_MAX because u32 cannot hold 2^32.
-  // Larger exponents multiply table factors in chunks of at most 31 periods.
+  // floor((2^32-1) * 2^(-n/32)), n=0..31, from the upstream generator.
+  // Exact 32-period halves use shifts; a zero remainder returns the sum
+  // directly, avoiding entry zero's fractional approximation.
   static constexpr u32 PELT_YN_Q32[] = {
       // clang-format off
-      4294967295U, 4202074112U, 4111399273U, 4022890828U,
-      3936497989U, 3852170226U, 3769857271U, 3689509115U,
-      3611076003U, 3534508432U, 3459757144U, 3386773123U,
-      3315507588U, 3245911989U, 3177938003U, 3111537527U,
-      3046662672U, 2983265755U, 2921299293U, 2860716000U,
-      2801468782U, 2743510729U, 2686795108U, 2631275360U,
-      2576905092U, 2523638068U, 2471428208U, 2420229582U,
-      2369996401U, 2320683011U, 2272243884U, 2224633618U,
+      0xffffffffU, 0xfa83b2daU, 0xf5257d14U, 0xefe4b99aU,
+      0xeac0c6e6U, 0xe5b906e6U, 0xe0ccdeebU, 0xdbfbb796U,
+      0xd744fcc9U, 0xd2a81d91U, 0xce248c14U, 0xc9b9bd85U,
+      0xc5672a10U, 0xc12c4cc9U, 0xbd08a39eU, 0xb8fbaf46U,
+      0xb504f333U, 0xb123f581U, 0xad583ee9U, 0xa9a15ab4U,
+      0xa5fed6a9U, 0xa2704302U, 0x9ef5325fU, 0x9b8d39b9U,
+      0x9837f050U, 0x94f4efa8U, 0x91c3d373U, 0x8ea4398aU,
+      0x8b95c1e3U, 0x88980e80U, 0x85aac367U, 0x82cd8698U,
       // clang-format on
   };
-  static constexpr u32 PELT_YN_TABLE_SIZE = 32; // Must match the 32 stored coefficients.
+  static_assert(sizeof(PELT_YN_Q32) / sizeof(PELT_YN_Q32[0]) == PELT_HALF_LIFE_PERIODS);
+  static constexpr u64 PELT_Y_Q32 = PELT_YN_Q32[1];
 
-  // Compose decay for arbitrary n by repeated table chunks (not squaring).
-  [[nodiscard]] static u64 pelt_decay_factor(u32 n) noexcept {
-    if (n == 0) {
-      return static_cast<u64>(PELT_YN_Q32[0]);
+  // Upstream's 47742 is an integer fixed point, not the real geometric sum.
+  // Derive it from the same scalar so coefficients and normalization cannot
+  // drift: S_next = floor(S*y) + 1024, starting with one complete period.
+  static constexpr u64 LOAD_AVG_MAX = []() constexpr {
+    u64 sum = PELT_PERIOD_US;
+    for (;;) {
+      const u64 next = ((sum * PELT_Y_Q32) >> PELT_Q32_SHIFT) + PELT_PERIOD_US;
+      if (next == sum)
+        return sum;
+      sum = next;
     }
+  }();
+  static_assert(LOAD_AVG_MAX == 47742);
 
-    u64 factor = static_cast<u64>(1) << 32; // 1.0 in Q32
-    while (n > 0) {
-      u32 step = (n < PELT_YN_TABLE_SIZE) ? n : (PELT_YN_TABLE_SIZE - 1);
-      factor = (factor * PELT_YN_Q32[step]) >> 32;
-      n -= step;
-    }
-    return factor;
-  }
-
-  // Geometric series sum: Σ_{i=1..n} 1024 × y^i  (Q32 input, returns μs)
-  // = 1024 × y × (1 - y^n) / (1 - y)
-  // Iterate each full 1024 us period (five fit in a normal 6 ms delta); there
-  // is no 64-period limit, and Q32 terms eventually round down to zero.
-  [[nodiscard]] static u64 pelt_period_sum(u32 n) noexcept {
-    if (n == 0) {
+  [[nodiscard]] static u64 pelt_decay_sum(u64 sum, u64 periods) noexcept {
+    // A u64 has no bits left after 64 halvings; guard the shift width.
+    const u64 halves = periods / PELT_HALF_LIFE_PERIODS;
+    if (halves >= 64)
       return 0;
-    }
-    // Round each contribution to whole microseconds before adding it.
-    u64 sum = 0;
-    u64 term_q32 = PELT_Y_Q32; // y^1
-    for (u32 i = 0; i < n; i++) {
-      sum += (PELT_PERIOD_US * term_q32) >> 32;
-      term_q32 = (term_q32 * PELT_Y_Q32) >> 32;
-      if (term_q32 == 0) {
-        break; // negligible
-      }
-    }
-    return sum;
+    sum >>= halves;
+    const u32 remainder = static_cast<u32>(periods % PELT_HALF_LIFE_PERIODS);
+    if (remainder == 0)
+      return sum;
+    // Sums are bounded by LOAD_AVG_MAX, so the Q32 product fits in u64.
+    return (sum * PELT_YN_Q32[remainder]) >> PELT_Q32_SHIFT;
   }
 
   void update_load_tracking(Thread *thread, u64 delta_exec_ns) noexcept {
-    if (thread == nullptr || delta_exec_ns == 0) {
+    if (thread == nullptr || delta_exec_ns == 0)
       return;
+
+    // update_curr_task already advanced this persistent execution counter.
+    // Convert the endpoints, retaining both sub-us time and period phase
+    // across calls; converting/rounding each delta changes the sampling rate.
+    const u64 end_us = thread->se.sum_exec_runtime / PELT_NS_PER_US;
+    const u64 start_us = (thread->se.sum_exec_runtime - delta_exec_ns) / PELT_NS_PER_US;
+    const u64 delta_us = end_us - start_us;
+    if (delta_us == 0)
+      return;
+    const u64 start_phase = start_us % PELT_PERIOD_US;
+    const u64 end_phase = end_us % PELT_PERIOD_US;
+    const u64 periods = (start_phase + delta_us) / PELT_PERIOD_US;
+
+    u64 contribution = delta_us;
+    if (periods != 0) {
+      thread->se.load_sum = pelt_decay_sum(thread->se.load_sum, periods);
+      thread->se.util_sum = pelt_decay_sum(thread->se.util_sum, periods);
+      // Complete the old partial period, add the intervening full periods,
+      // then add the undecayed current tail. Use the integer fixed-point
+      // identity for full periods instead of a separate scalar series.
+      contribution = pelt_decay_sum(PELT_PERIOD_US - start_phase, periods) + LOAD_AVG_MAX -
+                     pelt_decay_sum(LOAD_AVG_MAX, periods) - PELT_PERIOD_US + end_phase;
     }
+    thread->se.load_sum += contribution;
+    thread->se.util_sum += contribution;
 
-    // Convert nanoseconds to microseconds for PELT period math
-    u64 delta_us = delta_exec_ns / 1000;
-    if (delta_us == 0) {
-      // Preserve a nonzero contribution for sub-microsecond execution; this
-      // rounds such deltas up to the tracker's smallest unit (1 us).
-      delta_us = 1;
-    }
-
-    // Number of full 1024μs periods in this delta
-    u32 periods = static_cast<u32>(delta_us / PELT_PERIOD_US);
-    u64 remainder_us = delta_us % PELT_PERIOD_US;
-
-    // Decay existing sums by y^periods
-    if (periods > 0) {
-      u64 decay = pelt_decay_factor(periods);
-      thread->se.load_sum = (thread->se.load_sum * decay) >> 32;
-      thread->se.util_sum = (thread->se.util_sum * decay) >> 32;
-    }
-
-    // Accumulate new contribution:
-    //   full periods: Σ 1024 × y^i for i = 1..periods
-    //   partial period: remainder_us (not yet decayed — current period)
-    u64 contrib = pelt_period_sum(periods) + remainder_us;
-    thread->se.load_sum += contrib;
-    thread->se.util_sum += contrib;
-
-    // Cap to the existing normalization budget before deriving averages.
-    if (thread->se.load_sum > LOAD_AVG_MAX) {
-      thread->se.load_sum = LOAD_AVG_MAX;
-    }
-    if (thread->se.util_sum > LOAD_AVG_MAX) {
-      thread->se.util_sum = LOAD_AVG_MAX;
-    }
-
-    // Derive averages: scale by weight for load, raw for util
-    // load_avg = load_sum × weight / LOAD_AVG_MAX (normalized)
-    // util_avg = util_sum (represents CPU utilization directly)
-    thread->se.load_avg = (thread->se.load_sum * thread->se.weight) / LOAD_AVG_MAX;
-    thread->se.util_avg = thread->se.util_sum;
+    // The peak sum depends on the elapsed part of the current period.
+    // Including that phase prevents false idle time and load oscillations.
+    const u64 divider = LOAD_AVG_MAX - PELT_PERIOD_US + end_phase;
+    thread->se.load_sum = kernel_min(thread->se.load_sum, divider);
+    thread->se.util_sum = kernel_min(thread->se.util_sum, divider);
+    thread->se.load_avg = (thread->se.load_sum * thread->se.weight) / divider;
+    thread->se.util_avg = (thread->se.util_sum * PELT_UTIL_SCALE) / divider;
   }
 
   // Per-runqueue load aggregation: sum of per-entity averages.
@@ -1141,6 +1164,12 @@ inline containers::AtomicBool g_bsp_scheduling_ready{};
 // CFS scheduler class (also dispatches RT tasks)
 class CfsScheduler {
 private:
+  // Join the CFS/RT queue locks for publication, dispatch and CPU transfer.
+  // Acquire this before a queue lock, and never hold it across context_switch:
+  // another CPU must not claim a peeked task before its local dequeue, or see
+  // a linked node with the old CPU/state. The shared short transition favors
+  // a single ownership boundary over independently locked peek/remove calls.
+  inline static containers::IrqSpinLock task_transition_lock_{};
   containers::PerCpuData<CfsRunqueue> runqueues_;
   containers::PerCpuData<RtRunqueue> rt_runqueues_;
   containers::PerCpuData<IdleTask *> idle_tasks_;
@@ -1174,29 +1203,10 @@ public:
     if (thread == nullptr || cpu >= g_num_cpus) {
       return;
     }
-
-    // Route to RT or CFS queue based on scheduling class
-    if (thread->sched_class == SchedClass::RealTime) {
-      rt_runqueues_.get_cpu(cpu).enqueue_task(thread);
-    } else {
-      runqueues_.get_cpu(cpu).enqueue_task(thread);
-    }
-    thread->cpu = cpu;
-    thread->state = ProcessState::Ready;
-
-    // Wakeup preemption check:
-    // - RT task always preempts CFS task
-    // - RT task preempts lower-priority RT task
-    // - CFS task preempts if lower vruntime
-    Thread *curr = current_running_tasks_.get_cpu(cpu);
-    if (curr != nullptr) {
-      if (thread->sched_class == SchedClass::RealTime) {
-        if (curr->sched_class != SchedClass::RealTime || thread->rt.priority > curr->rt.priority) {
-          curr->need_resched = true;
-        }
-      } else if (curr->sched_class != SchedClass::RealTime && thread->se.vruntime < curr->se.vruntime) {
-        curr->need_resched = true;
-      }
+    {
+      containers::LockGuard<containers::IrqSpinLock> guard(task_transition_lock_);
+      thread->state = ProcessState::Ready;
+      enqueue_task_unlocked(thread, cpu);
     }
 
     // Wake target CPU if idle (tickless idle disables timer PPI,
@@ -1210,14 +1220,8 @@ public:
       return;
     }
 
-    u32 cpu = thread->cpu;
-    if (cpu < g_num_cpus) {
-      if (thread->sched_class == SchedClass::RealTime) {
-        rt_runqueues_.get_cpu(cpu).dequeue_task(thread);
-      } else {
-        runqueues_.get_cpu(cpu).dequeue_task(thread);
-      }
-    }
+    containers::LockGuard<containers::IrqSpinLock> guard(task_transition_lock_);
+    dequeue_task_unlocked(thread);
   }
 
   // Pick the next task to run — RT tasks always take precedence over CFS.
@@ -1226,17 +1230,44 @@ public:
       return nullptr;
     }
 
-    // RT class has strict priority over CFS (like Linux)
-    Thread *rt_next = rt_runqueues_.get_cpu(cpu).pick_next_task();
-    if (rt_next != nullptr) {
-      return rt_next;
-    }
-
-    return runqueues_.get_cpu(cpu).pick_next_task();
+    containers::LockGuard<containers::IrqSpinLock> guard(task_transition_lock_);
+    return pick_next_task_unlocked(cpu);
   }
 
-  // Pick highest-vruntime task from a CPU's runqueue (for load balancer).
-  // Steals the least-deserving task (ran most), preserving CFS fairness.
+  // Dispatch consumes the selection under the same lock used by migration.
+  // A returned task is no longer visible to a remote CPU's ready-queue scan.
+  [[nodiscard]] Thread *take_next_task(u32 cpu) noexcept {
+    if (cpu >= g_num_cpus)
+      return nullptr;
+    containers::LockGuard<containers::IrqSpinLock> guard(task_transition_lock_);
+    auto *task = pick_next_task_unlocked(cpu);
+    if (task)
+      dequeue_task_unlocked(task);
+    return task;
+  }
+
+  bool migrate_ready_task(u32 source, u32 destination) noexcept {
+    if (source >= g_num_cpus || destination >= g_num_cpus || source == destination)
+      return false;
+    {
+      containers::LockGuard<containers::IrqSpinLock> guard(task_transition_lock_);
+      // Retain the last queued task, matching the load balancer's policy.
+      if (get_cpu_nr_running(source) <= 1)
+        return false;
+      auto *task = runqueues_.get_cpu(source).pick_migration_task(destination, get_current_task_on_cpu(source));
+      if (!task)
+        return false;
+      dequeue_task_unlocked(task);
+      // Moving a Ready node changes placement, not its state. Do not overwrite
+      // a concurrent stop/termination while publishing it on the target queue.
+      enqueue_task_unlocked(task, destination);
+    }
+    send_reschedule_ipi(destination);
+    return true;
+  }
+
+  // Observe the highest-vruntime task. Migration must use migrate_ready_task
+  // to join candidate selection with removal and target publication.
   [[nodiscard]] Thread *pick_last_task(u32 cpu) noexcept {
     if (cpu >= g_num_cpus) {
       return nullptr;
@@ -1308,6 +1339,44 @@ public:
   }
 
 private:
+  [[nodiscard]] Thread *pick_next_task_unlocked(u32 cpu) noexcept {
+    // RT class has strict priority over CFS (like Linux).
+    if (auto *task = rt_runqueues_.get_cpu(cpu).pick_next_task())
+      return task;
+    return runqueues_.get_cpu(cpu).pick_next_task();
+  }
+
+  void dequeue_task_unlocked(Thread *thread) noexcept {
+    const u32 cpu = thread->cpu;
+    if (cpu >= g_num_cpus)
+      return;
+    if (thread->sched_class == SchedClass::RealTime)
+      rt_runqueues_.get_cpu(cpu).dequeue_task(thread);
+    else
+      runqueues_.get_cpu(cpu).dequeue_task(thread);
+  }
+
+  void enqueue_task_unlocked(Thread *thread, u32 cpu) noexcept {
+    // The caller publishes any state change under the transition lock. Set
+    // placement before linking the node so a target CPU cannot observe an
+    // intrusive node with the old CPU after acquiring that same lock.
+    thread->cpu = cpu;
+    if (thread->sched_class == SchedClass::RealTime)
+      rt_runqueues_.get_cpu(cpu).enqueue_task(thread);
+    else
+      runqueues_.get_cpu(cpu).enqueue_task(thread);
+
+    // RT preempts CFS/lower-priority RT; CFS preempts a higher vruntime.
+    if (auto *current = get_current_task_on_cpu(cpu)) {
+      if (thread->sched_class == SchedClass::RealTime) {
+        if (current->sched_class != SchedClass::RealTime || thread->rt.priority > current->rt.priority)
+          current->need_resched = true;
+      } else if (current->sched_class != SchedClass::RealTime && thread->se.vruntime < current->se.vruntime) {
+        current->need_resched = true;
+      }
+    }
+  }
+
   void execute_task_simplified(Thread *task, [[maybe_unused]] u32 cpu_id) noexcept {
     if (task == nullptr) {
       return;
@@ -1392,7 +1461,7 @@ public:
       Thread *next_task = nullptr;
 
       if (has_runnable_tasks(cpu_id)) {
-        next_task = pick_next_task(cpu_id);
+        next_task = take_next_task(cpu_id);
 
         if (next_task != nullptr) {
           active_cycles++;
@@ -1401,10 +1470,8 @@ public:
             log::klog::debug("[CPU{}][TID={}] task running", cpu_id, static_cast<u32>(next_task->tid));
           }
 
-          // All tasks use real context switch — dequeue from runqueue,
-          // switch to the task's context (eret for first entry, or
-          // context_switch for subsequent dispatches).
-          dequeue_task(next_task);
+          // Selection already removed the task before exposing its context
+          // to the dispatch path; a remote migration cannot claim it now.
           context_switch_to_task(next_task);
           // Returns here when this CPU's bootstrap context is restored
           // after the task is preempted by a timer IRQ.
@@ -1668,16 +1735,28 @@ public:
   // that task can resume on another CPU and free them while this CPU idles.
   static void switch_to_bootstrap(CpuContext &previous) noexcept {
     use_kernel_address_space();
-    set_current_task(nullptr);
+    // Keep the outgoing owner visible until bootstrap resumes after the
+    // assembly save. Clearing it here would permit migrating a Ready task
+    // whose continuation is still executing on this CPU.
     context_switch(&previous, &bootstrap_contexts_.get_local());
   }
 
-  static void set_current_task(Thread *task) noexcept { current_running_tasks_.get_local() = task; }
+  static void set_current_task(Thread *task) noexcept {
+    intrinsics::atomic::store(&current_running_tasks_.get_local(), task, intrinsics::atomic::memory_order::release);
+  }
 
-  static Thread *get_current_task() noexcept { return current_running_tasks_.get_local(); }
+  static Thread *get_current_task() noexcept {
+    // Spinlock preemption hooks call this lookup, so it cannot acquire another
+    // spinlock. Atomic access also makes remote ownership checks race-free.
+    return intrinsics::atomic::load(&current_running_tasks_.get_local(), intrinsics::atomic::memory_order::acquire);
+  }
 
   // Get the currently running task on a specific CPU (for topinfo)
-  static Thread *get_current_task_on_cpu(u32 cpu) noexcept { return current_running_tasks_.get_cpu(cpu); }
+  static Thread *get_current_task_on_cpu(u32 cpu) noexcept {
+    if (cpu >= g_num_cpus)
+      return nullptr;
+    return intrinsics::atomic::load(&current_running_tasks_.get_cpu(cpu), intrinsics::atomic::memory_order::acquire);
+  }
 
   // Caller holds its event lock with IRQs masked. It must register its waiter
   // before unlocking and committing, so condition changes cannot be lost.
@@ -1704,19 +1783,23 @@ private:
   static containers::PerCpuData<ExitStack> exit_stacks_;
 
   void reschedule_current(Thread *current, u32 cpu) noexcept {
-    enqueue_task(current, cpu);
-    auto *next = pick_next_task(cpu);
-    if (!next)
-      return;
-    // Even self-selection transfers the task out of the ready queue. Leaving
-    // its intrusive node linked makes the next yield insert that node twice.
-    dequeue_task(next);
-    if (next != current) {
-      context_switch_to_task(next);
-    } else {
-      current->state = ProcessState::Running;
-      current->need_resched = false;
+    {
+      containers::LockGuard<containers::IrqSpinLock> guard(task_transition_lock_);
+      current->state = ProcessState::Ready;
+      enqueue_task_unlocked(current, cpu);
+      if (pick_next_task_unlocked(cpu) == current) {
+        // Self-selection must remove the node before the next yield inserts
+        // it again, but needs no assembly save or ownership transfer.
+        dequeue_task_unlocked(current);
+        current->state = ProcessState::Running;
+        current->need_resched = false;
+        return;
+      }
     }
+    // Bootstrap acknowledges the saved continuation before publishing another
+    // owner. Direct task-to-task switching publishes next before saving current,
+    // which would let a remote balancer move current during the assembly save.
+    switch_to_bootstrap(current->context);
   }
 
   // ---- GIC timer IRQ handler ----
@@ -1758,9 +1841,8 @@ public:
     Thread *curr = get_current_task();
 
     if (curr == nullptr) {
-      Thread *next = pick_next_task(cpu);
+      Thread *next = take_next_task(cpu);
       if (next != nullptr) {
-        dequeue_task(next);
         context_switch_to_task(next);
       }
       return;
@@ -1960,9 +2042,8 @@ private:
     while (true) {
       current_cpu = CfsScheduler::get_current_cpu_id();
 
-      Thread *next_task = pick_next_task(current_cpu);
+      Thread *next_task = take_next_task(current_cpu);
       if (next_task != nullptr) {
-        dequeue_task(next_task);
         execute_task_simplified(next_task, current_cpu);
         enqueue_task(next_task, current_cpu);
       } else {
@@ -1989,9 +2070,8 @@ private:
     const bool restore_irqs = arch::interrupts_enabled();
     arch::disable_interrupts();
 
-    // Save prev BEFORE updating current — context_switch needs it
-    Thread *prev = get_current_task();
-
+    // Dispatch runs on bootstrap: every outgoing task returns there before
+    // the next selection. No task continuation is replaced before its save.
     CfsScheduler::set_current_task(task);
     task->state = ProcessState::Running;
     task->se.exec_start = get_current_time(); // Reset for vruntime accounting
@@ -2060,15 +2140,8 @@ private:
       // Fall through to the normal context_switch path below.
     }
     {
-      // Kernel-to-kernel context switch via assembly.
-      // When prev is null (e.g. schedule_after_exit) or self-switch,
-      // use per-CPU bootstrap context as throwaway save target.
-      CpuContext *prev_ctx;
-      if (prev != nullptr && prev != task) {
-        prev_ctx = &prev->context;
-      } else {
-        prev_ctx = &bootstrap_contexts_.get_local();
-      }
+      // Save the live scheduler stack for every task departure to restore.
+      CpuContext *prev_ctx = &bootstrap_contexts_.get_local();
 
       // For user tasks being re-dispatched after preemption:
       // Set page table base to this process's page tables BEFORE context_switch.
@@ -2115,7 +2188,9 @@ private:
       }
 
       context_switch(prev_ctx, &task->context);
-      // Returns here when prev_ctx is scheduled again.
+      // Bootstrap has resumed after the task's assembly save. Release the
+      // outgoing owner only now; a Ready node may then migrate safely.
+      CfsScheduler::set_current_task(nullptr);
       if (auto *sleeper = sleeping_tasks_.get_local()) {
         sleeping_tasks_.get_local() = nullptr;
         // The continuation is now saved; release publication to a waking CPU.
