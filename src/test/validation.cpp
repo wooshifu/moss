@@ -3814,6 +3814,20 @@ void declare_cases() {
     ut::register_test("file_copy", empty_case);
     ut::register_test("file_rename", empty_case);
     ut::register_test("application_workflow", empty_case);
+    ut::register_test("head", empty_case);
+    ut::register_test("cut", empty_case);
+    ut::register_test("sort", empty_case);
+    ut::register_test("uniq", empty_case);
+    ut::register_test("tr", empty_case);
+    ut::register_test("tee", empty_case);
+    ut::register_test("cmp", empty_case);
+    ut::register_test("basename", empty_case);
+    ut::register_test("dirname", empty_case);
+    ut::register_test("rmdir", empty_case);
+    ut::register_test("uname", empty_case);
+    ut::register_test("kill", empty_case);
+    ut::register_test("find", empty_case);
+    ut::register_test("find_rejects_unsupported", empty_case);
   });
   ut::register_suite("users.signals", [] {
     ut::register_test("basic_handler", empty_case);

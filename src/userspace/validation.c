@@ -1433,8 +1433,7 @@ void _start(void) {
     control(3, 0, 0);
   } else if (mode == 21) {
     const char *scripts[] = {
-        "exit 37",
-        "value=$(printf 'moss\\n'); [ \"$value\" = moss ] && printf '%s\\n' \"$value\" && exit 37; exit 98",
+        "exit 37", "value=$(printf 'moss\\n'); [ \"$value\" = moss ] && printf '%s\\n' \"$value\" && exit 37; exit 98",
         "[ \"$HOSTNAME\" = moss ] || exit 97; export MOSS_APP='value with spaces'; "
         "exec /busybox.elf ash -c '[ \"$HOSTNAME\" = moss ] && [ \"$MOSS_APP\" = \"value with spaces\" ] && "
         "exit 37; exit 98'",
@@ -1460,18 +1459,71 @@ void _start(void) {
         "/busybox.elf mv /move-dir/nested /move-tree && [ ! -e /move-dir/nested ] && "
         "/busybox.elf cat /move-tree/target && /busybox.elf rm -rf /move-dir /move-tree && "
         "[ ! -e /move-dir ] && [ ! -e /move-tree ] && exit 37; exit 98",
-        application_script};
-    for (long test = 0; test < 9; ++test) {
+        application_script,
+        "set -o pipefail; printf 'first\\nsecond\\nthird\\n' | /busybox.elf head -n 2 && exit 37; exit 98",
+        "set -o pipefail; printf 'alpha:one\\nbeta:two\\n' | /busybox.elf cut -d : -f 2 && exit 37; exit 98",
+        "set -o pipefail; printf 'pear\\napple\\npear\\nbanana\\n' | /busybox.elf sort && "
+        "printf '10\\n2\\n1\\n' | /busybox.elf sort -n && exit 37; exit 98",
+        "set -o pipefail; printf 'apple\\napple\\npear\\npear\\nbanana\\n' | /busybox.elf uniq && exit 37; exit 98",
+        "set -o pipefail; printf 'moss 123\\n' | /busybox.elf tr a-z A-Z && "
+        "printf 'moss123\\n' | /busybox.elf tr -d 0-9 && exit 37; exit 98",
+        "set -o pipefail; printf 'tee payload\\n' | /busybox.elf tee /tee-copy && "
+        "[ \"$(/busybox.elf cat /tee-copy)\" = 'tee payload' ] && /busybox.elf rm /tee-copy && "
+        "exit 37; exit 98",
+        // cmp's POSIX exit statuses distinguish different contents (1) from an I/O error (2).
+        "printf 'same\\n' > /cmp-left && /busybox.elf cp /cmp-left /cmp-right && "
+        "/busybox.elf cmp /cmp-left /cmp-right || exit 98; printf 'different\\n' > /cmp-right || exit 98; "
+        "/busybox.elf cmp -s /cmp-left /cmp-right; [ \"$?\" -eq 1 ] || exit 98; "
+        "/busybox.elf cmp -s /cmp-left /cmp-missing 2>/dev/null; [ \"$?\" -eq 2 ] || exit 98; "
+        "/busybox.elf rm /cmp-left /cmp-right && printf 'cmp ok\\n' && exit 37; exit 98",
+        "/busybox.elf basename /usr/local/moss.txt .txt && exit 37; exit 98",
+        "/busybox.elf dirname /usr/local/moss.txt && exit 37; exit 98",
+        "/busybox.elf mkdir /rmdir-work /rmdir-work/child && printf 'keep\\n' > /rmdir-work/file && "
+        "! /busybox.elf rmdir /rmdir-work 2>/dev/null && [ -d /rmdir-work/child ] && "
+        "[ \"$(/busybox.elf cat /rmdir-work/file)\" = keep ] && /busybox.elf rm /rmdir-work/file && "
+        "/busybox.elf rmdir /rmdir-work/child /rmdir-work && [ ! -e /rmdir-work ] && "
+        "printf 'rmdir ok\\n' && exit 37; exit 98",
+        "[ -n \"$(/busybox.elf uname -m)\" ] && /busybox.elf uname -s && /busybox.elf uname -n && "
+        "/busybox.elf uname -o && exit 37; exit 98",
+        // Verify real SIGTERM delivery (POSIX signal 15) through a foreground trap.
+        // Waiting for a background job would require mlibc's unavailable Sigsuspend.
+        "trap 'printf \"kill ok\\n\"; exit 37' TERM; "
+        "/busybox.elf kill -0 $$ && [ \"$(/busybox.elf kill -l 15)\" = TERM ] || exit 98; "
+        "/busybox.elf kill -TERM $$; exit 98",
+        // The size filter matches "deep" plus its newline, exactly five bytes.
+        "set -o pipefail; /busybox.elf mkdir /find-work /find-work/nested && "
+        "printf 'keep\\n' > /find-work/keep.txt && printf 'drop\\n' > /find-work/drop.log && "
+        "printf 'deep\\n' > /find-work/nested/deep.txt && "
+        "/busybox.elf find /find-work -maxdepth 1 -type f -name '*.txt' && "
+        "[ \"$(/busybox.elf find /find-work -type f -path '*/nested/*' -size 5c)\" = "
+        "/find-work/nested/deep.txt ] && "
+        "/busybox.elf find /find-work -maxdepth 1 -type f \\( -name '*.txt' -o -name '*.log' \\) | "
+        "/busybox.elf sort && "
+        "[ \"$(/busybox.elf find /find-work -mindepth 1 -maxdepth 1 ! -type f)\" = /find-work/nested ] && "
+        "/busybox.elf find /find-work -maxdepth 1 -name '*.txt' -print0 | /busybox.elf tr '\\000' '\\n' && "
+        "/busybox.elf rm -rf /find-work && [ ! -e /find-work ] && exit 37; exit 98",
+        "/busybox.elf mkdir /find-protected && printf 'keep\\n' > /find-protected/file && "
+        "! /busybox.elf find /find-protected -mtime 1 2>/dev/null && "
+        "! /busybox.elf find /find-protected -exec /busybox.elf rm /find-protected/file \\; 2>/dev/null && "
+        "! /busybox.elf find /find-protected -delete 2>/dev/null && "
+        "[ \"$(/busybox.elf cat /find-protected/file)\" = keep ] && /busybox.elf rm -rf /find-protected && "
+        "printf 'find restrictions ok\\n' && exit 37; exit 98"};
+    // Keep fixture order aligned with the kernel and host users.busybox catalogs.
+    // Exact stdout and the existing exit marker must both match for each applet.
+    const char *expected[] = {"", "moss\n", "", "pipeline ok\n",
+                              // The pinned minimal ls profile has sorting disabled.
+                              "beta\nalpha\n", "moss data\nappended\nnew\n", "copy payload\n",
+                              "move payload\nmove payload\n", "application ok\n", "first\nsecond\n", "one\ntwo\n",
+                              "apple\nbanana\npear\npear\n1\n2\n10\n", "apple\npear\nbanana\n", "MOSS 123\nmoss\n",
+                              "tee payload\n", "cmp ok\n", "moss\n", "/usr/local\n", "rmdir ok\n", "Moss\nmoss\nMoss\n",
+                              "kill ok\n",
+                              "/find-work/keep.txt\n/find-work/drop.log\n/find-work/keep.txt\n/find-work/keep.txt\n",
+                              "find restrictions ok\n"};
+    _Static_assert(sizeof(scripts) / sizeof(scripts[0]) == sizeof(expected) / sizeof(expected[0]),
+                   "Every BusyBox fixture needs exact expected stdout");
+    for (long test = 0; test < (long)(sizeof(scripts) / sizeof(scripts[0])); ++test) {
       control(1, test, 0);
-      unsigned long errors = busybox_script(scripts[test], test == 1   ? "moss\n"
-                                                           : test == 3 ? "pipeline ok\n"
-                                                           // The pinned minimal ls profile has sorting disabled.
-                                                           : test == 4 ? "beta\nalpha\n"
-                                                           : test == 5 ? "moss data\nappended\nnew\n"
-                                                           : test == 6 ? "copy payload\n"
-                                                           : test == 7 ? "move payload\nmove payload\n"
-                                                           : test == 8 ? "application ok\n"
-                                                                       : "");
+      unsigned long errors = busybox_script(scripts[test], expected[test]);
       if (!control(2, errors == 0, (long)errors))
         break;
     }

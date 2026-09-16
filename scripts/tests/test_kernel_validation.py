@@ -437,7 +437,15 @@ def test_case_duration_uses_host_observation_time(monkeypatch):
 
 
 @pytest.mark.parametrize(
-    "workload,override,expected", [("pfa", None, 30), ("mm", None, 5), ("pfa", 0.1, 0.1), ("pfa", 40, 40)]
+    "workload,override,expected",
+    [
+        ("pfa", None, 30),
+        ("mm", None, 5),
+        ("pfa", 0.1, 0.1),
+        ("pfa", 40, 40),
+        ("users.busybox", None, 30),
+        ("users.busybox", 1, 1),
+    ],
 )
 def test_workload_deadline_is_recorded_and_explicit_override_wins(tmp_path, monkeypatch, workload, override, expected):
     monkeypatch.setattr(kv, "build_qemu_args", lambda *_args, **_kwargs: [str(tmp_path / "missing-qemu")])

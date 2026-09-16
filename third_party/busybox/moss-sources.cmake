@@ -16,18 +16,30 @@ set(BUSYBOX_SOURCES
     archival/libarchive/seek_by_jump.c
     archival/libarchive/seek_by_read.c
     archival/libarchive/unsafe_symlink_target.c
+    coreutils/basename.c
     coreutils/cat.c
     coreutils/cp.c
+    coreutils/cut.c
+    coreutils/dirname.c
     coreutils/echo.c
+    coreutils/head.c
     coreutils/libcoreutils/cp_mv_stat.c
     coreutils/ls.c
     coreutils/mkdir.c
     coreutils/mv.c
     coreutils/printf.c
     coreutils/rm.c
+    coreutils/rmdir.c
+    coreutils/sort.c
+    coreutils/tee.c
     coreutils/test.c
     coreutils/test_ptr_hack.c
+    coreutils/tr.c
+    coreutils/uname.c
+    coreutils/uniq.c
     coreutils/wc.c
+    editors/cmp.c
+    findutils/find.c
     findutils/grep.c
     libbb/appletlib.c
     libbb/ask_confirmation.c
@@ -155,6 +167,7 @@ set(BUSYBOX_SOURCES
     libbb/xrealloc_vector.c
     libbb/xregcomp.c
     libpwdgrp/uidgid_get.c
+    procps/kill.c
     shell/ash.c
     shell/ash_ptr_hack.c
     shell/shell_common.c
