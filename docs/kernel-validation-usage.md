@@ -12,9 +12,15 @@ uv run cmake --build --preset arm64-debug
 uv run ctest --preset arm64-debug-test
 ```
 
-CTest runs `moss-functional` and `moss-framework`. Release also provides `moss-benchmark`. The `test-kernel` build target runs functional and framework tests; `benchmark-kernel` runs benchmarks in Release. Use `kernel_validation.py run` for validation; the normal runner does not dispatch tests. Configure with `-DMOSS_BUILD_TESTS=OFF` to exclude validation images and validation userspace programs.
+CTest runs `moss-functional`, `moss-applications`, `moss-framework` and `moss-production-boot`. The application test performs 1000 full workflows and can take tens of minutes. ARM64 Debug also runs `moss-console-input` (requires `gdb-multiarch`); Release provides `moss-benchmark`. The `test-kernel` build target includes both functional and application tests; `benchmark-kernel` runs benchmarks in Release. The explicit `stability-kernel` target runs the minimum-30-minute core-path workload; it is not part of routine CTest. Full application stability uses the explicit command below. Use `kernel_validation.py run` for validation; the normal runner does not dispatch tests. Configure with `-DMOSS_BUILD_TESTS=OFF` to exclude validation images and validation userspace programs.
 
 The default is QEMU TCG with four real online vCPUs and 2048 MiB RAM. CPU count is never silently clamped. The resource suite verifies work executed on every requested CPU and writes to owned memory beyond the old 256 MiB window. The present early mappings require RAM/device addresses below 4 GiB; the largest usable RAM size therefore depends on the firmware's physical layout. The default resource profile remains the baseline regression; additional machine/layout profiles verify image portability.
+
+The `scheduler` workload requires at least two CPUs. Its enabled
+`migration_current_owner` regression currently fails on x64 Debug: migration
+can take a still-executing thread before its context is saved. This is a known
+unrepaired failure, not an expected-pass exclusion; see the
+[diagnostic checkpoint](kernel-validation.md#scheduler-migration-diagnostic-checkpoint-2026-09-16).
 
 Each functional suite boots once, executes its cases sequentially, and stops after failure. Subsequent suites get fresh guests. Panic and timeout self-checks each use their own guest. Five warmups and thirty recorded benchmark batches share one guest per scenario, not one boot per sample.
 
@@ -26,7 +32,197 @@ uv run scripts/kernel_validation.py run --manifest build/arm64-release/moss-arti
 
 Use the actual `moss-artifacts.json` path printed by your preset if using an overridden build directory. With no `--output`, each run creates a unique directory under `<build>/validation/`. Explicit output directories must not already exist. The terminal prints the canonical report path.
 
-`--cpus`, `--memory-mib`, `--warmup`, `--samples`, `--iterations`, and `--order` are explicit overrides. `--machine`, `--cpu`, `--qemu` and `--dtb` select the runtime environment. `--expected-ram-mib` explicitly checks firmware-visible RAM when firmware reserves part of the installed RAM; it defaults to `--memory-mib` and is recorded separately. Default host deadlines are 30 s for startup, 60 s per guest, and 5 s per case except `pfa` (30 s: exhaustive 2 GiB memory access can exceed 5 s under host pressure). An explicit `--case-timeout` overrides either case default, including a shorter value. Reports retain the effective `case_timeout_seconds` per guest and host-observed `elapsed_seconds` per executed case; these include observation/polling effects and are not kernel microbenchmarks. CTest allows 600 s for the functional/framework runner to finish its guests, cleanup and reports. Ctrl-C or SIGTERM finalizes partial reports and terminates/reaps QEMU; workloads not started are recorded as such.
+Each run copies its validation image, initramfs and optional DTB into `inputs/`.
+Image/fixture copies must match their captured build provenance before any guest
+starts. All guests use these copies, so a concurrent rebuild cannot mix artifacts
+within one report. The report retains the frozen paths and content hashes.
+
+`--cpus`, `--memory-mib`, `--warmup`, `--samples`, `--iterations`, and `--order` are explicit overrides. `--machine`, `--cpu`, `--qemu` and `--dtb` select the runtime environment. `--expected-ram-mib` explicitly checks firmware-visible RAM when firmware reserves part of the installed RAM; it defaults to `--memory-mib` and is recorded separately. Ordinary host deadlines remain 30 s for startup, 60 s per guest, and 5 s per case except `pfa`, `users.signals`, `users.lifecycle` and the event benchmarks (30 s). The distinct `users.applications` workload has the progress-based budget below. An explicit `--case-timeout` overrides the case default, including a shorter value; `--guest-timeout` overrides the total guest budget, subject to the existing stability minimum. Reports retain `case_timeout_seconds`, its `case_timeout_kind` (`total` or `no_progress`), `guest_timeout_seconds` and each case's host-observed `elapsed_seconds`; these are not kernel microbenchmarks. Functional/framework CTest budgets remain 2100 s; the separate application test has a 3120 s budget. Ctrl-C or SIGTERM finalizes partial reports and terminates/reaps QEMU; workloads not started are recorded as such.
+
+## Pipe Regression
+
+The `users` suite also exercises blocking pipes through real syscalls: a delayed
+writer must not produce premature EOF, a delayed reader must release a full
+pipe's blocked writer, and CPU 0/CPU 1 exchange 256 request/reply records. The
+child sleeps and checks its reported CPU assignment after setting affinity;
+a successful affinity syscall alone is not placement evidence. The
+`users.uaccess` partial-copy cases close the writer before checking pipe EOF;
+they still verify fault handling and the exact bytes transferred.
+
+`users.signals` covers `SIGPIPE`/`EPIPE`, caught-signal interruption of empty
+reads and full writes, ignored/blocked signals that must not interrupt I/O,
+positive partial-write counts, and wakeup respecting CPU affinity. The signal
+sender and interrupted parent check their CPU 1/CPU 0 assignments through
+`topinfo`. In the validation image, the sender observes the parent's actual
+blocked read/write and FD after sleep handoff, not a guessed delay; the fixture
+deliberately includes 30 ms of parent preparation. A separate pipe acknowledges
+caught-signal interruption before the sender releases data I/O. The observer
+does not treat preparation nanosleep as pipe readiness and is absent from the
+production image. These are focused regressions, not complete pipe, job-control,
+immediate-migration or deterministic SMP acceptance.
+
+```sh
+uv run scripts/kernel_validation.py run --manifest build/arm64-debug/moss-artifacts.json --workload users.signals
+```
+
+`vfs.smp/shared_references` separately runs 1000 cross-table clone/close cycles,
+then same-table close/reuse while a CPU 1 pipe reader or writer is actually
+blocked. It requires the original operation's data, eventual EOF, a still usable
+replacement FD and exact resource recovery. The write case also checks that the
+active File remains allocated until its I/O finishes. These checks do not cover
+every multi-step descriptor publication/rollback or duplication interleaving.
+
+The same SMP case now forces competition for the last FD before namespace
+mutation. Failed `open(O_TRUNC)` must preserve the original inode and data;
+successful open and competing dup cannot both claim the slot. The ordinary
+FD-boundary case covers pending-slot visibility, clone, cancellation and
+recovery after path errors and real File-pool exhaustion. Pipe-pair publication
+and atomic source/target duplication remain distinct obligations.
+
+```sh
+uv run scripts/kernel_validation.py run --manifest build/arm64-debug/moss-artifacts.json --workload vfs.smp
+```
+
+## Production Boot
+
+`moss-production-boot` freezes the production kernel and initramfs, boots four
+vCPUs with 2 GiB, executes `hello.elf` through the real shell, and requires a
+second shell command to succeed after the child exits and is reaped. A prompt
+or echoed input alone cannot pass. Panics, validation output, unexpected exit
+and timeout fail the probe. Image hashes and serial/QEMU logs are retained in
+`<build>/production-boot/run-*/guest/` with `results.json`.
+
+```sh
+uv run scripts/check_production_boot.py --manifest build/arm64-debug/moss-artifacts.json
+uv run scripts/check_production_boot.py --manifest build/arm64-debug/moss-artifacts.json --gdb gdb-multiarch
+```
+
+The optional GDB probe supports ARM64 Debug on the fixed QEMU virt platform.
+It freezes matching production symbols, stops at the first VFS console read
+after the prompt, injects the first command and verifies its arrival through
+UARTFR before resuming. It does not consume FIFO bytes or patch kernel state.
+The same shell workflow must finish; missing barrier evidence, debugger failure
+or the unchanged 30-second timeout fails the run. The generated GDB script and
+debugger log accompany the ordinary serial log and report. This checks console
+readiness, not general concurrent-reader or scheduler handoff correctness.
+
+## Core-Path Recovery, Stability and IRQ Return Probes
+
+`users.lifecycle/core_paths_recovery` runs one warmup plus 1,000 complete cycles
+in one guest. Each cycle maps a private page, forks and verifies COW isolation,
+delivers and returns from a signal handler, sleeps through a real timer wakeup,
+transfers and checks pipe bytes, reads an inherited descriptor, executes a new
+image, exits, waits/reaps, checks pipe EOF and releases all parent resources.
+Every 100 cycles it verifies heap, physical pages, process/thread counts,
+parent descriptors, their file references, user/stack pages and VFS inode/dentry/file
+pool occupancy against the warm baseline. The
+`checkpoints` array in `results.json` retains the raw resource records. Missing
+or unequal recovery evidence cannot pass.
+
+`users.applications/core_application_recovery` reuses that complete core cycle
+and then forks, execs and reaps a new BusyBox ash running all nine selected applets.
+It verifies the uname-derived `HOSTNAME=moss`, exact captured stdout, pipeline
+results, directory/file cleanup and exit status. An independent counter advances
+only after a successful application workflow; `application_cycles` must match
+the core count. One warmup is excluded from both counts. Every **10** completed
+cycles records exact resource recovery, giving **101 checkpoints** for the routine
+1000-cycle run. The original core-only
+workload still records every 100 cycles and reports zero application cycles.
+
+This is a separate routine CTest (`moss-applications`), not a longer deadline for
+the original core case. Its 30 s **no-progress** watchdog advances only on valid,
+ordered checkpoints with advancing guest time. The default total budget is
+`(required_cycles / 10 + 1) * case_timeout + startup_timeout`: **3060 s** for the
+routine defaults, with another 60 s for CTest cleanup/reporting. A short explicit
+total budget still terminates a progressing guest. Direct CLI invocation without
+`--workload` runs the original functional catalog; use the application selector
+below or the full CTest preset to include repeated applications.
+
+The pinned ash profile enables upstream `ASH_BASH_COMPAT`, which contains
+pipefail. Scripts must successfully enable it; the text-pipeline probe additionally
+requires an upstream exit 7 to propagate through a successful downstream cat.
+Enabling this bundled upstream option does not establish support for every bash
+extension. The workflow changes directories and exercises relative paths;
+getcwd, Uname and the selected terminal/stdio adapter diagnostics are resolved.
+These tests check stdout and status, not a clean-stderr contract or complete
+POSIX behavior. Earlier failed runs remain evidence, not the latest source's
+acceptance status. See the design document's latest evidence and remaining limits.
+
+The static-libc descriptor check also enters the real native read/write/close
+syscalls with out-of-range full-width FDs, including positive and negative
+values sharing a live descriptor's low 32 bits. Rejection must preserve the
+read output, file contents and offset, and the original descriptor itself;
+direct FD-table tests alone do not cover syscall argument narrowing.
+
+`users.libc/static_runtime` checks native/real-libc working-directory behavior,
+including failed changes, buffer/pointer/path boundaries, fork and relative
+exec, cross-CPU ancestor rename, and directories removed while retained.
+`vfs/working_directory_lifecycle` repeats directory-reference recovery 1000 times
+and checks exact root references, pool occupancy and heap recovery. Paths remain
+bounded by the kernel's 1024-byte buffer. Symlinks, dirfd-relative APIs and dynamic
+mount behavior are not established by these checks.
+
+`users.libc/filesystem_permissions` uses the validation-only control hook to
+drop a child to UID/GID 99. It checks denied file open/truncate, path search,
+create/delete/rename and exec through the real static-libc syscall path, unchanged
+data and stat output after rejection, allowed namespace changes in a writable
+directory, creation ownership, inherited descriptors, and fork/exec credentials.
+`vfs/access_permissions` repeats owner/group/other precedence and rejected
+namespace mutations for 64 lifecycles with exact pool/heap recovery. These checks
+do not add a production identity-management API, supplementary groups or set-ID
+executables, nor establish complete POSIX permissions.
+
+The `users.timers/cancel_in_flight` fixture waits until its CPU 1/CPU 2 actors
+have masked local IRQs before arming the real periodic timer. The callback
+must execute off those actor CPUs, so it cannot preempt a participant whose
+progress it deliberately waits for. The real cancellation and rejected-restart
+assertions, observation window and five-second host deadline are unchanged.
+
+`timers/dispatch` checks ordinary setup and delayed registration of the second
+timer. Its unchanged 100 ms dispatch observation window begins only after both
+timers are armed; setup delay cannot consume it. Both phases still require
+one-shot and periodic callbacks at or after their deadlines, minimum callback
+counts, and no callbacks after cancellation.
+
+`--stability` accepts one core or application lifecycle workload and requires both at least 10,000 completed
+cycles and 30 minutes in the same guest. It continues cycling after 10,000 until
+the duration is reached. Both guest elapsed time and host-observed case duration
+must reach 30 minutes. The host sends a completion permit over the guest's serial
+input only after its own 30-minute case deadline and 10,000 reported cycles.
+The guest polls that permit through the shared nonblocking console RX owner,
+not directly from a UART whose interrupt handler may already have drained it.
+The guest continues full cycles until it receives that permit and meets its own
+duration gate; calibrated clock drift cannot cause an early successful stop.
+Reports record `stability_release_seconds`. The default 30-second case budget becomes a no-progress
+deadline, refreshed only by ordered checkpoints with advancing guest time.
+The overall guest budget is at least 30 minutes + startup budget + 60 seconds.
+Core-only stability remains the default. Full-profile stability must select
+`users.applications`; its interval-derived default total budget is **30060 s**,
+because completing 10000 actual workflows may take longer than 30 minutes.
+Neither the minimum duration nor the cycle/resource requirements are reduced.
+The required stage matrix is all three architectures in both Debug and Release;
+one passing configuration does not establish that matrix or concurrency closure.
+
+```sh
+uv run scripts/kernel_validation.py run --manifest build/arm64-debug/moss-artifacts.json --workload users.lifecycle
+uv run scripts/kernel_validation.py run --manifest build/arm64-debug/moss-artifacts.json --workload users.applications
+uv run scripts/kernel_validation.py run --manifest build/arm64-debug/moss-artifacts.json --stability
+uv run scripts/kernel_validation.py run --manifest build/arm64-debug/moss-artifacts.json --stability --workload users.applications
+uv run scripts/check_riscv64_dispatch.py --manifest build/arm64-debug/moss-artifacts.json --symbols build/arm64-debug/bin/moss.test.elf --gdb gdb-multiarch --runs 3
+```
+
+Despite its historical filename, the IRQ probe supports ARM64 exception return
+after waitpid and RV64 initial user-stack publication. Both require Debug symbols
+and a target-capable GDB. ARM64 executes the kernel's existing timer-compare MSR
+under debugger single-step to make a real IRQ pending, restores scratch PC/registers,
+then verifies IRQ delivery is deferred until EL0. The complete signal suite must
+also pass. RV64 uses the existing pending-software-IRQ probe plus `users.vm`.
+Frozen images, symbol hashes, GDB/serial/QEMU logs and results are retained under
+`<build>/dispatch-irq/`; failure is not replaced by a later retry. GDB 10.2 works
+for the ARM64 probe with ELF-only symbols but rejected the current RV64 QEMU
+register description. A locally built GDB 17.2 with its matching data directory
+completed three RV64 probe runs; supply that target-capable debugger via `--gdb`.
+Debugger setup failures remain errors, not accepted kernel checks.
 
 ## Memory Ownership and Boot Inputs
 
@@ -88,6 +284,33 @@ These are policy checks, not recoverable CPU-fault tests: copy helpers and VFS
 buffer accesses still need fault fixups and VM lifetime protection (MOSS-002).
 The subsequent users case covers fork/exec/reaping; containers.smp covers CPU1.
 
+## Static Runtime and Exec
+
+The default functional selection includes `users.libc`, `users.exec` and
+`users.busybox`. Run just these real user/kernel paths with:
+
+```sh
+uv run scripts/kernel_validation.py run --manifest build/arm64-debug/moss-artifacts.json \
+  --workload users.libc --workload users.exec --workload users.busybox
+```
+
+`users.exec` checks malformed entry/header/load rejection, bad environment
+pointers, combined argument/environment count and byte limits, exact accepted
+boundaries, and empty vectors. The accepted native limit is 128 strings and
+16 KiB including NULs; static mlibc validates the delivered arguments/environment.
+`allocation_rollback` uses the existing real physical-page pressure fixture,
+allowing successively more pages through root/stack/intermediate-table preparation.
+Each failed syscall must return ENOMEM without replacing the old address space
+or process name, changing the open file's position, or leaking heap/pages/files.
+The test then successfully fork/execs after pressure is released. This does not
+exercise every heap-allocation failure or every malformed ELF representation.
+
+BusyBox tests execute the pinned real ash for exit status, command substitution
+with exact captured stdout, environment export followed by external shell exec,
+pipelines, redirection, directory lifecycle, copy/rename and the combined
+application workflow. Repeated application acceptance is the separate
+`users.applications` workload described above.
+
 ## User Floating-Point State
 
 On x64, `users.fork_exec_exit_reap` also checks x87 data/control, MXCSR and
@@ -138,7 +361,34 @@ scheduler, IRQ-context, driver or IPC lifecycle acceptance; MOSS-006 remains ope
 
 ## Single-Function Measurements
 
-The five built-ins are `bench.allocate`, `bench.release`, `bench.combined`, `bench.read`, and `bench.getpid`. Allocation and release support orders 0 through 4. `bench.read` measures 256-byte reads from a real 64 KiB ramfs file. `bench.getpid` brackets real user-to-kernel-to-user calls from userspace, rather than calling a handler directly.
+There are thirteen built-ins. The original five are `bench.allocate`, `bench.release`, `bench.combined`, `bench.read`, and `bench.getpid`. Allocation and release support orders 0 through 4. `bench.read` measures 256-byte reads from a real 64 KiB ramfs file. `bench.getpid` brackets real user-to-kernel-to-user calls from userspace, rather than calling a handler directly.
+
+The eight additional version-1 scenarios use these fixed parameters and boundaries:
+
+| Scenario | Measured operation and untimed checks |
+| --- | --- |
+| `bench.fault` | First byte write to each of up to 64 fresh 4 KiB anonymous pages. Mapping and absent-PTE validation precede timing; payload validation and unmapping follow it. Measures the faulting instruction and complete fault/return path, not exclusive handler time. |
+| `bench.cow` | First write to each of up to 64 resident 4 KiB pages shared with a live forked child. Before timing, validate COW PTEs and at least two references; afterwards verify the parent's new bytes and child's unchanged bytes, reap and unmap. Fork/setup is not timed. |
+| `bench.switch` | Real userspace `sched_yield` round trips, including syscall entry, scheduler and saved-context transfers away and back. A scheduler-counter check rejects a yield that does not switch. This is not the duration of one assembly context-switch routine. |
+| `bench.wakeup` | Each real one-shot timer callback captures a counter immediately before the shared `task_wakeup` path; stop at the sleeping CPU-0 worker's first resumed counter read. The 1 ms pre-wakeup wait is excluded. |
+| `bench.timer` | Lateness from each one-shot timer's 1 ms deadline to the callback's first counter read. The timer clock's exact rounded conversion is inverted to obtain the deadline counter; setup and the pre-deadline wait are excluded. |
+| `bench.lifecycle` | Complete fork, child exec of `/validation_child.elf`, exit 37 and parent wait/reap, up to 64 cycles per batch. Child creation and teardown belong inside this measurement. |
+| `bench.signal` | Individually bracket self `SIGUSR1` send to the userspace handler's first counter read. Verify exactly one handler call per send; handler return is excluded from the reported interval. |
+| `bench.pipe` | One 1,024-byte write/read pair through real pipe syscalls. Check both transfer lengths, then verify final payload and close descriptors outside timing. Useful throughput is 1,024 bytes per pair, not double-counted; this is single-process transfer, not blocking producer/consumer throughput. |
+
+Signal, switch and pipe batches have a 65,536-operation safety cap. Timer and
+wakeup batches have a 64-event cap, so their summed measured latency need not
+reach the pilot's approximate 1 ms target. New scenarios have a 30 s default
+case deadline; explicit runner budgets still take precedence.
+
+Raw batches identify `measurement_kind`: `event_sum` for signal, wakeup and timer,
+`elapsed_batch` for the others. Event sums retain total event ticks and counts;
+their reported values are means within each batch and a median across batches,
+not per-event percentiles. Empty instrumentation costs are retained without
+subtraction. User fixtures are warmed before exact pre/post resource accounting;
+later batches must restore heap, physical pages, processes, threads, user/stack
+pages, descriptors and File references. Timer fixtures also require exact
+resource recovery and synchronous callback cancellation before stack teardown.
 
 Add a callback in `src/test/validation.cpp` and register it during `moss_validation_boot`:
 
@@ -154,15 +404,32 @@ bench::register_benchmark("bench.my_function", [](bench::Context& context) {
 
 The three application-specific functions above are author-provided: prepare and cleanup return `bool`; the operation returns `void` and retains its result in the fixture for untimed validation. A failed prepare still invokes cleanup, so partially initialized fixtures must be safe to release. Cleanup failures invalidate the scenario. Refer to `allocation_benchmark` for a complete production example with bounded ownership and free-page accounting.
 
-Add the stable scenario ID to the host `CATALOG` in `scripts/kernel_validation.py`. Similarly, add functional cases with `ut::register_test` inside an explicit `ut::register_suite`, then update that suite's host catalog. IDs and descriptor strings must have static lifetime and use ASCII letters/digits or `_-.=/`, at most 80 characters. Capacities are 128 cases, 16 suites and 16 benchmarks. Change the workload version when changing its definition or fixture semantics.
+Add the stable scenario ID to the host `CATALOG` in `scripts/kernel_validation.py`. Similarly, add functional cases with `ut::register_test` inside an explicit `ut::register_suite`, then update that suite's host catalog. IDs and descriptor strings must have static lifetime and use ASCII letters/digits or `_-.=/`, at most 80 characters. Capacities are 160 cases, 32 suites and 16 benchmarks. Change the workload version when changing its definition or fixture semantics.
 
 Counters are ordered and frequencies are validated: ARM64 CNTFRQ/CNTVCT, RISC-V 64 DTB timebase/time, and x86 CPUID.15 or three bounded PIT-channel-0 calibration samples. A bounded pilot selects an operation count, then all batches keep it fixed. The worker is pinned to CPU 0; other CPUs stay online and normal interrupts remain enabled during measured kernel operations.
 
 Raw ticks and empty-loop/counter overhead are retained, without exact overhead subtraction. Reported medians summarize batch-average elapsed time per operation, including callees and residual loop/result-storage costs. They are not per-call latency percentiles, exclusive function CPU time, hardware CPU cycles, or native-hardware performance claims. Do not run other benchmark runners concurrently when collecting comparison data.
 
+On Linux, `--host-cpus 8,9,10,11` additionally binds guest vCPUs 0–3 to those
+distinct eligible host CPUs. This is separate from the kernel worker's CPU-0
+affinity. The runner starts QEMU paused, uses its
+[QMP control protocol](https://www.qemu.org/docs/master/interop/qmp-spec.html)
+to discover vCPU thread IDs, verifies each belongs to its child QEMU process,
+applies and reads back every affinity, then resumes the guest. Missing or failed
+binding cannot silently launch an unpinned accepted measurement. Reports retain
+the actual thread/CPU mappings; offline comparison validates that evidence.
+Select CPUs appropriate to your host; this option does not isolate their SMT
+siblings, reserve exclusive CPU time, or change the host frequency governor.
+For pinned runs, the report also records each selected CPU's governor (or its
+unavailability); different recorded governors are incompatible comparison
+environments. Changing a governor is a separate, explicitly authorized host
+operation, not an automatic runner side effect.
+
 ## Reports and Baselines
 
 Every run retains `results.json`, per-case `junit.xml`, and original `<workload>/serial.log` and `qemu.log`. The JSON records build/compiler flags, revision, dirty state, image/fixture hashes, QEMU arguments, resources, clock calibration, raw batches, completion, host termination reason and raw child exit status. Expected fatal self-checks retain both the expected and observed outcome.
+
+The validation build writes `<validation-image>.provenance.json` beside the image. Reports use that build-time record, not the current checkout's HEAD. An image/initramfs mismatch requires a rebuild; missing source records are marked `source_status: unrecorded`, not attributed to the current source. Keep source files stable while building: the source snapshot is recorded at link completion, not continuously during compilation.
 
 ```sh
 uv run scripts/kernel_validation.py run --manifest build/arm64-release/moss-artifacts.json --benchmark --output build/results/baseline
@@ -170,6 +437,57 @@ uv run scripts/kernel_validation.py run --manifest build/arm64-release/moss-arti
 uv run scripts/kernel_validation.py compare build/results/baseline/results.json build/results/current/results.json
 ```
 
-The baseline is read-only and explicit. Matching scenarios reuse its valid operation count. Offline comparison launches no QEMU, revalidates raw evidence, and refuses incomplete/invalid or incompatible measurements. Revision and image hashes can differ; workload version, parameters, fixtures, build policy and execution environment must match. A slowdown is informational, not a CI failure; functional errors and invalid measurements still fail the run.
+The baseline is read-only and explicit. Matching scenarios reuse its valid operation count. Offline comparison launches no QEMU, revalidates raw evidence, and refuses incomplete/invalid or incompatible measurements. Revision and image hashes can differ; workload version, parameters, fixtures, build policy and execution environment must match. The two-report `compare` command is informational; use the separate repeat-based gate below for a blocking decision.
+
+### Repeated-Measurement Gate
+
+`scripts/performance_gate.py` requires at least five independent baseline reports
+from one exact source/image/fixture and three independent candidate reports from
+one exact source/image/fixture. Each must complete the full current benchmark
+catalog in Release. Collect them sequentially without competing validation or
+benchmark jobs, using `run --baseline` to keep per-scenario operation counts fixed.
+Repeated or relabelled raw measurements cannot manufacture independent runs.
+
+Supply each path with repeated `--baseline` and `--current` arguments, plus a new
+`--output` path. The gate retains the input paths and report hashes and never
+overwrites prior results. Without `--max-noise`, it reports calibration values
+but remains incomplete; no maximum acceptable noise has been silently chosen.
+After reviewing repeated-run variability, explicitly supply an accepted maximum
+run-to-run noise ratio with `--max-noise` in a separate output run.
+
+The user confirmed **5% as the trial noise ceiling on 2026-09-15**. Use
+`--max-noise 0.05`; the CLI still requires an explicit value for a gate decision.
+This caps variability in both repeat groups, not the permitted slowdown.
+For example, replay a complete pinned x64 Release campaign with a new output filename:
+
+```sh
+perf_evidence=build/performance-pinned.uoPXu1/x64-release
+uv run scripts/performance_gate.py --max-noise 0.05 \
+  --baseline "$perf_evidence/run-0/results.json" \
+  --baseline "$perf_evidence/run-1/results.json" \
+  --baseline "$perf_evidence/run-2/results.json" \
+  --baseline "$perf_evidence/run-3/results.json" \
+  --baseline "$perf_evidence/run-4/results.json" \
+  --current "$perf_evidence/run-5/results.json" \
+  --current "$perf_evidence/run-6/results.json" \
+  --current "$perf_evidence/run-7/results.json" \
+  --output "$perf_evidence/trial-noise-005-replay.json"
+```
+
+For each scenario, let `B` be its five-or-more baseline run medians. Observed noise
+is `max(B) / min(B) - 1`; the empirical upper bound is
+`max(B) * (1 + noise)`. All candidate run medians above that bound establish a
+regression; all at or below it pass that scenario. Mixed results, incompatible
+evidence, or baseline/candidate noise exceeding the explicit maximum remain
+incomplete. This conservative empirical rule is not a statistical confidence
+interval. The output records every run median, calibrated bound and decision.
+Exit codes are `0` for all scenarios passed, `1` for a confirmed regression, and
+`2` for incomplete evidence. A noise limit is not a fixed regression percentage;
+the scenario regression bounds come from the measured baselines.
+
+The gate's host tests include real command-line exit codes. The historical
+five-scenario results do not cover the expanded thirteen-scenario catalog.
+Current collection settings, raw evidence and acceptance outcomes are recorded
+in the [expanded performance acceptance record](kernel-validation.md#expanded-performance-acceptance-on-2026-09-15).
 
 Host-tool regression tests use `uv run pytest scripts/tests`. Those tests validate orchestration and parsing only; real kernel acceptance is the QEMU matrix above.

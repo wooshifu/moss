@@ -269,6 +269,7 @@ inline void disable_all_interrupts() noexcept {
 
 inline void flush_tlb() noexcept {
 #if defined(MOSS_ARCH_ARM64)
+  asm volatile("dsb ishst" ::: "memory");
   asm volatile("tlbi vmalle1is" ::: "memory");
   asm volatile("dsb sy");
   asm volatile("isb");

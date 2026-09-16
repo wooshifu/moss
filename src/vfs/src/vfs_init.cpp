@@ -4,6 +4,11 @@
 module moss.vfs;
 
 import moss.abi;
+import moss.arch;
+import moss.mm;
+
+// Validation can exhaust/restore the real heap around this fallible allocation.
+extern "C" [[gnu::weak, gnu::noinline]] void moss_validation_fd_clone(bool) noexcept {}
 
 namespace moss::kernel::vfs {
 
@@ -23,6 +28,21 @@ long MountTable::mount(const char *path, SuperBlock *sb, Dentry *root) noexcept 
   }
   entry.path[len] = '\0';
   entry.path_len = len;
+  entry.parent = nullptr;
+  entry.name_len = 0;
+  if (len > 1) {
+    u32 name_start = len;
+    while (name_start && path[name_start - 1] != '/')
+      --name_start;
+    char parent_path[MAX_PATH_LEN];
+    __builtin_memcpy(parent_path, path, name_start);
+    parent_path[name_start] = 0;
+    entry.parent = resolve_path_locked(parent_path);
+    if (!entry.parent || !entry.parent->inode || !entry.parent->inode->is_directory())
+      return -static_cast<long>(VfsError::NotDirectory);
+    entry.parent->ref();
+    entry.name_len = len - name_start;
+  }
   entry.sb = sb;
   entry.root = root;
   entry.active = true;
@@ -126,7 +146,7 @@ Dentry *DentryCache::lookup(const Dentry *parent, const char *name, u32 name_len
     u32 slot = (idx + i) % CACHE_SIZE;
     Dentry *d = slots_[slot];
     if (d == nullptr) {
-      return nullptr; // empty slot → miss
+      continue; // A deletion can leave a hole before a colliding live entry.
     }
     if (d->parent == parent && d->name_len == name_len) {
       // Compare names
@@ -145,31 +165,71 @@ Dentry *DentryCache::lookup(const Dentry *parent, const char *name, u32 name_len
   return nullptr;
 }
 
+void DentryCache::remove(Dentry *dentry) noexcept {
+  // ponytail: scan the bounded 256-slot cache; use tombstones if miss cost matters.
+  for (auto &slot : slots_)
+    if (slot == dentry)
+      slot = nullptr;
+}
+
 // -- Inode / Dentry / File pool allocators --
 
 static constexpr u32 MAX_INODES = 256;
 static constexpr u32 MAX_DENTRIES = 256;
 
 static Inode g_inode_pool[MAX_INODES];
-static u32 g_inode_count = 0;
+static bool g_inode_used[MAX_INODES];
+static containers::IrqSpinLock inode_pool_lock;
 
 static Dentry g_dentry_pool[MAX_DENTRIES];
-static u32 g_dentry_count = 0;
+static bool g_dentry_used[MAX_DENTRIES];
+static Dentry *find_dentry_for_inode(Inode *inode) noexcept;
 
 static File g_file_pool[MAX_FILES];
 static bool g_file_used[MAX_FILES];
 static bool g_file_pool_initialized = false;
+static containers::IrqSpinLock file_pool_lock;
+
+u32 file_pool_usage() noexcept {
+  containers::LockGuard<containers::IrqSpinLock> guard(file_pool_lock);
+  u32 files = 0;
+  for (bool used : g_file_used)
+    if (used)
+      ++files;
+  return files;
+}
+
+PoolUsage pool_usage() noexcept {
+  containers::LockGuard<containers::IrqSpinLock> namespace_guard(namespace_lock);
+  containers::LockGuard<containers::IrqSpinLock> inode_guard(inode_pool_lock);
+  PoolUsage usage;
+  for (bool used : g_inode_used)
+    if (used)
+      ++usage.inodes;
+  for (bool used : g_dentry_used)
+    if (used)
+      ++usage.dentries;
+  usage.files = file_pool_usage();
+  return usage;
+}
 
 Inode *alloc_inode() noexcept {
-  if (g_inode_count >= MAX_INODES) {
+  containers::LockGuard<containers::IrqSpinLock> guard(inode_pool_lock);
+  u32 slot = 0;
+  while (slot < MAX_INODES && g_inode_used[slot]) {
+    ++slot;
+  }
+  if (slot == MAX_INODES) {
     return nullptr;
   }
-  auto *inode = &g_inode_pool[g_inode_count++];
+  g_inode_used[slot] = true;
+  auto *inode = &g_inode_pool[slot];
   // Zero-initialize
   inode->ino = INVALID_INO;
   inode->type = FileType::Regular;
   inode->mode = 0;
   inode->nlink = 1;
+  inode->uid = inode->gid = 0;
   inode->size = 0;
   inode->rdev = NO_DEVICE;
   inode->sb = nullptr;
@@ -177,6 +237,8 @@ Inode *alloc_inode() noexcept {
   inode->inode_ops = nullptr;
   inode->data = nullptr;
   inode->private_data = nullptr;
+  inode->data_capacity = 0;
+  inode->ramfs_mutable = false;
   inode->child_count = 0;
   for (u32 i = 0; i < Inode::MAX_CHILDREN; ++i) {
     inode->children[i] = nullptr;
@@ -185,15 +247,30 @@ Inode *alloc_inode() noexcept {
   return inode;
 }
 
+static void free_inode(Inode *inode) noexcept {
+  containers::LockGuard<containers::IrqSpinLock> guard(inode_pool_lock);
+  if (inode && inode->ref_count == 0) {
+    if (inode->ramfs_mutable && inode->data)
+      (void)mm::RuntimeHeapAllocator::deallocate(const_cast<u8 *>(inode->data), inode->data_capacity);
+    g_inode_used[static_cast<usize>(inode - g_inode_pool)] = false;
+  }
+}
+
 Dentry *alloc_dentry(const char *name, u32 name_len, Inode *inode, Dentry *parent) noexcept {
-  if (g_dentry_count >= MAX_DENTRIES) {
+  u32 slot = 0;
+  while (slot < MAX_DENTRIES && g_dentry_used[slot])
+    ++slot;
+  if (slot == MAX_DENTRIES) {
     return nullptr;
   }
   if (name_len > MAX_NAME_LEN) {
     return nullptr;
   }
+  if (parent && (!parent->inode || parent->inode->child_count == Inode::MAX_CHILDREN))
+    return nullptr;
 
-  auto *d = &g_dentry_pool[g_dentry_count++];
+  g_dentry_used[slot] = true;
+  auto *d = &g_dentry_pool[slot];
   // Copy name
   for (u32 i = 0; i < name_len; ++i) {
     d->name[i] = name[i];
@@ -206,6 +283,7 @@ Dentry *alloc_dentry(const char *name, u32 name_len, Inode *inode, Dentry *paren
 
   // Register in parent's children list
   if (parent != nullptr && parent->inode != nullptr) {
+    parent->ref();
     auto *pi = parent->inode;
     if (pi->child_count < Inode::MAX_CHILDREN) {
       pi->children[pi->child_count++] = d;
@@ -218,7 +296,25 @@ Dentry *alloc_dentry(const char *name, u32 name_len, Inode *inode, Dentry *paren
   return d;
 }
 
+void release_dentry(Dentry *dentry) noexcept {
+  while (dentry) {
+    dentry->unref();
+    if (dentry->ref_count)
+      return;
+    auto *parent = dentry->parent;
+    if (dentry->inode) {
+      dentry->inode->unref();
+      free_inode(dentry->inode);
+    }
+    g_dentry_used[static_cast<usize>(dentry - g_dentry_pool)] = false;
+    dentry->inode = nullptr;
+    dentry->parent = nullptr;
+    dentry = parent;
+  }
+}
+
 File *alloc_file() noexcept {
+  containers::LockGuard<containers::IrqSpinLock> guard(file_pool_lock);
   if (!g_file_pool_initialized) {
     for (u32 i = 0; i < MAX_FILES; ++i) {
       g_file_used[i] = false;
@@ -235,7 +331,7 @@ File *alloc_file() noexcept {
       f->flags = 0;
       f->pos = 0;
       f->private_data = nullptr;
-      f->ref_count = 0;
+      f->ref_count = 1;
       return f;
     }
   }
@@ -243,6 +339,7 @@ File *alloc_file() noexcept {
 }
 
 void free_file(File *file) noexcept {
+  containers::LockGuard<containers::IrqSpinLock> guard(file_pool_lock);
   if (file == nullptr) {
     return;
   }
@@ -254,35 +351,55 @@ void free_file(File *file) noexcept {
 
 // -- FdTable implementation --
 
-void FdTable::release_file(File *f) noexcept {
+void release_file(File *f) noexcept {
   if (f == nullptr) {
     return;
   }
-  f->unref();
-  if (f->ref_count == 0) {
+  // Only the thread performing the 1 -> 0 transition may touch the endpoint
+  // afterward. A separate count load could observe another closer's zero.
+  if (f->unref()) {
     // Call filesystem release if available
     if (f->f_ops != nullptr && f->f_ops->release != nullptr) {
       f->f_ops->release(f);
     }
-    if (f->inode != nullptr) {
-      f->inode->unref();
+    {
+      containers::LockGuard<containers::IrqSpinLock> guard(namespace_lock);
+      if (f->inode != nullptr) {
+        f->inode->unref();
+        free_inode(f->inode);
+      }
+      release_dentry(f->dentry);
     }
     free_file(f);
   }
 }
 
 FdTable *FdTable::clone() const noexcept {
-  // Allocate from heap (kernel operator new panics on OOM)
-  auto *raw = new char[sizeof(FdTable)];
-  auto *table = new (raw) FdTable();
+  moss_validation_fd_clone(true);
+  auto storage = mm::RuntimeHeapAllocator::allocate(sizeof(FdTable));
+  moss_validation_fd_clone(false);
+  if (!storage)
+    return nullptr;
+  auto *table = new (*storage) FdTable();
   table->init();
+  {
+    containers::LockGuard<containers::IrqSpinLock> guard(namespace_lock);
+    table->set_working_directory(cwd_);
+  }
+  containers::LockGuard<containers::IrqSpinLock> guard(lock_);
   for (u32 i = 0; i < MAX_FDS; ++i) {
     if (fds_[i] != nullptr) {
       table->fds_[i] = fds_[i];
+      table->cloexec_[i] = cloexec_[i];
       fds_[i]->ref();
     }
   }
   return table;
+}
+
+FdTable::~FdTable() noexcept {
+  containers::LockGuard<containers::IrqSpinLock> guard(namespace_lock);
+  release_dentry(cwd_);
 }
 
 // ====================================================================
@@ -291,10 +408,18 @@ FdTable *FdTable::clone() const noexcept {
 
 namespace pipefs {
 
+struct PipeWaiter {
+  void *thread;
+  PipeWaiter *next;
+};
+
 /// Pipe internal state — 4KB ring buffer shared between read and write ends.
 struct PipeState {
   static constexpr u32 PIPE_BUF_SIZE = 4096;
 
+  containers::IrqSpinLock lock;
+  PipeWaiter *read_waiters;
+  PipeWaiter *write_waiters;
   u8 buffer[PIPE_BUF_SIZE];
   u32 read_pos;
   u32 write_pos;
@@ -306,15 +431,46 @@ struct PipeState {
 static constexpr u32 MAX_PIPES = 64;
 static PipeState g_pipe_pool[MAX_PIPES];
 static bool g_pipe_used[MAX_PIPES];
-static bool g_pipe_pool_initialized = false;
+static containers::IrqSpinLock g_pipe_pool_lock;
+
+// Keep IRQs masked across releasing the event lock and saving the sleeper's
+// context. Each waiter lives on its owner's stack; blocking allocates nothing.
+struct PipeGuard {
+  bool restore_irqs;
+  containers::IrqSpinLock &lock;
+  explicit PipeGuard(PipeState &state) : restore_irqs(arch::interrupts_enabled()), lock(state.lock) {
+    arch::disable_interrupts();
+    lock.lock();
+  }
+  ~PipeGuard() {
+    lock.unlock();
+    if (restore_irqs)
+      arch::enable_interrupts();
+  }
+  long wait(PipeWaiter *&head) {
+    void *thread = moss::abi::bridge::moss_prepare_io_wait();
+    if (!thread)
+      return -static_cast<long>(VfsError::NotSupported);
+    PipeWaiter waiter{thread, head};
+    head = &waiter;
+    lock.unlock();
+    moss::abi::bridge::moss_commit_io_wait();
+    lock.lock();
+    auto **link = &head;
+    while (*link != &waiter)
+      link = &(*link)->next;
+    *link = waiter.next;
+    return moss::abi::bridge::moss_io_wait_interrupted() ? -static_cast<long>(VfsError::Interrupted) : 0;
+  }
+};
+
+static void wake_waiters(PipeWaiter *head) noexcept {
+  for (auto *waiter = head; waiter; waiter = waiter->next)
+    moss::abi::bridge::moss_wake_io_waiter(waiter->thread);
+}
 
 static PipeState *alloc_pipe_state() noexcept {
-  if (!g_pipe_pool_initialized) {
-    for (u32 i = 0; i < MAX_PIPES; ++i) {
-      g_pipe_used[i] = false;
-    }
-    g_pipe_pool_initialized = true;
-  }
+  containers::LockGuard<containers::IrqSpinLock> guard(g_pipe_pool_lock);
   for (u32 i = 0; i < MAX_PIPES; ++i) {
     if (!g_pipe_used[i]) {
       g_pipe_used[i] = true;
@@ -324,6 +480,8 @@ static PipeState *alloc_pipe_state() noexcept {
       ps->count = 0;
       ps->readers = 0;
       ps->writers = 0;
+      ps->read_waiters = nullptr;
+      ps->write_waiters = nullptr;
       return ps;
     }
   }
@@ -335,6 +493,7 @@ static void free_pipe_state(PipeState *ps) noexcept {
     return;
   }
   auto offset = static_cast<u32>(ps - g_pipe_pool);
+  containers::LockGuard<containers::IrqSpinLock> guard(g_pipe_pool_lock);
   if (offset < MAX_PIPES) {
     g_pipe_used[offset] = false;
   }
@@ -347,9 +506,11 @@ static long pipe_read_release(File *file) noexcept {
     return 0;
   }
   auto *ps = static_cast<PipeState *>(file->private_data);
+  PipeGuard guard(*ps);
   if (ps->readers > 0) {
     --ps->readers;
   }
+  wake_waiters(ps->write_waiters);
   // Free PipeState when both ends are closed
   if (ps->readers == 0 && ps->writers == 0) {
     free_pipe_state(ps);
@@ -362,15 +523,17 @@ static long pipe_read(File *file, OutputBuffer buffer) noexcept {
     return -static_cast<long>(VfsError::InvalidArg);
   }
   auto *ps = static_cast<PipeState *>(file->private_data);
-
-  // Nothing to read
-  if (ps->count == 0) {
-    // Write end closed → EOF
-    if (ps->writers == 0) {
-      return 0;
-    }
-    // Write end still open but buffer empty → would block; return 0 (non-blocking)
+  PipeGuard guard(*ps);
+  if (buffer.size() == 0)
     return 0;
+
+  while (ps->count == 0) {
+    if (ps->writers == 0)
+      return 0;
+    if (file->flags & O_NONBLOCK)
+      return -static_cast<long>(VfsError::WouldBlock);
+    if (long error = guard.wait(ps->read_waiters))
+      return error;
   }
 
   // Read up to min(count, available)
@@ -387,6 +550,8 @@ static long pipe_read(File *file, OutputBuffer buffer) noexcept {
     ps->read_pos = (ps->read_pos + 1) % PipeState::PIPE_BUF_SIZE;
   }
   ps->count -= static_cast<u32>(copied);
+  if (copied)
+    wake_waiters(ps->write_waiters);
 
   return !copied && count ? -static_cast<long>(VfsError::BadAddress) : static_cast<long>(copied);
 }
@@ -416,9 +581,11 @@ static long pipe_write_release(File *file) noexcept {
     return 0;
   }
   auto *ps = static_cast<PipeState *>(file->private_data);
+  PipeGuard guard(*ps);
   if (ps->writers > 0) {
     --ps->writers;
   }
+  wake_waiters(ps->read_waiters);
   if (ps->readers == 0 && ps->writers == 0) {
     free_pipe_state(ps);
   }
@@ -430,31 +597,43 @@ static long pipe_write(File *file, InputBuffer buffer) noexcept {
     return -static_cast<long>(VfsError::InvalidArg);
   }
   auto *ps = static_cast<PipeState *>(file->private_data);
+  PipeGuard guard(*ps);
 
-  // Read end closed → broken pipe
-  if (ps->readers == 0) {
-    return -static_cast<long>(VfsError::InvalidArg); // EPIPE equivalent
-  }
+  usize written = 0;
+  while (written < buffer.size()) {
+    if (ps->readers == 0) {
+      moss::abi::bridge::moss_signal_broken_pipe();
+      return written ? static_cast<long>(written) : -static_cast<long>(VfsError::BrokenPipe);
+    }
 
-  // Write up to min(count, free space)
-  usize count = buffer.size();
-  u32 free_space = PipeState::PIPE_BUF_SIZE - ps->count;
-  if (count > free_space) {
-    count = free_space;
+    const usize free_space = PipeState::PIPE_BUF_SIZE - ps->count;
+    // Small writes reserve their entire record; larger writes can stream as
+    // readers drain the ring. Nonblocking writes never wait for capacity.
+    const usize needed = buffer.size() <= PipeState::PIPE_BUF_SIZE ? buffer.size() : 1;
+    if (free_space < needed) {
+      if (file->flags & O_NONBLOCK)
+        return written ? static_cast<long>(written) : -static_cast<long>(VfsError::WouldBlock);
+      if (long error = guard.wait(ps->write_waiters))
+        return written ? static_cast<long>(written) : error;
+      continue;
+    }
+    usize count = buffer.size() - written;
+    if (count > free_space)
+      count = free_space;
+    usize copied = 0;
+    for (; copied < count; ++copied) {
+      if (buffer.copy_to(written + copied, &ps->buffer[ps->write_pos], 1) != 1)
+        break;
+      ps->write_pos = (ps->write_pos + 1) % PipeState::PIPE_BUF_SIZE;
+    }
+    ps->count += static_cast<u32>(copied);
+    written += copied;
+    if (copied)
+      wake_waiters(ps->read_waiters);
+    if (copied != count)
+      return written ? static_cast<long>(written) : -static_cast<long>(VfsError::BadAddress);
   }
-  if (count == 0) {
-    return 0; // buffer full, non-blocking
-  }
-
-  usize copied = 0;
-  for (; copied < count; ++copied) {
-    if (buffer.copy_to(copied, &ps->buffer[ps->write_pos], 1) != 1)
-      break;
-    ps->write_pos = (ps->write_pos + 1) % PipeState::PIPE_BUF_SIZE;
-  }
-  ps->count += static_cast<u32>(copied);
-
-  return !copied ? -static_cast<long>(VfsError::BadAddress) : static_cast<long>(copied);
+  return static_cast<long>(written);
 }
 
 static long pipe_write_read([[maybe_unused]] File *file, [[maybe_unused]] OutputBuffer buffer) noexcept {
@@ -492,10 +671,14 @@ long create_pipe(File *&read_file, File *&write_file) noexcept {
   pipe_inode->type = FileType::Fifo;
   pipe_inode->mode = S_IFIFO | S_IRUSR | S_IWUSR;
   pipe_inode->private_data = ps;
+  // Anonymous inodes have no directory owner: only the two File endpoints
+  // hold references. The final close returns their inode slot to the pool.
+  pipe_inode->ref_count = 0;
 
   // 3. Allocate read-end File
   read_file = alloc_file();
   if (read_file == nullptr) {
+    free_inode(pipe_inode);
     free_pipe_state(ps);
     return -static_cast<long>(VfsError::NoMemory);
   }
@@ -509,6 +692,8 @@ long create_pipe(File *&read_file, File *&write_file) noexcept {
   // 4. Allocate write-end File
   write_file = alloc_file();
   if (write_file == nullptr) {
+    pipe_inode->unref();
+    free_inode(pipe_inode);
     free_file(read_file);
     read_file = nullptr;
     free_pipe_state(ps);
@@ -550,14 +735,6 @@ static long console_open([[maybe_unused]] File *file, [[maybe_unused]] Inode *in
 static long console_release([[maybe_unused]] File *file) noexcept { return 0; }
 
 static long console_read([[maybe_unused]] File *file, OutputBuffer buffer) noexcept {
-  // One-time init: enable PL011 RX interrupt, register GIC handler,
-  // set up ring buffer.  All heavy lifting is in syscall_table.cpp.
-  static bool inited = false;
-  if (!inited) {
-    moss::abi::bridge::console_rx_init();
-    inited = true;
-  }
-
   // Interrupt-driven, line-buffered console input with echo.
   // Each moss::abi::bridge::console_getc_blocking() call either returns instantly from the
   // ring buffer (fast path) or blocks the calling thread until the UART
@@ -633,13 +810,19 @@ static long console_lseek([[maybe_unused]] File *file, [[maybe_unused]] i64 offs
   return -static_cast<long>(VfsError::IsPipe); // not seekable
 }
 
+static long console_ioctl([[maybe_unused]] File *file, u32 command, u64 argument) noexcept {
+  if (command != MOSS_IOCTL_ISATTY)
+    return -static_cast<long>(VfsError::NotTerminal);
+  return argument ? -static_cast<long>(VfsError::InvalidArg) : 0;
+}
+
 static const FileOps g_console_fops = {
     .open = console_open,
     .release = console_release,
     .read = console_read,
     .write = console_write,
     .lseek = console_lseek,
-    .ioctl = nullptr,
+    .ioctl = console_ioctl,
 };
 
 // -- /dev/null file operations --
@@ -728,6 +911,7 @@ SuperBlock *devfs_init() noexcept {
 
   // Create devfs superblock
   g_devfs_sb.fs_name = "devfs";
+  g_devfs_sb.device = 2;
   g_devfs_sb.block_size = PAGE_SIZE;
   g_devfs_sb.fs_private = nullptr;
 
@@ -795,6 +979,9 @@ SuperBlock *devfs_init() noexcept {
     return nullptr;
   }
 
+  // RX must be ready before userspace can print a prompt. Lazy initialization
+  // on the first read resets the PL011 FIFO and discards already-typed input.
+  moss::abi::bridge::console_rx_init();
   g_devfs_initialized = true;
   return &g_devfs_sb;
 }
@@ -817,6 +1004,7 @@ static constexpr InodeNumber RAMFS_ROOT_INO = 1;
 // -- ramfs regular file operations --
 
 static long ramfs_read(File *file, OutputBuffer buffer) noexcept {
+  containers::LockGuard<containers::IrqSpinLock> guard(namespace_lock);
   if (file == nullptr || file->inode == nullptr) {
     return -static_cast<long>(VfsError::InvalidArg);
   }
@@ -842,11 +1030,72 @@ static long ramfs_read(File *file, OutputBuffer buffer) noexcept {
   return !copied && count ? -static_cast<long>(VfsError::BadAddress) : static_cast<long>(copied);
 }
 
-static long ramfs_write([[maybe_unused]] File *file, [[maybe_unused]] InputBuffer buffer) noexcept {
-  return -static_cast<long>(VfsError::PermDenied); // read-only
+static long ramfs_write(File *file, InputBuffer buffer) noexcept {
+  containers::LockGuard<containers::IrqSpinLock> guard(namespace_lock);
+  auto *inode = file->inode;
+  if (!inode->ramfs_mutable)
+    return -static_cast<long>(VfsError::PermDenied);
+  if (file->pos < 0)
+    return -static_cast<long>(VfsError::InvalidArg);
+  if (!buffer.size())
+    return 0;
+  const u64 position = file->flags & O_APPEND ? inode->size : static_cast<u64>(file->pos);
+  if (position > 0x7fffffffffffffffULL || buffer.size() > 0x7fffffffffffffffULL - position)
+    return -static_cast<long>(VfsError::FileTooLarge);
+  const usize end = position + buffer.size();
+  usize capacity = inode->data_capacity;
+  auto *data = const_cast<u8 *>(inode->data);
+  const bool grows = end > capacity;
+  if (grows) {
+    // ponytail: contiguous, geometrically grown file buffers; use page-backed
+    // storage if large/sparse files exhaust contiguous kernel heap space.
+    capacity = capacity && capacity <= 0x3fffffffffffffffULL ? capacity * 2 : end;
+    if (capacity < end)
+      capacity = end;
+    capacity = (capacity + PAGE_SIZE - 1) & ~(PAGE_SIZE - 1);
+    auto allocation = mm::RuntimeHeapAllocator::allocate(capacity);
+    if (!allocation)
+      return -static_cast<long>(VfsError::NoMemory);
+    data = static_cast<u8 *>(*allocation);
+    if (inode->size)
+      __builtin_memcpy(data, inode->data, inode->size);
+  }
+  if (position > inode->size)
+    __builtin_memset(data + inode->size, 0, position - inode->size);
+  const usize copied = buffer.copy_to(0, data + position, buffer.size());
+  if (!copied) {
+    if (grows)
+      (void)mm::RuntimeHeapAllocator::deallocate(data, capacity);
+    return -static_cast<long>(VfsError::BadAddress);
+  }
+  if (grows) {
+    if (inode->data)
+      (void)mm::RuntimeHeapAllocator::deallocate(const_cast<u8 *>(inode->data), inode->data_capacity);
+    inode->data = data;
+    inode->data_capacity = capacity;
+  }
+  file->pos = static_cast<i64>(position + copied);
+  if (position + copied > inode->size)
+    inode->size = position + copied;
+  return static_cast<long>(copied);
+}
+
+static long ramfs_open(File *file, Inode *inode, u32 flags) noexcept {
+  (void)file;
+  if (!(flags & O_TRUNC))
+    return 0;
+  containers::LockGuard<containers::IrqSpinLock> guard(namespace_lock);
+  if (!inode->ramfs_mutable)
+    return -static_cast<long>(VfsError::PermDenied);
+  if (inode->data)
+    (void)mm::RuntimeHeapAllocator::deallocate(const_cast<u8 *>(inode->data), inode->data_capacity);
+  inode->data = nullptr;
+  inode->size = inode->data_capacity = 0;
+  return 0;
 }
 
 static long ramfs_lseek(File *file, i64 offset, SeekWhence whence) noexcept {
+  containers::LockGuard<containers::IrqSpinLock> guard(namespace_lock);
   if (file == nullptr || file->inode == nullptr) {
     return -static_cast<long>(VfsError::InvalidArg);
   }
@@ -857,10 +1106,13 @@ static long ramfs_lseek(File *file, i64 offset, SeekWhence whence) noexcept {
     new_pos = offset;
     break;
   case SeekWhence::Current:
-    new_pos = file->pos + offset;
+    if (__builtin_add_overflow(file->pos, offset, &new_pos))
+      return -static_cast<long>(VfsError::Overflow);
     break;
   case SeekWhence::End:
-    new_pos = static_cast<i64>(file->inode->size) + offset;
+    if (file->inode->size > 0x7fffffffffffffffULL ||
+        __builtin_add_overflow(static_cast<i64>(file->inode->size), offset, &new_pos))
+      return -static_cast<long>(VfsError::Overflow);
     break;
   default:
     return -static_cast<long>(VfsError::InvalidArg);
@@ -873,7 +1125,7 @@ static long ramfs_lseek(File *file, i64 offset, SeekWhence whence) noexcept {
 }
 
 static const FileOps g_ramfs_file_fops = {
-    .open = nullptr,
+    .open = ramfs_open,
     .release = nullptr,
     .read = ramfs_read,
     .write = ramfs_write,
@@ -902,15 +1154,120 @@ static Dentry *ramfs_dir_lookup(Inode *dir, const char *name, u32 name_len) noex
   return nullptr;
 }
 
+static long ramfs_create(Inode *dir, const char *name, u32 length, FileType type, u32 mode) noexcept;
+static long ramfs_remove(Inode *dir, Dentry *child) noexcept;
+static long ramfs_rename(Dentry *source, Dentry *parent, const char *name, u32 name_len) noexcept;
 static const InodeOps g_ramfs_dir_iops = {
     .lookup = ramfs_dir_lookup,
-    .create = nullptr,
+    .create = ramfs_create,
+    .remove = ramfs_remove,
+    .rename = ramfs_rename,
 };
 
 // -- ramfs superblock --
 static SuperBlock g_ramfs_sb;
 static bool g_ramfs_initialized = false;
 static InodeNumber g_ramfs_next_ino = RAMFS_ROOT_INO + 1;
+
+static long ramfs_create(Inode *dir, const char *name, u32 length, FileType type, u32 mode) noexcept {
+  // Called with namespace_lock held. Published directory entries remain owned
+  // by the namespace until the removal path drops that ownership.
+  if (type != FileType::Directory && type != FileType::Regular)
+    return -static_cast<long>(VfsError::NotSupported);
+  if (!dir || !dir->is_directory())
+    return -static_cast<long>(VfsError::NotDirectory);
+  if (ramfs_dir_lookup(dir, name, length))
+    return -static_cast<long>(VfsError::FileExists);
+  Dentry *parent = find_dentry_for_inode(dir);
+  if (!parent)
+    return -static_cast<long>(VfsError::NoEntry);
+  Inode *inode = alloc_inode();
+  if (!inode)
+    return -static_cast<long>(VfsError::NoMemory);
+  inode->ino = g_ramfs_next_ino++;
+  inode->type = type;
+  inode->mode = (type == FileType::Directory ? S_IFDIR : S_IFREG) | (mode & 0777U);
+  inode->nlink = type == FileType::Directory ? 2 : 1;
+  inode->sb = dir->sb;
+  inode->inode_ops = type == FileType::Directory ? &g_ramfs_dir_iops : nullptr;
+  inode->file_ops = type == FileType::Regular ? &g_ramfs_file_fops : nullptr;
+  inode->ramfs_mutable = type == FileType::Regular;
+  if (!alloc_dentry(name, length, inode, parent)) {
+    inode->unref();
+    free_inode(inode);
+    return -static_cast<long>(VfsError::NoMemory);
+  }
+  if (type == FileType::Directory)
+    ++dir->nlink;
+  return 0;
+}
+
+static long ramfs_detach(Inode *dir, Dentry *child) noexcept {
+  u32 index = 0;
+  while (index < dir->child_count && dir->children[index] != child)
+    ++index;
+  if (index == dir->child_count)
+    return -static_cast<long>(VfsError::NoEntry);
+  for (u32 i = index + 1; i < dir->child_count; ++i)
+    dir->children[i - 1] = dir->children[i];
+  dir->children[--dir->child_count] = nullptr;
+  if (child->inode->is_directory())
+    --dir->nlink;
+  g_dcache.remove(child);
+  return 0;
+}
+
+static long ramfs_remove(Inode *dir, Dentry *child) noexcept {
+  if (!child || !child->inode)
+    return -static_cast<long>(VfsError::NoEntry);
+  if (child->inode->child_count)
+    return -static_cast<long>(VfsError::NotEmpty);
+  if (long result = ramfs_detach(dir, child); result < 0)
+    return result;
+  child->inode->nlink = 0;
+  release_dentry(child);
+  return 0;
+}
+
+static long ramfs_rename(Dentry *source, Dentry *parent, const char *name, u32 name_len) noexcept {
+  // The VFS holds namespace_lock throughout validation and commit. Reuse the
+  // source dentry so open files and child entries retain the same identity.
+  auto *old_parent = source->parent;
+  auto *old_dir = old_parent->inode;
+  auto *new_dir = parent->inode;
+  if (ramfs_dir_lookup(old_dir, source->name, source->name_len) != source)
+    return -static_cast<long>(VfsError::NoEntry);
+  for (auto *ancestor = parent; ancestor; ancestor = ancestor->parent)
+    if (ancestor == source)
+      return -static_cast<long>(VfsError::InvalidArg);
+  auto *target = ramfs_dir_lookup(new_dir, name, name_len);
+  if (target == source)
+    return 0;
+  if (target) {
+    if (source->inode->is_directory() != target->inode->is_directory())
+      return -static_cast<long>(target->inode->is_directory() ? VfsError::IsDirectory : VfsError::NotDirectory);
+    if (target->inode->child_count)
+      return -static_cast<long>(VfsError::NotEmpty);
+  } else if (old_parent != parent && new_dir->child_count == Inode::MAX_CHILDREN) {
+    return -static_cast<long>(VfsError::NoMemory);
+  }
+  // No allocations or fallible copy operations after this point. All removed
+  // entries were checked above while the namespace was exclusively held.
+  if (target)
+    (void)ramfs_remove(new_dir, target);
+  (void)ramfs_detach(old_dir, source);
+  parent->ref();
+  source->parent = parent;
+  __builtin_memcpy(source->name, name, name_len);
+  source->name[name_len] = 0;
+  source->name_len = name_len;
+  new_dir->children[new_dir->child_count++] = source;
+  if (source->inode->is_directory())
+    ++new_dir->nlink;
+  g_dcache.insert(source);
+  release_dentry(old_parent);
+  return 0;
+}
 
 SuperBlock *ramfs_init() noexcept {
   if (g_ramfs_initialized) {
@@ -924,6 +1281,7 @@ SuperBlock *ramfs_init() noexcept {
   }
 
   g_ramfs_sb.fs_name = "ramfs";
+  g_ramfs_sb.device = 1;
   g_ramfs_sb.block_size = moss::kernel::PAGE_SIZE;
   g_ramfs_sb.fs_private = nullptr;
 
@@ -934,6 +1292,7 @@ SuperBlock *ramfs_init() noexcept {
   }
   root_inode->ino = RAMFS_ROOT_INO;
   root_inode->type = FileType::Directory;
+  root_inode->nlink = 2;
   root_inode->mode = S_IFDIR | S_IRWXU | S_IRGRP | S_IXGRP | S_IROTH | S_IXOTH;
   root_inode->sb = &g_ramfs_sb;
   root_inode->inode_ops = &g_ramfs_dir_iops;
@@ -992,8 +1351,8 @@ namespace log = moss::kernel::logging;
 
 /// Helper: find a dentry in the pool by scanning for matching inode.
 static Dentry *find_dentry_for_inode(Inode *inode) noexcept {
-  for (u32 i = 0; i < g_dentry_count; ++i) {
-    if (g_dentry_pool[i].inode == inode) {
+  for (u32 i = 0; i < MAX_DENTRIES; ++i) {
+    if (g_dentry_used[i] && g_dentry_pool[i].inode == inode) {
       return &g_dentry_pool[i];
     }
   }
@@ -1036,29 +1395,10 @@ void vfs_init_stdio(void *fd_table) noexcept {
 
   auto *fdt = static_cast<FdTable *>(fd_table);
 
-  // Open /dev/console for stdin (fd 0), stdout (fd 1), stderr (fd 2)
-  Dentry *console_dentry = resolve_path("/dev/console");
-  if (console_dentry == nullptr || console_dentry->inode == nullptr) {
-    log::klog::warn("vfs: cannot open /dev/console for stdio");
-    return;
-  }
-
+  // Use the ordinary open path so stdio retains the same inode/dentry owners.
   for (int i = 0; i < 3; ++i) {
-    File *f = alloc_file();
-    if (f == nullptr) {
-      break;
-    }
-
-    f->inode = console_dentry->inode;
-    f->dentry = console_dentry;
-    f->f_ops = console_dentry->inode->file_ops;
-    f->flags = O_RDWR;
-    f->pos = 0;
-    console_dentry->inode->ref();
-
-    long fd = fdt->alloc_fd(f);
-    if (fd < 0) {
-      free_file(f);
+    if (syscall::do_open(fdt, "/dev/console", O_RDWR, 0) < 0) {
+      log::klog::warn("vfs: cannot open /dev/console for stdio");
       break;
     }
   }

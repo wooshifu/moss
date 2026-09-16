@@ -5,9 +5,12 @@ import shlex
 import shutil
 import struct
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
+
+from scripts.gen_initramfs import make_cpio_entry
 
 
 @pytest.mark.parametrize(
@@ -91,3 +94,33 @@ add_subdirectory(src/userspace)
     for program in programs:
         assert f"Linking userspace {program}.elf" in rebuilt
     assert "Generating initramfs.cpio" in rebuilt
+
+
+def test_validation_fixture_packages_the_real_runtime_programs(tmp_path):
+    repository = Path(__file__).resolve().parents[2]
+    inputs = [tmp_path / f"{name} program.elf" for name in ("parent", "child", "signal", "libc", "busybox")]
+    for path in inputs:
+        path.write_bytes(path.name.encode())
+    child = bytearray(range(256))
+    child[:6] = b"\x7fELF\x02\x01"
+    struct.pack_into("<Q", child, 32, 64)
+    inputs[1].write_bytes(child)
+    output = tmp_path / "validation-initramfs.cpio"
+    subprocess.run(
+        [sys.executable, str(repository / "scripts/gen_validation_initramfs.py"), str(output), *map(str, inputs)],
+        check=True,
+        capture_output=True,
+    )
+    archive = output.read_bytes()
+    assert archive.startswith(b"070701")
+    assert archive.index(b"libc_validation.elf\0") < archive.index(b"libc program.elf") < archive.index(b"TRAILER!!!\0")
+    assert archive.index(b"busybox.elf\0") < archive.index(b"busybox program.elf") < archive.index(b"TRAILER!!!\0")
+    assert make_cpio_entry("validation_child.elf", bytes(child), ino=2) in archive
+    for name, ino, offset, value in (
+        ("bad_entry.elf", 7, 24, bytes(8)),
+        ("bad_phentsize.elf", 8, 54, struct.pack("<H", 55)),
+        ("bad_load.elf", 9, 96, struct.pack("<Q", 257)),
+    ):
+        malformed = bytearray(child)
+        malformed[offset : offset + len(value)] = value
+        assert make_cpio_entry(name, bytes(malformed), ino=ino) in archive

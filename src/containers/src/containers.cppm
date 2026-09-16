@@ -863,23 +863,35 @@ template <typename T> class LockedList {
   usize size_{0};
   mutable IrqSpinLock lock_{};
 
-public:
-  constexpr LockedList() noexcept = default;
-  ~LockedList() { clear(); }
-  LockedList(const LockedList &) = delete;
-  LockedList &operator=(const LockedList &) = delete;
-
-  template <typename... Args> void push_front(Args &&...args) {
-    auto *node = new Node(moss::forward<Args>(args)...);
+  void publish(Node *node) {
     LockGuard<IrqSpinLock> guard(lock_);
     node->next = head_;
     head_ = node;
     ++size_;
   }
 
+public:
+  constexpr LockedList() noexcept = default;
+  ~LockedList() { clear(); }
+  LockedList(const LockedList &) = delete;
+  LockedList &operator=(const LockedList &) = delete;
+
+  template <typename... Args> void push_front(Args &&...args) { publish(new Node(moss::forward<Args>(args)...)); }
+
+  template <typename... Args> [[nodiscard]] bool try_push_front(Args &&...args) {
+    auto *storage = moss::abi::bridge::moss_heap_allocate(sizeof(Node), alignof(Node));
+    if (!storage)
+      return false;
+    publish(new (storage) Node(moss::forward<Args>(args)...));
+    return true;
+  }
+
   // Test and publication are one transaction (e.g. rejecting overlapping VMAs).
   template <typename Predicate, typename... Args> bool push_front_unless(Predicate conflicts, Args &&...args) {
-    auto node = make_unique<Node>(moss::forward<Args>(args)...);
+    auto *storage = moss::abi::bridge::moss_heap_allocate(sizeof(Node), alignof(Node));
+    if (!storage)
+      return false;
+    auto node = unique_ptr<Node>(new (storage) Node(moss::forward<Args>(args)...));
     bool inserted = true;
     {
       LockGuard<IrqSpinLock> guard(lock_);
@@ -1103,14 +1115,7 @@ template <typename Key, typename Value, usize BucketCount = 256> class LockedHas
     return hash & (BucketCount - 1);
   }
 
-public:
-  constexpr LockedHashMap() noexcept = default;
-  ~LockedHashMap() { clear(); }
-  LockedHashMap(const LockedHashMap &) = delete;
-  LockedHashMap &operator=(const LockedHashMap &) = delete;
-
-  template <typename K, typename V> void insert_or_update(K &&key, V &&value) {
-    auto *node = new Node(moss::forward<K>(key), moss::forward<V>(value));
+  void publish(Node *node) {
     Node *old = nullptr;
     {
       LockGuard<IrqSpinLock> guard(lock_);
@@ -1124,6 +1129,24 @@ public:
         ++size_;
     }
     delete old;
+  }
+
+public:
+  constexpr LockedHashMap() noexcept = default;
+  ~LockedHashMap() { clear(); }
+  LockedHashMap(const LockedHashMap &) = delete;
+  LockedHashMap &operator=(const LockedHashMap &) = delete;
+
+  template <typename K, typename V> void insert_or_update(K &&key, V &&value) {
+    publish(new Node(moss::forward<K>(key), moss::forward<V>(value)));
+  }
+
+  template <typename K, typename V> [[nodiscard]] bool try_insert_or_update(K &&key, V &&value) {
+    auto *storage = moss::abi::bridge::moss_heap_allocate(sizeof(Node), alignof(Node));
+    if (!storage)
+      return false;
+    publish(new (storage) Node(moss::forward<K>(key), moss::forward<V>(value)));
+    return true;
   }
 
   template <typename K> [[nodiscard]] Optional<Value> find(const K &key) const {

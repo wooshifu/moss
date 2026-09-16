@@ -174,13 +174,20 @@ These limits describe this implementation, not Linux's full hardware coverage:
   exec installs default state. AVX/XSAVE, complete extended-state signal frames
   and hardware acceptance remain open. CPU setup follows the
   [Intel system programming contract](https://cdrdv2-public.intel.com/812386/253668-sdm-vol-3a.pdf).
-- Freestanding ELF programs currently enter `_start(argc, argv)` using the ISA's
-  C function ABI, not Linux's initial process-stack ABI. x86 uses a zero return
-  slot below argv so entry RSP is 8 modulo 16, as required by the
+- Freestanding ELF programs enter `_start(argc, argv, envp)` using the ISA's
+  C function ABI; existing two-argument entry functions remain supported.
+  The kernel also prepares `argc, argv..., NULL, envp..., NULL, AT_NULL, 0`
+  on the user stack for static mlibc. This is not Linux binary compatibility.
+  x86 uses a zero return slot below this vector so entry RSP is 8 modulo 16, as required by the
   [SysV function-call convention](https://gitlab.com/x86-psABIs/x64-ABI/-/blob/master/x64-ABI/low-level-sys-info.tex).
   The shared userspace linker script page-separates RX, R and RW sections,
   including x86 large-model and RISC-V 64 small-data sections. The kernel ELF
-  loader's general overlap/permission validation is still incomplete.
+  loader accepts only static EXEC images with at most 64 program headers and
+  page-separated LOAD segments. It rejects dynamic/interpreter segments, W+X,
+  reserved-range collisions, invalid file extents and entries outside executable
+  LOAD memory. The native exec argument/environment limit is 128 combined
+  strings and 16 KiB including their terminators; excess returns E2BIG.
+  This bounded profile is not general ELF or POSIX conformance.
 - No physical board has been accepted by this change. QEMU `raspi4b` results are
   not proof of real Raspberry Pi firmware/device behavior. Early failures may
   need a debugger if firmware did not describe a usable console.

@@ -338,7 +338,7 @@ export namespace moss {
 
 // Basic atomic type template
 template <typename T> struct atomic {
-  static_assert(is_integral_v<T> || is_pointer_v<T>, "Atomic type must be integral or pointer");
+  static_assert(is_integral_v<T> || is_pointer_v<T> || __is_enum(T), "Atomic type must be integral, pointer or enum");
 
 private:
   T value_{};

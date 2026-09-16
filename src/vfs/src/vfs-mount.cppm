@@ -22,7 +22,9 @@ struct MountEntry {
   u32 path_len;            // strlen(path)
   SuperBlock *sb;          // filesystem superblock
   Dentry *root;            // root dentry of mounted fs
-  bool active;             // slot in use?
+  Dentry *parent;          // namespace parent, retained by this static mount
+  u32 name_len;
+  bool active; // slot in use?
 };
 
 // ============================================================================
@@ -56,6 +58,27 @@ public:
   /// Find the deepest mount point matching the given path.
   /// Returns true on success (result is filled in), false if no match.
   [[nodiscard]] bool lookup(const char *path, MountLookupResult &result) noexcept;
+  [[nodiscard]] const char *root_path(const Dentry *root) const noexcept {
+    for (u32 i = 0; i < count_; ++i)
+      if (mounts_[i].active && mounts_[i].root == root)
+        return mounts_[i].path;
+    return nullptr;
+  }
+  [[nodiscard]] Dentry *parent_of_root(const Dentry *root) const noexcept {
+    for (u32 i = 0; i < count_; ++i)
+      if (mounts_[i].active && mounts_[i].root == root)
+        return mounts_[i].parent;
+    return nullptr;
+  }
+  [[nodiscard]] Dentry *child_mount(const Dentry *parent, const char *name, u32 length) const noexcept {
+    for (u32 i = 0; i < count_; ++i) {
+      const auto &mount = mounts_[i];
+      if (mount.active && mount.parent == parent && mount.name_len == length &&
+          !__builtin_memcmp(mount.path + mount.path_len - length, name, length))
+        return mount.root;
+    }
+    return nullptr;
+  }
 
 private:
   MountEntry mounts_[MAX_MOUNTS];

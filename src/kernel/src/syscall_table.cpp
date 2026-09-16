@@ -17,6 +17,12 @@ import moss.vfs;
 using moss::abi::context_switch;
 using moss::abi::switch_to_user;
 
+// Only the validation image overrides this observation point. It can hold the
+// caller after arming a real timer without replacing expiry or scheduling.
+extern "C" [[gnu::weak, gnu::noinline]] void moss_validation_sleep_armed(void *) noexcept {}
+// Validation may apply real heap pressure at a fork allocation boundary.
+extern "C" [[gnu::weak, gnu::noinline]] void moss_validation_fork_metadata(unsigned, bool) noexcept {}
+
 namespace moss::kernel::syscall {
 
 // 全局系统调用统计
@@ -175,6 +181,47 @@ long sys_getgid(long /*unused*/, long /*unused*/, long /*unused*/, long /*unused
   return proc ? static_cast<long>(proc->gid()) : 0;
 }
 
+long sys_geteuid(long, long, long, long, long, long) noexcept {
+  auto proc = process::current_process();
+  return proc ? static_cast<long>(proc->euid()) : -errc::ESRCH;
+}
+
+long sys_getegid(long, long, long, long, long, long) noexcept {
+  auto proc = process::current_process();
+  return proc ? static_cast<long>(proc->egid()) : -errc::ESRCH;
+}
+
+long sys_arch_prctl(long operation, long address, long, long, long, long) noexcept {
+#if defined(MOSS_ARCH_X64)
+  auto *thread = process::CfsScheduler::get_current_task();
+  if (!thread)
+    return -errc::ESRCH;
+  if (operation == 0x1002) { // ARCH_SET_FS
+    auto base = static_cast<u64>(address);
+    if (base != 0 && !mm::PageTableManager::is_user_range(base, 1))
+      return -errc::EINVAL;
+    const bool restore_irqs = arch::interrupts_enabled();
+    arch::disable_interrupts();
+    thread->context.fs_base = base;
+    asm volatile("wrmsr" ::"c"(0xC0000100U), "a"(static_cast<u32>(base)), "d"(static_cast<u32>(base >> 32)) : "memory");
+    if (restore_irqs)
+      arch::enable_interrupts();
+    return 0;
+  }
+  if (operation == 0x1003) { // ARCH_GET_FS
+    u32 low = 0, high = 0;
+    asm volatile("rdmsr" : "=a"(low), "=d"(high) : "c"(0xC0000100U));
+    u64 base = static_cast<u64>(low) | (static_cast<u64>(high) << 32);
+    return copy_to_user(static_cast<u64>(address), &base, sizeof(base));
+  }
+  return -errc::EINVAL;
+#else
+  (void)operation;
+  (void)address;
+  return -errc::ENOSYS;
+#endif
+}
+
 // fork() — create a child process with COW-shared address space.
 // Child returns 0, parent returns child PID.
 long sys_fork(long /*unused*/, long /*unused*/, long /*unused*/, long /*unused*/, long /*unused*/,
@@ -213,6 +260,7 @@ long sys_fork(long /*unused*/, long /*unused*/, long /*unused*/, long /*unused*/
     return -errc::ENOMEM;
   }
   auto child_proc = *child_proc_result;
+  child_proc->inherit_credentials(*parent_proc);
 
   // Helper: clean up the child process on error (removes from process
   // table and triggers ~Process which frees address space, threads, etc.)
@@ -253,7 +301,25 @@ long sys_fork(long /*unused*/, long /*unused*/, long /*unused*/, long /*unused*/
 #endif
 
   // 7. Copy VMAs from parent to child via LockedList iteration
-  parent_as->vmas.for_each([&child_as](const process::VmaRegion &vma) { child_as->vmas.push_front(vma); });
+  child_as->executable_image = parent_as->executable_image;
+  bool vmas_copied = true;
+  parent_as->vmas.for_each([&](const process::VmaRegion &vma) {
+    if (!vmas_copied)
+      return;
+    moss_validation_fork_metadata(0, true);
+    vmas_copied = child_as->add_vma(vma.start_addr, vma.end_addr, vma.flags, vma.type, vma.backing_data,
+                                    vma.backing_offset, vma.backing_size);
+    moss_validation_fork_metadata(0, false);
+  });
+  if (!vmas_copied) {
+    cleanup_child(child_proc.get());
+    return -errc::ENOMEM;
+  }
+  // The allocation cursors belong to the cloned address space too. Leaving
+  // them zero breaks the first new mmap/brk allocation after fork.
+  child_as->mmap_next = parent_as->mmap_next;
+  child_as->brk_base = parent_as->brk_base;
+  child_as->brk_current = parent_as->brk_current;
 
   // 8. Bind address space to child process
   auto set_result = child_proc->set_address_space(moss::move(child_as));
@@ -267,7 +333,9 @@ long sys_fork(long /*unused*/, long /*unused*/, long /*unused*/, long /*unused*/
 
   // 9. Create child thread
   ThreadId child_tid = Process::allocate_thread_id();
-  auto *child_thread = new Thread(child_tid, child_proc->pid());
+  moss_validation_fork_metadata(1, true);
+  auto *child_thread = Thread::try_create(child_tid, child_proc->pid());
+  moss_validation_fork_metadata(1, false);
   if (!child_thread) {
     log::klog::error("sys_fork: thread allocation failed");
     cleanup_child(child_proc.get());
@@ -281,6 +349,7 @@ long sys_fork(long /*unused*/, long /*unused*/, long /*unused*/, long /*unused*/
     context.x[i] = frame->gpr(i);
   }
   context.x[0] = 0;
+  asm volatile("mrs %0, tpidr_el0" : "=r"(context.tpidr_el0));
 #elif defined(MOSS_ARCH_RISCV64)
   for (u32 i = 0; i < moss::abi::TrapFrame::GPR_COUNT; ++i) {
     context.x[i + 1] = frame->gpr(i);
@@ -289,6 +358,9 @@ long sys_fork(long /*unused*/, long /*unused*/, long /*unused*/, long /*unused*/
 #elif defined(MOSS_ARCH_X64)
   // Kernel C++ does not use FP/SIMD; capture the caller's live state.
   asm volatile("fxsave64 %0" : "=m"(context.fp)::"memory");
+  u32 fs_low = 0, fs_high = 0;
+  asm volatile("rdmsr" : "=a"(fs_low), "=d"(fs_high) : "c"(0xC0000100U));
+  context.fs_base = static_cast<u64>(fs_low) | (static_cast<u64>(fs_high) << 32);
   context.rbx = frame->rbx;
   context.rcx = frame->rcx;
   context.rdx = frame->rdx;
@@ -320,26 +392,31 @@ long sys_fork(long /*unused*/, long /*unused*/, long /*unused*/, long /*unused*/
   child_thread->state = ProcessState::Ready;
 
   // 11. Allocate per-thread kernel stack (16KB)
-  constexpr usize KERNEL_STACK_ORDER = 2; // 4 pages = 16KB
-  constexpr usize KERNEL_STACK_SIZE = PAGE_SIZE << KERNEL_STACK_ORDER;
-  auto kstack_result = mm::allocate_pages(KERNEL_STACK_ORDER);
+  auto kstack_result = child_thread->allocate_kernel_stack();
   if (!kstack_result) {
     log::klog::error("sys_fork: kernel stack alloc failed");
     delete child_thread;
     cleanup_child(child_proc.get());
     return -errc::ENOMEM;
   }
-  PhysAddr kstack_phys = *kstack_result;
-  child_thread->kernel_stack_base = static_cast<VirtAddr>(kstack_phys);
-  child_thread->kernel_stack_size = KERNEL_STACK_SIZE;
-
   // 12. Register child thread in child process's thread list
-  child_proc->register_thread(child_thread);
+  moss_validation_fork_metadata(2, true);
+  auto registered = child_proc->register_thread(child_thread);
+  moss_validation_fork_metadata(2, false);
+  if (!registered) {
+    delete child_thread;
+    cleanup_child(child_proc.get());
+    return -errc::ENOMEM;
+  }
 
   // 12b. Clone VFS fd table from parent to child
   if (parent_proc->fd_table() != nullptr) {
     auto *parent_fdt = static_cast<moss::kernel::vfs::FdTable *>(parent_proc->fd_table());
     auto *child_fdt = parent_fdt->clone();
+    if (!child_fdt) {
+      cleanup_child(child_proc.get());
+      return -errc::ENOMEM;
+    }
     child_proc->set_fd_table(child_fdt);
   }
 
@@ -350,8 +427,24 @@ long sys_fork(long /*unused*/, long /*unused*/, long /*unused*/, long /*unused*/
   child_proc->set_pgid(parent_proc->pgid());
   child_proc->set_sid(parent_proc->sid());
 
+  // Fork duplicates dispositions, mask and the user altstack/context, but not
+  // pending notifications. The child's COW stack owns any active signal frame.
+  child_proc->signal_state() = parent_proc->signal_state();
+  child_thread->signal_mask = parent_thread->signal_mask.load();
+  child_thread->alt_stack_sp = parent_thread->alt_stack_sp;
+  child_thread->alt_stack_size = parent_thread->alt_stack_size;
+  child_thread->alt_stack_flags = parent_thread->alt_stack_flags;
+  child_thread->on_alt_stack = parent_thread->on_alt_stack;
+  child_thread->active_signal_frame = parent_thread->active_signal_frame;
+
   // 13. Register child in parent's children list (for waitpid)
-  parent_proc->add_child(child_proc->pid());
+  moss_validation_fork_metadata(3, true);
+  const bool child_registered = parent_proc->try_add_child(child_proc->pid());
+  moss_validation_fork_metadata(3, false);
+  if (!child_registered) {
+    cleanup_child(child_proc.get());
+    return -errc::ENOMEM;
+  }
 
   // 14. Enqueue child into scheduler (scatter across CPUs via load balancer)
   child_proc->set_state(ProcessState::Running);
@@ -369,557 +462,286 @@ long sys_fork(long /*unused*/, long /*unused*/, long /*unused*/, long /*unused*/
   return static_cast<long>(child_proc->pid());
 }
 
-long sys_execve(long pathname_addr, long argv_addr, long /* envp */, long /*unused*/, long /*unused*/,
-                long /*unused*/) noexcept {
+long sys_execve(long pathname_addr, long argv_addr, long envp_addr, long, long, long) noexcept {
   using namespace moss::kernel::process;
   using namespace moss::kernel::elf;
-  // 1. Get current thread and process
   Thread *cur = g_scheduler ? CfsScheduler::get_current_task() : nullptr;
-  if (!cur) {
-    log::klog::error("execve: no current task");
+  auto proc = cur && g_process_manager ? g_process_manager->find_process(cur->owner_pid) : shared_ptr<Process>{};
+  if (!proc || !proc->address_space())
     return -errc::ESRCH;
-  }
-  auto proc = g_process_manager ? g_process_manager->find_process(cur->owner_pid) : shared_ptr<Process>{};
-  if (!proc || !proc->address_space()) {
-    log::klog::error("execve: no process or address space");
-    return -errc::ESRCH;
-  }
 
-  // 2. Copy pathname from user memory into kernel buffer (with VMA validation).
-  //    After step 5 switches TTBR0 to the kernel PGD, user addresses
-  //    are no longer accessible, so we must capture the string now.
-  constexpr usize PATH_MAX = 256;
-  char pathname_buf[PATH_MAX];
-  const long copied_path = copy_string_from_user(pathname_buf, static_cast<u64>(pathname_addr), PATH_MAX);
-  if (copied_path < 0) {
-    return copied_path;
-  }
-  const char *pathname = pathname_buf;
+  char pathname[256];
+  if (long error = copy_string_from_user(pathname, static_cast<u64>(pathname_addr), sizeof(pathname)); error < 0)
+    return error;
 
-  // 2a. Copy argv strings from user memory into kernel buffer (with VMA validation).
-  //     Must be done before TTBR0 switch (user addresses become invalid).
-  constexpr usize MAX_ARGS = 16;
-  constexpr usize ARGV_BUF_SIZE = 512;
-  char argv_buf[ARGV_BUF_SIZE]; // flat buffer for all strings
-  usize argv_offsets[MAX_ARGS]; // offset of each string in argv_buf
-  usize kernel_argc = 0;
-  usize argv_buf_pos = 0;
-
-  if (argv_addr != 0) {
-    // Validate the argv pointer array itself (up to MAX_ARGS pointers + null terminator)
-    // Read each pointer individually via copy_from_user
-    for (usize ai = 0; ai < MAX_ARGS; ++ai) {
-      usize arg_ptr = 0;
-      u64 ptr_addr = static_cast<u64>(argv_addr) + ai * sizeof(usize);
-      if (copy_from_user(&arg_ptr, ptr_addr, sizeof(arg_ptr)) < 0) {
+  // Bounded native exec contract: argv + envp together have at most 128
+  // strings and 16 KiB of bytes including their terminators. Never truncate.
+  constexpr usize MAX_STRINGS = 128;
+  constexpr usize STRING_BYTES = 16384;
+  struct Arguments {
+    char strings[STRING_BYTES]{};
+    usize offsets[MAX_STRINGS]{};
+    u64 vector[MAX_STRINGS + 5]{};
+    usize count{}, used{}, argc{};
+  };
+  // The syscall kernel stack is only 16 KiB; keep the snapshot in owned heap memory.
+  auto args = make_unique<Arguments>();
+  if (!args)
+    return -errc::ENOMEM;
+  auto capture = [&](long address) -> long {
+    if (!address)
+      return 0;
+    for (usize index = 0;; ++index) {
+      const u64 base = static_cast<u64>(address);
+      const usize offset = index * sizeof(u64);
+      if (base > ~u64{0} - offset)
         return -errc::EFAULT;
+      u64 pointer = 0;
+      if (copy_from_user(&pointer, base + offset, sizeof(pointer)) < 0)
+        return -errc::EFAULT;
+      if (!pointer)
+        return 0;
+      if (args->count == MAX_STRINGS || args->used == STRING_BYTES)
+        return -errc::E2BIG;
+      const long error = copy_string_from_user(args->strings + args->used, pointer, STRING_BYTES - args->used);
+      if (error < 0)
+        return error == -errc::ENAMETOOLONG ? -errc::E2BIG : error;
+      args->offsets[args->count++] = args->used;
+      while (args->strings[args->used++]) {
       }
-      if (arg_ptr == 0) {
-        break; // null terminator
-      }
-      argv_offsets[kernel_argc] = argv_buf_pos;
-      usize remaining = ARGV_BUF_SIZE - argv_buf_pos;
-      if (remaining <= 1) {
-        break; // buffer exhausted
-      }
-      const long copied_arg = copy_string_from_user(&argv_buf[argv_buf_pos], static_cast<u64>(arg_ptr), remaining);
-      if (copied_arg < 0) {
-        return copied_arg;
-      }
-      // Advance past the copied string (including null terminator)
-      while (argv_buf_pos < ARGV_BUF_SIZE && argv_buf[argv_buf_pos] != '\0') {
-        ++argv_buf_pos;
-      }
-      if (argv_buf_pos < ARGV_BUF_SIZE) {
-        ++argv_buf_pos; // skip '\0'
-      }
-      ++kernel_argc;
     }
-  }
+  };
+  if (long error = capture(argv_addr); error < 0)
+    return error;
+  args->argc = args->count;
+  if (long error = capture(envp_addr); error < 0)
+    return error;
 
-  // 2b. Set process name from pathname basename
+  shared_ptr<ExecutableImage> image;
+  const u8 *image_data;
+  usize image_size;
   {
-    const char *basename = pathname;
-    for (const char *p = pathname; *p; ++p) {
-      if (*p == '/') {
-        basename = p + 1;
-      }
+    containers::LockGuard<containers::IrqSpinLock> guard(vfs::namespace_lock);
+    auto *files = static_cast<vfs::FdTable *>(proc->fd_table());
+    vfs::VfsError error = vfs::VfsError::NoEntry;
+    auto *dentry = vfs::resolve_path_locked(pathname, &error, files ? files->working_directory() : nullptr,
+                                            proc->euid(), proc->egid());
+    if (!dentry || !dentry->inode)
+      return -static_cast<long>(error);
+    auto *inode = dentry->inode;
+    if (inode->type != vfs::FileType::Regular || !vfs::can_access(*inode, proc->euid(), proc->egid(), 1))
+      return -errc::EACCES;
+    if (!inode->data || !inode->size)
+      return -errc::ENOEXEC;
+    image_data = inode->data;
+    image_size = inode->size;
+    if (inode->ramfs_mutable) {
+      // ponytail: snapshot mutable executables once; use shared file pages if
+      // copying large images becomes costly. Immutable CPIO stays borrowed.
+      image = make_shared<ExecutableImage>();
+      auto allocation = mm::RuntimeHeapAllocator::allocate(image_size);
+      if (!allocation)
+        return -errc::ENOMEM;
+      image->data = static_cast<u8 *>(*allocation);
+      image->size = image_size;
+      __builtin_memcpy(image->data, image_data, image_size);
+      image_data = image->data;
     }
-    proc->set_name(basename);
   }
-
-  // 3. Resolve file via VFS path resolution (replaces direct initramfs access)
-  auto *dentry = moss::kernel::vfs::resolve_path(pathname);
-  if (!dentry || !dentry->inode) {
-    log::klog::error("execve: '{}' not found via VFS", pathname);
-    return -errc::ENOENT;
-  }
-  auto *file_inode = dentry->inode;
-  if (file_inode->type != moss::kernel::vfs::FileType::Regular) {
-    log::klog::error("execve: '{}' is not a regular file", pathname);
-    return -errc::EACCES;
-  }
-  if (file_inode->data == nullptr || file_inode->size == 0) {
-    log::klog::error("execve: '{}' has no data", pathname);
+  const auto *header = reinterpret_cast<const ElfHeader *>(image_data);
+  if (!validate_elf_header(header, image_size) || header->e_phnum > 64)
     return -errc::ENOEXEC;
-  }
-
-  // 4. Validate ELF header (inode->data = zero-copy ELF backing)
-  const auto *elf_hdr = reinterpret_cast<const ElfHeader *>(file_inode->data);
-  if (!validate_elf_header(elf_hdr, file_inode->size)) {
-    log::klog::error("execve: '{}' is not a valid ELF", pathname);
-    return -errc::ENOEXEC;
-  }
-
-  VirtAddr elf_entry = elf_hdr->e_entry;
-  const auto *phdrs = get_program_headers(elf_hdr);
-  u16 phnum = elf_hdr->e_phnum;
-
-  // ===== Point of no return =====
-  // From here, errors terminate the process (old address space is gone).
-
-  // 5. Switch TTBR0 to kernel PGD (safe teardown)
-  AddressSpace *old_as = proc->address_space();
-  PhysAddr old_pgd = old_as->pgd_phys;
-
-#if defined(MOSS_ARCH_ARM64)
-  {
-    auto *kpgd = mm::PageTableManager::get_kernel_pgd();
-    if (kpgd) {
-      u64 kpgd_phys = mm::PageTableManager::get_physical_address(kpgd);
-      asm volatile("msr ttbr0_el1, %0" ::"r"(kpgd_phys));
-      asm volatile("dsb ish" ::: "memory");
-      asm volatile("isb" ::: "memory");
-    }
-  }
-#elif defined(MOSS_ARCH_RISCV64)
-  // Switch SATP to kernel PGD before freeing old user page tables.
-  {
-    auto *kpgd = mm::PageTableManager::get_kernel_pgd();
-    if (kpgd) {
-      u64 kpgd_phys = mm::PageTableManager::get_physical_address(kpgd);
-      u64 satp_val = hal::mmu::make_satp_value(kpgd_phys);
-      asm volatile("csrw satp, %0" ::"r"(satp_val) : "memory");
-      asm volatile("sfence.vma" ::: "memory");
-    }
-  }
-#elif defined(MOSS_ARCH_X64)
-  // Switch CR3 to kernel PGD before freeing old user page tables.
-  {
-    auto *kpgd = mm::PageTableManager::get_kernel_pgd();
-    if (kpgd) {
-      u64 kpgd_phys = mm::PageTableManager::get_physical_address(kpgd);
-      asm volatile("mov %0, %%cr3" ::"r"(kpgd_phys) : "memory");
-    }
-  }
-#endif
-
-  // 6. Free old user page tables
-  if (old_pgd != 0) {
-    mm::PageTableManager::free_user_page_tables(old_pgd);
-    old_as->pgd_phys = 0; // prevent double-free
-  }
-
-  // 7. Create new address space
-  auto new_as_result = user_space::create_user_address_space();
-  if (!new_as_result) {
-    log::klog::error("execve: failed to create new address space");
-    // Unrecoverable — process has no address space
-    cur->state = ProcessState::Terminated;
-    if (g_scheduler) {
-      g_scheduler->dequeue_task(cur);
-      g_scheduler->schedule_after_exit(moss::move(proc));
-    }
-    while (true) {
-      ::moss::kernel::arch::cpu_halt();
-    }
-  }
-  auto new_as = moss::move(*new_as_result);
-
-  // 8. Load PT_LOAD segments as VMAs
-  //
-  // Multiple PT_LOAD segments may fall within the same page (e.g.
-  // .text at 0x400000 and .rodata at 0x400048 both within page
-  // 0x400000-0x401000).  The demand-paging handler maps one page
-  // per fault using a single VMA's backing data, so overlapping
-  // VMAs would cause data loss.
-  //
-  // Solution: two-pass approach.
-  //   Pass 1 — compute the overall VA range and file-offset range
-  //            across all PT_LOAD segments.
-  //   Pass 2 — create one merged VMA if all segments fit in the
-  //            same page range, otherwise fall back to per-segment
-  //            VMAs (safe when segments are page-separated).
-  {
-    constexpr u16 MAX_LOADS = 8;
-    u16 load_count = 0;
-
-    // Collect PT_LOAD segments
-    VirtAddr overall_start = ~0ULL;
-    VirtAddr overall_end = 0;
-    u64 file_offset_min = ~0ULL;
-    u64 file_offset_max = 0; // offset + filesz
-    u32 merged_flags = 0;
-
-    for (u16 i = 0; i < phnum && load_count < MAX_LOADS; ++i) {
-      const auto &ph = phdrs[i];
-      if (ph.p_type != PT_LOAD || ph.p_memsz == 0) {
-        continue;
-      }
-      ++load_count;
-
-      if (ph.p_vaddr < overall_start) {
-        overall_start = ph.p_vaddr;
-      }
-      VirtAddr seg_end = ph.p_vaddr + ph.p_memsz;
-      if (seg_end > overall_end) {
-        overall_end = seg_end;
-      }
-
-      if (ph.p_filesz > 0) {
-        if (ph.p_offset < file_offset_min) {
-          file_offset_min = ph.p_offset;
-        }
-        u64 fo_end = ph.p_offset + ph.p_filesz;
-        if (fo_end > file_offset_max) {
-          file_offset_max = fo_end;
-        }
-      }
-
-      if (ph.p_flags & PF_R) {
-        merged_flags |= vma_flags::READ;
-      }
-      if (ph.p_flags & PF_W) {
-        merged_flags |= vma_flags::WRITE;
-      }
-      if (ph.p_flags & PF_X) {
-        merged_flags |= vma_flags::EXEC;
-      }
-    }
-
-    // Page-align the overall range
-    VirtAddr page_start = overall_start & ~(static_cast<VirtAddr>(PAGE_SIZE) - 1);
-    VirtAddr page_end = (overall_end + PAGE_SIZE - 1) & ~(static_cast<VirtAddr>(PAGE_SIZE) - 1);
-
-    // Check if any segments overlap when page-aligned.
-    // This is common: .text ending at 0x36f8 and .rodata starting
-    // at 0x36f8 share the same page (0x3000-0x4000).  Overlapping
-    // VMAs cause demand-paging data loss, so we must merge.
-    bool has_page_overlap = false;
-    if (load_count > 1) {
-      // Simple O(n²) check — MAX_LOADS ≤ 8
-      struct {
-        VirtAddr s;
-        VirtAddr e;
-      } ranges[MAX_LOADS];
-      u16 ri = 0;
-      for (u16 i = 0; i < phnum && ri < MAX_LOADS; ++i) {
-        const auto &ph2 = phdrs[i];
-        if (ph2.p_type != PT_LOAD || ph2.p_memsz == 0) {
-          continue;
-        }
-        ranges[ri].s = ph2.p_vaddr & ~(static_cast<VirtAddr>(PAGE_SIZE) - 1);
-        ranges[ri].e = (ph2.p_vaddr + ph2.p_memsz + PAGE_SIZE - 1) & ~(static_cast<VirtAddr>(PAGE_SIZE) - 1);
-        ++ri;
-      }
-      for (u16 a = 0; a < ri && !has_page_overlap; ++a) {
-        for (u16 b = a + 1; b < ri; ++b) {
-          if (ranges[a].s < ranges[b].e && ranges[b].s < ranges[a].e) {
-            has_page_overlap = true;
-            break;
-          }
-        }
-      }
-    }
-
-    bool use_merged = has_page_overlap || load_count <= 1;
-
-    if (use_merged && load_count > 0) {
-      // Merged VMA: one VMA covering all PT_LOAD segments.
-      // backing_offset accounts for the gap between page_start and
-      // the first byte of file data in the ELF.
-      VmaType vma_type = (merged_flags & vma_flags::EXEC) ? VmaType::CODE : VmaType::DATA;
-
-      const u8 *backing = nullptr;
-      usize backing_size = 0;
-      u64 backing_offset = 0;
-      if (file_offset_max > file_offset_min) {
-        backing = file_inode->data + file_offset_min;
-        backing_size = static_cast<usize>(file_offset_max - file_offset_min);
-        // backing_offset = how far into the page the data starts
-        backing_offset = overall_start - page_start;
-      }
-
-      if (backing_size == 0) {
-        merged_flags |= vma_flags::DEMAND_ZERO;
-      }
-
-      new_as->add_vma(page_start, page_end, merged_flags, vma_type, backing, backing_offset, backing_size);
-
-    } else {
-      // Separate VMAs for page-separated segments (general case)
-      for (u16 i = 0; i < phnum; ++i) {
-        const auto &ph = phdrs[i];
-        if (ph.p_type != PT_LOAD || ph.p_memsz == 0) {
-          continue;
-        }
-
-        u32 vma_flags = 0;
-        if (ph.p_flags & PF_R) {
-          vma_flags |= vma_flags::READ;
-        }
-        if (ph.p_flags & PF_W) {
-          vma_flags |= vma_flags::WRITE;
-        }
-        if (ph.p_flags & PF_X) {
-          vma_flags |= vma_flags::EXEC;
-        }
-
-        VmaType vma_type = VmaType::DATA;
-        if ((ph.p_flags & PF_X) && !(ph.p_flags & PF_W)) {
-          vma_type = VmaType::CODE;
-        }
-
-        VirtAddr seg_start = ph.p_vaddr;
-        VirtAddr seg_end = (seg_start + ph.p_memsz + PAGE_SIZE - 1) & ~(static_cast<VirtAddr>(PAGE_SIZE) - 1);
-
-        const u8 *backing = (ph.p_filesz > 0) ? (file_inode->data + ph.p_offset) : nullptr;
-        usize b_size = static_cast<usize>(ph.p_filesz);
-
-        if (ph.p_filesz == 0) {
-          vma_flags |= vma_flags::DEMAND_ZERO;
-        }
-
-        new_as->add_vma(seg_start, seg_end, vma_flags, vma_type, backing, 0, b_size);
-
-        log::klog::info("  PT_LOAD: {:#x}-{:#x} filesz={} memsz={}", seg_start, seg_end, static_cast<u64>(ph.p_filesz),
-                        static_cast<u64>(ph.p_memsz));
-      }
-    }
-  }
-
-  // 9a. Sigreturn trampoline VMA (read + exec) — signal handler LR points here
-  {
-    new_as->add_vma(user_layout::SIGRETURN_PAGE, user_layout::SIGRETURN_PAGE + PAGE_SIZE,
-                    vma_flags::READ | vma_flags::EXEC, VmaType::SIGRETURN, moss::abi::signal::trampoline(), 0,
-                    moss::abi::signal::trampoline_size());
-  }
-
-  // 9b. Add stack VMA (demand-zero)
+  const auto *phdrs = get_program_headers(header);
   const VirtAddr stack_bottom = user_layout::STACK_TOP - user_layout::STACK_SIZE;
-  new_as->add_vma(stack_bottom, user_layout::STACK_TOP, vma_flags::READ | vma_flags::WRITE | vma_flags::DEMAND_ZERO,
-                  VmaType::STACK);
+  bool executable_entry = false;
 
-  // 10. Add heap VMA (demand-zero) and initialize program break
-  new_as->add_vma(user_layout::HEAP_START, user_layout::HEAP_START + user_layout::HEAP_INIT,
-                  vma_flags::READ | vma_flags::WRITE | vma_flags::DEMAND_ZERO, VmaType::HEAP);
-  new_as->brk_base = user_layout::HEAP_START;
-  new_as->brk_current = user_layout::HEAP_START;
-  new_as->mmap_next = user_layout::MMAP_BASE;
-
-  // 11. Bind new address space to process
-  auto set_result = proc->set_address_space(moss::move(new_as));
-  if (!set_result) {
-    log::klog::error("execve: set_address_space failed");
-    cur->state = ProcessState::Terminated;
-    if (g_scheduler) {
-      g_scheduler->dequeue_task(cur);
-      g_scheduler->schedule_after_exit(moss::move(proc));
+  // This static profile uses page-separated LOAD segments. Reject unsupported
+  // overlaps instead of merging unrelated file ranges and weakening permissions.
+  for (u16 i = 0; i < header->e_phnum; ++i) {
+    const auto &ph = phdrs[i];
+    if (ph.p_type == PT_INTERP || ph.p_type == PT_DYNAMIC)
+      return -errc::ENOEXEC;
+    if (ph.p_type != PT_LOAD && ph.p_type != PT_TLS)
+      continue;
+    if (ph.p_offset > image_size || ph.p_filesz > image_size - ph.p_offset || ph.p_filesz > ph.p_memsz)
+      return -errc::ENOEXEC;
+    if (ph.p_type != PT_LOAD || !ph.p_memsz)
+      continue;
+    if (ph.p_vaddr >= USER_MAX || ph.p_memsz > USER_MAX - ph.p_vaddr || (ph.p_flags & ~(PF_R | PF_W | PF_X)) ||
+        ((ph.p_flags & (PF_W | PF_X)) == (PF_W | PF_X)))
+      return -errc::ENOEXEC;
+    const VirtAddr start = ph.p_vaddr & ~(static_cast<VirtAddr>(PAGE_SIZE) - 1);
+    const VirtAddr end = (ph.p_vaddr + ph.p_memsz + PAGE_SIZE - 1) & ~(static_cast<VirtAddr>(PAGE_SIZE) - 1);
+    const u64 prefix = ph.p_vaddr - start;
+    if (ph.p_offset < prefix || ((ph.p_offset ^ ph.p_vaddr) & (PAGE_SIZE - 1)) ||
+        (ph.p_align > 1 && ((ph.p_align & (ph.p_align - 1)) || ((ph.p_offset ^ ph.p_vaddr) & (ph.p_align - 1)))))
+      return -errc::ENOEXEC;
+    if (!AddressSpace::valid_vma_range(start, end, VmaType::DATA) ||
+        (start < user_layout::STACK_TOP && end > stack_bottom) ||
+        (start < user_layout::HEAP_START + user_layout::HEAP_INIT && end > user_layout::HEAP_START))
+      return -errc::ENOEXEC;
+    // ponytail: pairwise overlap checks are bounded by 64 headers; sort if that cap grows.
+    for (u16 j = 0; j < i; ++j) {
+      const auto &other = phdrs[j];
+      if (other.p_type != PT_LOAD || !other.p_memsz)
+        continue;
+      const VirtAddr other_start = other.p_vaddr & ~(static_cast<VirtAddr>(PAGE_SIZE) - 1);
+      const VirtAddr other_end =
+          (other.p_vaddr + other.p_memsz + PAGE_SIZE - 1) & ~(static_cast<VirtAddr>(PAGE_SIZE) - 1);
+      if (start < other_end && end > other_start)
+        return -errc::ENOEXEC;
     }
-    while (true) {
-      ::moss::kernel::arch::cpu_halt();
-    }
+    if ((ph.p_flags & PF_X) && header->e_entry >= ph.p_vaddr && header->e_entry < ph.p_vaddr + ph.p_memsz)
+      executable_entry = true;
   }
+  if (!executable_entry)
+    return -errc::ENOEXEC;
 
-  // 11b. Switch TTBR0 to the new address space BEFORE writing to user
-  //      stack.  Steps 5-6 switched TTBR0 to kernel PGD for safe teardown;
-  //      now that the new address space is bound, we need user-space
-  //      mappings active so demand-paging works when we write argv data.
-#if defined(MOSS_ARCH_ARM64)
-  if (proc->address_space() && proc->address_space()->pgd_phys != 0) {
-    u64 ttbr0_val = proc->address_space()->pgd_phys | (static_cast<u64>(proc->address_space()->asid) << 48);
-    asm volatile("msr ttbr0_el1, %0" ::"r"(ttbr0_val));
-    asm volatile("tlbi aside1, %0" ::"r"(static_cast<u64>(proc->address_space()->asid) << 48));
-    asm volatile("dsb sy" ::: "memory");
-    asm volatile("isb" ::: "memory");
+  auto created = user_space::create_user_address_space();
+  if (!created)
+    return -errc::ENOMEM;
+  auto prepared = moss::move(*created);
+  prepared->executable_image = image;
+  for (u16 i = 0; i < header->e_phnum; ++i) {
+    const auto &ph = phdrs[i];
+    if (ph.p_type != PT_LOAD || !ph.p_memsz)
+      continue;
+    const VirtAddr start = ph.p_vaddr & ~(static_cast<VirtAddr>(PAGE_SIZE) - 1);
+    const VirtAddr end = (ph.p_vaddr + ph.p_memsz + PAGE_SIZE - 1) & ~(static_cast<VirtAddr>(PAGE_SIZE) - 1);
+    const usize prefix = ph.p_vaddr - start;
+    u32 flags = ph.p_filesz ? 0 : vma_flags::DEMAND_ZERO;
+    if (ph.p_flags & PF_R)
+      flags |= vma_flags::READ;
+    if (ph.p_flags & PF_W)
+      flags |= vma_flags::WRITE;
+    if (ph.p_flags & PF_X)
+      flags |= vma_flags::EXEC;
+    if (!prepared->add_vma(start, end, flags, ph.p_flags & PF_X ? VmaType::CODE : VmaType::DATA,
+                           ph.p_filesz ? image_data + ph.p_offset - prefix : nullptr, 0,
+                           ph.p_filesz ? ph.p_filesz + prefix : 0))
+      return -errc::ENOMEM;
   }
-#elif defined(MOSS_ARCH_RISCV64)
-  if (proc->address_space() && proc->address_space()->pgd_phys != 0) {
-    u64 satp_val = hal::mmu::make_satp_value(proc->address_space()->pgd_phys, proc->address_space()->asid);
-    asm volatile("csrw satp, %0" ::"r"(satp_val) : "memory");
-    asm volatile("sfence.vma" ::: "memory");
-  }
-#elif defined(MOSS_ARCH_X64)
-  if (proc->address_space() && proc->address_space()->pgd_phys != 0) {
-    u64 cr3_val = proc->address_space()->pgd_phys;
-    asm volatile("mov %0, %%cr3" ::"r"(cr3_val) : "memory");
-  }
+  if (!prepared->add_vma(user_layout::SIGRETURN_PAGE, user_layout::SIGRETURN_PAGE + PAGE_SIZE,
+                         vma_flags::READ | vma_flags::EXEC, VmaType::SIGRETURN, moss::abi::signal::trampoline(), 0,
+                         moss::abi::signal::trampoline_size()) ||
+      !prepared->add_vma(stack_bottom, user_layout::STACK_TOP,
+                         vma_flags::READ | vma_flags::WRITE | vma_flags::DEMAND_ZERO, VmaType::STACK) ||
+      !prepared->add_vma(user_layout::HEAP_START, user_layout::HEAP_START + user_layout::HEAP_INIT,
+                         vma_flags::READ | vma_flags::WRITE | vma_flags::DEMAND_ZERO, VmaType::HEAP))
+    return -errc::ENOMEM;
+  prepared->brk_base = prepared->brk_current = user_layout::HEAP_START;
+  prepared->mmap_next = user_layout::MMAP_BASE;
+
+  // Native C entry registers point into one canonical startup vector:
+  // argc, argv..., NULL, envp..., NULL, AT_NULL, 0. mlibc consumes it directly.
+  const usize argc = args->argc;
+  const VirtAddr strings_base = (user_layout::STACK_TOP - 16 - args->used) & ~VirtAddr{7};
+  const usize vector_bytes = (args->count + 5) * sizeof(u64);
+  const VirtAddr vector_base = (strings_base - vector_bytes) & ~VirtAddr{15};
+  const VirtAddr argv_base = vector_base + sizeof(u64);
+  const VirtAddr envp_base = argv_base + (argc + 1) * sizeof(u64);
+  VirtAddr user_sp = vector_base;
+#if defined(MOSS_ARCH_X64)
+  user_sp -= sizeof(u64); // Synthetic return slot: native C entry requires RSP % 16 == 8.
 #endif
+  if (user_sp < stack_bottom)
+    return -errc::E2BIG;
+  args->vector[0] = argc;
+  for (usize i = 0; i < args->count; ++i)
+    args->vector[1 + i + (i >= argc ? 1 : 0)] = strings_base + args->offsets[i];
 
-  // 12. Set up user stack with argc/argv, then reset thread context.
-  //
-  // Moss calls _start(argc, argv) using each ISA's C function ABI, not the
-  // Linux ELF process-entry stack ABI.
-  // We place the argv string data and pointer array on the user stack:
-  //
-  //   [STACK_TOP - 16]  (alignment padding)
-  //   ...strings...     null-terminated argv strings
-  //   argv[argc] = NULL
-  //   argv[argc-1]      pointers to strings (user VAs)
-  //   ...
-  //   argv[0]
-  //   <--- SP (16-byte aligned)
-  //
-  VirtAddr user_sp = user_layout::STACK_TOP - 16;
-  if (kernel_argc > 0) {
-    // Phase 1: calculate where strings will live on user stack.
-    // Strings are placed first (high addresses), then argv[] array below.
-    VirtAddr strings_base = user_sp - argv_buf_pos;
-    strings_base &= ~static_cast<VirtAddr>(0x7); // 8-byte align
-
-    // Phase 2: build argv[] pointer array (points to user VAs)
-    // argv[0..argc-1] + argv[argc]=NULL
-    usize argv_array_size = (kernel_argc + 1) * sizeof(u64);
-    VirtAddr argv_base = strings_base - argv_array_size;
-    argv_base &= ~static_cast<VirtAddr>(0xF); // 16-byte align SP
-
-    user_sp = argv_base;
-
-    // Phase 3: write strings and argv[] to user stack.
-    // Note: these user addresses are demand-zero pages.  Writing to
-    // them triggers kernel page faults that are resolved by the
-    // kernel_page_fault_handler (which handles user addresses via
-    // demand paging).  The data is written via volatile pointers to
-    // prevent the compiler from optimizing away the stores.
-
-    // Write string data
-    {
-      auto *dst = reinterpret_cast<volatile char *>(strings_base);
-      for (usize i = 0; i < argv_buf_pos; ++i) {
-        dst[i] = argv_buf[i];
-      }
+  // Populate inactive stack pages through the kernel's physical mapping.
+  // Failure frees only this prepared image; the caller remains runnable.
+  for (VirtAddr va = user_sp & ~(VirtAddr{PAGE_SIZE} - 1); va < user_layout::STACK_TOP; va += PAGE_SIZE) {
+    auto page = mm::allocate_pages(0);
+    if (!page)
+      return -errc::ENOMEM;
+    __builtin_memset(reinterpret_cast<void *>(phys_to_virt(*page)), 0, PAGE_SIZE);
+    if (!mm::PageTableManager::map_user_page(prepared->pgd_phys, va, *page, hal::mmu::page_perms::USER_RW)) {
+      (void)mm::free_pages(*page, 0);
+      return -errc::ENOMEM;
     }
-
-    // Write argv[] pointer array
-    {
-      auto *argv_ptrs = reinterpret_cast<volatile u64 *>(argv_base);
-      for (usize i = 0; i < kernel_argc; ++i) {
-        argv_ptrs[i] = strings_base + argv_offsets[i];
-      }
-      argv_ptrs[kernel_argc] = 0; // NULL terminator
-    }
+    (void)prepared->resident_pages.fetch_add(1, containers::MemoryOrder::Relaxed);
   }
+  auto write_stack = [&](VirtAddr address, const void *source, usize size) {
+    auto *bytes = static_cast<const u8 *>(source);
+    while (size) {
+      auto *pte = mm::PageTableManager::get_user_pte(prepared->pgd_phys, address);
+      if (!pte || !pte->is_valid())
+        return false;
+      const usize offset = address & (PAGE_SIZE - 1);
+      const usize chunk = size < PAGE_SIZE - offset ? size : PAGE_SIZE - offset;
+      __builtin_memcpy(reinterpret_cast<void *>(phys_to_virt(pte->get_phys_addr()) + offset), bytes, chunk);
+      address += chunk;
+      bytes += chunk;
+      size -= chunk;
+    }
+    return true;
+  };
+  if (!write_stack(strings_base, args->strings, args->used) || !write_stack(vector_base, args->vector, vector_bytes))
+    return -errc::EFAULT;
 
-  cur->context = CpuContext{}; // zero all registers
-  cur->context.pc = elf_entry;
-  cur->context.sp = user_sp;
-  cur->context.pstate = 0; // EL0t
+  // Commit: no remaining fallible preparation. IRQs stay masked while the
+  // hardware root and Process ownership change together. Old pages are freed
+  // by set_address_space only after they are no longer active.
+  arch::disable_interrupts();
 #if defined(MOSS_ARCH_ARM64)
-  cur->context.x[0] = kernel_argc;      // x0 = argc
-  cur->context.x[1] = (kernel_argc > 0) // x1 = argv
-                          ? (user_sp)   // argv_base == user_sp
-                          : 0;
+  u64 root = prepared->pgd_phys | (static_cast<u64>(prepared->asid) << 48);
+  asm volatile("msr ttbr0_el1, %0; dsb ish; isb" ::"r"(root) : "memory");
 #elif defined(MOSS_ARCH_RISCV64)
-  cur->context.x[10] = kernel_argc;      // a0 = argc
-  cur->context.x[11] = (kernel_argc > 0) // a1 = argv
-                           ? (user_sp)   // argv_base == user_sp
-                           : 0;
+  u64 root = hal::mmu::make_satp_value(prepared->pgd_phys, prepared->asid);
+  asm volatile("csrw satp, %0; sfence.vma" ::"r"(root) : "memory");
 #elif defined(MOSS_ARCH_X64)
-  cur->context.rdi = kernel_argc;      // rdi = argc (System V ABI arg0)
-  cur->context.rsi = (kernel_argc > 0) // rsi = argv (System V ABI arg1)
-                         ? (user_sp)   // argv_base == user_sp
-                         : 0;
-  // Model a C call's return-address slot without moving argv. A fresh x86 C
-  // entry expects RSP % 16 == 8; fork must keep its interrupted SP unchanged.
-  cur->context.sp -= sizeof(u64);
-  *reinterpret_cast<volatile u64 *>(cur->context.sp) = 0;
-  cur->context.pstate = 0x202; // RFLAGS: IF=1 (interrupts enabled on iretq)
+  asm volatile("mov %0, %%cr3" ::"r"(prepared->pgd_phys) : "memory");
 #endif
-  // Successful exec abandons the syscall stack without returning through its
-  // ordinary frame-borrow cleanup.
+  (void)proc->set_address_space(moss::move(prepared)); // Non-null ownership transfer cannot fail.
+  if (auto *files = static_cast<vfs::FdTable *>(proc->fd_table()))
+    files->close_on_exec();
+  const char *basename = pathname;
+  for (const char *p = pathname; *p; ++p)
+    if (*p == '/')
+      basename = p + 1;
+  proc->set_name(basename);
+  for (auto &action : proc->signal_state().actions)
+    if (action.handler != SIG_IGN)
+      action = Sigaction{};
+  cur->alt_stack_sp = cur->alt_stack_size = 0;
+  cur->alt_stack_flags = ss_flags::SS_DISABLE;
+  cur->on_alt_stack = false;
+  cur->active_signal_frame = 0;
   cur->trap_frame = nullptr;
-  cur->needs_initial_eret = true; // next dispatch does switch_to_user + eret
+  cur->context = CpuContext{};
+  cur->context.pc = header->e_entry;
+  cur->context.sp = user_sp;
+#if defined(MOSS_ARCH_ARM64)
+  cur->context.x[0] = argc;
+  cur->context.x[1] = argv_base;
+  cur->context.x[2] = envp_base;
+  if (cur->kernel_stack_base)
+    asm volatile("msr tpidr_el1, %0" ::"r"(cur->kernel_stack_top()));
+#elif defined(MOSS_ARCH_RISCV64)
+  cur->context.x[10] = argc;
+  cur->context.x[11] = argv_base;
+  cur->context.x[12] = envp_base;
+  if (cur->kernel_stack_base)
+    arch::set_user_kernel_stack(cur->kernel_stack_top());
+#elif defined(MOSS_ARCH_X64)
+  cur->context.rdi = argc;
+  cur->context.rsi = argv_base;
+  cur->context.rdx = envp_base;
+  cur->context.pstate = 0x202;
+  if (cur->kernel_stack_base)
+    moss::abi::x64::set_kernel_stack(cur->kernel_stack_top());
+#endif
+  cur->needs_initial_eret = false;
+  cur->state = ProcessState::Running;
   cur->stack_base = stack_bottom;
   cur->stack_size = user_layout::STACK_SIZE;
-
-  // 13. Direct eret to new program image.
-  //
-  // execve is called from a syscall handler (EL1), so we can eret
-  // directly to the new ELF entry point.  This is safe because:
-  //   - We already rebuilt the address space and page tables
-  //   - switch_to_user sets up ELR_EL1/SPSR_EL1/SP_EL0 and does eret
-  //   - When the new program is later preempted by timer IRQ,
-  //     irq_trampoline saves its state via context_switch, and
-  //     bootstrap_contexts_[cpu] is already valid (saved by the
-  //     user_eret_trampoline path that initially dispatched this task).
-#if defined(MOSS_ARCH_ARM64)
-  {
-    cur->needs_initial_eret = false;
-    cur->state = ProcessState::Running;
-
-    arch::disable_interrupts();
-
-    // TTBR0 already switched to new address space in step 11b.
-
-    // Set TPIDR_EL1 for per-thread kernel stack
-    if (cur->kernel_stack_base != 0) {
-      u64 kstack_top = cur->kernel_stack_top();
-      asm volatile("msr tpidr_el1, %0" ::"r"(kstack_top));
-    }
-
-    // The process table owns this Running process. Do not leak a local reference
-    // on the syscall stack that switch_to_user abandons.
-    proc.reset();
-    // eret to new program — never returns
-    switch_to_user(&cur->context, cur->context.sp);
-  }
-#elif defined(MOSS_ARCH_RISCV64)
-  {
-    cur->needs_initial_eret = false;
-    cur->state = ProcessState::Running;
-
-    arch::disable_interrupts();
-
-    // SATP already switched to new address space in step 11b.
-
-    // Set sscratch to per-thread kernel stack top so the next U-mode
-    // trap entry swaps to the correct kernel stack.  switch_to_user
-    // also writes sscratch, but with the *current* sp (which is the
-    // C call stack, not kernel_stack_top).  We must override it.
-    if (cur->kernel_stack_base != 0) {
-      u64 kstack_top = cur->kernel_stack_top();
-      arch::set_user_kernel_stack(kstack_top);
-    }
-
-    proc.reset();
-    // eret to new program — never returns
-    switch_to_user(&cur->context, cur->context.sp);
-  }
-#elif defined(MOSS_ARCH_X64)
-  {
-    cur->needs_initial_eret = false;
-    cur->state = ProcessState::Running;
-
-    arch::disable_interrupts();
-
-    // CR3 already switched to new address space in step 11b.
-
-    // Update TSS RSP0 and SYSCALL kernel stack for the new program.
-    if (cur->kernel_stack_base != 0) {
-      u64 kstack_top = cur->kernel_stack_top();
-      moss::abi::x64::set_kernel_stack(kstack_top);
-    }
-
-    proc.reset();
-    // iretq to new program — never returns
-    switch_to_user(&cur->context, cur->context.sp);
-  }
-#endif
-
-  // Should not reach here (switch_to_user does eret)
-  while (true) {
+  args.reset();
+  proc.reset();
+  switch_to_user(&cur->context, cur->context.sp);
+  while (true)
     ::moss::kernel::arch::cpu_halt();
-  }
 }
 
 // wait4(pid, wstatus, options, rusage) — wait for child process state change
@@ -931,6 +753,16 @@ long sys_wait4(long wait_pid, long wstatus_addr, long options, long /*unused*/, 
   using namespace moss::kernel::process;
 
   constexpr long WNOHANG = 1;
+  if ((options & ~WNOHANG) != 0) {
+    return -errc::EINVAL;
+  }
+  // This ABI currently supports a positive PID or -1, not process-group waits.
+  if (wait_pid == 0 || wait_pid < -1) {
+    return -errc::EINVAL;
+  }
+  if (wait_pid > ~ProcessId{0}) {
+    return -errc::ECHILD;
+  }
 
   Thread *cur = CfsScheduler::get_current_task();
   if (!cur) {
@@ -962,13 +794,6 @@ long sys_wait4(long wait_pid, long wstatus_addr, long options, long /*unused*/, 
       i32 child_exit_code = zombie->exit_code();
       ProcessId result_pid = zombie->pid();
 
-      // Remove from parent's children list
-      proc->remove_child(zombie_pid);
-
-      // Remove from process table and free Process object
-      // terminate_process sets Terminated + removes from table + release()
-      (void)g_process_manager->terminate_process(zombie_pid, child_exit_code);
-
       // Write status to user space if pointer is non-null
       // Linux WEXITSTATUS encoding: (exit_code & 0xFF) << 8
       if (wstatus_addr != 0) {
@@ -977,6 +802,11 @@ long sys_wait4(long wait_pid, long wstatus_addr, long options, long /*unused*/, 
           return -errc::EFAULT;
         }
       }
+
+      // Commit reaping only after copyout succeeds. EFAULT must leave the
+      // exit status available for a retry with a valid userspace destination.
+      proc->remove_child(zombie_pid);
+      (void)g_process_manager->terminate_process(zombie_pid, child_exit_code);
 
       return static_cast<long>(result_pid);
     }
@@ -992,33 +822,25 @@ long sys_wait4(long wait_pid, long wstatus_addr, long options, long /*unused*/, 
       return 0;
     }
 
-    // Block: add self to wait queue, set Sleeping (interruptible), dequeue.
-    // When a child calls sys_exit, it wakes all waiters on parent's WQ,
-    // setting them back to Ready and re-enqueueing them.  The thread
-    // then resumes here (after being re-dispatched by scheduler_tick's
-    // context_switch) and loops back to rescan for zombies.
-    // Sleeping = TASK_INTERRUPTIBLE: a future signal could wake us early.
+    if (!g_scheduler) {
+      return -errc::ESRCH;
+    }
+
+    // Publish a prepared sleeper before registering it. An exit on another
+    // CPU must not enqueue us until bootstrap owns our saved context.
+    const bool restore_irqs = arch::interrupts_enabled();
+    arch::disable_interrupts();
+    g_scheduler->prepare_sleep();
     proc->child_exit_wait_queue().add_waiter(static_cast<void *>(cur), /*exclusive=*/true);
-    cur->state = ProcessState::Sleeping;
-    if (g_scheduler) {
-      g_scheduler->dequeue_task(cur);
+    // An exit may have happened after the first scan but before registration.
+    // Recheck after publishing the waiter so neither side can miss the other.
+    if (proc->find_zombie_child(wait_pid) != INVALID_PROCESS_ID) {
+      g_scheduler->task_wakeup(cur, cur->wake_cpu);
     }
-
-    // Yield CPU: switch to bootstrap context, let scheduler pick next task.
-    // When this thread is woken (state=Ready, re-enqueued), scheduler_tick
-    // will context_switch back and we resume after this point.
-    {
-      u32 cpu = arch::get_current_cpu_id();
-      CpuContext *my_ctx = &cur->context;
-      CpuContext *bootstrap = &CfsScheduler::bootstrap_context(cpu);
-
-      CfsScheduler::set_current_task(nullptr);
-      arch::disable_interrupts();
-      context_switch(my_ctx, bootstrap);
-      arch::enable_interrupts();
-    }
-    // Resumed — remove self from wait queue and rescan
+    g_scheduler->commit_sleep();
     proc->child_exit_wait_queue().remove_waiter(static_cast<void *>(cur));
+    if (restore_irqs)
+      arch::enable_interrupts();
 
     // Check we still have children (might have been reaped by another thread)
     if (!proc->has_children()) {
@@ -1040,15 +862,10 @@ long sys_waitpid(long pid, long wstatus, long options, long /*unused*/, long /*u
 long sys_kill(long pid_arg, long sig_arg, long /*unused*/, long /*unused*/, long /*unused*/, long /*unused*/) noexcept {
   using namespace moss::kernel::process;
 
-  auto signo = static_cast<u32>(sig_arg);
-  if (signo >= sig::NSIG) {
+  if (sig_arg < 0 || sig_arg >= sig::NSIG) {
     return -errc::EINVAL;
   }
-
-  // sig == 0: permission check only (no signal sent)
-  if (signo == 0) {
-    return 0;
-  }
+  auto signo = static_cast<u32>(sig_arg);
 
   Thread *cur = CfsScheduler::get_current_task();
   if (!cur || !g_process_manager || !g_scheduler) {
@@ -1056,6 +873,10 @@ long sys_kill(long pid_arg, long sig_arg, long /*unused*/, long /*unused*/, long
   }
 
   auto pid = static_cast<i64>(pid_arg);
+  // ProcessId is u32. Reject truncating aliases (and LONG_MIN before negation).
+  if (pid > 0xffffffffLL || pid < -0xffffffffLL) {
+    return -errc::ESRCH;
+  }
 
   if (pid > 0) {
     // Send to specific process
@@ -1067,12 +888,11 @@ long sys_kill(long pid_arg, long sig_arg, long /*unused*/, long /*unused*/, long
     if (!main_thread) {
       return -errc::ESRCH;
     }
+    if (signo == 0) {
+      return 0; // Existence probe, after target lookup and without wakeup.
+    }
     if (!send_signal(main_thread, signo)) {
       return -errc::EPERM;
-    }
-    // Wake the thread if it was sleeping (interruptible)
-    if (main_thread->state == ProcessState::Sleeping) {
-      g_scheduler->task_wakeup(main_thread, main_thread->cpu);
     }
     return 0;
   }
@@ -1088,10 +908,7 @@ long sys_kill(long pid_arg, long sig_arg, long /*unused*/, long /*unused*/, long
     g_process_manager->for_each_process([&](ProcessId, Process *proc) {
       if (proc->pgid() == my_pgid) {
         Thread *thr = proc->get_main_thread();
-        if (thr && send_signal(thr, signo)) {
-          if (thr->state == ProcessState::Sleeping) {
-            g_scheduler->task_wakeup(thr, thr->cpu);
-          }
+        if (thr && (signo == 0 || send_signal(thr, signo))) {
           sent = true;
         }
       }
@@ -1106,10 +923,7 @@ long sys_kill(long pid_arg, long sig_arg, long /*unused*/, long /*unused*/, long
     g_process_manager->for_each_process([&](ProcessId, Process *proc) {
       if (proc->pgid() == target_pgid) {
         Thread *thr = proc->get_main_thread();
-        if (thr && send_signal(thr, signo)) {
-          if (thr->state == ProcessState::Sleeping) {
-            g_scheduler->task_wakeup(thr, thr->cpu);
-          }
+        if (thr && (signo == 0 || send_signal(thr, signo))) {
           sent = true;
         }
       }
@@ -1124,10 +938,7 @@ long sys_kill(long pid_arg, long sig_arg, long /*unused*/, long /*unused*/, long
       return; // skip kernel (0) and init (1)
     }
     Thread *thr = proc->get_main_thread();
-    if (thr && send_signal(thr, signo)) {
-      if (thr->state == ProcessState::Sleeping) {
-        g_scheduler->task_wakeup(thr, thr->cpu);
-      }
+    if (thr && (signo == 0 || send_signal(thr, signo))) {
       sent = true;
     }
   });
@@ -1267,10 +1078,10 @@ long sys_sigaction(long sig_arg, long act_addr, long oldact_addr, long /*unused*
                    long /*unused*/) noexcept {
   using namespace moss::kernel::process;
 
-  auto signo = static_cast<u32>(sig_arg);
-  if (signo == 0 || signo >= sig::NSIG) {
+  if (sig_arg <= 0 || sig_arg >= sig::NSIG) {
     return -errc::EINVAL;
   }
+  auto signo = static_cast<u32>(sig_arg);
 
   // Cannot change SIGKILL or SIGSTOP handlers
   if (signo == sig::SIGKILL || signo == sig::SIGSTOP) {
@@ -1287,17 +1098,7 @@ long sys_sigaction(long sig_arg, long act_addr, long oldact_addr, long /*unused*
     return -errc::ESRCH;
   }
 
-  SignalState *sigstate = get_signal_state(proc.get());
-  if (sigstate == nullptr) {
-    // Lazily initialize signal state
-    init_signal_state(proc.get());
-    sigstate = get_signal_state(proc.get());
-    if (sigstate == nullptr) {
-      return -errc::ENOMEM;
-    }
-  }
-
-  Sigaction &sa = sigstate->actions[signo];
+  Sigaction &sa = proc->signal_state().actions[signo];
 
   // Return old action if requested
   if (oldact_addr != 0) {
@@ -1316,8 +1117,11 @@ long sys_sigaction(long sig_arg, long act_addr, long oldact_addr, long /*unused*
     if (copy_from_user(&kact, static_cast<u64>(act_addr), sizeof(kact)) < 0) {
       return -errc::EFAULT;
     }
+    if ((kact.flags & ~static_cast<u64>(sa_flags::SA_ONSTACK)) != 0) {
+      return -errc::EINVAL;
+    }
     sa.handler = static_cast<VirtAddr>(kact.handler);
-    sa.mask = kact.mask;
+    sa.mask = kact.mask & ~sig::UNCATCHABLE_MASK;
     sa.flags = static_cast<u32>(kact.flags);
   }
 
@@ -1425,6 +1229,9 @@ long sys_sigaltstack(long ss_addr, long old_ss_addr, long /*unused*/, long /*unu
     if (copy_from_user(&new_ss, static_cast<u64>(ss_addr), sizeof(new_ss)) < 0) {
       return -errc::EFAULT;
     }
+    if ((new_ss.ss_flags & ~static_cast<u64>(ss_flags::SS_DISABLE)) != 0) {
+      return -errc::EINVAL;
+    }
     if (new_ss.ss_flags & ss_flags::SS_DISABLE) {
       cur->alt_stack_sp = 0;
       cur->alt_stack_size = 0;
@@ -1432,6 +1239,9 @@ long sys_sigaltstack(long ss_addr, long old_ss_addr, long /*unused*/, long /*unu
     } else {
       if (new_ss.ss_size < 2048) { // MINSIGSTKSZ
         return -errc::ENOMEM;
+      }
+      if (!validate_user_range(new_ss.ss_sp, new_ss.ss_size, vma_flags::WRITE)) {
+        return -errc::EFAULT;
       }
       cur->alt_stack_sp = static_cast<VirtAddr>(new_ss.ss_sp);
       cur->alt_stack_size = static_cast<usize>(new_ss.ss_size);
@@ -1461,13 +1271,26 @@ long sys_open(long pathname_addr, long flags, long mode, long /*unused*/, long /
     return -errc::EBADF;
   }
 
-  char path_buf[256];
+  if (flags < 0 || static_cast<u64>(flags) > 0xffffffffULL)
+    return -errc::EINVAL;
+  // The third argument is absent for open(path, flags) without O_CREAT.
+  if (flags & vfs::O_CREAT) {
+    if (mode < 0 || static_cast<u64>(mode) > 0xffffffffULL)
+      return -errc::EINVAL;
+  } else {
+    mode = 0;
+  }
+  char path_buf[vfs::MAX_PATH_LEN];
   const long copied = copy_string_from_user(path_buf, static_cast<u64>(pathname_addr), sizeof(path_buf));
   if (copied < 0) {
     return copied;
   }
 
-  return moss::kernel::vfs::syscall::do_open(fdt, path_buf, static_cast<u32>(flags), static_cast<u32>(mode));
+  auto proc = process::current_process();
+  if (!proc)
+    return -errc::ESRCH;
+  return moss::kernel::vfs::syscall::do_open(fdt, path_buf, static_cast<u32>(flags), static_cast<u32>(mode),
+                                             proc->euid(), proc->egid());
 }
 
 long sys_close(long fd, long /*unused*/, long /*unused*/, long /*unused*/, long /*unused*/, long /*unused*/) noexcept {
@@ -1476,7 +1299,7 @@ long sys_close(long fd, long /*unused*/, long /*unused*/, long /*unused*/, long 
     return -errc::EBADF;
   }
 
-  return moss::kernel::vfs::syscall::do_close(fdt, static_cast<int>(fd));
+  return moss::kernel::vfs::syscall::do_close(fdt, fd);
 }
 
 long sys_read(long fd, long buf_addr, long count, long /*unused*/, long /*unused*/, long /*unused*/) noexcept {
@@ -1497,7 +1320,7 @@ long sys_read(long fd, long buf_addr, long count, long /*unused*/, long /*unused
 
   auto buffer = moss::kernel::vfs::OutputBuffer::user(static_cast<u64>(buf_addr), static_cast<usize>(count),
                                                       process::copy_to_user);
-  return moss::kernel::vfs::syscall::do_read(fdt, static_cast<int>(fd), buffer);
+  return moss::kernel::vfs::syscall::do_read(fdt, fd, buffer);
 }
 
 long sys_write(long fd, long buf_addr, long count, long /*unused*/, long /*unused*/, long /*unused*/) noexcept {
@@ -1518,17 +1341,116 @@ long sys_write(long fd, long buf_addr, long count, long /*unused*/, long /*unuse
 
   auto buffer = moss::kernel::vfs::InputBuffer::user(static_cast<u64>(buf_addr), static_cast<usize>(count),
                                                      process::copy_from_user);
-  return moss::kernel::vfs::syscall::do_write(fdt, static_cast<int>(fd), buffer);
+  return moss::kernel::vfs::syscall::do_write(fdt, fd, buffer);
 }
 
 // ── Additional VFS syscalls (dup, dup2, pipe, lseek, fstat) ────
 
 long sys_lseek(long fd, long offset, long whence, long /*unused*/, long /*unused*/, long /*unused*/) noexcept {
+  if (whence < 0 || whence > 2)
+    return -errc::EINVAL;
   void *fdt = get_current_fd_table();
   if (!fdt) {
     return -errc::EBADF;
   }
   return moss::kernel::vfs::syscall::do_lseek(fdt, fd, static_cast<i64>(offset), static_cast<u32>(whence));
+}
+
+long sys_getdents(long fd, long buffer, long size, long, long, long) noexcept {
+  if (size < static_cast<long>(sizeof(vfs::DirEntry)))
+    return -errc::EINVAL;
+  if (!validate_user_range(static_cast<u64>(buffer), sizeof(vfs::DirEntry), process::vma_flags::WRITE))
+    return -errc::EFAULT;
+  return vfs::syscall::do_getdents(
+      get_current_fd_table(), fd,
+      vfs::OutputBuffer::user(static_cast<u64>(buffer), sizeof(vfs::DirEntry), process::copy_to_user));
+}
+
+long sys_stat(long path_addr, long stat_addr, long, long, long, long) noexcept {
+  char path[vfs::MAX_PATH_LEN];
+  if (long error = copy_string_from_user(path, static_cast<u64>(path_addr), sizeof(path)); error < 0)
+    return error;
+  vfs::Stat status{};
+  auto proc = process::current_process();
+  if (!proc)
+    return -errc::ESRCH;
+  long result = vfs::syscall::do_stat(path, &status, proc->fd_table(), proc->euid(), proc->egid());
+  return result < 0 ? result : copy_to_user(static_cast<u64>(stat_addr), &status, sizeof(status));
+}
+
+long sys_getcwd(long buffer, long size, long, long, long, long) noexcept {
+  if (size <= 0)
+    return -errc::EINVAL;
+  return vfs::syscall::do_getcwd(
+      get_current_fd_table(),
+      vfs::OutputBuffer::user(static_cast<u64>(buffer), static_cast<usize>(size), process::copy_to_user));
+}
+
+long sys_access(long path_addr, long mode, long, long, long, long) noexcept {
+  if (mode < 0 || mode > 7)
+    return -errc::EINVAL;
+  char path[vfs::MAX_PATH_LEN];
+  if (long error = copy_string_from_user(path, static_cast<u64>(path_addr), sizeof(path)); error < 0)
+    return error;
+  auto proc = process::current_process();
+  if (!proc)
+    return -errc::ESRCH;
+  // access(), unlike open()/chdir(), checks the real credentials.
+  return vfs::syscall::do_access(proc->fd_table(), path, mode, proc->uid(), proc->gid());
+}
+
+long sys_chdir(long path_addr, long, long, long, long, long) noexcept {
+  char path[vfs::MAX_PATH_LEN];
+  if (long error = copy_string_from_user(path, static_cast<u64>(path_addr), sizeof(path)); error < 0)
+    return error;
+  auto proc = process::current_process();
+  if (!proc)
+    return -errc::ESRCH;
+  return vfs::syscall::do_chdir(proc->fd_table(), path, proc->euid(), proc->egid());
+}
+
+long sys_mkdir(long path_addr, long mode, long, long, long, long) noexcept {
+  char path[vfs::MAX_PATH_LEN];
+  if (long error = copy_string_from_user(path, static_cast<u64>(path_addr), sizeof(path)); error < 0)
+    return error;
+  if (mode < 0 || mode > 0777)
+    return -errc::EINVAL;
+  auto proc = process::current_process();
+  if (!proc)
+    return -errc::ESRCH;
+  return vfs::syscall::do_mkdir(path, static_cast<u32>(mode), proc->euid(), proc->egid(), proc->fd_table());
+}
+
+long sys_rmdir(long path_addr, long, long, long, long, long) noexcept {
+  char path[vfs::MAX_PATH_LEN];
+  if (long error = copy_string_from_user(path, static_cast<u64>(path_addr), sizeof(path)); error < 0)
+    return error;
+  auto proc = process::current_process();
+  if (!proc)
+    return -errc::ESRCH;
+  return vfs::syscall::do_rmdir(path, proc->fd_table(), proc->euid(), proc->egid());
+}
+
+long sys_unlink(long path_addr, long, long, long, long, long) noexcept {
+  char path[vfs::MAX_PATH_LEN];
+  if (long error = copy_string_from_user(path, static_cast<u64>(path_addr), sizeof(path)); error < 0)
+    return error;
+  auto proc = process::current_process();
+  if (!proc)
+    return -errc::ESRCH;
+  return vfs::syscall::do_unlink(path, proc->fd_table(), proc->euid(), proc->egid());
+}
+
+long sys_rename(long old_path, long new_path, long, long, long, long) noexcept {
+  char old_name[vfs::MAX_PATH_LEN], new_name[vfs::MAX_PATH_LEN];
+  if (long error = copy_string_from_user(old_name, static_cast<u64>(old_path), sizeof(old_name)); error < 0)
+    return error;
+  if (long error = copy_string_from_user(new_name, static_cast<u64>(new_path), sizeof(new_name)); error < 0)
+    return error;
+  auto proc = process::current_process();
+  if (!proc)
+    return -errc::ESRCH;
+  return vfs::syscall::do_rename(old_name, new_name, proc->fd_table(), proc->euid(), proc->egid());
 }
 
 long sys_fstat(long fd, long stat_buf_addr, long /*unused*/, long /*unused*/, long /*unused*/,
@@ -1550,6 +1472,22 @@ long sys_fstat(long fd, long stat_buf_addr, long /*unused*/, long /*unused*/, lo
     return -errc::EFAULT;
   }
   return 0;
+}
+
+long sys_ioctl(long fd, long command, long argument, long, long, long) noexcept {
+  return moss::kernel::vfs::syscall::do_ioctl(get_current_fd_table(), fd, command, static_cast<u64>(argument));
+}
+
+long sys_uname(long address, long, long, long, long, long) noexcept {
+  // Native ABI: six zero-padded 65-byte fields: system, node, release,
+  // version, machine, domain. No hostname/domain mutation is implemented.
+  static constexpr char identity[6][65] = {
+      "Moss", "moss", MOSS_KERNEL_RELEASE, MOSS_KERNEL_VERSION, MOSS_KERNEL_MACHINE, ""};
+  return copy_to_user(static_cast<u64>(address), identity, sizeof(identity));
+}
+
+long sys_fcntl(long fd, long command, long argument, long /*unused*/, long /*unused*/, long /*unused*/) noexcept {
+  return moss::kernel::vfs::syscall::do_fcntl(get_current_fd_table(), fd, command, argument);
 }
 
 long sys_dup(long oldfd, long /*unused*/, long /*unused*/, long /*unused*/, long /*unused*/, long /*unused*/) noexcept {
@@ -1577,16 +1515,9 @@ long sys_pipe(long pipefd_addr, long /*unused*/, long /*unused*/, long /*unused*
   if (pipefd_addr == 0) {
     return -errc::EFAULT;
   }
-  // Use kernel-stack buffer, then copy to validated user address
-  long kpipefd[2] = {0, 0};
-  long ret = moss::kernel::vfs::syscall::do_pipe(fdt, kpipefd);
-  if (ret < 0) {
-    return ret;
-  }
-  if (copy_to_user(static_cast<u64>(pipefd_addr), kpipefd, sizeof(kpipefd)) < 0) {
-    return -errc::EFAULT;
-  }
-  return 0;
+  auto buffer = moss::kernel::vfs::OutputBuffer::user(static_cast<u64>(pipefd_addr), 2 * sizeof(long),
+                                                      moss::kernel::process::copy_to_user);
+  return moss::kernel::vfs::syscall::do_pipe(fdt, buffer);
 }
 
 // 内存管理系统调用
@@ -2038,6 +1969,9 @@ long sys_sched_yield(long /*unused*/, long /*unused*/, long /*unused*/, long /*u
     return -errc::ESRCH;
   }
 
+  // Publishing Ready must not be interrupted before saving this continuation.
+  const bool restore_irqs = arch::interrupts_enabled();
+  arch::disable_interrupts();
   u32 cpu = arch::get_current_cpu_id();
 
   // Penalize vruntime so other tasks get priority
@@ -2047,16 +1981,10 @@ long sys_sched_yield(long /*unused*/, long /*unused*/, long /*unused*/, long /*u
   // Re-enqueue and trigger reschedule
   g_scheduler->enqueue_task(cur, cpu);
 
-#if defined(MOSS_ARCH_ARM64)
-  {
-    CpuContext *my_ctx = &cur->context;
-    CpuContext *bootstrap = &CfsScheduler::bootstrap_context(cpu);
-    CfsScheduler::set_current_task(nullptr);
-    arch::disable_interrupts();
-    context_switch(my_ctx, bootstrap);
+  CfsScheduler::switch_to_bootstrap(cur->context);
+  if (restore_irqs) {
     arch::enable_interrupts();
   }
-#endif
 
   return 0;
 }
@@ -2089,7 +2017,11 @@ long sys_sched_getaffinity(long pid_arg, long /*unused*/, long mask_addr, long /
   }
 
   if (mask_addr != 0) {
-    u32 mask_val = target->cpu_affinity_mask.low_word();
+    u32 mask_val;
+    {
+      containers::LockGuard<containers::IrqSpinLock> guard(target->sleep_lock);
+      mask_val = target->cpu_affinity_mask.low_word();
+    }
     if (copy_to_user(static_cast<u64>(mask_addr), &mask_val, sizeof(mask_val)) < 0) {
       return -errc::EFAULT;
     }
@@ -2147,7 +2079,10 @@ long sys_sched_setaffinity(long pid_arg, long /*unused*/, long mask_addr, long /
     return -errc::ESRCH;
   }
 
-  target->cpu_affinity_mask.set_from_u32(new_mask);
+  {
+    containers::LockGuard<containers::IrqSpinLock> guard(target->sleep_lock);
+    target->cpu_affinity_mask.set_from_u32(new_mask);
+  }
 
   log::klog::info("sys_sched_setaffinity: TID={} mask={:#x}", static_cast<u32>(target->tid), new_mask);
   return 0;
@@ -2181,21 +2116,10 @@ static void nanosleep_wake_callback(void *data) noexcept {
   }
 }
 
-// sys_nanosleep(ns_ptr, remaining_ptr)
-// Blocking sleep: arms a one-shot HrTimer, blocks the calling thread,
-// and lets the CPU idle (WFI).  The timer ISR wakes the thread.
-long sys_nanosleep(long ns_addr, long /* remaining */, long /*unused*/, long /*unused*/, long /*unused*/,
-                   long /*unused*/) noexcept {
+// Both sleep syscalls use the same architecture-independent context switch.
+static long sleep_until(u64 deadline) noexcept {
   using namespace moss::kernel::process;
-
-  if (ns_addr == 0) {
-    return -errc::EFAULT;
-  }
-  u64 duration = 0;
-  if (copy_from_user(&duration, static_cast<u64>(ns_addr), sizeof(duration)) < 0) {
-    return -errc::EFAULT;
-  }
-  if (duration == 0) {
+  if (deadline <= timer::TimerSubsystem::instance().now_ns()) {
     return 0;
   }
 
@@ -2204,45 +2128,41 @@ long sys_nanosleep(long ns_addr, long /* remaining */, long /*unused*/, long /*u
     return -errc::ESRCH;
   }
 
-  // 1. Arm one-shot timer to wake us after `duration` ns.
-  //    HrTimer lives on kernel stack — safe because the stack
-  //    frame is preserved while the thread is blocked
-  //    (context_switch only saves/restores registers, not stack).
+  const bool restore_irqs = arch::interrupts_enabled();
+  arch::disable_interrupts();
+  // Dequeue before publishing the timer, and defer any remote wakeup until
+  // bootstrap owns our saved context. Local IRQ masking alone is not enough.
+  g_scheduler->prepare_sleep();
   timer::HrTimer sleep_timer;
   sleep_timer.init(timer::TimerMode::OneShot, nanosleep_wake_callback, cur);
-  sleep_timer.start_relative(duration);
-
-  // 2. Block: set Sleeping (interruptible), dequeue, context-switch.
-  //    Same pattern as sys_wait4.  After context_switch, the CPU
-  //    enters idle (WFI) if no other tasks are runnable, causing
-  //    idle_time_ns to accumulate correctly.
-  cur->state = ProcessState::Sleeping;
-  g_scheduler->dequeue_task(cur);
-
-#if defined(MOSS_ARCH_ARM64)
-  {
-    u32 cpu = arch::get_current_cpu_id();
-    CpuContext *my_ctx = &cur->context;
-    CpuContext *bootstrap = &CfsScheduler::bootstrap_context(cpu);
-
-    log::klog::debug("nanosleep: TID={} pre-switch pc={:#x} sp={:#x} x30={:#x}", static_cast<u32>(cur->tid), my_ctx->pc,
-                     my_ctx->sp, my_ctx->x[30]);
-
-    CfsScheduler::set_current_task(nullptr);
-    arch::disable_interrupts();
-    context_switch(my_ctx, bootstrap);
-    arch::enable_interrupts();
-
-    log::klog::debug("nanosleep: TID={} resumed pc={:#x} sp={:#x} x30={:#x}", static_cast<u32>(cur->tid), my_ctx->pc,
-                     my_ctx->sp, my_ctx->x[30]);
+  auto armed = sleep_timer.start(deadline);
+  if (!armed) {
+    // Roll an unsuccessful arm back through the same handoff; the prepared
+    // thread must not return to userspace while still marked/dequeued asleep.
+    g_scheduler->task_wakeup(cur, cur->wake_cpu);
+  } else {
+    moss_validation_sleep_armed(&sleep_timer);
   }
-#endif
+  g_scheduler->commit_sleep();
+  // A remote callback must release its reference before this stack disappears.
+  sleep_timer.cancel_sync();
+  if (restore_irqs) {
+    arch::enable_interrupts();
+  }
+  return armed ? 0 : armed.error() == ErrorCode::ResourceExhausted ? -errc::ENOMEM : -errc::EINVAL;
+}
 
-  // 3. Resumed: timer fired, ISR called task_wakeup, scheduler
-  //    re-dispatched us.  Cancel defensively (already inactive).
-  sleep_timer.cancel();
-
-  return 0;
+long sys_nanosleep(long ns_addr, long /*remaining*/, long /*unused*/, long /*unused*/, long /*unused*/,
+                   long /*unused*/) noexcept {
+  u64 duration = 0;
+  if (copy_from_user(&duration, static_cast<u64>(ns_addr), sizeof(duration)) < 0) {
+    return -errc::EFAULT;
+  }
+  u64 now = timer::TimerSubsystem::instance().now_ns();
+  if (duration > ~u64{0} - now) {
+    return -errc::EINVAL;
+  }
+  return sleep_until(now + duration);
 }
 
 // clock_nanosleep(clockid, flags, ns_addr, remaining)
@@ -2251,10 +2171,8 @@ long sys_nanosleep(long ns_addr, long /* remaining */, long /*unused*/, long /*u
 // ns_addr: pointer to u64 nanoseconds (relative duration or absolute timestamp)
 long sys_clock_nanosleep(long clockid, long flags, long ns_addr, long /*remaining*/, long /*unused*/,
                          long /*unused*/) noexcept {
-  using namespace moss::kernel::process;
-
   // Only support CLOCK_REALTIME (0) and CLOCK_MONOTONIC (1)
-  if (clockid < 0 || clockid > 1) {
+  if (clockid < 0 || clockid > 1 || (flags != 0 && flags != 1)) {
     return -errc::EINVAL;
   }
 
@@ -2266,53 +2184,14 @@ long sys_clock_nanosleep(long clockid, long flags, long ns_addr, long /*remainin
     return -errc::EFAULT;
   }
 
-  Thread *cur = CfsScheduler::get_current_task();
-  if (!cur || !g_scheduler) {
-    return -errc::ESRCH;
-  }
-
-  // Compute relative duration for the timer
-  constexpr long TIMER_ABSTIME = 1;
-  u64 duration = 0;
-
-  if (flags & TIMER_ABSTIME) {
-    // Absolute: sleep until target_ns timestamp
+  if (flags == 0) {
     u64 now = timer::TimerSubsystem::instance().now_ns();
-    if (target_ns <= now) {
-      return 0; // deadline already passed
+    if (target_ns > ~u64{0} - now) {
+      return -errc::EINVAL;
     }
-    duration = target_ns - now;
-  } else {
-    // Relative: sleep for target_ns nanoseconds (same as nanosleep)
-    duration = target_ns;
-    if (duration == 0) {
-      return 0;
-    }
+    target_ns += now;
   }
-
-  // Same timer + block pattern as sys_nanosleep
-  timer::HrTimer sleep_timer;
-  sleep_timer.init(timer::TimerMode::OneShot, nanosleep_wake_callback, cur);
-  sleep_timer.start_relative(duration);
-
-  cur->state = ProcessState::Sleeping;
-  g_scheduler->dequeue_task(cur);
-
-#if defined(MOSS_ARCH_ARM64)
-  {
-    u32 cpu = arch::get_current_cpu_id();
-    CpuContext *my_ctx = &cur->context;
-    CpuContext *bootstrap = &CfsScheduler::bootstrap_context(cpu);
-
-    CfsScheduler::set_current_task(nullptr);
-    arch::disable_interrupts();
-    context_switch(my_ctx, bootstrap);
-    arch::enable_interrupts();
-  }
-#endif
-
-  sleep_timer.cancel();
-  return 0;
+  return sleep_until(target_ns);
 }
 
 // ── System monitoring: topinfo ──────────────────────────────
@@ -2496,6 +2375,9 @@ long sys_not_implemented(long /*unused*/, long /*unused*/, long /*unused*/, long
 
 namespace console_rx {
 
+static bool initialized_ = false;
+
+#if defined(MOSS_ARCH_ARM64) || defined(MOSS_ARCH_X64)
 // Lock-free SPSC ring buffer (single producer = IRQ, single consumer = reader).
 // Power-of-2 size for mask-based wrap-around.
 constexpr usize RX_BUF_SIZE = 256;
@@ -2505,13 +2387,9 @@ static u8 rx_buf_[RX_BUF_SIZE];
 static volatile usize rx_head_ = 0; // Written by IRQ (producer)
 static volatile usize rx_tail_ = 0; // Written by consumer
 
-static bool initialized_ = false;
-
-#if defined(MOSS_ARCH_ARM64) || defined(MOSS_ARCH_X64)
 // The thread currently blocked waiting for input (at most one reader).
 // Used by uart_rx_irq_handler and console_getc_blocking.
 static process::Thread *blocked_reader_ = nullptr;
-#endif
 
 static bool buf_empty() noexcept { return rx_head_ == rx_tail_; }
 
@@ -2523,8 +2401,6 @@ static int buf_get() noexcept {
   rx_tail_ = (rx_tail_ + 1) & RX_BUF_MASK;
   return ch;
 }
-
-#if defined(MOSS_ARCH_ARM64) || defined(MOSS_ARCH_X64)
 
 static bool buf_put(u8 ch) noexcept {
   usize next_head = (rx_head_ + 1) & RX_BUF_MASK;
@@ -2577,7 +2453,7 @@ static void x64_uart_rx_dispatch() noexcept {
 } // namespace console_rx
 
 // extern "C" bridge: initialize console RX interrupt subsystem.
-// Called once from console_read() on first invocation.
+// Called by devfs initialization before userspace can access the console.
 extern "C" void console_rx_init() noexcept {
   using namespace console_rx;
   if (initialized_) {
@@ -2613,6 +2489,16 @@ extern "C" void console_rx_init() noexcept {
   initialized_ = true;
 }
 
+// Nonblocking access uses the same RX owner as the console reader. In
+// particular, validation must not steal bytes directly from an IRQ-owned UART.
+extern "C" int console_try_getc() noexcept {
+#if defined(MOSS_ARCH_ARM64) || defined(MOSS_ARCH_X64)
+  return console_rx::buf_get();
+#else
+  return hal::uart::getc();
+#endif
+}
+
 // extern "C" bridge: blocking getc — blocks the calling thread until a
 // character is available in the ring buffer.  Returns 0-255.
 extern "C" int console_getc_blocking() noexcept {
@@ -2620,7 +2506,7 @@ extern "C" int console_getc_blocking() noexcept {
   using namespace process;
 
   // Fast path: char already in buffer
-  int ch = buf_get();
+  int ch = console_try_getc();
   if (ch >= 0) {
     return ch;
   }
@@ -2653,12 +2539,8 @@ extern "C" int console_getc_blocking() noexcept {
 
     // 3. Context-switch to bootstrap (CPU enters idle → WFI/HLT)
     {
-      u32 cpu = arch::get_current_cpu_id();
-      CpuContext *my_ctx = &cur->context;
-      CpuContext *bootstrap = &CfsScheduler::bootstrap_context(cpu);
-      CfsScheduler::set_current_task(nullptr);
       arch::disable_interrupts();
-      context_switch(my_ctx, bootstrap);
+      CfsScheduler::switch_to_bootstrap(cur->context);
       arch::enable_interrupts();
     }
 
@@ -2687,8 +2569,8 @@ const SyscallDescriptor SYSCALL_TABLE[static_cast<int>(SyscallNumber::MAX_SYSCAL
     {"getppid", handlers::sys_getppid, 0, true, "获取父进程ID"},
     {"getuid", handlers::sys_getuid, 0, true, "获取用户ID"},
     {"getgid", handlers::sys_getgid, 0, true, "获取组ID"},
-    {"geteuid", handlers::sys_not_implemented, 0, false, "获取有效用户ID"},
-    {"getegid", handlers::sys_not_implemented, 0, false, "获取有效组ID"},
+    {"geteuid", handlers::sys_geteuid, 0, true, "获取有效用户ID"},
+    {"getegid", handlers::sys_getegid, 0, true, "获取有效组ID"},
     {"setsid", handlers::sys_setsid, 0, true, "创建新会话"},
     {"getpgid", handlers::sys_getpgid, 1, true, "获取进程组ID"},
 
@@ -2720,25 +2602,25 @@ const SyscallDescriptor SYSCALL_TABLE[static_cast<int>(SyscallNumber::MAX_SYSCAL
     {"read", handlers::sys_read, 3, true, "读取文件"},
     {"write", handlers::sys_write, 3, true, "写入文件"},
     {"lseek", handlers::sys_lseek, 3, true, "文件定位"},
-    {"stat", handlers::sys_not_implemented, 2, false, "获取文件状态"},
+    {"stat", handlers::sys_stat, 2, true, "获取文件状态"},
     {"fstat", handlers::sys_fstat, 2, true, "获取文件描述符状态"},
-    {"lstat", handlers::sys_not_implemented, 2, false, "获取链接文件状态"},
-    {"access", handlers::sys_not_implemented, 2, false, "检查文件权限"},
+    {"lstat", handlers::sys_stat, 2, true, "获取链接文件状态"},
+    {"access", handlers::sys_access, 2, true, "Check access using real credentials"},
     {"chmod", handlers::sys_not_implemented, 2, false, "修改文件权限"},
     {"chown", handlers::sys_not_implemented, 3, false, "修改文件所有者"},
     {"umask", handlers::sys_not_implemented, 1, false, "设置文件创建掩码"},
     {"dup", handlers::sys_dup, 1, true, "复制文件描述符"},
     {"dup2", handlers::sys_dup2, 2, true, "复制文件描述符到指定位置"},
     {"pipe", handlers::sys_pipe, 1, true, "创建管道"},
-    {"mkdir", handlers::sys_not_implemented, 2, false, "创建目录"},
-    {"rmdir", handlers::sys_not_implemented, 1, false, "删除目录"},
+    {"mkdir", handlers::sys_mkdir, 2, true, "创建目录"},
+    {"rmdir", handlers::sys_rmdir, 1, true, "删除目录"},
     {"link", handlers::sys_not_implemented, 2, false, "创建硬链接"},
-    {"unlink", handlers::sys_not_implemented, 1, false, "删除文件"},
+    {"unlink", handlers::sys_unlink, 1, true, "删除文件"},
     {"symlink", handlers::sys_not_implemented, 2, false, "创建符号链接"},
     {"readlink", handlers::sys_not_implemented, 3, false, "读取符号链接"},
-    {"chdir", handlers::sys_not_implemented, 1, false, "改变工作目录"},
-    {"getcwd", handlers::sys_not_implemented, 2, false, "获取当前目录"},
-    {"rename", handlers::sys_not_implemented, 2, false, "重命名文件"},
+    {"chdir", handlers::sys_chdir, 1, true, "改变工作目录"},
+    {"getcwd", handlers::sys_getcwd, 2, true, "获取当前目录"},
+    {"rename", handlers::sys_rename, 2, true, "重命名文件"},
     {"truncate", handlers::sys_not_implemented, 2, false, "截断文件"},
     {"ftruncate", handlers::sys_not_implemented, 2, false, "截断文件(通过fd)"},
     {"fsync", handlers::sys_not_implemented, 1, false, "同步文件"},
@@ -2803,7 +2685,7 @@ const SyscallDescriptor SYSCALL_TABLE[static_cast<int>(SyscallNumber::MAX_SYSCAL
     {"epoll_create", handlers::sys_not_implemented, 1, false, "创建epoll实例"},
 
     // === 系统信息和控制 (110-129) ===
-    {"uname", handlers::sys_not_implemented, 1, false, "获取系统信息"},
+    {"uname", handlers::sys_uname, 1, true, "Read native system identity"},
     {"topinfo", handlers::sys_topinfo, 1, true, "Get system/process info for top"},
     {"getrlimit", handlers::sys_not_implemented, 2, false, "获取资源限制"},
     {"setrlimit", handlers::sys_not_implemented, 2, false, "设置资源限制"},
@@ -2819,10 +2701,13 @@ const SyscallDescriptor SYSCALL_TABLE[static_cast<int>(SyscallNumber::MAX_SYSCAL
     {"iopl", handlers::sys_not_implemented, 1, false, "I/O权限级别"},
     {"ioperm", handlers::sys_not_implemented, 3, false, "I/O端口权限"},
     {"sysctl", handlers::sys_not_implemented, 1, false, "系统控制"},
-    {"arch_prctl", handlers::sys_not_implemented, 2, false, "架构特定控制"},
+    {"arch_prctl", handlers::sys_arch_prctl, 2, arch::is_x64, "架构特定控制"},
     {"prctl", handlers::sys_not_implemented, 5, false, "进程控制"},
     {"capget", handlers::sys_not_implemented, 2, false, "获取能力"},
-    {"capset", handlers::sys_not_implemented, 2, false, "设置能力"}};
+    {"capset", handlers::sys_not_implemented, 2, false, "设置能力"},
+    {"fcntl", handlers::sys_fcntl, 3, true, "Query file status flags"},
+    {"getdents", handlers::sys_getdents, 3, true, "Read a native directory entry"},
+    {"ioctl", handlers::sys_ioctl, 3, true, "Native device control"}};
 
 // 系统调用分发器实现
 long SyscallDispatcher::dispatch(long syscall_number, long arg0, long arg1, long arg2, long arg3, long arg4,

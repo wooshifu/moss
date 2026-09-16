@@ -16,6 +16,7 @@ inline constexpr long ENOENT = 2;        // No such file or directory
 inline constexpr long ESRCH = 3;         // No such process
 inline constexpr long EINTR = 4;         // Interrupted system call
 inline constexpr long EIO = 5;           // I/O error
+inline constexpr long E2BIG = 7;         // Argument list too long
 inline constexpr long ENOEXEC = 8;       // Exec format error
 inline constexpr long EBADF = 9;         // Bad file descriptor
 inline constexpr long ECHILD = 10;       // No child processes
@@ -186,8 +187,12 @@ enum class SyscallNumber : long {
   SYS_CAPGET = 128,
   SYS_CAPSET = 129,
 
+  SYS_FCNTL = 130,
+  SYS_GETDENTS = 131,
+  SYS_IOCTL = 132,
+
   // Total syscall count marker
-  MAX_SYSCALL = 130
+  MAX_SYSCALL = 133
 };
 
 // Syscall handler function type
@@ -217,6 +222,9 @@ long sys_getpid(long arg0, long arg1, long arg2, long arg3, long arg4, long arg5
 long sys_getppid(long arg0, long arg1, long arg2, long arg3, long arg4, long arg5) noexcept;
 long sys_getuid(long arg0, long arg1, long arg2, long arg3, long arg4, long arg5) noexcept;
 long sys_getgid(long arg0, long arg1, long arg2, long arg3, long arg4, long arg5) noexcept;
+long sys_geteuid(long arg0, long arg1, long arg2, long arg3, long arg4, long arg5) noexcept;
+long sys_getegid(long arg0, long arg1, long arg2, long arg3, long arg4, long arg5) noexcept;
+long sys_arch_prctl(long operation, long address, long arg2, long arg3, long arg4, long arg5) noexcept;
 
 // Process management - framework implementation
 long sys_fork(long arg0, long arg1, long arg2, long arg3, long arg4, long arg5) noexcept;
@@ -232,9 +240,16 @@ long sys_read(long fd, long buf_addr, long count, long arg3, long arg4, long arg
 long sys_write(long fd, long buf_addr, long count, long arg3, long arg4, long arg5) noexcept;
 long sys_lseek(long fd, long offset, long whence, long arg3, long arg4, long arg5) noexcept;
 long sys_fstat(long fd, long stat_buf_addr, long arg2, long arg3, long arg4, long arg5) noexcept;
+long sys_stat(long path_addr, long stat_addr, long arg2, long arg3, long arg4, long arg5) noexcept;
+long sys_mkdir(long path_addr, long mode, long arg2, long arg3, long arg4, long arg5) noexcept;
+long sys_rmdir(long path_addr, long arg1, long arg2, long arg3, long arg4, long arg5) noexcept;
+long sys_unlink(long path_addr, long arg1, long arg2, long arg3, long arg4, long arg5) noexcept;
+long sys_rename(long old_path, long new_path, long arg2, long arg3, long arg4, long arg5) noexcept;
+long sys_getdents(long fd, long buffer, long size, long arg3, long arg4, long arg5) noexcept;
 long sys_dup(long oldfd, long arg1, long arg2, long arg3, long arg4, long arg5) noexcept;
 long sys_dup2(long oldfd, long newfd, long arg2, long arg3, long arg4, long arg5) noexcept;
 long sys_pipe(long pipefd_addr, long arg1, long arg2, long arg3, long arg4, long arg5) noexcept;
+long sys_fcntl(long fd, long command, long arg2, long arg3, long arg4, long arg5) noexcept;
 
 // Memory management
 long sys_mmap(long addr, long length, long prot, long flags, long fd, long offset) noexcept;

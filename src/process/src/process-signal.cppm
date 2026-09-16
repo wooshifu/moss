@@ -76,13 +76,7 @@ inline constexpr u32 SS_DISABLE = 2;
 inline constexpr VirtAddr SIG_DFL = 0; // default action
 inline constexpr VirtAddr SIG_IGN = 1; // ignore signal
 
-struct Sigaction {
-  VirtAddr handler; // SIG_DFL, SIG_IGN, or user function pointer
-  u64 mask;         // signals to block during handler execution
-  u32 flags;        // SA_RESTART, SA_SIGINFO, etc. (reserved)
-
-  constexpr Sigaction() noexcept : handler(SIG_DFL), mask(0), flags(0) {}
-};
+static_assert(sizeof(SignalState::actions) / sizeof(Sigaction) == sig::NSIG);
 
 // ============================================================================
 // Default signal actions — what happens when handler is SIG_DFL
@@ -119,16 +113,6 @@ constexpr SigDefault default_action(u32 signo) noexcept {
   }
 }
 
-// ============================================================================
-// Per-process signal state
-// ============================================================================
-struct SignalState {
-  // Per-signal action table (indexed by signal number, 0 unused)
-  Sigaction actions[sig::NSIG]{};
-
-  constexpr SignalState() noexcept = default;
-};
-
 // Native signal ABI, version 2. GP order follows abi::TrapFrame::gpr().
 // Only user state is serialized; no kernel frame pointer or entry metadata.
 // FP storage is aligned for FXSAVE64 on x86 and Q0-Q31 on ARM64.
@@ -146,6 +130,7 @@ struct alignas(16) SignalFrame {
   u64 signo;
   u64 saved_mask;
   u64 saved_on_alt_stack;
+  u64 previous; // nested-frame link occupies the native ABI's tail padding
 };
 static_assert(sizeof(SignalFrame) == SignalFrame::FRAME_SIZE);
 static_assert(__builtin_offsetof(SignalFrame, fp) % 16 == 0);
@@ -157,26 +142,7 @@ static_assert(__builtin_offsetof(SignalFrame, fp) % 16 == 0);
 // Send a signal to a thread.  Sets the pending bit; actual delivery
 // happens at the next signal checkpoint (syscall return / IRQ return).
 // Returns true if the signal was successfully pended.
-inline bool send_signal(Thread *thread, u32 signo) noexcept {
-  if (thread == nullptr || signo == 0 || signo >= sig::NSIG) {
-    return false;
-  }
-
-  u64 mask = sig::sigmask(signo);
-
-  // Always pend the signal — even if currently blocked.  POSIX requires
-  // blocked signals to remain pending until the mask is lifted.
-  thread->pending_signals |= mask;
-
-  // If the signal is deliverable right now (not blocked, or uncatchable),
-  // wake a sleeping thread so it can process the signal.
-  bool deliverable = (mask & sig::UNCATCHABLE_MASK) != 0 || (thread->signal_mask & mask) == 0;
-  if (deliverable && thread->state == ProcessState::Sleeping) {
-    thread->need_resched = true;
-  }
-
-  return true;
-}
+bool send_signal(Thread *thread, u32 signo) noexcept;
 
 // Check if a thread has any unmasked pending signals.
 [[nodiscard]] inline bool signal_pending(const Thread *thread) noexcept {
@@ -241,11 +207,8 @@ inline bool send_signal(Thread *thread, u32 signo) noexcept {
 }
 
 // Get the signal state for a process.
-// Returns nullptr if the process has no signal state (kernel process).
+// Returns nullptr only for a null process.
 [[nodiscard]] SignalState *get_signal_state(Process *proc) noexcept;
-
-// Initialize signal state for a process (called from create_process).
-void init_signal_state(Process *proc) noexcept;
 
 // Process pending signals at a checkpoint (syscall return / IRQ return).
 // This is the main signal delivery entry point.

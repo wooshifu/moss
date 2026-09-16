@@ -519,8 +519,11 @@ static bool try_demand_page(moss::kernel::u64 far_addr, FaultAccess access) noex
       page_va[i] = 0;
     }
   } else {
-    for (usize i = 0; i < PG_SIZE; i++) {
-      page_va[i] = 0;
+    // Fresh physical pages are page-aligned. Clear whole words so the Debug
+    // demand-zero path does not execute a byte loop for every slab page.
+    auto *words = reinterpret_cast<u64 *>(page_va);
+    for (usize i = 0; i < PG_SIZE / sizeof(u64); i++) {
+      words[i] = 0;
     }
   }
 
@@ -564,7 +567,7 @@ static bool try_demand_page(moss::kernel::u64 far_addr, FaultAccess access) noex
     return false;
   }
 
-  mm::PageTableManager::invalidate_tlb_addr(fault_page);
+  // map_user_page publishes the entry and invalidates this address itself.
   return true;
 }
 

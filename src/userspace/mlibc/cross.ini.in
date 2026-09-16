@@ -1,0 +1,20 @@
+[binaries]
+c = ['@CLANG@', @MLIBC_FLAGS@]
+cpp = ['@CLANGXX@', @MLIBC_FLAGS@]
+ar = '@LLVM_AR@'
+strip = '@LLVM_STRIP@'
+
+[host_machine]
+system = 'moss'
+cpu_family = '@MLIBC_CPU@'
+cpu = '@MLIBC_CPU@'
+endian = 'little'
+
+[properties]
+needs_exe_wrapper = true
+
+[built-in options]
+c_args = ['-fno-stack-protector', '-D_GNU_SOURCE']
+cpp_args = ['-fno-stack-protector', '-D_GNU_SOURCE']
+c_link_args = ['-nostdlib', '-static', '-fuse-ld=lld']
+cpp_link_args = ['-nostdlib', '-static', '-fuse-ld=lld']

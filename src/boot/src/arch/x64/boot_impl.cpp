@@ -601,10 +601,17 @@ extern "C" void x64_interrupt_handler(u64 vector, u64 error_code, [[maybe_unused
 
   // 2. Initialize Local APIC (enable via SVR register)
   auto *gic = new moss::kernel::interrupts::GenericInterruptController();
-  if (gic) {
+  if (!gic) {
+    return ::moss::kernel::VoidResult{::moss::kernel::ErrorCode::OutOfMemory};
+  }
+  {
     VirtAddr dist_base = moss::kernel::platform::intc_dist_base(); // Local APIC
     VirtAddr cpu_base = moss::kernel::platform::intc_cpu_base();   // I/O APIC
-    (void)gic->initialize(dist_base, cpu_base, 0);
+    auto result = gic->initialize(dist_base, cpu_base, 0);
+    if (!result) {
+      delete gic;
+      return result;
+    }
     g_gic_controller = gic;
     g_gic_hardware_available = true;
     moss::boot::early_print("  Local APIC initialized\n");

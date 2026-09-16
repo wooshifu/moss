@@ -34,7 +34,9 @@ enum class memory_order : int {
 /// Atomically load value from ptr.
 /// Default: sequentially consistent ordering.
 template <typename T> [[nodiscard]] T load(const T *ptr, memory_order order = memory_order::seq_cst) noexcept {
-  return __atomic_load_n(ptr, static_cast<int>(order));
+  T value;
+  __atomic_load(ptr, &value, static_cast<int>(order));
+  return value;
 }
 
 // ============================================================================
@@ -44,7 +46,7 @@ template <typename T> [[nodiscard]] T load(const T *ptr, memory_order order = me
 /// Atomically store val to ptr.
 /// Default: sequentially consistent ordering.
 template <typename T> void store(T *ptr, T val, memory_order order = memory_order::seq_cst) noexcept {
-  __atomic_store_n(ptr, val, static_cast<int>(order));
+  __atomic_store(ptr, &val, static_cast<int>(order));
 }
 
 // ============================================================================
@@ -54,7 +56,9 @@ template <typename T> void store(T *ptr, T val, memory_order order = memory_orde
 /// Atomically replace value at ptr with val, return old value.
 /// Default: sequentially consistent ordering.
 template <typename T> [[nodiscard]] T exchange(T *ptr, T val, memory_order order = memory_order::seq_cst) noexcept {
-  return __atomic_exchange_n(ptr, val, static_cast<int>(order));
+  T old;
+  __atomic_exchange(ptr, &val, &old, static_cast<int>(order));
+  return old;
 }
 
 // ============================================================================
@@ -68,8 +72,8 @@ template <typename T> [[nodiscard]] T exchange(T *ptr, T val, memory_order order
 template <typename T>
 bool compare_exchange_strong(T *ptr, T *expected, T desired, memory_order success = memory_order::seq_cst,
                              memory_order failure = memory_order::seq_cst) noexcept {
-  return __atomic_compare_exchange_n(ptr, expected, desired, false, static_cast<int>(success),
-                                     static_cast<int>(failure));
+  return __atomic_compare_exchange(ptr, expected, &desired, false, static_cast<int>(success),
+                                   static_cast<int>(failure));
 }
 
 /// Atomically compare *ptr with *expected, replace with desired if equal.
@@ -78,8 +82,7 @@ bool compare_exchange_strong(T *ptr, T *expected, T desired, memory_order succes
 template <typename T>
 bool compare_exchange_weak(T *ptr, T *expected, T desired, memory_order success = memory_order::seq_cst,
                            memory_order failure = memory_order::seq_cst) noexcept {
-  return __atomic_compare_exchange_n(ptr, expected, desired, true, static_cast<int>(success),
-                                     static_cast<int>(failure));
+  return __atomic_compare_exchange(ptr, expected, &desired, true, static_cast<int>(success), static_cast<int>(failure));
 }
 
 // ============================================================================

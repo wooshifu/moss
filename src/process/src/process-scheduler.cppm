@@ -22,6 +22,9 @@ import moss.hal.timer;
 import moss.timer;
 import moss.logging;
 
+// Validation observes the real selection-to-dispatch boundary; production is a no-op.
+extern "C" void moss_validation_dispatch_selected() noexcept;
+
 // Assembly/entry symbols from moss.abi — bring into scope for this partition
 using moss::abi::context_switch;
 using moss::abi::switch_to_user;
@@ -1367,6 +1370,9 @@ public:
     constexpr u32 LOG_INTERVAL = 2000000;
 
     while (true) {
+      // A timer IRQ must not consume a selected task before this loop switches
+      // to it. Idle enables IRQs while waiting; tasks restore their own state.
+      arch::disable_interrupts();
       Thread *next_task = nullptr;
 
       if (has_runnable_tasks(cpu_id)) {
@@ -1452,11 +1458,38 @@ public:
   }
 
   void task_wakeup(Thread *task, u32 target_cpu) noexcept {
-    if (task == nullptr || !is_blocked_state(task->state)) {
+    if (task == nullptr || target_cpu >= g_num_cpus) {
       return;
     }
+    containers::LockGuard<containers::IrqSpinLock> guard(task->sleep_lock);
 
-    task->state = ProcessState::Ready;
+    // A prepared sleeper is still executing until bootstrap acknowledges its
+    // saved context. Remember early wakeups without publishing it to any CPU.
+    u32 handoff = task->sleep_handoff.load();
+    while (handoff != 0) {
+      if (handoff == 2 || task->sleep_handoff.compare_exchange_weak(handoff, 2)) {
+        return;
+      }
+    }
+
+    // A task may have excluded its old CPU before blocking. All wake sources
+    // must select an allowed CPU, not just the load balancer's migrations.
+    if (!task->cpu_affinity_mask.test(target_cpu)) {
+      target_cpu = 0;
+      while (target_cpu < g_num_cpus && !task->cpu_affinity_mask.test(target_cpu))
+        ++target_cpu;
+      if (target_cpu == g_num_cpus)
+        return;
+    }
+
+    // Several child exits, signals or timer callbacks may wake the same task.
+    // Only the winner of the blocked -> Ready transition owns enqueueing it.
+    ProcessState expected = task->state.load();
+    do {
+      if (!is_blocked_state(expected)) {
+        return;
+      }
+    } while (!task->state.compare_exchange_weak(expected, ProcessState::Ready));
     // Place entity with wakeup bonus before enqueueing
     place_entity(task, target_cpu, /*is_fork=*/false);
     enqueue_task(task, target_cpu);
@@ -1583,6 +1616,7 @@ private:
   static containers::PerCpuData<CpuContext> bootstrap_contexts_;
   // Keep the exiting task's owner alive until we are back on the scheduler stack.
   containers::PerCpuData<shared_ptr<Process>> exiting_processes_;
+  containers::PerCpuData<Thread *> sleeping_tasks_{};
 
   // Per-CPU exit stack — used by schedule_after_exit() to avoid running
   // on the exited process's kernel stack (which will be freed by waitpid).
@@ -1600,6 +1634,29 @@ public:
 
   static CpuContext &bootstrap_context(u32 cpu) noexcept { return bootstrap_contexts_.get_cpu(cpu); }
 
+  static void use_kernel_address_space() noexcept {
+    auto *pgd = mm::PageTableManager::get_kernel_pgd();
+    if (!pgd)
+      arch::kernel_panic("kernel page table unavailable");
+    const u64 physical = mm::PageTableManager::get_physical_address(pgd);
+#if defined(MOSS_ARCH_ARM64)
+    asm volatile("msr ttbr0_el1, %0\n\tdsb ish\n\tisb" ::"r"(physical) : "memory");
+#elif defined(MOSS_ARCH_X64)
+    asm volatile("mov %0, %%cr3" ::"r"(physical) : "memory");
+#elif defined(MOSS_ARCH_RISCV64)
+    const u64 satp = hal::mmu::make_satp_value(physical);
+    asm volatile("csrw satp, %0\n\tsfence.vma" ::"r"(satp) : "memory");
+#endif
+  }
+
+  // Caller masks IRQs. Bootstrap must never borrow a task's page tables:
+  // that task can resume on another CPU and free them while this CPU idles.
+  static void switch_to_bootstrap(CpuContext &previous) noexcept {
+    use_kernel_address_space();
+    set_current_task(nullptr);
+    context_switch(&previous, &bootstrap_contexts_.get_local());
+  }
+
   static void set_current_task(Thread *task) noexcept { current_running_tasks_.get_local() = task; }
 
   static Thread *get_current_task() noexcept { return current_running_tasks_.get_local(); }
@@ -1607,8 +1664,45 @@ public:
   // Get the currently running task on a specific CPU (for topinfo)
   static Thread *get_current_task_on_cpu(u32 cpu) noexcept { return current_running_tasks_.get_cpu(cpu); }
 
+  // Caller holds its event lock with IRQs masked. It must register its waiter
+  // before unlocking and committing, so condition changes cannot be lost.
+  Thread *prepare_sleep() noexcept {
+    auto *task = get_current_task();
+    if (!task || arch::interrupts_enabled())
+      return nullptr;
+    containers::LockGuard<containers::IrqSpinLock> guard(task->sleep_lock);
+    task->sleep_handoff.store(1);
+    task->wake_cpu = get_current_cpu_id();
+    task->state = ProcessState::Sleeping;
+    dequeue_task(task);
+    return task;
+  }
+
+  void commit_sleep() noexcept {
+    auto *task = get_current_task();
+    const auto cpu = get_current_cpu_id();
+    sleeping_tasks_.get_cpu(cpu) = task;
+    switch_to_bootstrap(task->context);
+  }
+
 private:
   static containers::PerCpuData<ExitStack> exit_stacks_;
+
+  void reschedule_current(Thread *current, u32 cpu) noexcept {
+    enqueue_task(current, cpu);
+    auto *next = pick_next_task(cpu);
+    if (!next)
+      return;
+    // Even self-selection transfers the task out of the ready queue. Leaving
+    // its intrusive node linked makes the next yield insert that node twice.
+    dequeue_task(next);
+    if (next != current) {
+      context_switch_to_task(next);
+    } else {
+      current->state = ProcessState::Running;
+      current->need_resched = false;
+    }
+  }
 
   // ---- GIC timer IRQ handler ----
   // Bridges the hardware interrupt from GIC to the TimerSubsystem.
@@ -1699,12 +1793,7 @@ public:
         }
         curr->state = ProcessState::Ready;
         record_preemption();
-        enqueue_task(curr, cpu);
-        Thread *next = pick_next_task(cpu);
-        if (next != nullptr && next != curr) {
-          dequeue_task(next);
-          context_switch_to_task(next);
-        }
+        reschedule_current(curr, cpu);
       }
       return;
     }
@@ -1720,12 +1809,7 @@ public:
       }
       curr->state = ProcessState::Ready;
       record_preemption();
-      enqueue_task(curr, cpu);
-      Thread *next = pick_next_task(cpu);
-      if (next != nullptr && next != curr) {
-        dequeue_task(next);
-        context_switch_to_task(next);
-      }
+      reschedule_current(curr, cpu);
       return;
     }
 
@@ -1759,14 +1843,7 @@ public:
       curr->state = ProcessState::Ready;
       record_preemption();
 
-      // Re-enqueue current task, pick the next one
-      enqueue_task(curr, cpu);
-      Thread *next = pick_next_task(cpu);
-      if (next != nullptr && next != curr) {
-        dequeue_task(next);
-        context_switch_to_task(next);
-        // Returns here when curr is scheduled again.
-      }
+      reschedule_current(curr, cpu);
     }
   }
 
@@ -1812,7 +1889,9 @@ public:
       early_debug_print("[sched] arming scheduler tick timer (6ms period)\n");
 
       sched_tick_.init(timer::TimerMode::Periodic, scheduler_tick_callback, this);
-      sched_tick_.start_relative(cfs_params::SCHED_LATENCY_NS);
+      if (!sched_tick_.start_relative(cfs_params::SCHED_LATENCY_NS)) {
+        arch::kernel_panic("cannot arm scheduler tick");
+      }
 
       early_debug_print("[sched] tick armed, entering idle loop\n");
 
@@ -1877,6 +1956,7 @@ private:
     if (task == nullptr) {
       return;
     }
+    moss_validation_dispatch_selected();
 
     // Guard: never switch to a terminated task (e.g. sys_exit race)
     if (task->state == ProcessState::Terminated) {
@@ -2011,6 +2091,12 @@ private:
 
       context_switch(prev_ctx, &task->context);
       // Returns here when prev_ctx is scheduled again.
+      if (auto *sleeper = sleeping_tasks_.get_local()) {
+        sleeping_tasks_.get_local() = nullptr;
+        // The continuation is now saved; release publication to a waking CPU.
+        if (sleeper->sleep_handoff.exchange(0) == 2)
+          task_wakeup(sleeper, sleeper->wake_cpu);
+      }
       exiting_processes_.get_local().reset();
       // An IRQ caller must finish restoring its trap frame with IRQs masked.
       // Ordinary scheduler callers regain their original enabled state.
@@ -2040,11 +2126,10 @@ public:
     arch::disable_interrupts();
     u32 cpu = get_current_cpu_id();
     exiting_processes_.get_cpu(cpu) = moss::move(process);
-    set_current_task(nullptr);
     // The bootstrap context already owns a live scheduler stack. Do not
     // overwrite it with a dying task, or change SP inside a C++ frame.
     CpuContext discarded{};
-    context_switch(&discarded, &bootstrap_contexts_.get_cpu(cpu));
+    switch_to_bootstrap(discarded);
     arch::kernel_panic("terminated task resumed");
   }
 };

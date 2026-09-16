@@ -8,6 +8,7 @@ export module moss.vfs:dcache;
 
 import moss.std;
 import moss.types;
+import moss.containers;
 import :types;
 import :inode;
 
@@ -47,6 +48,7 @@ public:
 
   /// Insert a dentry into the cache.
   void insert(Dentry *dentry) noexcept;
+  void remove(Dentry *dentry) noexcept;
 
   /// Look up a child dentry by parent + name.
   /// Returns nullptr if not cached.
@@ -66,11 +68,40 @@ private:
 /// On success returns the final Dentry*; on failure returns nullptr.
 [[nodiscard]] Dentry *resolve_path(const char *path) noexcept;
 
+// ponytail: one namespace lock for the bounded in-memory tree; split by directory if contention matters.
+inline containers::IrqSpinLock namespace_lock;
+/// Internal walk; the caller holds namespace_lock while using the borrowed result.
+/// If supplied, error describes a failed walk; ignore it on success.
+[[nodiscard]] Dentry *resolve_path_locked(const char *path, VfsError *error = nullptr, Dentry *start = nullptr,
+                                          u32 uid = 0, u32 gid = 0) noexcept;
+
+/// Requested R/W/X bits use the native access() mask (4/2/1).
+[[nodiscard]] inline bool can_access(const Inode &inode, u32 uid, u32 gid, u32 mask) noexcept {
+  if (uid == 0)
+    return !(mask & 1) || inode.is_directory() || (inode.mode & (S_IXUSR | S_IXGRP | S_IXOTH)) != 0;
+  const u32 shift = uid == inode.uid ? 6U : gid == inode.gid ? 3U : 0U;
+  return ((inode.mode >> shift) & mask) == mask;
+}
+
+[[nodiscard]] inline bool can_search(const Inode &inode, u32 uid, u32 gid) noexcept {
+  return can_access(inode, uid, gid, 1);
+}
+
 /// Allocate a new Dentry from the global dentry pool.
 [[nodiscard]] Dentry *alloc_dentry(const char *name, u32 name_len, Inode *inode, Dentry *parent) noexcept;
+/// Drop a retained dentry reference with namespace_lock held. Final release
+/// returns its inode/dentry slots and the reference to its parent.
+void release_dentry(Dentry *dentry) noexcept;
 
 /// Allocate a new Inode from the global inode pool.
 [[nodiscard]] Inode *alloc_inode() noexcept;
+
+/// Counts actual occupied pool slots, including unlinked but retained objects.
+struct PoolUsage {
+  u32 inodes = 0, dentries = 0, files = 0;
+  bool operator==(const PoolUsage &) const noexcept = default;
+};
+[[nodiscard]] PoolUsage pool_usage() noexcept;
 
 // Global dcache instance
 inline DentryCache g_dcache;

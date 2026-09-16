@@ -6,12 +6,22 @@ set(KERNEL_SOURCES src/kernel_main.cpp src/runtime_support.cpp src/syscall_table
 
 # Architecture-specific assembly files
 if(MOSS_TARGET_ARCH STREQUAL "ARM64")
+    set(MOSS_UNAME_MACHINE "aarch64")
     list(APPEND KERNEL_SOURCES src/arch/arm64_syscall.S src/arch/arm64_user_program.S)
 elseif(MOSS_TARGET_ARCH STREQUAL "X64")
+    set(MOSS_UNAME_MACHINE "x86_64")
     list(APPEND KERNEL_SOURCES src/arch/x64_syscall.S src/arch/x64_user_program.S)
 elseif(MOSS_TARGET_ARCH STREQUAL "RISCV64")
+    set(MOSS_UNAME_MACHINE "riscv64")
     list(APPEND KERNEL_SOURCES src/arch/riscv64_syscall.S src/arch/riscv64_user_program.S)
 endif()
+
+target_compile_definitions(
+    moss_kernel
+    PRIVATE MOSS_KERNEL_RELEASE="${CMAKE_PROJECT_VERSION}"
+            MOSS_KERNEL_VERSION="${CMAKE_PROJECT_VERSION}-${CMAKE_BUILD_TYPE}"
+            MOSS_KERNEL_MACHINE="${MOSS_UNAME_MACHINE}"
+)
 
 target_sources(
     moss_kernel
