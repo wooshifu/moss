@@ -378,12 +378,15 @@ static inline long topinfo(struct TopInfo *info) { return syscall1(SYS_TOPINFO, 
 
 static inline long current_cpu(void) {
   struct TopInfo info;
-  if (topinfo(&info) != 0)
+  if (topinfo(&info) != 0) {
     return -1;
+  }
   long self = syscall0(SYS_GETPID);
-  for (unsigned long i = 0; i < info.nr_processes; ++i)
-    if (info.procs[i].pid == self)
+  for (unsigned long i = 0; i < info.nr_processes; ++i) {
+    if (info.procs[i].pid == self) {
       return (long)info.procs[i].cpu;
+    }
+  }
   return -1;
 }
 

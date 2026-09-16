@@ -69,8 +69,9 @@ public:
 private:
   friend class FdTable;
   explicit FileRef(File *file) noexcept : file_(file) {
-    if (file_)
+    if (file_) {
       file_->ref();
+    }
   }
   File *file_ = nullptr;
 };
@@ -93,8 +94,9 @@ public:
   // The caller holds namespace_lock while borrowing the directory.
   [[nodiscard]] Dentry *working_directory() const noexcept { return cwd_; }
   void set_working_directory(Dentry *directory) noexcept {
-    if (directory)
+    if (directory) {
       directory->ref();
+    }
     release_dentry(cwd_);
     cwd_ = directory;
   }
@@ -117,8 +119,9 @@ public:
     explicit Reservation(FdTable &table) noexcept : table_(table) {
       containers::LockGuard<containers::IrqSpinLock> guard(table_.lock_);
       fd_ = table_.find_free_fd(0);
-      if (fd_ >= 0)
+      if (fd_ >= 0) {
         table_.reserved_[static_cast<u32>(fd_)] = true;
+      }
     }
     Reservation(const Reservation &) = delete;
     Reservation &operator=(const Reservation &) = delete;
@@ -130,10 +133,12 @@ public:
     }
     [[nodiscard]] long fd() const noexcept { return fd_; }
     long install(File *file, bool cloexec) noexcept {
-      if (fd_ < 0)
+      if (fd_ < 0) {
         return fd_;
-      if (!file)
+      }
+      if (!file) {
         return -static_cast<long>(VfsError::InvalidArg);
+      }
       containers::LockGuard<containers::IrqSpinLock> guard(table_.lock_);
       const auto index = static_cast<u32>(fd_);
       file->ref();
@@ -147,12 +152,15 @@ public:
 
     /// Commit two reservations together after fallible work, including copyout.
     long install_pair(Reservation &second, File *first_file, File *second_file) noexcept {
-      if (this == &second || &table_ != &second.table_ || !first_file || !second_file)
+      if (this == &second || &table_ != &second.table_ || !first_file || !second_file) {
         return -static_cast<long>(VfsError::InvalidArg);
-      if (fd_ < 0)
+      }
+      if (fd_ < 0) {
         return fd_;
-      if (second.fd_ < 0)
+      }
+      if (second.fd_ < 0) {
         return second.fd_;
+      }
       containers::LockGuard<containers::IrqSpinLock> guard(table_.lock_);
       const auto a = static_cast<u32>(fd_), b = static_cast<u32>(second.fd_);
       first_file->ref();
@@ -187,10 +195,12 @@ public:
   [[nodiscard]] long duplicate(long source, long minimum = 0, bool cloexec = false) noexcept {
     containers::LockGuard<containers::IrqSpinLock> guard(lock_);
     auto *file = lookup_file(source);
-    if (!file)
+    if (!file) {
       return -static_cast<long>(VfsError::BadFd);
-    if (minimum < 0 || minimum >= MAX_FDS)
+    }
+    if (minimum < 0 || minimum >= MAX_FDS) {
       return -static_cast<long>(VfsError::InvalidArg);
+    }
     const long fd = find_free_fd(static_cast<u32>(minimum));
     if (fd >= 0) {
       file->ref();
@@ -212,13 +222,16 @@ public:
     {
       containers::LockGuard<containers::IrqSpinLock> guard(lock_);
       auto *file = lookup_file(source);
-      if (!file)
+      if (!file) {
         return -static_cast<long>(VfsError::BadFd);
-      if (source == fd)
+      }
+      if (source == fd) {
         return fd; // A no-op preserves descriptor flags and reference ownership.
+      }
       auto idx = static_cast<u32>(fd);
-      if (reserved_[idx])
+      if (reserved_[idx]) {
         return -static_cast<long>(VfsError::Busy);
+      }
       // Retain before replacing: file can also be the old slot's object.
       file->ref();
       previous = fds_[idx];
@@ -248,8 +261,9 @@ public:
     {
       containers::LockGuard<containers::IrqSpinLock> guard(lock_);
       file = lookup_file(fd);
-      if (!file)
+      if (!file) {
         return -static_cast<long>(VfsError::BadFd);
+      }
       auto idx = static_cast<u32>(fd);
       fds_[idx] = nullptr;
       cloexec_[idx] = false;
@@ -265,8 +279,9 @@ public:
 
   /// Close all open fds (for exit / exec).
   void close_all() noexcept {
-    for (u32 fd = 0; fd < MAX_FDS; ++fd)
+    for (u32 fd = 0; fd < MAX_FDS; ++fd) {
       (void)close_fd(fd);
+    }
   }
 
   long descriptor_flags(long fd) const noexcept {
@@ -275,11 +290,13 @@ public:
   }
   long set_descriptor_flags(long fd, long flags) noexcept {
     containers::LockGuard<containers::IrqSpinLock> guard(lock_);
-    if (!lookup_file(fd))
+    if (!lookup_file(fd)) {
       return -static_cast<long>(VfsError::BadFd);
+    }
     // FD_CLOEXEC is the native F_SETFD bit 0; no other descriptor flags exist.
-    if (flags & ~1L)
+    if (flags & ~1L) {
       return -static_cast<long>(VfsError::InvalidArg);
+    }
     cloexec_[static_cast<u32>(fd)] = flags != 0;
     return 0;
   }
@@ -288,8 +305,9 @@ public:
       File *file = nullptr;
       {
         containers::LockGuard<containers::IrqSpinLock> guard(lock_);
-        if (!cloexec_[fd])
+        if (!cloexec_[fd]) {
           continue;
+        }
         file = fds_[fd];
         fds_[fd] = nullptr;
         cloexec_[fd] = false;
@@ -300,9 +318,11 @@ public:
 
 private:
   [[nodiscard]] long find_free_fd(u32 minimum) const noexcept {
-    for (u32 fd = minimum; fd < MAX_FDS; ++fd)
-      if (!fds_[fd] && !reserved_[fd])
+    for (u32 fd = minimum; fd < MAX_FDS; ++fd) {
+      if (!fds_[fd] && !reserved_[fd]) {
         return static_cast<long>(fd);
+      }
+    }
     return -static_cast<long>(VfsError::TooManyFiles);
   }
   [[nodiscard]] File *lookup_file(long fd) const noexcept {

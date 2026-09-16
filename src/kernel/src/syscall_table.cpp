@@ -19,9 +19,10 @@ using moss::abi::switch_to_user;
 
 // Only the validation image overrides this observation point. It can hold the
 // caller after arming a real timer without replacing expiry or scheduling.
-extern "C" [[gnu::weak, gnu::noinline]] void moss_validation_sleep_armed(void *) noexcept {}
+extern "C" [[gnu::weak, gnu::noinline]] void moss_validation_sleep_armed(void * /*unused*/) noexcept {}
 // Validation may apply real heap pressure at a fork allocation boundary.
-extern "C" [[gnu::weak, gnu::noinline]] void moss_validation_fork_metadata(unsigned, bool) noexcept {}
+extern "C" [[gnu::weak, gnu::noinline]] void moss_validation_fork_metadata(unsigned /*unused*/,
+                                                                           bool /*unused*/) noexcept {}
 
 namespace moss::kernel::syscall {
 
@@ -183,17 +184,20 @@ long sys_getgid(long /*unused*/, long /*unused*/, long /*unused*/, long /*unused
   return proc ? static_cast<long>(proc->gid()) : 0;
 }
 
-long sys_geteuid(long, long, long, long, long, long) noexcept {
+long sys_geteuid(long /*unused*/, long /*unused*/, long /*unused*/, long /*unused*/, long /*unused*/,
+                 long /*unused*/) noexcept {
   auto proc = process::current_process();
   return proc ? static_cast<long>(proc->euid()) : -errc::ESRCH;
 }
 
-long sys_getegid(long, long, long, long, long, long) noexcept {
+long sys_getegid(long /*unused*/, long /*unused*/, long /*unused*/, long /*unused*/, long /*unused*/,
+                 long /*unused*/) noexcept {
   auto proc = process::current_process();
   return proc ? static_cast<long>(proc->egid()) : -errc::ESRCH;
 }
 
-long sys_arch_prctl(long operation, long address, long, long, long, long) noexcept {
+long sys_arch_prctl(long operation, long address, long /*unused*/, long /*unused*/, long /*unused*/,
+                    long /*unused*/) noexcept {
 #if defined(MOSS_ARCH_X64)
   auto *thread = process::CfsScheduler::get_current_task();
   if (!thread)
@@ -309,8 +313,9 @@ long sys_fork(long /*unused*/, long /*unused*/, long /*unused*/, long /*unused*/
   child_as->executable_image = parent_as->executable_image;
   bool vmas_copied = true;
   parent_as->vmas.for_each([&](const process::VmaRegion &vma) {
-    if (!vmas_copied)
+    if (!vmas_copied) {
       return;
+    }
     moss_validation_fork_metadata(0, true);
     vmas_copied = child_as->add_vma(vma.start_addr, vma.end_addr, vma.flags, vma.type, vma.backing_data,
                                     vma.backing_offset, vma.backing_size);
@@ -469,19 +474,22 @@ long sys_fork(long /*unused*/, long /*unused*/, long /*unused*/, long /*unused*/
   return static_cast<long>(child_proc->pid());
 }
 
-long sys_execve(long pathname_addr, long argv_addr, long envp_addr, long, long, long) noexcept {
+long sys_execve(long pathname_addr, long argv_addr, long envp_addr, long /*unused*/, long /*unused*/,
+                long /*unused*/) noexcept {
   using namespace moss::kernel::process;
   using namespace moss::kernel::elf;
   Thread *cur = g_scheduler ? CfsScheduler::get_current_task() : nullptr;
   auto proc = cur && g_process_manager ? g_process_manager->find_process(cur->owner_pid) : shared_ptr<Process>{};
-  if (!proc || !proc->address_space())
+  if (!proc || !proc->address_space()) {
     return -errc::ESRCH;
+  }
 
   // Exec retains its narrower 256-byte path limit (including NUL), separate
   // from the VFS full-path limit; its exact original sizing is unrecorded.
   char pathname[256];
-  if (long error = copy_string_from_user(pathname, static_cast<u64>(pathname_addr), sizeof(pathname)); error < 0)
+  if (long error = copy_string_from_user(pathname, static_cast<u64>(pathname_addr), sizeof(pathname)); error < 0) {
     return error;
+  }
 
   // Bounded native exec contract: argv + envp together have at most 128
   // strings and 16 KiB of bytes including their terminators. Never truncate.
@@ -498,36 +506,45 @@ long sys_execve(long pathname_addr, long argv_addr, long envp_addr, long, long, 
   };
   // The syscall kernel stack is only 16 KiB; keep the snapshot in owned heap memory.
   auto args = make_unique<Arguments>();
-  if (!args)
+  if (!args) {
     return -errc::ENOMEM;
+  }
   auto capture = [&](long address) -> long {
-    if (!address)
+    if (!address) {
       return 0;
+    }
     for (usize index = 0;; ++index) {
       const u64 base = static_cast<u64>(address);
       const usize offset = index * sizeof(u64);
-      if (base > ~u64{0} - offset)
+      if (base > ~u64{0} - offset) {
         return -errc::EFAULT;
+      }
       u64 pointer = 0;
-      if (copy_from_user(&pointer, base + offset, sizeof(pointer)) < 0)
+      if (copy_from_user(&pointer, base + offset, sizeof(pointer)) < 0) {
         return -errc::EFAULT;
-      if (!pointer)
+      }
+      if (!pointer) {
         return 0;
-      if (args->count == MAX_STRINGS || args->used == STRING_BYTES)
+      }
+      if (args->count == MAX_STRINGS || args->used == STRING_BYTES) {
         return -errc::E2BIG;
+      }
       const long error = copy_string_from_user(args->strings + args->used, pointer, STRING_BYTES - args->used);
-      if (error < 0)
+      if (error < 0) {
         return error == -errc::ENAMETOOLONG ? -errc::E2BIG : error;
+      }
       args->offsets[args->count++] = args->used;
       while (args->strings[args->used++]) {
       }
     }
   };
-  if (long error = capture(argv_addr); error < 0)
+  if (long error = capture(argv_addr); error < 0) {
     return error;
+  }
   args->argc = args->count;
-  if (long error = capture(envp_addr); error < 0)
+  if (long error = capture(envp_addr); error < 0) {
     return error;
+  }
 
   shared_ptr<ExecutableImage> image;
   const u8 *image_data;
@@ -538,13 +555,16 @@ long sys_execve(long pathname_addr, long argv_addr, long envp_addr, long, long, 
     vfs::VfsError error = vfs::VfsError::NoEntry;
     auto *dentry = vfs::resolve_path_locked(pathname, &error, files ? files->working_directory() : nullptr,
                                             proc->euid(), proc->egid());
-    if (!dentry || !dentry->inode)
+    if (!dentry || !dentry->inode) {
       return -static_cast<long>(error);
+    }
     auto *inode = dentry->inode;
-    if (inode->type != vfs::FileType::Regular || !vfs::can_access(*inode, proc->euid(), proc->egid(), 1))
+    if (inode->type != vfs::FileType::Regular || !vfs::can_access(*inode, proc->euid(), proc->egid(), 1)) {
       return -errc::EACCES;
-    if (!inode->data || !inode->size)
+    }
+    if (!inode->data || !inode->size) {
       return -errc::ENOEXEC;
+    }
     image_data = inode->data;
     image_size = inode->size;
     if (inode->ramfs_mutable) {
@@ -552,8 +572,9 @@ long sys_execve(long pathname_addr, long argv_addr, long envp_addr, long, long, 
       // copying large images becomes costly. Immutable CPIO stays borrowed.
       image = make_shared<ExecutableImage>();
       auto allocation = mm::RuntimeHeapAllocator::allocate(image_size);
-      if (!allocation)
+      if (!allocation) {
         return -errc::ENOMEM;
+      }
       image->data = static_cast<u8 *>(*allocation);
       image->size = image_size;
       __builtin_memcpy(image->data, image_data, image_size);
@@ -563,8 +584,9 @@ long sys_execve(long pathname_addr, long argv_addr, long envp_addr, long, long, 
   const auto *header = reinterpret_cast<const ElfHeader *>(image_data);
   // Limit the quadratic overlap validation to 64 headers from untrusted input.
   // The exact cap calibration is unrecorded; larger static images are rejected.
-  if (!validate_elf_header(header, image_size) || header->e_phnum > 64)
+  if (!validate_elf_header(header, image_size) || header->e_phnum > 64) {
     return -errc::ENOEXEC;
+  }
   const auto *phdrs = get_program_headers(header);
   const VirtAddr stack_bottom = user_layout::STACK_TOP - user_layout::STACK_SIZE;
   bool executable_entry = false;
@@ -573,67 +595,84 @@ long sys_execve(long pathname_addr, long argv_addr, long envp_addr, long, long, 
   // overlaps instead of merging unrelated file ranges and weakening permissions.
   for (u16 i = 0; i < header->e_phnum; ++i) {
     const auto &ph = phdrs[i];
-    if (ph.p_type == PT_INTERP || ph.p_type == PT_DYNAMIC)
+    if (ph.p_type == PT_INTERP || ph.p_type == PT_DYNAMIC) {
       return -errc::ENOEXEC;
-    if (ph.p_type != PT_LOAD && ph.p_type != PT_TLS)
+    }
+    if (ph.p_type != PT_LOAD && ph.p_type != PT_TLS) {
       continue;
-    if (ph.p_offset > image_size || ph.p_filesz > image_size - ph.p_offset || ph.p_filesz > ph.p_memsz)
+    }
+    if (ph.p_offset > image_size || ph.p_filesz > image_size - ph.p_offset || ph.p_filesz > ph.p_memsz) {
       return -errc::ENOEXEC;
-    if (ph.p_type != PT_LOAD || !ph.p_memsz)
+    }
+    if (ph.p_type != PT_LOAD || !ph.p_memsz) {
       continue;
+    }
     if (ph.p_vaddr >= USER_MAX || ph.p_memsz > USER_MAX - ph.p_vaddr || (ph.p_flags & ~(PF_R | PF_W | PF_X)) ||
-        ((ph.p_flags & (PF_W | PF_X)) == (PF_W | PF_X)))
+        ((ph.p_flags & (PF_W | PF_X)) == (PF_W | PF_X))) {
       return -errc::ENOEXEC;
+    }
     const VirtAddr start = ph.p_vaddr & ~(static_cast<VirtAddr>(PAGE_SIZE) - 1);
     const VirtAddr end = (ph.p_vaddr + ph.p_memsz + PAGE_SIZE - 1) & ~(static_cast<VirtAddr>(PAGE_SIZE) - 1);
     const u64 prefix = ph.p_vaddr - start;
     if (ph.p_offset < prefix || ((ph.p_offset ^ ph.p_vaddr) & (PAGE_SIZE - 1)) ||
-        (ph.p_align > 1 && ((ph.p_align & (ph.p_align - 1)) || ((ph.p_offset ^ ph.p_vaddr) & (ph.p_align - 1)))))
+        (ph.p_align > 1 && ((ph.p_align & (ph.p_align - 1)) || ((ph.p_offset ^ ph.p_vaddr) & (ph.p_align - 1))))) {
       return -errc::ENOEXEC;
+    }
     if (!AddressSpace::valid_vma_range(start, end, VmaType::DATA) ||
         (start < user_layout::STACK_TOP && end > stack_bottom) ||
-        (start < user_layout::HEAP_START + user_layout::HEAP_INIT && end > user_layout::HEAP_START))
+        (start < user_layout::HEAP_START + user_layout::HEAP_INIT && end > user_layout::HEAP_START)) {
       return -errc::ENOEXEC;
+    }
     // ponytail: pairwise overlap checks are bounded by 64 headers; sort if that cap grows.
     for (u16 j = 0; j < i; ++j) {
       const auto &other = phdrs[j];
-      if (other.p_type != PT_LOAD || !other.p_memsz)
+      if (other.p_type != PT_LOAD || !other.p_memsz) {
         continue;
+      }
       const VirtAddr other_start = other.p_vaddr & ~(static_cast<VirtAddr>(PAGE_SIZE) - 1);
       const VirtAddr other_end =
           (other.p_vaddr + other.p_memsz + PAGE_SIZE - 1) & ~(static_cast<VirtAddr>(PAGE_SIZE) - 1);
-      if (start < other_end && end > other_start)
+      if (start < other_end && end > other_start) {
         return -errc::ENOEXEC;
+      }
     }
-    if ((ph.p_flags & PF_X) && header->e_entry >= ph.p_vaddr && header->e_entry < ph.p_vaddr + ph.p_memsz)
+    if ((ph.p_flags & PF_X) && header->e_entry >= ph.p_vaddr && header->e_entry < ph.p_vaddr + ph.p_memsz) {
       executable_entry = true;
+    }
   }
-  if (!executable_entry)
+  if (!executable_entry) {
     return -errc::ENOEXEC;
+  }
 
   auto created = user_space::create_user_address_space();
-  if (!created)
+  if (!created) {
     return -errc::ENOMEM;
+  }
   auto prepared = moss::move(*created);
   prepared->executable_image = image;
   for (u16 i = 0; i < header->e_phnum; ++i) {
     const auto &ph = phdrs[i];
-    if (ph.p_type != PT_LOAD || !ph.p_memsz)
+    if (ph.p_type != PT_LOAD || !ph.p_memsz) {
       continue;
+    }
     const VirtAddr start = ph.p_vaddr & ~(static_cast<VirtAddr>(PAGE_SIZE) - 1);
     const VirtAddr end = (ph.p_vaddr + ph.p_memsz + PAGE_SIZE - 1) & ~(static_cast<VirtAddr>(PAGE_SIZE) - 1);
     const usize prefix = ph.p_vaddr - start;
     u32 flags = ph.p_filesz ? 0 : vma_flags::DEMAND_ZERO;
-    if (ph.p_flags & PF_R)
+    if (ph.p_flags & PF_R) {
       flags |= vma_flags::READ;
-    if (ph.p_flags & PF_W)
+    }
+    if (ph.p_flags & PF_W) {
       flags |= vma_flags::WRITE;
-    if (ph.p_flags & PF_X)
+    }
+    if (ph.p_flags & PF_X) {
       flags |= vma_flags::EXEC;
+    }
     if (!prepared->add_vma(start, end, flags, ph.p_flags & PF_X ? VmaType::CODE : VmaType::DATA,
                            ph.p_filesz ? image_data + ph.p_offset - prefix : nullptr, 0,
-                           ph.p_filesz ? ph.p_filesz + prefix : 0))
+                           ph.p_filesz ? ph.p_filesz + prefix : 0)) {
       return -errc::ENOMEM;
+    }
   }
   if (!prepared->add_vma(user_layout::SIGRETURN_PAGE, user_layout::SIGRETURN_PAGE + PAGE_SIZE,
                          vma_flags::READ | vma_flags::EXEC, VmaType::SIGRETURN, moss::abi::signal::trampoline(), 0,
@@ -641,8 +680,9 @@ long sys_execve(long pathname_addr, long argv_addr, long envp_addr, long, long, 
       !prepared->add_vma(stack_bottom, user_layout::STACK_TOP,
                          vma_flags::READ | vma_flags::WRITE | vma_flags::DEMAND_ZERO, VmaType::STACK) ||
       !prepared->add_vma(user_layout::HEAP_START, user_layout::HEAP_START + user_layout::HEAP_INIT,
-                         vma_flags::READ | vma_flags::WRITE | vma_flags::DEMAND_ZERO, VmaType::HEAP))
+                         vma_flags::READ | vma_flags::WRITE | vma_flags::DEMAND_ZERO, VmaType::HEAP)) {
     return -errc::ENOMEM;
+  }
   prepared->brk_base = prepared->brk_current = user_layout::HEAP_START;
   prepared->mmap_next = user_layout::MMAP_BASE;
 
@@ -660,18 +700,21 @@ long sys_execve(long pathname_addr, long argv_addr, long envp_addr, long, long, 
 #if defined(MOSS_ARCH_X64)
   user_sp -= sizeof(u64); // Synthetic return slot: native C entry requires RSP % 16 == 8.
 #endif
-  if (user_sp < stack_bottom)
+  if (user_sp < stack_bottom) {
     return -errc::E2BIG;
+  }
   args->vector[0] = argc;
-  for (usize i = 0; i < args->count; ++i)
+  for (usize i = 0; i < args->count; ++i) {
     args->vector[1 + i + (i >= argc ? 1 : 0)] = strings_base + args->offsets[i];
+  }
 
   // Populate inactive stack pages through the kernel's physical mapping.
   // Failure frees only this prepared image; the caller remains runnable.
   for (VirtAddr va = user_sp & ~(VirtAddr{PAGE_SIZE} - 1); va < user_layout::STACK_TOP; va += PAGE_SIZE) {
     auto page = mm::allocate_pages(0);
-    if (!page)
+    if (!page) {
       return -errc::ENOMEM;
+    }
     __builtin_memset(reinterpret_cast<void *>(phys_to_virt(*page)), 0, PAGE_SIZE);
     if (!mm::PageTableManager::map_user_page(prepared->pgd_phys, va, *page, hal::mmu::page_perms::USER_RW)) {
       (void)mm::free_pages(*page, 0);
@@ -680,11 +723,12 @@ long sys_execve(long pathname_addr, long argv_addr, long envp_addr, long, long, 
     (void)prepared->resident_pages.fetch_add(1, containers::MemoryOrder::Relaxed);
   }
   auto write_stack = [&](VirtAddr address, const void *source, usize size) {
-    auto *bytes = static_cast<const u8 *>(source);
+    const auto *bytes = static_cast<const u8 *>(source);
     while (size) {
       auto *pte = mm::PageTableManager::get_user_pte(prepared->pgd_phys, address);
-      if (!pte || !pte->is_valid())
+      if (!pte || !pte->is_valid()) {
         return false;
+      }
       const usize offset = address & (PAGE_SIZE - 1);
       const usize chunk = size < PAGE_SIZE - offset ? size : PAGE_SIZE - offset;
       __builtin_memcpy(reinterpret_cast<void *>(phys_to_virt(pte->get_phys_addr()) + offset), bytes, chunk);
@@ -694,8 +738,9 @@ long sys_execve(long pathname_addr, long argv_addr, long envp_addr, long, long, 
     }
     return true;
   };
-  if (!write_stack(strings_base, args->strings, args->used) || !write_stack(vector_base, args->vector, vector_bytes))
+  if (!write_stack(strings_base, args->strings, args->used) || !write_stack(vector_base, args->vector, vector_bytes)) {
     return -errc::EFAULT;
+  }
 
   // Commit: no remaining fallible preparation. IRQs stay masked while the
   // hardware root and Process ownership change together. Old pages are freed
@@ -712,16 +757,21 @@ long sys_execve(long pathname_addr, long argv_addr, long envp_addr, long, long, 
   asm volatile("mov %0, %%cr3" ::"r"(prepared->pgd_phys) : "memory");
 #endif
   (void)proc->set_address_space(moss::move(prepared)); // Non-null ownership transfer cannot fail.
-  if (auto *files = static_cast<vfs::FdTable *>(proc->fd_table()))
+  if (auto *files = static_cast<vfs::FdTable *>(proc->fd_table())) {
     files->close_on_exec();
+  }
   const char *basename = pathname;
-  for (const char *p = pathname; *p; ++p)
-    if (*p == '/')
+  for (const char *p = pathname; *p; ++p) {
+    if (*p == '/') {
       basename = p + 1;
+    }
+  }
   proc->set_name(basename);
-  for (auto &action : proc->signal_state().actions)
-    if (action.handler != SIG_IGN)
+  for (auto &action : proc->signal_state().actions) {
+    if (action.handler != SIG_IGN) {
       action = Sigaction{};
+    }
+  }
   cur->alt_stack_sp = cur->alt_stack_size = 0;
   cur->alt_stack_flags = ss_flags::SS_DISABLE;
   cur->on_alt_stack = false;
@@ -734,8 +784,9 @@ long sys_execve(long pathname_addr, long argv_addr, long envp_addr, long, long, 
   cur->context.x[0] = argc;
   cur->context.x[1] = argv_base;
   cur->context.x[2] = envp_base;
-  if (cur->kernel_stack_base)
+  if (cur->kernel_stack_base) {
     asm volatile("msr tpidr_el1, %0" ::"r"(cur->kernel_stack_top()));
+  }
 #elif defined(MOSS_ARCH_RISCV64)
   cur->context.x[10] = argc;
   cur->context.x[11] = argv_base;
@@ -757,8 +808,9 @@ long sys_execve(long pathname_addr, long argv_addr, long envp_addr, long, long, 
   args.reset();
   proc.reset();
   switch_to_user(&cur->context, cur->context.sp);
-  while (true)
+  while (true) {
     ::moss::kernel::arch::cpu_halt();
+  }
 }
 
 // wait4(pid, wstatus, options, rusage) — wait for child process state change
@@ -856,8 +908,9 @@ long sys_wait4(long wait_pid, long wstatus_addr, long options, long /*unused*/, 
     }
     g_scheduler->commit_sleep();
     proc->child_exit_wait_queue().remove_waiter(static_cast<void *>(cur));
-    if (restore_irqs)
+    if (restore_irqs) {
       arch::enable_interrupts();
+    }
 
     // Check we still have children (might have been reaped by another thread)
     if (!proc->has_children()) {
@@ -1290,12 +1343,14 @@ long sys_open(long pathname_addr, long flags, long mode, long /*unused*/, long /
     return -errc::EBADF;
   }
 
-  if (flags < 0 || static_cast<u64>(flags) > 0xffffffffULL)
+  if (flags < 0 || static_cast<u64>(flags) > 0xffffffffULL) {
     return -errc::EINVAL;
+  }
   // The third argument is absent for open(path, flags) without O_CREAT.
   if (flags & vfs::O_CREAT) {
-    if (mode < 0 || static_cast<u64>(mode) > 0xffffffffULL)
+    if (mode < 0 || static_cast<u64>(mode) > 0xffffffffULL) {
       return -errc::EINVAL;
+    }
   } else {
     mode = 0;
   }
@@ -1306,8 +1361,9 @@ long sys_open(long pathname_addr, long flags, long mode, long /*unused*/, long /
   }
 
   auto proc = process::current_process();
-  if (!proc)
+  if (!proc) {
     return -errc::ESRCH;
+  }
   return moss::kernel::vfs::syscall::do_open(fdt, path_buf, static_cast<u32>(flags), static_cast<u32>(mode),
                                              proc->euid(), proc->egid());
 }
@@ -1366,8 +1422,9 @@ long sys_write(long fd, long buf_addr, long count, long /*unused*/, long /*unuse
 // ── Additional VFS syscalls (dup, dup2, pipe, lseek, fstat) ────
 
 long sys_lseek(long fd, long offset, long whence, long /*unused*/, long /*unused*/, long /*unused*/) noexcept {
-  if (whence < 0 || whence > 2)
+  if (whence < 0 || whence > 2) {
     return -errc::EINVAL;
+  }
   void *fdt = get_current_fd_table();
   if (!fdt) {
     return -errc::EBADF;
@@ -1375,100 +1432,126 @@ long sys_lseek(long fd, long offset, long whence, long /*unused*/, long /*unused
   return moss::kernel::vfs::syscall::do_lseek(fdt, fd, static_cast<i64>(offset), static_cast<u32>(whence));
 }
 
-long sys_getdents(long fd, long buffer, long size, long, long, long) noexcept {
-  if (size < static_cast<long>(sizeof(vfs::DirEntry)))
+long sys_getdents(long fd, long buffer, long size, long /*unused*/, long /*unused*/, long /*unused*/) noexcept {
+  if (size < static_cast<long>(sizeof(vfs::DirEntry))) {
     return -errc::EINVAL;
-  if (!validate_user_range(static_cast<u64>(buffer), sizeof(vfs::DirEntry), process::vma_flags::WRITE))
+  }
+  if (!validate_user_range(static_cast<u64>(buffer), sizeof(vfs::DirEntry), process::vma_flags::WRITE)) {
     return -errc::EFAULT;
+  }
   return vfs::syscall::do_getdents(
       get_current_fd_table(), fd,
       vfs::OutputBuffer::user(static_cast<u64>(buffer), sizeof(vfs::DirEntry), process::copy_to_user));
 }
 
-long sys_stat(long path_addr, long stat_addr, long, long, long, long) noexcept {
+long sys_stat(long path_addr, long stat_addr, long /*unused*/, long /*unused*/, long /*unused*/,
+              long /*unused*/) noexcept {
   char path[vfs::MAX_PATH_LEN];
-  if (long error = copy_string_from_user(path, static_cast<u64>(path_addr), sizeof(path)); error < 0)
+  if (long error = copy_string_from_user(path, static_cast<u64>(path_addr), sizeof(path)); error < 0) {
     return error;
+  }
   vfs::Stat status{};
   auto proc = process::current_process();
-  if (!proc)
+  if (!proc) {
     return -errc::ESRCH;
+  }
   long result = vfs::syscall::do_stat(path, &status, proc->fd_table(), proc->euid(), proc->egid());
   return result < 0 ? result : copy_to_user(static_cast<u64>(stat_addr), &status, sizeof(status));
 }
 
-long sys_getcwd(long buffer, long size, long, long, long, long) noexcept {
-  if (size <= 0)
+long sys_getcwd(long buffer, long size, long /*unused*/, long /*unused*/, long /*unused*/, long /*unused*/) noexcept {
+  if (size <= 0) {
     return -errc::EINVAL;
+  }
   return vfs::syscall::do_getcwd(
       get_current_fd_table(),
       vfs::OutputBuffer::user(static_cast<u64>(buffer), static_cast<usize>(size), process::copy_to_user));
 }
 
-long sys_access(long path_addr, long mode, long, long, long, long) noexcept {
-  if (mode < 0 || mode > 7)
+long sys_access(long path_addr, long mode, long /*unused*/, long /*unused*/, long /*unused*/,
+                long /*unused*/) noexcept {
+  if (mode < 0 || mode > 7) {
     return -errc::EINVAL;
+  }
   char path[vfs::MAX_PATH_LEN];
-  if (long error = copy_string_from_user(path, static_cast<u64>(path_addr), sizeof(path)); error < 0)
+  if (long error = copy_string_from_user(path, static_cast<u64>(path_addr), sizeof(path)); error < 0) {
     return error;
+  }
   auto proc = process::current_process();
-  if (!proc)
+  if (!proc) {
     return -errc::ESRCH;
+  }
   // access(), unlike open()/chdir(), checks the real credentials.
   return vfs::syscall::do_access(proc->fd_table(), path, mode, proc->uid(), proc->gid());
 }
 
-long sys_chdir(long path_addr, long, long, long, long, long) noexcept {
+long sys_chdir(long path_addr, long /*unused*/, long /*unused*/, long /*unused*/, long /*unused*/,
+               long /*unused*/) noexcept {
   char path[vfs::MAX_PATH_LEN];
-  if (long error = copy_string_from_user(path, static_cast<u64>(path_addr), sizeof(path)); error < 0)
+  if (long error = copy_string_from_user(path, static_cast<u64>(path_addr), sizeof(path)); error < 0) {
     return error;
+  }
   auto proc = process::current_process();
-  if (!proc)
+  if (!proc) {
     return -errc::ESRCH;
+  }
   return vfs::syscall::do_chdir(proc->fd_table(), path, proc->euid(), proc->egid());
 }
 
-long sys_mkdir(long path_addr, long mode, long, long, long, long) noexcept {
+long sys_mkdir(long path_addr, long mode, long /*unused*/, long /*unused*/, long /*unused*/, long /*unused*/) noexcept {
   char path[vfs::MAX_PATH_LEN];
-  if (long error = copy_string_from_user(path, static_cast<u64>(path_addr), sizeof(path)); error < 0)
+  if (long error = copy_string_from_user(path, static_cast<u64>(path_addr), sizeof(path)); error < 0) {
     return error;
-  if (mode < 0 || mode > 0777)
+  }
+  if (mode < 0 || mode > 0777) {
     return -errc::EINVAL;
+  }
   auto proc = process::current_process();
-  if (!proc)
+  if (!proc) {
     return -errc::ESRCH;
+  }
   return vfs::syscall::do_mkdir(path, static_cast<u32>(mode), proc->euid(), proc->egid(), proc->fd_table());
 }
 
-long sys_rmdir(long path_addr, long, long, long, long, long) noexcept {
+long sys_rmdir(long path_addr, long /*unused*/, long /*unused*/, long /*unused*/, long /*unused*/,
+               long /*unused*/) noexcept {
   char path[vfs::MAX_PATH_LEN];
-  if (long error = copy_string_from_user(path, static_cast<u64>(path_addr), sizeof(path)); error < 0)
+  if (long error = copy_string_from_user(path, static_cast<u64>(path_addr), sizeof(path)); error < 0) {
     return error;
+  }
   auto proc = process::current_process();
-  if (!proc)
+  if (!proc) {
     return -errc::ESRCH;
+  }
   return vfs::syscall::do_rmdir(path, proc->fd_table(), proc->euid(), proc->egid());
 }
 
-long sys_unlink(long path_addr, long, long, long, long, long) noexcept {
+long sys_unlink(long path_addr, long /*unused*/, long /*unused*/, long /*unused*/, long /*unused*/,
+                long /*unused*/) noexcept {
   char path[vfs::MAX_PATH_LEN];
-  if (long error = copy_string_from_user(path, static_cast<u64>(path_addr), sizeof(path)); error < 0)
+  if (long error = copy_string_from_user(path, static_cast<u64>(path_addr), sizeof(path)); error < 0) {
     return error;
+  }
   auto proc = process::current_process();
-  if (!proc)
+  if (!proc) {
     return -errc::ESRCH;
+  }
   return vfs::syscall::do_unlink(path, proc->fd_table(), proc->euid(), proc->egid());
 }
 
-long sys_rename(long old_path, long new_path, long, long, long, long) noexcept {
+long sys_rename(long old_path, long new_path, long /*unused*/, long /*unused*/, long /*unused*/,
+                long /*unused*/) noexcept {
   char old_name[vfs::MAX_PATH_LEN], new_name[vfs::MAX_PATH_LEN];
-  if (long error = copy_string_from_user(old_name, static_cast<u64>(old_path), sizeof(old_name)); error < 0)
+  if (long error = copy_string_from_user(old_name, static_cast<u64>(old_path), sizeof(old_name)); error < 0) {
     return error;
-  if (long error = copy_string_from_user(new_name, static_cast<u64>(new_path), sizeof(new_name)); error < 0)
+  }
+  if (long error = copy_string_from_user(new_name, static_cast<u64>(new_path), sizeof(new_name)); error < 0) {
     return error;
+  }
   auto proc = process::current_process();
-  if (!proc)
+  if (!proc) {
     return -errc::ESRCH;
+  }
   return vfs::syscall::do_rename(old_name, new_name, proc->fd_table(), proc->euid(), proc->egid());
 }
 
@@ -1493,11 +1576,12 @@ long sys_fstat(long fd, long stat_buf_addr, long /*unused*/, long /*unused*/, lo
   return 0;
 }
 
-long sys_ioctl(long fd, long command, long argument, long, long, long) noexcept {
+long sys_ioctl(long fd, long command, long argument, long /*unused*/, long /*unused*/, long /*unused*/) noexcept {
   return moss::kernel::vfs::syscall::do_ioctl(get_current_fd_table(), fd, command, static_cast<u64>(argument));
 }
 
-long sys_uname(long address, long, long, long, long, long) noexcept {
+long sys_uname(long address, long /*unused*/, long /*unused*/, long /*unused*/, long /*unused*/,
+               long /*unused*/) noexcept {
   // Native ABI: six zero-padded 65-byte fields: system, node, release,
   // version, machine, domain. No hostname/domain mutation is implemented.
   static constexpr char identity[6][65] = {
@@ -2169,7 +2253,10 @@ static long sleep_until(u64 deadline) noexcept {
   if (restore_irqs) {
     arch::enable_interrupts();
   }
-  return armed ? 0 : armed.error() == ErrorCode::ResourceExhausted ? -errc::ENOMEM : -errc::EINVAL;
+  if (armed) {
+    return 0;
+  }
+  return armed.error() == ErrorCode::ResourceExhausted ? -errc::ENOMEM : -errc::EINVAL;
 }
 
 long sys_nanosleep(long ns_addr, long /*remaining*/, long /*unused*/, long /*unused*/, long /*unused*/,

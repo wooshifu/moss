@@ -250,7 +250,12 @@ extern "C" void kernel_page_fault_handler(unsigned long long esr, unsigned long 
   u64 ec = (esr >> 26) & 0x3F;
   u64 dfsc = esr & 0x3F;
   [[maybe_unused]] bool is_write = ((esr >> 6) & 1) != 0;
-  const auto access = ec == 0x21 ? FaultAccess::Execute : is_write ? FaultAccess::Write : FaultAccess::Read;
+  auto access = FaultAccess::Read;
+  if (ec == 0x21) { // ARM64 ESR EC: instruction abort from the current EL.
+    access = FaultAccess::Execute;
+  } else if (is_write) {
+    access = FaultAccess::Write;
+  }
 
   // Translation faults: DFSC 0x04-0x07 (L0-L3 translation miss)
   bool is_translation_fault = (dfsc >= 0x04 && dfsc <= 0x07);
@@ -271,8 +276,9 @@ extern "C" void kernel_page_fault_handler(unsigned long long esr, unsigned long 
       if (try_demand_page(far_addr, access)) {
         return; // Demand page resolved — eret retries instruction
       }
-      if (ec == 0x25 && fixup_user_access(raw_frame, far_addr))
+      if (ec == 0x25 && fixup_user_access(raw_frame, far_addr)) {
         return;
+      }
       // No VMA found — this is a bad user pointer passed to syscall.
       // Terminate the faulting user process instead of panicking the kernel.
       kill_user_process("kernel access to unmapped user addr", far_addr, elr);
@@ -310,8 +316,9 @@ extern "C" void kernel_page_fault_handler(unsigned long long esr, unsigned long 
         return; // COW resolved — eret retries instruction
       }
     }
-    if (ec == 0x25 && fixup_user_access(raw_frame, far_addr))
+    if (ec == 0x25 && fixup_user_access(raw_frame, far_addr)) {
       return;
+    }
     log::klog::panic("KERNEL PERMISSION FAULT: addr={:#x} pc={:#x} write={:#b}", far_addr, elr, is_write);
     log::klog::panic("  DFSC: {:#x} ({})", dfsc, mm::dfsc_to_string(dfsc));
     while (true) {
@@ -322,8 +329,9 @@ extern "C" void kernel_page_fault_handler(unsigned long long esr, unsigned long 
   }
 
   // Other DFSC values (alignment, external abort, etc.)
-  if (ec == 0x25 && fixup_user_access(raw_frame, far_addr))
+  if (ec == 0x25 && fixup_user_access(raw_frame, far_addr)) {
     return;
+  }
   log::klog::panic("KERNEL FAULT: unhandled dfsc={:#x} ({}) addr={:#x} pc={:#x}", dfsc, mm::dfsc_to_string(dfsc),
                    far_addr, elr);
   while (true) {
@@ -436,11 +444,10 @@ static bool try_cow_fault(moss::kernel::u64 far_addr) noexcept {
       (void)mm::free_pages(old_pa, 0);
     }
     return true;
-  } else {
-    // Last reference: just clear COW flag and make writable
-    pte->clear_cow();
-    pte->make_writable();
   }
+  // Last reference: just clear COW flag and make writable
+  pte->clear_cow();
+  pte->make_writable();
 
   mm::PageTableManager::invalidate_tlb_addr(fault_page);
 
@@ -494,7 +501,12 @@ static bool try_demand_page(moss::kernel::u64 far_addr, FaultAccess access) noex
   constexpr u32 VMA_WRITE = 1U << 1;
   constexpr u32 VMA_EXEC = 1U << 2;
 
-  const u32 required = access == FaultAccess::Execute ? VMA_EXEC : access == FaultAccess::Write ? VMA_WRITE : VMA_READ;
+  u32 required = VMA_READ;
+  if (access == FaultAccess::Execute) {
+    required = VMA_EXEC;
+  } else if (access == FaultAccess::Write) {
+    required = VMA_WRITE;
+  }
   if ((vma_flags & required) == 0) {
     return false; // Deny READ/WRITE/EXEC before allocating, including PROT_NONE.
   }
@@ -585,7 +597,12 @@ extern "C" void user_page_fault_handler(unsigned long long esr, unsigned long lo
   u64 dfsc = esr & 0x3F;
   u64 ec = (esr >> 26) & 0x3F;
   bool is_write = ((esr >> 6) & 1) != 0;
-  const auto access = ec == 0x20 ? FaultAccess::Execute : is_write ? FaultAccess::Write : FaultAccess::Read;
+  auto access = FaultAccess::Read;
+  if (ec == 0x20) { // ARM64 ESR EC: instruction abort from a lower EL.
+    access = FaultAccess::Execute;
+  } else if (is_write) {
+    access = FaultAccess::Write;
+  }
 
   // Permission faults (DFSC 0x0C-0x0F): try COW resolution first
   bool is_permission_fault = (dfsc >= 0x0C && dfsc <= 0x0F);

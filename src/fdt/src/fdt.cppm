@@ -143,7 +143,7 @@ static bool read_reg(const void *fdt, int node, u32 index, u64 &base, u64 &size)
   if (static_cast<u32>(length) % stride || index >= static_cast<u32>(length) / stride) {
     return false;
   }
-  data += index * stride;
+  data += static_cast<usize>(index) * stride;
   base = read_cells_value(data, ac);
   size = read_cells_value(data, sc);
   if (!size || base + size < base) {
@@ -208,7 +208,7 @@ static u32 interrupt_number(const void *fdt, int node, u32 index = 0) noexcept {
   if (!data || length <= 0 || static_cast<u32>(length) < (index + 1) * cells * 4) {
     return 0;
   }
-  data += index * cells * 4;
+  data += static_cast<usize>(index) * cells * 4;
   u32 first = static_cast<u32>(read_cells_value(data, 1));
   if (cells == 1) {
     return first;
@@ -479,7 +479,7 @@ static void parse_intc(const void *fdt) noexcept {
     // 当前 HAL 逐个扫描标准 RD+SGI frame（各 64 KiB，合计 0x20000）；
     // 非标准 stride 或多个 region 需要先扩展扫描逻辑，不能仅放宽验证。
     int length = 0;
-    const auto *stride = static_cast<const void *>(fdt_getprop(fdt, intc_node, "redistributor-stride", &length));
+    const auto *stride = fdt_getprop(fdt, intc_node, "redistributor-stride", &length);
     u32 regions = 1;
     (void)property_u32(fdt, intc_node, "#redistributor-regions", regions);
     if (regions != 1 || (stride && (length != 8 || read_fdt64_unaligned(stride) != 0x20000)) ||
@@ -505,7 +505,7 @@ static void parse_intc(const void *fdt) noexcept {
       g_platform_info.plic_contexts[cpu] = ~0U;
     }
     for (int index = 0; index < len / 8; ++index) {
-      int controller = fdt_node_offset_by_phandle(fdt, fdt32_to_cpu(interrupts[index * 2]));
+      int controller = fdt_node_offset_by_phandle(fdt, fdt32_to_cpu(interrupts[static_cast<usize>(index) * 2]));
       u32 interrupt_cells = 0;
       if (controller < 0 || !property_u32(fdt, controller, "#interrupt-cells", interrupt_cells) ||
           interrupt_cells != 1) {

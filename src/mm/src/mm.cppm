@@ -29,8 +29,9 @@ extern "C" {
 void *moss_heap_allocate(unsigned long long size, unsigned long long alignment) noexcept {
   auto result = moss::kernel::mm::RuntimeHeapAllocator::allocate_aligned(static_cast<moss::kernel::usize>(size),
                                                                          static_cast<moss::kernel::usize>(alignment));
-  if (!result)
+  if (!result) {
     return nullptr;
+  }
   __builtin_memset(*result, 0, static_cast<moss::kernel::usize>(size));
   return *result;
 }

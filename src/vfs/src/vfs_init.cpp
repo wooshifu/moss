@@ -8,7 +8,7 @@ import moss.arch;
 import moss.mm;
 
 // Validation can exhaust/restore the real heap around this fallible allocation.
-extern "C" [[gnu::weak, gnu::noinline]] void moss_validation_fd_clone(bool) noexcept {}
+extern "C" [[gnu::weak, gnu::noinline]] void moss_validation_fd_clone(bool /*unused*/) noexcept {}
 
 namespace moss::kernel::vfs {
 
@@ -32,14 +32,16 @@ long MountTable::mount(const char *path, SuperBlock *sb, Dentry *root) noexcept 
   entry.name_len = 0;
   if (len > 1) {
     u32 name_start = len;
-    while (name_start && path[name_start - 1] != '/')
+    while (name_start && path[name_start - 1] != '/') {
       --name_start;
+    }
     char parent_path[MAX_PATH_LEN];
     __builtin_memcpy(parent_path, path, name_start);
     parent_path[name_start] = 0;
     entry.parent = resolve_path_locked(parent_path);
-    if (!entry.parent || !entry.parent->inode || !entry.parent->inode->is_directory())
+    if (!entry.parent || !entry.parent->inode || !entry.parent->inode->is_directory()) {
       return -static_cast<long>(VfsError::NotDirectory);
+    }
     entry.parent->ref();
     entry.name_len = len - name_start;
   }
@@ -169,9 +171,11 @@ Dentry *DentryCache::lookup(const Dentry *parent, const char *name, u32 name_len
 
 void DentryCache::remove(Dentry *dentry) noexcept {
   // ponytail: scan the bounded 256-slot cache; use tombstones if miss cost matters.
-  for (auto &slot : slots_)
-    if (slot == dentry)
+  for (auto &slot : slots_) {
+    if (slot == dentry) {
       slot = nullptr;
+    }
+  }
 }
 
 // -- Inode / Dentry / File pool allocators --
@@ -198,9 +202,11 @@ static containers::IrqSpinLock file_pool_lock;
 u32 file_pool_usage() noexcept {
   containers::LockGuard<containers::IrqSpinLock> guard(file_pool_lock);
   u32 files = 0;
-  for (bool used : g_file_used)
-    if (used)
+  for (bool used : g_file_used) {
+    if (used) {
       ++files;
+    }
+  }
   return files;
 }
 
@@ -208,12 +214,16 @@ PoolUsage pool_usage() noexcept {
   containers::LockGuard<containers::IrqSpinLock> namespace_guard(namespace_lock);
   containers::LockGuard<containers::IrqSpinLock> inode_guard(inode_pool_lock);
   PoolUsage usage;
-  for (bool used : g_inode_used)
-    if (used)
+  for (bool used : g_inode_used) {
+    if (used) {
       ++usage.inodes;
-  for (bool used : g_dentry_used)
-    if (used)
+    }
+  }
+  for (bool used : g_dentry_used) {
+    if (used) {
       ++usage.dentries;
+    }
+  }
   usage.files = file_pool_usage();
   return usage;
 }
@@ -255,24 +265,27 @@ Inode *alloc_inode() noexcept {
 static void free_inode(Inode *inode) noexcept {
   containers::LockGuard<containers::IrqSpinLock> guard(inode_pool_lock);
   if (inode && inode->ref_count == 0) {
-    if (inode->ramfs_mutable && inode->data)
+    if (inode->ramfs_mutable && inode->data) {
       (void)mm::RuntimeHeapAllocator::deallocate(const_cast<u8 *>(inode->data), inode->data_capacity);
+    }
     g_inode_used[static_cast<usize>(inode - g_inode_pool)] = false;
   }
 }
 
 Dentry *alloc_dentry(const char *name, u32 name_len, Inode *inode, Dentry *parent) noexcept {
   u32 slot = 0;
-  while (slot < MAX_DENTRIES && g_dentry_used[slot])
+  while (slot < MAX_DENTRIES && g_dentry_used[slot]) {
     ++slot;
+  }
   if (slot == MAX_DENTRIES) {
     return nullptr;
   }
   if (name_len > MAX_NAME_LEN) {
     return nullptr;
   }
-  if (parent && (!parent->inode || parent->inode->child_count == Inode::MAX_CHILDREN))
+  if (parent && (!parent->inode || parent->inode->child_count == Inode::MAX_CHILDREN)) {
     return nullptr;
+  }
 
   g_dentry_used[slot] = true;
   auto *d = &g_dentry_pool[slot];
@@ -304,8 +317,9 @@ Dentry *alloc_dentry(const char *name, u32 name_len, Inode *inode, Dentry *paren
 void release_dentry(Dentry *dentry) noexcept {
   while (dentry) {
     dentry->unref();
-    if (dentry->ref_count)
+    if (dentry->ref_count) {
       return;
+    }
     auto *parent = dentry->parent;
     if (dentry->inode) {
       dentry->inode->unref();
@@ -383,8 +397,9 @@ FdTable *FdTable::clone() const noexcept {
   moss_validation_fd_clone(true);
   auto storage = mm::RuntimeHeapAllocator::allocate(sizeof(FdTable));
   moss_validation_fd_clone(false);
-  if (!storage)
+  if (!storage) {
     return nullptr;
+  }
   auto *table = new (*storage) FdTable();
   table->init();
   {
@@ -453,14 +468,16 @@ struct PipeGuard {
   }
   ~PipeGuard() {
     lock.unlock();
-    if (restore_irqs)
+    if (restore_irqs) {
       arch::enable_interrupts();
+    }
   }
   long wait(PipeWaiter *&head) {
     void *thread = moss::abi::bridge::moss_prepare_io_wait();
-    if (!thread)
+    if (!thread) {
       return -static_cast<long>(VfsError::NotSupported);
-    PipeWaiter waiter{thread, head};
+    }
+    PipeWaiter waiter{.thread = thread, .next = head};
     head = &waiter;
     lock.unlock();
     moss::abi::bridge::moss_commit_io_wait();
@@ -468,16 +485,18 @@ struct PipeGuard {
     // Wakeup borrows the node; only its sleeping owner removes it under the
     // lock before returning, so no list pointer can outlive this stack frame.
     auto **link = &head;
-    while (*link != &waiter)
+    while (*link != &waiter) {
       link = &(*link)->next;
+    }
     *link = waiter.next;
     return moss::abi::bridge::moss_io_wait_interrupted() ? -static_cast<long>(VfsError::Interrupted) : 0;
   }
 };
 
 static void wake_waiters(PipeWaiter *head) noexcept {
-  for (auto *waiter = head; waiter; waiter = waiter->next)
+  for (auto *waiter = head; waiter; waiter = waiter->next) {
     moss::abi::bridge::moss_wake_io_waiter(waiter->thread);
+  }
 }
 
 static PipeState *alloc_pipe_state() noexcept {
@@ -535,16 +554,20 @@ static long pipe_read(File *file, OutputBuffer buffer) noexcept {
   }
   auto *ps = static_cast<PipeState *>(file->private_data);
   PipeGuard guard(*ps);
-  if (buffer.size() == 0)
+  if (buffer.size() == 0) {
     return 0;
+  }
 
   while (ps->count == 0) {
-    if (ps->writers == 0)
+    if (ps->writers == 0) {
       return 0;
-    if (file->flags & O_NONBLOCK)
+    }
+    if (file->flags & O_NONBLOCK) {
       return -static_cast<long>(VfsError::WouldBlock);
-    if (long error = guard.wait(ps->read_waiters))
+    }
+    if (long error = guard.wait(ps->read_waiters)) {
       return error;
+    }
   }
 
   // Read up to min(count, available)
@@ -558,13 +581,15 @@ static long pipe_read(File *file, OutputBuffer buffer) noexcept {
   // Copy one byte before consuming it: a user fault must leave the unread
   // suffix in the ring and return any successfully delivered prefix.
   for (; copied < count; ++copied) {
-    if (buffer.copy_from(copied, &ps->buffer[ps->read_pos], 1) != 1)
+    if (buffer.copy_from(copied, &ps->buffer[ps->read_pos], 1) != 1) {
       break;
+    }
     ps->read_pos = (ps->read_pos + 1) % PipeState::PIPE_BUF_SIZE;
   }
   ps->count -= static_cast<u32>(copied);
-  if (copied)
+  if (copied) {
     wake_waiters(ps->write_waiters);
+  }
 
   return !copied && count ? -static_cast<long>(VfsError::BadAddress) : static_cast<long>(copied);
 }
@@ -625,29 +650,35 @@ static long pipe_write(File *file, InputBuffer buffer) noexcept {
     // Nonblocking writes never wait for capacity.
     const usize needed = buffer.size() <= PipeState::PIPE_BUF_SIZE ? buffer.size() : 1;
     if (free_space < needed) {
-      if (file->flags & O_NONBLOCK)
+      if (file->flags & O_NONBLOCK) {
         return written ? static_cast<long>(written) : -static_cast<long>(VfsError::WouldBlock);
-      if (long error = guard.wait(ps->write_waiters))
+      }
+      if (long error = guard.wait(ps->write_waiters)) {
         return written ? static_cast<long>(written) : error;
+      }
       continue;
     }
     usize count = buffer.size() - written;
-    if (count > free_space)
+    if (count > free_space) {
       count = free_space;
+    }
     usize copied = 0;
     // Commit only bytes copied successfully from the user: on a fault, readers
     // may observe the valid prefix but must never see an uninitialized suffix.
     for (; copied < count; ++copied) {
-      if (buffer.copy_to(written + copied, &ps->buffer[ps->write_pos], 1) != 1)
+      if (buffer.copy_to(written + copied, &ps->buffer[ps->write_pos], 1) != 1) {
         break;
+      }
       ps->write_pos = (ps->write_pos + 1) % PipeState::PIPE_BUF_SIZE;
     }
     ps->count += static_cast<u32>(copied);
     written += copied;
-    if (copied)
+    if (copied) {
       wake_waiters(ps->read_waiters);
-    if (copied != count)
+    }
+    if (copied != count) {
       return written ? static_cast<long>(written) : -static_cast<long>(VfsError::BadAddress);
+    }
   }
   return static_cast<long>(written);
 }
@@ -792,8 +823,9 @@ static long console_read([[maybe_unused]] File *file, OutputBuffer buffer) noexc
     // Handle Enter (CR or LF)
     if (ch == '\r' || ch == '\n') {
       const u8 newline = '\n';
-      if (buffer.copy_from(pos, &newline, 1) != 1)
+      if (buffer.copy_from(pos, &newline, 1) != 1) {
         return pos ? static_cast<long>(pos) : -static_cast<long>(VfsError::BadAddress);
+      }
       ++pos;
       uart::putc('\r');
       uart::putc('\n');
@@ -802,8 +834,9 @@ static long console_read([[maybe_unused]] File *file, OutputBuffer buffer) noexc
 
     // Echo printable characters and store in buffer
     const auto byte = static_cast<u8>(ch);
-    if (buffer.copy_from(pos, &byte, 1) != 1)
+    if (buffer.copy_from(pos, &byte, 1) != 1) {
       return pos ? static_cast<long>(pos) : -static_cast<long>(VfsError::BadAddress);
+    }
     uart::putc(static_cast<char>(ch));
     ++pos;
   }
@@ -815,8 +848,9 @@ static long console_write([[maybe_unused]] File *file, InputBuffer buffer) noexc
   const usize count = buffer.size();
   for (usize i = 0; i < count; ++i) {
     char c = 0;
-    if (buffer.copy_to(i, &c, 1) != 1)
+    if (buffer.copy_to(i, &c, 1) != 1) {
       return i ? static_cast<long>(i) : -static_cast<long>(VfsError::BadAddress);
+    }
     if (c == '\n') {
       uart::putc('\r');
     }
@@ -831,8 +865,9 @@ static long console_lseek([[maybe_unused]] File *file, [[maybe_unused]] i64 offs
 }
 
 static long console_ioctl([[maybe_unused]] File *file, u32 command, u64 argument) noexcept {
-  if (command != MOSS_IOCTL_ISATTY)
+  if (command != MOSS_IOCTL_ISATTY) {
     return -static_cast<long>(VfsError::NotTerminal);
+  }
   return argument ? -static_cast<long>(VfsError::InvalidArg) : 0;
 }
 
@@ -874,12 +909,14 @@ static long zero_read([[maybe_unused]] File *file, OutputBuffer buffer) noexcept
   const usize count = buffer.size();
   while (copied < count) {
     usize chunk = count - copied;
-    if (chunk > sizeof(zeros))
+    if (chunk > sizeof(zeros)) {
       chunk = sizeof(zeros);
+    }
     const usize done = buffer.copy_from(copied, zeros, chunk);
     copied += done;
-    if (done != chunk)
+    if (done != chunk) {
       break;
+    }
   }
   return !copied && count ? -static_cast<long>(VfsError::BadAddress) : static_cast<long>(copied);
 }
@@ -1055,17 +1092,21 @@ static long ramfs_read(File *file, OutputBuffer buffer) noexcept {
 static long ramfs_write(File *file, InputBuffer buffer) noexcept {
   containers::LockGuard<containers::IrqSpinLock> guard(namespace_lock);
   auto *inode = file->inode;
-  if (!inode->ramfs_mutable)
+  if (!inode->ramfs_mutable) {
     return -static_cast<long>(VfsError::PermDenied);
-  if (file->pos < 0)
+  }
+  if (file->pos < 0) {
     return -static_cast<long>(VfsError::InvalidArg);
-  if (!buffer.size())
+  }
+  if (!buffer.size()) {
     return 0;
+  }
   const u64 position = file->flags & O_APPEND ? inode->size : static_cast<u64>(file->pos);
   // 2^63 - 1 is the largest representable signed file offset; keep successful
   // positions positive and separate from negative syscall error values.
-  if (position > 0x7fffffffffffffffULL || buffer.size() > 0x7fffffffffffffffULL - position)
+  if (position > 0x7fffffffffffffffULL || buffer.size() > 0x7fffffffffffffffULL - position) {
     return -static_cast<long>(VfsError::FileTooLarge);
+  }
   const usize end = position + buffer.size();
   usize capacity = inode->data_capacity;
   auto *data = const_cast<u8 *>(inode->data);
@@ -1076,47 +1117,57 @@ static long ramfs_write(File *file, InputBuffer buffer) noexcept {
     // 2^62 - 1 is half the signed-offset limit: doubling below it is safe.
     // Geometric growth amortizes reallocations; its exact tuning is unrecorded.
     capacity = capacity && capacity <= 0x3fffffffffffffffULL ? capacity * 2 : end;
-    if (capacity < end)
+    if (capacity < end) {
       capacity = end;
+    }
     capacity = (capacity + PAGE_SIZE - 1) & ~(PAGE_SIZE - 1);
     auto allocation = mm::RuntimeHeapAllocator::allocate(capacity);
-    if (!allocation)
+    if (!allocation) {
       return -static_cast<long>(VfsError::NoMemory);
+    }
     data = static_cast<u8 *>(*allocation);
-    if (inode->size)
+    if (inode->size) {
       __builtin_memcpy(data, inode->data, inode->size);
+    }
   }
-  if (position > inode->size)
+  if (position > inode->size) {
     __builtin_memset(data + inode->size, 0, position - inode->size);
+  }
   const usize copied = buffer.copy_to(0, data + position, buffer.size());
   if (!copied) {
-    if (grows)
+    if (grows) {
       (void)mm::RuntimeHeapAllocator::deallocate(data, capacity);
+    }
     return -static_cast<long>(VfsError::BadAddress);
   }
   // A failed first-byte copy rolls back the new allocation. Once a prefix
   // succeeds, publish only that prefix's offset/size as the partial-write result.
   if (grows) {
-    if (inode->data)
+    if (inode->data) {
       (void)mm::RuntimeHeapAllocator::deallocate(const_cast<u8 *>(inode->data), inode->data_capacity);
+    }
     inode->data = data;
     inode->data_capacity = capacity;
   }
   file->pos = static_cast<i64>(position + copied);
-  if (position + copied > inode->size)
+  if (position + copied > inode->size) {
     inode->size = position + copied;
+  }
   return static_cast<long>(copied);
 }
 
 static long ramfs_open(File *file, Inode *inode, u32 flags) noexcept {
   (void)file;
-  if (!(flags & O_TRUNC))
+  if (!(flags & O_TRUNC)) {
     return 0;
+  }
   containers::LockGuard<containers::IrqSpinLock> guard(namespace_lock);
-  if (!inode->ramfs_mutable)
+  if (!inode->ramfs_mutable) {
     return -static_cast<long>(VfsError::PermDenied);
-  if (inode->data)
+  }
+  if (inode->data) {
     (void)mm::RuntimeHeapAllocator::deallocate(const_cast<u8 *>(inode->data), inode->data_capacity);
+  }
   inode->data = nullptr;
   inode->size = inode->data_capacity = 0;
   return 0;
@@ -1134,13 +1185,15 @@ static long ramfs_lseek(File *file, i64 offset, SeekWhence whence) noexcept {
     new_pos = offset;
     break;
   case SeekWhence::Current:
-    if (__builtin_add_overflow(file->pos, offset, &new_pos))
+    if (__builtin_add_overflow(file->pos, offset, &new_pos)) {
       return -static_cast<long>(VfsError::Overflow);
+    }
     break;
   case SeekWhence::End:
     if (file->inode->size > 0x7fffffffffffffffULL ||
-        __builtin_add_overflow(static_cast<i64>(file->inode->size), offset, &new_pos))
+        __builtin_add_overflow(static_cast<i64>(file->inode->size), offset, &new_pos)) {
       return -static_cast<long>(VfsError::Overflow);
+    }
     break;
   default:
     return -static_cast<long>(VfsError::InvalidArg);
@@ -1200,18 +1253,23 @@ static InodeNumber g_ramfs_next_ino = RAMFS_ROOT_INO + 1;
 static long ramfs_create(Inode *dir, const char *name, u32 length, FileType type, u32 mode) noexcept {
   // Called with namespace_lock held. Published directory entries remain owned
   // by the namespace until the removal path drops that ownership.
-  if (type != FileType::Directory && type != FileType::Regular)
+  if (type != FileType::Directory && type != FileType::Regular) {
     return -static_cast<long>(VfsError::NotSupported);
-  if (!dir || !dir->is_directory())
+  }
+  if (!dir || !dir->is_directory()) {
     return -static_cast<long>(VfsError::NotDirectory);
-  if (ramfs_dir_lookup(dir, name, length))
+  }
+  if (ramfs_dir_lookup(dir, name, length)) {
     return -static_cast<long>(VfsError::FileExists);
+  }
   Dentry *parent = find_dentry_for_inode(dir);
-  if (!parent)
+  if (!parent) {
     return -static_cast<long>(VfsError::NoEntry);
+  }
   Inode *inode = alloc_inode();
-  if (!inode)
+  if (!inode) {
     return -static_cast<long>(VfsError::NoMemory);
+  }
   inode->ino = g_ramfs_next_ino++;
   inode->type = type;
   // 0777 retains only the three rwx triplets; file type comes from the validated
@@ -1227,33 +1285,41 @@ static long ramfs_create(Inode *dir, const char *name, u32 length, FileType type
     free_inode(inode);
     return -static_cast<long>(VfsError::NoMemory);
   }
-  if (type == FileType::Directory)
+  if (type == FileType::Directory) {
     ++dir->nlink;
+  }
   return 0;
 }
 
 static long ramfs_detach(Inode *dir, Dentry *child) noexcept {
   u32 index = 0;
-  while (index < dir->child_count && dir->children[index] != child)
+  while (index < dir->child_count && dir->children[index] != child) {
     ++index;
-  if (index == dir->child_count)
+  }
+  if (index == dir->child_count) {
     return -static_cast<long>(VfsError::NoEntry);
-  for (u32 i = index + 1; i < dir->child_count; ++i)
+  }
+  for (u32 i = index + 1; i < dir->child_count; ++i) {
     dir->children[i - 1] = dir->children[i];
+  }
   dir->children[--dir->child_count] = nullptr;
-  if (child->inode->is_directory())
+  if (child->inode->is_directory()) {
     --dir->nlink;
+  }
   g_dcache.remove(child);
   return 0;
 }
 
 static long ramfs_remove(Inode *dir, Dentry *child) noexcept {
-  if (!child || !child->inode)
+  if (!child || !child->inode) {
     return -static_cast<long>(VfsError::NoEntry);
-  if (child->inode->child_count)
+  }
+  if (child->inode->child_count) {
     return -static_cast<long>(VfsError::NotEmpty);
-  if (long result = ramfs_detach(dir, child); result < 0)
+  }
+  if (long result = ramfs_detach(dir, child); result < 0) {
     return result;
+  }
   child->inode->nlink = 0;
   release_dentry(child);
   return 0;
@@ -1265,26 +1331,33 @@ static long ramfs_rename(Dentry *source, Dentry *parent, const char *name, u32 n
   auto *old_parent = source->parent;
   auto *old_dir = old_parent->inode;
   auto *new_dir = parent->inode;
-  if (ramfs_dir_lookup(old_dir, source->name, source->name_len) != source)
+  if (ramfs_dir_lookup(old_dir, source->name, source->name_len) != source) {
     return -static_cast<long>(VfsError::NoEntry);
-  for (auto *ancestor = parent; ancestor; ancestor = ancestor->parent)
-    if (ancestor == source)
+  }
+  for (auto *ancestor = parent; ancestor; ancestor = ancestor->parent) {
+    if (ancestor == source) {
       return -static_cast<long>(VfsError::InvalidArg);
+    }
+  }
   auto *target = ramfs_dir_lookup(new_dir, name, name_len);
-  if (target == source)
+  if (target == source) {
     return 0;
+  }
   if (target) {
-    if (source->inode->is_directory() != target->inode->is_directory())
+    if (source->inode->is_directory() != target->inode->is_directory()) {
       return -static_cast<long>(target->inode->is_directory() ? VfsError::IsDirectory : VfsError::NotDirectory);
-    if (target->inode->child_count)
+    }
+    if (target->inode->child_count) {
       return -static_cast<long>(VfsError::NotEmpty);
+    }
   } else if (old_parent != parent && new_dir->child_count == Inode::MAX_CHILDREN) {
     return -static_cast<long>(VfsError::NoMemory);
   }
   // No allocations or fallible copy operations after this point. All removed
   // entries were checked above while the namespace was exclusively held.
-  if (target)
+  if (target) {
     (void)ramfs_remove(new_dir, target);
+  }
   (void)ramfs_detach(old_dir, source);
   parent->ref();
   source->parent = parent;
@@ -1292,8 +1365,9 @@ static long ramfs_rename(Dentry *source, Dentry *parent, const char *name, u32 n
   source->name[name_len] = 0;
   source->name_len = name_len;
   new_dir->children[new_dir->child_count++] = source;
-  if (source->inode->is_directory())
+  if (source->inode->is_directory()) {
     ++new_dir->nlink;
+  }
   g_dcache.insert(source);
   release_dentry(old_parent);
   return 0;

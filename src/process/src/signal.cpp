@@ -7,14 +7,16 @@ namespace moss::kernel::process {
 namespace log = moss::kernel::logging;
 
 bool send_signal(Thread *thread, u32 signo) noexcept {
-  if (!thread || signo == 0 || signo >= sig::NSIG)
+  if (!thread || signo == 0 || signo >= sig::NSIG) {
     return false;
+  }
   const u64 mask = sig::sigmask(signo);
   // Signals from another CPU must not overwrite unrelated pending bits.
   thread->pending_signals |= mask;
   const bool deliverable = (mask & sig::UNCATCHABLE_MASK) != 0 || (thread->signal_mask & mask) == 0;
-  if (deliverable && g_scheduler && thread->state == ProcessState::Sleeping)
+  if (deliverable && g_scheduler && thread->state == ProcessState::Sleeping) {
     g_scheduler->task_wakeup(thread, thread->cpu);
+  }
   return true;
 }
 

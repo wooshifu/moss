@@ -10,8 +10,9 @@ shared_ptr<Process> current_owner() noexcept {
 } // namespace
 
 usize copy_from_user(void *destination, u64 source, usize size) noexcept {
-  if (!size)
+  if (!size) {
     return 0;
+  }
   auto owner = current_owner();
   // Keep the Process alive while inspecting its address-space metadata. This
   // owner reference does not exclude exec/unmap or pin VMA/PTE/data pages.
@@ -23,18 +24,21 @@ usize copy_from_user(void *destination, u64 source, usize size) noexcept {
   auto *tail = static_cast<u8 *>(destination) + (size - remaining);
   // A raw copy can fault after a prefix. Clear the uncopied input tail so a
   // caller inspecting the whole kernel buffer cannot consume recycled bytes.
-  for (usize i = 0; i < remaining; ++i)
+  for (usize i = 0; i < remaining; ++i) {
     tail[i] = 0;
+  }
   return remaining;
 }
 
 usize copy_to_user(u64 destination, const void *source, usize size) noexcept {
-  if (!size)
+  if (!size) {
     return 0;
+  }
   auto owner = current_owner();
   auto *as = owner ? owner->address_space() : nullptr;
-  if (!as || !as->allows_user_access(destination, size, vma_flags::WRITE))
+  if (!as || !as->allows_user_access(destination, size, vma_flags::WRITE)) {
     return size;
+  }
   return moss::abi::uaccess::moss_raw_copy_to_user(reinterpret_cast<void *>(destination), source, size);
 }
 } // namespace moss::kernel::process

@@ -15,10 +15,12 @@ inline void ring_wrap() {
     sent.sequence = sequence;
     const moss::u8 payload = static_cast<moss::u8>(sequence);
     moss::u8 actual = 0;
-    if (!boost::ut::expect(writer.try_send(sent, &payload)))
+    if (!boost::ut::expect(writer.try_send(sent, &payload))) {
       return;
-    if (!boost::ut::expect(reader.try_receive(received, &actual, sizeof(actual))))
+    }
+    if (!boost::ut::expect(reader.try_receive(received, &actual, sizeof(actual)))) {
       return;
+    }
     boost::ut::expect(received.sequence == sequence && actual == payload);
   }
   const auto stats = writer.get_statistics();
@@ -38,8 +40,9 @@ inline void ring_geometry() {
   moss::u8 payload[192]{};
   header.payload_size = sizeof(payload);
   boost::ut::expect(!ring.try_send(header, nullptr));
-  for (unsigned i = 0; i < 4; ++i)
+  for (unsigned i = 0; i < 4; ++i) {
     boost::ut::expect(ring.try_send(header, payload));
+  }
   boost::ut::expect(!ring.try_send(header, payload));
   boost::ut::expect(ring.get_statistics().used_space == 1024);
   ipc::ZeroCopyRingBuffer<1024, 254> odd_budget(storage, sizeof(storage));
@@ -55,12 +58,14 @@ inline void shared_backing() {
   static_assert(sizeof(manager) <= 8192, "Leave at least half of the 16 KiB kernel stack for nested calls");
   const auto first_id = manager.create_region(0, kernel::PAGE_SIZE);
   const auto second_id = manager.create_region(0, kernel::PAGE_SIZE);
-  if (!boost::ut::expect(first_id && second_id))
+  if (!boost::ut::expect(first_id && second_id)) {
     return;
+  }
   auto first = manager.get_region_info(*first_id);
   auto second = manager.get_region_info(*second_id);
-  if (!boost::ut::expect(first && second))
+  if (!boost::ut::expect(first && second)) {
     return;
+  }
   const bool backed = first->phys_base != second->phys_base &&
                       first->virt_base == kernel::phys_to_virt(first->phys_base) &&
                       second->virt_base == kernel::phys_to_virt(second->phys_base);
@@ -85,10 +90,12 @@ inline void shared_lifecycle() {
   // comparing PFA counts so the test measures region backing, not slab growth.
   ipc::SharedMemoryManager manager;
   auto warmup = manager.create_region(0, kernel::PAGE_SIZE);
-  if (!boost::ut::expect(static_cast<bool>(warmup)))
+  if (!boost::ut::expect(static_cast<bool>(warmup))) {
     return;
-  if (!boost::ut::expect(static_cast<bool>(manager.destroy_region(*warmup))))
+  }
+  if (!boost::ut::expect(static_cast<bool>(manager.destroy_region(*warmup)))) {
     return;
+  }
   const auto baseline = kernel::mm::PageFrameAllocator::get_memory_stats().free_pages;
   constexpr ipc::ShmType unsupported_types[] = {ipc::ShmType::DeviceMemory, ipc::ShmType::DMA_Coherent,
                                                 ipc::ShmType::LargePage};
@@ -103,8 +110,9 @@ inline void shared_lifecycle() {
   for (unsigned i = 0; i < 8; ++i) {
     // Three logical pages must release the original four-page buddy block.
     auto id = manager.create_region(0, 2 * kernel::PAGE_SIZE + 1);
-    if (!boost::ut::expect(static_cast<bool>(id)))
+    if (!boost::ut::expect(static_cast<bool>(id))) {
       return;
+    }
     // No user VMA/PTE backend exists yet: a success address would be unsafe.
     const auto mapping = manager.map_to_process(0, *id);
     boost::ut::expect(!mapping && mapping.error() == kernel::KernelError::NotSupported);

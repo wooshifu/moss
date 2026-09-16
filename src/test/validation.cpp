@@ -417,8 +417,9 @@ void address_space_ownership() {
     ut::expect(!Tables::map_user_page(parent_root, moss::abi::linker::text_start(), *page, mm::page_perms::USER_RW));
     ut::expect(!Tables::map_user_page(parent_root, USER_MAX, *page, mm::page_perms::USER_RW));
     ut::expect(Tables::get_user_pte(parent_root, moss::abi::linker::text_start()) == nullptr);
-    if (!ut::expect(Tables::clone_user_page_tables(parent_root, child_root).has_value()))
+    if (!ut::expect(Tables::clone_user_page_tables(parent_root, child_root).has_value())) {
       return;
+    }
     const auto *parent_pte = Tables::get_user_pte(parent_root, user_va);
     const auto *child_pte = Tables::get_user_pte(child_root, user_va);
     ut::expect(parent_pte && child_pte && parent_pte->is_cow() && child_pte->is_cow() &&
@@ -472,10 +473,12 @@ void cow_clone_permissions() {
         expected[i].make_readonly();
       }
     }
-    if (!ut::expect(Tables::clone_user_page_tables(roots[0], roots[1]).has_value()))
+    if (!ut::expect(Tables::clone_user_page_tables(roots[0], roots[1]).has_value())) {
       return;
-    if (!ut::expect(Tables::clone_user_page_tables(roots[1], roots[2]).has_value()))
+    }
+    if (!ut::expect(Tables::clone_user_page_tables(roots[1], roots[2]).has_value())) {
       return;
+    }
     for (usize i = 0; i < 3; ++i) {
       for (const PhysAddr root : roots) {
         const auto *pte = Tables::get_user_pte(root, base + i * page_size);
@@ -504,10 +507,12 @@ void map_preserves_existing() {
     auto original = mm::allocate_pages(0);
     auto replacement = mm::allocate_pages(0);
     if (!ut::expect(original && replacement)) {
-      if (original)
+      if (original) {
         (void)mm::free_pages(*original, 0);
-      if (replacement)
+      }
+      if (replacement) {
         (void)mm::free_pages(*replacement, 0);
+      }
       return;
     }
     constexpr VirtAddr address = process::user_layout::CODE_BASE;
@@ -537,8 +542,9 @@ void unmap_reclaims_tables() {
   using Tables = mm::PageTableManager;
   using Pfa = mm::PageFrameAllocator;
   auto space = process::user_space::create_user_address_space();
-  if (!ut::expect(space.has_value()))
+  if (!ut::expect(space.has_value())) {
     return;
+  }
   const PhysAddr root = (*space)->pgd_phys;
   const auto baseline = Pfa::get_memory_stats().free_pages;
   constexpr VirtAddr base = process::user_layout::CODE_BASE;
@@ -549,19 +555,23 @@ void unmap_reclaims_tables() {
     auto first = mm::allocate_pages(0);
     auto second = mm::allocate_pages(0);
     if (!ut::expect(first && second)) {
-      if (first)
+      if (first) {
         (void)mm::free_pages(*first, 0);
-      if (second)
+      }
+      if (second) {
         (void)mm::free_pages(*second, 0);
+      }
       return;
     }
     const auto a = Tables::map_user_page(root, base, *first, mm::page_perms::USER_RW);
     const auto b = Tables::map_user_page(root, base + offset, *second, mm::page_perms::USER_RO);
     if (!ut::expect(a && b)) {
-      if (!a)
+      if (!a) {
         (void)mm::free_pages(*first, 0);
-      if (!b)
+      }
+      if (!b) {
         (void)mm::free_pages(*second, 0);
+      }
       return;
     }
     Tables::unmap_user_page(root, base);
@@ -570,8 +580,9 @@ void unmap_reclaims_tables() {
     ut::expect(Pfa::page_ref_get(*first) == 0 && Pfa::page_ref_get(*second) == 1);
     Tables::unmap_user_page(root, base + offset);
     Tables::unmap_user_page(root, base + offset); // Repeated unmap is harmless.
-    if (!ut::expect(Pfa::get_memory_stats().free_pages == baseline))
+    if (!ut::expect(Pfa::get_memory_stats().free_pages == baseline)) {
       return;
+    }
   }
 }
 
@@ -586,20 +597,23 @@ struct PagePressure {
   usize count = 0;
 
   bool acquire(usize budget) {
-    if (budget > 16)
+    if (budget > 16) {
       return false;
+    }
     while (count < budget) {
       auto page = mm::allocate_pages(0);
-      if (!page)
+      if (!page) {
         return false;
+      }
       allowance[count++] = *page;
     }
     for (usize next_order = MAX_ORDER + 1; next_order; --next_order) {
       const usize order = next_order - 1;
       for (;;) {
         auto block = mm::allocate_pages(order);
-        if (!block)
+        if (!block) {
           break;
+        }
         auto *record = reinterpret_cast<u64 *>(phys_to_virt(*block));
         record[0] = head;
         record[1] = order;
@@ -609,7 +623,15 @@ struct PagePressure {
     return mm::PageFrameAllocator::get_memory_stats().free_pages == 0;
   }
 
-  void give_one() { ut::expect(count && mm::free_pages(allowance[--count], 0).has_value()); }
+  void give_one() {
+    if (!count) {
+      ut::expect(false);
+      return;
+    }
+    // Retire the slot before freeing, so release() cannot retry a failed free.
+    --count;
+    ut::expect(mm::free_pages(allowance[count], 0).has_value());
+  }
 
   void release() {
     while (head) {
@@ -619,8 +641,9 @@ struct PagePressure {
       const auto order = static_cast<usize>(record[1]);
       ut::expect(mm::free_pages(page, order).has_value());
     }
-    while (count)
+    while (count) {
       give_one();
+    }
   }
 
   ~PagePressure() { release(); }
@@ -638,11 +661,13 @@ void map_allocation_rollback() {
   const auto free_before = Pfa::get_memory_stats().free_pages;
   {
     auto space = process::user_space::create_user_address_space();
-    if (!ut::expect(space.has_value()))
+    if (!ut::expect(space.has_value())) {
       return;
+    }
     auto page = mm::allocate_pages(0);
-    if (!ut::expect(page.has_value()))
+    if (!ut::expect(page.has_value())) {
       return;
+    }
     // Select a wholly absent root branch in either three- or four-level mode.
     const bool four_levels = Tables::is_user_range(1ULL << 39, page_size);
     const VirtAddr address = four_levels ? 1ULL << 39 : process::user_layout::CODE_BASE;
@@ -663,8 +688,9 @@ void map_allocation_rollback() {
       ut::expect(!leaf || !leaf->is_valid());
       ut::expect(Pfa::page_ref_get(*page) == 1);
       // Recover even a partially modified, inactive tree on the failing baseline.
-      if (leaf && leaf->is_valid())
+      if (leaf && leaf->is_valid()) {
         leaf->clear();
+      }
       (*space)->pgd_phys = 0;
       Tables::free_user_page_tables(root);
       auto fresh = Tables::create_user_page_tables();
@@ -677,8 +703,9 @@ void map_allocation_rollback() {
     }
     pressure.release();
     auto mapped = Tables::map_user_page((*space)->pgd_phys, address, *page, mm::page_perms::USER_RW);
-    if (!ut::expect(mapped.has_value()))
+    if (!ut::expect(mapped.has_value())) {
       (void)mm::free_pages(*page, 0);
+    }
   }
   ut::expect(Pfa::get_memory_stats().free_pages == free_before);
 }
@@ -690,11 +717,13 @@ void map_rejects_blocks() {
   {
     auto space = process::user_space::create_user_address_space();
     auto destination = process::user_space::create_user_address_space();
-    if (!ut::expect(space && destination))
+    if (!ut::expect(space && destination)) {
       return;
+    }
     auto page = mm::allocate_pages(0);
-    if (!ut::expect(page.has_value()))
+    if (!ut::expect(page.has_value())) {
       return;
+    }
     constexpr VirtAddr address = process::user_layout::CODE_BASE;
     const PhysAddr root = (*space)->pgd_phys;
     if (!ut::expect(Tables::map_user_page(root, address, *page, mm::page_perms::USER_RW).has_value())) {
@@ -737,15 +766,17 @@ void clone_preserves_destination() {
   {
     auto source = process::user_space::create_user_address_space();
     auto destination = process::user_space::create_user_address_space();
-    if (!ut::expect(source && destination))
+    if (!ut::expect(source && destination)) {
       return;
+    }
     const PhysAddr roots[] = {(*source)->pgd_phys, (*destination)->pgd_phys};
     constexpr VirtAddr address = process::user_layout::CODE_BASE;
     mm::PageTableEntry original[2];
     for (usize i = 0; i < 2; ++i) {
       auto page = mm::allocate_pages(0);
-      if (!ut::expect(page.has_value()))
+      if (!ut::expect(page.has_value())) {
         return;
+      }
       if (!ut::expect(Tables::map_user_page(roots[i], address, *page, mm::page_perms::USER_RW).has_value())) {
         (void)mm::free_pages(*page, 0);
         return;
@@ -773,8 +804,9 @@ void clone_allocation_rollback() {
   {
     auto parent = process::user_space::create_user_address_space();
     auto child = process::user_space::create_user_address_space();
-    if (!ut::expect(parent && child))
+    if (!ut::expect(parent && child)) {
       return;
+    }
     const PhysAddr parent_root = (*parent)->pgd_phys;
     const bool four_levels = Tables::is_user_range(1ULL << 39, page_size);
     constexpr VirtAddr base = process::user_layout::CODE_BASE;
@@ -783,8 +815,9 @@ void clone_allocation_rollback() {
     mm::PageTableEntry originals[4];
     for (usize i = 0; i < 4; ++i) {
       auto page = mm::allocate_pages(0);
-      if (!ut::expect(page.has_value()))
+      if (!ut::expect(page.has_value())) {
         return;
+      }
       if (!ut::expect(Tables::map_user_page(parent_root, addresses[i], *page, mm::page_perms::USER_RW).has_value())) {
         (void)mm::free_pages(*page, 0);
         return;
@@ -796,25 +829,29 @@ void clone_allocation_rollback() {
       Tables::free_user_page_tables((*child)->pgd_phys);
       (*child)->pgd_phys = 0;
       auto fresh = Tables::create_user_page_tables();
-      if (!ut::expect(fresh.has_value()))
+      if (!ut::expect(fresh.has_value())) {
         return false;
+      }
       (*child)->pgd_phys = *fresh;
       return true;
     };
     // Measure the real table-page requirement with ample memory, then undo this
     // inactive calibration clone. No parent user instruction can run here.
     const auto before_clone = Pfa::get_memory_stats().free_pages;
-    if (!ut::expect(Tables::clone_user_page_tables(parent_root, (*child)->pgd_phys).has_value()))
+    if (!ut::expect(Tables::clone_user_page_tables(parent_root, (*child)->pgd_phys).has_value())) {
       return;
+    }
     const usize needed = before_clone - Pfa::get_memory_stats().free_pages;
-    if (!ut::expect(needed > 0 && needed <= 16) || !recreate_child())
+    if (!ut::expect(needed > 0 && needed <= 16) || !recreate_child()) {
       return;
+    }
     for (usize i = 0; i < 4; ++i) {
       *Tables::get_user_pte(parent_root, addresses[i]) = originals[i];
     }
     PagePressure pressure;
-    if (!ut::expect(pressure.acquire(needed)))
+    if (!ut::expect(pressure.acquire(needed))) {
       return;
+    }
     for (usize budget = 0; budget < needed; ++budget) {
       const PhysAddr child_root = (*child)->pgd_phys;
       const auto root_hash = page_table_hash(child_root);
@@ -832,8 +869,9 @@ void clone_allocation_rollback() {
         ut::expect(Pfa::page_ref_get(originals[i].get_phys_addr()) == 1);
         ut::expect(*reinterpret_cast<const u64 *>(phys_to_virt(originals[i].get_phys_addr())) == 0xc0ffeeULL + i);
       }
-      if (!recreate_child())
+      if (!recreate_child()) {
         return;
+      }
       for (usize i = 0; i < 4; ++i) {
         *Tables::get_user_pte(parent_root, addresses[i]) = originals[i];
       }
@@ -841,8 +879,9 @@ void clone_allocation_rollback() {
     }
     // Exactly the required number of pages must suffice, including after all
     // preceding failed attempts; there is no extra reserve hidden in a mock.
-    if (!ut::expect(Tables::clone_user_page_tables(parent_root, (*child)->pgd_phys).has_value()))
+    if (!ut::expect(Tables::clone_user_page_tables(parent_root, (*child)->pgd_phys).has_value())) {
       return;
+    }
     ut::expect(Pfa::get_memory_stats().free_pages == 0);
     for (usize i = 0; i < 4; ++i) {
       const auto *pte = Tables::get_user_pte((*child)->pgd_phys, addresses[i]);
@@ -881,19 +920,22 @@ void asid_leases() {
       spaces[count] = moss::move(*next);
     }
     ut::expect(count == 254); // One live lease belongs to this worker.
-    if (count != 254)
+    if (count != 254) {
       return;
+    }
     for (unsigned i = 0; i < count; i += 2) {
       used[spaces[i]->asid] = false;
       spaces[i].reset();
     }
     for (unsigned i = 0; i < count; i += 2) {
       auto next = user_space::create_user_address_space();
-      if (!ut::expect(next.has_value()))
+      if (!ut::expect(next.has_value())) {
         return;
+      }
       const auto tag = (*next)->asid;
-      if (!ut::expect(tag > 0 && tag < 256 && !used[tag]))
+      if (!ut::expect(tag > 0 && tag < 256 && !used[tag])) {
         return;
+      }
       used[tag] = true;
       spaces[i] = moss::move(*next);
     }
@@ -974,11 +1016,13 @@ const char *const user_benchmark_names[] = {"bench.fault",     "bench.cow",    "
 // Private userspace dispatch modes: 2 is getpid and 11..16 follow this six-name
 // catalog's order. Keep these numbers synchronized with userspace/validation.c.
 long user_benchmark_mode() {
-  if (ut::same_id(selection, "bench.getpid"))
+  if (ut::same_id(selection, "bench.getpid")) {
     return 2;
+  }
   for (long i = 0; i < 6; ++i) {
-    if (ut::same_id(selection, user_benchmark_names[i]))
+    if (ut::same_id(selection, user_benchmark_names[i])) {
       return 11 + i;
+    }
   }
   return 0;
 }
@@ -1419,22 +1463,25 @@ struct HeapPressure {
   bool acquire(usize size) {
     for (;;) {
       auto allocation = mm::RuntimeHeapAllocator::allocate(size);
-      if (!allocation)
+      if (!allocation) {
         return allocation.error() == mm::HeapAllocError::OutOfMemory;
+      }
       *static_cast<void **>(*allocation) = head;
       head = *allocation;
     }
   }
   bool release_one() {
-    if (!head)
+    if (!head) {
       return false;
+    }
     void *block = head;
     head = *static_cast<void **>(block);
     return ut::expect(mm::RuntimeHeapAllocator::deallocate(block, 0).has_value());
   }
   void release() {
-    while (head)
+    while (head) {
       release_one();
+    }
   }
   ~HeapPressure() { release(); }
 };
@@ -1447,8 +1494,9 @@ void ipc_heap_rollback() {
   unsigned failures = 0;
   {
     HeapPressure pressure;
-    if (!ut::expect(pressure.acquire(sizeof(void *))))
+    if (!ut::expect(pressure.acquire(sizeof(void *)))) {
       return;
+    }
     // Restore heap capacity one real allocation at a time. Descriptor,
     // control-block and tracking-node failures must all return the backing.
     for (;;) {
@@ -1464,8 +1512,9 @@ void ipc_heap_rollback() {
       ut::expect(manager.get_statistics().total_regions == 0);
       ut::expect(mm::RuntimeHeapAllocator::get_heap_stats().allocated_bytes == heap);
       ut::expect(mm::PageFrameAllocator::get_memory_stats().free_pages == page_baseline);
-      if (recovered || !ut::expect(pressure.release_one()))
+      if (recovered || !ut::expect(pressure.release_one())) {
         break;
+      }
     }
   }
   ut::expect(failures > 0 && recovered);
@@ -1475,8 +1524,9 @@ void ipc_heap_rollback() {
     {
       ipc::SharedMemoryManager teardown;
       auto created = teardown.create_region(0, page_size);
-      if (!ut::expect(created.has_value()) || !ut::expect(pressure.acquire(sizeof(void *))))
+      if (!ut::expect(created.has_value()) || !ut::expect(pressure.acquire(sizeof(void *)))) {
         return;
+      }
       exhausted_pages = mm::PageFrameAllocator::get_memory_stats().free_pages;
       // The manager leaves scope while every heap allocation still fails.
       // Teardown must not allocate a snapshot just to release existing regions.
@@ -1496,8 +1546,9 @@ void process_heap_rollback() {
   unsigned failures = 0;
   {
     HeapPressure pressure;
-    if (!ut::expect(pressure.acquire(sizeof(void *))))
+    if (!ut::expect(pressure.acquire(sizeof(void *)))) {
       return;
+    }
     // Gradually restore real capacity through the public creation boundary;
     // intermediate failures must release every partially constructed object.
     for (usize attempt = 0; attempt < sizeof(process::Process) / sizeof(void *) + 16; ++attempt) {
@@ -1520,8 +1571,9 @@ void process_heap_rollback() {
       ut::expect(manager.total_processes() == baseline.processes);
       ut::expect(mm::RuntimeHeapAllocator::get_heap_stats().allocated_bytes == heap);
       ut::expect(mm::PageFrameAllocator::get_memory_stats().free_pages == baseline.free_pages);
-      if (recovered || !ut::expect(pressure.release_one()))
+      if (recovered || !ut::expect(pressure.release_one())) {
         break;
+      }
     }
   }
   ut::expect(failures > 0 && recovered);
@@ -1534,14 +1586,16 @@ void address_space_heap_rollback() {
   const auto pages = mm::PageFrameAllocator::get_memory_stats().free_pages;
   {
     HeapPressure pressure;
-    if (!ut::expect(pressure.acquire(sizeof(process::AddressSpace))))
+    if (!ut::expect(pressure.acquire(sizeof(process::AddressSpace)))) {
       return;
+    }
     // More attempts than the ASID capacity: even a one-lease-per-failure leak
     // must fail here, before pressure is removed and normal allocation resumes.
     for (unsigned attempt = 0; attempt < 256; ++attempt) {
       auto space = process::user_space::create_user_address_space();
-      if (!ut::expect(!space && space.error() == ErrorCode::OutOfMemory))
+      if (!ut::expect(!space && space.error() == ErrorCode::OutOfMemory)) {
         break;
+      }
       ut::expect(mm::PageFrameAllocator::get_memory_stats().free_pages == pages);
     }
   }
@@ -1559,17 +1613,20 @@ void vma_heap_rollback() {
   const auto pages = mm::PageFrameAllocator::get_memory_stats().free_pages;
   {
     auto created = user_space::create_user_address_space();
-    if (!ut::expect(created.has_value()))
+    if (!ut::expect(created.has_value())) {
       return;
+    }
     auto &space = **created;
     constexpr auto base = user_layout::MMAP_BASE;
-    if (!ut::expect(space.add_vma(base, base + page_size, vma_flags::READ, VmaType::MMAP)))
+    if (!ut::expect(space.add_vma(base, base + page_size, vma_flags::READ, VmaType::MMAP))) {
       return;
+    }
     const auto populated = mm::RuntimeHeapAllocator::get_heap_stats().allocated_bytes;
     {
       HeapPressure pressure;
-      if (!ut::expect(pressure.acquire(sizeof(VmaRegion))))
+      if (!ut::expect(pressure.acquire(sizeof(VmaRegion)))) {
         return;
+      }
       ut::expect(!space.add_vma(base + page_size, base + 2 * page_size, vma_flags::WRITE, VmaType::MMAP));
       ut::expect(!space.find_vma(base + page_size) && space.vmas.size() == 1);
       ut::expect(space.allows_user_access(base, page_size, vma_flags::READ) &&
@@ -1689,14 +1746,16 @@ void fd_boundaries() {
   ut::expect(table.get_file(1) == file && table.descriptor_flags(1) == 1);
   table.close_on_exec();
   ut::expect(table.get_file(1) == nullptr && file->ref_count == 1);
-  for (unsigned attempt = 0; attempt < vfs::MAX_FDS; ++attempt)
+  for (unsigned attempt = 0; attempt < vfs::MAX_FDS; ++attempt) {
     ut::expect(vfs::syscall::do_open(&table, "/missing-open-reservation", 0, 0) ==
                -static_cast<long>(vfs::VfsError::NoEntry));
+  }
   const u32 occupied = vfs::file_pool_usage();
   auto **held = new vfs::File *[vfs::MAX_FILES] {};
   u32 count = 0;
-  while (count < vfs::MAX_FILES && (held[count] = vfs::alloc_file()) != nullptr)
+  while (count < vfs::MAX_FILES && (held[count] = vfs::alloc_file()) != nullptr) {
     ++count;
+  }
   ut::expect(count == vfs::MAX_FILES - occupied);
   long pipe_ends[2] = {-37, -73};
   ut::expect(vfs::syscall::do_pipe(&table, pipe_ends) == -static_cast<long>(vfs::VfsError::NoMemory));
@@ -1709,16 +1768,18 @@ void fd_boundaries() {
     ut::expect(pipe_ends[0] == -37 && pipe_ends[1] == -73);
     ut::expect(vfs::file_pool_usage() == vfs::MAX_FILES - 1);
     held[count] = vfs::alloc_file();
-    if (ut::expect(held[count] != nullptr))
+    if (ut::expect(held[count] != nullptr)) {
       ++count;
+    }
   }
   ut::expect(vfs::syscall::do_open(&table, "/uncreated-open-reservation", vfs::O_RDWR | vfs::O_CREAT, 0600) ==
              -static_cast<long>(vfs::VfsError::NoMemory));
   vfs::Stat missing{};
   ut::expect(vfs::syscall::do_stat("/uncreated-open-reservation", &missing) ==
              -static_cast<long>(vfs::VfsError::NoEntry));
-  for (u32 i = 0; i < count; ++i)
+  for (u32 i = 0; i < count; ++i) {
     vfs::release_file(held[i]);
+  }
   delete[] held;
   ut::expect(vfs::file_pool_usage() == occupied);
   if (ut::expect(vfs::syscall::do_pipe(&table, pipe_ends) == 0)) {
@@ -1734,8 +1795,9 @@ void fd_boundaries() {
   const auto pools = vfs::pool_usage();
   const auto heap = mm::RuntimeHeapAllocator::get_heap_stats().allocated_bytes;
   fd = vfs::syscall::do_open(&table, "/fixture.bin", vfs::O_CLOEXEC, 0);
-  if (!ut::expect(fd == 0 && vfs::syscall::do_chdir(&table, "/") == 0))
+  if (!ut::expect(fd == 0 && vfs::syscall::do_chdir(&table, "/") == 0)) {
     return;
+  }
   auto *source = table.get_file(fd);
   const auto populated = vfs::pool_usage();
   const auto populated_heap = mm::RuntimeHeapAllocator::get_heap_stats().allocated_bytes;
@@ -1745,8 +1807,9 @@ void fd_boundaries() {
     if (ut::expect(pressure.acquire(sizeof(vfs::FdTable)))) {
       auto *copy = table.clone();
       ut::expect(copy == nullptr);
-      if (copy)
+      if (copy) {
         copy->close_all();
+      }
       delete copy;
       ut::expect(table.get_file(fd) == source && source->ref_count == 1 && table.descriptor_flags(fd) == 1);
       ut::expect(table.working_directory()->ref_count == cwd_refs && vfs::pool_usage() == populated);
@@ -1829,8 +1892,9 @@ void writable_lifecycle() {
   constexpr const char *path = "/writable";
   constexpr u8 payload[] = {0, 1, 2, 0xff};
   long fd = vfs::syscall::do_open(&table, path, create, 0600, 0, 43);
-  if (!ut::expect(fd == 0))
+  if (!ut::expect(fd == 0)) {
     return;
+  }
   vfs::Stat original{}, status{};
   ut::expect(vfs::syscall::do_fstat(&table, fd, &original) == 0 && original.st_size == 0 && original.st_uid == 0 &&
              original.st_gid == 43 && (original.st_mode & 0777) == 0600);
@@ -1869,8 +1933,9 @@ void writable_lifecycle() {
   ut::expect(vfs::syscall::do_write(&table, fd, vfs::InputBuffer::kernel(payload, 1)) ==
              -static_cast<long>(vfs::VfsError::FileTooLarge));
   ut::expect(vfs::syscall::do_lseek(&table, fd, -1, 0) == -static_cast<long>(vfs::VfsError::InvalidArg));
-  for (u32 next = 2; next < vfs::MAX_FDS; ++next)
+  for (u32 next = 2; next < vfs::MAX_FDS; ++next) {
     ut::expect(vfs::syscall::do_dup(&table, fd) == static_cast<long>(next));
+  }
   ut::expect(vfs::syscall::do_open(&table, "/uncreated", create, 0600) ==
              -static_cast<long>(vfs::VfsError::TooManyFiles));
   ut::expect(vfs::syscall::do_stat("/uncreated", &status) == -static_cast<long>(vfs::VfsError::NoEntry));
@@ -1921,8 +1986,9 @@ void writable_lifecycle() {
                __builtin_memcmp(bytes, payload, 4) == 0);
     table.close_all();
     if (!ut::expect(vfs::pool_usage() == baseline &&
-                    mm::RuntimeHeapAllocator::get_heap_stats().allocated_bytes == heap))
+                    mm::RuntimeHeapAllocator::get_heap_stats().allocated_bytes == heap)) {
       break;
+    }
   }
 }
 
@@ -1969,8 +2035,9 @@ void rename_lifecycle() {
     ut::expect(vfs::syscall::do_unlink("/rename-b/target") == 0);
     table.close_all();
     if (!ut::expect(vfs::pool_usage() == directories &&
-                    mm::RuntimeHeapAllocator::get_heap_stats().allocated_bytes == heap))
+                    mm::RuntimeHeapAllocator::get_heap_stats().allocated_bytes == heap)) {
       break;
+    }
   }
   ut::expect(vfs::syscall::do_rmdir("/rename-a") == 0 && vfs::syscall::do_rmdir("/rename-b") == 0);
   ut::expect(vfs::pool_usage() == baseline && mm::RuntimeHeapAllocator::get_heap_stats().allocated_bytes == heap);
@@ -1982,8 +2049,9 @@ void rename_boundaries() {
   vfs::FdTable table;
   constexpr const char *paths[] = {"/rename-a", "/rename-b", "/rename-a/source", "/rename-a/source/leaf",
                                    "/rename-b/target"};
-  for (auto *path : paths)
+  for (const auto *path : paths) {
     ut::expect(vfs::syscall::do_mkdir(path, 0700, 0, 0) == 0);
+  }
   long held = vfs::syscall::do_open(&table, "/rename-b/target", vfs::O_RDONLY, 0);
   long file = vfs::syscall::do_open(&table, "/rename-a/file", vfs::O_RDWR | vfs::O_CREAT, 0600);
   vfs::Stat source{}, target{}, current{}, parent{};
@@ -2002,22 +2070,22 @@ void rename_boundaries() {
     vfs::VfsError error;
   };
   const Rejection rejections[] = {
-      {"/rename-b/target", "/rename-b/target/leaf/cycle", vfs::VfsError::InvalidArg},
-      {"/rename-a/file", "/rename-b/target", vfs::VfsError::IsDirectory},
-      {"/rename-b/target", "/rename-a/file", vfs::VfsError::NotDirectory},
-      {"/rename-a", "/rename-b", vfs::VfsError::NotEmpty},
-      {"/rename-a/file", "/dev/null", vfs::VfsError::CrossDevice},
-      {"/", "/rename-a/root", vfs::VfsError::Busy},
-      {"/rename-a/file", "/", vfs::VfsError::Busy},
-      {"/dev", "/rename-a/device", vfs::VfsError::Busy},
-      {"/rename-a/file", "/dev", vfs::VfsError::Busy},
-      {"/rename-a/file/", "/rename-a/new", vfs::VfsError::NotDirectory},
-      {"/rename-a/file", "/rename-a/new/", vfs::VfsError::NotDirectory},
-      {"/rename-a/file", "/rename-a/file/child/new", vfs::VfsError::NotDirectory},
-      {"/rename-a/.", "/rename-a/new", vfs::VfsError::InvalidArg},
-      {"/rename-a/file", "/rename-a/..", vfs::VfsError::InvalidArg},
-      {"/rename-a/missing", "/rename-a/new", vfs::VfsError::NoEntry},
-      {"/rename-a/file", "", vfs::VfsError::NoEntry},
+      {.old_path = "/rename-b/target", .new_path = "/rename-b/target/leaf/cycle", .error = vfs::VfsError::InvalidArg},
+      {.old_path = "/rename-a/file", .new_path = "/rename-b/target", .error = vfs::VfsError::IsDirectory},
+      {.old_path = "/rename-b/target", .new_path = "/rename-a/file", .error = vfs::VfsError::NotDirectory},
+      {.old_path = "/rename-a", .new_path = "/rename-b", .error = vfs::VfsError::NotEmpty},
+      {.old_path = "/rename-a/file", .new_path = "/dev/null", .error = vfs::VfsError::CrossDevice},
+      {.old_path = "/", .new_path = "/rename-a/root", .error = vfs::VfsError::Busy},
+      {.old_path = "/rename-a/file", .new_path = "/", .error = vfs::VfsError::Busy},
+      {.old_path = "/dev", .new_path = "/rename-a/device", .error = vfs::VfsError::Busy},
+      {.old_path = "/rename-a/file", .new_path = "/dev", .error = vfs::VfsError::Busy},
+      {.old_path = "/rename-a/file/", .new_path = "/rename-a/new", .error = vfs::VfsError::NotDirectory},
+      {.old_path = "/rename-a/file", .new_path = "/rename-a/new/", .error = vfs::VfsError::NotDirectory},
+      {.old_path = "/rename-a/file", .new_path = "/rename-a/file/child/new", .error = vfs::VfsError::NotDirectory},
+      {.old_path = "/rename-a/.", .new_path = "/rename-a/new", .error = vfs::VfsError::InvalidArg},
+      {.old_path = "/rename-a/file", .new_path = "/rename-a/..", .error = vfs::VfsError::InvalidArg},
+      {.old_path = "/rename-a/missing", .new_path = "/rename-a/new", .error = vfs::VfsError::NoEntry},
+      {.old_path = "/rename-a/file", .new_path = "", .error = vfs::VfsError::NoEntry},
   };
   const auto populated = vfs::pool_usage();
   for (const auto &rejection : rejections) {
@@ -2055,8 +2123,9 @@ void rename_boundaries() {
   table.close_all();
   ut::expect(vfs::syscall::do_unlink("/rename-a/file") == 0);
   constexpr const char *directories[] = {"/rename-a", "/rename-b", "/rename-full"};
-  for (auto *directory : directories)
+  for (const auto *directory : directories) {
     ut::expect(vfs::syscall::do_rmdir(directory) == 0);
+  }
   ut::expect(vfs::pool_usage() == baseline && mm::RuntimeHeapAllocator::get_heap_stats().allocated_bytes == heap);
 }
 
@@ -2074,16 +2143,18 @@ void access_permissions() {
       // Root provides a writable arena; unprivileged creation must not rely on
       // bypassing the namespace root's 0755 permissions.
       if (!ut::expect(vfs::syscall::do_mkdir("/access-arena", 0777, 0, 0) == 0 &&
-                      vfs::syscall::do_chdir(&table, "/access-arena") == 0))
+                      vfs::syscall::do_chdir(&table, "/access-arena") == 0)) {
         return;
+      }
       auto create = [&](const char *path, u32 mode) {
         const long fd = vfs::syscall::do_open(&table, path, O_CREAT | O_EXCL | O_RDWR, mode, 42, 43);
         return fd >= 0 && vfs::syscall::do_close(&table, fd) == 0;
       };
       if (!ut::expect(create("owner", 0640) && create("group", 0040) && create("exec", 0010) &&
                       create("others", 0066) && vfs::syscall::do_mkdir("tree", 0710, 42, 43, &table) == 0 &&
-                      create("tree/leaf", 0600) && vfs::syscall::do_mkdir("tree/empty", 0700, 42, 43, &table) == 0))
+                      create("tree/leaf", 0600) && vfs::syscall::do_mkdir("tree/empty", 0700, 42, 43, &table) == 0)) {
         return;
+      }
       ut::expect(vfs::syscall::do_access(&table, "owner", 6, 42, 99) == 0);
       ut::expect(vfs::syscall::do_access(&table, "owner", 4, 99, 43) == 0);
       ut::expect(vfs::syscall::do_access(&table, "owner", 2, 99, 43) == denied);
@@ -2091,13 +2162,15 @@ void access_permissions() {
       auto open_as = [&](const char *path, u32 flags, u32 uid, u32 gid, bool permitted) {
         const long fd = vfs::syscall::do_open(&table, path, flags, 0, uid, gid);
         ut::expect(permitted ? fd >= 0 : fd == denied);
-        if (fd >= 0)
+        if (fd >= 0) {
           ut::expect(vfs::syscall::do_close(&table, fd) == 0);
+        }
       };
       const long owner = vfs::syscall::do_open(&table, "owner", O_RDWR, 0, 42, 43);
       constexpr u8 payload[] = {37, 0, 0xff};
-      if (!ut::expect(owner >= 0 && vfs::syscall::do_write(&table, owner, InputBuffer::kernel(payload, 3)) == 3))
+      if (!ut::expect(owner >= 0 && vfs::syscall::do_write(&table, owner, InputBuffer::kernel(payload, 3)) == 3)) {
         return;
+      }
       Stat original{}, current{}, original_leaf{};
       ut::expect(vfs::syscall::do_fstat(&table, owner, &original) == 0 && original.st_uid == 42 &&
                  original.st_gid == 43 && vfs::syscall::do_stat("tree", &current, &table) == 0 &&
@@ -2118,8 +2191,9 @@ void access_permissions() {
       open_as("tree/../others", O_RDONLY, 99, 99, false); // Do not normalize away a denied search.
       open_as("tree/../others", O_RDONLY, 99, 43, true);
       open_as("/access-uncreated", O_CREAT | O_WRONLY, 99, 99, false);
-      if (vfs::syscall::do_stat("/access-uncreated", &current) == 0)
+      if (vfs::syscall::do_stat("/access-uncreated", &current) == 0) {
         ut::expect(vfs::syscall::do_unlink("/access-uncreated") == 0);
+      }
       // Group search alone cannot authorize namespace changes. Rejections must
       // preserve both rename endpoints and the populated resource baseline.
       open_as("tree/uncreated", O_CREAT | O_WRONLY, 99, 43, false);
@@ -2159,8 +2233,9 @@ void access_permissions() {
                  vfs::syscall::do_rmdir("tree/empty", &table) == 0 && vfs::syscall::do_rmdir("tree", &table) == 0 &&
                  vfs::syscall::do_chdir(&table, "/") == 0 && vfs::syscall::do_rmdir("/access-arena") == 0);
     }
-    if (!ut::expect(pool_usage() == baseline && mm::RuntimeHeapAllocator::get_heap_stats().allocated_bytes == heap))
+    if (!ut::expect(pool_usage() == baseline && mm::RuntimeHeapAllocator::get_heap_stats().allocated_bytes == heap)) {
       return;
+    }
   }
 }
 
@@ -2177,17 +2252,20 @@ void working_directory_lifecycle() {
     {
       vfs::FdTable table;
       if (!ut::expect(vfs::syscall::do_mkdir("/cwd-tree", 0710, 0, 43) == 0 &&
-                      vfs::syscall::do_mkdir("/cwd-tree/leaf", 0755, 0, 43) == 0))
+                      vfs::syscall::do_mkdir("/cwd-tree/leaf", 0755, 0, 43) == 0)) {
         return;
+      }
       // Both the final directory and each searched ancestor require access.
       ut::expect(vfs::syscall::do_chdir(&table, "/cwd-tree", 99, 44) == -static_cast<long>(vfs::VfsError::PermDenied));
       ut::expect(vfs::syscall::do_chdir(&table, "/cwd-tree/leaf", 99, 44) ==
                  -static_cast<long>(vfs::VfsError::PermDenied));
-      if (!ut::expect(vfs::syscall::do_chdir(&table, "/cwd-tree/leaf", 99, 43) == 0))
+      if (!ut::expect(vfs::syscall::do_chdir(&table, "/cwd-tree/leaf", 99, 43) == 0)) {
         return;
+      }
       auto *child = table.clone();
-      if (!ut::expect(child != nullptr))
+      if (!ut::expect(child != nullptr)) {
         return;
+      }
       char path[vfs::MAX_PATH_LEN];
       auto output = vfs::OutputBuffer::kernel(path, sizeof(path));
       ut::expect(vfs::syscall::do_getcwd(child, output) == 0 && ut::same_id(path, "/cwd-tree/leaf"));
@@ -2207,8 +2285,9 @@ void working_directory_lifecycle() {
       delete child;
     }
     if (!ut::expect(root_references() == root_refs && vfs::pool_usage() == baseline &&
-                    mm::RuntimeHeapAllocator::get_heap_stats().allocated_bytes == heap))
+                    mm::RuntimeHeapAllocator::get_heap_stats().allocated_bytes == heap)) {
       return;
+    }
   }
 }
 
@@ -2222,15 +2301,17 @@ void directory_capacity() {
   ut::expect(vfs::pool_usage() == baseline);
   vfs::Stat root{}, full{}, current{};
   ut::expect(vfs::syscall::do_stat("/", &root) == 0);
-  if (!ut::expect(vfs::syscall::do_mkdir("/capacity", 0700, 0, 43) == 0))
+  if (!ut::expect(vfs::syscall::do_mkdir("/capacity", 0700, 0, 43) == 0)) {
     return;
+  }
   char path[] = "/capacity/00";
   u32 created = 0;
   for (; created < vfs::Inode::MAX_CHILDREN; ++created) {
     path[10] = static_cast<char>('0' + created / 10);
     path[11] = static_cast<char>('0' + created % 10);
-    if (!ut::expect(vfs::syscall::do_mkdir(path, 0700, 0, 43) == 0))
+    if (!ut::expect(vfs::syscall::do_mkdir(path, 0700, 0, 43) == 0)) {
       break;
+    }
   }
   ut::expect(vfs::syscall::do_stat("/capacity", &full) == 0);
   ut::expect(full.st_nlink == created + 2 && full.st_uid == 0 && full.st_gid == 43);
@@ -2255,8 +2336,9 @@ void directory_capacity() {
   long held = vfs::syscall::do_open(&table, "/capacity", 0, 0);
   if (ut::expect(held == 0)) {
     auto *file = table.get_file(held);
-    for (u32 fd = 1; fd < vfs::MAX_FDS; ++fd)
+    for (u32 fd = 1; fd < vfs::MAX_FDS; ++fd) {
       ut::expect(vfs::syscall::do_dup(&table, held) == static_cast<long>(fd));
+    }
     const auto installed = vfs::pool_usage();
     const auto inode_refs = file->inode->ref_count, dentry_refs = file->dentry->ref_count;
     for (unsigned attempt = 0; attempt < 300; ++attempt) {
@@ -2339,8 +2421,9 @@ void timer_dispatch() {
     ut::expect(static_cast<bool>(one_shot.start(deadline)));
     if (phase != 0) {
       // Model preemption between arming the two independent timers.
-      while (subsystem.now_ns() < deadline + 100000000ULL)
+      while (subsystem.now_ns() < deadline + 100000000ULL) {
         arch::cpu_yield();
+      }
     }
     const auto first_period = subsystem.now_ns() + 1000000ULL;
     ut::expect(static_cast<bool>(repeating.start_relative(1000000ULL)));
@@ -2372,8 +2455,9 @@ struct TimerCapacity {
   bool full = false;
 
   TimerCapacity() {
-    if (!ut::expect(timers != nullptr))
+    if (!ut::expect(timers != nullptr)) {
       return;
+    }
     unsigned active = 0;
     for (unsigned i = 0; i < 257; ++i) {
       timers[i].init(timer::TimerMode::OneShot, [](void *) noexcept {});
@@ -2388,8 +2472,9 @@ struct TimerCapacity {
   }
 
   ~TimerCapacity() {
-    if (!timers)
+    if (!timers) {
       return;
+    }
     for (unsigned i = 0; i < 257; ++i) {
       timers[i].cancel_sync();
       ut::expect(!timers[i].is_active());
@@ -2660,7 +2745,7 @@ void heap_exhaustion() {
   // 128 pointers track up to 8 MiB in 64 KiB chunks, then the fixture tests
   // smaller remainder allocations. These bound bookkeeping and stack usage.
   using Heap = mm::RuntimeHeapAllocator;
-  constexpr usize chunk_size = 64 * 1024;
+  constexpr usize chunk_size = static_cast<const usize>(64 * 1024);
   void *owned[128]{};
   auto sentinel = mm::PageFrameAllocator::allocate_pages(0);
   if (!ut::expect(static_cast<bool>(sentinel))) {
@@ -2680,7 +2765,8 @@ void heap_exhaustion() {
   const auto before = Heap::get_heap_stats().allocated_bytes;
   const auto free_pages = mm::PageFrameAllocator::get_memory_stats().free_pages;
   // Hold these together to write beyond the old 4/64/256-KiB boundaries.
-  constexpr usize probes[] = {4 * 1024, 64 * 1024, 256 * 1024};
+  constexpr usize probes[] = {static_cast<const usize>(4 * 1024), static_cast<const usize>(64 * 1024),
+                              static_cast<const usize>(256 * 1024)};
   usize probe_count = 0;
   for (usize size : probes) {
     auto allocation = Heap::allocate(size);
@@ -2736,7 +2822,7 @@ void heap_exhaustion() {
   layout.verify();
   ut::expect(static_cast<bool>(mm::PageFrameAllocator::free_pages(*sentinel, 0)));
   // A large allocation after release requires the split blocks to coalesce.
-  auto reused = Heap::allocate(1024 * 1024);
+  auto reused = Heap::allocate(static_cast<usize>(1024 * 1024));
   if (ut::expect(static_cast<bool>(reused))) {
     ut::expect(static_cast<bool>(Heap::deallocate(*reused, 0)));
   }
@@ -2969,8 +3055,9 @@ struct ContainerInterleaving {
       wait_for(factories, 2); // Force both creators past the initial lookup.
       return candidate;
     });
-    if (actor == 2)
+    if (actor == 2) {
       peer_value = reinterpret_cast<VirtAddr>(result.get());
+    }
     __atomic_fetch_or(&inserted, actor, __ATOMIC_RELEASE);
     wait_for(inserted, 3);
     return result;
@@ -2989,8 +3076,9 @@ struct ContainerInterleaving {
     wait_for(phase, 3);
     const bool alive = __atomic_load_n(&destroyed, __ATOMIC_ACQUIRE) == 0;
     peer_ok = peer_ok && alive;
-    if (held && alive)
+    if (held && alive) {
       peer_ok = peer_ok && (*held)->destroyed == &destroyed;
+    }
     held.reset();
     __atomic_store_n(&phase, 4U, __ATOMIC_RELEASE);
     wait_for(phase, 5);
@@ -3070,8 +3158,9 @@ struct FileReferences {
 
   static void require_refs(vfs::File *file, u32 expected, u32 cycle) {
     const u32 actual = file->ref_count;
-    if (actual != expected)
+    if (actual != expected) {
       logging::klog::error("File references cycle {}: expected {}, observed {}", cycle, expected, actual);
+    }
     require(actual == expected);
   }
 
@@ -3135,12 +3224,13 @@ struct FileReferences {
     for (u32 kind = 0; kind < 4; ++kind) {
       const u32 start = 2 * cycles + 18 + 3 * kind;
       ContainerInterleaving::wait_for(phase, start);
-      if (kind == 0)
+      if (kind == 0) {
         dup_result = vfs::syscall::do_dup(&reader, 0);
-      else if (kind == 1)
+      } else if (kind == 1) {
         dup_result = vfs::syscall::do_dup2(&reader, 0, 2);
-      else
+      } else {
         dup_result = vfs::syscall::do_fcntl(&reader, 0, kind == 2 ? 0 : 1030, 0);
+      }
       __atomic_store_n(&arrived, start + 2, __ATOMIC_RELEASE);
       ContainerInterleaving::wait_for(phase, start + 2);
     }
@@ -3155,9 +3245,11 @@ struct FileReferences {
     long ends[2] = {-1, -1};
     require(vfs::syscall::do_pipe(&reader, ends) == 0);
     auto *file = reader.get_file(ends[1]);
-    for (auto &table : writers)
-      for (u32 fd = 0; fd < copies; ++fd)
+    for (auto &table : writers) {
+      for (u32 fd = 0; fd < copies; ++fd) {
         require(table.alloc_fd(file) == static_cast<long>(fd));
+      }
+    }
     require(reader.close_fd(ends[1]) == 0);
     const auto populated = vfs::pool_usage();
     for (u32 cycle = 0; cycle < cycles; ++cycle) {
@@ -3200,11 +3292,13 @@ struct FileReferences {
     for (;;) {
       {
         containers::LockGuard<containers::IrqSpinLock> guard(peer_thread->sleep_lock);
-        if (peer_thread->state == process::ProcessState::Sleeping && peer_thread->sleep_handoff.load() == 0)
+        if (peer_thread->state == process::ProcessState::Sleeping && peer_thread->sleep_handoff.load() == 0) {
           break;
+        }
       }
-      if (__atomic_load_n(&arrived, __ATOMIC_ACQUIRE) == 2 * cycles + 4)
+      if (__atomic_load_n(&arrived, __ATOMIC_ACQUIRE) == 2 * cycles + 4) {
         require(false); // Returning before data or EOF is available is a failure.
+      }
       arch::cpu_yield();
     }
     require(ut::eq(reader.close_fd(ends[0]), 0L));
@@ -3222,18 +3316,21 @@ struct FileReferences {
     require(vfs::syscall::do_pipe(&reader, ends) == 0);
     // Fill the real 4096-byte pipe without a page-sized kernel stack temporary.
     u8 bytes[64] = {};
-    for (unsigned i = 0; i < 64; ++i)
+    for (unsigned i = 0; i < 64; ++i) {
       require(ut::eq(vfs::syscall::do_write(&reader, ends[1], vfs::InputBuffer::kernel(bytes, sizeof(bytes))), 64L));
+    }
     shared_write_fd = ends[1];
     __atomic_store_n(&phase, 2 * cycles + 5, __ATOMIC_RELEASE);
     for (;;) {
       {
         containers::LockGuard<containers::IrqSpinLock> guard(peer_thread->sleep_lock);
-        if (peer_thread->state == process::ProcessState::Sleeping && peer_thread->sleep_handoff.load() == 0)
+        if (peer_thread->state == process::ProcessState::Sleeping && peer_thread->sleep_handoff.load() == 0) {
           break;
+        }
       }
-      if (__atomic_load_n(&arrived, __ATOMIC_ACQUIRE) == 2 * cycles + 6)
+      if (__atomic_load_n(&arrived, __ATOMIC_ACQUIRE) == 2 * cycles + 6) {
         require(false); // A full pipe cannot accept the peer's byte yet.
+      }
       arch::cpu_yield();
     }
     require(ut::eq(reader.close_fd(ends[1]), 0L));
@@ -3242,8 +3339,9 @@ struct FileReferences {
     require(ut::eq(vfs::pool_usage().files, baseline.files + 3U));
     for (unsigned i = 0; i < 64; ++i) {
       require(ut::eq(vfs::syscall::do_read(&reader, ends[0], vfs::OutputBuffer::kernel(bytes, sizeof(bytes))), 64L));
-      for (u8 value : bytes)
+      for (u8 value : bytes) {
         require(ut::eq(value, u8{0}));
+      }
     }
     ContainerInterleaving::wait_for(arrived, 2 * cycles + 6);
     require(ut::eq(shared_write_result, 1L));
@@ -3260,8 +3358,9 @@ struct FileReferences {
     vfs::Stat original{}, after{};
     require(ut::eq(vfs::syscall::do_fstat(&reader, 0, &original), 0L));
     require(ut::eq(original.st_size, u64{1}));
-    for (u32 fd = 1; fd + 1 < vfs::MAX_FDS; ++fd)
+    for (u32 fd = 1; fd + 1 < vfs::MAX_FDS; ++fd) {
       require(ut::eq(vfs::syscall::do_dup(&reader, 0), static_cast<long>(fd)));
+    }
     const auto files_before_open = vfs::file_pool_usage();
     long competitor = -1;
     {
@@ -3270,8 +3369,9 @@ struct FileReferences {
       containers::LockGuard<containers::IrqSpinLock> guard(vfs::namespace_lock);
       __atomic_store_n(&phase, 2 * cycles + 7, __ATOMIC_RELEASE);
       while (vfs::file_pool_usage() == files_before_open) {
-        if (__atomic_load_n(&arrived, __ATOMIC_ACQUIRE) == 2 * cycles + 8)
+        if (__atomic_load_n(&arrived, __ATOMIC_ACQUIRE) == 2 * cycles + 8) {
           require(false);
+        }
         arch::cpu_yield();
       }
       require(ut::eq(vfs::file_pool_usage(), files_before_open + 1U));
@@ -3287,23 +3387,27 @@ struct FileReferences {
     require(ut::eq(after.st_ino, original.st_ino));
     require(ut::eq(after.st_size, static_cast<u64>(expected_bytes)));
     require(ut::eq(vfs::syscall::do_read(&reader, 0, vfs::OutputBuffer::kernel(&byte, 1)), expected_bytes));
-    if (expected_bytes)
+    if (expected_bytes) {
       require(ut::eq(byte, sent));
+    }
     reader.close_all();
     require(ut::eq(vfs::syscall::do_unlink("/shared-open"), 0L));
     require(vfs::pool_usage() == baseline && mm::RuntimeHeapAllocator::get_heap_stats().allocated_bytes == heap);
     __atomic_store_n(&phase, 2 * cycles + 8, __ATOMIC_RELEASE);
 
     require(ut::eq(vfs::syscall::do_open(&reader, "/dev/null", vfs::O_RDWR, 0), 0L));
-    for (u32 fd = 1; fd + 1 < vfs::MAX_FDS; ++fd)
+    for (u32 fd = 1; fd + 1 < vfs::MAX_FDS; ++fd) {
       require(ut::eq(vfs::syscall::do_dup(&reader, 0), static_cast<long>(fd)));
+    }
     __atomic_store_n(&phase, 2 * cycles + 9, __ATOMIC_RELEASE);
     while (!__atomic_load_n(&pipe_published, __ATOMIC_ACQUIRE) &&
-           __atomic_load_n(&arrived, __ATOMIC_ACQUIRE) != 2 * cycles + 11)
+           __atomic_load_n(&arrived, __ATOMIC_ACQUIRE) != 2 * cycles + 11) {
       arch::cpu_yield();
+    }
     const bool published = __atomic_load_n(&pipe_published, __ATOMIC_ACQUIRE) != 0;
-    if (published)
+    if (published) {
       require(ut::eq(reader.close_fd(last), 0L));
+    }
     require(ut::eq(vfs::syscall::do_dup(&reader, 0), last));
     require(ut::eq(vfs::syscall::do_write(&reader, last, vfs::InputBuffer::kernel(&sent, 1)), 1L));
     __atomic_store_n(&phase, 2 * cycles + 10, __ATOMIC_RELEASE);
@@ -3324,12 +3428,14 @@ struct FileReferences {
     // together, even before the publishing syscall returns.
     __atomic_store_n(&pipe_published, 0U, __ATOMIC_RELEASE);
     require(ut::eq(vfs::syscall::do_open(&reader, "/dev/null", vfs::O_RDWR, 0), 0L));
-    for (u32 fd = 1; fd + 2 < vfs::MAX_FDS; ++fd)
+    for (u32 fd = 1; fd + 2 < vfs::MAX_FDS; ++fd) {
       require(ut::eq(vfs::syscall::do_dup(&reader, 0), static_cast<long>(fd)));
+    }
     __atomic_store_n(&phase, 2 * cycles + 12, __ATOMIC_RELEASE);
     while (!__atomic_load_n(&pipe_published, __ATOMIC_ACQUIRE) &&
-           __atomic_load_n(&arrived, __ATOMIC_ACQUIRE) != 2 * cycles + 14)
+           __atomic_load_n(&arrived, __ATOMIC_ACQUIRE) != 2 * cycles + 14) {
       arch::cpu_yield();
+    }
     require(__atomic_load_n(&pipe_published, __ATOMIC_ACQUIRE) != 0);
     require(reader.get_file(last - 1) != nullptr && reader.get_file(last) != nullptr);
     require(ut::eq(vfs::syscall::do_fcntl(&reader, last - 1, 3, 0), static_cast<long>(vfs::O_RDONLY)));
@@ -3359,8 +3465,9 @@ struct FileReferences {
     require(ut::eq(anchor, 3L));
     __atomic_store_n(&phase, 2 * cycles + 15, __ATOMIC_RELEASE);
     while (!__atomic_load_n(&copyout_ready, __ATOMIC_ACQUIRE) &&
-           __atomic_load_n(&arrived, __ATOMIC_ACQUIRE) != 2 * cycles + 17)
+           __atomic_load_n(&arrived, __ATOMIC_ACQUIRE) != 2 * cycles + 17) {
       arch::cpu_yield();
+    }
     require(__atomic_load_n(&copyout_ready, __ATOMIC_ACQUIRE) != 0);
     require(native_fds[0] == 4 && native_fds[1] == 5);
     const bool visible = native_table->get_file(native_fds[0]) != nullptr;
@@ -3387,13 +3494,15 @@ struct FileReferences {
     require(ut::eq(native_result, -14L)); // The native copy into read-only user memory must fail.
     require(ut::eq(vfs::syscall::do_write(native_table, anchor, vfs::InputBuffer::kernel(&sent, 1)), 1L));
     for (const long fd : native_fds) {
-      if (!visible)
+      if (!visible) {
         require(ut::eq(vfs::syscall::do_dup(native_table, anchor), fd));
+      }
       require(ut::eq(vfs::syscall::do_write(native_table, fd, vfs::InputBuffer::kernel(&sent, 1)), 1L));
     }
     require(!visible);
-    for (const long fd : native_fds)
+    for (const long fd : native_fds) {
       require(ut::eq(native_table->close_fd(fd), 0L));
+    }
     require(ut::eq(native_table->close_fd(anchor), 0L));
     require(vfs::pool_usage() == baseline && mm::RuntimeHeapAllocator::get_heap_stats().allocated_bytes == heap);
     __atomic_store_n(&phase, 2 * cycles + 17, __ATOMIC_RELEASE);
@@ -3403,8 +3512,10 @@ struct FileReferences {
       require(ut::eq(vfs::syscall::do_open(&reader, "/dev/null", vfs::O_WRONLY, 0), 1L));
       __atomic_store_n(&dup_ready, 0U, __ATOMIC_RELEASE);
       __atomic_store_n(&phase, start, __ATOMIC_RELEASE);
-      while (!__atomic_load_n(&dup_ready, __ATOMIC_ACQUIRE) && __atomic_load_n(&arrived, __ATOMIC_ACQUIRE) != start + 2)
+      while (!__atomic_load_n(&dup_ready, __ATOMIC_ACQUIRE) &&
+             __atomic_load_n(&arrived, __ATOMIC_ACQUIRE) != start + 2) {
         arch::cpu_yield();
+      }
       require(__atomic_load_n(&dup_ready, __ATOMIC_ACQUIRE) != 0);
       require(ut::eq(reader.close_fd(0), 0L));
       require(reader.get_file(0) == nullptr);
@@ -3456,8 +3567,9 @@ struct TimerCancellation {
       pending.cancel_sync();
       cancel_ok = __atomic_load_n(&callback_returned, __ATOMIC_ACQUIRE) == 1;
       __atomic_store_n(&cancel_returned, 1U, __ATOMIC_RELEASE);
-      if (restore_irqs)
+      if (restore_irqs) {
         arch::enable_interrupts();
+      }
       return cancel_ok;
     }
     // A periodic timer remains queued while its callback runs. Inactive thus
@@ -3477,8 +3589,9 @@ struct TimerCancellation {
     observer_ok = observer_ok && !__atomic_load_n(&cancel_returned, __ATOMIC_ACQUIRE);
     __atomic_store_n(&release, 1U, __ATOMIC_RELEASE);
     __atomic_store_n(&observer_returned, 1U, __ATOMIC_RELEASE);
-    if (restore_irqs)
+    if (restore_irqs) {
       arch::enable_interrupts();
+    }
     return observer_ok;
   }
 
@@ -3520,8 +3633,9 @@ void failing_case() { ut::expect(false); }
 void kernel_stack_initialization() {
   process::Process owner(0);
   auto *thread = new process::Thread(0, 0);
-  if (!ut::expect(thread != nullptr))
+  if (!ut::expect(thread != nullptr)) {
     return;
+  }
   if (!ut::expect(owner.register_thread(thread).has_value())) {
     delete thread;
     return;
@@ -3531,11 +3645,13 @@ void kernel_stack_initialization() {
   // Poison that exact block before reuse to verify the entire stack is cleared.
   constexpr usize size = page_size << order;
   auto dirty = mm::allocate_pages(order);
-  if (!ut::expect(dirty.has_value()))
+  if (!ut::expect(dirty.has_value())) {
     return;
+  }
   auto *words = reinterpret_cast<u64 *>(phys_to_virt(*dirty));
-  for (usize i = 0; i < size / sizeof(u64); ++i)
+  for (usize i = 0; i < size / sizeof(u64); ++i) {
     words[i] = 0xfeedfacecafebeefULL;
+  }
 
   // Exhaust the real allocator, then offer only the poisoned block. This
   // checks rollback and recycled-page initialization without allocation hooks.
@@ -3547,15 +3663,18 @@ void kernel_stack_initialization() {
   ut::expect(mm::free_pages(*dirty, order).has_value());
   auto allocated = thread->allocate_kernel_stack();
   pressure.release();
-  if (!ut::expect(allocated.has_value()))
+  if (!ut::expect(allocated.has_value())) {
     return;
+  }
   const auto base = thread->kernel_stack_base;
-  if (!ut::expect(base != 0 && base % size == 0 && thread->kernel_stack_size == size))
+  if (!ut::expect(base != 0 && base % size == 0 && thread->kernel_stack_size == size)) {
     return;
+  }
   words = reinterpret_cast<u64 *>(base);
   bool zeroed = true;
-  for (usize i = 0; i < size / sizeof(u64); ++i)
+  for (usize i = 0; i < size / sizeof(u64); ++i) {
     zeroed = zeroed && words[i] == 0;
+  }
   ut::expect(zeroed);
   ut::expect(thread->kernel_stack_top() == base + size);
   auto repeated = thread->allocate_kernel_stack();
@@ -3566,8 +3685,9 @@ void kernel_stack_initialization() {
 void scheduler_self_selection(bool realtime) {
   using namespace process;
   unique_ptr<CfsScheduler> scheduler(new CfsScheduler());
-  if (!ut::expect(scheduler.get() != nullptr))
+  if (!ut::expect(scheduler.get() != nullptr)) {
     return;
+  }
   Thread current(0, 0), peer(1, 0);
   const auto cpu = arch::get_current_cpu_id();
   current.cpu = peer.cpu = cpu;
@@ -3590,8 +3710,9 @@ void scheduler_self_selection(bool realtime) {
   arch::disable_interrupts();
   auto *original = CfsScheduler::get_current_task();
   CfsScheduler::set_current_task(&current);
-  if (!realtime)
+  if (!realtime) {
     scheduler->enqueue_task(&peer, cpu);
+  }
   scheduler->scheduler_tick();
   const bool running = current.state == ProcessState::Running;
   const bool unqueued = !current.se.rb_on_rq && scheduler->get_cpu_nr_running(cpu) == (realtime ? 0U : 1U);
@@ -3599,11 +3720,13 @@ void scheduler_self_selection(bool realtime) {
   // Also clean up the unfixed self-selection state, so a failed assertion
   // remains a reportable failure rather than a second insertion hanging.
   scheduler->dequeue_task(&current);
-  if (!realtime)
+  if (!realtime) {
     scheduler->dequeue_task(&peer);
+  }
   CfsScheduler::set_current_task(original);
-  if (restore_irqs)
+  if (restore_irqs) {
     arch::enable_interrupts();
+  }
   ut::expect(reselected);
   ut::expect(running);
   ut::expect(unqueued);
@@ -3612,12 +3735,14 @@ void scheduler_self_selection(bool realtime) {
 
 void migration_current_owner() {
   using namespace process;
-  if (!ut::expect(g_num_cpus >= 2))
+  if (!ut::expect(g_num_cpus >= 2)) {
     return;
+  }
   unique_ptr<CfsScheduler> scheduler(new CfsScheduler());
   unique_ptr<LoadBalancer> balancer(new LoadBalancer());
-  if (!ut::expect(scheduler && balancer))
+  if (!ut::expect(scheduler && balancer)) {
     return;
+  }
   Thread current(0, 0), peer(1, 0);
   const auto source = arch::get_current_cpu_id();
   const auto target = (source + 1) % g_num_cpus;
@@ -3676,8 +3801,9 @@ void migration_current_owner() {
                       scheduler->get_cpu_nr_running(target) == 0;
   scheduler->dequeue_task(&current);
   scheduler->dequeue_task(&peer);
-  if (restore_irqs)
+  if (restore_irqs) {
     arch::enable_interrupts();
+  }
   ut::expect(retained);
   ut::expect(eligible_peer);
   ut::expect(moved);
@@ -3773,8 +3899,9 @@ void declare_cases() {
     ut::register_test("signal_return", empty_case);
   });
   ut::register_suite("users.uaccess", [] {
-    for (auto *name : uaccess_cases)
+    for (const auto *name : uaccess_cases) {
       ut::register_test(name, empty_case);
+    }
   });
   ut::register_suite("users.vm", [] {
     ut::register_test("private_cow", empty_case);
@@ -3801,8 +3928,9 @@ void declare_cases() {
                                      "bad_env_vector",        "bad_env_string",    "argument_count_limit",
                                      "combined_count_limit",  "string_byte_limit", "exact_combined_count",
                                      "exact_string_bytes",    "empty_vectors",     "allocation_rollback"};
-    for (auto *name : names)
+    for (const auto *name : names) {
       ut::register_test(name, empty_case);
+    }
   });
   ut::register_suite("users.busybox", [] {
     ut::register_test("ash_exit", empty_case);
@@ -4022,8 +4150,9 @@ struct TimerBenchmark {
     const auto now = bench::read_counter();
     auto &self = *static_cast<TimerBenchmark *>(data);
     __atomic_store_n(&self.observed, now, __ATOMIC_RELEASE);
-    if (self.sleeper)
+    if (self.sleeper) {
       process::g_scheduler->task_wakeup(self.sleeper, 0);
+    }
   }
 
   u64 measure(bool wakeup) {
@@ -4036,14 +4165,17 @@ struct TimerBenchmark {
     sleeper = wakeup ? process::CfsScheduler::get_current_task() : nullptr;
     const bool restore_irqs = arch::interrupts_enabled();
     arch::disable_interrupts();
-    if (sleeper)
+    if (sleeper) {
       sleeper->state = process::ProcessState::Sleeping;
+    }
     pending.init(timer::TimerMode::OneShot, callback, this);
     if (!pending.start(deadline)) {
-      if (sleeper)
+      if (sleeper) {
         sleeper->state = process::ProcessState::Running;
-      if (restore_irqs)
+      }
+      if (restore_irqs) {
         arch::enable_interrupts();
+      }
       return 0;
     }
     u64 resumed = 0;
@@ -4052,14 +4184,17 @@ struct TimerBenchmark {
       process::CfsScheduler::switch_to_bootstrap(sleeper->context);
       resumed = bench::read_counter();
     }
-    if (restore_irqs)
+    if (restore_irqs) {
       arch::enable_interrupts();
-    while (!__atomic_load_n(&observed, __ATOMIC_ACQUIRE))
+    }
+    while (!__atomic_load_n(&observed, __ATOMIC_ACQUIRE)) {
       arch::cpu_yield();
+    }
     pending.cancel_sync();
     const auto fired = __atomic_load_n(&observed, __ATOMIC_ACQUIRE);
-    if (!ut::expect(fired >= expected && affinity_valid() && (!sleeper || resumed > fired)))
+    if (!ut::expect(fired >= expected && affinity_valid() && (!sleeper || resumed > fired))) {
       return 0;
+    }
     return sleeper ? resumed - fired : fired - expected;
   }
 };
@@ -4071,8 +4206,9 @@ void timer_benchmark(bench::Context &context, bool wakeup) {
     u64 ticks = 0;
     for (usize i = 0; i < count; ++i) {
       const auto elapsed = fixture.measure(wakeup);
-      if (!elapsed)
+      if (!elapsed) {
         context.valid = false;
+      }
       ticks += elapsed;
     }
     return ticks;
@@ -4086,16 +4222,19 @@ void timer_benchmark(bench::Context &context, bool wakeup) {
   }
   if (!context.iterations) {
     context.iterations = 1;
-    while (context.valid && batch(context.iterations) < context.clock.frequency / 1000 && context.iterations < capacity)
+    while (context.valid && batch(context.iterations) < context.clock.frequency / 1000 &&
+           context.iterations < capacity) {
       context.iterations *= 2;
+    }
   }
   for (unsigned i = 0; context.valid && i < context.warmup + context.samples; ++i) {
     const auto ticks = batch(context.iterations);
     const auto begin = bench::read_counter();
     const auto overhead = (bench::read_counter() - begin) * context.iterations;
     context.valid = context.valid && LifecycleResources::capture() == before;
-    if (context.valid)
+    if (context.valid) {
       record_batch(ticks, context.iterations, i < context.warmup, overhead);
+    }
   }
 }
 
@@ -4293,19 +4432,22 @@ extern "C" void moss_validation_dispatch_selected() noexcept {
 }
 
 extern "C" void moss_validation_pipe_published(void *table) noexcept {
-  if (!file_references || table != &file_references->reader)
+  if (!file_references || table != &file_references->reader) {
     return;
+  }
   const u32 phase = __atomic_load_n(&file_references->phase, __ATOMIC_ACQUIRE);
-  if (phase != 2 * FileReferences::cycles + 9 && phase != 2 * FileReferences::cycles + 12)
+  if (phase != 2 * FileReferences::cycles + 9 && phase != 2 * FileReferences::cycles + 12) {
     return;
+  }
   __atomic_store_n(&file_references->pipe_published, 1U, __ATOMIC_RELEASE);
   ContainerInterleaving::wait_for(file_references->phase, phase + 1);
 }
 
 extern "C" void moss_validation_pipe_copyout(void *table, long first, long second) noexcept {
   if (!file_references || table != file_references->native_table ||
-      __atomic_load_n(&file_references->phase, __ATOMIC_ACQUIRE) != 2 * FileReferences::cycles + 15)
+      __atomic_load_n(&file_references->phase, __ATOMIC_ACQUIRE) != 2 * FileReferences::cycles + 15) {
     return;
+  }
   file_references->native_fds[0] = first;
   file_references->native_fds[1] = second;
   __atomic_store_n(&file_references->copyout_ready, 1U, __ATOMIC_RELEASE);
@@ -4313,34 +4455,39 @@ extern "C" void moss_validation_pipe_copyout(void *table, long first, long secon
 }
 
 extern "C" void moss_validation_dup_selected(void *table) noexcept {
-  if (!file_references || table != &file_references->reader || arch::get_current_cpu_id() != 1)
+  if (!file_references || table != &file_references->reader || arch::get_current_cpu_id() != 1) {
     return;
+  }
   const u32 phase = __atomic_load_n(&file_references->phase, __ATOMIC_ACQUIRE);
   const u32 offset = phase - (2 * FileReferences::cycles + 18);
-  if (offset >= 12 || offset % 3 != 0)
+  if (offset >= 12 || offset % 3 != 0) {
     return;
+  }
   __atomic_store_n(&file_references->dup_ready, 1U, __ATOMIC_RELEASE);
   ContainerInterleaving::wait_for(file_references->phase, phase + 1);
 }
 
 extern "C" void moss_validation_sleep_armed(void *pending) noexcept {
   auto *thread = process::CfsScheduler::get_current_task();
-  if (!thread || thread != early_sleep_thread)
+  if (!thread || thread != early_sleep_thread) {
     return;
+  }
   ++early_sleep_visits;
   auto &armed = *static_cast<timer::HrTimer *>(pending);
   // Local IRQs are masked by the real sleep syscall. Another CPU must expire
   // its timer before this caller saves its context. The host bounds the wait.
-  while (armed.is_active())
+  while (armed.is_active()) {
     arch::cpu_yield();
+  }
   armed.cancel_sync();
   early_sleep_woken = early_sleep_woken && !arch::interrupts_enabled() &&
                       (thread->state == process::ProcessState::Ready || thread->sleep_handoff.load() == 2);
 }
 
 extern "C" void moss_validation_fd_clone(bool entering) noexcept {
-  if (!fork_clone_pressure || fork_clone_exhausted)
+  if (!fork_clone_pressure || fork_clone_exhausted) {
     return;
+  }
   if (entering) {
     ut::expect(fork_clone_pressure->acquire(sizeof(vfs::FdTable)));
   } else {
@@ -4351,16 +4498,23 @@ extern "C" void moss_validation_fd_clone(bool entering) noexcept {
 
 extern "C" void moss_validation_fork_metadata(unsigned stage, bool entering) noexcept {
   auto *probe = fork_metadata_pressure;
-  if (!probe || probe->stage != stage || probe->exhausted)
+  if (!probe || probe->stage != stage || probe->exhausted) {
     return;
+  }
   if (entering) {
     // Fail after one successful VMA copy, not only before any work is owned.
-    if (stage == 0 && probe->vmas++ == 0)
+    if (stage == 0 && probe->vmas++ == 0) {
       return;
-    const usize size = stage == 0   ? sizeof(process::VmaRegion)
-                       : stage == 1 ? sizeof(process::Thread)
-                       : stage == 2 ? sizeof(process::ThreadEntry)
-                                    : sizeof(void *);
+    }
+    // Keep the fork hook's stage order: VMA=0, Thread=1, ThreadEntry=2.
+    usize size = sizeof(void *);
+    if (stage == 0) {
+      size = sizeof(process::VmaRegion);
+    } else if (stage == 1) {
+      size = sizeof(process::Thread);
+    } else if (stage == 2) {
+      size = sizeof(process::ThreadEntry);
+    }
     probe->holding = true;
     ut::expect(probe->heap.acquire(size));
   } else if (probe->holding) {
@@ -4551,8 +4705,9 @@ extern "C" long moss_validation_call(long op, long arg1, [[maybe_unused]] long a
     if (op == (mmap_pressure_case ? 42 : 44) && !user_heap_pressure) {
       user_heap_baseline = LifecycleResources::capture();
       user_heap_pressure = new HeapPressure{};
-      if (user_heap_pressure->acquire(mmap_pressure_case ? sizeof(process::VmaRegion) : sizeof(process::Process)))
+      if (user_heap_pressure->acquire(mmap_pressure_case ? sizeof(process::VmaRegion) : sizeof(process::Process))) {
         return 1;
+      }
       delete user_heap_pressure;
       user_heap_pressure = nullptr;
       return 0;
@@ -4565,18 +4720,22 @@ extern "C" long moss_validation_call(long op, long arg1, [[maybe_unused]] long a
   }
   if (op == 39 && ut::same_id(selection, "users.signals") &&
       (ut::same_id(active_case, "pipe_interrupted") || ut::same_id(active_case, "pipe_noninterrupting_signals"))) {
-    if (arg1 == 0 && arg2 == 0)
+    if (arg1 == 0 && arg2 == 0) {
       return 1; // The production image's weak hook still returns ENOSYS.
+    }
     auto caller = process::current_process();
-    if (!caller || arg1 != static_cast<long>(caller->parent_pid()) || arg2 < 0 || arg2 >= vfs::MAX_FDS)
+    if (!caller || arg1 != static_cast<long>(caller->parent_pid()) || arg2 < 0 || arg2 >= vfs::MAX_FDS) {
       return -1;
+    }
     auto parent = process::g_process_manager->find_process(caller->parent_pid());
     auto *thread = parent ? parent->get_main_thread() : nullptr;
-    if (!thread)
+    if (!thread) {
       return -1;
+    }
     containers::LockGuard<containers::IrqSpinLock> guard(thread->sleep_lock);
-    if (thread->state != process::ProcessState::Sleeping || thread->sleep_handoff.load() != 0)
+    if (thread->state != process::ProcessState::Sleeping || thread->sleep_handoff.load() != 0) {
       return 0;
+    }
     // Do not mistake the parent's preparation nanosleep for the intended I/O.
     auto *frame = thread->trap_frame;
     return frame && (frame->syscall_number() == 32 || frame->syscall_number() == 33) &&
@@ -4585,8 +4744,9 @@ extern "C" long moss_validation_call(long op, long arg1, [[maybe_unused]] long a
   if (op == 38 && arg1 == 0 && arg2 == 0 && ut::same_id(selection, "users.libc") &&
       ut::same_id(active_case, "filesystem_permissions")) {
     auto owner = process::current_process();
-    if (!owner || owner->euid() != 0)
+    if (!owner || owner->euid() != 0) {
       return -1;
+    }
     // Test precondition, not a production identity-management interface.
     owner->set_uid(99);
     owner->set_gid(99);
@@ -4594,8 +4754,9 @@ extern "C" long moss_validation_call(long op, long arg1, [[maybe_unused]] long a
   }
   if (ut::same_id(selection, "users.exec") && ut::same_id(active_case, "allocation_rollback") && affinity_valid()) {
     const long stages = mm::PageTableManager::is_user_range(1ULL << 39, page_size) ? 5 : 4;
-    if (op == 35)
+    if (op == 35) {
       return stages; // Root, stack leaf, then every missing intermediate table.
+    }
     auto *thread = process::CfsScheduler::get_current_task();
     auto owner = process::g_process_manager->find_process(thread->owner_pid);
     auto *as = owner ? owner->address_space() : nullptr;
@@ -4607,10 +4768,12 @@ extern "C" long moss_validation_call(long op, long arg1, [[maybe_unused]] long a
       __builtin_memcpy(exec_name, owner->name(), sizeof(exec_name));
       exec_pressure = new PagePressure{};
       bool ready = ut::expect(exec_pressure && exec_pressure->acquire(static_cast<usize>(arg1)));
-      while (ready && exec_pressure->count)
+      while (ready && exec_pressure->count) {
         exec_pressure->give_one();
-      if (ready)
+      }
+      if (ready) {
         return 1;
+      }
       delete exec_pressure;
       exec_pressure = nullptr;
       return 0;
@@ -4676,26 +4839,30 @@ extern "C" long moss_validation_call(long op, long arg1, [[maybe_unused]] long a
                                                       : shared_ptr<process::Process>{};
     auto *as = owner ? owner->address_space() : nullptr;
     const u64 address = static_cast<u64>(arg1);
-    if (!ut::expect(as && as->allows_user_access(address, 8, process::vma_flags::WRITE)))
+    if (!ut::expect(as && as->allows_user_access(address, 8, process::vma_flags::WRITE))) {
       return 0;
+    }
     auto *leaf = mm::PageTableManager::get_user_pte(as->pgd_phys, address);
     ut::expect(!leaf || !leaf->is_valid());
     usize released_pages = 0;
     if (op == 12) {
-      if (!ut::expect(uaccess_pressure == nullptr))
+      if (!ut::expect(uaccess_pressure == nullptr)) {
         return 0;
+      }
       uaccess_pressure = new PagePressure{};
       uaccess_free_before = mm::PageFrameAllocator::get_memory_stats().free_pages;
-      if (ut::expect(uaccess_pressure && uaccess_pressure->acquire(0)))
+      if (ut::expect(uaccess_pressure && uaccess_pressure->acquire(0))) {
         return 1;
+      }
     } else {
       ut::expect(uaccess_pressure != nullptr);
       released_pages = mm::PageFrameAllocator::get_memory_stats().free_pages;
       // The sigframe test reaps its child before releasing the pressure.
       // Account for those newly freed, non-fixture pages without relaxing the
       // zero-free-page invariant of the other fault cases.
-      if (!(arg2 == 1 && ut::same_id(active_case, "sigframe_fault")))
+      if (arg2 != 1 || !ut::same_id(active_case, "sigframe_fault")) {
         ut::expect(released_pages == 0);
+      }
     }
     delete uaccess_pressure;
     uaccess_pressure = nullptr;
@@ -4705,11 +4872,13 @@ extern "C" long moss_validation_call(long op, long arg1, [[maybe_unused]] long a
   if (op == 14 && ut::same_id(selection, "users.uaccess") && ut::same_id(active_case, "partial_read") &&
       uaccess_pressure) {
     u8 bytes[8];
-    for (auto &byte : bytes)
+    for (auto &byte : bytes) {
       byte = 0xa5;
+    }
     bool valid = ut::expect(process::copy_from_user(bytes, static_cast<u64>(arg1), sizeof(bytes)) == 4);
-    for (usize i = 0; i < sizeof(bytes); ++i)
+    for (usize i = 0; i < sizeof(bytes); ++i) {
       valid = ut::expect(bytes[i] == (i < 4 ? i : 0)) && valid;
+    }
     return valid ? 1 : 0;
   }
   if (op == 10 && ut::same_id(selection, "users.frame") && active_case) {
@@ -4798,12 +4967,14 @@ extern "C" long moss_validation_call(long op, long arg1, [[maybe_unused]] long a
     // The userspace fixture reports every 10 application cycles or 100 core
     // lifecycle cycles; changing these intervals must keep that protocol in sync.
     const u64 interval = applications ? 10 : 100;
-    if (!ut::expect(arg1 >= 0 && arg2 == (applications ? arg1 : 0)))
+    if (!ut::expect(arg1 >= 0 && arg2 == (applications ? arg1 : 0))) {
       return 0; // Each declared core cycle must also complete its BusyBox child.
+    }
     const auto now = LifecycleResources::capture();
     const u64 time_ns = timer::TimerSubsystem::instance().now_ns();
-    if (arg1 == 0 && !lifecycle_started)
+    if (arg1 == 0 && !lifecycle_started) {
       lifecycle_started_ns = time_ns;
+    }
     const u64 elapsed_ns = time_ns - lifecycle_started_ns;
     Event("checkpoint")
         .str("case", active_case)

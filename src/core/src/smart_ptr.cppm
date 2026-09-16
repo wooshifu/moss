@@ -109,12 +109,14 @@ public:
   template <typename Allocate, typename... Args>
   [[nodiscard]] static SharedPtr try_make(Allocate allocate, Args &&...args) {
     auto *storage = allocate(sizeof(T), alignof(T));
-    if (!storage)
+    if (!storage) {
       return {};
+    }
     UniquePtr<T> object(new (storage) T(forward<Args>(args)...));
     auto *control = allocate(sizeof(ControlBlock), alignof(ControlBlock));
-    if (!control)
+    if (!control) {
       return {};
+    }
     SharedPtr result;
     result.control_ = new (control) ControlBlock(object.release());
     return result;

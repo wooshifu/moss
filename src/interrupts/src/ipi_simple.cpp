@@ -52,10 +52,12 @@ IpiResult SimpleInterProcessorInterrupt::send_ipi(u32 target_cpu, IpiType type) 
   }
   const auto result = backend->ping_cpu(target_cpu);
   if (result != hw_simple::IpiResult::Success) {
-    if (result == hw_simple::IpiResult::NotInitialized)
+    if (result == hw_simple::IpiResult::NotInitialized) {
       return IpiResult::NotInitialized;
-    if (result == hw_simple::IpiResult::InvalidCpu)
+    }
+    if (result == hw_simple::IpiResult::InvalidCpu) {
       return IpiResult::InvalidCpu;
+    }
     return IpiResult::HardwareError;
   }
 

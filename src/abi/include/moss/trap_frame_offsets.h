@@ -5,6 +5,8 @@
 // Every saved slot is one 8-byte u64, in TrapFrame member order. Frame sizes
 // include any reserved slots and are multiples of the 16-byte stack alignment;
 // changing the layout requires updating assembly and the C++ offset assertions.
+// Assembly needs numeric preprocessor operands; C/C++ enums cannot define this ABI.
+// NOLINTBEGIN(modernize-macro-to-enum)
 #if defined(MOSS_ARCH_ARM64)
 // Restore only NZCV (bits 31:28); fixed zero selects EL0t with IRQs unmasked.
 // User-provided status must never choose a privileged return mode.
@@ -118,3 +120,4 @@
 #else
 #error Unsupported native trap frame
 #endif
+// NOLINTEND(modernize-macro-to-enum)
