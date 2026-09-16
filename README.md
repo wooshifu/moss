@@ -4,6 +4,8 @@ Moss is a modern multi-architecture hybrid kernel operating system supporting AR
 
 ## Quick Start
 
+Requires Clang/LLVM 23.0 or newer, including LLD and LLVM binary tools.
+
 ```bash
 # Configure, build and test all workflows concurrently (QEMU required for tests)
 uv run build.py
