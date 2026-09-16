@@ -24,6 +24,7 @@
 //   0x80    8      pstate    (RFLAGS)
 //   0x88    8      pc        (RIP / return address)
 //   0xA0    512    fp        (16-byte-aligned FXSAVE64 image)
+//   0x2A0   8      fs_base   (userspace thread pointer)
 //
 // x64 calling convention (System V AMD64 ABI):
 //   Arguments: RDI, RSI, RDX, RCX, R8, R9, [stack]
@@ -78,7 +79,19 @@ context_switch:
     movq    (%rsp), %rax
     movq    %rax, 136(%rdi)
 
+    // Preserve the userspace thread pointer across every scheduler transition.
+    movl    $0xC0000100, %ecx           // IA32_FS_BASE
+    rdmsr
+    shlq    $32, %rdx
+    orq     %rdx, %rax
+    movq    %rax, 672(%rdi)
+
     // ---- Phase 2: Restore next context ----
+    movq    672(%rsi), %rax
+    movq    %rax, %rdx
+    shrq    $32, %rdx
+    movl    $0xC0000100, %ecx
+    wrmsr
     fxrstor64 160(%rsi)
 
     // Restore RFLAGS from next->pstate
@@ -128,6 +141,11 @@ context_switch:
 switch_to_user:
     // First entry / exec must install this process's state, not the last owner.
     fxrstor64 160(%rdi)
+    movq    672(%rdi), %rax             // fresh exec clears FS; fork installs its inherited value
+    movq    %rax, %rdx
+    shrq    $32, %rdx
+    movl    $0xC0000100, %ecx
+    wrmsr
     // Build IRETQ frame on the kernel stack
     pushq   $0x1B                       // SS  (user data segment, RPL=3)
     pushq   %rsi                        // RSP (user stack pointer)

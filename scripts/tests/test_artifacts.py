@@ -1,11 +1,12 @@
 import json
 import struct
+import subprocess
 from pathlib import Path
 
 import pytest
 
 from qemu import build_qemu_args, resolve_qemu
-from scripts.artifacts import Artifacts
+from scripts.artifacts import Artifacts, record_validation_provenance
 from scripts.verify_linux_image import verify_arm64_header, verify_relocations, verify_riscv64_header
 
 
@@ -66,6 +67,96 @@ def test_no_implicit_image_fallback_and_qemu_is_only_a_run_dependency(tmp_path, 
         resolve_qemu("ARM64")
     # Reading build artifacts must not require an emulator.
     assert Artifacts.load(artifacts.manifest).arch == "ARM64"
+
+
+def test_validation_provenance_binds_built_artifacts_not_current_checkout(tmp_path):
+    source = tmp_path / "source"
+    source.mkdir()
+
+    def git(*args):
+        return subprocess.check_output(
+            ["git", "-c", "user.name=Test", "-c", "user.email=test@example.invalid", *args], cwd=source
+        ).strip()
+
+    git("init", "-q")
+    (source / "kernel.c").write_text("int kernel = 1;\n")
+    git("add", "kernel.c")
+    git("commit", "-qm", "initial")
+    built_revision = git("rev-parse", "HEAD").decode()
+    artifacts = Artifacts.load(manifest(tmp_path))
+    record_validation_provenance(artifacts, source)
+    original = artifacts.validation_provenance()
+    assert original["revision"] == built_revision and original["dirty"] is False
+    assert original["source_status"] == "recorded"
+
+    (source / "kernel.c").write_text("int kernel = 2;\n")
+    git("commit", "-qam", "changed checkout")
+    assert git("rev-parse", "HEAD").decode() != built_revision
+    assert artifacts.validation_provenance() == original
+
+    artifacts.require("validation_initramfs").write_bytes(b"changed fixture")
+    with pytest.raises(ValueError, match="provenance does not match"):
+        artifacts.validation_provenance()
+
+
+def test_missing_provenance_is_unknown_and_dirty_sources_have_distinct_identity(tmp_path):
+    artifacts = Artifacts.load(manifest(tmp_path))
+    assert artifacts.validation_provenance()["revision"] is None
+    assert artifacts.validation_provenance()["source_status"] == "unrecorded"
+    source = tmp_path / "source"
+    source.mkdir()
+    subprocess.run(["git", "init", "-q", str(source)], check=True)
+    subprocess.run(
+        [
+            "git",
+            "-c",
+            "user.name=Test",
+            "-c",
+            "user.email=test@example.invalid",
+            "commit",
+            "--allow-empty",
+            "-qm",
+            "base",
+        ],
+        cwd=source,
+        check=True,
+    )
+    (source / "new.c").write_text("int value = 1;\n")
+    record_validation_provenance(artifacts, source)
+    before = artifacts.validation_provenance()
+    assert before["dirty"] is True
+    (source / "new.c").write_text("int value = 2;\n")
+    record_validation_provenance(artifacts, source)
+    after = artifacts.validation_provenance()
+    assert before["revision"] == after["revision"]
+    assert before["source_sha256"] != after["source_sha256"]
+    artifacts.require("validation_kernel").write_bytes(b"changed image")
+    with pytest.raises(ValueError, match="provenance does not match"):
+        artifacts.validation_provenance()
+
+
+def test_validation_snapshot_survives_in_place_rebuild(tmp_path):
+    artifacts = Artifacts.load(manifest(tmp_path))
+    identity = artifacts.validation_identity()
+    snapshot = artifacts.snapshot_validation(tmp_path / "inputs")
+    for name in ("validation_kernel", "validation_initramfs"):
+        artifacts.require(name).write_bytes(b"rebuilt")
+    assert snapshot.validation_identity() == identity
+    assert snapshot.validation_provenance()["source_status"] == "unrecorded"
+    args = build_qemu_args(snapshot, validation=True)
+    assert Path(args[args.index("-kernel") + 1]).read_bytes() == b"artifact"
+    assert Path(args[args.index("-initrd") + 1]).read_bytes() == b"artifact"
+
+
+def test_validation_snapshot_rejects_build_during_copy(tmp_path, monkeypatch):
+    artifacts = Artifacts.load(manifest(tmp_path))
+
+    def raced_copy(_source, target):
+        target.write_bytes(b"concurrent build")
+
+    monkeypatch.setattr("scripts.artifacts.shutil.copy2", raced_copy)
+    with pytest.raises(ValueError, match="provenance does not match"):
+        artifacts.snapshot_validation(tmp_path / "inputs")
 
 
 def test_image_header_requires_static_size_before_boot_relocation():

@@ -569,38 +569,21 @@ private:
 
   // Device management initialization
   [[nodiscard]] VoidResult initialize_devices() noexcept {
-    // Create GIC interrupt controller
-    gic_ = new interrupts::GenericInterruptController();
-    if (!gic_) {
-      return VoidResult{ErrorCode::OutOfMemory};
+    // Borrow the boot-owned controller. Reinitializing the live hardware here
+    // resets interrupt routes and masks the already configured LAPIC timer.
+    if (!moss::boot::g_gic_hardware_available || !moss::boot::g_gic_controller) {
+      return VoidResult{ErrorCode::InvalidState};
     }
-
-    const auto &intc = platform::hardware.intc;
-    if (!intc.valid) {
-      delete gic_;
-      gic_ = nullptr;
-      return VoidResult{ErrorCode::NotSupported};
-    }
-    VirtAddr gic_dist_base = intc.dist_base;
-    u8 gic_ver = intc.gic_version;
-    VirtAddr second_base = gic_ver >= 3 ? intc.redist_base : intc.cpu_base;
-
-    auto gic_result = gic_->initialize(gic_dist_base, second_base, gic_ver);
-    if (!gic_result) {
-      delete gic_;
-      gic_ = nullptr;
-      return gic_result;
-    }
+    gic_ = moss::boot::g_gic_controller;
 
     // Create device manager
     device_manager_ = new drivers::DeviceManager();
     if (!device_manager_) {
-      delete gic_;
       gic_ = nullptr;
       return VoidResult{ErrorCode::OutOfMemory};
     }
 
-    // Publish the GIC only after allocations that can roll it back have succeeded.
+    // Drivers and interrupt dispatch share the controller established at boot.
     ::moss::kernel::interrupts::g_gic = gic_;
 
     // Initialize multi-architecture syscall support
@@ -753,7 +736,7 @@ private:
 
     // Step 4: Create thread with user-space entry point
     ThreadId init_tid = Process::allocate_thread_id();
-    auto *init_thread = new Thread(init_tid, init_pid);
+    auto *init_thread = Thread::try_create(init_tid, init_pid);
     if (!init_thread) {
       return VoidResult{ErrorCode::OutOfMemory};
     }
@@ -762,18 +745,11 @@ private:
     // This stack is used when handling exceptions from this thread's
     // user-mode execution — prevents all user processes from sharing
     // the single boot stack.
-    constexpr usize KERNEL_STACK_ORDER = 2; // 4 pages = 16KB
-    constexpr usize KERNEL_STACK_SIZE = PAGE_SIZE << KERNEL_STACK_ORDER;
-    auto kstack_result = mm::allocate_pages(KERNEL_STACK_ORDER);
+    auto kstack_result = init_thread->allocate_kernel_stack();
     if (!kstack_result) {
       delete init_thread;
       return VoidResult{ErrorCode::OutOfMemory};
     }
-    // Use physical address directly (identity-mapped region)
-    PhysAddr kstack_phys = *kstack_result;
-    init_thread->kernel_stack_base = static_cast<VirtAddr>(kstack_phys);
-    init_thread->kernel_stack_size = KERNEL_STACK_SIZE;
-
     // User context: entry point and stack pointer are user-space VAs
     // (demand-paged on first access)
     init_thread->stack_base = stack_bottom;
@@ -810,7 +786,11 @@ private:
     }
 
     // Step 5: Register thread into process's thread list (for cleanup)
-    init_proc->register_thread(init_thread);
+    auto registered = init_proc->register_thread(init_thread);
+    if (!registered) {
+      delete init_thread;
+      return registered;
+    }
 
     // Step 6: Enqueue into scheduler and register for direct dispatch
     scheduler_->enqueue_task(init_thread, current_cpu());

@@ -6,6 +6,18 @@ namespace moss::kernel::process {
 
 namespace log = moss::kernel::logging;
 
+bool send_signal(Thread *thread, u32 signo) noexcept {
+  if (!thread || signo == 0 || signo >= sig::NSIG)
+    return false;
+  const u64 mask = sig::sigmask(signo);
+  // Signals from another CPU must not overwrite unrelated pending bits.
+  thread->pending_signals |= mask;
+  const bool deliverable = (mask & sig::UNCATCHABLE_MASK) != 0 || (thread->signal_mask & mask) == 0;
+  if (deliverable && g_scheduler && thread->state == ProcessState::Sleeping)
+    g_scheduler->task_wakeup(thread, thread->cpu);
+  return true;
+}
+
 // ============================================================================
 // NEON/FP state save helpers (ARM64 only)
 //
@@ -82,48 +94,7 @@ static void write_fpsr(u64 val) noexcept { asm volatile("msr s3_3_c4_c4_1, %0" :
 static void write_fpcr(u64 val) noexcept { asm volatile("msr s3_3_c4_c4_0, %0" : : "r"(val)); }
 #endif
 
-// Per-process signal state storage.
-// Stored as void* inside Process to avoid circular header dependencies;
-// we cast here in the implementation.  Signal state is allocated once
-// when the process is created and freed when the process is destroyed.
-//
-// NOTE: the Process class does not directly embed SignalState because
-// the :signal partition is declared after :types.  Instead, we use the
-// existing fd_table_-style void* pattern — but for signals we add a
-// dedicated slot.  For now, we store it in a simple hash map keyed by PID.
-
-// Global signal state table (simple fixed-size array indexed by PID).
-// This avoids heap allocation and keeps the implementation straightforward.
-static constexpr usize MAX_SIGNAL_PROCS = 256;
-static SignalState g_signal_states[MAX_SIGNAL_PROCS]{};
-static bool g_signal_state_used[MAX_SIGNAL_PROCS]{};
-
-SignalState *get_signal_state(Process *proc) noexcept {
-  if (proc == nullptr) {
-    return nullptr;
-  }
-  auto pid = static_cast<usize>(proc->pid());
-  if (pid >= MAX_SIGNAL_PROCS) {
-    return nullptr;
-  }
-  if (!g_signal_state_used[pid]) {
-    return nullptr;
-  }
-  return &g_signal_states[pid];
-}
-
-void init_signal_state(Process *proc) noexcept {
-  if (proc == nullptr) {
-    return;
-  }
-  auto pid = static_cast<usize>(proc->pid());
-  if (pid >= MAX_SIGNAL_PROCS) {
-    log::klog::warn("init_signal_state: PID {} exceeds MAX_SIGNAL_PROCS", pid);
-    return;
-  }
-  g_signal_states[pid] = SignalState{};
-  g_signal_state_used[pid] = true;
-}
+SignalState *get_signal_state(Process *proc) noexcept { return proc ? &proc->signal_state() : nullptr; }
 
 // Called on the current thread's user-return path. Shared uaccess handles
 // admission and recoverable faults; concurrent VMA/PTE lifetime synchronization
@@ -175,6 +146,7 @@ bool setup_sigframe(Thread *thread, u32 signo, const Sigaction &sa) noexcept {
   sf.signo = signo;
   sf.saved_mask = thread->signal_mask;
   sf.saved_on_alt_stack = thread->on_alt_stack;
+  sf.previous = thread->active_signal_frame;
   if (copy_to_user(sigframe_sp, &sf, sizeof(sf)) != 0) {
     return false;
   }
@@ -194,6 +166,7 @@ bool setup_sigframe(Thread *thread, u32 signo, const Sigaction &sa) noexcept {
   frame.pc = sa.handler;
   frame.sp = handler_sp;
   frame.argument(0) = signo;
+  thread->active_signal_frame = sigframe_sp;
   thread->signal_mask = (thread->signal_mask | sa.mask | sig::sigmask(signo)) & ~sig::UNCATCHABLE_MASK;
   thread->on_alt_stack = use_altstack || thread->on_alt_stack;
   return true;
@@ -211,12 +184,20 @@ long do_sigreturn(Thread *thread) noexcept {
       !mm::PageTableManager::is_user_range(sf.elr, 1) || !mm::PageTableManager::is_user_range(sf.sp, 1)) {
     return -SIGRETURN_EFAULT;
   }
+  auto proc = g_process_manager ? g_process_manager->find_process(thread->owner_pid) : shared_ptr<Process>{};
+  auto *as = proc ? proc->address_space() : nullptr;
+  if (!as || !thread->active_signal_frame || frame.sp != thread->active_signal_frame ||
+      !as->allows_user_access(sf.elr, 1, vma_flags::EXEC) || sf.sp == 0 ||
+      !as->allows_user_access(sf.sp - 1, 1, vma_flags::WRITE) ||
+      (sf.previous != 0 && !as->allows_user_access(sf.previous, sizeof(sf), vma_flags::READ))) {
+    return -SIGRETURN_EFAULT;
+  }
 #if defined(MOSS_ARCH_ARM64)
   if ((sf.elr & 3) || (sf.sp & 15)) {
     return -SIGRETURN_EFAULT;
   }
 #elif defined(MOSS_ARCH_RISCV64)
-  if (sf.elr & 1) {
+  if ((sf.elr & 1) || (sf.sp & 15)) {
     return -SIGRETURN_EFAULT;
   }
 #elif defined(MOSS_ARCH_X64)
@@ -243,6 +224,7 @@ long do_sigreturn(Thread *thread) noexcept {
 #endif
   thread->signal_mask = sf.saved_mask & ~sig::UNCATCHABLE_MASK;
   thread->on_alt_stack = sf.saved_on_alt_stack != 0;
+  thread->active_signal_frame = sf.previous;
   return static_cast<long>(frame.result());
 }
 

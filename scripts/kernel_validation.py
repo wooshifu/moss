@@ -3,11 +3,15 @@
 import hashlib
 import json
 import math
+import os
 import platform
+import shutil
 import signal
+import socket
 import statistics
 import subprocess
 import sys
+import tempfile
 import time
 import xml.etree.ElementTree as ET
 from pathlib import Path
@@ -29,8 +33,39 @@ CATALOG = {
     "heap": ["alignment", "invalid_requests", "release_contract", "reuse", "exhaustion"],
     "containers": ["ownership", "release_reuse", "map_ownership", "held_reader", "reentry"],
     "containers.smp": ["interleaving"],
-    "vfs": ["read_position_eof", "errors_readonly"],
-    "users": ["syscall_values", "user_ranges", "fork_exec_exit_reap"],
+    "vfs.smp": ["shared_references"],
+    "vfs": [
+        "read_position_eof",
+        "errors_readonly",
+        "fd_boundaries",
+        "pipe_reuse",
+        "pipe_fd_rollback",
+        "directory_capacity",
+        "writable_lifecycle",
+        "rename_lifecycle",
+        "rename_boundaries",
+        "access_permissions",
+        "working_directory_lifecycle",
+    ],
+    "timers": ["contracts", "dispatch", "capacity"],
+    "scheduler": ["kernel_stack_initialization", "cfs_self_selection", "rr_self_selection", "migration_current_owner"],
+    "process": ["heap_rollback"],
+    "users": [
+        "syscall_values",
+        "user_ranges",
+        "fork_exec_exit_reap",
+        "pipe_output_rollback",
+        "yield_reuse",
+        "wait_status_rollback",
+        "pipe_waits_for_writer",
+        "pipe_cross_cpu_roundtrip",
+        "pipe_waits_for_reader",
+        "cross_cpu_exit_reap",
+        "fork_fd_allocation_rollback",
+        "mmap_heap_rollback",
+        "fork_process_allocation_rollback",
+        "fork_metadata_allocation_rollback",
+    ],
     "users.vm": ["private_cow", "readonly_cow", "access_permissions"],
     "users.frame": ["native_frame", "fork_registers", "signal_return"],
     "users.uaccess": [
@@ -43,6 +78,60 @@ CATALOG = {
         "sigframe_fault",
         "sigreturn_fault",
         "devices",
+    ],
+    "users.lifecycle": ["core_paths_recovery"],
+    "users.applications": ["core_application_recovery"],
+    "users.libc": ["static_runtime", "filesystem_permissions"],
+    "users.exec": [
+        "rejects_invalid_entry",
+        "rejects_phentsize",
+        "rejects_load_size",
+        "bad_env_vector",
+        "bad_env_string",
+        "argument_count_limit",
+        "combined_count_limit",
+        "string_byte_limit",
+        "exact_combined_count",
+        "exact_string_bytes",
+        "empty_vectors",
+        "allocation_rollback",
+    ],
+    "users.busybox": [
+        "ash_exit",
+        "ash_substitution",
+        "ash_exec_environment",
+        "text_pipeline",
+        "directory_lifecycle",
+        "file_redirection",
+        "file_copy",
+        "file_rename",
+        "application_workflow",
+    ],
+    "users.timers": [
+        "relative_sleep",
+        "absolute_sleep",
+        "invalid_arguments",
+        "short_reuse",
+        "cancel_in_flight",
+        "early_wakeup",
+        "arm_failure_recovery",
+    ],
+    "users.signals": [
+        "basic_handler",
+        "nested_signals",
+        "sigchld",
+        "sigprocmask",
+        "sigaltstack",
+        "sig_ign",
+        "invalid_arguments",
+        "frame_validation",
+        "inheritance",
+        "pid_lifecycle",
+        "pipe_sigpipe",
+        "pipe_interrupted",
+        "pipe_noninterrupting_signals",
+        "pipe_partial_interrupt",
+        "signal_wakeup_affinity",
     ],
     "users.simd_fault": ["isolation"],  # Explicit x86 acceptance; TCG may not deliver #XM.
     "mm.permissions": [
@@ -60,12 +149,33 @@ CATALOG = {
         "map_rejects_blocks",
         "clone_preserves_destination",
         "clone_allocation_rollback",
+        "address_space_heap_rollback",
+        "vma_heap_rollback",
+        "asid_leases",
+        "unmap_reclaims_tables",
     ],
     "self": ["accounting_registration", "registry_limits", "cleanup_guards", "heap_bounds"],
     "self.fail": ["intentional_assertion", "not_run"],
     "self.panic": ["intentional_panic"],
     "self.timeout": ["intentional_timeout"],
-    **{f"bench.{name}": [f"bench.{name}"] for name in ("allocate", "release", "combined", "read", "getpid")},
+    **{
+        f"bench.{name}": [f"bench.{name}"]
+        for name in (
+            "allocate",
+            "release",
+            "combined",
+            "read",
+            "getpid",
+            "fault",
+            "cow",
+            "switch",
+            "wakeup",
+            "timer",
+            "lifecycle",
+            "signal",
+            "pipe",
+        )
+    },
 }
 FUNCTIONAL = [
     "resources",
@@ -76,21 +186,59 @@ FUNCTIONAL = [
     "heap",
     "containers",
     "containers.smp",
+    "vfs.smp",
     "vfs",
+    "timers",
+    "scheduler",
+    "process",
     "users",
     "users.vm",
     "users.frame",
     "users.uaccess",
+    "users.signals",
+    "users.lifecycle",
+    "users.timers",
+    "users.libc",
+    "users.exec",
+    "users.busybox",
 ]
 BENCHMARKS = [name for name in CATALOG if name.startswith("bench.")]
+BENCHMARK_KINDS = {
+    f"bench.{name}": "event_sum" if name in ("signal", "wakeup", "timer") else "elapsed_batch"
+    for name in ("fault", "cow", "switch", "wakeup", "timer", "lifecycle", "signal", "pipe")
+}
 SELFTESTS = ["self", "self.fail", "self.panic", "self.timeout"]
+LIFECYCLE_INTERVAL = {"users.lifecycle": 100, "users.applications": 10}
+RESOURCE_FIELDS = (
+    "heap_bytes",
+    "free_pages",
+    "processes",
+    "threads",
+    "descriptors",
+    "file_refs",
+    "user_pages",
+    "stack_pages",
+    "vfs_inodes",
+    "vfs_dentries",
+    "vfs_files",
+)
 
 
 class Record(BaseModel):
     model_config = ConfigDict(extra="allow", strict=True)
     v: Literal[1]
     event: Literal[
-        "ready", "catalog", "worker", "case_start", "case_end", "clock", "calibration", "batch", "fatal", "end"
+        "ready",
+        "catalog",
+        "worker",
+        "case_start",
+        "case_end",
+        "checkpoint",
+        "clock",
+        "calibration",
+        "batch",
+        "fatal",
+        "end",
     ]
     workload: str
 
@@ -121,17 +269,20 @@ def integer(data: dict, key: str, minimum: int = 0, maximum: int = 2**64 - 1) ->
 class Protocol:
     """Fail-closed event state machine; no text PASS heuristic or exit-code-only success."""
 
-    def __init__(self, workload: str, cpus: int, memory_mib: int, warmup: int, samples: int):
+    def __init__(self, workload: str, cpus: int, memory_mib: int, warmup: int, samples: int, stability: bool = False):
         self.workload = workload
         self.expected = CATALOG[workload]
         self.cpus, self.memory_mib = cpus, memory_mib
         self.warmup, self.samples = warmup, samples
+        self.stability = stability
         self.ready: dict | None = None
         self.catalog: list[str] = []
         self.worker: dict | None = None
         self.active: str | None = None
         self.case_started: float | None = None
+        self.last_progress: float | None = None
         self.cases: list[dict] = []
+        self.checkpoints: list[dict] = []
         self.clock: dict | None = None
         self.calibration: list[dict] = []
         self.batches: list[dict] = []
@@ -161,8 +312,8 @@ class Protocol:
             ram = integer(record, "ram_bytes")
             if not self.memory_mib * 2**20 - 2**21 <= ram <= self.memory_mib * 2**20:
                 raise ValueError("firmware RAM differs from requested RAM")
-            if integer(record, "managed_pages") * 4096 <= 256 * 2**20:
-                raise ValueError("allocator did not discover enlarged RAM")
+            if not 0 < integer(record, "managed_pages") * 4096 <= ram:
+                raise ValueError("allocator page count is outside firmware RAM")
             return
         if not self.ready:
             raise ValueError("validation not ready")
@@ -187,11 +338,28 @@ class Protocol:
                 raise ValueError("unexpected case identity/order")
             self.active = record["case"]
             self.case_started = time.monotonic()
+            self.last_progress = self.case_started
         elif event == "case_end":
             if not self.active or record.get("case") != self.active:
                 raise ValueError("case completion without matching start")
             count = integer(record, "failed")
             passed = integer(record, "passed")
+            if (
+                not count
+                and self.workload in LIFECYCLE_INTERVAL
+                and (
+                    not self.checkpoints
+                    or self.checkpoints[-1]["cycles"] < (10000 if self.stability else 1000)
+                    or (not self.stability and len(self.checkpoints) != 1000 // LIFECYCLE_INTERVAL[self.workload] + 1)
+                    or self.checkpoints[-1]["elapsed_ns"] < (1800 * 10**9 if self.stability else 0)
+                    or any(
+                        sample[key] != self.checkpoints[0][key]
+                        for sample in self.checkpoints
+                        for key in RESOURCE_FIELDS
+                    )
+                )
+            ):
+                raise ValueError("missing or unequal lifecycle resource recovery")
             if not passed and not count and not self.workload.startswith("bench."):
                 raise ValueError("case has no assertions")
             self.failed |= count > 0
@@ -205,6 +373,27 @@ class Protocol:
             )
             self.active = None
             self.case_started = None
+        elif event == "checkpoint":
+            if self.workload not in LIFECYCLE_INTERVAL or not self.active or record.get("case") != self.active:
+                raise ValueError("unexpected resource checkpoint")
+            if (
+                integer(record, "cycles", 0, 2**31 if self.stability else 1000)
+                != len(self.checkpoints) * LIFECYCLE_INTERVAL[self.workload]
+            ):
+                raise ValueError("resource checkpoint sequence")
+            if integer(record, "application_cycles") != (
+                record["cycles"] if self.workload == "users.applications" else 0
+            ):
+                raise ValueError("application_cycles differ from complete core cycles")
+            elapsed = integer(record, "elapsed_ns")
+            if (not self.checkpoints and elapsed != 0) or (
+                self.checkpoints and elapsed <= self.checkpoints[-1]["elapsed_ns"]
+            ):
+                raise ValueError("resource checkpoint time did not advance")
+            for key in RESOURCE_FIELDS:
+                integer(record, key)
+            self.checkpoints.append(record)
+            self.last_progress = time.monotonic()
         elif event == "clock":
             if not self.active or self.clock or not self.workload.startswith("bench."):
                 raise ValueError("unexpected clock")
@@ -233,6 +422,8 @@ class Protocol:
         elif event == "batch":
             if not self.active or not self.clock:
                 raise ValueError("sample before validated clock/case")
+            if self.workload in BENCHMARK_KINDS and record.get("measurement_kind") != BENCHMARK_KINDS[self.workload]:
+                raise ValueError("missing or invalid measurement kind")
             index = integer(record, "index")
             if index != len(self.batches) or index >= self.warmup + self.samples:
                 raise ValueError("sample count/order mismatch")
@@ -307,28 +498,96 @@ class Protocol:
         return ("passed", "pass") if expected == "pass" else ("failed", "expected_failure_not_observed")
 
 
-def command_output(args: list[str]) -> str:
-    return subprocess.run(args, capture_output=True, text=True, check=True, timeout=30).stdout.strip()
-
-
 def sha256(path: Path) -> str:
     with path.open("rb") as stream:
         return hashlib.file_digest(stream, "sha256").hexdigest()
+
+
+def pin_vcpus(path: Path, process: subprocess.Popen, host_cpus: list[int], deadline: float) -> list[dict]:
+    """Pin only this paused QEMU's vCPU threads, verify, then resume via QMP."""
+    with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as client:
+        while True:
+            if process.poll() is not None or time.monotonic() >= deadline:
+                raise ValueError("QMP startup failed or timed out")
+            client.settimeout(max(0.001, deadline - time.monotonic()))
+            try:
+                client.connect(str(path))
+                break
+            except (FileNotFoundError, ConnectionRefusedError):
+                time.sleep(0.01)
+        with client.makefile("rwb") as stream:
+
+            def receive():
+                client.settimeout(max(0.001, deadline - time.monotonic()))
+                line = stream.readline(2**20)
+                if not line.endswith(b"\n") or time.monotonic() >= deadline:
+                    raise ValueError("incomplete or timed-out QMP response")
+                return load_json(line)
+
+            if "QMP" not in receive():
+                raise ValueError("missing QMP greeting")
+
+            def command(name):
+                stream.write(json.dumps({"execute": name, "id": name}).encode() + b"\n")
+                stream.flush()
+                while True:
+                    response = receive()
+                    if "event" in response:
+                        continue
+                    if response.get("id") != name or "return" not in response:
+                        raise ValueError(f"QMP {name} failed: {response}")
+                    return response["return"]
+
+            command("qmp_capabilities")
+            cpus = command("query-cpus-fast")
+            if (
+                not isinstance(cpus, list)
+                or len(cpus) != len(host_cpus)
+                or not all(isinstance(cpu, dict) for cpu in cpus)
+            ):
+                raise ValueError("QMP vCPU count mismatch")
+            if len({integer(cpu, "thread-id", 1) for cpu in cpus}) != len(cpus):
+                raise ValueError("QMP vCPUs do not have independent host threads")
+            cpus = sorted(cpus, key=lambda cpu: integer(cpu, "cpu-index"))
+            bindings = []
+            for index, cpu in enumerate(cpus):
+                tid = integer(cpu, "thread-id", 1)
+                if cpu["cpu-index"] != index or not Path(f"/proc/{process.pid}/task/{tid}").exists():
+                    raise ValueError("QMP vCPU identity is not owned by this guest")
+                os.sched_setaffinity(tid, {host_cpus[index]})
+                if os.sched_getaffinity(tid) != {host_cpus[index]}:
+                    raise ValueError("vCPU host affinity was not applied")
+                bindings.append(dict(cpu=index, thread_id=tid, host_cpu=host_cpus[index]))
+            command("cont")
+            return bindings
 
 
 def run_guest(cfg: Artifacts, workload: str, directory: Path, settings: dict, iterations: int) -> dict:
     directory.mkdir()
     case_timeout = settings.get("case_timeout")
     if case_timeout is None:
-        # Exhaustion touches all 2 GiB of guest RAM; host memory pressure can
-        # take it past the ordinary 5 s budget without a kernel failure.
-        case_timeout = 30.0 if workload == "pfa" else 5.0
+        # Exhaustive RAM access and repeated process lifecycles can exceed 5 s
+        # under host pressure; these suites retain a bounded 30 s deadline.
+        case_timeout = 30.0 if workload in ("pfa", "users.signals", *LIFECYCLE_INTERVAL, *BENCHMARK_KINDS) else 5.0
+    progress_deadline = settings.get("stability", False) or workload == "users.applications"
+    guest_timeout = settings.get("guest_timeout")
+    if guest_timeout is None:
+        # A distinct application workload, not a relaxation of the original
+        # core case's 30 s total deadline. Bound each verified interval by 30 s
+        # and the whole run by its finite number of intervals plus warmup/boot.
+        guest_timeout = 60.0
+        if workload == "users.applications":
+            intervals = (10000 if settings.get("stability") else 1000) // LIFECYCLE_INTERVAL[workload]
+            guest_timeout = (intervals + 1) * case_timeout + settings["startup_timeout"]
+    if settings.get("stability"):
+        guest_timeout = max(guest_timeout, 1800 + settings["startup_timeout"] + 60)
     state = Protocol(
         workload,
         settings["cpus"],
         settings.get("expected_ram_mib", settings["memory_mib"]),
         settings["warmup"],
         settings["samples"],
+        settings.get("stability", False),
     )
     bootargs = " ".join(
         f"moss.{k}={v}"
@@ -340,6 +599,7 @@ def run_guest(cfg: Artifacts, workload: str, directory: Path, settings: dict, it
             "samples": settings["samples"],
             "iterations": iterations,
             "order": settings["order"],
+            "stability": int(settings.get("stability", False)),
         }.items()
     )
     args = build_qemu_args(
@@ -358,14 +618,28 @@ def run_guest(cfg: Artifacts, workload: str, directory: Path, settings: dict, it
     reason, raw_exit, process = None, None, None
     termination = "process_exit"
     pending = b""
+    stability_release_seconds = None
     start = time.monotonic()
+    qmp_directory = None
+    host_bindings = None
     try:
+        if settings.get("host_cpus"):
+            qmp_directory = tempfile.TemporaryDirectory(prefix="moss-qmp-")
+            qmp_path = Path(qmp_directory.name) / "control.sock"
+            args += ["-S", "-qmp", f"unix:{qmp_path},server=on,wait=off"]
         with (
             serial_path.open("wb") as serial_out,
             error_path.open("wb") as diagnostics,
             serial_path.open("rb") as serial_in,
         ):
-            process = subprocess.Popen(args, stdin=subprocess.DEVNULL, stdout=serial_out, stderr=diagnostics)
+            process = subprocess.Popen(
+                args,
+                stdin=subprocess.PIPE if settings.get("stability") else subprocess.DEVNULL,
+                stdout=serial_out,
+                stderr=diagnostics,
+            )
+            if qmp_directory:
+                host_bindings = pin_vcpus(qmp_path, process, settings["host_cpus"], start + settings["startup_timeout"])
             while True:
                 if serial_path.stat().st_size > 32 * 2**20:
                     raise ValueError("serial log exceeded 32 MiB")
@@ -387,11 +661,27 @@ def run_guest(cfg: Artifacts, workload: str, directory: Path, settings: dict, it
                     if state.end:
                         termination = "protocol_end"
                     break
+                if (
+                    settings.get("stability")
+                    and stability_release_seconds is None
+                    and state.case_started is not None
+                    and now - state.case_started >= 1800
+                    and state.checkpoints
+                    and state.checkpoints[-1]["cycles"] >= 10000
+                ):
+                    # This only permits completion; the guest must still meet
+                    # its own duration, cycle and exact resource checks.
+                    process.stdin.write(b"S")
+                    process.stdin.flush()
+                    stability_release_seconds = now - state.case_started
                 if not state.ready and now - start >= settings["startup_timeout"]:
                     reason = "startup_timeout"
-                elif state.case_started and now - state.case_started >= case_timeout:
-                    reason = "case_timeout"
-                elif now - start >= settings["guest_timeout"]:
+                elif (
+                    state.case_started
+                    and now - (state.last_progress if progress_deadline else state.case_started) >= case_timeout
+                ):
+                    reason = "no_progress_timeout" if progress_deadline else "case_timeout"
+                elif now - start >= guest_timeout:
                     reason = "guest_timeout"
                 if reason:
                     termination = "timeout"
@@ -412,6 +702,10 @@ def run_guest(cfg: Artifacts, workload: str, directory: Path, settings: dict, it
                 process.wait()
         if process:
             raw_exit = process.returncode
+            if process.stdin:
+                process.stdin.close()
+        if qmp_directory:
+            qmp_directory.cleanup()
     serial = serial_path.read_bytes() if serial_path.exists() else b""
     # Recheck the complete log after reaping, including records written during termination.
     if termination == "protocol_end":
@@ -422,11 +716,21 @@ def run_guest(cfg: Artifacts, workload: str, directory: Path, settings: dict, it
                 settings.get("expected_ram_mib", settings["memory_mib"]),
                 settings["warmup"],
                 settings["samples"],
+                settings.get("stability", False),
             )
             for line in serial.splitlines():
                 replay.accept(line)
         except ValueError as error:
             reason = f"infrastructure: {error}"
+        if (
+            not reason
+            and settings.get("stability")
+            and not state.failed
+            and (not state.cases or state.cases[0]["elapsed_seconds"] < 1800)
+        ):
+            reason = "infrastructure: stability guest completed before 30 host minutes"
+        if not reason and settings.get("stability") and not state.failed and stability_release_seconds is None:
+            reason = "infrastructure: stability guest completed without host release"
     status, observed = state.outcome(termination, reason, serial)
     cases = list(state.cases)
     for name in state.expected[len(cases) :]:
@@ -445,16 +749,25 @@ def run_guest(cfg: Artifacts, workload: str, directory: Path, settings: dict, it
         "clock": state.clock,
         "calibration": state.calibration,
         "batches": state.batches,
+        "checkpoints": state.checkpoints,
         "raw_exit": raw_exit,
         "termination": termination,
         "completion": state.end,
         "elapsed_seconds": time.monotonic() - start,
         "case_timeout_seconds": case_timeout,
+        "case_timeout_kind": "no_progress" if progress_deadline else "total",
+        "guest_timeout_seconds": guest_timeout,
+        "stability_release_seconds": stability_release_seconds,
         "qemu_args": args,
         "serial_log": str(serial_path),
         "qemu_log": str(error_path),
         "parameters": {"order": settings["order"]},
+        "host_bindings": host_bindings,
     }
+    if workload in BENCHMARK_KINDS:
+        result["parameters"]["measurement_kind"] = BENCHMARK_KINDS[workload]
+    if workload == "bench.pipe":
+        result["parameters"]["transfer_bytes"] = 1024
     if status == "passed" and workload.startswith("bench.") and state.clock:
         values = [
             batch["ticks"] * 1e9 / state.clock["frequency"] / batch["operations"]
@@ -466,6 +779,12 @@ def run_guest(cfg: Artifacts, workload: str, directory: Path, settings: dict, it
             "batch_ns_per_operation": values,
             "interpretation": "elapsed batch averages, not individual-call latency or exclusive CPU time",
         }
+        if BENCHMARK_KINDS.get(workload) == "event_sum":
+            result["measurement"]["interpretation"] = (
+                "mean of individually bracketed event latencies per batch; not a percentile"
+            )
+        if workload == "bench.pipe":
+            result["measurement"]["bytes_per_second"] = 1024 * 1e9 / statistics.median(values)
         if workload == "bench.read":
             result["measurement"]["median_bytes_per_second"] = 256 * 1e9 / statistics.median(values)
     return result
@@ -502,6 +821,25 @@ def saved_measurement(report: dict, item: dict) -> float | None:
         if item.get("termination") != "protocol_end":
             return None
         settings = environment["settings"]
+        host_cpus = settings.get("host_cpus")
+        if host_cpus is not None:
+            if (
+                not isinstance(host_cpus, list)
+                or len(host_cpus) != integer(settings, "cpus", 1)
+                or any(type(cpu) is not int or cpu < 0 for cpu in host_cpus)
+                or len(set(host_cpus)) != len(host_cpus)
+            ):
+                return None
+            bindings = item.get("host_bindings")
+            if not isinstance(bindings, list) or len(bindings) != len(host_cpus):
+                return None
+            if any(
+                not isinstance(b, dict) or integer(b, "cpu") != i or integer(b, "host_cpu") != cpu
+                for i, (b, cpu) in enumerate(zip(bindings, host_cpus, strict=True))
+            ):
+                return None
+            if len({integer(b, "thread_id", 1) for b in bindings}) != len(bindings):
+                return None
         state = Protocol(
             item["workload"],
             settings["cpus"],
@@ -624,8 +962,10 @@ def run(
     workload: Annotated[list[str] | None, typer.Option()] = None,
     benchmark: bool = False,
     selftest: bool = False,
+    stability: bool = False,
     baseline: Annotated[Path | None, typer.Option()] = None,
     cpus: int = 4,
+    host_cpus: str | None = None,
     memory_mib: int = 2048,
     expected_ram_mib: int | None = None,
     warmup: int = 5,
@@ -634,20 +974,43 @@ def run(
     order: int = 0,
     startup_timeout: float = 30,
     case_timeout: float | None = None,
-    guest_timeout: float = 60,
+    guest_timeout: float | None = None,
 ) -> None:
     """One fresh guest per suite/scenario; samples reuse that guest."""
     selected = (
-        workload if workload is not None else (BENCHMARKS if benchmark else SELFTESTS if selftest else FUNCTIONAL)
+        workload
+        if workload is not None
+        else (["users.lifecycle"] if stability else BENCHMARKS if benchmark else SELFTESTS if selftest else FUNCTIONAL)
     )
+    if stability and (len(selected) != 1 or selected[0] not in LIFECYCLE_INTERVAL or benchmark or selftest or baseline):
+        raise typer.BadParameter("stability requires one core or application lifecycle suite")
     if not selected or len(set(selected)) != len(selected) or any(name not in CATALOG for name in selected):
         raise typer.BadParameter("select unique, nonempty known workload IDs")
+    host_cpu_ids = None
+    if host_cpus is not None:
+        try:
+            host_cpu_ids = [int(cpu) for cpu in host_cpus.split(",")]
+            if (
+                not hasattr(os, "sched_setaffinity")
+                or len(host_cpu_ids) != cpus
+                or len(set(host_cpu_ids)) != cpus
+                or not set(host_cpu_ids) <= os.sched_getaffinity(0)
+            ):
+                raise ValueError("one distinct eligible host CPU is required per vCPU")
+        except ValueError as error:
+            raise typer.BadParameter(f"invalid host CPUs: {error}") from error
     if not (
         1 <= cpus <= 16 and 0 <= warmup <= 100 and 1 <= samples <= 1000 and 0 <= iterations <= 65536 and 0 <= order <= 4
     ):
         raise typer.BadParameter("invalid resource or sampling parameters")
     if "containers.smp" in selected and cpus < 2:
         raise typer.BadParameter("containers.smp requires at least 2 CPUs; select single-worker workloads for 1 CPU")
+    if "vfs.smp" in selected and cpus < 2:
+        raise typer.BadParameter("vfs.smp requires at least 2 CPUs; select single-worker workloads for 1 CPU")
+    if "scheduler" in selected and cpus < 2:
+        raise typer.BadParameter("scheduler migration probe requires at least 2 CPUs")
+    if "users.timers" in selected and cpus < 3:
+        raise typer.BadParameter("users.timers cancellation probe requires at least 3 CPUs")
     if any(
         not math.isfinite(value) or value <= 0
         for value in (startup_timeout, case_timeout, guest_timeout)
@@ -663,15 +1026,24 @@ def run(
     build = cfg.manifest.parent
     metadata = cfg.build
     qemu = resolve_qemu(cfg.arch, qemu)
-    image = cfg.require("validation_kernel")
-    initrd = cfg.require("validation_initramfs")
     if any(name.startswith("bench.") for name in selected) and metadata["type"] != "Release":
         raise typer.BadParameter("benchmarks require the production Release build policy")
     prior = load_json(baseline.read_text()) if baseline else None
     if prior:
         validate_report(prior)
+    output = (output or build / "validation" / str(time.time_ns())).resolve()
+    output.mkdir(parents=True, exist_ok=False)
+    cfg = cfg.snapshot_validation(output / "inputs")
+    if dtb:
+        expected_dtb = sha256(dtb)
+        frozen_dtb = output / "inputs" / "board.dtb"
+        shutil.copy2(dtb, frozen_dtb)
+        if sha256(frozen_dtb) != expected_dtb:
+            raise ValueError("device tree changed while capturing validation inputs")
+        dtb = frozen_dtb
     settings = dict(
         cpus=cpus,
+        host_cpus=host_cpu_ids,
         memory_mib=memory_mib,
         expected_ram_mib=expected_ram_mib,
         warmup=warmup,
@@ -680,16 +1052,25 @@ def run(
         startup_timeout=startup_timeout,
         case_timeout=case_timeout,
         guest_timeout=guest_timeout,
+        stability=stability,
     )
+    governors = {}
+    for host_cpu in host_cpu_ids or ():
+        governor = Path(f"/sys/devices/system/cpu/cpu{host_cpu}/cpufreq/scaling_governor")
+        governors[str(host_cpu)] = governor.read_text().strip() if governor.exists() else None
     environment = {
         "arch": cfg.arch,
         "build": metadata,
         "qemu": get_qemu_version(qemu),
-        "host": platform.uname()._asdict(),
+        "host": platform.uname()._asdict()
+        | {
+            "cpu_affinity": sorted(os.sched_getaffinity(0)) if hasattr(os, "sched_getaffinity") else None,
+            "cpu_governors": governors,
+        },
         "settings": settings,
         "accelerator": "tcg",
         "clock_policy": 1,
-        "fixture_sha256": sha256(initrd),
+        "fixture_sha256": sha256(cfg.require("validation_initramfs")),
         "dtb_sha256": sha256(dtb) if dtb else None,
     }
     environment["machine"] = resolve_machine(cfg.arch, smp=cpus, machine=machine)
@@ -700,15 +1081,11 @@ def run(
         "requested": selected,
         "guests": [],
         "comparison_environment": environment,
-        "provenance": {
-            "revision": command_output(["git", "rev-parse", "HEAD"]),
-            "dirty": bool(command_output(["git", "status", "--porcelain"])),
-            "image_sha256": sha256(image),
-            "manifest": str(cfg.manifest),
-        },
+        "provenance": {**cfg.validation_provenance(), "manifest": str(cfg.manifest)},
     }
-    output = (output or build / "validation" / str(time.time_ns())).resolve()
-    output.mkdir(parents=True, exist_ok=False)
+    report["inputs"] = {name: str(cfg.require(name)) for name in ("validation_kernel", "validation_initramfs")} | {
+        "dtb": str(dtb) if dtb else None
+    }
     write_reports(report, output)
     previous_handler = signal.getsignal(signal.SIGTERM)
 

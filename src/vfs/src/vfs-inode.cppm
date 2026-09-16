@@ -48,6 +48,8 @@ struct InodeOps {
 
   /// Create a new file/directory/device inside a directory.
   long (*create)(Inode *dir, const char *name, u32 name_len, FileType type, u32 mode) noexcept;
+  long (*remove)(Inode *dir, Dentry *child) noexcept = nullptr;
+  long (*rename)(Dentry *source, Dentry *parent, const char *name, u32 name_len) noexcept = nullptr;
 };
 
 // ============================================================================
@@ -56,10 +58,11 @@ struct InodeOps {
 
 /// Identifies a mounted filesystem instance.
 struct SuperBlock {
-  const char *fs_name; // "ramfs", "devfs", "pipefs"
-  Inode *root_inode;   // root inode of this filesystem
-  u32 block_size;      // logical block size (usually PAGE_SIZE)
-  void *fs_private;    // filesystem-specific data
+  const char *fs_name;             // "ramfs", "devfs", "pipefs"
+  Inode *root_inode;               // root inode of this filesystem
+  u32 block_size;                  // logical block size (usually PAGE_SIZE)
+  void *fs_private;                // filesystem-specific data
+  DeviceNumber device = NO_DEVICE; // Stable filesystem identity, never a kernel address.
 };
 
 // ============================================================================
@@ -73,6 +76,7 @@ struct Inode {
   FileType type;
   u32 mode;          // permission + type bits (S_IF... | rwxrwxrwx)
   u32 nlink;         // hard link count
+  u32 uid, gid;      // inode owner, independent of the inspecting process
   u64 size;          // file size in bytes (0 for devices/pipes)
   DeviceNumber rdev; // device number (char/block devices only)
 
@@ -82,8 +86,10 @@ struct Inode {
   const InodeOps *inode_ops; // directory operations (null for non-dirs)
 
   // -- Filesystem-specific inline data --
-  const u8 *data;     // ramfs: pointer into initramfs CPIO data
-  void *private_data; // pipefs: PipeState*; others: fs-specific
+  const u8 *data;      // ramfs: pointer into initramfs CPIO data
+  void *private_data;  // pipefs: PipeState*; others: fs-specific
+  usize data_capacity; // Mutable ramfs buffer allocation size (CPIO remains borrowed).
+  bool ramfs_mutable;
 
   // -- Directory children (used by ramfs/devfs directory inodes) --
   // Simple inline array to avoid dynamic allocation for small dirs.

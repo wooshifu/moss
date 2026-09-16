@@ -14,6 +14,10 @@ enum {
   SYS_EXIT = 1,
   SYS_GETPID = 2,
   SYS_GETPPID = 3,
+  SYS_GETUID = 4,
+  SYS_GETGID = 5,
+  SYS_GETEUID = 6,
+  SYS_GETEGID = 7,
   SYS_FORK = 10,
   SYS_EXECVE = 11,
   SYS_WAIT4 = 12,
@@ -29,16 +33,35 @@ enum {
   SYS_READ = 32,
   SYS_WRITE = 33,
   SYS_LSEEK = 34,
+  SYS_STAT = 35,
   SYS_FSTAT = 36,
+  SYS_LSTAT = 37,
+  SYS_ACCESS = 38,
   SYS_DUP = 42,
   SYS_DUP2 = 43,
   SYS_PIPE = 44,
+  SYS_MKDIR = 45,
+  SYS_RMDIR = 46,
+  SYS_UNLINK = 48,
+  SYS_CHDIR = 51,
+  SYS_GETCWD = 52,
+  SYS_RENAME = 53,
   SYS_MMAP = 60,
   SYS_MUNMAP = 61,
+  SYS_BRK = 69,
   SYS_CLOCK_GETTIME = 83,
   SYS_NANOSLEEP = 86,
-  SYS_TOPINFO = 111
+  SYS_CLOCK_NANOSLEEP = 87,
+  SYS_UNAME = 110,
+  SYS_TOPINFO = 111,
+  SYS_ARCH_PRCTL = 126,
+  SYS_FCNTL = 130,
+  SYS_GETDENTS = 131,
+  SYS_IOCTL = 132
 };
+
+// No payload; succeeds only on a terminal. Not a Linux termios command.
+enum { MOSS_IOCTL_ISATTY = 0x4d01 };
 
 // ============================================================================
 // Low-level syscall wrappers
@@ -193,6 +216,8 @@ static inline long syscall6(long number, long arg0, long arg1, long arg2, long a
 // Signal constants
 // ============================================================================
 
+#ifndef MOSS_SYSCALL_RAW_ONLY
+
 #define SIGHUP 1
 enum {
   SIGINT = 2,
@@ -293,9 +318,11 @@ static inline long sigaltstack(const struct stack_t *ss, struct stack_t *old_ss)
   return syscall2(SYS_SIGALTSTACK, (long)ss, (long)old_ss);
 }
 
-static inline long clock_gettime_ns(unsigned long *ns) { return syscall1(SYS_CLOCK_GETTIME, (long)ns); }
+static inline long clock_gettime_ns(unsigned long *ns) { return syscall2(SYS_CLOCK_GETTIME, 1, (long)ns); }
 
-static inline long nanosleep_ns(unsigned long *ns) { return syscall1(SYS_NANOSLEEP, (long)ns); }
+static inline long nanosleep_ns(unsigned long *ns) { return syscall2(SYS_NANOSLEEP, (long)ns, 0); }
+
+#endif // MOSS_SYSCALL_RAW_ONLY
 
 // ============================================================================
 // TopInfo — system monitoring structures (for top command)
@@ -338,9 +365,22 @@ struct TopInfo {
 
 static inline long topinfo(struct TopInfo *info) { return syscall1(SYS_TOPINFO, (long)info); }
 
+static inline long current_cpu(void) {
+  struct TopInfo info;
+  if (topinfo(&info) != 0)
+    return -1;
+  long self = syscall0(SYS_GETPID);
+  for (unsigned long i = 0; i < info.nr_processes; ++i)
+    if (info.procs[i].pid == self)
+      return (long)info.procs[i].cpu;
+  return -1;
+}
+
 // ============================================================================
 // String utilities (no libc available)
 // ============================================================================
+
+#ifndef MOSS_SYSCALL_RAW_ONLY
 
 static inline int strlen(const char *s) {
   int n = 0;
@@ -468,3 +508,5 @@ static inline void print_str_padded(const char *s, int width) {
     print(" ");
   }
 }
+
+#endif // MOSS_SYSCALL_RAW_ONLY

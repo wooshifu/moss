@@ -94,9 +94,9 @@ void irq_handler_c(void) noexcept;
 void kernel_page_fault_handler(unsigned long long esr, unsigned long long far_addr, unsigned long long elr,
                                void *trap_frame) noexcept;
 void riscv64_page_fault_handler(unsigned long long cause, unsigned long long address, unsigned long long pc,
-                              void *trap_frame) noexcept;
+                                void *trap_frame) noexcept;
 void x64_page_fault_handler(unsigned long long error, unsigned long long address, unsigned long long pc,
-                               void *trap_frame) noexcept;
+                            void *trap_frame) noexcept;
 void user_page_fault_handler(unsigned long long esr, unsigned long long far_addr, unsigned long long elr) noexcept;
 void unhandled_exception_handler(unsigned long long esr, unsigned long long far_addr, unsigned long long elr,
                                  unsigned long long saved_x30, unsigned long long frame_sp) noexcept;
@@ -124,8 +124,16 @@ unsigned long long get_current_pgd_phys() noexcept;
 // vfs <-> kernel bridge
 void console_rx_init() noexcept;
 int console_getc_blocking() noexcept;
+int console_try_getc() noexcept;
+// Event owners register waiters while locked, then unlock before commit.
+void *moss_prepare_io_wait() noexcept;
+bool moss_io_wait_interrupted() noexcept;
+void moss_commit_io_wait() noexcept;
+void moss_wake_io_waiter(void *thread) noexcept;
+void moss_signal_broken_pipe() noexcept;
 
 // containers <-> mm bridge
+void *moss_heap_allocate(unsigned long long size, unsigned long long alignment) noexcept;
 unsigned long long moss_slab_alloc_pages(unsigned long long order) noexcept;
 int moss_slab_free_pages(unsigned long long addr, unsigned long long order) noexcept;
 
@@ -303,10 +311,17 @@ export namespace moss::abi::bridge {
 
 using ::console_getc_blocking;
 using ::console_rx_init;
+using ::console_try_getc;
 using ::demand_page_lookup;
 using ::get_current_pgd_phys;
+using ::moss_commit_io_wait;
+using ::moss_heap_allocate;
+using ::moss_io_wait_interrupted;
+using ::moss_prepare_io_wait;
+using ::moss_signal_broken_pipe;
 using ::moss_slab_alloc_pages;
 using ::moss_slab_free_pages;
+using ::moss_wake_io_waiter;
 using ::strcmp;
 using ::terminate_current_user_process;
 using ::try_grow_user_stack;

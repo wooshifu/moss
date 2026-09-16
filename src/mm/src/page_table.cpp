@@ -292,6 +292,27 @@ PageTableEntry *PageTableManager::get_user_pte(PhysAddr pgd_phys, VirtAddr va) {
   return &pte->entries[bd.pte_index];
 }
 
+static void prune_empty_user_tables(PageTable *table, unsigned shift, VirtAddr va) noexcept {
+  if (shift == PAGE_SHIFT)
+    return;
+  auto &entry = table->entries[(va >> shift) & 511];
+  if (!entry.is_valid() || !entry.is_table())
+    return;
+  const PhysAddr child_pa = entry.get_phys_addr();
+  auto *child = PageTableManager::get_table_from_physical(child_pa);
+  prune_empty_user_tables(child, shift - 9, va);
+  // ponytail: scan at most three 512-entry tables; add occupancy counters only
+  // if measured unmap throughput justifies maintaining them on every update.
+  for (const auto &leaf : child->entries) {
+    if (leaf.is_valid())
+      return;
+  }
+  entry.clear();
+  // A non-leaf removal needs walk-cache invalidation, not only leaf TLBI.
+  PageTableManager::invalidate_tlb();
+  (void)free_pages(child_pa, 0);
+}
+
 // Unmap a single user page: clear PTE, invalidate TLB, free physical page
 // when refcount drops to 0.  Pattern follows free_user_page_tables leaf cleanup.
 void PageTableManager::unmap_user_page(PhysAddr pgd_phys, VirtAddr va) noexcept {
@@ -309,6 +330,7 @@ void PageTableManager::unmap_user_page(PhysAddr pgd_phys, VirtAddr va) noexcept 
   if (remaining == 0) {
     (void)free_pages(pa, 0);
   }
+  prune_empty_user_tables(get_table_from_physical(pgd_phys), root_shift(), va);
 }
 
 KernelResult<PhysAddr> PageTableManager::create_user_page_tables() {

@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
-"""Inject a real pending IRQ at RV64's initial user-stack publication.
+"""Inject a real pending IRQ at a user-mode return boundary.
 
-This Debug-only QEMU/GDB regression uses the production scheduler and trap
-entry, then requires the complete users.vm suite. It does not rebuild or patch
-the kernel. Every run has frozen artifacts and retained logs; failure is final.
-The load base belongs to the runner's virt/OpenSBI fixture, not the kernel.
+RV64 checks initial user-stack publication; ARM64 checks exception return after
+wait4. These Debug-only probes use production entry/return code and require the
+complete users.vm or users.signals suite. Every run has frozen artifacts and
+retained logs; failure is final. Fixture load bases are not kernel constants.
 """
 
 import argparse
@@ -29,7 +29,7 @@ GDB_COMMANDS = r"""
 set pagination off
 set confirm off
 set architecture riscv64:rv64
-symbol-file -o @LOAD_BASE@ @SYMBOLS@
+symbol-file -readnever -o @LOAD_BASE@ @SYMBOLS@
 set remotetimeout 5
 set tcp auto-retry on
 target remote 127.0.0.1:@PORT@
@@ -57,8 +57,7 @@ set $sip = $sip | 2
 python
 if not (value("sip") & value("sie") & 2):
     raise gdb.GdbError("software IRQ did not become pending and enabled")
-bp = gdb.Breakpoint("*switch_to_user", type=gdb.BP_HARDWARE_BREAKPOINT, temporary=True)
-bp.thread = dispatch_cpu
+gdb.execute("thbreak *switch_to_user thread " + str(dispatch_cpu))
 end
 continue
 printf "[dispatch-irq] entering user return\n"
@@ -71,8 +70,7 @@ if actual_pc != value("initial_pc"):
 if not published_irq_masked or value("sstatus") & 2:
     raise gdb.GdbError("IRQs were enabled during the dispatch transition")
 user_sp = value("a1")
-bp = gdb.Breakpoint("*syscall_entry_point", type=gdb.BP_HARDWARE_BREAKPOINT, temporary=True)
-bp.thread = dispatch_cpu
+gdb.execute("thbreak *syscall_entry_point thread " + str(dispatch_cpu))
 end
 continue
 printf "[dispatch-irq] deferred IRQ delivered\n"
@@ -84,6 +82,76 @@ if value("sepc") != value("initial_pc") or value("sp") != user_sp:
     raise gdb.GdbError("the IRQ did not preserve the initial user PC/SP")
 if value("sscratch") != value("dispatch_top") - 16:
     raise gdb.GdbError("the IRQ has the wrong per-thread kernel stack")
+end
+printf "MOSS_DISPATCH_IRQ_VERIFIED\n"
+detach
+quit
+"""
+
+ARM64_COMMANDS = r"""
+set pagination off
+set confirm off
+set architecture aarch64
+symbol-file -readnever -o @LOAD_BASE@ @SYMBOLS@
+set remotetimeout 5
+set tcp auto-retry on
+target remote 127.0.0.1:@PORT@
+python
+import re
+def value(name):
+    return int(gdb.parse_and_eval("$" + name)) & ((1 << 64) - 1)
+def instructions(symbol, size):
+    address = gdb.execute("info address " + symbol, to_string=True)
+    start = int(re.search(r"0x[0-9a-f]+", address).group(), 16)
+    return gdb.selected_frame().architecture().disassemble(start, start + size)
+# Only ELF symbols are needed; -readnever avoids old GDB's module-DWARF bugs.
+timer = instructions("_ZN4moss6kernel3hal5timerW4mossW3halW5timer11set_compareEy", 128)
+msr = next(insn for insn in timer
+           if re.search(r"msr\s+cntv_cval_el0,", insn["asm"], re.I))
+restore = instructions("lower_el_sync_dispatch", 512)
+publish = next(i for i, insn in enumerate(restore)
+               if re.search(r"msr\s+spsr_el1,", insn["asm"], re.I))
+restore_pc = restore[publish + 1]["addr"]
+gdb.execute("hbreak *" + hex(restore_pc))
+# waitpid (13) delegates to wait4 and may schedule with IRQs re-enabled.
+gdb.execute("condition 1 *(unsigned long long*)($sp + 64) == 13")
+end
+continue
+printf "[return-irq] exception state published after wait4\n"
+info registers pc sp cpsr ELR_EL1 SPSR_EL1
+python
+return_cpu = gdb.selected_thread().global_num
+return_sp = value("sp")
+user_pc, user_pstate = value("ELR_EL1"), value("SPSR_EL1")
+masked = bool(value("cpsr") & 128)
+if user_pstate & 15:
+    raise gdb.GdbError("wait4 was not returning to EL0")
+gdb.execute("delete 1")
+# QEMU exposes these system registers read-only through its GDB register API.
+# Execute the existing timer MSR once with compare=0, under debugger single-step
+# (which suppresses IRQ delivery), then restore PC and its scratch register.
+# No kernel instructions, IRQ masks or saved return-state values are patched.
+register = re.search(r",\s*(x\d+)", msr["asm"]).group(1)
+scratch = value(register)
+gdb.execute("set $pc = " + hex(msr["addr"]))
+gdb.execute("set $" + register + " = 0")
+end
+stepi
+python
+gdb.execute("set $" + register + " = " + hex(scratch))
+gdb.execute("set $pc = " + hex(restore_pc))
+if value("CNTV_CVAL_EL0") or value("CNTV_CTL_EL0") & 7 != 5:
+    raise gdb.GdbError("enabled unmasked timer IRQ did not become pending")
+gdb.execute("thbreak *irq_trampoline thread " + str(return_cpu))
+end
+continue
+printf "[return-irq] pending timer IRQ delivered\n"
+info registers pc sp cpsr ELR_EL1 SPSR_EL1
+python
+if not masked or value("SPSR_EL1") & 15:
+    raise gdb.GdbError("IRQ entered during exception restore and overwrote ELR/SPSR")
+if value("ELR_EL1") != user_pc or value("sp") != return_sp + 272:
+    raise gdb.GdbError("deferred IRQ did not preserve user PC or kernel stack")
 end
 printf "MOSS_DISPATCH_IRQ_VERIFIED\n"
 detach
@@ -102,11 +170,13 @@ def terminate(process):
 
 
 def run(artifacts, symbols, directory, options):
+    workload = "users.signals" if artifacts.arch == "ARM64" else "users.vm"
     with socket.socket() as reservation:
         reservation.bind(("127.0.0.1", 0))
         port = reservation.getsockname()[1]
     commands = (
-        GDB_COMMANDS.replace("@LOAD_BASE@", hex(options.load_base))
+        (ARM64_COMMANDS if artifacts.arch == "ARM64" else GDB_COMMANDS)
+        .replace("@LOAD_BASE@", hex(options.load_base))
         .replace("@SYMBOLS@", json.dumps(str(symbols)))
         .replace("@PORT@", str(port))
     )
@@ -120,13 +190,13 @@ def run(artifacts, symbols, directory, options):
         cpu=options.cpu,
         extra_args=[
             "-append",
-            f"moss.validation=users.vm moss.cpus={options.cpus} moss.memory=2048",
+            f"moss.validation={workload} moss.cpus={options.cpus} moss.memory=2048",
             "-S",
             "-gdb",
             f"tcp:127.0.0.1:{port}",
         ],
     )
-    state = Protocol("users.vm", options.cpus, 2048, 0, 0)
+    state = Protocol(workload, options.cpus, 2048, 0, 0)
     guest = debugger = None
     reason, termination = None, None
     started = time.monotonic()
@@ -162,7 +232,9 @@ def run(artifacts, symbols, directory, options):
                     break
                 elif guest.poll() is not None:
                     reason = "unexpected_guest_exit"
-                elif state.case_started and time.monotonic() - state.case_started >= 5:
+                elif state.case_started and time.monotonic() - state.case_started >= (
+                    30 if workload == "users.signals" else 5
+                ):
                     reason = "case_timeout"
                 elif time.monotonic() - started >= 60:
                     reason = "guest_timeout"
@@ -180,7 +252,7 @@ def run(artifacts, symbols, directory, options):
     if termination == "protocol_end":
         # Include records emitted during termination; never accept a late error.
         try:
-            state = Protocol("users.vm", options.cpus, 2048, 0, 0)
+            state = Protocol(workload, options.cpus, 2048, 0, 0)
             for line in serial.splitlines():
                 state.accept(line)
         except ValueError as error:
@@ -203,16 +275,19 @@ def main():
     parser.add_argument("--manifest", required=True, type=Path)
     parser.add_argument("--symbols", required=True, type=Path, help="matching moss.test.elf")
     parser.add_argument("--gdb", default="gdb")
-    parser.add_argument("--cpu", default="rv64")
+    parser.add_argument("--cpu")
     parser.add_argument("--cpus", choices=(1, 4), type=int, default=4)
     parser.add_argument("--runs", type=int, default=1)
-    parser.add_argument("--load-base", type=lambda number: int(number, 0), default=0x80200000)
+    parser.add_argument("--load-base", type=lambda number: int(number, 0))
     options = parser.parse_args()
     artifacts = Artifacts.load(options.manifest)
-    if artifacts.arch != "RISCV64" or artifacts.build["type"] != "Debug":
-        parser.error("requires an RV64 Debug image (unoptimized publication boundary)")
+    if artifacts.arch not in ("RISCV64", "ARM64") or artifacts.build["type"] != "Debug":
+        parser.error("requires an RV64 or ARM64 Debug image (unoptimized return boundary)")
+    options.cpu = options.cpu or ("cortex-a72" if artifacts.arch == "ARM64" else "rv64")
+    if options.load_base is None:
+        options.load_base = 0x40200000 if artifacts.arch == "ARM64" else 0x80200000
     if options.runs < 1 or not shutil.which(options.gdb):
-        parser.error("requires --runs >= 1 and a RISC-V 64-capable GDB")
+        parser.error("requires --runs >= 1 and a target-capable GDB")
     root = artifacts.manifest.parent / "dispatch-irq"
     root.mkdir(exist_ok=True)
     output = Path(tempfile.mkdtemp(prefix="run-", dir=root))

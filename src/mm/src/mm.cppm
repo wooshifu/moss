@@ -21,8 +21,19 @@ export import :policy;
 export import :reclaim;
 export import :interface;
 
-// === Page allocator shim definitions (extern "C") ===
+// === Allocator shim definitions (extern "C") ===
 extern "C" {
+
+// Fallible, zeroed runtime storage; constructed objects retain ordinary delete
+// ownership. This avoids a containers -> mm -> containers import cycle.
+void *moss_heap_allocate(unsigned long long size, unsigned long long alignment) noexcept {
+  auto result = moss::kernel::mm::RuntimeHeapAllocator::allocate_aligned(static_cast<moss::kernel::usize>(size),
+                                                                         static_cast<moss::kernel::usize>(alignment));
+  if (!result)
+    return nullptr;
+  __builtin_memset(*result, 0, static_cast<moss::kernel::usize>(size));
+  return *result;
+}
 
 unsigned long long moss_slab_alloc_pages(unsigned long long order) noexcept {
   auto result = moss::kernel::mm::PageFrameAllocator::allocate_pages(static_cast<moss::kernel::usize>(order));

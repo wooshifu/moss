@@ -13,6 +13,7 @@ export module moss.timer;
 import moss.std;
 import moss.types;
 import moss.result;
+import moss.arch;
 import moss.hal.timer;
 import moss.containers;
 
@@ -49,6 +50,23 @@ public:
 
   /// Convert nanoseconds to raw cycles.
   [[nodiscard]] u64 ns_to_cycles(u64 ns) const noexcept;
+
+  /// First raw counter value at which now_ns() reaches an absolute deadline.
+  [[nodiscard]] u64 deadline_counter(u64 deadline_ns) const noexcept {
+    if (!mult_)
+      return 0;
+    // Exact bounded inversion, without a freestanding 128-bit division runtime.
+    const auto target = static_cast<__uint128_t>(deadline_ns) << shift_;
+    u64 low = 0, high = ~u64{0};
+    while (low < high) {
+      const auto middle = low + (high - low) / 2;
+      if (static_cast<__uint128_t>(middle) * mult_ >= target)
+        high = middle;
+      else
+        low = middle + 1;
+    }
+    return boot_cycles_ + low;
+  }
 
   /// Hardware timer frequency in Hz.
   [[nodiscard]] u64 frequency_hz() const noexcept { return freq_hz_; }
@@ -87,16 +105,20 @@ public:
   void init(TimerMode mode, TimerCallback callback, void *data = nullptr) noexcept;
 
   /// Start with absolute expiry (ns since boot).
-  void start(u64 expires_ns) noexcept;
+  [[nodiscard]] VoidResult start(u64 expires_ns) noexcept;
 
   /// Start with relative delay from now.
-  void start_relative(u64 delay_ns) noexcept;
+  [[nodiscard]] VoidResult start_relative(u64 delay_ns) noexcept;
 
   /// Cancel a pending timer.
   void cancel() noexcept;
 
+  /// Cancel and wait for callbacks to finish before freeing the timer/data.
+  /// Call from task context, never from this timer's callback.
+  void cancel_sync() noexcept;
+
   /// Query state.
-  [[nodiscard]] bool is_active() const noexcept { return active_; }
+  [[nodiscard]] bool is_active() const noexcept;
   [[nodiscard]] u64 expires_ns() const noexcept { return expires_ns_; }
   [[nodiscard]] TimerMode mode() const noexcept { return mode_; }
 
@@ -107,6 +129,7 @@ private:
   void *callback_data_{nullptr};
   TimerMode mode_{TimerMode::OneShot};
   bool active_{false};
+  u32 callbacks_in_flight_{0}; // guarded by TimerSubsystem::queue_lock_
 
   // Heap index: position of this timer in TimerSubsystem's min-heap array.
   // Enables O(log n) cancel/dequeue without linear search.
@@ -142,10 +165,15 @@ public:
   [[nodiscard]] u64 now_ns() const noexcept { return clocksource_.now_ns(); }
 
   /// Insert a timer into the min-heap.
-  void enqueue(HrTimer *timer) noexcept;
+  [[nodiscard]] VoidResult enqueue(HrTimer *timer, u64 expires_ns, u64 interval_ns) noexcept;
 
   /// Remove a timer from the min-heap.
   void dequeue(HrTimer *timer) noexcept;
+  void cancel_sync(HrTimer *timer) noexcept;
+  [[nodiscard]] bool is_active(const HrTimer *timer) const noexcept {
+    containers::LockGuard<containers::IrqSpinLock> guard(queue_lock_);
+    return timer->active_;
+  }
 
   /// Called from the timer interrupt handler.
   void handle_interrupt() noexcept;
@@ -154,7 +182,10 @@ public:
   [[nodiscard]] bool is_initialized() const noexcept { return initialized_; }
 
   /// Check if any timers are pending (for tickless idle decisions).
-  [[nodiscard]] bool has_pending_timers() const noexcept { return heap_size_ > 0; }
+  [[nodiscard]] bool has_pending_timers() const noexcept {
+    containers::LockGuard<containers::IrqSpinLock> guard(queue_lock_);
+    return heap_size_ > 0;
+  }
 
   /// Statistics.
   struct Stats {
@@ -170,7 +201,7 @@ private:
   Clocksource clocksource_;
   Stats stats_{};
   bool initialized_{false};
-  containers::IrqSpinLock queue_lock_; // Protects the min-heap
+  mutable containers::IrqSpinLock queue_lock_; // Protects the min-heap and active state
 
   // ── Min-heap of HrTimer pointers, keyed by expires_ns ──────────
   // O(log n) enqueue/dequeue, O(1) peek (heap_[0] = earliest).
@@ -260,28 +291,26 @@ void HrTimer::init(TimerMode mode, TimerCallback callback, void *data) noexcept 
   heap_index_ = ~0U;
 }
 
-void HrTimer::start(u64 abs_expires_ns) noexcept {
-  expires_ns_ = abs_expires_ns;
-  active_ = true;
-  TimerSubsystem::instance().enqueue(this);
-}
-
-void HrTimer::start_relative(u64 delay_ns) noexcept {
-  u64 now = TimerSubsystem::instance().now_ns();
-  expires_ns_ = now + delay_ns;
+VoidResult HrTimer::start(u64 abs_expires_ns) noexcept {
   if (mode_ == TimerMode::Periodic) {
-    interval_ns_ = delay_ns;
+    return VoidResult{ErrorCode::InvalidParameter}; // periodic timers need an interval
   }
-  active_ = true;
-  TimerSubsystem::instance().enqueue(this);
+  return TimerSubsystem::instance().enqueue(this, abs_expires_ns, 0);
 }
 
-void HrTimer::cancel() noexcept {
-  if (active_) {
-    TimerSubsystem::instance().dequeue(this);
-    active_ = false;
+VoidResult HrTimer::start_relative(u64 delay_ns) noexcept {
+  u64 now = TimerSubsystem::instance().now_ns();
+  if (delay_ns > ~u64{0} - now || (mode_ == TimerMode::Periodic && delay_ns == 0)) {
+    return VoidResult{ErrorCode::InvalidParameter};
   }
+  return TimerSubsystem::instance().enqueue(this, now + delay_ns, mode_ == TimerMode::Periodic ? delay_ns : 0);
 }
+
+void HrTimer::cancel() noexcept { TimerSubsystem::instance().dequeue(this); }
+
+void HrTimer::cancel_sync() noexcept { TimerSubsystem::instance().cancel_sync(this); }
+
+bool HrTimer::is_active() const noexcept { return TimerSubsystem::instance().is_active(this); }
 
 // ============================================================================
 // TimerSubsystem implementation
@@ -365,15 +394,27 @@ void TimerSubsystem::heap_sift_down(u32 idx) noexcept {
 
 // ── Enqueue / Dequeue ───────────────────────────────────────────────
 
-void TimerSubsystem::enqueue(HrTimer *timer) noexcept {
+VoidResult TimerSubsystem::enqueue(HrTimer *timer, u64 expires_ns, u64 interval_ns) noexcept {
   containers::LockGuard<containers::IrqSpinLock> guard(queue_lock_);
+  if (!initialized_ || timer->active_ || timer->heap_index_ != ~0U || timer->callbacks_in_flight_ != 0) {
+    return VoidResult{ErrorCode::InvalidState};
+  }
+  if (!timer->callback_) {
+    return VoidResult{ErrorCode::InvalidParameter};
+  }
+  if (heap_size_ == MAX_TIMERS) {
+    return VoidResult{ErrorCode::ResourceExhausted};
+  }
+  timer->expires_ns_ = expires_ns;
+  timer->interval_ns_ = interval_ns;
+  timer->active_ = true;
   enqueue_locked(timer);
+  return VoidResult{};
 }
 
 void TimerSubsystem::enqueue_locked(HrTimer *timer) noexcept {
-  if (heap_size_ >= MAX_TIMERS) {
-    return; // heap full — shouldn't happen in practice
-  }
+  // Callers hold queue_lock_ and either checked capacity or just extracted an
+  // expired periodic timer, so a slot is reserved before active_ is published.
 
   u32 idx = heap_size_;
   heap_[idx] = timer;
@@ -389,6 +430,7 @@ void TimerSubsystem::enqueue_locked(HrTimer *timer) noexcept {
 
 void TimerSubsystem::dequeue(HrTimer *timer) noexcept {
   containers::LockGuard<containers::IrqSpinLock> guard(queue_lock_);
+  timer->active_ = false;
   if (heap_size_ == 0 || timer->heap_index_ == ~0U) {
     return;
   }
@@ -414,6 +456,19 @@ void TimerSubsystem::dequeue(HrTimer *timer) noexcept {
 
   if (was_root) {
     reprogram_next();
+  }
+}
+
+void TimerSubsystem::cancel_sync(HrTimer *timer) noexcept {
+  dequeue(timer);
+  for (;;) {
+    {
+      containers::LockGuard<containers::IrqSpinLock> guard(queue_lock_);
+      if (timer->callbacks_in_flight_ == 0) {
+        return;
+      }
+    }
+    arch::cpu_yield();
   }
 }
 
@@ -464,14 +519,16 @@ void TimerSubsystem::handle_interrupt() noexcept {
 
     // Release lock BEFORE callback — callback may context_switch and
     // never return, which is fine since we no longer hold the lock.
+    auto callback = expired->callback_;
+    void *data = expired->callback_data_;
+    ++expired->callbacks_in_flight_;
     queue_lock_.unlock();
 
-    if (expired->callback_) {
-      expired->callback_(expired->callback_data_);
-    }
+    callback(data);
 
     // Re-acquire lock for next iteration
     queue_lock_.lock();
+    --expired->callbacks_in_flight_;
 
     // Refresh now for next iteration (if callback returned)
     now = clocksource_.now_ns();

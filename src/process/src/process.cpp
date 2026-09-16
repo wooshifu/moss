@@ -5,6 +5,9 @@ module moss.process;
 
 import moss.abi;
 import moss.hal.mmu;
+import moss.vfs;
+
+extern "C" [[gnu::weak, gnu::noinline]] void moss_validation_dispatch_selected() noexcept {}
 
 // Assembly/entry symbols from moss.abi
 using moss::abi::context_switch;
@@ -14,6 +17,39 @@ using moss::abi::entry::early_debug_print;
 static moss::u64 get_current_time() noexcept { return moss::kernel::arch::get_timestamp_counter(); }
 
 namespace moss::kernel::process {
+
+Thread *Thread::try_create(ThreadId id, ProcessId pid) noexcept {
+  auto *storage = moss::abi::bridge::moss_heap_allocate(sizeof(Thread), alignof(Thread));
+  return storage ? new (storage) Thread(id, pid) : nullptr;
+}
+
+Thread::~Thread() {
+  if (kernel_stack_base != 0 && kernel_stack_size > 0) {
+    usize order = 0;
+    const usize pages = kernel_stack_size / PAGE_SIZE;
+    while ((1U << order) < pages)
+      ++order;
+    (void)mm::free_pages(static_cast<PhysAddr>(kernel_stack_base), order);
+  }
+}
+
+VoidResult Thread::allocate_kernel_stack() noexcept {
+  if (kernel_stack_base || kernel_stack_size)
+    return VoidResult{ErrorCode::InvalidState};
+  constexpr usize order = 2;
+  auto block = mm::allocate_pages(order);
+  if (!block)
+    return VoidResult{ErrorCode::OutOfMemory};
+  constexpr usize size = PAGE_SIZE << order;
+  const auto base = static_cast<VirtAddr>(*block); // Identity-mapped stack.
+  auto *words = reinterpret_cast<u64 *>(base);
+  // Initialize the entire recycled region, not just the initial trap frame.
+  for (usize i = 0; i < size / sizeof(u64); ++i)
+    words[i] = 0;
+  kernel_stack_base = base;
+  kernel_stack_size = size;
+  return {};
+}
 
 // 进程映射项
 struct ProcessEntry {
@@ -31,6 +67,47 @@ ProcessManager *g_process_manager = nullptr;
 // 全局调度器实例
 CfsScheduler *g_scheduler = nullptr;
 
+extern "C" bool moss_io_wait_interrupted() noexcept {
+  auto *thread = current_thread();
+  if (!thread || !signal_pending(thread))
+    return false;
+  const u64 pending = thread->pending_signals.load() & (~thread->signal_mask.load() | sig::UNCATCHABLE_MASK);
+  if (pending & sig::UNCATCHABLE_MASK)
+    return true;
+  auto proc = g_process_manager ? g_process_manager->find_process(thread->owner_pid) : shared_ptr<Process>{};
+  auto *state = proc ? get_signal_state(proc.get()) : nullptr;
+  for (u32 signo = 1; signo < sig::NSIG; ++signo) {
+    if (!(pending & sig::sigmask(signo)))
+      continue;
+    const auto handler = state ? state->actions[signo].handler : SIG_DFL;
+    if (handler == SIG_IGN)
+      continue;
+    const auto action = default_action(signo);
+    if (handler != SIG_DFL || (action != SigDefault::Ignore && action != SigDefault::Continue))
+      return true;
+  }
+  return false;
+}
+
+extern "C" void *moss_prepare_io_wait() noexcept {
+  auto *thread = g_scheduler ? g_scheduler->prepare_sleep() : nullptr;
+  // Publish Sleeping before checking pending signals. Earlier signals are
+  // caught here; later senders participate in the scheduler's sleep handoff.
+  if (thread && moss_io_wait_interrupted())
+    g_scheduler->task_wakeup(thread, thread->wake_cpu);
+  return thread;
+}
+
+extern "C" void moss_commit_io_wait() noexcept { g_scheduler->commit_sleep(); }
+
+extern "C" void moss_wake_io_waiter(void *opaque) noexcept {
+  auto *thread = static_cast<Thread *>(opaque);
+  if (g_scheduler && thread)
+    g_scheduler->task_wakeup(thread, thread->wake_cpu);
+}
+
+extern "C" void moss_signal_broken_pipe() noexcept { (void)send_signal(current_thread(), sig::SIGPIPE); }
+
 // 全局负载均衡器实例
 LoadBalancer *g_load_balancer = nullptr;
 
@@ -44,6 +121,15 @@ containers::PerCpuData<CpuContext> CfsScheduler::bootstrap_contexts_{};
 containers::PerCpuData<CfsScheduler::ExitStack> CfsScheduler::exit_stacks_{};
 
 // Process类方法实现
+void Process::cleanup_files() noexcept {
+  auto *table = static_cast<vfs::FdTable *>(fd_table_);
+  fd_table_ = nullptr;
+  if (table) {
+    table->close_all();
+    delete table;
+  }
+}
+
 KernelResult<ThreadId> Process::create_thread(VirtAddr entry_point, VirtAddr stack_base, usize stack_size) noexcept {
   if (!address_space_) {
     return KernelResult<ThreadId>{ErrorCode::InvalidState};
@@ -55,7 +141,7 @@ KernelResult<ThreadId> Process::create_thread(VirtAddr entry_point, VirtAddr sta
   }
 
   // 创建线程对象
-  auto *thread = new Thread(tid, pid_);
+  auto *thread = Thread::try_create(tid, pid_);
   if (!thread) {
     return KernelResult<ThreadId>{ErrorCode::OutOfMemory};
   }
@@ -73,16 +159,11 @@ KernelResult<ThreadId> Process::create_thread(VirtAddr entry_point, VirtAddr sta
   thread->state = ProcessState::Ready;
   thread->start_time = get_current_time();
 
-  // 添加到线程列表 (使用LockedList的push_front)
-  ThreadEntry entry(tid, thread);
-  threads_.push_front(entry);
-
-  // 如果是第一个线程，设置为主线程
-  if (thread_count_.load(containers::MemoryOrder::Relaxed) == 0) {
-    main_thread_id_ = tid;
+  auto registered = register_thread(thread);
+  if (!registered) {
+    delete thread;
+    return KernelResult<ThreadId>{registered.error()};
   }
-
-  (void)thread_count_.fetch_add(1, containers::MemoryOrder::Relaxed);
 
   // Enqueue new thread into scheduler run queue
   if (g_scheduler != nullptr) {
@@ -133,16 +214,6 @@ void Process::record_page_fault(bool major) noexcept {
 void Process::cleanup_threads() noexcept {
   threads_.for_each([](const ThreadEntry &entry) {
     if (entry.thread) {
-      // Free per-thread kernel stack (allocated in sys_fork)
-      if (entry.thread->kernel_stack_base != 0 && entry.thread->kernel_stack_size > 0) {
-        constexpr usize PAGE_SIZE = 4096;
-        usize order = 0;
-        usize pages = entry.thread->kernel_stack_size / PAGE_SIZE;
-        while ((1U << order) < pages) {
-          ++order;
-        }
-        (void)mm::free_pages(static_cast<PhysAddr>(entry.thread->kernel_stack_base), order);
-      }
       // Mark thread as not on any runqueue to avoid dangling reference
       entry.thread->se.rb_on_rq = false;
       delete entry.thread;
@@ -157,13 +228,14 @@ ThreadId Process::allocate_thread_id() noexcept {
   return next_tid.fetch_add(1, containers::MemoryOrder::Relaxed);
 }
 
-void Process::register_thread(Thread *thread) noexcept {
+VoidResult Process::register_thread(Thread *thread) noexcept {
   if (!thread) {
-    return;
+    return VoidResult{ErrorCode::InvalidArgument};
   }
 
   ThreadEntry entry(thread->tid, thread);
-  threads_.push_front(entry);
+  if (!threads_.try_push_front(entry))
+    return VoidResult{ErrorCode::OutOfMemory};
 
   // Set main thread if this is the first thread
   if (thread_count_.load(containers::MemoryOrder::Relaxed) == 0) {
@@ -171,6 +243,7 @@ void Process::register_thread(Thread *thread) noexcept {
   }
 
   (void)thread_count_.fetch_add(1, containers::MemoryOrder::Relaxed);
+  return {};
 }
 
 ProcessId Process::find_zombie_child(i64 wait_pid) const noexcept {
@@ -205,15 +278,14 @@ KernelResult<shared_ptr<Process>> ProcessManager::create_process(ProcessId paren
     return KernelResult<shared_ptr<Process>>{ErrorCode::ResourceExhausted};
   }
 
-  auto process = make_shared<Process>(new_pid, parent_pid);
+  auto process = shared_ptr<Process>::try_make(moss::abi::bridge::moss_heap_allocate, new_pid, parent_pid);
   if (!process) {
     return KernelResult<shared_ptr<Process>>{ErrorCode::OutOfMemory};
   }
 
-  processes_.insert_or_update(new_pid, process);
-
-  // Initialize per-process signal state (handlers table)
-  init_signal_state(process.get());
+  if (!processes_.try_insert_or_update(new_pid, process)) {
+    return KernelResult<shared_ptr<Process>>{ErrorCode::OutOfMemory};
+  }
 
   record_fork();
   return KernelResult<shared_ptr<Process>>{process};
@@ -247,23 +319,32 @@ ProcessId ProcessManager::allocate_pid() noexcept { return next_pid_.fetch_add(1
 // 用户地址空间管理扩展功能
 namespace user_space {
 
-// ASID allocator: 8-bit (1-255), ASID 0 reserved for kernel.
-// On overflow (>255): global TLB flush + reset counter.
-static containers::AtomicU32 next_asid{1};
+// ponytail: 255 simultaneous address-space leases. Use per-CPU generations
+// before supporting more concurrent spaces; never recycle a live owner's tag.
+static containers::IrqSpinLock asid_lock;
+static bool asid_used[256]{true}; // tag 0 belongs to the kernel
 
 static u16 allocate_asid() noexcept {
-  u32 val = next_asid.fetch_add(1, containers::MemoryOrder::Relaxed);
-  if (val > 255) {
-    // Wrap around: global TLB flush, reset counter
-#if defined(__aarch64__) || defined(MOSS_ARCH_ARM64)
-    asm volatile("tlbi vmalle1" ::: "memory");
-    asm volatile("dsb sy" ::: "memory");
-    asm volatile("isb" ::: "memory");
-#endif
-    next_asid.store(2, containers::MemoryOrder::Relaxed);
-    return 1;
+  containers::LockGuard<containers::IrqSpinLock> guard(asid_lock);
+  for (u16 tag = 1; tag < 256; ++tag) {
+    if (!asid_used[tag]) {
+      asid_used[tag] = true;
+      return tag;
+    }
   }
-  return static_cast<u16>(val);
+  return 0;
+}
+
+void release_asid(u16 tag) noexcept {
+  if (tag == 0 || tag >= 256)
+    return;
+  containers::LockGuard<containers::IrqSpinLock> guard(asid_lock);
+#if defined(MOSS_ARCH_ARM64)
+  // Finish invalidation on every CPU before another space can take this tag.
+  asm volatile("dsb ishst; tlbi aside1is, %0; dsb ish; isb" : : "r"(static_cast<u64>(tag) << 48) : "memory");
+#endif
+  // RV64 flushes on every SATP switch; x86 does not enable PCID.
+  asid_used[tag] = false;
 }
 
 // Page-table ownership and architecture layout belong to the MM module.
@@ -272,11 +353,18 @@ KernelResult<unique_ptr<AddressSpace>> create_user_address_space() noexcept {
   if (!tables) {
     return KernelResult<unique_ptr<AddressSpace>>{tables.error()};
   }
-  auto address_space = make_unique<AddressSpace>(*tables, allocate_asid());
-  if (!address_space) {
+  const u16 asid = allocate_asid();
+  if (asid == 0) {
+    mm::PageTableManager::free_user_page_tables(*tables);
+    return KernelResult<unique_ptr<AddressSpace>>{ErrorCode::ResourceExhausted};
+  }
+  auto storage = mm::RuntimeHeapAllocator::allocate(sizeof(AddressSpace));
+  if (!storage) {
+    release_asid(asid);
     mm::PageTableManager::free_user_page_tables(*tables);
     return KernelResult<unique_ptr<AddressSpace>>{ErrorCode::OutOfMemory};
   }
+  auto address_space = unique_ptr<AddressSpace>(new (*storage) AddressSpace(*tables, asid));
   return KernelResult<unique_ptr<AddressSpace>>{moss::move(address_space)};
 }
 
@@ -347,40 +435,12 @@ KernelResult<VirtAddr> allocate_user_heap(Process *process, usize size) noexcept
     g_scheduler->dequeue_task(cur);
   }
 
+  // Release descriptors before publishing exit: other processes must observe
+  // pipe EOF and recover file-pool capacity without first reaping this zombie.
+  proc->cleanup_files();
+
   // 2. Restore page table base to kernel PGD BEFORE freeing user page tables
-#if defined(__aarch64__) || defined(MOSS_ARCH_ARM64)
-  {
-    auto *kpgd = mm::PageTableManager::get_kernel_pgd();
-    if (kpgd) {
-      u64 kpgd_phys = mm::PageTableManager::get_physical_address(kpgd);
-      asm volatile("msr ttbr0_el1, %0" ::"r"(kpgd_phys));
-      asm volatile("dsb ish" ::: "memory");
-      asm volatile("isb" ::: "memory");
-    }
-  }
-#elif defined(MOSS_ARCH_X64)
-  {
-    // x64 uses a single CR3 register — switch back to kernel PGD
-    // before freeing the user page tables to avoid use-after-free faults.
-    auto *kpgd = mm::PageTableManager::get_kernel_pgd();
-    if (kpgd) {
-      u64 kpgd_phys = mm::PageTableManager::get_physical_address(kpgd);
-      asm volatile("mov %0, %%cr3" ::"r"(kpgd_phys) : "memory");
-    }
-  }
-#elif defined(MOSS_ARCH_RISCV64)
-  {
-    // RISC-V 64 has a single satp register (no separate user/kernel page table base).
-    // Switch satp back to kernel PGD before freeing user page tables.
-    auto *kpgd = mm::PageTableManager::get_kernel_pgd();
-    if (kpgd) {
-      u64 kpgd_phys = mm::PageTableManager::get_physical_address(kpgd);
-      u64 satp_val = hal::mmu::make_satp_value(kpgd_phys);
-      asm volatile("csrw satp, %0" ::"r"(satp_val) : "memory");
-      asm volatile("sfence.vma" ::: "memory");
-    }
-  }
-#endif
+  CfsScheduler::use_kernel_address_space();
 
   // 3. Free user page tables (keeps Process object alive for Zombie)
   auto *as = proc->address_space();
@@ -399,11 +459,11 @@ KernelResult<VirtAddr> allocate_user_heap(Process *process, usize size) noexcept
         init_proc->add_child(child_pid);
         // If child is already zombie, wake init's waiters
         if (child->state() == ProcessState::Zombie) {
+          send_signal(init_proc->get_main_thread(), sig::SIGCHLD);
           init_proc->child_exit_wait_queue().wake_up([](void *thread_ptr) {
             auto *t = static_cast<Thread *>(thread_ptr);
-            t->state = ProcessState::Ready;
             if (g_scheduler) {
-              g_scheduler->enqueue_task(t, t->wake_cpu);
+              g_scheduler->task_wakeup(t, t->wake_cpu);
             }
           });
         }
@@ -420,13 +480,15 @@ KernelResult<VirtAddr> allocate_user_heap(Process *process, usize size) noexcept
   //    one exclusive waiter + all non-exclusive ones (avoids thundering herd).
   auto parent = g_process_manager->find_process(proc->parent_pid());
   if (parent) {
+    // Publish child status before SIGCHLD and wakeup: the returning waitpid
+    // checkpoint must observe both the zombie and its notification.
+    send_signal(parent->get_main_thread(), sig::SIGCHLD);
     log::klog::info("do_exit: PID={} waking parent PID={}", pid, proc->parent_pid());
     parent->child_exit_wait_queue().wake_up([](void *thread_ptr) {
       auto *t = static_cast<Thread *>(thread_ptr);
       log::klog::info("do_exit: wake waiter TID={} state->{}", static_cast<u32>(t->tid), "Ready");
-      t->state = ProcessState::Ready;
       if (g_scheduler) {
-        g_scheduler->enqueue_task(t, t->wake_cpu);
+        g_scheduler->task_wakeup(t, t->wake_cpu);
       }
     });
   } else {

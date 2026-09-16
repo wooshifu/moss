@@ -8,30 +8,32 @@ module moss.vfs;
 namespace moss::kernel::vfs {
 
 Dentry *resolve_path(const char *path) noexcept {
-  if (path == nullptr || path[0] != '/') {
+  containers::LockGuard<containers::IrqSpinLock> guard(namespace_lock);
+  return resolve_path_locked(path);
+}
+
+Dentry *resolve_path_locked(const char *path, VfsError *error, Dentry *start, u32 uid, u32 gid) noexcept {
+  if (error)
+    *error = VfsError::NoEntry;
+  if (path == nullptr || !*path) {
     return nullptr;
   }
 
-  // Find which mount point this path belongs to
+  // Walk from the namespace root or the retained process directory. Choosing
+  // a mount by the original string prefix would mishandle /dir/../dev and /dev/.. .
   MountLookupResult mount_result{};
-  if (!g_mount_table.lookup(path, mount_result)) {
+  if (!g_mount_table.lookup("/", mount_result)) {
     return nullptr;
   }
 
   // Start from the mount's root dentry
-  Dentry *current = mount_result.mount->root;
+  Dentry *current = *path == '/' || !start ? mount_result.mount->root : start;
   if (current == nullptr) {
     return nullptr;
   }
 
-  // If residual is empty, return root of the mount
-  const char *residual = mount_result.residual;
-  if (residual[0] == '\0') {
-    return current;
-  }
-
   // Walk each path component
-  const char *p = residual;
+  const char *p = path;
   while (*p != '\0') {
     // Skip leading '/'
     while (*p == '/') {
@@ -50,7 +52,33 @@ Dentry *resolve_path(const char *path) noexcept {
     p += name_len;
 
     if (current->inode == nullptr || !current->inode->is_directory()) {
+      if (error)
+        *error = VfsError::NotDirectory;
       return nullptr; // not a directory
+    }
+    if (!can_search(*current->inode, uid, gid)) {
+      if (error)
+        *error = VfsError::PermDenied;
+      return nullptr;
+    }
+
+    if (name_len > MAX_NAME_LEN) {
+      if (error)
+        *error = VfsError::NameTooLong;
+      return nullptr;
+    }
+    if (name_len == 1 && *name_start == '.')
+      continue;
+    if (name_len == 2 && name_start[0] == '.' && name_start[1] == '.') {
+      auto *parent = current->parent ? current->parent : g_mount_table.parent_of_root(current);
+      if (parent)
+        current = parent;
+      continue;
+    }
+
+    if (auto *mounted = g_mount_table.child_mount(current, name_start, name_len)) {
+      current = mounted;
+      continue;
     }
 
     // Try dcache first
@@ -95,6 +123,11 @@ Dentry *resolve_path(const char *path) noexcept {
     }
   }
 
+  if (p > path && p[-1] == '/' && (!current->inode || !current->inode->is_directory())) {
+    if (error)
+      *error = VfsError::NotDirectory;
+    return nullptr;
+  }
   return current;
 }
 

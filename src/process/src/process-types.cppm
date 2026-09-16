@@ -180,12 +180,14 @@ struct alignas(16) CpuContext {
   u16 cs, ds, es, fs, gs, ss;
 
   X86FpState fp;
+  u64 fs_base;
 
   constexpr CpuContext() noexcept
       : rax(0), rbx(0), rcx(0), rdx(0), rsi(0), rdi(0), rbp(0), sp(0), r8(0), r9(0), r10(0), r11(0), r12(0), r13(0),
-        r14(0), r15(0), pstate(0x202), pc(0), cs(0), ds(0), es(0), fs(0), gs(0), ss(0), fp{} {}
+        r14(0), r15(0), pstate(0x202), pc(0), cs(0), ds(0), es(0), fs(0), gs(0), ss(0), fp{}, fs_base(0) {}
 };
 static_assert(__builtin_offsetof(CpuContext, fp) == 160);
+static_assert(__builtin_offsetof(CpuContext, fs_base) == 672);
 
 #elif defined(__riscv) || defined(__riscv__) || defined(MOSS_ARCH_RISCV64)
 // RISC-V 64 CPU context
@@ -292,12 +294,26 @@ struct VmaRegion {
   }
 };
 
+namespace user_space {
+void release_asid(u16 asid) noexcept;
+}
+
 // Virtual memory address space — per-process PGD + VMA list
+struct ExecutableImage {
+  u8 *data = nullptr;
+  usize size = 0;
+  ~ExecutableImage() noexcept {
+    if (data)
+      (void)mm::RuntimeHeapAllocator::deallocate(data, size);
+  }
+};
+
 struct AddressSpace {
   PhysAddr pgd_phys; // physical address of the L0 (PGD) page table
   u16 asid;          // Address Space ID (0 = kernel, 1-255 = user)
 
-  containers::LockedList<VmaRegion> vmas; // dynamic VMA list (was: fixed array)
+  shared_ptr<ExecutableImage> executable_image; // Shared by fork; outlives lazy VMA backing.
+  containers::LockedList<VmaRegion> vmas;       // dynamic VMA list (was: fixed array)
 
   containers::AtomicSize total_pages;
   containers::AtomicSize resident_pages;
@@ -324,6 +340,7 @@ struct AddressSpace {
       mm::PageTableManager::free_user_page_tables(pgd_phys);
       pgd_phys = 0;
     }
+    user_space::release_asid(asid);
   }
 
   // Non-copyable (page tables are unique resources)
@@ -452,7 +469,10 @@ struct Thread {
   u32 cpu;
   u32 wake_cpu;
 
-  ProcessState state;
+  moss::atomic<ProcessState> state;
+  // 0: no handoff, 1: preparing sleep, 2: wake requested before context save.
+  moss::atomic<u32> sleep_handoff{0};
+  containers::IrqSpinLock sleep_lock;
   SchedClass sched_class;
   SchedPolicy sched_policy;
   SchedEntity se;
@@ -466,8 +486,8 @@ struct Thread {
   usize stack_size;
 
   VirtAddr wait_queue;
-  u64 signal_mask;
-  u64 pending_signals;
+  moss::atomic<u64> signal_mask;
+  moss::atomic<u64> pending_signals;
 
   // True when a user-mode task has not yet entered EL0 (needs switch_to_user
   // + eret).  After the first eret, timer-IRQ preemption saves/restores via
@@ -505,6 +525,7 @@ struct Thread {
   // Borrowed only during syscall dispatch or the user-return checkpoint.
   // Nested kernel exceptions must not replace this user frame.
   moss::abi::TrapFrame *trap_frame{nullptr};
+  VirtAddr active_signal_frame{0};
 
   // RT run queue intrusive list pointer (next task at same priority).
   // Used by RtRunqueue; nullptr when not enqueued in an RT queue.
@@ -527,6 +548,12 @@ struct Thread {
     se.rb_data = static_cast<void *>(this);
   }
 
+  [[nodiscard]] static Thread *try_create(ThreadId id, ProcessId pid) noexcept;
+  ~Thread();
+
+  // Own an initialized 16KB stack, including before registration in a Process.
+  [[nodiscard]] VoidResult allocate_kernel_stack() noexcept;
+
   // Returns the top of this thread's kernel stack (for TPIDR_EL1).
   [[nodiscard]] VirtAddr kernel_stack_top() const noexcept { return kernel_stack_base + kernel_stack_size; }
 
@@ -538,6 +565,17 @@ struct Thread {
     }
   }
   [[nodiscard]] bool is_preemptible() const noexcept { return preempt_count == 0; }
+};
+
+// Owned by Process, independent of the numeric PID. Handler 0 is SIG_DFL.
+struct Sigaction {
+  VirtAddr handler{0};
+  u64 mask{0};
+  u32 flags{0};
+};
+
+struct SignalState {
+  Sigaction actions[32]{}; // standard signals 1..31; slot 0 is unused
 };
 
 // Process control block
@@ -552,7 +590,8 @@ private:
   containers::AtomicCounter<u32> thread_count_;
   ThreadId main_thread_id_;
 
-  ProcessState state_;
+  // Publishing Zombie makes its exit status visible to a waiter on another CPU.
+  moss::atomic<ProcessState> state_;
   i32 exit_code_;
 
   struct {
@@ -574,6 +613,7 @@ private:
   // VFS: per-process file descriptor table (vfs::FdTable*)
   // Stored as void* to avoid circular dependency on moss.vfs
   void *fd_table_ = nullptr;
+  SignalState signal_state_{};
 
   // Process name (like Linux task_struct.comm), set by execve
   char name_[16]{};
@@ -589,7 +629,8 @@ private:
   containers::WaitQueue child_exit_wq_;
 
   // POSIX process credentials.
-  // Default: root (0,0). Inherited from parent on fork, set by execve.
+  // Init defaults to root. Fork copies all four IDs; this static exec profile
+  // preserves them and does not implement set-user-ID/set-group-ID binaries.
   u32 uid_{0};
   u32 gid_{0};
   u32 euid_{0};
@@ -603,6 +644,7 @@ public:
 
   ~Process() noexcept {
     cleanup_threads();
+    cleanup_files();
     // Page table cleanup is handled by ~AddressSpace (via unique_ptr).
     // do_exit() zeroes pgd_phys early to avoid freeing active tables;
     // if that didn't happen (error path), ~AddressSpace frees them now.
@@ -621,6 +663,7 @@ public:
   [[nodiscard]] ProcessId parent_pid() const noexcept { return parent_pid_; }
   [[nodiscard]] ProcessState state() const noexcept { return state_; }
   [[nodiscard]] i32 exit_code() const noexcept { return exit_code_; }
+  [[nodiscard]] SignalState &signal_state() noexcept { return signal_state_; }
 
   // Process group / session accessors (POSIX job control)
   [[nodiscard]] ProcessId pgid() const noexcept { return pgid_; }
@@ -640,6 +683,12 @@ public:
   void set_gid(u32 gid) noexcept {
     gid_ = gid;
     egid_ = gid;
+  }
+  void inherit_credentials(const Process &parent) noexcept {
+    uid_ = parent.uid_;
+    gid_ = parent.gid_;
+    euid_ = parent.euid_;
+    egid_ = parent.egid_;
   }
 
   // Process name (set by execve, inherited by fork)
@@ -681,11 +730,14 @@ public:
 
   // Register an externally-created thread into this process's thread list.
   // Used by fork() which builds a Thread manually instead of create_thread().
-  void register_thread(Thread *thread) noexcept;
+  // Ownership transfers only on success.
+  [[nodiscard]] VoidResult register_thread(Thread *thread) noexcept;
 
   // ── Children tracking (for wait/waitpid) ──────────────────────────
 
   void add_child(ProcessId child_pid) { children_.push_front(child_pid); }
+
+  [[nodiscard]] bool try_add_child(ProcessId child_pid) { return children_.try_push_front(child_pid); }
 
   void remove_child(ProcessId child_pid) { children_.remove(child_pid); }
 
@@ -711,7 +763,9 @@ public:
 
   // VFS file descriptor table access (void* to avoid circular dependency)
   [[nodiscard]] void *fd_table() const noexcept { return fd_table_; }
+  // Takes ownership of a heap-allocated vfs::FdTable (init/fork only).
   void set_fd_table(void *fdt) noexcept { fd_table_ = fdt; }
+  void cleanup_files() noexcept;
 
 private:
   void cleanup_threads() noexcept;

@@ -200,11 +200,53 @@ if(MOSS_BUILD_TESTS)
         ${CMAKE_BINARY_DIR}/moss-artifacts.json
     )
     add_test(NAME moss-functional COMMAND ${_validation})
+    add_test(NAME moss-applications COMMAND ${_validation} --workload users.applications)
+    set_tests_properties(
+        moss-applications
+        PROPERTIES TIMEOUT
+                   3120 # 101 progress intervals x 30 s, 30 s boot and 60 s cleanup/reporting.
+                   RUN_SERIAL
+                   TRUE
+                   LABELS
+                   "kernel;applications"
+                   WORKING_DIRECTORY
+                   ${CMAKE_SOURCE_DIR}
+    )
     add_test(NAME moss-framework COMMAND ${_validation} --selftest)
+    add_test(NAME moss-production-boot COMMAND uv run ${CMAKE_SOURCE_DIR}/scripts/check_production_boot.py --manifest
+                                               ${CMAKE_BINARY_DIR}/moss-artifacts.json
+    )
+    set_tests_properties(
+        moss-production-boot
+        PROPERTIES TIMEOUT
+                   45
+                   RUN_SERIAL
+                   TRUE
+                   LABELS
+                   "kernel"
+                   WORKING_DIRECTORY
+                   ${CMAKE_SOURCE_DIR}
+    )
+    if(MOSS_TARGET_ARCH STREQUAL "ARM64" AND CMAKE_BUILD_TYPE STREQUAL "Debug")
+        add_test(NAME moss-console-input COMMAND uv run ${CMAKE_SOURCE_DIR}/scripts/check_production_boot.py --manifest
+                                                 ${CMAKE_BINARY_DIR}/moss-artifacts.json --gdb gdb-multiarch
+        )
+        set_tests_properties(
+            moss-console-input
+            PROPERTIES TIMEOUT
+                       45
+                       RUN_SERIAL
+                       TRUE
+                       LABELS
+                       "kernel"
+                       WORKING_DIRECTORY
+                       ${CMAKE_SOURCE_DIR}
+        )
+    endif()
     set_tests_properties(
         moss-functional moss-framework
         PROPERTIES TIMEOUT
-                   600 # Nine guests may each use 60 s, plus process cleanup/reporting.
+                   2100 # Up to 32 registered suites, 60 s per guest plus cleanup/reporting.
                    RUN_SERIAL
                    TRUE
                    LABELS
@@ -217,7 +259,7 @@ if(MOSS_BUILD_TESTS)
         set_tests_properties(
             moss-benchmark
             PROPERTIES TIMEOUT
-                       420
+                       1100 # Up to 16 scenarios, 60 s per guest plus cleanup/reporting.
                        RUN_SERIAL
                        TRUE
                        LABELS
@@ -236,9 +278,17 @@ if(MOSS_BUILD_TESTS)
     add_custom_target(
         test-kernel
         COMMAND ${CMAKE_CTEST_COMMAND} --test-dir ${CMAKE_BINARY_DIR} -L kernel --output-on-failure
-        DEPENDS moss.test.elf
+        DEPENDS moss.test.elf moss.elf
         WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
         COMMENT "Running MOSS kernel validation (${MOSS_TARGET_ARCH})"
+    )
+    # Explicit long-run target: routine CTest has no minimum-duration stability guest.
+    add_custom_target(
+        stability-kernel
+        COMMAND ${_validation} --stability
+        DEPENDS moss.test.elf
+        WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+        COMMENT "Running 30-minute core-path stability validation (${MOSS_TARGET_ARCH})"
     )
 else()
     message(STATUS "跳过单元测试构建")
