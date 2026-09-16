@@ -18,14 +18,17 @@ public:
   usize size() const noexcept { return size_; }
   bool valid() const noexcept { return address_ && size_ <= ~u64{0} - address_; }
   usize copy_to(usize offset, void *destination, usize count) const noexcept {
-    if (!valid() || offset > size_ || count > size_ - offset)
+    if (!valid() || offset > size_ || count > size_ - offset) {
       return 0;
-    if (copy_)
+    }
+    if (copy_) {
       return count - copy_(destination, address_ + offset, count);
+    }
     const auto *source = reinterpret_cast<const u8 *>(address_ + offset);
     auto *target = static_cast<u8 *>(destination);
-    for (usize i = 0; i < count; ++i)
+    for (usize i = 0; i < count; ++i) {
       target[i] = source[i];
+    }
     return count;
   }
 
@@ -49,14 +52,17 @@ public:
   usize size() const noexcept { return size_; }
   bool valid() const noexcept { return address_ && size_ <= ~u64{0} - address_; }
   usize copy_from(usize offset, const void *source, usize count) const noexcept {
-    if (!valid() || offset > size_ || count > size_ - offset)
+    if (!valid() || offset > size_ || count > size_ - offset) {
       return 0;
-    if (copy_)
+    }
+    if (copy_) {
       return count - copy_(address_ + offset, source, count);
+    }
     auto *target = reinterpret_cast<u8 *>(address_ + offset);
     const auto *data = static_cast<const u8 *>(source);
-    for (usize i = 0; i < count; ++i)
+    for (usize i = 0; i < count; ++i) {
       target[i] = data[i];
+    }
     return count;
   }
 

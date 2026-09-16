@@ -88,11 +88,11 @@ extern "C" {
 [[noreturn]] void early_main(void *device_tree_ptr);
 [[noreturn]] void kernel_main(void) noexcept;
 void early_debug_print(const char *message) noexcept;
-void system_call_handler(void *trap_frame) noexcept;
-void user_return_handler(void *trap_frame) noexcept;
+void system_call_handler(void *raw_frame) noexcept;
+void user_return_handler(void *raw_frame) noexcept;
 void irq_handler_c(void) noexcept;
 void kernel_page_fault_handler(unsigned long long esr, unsigned long long far_addr, unsigned long long elr,
-                               void *trap_frame) noexcept;
+                               void *raw_frame) noexcept;
 void riscv64_page_fault_handler(unsigned long long cause, unsigned long long address, unsigned long long pc,
                                 void *trap_frame) noexcept;
 void x64_page_fault_handler(unsigned long long error, unsigned long long address, unsigned long long pc,
@@ -129,7 +129,7 @@ int console_try_getc() noexcept;
 void *moss_prepare_io_wait() noexcept;
 bool moss_io_wait_interrupted() noexcept;
 void moss_commit_io_wait() noexcept;
-void moss_wake_io_waiter(void *thread) noexcept;
+void moss_wake_io_waiter(void *opaque) noexcept;
 void moss_signal_broken_pipe() noexcept;
 
 // containers <-> mm bridge
@@ -155,13 +155,14 @@ using ::moss_raw_copy_to_user;
 inline bool fixup(TrapFrame &frame) noexcept {
   using moss::kernel::i64;
   using moss::kernel::u64;
-  if (frame.from_user())
+  if (frame.from_user()) {
     return false;
+  }
   static_assert(sizeof(int) == 4);
   // Each pair is two 4-byte signed displacements emitted by uaccess.S:
   // faulting instruction, then recovery PC, each relative to its own field.
   // Boot relocation therefore needs no writable pointers or fixed load address.
-  for (auto *entry = ::moss_uaccess_table_start; entry < ::moss_uaccess_table_end; entry += 2) {
+  for (const auto *entry = ::moss_uaccess_table_start; entry < ::moss_uaccess_table_end; entry += 2) {
     const u64 instruction = reinterpret_cast<u64>(entry) + static_cast<u64>(static_cast<i64>(entry[0]));
     if (frame.pc == instruction) {
       frame.pc = reinterpret_cast<u64>(entry + 1) + static_cast<u64>(static_cast<i64>(entry[1]));

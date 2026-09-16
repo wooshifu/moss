@@ -279,8 +279,9 @@ private:
       return false;
     }
 
-    if (!scheduler.migrate_ready_task(src_cpu, dst_cpu))
+    if (!scheduler.migrate_ready_task(src_cpu, dst_cpu)) {
       return false;
+    }
 
     stats.steal_success++;
     stats.migrations_count++;

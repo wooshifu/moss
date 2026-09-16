@@ -79,10 +79,16 @@ inline containers::IrqSpinLock namespace_lock;
 
 /// Requested R/W/X bits use the native access() mask (4/2/1).
 [[nodiscard]] inline bool can_access(const Inode &inode, u32 uid, u32 gid, u32 mask) noexcept {
-  if (uid == 0)
+  if (uid == 0) {
     return !(mask & 1) || inode.is_directory() || (inode.mode & (S_IXUSR | S_IXGRP | S_IXOTH)) != 0;
+  }
   // POSIX mode packs three rwx triplets: owner at bit 6, group at 3, others at 0.
-  const u32 shift = uid == inode.uid ? 6U : gid == inode.gid ? 3U : 0U;
+  u32 shift = 0;
+  if (uid == inode.uid) {
+    shift = 6;
+  } else if (gid == inode.gid) {
+    shift = 3;
+  }
   return ((inode.mode >> shift) & mask) == mask;
 }
 

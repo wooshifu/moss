@@ -42,7 +42,6 @@ import pygit2
 from rich.console import Console
 from rich.progress import BarColumn, MofNCompleteColumn, Progress, TextColumn
 
-SOURCE_ROOT = "src/"
 MODULE_SUFFIXES = {".cppm"}
 SOURCE_SUFFIXES = {".c", ".cc", ".cpp", ".cxx"} | MODULE_SUFFIXES
 CPP_SUFFIXES = SOURCE_SUFFIXES | {".h", ".hh", ".hpp", ".hxx", ".inl", ".ipp"}
@@ -146,9 +145,7 @@ def tracked_cpp_files(repo: pygit2.Repository) -> set[str]:
     return {
         entry.path
         for entry in repo.index
-        if entry.mode in REGULAR_FILE_MODES
-        and entry.path.startswith(SOURCE_ROOT)
-        and PurePosixPath(entry.path).suffix.lower() in CPP_SUFFIXES
+        if entry.mode in REGULAR_FILE_MODES and PurePosixPath(entry.path).suffix.lower() in CPP_SUFFIXES
     }
 
 
@@ -183,7 +180,7 @@ def changed_repository_files(repo: pygit2.Repository) -> set[str]:
 
 def changed_inputs(root: Path, paths: set[str], excludes: Sequence[ExcludePattern]) -> tuple[set[str], set[str]]:
     cpp = apply_excludes(
-        {path for path in paths if path.startswith(SOURCE_ROOT) and PurePosixPath(path).suffix.lower() in CPP_SUFFIXES},
+        {path for path in paths if PurePosixPath(path).suffix.lower() in CPP_SUFFIXES},
         excludes,
     )
     sources = {
@@ -244,11 +241,7 @@ def select_sources(
     cwd: Path,
 ) -> list[str]:
     available = apply_excludes(
-        {
-            command.path
-            for command in commands
-            if command.path.startswith(SOURCE_ROOT) and PurePosixPath(command.path).suffix.lower() in SOURCE_SUFFIXES
-        },
+        {command.path for command in commands if PurePosixPath(command.path).suffix.lower() in SOURCE_SUFFIXES},
         excludes,
     )
     expected = apply_excludes(

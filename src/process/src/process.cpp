@@ -27,27 +27,31 @@ Thread::~Thread() {
   if (kernel_stack_base != 0 && kernel_stack_size > 0) {
     usize order = 0;
     const usize pages = kernel_stack_size / PAGE_SIZE;
-    while ((1U << order) < pages)
+    while ((1U << order) < pages) {
       ++order;
+    }
     (void)mm::free_pages(static_cast<PhysAddr>(kernel_stack_base), order);
   }
 }
 
 VoidResult Thread::allocate_kernel_stack() noexcept {
-  if (kernel_stack_base || kernel_stack_size)
+  if (kernel_stack_base || kernel_stack_size) {
     return VoidResult{ErrorCode::InvalidState};
+  }
   // 2 阶分配得到 4 个 4 KiB 页，即固定 16 KiB 异常/系统调用栈；
   // 实测栈深度的选值依据尚未记录，扩大该值会增加每线程常驻内存。
   constexpr usize order = 2;
   auto block = mm::allocate_pages(order);
-  if (!block)
+  if (!block) {
     return VoidResult{ErrorCode::OutOfMemory};
+  }
   constexpr usize size = PAGE_SIZE << order;
   const auto base = static_cast<VirtAddr>(*block); // Identity-mapped stack.
   auto *words = reinterpret_cast<u64 *>(base);
   // Initialize the entire recycled region, not just the initial trap frame.
-  for (usize i = 0; i < size / sizeof(u64); ++i)
+  for (usize i = 0; i < size / sizeof(u64); ++i) {
     words[i] = 0;
+  }
   kernel_stack_base = base;
   kernel_stack_size = size;
   return {};
@@ -71,22 +75,27 @@ CfsScheduler *g_scheduler = nullptr;
 
 extern "C" bool moss_io_wait_interrupted() noexcept {
   auto *thread = current_thread();
-  if (!thread || !signal_pending(thread))
+  if (!thread || !signal_pending(thread)) {
     return false;
+  }
   const u64 pending = thread->pending_signals.load() & (~thread->signal_mask.load() | sig::UNCATCHABLE_MASK);
-  if (pending & sig::UNCATCHABLE_MASK)
+  if (pending & sig::UNCATCHABLE_MASK) {
     return true;
+  }
   auto proc = g_process_manager ? g_process_manager->find_process(thread->owner_pid) : shared_ptr<Process>{};
   auto *state = proc ? get_signal_state(proc.get()) : nullptr;
   for (u32 signo = 1; signo < sig::NSIG; ++signo) {
-    if (!(pending & sig::sigmask(signo)))
+    if (!(pending & sig::sigmask(signo))) {
       continue;
+    }
     const auto handler = state ? state->actions[signo].handler : SIG_DFL;
-    if (handler == SIG_IGN)
+    if (handler == SIG_IGN) {
       continue;
+    }
     const auto action = default_action(signo);
-    if (handler != SIG_DFL || (action != SigDefault::Ignore && action != SigDefault::Continue))
+    if (handler != SIG_DFL || (action != SigDefault::Ignore && action != SigDefault::Continue)) {
       return true;
+    }
   }
   return false;
 }
@@ -95,8 +104,9 @@ extern "C" void *moss_prepare_io_wait() noexcept {
   auto *thread = g_scheduler ? g_scheduler->prepare_sleep() : nullptr;
   // Publish Sleeping before checking pending signals. Earlier signals are
   // caught here; later senders participate in the scheduler's sleep handoff.
-  if (thread && moss_io_wait_interrupted())
+  if (thread && moss_io_wait_interrupted()) {
     g_scheduler->task_wakeup(thread, thread->wake_cpu);
+  }
   return thread;
 }
 
@@ -104,8 +114,9 @@ extern "C" void moss_commit_io_wait() noexcept { g_scheduler->commit_sleep(); }
 
 extern "C" void moss_wake_io_waiter(void *opaque) noexcept {
   auto *thread = static_cast<Thread *>(opaque);
-  if (g_scheduler && thread)
+  if (g_scheduler && thread) {
     g_scheduler->task_wakeup(thread, thread->wake_cpu);
+  }
 }
 
 extern "C" void moss_signal_broken_pipe() noexcept { (void)send_signal(current_thread(), sig::SIGPIPE); }
@@ -237,8 +248,9 @@ VoidResult Process::register_thread(Thread *thread) noexcept {
   }
 
   ThreadEntry entry(thread->tid, thread);
-  if (!threads_.try_push_front(entry))
+  if (!threads_.try_push_front(entry)) {
     return VoidResult{ErrorCode::OutOfMemory};
+  }
 
   // Set main thread if this is the first thread
   if (thread_count_.load(containers::MemoryOrder::Relaxed) == 0) {
@@ -339,8 +351,9 @@ static u16 allocate_asid() noexcept {
 }
 
 void release_asid(u16 tag) noexcept {
-  if (tag == 0 || tag >= 256)
+  if (tag == 0 || tag >= 256) {
     return;
+  }
   containers::LockGuard<containers::IrqSpinLock> guard(asid_lock);
 #if defined(MOSS_ARCH_ARM64)
   // ARM64 TLBI 的 ASID 位于操作数 [63:48]，故左移 48，而不是页号位移。

@@ -161,7 +161,7 @@ static void initialize_cpu_startup_info(u32 detected_cpus) noexcept {
   u32 max_iterations = timeout_ms * 10;
 
   early_uart_lock_acquire();
-  moss::kernel::hal::uart::putc(static_cast<char>('W'));
+  moss::kernel::hal::uart::putc('W');
   moss::kernel::hal::uart::putc(static_cast<char>('0' + static_cast<u8>(cpu_id % 10)));
   moss::kernel::hal::uart::putc(static_cast<char>(10));
   early_uart_lock_release();
@@ -169,7 +169,7 @@ static void initialize_cpu_startup_info(u32 detected_cpus) noexcept {
   while (load_cpu_state(cpu_id) != CpuState::Parked) {
     if (iteration >= max_iterations) {
       early_uart_lock_acquire();
-      moss::kernel::hal::uart::putc(static_cast<char>('T'));
+      moss::kernel::hal::uart::putc('T');
       moss::kernel::hal::uart::putc(static_cast<char>('0' + static_cast<u8>(cpu_id % 10)));
       moss::kernel::hal::uart::putc(static_cast<char>(10));
       early_uart_lock_release();
@@ -185,7 +185,7 @@ static void initialize_cpu_startup_info(u32 detected_cpus) noexcept {
 
     if (iteration % 1000 == 0) {
       early_uart_lock_acquire();
-      moss::kernel::hal::uart::putc(static_cast<char>('C'));
+      moss::kernel::hal::uart::putc('C');
       moss::kernel::hal::uart::putc(static_cast<char>('0' + static_cast<u8>(cpu_id % 10)));
       moss::kernel::hal::uart::putc(static_cast<char>('0' + static_cast<u8>(load_cpu_state(cpu_id))));
       moss::kernel::hal::uart::putc(static_cast<char>(10));
@@ -194,7 +194,7 @@ static void initialize_cpu_startup_info(u32 detected_cpus) noexcept {
   }
 
   early_uart_lock_acquire();
-  moss::kernel::hal::uart::putc(static_cast<char>('S'));
+  moss::kernel::hal::uart::putc('S');
   moss::kernel::hal::uart::putc(static_cast<char>('0' + static_cast<u8>(cpu_id % 10)));
   moss::kernel::hal::uart::putc(static_cast<char>(10));
   early_uart_lock_release();
@@ -217,7 +217,7 @@ void mark_cpu_parked(u32 cpu_id) noexcept {
     store_cpu_state(cpu_id, CpuState::Parked);
 
     early_uart_lock_acquire();
-    moss::kernel::hal::uart::putc(static_cast<char>('M'));
+    moss::kernel::hal::uart::putc('M');
     moss::kernel::hal::uart::putc(static_cast<char>('0' + static_cast<u8>(cpu_id % 10)));
     moss::kernel::hal::uart::putc(static_cast<char>(10));
     early_uart_lock_release();
@@ -257,10 +257,10 @@ bool wait_for_cpu_state(u32 cpu_id, CpuState expected_state, u32 timeout_ms) noe
 [[noreturn]] void cpu_park(u32 cpu_id) noexcept {
 
   early_uart_lock_acquire();
-  moss::kernel::hal::uart::putc(static_cast<char>('P'));
-  moss::kernel::hal::uart::putc(static_cast<char>('A'));
-  moss::kernel::hal::uart::putc(static_cast<char>('R'));
-  moss::kernel::hal::uart::putc(static_cast<char>('K'));
+  moss::kernel::hal::uart::putc('P');
+  moss::kernel::hal::uart::putc('A');
+  moss::kernel::hal::uart::putc('R');
+  moss::kernel::hal::uart::putc('K');
   moss::kernel::hal::uart::putc(static_cast<char>('0' + static_cast<u8>(cpu_id % 10)));
   moss::kernel::hal::uart::putc(static_cast<char>(10));
   early_uart_lock_release();
@@ -280,17 +280,17 @@ bool wait_for_cpu_state(u32 cpu_id, CpuState expected_state, u32 timeout_ms) noe
   }
 
   early_uart_lock_acquire();
-  moss::kernel::hal::uart::putc(static_cast<char>('A'));
-  moss::kernel::hal::uart::putc(static_cast<char>('C'));
-  moss::kernel::hal::uart::putc(static_cast<char>('T'));
-  moss::kernel::hal::uart::putc(static_cast<char>('V'));
+  moss::kernel::hal::uart::putc('A');
+  moss::kernel::hal::uart::putc('C');
+  moss::kernel::hal::uart::putc('T');
+  moss::kernel::hal::uart::putc('V');
   moss::kernel::hal::uart::putc(static_cast<char>('0' + static_cast<u8>(cpu_id % 10)));
   moss::kernel::hal::uart::putc(static_cast<char>(10));
 
-  moss::kernel::hal::uart::putc(static_cast<char>('W'));
-  moss::kernel::hal::uart::putc(static_cast<char>('A'));
-  moss::kernel::hal::uart::putc(static_cast<char>('I'));
-  moss::kernel::hal::uart::putc(static_cast<char>('T'));
+  moss::kernel::hal::uart::putc('W');
+  moss::kernel::hal::uart::putc('A');
+  moss::kernel::hal::uart::putc('I');
+  moss::kernel::hal::uart::putc('T');
   moss::kernel::hal::uart::putc(static_cast<char>('0' + static_cast<u8>(cpu_id % 10)));
   moss::kernel::hal::uart::putc(static_cast<char>(10));
   early_uart_lock_release();
@@ -314,9 +314,9 @@ extern "C" [[noreturn]] void secondary_cpu_entry() noexcept {
 
   // Minimal UART output (locked)
   early_uart_lock_acquire();
-  moss::kernel::hal::uart::putc(static_cast<char>('S'));
+  moss::kernel::hal::uart::putc('S');
   moss::kernel::hal::uart::putc(static_cast<char>('0' + static_cast<u8>(cpu_id % 10)));
-  moss::kernel::hal::uart::putc(static_cast<char>('\n'));
+  moss::kernel::hal::uart::putc('\n');
   early_uart_lock_release();
 
   // --- Phase 1: Park and wait for CPU 0 to finish initialization ---
@@ -331,9 +331,9 @@ extern "C" [[noreturn]] void secondary_cpu_entry() noexcept {
   }
 
   early_uart_lock_acquire();
-  moss::kernel::hal::uart::putc(static_cast<char>('I'));
+  moss::kernel::hal::uart::putc('I');
   moss::kernel::hal::uart::putc(static_cast<char>('0' + static_cast<u8>(cpu_id % 10)));
-  moss::kernel::hal::uart::putc(static_cast<char>('\n'));
+  moss::kernel::hal::uart::putc('\n');
   early_uart_lock_release();
 
   // --- Phase 2: Full subsystem initialization (GIC/timer are ready) ---
@@ -391,9 +391,9 @@ extern "C" [[noreturn]] void secondary_cpu_entry() noexcept {
   asm volatile("sev" ::: "memory"); // wake CPU 0's wait_for_cpu_state
 
   early_uart_lock_acquire();
-  moss::kernel::hal::uart::putc(static_cast<char>('R'));
+  moss::kernel::hal::uart::putc('R');
   moss::kernel::hal::uart::putc(static_cast<char>('0' + static_cast<u8>(cpu_id % 10)));
-  moss::kernel::hal::uart::putc(static_cast<char>('\n'));
+  moss::kernel::hal::uart::putc('\n');
   early_uart_lock_release();
 
   // 7. Enable IRQs and enter scheduling loop (never returns)

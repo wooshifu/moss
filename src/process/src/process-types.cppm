@@ -317,7 +317,7 @@ struct VmaRegion {
 };
 
 namespace user_space {
-void release_asid(u16 asid) noexcept;
+void release_asid(u16 tag) noexcept;
 }
 
 // Virtual memory address space — per-process PGD + VMA list
@@ -325,8 +325,9 @@ struct ExecutableImage {
   u8 *data = nullptr;
   usize size = 0;
   ~ExecutableImage() noexcept {
-    if (data)
+    if (data) {
       (void)mm::RuntimeHeapAllocator::deallocate(data, size);
+    }
   }
 };
 

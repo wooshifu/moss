@@ -13,8 +13,9 @@ Dentry *resolve_path(const char *path) noexcept {
 }
 
 Dentry *resolve_path_locked(const char *path, VfsError *error, Dentry *start, u32 uid, u32 gid) noexcept {
-  if (error)
+  if (error) {
     *error = VfsError::NoEntry;
+  }
   if (path == nullptr || !*path) {
     return nullptr;
   }
@@ -52,27 +53,32 @@ Dentry *resolve_path_locked(const char *path, VfsError *error, Dentry *start, u3
     p += name_len;
 
     if (current->inode == nullptr || !current->inode->is_directory()) {
-      if (error)
+      if (error) {
         *error = VfsError::NotDirectory;
+      }
       return nullptr; // not a directory
     }
     if (!can_search(*current->inode, uid, gid)) {
-      if (error)
+      if (error) {
         *error = VfsError::PermDenied;
+      }
       return nullptr;
     }
 
     if (name_len > MAX_NAME_LEN) {
-      if (error)
+      if (error) {
         *error = VfsError::NameTooLong;
+      }
       return nullptr;
     }
-    if (name_len == 1 && *name_start == '.')
+    if (name_len == 1 && *name_start == '.') {
       continue;
+    }
     if (name_len == 2 && name_start[0] == '.' && name_start[1] == '.') {
       auto *parent = current->parent ? current->parent : g_mount_table.parent_of_root(current);
-      if (parent)
+      if (parent) {
         current = parent;
+      }
       continue;
     }
 
@@ -123,8 +129,9 @@ Dentry *resolve_path_locked(const char *path, VfsError *error, Dentry *start, u3
   }
 
   if (p > path && p[-1] == '/' && (!current->inode || !current->inode->is_directory())) {
-    if (error)
+    if (error) {
       *error = VfsError::NotDirectory;
+    }
     return nullptr;
   }
   return current;
