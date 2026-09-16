@@ -100,6 +100,8 @@ long sys_debug_print(long arg0, long /*unused*/, long /*unused*/, long /*unused*
   if (arg0 == 0) {
     return -errc::EINVAL;
   }
+  // Keep diagnostic strings within a 256-byte stack snapshot including NUL.
+  // The exact budget is unrecorded; oversized input fails rather than truncates.
   char buf[256];
   const long copied = copy_string_from_user(buf, static_cast<u64>(arg0), sizeof(buf));
   if (copied < 0) {
@@ -196,6 +198,8 @@ long sys_arch_prctl(long operation, long address, long, long, long, long) noexce
   auto *thread = process::CfsScheduler::get_current_task();
   if (!thread)
     return -errc::ESRCH;
+  // ARCH_* operations and IA32_FS_BASE (0xC0000100) match the native x64
+  // TLS contract. WRMSR/RDMSR split the 64-bit base into two 32-bit words.
   if (operation == 0x1002) { // ARCH_SET_FS
     auto base = static_cast<u64>(address);
     if (base != 0 && !mm::PageTableManager::is_user_range(base, 1))
@@ -289,6 +293,7 @@ long sys_fork(long /*unused*/, long /*unused*/, long /*unused*/, long /*unused*/
   // 6. Flush parent TLB (PTEs changed to readonly/COW)
 #if defined(MOSS_ARCH_ARM64)
   {
+    // TLBI ASIDE1IS consumes the ASID at bits 63..48, with low bits zero.
     u64 asid_val = static_cast<u64>(parent_as->asid) << 48;
     asm volatile("tlbi aside1is, %0" ::"r"(asid_val));
     asm volatile("dsb ish" ::: "memory");
@@ -342,7 +347,9 @@ long sys_fork(long /*unused*/, long /*unused*/, long /*unused*/, long /*unused*/
     return -errc::ENOMEM;
   }
 
-  // Convert user GP state to the scheduler's initial-return context.
+  // Convert user GP state to the scheduler's initial-return context. ARM64 x0
+  // and RISC-V a0/x10 carry fork results; RISC-V x0 is absent from TrapFrame,
+  // hence its GPR-to-CpuContext index offset of one.
   auto &context = child_thread->context;
 #if defined(MOSS_ARCH_ARM64)
   for (u32 i = 0; i < moss::abi::TrapFrame::GPR_COUNT; ++i) {
@@ -470,17 +477,22 @@ long sys_execve(long pathname_addr, long argv_addr, long envp_addr, long, long, 
   if (!proc || !proc->address_space())
     return -errc::ESRCH;
 
+  // Exec retains its narrower 256-byte path limit (including NUL), separate
+  // from the VFS full-path limit; its exact original sizing is unrecorded.
   char pathname[256];
   if (long error = copy_string_from_user(pathname, static_cast<u64>(pathname_addr), sizeof(pathname)); error < 0)
     return error;
 
   // Bounded native exec contract: argv + envp together have at most 128
   // strings and 16 KiB of bytes including their terminators. Never truncate.
+  // These are Moss limits, not POSIX ARG_MAX; exact sizing evidence is
+  // unrecorded. Increasing them changes snapshot memory and startup stack use.
   constexpr usize MAX_STRINGS = 128;
   constexpr usize STRING_BYTES = 16384;
   struct Arguments {
     char strings[STRING_BYTES]{};
     usize offsets[MAX_STRINGS]{};
+    // Five extra words: argc, argv NUL, envp NUL, AT_NULL tag, AT_NULL value.
     u64 vector[MAX_STRINGS + 5]{};
     usize count{}, used{}, argc{};
   };
@@ -549,6 +561,8 @@ long sys_execve(long pathname_addr, long argv_addr, long envp_addr, long, long, 
     }
   }
   const auto *header = reinterpret_cast<const ElfHeader *>(image_data);
+  // Limit the quadratic overlap validation to 64 headers from untrusted input.
+  // The exact cap calibration is unrecorded; larger static images are rejected.
   if (!validate_elf_header(header, image_size) || header->e_phnum > 64)
     return -errc::ENOEXEC;
   const auto *phdrs = get_program_headers(header);
@@ -635,6 +649,8 @@ long sys_execve(long pathname_addr, long argv_addr, long envp_addr, long, long, 
   // Native C entry registers point into one canonical startup vector:
   // argc, argv..., NULL, envp..., NULL, AT_NULL, 0. mlibc consumes it directly.
   const usize argc = args->argc;
+  // Leave 16 bytes below the exclusive stack top; 7/15 are alignment masks
+  // for 8-byte pointer words and the native 16-byte startup stack boundary.
   const VirtAddr strings_base = (user_layout::STACK_TOP - 16 - args->used) & ~VirtAddr{7};
   const usize vector_bytes = (args->count + 5) * sizeof(u64);
   const VirtAddr vector_base = (strings_base - vector_bytes) & ~VirtAddr{15};
@@ -686,6 +702,7 @@ long sys_execve(long pathname_addr, long argv_addr, long envp_addr, long, long, 
   // by set_address_space only after they are no longer active.
   arch::disable_interrupts();
 #if defined(MOSS_ARCH_ARM64)
+  // TTBR0_EL1 places the ASID in bits 63..48; keep it separate from root PA.
   u64 root = prepared->pgd_phys | (static_cast<u64>(prepared->asid) << 48);
   asm volatile("msr ttbr0_el1, %0; dsb ish; isb" ::"r"(root) : "memory");
 #elif defined(MOSS_ARCH_RISCV64)
@@ -729,7 +746,7 @@ long sys_execve(long pathname_addr, long argv_addr, long envp_addr, long, long, 
   cur->context.rdi = argc;
   cur->context.rsi = argv_base;
   cur->context.rdx = envp_base;
-  cur->context.pstate = 0x202;
+  cur->context.pstate = 0x202; // RFLAGS bit 1 is required; bit 9 enables user interrupts.
   if (cur->kernel_stack_base)
     moss::abi::x64::set_kernel_stack(cur->kernel_stack_top());
 #endif
@@ -1237,6 +1254,8 @@ long sys_sigaltstack(long ss_addr, long old_ss_addr, long /*unused*/, long /*unu
       cur->alt_stack_size = 0;
       cur->alt_stack_flags = ss_flags::SS_DISABLE;
     } else {
+      // Native admission floor of 2048 bytes (MINSIGSTKSZ); it is not a guarantee
+      // that arbitrary handler locals or nested signal frames fit this stack.
       if (new_ss.ss_size < 2048) { // MINSIGSTKSZ
         return -errc::ENOMEM;
       }
@@ -1699,7 +1718,8 @@ long sys_brk(long addr, long /*unused*/, long /*unused*/, long /*unused*/, long 
     return static_cast<long>(as->brk_current);
   }
 
-  // Reject addresses beyond maximum heap size (16MB)
+  // Bound brk to 16 MiB per process. Exact budget sizing is unrecorded; mmap
+  // is separate, and brk failure returns the current break rather than -errno.
   constexpr usize MAX_HEAP = 16ULL * 1024 * 1024;
   if (new_brk - as->brk_base > MAX_HEAP || !mm::PageTableManager::is_user_range(as->brk_base, new_brk - as->brk_base)) {
     return static_cast<long>(as->brk_current);
@@ -2199,6 +2219,8 @@ long sys_clock_nanosleep(long clockid, long flags, long ns_addr, long /*remainin
 // Kernel-side mirror of userspace TopProcessInfo / TopInfo structs.
 // Layout must match exactly (all fields are u64/long on 64-bit).
 namespace topinfo_layout {
+// Fixed ABI capacities: 64 records and 16-byte NUL-terminated names must
+// match userspace/syscall.h. Changing either changes every following offset.
 inline constexpr u64 MAX_PROCS = 64;
 // Fixed ABI constant — matches userspace TOP_MAX_CPUS in syscall.h.
 // Independent of kernel BOOT_MAX_CPUS to maintain ABI stability.
@@ -2239,12 +2261,9 @@ struct Info {
 
 // sys_topinfo(info_ptr) — fill TopInfo struct for userspace `top`
 //
-// Strategy: collect ALL data into a kernel-stack local struct first,
-// then copy to user space in one shot.  This avoids data loss caused
-// by ARM64 demand-paging: when we write directly to user addresses,
-// page faults can invalidate TLB entries for previously-written pages,
-// causing those stores to be lost.  By buffering on the kernel stack
-// (which is always resident), we guarantee no data loss.
+// Collect into resident kernel storage before using the shared, fault-contained
+// user-copy policy. Filesystem/scheduler inspection must not dereference user
+// addresses directly; a failed copy returns EFAULT and may leave a user prefix.
 long sys_topinfo(long info_addr, long /*unused*/, long /*unused*/, long /*unused*/, long /*unused*/,
                  long /*unused*/) noexcept {
   using namespace moss::kernel::process;
@@ -2253,7 +2272,8 @@ long sys_topinfo(long info_addr, long /*unused*/, long /*unused*/, long /*unused
     return -errc::EFAULT;
   }
 
-  // Kernel-stack buffer (~5920 bytes, kernel stack is 16KB)
+  // 864 header/CPU-array bytes + 64 * 88-byte process records = 6496 bytes.
+  // Growing the fixed ABI consumes more of the 16 KiB syscall kernel stack.
   topinfo_layout::Info kbuf;
 
   // Zero-initialize on kernel stack (no page fault issues)
@@ -2323,7 +2343,8 @@ long sys_topinfo(long info_addr, long /*unused*/, long /*unused*/, long /*unused
       pe.ppid = static_cast<long>(proc->parent_pid());
       pe.state = static_cast<u64>(static_cast<u8>(proc->state()));
 
-      // Copy process name
+      // Copy at most 15 characters into the zeroed 16-byte ABI name field,
+      // preserving its final NUL for userspace formatters.
       const char *n = proc->name();
       for (usize i = 0; i < 15 && n[i]; ++i) {
         pe.name[i] = n[i];
@@ -2379,7 +2400,8 @@ static bool initialized_ = false;
 
 #if defined(MOSS_ARCH_ARM64) || defined(MOSS_ARCH_X64)
 // Lock-free SPSC ring buffer (single producer = IRQ, single consumer = reader).
-// Power-of-2 size for mask-based wrap-around.
+// Mask wrapping requires a power of two; 256 slots hold only 255 bytes
+// because one empty slot distinguishes full from empty. Exact sizing is unrecorded.
 constexpr usize RX_BUF_SIZE = 256;
 constexpr usize RX_BUF_MASK = RX_BUF_SIZE - 1;
 

@@ -9,6 +9,9 @@ namespace log = moss::kernel::logging;
 
 namespace moss::kernel::mm {
 
+// A 4 KiB table has 512 (2^9) 64-bit entries: each level consumes nine VA
+// bits above the 12-bit page offset. Root shifts are 30 for three levels and
+// 39 for four; walks below use 511 as the nine-bit index mask.
 static unsigned root_shift() noexcept { return hal::mmu::g_mmu_mode == hal::mmu::MmuMode::Sv39 ? 30 : 39; }
 
 // A whole entry is shared only when its entire VA range belongs to the kernel.
@@ -171,6 +174,8 @@ VoidResult PageTableManager::setup_kernel_high_half_tables() {
   if (!moss::kernel::platform::hardware.memory_map_valid) {
     return VoidResult{ErrorCode::InvalidState};
   }
+  // One level above 2 MiB covers 2^30 bytes. Four such entries cover the
+  // same [0, 4 GiB) physical span as the identity map, regardless of RAM banks.
   constexpr u64 ONE_GB = 0x40000000ULL;
 
   // break_virtual_address gives the correct pgd_index for each arch:
@@ -322,6 +327,8 @@ void PageTableManager::unmap_user_page(PhysAddr pgd_phys, VirtAddr va) noexcept 
   }
 
   PhysAddr pa = pte_entry->get_phys_addr();
+  // Revoke access before releasing ownership, or a recycled frame could remain
+  // reachable through this leaf's cached translation.
   pte_entry->clear();
   invalidate_tlb_addr(va);
 
@@ -500,6 +507,8 @@ VoidResult PageTableManager::clone_user_page_tables(PhysAddr src_pgd_phys, PhysA
 // Walks PGD→PUD→PMD→PTE, frees leaf pages and intermediate tables.
 // Skip kernel-owned VA ranges at each mixed level, regardless of leaf size.
 void PageTableManager::free_user_page_tables(PhysAddr pgd_phys) {
+  // Unlike single-page unmap this teardown does not flush translations. The
+  // caller must have stopped using this hierarchy on every executing CPU.
   if (pgd_phys == 0 || pgd_phys == get_physical_address(kernel_pgd) ||
       pgd_phys == get_physical_address(kernel_high_pgd)) {
     return;
@@ -677,6 +686,8 @@ VoidResult PageTableManager::setup_kernel_page_tables() {
   if (!moss::kernel::platform::hardware.memory_map_valid) {
     return VoidResult{ErrorCode::InvalidState};
   }
+  // 2^30-byte leaves: four cover KERNEL_IDENTITY_END (4 GiB). Changing this
+  // span also requires changing user admission and the physical allocator.
   constexpr u64 ONE_GB = 0x40000000ULL;
   namespace linker = moss::abi::linker;
   if (((linker::text_start() | linker::text_end() | linker::rodata_start() | linker::rodata_end()) & (PAGE_SIZE - 1)) !=
@@ -757,8 +768,8 @@ VoidResult PageTableManager::map_region(VirtAddr virt_addr, PhysAddr phys_addr, 
     }
   }
 
-  // Full TLB flush after bulk mapping (map_page does per-page invalidation,
-  // but a full flush is cheaper for large regions and ensures coherency)
+  // Keep the final full flush after map_page's individual invalidations. The
+  // current implementation performs both; no relative-cost measurement is recorded.
   invalidate_tlb();
 
   return VoidResult{};
@@ -874,6 +885,8 @@ void PageTableManager::print_mmu_registers() {
   log::klog::info("=== MMU寄存器详细状态 ===");
 
 #if defined(__aarch64__) || defined(MOSS_ARCH_ARM64)
+  // 位移/掩码来自 ARM64 寄存器字段：SCTLR M/C/I 为 0/2/12 位，
+  // TCR T0SZ/T1SZ 为 [5:0]/[21:16]，EPD0/1 为 7/23 位；MAIR 每项 8 位。
   // 读取关键MMU寄存器
   u64 sctlr_el1, tcr_el1, mair_el1, ttbr0_el1, ttbr1_el1;
 
@@ -916,6 +929,8 @@ void PageTableManager::print_mmu_registers() {
 
 // 调试功能实现：打印PGD级页表项
 void PageTableManager::print_pgd_entries() {
+  // 以下诊断算式固定使用四级 4 KiB 表：PGD 为 512 GiB、PUD 为 1 GiB，
+  // AttrIndx 是 ARM64 描述符 [4:2]。这些输出不能用于判断 Sv39 的层级。
   log::klog::info("=== PGD级页表项详细信息 ===");
 
   if (!kernel_pgd) {
@@ -1018,7 +1033,9 @@ void PageTableManager::print_page_table_details() {
   // 4. PGD页表项详情
   print_pgd_entries();
 
-  // 5. 地址转换示例 (L0→L1 1GB block mapping)
+  // 5. 四级表的地址转换示例：三个固定地址探测 1/2/3 GiB 边界，
+  // 五项与 addr_names 一一对应；0x1FF 提取 9 位索引，0x3FFFFFFF
+  // 提取 1 GiB 块内偏移。此诊断不会随运行时 Sv39 自动调整。
   log::klog::info("=== 地址转换示例 (L0→L1 1GB block mapping) ===");
   VirtAddr test_addrs[] = {moss::kernel::platform::ram_base(), moss::kernel::platform::uart_base(), 0x40000000,
                            0x80000000, 0xC0000000};
@@ -1114,6 +1131,9 @@ VoidResult PageTableManager::unmap_page(VirtAddr virt_addr) {
 // query_page — walk the page table and return mapping information
 // ============================================================================
 PageTableManager::PageInfo PageTableManager::query_page(VirtAddr virt_addr) {
+  // Offset masks preserve the VA bits below each leaf's alignment:
+  // 0x3fffffff = 2^30-1 (1 GiB), 0x1fffff = 2^21-1 (2 MiB),
+  // 0xfff = 2^12-1 (4 KiB). PageInfo::level describes size, not root depth.
   PageInfo info{.phys_addr = 0, .attributes = 0, .mapped = false, .level = 0};
 
   if (!kernel_pgd) {

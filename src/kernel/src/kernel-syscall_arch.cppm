@@ -38,11 +38,15 @@ inline bool initialize_architecture_syscalls() noexcept {
   // LSTAR MSR (0xC0000082) = syscall entry point address
   asm volatile("wrmsr" ::"c"(0xC0000082U), "a"(lo), "d"(hi));
 
-  // STAR MSR (0xC0000081): kernel CS=0x08 in [47:32], SYSRET base in [63:48]
+  // STAR MSR (0xC0000081): kernel CS=0x08 in [47:32], SYSRET base in [63:48].
+  // Selectors must match the boot GDT; the 16-bit shift places the user base
+  // in the upper half of the MSR high word. WRMSR splits each value at bit 32.
   u32 star_hi = (0x0008U) | (0x0010U << 16);
   asm volatile("wrmsr" ::"c"(0xC0000081U), "a"(0U), "d"(star_hi));
 
-  // SFMASK MSR (0xC0000084) = RFLAGS bits to clear on SYSCALL (IF, DF, TF)
+  // SFMASK MSR (0xC0000084): 0x700 clears IF/DF/TF (bits 9/10/8),
+  // preventing interrupts or single-stepping during stack entry and satisfying
+  // the C ABI requirement that string operations start with DF clear.
   asm volatile("wrmsr" ::"c"(0xC0000084U), "a"(0x700U), "d"(0U));
 
   // Enable SCE (System Call Enable) in EFER MSR (0xC0000080)
@@ -69,7 +73,7 @@ struct SyscallConvention {
   const char *syscall_instruction; // Syscall instruction
   const char *syscall_nr_register; // Syscall number register
   const char *return_register;     // Return value register
-  const char *arg_registers[6];    // Argument register list
+  const char *arg_registers[6];    // The native syscall ABI carries at most six arguments.
 };
 
 inline const SyscallConvention &get_syscall_convention() noexcept {

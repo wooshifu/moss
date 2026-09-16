@@ -9,6 +9,9 @@ ENTRY(_start)
 
 MEMORY
 {
+    /* Link above the low 1 MiB firmware/real-mode area. 255 MiB then reaches
+     * the 256 MiB image ceiling; actual usable RAM still comes from PVH.
+     * The exact image-capacity budget has no recorded sizing derivation. */
     RAM (rwx) : ORIGIN = 0x00100000, LENGTH = 255M
 }
 
@@ -16,6 +19,8 @@ KERNEL_VMA = 0xFFFF800000000000;
 
 SECTIONS
 {
+    /* 4 KiB boundaries separate RX/RO/RW page permissions; 8-byte constructor
+     * alignment matches 64-bit pointers and 4-byte Xen-note alignment is ELF ABI. */
     . = ORIGIN(RAM);
     _text_start = .; /* Boot code and ordinary text share the RX protection range. */
 
@@ -77,18 +82,25 @@ SECTIONS
         _bss_end = .;
     }
 
+    /* Shared linker budget: 512 KiB = 16 * 32 KiB boot stack slices. x64 also
+     * defines separate temporary/AP stacks in boot code; this is not their size.
+     * Exact stack-depth sizing for this reserve is undocumented. */
     .stack (NOLOAD) : ALIGN(4K) {
         _stack_bottom = .;
         . += 512K;
         _stack_top = .;
     }
 
+    /* Fixed 8 MiB heap reserve; boot initially admits only 256 KiB. The exact
+     * budget is undocumented; growing it increases loader-reserved image RAM. */
     .heap (NOLOAD) : ALIGN(4K) {
         _heap_start = .;
         . += 8M;
         _heap_end = .;
     }
 
+    /* 64 KiB holds sixteen 4 KiB bootstrap tables until buddy allocation is
+     * ready; exhaustion fails boot. Exact worst-case sizing is undocumented. */
     .pagetables (NOLOAD) : ALIGN(4K) {
         _pagetable_start = .;
         . += 64K;

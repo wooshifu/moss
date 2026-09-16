@@ -88,6 +88,7 @@ struct kernel_printer {
     }
 
     static void print_number(int num) {
+        // A 32-bit int needs up to ten decimal digits, a sign and '\0': 12 bytes.
         char buffer[12] = {0};
         if (num == 0) {
             print("0");
@@ -234,6 +235,7 @@ void format_value(T value) {
     if constexpr (requires { static_cast<int>(value); }) {
         if constexpr (sizeof(T) == 1) {
             // Character types
+            // ASCII's printable range includes space (32) through '~' (126).
             if (value >= 32 && value <= 126) {
                 kernel_printer::print("'");
                 char c[2] = {static_cast<char>(value), '\0'};
@@ -572,6 +574,8 @@ inline bool valid_id(const char *id) {
     ++length;
     bool allowed = (*id >= 'a' && *id <= 'z') || (*id >= 'A' && *id <= 'Z') || (*id >= '0' && *id <= '9') ||
                    *id == '_' || *id == '-' || *id == '.' || *id == '/' || *id == '=';
+    // Keep IDs to an 80-character policy budget; the allowed alphabet also
+    // avoids quotes and separators that would break structured serial events.
     if (length > 80 || !allowed) {
       return false;
     }
@@ -580,6 +584,8 @@ inline bool valid_id(const char *id) {
 }
 
 struct Registry {
+  // Fixed static budgets keep registration available before heap initialization.
+  // These are harness capacity choices; exhaustion is a registration error.
   static constexpr unsigned case_capacity = 160;
   static constexpr unsigned suite_capacity = 32;
   test_base cases[case_capacity]{};
@@ -680,6 +686,8 @@ struct bdd_test_factory {
     template<typename F>
     void operator=(F test_function) const {
         // Create formatted name for better test organization
+        // Prefix/name scans cap at 64/60 characters: together with '\0' they
+        // fit 128 bytes. Copy limits of 127 reserve the terminator byte.
         char formatted_name[128]; // Fixed-size buffer for kernel environment
         int prefix_len = 0;
         int name_len = 0;
@@ -704,6 +712,8 @@ struct bdd_test_factory {
         formatted_name[prefix_len + name_len] = '\0';
 
         // Use static storage for the formatted name (kernel-safe)
+        // Static name storage avoids dangling stack names; 64 entries is a
+        // legacy per-template budget, not the central Registry's case capacity.
         static char static_names[64][128]; // Support up to 64 BDD tests
         static int name_count = 0;
 
@@ -764,6 +774,8 @@ struct test_parameters {
 };
 
 // Helper macros to create test parameters (freestanding-friendly)
+// Sixteen elements is the shared legacy parameter-pack budget; these helpers
+// add only the supplied values, so unused slots do not declare additional tests.
 #define MAKE_TEST_PARAMS_1(T, v1) []() { \
     test_parameters<T, 16> params; \
     params.add(v1); \
@@ -799,6 +811,8 @@ template<typename ParamType, unsigned int N, typename F>
 void test_with_params(const char* base_name, test_parameters<ParamType, N> params, F test_function) {
     for (unsigned int i = 0U; i < params.size(); ++i) {
         // Create unique test name for each parameter
+        // The 100-character base-name cap leaves room for '_[index]' and '\0'
+        // in 128 bytes; this legacy formatter renders at most two index digits.
         char param_test_name[128];
         unsigned int name_len = 0U;
 
@@ -821,6 +835,8 @@ void test_with_params(const char* base_name, test_parameters<ParamType, N> param
         param_test_name[name_len] = '\0';
 
         // Store the test name and parameter in static storage
+        // Names, values and wrappers share 32 persistent slots so registration
+        // never refers to stack temporaries; this is a per-template capacity.
         static char static_param_names[32][128]; // Support up to 32 parameterized tests
         static ParamType static_params[32];
         static unsigned int param_test_count = 0U;
@@ -1177,7 +1193,9 @@ constexpr auto operator<=(T lhs, double_precision rhs) -> le_t<T, double> {
 #else
 // Fallback when floating point is not available - use integer representation
 struct double_precision {
-    int value; // Use fixed-point representation instead
+    // Thousandths preserve a decimal scale without enabling floating-point
+    // execution; conversion/comparison divides by 1000 and truncates fractions.
+    int value;
 
     constexpr double_precision(int v) : value(v) {}
 
@@ -1248,6 +1266,7 @@ inline void format_value<bool>(bool value) {
 
 template<>
 inline void format_value<char>(char value) {
+    // Printable ASCII, matching the character formatter above.
     if (value >= 32 && value <= 126) {
         kernel_printer::print("'");
         char c[2] = {value, '\0'};
@@ -1268,7 +1287,8 @@ inline void format_value<double>(double value) {
     double frac = value - int_part;
     if (frac != 0.0) {
         kernel_printer::print(".");
-        // Print a few decimal places (keep it simple for kernel)
+        // Scale three decimal places by 1000; this simple printer truncates
+        // and does not zero-pad leading fractional digits.
         int frac_part = static_cast<int>(frac * 1000);
         if (frac_part < 0) frac_part = -frac_part; // Handle negative fractions
         kernel_printer::print_number(frac_part);

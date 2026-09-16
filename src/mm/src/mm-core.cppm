@@ -19,11 +19,13 @@ import moss.abi;
 // Global-scope constants (originally outside namespace in buddy_allocator_v2.hpp)
 // ============================================================================
 
-// Page size constants
+// All supported MMU layouts use 4 KiB base pages; the allocator and page-table
+// encoders must agree on this granule. 12 is log2(4096), not a tuning value.
 export inline constexpr moss::kernel::usize PAGE_SIZE = 4096; // 4KB
 export inline constexpr moss::kernel::usize PAGE_SHIFT = 12;  // log2(PAGE_SIZE)
 
-// Buddy algorithm max order (supports up to 4MB = 4KB * 2^10)
+// Order 10 bounds contiguous allocations to 4 MiB (4 KiB * 2^10) and sizes
+// the free-list arrays. The reason for choosing this limit is not recorded.
 export inline constexpr moss::kernel::usize MAX_ORDER = 10;
 
 // ============================================================================
@@ -78,6 +80,8 @@ enum class MemoryPressure : u8 { LOW = 0, MEDIUM = 1, HIGH = 2, CRITICAL = 3 };
 
 using numa_node_t = u32;
 inline constexpr numa_node_t NUMA_NO_NODE = static_cast<numa_node_t>(-1);
+// Fixed topology/distance-array capacity, not a discovered hardware limit;
+// the original sizing rationale for 16 nodes is not recorded.
 inline constexpr u32 MAX_NUMA_NODES = 16;
 
 // ========================================================================
@@ -167,6 +171,9 @@ private:
 // buddy_allocator_v2.hpp
 // ========================================================================
 
+// Retained migration declarations: these formulas currently produce 512 for
+// SIZE and zero for PAGES with 4 KiB pages. The intended byte/page convention
+// and choice of order 9 are not recorded; resolve them before using pageblocks.
 inline constexpr usize PAGEBLOCK_ORDER = 9;
 inline constexpr usize PAGEBLOCK_SIZE = (1UL << PAGEBLOCK_ORDER);
 inline constexpr usize PAGEBLOCK_PAGES = PAGEBLOCK_SIZE >> PAGE_SHIFT;
@@ -272,6 +279,8 @@ private:
   };
 
   struct PerCpuPageCache {
+    // Declaration-only cache budget: 64 frames per CPU and migration type
+    // (256 KiB with base pages). No workload-based sizing evidence is recorded.
     static constexpr usize CACHE_SIZE = 64;
     struct Cache {
       PhysAddr pages[CACHE_SIZE];
@@ -394,18 +403,22 @@ private:
     usize size;
     FreeBlock *next;
     FreeBlock *prev;
+    // Distinct recognizable sentinels detect a wrong-state/corrupted header;
+    // the spelling of the free/allocated values has no arithmetic meaning.
     static constexpr u32 MAGIC = 0xDEADC0DE;
     u32 magic;
     FreeBlock(usize block_size) noexcept : size(block_size), next(nullptr), prev(nullptr), magic(MAGIC) {}
     [[nodiscard]] bool is_valid() const noexcept { return magic == MAGIC; }
   };
 
+  // Match BLOCK_ALIGN so a header immediately before an aligned payload is
+  // also aligned, including allocations with extra leading padding.
   struct alignas(16) AllocatedBlock {
     usize size;
     VirtAddr block_start;
     usize requested_size;
     u32 magic;
-    static constexpr u32 MAGIC = 0xBEEFF00D;
+    static constexpr u32 MAGIC = 0xBEEFF00D; // Allocated-state counterpart to FreeBlock::MAGIC.
     AllocatedBlock(usize block_size, VirtAddr start, usize requested) noexcept
         : size(block_size), block_start(start), requested_size(requested), magic(MAGIC) {}
     [[nodiscard]] bool is_valid() const noexcept { return magic == MAGIC; }
@@ -419,7 +432,10 @@ private:
   static FreeBlock *free_list_head_;
   static usize allocated_bytes_;
   static usize total_allocations_;
+  // Minimum byte alignment accommodates the supported 64-bit ABIs and the
+  // 16-byte-aligned AllocatedBlock; callers can request stronger alignment.
   static constexpr usize BLOCK_ALIGN = 16;
+  // A split remainder must hold its own intrusive free-list header.
   static constexpr usize MIN_BLOCK_SIZE = sizeof(FreeBlock);
 
   [[nodiscard]] static constexpr usize align_size(usize size, usize alignment) noexcept {

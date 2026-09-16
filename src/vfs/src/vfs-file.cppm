@@ -36,6 +36,9 @@ struct File {
 // File pool — simple static allocator for File objects
 // ============================================================================
 
+// Bound the global open-description pool, including unpublished opens and
+// lookup-owned references. The exact 512-slot budget is not documented; unlike
+// MAX_FDS this counts File objects, not dup/fork aliases of an existing object.
 inline constexpr u32 MAX_FILES = 512;
 
 /// File occupancy without acquiring namespace_lock (e.g. during namespace exclusion).
@@ -274,6 +277,7 @@ public:
     containers::LockGuard<containers::IrqSpinLock> guard(lock_);
     if (!lookup_file(fd))
       return -static_cast<long>(VfsError::BadFd);
+    // FD_CLOEXEC is the native F_SETFD bit 0; no other descriptor flags exist.
     if (flags & ~1L)
       return -static_cast<long>(VfsError::InvalidArg);
     cloexec_[static_cast<u32>(fd)] = flags != 0;

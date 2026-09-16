@@ -74,6 +74,8 @@ namespace moss::fdt {
 // ============================================================================
 
 /// 读取节点的 #address-cells 和 #size-cells 属性
+// DTB 的一个 cell 固定为 4 字节大端 u32；缺省地址/长度 cell 数由调用方
+// 按所在节点提供。这里只支持 1 或 2 个 cell，以容纳最多 64 位地址。
 static void read_cells(const void *fdt, int node, u32 &addr_cells, u32 &size_cells) noexcept {
   int len = 0;
   const void *prop = fdt_getprop(fdt, node, "#address-cells", &len);
@@ -106,6 +108,8 @@ static auto compatible_match(const void *fdt, int node, const char *match) noexc
 }
 
 static bool enabled(const void *fdt, int node) noexcept {
+  // 属性长度含结尾 NUL，所以 "ok"/"okay" 分别是 3/5 字节；缺少 status
+  // 按 DT 约定视为可用，精确长度避免接受未终止或带额外后缀的数据。
   int length = 0;
   const char *status = static_cast<const char *>(fdt_getprop(fdt, node, "status", &length));
   return !status || (length == 3 && strncmp(status, "ok", 3) == 0) || (length == 5 && strncmp(status, "okay", 5) == 0);
@@ -181,10 +185,14 @@ static bool read_reg(const void *fdt, int node, u32 index, u64 &base, u64 &size)
     ac = pac;
     sc = psc;
   }
+  // 当前内核启动映射仅覆盖低 4 GiB 物理地址；这是启动实现约束，不是
+  // DTB 的地址宽度限制。扩大映射时须同步调整发现和分配器的边界。
   return base < 0x100000000ULL && size <= 0x100000000ULL - base;
 }
 
 static u32 interrupt_number(const void *fdt, int node, u32 index = 0) noexcept {
+  // 支持 PLIC 的单 cell 源编号及 GIC 的三 cell 类型/编号/标志布局。
+  // GIC 类型 0=SPI、1=PPI，编号分别相对 INTID 32/16 起算，SGI 占 0..15。
   int parent_node = node;
   u32 phandle = 0;
   while (parent_node >= 0 && !property_u32(fdt, parent_node, "interrupt-parent", phandle)) {
@@ -216,6 +224,8 @@ static void parse_timer_and_firmware(const void *fdt) noexcept {
       continue;
     }
     if (compatible_match(fdt, node, "arm,armv8-timer")) {
+      // ARM timer binding 顺序为 secure/nonsecure physical、virtual、hyp；
+      // 索引 2 对应 HAL 使用的 cntv_* 虚拟计时器，不能改成另一条 PPI。
       g_platform_info.timer_interrupt = interrupt_number(fdt, node, 2); // virtual timer PPI
     }
     if (compatible_match(fdt, node, "arm,psci-0.2") || compatible_match(fdt, node, "arm,psci-1.0")) {
@@ -259,6 +269,8 @@ static void parse_cpus(const void *fdt) noexcept {
         if (!enabled(fdt, node)) {
           continue;
         }
+        // 16 与 BOOT_MAX_CPUS/平台数组容量一致；17 作为超容量哨兵交给
+        // 启动层拒绝拓扑，而不把多核机器悄悄截断为 16 核。
         if (count == 16) {
           g_platform_info.cpu_count = 17; // Fail at the boot contract boundary.
           return;
@@ -394,6 +406,8 @@ static void parse_uart(const void *fdt) noexcept {
     u32 shift = 0, width = 1;
     (void)property_u32(fdt, node, "reg-shift", shift);
     (void)property_u32(fdt, node, "reg-io-width", width);
+    // NS16550 HAL 仅实现 1/4 字节访问；shift<=3 将相邻寄存器间距限制
+    // 为至多 8 字节。shift 上限的具体硬件兼容范围尚未记录。
     if (shift > 3 || (width != 1 && width != 4)) {
       return;
     }
@@ -403,6 +417,8 @@ static void parse_uart(const void *fdt) noexcept {
     return;
   }
   u64 base = 0, size = 0;
+  // PL011 须覆盖 ICR(0x44)+4 字节；16550 有 8 个寄存器，按 reg-shift
+  // 扩展其地址跨度。较小 reg 区域不能满足 HAL 实际访问的寄存器范围。
   if (!read_reg(fdt, node, 0, base, size) ||
       size < (uart.kind == UartKind::Pl011 ? 0x48ULL : (8ULL << uart.reg_shift))) {
     return;
@@ -460,7 +476,8 @@ static void parse_intc(const void *fdt) noexcept {
     if (!read_reg(fdt, intc_node, 1, intc.redist_base, intc.redist_size)) {
       return;
     }
-    // ponytail: one standard GICv3 RD/SGI region; add stride/multiple-region support when needed.
+    // 当前 HAL 逐个扫描标准 RD+SGI frame（各 64 KiB，合计 0x20000）；
+    // 非标准 stride 或多个 region 需要先扩展扫描逻辑，不能仅放宽验证。
     int length = 0;
     const auto *stride = static_cast<const void *>(fdt_getprop(fdt, intc_node, "redistributor-stride", &length));
     u32 regions = 1;
@@ -478,10 +495,13 @@ static void parse_intc(const void *fdt) noexcept {
     // PLIC contexts are the positions in interrupts-extended, not hart*2+1.
     int len = 0;
     const auto *interrupts = static_cast<const fdt32_t *>(fdt_getprop(fdt, intc_node, "interrupts-extended", &len));
+    // 每个 context 是 phandle+单 cell 中断号，即 2*4=8 字节；中断号 9
+    // 标识 supervisor external，须保留其在整张列表中的索引作为 context。
     if (!interrupts || len < 8 || len % 8 || !g_platform_info.cpu_count || g_platform_info.cpu_count > 16) {
       return;
     }
     for (u32 cpu = 0; cpu < g_platform_info.cpu_count; ++cpu) {
+      // 缺失 context 用 ~0U 标记，后续窗口边界检查会拒绝该 CPU 的配置。
       g_platform_info.plic_contexts[cpu] = ~0U;
     }
     for (int index = 0; index < len / 8; ++index) {
@@ -510,6 +530,8 @@ static void parse_intc(const void *fdt) noexcept {
         }
       }
     }
+    // 控制窗口从 PLIC+0x200000 起，每个 context 占 0x1000 字节；
+    // 缺失 context 的哨兵也会越界，使控制器保持无效，避免配置错误 hart。
     for (u32 cpu = 0; cpu < g_platform_info.cpu_count; ++cpu) {
       u64 context_end = 0x200000ULL + (static_cast<u64>(g_platform_info.plic_contexts[cpu]) + 1) * 0x1000;
       if (context_end > intc.dist_size) {
@@ -579,7 +601,8 @@ bool parse_dtb(const void *dtb_ptr) noexcept {
   g_platform_info = {};
   g_platform_info.dtb_valid = true;
 
-  // 按顺序解析各节点
+  // CPU 必须先于 PLIC context 解析；chosen 必须先于 UART，以遵循 stdout
+  // 设备选择。bootargs/stdout 借用 DTB，后续保留其 RAM 防止分配器回收。
   parse_cpus(dtb_ptr);
   parse_memory(dtb_ptr);
   parse_chosen(dtb_ptr);

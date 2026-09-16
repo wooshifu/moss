@@ -4,7 +4,7 @@
 // trivial implementations (null, zero).  Mounted at "/dev".
 //
 // Device table:
-//   /dev/console  — write → UART putc; read → not supported (returns 0)
+//   /dev/console  — write → UART putc; read → echoed line input via the kernel RX owner
 //   /dev/null     — write → discard; read → returns 0 (EOF)
 //   /dev/zero     — write → discard; read → fills buffer with zeros
 

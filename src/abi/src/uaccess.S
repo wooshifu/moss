@@ -1,5 +1,7 @@
 // Fault-contained byte copies. The kernel operand has no exception fixup:
 // a kernel-buffer bug must not be mistaken for bad userspace input.
+// Return the remaining byte count, including the faulting byte. Advance the
+// count only after the user access succeeds so callers can report partial I/O.
 .text
 .balign 16
 .global moss_raw_copy_from_user
@@ -94,6 +96,9 @@ moss_raw_copy_to_user:
 .size moss_raw_copy_to_user, . - moss_raw_copy_to_user
 
 .section .rodata.moss_uaccess,"a"
+// Each fixup is two signed 32-bit displacements, each relative to its own
+// 4-byte field. This is the pair/stride consumed by abi::uaccess::fixup and
+// needs no absolute pointers when firmware relocates the kernel image.
 .balign 4
 .global moss_uaccess_table_start
 .global moss_uaccess_table_end

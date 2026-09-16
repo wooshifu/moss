@@ -12,6 +12,8 @@ public:
   static InputBuffer kernel(const void *source, usize size) noexcept {
     return {reinterpret_cast<u64>(source), size, nullptr};
   }
+  // A missing user-copy policy must invalidate the view, never enable the
+  // raw kernel-pointer path and bypass fault containment.
   static InputBuffer user(u64 source, usize size, UserCopy copy) noexcept { return {copy ? source : 0, size, copy}; }
   usize size() const noexcept { return size_; }
   bool valid() const noexcept { return address_ && size_ <= ~u64{0} - address_; }
@@ -40,6 +42,7 @@ public:
   static OutputBuffer kernel(void *destination, usize size) noexcept {
     return {reinterpret_cast<u64>(destination), size, nullptr};
   }
+  // As with InputBuffer, address zero makes a missing policy fail closed.
   static OutputBuffer user(u64 destination, usize size, UserCopy copy) noexcept {
     return {copy ? destination : 0, size, copy};
   }

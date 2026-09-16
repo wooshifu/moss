@@ -41,6 +41,8 @@ struct Dentry {
 /// Key: (parent Dentry*, name) → Dentry*
 class DentryCache {
 public:
+  // Fixed 256-entry cache keeps lookup storage bounded without heap allocation.
+  // The exact capacity rationale is not recorded; a miss still walks the tree.
   static constexpr u32 CACHE_SIZE = 256;
 
   /// Initialize the cache (zero all slots)
@@ -79,6 +81,7 @@ inline containers::IrqSpinLock namespace_lock;
 [[nodiscard]] inline bool can_access(const Inode &inode, u32 uid, u32 gid, u32 mask) noexcept {
   if (uid == 0)
     return !(mask & 1) || inode.is_directory() || (inode.mode & (S_IXUSR | S_IXGRP | S_IXOTH)) != 0;
+  // POSIX mode packs three rwx triplets: owner at bit 6, group at 3, others at 0.
   const u32 shift = uid == inode.uid ? 6U : gid == inode.gid ? 3U : 0U;
   return ((inode.mode >> shift) & mask) == mask;
 }

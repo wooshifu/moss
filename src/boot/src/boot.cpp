@@ -34,6 +34,8 @@ void record_cpu_online() noexcept {
   auto page = moss::kernel::mm::PageFrameAllocator::allocate_pages(0);
   if (page) {
     auto *value = reinterpret_cast<volatile u64 *>(*page);
+    // ASCII "MOSS" in the high word plus logical CPU ID makes the write/read
+    // probe recognizable; the marker is test data, not a persisted memory ABI.
     *value = 0x4d4f535300000000ULL | cpu;
     bool valid = *value == (0x4d4f535300000000ULL | cpu);
     auto released = moss::kernel::mm::PageFrameAllocator::free_pages(*page, 0);
@@ -47,6 +49,8 @@ void record_cpu_online() noexcept {
 u32 wait_for_all_cpus_active(u32 timeout_ms) noexcept {
   using namespace moss::kernel;
   const u64 start = hal::timer::read_counter();
+  // Counter frequency is Hz; divide by 1000 to convert the millisecond budget
+  // to ticks before polling the release/acquire readiness publication.
   const u64 ticks = hal::timer::frequency() / 1000 * timeout_ms;
   const u64 expected = (1ULL << g_num_cpus) - 1;
   for (;;) {
@@ -133,8 +137,6 @@ static void boot_print(const char *message) { moss::kernel::hal::uart::puts(mess
   boot_print("Handing off to architecture-independent system init...\n\n");
 
   // Hand off to architecture-independent system init
-  // Run C++ global constructors (.init_array) before kernel_main.
-  // In freestanding environments there is no CRT to do this automatically.
   // Run C++ global constructors (.init_array) before kernel_main.
   // In freestanding environments there is no CRT to do this automatically.
   moss::abi::linker::call_global_constructors();

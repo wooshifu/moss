@@ -56,9 +56,14 @@ private:
   u64 last_balance_time_;
   u64 balance_interval_;
 
+  // Retained queue capacity: 64 pending pointers per CPU; it is not used by
+  // the synchronous migration path. Exact sizing evidence is not recorded.
   containers::PerCpuWorkQueue<Thread *, 64> migration_queue_;
 
 public:
+  // Defaults are raw CFS load-score gaps (25), benefit-score cost (10000),
+  // and a 4 ms balance interval. Cost is compared with load gap * 1000,
+  // not elapsed nanoseconds. Exact default calibration is not recorded.
   LoadBalancer() noexcept
       : stats_{}, topology_{}, policy_(BalancePolicy::Conservative), imbalance_threshold_(25), migration_cost_(10000),
         last_balance_time_(0), balance_interval_(4000000) {
@@ -94,6 +99,9 @@ public:
       u32 load = scheduler.get_cpu_load(cpu);
       u32 nr_running = scheduler.get_cpu_nr_running(cpu);
 
+      // Only consider active migration above two tasks and raw load score 80.
+      // load_avg is weight-based, not a utilization percentage; the exact
+      // task/load cutoffs have no recorded workload calibration.
       if (nr_running > 2 && load > 80) {
         u32 target_cpu = find_least_loaded_cpu(scheduler);
         if (target_cpu != cpu && target_cpu < g_num_cpus) {
@@ -113,6 +121,8 @@ public:
 
     if (has_cpu_affinity(thread, prev_cpu)) {
       u32 prev_load = scheduler.get_cpu_load(prev_cpu);
+      // Preserve previous CPU placement below raw load score 70; this limits
+      // migrations by policy. The exact cutoff has no recorded tuning evidence.
       if (prev_load < 70) {
         return prev_cpu;
       }
@@ -164,6 +174,9 @@ public:
   }
 
   void set_policy(BalancePolicy policy) noexcept {
+    // Gap/interval defaults: conservative 25/8 ms, aggressive 15/2 ms and
+    // NUMA-aware 20/4 ms. More frequent/lower-gap checks favor migrations;
+    // no evidence for these exact pairs is recorded. Gaps are raw load scores.
     policy_ = policy;
 
     switch (policy) {
@@ -244,6 +257,8 @@ private:
         u32 cpu_numa = topology_.get_cpu(cpu).numa_node;
 
         if (thread_numa != cpu_numa) {
+          // Add 20 raw score units to disfavor a remote node. This is a policy
+          // penalty, not a measured NUMA distance; its exact rationale is unrecorded.
           load += 20;
         }
       }
@@ -303,6 +318,8 @@ private:
     u32 src_load = scheduler.get_cpu_load(src_cpu);
     u32 dst_load = scheduler.get_cpu_load(dst_cpu);
 
+    // Scale the score gap into migration_cost_'s units: default cost 10000
+    // requires a gap of at least 10. The choice of scale/cost is unrecorded.
     return (src_load > dst_load) ? (src_load - dst_load) * 1000 : 0;
   }
 

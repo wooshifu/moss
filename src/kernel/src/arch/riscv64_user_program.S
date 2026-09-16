@@ -42,7 +42,7 @@ _user_program_start:
     li      a7, 33                  // syscall number: sys_write
     li      a0, 1                   // fd = STDOUT_FILENO
     la      a1, .Lmsg_execve        // buf = address of message string
-    li      a2, 25                  // count = 25 bytes
+    li      a2, 25                  // Legacy count 25 exceeds the 23-byte string by 2; rationale unrecorded.
     ecall                           // trap to S-mode → system_call_handler
 
     // ---- Step 2: sys_execve("/shell.elf", NULL, NULL) ----
@@ -60,7 +60,7 @@ _user_program_start:
     li      a7, 33                  // sys_write
     li      a0, 1                   // fd = STDOUT
     la      a1, .Lmsg_fail          // "init: execve failed!\n"
-    li      a2, 22                  // 22 bytes
+    li      a2, 22                  // Legacy count 22 also reads 2 bytes of the following path; rationale unrecorded.
     ecall
 
     // ---- sys_exit(status=1) ----
@@ -76,9 +76,9 @@ _user_program_start:
 // Read-only string data (placed in .text.user for PC-relative addressing via LA)
 // =============================================================================
 .Lmsg_execve:
-    .ascii  "init: calling execve...\n"    // 25 bytes (includes \n, no NUL)
+    .ascii  "init: calling execve...\n"    // 23 bytes (includes \n, no NUL)
 .Lmsg_fail:
-    .ascii  "init: execve failed!\n"       // 22 bytes (includes \n, no NUL)
+    .ascii  "init: execve failed!\n"       // 20 bytes (includes \n, no NUL)
 .Lpath_shell:
     .asciz  "/shell.elf"                   // NUL-terminated VFS path for execve
 

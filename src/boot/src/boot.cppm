@@ -66,6 +66,7 @@ enum class BootStage : u32 {
 struct BootStatus {
   BootStage current_stage;
   u32 completed_stages_mask;
+  // Eight slots match BootStage values 0..7; architecture writers index by enum.
   u64 stage_timestamps[8];
   moss::kernel::ErrorCode last_error;
 };
@@ -83,6 +84,8 @@ void update_boot_stage(BootStage stage, moss::kernel::ErrorCode error = moss::ke
 void activate_secondary_cpus() noexcept;
 
 /// Wait for all CPUs to become active
+// The default 5000 ms is a bounded boot-readiness policy, not a firmware latency
+// guarantee; the repository does not record a measured basis for five seconds.
 u32 wait_for_all_cpus_active(u32 timeout_ms = 5000) noexcept;
 
 // Published by each CPU after its architecture runtime is ready.
@@ -168,6 +171,8 @@ constexpr ArchInfo get_current_arch_info() noexcept {
 
 /// Architecture-specific constants
 namespace arch_constants {
+// 4096-byte pages and 16-byte stacks match the page tables and native ABI.
+// 64 is a fixed cache-line policy, not a discovered size for every target CPU.
 constexpr u32 PAGE_SIZE = 4096;
 constexpr u32 CACHE_LINE_SIZE = 64;
 constexpr u32 STACK_ALIGNMENT = 16;

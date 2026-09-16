@@ -49,6 +49,8 @@ IpiResult SimpleInterProcessorInterrupt::send_ipi(u32 target_cpu, IpiType type) 
     (void)total_pings_sent_.fetch_add(1, containers::MemoryOrder::Relaxed);
   }
 
+  // This validation-only slice constructs metadata and counts sends; it has
+  // no queue or hardware notification. Success does not prove remote delivery.
   (void)msg;
 
   return IpiResult::Success;
@@ -90,6 +92,8 @@ SimpleInterProcessorInterrupt::SystemInfo SimpleInterProcessorInterrupt::get_sys
 
 bool SimpleInterProcessorInterrupt::is_valid_cpu_id(u32 cpu_id) const noexcept { return cpu_id < max_cpus_; }
 
+// Logical CPU zero is a test-slice assumption; production hardware IPI uses
+// arch::get_current_cpu_id() instead of this fixed source identity.
 u32 SimpleInterProcessorInterrupt::get_current_cpu_id() const noexcept { return 0; }
 
 // === Global initialization functions ===

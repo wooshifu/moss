@@ -5,7 +5,8 @@
 
 module;
 
-// PSCI constants (must be in global module fragment as macros)
+// PSCI SMC64 CPU_ON function ID: 0xc4000003 selects the 64-bit affinity/entry
+// call defined by PSCI, regardless of whether firmware uses SMC or HVC transport.
 enum { PSCI_CPU_ON_64 = 0xC4000003 };
 
 // Assembly-callable function forward declaration (defined in this file)
@@ -153,6 +154,10 @@ static void initialize_cpu_startup_info(u32 detected_cpus) noexcept {
   }
 
   u32 iteration = 0;
+  // Legacy polling policy: ten iterations per nominal ms, 10000 NOPs between
+  // probes and diagnostics every 1000 probes. These are uncalibrated loop
+  // counts, not a wall-clock guarantee; use wait_for_cpu_state for timed waits.
+  // Numeric character 10 below is ASCII LF; cpu_id%10 prints its last digit only.
   u32 max_iterations = timeout_ms * 10;
 
   early_uart_lock_acquire();
@@ -267,6 +272,8 @@ bool wait_for_cpu_state(u32 cpu_id, CpuState expected_state, u32 timeout_ms) noe
   while (!is_cpu_in_state(cpu_id, CpuState::Active)) {
     asm volatile("wfi");
 
+    // Uncalibrated 100-NOP backoff after wakeup; the specific count has no
+    // recorded timing basis and does not turn WFI into a timed polling primitive.
     for (volatile u32 i = 0; i < 100; i = i + 1) {
       asm volatile("nop");
     }
@@ -291,6 +298,8 @@ bool wait_for_cpu_state(u32 cpu_id, CpuState expected_state, u32 timeout_ms) noe
   while (true) {
     asm volatile("wfi");
 
+    // Legacy terminal park loop: 1000 NOPs merely defer the next WFI;
+    // its exact delay rationale is not recorded and it never resumes scheduling.
     for (u32 i = 0; i < 1000; i++) {
       asm volatile("nop");
     }
@@ -360,8 +369,8 @@ extern "C" [[noreturn]] void secondary_cpu_entry() noexcept {
   }
   (void)moss::kernel::hal::intc::init_cpu_interface(gic_cpu_base);
 
-  // Enable timer PPI (IRQ 27) and reschedule SGI (IRQ 0) in per-CPU
-  // banked GICD_ISENABLER.  PPI/SGI registers are per-CPU in GICv2.
+  // Enable the firmware timer PPI and reschedule SGI 0. GICv2 banks these
+  // enables per CPU; GICv3 uses this CPU's redistributor through the HAL.
   moss::kernel::VirtAddr gic_dist_base = plat.intc.dist_base;
   moss::kernel::hal::intc::enable_irq(gic_dist_base, moss::kernel::platform::timer_irq());
   moss::kernel::hal::intc::enable_irq(gic_dist_base, 0); // SGI 0 = Reschedule IPI
@@ -405,6 +414,9 @@ bool g_gic_hardware_available = false;
 /// then wait for them to reach Online (init complete, scheduling loop entered).
 namespace moss::boot {
 void activate_secondary_cpus() noexcept {
+  // Each Parked/Online wait gets 3000 ms. These are bounded activation-policy
+  // timeouts, distinct from the 5000 ms CPU_ON park wait; tuning evidence for
+  // the three-/five-second choices is not recorded.
   u32 successfully_activated = 0;
 
   for (u32 cpu_id = 1; cpu_id < g_cpu_topology.total_cpus; ++cpu_id) {
@@ -464,9 +476,8 @@ struct EarlyPrintGuard {
   auto operator=(const EarlyPrintGuard &) -> EarlyPrintGuard & = delete;
 };
 
-// early_print / early_print_hex: raw output, NO lock.
-// Caller must hold early_uart_lock (via EarlyPrintGuard) when concurrent
-// CPUs may be printing.  Before SMP starts there is no contention.
+// Each HAL puts() takes its own TX lock. EarlyPrintGuard additionally groups
+// multiple output calls with the separate boot lock when CPUs print concurrently.
 static void early_print(const char *str) { moss::kernel::hal::uart::puts(str); }
 
 static void early_print_hex(u64 value) {
@@ -606,6 +617,8 @@ void update_boot_stage(BootStage stage, ::moss::kernel::ErrorCode error) noexcep
 
   // Phase 6: Initialize runtime heap
   VirtAddr heap_start = moss::abi::linker::heap_start();
+  // Start with 256 KiB inside the linker-reserved 8 MiB heap. This is an initial
+  // allocator policy, not all firmware RAM; exact sizing evidence is not recorded.
   ::moss::kernel::usize initial_heap_size = 256ULL * 1024;
   auto heap_result = ::moss::kernel::mm::RuntimeHeapAllocator::initialize_heap(heap_start, initial_heap_size);
   if (!heap_result) {
@@ -718,6 +731,8 @@ void update_boot_stage(BootStage stage, ::moss::kernel::ErrorCode error) noexcep
         psci_result = psci_call(PSCI_CPU_ON_64, target_mpidr, entry_addr, context_id);
       } else if (cpu.enable_method == moss::kernel::platform::CpuEnableMethod::SpinTable && cpu.release_address &&
                  !(cpu.release_address & 7) && cpu.release_address < 0x100000000ULL) {
+        // Spin-table release cells are 8-byte addresses; this boot profile only
+        // accesses physical cells below its supported 4 GiB identity-map limit.
         auto *release = reinterpret_cast<volatile u64 *>(cpu.release_address);
         *release = entry_addr;
         asm volatile("dc cvac, %0; dsb sy; sev" ::"r"(release) : "memory");
@@ -809,6 +824,8 @@ u32 moss::boot::ARM64BootImpl::get_current_cpu_id() noexcept { return moss::boot
   early_print(message);
   early_print("\n==================\n");
 
+  // Compose PSCI SYSTEM_OFF ID 0x84000008 from its two 16-bit halves. This
+  // legacy path uses SMC directly; HVC-only firmware needs separate handling.
   asm volatile("movz x0, #0x0008, lsl #0\n"
                "movk x0, #0x8400, lsl #16\n"
                "smc #0\n"

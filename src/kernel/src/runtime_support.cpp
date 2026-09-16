@@ -142,7 +142,9 @@ void *memchr(const void *s, int c, size_t n) noexcept {
 } // extern "C"
 
 // 早期静态堆缓冲区 - 在RuntimeHeapAllocator初始化之前使用
-static char early_heap_buffer[64 * 1024]; // 64KB早期堆
+// 64 KiB 是运行时堆就绪前的固定启动预算；确切容量的测量依据尚未记录。
+// 此缓冲区只递增分配且不回收，缩小容量可能使早期 C++ 分配触发 panic。
+static char early_heap_buffer[64 * 1024]; // 64 KiB 早期堆
 static size_t early_heap_used = 0;
 static bool runtime_heap_ready = false;
 
@@ -162,7 +164,9 @@ static void *kernel_malloc(size_t size) noexcept {
     memset(ptr, 0, size);
     return ptr;
   } // 使用早期静态堆
-  size_t aligned_size = (size + 15UL) & ~15UL; // 16字节对齐
+  // 15 = 16 - 1，使每次保留长度向上取整为 16 字节；这里只约束分配步长，
+  // 不应据此推断 char 缓冲区基址或任意 over-aligned 类型的对齐保证。
+  size_t aligned_size = (size + 15UL) & ~15UL; // 16字节分配步长
   if (early_heap_used + aligned_size > sizeof(early_heap_buffer)) {
     return nullptr; // 早期堆空间不足
   }

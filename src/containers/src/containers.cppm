@@ -187,10 +187,9 @@ inline void (*g_preempt_enable_fn)() noexcept = nullptr;
 // Ticket SpinLock — fair, FIFO-ordered mutual exclusion
 // ============================================================================
 
-// ARM64-optimized ticket spinlock.
-// Uses fetch_add for ticket acquisition (LDAXR/STLXR on ARM64).
-// Waiters use cpu_yield() which maps to WFE on ARM64, woken by
-// SEV generated implicitly by the store-release in unlock().
+// Each fetch_add reserves one FIFO ticket. Waiters poll with cpu_yield()
+// (YIELD on ARM64, PAUSE on x64); this path does not sleep with WFE or depend
+// on an event notification. Acquire/release publishes the prior owner's writes.
 class TicketSpinLock {
 private:
   AtomicU32 next_ticket_{0};
@@ -208,13 +207,14 @@ public:
     }
     u32 my_ticket = next_ticket_.fetch_add(1, MemoryOrder::Acquire);
     while (now_serving_.load(MemoryOrder::Acquire) != my_ticket) {
-      moss::kernel::arch::cpu_yield(); // WFE on ARM64
+      moss::kernel::arch::cpu_yield(); // Keep polling without requiring an interrupt or event.
     }
   }
 
   void unlock() noexcept {
     (void)now_serving_.fetch_add(1, MemoryOrder::Release);
-    // ARM64: store-release generates implicit SEV to wake WFE waiters
+    // Release ownership before enabling preemption, since the next owner may
+    // need this CPU's current thread to run to make progress.
     if (g_preempt_enable_fn) {
       g_preempt_enable_fn();
     }
@@ -250,11 +250,14 @@ public:
     bool was_enabled = moss::kernel::arch::interrupts_enabled();
     moss::kernel::arch::disable_interrupts();
     inner_.lock();
+    // Save IRQ state only after ownership: another CPU can be waiting on this
+    // same lock and must not overwrite the current owner's restore state.
     saved_irq_state_ = was_enabled;
   }
 
   void unlock() noexcept {
     bool restore = saved_irq_state_;
+    // A new owner can overwrite saved_irq_state_ immediately after unlock.
     inner_.unlock();
     if (restore) {
       moss::kernel::arch::enable_interrupts();
@@ -299,7 +302,8 @@ private:
 public:
   constexpr PerCpuCounter() noexcept = default;
 
-  // Expand to support more CPUs (call after MM init)
+  // Expand after MM init while callers are quiescent: swapping the backing
+  // array is not synchronized with get_local() or counter updates.
   bool expand(u32 num_cpus) noexcept {
     if (num_cpus <= capacity_) {
       return true;
@@ -319,6 +323,7 @@ public:
   }
 
   [[nodiscard]] T get_total() const noexcept {
+    // Relaxed reads are statistics, not a simultaneous snapshot across CPUs.
     T total = 0;
     u32 limit = moss::kernel::g_num_cpus < capacity_ ? moss::kernel::g_num_cpus : capacity_;
     for (u32 i = 0; i < limit; ++i) {
@@ -346,6 +351,8 @@ template <typename T> struct QueueNode {
 // SPSC (Single Producer Single Consumer) lock-free queue
 template <typename T, moss::kernel::usize Capacity> class SPSCQueue {
 private:
+  // Masking replaces modulo; one slot stays empty so equal indices mean empty
+  // rather than full. A Capacity-sized array therefore holds Capacity - 1 items.
   static_assert((Capacity & (Capacity - 1)) == 0, "Capacity must be power of 2");
   static constexpr moss::kernel::usize MASK = Capacity - 1;
 
@@ -370,6 +377,7 @@ public:
       return false;
     }
 
+    // Publish only after construction; the consumer's acquire observes the item.
     data_[current_tail] = moss::forward<U>(item);
     tail_.store(next_tail, MemoryOrder::Release);
     return true;
@@ -383,6 +391,8 @@ public:
     }
 
     result = moss::move(data_[current_head]);
+    // Release the consumed slot only after moving its value, so the producer
+    // cannot reuse it while the consumer is still reading.
     head_.store((current_head + 1) & MASK, MemoryOrder::Release);
     return true;
   }
@@ -406,7 +416,10 @@ public:
   [[nodiscard]] static constexpr moss::kernel::usize capacity() noexcept { return Capacity - 1; }
 };
 
-// MPSC (Multiple Producer Single Consumer) lock-free queue
+// MPSC (Multiple Producer Single Consumer) intrusive queue. The returned node
+// becomes head_, so it must remain alive until a later dequeue advances head_.
+// Recycling also requires synchronization with in-flight producer links; this
+// container does not implement reclamation or transfer lifetime ownership.
 template <typename T> class MPSCQueue {
 private:
   alignas(moss::kernel::CACHE_LINE_SIZE) AtomicPtr<QueueNode<T>> head_;
@@ -424,6 +437,8 @@ public:
   void enqueue(QueueNode<T> *node) noexcept {
     node->next.store(nullptr, MemoryOrder::Relaxed);
     QueueNode<T> *prev_tail = tail_.exchange(node, MemoryOrder::AcqRel);
+    // Exchange reserves a producer position; the release link makes the node
+    // visible. Until that link appears, the consumer may temporarily see empty.
     prev_tail->next.store(node, MemoryOrder::Release);
   }
 
@@ -482,7 +497,9 @@ public:
   [[nodiscard]] static constexpr moss::kernel::usize pool_size() noexcept { return PoolSize; }
 };
 
-// MPMC (Multiple Producer Multiple Consumer) queue
+// Queue distributor built from SPSC lanes. Round-robin selects a lane but does
+// not serialize producers or consumers; callers must enforce each lane's SPSC
+// contract, including when using try_dequeue_any() to steal work.
 template <typename T, moss::kernel::usize NumConsumers, moss::kernel::usize QueueCapacity>
   requires(QueueCapacity > 0 && (QueueCapacity & (QueueCapacity - 1)) == 0) && (NumConsumers > 0)
 class MPMCQueue {
@@ -547,7 +564,9 @@ public:
   }
 };
 
-// Queue type aliases
+// Fixed queue budgets, not hardware limits; no sizing measurements are recorded.
+// The 256-slot process queue holds 255 items; each of the four 128-slot work
+// lanes holds 127. Changing lane count also changes consumer-ID routing.
 using ProcessQueue = SPSCQueue<ProcessId, 256>;
 using MessageQueue = MPSCQueue<u8>;
 using WorkQueue = MPMCQueue<ProcessId, 4, 128>;
@@ -642,8 +661,8 @@ public:
     return *this;
   }
 
-  // Expand capacity to num_cpus (call after MM init).
-  // Copies existing boot_buf_ data to the new buffer.
+  // Expand after MM init with no concurrent slot users. Values are moved and
+  // old storage is freed, so references obtained before expansion cannot escape.
   bool expand(u32 num_cpus) noexcept {
     const u32 old_capacity = capacity();
     if (num_cpus <= old_capacity) {
@@ -772,7 +791,8 @@ public:
   [[nodiscard]] operator T() const noexcept { return load_total(); }
 };
 
-// Per-CPU work queue
+// Per-CPU work queue. QueueSize is an interface default (256), currently unused
+// for storage: T's queue implementation supplies the actual capacity.
 template <typename T, moss::kernel::usize QueueSize = 256> class PerCpuWorkQueue {
 private:
   PerCpuData<T> data_;
@@ -835,6 +855,7 @@ using PerCpuU32Counter = PerCpuAtomicCounter<u32>;
 using PerCpuU64Counter = PerCpuAtomicCounter<u64>;
 using PerCpuUSizeCounter = PerCpuAtomicCounter<moss::kernel::usize>;
 
+// Legacy queue-size arguments (128/64) do not configure T or allocate a queue.
 using ProcessWorkQueue = PerCpuWorkQueue<ProcessId, 128>;
 using InterruptWorkQueue = PerCpuWorkQueue<InterruptId, 64>;
 
@@ -1086,6 +1107,8 @@ public:
 };
 
 // Node ownership, lookup copies and write serialization share one lock.
+// The default 256 buckets keeps a fixed pointer array and permits masked lookup;
+// its exact size is a policy default, with no workload sizing evidence recorded.
 template <typename Key, typename Value, usize BucketCount = 256> class LockedHashMap {
   static_assert(BucketCount != 0 && (BucketCount & (BucketCount - 1)) == 0,
                 "BucketCount must be a nonzero power of two");
@@ -1106,6 +1129,9 @@ template <typename Key, typename Value, usize BucketCount = 256> class LockedHas
   template <typename K> static usize bucket(const K &key) noexcept {
     // Normalize lookup keys to the stored type before hashing their bytes.
     Key stored_key = static_cast<Key>(key);
+    // FNV-1a's 32-bit offset basis and prime mix all bytes of the normalized key.
+    // usize may be wider than 32 bits; only masked low bits select the bucket.
+    // Constants: https://www.rfc-editor.org/rfc/rfc9923.html#section-5
     usize hash = 2166136261U;
     auto *data = reinterpret_cast<const u8 *>(&stored_key);
     for (usize i = 0; i < sizeof(Key); ++i) {
@@ -1302,6 +1328,8 @@ struct SlabPage {
 
 private:
   void initialize_free_list() noexcept {
+    // Each free object temporarily stores a next pointer in its own bytes.
+    // SlabCache must therefore provide at least pointer-sized, aligned slots.
     char *current = static_cast<char *>(memory);
     void *last_free = nullptr;
 
@@ -1560,6 +1588,7 @@ private:
   }
 
   [[nodiscard]] void *allocate_page() noexcept {
+    // Buddy order 0 requests one base page (2^0 pages), not zero bytes.
     unsigned long long addr = moss::abi::bridge::moss_slab_alloc_pages(0);
     if (addr == 0) {
       return nullptr;
@@ -1571,6 +1600,7 @@ private:
     if (ptr == nullptr) {
       return;
     }
+    // Match the order-0 allocation above so the PFA returns exactly one page.
     (void)moss::abi::bridge::moss_slab_free_pages(reinterpret_cast<unsigned long long>(ptr), 0);
   }
 
@@ -1587,7 +1617,12 @@ private:
 // Multi-size slab allocator
 class SlabAllocator {
 private:
+  // Legacy slot count: doubling 8-byte classes up to one 4096-byte page yields
+  // ten distinct sizes; remaining slots repeat the maximum. The reason for
+  // retaining 32 slots is not recorded, so do not infer 32 distinct size classes.
   static constexpr moss::kernel::usize NUM_CACHES = 32;
+  // Eight bytes fits the in-object free-list pointer on the supported LP64 ABIs;
+  // one base page is the largest class because each slab backing block is order 0.
   static constexpr moss::kernel::usize MIN_OBJECT_SIZE = 8;
   static constexpr moss::kernel::usize MAX_OBJECT_SIZE = 4096;
 
@@ -1866,7 +1901,9 @@ struct SystemStats {
 using SystemCounters = PerCpuData<SystemStats>;
 } // namespace common_types
 
-// Container configuration
+// Legacy configuration defaults: these values do not currently drive the queue
+// aliases or SlabAllocator above. Queue budgets are policy choices, not measured
+// limits; slab values mirror its pointer-sized minimum, page maximum and slot count.
 struct ContainerConfig {
   static constexpr usize DEFAULT_PROCESS_QUEUE_SIZE = 256;
   static constexpr usize DEFAULT_MESSAGE_QUEUE_SIZE = 512;

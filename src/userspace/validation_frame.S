@@ -2,6 +2,12 @@
 // function restores its C caller's registers and returns the syscall result,
 // or -(1000 + register index) on corruption. Fork executes the same checks in
 // both processes, before any exec or userspace C code can hide the difference.
+// Seeds use 256 + register index (x86 uses the save-order index); distinct values
+// expose misplaced saves. The base has no recorded special significance.
+// Error base 1000 separates register failures from ordinary native errno;
+// index 99 (1099) identifies flags. Changing this encoding affects diagnostics.
+// Native syscall IDs 17/14 are sigreturn/kill; kill uses PID 1 and SIGUSR1=10
+// because the validation process is the initial user process.
 .text
 // A malformed sigreturn must fail without touching the supplied user stack.
 // Keep the real C stack in a syscall-preserved register until the error returns.
@@ -36,6 +42,9 @@ uaccess_sigreturn_probe:
 .type frame_register_probe, @function
 frame_register_probe:
 #if defined(__aarch64__)
+    // 31 caller-register slots occupy 248 bytes; result is at 248, argument
+    // scratch at 256, and padding at 264 makes the total 272 a multiple of 16.
+    // Register i lives at i*8, so these offsets must follow the restore block.
     sub sp, sp, #272
     str x0, [sp, #0]
     str x1, [sp, #8]
@@ -109,6 +118,8 @@ frame_register_probe:
     mov x0, #256
 .Larm_set_flags:
     str x0, [sp, #256]
+    // NZCV is bits 31..28: nibble 0xa sets N and C, then the check shifts 28
+    // and compares with decimal 10. This exercises flags alongside GP state.
     mov x0, #0xa0000000
     msr nzcv, x0
     ldr x0, [sp, #256]
@@ -374,6 +385,9 @@ frame_register_probe:
     add sp, sp, #272
     ret
 #elif defined(__riscv)
+    // Slots use architectural index*8 through x31 at 248; x0 and SP need no
+    // save. Result at 256 plus padding at 264 makes 272 bytes, aligned to 16.
+    // The syscall argument supplied by C is a0/x10, hence its saved offset 80.
     addi sp, sp, -272
     sd x1, 8(sp)
     sd x3, 24(sp)
@@ -662,6 +676,9 @@ frame_register_probe:
     addi sp, sp, 272
     ret
 #elif defined(__x86_64__)
+    // 15 caller-register slots occupy 120 bytes, result is at 120, padding at
+    // 128. A C entry SP is 8 modulo 16; subtracting 136 aligns this workspace.
+    // SYSCALL architecturally clobbers RCX/R11, so their seeds are not checked.
     subq $136, %rsp
     movq %rax, 0(%rsp)
     movq %rbx, 8(%rsp)
@@ -699,7 +716,7 @@ frame_register_probe:
     movq $1, %rdi
     movq $10, %rsi
 .Lx86_call:
-    stc
+    stc // Carry is RFLAGS bit 0; test $1 below checks preservation through the trap.
     syscall
     movq %rax, 120(%rsp)
     pushfq

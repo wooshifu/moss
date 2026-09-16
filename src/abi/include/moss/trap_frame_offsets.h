@@ -2,7 +2,12 @@
 
 // Native exception-frame ABI: byte offsets consumed by preprocessed assembly.
 // No platform, bootloader or emulator information belongs here.
+// Every saved slot is one 8-byte u64, in TrapFrame member order. Frame sizes
+// include any reserved slots and are multiples of the 16-byte stack alignment;
+// changing the layout requires updating assembly and the C++ offset assertions.
 #if defined(MOSS_ARCH_ARM64)
+// Restore only NZCV (bits 31:28); fixed zero selects EL0t with IRQs unmasked.
+// User-provided status must never choose a privileged return mode.
 #define MOSS_USER_STATUS_MASK 0xf0000000
 #define MOSS_USER_STATUS_FIXED 0
 #define MOSS_TF_X0 0
@@ -41,6 +46,8 @@
 #define MOSS_TF_SP 264
 #define MOSS_TF_SIZE 272
 #elif defined(MOSS_ARCH_RISCV64)
+// Ignore user-supplied sstatus. UXL=2 (bits 33:32) selects RV64 and SPIE=1
+// (bit 5) restores supervisor interrupt delivery after SRET; SPP remains zero.
 #define MOSS_USER_STATUS_MASK 0
 #define MOSS_USER_STATUS_FIXED 0x200000020
 #define MOSS_TF_RA 0
@@ -81,6 +88,8 @@
 #define MOSS_TF_RESERVED1 280
 #define MOSS_TF_SIZE 288
 #elif defined(MOSS_ARCH_X64)
+// 0xcd5 preserves CF/PF/AF/ZF/SF/DF/OF only; 0x202 forces reserved bit 1
+// and IF while excluding IOPL and other privileged RFLAGS controls.
 #define MOSS_USER_STATUS_MASK 0xcd5
 #define MOSS_USER_STATUS_FIXED 0x202
 #define MOSS_TF_R15 0

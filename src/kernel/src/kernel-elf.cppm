@@ -10,6 +10,9 @@ import moss.arch;
 
 export namespace moss::kernel::elf {
 
+// These tags, machine IDs, segment types and permission bits are ELF wire
+// values, not tuning parameters; changing them would reinterpret linked files.
+// ELF_MAGIC packs the identification bytes as read by a little-endian CPU.
 // ELF file header constants
 inline constexpr u32 ELF_MAGIC = 0x464C457F; // "\x7FELF"
 inline constexpr u8 ELF_CLASS_64 = 2;        // 64-bit ELF
@@ -45,7 +48,7 @@ inline constexpr u32 PF_R = 0x4; // Readable
 
 // 64-bit ELF file header
 struct [[gnu::packed]] ElfHeader {
-  u8 e_ident[16];  // ELF identification
+  u8 e_ident[16];  // ELF fixes its identification prefix at 16 bytes; fields below must retain wire offsets.
   u16 e_type;      // File type
   u16 e_machine;   // Target architecture
   u32 e_version;   // File version
@@ -88,17 +91,17 @@ struct [[gnu::packed]] ProgramHeader {
     return false;
   }
 
-  // Check class (64-bit)
+  // ELF e_ident[4] is EI_CLASS; the loader below uses ELF64 field widths.
   if (hdr->e_ident[4] != ELF_CLASS_64) {
     return false;
   }
 
-  // Check endianness (little-endian)
+  // ELF e_ident[5] is EI_DATA; headers are read directly without byte swapping.
   if (hdr->e_ident[5] != ELF_DATA_LSB) {
     return false;
   }
 
-  // Check type (executable)
+  // Require a fixed-address executable: this loader does not relocate ET_DYN images.
   if (hdr->e_type != ET_EXEC) {
     return false;
   }
@@ -121,7 +124,8 @@ struct [[gnu::packed]] ProgramHeader {
     }
   }
 
-  // Check program header table
+  // e_ident[6] is EI_VERSION. Reject a truncated or differently sized table
+  // before pointer arithmetic; division below avoids overflow from count * size.
   if (hdr->e_ident[6] != ELF_VERSION || hdr->e_version != ELF_VERSION || hdr->e_ehsize != sizeof(ElfHeader) ||
       hdr->e_phentsize != sizeof(ProgramHeader) || hdr->e_phoff < sizeof(ElfHeader) || hdr->e_phnum == 0) {
     return false;

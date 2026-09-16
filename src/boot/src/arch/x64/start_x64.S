@@ -76,7 +76,7 @@ _pvh_start:
     //
     // We use 2MB pages for compatibility: PML4 → PDPT → PD (2MB each)
     //
-    // Page table layout (in .bss.pagetables):
+    // Page table layout (in .pvh.pagetables, outside the later BSS clear):
     //   pvh_pml4:   4096 bytes (512 entries, only [0] used)
     //   pvh_pdpt:   4096 bytes (512 entries, only [0..3] used for 4GB)
     //   pvh_pd[4]:  4x4096 bytes (each maps 1GB via 512x2MB pages)
@@ -199,8 +199,9 @@ _start:
     movb $0x0F, 0xb8001        // bright white on black
 
     // ---- Load GDT ----
-    // Layout: [0] null | [1] kernel CS | [2] kernel DS | [3] user CS | [4] user DS
-    // Selectors: 0x08=KCS, 0x10=KDS, 0x1B=UCS (RPL=3), 0x23=UDS (RPL=3)
+    // Layout: [0] null | [1] kernel CS | [2] kernel DS | [3] user DS | [4] user CS
+    // Selectors: 0x08=KCS, 0x10=KDS, 0x1B=UDS (RPL=3), 0x23=UCS (RPL=3).
+    // User data must precede user code for STAR-based SYSRET selector arithmetic.
     lea gdt_table(%rip), %rax
     lea gdt_ptr(%rip), %rbx
     movw $(gdt_end - gdt_table - 1), (%rbx) // limit
@@ -243,11 +244,13 @@ _start:
 .size _start, . - _start
 
 // =============================================================================
-// Temporary kernel stack (8 KB, page-aligned, in BSS)
+// Temporary kernel stack (8 KiB, 16-byte ABI alignment, in BSS)
 // =============================================================================
 .section ".bss.stack", "aw", @nobits
 .align 16
 stack_bottom:
+    // 8192 is the temporary early-call stack budget, not the linker/per-AP
+    // 32 KiB policy. Its exact maximum-depth sizing evidence is not recorded.
     .skip 8192                          // 8 KB stack
 stack_top:
 
@@ -352,15 +355,15 @@ x86_ap_trampoline_start:
     mov (0x8000 + .Lap_cr3 - x86_ap_trampoline_start), %eax
     mov %eax, %cr3
     mov %cr4, %eax
-    or $0x620, %eax
+    or $0x620, %eax                // CR4.PAE/OSFXSR/OSXMMEXCPT (bits 5/9/10)
     mov %eax, %cr4
     mov $0xC0000080, %ecx
     rdmsr
     or $0x900, %eax
     wrmsr
     mov %cr0, %eax
-    and $~0xC, %eax
-    or $0x80000003, %eax
+    and $~0xC, %eax               // clear CR0.EM/TS so x87/SSE can be initialized
+    or $0x80000003, %eax         // CR0.PG/PE/MP: paging, protected mode, FP monitor
     mov %eax, %cr0
     ljmpl $0x18, $(0x8000 + .Lap_long - x86_ap_trampoline_start)
 .code64
@@ -377,7 +380,7 @@ x86_ap_trampoline_start:
     .quad 0x00CF92000000FFFF
     .quad 0x00AF9A000000FFFF
 .Lap_gdtr:
-    .word 31
+    .word 31                      // four 8-byte descriptors - 1; GDTR limit is inclusive
     .long (0x8000 + .Lap_gdt - x86_ap_trampoline_start)
 .balign 8
 .global x86_ap_cr3

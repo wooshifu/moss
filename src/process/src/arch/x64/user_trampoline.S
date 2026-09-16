@@ -5,7 +5,7 @@
 .type user_iret_trampoline, @function
 user_iret_trampoline:
     movq %rbx, %rdi
-    movq 56(%rbx), %rsi
+    movq 56(%rbx), %rsi // CpuContext::sp: byte offset 7*8, checked by its C++ assertion.
     jmp switch_to_user
 .size user_iret_trampoline, .-user_iret_trampoline
 .section .note.GNU-stack,"",@progbits

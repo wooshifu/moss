@@ -41,7 +41,8 @@ inline constexpr long STDOUT = 1;
 inline constexpr long STDERR = 2;
 } // namespace fd_num
 
-// Syscall number enumeration - grouped by functionality
+// These ordinals define the Moss ABI shared by userspace/syscall.h and the
+// indexed dispatch table. They are not Linux syscall numbers or reorderable IDs.
 enum class SyscallNumber : long {
   // === Basic syscalls (0-9) ===
   SYS_DEBUG_PRINT = 0,

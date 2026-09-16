@@ -52,6 +52,8 @@ enum class DeviceState : u8 { Uninitialized = 0, Initializing = 1, Active = 2, S
 // ========================================================================
 
 struct DeviceProperty {
+  // Property storage is borrowed (often firmware-backed); the caller must keep
+  // both strings alive for as long as this device can be queried.
   const char *name;
   const char *value;
   usize value_size;
@@ -452,7 +454,9 @@ extern DeviceManager *g_device_manager;
 // PL011 UART Driver
 // ========================================================================
 
-// PL011 UART register offsets
+// PL011 UART register byte offsets and bit encodings follow Arm DDI 0183,
+// chapter 3. These are hardware ABI values; renumbering them selects different
+// registers rather than changing a driver policy.
 namespace uart_regs {
 inline constexpr u32 UARTDR = 0x000;
 inline constexpr u32 UARTRSR = 0x004;
@@ -526,6 +530,9 @@ private:
   u64 rx_errors_;
 
 public:
+  // Fallbacks are a 24 MHz UART clock and 115200 bits/s; firmware properties
+  // override them in initialize(). Their platform-specific selection rationale
+  // is not recorded, so they must not be assumed valid on every PL011 board.
   UartDevice(const char *name, const char *compatible) noexcept
       : Device(0, DeviceType::UART, name, compatible), base_addr_(0), clock_freq_(24000000), baud_rate_(115200),
         irq_(0), initialized_(false), bytes_sent_(0), bytes_received_(0), tx_errors_(0), rx_errors_(0) {}
@@ -633,6 +640,8 @@ public:
 
     u32 data = read_reg(uart_regs::UARTDR);
 
+    // PL011 DR[11:8] report overrun/break/parity/framing errors; bits [7:0]
+    // hold the character, so status bits must not leak into the returned byte.
     if (data & 0xF00) {
       rx_errors_++;
       return KernelResult<char>{Err<ErrorCode>(ErrorCode::IoError)};
@@ -684,6 +693,10 @@ public:
 
     baud_rate_ = baud_rate;
 
+    // PL011 baud divisor = UARTCLK/(16*baud): 16 is the hardware oversample
+    // factor. FBRD stores 6 fractional bits (scale 64); temp/2 rounds to the
+    // nearest fractional step rather than systematically truncating the baud.
+    // See Arm DDI 0183, section 2.4.3; these factors are not tuning parameters.
     u32 temp = 16 * baud_rate;
     u32 divint = clock_freq_ / temp;
     u32 divfrac = ((clock_freq_ % temp) * 64 + temp / 2) / temp;
@@ -727,6 +740,8 @@ private:
 
     write_reg(uart_regs::UARTLCR_H, uart_line_control::UARTLCR_H_WLEN_8 | uart_line_control::UARTLCR_H_FEN);
 
+    // All 11 PL011 interrupt causes are write-one-to-clear; discard stale
+    // causes before enabling transmit/receive to avoid an immediate old IRQ.
     write_reg(uart_regs::UARTICR, 0x7FF);
 
     write_reg(uart_regs::UARTCR, uart_control::UARTCR_UARTEN | uart_control::UARTCR_TXE | uart_control::UARTCR_RXE);
@@ -743,6 +758,7 @@ private:
 
     u32 int_status = uart->read_reg(uart_regs::UARTMIS);
 
+    // PL011 MIS.RXMIS is bit 4; draining RX removes the FIFO-level cause.
     if (int_status & (1 << 4)) {
       while (!(uart->read_reg(uart_regs::UARTFR) & uart_flags::UARTFR_RXFE)) {
         (void)uart->read_reg(uart_regs::UARTDR);
@@ -759,6 +775,7 @@ private:
   static const char *compatible_devices[];
 
 public:
+  // Two compatible strings are defined below: the PL011 and PrimeCell aliases.
   UartDriver() noexcept : Driver("pl011-uart", "1.0", compatible_devices, 2) {}
 
   ~UartDriver() override = default;

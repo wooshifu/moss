@@ -4,8 +4,8 @@
 //
 // What lives here (architecture-specific):
 //   - ARM64: Generic Timer (cntvct_el0, cntv_cval_el0, cntv_ctl_el0)
-//   - x64: Local APIC Timer / TSC [placeholder]
-//   - RISC-V 64: SBI Timer / stimecmp CSR [placeholder]
+//   - x64: PIT-calibrated Local APIC one-shot timer / TSC
+//   - RISC-V 64: SBI TIME extension / time counter
 //
 // What stays in timer.cppm (architecture-independent):
 //   - Clocksource class (mult/shift conversion)
@@ -26,7 +26,7 @@ using moss::u64;
 using moss::u8;
 
 // ============================================================================
-// Timer frequency — read from hardware or platform defaults
+// Timer frequency — read from hardware or firmware/calibration data
 // ============================================================================
 
 /// Return the hardware timer frequency in Hz.
@@ -37,11 +37,11 @@ using moss::u8;
   asm volatile("mrs %0, cntfrq_el0" : "=r"(freq));
   return freq;
 #elif defined(MOSS_ARCH_X64)
-  // x64: TSC frequency must be calibrated (placeholder: return platform default)
+  // Boot calibrate() publishes TSC Hz; there is no guessed fallback frequency.
   u64 plat_freq = platform::timer_frequency();
   return plat_freq;
 #elif defined(MOSS_ARCH_RISCV64)
-  // RISC-V 64: typically from DTB timebase-frequency; use platform default
+  // The DTB timebase-frequency is the time counter rate in Hz, not CPU cycles/s.
   u64 plat_freq = platform::timer_frequency();
   return plat_freq;
 #endif
@@ -81,18 +81,27 @@ inline u64 lapic_frequency = 0; // Counter frequency after the configured divide
     return value;
   };
   auto count = [&] {
+    // PIT channel 0: command port 0x43, counter port 0x40. Command zero
+    // latches the current 16-bit down-counter; read low byte before high byte.
     out(0x43, 0);
     u16 low = in(0x40);
     return static_cast<u16>(low | (static_cast<u16>(in(0x40)) << 8));
   };
   auto *initial = reinterpret_cast<volatile u32 *>(platform::intc_dist_base() + 0x380);
   auto *current = reinterpret_cast<volatile u32 *>(platform::intc_dist_base() + 0x390);
+  // LAPIC initial/current counts are at byte offsets 0x380/0x390. PIT command
+  // 0x30 selects channel 0, low/high-byte access, binary mode-0 one-shot;
+  // 0xffff gives a full 16-bit reference countdown before reaching zero.
   out(0x43, 0x30);
   out(0x40, 0xFF);
   out(0x40, 0xFF);
   u16 first = count(), last = first;
   u64 tsc_start = read_counter();
   *initial = ~0U;
+  // Target 20000 PIT ticks (~16.8 ms); 1000000 polls bounds a stalled PIT.
+  // Reject >60000 ticks (~50.3 ms) or wraparound so a delayed sample cannot
+  // masquerade as a reliable interval. These window/poll policies have no
+  // recorded tuning evidence; poll counts are not elapsed-time guarantees.
   for (u32 retry = 0; retry < 1000000 && first - last < 20000; ++retry) {
     last = count();
   }
@@ -103,8 +112,13 @@ inline u64 lapic_frequency = 0; // Counter frequency after the configured divide
     return false;
   }
   u64 reference_ticks = static_cast<u64>(first - last);
+  // The PC PIT reference is 1193182 Hz. Scale both measured tick deltas by
+  // this rate; LAPIC frequency includes the divide-by-16 configured at boot.
   platform::hardware.timebase_frequency = tsc_ticks * 1193182ULL / reference_ticks;
   lapic_frequency = apic_ticks * 1193182ULL / reference_ticks;
+  // Sanity policy: TSC 1 kHz..100 GHz, divided LAPIC 1 kHz..100 MHz.
+  // These are rejection bounds, not device specifications; exact bounds have
+  // no recorded derivation and must be revisited for hardware outside them.
   return frequency() >= 1000 && frequency() <= 100000000000ULL && lapic_frequency >= 1000 &&
          lapic_frequency <= 100000000ULL;
 }
@@ -123,6 +137,9 @@ inline void set_compare(u64 value) noexcept {
 #elif defined(MOSS_ARCH_X64)
   {
     u64 now = read_counter();
+    // LAPIC is a 32-bit countdown, not a TSC deadline register. Convert the
+    // remaining TSC cycles into divided LAPIC ticks and saturate at 2^32-1.
+    // One tick is the minimum: loading zero would disable the timer entirely.
     u64 delta = value > now ? value - now : 1;
     u64 seconds = delta / frequency();
     u64 ticks = seconds > 0xFFFFFFFFULL / lapic_frequency
@@ -138,6 +155,8 @@ inline void set_compare(u64 value) noexcept {
   register u64 a0 asm("a0") = value;
   register u64 a1 asm("a1") = 0;
   register u64 a6 asm("a6") = 0;
+  // SBI v0.2+: EID 0x54494d45 ("TIME"), FID 0=sbi_set_timer; value is an
+  // absolute time-counter deadline. RV64 needs no high-word argument in a1.
   register u64 a7 asm("a7") = 0x54494D45;
   asm volatile("ecall" : "+r"(a0), "+r"(a1) : "r"(a6), "r"(a7) : "memory");
 #endif
@@ -204,8 +223,8 @@ inline void ack_interrupt() noexcept {
 #elif defined(MOSS_ARCH_X64)
   // APIC EOI — handled by intc_hal::eoi, not duplicated here
 #elif defined(MOSS_ARCH_RISCV64)
-  // On RISC-V 64 with Sstc, writing stimecmp clears the pending timer interrupt.
-  // No explicit SIP.STIP clear needed — the caller will set a new compare value.
+  // SBI set_timer() clears the pending cause when the caller rearms the timer;
+  // firmware owns the mechanism, so do not also try to write supervisor STIP.
 #endif
 }
 
@@ -213,7 +232,7 @@ inline void ack_interrupt() noexcept {
 // Timer IRQ number query
 // ============================================================================
 
-/// Return the IRQ number used by the timer, as configured in PlatformDefaults.
+/// Return the timer IRQ discovered from firmware.
 [[nodiscard]] inline u32 irq_number() noexcept { return platform::timer_irq(); }
 
 } // namespace moss::kernel::hal::timer

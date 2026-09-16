@@ -62,6 +62,8 @@ struct InterruptDescriptor {
   bool enabled;
   const char *name;
 
+  // Priority 128 matches HAL's 0x80 default under PMR=0xff; target mask 1
+  // selects logical boot CPU zero. These are software defaults, not firmware IDs.
   InterruptDescriptor() noexcept
       : irq(0), type(InterruptType::SPI), trigger(TriggerType::LevelHigh), priority(128), target_cpu_mask(1),
         handler(nullptr), context(nullptr), count{}, enabled(false), name(nullptr) {}
@@ -288,6 +290,8 @@ public:
     (void)total_interrupts_.fetch_add(1, containers::MemoryOrder::Relaxed);
     interrupt_counts_.get_cpu(cpu)++;
 
+    // Hold a shared descriptor through the callback so concurrent table removal
+    // cannot free it; the callback context itself remains the registrant's responsibility.
     auto desc_ptr = interrupt_table_.find(irq);
     if (static_cast<bool>(desc_ptr)) {
       auto desc = *desc_ptr;
@@ -395,6 +399,8 @@ extern GenericInterruptController *g_gic;
 // ========================================================================
 // IPI SGI ID assignment (based on Linux kernel design)
 // ========================================================================
+// This is Moss's shared SGI-number contract (0..7), used by registration,
+// send mapping and per-SGI statistics; enum order changes must update all three.
 enum class IpiSgiId : u8 {
   Reschedule = 0,
   CallFunction = 1,
@@ -514,6 +520,7 @@ private:
   containers::AtomicU64 total_ipis_sent_;
   containers::AtomicU64 message_sequence_;
 
+  // Eight slots correspond to the IpiSgiId range 0..7 above.
   containers::AtomicU64 sgi_send_counts_[8];
   containers::AtomicU64 sgi_receive_counts_[8];
 
@@ -521,6 +528,8 @@ public:
   SimpleHardwareIpi() noexcept
       : gic_(nullptr), initialized_(false), max_cpus_(0), total_ipis_sent_{}, message_sequence_{}, sgi_send_counts_{},
         sgi_receive_counts_{} {
+    // Constructor seed only; initialize() resets to 1 before use. The choice
+    // of 1000 has no recorded rationale and is not a hardware protocol value.
     message_sequence_.store(1000, containers::MemoryOrder::Relaxed);
   }
 

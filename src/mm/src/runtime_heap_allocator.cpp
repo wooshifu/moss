@@ -26,6 +26,8 @@ HeapAllocVoidResult RuntimeHeapAllocator::initialize_heap(VirtAddr heap_start, u
   }
 
   const auto limit = moss::abi::linker::heap_end();
+  // 0x100000000 是当前 4 GiB 内核身份映射的独占上界；arena 的字节地址
+  // 必须能直接解引用，不能仅因链接脚本预留了空间就接受未映射的高地址。
   if (heap_start != moss::abi::linker::heap_start() || (heap_start & (PAGE_SIZE - 1)) != 0 || limit <= heap_start ||
       limit > 0x100000000ULL || (limit & (PAGE_SIZE - 1)) != 0) {
     return HeapAllocVoidResult{HeapAllocError::InvalidAddress};
@@ -183,6 +185,8 @@ HeapAllocVoidResult RuntimeHeapAllocator::expand_heap(usize additional_size) noe
 }
 
 HeapAllocVoidResult RuntimeHeapAllocator::expand_heap_locked(usize additional_size) noexcept {
+  // allocate_aligned already owns lock_; reacquiring the public entry's lock
+  // here would deadlock. Growth only exposes another part of the mapped arena.
   if (!initialized_) {
     return HeapAllocVoidResult{HeapAllocError::InitializationFailed};
   }
@@ -282,6 +286,8 @@ RuntimeHeapAllocator::FreeBlock *RuntimeHeapAllocator::find_suitable_block(usize
 void RuntimeHeapAllocator::split_block(FreeBlock *block, usize required_size) noexcept {
   usize remaining_size = block->size - required_size;
 
+  // Smaller tails cannot hold FreeBlock; keep them owned by this allocation
+  // so neither a later free nor the list traversal uses an undersized header.
   if (remaining_size >= MIN_BLOCK_SIZE) {
     // 创建新的空闲块
     FreeBlock *new_block = reinterpret_cast<FreeBlock *>(reinterpret_cast<char *>(block) + required_size);

@@ -25,6 +25,8 @@ VoidResult SimpleHardwareIpi::initialize(GenericInterruptController *gic, u32 ma
     return VoidResult{ErrorCode::InvalidParameter};
   }
 
+  // 256 is a legacy admission policy, not the 32-bit target mask's capacity;
+  // callers must also obey the firmware topology and BOOT_MAX_CPUS bound.
   if (max_cpus == 0 || max_cpus > 256) {
     return VoidResult{ErrorCode::InvalidParameter};
   }

@@ -47,11 +47,16 @@ namespace containers = moss::kernel::containers;
 
 // CFS scheduling parameters
 namespace cfs_params {
+// Default latency/quantum budgets trade switch frequency against response
+// time; their exact 6 ms/0.75 ms tuning evidence is not recorded. Eight is
+// their ratio, so periods grow once equal shares would fall below the quantum.
 inline constexpr u64 SCHED_LATENCY_NS = 6000000;  // 6ms
 inline constexpr u64 MIN_GRANULARITY_NS = 750000; // 0.75ms
 inline constexpr u32 SCHED_NR_LATENCY = 8;
 
-// nice-to-weight mapping table (similar to Linux kernel)
+// Linux-style nice scale: 40 entries cover -20..19; index 20 (nice 0) is the
+// neutral weight 1024 used to normalize vruntime. Adjacent weights differ by
+// roughly 1.25 so nice changes affect proportional CPU shares, not fixed slices.
 inline constexpr u32 NICE_TO_WEIGHT[] = {
     /* -20 */ 88761, 71755, 56483, 46273, 36291,
     /* -15 */ 29154, 23254, 18705, 14949, 11916,
@@ -66,6 +71,8 @@ inline constexpr u32 NICE_TO_WEIGHT[] = {
 constexpr u32 nice_to_weight_index(i32 nice) { return static_cast<u32>(nice + 20); }
 
 constexpr u32 nice_to_weight(i32 nice) {
+  // Invalid nice values use the smallest positive fallback, avoiding a zero
+  // denominator in fairness math. Valid values index the -20..19 public range.
   u32 index = nice_to_weight_index(nice);
   return (index < 40) ? NICE_TO_WEIGHT[index] : 1;
 }
@@ -133,6 +140,8 @@ private:
   // Find highest set bit across both words (highest priority with tasks).
   // Returns 0 if no bits set (priority 0 is unused).
   [[nodiscard]] u32 find_highest() const noexcept {
+    // clzll counts within a 64-bit word, so 63-clz is its highest bit index;
+    // add 64 only for the second word to recover the RT priority.
     // Check high word first (priorities 64-99)
     if (bitmap_[1] != 0) {
       return 64 + 63 - static_cast<u32>(intrinsics::bitops::clzll(bitmap_[1]));
@@ -465,6 +474,8 @@ public:
 
     static u64 pick_debug = 0;
     pick_debug++;
+    // Sample one selection per million calls to bound hot-path debug output;
+    // the exact logging interval has no recorded measurement behind it.
     if (pick_debug % 1000000 == 0) {
       log::klog::debug("pick_next_task: selected TID={} vruntime={} nr_running={} min_vruntime={}",
                        static_cast<u32>(next->tid), next->se.vruntime, nr_running_, min_vruntime_);
@@ -535,6 +546,7 @@ private:
 
     // vruntime-based preemption: if leftmost has much lower vruntime, preempt.
     // WAKEUP_GRANULARITY prevents excessive switching on tiny vruntime deltas.
+    // The exact 1 ms threshold is a policy default with no recorded calibration.
     constexpr u64 WAKEUP_GRANULARITY_NS = 1000000; // 1ms
     return current->se.vruntime > leftmost->se.vruntime + WAKEUP_GRANULARITY_NS;
   }
@@ -564,6 +576,8 @@ public:
   // is_fork=true: slight penalty so parent runs first (returns child PID).
   // is_fork=false (wakeup): slight bonus to reduce wakeup latency.
   void place_entity(Thread *thread, bool is_fork) noexcept {
+    // Half the target latency (3 ms) bounds the fork penalty/wakeup credit.
+    // The choice of one-half is not backed by recorded workload measurements.
     containers::LockGuard<containers::IrqSpinLock> guard(lock_);
     u64 vruntime = min_vruntime_;
     if (is_fork) {
@@ -595,32 +609,29 @@ private:
       return delta_exec;
     }
 
+    // Index 20 is nice 0: charge wall time in neutral-weight vruntime units.
     return (delta_exec * cfs_params::NICE_TO_WEIGHT[20]) / thread->se.weight;
   }
 
   // ── Standard PELT (Per-Entity Load Tracking) ────────────────────────
   //
-  // Models Linux kernel's PELT with 32ms half-life (y^32 = 0.5).
-  // Time is divided into 1024μs periods.  Each completed period's
-  // contribution decays by factor y = 0.97857206 (Q32 = 4202074112).
-  //
-  // Geometric series sum:  LOAD_AVG_MAX = 1024 × (1/(1-y)) ≈ 47742
-  //
-  // For a task that ran for `delta_ns` nanoseconds:
-  //   1. Convert delta to μs
-  //   2. Split into: d1 (remainder of current period) + n×1024 (full periods) + d3 (partial new period)
-  //   3. Apply: sum = old_sum × y^n  +  d1 × y^n  +  Σ_n(1024×y^i)  +  d3
-  //
-  // We precompute y^n for small n (0-63) as Q32 fixed-point.
+  // PELT-style tracking uses 1024 us periods and Q32 coefficients (divide by
+  // 2^32 to interpret them). The scalar below is about 0.97837162, giving
+  // roughly one-half decay over 32 periods (32.768 ms). This implementation
+  // splits each delta into full periods plus a remainder, without tracking a
+  // partially elapsed period across calls. Exact coefficient provenance is unrecorded.
 
-  // Q32 decay factor: y = 0.97857206 → round(y × 2^32) = 4202074112
+  // Keep scalar, table and normalization consistent when changing decay policy.
   static constexpr u64 PELT_Y_Q32 = 4202074112ULL;
   static constexpr u64 PELT_PERIOD_US = 1024;
   static constexpr u64 PELT_PERIOD_NS = PELT_PERIOD_US * 1000;
+  // Existing normalization/cap. Its exact derivation is unrecorded and it is
+  // not 1024/(1-y) for the scalar above (approximately 47345).
   static constexpr u64 LOAD_AVG_MAX = 47742;
 
-  // y^n table (Q32): precomputed for n = 0..31.  For n > 31, iterate.
-  // y^n = round(0.97857206^n × 2^32)
+  // Stored Q32 coefficients for n=0..31; their generation method is unrecorded.
+  // Entry zero approximates 1 with UINT32_MAX because u32 cannot hold 2^32.
+  // Larger exponents multiply table factors in chunks of at most 31 periods.
   static constexpr u32 PELT_YN_Q32[] = {
       // clang-format off
       4294967295U, 4202074112U, 4111399273U, 4022890828U,
@@ -633,9 +644,9 @@ private:
       2369996401U, 2320683011U, 2272243884U, 2224633618U,
       // clang-format on
   };
-  static constexpr u32 PELT_YN_TABLE_SIZE = 32;
+  static constexpr u32 PELT_YN_TABLE_SIZE = 32; // Must match the 32 stored coefficients.
 
-  // Compute y^n in Q32 for arbitrary n (uses table + iterative squaring for n≥32)
+  // Compose decay for arbitrary n by repeated table chunks (not squaring).
   [[nodiscard]] static u64 pelt_decay_factor(u32 n) noexcept {
     if (n == 0) {
       return static_cast<u64>(PELT_YN_Q32[0]);
@@ -652,12 +663,13 @@ private:
 
   // Geometric series sum: Σ_{i=1..n} 1024 × y^i  (Q32 input, returns μs)
   // = 1024 × y × (1 - y^n) / (1 - y)
-  // For small n, iterate directly (n ≤ ~64 on a 6ms tick).
+  // Iterate each full 1024 us period (five fit in a normal 6 ms delta); there
+  // is no 64-period limit, and Q32 terms eventually round down to zero.
   [[nodiscard]] static u64 pelt_period_sum(u32 n) noexcept {
     if (n == 0) {
       return 0;
     }
-    // Iterative accumulation (accurate for realistic n values ≤ 64)
+    // Round each contribution to whole microseconds before adding it.
     u64 sum = 0;
     u64 term_q32 = PELT_Y_Q32; // y^1
     for (u32 i = 0; i < n; i++) {
@@ -678,6 +690,8 @@ private:
     // Convert nanoseconds to microseconds for PELT period math
     u64 delta_us = delta_exec_ns / 1000;
     if (delta_us == 0) {
+      // Preserve a nonzero contribution for sub-microsecond execution; this
+      // rounds such deltas up to the tracker's smallest unit (1 us).
       delta_us = 1;
     }
 
@@ -699,7 +713,7 @@ private:
     thread->se.load_sum += contrib;
     thread->se.util_sum += contrib;
 
-    // Cap to LOAD_AVG_MAX (geometric series convergence limit)
+    // Cap to the existing normalization budget before deriving averages.
     if (thread->se.load_sum > LOAD_AVG_MAX) {
       thread->se.load_sum = LOAD_AVG_MAX;
     }
@@ -1120,7 +1134,7 @@ private:
 // BSP scheduling readiness flag — secondary CPUs idle-wait until BSP
 // finishes creating and dispatching the init process.  Without this gate,
 // secondary CPUs' scheduler_tick() and load balancer can steal/dispatch
-// init before BSP's start_scheduling() finds TID=1000, causing a
+// init before BSP's start_scheduling() dispatches it, causing a
 // double-dispatch race (two CPUs execute the same Thread simultaneously).
 inline containers::AtomicBool g_bsp_scheduling_ready{};
 
@@ -1354,7 +1368,7 @@ public:
 
     // Secondary CPUs: wait for BSP to finish creating and dispatching
     // the init process.  Without this gate, scheduler_tick() and the
-    // load balancer can steal/dispatch init before BSP finds TID=1000,
+    // load balancer can steal/dispatch init before BSP dispatches it,
     // leading to double-dispatch (two CPUs executing the same Thread).
     // BSP (cpu 0) skips this — it sets the flag in start_scheduling().
     if (cpu_id != 0) {
@@ -1367,6 +1381,8 @@ public:
 
     u32 idle_cycles = 0;
     u32 active_cycles = 0;
+    // Sample task/idle loop logging every two million iterations; aggregate
+    // stats use five times this interval. Exact diagnostic cadences are unrecorded.
     constexpr u32 LOG_INTERVAL = 2000000;
 
     while (true) {
@@ -1618,12 +1634,11 @@ private:
   containers::PerCpuData<shared_ptr<Process>> exiting_processes_;
   containers::PerCpuData<Thread *> sleeping_tasks_{};
 
-  // Per-CPU exit stack — used by schedule_after_exit() to avoid running
-  // on the exited process's kernel stack (which will be freed by waitpid).
-  // Without this, bootstrap_contexts_[cpu].sp would point to the dead
-  // task's kernel stack, creating a use-after-free when that stack is
-  // reclaimed by a subsequent fork.
-  static constexpr usize EXIT_STACK_SIZE = 4096; // 4KB per CPU is plenty
+  // Legacy one-page (4 KiB) exit-stack declaration. schedule_after_exit now
+  // restores bootstrap_contexts_ to leave the dying task's stack before its
+  // owner can be reclaimed; it does not use ExitStack. No stack-usage evidence
+  // for this retained size is recorded.
+  static constexpr usize EXIT_STACK_SIZE = 4096;
 
 public:
   struct alignas(16) ExitStack {
@@ -1734,7 +1749,8 @@ public:
     tick_count_++;
     u32 cpu = get_current_cpu_id();
 
-    // Periodic load balance: every 8 ticks (~48ms)
+    // Amortize balance scans over eight 6 ms ticks (~48 ms); the choice of
+    // eight ticks has no recorded workload calibration.
     if (tick_count_ % 8 == 0 && balance_callback_) {
       balance_callback_(get_current_time(), this);
     }
@@ -1762,6 +1778,8 @@ public:
     bool preempt_blocked = (curr->preempt_count > 0);
 
     u64 now = get_current_time();
+    // A non-advancing timestamp still charges a 1 us fallback; the exact
+    // fallback choice is unrecorded and is not a hardware clock resolution.
     u64 delta = (now > curr->se.exec_start) ? (now - curr->se.exec_start) : 1000;
 
     // ---- RT scheduling tick ----
@@ -1817,7 +1835,8 @@ public:
     // SCHED_LATENCY_NS (6ms); a delta much larger than that means the task
     // was in a kernel path that masked IRQ (e.g. console_read polling for
     // keyboard input).  Charge at most one tick's worth of vruntime so the
-    // task is not starved by CFS after the masked period ends.
+    // task is not starved by CFS after the masked period ends. Twice the period
+    // is the cutoff; the exact factor has no recorded calibration.
     if (delta > cfs_params::SCHED_LATENCY_NS * 2) {
       delta = cfs_params::SCHED_LATENCY_NS;
     }
@@ -1993,6 +2012,8 @@ private:
 
 #if defined(MOSS_ARCH_ARM64)
       // Keep the user context separate from the kernel trampoline context.
+      // Mask 15 rounds the byte address to the 16-byte ABI stack alignment;
+      // x19 carries the saved-context pointer and x30 is the trampoline LR.
       {
         u64 saved_address = (task->kernel_stack_top() - sizeof(CpuContext)) & ~15ULL;
         auto *saved = reinterpret_cast<CpuContext *>(saved_address);
@@ -2006,7 +2027,8 @@ private:
       }
 
 #elif defined(MOSS_ARCH_X64)
-      // Keep a complete user context above the initial kernel stack frame.
+      // Keep a complete user context above the initial kernel stack frame;
+      // masking 15 supplies the 16-byte alignment required by FXSAVE64.
       {
         u64 saved_address = (task->kernel_stack_top() - sizeof(CpuContext)) & ~15ULL;
         auto *saved = reinterpret_cast<CpuContext *>(saved_address);
@@ -2019,7 +2041,9 @@ private:
       }
 
 #elif defined(MOSS_ARCH_RISCV64)
-      // The top 16 bytes remain reserved for the CPU identity on trap entry.
+      // The top 16 bytes remain reserved for the CPU identity on trap entry:
+      // one 8-byte hart value plus padding preserves 16-byte stack alignment.
+      // s2/s3 (x18/x19) carry context/identity pointers to user_sret_trampoline.
       {
         u64 saved_address = (task->kernel_stack_top() - 16 - sizeof(CpuContext)) & ~15ULL;
         auto *saved = reinterpret_cast<CpuContext *>(saved_address);
@@ -2052,6 +2076,7 @@ private:
         auto proc = g_process_manager ? g_process_manager->find_process(task->owner_pid) : shared_ptr<Process>{};
         if (proc && proc->address_space() && proc->address_space()->pgd_phys != 0) {
 #if defined(MOSS_ARCH_ARM64)
+          // TTBR0_EL1 stores the ASID in bits [63:48], above the table PA.
           u64 ttbr0_val = proc->address_space()->pgd_phys | (static_cast<u64>(proc->address_space()->asid) << 48);
           asm volatile("msr ttbr0_el1, %0" ::"r"(ttbr0_val));
           asm volatile("isb" ::: "memory");

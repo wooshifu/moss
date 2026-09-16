@@ -28,22 +28,27 @@ using moss::kernel::VirtAddr;
 // Constants
 // ============================================================================
 
+// These static budgets bound table storage and error boundaries. The exact
+// sizing rationale for 256 descriptors, 16 mounts and 1024-byte paths is not
+// recorded; changing them alters accepted workloads and per-process storage.
 /// Maximum number of open file descriptors per process
 inline constexpr u32 MAX_FDS = 256;
 
 /// Maximum number of simultaneous mount points
 inline constexpr u32 MAX_MOUNTS = 16;
 
-/// Maximum path component length (single name between '/' separators)
+/// 255 name bytes plus a NUL fit the fixed 256-byte native DirEntry name field.
 inline constexpr u32 MAX_NAME_LEN = 255;
 
 /// Maximum full path length
 inline constexpr u32 MAX_PATH_LEN = 1024;
 
-/// Pipe buffer size (one page)
+/// 4096 bytes equals one base page and is the small-write atomicity boundary.
+/// Keep the pipe implementation and userspace capacity tests consistent.
 inline constexpr u32 PIPE_BUF_SIZE = 4096;
 
 /// Moss-native, no-payload terminal query; not a Linux termios ioctl.
+/// 0x4d01 is shared with syscall.h/mlibc; its original allocation is unrecorded.
 inline constexpr u32 MOSS_IOCTL_ISATTY = 0x4d01;
 
 // ============================================================================
@@ -75,7 +80,8 @@ enum class FileType : u8 {
 };
 
 // ============================================================================
-// Open flags (POSIX-compatible bit flags)
+// Open flags use the Linux-style numeric encoding consumed by pinned mlibc;
+// POSIX defines their behavior but does not fix these wire bit values.
 // ============================================================================
 
 inline constexpr u32 O_RDONLY = 0x0000;
@@ -132,6 +138,8 @@ inline constexpr u32 S_IXOTH = 00001;
 // VFS error codes
 // ============================================================================
 
+// Keep these errno values aligned with kernel:syscall_table and the userspace
+// adapter. Negative values are syscall errors, not filesystem-specific status IDs.
 enum class VfsError : u32 {
   None = 0,
   NoEntry = 2,         // ENOENT
@@ -183,6 +191,8 @@ struct Stat {
   u32 reserved;
   u64 st_dev;
 };
+// Native stat ABI: 40 bytes precede the final u64 device field, totaling 48.
+// The adapter copies this layout; accidental padding changes would break it.
 static_assert(sizeof(Stat) == 48 && __builtin_offsetof(Stat, st_dev) == 40);
 
 // Native fixed-size directory record. Offsets match the pinned mlibc dirent
@@ -195,6 +205,8 @@ struct DirEntry {
   char name[MAX_NAME_LEN + 1];
   u8 reserved[5]; // Explicitly initialized bytes instead of implicit ABI tail padding.
 };
+// Prefix: 8-byte inode + 8-byte cookie + 2-byte size + 1-byte type = 19 bytes;
+// a 256-byte name and 5 explicit tail bytes round the record to 280 (8-aligned).
 static_assert(sizeof(DirEntry) == 280 && __builtin_offsetof(DirEntry, name) == 19);
 
 } // namespace moss::kernel::vfs

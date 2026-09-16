@@ -11,6 +11,8 @@ syscall_entry_point:
 .type syscall_return, @function
 syscall_return:
     cbz x0, .Lreturn_error
+    // Legacy opaque SyscallContext offset: byte 56 (slot 7). Its layout
+    // is not defined here; this helper is not a native TrapFrame result accessor.
     ldr x0, [x0, #56]
     ret
 .Lreturn_error:

@@ -18,6 +18,9 @@ export namespace moss::kernel::initramfs {
 namespace log = moss::kernel::logging;
 
 /// Maximum number of files in the initramfs archive
+// Fixed lookup capacity keeps parsing independent of heap readiness. 64 is a
+// kernel policy, not a CPIO limit; entries after it are not indexed. The exact
+// capacity rationale is not recorded, so archive growth must revisit this limit.
 inline constexpr u32 MAX_INITRAMFS_FILES = 64;
 
 /// A single file entry in the initramfs
@@ -30,6 +33,8 @@ struct InitramfsEntry {
 
 /// CPIO newc header: 110 bytes, all ASCII hex fields
 /// Magic: "070701"
+// The format fixes 6 magic bytes + thirteen 8-digit hexadecimal fields;
+// changing these widths would move the filename and invalidate archive parsing.
 struct CpioNewcHeader {
   char c_magic[6];
   char c_ino[8];
@@ -82,6 +87,8 @@ inline bool str_equal(const char *a, const char *b) noexcept {
 }
 
 /// Read-only initramfs archive
+// Entry names and contents borrow the boot archive's RAM; that region must
+// remain mapped and reserved for every lookup and executable backing reference.
 class InitramfsArchive {
 public:
   /// Parse a CPIO newc archive from a RAM region.
@@ -124,7 +131,7 @@ public:
       // Name starts immediately after the 110-byte header
       const char *name = reinterpret_cast<const char *>(ptr + sizeof(CpioNewcHeader));
 
-      // Check for TRAILER (end of archive)
+      // CPIO namesize includes NUL: the ten-byte "TRAILER!!!" uses 11 bytes.
       if (namesize == 11 && str_equal(name, "TRAILER!!!")) {
         break;
       }

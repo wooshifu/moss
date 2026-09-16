@@ -37,7 +37,7 @@ static void early_print(const char *str) { moss::kernel::hal::uart::puts(str); }
 
 static void early_print_hex(u64 value) {
   constexpr char hex_chars[] = "0123456789ABCDEF";
-  char buffer[19] = "0x";
+  char buffer[19] = "0x"; // 2 prefix bytes + 16 u64 hex digits + NUL.
 
   for (int i = 15; i >= 0; i--) {
     buffer[2 + (15 - i)] = hex_chars[(value >> (i * 4)) & 0xF];
@@ -101,6 +101,7 @@ static SbiResult sbi_call(u64 eid, u64 fid, u64 a0 = 0, u64 a1 = 0, u64 a2 = 0) 
 static constexpr u64 SBI_EID_HSM = 0x48534D;
 
 static SbiResult sbi_hart_start(u64 hartid, u64 start_addr, u64 opaque) noexcept {
+  // HSM FID 0 is hart_start; opaque arrives in secondary a1 (the context pointer).
   return sbi_call(SBI_EID_HSM, 0, hartid, start_addr, opaque);
 }
 
@@ -133,6 +134,8 @@ static SbiResult sbi_hart_start(u64 hartid, u64 start_addr, u64 opaque) noexcept
   if (!moss::kernel::platform::order_cpus(boot_hart)) {
     return ::moss::kernel::VoidResult{::moss::kernel::ErrorCode::InvalidArgument};
   }
+  // PLIC context control windows begin at 0x200000 with 4 KiB stride. Use the
+  // DTB's supervisor-context index; sparse hart IDs cannot derive this offset.
   moss::kernel::platform::hardware.intc.cpu_base = info.intc.dist_base + 0x200000 + info.plic_contexts[0] * 0x1000ULL;
   ctx.memory_start = info.total_memory_start;
   ctx.memory_size = info.total_memory_size;
@@ -158,13 +161,14 @@ static SbiResult sbi_hart_start(u64 hartid, u64 start_addr, u64 opaque) noexcept
   moss::boot::early_print("=== RISC-V 64 Memory Management Setup ===\n");
 
   // Phase 0: Detect page table mode from DTB mmu-type property.
-  // Direct satp probing (MODE=Sv48+PPN=0) hangs QEMU because the write takes
-  // effect immediately and the CPU tries to walk a page table at physical
-  // address 0.  Linux works around this by building a temporary identity-map
-  // first, which is overkill for us.  The DTB's mmu-type is equally reliable.
+  // A satp probe needs valid identity-mapped tables because the write changes
+  // translation immediately. Firmware mmu-type avoids activating a PPN=0
+  // table while executing early boot; this kernel selects only Sv39 or Sv48.
   namespace mmu_hal = ::moss::kernel::hal::mmu;
 
   {
+    // RV64 satp.MODE[63:60] encodes Sv39=8 and Sv48=9; these are hardware
+    // encodings, while firmware mmu_levels counts 4 KiB table levels.
     const auto &info = moss::fdt::get_platform_info();
     if (info.mmu_levels >= 4) {
       mmu_hal::g_mmu_mode = mmu_hal::MmuMode::Sv48;
@@ -177,6 +181,8 @@ static SbiResult sbi_hart_start(u64 hartid, u64 start_addr, u64 opaque) noexcept
   mmu_hal::init_riscv64_address_layout(mmu_hal::g_mmu_mode);
   // Also update STACK_TOP for the detected mode
   if (mmu_hal::g_mmu_mode == mmu_hal::MmuMode::Sv48) {
+    // Match the process module's Sv48 stack policy: 4 GiB below the exclusive
+    // user ceiling 2^47, keeping the stack within the lower canonical half.
     ::moss::kernel::process::user_layout::STACK_TOP = 0x00007FFF00000000ULL;
     moss::boot::early_print("  MMU mode: Sv48 (4-level page table)\n");
   } else {
@@ -225,6 +231,8 @@ static SbiResult sbi_hart_start(u64 hartid, u64 start_addr, u64 opaque) noexcept
 
   // Phase 6: Initialize runtime heap
   VirtAddr heap_start = moss::abi::linker::heap_start();
+  // 256 KiB is the initial allocator span within the linker's 8 MiB reserve;
+  // its exact workload-sizing rationale is not recorded.
   ::moss::kernel::usize initial_heap_size = 256ULL * 1024;
   auto heap_result = ::moss::kernel::mm::RuntimeHeapAllocator::initialize_heap(heap_start, initial_heap_size);
   if (!heap_result) {
@@ -255,8 +263,8 @@ static SbiResult sbi_hart_start(u64 hartid, u64 start_addr, u64 opaque) noexcept
   {
     VirtAddr plic_base = moss::kernel::platform::intc_dist_base();
 
-    // S-mode context for hart 0: context_id = 1 (context 0 is M-mode)
-    // Threshold/claim registers at: plic_base + 0x200000 + context_id * 0x1000
+    // Logical boot CPU zero uses its firmware-described supervisor context.
+    // Threshold/claim windows start at 0x200000 and advance by 0x1000 bytes.
     VirtAddr ctx_base = plic_base + 0x200000 + moss::kernel::platform::hardware.plic_contexts[0] * 0x1000ULL;
 
     auto result = gic->initialize(plic_base, ctx_base, 0);
@@ -321,6 +329,7 @@ u32 moss::boot::RISCV64BootImpl::get_current_cpu_id() noexcept { return moss::bo
   moss::boot::early_print(message);
   moss::boot::early_print("\n===================\n");
 
+  // Legacy SBI v0.1 EID 8 is shutdown; it is not the modern SRST extension.
   asm volatile("li a7, 0x08\n"
                "li a6, 0x00\n"
                "ecall\n"
@@ -339,6 +348,9 @@ namespace moss::boot {
 moss::kernel::interrupts::GenericInterruptController *g_gic_controller = nullptr;
 bool g_gic_hardware_available = false;
 
+// Sixteen CPUs match BOOT_MAX_CPUS; 32 KiB stacks match the other boot paths.
+// Page alignment permits page-table protection; the exact stack budget is a
+// software policy without recorded maximum-depth measurement.
 alignas(4096) static u8 secondary_stacks[16][32768];
 struct HartStartContext {
   u64 stack;
@@ -367,6 +379,8 @@ extern "C" [[noreturn]] void riscv64_secondary_entry() noexcept {
   asm volatile("csrw stvec, %0; csrw sscratch, zero" ::"r"(trap) : "memory");
   // Enable supervisor software IPIs and timer interrupts on this hart.
   asm volatile("csrs sie, %0" ::"r"((1ULL << 1) | (1ULL << 5)));
+  // 100000 is time-counter ticks, not ns; delay=100000/timebase_frequency s.
+  // This initial scheduling compare has no recorded tuning rationale.
   moss::kernel::hal::timer::set_compare(moss::kernel::hal::timer::read_counter() + 100000);
   moss::boot::record_cpu_online();
   moss::kernel::process::secondary_cpu_schedule_loop(moss::kernel::arch::get_current_cpu_id());
