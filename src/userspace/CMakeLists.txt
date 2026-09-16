@@ -50,7 +50,7 @@ function(add_userspace_program NAME)
         OUTPUT ${_elf}
         COMMAND ${CMAKE_COMMAND} -E make_directory ${CMAKE_BINARY_DIR}/userspace
         COMMAND ${LLD_LINKER} ${USERSPACE_LINK_FLAGS} -o ${_elf} $<TARGET_OBJECTS:${_target}>
-        DEPENDS ${_target} $<TARGET_OBJECTS:${_target}> ${USERSPACE_LD}
+        DEPENDS ${_target} $<TARGET_OBJECTS:${_target}> ${USERSPACE_LD} DEPENDS_EXPLICIT_ONLY
         COMMENT "Linking userspace ${NAME}.elf"
         COMMAND_EXPAND_LISTS VERBATIM
     )
@@ -60,10 +60,10 @@ add_userspace_program(hello)
 add_userspace_program(shell)
 add_userspace_program(top)
 add_userspace_program(signal_test)
+add_subdirectory(mlibc)
+set(BUSYBOX_ELF ${CMAKE_CURRENT_BINARY_DIR}/mlibc/busybox/busybox)
 if(MOSS_BUILD_TESTS)
-    add_subdirectory(mlibc)
     set(LIBC_VALIDATION_ELF ${CMAKE_CURRENT_BINARY_DIR}/mlibc/libc_validation.elf)
-    set(BUSYBOX_ELF ${CMAKE_CURRENT_BINARY_DIR}/mlibc/busybox/busybox)
     add_userspace_program(validation)
     target_sources(moss_userspace_validation PRIVATE validation_frame.S)
     add_userspace_program(validation_child)
@@ -92,10 +92,17 @@ endif()
 # GNU cpio newc format (070701), consumed by the kernel's CPIO parser.
 add_custom_command(
     OUTPUT ${CMAKE_BINARY_DIR}/initramfs.cpio
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different ${BUSYBOX_ELF} ${CMAKE_BINARY_DIR}/userspace/busybox.elf
     COMMAND uv run ${CMAKE_SOURCE_DIR}/scripts/gen_initramfs.py ${CMAKE_BINARY_DIR}/initramfs.cpio
-            ${CMAKE_BINARY_DIR}/userspace hello.elf shell.elf top.elf signal_test.elf
-    DEPENDS ${CMAKE_BINARY_DIR}/userspace/hello.elf ${CMAKE_BINARY_DIR}/userspace/shell.elf
-            ${CMAKE_BINARY_DIR}/userspace/top.elf ${CMAKE_BINARY_DIR}/userspace/signal_test.elf
+            ${CMAKE_BINARY_DIR}/userspace hello.elf shell.elf top.elf signal_test.elf busybox.elf
+    DEPENDS ${CMAKE_BINARY_DIR}/userspace/hello.elf
+            ${CMAKE_BINARY_DIR}/userspace/shell.elf
+            ${CMAKE_BINARY_DIR}/userspace/top.elf
+            ${CMAKE_BINARY_DIR}/userspace/signal_test.elf
+            busybox-validation
+            ${BUSYBOX_ELF}
+            ${CMAKE_SOURCE_DIR}/scripts/gen_initramfs.py
+    BYPRODUCTS ${CMAKE_BINARY_DIR}/userspace/busybox.elf
     WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
     COMMENT "Generating initramfs.cpio"
     VERBATIM
