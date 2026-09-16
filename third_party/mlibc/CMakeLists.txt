@@ -35,6 +35,7 @@ add_library(
 )
 set_target_properties(mlibc PROPERTIES OUTPUT_NAME c ARCHIVE_OUTPUT_DIRECTORY "${MLIBC_SYSROOT}/usr/lib")
 foreach(target mlibc mlibc-math mlibc-regex mlibc-rtld)
+    # Use the vendored freestanding C++ headers without host libc++ wrappers.
     target_compile_options(
         ${target}
         PRIVATE ${MLIBC_ARCH_FLAGS}
@@ -46,6 +47,7 @@ foreach(target mlibc mlibc-math mlibc-regex mlibc-rtld)
                 -fno-stack-protector
                 -Wno-unknown-pragmas
                 -Wno-unused-function
+                "$<$<COMPILE_LANGUAGE:CXX>:-nostdinc++>"
                 "$<$<COMPILE_LANGUAGE:CXX>:-fno-rtti;-fno-exceptions;-fno-sanitize=function;-Wno-vla-cxx-extension>"
                 "-idirafter${MOSS_THIRD_PARTY}/freestnd-c-hdrs/${MLIBC_CPU}/include"
     )
