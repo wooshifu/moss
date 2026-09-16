@@ -1,6 +1,8 @@
 """Exercise the real userspace CMake targets independently of the kernel."""
 
+import hashlib
 import json
+import os
 import shlex
 import shutil
 import struct
@@ -11,6 +13,14 @@ from pathlib import Path
 import pytest
 
 from scripts.gen_initramfs import make_cpio_entry
+
+
+def test_repository_formatter_preserves_vendored_sources():
+    from format import classify_files
+
+    assert classify_files(
+        [Path("third_party/busybox/shell/ash.c"), Path("third_party/mlibc/CMakeLists.txt"), Path("build.py")]
+    ) == ([], [], [Path("build.py")])
 
 
 @pytest.mark.parametrize(
@@ -124,3 +134,76 @@ def test_validation_fixture_packages_the_real_runtime_programs(tmp_path):
         malformed = bytearray(child)
         malformed[offset : offset + len(value)] = value
         assert make_cpio_entry(name, bytes(malformed), ino=ino) in archive
+
+
+@pytest.mark.parametrize("arch,machine", [("X64", 62), ("ARM64", 183), ("RISCV64", 243)])
+def test_vendored_runtime_build_is_native_and_incremental(tmp_path, arch, machine):
+    required = ("clang", "clang++", "llvm-ar", "llvm-strip", "ld.lld", "cmake", "ninja", "sh", "bzip2")
+    if any(shutil.which(tool) is None for tool in required):
+        pytest.skip("LLVM, CMake, Ninja and BusyBox host-generator tools required")
+    repository = Path(__file__).resolve().parents[2]
+    root = tmp_path / "native runtime project"
+    shutil.copytree(repository / "src/userspace", root / "src/userspace", symlinks=True)
+    shutil.copytree(repository / "third_party", root / "third_party", symlinks=True)
+    build = tmp_path / "runtime build"
+    forbidden = tmp_path / "forbidden tools"
+    forbidden.mkdir()
+    for tool in ("make", "gmake", "meson", "curl", "wget"):
+        path = forbidden / tool
+        path.write_text("#!/bin/sh\necho 'Forbidden legacy build or download tool' >&2\nexit 97\n")
+        path.chmod(0o755)
+    env = dict(os.environ, PATH=f"{forbidden}{os.pathsep}{os.environ['PATH']}", UV_OFFLINE="1")
+
+    def run(*argv):
+        result = subprocess.run(argv, cwd=root, env=env, capture_output=True, text=True, check=False, timeout=300)
+        assert result.returncode == 0, result.stdout + result.stderr
+        return result.stdout + result.stderr
+
+    def source_digest():
+        digest = hashlib.sha256()
+        for path in sorted(root.rglob("*")):
+            if path.is_file():
+                digest.update(str(path.relative_to(root)).encode() + b"\0" + path.read_bytes())
+        return digest.hexdigest()
+
+    before = source_digest()
+    run(
+        "cmake",
+        "-S",
+        str(root / "src/userspace/mlibc"),
+        "-B",
+        str(build),
+        "-G",
+        "Ninja",
+        f"-DCMAKE_C_COMPILER={shutil.which('clang')}",
+        f"-DCMAKE_CXX_COMPILER={shutil.which('clang++')}",
+        f"-DCMAKE_ASM_COMPILER={shutil.which('clang')}",
+        "-DCMAKE_SYSTEM_NAME=Generic",
+        "-DCMAKE_BUILD_TYPE=Debug",
+        "-DCMAKE_EXPORT_COMPILE_COMMANDS=ON",
+        f"-DMOSS_TARGET_ARCH={arch}",
+    )
+    command = ("cmake", "--build", str(build), "--target", "mlibc-validation", "busybox-validation", "-j", "4")
+    run(*command)
+    for path in (build / "libc_validation.elf", build / "busybox/busybox"):
+        elf = path.read_bytes()
+        assert elf[:6] == b"\x7fELF\x02\x01"
+        assert struct.unpack_from("<H", elf, 18)[0] == machine
+        assert struct.unpack_from("<Q", elf, 24)[0] >= 0x200000000
+    entries = json.loads((build / "compile_commands.json").read_text())
+    assert any("mlibc/sysdeps/moss/sysdeps.cpp" in item["file"] for item in entries)
+    assert any("busybox/shell/ash.c" in item["file"] for item in entries)
+    assert not (build / "_deps").exists()
+    assert "no work to do" in run(*command)
+    assert source_digest() == before
+
+    # Edit the vendored source directly: CMake must recompile and relink consumers.
+    source = root / "third_party/mlibc/sysdeps/moss/sysdeps.cpp"
+    source.write_text(source.read_text() + "\n// Native dependency regression probe.\n")
+    changed = source_digest()
+    rebuilt = run(*command)
+    assert "sysdeps.cpp" in rebuilt
+    assert "libc_validation.unstripped.elf" in rebuilt
+    assert "busybox_unstripped" in rebuilt
+    assert "no work to do" in run(*command)
+    assert source_digest() == changed

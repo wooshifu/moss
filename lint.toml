@@ -3,4 +3,5 @@
 # Excluded headers are also filtered out of clang-tidy diagnostics and fixes.
 exclude = [
     "src/fdt/libfdt/**", # Vendored libfdt
+    "third_party/**", # Preserve upstream sources and their local adaptation style
 ]

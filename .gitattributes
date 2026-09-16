@@ -1,0 +1,2 @@
+# Preserve upstream archive bytes, including mixed/CRLF line endings.
+third_party/** -text

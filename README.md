@@ -25,6 +25,10 @@ CMake configure/build do not require QEMU; workflows also run CTest through the
 independent QEMU runner. Each architecture produces its own native kernel (not
 one cross-ISA binary).
 
+The static mlibc/BusyBox validation runtime is built directly from checked-in
+sources with native CMake targets. See [third-party sources](docs/third-party-sources.md)
+for exact upstream revisions, licenses, the supported profile and build requirements.
+
 ```sh
 # Configure, build and test in one workflow
 uv run cmake --workflow --preset arm64-debug
