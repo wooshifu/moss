@@ -25,9 +25,28 @@ CMake configure/build do not require QEMU; workflows also run CTest through the
 independent QEMU runner. Each architecture produces its own native kernel (not
 one cross-ISA binary).
 
-The static mlibc/BusyBox validation runtime is built directly from checked-in
+The static mlibc/BusyBox runtime is built directly from checked-in
 sources with native CMake targets. See [third-party sources](docs/third-party-sources.md)
 for exact upstream revisions, licenses, the supported profile and build requirements.
+
+The normal initramfs includes BusyBox, and `/shell.elf` starts its interactive
+ash at the `moss$` prompt. This also works with `MOSS_BUILD_TESTS=OFF`.
+The selected applets (`ls`, `cat`, `mkdir`, `cp`, `mv`, `rm`, `grep`, `wc`, and
+`ash`/`sh`) can be invoked by name using BusyBox's standalone shell support.
+Existing programs such as `hello.elf` and `top.elf` remain on `PATH`.
+
+For example, after launching QEMU:
+
+```sh
+mkdir /work
+printf 'moss\nother\nmoss again\n' > /work/input
+cat /work/input | grep moss | wc -l
+rm -rf /work
+hello.elf
+```
+
+Files created during the session live in RAM. The shell retains the current
+console's line input and editing; job control and tab completion are not enabled.
 
 ```sh
 # Configure, build and test in one workflow

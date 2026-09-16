@@ -40,7 +40,7 @@ add_subdirectory("${MOSS_THIRD_PARTY}/compiler-rt" builtins)
 set(MLIBC_BUILTINS_TARGET "clang_rt.builtins-${MLIBC_CPU}")
 add_custom_target(compiler-rt-builtins DEPENDS ${MLIBC_BUILTINS_TARGET})
 
-add_executable(mlibc-validation ../libc_validation.c $<TARGET_OBJECTS:mlibc-crt1>)
+add_executable(mlibc-validation EXCLUDE_FROM_ALL ../libc_validation.c $<TARGET_OBJECTS:mlibc-crt1>)
 target_compile_options(mlibc-validation PRIVATE ${MLIBC_ARCH_FLAGS} -O2 -ffreestanding -fno-stack-protector)
 target_compile_definitions(
     mlibc-validation PRIVATE MOSS_TEST_RELEASE="${CMAKE_PROJECT_VERSION}"
@@ -58,6 +58,8 @@ target_link_options(
     -nostdlib
     -static
     -fuse-ld=lld
+    # Match userspace.ld: 8 GiB keeps code above inherited kernel identity mappings;
+    # 4096-byte segment alignment permits distinct permissions on base pages.
     -Wl,--image-base=0x200000000,-z,max-page-size=4096
 )
 set_target_properties(
