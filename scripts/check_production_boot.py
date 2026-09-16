@@ -73,11 +73,26 @@ quit
         input_timing="first_read_barrier" if gdb else "prompt",
     )
     child, debugger, stage, pending = None, None, 0, b""
-    # A prompt alone is not acceptance: run an ELF through fork/exec/wait, then
-    # prove the parent shell can execute another command after reaping it.
+    # Require the real ash, applet lookup, pipelines and mutable files as well
+    # as an independent ELF and a subsequent command after child reaping.
     steps = [
+        (b"built-in shell (ash)", None),
         (b"moss$ ", b"hello.elf\n"),
         (b"MOSS execve() works!\n", None),
+        (
+            b"moss$ ",
+            b"mkdir /shell-check && printf 'moss\\nskip\\nmoss\\n' > /shell-check/input && "
+            b"cp /shell-check/input /shell-check/copy && mv /shell-check/copy /shell-check/result\n",
+        ),
+        (
+            b"moss$ ",
+            b"count=$(cat /shell-check/result | grep moss | wc -l); "
+            b'[ "$count" -eq 2 ] && [ "$(ls /shell-check | wc -l)" -eq 2 ] && '
+            b"rm -rf /shell-check && [ ! -e /shell-check ] && printf 'MOSS_BUSYBOX_READY\\n'\n",
+        ),
+        (b"\nMOSS_BUSYBOX_READY\n", None),
+        (b"moss$ ", b"sh -c 'printf \"MOSS_NESTED_SHELL\\n\"'\n"),
+        (b"\nMOSS_NESTED_SHELL\n", None),
         (b"moss$ ", b"echo MOSS_PRODUCTION_READY\n"),
         (b"\nMOSS_PRODUCTION_READY\n", None),
         (b"moss$ ", None),
@@ -122,7 +137,7 @@ quit
                         child.stdin.flush()
                     stage += 1
                 if stage == len(steps) and (not debugger or debugger.poll() is not None):
-                    result.update(status="passed", observed="shell_exec_wait")
+                    result.update(status="passed", observed="busybox_shell_exec_wait")
                     break
                 if child.poll() is not None:
                     result["observed"] = "unexpected_exit"

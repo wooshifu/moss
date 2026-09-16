@@ -2668,3 +2668,56 @@ The initial delivery separated framework completion from other kernel repairs. T
 - [x] Real allocator, VFS, and userspace/process cases.
 - [x] Validated clocks, function benchmarks, and baseline comparison.
 - [x] Debug/Release acceptance matrix and delivery evidence.
+
+## Production BusyBox Shell (2026-09-16)
+
+The normal initramfs now contains `/busybox.elf`, including builds with
+`MOSS_BUILD_TESTS=OFF`. Its `/shell.elf` is a small launcher for interactive ash
+with `PATH=/` and the existing `moss$` prompt. BusyBox standalone shell lookup
+provides the selected applets and `sh` without symlinks or `/proc/self/exe`.
+The validation initramfs retains its own `/shell.elf` validation driver.
+
+On macOS x86_64 with Clang 23.1.0 and QEMU 11.1.1, all six Debug/Release builds
+completed. The production probe requires the ash banner, external `hello.elf`,
+bare applet lookup, a pipeline, redirection, copy/rename/removal, nested `sh`, and
+a subsequent command after child reaping. The old mini-shell image failed this
+probe at its first step. The resulting production images passed all 11 steps:
+
+| Preset | Production report directory under `production-boot/` | Passing `users.busybox` report under `validation/` |
+| --- | --- | --- |
+| `arm64-debug` | `run-7qf75kln/guest` | `1789566484832820000` |
+| `arm64-release` | `run-1kyjc4ln/guest` | `1789566506770750000` |
+| `x64-debug` | `run-i73gfu78/guest` | `1789566519407995000` |
+| `x64-release` | `run-b4k4ey0t/guest` | `1789566535831716000` |
+| `riscv64-debug` | `run-5xivo5u2/guest` | `1789566548819490000` |
+| `riscv64-release` | `run-l5cr4on5/guest` | `1789566931581919000` |
+
+Paths are relative to `build/<preset>/`, with `results.json` in each listed
+directory. Each passing BusyBox report covers all nine cases with the unchanged
+5-second case budget. Artifact hashes match the final built images and fixtures.
+
+Host checks passed: nine production-probe tests and eight userspace build tests.
+The latter build the production archive with `MOSS_BUILD_TESTS=OFF` on all three
+architectures, verify its shell and BusyBox bytes, reject legacy build/download
+tools, and check unchanged rebuilds, dependency-triggered regeneration and source
+tree hashes. The three focused compilation/dependency cases were also rerun after
+adding an assertion that linking the small programs does not build BusyBox.
+
+Earlier timeouts remain evidence: the initial concurrent-load Debug runs were
+`arm64-debug/validation/1789565973057286000`,
+`x64-debug/validation/1789566022532811000`, and
+`riscv64-debug/validation/1789566024906977000` (all under `build/`). RISC-V Release
+also timed out in `1789566570611905000` and `1789566682810399000`. Its diagnostic
+run `1789566720978969000` explicitly used 15 seconds and passed; it does not
+replace the subsequent default-budget result in the table.
+
+A comparison using the pre-change BusyBox profile from `41903c3`, the same
+RISC-V Release kernel, and a fixture differing only in `busybox.elf` passed all
+nine cases at 5 seconds as well. The preserved comparison is under
+`build/riscv64-release/validation/busybox-shell-baseline-20260916/`. These reruns
+establish functional results, not the precise cause of the earlier timeouts or
+a performance comparison. No repository timeout was relaxed.
+
+This verifies the normal shell and selected BusyBox paths. It does not establish
+full kernel, long-run stability, performance, job-control, or terminal-editing
+acceptance. The GDB-controlled first-read variant was not run on this host.

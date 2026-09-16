@@ -48,7 +48,7 @@ Upstream Meson, Make/Kbuild, wrap files and download helpers remain in the compl
 
 ## Native Build Contract
 
-The supported profile is ARM64, x64 and RV64, static mlibc plus the BusyBox `ash`, `ls`, `cat`, `mkdir`, `cp`, `mv`, `rm`, `grep` and `wc` workload from ADR-0006. RV64 uses `rv64imac/lp64`; builtins supply compiler-generated arithmetic helpers, including the soft-float helpers needed by mlibc. There is no dynamic linker or Linux binary-compatibility promise.
+The supported profile is ARM64, x64 and RV64, static mlibc plus the BusyBox `ash`, `ls`, `cat`, `mkdir`, `cp`, `mv`, `rm`, `grep` and `wc` workload from ADR-0006. The production initramfs also includes `/busybox.elf`; its `/shell.elf` launcher starts interactive ash with `PATH=/`. Standalone shell applet lookup re-executes `/busybox.elf`, so selected commands and `sh` work without applet symlinks or `/proc/self/exe`. This does not enable additional applets, job control or a terminal line editor. RV64 uses `rv64imac/lp64`; builtins supply compiler-generated arithmetic helpers, including the soft-float helpers needed by mlibc. There is no dynamic linker or Linux binary-compatibility promise.
 
 The checked-in mlibc source/header lists were derived once from the pinned static profile; the BusyBox list and fully resolved configuration were taken from the same previously validated profile on all three architectures. Builds do not regenerate these lists from Meson or Kbuild. Enabling an additional libc option or applet requires deliberately updating the profile, selected sources, generated-header dependencies and runtime coverage together. Arbitrary BusyBox `.config` files are not supported.
 

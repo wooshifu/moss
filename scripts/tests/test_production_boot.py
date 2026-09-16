@@ -7,18 +7,41 @@ from scripts.artifacts import Artifacts
 
 
 @pytest.mark.parametrize(
-    "mode", ["complete", "echo_only", "exit", "late_panic", "gdb_complete", "gdb_unverified", "gdb_failure"]
+    "mode",
+    [
+        "complete",
+        "legacy_shell",
+        "applets_failed",
+        "echo_only",
+        "exit",
+        "late_panic",
+        "gdb_complete",
+        "gdb_unverified",
+        "gdb_failure",
+    ],
 )
 def test_production_probe_requires_exec_and_subsequent_shell_output(tmp_path, monkeypatch, mode):
     files = {name: tmp_path / name for name in ("kernel", "initramfs", "debug_symbols")}
     for path in files.values():
         path.write_bytes(b"image")
     cfg = Artifacts(tmp_path / "manifest.json", "ARM64", "linux-image", {"type": "Debug"}, files)
-    script = r"""
-import signal, sys, time
+    script = "import signal, sys, time\n"
+    if mode != "legacy_shell":
+        script += "print('BusyBox built-in shell (ash)', flush=True)\n"
+    script += r"""
 print('moss$ ', end='', flush=True)
 assert input() == 'hello.elf'
 print('MOSS execve() works!\nmoss$ ', end='', flush=True)
+assert input().startswith('mkdir /shell-check && ')
+print('moss$ ', end='', flush=True)
+assert input().startswith('count=$(cat /shell-check/result | grep moss | wc -l); ')
+"""
+    if mode == "applets_failed":
+        script += "print('cat: not found\\nmoss$ ', end='', flush=True)\ntime.sleep(30)\n"
+    script += r"""
+print('\nMOSS_BUSYBOX_READY\nmoss$ ', end='', flush=True)
+assert input().startswith("sh -c ")
+print('\nMOSS_NESTED_SHELL\nmoss$ ', end='', flush=True)
 assert input() == 'echo MOSS_PRODUCTION_READY'
 """
     if mode == "late_panic":
@@ -47,7 +70,11 @@ assert input() == 'echo MOSS_PRODUCTION_READY'
     assert result["status"] == ("passed" if mode in ("complete", "gdb_complete") else "error")
     assert result["raw_exit"] is not None
     if mode == "echo_only":
-        assert result["completed_steps"] == 3
+        assert result["completed_steps"] == 9
+    if mode == "legacy_shell":
+        assert result["completed_steps"] == 0
+    if mode == "applets_failed":
+        assert result["completed_steps"] == 5
     if mode == "late_panic":
         assert "panicked" in result["observed"]
     if mode in ("gdb_unverified", "gdb_failure"):
