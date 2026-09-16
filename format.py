@@ -27,7 +27,7 @@ CMAKE_EXTENSIONS = {".cmake"}
 PYTHON_EXTENSIONS = {".py"}
 
 # Vendored third-party code — never format
-EXCLUDE_PREFIXES = ("src/fdt/libfdt/",)
+EXCLUDE_PREFIXES = ("src/fdt/libfdt/", "third_party/")
 
 # Worker count: leave 2 cores free for the OS and progress rendering
 MAX_WORKERS = max(1, (os.cpu_count() or 4) - 2)

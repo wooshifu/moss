@@ -2550,6 +2550,85 @@ interim outcome and proceed to the next item. Performance acceptance stays
 does not waive the noise ceiling or mark the gate passed. The next selected
 item is renewed routine full-application acceptance after the shared-FD repair.
 
+## Native CMake Source Migration (2026-09-16)
+
+[ADR-0007](adr/0007-vendor-third-party-sources-with-native-cmake.md) is implemented:
+the static mlibc/BusyBox runtime now compiles checked-in source through native
+CMake targets. The [source inventory](third-party-sources.md) records exact
+upstream inputs, archive SHA-256 values, preserved source scope and direct
+adaptations. This supersedes the historical download/Meson/Make build described
+in earlier checkpoints; it does not change the kernel acceptance boundary.
+
+Fresh build directories were created under
+`/dev/shm/moss-native-cmake.3Y6k9s/<preset>` rather than reusing the old `_deps`
+trees. The tested working tree was based on `07a943d` plus this migration;
+individual reports retain their actual source/artifact fingerprints and frozen
+inputs, not a fabricated clean-commit identity. Durable copies of the reports,
+serial logs, frozen inputs and command logs are under the ignored local directory
+`build/native-cmake-source-migration-20260916/`. Reports retain their original
+temporary absolute paths; the temporary build trees are not permanent storage.
+
+| Configuration | Clean full build | mlibc E2E | BusyBox E2E | Application recovery | Framework | Production boot | No-op rebuild |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| ARM64 Debug | pass | 2/2 | 9/9 | 1000 cycles, 101 checkpoints | pass | pass | no work |
+| ARM64 Release | pass | 2/2 | 9/9 | 1000 cycles, 101 checkpoints | pass | pass | no work |
+| x64 Debug | pass | 2/2 | 9/9 | 1000 cycles, 101 checkpoints | pass | pass | no work |
+| x64 Release | pass | 2/2 | 9/9 | 1000 cycles, 101 checkpoints | pass | pass | no work |
+| RV64 Debug | pass | 2/2 | 9/9 | 1000 cycles, 101 checkpoints | pass | pass | no work |
+| RV64 Release | pass | 2/2 | 9/9 | 1000 cycles, 101 checkpoints | pass | pass | no work |
+
+Each application report records both `cycles=1000` and
+`application_cycles=1000`; resource recovery assertions passed. Framework runs
+check normal success and the intentionally expected assertion, panic and timeout
+outcomes. These are not performance comparisons or long-run stability results.
+
+Commands used for each preset (substitute its fresh build directory for `DIR`):
+
+```sh
+uv run cmake --preset PRESET -B DIR
+uv run cmake --build DIR --parallel 8
+uv run scripts/kernel_validation.py run --manifest DIR/moss-artifacts.json \
+  --workload users.libc --output LIBC_REPORT
+uv run scripts/kernel_validation.py run --manifest DIR/moss-artifacts.json \
+  --workload users.busybox --output BUSYBOX_REPORT
+uv run ctest --test-dir DIR --no-tests=error \
+  -R '^moss-(applications|production-boot|framework)$' --output-on-failure
+uv run cmake --build DIR --parallel 8
+```
+
+Additional build acceptance:
+
+- All three architectures also completed fresh Release full builds with the
+  network disabled using `unshare -Urn` and `UV_OFFLINE=1` (x64 used an additional
+  `x64-offline` directory). CMake, `llvm-ar` and `llvm-ranlib` were pinned to
+  installed executable paths. Initial ARM64/RV64 attempts stalled in the host's
+  Swift tool-manager `llvm-ranlib` wrapper; their logs are retained separately.
+  Selecting the actual installed LLVM binaries resolved this host-tool issue
+  without changing the system environment or downloading source.
+- `uv run pytest scripts/tests -q`: **239 passed**. The three new native-runtime
+  build cases copy sources into paths containing spaces, forbid Make/Meson and
+  download tools, build real ELF outputs, verify a no-op rebuild, and edit Moss
+  sysdeps directly to verify recompilation/relinking. Source-tree hashes remain
+  unchanged by configuration and compilation. A formatter test protects the
+  vendored-tree exclusion.
+- Archive comparison confirms complete BusyBox/mlibc/header dependency trees
+  with only the documented additions/adaptations, and unchanged compiler-rt
+  builtins/supporting files. No imported source is hidden by Git ignore rules.
+- Ruff and checks of the changed Python/native CMake files pass. Whole-repository
+  formatting still reports two unchanged pre-existing files:
+  `src/boot/src/arch/riscv64/boot_impl.cpp` and `src/mm/src/page_fault.cpp`.
+  They were not reformatted as part of this migration.
+  The full staged whitespace check also reports existing upstream whitespace in
+  imported files; those bytes are intentionally preserved. Checks of the
+  Moss-authored integration and adaptation files pass.
+
+The known `scheduler/migration_current_owner` failure was reproduced on x64
+Debug and remains a failure: three scheduler cases pass, then that case reports
+one failed assertion. Its original `results.json` and serial output are retained
+in `scheduler-known-red/`; no test was disabled or reclassified. **The overall
+kernel functional matrix, long-duration stability and performance acceptance
+remain incomplete.** Network and persistent-storage work remain excluded.
+
 ## Initial Implementation and Acceptance Plan
 
 The following sequence records the implemented plan. The evidence checklist is satisfied for the initial workloads and default QEMU profile, not for arbitrary kernel subsystems or native hardware.
