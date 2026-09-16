@@ -182,7 +182,7 @@ public:
   }
 
   /// Look up a file by name (linear scan).
-  /// Path matching: "hello.elf" matches entry "hello.elf", "/hello.elf" matches "hello.elf".
+  /// Path matching: "busybox.elf" and "/busybox.elf" both match entry "busybox.elf".
   [[nodiscard]] const InitramfsEntry *lookup(const char *path) const noexcept {
     if (!initialized_ || !path) {
       return nullptr;

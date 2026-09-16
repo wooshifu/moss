@@ -49,10 +49,10 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 set(CMAKE_C_FLAGS "-DMOSS_KERNEL_ONLY=1 -O0")
 set(CMAKE_C_FLAGS_DEBUG "-DMOSS_DEBUG_ONLY=1 -g")
 add_compile_definitions(MOSS_KERNEL_DEFINITION=1)
+set(MOSS_BUILD_TESTS ON)
 add_subdirectory(src/userspace)
 add_custom_target(userspace-fixture DEPENDS
-    ${CMAKE_BINARY_DIR}/userspace/hello.elf ${CMAKE_BINARY_DIR}/userspace/shell.elf
-    ${CMAKE_BINARY_DIR}/userspace/top.elf ${CMAKE_BINARY_DIR}/userspace/signal_test.elf)
+    ${CMAKE_BINARY_DIR}/userspace/validation.elf ${CMAKE_BINARY_DIR}/userspace/validation_child.elf)
 """,
         encoding="utf-8",
     )
@@ -83,17 +83,19 @@ add_custom_target(userspace-fixture DEPENDS
     build_argv = ["cmake", "--build", str(build), "--target", "userspace-fixture", "--parallel", "2"]
     run(*build_argv)
     assert not (build / "src/userspace/mlibc/busybox/busybox").exists()
-    programs = {"hello", "shell", "top", "signal_test"}
+    programs = {"validation", "validation_child"}
     entries = json.loads((build / "compile_commands.json").read_text())
     entries = [entry for entry in entries if "moss_userspace_" in entry["command"]]
-    assert {Path(entry["file"]).stem for entry in entries} == programs
-    assert len(entries) == len(programs)
+    assert {Path(entry["file"]).stem for entry in entries} == programs | {"validation_frame"}
+    assert len(entries) == len(programs) + 1  # The validation driver also links its register-frame assembly probe.
     for entry in entries:
         arguments = shlex.split(entry["command"])
         assert "-ffreestanding" in arguments
         assert "-fno-stack-protector" in arguments
         assert "-O2" in arguments
-        assert "-O0" not in arguments and "-g" not in arguments
+        assert "-O0" not in arguments
+        if Path(entry["file"]).suffix == ".c":
+            assert "-g" not in arguments
         assert not any("MOSS_KERNEL" in arg or "MOSS_DEBUG" in arg for arg in arguments)
     for program in programs:
         elf = (build / "userspace" / f"{program}.elf").read_bytes()
@@ -115,7 +117,7 @@ add_custom_target(userspace-fixture DEPENDS
 
 def test_validation_fixture_packages_the_real_runtime_programs(tmp_path):
     repository = Path(__file__).resolve().parents[2]
-    inputs = [tmp_path / f"{name} program.elf" for name in ("parent", "child", "signal", "libc", "busybox")]
+    inputs = [tmp_path / f"{name} program.elf" for name in ("parent", "child", "libc", "busybox")]
     for path in inputs:
         path.write_bytes(path.name.encode())
     child = bytearray(range(256))
@@ -130,13 +132,16 @@ def test_validation_fixture_packages_the_real_runtime_programs(tmp_path):
     )
     archive = output.read_bytes()
     assert archive.startswith(b"070701")
+    assert make_cpio_entry("validation.elf", inputs[0].read_bytes(), ino=1) in archive
+    for removed in ("hello", "shell", "top", "signal_test"):
+        assert f"{removed}.elf\0".encode() not in archive
     assert archive.index(b"libc_validation.elf\0") < archive.index(b"libc program.elf") < archive.index(b"TRAILER!!!\0")
     assert archive.index(b"busybox.elf\0") < archive.index(b"busybox program.elf") < archive.index(b"TRAILER!!!\0")
     assert make_cpio_entry("validation_child.elf", bytes(child), ino=2) in archive
     for name, ino, offset, value in (
-        ("bad_entry.elf", 7, 24, bytes(8)),
-        ("bad_phentsize.elf", 8, 54, struct.pack("<H", 55)),
-        ("bad_load.elf", 9, 96, struct.pack("<Q", 257)),
+        ("bad_entry.elf", 6, 24, bytes(8)),
+        ("bad_phentsize.elf", 7, 54, struct.pack("<H", 55)),
+        ("bad_load.elf", 8, 96, struct.pack("<Q", 257)),
     ):
         malformed = bytearray(child)
         malformed[offset : offset + len(value)] = value
@@ -210,8 +215,10 @@ add_subdirectory(src/userspace)
         assert struct.unpack_from("<Q", elf, 24)[0] >= 0x200000000
     busybox = (runtime / "busybox/busybox").read_bytes()
     archive = (build / "initramfs.cpio").read_bytes()
-    assert make_cpio_entry("busybox.elf", busybox, ino=5) in archive
-    assert make_cpio_entry("shell.elf", (build / "userspace/shell.elf").read_bytes(), ino=2) in archive
+    assert make_cpio_entry("busybox.elf", busybox, ino=1) in archive
+    for removed in ("hello", "shell", "top", "signal_test"):
+        assert not (build / "userspace" / f"{removed}.elf").exists()
+        assert f"{removed}.elf\0".encode() not in archive
     assert not (build / "validation-initramfs.cpio").exists()
     entries = json.loads((build / "compile_commands.json").read_text())
     assert any("mlibc/sysdeps/moss/sysdeps.cpp" in item["file"] for item in entries)

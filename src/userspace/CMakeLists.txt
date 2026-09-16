@@ -56,10 +56,6 @@ function(add_userspace_program NAME)
     )
 endfunction()
 
-add_userspace_program(hello)
-add_userspace_program(shell)
-add_userspace_program(top)
-add_userspace_program(signal_test)
 add_subdirectory(mlibc)
 set(BUSYBOX_ELF ${CMAKE_CURRENT_BINARY_DIR}/mlibc/busybox/busybox)
 if(MOSS_BUILD_TESTS)
@@ -73,10 +69,9 @@ if(MOSS_BUILD_TESTS)
         COMMAND
             uv run ${CMAKE_SOURCE_DIR}/scripts/gen_validation_initramfs.py ${CMAKE_BINARY_DIR}/validation-initramfs.cpio
             ${CMAKE_BINARY_DIR}/userspace/validation.elf ${CMAKE_BINARY_DIR}/userspace/validation_child.elf
-            ${CMAKE_BINARY_DIR}/userspace/signal_test.elf ${LIBC_VALIDATION_ELF} ${BUSYBOX_ELF}
+            ${LIBC_VALIDATION_ELF} ${BUSYBOX_ELF}
         DEPENDS ${CMAKE_BINARY_DIR}/userspace/validation.elf
                 ${CMAKE_BINARY_DIR}/userspace/validation_child.elf
-                ${CMAKE_BINARY_DIR}/userspace/signal_test.elf
                 mlibc-validation
                 ${LIBC_VALIDATION_ELF}
                 busybox-validation
@@ -94,14 +89,8 @@ add_custom_command(
     OUTPUT ${CMAKE_BINARY_DIR}/initramfs.cpio
     COMMAND ${CMAKE_COMMAND} -E copy_if_different ${BUSYBOX_ELF} ${CMAKE_BINARY_DIR}/userspace/busybox.elf
     COMMAND uv run ${CMAKE_SOURCE_DIR}/scripts/gen_initramfs.py ${CMAKE_BINARY_DIR}/initramfs.cpio
-            ${CMAKE_BINARY_DIR}/userspace hello.elf shell.elf top.elf signal_test.elf busybox.elf
-    DEPENDS ${CMAKE_BINARY_DIR}/userspace/hello.elf
-            ${CMAKE_BINARY_DIR}/userspace/shell.elf
-            ${CMAKE_BINARY_DIR}/userspace/top.elf
-            ${CMAKE_BINARY_DIR}/userspace/signal_test.elf
-            busybox-validation
-            ${BUSYBOX_ELF}
-            ${CMAKE_SOURCE_DIR}/scripts/gen_initramfs.py
+            ${CMAKE_BINARY_DIR}/userspace busybox.elf
+    DEPENDS busybox-validation ${BUSYBOX_ELF} ${CMAKE_SOURCE_DIR}/scripts/gen_initramfs.py
     BYPRODUCTS ${CMAKE_BINARY_DIR}/userspace/busybox.elf
     WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
     COMMENT "Generating initramfs.cpio"

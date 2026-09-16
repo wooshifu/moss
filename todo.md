@@ -61,7 +61,7 @@ uv run qemu.py --manifest build/arm64-debug/moss-artifacts.json
 | 虚拟内存 | 动态页表、用户地址空间、TTBR/CR3/satp 切换、VMA、demand paging、COW、匿名 private mmap、整段匹配 munmap、brk、栈增长与故障诊断 | 002、008～012；ASID 回绕、RO/NONE 权限、缩堆解映射及失败事务未闭合 |
 | 进程与调度 | ProcessManager、PID/PPID、每线程内核栈、CFS vruntime/权重、内嵌 RB 节点、插入/删除旋转与着色、idle、负载均衡和 affinity；fork/exec/wait/exit/Zombie | 014～019、021～023；有 RB 算法不代表调度队列所有权已正确 |
 | 信号与系统调用 | syscall dispatcher、kill/sigaction/sigprocmask/sigaltstack/sigreturn、三 ISA 原生帧及基本信号返回、共享用户复制及异常 fixup、clock_gettime/nanosleep 入口 | 002、003、007、019～021、031；不是“完整 POSIX 信号”或并发 VM 安全验收，nanosleep 切换仍仅 ARM64 |
-| ELF / userspace / initramfs | ELF64 基本检查、PT_LOAD/VMA 后备、按 ISA 的 trampoline 和 syscall wrapper；CPIO newc、shell/hello/top/signal_test、VFS exec；真正 getpid/getppid | 014～016、027；不是所有 ELF 布局或所有进程继承语义已验收 |
+| ELF / userspace / initramfs | ELF64 基本检查、PT_LOAD/VMA 后备、按 ISA 的 trampoline 和 syscall wrapper；CPIO newc、BusyBox ash 直接启动、独立 validation 映像含信号用例、VFS exec；真正 getpid/getppid | 014～016、027；不是所有 ELF 布局或所有进程继承语义已验收 |
 | VFS | inode/dentry/File/FdTable、路径/mount/dcache、ramfs、devfs(console/null/zero)、stdio、open/close/read/write/lseek/fstat/dup/dup2/pipe、匿名 pipefs 与有界 I/O 视图 | 022、024～026；部分复制按实际字节更新 offset/管道位置，不证明 FD 模式、共享 File 并发和 pipe 阻塞语义 |
 | 核心与同步 | C++ 模块、freestanding types/std/concepts、Result、unique_ptr/shared_ptr、klog；ticket/IRQ spinlock、RAII guard、atomics、PerCpuData/计数/队列、MPSC、拥有型锁容器、WaitQueue | 尤其 006、017、018；容器节点/查找引用安全不等于使用者的复合生命周期或调度协议安全 |
 | 扩展框架 | DeviceManager/UartDriver、NUMA/hugepage/reclaim/compaction/共享内存接口；Process 已有 uid/gid/euid/egid 字段 | 030～032 及后续功能清单；字段、框架或空成功返回不等于可用能力 |
