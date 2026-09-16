@@ -30,8 +30,8 @@ def test_production_probe_requires_exec_and_subsequent_shell_output(tmp_path, mo
         script += "print('BusyBox built-in shell (ash)', flush=True)\n"
     script += r"""
 print('moss$ ', end='', flush=True)
-assert input() == 'hello.elf'
-print('MOSS execve() works!\nmoss$ ', end='', flush=True)
+assert input() == '/busybox.elf ash -c \'printf "MOSS_EXEC_READY\\n"\''
+print('\nMOSS_EXEC_READY\nmoss$ ', end='', flush=True)
 assert input().startswith('mkdir /shell-check && ')
 print('moss$ ', end='', flush=True)
 assert input().startswith('count=$(cat /shell-check/result | grep moss | wc -l); ')

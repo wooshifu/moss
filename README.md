@@ -29,11 +29,11 @@ The static mlibc/BusyBox runtime is built directly from checked-in
 sources with native CMake targets. See [third-party sources](docs/third-party-sources.md)
 for exact upstream revisions, licenses, the supported profile and build requirements.
 
-The normal initramfs includes BusyBox, and `/shell.elf` starts its interactive
-ash at the `moss$` prompt. This also works with `MOSS_BUILD_TESTS=OFF`.
-The selected applets (`ls`, `cat`, `mkdir`, `cp`, `mv`, `rm`, `grep`, `wc`, and
-`ash`/`sh`) can be invoked by name using BusyBox's standalone shell support.
-Existing programs such as `hello.elf` and `top.elf` remain on `PATH`.
+The normal initramfs contains only `/busybox.elf`. The embedded init trampoline
+starts its interactive ash directly at the `moss$` prompt, including with
+`MOSS_BUILD_TESTS=OFF`. The selected applets can be invoked by name using
+BusyBox's standalone shell support. The separate validation initramfs starts
+`/validation.elf`, which also contains the signal regression cases.
 
 For example, after launching QEMU:
 
@@ -42,7 +42,7 @@ mkdir /work
 printf 'moss\nother\nmoss again\n' > /work/input
 cat /work/input | grep moss | wc -l
 rm -rf /work
-hello.elf
+/busybox.elf ash -c 'printf "exec works\n"'
 ```
 
 Files created during the session live in RAM. The shell retains the current

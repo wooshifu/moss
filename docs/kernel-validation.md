@@ -2671,6 +2671,13 @@ The initial delivery separated framework completion from other kernel repairs. T
 
 ## Production BusyBox Shell (2026-09-16)
 
+Update (2026-09-17): the production initramfs contains only `/busybox.elf`,
+launched directly by the embedded init trampoline. The validation driver is
+now named `/validation.elf` and includes all 15 signal regression cases;
+each case re-executes that image to retain process isolation and exec-reset
+coverage. The production probe now explicitly executes `/busybox.elf ash -c`.
+The reports below describe the earlier launcher-based images before cleanup.
+
 The normal initramfs now contains `/busybox.elf`, including builds with
 `MOSS_BUILD_TESTS=OFF`. Its `/shell.elf` is a small launcher for interactive ash
 with `PATH=/` and the existing `moss$` prompt. BusyBox standalone shell lookup
