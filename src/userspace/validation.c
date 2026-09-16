@@ -909,6 +909,94 @@ static unsigned long vm_access_permissions(void) {
   return errors;
 }
 
+static int decimal_equal(const char *actual, const char *expected) {
+  while (*actual && *actual == *expected) {
+    ++actual;
+    ++expected;
+  }
+  return *actual == *expected;
+}
+
+static unsigned long numbers_regression(void) {
+  // These are the 64-bit unsigned/signed boundaries, rather than arbitrary
+  // canaries. Signed subtraction stays representable while constructing MIN.
+  const unsigned long unsigned_max = ~0UL;
+  const long signed_min = -0x7fffffffffffffffL - 1;
+  const long signed_max = 0x7fffffffffffffffL;
+  char buffer[MOSS_DECIMAL_BUFFER_SIZE];
+  unsigned long errors =
+      ultoa(unsigned_max, buffer, sizeof(buffer)) != 20 || !decimal_equal(buffer, "18446744073709551615");
+  errors |=
+      (unsigned long)(ltoa(signed_min, buffer, sizeof(buffer)) != 20 || !decimal_equal(buffer, "-9223372036854775808"))
+      << 1;
+  errors |=
+      (unsigned long)(ltoa(signed_max, buffer, sizeof(buffer)) != 19 || !decimal_equal(buffer, "9223372036854775807"))
+      << 2;
+
+  // A one-byte destination admits only NUL. Nonzero neighbours catch the old
+  // zero-value fast path writing two bytes and signed formatting skipping NUL.
+  unsigned char one[3] = {0xa5, 0xa5, 0xa5};
+  errors |= (unsigned long)(ultoa(0, (char *)one + 1, 1) != 0 || one[0] != 0xa5 || one[1] != 0 || one[2] != 0xa5) << 3;
+  one[1] = 0xa5;
+  errors |=
+      (unsigned long)(ltoa(signed_min, (char *)one + 1, 1) != 0 || one[0] != 0xa5 || one[1] != 0 || one[2] != 0xa5)
+      << 4;
+  one[1] = 0xa5;
+  errors |= (unsigned long)(ultoa(unsigned_max, (char *)one + 1, 0) != 0 || ltoa(signed_min, (char *)one + 1, 0) != 0 ||
+                            one[1] != 0xa5)
+            << 5;
+  // Four bytes admit a three-character prefix and NUL, never the low digits.
+  errors |= (unsigned long)(ultoa(12345, buffer, 4) != 3 || !decimal_equal(buffer, "123") ||
+                            ltoa(signed_min, buffer, 4) != 3 || !decimal_equal(buffer, "-92"))
+            << 6;
+
+  long ends[2];
+  if (pipe(ends) != 0)
+    return errors | (1UL << 7);
+  long child = fork();
+  if (child == 0) {
+    if (close((int)ends[0]) != 0 || dup2((int)ends[1], 1) != 1 || close((int)ends[1]) != 0)
+      _exit(99);
+    // Capture the real output helpers through Moss write syscalls. Width 22
+    // adds two spaces to each 20-character boundary value; small width 3 also
+    // covers zero/sign padding. The complete output fits one 4096-byte pipe.
+    print_ulong(unsigned_max);
+    print("\n");
+    print_num_padded(unsigned_max, 22);
+    print("\n");
+    print_long(signed_min);
+    print("\n");
+    print_snum_padded(signed_min, 22);
+    print("\n");
+    print_num_padded(0, 3);
+    print("\n");
+    print_snum_padded(-1, 3);
+    print("\n");
+    _exit(37);
+  }
+  int failed = close((int)ends[1]) != 0 || child < 0;
+  const char expected[] = "18446744073709551615\n"
+                          "  18446744073709551615\n"
+                          "-9223372036854775808\n"
+                          "  -9223372036854775808\n"
+                          "  0\n"
+                          " -1\n";
+  unsigned long received = 0;
+  char chunk[32];
+  long count;
+  // Drain even mismatched output before reaping, so regressions cannot strand
+  // the writer behind pipe backpressure. The chunk size is a bounded stack choice.
+  while ((count = read((int)ends[0], chunk, sizeof(chunk))) > 0) {
+    for (long i = 0; i < count; ++i, ++received)
+      failed |= received >= sizeof(expected) - 1 || chunk[i] != expected[received];
+  }
+  failed |= count < 0 || received != sizeof(expected) - 1;
+  failed |= close((int)ends[0]) != 0;
+  if (child > 0)
+    failed |= !wait_exit(child, 37);
+  return errors | ((unsigned long)(failed != 0) << 7);
+}
+
 static unsigned long user_ranges(void) {
   unsigned check = 0;
   unsigned long failures = 0;
@@ -1493,6 +1581,9 @@ void _start(void) {
     if (control(2, pid == 1 && syscall0(SYS_GETPPID) == 0 && syscall0(510) < 0, 0)) {
       control(1, 1, 0);
       unsigned long errors = user_ranges();
+      // Reuse this existing users case: bits 32..39 distinguish number failures
+      // from the lower range-check bits without adding a control-protocol mode.
+      errors |= numbers_regression() << 32;
       if (!control(2, errors == 0, (long)errors)) {
         control(3, 0, 0);
       }

@@ -94,5 +94,8 @@ foreach(target mlibc-math mlibc-regex)
                 -Wno-attributes
     )
 endforeach()
+# mlibc needs _GNU_SOURCE globally to expose its own extension declarations. Some vendored musl math files define it
+# themselves without a guard, which Clang diagnoses although both definitions deliberately enable the same API.
+target_compile_options(mlibc-math PRIVATE -Wno-macro-redefined)
 add_library(mlibc-crt1 OBJECT sysdeps/moss/crt1.S)
 target_compile_options(mlibc-crt1 PRIVATE ${MLIBC_ARCH_FLAGS})

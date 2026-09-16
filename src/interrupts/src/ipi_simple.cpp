@@ -17,12 +17,11 @@ VoidResult SimpleInterProcessorInterrupt::initialize(u32 max_cpus) noexcept {
     return VoidResult{};
   }
 
-  if (max_cpus > MAX_CPUS) {
+  if (max_cpus == 0 || max_cpus > MAX_CPUS) {
     return VoidResult{ErrorCode::InvalidArgument};
   }
 
   max_cpus_ = max_cpus;
-  message_sequence_.store(0, containers::MemoryOrder::Relaxed);
   total_pings_sent_.store(0, containers::MemoryOrder::Relaxed);
   initialized_ = true;
 
@@ -40,19 +39,27 @@ IpiResult SimpleInterProcessorInterrupt::send_ipi(u32 target_cpu, IpiType type) 
     return IpiResult::InvalidCpu;
   }
 
-  IpiMessage msg{.type = type,
-                 .source_cpu = get_current_cpu_id(),
-                 .target_cpu = target_cpu,
-                 .sequence = message_sequence_.fetch_add(1, containers::MemoryOrder::Relaxed)};
-
-  if (type == IpiType::Ping) {
-    (void)total_pings_sent_.fetch_add(1, containers::MemoryOrder::Relaxed);
+  if (type != IpiType::Ping) {
+    return IpiResult::InvalidType;
   }
 
-  // This validation-only slice constructs metadata and counts sends; it has
-  // no queue or hardware notification. Success does not prove remote delivery.
-  (void)msg;
+  // Reuse the initialized hardware path, including its registered Ping handler
+  // and architecture-specific target checks. A successful request is accepted
+  // for asynchronous delivery; it is not a remote acknowledgement.
+  auto *backend = hw_simple::g_simple_hardware_ipi;
+  if (backend == nullptr) {
+    return IpiResult::NotInitialized;
+  }
+  const auto result = backend->ping_cpu(target_cpu);
+  if (result != hw_simple::IpiResult::Success) {
+    if (result == hw_simple::IpiResult::NotInitialized)
+      return IpiResult::NotInitialized;
+    if (result == hw_simple::IpiResult::InvalidCpu)
+      return IpiResult::InvalidCpu;
+    return IpiResult::HardwareError;
+  }
 
+  (void)total_pings_sent_.fetch_add(1, containers::MemoryOrder::Relaxed);
   return IpiResult::Success;
 }
 
@@ -68,6 +75,9 @@ VoidResult SimpleInterProcessorInterrupt::self_test() noexcept {
   log::klog::info("IPI simple self-test started");
 
   u32 current_cpu = get_current_cpu_id();
+  if (!is_valid_cpu_id(current_cpu)) {
+    return VoidResult{ErrorCode::InvalidState};
+  }
   for (u32 target_cpu = 0; target_cpu < max_cpus_; ++target_cpu) {
     if (target_cpu != current_cpu) {
       auto result = ping_cpu(target_cpu);
@@ -92,9 +102,9 @@ SimpleInterProcessorInterrupt::SystemInfo SimpleInterProcessorInterrupt::get_sys
 
 bool SimpleInterProcessorInterrupt::is_valid_cpu_id(u32 cpu_id) const noexcept { return cpu_id < max_cpus_; }
 
-// Logical CPU zero is a test-slice assumption; production hardware IPI uses
-// arch::get_current_cpu_id() instead of this fixed source identity.
-u32 SimpleInterProcessorInterrupt::get_current_cpu_id() const noexcept { return 0; }
+// Self-test excludes the actual firmware-mapped logical CPU, including a
+// nonzero caller; a fixed zero would send back to that caller and skip CPU 0.
+u32 SimpleInterProcessorInterrupt::get_current_cpu_id() const noexcept { return arch::get_current_cpu_id(); }
 
 // === Global initialization functions ===
 
@@ -142,8 +152,12 @@ const char *ipi_result_to_string(IpiResult result) noexcept {
     return "Success";
   case IpiResult::InvalidCpu:
     return "InvalidCpu";
+  case IpiResult::InvalidType:
+    return "InvalidType";
   case IpiResult::NotInitialized:
     return "NotInitialized";
+  case IpiResult::HardwareError:
+    return "HardwareError";
   default:
     return "Unknown";
   }

@@ -9,7 +9,7 @@
  *
  *   1. BOOT SEQUENCE
  *      - Linux ARM64 Image boot protocol
- *      - Exception level descent (EL3 path caveat documented at el3_entry)
+ *      - Exception level descent: EL3 → EL2 → EL1
  *      - BSS clearing, stack setup, DTB discovery
  *      - Primary CPU → early_main()
  *      - Secondary CPUs → secondary_cpu_entry()
@@ -141,6 +141,7 @@ _linux_header:
 // SPSR_EL2 — Saved Program Status Register at EL2
 #define SPSR_EL2_MASK     0x1F
 #define SPSR_EL2_EL1h     0x05          // Target: EL1 with SP_EL1
+#define SPSR_EL3_EL2h     0x09          // Target: EL2 with SP_EL2, before accessing EL2 registers
 #define SPSR_EL2_F        (1 << 6)      // FIQ mask
 #define SPSR_EL2_I        (1 << 7)      // IRQ mask
 #define SPSR_EL2_A        (1 << 8)      // SError mask
@@ -197,28 +198,27 @@ boot_exception_level:
     b       el1_entry                   // EL1 → proceed with kernel init
 
 // =============================================================================
-// Legacy EL3 descent path
+// EL3 → EL2 transition
 // =============================================================================
 //
 // Configure Secure Configuration Register (SCR_EL3):
-//   0x431 = RW (bit 10) | NS (bit 0) | legacy RES1 bits [5:4].
-// HCE (bit 8) and SMD (bit 7) are clear; this value does not enable HVC.
-// The return mode below selects EL1h despite targeting the el2_entry label;
-// entry from EL3 needs a separate mode/register-access correctness review.
+//   0x531 = RW (bit 10) | HCE (bit 8) | NS (bit 0) | RES1 bits [5:4].
+// Keep SMD (bit 7) clear so both SMC and HVC firmware transports remain legal.
+// Return to EL2h: el2_entry must configure HCR_EL2 and GIC access before EL1.
 // =============================================================================
 el3_entry:
-    mov     x0, #0x431
+    mov     x0, #0x531
     msr     scr_el3, x0
 
-    // SPSR.M=5 selects EL1h, with FIQ/IRQ/SError/debug masked; see caveat above.
-    mov     x0, #(SPSR_EL2_F | SPSR_EL2_I | SPSR_EL2_A | SPSR_EL2_D | SPSR_EL2_EL1h)
+    // SPSR.M=9 selects EL2h; mask exceptions until the lower-level vector setup.
+    mov     x0, #(SPSR_EL2_F | SPSR_EL2_I | SPSR_EL2_A | SPSR_EL2_D | SPSR_EL3_EL2h)
     msr     spsr_el3, x0
 
     // Set EL3 return address to el2_entry
     adr     x0, el2_entry
     msr     elr_el3, x0
 
-    eret                                // return mode follows SPSR_EL3, not label name
+    eret                                // → non-secure AArch64 EL2h
 
 // =============================================================================
 // EL2 → EL1 transition
@@ -245,7 +245,7 @@ el2_entry:
 1:
 
     // SPSR_EL2: mask all exceptions, target EL1h
-    mov     x0, #(SPSR_EL2_F | SPSR_EL2_I | SPSR_EL2_A | SPSR_EL2_D | 0x05)
+    mov     x0, #(SPSR_EL2_F | SPSR_EL2_I | SPSR_EL2_A | SPSR_EL2_D | SPSR_EL2_EL1h)
     msr     spsr_el2, x0
 
     // Set EL2 return address to el1_entry
@@ -330,7 +330,7 @@ bss_cleared:
 // Secondary CPU entry (firmware lands at arm64_secondary_start)
 // =============================================================================
 //
-// Secondary CPUs use their own EL descent; the EL3 mode caveat above applies.
+// Secondary CPUs arrive after the same EL3→EL2→EL1 descent when applicable.
 // They must NOT clear BSS. C++ configures their MMU after CPU 0 publishes tables.
 // Each CPU gets a 32KB stack slice below _stack_top.
 // =============================================================================

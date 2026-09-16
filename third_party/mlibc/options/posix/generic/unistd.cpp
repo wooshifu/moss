@@ -1145,6 +1145,7 @@ pid_t gettid(void) {
 	if constexpr (!mlibc::IsImplemented<GetTid>) {
 		MLIBC_MISSING_SYSDEP();
 		__ensure(!"Cannot continue without sys_gettid()");
+		__builtin_unreachable();
 	} else {
 		return mlibc::sysdep_or_panic<GetTid>();
 	}

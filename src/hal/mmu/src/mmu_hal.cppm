@@ -269,15 +269,15 @@ struct VirtualAddressBreakdown {
 struct AddressSpaceConfig {
 #if defined(MOSS_ARCH_ARM64)
   // T0SZ/T1SZ=16 means 64-16=48 address bits; IPS=5 selects 48-bit PA.
-  // TG0 and TG1 have different encodings: TG1=0 below is reserved, not the
-  // architected 4 KiB encoding (2). Its use has no recorded rationale; review
-  // that value separately from comment maintenance (Arm TCR_EL1[31:30]).
+  // TG0 and TG1 have different encodings: 4 KiB is TG0=0 but TG1=2.
+  // Reusing TG0's zero would program reserved TCR_EL1[31:30] and leave the
+  // upper-half mappings without an architecturally valid translation granule.
   static constexpr u64 TCR_VALUE = (16ULL << 0) |  // T0SZ: 48-bit TTBR0 region
                                    (16ULL << 16) | // T1SZ: 48-bit TTBR1 region
                                    (0ULL << 6) |   // not used
                                    (0ULL << 23) |  // not used
                                    (0ULL << 14) |  // TG0: 4KB granule
-                                   (0ULL << 30) |  // TG1: reserved encoding; see caveat above
+                                   (2ULL << 30) |  // TG1: 4 KiB (encoding differs from TG0)
                                    (1ULL << 8) |   // IRGN0: WB-WA
                                    (1ULL << 10) |  // ORGN0: WB-WA
                                    (3ULL << 12) |  // SH0: Inner Shareable

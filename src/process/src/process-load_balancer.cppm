@@ -136,19 +136,15 @@ public:
       return false;
     }
 
-    Thread *task = select_migration_candidate(src_cpu, scheduler);
-    if (task == nullptr) {
+    // Selection, removal and publication share dispatch's ownership boundary.
+    // Ready alone cannot authorize moving a still-executing continuation.
+    if (!scheduler.migrate_ready_task(src_cpu, dst_cpu)) {
       return false;
     }
-
-    scheduler.dequeue_task(task);
-    scheduler.enqueue_task(task, dst_cpu);
 
     auto &src_stats = stats_.get_cpu(src_cpu);
     src_stats.migrations_count++;
 
-    // Notify target CPU so it picks up the migrated task promptly
-    send_reschedule_ipi(dst_cpu);
     return true;
   }
 
@@ -276,45 +272,23 @@ private:
     auto &stats = stats_.get_cpu(dst_cpu);
     stats.steal_attempts++;
 
-    Thread *task = select_migration_candidate(src_cpu, scheduler);
-    if (task == nullptr) {
-      return false;
-    }
-
-    u64 expected_benefit = calculate_migration_benefit(task, src_cpu, dst_cpu, scheduler);
+    // Benefit depends only on the load gap. Avoid retaining a candidate
+    // pointer while a source CPU can dispatch or migrate it independently.
+    u64 expected_benefit = calculate_migration_benefit(src_cpu, dst_cpu, scheduler);
     if (expected_benefit < migration_cost_) {
       return false;
     }
 
-    scheduler.dequeue_task(task);
-    scheduler.enqueue_task(task, dst_cpu);
+    if (!scheduler.migrate_ready_task(src_cpu, dst_cpu))
+      return false;
 
     stats.steal_success++;
     stats.migrations_count++;
 
-    // Notify destination CPU (ourselves if idle-balancing, or another CPU)
-    send_reschedule_ipi(dst_cpu);
     return true;
   }
 
-  [[nodiscard]] Thread *select_migration_candidate(u32 cpu, CfsScheduler &scheduler) const noexcept {
-    // Pick the highest-vruntime (least-deserving) runnable task on source CPU.
-    // This preserves CFS fairness: we migrate the task that has consumed
-    // the most CPU, not the one most in need of CPU time.
-    // Only candidates with nr_running > 1 on source are eligible
-    // (we never steal the last runnable task).
-    if (scheduler.get_cpu_nr_running(cpu) <= 1) {
-      return nullptr;
-    }
-    return scheduler.pick_last_task(cpu);
-  }
-
-  [[nodiscard]] u64 calculate_migration_benefit(Thread *thread, u32 src_cpu, u32 dst_cpu,
-                                                CfsScheduler &scheduler) const noexcept {
-    if (thread == nullptr) {
-      return 0;
-    }
-
+  [[nodiscard]] u64 calculate_migration_benefit(u32 src_cpu, u32 dst_cpu, CfsScheduler &scheduler) const noexcept {
     u32 src_load = scheduler.get_cpu_load(src_cpu);
     u32 dst_load = scheduler.get_cpu_load(dst_cpu);
 
