@@ -586,7 +586,9 @@ inline bool valid_id(const char *id) {
 struct Registry {
   // Fixed static budgets keep registration available before heap initialization.
   // These are harness capacity choices; exhaustion is a registration error.
-  static constexpr unsigned case_capacity = 160;
+  // The expanded BusyBox suite exceeds the old 160-slot budget. 192 covers the
+  // current catalog with bounded headroom while keeping registration heap-free.
+  static constexpr unsigned case_capacity = 192;
   static constexpr unsigned suite_capacity = 32;
   test_base cases[case_capacity]{};
   const char *suites[suite_capacity]{};

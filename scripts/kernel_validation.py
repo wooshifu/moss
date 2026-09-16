@@ -127,6 +127,20 @@ CATALOG = {
         "file_copy",
         "file_rename",
         "application_workflow",
+        "head",
+        "cut",
+        "sort",
+        "uniq",
+        "tr",
+        "tee",
+        "cmp",
+        "basename",
+        "dirname",
+        "rmdir",
+        "uname",
+        "kill",
+        "find",
+        "find_rejects_unsupported",
     ],
     "users.timers": [
         "relative_sleep",
@@ -588,8 +602,13 @@ def run_guest(cfg: Artifacts, workload: str, directory: Path, settings: dict, it
     case_timeout = settings.get("case_timeout")
     if case_timeout is None:
         # Exhaustive RAM access and repeated process lifecycles can exceed 5 s
-        # under host pressure; these suites retain a bounded 30 s deadline.
-        case_timeout = 30.0 if workload in ("pfa", "users.signals", *LIFECYCLE_INTERVAL, *BENCHMARK_KINDS) else 5.0
+        # under host pressure. BusyBox's file-rename workflow took 6.32 s on
+        # ARM64 Debug while compiling; retain the same bounded 30 s deadline.
+        case_timeout = (
+            30.0
+            if workload in ("pfa", "users.signals", "users.busybox", *LIFECYCLE_INTERVAL, *BENCHMARK_KINDS)
+            else 5.0
+        )
     progress_deadline = settings.get("stability", False) or workload == "users.applications"
     guest_timeout = settings.get("guest_timeout")
     if guest_timeout is None:
