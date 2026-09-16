@@ -1,7 +1,8 @@
-// MOSS VFS ramfs — read-only RAM filesystem backed by initramfs CPIO data
+// MOSS VFS ramfs — immutable initramfs files and mutable runtime-created files
 //
 // Builds an inode tree from the parsed InitramfsArchive.  File content
-// is zero-copy: inode->data points directly into the CPIO memory region.
+// is zero-copy for archive files: inode->data borrows the CPIO memory region.
+// Archive bytes remain immutable; runtime-created regular files own heap buffers.
 // The root "/" is the ramfs root; files appear as /hello.elf etc.
 
 export module moss.vfs:ramfs;

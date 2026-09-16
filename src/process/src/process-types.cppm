@@ -91,7 +91,9 @@ constexpr SchedClass policy_to_class(SchedPolicy policy) noexcept {
   }
 }
 
-// Process priority range
+// Linux-compatible public ranges: nice -20..19 maps to 40 CFS weights;
+// RT priorities 1..99 leave zero for non-RT. Fallback 50 is the middle RT
+// priority; the reason for choosing that fallback is not recorded.
 namespace priority {
 inline constexpr i32 MIN_NICE = -20;
 inline constexpr i32 MAX_NICE = 19;
@@ -142,6 +144,9 @@ struct alignas(16) CpuContext {
 #elif defined(__x86_64__) || defined(__x86_64) || defined(MOSS_ARCH_X64)
 // Architectural FXSAVE64 image. Baseline x87/MMX/SSE state; AVX is not enabled.
 struct alignas(16) X86FpState {
+  // Architectural reset controls: 0x037f masks x87 exceptions with round-to-
+  // nearest/extended precision; MXCSR 0x1f80 masks SSE exceptions and rounds
+  // to nearest. They must form a valid fresh FXSAVE image for first dispatch.
   u16 control = 0x037f;
   u16 status = 0;
   u8 tag = 0;
@@ -151,6 +156,8 @@ struct alignas(16) X86FpState {
   u64 data = 0;
   u32 mxcsr = 0x1f80;
   u32 mxcsr_mask = 0;
+  // FXSAVE64 layout: eight 16-byte x87 slots, sixteen 16-byte XMM slots and
+  // 96 reserved bytes complete the 512-byte image; offsets are ABI constraints.
   u8 st[128]{};
   u8 xmm[256]{};
   u8 reserved_tail[96]{};
@@ -183,6 +190,8 @@ struct alignas(16) CpuContext {
   u64 fs_base;
 
   constexpr CpuContext() noexcept
+      // 0x202 sets fixed RFLAGS bit 1 and IF bit 9; assembly masks IF during
+      // the stack transition and the user-return path restores allowed flags.
       : rax(0), rbx(0), rcx(0), rdx(0), rsi(0), rdi(0), rbp(0), sp(0), r8(0), r9(0), r10(0), r11(0), r12(0), r13(0),
         r14(0), r15(0), pstate(0x202), pc(0), cs(0), ds(0), es(0), fs(0), gs(0), ss(0), fp{}, fs_base(0) {}
 };
@@ -211,6 +220,9 @@ struct alignas(16) CpuContext {
 #error "Unsupported target architecture: please compile on ARM64, x64 or RISC-V 64"
 #endif
 
+// One KiB is a software context-size guard, not an architecture frame size;
+// its original budget justification is unrecorded. Exact offsets below must
+// match context_switch.S, so structure changes require matching assembly edits.
 static_assert(sizeof(CpuContext) <= 1024, "CpuContext should fit in reasonable size");
 #if defined(MOSS_ARCH_ARM64)
 static_assert(__builtin_offsetof(CpuContext, sp) == 248 && __builtin_offsetof(CpuContext, pc) == 256 &&
@@ -226,14 +238,24 @@ static_assert(__builtin_offsetof(CpuContext, sp) == 56 && __builtin_offsetof(Cpu
 
 // Canonical user layout; the MMU's runtime USER_MAX selects Sv39/Sv48 bounds.
 namespace user_layout {
+// Keep heap at/above the 4 GiB kernel-map end, the RX signal stub at 6 GiB,
+// raw boot code at 8 GiB and anonymous mmap at 64 GiB so these regions begin
+// separately. Exact address-spacing choices are unrecorded; this is layout,
+// not a reservation of the intervening physical memory.
 inline constexpr VirtAddr CODE_BASE = 0x0000000200000000ULL;  // 8 GiB
 inline constexpr VirtAddr HEAP_START = 0x0000000100000000ULL; // 4 GiB, above identity map
+// Demand-paged budgets: 32 KiB initial stack, 8 MiB maximum downward growth
+// and 64 KiB initial heap. Original budget measurements are not recorded;
+// changing them affects VMA admission/growth, not immediate RAM allocation.
 inline constexpr usize STACK_SIZE = 32ULL * 1024;
 inline constexpr usize STACK_MAX = 8ULL * 1024 * 1024;
 inline constexpr usize HEAP_INIT = 64ULL * 1024;
 inline constexpr VirtAddr MMAP_BASE = 0x0000001000000000ULL;      // 64 GiB
 inline constexpr VirtAddr SIGRETURN_PAGE = 0x0000000180000000ULL; // kernel-installed RX user stub
 #if defined(MOSS_ARCH_RISCV64)
+// Initial stack address fits the positive Sv39 half; boot recomputes it from
+// the selected MMU mode. Other targets use the positive 48-bit user half.
+// Exact stack-top placement within these bounds has no recorded rationale.
 constinit inline VirtAddr STACK_TOP = 0x0000003F00000000ULL; // updated during early boot
 #else
 inline constexpr VirtAddr STACK_TOP = 0x00007FFF00000000ULL;
@@ -445,6 +467,8 @@ struct SchedEntity {
   bool rb_red;     // RB colour (true = red)
 
   SchedEntity() noexcept
+      // Neutral nice=0 uses weight 1024; prio 120 is the retained Linux-style
+      // normal-priority default. The exact reason for retaining 120 is unrecorded.
       : vruntime(0), exec_start(0), sum_exec_runtime(0), prev_sum_exec_runtime(0), weight(1024), nice(0), prio(120),
         load_weight(1024), load_sum(0), util_sum(0), load_avg(0), util_avg(0), rb_on_rq(false), rb_data(nullptr),
         rb_left(nullptr), rb_right(nullptr), rb_parent(nullptr), rb_red(true) {}
@@ -616,7 +640,7 @@ private:
   SignalState signal_state_{};
 
   // Process name (like Linux task_struct.comm), set by execve
-  char name_[16]{};
+  char name_[16]{}; // Linux-style comm: up to 15 bytes plus a terminating NUL.
 
   // Process group and session IDs (POSIX job control).
   // Default: pgid = pid (each process is its own group leader),
@@ -695,6 +719,7 @@ public:
   [[nodiscard]] const char *name() const noexcept { return name_; }
   void set_name(const char *n) noexcept {
     usize i = 0;
+    // Reserve the sixteenth byte for NUL even when the input is longer.
     while (i < 15 && n[i] != '\0') {
       name_[i] = n[i];
       ++i;
@@ -782,6 +807,7 @@ private:
   containers::PerCpuAtomicCounter<u64> total_exits_;
 
 public:
+  // PID zero is reserved for kernel/idle ownership; the first process is init (1).
   ProcessManager() noexcept : next_pid_(1) {}
 
   [[nodiscard]] KernelResult<shared_ptr<Process>> create_process(ProcessId parent_pid = INVALID_PROCESS_ID) noexcept;

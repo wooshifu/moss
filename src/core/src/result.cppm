@@ -1,4 +1,3 @@
-// src/modules/result.cppm
 // MOSS Result Type Module - Error Handling for Kernel Operations
 // Provides Result<T, E> type for safe error propagation without exceptions
 
@@ -26,12 +25,14 @@ private:
     // Default constructor - does nothing
     constexpr Storage() noexcept {}
 
-    // Value constructor
+    // bool/int are overload tags, not stored payloads: true selects value_,
+    // while the literal 1 at error call sites selects error_. has_value_ alone
+    // determines which union member must be destroyed.
     template <typename... Args>
     constexpr Storage(bool /*unused*/, Args &&...args) noexcept(noexcept(T(forward<Args>(args)...)))
         : value_(forward<Args>(args)...) {}
 
-    // Error constructor
+    // The int tag keeps value/error construction distinct even when T and E match.
     template <typename... Args>
     constexpr Storage(int /*unused*/, Args &&...args) noexcept(noexcept(E(forward<Args>(args)...)))
         : error_(forward<Args>(args)...) {}

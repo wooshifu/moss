@@ -28,6 +28,8 @@ bool send_signal(Thread *thread, u32 signo) noexcept {
 // ============================================================================
 #if defined(__aarch64__) || defined(MOSS_ARCH_ARM64)
 static void save_neon_state(u64 *neon_buf) noexcept {
+  // Qn occupies 16 bytes; paired loads/stores below use n*16 byte offsets
+  // and require the signal ABI's 16-byte-aligned 512-byte FP storage.
   asm volatile(".arch_extension fp\n"
                "stp q0,  q1,  [%0, #(0  * 16)]\n"
                "stp q2,  q3,  [%0, #(2  * 16)]\n"
@@ -114,11 +116,14 @@ bool setup_sigframe(Thread *thread, u32 signo, const Sigaction &sa) noexcept {
     user_sp = thread->alt_stack_sp + thread->alt_stack_size;
   }
 #if defined(MOSS_ARCH_X64)
-  // SysV's red zone belongs to the interrupted user function.
+  // The SysV AMD64 ABI reserves the 128 bytes below interrupted RSP for its
+  // user function; signal delivery must leave that red zone untouched.
   constexpr u64 red_zone = 128;
 #else
   constexpr u64 red_zone = 0;
 #endif
+  // Budget one extra 16-byte alignment unit before subtraction. Rounding
+  // down with mask 15 preserves FP/stack alignment and cannot underflow.
   if (user_sp < SignalFrame::FRAME_SIZE + red_zone + 16) {
     return false;
   }
@@ -152,7 +157,8 @@ bool setup_sigframe(Thread *thread, u32 signo, const Sigaction &sa) noexcept {
   }
   u64 handler_sp = sigframe_sp;
 #if defined(MOSS_ARCH_X64)
-  // A normal C handler returns with RET, leaving RSP at the signal frame.
+  // One 8-byte return address gives a C handler the SysV entry RSP alignment;
+  // RET removes it, leaving RSP at the 16-byte-aligned signal frame for sigreturn.
   handler_sp -= 8;
   u64 link = user_layout::SIGRETURN_PAGE;
   if (copy_to_user(handler_sp, &link, sizeof(link)) != 0) {
@@ -163,6 +169,8 @@ bool setup_sigframe(Thread *thread, u32 signo, const Sigaction &sa) noexcept {
 #elif defined(MOSS_ARCH_RISCV64)
   frame.ra = user_layout::SIGRETURN_PAGE;
 #endif
+  // Publish handler state only after all user writes succeed. A short copy
+  // may leave user bytes changed, but must not activate a half-built frame.
   frame.pc = sa.handler;
   frame.sp = handler_sp;
   frame.argument(0) = signo;
@@ -172,6 +180,7 @@ bool setup_sigframe(Thread *thread, u32 signo, const Sigaction &sa) noexcept {
   return true;
 }
 
+// Native syscall error convention uses Linux errno EFAULT=14 for bad frames.
 static constexpr long SIGRETURN_EFAULT = 14;
 
 long do_sigreturn(Thread *thread) noexcept {
@@ -180,6 +189,7 @@ long do_sigreturn(Thread *thread) noexcept {
   }
   auto &frame = *thread->trap_frame;
   SignalFrame sf{};
+  // Signal-frame/FP storage requires 16-byte alignment; mask 15 checks it.
   if ((frame.sp & 15) || copy_from_user(&sf, frame.sp, sizeof(sf)) != 0 || sf.magic != SignalFrame::MAGIC ||
       !mm::PageTableManager::is_user_range(sf.elr, 1) || !mm::PageTableManager::is_user_range(sf.sp, 1)) {
     return -SIGRETURN_EFAULT;
@@ -188,21 +198,29 @@ long do_sigreturn(Thread *thread) noexcept {
   auto *as = proc ? proc->address_space() : nullptr;
   if (!as || !thread->active_signal_frame || frame.sp != thread->active_signal_frame ||
       !as->allows_user_access(sf.elr, 1, vma_flags::EXEC) || sf.sp == 0 ||
+      // A downward-growing SP may be the VMA's exclusive end; validate the
+      // preceding byte rather than rejecting that valid empty-stack boundary.
       !as->allows_user_access(sf.sp - 1, 1, vma_flags::WRITE) ||
       (sf.previous != 0 && !as->allows_user_access(sf.previous, sizeof(sf), vma_flags::READ))) {
     return -SIGRETURN_EFAULT;
   }
 #if defined(MOSS_ARCH_ARM64)
+  // ARM64 instructions are 4-byte aligned; stacks must be 16-byte aligned.
   if ((sf.elr & 3) || (sf.sp & 15)) {
     return -SIGRETURN_EFAULT;
   }
 #elif defined(MOSS_ARCH_RISCV64)
+  // Compressed RISC-V instructions allow 2-byte PC alignment; the stack ABI
+  // still requires 16 bytes. Reject malformed addresses before resuming.
   if ((sf.elr & 1) || (sf.sp & 15)) {
     return -SIGRETURN_EFAULT;
   }
 #elif defined(MOSS_ARCH_X64)
   X86FpState current;
   asm volatile("fxsave64 %0" : "=m"(current)::"memory");
+  // FXSAVE's MXCSR_MASK can be zero; 0xffbf is the architectural fallback
+  // excluding reserved bits (including unsupported DAZ). MXCSR lives at byte
+  // offset 24, hence u64 slot 3. Reject bits that would make FXRSTOR fault.
   const u32 mask = current.mxcsr_mask ? current.mxcsr_mask : 0xffbfU;
   if (static_cast<u32>(sf.fp[3]) & ~mask) {
     return -SIGRETURN_EFAULT;

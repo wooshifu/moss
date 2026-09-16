@@ -1,10 +1,8 @@
 // MOSS Page Fault Handler
 //
-// Handles kernel-mode page faults (Data Abort EC=0x25, Instruction Abort EC=0x21)
-// and prints diagnostic information for all other unhandled exceptions.
-//
-// Called from the ARM64 exception vector table in start_arm64.S.
-// x64 and RISC-V 64 stubs are provided for link compatibility.
+// Resolves user demand/COW faults, including accesses from kernel copies, and
+// diagnoses unrecoverable faults. ARM64, x64 and RISC-V entry paths pass their
+// native fault state; only registered copy instructions can use uaccess fixups.
 
 module;
 
@@ -38,6 +36,9 @@ namespace moss::kernel::mm {
 // ============================================================================
 // EC (Exception Class) to human-readable string
 // ============================================================================
+// ARM64 ESR_EL1 encodings: EC is [31:26] (six bits), ISS is [24:0],
+// abort FSC is [5:0] and WnR is bit 6. These are architectural fields, not
+// local thresholds; the switches below decode their assigned values.
 static auto ec_to_string(u64 ec) noexcept -> const char * {
   switch (ec) {
   case 0x00:
@@ -175,6 +176,8 @@ enum class FaultAccess { Read, Write, Execute };
 static bool try_demand_page(moss::kernel::u64 far_addr, FaultAccess access) noexcept;
 
 static bool fixup_user_access(void *raw_frame, moss::kernel::u64 address) noexcept {
+  // Restrict recovery to a registered copy PC and a user fault address. A
+  // kernel-buffer fault must remain visible rather than becoming a short copy.
   return raw_frame && moss::kernel::mm::PageTableManager::is_user_range(address, 1) &&
          moss::abi::uaccess::fixup(*static_cast<moss::abi::TrapFrame *>(raw_frame));
 }
@@ -336,11 +339,8 @@ extern "C" void kernel_page_fault_handler(unsigned long long esr, unsigned long 
 // Called from lower_el_sync_dispatch when EC=0x24 (Data Abort, lower EL) or
 // EC=0x20 (Instruction Abort, lower EL).
 //
-// MVP behaviour: log diagnostics and terminate the faulting user process.
-// The kernel does NOT panic — it simply kills the offending process and
-// lets the scheduler pick the next runnable task.
-//
-// Future: demand paging, COW, stack growth, mmap fault-in.
+// Resolve demand paging, COW and eligible stack growth first. An unresolved
+// user fault terminates that process and returns control to the scheduler.
 // ============================================================================
 // Helper: kill the current user process and hand control to the scheduler
 [[noreturn]] static void kill_user_process(const char *reason, unsigned long long far_addr,
@@ -351,12 +351,14 @@ extern "C" void kernel_page_fault_handler(unsigned long long esr, unsigned long 
 
   // Bridge to kernel module: terminates process + restores kernel TTBR0 +
   // calls schedule_after_exit().  Never returns.
-  terminate_current_user_process(-11); // -11 ≈ SIGSEGV
+  terminate_current_user_process(-11); // Exit convention: negative SIGSEGV (signal number 11).
 }
 
 // Attempt COW (Copy-on-Write) resolution for a write permission fault.
 // Returns true if the fault was a COW page and has been resolved.
 static bool try_cow_fault(moss::kernel::u64 far_addr) noexcept {
+  // The caller's address-space protocol must exclude concurrent clone/unmap;
+  // an atomic refcount read does not stabilize the mutable PTE or its frame.
   namespace mm = moss::kernel::mm;
   namespace log = moss::kernel::logging;
   using moss::kernel::phys_to_virt;
@@ -367,11 +369,13 @@ static bool try_cow_fault(moss::kernel::u64 far_addr) noexcept {
   using moss::kernel::usize;
   using moss::kernel::VirtAddr;
 
-  constexpr usize PG_SIZE = 4096;
+  constexpr usize PG_SIZE = 4096; // Same 4 KiB granule as mm::PAGE_SIZE and order-0 frames.
   if (!mm::PageTableManager::is_user_range(far_addr, 1)) {
     return false;
   }
-  // A software COW marker does not grant permissions. All currently supported
+  // WRITE is bridge flag bit 1, matching process::vma_flags without importing
+  // moss.process back into its MM dependency. A software COW marker does not
+  // grant permissions. All currently supported
   // VMAs are private; shared mmap is rejected by sys_mmap. Recheck the current
   // VMA as well as the PTE before allowing any write-protection relaxation.
   u32 vma_flags = 0;
@@ -484,7 +488,8 @@ static bool try_demand_page(moss::kernel::u64 far_addr, FaultAccess access) noex
     }
   }
 
-  // vma_flags bit definitions (must match process::vma_flags)
+  // Bridge permission encoding matches process::vma_flags (READ/WRITE/EXEC
+  // in bits 0/1/2); local copies avoid a process -> mm -> process import cycle.
   constexpr u32 VMA_READ = 1U << 0;
   constexpr u32 VMA_WRITE = 1U << 1;
   constexpr u32 VMA_EXEC = 1U << 2;
@@ -495,7 +500,7 @@ static bool try_demand_page(moss::kernel::u64 far_addr, FaultAccess access) noex
   }
 
   // Allocate a physical page
-  constexpr usize PG_SIZE = 4096;
+  constexpr usize PG_SIZE = 4096; // Matches mm::PAGE_SIZE; fills exactly one order-0 frame.
   auto page_result = mm::page_alloc::alloc_kernel_pages(0);
   if (!page_result) {
     return false;
@@ -630,7 +635,7 @@ extern "C" [[noreturn]] void unhandled_user_exception_handler(unsigned long long
   log::klog::error("Terminating user process");
 
   // Terminate the faulting process and let the scheduler pick the next task.
-  terminate_current_user_process(-11); // -11 ≈ SIGSEGV
+  terminate_current_user_process(-11); // Exit convention: negative SIGSEGV (signal number 11).
 }
 
 // ============================================================================
@@ -688,7 +693,7 @@ extern "C" void riscv64_page_fault_handler(unsigned long long scause, unsigned l
 // x64 Page Fault Handler (#PF, vector 14)
 //
 // Called from x64_interrupt_handler() in boot_impl.cpp.
-// Error code bits:  0=Present  1=Write  2=User  4=InstructionFetch
+// Error code bits:  0=Present  1=Write  2=User  3=ReservedBit  4=InstructionFetch
 // CR2 holds the faulting virtual address.
 // ============================================================================
 #if defined(MOSS_ARCH_X64) || defined(__x86_64__) || defined(__x86_64)

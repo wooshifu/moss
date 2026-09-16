@@ -3,7 +3,7 @@
 #include "moss/trap_frame_offsets.h"
 
 .section .text
-.balign 4
+.balign 4 // stvec direct mode uses the low two bits as mode, so the entry must be 4-byte aligned.
 .global syscall_entry_point
 .type syscall_entry_point, @function
 syscall_entry_point:
@@ -46,7 +46,8 @@ syscall_entry_point:
     sd t0, MOSS_TF_PC(sp)
     csrr t0, sstatus
     sd t0, MOSS_TF_STATUS(sp)
-    // Use the architectural origin, not the untrusted user SP (which can be 0).
+    // sstatus.SPP is bit 8 (256): it identifies S-mode origin even when
+    // an untrusted user SP is zero. Nested S-mode entry stays on its kernel stack.
     andi t1, t0, 256
     bnez t1, .Lkernel_identity
     ld tp, MOSS_TF_SIZE(sp)
@@ -65,10 +66,13 @@ syscall_entry_point:
     sd t0, MOSS_TF_CAUSE(sp)
     sd zero, MOSS_TF_RESERVED0(sp)
     sd zero, MOSS_TF_RESERVED1(sp)
-    // C fault/syscall/return handlers may access validated user memory.
+    // sstatus.SUM is bit 18: permit the fault-contained user-copy handlers
+    // to access user pages from S-mode; the saved return status is separate.
     li t1, (1 << 18)
     csrs sstatus, t1
     bltz t0, .Linterrupt
+    // scause wire values: 8=U-mode ECALL; 12/13/15=instruction/load/store
+    // page faults; 5/7=load/store access faults handled by the same fault bridge.
     li t1, 8
     beq t0, t1, .Lsyscall
     li t1, 12
@@ -97,12 +101,16 @@ syscall_entry_point:
     j .Lreturn
 .Lsyscall:
     ld t0, MOSS_TF_PC(sp)
+    // ECALL is a 4-byte instruction even with compressed instructions enabled;
+    // resume after it rather than repeating the syscall on SRET.
     addi t0, t0, 4
     sd t0, MOSS_TF_PC(sp)
     mv a0, sp
     call system_call_handler
     j .Lreturn
 .Linterrupt:
+    // scause's top bit marks interrupts; shifting left then right removes it.
+    // Interrupt causes 5/9/1 are supervisor timer/external/software respectively.
     slli t0, t0, 1
     srli t0, t0, 1
     li t1, 5
@@ -111,7 +119,7 @@ syscall_entry_point:
     beq t0, t1, .Lexternal
     li t1, 1
     bne t0, t1, .Lreturn
-    csrci sip, 2
+    csrci sip, 2 // Clear SSIP (bit 1) so the software interrupt does not retrigger.
     j .Lreturn
 .Ltimer:
     call riscv64_timer_handler
@@ -119,7 +127,7 @@ syscall_entry_point:
 .Lexternal:
     call riscv64_external_handler
 .Lreturn:
-    csrci sstatus, 2
+    csrci sstatus, 2 // Clear SIE (bit 1) while the return frame is being consumed.
     mv a0, sp
     call user_return_handler
     ld t0, MOSS_TF_PC(sp)
@@ -202,6 +210,8 @@ syscall_entry_point:
 .type syscall_return, @function
 syscall_return:
     beqz a0, .Lreturn_error
+    // Legacy opaque SyscallContext byte offset (slot 7), not MOSS_TF_A0.
+    // The defining layout is not recorded here; native return uses the saved frame.
     ld a0, 56(a0)
     ret
 .Lreturn_error:

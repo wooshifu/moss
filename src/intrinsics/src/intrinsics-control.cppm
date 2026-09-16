@@ -58,7 +58,8 @@ template <typename T> [[nodiscard]] constexpr bool is_constant(const T &value) n
 
 #if __has_builtin(__builtin_assume)
 /// Tell optimizer to assume expr is true (undefined behavior if false).
-/// Stronger than [[assume]] attribute - generates actual code in debug builds.
+/// This supplies an invariant, not a runtime check even in debug builds.
+/// The wrapper's bool argument is evaluated normally before entering assume().
 /// Use carefully: only for verified invariants.
 inline void assume(bool expr) noexcept { __builtin_assume(expr); }
 

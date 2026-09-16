@@ -22,8 +22,8 @@
  * └──────────────────────────────────────────┘
  *
  * Key design decisions:
- *   - Base address 0x2_0000_0000 (8 GB) — placed above the kernel identity
- *     map region (PGD[0] L1 entries cover 0-4 GB) to ensure user page faults
+ *   - Base address 0x2_0000_0000 (8 GiB) — placed above the kernel identity
+ *     map region (PGD[0] L1 entries cover 0-4 GiB) to ensure user page faults
  *     trigger demand paging instead of hitting kernel block mappings
  *   - No explicit stack section — the kernel allocates the user stack and
  *     passes the stack pointer via switch_to_user()
@@ -45,14 +45,16 @@ ENTRY(_start)
 SECTIONS
 {
     /* ---- Program Load Address ----
-     * 0x2_0000_0000 (8 GB) places user code above the kernel identity map
-     * region.  The kernel copies PGD[0]→PUD[0..3] (4x 1GB blocks at 0-4GB)
+     * 0x2_0000_0000 (8 GiB) places user code above the kernel identity map
+     * region.  The kernel copies PGD[0]→PUD[0..3] (four 1 GiB blocks at 0-4 GiB)
      * into every user page table for kernel code accessibility.  User
-     * addresses must fall outside this 0-4GB region so that demand paging
+     * addresses must fall outside this 0-4 GiB region so that demand paging
      * (L1/L2/L3 translation faults) works correctly.
      *
-     * 0x200000000 maps to PGD[0]→PUD[8], which is empty in the kernel
-     * page tables, ensuring user faults are properly handled.
+     * These PGD/PUD coordinates describe the ARM64 backend; the other ISAs
+     * use their own table layouts for the same reserved low identity range.
+     * 0x200000000 maps to ARM64 PGD[0]→PUD[8], outside the borrowed identity
+     * entries, so user mappings can be created by demand paging.
      */
     . = 0x200000000;
 
@@ -75,8 +77,10 @@ SECTIONS
      *
      * Page permissions: Read-only (no write, no execute)
      */
-    /* Distinct permissions must never share a hardware page. Include x86
-     * large-model sections as well as the other ISAs' ordinary sections. */
+    /* 4096 bytes is the base hardware page size on all supported targets.
+     * Distinct permissions must never share a page; these alignments keep RX,
+     * read-only and writable sections separate. Include x86 large-model
+     * sections as well as the other ISAs' ordinary sections. */
     .rodata ALIGN(4096) : {
         *(.rodata* .lrodata*)
     }

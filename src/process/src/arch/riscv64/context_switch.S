@@ -16,6 +16,9 @@
 //   0x100   8      pc       — program counter (saved as ra for context_switch)
 //   0x108   8      pstate   — supervisor status register (sstatus)
 //   0x110   8      sp       — dedicated stack pointer field
+// Offsets are bytes: x[n] occupies n*8; 32 entries place pc at 256,
+// pstate at 264 and sp at 272. C++ static assertions protect this assembly
+// contract; the duplicated x[2]/sp fields must remain synchronized.
 //
 // RISC-V 64 register naming:
 //   x0  = zero (hardwired 0)    x16 = a6
@@ -109,6 +112,8 @@ context_switch:
 
     // Restore sstatus from next->pstate
     ld      t0, 264(a1)
+    // -3 is ~(1<<1): clear sstatus.SIE while the stack/context transition is
+    // incomplete. The scheduler continuation or SRET restores safe IRQ state.
     andi    t0, t0, -3                 // never enable IRQs halfway through a switch
     csrw    sstatus, t0
     csrw    sscratch, zero             // resumed code is still running in S-mode

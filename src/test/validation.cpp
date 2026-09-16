@@ -56,6 +56,8 @@ constexpr usize page_size = moss::kernel::PAGE_SIZE;
 
 // Inspect the real kernel/user tables without exposing kernel pointers to EL0.
 struct KernelPermissions {
+  // Four-level tables start at VA bit 39; Sv39 uses bit 30. Each 512-entry
+  // level contributes nine bits, ending at bit 12 for a 4 KiB leaf.
   unsigned root_shift = 39;
   u64 kernel_bytes = 0;
   usize user_leaves = 0;
@@ -81,6 +83,8 @@ struct KernelPermissions {
         continue;
       }
       const u64 base = prefix | (static_cast<u64>(i) << shift);
+      // Bit 8 is the highest bit of the nine-bit root index: it selects the
+      // sign-extended kernel half of the active virtual-address layout.
       const bool high_half = (base & (1ULL << (root_shift + 8))) != 0;
       bool descendant_user_access = user_access;
 #if defined(MOSS_ARCH_X64)
@@ -155,7 +159,8 @@ void kernel_mapping_permissions() {
   using Tables = mm::PageTableManager;
   KernelPermissions kernel;
   kernel.walk(Tables::get_physical_address(Tables::get_kernel_pgd()), kernel.root_shift, 0, false);
-  // This verifies the current 0-4 GiB identity/direct-map contract, not a board map.
+  // Bootstrap maps 4 GiB low on ARM64; x64/RISC-V count both the 4 GiB identity
+  // window and its high direct-map alias. This checks boot tables, not board RAM size.
 #if defined(MOSS_ARCH_ARM64)
   constexpr u64 kernel_bytes = 0x100000000ULL;
 #else
@@ -231,6 +236,9 @@ bool ram_contains(PhysAddr begin, PhysAddr end) {
 }
 
 u64 memory_hash(PhysAddr begin, usize size) {
+  // FNV-1a's 64-bit offset basis and prime detect accidental byte changes in
+  // allocator-owned metadata; this is an integrity regression check, not a
+  // cryptographic guarantee. https://www.rfc-editor.org/rfc/rfc9923.html#section-5
   u64 hash = 14695981039346656037ULL;
   const auto *bytes = reinterpret_cast<volatile u8 *>(begin);
   for (usize i = 0; i < size; ++i) {
@@ -246,6 +254,8 @@ u64 page_table_hash(PhysAddr address) {
 #if !defined(MOSS_ARCH_ARM64)
   hardware_bits |= mm::page_attr::DIRTY;
 #endif
+  // Reuse the FNV-64 constants for word-wise descriptor mixing (not byte-wise
+  // FNV-1a), so a hardware-only A/D update does not count as mapping corruption.
   u64 hash = 14695981039346656037ULL;
   const auto *table = reinterpret_cast<const mm::PageTable *>(address);
   for (const auto &entry : table->entries) {
@@ -257,6 +267,9 @@ u64 page_table_hash(PhysAddr address) {
 // Snapshot only immutable ownership data, not counters or arbitrary kernel BSS.
 // The suite has one userspace worker; other CPUs are online and idle.
 struct LayoutSnapshot {
+  // Static budget of 128 unique table pages; capture fails if the mapping grows
+  // beyond it. The low 4 GiB checks match the bootstrap identity-map window
+  // because this fixture dereferences physical addresses directly.
   struct Table {
     PhysAddr address;
     u64 hash;
@@ -561,6 +574,9 @@ void unmap_reclaims_tables() {
 // available to the production allocator. No allocation failure hook or mock.
 struct PagePressure {
   PhysAddr head = 0;
+  // Retain up to 16 individual pages for controlled rollback tests. This is a
+  // fixture budget, not a PFA limit; pressure records live in the owned blocks
+  // themselves so exhausting memory does not require further heap allocation.
   PhysAddr allowance[16]{};
   usize count = 0;
 
@@ -839,6 +855,9 @@ void asid_leases() {
   auto proc = g_process_manager->find_process(thread->owner_pid);
   const auto active_asid = proc->address_space()->asid;
   {
+    // The software allocator has 256 tags: zero is kernel-only, leaving 255
+    // user leases. This worker already owns one, so exhaustion occurs at 254
+    // new spaces; releasing alternate leases tests reuse without a full reset.
     unique_ptr<AddressSpace> spaces[255];
     bool used[256]{};
     used[active_asid] = true;
@@ -924,6 +943,7 @@ void vma_boundaries() {
   ut::expect(mm::PageFrameAllocator::get_memory_stats().free_pages == before);
 }
 
+// Match valid_id's 80-character limit and reserve one byte for the terminator.
 char selection[81]{};
 const char *active_case = nullptr;
 bool failed = false;
@@ -946,6 +966,8 @@ usize syscall_capacity = 65536;
 const char *const user_benchmark_names[] = {"bench.fault",     "bench.cow",    "bench.switch",
                                             "bench.lifecycle", "bench.signal", "bench.pipe"};
 
+// Private userspace dispatch modes: 2 is getpid and 11..16 follow this six-name
+// catalog's order. Keep these numbers synchronized with userspace/validation.c.
 long user_benchmark_mode() {
   if (ut::same_id(selection, "bench.getpid"))
     return 2;
@@ -959,6 +981,8 @@ long user_benchmark_mode() {
 // All strings come from the bounded catalog or fixed diagnostic identifiers.
 // One complete record per UART write avoids allocating a formatting buffer.
 class Event {
+  // Fixed 1 KiB serial-record budget avoids heap allocation. Overflow marks the
+  // run failed instead of emitting a truncated record that could parse as success.
   char buffer_[1024]{};
   usize used_ = 0;
   bool overflow_ = false;
@@ -999,6 +1023,8 @@ public:
     append(",\"");
     append(key);
     append("\":");
+    // A u64 needs at most 20 decimal digits; append adds them individually, so
+    // this reverse-order scratch array needs no null terminator.
     char digits[20];
     unsigned n = 0;
     do {
@@ -1065,6 +1091,9 @@ bool option(const char *key, char *out, usize capacity) {
 }
 
 u64 numeric_option(const char *key, u64 fallback) {
+  // Twenty-four bytes fit a u64's 20 decimal digits and terminator. The parser
+  // additionally rejects a pre-digit accumulator above 100,000,000, bounding
+  // subsequent multiply/add; selection-specific limits are checked at boot.
   char value[24];
   if (!option(key, value, sizeof(value))) {
     return fallback;
@@ -1087,6 +1116,8 @@ bool affinity_valid() {
 
 void resources() {
   const auto &info = moss::fdt::get_platform_info();
+  // Match the host validation runner's default four vCPUs and 2048 MiB; the
+  // boot options override these fixture expectations. Convert MiB to bytes.
   u64 cpus = numeric_option("moss.cpus", 4);
   u64 memory = numeric_option("moss.memory", 2048) * 1024 * 1024;
   u64 mask = (1ULL << cpus) - 1;
@@ -1094,10 +1125,17 @@ void resources() {
   ut::expect(__atomic_load_n(&moss::boot::online_cpu_mask, __ATOMIC_ACQUIRE) == mask);
   ut::expect(__atomic_load_n(&moss::boot::cpu_work_mask, __ATOMIC_ACQUIRE) == mask);
   ut::expect(info.memory_map_valid);
+  // Allow the same 2 MiB RAM-reporting shortfall as the host protocol parser.
+  // This is an acceptance tolerance; its original tuning basis is unrecorded.
   ut::expect(info.total_memory_size <= memory && info.total_memory_size + 0x200000 >= memory);
   auto stats = mm::PageFrameAllocator::get_memory_stats();
+  // Probe beyond 256 MiB (half of RAM for smaller fixtures), catching an
+  // allocator that only serves the low part of the advertised memory range.
   const u64 probe_offset = memory > 256UL * 1024 * 1024 ? 256UL * 1024 * 1024 : memory / 2;
   ut::expect(stats.total_pages * page_size > probe_offset);
+  // Order 9 is 512 * 4 KiB = 2 MiB. Holding up to 129 disjoint blocks exceeds
+  // the 128 blocks fitting below the 256 MiB probe, forcing a high allocation
+  // in the default fixture. Fragmented or smaller fixtures may fail earlier.
   PhysAddr owned[129]{};
   usize count = 0;
   bool high = false;
@@ -1122,6 +1160,8 @@ void resources() {
 }
 
 void pages() {
+  // Orders 0..7 cover 1..128-page blocks held concurrently. An arbitrary
+  // nonzero base pattern plus order distinguishes each block after allocation.
   auto before = mm::PageFrameAllocator::get_memory_stats().free_pages;
   PhysAddr live[8]{};
   for (usize order = 0; order < 8; ++order) {
@@ -1146,6 +1186,8 @@ void pages() {
 }
 
 void reuse_pages() {
+  // Cycle through orders 0..3 (1..8 pages) for 128 bounded reuse operations;
+  // the count is a regression workload budget, not a production limit.
   auto before = mm::PageFrameAllocator::get_memory_stats().free_pages;
   for (usize i = 0; i < 128; ++i) {
     auto page = mm::PageFrameAllocator::allocate_pages(i % 4);
@@ -1236,11 +1278,15 @@ void page_exhaustion() {
     PhysAddr address;
     usize order;
   };
-  // Store only block descriptors, not one pointer per page. This covers the
-  // current below-4-GiB allocator without consuming the test worker's stack.
+  // Store block descriptors off the worker stack. The fixed 2048-entry budget
+  // is not a PFA capacity: overflow fails this fixture after freeing the extra
+  // block. Its sizing basis for fragmented memory maps is unrecorded.
   static Owned owned[2048]{};
   const auto &info = moss::fdt::get_platform_info();
   auto initrd_hash = [&] {
+    // FNV-1a's 64-bit offset basis and prime detect accidental initrd writes;
+    // this is a regression checksum, not an integrity/authentication check.
+    // Constant definitions: https://www.rfc-editor.org/rfc/rfc9923.html#section-5
     u64 hash = 14695981039346656037ULL;
     for (PhysAddr address = info.initrd_start; address < info.initrd_end; ++address) {
       hash = (hash ^ *reinterpret_cast<volatile u8 *>(address)) * 1099511628211ULL;
@@ -1282,6 +1328,8 @@ void page_exhaustion() {
         break; // Never write into a block found to overlap reserved or live memory.
       }
       pages_owned += usize{1} << order;
+      // An arbitrary nonzero XOR mask and a complemented end word distinguish
+      // each page's endpoints, exposing overlap or writes beyond owned storage.
       for (PhysAddr page = begin; page < end; page += page_size) {
         *reinterpret_cast<volatile u64 *>(page) = page ^ 0x5eed1234ULL;
         *reinterpret_cast<volatile u64 *>(page + page_size - sizeof(u64)) = ~page;
@@ -1826,6 +1874,10 @@ void writable_lifecycle() {
 }
 
 void rename_lifecycle() {
+  // Octal modes exercise owner-only versus public access; UID/GID 42/43 are
+  // arbitrary non-root identities. Distinct byte fixtures include '\0'/0xff
+  // so replacement checks exercise binary content rather than C strings.
+  // One thousand cycles is a bounded reuse/leak workload, not a proof of stability.
   const auto baseline = vfs::pool_usage();
   const auto heap = mm::RuntimeHeapAllocator::get_heap_stats().allocated_bytes;
   vfs::FdTable table;
@@ -1956,6 +2008,9 @@ void rename_boundaries() {
 }
 
 void access_permissions() {
+  // Identity 42 owns files, group 43 matches them, and 99 is an unrelated user
+  // or group. Octal modes isolate owner/group/other and execute permissions;
+  // access masks use R_OK=4, W_OK=2, X_OK=1, F_OK=0 (combinations are bitwise OR).
   using namespace vfs;
   const auto baseline = pool_usage();
   const auto heap = mm::RuntimeHeapAllocator::get_heap_stats().allocated_bytes;
@@ -2185,6 +2240,8 @@ void timer_contracts() {
   test.init(timer::TimerMode::OneShot, [](void *) noexcept {});
   result = test.start_relative(~u64{0});
   ut::expect(!result && result.error() == ErrorCode::InvalidParameter && !test.is_active());
+  // One second in nanoseconds keeps these state/cancel checks armed in the
+  // future; it is a fixture delay rather than a timer precision requirement.
   const auto expiry = timer::TimerSubsystem::instance().now_ns() + 1000000000ULL;
   ut::expect(static_cast<bool>(test.start(expiry)));
   result = test.start_relative(1);
@@ -2215,6 +2272,10 @@ struct TimerObservation {
 };
 
 void timer_dispatch() {
+  // Use 2 ms one-shot / 1 ms periodic delays and a 100 ms observation budget.
+  // At least three callbacks distinguishes repetition from a one-shot; the
+  // 5 ms post-cancel window spans multiple periods. These are test budgets,
+  // not measured dispatch-latency guarantees.
   auto &subsystem = timer::TimerSubsystem::instance();
   for (unsigned phase = 0; phase != 2; ++phase) {
     TimerObservation once, periodic;
@@ -2252,6 +2313,8 @@ void timer_dispatch() {
 }
 
 struct TimerCapacity {
+  // One more than the production timer heap's 256 slots forces exhaustion;
+  // the 1000-second delay prevents test timers from expiring during setup.
   timer::HrTimer *timers = new timer::HrTimer[257];
   bool full = false;
 
@@ -2315,6 +2378,8 @@ void registry_limits() {
   static ut::Registry local;
   static const ut::Registry empty; // Avoid reset temporaries on the 16 KiB kernel stack.
   static_assert(ut::Registry::suite_capacity <= ut::Registry::case_capacity);
+  // One extra entry triggers overflow; each ID is 'c', three decimal digits,
+  // and the zero-initialized terminator. Capacities here must stay below 1000.
   static char ids[ut::Registry::case_capacity + 1][5];
   for (unsigned i = 0; i <= ut::Registry::case_capacity; ++i) {
     ids[i][0] = 'c';
@@ -2342,12 +2407,16 @@ void registry_limits() {
   local.begin_suite("invalid id");
   ut::expect(ut::same_id(local.error, "invalid_suite"));
   bench::Registry benchmarks;
+  // The benchmark registry holds 16 entries; the seventeenth must report
+  // exhaustion rather than silently dropping a registered workload.
   for (unsigned i = 0; i < 17; ++i) {
     benchmarks.add(ids[i], [](bench::Context &) {});
   }
   ut::expect(benchmarks.count == 16 && ut::same_id(benchmarks.error, "benchmark_capacity"));
 }
 void cleanup_guards() {
+  // An arbitrary valid 1 MHz fixture clock: only cleanup/error accounting is
+  // under test, so one iteration/sample and no warmup avoid unrelated work.
   bench::Clock clock{.frequency = 1000000};
   bench::Context context{.clock = clock, .iterations = 1, .capacity = 1, .warmup = 0, .samples = 1};
   unsigned cleaned = 0, called = 0;
@@ -2394,12 +2463,17 @@ void cleanup_guards() {
   ut::expect(page_table_hash(address) != hash);
 }
 void heap_bounds() {
+  // One TiB is intentionally beyond the linker-reserved heap, testing rejection
+  // without requiring allocation or iteration proportional to the request.
   auto before = mm::RuntimeHeapAllocator::get_heap_end();
   ut::expect(before <= moss::abi::linker::heap_end());
   ut::expect(!mm::RuntimeHeapAllocator::expand_heap(1ULL << 40));
   ut::expect(before == mm::RuntimeHeapAllocator::get_heap_end());
 }
 void heap_alignment() {
+  // Power-of-two alignments cover byte through page granularity. A 73-byte
+  // request is deliberately unaligned; offsets 0/72 touch its exact endpoints,
+  // and distinct arbitrary sentinels reveal aliasing or truncated usable storage.
   const usize alignments[] = {1, 2, 4, 8, 16, 32, 64, 256, 4096};
   const auto before = mm::RuntimeHeapAllocator::get_heap_stats().allocated_bytes;
   for (usize alignment : alignments) {
@@ -2440,6 +2514,8 @@ void heap_invalid_requests() {
   ut::expect(after.largest_free_block == before.largest_free_block);
 }
 void heap_release_contract() {
+  // Allocate 73 bytes and reject a sized free of 72; endpoint sentinels must
+  // survive that failure. The values distinguish mismatch from a valid release.
   using Heap = mm::RuntimeHeapAllocator;
   const auto before = Heap::get_heap_stats().allocated_bytes;
   auto allocation = Heap::allocate_aligned(73, page_size);
@@ -2472,10 +2548,16 @@ void heap_reuse() {
     u8 pattern = 0;
   };
   Slot slots[32]{};
+  // Fixed seed and a modulo-2^32 linear-congruential recurrence make this
+  // workload repeatable; these multiplier/increment values define the fixture,
+  // not a source of cryptographic randomness or measured allocator tuning.
   const auto before = Heap::get_heap_stats().allocated_bytes;
   u32 seed = 0x5eed;
   bool valid = true;
   for (usize step = 0; step < 4096 && valid; ++step) {
+    // Mix 32 live slots over 4096 bounded steps, with 1..1024-byte requests and
+    // power-of-two alignments 2^3..2^12 (8 bytes..4 KiB). Bit slices vary choices
+    // independently of the recurrence's weakest low bits.
     seed = seed * 1664525U + 1013904223U;
     auto &slot = slots[(seed >> 16) % 32];
     if (slot.pointer) {
@@ -2522,6 +2604,8 @@ void heap_reuse() {
   ut::expect(Heap::get_heap_stats().allocated_bytes == before);
 }
 void heap_exhaustion() {
+  // 128 pointers track up to 8 MiB in 64 KiB chunks, then the fixture tests
+  // smaller remainder allocations. These bound bookkeeping and stack usage.
   using Heap = mm::RuntimeHeapAllocator;
   constexpr usize chunk_size = 64 * 1024;
   void *owned[128]{};
@@ -2530,6 +2614,8 @@ void heap_exhaustion() {
     return;
   }
   auto *page = reinterpret_cast<volatile u64 *>(*sentinel);
+  // Arbitrary nonzero poison, varied by word index, detects allocator writes
+  // escaping the heap into a separately owned physical page.
   for (usize i = 0; i < page_size / sizeof(u64); ++i) {
     page[i] = 0x123456789abcdef0ULL ^ i;
   }
@@ -2820,6 +2906,9 @@ struct ContainerInterleaving {
   }
 
   shared_ptr<ConcurrentValue> race_insert(bool &list_inserted, u32 actor) {
+    // 42 is an arbitrary list value, and map key 2 differs from the earlier
+    // key 1. Actor bits 1/2 identify owner/peer; their OR (3) waits for both
+    // contenders, while factories==2 forces both through the lookup race.
     list_inserted = list.push_front_unless([](u32 value) { return value == 42; }, u32{42});
     auto result = map.get_or_insert(u32{2}, [&] {
       auto candidate = make_shared<ConcurrentValue>(&destroyed);
@@ -2837,6 +2926,8 @@ struct ContainerInterleaving {
   bool peer() {
     peer_cpu = arch::get_current_cpu_id();
     auto *thread = process::CfsScheduler::get_current_task();
+    // The peer is pinned to logical CPU1: its affinity bitmap is bit 1 (2),
+    // rather than the numeric CPU ID itself.
     peer_ok = peer_cpu == 1 && thread && thread->cpu_affinity_mask.low_word() == 2;
     wait_for(phase, 1);
     auto held = map.find(u32{1});
@@ -2891,12 +2982,18 @@ void end_case();
 // force a particular instruction-level interleaving inside ref()/release_file().
 struct FileReferences {
   vfs::FdTable reader, writers[2];
+  // phase is the owner's release-published milestone; arrived is the peer's
+  // acknowledgement. Each ownership cycle uses two milestones (clone/release),
+  // so subsequent scenarios start after 2 * cycles. Acquire waits make the
+  // associated fixture fields visible for quiescent reference-count checks.
   u32 phase = 0, arrived = 0;
   u32 peer_cpu = ~0U;
   process::Thread *peer_thread = nullptr;
   long shared_read_fd = -1, shared_read_result = -1;
   long shared_write_fd = -1, shared_write_result = -1;
   long shared_open_result = -1;
+  // Distinct arbitrary negative sentinels expose unexpected output mutation;
+  // successful descriptors are nonnegative, so neither can look like success.
   long shared_pipe_result = -1, shared_pipe_fds[2] = {-37, -73};
   u32 pipe_published = 0;
   vfs::FdTable *native_table = nullptr;
@@ -2905,6 +3002,8 @@ struct FileReferences {
   u32 dup_ready = 0;
   long dup_result = -1;
   u8 shared_byte = 0;
+  // Bounded stress dimensions: repeat 1000 ownership cycles and hold 64 copies
+  // per cycle to exercise refcounts and pool reuse, not an API capacity limit.
   static constexpr u32 cycles = 1000, copies = 64;
 
   template <typename Condition> static void require(Condition valid) {
@@ -2947,6 +3046,8 @@ struct FileReferences {
     __atomic_store_n(&arrived, 2 * cycles + 4, __ATOMIC_RELEASE);
     ContainerInterleaving::wait_for(phase, 2 * cycles + 4);
     ContainerInterleaving::wait_for(phase, 2 * cycles + 5);
+    // Arbitrary one-byte payload, checked at the receiving endpoint; it is
+    // independent of the negative -73 descriptor sentinel above.
     const u8 sent = 73;
     shared_write_result = vfs::syscall::do_write(&reader, shared_write_fd, vfs::InputBuffer::kernel(&sent, 1));
     __atomic_store_n(&arrived, 2 * cycles + 6, __ATOMIC_RELEASE);
@@ -2974,6 +3075,10 @@ struct FileReferences {
   }
 
   bool dup_peer() {
+    // Four variants share the same fixture: dup, dup2, F_DUPFD (0), and
+    // F_DUPFD_CLOEXEC (1030), using the project's Linux fcntl ABI constants.
+    // After the earlier 17 milestones, each variant reserves three more:
+    // enter the syscall, coordinate its copy, then acknowledge completion.
     for (u32 kind = 0; kind < 4; ++kind) {
       const u32 start = 2 * cycles + 18 + 3 * kind;
       ContainerInterleaving::wait_for(phase, start);
@@ -3007,6 +3112,8 @@ struct FileReferences {
       __atomic_store_n(&phase, start, __ATOMIC_RELEASE);
       auto *copy = writers[0].clone();
       ContainerInterleaving::wait_for(arrived, start + 1);
+      // Two original tables plus two clones each hold 'copies' writer refs;
+      // after both clones close, only the two original tables remain.
       require_refs(file, 4 * copies, cycle);
       __atomic_store_n(&phase, start + 1, __ATOMIC_RELEASE);
       copy->close_all();
@@ -3367,6 +3474,8 @@ void kernel_stack_initialization() {
     return;
   }
   constexpr usize order = 2;
+  // Thread::allocate_kernel_stack uses order 2: four 4 KiB pages (16 KiB).
+  // Poison that exact block before reuse to verify the entire stack is cleared.
   constexpr usize size = page_size << order;
   auto dirty = mm::allocate_pages(order);
   if (!ut::expect(dirty.has_value()))
@@ -3682,6 +3791,8 @@ bench::Clock discover_clock() {
 #else
   u32 eax, ebx, ecx, edx;
   asm volatile("cpuid" : "=a"(eax), "=b"(ebx), "=c"(ecx), "=d"(edx) : "a"(0), "c"(0));
+  // CPUID leaf 0x15 supplies crystal Hz (ECX) and the TSC/crystal ratio
+  // EBX/EAX. A missing leaf or zero field requires independent calibration.
   if (eax >= 0x15) {
     asm volatile("cpuid" : "=a"(eax), "=b"(ebx), "=c"(ecx), "=d"(edx) : "a"(0x15), "c"(0));
     if (eax && ebx && ecx) {
@@ -3697,18 +3808,27 @@ bench::Clock discover_clock() {
       return value;
     };
     auto count = [&] {
+      // PC PIT command port 0x43 / channel-0 port 0x40. Command zero latches
+      // channel 0, then low/high reads reconstruct one stable 16-bit sample.
       out(0x43, 0);
       u16 low = in(0x40);
       return static_cast<u16>(low | (static_cast<u16>(in(0x40)) << 8));
     };
     u64 frequencies[3]{};
+    // Three independent samples let the median reject one outlier. The 5%
+    // maximum spread below is a calibration acceptance policy, not precision proof.
     for (unsigned sample = 0; sample < 3; ++sample) {
+      // 0x30 selects channel 0, low/high access, binary mode 0. Reload 0xffff
+      // provides a finite countdown; an observed wrap invalidates the sample.
       out(0x43, 0x30);
       out(0x40, 0xFF);
       out(0x40, 0xFF);
       u16 first = count();
       u64 start = bench::read_counter();
       u16 last = first;
+      // One million port-read attempts bounds a stalled PIT. Require at least
+      // 16384 reference ticks (~13.7 ms); the 60000-tick ceiling stays below a
+      // full 16-bit countdown. Exact retry/window tuning evidence is not recorded.
       for (u32 retry = 0; retry < 1000000 && first - last < 16384; ++retry) {
         last = count();
       }
@@ -3718,6 +3838,8 @@ bench::Clock discover_clock() {
       }
       result.calibration_ticks[sample] = end - start;
       result.reference_ticks[sample] = static_cast<u64>(first - last);
+      // Convert using the PC PIT's 1,193,182 Hz reference, also QEMU's PIT_FREQ:
+      // https://github.com/qemu/qemu/blob/master/include/hw/timer/i8254.h
       frequencies[sample] = (end - start) * 1193182ULL / result.reference_ticks[sample];
     }
     u64 low = frequencies[0], high = frequencies[0];
@@ -3733,12 +3855,16 @@ bench::Clock discover_clock() {
       return {};
     }
     result.frequency = frequencies[0] + frequencies[1] + frequencies[2] - low - high;
+    // Scale relative spread by 10^6 for ppm and add a policy margin of 1000 ppm
+    // (0.1%); the margin has no recorded measurement-based derivation.
     result.uncertainty_ppm = static_cast<unsigned>((high - low) * 1000000 / low) + 1000;
     result.source = "pit.channel0";
   }
 #endif
   u64 begin = bench::read_counter();
   u64 previous = begin;
+  // Probe monotonicity 4096 times, then accept 1 kHz..100 GHz as a broad policy
+  // sanity range. These finite checks do not establish counter accuracy or stability.
   for (unsigned i = 0; i < 4096; ++i) {
     u64 current = bench::read_counter();
     if (current < previous) {
@@ -3782,6 +3908,8 @@ struct TimerBenchmark {
 
   u64 measure(bool wakeup) {
     auto &subsystem = timer::TimerSubsystem::instance();
+    // Arm 1 ms ahead and measure lateness after the expected counter value;
+    // the programmed delay itself is not included in the returned latency.
     const auto deadline = subsystem.now_ns() + 1000000ULL;
     const auto expected = subsystem.clocksource().deadline_counter(deadline);
     observed = 0;
@@ -3829,6 +3957,8 @@ void timer_benchmark(bench::Context &context, bool wakeup) {
     }
     return ticks;
   };
+  // Cap event batches at 64 to bound repeated timer/scheduler setup. The pilot
+  // uses a 1 ms sum-of-lateness target, matching the batch harness time scale.
   constexpr usize capacity = 64;
   if (context.iterations > capacity) {
     context.valid = false;
@@ -3873,6 +4003,9 @@ void prepare_clock() {
 }
 
 void allocation_benchmark(bench::Context &context, unsigned mode) {
+  // Track the Context's default 256 operations without heap bookkeeping.
+  // Orders 0..4 bound each block to 1..16 pages, keeping the fixture workload
+  // separate from the allocator's larger production MAX_ORDER limit.
   PhysAddr pages_owned[256]{};
   bool valid = true;
   usize order = static_cast<usize>(numeric_option("moss.order", 0));
@@ -3940,6 +4073,8 @@ void read_benchmark(bench::Context &context) {
     failed = true;
     return;
   }
+  // 256 operations each read 256 bytes: 65536 bytes cover the largest batch.
+  // Static storage keeps this buffer off the 16 KiB kernel stack.
   static u8 bytes[65536];
   bool valid = true;
   // Each timed operation reads a separate 256-byte slice of the fixture.
@@ -3976,6 +4111,8 @@ extern "C" void moss_validation_boot() noexcept {
     finish("invalid_stability_parameters");
   }
   stability = stability_option == 1;
+  // Policy ceilings bound serial output and run time; 65536 also matches the
+  // largest userspace syscall fixture capacity. They are not measured accuracy limits.
   if (!sample_count || sample_count > 1000 || warmup_count > 100 || fixed_iterations > 65536) {
     failed = true;
     finish("invalid_parameters");
@@ -4114,6 +4251,10 @@ extern "C" void moss_validation_fork_metadata(unsigned stage, bool entering) noe
 }
 
 extern "C" long moss_validation_call(long op, long arg1, [[maybe_unused]] long arg2) noexcept {
+  // These opcodes and returned mode IDs form the private validation protocol
+  // shared with src/userspace validation programs, not Linux syscall numbers.
+  // Keep both endpoints in sync: opcode zero performs the startup handshake;
+  // later operations drive suite-specific ownership checks and benchmarks.
   // Invoked only after the production scheduler and a real userspace exec.
   if (op == 0) {
     if (arg1 != 0 || !affinity_valid()) {
@@ -4534,6 +4675,8 @@ extern "C" long moss_validation_call(long op, long arg1, [[maybe_unused]] long a
   }
   if (op == 10 && is_lifecycle() && active_case) {
     const bool applications = ut::same_id(selection, "users.applications");
+    // The userspace fixture reports every 10 application cycles or 100 core
+    // lifecycle cycles; changing these intervals must keep that protocol in sync.
     const u64 interval = applications ? 10 : 100;
     if (!ut::expect(arg1 >= 0 && arg2 == (applications ? arg1 : 0)))
       return 0; // Each declared core cycle must also complete its BusyBox child.
@@ -4574,6 +4717,9 @@ extern "C" long moss_validation_call(long op, long arg1, [[maybe_unused]] long a
     }
     // Guest clocks may drift relative to the host (e.g. calibrated x86 TSC).
     // Keep doing complete cycles until both clocks and the host agree to stop.
+    // Ordinary runs require 1000 cycles. Stability runs require both 10000
+    // cycles and 30 minutes (1.8e12 ns), plus the host's stop handshake; these
+    // are explicit test-duration policies, not universal reliability thresholds.
     lifecycle_complete = lifecycle_checkpoint >= (stability ? 10000U : 1000U) &&
                          elapsed_ns >= (stability ? 1800000000000ULL : 0) && (!stability || lifecycle_host_released);
     return lifecycle_complete ? 2 : 1;

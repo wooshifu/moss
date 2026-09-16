@@ -9,7 +9,7 @@
  *
  *   1. BOOT SEQUENCE
  *      - Linux ARM64 Image boot protocol
- *      - Exception level descent: EL3 → EL2 → EL1
+ *      - Exception level descent (EL3 path caveat documented at el3_entry)
  *      - BSS clearing, stack setup, DTB discovery
  *      - Primary CPU → early_main()
  *      - Secondary CPUs → secondary_cpu_entry()
@@ -21,7 +21,7 @@
  *      - Routes other exceptions to exception_handler
  *
  *   3. IRQ HANDLING (irq_trampoline)
- *      - Saves 34-slot register frame (x0-x30 + ELR + SPSR + padding)
+ *      - Saves 34-slot register frame (x0-x30 + ELR + SPSR + interrupted SP)
  *      - Calls irq_handler_c (C++)
  *      - Restores all registers and returns via eret
  *
@@ -52,11 +52,11 @@
  *   30    0xF0      x30 (LR)
  *   31    0xF8      ELR_EL1 (exception return address)
  *   32    0x100     SPSR_EL1 (saved processor state)
- *   33    0x108     (padding for 16-byte SP alignment)
+ *   33    0x108     interrupted SP (SP_EL0 for user-origin exceptions)
  *
  * == Stack Layout ==
  *
- *   1MB total stack space, 32KB per CPU, supporting up to ASM_MAX_CPUS CPUs.
+ *   Linker reserves 512KB: 16 CPUs * 32KB; ASM_MAX_CPUS must fit that reserve.
  *   CPU 0 stack: _stack_top → _stack_top - 32KB
  *   CPU N stack: _stack_top - N*32KB → _stack_top - (N+1)*32KB
  *
@@ -64,7 +64,7 @@
  *   early_main(dtb_ptr)              — primary CPU entry (boot module)
  *   secondary_cpu_entry()            — secondary CPU entry (boot module)
  *   irq_handler_c()                  — interrupt handler (interrupts module)
- *   system_call_handler(nr, a0..a5)  — syscall dispatcher (kernel module)
+ *   system_call_handler(frame)       — native TrapFrame syscall dispatcher
  *   kernel_page_fault_handler(esr, far, elr) — same-EL page faults
  *   user_page_fault_handler(esr, far, elr)   — user-mode page faults
  *   unhandled_exception_handler(esr, far, elr) — fatal exceptions
@@ -152,7 +152,7 @@ _linux_header:
 //
 // On entry:
 //   x0 = DTB physical address (from bootloader/QEMU, or 0 if not passed)
-//   MPIDR_EL1.Aff0 = CPU ID (0 for boot CPU)
+//   MPIDR_EL1 = firmware hardware affinity (boot affinity need not be zero)
 //   CurrentEL = EL3, EL2, or EL1 depending on firmware
 // =============================================================================
 _start:
@@ -197,18 +197,20 @@ boot_exception_level:
     b       el1_entry                   // EL1 → proceed with kernel init
 
 // =============================================================================
-// EL3 → EL2 transition
+// Legacy EL3 descent path
 // =============================================================================
 //
 // Configure Secure Configuration Register (SCR_EL3):
-//   0x431 = RW (EL2 is AArch64) | NS (non-secure) | SMD | HCE
-// Then perform eret to EL2.
+//   0x431 = RW (bit 10) | NS (bit 0) | legacy RES1 bits [5:4].
+// HCE (bit 8) and SMD (bit 7) are clear; this value does not enable HVC.
+// The return mode below selects EL1h despite targeting the el2_entry label;
+// entry from EL3 needs a separate mode/register-access correctness review.
 // =============================================================================
 el3_entry:
     mov     x0, #0x431
     msr     scr_el3, x0
 
-    // SPSR_EL3: mask all exceptions, target EL1h (will descend through EL2)
+    // SPSR.M=5 selects EL1h, with FIQ/IRQ/SError/debug masked; see caveat above.
     mov     x0, #(SPSR_EL2_F | SPSR_EL2_I | SPSR_EL2_A | SPSR_EL2_D | SPSR_EL2_EL1h)
     msr     spsr_el3, x0
 
@@ -216,7 +218,7 @@ el3_entry:
     adr     x0, el2_entry
     msr     elr_el3, x0
 
-    eret                                // → EL2
+    eret                                // return mode follows SPSR_EL3, not label name
 
 // =============================================================================
 // EL2 → EL1 transition
@@ -234,7 +236,8 @@ el2_entry:
     ubfx    x0, x0, #24, #4
     cbz     x0, 1f
     // Enable GICv3 system register access before dropping to EL1.
-    // ICC_SRE_EL2 = S3_4_C12_C9_5: SRE (bit 0) | DFB (bit 1) | DIB (bit 2) = 0x7
+    // ICC_SRE_EL2 = S3_4_C12_C9_5: SRE/DFB/DIB (bits 0..2) plus
+    // Enable (bit 3) = 0xf, permitting EL1 access to its own SRE controls.
     // This allows EL1 to use ICC_*_EL1 system registers for GICv3 CPU interface.
     mov     x0, #0xF
     msr     S3_4_C12_C9_5, x0
@@ -284,6 +287,8 @@ el1_entry:
 
     // The image is linked at zero. Patch only ELF64 RELATIVE relocations;
     // PC-relative code already runs at the firmware-selected physical address.
+    // ELF64 Rela is three 8-byte fields (offset/info/addend): the 16+8 byte
+    // loads advance one 24-byte entry. Only type 1027 with symbol zero is allowed.
     adr     x4, _linux_header
     adrp    x0, _rela_start
     add     x0, x0, :lo12:_rela_start
@@ -314,7 +319,7 @@ clear_bss:
     b       clear_bss
 bss_cleared:
 
-    // Set CPU 0 stack pointer to top of the 256KB stack region
+    // CPU 0 uses the top 32 KiB slice of the linker's 512 KiB stack reserve.
     ldr     x0, =_stack_top_addr
     mov     sp, x0
 
@@ -322,10 +327,10 @@ bss_cleared:
     b       primary_cpu_continue
 
 // =============================================================================
-// Secondary CPU entry (PSCI CPU_ON lands here via _start)
+// Secondary CPU entry (firmware lands at arm64_secondary_start)
 // =============================================================================
 //
-// Secondary CPUs arrive here after going through EL3→EL2→EL1 descent.
+// Secondary CPUs use their own EL descent; the EL3 mode caveat above applies.
 // They must NOT clear BSS. C++ configures their MMU after CPU 0 publishes tables.
 // Each CPU gets a 32KB stack slice below _stack_top.
 // =============================================================================
@@ -406,6 +411,9 @@ invalid_cpu_id:
 .global cpu_startup_flags
 
 .section ".bss", "aw", @nobits
+// On AArch64 .align is a power of two: 8 reserves 256-byte alignment here.
+// Startup records only require u64 alignment; the extra alignment's rationale
+// is not recorded and must not be confused with an eight-byte stride.
 .align 8
 cpu_startup_flags:
     // Per-CPU startup control block: [entry_point: 8B] [startup_flag: 8B]
@@ -744,9 +752,7 @@ exception_handler:
 // Saves the full 34-slot frame, reads ESR_EL1, extracts EC, and routes:
 //
 //   EC=0x15: SVC from AArch64 (system call)
-//     → Remap x8/x0-x5 to C calling convention
-//     → system_call_handler(nr, a0, a1, a2, a3, a4, a5)
-//     → Store return value in saved x0 slot
+//     → system_call_handler(TrapFrame*) reads saved x8/x0-x5 and writes x0
 //
 //   EC=0x24: Data Abort from lower EL
 //   EC=0x20: Instruction Abort from lower EL

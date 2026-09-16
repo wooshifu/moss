@@ -15,6 +15,8 @@
 
 #include "syscall.h"
 
+// ESC (octal 033) plus ANSI CSI commands controls clearing and text attributes;
+// the numeric codes inside these strings are terminal protocol, not tuning.
 // ANSI escape sequences for terminal control
 #define ESC_CLEAR "\033[2J"
 #define ESC_HOME "\033[H"
@@ -25,6 +27,8 @@
 #define ESC_GREEN "\033[32m"
 #define ESC_RED "\033[31m"
 
+// Process state ordinals come from the kernel ProcessState snapshot; keep
+// this display mapping and the color tests below synchronized with that enum.
 // Process state names
 static const char *state_name(unsigned long state) {
   switch (state) {
@@ -50,6 +54,7 @@ static void print_ruler(void) { print("─────────────�
 
 // Print the system summary header
 static void print_header(struct TopInfo *info) {
+  // 1,000,000 ns/ms and 1000 ms/s convert the wire clock for the display.
   unsigned long uptime_ms = info->uptime_ns / 1000000;
   unsigned long uptime_s = uptime_ms / 1000;
 
@@ -96,7 +101,8 @@ static void print_memory(struct TopInfo *info) {
   print_ulong(total_kb);
   print("KB total  ");
 
-  // Color used memory: green < 50%, yellow 50-80%, red > 80%
+  // Presentation bands: green <=50%, yellow <=80%, red above 80%. Their exact
+  // threshold selection is unrecorded; these colors do not control memory policy.
   if (usage_pct > 80) {
     print(ESC_RED);
   } else if (usage_pct > 50) {
@@ -132,6 +138,8 @@ static void print_cpus(struct TopInfo *info, struct TopInfo *prev) {
   }
   unsigned long avg_load = (nr_cpus > 0) ? (total_load / nr_cpus) : 0;
 
+  // CPU presentation bands use 40/70 percent below and for each CPU. Their
+  // exact choice is unrecorded; they do not alter scheduling or report a limit.
   // Overall CPU usage line
   print(ESC_BOLD "CPU:" ESC_RESET " avg_load=");
   if (avg_load > 70) {
@@ -158,7 +166,8 @@ static void print_cpus(struct TopInfo *info, struct TopInfo *prev) {
   print_ulong(total_running);
   print("\n");
 
-  // Per-CPU lines: 4 CPUs per line
+  // Four CPUs per row keeps each fixed-width load label readable on a console;
+  // the exact grouping choice is unrecorded and only affects presentation.
   for (unsigned long i = 0; i < nr_cpus; i++) {
     if (i % 4 == 0) {
       print("  ");
@@ -222,6 +231,8 @@ static void print_process_table(struct TopInfo *info, struct TopInfo *prev) {
   for (unsigned long i = 0; i < info->nr_processes; i++) {
     struct TopProcessInfo *p = &info->procs[i];
 
+    // Field widths below align with the fixed table header (characters, not
+    // value limits); the time columns convert ns to us/ms/s for readability.
     // PID
     print_num_padded((unsigned long)p->pid, 5);
     print(" ");
@@ -301,7 +312,8 @@ static unsigned long parse_ulong(const char *s) {
 }
 
 void _start(long argc, char **argv) {
-  // Defaults: 1s refresh interval, 10s total duration
+  // A 1000 ms refresh and 10 s duration bound default console output; their
+  // exact choice is unrecorded. -d and -t override these presentation defaults.
   unsigned long interval_ms = 1000;
   unsigned long duration_s = 10;
 
@@ -311,7 +323,7 @@ void _start(long argc, char **argv) {
       if (i + 1 < argc) {
         interval_ms = parse_ulong(argv[++i]);
         if (interval_ms == 0) {
-          interval_ms = 100; // minimum 100ms
+          interval_ms = 100; // Zero-only fallback (100 ms) avoids a zero divisor; it is not a minimum clamp.
         }
       }
     } else if (argv[i][0] == '-' && argv[i][1] == 't' && argv[i][2] == '\0') {

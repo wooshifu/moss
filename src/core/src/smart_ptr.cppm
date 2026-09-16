@@ -78,6 +78,8 @@ private:
     T *ptr;
     atomic<u32> ref_count;
 
+    // The newly constructed SharedPtr owns the first reference; zero is reached
+    // only after the last owner releases the object and control block.
     ControlBlock(T *p) noexcept : ptr(p), ref_count(1) {}
   };
 
@@ -86,6 +88,9 @@ private:
   void release_ref() noexcept {
     if (control_ != nullptr) {
       if (control_->ref_count.fetch_sub(1, memory_order_acq_rel) == 1) {
+        // The old count of one identifies the final owner. Acquire/release
+        // orders prior owners' releases before destruction; it does not make
+        // concurrent mutation of the pointee or the same SharedPtr safe.
         delete control_->ptr;
         delete control_;
       }
@@ -99,6 +104,8 @@ public:
   explicit SharedPtr(T *ptr) noexcept : control_(ptr ? new ControlBlock(ptr) : nullptr) {}
 
   // The caller supplies fallible storage without tying core to a runtime heap.
+  // Storage must be compatible with delete: UniquePtr releases the object if
+  // control-block allocation fails, and the final owner deletes both allocations.
   template <typename Allocate, typename... Args>
   [[nodiscard]] static SharedPtr try_make(Allocate allocate, Args &&...args) {
     auto *storage = allocate(sizeof(T), alignof(T));
@@ -114,6 +121,8 @@ public:
   }
 
   // Copy construct
+  // An existing live owner keeps the control block alive, so incrementing the
+  // count needs no publication fence. Sharing the handle still needs synchronization.
   SharedPtr(const SharedPtr &other) noexcept : control_(other.control_) {
     if (control_ != nullptr) {
       (void)control_->ref_count.fetch_add(1, memory_order_relaxed);

@@ -31,6 +31,8 @@ inline u32 transmit_lock = 0;
 
 // UART is below the containers/arch modules. Keep its lock freestanding and
 // mask local IRQs so an interrupt cannot recursively wait on its own writer.
+// IRQ masks use DAIF immediate bit 1 on ARM64, RFLAGS.IF bit 9 on x64,
+// and sstatus.SIE bit 1 on RV64; only restore the caller's prior enable state.
 class TransmitGuard {
   u64 flags_ = 0;
 
@@ -71,6 +73,8 @@ public:
 
 inline u32 read_register(u32 offset) noexcept {
   const auto &uart = platform::hardware.uart;
+  // Firmware reg-shift scales register indices to byte addresses; reg-width=4
+  // requires word MMIO accesses even when the register payload is one byte.
   auto address = uart.base_addr + (static_cast<u64>(offset) << uart.reg_shift);
 #if defined(MOSS_ARCH_X64)
   if (uart.port_io) {
@@ -104,9 +108,11 @@ inline void putc_unlocked(char c) noexcept {
     return; // Console becomes available after firmware discovery.
   }
   if (uart.kind == platform::UartKind::Pl011) {
+    // PL011 FR is at byte offset 0x18; TXFF bit 5 prevents overwriting a full FIFO.
     while (read_register(0x18) & (1U << 5)) {
     }
   } else {
+    // 16550 LSR register 5: THRE bit 5 (0x20) permits another transmit byte.
     while (!(read_register(5) & 0x20)) {
     }
   }
@@ -123,6 +129,9 @@ inline void enable_rx() noexcept {
     return;
   }
   if (platform::hardware.uart.kind == platform::UartKind::Pl011) {
+    // PL011 register map: CR=0x30, ICR=0x44, LCR_H=0x2c. Disable before
+    // configuring 8-bit words (WLEN=3 at bit 5) and FIFO mode (bit 4), clear
+    // all 11 interrupt causes (0x7ff), then enable UART/TX/RX (bits 0/8/9).
     write_register(0x30, 0);
     write_register(0x44, 0x7FF);
     write_register(0x2C, (3U << 5) | (1U << 4));
@@ -135,8 +144,11 @@ inline void enable_rx_interrupt() noexcept {
     return;
   }
   if (platform::hardware.uart.kind == platform::UartKind::Pl011) {
+    // IMSC=0x38: RXIM bit 4 unmasks FIFO receive interrupts.
     write_register(0x38, read_register(0x38) | (1U << 4));
   } else {
+    // 16550 IER register 1 bit 0 enables RX; MCR register 4 bit 3 (OUT2)
+    // opens the legacy PC interrupt output gate.
     write_register(1, read_register(1) | 1U);
     write_register(4, read_register(4) | 8U);
   }
@@ -144,6 +156,7 @@ inline void enable_rx_interrupt() noexcept {
 
 inline void ack_rx_interrupt() noexcept {
   if (platform::hardware.uart.kind == platform::UartKind::Pl011) {
+    // ICR=0x44 is write-one-to-clear; clear RX (bit 4) and RX timeout (bit 6).
     write_register(0x44, (1U << 4) | (1U << 6));
   }
 }
@@ -154,12 +167,14 @@ inline int getc() noexcept {
     return -1;
   }
   if (uart.kind == platform::UartKind::Pl011) {
+    // FR=0x18 RXFE bit 4 marks empty; 16550 LSR register 5 uses DR bit 0.
     if (read_register(0x18) & (1U << 4)) {
       return -1;
     }
   } else if (!(read_register(5) & 1U)) {
     return -1;
   }
+  // DR/register 0 also carries PL011 error status above the 8-bit character.
   return static_cast<int>(read_register(0) & 0xFFU);
 }
 

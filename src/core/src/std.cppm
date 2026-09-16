@@ -44,7 +44,8 @@ enum class byte : unsigned char {};
 using nullptr_t = decltype(nullptr);
 using max_align_t = long double;
 
-// Integer limits
+// Unsigned N-bit limits are 2^N - 1; suffixes keep large literals unsigned before
+// conversion to the declared type, without depending on hosted <cstdint> headers.
 inline constexpr u8 UINT8_MAX = 255U;
 inline constexpr u16 UINT16_MAX = 65535U;
 inline constexpr u32 UINT32_MAX = 4294967295U;
@@ -307,6 +308,8 @@ inline void atomic_thread_fence(MemoryOrder /*order*/) noexcept {
 #endif
 }
 
+// These overloads currently use a full hardware barrier for every requested
+// order. This is stronger than a relaxed fence and is not per-order lowering.
 inline void atomic_thread_fence(memory_order /*order*/) noexcept {
 #if defined(MOSS_ARCH_ARM64)
   asm volatile("dmb sy" ::: "memory");

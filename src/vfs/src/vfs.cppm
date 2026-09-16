@@ -7,7 +7,7 @@
 //   - File descriptors and per-process FdTable
 //   - Mount table
 //   - devfs (/dev/console, /dev/null, /dev/zero)
-//   - ramfs (initramfs-backed read-only filesystem)
+//   - ramfs (immutable initramfs content plus mutable runtime-created files)
 //   - pipefs (anonymous pipes)
 //   - Syscall handler layer
 

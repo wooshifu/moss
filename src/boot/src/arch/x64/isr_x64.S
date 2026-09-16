@@ -123,7 +123,7 @@ ISR_NOERR 31
 // IRQs and software vectors (32-255): no error code
 // ---------------------------------------------------------------------------
 .set _isr_i, 32
-.rept 224
+.rept 224                         // 256 IDT vectors - 32 reserved CPU exception vectors
     MAKE_ISR_NOERR _isr_i
     .set _isr_i, _isr_i + 1
 .endr
@@ -181,7 +181,8 @@ isr_common:
     popq    %rbx
     popq    %rax
 
-    // Pop vector number and error code
+    // Drop two software/CPU metadata slots (2 * 8=16 bytes), leaving exactly
+    // the hardware return frame for IRETQ. Keep this paired with ISR_* pushes.
     addq    $16, %rsp
 
     // Return from interrupt

@@ -1,5 +1,17 @@
 #include "syscall.h"
 
+// Validation-image protocol, implemented by moss_validation_call in test/validation.cpp:
+// syscall 511 is outside the production table; op 0 selects a workload, 1 begins
+// a case, 2 reports success plus an error mask, 3 finishes, and 4/5/6 exchange
+// benchmark count/ticks/overhead. Other opcodes coordinate the named fixtures.
+// Keep both ends synchronized; production images return ENOSYS for this slot.
+//
+// Raw ABI conventions used below: mmap prot 3=R|W, flags 0x22=PRIVATE|ANONYMOUS,
+// fd -1 and offset 0; 4096-byte pages and 8192-byte pairs test page boundaries.
+// Native errors are -errno (7=E2BIG, 8=ENOEXEC, 10=ECHILD, 12=ENOMEM,
+// 14=EFAULT, 22=EINVAL, 36=ENAMETOOLONG, 38=ENOSYS). Error masks assign
+// each check a bit. Nonzero byte/canary patterns detect untouched or aliased data;
+// 37/39 are child/exec success markers, while other exit codes identify failures.
 static long control(long op, long a, long b) { return syscall3(511, op, a, b); }
 static unsigned long application_cycles;
 static int application_workload;
@@ -17,9 +29,11 @@ static unsigned long exec_probe(long test) {
   long child = fork();
   if (!child) {
     volatile unsigned long canary = 0x12345678;
+    // Test the shared 128-string cap at/beyond its boundary while retaining
+    // terminator slots: 129 argv strings need 130 pointers, 128 env need 129.
     static const char *args[130], *environment[129];
     args[0] = "exec";
-    static char bytes[16385];
+    static char bytes[16385]; // 16 KiB + NUL exceeds the inclusive exec byte budget by one.
     const char *path = "/validation_child.elf";
     long wanted = -8;
     if (test < 3) {
@@ -48,6 +62,8 @@ static unsigned long exec_probe(long test) {
     } else {
       path = "/libc_validation.elf";
       if (test == 8) {
+        // 64 argv + 64 environment strings exactly hit the 128-string limit;
+        // six bytes hold each generated "M00=1" string including its NUL.
         static char names[64][6];
         args[0] = "count";
         for (unsigned i = 1; i < 64; ++i)
@@ -95,6 +111,9 @@ static unsigned long busybox_script(const char *script, const char *expected) {
   close(fds[1]);
   unsigned long errors = child < 0 ? 2 : 0;
   unsigned long length = strlen(expected), received = 0;
+  // Fixed 64-byte drain chunks bound stack use independent of captured stdout;
+  // the precise chunk size is unrecorded. Continue draining after a mismatch
+  // so a child blocked on its stdout pipe can still exit and be reaped.
   char buffer[64];
   long count;
   while ((count = read(fds[0], buffer, sizeof(buffer))) > 0) {
@@ -117,6 +136,8 @@ static unsigned long busybox_script(const char *script, const char *expected) {
 
 static unsigned long wait_status_rollback(void) {
   unsigned long errors = 0;
+  // Repeat sixteen failed/retried waits to expose retained zombie ownership.
+  // This bounded repetition count is a fixture choice, not a measured threshold.
   for (unsigned i = 0; i < 16; ++i) {
     long child = fork();
     if (child == 0) {
@@ -126,6 +147,8 @@ static unsigned long wait_status_rollback(void) {
       return errors | 1;
     }
     int status = 0;
+    // 3 includes an unsupported wait option; adding 2^32 must not alias the
+    // live child PID through narrowing. Status uses its 8-bit code at bit 8.
     errors |= (unsigned long)(waitpid(child, &status, 3) != -22) << 1;
     errors |= (unsigned long)(waitpid(child + (1UL << 32), &status, 1) != -10) << 2;
     // A failed copyout must leave the zombie collectable by a later wait.
@@ -177,6 +200,8 @@ static unsigned long fork_allocation_rollback(long arm, long release, unsigned c
 }
 
 static unsigned long mmap_heap_rollback(void) {
+  // Control 42/43 exhausts/restores the VMA-allocation heap; four independent
+  // retries check resource reuse. The repetition count is a bounded fixture choice.
   for (unsigned long page = (unsigned long)__user_text_start; page < (unsigned long)__user_text_end; page += 4096)
     (void)*(const volatile unsigned char *)page;
   unsigned long errors = 0;
@@ -227,6 +252,8 @@ static unsigned long exec_allocation_rollback(void) {
   for (const char *p = path; *p; ++p)
     warm ^= (unsigned char)*p;
   (void)warm;
+  // Control 35 returns native page-table allocation stages; 36 reserves a
+  // given page budget, and 37 verifies rollback and releases that pressure.
   long stages = control(35, 0, 0);
   for (long budget = 0; budget < stages; ++budget) {
     if (!control(36, budget, 0)) {
@@ -254,6 +281,8 @@ static unsigned long exec_allocation_rollback(void) {
   return errors;
 }
 
+// Control 12/13 exhausts/releases physical pages while the writable test VMA
+// remains valid but absent: a copy must contain the allocation fault as EFAULT.
 static unsigned long uaccess_allocation_fault(void) {
   unsigned long now = 0;
   unsigned long errors = syscall2(SYS_CLOCK_GETTIME, 0, (long)&now) != 0;
@@ -333,6 +362,9 @@ static unsigned long uaccess_write_fault(void) {
   return errors;
 }
 
+// The partial-copy fixtures start at page byte 4092 (=4096-4), request eight
+// bytes, and deny the second page. Exactly four bytes may commit; retries must
+// preserve the file/ring cursor and the unread suffix rather than lose data.
 static unsigned long uaccess_partial_read(void) {
   long area = syscall6(SYS_MMAP, 0, 8192, 3, 0x22, -1, 0);
   if (area <= 0)
@@ -513,6 +545,8 @@ static unsigned long uaccess_devices(void) {
       syscall2(SYS_MUNMAP, area, 8192);
     return 1;
   }
+  // 301 crosses two complete 128-byte /dev/zero chunks and a partial third;
+  // a nonzero 0xa5 fill makes incomplete zeroing observable.
   unsigned char bytes[301];
   for (unsigned i = 0; i < sizeof(bytes); ++i)
     bytes[i] = 0xa5;
@@ -572,6 +606,8 @@ static unsigned long frame_signal_return(void) {
   return errors;
 }
 
+// A whole aligned base page isolates the read-only permission under test;
+// 0x5a distinguishes preserved data from a demand-zero or clobbered page.
 static const unsigned char vm_rodata[4096] __attribute__((aligned(4096))) = {0x5a};
 __attribute__((noinline)) static void vm_text(void) { asm volatile("" ::: "memory"); }
 
@@ -588,7 +624,8 @@ static unsigned long pipe_waits_for_writer(void) {
   if (child == 0) {
     if (close((int)ends[0]) != 0)
       _exit(91);
-    // Let the reader reach an empty pipe while this endpoint is still open.
+    // 10,000,000 ns (10 ms) gives the reader a scheduling opportunity while
+    // the endpoint stays open; this guessed delay does not prove it is waiting.
     unsigned long delay = 10000000;
     const unsigned char sent[] = {17, 44, 23, 99};
     if (nanosleep_ns(&delay) != 0 || write((int)ends[1], sent, sizeof(sent)) != sizeof(sent))
@@ -620,6 +657,8 @@ static unsigned long pipe_cross_cpu_roundtrip(unsigned rounds) {
   }
   long child = fork();
   if (child == 0) {
+    // Native syscall 20 sets affinity; mask 2 selects CPU1 (bit 1), while
+    // the parent runs on CPU0. A 1 ms sleep below permits wakeup-based migration.
     unsigned mask = 2;
     if (syscall3(20, 0, sizeof(mask), (long)&mask) != 0 || close((int)request[1]) != 0 || close((int)reply[0]) != 0)
       _exit(91);
@@ -662,6 +701,9 @@ static unsigned long pipe_waits_for_reader(void) {
   long ends[2];
   if (pipe(ends) != 0)
     return 1;
+  // Fill the entire 4096-byte pipe ring to force the extra record to wait.
+  // Modulo 251 stays within a byte and shifts the pattern across a 4096-byte
+  // boundary, making page-aligned duplication visible (4096 is not a multiple).
   unsigned char bytes[4096];
   for (unsigned i = 0; i < sizeof(bytes); ++i)
     bytes[i] = (unsigned char)(i % 251);
@@ -672,6 +714,7 @@ static unsigned long pipe_waits_for_reader(void) {
   }
   long child = fork();
   if (child == 0) {
+    // This 10 ms scheduling delay is a fixture guess, not a readiness handshake.
     unsigned long delay = 10000000;
     if (close((int)ends[1]) != 0 || nanosleep_ns(&delay) != 0 ||
         read((int)ends[0], bytes, sizeof(bytes)) != sizeof(bytes))
@@ -768,6 +811,9 @@ static unsigned long lifecycle_cycle(void) {
 }
 
 static unsigned long pipe_output_rollback(void) {
+  // 1000 rejected creations exceed the 64-pipe and 256-metadata budgets: a
+  // leaked reservation/state cannot hide in spare capacity. After stdio 0/1/2,
+  // the first successful pipe must still receive the lowest fds 3/4.
   for (unsigned i = 0; i < 1000; ++i) {
     if (syscall1(SYS_PIPE, (long)vm_rodata) != -14)
       return 1;
@@ -802,7 +848,7 @@ static int vm_fault(long address, int access) {
     }
     _exit(94); // A forbidden access must fault, not reach this exit.
   }
-  return wait_exit(child, 245); // Moss page faults exit -11, not POSIX wait status.
+  return wait_exit(child, 245); // (-SIGSEGV = -11) & 0xff = 245 in Moss's exit-code encoding.
 }
 
 static unsigned long vm_private_cow(void) {
@@ -872,6 +918,10 @@ static unsigned long user_ranges(void) {
       failures |= 1UL << check;                                                                                        \
     ++check;                                                                                                           \
   } while (0)
+  // 2^47 is the exclusive user limit; 0x1000 lies in inherited kernel mappings.
+  // Near-end and negative ranges test wrap/overflow. 0x180000000 (6 GiB) is
+  // the kernel-installed SIGRETURN_PAGE, which mmap/munmap must preserve.
+  // 0x32 adds unsupported MAP_FIXED, and prot bit 8 is outside R/W/X.
   CHECK_RANGE(syscall1(SYS_DEBUG_PRINT, 0) == -22);
   CHECK_RANGE(syscall1(SYS_DEBUG_PRINT, 0x800000000000L) == -14);
   CHECK_RANGE(syscall3(SYS_WRITE, 1, 0x800000000000L, 0) == -22); // current Moss zero-count ABI
@@ -897,6 +947,8 @@ static unsigned long user_ranges(void) {
     long second = syscall6(SYS_MMAP, first + 4096, 4096, 3, 0x22, -1, 0);
     CHECK_RANGE(second == first + 4096);
     if (second == first + 4096) {
+      // Page offsets 4094/4092/4093 leave 2/4/3 bytes respectively in the
+      // first VMA, forcing the u32 mask, u64 clock and path to cross into the next.
       unsigned char *mask = (unsigned char *)(first + 4094);
       mask[0] = 1;
       mask[1] = 0;
@@ -956,6 +1008,10 @@ static void benchmark_signal_handler(int signo) {
 }
 
 static void user_benchmark(long mode) {
+  // Protocol modes 11..16 measure faults, COW, switches, exec, signals and pipe
+  // transfers. Op 30 checks resource baselines; 31 verifies absent/COW mappings.
+  // The 1024-byte pipe record is one quarter of capacity, so a serial write/read
+  // sample completes without needing a concurrent reader; exact tuning is unrecorded.
   // Avoid unrelated instruction-page faults in the measured regions.
   for (unsigned long page = (unsigned long)__user_text_start; page < (unsigned long)__user_text_end; page += 4096)
     (void)*(const volatile unsigned char *)page;
@@ -1075,6 +1131,9 @@ static void user_benchmark(long mode) {
 
 #if defined(__x86_64__)
 static void set_fp_state(int child) {
+  // x87 0x77f/0xb7f and MXCSR 0x3f80/0x5f80 select distinct down/up rounding
+  // while keeping exceptions masked. XMM15 uses different nonzero parent/child
+  // markers so a save/restore that only preserves the default state cannot pass.
   unsigned short cw = child ? 0xb7f : 0x77f;
   unsigned mxcsr = child ? 0x5f80 : 0x3f80;
   unsigned long vector[2] = {child ? 0x12345678UL : 0x1122334455667788UL, 0x8877665544332211UL};
@@ -1088,6 +1147,8 @@ static int parent_fp_state(void) {
   unsigned short cw;
   unsigned mxcsr;
   unsigned long vector[2];
+  // x87's stored extended format is 80 bits (10 bytes); the checks below
+  // recognize 1.0: integer-bit byte 0x80 and exponent bytes 0xff/0x3f.
   unsigned char value[10];
   asm volatile("fnstcw %0; stmxcsr %1; movdqu %%xmm15, %2; fstpt %3; fldt %3"
                : "=m"(cw), "=m"(mxcsr), "=m"(vector), "=m"(value)
@@ -1112,10 +1173,12 @@ static int fp_fault_isolated(int simd) {
   int status = 0;
   long waited = child > 0 ? syscall3(SYS_WAITPID, child, (long)&status, 0) : -1;
   // Moss currently encodes fatal exceptions as negative exit codes, not POSIX signals.
-  return child > 1 && waited == child && ((status >> 8) & 255) == 248;
+  return child > 1 && waited == child && ((status >> 8) & 255) == 248; // (-SIGFPE = -8) & 255.
 }
 #endif
 
+// Two milliseconds (2,000,000 ns) is a short nonzero timer workload, not a
+// latency budget; assertions reject early return but allow scheduling overshoot.
 static unsigned long timer_relative_sleep(void) {
   unsigned long before = 0, after = 0, duration = 2000000;
   unsigned long errors = clock_gettime_ns(&before) != 0;
@@ -1128,6 +1191,7 @@ static unsigned long timer_relative_sleep(void) {
 static unsigned long timer_absolute_sleep(void) {
   unsigned long now = 0, after = 0;
   unsigned long errors = syscall2(SYS_CLOCK_GETTIME, 1, (long)&now) != 0;
+  // Clock ID 1 is monotonic and sleep flag 1 is TIMER_ABSTIME in the native ABI.
   unsigned long deadline = now + 2000000;
   errors |= (unsigned long)(syscall6(SYS_CLOCK_NANOSLEEP, 1, 1, (long)&deadline, 0, 0, 0) != 0) << 1;
   errors |= (unsigned long)(syscall2(SYS_CLOCK_GETTIME, 1, (long)&after) != 0) << 2;
@@ -1153,6 +1217,8 @@ static unsigned long timer_invalid_arguments(void) {
 }
 
 static unsigned long timer_short_reuse(void) {
+  // Reuse a 100 us request 1000 times to exercise timer retirement/rearming.
+  // The exact duration/count are fixture choices; no maximum-latency claim follows.
   unsigned long duration = 100000;
   for (unsigned i = 0; i < 1000; ++i) {
     unsigned long before = 0, after = 0;
@@ -1188,6 +1254,8 @@ static unsigned long timer_early_wakeup(void) {
 static unsigned long timer_arm_failure_recovery(void) {
   if (!control(28, 0, 0))
     return 1;
+  // A 1 s future deadline keeps the exhausted queue from being bypassed as
+  // an already-expired request; controls 28/29 hold/release real timer capacity.
   unsigned long duration = 1000000000, deadline = 0;
   unsigned long errors = syscall2(SYS_NANOSLEEP, (long)&duration, 0) != -12;
   errors |= syscall2(SYS_CLOCK_GETTIME, 1, (long)&deadline) != 0;
@@ -1202,6 +1270,8 @@ static unsigned long timer_arm_failure_recovery(void) {
 static unsigned long timer_cancel_in_flight(void) {
   if (!control(20, 0, 0))
     return 1;
+  // Two peer roles run on CPU1/CPU2 while CPU0 owns control 22; the four
+  // 20..23 opcodes coordinate real in-flight cancellation and fixture retirement.
   long children[2] = {-1, -1};
   for (long actor = 1; actor <= 2; ++actor) {
     unsigned mask = 1U << actor;
@@ -1226,6 +1296,8 @@ static unsigned long timer_cancel_in_flight(void) {
 }
 
 void _start(void) {
+  // Native affinity syscall 20 uses a u32 mask; bit 0 pins validation to CPU0.
+  // Workload selectors below are returned by control 0, not syscall numbers.
   unsigned mask = 1;
   long affinity = syscall3(20, 0, sizeof(mask), (long)&mask);
   long mode = control(0, affinity, 0);
@@ -1354,6 +1426,8 @@ void _start(void) {
     control(3, 0, 0);
   } else if (mode == 9 || mode == 23) {
     application_workload = mode == 23;
+    // The kernel control-10 checkpoint protocol expects 10 application cycles
+    // or 100 core cycles; both ends must change together if cadence changes.
     const long interval = application_workload ? 10 : 100;
     control(1, 0, 0);
     unsigned long cycle_errors = lifecycle_cycle(); // Warm mappings before the resource baseline.
@@ -1414,6 +1488,8 @@ void _start(void) {
   } else if (mode == 1) {
     long pid = getpid();
     control(1, 0, 0);
+    // Slot 510 is an invalid production syscall next to reserved validation
+    // slot 511; rejection must not prevent this PID1 worker from continuing.
     if (control(2, pid == 1 && syscall0(SYS_GETPPID) == 0 && syscall0(510) < 0, 0)) {
       control(1, 1, 0);
       unsigned long errors = user_ranges();
@@ -1481,6 +1557,8 @@ void _start(void) {
                       errors = pipe_cross_cpu_roundtrip(1);
                     if (control(2, errors == 0, (long)errors)) {
                       control(1, 10, 0);
+                      // 40/41 targets fd-table cloning, 44/45 process allocation,
+                      // and 46/47 four metadata stages; counts 16/4 bound repetition.
                       errors = fork_allocation_rollback(40, 41, 16);
                       if (control(2, errors == 0, (long)errors)) {
                         control(1, 11, 0);

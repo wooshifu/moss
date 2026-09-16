@@ -124,7 +124,8 @@ MMResult<MemoryInfo> UnifiedMemoryManager::query_memory_info([[maybe_unused]] mo
 
 MMResult<moss::kernel::usize>
 UnifiedMemoryManager::get_allocated_size([[maybe_unused]] moss::kernel::VirtAddr address) noexcept {
-  // 简化实现
+  // 占位查询固定返回一个基页，未读取堆块头；不能把此值作为实际分配大小
+  // 传给 sized free，后者会校验原请求长度。
   return MMResult<moss::kernel::usize>{moss::kernel::PAGE_SIZE};
 }
 
@@ -176,7 +177,8 @@ UnifiedMemoryManager::SystemPerformanceStats UnifiedMemoryManager::get_performan
   // 直接构造并返回，避免静态变量导致的C++运行时依赖
   SystemPerformanceStats stats{};
 
-  // 初始化基本统计信息
+  // 尚未接入实际采样：100.0 是百分比字段的占位“全部成功/本地/命中”，
+  // 0 表示未收集的计数和比例；这些值不构成运行时性能或健康证据。
   stats.allocation_perf.total_allocations = 0;
   stats.allocation_perf.failed_allocations = 0;
   stats.allocation_perf.avg_allocation_latency_us = 0;
@@ -210,6 +212,7 @@ void UnifiedMemoryManager::reset_performance_counters() noexcept {
 void UnifiedMemoryManager::dump_memory_layout() noexcept {
   namespace log = moss::kernel::logging;
   auto stats = PageFrameAllocator::get_memory_stats();
+  // 固定 4 KiB 基页与 mm::PAGE_SIZE 一致，除以 1024 将字节转为 KiB。
   constexpr moss::kernel::usize PAGE_SIZE = 4096;
   log::klog::info("=== Memory Layout ===");
   log::klog::info("  total:  {} pages ({} KB)", stats.total_pages, stats.total_pages * PAGE_SIZE / 1024);

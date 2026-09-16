@@ -158,8 +158,9 @@ inline bool fixup(TrapFrame &frame) noexcept {
   if (frame.from_user())
     return false;
   static_assert(sizeof(int) == 4);
-  // Each signed displacement is relative to its own field, so boot image
-  // relocation needs no writable pointers or machine-specific load address.
+  // Each pair is two 4-byte signed displacements emitted by uaccess.S:
+  // faulting instruction, then recovery PC, each relative to its own field.
+  // Boot relocation therefore needs no writable pointers or fixed load address.
   for (auto *entry = ::moss_uaccess_table_start; entry < ::moss_uaccess_table_end; entry += 2) {
     const u64 instruction = reinterpret_cast<u64>(entry) + static_cast<u64>(static_cast<i64>(entry[0]));
     if (frame.pc == instruction) {

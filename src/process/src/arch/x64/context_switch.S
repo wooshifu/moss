@@ -25,6 +25,9 @@
 //   0x88    8      pc        (RIP / return address)
 //   0xA0    512    fp        (16-byte-aligned FXSAVE64 image)
 //   0x2A0   8      fs_base   (userspace thread pointer)
+// Numeric memory operands are byte offsets checked by CpuContext's C++
+// static assertions. The 512-byte FP image starts at aligned offset 160;
+// its end at 672 is the FS-base field, so layout edits must update assembly.
 //
 // x64 calling convention (System V AMD64 ABI):
 //   Arguments: RDI, RSI, RDX, RCX, R8, R9, [stack]
@@ -59,6 +62,8 @@ context_switch:
     movq    %rsi, 32(%rdi)             // prev->rsi
     movq    %rdi, 40(%rdi)             // prev->rdi
     movq    %rbp, 48(%rdi)             // prev->rbp
+    // CALL pushed one 8-byte return address. Save SP above it because resume
+    // pushes prev->pc again; retaining the old slot would shift the stack.
     leaq    8(%rsp), %rax              // caller SP after this call returns
     movq    %rax, 56(%rdi)
     movq    %r8, 64(%rdi)              // prev->r8
@@ -80,6 +85,8 @@ context_switch:
     movq    %rax, 136(%rdi)
 
     // Preserve the userspace thread pointer across every scheduler transition.
+    // Architectural MSR identifier IA32_FS_BASE; RDMSR/WRMSR split a 64-bit
+    // base between EDX:EAX, hence the 32-bit shifts in all three paths.
     movl    $0xC0000100, %ecx           // IA32_FS_BASE
     rdmsr
     shlq    $32, %rdx
@@ -96,6 +103,8 @@ context_switch:
 
     // Restore RFLAGS from next->pstate
     movq    128(%rsi), %rax
+    // -513 is ~(1<<9): clear RFLAGS.IF until both stack and registers belong
+    // to next. Only the completed scheduler/user-return path may restore IF.
     andq    $-513, %rax                // caller reenables interrupts after the switch
     pushq   %rax
     popfq
@@ -134,7 +143,9 @@ context_switch:
 //
 // Prototype: extern "C" void switch_to_user(CpuContext* ctx, uint64_t user_sp);
 //
-// GDT layout: [3]=User Data(0x1B), [4]=User Code(0x23)
+// GDT layout: [3]=User Data(0x1B), [4]=User Code(0x23).
+// Selectors encode (GDT index<<3)|RPL: 3*8+3 and 4*8+3 request ring 3;
+// these constants must agree with the boot GDT, not with a process address.
 // =============================================================================
 .global switch_to_user
 .type switch_to_user, @function

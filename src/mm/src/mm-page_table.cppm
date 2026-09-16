@@ -44,6 +44,8 @@ enum class PageSize : u64 { Size4KB = PAGE_SIZE, Size2MB = 2ULL * 1024 * 1024, S
 namespace page_attr = ::moss::kernel::hal::mmu::page_attr;
 namespace page_perms = ::moss::kernel::hal::mmu::page_perms;
 
+// RISC-V PPN starts at descriptor bit 10 while a byte address starts at bit
+// 12. The shifts by 2 below bridge those encodings; other targets store PA bits.
 struct PageTableEntry {
   u64 raw;
   constexpr PageTableEntry() : raw(0) {}
@@ -146,6 +148,7 @@ struct PageTableEntry {
 
 static_assert(sizeof(PageTableEntry) == sizeof(u64) && alignof(PageTableEntry) == alignof(u64));
 
+// Hardware descriptors are 64 bits: one 4 KiB table holds 512 entries.
 static_assert(sizeof(PageTableEntry) == 8, "PageTableEntry must be 8 bytes");
 
 struct alignas(PAGE_SIZE) PageTable {
@@ -167,6 +170,8 @@ using hal::mmu::VirtualAddressBreakdown;
 
 class PageTableManager {
 private:
+  // Pre-allocator reserve of 64 tables (256 KiB). Exhaustion must fail rather
+  // than overrun early_tables; the original capacity justification is unrecorded.
   static constexpr usize MAX_EARLY_TABLES = 64;
   alignas(PAGE_SIZE) static inline PageTable early_tables[MAX_EARLY_TABLES];
   static inline usize next_table_index = 0;
@@ -175,7 +180,8 @@ private:
   static inline bool use_dynamic_alloc = false;       // Switch to buddy-backed alloc
 
 public:
-  // Current identity-map extent, independent of firmware RAM placement.
+  // Kernel builders cover four 1 GiB entries. Keep user admission above this
+  // 4 GiB identity map so a user mapping cannot replace borrowed kernel pages.
   static constexpr VirtAddr KERNEL_IDENTITY_END = 1ULL << 32;
 
   // Canonical positive user half, excluding the shared kernel identity map.
@@ -296,6 +302,8 @@ public:
   // Invalidate TLB entry for a single virtual address
   static void invalidate_tlb_addr(VirtAddr virt_addr) {
 #if defined(MOSS_ARCH_ARM64)
+    // TLBI takes VA[55:12], not a byte address. Publish page-table writes before
+    // invalidating; wait for invalidation to finish before resuming accesses.
     asm volatile("dsb ishst" ::: "memory");
     asm volatile("tlbi vale1is, %0" ::"r"(virt_addr >> 12) : "memory");
     asm volatile("dsb ish" ::: "memory");

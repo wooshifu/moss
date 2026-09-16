@@ -4,6 +4,8 @@ ENTRY(_start)
 
 MEMORY
 {
+    /* 256 MiB bounds link-image capacity; it is not firmware RAM discovery.
+     * Origin zero allows relocation. The exact capacity budget is undocumented. */
     RAM (rwx) : ORIGIN = 0, LENGTH = 256M
 }
 
@@ -11,6 +13,8 @@ KERNEL_VMA = 0xFFFF800000000000;
 
 SECTIONS
 {
+    /* 4 KiB boundaries separate RX/RO/RW page permissions. 8-byte init-array,
+     * GOT and relocation alignment matches the 64-bit pointers/ELF64 fields. */
     . = ORIGIN(RAM);
     _text_start = .; /* Boot code and ordinary text share the RX protection range. */
 
@@ -81,18 +85,24 @@ SECTIONS
         _bss_end = .;
     }
 
+    /* 512 KiB = 16 BOOT_MAX_CPUS * 32 KiB stacks, matching ARM64 boot slices.
+     * Stack budget is fixed policy, without recorded maximum-depth evidence. */
     .stack (NOLOAD) : ALIGN(4K) {
         _stack_bottom = .;
         . += 512K;
         _stack_top = .;
     }
 
+    /* Fixed 8 MiB heap reserve; boot initializes a 256 KiB subspan. The exact
+     * reserve budget is undocumented; enlarging it consumes image-reserved RAM. */
     .heap (NOLOAD) : ALIGN(4K) {
         _heap_start = .;
         . += 8M;
         _heap_end = .;
     }
 
+    /* 64 KiB holds sixteen 4 KiB bootstrap tables before buddy allocation is
+     * ready; exhaustion fails boot. Exact worst-case sizing is undocumented. */
     .pagetables (NOLOAD) : ALIGN(4K) {
         _pagetable_start = .;
         . += 64K;
