@@ -36,10 +36,18 @@ class Artifacts:
         if build.get("type") not in ("Debug", "Release", "RelWithDebInfo"):
             raise ValueError("invalid build type")
         files = {}
-        for name in ("kernel", "debug_symbols", "initramfs", "validation_kernel", "validation_initramfs"):
-            if name not in artifacts:
+        for name in (
+            "kernel",
+            "debug_symbols",
+            "initramfs",
+            "validation_kernel",
+            "validation_initramfs",
+            "validation_debug_symbols",
+        ):
+            # Old manifests remain usable, with explicitly unavailable test symbols.
+            if name not in artifacts and name != "validation_debug_symbols":
                 raise ValueError(f"missing artifact field: {name}")
-            value = artifacts[name]
+            value = artifacts.get(name)
             if value is None and name not in ("kernel", "debug_symbols"):
                 files[name] = None
             elif isinstance(value, str) and value and not Path(value).is_absolute():
@@ -62,6 +70,9 @@ class Artifacts:
         for name, field in (("validation_kernel", "image_sha256"), ("validation_initramfs", "fixture_sha256")):
             with self.require(name).open("rb") as stream:
                 identity[field] = hashlib.file_digest(stream, "sha256").hexdigest()
+        if self.files.get("validation_debug_symbols") is not None:
+            with self.require("validation_debug_symbols").open("rb") as stream:
+                identity["symbols_sha256"] = hashlib.file_digest(stream, "sha256").hexdigest()
         return identity
 
     def validation_provenance(self) -> dict[str, Any]:
@@ -98,7 +109,10 @@ class Artifacts:
         provenance = self.validation_provenance()
         directory.mkdir(parents=True, exist_ok=False)
         files = dict(self.files)
-        for name in ("validation_kernel", "validation_initramfs"):
+        names = ["validation_kernel", "validation_initramfs"]
+        if self.files.get("validation_debug_symbols") is not None:
+            names.append("validation_debug_symbols")
+        for name in names:
             source = self.require(name)
             target = directory / name / source.name
             target.parent.mkdir()

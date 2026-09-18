@@ -14,6 +14,18 @@ set_property(
              "${CMAKE_SOURCE_DIR}/scripts/artifacts.py"
 )
 add_dependencies(moss.test.elf validation-initramfs)
+# Keep ELF symbols from this exact link before applying the Release image policy. --strip-debug overrides the preset's
+# --strip-all in LLD; Release still has no DWARF.
+target_link_options(moss.test.elf PRIVATE "$<$<CONFIG:Release>:-Wl,--strip-debug>")
+add_custom_command(
+    TARGET moss.test.elf
+    POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E copy $<TARGET_FILE:moss.test.elf> ${CMAKE_BINARY_DIR}/bin/moss.test.symbols.elf
+    COMMAND $<$<CONFIG:Release>:${OBJCOPY_CMD}> $<$<CONFIG:Release>:--strip-all>
+            $<$<CONFIG:Release>:$<TARGET_FILE:moss.test.elf>>
+    BYPRODUCTS ${CMAKE_BINARY_DIR}/bin/moss.test.symbols.elf
+    VERBATIM
+)
 add_custom_command(
     TARGET moss.test.elf
     POST_BUILD
