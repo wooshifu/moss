@@ -1,6 +1,7 @@
 import json
 import struct
 import subprocess
+from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -48,6 +49,28 @@ def test_manifest_drives_normal_debug_and_validation_without_cmake(tmp_path):
     assert not any("semihost" in arg or "isa-debug-exit" in arg or "loader," in arg for arg in validation)
 
 
+@pytest.mark.parametrize("host", ["linux", "darwin", "win32"])
+def test_raspi4b_defaults_and_explicit_dtb(tmp_path, monkeypatch, host):
+    artifacts = Artifacts.load(manifest(tmp_path))
+    monkeypatch.setattr("qemu.sys.platform", host)
+    default_dtb = Path(__file__).resolve().parents[1] / "qemu" / "raspi4b.dtb"
+    for validation in (False, True):
+        args = build_qemu_args(artifacts, machine="raspi4b", validation=validation)
+        assert args[args.index("-dtb") + 1] == str(default_dtb)
+        assert args[args.index("-cpu") + 1] == "cortex-a72"
+        assert args[args.index("-smp") + 1] == "4"
+        assert args[args.index("-m") + 1] == "2048M"
+    custom_dtb = tmp_path / "custom.dtb"
+    custom_dtb.write_bytes(b"custom")
+    args = build_qemu_args(artifacts, machine="raspi4b", dtb=custom_dtb)
+    assert args[args.index("-dtb") + 1] == str(custom_dtb)
+    for resources in ({"smp": 2}, {"memory_mib": 1024}):
+        with pytest.raises(ValueError, match="4 CPUs and 2048 MiB"):
+            build_qemu_args(artifacts, machine="raspi4b", **resources)
+    with pytest.raises(ValueError, match="ARM64"):
+        build_qemu_args(replace(artifacts, arch="X64"), machine="raspi4b")
+
+
 @pytest.mark.parametrize(
     ("host", "directory", "writable", "free_mib", "extra", "machine", "automatic"),
     [
@@ -82,6 +105,8 @@ def test_qemu_ram_backend_is_host_safe(
     monkeypatch.setattr("qemu.shutil.disk_usage", disk_usage)
     for validation in (False, True):
         args = build_qemu_args(artifacts, machine=machine, validation=validation, extra_args=extra)
+        assert args[0] == "qemu-system-aarch64"
+        assert args[args.index("-accel") + 1] == ("tcg,tb-size=64" if validation else "tcg")
         if automatic:
             assert args[-2:] == ["-mem-path", "/dev/shm"]
         else:

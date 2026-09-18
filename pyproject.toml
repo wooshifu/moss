@@ -24,7 +24,10 @@ build-backend = "setuptools.build_meta"
 py-modules = ["format", "build", "lint", "qemu"]
 
 [tool.setuptools.packages.find]
-include = ["scripts"]
+include = ["scripts", "scripts.qemu"]
+
+[tool.setuptools.package-data]
+scripts = ["qemu/*.dtb", "qemu/*.dts"]
 
 [dependency-groups]
 dev = [
