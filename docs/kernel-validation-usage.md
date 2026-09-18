@@ -33,9 +33,35 @@ uv run scripts/kernel_validation.py run --manifest build/arm64-release/moss-arti
 Use the actual `moss-artifacts.json` path printed by your preset if using an overridden build directory. With no `--output`, each run creates a unique directory under `<build>/validation/`. Explicit output directories must not already exist. The terminal prints the canonical report path.
 
 Each run copies its validation image, initramfs and optional DTB into `inputs/`.
+New manifests also provide `validation_debug_symbols`: the companion ELF from
+the same test-kernel link, frozen into `inputs/validation_debug_symbols/`.
 Image/fixture copies must match their captured build provenance before any guest
 starts. All guests use these copies, so a concurrent rebuild cannot mix artifacts
-within one report. The report retains the frozen paths and content hashes.
+within one report. The report retains the frozen paths and content hashes,
+including `provenance.symbols_sha256`. A declared symbol file must exist and match
+the build record; rebuild after configuring the new manifest. Older manifests
+remain usable with explicitly unavailable validation symbols. Release keeps ELF
+symbols in the companion while the boot image stays stripped; its existing `-g0`
+policy means source lines and typed task inspection are unavailable.
+
+Before terminating a failed, still-live guest (including expected fatal
+self-checks), the runner stops it through QMP and retains all vCPU registers and
+`info roms` in `<workload>/diagnostics/qmp.json`. GDB adds per-vCPU backtraces,
+instructions, stack memory and, when DWARF is usable, current task IDs, states
+and wait objects. `results.json` embeds the capture status, errors, paths and
+actual symbol relocation offset in each guest's `diagnostics` field. ARM64/RV64
+offsets come from the exact loaded Image in `info roms`; x64 uses its ELF addresses.
+No fixed machine load address is substituted.
+
+Capture has an independent **10-second** budget outside case/guest deadlines and
+reported workload duration. GDB defaults to `gdb-multiarch`, then `gdb` on PATH;
+use `--gdb /path/to/gdb` for another target-capable version. If full DWARF loading
+fails or hangs, the remaining budget permits an ELF-only `-readnever` attempt.
+Scripts, debugger logs and completed JSON snapshots are retained. Missing GDB,
+unusable symbols or capture errors produce partial diagnostics without changing
+the original verdict. Successful runs do not attach GDB. Ctrl-C/SIGTERM skips
+capture and reaps the guest; exited guests have no live snapshot. Each guest uses
+private Unix sockets, so concurrent presets do not share debugger ports.
 
 `--cpus`, `--memory-mib`, `--warmup`, `--samples`, `--iterations`, and `--order` are explicit overrides. `--machine`, `--cpu`, `--qemu` and `--dtb` select the runtime environment. `--expected-ram-mib` explicitly checks firmware-visible RAM when firmware reserves part of the installed RAM; it defaults to `--memory-mib` and is recorded separately. Ordinary host deadlines remain 30 s for startup, 60 s per guest, and 5 s per case except `pfa`, `users.signals`, `users.lifecycle` and the event benchmarks (30 s). The distinct `users.applications` workload has the progress-based budget below. An explicit `--case-timeout` overrides the case default, including a shorter value; `--guest-timeout` overrides the total guest budget, subject to the existing stability minimum. Reports retain `case_timeout_seconds`, its `case_timeout_kind` (`total` or `no_progress`), `guest_timeout_seconds` and each case's host-observed `elapsed_seconds`; these are not kernel microbenchmarks. Functional/framework CTest budgets remain 2100 s; the separate application test has a 3120 s budget. Ctrl-C or SIGTERM finalizes partial reports and terminates/reaps QEMU; workloads not started are recorded as such.
 

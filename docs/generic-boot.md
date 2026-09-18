@@ -46,7 +46,8 @@ aliases.
 - `target`: architecture and boot protocol.
 - `build`: build type, compiler and flags, used for validation provenance.
 - `artifacts`: relative paths for `kernel`, `debug_symbols`, `initramfs`,
-  `validation_kernel`, and `validation_initramfs`; unavailable optional artifacts
+  `validation_kernel`, `validation_initramfs`, and `validation_debug_symbols`;
+  unavailable optional artifacts
   are `null`.
 
 The manifest contains no machine or emulator settings. Its paths must stay within

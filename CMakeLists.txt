@@ -311,9 +311,11 @@ endif()
 if(MOSS_BUILD_TESTS)
     set(_validation_json "\"${_validation_image}\"")
     set(_validation_initrd_json "\"validation-initramfs.cpio\"")
+    set(_validation_symbols_json "\"bin/moss.test.symbols.elf\"")
 else()
     set(_validation_json "null")
     set(_validation_initrd_json "null")
+    set(_validation_symbols_json "null")
 endif()
 string(TOUPPER "${CMAKE_BUILD_TYPE}" _build_config)
 # JSON escaping also handles Windows paths and quoted compiler flags.
@@ -339,7 +341,8 @@ file(
   \"artifacts\": {
     \"kernel\": \"${_kernel_image}\", \"debug_symbols\": \"bin/moss.elf\",
     \"initramfs\": \"initramfs.cpio\",
-    \"validation_kernel\": ${_validation_json}, \"validation_initramfs\": ${_validation_initrd_json}
+    \"validation_kernel\": ${_validation_json}, \"validation_initramfs\": ${_validation_initrd_json},
+    \"validation_debug_symbols\": ${_validation_symbols_json}
   }\n}\n"
 )
 
