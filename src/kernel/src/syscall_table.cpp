@@ -2533,14 +2533,15 @@ static void wake_blocked_reader() noexcept {
 }
 
 #if defined(MOSS_ARCH_ARM64)
-// UART RX IRQ handler — called from GIC interrupt context (IRQ 33).
+// UART RX IRQ handler — called with the firmware-discovered controller/IRQ.
 // Drains PL011 RX FIFO into ring buffer, then wakes the blocked reader.
 static void uart_rx_irq_handler(u32 /*irq*/, void * /*context*/) noexcept {
+  // Clear before draining: a refill between the final empty check and a later
+  // PL011 ICR write would erase the new RX notification with bytes still queued.
+  hal::uart::ack_rx_interrupt();
   for (int ch = hal::uart::getc(); ch >= 0; ch = hal::uart::getc()) {
     buf_put(static_cast<u8>(ch));
   }
-  hal::uart::ack_rx_interrupt();
-
   wake_blocked_reader();
 }
 #endif // MOSS_ARCH_ARM64
@@ -2575,7 +2576,7 @@ extern "C" void console_rx_init() noexcept {
 
   hal::uart::enable_rx_interrupt();
 
-  // 3. Register IRQ handler with GIC and enable UART IRQ (SPI 33)
+  // Register and enable the firmware-discovered UART IRQ on the active controller.
   if (interrupts::g_gic) {
     u32 uart_irq = platform::hardware.uart.irq;
     auto reg = interrupts::g_gic->register_interrupt(uart_irq, uart_rx_irq_handler, nullptr, "uart_rx");

@@ -53,7 +53,6 @@ def run(
         replace(cfg, files=files),
         qemu=resolve_qemu(cfg.arch),
         smp=4,
-        memory_mib=2048,
         machine=machine,
         dtb=files.get("dtb"),
     )

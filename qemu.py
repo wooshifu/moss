@@ -23,16 +23,28 @@ ARCH_CONFIG = {
 # Validation fork/exec can grow each guest's default cache to 1 GiB of host RAM.
 TCG_CACHE_MIB = 64
 
-# QEMU's raspi.c direct loader exposes the lower 1 GiB minus 64 MiB VideoCore RAM.
-RASPI4B_FIRMWARE_RAM_MIB = 960
+# QEMU's raspi.c loader exposes at most the lower 1 GiB minus 64 MiB VideoCore RAM.
+RASPI_CONFIG = {
+    "raspi3ap": {"cpu": "cortex-a53", "memory_mib": 512, "firmware_ram_mib": 448},
+    "raspi3b": {"cpu": "cortex-a53", "memory_mib": 1024, "firmware_ram_mib": 960},
+    "raspi4b": {"cpu": "cortex-a72", "memory_mib": 2048, "firmware_ram_mib": 960},
+}
+
+
+def resolve_resources(arch: str, machine: str | None, cpu: str | None, memory_mib: int | None) -> tuple[str, int]:
+    profile = RASPI_CONFIG.get((machine or "").split(",")[0], {})
+    return cpu or profile.get("cpu", ARCH_CONFIG[arch]["cpu"]), (
+        memory_mib if memory_mib is not None else profile.get("memory_mib", 2048)
+    )
 
 
 def resolve_dtb(arch: str, machine: str | None, dtb: Path | None) -> Path | None:
-    if machine and machine.split(",")[0] == "raspi4b":
+    if machine and machine.split(",")[0] in RASPI_CONFIG:
+        model = machine.split(",")[0]
         if arch != "ARM64":
-            raise ValueError("raspi4b requires an ARM64 image")
-        # Unlike virt, raspi4b needs an external DTB; bundling it avoids a host dtc dependency.
-        return dtb if dtb is not None else Path(__file__).resolve().parent / "scripts/qemu/raspi4b.dtb"
+            raise ValueError(f"{model} requires an ARM64 image")
+        # Unlike virt, these machines need an external DTB; bundling avoids a host dtc dependency.
+        return dtb if dtb is not None else Path(__file__).resolve().parent / "scripts/qemu" / f"{model}.dtb"
     return dtb
 
 
@@ -60,7 +72,7 @@ def build_qemu_args(
     artifacts: Artifacts,
     *,
     smp: int = 4,
-    memory_mib: int = 2048,
+    memory_mib: int | None = None,
     machine: str | None = None,
     cpu: str | None = None,
     qemu: str | None = None,
@@ -70,14 +82,16 @@ def build_qemu_args(
     extra_args: list[str] | None = None,
 ) -> list[str]:
     """Construct an invocation without inspecting CMake files or modifying images."""
+    cpu, memory_mib = resolve_resources(artifacts.arch, machine, cpu, memory_mib)
     if not 1 <= smp <= 16:
         raise ValueError("MOSS currently supports 1..16 CPUs")
     if memory_mib < 256:
         raise ValueError("at least 256 MiB RAM is required")
     selected = resolve_machine(artifacts.arch, smp=smp, machine=machine)
     dtb = resolve_dtb(artifacts.arch, selected, dtb)
-    if selected.split(",")[0] == "raspi4b" and (smp != 4 or memory_mib != 2048):
-        raise ValueError("raspi4b requires 4 CPUs and 2048 MiB")
+    model = selected.split(",")[0]
+    if model in RASPI_CONFIG and (smp != 4 or memory_mib != RASPI_CONFIG[model]["memory_mib"]):
+        raise ValueError(f"{model} requires 4 CPUs and {RASPI_CONFIG[model]['memory_mib']} MiB")
     image = artifacts.require("validation_kernel" if validation else "kernel")
     args = [
         qemu or ARCH_CONFIG[artifacts.arch]["qemu_system"],
@@ -90,7 +104,7 @@ def build_qemu_args(
         "-machine",
         selected,
         "-cpu",
-        cpu or ARCH_CONFIG[artifacts.arch]["cpu"],
+        cpu,
         "-smp",
         str(smp),
         "-m",
@@ -145,7 +159,7 @@ def main(
     qemu: str | None = None,
     dtb: Path | None = None,
     smp: int = 4,
-    memory_mib: int = 2048,
+    memory_mib: int | None = None,
     debug: bool = False,
     timeout: float | None = None,
     dry_run: bool = False,

@@ -27,7 +27,7 @@ py-modules = ["format", "build", "lint", "qemu"]
 include = ["scripts", "scripts.qemu"]
 
 [tool.setuptools.package-data]
-scripts = ["qemu/*.dtb", "qemu/*.dts"]
+scripts = ["qemu/*.dtb", "qemu/*.dts", "qemu/*.dtsi"]
 
 [dependency-groups]
 dev = [

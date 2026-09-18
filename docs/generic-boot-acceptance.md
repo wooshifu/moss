@@ -145,3 +145,50 @@ identical to the `virt` resources run `validation/1789716534034119254/results.js
 The default DTB was copied into each run and its input hash recorded. Wheel
 contents and an extracted-wheel CLI invocation verified that the model inputs
 are distributed; the compiled DTB also matched its checked-in DTS source.
+
+## Default raspi3ap / raspi3b profiles — 2026-09-18
+
+Verified with QEMU 11.1.1 TCG on Linux x86_64. Both models use four Cortex-A53
+CPUs, the bundled DTB and the same ARM64 image within each build mode. Every
+functional guest reported `online_mask=15` and the exact loader-described RAM:
+448 MiB for `raspi3ap` (512 MiB installed), 960 MiB for `raspi3b` (1024 MiB installed).
+BCM2836 local/ARMCTRL discovery and timer, mailbox IPI and peripheral IRQ operations
+are compiled into the generic kernel; there is no board-specific build preset.
+
+| Machine | Build | Production shell | Functional suites | Framework self-checks |
+| --- | --- | --- | --- | --- |
+| `raspi3ap` | Debug | All 11 probe steps pass | All 23 pass | All four pass |
+| `raspi3ap` | Release | 20 consecutive probes pass | All 23 pass | Not repeated |
+| `raspi3b` | Debug | All 11 probe steps pass | All 23 pass | All four pass |
+| `raspi3b` | Release | 20 consecutive probes pass | All 23 pass | Not repeated |
+
+Functional reports, relative to the matching `build/arm64-<mode>/`:
+
+- Debug `raspi3ap`: `validation/1789718761287455318/results.json`.
+- Debug `raspi3b`: `validation/1789718761287746728/results.json`.
+- Release `raspi3ap`: `validation/1789718832052899911/results.json`.
+- Release `raspi3b`: `validation/1789718832052897281/results.json`.
+- Debug framework `raspi3ap`: `validation/1789718885845471427/results.json`.
+- Debug framework `raspi3b`: `validation/1789718885845453927/results.json`.
+
+Debug shell reports are `production-boot/raspi3ap-acceptance-56oninte/0/results.json`
+and `production-boot/raspi3b-acceptance-47hhkvbo/0/results.json`. Release runs are
+`production-boot/raspi3ap-acceptance-jlro590g/{0..19}/results.json` and
+`production-boot/raspi3b-acceptance-675vlfg1/{0..19}/results.json`.
+All use the original probe commands and 30-second deadline.
+
+The validation image SHA-256 values, identical between these models, are
+`3d1aff6a5585895fbcd1af996abb03b7e6c3c52ed2908e2211bd5928b34131fd` (Debug) and
+`fe1c581fd535ef439a83c7660f6135f95c55333f96a2a7911eca6057706a0eb2` (Release).
+Installed RAM, expected firmware RAM, CPU model and copied DTB hashes were
+verified in every report. The wheel contains both DTBs, their DTS sources and
+`raspi3.dtsi`; an extracted-wheel CLI selected each packaged DTB without `dtc`.
+The Python checks passed all 176 selected tests, including argument construction
+for Linux, macOS and Windows; actual guest execution here was on Linux.
+
+Verification exposed a pre-existing PL011 receive race: clearing RX after
+draining could erase a concurrent refill's notification. A stalled guest had
+`UARTFR=0xc0` (RX full), `UARTMIS=0`, `UARTIMSC=0x10` and the BCM UART IRQ enabled.
+Clearing before draining fixed it: the minimal long-command reproduction passed
+20 consecutive runs, as did the full Release shell probes above. Timer dispatch
+also now uses the discovered IRQ rather than assuming GIC INTID 27.
