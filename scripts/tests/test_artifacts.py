@@ -52,25 +52,29 @@ def test_manifest_drives_normal_debug_and_validation_without_cmake(tmp_path):
 
 
 @pytest.mark.parametrize("host", ["linux", "darwin", "win32"])
-def test_raspi4b_defaults_and_explicit_dtb(tmp_path, monkeypatch, host):
+@pytest.mark.parametrize(
+    ("machine", "cpu", "memory_mib"),
+    [("raspi3ap", "cortex-a53", 512), ("raspi3b", "cortex-a53", 1024), ("raspi4b", "cortex-a72", 2048)],
+)
+def test_raspi_defaults_and_explicit_dtb(tmp_path, monkeypatch, host, machine, cpu, memory_mib):
     artifacts = Artifacts.load(manifest(tmp_path))
     monkeypatch.setattr("qemu.sys.platform", host)
-    default_dtb = Path(__file__).resolve().parents[1] / "qemu" / "raspi4b.dtb"
+    default_dtb = Path(__file__).resolve().parents[1] / "qemu" / f"{machine}.dtb"
     for validation in (False, True):
-        args = build_qemu_args(artifacts, machine="raspi4b", validation=validation)
+        args = build_qemu_args(artifacts, machine=machine, validation=validation)
         assert args[args.index("-dtb") + 1] == str(default_dtb)
-        assert args[args.index("-cpu") + 1] == "cortex-a72"
+        assert args[args.index("-cpu") + 1] == cpu
         assert args[args.index("-smp") + 1] == "4"
-        assert args[args.index("-m") + 1] == "2048M"
+        assert args[args.index("-m") + 1] == f"{memory_mib}M"
     custom_dtb = tmp_path / "custom.dtb"
     custom_dtb.write_bytes(b"custom")
-    args = build_qemu_args(artifacts, machine="raspi4b", dtb=custom_dtb)
+    args = build_qemu_args(artifacts, machine=machine, dtb=custom_dtb)
     assert args[args.index("-dtb") + 1] == str(custom_dtb)
-    for resources in ({"smp": 2}, {"memory_mib": 1024}):
-        with pytest.raises(ValueError, match="4 CPUs and 2048 MiB"):
-            build_qemu_args(artifacts, machine="raspi4b", **resources)
+    for resources in ({"smp": 2}, {"memory_mib": memory_mib // 2}):
+        with pytest.raises(ValueError, match=f"4 CPUs and {memory_mib} MiB"):
+            build_qemu_args(artifacts, machine=machine, **resources)
     with pytest.raises(ValueError, match="ARM64"):
-        build_qemu_args(replace(artifacts, arch="X64"), machine="raspi4b")
+        build_qemu_args(replace(artifacts, arch="X64"), machine=machine)
 
 
 @pytest.mark.parametrize(

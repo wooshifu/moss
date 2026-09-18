@@ -362,6 +362,7 @@ extern "C" [[noreturn]] void secondary_cpu_entry() noexcept {
   // GICv3: init_cpu_interface() uses ICC system registers + GICR internally;
   //        the cpu_base argument is ignored (pass 0).
   // GICv2: init_cpu_interface() uses MMIO GICC registers via cpu_base.
+  // BCM2836: the HAL initializes this physical core's local timer/mailbox controls.
   const auto &plat = moss::fdt::get_platform_info();
   moss::kernel::VirtAddr gic_cpu_base = 0;
   if (moss::kernel::hal::intc::g_gic_version != moss::kernel::hal::intc::GicVersion::GICv3) {
@@ -369,8 +370,8 @@ extern "C" [[noreturn]] void secondary_cpu_entry() noexcept {
   }
   (void)moss::kernel::hal::intc::init_cpu_interface(gic_cpu_base);
 
-  // Enable the firmware timer PPI and reschedule SGI 0. GICv2 banks these
-  // enables per CPU; GICv3 uses this CPU's redistributor through the HAL.
+  // Enable the firmware timer source and reschedule IPI 0 on this CPU.
+  // The HAL selects banked GIC registers, GICR or BCM2836's per-core controls.
   moss::kernel::VirtAddr gic_dist_base = plat.intc.dist_base;
   moss::kernel::hal::intc::enable_irq(gic_dist_base, moss::kernel::platform::timer_irq());
   moss::kernel::hal::intc::enable_irq(gic_dist_base, 0); // SGI 0 = Reschedule IPI

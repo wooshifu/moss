@@ -126,33 +126,46 @@ uv run scripts/kernel_validation.py run --manifest build/arm64-debug/moss-artifa
   --machine virt,gic-version=3 --cpus 16 --memory-mib 1024 --workload resources
 ```
 
-The runner includes a **synthetic QEMU `raspi4b` device tree**, not a production
-Raspberry Pi firmware DTB. It supplies a different ARM64 memory map,
-bus `ranges` translation, UART/GIC resources and spin-table CPU startup.
-QEMU 11 supports this model with four Cortex-A72 CPUs and 2048 MiB installed RAM.
-Selecting the machine uses the bundled DTB automatically; `--dtb` overrides it:
+The runner bundles **synthetic QEMU device trees** for three Raspberry Pi
+models, rather than physical-board firmware descriptions. All use four CPUs
+and spin-table startup. Selecting the machine sets its CPU/RAM defaults and
+bundled DTB automatically; `--dtb` overrides the description:
+
+| Machine | CPU | Installed RAM | Loader-described RAM | Interrupt controller |
+| --- | --- | --- | --- | --- |
+| `raspi3ap` | Cortex-A53 | 512 MiB | 448 MiB | BCM2836 local + ARMCTRL |
+| `raspi3b` | Cortex-A53 | 1024 MiB | 960 MiB | BCM2836 local + ARMCTRL |
+| `raspi4b` | Cortex-A72 | 2048 MiB | 960 MiB | GICv2 |
+
+The model hardware is documented in [QEMU's Raspberry Pi manual](https://www.qemu.org/docs/master/system/arm/raspi.html).
+QEMU's `raspi.c` direct loader subtracts 64 MiB VideoCore RAM from at most the
+lower 1 GiB; validation expectations follow that fixed rule.
 
 ```sh
+uv run qemu.py --manifest build/arm64-debug/moss-artifacts.json --machine raspi3ap
+uv run qemu.py --manifest build/arm64-debug/moss-artifacts.json --machine raspi3b
 uv run qemu.py --manifest build/arm64-debug/moss-artifacts.json --machine raspi4b
 uv run scripts/check_production_boot.py --manifest build/arm64-debug/moss-artifacts.json \
-  --machine raspi4b
+  --machine raspi3b
 uv run scripts/kernel_validation.py run --manifest build/arm64-debug/moss-artifacts.json \
-  --machine raspi4b
+  --machine raspi3ap
 ```
 
-No rebuild occurs between these invocations. This QEMU model requires 4 CPUs and
-2048 MiB installed RAM; its direct-kernel loader describes 960 MiB to the guest.
-The validation runner records this fixed expected RAM from the model's
+No rebuild occurs between these invocations. Each model requires exactly four
+CPUs and its installed RAM above; explicit mismatching RAM/SMP is rejected.
+The validation runner records the fixed expected RAM from the model's
 configuration, rather than deriving it from the guest's observed value.
 `--expected-ram-mib` explicitly overrides that expectation. The DTB is copied
 and hashed with the run's other inputs. The first-read `--gdb` probe remains
 specific to the `virt` machine's load base and UART registers.
 
-Both the DTS source and compiled DTB ship with the Python tools, so running
-the model does not require `dtc` on Linux, macOS or Windows. After editing the
-description, regenerate the checked-in DTB:
+The DTS sources (including the shared `raspi3.dtsi`) and compiled DTBs ship with
+the Python tools, so running these models does not require `dtc` on Linux,
+macOS or Windows. After editing a description, regenerate the checked-in DTB:
 
 ```sh
+dtc -I dts -O dtb -o scripts/qemu/raspi3ap.dtb scripts/qemu/raspi3ap.dts
+dtc -I dts -O dtb -o scripts/qemu/raspi3b.dtb scripts/qemu/raspi3b.dts
 dtc -I dts -O dtb -o scripts/qemu/raspi4b.dtb scripts/qemu/raspi4b.dts
 ```
 
@@ -193,9 +206,12 @@ These limits describe this implementation, not Linux's full hardware coverage:
   Valid nonzero hints do not replace mappings and may fall back to the monotonic
   mmap cursor. This is not Linux ABI compatibility or a complete VM transaction model.
 - ARM64: ARMv8-A baseline, 4 KiB pages, PL011/16550 console, GICv2 or one standard
-  GICv3 redistributor region, architectural virtual timer, PSCI 0.2+ (HVC/SMC) or
+  GICv3 redistributor region, BCM2836 local/ARMCTRL interrupts, architectural virtual timer, PSCI 0.2+ (HVC/SMC) or
   spin-table startup. GICv4 strides, GICv3 range selection for Aff0 >= 16 and
-  multi-region redistributors are not implemented.
+  multi-region redistributors are not implemented. BCM support covers the four
+  architectural timer sources, mailbox-zero IPIs and the peripheral cascade;
+  PMU and the separate ARM-local timer are not implemented. BCM has no programmable
+  priorities or individual peripheral-IRQ target routing; the cascade uses the boot CPU.
 - RV64: the configured RV64 ISA baseline, Sv39/Sv48, 16550 console and PLIC.
   CPU IDs/context numbers and timer frequency come from DTB; timer/IPI/HSM use
   SBI, so Sstc is not required. AIA/IMSIC/APLIC need separate drivers.
@@ -223,7 +239,7 @@ These limits describe this implementation, not Linux's full hardware coverage:
   LOAD memory. The native exec argument/environment limit is 128 combined
   strings and 16 KiB including their terminators; excess returns E2BIG.
   This bounded profile is not general ELF or POSIX conformance.
-- No physical board has been accepted by this change. QEMU `raspi4b` results are
+- No physical board has been accepted by this change. QEMU Raspberry Pi results are
   not proof of real Raspberry Pi firmware/device behavior. Early failures may
   need a debugger if firmware did not describe a usable console.
 

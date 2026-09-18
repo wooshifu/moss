@@ -1,0 +1,7 @@
+/dts-v1/;
+/include/ "raspi3.dtsi"
+
+/ {
+    compatible = "test,raspi3ap";
+    memory@0 { device_type = "memory"; reg = <0 0 0x20000000>; };
+};

@@ -3,7 +3,7 @@
 // Provides architecture-specific interrupt controller register operations.
 //
 // What lives here (architecture-specific):
-//   - GIC register offsets (ARM64: GICv2/GICv3, runtime dispatch)
+//   - GIC and BCM2836 register offsets (ARM64, runtime dispatch)
 //   - APIC register constants and I/O APIC routing (x64)
 //   - PLIC registers and SBI IPI delivery (RISC-V 64)
 //   - Low-level init, enable/disable IRQ, ack/eoi, send SGI/IPI
@@ -51,7 +51,7 @@ inline void write_reg(VirtAddr base, u32 offset, u32 value) noexcept {
 
 #if defined(MOSS_ARCH_ARM64)
 inline u32 g_gic_cpu_masks[16]{};
-enum class GicVersion : u8 { Unknown = 0, GICv2 = 2, GICv3 = 3 };
+enum class GicVersion : u8 { Unknown = 0, BCM2836 = 1, GICv2 = 2, GICv3 = 3 };
 
 // Set once during boot from DTB detection, read-only after.
 inline GicVersion g_gic_version = GicVersion::Unknown;
@@ -65,6 +65,101 @@ inline VirtAddr g_redist_base = 0;
 // ============================================================================
 
 #if defined(MOSS_ARCH_ARM64)
+
+namespace bcm2836 {
+// BCM2836 ARM-local register map (QA7 rev 3.4) and BCM2835 ARM Peripherals §7.
+// Bases come from the DTB; offsets and the four-core register strides are hardware ABI.
+inline constexpr u32 GPU_ROUTE = 0x0C;
+inline constexpr u32 TIMER_CONTROL = 0x40;
+inline constexpr u32 MAILBOX_CONTROL = 0x50;
+inline constexpr u32 IRQ_SOURCE = 0x60;
+inline constexpr u32 MAILBOX_SET = 0x80;
+inline constexpr u32 MAILBOX_CLEAR = 0xC0;
+inline constexpr u32 PENDING_BASIC = 0x00;
+inline constexpr u32 PENDING_GPU = 0x04;
+inline constexpr u32 FIQ_CONTROL = 0x0C;
+inline constexpr u32 ENABLE_GPU = 0x10;
+inline constexpr u32 ENABLE_BASIC = 0x18;
+inline constexpr u32 DISABLE_GPU = 0x1C;
+inline constexpr u32 DISABLE_BASIC = 0x24;
+inline constexpr u32 CORE_COUNT = 4;
+inline constexpr u32 CORE_STRIDE = 4;
+inline constexpr u32 MAILBOX_STRIDE = 16; // Four mailboxes per physical core; mailbox zero carries IPIs.
+inline constexpr u32 MAILBOX_SOURCE = 1U << 4;
+inline constexpr u32 GPU_SOURCE = 1U << 8;
+
+// Preserve the generic dispatch contract: 16 software IPIs, local timer IDs
+// 16..19, GPU bank IDs 32..95 and the eight basic IRQs at 96..103.
+inline constexpr u32 IPI_COUNT = 16;
+inline constexpr u32 TIMER_BASE = 16;
+inline constexpr u32 TIMER_COUNT = 4;
+inline constexpr u32 GPU_BASE = 32;
+inline constexpr u32 BASIC_BASE = 96;
+inline constexpr u32 IRQ_COUNT = 104;
+inline u32 ipi_masks[CORE_COUNT]{}; // Only the owning CPU changes its local enable mask.
+
+[[nodiscard]] inline u32 core_id() noexcept {
+  return static_cast<u32>(platform::hardware.cpus[arch::get_current_cpu_id()].hardware_id);
+}
+
+inline void set_enabled(VirtAddr local, u32 irq, bool enable) noexcept {
+  u32 cpu = core_id();
+  if (irq < IPI_COUNT) {
+    u32 &mask = ipi_masks[arch::get_current_cpu_id()];
+    mask = enable ? mask | (1U << irq) : mask & ~(1U << irq);
+    write_reg(local, MAILBOX_CONTROL + cpu * CORE_STRIDE, mask ? 1U : 0U);
+  } else if (irq >= TIMER_BASE && irq < TIMER_BASE + TIMER_COUNT) {
+    u32 offset = TIMER_CONTROL + cpu * CORE_STRIDE;
+    u32 mask = 1U << (irq - TIMER_BASE);
+    u32 value = read_reg(local, offset);
+    write_reg(local, offset, enable ? value | mask : value & ~mask);
+  } else if (irq >= GPU_BASE && irq < IRQ_COUNT) {
+    VirtAddr shared = platform::intc_cpu_base();
+    u32 offset = irq >= BASIC_BASE ? (enable ? ENABLE_BASIC : DISABLE_BASIC)
+                                   : (enable ? ENABLE_GPU : DISABLE_GPU) + ((irq - GPU_BASE) / 32) * 4;
+    write_reg(shared, offset, 1U << ((irq - GPU_BASE) % 32));
+  }
+}
+
+[[nodiscard]] inline u32 acknowledge() noexcept {
+  VirtAddr local = platform::intc_dist_base();
+  u32 cpu = core_id();
+  u32 sources = read_reg(local, IRQ_SOURCE + cpu * CORE_STRIDE);
+  if (sources & MAILBOX_SOURCE) {
+    u32 offset = MAILBOX_CLEAR + cpu * MAILBOX_STRIDE;
+    u32 pending = read_reg(local, offset);
+    u32 enabled = pending & ipi_masks[arch::get_current_cpu_id()];
+    if (enabled) {
+      u32 irq = static_cast<u32>(intrinsics::bitops::ctz(enabled));
+      // Clear before dispatch: clearing at EOI could lose a new IPI posted by
+      // another CPU while its handler runs. Other pending IPI bits stay set.
+      write_reg(local, offset, 1U << irq);
+      asm volatile("dmb ish" ::: "memory");
+      return irq;
+    }
+    write_reg(local, offset, pending); // Disabled IPI types must not keep mailbox zero asserted.
+  }
+  u32 timers = sources & ((1U << TIMER_COUNT) - 1);
+  if (timers) {
+    return TIMER_BASE + static_cast<u32>(intrinsics::bitops::ctz(timers));
+  }
+  if (sources & GPU_SOURCE) {
+    VirtAddr shared = platform::intc_cpu_base();
+    for (u32 bank = 0; bank < 2; ++bank) {
+      u32 pending = read_reg(shared, PENDING_GPU + bank * 4);
+      if (pending) {
+        return GPU_BASE + bank * 32 + static_cast<u32>(intrinsics::bitops::ctz(pending));
+      }
+    }
+    // Basic-pending's upper bits duplicate GPU sources and are not basic IRQs.
+    u32 pending = read_reg(shared, PENDING_BASIC) & 0xFF;
+    if (pending) {
+      return BASIC_BASE + static_cast<u32>(intrinsics::bitops::ctz(pending));
+    }
+  }
+  return 1023; // Existing ARM64 spurious-IRQ sentinel; BCM has no claim register.
+}
+} // namespace bcm2836
 
 // GIC register offsets below are byte offsets from the relevant MMIO frame,
 // fixed by the Arm GIC register map rather than kernel tuning choices.
@@ -276,6 +371,9 @@ inline constexpr u32 SPURIOUS_IRQ_THRESHOLD = 0; // PLIC: claim=0 means no pendi
 /// GICD_TYPER ITLinesNumber field is the same for both GICv2 and GICv3.
 [[nodiscard]] inline u32 read_max_interrupts(VirtAddr dist_base) noexcept {
 #if defined(MOSS_ARCH_ARM64)
+  if (g_gic_version == GicVersion::BCM2836) {
+    return bcm2836::IRQ_COUNT;
+  }
   u32 typer = read_reg(dist_base, dist_regs::TYPER);
   // ITLinesNumber[4:0] encodes one less than the count of 32-interrupt banks.
   return ((typer & 0x1F) + 1) * 32;
@@ -291,7 +389,7 @@ inline constexpr u32 SPURIOUS_IRQ_THRESHOLD = 0; // PLIC: claim=0 means no pendi
 /// Read the maximum number of supported CPUs from the controller.
 [[nodiscard]] inline u32 read_max_cpus(VirtAddr dist_base) noexcept {
 #if defined(MOSS_ARCH_ARM64)
-  if (g_gic_version == GicVersion::GICv3) {
+  if (g_gic_version == GicVersion::GICv3 || g_gic_version == GicVersion::BCM2836) {
     (void)dist_base;
     return platform::hardware.cpu_count; // Enumerated from firmware, not MMIO guesses.
   }
@@ -315,6 +413,16 @@ inline constexpr u32 SPURIOUS_IRQ_THRESHOLD = 0; // PLIC: claim=0 means no pendi
 /// Disables all interrupts, clears pending, sets default priority and targets.
 inline VoidResult init_distributor(VirtAddr dist_base, u32 max_interrupts) noexcept {
 #if defined(MOSS_ARCH_ARM64)
+  if (g_gic_version == GicVersion::BCM2836) {
+    // Shared peripheral interrupts have one hardware destination, unlike GIC SPIs.
+    write_reg(dist_base, bcm2836::GPU_ROUTE, static_cast<u32>(platform::hardware.cpus[0].hardware_id));
+    VirtAddr shared = platform::intc_cpu_base();
+    write_reg(shared, bcm2836::FIQ_CONTROL, 0);
+    write_reg(shared, bcm2836::DISABLE_GPU, ~0U);
+    write_reg(shared, bcm2836::DISABLE_GPU + 4, ~0U);
+    write_reg(shared, bcm2836::DISABLE_BASIC, 0xFF);
+    return VoidResult{};
+  }
   // Enable/pending/group banks hold 32 one-bit IRQ fields per 4-byte word:
   // a bank beginning at IRQ i is therefore at i/8 bytes. Priority/target banks
   // pack four 8-bit fields; 0x80808080 gives each IRQ midpoint priority 0x80
@@ -428,6 +536,15 @@ inline VoidResult init_distributor(VirtAddr dist_base, u32 max_interrupts) noexc
 /// GICv3: ICC system registers + GICR redistributor wakeup.
 inline VoidResult init_cpu_interface(VirtAddr cpu_base) noexcept {
 #if defined(MOSS_ARCH_ARM64)
+  if (g_gic_version == GicVersion::BCM2836) {
+    VirtAddr local = platform::intc_dist_base();
+    u32 cpu = bcm2836::core_id();
+    write_reg(local, bcm2836::TIMER_CONTROL + cpu * bcm2836::CORE_STRIDE, 0);
+    write_reg(local, bcm2836::MAILBOX_CONTROL + cpu * bcm2836::CORE_STRIDE, 0);
+    write_reg(local, bcm2836::MAILBOX_CLEAR + cpu * bcm2836::MAILBOX_STRIDE, ~0U);
+    bcm2836::ipi_masks[arch::get_current_cpu_id()] = 0;
+    return VoidResult{};
+  }
   if (g_gic_version == GicVersion::GICv3) {
     // 1. Enable SRE at EL1 (should already be set from EL2 setup in start_arm64.S)
     u32 sre = icc::read_sre();
@@ -502,6 +619,10 @@ inline VoidResult init_cpu_interface(VirtAddr cpu_base) noexcept {
 /// GICv3: SGI/PPI (irq < 32) use GICR, SPI (irq >= 32) use GICD.
 inline void enable_irq(VirtAddr dist_base, u32 irq) noexcept {
 #if defined(MOSS_ARCH_ARM64)
+  if (g_gic_version == GicVersion::BCM2836) {
+    bcm2836::set_enabled(dist_base, irq, true);
+    return;
+  }
   if (g_gic_version == GicVersion::GICv3 && irq < 32) {
     VirtAddr my_redist = find_my_redist_frame();
     if (!my_redist) {
@@ -545,6 +666,10 @@ inline void enable_irq(VirtAddr dist_base, u32 irq) noexcept {
 /// Disable a specific interrupt line.
 inline void disable_irq(VirtAddr dist_base, u32 irq) noexcept {
 #if defined(MOSS_ARCH_ARM64)
+  if (g_gic_version == GicVersion::BCM2836) {
+    bcm2836::set_enabled(dist_base, irq, false);
+    return;
+  }
   if (g_gic_version == GicVersion::GICv3 && irq < 32) {
     VirtAddr my_redist = find_my_redist_frame();
     if (!my_redist) {
@@ -590,6 +715,9 @@ inline void disable_irq(VirtAddr dist_base, u32 irq) noexcept {
 /// Returns the raw acknowledge register value (contains IRQ ID + source info).
 [[nodiscard]] inline u32 ack_irq(VirtAddr cpu_base) noexcept {
 #if defined(MOSS_ARCH_ARM64)
+  if (g_gic_version == GicVersion::BCM2836) {
+    return bcm2836::acknowledge();
+  }
   if (g_gic_version == GicVersion::GICv3) {
     return icc::read_iar1();
   }
@@ -624,6 +752,9 @@ inline void disable_irq(VirtAddr dist_base, u32 irq) noexcept {
 /// Signal end-of-interrupt to the controller.
 inline void eoi(VirtAddr cpu_base, u32 ack_value) noexcept {
 #if defined(MOSS_ARCH_ARM64)
+  if (g_gic_version == GicVersion::BCM2836) {
+    return; // Mailboxes clear at acknowledge; timer/UART handlers deassert their level sources.
+  }
   if (g_gic_version == GicVersion::GICv3) {
     icc::write_eoir1(ack_value);
     return;
@@ -650,6 +781,9 @@ inline void eoi(VirtAddr cpu_base, u32 ack_value) noexcept {
 /// We must read-modify-write to avoid corrupting adjacent IRQ priorities.
 inline void set_priority(VirtAddr dist_base, u32 irq, u8 priority) noexcept {
 #if defined(MOSS_ARCH_ARM64)
+  if (g_gic_version == GicVersion::BCM2836) {
+    return; // BCM2836 has no programmable interrupt priorities.
+  }
   // For GICv3, SGI/PPI priorities are in the redistributor, but we use
   // the same offset calculation — the base differs for irq < 32.
   VirtAddr base = dist_base;
@@ -686,6 +820,9 @@ inline void set_priority(VirtAddr dist_base, u32 irq, u8 priority) noexcept {
 /// GICv3: IROUTER with 64-bit affinity routing per SPI.
 inline void set_target(VirtAddr dist_base, u32 irq, u32 cpu_mask) noexcept {
 #if defined(MOSS_ARCH_ARM64)
+  if (g_gic_version == GicVersion::BCM2836) {
+    return; // Per-IRQ routing is unsupported; the shared cascade stays on the boot CPU.
+  }
   if (g_gic_version == GicVersion::GICv3) {
     if (irq < 32) {
       return; // SGI/PPI have no target routing in GICv3
@@ -731,6 +868,9 @@ inline void set_target(VirtAddr dist_base, u32 irq, u32 cpu_mask) noexcept {
 /// GIC admits priorities below PMR; PLIC admits priorities above its threshold.
 inline void set_priority_mask(VirtAddr cpu_base, u8 mask) noexcept {
 #if defined(MOSS_ARCH_ARM64)
+  if (g_gic_version == GicVersion::BCM2836) {
+    return; // IRQ masking uses per-source controls or architectural DAIF, not a priority threshold.
+  }
   if (g_gic_version == GicVersion::GICv3) {
     icc::write_pmr(mask);
     return;
@@ -761,6 +901,19 @@ inline VoidResult send_sgi(VirtAddr dist_base, [[maybe_unused]] VirtAddr cpu_bas
 #if defined(MOSS_ARCH_ARM64)
   if (sgi_id >= 16) {
     return VoidResult{ErrorCode::InvalidParameter};
+  }
+
+  if (g_gic_version == GicVersion::BCM2836) {
+    // Publish shared data before setting a mailbox bit. Hardware set/clear
+    // aliases coalesce repeated IPIs of the same type without overwriting others.
+    asm volatile("dmb ishst" ::: "memory");
+    for (u32 cpu = 0; cpu < platform::hardware.cpu_count; ++cpu) {
+      if (target_cpu_mask & (1U << cpu)) {
+        u32 physical = static_cast<u32>(platform::hardware.cpus[cpu].hardware_id);
+        write_reg(dist_base, bcm2836::MAILBOX_SET + physical * bcm2836::MAILBOX_STRIDE, 1U << sgi_id);
+      }
+    }
+    return VoidResult{};
   }
 
   if (g_gic_version == GicVersion::GICv3) {
