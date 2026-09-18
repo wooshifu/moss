@@ -2,6 +2,7 @@ import json
 import struct
 import subprocess
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -45,6 +46,49 @@ def test_manifest_drives_normal_debug_and_validation_without_cmake(tmp_path):
     assert validation[validation.index("-kernel") + 1] == str(tmp_path / "test.Image")
     assert validation[validation.index("-initrd") + 1] == str(tmp_path / "test.initrd")
     assert not any("semihost" in arg or "isa-debug-exit" in arg or "loader," in arg for arg in validation)
+
+
+@pytest.mark.parametrize(
+    ("host", "directory", "writable", "free_mib", "extra", "machine", "automatic"),
+    [
+        ("linux", True, True, 2048, [], None, True),
+        ("darwin", True, True, 2048, [], None, False),
+        ("win32", True, True, 2048, [], None, False),
+        ("linux", False, True, 2048, [], None, False),
+        ("linux", True, False, 2048, [], None, False),
+        ("linux", True, True, 2047, [], None, False),
+        ("linux", True, True, 2048, ["-mem-path", "/custom/ram"], None, False),
+        ("linux", True, True, 2048, ["-mem-path=/custom/ram"], None, False),
+        ("linux", True, True, 2048, ["-object", "memory-backend-memfd,id=ram,size=2G"], None, False),
+        ("linux", True, True, 2048, ["-numa", "node,memdev=ram"], None, False),
+        ("linux", True, True, 2048, [], "virt,memory-backend=ram", False),
+        ("linux", True, True, None, [], None, False),
+    ],
+)
+def test_qemu_ram_backend_is_host_safe(
+    tmp_path, monkeypatch, host, directory, writable, free_mib, extra, machine, automatic
+):
+    artifacts = Artifacts.load(manifest(tmp_path))
+    monkeypatch.setattr("qemu.sys.platform", host)
+    monkeypatch.setattr("qemu.Path.is_dir", lambda _: directory)
+    monkeypatch.setattr("qemu.os.access", lambda _path, _mode: writable)
+
+    def disk_usage(path):
+        assert host == "linux" and path == Path("/dev/shm")
+        if free_mib is None:
+            raise OSError("shared memory unavailable")
+        return SimpleNamespace(free=free_mib * 1024**2)
+
+    monkeypatch.setattr("qemu.shutil.disk_usage", disk_usage)
+    for validation in (False, True):
+        args = build_qemu_args(artifacts, machine=machine, validation=validation, extra_args=extra)
+        if automatic:
+            assert args[-2:] == ["-mem-path", "/dev/shm"]
+        else:
+            assert "/dev/shm" not in args
+        assert args.count("-mem-path") == (automatic or "-mem-path" in extra)
+        if extra:
+            assert args[-len(extra) :] == extra
 
 
 @pytest.mark.parametrize("value", ["/tmp/image", "../image", "", None, 4])

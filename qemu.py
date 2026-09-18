@@ -1,9 +1,11 @@
 #!/usr/bin/env python3
 """Run an existing kernel image. All emulator policy lives here, not in CMake."""
 
+import os
 import shlex
 import shutil
 import subprocess
+import sys
 from pathlib import Path
 from typing import Annotated
 
@@ -93,6 +95,22 @@ def build_qemu_args(
         if not dtb.is_file():
             raise ValueError(f"DTB does not exist: {dtb}")
         args += ["-dtb", str(dtb.resolve())]
+    # Sparse buddy-list writes can stall on host THP allocation/compaction.
+    # Require room for all guest RAM: exhausting a tmpfs backing can SIGBUS QEMU.
+    if sys.platform == "linux" and not any(
+        arg.startswith("-mem-path") or "memory-backend" in arg or "memdev=" in arg
+        for arg in [selected, *(extra_args or [])]
+    ):
+        shm_path = Path("/dev/shm")
+        try:
+            if (
+                shm_path.is_dir()
+                and os.access(shm_path, os.W_OK | os.X_OK)
+                and shutil.disk_usage(shm_path).free >= memory_mib * 1024**2
+            ):
+                args += ["-mem-path", str(shm_path)]
+        except OSError:
+            pass
     if debug_mode:
         args += ["-s", "-S"]
     return args + (extra_args or [])
