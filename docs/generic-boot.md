@@ -84,6 +84,13 @@ select the execution environment. Additional QEMU options follow `--`.
 `--dry-run` prints the invocation; `--timeout` bounds an interactive smoke run
 (timeout exit status 124 is not a kernel success result).
 
+On Linux, the runner automatically adds `-mem-path /dev/shm` when that directory
+is writable and has enough free space for the requested guest RAM. This avoids
+host transparent-hugepage allocation stalls during physical allocator startup.
+If unavailable, or on macOS/Windows, QEMU uses its default RAM allocation.
+Explicit memory paths/backends take precedence, for example
+`-- -mem-path /custom/ram`.
+
 `--debug` adds QEMU's GDB server and initial pause (`-s -S`) while booting the
 **same image through the same loader**, not a separately loaded ELF. Connect GDB
 to `localhost:1234`. For x86 use the manifest's ELF directly. For ARM64/RV64,
