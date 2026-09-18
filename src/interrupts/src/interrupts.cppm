@@ -30,7 +30,7 @@ namespace log = moss::kernel::logging;
 // ========================================================================
 
 // GIC version
-enum class GicVersion : u8 { GICv2 = 2, GICv3 = 3, Unknown = 0 };
+enum class GicVersion : u8 { BCM2836 = 1, GICv2 = 2, GICv3 = 3, Unknown = 0 };
 
 // Interrupt type
 enum class InterruptType : u8 {
@@ -130,9 +130,9 @@ public:
   }
 
   /// Three-argument initialize with GIC version hint from DTB.
-  /// @param dist_base      GICD base address (same for v2 and v3)
-  /// @param second_base    GICv2: GICC CPU interface; GICv3: GICR redistributor base
-  /// @param gic_version_hint  2 for GICv2, 3 for GICv3/v4 (from DTB)
+  /// @param dist_base      GICD or BCM2836 ARM-local base address
+  /// @param second_base    GICv2: GICC; GICv3: GICR; BCM2836: cascaded ARMCTRL
+  /// @param gic_version_hint  Legacy tag: 1 for BCM2836, 2 for GICv2, 3 for GICv3.
   [[nodiscard]] VoidResult initialize(VirtAddr dist_base, VirtAddr second_base, u8 gic_version_hint) noexcept {
     distributor_base_ = dist_base;
 
@@ -260,6 +260,10 @@ public:
       return VoidResult{ErrorCode::NotSupported};
     }
 
+    if (version_ == GicVersion::BCM2836) {
+      return VoidResult{ErrorCode::NotSupported}; // ARMCTRL routes its entire cascade, never individual IRQs.
+    }
+
     ::moss::kernel::hal::intc::set_target(distributor_base_, irq, cpu_mask);
 
     auto desc_ptr = interrupt_table_.find(irq);
@@ -341,7 +345,11 @@ private:
     // GICD_PIDR2 (offset 0xFFE8) is only reliably accessible on GICv3/v4
     // distributors; QEMU GICv2 does not map that offset and will abort.
     // So we only read PIDR2 as a sanity check when the hint says v3+.
-    if (gic_version_hint >= 3) {
+    if (gic_version_hint == 1) {
+      version_ = GicVersion::BCM2836;
+      hal::g_gic_version = hal::GicVersion::BCM2836;
+      log::klog::info("Interrupt controller: BCM2836 local + ARMCTRL");
+    } else if (gic_version_hint >= 3) {
       u32 pidr2 = hal::read_reg(distributor_base_, hal::dist_regs::PIDR2);
       u8 arch_rev = static_cast<u8>((pidr2 >> 4) & 0xF);
 

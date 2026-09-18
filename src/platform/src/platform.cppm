@@ -34,15 +34,15 @@ struct UartInfo {
   bool valid;
 };
 
-/// 中断控制器信息（GIC / PLIC）
+/// 中断控制器信息（GIC / BCM2836 / PLIC）
 struct InterruptControllerInfo {
-  PhysAddr dist_base;   // GIC distributor 或 PLIC 基地址
-  PhysAddr cpu_base;    // GICv2: GICC CPU interface; GICv3: unused (0)
+  PhysAddr dist_base;   // GIC distributor、BCM2836 local controller 或 PLIC
+  PhysAddr cpu_base;    // GICv2: GICC; BCM2836: cascaded ARMCTRL; GICv3: unused
   PhysAddr redist_base; // GICv3: GICR redistributor base (0 for GICv2/PLIC)
   u64 dist_size;
   u64 cpu_size;
   u64 redist_size; // GICv3: GICR region size
-  u8 gic_version;  // 0=unknown/PLIC, 2=GICv2, 3=GICv3/v4
+  u8 gic_version;  // Legacy controller tag: 0=unknown/PLIC, 1=BCM2836, 2=GICv2, 3=GICv3.
   bool valid;
 };
 

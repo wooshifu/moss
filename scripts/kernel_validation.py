@@ -24,13 +24,14 @@ if __package__ in (None, ""):
 
 from qemu import (
     ARCH_CONFIG,
-    RASPI4B_FIRMWARE_RAM_MIB,
+    RASPI_CONFIG,
     TCG_CACHE_MIB,
     build_qemu_args,
     get_qemu_version,
     resolve_dtb,
     resolve_machine,
     resolve_qemu,
+    resolve_resources,
 )
 from scripts.artifacts import Artifacts
 from scripts.qemu_diagnostics import capture_failure, qmp_session
@@ -1006,7 +1007,7 @@ def run(
     baseline: Annotated[Path | None, typer.Option()] = None,
     cpus: int = 4,
     host_cpus: str | None = None,
-    memory_mib: int = 2048,
+    memory_mib: int | None = None,
     expected_ram_mib: int | None = None,
     warmup: int = 5,
     samples: int = 30,
@@ -1060,11 +1061,12 @@ def run(
         if value is not None
     ):
         raise typer.BadParameter("deadlines must be positive")
+    cfg = Artifacts.load(manifest)
+    cpu, memory_mib = resolve_resources(cfg.arch, machine, cpu, memory_mib)
     if expected_ram_mib is None:
-        expected_ram_mib = RASPI4B_FIRMWARE_RAM_MIB if machine and machine.split(",")[0] == "raspi4b" else memory_mib
+        expected_ram_mib = RASPI_CONFIG.get((machine or "").split(",")[0], {}).get("firmware_ram_mib", memory_mib)
     if not 256 <= expected_ram_mib <= memory_mib:
         raise typer.BadParameter("expected firmware RAM must be between 256 MiB and installed RAM")
-    cfg = Artifacts.load(manifest)
     dtb = resolve_dtb(cfg.arch, machine, dtb)
     if "users.simd_fault" in selected and cfg.arch != "X64":
         raise typer.BadParameter("users.simd_fault requires x64")

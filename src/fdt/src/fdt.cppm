@@ -191,7 +191,7 @@ static bool read_reg(const void *fdt, int node, u32 index, u64 &base, u64 &size)
 }
 
 static u32 interrupt_number(const void *fdt, int node, u32 index = 0) noexcept {
-  // 支持 PLIC 的单 cell 源编号及 GIC 的三 cell 类型/编号/标志布局。
+  // 支持 PLIC 单 cell、BCM 两 cell 以及 GIC 三 cell 中断布局。
   // GIC 类型 0=SPI、1=PPI，编号分别相对 INTID 32/16 起算，SGI 占 0..15。
   int parent_node = node;
   u32 phandle = 0;
@@ -200,7 +200,7 @@ static u32 interrupt_number(const void *fdt, int node, u32 index = 0) noexcept {
   }
   int controller = fdt_node_offset_by_phandle(fdt, phandle);
   u32 cells = 0;
-  if (controller < 0 || !property_u32(fdt, controller, "#interrupt-cells", cells) || (cells != 1 && cells != 3)) {
+  if (controller < 0 || !property_u32(fdt, controller, "#interrupt-cells", cells) || cells < 1 || cells > 3) {
     return 0;
   }
   int length = 0;
@@ -214,6 +214,18 @@ static u32 interrupt_number(const void *fdt, int node, u32 index = 0) noexcept {
     return first;
   }
   u32 number = static_cast<u32>(read_cells_value(data, 1));
+  if (cells == 2) {
+    // HAL IDs reserve 0..15 for mailbox IPIs, 16..27 for local sources,
+    // 32..95 for GPU banks 1/2, and 96..103 for ARMCTRL's eight basic IRQs.
+    if (compatible_match(fdt, controller, "brcm,bcm2836-l1-intc")) {
+      return first < 12 ? 16 + first : 0;
+    }
+    if (compatible_match(fdt, controller, "brcm,bcm2836-armctrl-ic")) {
+      return first == 0 ? (number < 8 ? 96 + number : 0)
+                        : (first <= 2 && number < 32 ? 32 + (first - 1) * 32 + number : 0);
+    }
+    return 0;
+  }
   return first <= 1 ? number + (first == 0 ? 32 : 16) : 0;
 }
 
@@ -430,11 +442,11 @@ static void parse_uart(const void *fdt) noexcept {
   uart.valid = true;
 }
 
-/// 解析中断控制器节点（ARM GIC / RISC-V 64 PLIC）
+/// 解析中断控制器节点（ARM GIC / BCM2836 / RISC-V 64 PLIC）
 static void parse_intc(const void *fdt) noexcept {
   int intc_node = -1;
   int offset = -1;
-  u8 detected_version = 0; // 0=unknown/PLIC, 2=GICv2, 3=GICv3/v4
+  u8 detected_version = 0; // 0=unknown/PLIC, 1=BCM2836, 2=GICv2, 3=GICv3
 
   // 查找已知的中断控制器 compatible 字符串
   // Check GICv3 first — a GICv3 node must not be misidentified as v2
@@ -455,6 +467,11 @@ static void parse_intc(const void *fdt) noexcept {
     if (compatible_match(fdt, offset, "arm,cortex-a15-gic") || compatible_match(fdt, offset, "arm,gic-400")) {
       intc_node = offset;
       detected_version = 2;
+      break;
+    }
+    if (compatible_match(fdt, offset, "brcm,bcm2836-l1-intc")) {
+      intc_node = offset;
+      detected_version = 1;
       break;
     }
     if (compatible_match(fdt, offset, "riscv64,plic0") || compatible_match(fdt, offset, "sifive,plic-1.0.0")) {
@@ -484,6 +501,27 @@ static void parse_intc(const void *fdt) noexcept {
     (void)property_u32(fdt, intc_node, "#redistributor-regions", regions);
     if (regions != 1 || (stride && (length != 8 || read_fdt64_unaligned(stride) != 0x20000)) ||
         intc.redist_size < 0x20000) {
+      return;
+    }
+  } else if (detected_version == 1) {
+    // BCM2836 has four physical core slots and cascades ARMCTRL through local
+    // source 8. Both DTB windows must cover every register the HAL accesses.
+    if (intc.dist_size < 0x100 || !g_platform_info.cpu_count || g_platform_info.cpu_count > 4) {
+      return;
+    }
+    for (u32 cpu = 0; cpu < g_platform_info.cpu_count; ++cpu) {
+      if (g_platform_info.cpus[cpu].hardware_id >= 4) {
+        return;
+      }
+    }
+    int armctrl = -1;
+    while ((armctrl = fdt_node_offset_by_compatible(fdt, armctrl, "brcm,bcm2836-armctrl-ic")) >= 0) {
+      if (enabled(fdt, armctrl)) {
+        break;
+      }
+    }
+    if (armctrl < 0 || interrupt_number(fdt, armctrl) != 16 + 8 ||
+        !read_reg(fdt, armctrl, 0, intc.cpu_base, intc.cpu_size) || intc.cpu_size < 0x28) {
       return;
     }
   } else if (detected_version == 2) {

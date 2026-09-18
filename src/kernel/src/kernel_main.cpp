@@ -221,12 +221,11 @@ void irq_handler_c(void) noexcept {
     return; // EOI already sent above
   }
 
-  // Timer PPI (IRQ 27): per-CPU timer interrupt.
+  // Firmware/controller dispatch selects the timer ID (GIC and BCM differ).
   // Each CPU has its own banked cntv_cval_el0 compare register.
   // We must reprogram THIS CPU's compare before dispatching, because
   // TimerSubsystem::handle_interrupt() may context_switch and never return.
-  constexpr u32 TIMER_PPI_IRQ = 27;
-  if (irq == TIMER_PPI_IRQ) {
+  if (irq == ::moss::kernel::platform::timer_irq()) {
     timer_hal::ack_interrupt();
 
     // Reprogram THIS CPU's timer compare for the next tick interval.
