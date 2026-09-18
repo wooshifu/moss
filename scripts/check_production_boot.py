@@ -16,24 +16,47 @@ from pathlib import Path
 if __package__ in (None, ""):
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from qemu import build_qemu_args, resolve_qemu
+from qemu import build_qemu_args, resolve_dtb, resolve_qemu
 from scripts.artifacts import Artifacts
 
 
-def run(cfg: Artifacts, output: Path, timeout: float = 30, *, gdb: str | None = None) -> dict:
-    if gdb and (cfg.arch != "ARM64" or cfg.build["type"] != "Debug"):
-        raise ValueError("controlled first-read input requires ARM64 Debug")
+def run(
+    cfg: Artifacts,
+    output: Path,
+    timeout: float = 30,
+    *,
+    gdb: str | None = None,
+    machine: str | None = None,
+    dtb: Path | None = None,
+) -> dict:
+    # The first-read barrier below uses virt's Image load base and PL011 registers.
+    if gdb and (
+        cfg.arch != "ARM64"
+        or cfg.build["type"] != "Debug"
+        or (machine and not machine.split(",")[0].startswith("virt"))
+    ):
+        raise ValueError("controlled first-read input requires ARM64 Debug on virt")
+    dtb = resolve_dtb(cfg.arch, machine, dtb)
     output.mkdir(parents=True, exist_ok=False)
     files, hashes = dict(cfg.files), {"probe": hashlib.sha256(Path(__file__).read_bytes()).hexdigest()}
-    for key in ("kernel", "initramfs") + (("debug_symbols",) if gdb else ()):
-        source = cfg.require(key)
+    sources = {key: cfg.require(key) for key in ("kernel", "initramfs") + (("debug_symbols",) if gdb else ())}
+    if dtb is not None:
+        sources["dtb"] = dtb
+    for key, source in sources.items():
         before = hashlib.sha256(source.read_bytes()).hexdigest()
         target = output / f"{key}-{source.name}"
         shutil.copy2(source, target)
         if hashlib.sha256(target.read_bytes()).hexdigest() != before:
             raise ValueError("production artifact changed during copy")
         files[key], hashes[key] = target, before
-    args = build_qemu_args(replace(cfg, files=files), qemu=resolve_qemu(cfg.arch), smp=4, memory_mib=2048)
+    args = build_qemu_args(
+        replace(cfg, files=files),
+        qemu=resolve_qemu(cfg.arch),
+        smp=4,
+        memory_mib=2048,
+        machine=machine,
+        dtb=files.get("dtb"),
+    )
     capture = output / "console-input.gdb"
     if gdb:
         with socket.socket() as port:
@@ -182,12 +205,14 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--manifest", type=Path, required=True)
     parser.add_argument("--gdb", help="ARM64 Debug: inject input at the first VFS read before it can initialize RX")
+    parser.add_argument("--machine", help="QEMU machine (defaults to the architecture's normal machine)")
+    parser.add_argument("--dtb", type=Path, help="Override the machine's device tree")
     options = parser.parse_args()
     cfg = Artifacts.load(options.manifest)
     root = cfg.manifest.parent / "production-boot"
     root.mkdir(exist_ok=True)
     directory = Path(tempfile.mkdtemp(prefix="run-", dir=root)) / "guest"
-    result = run(cfg, directory, gdb=options.gdb)
+    result = run(cfg, directory, gdb=options.gdb, machine=options.machine, dtb=options.dtb)
     print(f"{cfg.arch}: {result['status']} ({result['observed']})\n{directory / 'results.json'}")
     return int(result["status"] != "passed")
 

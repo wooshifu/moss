@@ -20,6 +20,22 @@ ARCH_CONFIG = {
 }
 
 
+# Validation fork/exec can grow each guest's default cache to 1 GiB of host RAM.
+TCG_CACHE_MIB = 64
+
+# QEMU's raspi.c direct loader exposes the lower 1 GiB minus 64 MiB VideoCore RAM.
+RASPI4B_FIRMWARE_RAM_MIB = 960
+
+
+def resolve_dtb(arch: str, machine: str | None, dtb: Path | None) -> Path | None:
+    if machine and machine.split(",")[0] == "raspi4b":
+        if arch != "ARM64":
+            raise ValueError("raspi4b requires an ARM64 image")
+        # Unlike virt, raspi4b needs an external DTB; bundling it avoids a host dtc dependency.
+        return dtb if dtb is not None else Path(__file__).resolve().parent / "scripts/qemu/raspi4b.dtb"
+    return dtb
+
+
 def resolve_machine(arch: str, *, smp: int, machine: str | None = None) -> str:
     selected = machine or ARCH_CONFIG[arch]["machine"]
     if arch == "ARM64" and selected.split(",")[0] == "virt" and "gic-version=" not in selected:
@@ -59,8 +75,9 @@ def build_qemu_args(
     if memory_mib < 256:
         raise ValueError("at least 256 MiB RAM is required")
     selected = resolve_machine(artifacts.arch, smp=smp, machine=machine)
-    if selected.split(",")[0] == "raspi4b" and (dtb is None or smp != 4 or memory_mib != 2048):
-        raise ValueError("raspi4b requires --dtb, 4 CPUs and 2048 MiB")
+    dtb = resolve_dtb(artifacts.arch, selected, dtb)
+    if selected.split(",")[0] == "raspi4b" and (smp != 4 or memory_mib != 2048):
+        raise ValueError("raspi4b requires 4 CPUs and 2048 MiB")
     image = artifacts.require("validation_kernel" if validation else "kernel")
     args = [
         qemu or ARCH_CONFIG[artifacts.arch]["qemu_system"],
@@ -79,7 +96,7 @@ def build_qemu_args(
         "-m",
         f"{memory_mib}M",
         "-accel",
-        "tcg",
+        f"tcg,tb-size={TCG_CACHE_MIB}" if validation else "tcg",
         "-kernel",
         str(image),
         "-no-reboot",

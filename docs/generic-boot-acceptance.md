@@ -117,3 +117,31 @@ change hashes; each new acceptance run must compare its own recorded hashes.
 No physical device, arbitrary SoC layout, unimplemented driver, x2APIC/AIA, or
 UEFI-native boot path is accepted here. See the explicit
 [implementation limits](generic-boot.md#current-implementation-limits).
+
+
+## Default raspi4b profile — 2026-09-18
+
+Verified with QEMU 11.1.1 TCG on Linux x86_64. Selecting `--machine raspi4b`
+uses the bundled model DTB, four Cortex-A72 CPUs and 2048 MiB installed RAM.
+The loader describes 960 MiB RAM; every functional guest reported four online
+CPUs (`online_mask=15`) and that exact RAM size. No kernel rebuild was needed.
+
+| Build | Interactive production shell | Functional suites | Framework self-checks |
+| --- | --- | --- | --- |
+| ARM64 Debug | All 11 probe steps pass | All 23 pass | All four pass |
+| ARM64 Release | All 11 probe steps pass | All 23 pass | Not repeated |
+
+Reports are relative to `build/arm64-<mode>/`:
+
+- Debug shell: `production-boot/run-uuu006au/guest/results.json`.
+- Release shell: `production-boot/run-icnsmhm6/guest/results.json`.
+- Debug functional: `validation/1789716419109135193/results.json`.
+- Release functional: `validation/1789716418678117883/results.json`.
+- Debug framework: `validation/1789716522778962340/results.json`.
+
+The Debug validation image SHA-256 is
+`4090e8a070b699227961730a1f069e721ea8367aac8ce8bd2021b70c66282b61`,
+identical to the `virt` resources run `validation/1789716534034119254/results.json`.
+The default DTB was copied into each run and its input hash recorded. Wheel
+contents and an extracted-wheel CLI invocation verified that the model inputs
+are distributed; the compiled DTB also matched its checked-in DTS source.

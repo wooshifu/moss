@@ -91,6 +91,19 @@ If unavailable, or on macOS/Windows, QEMU uses its default RAM allocation.
 Explicit memory paths/backends take precedence, for example
 `-- -mem-path /custom/ram`.
 
+For validation kernels, the shared runner also adds `-accel tcg,tb-size=64` on
+all hosts, including for CTest. This caps the TCG code cache at 64 MiB per guest
+instead of allowing it to grow to QEMU's default maximum of 1 GiB during
+repeated exec workloads.
+`-mem-path` only changes guest RAM backing; it does not cover the TCG cache.
+Neither option changes the host's transparent-hugepage settings.
+
+Each parallel PFA exhaustion test touches its full requested RAM. Limit
+simultaneous workflows with `build.py --jobs 2` when host memory is tight:
+CTest's `RUN_SERIAL` only serializes tests within one CTest process, not across
+different preset workflows. The shared-memory space check does not reserve RAM
+across those processes.
+
 `--debug` adds QEMU's GDB server and initial pause (`-s -S`) while booting the
 **same image through the same loader**, not a separately loaded ELF. Connect GDB
 to `localhost:1234`. For x86 use the manifest's ELF directly. For ARM64/RV64,
@@ -112,21 +125,35 @@ uv run scripts/kernel_validation.py run --manifest build/arm64-debug/moss-artifa
   --machine virt,gic-version=3 --cpus 16 --memory-mib 1024 --workload resources
 ```
 
-The repository includes a **synthetic QEMU test description**, not a production
-Raspberry Pi firmware DTB. It exercises a genuinely different ARM64 memory map,
-bus `ranges` translation, UART/GIC resources and spin-table CPU startup:
+The runner includes a **synthetic QEMU `raspi4b` device tree**, not a production
+Raspberry Pi firmware DTB. It supplies a different ARM64 memory map,
+bus `ranges` translation, UART/GIC resources and spin-table CPU startup.
+QEMU 11 supports this model with four Cortex-A72 CPUs and 2048 MiB installed RAM.
+Selecting the machine uses the bundled DTB automatically; `--dtb` overrides it:
 
 ```sh
-dtc -I dts -O dtb -o build/arm64-debug/raspi4b-test.dtb scripts/tests/fixtures/raspi4b.dts
+uv run qemu.py --manifest build/arm64-debug/moss-artifacts.json --machine raspi4b
+uv run scripts/check_production_boot.py --manifest build/arm64-debug/moss-artifacts.json \
+  --machine raspi4b
 uv run scripts/kernel_validation.py run --manifest build/arm64-debug/moss-artifacts.json \
-  --machine raspi4b --dtb build/arm64-debug/raspi4b-test.dtb --expected-ram-mib 960
+  --machine raspi4b
 ```
 
 No rebuild occurs between these invocations. This QEMU model requires 4 CPUs and
 2048 MiB installed RAM; its direct-kernel loader describes 960 MiB to the guest.
-`--expected-ram-mib 960` makes that expectation explicit and recorded, instead of
-silently reducing an assertion to whatever the guest reports. Use the same
-`qemu.py` options (without `--expected-ram-mib`) to boot the normal shell image.
+The validation runner records this fixed expected RAM from the model's
+configuration, rather than deriving it from the guest's observed value.
+`--expected-ram-mib` explicitly overrides that expectation. The DTB is copied
+and hashed with the run's other inputs. The first-read `--gdb` probe remains
+specific to the `virt` machine's load base and UART registers.
+
+Both the DTS source and compiled DTB ship with the Python tools, so running
+the model does not require `dtc` on Linux, macOS or Windows. After editing the
+description, regenerate the checked-in DTB:
+
+```sh
+dtc -I dts -O dtb -o scripts/qemu/raspi4b.dtb scripts/qemu/raspi4b.dts
+```
 
 Compare `provenance` image hashes in the saved `results.json` files, not just their
 filenames. The runner records the actual machine, resources, CPU, DTB hash and

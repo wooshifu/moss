@@ -23,7 +23,16 @@ from pydantic import BaseModel, ConfigDict
 if __package__ in (None, ""):
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from qemu import ARCH_CONFIG, build_qemu_args, get_qemu_version, resolve_machine, resolve_qemu
+from qemu import (
+    ARCH_CONFIG,
+    RASPI4B_FIRMWARE_RAM_MIB,
+    TCG_CACHE_MIB,
+    build_qemu_args,
+    get_qemu_version,
+    resolve_dtb,
+    resolve_machine,
+    resolve_qemu,
+)
 from scripts.artifacts import Artifacts
 
 CATALOG = {
@@ -1057,10 +1066,12 @@ def run(
         if value is not None
     ):
         raise typer.BadParameter("deadlines must be positive")
-    expected_ram_mib = memory_mib if expected_ram_mib is None else expected_ram_mib
+    if expected_ram_mib is None:
+        expected_ram_mib = RASPI4B_FIRMWARE_RAM_MIB if machine and machine.split(",")[0] == "raspi4b" else memory_mib
     if not 256 <= expected_ram_mib <= memory_mib:
         raise typer.BadParameter("expected firmware RAM must be between 256 MiB and installed RAM")
     cfg = Artifacts.load(manifest)
+    dtb = resolve_dtb(cfg.arch, machine, dtb)
     if "users.simd_fault" in selected and cfg.arch != "X64":
         raise typer.BadParameter("users.simd_fault requires x64")
     build = cfg.manifest.parent
@@ -1109,6 +1120,7 @@ def run(
         },
         "settings": settings,
         "accelerator": "tcg",
+        "tcg_cache_mib": TCG_CACHE_MIB,
         "clock_policy": 1,
         "fixture_sha256": sha256(cfg.require("validation_initramfs")),
         "dtb_sha256": sha256(dtb) if dtb else None,
