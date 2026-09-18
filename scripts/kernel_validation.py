@@ -7,7 +7,6 @@ import os
 import platform
 import shutil
 import signal
-import socket
 import statistics
 import subprocess
 import sys
@@ -34,6 +33,7 @@ from qemu import (
     resolve_qemu,
 )
 from scripts.artifacts import Artifacts
+from scripts.qemu_diagnostics import capture_failure, qmp_session
 
 CATALOG = {
     "resources": ["cpu_memory"],
@@ -549,61 +549,24 @@ def sha256(path: Path) -> str:
 
 def pin_vcpus(path: Path, process: subprocess.Popen, host_cpus: list[int], deadline: float) -> list[dict]:
     """Pin only this paused QEMU's vCPU threads, verify, then resume via QMP."""
-    with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as client:
-        while True:
-            if process.poll() is not None or time.monotonic() >= deadline:
-                raise ValueError("QMP startup failed or timed out")
-            client.settimeout(max(0.001, deadline - time.monotonic()))
-            try:
-                client.connect(str(path))
-                break
-            except (FileNotFoundError, ConnectionRefusedError):
-                time.sleep(0.01)
-        with client.makefile("rwb") as stream:
-
-            def receive():
-                client.settimeout(max(0.001, deadline - time.monotonic()))
-                line = stream.readline(2**20)
-                if not line.endswith(b"\n") or time.monotonic() >= deadline:
-                    raise ValueError("incomplete or timed-out QMP response")
-                return load_json(line)
-
-            if "QMP" not in receive():
-                raise ValueError("missing QMP greeting")
-
-            def command(name):
-                stream.write(json.dumps({"execute": name, "id": name}).encode() + b"\n")
-                stream.flush()
-                while True:
-                    response = receive()
-                    if "event" in response:
-                        continue
-                    if response.get("id") != name or "return" not in response:
-                        raise ValueError(f"QMP {name} failed: {response}")
-                    return response["return"]
-
-            command("qmp_capabilities")
-            cpus = command("query-cpus-fast")
-            if (
-                not isinstance(cpus, list)
-                or len(cpus) != len(host_cpus)
-                or not all(isinstance(cpu, dict) for cpu in cpus)
-            ):
-                raise ValueError("QMP vCPU count mismatch")
-            if len({integer(cpu, "thread-id", 1) for cpu in cpus}) != len(cpus):
-                raise ValueError("QMP vCPUs do not have independent host threads")
-            cpus = sorted(cpus, key=lambda cpu: integer(cpu, "cpu-index"))
-            bindings = []
-            for index, cpu in enumerate(cpus):
-                tid = integer(cpu, "thread-id", 1)
-                if cpu["cpu-index"] != index or not Path(f"/proc/{process.pid}/task/{tid}").exists():
-                    raise ValueError("QMP vCPU identity is not owned by this guest")
-                os.sched_setaffinity(tid, {host_cpus[index]})
-                if os.sched_getaffinity(tid) != {host_cpus[index]}:
-                    raise ValueError("vCPU host affinity was not applied")
-                bindings.append(dict(cpu=index, thread_id=tid, host_cpu=host_cpus[index]))
-            command("cont")
-            return bindings
+    with qmp_session(path, process, deadline) as command:
+        cpus = command("query-cpus-fast")
+        if not isinstance(cpus, list) or len(cpus) != len(host_cpus) or not all(isinstance(cpu, dict) for cpu in cpus):
+            raise ValueError("QMP vCPU count mismatch")
+        if len({integer(cpu, "thread-id", 1) for cpu in cpus}) != len(cpus):
+            raise ValueError("QMP vCPUs do not have independent host threads")
+        cpus = sorted(cpus, key=lambda cpu: integer(cpu, "cpu-index"))
+        bindings = []
+        for index, cpu in enumerate(cpus):
+            tid = integer(cpu, "thread-id", 1)
+            if cpu["cpu-index"] != index or not Path(f"/proc/{process.pid}/task/{tid}").exists():
+                raise ValueError("QMP vCPU identity is not owned by this guest")
+            os.sched_setaffinity(tid, {host_cpus[index]})
+            if os.sched_getaffinity(tid) != {host_cpus[index]}:
+                raise ValueError("vCPU host affinity was not applied")
+            bindings.append(dict(cpu=index, thread_id=tid, host_cpu=host_cpus[index]))
+        command("cont")
+        return bindings
 
 
 def run_guest(cfg: Artifacts, workload: str, directory: Path, settings: dict, iterations: int) -> dict:
@@ -671,11 +634,20 @@ def run_guest(cfg: Artifacts, workload: str, directory: Path, settings: dict, it
     start = time.monotonic()
     qmp_directory = None
     host_bindings = None
+    failure_capture = {"status": "not_needed"}
+    diagnostic_elapsed = 0.0
     try:
+        # Short, private Unix paths avoid port races across concurrent presets.
+        qmp_directory = tempfile.TemporaryDirectory(prefix="moss-qmp-")
+        sockets = Path(qmp_directory.name)
+        args += [
+            "-qmp",
+            f"unix:{sockets / 'control.sock'},server=on,wait=off",
+            "-gdb",
+            f"unix:{sockets / 'gdb.sock'},server=on,wait=off",
+        ]
         if settings.get("host_cpus"):
-            qmp_directory = tempfile.TemporaryDirectory(prefix="moss-qmp-")
-            qmp_path = Path(qmp_directory.name) / "control.sock"
-            args += ["-S", "-qmp", f"unix:{qmp_path},server=on,wait=off"]
+            args += ["-S"]
         with (
             serial_path.open("wb") as serial_out,
             error_path.open("wb") as diagnostics,
@@ -687,8 +659,10 @@ def run_guest(cfg: Artifacts, workload: str, directory: Path, settings: dict, it
                 stdout=serial_out,
                 stderr=diagnostics,
             )
-            if qmp_directory:
-                host_bindings = pin_vcpus(qmp_path, process, settings["host_cpus"], start + settings["startup_timeout"])
+            if settings.get("host_cpus"):
+                host_bindings = pin_vcpus(
+                    sockets / "control.sock", process, settings["host_cpus"], start + settings["startup_timeout"]
+                )
             while True:
                 if serial_path.stat().st_size > 32 * 2**20:
                     raise ValueError("serial log exceeded 32 MiB")
@@ -743,12 +717,28 @@ def run_guest(cfg: Artifacts, workload: str, directory: Path, settings: dict, it
     finally:
         observed_end = time.monotonic()  # Exclude termination/reaping from an unfinished case's duration.
         if process and process.poll() is None:
-            process.terminate()
             try:
-                process.wait(timeout=2)
-            except subprocess.TimeoutExpired:
-                process.kill()
-                process.wait()
+                live_status, _ = state.outcome(termination, reason, serial_path.read_bytes())
+                if reason != "cancelled" and (live_status != "passed" or state.failed or state.fatal):
+                    capture_started = time.monotonic()
+                    try:
+                        failure_capture = capture_failure(
+                            cfg, process, sockets, directory / "diagnostics", settings["cpus"], settings.get("gdb")
+                        )
+                    except (OSError, ValueError, KeyboardInterrupt) as error:
+                        failure_capture = {"status": "error", "errors": [str(error)]}
+                    finally:
+                        diagnostic_elapsed = time.monotonic() - capture_started
+                        failure_capture["elapsed_seconds"] = diagnostic_elapsed
+            finally:
+                process.terminate()
+                try:
+                    process.wait(timeout=2)
+                except subprocess.TimeoutExpired:
+                    process.kill()
+                    process.wait()
+        elif reason or not state.end:
+            failure_capture = {"status": "unavailable", "errors": ["guest is not alive"]}
         if process:
             raw_exit = process.returncode
             if process.stdin:
@@ -802,7 +792,7 @@ def run_guest(cfg: Artifacts, workload: str, directory: Path, settings: dict, it
         "raw_exit": raw_exit,
         "termination": termination,
         "completion": state.end,
-        "elapsed_seconds": time.monotonic() - start,
+        "elapsed_seconds": time.monotonic() - start - diagnostic_elapsed,
         "case_timeout_seconds": case_timeout,
         "case_timeout_kind": "no_progress" if progress_deadline else "total",
         "guest_timeout_seconds": guest_timeout,
@@ -812,6 +802,7 @@ def run_guest(cfg: Artifacts, workload: str, directory: Path, settings: dict, it
         "qemu_log": str(error_path),
         "parameters": {"order": settings["order"]},
         "host_bindings": host_bindings,
+        "diagnostics": failure_capture,
     }
     if workload in BENCHMARK_KINDS:
         result["parameters"]["measurement_kind"] = BENCHMARK_KINDS[workload]
@@ -1024,6 +1015,9 @@ def run(
     startup_timeout: float = 30,
     case_timeout: float | None = None,
     guest_timeout: float | None = None,
+    gdb: Annotated[
+        str | None, typer.Option(help="Failure-capture debugger; defaults to gdb-multiarch or gdb on PATH")
+    ] = None,
 ) -> None:
     """One fresh guest per suite/scenario; samples reuse that guest."""
     selected = (
@@ -1136,7 +1130,10 @@ def run(
         "provenance": {**cfg.validation_provenance(), "manifest": str(cfg.manifest)},
     }
     report["inputs"] = {name: str(cfg.require(name)) for name in ("validation_kernel", "validation_initramfs")} | {
-        "dtb": str(dtb) if dtb else None
+        "dtb": str(dtb) if dtb else None,
+        "validation_debug_symbols": str(cfg.require("validation_debug_symbols"))
+        if cfg.files.get("validation_debug_symbols") is not None
+        else None,
     }
     write_reports(report, output)
     previous_handler = signal.getsignal(signal.SIGTERM)
@@ -1152,7 +1149,7 @@ def run(
                 old = next((g for g in prior["guests"] if g["workload"] == name and g.get("measurement")), None)
                 if old and saved_measurement(prior, old) is not None:
                     count = old["batches"][0]["operations"]
-            execution = dict(settings, qemu=qemu, machine=machine, cpu=cpu, dtb=dtb)
+            execution = dict(settings, qemu=qemu, machine=machine, cpu=cpu, dtb=dtb, gdb=gdb)
             result = run_guest(cfg, name, output / name, execution, count)
             report["guests"].append(result)
             write_reports(report, output)

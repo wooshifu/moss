@@ -640,11 +640,21 @@ def test_junit_preserves_failed_and_unstarted_cases(tmp_path):
 
 @pytest.mark.parametrize(
     "mode",
-    ["early_exit", "malformed", "timeout", "ignore_term", "cancel", "launch_failure", "complete", "duplicate_end"],
+    [
+        "early_exit",
+        "malformed",
+        "timeout",
+        "ignore_term",
+        "cancel",
+        "launch_failure",
+        "complete",
+        "duplicate_end",
+        "capture_error",
+    ],
 )
 def test_host_child_lifecycle_reaps_every_spawn(monkeypatch, tmp_path, mode):
     prefix = ""
-    if mode in ("timeout", "ignore_term", "cancel", "complete", "duplicate_end"):
+    if mode in ("timeout", "ignore_term", "cancel", "complete", "duplicate_end", "capture_error"):
         records = [
             event("mm", "ready", detected_cpus=4, online_mask=15, work_mask=15, ram_bytes=2**31, managed_pages=500000)
         ]
@@ -692,6 +702,16 @@ def test_host_child_lifecycle_reaps_every_spawn(monkeypatch, tmp_path, mode):
         return child
 
     monkeypatch.setattr(kv.subprocess, "Popen", spawn)
+    captures = []
+
+    def capture(_cfg, process, _sockets, _directory, _cpus, _gdb):
+        assert process.poll() is None  # The original guest must still exist when collecting evidence.
+        captures.append(process.pid)
+        if mode == "capture_error":
+            raise OSError("capture failed")
+        return {"status": "captured"}
+
+    monkeypatch.setattr(kv, "capture_failure", capture)
     cfg = Artifacts(tmp_path / "manifest.json", "ARM64", "linux-image", {}, {})
     # This checks post-startup timeout/reaping, not Python launch latency under
     # concurrent cross-compilation. Keep the case and termination deadlines tight.
@@ -704,15 +724,20 @@ def test_host_child_lifecycle_reaps_every_spawn(monkeypatch, tmp_path, mode):
         assert result["termination"] == "protocol_end"
     assert all(child.poll() is not None for child in children)
     assert Path(result["serial_log"]).exists()
-    if mode in ("timeout", "ignore_term"):
+    if mode in ("timeout", "ignore_term", "capture_error"):
         assert result["observed"] == "case_timeout"
         assert result["cases"][0]["elapsed_seconds"] >= 0.1
         if mode == "ignore_term":
             assert result["elapsed_seconds"] - result["cases"][0]["elapsed_seconds"] >= 2
         assert result["cases"][1]["status"] == "not_run"
         assert "elapsed_seconds" not in result["cases"][1]
+        assert captures
+        assert result["diagnostics"]["status"] == ("error" if mode == "capture_error" else "captured")
     if mode == "cancel":
         assert result["observed"] == "cancelled"
+        assert not captures
+    if mode == "complete":
+        assert not captures and result["diagnostics"]["status"] == "not_needed"
 
 
 def test_timeout_selftest_does_not_hide_an_unrelated_panic():

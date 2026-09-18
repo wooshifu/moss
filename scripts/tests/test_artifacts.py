@@ -3,6 +3,7 @@ import struct
 import subprocess
 from dataclasses import replace
 from pathlib import Path
+from shutil import copy2
 from types import SimpleNamespace
 
 import pytest
@@ -14,7 +15,7 @@ from scripts.verify_linux_image import verify_arm64_header, verify_relocations, 
 
 def manifest(tmp_path: Path) -> Path:
     # Deliberately not a CMake build directory.
-    for name in ("Image", "symbols.elf", "initrd", "test.Image", "test.initrd"):
+    for name in ("Image", "symbols.elf", "initrd", "test.Image", "test.initrd", "test.symbols.elf"):
         (tmp_path / name).write_bytes(b"artifact")
     path = tmp_path / "moss-artifacts.json"
     path.write_text(
@@ -29,6 +30,7 @@ def manifest(tmp_path: Path) -> Path:
                     "initramfs": "initrd",
                     "validation_kernel": "test.Image",
                     "validation_initramfs": "test.initrd",
+                    "validation_debug_symbols": "test.symbols.elf",
                 },
             }
         )
@@ -208,20 +210,55 @@ def test_validation_snapshot_survives_in_place_rebuild(tmp_path):
     artifacts = Artifacts.load(manifest(tmp_path))
     identity = artifacts.validation_identity()
     snapshot = artifacts.snapshot_validation(tmp_path / "inputs")
-    for name in ("validation_kernel", "validation_initramfs"):
+    for name in ("validation_kernel", "validation_initramfs", "validation_debug_symbols"):
         artifacts.require(name).write_bytes(b"rebuilt")
     assert snapshot.validation_identity() == identity
     assert snapshot.validation_provenance()["source_status"] == "unrecorded"
     args = build_qemu_args(snapshot, validation=True)
     assert Path(args[args.index("-kernel") + 1]).read_bytes() == b"artifact"
     assert Path(args[args.index("-initrd") + 1]).read_bytes() == b"artifact"
+    assert snapshot.require("validation_debug_symbols").read_bytes() == b"artifact"
 
 
-def test_validation_snapshot_rejects_build_during_copy(tmp_path, monkeypatch):
+def test_legacy_manifest_explicitly_has_no_validation_symbols(tmp_path):
+    path = manifest(tmp_path)
+    data = json.loads(path.read_text())
+    del data["artifacts"]["validation_debug_symbols"]
+    path.write_text(json.dumps(data))
+    artifacts = Artifacts.load(path)
+    assert artifacts.files["validation_debug_symbols"] is None
+    assert "symbols_sha256" not in artifacts.snapshot_validation(tmp_path / "inputs").validation_provenance()
+
+
+@pytest.mark.parametrize("value", ["../symbols.elf", "/tmp/symbols.elf", "", 4])
+def test_validation_symbols_must_stay_inside_manifest(tmp_path, value):
+    path = manifest(tmp_path)
+    data = json.loads(path.read_text())
+    data["artifacts"]["validation_debug_symbols"] = value
+    path.write_text(json.dumps(data))
+    with pytest.raises(ValueError, match="validation_debug_symbols"):
+        Artifacts.load(path)
+
+
+def test_validation_rejects_symbols_from_another_link(tmp_path):
+    artifacts = Artifacts.load(manifest(tmp_path))
+    source = tmp_path / "source"
+    source.mkdir()
+    record_validation_provenance(artifacts, source)
+    artifacts.require("validation_debug_symbols").write_bytes(b"different link")
+    with pytest.raises(ValueError, match="provenance does not match"):
+        artifacts.snapshot_validation(tmp_path / "inputs")
+
+
+@pytest.mark.parametrize("damaged", ["test.Image", "test.initrd", "test.symbols.elf"])
+def test_validation_snapshot_rejects_build_during_copy(tmp_path, monkeypatch, damaged):
     artifacts = Artifacts.load(manifest(tmp_path))
 
-    def raced_copy(_source, target):
-        target.write_bytes(b"concurrent build")
+    def raced_copy(source, target):
+        if source.name == damaged:
+            target.write_bytes(b"concurrent build")
+        else:
+            copy2(source, target)
 
     monkeypatch.setattr("scripts.artifacts.shutil.copy2", raced_copy)
     with pytest.raises(ValueError, match="provenance does not match"):
