@@ -12,6 +12,7 @@ from pathlib import Path
 
 import pytest
 
+from scripts import gen_validation_initramfs
 from scripts.gen_initramfs import make_cpio_entry
 
 
@@ -120,9 +121,61 @@ def test_validation_fixture_packages_the_real_runtime_programs(tmp_path):
     inputs = [tmp_path / f"{name} program.elf" for name in ("parent", "child", "libc", "busybox")]
     for path in inputs:
         path.write_bytes(path.name.encode())
-    child = bytearray(range(256))
-    child[:6] = b"\x7fELF\x02\x01"
-    struct.pack_into("<Q", child, 32, 64)
+    # A complete synthetic x86-64 child leaves the same page-sized program-header
+    # gap as the real linker output, so every derived fixture is structurally real.
+    child = bytearray(2 * gen_validation_initramfs.PAGE_BYTES)
+    # The production linker places fixed-address userspace at 8 GiB; mirroring
+    # that band keeps range checks realistic while leaving boundary segments apart.
+    code_address = 0x0000000200000000
+    identification = b"\x7fELF\x02\x01\x01" + bytes(9)
+    struct.pack_into(
+        "<16sHHIQQQIHHHHHH",
+        child,
+        0,
+        identification,
+        2,  # ET_EXEC: the loader accepts only fixed-address executable images.
+        62,  # EM_X86_64 selects the matching synthetic return sequence.
+        1,  # ELF header version.
+        code_address,
+        gen_validation_initramfs.ELF_HEADER_BYTES,
+        0,
+        0,
+        gen_validation_initramfs.ELF_HEADER_BYTES,
+        gen_validation_initramfs.PROGRAM_HEADER_BYTES,
+        2,  # One PT_LOAD plus one GNU_STACK record matches real child shape.
+        0,
+        0,
+        0,
+    )
+    struct.pack_into(
+        "<IIQQQQQQ",
+        child,
+        gen_validation_initramfs.ELF_HEADER_BYTES,
+        gen_validation_initramfs.PT_LOAD,
+        gen_validation_initramfs.PF_R | gen_validation_initramfs.PF_X,
+        gen_validation_initramfs.PAGE_BYTES,
+        code_address,
+        code_address,
+        16,  # A small nonempty payload is sufficient for derivation tests.
+        16,
+        gen_validation_initramfs.PAGE_BYTES,
+    )
+    struct.pack_into(
+        "<IIQQQQQQ",
+        child,
+        gen_validation_initramfs.ELF_HEADER_BYTES + gen_validation_initramfs.PROGRAM_HEADER_BYTES,
+        0x6474E551,  # PT_GNU_STACK wire tag emitted by ld.lld.
+        gen_validation_initramfs.PF_R | gen_validation_initramfs.PF_W,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+    )
+    # 0x90 is the x86 NOP byte; execution is irrelevant here, but a nonzero
+    # payload makes file-range mutation and packaging observable.
+    child[gen_validation_initramfs.PAGE_BYTES : gen_validation_initramfs.PAGE_BYTES + 16] = bytes([0x90]) * 16
     inputs[1].write_bytes(child)
     output = tmp_path / "validation-initramfs.cpio"
     subprocess.run(
@@ -138,14 +191,49 @@ def test_validation_fixture_packages_the_real_runtime_programs(tmp_path):
     assert archive.index(b"libc_validation.elf\0") < archive.index(b"libc program.elf") < archive.index(b"TRAILER!!!\0")
     assert archive.index(b"busybox.elf\0") < archive.index(b"busybox program.elf") < archive.index(b"TRAILER!!!\0")
     assert make_cpio_entry("validation_child.elf", bytes(child), ino=2) in archive
-    for name, ino, offset, value in (
-        ("bad_entry.elf", 6, 24, bytes(8)),
-        ("bad_phentsize.elf", 7, 54, struct.pack("<H", 55)),
-        ("bad_load.elf", 8, 96, struct.pack("<Q", 257)),
-    ):
-        malformed = bytearray(child)
-        malformed[offset : offset + len(value)] = value
-        assert make_cpio_entry(name, bytes(malformed), ino=ino) in archive
+    malformed = gen_validation_initramfs._malformed_images(bytes(child))
+    for index, (name, image) in enumerate(malformed):
+        assert make_cpio_entry(name, image, ino=6 + index) in archive
+    malformed_by_name = dict(malformed)
+    load_offset = gen_validation_initramfs.ELF_HEADER_BYTES
+    bad_file_range = malformed_by_name["bad_file_range.elf"]
+    assert struct.unpack_from("<Q", bad_file_range, load_offset + 8)[0] == (1 << 64) - 8
+    bad_address = malformed_by_name["bad_address_overflow.elf"]
+    assert struct.unpack_from("<Q", bad_address, load_offset + 16)[0] == (1 << 64) - 8
+
+    boundary = gen_validation_initramfs._boundary_image(bytes(child))
+    boundary_ino = 6 + len(malformed)
+    assert make_cpio_entry("boundary_load.elf", boundary, ino=boundary_ino) in archive
+    phoff, phnum, _ = gen_validation_initramfs._elf_layout(boundary)
+    assert phnum == 4  # Original LOAD/GNU_STACK plus RX and RW boundary segments.
+    rx = gen_validation_initramfs._program_header(boundary, phoff, phnum - 2)
+    rw = gen_validation_initramfs._program_header(boundary, phoff, phnum - 1)
+    assert rx[0:2] == (
+        gen_validation_initramfs.PT_LOAD,
+        gen_validation_initramfs.PF_R | gen_validation_initramfs.PF_X,
+    )
+    assert rx[3:8] == (
+        gen_validation_initramfs.BOUNDARY_RX_VADDR,
+        gen_validation_initramfs.BOUNDARY_RX_VADDR,
+        gen_validation_initramfs.BOUNDARY_RX_FILE_BYTES,
+        gen_validation_initramfs.BOUNDARY_RX_MEMORY_BYTES,
+        gen_validation_initramfs.PAGE_BYTES,
+    )
+    assert rw[0:2] == (
+        gen_validation_initramfs.PT_LOAD,
+        gen_validation_initramfs.PF_R | gen_validation_initramfs.PF_W,
+    )
+    assert rw[3:8] == (
+        gen_validation_initramfs.BOUNDARY_RW_VADDR,
+        gen_validation_initramfs.BOUNDARY_RW_VADDR,
+        gen_validation_initramfs.BOUNDARY_RW_FILE_BYTES,
+        gen_validation_initramfs.BOUNDARY_RW_MEMORY_BYTES,
+        gen_validation_initramfs.PAGE_BYTES,
+    )
+    assert boundary[rx[2] - gen_validation_initramfs.BOUNDARY_RX_PREFIX] == gen_validation_initramfs.RX_PREFIX_MARKER
+    assert boundary[rx[2] + len(gen_validation_initramfs.RETURN_42[62])] == gen_validation_initramfs.RX_FILE_MARKER
+    assert boundary[rw[2] - gen_validation_initramfs.BOUNDARY_RW_PREFIX] == gen_validation_initramfs.RW_PREFIX_MARKER
+    assert boundary[rw[2] + len(gen_validation_initramfs.RETURN_42[62])] == gen_validation_initramfs.RW_FILE_MARKER
 
 
 @pytest.mark.parametrize("arch,machine", [("X64", 62), ("ARM64", 183), ("RISCV64", 243)])

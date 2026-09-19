@@ -325,9 +325,14 @@ extern "C" [[noreturn]] void secondary_cpu_entry() noexcept {
     store_cpu_state(cpu_id, CpuState::Parked);
   }
 
-  // Wait until CPU 0 marks us as Active (meaning all subsystems are ready)
+  // Poll until CPU 0 marks us Active. No timer or interrupt can rescue a
+  // sleeping CPU at this phase, and QEMU 11.1.1 multi-threaded TCG has been
+  // observed leaving a WFE host thread asleep after SEV publishes the state.
+  // YIELD keeps the architectural state handshake while guaranteeing that
+  // the secondary rechecks it; reconsider WFE only after every supported
+  // platform provides a tested wake-up guarantee for this pre-IRQ phase.
   while (!is_cpu_in_state(cpu_id, CpuState::Active)) {
-    asm volatile("wfe");
+    moss::kernel::arch::cpu_yield();
   }
 
   early_uart_lock_acquire();
@@ -426,13 +431,9 @@ void activate_secondary_cpus() noexcept {
       continue;
     }
 
-    // Publish the activation before sending the wake-up event. A release
-    // store orders memory accesses, but does not ensure completion before
-    // SEV: the secondary could consume the event, read Parked and sleep
-    // again with no subsequent event to wake it. Use the full-system scope
-    // because the secondary has not enabled its MMU yet.
+    // The release store pairs with the secondary's acquire polling. That CPU
+    // cannot sleep in this pre-IRQ phase, so no separate event is required.
     mark_cpu_active(cpu_id);
-    asm volatile("dsb sy\n\tsev" ::: "memory");
 
     // Wait for it to finish init and reach Online state
     if (wait_for_cpu_state(cpu_id, CpuState::Online, 3000)) {

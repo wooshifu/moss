@@ -149,10 +149,6 @@ public:
       kernel_panic("Kernel initialization failed", result.error());
     }
 
-    current_phase_ = BootPhase::Completed;
-
-    early_debug_print("[boot] MOSS kernel boot completed\n");
-
     return VoidResult{};
   }
 
@@ -161,15 +157,20 @@ public:
     // Enable interrupts
     enable_interrupts();
 
-    // Initialize initramfs if bootloader provided one via DTB / PVH modules
+    // A userspace image is part of the boot contract, not an optional service:
+    // do not publish Completed until the archive and its init executable exist.
     {
       auto &pi = fdt::g_platform_info;
-      if (pi.initrd_start != 0 && pi.initrd_end > pi.initrd_start) {
-        usize initrd_size = static_cast<usize>(pi.initrd_end - pi.initrd_start);
-        log::klog::info("initramfs: found at {:#x}-{:#x} ({} bytes)", pi.initrd_start, pi.initrd_end, initrd_size);
-        initramfs::g_initramfs.init(pi.initrd_start, initrd_size);
-      } else {
-        log::klog::info("initramfs: not provided by bootloader");
+      if (pi.initrd_start == 0 || pi.initrd_end <= pi.initrd_start) {
+        kernel_panic("Required initramfs was not provided", ErrorCode::NotFound);
+      }
+      usize initrd_size = static_cast<usize>(pi.initrd_end - pi.initrd_start);
+      log::klog::info("initramfs: found at {:#x}-{:#x} ({} bytes)", pi.initrd_start, pi.initrd_end, initrd_size);
+      if (!initramfs::g_initramfs.init(pi.initrd_start, initrd_size)) {
+        kernel_panic("Invalid initramfs archive", ErrorCode::FileSystemError);
+      }
+      if (!initramfs::g_initramfs.lookup("/validation.elf") && !initramfs::g_initramfs.lookup("/busybox.elf")) {
+        kernel_panic("Required init executable is missing", ErrorCode::NotFound);
       }
     }
 
@@ -211,6 +212,9 @@ public:
       };
     }
 #endif
+
+    current_phase_ = BootPhase::Completed;
+    early_debug_print("[boot] MOSS kernel boot completed\n");
 
     // Enter scheduling loop (start_scheduling is [[noreturn]])
     scheduler_->start_scheduling();
@@ -728,8 +732,9 @@ private:
     as->add_vma(stack_bottom, user_layout::STACK_TOP, vma_flags::READ | vma_flags::WRITE | vma_flags::DEMAND_ZERO,
                 VmaType::STACK);
 
-    // Heap VMA: small initial region, demand-zero
-    as->add_vma(user_layout::HEAP_START, user_layout::HEAP_START + user_layout::HEAP_INIT,
+    // The empty HEAP VMA is the brk_base state. sys_brk grows its page-aligned
+    // end; reserving HEAP_INIT for ELF layout must not authorize those bytes.
+    as->add_vma(user_layout::HEAP_START, user_layout::HEAP_START,
                 vma_flags::READ | vma_flags::WRITE | vma_flags::DEMAND_ZERO, VmaType::HEAP);
     as->brk_base = user_layout::HEAP_START;
     as->brk_current = user_layout::HEAP_START;
