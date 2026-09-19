@@ -111,8 +111,11 @@ extern "C" {
     log::klog::error("scheduler: not initialized");
   }
 
-  log::klog::info("MOSS kernel init and verification complete");
-  log::klog::info("entering task scheduling phase...");
+  // Userspace archive validation and init creation happen in Kernel::run().
+  // Keep this message scoped to what has actually completed so a missing init
+  // cannot appear after a successful whole-kernel boot announcement.
+  log::klog::info("MOSS kernel subsystem verification complete");
+  log::klog::info("entering userspace bootstrap and scheduling phase...");
 
   // Start kernel run system (with real task scheduling)
   log::klog::info("starting kernel run system");

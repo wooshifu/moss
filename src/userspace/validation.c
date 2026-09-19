@@ -8,7 +8,7 @@
 //
 // Raw ABI conventions used below: mmap prot 3=R|W, flags 0x22=PRIVATE|ANONYMOUS,
 // fd -1 and offset 0; 4096-byte pages and 8192-byte pairs test page boundaries.
-// Native errors are -errno (7=E2BIG, 8=ENOEXEC, 10=ECHILD, 12=ENOMEM,
+// Native errors are -errno (2=ENOENT, 7=E2BIG, 8=ENOEXEC, 10=ECHILD, 12=ENOMEM,
 // 14=EFAULT, 22=EINVAL, 36=ENAMETOOLONG, 38=ENOSYS). Error masks assign
 // each check a bit. Nonzero byte/canary patterns detect untouched or aliased data;
 // 37/39 are child/exec success markers, while other exit codes identify failures.
@@ -26,6 +26,24 @@ static const char application_script[] =
     "printf 'application ok\\n' && exit 37; exit 98";
 
 static unsigned long exec_probe(long test) {
+  enum {
+    EXEC_REJECTION_CASES = 17,
+    EXEC_BAD_ENV_VECTOR = EXEC_REJECTION_CASES,
+    EXEC_BAD_ENV_STRING,
+    EXEC_ARGUMENT_COUNT,
+    EXEC_COMBINED_COUNT,
+    EXEC_STRING_BYTES,
+    EXEC_EXACT_COUNT,
+    EXEC_EXACT_BYTES,
+    EXEC_EMPTY_VECTORS,
+  };
+  static const char *invalid_images[EXEC_REJECTION_CASES] = {
+      "/bad_entry.elf",       "/bad_phentsize.elf",  "/bad_load.elf",       "/truncated_header.elf",
+      "/truncated_phdr.elf",  "/bad_file_range.elf", "/bad_user_range.elf", "/bad_address_overflow.elf",
+      "/bad_page_offset.elf", "/bad_alignment.elf",  "/bad_reserved.elf",   "/bad_overlap.elf",
+      "/too_many_phdrs.elf",  "/bad_rwx.elf",        "/bad_dynamic.elf",    "/bad_interp.elf",
+      "/bad_tls_file.elf",
+  };
   long child = fork();
   if (!child) {
     volatile unsigned long canary = 0x12345678;
@@ -36,27 +54,30 @@ static unsigned long exec_probe(long test) {
     static char bytes[16385]; // 16 KiB + NUL exceeds the inclusive exec byte budget by one.
     const char *path = "/validation_child.elf";
     long wanted = -8;
-    if (test < 3) {
-      const char *paths[] = {"/bad_entry.elf", "/bad_phentsize.elf", "/bad_load.elf"};
-      path = paths[test];
-    } else if (test == 3) {
+    if (test < EXEC_REJECTION_CASES) {
+      path = invalid_images[test];
+      // If a malformed image is accidentally accepted, validation_child must
+      // exit with its startup-error marker instead of sharing this probe's 37.
+      // A correct ENOEXEC returns here and still observes the live stack canary.
+      args[0] = "must-reject";
+    } else if (test == EXEC_BAD_ENV_VECTOR) {
       // A bad env vector must not destroy the caller's address space.
       long result = syscall3(SYS_EXECVE, (long)path, (long)args, 1);
       _exit(result == -14 && canary == 0x12345678 ? 37 : 98);
-    } else if (test == 4) {
+    } else if (test == EXEC_BAD_ENV_STRING) {
       environment[0] = (const char *)1;
       wanted = -14;
-    } else if (test == 5) {
+    } else if (test == EXEC_ARGUMENT_COUNT) {
       for (unsigned i = 0; i < 129; ++i) {
         args[i] = "";
       }
       wanted = -7;
-    } else if (test == 6) {
+    } else if (test == EXEC_COMBINED_COUNT) {
       for (unsigned i = 0; i < 128; ++i) {
         environment[i] = ""; // One argv plus 128 environment strings exceeds the shared cap.
       }
       wanted = -7;
-    } else if (test == 7) {
+    } else if (test == EXEC_STRING_BYTES) {
       for (unsigned i = 0; i < 16384; ++i) {
         bytes[i] = 'a';
       }
@@ -64,7 +85,7 @@ static unsigned long exec_probe(long test) {
       wanted = -7;
     } else {
       path = "/libc_validation.elf";
-      if (test == 8) {
+      if (test == EXEC_EXACT_COUNT) {
         // 64 argv + 64 environment strings exactly hit the 128-string limit;
         // six bytes hold each generated "M00=1" string including its NUL.
         static char names[64][6];
@@ -80,7 +101,7 @@ static unsigned long exec_probe(long test) {
           names[i][4] = '1';
           environment[i] = names[i];
         }
-      } else if (test == 9) {
+      } else if (test == EXEC_EXACT_BYTES) {
         args[0] = "bytes";
         args[1] = bytes;
         for (unsigned i = 0; i < 16377; ++i) {
@@ -91,11 +112,11 @@ static unsigned long exec_probe(long test) {
       }
     }
     long result = syscall3(SYS_EXECVE, (long)path, (long)args, (long)environment);
-    _exit(test < 8 && result == wanted && canary == 0x12345678 ? 37 : 98);
+    _exit(test < EXEC_EXACT_COUNT && result == wanted && canary == 0x12345678 ? 37 : 98);
   }
   int status = 0;
   long waited = child > 0 ? waitpid(child, &status, 0) : -1;
-  int expected = test < 8 ? 37 : 39;
+  int expected = test < EXEC_EXACT_COUNT ? 37 : 39;
   return child > 0 && waited == child && status == (expected << 8) ? 0 : 1 | (unsigned long)status << 8;
 }
 
@@ -255,13 +276,31 @@ static unsigned long mmap_heap_rollback(void) {
 }
 
 static unsigned long exec_allocation_rollback(void) {
-  volatile unsigned long canary = 0x12345678;
+  enum {
+    EXEC_ENOENT = 2,
+    EXEC_ENOEXEC = 8,
+    EXEC_ENOMEM = 12,
+  };
+  enum {
+    EXEC_ERR_MALFORMED = 1UL << 0,
+    EXEC_ERR_FIXTURE = 1UL << 1,
+    EXEC_ERR_ARM = 1UL << 2,
+    EXEC_ERR_ROLLBACK = 1UL << 3,
+    EXEC_ERR_FD_OFFSET = 1UL << 4,
+    EXEC_ERR_RETRY = 1UL << 5,
+    EXEC_ERR_MISSING = 1UL << 6,
+  };
+  // The nonzero asymmetric value makes stack replacement or clobbering visible.
+  const unsigned long canary_value = 0x12345678;
+  volatile unsigned long canary = canary_value;
   const char *args[] = {"exec", 0};
-  unsigned long errors = syscall3(SYS_EXECVE, (long)"/bad_entry.elf", (long)args, 0) != -8;
+  unsigned long errors =
+      syscall3(SYS_EXECVE, (long)"/bad_entry.elf", (long)args, 0) != -EXEC_ENOEXEC ? EXEC_ERR_MALFORMED : 0;
+  errors |= syscall3(SYS_EXECVE, (long)"/exec-missing.elf", (long)args, 0) != -EXEC_ENOENT ? EXEC_ERR_MISSING : 0;
   long fd = open("/fixture.bin", 0);
   unsigned char byte = 255;
   if (fd < 0 || read((int)fd, &byte, 1) != 1 || byte != 0) {
-    return errors | 2;
+    return errors | EXEC_ERR_FIXTURE;
   }
   // Warm the instruction stream and copy source before exhausting real pages.
   volatile unsigned char warm = 0;
@@ -285,12 +324,12 @@ static unsigned long exec_allocation_rollback(void) {
   long stages = control(35, 0, 0);
   for (long budget = 0; budget < stages; ++budget) {
     if (!control(36, budget, 0)) {
-      errors |= 4;
+      errors |= EXEC_ERR_ARM;
       break;
     }
     long result = syscall3(SYS_EXECVE, (long)path, (long)args, 0);
     int recovered = control(37, budget, 0) != 0;
-    if (result != -12 || canary != 0x12345678 || !recovered) {
+    if (result != -EXEC_ENOMEM || canary != canary_value || !recovered) {
       print("  FAIL: exec rollback budget=");
       print_long(budget);
       print(" result=");
@@ -298,11 +337,11 @@ static unsigned long exec_allocation_rollback(void) {
       print(" recovered=");
       print_long(recovered);
       print("\n");
-      errors |= 8;
+      errors |= EXEC_ERR_ROLLBACK;
       break;
     }
     if (read((int)fd, &byte, 1) != 1 || byte != budget + 1) {
-      errors |= 16;
+      errors |= EXEC_ERR_FD_OFFSET;
     }
   }
   close((int)fd);
@@ -313,9 +352,151 @@ static unsigned long exec_allocation_rollback(void) {
   }
   int status = 0;
   if (child <= 0 || waitpid(child, &status, 0) != child || status != (37 << 8)) {
-    errors |= 32;
+    errors |= EXEC_ERR_RETRY;
   }
   return errors;
+}
+
+static int copy_mutable_exec_fixture(const char *source_path, const char *target_path) {
+  enum {
+    OPEN_READ_ONLY = 0,
+    OPEN_WRITE_ONLY = 1U << 0,
+    OPEN_CREATE = 1U << 6,
+    OPEN_EXCLUSIVE = 1U << 7,
+    // One Moss user page bounds stack use and makes each transfer naturally page-sized.
+    COPY_BUFFER_BYTES = 4096,
+    // The private fixture must be readable, writable and executable by its owner.
+    OWNER_RWX_MODE = 0700,
+  };
+  (void)syscall1(SYS_UNLINK, (long)target_path);
+  long source = syscall3(SYS_OPEN, (long)source_path, OPEN_READ_ONLY, 0);
+  if (source < 0) {
+    return 0;
+  }
+  long target = syscall3(SYS_OPEN, (long)target_path, OPEN_WRITE_ONLY | OPEN_CREATE | OPEN_EXCLUSIVE, OWNER_RWX_MODE);
+  if (target < 0) {
+    close((int)source);
+    return 0;
+  }
+
+  unsigned char buffer[COPY_BUFFER_BYTES];
+  int copied = 1;
+  long count = 0;
+  while ((count = read((int)source, buffer, sizeof(buffer))) > 0) {
+    long offset = 0;
+    while (offset < count) {
+      long written = write((int)target, buffer + offset, count - offset);
+      if (written <= 0) {
+        copied = 0;
+        break;
+      }
+      offset += written;
+    }
+    if (!copied) {
+      break;
+    }
+  }
+  copied = copied && count >= 0;
+  copied = close((int)source) == 0 && copied;
+  copied = close((int)target) == 0 && copied;
+  if (!copied) {
+    (void)syscall1(SYS_UNLINK, (long)target_path);
+  }
+  return copied;
+}
+
+static unsigned long exec_mutable_snapshot_rollback(void) {
+  enum {
+    // Validation-only controls; these are unrelated to native syscall numbers.
+    EXEC_HEAP_PRESSURE_ARM = 48,
+    EXEC_HEAP_PRESSURE_RELEASE = 49,
+    // Arguments, SharedPtr object/control, bytes, address space and VMA node.
+    EXEC_HEAP_ALLOCATION_STAGES = 6,
+    EXEC_ENOMEM = 12,
+    // Moss user mappings use 4 KiB pages on every supported architecture.
+    USER_PAGE_BYTES = 4096,
+  };
+  enum {
+    EXEC_HEAP_ERR_COPY = 1UL << 0,
+    EXEC_HEAP_ERR_FIXTURE = 1UL << 1,
+    EXEC_HEAP_ERR_ARM = 1UL << 2,
+    EXEC_HEAP_ERR_ROLLBACK = 1UL << 3,
+    EXEC_HEAP_ERR_FD_OFFSET = 1UL << 4,
+    EXEC_HEAP_ERR_CLEANUP = 1UL << 5,
+  };
+  const char *path = "/exec-copy.elf";
+  if (!copy_mutable_exec_fixture("/validation_child.elf", path)) {
+    return EXEC_HEAP_ERR_COPY;
+  }
+
+  long fd = open("/fixture.bin", 0);
+  // Outside the fixture's expected 0..6 sequence, so an unread sentinel cannot pass.
+  unsigned char byte = 255;
+  unsigned long errors = 0;
+  if (fd < 0 || read((int)fd, &byte, 1) != 1 || byte != 0) {
+    if (fd >= 0) {
+      close((int)fd);
+    }
+    (void)syscall1(SYS_UNLINK, (long)path);
+    return EXEC_HEAP_ERR_FIXTURE;
+  }
+
+  // Make all caller-side instruction and string pages resident before heap
+  // exhaustion so the injected failure belongs to exec preparation itself.
+  volatile unsigned char warm = 0;
+  for (const unsigned char *p = __user_text_start; p < __user_text_end; p += USER_PAGE_BYTES) {
+    warm ^= *p;
+  }
+  for (const volatile char *p = path; *p; ++p) {
+    warm ^= (unsigned char)*p;
+  }
+  const char *args[] = {"exec", 0};
+  for (const volatile char *p = args[0]; *p; ++p) {
+    warm ^= (unsigned char)*p;
+  }
+  (void)warm;
+
+  // The asymmetric nonzero value detects accidental replacement or stack clobbering.
+  const unsigned long canary_value = 0x12345678;
+  volatile unsigned long canary = canary_value;
+  for (long stage = 0; stage < EXEC_HEAP_ALLOCATION_STAGES; ++stage) {
+    if (!control(EXEC_HEAP_PRESSURE_ARM, stage, 0)) {
+      errors |= EXEC_HEAP_ERR_ARM;
+      break;
+    }
+    long result = syscall3(SYS_EXECVE, (long)path, (long)args, 0);
+    int recovered = control(EXEC_HEAP_PRESSURE_RELEASE, stage, 0) != 0;
+    if (result != -EXEC_ENOMEM || canary != canary_value || !recovered) {
+      print("  FAIL: mutable exec rollback stage=");
+      print_long(stage);
+      print(" result=");
+      print_long(result);
+      print(" recovered=");
+      print_long(recovered);
+      print("\n");
+      errors |= EXEC_HEAP_ERR_ROLLBACK;
+      break;
+    }
+    if (read((int)fd, &byte, 1) != 1 || byte != (unsigned char)(stage + 1)) {
+      errors |= EXEC_HEAP_ERR_FD_OFFSET;
+      break;
+    }
+  }
+  errors |= close((int)fd) != 0 ? EXEC_HEAP_ERR_CLEANUP : 0;
+  errors |= syscall1(SYS_UNLINK, (long)path) != 0 ? EXEC_HEAP_ERR_CLEANUP : 0;
+  return errors;
+}
+
+static unsigned long exec_boundary_load_plan(void) {
+  long child = fork();
+  if (child == 0) {
+    const char *args[] = {"boundary", 0};
+    syscall3(SYS_EXECVE, (long)"/boundary_load.elf", (long)args, 0);
+    _exit(98);
+  }
+  int status = 0;
+  long waited = child > 0 ? waitpid(child, &status, 0) : -1;
+  return child > 0 && waited == child && status == (37 << 8) ? 0 : 1 | (unsigned long)status << 8;
 }
 
 // Control 12/13 exhausts/releases physical pages while the writable test VMA
@@ -816,7 +997,12 @@ static unsigned long pipe_waits_for_reader(void) {
   return errors;
 }
 
-static unsigned long lifecycle_cycle(void) {
+enum lifecycle_exit_order {
+  LIFECYCLE_WAIT_BEFORE_EOF,
+  LIFECYCLE_EOF_BEFORE_WAIT,
+};
+
+static unsigned long lifecycle_cycle(enum lifecycle_exit_order exit_order) {
   long fd = syscall3(SYS_OPEN, (long)"/fixture.bin", 0, 0);
   if (fd < 0) {
     return 1;
@@ -871,15 +1057,23 @@ static unsigned long lifecycle_cycle(void) {
   }
   unsigned long errors = (unsigned long)(close((int)ends[1]) != 0) << 2;
   int status = 0;
-  long waited = child > 0 ? syscall3(SYS_WAITPID, child, (long)&status, 0) : -1;
-  if (child <= 0 || waited != child || status != (37 << 8)) {
-    errors |= 8 | ((unsigned long)(unsigned short)status << 16);
+  long waited = -1;
+  if (exit_order == LIFECYCLE_WAIT_BEFORE_EOF) {
+    waited = child > 0 ? syscall3(SYS_WAITPID, child, (long)&status, 0) : -1;
   }
   unsigned char payload[4] = {0};
   errors |= (unsigned long)(read((int)ends[0], payload, 4) != 4 || payload[0] != 17 || payload[1] != 44 ||
                             payload[2] != 23 || payload[3] != 99)
             << 4;
-  errors |= (unsigned long)(read((int)ends[0], payload, 1) != 0) << 5; // Exit releases the last writer.
+  errors |= (unsigned long)(read((int)ends[0], payload, 1) != 0) << 5;
+  if (exit_order == LIFECYCLE_EOF_BEFORE_WAIT) {
+    // Observe final EOF before waitpid can reap the child. The exit path must
+    // release its inherited writer before publishing the process as a Zombie.
+    waited = child > 0 ? syscall3(SYS_WAITPID, child, (long)&status, 0) : -1;
+  }
+  if (child <= 0 || waited != child || status != (37 << 8)) {
+    errors |= 8 | ((unsigned long)(unsigned short)status << 16);
+  }
   errors |= (unsigned long)(close((int)ends[0]) != 0) << 6;
   errors |= (unsigned long)(private_page[0] != 17 || private_page[4095] != 23) << 7;
   errors |= (unsigned long)(syscall2(SYS_MUNMAP, area, 4096) != 0) << 8;
@@ -915,12 +1109,18 @@ static unsigned long pipe_output_rollback(void) {
   return errors;
 }
 
-static int vm_fault(long address, int access) {
+enum vm_fault_access {
+  VM_FAULT_READ,
+  VM_FAULT_WRITE,
+  VM_FAULT_EXECUTE,
+};
+
+static int vm_fault(long address, enum vm_fault_access access) {
   long child = syscall0(SYS_FORK);
   if (child == 0) {
-    if (access == 2) {
+    if (access == VM_FAULT_EXECUTE) {
       ((void (*)(void))address)();
-    } else if (access == 1) {
+    } else if (access == VM_FAULT_WRITE) {
       // An architectural write attempt, including to text/const data: do not
       // rely on undefined C writes to const objects surviving optimization.
 #if defined(__aarch64__)
@@ -976,8 +1176,8 @@ static unsigned long vm_private_cow(void) {
 static unsigned long vm_readonly_cow(void) {
   unsigned long errors = *(const volatile unsigned char *)vm_rodata != 0x5a;
   vm_text(); // Both mappings are resident before fork.
-  errors |= (unsigned long)!vm_fault((long)vm_rodata, 1) << 1;
-  errors |= (unsigned long)!vm_fault((long)vm_text, 1) << 2;
+  errors |= (unsigned long)!vm_fault((long)vm_rodata, VM_FAULT_WRITE) << 1;
+  errors |= (unsigned long)!vm_fault((long)vm_text, VM_FAULT_WRITE) << 2;
   errors |= (unsigned long)(*(const volatile unsigned char *)vm_rodata != 0x5a) << 3;
   return errors;
 }
@@ -987,16 +1187,106 @@ static unsigned long vm_access_permissions(void) {
   long nx = syscall6(SYS_MMAP, 0, 4096, 3, 0x22, -1, 0);
   unsigned long errors = none <= 0 || nx <= 0;
   if (none > 0) {
-    errors |= (unsigned long)!vm_fault(none, 0) << 1;
-    errors |= (unsigned long)!vm_fault(none, 1) << 2;
+    errors |= (unsigned long)!vm_fault(none, VM_FAULT_READ) << 1;
+    errors |= (unsigned long)!vm_fault(none, VM_FAULT_WRITE) << 2;
     errors |= (unsigned long)(syscall2(SYS_MUNMAP, none, 4096) != 0) << 3;
   }
   if (nx > 0) {
     // Keep this page absent: an instruction miss must check EXEC before any
     // demand allocation. Otherwise it can allocate then fault indefinitely.
-    errors |= (unsigned long)!vm_fault(nx, 2) << 4;
+    errors |= (unsigned long)!vm_fault(nx, VM_FAULT_EXECUTE) << 4;
     errors |= (unsigned long)(syscall2(SYS_MUNMAP, nx, 4096) != 0) << 5;
   }
+  return errors;
+}
+
+static unsigned long vm_brk_lifecycle(void) {
+  // Moss exposes 4 KiB user pages; three pages make one fully released page
+  // remain after shrinking to a deliberately non-page-aligned break.
+  enum {
+    PAGE_BYTES = 4096,
+    GROW_PAGES = 3,
+    // 37 is an arbitrary non-power-of-two offset; any value in this page would
+    // exercise the same partial-page ABI without resembling an alignment.
+    PARTIAL_BYTES = 37,
+  };
+  // Page four leaves one unmapped guard page after the three-page heap. Growing
+  // through page five must therefore collide with, rather than skip, the mmap.
+  enum { COLLISION_PAGE = 4, COLLISION_GROW_PAGES = 5 };
+  enum {
+    MMAP_PROT_READ = 1U << 0,
+    MMAP_PROT_WRITE = 1U << 1,
+    MAP_PRIVATE_ANONYMOUS = 0x22, // Moss's supported MAP_PRIVATE | MAP_ANONYMOUS pair.
+  };
+  // Complementary nonzero bytes distinguish retained heap data, mmap data and
+  // the zero-fill required after a fully released page is grown again.
+  enum { STALE_PATTERN = 0x5a, COLLISION_PATTERN = 0xa5 };
+  // One bit per observation keeps the serial failure mask independently decodable.
+  enum {
+    ERR_BASE = 1UL << 0,
+    ERR_INITIAL_VISIBLE = 1UL << 1,
+    ERR_GROW = 1UL << 2,
+    ERR_SHRINK = 1UL << 3,
+    ERR_RELEASED_VISIBLE = 1UL << 4,
+    ERR_REGROW = 1UL << 5,
+    ERR_STALE_CONTENT = 1UL << 6,
+    ERR_COLLISION_MAP = 1UL << 7,
+    ERR_COLLISION_GROW = 1UL << 8,
+    ERR_PARTIAL_COMMIT = 1UL << 9,
+    ERR_COLLISION_CONTENT = 1UL << 10,
+    ERR_GAP_VISIBLE = 1UL << 11,
+    ERR_COLLISION_UNMAP = 1UL << 12,
+    ERR_RESET = 1UL << 13,
+    ERR_RESET_VISIBLE = 1UL << 14,
+    ERR_FINAL_REGROW = 1UL << 15,
+    ERR_FINAL_CONTENT = 1UL << 16,
+    ERR_FINAL_RESET = 1UL << 17,
+  };
+
+  const long base = syscall1(SYS_BRK, 0);
+  if (base <= 0 || (base & (PAGE_BYTES - 1)) != 0) {
+    return ERR_BASE;
+  }
+
+  unsigned long errors = (unsigned long)!vm_fault(base, VM_FAULT_READ) * ERR_INITIAL_VISIBLE;
+  const long grown = base + GROW_PAGES * PAGE_BYTES;
+  if (syscall1(SYS_BRK, grown) != grown) {
+    return errors | ERR_GROW;
+  }
+  volatile unsigned char *const first = (volatile unsigned char *)base;
+  volatile unsigned char *const released = (volatile unsigned char *)(base + 2 * PAGE_BYTES);
+  *first = STALE_PATTERN;
+  *released = STALE_PATTERN;
+
+  const long partial = base + PAGE_BYTES + PARTIAL_BYTES;
+  errors |= (unsigned long)(syscall1(SYS_BRK, partial) != partial) * ERR_SHRINK;
+  errors |= (unsigned long)!vm_fault((long)released, VM_FAULT_READ) * ERR_RELEASED_VISIBLE;
+  errors |= (unsigned long)(syscall1(SYS_BRK, grown) != grown) * ERR_REGROW;
+  errors |= (unsigned long)(*released != 0) * ERR_STALE_CONTENT;
+
+  const long collision_address = base + COLLISION_PAGE * PAGE_BYTES;
+  long collision =
+      syscall6(SYS_MMAP, collision_address, PAGE_BYTES, MMAP_PROT_READ | MMAP_PROT_WRITE, MAP_PRIVATE_ANONYMOUS, -1, 0);
+  errors |= (unsigned long)(collision != collision_address) * ERR_COLLISION_MAP;
+  if (collision == collision_address) {
+    volatile unsigned char *const collision_byte = (volatile unsigned char *)collision;
+    *collision_byte = COLLISION_PATTERN;
+    const long rejected = base + COLLISION_GROW_PAGES * PAGE_BYTES;
+    errors |= (unsigned long)(syscall1(SYS_BRK, rejected) != grown) * ERR_COLLISION_GROW;
+    errors |= (unsigned long)(syscall1(SYS_BRK, 0) != grown) * ERR_PARTIAL_COMMIT;
+    errors |= (unsigned long)(*collision_byte != COLLISION_PATTERN) * ERR_COLLISION_CONTENT;
+    errors |= (unsigned long)!vm_fault(base + GROW_PAGES * PAGE_BYTES, VM_FAULT_READ) * ERR_GAP_VISIBLE;
+    errors |= (unsigned long)(syscall2(SYS_MUNMAP, collision, PAGE_BYTES) != 0) * ERR_COLLISION_UNMAP;
+  } else if (collision > 0) {
+    (void)syscall2(SYS_MUNMAP, collision, PAGE_BYTES);
+  }
+
+  errors |= (unsigned long)(syscall1(SYS_BRK, base) != base) * ERR_RESET;
+  errors |= (unsigned long)!vm_fault(base, VM_FAULT_READ) * ERR_RESET_VISIBLE;
+  const long one_page = base + PAGE_BYTES;
+  errors |= (unsigned long)(syscall1(SYS_BRK, one_page) != one_page) * ERR_FINAL_REGROW;
+  errors |= (unsigned long)(*first != 0) * ERR_FINAL_CONTENT;
+  errors |= (unsigned long)(syscall1(SYS_BRK, base) != base) * ERR_FINAL_RESET;
   return errors;
 }
 
@@ -1513,6 +1803,9 @@ static unsigned long timer_cancel_in_flight(void) {
 static volatile int handler_called = 0;
 static volatile int handler2_called = 0;
 static volatile unsigned long handler_sp = 0;
+// Every fork maps this symbol at the same user VA. Child-specific writes make
+// stale ASID translations observable without changing the parent's value.
+static volatile unsigned long asid_pattern = 0;
 
 static void sigusr1_handler(int sig) {
   handler_called = sig == SIGUSR1;
@@ -2242,22 +2535,38 @@ static int test_signal_wakeup_affinity(void) {
 }
 
 static int test_pid_lifecycle(void) {
-  // 300 sequential children exceed the 256-slot process/signal bookkeeping
-  // capacity while keeping concurrent population low, exercising slot reuse.
-  for (unsigned cycle = 0; cycle < 300; ++cycle) {
+  // 300 children cross both the 255-user-ASID lease limit and the former
+  // 256-slot signal table boundary while keeping concurrent population low.
+  enum { ASID_REUSE_CYCLES = 300 };
+  // Eight redispatches are a bounded repeat, not a claimed minimum: they keep
+  // the 300-cycle boundary test short while checking more than one TLB refill.
+  enum { ASID_REDISPATCHES = 8 };
+  asid_pattern = 0;
+  for (unsigned cycle = 0; cycle < ASID_REUSE_CYCLES; ++cycle) {
     long child = fork();
     if (child == 0) {
       struct sigaction_t sa = {(unsigned long)quiet_handler, 0, 0};
       unsigned long mask = 0;
+      const unsigned expected_cpu = cycle & 1U;
+      const unsigned cpu_mask = 1U << expected_cpu; // CPU0/CPU1 affinity bits alternate on each reused lease.
+      const unsigned long expected_pattern = (unsigned long)cycle + 1; // Nonzero and distinct in all 300 cycles.
+      unsigned long migration_delay = 1000000; // 1 ms permits a real sleep/wakeup migration after affinity changes.
       handler_called = 0;
-      int errors = sigprocmask(SIG_SETMASK, &mask, 0) != 0;
-      errors |= (moss_sigaction(SIGUSR1, &sa, 0) != 0) << 1;
-      errors |= (kill(getpid(), SIGUSR1) != 0) << 2;
-      errors |= (!handler_called) << 3;
+      asid_pattern = expected_pattern;
+      int errors = syscall3(SYS_SCHED_SETAFFINITY, 0, sizeof(cpu_mask), (long)&cpu_mask) != 0;
+      errors |= (nanosleep_ns(&migration_delay) != 0) << 1;
+      errors |= (current_cpu() != (long)expected_cpu) << 2;
+      for (unsigned redispatch = 0; redispatch < ASID_REDISPATCHES; ++redispatch) {
+        errors |= (sched_yield() != 0 || asid_pattern != expected_pattern) << 3;
+      }
+      errors |= (sigprocmask(SIG_SETMASK, &mask, 0) != 0) << 4;
+      errors |= (moss_sigaction(SIGUSR1, &sa, 0) != 0) << 5;
+      errors |= (kill(getpid(), SIGUSR1) != 0) << 6;
+      errors |= (!handler_called) << 7;
       _exit(errors);
     }
     int status = 0;
-    if (child < 0 || waitpid(child, &status, 0) != child || status != 0) {
+    if (child < 0 || waitpid(child, &status, 0) != child || status != 0 || asid_pattern != 0) {
       print("  FAIL: signal lifecycle cycle ");
       print_ulong(cycle);
       print(" child=");
@@ -2464,9 +2773,21 @@ void _start(long argc, const char **argv) {
     }
     control(3, 0, 0);
   } else if (mode == 22) {
-    for (long test = 0; test < 12; ++test) {
+    // Keep this dispatch order synchronized with both users.exec catalogs.
+    enum {
+      EXEC_PROBE_CASES = 25,
+      EXEC_ALLOCATION_CASE = 25,
+      EXEC_MUTABLE_CASE = 26,
+      EXEC_BOUNDARY_CASE = 27,
+      EXEC_CASES = 28,
+    };
+    for (long test = 0; test < EXEC_CASES; ++test) {
       control(1, test, 0);
-      unsigned long errors = test < 11 ? exec_probe(test) : exec_allocation_rollback();
+      unsigned long errors = test < EXEC_PROBE_CASES        ? exec_probe(test)
+                             : test == EXEC_ALLOCATION_CASE ? exec_allocation_rollback()
+                             : test == EXEC_MUTABLE_CASE    ? exec_mutable_snapshot_rollback()
+                             : test == EXEC_BOUNDARY_CASE   ? exec_boundary_load_plan()
+                                                            : 1;
       if (!control(2, errors == 0, (long)errors)) {
         break;
       }
@@ -2508,7 +2829,10 @@ void _start(long argc, const char **argv) {
     // or 100 core cycles; both ends must change together if cadence changes.
     const long interval = application_workload ? 10 : 100;
     control(1, 0, 0);
-    unsigned long cycle_errors = lifecycle_cycle(); // Warm mappings before the resource baseline.
+    // The warmup observes EOF before reaping once. Repeating that ordering in
+    // all 1,000 resource cycles adds a second wake/block handoff per cycle and
+    // would measure scheduler traffic instead of descriptor recovery.
+    unsigned long cycle_errors = lifecycle_cycle(LIFECYCLE_EOF_BEFORE_WAIT);
     int ok = cycle_errors == 0;
     if (ok) {
       ok = control(10, 0, application_workload ? (long)application_cycles - 1 : 0) != 0;
@@ -2518,7 +2842,7 @@ void _start(long argc, const char **argv) {
     long next_checkpoint = interval;
     long progress = 1;
     for (long cycle = 1; ok && progress == 1; ++cycle) {
-      cycle_errors = lifecycle_cycle();
+      cycle_errors = lifecycle_cycle(LIFECYCLE_WAIT_BEFORE_EOF);
       ok = cycle_errors == 0;
       if (ok && cycle == next_checkpoint) {
         progress = control(10, cycle, application_workload ? (long)application_cycles - 1 : 0);
@@ -2559,7 +2883,7 @@ void _start(long argc, const char **argv) {
     control(3, 0, 0);
   } else if (mode == 5) {
     // Preserve the users.vm driver's numbered case order.
-    unsigned long (*const tests[])(void) = {vm_private_cow, vm_readonly_cow, vm_access_permissions};
+    unsigned long (*const tests[])(void) = {vm_private_cow, vm_readonly_cow, vm_access_permissions, vm_brk_lifecycle};
     for (long test = 0; test < (long)(sizeof(tests) / sizeof(tests[0])); ++test) {
       control(1, test, 0);
       unsigned long errors = tests[test]();

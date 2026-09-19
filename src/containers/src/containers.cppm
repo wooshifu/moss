@@ -993,6 +993,31 @@ public:
     return false;
   }
 
+  // Selection, conflict validation and mutation share one lock acquisition.
+  // This prevents interval owners such as VMA lists from publishing an overlap
+  // between a separate check and update. The callback must not re-enter this list.
+  template <typename Predicate, typename Conflict, typename Func>
+  bool update_if_unless(Predicate pred, Conflict conflicts, Func update) {
+    LockGuard<IrqSpinLock> guard(lock_);
+    Node *selected = nullptr;
+    for (auto *node = head_; node; node = node->next) {
+      if (pred(static_cast<const T &>(node->data))) {
+        selected = node;
+        break;
+      }
+    }
+    if (!selected) {
+      return false;
+    }
+    for (auto *node = head_; node; node = node->next) {
+      if (node != selected && conflicts(static_cast<const T &>(node->data))) {
+        return false;
+      }
+    }
+    update(selected->data);
+    return true;
+  }
+
   template <typename Func> void for_each(Func func) const {
     LockGuard<IrqSpinLock> guard(lock_);
     for (auto *node = head_; node; node = node->next) {

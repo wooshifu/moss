@@ -12,14 +12,15 @@ uv run cmake --build --preset arm64-debug
 uv run ctest --preset arm64-debug-test
 ```
 
-CTest runs `moss-functional`, `moss-applications`, `moss-framework` and `moss-production-boot`. The application test performs 1000 full workflows and can take tens of minutes. ARM64 Debug also runs `moss-console-input` (requires `gdb-multiarch`); Release provides `moss-benchmark`. The `test-kernel` build target includes both functional and application tests; `benchmark-kernel` runs benchmarks in Release. The explicit `stability-kernel` target runs the minimum-30-minute core-path workload; it is not part of routine CTest. Full application stability uses the explicit command below. Use `kernel_validation.py run` for validation; the normal runner does not dispatch tests. Configure with `-DMOSS_BUILD_TESTS=OFF` to exclude validation images and validation userspace programs.
+CTest runs `moss-functional`, `moss-applications`, `moss-framework` and `moss-production-boot`. The application test performs 10 full workflows, including a baseline and completion resource checkpoint; use `--iterations 1000` for the former extended routine profile. X64 also runs `moss-pvh-initrd`; ARM64 Debug runs `moss-console-input` and requires either `gdb-multiarch` or `gdb` at configure time; Release provides `moss-benchmark`. The `test-kernel` build target includes both functional and application tests; `benchmark-kernel` runs benchmarks in Release. The explicit `stability-kernel` target runs the minimum-30-minute core-path workload; it is not part of routine CTest. Full application stability uses the explicit command below. Use `kernel_validation.py run` for validation; the normal runner does not dispatch tests. Configure with `-DMOSS_BUILD_TESTS=OFF` to exclude validation images and validation userspace programs.
 
 The default is QEMU TCG with four real online vCPUs and 2048 MiB RAM. CPU count is never silently clamped. The resource suite verifies work executed on every requested CPU and writes to owned memory beyond the old 256 MiB window. The present early mappings require RAM/device addresses below 4 GiB; the largest usable RAM size therefore depends on the firmware's physical layout. The default resource profile remains the baseline regression; additional machine/layout profiles verify image portability.
 
 The `scheduler` workload requires at least two CPUs. Its enabled
-`migration_current_owner` regression currently fails on x64 Debug: migration
-can take a still-executing thread before its context is saved. This is a known
-unrepaired failure, not an expected-pass exclusion; see the
+`migration_current_owner` regression protects the previously observed window
+where migration could take a still-executing thread before its context was
+saved. It passes in the current nine-preset functional matrix; this bounded
+regression does not prove every scheduler interleaving. See the retained
 [diagnostic checkpoint](kernel-validation.md#scheduler-migration-diagnostic-checkpoint-2026-09-16).
 
 Each functional suite boots once, executes its cases sequentially, and stops after failure. Subsequent suites get fresh guests. Panic and timeout self-checks each use their own guest. Five warmups and thirty recorded benchmark batches share one guest per scenario, not one boot per sample.
@@ -87,6 +88,14 @@ does not treat preparation nanosleep as pipe readiness and is absent from the
 production image. These are focused regressions, not complete pipe, job-control,
 immediate-migration or deterministic SMP acceptance.
 
+The `users.signals/pid_lifecycle` case creates 300 sequential children, crossing
+both the 255-user-ASID capacity and the former 256-entry signal-state boundary.
+Each child writes a distinct nonzero pattern at the same user virtual address,
+alternates affinity between CPU 0 and CPU 1, verifies its reported CPU after a
+sleep/wakeup, and checks the pattern across eight bounded redispatches. The
+parent's value at that address must remain zero. The eight yields add repeated
+TLB use without turning this boundary regression into an unbounded stress test.
+
 ```sh
 uv run scripts/kernel_validation.py run --manifest build/arm64-debug/moss-artifacts.json --workload users.signals
 ```
@@ -124,6 +133,9 @@ uv run scripts/check_production_boot.py --manifest build/arm64-debug/moss-artifa
 ```
 
 The optional GDB probe supports ARM64 Debug on the fixed QEMU virt platform.
+Pass either `gdb-multiarch` or a native `gdb` with the required remote-target
+support; CTest resolves those names in that order and fails configuration if
+neither exists instead of silently omitting the controlled probe.
 It freezes matching production symbols, stops at the first VFS console read
 after the prompt, injects the first command and verifies its arrival through
 UARTFR before resuming. It does not consume FIFO bytes or patch kernel state.
@@ -132,6 +144,26 @@ or the unchanged 30-second timeout fails the run. The generated GDB script and
 debugger log accompany the ordinary serial log and report. This checks console
 readiness, not general concurrent-reader or scheduler handoff correctness.
 
+## x64 PVH Initrd Contract
+
+`moss-pvh-initrd` freezes and hashes the production x64 kernel/initramfs, then
+boots the same kernel with two initramfs sizes and two RAM layouts. It checks
+that the logged interval matches the real file and moves when QEMU changes the
+PVH module placement. Missing and zero-length module descriptors, malformed
+newc data, and a valid archive without `/validation.elf` or `/busybox.elf` must
+produce their exact errors before the boot-completed marker. The zero-length
+case uses QEMU's GDB remote protocol only to alter the bootloader-owned module
+descriptor at the real ELF entry; it does not patch kernel code or require an
+external GDB executable. This follows the [Xen PVH boot
+ABI](https://xenbits.xenproject.org/docs/unstable/misc/pvh.html).
+
+```sh
+uv run scripts/check_x64_pvh_initrd.py --manifest build/x64-debug/moss-artifacts.json
+```
+
+Per-case serial/QEMU logs and the aggregate hash/range verdict are retained in
+`<build>/pvh-initrd/<timestamp>/`.
+
 ## Core-Path Recovery, Stability and IRQ Return Probes
 
 `users.lifecycle/core_paths_recovery` runs one warmup plus 1,000 complete cycles
@@ -139,6 +171,11 @@ in one guest. Each cycle maps a private page, forks and verifies COW isolation,
 delivers and returns from a signal handler, sleeps through a real timer wakeup,
 transfers and checks pipe bytes, reads an inherited descriptor, executes a new
 image, exits, waits/reaps, checks pipe EOF and releases all parent resources.
+The warmup deliberately reads final pipe EOF before `waitpid`, proving that exit
+closes the child's last inherited writer before the Zombie can be reaped. The
+1,000 measured cycles retain wait-before-EOF ordering: repeating the blocking
+EOF-first handoff would primarily add scheduler wake/block traffic to the
+resource-recovery workload rather than strengthen the ownership assertion.
 Every 100 cycles it verifies heap, physical pages, process/thread counts,
 parent descriptors, their file references, user/stack pages and VFS inode/dentry/file
 pool occupancy against the warm baseline. The
@@ -289,9 +326,28 @@ and no alias of text/rodata is writable. x86 also checks CR0.WP. The
 spaces, checking inherited kernel permissions, physical-page references,
 page-count recovery and unchanged shared kernel tables.
 `vma_boundaries` exercises production AddressSpace admission: complete user
-address bounds, alignment, empty/reversed ranges, permissions and the reserved
-sigreturn page. It also checks access across adjacent VMAs and rejection at a
-gap or incompatible permission.
+address bounds, alignment, reversed ranges, permissions and the reserved
+sigreturn page. Ordinary empty VMAs are rejected; the sole exception is the
+fixed `HEAP_START` sentinel used for `brk == brk_base`. The case grows that VMA,
+rejects an overlapping resize without invoking its mutation callback, shrinks
+it back to empty, and rejects a second or displaced HEAP. It also checks access
+across adjacent VMAs and rejection at a gap or incompatible permission.
+
+`users.vm/brk_lifecycle` enters through the real `brk`, `mmap`, `munmap`, fork,
+fault and wait paths. It proves that the initial empty heap faults, a page fully
+removed by a non-page-aligned shrink faults, and regrowth supplies a zero page.
+It then places an anonymous mapping beyond a guard page and requires conflicting
+heap growth to preserve the old break, mapping contents, and inaccessible gap.
+Shrinking to the base and regrowing checks the first page again. A sub-page
+shrink intentionally retains its containing hardware page; partial `munmap`
+remains unsupported and must be rejected rather than partially committed.
+
+Run the focused policy and lifecycle set with:
+
+```sh
+uv run scripts/kernel_validation.py run --manifest build/arm64-debug/moss-artifacts.json \
+  --workload users.vm --workload mm.permissions --workload mm.transactions
+```
 
 This is structural U/S and W^X evidence for the present 0-4 GiB mapping contract,
 not complete malicious-user fault containment or physical-hardware acceptance.
@@ -320,16 +376,32 @@ uv run scripts/kernel_validation.py run --manifest build/arm64-debug/moss-artifa
   --workload users.libc --workload users.exec --workload users.busybox
 ```
 
-`users.exec` checks malformed entry/header/load rejection, bad environment
-pointers, combined argument/environment count and byte limits, exact accepted
-boundaries, and empty vectors. The accepted native limit is 128 strings and
-16 KiB including NULs; static mlibc validates the delivered arguments/environment.
-`allocation_rollback` uses the existing real physical-page pressure fixture,
-allowing successively more pages through root/stack/intermediate-table preparation.
-Each failed syscall must return ENOMEM without replacing the old address space
-or process name, changing the open file's position, or leaking heap/pages/files.
-The test then successfully fork/execs after pressure is released. This does not
-exercise every heap-allocation failure or every malformed ELF representation.
+`users.exec` has 28 cases. It checks malformed entry/header/load rejection, file
+and address wraparound, page-offset/alignment and reserved/overlap policy,
+PT_INTERP/PT_DYNAMIC, orphan file-backed TLS, bad environment pointers, combined
+argument/environment count and byte limits, exact accepted boundaries, and empty
+vectors. Rejection cases use an argv marker that makes accidental exec observably
+different from ENOEXEC. The accepted native limit is 128 strings and 16 KiB
+including NULs; static mlibc validates the delivered arguments/environment.
+`allocation_rollback` exhausts the real physical-page allocator once, then exposes
+one additional page per root/stack/intermediate-table preparation stage. Each
+failed syscall must return ENOMEM without replacing the old address space or
+process name, changing the open file's position, or leaking heap/pages/files.
+
+`mutable_snapshot_rollback` copies the real child ELF into writable ramfs and
+separately exhausts the runtime heap at argument storage, mutable-image object,
+shared control block, image bytes, address-space object, and a partially prepared
+VMA list. Every stage preserves the old address-space identity/root hash/name,
+stack canary, sequential file offset, and the complete lifecycle-resource baseline.
+After pressure is released, the suite successfully fork/execs. `boundary_load_plan`
+executes an independently constructed ELF with non-page-aligned RX/RW segments. It
+checks file-prefix and cross-page bytes, BSS/page-tail zero fill, target code execution,
+RW writes, RX write faults and RW execute faults. `users.libc` also
+checks that successful exec retains an independent mutable-file snapshot, preserves
+ordinary descriptors, and closes only descriptors marked close-on-exec. These
+checks close MOSS-016 for the documented fixed-address static subset. They do not
+cover multithreaded exec, dynamic linking/relocation, shared LOAD pages or kernel
+TLS initialization; unsupported layouts are rejected instead of merged.
 
 BusyBox tests execute the pinned real ash for exit status, command substitution
 with exact captured stdout, environment export followed by external shell exec,

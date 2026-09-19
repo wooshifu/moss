@@ -207,8 +207,48 @@ void update_boot_stage(BootStage stage, ::moss::kernel::ErrorCode error) noexcep
 // x64BootImpl member function implementations
 // ACPI tables are firmware data, not emulator configuration. All early physical
 // accesses are bounded by the currently supported 4-GiB identity mapping.
+// Xen's PVH ABI also requires start-of-day structures below this boundary.
+static constexpr u64 PVH_BOOT_ADDRESS_LIMIT = u64{1} << 32;
+
 static bool physical_range(u64 base, u64 size) noexcept {
-  return base && base < 0x100000000ULL && size <= 0x100000000ULL - base;
+  // The temporary PVH identity map and the boot ABI both bound boot data below
+  // 4 GiB. Requiring a non-empty range also prevents zero-sized modules from
+  // being mistaken for a supplied initramfs.
+  return base && size && base < PVH_BOOT_ADDRESS_LIMIT && size <= PVH_BOOT_ADDRESS_LIMIT - base;
+}
+
+static bool valid_pvh_module_list(const moss::boot::HvmStartInfo &start) noexcept {
+  // Validate the complete declared table even though Moss currently consumes
+  // its first entry as the initramfs. This prevents a forged count from
+  // describing memory outside the early identity map.
+  const u64 table_size = static_cast<u64>(start.nr_modules) * sizeof(moss::boot::HvmModlistEntry);
+  return start.nr_modules && physical_range(start.modlist_paddr, table_size);
+}
+
+static bool valid_pvh_initrd(const moss::boot::HvmModlistEntry &module,
+                             const moss::kernel::platform::MemoryRegion *regions, u32 region_count) noexcept {
+  if (module.reserved || !physical_range(module.paddr, module.size)) {
+    return false;
+  }
+  const u64 module_end = module.paddr + module.size;
+  u64 covered_end = module.paddr;
+  while (covered_end < module_end) {
+    u64 next_end = covered_end;
+    for (u32 i = 0; i < region_count; ++i) {
+      const auto &region = regions[i];
+      if (region.size && region.base < PVH_BOOT_ADDRESS_LIMIT && region.size <= PVH_BOOT_ADDRESS_LIMIT - region.base &&
+          region.base <= covered_end && region.base + region.size > next_end) {
+        next_end = region.base + region.size;
+      }
+    }
+    if (next_end == covered_end) {
+      // A syntactically valid physical address can still name MMIO or reserved
+      // firmware data. Every byte must be covered by usable RAM.
+      return false;
+    }
+    covered_end = next_end;
+  }
+  return true;
 }
 static u64 acpi_value(const u8 *p, u32 bytes) noexcept {
   u64 value = 0;
@@ -423,7 +463,8 @@ static bool discover_acpi(u64 address) noexcept {
   // map type 1 denotes usable RAM, other types must not enter the allocator.
   auto invalid = [] { return ::moss::kernel::VoidResult{::moss::kernel::ErrorCode::InvalidArgument}; };
   if (!start || !physical_range(reinterpret_cast<u64>(start), sizeof(*start)) || start->magic != 0x336ec578 ||
-      start->version < 1 || !start->memmap_entries || start->memmap_entries > 128) {
+      start->version < 1 || !start->memmap_entries || start->memmap_entries > 128 || start->reserved) {
+    early_print("BOOT ERROR: invalid PVH start info\n");
     return invalid();
   }
   struct PvhMemoryEntry {
@@ -433,15 +474,21 @@ static bool discover_acpi(u64 address) noexcept {
     u32 reserved;
   };
   if (!physical_range(start->memmap_paddr, start->memmap_entries * sizeof(PvhMemoryEntry))) {
+    early_print("BOOT ERROR: invalid PVH memory map\n");
     return invalid();
   }
   const auto *map = reinterpret_cast<const PvhMemoryEntry *>(start->memmap_paddr);
   for (u32 i = 0; i < start->memmap_entries; ++i) {
+    if (map[i].reserved) {
+      early_print("BOOT ERROR: invalid PVH memory map entry\n");
+      return invalid();
+    }
     if (map[i].type != 1 || !map[i].size) {
       continue;
     }
-    if (hardware.memory_region_count == MAX_MEMORY_REGIONS || map[i].base >= 0x100000000ULL ||
-        map[i].size > 0x100000000ULL - map[i].base) {
+    if (hardware.memory_region_count == MAX_MEMORY_REGIONS || map[i].base >= PVH_BOOT_ADDRESS_LIMIT ||
+        map[i].size > PVH_BOOT_ADDRESS_LIMIT - map[i].base) {
+      early_print("BOOT ERROR: invalid PVH RAM range\n");
       return invalid();
     }
     hardware.memory_regions[hardware.memory_region_count++] = {.base = map[i].base, .size = map[i].size};
@@ -449,17 +496,21 @@ static bool discover_acpi(u64 address) noexcept {
   }
   hardware.memory_map_valid = hardware.memory_region_count > 0;
   hardware.total_memory_start = hardware.memory_regions[0].base;
-  if (start->nr_modules) {
-    if (!physical_range(start->modlist_paddr, sizeof(HvmModlistEntry))) {
-      return invalid();
-    }
-    const auto *module = reinterpret_cast<const HvmModlistEntry *>(start->modlist_paddr);
-    if (!physical_range(module->paddr, module->size)) {
-      return invalid();
-    }
-    hardware.initrd_start = module->paddr;
-    hardware.initrd_end = module->paddr + module->size;
+  if (!start->nr_modules) {
+    early_print("BOOT ERROR: PVH initrd module is required\n");
+    return invalid();
   }
+  if (!valid_pvh_module_list(*start)) {
+    early_print("BOOT ERROR: invalid PVH module list\n");
+    return invalid();
+  }
+  const auto *module = reinterpret_cast<const HvmModlistEntry *>(start->modlist_paddr);
+  if (!valid_pvh_initrd(*module, hardware.memory_regions, hardware.memory_region_count)) {
+    early_print("BOOT ERROR: invalid PVH initrd module\n");
+    return invalid();
+  }
+  hardware.initrd_start = module->paddr;
+  hardware.initrd_end = module->paddr + module->size;
   if (!hardware.memory_map_valid || !discover_acpi(start->rsdp_paddr)) {
     early_print("BOOT ERROR: valid PVH memory map and ACPI MADT required\n");
     return invalid();

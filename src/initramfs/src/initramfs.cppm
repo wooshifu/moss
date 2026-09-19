@@ -19,9 +19,16 @@ namespace log = moss::kernel::logging;
 
 /// Maximum number of files in the initramfs archive
 // Fixed lookup capacity keeps parsing independent of heap readiness. 64 is a
-// kernel policy, not a CPIO limit; entries after it are not indexed. The exact
-// capacity rationale is not recorded, so archive growth must revisit this limit.
+// kernel policy, not a CPIO limit; archives with more indexed entries are
+// rejected so callers cannot mistake a partial index for the complete archive.
+// The exact capacity rationale is not recorded, so growth must revisit it.
 inline constexpr u32 MAX_INITRAMFS_FILES = 64;
+
+// The newc wire format defines thirteen fixed-width hexadecimal fields after
+// its six-byte magic. Validating every field keeps ignored metadata from making
+// an otherwise malformed archive appear structurally sound.
+inline constexpr usize CPIO_NEWC_FIELD_COUNT = 13;
+inline constexpr usize CPIO_NEWC_HEX_FIELD_WIDTH = 8;
 
 /// A single file entry in the initramfs
 struct InitramfsEntry {
@@ -54,21 +61,23 @@ struct CpioNewcHeader {
 
 static_assert(sizeof(CpioNewcHeader) == 110, "CPIO newc header must be 110 bytes");
 
-/// Parse an 8-character ASCII hex field into u32
-inline u32 parse_hex8(const char *s) noexcept {
-  u32 val = 0;
-  for (int i = 0; i < 8; ++i) {
-    val <<= 4;
+/// Parse an 8-character ASCII hex field into u32.
+inline bool parse_hex8(const char *s, u32 &value) noexcept {
+  value = 0;
+  for (usize i = 0; i < CPIO_NEWC_HEX_FIELD_WIDTH; ++i) {
+    value <<= 4;
     char c = s[i];
     if (c >= '0' && c <= '9') {
-      val |= static_cast<u32>(c - '0');
+      value |= static_cast<u32>(c - '0');
     } else if (c >= 'a' && c <= 'f') {
-      val |= static_cast<u32>(c - 'a' + 10);
+      value |= static_cast<u32>(c - 'a' + 10);
     } else if (c >= 'A' && c <= 'F') {
-      val |= static_cast<u32>(c - 'A' + 10);
+      value |= static_cast<u32>(c - 'A' + 10);
+    } else {
+      return false;
     }
   }
-  return val;
+  return true;
 }
 
 /// Align up to 4-byte boundary (CPIO newc padding)
@@ -94,7 +103,7 @@ public:
   /// Parse a CPIO newc archive from a RAM region.
   /// @param base  Start address of the CPIO data in physical/identity-mapped RAM
   /// @param size  Total size of the archive in bytes
-  /// @return true if at least one file was found
+  /// @return true only when the complete archive is structurally valid
   bool init(PhysAddr base, usize size) noexcept {
 #ifdef MOSS_ARCH_X64
     // WORKAROUND for x64: use identity mapping instead of high-half mapping
@@ -105,51 +114,95 @@ public:
 #endif
     archive_size_ = size;
     file_count_ = 0;
+    initialized_ = false;
 
-    if (size < sizeof(CpioNewcHeader)) {
-      log::klog::warn("initramfs: archive too small ({} bytes)", size);
+    auto reject = [&](const char *reason, usize offset) noexcept {
+      log::klog::warn("initramfs: invalid archive at offset {:#x}: {}", static_cast<u64>(offset), reason);
+      base_ = nullptr;
+      archive_size_ = 0;
+      file_count_ = 0;
       return false;
+    };
+
+    if (!base || size < sizeof(CpioNewcHeader)) {
+      return reject("missing header", 0);
     }
 
-    const u8 *ptr = base_;
-    const u8 *end = base_ + size;
-
-    while (ptr + sizeof(CpioNewcHeader) <= end && file_count_ < MAX_INITRAMFS_FILES) {
-      const auto *hdr = reinterpret_cast<const CpioNewcHeader *>(ptr);
+    usize offset = 0;
+    bool saw_trailer = false;
+    while (offset < size) {
+      const usize remaining = size - offset;
+      if (remaining < sizeof(CpioNewcHeader)) {
+        return reject("truncated header or missing trailer", offset);
+      }
+      const auto *hdr = reinterpret_cast<const CpioNewcHeader *>(base_ + offset);
 
       // Verify magic
       if (hdr->c_magic[0] != '0' || hdr->c_magic[1] != '7' || hdr->c_magic[2] != '0' || hdr->c_magic[3] != '7' ||
           hdr->c_magic[4] != '0' || hdr->c_magic[5] != '1') {
-        log::klog::warn("initramfs: bad magic at offset {:#x}", static_cast<u64>(ptr - base_));
-        break;
+        return reject("bad newc magic", offset);
       }
 
-      u32 namesize = parse_hex8(hdr->c_namesize);
-      u32 filesize = parse_hex8(hdr->c_filesize);
-      u32 mode = parse_hex8(hdr->c_mode);
+      const char *hex_fields = hdr->c_ino;
+      for (usize field = 0; field < CPIO_NEWC_FIELD_COUNT; ++field) {
+        u32 ignored_value = 0;
+        if (!parse_hex8(hex_fields + field * CPIO_NEWC_HEX_FIELD_WIDTH, ignored_value)) {
+          return reject("non-hexadecimal header field", offset);
+        }
+      }
+
+      u32 namesize = 0;
+      u32 filesize = 0;
+      u32 mode = 0;
+      // These fields have already passed syntax validation above; parse them
+      // again to retain their values without storing all thirteen fields.
+      static_cast<void>(parse_hex8(hdr->c_namesize, namesize));
+      static_cast<void>(parse_hex8(hdr->c_filesize, filesize));
+      static_cast<void>(parse_hex8(hdr->c_mode, mode));
+      if (!namesize || namesize > remaining - sizeof(CpioNewcHeader)) {
+        return reject("filename extends past archive end", offset);
+      }
 
       // Name starts immediately after the 110-byte header
-      const char *name = reinterpret_cast<const char *>(ptr + sizeof(CpioNewcHeader));
+      const char *name = reinterpret_cast<const char *>(base_ + offset + sizeof(CpioNewcHeader));
+      if (name[namesize - 1] != '\0') {
+        return reject("filename is not NUL-terminated", offset);
+      }
+      for (u32 i = 0; i + 1 < namesize; ++i) {
+        if (name[i] == '\0') {
+          return reject("filename contains an embedded NUL", offset);
+        }
+      }
+
+      // Compute every offset before forming a pointer so a forged u32 size
+      // cannot move pointer arithmetic outside the supplied archive object.
+      const usize name_end = sizeof(CpioNewcHeader) + namesize;
+      const usize data_offset = align4(name_end);
+      if (data_offset < name_end || data_offset > remaining || filesize > remaining - data_offset) {
+        return reject("file data extends past archive end", offset);
+      }
+      const usize data_end = data_offset + filesize;
+      const usize entry_total = align4(data_end);
+      if (entry_total < data_end || entry_total > remaining) {
+        return reject("file padding extends past archive end", offset);
+      }
 
       // CPIO namesize includes NUL: the ten-byte "TRAILER!!!" uses 11 bytes.
       if (namesize == 11 && str_equal(name, "TRAILER!!!")) {
+        if (filesize) {
+          return reject("trailer contains file data", offset);
+        }
+        saw_trailer = true;
         break;
       }
 
-      // Data starts after header + name, aligned to 4 bytes
-      usize name_end = sizeof(CpioNewcHeader) + namesize;
-      usize data_offset = align4(name_end);
-      const u8 *data_ptr = ptr + data_offset;
-
-      // Bounds check
-      usize entry_total = align4(data_offset + filesize);
-      if (ptr + entry_total > end) {
-        log::klog::warn("initramfs: entry '{}' extends past archive end", name);
-        break;
-      }
+      const u8 *data_ptr = base_ + offset + data_offset;
 
       // Skip "." directory entry
       if (namesize != 2 || name[0] != '.' || name[1] != '\0') {
+        if (file_count_ == MAX_INITRAMFS_FILES) {
+          return reject("file count exceeds the fixed lookup capacity", offset);
+        }
         // Strip leading "./" if present
         const char *clean_name = name;
         if (namesize > 2 && name[0] == '.' && name[1] == '/') {
@@ -169,7 +222,11 @@ public:
         ++file_count_;
       }
 
-      ptr += entry_total;
+      offset += entry_total;
+    }
+
+    if (!saw_trailer) {
+      return reject("missing TRAILER!!! record", offset);
     }
 
     log::klog::info("initramfs: parsed {} files from {:#x} ({} bytes)", file_count_, base, size);
@@ -178,7 +235,7 @@ public:
     }
 
     initialized_ = true;
-    return file_count_ > 0;
+    return true;
   }
 
   /// Look up a file by name (linear scan).
