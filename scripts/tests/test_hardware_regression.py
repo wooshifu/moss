@@ -282,3 +282,71 @@ int main() {
     )
     result = run_cpp(compiler, tmp_path, source)
     assert result.returncode == 0, result.stdout + result.stderr
+
+
+def test_pvh_initrd_metadata_must_describe_usable_ram(compiler, tmp_path):
+    text = (ROOT / "src/boot/src/arch/x64/boot_impl.cpp").read_text()
+    source = (
+        RESULT_STUB
+        + "\nnamespace moss { using PhysAddr = ::u64; }\n"
+        + "namespace moss::boot {\n"
+        + braced_definition(text, "struct HvmStartInfo")
+        + ";\n"
+        + braced_definition(text, "struct HvmModlistEntry")
+        + ";\n}\n"
+        + "namespace moss::kernel::platform { struct MemoryRegion { moss::PhysAddr base; u64 size; }; }\n"
+        + text[text.index("static constexpr u64 PVH_BOOT_ADDRESS_LIMIT") : text.index("static bool physical_range")]
+        + braced_definition(text, "static bool physical_range")
+        + "\n"
+        + braced_definition(text, "static bool valid_pvh_module_list")
+        + "\n"
+        + braced_definition(text, "static bool valid_pvh_initrd")
+        + r"""
+int main() {
+  using moss::boot::HvmModlistEntry;
+  using moss::boot::HvmStartInfo;
+  using moss::kernel::platform::MemoryRegion;
+
+  // MiB-sized banks keep the interval arithmetic readable. A 4-KiB granule
+  // makes the module straddle their boundary and exposes a one-granule hole.
+  constexpr u64 bank_bytes = 1ULL << 20;
+  constexpr u64 range_granule = 1ULL << 12;
+  constexpr u64 first_bank = bank_bytes;
+  constexpr u64 second_bank = first_bank + bank_bytes;
+  constexpr u64 module_start = second_bank - range_granule;
+  constexpr u64 module_bytes = 2 * range_granule;
+
+  HvmStartInfo start{};
+  start.nr_modules = 2;
+  start.modlist_paddr = second_bank;
+  if (!valid_pvh_module_list(start)) return 1;
+  start.nr_modules = 0;
+  if (valid_pvh_module_list(start)) return 2;
+  start.nr_modules = 1;
+  // Starting halfway through the final descriptor below 4 GiB makes the
+  // declared table cross the early identity-map boundary.
+  start.modlist_paddr = PVH_BOOT_ADDRESS_LIMIT - sizeof(HvmModlistEntry) / 2;
+  if (valid_pvh_module_list(start)) return 3;
+
+  // Adjacent usable banks jointly cover this range; a hole between them must
+  // not be treated as RAM merely because both endpoints are valid.
+  MemoryRegion adjacent[] = {{first_bank, bank_bytes}, {second_bank, bank_bytes}};
+  HvmModlistEntry module{.paddr = module_start, .size = module_bytes, .cmdline_paddr = 0, .reserved = 0};
+  if (!valid_pvh_initrd(module, adjacent, 2)) return 4;
+  MemoryRegion hole[] = {{first_bank, bank_bytes - range_granule}, {second_bank, bank_bytes}};
+  if (valid_pvh_initrd(module, hole, 2)) return 5;
+
+  const u64 inside_first_bank = first_bank + bank_bytes / 2;
+  module = {.paddr = inside_first_bank, .size = 0, .cmdline_paddr = 0, .reserved = 0};
+  if (valid_pvh_initrd(module, adjacent, 2)) return 6;
+  module = {.paddr = inside_first_bank, .size = range_granule, .cmdline_paddr = 0, .reserved = 1};
+  if (valid_pvh_initrd(module, adjacent, 2)) return 7;
+  module = {.paddr = second_bank + bank_bytes, .size = range_granule, .cmdline_paddr = 0, .reserved = 0};
+  if (valid_pvh_initrd(module, adjacent, 2)) return 8;
+  module = {.paddr = inside_first_bank, .size = range_granule, .cmdline_paddr = 0, .reserved = 0};
+  if (!valid_pvh_initrd(module, adjacent, 2)) return 9;
+}
+"""
+    )
+    result = run_cpp(compiler, tmp_path, source)
+    assert result.returncode == 0, result.stdout + result.stderr

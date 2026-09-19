@@ -245,8 +245,9 @@ namespace user_layout {
 inline constexpr VirtAddr CODE_BASE = 0x0000000200000000ULL;  // 8 GiB
 inline constexpr VirtAddr HEAP_START = 0x0000000100000000ULL; // 4 GiB, above identity map
 // Demand-paged budgets: 32 KiB initial stack, 8 MiB maximum downward growth
-// and 64 KiB initial heap. Original budget measurements are not recorded;
-// changing them affects VMA admission/growth, not immediate RAM allocation.
+// and a 64 KiB ELF exclusion window at the heap base. The HEAP VMA itself
+// starts empty and follows brk exactly; the original window sizing evidence is
+// not recorded. Changing these values affects admission, not immediate RAM use.
 inline constexpr usize STACK_SIZE = 32ULL * 1024;
 inline constexpr usize STACK_MAX = 8ULL * 1024 * 1024;
 inline constexpr usize HEAP_INIT = 64ULL * 1024;
@@ -371,11 +372,26 @@ struct AddressSpace {
   AddressSpace &operator=(const AddressSpace &) = delete;
 
   [[nodiscard]] static bool valid_vma_range(VirtAddr start, VirtAddr end, VmaType type) noexcept {
-    if (start >= end || ((start | end) & (PAGE_SIZE - 1)) != 0 ||
-        !mm::PageTableManager::is_user_range(start, end - start)) {
+    if (start > end || ((start | end) & (PAGE_SIZE - 1)) != 0) {
+      return false;
+    }
+    // brk_base is fixed by the user layout. Accepting a HEAP elsewhere would
+    // let its VMA diverge from the break fields used by sys_brk and fork.
+    if (type == VmaType::HEAP && start != user_layout::HEAP_START) {
       return false;
     }
     constexpr auto stub = user_layout::SIGRETURN_PAGE;
+    // An empty HEAP region is the explicit brk==brk_base state. No other VMA
+    // may be empty because it would claim metadata without authorizing bytes.
+    if (start == end) {
+      // One byte validates the sentinel address itself without granting a span.
+      constexpr usize address_probe_bytes = 1;
+      return type == VmaType::HEAP && mm::PageTableManager::is_user_range(start, address_probe_bytes) &&
+             (start < stub || start >= stub + PAGE_SIZE);
+    }
+    if (!mm::PageTableManager::is_user_range(start, end - start)) {
+      return false;
+    }
     if (type == VmaType::SIGRETURN) {
       return start == stub && end == stub + PAGE_SIZE;
     }
@@ -390,8 +406,32 @@ struct AddressSpace {
         (type == VmaType::SIGRETURN && flags != (vma_flags::READ | vma_flags::EXEC))) {
       return false;
     }
-    return vmas.push_front_unless([start, end](const VmaRegion &v) { return start < v.end_addr && end > v.start_addr; },
-                                  start, end, flags, type, backing, b_offset, b_size);
+    return vmas.push_front_unless(
+        [start, end, type](const VmaRegion &v) {
+          // Empty heap sentinels do not overlap by interval arithmetic, so
+          // reject a second HEAP explicitly to keep one authoritative break.
+          return (type == VmaType::HEAP && v.type == VmaType::HEAP) || (start < v.end_addr && end > v.start_addr);
+        },
+        start, end, flags, type, backing, b_offset, b_size);
+  }
+
+  // Resize one exact VMA without a check/update race. before_update runs while
+  // the VMA list is locked, allowing brk shrink to revoke resident pages before
+  // the shorter authorization is published. It must not call back into vmas.
+  template <typename Func>
+  bool resize_vma(VirtAddr start, VirtAddr old_end, VirtAddr new_end, VmaType type, Func before_update) noexcept {
+    if (!valid_vma_range(start, new_end, type)) {
+      return false;
+    }
+    return vmas.update_if_unless(
+        [start, old_end, type](const VmaRegion &v) {
+          return v.start_addr == start && v.end_addr == old_end && v.type == type;
+        },
+        [start, new_end](const VmaRegion &v) { return start < v.end_addr && new_end > v.start_addr; },
+        [&](VmaRegion &v) {
+          before_update(static_cast<const VmaRegion &>(v));
+          v.end_addr = new_end;
+        });
   }
 
   // Copy metadata while locked; callers never borrow a list node.

@@ -97,7 +97,7 @@ CATALOG = {
         "fork_process_allocation_rollback",
         "fork_metadata_allocation_rollback",
     ],
-    "users.vm": ["private_cow", "readonly_cow", "access_permissions"],
+    "users.vm": ["private_cow", "readonly_cow", "access_permissions", "brk_lifecycle"],
     "users.frame": ["native_frame", "fork_registers", "signal_return"],
     "users.uaccess": [
         "allocation_fault",
@@ -117,6 +117,20 @@ CATALOG = {
         "rejects_invalid_entry",
         "rejects_phentsize",
         "rejects_load_size",
+        "rejects_truncated_header",
+        "rejects_truncated_phdr",
+        "rejects_file_range",
+        "rejects_user_range",
+        "rejects_address_overflow",
+        "rejects_page_offset",
+        "rejects_alignment",
+        "rejects_reserved_range",
+        "rejects_page_overlap",
+        "rejects_program_header_limit",
+        "rejects_wx",
+        "rejects_dynamic",
+        "rejects_interp",
+        "rejects_orphan_tls_file",
         "bad_env_vector",
         "bad_env_string",
         "argument_count_limit",
@@ -126,6 +140,8 @@ CATALOG = {
         "exact_string_bytes",
         "empty_vectors",
         "allocation_rollback",
+        "mutable_snapshot_rollback",
+        "boundary_load_plan",
     ],
     "users.busybox": [
         "ash_exit",
@@ -779,6 +795,7 @@ def run_guest(cfg: Artifacts, workload: str, directory: Path, settings: dict, it
                 settings["warmup"],
                 settings["samples"],
                 settings.get("stability", False),
+                lifecycle_cycles,
             )
             for line in serial.splitlines():
                 replay.accept(line)

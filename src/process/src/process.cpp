@@ -412,25 +412,32 @@ KernelResult<VirtAddr> allocate_user_heap(Process *process, usize size) noexcept
 
   AddressSpace *as = process->address_space();
 
-  // Use brk_current to track the heap watermark.  First call initializes
-  // from HEAP_START; subsequent calls extend from the current break.
+  constexpr u32 flags = vma_flags::READ | vma_flags::WRITE | vma_flags::DEMAND_ZERO;
+  // Use brk_current to track the heap watermark. The empty VMA represents the
+  // initial break without authorizing the old HEAP_INIT reservation window.
   if (as->brk_current == 0) {
     as->brk_base = user_layout::HEAP_START;
     as->brk_current = user_layout::HEAP_START;
+    if (!as->add_vma(as->brk_base, as->brk_base, flags, VmaType::HEAP)) {
+      return KernelResult<VirtAddr>{ErrorCode::AlreadyExists};
+    }
   }
 
   VirtAddr heap_addr = as->brk_current;
-
-  // Physical pages are allocated lazily via demand paging (page fault
-  // handler).  Here we only register the VMA so the fault handler knows
-  // the access is legitimate.
-  u32 flags = vma_flags::READ | vma_flags::WRITE | vma_flags::DEMAND_ZERO;
-  auto map_result = map_user_memory(as, heap_addr, 0, size, flags);
-  if (!map_result) {
-    return KernelResult<VirtAddr>{map_result.error()};
+  if (size > USER_MAX - heap_addr || !mm::PageTableManager::is_user_range(heap_addr, size)) {
+    return KernelResult<VirtAddr>{ErrorCode::InvalidArgument};
+  }
+  const VirtAddr page_mask = static_cast<VirtAddr>(PAGE_SIZE) - 1;
+  const VirtAddr old_end = (heap_addr + page_mask) & ~page_mask;
+  const VirtAddr new_break = heap_addr + size;
+  const VirtAddr new_end = (new_break + page_mask) & ~page_mask;
+  if (old_end != new_end && !as->resize_vma(as->brk_base, old_end, new_end, VmaType::HEAP, [](const VmaRegion &) {})) {
+    return KernelResult<VirtAddr>{ErrorCode::AlreadyExists};
   }
 
-  as->brk_current = heap_addr + size;
+  // Physical pages remain lazy; total_pages records newly authorized pages.
+  (void)as->total_pages.fetch_add((new_end - old_end) / PAGE_SIZE, containers::MemoryOrder::Relaxed);
+  as->brk_current = new_break;
 
   return KernelResult<VirtAddr>{heap_addr};
 }

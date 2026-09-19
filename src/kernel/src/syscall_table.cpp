@@ -23,6 +23,10 @@ extern "C" [[gnu::weak, gnu::noinline]] void moss_validation_sleep_armed(void * 
 // Validation may apply real heap pressure at a fork allocation boundary.
 extern "C" [[gnu::weak, gnu::noinline]] void moss_validation_fork_metadata(unsigned /*unused*/,
                                                                            bool /*unused*/) noexcept {}
+// Validation may apply real heap pressure at an exec preparation boundary.
+// The observer never substitutes an allocation result in production.
+extern "C" [[gnu::weak, gnu::noinline]] void moss_validation_exec_allocation(unsigned /*unused*/, bool /*unused*/,
+                                                                             moss::kernel::usize /*unused*/) noexcept {}
 
 namespace moss::kernel::syscall {
 
@@ -36,6 +40,17 @@ SyscallStats g_syscall_stats = {.total_syscalls = 0,
 // 系统调用处理函数实现
 namespace handlers {
 namespace log = moss::kernel::logging;
+
+namespace exec_allocation_stage {
+// Keep these values synchronized with the validation override. Each stage
+// surrounds one independently fallible owned resource in preparation order.
+inline constexpr unsigned ARGUMENTS = 0;
+inline constexpr unsigned MUTABLE_IMAGE_OBJECT = 1;
+inline constexpr unsigned MUTABLE_IMAGE_CONTROL = 2;
+inline constexpr unsigned MUTABLE_IMAGE_BYTES = 3;
+inline constexpr unsigned ADDRESS_SPACE = 4;
+inline constexpr unsigned VMA_NODE = 5;
+} // namespace exec_allocation_stage
 
 // ── User pointer validation (copy_from_user / copy_to_user) ────────────
 //
@@ -502,13 +517,19 @@ long sys_execve(long pathname_addr, long argv_addr, long envp_addr, long /*unuse
     usize offsets[MAX_STRINGS]{};
     // Five extra words: argc, argv NUL, envp NUL, AT_NULL tag, AT_NULL value.
     u64 vector[MAX_STRINGS + 5]{};
+    LoadPlan load_plan{};
     usize count{}, used{}, argc{};
   };
   // The syscall kernel stack is only 16 KiB; keep the snapshot in owned heap memory.
-  auto args = make_unique<Arguments>();
-  if (!args) {
+  moss_validation_exec_allocation(exec_allocation_stage::ARGUMENTS, true, sizeof(Arguments));
+  auto args_storage = mm::RuntimeHeapAllocator::allocate_aligned(sizeof(Arguments), alignof(Arguments));
+  moss_validation_exec_allocation(exec_allocation_stage::ARGUMENTS, false, sizeof(Arguments));
+  if (!args_storage) {
     return -errc::ENOMEM;
   }
+  // Ordinary new panics on kernel-heap OOM; placement construction preserves
+  // exec's recoverable contract, and unique_ptr uses the compatible delete path.
+  unique_ptr<Arguments> args{new (*args_storage) Arguments{}};
   auto capture = [&](long address) -> long {
     if (!address) {
       return 0;
@@ -570,8 +591,24 @@ long sys_execve(long pathname_addr, long argv_addr, long envp_addr, long /*unuse
     if (inode->ramfs_mutable) {
       // ponytail: snapshot mutable executables once; use shared file pages if
       // copying large images becomes costly. Immutable CPIO stays borrowed.
-      image = make_shared<ExecutableImage>();
+      bool allocating_image_object = true;
+      image = shared_ptr<ExecutableImage>::try_make([&](usize bytes, usize alignment) -> void * {
+        // SharedPtr owns two independent allocations. Expose each boundary so
+        // validation can prove that a missing control block releases the object.
+        const unsigned stage = allocating_image_object ? exec_allocation_stage::MUTABLE_IMAGE_OBJECT
+                                                       : exec_allocation_stage::MUTABLE_IMAGE_CONTROL;
+        allocating_image_object = false;
+        moss_validation_exec_allocation(stage, true, bytes);
+        auto storage = mm::RuntimeHeapAllocator::allocate_aligned(bytes, alignment);
+        moss_validation_exec_allocation(stage, false, bytes);
+        return storage ? *storage : nullptr;
+      });
+      if (!image) {
+        return -errc::ENOMEM;
+      }
+      moss_validation_exec_allocation(exec_allocation_stage::MUTABLE_IMAGE_BYTES, true, image_size);
       auto allocation = mm::RuntimeHeapAllocator::allocate(image_size);
+      moss_validation_exec_allocation(exec_allocation_stage::MUTABLE_IMAGE_BYTES, false, image_size);
       if (!allocation) {
         return -errc::ENOMEM;
       }
@@ -581,106 +618,66 @@ long sys_execve(long pathname_addr, long argv_addr, long envp_addr, long /*unuse
       image_data = image->data;
     }
   }
-  const auto *header = reinterpret_cast<const ElfHeader *>(image_data);
-  // Limit the quadratic overlap validation to 64 headers from untrusted input.
-  // The exact cap calibration is unrecorded; larger static images are rejected.
-  if (!validate_elf_header(header, image_size) || header->e_phnum > 64) {
-    return -errc::ENOEXEC;
-  }
-  const auto *phdrs = get_program_headers(header);
   const VirtAddr stack_bottom = user_layout::STACK_TOP - user_layout::STACK_SIZE;
-  bool executable_entry = false;
-
-  // This static profile uses page-separated LOAD segments. Reject unsupported
-  // overlaps instead of merging unrelated file ranges and weakening permissions.
-  for (u16 i = 0; i < header->e_phnum; ++i) {
-    const auto &ph = phdrs[i];
-    if (ph.p_type == PT_INTERP || ph.p_type == PT_DYNAMIC) {
-      return -errc::ENOEXEC;
-    }
-    if (ph.p_type != PT_LOAD && ph.p_type != PT_TLS) {
-      continue;
-    }
-    if (ph.p_offset > image_size || ph.p_filesz > image_size - ph.p_offset || ph.p_filesz > ph.p_memsz) {
-      return -errc::ENOEXEC;
-    }
-    if (ph.p_type != PT_LOAD || !ph.p_memsz) {
-      continue;
-    }
-    if (ph.p_vaddr >= USER_MAX || ph.p_memsz > USER_MAX - ph.p_vaddr || (ph.p_flags & ~(PF_R | PF_W | PF_X)) ||
-        ((ph.p_flags & (PF_W | PF_X)) == (PF_W | PF_X))) {
-      return -errc::ENOEXEC;
-    }
-    const VirtAddr start = ph.p_vaddr & ~(static_cast<VirtAddr>(PAGE_SIZE) - 1);
-    const VirtAddr end = (ph.p_vaddr + ph.p_memsz + PAGE_SIZE - 1) & ~(static_cast<VirtAddr>(PAGE_SIZE) - 1);
-    const u64 prefix = ph.p_vaddr - start;
-    if (ph.p_offset < prefix || ((ph.p_offset ^ ph.p_vaddr) & (PAGE_SIZE - 1)) ||
-        (ph.p_align > 1 && ((ph.p_align & (ph.p_align - 1)) || ((ph.p_offset ^ ph.p_vaddr) & (ph.p_align - 1))))) {
-      return -errc::ENOEXEC;
-    }
-    if (!AddressSpace::valid_vma_range(start, end, VmaType::DATA) ||
-        (start < user_layout::STACK_TOP && end > stack_bottom) ||
-        (start < user_layout::HEAP_START + user_layout::HEAP_INIT && end > user_layout::HEAP_START)) {
-      return -errc::ENOEXEC;
-    }
-    // ponytail: pairwise overlap checks are bounded by 64 headers; sort if that cap grows.
-    for (u16 j = 0; j < i; ++j) {
-      const auto &other = phdrs[j];
-      if (other.p_type != PT_LOAD || !other.p_memsz) {
-        continue;
-      }
-      const VirtAddr other_start = other.p_vaddr & ~(static_cast<VirtAddr>(PAGE_SIZE) - 1);
-      const VirtAddr other_end =
-          (other.p_vaddr + other.p_memsz + PAGE_SIZE - 1) & ~(static_cast<VirtAddr>(PAGE_SIZE) - 1);
-      if (start < other_end && end > other_start) {
-        return -errc::ENOEXEC;
-      }
-    }
-    if ((ph.p_flags & PF_X) && header->e_entry >= ph.p_vaddr && header->e_entry < ph.p_vaddr + ph.p_memsz) {
-      executable_entry = true;
-    }
-  }
-  if (!executable_entry) {
+  const LoadRange reserved_ranges[] = {
+      {user_layout::SIGRETURN_PAGE, user_layout::SIGRETURN_PAGE + PAGE_SIZE},
+      {stack_bottom, user_layout::STACK_TOP},
+      {user_layout::HEAP_START, user_layout::HEAP_START + user_layout::HEAP_INIT},
+  };
+  const LoadPlanPolicy load_policy = {
+      PAGE_SIZE,
+      mm::PageTableManager::KERNEL_IDENTITY_END,
+      USER_MAX,
+      reserved_ranges,
+      sizeof(reserved_ranges) / sizeof(reserved_ranges[0]),
+  };
+  if (!build_load_plan(image_data, image_size, load_policy, args->load_plan)) {
     return -errc::ENOEXEC;
   }
+  // From this point onward the plan is immutable: validation and VMA backing
+  // intervals cannot diverge through a second round of ELF arithmetic.
+  const LoadPlan &load_plan = args->load_plan;
 
+  moss_validation_exec_allocation(exec_allocation_stage::ADDRESS_SPACE, true, sizeof(AddressSpace));
   auto created = user_space::create_user_address_space();
+  moss_validation_exec_allocation(exec_allocation_stage::ADDRESS_SPACE, false, sizeof(AddressSpace));
   if (!created) {
     return -errc::ENOMEM;
   }
   auto prepared = moss::move(*created);
   prepared->executable_image = image;
-  for (u16 i = 0; i < header->e_phnum; ++i) {
-    const auto &ph = phdrs[i];
-    if (ph.p_type != PT_LOAD || !ph.p_memsz) {
-      continue;
-    }
-    const VirtAddr start = ph.p_vaddr & ~(static_cast<VirtAddr>(PAGE_SIZE) - 1);
-    const VirtAddr end = (ph.p_vaddr + ph.p_memsz + PAGE_SIZE - 1) & ~(static_cast<VirtAddr>(PAGE_SIZE) - 1);
-    const usize prefix = ph.p_vaddr - start;
-    u32 flags = ph.p_filesz ? 0 : vma_flags::DEMAND_ZERO;
-    if (ph.p_flags & PF_R) {
+  auto add_prepared_vma = [&](VirtAddr start, VirtAddr end, u32 flags, VmaType type, const u8 *backing,
+                              usize backing_offset, usize backing_size) {
+    moss_validation_exec_allocation(exec_allocation_stage::VMA_NODE, true, sizeof(VmaRegion));
+    const bool added = prepared->add_vma(start, end, flags, type, backing, backing_offset, backing_size);
+    moss_validation_exec_allocation(exec_allocation_stage::VMA_NODE, false, sizeof(VmaRegion));
+    return added;
+  };
+  for (usize i = 0; i < load_plan.segment_count; ++i) {
+    const auto &segment = load_plan.segments[i];
+    u32 flags = segment.backing_size ? 0 : vma_flags::DEMAND_ZERO;
+    if (segment.flags & PF_R) {
       flags |= vma_flags::READ;
     }
-    if (ph.p_flags & PF_W) {
+    if (segment.flags & PF_W) {
       flags |= vma_flags::WRITE;
     }
-    if (ph.p_flags & PF_X) {
+    if (segment.flags & PF_X) {
       flags |= vma_flags::EXEC;
     }
-    if (!prepared->add_vma(start, end, flags, ph.p_flags & PF_X ? VmaType::CODE : VmaType::DATA,
-                           ph.p_filesz ? image_data + ph.p_offset - prefix : nullptr, 0,
-                           ph.p_filesz ? ph.p_filesz + prefix : 0)) {
+    const u8 *backing = segment.backing_size ? image_data + segment.backing_offset : nullptr;
+    if (!add_prepared_vma(segment.page_start, segment.page_end, flags,
+                          segment.flags & PF_X ? VmaType::CODE : VmaType::DATA, backing, 0, segment.backing_size)) {
       return -errc::ENOMEM;
     }
   }
-  if (!prepared->add_vma(user_layout::SIGRETURN_PAGE, user_layout::SIGRETURN_PAGE + PAGE_SIZE,
-                         vma_flags::READ | vma_flags::EXEC, VmaType::SIGRETURN, moss::abi::signal::trampoline(), 0,
-                         moss::abi::signal::trampoline_size()) ||
-      !prepared->add_vma(stack_bottom, user_layout::STACK_TOP,
-                         vma_flags::READ | vma_flags::WRITE | vma_flags::DEMAND_ZERO, VmaType::STACK) ||
-      !prepared->add_vma(user_layout::HEAP_START, user_layout::HEAP_START + user_layout::HEAP_INIT,
-                         vma_flags::READ | vma_flags::WRITE | vma_flags::DEMAND_ZERO, VmaType::HEAP)) {
+  if (!add_prepared_vma(user_layout::SIGRETURN_PAGE, user_layout::SIGRETURN_PAGE + PAGE_SIZE,
+                        vma_flags::READ | vma_flags::EXEC, VmaType::SIGRETURN, moss::abi::signal::trampoline(), 0,
+                        moss::abi::signal::trampoline_size()) ||
+      !add_prepared_vma(stack_bottom, user_layout::STACK_TOP,
+                        vma_flags::READ | vma_flags::WRITE | vma_flags::DEMAND_ZERO, VmaType::STACK, nullptr, 0, 0) ||
+      !add_prepared_vma(user_layout::HEAP_START, user_layout::HEAP_START,
+                        vma_flags::READ | vma_flags::WRITE | vma_flags::DEMAND_ZERO, VmaType::HEAP, nullptr, 0, 0)) {
     return -errc::ENOMEM;
   }
   prepared->brk_base = prepared->brk_current = user_layout::HEAP_START;
@@ -778,7 +775,7 @@ long sys_execve(long pathname_addr, long argv_addr, long envp_addr, long /*unuse
   cur->active_signal_frame = 0;
   cur->trap_frame = nullptr;
   cur->context = CpuContext{};
-  cur->context.pc = header->e_entry;
+  cur->context.pc = load_plan.entry;
   cur->context.sp = user_sp;
 #if defined(MOSS_ARCH_ARM64)
   cur->context.x[0] = argc;
@@ -1809,14 +1806,32 @@ long sys_brk(long addr, long /*unused*/, long /*unused*/, long /*unused*/, long 
     return static_cast<long>(as->brk_current);
   }
 
-  // Expand or shrink the HEAP VMA to cover the new break (page-aligned)
-  VirtAddr aligned_end = (new_brk + PAGE_SIZE - 1) & ~(static_cast<VirtAddr>(PAGE_SIZE) - 1);
-  if (aligned_end != as->brk_base && !AddressSpace::valid_vma_range(as->brk_base, aligned_end, VmaType::HEAP)) {
+  const VirtAddr page_mask = static_cast<VirtAddr>(PAGE_SIZE) - 1;
+  const VirtAddr old_end = (as->brk_current + page_mask) & ~page_mask;
+  const VirtAddr new_end = (new_brk + page_mask) & ~page_mask;
+  if (!AddressSpace::valid_vma_range(as->brk_base, new_end, VmaType::HEAP)) {
     return static_cast<long>(as->brk_current);
   }
-  (void)as->vmas.update_if([](const VmaRegion &vma) { return vma.type == VmaType::HEAP; },
-                           [&](VmaRegion &vma) { vma.end_addr = aligned_end; });
 
+  if (old_end != new_end) {
+    // Keep VMA conflict validation, resident-page revocation and metadata
+    // publication in one list transaction. A failed growth leaves both the
+    // old VMA and brk_current untouched.
+    const bool resized = as->resize_vma(as->brk_base, old_end, new_end, VmaType::HEAP, [&](const VmaRegion &vma) {
+      if (new_end >= vma.end_addr) {
+        return;
+      }
+      for (VirtAddr va = new_end; va < vma.end_addr; va += PAGE_SIZE) {
+        mm::PageTableManager::unmap_user_page(as->pgd_phys, va);
+      }
+    });
+    if (!resized) {
+      return static_cast<long>(as->brk_current);
+    }
+  }
+
+  // Sub-page shrink retains the containing page. Hardware cannot revoke only
+  // its tail; a later growth within that page may observe the retained bytes.
   as->brk_current = new_brk;
   return static_cast<long>(new_brk);
 }

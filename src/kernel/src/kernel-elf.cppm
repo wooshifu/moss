@@ -76,6 +76,41 @@ struct [[gnu::packed]] ProgramHeader {
   u64 p_align;  // Segment alignment
 };
 
+// The existing 64-header limit bounds pairwise page-overlap validation. Its
+// original calibration is unrecorded; changing it also changes the fixed plan
+// size and the n*(n-1)/2 overlap cost (2,016 comparisons when n is 64).
+inline constexpr usize MAX_PROGRAM_HEADERS = 64;
+
+struct LoadRange {
+  u64 start;
+  u64 end;
+};
+
+struct LoadSegment {
+  u64 page_start;
+  u64 page_end;
+  usize backing_offset;
+  usize backing_size;
+  u32 flags;
+};
+
+struct LoadPlanPolicy {
+  u64 page_size;
+  u64 user_begin;
+  u64 user_end;
+  const LoadRange *reserved;
+  usize reserved_count;
+};
+
+// A successful plan is a complete immutable description of every PT_LOAD.
+// The caller discards this object on failure and consumes it read-only after
+// success, so VMA construction cannot diverge from validation arithmetic.
+struct LoadPlan {
+  LoadSegment segments[MAX_PROGRAM_HEADERS]{};
+  usize segment_count{};
+  u64 entry{};
+};
+
 // ============================================================================
 // ELF validation
 // ============================================================================
@@ -140,6 +175,128 @@ struct [[gnu::packed]] ProgramHeader {
 /// Get pointer to program header table
 [[nodiscard]] inline const ProgramHeader *get_program_headers(const ElfHeader *hdr) noexcept {
   return reinterpret_cast<const ProgramHeader *>(reinterpret_cast<const u8 *>(hdr) + hdr->e_phoff);
+}
+
+/// Validate an image and produce the page/file intervals consumed by demand paging.
+/// `out` is valid only when this function succeeds.
+[[nodiscard]] inline bool build_load_plan(const u8 *image, usize image_size, const LoadPlanPolicy &policy,
+                                          LoadPlan &out) noexcept {
+  if (!image || policy.page_size == 0 || (policy.page_size & (policy.page_size - 1)) != 0 ||
+      policy.user_begin >= policy.user_end || (policy.reserved_count != 0 && !policy.reserved)) {
+    return false;
+  }
+  const auto *header = reinterpret_cast<const ElfHeader *>(image);
+  if (!validate_elf_header(header, image_size) || header->e_phnum > MAX_PROGRAM_HEADERS) {
+    return false;
+  }
+
+  out = LoadPlan{};
+  out.entry = header->e_entry;
+  const auto *headers = get_program_headers(header);
+  const u64 page_mask = policy.page_size - 1;
+  bool executable_entry = false;
+
+  for (u16 i = 0; i < header->e_phnum; ++i) {
+    const auto &program = headers[i];
+    if (program.p_type == PT_INTERP || program.p_type == PT_DYNAMIC) {
+      // This fixed-address loader has no interpreter or relocator.
+      return false;
+    }
+    if (program.p_type != PT_LOAD && program.p_type != PT_TLS) {
+      continue;
+    }
+    if (program.p_offset > image_size || program.p_filesz > image_size - program.p_offset ||
+        program.p_filesz > program.p_memsz) {
+      return false;
+    }
+    if (program.p_type == PT_TLS) {
+      if (program.p_memsz != 0 &&
+          (program.p_vaddr < policy.user_begin || program.p_vaddr >= policy.user_end ||
+           program.p_memsz > policy.user_end - program.p_vaddr || (program.p_flags & ~(PF_R | PF_W)) != 0 ||
+           (program.p_align > 1 && ((program.p_align & (program.p_align - 1)) != 0 ||
+                                    ((program.p_offset ^ program.p_vaddr) & (program.p_align - 1)) != 0)))) {
+        return false;
+      }
+      continue;
+    }
+    if (program.p_memsz == 0) {
+      continue;
+    }
+    if (program.p_vaddr < policy.user_begin || program.p_vaddr >= policy.user_end ||
+        program.p_memsz > policy.user_end - program.p_vaddr || (program.p_flags & ~(PF_R | PF_W | PF_X)) != 0 ||
+        (program.p_flags & (PF_W | PF_X)) == (PF_W | PF_X)) {
+      return false;
+    }
+
+    const u64 memory_end = program.p_vaddr + program.p_memsz;
+    if (memory_end > ~u64{0} - page_mask) {
+      return false;
+    }
+    const u64 page_start = program.p_vaddr & ~page_mask;
+    const u64 page_end = (memory_end + page_mask) & ~page_mask;
+    const u64 prefix = program.p_vaddr - page_start;
+    if (page_start < policy.user_begin || page_end > policy.user_end || program.p_offset < prefix ||
+        ((program.p_offset ^ program.p_vaddr) & page_mask) != 0 ||
+        (program.p_align > 1 && ((program.p_align & (program.p_align - 1)) != 0 ||
+                                 ((program.p_offset ^ program.p_vaddr) & (program.p_align - 1)) != 0)) ||
+        program.p_filesz > ~u64{0} - prefix) {
+      return false;
+    }
+
+    for (usize reserved = 0; reserved < policy.reserved_count; ++reserved) {
+      const auto &range = policy.reserved[reserved];
+      if (range.start > range.end || (page_start < range.end && page_end > range.start)) {
+        return false;
+      }
+    }
+    for (usize existing = 0; existing < out.segment_count; ++existing) {
+      const auto &segment = out.segments[existing];
+      if (page_start < segment.page_end && page_end > segment.page_start) {
+        return false; // Shared pages would combine unrelated bytes or permissions.
+      }
+    }
+
+    auto &segment = out.segments[out.segment_count++];
+    segment.page_start = page_start;
+    segment.page_end = page_end;
+    segment.backing_offset = program.p_filesz ? static_cast<usize>(program.p_offset - prefix) : 0;
+    segment.backing_size = program.p_filesz ? static_cast<usize>(prefix + program.p_filesz) : 0;
+    segment.flags = program.p_flags;
+    if ((program.p_flags & PF_X) != 0 && header->e_entry >= program.p_vaddr && header->e_entry < memory_end) {
+      executable_entry = true;
+    }
+  }
+
+  // PT_TLS is runtime metadata rather than a separate mapping. The static
+  // userspace runtime owns thread-pointer setup; a NOBITS-only template needs no
+  // file mapping. When file bytes do exist, require one LOAD to contain both
+  // their memory interval and translation so the template is actually mapped.
+  for (u16 i = 0; i < header->e_phnum; ++i) {
+    const auto &tls = headers[i];
+    if (tls.p_type != PT_TLS || tls.p_filesz == 0) {
+      continue;
+    }
+    bool covered = false;
+    for (u16 j = 0; j < header->e_phnum; ++j) {
+      const auto &load = headers[j];
+      if (load.p_type != PT_LOAD || load.p_memsz == 0 || tls.p_vaddr < load.p_vaddr ||
+          tls.p_vaddr > load.p_vaddr + load.p_memsz || tls.p_memsz > load.p_vaddr + load.p_memsz - tls.p_vaddr) {
+        continue;
+      }
+      if (tls.p_filesz != 0 && (tls.p_offset < load.p_offset || tls.p_offset > load.p_offset + load.p_filesz ||
+                                tls.p_filesz > load.p_offset + load.p_filesz - tls.p_offset ||
+                                tls.p_vaddr - load.p_vaddr != tls.p_offset - load.p_offset)) {
+        continue;
+      }
+      covered = true;
+      break;
+    }
+    if (!covered) {
+      return false;
+    }
+  }
+
+  return executable_entry;
 }
 
 } // namespace moss::kernel::elf

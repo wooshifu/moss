@@ -2728,3 +2728,287 @@ a performance comparison. No repository timeout was relaxed.
 This verifies the normal shell and selected BusyBox paths. It does not establish
 full kernel, long-run stability, performance, job-control, or terminal-editing
 acceptance. The GDB-controlled first-read variant was not run on this host.
+
+## ASID, Signal-State, and Exit-FD Lifecycle Acceptance (2026-09-19)
+
+The ASID and signal-state audit statuses were stale relative to the current
+production implementation. ASIDs 1 through 255 are active leases protected by
+an IRQ spin lock, exhaustion is explicit, and address-space destruction returns
+the lease only after the architecture-required invalidation. Signal state is
+owned by `Process`; fork copies dispositions and thread-local mask/altstack
+state, while exec resets non-ignored dispositions and the alternate stack.
+`do_exit` closes and detaches the process descriptor table before publishing a
+Zombie, with the destructor retained as an idempotent fallback.
+
+The focused regressions were strengthened without changing those production
+paths. `mm.transactions/asid_leases` holds the complete user-tag population,
+checks uniqueness and exhaustion, reuses only released tags, and restores the
+page baseline. `users.signals/pid_lifecycle` creates 300 sequential children;
+each writes a distinct pattern at the same user VA, alternates between CPU 0 and
+CPU 1, verifies the observed CPU, and checks the pattern across repeated yields.
+The lifecycle warmup observes final pipe EOF before `waitpid`; the subsequent
+1,000 cycles retain exact descriptor, file, VFS, memory, process, and thread
+resource checkpoints.
+
+All six affected Debug/Release builds completed. At execution time, these
+finalized reports recorded revision
+`caaab1bce5259ddf2c23437b8f13bb12c233a9c7`, a dirty source tree, and source
+hash `af2d1442f941a79e901a0e3cbf5f5542cf93ba4f1df126d4e89c9c6aa2470531`.
+Delivery-document edits followed the runs, so that hash is not presented as the
+post-documentation worktree identity:
+
+| Preset | ASID and signal lifecycle | Exit-FD/resource lifecycle at the default budget |
+| --- | --- | --- |
+| ARM64 Debug | `1789801308711624000` passed | Same report: 1,000 cycles / 3,026 assertions passed |
+| ARM64 Release | `1789801347726477000` passed | Same report: 1,000 cycles / 3,026 assertions passed |
+| RV64 Debug | `1789801463490433000` passed | `1789801038486023000`: timed out at the stable 600-cycle checkpoint |
+| RV64 Release | `1789801373375143000` passed | Same report: 1,000 cycles / 3,026 assertions passed |
+| x64 Debug | `1789801398825575000` passed | Same report: 1,000 cycles / 3,029 assertions passed |
+| x64 Release | `1789801435917554000` passed | Same report: 1,000 cycles / 3,026 assertions passed |
+
+The final RV64 Debug default run reached cycle 600 at 29.644042 seconds of guest
+time with every checkpoint resource equal to its baseline. A same-source
+diagnostic run with an explicit 60-second case timeout completed all 1,000 cycles
+and 3,026 assertions at 40.080208 seconds (`1789801163232597000`). This falsifies
+an EOF-before-wait deadlock in the strengthened warmup, but the longer diagnostic
+does not replace the original 30-second gate and the repository timeout was not
+relaxed. The focused host runner suite passed 124 tests; clang-format dry-run and
+`git diff --check` also passed. Accordingly, MOSS-011 and MOSS-021 are closed;
+MOSS-022 remains only partially accepted until RV64 Debug completes under the
+default matrix budget.
+
+## brk/VMA/PTE Lifecycle Acceptance (2026-09-19)
+
+MOSS-012 is closed for the current process model. Init and exec now install one
+empty HEAP VMA at the fixed `HEAP_START`; the former 64 KiB `HEAP_INIT` range is
+only an ELF-layout exclusion window. A resize holds the VMA-list IRQ lock while
+it selects the exact old heap, rejects overlap with another VMA, revokes pages,
+and publishes the new endpoint. Conflicting growth therefore leaves both the
+VMA and `brk_current` unchanged.
+
+Shrinking across page boundaries calls the existing user-page unmap primitive
+before shortening the VMA. That primitive clears the leaf, invalidates the TLB,
+decrements the COW-aware frame reference, frees the last reference, and prunes
+empty user tables. A sub-page shrink deliberately retains its containing page;
+hardware cannot revoke only the byte tail, and regrowth within that page may see
+retained bytes. Partial `munmap` remains explicitly unsupported. PROT_NONE and
+read/write/execute demand-fault checks already reject unauthorized access before
+allocating a frame.
+
+The new `users.vm/brk_lifecycle` case was run before the production repair. ARM64
+Debug report `1789803020518526000`, source hash
+`cd9ae34486837d39e261b125ae9ec152639183e42cc2733026b75795618abd10`, retained
+the failure: the previous three VM cases passed, while the new case returned
+mask `0x14b52`. The mask records premature initial-heap access, access and stale
+contents after shrink, partially committed conflicting growth, an accessible
+gap, and stale contents after reset/regrowth.
+
+After the repair and the subsequent LoadPlan acceptance, all six
+Debug/Release builds succeeded. One finalized report per preset contains all six
+selected suites and 73 cases: four `users.vm`, seven `mm.permissions`, nine
+`mm.transactions`, 28 `users.exec`, and the libc/BusyBox consumers. All passed. The reports
+recorded revision `caaab1bce5259ddf2c23437b8f13bb12c233a9c7`, dirty=true, and
+execution-time source hash
+`c936891a8035d9aaaaead297cd85f5ab002b3dc07cd865edfad75804503cfe8b`.
+Documentation edits followed those executions, so this is not the final
+post-documentation worktree hash.
+
+| Preset | Final 73-case report |
+| --- | --- |
+| ARM64 Debug | `1789814154497644000` |
+| ARM64 Release | `1789814177535478000` |
+| RV64 Debug | `1789814194506681000` |
+| RV64 Release | `1789814222503529000` |
+| x64 Debug | `1789814238346898000` |
+| x64 Release | `1789814264526648000` |
+
+The user regression starts from an inaccessible empty break, grows three pages,
+shrinks to one page plus 37 bytes, requires the fully released page to fault,
+and requires zero-filled regrowth. It then maps page four and rejects heap growth
+through page five without changing the break, mapped byte, or guard-page access.
+The kernel metadata case independently checks fixed/unique empty-heap admission
+and callback-free rollback. `unmap_reclaims_tables` checks real PTE removal,
+frame references, neighbor preservation, repeated unmap, and PFA recovery.
+
+Three earlier Debug reports run concurrently on the host retained default-budget
+timeouts: `1789803823431979000`, `1789803823427498000`, and
+`1789803823427213000`. A serial RV64 Debug run also recorded a 5.010-second
+`users.exec/allocation_rollback` timeout in `1789803979141898000`; its isolated
+default-budget rerun passed in `1789804114118442000`. No timeout was relaxed,
+and the precise host-load cause is not claimed. The focused host runner suite
+passed 124 tests.
+
+This acceptance does not cover partial VMA splitting, a shared address space
+faulting/resizing concurrently on multiple CPUs, general COW/fork OOM atomicity,
+real hardware, or RelWithDebInfo. Those limitations remain under MOSS-008 through
+MOSS-010 and the broader validation backlog.
+
+## Transactional Exec Replacement Acceptance (2026-09-19)
+
+MOSS-015 is closed for the current single-threaded-process, independently owned
+address-space model. `sys_execve` now snapshots path/arguments and writable ramfs
+ELF bytes while the old address space remains active, validates the image, and
+prepares an independent address space, VMAs, page tables, stack contents, and user
+context. Only after all fallible work succeeds does it disable interrupts, switch
+the architecture page-table root, transfer the prepared owner to `Process`, and
+then commit close-on-exec, process-name, signal, alternate-stack, and user-context
+state. Destruction of the old owner therefore happens after the root switch.
+
+Ordinary kernel `new` is fatal on runtime-heap exhaustion, so exec argument storage
+now uses fallible aligned allocation plus placement construction. A mutable
+`ExecutableImage` uses `SharedPtr::try_make`, exposing object and control-block
+allocation as separate failures; image bytes, address-space ownership, and each
+VMA node are also checked. Immutable CPIO images retain their read-only backing,
+whereas writable ramfs executables receive an owned byte snapshot under the
+namespace lock.
+
+The first new heap-stage regression caught the production defect before repair.
+ARM64 Debug report `1789807628141897000`, source hash
+`3005e7829f49bcc54ee09945f0bcce53eb8dfc8aac4bab2fe182d44659cffcb0`, records
+`users.exec/mutable_snapshot_rollback` as an unexpected kernel panic; its GDB
+backtrace reaches fatal `operator new` through `make_unique<Arguments>` in
+`sys_execve`. After converting arguments to fallible allocation, diagnostic report
+`1789807781399619000` reached the shared-control-block stage but exceeded the
+unchanged five-second case budget while freeing hundreds of thousands of tiny
+pressure records. The fixture was changed to consume the 8 MiB heap in 64 KiB
+blocks before refining down to the target allocation size; this reduces fixture
+cost without granting the target allocation or extending its deadline.
+
+`allocation_rollback` now exhausts the PFA once, retains one allowance page for
+each native page-table stage, and exposes those pages incrementally. It still
+checks every root, stack-leaf, and intermediate-table failure, then exact resource
+recovery. `mutable_snapshot_rollback` copies `/validation_child.elf` into writable
+ramfs and independently drives six real heap failures: arguments, mutable-image
+object, shared control block, image bytes, address space, and a VMA node after
+partial preparation. Each failure must return ENOMEM while preserving the old
+address-space identity/root hash/name, stack canary, sequential descriptor offset,
+and exact heap/page/process/thread/descriptor/file/VFS resource baseline.
+
+The isolated ARM64 Debug report `1789807979527823000` passed all 13 then-current exec cases at
+the default budget; physical-page rollback took 0.930871 seconds and the six-stage
+heap rollback took 0.069425 seconds. After the LoadPlan work below, all six final builds succeeded, and the
+same source hash
+`c936891a8035d9aaaaead297cd85f5ab002b3dc07cd865edfad75804503cfe8b`
+produced six suites and 73 passing cases per preset:
+
+| Preset | Final report |
+| --- | --- |
+| ARM64 Debug | `1789814154497644000` |
+| ARM64 Release | `1789814177535478000` |
+| RV64 Debug | `1789814194506681000` |
+| RV64 Release | `1789814222503529000` |
+| x64 Debug | `1789814238346898000` |
+| x64 Release | `1789814264526648000` |
+
+The selected matrix comprises `users.exec`, `users.vm`, `mm.permissions`,
+`mm.transactions`, `users.libc`, and `users.busybox`. The host runner and real
+vendored userspace build tests passed 134/134. Successful libc coverage additionally
+confirms that an execed mutable ELF can truncate and unlink its original backing,
+ordinary descriptors retain their shared offset, and only FD_CLOEXEC descriptors
+close on successful commit.
+
+This acceptance does not cover concurrent exec/fault/unmap in a shared address
+space. Static ELF planning, explicit unsupported-layout rejection and boundary-page
+semantics are accepted separately below; dynamic loading and shared LOAD pages remain
+unsupported rather than silently approximated.
+
+## Immutable ELF LoadPlan Acceptance (2026-09-19)
+
+MOSS-016 is closed for the documented fixed-address, static ELF subset. The loader
+now builds one fixed-capacity `LoadPlan` before allocating an address space. It uses
+subtraction-based bounds checks for the program-header table, file intervals, user
+address intervals and page rounding, then records each PT_LOAD's page range, backing
+range and final permissions. VMA construction consumes that plan read-only, so it
+cannot diverge through a second pass of unchecked ELF arithmetic.
+
+The loader rejects PT_INTERP/PT_DYNAMIC, unknown flags, W+X, stack/heap/sigreturn
+collisions, page-sharing LOAD segments, more than 64 headers and entries outside an
+executable segment. PT_TLS does not create a separate VMA: NOBITS-only TLS remains
+runtime metadata, while a file-backed TLS template must have its memory range, file
+range and VA/file translation contained by one validated LOAD. Thread-pointer setup
+and complete TLS inheritance are not claimed here.
+
+The malformed fixture set contains 17 independently generated images covering bad
+entry and phentsize, `filesz > memsz`, truncated headers/tables, file and address
+wraparound, a kernel address, mismatched page offset, invalid alignment, reserved
+range, page overlap, 65 headers, RWX, PT_DYNAMIC, PT_INTERP and an orphan file-backed
+TLS template. Rejection probes pass `must-reject`; accidental exec therefore exits
+with the child's startup-error marker instead of being confused with ENOEXEC followed
+by the old process's success exit.
+
+The positive `boundary_load.elf` adds separate non-page-aligned RX and RW segments
+with different absolute file/VA translations. The RX file payload crosses a page;
+the RW memory range includes BSS and crosses a page. The real child verifies prefix
+bytes, file bytes, BSS and rounded page-tail zero fill, executes target-specific code
+that returns 42, writes RW BSS, and proves RX writes and RW execution fault in forked
+children. This checks bytes and final PTE permissions rather than only exec success.
+
+The corrected oracle exposed several rejected intermediate designs. ARM64 Debug
+`1789813438676220000` failed at the then-named TLS rejection after the preceding
+malformed cases passed. Blanket PT_TLS rejection in `1789813531418854000` broke the
+valid mlibc exact-count exec. `1789813725768099000` exposed unsigned underflow in a
+containment subtraction, and the six `1789813880514573000` through
+`1789813919429130000` reports showed that requiring NOBITS-only BusyBox TLS metadata
+to lie in a LOAD was too strict. These reports remain diagnostics; no timeout or
+assertion was relaxed.
+
+The final six reports are the 73-case matrix listed above. Every guest and all 28
+`users.exec` cases passed with source hash
+`c936891a8035d9aaaaead297cd85f5ab002b3dc07cd865edfad75804503cfe8b`.
+Host runner, fixture-packaging and three-ISA vendored-userspace tests passed 134/134.
+One earlier ARM64 Release attempt (`1789811660833369000`) panicked before its next
+suite because only three of four secondary CPUs came online; the focused rerun
+`1789811773578266000` and final complete report passed. It remains an SMP startup
+diagnostic, not a LoadPlan failure.
+
+This does not add dynamic linking, relocation, shared LOAD pages, kernel-managed TLS,
+real-hardware coverage or concurrent shared-address-space exec/fault/unmap safety.
+The focused six-report matrix did not include RelWithDebInfo; the subsequent
+nine-preset routine matrix below covers that build type. Unsupported layouts are
+rejected explicitly.
+
+## Nine-preset CTest Repair and Acceptance (2026-09-19)
+
+After the MOSS-016 acceptance, the first serial ARM64 Debug CTest retained three
+independent failures. Application report `1789815040270100000` contained equal
+resource checkpoints at cycles 0 and 10, but final serial replay reconstructed the
+protocol with the default 1,000-cycle target. Framework report
+`1789815056415011000` failed before validation readiness: the fourth secondary CPU
+remained in the pre-IRQ WFE activation loop and CPU0 reported initialization timeout.
+Controlled-console run `run-k0tdvahz` failed before guest progress because CMake
+hard-coded the unavailable Linux command name `gdb-multiarch`.
+
+Replay now receives the same computed lifecycle-cycle target as live parsing. The
+ARM64 pre-IRQ Active handshake polls with `cpu_yield()` so a lost host wake-up cannot
+leave the secondary asleep indefinitely. The release publication pairs with acquire
+polling; the old DSB/SEV has no sleeping consumer and was removed. CMake requires and records either
+`gdb-multiarch` or `gdb`; this host resolved `/usr/local/bin/gdb`. No test was
+disabled, no deadline was enlarged, and QEMU retained multi-threaded TCG.
+
+The three focused reruns passed, followed by fresh configure/build and serial CTest
+execution for all nine presets. The result was **43/43 CTest**: ARM64 14/14, x64
+16/16 and RV64 13/13. Each final functional report contains 23 suites and 171
+passing cases with no failed guest:
+
+| Preset | Functional report |
+| --- | --- |
+| ARM64 Debug | `1789817091021342000` |
+| ARM64 Release | `1789817203567493000` |
+| ARM64 RelWithDebInfo | `1789817294018303000` |
+| x64 Debug | `1789815900880040000` |
+| x64 Release | `1789816020589431000` |
+| x64 RelWithDebInfo | `1789816137722556000` |
+| RV64 Debug | `1789816220220585000` |
+| RV64 Release | `1789816361313349000` |
+| RV64 RelWithDebInfo | `1789816456994123000` |
+
+Release benchmarks, x64 PVH/initrd probes, ordinary production boots and the ARM64
+Debug controlled first-read probe also passed. The controlled report is
+`run-3p24rz28`, with all 11 shell/exec/wait steps completed. Post-fix host tests
+passed 126 runner cases and 19 hardware/production-probe cases; Ruff, scoped
+ClangFormat and `git diff --check` passed.
+
+Polling fixes this reproducible pre-IRQ progress failure but is not ARM hardware or
+startup-stress acceptance. The routine matrix also does not substitute for the
+30-minute stability workload, performance gates, network/storage coverage or
+concurrent shared-address-space exec/fault/unmap validation.

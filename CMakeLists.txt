@@ -230,14 +230,34 @@ if(MOSS_BUILD_TESTS)
                    WORKING_DIRECTORY
                    ${CMAKE_SOURCE_DIR}
     )
+    if(MOSS_TARGET_ARCH STREQUAL "X64")
+        add_test(NAME moss-pvh-initrd COMMAND uv run ${CMAKE_SOURCE_DIR}/scripts/check_x64_pvh_initrd.py --manifest
+                                            ${CMAKE_BINARY_DIR}/moss-artifacts.json
+        )
+        set_tests_properties(
+            moss-pvh-initrd
+            PROPERTIES TIMEOUT
+                       150 # Seven 15-second guest bounds plus bounded cleanup and report writing.
+                       RUN_SERIAL
+                       TRUE
+                       LABELS
+                       "kernel;boot"
+                       WORKING_DIRECTORY
+                       ${CMAKE_SOURCE_DIR}
+        )
+    endif()
     if(MOSS_TARGET_ARCH STREQUAL "ARM64" AND CMAKE_BUILD_TYPE STREQUAL "Debug")
+        # Debian names the cross-target debugger gdb-multiarch, while native
+        # Native GDB builds on macOS expose the same remote
+        # protocol support as gdb. The controlled input test requires either.
+        find_program(MOSS_GDB_EXECUTABLE NAMES gdb-multiarch gdb REQUIRED)
         add_test(NAME moss-console-input COMMAND uv run ${CMAKE_SOURCE_DIR}/scripts/check_production_boot.py --manifest
-                                                 ${CMAKE_BINARY_DIR}/moss-artifacts.json --gdb gdb-multiarch
+                                                 ${CMAKE_BINARY_DIR}/moss-artifacts.json --gdb ${MOSS_GDB_EXECUTABLE}
         )
         set_tests_properties(
             moss-console-input
             PROPERTIES TIMEOUT
-                       45
+                       45 # Existing bound around a 30 s probe; the rationale for the 15 s margin is not recorded.
                        RUN_SERIAL
                        TRUE
                        LABELS

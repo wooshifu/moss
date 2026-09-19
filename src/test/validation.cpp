@@ -983,6 +983,29 @@ void vma_boundaries() {
     ut::expect(!space.allows_user_access(0, 1, vma_flags::READ));
     ut::expect(!space.allows_user_access(USER_MAX - 1, 2, vma_flags::READ));
     ut::expect(space.allows_user_access(0, 0, vma_flags::READ));
+
+    constexpr auto heap = user_layout::HEAP_START;
+    constexpr u32 heap_flags = vma_flags::READ | vma_flags::WRITE | vma_flags::DEMAND_ZERO;
+    ut::expect(!space.add_vma(heap + page_size, heap + 2 * page_size, heap_flags, VmaType::HEAP));
+    ut::expect(space.add_vma(heap, heap, heap_flags, VmaType::HEAP));
+    ut::expect(!space.add_vma(heap, heap, heap_flags, VmaType::HEAP));
+    bool resized = false;
+    ut::expect(space.resize_vma(heap, heap, heap + page_size, VmaType::HEAP,
+                                [&](const VmaRegion &old) { resized = old.end_addr == heap; }));
+    ut::expect(resized && space.find_vma(heap) && space.find_vma(heap)->end_addr == heap + page_size);
+    const auto collision_start = heap + 2 * page_size;
+    const auto collision_end = collision_start + page_size;
+    ut::expect(space.add_vma(collision_start, collision_end, vma_flags::READ, VmaType::MMAP));
+    resized = false;
+    ut::expect(!space.resize_vma(heap, heap + page_size, collision_end, VmaType::HEAP,
+                                 [&](const VmaRegion &) { resized = true; }));
+    ut::expect(!resized && space.find_vma(heap) && space.find_vma(heap)->end_addr == heap + page_size);
+    ut::expect(space.resize_vma(heap, heap + page_size, heap, VmaType::HEAP,
+                                [&](const VmaRegion &old) { resized = old.end_addr == heap + page_size; }));
+    ut::expect(resized && !space.find_vma(heap));
+    ut::expect(space.remove_vma(heap, heap));
+    ut::expect(space.remove_vma(collision_start, collision_end));
+
     const auto stub = user_layout::SIGRETURN_PAGE;
     ut::expect(!space.add_vma(stub, stub + page_size, vma_flags::WRITE, VmaType::SIGRETURN));
     ut::expect(space.add_vma(stub, stub + page_size, vma_flags::READ | vma_flags::EXEC, VmaType::SIGRETURN));
@@ -1461,14 +1484,29 @@ struct HeapPressure {
   void *head = nullptr;
 
   bool acquire(usize size) {
-    for (;;) {
-      auto allocation = mm::RuntimeHeapAllocator::allocate(size);
-      if (!allocation) {
-        return allocation.error() == mm::HeapAllocError::OutOfMemory;
-      }
-      *static_cast<void **>(*allocation) = head;
-      head = *allocation;
+    if (size < sizeof(void *)) {
+      return false;
     }
+    auto exhaust = [&](usize request_size) {
+      for (;;) {
+        auto allocation = mm::RuntimeHeapAllocator::allocate(request_size);
+        if (!allocation) {
+          return allocation.error() == mm::HeapAllocError::OutOfMemory;
+        }
+        *static_cast<void **>(*allocation) = head;
+        head = *allocation;
+      }
+    };
+    // The current heap arena is 8 MiB: 64 KiB bulk requests bound its first
+    // pass to roughly 128 records. Halving then consumes every smaller free
+    // fragment before the exact target-size request proves real exhaustion.
+    constexpr usize BULK_PRESSURE_BYTES = 64 * 1024;
+    for (usize request_size = BULK_PRESSURE_BYTES; request_size > size; request_size /= 2) {
+      if (!exhaust(request_size)) {
+        return false;
+      }
+    }
+    return exhaust(size);
   }
   bool release_one() {
     if (!head) {
@@ -1650,6 +1688,24 @@ struct ForkMetadataPressure {
   bool holding = false, exhausted = false;
 };
 ForkMetadataPressure *fork_metadata_pressure = nullptr;
+struct ExecAllocationPressure {
+  LifecycleResources baseline;
+  HeapPressure heap;
+  process::AddressSpace *original = nullptr;
+  PhysAddr root = 0;
+  u64 root_hash = 0;
+  char name[16]{}; // Matches Process's 15-byte comm plus terminating NUL.
+  unsigned stage = 0, vmas = 0;
+  bool holding = false, exhausted = false;
+};
+ExecAllocationPressure *exec_allocation_pressure = nullptr;
+// Validation controls 48/49 are the next unused pair in this private protocol.
+// Six stages cover arguments, both SharedPtr allocations, image bytes, the
+// address space and a partially populated VMA list; keep userspace in sync.
+inline constexpr long EXEC_HEAP_PRESSURE_ARM = 48;
+inline constexpr long EXEC_HEAP_PRESSURE_RELEASE = 49;
+inline constexpr unsigned EXEC_HEAP_ALLOCATION_STAGES = 6;
+inline constexpr unsigned EXEC_VMA_ALLOCATION_STAGE = 5;
 HeapPressure *fork_clone_pressure = nullptr;
 LifecycleResources fork_clone_baseline;
 bool fork_clone_exhausted = false;
@@ -3907,6 +3963,7 @@ void declare_cases() {
     ut::register_test("private_cow", empty_case);
     ut::register_test("readonly_cow", empty_case);
     ut::register_test("access_permissions", empty_case);
+    ut::register_test("brk_lifecycle", empty_case);
   });
   ut::register_suite("users.lifecycle", [] { ut::register_test("core_paths_recovery", empty_case); });
   ut::register_suite("users.applications", [] { ut::register_test("core_application_recovery", empty_case); });
@@ -3924,10 +3981,36 @@ void declare_cases() {
     ut::register_test("filesystem_permissions", empty_case);
   });
   ut::register_suite("users.exec", [] {
-    constexpr const char *names[] = {"rejects_invalid_entry", "rejects_phentsize", "rejects_load_size",
-                                     "bad_env_vector",        "bad_env_string",    "argument_count_limit",
-                                     "combined_count_limit",  "string_byte_limit", "exact_combined_count",
-                                     "exact_string_bytes",    "empty_vectors",     "allocation_rollback"};
+    constexpr const char *names[] = {
+        "rejects_invalid_entry",
+        "rejects_phentsize",
+        "rejects_load_size",
+        "rejects_truncated_header",
+        "rejects_truncated_phdr",
+        "rejects_file_range",
+        "rejects_user_range",
+        "rejects_address_overflow",
+        "rejects_page_offset",
+        "rejects_alignment",
+        "rejects_reserved_range",
+        "rejects_page_overlap",
+        "rejects_program_header_limit",
+        "rejects_wx",
+        "rejects_dynamic",
+        "rejects_interp",
+        "rejects_orphan_tls_file",
+        "bad_env_vector",
+        "bad_env_string",
+        "argument_count_limit",
+        "combined_count_limit",
+        "string_byte_limit",
+        "exact_combined_count",
+        "exact_string_bytes",
+        "empty_vectors",
+        "allocation_rollback",
+        "mutable_snapshot_rollback",
+        "boundary_load_plan",
+    };
     for (const auto *name : names) {
       ut::register_test(name, empty_case);
     }
@@ -4524,6 +4607,28 @@ extern "C" void moss_validation_fork_metadata(unsigned stage, bool entering) noe
   }
 }
 
+extern "C" void moss_validation_exec_allocation(unsigned stage, bool entering, usize allocation_size) noexcept {
+  auto *probe = exec_allocation_pressure;
+  if (!probe || probe->stage != stage) {
+    return;
+  }
+  if (entering) {
+    if (probe->holding || probe->exhausted) {
+      return;
+    }
+    // The final stage is the VMA-node boundary. Let one node become owned first so the
+    // failure proves cleanup of a partially prepared address space.
+    if (stage == EXEC_VMA_ALLOCATION_STAGE && probe->vmas++ == 0) {
+      return;
+    }
+    probe->holding = true;
+    probe->exhausted = ut::expect(probe->heap.acquire(allocation_size));
+  } else if (probe->holding) {
+    probe->heap.release();
+    probe->holding = false;
+  }
+}
+
 extern "C" long moss_validation_call(long op, long arg1, [[maybe_unused]] long arg2) noexcept {
   // These opcodes and returned mode IDs form the private validation protocol
   // shared with src/userspace validation programs, not Linux syscall numbers.
@@ -4752,6 +4857,46 @@ extern "C" long moss_validation_call(long op, long arg1, [[maybe_unused]] long a
     owner->set_gid(99);
     return 0;
   }
+  if (ut::same_id(selection, "users.exec") && ut::same_id(active_case, "mutable_snapshot_rollback") &&
+      affinity_valid()) {
+    auto owner = process::current_process();
+    auto *as = owner ? owner->address_space() : nullptr;
+    if (op == EXEC_HEAP_PRESSURE_ARM && !exec_allocation_pressure && as && arg1 >= 0 &&
+        arg1 < EXEC_HEAP_ALLOCATION_STAGES) {
+      // Capture before allocating the probe so release can require an exact
+      // return to the caller's pre-injection ownership state.
+      const auto baseline = LifecycleResources::capture();
+      auto *probe = new ExecAllocationPressure{};
+      if (!probe) {
+        return 0;
+      }
+      probe->baseline = baseline;
+      probe->original = as;
+      probe->root = as->pgd_phys;
+      probe->root_hash = page_table_hash(probe->root);
+      __builtin_memcpy(probe->name, owner->name(), sizeof(probe->name));
+      probe->stage = static_cast<unsigned>(arg1);
+      exec_allocation_pressure = probe;
+      return 1;
+    }
+    if (op == EXEC_HEAP_PRESSURE_RELEASE && exec_allocation_pressure) {
+      auto *probe = exec_allocation_pressure;
+      bool valid = ut::expect(arg1 >= 0 && static_cast<unsigned>(arg1) == probe->stage);
+      valid = ut::expect(probe->exhausted && !probe->holding) && valid;
+      if (probe->stage == EXEC_VMA_ALLOCATION_STAGE) {
+        valid = ut::expect(probe->vmas >= 2) && valid;
+      }
+      valid = ut::expect(as && as == probe->original && as->pgd_phys == probe->root &&
+                         page_table_hash(probe->root) == probe->root_hash &&
+                         __builtin_memcmp(probe->name, owner->name(), sizeof(probe->name)) == 0) &&
+              valid;
+      const auto baseline = probe->baseline;
+      delete probe;
+      exec_allocation_pressure = nullptr;
+      valid = ut::expect(LifecycleResources::capture() == baseline) && valid;
+      return valid ? 1 : 0;
+    }
+  }
   if (ut::same_id(selection, "users.exec") && ut::same_id(active_case, "allocation_rollback") && affinity_valid()) {
     const long stages = mm::PageTableManager::is_user_range(1ULL << 39, page_size) ? 5 : 4;
     if (op == 35) {
@@ -4760,34 +4905,54 @@ extern "C" long moss_validation_call(long op, long arg1, [[maybe_unused]] long a
     auto *thread = process::CfsScheduler::get_current_task();
     auto owner = process::g_process_manager->find_process(thread->owner_pid);
     auto *as = owner ? owner->address_space() : nullptr;
-    if (op == 36 && !exec_pressure && as && arg1 >= 0 && arg1 < stages) {
-      exec_baseline = LifecycleResources::capture();
-      exec_original = as;
-      exec_root = as->pgd_phys;
-      exec_root_hash = page_table_hash(exec_root);
-      __builtin_memcpy(exec_name, owner->name(), sizeof(exec_name));
-      exec_pressure = new PagePressure{};
-      bool ready = ut::expect(exec_pressure && exec_pressure->acquire(static_cast<usize>(arg1)));
-      while (ready && exec_pressure->count) {
-        exec_pressure->give_one();
+    if (op == 36 && as && arg1 >= 0 && arg1 < stages) {
+      if (!exec_pressure) {
+        if (arg1 != 0) {
+          return 0;
+        }
+        exec_baseline = LifecycleResources::capture();
+        exec_original = as;
+        exec_root = as->pgd_phys;
+        exec_root_hash = page_table_hash(exec_root);
+        __builtin_memcpy(exec_name, owner->name(), sizeof(exec_name));
+        exec_pressure = new PagePressure{};
+        // Exhaust the PFA once while retaining one allowance page per native
+        // page-table stage. Each completed failure releases one more allowance,
+        // producing the same 0..N-page budgets without rescanning all RAM.
+        const bool ready = ut::expect(exec_pressure && exec_pressure->acquire(static_cast<usize>(stages)));
+        if (!ready) {
+          delete exec_pressure;
+          exec_pressure = nullptr;
+          return 0;
+        }
       }
-      if (ready) {
-        return 1;
+      const auto exposed_pages = static_cast<long>(static_cast<usize>(stages) - exec_pressure->count);
+      if (!ut::expect(arg1 == exposed_pages)) {
+        delete exec_pressure;
+        exec_pressure = nullptr;
+        return 0;
       }
-      delete exec_pressure;
-      exec_pressure = nullptr;
-      return 0;
+      return 1;
     }
     if (op == 37 && exec_pressure) {
       bool valid = ut::expect(mm::PageFrameAllocator::get_memory_stats().free_pages == static_cast<usize>(arg1));
+      valid =
+          ut::expect(arg1 >= 0 && arg1 < stages && exec_pressure->count == static_cast<usize>(stages - arg1)) && valid;
       valid = ut::expect(as && as == exec_original && as->pgd_phys == exec_root &&
                          page_table_hash(exec_root) == exec_root_hash &&
                          __builtin_memcmp(exec_name, owner->name(), sizeof(exec_name)) == 0) &&
               valid;
+      if (valid && arg1 + 1 < stages) {
+        exec_pressure->give_one();
+        valid = ut::expect(mm::PageFrameAllocator::get_memory_stats().free_pages == static_cast<usize>(arg1 + 1));
+        if (valid) {
+          return 1;
+        }
+      }
       delete exec_pressure;
       exec_pressure = nullptr;
       valid = ut::expect(LifecycleResources::capture() == exec_baseline) && valid;
-      return valid ? 1 : 0;
+      return valid && arg1 + 1 == stages ? 1 : 0;
     }
   }
   if (ut::same_id(selection, "users.timers") && ut::same_id(active_case, "arm_failure_recovery") && affinity_valid()) {
