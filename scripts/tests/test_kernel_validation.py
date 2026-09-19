@@ -35,8 +35,8 @@ def emit(state, event_type, **fields):
     state.accept(b"@@MOSS " + json.dumps(event(state.workload, event_type, **fields)).encode())
 
 
-def ready(workload="mm", warmup=1, samples=2, stability=False):
-    state = kv.Protocol(workload, 4, 2048, warmup, samples, stability)
+def ready(workload="mm", warmup=1, samples=2, stability=False, lifecycle_cycles=None):
+    state = kv.Protocol(workload, 4, 2048, warmup, samples, stability, lifecycle_cycles)
     emit(state, "ready", detected_cpus=4, online_mask=15, work_mask=15, ram_bytes=2**31, managed_pages=500000)
     for name in kv.CATALOG[workload]:
         emit(state, "catalog", case=name)
@@ -213,6 +213,30 @@ def test_lifecycle_requires_ordered_resource_recovery_evidence(mode, workload):
     emit(state, "end", completed=1, selected=1, failed=0)
     assert state.outcome("protocol_end", None, b"") == ("passed", "pass")
     assert len(state.checkpoints) == 1000 // interval + 1
+
+
+def test_application_lifecycle_accepts_the_ctest_ten_cycle_profile():
+    state = ready("users.applications", lifecycle_cycles=10)
+    case = state.expected[0]
+    emit(state, "case_start", case=case)
+    for cycle in (0, 10):
+        emit(
+            state,
+            "checkpoint",
+            case=case,
+            cycles=cycle,
+            application_cycles=cycle,
+            elapsed_ns=cycle * 10**6,
+            **LIFECYCLE_RESOURCES,
+        )
+    emit(state, "case_end", case=case, passed=1, failed=0)
+    emit(state, "end", completed=1, selected=1, failed=0)
+    assert state.outcome("protocol_end", None, b"") == ("passed", "pass")
+
+
+def test_lifecycle_rejects_a_cycle_count_outside_its_checkpoint_cadence():
+    with pytest.raises(ValueError, match="checkpoint interval"):
+        ready("users.applications", lifecycle_cycles=11)
 
 
 @pytest.mark.parametrize("workload", [None, ["containers.smp"], ["vfs.smp"], ["scheduler"]])
