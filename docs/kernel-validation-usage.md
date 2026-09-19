@@ -63,7 +63,7 @@ the original verdict. Successful runs do not attach GDB. Ctrl-C/SIGTERM skips
 capture and reaps the guest; exited guests have no live snapshot. Each guest uses
 private Unix sockets, so concurrent presets do not share debugger ports.
 
-`--cpus`, `--memory-mib`, `--warmup`, `--samples`, `--iterations`, and `--order` are explicit overrides. `--machine`, `--cpu`, `--qemu` and `--dtb` select the runtime environment. `--expected-ram-mib` explicitly checks firmware-visible RAM when firmware reserves part of the installed RAM; it defaults to `--memory-mib` and is recorded separately. Ordinary host deadlines remain 30 s for startup, 60 s per guest, and 5 s per case except `pfa`, `users.signals`, `users.lifecycle` and the event benchmarks (30 s). The distinct `users.applications` workload has the progress-based budget below. An explicit `--case-timeout` overrides the case default, including a shorter value; `--guest-timeout` overrides the total guest budget, subject to the existing stability minimum. Reports retain `case_timeout_seconds`, its `case_timeout_kind` (`total` or `no_progress`), `guest_timeout_seconds` and each case's host-observed `elapsed_seconds`; these are not kernel microbenchmarks. Functional/framework CTest budgets remain 2100 s; the separate application test has a 3120 s budget. Ctrl-C or SIGTERM finalizes partial reports and terminates/reaps QEMU; workloads not started are recorded as such.
+`--cpus`, `--memory-mib`, `--warmup`, `--samples`, `--iterations`, and `--order` are explicit overrides. `--machine`, `--cpu`, `--qemu` and `--dtb` select the runtime environment. `--expected-ram-mib` explicitly checks firmware-visible RAM when firmware reserves part of the installed RAM; it defaults to `--memory-mib` and is recorded separately. Ordinary host deadlines remain 30 s for startup, 60 s per guest, and 5 s per case except `pfa`, `users.signals`, `users.lifecycle` and the event benchmarks (30 s). The distinct `users.applications` workload has the progress-based budget below. An explicit `--case-timeout` overrides the case default, including a shorter value; `--guest-timeout` overrides the total guest budget, subject to the existing stability minimum. Reports retain `case_timeout_seconds`, its `case_timeout_kind` (`total` or `no_progress`), `guest_timeout_seconds` and each case's host-observed `elapsed_seconds`; these are not kernel microbenchmarks. Functional/framework CTest budgets remain 2100 s; the 10-cycle application test has a 150 s budget. Ctrl-C or SIGTERM finalizes partial reports and terminates/reaps QEMU; workloads not started are recorded as such.
 
 ## Pipe Regression
 
@@ -151,16 +151,16 @@ It verifies the uname-derived `HOSTNAME=moss`, exact captured stdout, pipeline
 results, directory/file cleanup and exit status. An independent counter advances
 only after a successful application workflow; `application_cycles` must match
 the core count. One warmup is excluded from both counts. Every **10** completed
-cycles records exact resource recovery, giving **101 checkpoints** for the routine
-1000-cycle run. The original core-only
+cycles records exact resource recovery, giving a baseline and completion checkpoint
+for CTest's 10-cycle run (or **101 checkpoints** with `--iterations 1000`). The original core-only
 workload still records every 100 cycles and reports zero application cycles.
 
 This is a separate routine CTest (`moss-applications`), not a longer deadline for
-the original core case. Its 30 s **no-progress** watchdog advances only on valid,
-ordered checkpoints with advancing guest time. The default total budget is
-`(required_cycles / 10 + 1) * case_timeout + startup_timeout`: **3060 s** for the
-routine defaults, with another 60 s for CTest cleanup/reporting. A short explicit
-total budget still terminates a progressing guest. Direct CLI invocation without
+the original core case. It passes `--iterations 10`, so its 30 s **no-progress**
+watchdog observes the baseline and completion checkpoint and its total budget is
+90 s, with another 60 s for CTest cleanup/reporting. Direct invocation keeps the
+1,000-cycle default unless `--iterations` supplies another checkpoint-aligned
+count. A short explicit total budget still terminates a progressing guest. Direct CLI invocation without
 `--workload` runs the original functional catalog; use the application selector
 below or the full CTest preset to include repeated applications.
 

@@ -314,12 +314,27 @@ def integer(data: dict, key: str, minimum: int = 0, maximum: int = 2**64 - 1) ->
 class Protocol:
     """Fail-closed event state machine; no text PASS heuristic or exit-code-only success."""
 
-    def __init__(self, workload: str, cpus: int, memory_mib: int, warmup: int, samples: int, stability: bool = False):
+    def __init__(
+        self,
+        workload: str,
+        cpus: int,
+        memory_mib: int,
+        warmup: int,
+        samples: int,
+        stability: bool = False,
+        lifecycle_cycles: int | None = None,
+    ):
         self.workload = workload
         self.expected = CATALOG[workload]
         self.cpus, self.memory_mib = cpus, memory_mib
         self.warmup, self.samples = warmup, samples
         self.stability = stability
+        # Stability is a fixed 10,000-cycle acceptance contract. Routine
+        # lifecycle callers may request a smaller multiple of their checkpoint
+        # cadence, such as CTest's ten application workflows.
+        self.lifecycle_cycles = 10000 if stability else lifecycle_cycles or 1000
+        if workload in LIFECYCLE_INTERVAL and self.lifecycle_cycles % LIFECYCLE_INTERVAL[workload]:
+            raise ValueError("lifecycle cycle count must align with checkpoint interval")
         self.ready: dict | None = None
         self.catalog: list[str] = []
         self.worker: dict | None = None
@@ -394,8 +409,11 @@ class Protocol:
                 and self.workload in LIFECYCLE_INTERVAL
                 and (
                     not self.checkpoints
-                    or self.checkpoints[-1]["cycles"] < (10000 if self.stability else 1000)
-                    or (not self.stability and len(self.checkpoints) != 1000 // LIFECYCLE_INTERVAL[self.workload] + 1)
+                    or self.checkpoints[-1]["cycles"] < self.lifecycle_cycles
+                    or (
+                        not self.stability
+                        and len(self.checkpoints) != self.lifecycle_cycles // LIFECYCLE_INTERVAL[self.workload] + 1
+                    )
                     or self.checkpoints[-1]["elapsed_ns"] < (1800 * 10**9 if self.stability else 0)
                     or any(
                         sample[key] != self.checkpoints[0][key]
@@ -422,7 +440,7 @@ class Protocol:
             if self.workload not in LIFECYCLE_INTERVAL or not self.active or record.get("case") != self.active:
                 raise ValueError("unexpected resource checkpoint")
             if (
-                integer(record, "cycles", 0, 2**31 if self.stability else 1000)
+                integer(record, "cycles", 0, 2**31 if self.stability else self.lifecycle_cycles)
                 != len(self.checkpoints) * LIFECYCLE_INTERVAL[self.workload]
             ):
                 raise ValueError("resource checkpoint sequence")
@@ -572,6 +590,9 @@ def pin_vcpus(path: Path, process: subprocess.Popen, host_cpus: list[int], deadl
 
 def run_guest(cfg: Artifacts, workload: str, directory: Path, settings: dict, iterations: int) -> dict:
     directory.mkdir()
+    lifecycle_cycles = 10000 if settings.get("stability") else iterations or 1000
+    if workload in LIFECYCLE_INTERVAL and lifecycle_cycles % LIFECYCLE_INTERVAL[workload]:
+        raise ValueError("lifecycle iterations must align with the checkpoint interval")
     case_timeout = settings.get("case_timeout")
     if case_timeout is None:
         # Exhaustive RAM access and repeated process lifecycles can exceed 5 s
@@ -590,7 +611,7 @@ def run_guest(cfg: Artifacts, workload: str, directory: Path, settings: dict, it
         # and the whole run by its finite number of intervals plus warmup/boot.
         guest_timeout = 60.0
         if workload == "users.applications":
-            intervals = (10000 if settings.get("stability") else 1000) // LIFECYCLE_INTERVAL[workload]
+            intervals = lifecycle_cycles // LIFECYCLE_INTERVAL[workload]
             guest_timeout = (intervals + 1) * case_timeout + settings["startup_timeout"]
     if settings.get("stability"):
         guest_timeout = max(guest_timeout, 1800 + settings["startup_timeout"] + 60)
@@ -601,6 +622,7 @@ def run_guest(cfg: Artifacts, workload: str, directory: Path, settings: dict, it
         settings["warmup"],
         settings["samples"],
         settings.get("stability", False),
+        lifecycle_cycles,
     )
     bootargs = " ".join(
         f"moss.{k}={v}"
@@ -801,7 +823,7 @@ def run_guest(cfg: Artifacts, workload: str, directory: Path, settings: dict, it
         "qemu_args": args,
         "serial_log": str(serial_path),
         "qemu_log": str(error_path),
-        "parameters": {"order": settings["order"]},
+        "parameters": {"order": settings["order"], "iterations": iterations},
         "host_bindings": host_bindings,
         "diagnostics": failure_capture,
     }

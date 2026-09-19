@@ -200,11 +200,14 @@ if(MOSS_BUILD_TESTS)
         ${CMAKE_BINARY_DIR}/moss-artifacts.json
     )
     add_test(NAME moss-functional COMMAND ${_validation})
-    add_test(NAME moss-applications COMMAND ${_validation} --workload users.applications)
+    # Ten complete BusyBox lifecycles keep routine CTest bounded while still
+    # exercising fork/exec/reap and the resource-recovery checkpoint. The
+    # explicit stability workload remains the long-duration coverage tier.
+    add_test(NAME moss-applications COMMAND ${_validation} --workload users.applications --iterations 10)
     set_tests_properties(
         moss-applications
         PROPERTIES TIMEOUT
-                   3120 # 101 progress intervals x 30 s, 30 s boot and 60 s cleanup/reporting.
+                   150 # Two 30 s progress windows, 30 s boot and 60 s cleanup/reporting.
                    RUN_SERIAL
                    TRUE
                    LABELS
