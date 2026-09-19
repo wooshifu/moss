@@ -5008,11 +5008,15 @@ extern "C" long moss_validation_call(long op, long arg1, [[maybe_unused]] long a
     }
     // Guest clocks may drift relative to the host (e.g. calibrated x86 TSC).
     // Keep doing complete cycles until both clocks and the host agree to stop.
-    // Ordinary runs require 1000 cycles. Stability runs require both 10000
-    // cycles and 30 minutes (1.8e12 ns), plus the host's stop handshake; these
-    // are explicit test-duration policies, not universal reliability thresholds.
-    lifecycle_complete = lifecycle_checkpoint >= (stability ? 10000U : 1000U) &&
-                         elapsed_ns >= (stability ? 1800000000000ULL : 0) && (!stability || lifecycle_host_released);
+    // Routine callers may lower the cycle count through moss.iterations only
+    // when it lands on this workload's checkpoint cadence. Stability remains
+    // fixed at 10,000 cycles and 30 minutes (1.8e12 ns), plus a host release.
+    const u64 target_cycles = stability ? 10000U : (fixed_iterations ? fixed_iterations : 1000U);
+    if (!ut::expect(target_cycles % interval == 0)) {
+      return 0;
+    }
+    lifecycle_complete = lifecycle_checkpoint >= target_cycles && elapsed_ns >= (stability ? 1800000000000ULL : 0) &&
+                         (!stability || lifecycle_host_released);
     return lifecycle_complete ? 2 : 1;
   }
   if (ut::same_id(selection, "vfs.smp") && active_case && file_references) {
