@@ -106,13 +106,14 @@ public:
   // The caller supplies fallible storage without tying core to a runtime heap.
   // Storage must be compatible with delete: UniquePtr releases the object if
   // control-block allocation fails, and the final owner deletes both allocations.
-  template <typename Allocate, typename... Args>
+  // Object may be derived from T; deleting through T requires a virtual destructor.
+  template <typename Object = T, typename Allocate, typename... Args>
   [[nodiscard]] static SharedPtr try_make(Allocate allocate, Args &&...args) {
-    auto *storage = allocate(sizeof(T), alignof(T));
+    auto *storage = allocate(sizeof(Object), alignof(Object));
     if (!storage) {
       return {};
     }
-    UniquePtr<T> object(new (storage) T(forward<Args>(args)...));
+    UniquePtr<Object> object(new (storage) Object(forward<Args>(args)...));
     auto *control = allocate(sizeof(ControlBlock), alignof(ControlBlock));
     if (!control) {
       return {};

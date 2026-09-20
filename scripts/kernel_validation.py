@@ -37,6 +37,14 @@ from scripts.artifacts import Artifacts
 from scripts.qemu_diagnostics import capture_failure, qmp_session
 
 CATALOG = {
+    "drivers": [
+        "registration",
+        "matching_failure",
+        "ownership",
+        "registration_rollback",
+        "irq_registration_rollback",
+        "console_ring",
+    ],
     "resources": ["cpu_memory"],
     "mm": ["pageblock_units", "mmu_granule", "orders_alignment", "reuse"],
     "pfa": ["release_contract", "exhaustion"],
@@ -193,6 +201,8 @@ CATALOG = {
         "pipe_noninterrupting_signals",
         "pipe_partial_interrupt",
         "signal_wakeup_affinity",
+        "console_interrupted",
+        "console_partial_interrupt",
     ],
     "users.simd_fault": ["isolation"],  # Explicit x86 acceptance; TCG may not deliver #XM.
     "mm.permissions": [
@@ -239,6 +249,7 @@ CATALOG = {
     },
 }
 FUNCTIONAL = [
+    "drivers",
     "resources",
     "mm",
     "mm.permissions",
@@ -675,6 +686,7 @@ def run_guest(cfg: Artifacts, workload: str, directory: Path, settings: dict, it
     host_bindings = None
     failure_capture = {"status": "not_needed"}
     diagnostic_elapsed = 0.0
+    serial_inputs = []
     try:
         # Short, private Unix paths avoid port races across concurrent presets.
         qmp_directory = tempfile.TemporaryDirectory(prefix="moss-qmp-")
@@ -694,7 +706,9 @@ def run_guest(cfg: Artifacts, workload: str, directory: Path, settings: dict, it
         ):
             process = subprocess.Popen(
                 args,
-                stdin=subprocess.PIPE if settings.get("stability") else subprocess.DEVNULL,
+                stdin=subprocess.PIPE
+                if settings.get("stability") or workload == "users.signals"
+                else subprocess.DEVNULL,
                 stdout=serial_out,
                 stderr=diagnostics,
             )
@@ -709,6 +723,16 @@ def run_guest(cfg: Artifacts, workload: str, directory: Path, settings: dict, it
                 while b"\n" in pending:
                     line, pending = pending.split(b"\n", 1)
                     state.accept(line.rstrip(b"\r"))
+                    if (
+                        workload == "users.signals"
+                        and state.active == "console_partial_interrupt"
+                        and not serial_inputs
+                    ):
+                        # The fixture consumes one byte before forking, then checks
+                        # that a caught signal returns the second as a partial read.
+                        process.stdin.write(b"kk")
+                        process.stdin.flush()
+                        serial_inputs.append({"case": state.active, "hex": "6b6b"})
                 if len(pending) > 65536:
                     raise ValueError("unbounded partial serial line")
                 if state.end:
@@ -837,6 +861,7 @@ def run_guest(cfg: Artifacts, workload: str, directory: Path, settings: dict, it
         "case_timeout_kind": "no_progress" if progress_deadline else "total",
         "guest_timeout_seconds": guest_timeout,
         "stability_release_seconds": stability_release_seconds,
+        "serial_inputs": serial_inputs,
         "qemu_args": args,
         "serial_log": str(serial_path),
         "qemu_log": str(error_path),

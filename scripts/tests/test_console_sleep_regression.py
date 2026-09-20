@@ -26,24 +26,16 @@ def braced_definition(text, marker):
 
 
 def production_console_source():
-    source = (ROOT / "src/kernel/src/syscall_table.cpp").read_text()
-    ring_start = source.index("constexpr usize RX_BUF_SIZE =", source.index("namespace console_rx"))
-    ring_end = source.index("static bool buf_empty()", ring_start)
-    helpers = "\n".join(
-        braced_definition(source, marker)
-        for marker in (
-            "static bool buf_empty()",
-            "static int buf_get()",
-            "static bool buf_put(",
-            "static void wake_blocked_reader()",
-        )
-    )
-    console = braced_definition(source, 'extern "C" int console_getc_blocking()')
-    # Only replace privileged platform idle instructions. The tested queue,
-    # waiter registration and sleep control flow remain the production body.
-    console = console.replace('asm volatile("wfi" ::: "memory");', "arch::cpu_idle_once();")
-    console = console.replace('asm volatile("hlt" ::: "memory");', "arch::cpu_idle_once();")
-    return "namespace console_rx {\n" + source[ring_start:ring_end] + helpers + "\n}\n" + console
+    interface = (ROOT / "src/drivers/src/console.cppm").read_text()
+    source = (ROOT / "src/drivers/src/console.cpp").read_text()
+    ring = braced_definition(interface, "class RxRing") + ";"
+    start = source.index("containers::IrqSpinLock event_lock;")
+    end = source.index("void receive()", start)
+    markers = ("void receive()", "int try_getc()", "int getc_blocking()")
+    helpers = "\n".join(braced_definition(source, marker) for marker in markers)
+    helpers = helpers.replace('asm volatile("wfi" ::: "memory");', "arch::cpu_idle_once();")
+    helpers = helpers.replace('asm volatile("hlt" ::: "memory");', "arch::cpu_idle_once();")
+    return "namespace console_rx {\n" + ring + source[start:end] + helpers + "\n}\n"
 
 
 HOST_MODEL = r"""
@@ -59,6 +51,10 @@ static const char *scenario;
 static bool irqs_enabled;
 static bool event_injected;
 static bool pending_uart;
+static bool pending_remote;
+static bool interrupted;
+static bool event_locked;
+static unsigned fifo_bytes;
 static u32 current_cpu;
 static u32 switches;
 static u32 ready_publications;
@@ -95,13 +91,57 @@ static CfsScheduler scheduler;
 static CfsScheduler *g_scheduler = &scheduler;
 }
 
+static void deliver_uart();
 namespace arch {
 static bool interrupts_enabled() { return irqs_enabled; }
-static void disable_interrupts() { irqs_enabled = false; }
+static void disable_interrupts() {
+  if (!event_injected && std::strcmp(scenario, "before-mask") == 0) {
+    event_injected = true;
+    deliver_uart();
+  }
+  irqs_enabled = false;
+}
 static void enable_interrupts() { irqs_enabled = true; }
 static void cpu_idle_once() { fail("unexpected platform idle fallback"); }
 }
-extern "C" int console_try_getc() noexcept;
+namespace containers {
+class IrqSpinLock {
+  bool saved_ = false;
+public:
+  void lock() {
+    if (event_locked) fail("recursive event lock");
+    saved_ = arch::interrupts_enabled();
+    arch::disable_interrupts();
+    event_locked = true;
+  }
+  void unlock() {
+    event_locked = false;
+    if (pending_remote) { pending_remote = false; deliver_uart(); }
+    if (saved_) arch::enable_interrupts();
+  }
+};
+template <typename Lock> struct LockGuard {
+  Lock &lock;
+  explicit LockGuard(Lock &value) : lock(value) { lock.lock(); }
+  ~LockGuard() { lock.unlock(); }
+};
+}
+namespace uart {
+static void ack_rx_interrupt() {}
+static int getc() { if (!fifo_bytes) return -1; --fifo_bytes; return 'k'; }
+}
+namespace moss::abi::bridge {
+static void *moss_prepare_io_wait() {
+  auto *thread = process::g_scheduler->prepare_sleep();
+  if (interrupted) process::g_scheduler->task_wakeup(thread, thread->wake_cpu);
+  return thread;
+}
+static void moss_commit_io_wait() { process::g_scheduler->commit_sleep(); }
+static void moss_wake_io_waiter(void *thread) {
+  process::g_scheduler->task_wakeup(static_cast<process::Thread *>(thread), process::reader.wake_cpu);
+}
+static bool moss_io_wait_interrupted() { return interrupted; }
+}
 static void deliver_uart();
 static void perform_switch();
 """
@@ -111,18 +151,9 @@ HOST_DRIVER = r"""
 static bool is_scenario(const char *name) { return std::strcmp(scenario, name) == 0; }
 
 static void deliver_uart() {
-  if (!console_rx::buf_put('k')) fail("host UART ring unexpectedly full");
-  console_rx::wake_blocked_reader();
-}
-
-extern "C" int console_try_getc() noexcept {
-  const int result = console_rx::buf_get();
-  // A UART IRQ may fill RX after the initial nonblocking read reports empty.
-  if (result < 0 && is_scenario("before-mask") && !event_injected) {
-    event_injected = true;
-    deliver_uart();
-  }
-  return result;
+  if (event_locked) { pending_remote = true; return; }
+  ++fifo_bytes;
+  console_rx::receive();
 }
 
 void process::CfsScheduler::dequeue_task(Thread *) {
@@ -135,8 +166,7 @@ void process::CfsScheduler::dequeue_task(Thread *) {
     else pending_uart = true;
   } else if (is_scenario("dequeue-remote")) {
     event_injected = true;
-    // Masking the reader CPU cannot stop a UART producer on another CPU.
-    // It can fill RX before blocked_reader is published.
+    // A remote IRQ waits for the event lock, then sees the published waiter.
     deliver_uart();
   }
 }
@@ -172,7 +202,11 @@ static void perform_switch() {
   using namespace process;
   if (irqs_enabled) fail("context switch began with IRQs enabled");
   ++switches;
-  if (is_scenario("before-save") && !event_injected) {
+  if (is_scenario("signal") && !event_injected) {
+    event_injected = true;
+    interrupted = true;
+    scheduler.task_wakeup(&reader, reader.wake_cpu);
+  } else if (is_scenario("before-save") && !event_injected) {
     event_injected = true;
     deliver_uart();
   } else if (is_scenario("spurious-then-uart")) {
@@ -205,13 +239,15 @@ int main(int argc, char **argv) {
   scenario = argv[1];
   irqs_enabled = std::strcmp(argv[2], "enabled") == 0;
   const bool original_irqs = irqs_enabled;
-  if (is_scenario("fast")) console_rx::buf_put('k');
+  if (is_scenario("fast")) console_rx::ring.put('k');
+  if (is_scenario("signal-pending")) interrupted = true;
 
-  const int character = console_getc_blocking();
-  if (character != 'k') fail("console did not return the received UART byte");
+  const int character = console_rx::getc_blocking();
+  const int expected = is_scenario("signal") || is_scenario("signal-pending") ? -1 : 'k';
+  if (character != expected) fail("console did not return the expected UART/signal result");
   if (irqs_enabled != original_irqs) fail("console changed its caller's IRQ mask");
-  if (!console_rx::buf_empty()) fail("console left the returned byte queued");
-  if (console_rx::blocked_reader_ != nullptr) fail("completed console read left a registered waiter");
+  if (!console_rx::ring.empty()) fail("console left the returned byte queued");
+  if (console_rx::waiters != nullptr) fail("completed console read left a registered waiter");
   if (process::reader.state != process::ProcessState::Running) fail("resumed reader was not Running");
   if (is_scenario("spurious-then-uart") && switches != 2)
     fail("spurious wake did not recheck RX and block until the UART byte arrived");
@@ -242,7 +278,17 @@ def console_binary(request, tmp_path_factory):
 
 @pytest.mark.parametrize("irq_state", ["enabled", "masked"])
 @pytest.mark.parametrize(
-    "scenario", ["dequeue-local", "dequeue-remote", "before-save", "spurious-then-uart", "fast", "before-mask"]
+    "scenario",
+    [
+        "dequeue-local",
+        "dequeue-remote",
+        "before-save",
+        "spurious-then-uart",
+        "fast",
+        "before-mask",
+        "signal",
+        "signal-pending",
+    ],
 )
 def test_console_sleep_preserves_uart_wakeup_and_irq_state(console_binary, irq_state, scenario):
     # This in-memory interleaving should finish immediately; 10 s bounds a

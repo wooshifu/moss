@@ -1,0 +1,3 @@
+add_library(moss_driver_irqchip OBJECT)
+target_sources(moss_driver_irqchip PUBLIC FILE_SET CXX_MODULES FILES src/irqchip.cppm)
+target_link_libraries(moss_driver_irqchip PUBLIC moss_core moss_aal moss_platform)

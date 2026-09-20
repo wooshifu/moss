@@ -7,5 +7,5 @@ target_sources(
 
 target_link_libraries(
     moss_hal_intc
-    PUBLIC moss_core moss_aal moss_platform
+    PUBLIC moss_driver_irqchip moss_core moss_aal moss_platform
 )

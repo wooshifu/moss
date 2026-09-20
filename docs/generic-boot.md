@@ -246,3 +246,5 @@ These limits describe this implementation, not Linux's full hardware coverage:
 The runtime resource model, supported boot adapters and reusable device drivers
 are the implemented separation; an empty board factory or universal HAL cannot
 provide the missing hardware capabilities.
+
+Driver source boundaries, binding and boot hardware ownership are documented in [Built-in drivers](drivers.md).

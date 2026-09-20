@@ -13,6 +13,7 @@ import moss.hal.intc;
 import moss.containers;
 import moss.smart_ptr;
 import moss.logging;
+import moss.abi;
 
 // ============================================================================
 // Exported interrupt types and classes
@@ -178,12 +179,15 @@ public:
       return VoidResult{ErrorCode::AlreadyExists};
     }
 
-    auto desc = make_shared<InterruptDescriptor>(irq, handler, context, name);
+    auto desc =
+        shared_ptr<InterruptDescriptor>::try_make(moss::abi::bridge::moss_heap_allocate, irq, handler, context, name);
     if (!desc) {
       return VoidResult{ErrorCode::OutOfMemory};
     }
 
-    interrupt_table_.insert_or_update(irq, desc);
+    if (!interrupt_table_.try_insert_or_update(irq, desc)) {
+      return VoidResult{ErrorCode::OutOfMemory};
+    }
 
     return VoidResult{};
   }

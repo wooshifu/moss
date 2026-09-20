@@ -134,9 +134,7 @@ static SbiResult sbi_hart_start(u64 hartid, u64 start_addr, u64 opaque) noexcept
   if (!moss::kernel::platform::order_cpus(boot_hart)) {
     return ::moss::kernel::VoidResult{::moss::kernel::ErrorCode::InvalidArgument};
   }
-  // PLIC context control windows begin at 0x200000 with 4 KiB stride. Use the
-  // DTB's supervisor-context index; sparse hart IDs cannot derive this offset.
-  moss::kernel::platform::hardware.intc.cpu_base = info.intc.dist_base + 0x200000 + info.plic_contexts[0] * 0x1000ULL;
+  moss::kernel::platform::hardware.intc.cpu_base = moss::kernel::hal::intc::plic_context_base(0);
   ctx.memory_start = info.total_memory_start;
   ctx.memory_size = info.total_memory_size;
   ctx.kernel_phys_base = reinterpret_cast<PhysAddr>(moss::abi::_start);
@@ -263,9 +261,7 @@ static SbiResult sbi_hart_start(u64 hartid, u64 start_addr, u64 opaque) noexcept
   {
     VirtAddr plic_base = moss::kernel::platform::intc_dist_base();
 
-    // Logical boot CPU zero uses its firmware-described supervisor context.
-    // Threshold/claim windows start at 0x200000 and advance by 0x1000 bytes.
-    VirtAddr ctx_base = plic_base + 0x200000 + moss::kernel::platform::hardware.plic_contexts[0] * 0x1000ULL;
+    VirtAddr ctx_base = moss::kernel::hal::intc::plic_context_base(0);
 
     auto result = gic->initialize(plic_base, ctx_base, 0);
     if (!result) {

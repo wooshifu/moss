@@ -81,6 +81,9 @@ add_subdirectory(src/core)
 add_subdirectory(src/abi)
 add_subdirectory(src/aal)
 add_subdirectory(src/platform)
+add_subdirectory(src/drivers/serial)
+add_subdirectory(src/drivers/irqchip)
+add_subdirectory(src/drivers/timer)
 add_subdirectory(src/hal)
 add_subdirectory(src/fdt)
 add_subdirectory(src/initramfs)
@@ -105,6 +108,9 @@ target_link_libraries(
             moss_abi
             moss_aal
             moss_platform
+            moss_driver_uart
+            moss_driver_irqchip
+            moss_driver_timer
             moss_hal_mmu
             moss_hal_intc
             moss_hal_uart

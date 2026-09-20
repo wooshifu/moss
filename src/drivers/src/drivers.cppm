@@ -1,5 +1,5 @@
 // MOSS Drivers Module - Device Management and Driver Framework
-// Provides device tree, driver matching, lifecycle management, and UART driver.
+// Passive device descriptions and static built-in driver binding.
 
 export module moss.drivers;
 
@@ -11,6 +11,9 @@ import moss.arch;
 import moss.containers;
 import moss.interrupts;
 import moss.abi;
+import moss.platform;
+import moss.timer;
+import moss.drivers.console;
 
 // ============================================================================
 // Exported driver framework types and classes
@@ -42,10 +45,28 @@ enum class DeviceType : u8 {
   Timer = 11,
   Clock = 12,
   Power = 13,
-  Platform = 14
+  Platform = 14,
+  InterruptController = 15
 };
 
 enum class DeviceState : u8 { Uninitialized = 0, Initializing = 1, Active = 2, Suspended = 3, Error = 4, Removed = 5 };
+
+enum class HardwareId : u8 {
+  Unknown,
+  Pl011,
+  Ns16550,
+  GicV2,
+  GicV3,
+  Bcm,
+  Apic,
+  Plic,
+  ArmVirtualTimer,
+  LapicTimer,
+  SbiTimer
+};
+enum class BindMode : u8 { Initialize, AdoptBoot };
+class Driver;
+class DeviceManager;
 
 // ========================================================================
 // Device resource structures
@@ -68,8 +89,8 @@ struct DeviceMemoryInfo {
 };
 
 struct DeviceIoInfo {
-  u16 start;
-  u16 end;
+  u32 start;
+  u32 end; // Exclusive end can be 0x10000 for a range ending at the last I/O port.
 };
 
 struct DeviceInterruptInfo {
@@ -100,10 +121,17 @@ struct DeviceResource {
 // ========================================================================
 
 class Device {
+  friend class DeviceManager;
+  DeviceManager *manager_{nullptr};
+  shared_ptr<Driver> driver_;
+  HardwareId hardware_id_;
+  BindMode bind_mode_;
+  u32 probe_error_{static_cast<u32>(ErrorCode::Success)};
+
 protected:
   DeviceId device_id_;
   DeviceType type_;
-  DeviceState state_;
+  u8 state_;
   const char *name_;
   const char *compatible_;
   Device *parent_;
@@ -117,9 +145,11 @@ protected:
   u64 access_count_;
 
 public:
-  Device(DeviceId id, DeviceType type, const char *name, const char *compatible) noexcept
-      : device_id_(id), type_(type), state_(DeviceState::Uninitialized), name_(name), compatible_(compatible),
-        parent_(nullptr), init_time_(0), last_access_time_(0), access_count_(0) {}
+  Device(DeviceId id, DeviceType type, const char *name, const char *compatible,
+         HardwareId hardware_id = HardwareId::Unknown, BindMode mode = BindMode::Initialize) noexcept
+      : hardware_id_(hardware_id), bind_mode_(mode), device_id_(id), type_(type),
+        state_(static_cast<u8>(DeviceState::Uninitialized)), name_(name), compatible_(compatible), parent_(nullptr),
+        init_time_(0), last_access_time_(0), access_count_(0) {}
 
   virtual ~Device() noexcept = default;
 
@@ -128,18 +158,20 @@ public:
   Device(Device &&) = delete;
   Device &operator=(Device &&) = delete;
 
-  // Device lifecycle interface
-  [[nodiscard]] virtual VoidResult initialize() noexcept = 0;
-  [[nodiscard]] virtual VoidResult suspend() noexcept { return VoidResult{}; }
-  [[nodiscard]] virtual VoidResult resume() noexcept { return VoidResult{}; }
-  virtual void shutdown() noexcept {}
-
   // Basic property access
-  [[nodiscard]] DeviceId device_id() const noexcept { return device_id_; }
+  [[nodiscard]] DeviceId device_id() const noexcept { return __atomic_load_n(&device_id_, __ATOMIC_ACQUIRE); }
   [[nodiscard]] DeviceType type() const noexcept { return type_; }
-  [[nodiscard]] DeviceState state() const noexcept { return state_; }
+  [[nodiscard]] DeviceState state() const noexcept {
+    return static_cast<DeviceState>(__atomic_load_n(&state_, __ATOMIC_ACQUIRE));
+  }
   [[nodiscard]] const char *name() const noexcept { return name_; }
   [[nodiscard]] const char *compatible() const noexcept { return compatible_; }
+
+  [[nodiscard]] HardwareId hardware_id() const noexcept { return hardware_id_; }
+  [[nodiscard]] BindMode bind_mode() const noexcept { return bind_mode_; }
+  [[nodiscard]] ErrorCode probe_error() const noexcept {
+    return static_cast<ErrorCode>(__atomic_load_n(&probe_error_, __ATOMIC_ACQUIRE));
+  }
 
   // Device tree relationships
   [[nodiscard]] Device *parent() const noexcept { return parent_; }
@@ -150,7 +182,9 @@ public:
   }
 
   // Resource management
-  void add_resource(const DeviceResource &resource) noexcept { resources_.push_front(resource); }
+  [[nodiscard]] bool add_resource(const DeviceResource &resource) noexcept {
+    return resources_.try_push_front(resource);
+  }
 
   [[nodiscard]] containers::Optional<DeviceResource> get_resource(DeviceResource::Type type,
                                                                   usize index = 0) const noexcept {
@@ -180,14 +214,15 @@ public:
     return found ? found->value : nullptr;
   }
 
-  // State management
+private:
   void set_state(DeviceState new_state) noexcept {
-    state_ = new_state;
     if (new_state == DeviceState::Active) {
       init_time_ = get_current_time();
     }
+    __atomic_store_n(&state_, static_cast<u8>(new_state), __ATOMIC_RELEASE);
   }
 
+public:
   // Statistics
   void update_access() noexcept {
     last_access_time_ = get_current_time();
@@ -208,614 +243,351 @@ protected:
   [[nodiscard]] static u64 get_current_time() noexcept { return arch::get_timestamp_counter(); }
 };
 
-// ========================================================================
-// Driver base class
-// ========================================================================
-
 class Driver {
-protected:
   const char *name_;
-  const char *version_;
-  const char **compatible_list_;
-  usize compatible_count_;
+  DeviceType type_;
+  HardwareId hardware_id_;
+  const char *compatible_;
 
 public:
-  Driver(const char *name, const char *version, const char **compatible_list, usize compatible_count) noexcept
-      : name_(name), version_(version), compatible_list_(compatible_list), compatible_count_(compatible_count) {}
-
+  Driver(const char *name, DeviceType type, HardwareId hardware_id, const char *compatible = nullptr) noexcept
+      : name_(name), type_(type), hardware_id_(hardware_id), compatible_(compatible) {}
   virtual ~Driver() noexcept = default;
-
   Driver(const Driver &) = delete;
   Driver &operator=(const Driver &) = delete;
-  Driver(Driver &&) = delete;
-  Driver &operator=(Driver &&) = delete;
-
-  // Driver interface
-  [[nodiscard]] virtual VoidResult probe(Device *device) noexcept = 0;
-  virtual void remove(Device *device) noexcept = 0;
-
-  // Power management
-  [[nodiscard]] virtual VoidResult suspend([[maybe_unused]] Device *device) noexcept { return VoidResult{}; }
-  [[nodiscard]] virtual VoidResult resume([[maybe_unused]] Device *device) noexcept { return VoidResult{}; }
-
-  // Basic properties
   [[nodiscard]] const char *name() const noexcept { return name_; }
-  [[nodiscard]] const char *version() const noexcept { return version_; }
-
-  // Device matching
-  [[nodiscard]] bool is_compatible(const char *device_compatible) const noexcept {
-    for (usize i = 0; i < compatible_count_; ++i) {
-      if (moss::abi::bridge::strcmp(compatible_list_[i], device_compatible) == 0) {
-        return true;
-      }
-    }
-    return false;
+  [[nodiscard]] bool matches(const Device &device) const noexcept {
+    return type_ == device.type() && hardware_id_ == device.hardware_id() &&
+           (!compatible_ || (device.compatible() && moss::abi::bridge::strcmp(compatible_, device.compatible()) == 0));
   }
+  // A failed probe must release only resources it acquired, preserving borrowed boot state.
+  [[nodiscard]] virtual VoidResult probe(Device &device, BindMode mode) noexcept = 0;
+  virtual void remove(Device &device) noexcept = 0;
+  [[nodiscard]] virtual VoidResult suspend(Device &) noexcept { return VoidResult{}; }
+  [[nodiscard]] virtual VoidResult resume(Device &) noexcept { return VoidResult{}; }
 };
 
-// ========================================================================
-// Device Manager
-// ========================================================================
-
 class DeviceManager {
-private:
-  containers::LockedHashMap<DeviceId, shared_ptr<Device>> devices_;
-  containers::LockedHashMap<const char *, DeviceId> device_name_map_;
-  containers::LockedList<Driver *> drivers_;
-  containers::LockedHashMap<DeviceId, Driver *> device_driver_map_;
+  // ponytail: linear scans suit the three boot devices; add an index when device counts grow.
+  containers::LockedList<shared_ptr<Device>> devices_;
+  containers::LockedList<shared_ptr<Driver>> drivers_;
+  mutable containers::IrqSpinLock registry_lock_;
+  DeviceId next_id_{1};
 
-  containers::AtomicCounter<DeviceId> next_device_id_;
-  containers::AtomicCounter<u32> total_devices_;
-  containers::AtomicCounter<u32> active_devices_;
-  containers::AtomicCounter<u32> registered_drivers_;
+  [[nodiscard]] shared_ptr<Device> next_device(DeviceId after) const noexcept {
+    containers::LockGuard<containers::IrqSpinLock> guard(registry_lock_);
+    shared_ptr<Device> result;
+    devices_.for_each([&](const shared_ptr<Device> &device) {
+      if (device->device_id() > after && (!result || device->device_id() < result->device_id()))
+        result = device;
+    });
+    return result;
+  }
 
 public:
-  DeviceManager() noexcept : next_device_id_(1), total_devices_(0), active_devices_(0), registered_drivers_(0) {}
-
-  ~DeviceManager() noexcept { cleanup(); }
-
+  DeviceManager() noexcept = default;
   DeviceManager(const DeviceManager &) = delete;
   DeviceManager &operator=(const DeviceManager &) = delete;
-  DeviceManager(DeviceManager &&) = delete;
-  DeviceManager &operator=(DeviceManager &&) = delete;
+  ~DeviceManager() noexcept {
+    // Destruction requires callers to have stopped registry operations. Boot devices
+    // borrow hardware that still serves scheduling and logging during shutdown.
+    for (DeviceId after = 0;;) {
+      auto device = next_device(after);
+      if (!device)
+        break;
+      after = device->device_id();
+      if (device->driver_ && device->bind_mode() != BindMode::AdoptBoot)
+        device->driver_->remove(*device);
+      device->driver_.reset();
+      device->set_state(DeviceState::Removed);
+      __atomic_store_n(&device->manager_, static_cast<DeviceManager *>(nullptr), __ATOMIC_RELEASE);
+    }
+    devices_.clear();
+    drivers_.clear();
+  }
 
   [[nodiscard]] KernelResult<DeviceId> register_device(shared_ptr<Device> device) noexcept {
-    if (!device) {
+    if (!device || !device->name())
       return KernelResult<DeviceId>{Err<ErrorCode>(ErrorCode::InvalidParameter)};
-    }
-
-    DeviceId device_id = next_device_id_.fetch_add(1, containers::MemoryOrder::Relaxed);
-
-    devices_.insert_or_update(device_id, device);
-    if (device->name() != nullptr) {
-      device_name_map_.insert_or_update(device->name(), device_id);
-    }
-
-    (void)total_devices_.fetch_add(1, containers::MemoryOrder::Relaxed);
-
-    auto match_result = match_driver(device.get());
-    if (match_result) {
-      device->set_state(DeviceState::Active);
-      (void)active_devices_.fetch_add(1, containers::MemoryOrder::Relaxed);
-    }
-
-    return KernelResult<DeviceId>{device_id};
-  }
-
-  [[nodiscard]] VoidResult unregister_device(DeviceId device_id) noexcept {
-    auto device_ptr = devices_.extract(device_id);
-    if (!device_ptr) {
-      return VoidResult{ErrorCode::NotFound};
-    }
-
-    shared_ptr<Device> device = *device_ptr;
-
-    auto driver_ptr = device_driver_map_.extract(device_id);
-    if (static_cast<bool>(driver_ptr)) {
-      Driver *driver = *driver_ptr;
-      driver->remove(device.get());
-    }
-
-    if (device->name() != nullptr) {
-      device_name_map_.remove(device->name());
-    }
-
-    if (device->state() == DeviceState::Active) {
-      (void)active_devices_.fetch_sub(1, containers::MemoryOrder::Relaxed);
-    }
-    (void)total_devices_.fetch_sub(1, containers::MemoryOrder::Relaxed);
-
-    device->shutdown();
-    return VoidResult{};
-  }
-
-  [[nodiscard]] VoidResult register_driver(Driver *driver) noexcept {
-    if (driver == nullptr) {
-      return VoidResult{ErrorCode::InvalidParameter};
-    }
-
-    drivers_.push_front(driver);
-    (void)registered_drivers_.fetch_add(1, containers::MemoryOrder::Relaxed);
-
-    devices_.for_each_snapshot([this, driver](const auto &entry) {
-      Device *device = entry.value.get();
-      if (device->state() == DeviceState::Uninitialized && driver->is_compatible(device->compatible())) {
-
-        auto probe_result = driver->probe(device);
-        if (probe_result) {
-          device_driver_map_.insert_or_update(device->device_id(), driver);
-          device->set_state(DeviceState::Active);
-          (void)active_devices_.fetch_add(1, containers::MemoryOrder::Relaxed);
-        }
+    {
+      containers::LockGuard<containers::IrqSpinLock> guard(registry_lock_);
+      DeviceManager *expected = nullptr;
+      if (!__atomic_compare_exchange_n(&device->manager_, &expected, this, false, __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE))
+        return KernelResult<DeviceId>{Err<ErrorCode>(ErrorCode::AlreadyExists)};
+      auto duplicate = devices_.find_if([&](const shared_ptr<Device> &other) {
+        return moss::abi::bridge::strcmp(other->name(), device->name()) == 0;
+      });
+      if (duplicate || !devices_.try_push_front(device)) {
+        __atomic_store_n(&device->manager_, static_cast<DeviceManager *>(nullptr), __ATOMIC_RELEASE);
+        return KernelResult<DeviceId>{Err<ErrorCode>(duplicate ? ErrorCode::AlreadyExists : ErrorCode::OutOfMemory)};
       }
-    });
+      __atomic_store_n(&device->device_id_, next_id_++, __ATOMIC_RELEASE);
+      device->set_state(DeviceState::Uninitialized);
+    }
+    (void)bind_device(device->device_id());
+    return KernelResult<DeviceId>{device->device_id()};
+  }
 
+  [[nodiscard]] VoidResult register_driver(shared_ptr<Driver> driver) noexcept {
+    if (!driver || !driver->name())
+      return VoidResult{ErrorCode::InvalidParameter};
+    {
+      containers::LockGuard<containers::IrqSpinLock> guard(registry_lock_);
+      if (drivers_.find_if([&](const shared_ptr<Driver> &other) {
+            return other.get() == driver.get() || moss::abi::bridge::strcmp(other->name(), driver->name()) == 0;
+          }))
+        return VoidResult{ErrorCode::AlreadyExists};
+      if (!drivers_.try_push_front(driver))
+        return VoidResult{ErrorCode::OutOfMemory};
+    }
+    for (DeviceId after = 0;;) {
+      auto device = next_device(after);
+      if (!device)
+        break;
+      after = device->device_id();
+      if (device->state() == DeviceState::Uninitialized)
+        (void)bind_device(after);
+    }
     return VoidResult{};
   }
 
-  [[nodiscard]] shared_ptr<Device> get_device(DeviceId device_id) const noexcept {
-    auto device_ptr = devices_.find(device_id);
-    return device_ptr ? *device_ptr : shared_ptr<Device>{};
-  }
-
-  [[nodiscard]] shared_ptr<Device> get_device_by_name(const char *name) const noexcept {
-    auto device_id_ptr = device_name_map_.find(name);
-    if (!device_id_ptr) {
-      return shared_ptr<Device>{};
+  [[nodiscard]] VoidResult bind_device(DeviceId id) noexcept {
+    shared_ptr<Device> device;
+    shared_ptr<Driver> driver;
+    {
+      containers::LockGuard<containers::IrqSpinLock> guard(registry_lock_);
+      auto found = devices_.find_if([&](const shared_ptr<Device> &item) { return item->device_id() == id; });
+      if (!found)
+        return VoidResult{ErrorCode::NotFound};
+      device = *found;
+      if (device->state() != DeviceState::Uninitialized)
+        return VoidResult{ErrorCode::InvalidState};
+      auto matched = drivers_.find_if([&](const shared_ptr<Driver> &item) { return item->matches(*device); });
+      if (!matched)
+        return VoidResult{ErrorCode::NotFound};
+      driver = *matched;
+      device->set_state(DeviceState::Initializing);
     }
-
-    return get_device(*device_id_ptr);
+    // Claim the transition under lock; callbacks may allocate, sleep or inspect the registry.
+    auto result = driver->probe(*device, device->bind_mode());
+    {
+      containers::LockGuard<containers::IrqSpinLock> guard(registry_lock_);
+      __atomic_store_n(&device->probe_error_, static_cast<u32>(result ? ErrorCode::Success : result.error()),
+                       __ATOMIC_RELEASE);
+      if (result)
+        device->driver_ = driver;
+      device->set_state(result ? DeviceState::Active : DeviceState::Error);
+    }
+    return result;
   }
 
+  [[nodiscard]] VoidResult unregister_device(DeviceId id) noexcept {
+    shared_ptr<Device> device;
+    shared_ptr<Driver> driver;
+    {
+      containers::LockGuard<containers::IrqSpinLock> guard(registry_lock_);
+      auto found = devices_.find_if([&](const shared_ptr<Device> &item) { return item->device_id() == id; });
+      if (!found)
+        return VoidResult{ErrorCode::NotFound};
+      device = *found;
+      if (device->bind_mode() == BindMode::AdoptBoot)
+        return VoidResult{ErrorCode::PermissionDenied};
+      if (device->state() == DeviceState::Initializing)
+        return VoidResult{ErrorCode::ResourceBusy};
+      device->set_state(DeviceState::Initializing);
+      driver = device->driver_;
+    }
+    if (driver)
+      driver->remove(*device);
+    {
+      containers::LockGuard<containers::IrqSpinLock> guard(registry_lock_);
+      devices_.remove_if([&](const shared_ptr<Device> &item) { return item.get() == device.get(); });
+      device->driver_.reset();
+      device->set_state(DeviceState::Removed);
+      __atomic_store_n(&device->manager_, static_cast<DeviceManager *>(nullptr), __ATOMIC_RELEASE);
+    }
+    return VoidResult{};
+  }
+
+  [[nodiscard]] shared_ptr<Device> get_device(DeviceId id) const noexcept {
+    containers::LockGuard<containers::IrqSpinLock> guard(registry_lock_);
+    auto found = devices_.find_if([&](const shared_ptr<Device> &item) { return item->device_id() == id; });
+    return found ? *found : shared_ptr<Device>{};
+  }
+  [[nodiscard]] shared_ptr<Device> get_device_by_name(const char *name) const noexcept {
+    if (!name)
+      return {};
+    containers::LockGuard<containers::IrqSpinLock> guard(registry_lock_);
+    auto found = devices_.find_if(
+        [&](const shared_ptr<Device> &item) { return moss::abi::bridge::strcmp(item->name(), name) == 0; });
+    return found ? *found : shared_ptr<Device>{};
+  }
   struct DeviceManagerStats {
     u32 total_devices;
     u32 active_devices;
     u32 registered_drivers;
   };
-
   [[nodiscard]] DeviceManagerStats get_statistics() const noexcept {
-    return {.total_devices = total_devices_.load(containers::MemoryOrder::Relaxed),
-            .active_devices = active_devices_.load(containers::MemoryOrder::Relaxed),
-            .registered_drivers = registered_drivers_.load(containers::MemoryOrder::Relaxed)};
+    containers::LockGuard<containers::IrqSpinLock> guard(registry_lock_);
+    DeviceManagerStats stats{static_cast<u32>(devices_.size()), 0, static_cast<u32>(drivers_.size())};
+    devices_.for_each([&](const shared_ptr<Device> &device) {
+      if (device->state() == DeviceState::Active)
+        ++stats.active_devices;
+    });
+    return stats;
   }
-
   void list_devices(void (*callback)(const Device &, void *), void *context) const noexcept {
-    devices_.for_each_snapshot([callback, context](const auto &entry) {
-      const Device &device = *entry.value;
-      callback(device, context);
-    });
+    for (DeviceId after = 0;;) {
+      auto device = next_device(after);
+      if (!device)
+        break;
+      after = device->device_id();
+      callback(*device, context);
+    }
   }
-
-  [[nodiscard]] VoidResult suspend_all_devices() noexcept {
-    bool success = true;
-
-    devices_.for_each_snapshot([&success](const auto &entry) {
-      Device *device = entry.value.get();
-      if (device->state() == DeviceState::Active) {
-        auto result = device->suspend();
-        if (result) {
-          device->set_state(DeviceState::Suspended);
-        } else {
-          success = false;
-        }
-      }
-    });
-
-    return success ? VoidResult{} : VoidResult{ErrorCode::IoError};
-  }
-
-  [[nodiscard]] VoidResult resume_all_devices() noexcept {
-    bool success = true;
-
-    devices_.for_each_snapshot([&success](const auto &entry) {
-      Device *device = entry.value.get();
-      if (device->state() == DeviceState::Suspended) {
-        auto result = device->resume();
-        if (result) {
-          device->set_state(DeviceState::Active);
-        } else {
-          success = false;
-        }
-      }
-    });
-
-    return success ? VoidResult{} : VoidResult{ErrorCode::IoError};
-  }
+  [[nodiscard]] VoidResult suspend_all_devices() noexcept { return change_power_state(false); }
+  [[nodiscard]] VoidResult resume_all_devices() noexcept { return change_power_state(true); }
 
 private:
-  [[nodiscard]] VoidResult match_driver(Device *device) noexcept {
-    auto matched_driver_ptr =
-        drivers_.find_if([device](const Driver *driver) { return driver->is_compatible(device->compatible()); });
-
-    if (!matched_driver_ptr) {
-      return VoidResult{ErrorCode::NotFound};
-    }
-
-    Driver *matched_driver = *matched_driver_ptr;
-
-    auto probe_result = matched_driver->probe(device);
-    if (!probe_result) {
-      return probe_result;
-    }
-
-    device_driver_map_.insert_or_update(device->device_id(), matched_driver);
-    return VoidResult{};
-  }
-
-  void cleanup() noexcept {
-    devices_.for_each_snapshot([](const auto &entry) { entry.value->shutdown(); });
-  }
-};
-
-// Global device manager
-extern DeviceManager *g_device_manager;
-
-// ========================================================================
-// PL011 UART Driver
-// ========================================================================
-
-// PL011 UART register byte offsets and bit encodings follow Arm DDI 0183,
-// chapter 3. These are hardware ABI values; renumbering them selects different
-// registers rather than changing a driver policy.
-namespace uart_regs {
-inline constexpr u32 UARTDR = 0x000;
-inline constexpr u32 UARTRSR = 0x004;
-inline constexpr u32 UARTFR = 0x018;
-inline constexpr u32 UARTILPR = 0x020;
-inline constexpr u32 UARTIBRD = 0x024;
-inline constexpr u32 UARTFBRD = 0x028;
-inline constexpr u32 UARTLCR_H = 0x02C;
-inline constexpr u32 UARTCR = 0x030;
-inline constexpr u32 UARTIFLS = 0x034;
-inline constexpr u32 UARTIMSC = 0x038;
-inline constexpr u32 UARTRIS = 0x03C;
-inline constexpr u32 UARTMIS = 0x040;
-inline constexpr u32 UARTICR = 0x044;
-inline constexpr u32 UARTDMACR = 0x048;
-} // namespace uart_regs
-
-// UART flag bits
-namespace uart_flags {
-inline constexpr u32 UARTFR_CTS = (1 << 0);
-inline constexpr u32 UARTFR_DSR = (1 << 1);
-inline constexpr u32 UARTFR_DCD = (1 << 2);
-inline constexpr u32 UARTFR_BUSY = (1 << 3);
-inline constexpr u32 UARTFR_RXFE = (1 << 4);
-inline constexpr u32 UARTFR_TXFF = (1 << 5);
-inline constexpr u32 UARTFR_RXFF = (1 << 6);
-inline constexpr u32 UARTFR_TXFE = (1 << 7);
-} // namespace uart_flags
-
-// UART control bits
-namespace uart_control {
-inline constexpr u32 UARTCR_UARTEN = (1 << 0);
-inline constexpr u32 UARTCR_SIREN = (1 << 1);
-inline constexpr u32 UARTCR_SIRLP = (1 << 2);
-inline constexpr u32 UARTCR_LBE = (1 << 7);
-inline constexpr u32 UARTCR_TXE = (1 << 8);
-inline constexpr u32 UARTCR_RXE = (1 << 9);
-inline constexpr u32 UARTCR_DTR = (1 << 10);
-inline constexpr u32 UARTCR_RTS = (1 << 11);
-inline constexpr u32 UARTCR_OUT1 = (1 << 12);
-inline constexpr u32 UARTCR_OUT2 = (1 << 13);
-inline constexpr u32 UARTCR_RTSEN = (1 << 14);
-inline constexpr u32 UARTCR_CTSEN = (1 << 15);
-} // namespace uart_control
-
-// UART line control bits
-namespace uart_line_control {
-inline constexpr u32 UARTLCR_H_BRK = (1 << 0);
-inline constexpr u32 UARTLCR_H_PEN = (1 << 1);
-inline constexpr u32 UARTLCR_H_EPS = (1 << 2);
-inline constexpr u32 UARTLCR_H_STP2 = (1 << 3);
-inline constexpr u32 UARTLCR_H_FEN = (1 << 4);
-inline constexpr u32 UARTLCR_H_WLEN_5 = (0 << 5);
-inline constexpr u32 UARTLCR_H_WLEN_6 = (1 << 5);
-inline constexpr u32 UARTLCR_H_WLEN_7 = (2 << 5);
-inline constexpr u32 UARTLCR_H_WLEN_8 = (3 << 5);
-} // namespace uart_line_control
-
-// UART device class
-class UartDevice : public Device {
-private:
-  VirtAddr base_addr_;
-  u32 clock_freq_;
-  u32 baud_rate_;
-  InterruptId irq_;
-  bool initialized_;
-
-  u64 bytes_sent_;
-  u64 bytes_received_;
-  u64 tx_errors_;
-  u64 rx_errors_;
-
-public:
-  // Fallbacks are a 24 MHz UART clock and 115200 bits/s; firmware properties
-  // override them in initialize(). Their platform-specific selection rationale
-  // is not recorded, so they must not be assumed valid on every PL011 board.
-  UartDevice(const char *name, const char *compatible) noexcept
-      : Device(0, DeviceType::UART, name, compatible), base_addr_(0), clock_freq_(24000000), baud_rate_(115200),
-        irq_(0), initialized_(false), bytes_sent_(0), bytes_received_(0), tx_errors_(0), rx_errors_(0) {}
-
-  ~UartDevice() override = default;
-
-  [[nodiscard]] VoidResult initialize() noexcept override {
-    if (initialized_) {
-      return VoidResult{ErrorCode::InvalidState};
-    }
-
-    auto memory_res = get_resource(DeviceResource::Memory);
-    if (!memory_res) {
-      return VoidResult{ErrorCode::NotFound};
-    }
-
-    base_addr_ = memory_res->memory.mapped_addr;
-    if (base_addr_ == 0) {
-      return VoidResult{ErrorCode::InvalidParameter};
-    }
-
-    auto irq_res = get_resource(DeviceResource::IRQ);
-    if (irq_res) {
-      irq_ = irq_res->interrupt.irq;
-    }
-
-    const char *clock_freq_str = get_property("clock-frequency");
-    if (clock_freq_str != nullptr) {
-      clock_freq_ = string_to_u32(clock_freq_str);
-    }
-
-    const char *baud_rate_str = get_property("current-speed");
-    if (baud_rate_str != nullptr) {
-      baud_rate_ = string_to_u32(baud_rate_str);
-    }
-
-    auto init_result = initialize_hardware();
-    if (!init_result) {
-      return init_result;
-    }
-
-    initialized_ = true;
-    set_state(DeviceState::Active);
-
-    return VoidResult{};
-  }
-
-  [[nodiscard]] VoidResult suspend() noexcept override {
-    if (!initialized_) {
-      return VoidResult{ErrorCode::InvalidState};
-    }
-
-    write_reg(uart_regs::UARTCR, 0);
-    set_state(DeviceState::Suspended);
-
-    return VoidResult{};
-  }
-
-  [[nodiscard]] VoidResult resume() noexcept override {
-    if (state() != DeviceState::Suspended) {
-      return VoidResult{ErrorCode::InvalidState};
-    }
-
-    auto init_result = initialize_hardware();
-    if (!init_result) {
-      return init_result;
-    }
-
-    set_state(DeviceState::Active);
-    return VoidResult{};
-  }
-
-  void shutdown() noexcept override {
-    if (initialized_) {
-      write_reg(uart_regs::UARTCR, 0);
-      initialized_ = false;
-    }
-  }
-
-  // UART operations
-  [[nodiscard]] VoidResult send_char(char c) noexcept {
-    if (!initialized_) {
-      return VoidResult{ErrorCode::InvalidState};
-    }
-
-    while (read_reg(uart_regs::UARTFR) & uart_flags::UARTFR_TXFF) {
-      // Wait for TX FIFO to be non-full
-    }
-
-    write_reg(uart_regs::UARTDR, static_cast<u32>(c));
-    bytes_sent_++;
-    update_access();
-
-    return VoidResult{};
-  }
-
-  [[nodiscard]] KernelResult<char> receive_char() noexcept {
-    if (!initialized_) {
-      return KernelResult<char>{Err<ErrorCode>(ErrorCode::InvalidState)};
-    }
-
-    if (read_reg(uart_regs::UARTFR) & uart_flags::UARTFR_RXFE) {
-      return KernelResult<char>{Err<ErrorCode>(ErrorCode::NotFound)};
-    }
-
-    u32 data = read_reg(uart_regs::UARTDR);
-
-    // PL011 DR[11:8] report overrun/break/parity/framing errors; bits [7:0]
-    // hold the character, so status bits must not leak into the returned byte.
-    if (data & 0xF00) {
-      rx_errors_++;
-      return KernelResult<char>{Err<ErrorCode>(ErrorCode::IoError)};
-    }
-
-    bytes_received_++;
-    update_access();
-
-    return KernelResult<char>{static_cast<char>(data & 0xFF)};
-  }
-
-  [[nodiscard]] VoidResult send_string(const char *str) noexcept {
-    if (str == nullptr) {
-      return VoidResult{ErrorCode::InvalidParameter};
-    }
-
-    while (*str) {
-      auto result = send_char(*str++);
-      if (!result) {
+  [[nodiscard]] VoidResult change_power_state(bool resume) noexcept {
+    for (DeviceId after = 0;;) {
+      auto device = next_device(after);
+      if (!device)
+        break;
+      after = device->device_id();
+      shared_ptr<Driver> driver;
+      {
+        containers::LockGuard<containers::IrqSpinLock> guard(registry_lock_);
+        if (__atomic_load_n(&device->manager_, __ATOMIC_ACQUIRE) != this)
+          continue;
+        if (device->bind_mode() == BindMode::AdoptBoot)
+          return VoidResult{ErrorCode::PermissionDenied};
+        if (device->state() != (resume ? DeviceState::Suspended : DeviceState::Active))
+          continue;
+        driver = device->driver_;
+        device->set_state(DeviceState::Initializing);
+      }
+      auto result = resume ? driver->resume(*device) : driver->suspend(*device);
+      {
+        containers::LockGuard<containers::IrqSpinLock> guard(registry_lock_);
+        device->set_state(result ? (resume ? DeviceState::Active : DeviceState::Suspended)
+                                 : (resume ? DeviceState::Suspended : DeviceState::Active));
+      }
+      if (!result)
         return result;
-      }
     }
-
     return VoidResult{};
-  }
-
-  struct UartStatistics {
-    u64 bytes_sent;
-    u64 bytes_received;
-    u64 tx_errors;
-    u64 rx_errors;
-    u32 current_baud_rate;
-    bool is_active;
-  };
-
-  [[nodiscard]] UartStatistics get_uart_statistics() const noexcept {
-    return {.bytes_sent = bytes_sent_,
-            .bytes_received = bytes_received_,
-            .tx_errors = tx_errors_,
-            .rx_errors = rx_errors_,
-            .current_baud_rate = baud_rate_,
-            .is_active = state() == DeviceState::Active};
-  }
-
-  [[nodiscard]] VoidResult set_baud_rate(u32 baud_rate) noexcept {
-    if (!initialized_) {
-      return VoidResult{ErrorCode::InvalidState};
-    }
-
-    baud_rate_ = baud_rate;
-
-    // PL011 baud divisor = UARTCLK/(16*baud): 16 is the hardware oversample
-    // factor. FBRD stores 6 fractional bits (scale 64); temp/2 rounds to the
-    // nearest fractional step rather than systematically truncating the baud.
-    // See Arm DDI 0183, section 2.4.3; these factors are not tuning parameters.
-    u32 temp = 16 * baud_rate;
-    u32 divint = clock_freq_ / temp;
-    u32 divfrac = ((clock_freq_ % temp) * 64 + temp / 2) / temp;
-
-    write_reg(uart_regs::UARTIBRD, divint);
-    write_reg(uart_regs::UARTFBRD, divfrac);
-
-    return VoidResult{};
-  }
-
-private:
-  [[nodiscard]] u32 read_reg(u32 offset) const noexcept {
-    return *reinterpret_cast<volatile u32 *>(base_addr_ + offset);
-  }
-
-  void write_reg(u32 offset, u32 value) const noexcept {
-    *reinterpret_cast<volatile u32 *>(base_addr_ + offset) = value;
-  }
-
-  [[nodiscard]] static u32 string_to_u32(const char *str) noexcept {
-    if (str == nullptr) {
-      return 0;
-    }
-
-    u32 result = 0;
-    while (*str >= '0' && *str <= '9') {
-      result = result * 10 + static_cast<u32>(*str - '0');
-      str++;
-    }
-    return result;
-  }
-
-  [[nodiscard]] VoidResult initialize_hardware() noexcept {
-    write_reg(uart_regs::UARTCR, 0);
-    write_reg(uart_regs::UARTRSR, 0);
-
-    auto baud_result = set_baud_rate(baud_rate_);
-    if (!baud_result) {
-      return baud_result;
-    }
-
-    write_reg(uart_regs::UARTLCR_H, uart_line_control::UARTLCR_H_WLEN_8 | uart_line_control::UARTLCR_H_FEN);
-
-    // All 11 PL011 interrupt causes are write-one-to-clear; discard stale
-    // causes before enabling transmit/receive to avoid an immediate old IRQ.
-    write_reg(uart_regs::UARTICR, 0x7FF);
-
-    write_reg(uart_regs::UARTCR, uart_control::UARTCR_UARTEN | uart_control::UARTCR_TXE | uart_control::UARTCR_RXE);
-
-    return VoidResult{};
-  }
-
-  static void uart_interrupt_handler(InterruptId irq, void *context) noexcept {
-    (void)irq;
-    UartDevice *uart = static_cast<UartDevice *>(context);
-    if (uart == nullptr) {
-      return;
-    }
-
-    u32 int_status = uart->read_reg(uart_regs::UARTMIS);
-
-    // PL011 MIS.RXMIS is bit 4; draining RX removes the FIFO-level cause.
-    if (int_status & (1 << 4)) {
-      while (!(uart->read_reg(uart_regs::UARTFR) & uart_flags::UARTFR_RXFE)) {
-        (void)uart->read_reg(uart_regs::UARTDR);
-      }
-    }
-
-    uart->write_reg(uart_regs::UARTICR, int_status);
   }
 };
 
-// UART driver class
-class UartDriver : public Driver {
-private:
-  static const char *compatible_devices[];
+inline DeviceManager *g_device_manager = nullptr;
+
+// These drivers adopt the selected platform resources, rather than inventing
+// firmware-compatible strings for ACPI or architectural devices.
+class BootDriver final : public Driver {
+  interrupts::GenericInterruptController *controller_;
 
 public:
-  // Two compatible strings are defined below: the PL011 and PrimeCell aliases.
-  UartDriver() noexcept : Driver("pl011-uart", "1.0", compatible_devices, 2) {}
-
-  ~UartDriver() override = default;
-
-  [[nodiscard]] VoidResult probe(Device *device) noexcept override {
-    if (device == nullptr) {
-      return VoidResult{ErrorCode::InvalidParameter};
-    }
-
-    if (device->type() != DeviceType::UART) {
-      return VoidResult{ErrorCode::NotSupported};
-    }
-
-    auto init_result = device->initialize();
-    if (!init_result) {
-      return init_result;
-    }
-
+  BootDriver(const char *name, DeviceType type, HardwareId id, interrupts::GenericInterruptController *controller)
+      : Driver(name, type, id), controller_(controller) {}
+  VoidResult probe(Device &device, BindMode mode) noexcept override {
+    if (mode != BindMode::AdoptBoot || !controller_)
+      return VoidResult{ErrorCode::InvalidState};
+    if (device.type() == DeviceType::UART)
+      return console::initialize();
+    if (device.type() == DeviceType::Timer && !timer::TimerSubsystem::instance().is_initialized())
+      return VoidResult{ErrorCode::InvalidState};
     return VoidResult{};
   }
-
-  void remove(Device *device) noexcept override {
-    if (device != nullptr) {
-      device->shutdown();
-    }
-  }
+  void remove(Device &) noexcept override {}
 };
 
-// Global UART driver instance
-extern UartDriver *g_uart_driver;
-
-// === Module-level variable definitions ===
-
-// Global device manager instance
-DeviceManager *g_device_manager = nullptr;
-
-// Global UART driver instance
-UartDriver *g_uart_driver = nullptr;
-
-// UartDriver compatible device list (static data member)
-const char *UartDriver::compatible_devices[] = {"arm,pl011", "arm,primecell"};
-
+[[nodiscard]] inline VoidResult register_boot_devices(DeviceManager &manager,
+                                                      interrupts::GenericInterruptController *controller) noexcept {
+#if defined(MOSS_ARCH_ARM64)
+  const auto chip = platform::hardware.intc.gic_version == 1   ? HardwareId::Bcm
+                    : platform::hardware.intc.gic_version == 3 ? HardwareId::GicV3
+                                                               : HardwareId::GicV2;
+  const auto clock = HardwareId::ArmVirtualTimer;
+#elif defined(MOSS_ARCH_X64)
+  const auto chip = HardwareId::Apic;
+  const auto clock = HardwareId::LapicTimer;
+#else
+  const auto chip = HardwareId::Plic;
+  const auto clock = HardwareId::SbiTimer;
+#endif
+  const auto serial =
+      platform::hardware.uart.kind == platform::UartKind::Pl011 ? HardwareId::Pl011 : HardwareId::Ns16550;
+  const DeviceType types[] = {DeviceType::InterruptController, DeviceType::Timer, DeviceType::UART};
+  const HardwareId ids[] = {chip, clock, serial};
+  const char *names[] = {"irqchip", "timer", "console"};
+  const usize count = platform::hardware.uart.valid ? 3 : 2;
+  for (usize i = 0; i < count; ++i) {
+    auto driver = shared_ptr<Driver>::try_make<BootDriver>(moss::abi::bridge::moss_heap_allocate, names[i], types[i],
+                                                           ids[i], controller);
+    if (!driver)
+      return VoidResult{ErrorCode::OutOfMemory};
+    auto registered = manager.register_driver(driver);
+    if (!registered)
+      return registered;
+  }
+  for (usize i = 0; i < count; ++i) {
+    auto device = shared_ptr<Device>::try_make(moss::abi::bridge::moss_heap_allocate, 0U, types[i], names[i], nullptr,
+                                               ids[i], BindMode::AdoptBoot);
+    if (!device)
+      return VoidResult{ErrorCode::OutOfMemory};
+    DeviceResource resource;
+    if (i == 0) {
+      const auto &chip_info = platform::hardware.intc;
+      const PhysAddr bases[] = {chip_info.dist_base, chip_info.cpu_base, chip_info.redist_base};
+      u64 sizes[] = {chip_info.dist_size, chip_info.cpu_size, chip_info.redist_size};
+#if defined(MOSS_ARCH_X64)
+      // The existing xAPIC profile maps each register bank as one 4 KiB MMIO page.
+      sizes[0] = sizes[1] = PAGE_SIZE;
+#endif
+      for (usize bank = 0; bank < 3; ++bank) {
+        if (!bases[bank] || !sizes[bank])
+          continue;
+        resource.type = DeviceResource::Memory;
+        resource.memory = {bases[bank], bases[bank] + sizes[bank], bases[bank]};
+        if (!device->add_resource(resource))
+          return VoidResult{ErrorCode::OutOfMemory};
+      }
+    } else if (i == 2) {
+      const auto &uart = platform::hardware.uart;
+      resource.type = uart.port_io ? DeviceResource::IO : DeviceResource::Memory;
+      if (resource.type == DeviceResource::IO) {
+        resource.io = {static_cast<u32>(uart.base_addr), static_cast<u32>(uart.base_addr + uart.size)};
+      } else {
+        resource.memory = {uart.base_addr, uart.base_addr + uart.size, uart.base_addr};
+      }
+      if (!device->add_resource(resource))
+        return VoidResult{ErrorCode::OutOfMemory};
+    }
+    if (i != 0) {
+      resource.type = DeviceResource::IRQ;
+      resource.interrupt = {i == 1 ? platform::timer_irq() : platform::hardware.uart.irq,
+                            interrupts::TriggerType::LevelHigh};
+#if defined(MOSS_ARCH_X64)
+      resource.interrupt.trigger = interrupts::TriggerType::EdgeRising;
+      if (i == 2) {
+        // MADT override bits 0..1 encode polarity; bits 2..3 encode trigger mode.
+        const u16 flags = platform::hardware.isa_flags[platform::hardware.uart.irq];
+        const bool level = (flags & 12) == 12, low = (flags & 3) == 3;
+        resource.interrupt.trigger =
+            level ? (low ? interrupts::TriggerType::LevelLow : interrupts::TriggerType::LevelHigh)
+                  : (low ? interrupts::TriggerType::EdgeFalling : interrupts::TriggerType::EdgeRising);
+      }
+#endif
+      if (!device->add_resource(resource))
+        return VoidResult{ErrorCode::OutOfMemory};
+    }
+    auto registered = manager.register_device(device);
+    if (!registered)
+      return VoidResult{registered.error()};
+    if (device->state() != DeviceState::Active)
+      return VoidResult{device->probe_error()};
+  }
+  return VoidResult{};
+}
 } // namespace moss::kernel::drivers

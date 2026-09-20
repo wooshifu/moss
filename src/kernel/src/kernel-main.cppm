@@ -8,7 +8,6 @@ extern "C" void moss_validation_boot() noexcept;
 #ifdef MOSS_ARCH_X64
 // Cross-module interrupt dispatch callbacks (defined in boot_impl.cpp)
 extern "C" void (*g_x64_timer_handler)() noexcept;
-extern "C" void (*g_x64_uart_rx_handler)() noexcept;
 #endif
 
 export module moss.kernel:main;
@@ -226,7 +225,7 @@ public:
 
     // Shutdown subsystems in reverse order
     if (device_manager_) {
-      (void)device_manager_->suspend_all_devices();
+      drivers::g_device_manager = nullptr;
       delete device_manager_;
       device_manager_ = nullptr;
     }
@@ -596,6 +595,9 @@ private:
 
     // Drivers and interrupt dispatch share the controller established at boot.
     ::moss::kernel::interrupts::g_gic = gic_;
+    drivers::g_device_manager = device_manager_;
+    auto bound = drivers::register_boot_devices(*device_manager_, gic_);
+    if (!bound) return bound;
 
     // Initialize multi-architecture syscall support
     log::klog::info("Initializing multi-architecture syscall support...");

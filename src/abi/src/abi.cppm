@@ -121,7 +121,8 @@ int try_grow_user_stack(unsigned long long fault_addr) noexcept;
 unsigned long long get_current_pgd_phys() noexcept;
 [[noreturn]] void terminate_current_user_process(int exit_code) noexcept;
 
-// vfs <-> kernel bridge
+// Console and event wait bridges keep VFS and drivers independent of process.
+extern void (*g_x64_uart_rx_handler)() noexcept;
 void console_rx_init() noexcept;
 int console_getc_blocking() noexcept;
 int console_try_getc() noexcept;
@@ -312,6 +313,7 @@ inline auto user_program_size() noexcept -> moss::kernel::usize {
 export namespace moss::abi::bridge {
 
 using ::console_getc_blocking;
+using ::g_x64_uart_rx_handler;
 using ::console_rx_init;
 using ::console_try_getc;
 using ::demand_page_lookup;
