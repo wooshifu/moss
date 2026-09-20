@@ -796,6 +796,9 @@ static long console_read([[maybe_unused]] File *file, OutputBuffer buffer) noexc
   while (pos < count) {
     int ch = moss::abi::bridge::console_getc_blocking();
     if (ch < 0) {
+      if (moss::abi::bridge::moss_io_wait_interrupted()) {
+        return pos ? static_cast<long>(pos) : -static_cast<long>(VfsError::Interrupted);
+      }
       continue;
     }
 

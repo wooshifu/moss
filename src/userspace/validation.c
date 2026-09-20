@@ -2534,6 +2534,84 @@ static int test_signal_wakeup_affinity(void) {
   return errors;
 }
 
+static int console_signal_wait(int partial) {
+  const long fd = open("/dev/console", 0);
+  if (fd < 0)
+    return 1;
+  if (partial) {
+    char warmup;
+    // The host sends two bytes together. Consume one before forking so input
+    // is ready before the later partial read and signal handoff begin.
+    if (read((int)fd, &warmup, 1) != 1 || warmup != 'k') {
+      close((int)fd);
+      return 1;
+    }
+  }
+  struct sigaction_t action = {(unsigned long)quiet_handler, 0, 0};
+  handler_called = 0;
+  unsigned cpu_mask = 1;
+  int errors = moss_sigaction(SIGUSR1, &action, 0) != 0;
+  errors |= syscall3(20, 0, sizeof(cpu_mask), (long)&cpu_mask) != 0;
+  // RV64 polls in supervisor mode, so migrate the reader before occupying a CPU.
+  unsigned long migration_delay = 1000000; // One millisecond in nanoseconds.
+  errors |= nanosleep_ns(&migration_delay) != 0 || current_cpu() != 0;
+  long ready_pipe[2];
+  if (pipe(ready_pipe) != 0) {
+    close((int)fd);
+    return 1;
+  }
+  const long parent = getpid();
+  const long child = fork();
+  if (child == 0) {
+    close((int)ready_pipe[0]);
+    cpu_mask = 2;
+    if (syscall3(20, 0, sizeof(cpu_mask), (long)&cpu_mask) != 0)
+      _exit(1);
+    // Affinity moves the continuation through sleep/wakeup; readiness is observed
+    // separately below, so this delay is not a guessed parent-read window.
+    unsigned long delay = 1000000; // One millisecond in nanoseconds.
+    int failed = nanosleep_ns(&delay) != 0;
+    const unsigned char ready_byte = 37; // Nonzero handshake sentinel.
+    failed |= write((int)ready_pipe[1], &ready_byte, 1) != 1;
+    close((int)ready_pipe[1]);
+    // Query the existing validation observation of the real read continuation,
+    // so the signal originates on CPU 1 after CPU 0 has entered console I/O.
+    long ready;
+    while ((ready = syscall3(511, 39, parent, fd)) == 0)
+      sched_yield();
+    failed |= ready != 1 || current_cpu() != 1;
+    failed |= kill(parent, SIGUSR1) != 0;
+    _exit(failed);
+  }
+  if (child < 0) {
+    close((int)ready_pipe[0]);
+    close((int)ready_pipe[1]);
+    close((int)fd);
+    return 1;
+  }
+  close((int)ready_pipe[1]);
+  unsigned char ready_byte = 0;
+  // Fork initially queues the child on this CPU. Let it run and migrate
+  // before RV64 enters a supervisor polling read that cannot schedule it.
+  errors |= read((int)ready_pipe[0], &ready_byte, 1) != 1 || ready_byte != 37;
+  close((int)ready_pipe[0]);
+  char bytes[2];
+  const long result = read((int)fd, bytes, partial ? 2 : 1);
+  int status = 0;
+  // Moss read returns Linux EINTR (4) when no bytes were copied.
+  errors |= result != (partial ? 1 : -4) || handler_called != 1;
+  errors |= partial && bytes[0] != 'k';
+  // Console echo has no newline; keep the next validation event on its own line.
+  if (partial)
+    print("\n");
+  errors |= waitpid(child, &status, 0) != child || status != 0;
+  errors |= close((int)fd) != 0;
+  return errors;
+}
+
+static int test_console_interrupted(void) { return console_signal_wait(0); }
+static int test_console_partial_interrupt(void) { return console_signal_wait(1); }
+
 static int test_pid_lifecycle(void) {
   // 300 children cross both the 255-user-ASID lease limit and the former
   // 256-slot signal table boundary while keeping concurrent population low.
@@ -2601,7 +2679,9 @@ static int signal_case(const char *name) {
                {"pipe_interrupted", test_pipe_interrupted},
                {"pipe_noninterrupting_signals", test_pipe_noninterrupting_signals},
                {"pipe_partial_interrupt", test_pipe_partial_interrupt},
-               {"signal_wakeup_affinity", test_signal_wakeup_affinity}};
+               {"signal_wakeup_affinity", test_signal_wakeup_affinity},
+               {"console_interrupted", test_console_interrupted},
+               {"console_partial_interrupt", test_console_partial_interrupt}};
   if (streq(name, "exec_reset")) {
     return test_exec_reset();
   }
@@ -2867,7 +2947,7 @@ void _start(long argc, const char **argv) {
                            "pipe_interrupted",
                            "pipe_noninterrupting_signals",
                            "pipe_partial_interrupt",
-                           "signal_wakeup_affinity"};
+                           "signal_wakeup_affinity", "console_interrupted", "console_partial_interrupt"};
     for (unsigned test = 0; test < sizeof(cases) / sizeof(cases[0]); ++test) {
       control(1, test, 0);
       long child = fork();

@@ -7,5 +7,5 @@ target_sources(
 
 target_link_libraries(
     moss_hal_timer
-    PUBLIC moss_core moss_aal moss_platform
+    PUBLIC moss_driver_timer moss_core moss_aal moss_platform
 )

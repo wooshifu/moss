@@ -620,7 +620,9 @@ static void uart_print_hex(u64 value) noexcept {
 // Global callbacks for cross-module interrupt dispatch (registered by kernel-main.cppm).
 // extern "C" to avoid module-local mangling — accessible from any translation unit.
 extern "C" void (*g_x64_timer_handler)() noexcept = nullptr;
-extern "C" void (*g_x64_uart_rx_handler)() noexcept = nullptr;
+extern "C" {
+void (*g_x64_uart_rx_handler)() noexcept = nullptr;
+}
 
 // C++ interrupt/exception handler called from isr_common (isr_x64.S)
 extern "C" void x64_interrupt_handler(u64 vector, u64 error_code, [[maybe_unused]] void *frame) noexcept {
@@ -655,9 +657,7 @@ extern "C" void x64_interrupt_handler(u64 vector, u64 error_code, [[maybe_unused
 
   // EOI before dispatch because the timer callback may context-switch away
   // before returning; deferring EOI could leave the local interrupt in service.
-  const u64 LAPIC_EOI_ADDR = moss::kernel::platform::intc_dist_base() + 0x0B0;
-  auto *lapic_eoi = reinterpret_cast<volatile u32 *>(LAPIC_EOI_ADDR);
-  *lapic_eoi = 0;
+  moss::kernel::hal::intc::eoi(moss::kernel::platform::intc_dist_base(), 0);
 
   // LAPIC timer (vector 48)
   if (vector == 48 && g_x64_timer_handler != nullptr) {
@@ -701,11 +701,7 @@ extern "C" void x64_interrupt_handler(u64 vector, u64 error_code, [[maybe_unused
 
   // 3. Configure LAPIC timer: divide-by-16, one-shot, vector 48, initially masked
   {
-    const u64 LAPIC_BASE = moss::kernel::platform::intc_dist_base() + 0x000;
-    auto *div_config = reinterpret_cast<volatile u32 *>(LAPIC_BASE + 0x3E0); // Divide Configuration
-    auto *lvt_timer = reinterpret_cast<volatile u32 *>(LAPIC_BASE + 0x320);  // LVT Timer
-    *div_config = 0x03;                                                      // divide by 16
-    *lvt_timer = 48 | (1U << 16); // vector 48, one-shot (bit17=0), masked (bit16=1)
+    moss::kernel::hal::timer::configure_local_timer(true);
     moss::boot::early_print("  LAPIC timer configured (vec=48, masked)\n");
   }
 
@@ -812,24 +808,19 @@ void activate_secondary_cpus() noexcept {
   // final W^X tables after leaving that page, before publishing itself online.
   u64 cr3 = reinterpret_cast<u64>(pvh_pml4);
   *reinterpret_cast<u64 *>(copy + (x86_ap_cr3 - x86_ap_trampoline_start)) = cr3;
-  auto *icr_lo = reinterpret_cast<volatile u32 *>(moss::kernel::platform::intc_dist_base() + 0x300);
-  auto *icr_hi = reinterpret_cast<volatile u32 *>(moss::kernel::platform::intc_dist_base() + 0x310);
   for (u32 cpu = 1; cpu < moss::kernel::g_num_cpus; ++cpu) {
     *reinterpret_cast<u64 *>(copy + (x86_ap_stack - x86_ap_trampoline_start)) =
         reinterpret_cast<u64>(&ap_stacks[cpu][32768]);
     moss::kernel::arch::memory_barrier();
-    *icr_hi = static_cast<u32>(moss::kernel::platform::hardware.cpus[cpu].hardware_id) << 24;
-    *icr_lo = 0x0000C500; // INIT, level assert.
+    const auto apic_id = static_cast<u32>(moss::kernel::platform::hardware.cpus[cpu].hardware_id);
+    moss::kernel::hal::intc::send_startup_ipi(apic_id, 0x0000C500); // INIT, level assert.
     ap_delay();
-    *icr_hi = static_cast<u32>(moss::kernel::platform::hardware.cpus[cpu].hardware_id) << 24;
-    *icr_lo = 0x00008500; // INIT deassert.
+    moss::kernel::hal::intc::send_startup_ipi(apic_id, 0x00008500); // INIT deassert.
     ap_delay();
-    *icr_hi = static_cast<u32>(moss::kernel::platform::hardware.cpus[cpu].hardware_id) << 24;
-    *icr_lo = 0x00000608; // SIPI vector 8, physical 0x8000.
+    moss::kernel::hal::intc::send_startup_ipi(apic_id, 0x00000608); // SIPI vector 8, physical 0x8000.
     ap_delay();
     if (!(__atomic_load_n(&online_cpu_mask, __ATOMIC_ACQUIRE) & (1ULL << cpu))) {
-      *icr_hi = static_cast<u32>(moss::kernel::platform::hardware.cpus[cpu].hardware_id) << 24;
-      *icr_lo = 0x00000608;
+      moss::kernel::hal::intc::send_startup_ipi(apic_id, 0x00000608);
     }
     // Bound readiness spinning to 100000000 CPU hints; this is a poll budget
     // with no measured wall-clock rationale, separate from the final timed wait.
@@ -876,10 +867,8 @@ extern "C" [[noreturn]] void x86_secondary_entry() noexcept {
   asm volatile("ltr %w0" ::"r"(static_cast<u16>(0x28)));
   set_gs_runtime(cpu, tss);
   asm volatile("lidt %0" ::"m"(g_idtr));
-  *reinterpret_cast<volatile u32 *>(moss::kernel::platform::intc_dist_base() + 0x0F0) = 0x1FF;
-  *reinterpret_cast<volatile u32 *>(moss::kernel::platform::intc_dist_base() + 0x080) = 0;
-  *reinterpret_cast<volatile u32 *>(moss::kernel::platform::intc_dist_base() + 0x3E0) = 3;
-  *reinterpret_cast<volatile u32 *>(moss::kernel::platform::intc_dist_base() + 0x320) = 48;
+  moss::kernel::hal::intc::enable_secondary_interface();
+  moss::kernel::hal::timer::configure_local_timer(false);
   u64 entry = reinterpret_cast<u64>(&moss::abi::syscall_entry_point);
   // SYSCALL MSRs: LSTAR=0xc0000082, STAR=0xc0000081, FMASK=0xc0000084,
   // EFER=0xc0000080. STAR high=0x00100008 selects kernel CS 8 and SYSRET

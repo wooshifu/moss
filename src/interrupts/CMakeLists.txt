@@ -11,6 +11,7 @@ target_sources(
 target_link_libraries(
     moss_interrupts
     PUBLIC moss_core
+           moss_abi
            moss_aal
            moss_platform
            moss_hal_intc
