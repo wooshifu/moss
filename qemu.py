@@ -116,7 +116,9 @@ def build_qemu_args(
         "-no-reboot",
     ]
     if not validation:
-        args += ["-mon", "chardev=char0,mode=readline"]
+        # monitor-hmp supersedes QEMU's deprecated -mon syntax while preserving
+        # the interactive HMP console on the multiplexed serial terminal.
+        args += ["-object", "monitor-hmp,id=mon0,chardev=char0,readline=on"]
     if artifacts.arch == "RISCV64":
         args += ["-bios", "default"]
     initrd = "validation_initramfs" if validation else "initramfs"

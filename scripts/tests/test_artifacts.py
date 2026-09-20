@@ -46,8 +46,10 @@ def test_manifest_drives_normal_debug_and_validation_without_cmake(tmp_path):
     assert normal[normal.index("-kernel") + 1] == str(tmp_path / "Image")
     assert debug[debug.index("-kernel") + 1] == normal[normal.index("-kernel") + 1]
     assert debug[-2:] == ["-s", "-S"]
+    assert normal[normal.index("-object") + 1] == "monitor-hmp,id=mon0,chardev=char0,readline=on"
     assert validation[validation.index("-kernel") + 1] == str(tmp_path / "test.Image")
     assert validation[validation.index("-initrd") + 1] == str(tmp_path / "test.initrd")
+    assert "monitor-hmp" not in validation
     assert not any("semihost" in arg or "isa-debug-exit" in arg or "loader," in arg for arg in validation)
 
 
