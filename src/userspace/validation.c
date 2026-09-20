@@ -1697,6 +1697,7 @@ static unsigned long timer_absolute_sleep(void) {
 
 static unsigned long timer_invalid_arguments(void) {
   unsigned long duration = 0;
+  unsigned long resolution = 0;
   unsigned long errors = syscall2(SYS_NANOSLEEP, 0, 0) != -14;
   errors |= (unsigned long)(syscall6(SYS_CLOCK_NANOSLEEP, 1, 0, 0, 0, 0, 0) != -14) << 1;
   errors |= (unsigned long)(syscall6(SYS_CLOCK_NANOSLEEP, 2, 0, (long)&duration, 0, 0, 0) != -22) << 2;
@@ -1705,6 +1706,12 @@ static unsigned long timer_invalid_arguments(void) {
   duration = ~0UL;
   errors |= (unsigned long)(syscall2(SYS_NANOSLEEP, (long)&duration, 0) != -22) << 5;
   errors |= (unsigned long)(syscall6(SYS_CLOCK_NANOSLEEP, 1, 0, (long)&duration, 0, 0, 0) != -22) << 6;
+  // clock_getres must neither claim sub-tick precision nor accept inaccessible
+  // output memory or a clock domain that the native ABI does not implement.
+  errors |= clock_getres_ns(&resolution) != 0 || resolution == 0;
+  errors |= syscall2(SYS_CLOCK_GETRES, 1, 0) != -14;
+  errors |= syscall2(SYS_CLOCK_GETRES, 2, (long)&resolution) != -22;
+  errors |= syscall2(SYS_CLOCK_GETRES, -1, (long)&resolution) != -22;
   return errors;
 }
 
@@ -2628,12 +2635,36 @@ static int test_pid_lifecycle(void) {
       const unsigned expected_cpu = cycle & 1U;
       const unsigned cpu_mask = 1U << expected_cpu; // CPU0/CPU1 affinity bits alternate on each reused lease.
       const unsigned long expected_pattern = (unsigned long)cycle + 1; // Nonzero and distinct in all 300 cycles.
-      unsigned long migration_delay = 1000000; // 1 ms permits a real sleep/wakeup migration after affinity changes.
+      // A 1 ms delay exercises sleep/wakeup placement in ordinary runs. The
+      // direct check below remains the oracle if a loaded host lets the
+      // deadline expire before the guest can block.
+      unsigned long migration_delay = 1000000;
       handler_called = 0;
       asid_pattern = expected_pattern;
       int errors = syscall3(SYS_SCHED_SETAFFINITY, 0, sizeof(cpu_mask), (long)&cpu_mask) != 0;
+      // A successful affinity change must return on an allowed CPU. The sleep
+      // remains a second dispatch check, not the mechanism that causes migration.
+      const long affinity_cpu = current_cpu();
+      if (affinity_cpu != (long)expected_cpu) {
+        print("  FAIL: affinity returned on CPU ");
+        print_long(affinity_cpu);
+        print(" expected ");
+        print_ulong(expected_cpu);
+        print("\n");
+        // Bit 2 is the established pid_lifecycle migration diagnostic.
+        errors |= 1 << 2;
+      }
       errors |= (nanosleep_ns(&migration_delay) != 0) << 1;
-      errors |= (current_cpu() != (long)expected_cpu) << 2;
+      const long observed_cpu = current_cpu();
+      if (observed_cpu != (long)expected_cpu) {
+        print("  FAIL: wake returned on CPU ");
+        print_long(observed_cpu);
+        print(" expected ");
+        print_ulong(expected_cpu);
+        print("\n");
+        // Bit 2 is the established pid_lifecycle diagnostic for migration.
+        errors |= 1 << 2;
+      }
       for (unsigned redispatch = 0; redispatch < ASID_REDISPATCHES; ++redispatch) {
         errors |= (sched_yield() != 0 || asid_pattern != expected_pattern) << 3;
       }
@@ -2905,9 +2936,12 @@ void _start(long argc, const char **argv) {
     control(3, 0, 0);
   } else if (mode == 9 || mode == 23) {
     application_workload = mode == 23;
-    // The kernel control-10 checkpoint protocol expects 10 application cycles
-    // or 100 core cycles; both ends must change together if cadence changes.
-    const long interval = application_workload ? 10 : 100;
+    // Five is the midpoint of the routine 10-cycle application workload, so a
+    // host-throttled but live guest reports progress before exhausting the
+    // 30-second no-progress window. Core recovery stays at 100 cycles to avoid
+    // making its 1,000/10,000-cycle runs protocol-bound. The host cadence must
+    // change with these values.
+    const long interval = application_workload ? 5 : 100;
     control(1, 0, 0);
     // The warmup observes EOF before reaping once. Repeating that ordering in
     // all 1,000 resource cycles adds a second wake/block handoff per cycle and
@@ -2947,7 +2981,9 @@ void _start(long argc, const char **argv) {
                            "pipe_interrupted",
                            "pipe_noninterrupting_signals",
                            "pipe_partial_interrupt",
-                           "signal_wakeup_affinity", "console_interrupted", "console_partial_interrupt"};
+                           "signal_wakeup_affinity",
+                           "console_interrupted",
+                           "console_partial_interrupt"};
     for (unsigned test = 0; test < sizeof(cases) / sizeof(cases[0]); ++test) {
       control(1, test, 0);
       long child = fork();

@@ -435,8 +435,12 @@ private:
 
     // Print memory system information
     auto pressure = mm::get_memory_pressure();
+    if (!pressure) {
+      log::klog::info("Memory pressure monitoring: unsupported");
+      return VoidResult{};
+    }
     const char *pressure_str = "UNKNOWN";
-    switch (pressure) {
+    switch (*pressure) {
     case mm::MemoryPressure::LOW:
       pressure_str = "LOW";
       break;
@@ -449,8 +453,8 @@ private:
     case mm::MemoryPressure::CRITICAL:
       pressure_str = "CRITICAL";
       break;
+    case mm::MemoryPressure::UNKNOWN:
     default:
-      pressure_str = "UNKNOWN";
       break;
     }
     log::klog::info("Memory pressure level: {}", pressure_str);
@@ -597,7 +601,9 @@ private:
     ::moss::kernel::interrupts::g_gic = gic_;
     drivers::g_device_manager = device_manager_;
     auto bound = drivers::register_boot_devices(*device_manager_, gic_);
-    if (!bound) return bound;
+    if (!bound) {
+      return bound;
+    }
 
     // Initialize multi-architecture syscall support
     log::klog::info("Initializing multi-architecture syscall support...");

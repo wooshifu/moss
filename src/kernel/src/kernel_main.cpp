@@ -68,26 +68,35 @@ extern "C" {
   // Memory management
   if (mm::is_memory_system_healthy()) {
     auto pressure = mm::get_memory_pressure();
-    const char *level = "unknown";
-    switch (pressure) {
-    case mm::MemoryPressure::LOW:
-      level = "low";
-      break;
-    case mm::MemoryPressure::MEDIUM:
-      level = "medium";
-      break;
-    case mm::MemoryPressure::HIGH:
-      level = "high";
-      break;
-    case mm::MemoryPressure::CRITICAL:
-      level = "critical";
-      break;
-    default:
-      break;
+    if (!pressure) {
+      // Readiness is real, but no pressure sampler is implemented yet. Keep
+      // those two facts separate in the boot capability report.
+      log::klog::info("memory: ready, pressure=unsupported");
+    } else {
+      const char *level = "unknown";
+      switch (*pressure) {
+      case mm::MemoryPressure::LOW:
+        level = "low";
+        break;
+      case mm::MemoryPressure::MEDIUM:
+        level = "medium";
+        break;
+      case mm::MemoryPressure::HIGH:
+        level = "high";
+        break;
+      case mm::MemoryPressure::CRITICAL:
+        level = "critical";
+        break;
+      case mm::MemoryPressure::UNKNOWN:
+        level = "unknown";
+        break;
+      default:
+        break;
+      }
+      log::klog::info("memory: ready, pressure={}", level);
     }
-    log::klog::info("memory: healthy, pressure={}", level);
   } else {
-    log::klog::warn("memory: unhealthy");
+    log::klog::warn("memory: not ready");
   }
 
   // Interrupt controller

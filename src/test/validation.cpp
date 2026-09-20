@@ -31,6 +31,20 @@ using namespace moss::kernel;
 namespace ut = boost::ut;
 namespace bench = moss::bench;
 
+namespace {
+bool mm_publication_boundary_observed;
+bool mm_ready_visible_at_publication_boundary;
+bool mm_instance_visible_at_publication_boundary;
+} // namespace
+
+extern "C" void moss_validation_mm_before_ready(const void *published_instance) noexcept {
+  mm_publication_boundary_observed = true;
+  mm_ready_visible_at_publication_boundary = mm::UnifiedMemoryManager::is_system_initialized();
+  // The hook receives the exact object published by the preceding release
+  // store, avoiding a public raw-reference API that could outlive shutdown.
+  mm_instance_visible_at_publication_boundary = published_instance != nullptr;
+}
+
 namespace moss::kernel {
 void kernel_uart_puts(const char *str) noexcept { hal::uart::puts(str); }
 [[noreturn]] void kernel_test_exit([[maybe_unused]] int code) noexcept {
@@ -63,6 +77,75 @@ unsigned current_cpu() noexcept { return arch::get_current_cpu_id(); }
 
 namespace {
 constexpr usize page_size = moss::kernel::PAGE_SIZE;
+
+void mm_initialization_publication() {
+  ut::expect(mm_publication_boundary_observed);
+  ut::expect(!mm_ready_visible_at_publication_boundary);
+  ut::expect(mm_instance_visible_at_publication_boundary);
+  ut::expect(mm::UnifiedMemoryManager::is_system_initialized());
+}
+
+void mm_unsupported_contracts() {
+  const auto pages_before = mm::PageFrameAllocator::get_memory_stats();
+  const auto heap_before = mm::RuntimeHeapAllocator::get_heap_stats();
+
+  const auto buddy_init = mm::BuddyAllocatorV2::initialize();
+  const auto buddy_compaction = mm::BuddyAllocatorV2::compact_memory();
+  const auto buddy_watermark = mm::BuddyAllocatorV2::get_water_mark();
+  const auto buddy_pressure = mm::BuddyAllocatorV2::is_memory_pressure();
+  const auto buddy_fragmentation = mm::BuddyAllocatorV2::get_fragmentation_stats();
+  const auto buddy_stats = mm::BuddyAllocatorV2::get_memory_stats();
+  // This page-aligned value is only a sentinel. Unsupported operations must
+  // neither dereference it nor replace it with a fabricated allocation.
+  VirtAddr address = page_size;
+  const auto info = mm::UnifiedMemoryManager::query_memory_info(address);
+  const auto allocated_size = mm::UnifiedMemoryManager::get_allocated_size(address);
+  const auto reallocation = mm::UnifiedMemoryManager::reallocate(address, page_size, 2 * page_size);
+  const auto prefault = mm::UnifiedMemoryManager::prefault_memory(address, page_size);
+  const auto advice = mm::UnifiedMemoryManager::advise_usage_pattern(address, page_size, mm::UsagePattern::SEQUENTIAL);
+  const auto reclaim = mm::UnifiedMemoryManager::trigger_memory_reclaim();
+  const auto compaction = mm::UnifiedMemoryManager::trigger_memory_compaction();
+  const auto pressure = mm::UnifiedMemoryManager::get_memory_pressure();
+  const auto numa = mm::UnifiedMemoryManager::optimize_numa_placement(address, page_size);
+  const auto huge = mm::UnifiedMemoryManager::promote_to_huge_pages(address, page_size);
+  const auto region_compaction = mm::UnifiedMemoryManager::compact_memory_region(address, page_size);
+  const auto performance = mm::UnifiedMemoryManager::get_performance_stats();
+  const mm::UnifiedMemoryManager::SystemPerformanceStats empty_performance{};
+  const auto counter_reset = mm::UnifiedMemoryManager::reset_performance_counters();
+  const auto history = mm::UnifiedMemoryManager::dump_allocation_history();
+  const auto leak_report = mm::UnifiedMemoryManager::generate_leak_report();
+
+  ut::expect(!buddy_init && buddy_init.error() == mm::BuddyError::NotSupported);
+  ut::expect(!buddy_compaction && buddy_compaction.error() == mm::BuddyError::NotSupported);
+  ut::expect(!buddy_watermark && buddy_watermark.error() == mm::BuddyError::NotSupported);
+  ut::expect(!buddy_pressure && buddy_pressure.error() == mm::BuddyError::NotSupported);
+  ut::expect(!buddy_fragmentation && buddy_fragmentation.error() == mm::BuddyError::NotSupported);
+  ut::expect(!buddy_stats && buddy_stats.error() == mm::BuddyError::NotSupported);
+  ut::expect(!info && info.error() == mm::MMError::NotSupported);
+  ut::expect(!allocated_size && allocated_size.error() == mm::MMError::NotSupported);
+  ut::expect(!reallocation && reallocation.error() == mm::MMError::NotSupported);
+  ut::expect(address == page_size);
+  ut::expect(!prefault && prefault.error() == mm::MMError::NotSupported);
+  ut::expect(!advice && advice.error() == mm::MMError::NotSupported);
+  ut::expect(!reclaim && reclaim.error() == mm::MMError::NotSupported);
+  ut::expect(!compaction && compaction.error() == mm::MMError::NotSupported);
+  ut::expect(!pressure && pressure.error() == mm::MMError::NotSupported);
+  ut::expect(!numa && numa.error() == mm::MMError::NotSupported);
+  ut::expect(!huge && huge.error() == mm::MMError::NotSupported);
+  ut::expect(!region_compaction && region_compaction.error() == mm::MMError::NotSupported);
+  ut::expect(!performance && performance.error() == mm::MMError::NotSupported);
+  ut::expect(empty_performance.overall_pressure == mm::MemoryPressure::UNKNOWN);
+  ut::expect(!counter_reset && counter_reset.error() == mm::MMError::NotSupported);
+  ut::expect(!history && history.error() == mm::MMError::NotSupported);
+  ut::expect(!leak_report && leak_report.error() == mm::MMError::NotSupported);
+
+  const auto pages_after = mm::PageFrameAllocator::get_memory_stats();
+  const auto heap_after = mm::RuntimeHeapAllocator::get_heap_stats();
+  ut::expect(pages_after.free_pages == pages_before.free_pages);
+  ut::expect(pages_after.used_pages == pages_before.used_pages);
+  ut::expect(heap_after.allocated_bytes == heap_before.allocated_bytes);
+  ut::expect(heap_after.free_bytes == heap_before.free_bytes);
+}
 
 // Inspect the real kernel/user tables without exposing kernel pointers to EL0.
 struct KernelPermissions {
@@ -4103,6 +4186,8 @@ void declare_cases() {
   });
   ut::register_suite("resources", [] { ut::register_test("cpu_memory", resources); });
   ut::register_suite("mm", [] {
+    ut::register_test("initialization_publication", mm_initialization_publication);
+    ut::register_test("unsupported_contracts", mm_unsupported_contracts);
     ut::register_test("pageblock_units", moss::test::scheduler_regression::pageblock_units);
     ut::register_test("mmu_granule", [] { ut::expect(moss::test::hardware::arm64_mmu_granule_regression()); });
     ut::register_test("orders_alignment", pages);
@@ -5076,7 +5161,8 @@ extern "C" long moss_validation_call(long op, long arg1, [[maybe_unused]] long a
     bool require_sleep = true;
 #if defined(MOSS_ARCH_RISCV64)
     // RV64 still polls console RX; its active read frame is the readiness boundary.
-    require_sleep = !ut::same_id(active_case, "console_interrupted") && !ut::same_id(active_case, "console_partial_interrupt");
+    require_sleep =
+        !ut::same_id(active_case, "console_interrupted") && !ut::same_id(active_case, "console_partial_interrupt");
 #endif
     if (require_sleep && (thread->state != process::ProcessState::Sleeping || thread->sleep_handoff.load() != 0)) {
       return 0;
@@ -5369,9 +5455,12 @@ extern "C" long moss_validation_call(long op, long arg1, [[maybe_unused]] long a
   }
   if (op == 10 && is_lifecycle() && active_case) {
     const bool applications = ut::same_id(selection, "users.applications");
-    // The userspace fixture reports every 10 application cycles or 100 core
-    // lifecycle cycles; changing these intervals must keep that protocol in sync.
-    const u64 interval = applications ? 10 : 100;
+    // Five is the midpoint of CTest's ten-cycle application profile, keeping
+    // the 30-second no-progress deadline sensitive to a real stall instead of
+    // aggregate host throttling. Core runs stay at 100 cycles to avoid making
+    // their 1,000/10,000-cycle profiles protocol-bound. Userspace and the host
+    // parser must use the same cadence.
+    const u64 interval = applications ? 5 : 100;
     if (!ut::expect(arg1 >= 0 && arg2 == (applications ? arg1 : 0))) {
       return 0; // Each declared core cycle must also complete its BusyBox child.
     }

@@ -199,8 +199,9 @@ public:
     if (!region) {
       return VoidResult{KernelError::InvalidArgument};
     }
-    // map_to_process cannot create mappings until its backend is implemented.
-    return VoidResult{KernelError::NotFound};
+    // map_to_process cannot create mappings until its backend is implemented;
+    // report the missing capability rather than pretending a lookup ran.
+    return VoidResult{KernelError::NotSupported};
   }
 
   [[nodiscard]] VoidResult destroy_region(ShmId region_id) noexcept {
@@ -238,20 +239,21 @@ public:
     return found ? *found : shared_ptr<ShmRegion>{};
   }
 
-  void sync_region(ShmId region_id) const noexcept {
+  [[nodiscard]] VoidResult sync_region(ShmId region_id) const noexcept {
     auto region = get_region_info(region_id);
     if (!region) {
-      return;
+      return VoidResult{KernelError::InvalidArgument};
     }
     containers::LockGuard<containers::IrqSpinLock> guard(region->lifecycle_lock);
     if (region->ref_count.load(containers::MemoryOrder::Relaxed) == DESTROYED_REFS) {
-      return;
+      return VoidResult{KernelError::InvalidState};
     }
     const VirtAddr end = region->virt_base + region->size;
     for (VirtAddr address = region->virt_base; address < end; address += CACHE_LINE_SIZE) {
       arch::flush_cache_line(address);
     }
     arch::memory_barrier();
+    return VoidResult{};
   }
 
   [[nodiscard]] SharedMemoryStats get_statistics() const noexcept {
@@ -261,8 +263,10 @@ public:
             .huge_pages_used = 0};
   }
 
-  void cleanup_process_mappings([[maybe_unused]] ProcessId pid) noexcept {
-    // There are no successful process mappings to revoke in the current backend.
+  [[nodiscard]] VoidResult cleanup_process_mappings([[maybe_unused]] ProcessId pid) noexcept {
+    // There are no successful process mappings to revoke in the current
+    // backend. Make that missing capability visible to a future exit caller.
+    return VoidResult{KernelError::NotSupported};
   }
 
 private:
@@ -928,17 +932,17 @@ public:
 
   void cleanup_process_ipc(ProcessId pid) noexcept {
     auto channels_ptr = process_channels_.find(pid);
-    if (!channels_ptr) {
-      return;
+    if (channels_ptr) {
+      auto channels = *channels_ptr;
+      if (channels) {
+        channels->for_each_snapshot([this, pid](const ChannelId &channel_id) { (void)disconnect(channel_id, pid); });
+      }
+      process_channels_.remove(pid);
     }
-    auto channels = *channels_ptr;
-    if (!channels) {
-      return;
-    }
-    channels->for_each_snapshot([this, pid](const ChannelId &channel_id) { (void)disconnect(channel_id, pid); });
-    process_channels_.remove(pid);
     if (shared_memory_manager_ != nullptr) {
-      shared_memory_manager_->cleanup_process_mappings(pid);
+      // Mapping admission is explicitly unsupported, so there is no process
+      // mapping state to revoke. Keep this integration point for that backend.
+      (void)shared_memory_manager_->cleanup_process_mappings(pid);
     }
   }
 

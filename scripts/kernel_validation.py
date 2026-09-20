@@ -46,7 +46,14 @@ CATALOG = {
         "console_ring",
     ],
     "resources": ["cpu_memory"],
-    "mm": ["pageblock_units", "mmu_granule", "orders_alignment", "reuse"],
+    "mm": [
+        "initialization_publication",
+        "unsupported_contracts",
+        "pageblock_units",
+        "mmu_granule",
+        "orders_alignment",
+        "reuse",
+    ],
     "pfa": ["release_contract", "exhaustion"],
     "heap": ["alignment", "invalid_requests", "release_contract", "reuse", "exhaustion"],
     "containers": [
@@ -280,7 +287,11 @@ BENCHMARK_KINDS = {
     for name in ("fault", "cow", "switch", "wakeup", "timer", "lifecycle", "signal", "pipe")
 }
 SELFTESTS = ["self", "self.fail", "self.panic", "self.timeout"]
-LIFECYCLE_INTERVAL = {"users.lifecycle": 100, "users.applications": 10}
+# Five is the midpoint of CTest's ten-cycle application profile: it preserves
+# the full workload while proving liveness before a slow TCG run can consume a
+# whole 30-second no-progress window. Core recovery remains sampled every 100
+# cycles to keep its 1,000/10,000-cycle runs from becoming protocol-bound.
+LIFECYCLE_INTERVAL = {"users.lifecycle": 100, "users.applications": 5}
 RESOURCE_FIELDS = (
     "heap_bytes",
     "free_pages",

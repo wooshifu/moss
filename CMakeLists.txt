@@ -207,13 +207,14 @@ if(MOSS_BUILD_TESTS)
     )
     add_test(NAME moss-functional COMMAND ${_validation})
     # Ten complete BusyBox lifecycles keep routine CTest bounded while still
-    # exercising fork/exec/reap and the resource-recovery checkpoint. The
-    # explicit stability workload remains the long-duration coverage tier.
+    # exercising fork/exec/reap and resource recovery. Baseline, midpoint and
+    # completion checkpoints distinguish a slow live guest from a stalled one;
+    # the explicit stability workload remains the long-duration coverage tier.
     add_test(NAME moss-applications COMMAND ${_validation} --workload users.applications --iterations 10)
     set_tests_properties(
         moss-applications
         PROPERTIES TIMEOUT
-                   150 # Two 30 s progress windows, 30 s boot and 60 s cleanup/reporting.
+                   150 # Three 30 s progress windows, 30 s boot and 30 s cleanup/reporting.
                    RUN_SERIAL
                    TRUE
                    LABELS

@@ -52,6 +52,7 @@ enum {
   SYS_MUNMAP = 61,
   SYS_BRK = 69,
   SYS_CLOCK_GETTIME = 83,
+  SYS_CLOCK_GETRES = 85,
   SYS_NANOSLEEP = 86,
   SYS_CLOCK_NANOSLEEP = 87,
   SYS_UNAME = 110,
@@ -329,6 +330,10 @@ static inline long sigaltstack(const struct stack_t *ss, struct stack_t *old_ss)
 // Clock ID 1 selects monotonic time. Moss returns a single u64 nanosecond
 // count, not a POSIX timespec; mlibc performs that representation conversion.
 static inline long clock_gettime_ns(unsigned long *ns) { return syscall2(SYS_CLOCK_GETTIME, 1, (long)ns); }
+
+// Like clock_gettime_ns, the native ABI writes a u64 nanosecond count instead
+// of a POSIX timespec. Clock ID 1 selects the monotonic hardware clocksource.
+static inline long clock_getres_ns(unsigned long *ns) { return syscall2(SYS_CLOCK_GETRES, 1, (long)ns); }
 
 static inline long nanosleep_ns(unsigned long *ns) { return syscall2(SYS_NANOSLEEP, (long)ns, 0); }
 
