@@ -140,7 +140,10 @@ enum class SyscallNumber : long {
   SYS_CLOCK_SETTIME = 84,
   SYS_CLOCK_GETRES = 85,
   SYS_NANOSLEEP = 86,
-  SYS_TIMER_CREATE = 87,
+  // Slot 87 has long dispatched clock_nanosleep in syscall_table.cpp. Keep
+  // the enum aligned with the executable ABI so future callers cannot mistake
+  // this occupied slot for the unimplemented timer_create interface.
+  SYS_CLOCK_NANOSLEEP = 87,
   SYS_TIMER_SETTIME = 88,
   SYS_TIMER_GETTIME = 89,
 
@@ -273,7 +276,9 @@ long sys_sched_setaffinity(long pid_arg, long arg1, long mask_addr, long arg3, l
 
 // Time syscalls
 long sys_clock_gettime(long arg0, long time_ns_addr, long arg2, long arg3, long arg4, long arg5) noexcept;
+long sys_clock_getres(long clock_id, long resolution_ns_addr, long arg2, long arg3, long arg4, long arg5) noexcept;
 long sys_nanosleep(long ns_addr, long arg1, long arg2, long arg3, long arg4, long arg5) noexcept;
+long sys_clock_nanosleep(long clockid, long flags, long ns_addr, long remaining, long arg4, long arg5) noexcept;
 
 // System monitoring
 long sys_topinfo(long info_addr, long arg1, long arg2, long arg3, long arg4, long arg5) noexcept;

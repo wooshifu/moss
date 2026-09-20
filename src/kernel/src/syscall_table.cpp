@@ -2166,9 +2166,12 @@ long sys_sched_setaffinity(long pid_arg, long /*unused*/, long mask_addr, long /
     return -errc::EINVAL;
   }
 
-  // Mask out CPUs beyond available CPU count
+  // The native ABI currently transfers one u32 mask, so CPUs beyond its 32
+  // representable bits cannot be selected until the ABI grows a larger set.
+  constexpr u32 kNativeAffinityBits = 32;
+  // Mask out CPUs beyond available CPU count.
   u32 num_cpus = g_num_cpus;
-  u32 valid_mask = (num_cpus >= 32) ? 0xFFFFFFFFU : ((1U << num_cpus) - 1);
+  u32 valid_mask = (num_cpus >= kNativeAffinityBits) ? ~0U : ((1U << num_cpus) - 1);
   new_mask &= valid_mask;
   if (new_mask == 0) {
     return -errc::EINVAL;
@@ -2194,9 +2197,49 @@ long sys_sched_setaffinity(long pid_arg, long /*unused*/, long mask_addr, long /
     return -errc::ESRCH;
   }
 
+  Thread *current = CfsScheduler::get_current_task();
+  const bool changes_current = target == current;
+  const bool restore_irqs = changes_current && arch::interrupts_enabled();
+  if (changes_current) {
+    // Keep a timer preemption from redispatching this thread on the old CPU
+    // between publishing the restrictive mask and starting its migration.
+    arch::disable_interrupts();
+  }
+
+  const u32 current_cpu = arch::get_current_cpu_id();
+  u32 old_mask = 0;
+  u32 destination = current_cpu;
+  bool needs_migration = false;
   {
     containers::LockGuard<containers::IrqSpinLock> guard(target->sleep_lock);
+    old_mask = target->cpu_affinity_mask.low_word();
     target->cpu_affinity_mask.set_from_u32(new_mask);
+    if (changes_current && !target->cpu_affinity_mask.test(current_cpu)) {
+      needs_migration = true;
+      destination = 0;
+      while (destination < num_cpus && !target->cpu_affinity_mask.test(destination)) {
+        ++destination;
+      }
+    }
+  }
+
+  if (needs_migration) {
+    if (!g_scheduler || destination == num_cpus || !g_scheduler->migrate_current(destination)) {
+      // Do not report success with a mask that the running thread could not
+      // obey. Restoring the prior mask keeps the syscall failure atomic.
+      {
+        containers::LockGuard<containers::IrqSpinLock> guard(target->sleep_lock);
+        target->cpu_affinity_mask.set_from_u32(old_mask);
+      }
+      if (restore_irqs) {
+        arch::enable_interrupts();
+      }
+      return -errc::EAGAIN;
+    }
+  }
+
+  if (restore_irqs) {
+    arch::enable_interrupts();
   }
 
   log::klog::info("sys_sched_setaffinity: TID={} mask={:#x}", static_cast<u32>(target->tid), new_mask);
@@ -2214,6 +2257,37 @@ long sys_clock_gettime(long /* clock_id */, long time_ns_addr, long /*unused*/, 
   }
   u64 ns = timer::TimerSubsystem::instance().now_ns();
   if (copy_to_user(static_cast<u64>(time_ns_addr), &ns, sizeof(ns)) < 0) {
+    return -errc::EFAULT;
+  }
+  return 0;
+}
+
+// sys_clock_getres(clock_id, resolution_ns_ptr)
+// The native ABI returns one u64 nanosecond count, matching clock_gettime
+// rather than exposing a POSIX timespec. A counter tick cannot be represented
+// by less than ceil(10^9 / frequency_hz) ns, so round up to avoid advertising
+// precision that the hardware clocksource cannot provide.
+long sys_clock_getres(long clock_id, long resolution_ns_addr, long /*unused*/, long /*unused*/, long /*unused*/,
+                      long /*unused*/) noexcept {
+  constexpr long kClockRealtime = 0;
+  constexpr long kClockMonotonic = 1;
+  constexpr u64 kNanosecondsPerSecond = 1000000000ULL;
+
+  if (clock_id != kClockRealtime && clock_id != kClockMonotonic) {
+    return -errc::EINVAL;
+  }
+  if (resolution_ns_addr == 0) {
+    return -errc::EFAULT;
+  }
+
+  const u64 frequency_hz = timer::TimerSubsystem::instance().clocksource().frequency_hz();
+  if (frequency_hz == 0) {
+    // A time syscall before timer initialization has no meaningful resolution.
+    return -errc::EINVAL;
+  }
+  const u64 resolution_ns = kNanosecondsPerSecond / frequency_hz +
+                            static_cast<u64>(kNanosecondsPerSecond % frequency_hz != 0);
+  if (copy_to_user(static_cast<u64>(resolution_ns_addr), &resolution_ns, sizeof(resolution_ns)) < 0) {
     return -errc::EFAULT;
   }
   return 0;
@@ -2588,7 +2662,7 @@ const SyscallDescriptor SYSCALL_TABLE[static_cast<int>(SyscallNumber::MAX_SYSCAL
     {"settimeofday", handlers::sys_not_implemented, 2, false, "设置时间"},
     {"clock_gettime", handlers::sys_clock_gettime, 2, true, "Get monotonic time (ns)"},
     {"clock_settime", handlers::sys_not_implemented, 2, false, "设置时钟时间"},
-    {"clock_getres", handlers::sys_not_implemented, 2, false, "获取时钟分辨率"},
+    {"clock_getres", handlers::sys_clock_getres, 2, true, "Get clock resolution (ns)"},
     {"nanosleep", handlers::sys_nanosleep, 2, true, "Yield-loop nanosleep"},
     {"clock_nanosleep", handlers::sys_clock_nanosleep, 4, true, "Clock-based nanosleep"},
     {"timer_settime", handlers::sys_not_implemented, 4, false, "设置定时器"},

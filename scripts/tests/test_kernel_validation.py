@@ -160,6 +160,7 @@ def test_lifecycle_rejects_unmatched_application_cycles(application_cycles):
     case = state.expected[0]
     emit(state, "case_start", case=case)
     emit(state, "checkpoint", case=case, cycles=0, application_cycles=0, elapsed_ns=0, **LIFECYCLE_RESOURCES)
+    emit(state, "checkpoint", case=case, cycles=5, application_cycles=5, elapsed_ns=5 * 10**8, **LIFECYCLE_RESOURCES)
     with pytest.raises(ValueError, match="application_cycles"):
         emit(
             state,
@@ -215,11 +216,13 @@ def test_lifecycle_requires_ordered_resource_recovery_evidence(mode, workload):
     assert len(state.checkpoints) == 1000 // interval + 1
 
 
-def test_application_lifecycle_accepts_the_ctest_ten_cycle_profile():
+def test_application_lifecycle_reports_midpoint_progress_for_the_ctest_profile():
     state = ready("users.applications", lifecycle_cycles=10)
     case = state.expected[0]
     emit(state, "case_start", case=case)
-    for cycle in (0, 10):
+    # CTest runs ten application cycles; a midpoint checkpoint keeps an active
+    # but host-throttled guest from looking stalled for the entire workload.
+    for cycle in (0, 5, 10):
         emit(
             state,
             "checkpoint",
@@ -382,6 +385,12 @@ def test_stability_host_releases_live_guest_only_after_duration_and_cycles(tmp_p
 @pytest.mark.parametrize("mode", ["progress", "stalled", "total_limit"])
 def test_application_watchdog_requires_progress_and_a_total_bound(tmp_path, monkeypatch, mode):
     workload, case = "users.applications", "core_application_recovery"
+    interval = kv.LIFECYCLE_INTERVAL[workload]
+    # With --iterations omitted, the runner requires 1,000 routine lifecycle
+    # cycles. Advancing ten cycles per virtual second keeps this host-only test
+    # fast while separating its two-second progress and five-second total bounds.
+    routine_cycles = 1000
+    virtual_cycles_per_second = 10
     records = [
         event(workload, "ready", detected_cpus=4, online_mask=15, work_mask=15, ram_bytes=2**31, managed_pages=500000),
         event(workload, "catalog", case=case),
@@ -393,8 +402,9 @@ def test_application_watchdog_requires_progress_and_a_total_bound(tmp_path, monk
     )
     checkpoint = event(workload, "checkpoint", case=case, **LIFECYCLE_RESOURCES)
     script += (
-        f"\nfor cycle in range(0, {1 if mode == 'stalled' else 1001}, 10):\n"
-        f" record = {checkpoint!r} | dict(cycles=cycle, application_cycles=cycle, elapsed_ns=cycle * 10**8)\n"
+        f"\nfor cycle in range(0, {1 if mode == 'stalled' else routine_cycles + 1}, {interval}):\n"
+        f" record = {checkpoint!r} | dict(cycles=cycle, application_cycles=cycle, "
+        f"elapsed_ns=cycle * {10**9 // virtual_cycles_per_second})\n"
         " print('@@MOSS ' + json.dumps(record), flush=True)\n time.sleep(0.01)\n"
     )
     if mode != "stalled":
@@ -410,7 +420,7 @@ def test_application_watchdog_requires_progress_and_a_total_bound(tmp_path, monk
 
     def accept(state, line):
         if b'"event": "checkpoint"' in line:
-            offset[0] = json.loads(line[7:])["cycles"] / 10
+            offset[0] = json.loads(line[7:])["cycles"] / virtual_cycles_per_second
         original_accept(state, line)
 
     monkeypatch.setattr(kv.Protocol, "accept", accept)
@@ -433,8 +443,11 @@ def test_application_watchdog_requires_progress_and_a_total_bound(tmp_path, monk
     )
     assert result["case_timeout_kind"] == "no_progress"
     if mode == "progress":
-        assert result["cases"][0]["elapsed_seconds"] >= 100
-        assert result["guest_timeout_seconds"] == 232
+        assert result["cases"][0]["elapsed_seconds"] >= routine_cycles / virtual_cycles_per_second
+        assert (
+            result["guest_timeout_seconds"]
+            == (routine_cycles // interval + 1) * settings["case_timeout"] + settings["startup_timeout"]
+        )
 
 
 def test_simd_fault_is_explicit_and_failure_is_not_an_expected_pass():

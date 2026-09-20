@@ -400,12 +400,22 @@ int main(int argc, char **argv) {
     require(left[0] == 0x35 && right[0] == 0x79, "one region overwrote another's backing");
     const auto mapping = manager.map_to_process(0, *first_id);
     require(!mapping && mapping.error() == KernelError::NotSupported, "mapping promised a missing user backend");
+    const auto unmapping = manager.unmap_from_process(0, *first_id);
+    require(!unmapping && unmapping.error() == KernelError::NotSupported,
+            "unmapping promised a missing user backend");
+    require(bool(manager.sync_region(*first_id)), "sync rejected live direct-map backing");
+    const auto cleanup = manager.cleanup_process_mappings(0);
+    require(!cleanup && cleanup.error() == KernelError::NotSupported,
+            "process cleanup promised a missing mapping backend");
     require(first->ref_count.load() == 1, "unsupported mapping acquired a backing reference");
     auto stats = manager.get_statistics();
     require(stats.total_regions == 2 && stats.total_memory_usage == 2 * logical_pages * PAGE_SIZE,
             "logical region accounting is inconsistent");
     require(bool(manager.destroy_region(*first_id)) && bool(manager.destroy_region(*second_id)),
             "original-order destruction failed");
+    const auto missing_sync = manager.sync_region(*first_id);
+    require(!missing_sync && missing_sync.error() == KernelError::InvalidArgument,
+            "sync hid an unknown region");
     require(mm::PageFrameAllocator::releases == 2 && mm::PageFrameAllocator::release_orders[0] == order &&
             mm::PageFrameAllocator::release_orders[1] == order, "destruction freed a different buddy order");
     require(mm::PageFrameAllocator::live_pages == 0, "metadata handles incorrectly retained backing pages");

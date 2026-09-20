@@ -1,6 +1,6 @@
 # MOSS 内核能力与待办
 
-> 更新日期：2026-09-19；提交基线：`caaab1b`；历史实现与实测保留原日期，最新工作区进展见 moss-todo.md 第 3.21～3.27 节。
+> 更新日期：2026-09-20；提交基线：`c23d205`；历史实现与实测保留原日期，最新工作区进展见 moss-todo.md 第 3.21～3.29 节。
 > 本文取代旧清单中“完成即可靠”“x86/RISC-V 64 仅为启动桩”的描述。
 > 审计问题的原始证据、当前状态及完整验收条件见 [moss-todo.md](moss-todo.md)；MOSS-001～032 沿用原编号，不重新编号。
 
@@ -60,11 +60,11 @@ uv run qemu.py --manifest build/arm64-debug/moss-artifacts.json
 | 物理内存与堆 | Buddy PFA、页引用、order 分配/释放、统计；链接预留 8 MiB NOLOAD 堆，256 KiB 起始 arena，扩容限制在预留内；SlabCache/SlabAllocator 代码 | 005 及 008～010/028 的页引用生命周期；004/013 已按限定验收关闭，不能据此声称 COW 或 Slab 并发可靠 |
 | 虚拟内存 | 动态页表、用户地址空间、TTBR/CR3/satp 切换、VMA、demand paging、COW、匿名 private mmap、整段匹配 munmap、brk、栈增长与故障诊断 | 002、008～010；fault-safe uaccess、COW/clone OOM 与共享地址空间并发事务未闭合 |
 | 进程与调度 | ProcessManager、PID/PPID、每线程内核栈、CFS vruntime/权重、内嵌 RB 节点、插入/删除旋转与着色、idle、负载均衡和 affinity；fork/exec/wait/exit/Zombie | 014、017～020、022～023；015/016 已按当前单线程进程和静态 ELF 子集关闭，有 RB 算法不代表调度队列所有权已正确 |
-| 信号与系统调用 | syscall dispatcher、kill/sigaction/sigprocmask/sigaltstack/sigreturn、三 ISA 原生帧及基本信号返回、共享用户复制及异常 fixup、clock_gettime/nanosleep 入口 | 002、003、007、019～020、031；不是“完整 POSIX 信号”或并发 VM 安全验收，clock_getres 与信号中断语义仍待补 |
+| 信号与系统调用 | syscall dispatcher、kill/sigaction/sigprocmask/sigaltstack/sigreturn、三 ISA 原生帧及基本信号返回、共享用户复制及异常 fixup、clock_gettime/clock_getres/nanosleep 入口 | 002、003、007、019～020、031；不是“完整 POSIX 信号”或并发 VM 安全验收，clock_getres 目前只经 ARM64 Debug 回归，信号中断语义仍待补 |
 | ELF / userspace / initramfs | ELF64 checked LoadPlan、逐段 PT_LOAD/VMA 后备、按 ISA 的 trampoline 和 syscall wrapper；CPIO newc、BusyBox ash 直接启动、独立 validation 映像含信号用例、VFS exec；真正 getpid/getppid | 014；015/016 的事务与受支持静态 ELF 子集已关闭；动态加载、共享 LOAD 页和完整进程继承不是已支持能力 |
 | VFS | inode/dentry/File/FdTable、路径/mount/dcache、ramfs、devfs(console/null/zero)、stdio、open/close/read/write/lseek/fstat/dup/dup2/pipe、匿名 pipefs 与有界 I/O 视图 | 022、024～026；部分复制按实际字节更新 offset/管道位置，不证明 FD 模式、共享 File 并发和 pipe 阻塞语义 |
 | 核心与同步 | C++ 模块、freestanding types/std/concepts、Result、unique_ptr/shared_ptr、klog；ticket/IRQ spinlock、RAII guard、atomics、PerCpuData/计数/队列、MPSC、拥有型锁容器、WaitQueue | 尤其 006、017、018；容器节点/查找引用安全不等于使用者的复合生命周期或调度协议安全 |
-| 扩展框架 | DeviceManager/UartDriver、NUMA/hugepage/reclaim/compaction/共享内存接口；Process 已有 uid/gid/euid/egid 字段 | 030～032 及后续功能清单；字段、框架或空成功返回不等于可用能力 |
+| 扩展框架 | DeviceManager/UartDriver；NUMA/hugepage/reclaim/compaction/共享映射等未实现接口显式返回 Unsupported；Process 已有 uid/gid/euid/egid 字段 | 031～032 及后续功能清单；字段、框架或显式 Unsupported 不等于能力可用 |
 
 主要实现分别位于 `src/boot/`、`src/aal/`、`src/hal/`、`src/mm/`、`src/containers/`、`src/process/`、`src/kernel/`、`src/vfs/`、`src/userspace/`。下面以稳定审计编号追踪未完成工作，详细源码符号见 [审计状态表](moss-todo.md#4-问题总表与当前状态)。
 
@@ -142,10 +142,12 @@ uv run qemu.py --manifest build/arm64-debug/moss-artifacts.json
   - [x] current task、初始上下文、地址空间及入口栈在本 CPU 的同一 IRQ 临界区内发布；这不替代跨 CPU 的运行队列/on-CPU 所有权协议（3.18）。
   - [x] 修复实际双 CPU 用例暴露的 ARM64 从核未开启 MMU：复用主核已建页表，在各从核配置 MMU 和高地址直映后才发布 online（工作区，3.9）；不代表运行队列所有权或运行中任务迁移已完成。
   - [x] ARM64 激活从核时补齐 `Active` 发布后的 `DSB SY → SEV` 完成顺序；三模式构建、Debug/Release CTest 5/5 与实际指令检查通过，偶发挂起完整验收另列（3.15）。
+  - [x] 调用线程收紧自身 affinity 时，在返回用户态前经 bootstrap 保存 continuation，再发布到目标 CPU；旧实现的 cycle 1 确定性红例、单例绿例及 32/32 并发压力已保留（3.28）。远程目标、一般抢占迁移及完整 on-CPU 协议仍未关闭。
 - [ ] **MOSS-018**：wait/console 条件检查—登记—睡眠统一协议；多读者、信号中断、坏 status 后可重试。
   - [ ] ARM64 Debug `containers.smp` 子进程 Zombie 后超时仍未解决。启动失败已另抓到 CPU3 为 Active 却停在 WFE 的现场；补屏障不等于两个故障都已修复。历史两轮六配置 CTest 均 14/15，不能关闭 SMP 验收（3.14～3.15）。
   - [x] 独立诊断确认本机 QEMU MTTCG 事件已置位但宿主线程仍睡眠；不加载 Moss 也能稳定复现，仅补宿主 kick 即继续。该诊断不算内核修复或 SMP 验收，正式 runner 模式不变（3.15）。
-- [ ] **MOSS-019**：三架构真实 nanosleep；timer 满队列显式失败、同步取消/回调生命周期与 deadline 溢出检查。`clock_getres` 仍是 ENOSYS，按明确的 Moss ABI 补实现与测试。
+- [ ] **MOSS-019**：三架构真实 nanosleep；timer 满队列显式失败、同步取消/回调生命周期与 deadline 溢出检查。
+  - [x] `clock_getres` 以原生 `u64` 纳秒 ABI 实现：支持 clock-id 0/1、以 `ceil(10^9 / frequency_hz)` 报告不夸大的硬件 tick、拒绝空输出指针和其他 clock-id；用户 wrapper 与功能回归均已加入。ARM64 Debug 默认 CTest 5/5 于 2026-09-20 通过；尚未构成三架构验收。
 - [ ] **MOSS-020**：统一 syscall/IRQ 返回信号检查；修正 signo/返回值写回，补 CPU-bound 投递、STOP/CONT/SIGCHLD 和阻塞中断。
   - [x] 统一用户返回检查点、结果先写回及准确终止 signo；三 ISA 基本信号与 handler 嵌套 syscall 后的 GP/返回值恢复通过（`0e88344`，3.19）。
   - [ ] CPU-bound、STOP/CONT/SIGCHLD 和阻塞中断语义。
@@ -169,9 +171,13 @@ uv run qemu.py --manifest build/arm64-debug/moss-artifacts.json
 ## P2：能力契约与文档
 
 - [ ] **MOSS-029（部分实现）**：x86 TSC/LAPIC 分别用 PIT 校准，RV64 使用 SBI TIME 且已有 `sstc=false` 验收；补缺失 SBI/计时设备、失败返回、时钟误差与 CPU 能力变化测试。
-- [ ] **MOSS-030**：内存/IPC 未实现操作返回 Unsupported，不返回固定地址、假成功率或假压力；初始化 Ready 只能在实例发布后可见。
+- [x] **MOSS-030（工作区，3.28～3.29）**：内存/IPC 未实现操作返回 Unsupported，不返回固定地址、假成功率或假压力；初始化 Ready 只能在实例发布后可见。
+  - [x] UnifiedMemoryManager 的 allocation-info、prefault、usage advice、reclaim/compaction、NUMA 与 huge-page 操作不再返回空成功；统一返回新增的 `MMError::NotSupported`。
+  - [x] 初始化改为 `Uninitialized → Initializing → Ready → ShuttingDown` 原子状态机，实例指针先发布、Ready 后发布；确定性边界测试能在顺序变异时变红，恢复后通过（3.28）。公开原始 singleton 借用已删除，测试只接收发布边界的 opaque 指针。
+  - [x] Buddy V2 的初始化/压缩/watermark/压力/碎片/统计，以及 Unified 的压力/性能/reset/history/leak 等占位接口返回明确的 `NotSupported`；未知压力使用 `UNKNOWN`，不再伪造 LOW、100% 或零统计。
+  - [x] 共享区 create/destroy/stats/sync 只报告真实对象状态；尚无进程地址空间所有权协议的 map/unmap/process-cleanup 明确返回 `NotSupported`，不再返回固定地址或空成功。三架构九 preset 的 `mm.unsupported_contracts` 均为 27/27，完整 CTest 43/43（3.29）。
 - [ ] **MOSS-031**：收敛 UserAccess/AddressSpace/TrapFrame/ProcessResources/ExecLoader 等已有职责；明确 Moss ABI、号表、定长结构与错误语义，不把同名 syscall 宣称为 Linux/POSIX ABI。
-- [ ] **MOSS-032（本文档部分已更新）**：持续同步代码、启动错误、统计和 pass/fail/skip；本次清单更新不关闭 MOSS-030 的假能力或其他验收缺口。
+- [ ] **MOSS-032（本文档部分已更新）**：持续同步代码、启动错误、统计和 pass/fail/skip；MOSS-030 的假能力契约已关闭，其他文档与验收缺口仍需继续同步。
 
 依赖顺序及每阶段退出条件见 [审计实施顺序](moss-todo.md#11-实施顺序与可交付阶段)。各编号只有满足原验收条件后才整体关闭；上面的“已修复”子问题不免除同项剩余工作。
 

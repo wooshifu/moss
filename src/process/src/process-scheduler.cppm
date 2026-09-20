@@ -1803,6 +1803,39 @@ public:
     switch_to_bootstrap(task->context);
   }
 
+  // Move the calling thread only after its continuation has been saved on the
+  // source CPU. Publishing it directly on a remote runqueue would let that CPU
+  // restore the same context while context_switch() is still writing it here.
+  // Reusing the sleep handoff makes bootstrap perform the first safe publish;
+  // the call returns only when the thread is dispatched on destination.
+  [[nodiscard]] bool migrate_current(u32 destination) noexcept {
+    auto *task = get_current_task();
+    const u32 source = get_current_cpu_id();
+    if (!task || arch::interrupts_enabled() || source >= g_num_cpus || destination >= g_num_cpus) {
+      return false;
+    }
+    if (source == destination) {
+      return true;
+    }
+
+    {
+      containers::LockGuard<containers::IrqSpinLock> guard(task->sleep_lock);
+      if (task->state != ProcessState::Running || !task->cpu_affinity_mask.test(destination)) {
+        return false;
+      }
+      // Handoff value 2 records that bootstrap must wake the saved task
+      // immediately; no timer or external wake source is required.
+      task->sleep_handoff.store(2);
+      task->wake_cpu = destination;
+      task->state = ProcessState::Sleeping;
+      dequeue_task(task);
+    }
+
+    sleeping_tasks_.get_cpu(source) = task;
+    switch_to_bootstrap(task->context);
+    return true;
+  }
+
 private:
   static containers::PerCpuData<ExitStack> exit_stacks_;
 

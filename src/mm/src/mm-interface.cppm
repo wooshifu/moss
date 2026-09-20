@@ -371,7 +371,10 @@ enum class MMError : u32 {
   ResourceBusy = 6,
   PermissionDenied = 7,
   FragmentationSevere = 8,
-  ConfigurationInvalid = 9
+  ConfigurationInvalid = 9,
+  // Appended to preserve the numeric values of existing internal callers;
+  // use this when an exported operation has no backing implementation.
+  NotSupported = 10
 };
 
 template <typename T> using MMResult = moss::kernel::Result<T, MMError>;
@@ -470,7 +473,7 @@ public:
     u64 report_timestamp;
     MemoryPressure overall_pressure;
 
-    SystemPerformanceStats() noexcept : report_timestamp(0), overall_pressure(MemoryPressure::LOW) {
+    SystemPerformanceStats() noexcept : report_timestamp(0), overall_pressure(MemoryPressure::UNKNOWN) {
       allocation_perf = {};
       system_efficiency = {};
     }
@@ -508,7 +511,7 @@ public:
   // Memory pressure management
   static MMVoidResult trigger_memory_reclaim() noexcept;
   static MMVoidResult trigger_memory_compaction() noexcept;
-  [[nodiscard]] static MemoryPressure get_memory_pressure() noexcept;
+  [[nodiscard]] static MMResult<MemoryPressure> get_memory_pressure() noexcept;
 
   // Performance optimization
   static MMVoidResult optimize_numa_placement(VirtAddr address, usize size) noexcept;
@@ -516,17 +519,14 @@ public:
   static MMVoidResult compact_memory_region(VirtAddr start, usize size) noexcept;
 
   // System monitoring and statistics
-  [[nodiscard]] static SystemPerformanceStats get_performance_stats() noexcept;
+  [[nodiscard]] static MMResult<SystemPerformanceStats> get_performance_stats() noexcept;
   [[nodiscard]] static bool is_system_healthy() noexcept;
-  static void reset_performance_counters() noexcept;
+  [[nodiscard]] static MMVoidResult reset_performance_counters() noexcept;
 
   // Debug and diagnostics
   static void dump_memory_layout() noexcept;
-  static void dump_allocation_history() noexcept;
+  [[nodiscard]] static MMVoidResult dump_allocation_history() noexcept;
   static MMResult<MemoryLeakDetector::LeakReport> generate_leak_report() noexcept;
-
-  // Singleton access
-  [[nodiscard]] static UnifiedMemoryManager &get_instance() noexcept;
 
 private:
   explicit UnifiedMemoryManager(const SystemConfig &config) noexcept;
@@ -549,7 +549,12 @@ private:
   void update_allocation_strategies() noexcept;
 
   // Singleton management
-  static bool initialized_;
+  enum class InitializationState : u32 { Uninitialized, Initializing, Ready, ShuttingDown };
+  // Stored as its fixed-width underlying type so compiler atomics can publish
+  // the singleton without depending on a dynamically initialized lock object.
+  static u32 initialization_state_;
+  // This pointer is deliberately not exposed as a reference: shutdown can
+  // safely reclaim the configuration object only while no raw borrow escapes.
   static UnifiedMemoryManager *instance_;
 };
 
@@ -573,7 +578,7 @@ inline MMVoidResult free(VirtAddr addr) noexcept { return UnifiedMemoryManager::
 
 inline MMVoidResult free_sized(VirtAddr addr, usize size) noexcept { return UnifiedMemoryManager::free(addr, size); }
 
-inline MemoryPressure get_pressure() noexcept { return UnifiedMemoryManager::get_memory_pressure(); }
+inline MMResult<MemoryPressure> get_pressure() noexcept { return UnifiedMemoryManager::get_memory_pressure(); }
 
 inline bool is_healthy() noexcept { return UnifiedMemoryManager::is_system_healthy(); }
 
@@ -785,31 +790,32 @@ inline void shutdown_kernel_memory() noexcept { UnifiedMemoryManager::shutdown_s
 inline bool is_memory_system_healthy() noexcept { return UnifiedMemoryManager::is_system_healthy(); }
 
 // Trigger memory GC
-inline void trigger_memory_gc() noexcept { (void)UnifiedMemoryManager::trigger_memory_reclaim(); }
+[[nodiscard]] inline MMVoidResult trigger_memory_gc() noexcept {
+  return UnifiedMemoryManager::trigger_memory_reclaim();
+}
 
 // Get memory pressure
-inline MemoryPressure get_memory_pressure() noexcept { return UnifiedMemoryManager::get_memory_pressure(); }
+inline MMResult<MemoryPressure> get_memory_pressure() noexcept { return UnifiedMemoryManager::get_memory_pressure(); }
 
 // Get memory stats
-inline UnifiedMemoryManager::SystemPerformanceStats get_memory_stats() noexcept {
+inline MMResult<UnifiedMemoryManager::SystemPerformanceStats> get_memory_stats() noexcept {
   return UnifiedMemoryManager::get_performance_stats();
 }
 
-// Print memory stats (uses klog for UART output)
-inline void print_memory_stats() noexcept {
-  [[maybe_unused]] auto stats = get_memory_stats();
-  log::klog::info("=== MEMORY SYSTEM STATS ===");
-}
+// Print the implemented PFA snapshot rather than the unsupported synthetic
+// performance report.
+inline void print_memory_stats() noexcept { UnifiedMemoryManager::dump_memory_layout(); }
 
-// Check memory leaks (uses klog for UART output)
-inline void check_memory_leaks() noexcept {
+// Leak tracking is optional; propagate its capability error to the caller.
+[[nodiscard]] inline MMVoidResult check_memory_leaks() noexcept {
   auto leak_result = UnifiedMemoryManager::generate_leak_report();
-  if (leak_result.is_ok()) {
-    auto report = *leak_result;
-    if (report.total_leaked_bytes > 0) {
-      log::klog::warn("MEMORY LEAKS DETECTED!");
-    }
+  if (!leak_result) {
+    return MMVoidResult{leak_result.error()};
   }
+  if ((*leak_result).total_leaked_bytes > 0) {
+    log::klog::warn("MEMORY LEAKS DETECTED!");
+  }
+  return MMVoidResult{};
 }
 
 // Page allocator shim (C-linkage bridge for containers→mm dependency)

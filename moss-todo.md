@@ -954,6 +954,32 @@ MOSS-016 完成后串行执行全部九个 CTest preset。首个 ARM64 Debug 运
 
 启动轮询只关闭此次可复现的 CTest 前进性错误，不代替 ARM 实机覆盖、启动压力循环或 MOSS-017/018 的完整调度/等待验收。九 preset 的普通通过也不满足 30 分钟稳定性、性能门禁、网络或持久存储范围。
 
+### 3.28 MM 初始化发布与 affinity 返回契约（2026-09-20，基于 `c23d205`，工作区）
+
+MOSS-030 原实现先以 CAS 把单一 `initialized_` 布尔值设为 true，之后才分配并写入 `instance_`；并发调用者可以据此提前返回成功，而实例仍为空。当前实现改用 `Uninitialized`、`Initializing`、`Ready`、`ShuttingDown` 四态原子状态机：初始化竞争者等待构造者发布 Ready，关闭与初始化互斥，实例指针以 release 写入后才 release 发布 Ready，读取 Ready 使用 acquire。未实现的 allocation-info、prefault、usage advice、reclaim/compaction、NUMA 和 huge-page 操作同时改为 `MMError::NotSupported`，不再返回空成功或固定基页大小。
+
+验证镜像沿用现有弱观察点模式，在实例已经发布而 Ready 尚未发布的唯一边界记录状态；生产镜像观察点为空，不替换分配或同步。`mm.initialization_publication` 检查该边界看不到 Ready、能取得实例，且启动完成后 Ready 可见。故意把 Ready 移到观察点之前时，报告 `1789911285744141000` 以 3 项通过、1 项失败变红；恢复正确顺序后报告 `1789911357350730000` 通过。该证据关闭“Ready 早于实例”的发布顺序子问题；没有据此宣称高级内存统计、Buddy 占位查询、共享映射或运行期任意借用与 shutdown 并发已实现。
+
+随后 ARM64 Debug 默认 CTest 首轮报告 `1789908683631496000` 同时暴露 `users.signals/pid_lifecycle` 断言和 `users.lifecycle` 30 秒超时。信号用例原先在 `sched_setaffinity()` 后用 1 ms nanosleep 间接等待迁移；宿主负载使 deadline 在真正阻塞前过期时，线程仍可在已被新 mask 排除的 CPU0 上继续执行。新增的直接返回后 CPU 断言把旧行为稳定为 cycle 1 红例（`1789910138455376000`）。调度器现在复用 sleep handoff：先在源 CPU 保存 continuation，bootstrap 再把线程发布到 mask 允许的目标 CPU，系统调用只在目标 CPU 重新调度后返回，避免远端在源端仍写上下文时恢复同一线程。
+
+修复后的单例 `users.signals` 报告 `1789910546894653000` 通过，与原复现负载一致的 32 个客体、8 路并发压力为 32/32 通过。最终 ARM64 Debug CTest 为 **5/5**、139.75 秒；functional 报告 `1789911561500158000` 的 24 个 guest、180 case 全部通过，framework 报告 `1789911672427670000` 通过。`users.lifecycle` 在最终普通串行环境中通过，未放宽 30 秒 case deadline。runner 单测 126/126、MM 定向 lint、Ruff 与 `git diff --check` 通过；全仓 lint 仍有本工作区既存诊断，不能据这些定向结果宣称全仓 lint 通过。
+
+本节仅验证 ARM64 Debug 的调用线程自身 affinity 收紧和 MM 初始化发布边界。其他进程/线程的 affinity、一般抢占与 load-balancer on-CPU 所有权仍属于 MOSS-017；MOSS-030 当时缺少的三架构矩阵与 shutdown 借用边界由 3.29 继续闭合。
+
+### 3.29 MOSS-030 能力契约闭合与 applications 前进性修复（2026-09-20，基于 `c23d205`，工作区）
+
+MOSS-030 的剩余占位能力已按“真实实现或明确拒绝”收口。BuddyAllocatorV2 的 initialize/compact/watermark/pressure/fragmentation/statistics 接口改为带 `BuddyError::NotSupported` 的结果；UnifiedMemoryManager 的 reallocate、压力/性能、counter reset、history dump 和 leak report 等未实现接口返回 `MMError::NotSupported`，默认压力为 `UNKNOWN`，不再伪造 LOW、100% 成功率或零统计。启动日志只报告 memory ready，并明确 pressure unsupported；真实布局诊断来自 PFA，而不是固定页大小。公开的 `UnifiedMemoryManager::get_instance()` 原始借用已删除，发布边界测试只接收 opaque 指针，因此 shutdown 期间没有对外逃逸的 singleton 引用。
+
+IPC 共享区 create/destroy/stats 使用实际分配与对象表，live direct-map region 的 sync 验证真实对象状态；尚未建立进程地址空间映射所有权的 map/unmap/process-mapping cleanup 统一返回 `NotSupported`。进程 IPC 清理不会因这个已知 unsupported 分支跳过实际共享区回收。原先 host shared-memory 回归为 **2 failed / 4 passed**，ARM64 Debug 报告 `1789912745979019000` 的 `mm.unsupported_contracts` 为 **5 passed / 4 failed**；修复后该用例扩展到 **27/27**，同时核对错误码、输出地址不变及 PFA/heap 统计无副作用。
+
+最终九份 functional 报告均含 24 个通过 guest，且 `mm.unsupported_contracts` 为 27/27：ARM64 `1789917623340436000`、`1789917723149759000`、`1789917793935042000`，x64 `1789917855339589000`、`1789917963346620000`、`1789918043921536000`，RV64 `1789918114298668000`、`1789918230081591000`、`1789918300552788000`。相关 MM/IPC 文件的反向文本审计未再发现固定成功映射地址、假 LOW/HIGH/100% 或公开 Unified singleton 借用；索引对精确路径无相关缺口，已对 `validation.c` 的已标记 parse-partial 范围补做源文件核对。
+
+九 preset CTest 首轮在 ARM64 Release 的 `moss-applications` 暴露默认 30 秒无进展失败，报告 `1789914050302540000` 只到 cycle 0。有效的 20 秒反馈环也以 `1789914758029681000` 复现；两次暂停分别落在定时器打断用户态 slab 分配和用户态 `mlibc::putenv`，并非固定内核死锁位置。根因是十个包含多次 BusyBox exec 的周期之间只有末尾检查点：仍在执行的 TCG guest 会被整段误判为无进展。userspace、kernel validation 与 host parser 的 application cadence 同步改为 5，在保留十个周期和 30 秒 deadline 的同时报告 baseline/midpoint/completion；协议单测先红后绿，20 秒反馈环随后连续 **6/6** 通过，首份为 `1789915654570534000`，三次资源快照一致。
+
+收尾验证为 runner/shared-memory host 测试 **132/132**，九个 Debug/Release/RelWithDebInfo 构建全部成功；最终工作区的串行 CTest 为 ARM64 **14/14**、x64 **16/16**、RV64 **13/13**，合计 **43/43**。各 applications 项均使用默认 30 秒进度门槛，在 10.98～17.90 秒内通过，没有以放宽 timeout 覆盖原失败；最终 ARM64 Release applications 报告为 `1789917759977009000`。本项涉及的 6 个生产翻译单元通过定向 Clang-Tidy，相关 C/C++ 格式、Ruff 与 `git diff --check` 通过；全仓 lint 仍有 drivers/FDT/syscall/旧 validation 代码共 8 个翻译单元的既存诊断，故不宣称全仓 lint 已通过。
+
+本项关闭的是公开能力的诚实契约，不表示 NUMA、huge page、reclaim/compaction 或进程共享映射已经实现；这些接口仍明确 Unsupported，未来实现必须另行建立所有权、回滚和并发验收。MOSS-017/018 及一般 VM 生命周期问题也不在本结论内。
+
 ## 4. 问题总表与当前状态
 
 | 编号 | 优先级 | 审计主题 | 当前状态与下一步 |
@@ -974,9 +1000,9 @@ MOSS-016 完成后串行执行全部九个 CTest preset。首个 ARM64 Debug 运
 | MOSS-014 | P1 | fork 用户现场与继承状态 | 部分实现；三 ISA 实际用户帧 GP 复制、ARM64 x30 和 x86 CF 修复有不立即 exec 的回归（3.19）；VM/凭据/全部 FP/TLS 继承及失败验收仍缺。 |
 | MOSS-015 | P1 | exec 原子替换 | 已关闭（工作区，3.25）；全部可失败准备均在旧地址空间仍有效时完成，提交后才回收旧所有权；PFA 与六级 heap 失败、可变 ELF 快照及 FD 语义已在六配置通过。 |
 | MOSS-016 | P1 | ELF 校验与分段策略 | 已关闭（工作区，3.26）；不可变 LoadPlan、checked arithmetic、严格拒绝 oracle、17 个畸形映像，以及非页对齐 RX/RW 的实际字节/零填充/最终权限已在六配置通过。 |
-| MOSS-017 | P1 | 运行队列 / 迁移 / on-CPU | 部分修复（工作区）；三 ISA yield 真切换、退出通知共享原子唤醒已回归；pick/dequeue、迁移及 on-CPU/check_need_resched 仍未闭合，见当前验收记录。 |
+| MOSS-017 | P1 | 运行队列 / 迁移 / on-CPU | 部分修复（工作区，3.28）；调用线程收紧自身 affinity 时会在 continuation 保存后同步迁移，确定性红例、单例及 32/32 并发压力通过；远程目标、一般 pick/dequeue/迁移及 on-CPU/check_need_resched 仍未闭合。 |
 | MOSS-018 | P1 | wait/console 丢失唤醒 | 部分修复（工作区）；wait 的 status EFAULT 可重试，选项/PID 边界已回归；条件检查与等待登记仍分离，丢失唤醒和信号中断未关闭。 |
-| MOSS-019 | P1 | nanosleep / timer 生命周期 | 部分修复（工作区）；三 ISA 切换、先 Sleeping 后 arm、容量失败及同步取消已回归；跨 CPU 交接与信号中断仍未闭合。 |
+| MOSS-019 | P1 | nanosleep / timer 生命周期 | 部分修复（工作区）；三 ISA 切换、先 Sleeping 后 arm、容量失败及同步取消已回归。`clock_getres` 已以原生 u64 纳秒 ABI 实现并在 ARM64 Debug 默认 CTest 5/5 回归（2026-09-20）；跨 CPU 交接、信号中断及三架构验收仍未闭合。 |
 | MOSS-020 | P1 | 信号投递 / STOP/CONT/SIGCHLD | 部分修复（3.19）；统一用户返回检查点、结果/handler 参数写回顺序及终止信号编号已补；CPU-bound、STOP/CONT/SIGCHLD 和阻塞中断仍待闭合。 |
 | MOSS-021 | P1 | 信号状态生命周期 | 已关闭（工作区，3.23）；状态由 `Process` 拥有，fork/exec/exit 规则已核对，继承/重置及跨旧 256 槽边界的 300 次生命周期在六配置通过。 |
 | MOSS-022 | P1 | 退出 FD 关闭 | 实现已修复、验收部分（工作区，3.23）；退出在 Zombie 前 close-all、析构兜底，EOF-before-wait 与 1,000 次资源恢复通过五个默认配置；RV64 Debug 默认 30 秒仍超时，60 秒诊断通过，故不关闭。 |
@@ -987,11 +1013,11 @@ MOSS-016 完成后串行执行全部九个 CTest preset。首个 ARM64 Debug 运
 | MOSS-027 | P1 | x86 PVH / initramfs | 已关闭（工作区，3.22）；真实模块表/可用 RAM 范围、严格 newc、完成标记顺序及七场景生产 QEMU gate 已通过 Debug/Release。 |
 | MOSS-028 | P1 | 真实内核测试与失败传播 | 框架已替换，覆盖待补；生产模块、串口协议及三架构自检已落地，T01～T12 不能整体关闭。 |
 | MOSS-029 | P2 | 计时源和 ISA 能力 | 部分实现；x86 双频率校准、RV64 SBI TIME 已落地；3.8 新暴露验证镜像一次校准拒绝，具体分支未定位，异常能力与时钟误差验收仍待补。 |
-| MOSS-030 | P2 | 空成功 / 固定地址 / 假统计 | 未修复；`mm_interface_impl.cpp` 与 `ipc.cppm` 仍有固定结果/空成功及提前 Ready。 |
+| MOSS-030 | P2 | 空成功 / 固定地址 / 假统计 | 已关闭（工作区，3.28～3.29）；MM/IPC 未实现操作显式返回 `NotSupported` 且无副作用，真实 create/destroy/stats/sync 使用实际对象，假压力/成功率/固定地址已移除；初始化有序发布且不再公开原始 singleton 借用。三架构九 preset 的契约回归和完整 CTest 通过。 |
 | MOSS-031 | P2 | 核心边界与 ABI | 部分边界改善；启动/硬件/runner 已拆分，uaccess/TrapFrame/进程事务和共用 ABI 仍待收敛。 |
-| MOSS-032 | P2 | 文档 / 状态 / 统计一致性 | 文档部分已更新；能力矩阵及历史/当前证据已分开，启动假成功已随 3.22 修复，假统计和完整验收仍未关闭。 |
+| MOSS-032 | P2 | 文档 / 状态 / 统计一致性 | 文档部分已更新；能力矩阵及历史/当前证据已分开，启动假成功已随 3.22 修复，MOSS-030 的假 MM/IPC 统计与成功契约已随 3.29 关闭；其余日志、skip 与完整验收仍未关闭。 |
 
-004/013 已按所列专项验收和修复提交关闭，011/021 已按 3.23 的当前实现复核和六配置专项验收关闭，012 已按 3.24 的红绿回归与六配置专项验收关闭，015 已按 3.25 的准备/提交事务、逐级真实压力与六配置验收关闭，016 已按 3.26 的 LoadPlan、畸形输入和边界页语义验收关闭，027 已按 3.22 的工作区修复和专项验收关闭；其余包含未完成验收的整项仍保持打开，有限子任务在第 11 节单独勾选。以下保留原始问题细节，避免修复后丢失回归依据。
+004/013 已按所列专项验收和修复提交关闭，011/021 已按 3.23 的当前实现复核和六配置专项验收关闭，012 已按 3.24 的红绿回归与六配置专项验收关闭，015 已按 3.25 的准备/提交事务、逐级真实压力与六配置验收关闭，016 已按 3.26 的 LoadPlan、畸形输入和边界页语义验收关闭，027 已按 3.22 的工作区修复和专项验收关闭，030 已按 3.28～3.29 的有序发布、显式 Unsupported 与九配置验收关闭；其余包含未完成验收的整项仍保持打开，有限子任务在第 11 节单独勾选。以下保留原始问题细节，避免修复后丢失回归依据。
 
 ## 5. 隔离与基础内存
 
@@ -1413,7 +1439,9 @@ fork 对 VMA 有复制，但未完整继承 `brk_base/brk_current/mmap_next` 等
 
 ### MOSS-030 · 空实现返回成功使上层无法建立可靠契约
 
-**位置与事实：** `src/mm/src/mm_interface_impl.cpp:22` 一些初始化/压缩、watermark、压力和统计为固定结果；`:125` 的大小查询固定返回页大小，prefault、reclaim、hugepage promotion 等路径含成功占位；性能统计还包含固定成功率。`:51` 的初始化状态发布顺序也先标记 initialized 再发布实例，若被并发调用会暴露未完成状态。
+**2026-09-20 更新：已关闭。** UnifiedMemoryManager 的未实现查询/高级操作、BuddyAllocatorV2 的占位初始化/压缩/watermark/压力/碎片/统计，以及尚无真实进程映射所有权的 IPC map/unmap/cleanup 均返回明确的 `NotSupported` 且保持状态不变。真实共享区 create/destroy/stats/sync 使用实际分配对象；假 LOW/100%/零统计和固定映射地址已删除。初始化采用四态原子发布，公开原始 singleton 借用已移除；红绿证据及九配置验收见 3.28～3.29。未实现能力仍是后续功能，不因本项关闭而被宣称可用。
+
+**原始审计位置与事实：** `src/mm/src/mm_interface_impl.cpp:22` 一些初始化/压缩、watermark、压力和统计为固定结果；`:125` 的大小查询固定返回页大小，prefault、reclaim、hugepage promotion 等路径含成功占位；性能统计还包含固定成功率。`:51` 的初始化状态发布顺序也先标记 initialized 再发布实例，若被并发调用会暴露未完成状态。
 
 `src/ipc/src/ipc.cppm:304` 附近的共享内存相关辅助路径返回固定物理/虚拟地址，映射操作为空成功。这些接口并非都已接到当前用户态 syscall，故应记录为**潜在错误能力**，而不是声称现有 shell 已通过它们分配共享内存。
 
@@ -1447,7 +1475,7 @@ fork 对 VMA 有复制，但未完整继承 `brk_base/brk_current/mmap_next` 等
 
 ### MOSS-032 · 文档、日志和统计需要如实表达当前能力
 
-**2026-09-06 更新：清单与能力矩阵已同步，整项未关闭。** `todo.md` 现区分已有实现、通过配置和待验收；不再要求重做 RB 平衡或从零实现 RV64/x86，workflow 也已注明 configure/build/test。本文保留旧故障与新基线，不将历史 timeout 当当前失败。`mm_interface_impl.cpp` 的固定统计、部分启动阶段继续成功及独立 signal_test 的 SKIP 表达仍需修复；文档更新不能替代这些实现。
+**2026-09-20 更新：清单与能力矩阵继续同步，整项未关闭。** `todo.md` 现区分已有实现、通过配置和待验收；不再要求重做 RB 平衡或从零实现 RV64/x86，workflow 也已注明 configure/build/test。本文保留旧故障与新基线，不将历史 timeout 当当前失败。`mm_interface_impl.cpp` 的固定统计已随 MOSS-030 关闭；其他启动阶段、独立 signal_test 的 SKIP 表达及持续文档同步仍需处理，文档更新不能替代实现验收。
 
 **事实：** 原审计时的 `todo.md` 中“x86/RISC-V 64 只有桩”“红黑树平衡未实现”等表述不准确：调度器 `src/process/src/process-scheduler.cppm:882` 有插入平衡，`:1011` 有删除平衡；三个架构也都有大量真实代码。反过来，凭据结构存在不代表完整权限策略，信号正常例子通过不代表完整信号语义，存在 validate helper 不代表所有用户指针都安全。
 

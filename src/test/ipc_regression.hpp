@@ -116,8 +116,15 @@ inline void shared_lifecycle() {
     // No user VMA/PTE backend exists yet: a success address would be unsafe.
     const auto mapping = manager.map_to_process(0, *id);
     boost::ut::expect(!mapping && mapping.error() == kernel::KernelError::NotSupported);
+    const auto unmapping = manager.unmap_from_process(0, *id);
+    boost::ut::expect(!unmapping && unmapping.error() == kernel::KernelError::NotSupported);
+    boost::ut::expect(static_cast<bool>(manager.sync_region(*id)));
+    const auto cleanup = manager.cleanup_process_mappings(0);
+    boost::ut::expect(!cleanup && cleanup.error() == kernel::KernelError::NotSupported);
     boost::ut::expect(static_cast<bool>(manager.destroy_region(*id)));
     boost::ut::expect(!manager.get_region_info(*id));
+    const auto missing_sync = manager.sync_region(*id);
+    boost::ut::expect(!missing_sync && missing_sync.error() == kernel::KernelError::InvalidArgument);
   }
   boost::ut::expect(kernel::mm::PageFrameAllocator::get_memory_stats().free_pages == baseline);
   boost::ut::expect(manager.get_statistics().total_regions == 0);

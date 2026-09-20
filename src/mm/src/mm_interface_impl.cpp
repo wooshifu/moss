@@ -6,9 +6,16 @@ module;
 
 module moss.mm;
 
+// Only the validation image observes the publication boundary. Production
+// initialization does not wait here or replace any allocation/state change.
+extern "C" [[gnu::weak, gnu::noinline]] void moss_validation_mm_before_ready(const void *published_instance
+                                                                             [[maybe_unused]]) noexcept {}
+
 namespace moss::kernel::mm {
 
-// BuddyAllocatorV2 stub implementations
+// BuddyAllocatorV2 is currently only a compatibility allocation facade over
+// PageFrameAllocator. V2 metadata-dependent operations must report that their
+// backend is absent instead of synthesizing a healthy allocator state.
 BuddyResult<moss::kernel::PhysAddr> BuddyAllocatorV2::allocate_pages(const PageAllocRequest &request) noexcept {
   // Delegates to PageFrameAllocator — full buddy with migration types,
   // per-CPU caches, and watermark management is a separate project.
@@ -19,7 +26,7 @@ BuddyResult<moss::kernel::PhysAddr> BuddyAllocatorV2::allocate_pages(const PageA
   return BuddyResult<moss::kernel::PhysAddr>{*result};
 }
 
-BuddyVoidResult BuddyAllocatorV2::initialize() noexcept { return BuddyVoidResult{}; }
+BuddyVoidResult BuddyAllocatorV2::initialize() noexcept { return BuddyVoidResult{BuddyError::NotSupported}; }
 
 BuddyVoidResult BuddyAllocatorV2::free_pages(moss::kernel::PhysAddr addr, moss::kernel::usize order) noexcept {
   auto result = PageFrameAllocator::free_pages(addr, order);
@@ -29,53 +36,113 @@ BuddyVoidResult BuddyAllocatorV2::free_pages(moss::kernel::PhysAddr addr, moss::
   return BuddyVoidResult{};
 }
 
-BuddyVoidResult BuddyAllocatorV2::compact_memory() noexcept { return BuddyVoidResult{}; }
+BuddyVoidResult BuddyAllocatorV2::compact_memory() noexcept { return BuddyVoidResult{BuddyError::NotSupported}; }
 
-BuddyAllocatorV2::WaterMark BuddyAllocatorV2::get_water_mark() noexcept { return WaterMark::HIGH; }
-
-bool BuddyAllocatorV2::is_memory_pressure() noexcept { return false; }
-
-BuddyAllocatorV2::FragmentationStats BuddyAllocatorV2::get_fragmentation_stats() noexcept {
-  return FragmentationStats{};
+BuddyResult<BuddyAllocatorV2::WaterMark> BuddyAllocatorV2::get_water_mark() noexcept {
+  return BuddyResult<WaterMark>{BuddyError::NotSupported};
 }
 
-BuddyAllocatorV2::MemoryStats BuddyAllocatorV2::get_memory_stats() noexcept { return MemoryStats{}; }
+BuddyResult<bool> BuddyAllocatorV2::is_memory_pressure() noexcept {
+  return BuddyResult<bool>{BuddyError::NotSupported};
+}
+
+BuddyResult<BuddyAllocatorV2::FragmentationStats> BuddyAllocatorV2::get_fragmentation_stats() noexcept {
+  return BuddyResult<FragmentationStats>{BuddyError::NotSupported};
+}
+
+BuddyResult<BuddyAllocatorV2::MemoryStats> BuddyAllocatorV2::get_memory_stats() noexcept {
+  return BuddyResult<MemoryStats>{BuddyError::NotSupported};
+}
 
 // 静态成员初始化
-bool UnifiedMemoryManager::initialized_ = false;
+u32 UnifiedMemoryManager::initialization_state_ = static_cast<u32>(InitializationState::Uninitialized);
 UnifiedMemoryManager *UnifiedMemoryManager::instance_ = nullptr;
 
-// 系统初始化 — atomic flag prevents double-init from concurrent CPUs.
-// Uses __atomic builtins because containers::AtomicBool is not available
-// here (mm is lower-level than containers in the module dependency graph).
+// System initialization uses an explicit publication state. The constructing
+// CPU publishes instance_ before Ready; acquire readers that observe Ready
+// therefore cannot return success while the singleton is still absent.
 MMVoidResult UnifiedMemoryManager::initialize_system(const SystemConfig &config) noexcept {
-  // Atomic compare-and-swap: only one caller can transition false→true
-  bool expected = false;
-  if (!__atomic_compare_exchange_n(&initialized_, &expected, true, false, __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE)) {
-    // Already initialized (or another CPU won the race)
-    return MMVoidResult{};
+  constexpr u32 uninitialized = static_cast<u32>(InitializationState::Uninitialized);
+  constexpr u32 initializing = static_cast<u32>(InitializationState::Initializing);
+  constexpr u32 ready = static_cast<u32>(InitializationState::Ready);
+  constexpr u32 shutting_down = static_cast<u32>(InitializationState::ShuttingDown);
+
+  u32 observed = uninitialized;
+  for (;;) {
+    if (__atomic_compare_exchange_n(&initialization_state_, &observed, initializing, true, __ATOMIC_ACQ_REL,
+                                    __ATOMIC_ACQUIRE)) {
+      break;
+    }
+    if (observed == ready) {
+      return MMVoidResult{};
+    }
+    if (observed == shutting_down) {
+      return MMVoidResult{MMError::ResourceBusy};
+    }
+    // The winning CPU must finish construction and publish Ready before a
+    // concurrent initializer may report success.
+    while (observed == initializing) {
+      moss::kernel::arch::cpu_yield();
+      observed = __atomic_load_n(&initialization_state_, __ATOMIC_ACQUIRE);
+    }
+    if (observed == ready) {
+      return MMVoidResult{};
+    }
+    if (observed == shutting_down) {
+      return MMVoidResult{MMError::ResourceBusy};
+    }
+    observed = uninitialized;
   }
 
-  // We won the race — create instance.
   // operator new panics on OOM in this kernel, so no null check needed.
   auto *raw = new char[sizeof(UnifiedMemoryManager)];
   auto *inst = new (raw) UnifiedMemoryManager(config);
   __atomic_store_n(&instance_, inst, __ATOMIC_RELEASE);
+  moss_validation_mm_before_ready(inst);
+  __atomic_store_n(&initialization_state_, ready, __ATOMIC_RELEASE);
   return MMVoidResult{};
 }
 
-// 系统关闭 — properly destroy and free
+// Shutdown is serialized with initialization. Runtime users must already be
+// quiesced; this state machine protects publication, not arbitrary live borrows.
 void UnifiedMemoryManager::shutdown_system() noexcept {
+  constexpr u32 uninitialized = static_cast<u32>(InitializationState::Uninitialized);
+  constexpr u32 initializing = static_cast<u32>(InitializationState::Initializing);
+  constexpr u32 ready = static_cast<u32>(InitializationState::Ready);
+  constexpr u32 shutting_down = static_cast<u32>(InitializationState::ShuttingDown);
+
+  u32 observed = ready;
+  for (;;) {
+    if (__atomic_compare_exchange_n(&initialization_state_, &observed, shutting_down, true, __ATOMIC_ACQ_REL,
+                                    __ATOMIC_ACQUIRE)) {
+      break;
+    }
+    if (observed == uninitialized) {
+      return;
+    }
+    while (observed == initializing || observed == shutting_down) {
+      moss::kernel::arch::cpu_yield();
+      observed = __atomic_load_n(&initialization_state_, __ATOMIC_ACQUIRE);
+    }
+    if (observed == uninitialized) {
+      return;
+    }
+    observed = ready;
+  }
+
   auto *inst = __atomic_exchange_n(&instance_, nullptr, __ATOMIC_ACQ_REL);
-  __atomic_store_n(&initialized_, false, __ATOMIC_RELEASE);
   if (inst) {
     inst->~UnifiedMemoryManager();
     delete[] reinterpret_cast<char *>(inst);
   }
+  __atomic_store_n(&initialization_state_, uninitialized, __ATOMIC_RELEASE);
 }
 
 // 检查系统是否已初始化
-bool UnifiedMemoryManager::is_system_initialized() noexcept { return __atomic_load_n(&initialized_, __ATOMIC_ACQUIRE); }
+bool UnifiedMemoryManager::is_system_initialized() noexcept {
+  constexpr u32 ready = static_cast<u32>(InitializationState::Ready);
+  return __atomic_load_n(&initialization_state_, __ATOMIC_ACQUIRE) == ready;
+}
 
 // 主要内存分配接口 — delegates to RuntimeHeapAllocator
 MMResult<moss::kernel::VirtAddr> UnifiedMemoryManager::allocate(const MemoryRequest &request) noexcept {
@@ -116,17 +183,16 @@ MMVoidResult UnifiedMemoryManager::free(moss::kernel::VirtAddr address, moss::ke
 
 // 内存信息查询
 MMResult<MemoryInfo> UnifiedMemoryManager::query_memory_info([[maybe_unused]] moss::kernel::VirtAddr address) noexcept {
-  // 简化实现
-  MemoryInfo info{};
-  info.virtual_address = address;
-  return MMResult<MemoryInfo>{info};
+  // RuntimeHeapAllocator does not expose allocation metadata. Returning a
+  // mostly-zero record would let callers treat an unknown address as valid.
+  return MMResult<MemoryInfo>{MMError::NotSupported};
 }
 
 MMResult<moss::kernel::usize>
 UnifiedMemoryManager::get_allocated_size([[maybe_unused]] moss::kernel::VirtAddr address) noexcept {
-  // 占位查询固定返回一个基页，未读取堆块头；不能把此值作为实际分配大小
-  // 传给 sized free，后者会校验原请求长度。
-  return MMResult<moss::kernel::usize>{moss::kernel::PAGE_SIZE};
+  // RuntimeHeapAllocator does not retain a public size lookup. A base-page
+  // placeholder can corrupt a later sized free, so reject the query instead.
+  return MMResult<moss::kernel::usize>{MMError::NotSupported};
 }
 
 // 高级内存操作
@@ -134,114 +200,94 @@ MMVoidResult UnifiedMemoryManager::reallocate([[maybe_unused]] moss::kernel::Vir
                                               [[maybe_unused]] moss::kernel::usize old_size,
                                               [[maybe_unused]] moss::kernel::usize new_size,
                                               [[maybe_unused]] AllocFlags flags) noexcept {
-  // 简化实现
-  return MMVoidResult{MMError::OperationFailed};
+  // RuntimeHeapAllocator has no in-place resize or allocation-size lookup, so
+  // this operation cannot preserve the old allocation on every failure yet.
+  return MMVoidResult{MMError::NotSupported};
 }
 
 MMVoidResult UnifiedMemoryManager::prefault_memory([[maybe_unused]] moss::kernel::VirtAddr address,
                                                    [[maybe_unused]] moss::kernel::usize size) noexcept {
-  return MMVoidResult{};
+  return MMVoidResult{MMError::NotSupported};
 }
 
 MMVoidResult UnifiedMemoryManager::advise_usage_pattern([[maybe_unused]] moss::kernel::VirtAddr address,
                                                         [[maybe_unused]] moss::kernel::usize size,
                                                         [[maybe_unused]] UsagePattern pattern) noexcept {
-  return MMVoidResult{};
+  return MMVoidResult{MMError::NotSupported};
 }
 
 // 内存压力管理
-MMVoidResult UnifiedMemoryManager::trigger_memory_reclaim() noexcept { return MMVoidResult{}; }
+MMVoidResult UnifiedMemoryManager::trigger_memory_reclaim() noexcept { return MMVoidResult{MMError::NotSupported}; }
 
-MMVoidResult UnifiedMemoryManager::trigger_memory_compaction() noexcept { return MMVoidResult{}; }
+MMVoidResult UnifiedMemoryManager::trigger_memory_compaction() noexcept { return MMVoidResult{MMError::NotSupported}; }
 
-MemoryPressure UnifiedMemoryManager::get_memory_pressure() noexcept { return MemoryPressure::LOW; }
+MMResult<MemoryPressure> UnifiedMemoryManager::get_memory_pressure() noexcept {
+  // Neither the PFA nor the facade maintains validated pressure thresholds.
+  // LOW would therefore be a fabricated health signal rather than a sample.
+  return MMResult<MemoryPressure>{MMError::NotSupported};
+}
 
 // 性能优化
 MMVoidResult UnifiedMemoryManager::optimize_numa_placement([[maybe_unused]] moss::kernel::VirtAddr address,
                                                            [[maybe_unused]] moss::kernel::usize size) noexcept {
-  return MMVoidResult{};
+  return MMVoidResult{MMError::NotSupported};
 }
 
 MMVoidResult UnifiedMemoryManager::promote_to_huge_pages([[maybe_unused]] moss::kernel::VirtAddr address,
                                                          [[maybe_unused]] moss::kernel::usize size) noexcept {
-  return MMVoidResult{};
+  return MMVoidResult{MMError::NotSupported};
 }
 
 MMVoidResult UnifiedMemoryManager::compact_memory_region([[maybe_unused]] moss::kernel::VirtAddr start,
                                                          [[maybe_unused]] moss::kernel::usize size) noexcept {
-  return MMVoidResult{};
+  return MMVoidResult{MMError::NotSupported};
 }
 
 // 系统监控和统计
-UnifiedMemoryManager::SystemPerformanceStats UnifiedMemoryManager::get_performance_stats() noexcept {
-  // 直接构造并返回，避免静态变量导致的C++运行时依赖
-  SystemPerformanceStats stats{};
-
-  // 尚未接入实际采样：100.0 是百分比字段的占位“全部成功/本地/命中”，
-  // 0 表示未收集的计数和比例；这些值不构成运行时性能或健康证据。
-  stats.allocation_perf.total_allocations = 0;
-  stats.allocation_perf.failed_allocations = 0;
-  stats.allocation_perf.avg_allocation_latency_us = 0;
-  stats.allocation_perf.max_allocation_latency_us = 0;
-  stats.allocation_perf.total_allocated_bytes = 0;
-  stats.allocation_perf.allocation_success_rate = 100.0;
-
-  stats.system_efficiency.memory_utilization = 0.0;
-  stats.system_efficiency.fragmentation_ratio = 0.0;
-  stats.system_efficiency.numa_locality_ratio = 100.0;
-  stats.system_efficiency.huge_page_ratio = 0.0;
-  stats.system_efficiency.cache_hit_ratio = 100.0;
-
-  stats.overall_pressure = MemoryPressure::LOW;
-  stats.report_timestamp = 0;
-
-  return stats;
+MMResult<UnifiedMemoryManager::SystemPerformanceStats> UnifiedMemoryManager::get_performance_stats() noexcept {
+  // Allocation counts, latency, NUMA locality, huge-page use, and cache hits
+  // are not sampled. Returning zeroes or 100% would make absence look measured.
+  return MMResult<SystemPerformanceStats>{MMError::NotSupported};
 }
 
-bool UnifiedMemoryManager::is_system_healthy() noexcept { return __atomic_load_n(&initialized_, __ATOMIC_ACQUIRE); }
+// "Healthy" currently means only that singleton publication completed. It is
+// not a claim that unsupported pressure or performance monitors are healthy.
+bool UnifiedMemoryManager::is_system_healthy() noexcept { return is_system_initialized(); }
 
-void UnifiedMemoryManager::reset_performance_counters() noexcept {
-  // Performance counters (allocation_count_, steal_count_, etc.) live in
-  // BuddyAllocatorV2 which currently delegates to PageFrameAllocator.
-  // The PageFrameAllocator tracks used_pages/free_pages atomically but
-  // has no separate "counter reset" — values reflect cumulative state.
-  // Nothing to reset until real per-interval counters are added.
+MMVoidResult UnifiedMemoryManager::reset_performance_counters() noexcept {
+  // No resettable performance sampler exists; PFA usage is live state and must
+  // never be zeroed merely to emulate a counter reset.
+  return MMVoidResult{MMError::NotSupported};
 }
 
 // 调试和诊断
 void UnifiedMemoryManager::dump_memory_layout() noexcept {
   namespace log = moss::kernel::logging;
   auto stats = PageFrameAllocator::get_memory_stats();
-  // 固定 4 KiB 基页与 mm::PAGE_SIZE 一致，除以 1024 将字节转为 KiB。
-  constexpr moss::kernel::usize PAGE_SIZE = 4096;
+  // KiB is defined as 1024 bytes; use the architecture's declared page size
+  // so this diagnostic remains correct if the supported granule changes.
+  constexpr moss::kernel::usize bytes_per_kib = 1024;
   log::klog::info("=== Memory Layout ===");
-  log::klog::info("  total:  {} pages ({} KB)", stats.total_pages, stats.total_pages * PAGE_SIZE / 1024);
-  log::klog::info("  free:   {} pages ({} KB)", stats.free_pages, stats.free_pages * PAGE_SIZE / 1024);
-  log::klog::info("  used:   {} pages ({} KB)", stats.used_pages, stats.used_pages * PAGE_SIZE / 1024);
-  log::klog::info("  kernel: {} pages ({} KB)", stats.kernel_pages, stats.kernel_pages * PAGE_SIZE / 1024);
+  log::klog::info("  total:  {} pages ({} KB)", stats.total_pages,
+                  stats.total_pages * moss::kernel::PAGE_SIZE / bytes_per_kib);
+  log::klog::info("  free:   {} pages ({} KB)", stats.free_pages,
+                  stats.free_pages * moss::kernel::PAGE_SIZE / bytes_per_kib);
+  log::klog::info("  used:   {} pages ({} KB)", stats.used_pages,
+                  stats.used_pages * moss::kernel::PAGE_SIZE / bytes_per_kib);
+  log::klog::info("  kernel: {} pages ({} KB)", stats.kernel_pages,
+                  stats.kernel_pages * moss::kernel::PAGE_SIZE / bytes_per_kib);
 }
 
-void UnifiedMemoryManager::dump_allocation_history() noexcept {
-  // Allocation history tracking requires a ring buffer to record each
-  // allocate/free call with timestamp, size, and caller.  No such
-  // infrastructure exists yet — this is a no-op until then.
+MMVoidResult UnifiedMemoryManager::dump_allocation_history() noexcept {
+  // No allocation-history ring exists, so an empty dump cannot be presented as
+  // a successful diagnostic collection.
+  return MMVoidResult{MMError::NotSupported};
 }
 
 MMResult<MemoryLeakDetector::LeakReport> UnifiedMemoryManager::generate_leak_report() noexcept {
-  MemoryLeakDetector::LeakReport report{};
-  report.total_leaked_bytes = 0;
-  report.leak_count = 0;
-  return MMResult<MemoryLeakDetector::LeakReport>{report};
-}
-
-// 单例访问 — caller must check is_system_initialized() first;
-// crash immediately on null dereference is preferable to silent corruption.
-UnifiedMemoryManager &UnifiedMemoryManager::get_instance() noexcept {
-  auto *inst = __atomic_load_n(&instance_, __ATOMIC_ACQUIRE);
-  if (!inst) {
-    moss::kernel::arch::kernel_panic("UnifiedMemoryManager::get_instance() called before initialize_system()");
-  }
-  return *inst;
+  // No allocation ownership tracker feeds MemoryLeakDetector. A zero-leak
+  // report would mean "not measured", not evidence that no leaks exist.
+  return MMResult<MemoryLeakDetector::LeakReport>{MMError::NotSupported};
 }
 
 // 构造函数

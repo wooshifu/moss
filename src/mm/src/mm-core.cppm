@@ -72,7 +72,15 @@ enum class AllocationType : u8 {
 
 enum class UsagePattern : u8 { SEQUENTIAL = 0, RANDOM = 1, HOT_COLD = 2, STREAMING = 3, BATCH = 4, INTERACTIVE = 5 };
 
-enum class MemoryPressure : u8 { LOW = 0, MEDIUM = 1, HIGH = 2, CRITICAL = 3 };
+enum class MemoryPressure : u8 {
+  LOW = 0,
+  MEDIUM = 1,
+  HIGH = 2,
+  CRITICAL = 3,
+  // Appended so an unmeasured sample is never represented as LOW while the
+  // existing pressure values keep their numeric representation.
+  UNKNOWN = 4
+};
 
 // ========================================================================
 // NUMA base types (needed by vmalloc, huge_pages, mm_interface)
@@ -190,7 +198,10 @@ enum class BuddyError : u32 {
   InvalidAddress = 3,
   InvalidMigrationType = 4,
   InitializationFailed = 5,
-  FragmentationSevere = 6
+  FragmentationSevere = 6,
+  // Appended so existing error values stay stable. V2-only operations use
+  // this until the PFA maintains migration, watermark, or compaction state.
+  NotSupported = 7
 };
 
 template <typename T> using BuddyResult = moss::kernel::Result<T, BuddyError>;
@@ -226,8 +237,10 @@ public:
 
   enum class WaterMark : u32 { LOW = 0, MIN = 1, HIGH = 2 };
 
-  [[nodiscard]] static WaterMark get_water_mark() noexcept;
-  [[nodiscard]] static bool is_memory_pressure() noexcept;
+  // The baseline PFA does not maintain V2 watermarks. Keep absence in the
+  // result type so callers cannot confuse an arbitrary level with real state.
+  [[nodiscard]] static BuddyResult<WaterMark> get_water_mark() noexcept;
+  [[nodiscard]] static BuddyResult<bool> is_memory_pressure() noexcept;
 
   struct FragmentationStats {
     usize total_free_pages;
@@ -237,7 +250,7 @@ public:
     usize unusable_pages;
   };
 
-  [[nodiscard]] static FragmentationStats get_fragmentation_stats() noexcept;
+  [[nodiscard]] static BuddyResult<FragmentationStats> get_fragmentation_stats() noexcept;
 
   struct MemoryStats {
     usize total_pages;
@@ -250,7 +263,7 @@ public:
     usize steal_count;
   };
 
-  [[nodiscard]] static MemoryStats get_memory_stats() noexcept;
+  [[nodiscard]] static BuddyResult<MemoryStats> get_memory_stats() noexcept;
 
 private:
   struct PageBlock {
