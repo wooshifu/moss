@@ -242,7 +242,19 @@ def test_lifecycle_rejects_a_cycle_count_outside_its_checkpoint_cadence():
         ready("users.applications", lifecycle_cycles=11)
 
 
-@pytest.mark.parametrize("workload", [None, ["containers.smp"], ["vfs.smp"], ["scheduler"]])
+@pytest.mark.parametrize(
+    "workload",
+    [
+        None,
+        ["containers.smp"],
+        ["vfs.smp"],
+        ["mm.lifetime"],
+        ["mm.concurrent"],
+        ["mm.uaccess"],
+        ["mm.tlb_broadcast"],
+        ["scheduler"],
+    ],
+)
 def test_smp_workload_rejects_one_cpu_before_loading_artifacts(workload):
     with pytest.raises(kv.typer.BadParameter, match="requires at least 2 CPUs"):
         kv.run(manifest=Path("not-loaded.json"), workload=workload, cpus=1)
@@ -462,6 +474,51 @@ def test_simd_fault_rejects_other_architectures_before_launch(tmp_path, monkeypa
     monkeypatch.setattr(Artifacts, "load", lambda _: cfg)
     with pytest.raises(kv.typer.BadParameter, match="requires x64"):
         kv.run(manifest=cfg.manifest, workload=["users.simd_fault"])
+
+
+def test_lifetime_is_default_with_hardware_root_retirement():
+    assert "mm.lifetime" in kv.FUNCTIONAL
+    assert kv.CATALOG["mm.lifetime"] == ["held_readers", "hardware_root", "kernel_root"]
+
+
+def test_signal_stack_attacks_are_required_for_default_acceptance():
+    assert "users.signals" in kv.FUNCTIONAL
+    assert {"sigaltstack", "frame_validation", "altstack_overflow", "altstack_boundaries"} <= set(
+        kv.CATALOG["users.signals"]
+    )
+    state = ready("users.signals")
+    finish(state, failed=True)
+    assert state.outcome("protocol_end", 0, b"") == ("failed", "assertion")
+
+
+@pytest.mark.parametrize("arch", ["X64", "RISCV64", "ARM64"])
+def test_tlb_join_defaults_follow_the_native_protocol(arch):
+    expected = kv.FUNCTIONAL + (kv.TLB_JOIN if arch != "ARM64" else [])
+    assert kv.functional_workloads(arch) == expected
+    assert all(kv.CATALOG[name] == ["registration"] for name in kv.TLB_JOIN)
+    assert not any(name in kv.FUNCTIONAL for name in kv.TLB_JOIN)
+
+
+@pytest.mark.parametrize("workload", kv.TLB_JOIN)
+@pytest.mark.parametrize("arch,cpus,error", [("ARM64", 4, "require x64 or riscv64"), ("X64", 1, "at least 2 CPUs")])
+def test_tlb_join_rejects_unsupported_guests_before_launch(tmp_path, monkeypatch, workload, arch, cpus, error):
+    cfg = Artifacts(tmp_path / "manifest.json", arch, "linux-image", {}, {})
+    monkeypatch.setattr(Artifacts, "load", lambda _: cfg)
+    with pytest.raises(kv.typer.BadParameter, match=error):
+        kv.run(manifest=cfg.manifest, workload=[workload], cpus=cpus)
+
+
+def test_tlb_broadcast_is_default_with_hardware_lock_and_publisher_scenarios():
+    assert "mm.tlb_broadcast" in kv.FUNCTIONAL
+    assert kv.CATALOG["mm.tlb_broadcast"] == [
+        "local_remap",
+        "remote_remap",
+        "locked_remap",
+        "ipi_remap",
+        "pruned_remap",
+        "concurrent_remap_0",
+        "concurrent_remap_1",
+    ]
 
 
 def test_case_duration_uses_host_observation_time(monkeypatch):

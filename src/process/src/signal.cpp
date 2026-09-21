@@ -100,9 +100,9 @@ static void write_fpcr(u64 val) noexcept { asm volatile("msr s3_3_c4_c4_0, %0" :
 
 SignalState *get_signal_state(Process *proc) noexcept { return proc ? &proc->signal_state() : nullptr; }
 
-// Called on the current thread's user-return path. Shared uaccess handles
-// admission and recoverable faults; concurrent VMA/PTE lifetime synchronization
-// remains a separate responsibility.
+// Called on the current thread's user-return path. Shared uaccess holds a VM
+// lease for each copied page; coordinating an entire delivery with concurrent
+// shared exec is still a separate process/thread-lifecycle responsibility.
 bool setup_sigframe(Thread *thread, u32 signo, const Sigaction &sa) noexcept {
   if (!thread || !thread->trap_frame || !thread->trap_frame->from_user()) {
     return false;
@@ -130,8 +130,27 @@ bool setup_sigframe(Thread *thread, u32 signo, const Sigaction &sa) noexcept {
     return false;
   }
   const u64 sigframe_sp = (user_sp - red_zone - SignalFrame::FRAME_SIZE) & ~15ULL;
+  u64 handler_sp = sigframe_sp;
+#if defined(MOSS_ARCH_X64)
+  // The return-address slot is part of delivery's write footprint, not handler
+  // workspace. Check it together with the frame before writing either region.
+  handler_sp -= sizeof(u64);
+#endif
+  if (use_altstack || thread->on_alt_stack) {
+    if (thread->alt_stack_size > ~thread->alt_stack_sp) {
+      return false;
+    }
+    const u64 alt_end = thread->alt_stack_sp + thread->alt_stack_size;
+    // A writable VMA below an exhausted alternate stack is not stack capacity.
+    // Enforce the registered interval, including alignment/red-zone padding,
+    // for both first entry and nested delivery before any user copy is made.
+    if (handler_sp < thread->alt_stack_sp || user_sp > alt_end || sigframe_sp > alt_end ||
+        SignalFrame::FRAME_SIZE > alt_end - sigframe_sp) {
+      return false;
+    }
+  }
   auto proc = g_process_manager ? g_process_manager->find_process(thread->owner_pid) : shared_ptr<Process>{};
-  auto *as = proc ? proc->address_space() : nullptr;
+  auto as = proc ? proc->address_space() : shared_ptr<AddressSpace>{};
   if (!as || !as->allows_user_access(sa.handler, 1, vma_flags::EXEC)) {
     return false;
   }
@@ -157,11 +176,9 @@ bool setup_sigframe(Thread *thread, u32 signo, const Sigaction &sa) noexcept {
   if (copy_to_user(sigframe_sp, &sf, sizeof(sf)) != 0) {
     return false;
   }
-  u64 handler_sp = sigframe_sp;
 #if defined(MOSS_ARCH_X64)
   // One 8-byte return address gives a C handler the SysV entry RSP alignment;
   // RET removes it, leaving RSP at the 16-byte-aligned signal frame for sigreturn.
-  handler_sp -= 8;
   u64 link = user_layout::SIGRETURN_PAGE;
   if (copy_to_user(handler_sp, &link, sizeof(link)) != 0) {
     return false;
@@ -197,7 +214,7 @@ long do_sigreturn(Thread *thread) noexcept {
     return -SIGRETURN_EFAULT;
   }
   auto proc = g_process_manager ? g_process_manager->find_process(thread->owner_pid) : shared_ptr<Process>{};
-  auto *as = proc ? proc->address_space() : nullptr;
+  auto as = proc ? proc->address_space() : shared_ptr<AddressSpace>{};
   if (!as || !thread->active_signal_frame || frame.sp != thread->active_signal_frame ||
       !as->allows_user_access(sf.elr, 1, vma_flags::EXEC) || sf.sp == 0 ||
       // A downward-growing SP may be the VMA's exclusive end; validate the

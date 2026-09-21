@@ -31,6 +31,15 @@ module moss.mm;
 
 import moss.abi;
 
+// A no-op in production; validation orders two real fault operations at the
+// exact old-frame snapshot, rather than substituting a mock COW algorithm.
+extern "C" [[gnu::weak, gnu::noinline]] void moss_validation_cow_snapshot(moss::kernel::PhysAddr /*root*/,
+                                                                          moss::kernel::VirtAddr /*address*/) noexcept {
+}
+
+extern "C" [[gnu::weak, gnu::noinline]] void
+moss_validation_demand_snapshot(moss::kernel::PhysAddr /*root*/, moss::kernel::VirtAddr /*address*/) noexcept {}
+
 namespace moss::kernel::mm {
 
 // ============================================================================
@@ -163,17 +172,19 @@ static auto dfsc_to_string(u64 dfsc) noexcept -> const char * {
 } // namespace moss::kernel::mm
 
 // Import bridge functions from moss.abi (previously declared as extern "C" in this file)
-using moss::abi::bridge::demand_page_lookup;
-using moss::abi::bridge::get_current_pgd_phys;
+using moss::abi::bridge::resolve_current_user_fault;
 using moss::abi::bridge::terminate_current_user_process;
-using moss::abi::bridge::try_grow_user_stack;
 
 // Forward declarations for static helpers used by both kernel and user handlers
 [[noreturn]] static void kill_user_process(const char *reason, unsigned long long far_addr,
                                            unsigned long long elr) noexcept;
-static bool try_cow_fault(moss::kernel::u64 far_addr) noexcept;
-enum class FaultAccess { Read, Write, Execute };
-static bool try_demand_page(moss::kernel::u64 far_addr, FaultAccess access) noexcept;
+using FaultAccess = moss::kernel::mm::UserFaultAccess;
+static bool try_cow_fault(moss::kernel::u64 far_addr) noexcept {
+  return resolve_current_user_fault(far_addr, static_cast<unsigned int>(FaultAccess::Write), true) != 0;
+}
+static bool try_demand_page(moss::kernel::u64 far_addr, FaultAccess access) noexcept {
+  return resolve_current_user_fault(far_addr, static_cast<unsigned int>(access), false) != 0;
+}
 
 static bool fixup_user_access(void *raw_frame, moss::kernel::u64 address) noexcept {
   // Restrict recovery to a registered copy PC and a user fault address. A
@@ -269,9 +280,9 @@ extern "C" void kernel_page_fault_handler(unsigned long long esr, unsigned long 
   bool is_user_address = mm::PageTableManager::is_user_range(far_addr, 1);
 
   if (is_translation_fault) {
-    // For user addresses accessed from kernel mode (e.g. sys_topinfo writing
-    // to a user-provided TopInfo pointer on the demand-zero stack), attempt
-    // demand paging exactly like user_page_fault_handler would.
+    // Low-level raw user accesses can fault in kernel mode. Shared process
+    // uaccess resolves pages before copying through physical aliases instead;
+    // raw accesses still use the native demand/COW and exact-PC fixup path.
     if (is_user_address) {
       if (try_demand_page(far_addr, access)) {
         return; // Demand page resolved — eret retries instruction
@@ -364,7 +375,7 @@ extern "C" void kernel_page_fault_handler(unsigned long long esr, unsigned long 
 
 // Attempt COW (Copy-on-Write) resolution for a write permission fault.
 // Returns true if the fault was a COW page and has been resolved.
-static bool try_cow_fault(moss::kernel::u64 far_addr) noexcept {
+bool moss::kernel::mm::resolve_user_cow_fault(const UserFaultContext &context, VirtAddr far_addr) noexcept {
   // The caller's address-space protocol must exclude concurrent clone/unmap;
   // an atomic refcount read does not stabilize the mutable PTE or its frame.
   namespace mm = moss::kernel::mm;
@@ -381,32 +392,33 @@ static bool try_cow_fault(moss::kernel::u64 far_addr) noexcept {
   if (!mm::PageTableManager::is_user_range(far_addr, 1)) {
     return false;
   }
-  // WRITE is bridge flag bit 1, matching process::vma_flags without importing
-  // moss.process back into its MM dependency. A software COW marker does not
-  // grant permissions. All currently supported
-  // VMAs are private; shared mmap is rejected by sys_mmap. Recheck the current
-  // VMA as well as the PTE before allowing any write-protection relaxation.
-  u32 vma_flags = 0;
-  const u8 *backing = nullptr;
-  u64 backing_offset = 0, backing_size = 0, vma_start = 0;
-  if (!demand_page_lookup(far_addr, &vma_flags, &backing, &backing_offset, &backing_size, &vma_start) ||
-      (vma_flags & (1U << 1)) == 0) {
+  // A COW marker does not grant write authority. The caller's current VMA
+  // snapshot must authorize it as well; shared mmap remains unsupported.
+  if ((context.flags & static_cast<u32>(UserFaultAccess::Write)) == 0) {
     return false;
   }
   VirtAddr fault_page = far_addr & ~(static_cast<u64>(PG_SIZE) - 1);
-  PhysAddr pgd_phys = get_current_pgd_phys();
+  PhysAddr pgd_phys = context.root;
   if (pgd_phys == 0) {
     return false;
   }
 
   // Walk page tables to get a mutable pointer to the PTE
   auto *pte = mm::PageTableManager::get_user_pte(pgd_phys, fault_page);
-  if (!pte || !pte->is_valid() || (pte->raw & mm::page_attr::USER) == 0 || pte->is_writable()) {
+  if (!pte || !pte->is_valid() || (pte->raw & mm::page_attr::USER) == 0) {
     return false;
+  }
+  if (pte->is_writable() && !pte->is_cow()) {
+    // Another fault may have committed before this transaction acquired the
+    // lock. Do not allocate/copy/drop its frame again or kill the waiting task.
+    // No permissions are added here; the VMA and existing leaf already allow
+    // the write. Retry after invalidating the stale faulting translation.
+    mm::PageTableManager::invalidate_tlb_addr(fault_page);
+    return true;
   }
 
   // Must be a COW-marked page
-  if (!pte->is_cow()) {
+  if (!pte->is_cow() || pte->is_writable()) {
     return false;
   }
 
@@ -415,11 +427,15 @@ static bool try_cow_fault(moss::kernel::u64 far_addr) noexcept {
   if (refcount == 0) {
     return false; // Never manufacture ownership for an unreferenced frame.
   }
+  moss_validation_cow_snapshot(pgd_phys, fault_page);
 
   if (refcount > 1) {
     // Shared page: allocate new page, copy content, remap writable
     auto new_page = mm::page_alloc::alloc_kernel_pages(0);
     if (!new_page) {
+      // Preserve the shared frame, its reference and the read-only COW PTE on
+      // OOM. In particular, do not promote permissions before allocation: a
+      // copy fixup must leave the same mapping safe to retry after recovery.
       return false; // The entry decides between user termination and copy fixup.
     }
     PhysAddr new_pa = *new_page;
@@ -456,7 +472,8 @@ static bool try_cow_fault(moss::kernel::u64 far_addr) noexcept {
 
 // Attempt demand paging for a user translation fault.
 // Returns true if the fault was resolved (caller should return to eret).
-static bool try_demand_page(moss::kernel::u64 far_addr, FaultAccess access) noexcept {
+bool moss::kernel::mm::resolve_user_demand_fault(const UserFaultContext &context, VirtAddr far_addr,
+                                                 UserFaultAccess access) noexcept {
   namespace mm = moss::kernel::mm;
   using moss::kernel::phys_to_virt;
   using moss::kernel::PhysAddr;
@@ -468,32 +485,15 @@ static bool try_demand_page(moss::kernel::u64 far_addr, FaultAccess access) noex
 
   namespace log = moss::kernel::logging;
 
-  const PhysAddr pgd_phys = get_current_pgd_phys();
+  const PhysAddr pgd_phys = context.root;
   if (!pgd_phys || !mm::PageTableManager::is_user_range(far_addr, 1)) {
     return false;
   }
-  // A resident page's permission fault is not a request to refill its contents.
-  const auto *existing = mm::PageTableManager::get_user_pte(pgd_phys, far_addr);
-  if (existing && existing->is_valid()) {
-    return false;
-  }
-
-  u32 vma_flags = 0;
-  const u8 *backing_data = nullptr;
-  u64 backing_offset = 0;
-  u64 backing_size = 0;
-  u64 vma_start = 0;
-
-  int found = demand_page_lookup(far_addr, &vma_flags, &backing_data, &backing_offset, &backing_size, &vma_start);
-  if (!found) {
-    // Attempt automatic stack growth: extend the STACK VMA downward, then retry
-    if (try_grow_user_stack(far_addr)) {
-      found = demand_page_lookup(far_addr, &vma_flags, &backing_data, &backing_offset, &backing_size, &vma_start);
-    }
-    if (!found) {
-      return false;
-    }
-  }
+  const u32 vma_flags = context.flags;
+  const u8 *backing_data = context.backing;
+  const usize backing_offset = context.backing_offset;
+  const usize backing_size = context.backing_size;
+  const VirtAddr vma_start = context.start;
 
   // Bridge permission encoding matches process::vma_flags (READ/WRITE/EXEC
   // in bits 0/1/2); local copies avoid a process -> mm -> process import cycle.
@@ -511,6 +511,33 @@ static bool try_demand_page(moss::kernel::u64 far_addr, FaultAccess access) noex
     return false; // Deny READ/WRITE/EXEC before allocating, including PROT_NONE.
   }
 
+  const auto *existing = mm::PageTableManager::get_user_pte(pgd_phys, far_addr);
+  if (existing && existing->is_valid()) {
+    // A concurrent demand fault may already have supplied the page. Reuse it
+    // only if its actual permissions admit this access; never refill resident
+    // contents or turn a protection fault (including COW) into a fresh page.
+    bool allowed = (existing->raw & mm::page_attr::USER) != 0;
+    if (access == UserFaultAccess::Write) {
+      allowed = allowed && existing->is_writable() && !existing->is_cow();
+    } else if (access == UserFaultAccess::Execute) {
+#if defined(MOSS_ARCH_RISCV64)
+      allowed = allowed && (existing->raw & mm::page_attr::EXECUTE) != 0;
+#else
+      allowed = allowed && (existing->raw & mm::page_attr::XN) == 0;
+#endif
+    }
+#if defined(MOSS_ARCH_RISCV64)
+    if (access == UserFaultAccess::Read) {
+      allowed = allowed && (existing->raw & mm::page_attr::READ) != 0;
+    }
+#endif
+    if (allowed) {
+      mm::PageTableManager::invalidate_tlb_addr(far_addr);
+    }
+    return allowed;
+  }
+
+  moss_validation_demand_snapshot(pgd_phys, far_addr & ~(static_cast<VirtAddr>(PAGE_SIZE) - 1));
   // Allocate a physical page
   constexpr usize PG_SIZE = 4096; // Matches mm::PAGE_SIZE; fills exactly one order-0 frame.
   auto page_result = mm::page_alloc::alloc_kernel_pages(0);
@@ -680,8 +707,8 @@ extern "C" void riscv64_page_fault_handler(unsigned long long scause, unsigned l
   }
 
   // 2. Try demand paging only for absent pages (U-mode and S-mode accesses).
-  //    S-mode faults occur when kernel code (e.g. console_write in sys_write)
-  //    accesses a user buffer whose page hasn't been demand-faulted yet.
+  //    S-mode faults remain possible for low-level raw user accesses. Shared
+  //    process uaccess resolves pages before its physical-alias copy instead.
   if (scause >= 12 && try_demand_page(stval, access)) {
     return; // Fault resolved — sret retries instruction
   }

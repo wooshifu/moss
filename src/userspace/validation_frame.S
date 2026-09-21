@@ -6,8 +6,8 @@
 // expose misplaced saves. The base has no recorded special significance.
 // Error base 1000 separates register failures from ordinary native errno;
 // index 99 (1099) identifies flags. Changing this encoding affects diagnostics.
-// Native syscall IDs 17/14 are sigreturn/kill; kill uses PID 1 and SIGUSR1=10
-// because the validation process is the initial user process.
+// Native syscall IDs 17/14 are sigreturn/kill; kill uses the second C argument
+// as its target PID and SIGUSR1=10, including fork/exec validation workers.
 .text
 // A malformed sigreturn must fail without touching the supplied user stack.
 // Keep the real C stack in a syscall-preserved register until the error returns.
@@ -112,7 +112,9 @@ frame_register_probe:
     cmp x8, #14
     b.ne .Larm_no_signal
     mov x1, #10
-    mov x0, #1
+    // The saved second C argument is the target PID; forked validation cases
+    // must signal themselves, not the suite's PID 1 supervisor.
+    ldr x0, [sp, #8]
     b .Larm_set_flags
 .Larm_no_signal:
     mov x0, #256
@@ -452,7 +454,8 @@ frame_register_probe:
     ld a7, 80(sp)
     li a0, 14
     bne a7, a0, .Lrv_no_signal
-    li a0, 1
+    // x11 is the saved second C argument (target PID), at register slot 11.
+    ld a0, 88(sp)
     li a1, 10
     j .Lrv_call
 .Lrv_no_signal:
@@ -713,7 +716,8 @@ frame_register_probe:
     movq 40(%rsp), %rax
     cmpq $14, %rax
     jne .Lx86_call
-    movq $1, %rdi
+    // Saved RSI holds the second C argument, the caller's target PID.
+    movq 32(%rsp), %rdi
     movq $10, %rsi
 .Lx86_call:
     stc // Carry is RFLAGS bit 0; test $1 below checks preservation through the trap.
@@ -737,7 +741,7 @@ frame_register_probe:
 .Lx86_signal_args:
     cmpq $10, %rsi
     jne .Lbad_x86_4
-    cmpq $1, %rdi
+    cmpq 32(%rsp), %rdi
     jne .Lbad_x86_5
 .Lx86_after_args:
     cmpq $262, %rbp

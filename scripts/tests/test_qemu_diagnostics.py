@@ -36,11 +36,12 @@ def test_missing_or_ambiguous_load_base_is_not_guessed(roms):
 
 
 @pytest.mark.parametrize("mode", ["complete", "no_gdb", "gdb_timeout", "no_load_offset"])
-def test_capture_stops_guest_keeps_all_cpus_and_bounds_debugger(tmp_path, monkeypatch, mode):
+def test_capture_stops_guest_keeps_all_cpus_and_bounds_debugger(tmp_path, qmp_sockets, monkeypatch, mode):
     cfg = Artifacts.load(manifest(tmp_path))
     actions = []
-    sockets = tmp_path / "sockets"
-    sockets.mkdir()
+    sockets = qmp_sockets
+    # Keep the injected debugger deadline below the one-second completion
+    # assertion without making the fake QMP exchanges depend on tiny timeouts.
     monkeypatch.setattr(qd, "CAPTURE_TIMEOUT", 0.3)
     monkeypatch.setattr(qd.shutil, "which", lambda _: None)
     children = []
@@ -58,6 +59,8 @@ def test_capture_stops_guest_keeps_all_cpus_and_bounds_debugger(tmp_path, monkey
         script = qd.Path(args[-1]).read_text()
         assert "continue" not in script and "detach" not in script
         if mode == "gdb_timeout":
+            # Sleep far beyond the injected 0.3-second capture budget so only
+            # actual subprocess termination can satisfy the completion bound.
             return original_run([sys.executable, "-c", "import time; time.sleep(30)"], **kwargs)
         configuration = json.loads(ast.literal_eval(script.split("config = json.loads(")[1].split("\n")[0][:-1]))
         qd.Path(configuration["output"]).write_text(json.dumps({"cpus": [0, 1, 2, 3], "tasks": [], "errors": []}))
@@ -70,7 +73,7 @@ def test_capture_stops_guest_keeps_all_cpus_and_bounds_debugger(tmp_path, monkey
 
         def server():
             with listener.accept()[0] as connection, connection.makefile("rwb") as stream:
-                connection.settimeout(2)
+                connection.settimeout(2)  # Fixture fail-safe, longer than the 0.3-second capture budget.
                 stream.write(b'{"QMP": {}}\n')
                 stream.flush()
                 while line := stream.readline():
@@ -109,7 +112,7 @@ def test_capture_stops_guest_keeps_all_cpus_and_bounds_debugger(tmp_path, monkey
                 None if mode == "no_gdb" else "gdb",
             )
         finally:
-            thread.join(timeout=3)
+            thread.join(timeout=3)  # Allow the two-second socket guard to unwind before checking for leaks.
         assert not thread.is_alive()
     assert actions[1] == "stop" and "cont" not in actions
     assert len(result["cpus"]) == 4

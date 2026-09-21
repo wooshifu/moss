@@ -1718,6 +1718,9 @@ private:
   // context_switch() saves the caller's registers here; the new task
   // starts on its own stack.  Restoring bootstrap returns to the caller.
   static containers::PerCpuData<CpuContext> bootstrap_contexts_;
+  // Each installed user root owns its tables, backing and ASID independently
+  // of Process publication. Only this CPU, with IRQs masked, accesses its slot.
+  static containers::PerCpuData<shared_ptr<AddressSpace>> active_address_spaces_;
   // Keep the exiting task's owner alive until we are back on the scheduler stack.
   containers::PerCpuData<shared_ptr<Process>> exiting_processes_;
   containers::PerCpuData<Thread *> sleeping_tasks_{};
@@ -1737,21 +1740,15 @@ public:
 
   static CpuContext &bootstrap_context(u32 cpu) noexcept { return bootstrap_contexts_.get_cpu(cpu); }
 
-  static void use_kernel_address_space() noexcept {
-    auto *pgd = mm::PageTableManager::get_kernel_pgd();
-    if (!pgd) {
-      arch::kernel_panic("kernel page table unavailable");
-    }
-    const u64 physical = mm::PageTableManager::get_physical_address(pgd);
-#if defined(MOSS_ARCH_ARM64)
-    asm volatile("msr ttbr0_el1, %0\n\tdsb ish\n\tisb" ::"r"(physical) : "memory");
-#elif defined(MOSS_ARCH_X64)
-    asm volatile("mov %0, %%cr3" ::"r"(physical) : "memory");
-#elif defined(MOSS_ARCH_RISCV64)
-    const u64 satp = hal::mmu::make_satp_value(physical);
-    asm volatile("csrw satp, %0\n\tsfence.vma" ::"r"(satp) : "memory");
-#endif
-  }
+  // Pin next before the hardware write and retire the old pin afterward;
+  // an empty owner selects the kernel root. This may reclaim a complete tree
+  // and synchronously shoot down TLBs: do not call while holding VM locks.
+  // Restores the caller's IRQ state; it does not rebind another CPU or task.
+  static void use_address_space(shared_ptr<AddressSpace> next) noexcept;
+  // An owning snapshot of this CPU's installed user root, empty on bootstrap.
+  // Keep IRQs masked if the caller also needs the hardware root to stay fixed.
+  [[nodiscard]] static shared_ptr<AddressSpace> active_address_space() noexcept;
+  static void use_kernel_address_space() noexcept { use_address_space({}); }
 
   // Caller masks IRQs. Bootstrap must never borrow a task's page tables:
   // that task can resume on another CPU and free them while this CPU idles.
@@ -2204,21 +2201,9 @@ private:
       // Set page table base to this process's page tables BEFORE context_switch.
       if (task->is_user_task) {
         auto proc = g_process_manager ? g_process_manager->find_process(task->owner_pid) : shared_ptr<Process>{};
-        if (proc && proc->address_space() && proc->address_space()->pgd_phys != 0) {
-#if defined(MOSS_ARCH_ARM64)
-          // TTBR0_EL1 stores the ASID in bits [63:48], above the table PA.
-          u64 ttbr0_val = proc->address_space()->pgd_phys | (static_cast<u64>(proc->address_space()->asid) << 48);
-          asm volatile("msr ttbr0_el1, %0" ::"r"(ttbr0_val));
-          asm volatile("isb" ::: "memory");
-#elif defined(MOSS_ARCH_X64)
-          u64 pgd_phys = proc->address_space()->pgd_phys;
-          asm volatile("mov %0, %%cr3" ::"r"(pgd_phys) : "memory");
-#elif defined(MOSS_ARCH_RISCV64)
-          // SATP: runtime Sv39/Sv48 mode, ASID in bits 44-59, PPN in bits 0-43
-          u64 satp_val = hal::mmu::make_satp_value(proc->address_space()->pgd_phys, proc->address_space()->asid);
-          asm volatile("csrw satp, %0" ::"r"(satp_val) : "memory");
-          asm volatile("sfence.vma" ::: "memory");
-#endif
+        auto as = proc ? proc->address_space() : shared_ptr<AddressSpace>{};
+        if (as && as->pgd_phys != 0) {
+          use_address_space(moss::move(as));
         }
 
 #if defined(MOSS_ARCH_ARM64)

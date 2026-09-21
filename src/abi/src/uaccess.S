@@ -20,6 +20,9 @@ moss_raw_copy_from_user:
     mov x0, x2
     ret
 #elif defined(MOSS_ARCH_RISCV64)
+    // Raw callers must already permit S-mode user access (sstatus.SUM).
+    // The normal exception entry enables it; these leaf helpers do not change
+    // access state or provide a scope for boot-time callers.
     beqz a2, .Lfrom_done
 .Lfrom_loop:
 .Lfrom_user:

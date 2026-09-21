@@ -26,7 +26,7 @@ void receive() noexcept {
   }
 }
 #if defined(MOSS_ARCH_ARM64)
-void receive_irq(u32, void *) noexcept { receive(); }
+void receive_irq([[maybe_unused]] u32 irq, [[maybe_unused]] void *context) noexcept { receive(); }
 #endif
 #endif
 } // namespace
@@ -38,19 +38,23 @@ bool is_initialized() noexcept {
 
 VoidResult initialize() noexcept {
   containers::LockGuard<containers::IrqSpinLock> guard(init_lock);
-  if (initialized)
+  if (initialized) {
     return VoidResult{};
-  if (!platform::hardware.uart.valid)
+  }
+  if (!platform::hardware.uart.valid) {
     return VoidResult{ErrorCode::NotFound};
+  }
 #if defined(MOSS_ARCH_ARM64) || defined(MOSS_ARCH_X64)
   auto *controller = interrupts::g_gic;
-  if (!controller)
+  if (!controller) {
     return VoidResult{ErrorCode::InvalidState};
+  }
   const u32 irq = platform::hardware.uart.irq;
 #if defined(MOSS_ARCH_ARM64)
   auto registered = controller->register_interrupt(irq, receive_irq, nullptr, "uart_rx");
-  if (!registered)
+  if (!registered) {
     return registered;
+  }
 #else
   moss::abi::bridge::g_x64_uart_rx_handler = receive;
 #endif
@@ -87,32 +91,30 @@ int getc_blocking() noexcept {
   for (;;) {
     if (int ch = ring.get(); ch >= 0) {
       event_lock.unlock();
-      if (restore_irqs)
+      if (restore_irqs) {
         arch::enable_interrupts();
+      }
       return ch;
     }
     if (moss::abi::bridge::moss_io_wait_interrupted()) {
       event_lock.unlock();
-      if (restore_irqs)
+      if (restore_irqs) {
         arch::enable_interrupts();
+      }
       return -1;
     }
     void *thread = moss::abi::bridge::moss_prepare_io_wait();
     if (!thread) {
       event_lock.unlock();
-      if (restore_irqs)
-        arch::enable_interrupts();
-#if defined(MOSS_ARCH_ARM64)
-      asm volatile("wfi" ::: "memory");
-#else
-      asm volatile("hlt" ::: "memory");
-#endif
-      arch::disable_interrupts();
+      // With no schedulable waiter, leave IRQ delivery live during the wait:
+      // a masked HLT/WFI must not strand RX or a remote TLB acknowledgement.
+      // cpu_idle_once returns with IRQs masked before event_lock is reacquired.
+      arch::cpu_idle_once();
       event_lock.lock();
       continue;
     }
     // The event lock makes checking input and publishing sleep one transaction.
-    Waiter waiter{thread, waiters};
+    Waiter waiter{.thread = thread, .next = waiters};
     waiters = &waiter;
     event_lock.unlock();
     moss::abi::bridge::moss_commit_io_wait();
@@ -120,17 +122,29 @@ int getc_blocking() noexcept {
     // Wakeup only borrows nodes. The sleeping owner unlinks its stack node
     // under the same lock before returning, including signal-driven wakeups.
     auto **link = &waiters;
-    while (*link != &waiter)
+    while (*link != &waiter) {
       link = &(*link)->next;
+    }
     *link = waiter.next;
   }
 #else
   for (;;) {
-    if (int ch = uart::getc(); ch >= 0)
+    if (int ch = uart::getc(); ch >= 0) {
       return ch;
-    if (moss::abi::bridge::moss_io_wait_interrupted())
+    }
+    if (moss::abi::bridge::moss_io_wait_interrupted()) {
       return -1;
-    asm volatile("wfi" ::: "memory");
+    }
+    // A syscall can enter with SIE clear. WFI may wake for SSIP without
+    // dispatching its handler, leaving a remote VM owner waiting forever for
+    // our TLB ACK before it can send the signal this read is waiting for.
+    // No console/VM lock is held here: allow IRQ delivery while waiting and
+    // preserve the caller's interrupt state after the idle sequence.
+    const bool restore_irqs = arch::interrupts_enabled();
+    arch::cpu_idle_once();
+    if (restore_irqs) {
+      arch::enable_interrupts();
+    }
   }
 #endif
 }

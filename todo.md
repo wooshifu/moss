@@ -1,6 +1,6 @@
 # MOSS 内核能力与待办
 
-> 更新日期：2026-09-20；提交基线：`c23d205`；历史实现与实测保留原日期，最新工作区进展见 moss-todo.md 第 3.21～3.29 节。
+> 更新日期：2026-09-21；提交基线：`0234427`；历史实现与实测保留原日期，最新工作区进展见 moss-todo.md 第 3.21～3.40 节。
 > 本文取代旧清单中“完成即可靠”“x86/RISC-V 64 仅为启动桩”的描述。
 > 审计问题的原始证据、当前状态及完整验收条件见 [moss-todo.md](moss-todo.md)；MOSS-001～032 沿用原编号，不重新编号。
 
@@ -21,13 +21,13 @@ MOSS 当前是 C++26 freestanding 的模块化单体研究内核。ARM64、RV64�
 | --- | --- | --- | --- |
 | ARM64 | Linux Image + DTB；PL011/16550；GICv2/v3；PSCI 或 spin-table | Debug/Release 默认四核真实内核测试；GICv3 16 核资源测试；同镜像 QEMU `raspi4b` 合成 DTB 测试 | 任意 SoC、真实树莓派、完整信号隔离验收 |
 | RV64 | Linux Image + DTB/SBI；Sv39/Sv48；16550、PLIC、SBI TIME/IPI/HSM | Debug/Release 默认四核真实内核测试；同镜像 `sstc=false` 双核配置 | 完整信号、COW 正确性、AIA/IMSIC/APLIC 支持 |
-| x64 | PVH + 内存表、最小 ACPI MADT/SPCR/BDA 发现；IDT、xAPIC/I/O APIC、PIT 校准、SYSCALL、AP 启动 | Debug/Release 默认四核真实内核测试；同镜像 `q35`/`pc`；正常镜像 shell | 安全的用户/内核页权限、完整信号、UEFI/x2APIC/完整 ACPI |
+| x64 | PVH + 内存表、最小 ACPI MADT/SPCR/BDA 发现；IDT、xAPIC/I/O APIC、PIT 校准、SYSCALL、AP 启动 | Debug/Release 默认四核真实内核测试；同镜像 `q35`/`pc`；正常镜像 shell；三个构建配置的页权限和用户违规访存隔离验收（3.30） | 完整信号、并发 VM 隔离、UEFI/x2APIC/完整 ACPI |
 
 表中运行证据来自 [通用启动验收记录](docs/generic-boot-acceptance.md)，有配置与范围限制，不自动推广到所有机器。当前最多 16 CPU、8 个固件 RAM 区域，早期物理映射低于 4 GiB；工作区 PFA 已联合管理 kernel_end 以上的合格 RAM bank，保留物理洞。kernel_end 以下仍整体保留，尚不能声称精确回收全部启动内存。
 
 ### 已完成的构建与运行拆分
 
-- [x] 架构预设共 9 个：`{arm64,riscv64,x64}-{debug,release,relwithdebinfo}`；每个 workflow 为 configure → build → matching CTest preset（`b57422d`）；当前工作区九 preset 串行 **43/43 CTest** 通过，见 moss-todo.md 3.27。
+- [x] 架构预设共 9 个：`{arm64,riscv64,x64}-{debug,release,relwithdebinfo}`；每个 workflow 为 configure → build → matching CTest preset（`b57422d`）；当前工作区九 preset 最终串行 **43/43 CTest** 通过，最新报告及 16 CPU/Sv39/GICv3 同镜像补验见 moss-todo.md 3.40；3.34～3.40 的初始失败、默认超时与受控变异失败仍保留。
 - [x] 独立 configure/build 不查找、不启动 QEMU；workflow 的 test 阶段通过独立 runner 使用 QEMU。
 - [x] CMake 产出版本化、相对路径的 `moss-artifacts.json`，只描述架构、构建与产物；机器、CPU、RAM、SMP、固件选项由 runner 决定。
 - [x] 删除旧 `*-qemu-*` 预设、生成的 QEMU wrapper/config 和内核平台默认地址；以启动信息填充 `platform::hardware`。
@@ -56,9 +56,9 @@ uv run qemu.py --manifest build/arm64-debug/moss-artifacts.json
 
 | 子系统 | 已有实现 | 剩余可靠性任务 |
 | --- | --- | --- |
-| Boot / AAL / HAL | 三架构启动、CPU 身份、per-CPU 栈与上下文、异常/IRQ、用户返回、UART；DTB 或 PVH/ACPI 资源发现、SMP/IPI、硬件定时器 | 001、007、023、029；真机和未知设备仍需适配/验收 |
+| Boot / AAL / HAL | 三架构启动、CPU 身份、per-CPU 栈与上下文、异常/IRQ、用户返回、UART；DTB 或 PVH/ACPI 资源发现、SMP/IPI、硬件定时器 | 007、023、029；001 的当前页权限隔离已关闭，真机和未知设备仍需适配/验收 |
 | 物理内存与堆 | Buddy PFA、页引用、order 分配/释放、统计；链接预留 8 MiB NOLOAD 堆，256 KiB 起始 arena，扩容限制在预留内；SlabCache/SlabAllocator 代码 | 005 及 008～010/028 的页引用生命周期；004/013 已按限定验收关闭，不能据此声称 COW 或 Slab 并发可靠 |
-| 虚拟内存 | 动态页表、用户地址空间、TTBR/CR3/satp 切换、VMA、demand paging、COW、匿名 private mmap、整段匹配 munmap、brk、栈增长与故障诊断 | 002、008～010；fault-safe uaccess、COW/clone OOM 与共享地址空间并发事务未闭合 |
+| 虚拟内存 | 动态页表、用户地址空间、TTBR/CR3/satp 切换、VMA、demand paging、COW、匿名 private mmap、整段匹配 munmap、brk、栈增长与故障诊断 | 002、008～010；共享 uaccess、受控 COW/clone OOM 已有回归，完整 fork 失败与共享地址空间并发事务未闭合 |
 | 进程与调度 | ProcessManager、PID/PPID、每线程内核栈、CFS vruntime/权重、内嵌 RB 节点、插入/删除旋转与着色、idle、负载均衡和 affinity；fork/exec/wait/exit/Zombie | 014、017～020、022～023；015/016 已按当前单线程进程和静态 ELF 子集关闭，有 RB 算法不代表调度队列所有权已正确 |
 | 信号与系统调用 | syscall dispatcher、kill/sigaction/sigprocmask/sigaltstack/sigreturn、三 ISA 原生帧及基本信号返回、共享用户复制及异常 fixup、clock_gettime/clock_getres/nanosleep 入口 | 002、003、007、019～020、031；不是“完整 POSIX 信号”或并发 VM 安全验收，clock_getres 目前只经 ARM64 Debug 回归，信号中断语义仍待补 |
 | ELF / userspace / initramfs | ELF64 checked LoadPlan、逐段 PT_LOAD/VMA 后备、按 ISA 的 trampoline 和 syscall wrapper；CPIO newc、BusyBox ash 直接启动、独立 validation 映像含信号用例、VFS exec；真正 getpid/getppid | 014；015/016 的事务与受支持静态 ELF 子集已关闭；动态加载、共享 LOAD 页和完整进程继承不是已支持能力 |
@@ -72,21 +72,30 @@ uv run qemu.py --manifest build/arm64-debug/moss-artifacts.json
 
 优先级沿用审计，不沿用旧清单按“新增功能”划分的 P0/P1。
 
-- [ ] **MOSS-001**：x86 内核映射去掉 USER；收紧三架构最终内核 W^X，验证 supervisor/RO/NX 权限。
+- [x] **MOSS-001（工作区，3.30 已关闭）**：x86 内核映射去掉 USER；收紧三架构最终内核 W^X，验证 supervisor/RO/NX 权限及受控用户异常隔离。
   - [x] 内核叶子/专用上级表默认 supervisor-only；用户页表显式启用 U/S，内核 map_page 拒绝 USER 属性（工作区，moss-todo.md 第 3.11 节）。
   - [x] 生产内核表与活动用户页表结构检查；三架构 Debug/Release CTest 15/15，RV64 额外 Sv39 用户路径通过（3.11）。
   - [x] 三架构最终 text RX、rodata RO/NX、其余 RAM/device RW/NX；全部直映 NX，text/rodata 别名只读。共享内核子树按 VA 归属借用，生产创建/clone/回收与六配置 CTest 通过（工作区，3.12）。
-  - [ ] 用户违规访存的受控异常与终止隔离验收；不把结构检查和正常用户路径通过当完整隔离证明。
+  - [x] 五类内核对象（text/rodata/data/活动页表/MMIO）的 identity/direct-map 用户读写共 20 次均只终止违规子进程；父进程用户页、内核哨兵与根表保持，三架构九配置及同镜像 Sv39/GICv3 补验通过。合法用户地址替换攻击目标的反向对照准确变红（3.30）。
 - [ ] **MOSS-002**：统一用户地址域，限制 VMA/mmap，移除 syscall 0 原始 UART 指针旁路；实现可恢复、跨页/跨 VMA 的 uaccess。
   - [x] 用户域、VMA 准入与保留 sigreturn 页检查；mmap/munmap 拒绝完整范围溢出和不支持的 flags，复制策略覆盖相邻 VMA（工作区，3.13）。
   - [x] 删除分发前原始 puts，复用有界字符串路径；超长字符串报错而非静默截断，真实 syscall 检查已加入 users（3.13）。
   - [x] 三架构共享复制及异常 fixup；真实 PFA 耗尽时输出复制返回 EFAULT，进程存活且释放压力后同址重试成功（3.20）。
   - [x] VFS 使用有界输入/输出视图、信号帧复用共享复制；输入/输出缺页 OOM、跨页部分 I/O、失败后的 offset/管道数据保留及未复制输入尾部清零通过九配置（3.21）。
-  - [ ] COW OOM、并发 exec/unmap/COW 与页/VM 生命周期；不把 Process 所有者引用当作地址空间锁或页锁定。
-- [ ] **MOSS-003**：将用户信号帧/altstack 当不可信输入，安全复制并净化 PC/SP/特权状态。
+  - [x] 真实 fork/PFA 耗尽下的 COW 输出 EFAULT、跨页部分复制、直接用户写隔离及恢复后恰好一页分裂；PTE/内容/引用与 reap 后完整资源基线保持，九配置 CTest 43/43、Sv39 Debug/Release 同镜像补验通过（工作区，3.31）。
+  - [x] 地址空间返回持有快照，发布/取得引用使用短 IRQ 锁、锁外析构；替换、exit 摘除和 Process 销毁不提前释放读者的页表/数据/ASID。双 CPU 持有读者红绿回归、九配置及 Sv39/GICv3 补验通过（3.32）。
+  - [x] 每地址空间的软件 VM 事务；缺页桥接全程持有同一 VMA/root/backing 上下文，fork/mmap/munmap/brk 使用同一锁。双 CPU COW/demand 重复故障与资源回收有红绿回归，九配置及同镜像 Sv39/GICv3 通过（3.33）。
+  - [x] 公共 uaccess 绑定所持地址空间版本，逐页短 VM 租约覆盖解析和物理别名复制；版本替换、复制与 unmap/fork 竞争、用户 PTE A/D 及独立 raw fixup 已有回归，九配置最终 43/43 CTest 及同镜像 Sv39/GICv3 通过；原始失败和验证边界见 3.34。
+  - [x] ARM64 按地址失效改为全 ASID/全层级广播，MM 复用 AAL；真实活动 root 的本核/远程重映射、去广播红例与架构指令门禁通过。QEMU 未暴露旧 ASID 错误，不能把它的通过外推为真机验收（3.35）。
+  - [x] x64/RV64 同步远程 TLB 请求—确认、IRQ 关闭时的协作处理与原生 IPI 入口；三架构本核/远端、VM 锁竞争、纯 IPI 和表页剪枝五场景通过，锁/IRQ 变异与 RV64 控制台互等的红绿证据见 3.36。
+  - [x] 两个 CPU 分别先获 TLB 发布锁的确定性交错；双地址空间/不同 VA 的真实重映射、旧/新翻译与资源恢复、去除发布锁协作处理的负向对照已补（3.37）。ARM64 使用原生广播并发验收。
+  - [x] 活动硬件 root 独立持有页表/数据/ASID，切换后才退休；原生缺页绑定实际安装版本。双 CPU 替换/销毁、用户/内核 root 退休红绿回归、九配置及 16 CPU/Sv39/GICv3 同镜像补验通过（3.38）。
+  - [x] 真实启动中首个辅助 CPU 注册与 TLB 请求的两个确定性顺序；硬件旧/新翻译、目标 mask 和资源基线、漏注册刷新/漏目标的双架构负向对照通过。九配置 43/43 CTest 及同镜像 16 CPU/Sv39/GICv3 补验通过，不外推为热插拔或全部交错验收（3.39）。
+  - [ ] 完整共享 exec 的线程/root 协调、异步访问的长期页 pin 及更多并发 unmap/fork/fault 交错；不把同步页租约、root 拥有权或所测 TLB 场景当作完整硬件访问隔离。
+- [x] **MOSS-003（工作区，3.40 已关闭）**：将用户信号帧/altstack 当不可信输入，安全复制并净化 PC/SP/特权状态。
   - [x] 信号帧 V2、原生 GP、PC/SP 用户域和按 ISA 的状态白名单、x86 MXCSR 检查；基本信号返回在三架构九配置通过（`0e88344`，3.19）。
   - [x] 信号帧写出/读回移除普通用户指针循环；合法未驻留备用栈 OOM 只终止目标子进程，伪造 sigreturn SP 在 OOM 时返回 EFAULT，九配置通过（3.21）。
-  - [ ] 恶意特权字段、嵌套/备用栈完整验收，不能以普通返回或单种故障通过替代完整隔离验证。
+  - [x] 注册栈容量越界先红后绿；恶意特权字段、无效 PC/SP/magic/帧地址、只读/未映射/回绕及内核栈地址、注册后撤销/只读替换、合法嵌套 GP/标志/mask 往返和内核哨兵验收通过，九配置 43/43 CTest（3.40）。不外推为完整信号语义、共享 exec 协调或真机验收。
 - [x] **MOSS-004（`040d773`）**：当前堆、活动页表树/early pool/链接表区、PFA 元数据布局与耗尽校验和，以及坏布局启动拒绝已验证；不外推到并发进程页表生命周期。
   - [x] heap 耗尽返回失败，缓冲区模式/PFA 页哨兵及页计数不变，释放后可重新分配合并大块。
   - [x] 4/64/256 KiB 边界写入及堆/PFA 耗尽时检查页表与元数据；三架构 Debug/Release 拒绝重叠堆布局（[证据](moss-todo.md#37-堆页表与-pfa-元数据所有权2026-09-06工作区)）。
@@ -104,17 +113,20 @@ uv run qemu.py --manifest build/arm64-debug/moss-artifacts.json
   - [ ] 完整异常入口与抢占交错验收；最初自然 `pc=0` 报告 `1789054088760333000` 未抓寄存器现场，不能以本次确认的一个原因宣称所有历史/后续启动故障已解决。
 - [ ] **MOSS-008**：仅可写私有页允许 COW；RO/text/NX/NONE 不能因 fork 或 fault 被放宽权限。
   - [x] clone 保留真实只读页，fault 检查可写 VMA；真实页表三代引用/释放及用户态多代 COW、最后引用写入、fork 后 text/rodata 写入拒绝，三架构九配置默认回归通过（3.16）。
-  - [ ] 同时写故障、fork/unmap 交错的 VMA/PTE/ref/TLB 事务锁及 OOM 回滚；fork 前只读写入和遗留 COW/VMA 权限冲突的独立异常验收。
+  - [x] 双引用 COW 页分配失败不放宽权限或损坏内容/引用；共享页错误放开写权限的变异准确变红，恢复后单页分裂、用户异常和回收验收通过（3.31）。
+  - [ ] 同时写故障、fork/unmap 交错的 VMA/PTE/ref/TLB 事务锁及并发 OOM 回滚；fork 前只读写入和遗留 COW/VMA 权限冲突的独立异常验收。
 
 ## P1：VM、进程、并发、VFS 与验收
 
 - [ ] **MOSS-009**：修正 RV64 demand/COW 分类及 PPN 编码；已驻留页不得被缺页路径重新填充。
   - [x] fault 区分读/写/执行，demand 拒绝驻留页与无权限访问，COW 使用 HAL PTE 编码；匿名页内容隔离、PROT_NONE/NX 拒绝在三架构及 RV64 Sv39/Sv48 上通过（3.16）。
-  - [ ] 补多物理地址编码往返、拒绝访问零额外分配，以及覆盖/失败时的页引用生命周期专项；不以一次普通回归替代并发与故障注入。
+  - [x] 受控 COW OOM 保持旧物理页与双引用，恢复后的编码/属性与单页分裂、父子退出后的页回收通过真实压力验收（3.31）。
+  - [ ] 补多物理地址编码往返、其他拒绝访问零额外分配，以及覆盖/并发失败时的页引用生命周期专项；不以单线程父子回归替代并发故障注入。
 - [ ] **MOSS-010**：页表 clone/map 显式失败、完整回滚；不得发布部分成功的 fork。
   - [x] map 拒绝已有叶子与中间 block；完整缺失路径准备失败不改原树/数据页引用，逐级真实 PFA 耗尽与恢复后成功通过（3.17）。
   - [x] clone 校验与表页分配先于 PTE/引用修改，显式返回错误且 fork 检查结果；跨表级/分支的逐点 PFA 耗尽、父页权限/数据/引用保持、目标拒绝及恰好足够预算成功，三架构九配置与 Sv39 专项通过（3.17）。
-  - [ ] 把 clone 成功后的 kernel-stack、VMA、FD 等失败纳入整次 fork 的事务，补真实系统调用逐点 OOM 验收；统一地址空间锁与并发故障交错仍待完成。
+  - [x] AddressSpace 对象和共享引用控制块的堆分配失败均显式返回 OOM，归还页表、ASID 和堆对象；真实控制块耗尽、泄漏变异反例、九配置及 Sv39 补验通过（3.32）。
+  - [ ] 把 clone 成功后的 kernel-stack、VMA、FD 等失败纳入整次 fork 的事务，补真实系统调用逐点 OOM 验收；3.33 已补父地址空间软件事务，更多并发 clone/unmap 交错与活动 root 协调仍待完成。
 - [x] **MOSS-011（工作区 3.23 已关闭）**：活跃 ASID 使用加锁租约表，地址空间销毁前不复用，ARM64 复用前广播失效；255 个用户标签耗尽显式失败。
   - [x] `mm.transactions/asid_leases` 验证全部活跃标签唯一、耗尽、隔项释放后只复用已归还标签并恢复页计数；当前三架构 Debug/Release 均通过。
   - [x] `users.signals/pid_lifecycle` 顺序创建 300 个子进程，在同一用户 VA 写入逐次唯一模式，交替迁移 CPU0/CPU1 并重复调度；父地址空间始终保持原值，当前六配置均通过。
@@ -183,9 +195,9 @@ uv run qemu.py --manifest build/arm64-debug/moss-artifacts.json
 
 ## 后续功能：保留需求，但不抢在 P0/P1 之前
 
-- [ ] **KPTI / 高半区布局**：作为后续隔离加固；先修 MOSS-001 的直接 U/S 权限错误，再设计用户/内核页表和入口切换，不能把直接越权仅描述成 Meltdown。
+- [ ] **KPTI / 高半区布局**：作为后续隔离加固；MOSS-001 的直接 U/S 权限错误和当前页权限验收已关闭，用户/内核页表拆分及入口切换仍需另行设计。
 - [ ] **栈增长加固与 VM 兼容扩展**：已有 demand-zero 栈增长；补 guard/边界/冲突测试。文件后备 mmap、MAP_SHARED、部分 munmap 在 VM 事务稳定后实现。
-- [ ] **x64 端口完善**：复用已有 IDT、MMU、APIC、timer、context switch、SYSCALL、fault 和 AP startup；先完成 001/007/014/019 等跨架构契约，不再从 boot stub 重写。
+- [ ] **x64 端口完善**：复用已有 IDT、MMU、APIC、timer、context switch、SYSCALL、fault 和 AP startup；先完成 007/014/019 等跨架构契约，001 的页权限隔离已验收，不再从 boot stub 重写。
 - [ ] **RV64 端口完善**：复用已有 satp/trap/PLIC/SBI/context switch/ecall/HSM；先完成 007/009/014/019，按需求另增 AIA 等驱动。
 - [ ] **同 ISA 通用镜像扩展与真机验收**：已有低于 4 GiB 的多 RAM bank 分配；继续精确回收启动区、细粒度 RAM/MMIO 映射、更多启动协议/设备与真机固件交接，以不变镜像 hash 验收，不能退回 virt/板名编译矩阵。
 - [ ] **块设备与持久文件系统**：块层和实际设备驱动；virtio-blk 可作为首个可验证设备契约，不是内核对 QEMU 的依赖。

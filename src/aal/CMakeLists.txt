@@ -1,15 +1,15 @@
 # src/aal/CMakeLists.txt — Architecture Abstraction Layer
 #
-# Provides module moss.arch with inline implementations for all
+# Provides module moss.arch with CPU primitives and TLB synchronization for all
 # supported architectures.  The correct code path is selected at
 # compile time via CMake-injected MOSS_ARCH_* macros.
 
 add_library(moss_aal OBJECT)
 
-# The single module file contains all arch-specific inline asm, selected by #ifdef at compile time — no per-arch source
-# split needed.
+# Keep the allocation-free shootdown protocol separate from inline primitives.
 target_sources(
     moss_aal
+    PRIVATE src/tlb.cpp
     PUBLIC FILE_SET CXX_MODULES FILES src/arch.cppm
 )
 

@@ -19,6 +19,7 @@ void early_debug_print(const char *message) noexcept; // UART output (kernel_mai
 extern unsigned char x86_ap_trampoline_start[], x86_ap_trampoline_end[], x86_ap_cr3[], x86_ap_stack[];
 extern unsigned char pvh_pml4[];
 [[noreturn]] void x86_secondary_entry() noexcept;
+void moss_validation_cpu_started(unsigned cpu) noexcept;
 }
 
 module moss.boot;
@@ -281,7 +282,7 @@ static const u8 *acpi_table(u64 address) noexcept {
   }
   const auto *p = reinterpret_cast<const u8 *>(address);
   u64 size = acpi_value(p + 4, 4);
-  if (size < 36 || size > 1024 * 1024 || !physical_range(address, size) || !checksum(p, static_cast<u32>(size))) {
+  if (size < 36 || size > 1024ULL * 1024 || !physical_range(address, size) || !checksum(p, static_cast<u32>(size))) {
     return nullptr;
   }
   return p;
@@ -659,6 +660,11 @@ extern "C" void x64_interrupt_handler(u64 vector, u64 error_code, [[maybe_unused
   // before returning; deferring EOI could leave the local interrupt in service.
   moss::kernel::hal::intc::eoi(moss::kernel::platform::intc_dist_base(), 0);
 
+  if (vector == moss::kernel::arch::X64_TLB_SHOOTDOWN_VECTOR) {
+    moss::kernel::arch::service_tlb_shootdown();
+    return;
+  }
+
   // LAPIC timer (vector 48)
   if (vector == 48 && g_x64_timer_handler != nullptr) {
     g_x64_timer_handler();
@@ -822,6 +828,7 @@ void activate_secondary_cpus() noexcept {
     if (!(__atomic_load_n(&online_cpu_mask, __ATOMIC_ACQUIRE) & (1ULL << cpu))) {
       moss::kernel::hal::intc::send_startup_ipi(apic_id, 0x00000608);
     }
+    moss_validation_cpu_started(cpu);
     // Bound readiness spinning to 100000000 CPU hints; this is a poll budget
     // with no measured wall-clock rationale, separate from the final timed wait.
     for (u32 retry = 0; retry < 100000000; ++retry) {

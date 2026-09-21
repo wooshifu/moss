@@ -13,6 +13,10 @@ module;
 #define MOSS_CURRENT_ARCH "RISC-V 64"
 #endif
 
+// Called only after a real secondary start request, before any readiness wait.
+// The validation image may align its first TLB registration with a BSP request.
+extern "C" [[gnu::weak, gnu::noinline]] void moss_validation_cpu_started(unsigned /*cpu*/) noexcept {}
+
 module moss.boot;
 
 import moss.abi;
@@ -23,6 +27,17 @@ using moss::u64;
 using moss::VirtAddr;
 
 namespace moss::boot {
+
+static bool notify_tlb_cpu(u32 cpu) noexcept {
+  using namespace moss::kernel;
+  // The interrupt-controller interface takes a 32-bit logical target mask.
+  if (cpu >= sizeof(u32) * 8) {
+    return false;
+  }
+  return hal::intc::send_sgi(platform::intc_dist_base(), platform::intc_cpu_base(), arch::TLB_SHOOTDOWN_SGI,
+                             u32{1} << cpu)
+      .has_value();
+}
 
 void record_cpu_online() noexcept {
   u32 cpu = moss::kernel::arch::get_current_cpu_id();
@@ -43,6 +58,9 @@ void record_cpu_online() noexcept {
       __atomic_fetch_or(&cpu_work_mask, 1ULL << cpu, __ATOMIC_RELEASE);
     }
   }
+  // Entry/trap state and the local interrupt controller are ready before
+  // joining; shared VM operations may target this CPU after registration.
+  moss::kernel::arch::register_tlb_cpu(notify_tlb_cpu);
   __atomic_fetch_or(&online_cpu_mask, 1ULL << cpu, __ATOMIC_RELEASE);
 }
 

@@ -5,9 +5,8 @@
 // should `import moss.arch;` and call these functions instead of writing
 // its own `#ifdef / asm volatile` blocks.
 //
-// Design: all functions are `inline` in the exported interface, so the
-// compiler can inline them at every call-site — zero overhead compared to
-// the previous copy-paste approach, but with a single point of maintenance.
+// CPU primitives are inline; the synchronous software TLB protocol lives in
+// tlb.cpp so its shared state and ordering have one implementation.
 
 export module moss.arch;
 
@@ -110,6 +109,10 @@ inline void io_barrier() noexcept {
 // CPU operations
 // ============================================================================
 
+// No allocation, locks or scheduling: safe even for an IRQ-masked lock waiter.
+// ARM64 uses native TLBI broadcasts and does not need this software mailbox.
+void service_tlb_shootdown() noexcept;
+
 // Hint the CPU to yield execution (spin-wait optimisation)
 // This never schedules a thread or waits for an event; spin loops must keep
 // checking their condition and cannot rely on a matching SEV notification.
@@ -117,8 +120,10 @@ inline void cpu_yield() noexcept {
 #if defined(MOSS_ARCH_ARM64)
   asm volatile("yield" ::: "memory");
 #elif defined(MOSS_ARCH_X64)
+  service_tlb_shootdown();
   asm volatile("pause" ::: "memory");
 #elif defined(MOSS_ARCH_RISCV64)
+  service_tlb_shootdown();
   asm volatile("" ::: "memory"); // no yield hint on RISC-V 64
 #endif
 }
@@ -274,33 +279,47 @@ inline void disable_all_interrupts() noexcept {
 // TLB management
 // ============================================================================
 
+// SGIs 0..7 are reserved for the generic IPI classes. x64 routes SGIs at
+// vector 64+id (above exceptions/legacy IRQs), so shootdown uses vector 72.
+inline constexpr u32 TLB_SHOOTDOWN_SGI = 8;
+inline constexpr u32 X64_TLB_SHOOTDOWN_VECTOR = 64 + TLB_SHOOTDOWN_SGI;
+using TlbNotifier = bool (*)(u32 cpu) noexcept;
+// Boot calls this on each CPU only after its MMU, trap entry and IPI transport
+// are ready. Joining serializes with requests; hot-unplug is not supported.
+void register_tlb_cpu(TlbNotifier notify) noexcept;
+// PTE stores precede publication; return means every participating CPU has
+// invalidated. Callers still own VM locking and address-space/root lifetime.
+void synchronize_tlb(VirtAddr addr, bool full) noexcept;
+
 inline void flush_tlb() noexcept {
 #if defined(MOSS_ARCH_ARM64)
   asm volatile("dsb ishst" ::: "memory");
   asm volatile("tlbi vmalle1is" ::: "memory");
-  asm volatile("dsb sy");
-  asm volatile("isb");
-#elif defined(MOSS_ARCH_X64)
-  // Reload CR3 to flush entire TLB
-  u64 cr3;
-  asm volatile("mov %%cr3, %0" : "=r"(cr3));
-  asm volatile("mov %0, %%cr3" ::"r"(cr3) : "memory");
-#elif defined(MOSS_ARCH_RISCV64)
-  asm volatile("sfence.vma" ::: "memory");
+  asm volatile("dsb sy" ::: "memory");
+  asm volatile("isb" ::: "memory");
+#else
+  synchronize_tlb(0, true);
 #endif
 }
 
+// Complete per-address invalidation after publishing PTE stores. ARM64
+// broadcasts within the inner-shareable domain; x64/RV64 wait for remote
+// software acknowledgements before callers may reclaim old backing storage.
 inline void flush_tlb_addr(VirtAddr addr) noexcept {
 #if defined(MOSS_ARCH_ARM64)
-  // TLBI's VA operand uses address bits [55:12], not a byte address. The
-  // 12-bit shift follows the 4 KiB page granule used by the kernel mappings.
-  asm volatile("tlbi vae1is, %0" ::"r"(addr >> 12) : "memory");
-  asm volatile("dsb sy");
-  asm volatile("isb");
-#elif defined(MOSS_ARCH_X64)
-  asm volatile("invlpg (%0)" ::"r"(addr) : "memory");
-#elif defined(MOSS_ARCH_RISCV64)
-  asm volatile("sfence.vma %0, zero" ::"r"(addr) : "memory");
+  // This interface has no ASID, and the changed root need not be active on
+  // this CPU. VAAE1IS covers all ASIDs and walk levels on the sharing CPUs;
+  // VAE1IS/VALE1IS with a bare page number would target only ASID 0.
+  // Encode exactly VA[55:12] (44 bits). Canonical high bits must not leak into
+  // TTL/RES0 fields; the 12-bit shift corresponds to the 4 KiB page granule.
+  const u64 operand = (addr >> 12) & ((u64{1} << 44) - 1);
+  asm volatile("dsb ishst" ::: "memory");
+  asm volatile("tlbi vaae1is, %0" ::"r"(operand) : "memory");
+  // Completion precedes releasing frames or publishing a replacement mapping.
+  asm volatile("dsb ish" ::: "memory");
+  asm volatile("isb" ::: "memory");
+#else
+  synchronize_tlb(addr, false);
 #endif
 }
 

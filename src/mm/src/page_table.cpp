@@ -428,8 +428,9 @@ static VoidResult prepare_user_clone(const PageTable *src, const PageTable *dst,
     }
     if (shift == 12) {
 #if defined(MOSS_ARCH_RISCV64)
-      if (entry.is_table())
+      if (entry.is_table()) {
         return VoidResult{ErrorCode::NotSupported};
+      }
 #elif defined(MOSS_ARCH_ARM64)
       if (!entry.is_table()) {
         return VoidResult{ErrorCode::NotSupported};
@@ -681,7 +682,10 @@ VoidResult PageTableManager::map_user_page(PhysAddr pgd_phys, VirtAddr va, PhysA
     PageTableEntry link;
     link.set_table(get_physical_address(first), true);
     publish_entry(entry, link);
-    invalidate_tlb_addr(va);
+    // Publishing a non-leaf changes the walk, not only this leaf translation.
+    // In particular, RISC-V requires SFENCE.VMA rs1=x0 for non-leaf changes;
+    // a VA-scoped fence only orders leaf PTEs (Privileged ISA, supervisor 1.13).
+    invalidate_tlb();
     return VoidResult{};
   }
 
