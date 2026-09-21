@@ -8,6 +8,14 @@ import moss.hal.mmu;
 import moss.vfs;
 
 extern "C" [[gnu::weak, gnu::noinline]] void moss_validation_dispatch_selected() noexcept {}
+// The validation image applies real heap pressure at each owned-allocation
+// boundary; production keeps the same allocation and rollback path.
+extern "C" [[gnu::weak, gnu::noinline]] void
+moss_validation_address_space_allocation(bool /*entering*/, bool /*control_block*/,
+                                         moss::kernel::usize /*size*/) noexcept {}
+extern "C" [[gnu::weak, gnu::noinline]] void moss_validation_vm_contended(moss::kernel::PhysAddr /*root*/) noexcept {}
+extern "C" [[gnu::weak, gnu::noinline]] void
+moss_validation_address_space_retiring(moss::kernel::PhysAddr /*root*/) noexcept {}
 
 // Assembly/entry symbols from moss.abi
 using moss::abi::context_switch;
@@ -17,6 +25,57 @@ using moss::abi::entry::early_debug_print;
 static moss::u64 get_current_time() noexcept { return moss::kernel::arch::get_timestamp_counter(); }
 
 namespace moss::kernel::process {
+
+AddressSpace::VmTransaction::VmTransaction(AddressSpace &owner) noexcept : owner_(owner) {
+  if (!owner_.vm_lock_.try_lock()) {
+    // Observe real contention without changing the production lock algorithm.
+    moss_validation_vm_contended(owner_.pgd_phys);
+    owner_.vm_lock_.lock();
+  }
+}
+
+AddressSpace::VmTransaction::~VmTransaction() noexcept { owner_.vm_lock_.unlock(); }
+
+bool AddressSpace::resolve_fault(VirtAddr address, mm::UserFaultAccess access, bool cow_only,
+                                 VirtAddr *grown_stack) noexcept {
+  auto transaction = lock_vm();
+  return resolve_fault_locked(address, access, cow_only, grown_stack);
+}
+
+bool AddressSpace::resolve_fault_locked(VirtAddr address, mm::UserFaultAccess access, bool cow_only,
+                                        VirtAddr *grown_stack) noexcept {
+  static_assert(static_cast<u32>(mm::UserFaultAccess::Read) == vma_flags::READ);
+  static_assert(static_cast<u32>(mm::UserFaultAccess::Write) == vma_flags::WRITE);
+  static_assert(static_cast<u32>(mm::UserFaultAccess::Execute) == vma_flags::EXEC);
+  if (grown_stack) {
+    *grown_stack = 0;
+  }
+  auto vma = find_vma(address);
+  if (!vma && !cow_only) {
+    const VirtAddr new_start = address & ~(static_cast<VirtAddr>(PAGE_SIZE) - 1);
+    const VirtAddr limit = user_layout::STACK_TOP - user_layout::STACK_MAX;
+    if (address < limit || !valid_vma_range(new_start, user_layout::STACK_TOP, VmaType::STACK) ||
+        !vmas.update_if([&](const VmaRegion &v) { return v.type == VmaType::STACK && address < v.start_addr; },
+                        [&](VmaRegion &v) { v.start_addr = new_start; })) {
+      return false;
+    }
+    if (grown_stack) {
+      *grown_stack = new_start;
+    }
+    vma = find_vma(address);
+  }
+  if (!vma) {
+    return false;
+  }
+  const mm::UserFaultContext context{.root = pgd_phys,
+                                     .flags = vma->flags,
+                                     .start = vma->start_addr,
+                                     .backing = vma->backing_data,
+                                     .backing_offset = vma->backing_offset,
+                                     .backing_size = vma->backing_size};
+  return cow_only ? mm::resolve_user_cow_fault(context, address)
+                  : mm::resolve_user_demand_fault(context, address, access);
+}
 
 Thread *Thread::try_create(ThreadId id, ProcessId pid) noexcept {
   auto *storage = moss::abi::bridge::moss_heap_allocate(sizeof(Thread), alignof(Thread));
@@ -129,8 +188,54 @@ containers::PerCpuData<Thread *> CfsScheduler::current_running_tasks_{};
 
 // Per-CPU bootstrap context for context_switch when no previous task exists
 containers::PerCpuData<CpuContext> CfsScheduler::bootstrap_contexts_{};
+// Slot storage lasts for the kernel's lifetime; each owner is explicitly reset
+// on a root switch. Suppress only exit-time destruction: this freestanding
+// kernel has no __cxa_atexit, and must not release a CPU's live root at shutdown.
+[[clang::no_destroy]] containers::PerCpuData<shared_ptr<AddressSpace>> CfsScheduler::active_address_spaces_{};
 
-// Per-CPU exit stack for schedule_after_exit (avoids use-after-free on dead task's kernel stack)
+void CfsScheduler::use_address_space(shared_ptr<AddressSpace> next) noexcept {
+  const bool interrupts = arch::interrupts_enabled();
+  arch::disable_interrupts();
+  auto *kernel = mm::PageTableManager::get_kernel_pgd();
+  if (!next && !kernel) {
+    arch::kernel_panic("kernel page table unavailable");
+  }
+  const PhysAddr physical = next ? next->pgd_phys : mm::PageTableManager::get_physical_address(kernel);
+  if (!physical) {
+    arch::kernel_panic("address-space root unavailable");
+  }
+  [[maybe_unused]] const u16 asid = next ? next->asid : 0;
+  // The parameter retains the outgoing owner through the hardware write.
+  // Publish the incoming pin first, with local IRQs/preemption excluded; no
+  // Process lock or VM lock may be held across the subsequent final release.
+  active_address_spaces_.get_local().swap(next);
+#if defined(MOSS_ARCH_ARM64)
+  // TTBR0_EL1 stores the ASID above the table PA, starting at bit 48.
+  const u64 root = physical | (static_cast<u64>(asid) << 48);
+  asm volatile("msr ttbr0_el1, %0; dsb ish; isb" ::"r"(root) : "memory");
+#elif defined(MOSS_ARCH_X64)
+  asm volatile("mov %0, %%cr3" ::"r"(physical) : "memory");
+#elif defined(MOSS_ARCH_RISCV64)
+  const u64 root = hal::mmu::make_satp_value(physical, asid);
+  asm volatile("csrw satp, %0; sfence.vma" ::"r"(root) : "memory");
+#endif
+  next.reset();
+  if (interrupts) {
+    arch::enable_interrupts();
+  }
+}
+
+shared_ptr<AddressSpace> CfsScheduler::active_address_space() noexcept {
+  const bool interrupts = arch::interrupts_enabled();
+  arch::disable_interrupts();
+  auto held = active_address_spaces_.get_local();
+  if (interrupts) {
+    arch::enable_interrupts();
+  }
+  return held;
+}
+
+// Legacy storage: exit restores bootstrap_contexts_, not these old exit stacks.
 containers::PerCpuData<CfsScheduler::ExitStack> CfsScheduler::exit_stacks_{};
 
 // Process类方法实现
@@ -144,7 +249,7 @@ void Process::cleanup_files() noexcept {
 }
 
 KernelResult<ThreadId> Process::create_thread(VirtAddr entry_point, VirtAddr stack_base, usize stack_size) noexcept {
-  if (!address_space_) {
+  if (!address_space()) {
     return KernelResult<ThreadId>{ErrorCode::InvalidState};
   }
 
@@ -195,13 +300,28 @@ Thread *Process::get_thread(ThreadId tid) const noexcept {
 
 Thread *Process::get_main_thread() const noexcept { return get_thread(main_thread_id_); }
 
-VoidResult Process::set_address_space(unique_ptr<AddressSpace> as) noexcept {
+VoidResult Process::set_address_space(shared_ptr<AddressSpace> as) noexcept {
   if (!as) {
     return VoidResult{ErrorCode::InvalidArgument};
   }
 
-  address_space_ = moss::move(as);
+  {
+    containers::LockGuard<containers::IrqSpinLock> guard(address_space_lock_);
+    address_space_.swap(as);
+  }
+  // The retired owner may free an entire page-table tree. Do not hold the
+  // publication lock across destruction or block readers of the new version.
+  // CPUs retain their installed versions separately; publishing here does not
+  // switch another CPU's root or finish shared-exec thread coordination.
   return VoidResult{};
+}
+
+void Process::clear_address_space() noexcept {
+  shared_ptr<AddressSpace> retired;
+  {
+    containers::LockGuard<containers::IrqSpinLock> guard(address_space_lock_);
+    address_space_.swap(retired);
+  }
 }
 
 void Process::set_state(ProcessState new_state) noexcept { state_ = new_state; }
@@ -365,24 +485,38 @@ void release_asid(u16 tag) noexcept {
 }
 
 // Page-table ownership and architecture layout belong to the MM module.
-KernelResult<unique_ptr<AddressSpace>> create_user_address_space() noexcept {
+KernelResult<shared_ptr<AddressSpace>> create_user_address_space() noexcept {
   auto tables = mm::PageTableManager::create_user_page_tables();
   if (!tables) {
-    return KernelResult<unique_ptr<AddressSpace>>{tables.error()};
+    return KernelResult<shared_ptr<AddressSpace>>{tables.error()};
   }
   const u16 asid = allocate_asid();
   if (asid == 0) {
     mm::PageTableManager::free_user_page_tables(*tables);
-    return KernelResult<unique_ptr<AddressSpace>>{ErrorCode::ResourceExhausted};
+    return KernelResult<shared_ptr<AddressSpace>>{ErrorCode::ResourceExhausted};
   }
-  auto storage = mm::RuntimeHeapAllocator::allocate(sizeof(AddressSpace));
-  if (!storage) {
+  // A zero root/tag owns no MM resources. Keep that inert state until both
+  // fallible SharedPtr allocations succeed: try_make destroys the object when
+  // its control block fails, so publishing tables earlier would double-free
+  // them in the explicit rollback below.
+  bool control_block = false;
+  auto address_space = shared_ptr<AddressSpace>::try_make(
+      [&](usize size, usize alignment) -> void * {
+        moss_validation_address_space_allocation(true, control_block, size);
+        auto storage = mm::RuntimeHeapAllocator::allocate_aligned(size, alignment);
+        moss_validation_address_space_allocation(false, control_block, size);
+        control_block = true; // try_make allocates the object, then its control block.
+        return storage ? *storage : nullptr;
+      },
+      PhysAddr{0}, u16{0});
+  if (!address_space) {
     release_asid(asid);
     mm::PageTableManager::free_user_page_tables(*tables);
-    return KernelResult<unique_ptr<AddressSpace>>{ErrorCode::OutOfMemory};
+    return KernelResult<shared_ptr<AddressSpace>>{ErrorCode::OutOfMemory};
   }
-  auto address_space = unique_ptr<AddressSpace>(new (*storage) AddressSpace(*tables, asid));
-  return KernelResult<unique_ptr<AddressSpace>>{moss::move(address_space)};
+  address_space->pgd_phys = *tables;
+  address_space->asid = asid;
+  return KernelResult<shared_ptr<AddressSpace>>{moss::move(address_space)};
 }
 
 // 映射内存区域到用户地址空间
@@ -391,6 +525,7 @@ VoidResult map_user_memory(AddressSpace *as, VirtAddr vaddr, [[maybe_unused]] Ph
   if (!as || size == 0 || !mm::PageTableManager::is_user_range(vaddr, size)) {
     return VoidResult{ErrorCode::InvalidArgument};
   }
+  auto transaction = as->lock_vm();
 
   // Add VMA region via AddressSpace helper
   if (!as->add_vma(vaddr, vaddr + size, flags)) {
@@ -406,11 +541,11 @@ VoidResult map_user_memory(AddressSpace *as, VirtAddr vaddr, [[maybe_unused]] Ph
 
 // 分配用户堆内存
 KernelResult<VirtAddr> allocate_user_heap(Process *process, usize size) noexcept {
-  if (!process || !process->address_space() || size == 0) {
+  auto as = process ? process->address_space() : shared_ptr<AddressSpace>{};
+  if (!as || size == 0) {
     return KernelResult<VirtAddr>{ErrorCode::InvalidArgument};
   }
-
-  AddressSpace *as = process->address_space();
+  auto transaction = as->lock_vm();
 
   constexpr u32 flags = vma_flags::READ | vma_flags::WRITE | vma_flags::DEMAND_ZERO;
   // Use brk_current to track the heap watermark. The empty VMA represents the
@@ -466,12 +601,10 @@ KernelResult<VirtAddr> allocate_user_heap(Process *process, usize size) noexcept
   // 2. Restore page table base to kernel PGD BEFORE freeing user page tables
   CfsScheduler::use_kernel_address_space();
 
-  // 3. Free user page tables (keeps Process object alive for Zombie)
-  auto *as = proc->address_space();
-  if (as && as->pgd_phys != 0) {
-    mm::PageTableManager::free_user_page_tables(as->pgd_phys);
-    as->pgd_phys = 0; // prevent double-free in ~Process
-  }
+  // 3. Detach before publishing Zombie, preserving any in-flight reader's
+  // tables and ASID until its final release. Never free through a borrowed
+  // pointer or leave a local owning snapshot on this non-returning exit stack.
+  proc->clear_address_space();
 
   // 4. Reparent children to init (PID 1)
   auto init_proc = g_process_manager->find_process(1);

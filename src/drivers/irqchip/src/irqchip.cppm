@@ -120,8 +120,11 @@ inline void set_enabled(VirtAddr local, u32 irq, bool enable) noexcept {
     write_reg(local, offset, enable ? value | mask : value & ~mask);
   } else if (irq >= GPU_BASE && irq < IRQ_COUNT) {
     VirtAddr shared = platform::intc_cpu_base();
-    u32 offset = irq >= BASIC_BASE ? (enable ? ENABLE_BASIC : DISABLE_BASIC)
-                                   : (enable ? ENABLE_GPU : DISABLE_GPU) + ((irq - GPU_BASE) / 32) * 4;
+    u32 offset = enable ? ENABLE_BASIC : DISABLE_BASIC;
+    if (irq < BASIC_BASE) {
+      // GPU IRQ banks each have 32 bits; adjacent bank registers are 4 bytes apart.
+      offset = (enable ? ENABLE_GPU : DISABLE_GPU) + ((irq - GPU_BASE) / 32) * 4;
+    }
     write_reg(shared, offset, 1U << ((irq - GPU_BASE) % 32));
   }
 }
@@ -606,19 +609,19 @@ inline VoidResult init_cpu_interface(VirtAddr cpu_base) noexcept {
 #elif defined(MOSS_ARCH_X64)
   // cpu_base is the discovered I/O APIC; the Local APIC has its own resource.
   (void)cpu_base;
-  const VirtAddr LAPIC_BASE = platform::intc_dist_base();
+  const VirtAddr lapic_base = platform::intc_dist_base();
 
   // Mask all LVT entries to prevent spurious interrupts before proper setup
-  write_reg(LAPIC_BASE, cpu_regs::LVT_TIMER, cpu_regs::LVT_MASK);
-  write_reg(LAPIC_BASE, cpu_regs::LVT_LINT0, cpu_regs::LVT_MASK);
-  write_reg(LAPIC_BASE, cpu_regs::LVT_LINT1, cpu_regs::LVT_MASK);
-  write_reg(LAPIC_BASE, cpu_regs::LVT_ERROR, cpu_regs::LVT_MASK);
+  write_reg(lapic_base, cpu_regs::LVT_TIMER, cpu_regs::LVT_MASK);
+  write_reg(lapic_base, cpu_regs::LVT_LINT0, cpu_regs::LVT_MASK);
+  write_reg(lapic_base, cpu_regs::LVT_LINT1, cpu_regs::LVT_MASK);
+  write_reg(lapic_base, cpu_regs::LVT_ERROR, cpu_regs::LVT_MASK);
 
   // Enable Local APIC via SVR with spurious vector 0xFF
-  u32 svr = read_reg(LAPIC_BASE, cpu_regs::SVR);
+  u32 svr = read_reg(lapic_base, cpu_regs::SVR);
   svr |= 0x100; // APIC Enable bit
   svr |= 0xFF;  // Spurious vector = 255
-  write_reg(LAPIC_BASE, cpu_regs::SVR, svr);
+  write_reg(lapic_base, cpu_regs::SVR, svr);
 
 #elif defined(MOSS_ARCH_RISCV64)
   // PLIC: set threshold to 0 (accept all priorities)
@@ -655,9 +658,9 @@ inline void enable_irq(VirtAddr dist_base, u32 irq) noexcept {
 #elif defined(MOSS_ARCH_X64)
   // I/O APIC: unmask redirection table entry for the given IRQ line
   {
-    const VirtAddr IOAPIC_BASE = platform::intc_cpu_base();
-    auto *ioregsel = reinterpret_cast<volatile u32 *>(IOAPIC_BASE);
-    auto *iowin = reinterpret_cast<volatile u32 *>(IOAPIC_BASE + 0x10);
+    const VirtAddr ioapic_base = platform::intc_cpu_base();
+    auto *ioregsel = reinterpret_cast<volatile u32 *>(ioapic_base);
+    auto *iowin = reinterpret_cast<volatile u32 *>(ioapic_base + 0x10);
     u32 gsi = irq < 16 ? platform::hardware.isa_gsi[irq] : irq;
     u32 reg_low = 0x10 + gsi * 2;
     *ioregsel = reg_low;
@@ -701,9 +704,9 @@ inline void disable_irq(VirtAddr dist_base, u32 irq) noexcept {
 #elif defined(MOSS_ARCH_X64)
   // I/O APIC: mask redirection table entry for the given IRQ line
   {
-    const VirtAddr IOAPIC_BASE = platform::intc_cpu_base();
-    auto *ioregsel = reinterpret_cast<volatile u32 *>(IOAPIC_BASE);
-    auto *iowin = reinterpret_cast<volatile u32 *>(IOAPIC_BASE + 0x10);
+    const VirtAddr ioapic_base = platform::intc_cpu_base();
+    auto *ioregsel = reinterpret_cast<volatile u32 *>(ioapic_base);
+    auto *iowin = reinterpret_cast<volatile u32 *>(ioapic_base + 0x10);
     u32 gsi = irq < 16 ? platform::hardware.isa_gsi[irq] : irq;
     u32 reg_low = 0x10 + gsi * 2;
     *ioregsel = reg_low;
@@ -964,18 +967,27 @@ inline VoidResult send_sgi(VirtAddr dist_base, [[maybe_unused]] VirtAddr cpu_bas
   }
 
 #elif defined(MOSS_ARCH_X64)
-  // Local APIC ICR: send fixed IPI
-  // ICR high: destination APIC ID
-  // ICR low: vector | delivery mode
-  (void)dist_base;
-  if (target_cpu_mask != 0) {
-    // Find first target CPU from mask
-    u32 target = static_cast<u32>(intrinsics::bitops::ctz(target_cpu_mask));
+  // Local APIC ICR high/low form one per-CPU command. Mask interrupts so a
+  // nested sender cannot overwrite its destination between the two writes.
+  const bool interrupts = arch::interrupts_enabled();
+  arch::disable_interrupts();
+  for (u32 target = 0; target < platform::hardware.cpu_count; ++target) {
+    if (!(target_cpu_mask & (1U << target))) {
+      continue;
+    }
+    // Intel SDM 12.6.1: ICR Delivery Status bit 12 must be idle before reuse;
+    // delivery completion is distinct from the receiver's software TLB ACK.
+    while (read_reg(dist_base, cpu_regs::ICR_LOW) & (1U << 12)) {
+      arch::cpu_yield();
+    }
     u32 dest_apic_id = static_cast<u32>(platform::hardware.cpus[target].hardware_id);
     // ICR destination is bits 31:24; fixed IPI vectors use 64+SGI, above the
     // exception/legacy IRQ region. Bit 14 requests level assert delivery.
     write_reg(dist_base, cpu_regs::ICR_HIGH, dest_apic_id << 24);
     write_reg(dist_base, cpu_regs::ICR_LOW, (64 + sgi_id) | (1U << 14));
+  }
+  if (interrupts) {
+    arch::enable_interrupts();
   }
 
 #elif defined(MOSS_ARCH_RISCV64)

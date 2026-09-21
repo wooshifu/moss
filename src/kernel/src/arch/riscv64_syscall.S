@@ -119,7 +119,10 @@ syscall_entry_point:
     beq t0, t1, .Lexternal
     li t1, 1
     bne t0, t1, .Lreturn
-    csrci sip, 2 // Clear SSIP (bit 1) so the software interrupt does not retrigger.
+    // Clear SSIP (bit 1) before consuming the mailbox. Clearing afterward
+    // could erase a new notification published after this request is ACKed.
+    csrci sip, 2
+    call riscv64_software_handler
     j .Lreturn
 .Ltimer:
     call riscv64_timer_handler

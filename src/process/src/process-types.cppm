@@ -13,6 +13,8 @@ import moss.containers;
 import moss.mm;
 import moss.logging;
 
+extern "C" void moss_validation_address_space_retiring(moss::kernel::PhysAddr root) noexcept;
+
 // ============================================================================
 // process.hpp - Base process types
 // ============================================================================
@@ -333,6 +335,27 @@ struct ExecutableImage {
 };
 
 struct AddressSpace {
+private:
+  containers::IrqSpinLock vm_lock_;
+
+public:
+  // Lock order: VM transaction -> VMA list -> MM allocator locks. Keep the
+  // AddressSpace owner alive until this guard is destroyed. Transactions may
+  // not block, switch address spaces or copy via faultable user addresses.
+  // This serializes software state, not hardware-root lifetime. PTE mutators
+  // perform their own synchronous TLB invalidation; active-root owners and
+  // synchronous copy leases separately protect their corresponding lifetimes.
+  class VmTransaction {
+    AddressSpace &owner_;
+
+  public:
+    explicit VmTransaction(AddressSpace &owner) noexcept;
+    ~VmTransaction() noexcept;
+    VmTransaction(const VmTransaction &) = delete;
+    VmTransaction &operator=(const VmTransaction &) = delete;
+  };
+  [[nodiscard]] VmTransaction lock_vm() noexcept { return VmTransaction(*this); }
+
   PhysAddr pgd_phys; // physical address of the L0 (PGD) page table
   u16 asid;          // Address Space ID (0 = kernel, 1-255 = user)
 
@@ -356,11 +379,12 @@ struct AddressSpace {
   AddressSpace(PhysAddr pgd, u16 asid_val) noexcept
       : pgd_phys(pgd), asid(asid_val), vmas{}, total_pages(0), resident_pages(0) {}
 
-  // Destructor: free page table hierarchy if still owned.
-  // This ensures no PGD/PUD/PMD/PTE leak when an AddressSpace is
-  // dropped without going through do_exit (e.g. fork error paths).
+  // The final owner releases tables and ASID together, including fork rollback
+  // and readers which outlive exec/exit. CfsScheduler's per-CPU root owner is
+  // released only after switching away; references do not serialize PTE mutation.
   ~AddressSpace() noexcept {
     if (pgd_phys != 0) {
+      moss_validation_address_space_retiring(pgd_phys);
       mm::PageTableManager::free_user_page_tables(pgd_phys);
       pgd_phys = 0;
     }
@@ -371,6 +395,25 @@ struct AddressSpace {
   AddressSpace(const AddressSpace &) = delete;
   AddressSpace &operator=(const AddressSpace &) = delete;
 
+  // Retain this AddressSpace for the whole call. Fault resolution consumes one
+  // VMA/root/image context; it never returns a borrowed backing pointer.
+  [[nodiscard]] bool resolve_fault(VirtAddr address, mm::UserFaultAccess access, bool cow_only,
+                                   VirtAddr *grown_stack = nullptr) noexcept;
+
+  // Bind copies to this owned version, independently of the CPU's active root.
+  // A short VM transaction keeps each resolved page mapped through its copy;
+  // writers also exclude fork so a physical alias cannot bypass newly set COW.
+  // The entire buffer is not atomic, and kernel buffers must remain valid.
+  [[nodiscard]] usize copy_from_user(void *destination, VirtAddr source, usize size) noexcept;
+  [[nodiscard]] usize copy_to_user(VirtAddr destination, const void *source, usize size) noexcept;
+
+private:
+  [[nodiscard]] bool resolve_fault_locked(VirtAddr address, mm::UserFaultAccess access, bool cow_only,
+                                          VirtAddr *grown_stack) noexcept;
+  [[nodiscard]] usize transfer_user_pages(VirtAddr address, void *kernel_output, const void *kernel_input, usize size,
+                                          mm::UserFaultAccess access) noexcept;
+
+public:
   [[nodiscard]] static bool valid_vma_range(VirtAddr start, VirtAddr end, VmaType type) noexcept {
     if (start > end || ((start | end) & (PAGE_SIZE - 1)) != 0) {
       return false;
@@ -399,6 +442,8 @@ struct AddressSpace {
   }
 
   // Admission policy is independent of whether a user page is resident.
+  // Mutators require a VM transaction, or an unpublished/exclusively owned
+  // space. The list lock alone cannot serialize metadata with PTE changes.
   bool add_vma(VirtAddr start, VirtAddr end, u32 flags, VmaType type = VmaType::DATA, const u8 *backing = nullptr,
                usize b_offset = 0, usize b_size = 0) noexcept {
     constexpr u32 allowed = vma_flags::READ | vma_flags::WRITE | vma_flags::EXEC | vma_flags::DEMAND_ZERO;
@@ -649,7 +694,10 @@ private:
   ProcessId pid_;
   ProcessId parent_pid_;
 
-  unique_ptr<AddressSpace> address_space_;
+  // Only publication/acquisition uses this short IRQ-safe lock. Copy the owner
+  // under it, but destroy retired spaces outside it: teardown takes MM locks.
+  mutable containers::IrqSpinLock address_space_lock_;
+  shared_ptr<AddressSpace> address_space_;
 
   containers::LockedList<ThreadEntry> threads_;
   containers::AtomicCounter<u32> thread_count_;
@@ -710,9 +758,8 @@ public:
   ~Process() noexcept {
     cleanup_threads();
     cleanup_files();
-    // Page table cleanup is handled by ~AddressSpace (via unique_ptr).
-    // do_exit() zeroes pgd_phys early to avoid freeing active tables;
-    // if that didn't happen (error path), ~AddressSpace frees them now.
+    // Dropping this Process's owner must not invalidate held AddressSpace
+    // snapshots. do_exit() detaches it earlier, after switching hardware roots.
   }
 
   // Non-copyable (deleted copy constructor and copy assignment)
@@ -778,8 +825,15 @@ public:
   [[nodiscard]] u32 thread_count() const noexcept { return thread_count_.load(containers::MemoryOrder::Relaxed); }
 
   // Memory management
-  [[nodiscard]] VoidResult set_address_space(unique_ptr<AddressSpace> as) noexcept;
-  [[nodiscard]] AddressSpace *address_space() const noexcept { return address_space_.get(); }
+  [[nodiscard]] VoidResult set_address_space(shared_ptr<AddressSpace> as) noexcept;
+  void clear_address_space() noexcept;
+  // Retains this published version, which may differ from a CPU's installed
+  // version until an explicit root switch. Publication does not rebind readers.
+  // This is lifetime protection, not a VMA/PTE transaction lock or page pin.
+  [[nodiscard]] shared_ptr<AddressSpace> address_space() const noexcept {
+    containers::LockGuard<containers::IrqSpinLock> guard(address_space_lock_);
+    return address_space_;
+  }
 
   // Process state management
   void set_state(ProcessState new_state) noexcept;
@@ -894,7 +948,7 @@ extern ProcessManager *g_process_manager;
 // User address space management extensions
 namespace user_space {
 
-[[nodiscard]] KernelResult<unique_ptr<AddressSpace>> create_user_address_space() noexcept;
+[[nodiscard]] KernelResult<shared_ptr<AddressSpace>> create_user_address_space() noexcept;
 
 [[nodiscard]] VoidResult map_user_memory(AddressSpace *as, VirtAddr vaddr, PhysAddr paddr, usize size,
                                          u32 flags) noexcept;

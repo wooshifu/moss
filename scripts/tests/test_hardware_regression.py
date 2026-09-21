@@ -211,6 +211,57 @@ def test_arm64_el3_returns_to_el2_with_hvc_enabled(compiler, tmp_path):
     assert decoded.index("SCR_EL3") < decoded.index("SPSR_EL3") < decoded.index("ELR_EL3") < decoded.index("eret")
 
 
+def test_arm64_address_invalidation_covers_all_asids_and_orders_completion(compiler, tmp_path):
+    objdump = compiler.with_name("llvm-objdump")
+    if not objdump.exists():
+        pytest.skip("LLVM objdump is needed to inspect ARM64 TLB instructions")
+    arch = braced_definition((ROOT / "src/aal/src/arch.cppm").read_text(), "inline void flush_tlb_addr(")
+    mm = braced_definition((ROOT / "src/mm/src/mm-page_table.cppm").read_text(), "static void invalidate_tlb_addr(")
+    cpp = tmp_path / "tlb.cpp"
+    output = tmp_path / "tlb.o"
+    # Compile the actual production bodies, including MM's delegation to AAL.
+    # This architectural gate complements runtime remap tests: a TCG model
+    # may invalidate more ASIDs than the instruction requires on real hardware.
+    cpp.write_text(
+        "using u64 = unsigned long long; using VirtAddr = u64;\n"
+        f"namespace moss::kernel::arch {{ {arch} }}\n"
+        f"struct PageTableManager {{ {mm} }};\n"
+        'extern "C" void flush_arch(VirtAddr va) { moss::kernel::arch::flush_tlb_addr(va); }\n'
+        'extern "C" void flush_mm(VirtAddr va) { PageTableManager::invalidate_tlb_addr(va); }\n'
+    )
+    subprocess.run(
+        [
+            str(compiler),
+            "--target=aarch64-none-elf",
+            "-DMOSS_ARCH_ARM64",
+            "-O2",
+            "-ffreestanding",
+            "-c",
+            str(cpp),
+            "-o",
+            str(output),
+        ],
+        check=True,
+        capture_output=True,
+    )
+    for symbol in ("flush_arch", "flush_mm"):
+        decoded = subprocess.run(
+            [str(objdump), "-d", "--no-show-raw-insn", f"--disassemble-symbols={symbol}", str(output)],
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout.lower()
+        decoded = re.sub(r"[ \t]+", " ", decoded)
+        # The interface has no ASID: VA[A] must cover every ASID, IS broadcasts,
+        # and E1 (not LE1) permits invalidating cached intermediate walks too.
+        assert re.search(r"\btlbi\s+vaae1is,", decoded), decoded
+        operations = re.findall(r"\b(dsb\s+ishst|tlbi\s+vaae1is|dsb\s+ish|isb)\b", decoded)
+        assert operations == ["dsb ishst", "tlbi vaae1is", "dsb ish", "isb"], decoded
+        # VA[55:12] is a 44-bit field, not an arithmetic shift of a canonical
+        # high address into the TTL/RES0 fields. LLVM folds shift+mask to UBFX.
+        assert re.search(r"\bubfx\s+x\d+,\s*x\d+,\s*#(?:12|0xc),\s*#(?:44|0x2c)\b", decoded), decoded
+
+
 def ipi_source():
     interface = (ROOT / "src/interrupts/src/interrupts.cppm").read_text()
     types = braced_definition(interface, "namespace simple {")

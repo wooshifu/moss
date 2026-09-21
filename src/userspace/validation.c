@@ -26,8 +26,10 @@ static const char application_script[] =
     "printf 'application ok\\n' && exit 37; exit 98";
 
 static unsigned long exec_probe(long test) {
+  // The first 17 catalog entries are the malformed ELF fixtures listed below;
+  // subsequent selectors exercise argument admission using a valid image.
+  enum { EXEC_REJECTION_CASES = 17 };
   enum {
-    EXEC_REJECTION_CASES = 17,
     EXEC_BAD_ENV_VECTOR = EXEC_REJECTION_CASES,
     EXEC_BAD_ENV_STRING,
     EXEC_ARGUMENT_COUNT,
@@ -825,7 +827,110 @@ static unsigned long uaccess_devices(void) {
   return errors;
 }
 
-long frame_register_probe(long number);
+static unsigned long uaccess_cow_fault(int kind) {
+  // Controls 52..57 follow isolation's 50/51 and match CowAllocationPressure.
+  enum { COW_BEGIN = 52, COW_ARM, COW_CHECK, COW_RELEASE, COW_SPLIT, COW_FINISH };
+  enum { COPY_FAULT, PARTIAL_READ, USER_FAULT };
+  // Two resident pages give a private writable prefix followed by shared COW
+  // storage. A nonzero pattern distinguishes preserved bytes from zero fill.
+  const long page_bytes = 4096;
+  const unsigned char pattern = 0xa5;
+  long area = syscall6(SYS_MMAP, 0, page_bytes * 2, 3, 0x22, -1, 0);
+  if (area <= 0) {
+    return 1;
+  }
+  volatile unsigned char *bytes = (volatile unsigned char *)area;
+  for (long i = 0; i < page_bytes * 2; ++i) {
+    bytes[i] = pattern;
+  }
+  long gate[2];
+  if (pipe(gate) != 0) {
+    syscall2(SYS_MUNMAP, area, page_bytes * 2);
+    return 2;
+  }
+  long fd = open("/fixture.bin", 0);
+  unsigned char warm = 0;
+  unsigned long errors = fd < 0 || read((int)fd, &warm, 1) != 1 || syscall3(SYS_LSEEK, fd, 0, 0) != 0;
+  const long target = area + page_bytes;
+  if (errors || !control(COW_BEGIN, target, 0)) {
+    close((int)fd);
+    close((int)gate[0]);
+    close((int)gate[1]);
+    syscall2(SYS_MUNMAP, area, page_bytes * 2);
+    return 4;
+  }
+  int status = 0;
+  long child = fork();
+  if (child == 0) {
+    unsigned char ready = 0;
+    while (read((int)gate[0], &ready, 1) == 0) {
+      sched_yield();
+    }
+    close((int)gate[0]);
+    close((int)gate[1]);
+    bytes[0] = pattern; // Resolve only the prefix page's COW before pressure.
+    // Warm the child's output stack, including syscall-call frames, before
+    // draining memory. The target remains shared and is only read here.
+    unsigned long now = 0;
+    errors = ready != 1 || syscall2(SYS_CLOCK_GETTIME, 0, (long)&now) != 0 || bytes[page_bytes] != pattern;
+    if (errors || !control(COW_ARM, target, 0)) {
+      _exit(93); // Fixture preparation failed, not the expected fatal store.
+    }
+    if (kind == USER_FAULT) {
+      *(volatile unsigned char *)target = 0;
+      _exit(94); // A successful store must never pass as an isolated fault.
+    }
+    // The eight-byte read crosses four bytes on either side of the boundary.
+    const long prefix = kind == PARTIAL_READ ? 4 : 0;
+    if (kind == COPY_FAULT) {
+      errors |= (unsigned long)(syscall2(SYS_CLOCK_GETTIME, 0, target) != -14) << 1;
+    }
+    long result = read((int)fd, (void *)(target - prefix), 8);
+    errors |= (unsigned long)(result != (prefix ? prefix : -14)) << 2;
+    errors |= (unsigned long)(syscall3(SYS_LSEEK, fd, 0, 1) != prefix) << 3;
+    errors |= (unsigned long)!control(COW_CHECK, target, 0) << 4;
+    errors |= (unsigned long)!control(COW_RELEASE, target, 0) << 5;
+    const long remaining = 8 - prefix;
+    errors |= (unsigned long)(read((int)fd, (void *)target, remaining) != remaining) << 6;
+    for (long i = 0; i < prefix; ++i) {
+      errors |= (unsigned long)(bytes[page_bytes - prefix + i] != (unsigned char)i) << 7;
+    }
+    for (long i = 0; i < page_bytes; ++i) {
+      const unsigned char expected = i < remaining ? (unsigned char)(prefix + i) : pattern;
+      errors |= (unsigned long)(bytes[page_bytes + i] != expected) << 8;
+    }
+    errors |= (unsigned long)!control(COW_SPLIT, target, 0) << 9;
+    _exit(errors ? 98 : 37);
+  }
+  // A pipe gate makes the parent's wait destination private before the child
+  // can exhaust PFA. It does not rely on which fork continuation runs first.
+  status = (int)getpid();
+  unsigned char ready = 1;
+  errors |= (unsigned long)(child <= 0 || write((int)gate[1], &ready, 1) != 1) << 1;
+  long waited = child > 0 ? waitpid(child, &status, 0) : -1;
+  errors |= (unsigned long)!control(COW_FINISH, target, 0) << 2;
+  // The native fault path exits with -SIGSEGV; wait encodes its low byte.
+  const int expected_exit = kind == USER_FAULT ? ((-SIGSEGV) & 255) : 37;
+  errors |= (unsigned long)(waited != child || ((status >> 8) & 255) != expected_exit) << 3;
+  for (long i = 0; i < page_bytes * 2; ++i) {
+    errors |= (unsigned long)(bytes[i] != pattern) << 4;
+  }
+  // The survivor must retain ordinary access after its peer failed or split.
+  bytes[page_bytes] = 0;
+  errors |= (unsigned long)(bytes[page_bytes] != 0) << 5;
+  errors |= (unsigned long)(close((int)fd) != 0) << 6;
+  errors |= (unsigned long)(close((int)gate[0]) != 0) << 7;
+  errors |= (unsigned long)(close((int)gate[1]) != 0) << 7;
+  errors |= (unsigned long)(syscall2(SYS_MUNMAP, area, page_bytes * 2) != 0) << 8;
+  return errors;
+}
+
+// Ordinals select the three cases in uaccess_cow_fault's local protocol enum.
+static unsigned long uaccess_cow_copy_fault(void) { return uaccess_cow_fault(0); }
+static unsigned long uaccess_cow_partial_read(void) { return uaccess_cow_fault(1); }
+static unsigned long uaccess_cow_user_fault(void) { return uaccess_cow_fault(2); }
+
+long frame_register_probe(long number, long signal_pid);
 static volatile int handled_signo;
 static volatile long handler_pid;
 #if defined(__x86_64__)
@@ -843,9 +948,9 @@ static void frame_signal_handler(int signo) {
 static unsigned long frame_signal_return(void) {
   struct sigaction_t action = {(unsigned long)frame_signal_handler, 0, 0};
   unsigned long errors = moss_sigaction(SIGUSR1, &action, 0) != 0;
-  long result = frame_register_probe(SYS_KILL);
+  long result = frame_register_probe(SYS_KILL, getpid());
   errors |= (unsigned long)(result != 0 || handled_signo != SIGUSR1 || handler_pid != getpid()) << 1;
-  errors |= (unsigned long)(frame_register_probe(SYS_GETPID) != getpid()) << 2;
+  errors |= (unsigned long)(frame_register_probe(SYS_GETPID, 0) != getpid()) << 2;
   action.handler = SIG_DFL;
   errors |= (unsigned long)(moss_sigaction(SIGUSR1, &action, 0) != 0) << 3;
   return errors;
@@ -1200,6 +1305,63 @@ static unsigned long vm_access_permissions(void) {
   return errors;
 }
 
+static unsigned long vm_kernel_isolation(long target) {
+  // Private validation controls 50/51 prepare an actual kernel mapping and
+  // check its contents after the child is reaped; keep validation.cpp in sync.
+  enum { ISOLATION_PREPARE = 50, ISOLATION_VERIFY = 51 };
+  // One native base page proves legal user loads/stores survive every attack.
+  const long page_bytes = 4096;
+  long area = syscall6(SYS_MMAP, 0, page_bytes, 3, 0x22, -1, 0);
+  if (area <= 0) {
+    return 1;
+  }
+  volatile unsigned *user = (volatile unsigned *)area;
+  const unsigned canary = 0x5a39c681; // Nonzero mixed bytes expose clobbering and demand-zero replacement.
+  *user = canary;
+  const long parent = getpid();
+  unsigned long errors = 0;
+  // Exercise both the identity mapping and its high direct-map alias. Each
+  // operation gets a separate child so a rejected read cannot hide an allowed write.
+  for (long alias = 0; alias < 2; ++alias) {
+    for (long write = 0; write < 2; ++write) {
+      long address = control(ISOLATION_PREPARE, target, alias);
+      if (!address) {
+        errors |= 1;
+        continue;
+      }
+      long child = fork();
+      if (child == 0) {
+        // Use aligned 32-bit accesses for the interrupt-controller registers
+        // as well as RAM. Inline assembly keeps forbidden writes to text/RO
+        // objects from being optimized away as undefined C behavior.
+        if (write) {
+#if defined(__aarch64__)
+          asm volatile("str wzr, [%0]" : : "r"(address) : "memory");
+#elif defined(__x86_64__)
+          asm volatile("movl $0, (%0)" : : "r"(address) : "memory");
+#else
+          asm volatile("sw zero, 0(%0)" : : "r"(address) : "memory");
+#endif
+        } else {
+          unsigned value = *(volatile unsigned *)address;
+          asm volatile("" : : "r"(value) : "memory");
+        }
+        _exit(94); // A completed forbidden access must never share the fault exit marker.
+      }
+      // Moss currently encodes fatal page faults as (-SIGSEGV)&255, not the
+      // POSIX wait signal encoding. The exact code rejects unrelated exits.
+      errors |= (unsigned long)!wait_exit(child, 245) << 1;
+      errors |= (unsigned long)!control(ISOLATION_VERIFY, target, alias) << 2;
+      errors |= (unsigned long)(getpid() != parent || *user != canary) << 3;
+      *user = canary ^ 1U;
+      errors |= (unsigned long)(*user != (canary ^ 1U)) << 4;
+      *user = canary;
+    }
+  }
+  errors |= (unsigned long)(syscall2(SYS_MUNMAP, area, page_bytes) != 0) << 5;
+  return errors;
+}
+
 static unsigned long vm_brk_lifecycle(void) {
   // Moss exposes 4 KiB user pages; three pages make one fully released page
   // remain after shrinking to a deliberately non-page-aligned break.
@@ -1249,12 +1411,13 @@ static unsigned long vm_brk_lifecycle(void) {
   }
 
   unsigned long errors = (unsigned long)!vm_fault(base, VM_FAULT_READ) * ERR_INITIAL_VISIBLE;
-  const long grown = base + GROW_PAGES * PAGE_BYTES;
+  const long grown = base + (long)GROW_PAGES * PAGE_BYTES;
   if (syscall1(SYS_BRK, grown) != grown) {
     return errors | ERR_GROW;
   }
   volatile unsigned char *const first = (volatile unsigned char *)base;
-  volatile unsigned char *const released = (volatile unsigned char *)(base + 2 * PAGE_BYTES);
+  // The third page is wholly beyond the partially retained second page.
+  volatile unsigned char *const released = (volatile unsigned char *)(base + 2L * PAGE_BYTES);
   *first = STALE_PATTERN;
   *released = STALE_PATTERN;
 
@@ -1264,18 +1427,18 @@ static unsigned long vm_brk_lifecycle(void) {
   errors |= (unsigned long)(syscall1(SYS_BRK, grown) != grown) * ERR_REGROW;
   errors |= (unsigned long)(*released != 0) * ERR_STALE_CONTENT;
 
-  const long collision_address = base + COLLISION_PAGE * PAGE_BYTES;
+  const long collision_address = base + (long)COLLISION_PAGE * PAGE_BYTES;
   long collision =
       syscall6(SYS_MMAP, collision_address, PAGE_BYTES, MMAP_PROT_READ | MMAP_PROT_WRITE, MAP_PRIVATE_ANONYMOUS, -1, 0);
   errors |= (unsigned long)(collision != collision_address) * ERR_COLLISION_MAP;
   if (collision == collision_address) {
     volatile unsigned char *const collision_byte = (volatile unsigned char *)collision;
     *collision_byte = COLLISION_PATTERN;
-    const long rejected = base + COLLISION_GROW_PAGES * PAGE_BYTES;
+    const long rejected = base + (long)COLLISION_GROW_PAGES * PAGE_BYTES;
     errors |= (unsigned long)(syscall1(SYS_BRK, rejected) != grown) * ERR_COLLISION_GROW;
     errors |= (unsigned long)(syscall1(SYS_BRK, 0) != grown) * ERR_PARTIAL_COMMIT;
     errors |= (unsigned long)(*collision_byte != COLLISION_PATTERN) * ERR_COLLISION_CONTENT;
-    errors |= (unsigned long)!vm_fault(base + GROW_PAGES * PAGE_BYTES, VM_FAULT_READ) * ERR_GAP_VISIBLE;
+    errors |= (unsigned long)!vm_fault(base + (long)GROW_PAGES * PAGE_BYTES, VM_FAULT_READ) * ERR_GAP_VISIBLE;
     errors |= (unsigned long)(syscall2(SYS_MUNMAP, collision, PAGE_BYTES) != 0) * ERR_COLLISION_UNMAP;
   } else if (collision > 0) {
     (void)syscall2(SYS_MUNMAP, collision, PAGE_BYTES);
@@ -1984,6 +2147,34 @@ static int test_sigprocmask(void) {
 }
 
 // Test 5: sigaltstack
+static volatile int alt_nested_errors, alt_nested_phase;
+static unsigned long alt_nested_base, alt_nested_top;
+
+static void alt_nested_handler(int signo) {
+  struct stack_t current, disabled = {0, 0, SS_DISABLE};
+  unsigned long mask = 0;
+  // An address in this C frame proves both handlers use the registered stack.
+  volatile unsigned long canary = 0x71b59a63UL; // Mixed bytes expose nested-stack clobbering.
+  alt_nested_errors |= (unsigned long)&canary < alt_nested_base || (unsigned long)&canary >= alt_nested_top;
+  alt_nested_errors |= sigaltstack(0, &current) != 0 || current.ss_flags != SS_ONSTACK;
+  alt_nested_errors |= sigaltstack(&disabled, 0) != -1; // EPERM while an alternate-stack handler is active.
+  alt_nested_errors |= sigprocmask(SIG_SETMASK, 0, &mask) != 0;
+  unsigned long expected = (1UL << SIGHUP) | (1UL << SIGUSR1);
+  if (signo == SIGUSR2) {
+    expected |= 1UL << SIGUSR2;
+    alt_nested_errors |= alt_nested_phase != 1 || mask != expected;
+    alt_nested_phase = 2;
+  } else {
+    alt_nested_errors |= signo != SIGUSR1 || alt_nested_phase != 0 || mask != expected;
+    alt_nested_phase = 1;
+    alt_nested_errors |= kill(getpid(), SIGUSR2) != 0 || alt_nested_phase != 2;
+    alt_nested_errors |= canary != 0x71b59a63UL;
+    alt_nested_errors |= sigprocmask(SIG_SETMASK, 0, &mask) != 0 || mask != expected;
+    alt_nested_errors |= sigaltstack(0, &current) != 0 || current.ss_flags != SS_ONSTACK;
+    alt_nested_phase = 3;
+  }
+}
+
 static int test_sigaltstack(void) {
   print("\n=== Test 5: sigaltstack ===\n");
   handler_called = 0;
@@ -2018,6 +2209,29 @@ static int test_sigaltstack(void) {
 
   if (handler_called && handler_sp >= altstack_base && handler_sp < altstack_top) {
     print("  PASS: handler ran on altstack\n");
+    alt_nested_base = altstack_base;
+    alt_nested_top = altstack_top;
+    sa.handler = (unsigned long)alt_nested_handler;
+    if (moss_sigaction(SIGUSR1, &sa, 0) != 0) {
+      return 1;
+    }
+    // A nested handler uses the current alternate stack regardless of its own
+    // SA_ONSTACK bit. Repeat after a complete return to verify state reset.
+    const unsigned long initial_mask = 1UL << SIGHUP;
+    for (int onstack = 0; onstack <= 1; ++onstack) {
+      sa.flags = onstack ? SA_ONSTACK : 0;
+      alt_nested_phase = 0;
+      if (moss_sigaction(SIGUSR2, &sa, 0) != 0 || sigprocmask(SIG_SETMASK, &initial_mask, 0) != 0 ||
+          frame_register_probe(SYS_KILL, getpid()) != 0 || alt_nested_phase != 3 || alt_nested_errors) {
+        return 1;
+      }
+      unsigned long restored = 0;
+      struct stack_t current;
+      if (sigprocmask(SIG_SETMASK, 0, &restored) != 0 || restored != initial_mask || sigaltstack(0, &current) != 0 ||
+          current.ss_flags != 0) {
+        return 1;
+      }
+    }
     return 0;
   }
   if (handler_called) {
@@ -2135,6 +2349,152 @@ _Static_assert(__builtin_offsetof(struct signal_frame_t, fp) == 304, "signal FP 
 static unsigned char frame_stack[16384] __attribute__((aligned(16)));
 static volatile int frame_errors;
 static volatile int frame_mode;
+static unsigned long frame_kernel_address;
+
+static void reject_frame_field(struct signal_frame_t *sf, unsigned long *field, unsigned long value) {
+  const unsigned long saved = *field;
+  *field = value;
+  frame_errors |= try_sigreturn((unsigned long)sf) != -14;
+  *field = saved;
+}
+
+// Issue kill from a caller-selected, aligned user SP without a compiler frame.
+// Native syscall IDs 14/1 are kill/exit; exit marker 93 means the delivery that
+// should have killed this child unexpectedly returned to the interrupted PC.
+__attribute__((naked, noreturn)) static void signal_from_stack(unsigned long stack, long pid, long signo) {
+#if defined(__aarch64__)
+  asm volatile("mov sp, x0; mov x0, x1; mov x1, x2; mov x8, #14; svc #0; "
+               "mov x0, #93; mov x8, #1; svc #0; brk #0");
+#elif defined(__x86_64__)
+  asm volatile("mov %rdi, %rsp; mov %rsi, %rdi; mov %rdx, %rsi; mov $14, %eax; syscall; "
+               "mov $93, %edi; mov $1, %eax; syscall; ud2");
+#else
+  asm volatile("mv sp, a0; mv a0, a1; mv a1, a2; li a7, 14; ecall; "
+               "li a0, 93; li a7, 1; ecall; unimp");
+#endif
+}
+
+static void overflow_inner_handler(int signo) {
+  (void)signo;
+  _exit(94); // Distinguish an illegally delivered nested frame from rejection.
+}
+
+static void overflow_outer_handler(int signo) {
+  struct stack_t current;
+  if (signo != SIGUSR1 || sigaltstack(0, &current) != 0 || !(current.ss_flags & SS_ONSTACK)) {
+    _exit(91); // The intended on-altstack precondition was not established.
+  }
+  // One ABI alignment unit remains above the registered base. The complete
+  // 848-byte frame cannot fit, even though memory below that base is writable.
+  signal_from_stack(current.ss_sp + 16, getpid(), SIGUSR2);
+}
+
+static int test_altstack_overflow(void) {
+  // One writable base page below the registered stack ensures a missing range
+  // check cannot accidentally pass because an unmapped guard page faults. Two
+  // further pages provide the outer frame and C-handler workspace; the nested
+  // probe explicitly shrinks the remaining capacity to one alignment unit.
+  enum { PREFIX_BYTES = 4096, STACK_BYTES = 2 * PREFIX_BYTES };
+  const unsigned char canary = 0xa7; // Distinct from zero and serialized frame bytes.
+  for (unsigned i = 0; i < PREFIX_BYTES; ++i) {
+    frame_stack[i] = canary;
+  }
+  long child = fork();
+  if (child == 0) {
+    struct stack_t ss = {(unsigned long)frame_stack + PREFIX_BYTES, STACK_BYTES, 0};
+    struct sigaction_t outer = {(unsigned long)overflow_outer_handler, 0, SA_ONSTACK};
+    struct sigaction_t inner = {(unsigned long)overflow_inner_handler, 0, SA_ONSTACK};
+    if (sigaltstack(&ss, 0) != 0 || moss_sigaction(SIGUSR1, &outer, 0) != 0 ||
+        moss_sigaction(SIGUSR2, &inner, 0) != 0) {
+      _exit(92); // Setup failure must not match the fatal-delivery exit code.
+    }
+    kill(getpid(), SIGUSR1);
+    _exit(93);
+  }
+  int status = 0;
+  // Failed signal-frame setup currently terminates with 128 + signo. Preserve
+  // that native contract, rather than accepting any unrelated child death.
+  const int rejected = child > 1 && waitpid(child, &status, 0) == child && ((status >> 8) & 255) == 128 + SIGUSR2;
+  if (!rejected) {
+    print("altstack overflow child status: ");
+    print_long(status);
+    print("\n");
+  }
+  for (unsigned i = 0; i < PREFIX_BYTES; ++i) {
+    if (((volatile unsigned char *)frame_stack)[i] != canary) {
+      return 1; // Child failure must not corrupt the parent's COW backing.
+    }
+  }
+  return !rejected;
+}
+
+static int test_altstack_boundaries(void) {
+  // Native pages are 4 KiB; two pages leave ordinary handler workspace, while
+  // the adjacent read-only page tests whole-interval admission across VMAs.
+  enum { PAGE_BYTES = 4096, STACK_BYTES = 2 * PAGE_BYTES };
+  // Native mmap protection 3=R|W, 1=R; 0x22 is PRIVATE|ANONYMOUS, not MAP_FIXED.
+  long area = syscall6(SYS_MMAP, 0, STACK_BYTES, 3, 0x22, -1, 0);
+  if (area <= 0) {
+    return 1;
+  }
+  long adjacent = syscall6(SYS_MMAP, area + STACK_BYTES, PAGE_BYTES, 1, 0x22, -1, 0);
+  if (adjacent != area + STACK_BYTES) {
+    return 1; // Prove the intended adjacent VMA layout, not just two mappings.
+  }
+  struct stack_t ss = {(unsigned long)area, STACK_BYTES + PAGE_BYTES, 0};
+  int errors = sigaltstack(&ss, 0) != -14;
+  ss.ss_sp = (unsigned long)vm_rodata;
+  ss.ss_size = sizeof(vm_rodata);
+  errors |= sigaltstack(&ss, 0) != -14;
+  ss.ss_sp = (unsigned long)area;
+  ss.ss_size = ~(unsigned long)area + 1; // Exact end-address wrap to zero.
+  errors |= sigaltstack(&ss, 0) != -14;
+  errors |= syscall2(SYS_MUNMAP, adjacent, PAGE_BYTES) != 0;
+  ss.ss_sp = (unsigned long)adjacent;
+  ss.ss_size = PAGE_BYTES;
+  errors |= sigaltstack(&ss, 0) != -14;
+  // Both aliases refer to a real mapped kernel-data sentinel. Controls 50/51
+  // share the VM-isolation fixture; target 2 identifies kernel data.
+  for (long alias = 0; alias <= 1; ++alias) {
+    long address = control(50, 2, alias);
+    if (!address) {
+      return 1;
+    }
+    ss.ss_sp = (unsigned long)address;
+    errors |= sigaltstack(&ss, 0) != -14;
+    errors |= !control(51, 2, alias);
+  }
+  struct stack_t current;
+  errors |= sigaltstack(0, &current) != 0 || current.ss_flags != SS_DISABLE;
+  // Registration is not a lease: delivery must revalidate a later unmap or
+  // read-only replacement. Each attack has its own child and exact exit oracle.
+  const unsigned long canary = 0x6d71b3a5UL; // Nonzero mixed bytes detect parent-page corruption.
+  *(volatile unsigned long *)area = canary;
+  if (!control(50, 2, 0)) {
+    return 1;
+  }
+  for (int readonly = 0; readonly <= 1; ++readonly) {
+    long child = fork();
+    if (child == 0) {
+      struct stack_t child_stack = {(unsigned long)area, STACK_BYTES, 0};
+      struct sigaction_t action = {(unsigned long)overflow_inner_handler, 0, SA_ONSTACK};
+      if (sigaltstack(&child_stack, 0) != 0 || moss_sigaction(SIGUSR1, &action, 0) != 0 ||
+          syscall2(SYS_MUNMAP, area, STACK_BYTES) != 0) {
+        _exit(92); // Setup failures are distinct from failed signal delivery.
+      }
+      if (readonly && syscall6(SYS_MMAP, area, STACK_BYTES, 1, 0x22, -1, 0) != area) {
+        _exit(92);
+      }
+      kill(getpid(), SIGUSR1);
+      _exit(93); // Delivery unexpectedly returned; handler execution uses 94.
+    }
+    errors |= !wait_exit(child, 128 + SIGUSR1);
+    errors |= *(volatile unsigned long *)area != canary;
+  }
+  errors |= !control(51, 2, 0);
+  errors |= syscall2(SYS_MUNMAP, area, STACK_BYTES) != 0;
+  return errors;
+}
 
 static void frame_handler(int signo) {
   unsigned long red_zone = 0;
@@ -2143,8 +2503,8 @@ static void frame_handler(int signo) {
 #endif
   struct signal_frame_t *sf = (void *)(frame_stack + sizeof(frame_stack) - red_zone - sizeof(struct signal_frame_t));
   frame_errors |= signo != SIGUSR1;
-  // Modes 0/1/2 corrupt magic/PC/SP; mode 3 checks privileged flag sanitizing.
-  // x86 mode 4 additionally validates the architecture FP control payload.
+  // Modes 0/1/2 corrupt magic/PC/SP; mode 3 requests privileged flags, mode 4
+  // observes the next native trap after that return; x86 mode 5 checks MXCSR.
   if (frame_mode < 3) {
     unsigned long *field = &sf->sp;
     if (frame_mode == 0) {
@@ -2156,6 +2516,29 @@ static void frame_handler(int signo) {
     *field = frame_mode == 0 ? 0 : 0xfffffffffffff000UL;
     frame_errors |= try_sigreturn((unsigned long)sf) != -14;
     *field = saved;
+    if (frame_mode == 0) {
+      reject_frame_field(sf, &sf->pc, frame_kernel_address);
+      reject_frame_field(sf, &sf->sp, frame_kernel_address);
+      reject_frame_field(sf, &sf->pc, (unsigned long)frame_stack);                   // Writable, but not executable.
+      reject_frame_field(sf, &sf->sp, (unsigned long)vm_rodata + sizeof(vm_rodata)); // Read-only stack.
+      reject_frame_field(sf, &sf->sp, 0);
+      reject_frame_field(sf, &sf->previous, frame_kernel_address);
+#if !defined(__x86_64__)
+      // Unlike x86, native ARM/RV instruction and stack alignment is mandatory.
+      reject_frame_field(sf, &sf->pc, sf->pc | 1UL);
+      reject_frame_field(sf, &sf->sp, sf->sp - 1);
+#endif
+      // A half-aligned frame and a valid copied frame at an inactive address
+      // must fail without consuming the real active frame or changing masks.
+      frame_errors |= try_sigreturn((unsigned long)sf + sizeof(unsigned long)) != -14;
+      struct signal_frame_t *copy = (void *)frame_stack;
+      // This freestanding fixture has no libc memcpy; volatile byte accesses
+      // also force the compiler to materialize the entire forged user frame.
+      for (unsigned i = 0; i < sizeof(*sf); ++i) {
+        ((volatile unsigned char *)copy)[i] = ((volatile unsigned char *)sf)[i];
+      }
+      frame_errors |= try_sigreturn((unsigned long)copy) != -14;
+    }
   } else if (frame_mode == 3) {
     // The kernel may restore arithmetic flags, never privileged return modes,
     // interrupt masks, IOPL, SUM or a blocked SIGKILL/SIGSTOP.
@@ -2167,6 +2550,17 @@ static void frame_handler(int signo) {
     sf->flags |= (1UL << 8) | (1UL << 18) | 2; // SPP, SUM, SIE
 #endif
     sf->mask |= (1UL << SIGKILL) | (1UL << SIGSTOP);
+  } else if (frame_mode == 4) {
+    // Inspect a fresh kernel-written frame after the forged return, not the
+    // userspace buffer we modified. Ordinary GP/arithmetic flags are checked
+    // independently by frame_register_probe around each signal delivery.
+#if defined(__aarch64__)
+    frame_errors |= (sf->flags & 0x3cfUL) != 0;
+#elif defined(__x86_64__)
+    frame_errors |= (sf->flags & 0x1a3000UL) != 0;
+#else
+    frame_errors |= (sf->flags & ((1UL << 8) | (1UL << 18) | 2)) != 0;
+#endif
   }
 #if defined(__x86_64__)
   else {
@@ -2185,20 +2579,37 @@ static void frame_handler(int signo) {
 
 static int test_frame_validation(void) {
   struct stack_t ss = {(unsigned long)frame_stack, sizeof(frame_stack), 0};
-  struct sigaction_t sa = {(unsigned long)frame_handler, 0, SA_ONSTACK};
+  struct sigaction_t sa = {(unsigned long)sigusr1_handler, 0, SA_ONSTACK};
   if (sigaltstack(&ss, 0) != 0 || moss_sigaction(SIGUSR1, &sa, 0) != 0) {
     return 1;
   }
-  // Four common frame cases plus the fifth, x86-only MXCSR case above.
+  // Complete one benign return before freezing the root-table snapshot. The
+  // lazy sigreturn trampoline at 6 GiB occupies a separate Sv39 root entry;
+  // its first instruction fault legitimately allocates that user subtree.
+  handler_called = 0;
+  if (kill(getpid(), SIGUSR1) != 0 || !handler_called) {
+    return 1;
+  }
+  sa.handler = (unsigned long)frame_handler;
+  if (moss_sigaction(SIGUSR1, &sa, 0) != 0) {
+    return 1;
+  }
+  // Existing isolation controls 50/51 snapshot/verify real kernel data and
+  // its root mapping. Target 2 is kernel data; alias 0 is the identity address.
+  frame_kernel_address = (unsigned long)control(50, 2, 0);
+  if (!frame_kernel_address) {
+    return 1;
+  }
+  // Five common frame cases plus the sixth, x86-only MXCSR case above.
   const int count =
 #if defined(__x86_64__)
-      5;
+      6;
 #else
-      4;
+      5;
 #endif
   for (frame_mode = 0; frame_mode < count; ++frame_mode) {
     handler_called = 0;
-    if (kill(getpid(), SIGUSR1) != 0 || !handler_called || frame_errors) {
+    if (frame_register_probe(SYS_KILL, getpid()) != 0 || !handler_called || frame_errors) {
       return 1;
     }
     unsigned long mask = ~0UL;
@@ -2210,7 +2621,7 @@ static int test_frame_validation(void) {
       return 1;
     }
   }
-  return 0;
+  return !control(51, 2, 0);
 }
 
 static int test_exec_reset(void) {
@@ -2543,8 +2954,9 @@ static int test_signal_wakeup_affinity(void) {
 
 static int console_signal_wait(int partial) {
   const long fd = open("/dev/console", 0);
-  if (fd < 0)
+  if (fd < 0) {
     return 1;
+  }
   if (partial) {
     char warmup;
     // The host sends two bytes together. Consume one before forking so input
@@ -2572,8 +2984,9 @@ static int console_signal_wait(int partial) {
   if (child == 0) {
     close((int)ready_pipe[0]);
     cpu_mask = 2;
-    if (syscall3(20, 0, sizeof(cpu_mask), (long)&cpu_mask) != 0)
+    if (syscall3(20, 0, sizeof(cpu_mask), (long)&cpu_mask) != 0) {
       _exit(1);
+    }
     // Affinity moves the continuation through sleep/wakeup; readiness is observed
     // separately below, so this delay is not a guessed parent-read window.
     unsigned long delay = 1000000; // One millisecond in nanoseconds.
@@ -2584,8 +2997,9 @@ static int console_signal_wait(int partial) {
     // Query the existing validation observation of the real read continuation,
     // so the signal originates on CPU 1 after CPU 0 has entered console I/O.
     long ready;
-    while ((ready = syscall3(511, 39, parent, fd)) == 0)
+    while ((ready = syscall3(511, 39, parent, fd)) == 0) {
       sched_yield();
+    }
     failed |= ready != 1 || current_cpu() != 1;
     failed |= kill(parent, SIGUSR1) != 0;
     _exit(failed);
@@ -2609,8 +3023,9 @@ static int console_signal_wait(int partial) {
   errors |= result != (partial ? 1 : -4) || handler_called != 1;
   errors |= partial && bytes[0] != 'k';
   // Console echo has no newline; keep the next validation event on its own line.
-  if (partial)
+  if (partial) {
     print("\n");
+  }
   errors |= waitpid(child, &status, 0) != child || status != 0;
   errors |= close((int)fd) != 0;
   return errors;
@@ -2704,6 +3119,8 @@ static int signal_case(const char *name) {
                {"sig_ign", test_sig_ign},
                {"invalid_arguments", test_invalid_arguments},
                {"frame_validation", test_frame_validation},
+               {"altstack_overflow", test_altstack_overflow},
+               {"altstack_boundaries", test_altstack_boundaries},
                {"inheritance", test_inheritance},
                {"pid_lifecycle", test_pid_lifecycle},
                {"pipe_sigpipe", test_pipe_sigpipe},
@@ -2746,9 +3163,9 @@ void _start(long argc, const char **argv) {
       (void)*(const volatile unsigned char *)page;
     }
     unsigned long (*const tests[])(void) = {
-        uaccess_allocation_fault, uaccess_write_fault,     uaccess_read_fault,
-        uaccess_partial_read,     uaccess_partial_write,   uaccess_partial_pipe_read,
-        uaccess_sigframe_fault,   uaccess_sigreturn_fault, uaccess_devices};
+        uaccess_allocation_fault, uaccess_write_fault,       uaccess_read_fault,       uaccess_partial_read,
+        uaccess_partial_write,    uaccess_partial_pipe_read, uaccess_sigframe_fault,   uaccess_sigreturn_fault,
+        uaccess_devices,          uaccess_cow_copy_fault,    uaccess_cow_partial_read, uaccess_cow_user_fault};
     for (long test = 0; test < (long)(sizeof(tests) / sizeof(tests[0])); ++test) {
       control(1, test, 0);
       unsigned long errors = tests[test]();
@@ -2759,13 +3176,13 @@ void _start(long argc, const char **argv) {
     control(3, 0, 0);
   } else if (mode == 6) {
     control(1, 0, 0);
-    long probe = frame_register_probe(SYS_GETPID);
+    long probe = frame_register_probe(SYS_GETPID, 0);
     if (!control(2, syscall6(511, 10, 11, 22, 33, 44, 55) == 12345 && probe == getpid(),
                  probe == getpid() ? 0 : probe)) {
       control(3, 0, 0);
     }
     control(1, 1, 0);
-    long child = frame_register_probe(SYS_FORK);
+    long child = frame_register_probe(SYS_FORK, 0);
     if (getpid() != 1) {
       _exit(child == 0 ? 37 : (int)(90 - child - 1000));
     }
@@ -2894,11 +3311,16 @@ void _start(long argc, const char **argv) {
     };
     for (long test = 0; test < EXEC_CASES; ++test) {
       control(1, test, 0);
-      unsigned long errors = test < EXEC_PROBE_CASES        ? exec_probe(test)
-                             : test == EXEC_ALLOCATION_CASE ? exec_allocation_rollback()
-                             : test == EXEC_MUTABLE_CASE    ? exec_mutable_snapshot_rollback()
-                             : test == EXEC_BOUNDARY_CASE   ? exec_boundary_load_plan()
-                                                            : 1;
+      unsigned long errors = 1;
+      if (test < EXEC_PROBE_CASES) {
+        errors = exec_probe(test);
+      } else if (test == EXEC_ALLOCATION_CASE) {
+        errors = exec_allocation_rollback();
+      } else if (test == EXEC_MUTABLE_CASE) {
+        errors = exec_mutable_snapshot_rollback();
+      } else if (test == EXEC_BOUNDARY_CASE) {
+        errors = exec_boundary_load_plan();
+      }
       if (!control(2, errors == 0, (long)errors)) {
         break;
       }
@@ -2975,6 +3397,8 @@ void _start(long argc, const char **argv) {
                            "sig_ign",
                            "invalid_arguments",
                            "frame_validation",
+                           "altstack_overflow",
+                           "altstack_boundaries",
                            "inheritance",
                            "pid_lifecycle",
                            "pipe_sigpipe",
@@ -3003,6 +3427,15 @@ void _start(long argc, const char **argv) {
     for (long test = 0; test < (long)(sizeof(tests) / sizeof(tests[0])); ++test) {
       control(1, test, 0);
       unsigned long errors = tests[test]();
+      if (!control(2, errors == 0, (long)errors)) {
+        control(3, 0, 0);
+      }
+    }
+    // Five kernel target classes follow the four existing VM cases. Each
+    // class tests read/write against both mappings of the same physical object.
+    for (long target = 0; target < 5; ++target) {
+      control(1, (long)(sizeof(tests) / sizeof(tests[0])) + target, 0);
+      unsigned long errors = vm_kernel_isolation(target);
       if (!control(2, errors == 0, (long)errors)) {
         break;
       }
@@ -3130,8 +3563,9 @@ void _start(long argc, const char **argv) {
     long child = affinity == 0 ? syscall0(SYS_FORK) : -1;
     if (child == 0) {
 #if defined(__x86_64__)
-      if (!parent_fp_state())
+      if (!parent_fp_state()) {
         _exit(97);
+      }
 #endif
       long peer = control(7, affinity, 0);
       if (peer == 2) {

@@ -71,6 +71,20 @@ CATALOG = {
     ],
     "containers.smp": ["interleaving"],
     "vfs.smp": ["shared_references"],
+    "mm.lifetime": ["held_readers", "hardware_root", "kernel_root"],
+    "mm.concurrent": ["cow_fault", "demand_fault"],
+    "mm.uaccess": ["copy_unmap", "copy_fork"],
+    "mm.tlb_broadcast": [
+        "local_remap",
+        "remote_remap",
+        "locked_remap",
+        "ipi_remap",
+        "pruned_remap",
+        "concurrent_remap_0",
+        "concurrent_remap_1",
+    ],
+    "mm.tlb_join.request_first": ["registration"],
+    "mm.tlb_join.cpu_first": ["registration"],
     "vfs": [
         "read_position_eof",
         "errors_readonly",
@@ -112,7 +126,17 @@ CATALOG = {
         "fork_process_allocation_rollback",
         "fork_metadata_allocation_rollback",
     ],
-    "users.vm": ["private_cow", "readonly_cow", "access_permissions", "brk_lifecycle"],
+    "users.vm": [
+        "private_cow",
+        "readonly_cow",
+        "access_permissions",
+        "brk_lifecycle",
+        "kernel_text",
+        "kernel_rodata",
+        "kernel_data",
+        "kernel_page_table",
+        "kernel_mmio",
+    ],
     "users.frame": ["native_frame", "fork_registers", "signal_return"],
     "users.uaccess": [
         "allocation_fault",
@@ -124,6 +148,9 @@ CATALOG = {
         "sigframe_fault",
         "sigreturn_fault",
         "devices",
+        "cow_copy_fault",
+        "cow_partial_read",
+        "cow_user_fault",
     ],
     "users.lifecycle": ["core_paths_recovery"],
     "users.applications": ["core_application_recovery"],
@@ -201,6 +228,8 @@ CATALOG = {
         "sig_ign",
         "invalid_arguments",
         "frame_validation",
+        "altstack_overflow",
+        "altstack_boundaries",
         "inheritance",
         "pid_lifecycle",
         "pipe_sigpipe",
@@ -222,12 +251,15 @@ CATALOG = {
         "vma_boundaries",
     ],
     "mm.transactions": [
+        "user_copy_version",
+        "raw_copy_fixup",
         "map_preserves_existing",
         "map_allocation_rollback",
         "map_rejects_blocks",
         "clone_preserves_destination",
         "clone_allocation_rollback",
         "address_space_heap_rollback",
+        "address_space_control_rollback",
         "vma_heap_rollback",
         "asid_leases",
         "unmap_reclaims_tables",
@@ -261,6 +293,10 @@ FUNCTIONAL = [
     "mm",
     "mm.permissions",
     "mm.transactions",
+    "mm.lifetime",
+    "mm.concurrent",
+    "mm.uaccess",
+    "mm.tlb_broadcast",
     "pfa",
     "heap",
     "containers",
@@ -282,6 +318,14 @@ FUNCTIONAL = [
     "users.busybox",
 ]
 BENCHMARKS = [name for name in CATALOG if name.startswith("bench.")]
+TLB_JOIN = ["mm.tlb_join.request_first", "mm.tlb_join.cpu_first"]
+
+
+def functional_workloads(arch: str) -> list[str]:
+    """Native broadcasts do not participate in the software CPU-join protocol."""
+    return [*FUNCTIONAL, *(TLB_JOIN if arch in ("X64", "RISCV64") else [])]
+
+
 BENCHMARK_KINDS = {
     f"bench.{name}": "event_sum" if name in ("signal", "wakeup", "timer") else "elapsed_batch"
     for name in ("fault", "cow", "switch", "wakeup", "timer", "lifecycle", "signal", "pipe")
@@ -1126,6 +1170,14 @@ def run(
         raise typer.BadParameter("containers.smp requires at least 2 CPUs; select single-worker workloads for 1 CPU")
     if "vfs.smp" in selected and cpus < 2:
         raise typer.BadParameter("vfs.smp requires at least 2 CPUs; select single-worker workloads for 1 CPU")
+    if "mm.lifetime" in selected and cpus < 2:
+        raise typer.BadParameter("mm.lifetime requires at least 2 CPUs; select single-worker workloads for 1 CPU")
+    if "mm.concurrent" in selected and cpus < 2:
+        raise typer.BadParameter("mm.concurrent requires at least 2 CPUs; select single-worker workloads for 1 CPU")
+    if "mm.uaccess" in selected and cpus < 2:
+        raise typer.BadParameter("mm.uaccess requires at least 2 CPUs; select single-worker workloads for 1 CPU")
+    if "mm.tlb_broadcast" in selected and cpus < 2:
+        raise typer.BadParameter("mm.tlb_broadcast requires at least 2 CPUs")
     if "scheduler" in selected and cpus < 2:
         raise typer.BadParameter("scheduler migration probe requires at least 2 CPUs")
     if "users.timers" in selected and cpus < 3:
@@ -1137,6 +1189,13 @@ def run(
     ):
         raise typer.BadParameter("deadlines must be positive")
     cfg = Artifacts.load(manifest)
+    if workload is None and not (benchmark or selftest or stability):
+        selected = functional_workloads(cfg.arch)
+    if any(name in TLB_JOIN for name in selected):
+        if cfg.arch not in ("X64", "RISCV64"):
+            raise typer.BadParameter("TLB CPU-join workloads require x64 or riscv64")
+        if cpus < 2:
+            raise typer.BadParameter("TLB CPU-join workloads require at least 2 CPUs")
     cpu, memory_mib = resolve_resources(cfg.arch, machine, cpu, memory_mib)
     if expected_ram_mib is None:
         expected_ram_mib = RASPI_CONFIG.get((machine or "").split(",")[0], {}).get("firmware_ram_mib", memory_mib)

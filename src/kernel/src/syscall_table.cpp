@@ -3,7 +3,6 @@
 
 module;
 
-
 module moss.kernel;
 
 import moss.abi;
@@ -53,16 +52,16 @@ inline constexpr unsigned VMA_NODE = 5;
 // Shared process uaccess owns VMA admission and fault-contained copies.
 // The syscall layer translates its failure to the Moss EFAULT return value.
 
-/// Return the calling process's AddressSpace, or nullptr.
-static process::AddressSpace *get_current_address_space() noexcept {
+/// Retain the calling process's published AddressSpace, or an empty owner.
+static shared_ptr<process::AddressSpace> get_current_address_space() noexcept {
   using namespace moss::kernel::process;
   Thread *cur = CfsScheduler::get_current_task();
   if (!cur) {
-    return nullptr;
+    return {};
   }
   auto proc = g_process_manager ? g_process_manager->find_process(cur->owner_pid) : shared_ptr<Process>{};
   if (!proc) {
-    return nullptr;
+    return {};
   }
   return proc->address_space();
 }
@@ -72,7 +71,7 @@ static bool validate_user_range(u64 user_addr, usize len, u32 required_flags) no
   if (len == 0) {
     return true;
   }
-  auto *as = get_current_address_space();
+  auto as = get_current_address_space();
   return as && as->allows_user_access(user_addr, len, required_flags);
 }
 
@@ -211,20 +210,23 @@ long sys_arch_prctl(long operation, long address, long /*unused*/, long /*unused
                     long /*unused*/) noexcept {
 #if defined(MOSS_ARCH_X64)
   auto *thread = process::CfsScheduler::get_current_task();
-  if (!thread)
+  if (!thread) {
     return -errc::ESRCH;
+  }
   // ARCH_* operations and IA32_FS_BASE (0xC0000100) match the native x64
   // TLS contract. WRMSR/RDMSR split the 64-bit base into two 32-bit words.
   if (operation == 0x1002) { // ARCH_SET_FS
     auto base = static_cast<u64>(address);
-    if (base != 0 && !mm::PageTableManager::is_user_range(base, 1))
+    if (base != 0 && !mm::PageTableManager::is_user_range(base, 1)) {
       return -errc::EINVAL;
+    }
     const bool restore_irqs = arch::interrupts_enabled();
     arch::disable_interrupts();
     thread->context.fs_base = base;
     asm volatile("wrmsr" ::"c"(0xC0000100U), "a"(static_cast<u32>(base)), "d"(static_cast<u32>(base >> 32)) : "memory");
-    if (restore_irqs)
+    if (restore_irqs) {
       arch::enable_interrupts();
+    }
     return 0;
   }
   if (operation == 0x1003) { // ARCH_GET_FS
@@ -257,12 +259,11 @@ long sys_fork(long /*unused*/, long /*unused*/, long /*unused*/, long /*unused*/
 
   auto parent_proc =
       g_process_manager ? g_process_manager->find_process(parent_thread->owner_pid) : shared_ptr<Process>{};
-  if (!parent_proc || !parent_proc->address_space()) {
+  auto parent_as = parent_proc ? parent_proc->address_space() : shared_ptr<AddressSpace>{};
+  if (!parent_as) {
     log::klog::error("sys_fork: no parent process or address space");
     return -errc::EAGAIN;
   }
-
-  AddressSpace *parent_as = parent_proc->address_space();
 
   // The live entry owns the frame; never infer it from a stack-top offset.
   auto *frame = parent_thread->trap_frame;
@@ -298,56 +299,51 @@ long sys_fork(long /*unused*/, long /*unused*/, long /*unused*/, long /*unused*/
   }
   auto child_as = moss::move(*child_as_result);
 
-  // 5. Clone page tables with COW
-  auto cloned = mm::PageTableManager::clone_user_page_tables(parent_as->pgd_phys, child_as->pgd_phys);
+  // The child is unpublished. Hold only the parent's VM transaction through
+  // PTE/ref changes, TLB invalidation and the matching VMA/cursor snapshot.
+  // Release it before process-table cleanup or any later scheduling work.
+  const auto cloned = [&]() -> VoidResult {
+    auto transaction = parent_as->lock_vm();
+    auto tables = mm::PageTableManager::clone_user_page_tables(parent_as->pgd_phys, child_as->pgd_phys);
+    if (!tables) {
+      return tables;
+    }
+
+    // clone_user_page_tables synchronously invalidated every CPU after its
+    // COW commit. Do not reload a raw root here outside the ownership path.
+
+    // 7. Copy VMAs from parent to child via LockedList iteration
+    child_as->executable_image = parent_as->executable_image;
+    bool vmas_copied = true;
+    parent_as->vmas.for_each([&](const process::VmaRegion &vma) {
+      if (!vmas_copied) {
+        return;
+      }
+      moss_validation_fork_metadata(0, true);
+      vmas_copied = child_as->add_vma(vma.start_addr, vma.end_addr, vma.flags, vma.type, vma.backing_data,
+                                      vma.backing_offset, vma.backing_size);
+      moss_validation_fork_metadata(0, false);
+    });
+    if (!vmas_copied) {
+      return VoidResult{ErrorCode::OutOfMemory};
+    }
+    // The allocation cursors belong to the cloned address space too. Leaving
+    // them zero breaks the first new mmap/brk allocation after fork.
+    child_as->mmap_next = parent_as->mmap_next;
+    child_as->brk_base = parent_as->brk_base;
+    child_as->brk_current = parent_as->brk_current;
+    return {};
+  }();
   if (!cloned) {
     cleanup_child(child_proc.get());
     return cloned.error() == ErrorCode::OutOfMemory ? -errc::ENOMEM : -errc::EFAULT;
   }
 
-  // 6. Flush parent TLB (PTEs changed to readonly/COW)
-#if defined(MOSS_ARCH_ARM64)
-  {
-    // TLBI ASIDE1IS consumes the ASID at bits 63..48, with low bits zero.
-    u64 asid_val = static_cast<u64>(parent_as->asid) << 48;
-    asm volatile("tlbi aside1is, %0" ::"r"(asid_val));
-    asm volatile("dsb ish" ::: "memory");
-    asm volatile("isb" ::: "memory");
-  }
-#elif defined(MOSS_ARCH_RISCV64)
-  asm volatile("sfence.vma" ::: "memory");
-#elif defined(MOSS_ARCH_X64)
-  asm volatile("mov %0, %%cr3" ::"r"(parent_as->pgd_phys) : "memory");
-#endif
-
-  // 7. Copy VMAs from parent to child via LockedList iteration
-  child_as->executable_image = parent_as->executable_image;
-  bool vmas_copied = true;
-  parent_as->vmas.for_each([&](const process::VmaRegion &vma) {
-    if (!vmas_copied) {
-      return;
-    }
-    moss_validation_fork_metadata(0, true);
-    vmas_copied = child_as->add_vma(vma.start_addr, vma.end_addr, vma.flags, vma.type, vma.backing_data,
-                                    vma.backing_offset, vma.backing_size);
-    moss_validation_fork_metadata(0, false);
-  });
-  if (!vmas_copied) {
-    cleanup_child(child_proc.get());
-    return -errc::ENOMEM;
-  }
-  // The allocation cursors belong to the cloned address space too. Leaving
-  // them zero breaks the first new mmap/brk allocation after fork.
-  child_as->mmap_next = parent_as->mmap_next;
-  child_as->brk_base = parent_as->brk_base;
-  child_as->brk_current = parent_as->brk_current;
-
   // 8. Bind address space to child process
   auto set_result = child_proc->set_address_space(moss::move(child_as));
   if (!set_result) {
     log::klog::error("sys_fork: set_address_space failed");
-    // child_as was moved — if set failed, unique_ptr may still own it
-    // and ~AddressSpace will free the page tables.
+    // The by-value owner releases an uninstalled space on failure.
     cleanup_child(child_proc.get());
     return -errc::ENOMEM;
   }
@@ -616,16 +612,16 @@ long sys_execve(long pathname_addr, long argv_addr, long envp_addr, long /*unuse
   }
   const VirtAddr stack_bottom = user_layout::STACK_TOP - user_layout::STACK_SIZE;
   const LoadRange reserved_ranges[] = {
-      {user_layout::SIGRETURN_PAGE, user_layout::SIGRETURN_PAGE + PAGE_SIZE},
-      {stack_bottom, user_layout::STACK_TOP},
-      {user_layout::HEAP_START, user_layout::HEAP_START + user_layout::HEAP_INIT},
+      {.start = user_layout::SIGRETURN_PAGE, .end = user_layout::SIGRETURN_PAGE + PAGE_SIZE},
+      {.start = stack_bottom, .end = user_layout::STACK_TOP},
+      {.start = user_layout::HEAP_START, .end = user_layout::HEAP_START + user_layout::HEAP_INIT},
   };
   const LoadPlanPolicy load_policy = {
-      PAGE_SIZE,
-      mm::PageTableManager::KERNEL_IDENTITY_END,
-      USER_MAX,
-      reserved_ranges,
-      sizeof(reserved_ranges) / sizeof(reserved_ranges[0]),
+      .page_size = PAGE_SIZE,
+      .user_begin = mm::PageTableManager::KERNEL_IDENTITY_END,
+      .user_end = USER_MAX,
+      .reserved = reserved_ranges,
+      .reserved_count = sizeof(reserved_ranges) / sizeof(reserved_ranges[0]),
   };
   if (!build_load_plan(image_data, image_size, load_policy, args->load_plan)) {
     return -errc::ENOEXEC;
@@ -736,19 +732,11 @@ long sys_execve(long pathname_addr, long argv_addr, long envp_addr, long /*unuse
   }
 
   // Commit: no remaining fallible preparation. IRQs stay masked while the
-  // hardware root and Process ownership change together. Old pages are freed
-  // by set_address_space only after they are no longer active.
+  // local hardware root and Process ownership change before user return.
+  // Other CPUs retain their installed versions independently; the old tree is
+  // freed only after its final software reader and hardware-root owner leave.
   arch::disable_interrupts();
-#if defined(MOSS_ARCH_ARM64)
-  // TTBR0_EL1 places the ASID in bits 63..48; keep it separate from root PA.
-  u64 root = prepared->pgd_phys | (static_cast<u64>(prepared->asid) << 48);
-  asm volatile("msr ttbr0_el1, %0; dsb ish; isb" ::"r"(root) : "memory");
-#elif defined(MOSS_ARCH_RISCV64)
-  u64 root = hal::mmu::make_satp_value(prepared->pgd_phys, prepared->asid);
-  asm volatile("csrw satp, %0; sfence.vma" ::"r"(root) : "memory");
-#elif defined(MOSS_ARCH_X64)
-  asm volatile("mov %0, %%cr3" ::"r"(prepared->pgd_phys) : "memory");
-#endif
+  CfsScheduler::use_address_space(prepared);
   (void)proc->set_address_space(moss::move(prepared)); // Non-null ownership transfer cannot fail.
   if (auto *files = static_cast<vfs::FdTable *>(proc->fd_table())) {
     files->close_on_exec();
@@ -784,15 +772,17 @@ long sys_execve(long pathname_addr, long argv_addr, long envp_addr, long /*unuse
   cur->context.x[10] = argc;
   cur->context.x[11] = argv_base;
   cur->context.x[12] = envp_base;
-  if (cur->kernel_stack_base)
+  if (cur->kernel_stack_base) {
     arch::set_user_kernel_stack(cur->kernel_stack_top());
+  }
 #elif defined(MOSS_ARCH_X64)
   cur->context.rdi = argc;
   cur->context.rsi = argv_base;
   cur->context.rdx = envp_base;
   cur->context.pstate = 0x202; // RFLAGS bit 1 is required; bit 9 enables user interrupts.
-  if (cur->kernel_stack_base)
+  if (cur->kernel_stack_base) {
     moss::abi::x64::set_kernel_stack(cur->kernel_stack_top());
+  }
 #endif
   cur->needs_initial_eret = false;
   cur->state = ProcessState::Running;
@@ -1648,11 +1638,12 @@ long sys_mmap(long addr, long length, long prot, long flags, long fd, long offse
   if (!proc) {
     return -errc::ESRCH;
   }
-  auto *as = proc->address_space();
+  auto as = proc->address_space();
   if (!as) {
     return -errc::ENOMEM;
   }
 
+  auto transaction = as->lock_vm();
   // Page-align length upward
   auto map_len = static_cast<usize>(length);
   if (map_len > USER_MAX - mm::PageTableManager::KERNEL_IDENTITY_END) {
@@ -1732,11 +1723,12 @@ long sys_munmap(long addr, long length, long /*unused*/, long /*unused*/, long /
   if (!proc) {
     return -errc::ESRCH;
   }
-  auto *as = proc->address_space();
+  auto as = proc->address_space();
   if (!as) {
     return -errc::EINVAL;
   }
 
+  auto transaction = as->lock_vm();
   // Find VMA containing the unmap address
   auto vma = as->find_vma(map_addr);
   if (!vma) {
@@ -1778,11 +1770,12 @@ long sys_brk(long addr, long /*unused*/, long /*unused*/, long /*unused*/, long 
   if (!proc) {
     return -errc::ESRCH;
   }
-  auto *as = proc->address_space();
+  auto as = proc->address_space();
   if (!as) {
     return -errc::ENOMEM;
   }
 
+  auto transaction = as->lock_vm();
   // brk(0): query current program break
   if (addr == 0) {
     return static_cast<long>(as->brk_current);
@@ -2285,8 +2278,8 @@ long sys_clock_getres(long clock_id, long resolution_ns_addr, long /*unused*/, l
     // A time syscall before timer initialization has no meaningful resolution.
     return -errc::EINVAL;
   }
-  const u64 resolution_ns = kNanosecondsPerSecond / frequency_hz +
-                            static_cast<u64>(kNanosecondsPerSecond % frequency_hz != 0);
+  const u64 resolution_ns =
+      kNanosecondsPerSecond / frequency_hz + static_cast<u64>(kNanosecondsPerSecond % frequency_hz != 0);
   if (copy_to_user(static_cast<u64>(resolution_ns_addr), &resolution_ns, sizeof(resolution_ns)) < 0) {
     return -errc::EFAULT;
   }

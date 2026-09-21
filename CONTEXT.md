@@ -63,12 +63,24 @@ Client recovery that discovers a replacement Service Incarnation, obtains new ca
 _Avoid_: Kernel replay, transparent capability rebinding
 
 **Initial System Supervisor**:
-The first userspace process created by the Mechanism Kernel Domain. It receives the Bootstrap Capability Set and owns system-service construction, resource and authority delegation, dependency ordering, discovery policy, failure response and recovery policy.
+The first userspace process created by the Mechanism Kernel Domain, whose unexpected loss is a system-level failure rather than an ordinary service restart. It receives the Bootstrap Capability Set and owns system-service construction, resource and authority delegation, dependency ordering, discovery policy, failure response and recovery policy.
 _Avoid_: Kernel service manager, privileged background helper
 
 **Bootstrap Capability Set**:
 The finite set of initial capabilities supplied to the Initial System Supervisor so it can construct the userspace system and delegate narrower authority. It is the root of userspace authority, not an ambient privilege mode inherited by every service.
 _Avoid_: Userspace kernel privilege, unrestricted root process
+
+**Moss Boot Trust Chain**:
+The chain of authentication rooted in the platform boot environment that establishes the identity and integrity of the Mechanism Kernel Domain, Initial System Supervisor and Boot Authorization Configuration before bootstrap authority is supplied.
+_Avoid_: Self-approved supervisor, runtime package approval
+
+**Boot Authorization Configuration**:
+Authenticated bootstrap policy identifying which initial components may receive the Bootstrap Capability Set or delegated code-approval authority. It establishes the initial authority owners without defining every later application's approval policy.
+_Avoid_: Unverified startup arguments, service-selected root privilege
+
+**Boot Verification State**:
+The boot environment's report of whether authentication was enforced and which trust-root identity was used for this boot. A user-selected root and disabled verification are distinct states; this report is not by itself remote attestation.
+_Avoid_: Development mode as verified production boot, self-certified boot status
 
 **Isolated Device Driver**:
 An Isolated System Service that implements device protocol and policy using capability-scoped access to its hardware resources. It may receive bounded MMIO or I/O-port mappings, interrupt events and DMA mappings, but it does not execute callbacks in the Mechanism Kernel Domain.
@@ -157,6 +169,42 @@ _Avoid_: Kernel PID manager, native authority through uid or PID
 **Loader Service**:
 An Isolated System Service that parses executable formats and constructs a new Execution Domain from capability-authorized Memory Objects, mappings, initial thread state and explicitly inherited handles. The kernel validates generic execution invariants without parsing the executable format.
 _Avoid_: Kernel ELF loader, executable parser in a syscall
+
+**Code Authority Service**:
+An Isolated System Service with delegated authority to approve code for execution under a product's signature, package-origin or local-user approval policy. Its approval is scoped to an Immutable Code Version rather than a mutable pathname or file.
+_Avoid_: Kernel certificate parser, ambient permission to execute
+
+**Immutable Code Version**:
+A particular content version whose bytes cannot change while its execution authorization remains valid, including through writable aliases or replacement pager contents. Modified contents constitute a new version and do not inherit the old version's approval.
+_Avoid_: Verified pathname, once-checked mutable file
+
+**Code Approval Instance**:
+One distinct authorization of an Immutable Code Version, whose validity is independent of the issuing Service Incarnation's continued execution. Revoked authority never becomes valid again; reapproval creates a separate instance even when the approved contents are unchanged.
+_Avoid_: Latest approval for a file, reactivated execution permission
+
+**Executable Memory Capability**:
+A Moss Capability Handle authorizing executable mappings of a specific Immutable Code Version under one Code Approval Instance and within delegated rights. Ordinary Memory Object ownership or write authority does not imply this authority.
+_Avoid_: Automatically executable allocation, executable filename
+
+**Code Approval Revocation**:
+Permanent withdrawal of a Code Approval Instance's authority to establish new executable mappings, including execution-permission upgrades and program loading. It applies through copied or transferred capabilities but does not by itself terminate Execution Domains or remove their existing executable mappings.
+_Avoid_: Immediate code termination, closing one executable handle
+
+**Code Approval Revocation Authority**:
+Explicit capability authority to revoke Code Approval Instances within a delegated scope, retainable independently of the issuing Code Authority Service. It does not by itself grant code-approval, executable-mapping or Execution Termination Authority.
+_Avoid_: Global revoke privilege, authority inherited from a service name
+
+**Existing Executable Mapping**:
+A live executable mapping whose admission committed before the relevant Code Approval Revocation, bound to its admitted Immutable Code Version and range in one Execution Domain regardless of page residency. Its continued authority does not extend to newly created or cloned executable mappings.
+_Avoid_: Resident executable page, inheritable execution approval
+
+**Execution Termination Authority**:
+Explicit capability authority to request kernel-enforced termination of specified Execution Domains, independent of the authority to approve or revoke code. Possession of code-approval authority alone does not grant it.
+_Avoid_: Implicit kill permission, advisory termination signal
+
+**JIT Authority**:
+Separately delegated authority to publish dynamically generated Immutable Code Versions for execution under kernel-enforced write/execute exclusion. It does not authorize simultaneous writable and executable aliases of the same backing storage.
+_Avoid_: Unrestricted RWX permission, ordinary memory-write right
 
 ### Validation
 

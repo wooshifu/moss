@@ -190,6 +190,8 @@ inline void (*g_preempt_enable_fn)() noexcept = nullptr;
 // Each fetch_add reserves one FIFO ticket. Waiters poll with cpu_yield()
 // (YIELD on ARM64, PAUSE on x64); this path does not sleep with WFE or depend
 // on an event notification. Acquire/release publishes the prior owner's writes.
+// x64/RV64 cpu_yield also acknowledges pending TLB invalidations without locks,
+// allowing the VM owner to make progress when this waiter has IRQs masked.
 class TicketSpinLock {
 private:
   AtomicU32 next_ticket_{0};

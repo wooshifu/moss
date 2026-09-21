@@ -5,6 +5,7 @@ import os
 import socket
 import threading
 import time
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -37,8 +38,8 @@ def test_saved_pinning_requires_complete_binding_evidence(damage):
 
 
 @pytest.mark.parametrize("damage", [None, "missing_cpu", "foreign_thread", "affinity_not_applied"])
-def test_qmp_resumes_only_after_owned_thread_binding(tmp_path, monkeypatch, damage):
-    path = tmp_path / "qmp.sock"
+def test_qmp_resumes_only_after_owned_thread_binding(qmp_sockets, monkeypatch, damage):
+    path = qmp_sockets / "qmp.sock"
     actions = []
     affinity = {0}
 
@@ -49,15 +50,27 @@ def test_qmp_resumes_only_after_owned_thread_binding(tmp_path, monkeypatch, dama
             affinity.clear()
             affinity.update(cpus)
 
-    monkeypatch.setattr(os, "sched_setaffinity", apply)
-    monkeypatch.setattr(os, "sched_getaffinity", lambda tid: affinity)
+    # This is a Linux-host protocol simulation, not a real pinning test. Supply
+    # both the affinity API and its ownership namespace on non-Linux hosts too;
+    # only this fixture's one reported thread belongs to the fake guest.
+    monkeypatch.setattr(os, "sched_setaffinity", apply, raising=False)
+    monkeypatch.setattr(os, "sched_getaffinity", lambda tid: affinity, raising=False)
+    original_exists = Path.exists
+    task_root = f"/proc/{os.getpid()}/task/"
+
+    def exists(candidate):
+        if str(candidate).startswith(task_root):
+            return str(candidate) == f"{task_root}{os.getpid()}"
+        return original_exists(candidate)
+
+    monkeypatch.setattr(Path, "exists", exists)
     with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as listener:
         listener.bind(str(path))
         listener.listen()
 
         def server():
             with listener.accept()[0] as connection, connection.makefile("rwb") as stream:
-                connection.settimeout(3)
+                connection.settimeout(3)  # Fail-safe longer than the two-second protocol deadline below.
                 stream.write(b'{"QMP": {}}\n')
                 stream.flush()
                 while line := stream.readline():
@@ -67,6 +80,7 @@ def test_qmp_resumes_only_after_owned_thread_binding(tmp_path, monkeypatch, dama
                     result = {}
                     if name == "query-cpus-fast":
                         result = [
+                            # Arbitrary foreign identity: the fixture owns only os.getpid().
                             {"cpu-index": 0, "thread-id": 999999999 if damage == "foreign_thread" else os.getpid()}
                         ]
                         if damage == "missing_cpu":
@@ -81,6 +95,8 @@ def test_qmp_resumes_only_after_owned_thread_binding(tmp_path, monkeypatch, dama
         try:
             if damage:
                 with pytest.raises(ValueError):
+                    # CPU 8 is an arbitrary simulated binding, distinct from
+                    # the initial {0}; two seconds bound the local QMP exchange.
                     pin_vcpus(path, process, [8], time.monotonic() + 2)
                 assert "cont" not in actions
             else:
@@ -89,5 +105,5 @@ def test_qmp_resumes_only_after_owned_thread_binding(tmp_path, monkeypatch, dama
                 ]
                 assert actions == ["qmp_capabilities", "query-cpus-fast", "pin", "cont"]
         finally:
-            thread.join(timeout=4)
+            thread.join(timeout=4)  # Let the three-second socket guard unwind before checking for leaks.
         assert not thread.is_alive()

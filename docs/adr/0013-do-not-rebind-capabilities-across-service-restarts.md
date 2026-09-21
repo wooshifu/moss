@@ -5,7 +5,7 @@ date: 2026-09-19
 
 # Do Not Rebind Capabilities Across Service Restarts
 
-Every start or restart of an Isolated System Service creates a new Service Incarnation. Capabilities remain bound to the particular incarnation and objects from which they were obtained. When that incarnation dies, its outstanding calls terminate with an explicit peer-death result and its capabilities become permanently invalid; restarting a service under the same discovery name does not retarget them.
+Every start or restart of an Isolated System Service creates a new Service Incarnation. Capabilities targeting that incarnation or its incarnation-bound objects remain bound to those targets. When that incarnation dies, its outstanding calls terminate with an explicit peer-death result and those capabilities become permanently invalid; restarting a service under the same discovery name does not retarget them. This does not invalidate every independent kernel object merely because the service created or transferred authority to it; Code Approval Instances follow [ADR-0031](0031-preserve-code-approvals-across-authority-service-failure.md).
 
 Clients recover through Explicit Service Reconnection: they discover the replacement incarnation, obtain new capabilities and reconstruct their protocol state. The kernel does not replay requests. A client library may retry only when the service protocol explicitly defines the operation as safe to repeat.
 

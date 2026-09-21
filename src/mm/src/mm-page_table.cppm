@@ -25,6 +25,25 @@ using moss::kernel::PhysAddr;
 using moss::kernel::VirtAddr;
 using moss::kernel::VoidResult;
 
+// These values are the VMA READ/WRITE/EXEC bits carried across the ABI bridge.
+// The process layer statically checks the encoding without an MM -> process import.
+enum class UserFaultAccess : u32 { Read = 1U << 0, Write = 1U << 1, Execute = 1U << 2 };
+
+// Borrowed for one complete fault transaction. The caller retains the address
+// space/image and excludes VMA/PTE mutation until resolution has finished.
+struct UserFaultContext {
+  PhysAddr root;
+  u32 flags;
+  VirtAddr start;
+  const u8 *backing;
+  usize backing_offset;
+  usize backing_size;
+};
+
+[[nodiscard]] bool resolve_user_cow_fault(const UserFaultContext &context, VirtAddr far_addr) noexcept;
+[[nodiscard]] bool resolve_user_demand_fault(const UserFaultContext &context, VirtAddr far_addr,
+                                             UserFaultAccess access) noexcept;
+
 enum class MemoryAttributes : u8 {
   NORMAL_CACHEABLE = 0,
   NORMAL_NON_CACHEABLE = 1,
@@ -289,7 +308,7 @@ public:
   // Unmap a single user page: clear PTE, invalidate TLB, free physical page
   // when refcount drops to 0 (COW-aware), and reclaim empty private tables.
   // No-op if the PTE is not mapped. Caller excludes concurrent address-space
-  // changes and execution on other CPUs (no cross-CPU x86/RISC-V 64 shootdown yet).
+  // changes and root lifetime; TLB completion alone does not serialize execution.
   static void unmap_user_page(PhysAddr pgd_phys, VirtAddr va) noexcept;
 
   // Clone into an owned, inactive destination with no user leaves. The caller
@@ -299,21 +318,9 @@ public:
   // any error leaves both trees and their frame references unchanged.
   [[nodiscard]] static VoidResult clone_user_page_tables(PhysAddr src_pgd_phys, PhysAddr dst_pgd_phys);
 
-  // Invalidate TLB entry for a single virtual address
-  static void invalidate_tlb_addr(VirtAddr virt_addr) {
-#if defined(MOSS_ARCH_ARM64)
-    // TLBI takes VA[55:12], not a byte address. Publish page-table writes before
-    // invalidating; wait for invalidation to finish before resuming accesses.
-    asm volatile("dsb ishst" ::: "memory");
-    asm volatile("tlbi vale1is, %0" ::"r"(virt_addr >> 12) : "memory");
-    asm volatile("dsb ish" ::: "memory");
-    asm volatile("isb" ::: "memory");
-#elif defined(MOSS_ARCH_X64)
-    asm volatile("invlpg (%0)" ::"r"(virt_addr) : "memory");
-#elif defined(MOSS_ARCH_RISCV64)
-    asm volatile("sfence.vma %0, zero" ::"r"(virt_addr) : "memory");
-#endif
-  }
+  // AAL completes ARM64's all-ASID broadcast or x64/RV64's remote ACK protocol
+  // before frame reuse. VM serialization and active-root lifetime remain here.
+  static void invalidate_tlb_addr(VirtAddr virt_addr) { moss::kernel::arch::flush_tlb_addr(virt_addr); }
 };
 
 [[nodiscard]] VoidResult setup_mmu();

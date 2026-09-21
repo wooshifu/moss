@@ -114,10 +114,7 @@ extern "C" [[noreturn]] void secondary_cpu_entry() noexcept;
 // ============================================================================
 extern "C" {
 // mm <-> kernel bridge
-int demand_page_lookup(unsigned long long fault_addr, unsigned int *out_flags, const unsigned char **out_backing_data,
-                       unsigned long long *out_backing_offset, unsigned long long *out_backing_size,
-                       unsigned long long *out_vma_start) noexcept;
-int try_grow_user_stack(unsigned long long fault_addr) noexcept;
+int resolve_current_user_fault(unsigned long long fault_addr, unsigned int access, bool cow_only) noexcept;
 unsigned long long get_current_pgd_phys() noexcept;
 [[noreturn]] void terminate_current_user_process(int exit_code) noexcept;
 
@@ -148,8 +145,10 @@ export import :trap_frame;
 import moss.types;
 
 export namespace moss::abi::uaccess {
-// Raw primitives return bytes not copied. Policy/lifetime checks belong to
-// process::copy_*_user; only the user operand's instruction has a fixup.
+// Raw primitives return bytes not copied and access the active hardware root;
+// only the user operand's instruction has a fixup. They do not retain an
+// AddressSpace or protect its frames. Ordinary callers use process::copy_*_user,
+// which binds the selected version and copies through leased physical aliases.
 using ::moss_raw_copy_from_user;
 using ::moss_raw_copy_to_user;
 
@@ -313,10 +312,9 @@ inline auto user_program_size() noexcept -> moss::kernel::usize {
 export namespace moss::abi::bridge {
 
 using ::console_getc_blocking;
-using ::g_x64_uart_rx_handler;
 using ::console_rx_init;
 using ::console_try_getc;
-using ::demand_page_lookup;
+using ::g_x64_uart_rx_handler;
 using ::get_current_pgd_phys;
 using ::moss_commit_io_wait;
 using ::moss_heap_allocate;
@@ -326,9 +324,9 @@ using ::moss_signal_broken_pipe;
 using ::moss_slab_alloc_pages;
 using ::moss_slab_free_pages;
 using ::moss_wake_io_waiter;
+using ::resolve_current_user_fault;
 using ::strcmp;
 using ::terminate_current_user_process;
-using ::try_grow_user_stack;
 
 } // namespace moss::abi::bridge
 

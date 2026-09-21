@@ -280,80 +280,44 @@ void irq_handler_c(void) noexcept {
 // bridging the mm ↔ process module boundary without circular imports.
 // ============================================================================
 
-int demand_page_lookup(unsigned long long fault_addr, unsigned int *out_flags, const unsigned char **out_backing_data,
-                       unsigned long long *out_backing_offset, unsigned long long *out_backing_size,
-                       unsigned long long *out_vma_start) noexcept {
+int resolve_current_user_fault(unsigned long long fault_addr, unsigned int access, bool cow_only) noexcept {
   using namespace moss::kernel;
 
-  auto proc = process::current_process();
-  if (!proc || !proc->address_space()) {
+  // The faulting translation belongs to the installed hardware root. Process
+  // publication may already point at a newer image on another CPU; resolving
+  // into that version would leave the actual faulting page unmapped.
+  auto as = process::CfsScheduler::active_address_space();
+  if (!as) {
     return 0;
   }
 
-  auto vma = proc->address_space()->find_vma(static_cast<VirtAddr>(fault_addr));
-  if (!vma) {
+  if (access != static_cast<unsigned int>(mm::UserFaultAccess::Read) &&
+      access != static_cast<unsigned int>(mm::UserFaultAccess::Write) &&
+      access != static_cast<unsigned int>(mm::UserFaultAccess::Execute)) {
     return 0;
   }
-
-  *out_flags = vma->flags;
-  *out_backing_data = vma->backing_data;
-  *out_backing_offset = static_cast<unsigned long long>(vma->backing_offset);
-  *out_backing_size = static_cast<unsigned long long>(vma->backing_size);
-  *out_vma_start = static_cast<unsigned long long>(vma->start_addr);
-  return 1;
-}
-
-// Try to grow the user stack VMA downward to cover fault_addr.
-// Returns 1 if the stack was successfully extended, 0 otherwise.
-// Called from page_fault.cpp when demand_page_lookup fails — the caller
-// retries demand_page_lookup after a successful growth so the new region
-// gets a demand-zero page as usual.
-int try_grow_user_stack(unsigned long long fault_addr) noexcept {
-  using namespace moss::kernel;
-
-  auto proc = process::current_process();
-  if (!proc || !proc->address_space()) {
-    return 0;
-  }
-  auto *as = proc->address_space();
-
-  const VirtAddr stack_limit = process::user_layout::STACK_TOP - process::user_layout::STACK_MAX;
-  if (fault_addr < stack_limit) {
-    return 0;
-  }
-
-  // 4096 bytes is the MM subsystem's base page granule; VMA growth must
-  // admit the complete faulting page before demand-zero mapping retries.
-  constexpr u64 PG_SIZE = 4096;
-  const VirtAddr new_start = fault_addr & ~(PG_SIZE - 1);
-  if (!process::AddressSpace::valid_vma_range(new_start, process::user_layout::STACK_TOP, process::VmaType::STACK)) {
-    return 0;
-  }
-
-  if (!as->vmas.update_if(
-          [&](const process::VmaRegion &v) { return v.type == process::VmaType::STACK && fault_addr < v.start_addr; },
-          [&](process::VmaRegion &v) { v.start_addr = new_start; })) {
-    return 0;
-  }
-
-  // 5. Update thread metadata
+  // Keep the same owning snapshot through VMA lookup, backing reads and PTE
+  // publication. Returning a raw root/backing from separate lookups could pair
+  // different exec generations or allow the image to die during the fault.
+  VirtAddr grown_stack = 0;
+  const bool resolved = as->resolve_fault(static_cast<VirtAddr>(fault_addr), static_cast<mm::UserFaultAccess>(access),
+                                          cow_only, &grown_stack);
   auto *thread = process::current_thread();
-  if (thread) {
-    thread->stack_base = new_start;
-    thread->stack_size = process::user_layout::STACK_TOP - new_start;
+  if (thread && grown_stack != 0) {
+    thread->stack_base = grown_stack;
+    thread->stack_size = process::user_layout::STACK_TOP - grown_stack;
   }
-
-  return 1;
+  return resolved ? 1 : 0;
 }
 
 unsigned long long get_current_pgd_phys() noexcept {
   using namespace moss::kernel;
 
-  auto proc = process::current_process();
-  if (!proc || !proc->address_space()) {
+  auto as = process::CfsScheduler::active_address_space();
+  if (!as) {
     return 0;
   }
-  return static_cast<unsigned long long>(proc->address_space()->pgd_phys);
+  return static_cast<unsigned long long>(as->pgd_phys);
 }
 
 // ============================================================================
@@ -391,6 +355,12 @@ unsigned long long get_current_pgd_phys() noexcept {
 // RISC-V 64 trap handlers — called from riscv64_syscall.S dispatch
 // ============================================================================
 #if defined(MOSS_ARCH_RISCV64) || defined(__riscv) || defined(__riscv__)
+
+void riscv64_software_handler() noexcept {
+  // SBI software IPIs share SSIP. Reschedule-only notifications have no TLB
+  // request; polling the mailbox is harmless and never takes scheduler locks.
+  ::moss::kernel::arch::service_tlb_shootdown();
+}
 
 // S-mode timer interrupt handler.
 // Reprograms stimecmp via HAL and calls scheduler_tick().

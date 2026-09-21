@@ -12,6 +12,7 @@ module;
 
 extern "C" void riscv64_secondary_start();
 extern "C" [[noreturn]] void riscv64_secondary_entry() noexcept;
+extern "C" void moss_validation_cpu_started(unsigned cpu) noexcept;
 
 module moss.boot;
 
@@ -365,6 +366,8 @@ void activate_secondary_cpus() noexcept {
                        reinterpret_cast<u64>(&hart_contexts[cpu]));
     if (result.error != 0) {
       early_print("SBI HSM start failed\n");
+    } else {
+      moss_validation_cpu_started(cpu);
     }
   }
 }
