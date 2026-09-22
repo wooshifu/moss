@@ -12,6 +12,13 @@ add_executable(busybox-applet-tables "${BUSYBOX_SOURCE_DIR}/applets/applet_table
 add_executable(busybox-usage "${BUSYBOX_SOURCE_DIR}/applets/usage.c")
 foreach(target busybox-applet-tables busybox-usage)
     add_dependencies(${target} busybox-generated-inputs)
+    if(CMAKE_HOST_WIN32)
+        target_include_directories(${target} BEFORE PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/windows")
+        target_compile_definitions(${target} PRIVATE _CRT_SECURE_NO_WARNINGS)
+        # The target platform is Generic, so CMake does not infer the suffix
+        # even though these two executables use the Windows host triple.
+        set_target_properties(${target} PROPERTIES SUFFIX ".exe")
+    endif()
     target_include_directories(
         ${target} PRIVATE "${BUSYBOX_BINARY_DIR}/include" "${BUSYBOX_BINARY_DIR}/applets"
                           "${BUSYBOX_SOURCE_DIR}/include"

@@ -53,8 +53,10 @@ set(BUSYBOX_GENERATION_INPUTS ${BUSYBOX_SOURCES} applets/applets.c include/apple
 list(TRANSFORM BUSYBOX_GENERATION_INPUTS PREPEND "${BUSYBOX_SOURCE_DIR}/")
 add_custom_command(
     OUTPUT "${BUSYBOX_BINARY_DIR}/include/applets.h" "${BUSYBOX_BINARY_DIR}/include/usage.h"
-    COMMAND sh "${BUSYBOX_SOURCE_DIR}/scripts/gen_build_files.sh" "${BUSYBOX_SOURCE_DIR}" "${BUSYBOX_BINARY_DIR}"
-    DEPENDS ${BUSYBOX_GENERATION_INPUTS} "${BUSYBOX_SOURCE_DIR}/scripts/gen_build_files.sh"
+    COMMAND
+        "${UV_EXECUTABLE}" run "${CMAKE_SOURCE_DIR}/scripts/gen_busybox_headers.py" generate
+        "${BUSYBOX_SOURCE_DIR}" "${BUSYBOX_BINARY_DIR}"
+    DEPENDS ${BUSYBOX_GENERATION_INPUTS} "${CMAKE_SOURCE_DIR}/scripts/gen_busybox_headers.py"
     VERBATIM
 )
 add_custom_target(
@@ -63,6 +65,9 @@ add_custom_target(
 add_subdirectory(moss-host-tools)
 add_custom_command(
     OUTPUT "${BUSYBOX_BINARY_DIR}/include/applet_tables.h" "${BUSYBOX_BINARY_DIR}/include/NUM_APPLETS.h"
+    COMMAND
+        "${CMAKE_COMMAND}" -E rm -f "${BUSYBOX_BINARY_DIR}/include/applet_tables.h"
+        "${BUSYBOX_BINARY_DIR}/include/NUM_APPLETS.h"
     COMMAND $<TARGET_FILE:busybox-applet-tables> "${BUSYBOX_BINARY_DIR}/include/applet_tables.h"
             "${BUSYBOX_BINARY_DIR}/include/NUM_APPLETS.h"
     DEPENDS busybox-applet-tables
@@ -70,9 +75,10 @@ add_custom_command(
 )
 add_custom_command(
     OUTPUT "${BUSYBOX_BINARY_DIR}/include/usage_compressed.h"
-    COMMAND sh "${BUSYBOX_SOURCE_DIR}/applets/usage_compressed" "${BUSYBOX_BINARY_DIR}/include/usage_compressed.h"
-            "${BUSYBOX_BINARY_DIR}/applets"
-    DEPENDS busybox-usage applets/usage_compressed
+    COMMAND
+        "${UV_EXECUTABLE}" run "${CMAKE_SOURCE_DIR}/scripts/gen_busybox_headers.py" compress-usage
+        $<TARGET_FILE:busybox-usage> "${BUSYBOX_BINARY_DIR}/include/usage_compressed.h"
+    DEPENDS busybox-usage "${CMAKE_SOURCE_DIR}/scripts/gen_busybox_headers.py"
     VERBATIM
 )
 add_custom_target(

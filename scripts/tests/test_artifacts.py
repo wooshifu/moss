@@ -1,6 +1,7 @@
 import json
 import struct
 import subprocess
+import sys
 from dataclasses import replace
 from pathlib import Path
 from shutil import copy2
@@ -8,6 +9,7 @@ from types import SimpleNamespace
 
 import pytest
 
+import qemu
 from qemu import build_qemu_args, resolve_qemu
 from scripts.artifacts import Artifacts, record_validation_provenance
 from scripts.verify_linux_image import verify_arm64_header, verify_relocations, verify_riscv64_header
@@ -51,6 +53,41 @@ def test_manifest_drives_normal_debug_and_validation_without_cmake(tmp_path):
     assert validation[validation.index("-initrd") + 1] == str(tmp_path / "test.initrd")
     assert "monitor-hmp" not in validation
     assert not any("semihost" in arg or "isa-debug-exit" in arg or "loader," in arg for arg in validation)
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows console code-page contract")
+def test_interactive_qemu_uses_utf8_console_and_restores(monkeypatch):
+    import ctypes
+
+    kernel32 = ctypes.windll.kernel32
+    original_input = kernel32.GetConsoleCP()
+    original_output = kernel32.GetConsoleOutputCP()
+    if not original_input or not original_output:
+        pytest.skip("test process is not attached to a Windows console")
+
+    observed = {}
+
+    def launch(_args, **_kwargs):
+        observed["input"] = kernel32.GetConsoleCP()
+        observed["output"] = kernel32.GetConsoleOutputCP()
+        return SimpleNamespace(returncode=0)
+
+    monkeypatch.setattr(qemu.Artifacts, "load", lambda _path: SimpleNamespace(arch="ARM64"))
+    monkeypatch.setattr(qemu, "resolve_qemu", lambda _arch, _executable: "qemu-system-aarch64")
+    monkeypatch.setattr(qemu, "build_qemu_args", lambda *_args, **_kwargs: ["qemu-system-aarch64"])
+    monkeypatch.setattr(qemu.subprocess, "run", launch)
+
+    try:
+        assert kernel32.SetConsoleCP(936) and kernel32.SetConsoleOutputCP(936)
+        with pytest.raises(qemu.typer.Exit) as completed:
+            qemu.main(SimpleNamespace(args=[]), Path("unused"))
+        assert completed.value.exit_code == 0
+        assert observed == {"input": 65001, "output": 65001}
+        assert kernel32.GetConsoleCP() == 936
+        assert kernel32.GetConsoleOutputCP() == 936
+    finally:
+        kernel32.SetConsoleCP(original_input)
+        kernel32.SetConsoleOutputCP(original_output)
 
 
 @pytest.mark.parametrize("host", ["linux", "darwin", "win32"])
