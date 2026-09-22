@@ -6,6 +6,7 @@ import shlex
 import shutil
 import subprocess
 import sys
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Annotated
 
@@ -29,6 +30,36 @@ RASPI_CONFIG = {
     "raspi3b": {"cpu": "cortex-a53", "memory_mib": 1024, "firmware_ram_mib": 960},
     "raspi4b": {"cpu": "cortex-a72", "memory_mib": 2048, "firmware_ram_mib": 960},
 }
+
+
+@contextmanager
+def windows_utf8_console():
+    """Let QEMU's UTF-8 serial bytes render correctly in a Windows console."""
+    if sys.platform != "win32":
+        yield
+        return
+
+    import ctypes
+
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    original_input = kernel32.GetConsoleCP()
+    original_output = kernel32.GetConsoleOutputCP()
+    changed_input = changed_output = False
+    try:
+        if original_input and original_input != 65001:
+            if not kernel32.SetConsoleCP(65001):
+                raise OSError(ctypes.get_last_error(), "failed to select UTF-8 console input")
+            changed_input = True
+        if original_output and original_output != 65001:
+            if not kernel32.SetConsoleOutputCP(65001):
+                raise OSError(ctypes.get_last_error(), "failed to select UTF-8 console output")
+            changed_output = True
+        yield
+    finally:
+        if changed_output:
+            kernel32.SetConsoleOutputCP(original_output)
+        if changed_input:
+            kernel32.SetConsoleCP(original_input)
 
 
 def resolve_resources(arch: str, machine: str | None, cpu: str | None, memory_mib: int | None) -> tuple[str, int]:
@@ -187,7 +218,8 @@ def main(
                 typer.echo("PIE symbols need the firmware-selected Image load offset; see docs/generic-boot.md.")
         if dry_run:
             return
-        result = subprocess.run(args, check=False, timeout=timeout)
+        with windows_utf8_console():
+            result = subprocess.run(args, check=False, timeout=timeout)
     except subprocess.TimeoutExpired:
         raise typer.Exit(124) from None
     except (OSError, ValueError, KeyError, TypeError) as error:

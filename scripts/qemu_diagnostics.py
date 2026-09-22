@@ -17,7 +17,10 @@ CAPTURE_TIMEOUT = 10.0
 
 @contextmanager
 def qmp_session(path: Path, process: subprocess.Popen, deadline: float):
-    with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as client:
+    family = getattr(socket, "AF_UNIX", None)
+    if family is None:
+        raise ValueError("QMP Unix sockets are not supported by this Python build")
+    with socket.socket(family, socket.SOCK_STREAM) as client:
         while True:
             if process.poll() is not None or time.monotonic() >= deadline:
                 raise ValueError("QMP startup failed or timed out")

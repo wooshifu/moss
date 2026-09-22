@@ -56,6 +56,19 @@ def run(
         machine=machine,
         dtb=files.get("dtb"),
     )
+    console_listener = None
+    if sys.platform == "win32" and "-chardev" in args:
+        chardev = args.index("-chardev") + 1
+        if args[chardev].startswith("stdio,id=char0,"):
+            # QEMU's Windows stdio backend drops line terminators written
+            # through an anonymous pipe.  A loopback chardev preserves the
+            # serial byte stream and keeps the probe fully non-interactive.
+            console_listener = socket.socket()
+            console_listener.bind(("127.0.0.1", 0))
+            console_listener.listen(1)
+            console_listener.settimeout(5)
+            port = console_listener.getsockname()[1]
+            args[chardev] = f"socket,id=char0,host=127.0.0.1,port={port},mux=on"
     capture = output / "console-input.gdb"
     if gdb:
         with socket.socket() as port:
@@ -94,7 +107,7 @@ quit
         qemu_args=args,
         input_timing="first_read_barrier" if gdb else "prompt",
     )
-    child, debugger, stage, pending = None, None, 0, b""
+    child, debugger, console, stage, pending = None, None, None, 0, b""
     # Require the real ash, applet lookup, pipelines and mutable files as well
     # as explicit BusyBox ELF execution and a command after child reaping.
     steps = [
@@ -134,12 +147,22 @@ quit
             (output / "gdb.log").open("wb") as debug_log,
         ):
             child = subprocess.Popen(args, stdin=subprocess.PIPE, stdout=out, stderr=err)
+            if console_listener:
+                console = console_listener.accept()[0]
+                console.setblocking(False)
             if gdb:
                 debugger = subprocess.Popen(
                     [gdb, "-nx", "-batch", "-x", str(capture)], stdout=debug_log, stderr=subprocess.STDOUT
                 )
             while time.monotonic() - started < timeout:
-                chunk = incoming.read(2**20).replace(b"\r", b"")
+                try:
+                    chunk = console.recv(2**20) if console else incoming.read(2**20)
+                except BlockingIOError:
+                    chunk = b""
+                if console and chunk:
+                    out.write(chunk)
+                    out.flush()
+                chunk = chunk.replace(b"\r", b"")
                 pending += chunk
                 if serial.stat().st_size > 32 * 2**20:
                     raise ValueError("production serial log exceeds 32 MiB")
@@ -155,8 +178,11 @@ quit
                     marker, command = steps[stage]
                     pending = pending.split(marker, 1)[1]
                     if command:
-                        child.stdin.write(command)
-                        child.stdin.flush()
+                        if console:
+                            console.sendall(command)
+                        else:
+                            child.stdin.write(command)
+                            child.stdin.flush()
                     stage += 1
                 if stage == len(steps) and (not debugger or debugger.poll() is not None):
                     result.update(status="passed", observed="busybox_shell_exec_wait")
@@ -181,6 +207,10 @@ quit
                     child.wait()
             child.stdin.close()
             result["raw_exit"] = child.returncode
+        if console:
+            console.close()
+        if console_listener:
+            console_listener.close()
         if debugger:
             if debugger.poll() is None:
                 debugger.terminate()

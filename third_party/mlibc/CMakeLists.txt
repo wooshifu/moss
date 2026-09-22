@@ -24,7 +24,29 @@ file(
 configure_file(moss-internal-config.h.in "${MLIBC_GENERATED}/internal-config.h" @ONLY)
 foreach(header IN LISTS MLIBC_PUBLIC_HEADERS)
     string(REGEX REPLACE "^.*include/" "" destination "${header}")
-    configure_file("${header}" "${MLIBC_SYSROOT}/usr/include/${destination}" COPYONLY)
+    set(header_source "${CMAKE_CURRENT_SOURCE_DIR}/${header}")
+    # Git represents mlibc's abi-bits as symlinks.  With core.symlinks=false,
+    # Windows checks them out as one-line files containing the link target.
+    if(CMAKE_HOST_WIN32 AND header MATCHES "^sysdeps/moss/include/abi-bits/" AND NOT IS_SYMLINK "${header_source}")
+        file(READ "${header_source}" link_target LIMIT 512)
+        string(STRIP "${link_target}" link_target)
+        if(link_target MATCHES "^\\.\\./.*\\.h$")
+            get_filename_component(header_directory "${header_source}" DIRECTORY)
+            cmake_path(
+                ABSOLUTE_PATH
+                link_target
+                BASE_DIRECTORY
+                "${header_directory}"
+                NORMALIZE
+                OUTPUT_VARIABLE
+                header_source
+            )
+            if(NOT EXISTS "${header_source}")
+                message(FATAL_ERROR "Broken mlibc ABI header link: ${header} -> ${link_target}")
+            endif()
+        endif()
+    endif()
+    configure_file("${header_source}" "${MLIBC_SYSROOT}/usr/include/${destination}" COPYONLY)
 endforeach()
 add_library(mlibc-math OBJECT ${MLIBC_MATH_SOURCES})
 add_library(mlibc-regex OBJECT ${MLIBC_REGEX_SOURCES})
@@ -70,11 +92,14 @@ foreach(target mlibc mlibc-math mlibc-regex mlibc-rtld)
                 options/elf/include
                 options/lsb/include
                 sysdeps/generic-helpers/include
+                # Prefer the materialized ABI headers in the sysroot. On Unix
+                # these are copies of symlink targets; on Windows they replace
+                # Git's plain-text symlink placeholders.
+                "${MLIBC_SYSROOT}/usr/include"
                 sysdeps/moss/include
                 options/ansi/include
                 options/posix/include
                 options/glibc/include
-                "${MLIBC_SYSROOT}/usr/include"
                 "${MOSS_THIRD_PARTY}/frigg/include"
                 "${MOSS_THIRD_PARTY}/libsmarter/include"
     )
