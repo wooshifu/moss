@@ -479,19 +479,19 @@ static int signal_runtime(void) {
     return 0;
   }
   action.sa_handler = handle_usr1;
-  action.sa_flags = SA_ONSTACK;
+  action.sa_flags = SA_ONSTACK | SA_RESTART;
   sigemptyset(&action.sa_mask);
   sigaddset(&action.sa_mask, SIGUSR2);
   if (sigaction(SIGUSR1, &action, &previous) || sigaction(SIGUSR1, NULL, &observed) ||
-      observed.sa_handler != handle_usr1 || observed.sa_flags != SA_ONSTACK ||
+      observed.sa_handler != handle_usr1 || observed.sa_flags != (SA_ONSTACK | SA_RESTART) ||
       sigismember(&observed.sa_mask, SIGUSR2) != 1 || sigismember(&observed.sa_mask, SIGUSR1) != 0) {
     return 0;
   }
   // Unknown flags must not silently change the installed action.
-  action.sa_flags = SA_RESTART;
+  action.sa_flags = SA_SIGINFO;
   errno = 0;
   if (sigaction(SIGUSR1, &action, NULL) != -1 || errno != EINVAL || sigaction(SIGUSR1, NULL, &observed) ||
-      observed.sa_flags != SA_ONSTACK) {
+      observed.sa_flags != (SA_ONSTACK | SA_RESTART)) {
     return 0;
   }
   sigfillset(&blocked);

@@ -154,12 +154,28 @@ bool setup_sigframe(Thread *thread, u32 signo, const Sigaction &sa) noexcept {
   if (!as || !as->allows_user_access(sa.handler, 1, vma_flags::EXEC)) {
     return false;
   }
+  // The trap reports the instruction after SVC/ECALL/SYSCALL. Restore the
+  // original result register before replaying it after the handler returns.
+  auto saved_frame = frame;
+  if (thread->restart_syscall_pending && (sa.flags & sa_flags::SA_RESTART)) {
+#if defined(MOSS_ARCH_X64)
+    constexpr u64 syscall_instruction_size = 2; // SYSCALL is two bytes.
+    const u64 original_result_register = thread->restart_syscall_number;
+#else
+    constexpr u64 syscall_instruction_size = 4; // SVC and ECALL are four bytes.
+    const u64 original_result_register = thread->restart_syscall_arg0;
+#endif
+    if (saved_frame.pc >= syscall_instruction_size) {
+      saved_frame.pc -= syscall_instruction_size;
+      saved_frame.result() = original_result_register;
+    }
+  }
   SignalFrame sf{};
   sf.magic = SignalFrame::MAGIC;
   for (u32 i = 0; i < moss::abi::TrapFrame::GPR_COUNT; ++i) {
-    sf.gp_regs[i] = frame.gpr(i);
+    sf.gp_regs[i] = saved_frame.gpr(i);
   }
-  sf.elr = frame.pc;
+  sf.elr = saved_frame.pc;
   sf.spsr = frame.status;
   sf.sp = frame.sp;
 #if defined(MOSS_ARCH_ARM64)

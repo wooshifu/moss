@@ -159,6 +159,7 @@ void system_call_handler(void *raw_frame) noexcept {
     thread->trap_frame = &frame;
   }
   const long nr = static_cast<long>(frame.syscall_number());
+  const u64 first_arg = frame.argument(0);
   // 511 is the validation-only syscall slot, outside the production table.
   // It must match validation.c; production retains the ENOSYS weak hook.
   const long result =
@@ -172,6 +173,23 @@ void system_call_handler(void *raw_frame) noexcept {
   // the handler argument. Assembly restores this frame; it never patches it.
   frame.result() = static_cast<u64>(result);
   if (thread) {
+    thread->restart_syscall_pending = false;
+    // Only zero-progress wait/I/O is replayable. Positive partial transfers
+    // have already committed bytes; nanosleep reports EINTR even with SA_RESTART.
+    if (result == -syscall::errc::EINTR) {
+      switch (nr) {
+      case static_cast<long>(syscall::SyscallNumber::SYS_WAIT4):
+      case static_cast<long>(syscall::SyscallNumber::SYS_WAITPID):
+      case static_cast<long>(syscall::SyscallNumber::SYS_READ):
+      case static_cast<long>(syscall::SyscallNumber::SYS_WRITE):
+        thread->restart_syscall_number = static_cast<u64>(nr);
+        thread->restart_syscall_arg0 = first_arg;
+        thread->restart_syscall_pending = true;
+        break;
+      default:
+        break;
+      }
+    }
     thread->trap_frame = previous;
   }
 }
@@ -189,14 +207,17 @@ void user_return_handler(void *raw_frame) noexcept {
   }
   auto *previous = thread->trap_frame;
   thread->trap_frame = &frame;
+  u32 signo = 0;
   if (signal_pending(thread)) {
-    const u32 signo = do_signal_checkpoint(thread);
-    if (signo) {
-      auto proc = g_process_manager ? g_process_manager->find_process(thread->owner_pid) : shared_ptr<Process>{};
-      if (proc) {
-        // Preserve the shell convention of 128 + signal number for a fatal signal.
-        do_exit(thread, moss::move(proc), 128 + static_cast<i32>(signo));
-      }
+    signo = do_signal_checkpoint(thread);
+  }
+  // The saved context belongs only to this syscall return, not a later IRQ.
+  thread->restart_syscall_pending = false;
+  if (signo) {
+    auto proc = g_process_manager ? g_process_manager->find_process(thread->owner_pid) : shared_ptr<Process>{};
+    if (proc) {
+      // Preserve the shell convention of 128 + signal number for a fatal signal.
+      do_exit(thread, moss::move(proc), 128 + static_cast<i32>(signo));
     }
   }
   thread->trap_frame = previous;

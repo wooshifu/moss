@@ -1,7 +1,7 @@
 # Moss 内核设计与实现审计报告及修复清单
 
 > 原始审计：2026-09-05，源码基线：`e0e2bbc920b66f91e18802a46106ca5811e588b1`。
-> 当前源码复核：2026-09-23，`604fe85`；该次文档复核未重跑 QEMU。第 3.4～3.20 节保留此前实测及当时状态；后续实现与运行记录见第 3.21～3.64 节，源码与历史证据的对应关系见第 3.41 节。本轮九预设运行见第 3.59～3.64 节。本文与 [todo.md](todo.md) 同步。
+> 源码复核基线：2026-09-23，`604fe85`（当次未重跑 QEMU）。第 3.4～3.20 节保留此前实测及当时状态；后续实现与运行记录见第 3.21～3.65 节，源码与历史证据的对应关系见第 3.41 节。本轮九预设运行见第 3.59～3.65 节。本文与 [todo.md](todo.md) 同步。
 > 第 3.1～3.2 节保留原始运行证据；第 5～9 节未标新日期的“位置与事实”、地址和行号属于原始审计，不能当作当前仍然失败的运行结果。带日期的“工作区”指当时的验证状态，不表示当前仍未提交；当前状态以第 4 节及各项更新说明为准。
 
 ## 1. 当前结论
@@ -12,9 +12,9 @@ Moss 已具备三架构真实启动、SMP、用户态与进程执行路径。后
 
 1. **隔离缺陷尚未全部闭合。** 已修复内核映射 USER，并收紧三架构最终内核 W^X；syscall 0 原始 UART 指针旁路已删除，用户地址域/VMA 准入与跨 VMA 权限校验已补。`0e88344` 改为原生 TrapFrame、按 ISA 净化信号返回状态；3.20～3.34 补共享用户复制、受控 COW OOM、地址空间持有、软件 VM 事务和同步页租约。3.35～3.39 补三架构 TLB 失效、活动硬件 root 拥有权及首次 CPU 注册交错；3.40 已关闭原生信号帧/备用栈的恶意输入验收。共享 exec 的线程/root 协调、异步长期页 pin 和更多并发 VM 交错仍未闭合。
 2. **部分基础修复已落地，但所有权验收未完成。** `040d773` 已验证 heap/PFA 对齐与释放、保留洞和多 bank 耗尽、当前布局及页表/元数据哨兵。`4cde9b3` 修复指针发布误删可达节点；伪 RCU 已删除，锁保护的拥有型容器已有持有读者、重入与双 CPU 交错测试。IRQ/驱动/IPC 复合生命周期、页引用并发及完整启动保留集合仍待完成。
-3. **跨架构入口已统一，完整进程语义仍待补。** 三 ISA 用单一原生帧指针传递 syscall，fork 不再猜内核栈偏移，信号返回桩由各 ISA 汇编产生；3.24～3.26 已闭合当前单地址空间模型下的 brk、exec 事务和受支持静态 ELF LoadPlan。GP/条件码、基本信号往返及 nanosleep 捕获信号中断通过，不代表全部 FP/TLS 继承、CPU-bound 信号、SA_RESTART、动态加载、共享 LOAD 页或共享地址空间 VM 并发已经可靠。
+3. **跨架构入口已统一，完整进程语义仍待补。** 三 ISA 用单一原生帧指针传递 syscall，fork 不再猜内核栈偏移，信号返回桩由各 ISA 汇编产生；3.24～3.26 已闭合当前单地址空间模型下的 brk、exec 事务和受支持静态 ELF LoadPlan。GP/条件码、基本信号往返、nanosleep 捕获信号中断及限定 SA_RESTART 重试通过，不代表全部 FP/TLS 继承、CPU-bound 信号、STOP/CONT、动态加载、共享 LOAD 页或共享地址空间 VM 并发已经可靠。
 4. **旧停滞记录应保留，不能直接当作当前复现。** 退出已改为经 `context_switch` 返回活跃 bootstrap 栈，不再在 C++ 帧中直接修改 SP。默认 `users.lifecycle` 已覆盖 1,000 次 fork/exec/exit/wait 和资源检查，并随最近记录的九预设矩阵通过；旧第 28 次停滞的原版本红绿对照、1/16 CPU 长循环与更广的生命周期压力仍缺。
-5. **测试已从基础语言检查升级为真实内核检查，覆盖仍有边界。** 本轮九预设 CTest 为 44/44（3.64），包含 Release 的三个 benchmark、ARM64 Debug console 登记探针，以及 ARM64/x64 的真实 IRQ/等待登记交错。默认用户套件包含 COW/OOM、恶意信号帧、部分用户复制故障、双 console 读者、管道与 nanosleep 信号中断及 1,000 次生命周期；这不证明全部 uaccess 故障、确定性调度竞争或真机可靠性。
+5. **测试已从基础语言检查升级为真实内核检查，覆盖仍有边界。** 本轮九预设 CTest 为 44/44（3.65），包含 Release 的三个 benchmark、ARM64 Debug console 登记探针，以及 ARM64/x64 的真实 IRQ/等待登记交错。默认用户套件包含 COW/OOM、恶意信号帧、部分用户复制故障、双 console 读者、管道与 nanosleep 信号中断、限定 SA_RESTART 重试及 1,000 次生命周期；这不证明全部 uaccess 故障、确定性调度竞争或真机可靠性。
 
 保留现有 C++ 模块、AAL/HAL、可用进程/VFS/调度路径；先关闭权限、所有权、等待/退出和失败事务，再扩展高级 IPC、POSIX 或设备栈。内核模型仍是模块化单体，而不是已经实现用户态服务隔离的 hybrid。
 
@@ -1479,13 +1479,13 @@ PVH initrd 原先只要求被 RAM 条目覆盖；当同一物理区间也被非 
 
 `sys_wait4()` 原先被信号唤醒后只重新扫描子进程并再次睡眠；没有 Zombie 时，已捕获的信号也不会使阻塞等待返回。现在沿用 pipe/console 的可中断信号判定：先让 Zombie/`WNOHANG` 优先，再对可中断的待处理信号返回 `-EINTR`；准备睡眠改用共享 `moss_prepare_io_wait()`，让检查后、睡眠发布前到达的信号也能自唤醒。等待者仍在提交睡眠后从队列摘除，坏 status 指针仍不消耗 Zombie。
 
-新增 `users.signals/wait_interrupted`：子进程绑到 CPU1，验证父进程的真实 waitpid 帧已经处于 Sleeping 后才发送 SIGUSR1，并等待父进程的 pipe 确认才退出。父进程要求首次 wait 返回 `-EINTR`、status 保持哨兵值且 handler 已运行，然后放行子进程并成功 reap。临时恢复旧 wait 实现时，新用例在 `wait_interrupted` 报 `case_timeout`（`build/x64-debug/wait-interrupted-old-red/results.json`）；修复后三架构九预设定向 `users.signals` 各 21/21、完整 CTest 43/43，宿主 runner 回归 187 passed、1 skipped。当前 `sigaction` 仍拒绝 SA_RESTART，wait 自动重启和 RX/多读者交错尚未验收。
+新增 `users.signals/wait_interrupted`：子进程绑到 CPU1，验证父进程的真实 waitpid 帧已经处于 Sleeping 后才发送 SIGUSR1，并等待父进程的 pipe 确认才退出。父进程要求首次 wait 返回 `-EINTR`、status 保持哨兵值且 handler 已运行，然后放行子进程并成功 reap。临时恢复旧 wait 实现时，新用例在 `wait_interrupted` 报 `case_timeout`（`build/x64-debug/wait-interrupted-old-red/results.json`）；修复后三架构九预设定向 `users.signals` 各 21/21、完整 CTest 43/43，宿主 runner 回归 187 passed、1 skipped。当时 `sigaction` 仍拒绝 SA_RESTART，wait 自动重启和 RX/多读者交错尚未验收。
 
 ### 3.61 nanosleep 捕获信号中断和剩余时间（2026-09-23，工作区）
 
 `sleep_until()` 原先把信号造成的提前唤醒也当作定时器到期，返回 0。现在每次阻塞前和被唤醒后都检查 deadline 与可中断的待处理信号；复用 `moss_prepare_io_wait()` 覆盖信号检查与发布 Sleeping 之间的窗口。返回前仍同步取消栈上 timer；被捕获信号中断时返回 `-EINTR`，两个相对调用向非空 remaining 写入剩余纳秒，绝对 deadline 调用保持 remaining 不变。忽略信号或其他提前唤醒会继续等到原 deadline。
 
-新增三个真实用户态 `users.timers` 用例：CPU1 上的子进程观察父进程真实 nanosleep/clock_nanosleep 帧完成 Sleeping 交接后发送 SIGUSR1，并等待父进程确认才退出，避免子进程退出造成第二个唤醒。分别验证原生 nanosleep、clock_nanosleep 相对/绝对调用的 EINTR、handler 和 remaining 语义。旧实现的 x64 Debug 首个新用例断言失败（`build/x64-debug/timer-signal-old-red/results.json`）；修复后三架构九预设的定向 `users.timers` 各 10/10，完整 CTest 43/43，宿主 runner 187 passed、1 skipped。更广的跨 CPU timer 交错、STOP/CONT 和 SA_RESTART 仍单独保留。
+新增三个真实用户态 `users.timers` 用例：CPU1 上的子进程观察父进程真实 nanosleep/clock_nanosleep 帧完成 Sleeping 交接后发送 SIGUSR1，并等待父进程确认才退出，避免子进程退出造成第二个唤醒。分别验证原生 nanosleep、clock_nanosleep 相对/绝对调用的 EINTR、handler 和 remaining 语义。旧实现的 x64 Debug 首个新用例断言失败（`build/x64-debug/timer-signal-old-red/results.json`）；修复后三架构九预设的定向 `users.timers` 各 10/10，完整 CTest 43/43，宿主 runner 187 passed、1 skipped。当时更广的跨 CPU timer 交错、STOP/CONT 和 SA_RESTART 仍单独保留。
 
 ### 3.62 console 空检查与 waiter 登记之间的真实 RX 排队（2026-09-23，工作区）
 
@@ -1499,15 +1499,23 @@ ARM64 Debug 的生产镜像在 `console::getc_blocking()` 空 ring 检查后、�
 
 新增 `users.signals/console_multi_reader`：两个子进程分别绑到 CPU1/CPU2 并各从 `/dev/console` 读一个字节。父进程通过验证调用确认两者的真实 read 帧已进入阻塞状态；RV64 仍是轮询路径，只确认活跃 read 帧。随后父进程输出独立标记，宿主 runner 收到该标记才向 QEMU 串口发送 `ab`。两个子进程分别经 pipe 返回所读字节，父进程要求结果恰好是 `a` 和 `b`，两个子进程均正常退出。父进程在上报用例结果前补换行，避免 console 回显粘连验证协议。
 
-首轮宿主匹配漏掉串口行尾 `\r`，没有注入输入，x64 Debug 在新用例超时；改为复用协议解析时的行尾规范化后，x64/ARM64/RV64 Debug 均通过。临时把 RX 唤醒缩成只唤醒第一个 waiter，x64 Debug 的旧用例通过，新用例在宿主已注入 `ab` 后 `case_timeout`（`build/x64-debug/console-multi-one-wake-red/results.json`）；恢复全员唤醒后，三架构九预设 `users.signals` 各 22/22，完整 CTest 为 x64 16/16、ARM64 15/15、RV64 13/13，合计 44/44。宿主 runner 测试为 187 passed、1 skipped，Ruff 检查通过。ARM64/x64 验证多等待者队列，RV64 验证两个轮询读者；后续 IRQ/登记交错见 3.64，SA_RESTART 仍待验收。
+首轮宿主匹配漏掉串口行尾 `\r`，没有注入输入，x64 Debug 在新用例超时；改为复用协议解析时的行尾规范化后，x64/ARM64/RV64 Debug 均通过。临时把 RX 唤醒缩成只唤醒第一个 waiter，x64 Debug 的旧用例通过，新用例在宿主已注入 `ab` 后 `case_timeout`（`build/x64-debug/console-multi-one-wake-red/results.json`）；恢复全员唤醒后，三架构九预设 `users.signals` 各 22/22，完整 CTest 为 x64 16/16、ARM64 15/15、RV64 13/13，合计 44/44。宿主 runner 测试为 187 passed、1 skipped，Ruff 检查通过。ARM64/x64 验证多等待者队列，RV64 验证两个轮询读者；后续 IRQ/登记交错见 3.64；SA_RESTART 在当时仍待验收。
 
 ### 3.64 console IRQ handler 与等待登记的双 CPU 交错（2026-09-23，工作区）
 
 新增仅在 ARM64/x64 默认功能集运行的 `users.console_irq/irq_before_registration`。读者固定在 CPU1，在空 ring 检查之后持有 console 事件锁；父进程确认读者到达该点后，宿主向真实 QEMU 串口注入 `r`。UART IRQ 默认投递到 CPU0，验证镜像的 RX 钩子记录 handler 已在 CPU0 抵达事件锁前，然后读者才继续登记 waiter 并释放锁。父进程要求读者从 `/dev/console` 得到该字节、经 pipe 返回且正常退出，最后检查两个钩子的记录。生产镜像的钩子仍为空实现；原有 RX 和等待协议不变。RV64 使用轮询 console，故不运行该 IRQ 专项。
 
-ARM64/x64 六配置的真实输入用例均通过。临时去掉 waiter 发布后，宿主仍注入 `r`，x64 Debug 新用例按预期 `case_timeout`（`build/x64-debug/console-irq-no-waiter-red/results.json`）；源码已恢复。该测试把 IRQ handler 抵达与 reader 登记的顺序固定在不同 CPU 上，覆盖先前 3.62 的全 vCPU 暂停探针未覆盖的并发窗口；SA_RESTART 仍待实现。
+ARM64/x64 六配置的真实输入用例均通过。临时去掉 waiter 发布后，宿主仍注入 `r`，x64 Debug 新用例按预期 `case_timeout`（`build/x64-debug/console-irq-no-waiter-red/results.json`）；源码已恢复。该测试把 IRQ handler 抵达与 reader 登记的顺序固定在不同 CPU 上，覆盖先前 3.62 的全 vCPU 暂停探针未覆盖的并发窗口；SA_RESTART 在当时仍待实现。
 
 并行九预设首轮中，RV64 Release 的旧 `interrupts.smp/irq_context_retirement` 一次断言失败：旧测试在 `end_callback()` 释放租约后才写完成标志，注销可在这两步之间合法返回。10 次定向重放及一次完整 CTest 重试通过；将完成标志移到释放租约之前后，最终九预设完整 CTest 为 x64 16/16、ARM64 15/15、RV64 13/13，合计 44/44。此修正只消除测试自身的假失败，不改变 IRQ 注销实现。独立 console 宿主夹具补齐生产镜像的两个空验证钩子后，专项测试 32/32 通过；完整宿主测试 393 passed、1 skipped，Ruff 格式与静态检查通过。
+
+### 3.65 捕获信号后的限定 SA_RESTART 重试（2026-09-23，工作区）
+
+`sigaction` 现在接受原生 `SA_RESTART`，mlibc 在公共标志与 Moss 原生位值之间双向转换。系统调用返回 `-EINTR` 时，只有 `wait4/waitpid/read/write` 保存重试现场；信号处理函数启用 `SA_RESTART` 才在信号帧中退回到原系统调用指令，并恢复被返回值覆盖的首参数（ARM64/RV64）或系统调用号（x64）。`sigreturn` 按普通现场恢复路径重新执行该调用。无信号处理函数、未启用标志或其他调用不会重试；已完成部分传输的正数返回值也不会重复读写。原生 nanosleep 与 clock_nanosleep 即使启用该标志仍报告 `EINTR` 和既有 remaining 语义。
+
+新增真实用户态 `users.signals/wait_restarted`、`pipe_restarted`（读、写）及 `console_restarted`。子进程确认父进程的真实阻塞帧后发信号，wait/pipe 的处理函数才放行子进程；console 的宿主输入在处理函数打印握手标记后才注入，确保观察的是重试的 read。`pipe_partial_interrupt` 改为带 `SA_RESTART` 验证已传字节数不被重复处理；三个 `users.timers` 中断用例改为带该标志，继续要求 `EINTR`；libc 验证同时检查 ONSTACK/RESTART 往返和未支持标志的拒绝。
+
+三架构 Debug 定向运行的 `users.signals` 各 25/25、`users.timers` 各 10/10、`users.libc` 各 2/2。九预设完整 CTest 为 x64 16/16、ARM64 15/15、RV64 13/13，合计 44/44；宿主测试 393 passed、1 skipped，修改的 runner 文件通过 Ruff 格式与静态检查。此项只覆盖声明的可重启调用子集；CPU-bound 信号投递、STOP/CONT、其他阻塞调用及历史 SMP 超时因果仍按 MOSS-018/020 保留。
 
 ## 4. 问题总表与当前状态
 
@@ -1530,9 +1538,9 @@ ARM64/x64 六配置的真实输入用例均通过。临时去掉 waiter 发布�
 | MOSS-015 | P1 | exec 原子替换 | 已关闭（3.25）；全部可失败准备均在旧地址空间仍有效时完成，提交后才回收旧所有权；PFA 与六级 heap 失败、可变 ELF 快照及 FD 语义已在六配置通过。 |
 | MOSS-016 | P1 | ELF 校验与分段策略 | 已关闭（3.26）；不可变 LoadPlan、checked arithmetic、严格拒绝 oracle、17 个畸形映像，以及非页对齐 RX/RW 的实际字节/零填充/最终权限已在六配置通过。 |
 | MOSS-017 | P1 | 运行队列 / 迁移 / on-CPU | 部分修复（3.28）；调用线程收紧自身 affinity 时会在 continuation 保存后同步迁移，确定性红例、单例及 32/32 并发压力通过；远程目标、一般 pick/dequeue/迁移及 on-CPU/check_need_resched 仍未闭合。 |
-| MOSS-018 | P1 | wait/console 丢失唤醒 | 部分修复；wait 的 child-exit/登记交错及 EINTR 已有红绿验收（3.59～3.60）；console 的 RX 排队窗口、双读者及跨 CPU IRQ/登记交错分别在 3.62～3.64 验收。SA_RESTART 仍待实现。 |
+| MOSS-018 | P1 | wait/console 丢失唤醒 | 部分修复；wait 的 child-exit/登记交错及 EINTR 已有红绿验收（3.59～3.60）；console 的 RX 排队窗口、双读者及跨 CPU IRQ/登记交错分别在 3.62～3.64 验收。SA_RESTART 限定重启子集已验收（3.65）；历史 SMP 超时因果仍待确认。 |
 | MOSS-019 | P1 | nanosleep / timer 生命周期 | 部分修复；三 ISA 实际睡眠、容量失败、deadline 溢出、跨 CPU 交接及同步取消已有实现；捕获信号的 EINTR 与相对剩余时间已有九预设红绿验收（3.61）。更广定时交错仍待验收。 |
-| MOSS-020 | P1 | 信号投递 / STOP/CONT/SIGCHLD | 部分修复；结果/handler 参数写回顺序已补，默认用例已断言 SIGCHLD、pipe/console 中断与部分传输、wait 和 nanosleep 的 EINTR（3.60～3.61）。CPU-bound 的 IRQ 返回投递、STOP/CONT 及 SA_RESTART 仍待闭合。 |
+| MOSS-020 | P1 | 信号投递 / STOP/CONT/SIGCHLD | 部分修复；结果/handler 参数写回顺序已补，默认用例已断言 SIGCHLD、pipe/console 中断与部分传输、wait 和 nanosleep 的 EINTR（3.60～3.61）。SA_RESTART 限定重启子集已验收（3.65）；CPU-bound 的 IRQ 返回投递与 STOP/CONT 仍待闭合。 |
 | MOSS-021 | P1 | 信号状态生命周期 | 已关闭（3.23）；状态由 `Process` 拥有，fork/exec/exit 规则已核对，继承/重置及跨旧 256 槽边界的 300 次生命周期在六配置通过。 |
 | MOSS-022 | P1 | 退出 FD 关闭 | 实现已修复、验收部分；退出在 Zombie 前 close-all、析构兜底，EOF-before-wait 与默认 1,000 次资源恢复已有九预设通过记录。3.23 的 RV64 Debug 30 秒超时是旧报告；原故障复现/原因和更广压力仍待核对。 |
 | MOSS-023 | P1 | 退出换栈 / 连续执行停滞 | 部分验收；已复用 context_switch 返回 bootstrap 栈，默认 `users.lifecycle` 1,000 次随最近九预设矩阵通过；旧第 28 次停滞红绿对照、1/16 CPU 长循环仍缺。 |
@@ -1814,7 +1822,7 @@ fork 对 VMA 有复制，但未完整继承 `brk_base/brk_current/mmap_next` 等
 
 ### MOSS-018 · 检查条件、登记等待和进入睡眠必须是一个协议
 
-**2026-09-23 更新：部分修复，见 3.41、3.59～3.60、3.62～3.64。** `sys_wait4()` 已在准备睡眠后登记 waiter 并重查 Zombie；child exit 在登记前完成唤醒的双 CPU 交错及 wait EINTR 已通过红绿对照。console 的检查与登记由锁串行化，支持多个 waiter 和待处理信号唤醒；真实 RX 排队窗口、双读者及跨 CPU IRQ/登记交错均已有回归。SA_RESTART 仍待补。
+**2026-09-23 更新：部分修复，见 3.41、3.59～3.60、3.62～3.65。** `sys_wait4()` 已在准备睡眠后登记 waiter 并重查 Zombie；child exit 在登记前完成唤醒的双 CPU 交错及 wait EINTR 已通过红绿对照。console 的检查与登记由锁串行化，支持多个 waiter 和待处理信号唤醒；真实 RX 排队窗口、双读者及跨 CPU IRQ/登记交错均已有回归。SA_RESTART 的限定重启子集已补；历史 SMP 超时因果仍待确认。
 
 **原始位置与事实（修复前）：** `src/kernel/src/syscall_table.cpp:988` 的 wait4 先扫描 Zombie，再登记等待和改变状态；子进程可在这段窗口退出，使唤醒早于有效等待登记。`:2695` 的 console 阻塞路径也把缓冲区检查、状态/队列修改和单个 `blocked_reader` 注册分开；另一个 CPU 的 RX 可穿过窗口，且单指针无法支持多个等待者。
 
@@ -1842,7 +1850,7 @@ fork 对 VMA 有复制，但未完整继承 `brk_base/brk_current/mmap_next` 等
 
 ### MOSS-020 · 信号正常演示通过，仍不代表投递和返回语义正确
 
-**2026-09-23 更新：部分修复，见 3.19、3.41、3.60～3.61。** handler 参数/返回值已有回归；默认 `users.signals` 已包含 SIGCHLD 基本断言、pipe/console 中断与部分传输、wait EINTR，`users.timers` 已包含 nanosleep EINTR。CPU-bound 的 IRQ 返回投递、STOP/CONT 及 SA_RESTART 仍待闭合。
+**2026-09-23 更新：部分修复，见 3.19、3.41、3.60～3.61、3.65。** handler 参数/返回值已有回归；默认 `users.signals` 已包含 SIGCHLD 基本断言、pipe/console 中断与部分传输、wait EINTR，`users.timers` 已包含 nanosleep EINTR。SA_RESTART 限定重启子集已补；CPU-bound 的 IRQ 返回投递与 STOP/CONT 仍待闭合。
 
 **原始位置与事实（修复前）：** `src/process/src/signal.cpp:128` 写 `frame[0] = signo`，但 ARM64 系统调用返回段 `src/boot/src/arch/arm64/start_arm64.S:879` 随后把 C 返回值写回相同槽位，覆盖 handler 参数；建立信号帧时也需要先确定被中断系统调用的最终返回值。当时用户测试 handler 未充分断言该参数，无法检测这个错误。
 
@@ -2139,18 +2147,20 @@ fork 对 VMA 有复制，但未完整继承 `brk_base/brk_current/mmap_next` 等
 ### 阶段 D：闭合调度、等待和退出生命周期
 
 - [ ] D1：运行队列原子取任务、on_cpu 交接、迁移锁序及 affinity（017）。
-- [ ] D2：wait/console 的登记—睡眠、nanosleep 交接与同步取消已实现；child-exit/登记交错、wait/nanosleep EINTR、RX 排队窗口、双读者及跨 CPU IRQ/登记交错已验收，继续补 SA_RESTART 和更多定时交错（018、019）。
+- [ ] D2：wait/console 的登记—睡眠、nanosleep 交接与同步取消已实现；child-exit/登记交错、wait/nanosleep EINTR、RX 排队窗口、双读者及跨 CPU IRQ/登记交错已验收，继续补更多定时交错（018、019）。
   - [x] child exit 完成唤醒后才登记 wait 的确定性交错；移除 Zombie 重查的红例与九预设 `users.signals` 20/20 通过（3.59）。
   - [x] waitpid 对捕获信号返回 EINTR，并保留状态与可重试回收；旧实现超时红例、九预设 `users.signals` 21/21 和完整 CTest 43/43 通过（3.60）。
   - [x] nanosleep/clock_nanosleep 捕获信号后返回 EINTR；相对调用写剩余纳秒，绝对调用不改 remaining；旧实现断言红例，九预设 `users.timers` 各 10/10（3.61）。
   - [x] ARM64 Debug 将真实 PL011 RX 固定在 console 空检查之后、waiter 登记之前排队；去掉 waiter 登记的负向探针超时，恢复后 shell 完成（3.62）。该探针不强制 IRQ handler 并发，另见 3.64。
   - [x] 两个绑核 console 读者各取得真实串口输入的一个字节；单 waiter 唤醒变异使新用例超时，九预设 `users.signals` 各 22/22（3.63）。
   - [x] CPU1 读者持锁到达空检查/登记间隙后注入真实串口字节；CPU0 IRQ handler 已抵达同一锁，读者继续登记并成功读取。去掉 waiter 发布的负向用例超时（3.64）。
+  - [x] 捕获信号的 SA_RESTART 对 waitpid、pipe 读写和 console 读重试；部分传输不重试，nanosleep 仍返回 EINTR（3.65）。
 - [x] D3a：删除 C++ inline 换栈，复用已有 context_switch 返回活跃 bootstrap 调度上下文（023，`44dedc2`）。
 - [ ] D3b：默认 4 CPU 的 1,000 次生命周期与资源检查已有九预设通过记录；补旧第 28 次停滞红绿对照、1/16 CPU 长循环及旧栈/上下文生命周期专项验收（023）。
 - [x] D4a：`Process` 拥有信号状态，fork 继承、exec 重置、exit 回收及跨旧固定槽边界验收通过（021，工作区 3.23）。
 - [ ] D4b：FD 所有权、Zombie 前关闭及 EOF-before-wait 已验证，默认 1,000 次生命周期有最近九预设通过记录；保留 3.23 旧超时，继续查原故障因果和更广压力（022）。
-- [ ] D5：基本 SIGCHLD、pipe/console 中断及 wait/nanosleep EINTR 已有用例；补 CPU-bound 的 IRQ 返回投递、STOP/CONT 和 SA_RESTART（020）。
+- [ ] D5：基本 SIGCHLD、pipe/console 中断及 wait/nanosleep EINTR 已有用例；补 CPU-bound 的 IRQ 返回投递与 STOP/CONT（020）。
+  - [x] SA_RESTART 限定子集及 libc 标志往返通过三架构真实内核验证（3.65）。
 
 **退出条件：** 连续 1,000 次进程生命周期和可控并发交错通过；CPU-bound 信号可达；阻塞、取消、退出都无丢失唤醒；运行者/队列/资源计数始终满足不变量。一次性启动成功不满足此阶段。
 
