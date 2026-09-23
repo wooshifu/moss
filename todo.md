@@ -95,6 +95,7 @@ uv run qemu.py --manifest build/arm64-debug/moss-artifacts.json
   - [x] 单次 `execve` 的 pathname、argv/envp 指针及字符串固定从同一持有的地址空间版本读取；路径读取后强制发布另一版本的真实用户态回归先红后绿，九配置 `users.exec` 与 CTest 43/43 通过（3.42）。
   - [x] 双 CPU 缺页与同址 `unmap` 的确定性交错：缺页持 VM 事务时对端等待，提交后摘除 PTE/VMA 并回收页；去掉验证侧 `unmap` 锁只有新增用例变红，九配置 `mm.concurrent` 与 CTest 43/43 通过（3.43）。
   - [x] 未支持多线程 `exec` 前先拒绝不安全组合：已有第二线程时 `execve` 返回 EAGAIN，准备期间注册线程失败；两条真实 `execve` 回归各有旧实现红例，九配置 `users.exec` 及 CTest 43/43 通过（3.44）。
+  - [x] 双 CPU 缺页与 fork 页表克隆的确定性交错：克隆等待缺页提交，父子 COW/ref 与资源基线一致；验证侧去锁只让新增项变红，九配置 `mm.concurrent` 各 4/4、CTest 43/43 通过（3.45）。
   - [ ] 完整共享 exec 的线程/root 协调、异步访问的长期页 pin 及更多并发 unmap/fork/fault 交错；不把同步页租约、root 拥有权或所测 TLB 场景当作完整硬件访问隔离。
 - [x] **MOSS-003（3.40 已关闭）**：将用户信号帧/altstack 当不可信输入，安全复制并净化 PC/SP/特权状态。
   - [x] 信号帧 V2、原生 GP、PC/SP 用户域和按 ISA 的状态白名单、x86 MXCSR 检查；基本信号返回在三架构九配置通过（`0e88344`，3.19）。

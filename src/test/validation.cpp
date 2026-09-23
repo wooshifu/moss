@@ -3879,17 +3879,17 @@ struct FaultTransactions {
   using Tables = mm::PageTableManager;
   using Pfa = mm::PageFrameAllocator;
   static constexpr VirtAddr address = process::user_layout::CODE_BASE;
-  // COW, demand-zero, then fault versus unmap. Each uses the same three
-  // snapshot/commit/cleanup milestones so the peer contends before commit.
-  static constexpr u32 scenarios = 3, milestones = 3;
-  shared_ptr<process::AddressSpace> source, target;
+  // COW, demand-zero, fault versus unmap, then fault versus fork. Each uses
+  // the same milestones so the peer contends before the fault commits.
+  static constexpr u32 scenarios = 4, milestones = 3;
+  shared_ptr<process::AddressSpace> source, target, clone;
   PhysAddr original = 0, owner_page = 0, peer_page = 0;
   u64 contents = 0;
   // Independent monotonic clocks: phase = snapshot/commit/cleanup; arrived =
   // ready/contending/finished. The host's normal deadline bounds a stuck peer.
   u32 phase = 0, arrived = 0, snapshots = 0, contentions = 0;
   u32 round_base = 0;
-  bool demand = false, unmap = false;
+  bool demand = false, unmap = false, fork = false;
   bool peer_ok = false;
 
   void snapshot(PhysAddr root, VirtAddr fault_address) {
@@ -3923,7 +3923,13 @@ struct FaultTransactions {
       const auto base = round * milestones;
       __atomic_store_n(&arrived, base + 1, __ATOMIC_RELEASE);
       ContainerInterleaving::wait_for(phase, base + 1);
-      if (unmap) {
+      if (fork) {
+        auto transaction = target->lock_vm();
+        peer_ok = static_cast<bool>(Tables::clone_user_page_tables(target->pgd_phys, clone->pgd_phys)) && peer_ok;
+        const auto *pte = Tables::get_user_pte(clone->pgd_phys, address);
+        peer_page = pte && pte->is_valid() ? pte->get_phys_addr() : 0;
+        peer_ok = peer_page != 0 && peer_ok;
+      } else if (unmap) {
         auto transaction = target->lock_vm();
         const auto *pte = Tables::get_user_pte(target->pgd_phys, address);
         peer_page = pte && pte->is_valid() ? pte->get_phys_addr() : 0;
@@ -3946,9 +3952,13 @@ struct FaultTransactions {
       round_base = round * milestones;
       demand = round != 0;
       unmap = round == 2;
+      fork = round == 3;
       snapshots = 0;
       contentions = 0;
-      if (unmap) {
+      if (fork) {
+        end_case();
+        start_case("fault_fork");
+      } else if (unmap) {
         end_case();
         start_case("fault_unmap");
       } else if (demand) {
@@ -3971,6 +3981,12 @@ struct FaultTransactions {
     constexpr u32 flags = process::vma_flags::READ | process::vma_flags::WRITE;
     AddressSpaceReaders::require(source->add_vma(address, address + page_size, flags));
     AddressSpaceReaders::require(target->add_vma(address, address + page_size, flags));
+    if (fork) {
+      auto cloned_space = process::user_space::create_user_address_space();
+      AddressSpaceReaders::require(cloned_space.has_value());
+      clone = moss::move(*cloned_space);
+      AddressSpaceReaders::require(clone->add_vma(address, address + page_size, flags));
+    }
     auto allocated = mm::allocate_pages(0);
     AddressSpaceReaders::require(allocated.has_value());
     original = *allocated;
@@ -3999,6 +4015,23 @@ struct FaultTransactions {
                  !target->find_vma(address) && Pfa::page_ref_get(owner_page) == 0);
       ut::expect(Pfa::page_ref_get(original) == 1 && memory_hash(phys_to_virt(original), page_size) == contents);
       ut::expect(snapshots == 1 && contentions == 1);
+      target.reset();
+      source.reset();
+      ut::expect(Pfa::get_memory_stats().free_pages == pages);
+      ut::expect(mm::RuntimeHeapAllocator::get_heap_stats().allocated_bytes == heap);
+      return;
+    }
+    if (fork) {
+      const auto *parent_pte = Tables::get_user_pte(target->pgd_phys, address);
+      const auto *child_pte = Tables::get_user_pte(clone->pgd_phys, address);
+      ut::expect(owner_page != 0 && owner_page != original && peer_page == owner_page && parent_pte && child_pte &&
+                 parent_pte->get_phys_addr() == owner_page && child_pte->get_phys_addr() == owner_page &&
+                 parent_pte->is_cow() && child_pte->is_cow() && !parent_pte->is_writable() &&
+                 !child_pte->is_writable() && Pfa::page_ref_get(owner_page) == 2);
+      ut::expect(Pfa::page_ref_get(original) == 1 && memory_hash(phys_to_virt(original), page_size) == contents &&
+                 memory_hash(phys_to_virt(owner_page), page_size) == contents);
+      ut::expect(snapshots == 1 && contentions == 1);
+      clone.reset();
       target.reset();
       source.reset();
       ut::expect(Pfa::get_memory_stats().free_pages == pages);
@@ -5864,6 +5897,7 @@ void declare_cases() {
     ut::register_test("cow_fault", empty_case);
     ut::register_test("demand_fault", empty_case);
     ut::register_test("fault_unmap", empty_case);
+    ut::register_test("fault_fork", empty_case);
   });
   ut::register_suite("mm.uaccess", [] {
     ut::register_test("copy_unmap", empty_case);
