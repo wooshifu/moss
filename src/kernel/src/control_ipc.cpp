@@ -10,7 +10,7 @@ constexpr usize kMessageBytes = 256;
 // when measured service concurrency needs more outstanding calls.
 constexpr usize kPendingCalls = 16;
 constexpr u32 kAllRights = capability::rights::SEND | capability::rights::RECEIVE | capability::rights::TRANSFER |
-                           capability::rights::DUPLICATE;
+                           capability::rights::DUPLICATE | capability::rights::MAP_READ | capability::rights::MAP_WRITE;
 
 // Keep this wire layout aligned with userspace's moss_ipc_message. All fields
 // are fixed-width on Moss's supported 64-bit ABIs.
@@ -223,6 +223,24 @@ public:
   ~Receiver() override { channel->close(); }
 };
 
+class MemoryObject final : public capability::Object {
+  PhysAddr page_{0};
+  bool has_page_{false};
+
+public:
+  MemoryObject() noexcept : Object(capability::ObjectType::Memory) {}
+  ~MemoryObject() override {
+    // The allocation owns one reference; each resident mapping owns another.
+    if (has_page_ && mm::PageFrameAllocator::page_ref_dec(page_) == 0)
+      (void)mm::free_pages(page_, 0);
+  }
+  void adopt_page(PhysAddr page) noexcept {
+    page_ = page;
+    has_page_ = true;
+  }
+  [[nodiscard]] PhysAddr page() const noexcept { return page_; }
+};
+
 class Reply final : public capability::Object {
 public:
   shared_ptr<Channel> channel;
@@ -288,6 +306,60 @@ long sys_cap_set_inherit(long handle, long inherit, long, long, long, long) noex
     return -errc::EINVAL;
   auto result = proc->capabilities().set_inheritable(static_cast<Handle>(handle), inherit == 1);
   return result ? 0 : cap_error(result.error());
+}
+
+long sys_mem_create(long size, long, long, long, long, long) noexcept {
+  // ponytail: one page is enough to establish the shared data path; extend
+  // object sizing when a service protocol needs a larger contiguous window.
+  if (size != static_cast<long>(PAGE_SIZE))
+    return -errc::EINVAL;
+  auto proc = caller_process();
+  if (!proc)
+    return -errc::ESRCH;
+  // Construct first: try_make may destroy a constructed object if its control
+  // block allocation fails, so no physical page may be owned until it returns.
+  auto object = shared_ptr<capability::Object>::try_make<MemoryObject>(ipc_allocate);
+  if (!object)
+    return -errc::ENOMEM;
+  auto page = mm::allocate_pages(0);
+  if (!page)
+    return -errc::ENOMEM;
+  __builtin_memset(reinterpret_cast<void *>(phys_to_virt(*page)), 0, PAGE_SIZE);
+  static_cast<MemoryObject *>(object.get())->adopt_page(*page);
+  constexpr u32 initial_rights = capability::rights::MAP_READ | capability::rights::MAP_WRITE |
+                                 capability::rights::TRANSFER | capability::rights::DUPLICATE;
+  auto handle = proc->capabilities().install(moss::move(object), initial_rights);
+  return handle ? static_cast<long>(*handle) : cap_error(handle.error());
+}
+
+long sys_mem_map(long handle, long rights, long, long, long, long) noexcept {
+  constexpr u32 mapping_rights = capability::rights::MAP_READ | capability::rights::MAP_WRITE;
+  if (rights <= 0 || (static_cast<u64>(rights) & ~static_cast<u64>(mapping_rights)) != 0)
+    return -errc::EINVAL;
+  auto proc = caller_process();
+  if (!proc)
+    return -errc::ESRCH;
+  auto looked = proc->capabilities().lookup(static_cast<Handle>(handle), capability::ObjectType::Memory,
+                                            static_cast<u32>(rights));
+  if (!looked)
+    return cap_error(looked.error());
+  auto as = proc->address_space();
+  if (!as)
+    return -errc::ESRCH;
+  auto transaction = as->lock_vm();
+  // ponytail: use the existing monotonic mmap cursor; add hole search when
+  // services need to recycle virtual ranges after unmap.
+  const VirtAddr address = as->mmap_next;
+  if (address > USER_MAX - PAGE_SIZE || !mm::PageTableManager::is_user_range(address, PAGE_SIZE))
+    return -errc::ENOMEM;
+  // Every supported architecture makes a writable user mapping readable.
+  const u32 flags =
+      process::vma_flags::READ | ((rights & capability::rights::MAP_WRITE) ? process::vma_flags::WRITE : 0U);
+  if (!as->add_vma(address, address + PAGE_SIZE, flags, process::VmaType::MMAP, nullptr, 0, 0, *looked,
+                   static_cast<MemoryObject *>((*looked).get())->page()))
+    return -errc::ENOMEM;
+  as->mmap_next = address + PAGE_SIZE;
+  return static_cast<long>(address);
 }
 
 long sys_ipc_create(long pair_addr, long, long, long, long, long) noexcept {

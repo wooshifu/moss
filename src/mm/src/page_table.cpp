@@ -477,7 +477,7 @@ static void commit_user_clone(PageTable *src, PageTable *dst, unsigned shift, u6
     auto &target = dst->entries[i];
     if (shift == 12) {
       auto value = source;
-      if (value.is_writable()) {
+      if (value.is_writable() && !value.is_shared()) {
         value.set_cow();
         value.make_readonly();
         publish_entry(source, value);

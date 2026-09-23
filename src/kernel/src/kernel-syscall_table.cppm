@@ -205,9 +205,11 @@ enum class SyscallNumber : long {
   SYS_IPC_CALL = 137,
   SYS_IPC_RECEIVE = 138,
   SYS_IPC_REPLY = 139,
+  SYS_MEM_CREATE = 140,
+  SYS_MEM_MAP = 141,
 
   // Total syscall count marker
-  MAX_SYSCALL = 140
+  MAX_SYSCALL = 142
 };
 
 // Syscall handler function type
@@ -298,9 +300,12 @@ long sys_cap_close(long handle, long arg1, long arg2, long arg3, long arg4, long
 long sys_cap_duplicate(long handle, long rights, long arg2, long arg3, long arg4, long arg5) noexcept;
 long sys_cap_set_inherit(long handle, long inherit, long arg2, long arg3, long arg4, long arg5) noexcept;
 long sys_ipc_create(long pair_addr, long arg1, long arg2, long arg3, long arg4, long arg5) noexcept;
-long sys_ipc_call(long endpoint, long request_addr, long response_addr, long deadline_ns, long arg4, long arg5) noexcept;
+long sys_ipc_call(long endpoint, long request_addr, long response_addr, long deadline_ns, long arg4,
+                  long arg5) noexcept;
 long sys_ipc_receive(long endpoint, long request_addr, long reply_addr, long arg3, long arg4, long arg5) noexcept;
 long sys_ipc_reply(long reply, long response_addr, long arg2, long arg3, long arg4, long arg5) noexcept;
+long sys_mem_create(long size, long arg1, long arg2, long arg3, long arg4, long arg5) noexcept;
+long sys_mem_map(long handle, long rights, long arg2, long arg3, long arg4, long arg5) noexcept;
 
 // Default handler for unimplemented syscalls
 long sys_not_implemented(long arg0, long arg1, long arg2, long arg3, long arg4, long arg5) noexcept;

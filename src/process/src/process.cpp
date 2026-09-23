@@ -75,7 +75,8 @@ bool AddressSpace::resolve_fault_locked(VirtAddr address, mm::UserFaultAccess ac
                                      .start = vma->start_addr,
                                      .backing = vma->backing_data,
                                      .backing_offset = vma->backing_offset,
-                                     .backing_size = vma->backing_size};
+                                     .backing_size = vma->backing_size,
+                                     .shared_page = vma->shared_page};
   return cow_only ? mm::resolve_user_cow_fault(context, address)
                   : mm::resolve_user_demand_fault(context, address, access);
 }

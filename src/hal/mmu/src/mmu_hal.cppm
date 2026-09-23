@@ -106,6 +106,7 @@ inline constexpr u64 ATTR_NORMAL_NC = (2ULL << ATTR_IDX_SHIFT); // MAIR index 2
 
 // Software-defined: Copy-on-Write marker (bits 55-58 are software-available)
 inline constexpr u64 SW_COW = (1ULL << 55);
+inline constexpr u64 SW_SHARED = (1ULL << 56); // Keep writable Memory Object mappings shared across fork.
 
 #elif defined(MOSS_ARCH_X64)
 // x64 4-level paging PTE format (Intel SDM Vol.3, Ch.4)
@@ -132,6 +133,7 @@ inline constexpr u64 GLOBAL = (1ULL << 8);    // Global
 
 // Software-defined: Copy-on-Write marker (bit 52 is software-available)
 inline constexpr u64 SW_COW = (1ULL << 52);
+inline constexpr u64 SW_SHARED = (1ULL << 53); // Software leaf bit, separate from physical-address bits.
 
 #elif defined(MOSS_ARCH_RISCV64)
 // RISC-V 64 Sv39/Sv48 PTE format (RISC-V 64 Privileged Spec, Ch. 4.4)
@@ -161,6 +163,7 @@ inline constexpr u64 GLOBAL = (1ULL << 5);  // G (Global)
 
 // Software-defined: Copy-on-Write marker (RSW bit 0, bits 8-9 are reserved for software)
 inline constexpr u64 SW_COW = (1ULL << 8);
+inline constexpr u64 SW_SHARED = (1ULL << 9); // RSW bit 1 preserves shared mappings across fork.
 #endif
 
 } // namespace page_attr

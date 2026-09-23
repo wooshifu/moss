@@ -417,7 +417,8 @@ void _start(long argc, const char **argv) {
     control(3, 0, 0);
   } else if (mode == 25) {
     unsigned long (*const tests[])(void) = {
-        ipc_roundtrip, ipc_deadline, ipc_peer_death, ipc_signal_cancel, ipc_capability_transfer, ipc_delivery_rollback};
+        ipc_roundtrip,           ipc_deadline,          ipc_peer_death,   ipc_signal_cancel,
+        ipc_capability_transfer, ipc_delivery_rollback, ipc_memory_object};
     for (long test = 0; test < (long)(sizeof(tests) / sizeof(tests[0])); ++test) {
       control(1, test, 0);
       unsigned long errors = tests[test]();

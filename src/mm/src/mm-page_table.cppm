@@ -38,6 +38,7 @@ struct UserFaultContext {
   const u8 *backing;
   usize backing_offset;
   usize backing_size;
+  PhysAddr shared_page;
 };
 
 [[nodiscard]] bool resolve_user_cow_fault(const UserFaultContext &context, VirtAddr far_addr) noexcept;
@@ -62,6 +63,7 @@ enum class PageSize : u64 { Size4KB = PAGE_SIZE, Size2MB = 2ULL * 1024 * 1024, S
 // from a single source of truth in moss.hal.mmu.
 namespace page_attr = ::moss::kernel::hal::mmu::page_attr;
 namespace page_perms = ::moss::kernel::hal::mmu::page_perms;
+static_assert((page_attr::SW_SHARED & hal::mmu::PTE_ADDR_MASK) == 0);
 
 // RISC-V PPN starts at descriptor bit 10 while a byte address starts at bit
 // 12. The shifts by 2 below bridge those encodings; other targets store PA bits.
@@ -129,6 +131,7 @@ struct PageTableEntry {
 
   // ---- COW (Copy-on-Write) helpers ----
   [[nodiscard]] constexpr bool is_cow() const { return (raw & page_attr::SW_COW) != 0; }
+  [[nodiscard]] constexpr bool is_shared() const { return (raw & page_attr::SW_SHARED) != 0; }
   constexpr void set_cow() { raw |= page_attr::SW_COW; }
   constexpr void clear_cow() { raw &= ~page_attr::SW_COW; }
 

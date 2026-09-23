@@ -15,6 +15,7 @@ unsigned long ipc_peer_death(void);
 unsigned long ipc_signal_cancel(void);
 unsigned long ipc_capability_transfer(void);
 unsigned long ipc_delivery_rollback(void);
+unsigned long ipc_memory_object(void);
 unsigned long busybox_script(const char *script, const char *expected);
 unsigned long wait_status_rollback(void);
 unsigned long fork_allocation_rollback(long arm, long release, unsigned cycles);
