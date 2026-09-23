@@ -38,6 +38,9 @@ struct moss_ipc_endpoints {
 
 enum { MOSS_FORK_CAP_INHERIT = 1U << 0 };
 
+// SYS_CAP_SET_INHERIT changes fork inheritance and exec retention together.
+// SYS_CAP_SET_EXEC overrides only exec retention: 1 keeps the handle, 0 closes
+// it after a successful exec. Opting in requires DUPLICATE authority.
 // SYS_FORK_DOMAIN_SELECT preserves each selected handle number through exec.
 // INHERIT additionally permits later ordinary forks.
 struct moss_fork_capability {

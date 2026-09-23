@@ -632,11 +632,14 @@ unsigned long ipc_domain_selection(void) {
     long grandchild = syscall0(SYS_FORK);
     if (grandchild == 0)
       _exit(syscall1(SYS_CAP_CLOSE, (long)pair.receive) == -IPC_EBADF ? 37 : 96);
-    _exit(denied_duplicate == -IPC_EACCES && grandchild > 1 && wait_exit(grandchild, 37) &&
-                  syscall1(SYS_CAP_CLOSE, (long)pair.receive) == 0 &&
-                  syscall1(SYS_CAP_CLOSE, (long)pair.send) == -IPC_EBADF
-              ? 37
-              : 96);
+    if (denied_duplicate != -IPC_EACCES || grandchild <= 1 || !wait_exit(grandchild, 37) ||
+        syscall1(SYS_CAP_CLOSE, (long)pair.send) != -IPC_EBADF)
+      _exit(96);
+    char selected_arg[MOSS_DECIMAL_BUFFER_SIZE];
+    (void)ultoa(pair.receive, selected_arg, sizeof(selected_arg));
+    const char *args[] = {"cap-present", selected_arg, 0};
+    syscall3(SYS_EXECVE, (long)"/validation_child.elf", (long)args, 0);
+    _exit(96);
   }
   errors |= (unsigned long)(selected_child <= 1 || !selected_domain) << 4;
   if (selected_domain)
@@ -663,6 +666,32 @@ unsigned long ipc_domain_selection(void) {
               << 9;
     errors |= (unsigned long)(syscall1(SYS_CAP_CLOSE, limited) != 0) << 10;
   }
+  long exec_limited = syscall2(SYS_CAP_DUPLICATE, (long)pair.receive, MOSS_CAP_RECEIVE);
+  errors |= (unsigned long)(exec_limited <= 0) << 19;
+  if (exec_limited > 0) {
+    errors |= (unsigned long)(syscall2(SYS_CAP_SET_EXEC, exec_limited, 1) != -IPC_EACCES) << 20;
+    errors |= (unsigned long)(syscall2(SYS_CAP_SET_EXEC, exec_limited, 0) != 0) << 21;
+    errors |= (unsigned long)(syscall1(SYS_CAP_CLOSE, exec_limited) != 0) << 22;
+  }
+  errors |= (unsigned long)(syscall2(SYS_CAP_SET_EXEC, (long)pair.send, 2) != -IPC_EINVAL) << 23;
+  errors |= (unsigned long)(syscall2(SYS_CAP_SET_EXEC, 0, 1) != -IPC_EBADF) << 24;
+  errors |= (unsigned long)(syscall2(SYS_CAP_SET_INHERIT, (long)pair.receive, 1) != 0) << 25;
+  errors |= (unsigned long)(syscall2(SYS_CAP_SET_EXEC, (long)pair.send, 0) != 0) << 26;
+  errors |= (unsigned long)(syscall2(SYS_CAP_SET_EXEC, (long)pair.receive, 0) != 0 ||
+                            syscall2(SYS_CAP_SET_EXEC, (long)pair.receive, 1) != 0)
+            << 27;
+  long exec_child = fork();
+  if (exec_child == 0) {
+    if (syscall2(SYS_CAP_SET_EXEC, (long)pair.send, 0) != 0)
+      _exit(96);
+    char closed_arg[MOSS_DECIMAL_BUFFER_SIZE], kept_arg[MOSS_DECIMAL_BUFFER_SIZE];
+    (void)ultoa(pair.send, closed_arg, sizeof(closed_arg));
+    (void)ultoa(pair.receive, kept_arg, sizeof(kept_arg));
+    const char *args[] = {"cap-exec", closed_arg, kept_arg, 0};
+    syscall3(SYS_EXECVE, (long)"/validation_child.elf", (long)args, 0);
+    _exit(96);
+  }
+  errors |= (unsigned long)(exec_child <= 1 || !wait_exit(exec_child, 37)) << 28;
   errors |= (unsigned long)(syscall3(SYS_FORK_DOMAIN_SELECT, (long)&rejected_domain, 0, 1) != -IPC_EFAULT) << 11;
   // A bit outside the published selection flags must be rejected.
   const struct moss_fork_capability invalid_flags[] = {{pair.receive, MOSS_CAP_RECEIVE, MOSS_FORK_CAP_INHERIT << 1}};

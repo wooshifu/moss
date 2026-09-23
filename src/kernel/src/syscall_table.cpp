@@ -3072,7 +3072,8 @@ const SyscallDescriptor SYSCALL_TABLE[static_cast<int>(SyscallNumber::MAX_SYSCAL
     {"fork_domain_select", handlers::sys_fork_domain_select, 3, true, "Fork with selected inherited capabilities"},
     {"domain_wait_any", handlers::sys_domain_wait_any, 2, true, "Wait for one of several capability-addressed domains"},
     {"domain_status", handlers::sys_domain_status, 2, true, "Read a capability-addressed domain's exit cause"},
-    {"domain_self", handlers::sys_domain_self, 0, true, "Acquire a capability for the calling domain"}};
+    {"domain_self", handlers::sys_domain_self, 0, true, "Acquire a capability for the calling domain"},
+    {"cap_set_exec", handlers::sys_cap_set_exec, 2, true, "Select capability retention after exec"}};
 
 // 系统调用分发器实现
 long SyscallDispatcher::dispatch(long syscall_number, long arg0, long arg1, long arg2, long arg3, long arg4,

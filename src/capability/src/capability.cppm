@@ -295,7 +295,22 @@ public:
     if (inheritable && !(entry->rights & rights::DUPLICATE))
       return VoidResult{ErrorCode::PermissionDenied};
     entry->inheritable = inheritable;
+    // Preserve the original syscall contract; callers may override exec
+    // retention independently after changing fork inheritance.
     entry->keep_on_exec = inheritable;
+    return {};
+  }
+
+  [[nodiscard]] VoidResult set_keep_on_exec(Handle handle, bool keep) noexcept {
+    containers::LockGuard<containers::IrqSpinLock> guard(lock_);
+    Entry *entry = find_locked(handle);
+    if (!entry)
+      return VoidResult{ErrorCode::NotFound};
+    // A cap without DUPLICATE cannot be carried into a different program
+    // unless the parent explicitly selected it for that child's exec.
+    if (keep && !(entry->rights & rights::DUPLICATE))
+      return VoidResult{ErrorCode::PermissionDenied};
+    entry->keep_on_exec = keep;
     return {};
   }
 

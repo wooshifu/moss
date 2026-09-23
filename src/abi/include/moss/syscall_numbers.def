@@ -169,6 +169,7 @@
   SYS_DOMAIN_WAIT_ANY = 148,
   SYS_DOMAIN_STATUS = 149,
   SYS_DOMAIN_SELF = 150,
+  SYS_CAP_SET_EXEC = 151,
 
   // Total syscall count marker
-  MAX_SYSCALL = 151
+  MAX_SYSCALL = 152

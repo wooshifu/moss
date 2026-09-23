@@ -349,6 +349,16 @@ long sys_cap_set_inherit(long handle, long inherit, long, long, long, long) noex
   return result ? 0 : cap_error(result.error());
 }
 
+long sys_cap_set_exec(long handle, long keep, long, long, long, long) noexcept {
+  auto proc = caller_process();
+  if (!proc)
+    return -errc::ESRCH;
+  if (keep != 0 && keep != 1)
+    return -errc::EINVAL;
+  auto result = proc->capabilities().set_keep_on_exec(static_cast<Handle>(handle), keep == 1);
+  return result ? 0 : cap_error(result.error());
+}
+
 long sys_mem_create(long size, long, long, long, long, long) noexcept {
   // ponytail: one page is enough to establish the shared data path; extend
   // object sizing when a service protocol needs a larger contiguous window.

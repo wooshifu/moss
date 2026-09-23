@@ -144,6 +144,7 @@ long sys_topinfo(long info_addr, long arg1, long arg2, long arg3, long arg4, lon
 long sys_cap_close(long handle, long arg1, long arg2, long arg3, long arg4, long arg5) noexcept;
 long sys_cap_duplicate(long handle, long rights, long arg2, long arg3, long arg4, long arg5) noexcept;
 long sys_cap_set_inherit(long handle, long inherit, long arg2, long arg3, long arg4, long arg5) noexcept;
+long sys_cap_set_exec(long handle, long keep, long arg2, long arg3, long arg4, long arg5) noexcept;
 long sys_ipc_create(long pair_addr, long arg1, long arg2, long arg3, long arg4, long arg5) noexcept;
 long sys_ipc_mint_badge(long endpoint, long badge, long arg2, long arg3, long arg4, long arg5) noexcept;
 long sys_ipc_call(long endpoint, long request_addr, long response_addr, long deadline_ns, long arg4,

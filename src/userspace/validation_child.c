@@ -1,9 +1,10 @@
 #include "syscall.h"
 
 // 94 marks a forbidden access that unexpectedly returned; 95/96/97 identify
-// startup-vector, FP-reset and boundary-plan failures. 37 is the shared success
-// marker. Faults must report a SIGSEGV wait status rather than an exit marker.
+// startup/capability, FP-reset and boundary-plan failures. 37 is the shared
+// success marker. Faults must report a SIGSEGV wait status rather than an exit marker.
 enum { FORBIDDEN_ACCESS_EXIT = 94, STARTUP_EXIT = 95, FP_EXIT = 96, BOUNDARY_EXIT = 97, SUCCESS_EXIT = 37 };
+enum { BAD_HANDLE_ERROR = 9 };
 
 // Keep this geometry synchronized with gen_validation_initramfs.py. The two
 // additional PT_LOAD ranges are far beyond the linked child image but remain in
@@ -34,6 +35,18 @@ static int text_equal(const char *left, const char *right) {
     ++right;
   }
   return *left == *right;
+}
+
+static unsigned long parse_handle(const char *text) {
+  unsigned long handle = 0;
+  if (!text || !*text)
+    return 0;
+  for (; *text; ++text) {
+    if (*text < '0' || *text > '9')
+      return 0;
+    handle = handle * 10 + (unsigned long)(*text - '0');
+  }
+  return handle;
 }
 
 static int access_faults(unsigned long address, int execute) {
@@ -82,7 +95,26 @@ static int boundary_load_plan(void) {
 }
 
 void _start(long argc, const char **argv) {
-  if (argc != 1 || !argv || !argv[0] || argv[1]) {
+  if (!argv || !argv[0]) {
+    _exit(STARTUP_EXIT);
+  }
+  if (text_equal(argv[0], "cap-present")) {
+    if (argc != 2 || !argv[1] || argv[2])
+      _exit(STARTUP_EXIT);
+    unsigned long handle = parse_handle(argv[1]);
+    _exit(handle && syscall1(SYS_CAP_CLOSE, (long)handle) == 0 ? SUCCESS_EXIT : STARTUP_EXIT);
+  }
+  if (text_equal(argv[0], "cap-exec")) {
+    if (argc != 3 || !argv[1] || !argv[2] || argv[3])
+      _exit(STARTUP_EXIT);
+    unsigned long closed = parse_handle(argv[1]);
+    unsigned long kept = parse_handle(argv[2]);
+    _exit(closed && kept && syscall1(SYS_CAP_CLOSE, (long)closed) == -BAD_HANDLE_ERROR &&
+                  syscall1(SYS_CAP_CLOSE, (long)kept) == 0
+              ? SUCCESS_EXIT
+              : STARTUP_EXIT);
+  }
+  if (argc != 1 || argv[1]) {
     _exit(STARTUP_EXIT);
   }
   if (text_equal(argv[0], "boundary")) {
