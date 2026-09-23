@@ -47,7 +47,10 @@ the file. `/moss-file.elf resize SIZE /name` changes an existing file's length
 and zero-fills an extension.
 The namespace validates the path and asks the file service to mint a per-file
 sender capability; the kernel supplies its badge to the service on later
-operations. Ordinary shell files, ELF loading, process compatibility,
+operations. `moss-init` receives an execution-domain capability when it forks
+each service and shell, and uses that capability to terminate its children;
+PIDs remain diagnostic identifiers and the current `waitpid` compatibility
+path still reaps them. Ordinary shell files, ELF loading, process compatibility,
 interrupt/timer bootstrap and the early console still use kernel
 implementations. The accepted
 [architecture decisions](docs/adr/) describe their intended migration.

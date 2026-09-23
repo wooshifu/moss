@@ -256,10 +256,34 @@ long sys_arch_prctl(long operation, long address, long /*unused*/, long /*unused
 
 // fork() — create a child process with COW-shared address space.
 // Child returns 0, parent returns child PID.
-long sys_fork(long /*unused*/, long /*unused*/, long /*unused*/, long /*unused*/, long /*unused*/,
-              long /*unused*/) noexcept {
+class DomainObject final : public capability::Object {
+public:
+  // Hold the specific process incarnation after its diagnostic PID can be
+  // reused; an old capability must never address a later process by number.
+  shared_ptr<process::Process> process;
+  explicit DomainObject(shared_ptr<process::Process> target) noexcept
+      : Object(capability::ObjectType::Domain), process(moss::move(target)) {}
+};
+
+static long domain_cap_error(ErrorCode error) noexcept {
+  if (error == ErrorCode::NotFound)
+    return -errc::EBADF;
+  if (error == ErrorCode::PermissionDenied)
+    return -errc::EACCES;
+  if (error == ErrorCode::ResourceExhausted)
+    return -errc::EMFILE;
+  if (error == ErrorCode::OutOfMemory)
+    return -errc::ENOMEM;
+  return -errc::EINVAL;
+}
+
+static long do_fork(u64 domain_cap_out_addr) noexcept {
   using namespace moss::kernel::process;
   namespace log = moss::kernel::logging;
+
+  if (domain_cap_out_addr && !validate_user_range(domain_cap_out_addr, sizeof(Handle), vma_flags::WRITE)) {
+    return -errc::EFAULT;
+  }
 
   // 1. Get current thread and process
   Thread *parent_thread = CfsScheduler::get_current_task();
@@ -486,6 +510,32 @@ long sys_fork(long /*unused*/, long /*unused*/, long /*unused*/, long /*unused*/
     return -errc::ENOMEM;
   }
 
+  if (domain_cap_out_addr) {
+    auto object =
+        shared_ptr<capability::Object>::try_make<DomainObject>(moss::abi::bridge::moss_heap_allocate, child_proc);
+    if (!object) {
+      parent_proc->remove_child(child_proc->pid());
+      cleanup_child(child_proc.get());
+      return -errc::ENOMEM;
+    }
+    auto handle = parent_proc->capabilities().install(
+        moss::move(object), capability::rights::DOMAIN_TERMINATE | capability::rights::DOMAIN_INSPECT |
+                                capability::rights::TRANSFER | capability::rights::DUPLICATE);
+    if (!handle) {
+      parent_proc->remove_child(child_proc->pid());
+      cleanup_child(child_proc.get());
+      return domain_cap_error(handle.error());
+    }
+    // The child is not runnable yet. If copying the handle faults, remove
+    // both the authority and its unpublished child before returning.
+    if (copy_to_user(domain_cap_out_addr, &*handle, sizeof(*handle)) < 0) {
+      (void)parent_proc->capabilities().close(*handle);
+      parent_proc->remove_child(child_proc->pid());
+      cleanup_child(child_proc.get());
+      return -errc::EFAULT;
+    }
+  }
+
   // 14. Enqueue child into scheduler (scatter across CPUs via load balancer)
   child_proc->set_state(ProcessState::Running);
   if (g_scheduler) {
@@ -500,6 +550,42 @@ long sys_fork(long /*unused*/, long /*unused*/, long /*unused*/, long /*unused*/
 
   // 15. Parent returns child PID
   return static_cast<long>(child_proc->pid());
+}
+
+long sys_fork(long, long, long, long, long, long) noexcept { return do_fork(0); }
+
+long sys_fork_domain(long cap_out_addr, long, long, long, long, long) noexcept {
+  return cap_out_addr ? do_fork(static_cast<u64>(cap_out_addr)) : -errc::EFAULT;
+}
+
+long sys_domain_id(long handle, long, long, long, long, long) noexcept {
+  auto caller = process::current_process();
+  if (!caller)
+    return -errc::ESRCH;
+  auto object = caller->capabilities().lookup(static_cast<Handle>(handle), capability::ObjectType::Domain,
+                                              capability::rights::DOMAIN_INSPECT);
+  if (!object)
+    return domain_cap_error(object.error());
+  return static_cast<long>(static_cast<DomainObject *>((*object).get())->process->pid());
+}
+
+long sys_domain_terminate(long handle, long, long, long, long, long) noexcept {
+  auto caller = process::current_process();
+  if (!caller)
+    return -errc::ESRCH;
+  auto object = caller->capabilities().lookup(static_cast<Handle>(handle), capability::ObjectType::Domain,
+                                              capability::rights::DOMAIN_TERMINATE);
+  if (!object)
+    return domain_cap_error(object.error());
+  auto &target = *static_cast<DomainObject *>((*object).get())->process;
+  if (target.state() != process::ProcessState::Running)
+    return -errc::ESRCH; // Retired domains cannot accept new control requests.
+  auto *thread = target.get_main_thread();
+  if (!thread)
+    return -errc::ESRCH;
+  // The current single-thread process implementation uses uncatchable SIGKILL
+  // as its exit wakeup; authorization comes solely from this domain handle.
+  return process::send_signal(thread, process::sig::SIGKILL) ? 0 : -errc::ESRCH;
 }
 
 long sys_execve(long pathname_addr, long argv_addr, long envp_addr, long /*unused*/, long /*unused*/,
@@ -2786,7 +2872,10 @@ const SyscallDescriptor SYSCALL_TABLE[static_cast<int>(SyscallNumber::MAX_SYSCAL
     {"ipc_reply", handlers::sys_ipc_reply, 2, true, "Complete a pending call"},
     {"mem_create", handlers::sys_mem_create, 1, true, "Create a capability-backed memory page"},
     {"mem_map", handlers::sys_mem_map, 2, true, "Map a memory capability"},
-    {"ipc_mint_badge", handlers::sys_ipc_mint_badge, 2, true, "Mint a sender with a receiver-visible badge"}};
+    {"ipc_mint_badge", handlers::sys_ipc_mint_badge, 2, true, "Mint a sender with a receiver-visible badge"},
+    {"fork_domain", handlers::sys_fork_domain, 1, true, "Fork with a child execution-domain capability"},
+    {"domain_id", handlers::sys_domain_id, 1, true, "Inspect a domain's diagnostic process ID"},
+    {"domain_terminate", handlers::sys_domain_terminate, 1, true, "Request capability-authorized termination"}};
 
 // 系统调用分发器实现
 long SyscallDispatcher::dispatch(long syscall_number, long arg0, long arg1, long arg2, long arg3, long arg4,

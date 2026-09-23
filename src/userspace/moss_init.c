@@ -1,5 +1,4 @@
 #include <errno.h>
-#include <signal.h>
 #include <stddef.h>
 #include <stdio.h>
 #include <string.h>
@@ -15,6 +14,7 @@
 struct Service {
   pid_t pid;
   long send;
+  long domain;
 };
 
 enum ServiceLoss { FILE_LOST, NAMESPACE_LOST, SUPERVISOR_FAILURE };
@@ -35,20 +35,35 @@ static void wait_for(pid_t child) {
   }
 }
 
-static void stop_child(pid_t child) {
+static pid_t fork_domain(long *domain) {
+  *domain = 0;
+  return (pid_t)syscall1(SYS_FORK_DOMAIN, (long)domain);
+}
+
+static void stop_child(pid_t child, long domain) {
   if (child > 0) {
-    (void)kill(child, SIGKILL);
+    long result = domain > 0 ? syscall1(SYS_DOMAIN_TERMINATE, domain) : -EBADF;
+    if (result != 0 && result != -ESRCH) {
+      // Losing the authority for a live supervised child leaves no safe
+      // recovery owner. Exiting init enters the kernel's fatal reset path.
+      report(STDERR_FILENO, "moss-init: child domain termination failed\n");
+      _exit(1);
+    }
     wait_for(child);
+  }
+  if (domain > 0) {
+    (void)syscall1(SYS_CAP_CLOSE, domain);
   }
 }
 
 static void stop_service(struct Service *service) {
-  stop_child(service->pid);
+  stop_child(service->pid, service->domain);
   if (service->send > 0) {
     (void)syscall1(SYS_CAP_CLOSE, service->send);
   }
   service->pid = 0;
   service->send = 0;
+  service->domain = 0;
 }
 
 static int restart_delay(void) {
@@ -88,7 +103,8 @@ static int start_file_service(struct Service *service) {
     goto fail;
   }
 
-  pid_t child = fork();
+  long domain = 0;
+  pid_t child = fork_domain(&domain);
   if (child == 0) {
     char *const argv[] = {"file-service", receive_arg, mint_arg, NULL};
     execve("/file-service.elf", argv, NULL);
@@ -104,11 +120,12 @@ static int start_file_service(struct Service *service) {
   long send = syscall2(SYS_CAP_DUPLICATE, (long)endpoints.send, MOSS_CAP_SEND | MOSS_CAP_DUPLICATE);
   (void)syscall1(SYS_CAP_CLOSE, (long)endpoints.send);
   if (send <= 0) {
-    stop_child(child);
+    stop_child(child, domain);
     return -1;
   }
   service->pid = child;
   service->send = send;
+  service->domain = domain;
   return 0;
 
 fail:
@@ -149,7 +166,8 @@ static int start_namespace_service(const struct Service *file, struct Service *s
 
   // Fork copies opted-in handles with their numbers unchanged. The parent
   // closes its temporary minted handle before it creates a shell.
-  pid_t child = fork();
+  long domain = 0;
+  pid_t child = fork_domain(&domain);
   if (child == 0) {
     char *const argv[] = {"namespace-service", receive_arg, file_arg, NULL};
     execve("/namespace-service.elf", argv, NULL);
@@ -159,7 +177,7 @@ static int start_namespace_service(const struct Service *file, struct Service *s
   (void)syscall1(SYS_CAP_CLOSE, receive);
   (void)syscall1(SYS_CAP_CLOSE, (long)endpoints.receive);
   if (child < 0) {
-    stop_child(child);
+    stop_child(child, domain);
     (void)syscall1(SYS_CAP_CLOSE, (long)endpoints.send);
     return -1;
   }
@@ -170,11 +188,12 @@ static int start_namespace_service(const struct Service *file, struct Service *s
     if (send > 0) {
       (void)syscall1(SYS_CAP_CLOSE, send);
     }
-    stop_child(child);
+    stop_child(child, domain);
     return -1;
   }
   service->pid = child;
   service->send = send;
+  service->domain = domain;
   return 0;
 
 fail:
@@ -189,14 +208,15 @@ fail:
   return -1;
 }
 
-static pid_t start_shell(long namespace_capability) {
+static pid_t start_shell(long namespace_capability, long *domain) {
+  *domain = 0;
   char namespace_env[64]; // Environment key plus decimal 64-bit handle.
   int size =
       snprintf(namespace_env, sizeof(namespace_env), "MOSS_NAMESPACE_CAP=%lu", (unsigned long)namespace_capability);
   if (size < 0 || (size_t)size >= sizeof(namespace_env)) {
     return -1;
   }
-  pid_t child = fork();
+  pid_t child = fork_domain(domain);
   if (child == 0) {
     char *const argv[] = {"ash", "-i", NULL};
     char *const env[] = {"PATH=/", "HOME=/", "TERM=dumb", "PS1=moss$ ", "PS2=> ", namespace_env, NULL};
@@ -206,7 +226,7 @@ static pid_t start_shell(long namespace_capability) {
   return child;
 }
 
-static enum ServiceLoss supervise(struct Service *file, struct Service *namespace, pid_t *shell) {
+static enum ServiceLoss supervise(struct Service *file, struct Service *namespace, pid_t *shell, long *shell_domain) {
   for (;;) {
     int status;
     pid_t reaped = waitpid(-1, &status, 0);
@@ -229,11 +249,13 @@ static enum ServiceLoss supervise(struct Service *file, struct Service *namespac
     }
     if (reaped == *shell) {
       *shell = 0;
+      (void)syscall1(SYS_CAP_CLOSE, *shell_domain);
+      *shell_domain = 0;
       report(STDOUT_FILENO, "moss-init: restarting shell\n");
       if (restart_delay() != 0) {
         return SUPERVISOR_FAILURE;
       }
-      *shell = start_shell(namespace->send);
+      *shell = start_shell(namespace->send, shell_domain);
       if (*shell < 0) {
         report(STDERR_FILENO, "moss-init: shell launch failed\n");
         *shell = 0;
@@ -262,7 +284,8 @@ int main(void) {
         break;
       }
       report_started("namespace service", namespace.pid);
-      pid_t shell = start_shell(namespace.send);
+      long shell_domain = 0;
+      pid_t shell = start_shell(namespace.send, &shell_domain);
       if (shell < 0) {
         report(STDERR_FILENO, "moss-init: shell launch failed\n");
         stop_service(&namespace);
@@ -273,8 +296,8 @@ int main(void) {
         continue;
       }
 
-      enum ServiceLoss lost = supervise(&file, &namespace, &shell);
-      stop_child(shell);
+      enum ServiceLoss lost = supervise(&file, &namespace, &shell, &shell_domain);
+      stop_child(shell, shell_domain);
       stop_service(&namespace);
       if (lost == SUPERVISOR_FAILURE) {
         stop_service(&file);

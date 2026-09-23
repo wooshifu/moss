@@ -165,6 +165,7 @@ void declare_cases() {
     ut::register_test("memory_object", empty_case);
     ut::register_test("badged_sender", empty_case);
     ut::register_test("nested_roundtrip", empty_case);
+    ut::register_test("domain_control", empty_case);
   });
   ut::register_suite("users.libc", [] {
     ut::register_test("static_runtime", empty_case);

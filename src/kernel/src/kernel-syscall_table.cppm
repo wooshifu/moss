@@ -208,9 +208,12 @@ enum class SyscallNumber : long {
   SYS_MEM_CREATE = 140,
   SYS_MEM_MAP = 141,
   SYS_IPC_MINT_BADGE = 142,
+  SYS_FORK_DOMAIN = 143,
+  SYS_DOMAIN_ID = 144,
+  SYS_DOMAIN_TERMINATE = 145,
 
   // Total syscall count marker
-  MAX_SYSCALL = 143
+  MAX_SYSCALL = 146
 };
 
 // Syscall handler function type
@@ -246,6 +249,9 @@ long sys_arch_prctl(long operation, long address, long arg2, long arg3, long arg
 
 // Process management - framework implementation
 long sys_fork(long arg0, long arg1, long arg2, long arg3, long arg4, long arg5) noexcept;
+long sys_fork_domain(long cap_out_addr, long arg1, long arg2, long arg3, long arg4, long arg5) noexcept;
+long sys_domain_id(long handle, long arg1, long arg2, long arg3, long arg4, long arg5) noexcept;
+long sys_domain_terminate(long handle, long arg1, long arg2, long arg3, long arg4, long arg5) noexcept;
 long sys_execve(long pathname_addr, long argv_addr, long envp_addr, long arg3, long arg4, long arg5) noexcept;
 long sys_wait4(long wait_pid, long wstatus_addr, long options, long arg3, long arg4, long arg5) noexcept;
 long sys_waitpid(long pid, long wstatus, long options, long arg3, long arg4, long arg5) noexcept;

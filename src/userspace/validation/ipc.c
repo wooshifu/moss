@@ -10,6 +10,7 @@ void *memset(void *destination, int value, unsigned long count) {
 }
 
 enum {
+  IPC_ESRCH = 3,
   IPC_EINTR = 4,
   IPC_EBADF = 9,
   IPC_EACCES = 13,
@@ -477,5 +478,47 @@ unsigned long ipc_memory_object(void) {
                             syscall2(SYS_MUNMAP, readable_addr, MOSS_MEM_OBJECT_BYTES) != 0)
             << 8;
   errors |= (unsigned long)(syscall1(SYS_CAP_CLOSE, (long)control.send) != 0) << 9;
+  return errors;
+}
+
+unsigned long ipc_domain_control(void) {
+  // A failed termination must complete with exit 97 within one second,
+  // rather than leave the validation runner waiting on an immortal child.
+  enum { DOMAIN_CHILD_SLEEP_NS = 10000000, DOMAIN_CHILD_SLEEP_CYCLES = 100 };
+  unsigned long errors = (unsigned long)(syscall1(SYS_FORK_DOMAIN, 0) != -IPC_EFAULT);
+  unsigned long domain = 0;
+  long child = syscall1(SYS_FORK_DOMAIN, (long)&domain);
+  if (child == 0) {
+    if (domain != 0)
+      _exit(96); // The parent's newly installed authority must not appear in the child.
+    for (unsigned int attempt = 0; attempt < DOMAIN_CHILD_SLEEP_CYCLES; ++attempt) {
+      unsigned long delay = DOMAIN_CHILD_SLEEP_NS;
+      (void)nanosleep_ns(&delay);
+    }
+    _exit(97); // Bound a failed termination test instead of hanging the suite.
+  }
+  if (child <= 1 || !domain) {
+    if (child > 1)
+      (void)wait_exit(child, 97);
+    if (domain)
+      (void)syscall1(SYS_CAP_CLOSE, (long)domain);
+    return errors | 2;
+  }
+
+  long inspect = syscall2(SYS_CAP_DUPLICATE, (long)domain, MOSS_CAP_DOMAIN_INSPECT);
+  errors |= (unsigned long)(syscall1(SYS_DOMAIN_ID, (long)domain) != child) << 2;
+  errors |= (unsigned long)(inspect <= 0) << 3;
+  if (inspect > 0) {
+    errors |= (unsigned long)(syscall1(SYS_DOMAIN_ID, inspect) != child) << 4;
+    errors |= (unsigned long)(syscall1(SYS_DOMAIN_TERMINATE, inspect) != -IPC_EACCES) << 5;
+  }
+  errors |= (unsigned long)(syscall1(SYS_DOMAIN_TERMINATE, (long)domain) != 0) << 6;
+  errors |= (unsigned long)!wait_signal(child, SIGKILL) << 7;
+  errors |= (unsigned long)(syscall1(SYS_DOMAIN_TERMINATE, (long)domain) != -IPC_ESRCH) << 8;
+  errors |= (unsigned long)(syscall1(SYS_DOMAIN_ID, (long)domain) != child) << 9;
+  if (inspect > 0)
+    errors |= (unsigned long)(syscall1(SYS_CAP_CLOSE, inspect) != 0) << 10;
+  errors |= (unsigned long)(syscall1(SYS_CAP_CLOSE, (long)domain) != 0) << 11;
+  errors |= (unsigned long)(syscall1(SYS_DOMAIN_TERMINATE, (long)domain) != -IPC_EBADF) << 12;
   return errors;
 }

@@ -239,6 +239,7 @@ CATALOG = {
         "memory_object",
         "badged_sender",
         "nested_roundtrip",
+        "domain_control",
     ],
     "users.signals": [
         "basic_handler",
