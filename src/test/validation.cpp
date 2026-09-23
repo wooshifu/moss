@@ -5888,6 +5888,7 @@ void declare_cases() {
     ut::register_test("nested_signals", empty_case);
     ut::register_test("sigchld", empty_case);
     ut::register_test("wait_registration", empty_case);
+    ut::register_test("wait_interrupted", empty_case);
     ut::register_test("sigprocmask", empty_case);
     ut::register_test("sigaltstack", empty_case);
     ut::register_test("sig_ign", empty_case);
@@ -6942,6 +6943,24 @@ extern "C" long moss_validation_call(long op, long arg1, [[maybe_unused]] long a
       wait_exit_child = INVALID_PROCESS_ID;
       return observed;
     }
+  }
+  if (op == 55 && ut::same_id(selection, "users.signals") && ut::same_id(active_case, "wait_interrupted") &&
+      arch::get_current_cpu_id() == 1) {
+    auto child = process::current_process();
+    if (!child || arg1 != static_cast<long>(child->parent_pid()) || arg2 != static_cast<long>(child->pid())) {
+      return -1;
+    }
+    auto parent = process::g_process_manager->find_process(child->parent_pid());
+    auto *thread = parent ? parent->get_main_thread() : nullptr;
+    if (!thread) {
+      return -1;
+    }
+    containers::LockGuard<containers::IrqSpinLock> guard(thread->sleep_lock);
+    auto *frame = thread->trap_frame;
+    // Native syscall 13 is waitpid; inspect the real blocked frame rather
+    // than treating the child's readiness or a preceding syscall as proof.
+    return thread->state == process::ProcessState::Sleeping && thread->sleep_handoff.load() == 0 && frame &&
+           frame->syscall_number() == 13 && frame->argument(0) == static_cast<u64>(arg2);
   }
   if (op == 39 && ut::same_id(selection, "users.signals") &&
       (ut::same_id(active_case, "pipe_interrupted") || ut::same_id(active_case, "pipe_noninterrupting_signals") ||
