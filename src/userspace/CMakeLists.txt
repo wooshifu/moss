@@ -43,7 +43,7 @@ function(add_userspace_program NAME)
     # Real CMake compilation targets export their commands and track header dependencies.
     add_library(${_target} OBJECT ${USERSPACE_DIR}/${NAME}.c)
     target_compile_options(${_target} PRIVATE ${USERSPACE_COMPILE_FLAGS})
-    target_include_directories(${_target} PRIVATE ${USERSPACE_DIR})
+    target_include_directories(${_target} PRIVATE ${USERSPACE_DIR} ${CMAKE_SOURCE_DIR}/src/abi/include)
 
     # Retain direct ld.lld linking and the existing ELF output locations.
     add_custom_command(

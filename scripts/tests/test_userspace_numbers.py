@@ -88,6 +88,8 @@ def format_probe(tmp_path_factory):
             "-fno-sanitize-recover=all",
             "-I",
             str(REPOSITORY / "src/userspace"),
+            "-I",
+            str(REPOSITORY / "src/abi/include"),
             str(source),
             "-o",
             str(executable),

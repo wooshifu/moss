@@ -39,6 +39,7 @@ def test_userspace_compile_database_and_incremental_dependencies(tmp_path, arch,
     repository = Path(__file__).resolve().parents[2]
     root = tmp_path / "userspace project"
     shutil.copytree(repository / "src/userspace", root / "src/userspace")
+    shutil.copytree(repository / "src/abi/include", root / "src/abi/include")
     (root / "third_party").symlink_to(repository / "third_party", target_is_directory=True)
     (root / "scripts").mkdir()
     shutil.copy2(repository / "scripts/gen_initramfs.py", root / "scripts/gen_initramfs.py")
@@ -246,6 +247,7 @@ def test_vendored_runtime_build_is_native_and_incremental(tmp_path, arch, machin
     repository = Path(__file__).resolve().parents[2]
     root = tmp_path / "native runtime project"
     shutil.copytree(repository / "src/userspace", root / "src/userspace", symlinks=True)
+    shutil.copytree(repository / "src/abi/include", root / "src/abi/include", symlinks=True)
     shutil.copytree(repository / "third_party", root / "third_party", symlinks=True)
     (root / "scripts").mkdir()
     shutil.copy2(repository / "scripts/gen_initramfs.py", root / "scripts/gen_initramfs.py")
