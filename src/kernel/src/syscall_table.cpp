@@ -1281,7 +1281,7 @@ long sys_waitpid(long pid, long wstatus, long options, long /*unused*/, long /*u
   return sys_wait4(pid, wstatus, options, 0, 0, 0);
 }
 
-static bool pid_control_requires_capability(const process::Process &target, ProcessId caller_pid) noexcept {
+static bool pid_signal_requires_capability(const process::Process &target, ProcessId caller_pid) noexcept {
   // A parentless native domain has no POSIX peer authority. Its own ordinary
   // fork children retain parent-directed signals until the compatibility
   // service owns that relationship. PID 1 has no such exception: losing the
@@ -1320,7 +1320,7 @@ long sys_kill(long pid_arg, long sig_arg, long /*unused*/, long /*unused*/, long
     if (!target) {
       return -errc::ESRCH;
     }
-    if (pid_control_requires_capability(*target, cur->owner_pid)) {
+    if (pid_signal_requires_capability(*target, cur->owner_pid)) {
       return -errc::EPERM;
     }
     Thread *main_thread = target->get_main_thread();
@@ -1345,7 +1345,7 @@ long sys_kill(long pid_arg, long sig_arg, long /*unused*/, long /*unused*/, long
     ProcessId my_pgid = caller->pgid();
     bool sent = false;
     g_process_manager->for_each_process([&](ProcessId, Process *proc) {
-      if (proc->pgid() == my_pgid && !pid_control_requires_capability(*proc, cur->owner_pid)) {
+      if (proc->pgid() == my_pgid && !pid_signal_requires_capability(*proc, cur->owner_pid)) {
         Thread *thr = proc->get_main_thread();
         if (thr && (signo == 0 || send_signal(thr, signo))) {
           sent = true;
@@ -1360,7 +1360,7 @@ long sys_kill(long pid_arg, long sig_arg, long /*unused*/, long /*unused*/, long
     auto target_pgid = static_cast<ProcessId>(-pid);
     bool sent = false;
     g_process_manager->for_each_process([&](ProcessId, Process *proc) {
-      if (proc->pgid() == target_pgid && !pid_control_requires_capability(*proc, cur->owner_pid)) {
+      if (proc->pgid() == target_pgid && !pid_signal_requires_capability(*proc, cur->owner_pid)) {
         Thread *thr = proc->get_main_thread();
         if (thr && (signo == 0 || send_signal(thr, signo))) {
           sent = true;
@@ -1373,7 +1373,7 @@ long sys_kill(long pid_arg, long sig_arg, long /*unused*/, long /*unused*/, long
   // pid == -1: send to all POSIX-visible processes except init.
   bool sent = false;
   g_process_manager->for_each_process([&](ProcessId proc_pid, Process *proc) {
-    if (proc_pid <= 1 || pid_control_requires_capability(*proc, cur->owner_pid)) {
+    if (proc_pid <= 1 || pid_signal_requires_capability(*proc, cur->owner_pid)) {
       return;
     }
     Thread *thr = proc->get_main_thread();
@@ -2514,7 +2514,9 @@ long sys_sched_setaffinity(long pid_arg, long /*unused*/, long mask_addr, long /
     if (!proc) {
       return -errc::ESRCH;
     }
-    if (pid_control_requires_capability(*proc, current->owner_pid)) {
+    // POSIX child-to-parent signals do not confer scheduling authority over
+    // a parentless native domain.
+    if (proc->parent_pid() == INVALID_PROCESS_ID && proc->pid() != current->owner_pid) {
       return -errc::EPERM;
     }
     target = proc->get_main_thread();

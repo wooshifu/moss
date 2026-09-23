@@ -566,6 +566,19 @@ unsigned long ipc_domain_control(void) {
   unsigned long natural_domain = 0;
   long natural_child = syscall1(SYS_FORK_DOMAIN, (long)&natural_domain);
   if (natural_child == 0) {
+    // PID 1 denies child signals; a non-supervisor native domain must allow
+    // that POSIX relationship without granting scheduling control.
+    long ordinary_child = fork();
+    if (ordinary_child == 0) {
+      unsigned int affinity = 1;
+      long parent = getppid();
+      _exit(parent > 1 && syscall2(SYS_KILL, parent, 0) == 0 &&
+                    syscall3(SYS_SCHED_SETAFFINITY, parent, sizeof(affinity), (long)&affinity) == -IPC_EPERM
+                ? 37
+                : 96);
+    }
+    if (!wait_exit(ordinary_child, 37))
+      _exit(96);
     // This fixture delay exercises the blocking path, not a timing contract.
     unsigned long delay = DOMAIN_OBSERVER_DELAY_NS;
     if (nanosleep_ns(&delay) != 0)
