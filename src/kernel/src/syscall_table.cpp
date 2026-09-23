@@ -447,6 +447,13 @@ long sys_fork(long /*unused*/, long /*unused*/, long /*unused*/, long /*unused*/
     child_proc->set_fd_table(child_fdt);
   }
 
+  // Native authority is copied only when the owning process selected it;
+  // POSIX file descriptor inheritance above is a separate compatibility rule.
+  if (!parent_proc->capabilities().clone_inheritable_to(child_proc->capabilities())) {
+    cleanup_child(child_proc.get());
+    return -errc::EAGAIN;
+  }
+
   // 12c. Inherit process name from parent
   child_proc->set_name(parent_proc->name());
 
@@ -771,6 +778,7 @@ long sys_execve(long pathname_addr, long argv_addr, long envp_addr, long /*unuse
   if (auto *files = static_cast<vfs::FdTable *>(proc->fd_table())) {
     files->close_on_exec();
   }
+  proc->capabilities().close_uninheritable();
   const char *basename = pathname;
   for (const char *p = pathname; *p; ++p) {
     if (*p == '/') {

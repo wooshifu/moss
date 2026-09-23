@@ -58,6 +58,39 @@ inline void process_handles() {
   boost::ut::expect(!sender.close(*send_only));
   boost::ut::expect(!sender.close(moss::kernel::INVALID_HANDLE));
   boost::ut::expect(static_cast<bool>(receiver.close(*moved)));
+
+  cap::Table parent, child, occupied;
+  auto kept = parent.install(object, full_rights);
+  if (!boost::ut::expect(static_cast<bool>(kept)))
+    return;
+  auto dropped = parent.duplicate(*kept, cap::rights::SEND);
+  if (!boost::ut::expect(static_cast<bool>(dropped)))
+    return;
+  auto denied_inherit = parent.set_inheritable(*dropped, true);
+  boost::ut::expect(!denied_inherit && denied_inherit.error() == ErrorCode::PermissionDenied);
+  boost::ut::expect(static_cast<bool>(parent.set_inheritable(*kept, true)));
+  boost::ut::expect(static_cast<bool>(parent.clone_inheritable_to(child)));
+  boost::ut::expect(static_cast<bool>(child.lookup(*kept, cap::ObjectType::Endpoint, cap::rights::SEND)));
+  boost::ut::expect(!child.lookup(*dropped, cap::ObjectType::Endpoint, 0));
+  auto after_fork = child.install(object, cap::rights::SEND);
+  if (!boost::ut::expect(static_cast<bool>(after_fork)))
+    return;
+  boost::ut::expect(*after_fork > *dropped);
+  child.close_uninheritable();
+  boost::ut::expect(static_cast<bool>(child.lookup(*kept, cap::ObjectType::Endpoint, cap::rights::SEND)));
+  boost::ut::expect(!child.lookup(*after_fork, cap::ObjectType::Endpoint, 0));
+  auto occupied_handle = occupied.install(object, cap::rights::SEND);
+  boost::ut::expect(static_cast<bool>(occupied_handle));
+  auto refused = parent.clone_inheritable_to(occupied);
+  boost::ut::expect(!refused && refused.error() == ErrorCode::AlreadyExists);
+  boost::ut::expect(static_cast<bool>(occupied.close(*occupied_handle)));
+  refused = parent.clone_inheritable_to(occupied);
+  boost::ut::expect(!refused && refused.error() == ErrorCode::AlreadyExists);
+  parent.close_uninheritable();
+  boost::ut::expect(!parent.lookup(*dropped, cap::ObjectType::Endpoint, 0));
+  boost::ut::expect(static_cast<bool>(parent.lookup(*kept, cap::ObjectType::Endpoint, cap::rights::SEND)));
+  boost::ut::expect(static_cast<bool>(parent.close(*kept)));
+  boost::ut::expect(static_cast<bool>(child.close(*kept)));
   object.reset();
   boost::ut::expect(destructions == 1);
 }

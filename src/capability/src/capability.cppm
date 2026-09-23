@@ -34,6 +34,7 @@ class Table {
   struct Entry {
     Handle handle{INVALID_HANDLE};
     u32 rights{0};
+    bool inheritable{false};
     shared_ptr<Object> object{};
   };
 
@@ -72,6 +73,7 @@ class Table {
       if (entry.handle == INVALID_HANDLE) {
         entry.handle = next_handle_++;
         entry.rights = granted_rights;
+        entry.inheritable = false;
         entry.object = moss::move(object);
         return KernelResult<Handle>{entry.handle};
       }
@@ -94,6 +96,7 @@ class Table {
       retired = moss::move(source->object);
       source->handle = INVALID_HANDLE;
       source->rights = 0;
+      source->inheritable = false;
     }
     return installed;
   }
@@ -136,6 +139,67 @@ public:
     return install_locked(copy, granted_rights);
   }
 
+  [[nodiscard]] VoidResult set_inheritable(Handle handle, bool inheritable) noexcept {
+    containers::LockGuard<containers::IrqSpinLock> guard(lock_);
+    Entry *entry = find_locked(handle);
+    if (!entry)
+      return VoidResult{ErrorCode::NotFound};
+    // Fork creates another reference; a holder without DUPLICATE authority
+    // cannot arrange for that duplication through a later fork.
+    if (inheritable && !(entry->rights & rights::DUPLICATE))
+      return VoidResult{ErrorCode::PermissionDenied};
+    entry->inheritable = inheritable;
+    return {};
+  }
+
+  // Fork copies only opted-in handles with the same numeric values. The child
+  // inherits a copy of the parent's address space, so renumbering would turn
+  // its already-stored handle values into stale references.
+  [[nodiscard]] VoidResult clone_inheritable_to(Table &target) const noexcept {
+    if (this == &target)
+      return VoidResult{ErrorCode::InvalidArgument};
+    auto copy_locked = [&]() -> VoidResult {
+      // A recycled empty table may have issued these numbers before; only a
+      // fresh child table can safely preserve the parent's numeric handles.
+      if (target.next_handle_ != 1)
+        return VoidResult{ErrorCode::AlreadyExists};
+      for (const auto &entry : target.entries_) {
+        if (entry.handle != INVALID_HANDLE)
+          return VoidResult{ErrorCode::AlreadyExists};
+      }
+      for (usize i = 0; i < CAPACITY; ++i) {
+        if (entries_[i].handle != INVALID_HANDLE && entries_[i].inheritable)
+          target.entries_[i] = entries_[i];
+      }
+      target.next_handle_ = next_handle_;
+      return {};
+    };
+    // Match transfer_to's address ordering so concurrent table operations
+    // cannot acquire the same two locks in opposite orders.
+    if (reinterpret_cast<usize>(this) < reinterpret_cast<usize>(&target)) {
+      containers::LockGuard<containers::IrqSpinLock> first(lock_);
+      containers::LockGuard<containers::IrqSpinLock> second(target.lock_);
+      return copy_locked();
+    }
+    containers::LockGuard<containers::IrqSpinLock> first(target.lock_);
+    containers::LockGuard<containers::IrqSpinLock> second(lock_);
+    return copy_locked();
+  }
+
+  void close_uninheritable() noexcept {
+    shared_ptr<Object> retired[CAPACITY];
+    {
+      containers::LockGuard<containers::IrqSpinLock> guard(lock_);
+      for (usize i = 0; i < CAPACITY; ++i) {
+        if (entries_[i].handle != INVALID_HANDLE && !entries_[i].inheritable) {
+          retired[i] = moss::move(entries_[i].object);
+          entries_[i].handle = INVALID_HANDLE;
+          entries_[i].rights = 0;
+        }
+      }
+    }
+  }
+
   // Both tables stay locked through publication and optional withdrawal, so
   // a failed destination install never consumes source authority.
   [[nodiscard]] KernelResult<Handle> transfer_to(Table &target, Handle handle, u32 granted_rights,
@@ -165,6 +229,7 @@ public:
       retired = moss::move(entry->object);
       entry->handle = INVALID_HANDLE;
       entry->rights = 0;
+      entry->inheritable = false;
     }
     return {};
   }
@@ -177,6 +242,7 @@ public:
         retired[i] = moss::move(entries_[i].object);
         entries_[i].handle = INVALID_HANDLE;
         entries_[i].rights = 0;
+        entries_[i].inheritable = false;
       }
     }
   }
