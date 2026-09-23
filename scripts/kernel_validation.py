@@ -58,13 +58,7 @@ CATALOG = {
     "heap": ["alignment", "invalid_requests", "release_contract", "reuse", "exhaustion"],
     "containers": [
         "queue_reuse",
-        "ipc_heap_rollback",
-        "ipc_shared_backing",
         "capability_process_handles",
-        "ipc_shared_lifecycle",
-        "ipc_service_lifecycle",
-        "ipc_ring_wrap",
-        "ipc_ring_geometry",
         "ownership",
         "release_reuse",
         "map_ownership",

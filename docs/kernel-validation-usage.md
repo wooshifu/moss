@@ -2,7 +2,7 @@
 
 The validation executable links the same production object modules and follows the same boot, memory, VFS, scheduler, userspace entry and exec paths as `moss.elf`. Its initramfs contains deterministic fixtures and real userspace validation programs. The framework is `ut_kernel`, from `unit_kenel`, not Unity.
 
-The historical `containers.ipc_*` cases link `moss.ipc` only into the validation image. They exercise the old channel and service-manager algorithms, not the production IPC path. `users.ipc` and `moss-production-boot` exercise capability-backed control IPC and Memory Objects used by production.
+`users.ipc` and `moss-production-boot` exercise capability-backed control IPC and Memory Objects used by production.
 `users.ipc/badged_sender` checks that the receiver gets the sender capability's badge, user-supplied badges are rejected, and attenuated or minted sender handles cannot mint new identities. Production boot exercises `/scratch` and a second native file with distinct badges, rejects an escaping path, checks a write across the shared-page boundary followed by a shorter replacement and zero-filled extension, rejects an over-budget resize without changing content, and checks that namespace restart preserves file contents while file-service restart discards the volatile second file. Ordinary shell file paths still use the kernel VFS.
 `users.ipc/domain_control` checks that `SYS_FORK_DOMAIN` returns a child capability only to the parent, that an inspection-only capability cannot terminate the child, and that a reaped child's capability rejects termination. Production `moss-init` uses child domain capabilities for service and shell termination; `waitpid` still provides compatibility reaping.
 

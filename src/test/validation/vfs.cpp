@@ -14,7 +14,6 @@ import moss.smart_ptr;
 import moss.hal.uart;
 import moss.hal.mmu;
 import moss.logging;
-import moss.ipc;
 import moss.drivers;
 import moss.result;
 import moss.platform;

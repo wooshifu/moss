@@ -14,7 +14,6 @@ import moss.smart_ptr;
 import moss.hal.uart;
 import moss.hal.mmu;
 import moss.logging;
-import moss.ipc;
 import moss.drivers;
 import moss.result;
 import moss.platform;
@@ -24,7 +23,6 @@ import moss.drivers.console;
 #include "framework/benchmark.hpp"
 #include "framework/ut_kernel.hpp"
 #include "hardware_regression.hpp"
-#include "ipc_regression.hpp"
 #include "queue_regression.hpp"
 #include "scheduler_regression.hpp"
 #include "validation/core_cases.hpp"
@@ -33,60 +31,9 @@ import moss.drivers.console;
 using namespace moss::kernel;
 namespace ut = boost::ut;
 namespace bench = moss::bench;
-using moss::test::validation::HeapPressure;
 
 namespace moss::test::validation {
 void empty_case() {}
-void ipc_heap_rollback() {
-  const auto heap_baseline = mm::RuntimeHeapAllocator::get_heap_stats().allocated_bytes;
-  const auto page_baseline = mm::PageFrameAllocator::get_memory_stats().free_pages;
-  ipc::SharedMemoryManager manager;
-  bool recovered = false;
-  unsigned failures = 0;
-  {
-    HeapPressure pressure;
-    if (!ut::expect(pressure.acquire(sizeof(void *)))) {
-      return;
-    }
-    // Restore heap capacity one real allocation at a time. Descriptor,
-    // control-block and tracking-node failures must all return the backing.
-    for (;;) {
-      const auto heap = mm::RuntimeHeapAllocator::get_heap_stats().allocated_bytes;
-      auto created = manager.create_region(0, page_size);
-      if (created) {
-        recovered = true;
-        ut::expect(manager.destroy_region(*created).has_value());
-      } else {
-        ++failures;
-        ut::expect(created.error() == KernelError::OutOfMemory);
-      }
-      ut::expect(manager.get_statistics().total_regions == 0);
-      ut::expect(mm::RuntimeHeapAllocator::get_heap_stats().allocated_bytes == heap);
-      ut::expect(mm::PageFrameAllocator::get_memory_stats().free_pages == page_baseline);
-      if (recovered || !ut::expect(pressure.release_one())) {
-        break;
-      }
-    }
-  }
-  ut::expect(failures > 0 && recovered);
-  {
-    HeapPressure pressure;
-    usize exhausted_pages = 0;
-    {
-      ipc::SharedMemoryManager teardown;
-      auto created = teardown.create_region(0, page_size);
-      if (!ut::expect(created.has_value()) || !ut::expect(pressure.acquire(sizeof(void *)))) {
-        return;
-      }
-      exhausted_pages = mm::PageFrameAllocator::get_memory_stats().free_pages;
-      // The manager leaves scope while every heap allocation still fails.
-      // Teardown must not allocate a snapshot just to release existing regions.
-    }
-    ut::expect(mm::PageFrameAllocator::get_memory_stats().free_pages == exhausted_pages + 1);
-  }
-  ut::expect(mm::RuntimeHeapAllocator::get_heap_stats().allocated_bytes == heap_baseline);
-  ut::expect(mm::PageFrameAllocator::get_memory_stats().free_pages == page_baseline);
-}
 
 void timer_contracts() {
   ut::expect(timer::Clocksource{}.deadline_counter(0) == 0);

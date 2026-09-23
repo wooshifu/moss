@@ -1,6 +1,6 @@
 # OBJECT 库循环依赖的解决办法
 
-本文保留早期构建依赖问题的诊断记录。下方 `moss_ipc` 依赖图是历史示例；当前旧 IPC 模块仅作为 `moss_ipc_validation` 链接到验证镜像，生产内核使用独立的控制 IPC 和 Memory Object 实现。
+本文保留早期构建依赖问题的诊断记录。下方 `moss_ipc` 依赖图是历史示例；旧 IPC 模块及其验证镜像链接已移除，生产内核使用独立的控制 IPC 和 Memory Object 实现。
 
 ## 问题背景
 

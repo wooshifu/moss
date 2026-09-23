@@ -14,7 +14,6 @@ import moss.smart_ptr;
 import moss.hal.uart;
 import moss.hal.mmu;
 import moss.logging;
-import moss.ipc;
 import moss.drivers;
 import moss.result;
 import moss.platform;
@@ -24,7 +23,6 @@ import moss.drivers.console;
 #include "framework/benchmark.hpp"
 #include "framework/ut_kernel.hpp"
 #include "hardware_regression.hpp"
-#include "ipc_regression.hpp"
 #include "queue_regression.hpp"
 #include "scheduler_regression.hpp"
 #include "validation/memory_internal.hpp"
