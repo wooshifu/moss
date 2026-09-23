@@ -130,4 +130,40 @@ inline void shared_lifecycle() {
   boost::ut::expect(manager.get_statistics().total_regions == 0);
 }
 
+inline void service_lifecycle() {
+  namespace ipc = moss::kernel::ipc;
+  if (!boost::ut::expect(ipc::g_shared_memory_manager != nullptr)) {
+    return;
+  }
+  const auto regions = ipc::g_shared_memory_manager->get_statistics().total_regions;
+  ipc::IpcManager manager(ipc::g_shared_memory_manager);
+  auto service = manager.register_service(1, "validation-service", 1);
+  if (!boost::ut::expect(static_cast<bool>(service))) {
+    return;
+  }
+  auto duplicate = manager.register_service(1, "validation-service", 1);
+  boost::ut::expect(!duplicate && duplicate.error() == moss::kernel::KernelError::AlreadyExists);
+  auto channel = manager.connect_to_service_by_name(2, "validation-service");
+  if (!boost::ut::expect(static_cast<bool>(channel))) {
+    return;
+  }
+  auto full = manager.connect_to_service(3, *service);
+  boost::ut::expect(!full && full.error() == moss::kernel::KernelError::ResourceExhausted);
+  const auto active = manager.get_statistics();
+  boost::ut::expect(active.total_services == 1 && active.total_channels == 1);
+  boost::ut::expect(static_cast<bool>(manager.disconnect(*channel, 2)));
+  boost::ut::expect(ipc::g_shared_memory_manager->get_statistics().total_regions == regions);
+  auto reconnected = manager.connect_to_service(3, *service);
+  if (!boost::ut::expect(static_cast<bool>(reconnected))) {
+    return;
+  }
+  boost::ut::expect(static_cast<bool>(manager.unregister_service(*service, 1)));
+  const auto stopped = manager.get_statistics();
+  boost::ut::expect(stopped.total_services == 0 && stopped.total_channels == 0);
+  boost::ut::expect(manager.disconnect(*reconnected, 3).error() == moss::kernel::KernelError::NotFound);
+  auto absent = manager.connect_to_service_by_name(2, "validation-service");
+  boost::ut::expect(!absent && absent.error() == moss::kernel::KernelError::NotFound);
+  boost::ut::expect(ipc::g_shared_memory_manager->get_statistics().total_regions == regions);
+}
+
 } // namespace moss::test::ipc_regression

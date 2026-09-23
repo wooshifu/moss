@@ -61,6 +61,7 @@ CATALOG = {
         "ipc_heap_rollback",
         "ipc_shared_backing",
         "ipc_shared_lifecycle",
+        "ipc_service_lifecycle",
         "ipc_ring_wrap",
         "ipc_ring_geometry",
         "ownership",

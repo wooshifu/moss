@@ -152,3 +152,115 @@ def test_channel_timeout_clock_uses_calibrated_nanoseconds(tmp_path):
     assert built.returncode == 0, built.stdout + built.stderr
     result = subprocess.run([str(binary)], capture_output=True, text=True, timeout=5)
     assert result.returncode == 0, result.stdout + result.stderr
+
+
+def test_service_removal_during_connect_cannot_publish_orphan(tmp_path):
+    compiler = shutil.which("clang++")
+    if not compiler:
+        pytest.skip("clang++ required for production IPC lifecycle check")
+    root = Path(__file__).resolve().parents[2]
+    source = (root / "src/ipc/src/ipc.cppm").read_text()
+    start = source.index("[[nodiscard]] KernelResult<ChannelId> connect_to_service(")
+    method = source[start : source.index("\n  }\n", start) + 4]
+    cpp = tmp_path / "service-lifecycle.cpp"
+    cpp.write_text(
+        r"""
+#include <cassert>
+#include <cstdint>
+#include <functional>
+#include <memory>
+#include <mutex>
+#include <optional>
+#include <unordered_map>
+#include <utility>
+using u32 = std::uint32_t;
+using ServiceId = u32;
+using ChannelId = u32;
+using ProcessId = u32;
+enum class KernelError { NotFound, ResourceExhausted, OutOfMemory };
+struct VoidResult {
+  bool ok = true;
+  KernelError failure = KernelError::NotFound;
+  explicit operator bool() const { return ok; }
+  KernelError error() const { return failure; }
+};
+template<class T> struct KernelResult {
+  bool ok;
+  T value{};
+  KernelError failure = KernelError::NotFound;
+  KernelResult(T n) : ok(true), value(n) {}
+  KernelResult(KernelError e) : ok(false), failure(e) {}
+  explicit operator bool() const { return ok; }
+};
+namespace moss { using std::move; }
+using std::make_shared;
+using std::shared_ptr;
+namespace containers {
+enum class MemoryOrder { Relaxed, Acquire, AcqRel };
+using IrqSpinLock = std::mutex;
+template<class T> using LockGuard = std::lock_guard<T>;
+template<class T> struct AtomicCounter {
+  T value;
+  AtomicCounter(T n = 0) : value(n) {}
+  T load(MemoryOrder) const { return value; }
+  T fetch_add(T n, MemoryOrder) { T old = value; value += n; return old; }
+};
+}
+template<class K, class V> struct Map {
+  std::unordered_map<K,V> entries;
+  std::optional<V> find(K key) const {
+    auto it = entries.find(key);
+    return it == entries.end() ? std::nullopt : std::optional<V>(it->second);
+  }
+  void insert_or_update(K key, V value) { entries[key] = std::move(value); }
+  void remove(K key) { entries.erase(key); }
+};
+struct ServiceDescriptor {
+  ServiceId service_id = 7;
+  ProcessId provider_pid = 1;
+  u32 max_clients = 1;
+  containers::AtomicCounter<u32> current_clients;
+};
+struct ConnectionDescriptor {
+  ConnectionDescriptor(ChannelId, ProcessId, ProcessId, ServiceId) {}
+};
+std::function<void()> during_initialize;
+struct ZeroCopyChannel {
+  ZeroCopyChannel(ChannelId, ProcessId, ProcessId) {}
+  VoidResult initialize() { if (during_initialize) during_initialize(); return {}; }
+};
+struct IpcManager {
+  containers::IrqSpinLock lifecycle_lock_;
+  Map<ServiceId, shared_ptr<ServiceDescriptor>> services_;
+  Map<ChannelId, shared_ptr<ZeroCopyChannel>> channels_;
+  Map<ChannelId, shared_ptr<ConnectionDescriptor>> connections_;
+  containers::AtomicCounter<ChannelId> next_channel_id_{1};
+  containers::AtomicCounter<u32> total_channels_;
+  void add_process_channel(ProcessId, ChannelId) {}
+"""
+        + method
+        + r"""
+};
+int main() {
+  IpcManager manager;
+  auto service = make_shared<ServiceDescriptor>();
+  manager.services_.insert_or_update(service->service_id, service);
+  during_initialize = [&] { manager.services_.remove(service->service_id); };
+  const auto removed = manager.connect_to_service(2, service->service_id);
+  assert(!removed && manager.channels_.entries.empty() && manager.connections_.entries.empty());
+  assert(service->current_clients.load(containers::MemoryOrder::Relaxed) == 0);
+  assert(manager.total_channels_.load(containers::MemoryOrder::Relaxed) == 0);
+  during_initialize = {};
+  manager.services_.insert_or_update(service->service_id, service);
+  const auto connected = manager.connect_to_service(2, service->service_id);
+  assert(connected && manager.channels_.entries.size() == 1 && manager.connections_.entries.size() == 1);
+  assert(service->current_clients.load(containers::MemoryOrder::Relaxed) == 1);
+  assert(!manager.connect_to_service(3, service->service_id));
+}
+"""
+    )
+    binary = tmp_path / "service-lifecycle"
+    built = subprocess.run([compiler, "-std=c++23", str(cpp), "-o", str(binary)], capture_output=True, text=True)
+    assert built.returncode == 0, built.stdout + built.stderr
+    result = subprocess.run([str(binary)], capture_output=True, text=True, timeout=5)
+    assert result.returncode == 0, result.stdout + result.stderr
