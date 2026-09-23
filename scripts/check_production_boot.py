@@ -118,6 +118,10 @@ quit
     service_pid = None
     namespace_pid = None
     bulk_data = b"0" * 300
+    # One byte past a shared transfer page proves the file service retains
+    # content across multiple positional calls.
+    page_crossing_size = 4096 + 1
+    page_crossing_data = b"0" * page_crossing_size
     # Require namespace lookup and direct file-capability calls as well as
     # ash commands, child reaping and independent service recovery by PID 1.
     steps = [
@@ -181,6 +185,26 @@ quit
         (b"\nMOSS_FILE_ERROR\n", None),
         (b"moss$ ", b"/moss-file.elf write \"$(printf '%0300d' 0)\"\n"),
         (b"\nMOSS_FILE_WRITE_OK\n", None),
+        (b"moss$ ", b"/moss-file.elf read\n"),
+        (b"\nMOSS_FILE_READ=" + bulk_data + b"\n", None),
+        (b"moss$ ", f"/moss-file.elf write \"$(printf '%0{page_crossing_size}d' 0)\" /note\n".encode()),
+        (b"\nMOSS_FILE_WRITE_OK\n", None),
+        (b"moss$ ", b"/moss-file.elf read /note\n"),
+        (b"\nMOSS_FILE_READ=" + page_crossing_data + b"\n", None),
+        (b"moss$ ", b"/moss-file.elf write short /note\n"),
+        (b"\nMOSS_FILE_WRITE_OK\n", None),
+        (b"moss$ ", b"/moss-file.elf read /note\n"),
+        (b"\nMOSS_FILE_READ=short\n", None),
+        (b"moss$ ", b"/moss-file.elf resize 7 /note\n"),
+        (b"\nMOSS_FILE_RESIZE_OK\n", None),
+        (b"moss$ ", b"/moss-file.elf read /note\n"),
+        (b"\nMOSS_FILE_READ=short\0\0\n", None),
+        # /scratch retains one page, so /note cannot claim the full 16-page
+        # service budget; rejected resize must preserve its bytes.
+        (b"moss$ ", b"/moss-file.elf resize 65536 /note\n"),
+        (b"\nMOSS_FILE_ERROR\n", None),
+        (b"moss$ ", b"/moss-file.elf read /note\n"),
+        (b"\nMOSS_FILE_READ=short\0\0\n", None),
         (b"moss$ ", b"/moss-file.elf read\n"),
         (b"\nMOSS_FILE_READ=" + bulk_data + b"\n", None),
         (b"moss$ ", None),
