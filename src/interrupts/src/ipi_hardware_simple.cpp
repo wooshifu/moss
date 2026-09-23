@@ -42,6 +42,7 @@ VoidResult SimpleHardwareIpi::initialize(GenericInterruptController *gic, u32 ma
       gic_->register_interrupt(static_cast<InterruptId>(IpiSgiId::Ping), handle_ping_sgi, this, "IPI-Ping");
   if (!ping_result) {
     log::klog::error("Failed to register Ping SGI");
+    gic_ = nullptr;
     return ping_result;
   }
 
@@ -49,6 +50,9 @@ VoidResult SimpleHardwareIpi::initialize(GenericInterruptController *gic, u32 ma
                                                     handle_reschedule_sgi, this, "IPI-Reschedule");
   if (!reschedule_result) {
     log::klog::error("Failed to register Reschedule SGI");
+    // The registrant owns the borrowed context until unregister drains callbacks.
+    (void)gic_->unregister_interrupt(static_cast<InterruptId>(IpiSgiId::Ping));
+    gic_ = nullptr;
     return reschedule_result;
   }
 
@@ -58,6 +62,9 @@ VoidResult SimpleHardwareIpi::initialize(GenericInterruptController *gic, u32 ma
 
   if (!enable_ping || !enable_reschedule) {
     log::klog::error("Failed to enable SGI interrupts");
+    (void)gic_->unregister_interrupt(static_cast<InterruptId>(IpiSgiId::Ping));
+    (void)gic_->unregister_interrupt(static_cast<InterruptId>(IpiSgiId::Reschedule));
+    gic_ = nullptr;
     return VoidResult{ErrorCode::InvalidState};
   }
 
