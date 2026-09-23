@@ -309,6 +309,8 @@ add_subdirectory(src/userspace)
         runtime / "namespace-service.elf",
         runtime / "moss-file.elf",
         runtime / "moss-domain.elf",
+        runtime / "process-service.elf",
+        runtime / "moss-process.elf",
         runtime / "busybox/busybox",
     ):
         elf = path.read_bytes()
@@ -320,6 +322,8 @@ add_subdirectory(src/userspace)
     namespace_service = (runtime / "namespace-service.elf").read_bytes()
     file_client = (runtime / "moss-file.elf").read_bytes()
     domain_client = (runtime / "moss-domain.elf").read_bytes()
+    process_service = (runtime / "process-service.elf").read_bytes()
+    process_client = (runtime / "moss-process.elf").read_bytes()
     busybox = (runtime / "busybox/busybox").read_bytes()
     archive = (build / "initramfs.cpio").read_bytes()
     assert make_cpio_entry("init.elf", init, ino=1) in archive
@@ -328,6 +332,8 @@ add_subdirectory(src/userspace)
     assert make_cpio_entry("moss-file.elf", file_client, ino=4) in archive
     assert make_cpio_entry("busybox.elf", busybox, ino=5) in archive
     assert make_cpio_entry("moss-domain.elf", domain_client, ino=6) in archive
+    assert make_cpio_entry("process-service.elf", process_service, ino=7) in archive
+    assert make_cpio_entry("moss-process.elf", process_client, ino=8) in archive
     for removed in ("hello", "shell", "top", "signal_test"):
         assert not (build / "userspace" / f"{removed}.elf").exists()
         assert f"{removed}.elf\0".encode() not in archive

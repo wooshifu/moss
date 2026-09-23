@@ -29,12 +29,15 @@ def test_production_probe_requires_exec_and_subsequent_shell_output(tmp_path, mo
     script = "import signal, sys, time\n"
     script += (
         "print('moss-init: supervisor ready\\nmoss-init: file service started pid=42\\n"
-        "moss-init: namespace service started pid=43', flush=True)\n"
+        "moss-init: namespace service started pid=43\\n"
+        "moss-init: process service started pid=44', flush=True)\n"
     )
     if mode != "legacy_shell":
         script += "print('BusyBox built-in shell (ash)', flush=True)\n"
     script += r"""
 print('moss$ ', end='', flush=True)
+assert input() == '/moss-process.elf probe'
+print('\nMOSS_PROCESS_READY\nmoss$ ', end='', flush=True)
 assert input() == '/moss-file.elf read /missing'
 print('\nMOSS_FILE_ERROR\nmoss$ ', end='', flush=True)
 assert input() == '/moss-file.elf write native'
@@ -80,9 +83,17 @@ assert input() == 'echo MOSS_PRODUCTION_READY'
         script += "print('\\nMOSS_SLEEP_READY\\nmoss$ ', end='', flush=True)\n"
         script += "assert input() == '/moss-file.elf read'\n"
         script += "print('\\nMOSS_FILE_READ=native\\nmoss$ ', end='', flush=True)\n"
+        script += "assert input() == '/moss-domain.elf terminate process'\n"
+        script += (
+            "print('moss-init: process service died\\nmoss-init: process service started pid=45', flush=True)\n"
+        )
+        script += "print('BusyBox built-in shell (ash)\\nmoss$ ', end='', flush=True)\n"
+        script += "assert input() == '/moss-process.elf probe'\n"
+        script += "print('\\nMOSS_PROCESS_READY\\nmoss$ ', end='', flush=True)\n"
         script += "assert input() == '/moss-domain.elf terminate namespace'\n"
         script += (
-            "print('moss-init: namespace service died\\nmoss-init: namespace service started pid=44', flush=True)\n"
+            "print('moss-init: namespace service died\\nmoss-init: namespace service started pid=46\\n"
+            "moss-init: process service started pid=47', flush=True)\n"
         )
         script += "print('BusyBox built-in shell (ash)\\nmoss$ ', end='', flush=True)\n"
         script += "assert input() == '/moss-file.elf read'\n"
@@ -91,8 +102,9 @@ assert input() == 'echo MOSS_PRODUCTION_READY'
         script += "print('\\nMOSS_FILE_READ=separate\\nmoss$ ', end='', flush=True)\n"
         script += "assert input() == '/moss-domain.elf terminate file'\n"
         script += (
-            "print('moss-init: file service died\\nmoss-init: file service started pid=45\\n"
-            "moss-init: namespace service started pid=46', flush=True)\n"
+            "print('moss-init: file service died\\nmoss-init: file service started pid=48\\n"
+            "moss-init: namespace service started pid=49\\n"
+            "moss-init: process service started pid=50', flush=True)\n"
         )
         script += "print('BusyBox built-in shell (ash)\\nmoss$ ', end='', flush=True)\n"
         script += "assert input() == '/moss-file.elf read'\n"
@@ -140,11 +152,11 @@ assert input() == 'echo MOSS_PRODUCTION_READY'
     assert result["status"] == ("passed" if mode in ("complete", "gdb_complete") else "error")
     assert result["raw_exit"] is not None
     if mode == "echo_only":
-        assert result["completed_steps"] == 26
+        assert result["completed_steps"] == 29
     if mode == "legacy_shell":
-        assert result["completed_steps"] == 3
+        assert result["completed_steps"] == 4
     if mode == "applets_failed":
-        assert result["completed_steps"] == 22
+        assert result["completed_steps"] == 25
     if mode == "late_panic":
         assert "panicked" in result["observed"]
     if mode == "sleep_runtime_failure":

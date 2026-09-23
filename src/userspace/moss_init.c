@@ -18,7 +18,7 @@ struct Service {
   long domain;
 };
 
-enum ServiceLoss { FILE_LOST, NAMESPACE_LOST, SUPERVISOR_FAILURE };
+enum ServiceLoss { FILE_LOST, NAMESPACE_LOST, PROCESS_LOST, SUPERVISOR_FAILURE };
 
 static void report(int fd, const char *message) { (void)write(fd, message, strlen(message)); }
 
@@ -97,7 +97,7 @@ static int restart_delay(void) {
   return result == 0 ? 0 : -1;
 }
 
-static int start_file_service(struct Service *service) {
+static int start_endpoint_service(struct Service *service, const char *program) {
   struct moss_ipc_endpoints endpoints = {0};
   if (syscall1(SYS_IPC_CREATE, (long)&endpoints) != 0) {
     return -1;
@@ -107,8 +107,8 @@ static int start_file_service(struct Service *service) {
   if (receive <= 0) {
     goto fail;
   }
-  // The file service owns mint authority. The supervisor retains only an
-  // attenuated sender for service lookup and recovery.
+  // The service owns mint authority. The supervisor retains only an
+  // attenuated sender for clients and recovery.
   mint = syscall2(SYS_CAP_DUPLICATE, (long)endpoints.send,
                   MOSS_CAP_SEND | MOSS_CAP_TRANSFER | MOSS_CAP_DUPLICATE | MOSS_CAP_MINT);
   if (mint <= 0) {
@@ -128,14 +128,15 @@ static int start_file_service(struct Service *service) {
       {(unsigned long)mint, MOSS_CAP_SEND | MOSS_CAP_TRANSFER | MOSS_CAP_DUPLICATE | MOSS_CAP_MINT, 0}};
   pid_t child = fork_domain(&domain, handles, sizeof(handles) / sizeof(handles[0]));
   if (child == 0) {
-    char *const argv[] = {"file-service", receive_arg, mint_arg, NULL};
-    execve("/file-service.elf", argv, NULL);
+    char *const argv[] = {(char *)program, receive_arg, mint_arg, NULL};
+    execve(program, argv, NULL);
     _exit(127);
   }
   (void)syscall1(SYS_CAP_CLOSE, mint);
   (void)syscall1(SYS_CAP_CLOSE, receive);
   (void)syscall1(SYS_CAP_CLOSE, (long)endpoints.receive);
   if (child < 0) {
+    stop_child(child, domain);
     (void)syscall1(SYS_CAP_CLOSE, (long)endpoints.send);
     return -1;
   }
@@ -232,24 +233,33 @@ fail:
   return -1;
 }
 
-static pid_t start_shell(long namespace_capability, long file_domain, long namespace_domain, long supervisor_domain,
-                         long *domain) {
+static pid_t start_shell(long namespace_capability, long process_capability, long file_domain, long namespace_domain,
+                         long process_domain, long supervisor_domain, long *domain) {
   *domain = 0;
-  if (namespace_capability <= 0 || file_domain <= 0 || namespace_domain <= 0 || supervisor_domain <= 0)
+  if (namespace_capability <= 0 || process_capability <= 0 || file_domain <= 0 || namespace_domain <= 0 ||
+      process_domain <= 0 || supervisor_domain <= 0)
     return -1;
   char namespace_env[64]; // Environment key plus decimal 64-bit handle.
-  char file_domain_env[64], namespace_domain_env[64], supervisor_domain_env[64];
+  char process_env[64], file_domain_env[64], namespace_domain_env[64], process_domain_env[64],
+      supervisor_domain_env[64];
   int size =
       snprintf(namespace_env, sizeof(namespace_env), "MOSS_NAMESPACE_CAP=%lu", (unsigned long)namespace_capability);
   if (size < 0 || (size_t)size >= sizeof(namespace_env)) {
     return -1;
   }
+  size = snprintf(process_env, sizeof(process_env), "MOSS_PROCESS_CAP=%lu", (unsigned long)process_capability);
+  if (size < 0 || (size_t)size >= sizeof(process_env))
+    return -1;
   size = snprintf(file_domain_env, sizeof(file_domain_env), "MOSS_FILE_DOMAIN_CAP=%lu", (unsigned long)file_domain);
   if (size < 0 || (size_t)size >= sizeof(file_domain_env))
     return -1;
   size = snprintf(namespace_domain_env, sizeof(namespace_domain_env), "MOSS_NAMESPACE_DOMAIN_CAP=%lu",
                   (unsigned long)namespace_domain);
   if (size < 0 || (size_t)size >= sizeof(namespace_domain_env))
+    return -1;
+  size = snprintf(process_domain_env, sizeof(process_domain_env), "MOSS_PROCESS_DOMAIN_CAP=%lu",
+                  (unsigned long)process_domain);
+  if (size < 0 || (size_t)size >= sizeof(process_domain_env))
     return -1;
   size = snprintf(supervisor_domain_env, sizeof(supervisor_domain_env), "MOSS_SUPERVISOR_DOMAIN_CAP=%lu",
                   (unsigned long)supervisor_domain);
@@ -260,30 +270,42 @@ static pid_t start_shell(long namespace_capability, long file_domain, long names
   // handle numbers let their environment refer to the same local authority.
   const struct moss_fork_capability handles[] = {
       {(unsigned long)namespace_capability, MOSS_CAP_SEND | MOSS_CAP_DUPLICATE, MOSS_FORK_CAP_INHERIT},
+      {(unsigned long)process_capability, MOSS_CAP_SEND | MOSS_CAP_DUPLICATE, MOSS_FORK_CAP_INHERIT},
       {(unsigned long)file_domain, MOSS_CAP_DOMAIN_TERMINATE | MOSS_CAP_DUPLICATE, MOSS_FORK_CAP_INHERIT},
       {(unsigned long)namespace_domain, MOSS_CAP_DOMAIN_TERMINATE | MOSS_CAP_DUPLICATE, MOSS_FORK_CAP_INHERIT},
+      {(unsigned long)process_domain, MOSS_CAP_DOMAIN_TERMINATE | MOSS_CAP_DUPLICATE, MOSS_FORK_CAP_INHERIT},
       {(unsigned long)supervisor_domain, MOSS_CAP_DOMAIN_TERMINATE | MOSS_CAP_DUPLICATE, MOSS_FORK_CAP_INHERIT}};
   pid_t child = fork_domain(domain, handles, sizeof(handles) / sizeof(handles[0]));
   if (child == 0) {
     char *const argv[] = {"ash", "-i", NULL};
-    char *const env[] = {"PATH=/",      "HOME=/",        "TERM=dumb",          "PS1=moss$ ",          "PS2=> ",
-                         namespace_env, file_domain_env, namespace_domain_env, supervisor_domain_env, NULL};
+    char *const env[] = {"PATH=/",
+                         "HOME=/",
+                         "TERM=dumb",
+                         "PS1=moss$ ",
+                         "PS2=> ",
+                         namespace_env,
+                         process_env,
+                         file_domain_env,
+                         namespace_domain_env,
+                         process_domain_env,
+                         supervisor_domain_env,
+                         NULL};
     execve("/busybox.elf", argv, env);
     _exit(127);
   }
   return child;
 }
 
-static enum ServiceLoss supervise(struct Service *file, struct Service *namespace, long supervisor_domain, pid_t *shell,
-                                  long *shell_domain) {
+static enum ServiceLoss supervise(struct Service *file, struct Service *namespace, struct Service *process,
+                                  long supervisor_domain, pid_t *shell, long *shell_domain) {
   for (;;) {
     const unsigned long domains[] = {(unsigned long)file->domain, (unsigned long)namespace->domain,
-                                     (unsigned long)*shell_domain};
-    long exited = syscall2(SYS_DOMAIN_WAIT_ANY, (long)domains, 3);
+                                     (unsigned long)process->domain, (unsigned long)*shell_domain};
+    long exited = syscall2(SYS_DOMAIN_WAIT_ANY, (long)domains, 4);
     if (exited == -EINTR) {
       continue;
     }
-    if (exited < 0 || exited > 2) {
+    if (exited < 0 || exited > 3) {
       char message[80];
       int size = snprintf(message, sizeof(message), "moss-init: domain wait failed: %ld\n", exited);
       if (size > 0 && (size_t)size < sizeof(message))
@@ -301,6 +323,11 @@ static enum ServiceLoss supervise(struct Service *file, struct Service *namespac
       return NAMESPACE_LOST;
     }
     if (exited == 2) {
+      process->pid = 0;
+      report(STDOUT_FILENO, "moss-init: process service died\n");
+      return PROCESS_LOST;
+    }
+    if (exited == 3) {
       *shell = 0;
       (void)syscall1(SYS_CAP_CLOSE, *shell_domain);
       *shell_domain = 0;
@@ -308,7 +335,8 @@ static enum ServiceLoss supervise(struct Service *file, struct Service *namespac
       if (restart_delay() != 0) {
         return SUPERVISOR_FAILURE;
       }
-      *shell = start_shell(namespace->send, file->domain, namespace->domain, supervisor_domain, shell_domain);
+      *shell = start_shell(namespace->send, process->send, file->domain, namespace->domain, process->domain,
+                           supervisor_domain, shell_domain);
       if (*shell < 0) {
         report(STDERR_FILENO, "moss-init: shell launch failed\n");
         *shell = 0;
@@ -334,7 +362,7 @@ int main(void) {
   report(STDOUT_FILENO, "moss-init: supervisor ready\n");
   for (;;) {
     struct Service file = {0};
-    if (start_file_service(&file) != 0) {
+    if (start_endpoint_service(&file, "/file-service.elf") != 0) {
       report(STDERR_FILENO, "moss-init: file service launch failed\n");
       if (restart_delay() != 0) {
         return 1;
@@ -349,20 +377,34 @@ int main(void) {
         break;
       }
       report_started("namespace service", namespace.pid);
-      long shell_domain = 0;
-      pid_t shell = start_shell(namespace.send, file.domain, namespace.domain, supervisor_domain, &shell_domain);
-      if (shell < 0) {
-        report(STDERR_FILENO, "moss-init: shell launch failed\n");
-        stop_service(&namespace);
+      enum ServiceLoss lost;
+      for (;;) {
+        struct Service process = {0};
+        if (start_endpoint_service(&process, "/process-service.elf") != 0) {
+          report(STDERR_FILENO, "moss-init: process service launch failed\n");
+          lost = PROCESS_LOST;
+        } else {
+          report_started("process service", process.pid);
+          long shell_domain = 0;
+          pid_t shell = start_shell(namespace.send, process.send, file.domain, namespace.domain, process.domain,
+                                    supervisor_domain, &shell_domain);
+          if (shell < 0) {
+            report(STDERR_FILENO, "moss-init: shell launch failed\n");
+            lost = PROCESS_LOST;
+          } else {
+            lost = supervise(&file, &namespace, &process, supervisor_domain, &shell, &shell_domain);
+          }
+          stop_child(shell, shell_domain);
+          stop_service(&process);
+        }
+        if (lost != PROCESS_LOST)
+          break;
         if (restart_delay() != 0) {
+          stop_service(&namespace);
           stop_service(&file);
           return 1;
         }
-        continue;
       }
-
-      enum ServiceLoss lost = supervise(&file, &namespace, supervisor_domain, &shell, &shell_domain);
-      stop_child(shell, shell_domain);
       stop_service(&namespace);
       if (lost == SUPERVISOR_FAILURE) {
         stop_service(&file);

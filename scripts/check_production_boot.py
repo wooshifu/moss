@@ -117,18 +117,22 @@ quit
     child, debugger, console, stage, pending = None, None, None, 0, b""
     service_pid = None
     namespace_pid = None
+    process_pid = None
     bulk_data = b"0" * 300
     # One byte past a shared transfer page proves the file service retains
     # content across multiple positional calls.
     page_crossing_size = 4096 + 1
     page_crossing_data = b"0" * page_crossing_size
-    # Require namespace lookup and direct file-capability calls as well as
-    # ash commands, child reaping and independent service recovery by PID 1.
+    # Require native process observation, namespace lookup and direct file
+    # capabilities alongside shell workflows and independent service recovery.
     steps = [
         (b"moss-init: supervisor ready", None),
         (b"moss-init: file service started", None),
         (b"moss-init: namespace service started", None),
+        (b"moss-init: process service started", None),
         (b"built-in shell (ash)", None),
+        (b"moss$ ", b"/moss-process.elf probe\n"),
+        (b"\nMOSS_PROCESS_READY\n", None),
         (b"moss$ ", b"/moss-file.elf read /missing\n"),
         (b"\nMOSS_FILE_ERROR\n", None),
         (b"moss$ ", b"/moss-file.elf write native\n"),
@@ -169,9 +173,16 @@ quit
         (b"\nMOSS_SLEEP_READY\n", None),
         (b"moss$ ", b"/moss-file.elf read\n"),
         (b"\nMOSS_FILE_READ=native\n", None),
+        (b"moss$ ", b"/moss-domain.elf terminate process\n"),
+        (b"moss-init: process service died", None),
+        (b"moss-init: process service started", None),
+        (b"built-in shell (ash)", None),
+        (b"moss$ ", b"/moss-process.elf probe\n"),
+        (b"\nMOSS_PROCESS_READY\n", None),
         (b"moss$ ", b"/moss-domain.elf terminate namespace\n"),
         (b"moss-init: namespace service died", None),
         (b"moss-init: namespace service started", None),
+        (b"moss-init: process service started", None),
         (b"built-in shell (ash)", None),
         (b"moss$ ", b"/moss-file.elf read\n"),
         (b"\nMOSS_FILE_READ=native\n", None),
@@ -181,6 +192,7 @@ quit
         (b"moss-init: file service died", None),
         (b"moss-init: file service started", None),
         (b"moss-init: namespace service started", None),
+        (b"moss-init: process service started", None),
         (b"built-in shell (ash)", None),
         (b"moss$ ", b"/moss-file.elf read\n"),
         (b"\nMOSS_FILE_READ=\n", None),
@@ -255,18 +267,25 @@ quit
                         break
                     marker, command = steps[stage]
                     after = pending.split(marker, 1)[1]
-                    if marker in (b"moss-init: file service started", b"moss-init: namespace service started"):
+                    if marker in (b"moss-init: file service started", b"moss-init: namespace service started",
+                                  b"moss-init: process service started"):
                         match = re.match(rb" pid=(\d+)\n", after)
                         if not match:
                             break
                         next_pid = int(match.group(1))
-                        previous_pid = service_pid if marker == b"moss-init: file service started" else namespace_pid
+                        previous_pid = {
+                            b"moss-init: file service started": service_pid,
+                            b"moss-init: namespace service started": namespace_pid,
+                            b"moss-init: process service started": process_pid,
+                        }[marker]
                         if next_pid <= 1 or next_pid == previous_pid:
                             raise ValueError("service incarnation did not change")
                         if marker == b"moss-init: file service started":
                             service_pid = next_pid
-                        else:
+                        elif marker == b"moss-init: namespace service started":
                             namespace_pid = next_pid
+                        else:
+                            process_pid = next_pid
                         after = after[match.end() :]
                     pending = after
                     if command:
@@ -279,7 +298,7 @@ quit
                             child.stdin.flush()
                     stage += 1
                 if stage == len(steps) and (not debugger or debugger.poll() is not None):
-                    result.update(status="passed", observed="namespace_and_file_service_recovered")
+                    result.update(status="passed", observed="process_namespace_and_file_services_recovered")
                     break
                 if child.poll() is not None:
                     result["observed"] = "unexpected_exit"
