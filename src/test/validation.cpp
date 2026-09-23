@@ -5470,6 +5470,9 @@ TimerCancellation *timer_cancellation = nullptr;
 process::Thread *early_sleep_thread = nullptr;
 u32 early_sleep_visits = 0;
 bool early_sleep_woken = true;
+ProcessId wait_exit_parent = INVALID_PROCESS_ID;
+ProcessId wait_exit_child = INVALID_PROCESS_ID;
+u32 wait_exit_phase = 0;
 bool dispatch_boundary_checked = false;
 
 void failing_case() { ut::expect(false); }
@@ -5884,6 +5887,7 @@ void declare_cases() {
     ut::register_test("basic_handler", empty_case);
     ut::register_test("nested_signals", empty_case);
     ut::register_test("sigchld", empty_case);
+    ut::register_test("wait_registration", empty_case);
     ut::register_test("sigprocmask", empty_case);
     ut::register_test("sigaltstack", empty_case);
     ut::register_test("sig_ign", empty_case);
@@ -6414,6 +6418,26 @@ extern "C" void moss_validation_sleep_armed(void *pending) noexcept {
                       (thread->state == process::ProcessState::Ready || thread->sleep_handoff.load() == 2);
 }
 
+extern "C" void moss_validation_wait_before_register(u32 parent_pid, long wait_pid) noexcept {
+  if (!ut::same_id(active_case, "wait_registration") || parent_pid != wait_exit_parent || wait_pid <= 1 ||
+      wait_pid > static_cast<long>(~ProcessId{0}) || __atomic_load_n(&wait_exit_phase, __ATOMIC_ACQUIRE) != 1) {
+    return;
+  }
+  // The child can leave its gate only after the first Zombie scan missed it.
+  wait_exit_child = static_cast<ProcessId>(wait_pid);
+  __atomic_store_n(&wait_exit_phase, 2U, __ATOMIC_RELEASE);
+  ContainerInterleaving::wait_for(wait_exit_phase, 3);
+}
+
+extern "C" void moss_validation_child_exit_notified(u32 child_pid, u32 parent_pid) noexcept {
+  if (ut::same_id(active_case, "wait_registration") && parent_pid == wait_exit_parent && child_pid == wait_exit_child &&
+      __atomic_load_n(&wait_exit_phase, __ATOMIC_ACQUIRE) == 2) {
+    // The real exit path has published Zombie and attempted wakeup while no
+    // waiter exists; release/acquire also makes its status visible to wait4.
+    __atomic_store_n(&wait_exit_phase, 3U, __ATOMIC_RELEASE);
+  }
+}
+
 extern "C" void moss_validation_fd_clone(bool entering) noexcept {
   if (!fork_clone_pressure || fork_clone_exhausted) {
     return;
@@ -6886,6 +6910,37 @@ extern "C" long moss_validation_call(long op, long arg1, [[maybe_unused]] long a
       delete user_heap_pressure;
       user_heap_pressure = nullptr;
       return ut::expect(LifecycleResources::capture() == user_heap_baseline);
+    }
+  }
+  // 52 arms the case, 53 gates the migrated child, and 54 verifies the wake
+  // ordering before clearing the fixture for later cases.
+  if (ut::same_id(selection, "users.signals") && ut::same_id(active_case, "wait_registration")) {
+    if (op == 52 && affinity_valid() && arg1 == 0 && g_num_cpus >= 2 &&
+        __atomic_load_n(&wait_exit_phase, __ATOMIC_ACQUIRE) == 0) {
+      auto parent = process::current_process();
+      if (!parent) {
+        return 0;
+      }
+      wait_exit_parent = parent->pid();
+      wait_exit_child = INVALID_PROCESS_ID;
+      __atomic_store_n(&wait_exit_phase, 1U, __ATOMIC_RELEASE);
+      return 1;
+    }
+    if (op == 53 && arch::get_current_cpu_id() == 1) {
+      ContainerInterleaving::wait_for(wait_exit_phase, 2);
+      auto child = process::current_process();
+      if (!child || child->pid() != wait_exit_child || child->parent_pid() != wait_exit_parent) {
+        return 0;
+      }
+      return 1;
+    }
+    if (op == 54 && affinity_valid()) {
+      const bool observed =
+          __atomic_load_n(&wait_exit_phase, __ATOMIC_ACQUIRE) == 3 && arg1 == static_cast<long>(wait_exit_child);
+      __atomic_store_n(&wait_exit_phase, 0U, __ATOMIC_RELEASE);
+      wait_exit_parent = INVALID_PROCESS_ID;
+      wait_exit_child = INVALID_PROCESS_ID;
+      return observed;
     }
   }
   if (op == 39 && ut::same_id(selection, "users.signals") &&
