@@ -9,7 +9,6 @@
 struct Record {
   unsigned long id;
   unsigned long parent_id;
-  unsigned long native_id;
   unsigned long domain;
 };
 
@@ -32,11 +31,14 @@ static struct Record *find_record(unsigned long id) {
   return NULL;
 }
 
-static struct Record *free_record(unsigned long native_id) {
+static struct Record *free_record(unsigned long domain) {
   struct Record *free = NULL;
   for (unsigned int i = 0; i < MOSS_PROCESS_RECORD_LIMIT; ++i) {
-    if (records[i].id && records[i].native_id == native_id)
-      return NULL;
+    if (records[i].id) {
+      // A comparison error cannot prove uniqueness, so reject registration.
+      if (syscall2(SYS_DOMAIN_SAME, (long)domain, (long)records[i].domain) != 0)
+        return NULL;
+    }
     if (!records[i].id && !free)
       free = &records[i];
   }
@@ -83,7 +85,7 @@ int main(int argc, char **argv) {
     if (request.size == 1 && (register_root || register_child) && request.capability &&
         request.rights == (MOSS_CAP_DOMAIN_OBSERVE | MOSS_CAP_DOMAIN_INSPECT)) {
       struct Record *parent = register_child ? find_record(request.badge) : NULL;
-      long native_id = syscall1(SYS_DOMAIN_ID, (long)request.capability);
+      long valid_domain = syscall2(SYS_DOMAIN_SAME, (long)request.capability, (long)request.capability);
       if (register_child && !parent) {
         response.payload[0] = MOSS_PROCESS_NO_ENTRY;
       } else if (register_child) {
@@ -97,15 +99,14 @@ int main(int argc, char **argv) {
           parent = NULL;
         }
       }
-      if ((!register_child || parent) && native_id > 0 && next_id <= LONG_MAX) {
-        registered = free_record((unsigned long)native_id);
+      if ((!register_child || parent) && valid_domain == 1 && next_id <= LONG_MAX) {
+        registered = free_record(request.capability);
         if (registered)
           session = syscall2(SYS_IPC_MINT_BADGE, (long)mint, (long)next_id);
       }
       if (session > 0) {
         registered->id = next_id++;
         registered->parent_id = parent ? parent->id : 0;
-        registered->native_id = (unsigned long)native_id;
         registered->domain = request.capability;
         request.capability = 0;
         response.size = MOSS_PROCESS_REPLY_VALUE_BYTES;
@@ -114,7 +115,7 @@ int main(int argc, char **argv) {
         response.capability = (unsigned long)session;
         response.rights = MOSS_CAP_SEND | MOSS_CAP_DUPLICATE;
       } else if (!register_child || parent) {
-        response.payload[0] = native_id <= 0 ? MOSS_PROCESS_BAD_REQUEST : MOSS_PROCESS_UNAVAILABLE;
+        response.payload[0] = valid_domain != 1 ? MOSS_PROCESS_BAD_REQUEST : MOSS_PROCESS_UNAVAILABLE;
       }
     } else if (request.badge && request.size == 1 && !request.capability && !request.rights) {
       struct Record *record = find_record(request.badge);

@@ -49,6 +49,8 @@ struct moss_fork_capability {
   unsigned long flags;
 };
 
+// SYS_DOMAIN_SAME requires INSPECT on both handles and returns 1 for the same
+// domain incarnation, 0 for different domains; it never compares PID values.
 // SYS_DOMAIN_STATUS returns this after the domain exits. A signal exit sets
 // signal and leaves code zero; a normal exit sets code and clears signal.
 struct moss_domain_exit {

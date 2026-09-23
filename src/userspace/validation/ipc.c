@@ -501,7 +501,12 @@ unsigned long ipc_domain_control(void) {
   if (self > 0) {
     errors |= (unsigned long)(syscall1(SYS_DOMAIN_ID, self) != getpid()) << 34;
     errors |= (unsigned long)(syscall1(SYS_DOMAIN_WAIT, self) != -IPC_EINVAL) << 35;
-    errors |= (unsigned long)(syscall1(SYS_CAP_CLOSE, self) != 0) << 36;
+    long another_self = syscall0(SYS_DOMAIN_SELF);
+    errors |= (unsigned long)(another_self <= 0) << 37;
+    if (another_self > 0) {
+      errors |= (unsigned long)(syscall2(SYS_DOMAIN_SAME, self, another_self) != 1) << 38;
+      (void)syscall1(SYS_CAP_CLOSE, another_self);
+    }
   }
   unsigned long domain = 0;
   long child = syscall1(SYS_FORK_DOMAIN, (long)&domain);
@@ -520,6 +525,8 @@ unsigned long ipc_domain_control(void) {
       (void)syscall1(SYS_DOMAIN_WAIT, (long)domain);
       (void)syscall1(SYS_CAP_CLOSE, (long)domain);
     }
+    if (self > 0)
+      errors |= (unsigned long)(syscall1(SYS_CAP_CLOSE, self) != 0) << 36;
     return errors | 2;
   }
 
@@ -540,11 +547,24 @@ unsigned long ipc_domain_control(void) {
     errors |= (unsigned long)(syscall1(SYS_DOMAIN_TERMINATE, inspect) != -IPC_EACCES) << 5;
     errors |= (unsigned long)(syscall1(SYS_DOMAIN_WAIT, inspect) != -IPC_EACCES) << 20;
     errors |= (unsigned long)(syscall2(SYS_DOMAIN_STATUS, inspect, (long)&status) != -IPC_EACCES) << 28;
+    errors |= (unsigned long)(syscall2(SYS_DOMAIN_SAME, (long)domain, inspect) != 1) << 40;
   }
   errors |= (unsigned long)(observe <= 0) << 13;
   if (observe > 0) {
     errors |= (unsigned long)(syscall1(SYS_DOMAIN_ID, observe) != -IPC_EACCES) << 14;
     errors |= (unsigned long)(syscall1(SYS_DOMAIN_TERMINATE, observe) != -IPC_EACCES) << 15;
+    errors |= (unsigned long)(syscall2(SYS_DOMAIN_SAME, (long)domain, observe) != -IPC_EACCES) << 41;
+  }
+  if (self > 0)
+    errors |= (unsigned long)(syscall2(SYS_DOMAIN_SAME, self, (long)domain) != 0) << 39;
+  errors |= (unsigned long)(syscall2(SYS_DOMAIN_SAME, (long)domain, 0) != -IPC_EBADF) << 42;
+  struct moss_ipc_endpoints pair = {0};
+  if (syscall1(SYS_IPC_CREATE, (long)&pair) != 0) {
+    errors |= 1UL << 43;
+  } else {
+    errors |= (unsigned long)(syscall2(SYS_DOMAIN_SAME, (long)domain, (long)pair.send) != -IPC_EINVAL) << 44;
+    (void)syscall1(SYS_CAP_CLOSE, (long)pair.send);
+    (void)syscall1(SYS_CAP_CLOSE, (long)pair.receive);
   }
   errors |= (unsigned long)(syscall1(SYS_DOMAIN_TERMINATE, (long)domain) != 0) << 6;
   if (observe > 0)
@@ -554,8 +574,11 @@ unsigned long ipc_domain_control(void) {
   errors |= (unsigned long)(syscall3(SYS_WAITPID, child, 0, 1) != -IPC_ECHILD) << 25;
   errors |= (unsigned long)(syscall1(SYS_DOMAIN_TERMINATE, (long)domain) != -IPC_ESRCH) << 8;
   errors |= (unsigned long)(syscall1(SYS_DOMAIN_ID, (long)domain) != child) << 9;
-  if (inspect > 0)
+  if (inspect > 0) {
+    errors |= (unsigned long)(syscall2(SYS_DOMAIN_SAME, (long)domain, inspect) != 1) << 45;
     errors |= (unsigned long)(syscall1(SYS_CAP_CLOSE, inspect) != 0) << 10;
+    errors |= (unsigned long)(syscall2(SYS_DOMAIN_SAME, (long)domain, inspect) != -IPC_EBADF) << 46;
+  }
   if (observe > 0)
     errors |= (unsigned long)(syscall1(SYS_CAP_CLOSE, observe) != 0) << 18;
   errors |= (unsigned long)(syscall1(SYS_CAP_CLOSE, (long)domain) != 0) << 11;
@@ -600,6 +623,8 @@ unsigned long ipc_domain_control(void) {
     errors |= (unsigned long)(syscall3(SYS_WAITPID, natural_child, 0, 1) != -IPC_ECHILD) << 26;
     errors |= (unsigned long)(syscall1(SYS_CAP_CLOSE, (long)natural_domain) != 0) << 23;
   }
+  if (self > 0)
+    errors |= (unsigned long)(syscall1(SYS_CAP_CLOSE, self) != 0) << 36;
   return errors;
 }
 

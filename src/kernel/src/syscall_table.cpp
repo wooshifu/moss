@@ -601,6 +601,25 @@ long sys_domain_id(long handle, long, long, long, long, long) noexcept {
   return static_cast<long>(static_cast<DomainObject *>((*object).get())->process->pid());
 }
 
+long sys_domain_same(long left, long right, long, long, long, long) noexcept {
+  auto caller = process::current_process();
+  if (!caller)
+    return -errc::ESRCH;
+  auto first = caller->capabilities().lookup(static_cast<Handle>(left), capability::ObjectType::Domain,
+                                             capability::rights::DOMAIN_INSPECT);
+  if (!first)
+    return domain_cap_error(first.error());
+  auto second = caller->capabilities().lookup(static_cast<Handle>(right), capability::ObjectType::Domain,
+                                              capability::rights::DOMAIN_INSPECT);
+  if (!second)
+    return domain_cap_error(second.error());
+  // SYS_DOMAIN_SELF creates a fresh wrapper for each handle. Compare the
+  // retained process incarnation, not wrapper identity or a reusable PID.
+  const auto *left_domain = static_cast<DomainObject *>((*first).get())->process.get();
+  const auto *right_domain = static_cast<DomainObject *>((*second).get())->process.get();
+  return left_domain == right_domain ? 1 : 0;
+}
+
 long sys_domain_self(long, long, long, long, long, long) noexcept {
   auto caller = process::current_process();
   if (!caller)
@@ -3073,7 +3092,8 @@ const SyscallDescriptor SYSCALL_TABLE[static_cast<int>(SyscallNumber::MAX_SYSCAL
     {"domain_wait_any", handlers::sys_domain_wait_any, 2, true, "Wait for one of several capability-addressed domains"},
     {"domain_status", handlers::sys_domain_status, 2, true, "Read a capability-addressed domain's exit cause"},
     {"domain_self", handlers::sys_domain_self, 0, true, "Acquire a capability for the calling domain"},
-    {"cap_set_exec", handlers::sys_cap_set_exec, 2, true, "Select capability retention after exec"}};
+    {"cap_set_exec", handlers::sys_cap_set_exec, 2, true, "Select capability retention after exec"},
+    {"domain_same", handlers::sys_domain_same, 2, true, "Compare two inspected domain incarnations"}};
 
 // 系统调用分发器实现
 long SyscallDispatcher::dispatch(long syscall_number, long arg0, long arg1, long arg2, long arg3, long arg4,
