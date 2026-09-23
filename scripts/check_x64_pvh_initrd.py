@@ -68,6 +68,8 @@ PVH_MODULE_SIZE_OFFSET = 8
 PVH_MODULE_SIZE_BYTES = 8
 # These match HvmStartInfo and PvhMemoryEntry in the production boot parser.
 PVH_MEMORY_MAP_OFFSET = 40
+# hvm_start_info stores the 32-bit entry count after the 64-bit map pointer.
+PVH_MEMORY_COUNT_OFFSET = PVH_MEMORY_MAP_OFFSET + 8
 PVH_MEMORY_ENTRY_BYTES = 24
 # PVH memory-map type 1 identifies usable RAM.
 PVH_RAM_TYPE = 1
@@ -193,7 +195,14 @@ def mutate_pvh_boot_info(
         (module_list,) = struct.unpack_from("<Q", start, PVH_MODULE_LIST_OFFSET)
         if magic != PVH_MAGIC:
             raise RuntimeError("QEMU did not provide PVH start info")
-        if mutation == "invalid-module":
+        if mutation == "oversized-memory-map":
+            count_address = start_info + PVH_MEMORY_COUNT_OFFSET
+            invalid_count = PVH_MAX_MEMORY_ENTRIES + 1
+            replacement = struct.pack("<I", invalid_count)
+            if remote.command(f"M{count_address:x},{len(replacement):x}:{replacement.hex()}") != b"OK":
+                raise RuntimeError("QEMU rejected the oversized-memory-map mutation")
+            details = {"memory_map_entries": invalid_count}
+        elif mutation == "invalid-module":
             if not module_count or not module_list:
                 raise RuntimeError("QEMU did not provide the expected PVH module descriptor")
             size_address = module_list + PVH_MODULE_SIZE_OFFSET
@@ -208,7 +217,14 @@ def mutate_pvh_boot_info(
             if remote.command(f"M{size_address:x},{PVH_MODULE_SIZE_BYTES:x}:{zero_size}") != b"OK":
                 raise RuntimeError("QEMU rejected the invalid-module mutation")
             details = {"module_size_before": original_size}
-        elif mutation in ("reserved-overlap", "reserved-overflow", "reserved-initrd", "ram-overlap"):
+        elif mutation in (
+            "reserved-overlap",
+            "reserved-overflow",
+            "reserved-initrd",
+            "ram-overlap",
+            "entry-reserved",
+            "ram-above-limit",
+        ):
             map_address, count = struct.unpack_from("<QI", start, PVH_MEMORY_MAP_OFFSET)
             if not map_address or not 1 < count <= PVH_MAX_MEMORY_ENTRIES:
                 raise RuntimeError("QEMU did not provide a usable PVH memory map")
@@ -274,7 +290,7 @@ def mutate_pvh_boot_info(
                     "reserved_entry": reserved,
                     "reserved_type": reserved_kind,
                 }
-            else:
+            elif mutation == "reserved-initrd":
                 base, size = module_base, module_size
                 details = {
                     "module_base": base,
@@ -282,8 +298,15 @@ def mutate_pvh_boot_info(
                     "reserved_entry": reserved,
                     "reserved_type": reserved_kind,
                 }
-            replacement_type = PVH_RAM_TYPE if mutation == "ram-overlap" else reserved_kind
-            replacement = struct.pack("<QQII", base, size, replacement_type, 0)
+            elif mutation == "ram-above-limit":
+                base, size = PVH_BOOT_ADDRESS_LIMIT, 1
+                details = {"ram_base": base, "ram_size": size, "replaced_entry": reserved}
+            else:
+                base, size, _, _ = entries[reserved]
+                details = {"reserved_entry": reserved, "reserved_bits": 1}
+            replacement_type = PVH_RAM_TYPE if mutation in ("ram-overlap", "ram-above-limit") else reserved_kind
+            replacement_reserved = 1 if mutation == "entry-reserved" else 0
+            replacement = struct.pack("<QQII", base, size, replacement_type, replacement_reserved)
             if remote.command(f"M{entry_address:x},{len(replacement):x}:{replacement.hex()}") != b"OK":
                 raise RuntimeError(f"QEMU rejected the {mutation} mutation")
         else:
@@ -451,6 +474,30 @@ def main() -> int:
             b"Error: Memory management setup failed",
             False,
             "ram-overlap",
+        ),
+        (
+            "oversized-memory-map",
+            base,
+            BASE_MEMORY_MIB,
+            b"BOOT ERROR: invalid PVH start info",
+            False,
+            "oversized-memory-map",
+        ),
+        (
+            "entry-reserved",
+            base,
+            BASE_MEMORY_MIB,
+            b"BOOT ERROR: invalid PVH memory map entry",
+            False,
+            "entry-reserved",
+        ),
+        (
+            "ram-above-limit",
+            base,
+            BASE_MEMORY_MIB,
+            b"BOOT ERROR: invalid PVH RAM range",
+            False,
+            "ram-above-limit",
         ),
         ("invalid-archive", invalid, BASE_MEMORY_MIB, b"Error: Invalid initramfs archive", False, None),
         ("missing-init", no_init, BASE_MEMORY_MIB, b"Error: Required init executable is missing", False, None),
