@@ -5923,6 +5923,7 @@ void declare_cases() {
     ut::register_test("sigchld", empty_case);
     ut::register_test("wait_registration", empty_case);
     ut::register_test("wait_interrupted", empty_case);
+    ut::register_test("wait_restarted", empty_case);
     ut::register_test("sigprocmask", empty_case);
     ut::register_test("sigaltstack", empty_case);
     ut::register_test("sig_ign", empty_case);
@@ -5934,11 +5935,13 @@ void declare_cases() {
     ut::register_test("pid_lifecycle", empty_case);
     ut::register_test("pipe_sigpipe", empty_case);
     ut::register_test("pipe_interrupted", empty_case);
+    ut::register_test("pipe_restarted", empty_case);
     ut::register_test("pipe_noninterrupting_signals", empty_case);
     ut::register_test("pipe_partial_interrupt", empty_case);
     ut::register_test("signal_wakeup_affinity", empty_case);
     ut::register_test("console_interrupted", empty_case);
     ut::register_test("console_partial_interrupt", empty_case);
+    ut::register_test("console_restarted", empty_case);
     ut::register_test("console_multi_reader", empty_case);
   });
 #if defined(MOSS_ARCH_ARM64) || defined(MOSS_ARCH_X64)
@@ -6988,7 +6991,8 @@ extern "C" long moss_validation_call(long op, long arg1, [[maybe_unused]] long a
       return observed;
     }
   }
-  if (op == 55 && ut::same_id(selection, "users.signals") && ut::same_id(active_case, "wait_interrupted") &&
+  if (op == 55 && ut::same_id(selection, "users.signals") &&
+      (ut::same_id(active_case, "wait_interrupted") || ut::same_id(active_case, "wait_restarted")) &&
       arch::get_current_cpu_id() == 1) {
     auto child = process::current_process();
     if (!child || arg1 != static_cast<long>(child->parent_pid()) || arg2 != static_cast<long>(child->pid())) {
@@ -7093,8 +7097,10 @@ extern "C" long moss_validation_call(long op, long arg1, [[maybe_unused]] long a
   }
 #endif
   if (op == 39 && ut::same_id(selection, "users.signals") &&
-      (ut::same_id(active_case, "pipe_interrupted") || ut::same_id(active_case, "pipe_noninterrupting_signals") ||
-       ut::same_id(active_case, "console_interrupted") || ut::same_id(active_case, "console_partial_interrupt"))) {
+      (ut::same_id(active_case, "pipe_interrupted") || ut::same_id(active_case, "pipe_restarted") ||
+       ut::same_id(active_case, "pipe_noninterrupting_signals") ||
+       ut::same_id(active_case, "console_interrupted") || ut::same_id(active_case, "console_partial_interrupt") ||
+       ut::same_id(active_case, "console_restarted"))) {
     if (arg1 == 0 && arg2 == 0) {
       return 1; // The production image's weak hook still returns ENOSYS.
     }
@@ -7112,7 +7118,8 @@ extern "C" long moss_validation_call(long op, long arg1, [[maybe_unused]] long a
 #if defined(MOSS_ARCH_RISCV64)
     // RV64 still polls console RX; its active read frame is the readiness boundary.
     require_sleep =
-        !ut::same_id(active_case, "console_interrupted") && !ut::same_id(active_case, "console_partial_interrupt");
+        !ut::same_id(active_case, "console_interrupted") && !ut::same_id(active_case, "console_partial_interrupt") &&
+        !ut::same_id(active_case, "console_restarted");
 #endif
     if (require_sleep && (thread->state != process::ProcessState::Sleeping || thread->sleep_handoff.load() != 0)) {
       return 0;

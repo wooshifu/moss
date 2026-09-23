@@ -233,6 +233,7 @@ CATALOG = {
         "sigchld",
         "wait_registration",
         "wait_interrupted",
+        "wait_restarted",
         "sigprocmask",
         "sigaltstack",
         "sig_ign",
@@ -244,11 +245,13 @@ CATALOG = {
         "pid_lifecycle",
         "pipe_sigpipe",
         "pipe_interrupted",
+        "pipe_restarted",
         "pipe_noninterrupting_signals",
         "pipe_partial_interrupt",
         "signal_wakeup_affinity",
         "console_interrupted",
         "console_partial_interrupt",
+        "console_restarted",
         "console_multi_reader",
     ],
     "users.console_irq": ["irq_before_registration"],
@@ -815,6 +818,14 @@ def run_guest(cfg: Artifacts, workload: str, directory: Path, settings: dict, it
                         process.stdin.write(b"ab")
                         process.stdin.flush()
                         serial_inputs.append({"case": state.active, "hex": "6162"})
+                    if (
+                        workload == "users.signals"
+                        and state.active == "console_restarted"
+                        and line == b"MOSS_CONSOLE_RESTART_READY"
+                    ):
+                        process.stdin.write(b"r")
+                        process.stdin.flush()
+                        serial_inputs.append({"case": state.active, "hex": "72"})
                     if (
                         workload == "users.console_irq"
                         and state.active == "irq_before_registration"

@@ -636,6 +636,10 @@ struct Thread {
   // Nested kernel exceptions must not replace this user frame.
   moss::abi::TrapFrame *trap_frame{nullptr};
   VirtAddr active_signal_frame{0};
+  // A caught signal can restart only the syscall interrupted at this return checkpoint.
+  u64 restart_syscall_number{0};
+  u64 restart_syscall_arg0{0};
+  bool restart_syscall_pending{false};
 
   // RT run queue intrusive list pointer (next task at same priority).
   // Used by RtRunqueue; nullptr when not enqueued in an RT queue.

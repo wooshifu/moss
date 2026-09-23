@@ -1934,7 +1934,8 @@ static volatile int timer_handler_called;
 static void timer_signal_handler(int signo) { timer_handler_called = signo == SIGUSR1; }
 
 static unsigned long timer_signal_interrupted(unsigned mode) {
-  struct sigaction_t action = {(unsigned long)timer_signal_handler, 0, 0};
+  // POSIX sleep calls report EINTR even when the handler requests SA_RESTART.
+  struct sigaction_t action = {(unsigned long)timer_signal_handler, 0, SA_RESTART};
   timer_handler_called = 0;
   if (moss_sigaction(SIGUSR1, &action, 0) != 0) {
     return 1;
@@ -2258,8 +2259,16 @@ static int test_wait_registration(void) {
   return !prepared || waited != child || status != (42 << 8) || observed != 1;
 }
 
-static int test_wait_interrupted(void) {
-  struct sigaction_t action = {(unsigned long)sigusr1_handler, 0, 0};
+// A restarted wait cannot release the child after waitpid returns.
+static volatile long wait_restart_release_fd = -1;
+static void wait_restart_handler(int signo) {
+  const unsigned char byte = 37;
+  handler_called = signo == SIGUSR1 && write((int)wait_restart_release_fd, &byte, 1) == 1;
+}
+
+static int wait_signal_test(int restart) {
+  struct sigaction_t action = {(unsigned long)(restart ? wait_restart_handler : sigusr1_handler), 0,
+                               restart ? SA_RESTART : 0};
   handler_called = 0;
   if (moss_sigaction(SIGUSR1, &action, 0) != 0) {
     return 1;
@@ -2268,6 +2277,7 @@ static int test_wait_interrupted(void) {
   if (pipe(release) != 0) {
     return 1;
   }
+  wait_restart_release_fd = release[1];
   long parent = getpid();
   long child = fork();
   if (child == 0) {
@@ -2291,18 +2301,29 @@ static int test_wait_interrupted(void) {
     close((int)release[1]);
     return 1;
   }
-  // EINTR must leave the still-running child's status untouched and reap it later.
+  // EINTR must leave the still-running child's status untouched. With
+  // SA_RESTART, the handler releases the child and waitpid reaps it itself.
   const int status_canary = 0x5a5a5a5a;
   int status = status_canary;
   long result = waitpid(child, &status, 0);
-  int errors = result != -4 || status != status_canary || handler_called != 1;
-  const unsigned char byte = 37;
-  errors |= write((int)release[1], &byte, 1) != 1;
+  int errors = handler_called != 1;
+  if (restart) {
+    errors |= result != child || status != (42 << 8);
+  } else {
+    errors |= result != -4 || status != status_canary;
+    const unsigned char byte = 37;
+    errors |= write((int)release[1], &byte, 1) != 1;
+  }
   close((int)release[1]);
-  status = 0;
-  errors |= waitpid(child, &status, 0) != child || status != (42 << 8);
+  if (!restart) {
+    status = 0;
+    errors |= waitpid(child, &status, 0) != child || status != (42 << 8);
+  }
   return errors;
 }
+
+static int test_wait_interrupted(void) { return wait_signal_test(0); }
+static int test_wait_restarted(void) { return wait_signal_test(1); }
 
 // Test 4: sigprocmask — block and unblock
 static int test_sigprocmask(void) {
@@ -2493,7 +2514,7 @@ static int test_invalid_arguments(void) {
   CHECK(syscall2(SYS_KILL, getpid(), (1L << 32) + SIGUSR1) == -22);
   CHECK(moss_sigaction(SIGUSR1, (void *)0x1000, 0) == -14);
   CHECK(moss_sigaction(SIGUSR1, &sa, (void *)0x1000) == -14);
-  sa.flags = 8; // Unsupported native action bit; only SA_ONSTACK is accepted.
+  sa.flags = 8; // Unsupported native action bit.
   CHECK(moss_sigaction(SIGUSR1, &sa, 0) == -22);
   unsigned long bits = (1UL << SIGKILL) | (1UL << SIGSTOP), old = 0;
   CHECK(sigprocmask(SIG_SETMASK, &bits, 0) == 0);
@@ -2907,7 +2928,14 @@ static int test_pipe_sigpipe(void) {
   return errors;
 }
 
-enum pipe_disposition { PIPE_CAUGHT, PIPE_IGNORED, PIPE_BLOCKED };
+enum pipe_disposition { PIPE_CAUGHT, PIPE_IGNORED, PIPE_BLOCKED, PIPE_RESTART };
+
+// A restarted read/write releases its peer from the handler, before returning.
+static volatile long pipe_restart_ack_fd = -1;
+static void pipe_restart_handler(int signo) {
+  const unsigned char byte = 37;
+  handler_called = signo == SIGUSR1 && write((int)pipe_restart_ack_fd, &byte, 1) == 1;
+}
 
 static int pipe_signal_wait(int writing, enum pipe_disposition disposition) {
   // Validation syscall 511, operation 39 reports a queued pipe waiter. A
@@ -2923,11 +2951,15 @@ static int pipe_signal_wait(int writing, enum pipe_disposition disposition) {
     return 1;
   }
   long acknowledgement[2];
-  const int acknowledge = coordinated && disposition == PIPE_CAUGHT;
+  const int caught = disposition == PIPE_CAUGHT || disposition == PIPE_RESTART;
+  const int acknowledge = coordinated && caught;
   if (acknowledge && pipe(acknowledgement) != 0) {
     close((int)ends[0]);
     close((int)ends[1]);
     return 1;
+  }
+  if (disposition == PIPE_RESTART && acknowledge) {
+    pipe_restart_ack_fd = acknowledgement[1];
   }
   // One 4096-byte pipe capacity makes the next single-byte write block.
   // The byte-index pattern detects changed or misplaced bytes across the wait.
@@ -2935,7 +2967,8 @@ static int pipe_signal_wait(int writing, enum pipe_disposition disposition) {
   for (unsigned i = 0; i < sizeof(data); ++i) {
     data[i] = (unsigned char)i;
   }
-  struct sigaction_t action = {(unsigned long)quiet_handler, 0, 0};
+  struct sigaction_t action = {(unsigned long)(disposition == PIPE_RESTART ? pipe_restart_handler : quiet_handler), 0,
+                               disposition == PIPE_RESTART ? SA_RESTART : 0};
   if (disposition == PIPE_IGNORED) {
     action.handler = SIG_IGN;
   }
@@ -3019,11 +3052,13 @@ static int pipe_signal_wait(int writing, enum pipe_disposition disposition) {
     errors |= nanosleep_ns(&prepare_delay) != 0;
   }
   long result = writing ? write((int)ends[1], data, 1) : read((int)ends[0], data, 1);
-  errors |= result != (disposition == PIPE_CAUGHT ? -4 : 1) || handler_called != (disposition == PIPE_CAUGHT);
+  errors |= result != (disposition == PIPE_CAUGHT ? -4 : 1) || handler_called != caught;
   errors |= current_cpu() != 0;
   if (acknowledge) {
-    const unsigned char observed = 37;
-    errors |= write((int)acknowledgement[1], &observed, 1) != 1;
+    if (disposition != PIPE_RESTART) {
+      const unsigned char observed = 37;
+      errors |= write((int)acknowledgement[1], &observed, 1) != 1;
+    }
     errors |= close((int)acknowledgement[1]) != 0;
   }
   if (!writing && result == -4) {
@@ -3046,6 +3081,12 @@ static int test_pipe_interrupted(void) {
   return errors;
 }
 
+static int test_pipe_restarted(void) {
+  int errors = pipe_signal_wait(0, PIPE_RESTART);
+  errors |= pipe_signal_wait(1, PIPE_RESTART);
+  return errors;
+}
+
 static int test_pipe_noninterrupting_signals(void) {
   int errors = pipe_signal_wait(0, PIPE_IGNORED);
   errors |= pipe_signal_wait(1, PIPE_IGNORED);
@@ -3065,7 +3106,7 @@ static int test_pipe_partial_interrupt(void) {
   for (unsigned i = 0; i < sizeof(data); ++i) {
     data[i] = (unsigned char)i;
   }
-  struct sigaction_t action = {(unsigned long)quiet_handler, 0, 0};
+  struct sigaction_t action = {(unsigned long)quiet_handler, 0, SA_RESTART};
   handler_called = 0;
   int errors = moss_sigaction(SIGUSR1, &action, 0) != 0;
   long parent = getpid();
@@ -3151,7 +3192,13 @@ static int test_signal_wakeup_affinity(void) {
   return errors;
 }
 
-static int console_signal_wait(int partial) {
+static void console_restart_handler(int signo) {
+  handler_called = signo == SIGUSR1;
+  // The host injects the byte only after this marker, into the resumed read.
+  print("MOSS_CONSOLE_RESTART_READY\n");
+}
+
+static int console_signal_wait(int partial, int restart) {
   const long fd = open("/dev/console", 0);
   if (fd < 0) {
     return 1;
@@ -3165,7 +3212,8 @@ static int console_signal_wait(int partial) {
       return 1;
     }
   }
-  struct sigaction_t action = {(unsigned long)quiet_handler, 0, 0};
+  struct sigaction_t action = {(unsigned long)(restart ? console_restart_handler : quiet_handler), 0,
+                               restart ? SA_RESTART : 0};
   handler_called = 0;
   unsigned cpu_mask = 1;
   int errors = moss_sigaction(SIGUSR1, &action, 0) != 0;
@@ -3219,10 +3267,11 @@ static int console_signal_wait(int partial) {
   const long result = read((int)fd, bytes, partial ? 2 : 1);
   int status = 0;
   // Moss read returns Linux EINTR (4) when no bytes were copied.
-  errors |= result != (partial ? 1 : -4) || handler_called != 1;
+  errors |= result != (partial || restart ? 1 : -4) || handler_called != 1;
   errors |= partial && bytes[0] != 'k';
+  errors |= restart && bytes[0] != 'r';
   // Console echo has no newline; keep the next validation event on its own line.
-  if (partial) {
+  if (partial || restart) {
     print("\n");
   }
   errors |= waitpid(child, &status, 0) != child || status != 0;
@@ -3230,8 +3279,9 @@ static int console_signal_wait(int partial) {
   return errors;
 }
 
-static int test_console_interrupted(void) { return console_signal_wait(0); }
-static int test_console_partial_interrupt(void) { return console_signal_wait(1); }
+static int test_console_interrupted(void) { return console_signal_wait(0, 0); }
+static int test_console_partial_interrupt(void) { return console_signal_wait(1, 0); }
+static int test_console_restarted(void) { return console_signal_wait(0, 1); }
 
 static int test_console_multi_reader(void) {
   long results[2];
@@ -3442,6 +3492,7 @@ static int signal_case(const char *name) {
                {"sigchld", test_sigchld},
                {"wait_registration", test_wait_registration},
                {"wait_interrupted", test_wait_interrupted},
+               {"wait_restarted", test_wait_restarted},
                {"sigprocmask", test_sigprocmask},
                {"sigaltstack", test_sigaltstack},
                {"sig_ign", test_sig_ign},
@@ -3453,11 +3504,13 @@ static int signal_case(const char *name) {
                {"pid_lifecycle", test_pid_lifecycle},
                {"pipe_sigpipe", test_pipe_sigpipe},
                {"pipe_interrupted", test_pipe_interrupted},
+               {"pipe_restarted", test_pipe_restarted},
                {"pipe_noninterrupting_signals", test_pipe_noninterrupting_signals},
                {"pipe_partial_interrupt", test_pipe_partial_interrupt},
                {"signal_wakeup_affinity", test_signal_wakeup_affinity},
                {"console_interrupted", test_console_interrupted},
                {"console_partial_interrupt", test_console_partial_interrupt},
+               {"console_restarted", test_console_restarted},
                {"console_multi_reader", test_console_multi_reader}};
   if (streq(name, "exec_reset")) {
     return test_exec_reset();
@@ -3739,6 +3792,7 @@ void _start(long argc, const char **argv) {
                            "sigchld",
                            "wait_registration",
                            "wait_interrupted",
+                           "wait_restarted",
                            "sigprocmask",
                            "sigaltstack",
                            "sig_ign",
@@ -3750,11 +3804,13 @@ void _start(long argc, const char **argv) {
                            "pid_lifecycle",
                            "pipe_sigpipe",
                            "pipe_interrupted",
+                           "pipe_restarted",
                            "pipe_noninterrupting_signals",
                            "pipe_partial_interrupt",
                            "signal_wakeup_affinity",
                            "console_interrupted",
                            "console_partial_interrupt",
+                           "console_restarted",
                            "console_multi_reader"};
     const unsigned count = mode == 24 ? 1 : sizeof(cases) / sizeof(cases[0]);
     for (unsigned test = 0; test < count; ++test) {
