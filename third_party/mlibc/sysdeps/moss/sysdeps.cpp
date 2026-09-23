@@ -28,6 +28,7 @@ struct MossSigaction {
 // Native action bits differ from mlibc's public signal.h encoding.
 constexpr unsigned long moss_sa_onstack = 0x1;
 constexpr unsigned long moss_sa_restart = 0x2;
+constexpr unsigned long moss_sa_nocldstop = 0x8;
 
 // Native vfs::Stat layout, not the mlibc public struct stat.
 struct MossStat {
@@ -239,12 +240,13 @@ int Sysdeps<Sigaction>::operator()(int signo, const struct sigaction *action, st
     return ENOSYS;
   MossSigaction input{}, output{};
   if (action) {
-    if (action->sa_flags & ~(SA_ONSTACK | SA_RESTART))
+    if (action->sa_flags & ~(SA_ONSTACK | SA_RESTART | SA_NOCLDSTOP))
       return EINVAL;
     input.handler = reinterpret_cast<unsigned long>(action->sa_handler);
     input.mask = moss_signal_mask(action->sa_mask);
     input.flags = (action->sa_flags & SA_ONSTACK ? moss_sa_onstack : 0) |
-                  (action->sa_flags & SA_RESTART ? moss_sa_restart : 0);
+                  (action->sa_flags & SA_RESTART ? moss_sa_restart : 0) |
+                  (action->sa_flags & SA_NOCLDSTOP ? moss_sa_nocldstop : 0);
   }
   long result = syscall3(SYS_SIGACTION, signo, action ? reinterpret_cast<long>(&input) : 0,
                          previous ? reinterpret_cast<long>(&output) : 0);
@@ -253,7 +255,8 @@ int Sysdeps<Sigaction>::operator()(int signo, const struct sigaction *action, st
     previous->sa_handler = reinterpret_cast<void (*)(int)>(output.handler);
     libc_signal_mask(output.mask, previous->sa_mask);
     previous->sa_flags = (output.flags & moss_sa_onstack ? SA_ONSTACK : 0) |
-                         (output.flags & moss_sa_restart ? SA_RESTART : 0);
+                         (output.flags & moss_sa_restart ? SA_RESTART : 0) |
+                         (output.flags & moss_sa_nocldstop ? SA_NOCLDSTOP : 0);
   }
   return error(result);
 }

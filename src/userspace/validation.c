@@ -2476,11 +2476,21 @@ static int test_stop_continue(void) {
   return 0;
 }
 
-static int test_wait_job_status(void) {
+static int run_wait_job_status(int no_cldstop) {
   enum { WAIT_NOHANG = 1, WAIT_UNTRACED = 2, WAIT_CONTINUED = 8 };
   long ready[2];
   if (pipe(ready) != 0) {
     return 1;
+  }
+  struct sigaction_t previous_chld = {0};
+  if (no_cldstop) {
+    struct sigaction_t action = {(unsigned long)sigchld_handler, 0, SA_NOCLDSTOP};
+    if (moss_sigaction(SIGCHLD, &action, &previous_chld) != 0) {
+      close((int)ready[0]);
+      close((int)ready[1]);
+      return 1;
+    }
+    handler_called = 0;
   }
   const long child = fork();
   if (child == 0) {
@@ -2509,6 +2519,9 @@ static int test_wait_job_status(void) {
   close((int)ready[1]);
   if (child < 0) {
     close((int)ready[0]);
+    if (no_cldstop) {
+      moss_sigaction(SIGCHLD, &previous_chld, 0);
+    }
     return 1;
   }
   unsigned char byte = 0;
@@ -2519,6 +2532,7 @@ static int test_wait_job_status(void) {
   if (!errors) {
     errors |= waitpid(child, (int *)1, WAIT_UNTRACED) != -14;
     errors |= waitpid(child, &status, WAIT_UNTRACED) != child || status != ((SIGSTOP << 8) | 0x7f);
+    errors |= no_cldstop && handler_called != 0;
     status = 0x12345678;
     errors |= waitpid(child, &status, WAIT_NOHANG | WAIT_UNTRACED) != 0 || status != 0x12345678;
     errors |= waitpid(child, &status, WAIT_NOHANG) != 0;
@@ -2528,6 +2542,7 @@ static int test_wait_job_status(void) {
   }
   if (!errors) {
     errors |= waitpid(child, &status, WAIT_CONTINUED) != child || status != 0xffff;
+    errors |= no_cldstop && handler_called != 0;
     status = 0x12345678;
     errors |= waitpid(child, &status, WAIT_NOHANG | WAIT_CONTINUED) != 0 || status != 0x12345678;
     errors |= waitpid(child, &status, WAIT_NOHANG) != 0;
@@ -2538,8 +2553,16 @@ static int test_wait_job_status(void) {
   }
   status = 0;
   errors |= waitpid(child, &status, 0) != child || (!errors && status != (42 << 8));
+  if (no_cldstop) {
+    errors |= handler_called != 1;
+    errors |= moss_sigaction(SIGCHLD, &previous_chld, 0) != 0;
+  }
   return errors != 0;
 }
+
+static int test_wait_job_status(void) { return run_wait_job_status(0); }
+
+static int test_no_cldstop(void) { return run_wait_job_status(1); }
 
 static int test_signal_exit_status(void) {
   for (int mode = 0; mode < 3; ++mode) {
@@ -2755,7 +2778,7 @@ static int test_invalid_arguments(void) {
   CHECK(syscall2(SYS_KILL, getpid(), (1L << 32) + SIGUSR1) == -22);
   CHECK(moss_sigaction(SIGUSR1, (void *)0x1000, 0) == -14);
   CHECK(moss_sigaction(SIGUSR1, &sa, (void *)0x1000) == -14);
-  sa.flags = 8; // Unsupported native action bit.
+  sa.flags = 0x10; // Bit 4 remains outside the supported native action flags.
   CHECK(moss_sigaction(SIGUSR1, &sa, 0) == -22);
   unsigned long bits = (1UL << SIGKILL) | (1UL << SIGSTOP), old = 0;
   CHECK(sigprocmask(SIG_SETMASK, &bits, 0) == 0);
@@ -3735,6 +3758,7 @@ static int signal_case(const char *name) {
                {"cpu_bound_irq", test_cpu_bound_irq},
                {"stop_continue", test_stop_continue},
                {"wait_job_status", test_wait_job_status},
+               {"no_cldstop", test_no_cldstop},
                {"signal_exit_status", test_signal_exit_status},
                {"sigprocmask", test_sigprocmask},
                {"sigaltstack", test_sigaltstack},
@@ -4039,6 +4063,7 @@ void _start(long argc, const char **argv) {
                            "cpu_bound_irq",
                            "stop_continue",
                            "wait_job_status",
+                           "no_cldstop",
                            "signal_exit_status",
                            "sigprocmask",
                            "sigaltstack",
