@@ -1,5 +1,5 @@
 # Validation uses the exact production object modules and bootstrap.
-add_executable(moss.test.elf validation.cpp validation/drivers.cpp)
+add_executable(moss.test.elf validation.cpp validation/core.cpp validation/drivers.cpp validation/memory.cpp validation/smp.cpp validation/smp_vfs.cpp validation/vfs.cpp)
 get_target_property(_kernel_modules moss.elf LINK_LIBRARIES)
 target_link_libraries(
     moss.test.elf

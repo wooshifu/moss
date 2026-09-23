@@ -6,6 +6,8 @@ namespace moss::test::validation {
 using namespace moss::kernel;
 namespace ut = boost::ut;
 
+void register_vfs_cases();
+
 // Store ownership in the real allocations themselves: exhausting the heap
 // must not need another allocation to remember how to release it.
 struct HeapPressure {

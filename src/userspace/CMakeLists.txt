@@ -61,7 +61,11 @@ set(BUSYBOX_ELF ${CMAKE_CURRENT_BINARY_DIR}/mlibc/busybox/busybox)
 if(MOSS_BUILD_TESTS)
     set(LIBC_VALIDATION_ELF ${CMAKE_CURRENT_BINARY_DIR}/mlibc/libc_validation.elf)
     add_userspace_program(validation)
-    target_sources(moss_userspace_validation PRIVATE validation_frame.S)
+    target_sources(
+        moss_userspace_validation
+        PRIVATE validation_frame.S validation/basics.c validation/benchmarks.c validation/exec.c
+                validation/signals.c validation/timers.c validation/uaccess.c validation/vm.c
+    )
     add_userspace_program(validation_child)
 
     add_custom_command(
