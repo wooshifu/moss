@@ -5815,6 +5815,9 @@ void declare_cases() {
     ut::register_test("cancel_in_flight", empty_case);
     ut::register_test("early_wakeup", empty_case);
     ut::register_test("arm_failure_recovery", empty_case);
+    ut::register_test("relative_interrupted", empty_case);
+    ut::register_test("clock_relative_interrupted", empty_case);
+    ut::register_test("clock_absolute_interrupted", empty_case);
   });
   ut::register_suite("users.libc", [] {
     ut::register_test("static_runtime", empty_case);
@@ -6961,6 +6964,28 @@ extern "C" long moss_validation_call(long op, long arg1, [[maybe_unused]] long a
     // than treating the child's readiness or a preceding syscall as proof.
     return thread->state == process::ProcessState::Sleeping && thread->sleep_handoff.load() == 0 && frame &&
            frame->syscall_number() == 13 && frame->argument(0) == static_cast<u64>(arg2);
+  }
+  if (op == 56 && ut::same_id(selection, "users.timers") && arch::get_current_cpu_id() == 1) {
+    const long mode = ut::same_id(active_case, "relative_interrupted")         ? 0
+                      : ut::same_id(active_case, "clock_relative_interrupted") ? 1
+                      : ut::same_id(active_case, "clock_absolute_interrupted") ? 2
+                                                                               : -1;
+    auto child = process::current_process();
+    if (!child || mode != arg2 || arg1 != static_cast<long>(child->parent_pid())) {
+      return -1;
+    }
+    auto parent = process::g_process_manager->find_process(child->parent_pid());
+    auto *thread = parent ? parent->get_main_thread() : nullptr;
+    if (!thread) {
+      return -1;
+    }
+    containers::LockGuard<containers::IrqSpinLock> guard(thread->sleep_lock);
+    auto *frame = thread->trap_frame;
+    // Native syscall numbers 86/87 are nanosleep/clock_nanosleep. Inspect the
+    // actual frame after its sleep handoff completes, not a guessed delay.
+    return thread->state == process::ProcessState::Sleeping && thread->sleep_handoff.load() == 0 && frame &&
+           frame->syscall_number() == (mode == 0 ? 86U : 87U) &&
+           (mode == 0 || frame->argument(1) == static_cast<u64>(mode == 2));
   }
   if (op == 39 && ut::same_id(selection, "users.signals") &&
       (ut::same_id(active_case, "pipe_interrupted") || ut::same_id(active_case, "pipe_noninterrupting_signals") ||

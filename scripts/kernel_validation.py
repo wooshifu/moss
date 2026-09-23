@@ -223,6 +223,9 @@ CATALOG = {
         "cancel_in_flight",
         "early_wakeup",
         "arm_failure_recovery",
+        "relative_interrupted",
+        "clock_relative_interrupted",
+        "clock_absolute_interrupted",
     ],
     "users.signals": [
         "basic_handler",

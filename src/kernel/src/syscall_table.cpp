@@ -2337,45 +2337,58 @@ static void nanosleep_wake_callback(void *data) noexcept {
 }
 
 // Both sleep syscalls use the same architecture-independent context switch.
-static long sleep_until(u64 deadline) noexcept {
+static long sleep_until(u64 deadline, u64 remaining_addr = 0) noexcept {
   using namespace moss::kernel::process;
-  if (deadline <= timer::TimerSubsystem::instance().now_ns()) {
-    return 0;
-  }
+  while (true) {
+    const u64 now = timer::TimerSubsystem::instance().now_ns();
+    if (deadline <= now) {
+      return 0;
+    }
+    Thread *cur = CfsScheduler::get_current_task();
+    if (!cur || !g_scheduler) {
+      return -errc::ESRCH;
+    }
+    if (moss::abi::bridge::moss_io_wait_interrupted()) {
+      if (remaining_addr != 0) {
+        const u64 remaining_ns = deadline - now;
+        if (copy_to_user(remaining_addr, &remaining_ns, sizeof(remaining_ns)) < 0) {
+          return -errc::EFAULT;
+        }
+      }
+      return -errc::EINTR;
+    }
 
-  Thread *cur = CfsScheduler::get_current_task();
-  if (!cur || !g_scheduler) {
-    return -errc::ESRCH;
+    const bool restore_irqs = arch::interrupts_enabled();
+    arch::disable_interrupts();
+    // Dequeue before publishing the timer, and defer any remote wakeup until
+    // bootstrap owns our saved context. The helper also catches signals that
+    // arrive between the pending check and publishing Sleeping.
+    (void)moss::abi::bridge::moss_prepare_io_wait();
+    timer::HrTimer sleep_timer;
+    sleep_timer.init(timer::TimerMode::OneShot, nanosleep_wake_callback, cur);
+    auto armed = sleep_timer.start(deadline);
+    if (!armed) {
+      // Roll an unsuccessful arm back through the same handoff; the prepared
+      // thread must not return to userspace while still marked/dequeued asleep.
+      g_scheduler->task_wakeup(cur, cur->wake_cpu);
+    } else {
+      moss_validation_sleep_armed(&sleep_timer);
+    }
+    g_scheduler->commit_sleep();
+    // A remote callback must release its reference before this stack disappears.
+    sleep_timer.cancel_sync();
+    if (restore_irqs) {
+      arch::enable_interrupts();
+    }
+    if (!armed) {
+      return armed.error() == ErrorCode::ResourceExhausted ? -errc::ENOMEM : -errc::EINVAL;
+    }
+    // Signals, timer expiry and unrelated wakeups share the same scheduler path.
+    // Recheck the deadline and pending signal before reporting completion.
   }
-
-  const bool restore_irqs = arch::interrupts_enabled();
-  arch::disable_interrupts();
-  // Dequeue before publishing the timer, and defer any remote wakeup until
-  // bootstrap owns our saved context. Local IRQ masking alone is not enough.
-  g_scheduler->prepare_sleep();
-  timer::HrTimer sleep_timer;
-  sleep_timer.init(timer::TimerMode::OneShot, nanosleep_wake_callback, cur);
-  auto armed = sleep_timer.start(deadline);
-  if (!armed) {
-    // Roll an unsuccessful arm back through the same handoff; the prepared
-    // thread must not return to userspace while still marked/dequeued asleep.
-    g_scheduler->task_wakeup(cur, cur->wake_cpu);
-  } else {
-    moss_validation_sleep_armed(&sleep_timer);
-  }
-  g_scheduler->commit_sleep();
-  // A remote callback must release its reference before this stack disappears.
-  sleep_timer.cancel_sync();
-  if (restore_irqs) {
-    arch::enable_interrupts();
-  }
-  if (armed) {
-    return 0;
-  }
-  return armed.error() == ErrorCode::ResourceExhausted ? -errc::ENOMEM : -errc::EINVAL;
 }
 
-long sys_nanosleep(long ns_addr, long /*remaining*/, long /*unused*/, long /*unused*/, long /*unused*/,
+long sys_nanosleep(long ns_addr, long remaining_addr, long /*unused*/, long /*unused*/, long /*unused*/,
                    long /*unused*/) noexcept {
   u64 duration = 0;
   if (copy_from_user(&duration, static_cast<u64>(ns_addr), sizeof(duration)) < 0) {
@@ -2385,14 +2398,14 @@ long sys_nanosleep(long ns_addr, long /*remaining*/, long /*unused*/, long /*unu
   if (duration > ~u64{0} - now) {
     return -errc::EINVAL;
   }
-  return sleep_until(now + duration);
+  return sleep_until(now + duration, static_cast<u64>(remaining_addr));
 }
 
 // clock_nanosleep(clockid, flags, ns_addr, remaining)
 // clockid: 0 = CLOCK_REALTIME, 1 = CLOCK_MONOTONIC (we treat both the same)
 // flags:   0 = relative sleep,  1 = TIMER_ABSTIME (absolute deadline)
 // ns_addr: pointer to u64 nanoseconds (relative duration or absolute timestamp)
-long sys_clock_nanosleep(long clockid, long flags, long ns_addr, long /*remaining*/, long /*unused*/,
+long sys_clock_nanosleep(long clockid, long flags, long ns_addr, long remaining_addr, long /*unused*/,
                          long /*unused*/) noexcept {
   // Only support CLOCK_REALTIME (0) and CLOCK_MONOTONIC (1)
   if (clockid < 0 || clockid > 1 || (flags != 0 && flags != 1)) {
@@ -2414,7 +2427,7 @@ long sys_clock_nanosleep(long clockid, long flags, long ns_addr, long /*remainin
     }
     target_ns += now;
   }
-  return sleep_until(target_ns);
+  return sleep_until(target_ns, flags == 0 ? static_cast<u64>(remaining_addr) : 0);
 }
 
 // ── System monitoring: topinfo ──────────────────────────────

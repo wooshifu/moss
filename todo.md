@@ -1,6 +1,6 @@
 # MOSS 内核能力与待办
 
-> 当前源码复核：2026-09-23，`604fe85`；该次文档复核未重跑 QEMU。之后的当前九预设运行验收见 [moss-todo.md](moss-todo.md) 第 3.59～3.60 节。历史实现与实测保留原日期；源码与旧报告的对应关系见第 3.41 节。
+> 当前源码复核：2026-09-23，`604fe85`；该次文档复核未重跑 QEMU。之后的当前九预设运行验收见 [moss-todo.md](moss-todo.md) 第 3.59～3.61 节。历史实现与实测保留原日期；源码与旧报告的对应关系见第 3.41 节。
 > 本文取代旧清单中“完成即可靠”“x86/RISC-V 64 仅为启动桩”的描述。
 > 审计问题的原始证据、当前状态及完整验收条件见 [moss-todo.md](moss-todo.md)；MOSS-001～032 沿用原编号，不重新编号。
 
@@ -28,7 +28,7 @@ MOSS 当前是 C++26 freestanding 的模块化单体研究内核。ARM64、RV64�
 
 ### 已完成的构建与运行拆分
 
-- [x] 架构预设共 9 个：`{arm64,riscv64,x64}-{debug,release,relwithdebinfo}`；每个 workflow 为 configure → build → matching CTest preset（`b57422d`）。3.40 的九 preset **43/43 CTest** 及 16 CPU/Sv39/GICv3 同镜像补验是当时记录；本轮九预设重新通过 **43/43 CTest**，见 3.60。3.34～3.40 的初始失败、默认超时与受控变异失败仍保留。
+- [x] 架构预设共 9 个：`{arm64,riscv64,x64}-{debug,release,relwithdebinfo}`；每个 workflow 为 configure → build → matching CTest preset（`b57422d`）。3.40 的九 preset **43/43 CTest** 及 16 CPU/Sv39/GICv3 同镜像补验是当时记录；本轮九预设重新通过 **43/43 CTest**，见 3.61。3.34～3.40 的初始失败、默认超时与受控变异失败仍保留。
 - [x] 独立 configure/build 不查找、不启动 QEMU；workflow 的 test 阶段通过独立 runner 使用 QEMU。
 - [x] CMake 产出版本化、相对路径的 `moss-artifacts.json`，只描述架构、构建与产物；机器、CPU、RAM、SMP、固件选项由 runner 决定。
 - [x] 删除旧 `*-qemu-*` 预设、生成的 QEMU wrapper/config 和内核平台默认地址；以启动信息填充 `platform::hardware`。
@@ -178,14 +178,16 @@ uv run qemu.py --manifest build/arm64-debug/moss-artifacts.json
   - [x] waitpid 被捕获信号唤醒后返回 EINTR，保留未写的 status 和可重试回收；旧实现超时红例、九预设 `users.signals` 各 21/21、完整 CTest 43/43（3.60）。
   - [ ] 3.14～3.15 的 ARM64 Debug `containers.smp` Zombie 超时及 CPU3 WFE 现场保留为历史失败；当前镜像同配置 100 次通过且已有逐次重放脚本，旧故障因果仍未确认，不写成当前稳定超时（3.58）。
   - [x] 独立诊断确认本机 QEMU MTTCG 事件已置位但宿主线程仍睡眠；不加载 Moss 也能稳定复现，仅补宿主 kick 即继续。该诊断不算内核修复或 SMP 验收，正式 runner 模式不变（3.15）。
-- [ ] **MOSS-019（部分修复）**：三架构 nanosleep、timer 容量错误、同步取消和 deadline 溢出已有实现；补信号中断后的 sleep 语义和更广跨 CPU 定时交错。
+- [ ] **MOSS-019（部分修复）**：三架构 nanosleep、timer 容量错误、同步取消、deadline 溢出及捕获信号的 EINTR 已实现；补更广跨 CPU 定时交错。
   - [x] `sleep_until()` 以 prepare/arm/commit 交接睡眠；arm 失败回滚，返回前同步取消栈上 timer（3.41）。
   - [x] `clock_getres` 以原生 `u64` 纳秒 ABI 实现：支持 clock-id 0/1、以 `ceil(10^9 / frequency_hz)` 报告硬件 tick，拒绝空输出指针和其他 clock-id；用例已进入默认 `users.timers`，最近九预设矩阵包含它。2026-09-20 的 ARM64 Debug 5/5 是较早记录。
-- [ ] **MOSS-020（部分修复）**：统一 syscall/IRQ 返回信号检查；结果/handler 参数写回、SIGCHLD 基本投递、pipe/console 信号中断及 wait EINTR 已有覆盖；补 CPU-bound、STOP/CONT、nanosleep 中断和 SA_RESTART 语义。
+  - [x] `nanosleep`/`clock_nanosleep` 在真实跨 CPU SIGUSR1 唤醒后返回 EINTR；相对调用写剩余纳秒，绝对调用不改 remaining；旧实现断言失败，九预设 `users.timers` 各 10/10（3.61）。
+- [ ] **MOSS-020（部分修复）**：统一 syscall/IRQ 返回信号检查；结果/handler 参数写回、SIGCHLD 基本投递、pipe/console、wait 和 nanosleep 信号中断已有覆盖；补 CPU-bound、STOP/CONT 和 SA_RESTART 语义。
   - [x] 统一用户返回检查点、结果先写回及准确终止 signo；三 ISA 基本信号与 handler 嵌套 syscall 后的 GP/返回值恢复通过（`0e88344`，3.19）。
   - [x] 默认 `users.signals` 已有 SIGCHLD、SIGPIPE、pipe/console 中断及部分传输用例；不等于所有阻塞调用已处理信号（3.41）。
   - [x] 被捕获的 SIGUSR1 中断 waitpid 后返回 EINTR，status 未写且子进程仍可 reap；九预设 `users.signals` 21/21（3.60）。
-  - [ ] CPU-bound 的 IRQ 返回投递、STOP/CONT、nanosleep 中断与 SA_RESTART 语义。
+  - [x] 捕获信号中断相对/绝对 nanosleep 的返回与 remaining 语义；九预设 `users.timers` 10/10（3.61）。
+  - [ ] CPU-bound 的 IRQ 返回投递、STOP/CONT 与 SA_RESTART 语义。
 - [x] **MOSS-021（3.23 已关闭）**：信号状态由 `Process` 拥有；fork 复制 disposition、线程 mask/altstack，exec 重置非忽略 disposition 与 altstack，退出随进程回收。
   - [x] 继承/exec-reset 用例及跨越原 256 槽边界的 300 次生命周期用例在当前三架构 Debug/Release 均通过。
 - [ ] **MOSS-022（实现已修复，验收部分）**：进入 Zombie 前关闭 FD、析构兜底及 exec 继承已接通；专项 warmup 在 wait/reap 前观测最后 writer 关闭后的 EOF。
