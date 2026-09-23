@@ -1489,6 +1489,15 @@ public:
             log::klog::debug("[CPU{}][TID={}] task running", cpu_id, static_cast<u32>(next_task->tid));
           }
 
+#if defined(MOSS_ARCH_X64)
+          // A LAPIC one-shot can expire while masked in idle. Unmasking it does
+          // not reload the count, so arm the secondary CPU before user dispatch.
+          // CPU 0's timer is programmed by the shared HrTimer queue instead.
+          if (cpu_id != 0) {
+            auto &clock = timer::TimerSubsystem::instance().clocksource();
+            hal::timer::set_compare(hal::timer::read_counter() + clock.ns_to_cycles(cfs_params::SCHED_LATENCY_NS));
+          }
+#endif
           // Selection already removed the task before exposing its context
           // to the dispatch path; a remote migration cannot claim it now.
           context_switch_to_task(next_task);

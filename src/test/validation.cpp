@@ -5504,6 +5504,13 @@ bool early_sleep_woken = true;
 ProcessId wait_exit_parent = INVALID_PROCESS_ID;
 ProcessId wait_exit_child = INVALID_PROCESS_ID;
 u32 wait_exit_phase = 0;
+ProcessId cpu_bound_probe_pid = INVALID_PROCESS_ID;
+u64 cpu_bound_probe_start = 0;
+u64 cpu_bound_probe_end = 0;
+u32 cpu_bound_irq_seen = 0;
+// Validation control IDs shared with the CPU-bound userspace case.
+constexpr long CPU_BOUND_ARM_PROBE = 60;
+constexpr long CPU_BOUND_CHECK_PROBE = 61;
 bool dispatch_boundary_checked = false;
 
 void failing_case() { ut::expect(false); }
@@ -5924,6 +5931,7 @@ void declare_cases() {
     ut::register_test("wait_registration", empty_case);
     ut::register_test("wait_interrupted", empty_case);
     ut::register_test("wait_restarted", empty_case);
+    ut::register_test("cpu_bound_irq", empty_case);
     ut::register_test("sigprocmask", empty_case);
     ut::register_test("sigaltstack", empty_case);
     ut::register_test("sig_ign", empty_case);
@@ -6404,6 +6412,21 @@ extern "C" void moss_validation_dispatch_selected() noexcept {
     dispatch_boundary_checked = true;
     // A timer IRQ must not consume this cached selection before it is dispatched.
     ut::expect(!arch::interrupts_enabled());
+  }
+}
+
+extern "C" void moss_validation_user_return(void *raw_frame) noexcept {
+  const auto pid = __atomic_load_n(&cpu_bound_probe_pid, __ATOMIC_ACQUIRE);
+  if (pid == INVALID_PROCESS_ID || !ut::same_id(active_case, "cpu_bound_irq")) {
+    return;
+  }
+  auto *thread = process::CfsScheduler::get_current_task();
+  auto &frame = *static_cast<moss::abi::TrapFrame *>(raw_frame);
+  // The child performs no syscall inside this registered PC interval. Seeing
+  // its PC here proves that an IRQ used the common user-return checkpoint.
+  if (thread && thread->owner_pid == pid && arch::get_current_cpu_id() == 1 &&
+      frame.pc >= cpu_bound_probe_start && frame.pc < cpu_bound_probe_end) {
+    __atomic_fetch_add(&cpu_bound_irq_seen, 1U, __ATOMIC_RELEASE);
   }
 }
 
@@ -7009,6 +7032,26 @@ extern "C" long moss_validation_call(long op, long arg1, [[maybe_unused]] long a
     // than treating the child's readiness or a preceding syscall as proof.
     return thread->state == process::ProcessState::Sleeping && thread->sleep_handoff.load() == 0 && frame &&
            frame->syscall_number() == 13 && frame->argument(0) == static_cast<u64>(arg2);
+  }
+  if (ut::same_id(selection, "users.signals") && ut::same_id(active_case, "cpu_bound_irq")) {
+    if (op == CPU_BOUND_ARM_PROBE && arch::get_current_cpu_id() == 1 && arg1 > 0 && arg2 > arg1) {
+      auto child = process::current_process();
+      if (!child) {
+        return -1;
+      }
+      cpu_bound_probe_start = static_cast<u64>(arg1);
+      cpu_bound_probe_end = static_cast<u64>(arg2);
+      __atomic_store_n(&cpu_bound_irq_seen, 0U, __ATOMIC_RELEASE);
+      __atomic_store_n(&cpu_bound_probe_pid, child->pid(), __ATOMIC_RELEASE);
+      return 1;
+    }
+    if (op == CPU_BOUND_CHECK_PROBE && affinity_valid() && arg1 == static_cast<long>(cpu_bound_probe_pid)) {
+      if (__atomic_load_n(&cpu_bound_irq_seen, __ATOMIC_ACQUIRE) < 2) {
+        return 0;
+      }
+      __atomic_store_n(&cpu_bound_probe_pid, INVALID_PROCESS_ID, __ATOMIC_RELEASE);
+      return 1;
+    }
   }
   if (op == 56 && ut::same_id(selection, "users.timers") && arch::get_current_cpu_id() == 1) {
     const long mode = ut::same_id(active_case, "relative_interrupted")         ? 0

@@ -2325,6 +2325,57 @@ static int wait_signal_test(int restart) {
 static int test_wait_interrupted(void) { return wait_signal_test(0); }
 static int test_wait_restarted(void) { return wait_signal_test(1); }
 
+enum { CPU_BOUND_ARM_PROBE = 60, CPU_BOUND_CHECK_PROBE = 61 };
+// Keep the two labels around the actual user loop in every build mode; the
+// validation kernel admits the signal only after an IRQ has returned there.
+__attribute__((optnone)) static int test_cpu_bound_irq(void) {
+  long ready[2];
+  if (pipe(ready) != 0) {
+    return 1;
+  }
+  const long child = fork();
+  if (child == 0) {
+    close((int)ready[0]);
+    unsigned cpu_mask = 2;
+    struct sigaction_t action = {(unsigned long)sigusr1_handler, 0, 0};
+    handler_called = 0;
+    if (syscall3(20, 0, sizeof(cpu_mask), (long)&cpu_mask) != 0 ||
+        moss_sigaction(SIGUSR1, &action, 0) != 0 ||
+        control(CPU_BOUND_ARM_PROBE, (long)&&spin_begin, (long)&&spin_end) != 1) {
+      _exit(98);
+    }
+    const unsigned char byte = 37;
+    if (write((int)ready[1], &byte, 1) != 1 || close((int)ready[1]) != 0) {
+      _exit(98);
+    }
+  spin_begin:
+    while (!handler_called) {
+      __asm__ volatile("" ::: "memory");
+    }
+  spin_end:
+    _exit(handler_called == 1 && current_cpu() == 1 ? 42 : 98);
+  }
+  close((int)ready[1]);
+  if (child < 0) {
+    close((int)ready[0]);
+    return 1;
+  }
+  unsigned char byte = 0;
+  int errors = read((int)ready[0], &byte, 1) != 1 || byte != 37;
+  close((int)ready[0]);
+  long observed;
+  while (!errors && (observed = control(CPU_BOUND_CHECK_PROBE, child, 0)) == 0) {
+    sched_yield(); // Require repeated IRQ returns, not a single page fault.
+  }
+  if (errors || observed != 1 || kill(child, SIGUSR1) != 0) {
+    kill(child, SIGKILL);
+    errors = 1;
+  }
+  int status = 0;
+  errors |= waitpid(child, &status, 0) != child || (!errors && status != (42 << 8));
+  return errors;
+}
+
 // Test 4: sigprocmask — block and unblock
 static int test_sigprocmask(void) {
   print("\n=== Test 4: sigprocmask block/unblock ===\n");
@@ -3493,6 +3544,7 @@ static int signal_case(const char *name) {
                {"wait_registration", test_wait_registration},
                {"wait_interrupted", test_wait_interrupted},
                {"wait_restarted", test_wait_restarted},
+               {"cpu_bound_irq", test_cpu_bound_irq},
                {"sigprocmask", test_sigprocmask},
                {"sigaltstack", test_sigaltstack},
                {"sig_ign", test_sig_ign},
@@ -3793,6 +3845,7 @@ void _start(long argc, const char **argv) {
                            "wait_registration",
                            "wait_interrupted",
                            "wait_restarted",
+                           "cpu_bound_irq",
                            "sigprocmask",
                            "sigaltstack",
                            "sig_ign",

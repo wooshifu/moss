@@ -28,6 +28,7 @@ extern "C" {
                                         [[maybe_unused]] long arg2) noexcept {
   return -38; // Native ENOSYS: production images do not implement validation calls.
 }
+[[gnu::weak]] void moss_validation_user_return([[maybe_unused]] void *raw_frame) noexcept {}
 
 // Kernel main entry (called from boot assembly)
 [[noreturn]] void kernel_main(void) noexcept {
@@ -207,6 +208,7 @@ void user_return_handler(void *raw_frame) noexcept {
   }
   auto *previous = thread->trap_frame;
   thread->trap_frame = &frame;
+  moss_validation_user_return(raw_frame);
   u32 signo = 0;
   if (signal_pending(thread)) {
     signo = do_signal_checkpoint(thread);
