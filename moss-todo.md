@@ -1,8 +1,8 @@
 # Moss 内核设计与实现审计报告及修复清单
 
 > 原始审计：2026-09-05，源码基线：`e0e2bbc920b66f91e18802a46106ca5811e588b1`。
-> 状态复核：2026-09-21，提交基线：`0234427`。第 3.4～3.20 节保留此前实测及当时状态；最新 VFS/信号 uaccess、PVH/initrd、进程生命周期、brk/VMA、exec 事务、ELF LoadPlan、能力契约、内核映射隔离、COW OOM、地址空间持有读者、软件 VM 事务、同步页租约、跨 CPU TLB 失效/双发布者交错、活动硬件 root 拥有权、首次 CPU 注册交错及恶意信号帧/备用栈进展见第 3.21～3.40 节。本文与 [todo.md](todo.md) 同步。
-> 第 3.1～3.2 节保留原始运行证据；第 5～9 节未标新日期的“位置与事实”、地址和行号属于原始审计，不能当作当前仍然失败的运行结果。当前状态以第 4 节及各项更新说明为准。
+> 当前源码复核：2026-09-23，`604fe85`；最近一次记录的九预设运行验收属于 2026-09-21 的第 3.40 节，本次文档复核未重跑 QEMU。第 3.4～3.20 节保留此前实测及当时状态；后续实现与运行记录见第 3.21～3.40 节，当前源码与历史证据的对应关系见第 3.41 节。本文与 [todo.md](todo.md) 同步。
+> 第 3.1～3.2 节保留原始运行证据；第 5～9 节未标新日期的“位置与事实”、地址和行号属于原始审计，不能当作当前仍然失败的运行结果。带日期的“工作区”指当时的验证状态，不表示当前仍未提交；当前状态以第 4 节及各项更新说明为准。
 
 ## 1. 当前结论
 
@@ -10,11 +10,11 @@ Moss 已具备三架构真实启动、SMP、用户态与进程执行路径。后
 
 但“能启动、能完成一次 fork/exec/wait”仍不等于可靠的多架构研究内核：
 
-1. **隔离缺陷尚未全部闭合。** 已修复内核映射 USER，并收紧三架构最终内核 W^X；syscall 0 原始 UART 指针旁路已删除，用户地址域/VMA 准入与跨 VMA 权限校验已补。`0e88344` 改为原生 TrapFrame、按 ISA 净化信号返回状态；3.20～3.21 补共享用户复制的异常 fixup、VFS/信号迁移与缺页 OOM 回归，3.31 补受控 COW OOM、重试和回收验收，3.32 补地址空间持有快照、替换/摘除与控制块 OOM 回滚，3.33 补软件 VM 事务和双 CPU COW/demand 竞争，3.34 补同步 uaccess 版本绑定和页租约。恶意信号帧全覆盖、活动共享 root、远程 TLB、异步页 pin 和完整并发事务仍未完成验收。
-2. **部分基础修复已落地，但所有权验收未完成。** `040d773` 已验证 heap/PFA 对齐与释放、保留洞和多 bank 耗尽、当前布局及页表/元数据哨兵。`4cde9b3` 修复指针发布误删可达节点；当前工作区已删除伪 RCU，迁移锁保护的拥有型容器并补持有读者、重入与双 CPU 交错测试。IRQ/驱动/IPC 复合生命周期、页引用并发及完整启动保留集合仍待完成。
-3. **跨架构入口已统一，完整进程语义仍待补。** 三 ISA 用单一原生帧指针传递 syscall，fork 不再猜内核栈偏移，信号返回桩由各 ISA 汇编产生；3.24～3.26 已闭合当前单地址空间模型下的 brk、exec 事务和受支持静态 ELF LoadPlan。GP/条件码和基本信号往返通过，不代表全部 FP/TLS 继承、CPU-bound 信号、nanosleep、动态加载、共享 LOAD 页或共享地址空间 VM 并发已经可靠。
-4. **旧停滞记录应保留，不能直接当作当前复现。** 退出已改为经 `context_switch` 返回活跃 bootstrap 栈，不再在 C++ 帧中直接修改 SP。第 28 次停滞的原版本对照、1,000 次生命周期与资源稳定性尚无完整关闭证据。
-5. **测试已从基础语言检查升级为真实内核检查，覆盖仍有边界。** 三架构已有功能、框架自检和 Release 基准证据；默认套件包含 COW 权限及 OOM、原生帧、输入/输出缺页 OOM、跨页短 I/O 和信号复制故障回归，但未完成恶意信号帧、全部 uaccess 故障、长循环或确定性调度竞争验收。
+1. **隔离缺陷尚未全部闭合。** 已修复内核映射 USER，并收紧三架构最终内核 W^X；syscall 0 原始 UART 指针旁路已删除，用户地址域/VMA 准入与跨 VMA 权限校验已补。`0e88344` 改为原生 TrapFrame、按 ISA 净化信号返回状态；3.20～3.34 补共享用户复制、受控 COW OOM、地址空间持有、软件 VM 事务和同步页租约。3.35～3.39 补三架构 TLB 失效、活动硬件 root 拥有权及首次 CPU 注册交错；3.40 已关闭原生信号帧/备用栈的恶意输入验收。共享 exec 的线程/root 协调、异步长期页 pin 和更多并发 VM 交错仍未闭合。
+2. **部分基础修复已落地，但所有权验收未完成。** `040d773` 已验证 heap/PFA 对齐与释放、保留洞和多 bank 耗尽、当前布局及页表/元数据哨兵。`4cde9b3` 修复指针发布误删可达节点；伪 RCU 已删除，锁保护的拥有型容器已有持有读者、重入与双 CPU 交错测试。IRQ/驱动/IPC 复合生命周期、页引用并发及完整启动保留集合仍待完成。
+3. **跨架构入口已统一，完整进程语义仍待补。** 三 ISA 用单一原生帧指针传递 syscall，fork 不再猜内核栈偏移，信号返回桩由各 ISA 汇编产生；3.24～3.26 已闭合当前单地址空间模型下的 brk、exec 事务和受支持静态 ELF LoadPlan。GP/条件码和基本信号往返通过，不代表全部 FP/TLS 继承、CPU-bound 信号、nanosleep 中断语义、动态加载、共享 LOAD 页或共享地址空间 VM 并发已经可靠。
+4. **旧停滞记录应保留，不能直接当作当前复现。** 退出已改为经 `context_switch` 返回活跃 bootstrap 栈，不再在 C++ 帧中直接修改 SP。默认 `users.lifecycle` 已覆盖 1,000 次 fork/exec/exit/wait 和资源检查，并随最近记录的九预设矩阵通过；旧第 28 次停滞的原版本红绿对照、1/16 CPU 长循环与更广的生命周期压力仍缺。
+5. **测试已从基础语言检查升级为真实内核检查，覆盖仍有边界。** 最近记录的九预设 CTest 为 43/43，默认用户套件包含 COW/OOM、恶意信号帧、部分用户复制故障、管道信号中断与 1,000 次生命周期；这不是本次 `604fe85` 的重新运行，也不证明全部 uaccess 故障、确定性调度竞争或真机可靠性。
 
 保留现有 C++ 模块、AAL/HAL、可用进程/VFS/调度路径；先关闭权限、所有权、等待/退出和失败事务，再扩展高级 IPC、POSIX 或设备栈。内核模型仍是模块化单体，而不是已经实现用户态服务隔离的 hybrid。
 
@@ -35,16 +35,18 @@ Moss 已具备三架构真实启动、SMP、用户态与进程执行路径。后
 
 P0 是本项目的实现优先级，不是 CVSS 评级。研究内核也需要隔离错误进程；这里不要求它立即具备生产操作系统的全部安全机制。
 
-原审计行号指 `e0e2bbc`，初次更新说明中的符号和路径按 `b57422d` 核对；后续提交和工作区修复另标。请用“路径 + 符号 + 不变量”定位。每项完整验收仍是关闭要求；只有第 3.3～3.15 节明确列出的覆盖可以算已执行，不能把新增普通测试外推成所有审计验收通过。`[x]` 只关闭该行限定的子任务，`[ ]` 包括待实现、部分实现及待专项验收。
+原审计行号指 `e0e2bbc`，初次更新说明中的符号和路径按 `b57422d` 核对；后续提交与各轮当时的工作区修复另标。请用“路径 + 符号 + 不变量”定位。第 3 节按日期记录已执行的验收，3.41 只做源码复核；不能把普通用例或旧报告外推成当前 HEAD 的全部验收通过。`[x]` 只关闭该行限定的子任务，`[ ]` 包括待实现、部分实现及待专项验收。
 
-### 2.2 原审计方法与本次复核
+### 2.2 原审计方法与历次复核
+
+以下是原审计和 2026-09-06 复核的方法记录，不表示 2026-09-23 重跑了对应构建或 QEMU：
 
 - 优先使用 codebase-memory-mcp 的符号搜索、调用关系和源码片段，检查索引覆盖及引用路径；对汇编、链接脚本、部分解析范围和负向结论补充直接源码检查。
 - 从启动到用户态、系统调用到缺页、fork/exec 到退出回收追踪实际路径，而非只看接口声明或 `todo.md`。
 - 对已有六个 QEMU 构建目录执行增量构建和 CTest，并进行 ARM64/RISC-V 64 用户态交互；对重复执行停滞使用 QEMU 寄存器采样和 `llvm-addr2line` 定位。
 - 对页权限、异常返回、RISC-V 64 PTE、PVH 和 RCU 契约参考官方资料。知识图谱覆盖是辅助信号，不是源码完整性证明。
 
-2026-09-06 复核先比较 `e0e2bbc..b57422d`，再对相关符号、调用链和当前源码进行检查。知识图谱使用 Tier 2，初始 generation 为 `2026-09-06T10:43:22Z`；已检查证据路径覆盖，并直接读取汇编、链接脚本及部分解析范围。对于图谱未捕获的全限定 C++ 方法，使用直接源码确认。此次更新不是重新执行全部历史故障实验。
+2026-09-06 复核先比较 `e0e2bbc..b57422d`，再对相关符号、调用链和当时源码进行检查。知识图谱使用 Tier 2，初始 generation 为 `2026-09-06T10:43:22Z`；已检查证据路径覆盖，并直接读取汇编、链接脚本及部分解析范围。对于图谱未捕获的全限定 C++ 方法，使用直接源码确认。该轮没有重新执行全部历史故障实验；2026-09-23 的源码复核范围另见 3.41。
 
 范围涵盖启动、AAL/HAL、物理与虚拟内存、页表与缺页、容器、调度、进程、信号、系统调用、ELF、VFS/pipe、定时器、IPC/驱动框架及测试入口。没有完成真实硬件验收、长时间 SMP 压力、所有错误注入、完整指令集状态覆盖或第三方库逐行审计。
 
@@ -646,7 +648,7 @@ LLDB 检查本机 QEMU 11.1.1 进程时，CPU3 为 `halted=1, halt_reason=HALT_W
 
 **真实写入现场：** `build/riscv64-debug/diagnostics/first-user-7v4ry6vu/0001/gdb.log` 保留硬件观察点：用户 PC 从 `0x200000000` 变成 `2`，写入者为 `syscall_entry_point` 的 `sd tp, 256(sp)`，`sstatus.SPP=1`，`sepc` 指向仍在 S-mode 的栈发布函数；随后用户在地址 2 取指失败。此前不带断点的自然失败仍保留在 `first-user-f9tfl9ga/0027`（前 26 次到达 worker，第 27 次 `PC=0`）。最初报告 `1789054088760333000` 没有寄存器现场，因此不能声称本路径已证明是每一次历史 `PC=0` 的唯一原因。
 
-新增独立回归 `scripts/check_riscv64_dispatch.py`：GDB 在生产栈发布函数的返回点设置真实 SSIP pending/enable，不修改内核代码、PC、栈数据或调度器实现；验证初始 PC 未改变、切换期间 IRQ 关闭，以及 SSIP 仅在首次 SRET 后以正确用户 PC/SP 进入真实异常入口，最后必须完成全部 `users.vm` 用例。软件 IRQ 的 pending/enable 语义依据 [RISC-V 64 Supervisor ISA](riscv64_SUPERVISOR_DOC)。脚本使用已有 artifact reader、QEMU runner 和严格串口协议解析，冻结 kernel/initramfs/symbols 并记录 SHA-256；每次 fresh guest，第一次失败即停止并保留报告。它是需要 RISC-V 64 GDB 的专项入口，尚未加入默认 CTest，不把它计入默认测试数量。
+新增独立回归 `scripts/check_riscv64_dispatch.py`：GDB 在生产栈发布函数的返回点设置真实 SSIP pending/enable，不修改内核代码、PC、栈数据或调度器实现；验证初始 PC 未改变、切换期间 IRQ 关闭，以及 SSIP 仅在首次 SRET 后以正确用户 PC/SP 进入真实异常入口，最后必须完成全部 `users.vm` 用例。软件 IRQ 的 pending/enable 语义依据 [RISC-V 64 Supervisor ISA](https://docs.riscv.org/reference/isa/priv/supervisor.html)。脚本使用已有 artifact reader、QEMU runner 和严格串口协议解析，冻结 kernel/initramfs/symbols 并记录 SHA-256；每次 fresh guest，第一次失败即停止并保留报告。它是需要 RISC-V 64 GDB 的专项入口，尚未加入默认 CTest，不把它计入默认测试数量。
 
 ```sh
 uv run python scripts/check_riscv64_dispatch.py \
@@ -1355,40 +1357,50 @@ per-CPU 槽位最初引入静态析构注册，x64 freestanding 链接报告缺�
 
 据此关闭 MOSS-003 的当前原生信号帧/备用栈不可信输入验收，不把结果外推为完整信号语义、共享 exec 协调、全部异常/抢占交错或真机验证。相关剩余项继续保留；原始溢出和 Sv39 夹具失败不被后续绿色报告覆盖。
 
+### 3.41 当前源码与历史运行证据复核（2026-09-23，`604fe85`）
+
+本节只核对源码和已有报告，未重新构建或运行 QEMU。第 3.40 节记录的九预设 CTest **43/43**、16 CPU/Sv39/GICv3 同镜像补验，是当时的运行证据；不能写成 `604fe85` 的新测试结果。下文的“已实现”只表示当前路径存在，不替代未列出的专项验收。
+
+- `register_boot_devices()` 向 `DeviceManager` 注册启动时的中断控制器、计时器和可用串口设备及其 `BootDriver`，并检查设备进入 Active；HAL 仍负责实际硬件操作。旧审计中的设备数为 0 和 `UartDriver` 不代表当前启动路径。动态总线枚举、热插拔及通用 DMA 仍未由此实现。
+- `sys_wait4()` 在准备睡眠后登记 waiter 并重查 Zombie，坏 status 的复制失败不提交 reap；console 使用受锁保护的检查/登记和多 waiter，pipe 也有阻塞等待与信号中断路径。剩余的是多读者、child-exit/RX 精确交错，以及 wait/nanosleep 的完整 EINTR/重启语义。
+- `sleep_until()` 已处理定时器 arm 失败、跨 CPU 睡眠交接和同步取消；`clock_getres`、SIGCHLD 基本断言及 pipe/console 信号用例已进入默认功能集。第 3.23 节的 RV64 Debug 30 秒超时、3.14～3.15 节的 ARM64 停滞保留为历史失败，不再当作当前稳定复现。
+- VFS 的 FD 访问模式、稳定 File 引用和池锁已有实现；pipe 空读/满写会等待，最后 writer 关闭才 EOF，断端写返回 EPIPE 并投递 SIGPIPE；inode/FD/pipe 槽回收和 `sys_pipe` 输出失败回滚也已有实现。原始 MOSS-024～026 的“未修复”描述只适用于旧基线；共享 offset、关闭并发、确定性交错和逐阶段故障注入仍需按验收项检查。
+- 默认 `users.lifecycle` 循环 1,000 次，覆盖 fork/COW、信号、计时器、pipe、exec、exit/wait 及资源恢复；最近记录的九预设矩阵包含它。旧第 28 次停滞的因果对照和 1/16 CPU 长循环仍未完成。
+
 ## 4. 问题总表与当前状态
 
 | 编号 | 优先级 | 审计主题 | 当前状态与下一步 |
 | --- | --- | --- | --- |
-| MOSS-001 | P0 | 内核映射 USER / W^X | 已关闭（工作区，3.30）；最终 U/S、W^X/RO/NX 结构检查和五类内核对象的 identity/direct-map 用户读写隔离均通过三架构九配置；Sv39、GICv3 同镜像补验通过。 |
+| MOSS-001 | P0 | 内核映射 USER / W^X | 已关闭（3.30）；最终 U/S、W^X/RO/NX 结构检查和五类内核对象的 identity/direct-map 用户读写隔离均通过三架构九配置；Sv39、GICv3 同镜像补验通过。 |
 | MOSS-002 | P0 | 用户域 / uaccess / 调试旁路 | 部分修复（3.13、3.20～3.21、3.31～3.39）；共享 uaccess/COW OOM、拥有型地址空间、软件 VM 事务、同步页租约、三架构 TLB 协议、双发布者交错、活动 root 拥有权/本核退休与首次 CPU 注册两顺序已补；完整共享 exec、异步页 pin 与完整并发验收未完成。 |
-| MOSS-003 | P0 | 信号帧与特权状态恢复 | 已关闭（工作区，3.40）；修复注册栈容量越界，恶意帧、栈准入/撤销、内核哨兵及合法嵌套现场验收通过；不代表全部信号语义或共享 exec 协调完成。 |
+| MOSS-003 | P0 | 信号帧与特权状态恢复 | 已关闭（3.40）；修复注册栈容量越界，恶意帧、栈准入/撤销、内核哨兵及合法嵌套现场验收通过；不代表全部信号语义或共享 exec 协调完成。 |
 | MOSS-004 | P0 | 堆与页表/PFA 所有权重叠 | 已关闭（`040d773`）；当前布局、活动页表树/早期表池及元数据哨兵、耗尽、坏布局启动拒绝专项验收通过，见 3.7。 |
 | MOSS-005 | P0 | 启动保留区未排除 | 多 bank、保留洞、非对齐/重叠、容量/溢出及耗尽已验证；低地址启动区仍保守保留，PVH 异常表/完整保留集合待补，见 3.5～3.6。 |
-| MOSS-006 | P0 | 容器与使用者的所有权 | 部分修复（工作区）；伪 RCU 已替换为 LockedList/LockedHashMap，查找复制拥有者，锁外析构/快照回调；持有读者与双 CPU 交错有实测，IRQ/驱动/IPC 复合协议未闭合，见 3.9。 |
+| MOSS-006 | P0 | 容器与使用者的所有权 | 部分修复；伪 RCU 已替换为 LockedList/LockedHashMap，持有读者与双 CPU 交错有实测；启动设备已通过 DeviceManager/BootDriver 静态注册并激活，IRQ context、动态解绑和 IPC 等复合生命周期未闭合，见 3.9、3.41。 |
 | MOSS-007 | P0 | 跨 ISA TrapFrame / syscall 参数 | 部分实现（3.18～3.19）；有效原生帧、布局断言、六参数/GP/条件码与 native sigreturn 已通过九配置；全异常交错及完整扩展状态仍待验收。 |
-| MOSS-008 | P0 | 只读页被 COW 放宽权限 | 部分修复；只读 VMA、受控 OOM、多代 COW 与双 CPU fault 软件事务已有回归（3.16、3.31、3.33）；活动共享 root 与完整并发 VM 生命周期仍待补。 |
+| MOSS-008 | P0 | 只读页被 COW 放宽权限 | 部分修复；只读 VMA、受控 OOM、多代 COW 与双 CPU fault 软件事务已有回归（3.16、3.31、3.33）；活动硬件 root 拥有权已有 3.38 验收，共享 exec/root 协调与完整并发 VM 生命周期仍待补。 |
 | MOSS-009 | P1 | RV64 fault 分类 / PPN | 部分修复；访问类型与驻留检查、COW 优先和 HAL PPN 编码已补，Sv39/Sv48 回归通过；受控 COW OOM 引用回归见 3.31，多地址编码、其他拒绝访问及并发生命周期专项仍待补。 |
 | MOSS-010 | P1 | 页表 clone/map 回滚 | 部分修复（3.17、3.32～3.33）；map/clone 表页准备失败不改原树和数据页引用，fork 检查 clone 结果且持有父 VM 事务；地址空间对象/控制块真实 OOM 回滚已验收。完整 fork 后续失败事务、并发 clone/unmap 与活动 root 协调待补。 |
-| MOSS-011 | P1 | 活跃 ASID 回绕重用 | 已关闭（工作区，3.23）；加锁的 1…255 活跃租约、耗尽错误、析构归还和 ARM64 广播失效已核对，内核边界测试及同 VA/跨 CPU 的 300 次用户复用在六配置通过。 |
-| MOSS-012 | P1 | brk/VMA/PTE 权限生命周期 | 已关闭（工作区，3.24）；空堆、缩堆 PTE/ref/TLB 撤销、重新增长清零、增长冲突回滚及权限拒绝已在六配置通过；部分 munmap 与共享地址空间并发仍明确留在范围外。 |
+| MOSS-011 | P1 | 活跃 ASID 回绕重用 | 已关闭（3.23）；加锁的 1…255 活跃租约、耗尽错误、析构归还和 ARM64 广播失效已核对，内核边界测试及同 VA/跨 CPU 的 300 次用户复用在六配置通过。 |
+| MOSS-012 | P1 | brk/VMA/PTE 权限生命周期 | 已关闭（3.24）；空堆、缩堆 PTE/ref/TLB 撤销、重新增长清零、增长冲突回滚及权限拒绝已在六配置通过；部分 munmap 与共享地址空间并发仍明确留在范围外。 |
 | MOSS-013 | P1 | 对齐 / buddy / 释放契约 | 已关闭（`040d773`）；heap/PFA 对齐、释放归属、保留洞分段/耗尽专项验收通过；页引用并发不在此结论内，见 3.4～3.5。 |
 | MOSS-014 | P1 | fork 用户现场与继承状态 | 部分实现；三 ISA 实际用户帧 GP 复制、ARM64 x30 和 x86 CF 修复有不立即 exec 的回归（3.19）；VM/凭据/全部 FP/TLS 继承及失败验收仍缺。 |
-| MOSS-015 | P1 | exec 原子替换 | 已关闭（工作区，3.25）；全部可失败准备均在旧地址空间仍有效时完成，提交后才回收旧所有权；PFA 与六级 heap 失败、可变 ELF 快照及 FD 语义已在六配置通过。 |
-| MOSS-016 | P1 | ELF 校验与分段策略 | 已关闭（工作区，3.26）；不可变 LoadPlan、checked arithmetic、严格拒绝 oracle、17 个畸形映像，以及非页对齐 RX/RW 的实际字节/零填充/最终权限已在六配置通过。 |
-| MOSS-017 | P1 | 运行队列 / 迁移 / on-CPU | 部分修复（工作区，3.28）；调用线程收紧自身 affinity 时会在 continuation 保存后同步迁移，确定性红例、单例及 32/32 并发压力通过；远程目标、一般 pick/dequeue/迁移及 on-CPU/check_need_resched 仍未闭合。 |
-| MOSS-018 | P1 | wait/console 丢失唤醒 | 部分修复（工作区）；wait 的 status EFAULT 可重试，选项/PID 边界已回归；条件检查与等待登记仍分离，丢失唤醒和信号中断未关闭。 |
-| MOSS-019 | P1 | nanosleep / timer 生命周期 | 部分修复（工作区）；三 ISA 切换、先 Sleeping 后 arm、容量失败及同步取消已回归。`clock_getres` 已以原生 u64 纳秒 ABI 实现并在 ARM64 Debug 默认 CTest 5/5 回归（2026-09-20）；跨 CPU 交接、信号中断及三架构验收仍未闭合。 |
-| MOSS-020 | P1 | 信号投递 / STOP/CONT/SIGCHLD | 部分修复（3.19）；统一用户返回检查点、结果/handler 参数写回顺序及终止信号编号已补；CPU-bound、STOP/CONT/SIGCHLD 和阻塞中断仍待闭合。 |
-| MOSS-021 | P1 | 信号状态生命周期 | 已关闭（工作区，3.23）；状态由 `Process` 拥有，fork/exec/exit 规则已核对，继承/重置及跨旧 256 槽边界的 300 次生命周期在六配置通过。 |
-| MOSS-022 | P1 | 退出 FD 关闭 | 实现已修复、验收部分（工作区，3.23）；退出在 Zombie 前 close-all、析构兜底，EOF-before-wait 与 1,000 次资源恢复通过五个默认配置；RV64 Debug 默认 30 秒仍超时，60 秒诊断通过，故不关闭。 |
-| MOSS-023 | P1 | 退出换栈 / 连续执行停滞 | 部分实现；已复用 context_switch 返回 bootstrap 栈；旧停滞根因对照及 1,000 次验收仍缺。 |
-| MOSS-024 | P1 | VFS 访问模式 / 引用 / offset | 未修复；do_read/do_write 直接调用 f_ops，共享 File/池并发契约未补。 |
-| MOSS-025 | P1 | pipe 阻塞与 EOF | 未修复；空但有 writer 的 read、满 write 仍返回 0，断端仍 InvalidArg。 |
-| MOSS-026 | P1 | 固定池回收与 pipe 回滚 | 未修复；inode 单调计数、端点失败清理及用户输出失败 FD 回滚仍需处理。 |
-| MOSS-027 | P1 | x86 PVH / initramfs | 已关闭（工作区，3.22）；真实模块表/可用 RAM 范围、严格 newc、完成标记顺序及七场景生产 QEMU gate 已通过 Debug/Release。 |
+| MOSS-015 | P1 | exec 原子替换 | 已关闭（3.25）；全部可失败准备均在旧地址空间仍有效时完成，提交后才回收旧所有权；PFA 与六级 heap 失败、可变 ELF 快照及 FD 语义已在六配置通过。 |
+| MOSS-016 | P1 | ELF 校验与分段策略 | 已关闭（3.26）；不可变 LoadPlan、checked arithmetic、严格拒绝 oracle、17 个畸形映像，以及非页对齐 RX/RW 的实际字节/零填充/最终权限已在六配置通过。 |
+| MOSS-017 | P1 | 运行队列 / 迁移 / on-CPU | 部分修复（3.28）；调用线程收紧自身 affinity 时会在 continuation 保存后同步迁移，确定性红例、单例及 32/32 并发压力通过；远程目标、一般 pick/dequeue/迁移及 on-CPU/check_need_resched 仍未闭合。 |
+| MOSS-018 | P1 | wait/console 丢失唤醒 | 部分修复；wait 已采用 prepare/register/recheck/commit 并保留坏 status 后重试，console 有受锁保护的多 waiter 和信号中断路径。child-exit/RX 确定性交错、多读者及 wait 的 EINTR/重启语义仍待验收，见 3.41。 |
+| MOSS-019 | P1 | nanosleep / timer 生命周期 | 部分修复；三 ISA 实际睡眠、容量失败、deadline 溢出、跨 CPU 交接及同步取消已有实现；`clock_getres` 用例已进入默认功能集，最近记录的九预设 CTest 包含它。信号中断后的 sleep 语义及更广定时交错仍待验收。 |
+| MOSS-020 | P1 | 信号投递 / STOP/CONT/SIGCHLD | 部分修复；结果/handler 参数写回顺序已补，默认用例已断言 SIGCHLD 基本投递、pipe/console 的中断与部分传输。CPU-bound 的 IRQ 返回投递、STOP/CONT 和 wait/nanosleep 中断语义仍待闭合。 |
+| MOSS-021 | P1 | 信号状态生命周期 | 已关闭（3.23）；状态由 `Process` 拥有，fork/exec/exit 规则已核对，继承/重置及跨旧 256 槽边界的 300 次生命周期在六配置通过。 |
+| MOSS-022 | P1 | 退出 FD 关闭 | 实现已修复、验收部分；退出在 Zombie 前 close-all、析构兜底，EOF-before-wait 与默认 1,000 次资源恢复已有九预设通过记录。3.23 的 RV64 Debug 30 秒超时是旧报告；原故障复现/原因和更广压力仍待核对。 |
+| MOSS-023 | P1 | 退出换栈 / 连续执行停滞 | 部分验收；已复用 context_switch 返回 bootstrap 栈，默认 `users.lifecycle` 1,000 次随最近九预设矩阵通过；旧第 28 次停滞红绿对照、1/16 CPU 长循环仍缺。 |
+| MOSS-024 | P1 | VFS 访问模式 / 引用 / offset | 部分修复；read/write 已检查访问模式，FD 获取稳定 File 引用，FD/File 池及 ramfs offset 有锁；共享 offset、close/read 与池并发的专项交错仍待验收。 |
+| MOSS-025 | P1 | pipe 阻塞与 EOF | 主路径已实现；空且有 writer 的 read、满 write 等待，最后 writer 关闭才 EOF，无 reader 写返回 EPIPE/SIGPIPE，非阻塞和部分传输有处理；确定性多读写者/端点竞争仍待验收。 |
+| MOSS-026 | P1 | 固定池回收与 pipe 回滚 | 部分修复；inode/FD/pipe 槽复用、端点清理及 `sys_pipe` 输出失败回滚已有实现，1,000 次 pipe 复用及 FD 回滚有用例；各分配阶段故障注入和并发池复用仍待验收。 |
+| MOSS-027 | P1 | x86 PVH / initramfs | 已关闭（3.22）；真实模块表/可用 RAM 范围、严格 newc、完成标记顺序及七场景生产 QEMU gate 已通过 Debug/Release。 |
 | MOSS-028 | P1 | 真实内核测试与失败传播 | 框架已替换，覆盖待补；生产模块、串口协议及三架构自检已落地，T01～T12 不能整体关闭。 |
 | MOSS-029 | P2 | 计时源和 ISA 能力 | 部分实现；x86 双频率校准、RV64 SBI TIME 已落地；3.8 新暴露验证镜像一次校准拒绝，具体分支未定位，异常能力与时钟误差验收仍待补。 |
-| MOSS-030 | P2 | 空成功 / 固定地址 / 假统计 | 已关闭（工作区，3.28～3.29）；MM/IPC 未实现操作显式返回 `NotSupported` 且无副作用，真实 create/destroy/stats/sync 使用实际对象，假压力/成功率/固定地址已移除；初始化有序发布且不再公开原始 singleton 借用。三架构九 preset 的契约回归和完整 CTest 通过。 |
+| MOSS-030 | P2 | 空成功 / 固定地址 / 假统计 | 已关闭（3.28～3.29）；MM/IPC 未实现操作显式返回 `NotSupported` 且无副作用，真实 create/destroy/stats/sync 使用实际对象，假压力/成功率/固定地址已移除；初始化有序发布且不再公开原始 singleton 借用。三架构九 preset 的契约回归和完整 CTest 通过。 |
 | MOSS-031 | P2 | 核心边界与 ABI | 部分边界改善；启动/硬件/runner 已拆分，uaccess/TrapFrame/进程事务和共用 ABI 仍待收敛。 |
 | MOSS-032 | P2 | 文档 / 状态 / 统计一致性 | 文档部分已更新；能力矩阵及历史/当前证据已分开，启动假成功已随 3.22 修复，MOSS-030 的假 MM/IPC 统计与成功契约已随 3.29 关闭；其余日志、skip 与完整验收仍未关闭。 |
 
@@ -1542,7 +1554,7 @@ _kernel_end / _pagetable_end    0x403fd000
 
 **修复：** 根据异常原因和页表 walk 结果生成明确的 `FaultInfo`：访问类型、来源特权级、页不存在或权限错误。仅缺页进入 demand；合法 COW 写故障进入 COW；其他权限错误终止用户访问。所有 PTE 编解码调用对应 HAL 构造函数，禁止在共用代码手工拼某一 ISA 的地址位。
 
-**验收：** 已修改匿名页 fork 后分别写入仍保留原内容；执行 NX、写 RO、读 PROT_NONE 不新增替代页；PTE 编解码对多个物理地址双向一致；旧页引用在覆盖/失败路径正确变化。编码及访问检查依据见 [RISC-V 64 Supervisor 规范](riscv64_SUPERVISOR_DOC)。
+**验收：** 已修改匿名页 fork 后分别写入仍保留原内容；执行 NX、写 RO、读 PROT_NONE 不新增替代页；PTE 编解码对多个物理地址双向一致；旧页引用在覆盖/失败路径正确变化。编码及访问检查依据见 [RISC-V 64 Supervisor 规范](https://docs.riscv.org/reference/isa/priv/supervisor.html)。
 
 ### MOSS-010 · 页表克隆失败不能以“部分成功”发布子进程
 
@@ -1662,7 +1674,9 @@ fork 对 VMA 有复制，但未完整继承 `brk_base/brk_current/mmap_next` 等
 
 ### MOSS-018 · 检查条件、登记等待和进入睡眠必须是一个协议
 
-**位置与事实：** `src/kernel/src/syscall_table.cpp:988` 的 wait4 先扫描 Zombie，再登记等待和改变状态；子进程可在这段窗口退出，使唤醒早于有效等待登记。`:2695` 的 console 阻塞路径也把缓冲区检查、状态/队列修改和单个 `blocked_reader` 注册分开；另一个 CPU 的 RX 可穿过窗口，且单指针无法支持多个等待者。
+**2026-09-23 源码复核：部分修复，见 3.41。** `sys_wait4()` 已在准备睡眠后登记 waiter 并重查 Zombie；console 的检查与登记由锁串行化，支持多个 waiter 和待处理信号唤醒。已有 console/pipe 信号用例；child exit 与登记、RX 与登记的确定性交错、多读者及 wait EINTR/重启仍待补。
+
+**原始位置与事实（修复前）：** `src/kernel/src/syscall_table.cpp:988` 的 wait4 先扫描 Zombie，再登记等待和改变状态；子进程可在这段窗口退出，使唤醒早于有效等待登记。`:2695` 的 console 阻塞路径也把缓冲区检查、状态/队列修改和单个 `blocked_reader` 注册分开；另一个 CPU 的 RX 可穿过窗口，且单指针无法支持多个等待者。
 
 原先 wait4 先 reap 后复制 status 的问题已在工作区修复：现在先 copyout，成功后才提交回收。`users/wait_status_rollback` 的旧实现失败及 16 次错误重试/回收回归见[当前验收记录](docs/kernel-validation.md#continued-acceptance-on-2026-09-15)。这不关闭原子等待协议；信号唤醒后若只重新循环睡眠，仍没有明确的 EINTR/重启语义。
 
@@ -1671,6 +1685,8 @@ fork 对 VMA 有复制，但未完整继承 `brk_base/brk_current/mmap_next` 等
 **验收：** 在检查条件与登记等待之间强制 child exit/RX；每次都能结束等待。覆盖“事件已经发生后才调用 wait”、多个读者、信号中断、坏 status 指针后再次 wait。不能用固定 sleep 避开竞争窗口作为修复。
 
 ### MOSS-019 · nanosleep 和定时器缺少可失败、可取消的生命周期
+
+**2026-09-23 源码复核：** `sleep_until()` 已使用 prepare/arm/commit/synchronous cancel 交接，timer 满队列错误和 deadline 溢出有处理；`clock_getres` 已在默认 `users.timers`，最近记录的九预设矩阵包含它。剩余重点是信号中断后的 sleep 语义及更多跨 CPU 时序；下面的旧位置属于修复前。
 
 **2026-09-15 工作区进展：** 下述原始缺陷中的三 ISA 实际切换、先 Sleeping 后 arm、队列容量 Result 和 in-flight callback 同步取消已修复并回归；三 CPU 持有回调的负向注入能检出提前返回。跨 CPU 上下文交接与信号中断仍待闭合，不能整体关闭。证据见[当前验收记录](docs/kernel-validation.md#continued-acceptance-on-2026-09-15)及该节之前的定时器记录。
 
@@ -1686,15 +1702,17 @@ fork 对 VMA 有复制，但未完整继承 `brk_base/brk_current/mmap_next` 等
 
 ### MOSS-020 · 信号正常演示通过，仍不代表投递和返回语义正确
 
-**位置与事实：** `src/process/src/signal.cpp:128` 写 `frame[0] = signo`，但 ARM64 系统调用返回段 `src/boot/src/arch/arm64/start_arm64.S:879` 随后把 C 返回值写回相同槽位，覆盖 handler 参数；建立信号帧时也需要先确定被中断系统调用的最终返回值。当前用户测试 handler 不充分断言该参数，无法检测这个错误。
+**2026-09-23 源码复核：部分修复，见 3.19、3.41。** handler 参数/返回值已有回归；默认 `users.signals` 已包含 SIGCHLD 基本断言、pipe/console 中断与部分传输。CPU-bound 的 IRQ 返回投递、STOP/CONT 和 wait/nanosleep 中断结果仍待闭合。
 
-信号 checkpoint 主要在系统调用路径；纯用户计算循环不一定经过投递点。STOP 改状态/出队后若继续返回用户态，不能完成停止；CONT 对 Stopped 的恢复不能只依赖“线程再次执行 checkpoint”。`src/process/src/process.cpp:437` 的退出路径没有形成完整 SIGCHLD 投递闭环，现有测试明确跳过该项。
+**原始位置与事实（修复前）：** `src/process/src/signal.cpp:128` 写 `frame[0] = signo`，但 ARM64 系统调用返回段 `src/boot/src/arch/arm64/start_arm64.S:879` 随后把 C 返回值写回相同槽位，覆盖 handler 参数；建立信号帧时也需要先确定被中断系统调用的最终返回值。当时用户测试 handler 未充分断言该参数，无法检测这个错误。
+
+原审计时，信号 checkpoint 主要在系统调用路径；纯用户计算循环不一定经过投递点。STOP 改状态/出队后若继续返回用户态，不能完成停止；CONT 对 Stopped 的恢复不能只依赖“线程再次执行 checkpoint”。当时 `src/process/src/process.cpp:437` 的退出路径未形成完整 SIGCHLD 投递闭环，测试跳过该项；当前基本 SIGCHLD 用例已取消跳过。
 
 需要区分：`src/kernel/src/syscall_table.cpp:1112` 的 kill 已包含对 Sleeping 任务的唤醒，不能声称实现完全没有信号唤醒；缺失的是对所有状态、返回点和等待结果的一致协议。
 
 **修复：** 在共同返回用户态路径处理 pending signal：先提交 syscall 结果，再允许投递修改返回现场，汇编不得覆盖已编辑帧。把 IRQ 返回纳入投递/重调度检查。显式实现 STOP/CONT 状态转换和 SIGCHLD 产生；为可中断阻塞定义 EINTR 或已声明的重启子集；sigreturn 使用专门的“现场已恢复”结果，避免普通返回值覆盖。
 
-**验收：** handler 收到正确 signo；被中断 syscall 的返回值在信号返回后正确；CPU-bound 进程能收到信号；STOP 后无用户进展、CONT 后恢复；wait/console/sleep 有一致中断行为；SIGCHLD 从 SKIP 改为真实断言。
+**验收：** handler signo/返回值及 SIGCHLD 基本断言已有覆盖；还需 CPU-bound 进程投递、STOP 后无用户进展/CONT 后恢复，以及 wait/console/sleep 一致的中断结果与更多交错。console 已有部分中断用例，不以此代替整组验收。
 
 ### MOSS-021 · 信号状态不能以绝对 PID 作为固定数组下标
 
@@ -1710,7 +1728,7 @@ fork 对 VMA 有复制，但未完整继承 `brk_base/brk_current/mmap_next` 等
 
 ### MOSS-022 · Zombie 只应保留等待结果，不应继续占有打开文件
 
-**2026-09-19 更新：实现已修复，验收部分（工作区 3.23）。** 当前 `do_exit()` 在发布 Zombie 前调用幂等的 `cleanup_files()`，析构兜底；warmup 已在 wait/reap 前观测 EOF，1,000 次资源恢复在五个默认配置通过。RV64 Debug 当前源码仍超过默认 30 秒，只有显式 60 秒诊断完成，故本项保持未关闭。下面是原始审计事实。
+**2026-09-23 源码复核：实现已修复，验收部分，见 3.41。** 当前 `do_exit()` 在发布 Zombie 前调用幂等的 `cleanup_files()`，析构兜底；warmup 已在 wait/reap 前观测 EOF。默认 1,000 次生命周期随最近记录的九预设矩阵通过。2026-09-19 的 RV64 Debug 30 秒超时及 60 秒诊断保留为旧实测，不写成当前稳定失败；原故障因果对照和更广压力仍缺。下面是原始审计事实。
 
 **原始位置与事实：** `src/process/src/process-types.cppm:501` 用 `void*` 保存 FD table，析构 `:529` 主要清理线程；`src/process/src/process.cpp:437` 的退出没有关闭 FD table。`src/vfs/src/vfs-file.cppm:125` 有 `close_all()`，但检查退出调用链未形成调用。`src/vfs/src/vfs_init.cpp:274` 的 fork 克隆会分配新表并增加文件引用。
 
@@ -1722,7 +1740,7 @@ fork 对 VMA 有复制，但未完整继承 `brk_base/brk_current/mmap_next` 等
 
 ### MOSS-023 · 退出换栈需要汇编边界；连续执行停滞需要单独关闭
 
-**2026-09-06 更新：危险换栈实现已替换，故障项尚未关闭。** `CfsScheduler::schedule_after_exit` 现在关中断、清 current，以 `context_switch(&discarded, &bootstrap_contexts_.get_cpu(cpu))` 返回已有调度栈；没有继续使用 C++ inline asm 改 SP，也无需新增平行 exit 栈框架。三架构基本生命周期通过，但没有旧第 28 次失败的前后对照或 1,000 次/多 CPU/资源计数验收。下面的采样 PC 是旧实现，不能用于定位新实现。
+**2026-09-23 源码复核：部分验收，见 3.41。** `CfsScheduler::schedule_after_exit` 已用 `context_switch(&discarded, &bootstrap_contexts_.get_cpu(cpu))` 返回现有调度栈；默认 4 CPU 的 `users.lifecycle` 1,000 次和资源检查随最近九预设矩阵通过。原第 28 次停滞的旧版红绿对照、1/16 CPU 长循环仍缺。下面 2026-09-06 的采样 PC 属于旧实现，不能用于定位新实现。
 
 **位置与事实：** `src/process/src/process-scheduler.cppm:2097` 的 `schedule_after_exit()` 在普通 C++ 函数内部直接用 inline asm 修改 SP/RSP，然后继续执行 C++ 循环和函数调用。编译器已经建立的帧、局部变量和寄存器溢出位置不能依赖这种换栈后仍正确；仅添加 `memory` clobber 不会建立新的 C++ 调用帧契约。
 
@@ -1741,7 +1759,9 @@ fork 对 VMA 有复制，但未完整继承 `brk_base/brk_current/mmap_next` 等
 
 ### MOSS-024 · FD 访问模式和共享文件对象需要独立保护
 
-**位置与事实：** `src/vfs/src/vfs_syscall.cpp:73` 的 read/write 路径未完整执行 O_ACCMODE 检查。`src/vfs/src/vfs-file.cppm` 的 FD table、共享 File 的位置/引用及 `src/vfs/src/vfs_init.cpp` 的全局 file pool 没有足够的并发保护。
+**2026-09-23 源码复核：部分修复，见 3.41。** `do_read()`/`do_write()` 检查 O_ACCMODE，FD 查找获取稳定 File 引用；FD table、File 池及 ramfs 偏移已有锁保护。共享 offset 顺序、close/read 和池分配/关闭的专项并发交错仍未验收。
+
+**原始位置与事实（修复前）：** `src/vfs/src/vfs_syscall.cpp:73` 的 read/write 路径未完整执行 O_ACCMODE 检查。`src/vfs/src/vfs-file.cppm` 的 FD table、共享 File 的位置/引用及 `src/vfs/src/vfs_init.cpp` 的全局 file pool 没有足够的并发保护。
 
 **影响：** 只读打开的对象可能被写；fork 共享 File 后，文件偏移竞争；多 CPU 分配/关闭同一池可能出现重复占用、引用丢失或 use-after-free。进程当前是否支持多个用户线程不消除全局池和 fork 共享对象的多进程竞争。
 
@@ -1751,7 +1771,9 @@ fork 对 VMA 有复制，但未完整继承 `brk_base/brk_current/mmap_next` 等
 
 ### MOSS-025 · 管道的“暂时为空”与 EOF 是不同事件
 
-**位置与事实：** `src/vfs/src/vfs_init.cpp:360` 的 pipe 读在空但仍有 writer 时返回 0；`:426` 的满管道写返回 0，断开的读端错误为 EINVAL；读写共享缓冲区也没有完整等待和互斥协议。
+**2026-09-23 源码复核：主路径已实现，见 3.41。** `pipe_read()` 在空但有 writer 时等待，最后 writer 关闭才 EOF；`pipe_write()` 在满缓冲区等待，无 reader 时返回 EPIPE 并投递 SIGPIPE，O_NONBLOCK 和部分传输也有处理。现有定时延迟测试不足以证明确定性交错或多读写者协议，整项保持打开。
+
+**原始位置与事实（修复前）：** `src/vfs/src/vfs_init.cpp:360` 的 pipe 读在空但仍有 writer 时返回 0；`:426` 的满管道写返回 0，断开的读端错误为 EINVAL；读写共享缓冲区也没有完整等待和互斥协议。
 
 **影响：** 常规用户程序把 0 长度读解释为 EOF，会提前结束消费；生产者在满缓冲区时收到无法表达阻塞原因的结果；fork/close/exit 后端点计数又受 MOSS-022 影响。
 
@@ -1761,7 +1783,9 @@ fork 对 VMA 有复制，但未完整继承 `brk_base/brk_current/mmap_next` 等
 
 ### MOSS-026 · 固定容量可以接受，不回收和失败泄漏不能接受
 
-**位置与事实：** `src/vfs/src/vfs_init.cpp:163` 的 inode 分配使用单调增长计数，固定容量 256；pipe 创建消耗 inode，关闭未形成可重用槽位协议。`src/vfs/src/vfs_syscall.cpp:169` 的 do_pipe 在部分失败分支直接 free File，绕过其 release 所承担的 PipeState/inode 释放。`src/kernel/src/syscall_table.cpp:1627` 的 sys_pipe 创建成功后，如果结果数组 `copy_to_user` 失败，直接返回 EFAULT，没有关闭已安装的两个 FD。
+**2026-09-23 源码复核：部分修复，见 3.41。** inode/File/FD/pipe 的复用和失败清理已有实现，`do_pipe()` 使用 FD reservation，在结果 copyout 成功后才安装端点；已有 1,000 次 pipe 复用和 FD 回滚用例。原验收要求的逐阶段故障注入及并发池复用仍待补。
+
+**原始位置与事实（修复前）：** `src/vfs/src/vfs_init.cpp:163` 的 inode 分配使用单调增长计数，固定容量 256；pipe 创建消耗 inode，关闭未形成可重用槽位协议。`src/vfs/src/vfs_syscall.cpp:169` 的 do_pipe 在部分失败分支直接 free File，绕过其 release 所承担的 PipeState/inode 释放。`src/kernel/src/syscall_table.cpp:1627` 的 sys_pipe 创建成功后，如果结果数组 `copy_to_user` 失败，直接返回 EFAULT，没有关闭已安装的两个 FD。
 
 **影响：** 顺序创建/关闭也会耗尽对象池；用户提供坏输出指针即可反复消耗 FD/pipe 资源；失败分支和正常关闭产生不同引用结果。
 
@@ -1856,7 +1880,7 @@ fork 对 VMA 有复制，但未完整继承 `brk_base/brk_current/mmap_next` 等
 
 **事实：** 原审计时的 `todo.md` 中“x86/RISC-V 64 只有桩”“红黑树平衡未实现”等表述不准确：调度器 `src/process/src/process-scheduler.cppm:882` 有插入平衡，`:1011` 有删除平衡；三个架构也都有大量真实代码。反过来，凭据结构存在不代表完整权限策略，信号正常例子通过不代表完整信号语义，存在 validate helper 不代表所有用户指针都安全。
 
-DeviceManager 的框架存在、运行时设备计数为 0 与 UART 实际通过 HAL 工作可以同时成立；不能据计数断言“没有驱动”，也不能据框架声明断言动态设备管理已经完整可用。启动阶段打印成功、固定统计和末尾 ALL TESTS PASSED 同样需要与真实条件绑定。
+当前启动路径已向 DeviceManager 注册并激活 irqchip、timer 和可用 console 对应的 BootDriver/Device；UART 硬件操作仍由 HAL 承担。静态绑定不等于动态设备管理、热插拔或通用 DMA 已可用。启动阶段打印成功、固定统计和末尾 ALL TESTS PASSED 同样需要与真实条件绑定。
 
 **修复：** 维护按架构划分的能力矩阵，至少区分 declared/implemented/tested/unsupported；启动关键依赖失败就停在准确失败阶段；测试结果分别统计 pass/fail/skip。旧 TODO 作为历史保留或加迁移说明，新任务以本文的源码证据和验收为依据，关闭条目时附修复提交与实测证据。
 
@@ -1886,7 +1910,7 @@ DeviceManager 的框架存在、运行时设备计数为 0 与 UART 实际通过
 ### 阶段 A：建立可观察基线，并修复基础内存所有权
 
 - [x] A1a：建立生产内核功能套件、框架失败/panic/timeout 自检、串口协议和宿主报告；六配置已有通过记录（028，`44dedc2` / `6252484`）。
-- [ ] A1b：补 ARM64 原重复失败的可重放脚本、未覆盖装载/skip 负向用例和审计 T01～T12，不把当前 14 个功能用例当完整覆盖（028）。
+- [ ] A1b：补 ARM64 原重复失败的可重放脚本、未覆盖装载/skip 负向用例和审计 T01～T12，不把已有功能套件当完整覆盖（028）。
 - [x] A1c：修复 Active/Online 混淆和循环次数超时造成的 CPU 就绪误报；统一三架构等待，六配置 CTest、ARM64 四核 10 次与 16 核 heap 通过（3.4）。
 - [x] A1d：逐 case 宿主耗时与实际 deadline 可观测；PFA 全 RAM 耗尽预算按真实工作量调整，四并发红绿对照和显式短超时负向检查通过，不减少断言或忽略失败（028，工作区 3.10）。
 - [x] A2a：三个 linker 预留 8 MiB heap，起始 arena/扩容不得越过 heap_end；加入并通过 heap_bounds（004，`44dedc2`）。
@@ -1939,7 +1963,7 @@ DeviceManager 的框架存在、运行时设备计数为 0 与 UART 实际通过
   - [x] 恶意帧、注册备用栈容量、只读/未映射/回绕、内核哨兵与合法嵌套往返验收，九配置通过（003，3.40）。
   - [ ] IRQ CPU-bound 信号专项及 020 的其余投递语义；不因 003 关闭而勾选整个 B4。
 
-**退出条件：** 各架构静态页表/布局检查通过；能运行用户态的架构上，坏指针、坏栈、特权状态和只读映射攻击只影响调用进程。x86 正常用户态已接通，可直接补隔离测试；普通 users 套件没有执行这些攻击，不能勾为通过。
+**退出条件：** 各架构静态页表/布局检查通过；能运行用户态的架构上，坏指针、坏栈、特权状态和只读映射攻击只影响调用进程。MOSS-001/003 的限定攻击矩阵已有用户态回归；共享 exec、更多并发 VM 与 MOSS-020 信号投递仍须按各自范围验收。
 
 ### 阶段 C：建立三架构真实用户态闭环与 VM 事务
 
@@ -1958,19 +1982,19 @@ DeviceManager 的框架存在、运行时设备计数为 0 与 UART 实际通过
 ### 阶段 D：闭合调度、等待和退出生命周期
 
 - [ ] D1：运行队列原子取任务、on_cpu 交接、迁移锁序及 affinity（017）。
-- [ ] D2：共同 WaitQueue 和唤醒原因，修复 wait/console/nanosleep 及 timer cancel（018、019）。
+- [ ] D2：wait/console 的登记—睡眠、nanosleep 交接与同步取消已实现；补 child-exit/RX 确定性交错、多读者和 wait/nanosleep 中断结果的统一验收（018、019）。
 - [x] D3a：删除 C++ inline 换栈，复用已有 context_switch 返回活跃 bootstrap 调度上下文（023，`44dedc2`）。
-- [ ] D3b：验证旧栈/上下文生命周期；原失败对照及至少 1,000 次、多 CPU、资源稳定性实验后才关闭旧停滞（023）。
+- [ ] D3b：默认 4 CPU 的 1,000 次生命周期与资源检查已有九预设通过记录；补旧第 28 次停滞红绿对照、1/16 CPU 长循环及旧栈/上下文生命周期专项验收（023）。
 - [x] D4a：`Process` 拥有信号状态，fork 继承、exec 重置、exit 回收及跨旧固定槽边界验收通过（021，工作区 3.23）。
-- [ ] D4b：FD 所有权和 Zombie 前关闭已实现，EOF-before-wait 与资源恢复已验证；RV64 Debug 默认 30 秒矩阵仍需闭合（022，工作区 3.23）。
-- [ ] D5：统一 IRQ/syscall 返回处的信号和抢占检查，补 STOP/CONT/SIGCHLD（020）。
+- [ ] D4b：FD 所有权、Zombie 前关闭及 EOF-before-wait 已验证，默认 1,000 次生命周期有最近九预设通过记录；保留 3.23 旧超时，继续查原故障因果和更广压力（022）。
+- [ ] D5：基本 SIGCHLD、pipe/console 中断已有用例；补 CPU-bound 的 IRQ 返回投递、STOP/CONT 和 wait/nanosleep 中断语义（020）。
 
 **退出条件：** 连续 1,000 次进程生命周期和可控并发交错通过；CPU-bound 信号可达；阻塞、取消、退出都无丢失唤醒；运行者/队列/资源计数始终满足不变量。一次性启动成功不满足此阶段。
 
 ### 阶段 E：修复 VFS 语义并收敛对外能力
 
-- [ ] E1：FD 模式检查、File 引用/偏移保护、可回收池和所有失败回滚（024、026）。
-- [ ] E2：pipe 的正确阻塞、EOF、端点关闭和写原子性（025，依赖 D2/D4）。
+- [ ] E1：FD 模式检查、稳定 File 引用、池锁/回收和 pipe 输出失败回滚已有实现；补共享 offset/close 并发及各分配阶段故障注入（024、026）。
+- [ ] E2：pipe 的阻塞、EOF、EPIPE/SIGPIPE 和小写入容量保留已有实现；补确定性多读写者、端点关闭交错和写入原子性验收（025，依赖 D2/D4）。
 - [x] E3a：x86 TSC/LAPIC 独立 PIT 校准，RV64 DTB timebase + SBI TIME；无 Sstc 配置已有验收（029，`6252484`）。
 - [ ] E3b：缺失/失败的计时能力、SBI 返回、误差和 CPU 变化验收；所有空实现改为 Unsupported（029、030）。
 - [x] E4a：按 ADR-0005 拆分内核/构建/runner；本次同步两份清单和能力矩阵，保留历史证据（031、032）。
@@ -2047,6 +2071,6 @@ DeviceManager 的框架存在、运行时设备计数为 0 与 UART 实际通过
 
 ## 14. 最终建议
 
-Moss 当前最需要的是建立一条可信的工程闭环：**正确拥有内存 → 正确隔离用户态 → 正确保存/恢复现场 → 原子调度与唤醒 → 完整退出回收 → 测试能真实判错**。其中堆预留、退出切换和测试基础已有明确进展，剩余权限、RCU、VM/资源事务和并发验收仍有独立缺口；任何单个演示通过都不足以替代它们。
+Moss 当前最需要的是建立一条可信的工程闭环：**正确拥有内存 → 正确隔离用户态 → 正确保存/恢复现场 → 原子调度与唤醒 → 完整退出回收 → 测试能真实判错**。内核页权限、原生信号帧、伪 RCU 替换和退出切换已有明确验收或修复；共享 VM、调度等待、资源并发与真机验收仍有独立缺口，不能由单次演示替代。
 
 在此基础上，现有代码完全可以继续演进为可靠的多架构研究内核。优先修复本文 P0/P1，按阶段验收；暂缓新增复杂功能，保留简单、可解释、有界且失败行为明确的实现。后续方案若改变本文判断，应附新的源码或运行证据，并更新对应条目的事实状态与验收结果，而不是只修改完成标记。
