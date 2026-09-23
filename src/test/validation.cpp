@@ -5688,6 +5688,7 @@ void declare_cases() {
     ut::register_test("ipc_heap_rollback", ipc_heap_rollback);
     ut::register_test("ipc_shared_backing", moss::test::ipc_regression::shared_backing);
     ut::register_test("ipc_shared_lifecycle", moss::test::ipc_regression::shared_lifecycle);
+    ut::register_test("ipc_service_lifecycle", moss::test::ipc_regression::service_lifecycle);
     ut::register_test("ipc_ring_wrap", moss::test::ipc_regression::ring_wrap);
     ut::register_test("ipc_ring_geometry", moss::test::ipc_regression::ring_geometry);
     ut::register_test("ownership", container_ownership);

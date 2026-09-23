@@ -730,6 +730,9 @@ struct ConnectionDescriptor {
 // IPC管理器主类
 class IpcManager {
 private:
+  // ponytail: one lock makes cross-map lifecycle transitions atomic; use
+  // per-service reservations if connection churn makes this a bottleneck.
+  containers::IrqSpinLock lifecycle_lock_;
   containers::LockedHashMap<ServiceId, shared_ptr<ServiceDescriptor>> services_;
   containers::LockedHashMap<ChannelId, shared_ptr<ZeroCopyChannel>> channels_;
   containers::LockedHashMap<ChannelId, shared_ptr<ConnectionDescriptor>> connections_;
@@ -767,31 +770,38 @@ public:
     if (service_name == nullptr) {
       return KernelResult<ServiceId>{KernelError::InvalidArgument};
     }
-    if (static_cast<bool>(find_service_by_name(service_name))) {
+    containers::LockGuard<containers::IrqSpinLock> guard(lifecycle_lock_);
+    bool duplicate = false;
+    services_.for_each([&](const auto &entry) {
+      if (moss::abi::bridge::strcmp(entry.value->service_name, service_name) == 0)
+        duplicate = true;
+    });
+    if (duplicate)
       return KernelResult<ServiceId>{KernelError::AlreadyExists};
-    }
-    ServiceId service_id = next_service_id_.fetch_add(1, containers::MemoryOrder::Relaxed);
-    auto service = make_shared<ServiceDescriptor>(service_id, provider_pid, service_name);
+    auto service = make_shared<ServiceDescriptor>(0U, provider_pid, service_name);
+    if (!service)
+      return KernelResult<ServiceId>{KernelError::OutOfMemory};
     service->max_clients = max_clients;
+    ServiceId service_id = next_service_id_.fetch_add(1, containers::MemoryOrder::Relaxed);
+    service->service_id = service_id;
     services_.insert_or_update(service_id, service);
     (void)total_services_.fetch_add(1, containers::MemoryOrder::Relaxed);
     return KernelResult<ServiceId>{service_id};
   }
 
   [[nodiscard]] VoidResult unregister_service(ServiceId service_id, ProcessId provider_pid) noexcept {
-    auto service_ptr = services_.find(service_id);
-    if (!service_ptr) {
-      return VoidResult{KernelError::NotFound};
+    {
+      containers::LockGuard<containers::IrqSpinLock> guard(lifecycle_lock_);
+      auto service_ptr = services_.find(service_id);
+      if (!service_ptr)
+        return VoidResult{KernelError::NotFound};
+      if ((*service_ptr)->provider_pid != provider_pid)
+        return VoidResult{KernelError::PermissionDenied};
+      services_.remove(service_id);
+      (void)total_services_.fetch_sub(1, containers::MemoryOrder::Relaxed);
     }
-    auto service = *service_ptr;
-    if (service->provider_pid != provider_pid) {
-      return VoidResult{KernelError::PermissionDenied};
-    }
-    if (!services_.remove(service_id)) {
-      return VoidResult{KernelError::NotFound};
-    }
+    // No connection can publish after removal; drain the previously published set.
     close_service_channels(service_id);
-    (void)total_services_.fetch_sub(1, containers::MemoryOrder::Relaxed);
     return VoidResult{};
   }
 
@@ -814,12 +824,22 @@ public:
       return KernelResult<ChannelId>{init_result.error()};
     }
     auto conn = make_shared<ConnectionDescriptor>(channel_id, client_pid, service->provider_pid, service_id);
-    channels_.insert_or_update(channel_id, moss::move(channel));
-    connections_.insert_or_update(channel_id, conn);
-    (void)service->current_clients.fetch_add(1, containers::MemoryOrder::AcqRel);
-    (void)total_channels_.fetch_add(1, containers::MemoryOrder::Relaxed);
-    add_process_channel(client_pid, channel_id);
-    add_process_channel(service->provider_pid, channel_id);
+    if (!conn)
+      return KernelResult<ChannelId>{KernelError::OutOfMemory};
+    {
+      containers::LockGuard<containers::IrqSpinLock> guard(lifecycle_lock_);
+      auto current = services_.find(service_id);
+      if (!current || current->get() != service.get())
+        return KernelResult<ChannelId>{KernelError::NotFound};
+      if (service->current_clients.load(containers::MemoryOrder::Acquire) >= service->max_clients)
+        return KernelResult<ChannelId>{KernelError::ResourceExhausted};
+      channels_.insert_or_update(channel_id, moss::move(channel));
+      connections_.insert_or_update(channel_id, conn);
+      (void)service->current_clients.fetch_add(1, containers::MemoryOrder::AcqRel);
+      (void)total_channels_.fetch_add(1, containers::MemoryOrder::Relaxed);
+      add_process_channel(client_pid, channel_id);
+      add_process_channel(service->provider_pid, channel_id);
+    }
     return KernelResult<ChannelId>{channel_id};
   }
 
@@ -833,26 +853,26 @@ public:
   }
 
   [[nodiscard]] VoidResult disconnect(ChannelId channel_id, ProcessId requester_pid) noexcept {
-    auto conn_ptr = connections_.find(channel_id);
-    if (!conn_ptr) {
-      return VoidResult{KernelError::NotFound};
+    shared_ptr<ZeroCopyChannel> retired_channel;
+    {
+      containers::LockGuard<containers::IrqSpinLock> guard(lifecycle_lock_);
+      auto conn_ptr = connections_.find(channel_id);
+      if (!conn_ptr)
+        return VoidResult{KernelError::NotFound};
+      auto conn = *conn_ptr;
+      if (conn->client_pid != requester_pid && conn->server_pid != requester_pid)
+        return VoidResult{KernelError::PermissionDenied};
+      connections_.remove(channel_id);
+      auto channel = channels_.extract(channel_id);
+      if (channel)
+        retired_channel = moss::move(*channel);
+      auto service_ptr = services_.find(conn->service_id);
+      if (service_ptr)
+        (void)(*service_ptr)->current_clients.fetch_sub(1, containers::MemoryOrder::AcqRel);
+      remove_process_channel(conn->client_pid, channel_id);
+      remove_process_channel(conn->server_pid, channel_id);
+      (void)total_channels_.fetch_sub(1, containers::MemoryOrder::Relaxed);
     }
-    auto conn = *conn_ptr;
-    if (conn->client_pid != requester_pid && conn->server_pid != requester_pid) {
-      return VoidResult{KernelError::PermissionDenied};
-    }
-    if (!connections_.remove(channel_id)) {
-      return VoidResult{KernelError::NotFound};
-    }
-    channels_.remove(channel_id);
-    auto service_ptr = services_.find(conn->service_id);
-    if (static_cast<bool>(service_ptr)) {
-      auto service = *service_ptr;
-      (void)service->current_clients.fetch_sub(1, containers::MemoryOrder::AcqRel);
-    }
-    remove_process_channel(conn->client_pid, channel_id);
-    remove_process_channel(conn->server_pid, channel_id);
-    (void)total_channels_.fetch_sub(1, containers::MemoryOrder::Relaxed);
     return VoidResult{};
   }
 
@@ -948,8 +968,11 @@ public:
 
 private:
   [[nodiscard]] shared_ptr<ServiceDescriptor> find_service_by_name(const char *name) noexcept {
+    // Compare borrowed names while removal is excluded; the returned
+    // descriptor remains owned, subject to service_name's lifetime contract.
+    containers::LockGuard<containers::IrqSpinLock> guard(lifecycle_lock_);
     shared_ptr<ServiceDescriptor> found_service;
-    services_.for_each_snapshot([name, &found_service](const auto &entry) {
+    services_.for_each([name, &found_service](const auto &entry) {
       auto service = entry.value;
       if (moss::abi::bridge::strcmp(service->service_name, name) == 0) {
         found_service = service;
@@ -1004,6 +1027,8 @@ private:
   [[nodiscard]] static u64 get_current_time() noexcept { return arch::get_timestamp_counter(); }
 
   void cleanup() noexcept {
+    // Destruction requires callers to have stopped; the lifecycle lock only
+    // serializes mutations while this manager is alive.
     channels_.clear();
     connections_.clear();
     services_.clear();
