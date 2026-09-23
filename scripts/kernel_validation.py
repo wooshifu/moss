@@ -72,7 +72,7 @@ CATALOG = {
     "containers.smp": ["interleaving"],
     "vfs.smp": ["shared_references"],
     "mm.lifetime": ["held_readers", "hardware_root", "kernel_root"],
-    "mm.concurrent": ["cow_fault", "demand_fault", "fault_unmap", "fault_fork"],
+    "mm.concurrent": ["cow_fault", "demand_fault", "fault_unmap", "fault_fork", "fork_unmap"],
     "mm.uaccess": ["copy_unmap", "copy_fork"],
     "mm.tlb_broadcast": [
         "local_remap",
