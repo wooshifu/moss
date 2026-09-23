@@ -3233,6 +3233,72 @@ static int console_signal_wait(int partial) {
 static int test_console_interrupted(void) { return console_signal_wait(0); }
 static int test_console_partial_interrupt(void) { return console_signal_wait(1); }
 
+static int test_console_multi_reader(void) {
+  long results[2];
+  if (pipe(results) != 0) {
+    return 1;
+  }
+  long children[2] = {-1, -1};
+  for (unsigned actor = 0; actor < 2; ++actor) {
+    children[actor] = fork();
+    if (children[actor] == 0) {
+      close((int)results[0]);
+      unsigned cpu_mask = 1U << (actor + 1);
+      if (syscall3(20, 0, sizeof(cpu_mask), (long)&cpu_mask) != 0 || current_cpu() != actor + 1) {
+        _exit(98);
+      }
+      long fd = open("/dev/console", 0);
+      char byte = 0;
+      long count = fd >= 0 ? read((int)fd, &byte, 1) : -1;
+      int failed = count != 1 || (byte != 'a' && byte != 'b');
+      if (!failed) {
+        failed = write((int)results[1], &byte, 1) != 1;
+      }
+      if (fd >= 0) {
+        close((int)fd);
+      }
+      close((int)results[1]);
+      _exit(failed ? 98 : 42);
+    }
+    if (children[actor] < 0) {
+      break;
+    }
+  }
+  close((int)results[1]);
+  int errors = children[0] < 0 || children[1] < 0;
+  if (!errors) {
+    long ready;
+    while ((ready = control(57, children[0], children[1])) == 0) {
+      sched_yield(); // The host case deadline bounds a missing reader.
+    }
+    errors = ready != 1;
+  }
+  if (errors) {
+    for (unsigned i = 0; i < 2; ++i) {
+      if (children[i] > 0) {
+        kill(children[i], SIGKILL);
+      }
+    }
+  } else {
+    // The host injects actual serial bytes only after both read continuations
+    // are observed; two results prove each blocked reader made progress.
+    print("MOSS_CONSOLE_MULTI_READY\n");
+    char got[2] = {0, 0};
+    errors |= read((int)results[0], &got[0], 1) != 1;
+    errors |= read((int)results[0], &got[1], 1) != 1;
+    print("\n"); // Keep validation protocol lines clear of console echo.
+    errors |= !((got[0] == 'a' && got[1] == 'b') || (got[0] == 'b' && got[1] == 'a'));
+  }
+  close((int)results[0]);
+  for (unsigned i = 0; i < 2; ++i) {
+    int status = 0;
+    if (children[i] > 0) {
+      errors |= waitpid(children[i], &status, 0) != children[i] || status != (42 << 8);
+    }
+  }
+  return errors;
+}
+
 static int test_pid_lifecycle(void) {
   // 300 children cross both the 255-user-ASID lease limit and the former
   // 256-slot signal table boundary while keeping concurrent population low.
@@ -3330,7 +3396,8 @@ static int signal_case(const char *name) {
                {"pipe_partial_interrupt", test_pipe_partial_interrupt},
                {"signal_wakeup_affinity", test_signal_wakeup_affinity},
                {"console_interrupted", test_console_interrupted},
-               {"console_partial_interrupt", test_console_partial_interrupt}};
+               {"console_partial_interrupt", test_console_partial_interrupt},
+               {"console_multi_reader", test_console_multi_reader}};
   if (streq(name, "exec_reset")) {
     return test_exec_reset();
   }
@@ -3626,7 +3693,8 @@ void _start(long argc, const char **argv) {
                            "pipe_partial_interrupt",
                            "signal_wakeup_affinity",
                            "console_interrupted",
-                           "console_partial_interrupt"};
+                           "console_partial_interrupt",
+                           "console_multi_reader"};
     for (unsigned test = 0; test < sizeof(cases) / sizeof(cases[0]); ++test) {
       control(1, test, 0);
       long child = fork();
