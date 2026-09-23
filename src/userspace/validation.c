@@ -182,7 +182,7 @@ static unsigned long wait_status_rollback(void) {
     int status = 0;
     // 3 includes an unsupported wait option; adding 2^32 must not alias the
     // live child PID through narrowing. Status uses its 8-bit code at bit 8.
-    errors |= (unsigned long)(waitpid(child, &status, 3) != -22) << 1;
+    errors |= (unsigned long)(waitpid(child, &status, 16) != -22) << 1;
     errors |= (unsigned long)(waitpid(child + (1UL << 32), &status, 1) != -10) << 2;
     // A failed copyout must leave the zombie collectable by a later wait.
     errors |= (unsigned long)(waitpid(child, (int *)1, 0) != -14) << 3;
@@ -2476,6 +2476,71 @@ static int test_stop_continue(void) {
   return 0;
 }
 
+static int test_wait_job_status(void) {
+  enum { WAIT_NOHANG = 1, WAIT_UNTRACED = 2, WAIT_CONTINUED = 8 };
+  long ready[2];
+  if (pipe(ready) != 0) {
+    return 1;
+  }
+  const long child = fork();
+  if (child == 0) {
+    close((int)ready[0]);
+    unsigned cpu_mask = 1U << 1;
+    struct sigaction_t usr1 = {(unsigned long)sigusr1_handler, 0, 0};
+    handler_called = 0;
+    if (syscall3(20, 0, sizeof(cpu_mask), (long)&cpu_mask) != 0 || moss_sigaction(SIGUSR1, &usr1, 0) != 0) {
+      _exit(98);
+    }
+    const unsigned char byte = 37;
+    if (write((int)ready[1], &byte, 1) != 1 || close((int)ready[1]) != 0) {
+      _exit(98);
+    }
+    while (control(55, getppid(), getpid()) != 1) {
+      sched_yield();
+    }
+    if (kill(getpid(), SIGSTOP) != 0) {
+      _exit(98);
+    }
+    while (!handler_called) {
+      __asm__ volatile("" ::: "memory");
+    }
+    _exit(current_cpu() == 1 ? 42 : 98);
+  }
+  close((int)ready[1]);
+  if (child < 0) {
+    close((int)ready[0]);
+    return 1;
+  }
+  unsigned char byte = 0;
+  int errors = read((int)ready[0], &byte, 1) != 1 || byte != 37;
+  close((int)ready[0]);
+  int status = 0x12345678;
+  errors |= waitpid(child, &status, WAIT_NOHANG | WAIT_UNTRACED | WAIT_CONTINUED) != 0 || status != 0x12345678;
+  if (!errors) {
+    errors |= waitpid(child, (int *)1, WAIT_UNTRACED) != -14;
+    errors |= waitpid(child, &status, WAIT_UNTRACED) != child || status != ((SIGSTOP << 8) | 0x7f);
+    status = 0x12345678;
+    errors |= waitpid(child, &status, WAIT_NOHANG | WAIT_UNTRACED) != 0 || status != 0x12345678;
+    errors |= waitpid(child, &status, WAIT_NOHANG) != 0;
+  }
+  if (!errors) {
+    errors |= kill(child, SIGCONT) != 0;
+  }
+  if (!errors) {
+    errors |= waitpid(child, &status, WAIT_CONTINUED) != child || status != 0xffff;
+    status = 0x12345678;
+    errors |= waitpid(child, &status, WAIT_NOHANG | WAIT_CONTINUED) != 0 || status != 0x12345678;
+    errors |= waitpid(child, &status, WAIT_NOHANG) != 0;
+  }
+  if (errors || kill(child, SIGUSR1) != 0) {
+    kill(child, SIGKILL);
+    errors = 1;
+  }
+  status = 0;
+  errors |= waitpid(child, &status, 0) != child || (!errors && status != (42 << 8));
+  return errors != 0;
+}
+
 // Test 4: sigprocmask — block and unblock
 static int test_sigprocmask(void) {
   print("\n=== Test 4: sigprocmask block/unblock ===\n");
@@ -3646,6 +3711,7 @@ static int signal_case(const char *name) {
                {"wait_restarted", test_wait_restarted},
                {"cpu_bound_irq", test_cpu_bound_irq},
                {"stop_continue", test_stop_continue},
+               {"wait_job_status", test_wait_job_status},
                {"sigprocmask", test_sigprocmask},
                {"sigaltstack", test_sigaltstack},
                {"sig_ign", test_sig_ign},
@@ -3948,6 +4014,7 @@ void _start(long argc, const char **argv) {
                            "wait_restarted",
                            "cpu_bound_irq",
                            "stop_continue",
+                           "wait_job_status",
                            "sigprocmask",
                            "sigaltstack",
                            "sig_ign",

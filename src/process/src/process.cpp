@@ -623,6 +623,7 @@ KernelResult<VirtAddr> allocate_user_heap(Process *process, usize size) noexcept
 
   // 1. Mark thread terminated BEFORE dequeue (prevents re-enqueue by scheduler_tick)
   cur->state = ProcessState::Terminated;
+  cur->publish_wait_status(0);
   if (g_scheduler) {
     g_scheduler->dequeue_task(cur);
   }
