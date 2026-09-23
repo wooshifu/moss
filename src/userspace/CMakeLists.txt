@@ -62,6 +62,7 @@ set(MOSS_INIT_ELF ${CMAKE_CURRENT_BINARY_DIR}/mlibc/init.elf)
 set(MOSS_FILE_SERVICE_ELF ${CMAKE_CURRENT_BINARY_DIR}/mlibc/file-service.elf)
 set(MOSS_NAMESPACE_SERVICE_ELF ${CMAKE_CURRENT_BINARY_DIR}/mlibc/namespace-service.elf)
 set(MOSS_FILE_ELF ${CMAKE_CURRENT_BINARY_DIR}/mlibc/moss-file.elf)
+set(MOSS_DOMAIN_ELF ${CMAKE_CURRENT_BINARY_DIR}/mlibc/moss-domain.elf)
 if(MOSS_BUILD_TESTS)
     set(LIBC_VALIDATION_ELF ${CMAKE_CURRENT_BINARY_DIR}/mlibc/libc_validation.elf)
     add_userspace_program(validation)
@@ -100,14 +101,17 @@ add_custom_command(
     COMMAND ${CMAKE_COMMAND} -E copy_if_different ${MOSS_FILE_SERVICE_ELF} ${CMAKE_BINARY_DIR}/userspace/file-service.elf
     COMMAND ${CMAKE_COMMAND} -E copy_if_different ${MOSS_NAMESPACE_SERVICE_ELF} ${CMAKE_BINARY_DIR}/userspace/namespace-service.elf
     COMMAND ${CMAKE_COMMAND} -E copy_if_different ${MOSS_FILE_ELF} ${CMAKE_BINARY_DIR}/userspace/moss-file.elf
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different ${MOSS_DOMAIN_ELF} ${CMAKE_BINARY_DIR}/userspace/moss-domain.elf
     COMMAND uv run ${CMAKE_SOURCE_DIR}/scripts/gen_initramfs.py ${CMAKE_BINARY_DIR}/initramfs.cpio
             ${CMAKE_BINARY_DIR}/userspace init.elf file-service.elf namespace-service.elf moss-file.elf busybox.elf
+            moss-domain.elf
     DEPENDS moss-init ${MOSS_INIT_ELF} moss-file-service ${MOSS_FILE_SERVICE_ELF}
             moss-namespace-service ${MOSS_NAMESPACE_SERVICE_ELF} moss-file ${MOSS_FILE_ELF}
+            moss-domain ${MOSS_DOMAIN_ELF}
             busybox-validation ${BUSYBOX_ELF} ${CMAKE_SOURCE_DIR}/scripts/gen_initramfs.py
     BYPRODUCTS ${CMAKE_BINARY_DIR}/userspace/init.elf ${CMAKE_BINARY_DIR}/userspace/file-service.elf
                ${CMAKE_BINARY_DIR}/userspace/namespace-service.elf ${CMAKE_BINARY_DIR}/userspace/moss-file.elf
-               ${CMAKE_BINARY_DIR}/userspace/busybox.elf
+               ${CMAKE_BINARY_DIR}/userspace/busybox.elf ${CMAKE_BINARY_DIR}/userspace/moss-domain.elf
     WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
     COMMENT "Generating initramfs.cpio"
     VERBATIM

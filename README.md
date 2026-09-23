@@ -54,8 +54,11 @@ diagnostic PID is retired. `moss-init` observes service exits by capability
 and reaps orphaned POSIX shell descendants through `waitpid`. Ordinary shell
 files, ELF loading, process compatibility, interrupt/timer bootstrap and the
 early console still use kernel implementations. The transitional kernel
-`kill(pid)` path can still target a running native domain; removing that PID
-authority requires the Process Compatibility Service. The accepted
+`kill(pid)` path continues to serve POSIX child relationships but rejects
+unrelated control of native domains. The privileged management shell receives
+selected service and supervisor termination capabilities for recovery checks.
+Moving the remaining POSIX identity and signal policy into the Process
+Compatibility Service is still pending. The accepted
 [architecture decisions](docs/adr/) describe their intended migration.
 
 For example, after launching QEMU:

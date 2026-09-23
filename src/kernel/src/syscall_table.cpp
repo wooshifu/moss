@@ -265,6 +265,10 @@ public:
       : Object(capability::ObjectType::Domain), process(moss::move(target)) {}
 };
 
+inline constexpr u32 kFullDomainRights = capability::rights::DOMAIN_TERMINATE | capability::rights::DOMAIN_INSPECT |
+                                         capability::rights::DOMAIN_OBSERVE | capability::rights::TRANSFER |
+                                         capability::rights::DUPLICATE;
+
 struct DomainExitStatus {
   i32 code;
   u32 signal;
@@ -537,10 +541,7 @@ static long do_fork(u64 domain_cap_out_addr, const capability::ForkSelection *se
       cleanup_child(child_proc.get());
       return -errc::ENOMEM;
     }
-    auto handle = parent_proc->capabilities().install(
-        moss::move(object), capability::rights::DOMAIN_TERMINATE | capability::rights::DOMAIN_INSPECT |
-                                capability::rights::DOMAIN_OBSERVE | capability::rights::TRANSFER |
-                                capability::rights::DUPLICATE);
+    auto handle = parent_proc->capabilities().install(moss::move(object), kFullDomainRights);
     if (!handle) {
       cleanup_child(child_proc.get());
       return domain_cap_error(handle.error());
@@ -598,6 +599,19 @@ long sys_domain_id(long handle, long, long, long, long, long) noexcept {
   if (!object)
     return domain_cap_error(object.error());
   return static_cast<long>(static_cast<DomainObject *>((*object).get())->process->pid());
+}
+
+long sys_domain_self(long, long, long, long, long, long) noexcept {
+  auto caller = process::current_process();
+  if (!caller)
+    return -errc::ESRCH;
+  // Ordinary do_exit clears the caller's table before publishing exit,
+  // breaking this self-handle cycle. Initial-supervisor exit resets the system.
+  auto object = shared_ptr<capability::Object>::try_make<DomainObject>(moss::abi::bridge::moss_heap_allocate, caller);
+  if (!object)
+    return -errc::ENOMEM;
+  auto handle = caller->capabilities().install(moss::move(object), kFullDomainRights);
+  return handle ? static_cast<long>(*handle) : domain_cap_error(handle.error());
 }
 
 long sys_domain_terminate(long handle, long, long, long, long, long) noexcept {
@@ -1267,11 +1281,20 @@ long sys_waitpid(long pid, long wstatus, long options, long /*unused*/, long /*u
   return sys_wait4(pid, wstatus, options, 0, 0, 0);
 }
 
+static bool pid_control_requires_capability(const process::Process &target, ProcessId caller_pid) noexcept {
+  // A parentless native domain has no POSIX peer authority. Its own ordinary
+  // fork children retain parent-directed signals until the compatibility
+  // service owns that relationship. PID 1 has no such exception: losing the
+  // initial supervisor resets the whole system.
+  return target.parent_pid() == INVALID_PROCESS_ID && target.pid() != caller_pid &&
+         (target.is_initial_supervisor() || !target.is_child(caller_pid));
+}
+
 // kill(pid, sig) — send signal to process.
-//   pid > 0:  send to specific process
-//   pid == 0: send to all processes in caller's process group
-//   pid == -1: send to all processes (except init) — simplified
-//   pid < -1: send to process group |pid|
+//   pid > 0:  send to one POSIX-visible process
+//   pid == 0: send to POSIX-visible members of the caller's group
+//   pid == -1: send to all POSIX-visible processes (except init) — simplified
+//   pid < -1: send to POSIX-visible members of group |pid|
 long sys_kill(long pid_arg, long sig_arg, long /*unused*/, long /*unused*/, long /*unused*/, long /*unused*/) noexcept {
   using namespace moss::kernel::process;
 
@@ -1297,6 +1320,9 @@ long sys_kill(long pid_arg, long sig_arg, long /*unused*/, long /*unused*/, long
     if (!target) {
       return -errc::ESRCH;
     }
+    if (pid_control_requires_capability(*target, cur->owner_pid)) {
+      return -errc::EPERM;
+    }
     Thread *main_thread = target->get_main_thread();
     if (!main_thread) {
       return -errc::ESRCH;
@@ -1319,7 +1345,7 @@ long sys_kill(long pid_arg, long sig_arg, long /*unused*/, long /*unused*/, long
     ProcessId my_pgid = caller->pgid();
     bool sent = false;
     g_process_manager->for_each_process([&](ProcessId, Process *proc) {
-      if (proc->pgid() == my_pgid) {
+      if (proc->pgid() == my_pgid && !pid_control_requires_capability(*proc, cur->owner_pid)) {
         Thread *thr = proc->get_main_thread();
         if (thr && (signo == 0 || send_signal(thr, signo))) {
           sent = true;
@@ -1334,7 +1360,7 @@ long sys_kill(long pid_arg, long sig_arg, long /*unused*/, long /*unused*/, long
     auto target_pgid = static_cast<ProcessId>(-pid);
     bool sent = false;
     g_process_manager->for_each_process([&](ProcessId, Process *proc) {
-      if (proc->pgid() == target_pgid) {
+      if (proc->pgid() == target_pgid && !pid_control_requires_capability(*proc, cur->owner_pid)) {
         Thread *thr = proc->get_main_thread();
         if (thr && (signo == 0 || send_signal(thr, signo))) {
           sent = true;
@@ -1344,11 +1370,11 @@ long sys_kill(long pid_arg, long sig_arg, long /*unused*/, long /*unused*/, long
     return sent ? 0 : -errc::ESRCH;
   }
 
-  // pid == -1: send to all (simplified — skip PID 0 and PID 1)
+  // pid == -1: send to all POSIX-visible processes except init.
   bool sent = false;
   g_process_manager->for_each_process([&](ProcessId proc_pid, Process *proc) {
-    if (proc_pid <= 1) {
-      return; // skip kernel (0) and init (1)
+    if (proc_pid <= 1 || pid_control_requires_capability(*proc, cur->owner_pid)) {
+      return;
     }
     Thread *thr = proc->get_main_thread();
     if (thr && (signo == 0 || send_signal(thr, signo))) {
@@ -2473,9 +2499,13 @@ long sys_sched_setaffinity(long pid_arg, long /*unused*/, long mask_addr, long /
 
   shared_ptr<Process> proc; // Own target threads throughout this syscall.
   Thread *target = nullptr;
+  Thread *current = CfsScheduler::get_current_task();
+  if (!current) {
+    return -errc::ESRCH;
+  }
 
   if (pid_arg == 0) {
-    target = CfsScheduler::get_current_task();
+    target = current;
   } else {
     if (!g_process_manager) {
       return -errc::ESRCH;
@@ -2484,6 +2514,9 @@ long sys_sched_setaffinity(long pid_arg, long /*unused*/, long mask_addr, long /
     if (!proc) {
       return -errc::ESRCH;
     }
+    if (pid_control_requires_capability(*proc, current->owner_pid)) {
+      return -errc::EPERM;
+    }
     target = proc->get_main_thread();
   }
 
@@ -2491,7 +2524,6 @@ long sys_sched_setaffinity(long pid_arg, long /*unused*/, long mask_addr, long /
     return -errc::ESRCH;
   }
 
-  Thread *current = CfsScheduler::get_current_task();
   const bool changes_current = target == current;
   const bool restore_irqs = changes_current && arch::interrupts_enabled();
   if (changes_current) {
@@ -3037,7 +3069,8 @@ const SyscallDescriptor SYSCALL_TABLE[static_cast<int>(SyscallNumber::MAX_SYSCAL
     {"domain_wait", handlers::sys_domain_wait, 1, true, "Wait for a capability-addressed domain to exit"},
     {"fork_domain_select", handlers::sys_fork_domain_select, 3, true, "Fork with selected inherited capabilities"},
     {"domain_wait_any", handlers::sys_domain_wait_any, 2, true, "Wait for one of several capability-addressed domains"},
-    {"domain_status", handlers::sys_domain_status, 2, true, "Read a capability-addressed domain's exit cause"}};
+    {"domain_status", handlers::sys_domain_status, 2, true, "Read a capability-addressed domain's exit cause"},
+    {"domain_self", handlers::sys_domain_self, 0, true, "Acquire a capability for the calling domain"}};
 
 // 系统调用分发器实现
 long SyscallDispatcher::dispatch(long syscall_number, long arg0, long arg1, long arg2, long arg3, long arg4,

@@ -10,6 +10,7 @@ void *memset(void *destination, int value, unsigned long count) {
 }
 
 enum {
+  IPC_EPERM = 1,
   IPC_ESRCH = 3,
   IPC_EINTR = 4,
   IPC_EBADF = 9,
@@ -495,6 +496,13 @@ unsigned long ipc_domain_control(void) {
   // rather than leave the validation runner waiting on an immortal child.
   enum { DOMAIN_CHILD_SLEEP_NS = 10000000, DOMAIN_CHILD_SLEEP_CYCLES = 100, DOMAIN_OBSERVER_DELAY_NS = 50000000 };
   unsigned long errors = (unsigned long)(syscall1(SYS_FORK_DOMAIN, 0) != -IPC_EFAULT);
+  long self = syscall0(SYS_DOMAIN_SELF);
+  errors |= (unsigned long)(self <= 0) << 33;
+  if (self > 0) {
+    errors |= (unsigned long)(syscall1(SYS_DOMAIN_ID, self) != getpid()) << 34;
+    errors |= (unsigned long)(syscall1(SYS_DOMAIN_WAIT, self) != -IPC_EINVAL) << 35;
+    errors |= (unsigned long)(syscall1(SYS_CAP_CLOSE, self) != 0) << 36;
+  }
   unsigned long domain = 0;
   long child = syscall1(SYS_FORK_DOMAIN, (long)&domain);
   if (child == 0) {
@@ -520,6 +528,11 @@ unsigned long ipc_domain_control(void) {
   struct moss_domain_exit status = {0};
   errors |= (unsigned long)(syscall1(SYS_DOMAIN_ID, (long)domain) != child) << 2;
   errors |= (unsigned long)(syscall3(SYS_WAITPID, child, 0, 1) != -IPC_ECHILD) << 24;
+  errors |= (unsigned long)(syscall2(SYS_KILL, child, 0) != -IPC_EPERM) << 30;
+  errors |= (unsigned long)(syscall2(SYS_KILL, child, SIGKILL) != -IPC_EPERM) << 31;
+  unsigned int affinity = 1;
+  errors |= (unsigned long)(syscall3(SYS_SCHED_SETAFFINITY, child, sizeof(affinity), (long)&affinity) != -IPC_EPERM)
+            << 32;
   errors |= (unsigned long)(syscall2(SYS_DOMAIN_STATUS, (long)domain, (long)&status) != -IPC_EAGAIN) << 27;
   errors |= (unsigned long)(inspect <= 0) << 3;
   if (inspect > 0) {

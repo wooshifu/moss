@@ -232,28 +232,50 @@ fail:
   return -1;
 }
 
-static pid_t start_shell(long namespace_capability, long *domain) {
+static pid_t start_shell(long namespace_capability, long file_domain, long namespace_domain, long supervisor_domain,
+                         long *domain) {
   *domain = 0;
+  if (namespace_capability <= 0 || file_domain <= 0 || namespace_domain <= 0 || supervisor_domain <= 0)
+    return -1;
   char namespace_env[64]; // Environment key plus decimal 64-bit handle.
+  char file_domain_env[64], namespace_domain_env[64], supervisor_domain_env[64];
   int size =
       snprintf(namespace_env, sizeof(namespace_env), "MOSS_NAMESPACE_CAP=%lu", (unsigned long)namespace_capability);
   if (size < 0 || (size_t)size >= sizeof(namespace_env)) {
     return -1;
   }
-  // Shell commands fork before exec; their namespace sender must follow them.
+  size = snprintf(file_domain_env, sizeof(file_domain_env), "MOSS_FILE_DOMAIN_CAP=%lu", (unsigned long)file_domain);
+  if (size < 0 || (size_t)size >= sizeof(file_domain_env))
+    return -1;
+  size = snprintf(namespace_domain_env, sizeof(namespace_domain_env), "MOSS_NAMESPACE_DOMAIN_CAP=%lu",
+                  (unsigned long)namespace_domain);
+  if (size < 0 || (size_t)size >= sizeof(namespace_domain_env))
+    return -1;
+  size = snprintf(supervisor_domain_env, sizeof(supervisor_domain_env), "MOSS_SUPERVISOR_DOMAIN_CAP=%lu",
+                  (unsigned long)supervisor_domain);
+  if (size < 0 || (size_t)size >= sizeof(supervisor_domain_env))
+    return -1;
+  // The privileged management shell receives attenuated termination rights.
+  // Commands need INHERIT because ash forks before executing them; stable
+  // handle numbers let their environment refer to the same local authority.
   const struct moss_fork_capability handles[] = {
-      {(unsigned long)namespace_capability, MOSS_CAP_SEND | MOSS_CAP_DUPLICATE, MOSS_FORK_CAP_INHERIT}};
+      {(unsigned long)namespace_capability, MOSS_CAP_SEND | MOSS_CAP_DUPLICATE, MOSS_FORK_CAP_INHERIT},
+      {(unsigned long)file_domain, MOSS_CAP_DOMAIN_TERMINATE | MOSS_CAP_DUPLICATE, MOSS_FORK_CAP_INHERIT},
+      {(unsigned long)namespace_domain, MOSS_CAP_DOMAIN_TERMINATE | MOSS_CAP_DUPLICATE, MOSS_FORK_CAP_INHERIT},
+      {(unsigned long)supervisor_domain, MOSS_CAP_DOMAIN_TERMINATE | MOSS_CAP_DUPLICATE, MOSS_FORK_CAP_INHERIT}};
   pid_t child = fork_domain(domain, handles, sizeof(handles) / sizeof(handles[0]));
   if (child == 0) {
     char *const argv[] = {"ash", "-i", NULL};
-    char *const env[] = {"PATH=/", "HOME=/", "TERM=dumb", "PS1=moss$ ", "PS2=> ", namespace_env, NULL};
+    char *const env[] = {"PATH=/",      "HOME=/",        "TERM=dumb",          "PS1=moss$ ",          "PS2=> ",
+                         namespace_env, file_domain_env, namespace_domain_env, supervisor_domain_env, NULL};
     execve("/busybox.elf", argv, env);
     _exit(127);
   }
   return child;
 }
 
-static enum ServiceLoss supervise(struct Service *file, struct Service *namespace, pid_t *shell, long *shell_domain) {
+static enum ServiceLoss supervise(struct Service *file, struct Service *namespace, long supervisor_domain, pid_t *shell,
+                                  long *shell_domain) {
   for (;;) {
     const unsigned long domains[] = {(unsigned long)file->domain, (unsigned long)namespace->domain,
                                      (unsigned long)*shell_domain};
@@ -286,7 +308,7 @@ static enum ServiceLoss supervise(struct Service *file, struct Service *namespac
       if (restart_delay() != 0) {
         return SUPERVISOR_FAILURE;
       }
-      *shell = start_shell(namespace->send, shell_domain);
+      *shell = start_shell(namespace->send, file->domain, namespace->domain, supervisor_domain, shell_domain);
       if (*shell < 0) {
         report(STDERR_FILENO, "moss-init: shell launch failed\n");
         *shell = 0;
@@ -302,6 +324,11 @@ int main(void) {
   struct sigaction action = {.sa_handler = child_exited};
   sigemptyset(&action.sa_mask);
   if (sigaction(SIGCHLD, &action, NULL) != 0) {
+    return 1;
+  }
+  long supervisor_domain = syscall0(SYS_DOMAIN_SELF);
+  if (supervisor_domain <= 0) {
+    report(STDERR_FILENO, "moss-init: self domain acquisition failed\n");
     return 1;
   }
   report(STDOUT_FILENO, "moss-init: supervisor ready\n");
@@ -323,7 +350,7 @@ int main(void) {
       }
       report_started("namespace service", namespace.pid);
       long shell_domain = 0;
-      pid_t shell = start_shell(namespace.send, &shell_domain);
+      pid_t shell = start_shell(namespace.send, file.domain, namespace.domain, supervisor_domain, &shell_domain);
       if (shell < 0) {
         report(STDERR_FILENO, "moss-init: shell launch failed\n");
         stop_service(&namespace);
@@ -334,7 +361,7 @@ int main(void) {
         continue;
       }
 
-      enum ServiceLoss lost = supervise(&file, &namespace, &shell, &shell_domain);
+      enum ServiceLoss lost = supervise(&file, &namespace, supervisor_domain, &shell, &shell_domain);
       stop_child(shell, shell_domain);
       stop_service(&namespace);
       if (lost == SUPERVISOR_FAILURE) {

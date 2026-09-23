@@ -81,9 +81,9 @@ def run_case(cfg: Artifacts, output: Path, *, early: bool, timeout: float = 20) 
                     break
                 if not early and not sent and b"moss$ " in pending:
                     if console:
-                        console.sendall(b"kill -9 1\n")
+                        console.sendall(b"/moss-domain.elf terminate supervisor\n")
                     else:
-                        child.stdin.write(b"kill -9 1\n")
+                        child.stdin.write(b"/moss-domain.elf terminate supervisor\n")
                         child.stdin.flush()
                     sent = True
                 if child.poll() is not None:
@@ -116,7 +116,7 @@ def run_case(cfg: Artifacts, output: Path, *, early: bool, timeout: float = 20) 
             console.close()
         if listener:
             listener.close()
-        result.update(elapsed_seconds=time.monotonic() - started, kill_sent=sent)
+        result.update(elapsed_seconds=time.monotonic() - started, termination_sent=sent)
         (output / "results.json").write_text(json.dumps(result, indent=2) + "\n")
     return result
 

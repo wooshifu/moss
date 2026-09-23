@@ -80,7 +80,7 @@ assert input() == 'echo MOSS_PRODUCTION_READY'
         script += "print('\\nMOSS_SLEEP_READY\\nmoss$ ', end='', flush=True)\n"
         script += "assert input() == '/moss-file.elf read'\n"
         script += "print('\\nMOSS_FILE_READ=native\\nmoss$ ', end='', flush=True)\n"
-        script += "assert input() == 'kill 43'\n"
+        script += "assert input() == '/moss-domain.elf terminate namespace'\n"
         script += (
             "print('moss-init: namespace service died\\nmoss-init: namespace service started pid=44', flush=True)\n"
         )
@@ -89,7 +89,7 @@ assert input() == 'echo MOSS_PRODUCTION_READY'
         script += "print('\\nMOSS_FILE_READ=native\\nmoss$ ', end='', flush=True)\n"
         script += "assert input() == '/moss-file.elf read /note'\n"
         script += "print('\\nMOSS_FILE_READ=separate\\nmoss$ ', end='', flush=True)\n"
-        script += "assert input() == 'kill 42'\n"
+        script += "assert input() == '/moss-domain.elf terminate file'\n"
         script += (
             "print('moss-init: file service died\\nmoss-init: file service started pid=45\\n"
             "moss-init: namespace service started pid=46', flush=True)\n"

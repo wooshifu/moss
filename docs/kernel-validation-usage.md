@@ -4,7 +4,7 @@ The validation executable links the same production object modules and follows t
 
 `users.ipc` and `moss-production-boot` exercise capability-backed control IPC and Memory Objects used by production.
 `users.ipc/badged_sender` checks that the receiver gets the sender capability's badge, user-supplied badges are rejected, and attenuated or minted sender handles cannot mint new identities. Production boot exercises `/scratch` and a second native file with distinct badges, rejects an escaping path, checks a write across the shared-page boundary followed by a shorter replacement and zero-filled extension, rejects an over-budget resize without changing content, and checks that namespace restart preserves file contents while file-service restart discards the volatile second file. Ordinary shell file paths still use the kernel VFS.
-`users.ipc/domain_control` checks that `SYS_FORK_DOMAIN` returns a child capability only to the creator, has no POSIX parent/wait status, keeps inspection, observation and termination rights separate, and retains a native exit result through `SYS_DOMAIN_STATUS` after the diagnostic PID is retired. Production `moss-init` uses domain capabilities to terminate and wait for services and shells; `waitpid` reaps only orphaned POSIX descendants. The current production fault-injection checks still use the transitional kernel `kill(pid)` path to stop running services.
+`users.ipc/domain_control` checks that `SYS_DOMAIN_SELF` returns a capability for the caller, `SYS_FORK_DOMAIN` returns a child capability only to the creator, native children have no POSIX parent/wait status, PID-based signal and affinity control from unrelated domains is rejected, inspection, observation and termination rights remain separate, and `SYS_DOMAIN_STATUS` retains a native exit result after the diagnostic PID is retired. Production `moss-init` uses domain capabilities to terminate and wait for services and shells; `waitpid` reaps only orphaned POSIX descendants. Production recovery checks use termination capabilities explicitly delegated to the management shell.
 `users.ipc/domain_selection` checks that native fork omits even parent handles opted into POSIX inheritance, copies only explicitly selected handles at stable numbers with reduced rights, and rejects duplicate or unauthorized selections. A selected handle survives exec; only handles marked for later fork inheritance reach ordinary fork children. Production `moss-init` selects each service's and shell's handles and rights.
 `users.ipc/domain_wait_any` checks waiting for the first exit in a capability list, native exit status, retry after a failed status copy, duplicate target rejection and observe-right enforcement. Production `moss-init` uses this list to identify exited services and shells.
 
@@ -152,8 +152,9 @@ and timeout fail the probe. Image hashes and serial/QEMU logs are retained in
 `<build>/production-boot/run-*/guest/` with `results.json`.
 
 `moss-supervisor-reset` checks that the production Initial System Supervisor's
-death resets the platform. It kills PID 1 after the shell prompt, then boots a
-valid archive without `/init.elf` to force an early exec failure. Both cases
+death resets the platform. It requests termination through a delegated domain
+capability after the shell prompt, then boots a valid archive without
+`/init.elf` to force an early exec failure. Both cases
 require the kernel diagnostic and an actual QEMU reset exit with `-no-reboot`.
 Frozen images, serial logs and results are under `<build>/supervisor-reset/run-*/`.
 The x64 path supports the ACPI FADT 8-bit System I/O reset register; ARM64 uses
