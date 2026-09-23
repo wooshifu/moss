@@ -910,10 +910,9 @@ long sys_wait4(long wait_pid, long wstatus_addr, long options, long /*unused*/, 
       i32 child_exit_code = zombie->exit_code();
       ProcessId result_pid = zombie->pid();
 
-      // Write status to user space if pointer is non-null
-      // Linux WEXITSTATUS encoding: (exit_code & 0xFF) << 8
+      // Write the published wait status only after Zombie is observed.
       if (wstatus_addr != 0) {
-        int wstatus = (static_cast<int>(child_exit_code) & 0xFF) << 8;
+        int wstatus = zombie->wait_status();
         if (copy_to_user(static_cast<u64>(wstatus_addr), &wstatus, sizeof(wstatus)) < 0) {
           return -errc::EFAULT;
         }

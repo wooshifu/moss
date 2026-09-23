@@ -218,8 +218,7 @@ void user_return_handler(void *raw_frame) noexcept {
   if (signo) {
     auto proc = g_process_manager ? g_process_manager->find_process(thread->owner_pid) : shared_ptr<Process>{};
     if (proc) {
-      // Preserve the shell convention of 128 + signal number for a fatal signal.
-      do_exit(thread, moss::move(proc), 128 + static_cast<i32>(signo));
+      do_exit(thread, moss::move(proc), 128 + static_cast<i32>(signo), signo);
     }
   }
   thread->trap_frame = previous;
@@ -346,7 +345,7 @@ unsigned long long get_current_pgd_phys() noexcept {
 // ============================================================================
 // Bridge: terminate current user process and switch to scheduler
 // ============================================================================
-[[noreturn]] void terminate_current_user_process(int exit_code) noexcept {
+[[noreturn]] void terminate_current_user_process(int signal_number) noexcept {
   using namespace moss::kernel;
 
   process::Thread *cur = process::CfsScheduler::get_current_task();
@@ -358,7 +357,7 @@ unsigned long long get_current_pgd_phys() noexcept {
   }
 
   ProcessId pid = cur->owner_pid;
-  log::klog::info("terminate_user_process: PID={} TID={} exit_code={}", pid, static_cast<u32>(cur->tid), exit_code);
+  log::klog::info("terminate_user_process: PID={} TID={} signal={}", pid, static_cast<u32>(cur->tid), signal_number);
 
   auto proc =
       process::g_process_manager ? process::g_process_manager->find_process(pid) : shared_ptr<process::Process>{};
@@ -371,7 +370,7 @@ unsigned long long get_current_pgd_phys() noexcept {
   }
 
   // Delegate to shared Zombie transition (never returns)
-  process::do_exit(cur, moss::move(proc), static_cast<i32>(exit_code));
+  process::do_exit(cur, moss::move(proc), 128 + signal_number, static_cast<u32>(signal_number));
 }
 
 // ============================================================================
@@ -429,8 +428,7 @@ void riscv64_external_handler() noexcept {
   // If so, terminate the user process and let the scheduler continue.
   if (sepc < ::moss::kernel::KERNEL_BASE) {
     log::klog::error("  User-mode exception, terminating process");
-    // Legacy fatal-user-fault code: -SIGSEGV (11), not an errno result.
-    ::moss::abi::bridge::terminate_current_user_process(-11);
+    ::moss::abi::bridge::terminate_current_user_process(moss::kernel::process::sig::SIGSEGV);
   }
 
   // Kernel-mode exception — unrecoverable

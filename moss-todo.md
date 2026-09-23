@@ -1,7 +1,7 @@
 # Moss 内核设计与实现审计报告及修复清单
 
 > 原始审计：2026-09-05，源码基线：`e0e2bbc920b66f91e18802a46106ca5811e588b1`。
-> 源码复核基线：2026-09-23，`604fe85`（当次未重跑 QEMU）。第 3.4～3.20 节保留此前实测及当时状态；后续实现与运行记录见第 3.21～3.68 节，源码与历史证据的对应关系见第 3.41 节。本轮九预设运行见第 3.59～3.68 节。本文与 [todo.md](todo.md) 同步。
+> 源码复核基线：2026-09-23，`604fe85`（当次未重跑 QEMU）。第 3.4～3.20 节保留此前实测及当时状态；后续实现与运行记录见第 3.21～3.69 节，源码与历史证据的对应关系见第 3.41 节。本轮九预设运行见第 3.59～3.69 节。本文与 [todo.md](todo.md) 同步。
 > 第 3.1～3.2 节保留原始运行证据；第 5～9 节未标新日期的“位置与事实”、地址和行号属于原始审计，不能当作当前仍然失败的运行结果。带日期的“工作区”指当时的验证状态，不表示当前仍未提交；当前状态以第 4 节及各项更新说明为准。
 
 ## 1. 当前结论
@@ -12,9 +12,9 @@ Moss 已具备三架构真实启动、SMP、用户态与进程执行路径。后
 
 1. **隔离缺陷尚未全部闭合。** 已修复内核映射 USER，并收紧三架构最终内核 W^X；syscall 0 原始 UART 指针旁路已删除，用户地址域/VMA 准入与跨 VMA 权限校验已补。`0e88344` 改为原生 TrapFrame、按 ISA 净化信号返回状态；3.20～3.34 补共享用户复制、受控 COW OOM、地址空间持有、软件 VM 事务和同步页租约。3.35～3.39 补三架构 TLB 失效、活动硬件 root 拥有权及首次 CPU 注册交错；3.40 已关闭原生信号帧/备用栈的恶意输入验收。共享 exec 的线程/root 协调、异步长期页 pin 和更多并发 VM 交错仍未闭合。
 2. **部分基础修复已落地，但所有权验收未完成。** `040d773` 已验证 heap/PFA 对齐与释放、保留洞和多 bank 耗尽、当前布局及页表/元数据哨兵。`4cde9b3` 修复指针发布误删可达节点；伪 RCU 已删除，锁保护的拥有型容器已有持有读者、重入与双 CPU 交错测试。IRQ/驱动/IPC 复合生命周期、页引用并发及完整启动保留集合仍待完成。
-3. **跨架构入口已统一，完整进程语义仍待补。** 三 ISA 用单一原生帧指针传递 syscall，fork 不再猜内核栈偏移，信号返回桩由各 ISA 汇编产生；3.24～3.26 已闭合当前单地址空间模型下的 brk、exec 事务和受支持静态 ELF LoadPlan。GP/条件码、基本信号往返、nanosleep 捕获信号中断、限定 SA_RESTART 重试、CPU-bound IRQ 返回投递、基本 STOP/CONT 交接及 waitpid 状态报告通过，不代表全部 FP/TLS 继承、完整 POSIX job control、动态加载、共享 LOAD 页或共享地址空间 VM 并发已经可靠。
+3. **跨架构入口已统一，完整进程语义仍待补。** 三 ISA 用单一原生帧指针传递 syscall，fork 不再猜内核栈偏移，信号返回桩由各 ISA 汇编产生；3.24～3.26 已闭合当前单地址空间模型下的 brk、exec 事务和受支持静态 ELF LoadPlan。GP/条件码、基本信号往返、nanosleep 捕获信号中断、限定 SA_RESTART 重试、CPU-bound IRQ 返回投递、基本 STOP/CONT 交接及 waitpid 停止/继续与信号致死状态报告通过，不代表全部 FP/TLS 继承、完整 POSIX job control、动态加载、共享 LOAD 页或共享地址空间 VM 并发已经可靠。
 4. **旧停滞记录应保留，不能直接当作当前复现。** 退出已改为经 `context_switch` 返回活跃 bootstrap 栈，不再在 C++ 帧中直接修改 SP。默认 `users.lifecycle` 已覆盖 1,000 次 fork/exec/exit/wait 和资源检查，并随最近记录的九预设矩阵通过；旧第 28 次停滞的原版本红绿对照、1/16 CPU 长循环与更广的生命周期压力仍缺。
-5. **测试已从基础语言检查升级为真实内核检查，覆盖仍有边界。** 本轮九预设 CTest 为 44/44（3.68），包含 Release 的三个 benchmark、ARM64 Debug console 登记探针，以及 ARM64/x64 的真实 IRQ/等待登记交错。默认用户套件包含 COW/OOM、恶意信号帧、部分用户复制故障、双 console 读者、管道与 nanosleep 信号中断、限定 SA_RESTART 重试、基本 STOP/CONT 与 waitpid 状态报告及 1,000 次生命周期；这不证明全部 uaccess 故障、确定性调度竞争或真机可靠性。
+5. **测试已从基础语言检查升级为真实内核检查，覆盖仍有边界。** 本轮九预设 CTest 为 44/44（3.69），包含 Release 的三个 benchmark、ARM64 Debug console 登记探针，以及 ARM64/x64 的真实 IRQ/等待登记交错。默认用户套件包含 COW/OOM、恶意信号帧、部分用户复制故障、双 console 读者、管道与 nanosleep 信号中断、限定 SA_RESTART 重试、基本 STOP/CONT、waitpid 停止/继续与信号致死状态报告及 1,000 次生命周期；这不证明全部 uaccess 故障、确定性调度竞争或真机可靠性。
 
 保留现有 C++ 模块、AAL/HAL、可用进程/VFS/调度路径；先关闭权限、所有权、等待/退出和失败事务，再扩展高级 IPC、POSIX 或设备栈。内核模型仍是模块化单体，而不是已经实现用户态服务隔离的 hybrid。
 
@@ -1539,7 +1539,15 @@ x64 初始验证在该用例超时：GDB 快照显示子进程仍在 CPU1 的循
 
 旧实现拒绝 `WUNTRACED/WCONTINUED`，x64 Debug 的新增用例先报断言失败（隔离工作树报告 `1790157676594790066`）。现在 STOP 在调度交接时发布带代际号的状态，CONT 在生成时发布继续状态，父等待队列与 SIGCHLD 收到通知；退出清除旧 job-control 事件。waitpid 先用 CAS 保留当前代际事件，再写用户状态；坏指针时仅在事件未被新状态替换的情况下恢复并唤醒等待者，避免重复报告或清除后来的事件。三架构 Debug 定向 `users.signals` 各 28/28 通过。隔离工作树九预设完整 CTest 为 x64 16/16、ARM64 15/15、RV64 13/13，合计 44/44；宿主测试 393 passed、1 skipped，修改的 runner 文件通过 Ruff 与格式检查。
 
-此项只覆盖单线程子进程的停止/继续报告；进程组选择式 wait、`SA_NOCLDSTOP`、信号致死状态的完整 POSIX 编码和更广并发仍未实现，MOSS-020 继续保留。
+此项只覆盖单线程子进程的停止/继续报告；当时进程组选择式 wait、`SA_NOCLDSTOP`、信号致死状态的完整 POSIX 编码和更广并发仍未实现。信号致死状态的后续修复见 3.69；MOSS-020 继续保留。
+
+### 3.69 waitpid 区分普通退出与信号致死（2026-09-23，隔离工作树）
+
+新增 `users.signals/signal_exit_status`：子进程分别以 SIGKILL、`_exit(-SIGSEGV)` 和非法用户地址访问终止，父进程要求 `waitpid` 依次返回原始状态 `SIGKILL`、`((unsigned char)-SIGSEGV) << 8` 和 `SIGSEGV`。这区分信号致死与数值相同的普通退出；不声称内核已经生成 core dump。旧实现将 SIGKILL 和 SIGSEGV 两种致命信号折成普通退出码，x64 Debug 新用例先报断言失败（隔离工作树报告 `1790159394526716711`）。
+
+`Process` 在发布 Zombie 前分别保存内部退出码和终止信号，`wait4` 根据两者产生状态；sys_exit 保持普通退出，用户返回的致命信号与三架构异常桥传入显式信号号。原来把 SIGSEGV/SIGFPE/SIGPIPE 当作退出码的 VM、uaccess、FP、信号帧及子镜像断言已同步改为核对原始信号状态。三架构 Debug 定向 `users.signals` 各 29/29 通过；x64 Debug 完整测试首轮暴露两处遗留断言，修正后 `users` 和 `users.uaccess` 专项通过。九预设完整 CTest 为 x64 16/16、ARM64 15/15、RV64 13/13，合计 44/44；宿主测试 393 passed、1 skipped，修改的 runner 文件通过 Ruff 与格式检查。
+
+此项只关闭已覆盖的信号致死 wait 状态编码；进程组选择式 wait、`SA_NOCLDSTOP`、core dump 状态位与更广并发仍保留在 MOSS-020。
 
 ## 4. 问题总表与当前状态
 
@@ -1564,7 +1572,7 @@ x64 初始验证在该用例超时：GDB 快照显示子进程仍在 CPU1 的循
 | MOSS-017 | P1 | 运行队列 / 迁移 / on-CPU | 部分修复（3.28）；调用线程收紧自身 affinity 时会在 continuation 保存后同步迁移，确定性红例、单例及 32/32 并发压力通过；远程目标、一般 pick/dequeue/迁移及 on-CPU/check_need_resched 仍未闭合。 |
 | MOSS-018 | P1 | wait/console 丢失唤醒 | 部分修复；wait 的 child-exit/登记交错及 EINTR 已有红绿验收（3.59～3.60）；console 的 RX 排队窗口、双读者及跨 CPU IRQ/登记交错分别在 3.62～3.64 验收。SA_RESTART 限定重启子集已验收（3.65）；历史 SMP 超时因果仍待确认。 |
 | MOSS-019 | P1 | nanosleep / timer 生命周期 | 部分修复；三 ISA 实际睡眠、容量失败、deadline 溢出、跨 CPU 交接及同步取消已有实现；捕获信号的 EINTR 与相对剩余时间已有九预设红绿验收（3.61）。更广定时交错仍待验收。 |
-| MOSS-020 | P1 | 信号投递 / STOP/CONT/SIGCHLD | 部分修复；结果/handler 参数写回、SIGCHLD、pipe/console 中断与部分传输、wait/nanosleep EINTR、限定 SA_RESTART 重试及 CPU-bound IRQ 投递已验收（3.60～3.66）。基本 STOP/CONT 交接及 waitpid 一次性状态报告通过（3.67～3.68）；完整 job control、信号致死状态编码与更广交错仍待补。 |
+| MOSS-020 | P1 | 信号投递 / STOP/CONT/SIGCHLD | 部分修复；结果/handler 参数写回、SIGCHLD、pipe/console 中断与部分传输、wait/nanosleep EINTR、限定 SA_RESTART 重试及 CPU-bound IRQ 投递已验收（3.60～3.66）。基本 STOP/CONT 交接、waitpid 一次性状态及信号致死状态编码通过（3.67～3.69）；完整 job control 与更广交错仍待补。 |
 | MOSS-021 | P1 | 信号状态生命周期 | 已关闭（3.23）；状态由 `Process` 拥有，fork/exec/exit 规则已核对，继承/重置及跨旧 256 槽边界的 300 次生命周期在六配置通过。 |
 | MOSS-022 | P1 | 退出 FD 关闭 | 实现已修复、验收部分；退出在 Zombie 前 close-all、析构兜底，EOF-before-wait 与默认 1,000 次资源恢复已有九预设通过记录。3.23 的 RV64 Debug 30 秒超时是旧报告；原故障复现/原因和更广压力仍待核对。 |
 | MOSS-023 | P1 | 退出换栈 / 连续执行停滞 | 部分验收；已复用 context_switch 返回 bootstrap 栈，默认 `users.lifecycle` 1,000 次随最近九预设矩阵通过；旧第 28 次停滞红绿对照、1/16 CPU 长循环仍缺。 |
@@ -1874,7 +1882,7 @@ fork 对 VMA 有复制，但未完整继承 `brk_base/brk_current/mmap_next` 等
 
 ### MOSS-020 · 信号正常演示通过，仍不代表投递和返回语义正确
 
-**2026-09-23 更新：部分修复，见 3.19、3.41、3.60～3.61、3.65～3.68。** handler 参数/返回值已有回归；默认 `users.signals` 已包含 SIGCHLD 基本断言、pipe/console 中断与部分传输、wait EINTR，`users.timers` 已包含 nanosleep EINTR。SA_RESTART 限定重启子集、CPU-bound IRQ 返回投递、基本 STOP/CONT 停止/恢复及 `waitpid(WUNTRACED/WCONTINUED)` 一次性状态报告已补；完整 job control 与更广阻塞/信号交错仍待实现和验收。
+**2026-09-23 更新：部分修复，见 3.19、3.41、3.60～3.61、3.65～3.69。** handler 参数/返回值已有回归；默认 `users.signals` 已包含 SIGCHLD 基本断言、pipe/console 中断与部分传输、wait EINTR，`users.timers` 已包含 nanosleep EINTR。SA_RESTART 限定重启子集、CPU-bound IRQ 返回投递、基本 STOP/CONT 停止/恢复，以及 `waitpid` 的停止、继续、信号致死状态报告已补；完整 job control 与更广阻塞/信号交错仍待实现和验收。
 
 **原始位置与事实（修复前）：** `src/process/src/signal.cpp:128` 写 `frame[0] = signo`，但 ARM64 系统调用返回段 `src/boot/src/arch/arm64/start_arm64.S:879` 随后把 C 返回值写回相同槽位，覆盖 handler 参数；建立信号帧时也需要先确定被中断系统调用的最终返回值。当时用户测试 handler 未充分断言该参数，无法检测这个错误。
 
@@ -1884,7 +1892,7 @@ fork 对 VMA 有复制，但未完整继承 `brk_base/brk_current/mmap_next` 等
 
 **修复：** 在共同返回用户态路径处理 pending signal：先提交 syscall 结果，再允许投递修改返回现场，汇编不得覆盖已编辑帧。把 IRQ 返回纳入投递/重调度检查。显式实现 STOP/CONT 状态转换和 SIGCHLD 产生；为可中断阻塞定义 EINTR 或已声明的重启子集；sigreturn 使用专门的“现场已恢复”结果，避免普通返回值覆盖。
 
-**验收：** handler signo/返回值、SIGCHLD 基本断言、CPU-bound 进程投递、STOP 后切出/CONT 后恢复及一次性 waitpid 状态已有覆盖；还需进程组 job control、信号致死状态编码、wait/console/sleep 更广的中断结果与交错。console 已有部分中断用例，不以此代替整组验收。
+**验收：** handler signo/返回值、SIGCHLD 基本断言、CPU-bound 进程投递、STOP 后切出/CONT 后恢复、一次性 waitpid 停止/继续状态及信号致死状态已有覆盖；还需进程组 job control、core dump 状态位、wait/console/sleep 更广的中断结果与交错。console 已有部分中断用例，不以此代替整组验收。
 
 ### MOSS-021 · 信号状态不能以绝对 PID 作为固定数组下标
 
@@ -2153,6 +2161,7 @@ fork 对 VMA 有复制，但未完整继承 `brk_base/brk_current/mmap_next` 等
   - [x] CPU-bound 的 IRQ 返回投递专项通过三架构用户态验证（3.66）。
   - [x] STOP 后切出运行队列、CONT/KILL 唤醒及阻塞/忽略 CONT 时的恢复通过三架构用户态验证（3.67）。
   - [x] waitpid 的 WUNTRACED/WCONTINUED 一次性状态报告、坏指针不消耗事件及实际阻塞唤醒通过三架构用户态验证（3.68）。
+  - [x] waitpid 区分 SIGKILL/SIGSEGV 致死与普通 `_exit(-SIGSEGV)`，旧 VM/uaccess/FP 等断言同步更新并通过九预设验证（3.69）。
   - [ ] 020 的其余投递语义；不因 003 或基本 STOP/CONT 已验收而勾选整个 B4。
 
 **退出条件：** 各架构静态页表/布局检查通过；能运行用户态的架构上，坏指针、坏栈、特权状态和只读映射攻击只影响调用进程。MOSS-001/003 的限定攻击矩阵已有用户态回归；共享 exec、更多并发 VM 与 MOSS-020 信号投递仍须按各自范围验收。
@@ -2186,11 +2195,12 @@ fork 对 VMA 有复制，但未完整继承 `brk_base/brk_current/mmap_next` 等
 - [ ] D3b：默认 4 CPU 的 1,000 次生命周期与资源检查已有九预设通过记录；补旧第 28 次停滞红绿对照、1/16 CPU 长循环及旧栈/上下文生命周期专项验收（023）。
 - [x] D4a：`Process` 拥有信号状态，fork 继承、exec 重置、exit 回收及跨旧固定槽边界验收通过（021，工作区 3.23）。
 - [ ] D4b：FD 所有权、Zombie 前关闭及 EOF-before-wait 已验证，默认 1,000 次生命周期有最近九预设通过记录；保留 3.23 旧超时，继续查原故障因果和更广压力（022）。
-- [ ] D5：基本 SIGCHLD、pipe/console 中断、wait/nanosleep EINTR、CPU-bound IRQ 返回、STOP/CONT 交接及 waitpid 状态报告已有用例；补完整 job control 与其余信号交错（020）。
+- [ ] D5：基本 SIGCHLD、pipe/console 中断、wait/nanosleep EINTR、CPU-bound IRQ 返回、STOP/CONT 交接及 waitpid 停止/继续与信号致死状态报告已有用例；补完整 job control 与其余信号交错（020）。
   - [x] SA_RESTART 限定子集及 libc 标志往返通过三架构真实内核验证（3.65）。
   - [x] CPU-bound 用户循环中的两次 IRQ 返回及跨 CPU SIGUSR1 处理通过三架构真实内核验证（3.66）。
   - [x] 停止任务退出 CPU、CONT/KILL 恢复与待处理 STOP/CONT 互斥通过三架构真实内核验证（3.67）。
   - [x] waitpid 停止/继续状态各报告一次，子进程在父进程睡眠后自发 STOP 并唤醒父进程（3.68）。
+  - [x] waitpid 对致命信号返回原始信号状态，普通负退出码仍按退出码编码（3.69）。
 
 **退出条件：** 连续 1,000 次进程生命周期和可控并发交错通过；CPU-bound 信号可达；阻塞、取消、退出都无丢失唤醒；运行者/队列/资源计数始终满足不变量。一次性启动成功不满足此阶段。
 

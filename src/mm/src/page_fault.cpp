@@ -31,6 +31,10 @@ module moss.mm;
 
 import moss.abi;
 
+// POSIX SIGSEGV. moss.mm cannot import moss.process's signal constants without
+// introducing a module cycle through the process address-space dependency.
+constexpr int kSegmentationFaultSignal = 11;
+
 // No-ops in production. Validation orders real faults at the old-frame
 // snapshot and records a committed frame before a contending unmap can retire it.
 extern "C" [[gnu::weak, gnu::noinline]] void moss_validation_cow_snapshot(moss::kernel::PhysAddr /*root*/,
@@ -373,7 +377,7 @@ extern "C" void kernel_page_fault_handler(unsigned long long esr, unsigned long 
 
   // Bridge to kernel module: terminates process + restores kernel TTBR0 +
   // calls schedule_after_exit().  Never returns.
-  terminate_current_user_process(-11); // Exit convention: negative SIGSEGV (signal number 11).
+  terminate_current_user_process(kSegmentationFaultSignal);
 }
 
 // Attempt COW (Copy-on-Write) resolution for a write permission fault.
@@ -683,7 +687,7 @@ extern "C" [[noreturn]] void unhandled_user_exception_handler(unsigned long long
   log::klog::error("Terminating user process");
 
   // Terminate the faulting process and let the scheduler pick the next task.
-  terminate_current_user_process(-11); // Exit convention: negative SIGSEGV (signal number 11).
+  terminate_current_user_process(kSegmentationFaultSignal);
 }
 
 // ============================================================================
