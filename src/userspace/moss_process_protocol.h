@@ -17,7 +17,9 @@ enum {
   MOSS_PROCESS_PREPARE_CHILD = 6,
   MOSS_PROCESS_ATTACH_CHILD = 7,
   MOSS_PROCESS_CANCEL_CHILD = 8,
-  MOSS_PROCESS_IDENTITY = 9
+  MOSS_PROCESS_IDENTITY = 9,
+  MOSS_PROCESS_READY = 10,
+  MOSS_PROCESS_WAIT_CHILD = 11
 };
 enum {
   MOSS_PROCESS_OK = 0,
@@ -45,6 +47,8 @@ enum {
 // native fork. ATTACH_CHILD transfers the new domain under the parent's
 // session; CANCEL_CHILD removes only an unattached reservation. IDENTITY
 // returns [OK, ID:u64 LE, parent ID:u64 LE] through the child's session.
+// READY returns RUNNING until the reserved identity is attached. WAIT_CHILD
+// selects one child by ID under the parent's badge and uses WAIT_ANY's reply.
 static inline uint64_t moss_process_get_u64(const unsigned char *bytes) {
   uint64_t value = 0;
   for (unsigned int index = 0; index < 8; ++index)

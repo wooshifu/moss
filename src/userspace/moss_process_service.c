@@ -154,10 +154,33 @@ int main(int argc, char **argv) {
         response.payload[0] = MOSS_PROCESS_OK;
         released = child;
       }
+    } else if (request.badge && request.size == MOSS_PROCESS_REPLY_VALUE_BYTES &&
+               request.payload[0] == MOSS_PROCESS_WAIT_CHILD && !request.capability && !request.rights) {
+      struct Record *parent = find_record(request.badge);
+      struct Record *child = find_record(moss_process_get_u64(request.payload + 1));
+      if (!parent || !child || child->parent_id != parent->id) {
+        response.payload[0] = MOSS_PROCESS_NO_ENTRY;
+      } else if (!child->domain) {
+        response.payload[0] = MOSS_PROCESS_RUNNING;
+      } else {
+        struct moss_domain_exit status = {0};
+        long result = syscall2(SYS_DOMAIN_STATUS, (long)child->domain, (long)&status);
+        if (result == 0) {
+          response.size = MOSS_PROCESS_REPLY_WAIT_BYTES;
+          response.payload[0] = MOSS_PROCESS_EXITED;
+          moss_process_put_u64(response.payload + 1, child->id);
+          moss_process_put_u64(response.payload + 9, ((uint64_t)status.signal << 32) | (uint32_t)status.code);
+          released = child;
+        } else {
+          response.payload[0] = result == -EAGAIN ? MOSS_PROCESS_RUNNING : MOSS_PROCESS_UNAVAILABLE;
+        }
+      }
     } else if (request.badge && request.size == 1 && !request.capability && !request.rights) {
       struct Record *record = find_record(request.badge);
       if (!record) {
         response.payload[0] = MOSS_PROCESS_NO_ENTRY;
+      } else if (request.payload[0] == MOSS_PROCESS_READY) {
+        response.payload[0] = record->domain ? MOSS_PROCESS_OK : MOSS_PROCESS_RUNNING;
       } else if (request.payload[0] == MOSS_PROCESS_IDENTITY) {
         response.size = MOSS_PROCESS_REPLY_IDENTITY_BYTES;
         response.payload[0] = MOSS_PROCESS_OK;
