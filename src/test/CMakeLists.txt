@@ -1,5 +1,40 @@
 # Validation uses the exact production object modules and bootstrap.
-add_executable(moss.test.elf validation.cpp validation/core.cpp validation/drivers.cpp validation/memory.cpp validation/smp.cpp validation/smp_vfs.cpp validation/vfs.cpp)
+add_executable(
+    moss.test.elf
+    validation.cpp
+    validation/core.cpp
+    validation/core_containers.cpp
+    validation/core_scheduler.cpp
+    validation/drivers.cpp
+    validation/memory.cpp
+    validation/memory_transactions.cpp
+    validation/memory_pages.cpp
+    validation/memory_heap.cpp
+    validation/resources.cpp
+    validation/isolation.cpp
+    validation/uaccess.cpp
+    validation/timer_control.cpp
+    validation/process_control.cpp
+    validation/exec_control.cpp
+    validation/signal_control.cpp
+    validation/benchmark_cases.cpp
+    validation/benchmark_control.cpp
+    validation/lifecycle.cpp
+    validation/registry.cpp
+    validation/smp.cpp
+    validation/smp_containers.cpp
+    validation/smp_lifetime.cpp
+    validation/smp_copy.cpp
+    validation/smp_interrupt.cpp
+    validation/smp_fault.cpp
+    validation/smp_leases.cpp
+    validation/smp_tlb.cpp
+    validation/smp_join.cpp
+    validation/smp_vfs.cpp
+    validation/smp_vfs_owner.cpp
+    validation/vfs.cpp
+    validation/vfs_lifecycle.cpp
+)
 get_target_property(_kernel_modules moss.elf LINK_LIBRARIES)
 target_link_libraries(
     moss.test.elf
