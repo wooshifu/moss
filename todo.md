@@ -174,7 +174,7 @@ uv run qemu.py --manifest build/arm64-debug/moss-artifacts.json
   - [x] 调用线程收紧自身 affinity 时，在返回用户态前经 bootstrap 保存 continuation，再发布到目标 CPU；旧实现的 cycle 1 确定性红例、单例绿例及 32/32 并发压力已保留（3.28）。远程目标、一般抢占迁移及完整 on-CPU 协议仍未关闭。
 - [ ] **MOSS-018（部分修复）**：wait/console 已有登记—睡眠协议和坏 status 可重试；补 child-exit/RX 确定性交错、多读者及 wait EINTR/重启验收。
   - [x] `sys_wait4()` 准备睡眠后登记 waiter、重查 Zombie；status copyout 失败不 reap。console 受锁保护检查/登记、支持多 waiter，已有 console 信号中断用例（3.41）。
-  - [ ] 3.14～3.15 的 ARM64 Debug `containers.smp` Zombie 超时及 CPU3 WFE 现场保留为历史失败；最近九预设矩阵通过，旧故障是否复现及因果仍需专项重放，不写成当前稳定超时。
+  - [ ] 3.14～3.15 的 ARM64 Debug `containers.smp` Zombie 超时及 CPU3 WFE 现场保留为历史失败；当前镜像同配置 100 次通过且已有逐次重放脚本，旧故障因果仍未确认，不写成当前稳定超时（3.58）。
   - [x] 独立诊断确认本机 QEMU MTTCG 事件已置位但宿主线程仍睡眠；不加载 Moss 也能稳定复现，仅补宿主 kick 即继续。该诊断不算内核修复或 SMP 验收，正式 runner 模式不变（3.15）。
 - [ ] **MOSS-019（部分修复）**：三架构 nanosleep、timer 容量错误、同步取消和 deadline 溢出已有实现；补信号中断后的 sleep 语义和更广跨 CPU 定时交错。
   - [x] `sleep_until()` 以 prepare/arm/commit 交接睡眠；arm 失败回滚，返回前同步取消栈上 timer（3.41）。
@@ -196,6 +196,7 @@ uv run qemu.py --manifest build/arm64-debug/moss-artifacts.json
 - [ ] **MOSS-028（框架已落地，覆盖待补）**：保留真实内核套件、协议、失败/panic/timeout 自检；逐项补审计 T01～T12，特别是信号、坏指针、COW、资源长循环、失败回滚及确定性交错；纳入持续验收。
   - [x] 断言失败后继续执行的 case 不再误报 `invalid case start`；原始失败串口重放为 `failed/assertion`（3.56）。
   - [x] 缺少验证内核/initramfs 时装载前拒绝；取消后未运行套件保持非零退出并在 JUnit 标为 skipped（3.57）。
+  - [x] ARM64 Debug `containers.smp` 同镜像逐次重放入口及当前 100 次检查（3.58）；历史 Zombie 后超时未据此关闭。
   - [x] 3.21 扩展 users.uaccess 为九项，九个 workflow/CTest 21/21、宿主 121/121；两份 RV64 Debug 超时继续保留，不能以之后矩阵通过关闭（3.21）。
   - [x] 3.20 新增 users.uaccess 后九个 workflow/CTest 21/21、宿主 121/121；原始报告及仍未验收的范围见 3.20。
   - [x] `0e88344` 提交前九个 workflow/CTest 21/21、宿主 121/121，通过范围和全部原始报告见 3.19；不是全部 T01～T12 验收。
