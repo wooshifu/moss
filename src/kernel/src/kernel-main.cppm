@@ -653,6 +653,12 @@ private:
     }
     auto init_proc = proc_result.value();
     ProcessId init_pid = init_proc->pid();
+    // The fixed boot trampoline tries validation.elf first. Only the
+    // production image creates the Initial System Supervisor; designate its
+    // Process before it can run so even an early exec failure is fatal.
+    if (!initramfs::g_initramfs.lookup("/validation.elf")) {
+      init_proc->designate_initial_supervisor();
+    }
 
     // Step 2: Create real AddressSpace with buddy-allocated PGD
     auto as_result = user_space::create_user_address_space();

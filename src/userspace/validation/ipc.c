@@ -9,8 +9,18 @@ void *memset(void *destination, int value, unsigned long count) {
   return destination;
 }
 
-enum { IPC_EINTR = 4, IPC_EBADF = 9, IPC_EACCES = 13, IPC_EINVAL = 22, IPC_EPIPE = 32, IPC_ETIMEDOUT = 110 };
+enum {
+  IPC_EINTR = 4,
+  IPC_EBADF = 9,
+  IPC_EACCES = 13,
+  IPC_EFAULT = 14,
+  IPC_EINVAL = 22,
+  IPC_EPIPE = 32,
+  IPC_ETIMEDOUT = 110
+};
 static volatile int ipc_signal_seen;
+// Bounds broken test services so a regression fails instead of hanging validation.
+static const unsigned long ipc_call_timeout_ns = 5000000000UL;
 
 static void ipc_signal_handler(int signo) { ipc_signal_seen = signo; }
 
@@ -76,10 +86,7 @@ unsigned long ipc_roundtrip(void) {
   errors |= (unsigned long)(syscall1(SYS_CAP_CLOSE, (long)pair.receive) != 0) << 6;
   const struct moss_ipc_message request = {.size = 2, .payload = {'h', 'i'}};
   struct moss_ipc_message response = {0};
-  // This bound only prevents a broken service from hanging validation; it is
-  // not a latency acceptance threshold for a real control call.
-  enum { CALL_TIMEOUT_NS = 5000000000UL };
-  long deadline = deadline_after(CALL_TIMEOUT_NS);
+  long deadline = deadline_after(ipc_call_timeout_ns);
   long result = deadline > 0 ? ipc_call(pair.send, &request, &response, deadline) : -1;
   errors |= (unsigned long)(result != 2 || response.size != 2 || response.payload[0] != 'o' ||
                             response.payload[1] != 'k' || response.capability != 0)
@@ -133,7 +140,7 @@ unsigned long ipc_peer_death(void) {
   unsigned long errors = syscall1(SYS_CAP_CLOSE, (long)pair.receive) != 0;
   const struct moss_ipc_message request = {.size = 1, .payload = {19}};
   struct moss_ipc_message response = {0};
-  long deadline = deadline_after(5000000000UL);
+  long deadline = deadline_after(ipc_call_timeout_ns);
   errors |= (unsigned long)(deadline <= 0 || ipc_call(pair.send, &request, &response, deadline) != -IPC_EPIPE) << 1;
   errors |= (unsigned long)!wait_exit(child, 37) << 2;
   errors |= (unsigned long)(syscall1(SYS_CAP_CLOSE, (long)pair.send) != 0) << 3;
@@ -160,7 +167,7 @@ unsigned long ipc_signal_cancel(void) {
   if (child > 0) {
     const struct moss_ipc_message request = {0};
     struct moss_ipc_message response = {0};
-    long deadline = deadline_after(5000000000UL);
+    long deadline = deadline_after(ipc_call_timeout_ns);
     errors |= (unsigned long)(deadline <= 0 || ipc_call(pair.send, &request, &response, deadline) != -IPC_EINTR ||
                               ipc_signal_seen != SIGUSR1)
               << 1;
@@ -194,13 +201,13 @@ unsigned long ipc_capability_transfer(void) {
       _exit(93);
     const struct moss_ipc_message delegated_request = {.size = 1, .payload = {'b'}};
     struct moss_ipc_message delegated_response = {0};
-    long deadline = deadline_after(5000000000UL);
+    long deadline = deadline_after(ipc_call_timeout_ns);
     if (deadline <= 0 || ipc_call(request.capability, &delegated_request, &delegated_response, deadline) != 1 ||
         delegated_response.payload[0] != 'b')
       _exit(94);
     const struct moss_ipc_message returned_request = {.size = 1, .payload = {'c'}};
     struct moss_ipc_message returned_response = {0};
-    deadline = deadline_after(5000000000UL);
+    deadline = deadline_after(ipc_call_timeout_ns);
     if (deadline <= 0 || ipc_call(returned.send, &returned_request, &returned_response, deadline) != 1 ||
         returned_response.payload[0] != 'c')
       _exit(95);
@@ -212,7 +219,7 @@ unsigned long ipc_capability_transfer(void) {
   const struct moss_ipc_message request = {
       .size = 1, .capability = delegated.send, .rights = MOSS_CAP_SEND, .payload = {'a'}};
   struct moss_ipc_message response = {0};
-  long deadline = deadline_after(5000000000UL);
+  long deadline = deadline_after(ipc_call_timeout_ns);
   long completed = deadline > 0 ? ipc_call(control.send, &request, &response, deadline) : -1;
   errors |= (unsigned long)(completed != 1 || response.payload[0] != 'a' || response.capability == 0 ||
                             response.rights != MOSS_CAP_RECEIVE)
@@ -236,5 +243,114 @@ unsigned long ipc_capability_transfer(void) {
   errors |= (unsigned long)!wait_exit(child, 37) << 9;
   errors |= (unsigned long)(syscall1(SYS_CAP_CLOSE, (long)control.send) != 0) << 10;
   errors |= (unsigned long)(syscall1(SYS_CAP_CLOSE, (long)delegated.receive) != 0) << 11;
+  return errors;
+}
+
+unsigned long ipc_delivery_rollback(void) {
+  struct moss_ipc_endpoints control = {0, 0}, delegated = {0, 0};
+  if (syscall1(SYS_IPC_CREATE, (long)&control) != 0 || syscall1(SYS_IPC_CREATE, (long)&delegated) != 0 ||
+      syscall2(SYS_CAP_SET_INHERIT, (long)control.receive, 1) != 0)
+    return 1;
+  long child = fork();
+  if (child == 0) {
+    struct moss_ipc_message first = {0};
+    // The request copyout succeeds, but the reply-handle copyout fails.
+    if (ipc_receive(control.receive, &first, 0) != -IPC_EFAULT || first.size != 1 || first.capability == 0 ||
+        first.rights != MOSS_CAP_SEND || syscall1(SYS_CAP_CLOSE, (long)first.capability) != -IPC_EBADF ||
+        syscall2(SYS_CAP_DUPLICATE, (long)first.capability, MOSS_CAP_SEND) != -IPC_EBADF)
+      _exit(91);
+    struct moss_ipc_message request = {0};
+    unsigned long reply = 0;
+    if (ipc_receive(control.receive, &request, &reply) != 1 || request.payload[0] != 'r' || request.capability == 0 ||
+        request.capability == first.capability || syscall1(SYS_CAP_CLOSE, (long)request.capability) != 0)
+      _exit(92);
+    const struct moss_ipc_message response = {.size = 1, .payload = {'r'}};
+    _exit(ipc_reply(reply, &response) == 0 ? 37 : 93);
+  }
+  if (child < 0)
+    return 2;
+  unsigned long errors = syscall1(SYS_CAP_CLOSE, (long)control.receive) != 0;
+  const struct moss_ipc_message request = {
+      .size = 1, .capability = delegated.send, .rights = MOSS_CAP_SEND, .payload = {'r'}};
+  struct moss_ipc_message response = {0};
+  long deadline = deadline_after(ipc_call_timeout_ns);
+  errors |= (unsigned long)(deadline <= 0 || ipc_call(control.send, &request, &response, deadline) != 1 ||
+                            response.payload[0] != 'r')
+            << 1;
+  errors |= (unsigned long)!wait_exit(child, 37) << 2;
+  errors |= (unsigned long)(syscall1(SYS_CAP_CLOSE, (long)control.send) != 0) << 3;
+  errors |= (unsigned long)(syscall1(SYS_CAP_CLOSE, (long)delegated.send) != 0) << 4;
+  errors |= (unsigned long)(syscall1(SYS_CAP_CLOSE, (long)delegated.receive) != 0) << 5;
+  return errors;
+}
+
+unsigned long ipc_memory_object(void) {
+  if (syscall1(SYS_MEM_CREATE, 0) != -IPC_EINVAL)
+    return 1;
+  long memory = syscall1(SYS_MEM_CREATE, MOSS_MEM_OBJECT_BYTES);
+  if (memory <= 0)
+    return 2;
+  long read_only = syscall2(SYS_CAP_DUPLICATE, memory, MOSS_CAP_MAP_READ);
+  if (read_only <= 0)
+    return 4;
+  unsigned long errors = syscall2(SYS_MEM_MAP, read_only, MOSS_CAP_MAP_WRITE) != -IPC_EACCES;
+  long writable_addr = syscall2(SYS_MEM_MAP, memory, MOSS_CAP_MAP_READ | MOSS_CAP_MAP_WRITE);
+  long readable_addr = syscall2(SYS_MEM_MAP, read_only, MOSS_CAP_MAP_READ);
+  if (writable_addr <= 0 || readable_addr <= 0)
+    return errors | 2;
+  volatile unsigned char *writable = (volatile unsigned char *)writable_addr;
+  volatile const unsigned char *readable = (volatile const unsigned char *)readable_addr;
+  writable[0] = 'm';
+  errors |= (unsigned long)(readable[0] != 'm') << 1;
+
+  struct moss_ipc_endpoints control = {0, 0};
+  if (syscall1(SYS_IPC_CREATE, (long)&control) != 0 || syscall2(SYS_CAP_SET_INHERIT, (long)control.receive, 1) != 0)
+    return errors | 4;
+  long child = fork();
+  if (child == 0) {
+    // This inherited writable VMA must remain shared after fork.
+    if (writable[0] != 'm')
+      _exit(91);
+    writable[1] = 'f';
+    struct moss_ipc_message request = {0};
+    unsigned long reply = 0;
+    if (ipc_receive(control.receive, &request, &reply) != 1 || request.capability == 0 ||
+        request.rights != (MOSS_CAP_MAP_READ | MOSS_CAP_MAP_WRITE) ||
+        syscall2(SYS_CAP_DUPLICATE, (long)request.capability, MOSS_CAP_MAP_READ) != -IPC_EACCES)
+      _exit(92);
+    long transferred_addr = syscall2(SYS_MEM_MAP, (long)request.capability, MOSS_CAP_MAP_WRITE);
+    if (transferred_addr <= 0)
+      _exit(93);
+    volatile unsigned char *transferred = (volatile unsigned char *)transferred_addr;
+    if (transferred[0] != 'm' || transferred[1] != 'f')
+      _exit(94);
+    transferred[0] = 's';
+    if (syscall1(SYS_CAP_CLOSE, (long)request.capability) != 0 || transferred[0] != 's')
+      _exit(95);
+    const struct moss_ipc_message response = {.size = 1, .payload = {'s'}};
+    _exit(ipc_reply(reply, &response) == 0 ? 37 : 96);
+  }
+  if (child < 0)
+    return errors | 8;
+  errors |= (unsigned long)(syscall1(SYS_CAP_CLOSE, (long)control.receive) != 0) << 3;
+  const struct moss_ipc_message request = {.size = 1,
+                                           .capability = (unsigned long)memory,
+                                           .rights = MOSS_CAP_MAP_READ | MOSS_CAP_MAP_WRITE,
+                                           .payload = {'m'}};
+  struct moss_ipc_message response = {0};
+  long deadline = deadline_after(ipc_call_timeout_ns);
+  long completed = deadline > 0 ? ipc_call(control.send, &request, &response, deadline) : -1;
+  if (completed != 1)
+    kill(child, SIGKILL); // A failed enqueue could leave the child waiting to receive forever.
+  errors |= (unsigned long)(completed != 1 || response.payload[0] != 's') << 4;
+  errors |= (unsigned long)!wait_exit(child, 37) << 5;
+  errors |= (unsigned long)(readable[0] != 's' || readable[1] != 'f') << 6;
+  errors |= (unsigned long)(syscall1(SYS_CAP_CLOSE, memory) != 0 || syscall1(SYS_CAP_CLOSE, read_only) != 0 ||
+                            writable[0] != 's')
+            << 7;
+  errors |= (unsigned long)(syscall2(SYS_MUNMAP, writable_addr, MOSS_MEM_OBJECT_BYTES) != 0 ||
+                            syscall2(SYS_MUNMAP, readable_addr, MOSS_MEM_OBJECT_BYTES) != 0)
+            << 8;
+  errors |= (unsigned long)(syscall1(SYS_CAP_CLOSE, (long)control.send) != 0) << 9;
   return errors;
 }

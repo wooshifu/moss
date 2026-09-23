@@ -75,7 +75,8 @@ bool AddressSpace::resolve_fault_locked(VirtAddr address, mm::UserFaultAccess ac
                                      .start = vma->start_addr,
                                      .backing = vma->backing_data,
                                      .backing_offset = vma->backing_offset,
-                                     .backing_size = vma->backing_size};
+                                     .backing_size = vma->backing_size,
+                                     .shared_page = vma->shared_page};
   return cow_only ? mm::resolve_user_cow_fault(context, address)
                   : mm::resolve_user_demand_fault(context, address, access);
 }
@@ -620,6 +621,14 @@ KernelResult<VirtAddr> allocate_user_heap(Process *process, usize size) noexcept
   namespace log = moss::kernel::logging;
 
   ProcessId pid = cur->owner_pid;
+
+  if (proc->is_initial_supervisor()) {
+    // Its authority and service graph cannot be rebuilt from a zombie or a
+    // new PID. Reset before ordinary process teardown can leave services
+    // running without their initial supervisor.
+    log::klog::error("initial system supervisor exited: code={}; resetting system", exit_code);
+    arch::system_reset();
+  }
 
   // 1. Mark thread terminated BEFORE dequeue (prevents re-enqueue by scheduler_tick)
   cur->state = ProcessState::Terminated;

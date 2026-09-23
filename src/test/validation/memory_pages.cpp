@@ -69,6 +69,8 @@ void vma_boundaries() {
     ut::expect(!space.add_vma(base, base + page_size, vma_flags::WRITE, VmaType::MMAP));
     ut::expect(space.remove_vma(base, base + page_size));
     ut::expect(!space.add_vma(base, base + page_size, ~u32{0}, VmaType::MMAP));
+    ut::expect(
+        !space.add_vma(base, base + page_size, vma_flags::READ | vma_flags::WRITE | vma_flags::EXEC, VmaType::MMAP));
     ut::expect(space.add_vma(base, base + page_size, vma_flags::READ | vma_flags::WRITE, VmaType::MMAP));
     ut::expect(space.add_vma(base + page_size, base + 2 * page_size, vma_flags::READ, VmaType::MMAP));
     ut::expect(space.allows_user_access(base + page_size - 8, 16, vma_flags::READ));

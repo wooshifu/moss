@@ -59,6 +59,10 @@ struct PlatformInfo {
   CpuInfo cpus[16];
   bool psci_valid;
   bool psci_smc;
+  // IA-PC ACPI FADT RESET_REG is a platform-supplied system-reset port.
+  u16 acpi_reset_port;
+  u8 acpi_reset_value;
+  bool acpi_reset_valid;
   u32 timer_interrupt;
   u32 plic_contexts[16];
   // ISA 硬件定义 IRQ0..15；GSI 映射和 ACPI 极性/触发标志必须同步索引。

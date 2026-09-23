@@ -78,7 +78,13 @@ unsigned long vm_readonly_cow(void) {
 unsigned long vm_access_permissions(void) {
   long none = syscall6(SYS_MMAP, 0, 4096, 0, 0x22, -1, 0);
   long nx = syscall6(SYS_MMAP, 0, 4096, 3, 0x22, -1, 0);
+  long rx = syscall6(SYS_MMAP, 0, 4096, 5, 0x22, -1, 0);
+  long wx = syscall6(SYS_MMAP, 0, 4096, 7, 0x22, -1, 0);
   unsigned long errors = none <= 0 || nx <= 0;
+  // Native EACCES is 13 (kernel-syscall_table.cppm). Even a read-only
+  // executable anonymous mapping lacks code approval.
+  errors |= (unsigned long)(rx != -13) << 6;
+  errors |= (unsigned long)(wx != -13) << 7;
   if (none > 0) {
     errors |= (unsigned long)!vm_fault(none, VM_FAULT_READ) << 1;
     errors |= (unsigned long)!vm_fault(none, VM_FAULT_WRITE) << 2;

@@ -257,6 +257,44 @@ inline void disable_all_interrupts() noexcept {
 #endif
 }
 
+// Firmware or ACPI owns the whole-machine transition. Do not depend on the
+// failed supervisor or its services to complete this path.
+[[noreturn]] inline void system_reset() noexcept {
+  disable_all_interrupts();
+#if defined(MOSS_ARCH_ARM64)
+  if (platform::hardware.psci_valid) {
+    // PSCI SYSTEM_RESET, Arm DEN0022 function ID 0x84000009.
+    register u64 x0 asm("x0") = 0x84000009;
+    register u64 x1 asm("x1") = 0;
+    register u64 x2 asm("x2") = 0;
+    register u64 x3 asm("x3") = 0;
+    if (platform::hardware.psci_smc) {
+      asm volatile("smc #0" : "+r"(x0) : "r"(x1), "r"(x2), "r"(x3) : "memory");
+    } else {
+      asm volatile("hvc #0" : "+r"(x0) : "r"(x1), "r"(x2), "r"(x3) : "memory");
+    }
+  }
+#elif defined(MOSS_ARCH_X64)
+  if (platform::hardware.acpi_reset_valid) {
+    // ACPI 6.5 reset register: write the FADT's RESET_VALUE to RESET_REG.
+    asm volatile("outb %0, %1" ::"a"(platform::hardware.acpi_reset_value), "Nd"(platform::hardware.acpi_reset_port)
+                 : "memory");
+  }
+#elif defined(MOSS_ARCH_RISCV64)
+  // RISC-V SBI SRST: EID "SRST", FID 0, cold reboot type 1, reason 0.
+  register u64 a0 asm("a0") = 1;
+  register u64 a1 asm("a1") = 0;
+  register u64 a6 asm("a6") = 0;
+  register u64 a7 asm("a7") = 0x53525354;
+  asm volatile("ecall" : "+r"(a0), "+r"(a1) : "r"(a6), "r"(a7) : "memory");
+#endif
+  // Firmware must not return from a successful reset. Masked-IRQ halt is the
+  // bounded local fallback if the platform has no reset path or one fails.
+  for (;;) {
+    cpu_halt();
+  }
+}
+
 [[nodiscard]] inline bool interrupts_enabled() noexcept {
 #if defined(MOSS_ARCH_ARM64)
   u64 daif;

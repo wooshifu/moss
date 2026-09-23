@@ -1,8 +1,9 @@
-"""Exercise the unmodified production image through its real interactive shell."""
+"""Exercise the production supervisor and its real interactive shell."""
 
 import argparse
 import hashlib
 import json
+import re
 import shutil
 import signal
 import socket
@@ -114,10 +115,22 @@ quit
         input_timing=("registration_barrier" if registration_race else "first_read_barrier") if gdb else "prompt",
     )
     child, debugger, console, stage, pending = None, None, None, 0, b""
-    # Require the real ash, applet lookup, pipelines and mutable files as well
-    # as explicit BusyBox ELF execution and a command after child reaping.
+    service_pid = None
+    namespace_pid = None
+    bulk_data = b"0" * 300
+    # Require namespace lookup and direct file-capability calls as well as
+    # ash commands, child reaping and independent service recovery by PID 1.
     steps = [
+        (b"moss-init: supervisor ready", None),
+        (b"moss-init: file service started", None),
+        (b"moss-init: namespace service started", None),
         (b"built-in shell (ash)", None),
+        (b"moss$ ", b"/moss-file.elf read /missing\n"),
+        (b"\nMOSS_FILE_ERROR\n", None),
+        (b"moss$ ", b"/moss-file.elf write native\n"),
+        (b"\nMOSS_FILE_WRITE_OK\n", None),
+        (b"moss$ ", b"/moss-file.elf read\n"),
+        (b"\nMOSS_FILE_READ=native\n", None),
         (b"moss$ ", b"/busybox.elf ash -c 'printf \"MOSS_EXEC_READY\\n\"'\n"),
         (b"\nMOSS_EXEC_READY\n", None),
         (
@@ -136,6 +149,28 @@ quit
         (b"\nMOSS_NESTED_SHELL\n", None),
         (b"moss$ ", b"echo MOSS_PRODUCTION_READY\n"),
         (b"\nMOSS_PRODUCTION_READY\n", None),
+        (b"moss$ ", b"exit\n"),
+        (b"moss-init: restarting shell", None),
+        (b"built-in shell (ash)", None),
+        (b"moss$ ", b"/moss-file.elf read\n"),
+        (b"\nMOSS_FILE_READ=native\n", None),
+        (b"moss$ ", lambda _file, namespace: f"kill {namespace}\n".encode()),
+        (b"moss-init: namespace service died", None),
+        (b"moss-init: namespace service started", None),
+        (b"built-in shell (ash)", None),
+        (b"moss$ ", b"/moss-file.elf read\n"),
+        (b"\nMOSS_FILE_READ=native\n", None),
+        (b"moss$ ", lambda file, _namespace: f"kill {file}\n".encode()),
+        (b"moss-init: file service died", None),
+        (b"moss-init: file service started", None),
+        (b"moss-init: namespace service started", None),
+        (b"built-in shell (ash)", None),
+        (b"moss$ ", b"/moss-file.elf read\n"),
+        (b"\nMOSS_FILE_READ=\n", None),
+        (b"moss$ ", b"/moss-file.elf write \"$(printf '%0300d' 0)\"\n"),
+        (b"\nMOSS_FILE_WRITE_OK\n", None),
+        (b"moss$ ", b"/moss-file.elf read\n"),
+        (b"\nMOSS_FILE_READ=" + bulk_data + b"\n", None),
         (b"moss$ ", None),
     ]
     started = time.monotonic()
@@ -178,8 +213,24 @@ quit
                     if gdb and stage == 0 and pause_marker.encode() not in (output / "gdb.log").read_bytes():
                         break
                     marker, command = steps[stage]
-                    pending = pending.split(marker, 1)[1]
+                    after = pending.split(marker, 1)[1]
+                    if marker in (b"moss-init: file service started", b"moss-init: namespace service started"):
+                        match = re.match(rb" pid=(\d+)\n", after)
+                        if not match:
+                            break
+                        next_pid = int(match.group(1))
+                        previous_pid = service_pid if marker == b"moss-init: file service started" else namespace_pid
+                        if next_pid <= 1 or next_pid == previous_pid:
+                            raise ValueError("service incarnation did not change")
+                        if marker == b"moss-init: file service started":
+                            service_pid = next_pid
+                        else:
+                            namespace_pid = next_pid
+                        after = after[match.end() :]
+                    pending = after
                     if command:
+                        if callable(command):
+                            command = command(service_pid, namespace_pid)
                         if console:
                             console.sendall(command)
                         else:
@@ -187,7 +238,7 @@ quit
                             child.stdin.flush()
                     stage += 1
                 if stage == len(steps) and (not debugger or debugger.poll() is not None):
-                    result.update(status="passed", observed="busybox_shell_exec_wait")
+                    result.update(status="passed", observed="namespace_and_file_service_recovered")
                     break
                 if child.poll() is not None:
                     result["observed"] = "unexpected_exit"

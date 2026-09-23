@@ -9,7 +9,7 @@
 //   1. sys_write(stdout, "init: calling execve...\n") — announce trampoline
 //   2. Try /validation.elf; only the validation initramfs contains it.
 //      Only ENOENT falls through, so a broken validation image stays a failure.
-//   3. Execute /busybox.elf as ash -i with the shell environment below.
+//   3. Execute /init.elf, which supervises the production shell.
 //   4. On launch failure, print the error and exit with a nonzero status.
 //
 // ARM64 syscall convention (Linux-compatible):
@@ -35,13 +35,6 @@
 .global _user_program_start
 .global _user_program_end
 
-// Native pointers occupy eight bytes on all supported 64-bit ISAs. argv has
-// ash, -i and NULL; envp has five environment strings and NULL. Round their
-// combined storage up to the 16-byte user-stack ABI alignment.
-.equ .Lpointer_bytes, 8
-.equ .Largv_bytes, 3 * .Lpointer_bytes
-.equ .Lframe_bytes, (.Largv_bytes + 6 * .Lpointer_bytes + 15) & -16
-
 .type _user_program_start, @function
 _user_program_start:
 
@@ -62,28 +55,14 @@ _user_program_start:
     cmn     x0, #2                  // ENOENT is returned as native errno -2.
     b.ne    .Llaunch_failed
 
-    // Build writable pointer vectors using relocated user-mode string addresses.
-    // Kernel-linked absolute pointer data would still point into kernel memory.
-    sub     sp, sp, #.Lframe_bytes
-    adr     x3, .Larg_ash
-    str     x3, [sp, #0 * .Lpointer_bytes]
-    adr     x3, .Larg_interactive
-    str     x3, [sp, #1 * .Lpointer_bytes]
-    str     xzr, [sp, #2 * .Lpointer_bytes] // NUL terminator
-    adr     x3, .Lenv_path
-    str     x3, [sp, #3 * .Lpointer_bytes]
-    adr     x3, .Lenv_home
-    str     x3, [sp, #4 * .Lpointer_bytes]
-    adr     x3, .Lenv_term
-    str     x3, [sp, #5 * .Lpointer_bytes]
-    adr     x3, .Lenv_ps1
-    str     x3, [sp, #6 * .Lpointer_bytes]
-    adr     x3, .Lenv_ps2
-    str     x3, [sp, #7 * .Lpointer_bytes]
-    str     xzr, [sp, #8 * .Lpointer_bytes] // NUL terminator
-    mov     x1, sp                  // argv = {"ash", "-i", NULL}
-    add     x2, sp, #.Largv_bytes    // envp follows argv
-    adr     x0, .Lpath_busybox
+    // Pass one relocated argv pointer; service policy lives in /init.elf.
+    sub     sp, sp, #16
+    adr     x3, .Larg_init
+    str     x3, [sp]
+    str     xzr, [sp, #8]
+    mov     x1, sp
+    mov     x2, #0
+    adr     x0, .Lpath_init
     mov     x8, #11                 // SYS_EXECVE
     svc     #0
 
@@ -115,22 +94,10 @@ _user_program_start:
 .Lmsg_fail_end:
 .Lpath_validation:
     .asciz  "/validation.elf"
-.Lpath_busybox:
-    .asciz  "/busybox.elf"
-.Larg_ash:
-    .asciz  "ash"
-.Larg_interactive:
-    .asciz  "-i"
-.Lenv_path:
-    .asciz  "PATH=/"
-.Lenv_home:
-    .asciz  "HOME=/"
-.Lenv_term:
-    .asciz  "TERM=dumb"
-.Lenv_ps1:
-    .asciz  "PS1=moss$ "
-.Lenv_ps2:
-    .asciz  "PS2=> "
+.Lpath_init:
+    .asciz  "/init.elf"
+.Larg_init:
+    .asciz  "init"
 
 // =============================================================================
 // End-of-program marker

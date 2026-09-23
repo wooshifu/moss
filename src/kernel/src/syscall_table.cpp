@@ -23,8 +23,8 @@ extern "C" [[gnu::weak, gnu::noinline]] void moss_validation_fork_metadata(unsig
 extern "C" [[gnu::weak, gnu::noinline]] void moss_validation_exec_allocation(unsigned /*unused*/, bool /*unused*/,
                                                                              moss::kernel::usize /*unused*/) noexcept {}
 // Validation can replace the published source between pathname and vector reads.
-extern "C" [[gnu::weak, gnu::noinline]] void moss_validation_exec_source_snapshot(moss::kernel::PhysAddr /*unused*/,
-                                                                                   moss::kernel::VirtAddr /*unused*/) noexcept {}
+extern "C" [[gnu::weak, gnu::noinline]] void
+moss_validation_exec_source_snapshot(moss::kernel::PhysAddr /*unused*/, moss::kernel::VirtAddr /*unused*/) noexcept {}
 // Validation can force child exit after wait's first scan and before registration.
 extern "C" [[gnu::weak, gnu::noinline]] void moss_validation_wait_before_register(moss::kernel::u32 /*parent_pid*/,
                                                                                   long /*wait_pid*/) noexcept {}
@@ -332,7 +332,7 @@ long sys_fork(long /*unused*/, long /*unused*/, long /*unused*/, long /*unused*/
       }
       moss_validation_fork_metadata(0, true);
       vmas_copied = child_as->add_vma(vma.start_addr, vma.end_addr, vma.flags, vma.type, vma.backing_data,
-                                      vma.backing_offset, vma.backing_size);
+                                      vma.backing_offset, vma.backing_size, vma.memory_object, vma.shared_page);
       moss_validation_fork_metadata(0, false);
     });
     if (!vmas_copied) {
@@ -1766,6 +1766,11 @@ long sys_mmap(long addr, long length, long prot, long flags, long fd, long offse
       offset != 0) {
     return -errc::EINVAL;
   }
+  // Anonymous memory has no approved immutable code version. Fail closed
+  // until a capability-checked executable Memory Object path exists.
+  if (prot & PROT_EXEC) {
+    return -errc::EACCES;
+  }
 
   Thread *cur = CfsScheduler::get_current_task();
   if (!cur) {
@@ -1809,10 +1814,6 @@ long sys_mmap(long addr, long length, long prot, long flags, long fd, long offse
   if (prot & PROT_WRITE) {
     vflags |= vma_flags::WRITE;
   }
-  if (prot & PROT_EXEC) {
-    vflags |= vma_flags::EXEC;
-  }
-
   // A valid hint never replaces an existing VMA. On collision try the cursor;
   // MAP_FIXED and unknown flags were rejected above, not silently downgraded.
   if (!as->add_vma(map_addr, map_addr + map_len, vflags, VmaType::MMAP)) {
@@ -2863,7 +2864,9 @@ const SyscallDescriptor SYSCALL_TABLE[static_cast<int>(SyscallNumber::MAX_SYSCAL
     {"ipc_create", handlers::sys_ipc_create, 1, true, "Create a bounded control endpoint"},
     {"ipc_call", handlers::sys_ipc_call, 4, true, "Call a control endpoint"},
     {"ipc_receive", handlers::sys_ipc_receive, 3, true, "Receive a control request"},
-    {"ipc_reply", handlers::sys_ipc_reply, 2, true, "Complete a pending call"}};
+    {"ipc_reply", handlers::sys_ipc_reply, 2, true, "Complete a pending call"},
+    {"mem_create", handlers::sys_mem_create, 1, true, "Create a capability-backed memory page"},
+    {"mem_map", handlers::sys_mem_map, 2, true, "Map a memory capability"}};
 
 // 系统调用分发器实现
 long SyscallDispatcher::dispatch(long syscall_number, long arg0, long arg1, long arg2, long arg3, long arg4,

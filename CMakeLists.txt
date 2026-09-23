@@ -228,6 +228,13 @@ if(MOSS_BUILD_TESTS)
     add_test(NAME moss-production-boot COMMAND uv run ${CMAKE_SOURCE_DIR}/scripts/check_production_boot.py --manifest
                                                ${CMAKE_BINARY_DIR}/moss-artifacts.json
     )
+    add_test(NAME moss-supervisor-reset COMMAND uv run ${CMAKE_SOURCE_DIR}/scripts/check_supervisor_reset.py --manifest
+                                                ${CMAKE_BINARY_DIR}/moss-artifacts.json
+    )
+    set_tests_properties(
+        moss-supervisor-reset
+        PROPERTIES TIMEOUT 55 RUN_SERIAL TRUE LABELS "kernel" WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+    )
     set_tests_properties(
         moss-production-boot
         PROPERTIES TIMEOUT

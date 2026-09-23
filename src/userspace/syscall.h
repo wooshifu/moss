@@ -69,7 +69,9 @@ enum {
   SYS_IPC_CREATE = 136,
   SYS_IPC_CALL = 137,
   SYS_IPC_RECEIVE = 138,
-  SYS_IPC_REPLY = 139
+  SYS_IPC_REPLY = 139,
+  SYS_MEM_CREATE = 140,
+  SYS_MEM_MAP = 141
 };
 
 enum {
@@ -77,8 +79,14 @@ enum {
   MOSS_CAP_RECEIVE = 1U << 1,
   MOSS_CAP_TRANSFER = 1U << 2,
   MOSS_CAP_DUPLICATE = 1U << 3,
+  MOSS_CAP_MAP_READ = 1U << 4,
+  MOSS_CAP_MAP_WRITE = 1U << 5,
   MOSS_IPC_MAX_MESSAGE = 256
 };
+
+// The initial Memory Object is one 4 KiB page. MAP_WRITE mappings are also
+// readable on all supported architectures; closing a handle keeps mappings.
+#define MOSS_MEM_OBJECT_BYTES 4096UL
 
 struct moss_ipc_endpoints {
   unsigned long send;
