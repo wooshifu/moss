@@ -152,6 +152,7 @@ static_assert(__builtin_offsetof(SignalFrame, fp) % 16 == 0);
 // at the next checkpoint. SIGCONT resumes a stopped thread at generation.
 // Returns true if the signal was successfully pended.
 bool send_signal(Thread *thread, u32 signo) noexcept;
+void notify_parent_job_status(Thread *thread) noexcept;
 
 // Check if a thread has any unmasked pending signals.
 [[nodiscard]] inline bool signal_pending(const Thread *thread) noexcept {

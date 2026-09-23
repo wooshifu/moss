@@ -572,6 +572,8 @@ struct RtSchedEntity {
 
 // Thread structure
 struct Thread {
+  static constexpr u64 WAIT_STATUS_MASK = (1ULL << (sizeof(u32) * 8)) - 1;
+
   ThreadId tid;
   ProcessId owner_pid;
 
@@ -583,6 +585,13 @@ struct Thread {
   // 0: no handoff, 1: preparing to block, 2: wake requested before context save.
   moss::atomic<u32> sleep_handoff{0};
   containers::IrqSpinLock sleep_lock;
+  // High word is a generation; low word is the Linux-compatible wait status.
+  // Keeping the generation when consumed prevents a failed copyout from
+  // restoring an old event over a later identical STOP/CONT event.
+  moss::atomic<u64> wait_status_event{0};
+  // State stays Stopped through the wake handoff; this suppresses duplicate
+  // continued events from multiple SIGCONT senders. Protected by sleep_lock.
+  bool job_stopped{false};
   SchedClass sched_class;
   SchedPolicy sched_policy;
   SchedEntity se;
@@ -679,6 +688,14 @@ struct Thread {
     }
   }
   [[nodiscard]] bool is_preemptible() const noexcept { return preempt_count == 0; }
+
+  void publish_wait_status(u32 status) noexcept {
+    u64 current = wait_status_event.load();
+    u64 next;
+    do {
+      next = ((current + WAIT_STATUS_MASK + 1) & ~WAIT_STATUS_MASK) | status;
+    } while (!wait_status_event.compare_exchange_weak(current, next));
+  }
 };
 
 // Owned by Process, independent of the numeric PID. Handler 0 is SIG_DFL.
@@ -886,6 +903,10 @@ public:
 
   // Iterate children (for reparenting in sys_exit)
   template <typename Func> void for_each_child(Func func) const { children_.for_each_snapshot(func); }
+
+  // wait4 rechecks with IRQs masked; avoid snapshot allocation there. The
+  // callback must not modify or reenter this child list.
+  template <typename Func> void for_each_child_locked(Func func) const { children_.for_each(func); }
 
   // Parent PID setter (for reparenting)
   void set_parent_pid(ProcessId pid) noexcept { parent_pid_ = pid; }

@@ -1810,7 +1810,7 @@ public:
     switch_to_bootstrap(task->context);
   }
 
-  void stop_current() noexcept {
+  void stop_current(u32 signo) noexcept {
     auto *task = get_current_task();
     if (!task || arch::interrupts_enabled()) {
       return;
@@ -1826,8 +1826,12 @@ public:
       task->sleep_handoff.store(1);
       task->wake_cpu = get_current_cpu_id();
       task->state = ProcessState::Stopped;
+      task->job_stopped = true;
+      // abi-bits/wait.h recognizes the low byte 0x7f as a stopped child.
+      task->publish_wait_status((signo << 8) | 0x7f);
       dequeue_task(task);
     }
+    notify_parent_job_status(task);
     // The same bootstrap acknowledgement as an interruptible sleep prevents
     // a concurrent CONT/KILL from dispatching an unsaved kernel continuation.
     commit_sleep();

@@ -831,13 +831,15 @@ long sys_execve(long pathname_addr, long argv_addr, long envp_addr, long /*unuse
 // wait4(pid, wstatus, options, rusage) — wait for child process state change
 // pid > 0: wait for specific child
 // pid == -1: wait for any child
-// options: WNOHANG (1) = return immediately if no child has exited
+// options use the Linux-compatible abi-bits/wait.h values.
 long sys_wait4(long wait_pid, long wstatus_addr, long options, long /*unused*/, long /*unused*/,
                long /*unused*/) noexcept {
   using namespace moss::kernel::process;
 
   constexpr long WNOHANG = 1;
-  if ((options & ~WNOHANG) != 0) {
+  constexpr long WUNTRACED = 2;
+  constexpr long WCONTINUED = 8;
+  if ((options & ~(WNOHANG | WUNTRACED | WCONTINUED)) != 0) {
     return -errc::EINVAL;
   }
   // This ABI currently supports a positive PID or -1, not process-group waits.
@@ -862,6 +864,36 @@ long sys_wait4(long wait_pid, long wstatus_addr, long options, long /*unused*/, 
   if (!proc->has_children()) {
     return -errc::ECHILD;
   }
+
+  struct JobEvent {
+    shared_ptr<Process> child;
+    Thread *thread = nullptr;
+    u64 value = 0;
+  };
+  auto find_job_event = [&]() -> JobEvent {
+    JobEvent found{};
+    if ((options & (WUNTRACED | WCONTINUED)) == 0) {
+      return found;
+    }
+    proc->for_each_child_locked([&](ProcessId child_pid) {
+      if (found.thread || (wait_pid > 0 && static_cast<ProcessId>(wait_pid) != child_pid)) {
+        return;
+      }
+      auto child = g_process_manager->find_process(child_pid);
+      if (!child || child->state() == ProcessState::Zombie) {
+        return;
+      }
+      auto *thread = child->get_main_thread();
+      const u64 event = thread ? thread->wait_status_event.load() : 0;
+      const u32 status = static_cast<u32>(event);
+      if (((options & WUNTRACED) && (status & 0xff) == 0x7f) || ((options & WCONTINUED) && status == 0xffff)) {
+        // Retain the process so another waiter cannot free this thread during
+        // reservation and copyout.
+        found = {child, thread, event};
+      }
+    });
+    return found;
+  };
 
   while (true) {
     // Scan for matching zombie child
@@ -895,6 +927,31 @@ long sys_wait4(long wait_pid, long wstatus_addr, long options, long /*unused*/, 
       return static_cast<long>(result_pid);
     }
 
+    if (auto job = find_job_event(); job.thread) {
+      const u64 cleared = job.value & ~Thread::WAIT_STATUS_MASK;
+      u64 expected = job.value;
+      // Reserve before copyout so a competing waiter cannot report the same
+      // event, and a failed consume cannot leave an unreported user status.
+      if (!job.thread->wait_status_event.compare_exchange_strong(expected, cleared)) {
+        continue;
+      }
+      const int status = static_cast<int>(static_cast<u32>(job.value));
+      if (wstatus_addr != 0 && copy_to_user(static_cast<u64>(wstatus_addr), &status, sizeof(status)) < 0) {
+        expected = cleared;
+        if (job.thread->wait_status_event.compare_exchange_strong(expected, job.value)) {
+          // Another waiter may have slept while this event was reserved.
+          proc->child_exit_wait_queue().wake_up([](void *waiting) {
+            auto *task = static_cast<Thread *>(waiting);
+            if (g_scheduler) {
+              g_scheduler->task_wakeup(task, task->wake_cpu);
+            }
+          });
+        }
+        return -errc::EFAULT;
+      }
+      return static_cast<long>(job.child->pid());
+    }
+
     // No zombie found
     // Check if specified PID is actually a child
     if (wait_pid > 0 && !proc->is_child(static_cast<ProcessId>(wait_pid))) {
@@ -924,7 +981,7 @@ long sys_wait4(long wait_pid, long wstatus_addr, long options, long /*unused*/, 
     proc->child_exit_wait_queue().add_waiter(static_cast<void *>(cur), /*exclusive=*/true);
     // An exit may have happened after the first scan but before registration.
     // Recheck after publishing the waiter so neither side can miss the other.
-    if (proc->find_zombie_child(wait_pid) != INVALID_PROCESS_ID) {
+    if (proc->find_zombie_child(wait_pid) != INVALID_PROCESS_ID || find_job_event().thread) {
       g_scheduler->task_wakeup(cur, cur->wake_cpu);
     }
     g_scheduler->commit_sleep();

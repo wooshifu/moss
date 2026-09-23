@@ -5935,6 +5935,7 @@ void declare_cases() {
     ut::register_test("wait_restarted", empty_case);
     ut::register_test("cpu_bound_irq", empty_case);
     ut::register_test("stop_continue", empty_case);
+    ut::register_test("wait_job_status", empty_case);
     ut::register_test("sigprocmask", empty_case);
     ut::register_test("sigaltstack", empty_case);
     ut::register_test("sig_ign", empty_case);
@@ -7018,7 +7019,8 @@ extern "C" long moss_validation_call(long op, long arg1, [[maybe_unused]] long a
     }
   }
   if (op == 55 && ut::same_id(selection, "users.signals") &&
-      (ut::same_id(active_case, "wait_interrupted") || ut::same_id(active_case, "wait_restarted")) &&
+      (ut::same_id(active_case, "wait_interrupted") || ut::same_id(active_case, "wait_restarted") ||
+       ut::same_id(active_case, "wait_job_status")) &&
       arch::get_current_cpu_id() == 1) {
     auto child = process::current_process();
     if (!child || arg1 != static_cast<long>(child->parent_pid()) || arg2 != static_cast<long>(child->pid())) {

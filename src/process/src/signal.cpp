@@ -12,6 +12,7 @@ bool send_signal(Thread *thread, u32 signo) noexcept {
   }
   const u64 mask = sig::sigmask(signo);
   bool wake = false;
+  bool continued = false;
   {
     containers::LockGuard<containers::IrqSpinLock> guard(thread->sleep_lock);
     // POSIX stop/continue generation discards the opposite pending group.
@@ -33,11 +34,36 @@ bool send_signal(Thread *thread, u32 signo) noexcept {
     const auto state = thread->state.load();
     wake = (state == ProcessState::Stopped && (signo == sig::SIGCONT || signo == sig::SIGKILL)) ||
            (state == ProcessState::Sleeping && deliverable);
+    if (state == ProcessState::Stopped && signo == sig::SIGCONT && thread->job_stopped) {
+      thread->job_stopped = false;
+      // abi-bits/wait.h recognizes 0xffff as a continued child.
+      thread->publish_wait_status(0xffff);
+      continued = true;
+    }
   }
   if (wake && g_scheduler) {
     g_scheduler->task_wakeup(thread, thread->cpu);
   }
+  if (continued) {
+    notify_parent_job_status(thread);
+  }
   return true;
+}
+
+void notify_parent_job_status(Thread *thread) noexcept {
+  auto child = g_process_manager ? g_process_manager->find_process(thread->owner_pid) : shared_ptr<Process>{};
+  auto parent = child ? g_process_manager->find_process(child->parent_pid()) : shared_ptr<Process>{};
+  if (!parent) {
+    return;
+  }
+  (void)send_signal(parent->get_main_thread(), sig::SIGCHLD);
+  // The parent may block or ignore SIGCHLD while waiting for this status.
+  parent->child_exit_wait_queue().wake_up([](void *waiting) {
+    auto *task = static_cast<Thread *>(waiting);
+    if (g_scheduler) {
+      g_scheduler->task_wakeup(task, task->wake_cpu);
+    }
+  });
 }
 
 // ============================================================================
@@ -336,7 +362,7 @@ u32 do_signal_checkpoint(Thread *thread) noexcept {
         if (!g_scheduler) {
           return signo;
         }
-        g_scheduler->stop_current();
+        g_scheduler->stop_current(signo);
         continue;
       case SigDefault::Ignore:
       case SigDefault::Continue:
