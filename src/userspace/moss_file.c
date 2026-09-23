@@ -12,12 +12,10 @@
 // Each service call has its own bounded wait; a stalled service cannot hang
 // the shell indefinitely, and an ambiguous write is never retried here.
 #define FILE_CALL_TIMEOUT_NS 5000000000UL
-// Native clock ID 1 is monotonic, as in clock_gettime_ns in syscall.h.
-#define MOSS_MONOTONIC_CLOCK_ID 1
 
 static long call(unsigned long endpoint, const struct moss_ipc_message *request, struct moss_ipc_message *response) {
   unsigned long now = 0;
-  if (syscall2(SYS_CLOCK_GETTIME, MOSS_MONOTONIC_CLOCK_ID, (long)&now) != 0 || now > LONG_MAX - FILE_CALL_TIMEOUT_NS) {
+  if (syscall2(SYS_CLOCK_GETTIME, MOSS_CLOCK_MONOTONIC, (long)&now) != 0 || now > LONG_MAX - FILE_CALL_TIMEOUT_NS) {
     return -1;
   }
   return syscall6(SYS_IPC_CALL, (long)endpoint, (long)request, (long)response, (long)(now + FILE_CALL_TIMEOUT_NS), 0,

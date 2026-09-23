@@ -8,7 +8,6 @@
 
 #define MOSS_SYSCALL_RAW_ONLY
 #include "syscall.h"
-#include "moss_file_protocol.h"
 
 // One second between launches bounds a failing service's restart rate.
 #define RESTART_DELAY_NS 1000000000UL
@@ -69,33 +68,53 @@ static int start_file_service(struct Service *service) {
   if (syscall1(SYS_IPC_CREATE, (long)&endpoints) != 0) {
     return -1;
   }
+  long mint = 0;
   long receive = syscall2(SYS_CAP_DUPLICATE, (long)endpoints.receive, MOSS_CAP_RECEIVE | MOSS_CAP_DUPLICATE);
   if (receive <= 0 || syscall2(SYS_CAP_SET_INHERIT, receive, 1) != 0) {
     goto fail;
   }
-  char receive_arg[32]; // Decimal 64-bit handle plus terminator.
-  int size = snprintf(receive_arg, sizeof(receive_arg), "%lu", (unsigned long)receive);
-  if (size < 0 || (size_t)size >= sizeof(receive_arg)) {
+  // The file service owns mint authority. The supervisor retains only an
+  // attenuated sender for service lookup and recovery.
+  mint = syscall2(SYS_CAP_DUPLICATE, (long)endpoints.send,
+                  MOSS_CAP_SEND | MOSS_CAP_TRANSFER | MOSS_CAP_DUPLICATE | MOSS_CAP_MINT);
+  if (mint <= 0 || syscall2(SYS_CAP_SET_INHERIT, mint, 1) != 0) {
+    goto fail;
+  }
+  char receive_arg[32], mint_arg[32]; // Each holds a decimal 64-bit handle.
+  int receive_size = snprintf(receive_arg, sizeof(receive_arg), "%lu", (unsigned long)receive);
+  int mint_size = snprintf(mint_arg, sizeof(mint_arg), "%lu", (unsigned long)mint);
+  if (receive_size < 0 || (size_t)receive_size >= sizeof(receive_arg) || mint_size < 0 ||
+      (size_t)mint_size >= sizeof(mint_arg)) {
     goto fail;
   }
 
   pid_t child = fork();
   if (child == 0) {
-    char *const argv[] = {"file-service", receive_arg, NULL};
+    char *const argv[] = {"file-service", receive_arg, mint_arg, NULL};
     execve("/file-service.elf", argv, NULL);
     _exit(127);
   }
+  (void)syscall1(SYS_CAP_CLOSE, mint);
   (void)syscall1(SYS_CAP_CLOSE, receive);
   (void)syscall1(SYS_CAP_CLOSE, (long)endpoints.receive);
   if (child < 0) {
     (void)syscall1(SYS_CAP_CLOSE, (long)endpoints.send);
     return -1;
   }
+  long send = syscall2(SYS_CAP_DUPLICATE, (long)endpoints.send, MOSS_CAP_SEND | MOSS_CAP_DUPLICATE);
+  (void)syscall1(SYS_CAP_CLOSE, (long)endpoints.send);
+  if (send <= 0) {
+    stop_child(child);
+    return -1;
+  }
   service->pid = child;
-  service->send = (long)endpoints.send;
+  service->send = send;
   return 0;
 
 fail:
+  if (mint > 0) {
+    (void)syscall1(SYS_CAP_CLOSE, mint);
+  }
   if (receive > 0) {
     (void)syscall1(SYS_CAP_CLOSE, receive);
   }
@@ -110,9 +129,9 @@ static int start_namespace_service(const struct Service *file, struct Service *s
     return -1;
   }
   long receive = 0;
-  // The namespace service receives only a sender for this file object. The
-  // original endpoint stays here so clients cannot mint other identities.
-  long file_cap = syscall2(SYS_IPC_MINT_BADGE, file->send, MOSS_FILE_SCRATCH_BADGE);
+  // Inheriting through fork needs DUPLICATE. The namespace can ask the file
+  // service to open an object, but cannot mint or transfer this root sender.
+  long file_cap = syscall2(SYS_CAP_DUPLICATE, file->send, MOSS_CAP_SEND | MOSS_CAP_DUPLICATE);
   if (file_cap <= 0) {
     goto fail;
   }

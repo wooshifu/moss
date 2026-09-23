@@ -7,13 +7,18 @@
 #include "syscall.h"
 
 int main(int argc, char **argv) {
-  if (argc != 2 || !argv[1]) {
+  if (argc != 3 || !argv[1] || !argv[2]) {
     return 2;
   }
   char *end = NULL;
   errno = 0;
   unsigned long receive = strtoul(argv[1], &end, 10);
   if (errno || !receive || *end) {
+    return 2;
+  }
+  errno = 0;
+  unsigned long mint = strtoul(argv[2], &end, 10);
+  if (errno || !mint || *end) {
     return 2;
   }
 
@@ -32,6 +37,7 @@ int main(int argc, char **argv) {
       return 1;
     }
     struct moss_ipc_message response = {.size = 1, .payload = {MOSS_FILE_BAD_REQUEST}};
+    long minted = 0;
     if (request.capability) {
       unsigned long count = (unsigned long)request.payload[1] | ((unsigned long)request.payload[2] << 8);
       int reading = request.badge == MOSS_FILE_SCRATCH_BADGE && request.size == 1 &&
@@ -62,6 +68,14 @@ int main(int argc, char **argv) {
       // Even a malformed request may carry a transferred handle. Release it
       // after use so clients cannot exhaust the service's capability table.
       (void)syscall1(SYS_CAP_CLOSE, (long)request.capability);
+    } else if (request.badge == 0 && request.size == 1 && request.payload[0] == MOSS_FILE_OPEN) {
+      minted = syscall2(SYS_IPC_MINT_BADGE, (long)mint, MOSS_FILE_SCRATCH_BADGE);
+      if (minted > 0) {
+        response.payload[0] = MOSS_FILE_OK;
+        response.capability = (unsigned long)minted;
+        // Forwarding a reduced SEND handle requires TRANSFER and DUPLICATE.
+        response.rights = MOSS_CAP_SEND | MOSS_CAP_TRANSFER | MOSS_CAP_DUPLICATE;
+      }
     } else if (request.badge == MOSS_FILE_SCRATCH_BADGE && request.size == 1 && request.payload[0] == MOSS_FILE_READ &&
                length <= MOSS_IPC_MAX_MESSAGE - 1) {
       response.payload[0] = MOSS_FILE_OK;
@@ -75,5 +89,10 @@ int main(int argc, char **argv) {
     // A timed-out caller may have discarded its Reply; the file remains
     // usable for later requests regardless of that caller's outcome.
     (void)syscall2(SYS_IPC_REPLY, (long)reply, (long)&response);
+    // Reply transfer snapshots the handle. Keep no local object handle after
+    // the reply, including when the caller timed out before delivery.
+    if (minted > 0) {
+      (void)syscall1(SYS_CAP_CLOSE, minted);
+    }
   }
 }

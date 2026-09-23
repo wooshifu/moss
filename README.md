@@ -40,13 +40,12 @@ BusyBox's standalone shell support. The separate validation initramfs starts
 `/validation.elf`, which also contains the signal regression cases.
 
 The capability-backed services currently cover only the volatile `/scratch`
-example used by `/moss-file.elf`. Its lookup returns a minted sender capability;
-the kernel supplies that capability's file badge to the serving process.
-Ordinary shell files, ELF loading, process compatibility, interrupt/timer
-bootstrap and the early console still use kernel
+example used by `/moss-file.elf`. Its namespace lookup asks the file service
+to mint a sender capability; the kernel supplies that capability's file badge
+to the serving process. Ordinary shell files, ELF loading, process
+compatibility, interrupt/timer bootstrap and the early console still use kernel
 implementations. The accepted [architecture decisions](docs/adr/) describe
-their intended migration; they
-are not a claim that those services have already replaced the kernel paths.
+their intended migration.
 
 For example, after launching QEMU:
 

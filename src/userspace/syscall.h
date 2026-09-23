@@ -115,6 +115,9 @@ struct moss_ipc_message {
 // allocation rationale is unrecorded. Do not substitute a Linux termios opcode.
 enum { MOSS_IOCTL_ISATTY = 0x4d01 };
 
+// Native clock ID 1 selects monotonic nanoseconds, not a POSIX timespec.
+enum { MOSS_CLOCK_MONOTONIC = 1 };
+
 // ============================================================================
 // Low-level syscall wrappers
 // The memory clobber prevents moving user-buffer accesses across the trap.
@@ -377,11 +380,15 @@ static inline long sigaltstack(const struct stack_t *ss, struct stack_t *old_ss)
 
 // Clock ID 1 selects monotonic time. Moss returns a single u64 nanosecond
 // count, not a POSIX timespec; mlibc performs that representation conversion.
-static inline long clock_gettime_ns(unsigned long *ns) { return syscall2(SYS_CLOCK_GETTIME, 1, (long)ns); }
+static inline long clock_gettime_ns(unsigned long *ns) {
+  return syscall2(SYS_CLOCK_GETTIME, MOSS_CLOCK_MONOTONIC, (long)ns);
+}
 
 // Like clock_gettime_ns, the native ABI writes a u64 nanosecond count instead
 // of a POSIX timespec. Clock ID 1 selects the monotonic hardware clocksource.
-static inline long clock_getres_ns(unsigned long *ns) { return syscall2(SYS_CLOCK_GETRES, 1, (long)ns); }
+static inline long clock_getres_ns(unsigned long *ns) {
+  return syscall2(SYS_CLOCK_GETRES, MOSS_CLOCK_MONOTONIC, (long)ns);
+}
 
 static inline long nanosleep_ns(unsigned long *ns) { return syscall2(SYS_NANOSLEEP, (long)ns, 0); }
 
