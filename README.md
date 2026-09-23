@@ -31,11 +31,19 @@ The static mlibc/BusyBox runtime is built directly from checked-in
 sources with native CMake targets. See [third-party sources](docs/third-party-sources.md)
 for exact upstream revisions, licenses, the supported profile and build requirements.
 
-The normal initramfs contains only `/busybox.elf`. The embedded init trampoline
-starts its interactive ash directly at the `moss$` prompt, including with
+The normal initramfs contains `/init.elf`, `/file-service.elf`,
+`/namespace-service.elf`, `/moss-file.elf` and `/busybox.elf`. The embedded
+trampoline starts `/init.elf`; that supervisor launches the two services and
+an interactive BusyBox ash at the `moss$` prompt, including with
 `MOSS_BUILD_TESTS=OFF`. The selected applets can be invoked by name using
 BusyBox's standalone shell support. The separate validation initramfs starts
 `/validation.elf`, which also contains the signal regression cases.
+
+The capability-backed services currently cover only the volatile `/scratch`
+example used by `/moss-file.elf`. Ordinary shell files, ELF loading, process
+compatibility and boot drivers still use kernel implementations. The accepted
+[architecture decisions](docs/adr/) describe their intended migration; they
+are not a claim that those services have already replaced the kernel paths.
 
 For example, after launching QEMU:
 
