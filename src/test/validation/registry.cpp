@@ -204,6 +204,7 @@ void declare_cases() {
         "source_version",
         "registration_gate",
         "shared_thread_gate",
+        "startup_capability",
     };
     for (const auto *name : names) {
       ut::register_test(name, empty_case);

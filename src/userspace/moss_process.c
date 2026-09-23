@@ -1,12 +1,18 @@
 #include <errno.h>
 #include <limits.h>
+#include <signal.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/auxv.h>
+#include <sys/wait.h>
 #include <unistd.h>
 
 #define MOSS_SYSCALL_RAW_ONLY
 #include "moss_process_protocol.h"
 #include "syscall.h"
+
+extern char **environ;
 
 // Boot validation must fail within a bounded time if the service stops
 // replying or a child never publishes its exit status.
@@ -148,14 +154,25 @@ static int observe_child(unsigned long root, unsigned long *last_id, int exit_co
 }
 
 static int observe_family(unsigned long root, unsigned long *last_id) {
-  long self = syscall0(SYS_DOMAIN_SELF);
-  if (self <= 0)
-    return 0;
-  unsigned long parent_id = 0, parent_session = 0;
-  if (!new_session(root, (unsigned long)self, MOSS_PROCESS_REGISTER, &parent_id, &parent_session))
-    return 0;
-  int valid = parent_id > *last_id;
-  *last_id = parent_id;
+  unsigned long parent_session = getauxval(MOSS_AT_STARTUP_CAP);
+  const int borrowed_session = parent_session != 0;
+  unsigned long parent_id = 0;
+  if (borrowed_session) {
+    struct moss_ipc_message identity = {.size = 1, .payload = {MOSS_PROCESS_IDENTITY}};
+    struct moss_ipc_message response = {0};
+    long result = call(parent_session, &identity, &response);
+    int clean = no_capability(&response);
+    if (result != MOSS_PROCESS_REPLY_IDENTITY_BYTES || response.payload[0] != MOSS_PROCESS_OK || !clean)
+      return 0;
+    parent_id = moss_process_get_u64(response.payload + 1);
+  } else {
+    long self = syscall0(SYS_DOMAIN_SELF);
+    if (self <= 0 || !new_session(root, (unsigned long)self, MOSS_PROCESS_REGISTER, &parent_id, &parent_session))
+      return 0;
+  }
+  int valid = parent_id && (borrowed_session || parent_id > *last_id);
+  if (!borrowed_session)
+    *last_id = parent_id;
   unsigned long cancelled_id = 0, cancelled_session = 0;
   if (!new_session(parent_session, 0, MOSS_PROCESS_PREPARE_CHILD, &cancelled_id, &cancelled_session))
     valid = 0;
@@ -205,6 +222,10 @@ static int observe_family(unsigned long root, unsigned long *last_id) {
     unsigned long domain = 0;
     long child = syscall1(SYS_FORK_DOMAIN_INHERIT, (long)&domain);
     if (child == 0) {
+      // This raw child uses only its reserved badge; it must not retain the
+      // managed parent's session inherited by the native fork.
+      if (borrowed_session)
+        (void)syscall1(SYS_CAP_CLOSE, (long)parent_session);
       // The parent must attach the reserved domain before this child can
       // create descendants under its service identity.
       int ready = -1;
@@ -224,8 +245,8 @@ static int observe_family(unsigned long root, unsigned long *last_id) {
       struct moss_ipc_message response = {0};
       long result = call(child_sessions[i], &identity, &response);
       int clean = no_capability(&response);
-      if (getppid() != 0 || result != MOSS_PROCESS_REPLY_IDENTITY_BYTES || response.payload[0] != MOSS_PROCESS_OK ||
-          moss_process_get_u64(response.payload + 1) != child_ids[i] ||
+      if (syscall0(SYS_GETPPID) != 0 || result != MOSS_PROCESS_REPLY_IDENTITY_BYTES ||
+          response.payload[0] != MOSS_PROCESS_OK || moss_process_get_u64(response.payload + 1) != child_ids[i] ||
           moss_process_get_u64(response.payload + 9) != parent_id || !clean)
         _exit(41);
       (void)syscall1(SYS_CLOSE, pipe_fds[1]);
@@ -354,16 +375,55 @@ static int observe_family(unsigned long root, unsigned long *last_id) {
     (void)no_capability(&response);
     (void)syscall1(SYS_CAP_CLOSE, (long)child_sessions[i]);
   }
-  request.payload[0] = MOSS_PROCESS_RELEASE;
-  response = (struct moss_ipc_message){0};
-  result = call(parent_session, &request, &response);
-  clean = no_capability(&response);
-  valid &= result == 1 && response.payload[0] == MOSS_PROCESS_OK && clean;
-  (void)syscall1(SYS_CAP_CLOSE, (long)parent_session);
+  if (!borrowed_session) {
+    request.payload[0] = MOSS_PROCESS_RELEASE;
+    response = (struct moss_ipc_message){0};
+    result = call(parent_session, &request, &response);
+    clean = no_capability(&response);
+    valid &= result == 1 && response.payload[0] == MOSS_PROCESS_OK && clean;
+    (void)syscall1(SYS_CAP_CLOSE, (long)parent_session);
+  }
   return valid;
 }
 
+static int managed_libc_probe(void) {
+  unsigned long session = getauxval(MOSS_AT_STARTUP_CAP);
+  pid_t parent_id = getpid();
+  if (!session || parent_id <= 0 || getppid() <= 0)
+    return 0;
+  errno = 0;
+  if (kill(parent_id, 0) != -1 || errno != ENOSYS)
+    return 0;
+  pid_t child = fork();
+  if (child == 0) {
+    pid_t child_id = getpid();
+    if (child_id <= 0 || getppid() != parent_id || syscall1(SYS_CAP_CLOSE, (long)session) != -EBADF)
+      _exit(41);
+    char child_text[21], parent_text[21]; // Decimal 64-bit values plus NUL.
+    if (snprintf(child_text, sizeof(child_text), "%lu", (unsigned long)child_id) <= 0 ||
+        snprintf(parent_text, sizeof(parent_text), "%lu", (unsigned long)parent_id) <= 0)
+      _exit(42);
+    char *const args[] = {"moss-process", "libc-child", child_text, parent_text, NULL};
+    execve("/moss-process.elf", args, NULL);
+    _exit(42);
+  }
+  int status = 0;
+  return child > 0 && waitpid(child, &status, 0) == child && status == (37 << 8) &&
+         waitpid(child, &status, WNOHANG) == -1 && errno == ECHILD;
+}
+
 int main(int argc, char **argv) {
+  if (argc == 4 && strcmp(argv[1], "libc-child") == 0) {
+    char *end = NULL;
+    unsigned long child_id = strtoul(argv[2], &end, 10);
+    if (!child_id || *end)
+      return 43;
+    unsigned long parent_id = strtoul(argv[3], &end, 10);
+    return parent_id && !*end && !environ[0] && getauxval(MOSS_AT_STARTUP_CAP) && getpid() == (pid_t)child_id &&
+                   getppid() == (pid_t)parent_id
+               ? 37
+               : 43;
+  }
   if (argc != 2 || strcmp(argv[1], "probe") != 0)
     return error();
   const char *value = getenv("MOSS_PROCESS_CAP");
@@ -375,7 +435,8 @@ int main(int argc, char **argv) {
   if (errno || !root || root > LONG_MAX || *end)
     return error();
   unsigned long last_id = 1;
-  if (!observe_child(root, &last_id, 37) || !observe_child(root, &last_id, 38) || !observe_family(root, &last_id))
+  if (!managed_libc_probe() || !observe_child(root, &last_id, 37) || !observe_child(root, &last_id, 38) ||
+      !observe_family(root, &last_id))
     return error();
   static const char message[] = "MOSS_PROCESS_READY\n";
   (void)write(STDOUT_FILENO, message, sizeof(message) - 1);

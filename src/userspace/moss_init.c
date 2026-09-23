@@ -1,4 +1,5 @@
 #include <errno.h>
+#include <limits.h>
 #include <signal.h>
 #include <stddef.h>
 #include <stdio.h>
@@ -7,6 +8,7 @@
 #include <unistd.h>
 
 #define MOSS_SYSCALL_RAW_ONLY
+#include "moss_process_protocol.h"
 #include "syscall.h"
 
 // One second between launches bounds a failing service's restart rate.
@@ -95,6 +97,88 @@ static int restart_delay(void) {
     delay = remaining;
   }
   return result == 0 ? 0 : -1;
+}
+
+static long process_call(long session, const struct moss_ipc_message *request, struct moss_ipc_message *response) {
+  // A dead or wedged registry must not stall init's recovery loop forever.
+  static const unsigned long call_timeout_ns = 5000000000UL;
+  unsigned long now = 0;
+  if (syscall2(SYS_CLOCK_GETTIME, MOSS_CLOCK_MONOTONIC, (long)&now) != 0 || now > LONG_MAX - call_timeout_ns)
+    return -1;
+  return syscall6(SYS_IPC_CALL, session, (long)request, (long)response, (long)(now + call_timeout_ns), 0, 0);
+}
+
+static int process_reply_ok(long result, struct moss_ipc_message *response) {
+  if (response->capability) {
+    (void)syscall1(SYS_CAP_CLOSE, (long)response->capability);
+    return 0;
+  }
+  return result == 1 && response->rights == 0 && response->payload[0] == MOSS_PROCESS_OK;
+}
+
+static long register_supervisor(long root) {
+  long self = syscall0(SYS_DOMAIN_SELF);
+  if (self <= 0)
+    return 0;
+  struct moss_ipc_message request = {.size = 1,
+                                     .capability = (unsigned long)self,
+                                     .rights = MOSS_CAP_DOMAIN_OBSERVE | MOSS_CAP_DOMAIN_INSPECT,
+                                     .payload = {MOSS_PROCESS_REGISTER}};
+  struct moss_ipc_message response = {0};
+  long result = process_call(root, &request, &response);
+  (void)syscall1(SYS_CAP_CLOSE, self);
+  if (result == MOSS_PROCESS_REPLY_VALUE_BYTES && response.payload[0] == MOSS_PROCESS_OK &&
+      moss_process_get_u64(response.payload + 1) == 1 && response.capability &&
+      response.rights == (MOSS_CAP_SEND | MOSS_CAP_DUPLICATE))
+    return (long)response.capability;
+  if (response.capability)
+    (void)syscall1(SYS_CAP_CLOSE, (long)response.capability);
+  return 0;
+}
+
+static int process_child_request(long parent_session, unsigned char operation, unsigned long child_id,
+                                 unsigned long domain) {
+  struct moss_ipc_message request = {.size = MOSS_PROCESS_REPLY_VALUE_BYTES,
+                                     .capability = domain,
+                                     .rights = domain ? MOSS_CAP_DOMAIN_OBSERVE | MOSS_CAP_DOMAIN_INSPECT : 0,
+                                     .payload = {operation}};
+  moss_process_put_u64(request.payload + 1, child_id);
+  struct moss_ipc_message response = {0};
+  return process_reply_ok(process_call(parent_session, &request, &response), &response);
+}
+
+static int reap_shell(long parent_session, unsigned long child_id) {
+  struct moss_ipc_message request = {.size = MOSS_PROCESS_REPLY_VALUE_BYTES, .payload = {MOSS_PROCESS_WAIT_CHILD}};
+  moss_process_put_u64(request.payload + 1, child_id);
+  struct moss_ipc_message response = {0};
+  long result = process_call(parent_session, &request, &response);
+  if (response.capability)
+    (void)syscall1(SYS_CAP_CLOSE, (long)response.capability);
+  return result == MOSS_PROCESS_REPLY_WAIT_BYTES && response.payload[0] == MOSS_PROCESS_EXITED &&
+         moss_process_get_u64(response.payload + 1) == child_id && !response.capability && !response.rights;
+}
+
+static int process_child_ready(long session) {
+  // ATTACH races the child's first instruction; bounded polling lets a failed
+  // supervisor launch exit instead of running with an unattached identity.
+  enum { READY_RETRIES = 500, READY_DELAY_NS = 10000000UL };
+  for (unsigned int retry = 0; retry < READY_RETRIES; ++retry) {
+    struct moss_ipc_message request = {.size = 1, .payload = {MOSS_PROCESS_READY}};
+    struct moss_ipc_message response = {0};
+    long result = process_call(session, &request, &response);
+    if (response.capability)
+      (void)syscall1(SYS_CAP_CLOSE, (long)response.capability);
+    if (result != 1 || response.capability || response.rights)
+      return 0;
+    if (response.payload[0] == MOSS_PROCESS_OK)
+      return 1;
+    if (response.payload[0] != MOSS_PROCESS_RUNNING)
+      return 0;
+    unsigned long delay = READY_DELAY_NS;
+    if (syscall1(SYS_NANOSLEEP, (long)&delay) != 0)
+      return 0;
+  }
+  return 0;
 }
 
 static int start_endpoint_service(struct Service *service, const char *program) {
@@ -233,11 +317,13 @@ fail:
   return -1;
 }
 
-static pid_t start_shell(long namespace_capability, long process_capability, long file_domain, long namespace_domain,
-                         long process_domain, long supervisor_domain, long *domain) {
+static pid_t start_shell(long namespace_capability, long process_capability, long parent_session, long file_domain,
+                         long namespace_domain, long process_domain, long supervisor_domain, long *domain,
+                         unsigned long *shell_id) {
   *domain = 0;
-  if (namespace_capability <= 0 || process_capability <= 0 || file_domain <= 0 || namespace_domain <= 0 ||
-      process_domain <= 0 || supervisor_domain <= 0)
+  *shell_id = 0;
+  if (namespace_capability <= 0 || process_capability <= 0 || parent_session <= 0 || file_domain <= 0 ||
+      namespace_domain <= 0 || process_domain <= 0 || supervisor_domain <= 0)
     return -1;
   char namespace_env[64]; // Environment key plus decimal 64-bit handle.
   char process_env[64], file_domain_env[64], namespace_domain_env[64], process_domain_env[64],
@@ -265,6 +351,21 @@ static pid_t start_shell(long namespace_capability, long process_capability, lon
                   (unsigned long)supervisor_domain);
   if (size < 0 || (size_t)size >= sizeof(supervisor_domain_env))
     return -1;
+  struct moss_ipc_message prepare = {.size = 1, .payload = {MOSS_PROCESS_PREPARE_CHILD}};
+  struct moss_ipc_message reservation = {0};
+  long prepared = process_call(parent_session, &prepare, &reservation);
+  if (prepared != MOSS_PROCESS_REPLY_VALUE_BYTES || reservation.payload[0] != MOSS_PROCESS_OK ||
+      !reservation.capability || reservation.rights != (MOSS_CAP_SEND | MOSS_CAP_DUPLICATE)) {
+    if (reservation.capability)
+      (void)syscall1(SYS_CAP_CLOSE, (long)reservation.capability);
+    return -1;
+  }
+  unsigned long child_id = moss_process_get_u64(reservation.payload + 1);
+  long child_session = (long)reservation.capability;
+  if (!child_id) {
+    (void)syscall1(SYS_CAP_CLOSE, child_session);
+    return -1;
+  }
   // The privileged management shell receives attenuated termination rights.
   // Commands need INHERIT because ash forks before executing them; stable
   // handle numbers let their environment refer to the same local authority.
@@ -274,7 +375,8 @@ static pid_t start_shell(long namespace_capability, long process_capability, lon
       {(unsigned long)file_domain, MOSS_CAP_DOMAIN_TERMINATE | MOSS_CAP_DUPLICATE, MOSS_FORK_CAP_INHERIT},
       {(unsigned long)namespace_domain, MOSS_CAP_DOMAIN_TERMINATE | MOSS_CAP_DUPLICATE, MOSS_FORK_CAP_INHERIT},
       {(unsigned long)process_domain, MOSS_CAP_DOMAIN_TERMINATE | MOSS_CAP_DUPLICATE, MOSS_FORK_CAP_INHERIT},
-      {(unsigned long)supervisor_domain, MOSS_CAP_DOMAIN_TERMINATE | MOSS_CAP_DUPLICATE, MOSS_FORK_CAP_INHERIT}};
+      {(unsigned long)supervisor_domain, MOSS_CAP_DOMAIN_TERMINATE | MOSS_CAP_DUPLICATE, MOSS_FORK_CAP_INHERIT},
+      {(unsigned long)child_session, MOSS_CAP_SEND | MOSS_CAP_DUPLICATE, MOSS_FORK_CAP_INHERIT}};
   pid_t child = fork_domain(domain, handles, sizeof(handles) / sizeof(handles[0]));
   if (child == 0) {
     char *const argv[] = {"ash", "-i", NULL};
@@ -290,14 +392,28 @@ static pid_t start_shell(long namespace_capability, long process_capability, lon
                          process_domain_env,
                          supervisor_domain_env,
                          NULL};
-    execve("/busybox.elf", argv, env);
+    if (!process_child_ready(child_session))
+      _exit(127);
+    (void)syscall6(SYS_EXECVE_CAP, (long)"/busybox.elf", (long)argv, (long)env, child_session, 0, 0);
     _exit(127);
   }
+  int attached = child > 0 && *domain > 0 &&
+                 process_child_request(parent_session, MOSS_PROCESS_ATTACH_CHILD, child_id, (unsigned long)*domain);
+  if (!attached) {
+    stop_child(child, *domain);
+    *domain = 0;
+    (void)process_child_request(parent_session, MOSS_PROCESS_CANCEL_CHILD, child_id, 0);
+    child = -1;
+  } else {
+    *shell_id = child_id;
+  }
+  (void)syscall1(SYS_CAP_CLOSE, child_session);
   return child;
 }
 
 static enum ServiceLoss supervise(struct Service *file, struct Service *namespace, struct Service *process,
-                                  long supervisor_domain, pid_t *shell, long *shell_domain) {
+                                  long process_session, long supervisor_domain, pid_t *shell, long *shell_domain,
+                                  unsigned long *shell_id) {
   for (;;) {
     const unsigned long domains[] = {(unsigned long)file->domain, (unsigned long)namespace->domain,
                                      (unsigned long)process->domain, (unsigned long)*shell_domain};
@@ -331,12 +447,15 @@ static enum ServiceLoss supervise(struct Service *file, struct Service *namespac
       *shell = 0;
       (void)syscall1(SYS_CAP_CLOSE, *shell_domain);
       *shell_domain = 0;
+      if (!reap_shell(process_session, *shell_id))
+        return PROCESS_LOST;
+      *shell_id = 0;
       report(STDOUT_FILENO, "moss-init: restarting shell\n");
       if (restart_delay() != 0) {
         return SUPERVISOR_FAILURE;
       }
-      *shell = start_shell(namespace->send, process->send, file->domain, namespace->domain, process->domain,
-                           supervisor_domain, shell_domain);
+      *shell = start_shell(namespace->send, process->send, process_session, file->domain, namespace->domain,
+                           process->domain, supervisor_domain, shell_domain, shell_id);
       if (*shell < 0) {
         report(STDERR_FILENO, "moss-init: shell launch failed\n");
         *shell = 0;
@@ -385,16 +504,23 @@ int main(void) {
           lost = PROCESS_LOST;
         } else {
           report_started("process service", process.pid);
+          long process_session = register_supervisor(process.send);
           long shell_domain = 0;
-          pid_t shell = start_shell(namespace.send, process.send, file.domain, namespace.domain, process.domain,
-                                    supervisor_domain, &shell_domain);
+          unsigned long shell_id = 0;
+          pid_t shell = process_session > 0
+                            ? start_shell(namespace.send, process.send, process_session, file.domain, namespace.domain,
+                                          process.domain, supervisor_domain, &shell_domain, &shell_id)
+                            : -1;
           if (shell < 0) {
             report(STDERR_FILENO, "moss-init: shell launch failed\n");
             lost = PROCESS_LOST;
           } else {
-            lost = supervise(&file, &namespace, &process, supervisor_domain, &shell, &shell_domain);
+            lost = supervise(&file, &namespace, &process, process_session, supervisor_domain, &shell, &shell_domain,
+                             &shell_id);
           }
           stop_child(shell, shell_domain);
+          if (process_session > 0)
+            (void)syscall1(SYS_CAP_CLOSE, process_session);
           stop_service(&process);
         }
         if (lost != PROCESS_LOST)

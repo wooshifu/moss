@@ -1,5 +1,37 @@
 #include "validation/internal.h"
 
+unsigned long exec_startup_capability(void) {
+  enum { BAD_HANDLE = 9, ACCESS_DENIED = 13, CHILD_SUCCESS = 37 };
+  struct moss_ipc_endpoints pair = {0};
+  if (syscall1(SYS_IPC_CREATE, (long)&pair) != 0)
+    return 1;
+
+  unsigned long errors = (unsigned long)(syscall2(SYS_CAP_SET_INHERIT, (long)pair.receive, 1) != 0) << 1;
+  if (!errors) {
+    long child = fork();
+    if (child == 0) {
+      const char *path = "/validation_child.elf";
+      char handle_text[MOSS_DECIMAL_BUFFER_SIZE];
+      (void)ultoa(pair.receive, handle_text, sizeof(handle_text));
+      const char *args[] = {"startup-cap", handle_text, 0};
+      // The selected handle starts closed-on-exec; execve_cap must retain it.
+      if (syscall2(SYS_CAP_SET_EXEC, (long)pair.receive, 0) != 0 ||
+          syscall6(SYS_EXECVE_CAP, (long)path, (long)args, 0, 0, 0, 0) != -BAD_HANDLE)
+        _exit(96);
+      long limited = syscall2(SYS_CAP_DUPLICATE, (long)pair.receive, MOSS_CAP_RECEIVE);
+      if (limited <= 0 || syscall6(SYS_EXECVE_CAP, (long)path, (long)args, 0, limited, 0, 0) != -ACCESS_DENIED ||
+          syscall1(SYS_CAP_CLOSE, limited) != 0)
+        _exit(97);
+      syscall6(SYS_EXECVE_CAP, (long)path, (long)args, 0, (long)pair.receive, 0, 0);
+      _exit(98);
+    }
+    errors |= (unsigned long)(child <= 1 || !wait_exit(child, CHILD_SUCCESS)) << 2;
+  }
+  errors |= (unsigned long)(syscall1(SYS_CAP_CLOSE, (long)pair.send) != 0) << 3;
+  errors |= (unsigned long)(syscall1(SYS_CAP_CLOSE, (long)pair.receive) != 0) << 4;
+  return errors;
+}
+
 unsigned long exec_probe(long test) {
   // The first 17 catalog entries are the malformed ELF fixtures listed below;
   // subsequent selectors exercise argument admission using a valid image.

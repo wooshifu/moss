@@ -5,6 +5,8 @@
 
 #pragma once
 
+#include <moss/startup_auxv.h>
+
 // ============================================================================
 // Syscall numbers shared with the kernel through moss/syscall_numbers.def
 // ============================================================================
@@ -45,6 +47,8 @@ enum { MOSS_FORK_CAP_INHERIT = 1U << 0 };
 // INHERIT additionally permits later ordinary forks.
 // SYS_FORK_DOMAIN_INHERIT creates a native child with only handles previously
 // opted into inheritance; the parent receives its domain capability.
+// SYS_EXECVE_CAP selects one handle to retain and publishes its process-local
+// number through MOSS_AT_STARTUP_CAP in auxv. It needs DUPLICATE authority.
 struct moss_fork_capability {
   unsigned long handle;
   unsigned long rights;

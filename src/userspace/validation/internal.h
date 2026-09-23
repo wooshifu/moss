@@ -10,6 +10,7 @@ extern const unsigned char __user_text_start[], __user_text_end[];
 int wait_exit(long child, int code);
 int wait_signal(long child, int signo);
 unsigned long exec_probe(long test);
+unsigned long exec_startup_capability(void);
 unsigned long ipc_roundtrip(void);
 unsigned long ipc_badged_sender(void);
 unsigned long ipc_domain_control(void);

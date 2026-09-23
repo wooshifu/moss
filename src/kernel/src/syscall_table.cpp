@@ -3,6 +3,8 @@
 
 module;
 
+#include <moss/startup_auxv.h>
+
 module moss.kernel;
 
 import moss.abi;
@@ -784,8 +786,7 @@ long sys_domain_status(long handle, long status_addr, long, long, long, long) no
   return copy_domain_exit_status(target, static_cast<u64>(status_addr));
 }
 
-long sys_execve(long pathname_addr, long argv_addr, long envp_addr, long /*unused*/, long /*unused*/,
-                long /*unused*/) noexcept {
+static long do_execve(long pathname_addr, long argv_addr, long envp_addr, Handle startup_cap) noexcept {
   using namespace moss::kernel::process;
   using namespace moss::kernel::elf;
   Thread *cur = g_scheduler ? CfsScheduler::get_current_task() : nullptr;
@@ -830,8 +831,8 @@ long sys_execve(long pathname_addr, long argv_addr, long envp_addr, long /*unuse
   struct Arguments {
     char strings[STRING_BYTES]{};
     usize offsets[MAX_STRINGS]{};
-    // Five extra words: argc, argv NUL, envp NUL, AT_NULL tag, AT_NULL value.
-    u64 vector[MAX_STRINGS + 5]{};
+    // The selected startup capability adds one auxiliary tag/value pair.
+    u64 vector[MAX_STRINGS + 7]{};
     LoadPlan load_plan{};
     usize count{}, used{}, argc{};
   };
@@ -1000,13 +1001,13 @@ long sys_execve(long pathname_addr, long argv_addr, long envp_addr, long /*unuse
   prepared->brk_base = prepared->brk_current = user_layout::HEAP_START;
   prepared->mmap_next = user_layout::MMAP_BASE;
 
-  // Native C entry registers point into one canonical startup vector:
-  // argc, argv..., NULL, envp..., NULL, AT_NULL, 0. mlibc consumes it directly.
+  // Native C entry registers point into one canonical startup vector. The
+  // optional handle is auxiliary metadata, so a caller's envp stays exact.
   const usize argc = args->argc;
   // Leave 16 bytes below the exclusive stack top; 7/15 are alignment masks
   // for 8-byte pointer words and the native 16-byte startup stack boundary.
   const VirtAddr strings_base = (user_layout::STACK_TOP - 16 - args->used) & ~VirtAddr{7};
-  const usize vector_bytes = (args->count + 5) * sizeof(u64);
+  const usize vector_bytes = (args->count + 5 + (startup_cap ? 2 : 0)) * sizeof(u64);
   const VirtAddr vector_base = (strings_base - vector_bytes) & ~VirtAddr{15};
   const VirtAddr argv_base = vector_base + sizeof(u64);
   const VirtAddr envp_base = argv_base + (argc + 1) * sizeof(u64);
@@ -1020,6 +1021,10 @@ long sys_execve(long pathname_addr, long argv_addr, long envp_addr, long /*unuse
   args->vector[0] = argc;
   for (usize i = 0; i < args->count; ++i) {
     args->vector[1 + i + (i >= argc ? 1 : 0)] = strings_base + args->offsets[i];
+  }
+  if (startup_cap) {
+    args->vector[args->count + 3] = MOSS_AT_STARTUP_CAP;
+    args->vector[args->count + 4] = startup_cap;
   }
 
   // Populate inactive stack pages through the kernel's physical mapping.
@@ -1054,6 +1059,14 @@ long sys_execve(long pathname_addr, long argv_addr, long envp_addr, long /*unuse
   };
   if (!write_stack(strings_base, args->strings, args->used) || !write_stack(vector_base, args->vector, vector_bytes)) {
     return -errc::EFAULT;
+  }
+
+  // This is the last fallible step. A single-threaded exec owns its table,
+  // and the selected handle must survive close_uninheritable at commit.
+  if (startup_cap) {
+    auto kept = proc->capabilities().set_keep_on_exec(startup_cap, true);
+    if (!kept)
+      return domain_cap_error(kept.error());
   }
 
   // Commit: no remaining fallible preparation. IRQs stay masked while the
@@ -1118,6 +1131,15 @@ long sys_execve(long pathname_addr, long argv_addr, long envp_addr, long /*unuse
   while (true) {
     ::moss::kernel::arch::cpu_halt();
   }
+}
+
+long sys_execve(long pathname_addr, long argv_addr, long envp_addr, long, long, long) noexcept {
+  return do_execve(pathname_addr, argv_addr, envp_addr, 0);
+}
+
+long sys_execve_cap(long pathname_addr, long argv_addr, long envp_addr, long startup_cap, long, long) noexcept {
+  return startup_cap > 0 ? do_execve(pathname_addr, argv_addr, envp_addr, static_cast<Handle>(startup_cap))
+                         : -errc::EBADF;
 }
 
 // wait4(pid, wstatus, options, rusage) — wait for child process state change
@@ -3100,7 +3122,8 @@ const SyscallDescriptor SYSCALL_TABLE[static_cast<int>(SyscallNumber::MAX_SYSCAL
     {"cap_set_exec", handlers::sys_cap_set_exec, 2, true, "Select capability retention after exec"},
     {"domain_same", handlers::sys_domain_same, 2, true, "Compare two inspected domain incarnations"},
     {"fork_domain_inherit", handlers::sys_fork_domain_inherit, 1, true,
-     "Fork a native domain with capabilities marked for inheritance"}};
+     "Fork a native domain with capabilities marked for inheritance"},
+    {"execve_cap", handlers::sys_execve_cap, 4, true, "Exec with an explicit retained startup capability"}};
 
 // 系统调用分发器实现
 long SyscallDispatcher::dispatch(long syscall_number, long arg0, long arg1, long arg2, long arg3, long arg4,

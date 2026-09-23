@@ -5,14 +5,109 @@
 #include <mlibc/tcb.hpp>
 #include <stddef.h>
 #include <string.h>
+#include <sys/auxv.h>
 #include <sys/stat.h>
 #include <sys/utsname.h>
+#include <sys/wait.h>
 
 #define MOSS_SYSCALL_RAW_ONLY
+#include <moss-process-protocol.h>
 #include <moss-syscall.h>
 
 namespace {
 int error(long result) { return result < 0 ? static_cast<int>(-result) : 0; }
+
+unsigned long forked_session = 0;
+// The service has no asynchronous exit notification yet; 10 ms polling
+// bounds wait latency without spinning while a child runs.
+constexpr unsigned long process_poll_ns = 10000000UL;
+
+unsigned long process_session() {
+  if (forked_session)
+    return forked_session;
+  int saved_errno = errno;
+  unsigned long session = getauxval(MOSS_AT_STARTUP_CAP);
+  errno = saved_errno;
+  return session;
+}
+
+long process_call(unsigned long session, const moss_ipc_message &request,
+                  moss_ipc_message &response) {
+  // Keep a lost process service from hanging a managed libc call indefinitely.
+  constexpr unsigned long timeout_ns = 5000000000UL;
+  unsigned long now = 0;
+  if (syscall2(SYS_CLOCK_GETTIME, MOSS_CLOCK_MONOTONIC,
+               reinterpret_cast<long>(&now)) != 0 ||
+      now > LONG_MAX - timeout_ns)
+    return -EIO;
+  return syscall6(SYS_IPC_CALL, session, reinterpret_cast<long>(&request),
+                  reinterpret_cast<long>(&response), now + timeout_ns, 0, 0);
+}
+
+bool no_capability(moss_ipc_message &response) {
+  if (response.capability) {
+    syscall1(SYS_CAP_CLOSE, response.capability);
+    return false;
+  }
+  return !response.rights;
+}
+
+int ready_for_parent(unsigned long session) {
+  // A parent attaches the new domain after fork returns. Do not expose a
+  // compatibility identity until its service record has that domain. Match
+  // the production probe's five-second launch bound.
+  constexpr unsigned int retries = 500;
+  for (unsigned int i = 0; i < retries; ++i) {
+    moss_ipc_message request{};
+    request.size = 1;
+    request.payload[0] = MOSS_PROCESS_READY;
+    moss_ipc_message response{};
+    long result = process_call(session, request, response);
+    if (!no_capability(response) || result != 1)
+      return result < 0 ? error(result) : EIO;
+    if (response.payload[0] == MOSS_PROCESS_OK)
+      return 0;
+    if (response.payload[0] != MOSS_PROCESS_RUNNING)
+      return EIO;
+    unsigned long delay = process_poll_ns;
+    result = syscall1(SYS_NANOSLEEP, reinterpret_cast<long>(&delay));
+    if (result < 0)
+      return error(result);
+  }
+  return ETIMEDOUT;
+}
+
+int process_identity(unsigned long session, unsigned long &id,
+                     unsigned long &parent) {
+  moss_ipc_message request{};
+  request.size = 1;
+  request.payload[0] = MOSS_PROCESS_IDENTITY;
+  moss_ipc_message response{};
+  long result = process_call(session, request, response);
+  if (!no_capability(response) || result != MOSS_PROCESS_REPLY_IDENTITY_BYTES ||
+      response.payload[0] != MOSS_PROCESS_OK)
+    return result < 0 ? error(result) : EIO;
+  id = moss_process_get_u64(response.payload + 1);
+  parent = moss_process_get_u64(response.payload + 9);
+  if (!id)
+    return EIO;
+  return id <= INT_MAX && parent <= INT_MAX ? 0 : EOVERFLOW;
+}
+
+bool process_child_request(unsigned long session, unsigned char operation,
+                           unsigned long child_id, unsigned long domain) {
+  moss_ipc_message request{};
+  request.size = MOSS_PROCESS_REPLY_VALUE_BYTES;
+  request.capability = domain;
+  request.rights =
+      domain ? MOSS_CAP_DOMAIN_OBSERVE | MOSS_CAP_DOMAIN_INSPECT : 0;
+  request.payload[0] = operation;
+  moss_process_put_u64(request.payload + 1, child_id);
+  moss_ipc_message response{};
+  long result = process_call(session, request, response);
+  return no_capability(response) && result == 1 &&
+         response.payload[0] == MOSS_PROCESS_OK;
+}
 
 // The pinned mlibc ABI uses bit signo-1 in a 128-byte set. Moss uses bit
 // signo in one word and only implements signals 1..31 (including sigfillset).
@@ -251,13 +346,39 @@ int Sysdeps<Sleep>::operator()(time_t *seconds, long *nanoseconds) {
   *nanoseconds = 0;
   return 0;
 }
-pid_t Sysdeps<GetPid>::operator()() { return syscall0(SYS_GETPID); }
-pid_t Sysdeps<GetPpid>::operator()() { return syscall0(SYS_GETPPID); }
+pid_t Sysdeps<GetPid>::operator()() {
+  unsigned long session = process_session();
+  if (!session)
+    return syscall0(SYS_GETPID);
+  unsigned long id = 0, parent = 0;
+  int result = process_identity(session, id, parent);
+  if (result) {
+    errno = result;
+    return -1;
+  }
+  return static_cast<pid_t>(id);
+}
+pid_t Sysdeps<GetPpid>::operator()() {
+  unsigned long session = process_session();
+  if (!session)
+    return syscall0(SYS_GETPPID);
+  unsigned long id = 0, parent = 0;
+  int result = process_identity(session, id, parent);
+  if (result) {
+    errno = result;
+    return -1;
+  }
+  return static_cast<pid_t>(parent);
+}
 uid_t Sysdeps<GetUid>::operator()() { return syscall0(SYS_GETUID); }
 uid_t Sysdeps<GetEuid>::operator()() { return syscall0(SYS_GETEUID); }
 gid_t Sysdeps<GetGid>::operator()() { return syscall0(SYS_GETGID); }
 gid_t Sysdeps<GetEgid>::operator()() { return syscall0(SYS_GETEGID); }
-int Sysdeps<Kill>::operator()(pid_t pid, int signo) { return error(syscall2(SYS_KILL, pid, signo)); }
+int Sysdeps<Kill>::operator()(pid_t pid, int signo) {
+  // A compatibility PID is never a native PID; forwarding it could signal an
+  // unrelated domain until the process service implements signal routing.
+  return process_session() ? ENOSYS : error(syscall2(SYS_KILL, pid, signo));
+}
 int Sysdeps<Sigaction>::operator()(int signo, const struct sigaction *action, struct sigaction *previous) {
   // mlibc explicitly accepts ENOSYS here to opt out of pthread cancellation.
   // Its reserved signal lies outside Moss's supported signal range.
@@ -297,6 +418,60 @@ int Sysdeps<Sigprocmask>::operator()(int how, const sigset_t *set, sigset_t *pre
 }
 void Sysdeps<Yield>::operator()() { syscall0(SYS_SCHED_YIELD); }
 int Sysdeps<Fork>::operator()(pid_t *child) {
+  unsigned long session = process_session();
+  if (session) {
+    moss_ipc_message prepare{};
+    prepare.size = 1;
+    prepare.payload[0] = MOSS_PROCESS_PREPARE_CHILD;
+    moss_ipc_message reservation{};
+    long result = process_call(session, prepare, reservation);
+    if (result != MOSS_PROCESS_REPLY_VALUE_BYTES ||
+        reservation.payload[0] != MOSS_PROCESS_OK || !reservation.capability ||
+        reservation.rights != (MOSS_CAP_SEND | MOSS_CAP_DUPLICATE)) {
+      if (reservation.capability)
+        syscall1(SYS_CAP_CLOSE, reservation.capability);
+      return result < 0 ? error(result) : EIO;
+    }
+    unsigned long id = moss_process_get_u64(reservation.payload + 1);
+    unsigned long child_session = reservation.capability;
+    if (!id || id > INT_MAX ||
+        syscall2(SYS_CAP_SET_INHERIT, child_session, 1) != 0) {
+      process_child_request(session, MOSS_PROCESS_CANCEL_CHILD, id, 0);
+      syscall1(SYS_CAP_CLOSE, child_session);
+      return id > INT_MAX ? EOVERFLOW : EIO;
+    }
+    unsigned long domain = 0;
+    result = syscall1(SYS_FORK_DOMAIN_INHERIT, reinterpret_cast<long>(&domain));
+    if (result == 0) {
+      // The inherited parent sender must not grant this child authority over
+      // its siblings. The child keeps only its own newly badged session.
+      syscall1(SYS_CAP_CLOSE, session);
+      forked_session = child_session;
+      int ready = ready_for_parent(child_session);
+      if (ready)
+        sysdep<Exit>(127);
+      *child = 0;
+      return 0;
+    }
+    syscall2(SYS_CAP_SET_INHERIT, child_session, 0);
+    int attached =
+        result > 0 && domain &&
+        process_child_request(session, MOSS_PROCESS_ATTACH_CHILD, id, domain);
+    if (!attached) {
+      if (result > 0 && domain) {
+        syscall1(SYS_DOMAIN_TERMINATE, domain);
+        syscall1(SYS_DOMAIN_WAIT, domain);
+      }
+      process_child_request(session, MOSS_PROCESS_CANCEL_CHILD, id, 0);
+    }
+    if (domain)
+      syscall1(SYS_CAP_CLOSE, domain);
+    syscall1(SYS_CAP_CLOSE, child_session);
+    if (!attached)
+      return result < 0 ? error(result) : EIO;
+    *child = static_cast<pid_t>(id);
+    return 0;
+  }
   long result = syscall0(SYS_FORK);
   if (result >= 0)
     *child = result;
@@ -305,14 +480,67 @@ int Sysdeps<Fork>::operator()(pid_t *child) {
 int Sysdeps<Waitpid>::operator()(pid_t pid, int *status, int flags, rusage *usage, pid_t *waited) {
   if (usage)
     return ENOSYS;
+  unsigned long session = process_session();
+  if (session) {
+    if ((flags & ~WNOHANG) || (pid <= 0 && pid != -1))
+      return EINVAL;
+    moss_ipc_message request{};
+    request.size = pid == -1 ? 1 : MOSS_PROCESS_REPLY_VALUE_BYTES;
+    request.payload[0] =
+        pid == -1 ? MOSS_PROCESS_WAIT_ANY : MOSS_PROCESS_WAIT_CHILD;
+    if (pid > 0)
+      moss_process_put_u64(request.payload + 1,
+                           static_cast<unsigned long>(pid));
+    for (;;) {
+      moss_ipc_message response{};
+      long result = process_call(session, request, response);
+      if (!no_capability(response))
+        return EIO;
+      if (result < 0)
+        return error(result);
+      if (result == MOSS_PROCESS_REPLY_WAIT_BYTES &&
+          response.payload[0] == MOSS_PROCESS_EXITED) {
+        unsigned long id = moss_process_get_u64(response.payload + 1);
+        unsigned long state = moss_process_get_u64(response.payload + 9);
+        if (!id || (pid > 0 && id != static_cast<unsigned long>(pid)))
+          return EIO;
+        if (id > INT_MAX)
+          return EOVERFLOW;
+        if (status)
+          *status = state >> 32 ? static_cast<int>((state >> 32) & 0x7f)
+                                : static_cast<int>((state & 0xff) << 8);
+        *waited = static_cast<pid_t>(id);
+        return 0;
+      }
+      if (result != 1)
+        return EIO;
+      if (response.payload[0] == MOSS_PROCESS_NO_ENTRY)
+        return ECHILD;
+      if (response.payload[0] != MOSS_PROCESS_RUNNING)
+        return EIO;
+      if (flags & WNOHANG) {
+        *waited = 0;
+        return 0;
+      }
+      unsigned long delay = process_poll_ns;
+      result = syscall1(SYS_NANOSLEEP, reinterpret_cast<long>(&delay));
+      if (result < 0)
+        return error(result);
+    }
+  }
   long result = syscall3(SYS_WAITPID, pid, reinterpret_cast<long>(status), flags);
   if (result >= 0)
     *waited = result;
   return error(result);
 }
 int Sysdeps<Execve>::operator()(const char *path, char *const argv[], char *const envp[]) {
-  return error(
-      syscall3(SYS_EXECVE, reinterpret_cast<long>(path), reinterpret_cast<long>(argv), reinterpret_cast<long>(envp)));
+  unsigned long session = process_session();
+  return error(session ? syscall6(SYS_EXECVE_CAP, reinterpret_cast<long>(path),
+                                  reinterpret_cast<long>(argv),
+                                  reinterpret_cast<long>(envp), session, 0, 0)
+                       : syscall3(SYS_EXECVE, reinterpret_cast<long>(path),
+                                  reinterpret_cast<long>(argv),
+                                  reinterpret_cast<long>(envp)));
 }
 
 // ARM64 and RV64 let userspace write its own thread pointer directly.

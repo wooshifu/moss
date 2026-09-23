@@ -539,7 +539,8 @@ void _start(long argc, const char **argv) {
       EXEC_SOURCE_VERSION_CASE = 28,
       EXEC_REGISTRATION_CASE = 29,
       EXEC_SHARED_THREAD_CASE = 30,
-      EXEC_CASES = 31,
+      EXEC_STARTUP_CAP_CASE = 31,
+      EXEC_CASES = 32,
     };
     for (long test = 0; test < EXEC_CASES; ++test) {
       control(1, test, 0);
@@ -558,6 +559,8 @@ void _start(long argc, const char **argv) {
         errors = exec_shared_thread_gate();
       } else if (test == EXEC_REGISTRATION_CASE) {
         errors = exec_registration_gate();
+      } else if (test == EXEC_STARTUP_CAP_CASE) {
+        errors = exec_startup_capability();
       }
       if (!control(2, errors == 0, (long)errors)) {
         break;

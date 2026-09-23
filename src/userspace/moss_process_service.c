@@ -70,9 +70,8 @@ int main(int argc, char **argv) {
   // IDs are never recycled while this service incarnation is alive. A stale
   // badged sender cannot select a later record in a reused slot; a restart
   // creates a new endpoint, so its old sender cannot reach the new registry.
-  // Reserve 1 for a future compatibility init registration. The supervisor
-  // still owns the native initial domain in this first service incarnation.
-  unsigned long next_id = 2;
+  // The supervisor registers first, so compatibility init retains ID 1.
+  unsigned long next_id = 1;
   for (;;) {
     struct moss_ipc_message request = {0};
     unsigned long reply = 0;

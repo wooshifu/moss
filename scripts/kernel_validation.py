@@ -185,6 +185,7 @@ CATALOG = {
         "source_version",
         "registration_gate",
         "shared_thread_gate",
+        "startup_capability",
     ],
     "users.busybox": [
         "ash_exit",

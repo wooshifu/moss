@@ -94,7 +94,7 @@ static int boundary_load_plan(void) {
   return errors == 0;
 }
 
-void _start(long argc, const char **argv) {
+void _start(long argc, const char **argv, const char **envp) {
   if (!argv || !argv[0]) {
     _exit(STARTUP_EXIT);
   }
@@ -111,6 +111,16 @@ void _start(long argc, const char **argv) {
     unsigned long kept = parse_handle(argv[2]);
     _exit(closed && kept && syscall1(SYS_CAP_CLOSE, (long)closed) == -BAD_HANDLE_ERROR &&
                   syscall1(SYS_CAP_CLOSE, (long)kept) == 0
+              ? SUCCESS_EXIT
+              : STARTUP_EXIT);
+  }
+  if (text_equal(argv[0], "startup-cap")) {
+    if (argc != 2 || !argv[1] || argv[2] || !envp || envp[0])
+      _exit(STARTUP_EXIT);
+    unsigned long handle = parse_handle(argv[1]);
+    const unsigned long *auxv = (const unsigned long *)(envp + 1);
+    _exit(handle && auxv[0] == MOSS_AT_STARTUP_CAP && auxv[1] == handle && auxv[2] == 0 && auxv[3] == 0 &&
+                  syscall1(SYS_CAP_CLOSE, (long)handle) == 0
               ? SUCCESS_EXIT
               : STARTUP_EXIT);
   }
