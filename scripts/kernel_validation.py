@@ -184,6 +184,7 @@ CATALOG = {
         "allocation_rollback",
         "mutable_snapshot_rollback",
         "boundary_load_plan",
+        "source_version",
     ],
     "users.busybox": [
         "ash_exit",

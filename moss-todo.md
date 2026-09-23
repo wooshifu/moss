@@ -1367,12 +1367,20 @@ per-CPU 槽位最初引入静态析构注册，x64 freestanding 链接报告缺�
 - VFS 的 FD 访问模式、稳定 File 引用和池锁已有实现；pipe 空读/满写会等待，最后 writer 关闭才 EOF，断端写返回 EPIPE 并投递 SIGPIPE；inode/FD/pipe 槽回收和 `sys_pipe` 输出失败回滚也已有实现。原始 MOSS-024～026 的“未修复”描述只适用于旧基线；共享 offset、关闭并发、确定性交错和逐阶段故障注入仍需按验收项检查。
 - 默认 `users.lifecycle` 循环 1,000 次，覆盖 fork/COW、信号、计时器、pipe、exec、exit/wait 及资源恢复；最近记录的九预设矩阵包含它。旧第 28 次停滞的因果对照和 1/16 CPU 长循环仍未完成。
 
+### 3.42 execve 输入版本绑定（2026-09-23，工作区）
+
+`sys_execve` 现在持有入口时的 `AddressSpace`，从同一版本复制 pathname、argv/envp 指针及字符串，复制完毕即释放。此前 pathname 读取之后的每次用户复制都会重新取得 `Process` 当前地址空间；若其间发布了新版本，一次调用会混用两个版本。
+
+新增真实用户态 `users.exec/source_version`：在 pathname 读取后，验证钩子发布一个同地址但 `argv[0]` 从 `exec` 改成 `fail` 的地址空间。修复前 ARM64 Debug 的 `users.exec` 只有该项失败，其余 28 项通过；修复后九配置 `users.exec` 各 29/29、完整 CTest 合计 43/43 通过。隔离 userspace 构建夹具补齐 BusyBox 生成脚本及 `uv` 路径后，宿主 `scripts/tests` 为 386 passed、1 skipped。原始报告分别位于 `build/arm64-debug/exec-source-red/results.json`、`build/<preset>/exec-source-green/results.json` 和 `build/<preset>/exec-source-ctest.log`。
+
+这只保证一次 `execve` 的输入来源版本一致；共享进程的线程停顿/退出、其他 CPU 已安装 root 协调、异步长期页 pin 和更广 VM 交错仍在 MOSS-002 中保持未完成。
+
 ## 4. 问题总表与当前状态
 
 | 编号 | 优先级 | 审计主题 | 当前状态与下一步 |
 | --- | --- | --- | --- |
 | MOSS-001 | P0 | 内核映射 USER / W^X | 已关闭（3.30）；最终 U/S、W^X/RO/NX 结构检查和五类内核对象的 identity/direct-map 用户读写隔离均通过三架构九配置；Sv39、GICv3 同镜像补验通过。 |
-| MOSS-002 | P0 | 用户域 / uaccess / 调试旁路 | 部分修复（3.13、3.20～3.21、3.31～3.39）；共享 uaccess/COW OOM、拥有型地址空间、软件 VM 事务、同步页租约、三架构 TLB 协议、双发布者交错、活动 root 拥有权/本核退休与首次 CPU 注册两顺序已补；完整共享 exec、异步页 pin 与完整并发验收未完成。 |
+| MOSS-002 | P0 | 用户域 / uaccess / 调试旁路 | 部分修复（3.13、3.20～3.21、3.31～3.39、3.42）；共享 uaccess/COW OOM、拥有型地址空间、软件 VM 事务、同步页租约、三架构 TLB 协议、双发布者交错、活动 root 拥有权/本核退休、首次 CPU 注册两顺序及单次 exec 输入版本绑定已补；完整共享 exec、异步页 pin 与完整并发验收未完成。 |
 | MOSS-003 | P0 | 信号帧与特权状态恢复 | 已关闭（3.40）；修复注册栈容量越界，恶意帧、栈准入/撤销、内核哨兵及合法嵌套现场验收通过；不代表全部信号语义或共享 exec 协调完成。 |
 | MOSS-004 | P0 | 堆与页表/PFA 所有权重叠 | 已关闭（`040d773`）；当前布局、活动页表树/早期表池及元数据哨兵、耗尽、坏布局启动拒绝专项验收通过，见 3.7。 |
 | MOSS-005 | P0 | 启动保留区未排除 | 多 bank、保留洞、非对齐/重叠、容量/溢出及耗尽已验证；低地址启动区仍保守保留，PVH 异常表/完整保留集合待补，见 3.5～3.6。 |
@@ -1951,6 +1959,7 @@ fork 对 VMA 有复制，但未完整继承 `brk_base/brk_current/mmap_next` 等
   - [x] 双 CPU、双地址空间/不同 VA 的并发 TLB 发布；分别强制两个 CPU 先获发布锁，旧/新硬件翻译与回收基线检查、仅删除发布锁协作处理的负向对照通过（3.37）；ARM64 验证原生广播并发，不声明软件锁顺序。
   - [x] CPU 实际安装 root 独立持有页表/数据/ASID，本核写入新 root 后才退休旧拥有者；Process 替换/销毁与原生缺页绑定、用户/内核 root 退休的双 CPU 红绿回归，九配置及 16 CPU/Sv39/GICv3 补验通过（3.38）。
   - [x] 真实启动中首个辅助 CPU 注册与 TLB 请求的两个确定性顺序；硬件旧/新翻译、成员目标与资源基线，以及漏注册刷新/漏目标的双架构负向对照通过。九配置 43/43 CTest 及同镜像 16 CPU/Sv39/GICv3 补验通过，不外推为热插拔或全部交错验收（3.39）。
+  - [x] 单次 `execve` 的全部用户输入绑定入口地址空间；路径复制后替换 `Process` 地址空间的真实用户态回归先红后绿，九配置 `users.exec` 与 CTest 43/43 通过（3.42）。
   - [ ] 完整共享 exec 的线程/root 协调、异步访问的长期页 pin 及更多并发 unmap/fork/fault 专项验收。
 - [x] B3a：RV64/x86 首次用户返回与基本 fork 用户 GP 现场恢复已补，三架构真实 users 套件通过（007、014，`44dedc2`）。
 - [ ] B3b：三个 ISA 有效 TrapFrame 传参、布局断言、完整用户现场、信号桩及安全返回仍待统一（007）。
