@@ -70,7 +70,7 @@ constexpr bool is_signal_wakeable(ProcessState s) noexcept { return s == Process
 enum class SchedClass : u8 { Normal = 0, RealTime = 1, Idle = 2, Batch = 3 };
 
 // Scheduling policy — selects the dispatch algorithm within a class.
-// Maps to Linux SCHED_* constants used by sched_setscheduler().
+// Maps to Linux SCHED_* constants returned by sched_getscheduler().
 enum class SchedPolicy : u8 {
   Normal = 0, // SCHED_NORMAL (CFS)
   Fifo = 1,   // SCHED_FIFO   (RT, runs until block/yield/preempted by higher prio)
@@ -78,22 +78,6 @@ enum class SchedPolicy : u8 {
   Batch = 3,  // SCHED_BATCH  (CFS, batch-optimized)
   Idle = 5,   // SCHED_IDLE   (lowest priority)
 };
-
-// Map SchedPolicy → SchedClass for dispatch routing.
-constexpr SchedClass policy_to_class(SchedPolicy policy) noexcept {
-  switch (policy) {
-  case SchedPolicy::Fifo:
-  case SchedPolicy::RR:
-    return SchedClass::RealTime;
-  case SchedPolicy::Batch:
-    return SchedClass::Batch;
-  case SchedPolicy::Idle:
-    return SchedClass::Idle;
-  case SchedPolicy::Normal:
-  default:
-    return SchedClass::Normal;
-  }
-}
 
 // Linux-compatible public ranges: nice -20..19 maps to 40 CFS weights;
 // RT priorities 1..99 leave zero for non-RT. Fallback 50 is the middle RT
