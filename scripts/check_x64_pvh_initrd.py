@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Verify x64 PVH initrd discovery and its production boot failure modes."""
+"""Verify x64 PVH boot metadata and its production failure modes."""
 
 import argparse
 import hashlib
@@ -10,6 +10,7 @@ import socket
 import struct
 import subprocess
 import sys
+import tempfile
 import time
 from dataclasses import replace
 from pathlib import Path
@@ -57,14 +58,20 @@ ELF64_ENTRY_END = ELF64_ENTRY_OFFSET + 8
 # AMD64's GDB remote register numbering assigns RSI register number four. The
 # 32-bit PVH stub deliberately preserves EBX in ESI until the 64-bit ELF entry.
 AMD64_RSI_REGISTER_NUMBER = 4
-# The first 24 PVH bytes include magic, module count, and modlist_paddr. Module
-# size is the second 64-bit field in each 32-byte hvm_modlist_entry.
-PVH_START_INFO_PREFIX_BYTES = 24
+# The 56-byte PVH start_info includes the module list and memory-map pointer.
+# Module size is the second 64-bit field in each 32-byte hvm_modlist_entry.
+PVH_START_INFO_BYTES = 56
 # Xen fixes HVM_START_MAGIC_VALUE to this value for PVH start_info discovery.
 PVH_MAGIC = 0x336EC578
 PVH_MODULE_LIST_OFFSET = 16
 PVH_MODULE_SIZE_OFFSET = 8
 PVH_MODULE_SIZE_BYTES = 8
+# These match HvmStartInfo and PvhMemoryEntry in the production boot parser.
+PVH_MEMORY_MAP_OFFSET = 40
+PVH_MEMORY_ENTRY_BYTES = 24
+PVH_BOOT_ADDRESS_LIMIT = 1 << 32
+# Match the production PVH admission bound before requesting the GDB packet.
+PVH_MAX_MEMORY_ENTRIES = 128
 # Only the bootstrap CPU participates in these boot-contract checks. A single
 # vCPU also makes the temporary entry breakpoint unambiguous and keeps CI cheap.
 PVH_TEST_VCPUS = 1
@@ -140,7 +147,9 @@ def elf64_entry(kernel: Path) -> int:
     return struct.unpack_from("<Q", header, ELF64_ENTRY_OFFSET)[0]
 
 
-def corrupt_pvh_module(kernel: Path, gdb_socket: Path, child: subprocess.Popen[bytes]) -> None:
+def mutate_pvh_boot_info(
+    kernel: Path, gdb_socket: Path, child: subprocess.Popen[bytes], mutation: str
+) -> dict[str, int]:
     deadline = time.monotonic() + GDB_BREAK_TIMEOUT_SECONDS
     while not gdb_socket.exists():
         if child.poll() is not None:
@@ -168,31 +177,68 @@ def corrupt_pvh_module(kernel: Path, gdb_socket: Path, child: subprocess.Popen[b
             start_info = int.from_bytes(bytes.fromhex(encoded_pointer.decode("ascii")), "little")
         except ValueError as error:
             raise RuntimeError(f"QEMU returned an invalid PVH pointer: {encoded_pointer!r}") from error
-        encoded_start = remote.command(f"m{start_info:x},{PVH_START_INFO_PREFIX_BYTES:x}")
+        encoded_start = remote.command(f"m{start_info:x},{PVH_START_INFO_BYTES:x}")
         try:
             start = bytes.fromhex(encoded_start.decode("ascii"))
         except ValueError as error:
             raise RuntimeError(f"QEMU could not read PVH start info: {encoded_start!r}") from error
-        if len(start) != PVH_START_INFO_PREFIX_BYTES:
+        if len(start) != PVH_START_INFO_BYTES:
             raise RuntimeError("QEMU returned truncated PVH start info")
         magic, module_count = struct.unpack_from("<I8xI", start)
         (module_list,) = struct.unpack_from("<Q", start, PVH_MODULE_LIST_OFFSET)
-        if magic != PVH_MAGIC or not module_count or not module_list:
-            raise RuntimeError("QEMU did not provide the expected PVH module descriptor")
-
-        size_address = module_list + PVH_MODULE_SIZE_OFFSET
-        encoded_size = remote.command(f"m{size_address:x},{PVH_MODULE_SIZE_BYTES:x}")
-        try:
-            original_size = int.from_bytes(bytes.fromhex(encoded_size.decode("ascii")), "little")
-        except ValueError as error:
-            raise RuntimeError(f"QEMU could not read the PVH module size: {encoded_size!r}") from error
-        if not original_size:
-            raise RuntimeError("QEMU unexpectedly supplied an empty PVH module")
-        zero_size = bytes(PVH_MODULE_SIZE_BYTES).hex()
-        if remote.command(f"M{size_address:x},{PVH_MODULE_SIZE_BYTES:x}:{zero_size}") != b"OK":
-            raise RuntimeError("QEMU rejected the invalid-module mutation")
+        if magic != PVH_MAGIC:
+            raise RuntimeError("QEMU did not provide PVH start info")
+        if mutation == "invalid-module":
+            if not module_count or not module_list:
+                raise RuntimeError("QEMU did not provide the expected PVH module descriptor")
+            size_address = module_list + PVH_MODULE_SIZE_OFFSET
+            encoded_size = remote.command(f"m{size_address:x},{PVH_MODULE_SIZE_BYTES:x}")
+            try:
+                original_size = int.from_bytes(bytes.fromhex(encoded_size.decode("ascii")), "little")
+            except ValueError as error:
+                raise RuntimeError(f"QEMU could not read the PVH module size: {encoded_size!r}") from error
+            if not original_size:
+                raise RuntimeError("QEMU unexpectedly supplied an empty PVH module")
+            zero_size = bytes(PVH_MODULE_SIZE_BYTES).hex()
+            if remote.command(f"M{size_address:x},{PVH_MODULE_SIZE_BYTES:x}:{zero_size}") != b"OK":
+                raise RuntimeError("QEMU rejected the invalid-module mutation")
+            details = {"module_size_before": original_size}
+        elif mutation == "reserved-overlap":
+            map_address, count = struct.unpack_from("<QI", start, PVH_MEMORY_MAP_OFFSET)
+            if not map_address or not 1 < count <= PVH_MAX_MEMORY_ENTRIES:
+                raise RuntimeError("QEMU did not provide a usable PVH memory map")
+            encoded_map = remote.command(f"m{map_address:x},{count * PVH_MEMORY_ENTRY_BYTES:x}")
+            try:
+                memory_map = bytes.fromhex(encoded_map.decode("ascii"))
+            except ValueError as error:
+                raise RuntimeError(f"QEMU could not read the PVH memory map: {encoded_map!r}") from error
+            if len(memory_map) != count * PVH_MEMORY_ENTRY_BYTES:
+                raise RuntimeError("QEMU returned truncated PVH memory map")
+            entries = [
+                struct.unpack_from("<QQII", memory_map, index * PVH_MEMORY_ENTRY_BYTES) for index in range(count)
+            ]
+            usable = [
+                (size, base)
+                for base, size, kind, _ in entries
+                if kind == 1 and base < PVH_BOOT_ADDRESS_LIMIT and 0 < size <= PVH_BOOT_ADDRESS_LIMIT - base
+            ]
+            reserved = next((index for index, (_, _, kind, _) in enumerate(entries) if kind != 1), None)
+            if not usable or reserved is None:
+                raise RuntimeError("QEMU did not provide RAM and a non-RAM entry for the overlap check")
+            # Reuse a real descriptor while making it cover the largest RAM
+            # bank; the allocator must never publish that bank as free pages.
+            size, base = max(usable)
+            entry_address = map_address + reserved * PVH_MEMORY_ENTRY_BYTES
+            reserved_kind = entries[reserved][2]
+            replacement = struct.pack("<QQII", base, size, reserved_kind, 0)
+            if remote.command(f"M{entry_address:x},{len(replacement):x}:{replacement.hex()}") != b"OK":
+                raise RuntimeError("QEMU rejected the reserved-overlap mutation")
+            details = {"ram_base": base, "ram_size": size, "reserved_entry": reserved, "reserved_type": reserved_kind}
+        else:
+            raise ValueError(f"unknown PVH mutation: {mutation}")
         if remote.command("D") != b"OK":
             raise RuntimeError("QEMU could not detach and resume the mutated guest")
+        return details
 
 
 def run_case(
@@ -205,16 +251,16 @@ def run_case(
     positive: bool,
     qemu: str,
     output: Path,
-    corrupt_module: bool = False,
+    mutation: str | None = None,
     gdb_socket: Path | None = None,
 ) -> dict[str, Any]:
     output.mkdir()
     files = dict(cfg.files)
     files.update(kernel=kernel, initramfs=initrd)
     args = build_qemu_args(replace(cfg, files=files), smp=PVH_TEST_VCPUS, memory_mib=memory_mib, qemu=qemu)
-    if corrupt_module:
+    if mutation:
         if gdb_socket is None:
-            raise ValueError("invalid-module scenario requires a GDB socket")
+            raise ValueError("PVH mutation requires a GDB socket")
         args += ["-S", "-gdb", f"unix:{gdb_socket},server=on,wait=off"]
     serial = output / "serial.log"
     qemu_log = output / "qemu.log"
@@ -223,12 +269,13 @@ def run_case(
     evidence = b""
     observed = "timeout"
     mutation_error = None
+    mutation_details = None
     try:
         with serial.open("wb") as out, qemu_log.open("wb") as err:
             child = subprocess.Popen(args, stdin=subprocess.DEVNULL, stdout=out, stderr=err)
-            if corrupt_module:
+            if mutation:
                 try:
-                    corrupt_pvh_module(kernel, gdb_socket, child)
+                    mutation_details = mutate_pvh_boot_info(kernel, gdb_socket, child, mutation)
                 except (ConnectionError, OSError, RuntimeError, TimeoutError, ValueError) as error:
                     mutation_error = str(error)
                     observed = "mutation_error"
@@ -270,6 +317,7 @@ def run_case(
         "boot_completed": completed,
         "panicked": panicked,
         "mutation_error": mutation_error,
+        "mutation_details": mutation_details,
         "elapsed_seconds": time.monotonic() - started,
         "qemu_args": args,
         "raw_exit": child.returncode if child else None,
@@ -315,30 +363,40 @@ def main() -> int:
     )
 
     scenarios = (
-        ("base-512", base, BASE_MEMORY_MIB, b"moss$ ", True, False),
-        ("padded-512", padded, BASE_MEMORY_MIB, b"moss$ ", True, False),
-        ("base-768", base, RELOCATED_MEMORY_MIB, b"moss$ ", True, False),
-        ("missing-module", None, BASE_MEMORY_MIB, b"BOOT ERROR: PVH initrd module is required", False, False),
-        ("invalid-module", base, BASE_MEMORY_MIB, b"BOOT ERROR: invalid PVH initrd module", False, True),
-        ("invalid-archive", invalid, BASE_MEMORY_MIB, b"Error: Invalid initramfs archive", False, False),
-        ("missing-init", no_init, BASE_MEMORY_MIB, b"Error: Required init executable is missing", False, False),
+        ("base-512", base, BASE_MEMORY_MIB, b"moss$ ", True, None),
+        ("padded-512", padded, BASE_MEMORY_MIB, b"moss$ ", True, None),
+        ("base-768", base, RELOCATED_MEMORY_MIB, b"moss$ ", True, None),
+        ("missing-module", None, BASE_MEMORY_MIB, b"BOOT ERROR: PVH initrd module is required", False, None),
+        ("invalid-module", base, BASE_MEMORY_MIB, b"BOOT ERROR: invalid PVH initrd module", False, "invalid-module"),
+        (
+            "reserved-overlap",
+            base,
+            BASE_MEMORY_MIB,
+            b"Error: Memory management setup failed",
+            False,
+            "reserved-overlap",
+        ),
+        ("invalid-archive", invalid, BASE_MEMORY_MIB, b"Error: Invalid initramfs archive", False, None),
+        ("missing-init", no_init, BASE_MEMORY_MIB, b"Error: Required init executable is missing", False, None),
     )
     results: dict[str, dict[str, Any]] = {}
-    for name, initrd, memory_mib, expected, positive, corrupt_module in scenarios:
-        result = run_case(
-            cfg,
-            kernel=kernel,
-            initrd=initrd,
-            memory_mib=memory_mib,
-            expected=expected,
-            positive=positive,
-            qemu=qemu,
-            output=root / name,
-            corrupt_module=corrupt_module,
-            gdb_socket=root / "gdb.sock" if corrupt_module else None,
-        )
-        results[name] = result
-        print(f"{name}: {result['status']} ({result['observed']})", flush=True)
+    # AF_UNIX paths are bounded independently of the report output location.
+    with tempfile.TemporaryDirectory(prefix="moss-pvh-gdb-") as socket_dir:
+        for name, initrd, memory_mib, expected, positive, mutation in scenarios:
+            result = run_case(
+                cfg,
+                kernel=kernel,
+                initrd=initrd,
+                memory_mib=memory_mib,
+                expected=expected,
+                positive=positive,
+                qemu=qemu,
+                output=root / name,
+                mutation=mutation,
+                gdb_socket=Path(socket_dir) / f"{name}.sock" if mutation else None,
+            )
+            results[name] = result
+            print(f"{name}: {result['status']} ({result['observed']})", flush=True)
 
     base_512 = results["base-512"]["initrd_range"]
     padded_512 = results["padded-512"]["initrd_range"]
