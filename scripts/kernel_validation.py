@@ -238,6 +238,7 @@ CATALOG = {
         "stop_continue",
         "wait_job_status",
         "no_cldstop",
+        "wait_process_group",
         "signal_exit_status",
         "sigprocmask",
         "sigaltstack",

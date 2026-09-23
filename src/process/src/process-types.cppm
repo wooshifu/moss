@@ -759,7 +759,8 @@ private:
   // Process group and session IDs (POSIX job control).
   // Default: pgid = pid (each process is its own group leader),
   //          sid  = parent's sid (inherited on fork, set by setsid).
-  ProcessId pgid_;
+  // A child may change groups on another CPU while its parent scans waitpid.
+  moss::atomic<ProcessId> pgid_;
   ProcessId sid_;
 
   // Children tracking for wait()/waitpid()
@@ -809,9 +810,9 @@ public:
   [[nodiscard]] SignalState &signal_state() noexcept { return signal_state_; }
 
   // Process group / session accessors (POSIX job control)
-  [[nodiscard]] ProcessId pgid() const noexcept { return pgid_; }
+  [[nodiscard]] ProcessId pgid() const noexcept { return pgid_.load(); }
   [[nodiscard]] ProcessId sid() const noexcept { return sid_; }
-  void set_pgid(ProcessId pgid) noexcept { pgid_ = pgid; }
+  void set_pgid(ProcessId pgid) noexcept { pgid_.store(pgid); }
   void set_sid(ProcessId sid) noexcept { sid_ = sid; }
 
   // POSIX credentials
@@ -900,11 +901,9 @@ public:
 
   [[nodiscard]] bool has_children() const noexcept { return !children_.empty(); }
 
-  // Find a zombie child matching wait_pid:
-  //   wait_pid > 0  → specific child
-  //   wait_pid == -1 → any zombie child
+  // Find a zombie child matching wait_pid and the selected process group.
   // Returns PID of found zombie, or INVALID_PROCESS_ID if none.
-  [[nodiscard]] ProcessId find_zombie_child(i64 wait_pid) const noexcept;
+  [[nodiscard]] ProcessId find_zombie_child(i64 wait_pid, ProcessId target_pgid) const noexcept;
 
   // Check if a specific PID is in this process's children list
   [[nodiscard]] bool is_child(ProcessId pid) const noexcept { return static_cast<bool>(children_.find(pid)); }

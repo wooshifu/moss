@@ -829,8 +829,8 @@ long sys_execve(long pathname_addr, long argv_addr, long envp_addr, long /*unuse
 }
 
 // wait4(pid, wstatus, options, rusage) — wait for child process state change
-// pid > 0: wait for specific child
-// pid == -1: wait for any child
+// pid > 0: specific child; -1: any child; 0: caller's process group;
+// pid < -1: children in process group -pid.
 // options use the Linux-compatible abi-bits/wait.h values.
 long sys_wait4(long wait_pid, long wstatus_addr, long options, long /*unused*/, long /*unused*/,
                long /*unused*/) noexcept {
@@ -842,11 +842,9 @@ long sys_wait4(long wait_pid, long wstatus_addr, long options, long /*unused*/, 
   if ((options & ~(WNOHANG | WUNTRACED | WCONTINUED)) != 0) {
     return -errc::EINVAL;
   }
-  // This ABI currently supports a positive PID or -1, not process-group waits.
-  if (wait_pid == 0 || wait_pid < -1) {
-    return -errc::EINVAL;
-  }
-  if (wait_pid > ~ProcessId{0}) {
+  // Bound both signs before negating a process-group selector (including LONG_MIN).
+  constexpr long MAX_PID = static_cast<long>(~ProcessId{0});
+  if (wait_pid > MAX_PID || wait_pid < -MAX_PID) {
     return -errc::ECHILD;
   }
 
@@ -860,10 +858,28 @@ long sys_wait4(long wait_pid, long wstatus_addr, long options, long /*unused*/, 
     return -errc::EINVAL;
   }
 
-  // Must have children
-  if (!proc->has_children()) {
-    return -errc::ECHILD;
-  }
+  // Resolve pid==0 once so every scan during this wait uses the same group.
+  const ProcessId target_pgid = wait_pid == 0 ? proc->pgid() : (wait_pid < -1 ? static_cast<ProcessId>(-wait_pid) : 0);
+  auto matches_child = [&](ProcessId child_pid, const Process &child) {
+    if (wait_pid == -1) {
+      return true;
+    }
+    if (wait_pid > 0) {
+      return static_cast<ProcessId>(wait_pid) == child_pid;
+    }
+    return child.pgid() == target_pgid;
+  };
+  auto has_matching_child = [&]() {
+    bool found = false;
+    proc->for_each_child_locked([&](ProcessId child_pid) {
+      if (found) {
+        return;
+      }
+      auto child = g_process_manager->find_process(child_pid);
+      found = child && matches_child(child_pid, *child);
+    });
+    return found;
+  };
 
   struct JobEvent {
     shared_ptr<Process> child;
@@ -876,11 +892,11 @@ long sys_wait4(long wait_pid, long wstatus_addr, long options, long /*unused*/, 
       return found;
     }
     proc->for_each_child_locked([&](ProcessId child_pid) {
-      if (found.thread || (wait_pid > 0 && static_cast<ProcessId>(wait_pid) != child_pid)) {
+      if (found.thread) {
         return;
       }
       auto child = g_process_manager->find_process(child_pid);
-      if (!child || child->state() == ProcessState::Zombie) {
+      if (!child || child->state() == ProcessState::Zombie || !matches_child(child_pid, *child)) {
         return;
       }
       auto *thread = child->get_main_thread();
@@ -897,13 +913,13 @@ long sys_wait4(long wait_pid, long wstatus_addr, long options, long /*unused*/, 
 
   while (true) {
     // Scan for matching zombie child
-    ProcessId zombie_pid = proc->find_zombie_child(wait_pid);
+    ProcessId zombie_pid = proc->find_zombie_child(wait_pid, target_pgid);
 
     if (zombie_pid != INVALID_PROCESS_ID) {
       // Found a zombie — reap it
       auto zombie = g_process_manager->find_process(zombie_pid);
-      if (!zombie) {
-        // Race: already reaped by another thread, retry
+      if (!zombie || !matches_child(zombie_pid, *zombie)) {
+        // Another waiter may have reaped it, or it may have changed groups.
         continue;
       }
 
@@ -951,9 +967,8 @@ long sys_wait4(long wait_pid, long wstatus_addr, long options, long /*unused*/, 
       return static_cast<long>(job.child->pid());
     }
 
-    // No zombie found
-    // Check if specified PID is actually a child
-    if (wait_pid > 0 && !proc->is_child(static_cast<ProcessId>(wait_pid))) {
+    // Other children do not keep a wait for this selected set alive.
+    if (!has_matching_child()) {
       return -errc::ECHILD;
     }
 
@@ -980,7 +995,8 @@ long sys_wait4(long wait_pid, long wstatus_addr, long options, long /*unused*/, 
     proc->child_exit_wait_queue().add_waiter(static_cast<void *>(cur), /*exclusive=*/true);
     // An exit may have happened after the first scan but before registration.
     // Recheck after publishing the waiter so neither side can miss the other.
-    if (proc->find_zombie_child(wait_pid) != INVALID_PROCESS_ID || find_job_event().thread) {
+    if (proc->find_zombie_child(wait_pid, target_pgid) != INVALID_PROCESS_ID || find_job_event().thread ||
+        !has_matching_child()) {
       g_scheduler->task_wakeup(cur, cur->wake_cpu);
     }
     g_scheduler->commit_sleep();
@@ -989,10 +1005,6 @@ long sys_wait4(long wait_pid, long wstatus_addr, long options, long /*unused*/, 
       arch::enable_interrupts();
     }
 
-    // Check we still have children (might have been reaped by another thread)
-    if (!proc->has_children()) {
-      return -errc::ECHILD;
-    }
   }
 }
 

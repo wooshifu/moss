@@ -414,7 +414,7 @@ bool Process::try_begin_exec() noexcept {
 
 void Process::finish_exec() noexcept { exec_in_progress_.store(false); }
 
-ProcessId Process::find_zombie_child(i64 wait_pid) const noexcept {
+ProcessId Process::find_zombie_child(i64 wait_pid, ProcessId target_pgid) const noexcept {
   ProcessId found = INVALID_PROCESS_ID;
 
   children_.for_each([&](ProcessId child_pid) {
@@ -431,7 +431,8 @@ ProcessId Process::find_zombie_child(i64 wait_pid) const noexcept {
       return;
     }
 
-    if (wait_pid == -1 || static_cast<ProcessId>(wait_pid) == child_pid) {
+    if (wait_pid == -1 || (wait_pid > 0 && static_cast<ProcessId>(wait_pid) == child_pid) ||
+        (wait_pid <= 0 && child->pgid() == target_pgid)) {
       found = child_pid;
     }
   });
