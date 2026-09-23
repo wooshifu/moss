@@ -1465,6 +1465,10 @@ PVH initrd 原先只要求被 RAM 条目覆盖；当同一物理区间也被非 
 
 新增宿主负向回归：即使生产内核/initramfs 仍存在，缺少验证内核或验证 initramfs 时，`Artifacts.snapshot_validation()` 也必须在装载前拒绝，不能退回生产镜像。CLI 手动复核缺少验证内核时退出码为 1，未生成虚假的成功报告。另以两个套件的 runner 调用模拟首个 guest 被取消，核对命令退出码为 1、报告 `finalized` 且第二项在 `not_run` 中、JUnit 对第二项逐 case 标为 skipped，而非通过。宿主 `test_artifacts.py` 与 `test_kernel_validation.py` 合计 187 passed、1 skipped；此项只验收宿主输入/报告路径，没有启动真实 QEMU，也不替代 ARM64 历史失败重放或 T01～T12 审计覆盖。
 
+### 3.58 ARM64 `containers.smp` 历史超时重放入口（2026-09-23，工作区）
+
+新增 `scripts/replay_arm64_containers_smp.sh`，逐次调用生产验证 runner 的 ARM64 Debug `containers.smp`，保留默认四核、2 GiB、5 秒 case deadline 与 60 秒 guest deadline；每次单独保存报告，首个失败立即停止，且比较报告中的镜像/initramfs/符号哈希，拒绝把重建前后的运行混作同一重复样本。命令为 `scripts/replay_arm64_containers_smp.sh build/arm64-debug/moss-artifacts.json 100`，可选第三参数指定输出目录。脚本经 Bash 语法、ShellCheck 和两次端到端冒烟检查；同一当前镜像的独立 100 次定向运行全部通过，100 份报告均 finalized、无未运行项，镜像与 fixture 哈希各只有一种。3.14 的旧 Zombie 后 `case_timeout` 报告已不在当前构建目录，当前 100 次未复现不能证明旧调度/wait 根因已经消失；MOSS-017/018 与 A1b 的历史因果确认继续保持未完成。
+
 ## 4. 问题总表与当前状态
 
 | 编号 | 优先级 | 审计主题 | 当前状态与下一步 |
@@ -1496,7 +1500,7 @@ PVH initrd 原先只要求被 RAM 条目覆盖；当同一物理区间也被非 
 | MOSS-025 | P1 | pipe 阻塞与 EOF | 主路径已实现；空且有 writer 的 read、满 write 等待，最后 writer 关闭才 EOF，无 reader 写返回 EPIPE/SIGPIPE，非阻塞和部分传输有处理；确定性多读写者/端点竞争仍待验收。 |
 | MOSS-026 | P1 | 固定池回收与 pipe 回滚 | 部分修复；inode/FD/pipe 槽复用、端点清理及 `sys_pipe` 输出失败回滚已有实现，1,000 次 pipe 复用及 FD 回滚有用例；各分配阶段故障注入和并发池复用仍待验收。 |
 | MOSS-027 | P1 | x86 PVH / initramfs | 已关闭（3.22）；真实模块表/可用 RAM 范围、严格 newc、完成标记顺序及七场景生产 QEMU gate 已通过 Debug/Release。 |
-| MOSS-028 | P1 | 真实内核测试与失败传播 | 框架已替换，覆盖待补；生产模块、串口协议及三架构自检已落地，断言失败后继续执行的报告分类（3.56）及缺失验证输入/未运行套件的负向验收（3.57）已补；T01～T12 不能整体关闭。 |
+| MOSS-028 | P1 | 真实内核测试与失败传播 | 框架已替换，覆盖待补；生产模块、串口协议及三架构自检已落地，断言失败后的报告分类（3.56）、验证输入/未运行套件负向验收（3.57）及 ARM64 `containers.smp` 重放入口（3.58）已补；历史因果和 T01～T12 仍待闭合。 |
 | MOSS-029 | P2 | 计时源和 ISA 能力 | 部分实现；x86 双频率校准、RV64 SBI TIME 已落地；3.8 新暴露验证镜像一次校准拒绝，具体分支未定位，异常能力与时钟误差验收仍待补。 |
 | MOSS-030 | P2 | 空成功 / 固定地址 / 假统计 | 已关闭（3.28～3.29）；MM/IPC 未实现操作显式返回 `NotSupported` 且无副作用，真实 create/destroy/stats/sync 使用实际对象，假压力/成功率/固定地址已移除；初始化有序发布且不再公开原始 singleton 借用。三架构九 preset 的契约回归和完整 CTest 通过。 |
 | MOSS-031 | P2 | 核心边界与 ABI | 部分边界改善；启动/硬件/runner 已拆分，uaccess/TrapFrame/进程事务和共用 ABI 仍待收敛。 |
@@ -2009,6 +2013,7 @@ fork 对 VMA 有复制，但未完整继承 `brk_base/brk_current/mmap_next` 等
 - [ ] A1b：补 ARM64 原重复失败的可重放脚本、未覆盖装载/skip 负向用例和审计 T01～T12，不把已有功能套件当完整覆盖（028）。
   - [x] 断言失败后继续执行的 case 保留原有失败归类及完整报告；真实失败串口重放和宿主红绿回归见 3.56。
   - [x] 验证镜像/initramfs 缺失时不退回生产产物，取消后未运行套件保持 CLI 失败与 JUnit skipped；宿主负向验收见 3.57。
+  - [x] ARM64 Debug `containers.smp` 逐次重放脚本保留默认时限与同镜像约束；当前 100 次通过，旧 Zombie 超时因果仍待查（3.58）。
 - [x] A1c：修复 Active/Online 混淆和循环次数超时造成的 CPU 就绪误报；统一三架构等待，六配置 CTest、ARM64 四核 10 次与 16 核 heap 通过（3.4）。
 - [x] A1d：逐 case 宿主耗时与实际 deadline 可观测；PFA 全 RAM 耗尽预算按真实工作量调整，四并发红绿对照和显式短超时负向检查通过，不减少断言或忽略失败（028，工作区 3.10）。
 - [x] A2a：三个 linker 预留 8 MiB heap，起始 arena/扩容不得越过 heap_end；加入并通过 heap_bounds（004，`44dedc2`）。
