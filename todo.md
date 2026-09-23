@@ -1,6 +1,6 @@
 # MOSS 内核能力与待办
 
-> 当前源码复核：2026-09-23，`604fe85`；该次文档复核未重跑 QEMU。之后的当前九预设运行验收见 [moss-todo.md](moss-todo.md) 第 3.59～3.63 节。历史实现与实测保留原日期；源码与旧报告的对应关系见第 3.41 节。
+> 当前源码复核：2026-09-23，`604fe85`；该次文档复核未重跑 QEMU。之后的当前九预设运行验收见 [moss-todo.md](moss-todo.md) 第 3.59～3.64 节。历史实现与实测保留原日期；源码与旧报告的对应关系见第 3.41 节。
 > 本文取代旧清单中“完成即可靠”“x86/RISC-V 64 仅为启动桩”的描述。
 > 审计问题的原始证据、当前状态及完整验收条件见 [moss-todo.md](moss-todo.md)；MOSS-001～032 沿用原编号，不重新编号。
 
@@ -28,7 +28,7 @@ MOSS 当前是 C++26 freestanding 的模块化单体研究内核。ARM64、RV64�
 
 ### 已完成的构建与运行拆分
 
-- [x] 架构预设共 9 个：`{arm64,riscv64,x64}-{debug,release,relwithdebinfo}`；每个 workflow 为 configure → build → matching CTest preset（`b57422d`）。3.40 的九 preset **43/43 CTest** 及 16 CPU/Sv39/GICv3 同镜像补验是当时记录；本轮补 ARM64 Debug console 登记探针和双读者回归后，九预设通过 **44/44 CTest**，见 3.62～3.63。3.34～3.40 的初始失败、默认超时与受控变异失败仍保留。
+- [x] 架构预设共 9 个：`{arm64,riscv64,x64}-{debug,release,relwithdebinfo}`；每个 workflow 为 configure → build → matching CTest preset（`b57422d`）。3.40 的九 preset **43/43 CTest** 及 16 CPU/Sv39/GICv3 同镜像补验是当时记录；本轮补 console RX 排队、双读者及跨 CPU IRQ/登记回归后，九预设通过 **44/44 CTest**，见 3.62～3.64。3.34～3.40 的初始失败、默认超时与受控变异失败仍保留。
 - [x] 独立 configure/build 不查找、不启动 QEMU；workflow 的 test 阶段通过独立 runner 使用 QEMU。
 - [x] CMake 产出版本化、相对路径的 `moss-artifacts.json`，只描述架构、构建与产物；机器、CPU、RAM、SMP、固件选项由 runner 决定。
 - [x] 删除旧 `*-qemu-*` 预设、生成的 QEMU wrapper/config 和内核平台默认地址；以启动信息填充 `platform::hardware`。
@@ -172,12 +172,13 @@ uv run qemu.py --manifest build/arm64-debug/moss-artifacts.json
   - [x] 修复实际双 CPU 用例暴露的 ARM64 从核未开启 MMU：复用主核已建页表，在各从核配置 MMU 和高地址直映后才发布 online（工作区，3.9）；不代表运行队列所有权或运行中任务迁移已完成。
   - [x] ARM64 激活从核时补齐 `Active` 发布后的 `DSB SY → SEV` 完成顺序；三模式构建、Debug/Release CTest 5/5 与实际指令检查通过，偶发挂起完整验收另列（3.15）。
   - [x] 调用线程收紧自身 affinity 时，在返回用户态前经 bootstrap 保存 continuation，再发布到目标 CPU；旧实现的 cycle 1 确定性红例、单例绿例及 32/32 并发压力已保留（3.28）。远程目标、一般抢占迁移及完整 on-CPU 协议仍未关闭。
-- [ ] **MOSS-018（部分修复）**：wait/console 已有登记—睡眠协议和坏 status 可重试；child-exit 交错、wait EINTR、真实 RX 排队窗口及双读者已验收，继续补 IRQ handler 与登记的并发交错及 SA_RESTART。
+- [ ] **MOSS-018（部分修复）**：wait/console 已有登记—睡眠协议和坏 status 可重试；child-exit 交错、wait EINTR、真实 RX 排队窗口、双读者及跨 CPU IRQ/登记交错已验收，继续补 SA_RESTART。
   - [x] `sys_wait4()` 准备睡眠后登记 waiter、重查 Zombie；status copyout 失败不 reap。console 受锁保护检查/登记、支持多 waiter，已有 console 信号中断用例（3.41）。
   - [x] child exit 在 wait 登记前完成真实唤醒的双 CPU 顺序已有验证钩子固定；移除登记后的 Zombie 重查使新用例超时，恢复后九预设 `users.signals` 各 20/20、完整 CTest 43/43（3.59）。
   - [x] waitpid 被捕获信号唤醒后返回 EINTR，保留未写的 status 和可重试回收；旧实现超时红例、九预设 `users.signals` 各 21/21、完整 CTest 43/43（3.60）。
-  - [x] ARM64 Debug 在 console 空 ring 检查之后、waiter 登记之前暂停，确认真实 PL011 RX 已排队后恢复，shell 完成；去掉 waiter 登记的负向变异在首次命令超时（3.62）。该测试尚未强制 IRQ handler 在登记前运行。
+  - [x] ARM64 Debug 在 console 空 ring 检查之后、waiter 登记之前暂停，确认真实 PL011 RX 已排队后恢复，shell 完成；去掉 waiter 登记的负向变异在首次命令超时（3.62）。该探针不强制 IRQ handler 并发，另见 3.64。
   - [x] CPU1/CPU2 两个 `/dev/console` 读者都进入真实 read 后，宿主注入 `ab`；三架构九预设各 22/22，单 waiter 唤醒变异只使新用例超时（3.63）。RV64 验证轮询读者，ARM64/x64 验证等待队列。
+  - [x] ARM64/x64 的 CPU1 读者持锁停在空检查与等待登记之间，注入真实串口字节使 CPU0 IRQ handler 抵达同一锁；读者登记后成功读回，去掉 waiter 发布的负向试验超时（3.64）。RV64 是轮询路径，不运行该 IRQ 专项。
   - [ ] 3.14～3.15 的 ARM64 Debug `containers.smp` Zombie 超时及 CPU3 WFE 现场保留为历史失败；当前镜像同配置 100 次通过且已有逐次重放脚本，旧故障因果仍未确认，不写成当前稳定超时（3.58）。
   - [x] 独立诊断确认本机 QEMU MTTCG 事件已置位但宿主线程仍睡眠；不加载 Moss 也能稳定复现，仅补宿主 kick 即继续。该诊断不算内核修复或 SMP 验收，正式 runner 模式不变（3.15）。
 - [ ] **MOSS-019（部分修复）**：三架构 nanosleep、timer 容量错误、同步取消、deadline 溢出及捕获信号的 EINTR 已实现；补更广跨 CPU 定时交错。

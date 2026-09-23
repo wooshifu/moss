@@ -544,11 +544,14 @@ def test_signal_stack_attacks_are_required_for_default_acceptance():
 
 
 @pytest.mark.parametrize("arch", ["X64", "RISCV64", "ARM64"])
-def test_tlb_join_defaults_follow_the_native_protocol(arch):
-    expected = kv.FUNCTIONAL + (kv.TLB_JOIN if arch != "ARM64" else [])
+def test_arch_specific_defaults_follow_the_native_protocol(arch):
+    expected = (
+        kv.FUNCTIONAL + (["users.console_irq"] if arch != "RISCV64" else []) + (kv.TLB_JOIN if arch != "ARM64" else [])
+    )
     assert kv.functional_workloads(arch) == expected
+    assert kv.CATALOG["users.console_irq"] == ["irq_before_registration"]
     assert all(kv.CATALOG[name] == ["registration"] for name in kv.TLB_JOIN)
-    assert not any(name in kv.FUNCTIONAL for name in kv.TLB_JOIN)
+    assert not any(name in kv.FUNCTIONAL for name in (*kv.TLB_JOIN, "users.console_irq"))
 
 
 @pytest.mark.parametrize("workload", kv.TLB_JOIN)
@@ -558,6 +561,13 @@ def test_tlb_join_rejects_unsupported_guests_before_launch(tmp_path, monkeypatch
     monkeypatch.setattr(Artifacts, "load", lambda _: cfg)
     with pytest.raises(kv.typer.BadParameter, match=error):
         kv.run(manifest=cfg.manifest, workload=[workload], cpus=cpus)
+
+
+def test_console_irq_rejects_polling_guest_before_launch(tmp_path, monkeypatch):
+    cfg = Artifacts(tmp_path / "manifest.json", "RISCV64", "linux-image", {}, {})
+    monkeypatch.setattr(Artifacts, "load", lambda _: cfg)
+    with pytest.raises(kv.typer.BadParameter, match="interrupt-driven console"):
+        kv.run(manifest=cfg.manifest, workload=["users.console_irq"])
 
 
 def test_tlb_broadcast_is_default_with_hardware_lock_and_publisher_scenarios():
