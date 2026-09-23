@@ -3879,9 +3879,10 @@ struct FaultTransactions {
   using Tables = mm::PageTableManager;
   using Pfa = mm::PageFrameAllocator;
   static constexpr VirtAddr address = process::user_layout::CODE_BASE;
-  // COW, demand-zero, fault versus unmap, then fault versus fork. Each uses
-  // the same milestones so the peer contends before the fault commits.
-  static constexpr u32 scenarios = 4, milestones = 3;
+  static constexpr u8 resident_byte = 0x5a; // Nonzero so demand-zero cannot masquerade as resident data.
+  // COW, demand-zero, fault/unmap, fault/fork, then fork/unmap. Each uses the
+  // same milestones so the peer contends before the owner commits.
+  static constexpr u32 scenarios = 5, milestones = 3;
   shared_ptr<process::AddressSpace> source, target, clone;
   PhysAddr original = 0, owner_page = 0, peer_page = 0;
   u64 contents = 0;
@@ -3889,7 +3890,7 @@ struct FaultTransactions {
   // ready/contending/finished. The host's normal deadline bounds a stuck peer.
   u32 phase = 0, arrived = 0, snapshots = 0, contentions = 0;
   u32 round_base = 0;
-  bool demand = false, unmap = false, fork = false;
+  bool demand = false, unmap = false, fork = false, fork_unmap = false;
   bool peer_ok = false;
 
   void snapshot(PhysAddr root, VirtAddr fault_address) {
@@ -3929,7 +3930,7 @@ struct FaultTransactions {
         const auto *pte = Tables::get_user_pte(clone->pgd_phys, address);
         peer_page = pte && pte->is_valid() ? pte->get_phys_addr() : 0;
         peer_ok = peer_page != 0 && peer_ok;
-      } else if (unmap) {
+      } else if (unmap || fork_unmap) {
         auto transaction = target->lock_vm();
         const auto *pte = Tables::get_user_pte(target->pgd_phys, address);
         peer_page = pte && pte->is_valid() ? pte->get_phys_addr() : 0;
@@ -3953,9 +3954,13 @@ struct FaultTransactions {
       demand = round != 0;
       unmap = round == 2;
       fork = round == 3;
+      fork_unmap = round == 4;
       snapshots = 0;
       contentions = 0;
-      if (fork) {
+      if (fork_unmap) {
+        end_case();
+        start_case("fork_unmap");
+      } else if (fork) {
         end_case();
         start_case("fault_fork");
       } else if (unmap) {
@@ -3971,6 +3976,10 @@ struct FaultTransactions {
   }
 
   void owner_round() {
+    if (fork_unmap) {
+      fork_unmap_round();
+      return;
+    }
     const auto heap = mm::RuntimeHeapAllocator::get_heap_stats().allocated_bytes;
     const auto pages = Pfa::get_memory_stats().free_pages;
     auto original_space = process::user_space::create_user_address_space();
@@ -3993,7 +4002,7 @@ struct FaultTransactions {
     auto *bytes = reinterpret_cast<u8 *>(phys_to_virt(original));
     // A nonzero pattern distinguishes the copied contents from demand-zero.
     for (usize index = 0; index < page_size; ++index) {
-      bytes[index] = demand ? 0 : 0x5a;
+      bytes[index] = demand ? 0 : resident_byte;
     }
     contents = memory_hash(phys_to_virt(original), page_size);
     AddressSpaceReaders::require(Tables::map_user_page(source->pgd_phys, address, original, mm::page_perms::USER_RW));
@@ -4068,6 +4077,55 @@ struct FaultTransactions {
     }
     target.reset();
     source.reset();
+    ut::expect(Pfa::get_memory_stats().free_pages == pages);
+    ut::expect(mm::RuntimeHeapAllocator::get_heap_stats().allocated_bytes == heap);
+  }
+
+  void fork_unmap_round() {
+    const auto heap = mm::RuntimeHeapAllocator::get_heap_stats().allocated_bytes;
+    const auto pages = Pfa::get_memory_stats().free_pages;
+    auto parent = process::user_space::create_user_address_space();
+    auto child = process::user_space::create_user_address_space();
+    AddressSpaceReaders::require(parent && child);
+    target = moss::move(*parent);
+    clone = moss::move(*child);
+    constexpr u32 flags = process::vma_flags::READ | process::vma_flags::WRITE;
+    AddressSpaceReaders::require(target->add_vma(address, address + page_size, flags));
+    auto allocated = mm::allocate_pages(0);
+    AddressSpaceReaders::require(allocated.has_value());
+    original = *allocated;
+    auto *bytes = reinterpret_cast<u8 *>(phys_to_virt(original));
+    for (usize index = 0; index < page_size; ++index) {
+      bytes[index] = resident_byte;
+    }
+    contents = memory_hash(phys_to_virt(original), page_size);
+    AddressSpaceReaders::require(Tables::map_user_page(target->pgd_phys, address, original, mm::page_perms::USER_RW));
+
+    bool cloned = false;
+    bool metadata_copied = false;
+    {
+      auto transaction = target->lock_vm();
+      __atomic_store_n(&phase, round_base + 1, __ATOMIC_RELEASE);
+      ContainerInterleaving::wait_for(arrived, round_base + 2);
+      cloned = static_cast<bool>(Tables::clone_user_page_tables(target->pgd_phys, clone->pgd_phys));
+      auto vma = target->find_vma(address);
+      metadata_copied = vma && clone->add_vma(vma->start_addr, vma->end_addr, vma->flags);
+      __atomic_store_n(&phase, round_base + 2, __ATOMIC_RELEASE);
+    }
+    ContainerInterleaving::wait_for(arrived, round_base + 3);
+    const auto *parent_pte = Tables::get_user_pte(target->pgd_phys, address);
+    const auto *child_pte = Tables::get_user_pte(clone->pgd_phys, address);
+    const bool child_owned = child_pte && child_pte->is_valid() && child_pte->get_phys_addr() == original;
+    ut::expect(cloned && metadata_copied && peer_ok && affinity_valid());
+    ut::expect((!parent_pte || !parent_pte->is_valid()) && !target->find_vma(address) && peer_page == original);
+    ut::expect(child_owned && child_pte->is_cow() && !child_pte->is_writable() && clone->find_vma(address) &&
+               Pfa::page_ref_get(original) == 1);
+    if (child_owned) {
+      ut::expect(memory_hash(phys_to_virt(original), page_size) == contents);
+    }
+    ut::expect(snapshots == 0 && contentions == 1);
+    clone.reset();
+    target.reset();
     ut::expect(Pfa::get_memory_stats().free_pages == pages);
     ut::expect(mm::RuntimeHeapAllocator::get_heap_stats().allocated_bytes == heap);
   }
@@ -5898,6 +5956,7 @@ void declare_cases() {
     ut::register_test("demand_fault", empty_case);
     ut::register_test("fault_unmap", empty_case);
     ut::register_test("fault_fork", empty_case);
+    ut::register_test("fork_unmap", empty_case);
   });
   ut::register_suite("mm.uaccess", [] {
     ut::register_test("copy_unmap", empty_case);
