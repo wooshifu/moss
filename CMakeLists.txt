@@ -261,8 +261,12 @@ if(MOSS_BUILD_TESTS)
         add_test(NAME moss-console-input COMMAND uv run ${CMAKE_SOURCE_DIR}/scripts/check_production_boot.py --manifest
                                                  ${CMAKE_BINARY_DIR}/moss-artifacts.json --gdb ${MOSS_GDB_EXECUTABLE}
         )
+        add_test(NAME moss-console-registration COMMAND uv run ${CMAKE_SOURCE_DIR}/scripts/check_production_boot.py
+                                                        --manifest ${CMAKE_BINARY_DIR}/moss-artifacts.json
+                                                        --gdb ${MOSS_GDB_EXECUTABLE} --registration-race
+        )
         set_tests_properties(
-            moss-console-input
+            moss-console-input moss-console-registration
             PROPERTIES TIMEOUT
                        45 # Existing bound around a 30 s probe; the rationale for the 15 s margin is not recorded.
                        RUN_SERIAL
