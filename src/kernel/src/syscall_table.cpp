@@ -293,7 +293,8 @@ static long domain_cap_error(ErrorCode error) noexcept {
   return -errc::EINVAL;
 }
 
-static long do_fork(u64 domain_cap_out_addr, const capability::ForkSelection *selected, usize selected_count) noexcept {
+static long do_fork(u64 domain_cap_out_addr, const capability::ForkSelection *selected, usize selected_count,
+                    bool inherit_marked) noexcept {
   using namespace moss::kernel::process;
   namespace log = moss::kernel::logging;
 
@@ -496,11 +497,11 @@ static long do_fork(u64 domain_cap_out_addr, const capability::ForkSelection *se
     child_proc->set_fd_table(child_fdt);
   }
 
-  // Native creation selects capabilities per child. POSIX fork retains its
-  // opted-in inheritance rule; descriptor inheritance above is independent.
-  auto copied_caps = domain_cap_out_addr ? parent_proc->capabilities().clone_selected_to(child_proc->capabilities(),
-                                                                                         selected, selected_count)
-                                         : parent_proc->capabilities().clone_inheritable_to(child_proc->capabilities());
+  // Compatibility fork can use native domain authority while retaining only
+  // capabilities the parent explicitly marked for inheritance.
+  auto copied_caps = inherit_marked ? parent_proc->capabilities().clone_inheritable_to(child_proc->capabilities())
+                                    : parent_proc->capabilities().clone_selected_to(child_proc->capabilities(),
+                                                                                    selected, selected_count);
   if (!copied_caps) {
     cleanup_child(child_proc.get());
     return domain_cap_out_addr ? domain_cap_error(copied_caps.error()) : -errc::EAGAIN;
@@ -571,10 +572,14 @@ static long do_fork(u64 domain_cap_out_addr, const capability::ForkSelection *se
   return static_cast<long>(child_proc->pid());
 }
 
-long sys_fork(long, long, long, long, long, long) noexcept { return do_fork(0, nullptr, 0); }
+long sys_fork(long, long, long, long, long, long) noexcept { return do_fork(0, nullptr, 0, true); }
 
 long sys_fork_domain(long cap_out_addr, long, long, long, long, long) noexcept {
-  return cap_out_addr ? do_fork(static_cast<u64>(cap_out_addr), nullptr, 0) : -errc::EFAULT;
+  return cap_out_addr ? do_fork(static_cast<u64>(cap_out_addr), nullptr, 0, false) : -errc::EFAULT;
+}
+
+long sys_fork_domain_inherit(long cap_out_addr, long, long, long, long, long) noexcept {
+  return cap_out_addr ? do_fork(static_cast<u64>(cap_out_addr), nullptr, 0, true) : -errc::EFAULT;
 }
 
 long sys_fork_domain_select(long cap_out_addr, long handles_addr, long count_arg, long, long, long) noexcept {
@@ -587,7 +592,7 @@ long sys_fork_domain_select(long cap_out_addr, long handles_addr, long count_arg
   if (count != 0 &&
       (!handles_addr || copy_from_user(selected, static_cast<u64>(handles_addr), count * sizeof(selected[0])) < 0))
     return -errc::EFAULT;
-  return do_fork(static_cast<u64>(cap_out_addr), selected, count);
+  return do_fork(static_cast<u64>(cap_out_addr), selected, count, false);
 }
 
 long sys_domain_id(long handle, long, long, long, long, long) noexcept {
@@ -3093,7 +3098,9 @@ const SyscallDescriptor SYSCALL_TABLE[static_cast<int>(SyscallNumber::MAX_SYSCAL
     {"domain_status", handlers::sys_domain_status, 2, true, "Read a capability-addressed domain's exit cause"},
     {"domain_self", handlers::sys_domain_self, 0, true, "Acquire a capability for the calling domain"},
     {"cap_set_exec", handlers::sys_cap_set_exec, 2, true, "Select capability retention after exec"},
-    {"domain_same", handlers::sys_domain_same, 2, true, "Compare two inspected domain incarnations"}};
+    {"domain_same", handlers::sys_domain_same, 2, true, "Compare two inspected domain incarnations"},
+    {"fork_domain_inherit", handlers::sys_fork_domain_inherit, 1, true,
+     "Fork a native domain with capabilities marked for inheritance"}};
 
 // 系统调用分发器实现
 long SyscallDispatcher::dispatch(long syscall_number, long arg0, long arg1, long arg2, long arg3, long arg4,

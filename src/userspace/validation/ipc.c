@@ -649,6 +649,26 @@ unsigned long ipc_domain_selection(void) {
   if (empty_domain)
     errors |= (unsigned long)(syscall1(SYS_CAP_CLOSE, (long)empty_domain) != 0) << 3;
 
+  unsigned long inherited_domain = 0;
+  long inherited_child = syscall1(SYS_FORK_DOMAIN_INHERIT, (long)&inherited_domain);
+  if (inherited_child == 0) {
+    if (getppid() != 0 || syscall1(SYS_CAP_CLOSE, (long)pair.receive) != -IPC_EBADF)
+      _exit(96);
+    char inherited_arg[MOSS_DECIMAL_BUFFER_SIZE];
+    (void)ultoa(pair.send, inherited_arg, sizeof(inherited_arg));
+    const char *args[] = {"cap-present", inherited_arg, 0};
+    syscall3(SYS_EXECVE, (long)"/validation_child.elf", (long)args, 0);
+    _exit(96);
+  }
+  errors |= (unsigned long)(inherited_child <= 1 || !inherited_domain) << 29;
+  if (inherited_domain)
+    errors |= (unsigned long)!domain_exited(inherited_domain, 37, 0) << 30;
+  if (inherited_child > 1)
+    errors |= (unsigned long)(syscall3(SYS_WAITPID, inherited_child, 0, 1) != -IPC_ECHILD) << 31;
+  if (inherited_domain)
+    errors |= (unsigned long)(syscall1(SYS_CAP_CLOSE, (long)inherited_domain) != 0) << 32;
+  errors |= (unsigned long)(syscall1(SYS_FORK_DOMAIN_INHERIT, 0) != -IPC_EFAULT) << 33;
+
   const struct moss_fork_capability selected[] = {{pair.receive, MOSS_CAP_RECEIVE, 0}};
   unsigned long selected_domain = 0;
   long selected_child = syscall3(SYS_FORK_DOMAIN_SELECT, (long)&selected_domain, (long)selected, 1);

@@ -43,6 +43,8 @@ enum { MOSS_FORK_CAP_INHERIT = 1U << 0 };
 // it after a successful exec. Opting in requires DUPLICATE authority.
 // SYS_FORK_DOMAIN_SELECT preserves each selected handle number through exec.
 // INHERIT additionally permits later ordinary forks.
+// SYS_FORK_DOMAIN_INHERIT creates a native child with only handles previously
+// opted into inheritance; the parent receives its domain capability.
 struct moss_fork_capability {
   unsigned long handle;
   unsigned long rights;

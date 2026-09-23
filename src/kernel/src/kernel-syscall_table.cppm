@@ -83,6 +83,7 @@ long sys_arch_prctl(long operation, long address, long arg2, long arg3, long arg
 // Process management - framework implementation
 long sys_fork(long arg0, long arg1, long arg2, long arg3, long arg4, long arg5) noexcept;
 long sys_fork_domain(long cap_out_addr, long arg1, long arg2, long arg3, long arg4, long arg5) noexcept;
+long sys_fork_domain_inherit(long cap_out_addr, long arg1, long arg2, long arg3, long arg4, long arg5) noexcept;
 long sys_fork_domain_select(long cap_out_addr, long handles_addr, long count, long arg3, long arg4, long arg5) noexcept;
 long sys_domain_id(long handle, long arg1, long arg2, long arg3, long arg4, long arg5) noexcept;
 long sys_domain_same(long left, long right, long arg2, long arg3, long arg4, long arg5) noexcept;
