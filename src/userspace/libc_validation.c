@@ -498,7 +498,12 @@ static int signal_runtime(void) {
   chld.sa_handler = SIG_DFL;
   chld.sa_flags = SA_NOCLDSTOP;
   if (sigaction(SIGCHLD, &chld, &previous_chld) || sigaction(SIGCHLD, NULL, &observed_chld) ||
-      observed_chld.sa_flags != SA_NOCLDSTOP || sigaction(SIGCHLD, &previous_chld, NULL)) {
+      observed_chld.sa_flags != SA_NOCLDSTOP) {
+    return 0;
+  }
+  chld.sa_flags = SA_NOCLDWAIT;
+  if (sigaction(SIGCHLD, &chld, NULL) || sigaction(SIGCHLD, NULL, &observed_chld) ||
+      observed_chld.sa_flags != SA_NOCLDWAIT || sigaction(SIGCHLD, &previous_chld, NULL)) {
     return 0;
   }
   sigfillset(&blocked);

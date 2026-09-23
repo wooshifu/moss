@@ -2582,6 +2582,43 @@ static int test_wait_process_group(void) {
   return child < 0 || waitpid(0, &status, 0) != child || status != (37 << 8);
 }
 
+static int test_no_cldwait(void) {
+  enum { NOCLDWAIT_HANDLER, NOCLDWAIT_DEFAULT, SIGCHLD_IGNORED };
+  for (int mode = NOCLDWAIT_HANDLER; mode <= SIGCHLD_IGNORED; ++mode) {
+    struct sigaction_t action = {SIG_DFL, 0, SA_NOCLDWAIT};
+    if (mode == NOCLDWAIT_HANDLER) {
+      action.handler = (unsigned long)sigchld_handler;
+    } else if (mode == SIGCHLD_IGNORED) {
+      action.handler = SIG_IGN;
+      action.flags = 0;
+    }
+    struct sigaction_t previous = {0};
+    if (moss_sigaction(SIGCHLD, &action, &previous) != 0) {
+      return 1;
+    }
+    handler_called = 0;
+    const long child = fork();
+    if (child == 0) {
+      unsigned cpu_mask = 1U << 1;
+      if (syscall3(SYS_SCHED_SETAFFINITY, 0, sizeof(cpu_mask), (long)&cpu_mask) != 0) {
+        _exit(98);
+      }
+      while (control(55, getppid(), getpid()) != 1) {
+        sched_yield();
+      }
+      _exit(42);
+    }
+    int status = 0x12345678;
+    const long result = child > 0 ? waitpid(child, &status, 0) : -1;
+    const int errors = child <= 0 || result != -10 || status != 0x12345678 || kill(child, 0) != -3 ||
+                       handler_called != (mode == NOCLDWAIT_HANDLER);
+    if (moss_sigaction(SIGCHLD, &previous, 0) != 0 || errors) {
+      return 1;
+    }
+  }
+  return 0;
+}
+
 static int test_signal_exit_status(void) {
   for (int mode = 0; mode < 3; ++mode) {
     const long child = fork();
@@ -2796,7 +2833,7 @@ static int test_invalid_arguments(void) {
   CHECK(syscall2(SYS_KILL, getpid(), (1L << 32) + SIGUSR1) == -22);
   CHECK(moss_sigaction(SIGUSR1, (void *)0x1000, 0) == -14);
   CHECK(moss_sigaction(SIGUSR1, &sa, (void *)0x1000) == -14);
-  sa.flags = 0x10; // Bit 4 remains outside the supported native action flags.
+  sa.flags = 0x20; // Bit 5 remains outside the supported native action flags.
   CHECK(moss_sigaction(SIGUSR1, &sa, 0) == -22);
   unsigned long bits = (1UL << SIGKILL) | (1UL << SIGSTOP), old = 0;
   CHECK(sigprocmask(SIG_SETMASK, &bits, 0) == 0);
@@ -3778,6 +3815,7 @@ static int signal_case(const char *name) {
                {"wait_job_status", test_wait_job_status},
                {"no_cldstop", test_no_cldstop},
                {"wait_process_group", test_wait_process_group},
+               {"no_cldwait", test_no_cldwait},
                {"signal_exit_status", test_signal_exit_status},
                {"sigprocmask", test_sigprocmask},
                {"sigaltstack", test_sigaltstack},
@@ -4084,6 +4122,7 @@ void _start(long argc, const char **argv) {
                            "wait_job_status",
                            "no_cldstop",
                            "wait_process_group",
+                           "no_cldwait",
                            "signal_exit_status",
                            "sigprocmask",
                            "sigaltstack",

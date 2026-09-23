@@ -254,10 +254,10 @@ enum { SIG_DFL = 0, SIG_IGN = 1 };
 // sigprocmask 'how' values
 enum { SIG_BLOCK = 0, SIG_UNBLOCK = 1, SIG_SETMASK = 2 };
 
-// Moss-native flags, translated by mlibc: ONSTACK/RESTART/NOCLDSTOP occupy
-// bits 0/1/3; bit 2 is reserved for SIGINFO. The public libc bits differ.
+// Moss-native flags, translated by mlibc: ONSTACK/RESTART/NOCLDSTOP/NOCLDWAIT
+// occupy bits 0/1/3/4; bit 2 is reserved for SIGINFO. Public libc bits differ.
 // sigaction flags
-enum { SA_ONSTACK = 0x1, SA_RESTART = 0x2, SA_NOCLDSTOP = 0x8 };
+enum { SA_ONSTACK = 0x1, SA_RESTART = 0x2, SA_NOCLDSTOP = 0x8, SA_NOCLDWAIT = 0x10 };
 
 // sigaltstack flags
 enum { SS_ONSTACK = 1, SS_DISABLE = 2 };
