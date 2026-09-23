@@ -227,11 +227,20 @@ static bool valid_pvh_module_list(const moss::boot::HvmStartInfo &start) noexcep
 }
 
 static bool valid_pvh_initrd(const moss::boot::HvmModlistEntry &module,
-                             const moss::kernel::platform::MemoryRegion *regions, u32 region_count) noexcept {
+                             const moss::kernel::platform::MemoryRegion *regions, u32 region_count,
+                             const moss::kernel::platform::MemoryRegion *reserved, u32 reserved_count) noexcept {
   if (module.reserved || !physical_range(module.paddr, module.size)) {
     return false;
   }
   const u64 module_end = module.paddr + module.size;
+  for (u32 i = 0; i < reserved_count; ++i) {
+    const auto &region = reserved[i];
+    // PVH descriptors may alias: RAM coverage alone cannot authorize a module
+    // when a non-RAM descriptor also claims any of its bytes.
+    if (region.size && module.paddr < region.base + region.size && region.base < module_end) {
+      return false;
+    }
+  }
   u64 covered_end = module.paddr;
   while (covered_end < module_end) {
     u64 next_end = covered_end;
@@ -525,7 +534,8 @@ static bool discover_acpi(u64 address) noexcept {
     return invalid();
   }
   const auto *module = reinterpret_cast<const HvmModlistEntry *>(start->modlist_paddr);
-  if (!valid_pvh_initrd(*module, hardware.memory_regions, hardware.memory_region_count)) {
+  if (!valid_pvh_initrd(*module, hardware.memory_regions, hardware.memory_region_count, hardware.reserved_regions,
+                        hardware.reserved_region_count)) {
     early_print("BOOT ERROR: invalid PVH initrd module\n");
     return invalid();
   }

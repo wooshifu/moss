@@ -206,7 +206,7 @@ def mutate_pvh_boot_info(
             if remote.command(f"M{size_address:x},{PVH_MODULE_SIZE_BYTES:x}:{zero_size}") != b"OK":
                 raise RuntimeError("QEMU rejected the invalid-module mutation")
             details = {"module_size_before": original_size}
-        elif mutation in ("reserved-overlap", "reserved-overflow"):
+        elif mutation in ("reserved-overlap", "reserved-overflow", "reserved-initrd"):
             map_address, count = struct.unpack_from("<QI", start, PVH_MEMORY_MAP_OFFSET)
             if not map_address or not 1 < count <= PVH_MAX_MEMORY_ENTRIES:
                 raise RuntimeError("QEMU did not provide a usable PVH memory map")
@@ -225,6 +225,20 @@ def mutate_pvh_boot_info(
                 raise RuntimeError("QEMU did not provide a non-RAM entry for the memory-map check")
             entry_address = map_address + reserved * PVH_MEMORY_ENTRY_BYTES
             reserved_kind = entries[reserved][2]
+            if mutation != "reserved-overflow":
+                if not module_count or not module_list:
+                    raise RuntimeError("QEMU did not provide the expected PVH module descriptor")
+                module_bytes = PVH_MODULE_SIZE_OFFSET + PVH_MODULE_SIZE_BYTES
+                encoded_module = remote.command(f"m{module_list:x},{module_bytes:x}")
+                try:
+                    module = bytes.fromhex(encoded_module.decode("ascii"))
+                except ValueError as error:
+                    raise RuntimeError(f"QEMU could not read the PVH module: {encoded_module!r}") from error
+                if len(module) != module_bytes:
+                    raise RuntimeError("QEMU returned a truncated PVH module")
+                module_base, module_size = struct.unpack("<QQ", module)
+                if not module_base or not module_size:
+                    raise RuntimeError("QEMU supplied an empty PVH module")
             if mutation == "reserved-overlap":
                 usable = [
                     (size, base)
@@ -233,20 +247,32 @@ def mutate_pvh_boot_info(
                 ]
                 if not usable:
                     raise RuntimeError("QEMU did not provide RAM for the overlap check")
-                # Reuse a real descriptor while making it cover the largest RAM
-                # bank; the allocator must never publish that bank as free pages.
+                # Reserve the bank prefix while leaving the module outside it:
+                # this keeps the allocator test independent of module rejection.
                 size, base = max(usable)
+                if not base < module_base < base + size:
+                    raise RuntimeError("QEMU did not place the PVH module in the largest RAM bank")
+                size = module_base - base
                 details = {
                     "ram_base": base,
                     "ram_size": size,
+                    "module_base": module_base,
                     "reserved_entry": reserved,
                     "reserved_type": reserved_kind,
                 }
-            else:
+            elif mutation == "reserved-overflow":
                 base, size = PVH_OVERFLOW_BASE, PVH_OVERFLOW_BYTES
                 details = {
                     "overflow_base": base,
                     "overflow_size": size,
+                    "reserved_entry": reserved,
+                    "reserved_type": reserved_kind,
+                }
+            else:
+                base, size = module_base, module_size
+                details = {
+                    "module_base": base,
+                    "module_size": size,
                     "reserved_entry": reserved,
                     "reserved_type": reserved_kind,
                 }
@@ -402,6 +428,14 @@ def main() -> int:
             b"BOOT ERROR: invalid PVH memory map entry",
             False,
             "reserved-overflow",
+        ),
+        (
+            "reserved-initrd",
+            base,
+            BASE_MEMORY_MIB,
+            b"BOOT ERROR: invalid PVH initrd module",
+            False,
+            "reserved-initrd",
         ),
         ("invalid-archive", invalid, BASE_MEMORY_MIB, b"Error: Invalid initramfs archive", False, None),
         ("missing-init", no_init, BASE_MEMORY_MIB, b"Error: Required init executable is missing", False, None),
