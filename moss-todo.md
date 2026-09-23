@@ -1401,6 +1401,14 @@ per-CPU 槽位最初引入静态析构注册，x64 freestanding 链接报告缺�
 
 测试调用的是 `sys_fork` 所用的生产克隆原语，目标 root 未装入硬件；这不代表用户态两个运行线程共享地址空间时的完整 fork/unmap 行为已验收。
 
+### 3.47 x64 PVH 非 RAM 区间进入启动保留集合（2026-09-23，工作区）
+
+x64 PVH 解析现在把低于 4 GiB 的非 RAM 内存表区间记录到 `reserved_regions`，跨 4 GiB 的区间先裁剪；区间溢出或保留槽不足直接拒绝启动。PFA 原有的 metadata 放置和自由块发布均排除该集合，因此重叠的非 RAM 描述符不会因另一条 RAM 描述符而被发布为可分配页。
+
+真实 QEMU 负向验收在 PVH ELF 入口暂停同一生产镜像，将现有非 RAM 描述符改为覆盖主 RAM 区间并保留原 type；修改前内核仍完成启动，修复后在内存管理阶段失败且不产生完成标记。x64 Debug、Release、RelWithDebInfo 各八个 PVH 启动场景通过，正常 initrd 大小/位置变化和原有失败路径仍绿；九配置完整 CTest 合计 43/43、宿主硬件回归 11/11 通过。初次 RelWithDebInfo CTest 因验收脚本的 Unix socket 路径过长使 QEMU 无法启动；改用短临时路径后，x64 三配置 CTest 重跑通过，最终脚本调整后的 PVH 单项又各 1/1 通过。旧逻辑红例在 `build/x64-debug/pvh-reserved-old-red/results.json`，修复报告在 `build/x64-<config>/pvh-reserved-type-final/results.json`、`pvh-reserved-socket-ctest.log` 和 `pvh-reserved-type-ctest.log`。
+
+低于 `kernel_end` 的完整启动对象仍未列齐，也未回收那部分内存；其他 PVH 异常表组合和真实固件场景仍归 MOSS-005，不能据此关闭整项。
+
 ## 4. 问题总表与当前状态
 
 | 编号 | 优先级 | 审计主题 | 当前状态与下一步 |
@@ -1409,7 +1417,7 @@ per-CPU 槽位最初引入静态析构注册，x64 freestanding 链接报告缺�
 | MOSS-002 | P0 | 用户域 / uaccess / 调试旁路 | 部分修复（3.13、3.20～3.21、3.31～3.39、3.42～3.46）；共享 uaccess/COW OOM、拥有型地址空间、软件 VM 事务、同步页租约、三架构 TLB 协议、双发布者交错、活动 root 拥有权/本核退休、首次 CPU 注册两顺序、单次 exec 输入版本绑定、缺页/unmap、缺页/fork 与 fork/unmap 交错及多线程 exec 失败关闭已补；完整共享 exec、异步页 pin 与完整并发验收未完成。 |
 | MOSS-003 | P0 | 信号帧与特权状态恢复 | 已关闭（3.40）；修复注册栈容量越界，恶意帧、栈准入/撤销、内核哨兵及合法嵌套现场验收通过；不代表全部信号语义或共享 exec 协调完成。 |
 | MOSS-004 | P0 | 堆与页表/PFA 所有权重叠 | 已关闭（`040d773`）；当前布局、活动页表树/早期表池及元数据哨兵、耗尽、坏布局启动拒绝专项验收通过，见 3.7。 |
-| MOSS-005 | P0 | 启动保留区未排除 | 多 bank、保留洞、非对齐/重叠、容量/溢出及耗尽已验证；低地址启动区仍保守保留，PVH 异常表/完整保留集合待补，见 3.5～3.6。 |
+| MOSS-005 | P0 | 启动保留区未排除 | 多 bank、保留洞、非对齐/重叠、容量/溢出及耗尽已验证；x64 PVH 非 RAM 区间已纳入保留集合（3.47）；低地址启动区仍保守保留，完整保留集合/回收及其他 PVH 异常表待补。 |
 | MOSS-006 | P0 | 容器与使用者的所有权 | 部分修复；伪 RCU 已替换为 LockedList/LockedHashMap，持有读者与双 CPU 交错有实测；启动设备已通过 DeviceManager/BootDriver 静态注册并激活，IRQ context、动态解绑和 IPC 等复合生命周期未闭合，见 3.9、3.41。 |
 | MOSS-007 | P0 | 跨 ISA TrapFrame / syscall 参数 | 部分实现（3.18～3.19）；有效原生帧、布局断言、六参数/GP/条件码与 native sigreturn 已通过九配置；全异常交错及完整扩展状态仍待验收。 |
 | MOSS-008 | P0 | 只读页被 COW 放宽权限 | 部分修复；只读 VMA、受控 OOM、多代 COW 与双 CPU fault 软件事务已有回归（3.16、3.31、3.33）；活动硬件 root 拥有权已有 3.38 验收，共享 exec/root 协调与完整并发 VM 生命周期仍待补。 |
@@ -1525,15 +1533,11 @@ _kernel_end / _pagetable_end    0x403fd000
 
 ### MOSS-005 · 物理内存需要保留区集合，不能只用 kernel_end 切一刀
 
-**2026-09-06 更新：部分验收。** `44dedc2` / `6252484` 已在 `platform.cppm::PlatformInfo`、`fdt.cppm`、PVH 解析和 `PageFrameAllocator::parse_memory_layout/initialize_free_lists` 传递实际 RAM、DTB/固件保留信息；metadata 放置及自由块发布会绕过 initrd/reserved ranges。第 3.5 节工作区补齐真实耗尽、保留洞/非对齐/重叠、initrd 校验和与极值区间边界；3.6 进一步联合管理 kernel_end 以上的合格 RAM bank，覆盖乱序多段、相邻合并和后续 bank 安放元数据，当前布局与元数据/页表保护检查见 3.7。低地址启动数据尚未全部显式保留，暂不回收 kernel_end 以下；完整保留集合、回收及 x86 PVH 异常表仍待补。
+**2026-09-23 更新：部分验收。** `44dedc2` / `6252484` 已在 `platform.cppm::PlatformInfo`、`fdt.cppm`、PVH 解析和 `PageFrameAllocator::parse_memory_layout/initialize_free_lists` 传递实际 RAM、DTB/固件保留信息；metadata 放置及自由块发布会绕过 initrd/reserved ranges。第 3.5 节补齐真实耗尽、保留洞/非对齐/重叠、initrd 校验和与极值区间边界；3.6 进一步联合管理 kernel_end 以上的合格 RAM bank，覆盖乱序多段、相邻合并和后续 bank 安放元数据，当前布局与元数据/页表保护检查见 3.7。3.47 补 x64 PVH 非 RAM 保留区传递及真实重叠表红绿验收。低地址启动数据尚未全部显式保留，暂不回收 kernel_end 以下；完整保留集合、回收及其他 PVH 异常表仍待补。
 
-**位置与事实：** `src/mm/src/page_frame_allocator.cpp:178` 至初始化区域构造路径以 RAM 起止、内核末端和元数据计算主要可分配区，没有统一扣除 initrd、DTB、固件/OpenSBI 以及其他 reserved ranges。现有 initramfs 文件还依赖启动镜像中的后备数据。
+**当前实现：** `PageFrameAllocator::parse_memory_layout/initialize_free_lists` 按实际 RAM bank 建立可分配区，跳过 `kernel_end` 以下、initrd、固件/DTB 保留区及 PFA 元数据；x64 PVH 的非 RAM 条目现在也进入同一保留集合。多 bank、保留洞、非对齐/重叠、耗尽及 initrd 后备数据校验已专项验证，见 3.5～3.7、3.47。
 
-**影响：** 在分配压力下，仍被使用的启动数据可能进入普通页分配池；零拷贝 ELF/文件后备页可能被其他内核对象或用户页覆盖。单次 shell 演示不一定触及这些物理页，因此不能反证正确。
-
-**修复：** BootInfo 提供标准化的 usable/reserved 区间集合；合并、裁剪后从 usable 中扣除 kernel、初始堆、页表、PFA 元数据、DTB、initrd 和固件区域。多段 RAM 和洞必须被保留，不得用总大小推导成一个连续区。initrd 只有在所有后备引用解除或内容复制完成后才能归还。
-
-**验收：** 构造多段内存、区间重叠、非页对齐、RAM 内 initrd 和保留洞；枚举分配至耗尽，任何保留页都不得被返回；运行加载程序时给其他页写模式，文件后备数据保持不变。
+**剩余风险与工作：** `kernel_end` 以下仍整体保留，因为 PVH 低地址启动参数、AP trampoline 等活跃对象尚未全部进入显式集合。按启动协议补齐这些对象的所有权和保留区后，才可回收其余低地址可用页；initrd 也只能在后备引用解除或内容复制完成后归还。其他 PVH 异常表及真机固件交接仍需专项验收。
 
 ### MOSS-006 · 当前 RCU 容器既没有安全退休语义，也没有宽限期
 
@@ -1953,7 +1957,8 @@ fork 对 VMA 有复制，但未完整继承 `brk_base/brk_current/mmap_next` 等
   - [x] 堆耗尽返回失败、块内数据与独立 PFA 页哨兵不变、分配计数恢复及大块合并复用（3.4）。
   - [x] 所选 RAM bank 分配至耗尽、保留洞/重叠/非对齐、initrd 校验和及 DTB 极值/容量边界检查（3.5）。
   - [x] 联合管理 kernel_end 以上多 bank；RV64 同镜像两段/乱序八段、后续 bank 元数据、相邻合并及容量溢出验收（3.6）。
-  - [ ] 完整显式启动保留集合、kernel_end 以下可用页回收及 PVH 异常内存表。
+  - [x] x64 PVH 非 RAM 描述符进入保留集合，重叠主 RAM 的真实启动红绿对照、三构建配置八场景及 CTest 43/43 通过（3.47）。
+  - [ ] 完整显式启动保留集合、kernel_end 以下可用页回收及其他 PVH 异常内存表。
   - [x] 当前 heap/活动页表树/early pool/链接表区/PFA 元数据布局、增长与耗尽校验和，以及坏布局启动拒绝（004，3.7）；多进程/SMP 引用交错仍待专项验收。
 - [x] A3a：初始自由块按物理对齐、长度和保留区循环降 order；真实 PFA orders/reuse/free-page 检查已接通（013）。
 - [x] A3b：修复 heap 返回地址对齐/溢出与错误释放 order 契约，补全页/对象计数及边界验收（013，工作区 3.4～3.5）。

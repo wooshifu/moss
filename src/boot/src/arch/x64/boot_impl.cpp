@@ -479,12 +479,31 @@ static bool discover_acpi(u64 address) noexcept {
     return invalid();
   }
   const auto *map = reinterpret_cast<const PvhMemoryEntry *>(start->memmap_paddr);
+  constexpr u32 reserved_capacity = sizeof(hardware.reserved_regions) / sizeof(hardware.reserved_regions[0]);
   for (u32 i = 0; i < start->memmap_entries; ++i) {
     if (map[i].reserved) {
       early_print("BOOT ERROR: invalid PVH memory map entry\n");
       return invalid();
     }
-    if (map[i].type != 1 || !map[i].size) {
+    if (!map[i].size) {
+      continue;
+    }
+    if (map[i].size > ~u64{0} - map[i].base) {
+      early_print("BOOT ERROR: invalid PVH memory map entry\n");
+      return invalid();
+    }
+    if (map[i].type != 1) {
+      // A non-RAM entry may overlap a usable range. Preserve its exclusion so
+      // the PFA cannot publish firmware/MMIO pages from that RAM entry.
+      if (map[i].base < PVH_BOOT_ADDRESS_LIMIT) {
+        if (hardware.reserved_region_count == reserved_capacity) {
+          early_print("BOOT ERROR: too many PVH reserved ranges\n");
+          return invalid();
+        }
+        const u64 visible_size = PVH_BOOT_ADDRESS_LIMIT - map[i].base;
+        hardware.reserved_regions[hardware.reserved_region_count++] = {
+            .base = map[i].base, .size = map[i].size < visible_size ? map[i].size : visible_size};
+      }
       continue;
     }
     if (hardware.memory_region_count == MAX_MEMORY_REGIONS || map[i].base >= PVH_BOOT_ADDRESS_LIMIT ||
