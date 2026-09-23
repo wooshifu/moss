@@ -28,6 +28,9 @@ extern "C" [[gnu::weak, gnu::noinline]] void moss_validation_exec_source_snapsho
 // Validation can force child exit after wait's first scan and before registration.
 extern "C" [[gnu::weak, gnu::noinline]] void moss_validation_wait_before_register(moss::kernel::u32 /*parent_pid*/,
                                                                                   long /*wait_pid*/) noexcept {}
+// Validation can replace a signal action after oldact is copied, before publication.
+extern "C" [[gnu::weak, gnu::noinline]] void
+moss_validation_sigaction_before_replace(moss::kernel::u32 /*pid*/, moss::kernel::u32 /*signo*/) noexcept {}
 
 namespace moss::kernel::syscall {
 
@@ -456,7 +459,7 @@ long sys_fork(long /*unused*/, long /*unused*/, long /*unused*/, long /*unused*/
 
   // Fork duplicates dispositions, mask and the user altstack/context, but not
   // pending notifications. The child's COW stack owns any active signal frame.
-  child_proc->signal_state() = parent_proc->signal_state();
+  child_proc->inherit_signal_actions_from(*parent_proc);
   child_thread->signal_mask = parent_thread->signal_mask.load();
   child_thread->alt_stack_sp = parent_thread->alt_stack_sp;
   child_thread->alt_stack_size = parent_thread->alt_stack_size;
@@ -778,11 +781,7 @@ long sys_execve(long pathname_addr, long argv_addr, long envp_addr, long /*unuse
     }
   }
   proc->set_name(basename);
-  for (auto &action : proc->signal_state().actions) {
-    if (action.handler != SIG_IGN) {
-      action = Sigaction{};
-    }
-  }
+  proc->reset_signal_actions_for_exec();
   cur->alt_stack_sp = cur->alt_stack_size = 0;
   cur->alt_stack_flags = ss_flags::SS_DISABLE;
   cur->on_alt_stack = false;
@@ -1275,20 +1274,7 @@ long sys_sigaction(long sig_arg, long act_addr, long oldact_addr, long /*unused*
     return -errc::ESRCH;
   }
 
-  Sigaction &sa = proc->signal_state().actions[signo];
-
-  // Return old action if requested
-  if (oldact_addr != 0) {
-    UserSigaction kold;
-    kold.handler = sa.handler;
-    kold.mask = sa.mask;
-    kold.flags = sa.flags;
-    if (copy_to_user(static_cast<u64>(oldact_addr), &kold, sizeof(kold)) < 0) {
-      return -errc::EFAULT;
-    }
-  }
-
-  // Set new action if provided
+  Sigaction desired{};
   if (act_addr != 0) {
     UserSigaction kact;
     if (copy_from_user(&kact, static_cast<u64>(act_addr), sizeof(kact)) < 0) {
@@ -1298,12 +1284,30 @@ long sys_sigaction(long sig_arg, long act_addr, long oldact_addr, long /*unused*
                                         sa_flags::SA_NOCLDWAIT)) != 0) {
       return -errc::EINVAL;
     }
-    sa.handler = static_cast<VirtAddr>(kact.handler);
-    sa.mask = kact.mask & ~sig::UNCATCHABLE_MASK;
-    sa.flags = static_cast<u32>(kact.flags);
+    desired = Sigaction{static_cast<VirtAddr>(kact.handler), kact.mask & ~sig::UNCATCHABLE_MASK,
+                        static_cast<u32>(kact.flags)};
   }
 
-  return 0;
+  for (;;) {
+    const Sigaction previous = proc->signal_action(signo);
+    if (oldact_addr != 0) {
+      const UserSigaction kold{previous.handler, previous.mask, previous.flags};
+      if (copy_to_user(static_cast<u64>(oldact_addr), &kold, sizeof(kold)) < 0) {
+        return -errc::EFAULT;
+      }
+    }
+    if (act_addr == 0) {
+      return 0;
+    }
+    if (oldact_addr != 0) {
+      moss_validation_sigaction_before_replace(proc->pid(), signo);
+    }
+    // User copy cannot run under the IRQ spinlock. Retry if another writer
+    // changed the action so oldact always describes the action we replace.
+    if (proc->try_replace_signal_action(signo, previous, desired)) {
+      return 0;
+    }
+  }
 }
 
 // sigprocmask(how, set, oldset) — modify thread's signal mask.

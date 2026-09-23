@@ -751,6 +751,9 @@ private:
   // VFS: per-process file descriptor table (vfs::FdTable*)
   // Stored as void* to avoid circular dependency on moss.vfs
   void *fd_table_ = nullptr;
+  // Child exit and signal delivery can read dispositions on another CPU.
+  // The lock protects coherent action snapshots; user copies stay outside it.
+  mutable containers::IrqSpinLock signal_state_lock_;
   SignalState signal_state_{};
 
   // Process name (like Linux task_struct.comm), set by execve
@@ -807,7 +810,10 @@ public:
     return terminating_signal_ ? static_cast<i32>(terminating_signal_)
                                : static_cast<i32>((static_cast<u32>(exit_code_) & 0xffU) << 8);
   }
-  [[nodiscard]] SignalState &signal_state() noexcept { return signal_state_; }
+  [[nodiscard]] Sigaction signal_action(u32 signo) const noexcept;
+  [[nodiscard]] bool try_replace_signal_action(u32 signo, const Sigaction &expected, const Sigaction &desired) noexcept;
+  void inherit_signal_actions_from(const Process &parent) noexcept;
+  void reset_signal_actions_for_exec() noexcept;
 
   // Process group / session accessors (POSIX job control)
   [[nodiscard]] ProcessId pgid() const noexcept { return pgid_.load(); }

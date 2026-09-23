@@ -5504,6 +5504,9 @@ bool early_sleep_woken = true;
 ProcessId wait_exit_parent = INVALID_PROCESS_ID;
 ProcessId wait_exit_child = INVALID_PROCESS_ID;
 u32 wait_exit_phase = 0;
+u32 sigaction_race_phase = 0;
+ProcessId sigaction_race_parent = INVALID_PROCESS_ID;
+constexpr long SIGACTION_RACE_CONTROL = 59;
 ProcessId cpu_bound_probe_pid = INVALID_PROCESS_ID;
 u64 cpu_bound_probe_start = 0;
 u64 cpu_bound_probe_end = 0;
@@ -5940,6 +5943,7 @@ void declare_cases() {
     ut::register_test("wait_process_group", empty_case);
     ut::register_test("wait_group_change", empty_case);
     ut::register_test("no_cldwait", empty_case);
+    ut::register_test("sigaction_race", empty_case);
     ut::register_test("signal_exit_status", empty_case);
     ut::register_test("sigprocmask", empty_case);
     ut::register_test("sigaltstack", empty_case);
@@ -6503,6 +6507,23 @@ extern "C" void moss_validation_wait_before_register(u32 parent_pid, long wait_p
   ContainerInterleaving::wait_for(wait_exit_phase, 3);
 }
 
+extern "C" void moss_validation_sigaction_before_replace(u32 pid, u32 signo) noexcept {
+  if (!ut::same_id(active_case, "sigaction_race") || pid != sigaction_race_parent || signo != process::sig::SIGUSR1 ||
+      sigaction_race_phase != 1) {
+    return;
+  }
+  auto parent = process::g_process_manager->find_process(pid);
+  if (!parent) {
+    return;
+  }
+  const auto previous = parent->signal_action(signo);
+  const process::Sigaction injected{process::SIG_IGN, process::sig::sigmask(process::sig::SIGUSR2),
+                                    process::sa_flags::SA_RESTART};
+  if (parent->try_replace_signal_action(signo, previous, injected)) {
+    sigaction_race_phase = 2;
+  }
+}
+
 extern "C" void moss_validation_child_exit_notified(u32 child_pid, u32 parent_pid) noexcept {
   if (ut::same_id(active_case, "wait_registration") && parent_pid == wait_exit_parent && child_pid == wait_exit_child &&
       __atomic_load_n(&wait_exit_phase, __ATOMIC_ACQUIRE) == 2) {
@@ -7047,6 +7068,24 @@ extern "C" long moss_validation_call(long op, long arg1, [[maybe_unused]] long a
            frame->argument(0) == static_cast<u64>(ut::same_id(active_case, "wait_process_group")  ? -arg2
                                                   : ut::same_id(active_case, "wait_group_change") ? 0
                                                                                                   : arg2);
+  }
+  if (op == SIGACTION_RACE_CONTROL && ut::same_id(selection, "users.signals") &&
+      ut::same_id(active_case, "sigaction_race") && affinity_valid()) {
+    if (arg1 == 0 && sigaction_race_phase == 0) {
+      auto parent = process::current_process();
+      if (!parent) {
+        return 0;
+      }
+      sigaction_race_parent = parent->pid();
+      sigaction_race_phase = 1;
+      return 1;
+    }
+    if (arg1 == 1) {
+      const bool fired = sigaction_race_phase == 2;
+      sigaction_race_phase = 0;
+      sigaction_race_parent = INVALID_PROCESS_ID;
+      return fired;
+    }
   }
   if (ut::same_id(selection, "users.signals") && ut::same_id(active_case, "cpu_bound_irq")) {
     if (op == CPU_BOUND_ARM_PROBE && arch::get_current_cpu_id() == 1 && arg1 > 0 && arg2 > arg1) {

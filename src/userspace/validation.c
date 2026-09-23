@@ -2655,6 +2655,26 @@ static int test_no_cldwait(void) {
   return 0;
 }
 
+static int test_sigaction_race(void) {
+  enum { SIGACTION_RACE_CONTROL = 59 }; // Private validation opcode; keep in sync with the kernel fixture.
+  struct sigaction_t base = {SIG_DFL, 0, 0}, previous = {0};
+  if (moss_sigaction(SIGUSR1, &base, &previous) != 0) {
+    return 1;
+  }
+  struct sigaction_t desired = {(unsigned long)sigusr1_handler, 1UL << SIGUSR1, SA_RESTART};
+  struct sigaction_t observed = {0}, current = {0};
+  int errors = control(SIGACTION_RACE_CONTROL, 0, 0) != 1;
+  if (!errors) {
+    errors |= moss_sigaction(SIGUSR1, &desired, &observed) != 0;
+    errors |= control(SIGACTION_RACE_CONTROL, 1, 0) != 1;
+    errors |= observed.handler != SIG_IGN || observed.mask != (1UL << SIGUSR2) || observed.flags != SA_RESTART;
+    errors |= moss_sigaction(SIGUSR1, 0, &current) != 0;
+    errors |= current.handler != desired.handler || current.mask != desired.mask || current.flags != desired.flags;
+  }
+  errors |= moss_sigaction(SIGUSR1, &previous, 0) != 0;
+  return errors;
+}
+
 static int test_signal_exit_status(void) {
   for (int mode = 0; mode < 3; ++mode) {
     const long child = fork();
@@ -3853,6 +3873,7 @@ static int signal_case(const char *name) {
                {"wait_process_group", test_wait_process_group},
                {"wait_group_change", test_wait_group_change},
                {"no_cldwait", test_no_cldwait},
+               {"sigaction_race", test_sigaction_race},
                {"signal_exit_status", test_signal_exit_status},
                {"sigprocmask", test_sigprocmask},
                {"sigaltstack", test_sigaltstack},
@@ -4161,6 +4182,7 @@ void _start(long argc, const char **argv) {
                            "wait_process_group",
                            "wait_group_change",
                            "no_cldwait",
+                           "sigaction_race",
                            "signal_exit_status",
                            "sigprocmask",
                            "sigaltstack",
