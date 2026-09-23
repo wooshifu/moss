@@ -72,6 +72,9 @@ PVH_MEMORY_ENTRY_BYTES = 24
 PVH_BOOT_ADDRESS_LIMIT = 1 << 32
 # Match the production PVH admission bound before requesting the GDB packet.
 PVH_MAX_MEMORY_ENTRIES = 128
+# Adding two bytes to the final 64-bit address must be rejected as overflow.
+PVH_OVERFLOW_BASE = (1 << 64) - 1
+PVH_OVERFLOW_BYTES = 2
 # Only the bootstrap CPU participates in these boot-contract checks. A single
 # vCPU also makes the temporary entry breakpoint unambiguous and keeps CI cheap.
 PVH_TEST_VCPUS = 1
@@ -203,7 +206,7 @@ def mutate_pvh_boot_info(
             if remote.command(f"M{size_address:x},{PVH_MODULE_SIZE_BYTES:x}:{zero_size}") != b"OK":
                 raise RuntimeError("QEMU rejected the invalid-module mutation")
             details = {"module_size_before": original_size}
-        elif mutation == "reserved-overlap":
+        elif mutation in ("reserved-overlap", "reserved-overflow"):
             map_address, count = struct.unpack_from("<QI", start, PVH_MEMORY_MAP_OFFSET)
             if not map_address or not 1 < count <= PVH_MAX_MEMORY_ENTRIES:
                 raise RuntimeError("QEMU did not provide a usable PVH memory map")
@@ -217,23 +220,39 @@ def mutate_pvh_boot_info(
             entries = [
                 struct.unpack_from("<QQII", memory_map, index * PVH_MEMORY_ENTRY_BYTES) for index in range(count)
             ]
-            usable = [
-                (size, base)
-                for base, size, kind, _ in entries
-                if kind == 1 and base < PVH_BOOT_ADDRESS_LIMIT and 0 < size <= PVH_BOOT_ADDRESS_LIMIT - base
-            ]
             reserved = next((index for index, (_, _, kind, _) in enumerate(entries) if kind != 1), None)
-            if not usable or reserved is None:
-                raise RuntimeError("QEMU did not provide RAM and a non-RAM entry for the overlap check")
-            # Reuse a real descriptor while making it cover the largest RAM
-            # bank; the allocator must never publish that bank as free pages.
-            size, base = max(usable)
+            if reserved is None:
+                raise RuntimeError("QEMU did not provide a non-RAM entry for the memory-map check")
             entry_address = map_address + reserved * PVH_MEMORY_ENTRY_BYTES
             reserved_kind = entries[reserved][2]
+            if mutation == "reserved-overlap":
+                usable = [
+                    (size, base)
+                    for base, size, kind, _ in entries
+                    if kind == 1 and base < PVH_BOOT_ADDRESS_LIMIT and 0 < size <= PVH_BOOT_ADDRESS_LIMIT - base
+                ]
+                if not usable:
+                    raise RuntimeError("QEMU did not provide RAM for the overlap check")
+                # Reuse a real descriptor while making it cover the largest RAM
+                # bank; the allocator must never publish that bank as free pages.
+                size, base = max(usable)
+                details = {
+                    "ram_base": base,
+                    "ram_size": size,
+                    "reserved_entry": reserved,
+                    "reserved_type": reserved_kind,
+                }
+            else:
+                base, size = PVH_OVERFLOW_BASE, PVH_OVERFLOW_BYTES
+                details = {
+                    "overflow_base": base,
+                    "overflow_size": size,
+                    "reserved_entry": reserved,
+                    "reserved_type": reserved_kind,
+                }
             replacement = struct.pack("<QQII", base, size, reserved_kind, 0)
             if remote.command(f"M{entry_address:x},{len(replacement):x}:{replacement.hex()}") != b"OK":
-                raise RuntimeError("QEMU rejected the reserved-overlap mutation")
-            details = {"ram_base": base, "ram_size": size, "reserved_entry": reserved, "reserved_type": reserved_kind}
+                raise RuntimeError(f"QEMU rejected the {mutation} mutation")
         else:
             raise ValueError(f"unknown PVH mutation: {mutation}")
         if remote.command("D") != b"OK":
@@ -375,6 +394,14 @@ def main() -> int:
             b"Error: Memory management setup failed",
             False,
             "reserved-overlap",
+        ),
+        (
+            "reserved-overflow",
+            base,
+            BASE_MEMORY_MIB,
+            b"BOOT ERROR: invalid PVH memory map entry",
+            False,
+            "reserved-overflow",
         ),
         ("invalid-archive", invalid, BASE_MEMORY_MIB, b"Error: Invalid initramfs archive", False, None),
         ("missing-init", no_init, BASE_MEMORY_MIB, b"Error: Required init executable is missing", False, None),
