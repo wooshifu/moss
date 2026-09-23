@@ -762,6 +762,7 @@ private:
   moss::atomic<ProcessState> state_;
   i32 exit_code_;
   u32 terminating_signal_ = 0;
+  containers::WaitQueue domain_exit_wq_;
 
   struct {
     u64 max_memory;
@@ -814,8 +815,8 @@ private:
 public:
   Process(ProcessId pid, ProcessId parent = INVALID_PROCESS_ID) noexcept
       : pid_(pid), parent_pid_(parent), address_space_(nullptr), thread_count_(0), main_thread_id_(INVALID_THREAD_ID),
-        state_(ProcessState::Created), exit_code_(0), limits_{}, stats_{}, pgid_(pid), sid_(0), children_{},
-        child_exit_wq_{} {}
+        state_(ProcessState::Created), exit_code_(0), domain_exit_wq_{}, limits_{}, stats_{}, pgid_(pid), sid_(0),
+        children_{}, child_exit_wq_{} {}
 
   ~Process() noexcept {
     cleanup_threads();
@@ -840,6 +841,7 @@ public:
   [[nodiscard]] const capability::Table &capabilities() const noexcept { return capabilities_; }
   [[nodiscard]] ProcessId parent_pid() const noexcept { return parent_pid_; }
   [[nodiscard]] ProcessState state() const noexcept { return state_; }
+  containers::WaitQueue &domain_exit_wait_queue() noexcept { return domain_exit_wq_; }
   [[nodiscard]] i32 exit_code() const noexcept { return exit_code_; }
   // The Linux-compatible wait ABI puts normal exit codes in bits 8..15 and
   // fatal signals in the low bits. Keep the cause so _exit(-signo) stays normal.

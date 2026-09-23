@@ -48,11 +48,11 @@ and zero-fills an extension.
 The namespace validates the path and asks the file service to mint a per-file
 sender capability; the kernel supplies its badge to the service on later
 operations. `moss-init` receives an execution-domain capability when it forks
-each service and shell, and uses that capability to terminate its children;
-PIDs remain diagnostic identifiers and the current `waitpid` compatibility
-path still reaps them. Ordinary shell files, ELF loading, process compatibility,
-interrupt/timer bootstrap and the early console still use kernel
-implementations. The accepted
+each service and shell, and uses that capability to terminate and wait for
+its children; PIDs remain diagnostic identifiers and the current `waitpid`
+compatibility path still reaps them. Ordinary shell files, ELF loading,
+process compatibility, interrupt/timer bootstrap and the early console still
+use kernel implementations. The accepted
 [architecture decisions](docs/adr/) describe their intended migration.
 
 For example, after launching QEMU:

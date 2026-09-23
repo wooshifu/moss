@@ -484,7 +484,7 @@ unsigned long ipc_memory_object(void) {
 unsigned long ipc_domain_control(void) {
   // A failed termination must complete with exit 97 within one second,
   // rather than leave the validation runner waiting on an immortal child.
-  enum { DOMAIN_CHILD_SLEEP_NS = 10000000, DOMAIN_CHILD_SLEEP_CYCLES = 100 };
+  enum { DOMAIN_CHILD_SLEEP_NS = 10000000, DOMAIN_CHILD_SLEEP_CYCLES = 100, DOMAIN_OBSERVER_DELAY_NS = 50000000 };
   unsigned long errors = (unsigned long)(syscall1(SYS_FORK_DOMAIN, 0) != -IPC_EFAULT);
   unsigned long domain = 0;
   long child = syscall1(SYS_FORK_DOMAIN, (long)&domain);
@@ -506,19 +506,53 @@ unsigned long ipc_domain_control(void) {
   }
 
   long inspect = syscall2(SYS_CAP_DUPLICATE, (long)domain, MOSS_CAP_DOMAIN_INSPECT);
+  long observe = syscall2(SYS_CAP_DUPLICATE, (long)domain, MOSS_CAP_DOMAIN_OBSERVE);
   errors |= (unsigned long)(syscall1(SYS_DOMAIN_ID, (long)domain) != child) << 2;
   errors |= (unsigned long)(inspect <= 0) << 3;
   if (inspect > 0) {
     errors |= (unsigned long)(syscall1(SYS_DOMAIN_ID, inspect) != child) << 4;
     errors |= (unsigned long)(syscall1(SYS_DOMAIN_TERMINATE, inspect) != -IPC_EACCES) << 5;
+    errors |= (unsigned long)(syscall1(SYS_DOMAIN_WAIT, inspect) != -IPC_EACCES) << 20;
+  }
+  errors |= (unsigned long)(observe <= 0) << 13;
+  if (observe > 0) {
+    errors |= (unsigned long)(syscall1(SYS_DOMAIN_ID, observe) != -IPC_EACCES) << 14;
+    errors |= (unsigned long)(syscall1(SYS_DOMAIN_TERMINATE, observe) != -IPC_EACCES) << 15;
   }
   errors |= (unsigned long)(syscall1(SYS_DOMAIN_TERMINATE, (long)domain) != 0) << 6;
+  if (observe > 0)
+    errors |= (unsigned long)(syscall1(SYS_DOMAIN_WAIT, observe) != 0) << 16;
   errors |= (unsigned long)!wait_signal(child, SIGKILL) << 7;
+  errors |= (unsigned long)(syscall1(SYS_DOMAIN_WAIT, (long)domain) != 0) << 17;
   errors |= (unsigned long)(syscall1(SYS_DOMAIN_TERMINATE, (long)domain) != -IPC_ESRCH) << 8;
   errors |= (unsigned long)(syscall1(SYS_DOMAIN_ID, (long)domain) != child) << 9;
   if (inspect > 0)
     errors |= (unsigned long)(syscall1(SYS_CAP_CLOSE, inspect) != 0) << 10;
+  if (observe > 0)
+    errors |= (unsigned long)(syscall1(SYS_CAP_CLOSE, observe) != 0) << 18;
   errors |= (unsigned long)(syscall1(SYS_CAP_CLOSE, (long)domain) != 0) << 11;
   errors |= (unsigned long)(syscall1(SYS_DOMAIN_TERMINATE, (long)domain) != -IPC_EBADF) << 12;
+  errors |= (unsigned long)(syscall1(SYS_DOMAIN_WAIT, (long)domain) != -IPC_EBADF) << 19;
+
+  unsigned long natural_domain = 0;
+  long natural_child = syscall1(SYS_FORK_DOMAIN, (long)&natural_domain);
+  if (natural_child == 0) {
+    // This fixture delay exercises the blocking path, not a timing contract.
+    unsigned long delay = DOMAIN_OBSERVER_DELAY_NS;
+    if (nanosleep_ns(&delay) != 0)
+      _exit(96);
+    _exit(37);
+  }
+  if (natural_child <= 1 || !natural_domain) {
+    errors |= 1UL << 21;
+    if (natural_child > 1)
+      (void)wait_exit(natural_child, 37);
+    if (natural_domain)
+      (void)syscall1(SYS_CAP_CLOSE, (long)natural_domain);
+  } else {
+    errors |= (unsigned long)(syscall1(SYS_DOMAIN_WAIT, (long)natural_domain) != 0) << 21;
+    errors |= (unsigned long)!wait_exit(natural_child, 37) << 22;
+    errors |= (unsigned long)(syscall1(SYS_CAP_CLOSE, (long)natural_domain) != 0) << 23;
+  }
   return errors;
 }

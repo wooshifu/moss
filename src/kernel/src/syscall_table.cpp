@@ -520,7 +520,8 @@ static long do_fork(u64 domain_cap_out_addr) noexcept {
     }
     auto handle = parent_proc->capabilities().install(
         moss::move(object), capability::rights::DOMAIN_TERMINATE | capability::rights::DOMAIN_INSPECT |
-                                capability::rights::TRANSFER | capability::rights::DUPLICATE);
+                                capability::rights::DOMAIN_OBSERVE | capability::rights::TRANSFER |
+                                capability::rights::DUPLICATE);
     if (!handle) {
       parent_proc->remove_child(child_proc->pid());
       cleanup_child(child_proc.get());
@@ -586,6 +587,43 @@ long sys_domain_terminate(long handle, long, long, long, long, long) noexcept {
   // The current single-thread process implementation uses uncatchable SIGKILL
   // as its exit wakeup; authorization comes solely from this domain handle.
   return process::send_signal(thread, process::sig::SIGKILL) ? 0 : -errc::ESRCH;
+}
+
+long sys_domain_wait(long handle, long, long, long, long, long) noexcept {
+  auto caller = process::current_process();
+  if (!caller)
+    return -errc::ESRCH;
+  auto object = caller->capabilities().lookup(static_cast<Handle>(handle), capability::ObjectType::Domain,
+                                              capability::rights::DOMAIN_OBSERVE);
+  if (!object)
+    return domain_cap_error(object.error());
+  auto &target = *static_cast<DomainObject *>((*object).get())->process;
+  if (&target == caller.get())
+    return -errc::EINVAL;
+  auto *cur = process::CfsScheduler::get_current_task();
+  if (!cur || !process::g_scheduler)
+    return -errc::ESRCH;
+  auto exited = [&] {
+    const auto state = target.state();
+    return state == process::ProcessState::Zombie || state == process::ProcessState::Terminated;
+  };
+  while (!exited()) {
+    if (moss::abi::bridge::moss_io_wait_interrupted())
+      return -errc::EINTR;
+    // Prepare before registration, then recheck after registration: exit on
+    // another CPU must neither miss this waiter nor wake it before handoff.
+    const bool restore_irqs = arch::interrupts_enabled();
+    arch::disable_interrupts();
+    (void)moss::abi::bridge::moss_prepare_io_wait();
+    target.domain_exit_wait_queue().add_waiter(static_cast<void *>(cur));
+    if (exited())
+      process::g_scheduler->task_wakeup(cur, cur->wake_cpu);
+    process::g_scheduler->commit_sleep();
+    target.domain_exit_wait_queue().remove_waiter(static_cast<void *>(cur));
+    if (restore_irqs)
+      arch::enable_interrupts();
+  }
+  return 0;
 }
 
 long sys_execve(long pathname_addr, long argv_addr, long envp_addr, long /*unused*/, long /*unused*/,
@@ -2875,7 +2913,8 @@ const SyscallDescriptor SYSCALL_TABLE[static_cast<int>(SyscallNumber::MAX_SYSCAL
     {"ipc_mint_badge", handlers::sys_ipc_mint_badge, 2, true, "Mint a sender with a receiver-visible badge"},
     {"fork_domain", handlers::sys_fork_domain, 1, true, "Fork with a child execution-domain capability"},
     {"domain_id", handlers::sys_domain_id, 1, true, "Inspect a domain's diagnostic process ID"},
-    {"domain_terminate", handlers::sys_domain_terminate, 1, true, "Request capability-authorized termination"}};
+    {"domain_terminate", handlers::sys_domain_terminate, 1, true, "Request capability-authorized termination"},
+    {"domain_wait", handlers::sys_domain_wait, 1, true, "Wait for a capability-addressed domain to exit"}};
 
 // 系统调用分发器实现
 long SyscallDispatcher::dispatch(long syscall_number, long arg0, long arg1, long arg2, long arg3, long arg4,

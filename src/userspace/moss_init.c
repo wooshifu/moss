@@ -49,6 +49,15 @@ static void stop_child(pid_t child, long domain) {
       report(STDERR_FILENO, "moss-init: child domain termination failed\n");
       _exit(1);
     }
+    // Exit observation is capability-based; waitpid still reaps the
+    // compatibility zombie until the process service owns that state.
+    do {
+      result = syscall1(SYS_DOMAIN_WAIT, domain);
+    } while (result == -EINTR);
+    if (result != 0) {
+      report(STDERR_FILENO, "moss-init: child domain wait failed\n");
+      _exit(1);
+    }
     wait_for(child);
   }
   if (domain > 0) {

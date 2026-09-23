@@ -694,6 +694,10 @@ KernelResult<VirtAddr> allocate_user_heap(Process *process, usize size) noexcept
     proc->set_state(ProcessState::Zombie);
   }
 
+  // Every domain observer has its own authority and can consume the exit
+  // independently, including after POSIX reaping removes the PID mapping.
+  proc->domain_exit_wait_queue().for_each_waiter(moss_wake_io_waiter);
+
   // 6. Notify the parent only after status or removal becomes visible.
   if (parent) {
     // POSIX leaves SA_NOCLDWAIT's SIGCHLD delivery to the implementation;
