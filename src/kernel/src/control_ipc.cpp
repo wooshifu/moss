@@ -191,11 +191,11 @@ class Reply final : public capability::Object {
 public:
   shared_ptr<Channel> channel;
   shared_ptr<PendingCall> call;
-  bool armed{false};
+  atomic<bool> armed{false};
   Reply(shared_ptr<Channel> owner, shared_ptr<PendingCall> pending) noexcept
       : Object(capability::ObjectType::Reply), channel(moss::move(owner)), call(moss::move(pending)) {}
   ~Reply() override {
-    if (armed)
+    if (armed.load(memory_order_acquire))
       (void)channel->complete(call.get(), Outcome::PeerClosed);
   }
 };
@@ -397,7 +397,7 @@ long sys_ipc_receive(long endpoint, long request_addr, long request_capacity, lo
         return -errc::EFAULT;
       }
       if (channel->receive(call.get())) {
-        static_cast<Reply *>(reply.get())->armed = true;
+        static_cast<Reply *>(reply.get())->armed.store(true, memory_order_release);
         return static_cast<long>(call->request_size);
       }
       (void)proc->capabilities().close(handle);
@@ -433,6 +433,10 @@ long sys_ipc_reply(long reply_handle, long response_addr, long response_size, lo
       process::copy_from_user(response, static_cast<u64>(response_addr), static_cast<usize>(response_size)) != 0)
     return -errc::EFAULT;
   auto *reply = static_cast<Reply *>((*looked).get());
+  // Another thread in this process may guess the new numeric handle before
+  // receive finishes publishing the request and its one-shot authority.
+  if (!reply->armed.load(memory_order_acquire))
+    return -errc::EAGAIN;
   // A cached Reply outcome does not mean this invocation won the one-shot
   // transition: another thread may have looked up the same handle earlier.
   bool committed = false;
