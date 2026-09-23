@@ -60,8 +60,46 @@ struct InterruptDescriptor {
   InterruptHandler handler;
   void *context;
   containers::AtomicU64 count;
-  bool enabled;
+  containers::AtomicCounter<u8> enabled;
   const char *name;
+
+private:
+  // A table lookup can outlive removal. Serialize callback admission with
+  // retirement so the registrant may release context after unregister returns.
+  containers::IrqSpinLock callback_lock_;
+  containers::AtomicCounter<u32> active_callbacks_{};
+  bool retiring_{false};
+
+public:
+  [[nodiscard]] bool begin_callback() noexcept {
+    containers::LockGuard<containers::IrqSpinLock> guard(callback_lock_);
+    if (retiring_)
+      return false;
+    (void)active_callbacks_.fetch_add(1, containers::MemoryOrder::Relaxed);
+    return true;
+  }
+
+  // Pair once with each successful begin_callback(), after handler access to context ends.
+  void end_callback() noexcept { (void)active_callbacks_.fetch_sub(1, containers::MemoryOrder::Release); }
+
+  [[nodiscard]] bool stop_callbacks() noexcept {
+    containers::LockGuard<containers::IrqSpinLock> guard(callback_lock_);
+    if (retiring_)
+      return false;
+    retiring_ = true;
+    return true;
+  }
+
+  [[nodiscard]] bool callbacks_stopped() noexcept {
+    containers::LockGuard<containers::IrqSpinLock> guard(callback_lock_);
+    return retiring_;
+  }
+
+  void wait_callbacks() const noexcept {
+    // Called from thread context, never from this IRQ's own callback.
+    while (active_callbacks_.load(containers::MemoryOrder::Acquire) != 0)
+      arch::cpu_yield();
+  }
 
   // Priority 128 matches HAL's 0x80 default under PMR=0xff; target mask 1
   // selects logical boot CPU zero. These are software defaults, not firmware IDs.
@@ -193,17 +231,23 @@ public:
   }
 
   [[nodiscard]] VoidResult unregister_interrupt(InterruptId irq) noexcept {
-    containers::LockGuard<containers::IrqSpinLock> guard(table_write_lock_);
-
-    auto desc_ptr = interrupt_table_.find(irq);
-    if (!desc_ptr) {
-      return VoidResult{ErrorCode::NotFound};
+    shared_ptr<InterruptDescriptor> desc;
+    {
+      containers::LockGuard<containers::IrqSpinLock> guard(table_write_lock_);
+      auto found = interrupt_table_.find(irq);
+      if (!found)
+        return VoidResult{ErrorCode::NotFound};
+      desc = *found;
+      if (!desc->stop_callbacks())
+        return VoidResult{ErrorCode::ResourceBusy};
+      ::moss::kernel::hal::intc::disable_irq(distributor_base_, irq);
+      desc->enabled.store(0, containers::MemoryOrder::Release);
     }
-    auto desc = *desc_ptr;
-
-    (void)disable_interrupt(irq);
-    interrupt_table_.remove(irq);
-
+    desc->wait_callbacks();
+    {
+      containers::LockGuard<containers::IrqSpinLock> guard(table_write_lock_);
+      interrupt_table_.remove(irq);
+    }
     return VoidResult{};
   }
 
@@ -212,12 +256,14 @@ public:
       return VoidResult{ErrorCode::InvalidParameter};
     }
 
-    ::moss::kernel::hal::intc::enable_irq(distributor_base_, irq);
-
+    containers::LockGuard<containers::IrqSpinLock> guard(table_write_lock_);
     auto desc_ptr = interrupt_table_.find(irq);
+    if (desc_ptr && (*desc_ptr)->callbacks_stopped())
+      return VoidResult{ErrorCode::ResourceBusy};
+    ::moss::kernel::hal::intc::enable_irq(distributor_base_, irq);
     if (static_cast<bool>(desc_ptr)) {
       auto desc = *desc_ptr;
-      desc->enabled = true;
+      desc->enabled.store(1, containers::MemoryOrder::Release);
     }
 
     return VoidResult{};
@@ -233,7 +279,7 @@ public:
     auto desc_ptr = interrupt_table_.find(irq);
     if (static_cast<bool>(desc_ptr)) {
       auto desc = *desc_ptr;
-      desc->enabled = false;
+      desc->enabled.store(0, containers::MemoryOrder::Release);
     }
 
     return VoidResult{};
@@ -298,14 +344,16 @@ public:
     (void)total_interrupts_.fetch_add(1, containers::MemoryOrder::Relaxed);
     interrupt_counts_.get_cpu(cpu)++;
 
-    // Hold a shared descriptor through the callback so concurrent table removal
-    // cannot free it; the callback context itself remains the registrant's responsibility.
+    // The descriptor protects its borrowed context against concurrent unbind.
     auto desc_ptr = interrupt_table_.find(irq);
     if (static_cast<bool>(desc_ptr)) {
       auto desc = *desc_ptr;
-      if (desc->handler != nullptr) {
-        desc->handler(irq, desc->context);
-        (void)desc->count.fetch_add(1, containers::MemoryOrder::Relaxed);
+      if (desc->begin_callback()) {
+        if (desc->handler != nullptr) {
+          desc->handler(irq, desc->context);
+          (void)desc->count.fetch_add(1, containers::MemoryOrder::Relaxed);
+        }
+        desc->end_callback();
       }
     }
 
@@ -318,7 +366,7 @@ public:
 
     interrupt_table_.for_each([&registered, &enabled](const auto &entry) {
       registered++;
-      if (entry.value->enabled) {
+      if (entry.value->enabled.load(containers::MemoryOrder::Acquire)) {
         enabled++;
       }
     });
