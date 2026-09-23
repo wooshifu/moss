@@ -2476,7 +2476,7 @@ static int test_stop_continue(void) {
   return 0;
 }
 
-static int run_wait_job_status(int no_cldstop) {
+static int run_wait_job_status(int no_cldstop, int group_wait) {
   enum { WAIT_NOHANG = 1, WAIT_UNTRACED = 2, WAIT_CONTINUED = 8 };
   long ready[2];
   if (pipe(ready) != 0) {
@@ -2498,7 +2498,8 @@ static int run_wait_job_status(int no_cldstop) {
     unsigned cpu_mask = 1U << 1;
     struct sigaction_t usr1 = {(unsigned long)sigusr1_handler, 0, 0};
     handler_called = 0;
-    if (syscall3(20, 0, sizeof(cpu_mask), (long)&cpu_mask) != 0 || moss_sigaction(SIGUSR1, &usr1, 0) != 0) {
+    if (syscall3(20, 0, sizeof(cpu_mask), (long)&cpu_mask) != 0 || moss_sigaction(SIGUSR1, &usr1, 0) != 0 ||
+        (group_wait && syscall0(SYS_SETPGRP) != 0)) {
       _exit(98);
     }
     const unsigned char byte = 37;
@@ -2527,32 +2528,37 @@ static int run_wait_job_status(int no_cldstop) {
   unsigned char byte = 0;
   int errors = read((int)ready[0], &byte, 1) != 1 || byte != 37;
   close((int)ready[0]);
+  const long wait_target = group_wait ? -child : child;
   int status = 0x12345678;
-  errors |= waitpid(child, &status, WAIT_NOHANG | WAIT_UNTRACED | WAIT_CONTINUED) != 0 || status != 0x12345678;
+  if (group_wait) {
+    errors |= waitpid(0, &status, WAIT_NOHANG) != -10 || status != 0x12345678;
+    errors |= waitpid(-child - 1, &status, WAIT_NOHANG) != -10 || status != 0x12345678;
+  }
+  errors |= waitpid(wait_target, &status, WAIT_NOHANG | WAIT_UNTRACED | WAIT_CONTINUED) != 0 || status != 0x12345678;
   if (!errors) {
-    errors |= waitpid(child, (int *)1, WAIT_UNTRACED) != -14;
-    errors |= waitpid(child, &status, WAIT_UNTRACED) != child || status != ((SIGSTOP << 8) | 0x7f);
+    errors |= waitpid(wait_target, (int *)1, WAIT_UNTRACED) != -14;
+    errors |= waitpid(wait_target, &status, WAIT_UNTRACED) != child || status != ((SIGSTOP << 8) | 0x7f);
     errors |= no_cldstop && handler_called != 0;
     status = 0x12345678;
-    errors |= waitpid(child, &status, WAIT_NOHANG | WAIT_UNTRACED) != 0 || status != 0x12345678;
-    errors |= waitpid(child, &status, WAIT_NOHANG) != 0;
+    errors |= waitpid(wait_target, &status, WAIT_NOHANG | WAIT_UNTRACED) != 0 || status != 0x12345678;
+    errors |= waitpid(wait_target, &status, WAIT_NOHANG) != 0;
   }
   if (!errors) {
     errors |= kill(child, SIGCONT) != 0;
   }
   if (!errors) {
-    errors |= waitpid(child, &status, WAIT_CONTINUED) != child || status != 0xffff;
+    errors |= waitpid(wait_target, &status, WAIT_CONTINUED) != child || status != 0xffff;
     errors |= no_cldstop && handler_called != 0;
     status = 0x12345678;
-    errors |= waitpid(child, &status, WAIT_NOHANG | WAIT_CONTINUED) != 0 || status != 0x12345678;
-    errors |= waitpid(child, &status, WAIT_NOHANG) != 0;
+    errors |= waitpid(wait_target, &status, WAIT_NOHANG | WAIT_CONTINUED) != 0 || status != 0x12345678;
+    errors |= waitpid(wait_target, &status, WAIT_NOHANG) != 0;
   }
   if (errors || kill(child, SIGUSR1) != 0) {
     kill(child, SIGKILL);
     errors = 1;
   }
   status = 0;
-  errors |= waitpid(child, &status, 0) != child || (!errors && status != (42 << 8));
+  errors |= waitpid(wait_target, &status, 0) != child || (!errors && status != (42 << 8));
   if (no_cldstop) {
     errors |= handler_called != 1;
     errors |= moss_sigaction(SIGCHLD, &previous_chld, 0) != 0;
@@ -2560,9 +2566,21 @@ static int run_wait_job_status(int no_cldstop) {
   return errors != 0;
 }
 
-static int test_wait_job_status(void) { return run_wait_job_status(0); }
+static int test_wait_job_status(void) { return run_wait_job_status(0, 0); }
 
-static int test_no_cldstop(void) { return run_wait_job_status(1); }
+static int test_no_cldstop(void) { return run_wait_job_status(1, 0); }
+
+static int test_wait_process_group(void) {
+  if (run_wait_job_status(0, 1)) {
+    return 1;
+  }
+  const long child = fork();
+  if (child == 0) {
+    _exit(37);
+  }
+  int status = 0;
+  return child < 0 || waitpid(0, &status, 0) != child || status != (37 << 8);
+}
 
 static int test_signal_exit_status(void) {
   for (int mode = 0; mode < 3; ++mode) {
@@ -3759,6 +3777,7 @@ static int signal_case(const char *name) {
                {"stop_continue", test_stop_continue},
                {"wait_job_status", test_wait_job_status},
                {"no_cldstop", test_no_cldstop},
+               {"wait_process_group", test_wait_process_group},
                {"signal_exit_status", test_signal_exit_status},
                {"sigprocmask", test_sigprocmask},
                {"sigaltstack", test_sigaltstack},
@@ -4064,6 +4083,7 @@ void _start(long argc, const char **argv) {
                            "stop_continue",
                            "wait_job_status",
                            "no_cldstop",
+                           "wait_process_group",
                            "signal_exit_status",
                            "sigprocmask",
                            "sigaltstack",
