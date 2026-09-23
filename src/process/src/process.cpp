@@ -631,6 +631,7 @@ KernelResult<VirtAddr> allocate_user_heap(Process *process, usize size) noexcept
   // Release descriptors before publishing exit: other processes must observe
   // pipe EOF and recover file-pool capacity without first reaping this zombie.
   proc->cleanup_files();
+  proc->capabilities().clear();
 
   // 2. Restore page table base to kernel PGD BEFORE freeing user page tables
   CfsScheduler::use_kernel_address_space();

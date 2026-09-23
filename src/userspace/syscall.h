@@ -62,8 +62,40 @@ enum {
   SYS_ARCH_PRCTL = 126,
   SYS_FCNTL = 130,
   SYS_GETDENTS = 131,
-  SYS_IOCTL = 132
+  SYS_IOCTL = 132,
+  SYS_CAP_CLOSE = 133,
+  SYS_CAP_DUPLICATE = 134,
+  SYS_CAP_SET_INHERIT = 135,
+  SYS_IPC_CREATE = 136,
+  SYS_IPC_CALL = 137,
+  SYS_IPC_RECEIVE = 138,
+  SYS_IPC_REPLY = 139
 };
+
+enum {
+  MOSS_CAP_SEND = 1U << 0,
+  MOSS_CAP_RECEIVE = 1U << 1,
+  MOSS_CAP_TRANSFER = 1U << 2,
+  MOSS_CAP_DUPLICATE = 1U << 3,
+  MOSS_IPC_MAX_MESSAGE = 256
+};
+
+struct moss_ipc_endpoints {
+  unsigned long send;
+  unsigned long receive;
+};
+
+// One capability may accompany each bounded request or reply. Passing a
+// capability copies reduced rights; zero capability requires zero rights.
+struct moss_ipc_message {
+  unsigned long size;
+  unsigned long capability;
+  unsigned long rights;
+  unsigned char payload[MOSS_IPC_MAX_MESSAGE];
+};
+
+// SYS_IPC_CALL uses (endpoint, request*, response*, absolute deadline_ns).
+// A zero deadline disables it; both messages use the fixed structure above.
 
 // No payload; succeeds only on a terminal. Not a Linux termios command.
 // 0x4d01 is a Moss-specific command ID shared with vfs:types; its exact

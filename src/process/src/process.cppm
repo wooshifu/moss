@@ -12,6 +12,7 @@ import moss.arch;
 import moss.containers;
 import moss.mm;
 import moss.ipc;
+export import moss.capability;
 import moss.interrupts;
 import moss.platform;
 import moss.hal.intc;

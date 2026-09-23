@@ -419,6 +419,16 @@ void _start(long argc, const char **argv) {
 #endif
     control(2, errors == 0, (long)errors);
     control(3, 0, 0);
+  } else if (mode == 25) {
+    unsigned long (*const tests[])(void) = {ipc_roundtrip, ipc_deadline, ipc_peer_death, ipc_signal_cancel,
+                                            ipc_capability_transfer};
+    for (long test = 0; test < (long)(sizeof(tests) / sizeof(tests[0])); ++test) {
+      control(1, test, 0);
+      unsigned long errors = tests[test]();
+      if (!control(2, errors == 0, (long)errors))
+        break;
+    }
+    control(3, 0, 0);
   } else if (mode == 21) {
     const char *scripts[] = {
         "exit 37", "value=$(printf 'moss\\n'); [ \"$value\" = moss ] && printf '%s\\n' \"$value\" && exit 37; exit 98",

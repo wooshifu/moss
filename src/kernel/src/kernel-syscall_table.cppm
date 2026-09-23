@@ -29,9 +29,11 @@ inline constexpr long ENOTDIR = 20;      // Not a directory
 inline constexpr long EISDIR = 21;       // Is a directory
 inline constexpr long EINVAL = 22;       // Invalid argument
 inline constexpr long EMFILE = 24;       // Too many open files
+inline constexpr long EPIPE = 32;        // Peer closed
 inline constexpr long ESPIPE = 29;       // Illegal seek (pipe)
 inline constexpr long ENAMETOOLONG = 36; // File name too long
 inline constexpr long ENOSYS = 38;       // Function not implemented
+inline constexpr long ETIMEDOUT = 110;   // Deadline expired
 } // namespace errc
 
 // Standard POSIX file descriptor numbers
@@ -195,8 +197,17 @@ enum class SyscallNumber : long {
   SYS_GETDENTS = 131,
   SYS_IOCTL = 132,
 
+  // Native capability and bounded control IPC operations.
+  SYS_CAP_CLOSE = 133,
+  SYS_CAP_DUPLICATE = 134,
+  SYS_CAP_SET_INHERIT = 135,
+  SYS_IPC_CREATE = 136,
+  SYS_IPC_CALL = 137,
+  SYS_IPC_RECEIVE = 138,
+  SYS_IPC_REPLY = 139,
+
   // Total syscall count marker
-  MAX_SYSCALL = 133
+  MAX_SYSCALL = 140
 };
 
 // Syscall handler function type
@@ -282,6 +293,14 @@ long sys_clock_nanosleep(long clockid, long flags, long ns_addr, long remaining,
 
 // System monitoring
 long sys_topinfo(long info_addr, long arg1, long arg2, long arg3, long arg4, long arg5) noexcept;
+
+long sys_cap_close(long handle, long arg1, long arg2, long arg3, long arg4, long arg5) noexcept;
+long sys_cap_duplicate(long handle, long rights, long arg2, long arg3, long arg4, long arg5) noexcept;
+long sys_cap_set_inherit(long handle, long inherit, long arg2, long arg3, long arg4, long arg5) noexcept;
+long sys_ipc_create(long pair_addr, long arg1, long arg2, long arg3, long arg4, long arg5) noexcept;
+long sys_ipc_call(long endpoint, long request_addr, long response_addr, long deadline_ns, long arg4, long arg5) noexcept;
+long sys_ipc_receive(long endpoint, long request_addr, long reply_addr, long arg3, long arg4, long arg5) noexcept;
+long sys_ipc_reply(long reply, long response_addr, long arg2, long arg3, long arg4, long arg5) noexcept;
 
 // Default handler for unimplemented syscalls
 long sys_not_implemented(long arg0, long arg1, long arg2, long arg3, long arg4, long arg5) noexcept;

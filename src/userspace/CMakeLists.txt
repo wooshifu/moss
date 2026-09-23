@@ -63,7 +63,7 @@ if(MOSS_BUILD_TESTS)
     add_userspace_program(validation)
     target_sources(
         moss_userspace_validation
-        PRIVATE validation_frame.S validation/basics.c validation/benchmarks.c validation/exec.c
+        PRIVATE validation_frame.S validation/basics.c validation/benchmarks.c validation/exec.c validation/ipc.c
                 validation/signals.c validation/timers.c validation/uaccess.c validation/vm.c
     )
     add_userspace_program(validation_child)

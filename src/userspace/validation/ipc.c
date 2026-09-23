@@ -1,0 +1,240 @@
+#include "validation/internal.h"
+
+// The freestanding validation image has no libc; Clang lowers zeroing the
+// fixed-size IPC message aggregate to this routine.
+void *memset(void *destination, int value, unsigned long count) {
+  volatile unsigned char *bytes = (volatile unsigned char *)destination;
+  for (unsigned long i = 0; i < count; ++i)
+    bytes[i] = (unsigned char)value;
+  return destination;
+}
+
+enum { IPC_EINTR = 4, IPC_EBADF = 9, IPC_EACCES = 13, IPC_EINVAL = 22, IPC_EPIPE = 32, IPC_ETIMEDOUT = 110 };
+static volatile int ipc_signal_seen;
+
+static void ipc_signal_handler(int signo) { ipc_signal_seen = signo; }
+
+static long deadline_after(unsigned long offset_ns) {
+  unsigned long now = 0;
+  return clock_gettime_ns(&now) == 0 ? (long)(now + offset_ns) : -1;
+}
+
+static long ipc_call(unsigned long endpoint, const struct moss_ipc_message *request, struct moss_ipc_message *response,
+                     long deadline) {
+  return syscall6(SYS_IPC_CALL, (long)endpoint, (long)request, (long)response, deadline, 0, 0);
+}
+
+static long ipc_receive(unsigned long endpoint, struct moss_ipc_message *request, unsigned long *reply) {
+  return syscall3(SYS_IPC_RECEIVE, (long)endpoint, (long)request, (long)reply);
+}
+
+static long ipc_reply(unsigned long reply, const struct moss_ipc_message *response) {
+  return syscall2(SYS_IPC_REPLY, (long)reply, (long)response);
+}
+
+unsigned long ipc_roundtrip(void) {
+  struct moss_ipc_endpoints pair = {0, 0};
+  if (syscall1(SYS_IPC_CREATE, (long)&pair) != 0)
+    return 1;
+  long limited = syscall2(SYS_CAP_DUPLICATE, (long)pair.send, MOSS_CAP_SEND);
+  unsigned long errors = limited <= 0;
+  if (limited > 0) {
+    errors |= (unsigned long)(syscall2(SYS_CAP_DUPLICATE, limited, MOSS_CAP_SEND) != -IPC_EACCES) << 1;
+    errors |= (unsigned long)(syscall2(SYS_CAP_SET_INHERIT, limited, 1) != -IPC_EACCES) << 2;
+    struct moss_ipc_message unused = {0};
+    unsigned long reply = 0;
+    errors |= (unsigned long)(ipc_receive((unsigned long)limited, &unused, &reply) != -IPC_EINVAL) << 3;
+  }
+  if (syscall2(SYS_CAP_SET_INHERIT, (long)pair.receive, 1) != 0)
+    errors |= 1UL << 4;
+  long child = fork();
+  if (child == 0) {
+    unsigned cpu1 = 2; // Affinity mask bit 1 selects CPU1, away from the parent on CPU0.
+    unsigned long migration_wait = 1000000UL;
+    if (syscall3(SYS_SCHED_SETAFFINITY, 0, sizeof(cpu1), (long)&cpu1) != 0 || nanosleep_ns(&migration_wait) != 0 ||
+        current_cpu() != 1)
+      _exit(96);
+    struct moss_ipc_message request = {0};
+    unsigned long reply = 0;
+    if (syscall1(SYS_CAP_CLOSE, (long)pair.send) != -IPC_EBADF)
+      _exit(91);
+    if (ipc_receive(pair.receive, &request, &reply) != 2 || request.size != 2 || request.payload[0] != 'h' ||
+        request.payload[1] != 'i' || request.capability != 0)
+      _exit(92);
+    if (syscall2(SYS_CAP_DUPLICATE, (long)reply, MOSS_CAP_SEND) != -IPC_EACCES)
+      _exit(93);
+    const struct moss_ipc_message response = {.size = 2, .payload = {'o', 'k'}};
+    if (ipc_reply(reply, &response) != 0 || syscall1(SYS_CAP_CLOSE, (long)reply) != -IPC_EBADF)
+      _exit(94);
+    _exit(syscall1(SYS_CAP_CLOSE, (long)pair.receive) == 0 ? 37 : 95);
+  }
+  if (child < 0) {
+    syscall1(SYS_CAP_CLOSE, (long)pair.receive);
+    syscall1(SYS_CAP_CLOSE, (long)pair.send);
+    return errors | (1UL << 5);
+  }
+  errors |= (unsigned long)(syscall1(SYS_CAP_CLOSE, (long)pair.receive) != 0) << 6;
+  const struct moss_ipc_message request = {.size = 2, .payload = {'h', 'i'}};
+  struct moss_ipc_message response = {0};
+  // This bound only prevents a broken service from hanging validation; it is
+  // not a latency acceptance threshold for a real control call.
+  enum { CALL_TIMEOUT_NS = 5000000000UL };
+  long deadline = deadline_after(CALL_TIMEOUT_NS);
+  long result = deadline > 0 ? ipc_call(pair.send, &request, &response, deadline) : -1;
+  errors |= (unsigned long)(result != 2 || response.size != 2 || response.payload[0] != 'o' ||
+                            response.payload[1] != 'k' || response.capability != 0)
+            << 7;
+  errors |= (unsigned long)!wait_exit(child, 37) << 8;
+  errors |= (unsigned long)(ipc_call(pair.send, &request, &response, 0) != -IPC_EPIPE) << 9;
+  errors |= (unsigned long)(syscall1(SYS_CAP_CLOSE, (long)pair.send) != 0) << 10;
+  if (limited > 0)
+    errors |= (unsigned long)(syscall1(SYS_CAP_CLOSE, limited) != 0) << 11;
+  return errors;
+}
+
+unsigned long ipc_deadline(void) {
+  struct moss_ipc_endpoints pair = {0, 0};
+  if (syscall1(SYS_IPC_CREATE, (long)&pair) != 0)
+    return 1;
+  unsigned long errors = 0;
+  struct moss_ipc_message request = {.size = MOSS_IPC_MAX_MESSAGE + 1, .payload = {7}};
+  struct moss_ipc_message response = {0};
+  errors |= (unsigned long)(ipc_call(pair.send, &request, &response, 0) != -IPC_EINVAL);
+  request.size = 1;
+  // Three expired calls reuse the same bounded queue slots and timer state.
+  for (unsigned i = 0; i < 3; ++i) {
+    long deadline = deadline_after(1000000UL); // 1 ms is a fixture timeout, not a throughput target.
+    if (deadline <= 0 || ipc_call(pair.send, &request, &response, deadline) != -IPC_ETIMEDOUT) {
+      errors |= 2;
+      break;
+    }
+  }
+  errors |= (unsigned long)(syscall1(SYS_CAP_CLOSE, (long)pair.receive) != 0) << 2;
+  errors |= (unsigned long)(ipc_call(pair.send, &request, &response, 0) != -IPC_EPIPE) << 3;
+  errors |= (unsigned long)(syscall1(SYS_CAP_CLOSE, (long)pair.send) != 0) << 4;
+  return errors;
+}
+
+unsigned long ipc_peer_death(void) {
+  struct moss_ipc_endpoints pair = {0, 0};
+  if (syscall1(SYS_IPC_CREATE, (long)&pair) != 0 || syscall2(SYS_CAP_SET_INHERIT, (long)pair.receive, 1) != 0)
+    return 1;
+  long child = fork();
+  if (child == 0) {
+    struct moss_ipc_message request = {0};
+    unsigned long reply = 0;
+    if (ipc_receive(pair.receive, &request, &reply) != 1 || request.size != 1 || request.payload[0] != 19)
+      _exit(91);
+    // Exit without replying: the one-shot reply capability must wake the caller.
+    _exit(37);
+  }
+  if (child < 0)
+    return 2;
+  unsigned long errors = syscall1(SYS_CAP_CLOSE, (long)pair.receive) != 0;
+  const struct moss_ipc_message request = {.size = 1, .payload = {19}};
+  struct moss_ipc_message response = {0};
+  long deadline = deadline_after(5000000000UL);
+  errors |= (unsigned long)(deadline <= 0 || ipc_call(pair.send, &request, &response, deadline) != -IPC_EPIPE) << 1;
+  errors |= (unsigned long)!wait_exit(child, 37) << 2;
+  errors |= (unsigned long)(syscall1(SYS_CAP_CLOSE, (long)pair.send) != 0) << 3;
+  return errors;
+}
+
+unsigned long ipc_signal_cancel(void) {
+  struct moss_ipc_endpoints pair = {0, 0};
+  struct sigaction_t action = {(unsigned long)ipc_signal_handler, 0, 0};
+  struct sigaction_t old_action = {0, 0, 0};
+  if (syscall1(SYS_IPC_CREATE, (long)&pair) != 0)
+    return 1;
+  if (moss_sigaction(SIGUSR1, &action, &old_action) != 0)
+    return 2;
+  ipc_signal_seen = 0;
+  long parent = getpid();
+  long child = fork();
+  if (child == 0) {
+    // Give the parent time to enter the blocking call before sending SIGUSR1.
+    unsigned long delay = 10000000UL;
+    _exit(nanosleep_ns(&delay) == 0 && kill(parent, SIGUSR1) == 0 ? 37 : 91);
+  }
+  unsigned long errors = child < 0;
+  if (child > 0) {
+    const struct moss_ipc_message request = {0};
+    struct moss_ipc_message response = {0};
+    long deadline = deadline_after(5000000000UL);
+    errors |= (unsigned long)(deadline <= 0 || ipc_call(pair.send, &request, &response, deadline) != -IPC_EINTR ||
+                              ipc_signal_seen != SIGUSR1)
+              << 1;
+    errors |= (unsigned long)!wait_exit(child, 37) << 2;
+  }
+  errors |= (unsigned long)(moss_sigaction(SIGUSR1, &old_action, 0) != 0) << 3;
+  errors |= (unsigned long)(syscall1(SYS_CAP_CLOSE, (long)pair.receive) != 0) << 4;
+  errors |= (unsigned long)(syscall1(SYS_CAP_CLOSE, (long)pair.send) != 0) << 5;
+  return errors;
+}
+
+unsigned long ipc_capability_transfer(void) {
+  struct moss_ipc_endpoints control = {0, 0}, delegated = {0, 0};
+  if (syscall1(SYS_IPC_CREATE, (long)&control) != 0 || syscall1(SYS_IPC_CREATE, (long)&delegated) != 0 ||
+      syscall2(SYS_CAP_SET_INHERIT, (long)control.receive, 1) != 0)
+    return 1;
+  long child = fork();
+  if (child == 0) {
+    struct moss_ipc_message request = {0};
+    unsigned long control_reply = 0;
+    if (ipc_receive(control.receive, &request, &control_reply) != 1 || request.payload[0] != 'a' ||
+        request.capability == 0 || request.rights != MOSS_CAP_SEND ||
+        syscall2(SYS_CAP_DUPLICATE, (long)request.capability, MOSS_CAP_SEND) != -IPC_EACCES)
+      _exit(91);
+    struct moss_ipc_endpoints returned = {0, 0};
+    if (syscall1(SYS_IPC_CREATE, (long)&returned) != 0)
+      _exit(92);
+    const struct moss_ipc_message answer = {
+        .size = 1, .capability = returned.receive, .rights = MOSS_CAP_RECEIVE, .payload = {'a'}};
+    if (ipc_reply(control_reply, &answer) != 0 || syscall1(SYS_CAP_CLOSE, (long)returned.receive) != 0)
+      _exit(93);
+    const struct moss_ipc_message delegated_request = {.size = 1, .payload = {'b'}};
+    struct moss_ipc_message delegated_response = {0};
+    long deadline = deadline_after(5000000000UL);
+    if (deadline <= 0 || ipc_call(request.capability, &delegated_request, &delegated_response, deadline) != 1 ||
+        delegated_response.payload[0] != 'b')
+      _exit(94);
+    const struct moss_ipc_message returned_request = {.size = 1, .payload = {'c'}};
+    struct moss_ipc_message returned_response = {0};
+    deadline = deadline_after(5000000000UL);
+    if (deadline <= 0 || ipc_call(returned.send, &returned_request, &returned_response, deadline) != 1 ||
+        returned_response.payload[0] != 'c')
+      _exit(95);
+    _exit(37);
+  }
+  if (child < 0)
+    return 2;
+  unsigned long errors = syscall1(SYS_CAP_CLOSE, (long)control.receive) != 0;
+  const struct moss_ipc_message request = {
+      .size = 1, .capability = delegated.send, .rights = MOSS_CAP_SEND, .payload = {'a'}};
+  struct moss_ipc_message response = {0};
+  long deadline = deadline_after(5000000000UL);
+  long completed = deadline > 0 ? ipc_call(control.send, &request, &response, deadline) : -1;
+  errors |= (unsigned long)(completed != 1 || response.payload[0] != 'a' || response.capability == 0 ||
+                            response.rights != MOSS_CAP_RECEIVE)
+            << 1;
+  if (completed == 1 && response.capability != 0) {
+    errors |= (unsigned long)(syscall2(SYS_CAP_SET_INHERIT, (long)response.capability, 1) != -IPC_EACCES) << 2;
+    errors |= (unsigned long)(syscall1(SYS_CAP_CLOSE, (long)delegated.send) != 0) << 3;
+    struct moss_ipc_message incoming = {0};
+    unsigned long reply = 0;
+    errors |= (unsigned long)(ipc_receive(delegated.receive, &incoming, &reply) != 1 || incoming.payload[0] != 'b')
+              << 4;
+    const struct moss_ipc_message accepted = {.size = 1, .payload = {'b'}};
+    errors |= (unsigned long)(ipc_reply(reply, &accepted) != 0) << 5;
+    reply = 0;
+    errors |= (unsigned long)(ipc_receive(response.capability, &incoming, &reply) != 1 || incoming.payload[0] != 'c')
+              << 6;
+    const struct moss_ipc_message returned = {.size = 1, .payload = {'c'}};
+    errors |= (unsigned long)(ipc_reply(reply, &returned) != 0) << 7;
+    errors |= (unsigned long)(syscall1(SYS_CAP_CLOSE, (long)response.capability) != 0) << 8;
+  }
+  errors |= (unsigned long)!wait_exit(child, 37) << 9;
+  errors |= (unsigned long)(syscall1(SYS_CAP_CLOSE, (long)control.send) != 0) << 10;
+  errors |= (unsigned long)(syscall1(SYS_CAP_CLOSE, (long)delegated.receive) != 0) << 11;
+  return errors;
+}

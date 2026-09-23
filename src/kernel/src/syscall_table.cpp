@@ -450,6 +450,13 @@ long sys_fork(long /*unused*/, long /*unused*/, long /*unused*/, long /*unused*/
     child_proc->set_fd_table(child_fdt);
   }
 
+  // Native authority is copied only when the owning process selected it;
+  // POSIX file descriptor inheritance above is a separate compatibility rule.
+  if (!parent_proc->capabilities().clone_inheritable_to(child_proc->capabilities())) {
+    cleanup_child(child_proc.get());
+    return -errc::EAGAIN;
+  }
+
   // 12c. Inherit process name from parent
   child_proc->set_name(parent_proc->name());
 
@@ -774,6 +781,7 @@ long sys_execve(long pathname_addr, long argv_addr, long envp_addr, long /*unuse
   if (auto *files = static_cast<vfs::FdTable *>(proc->fd_table())) {
     files->close_on_exec();
   }
+  proc->capabilities().close_uninheritable();
   const char *basename = pathname;
   for (const char *p = pathname; *p; ++p) {
     if (*p == '/') {
@@ -2848,7 +2856,14 @@ const SyscallDescriptor SYSCALL_TABLE[static_cast<int>(SyscallNumber::MAX_SYSCAL
     {"capset", handlers::sys_not_implemented, 2, false, "设置能力"},
     {"fcntl", handlers::sys_fcntl, 3, true, "Query file status flags"},
     {"getdents", handlers::sys_getdents, 3, true, "Read a native directory entry"},
-    {"ioctl", handlers::sys_ioctl, 3, true, "Native device control"}};
+    {"ioctl", handlers::sys_ioctl, 3, true, "Native device control"},
+    {"cap_close", handlers::sys_cap_close, 1, true, "Close a process-local capability"},
+    {"cap_duplicate", handlers::sys_cap_duplicate, 2, true, "Duplicate with reduced rights"},
+    {"cap_set_inherit", handlers::sys_cap_set_inherit, 2, true, "Select fork/exec inheritance"},
+    {"ipc_create", handlers::sys_ipc_create, 1, true, "Create a bounded control endpoint"},
+    {"ipc_call", handlers::sys_ipc_call, 4, true, "Call a control endpoint"},
+    {"ipc_receive", handlers::sys_ipc_receive, 3, true, "Receive a control request"},
+    {"ipc_reply", handlers::sys_ipc_reply, 2, true, "Complete a pending call"}};
 
 // 系统调用分发器实现
 long SyscallDispatcher::dispatch(long syscall_number, long arg0, long arg1, long arg2, long arg3, long arg4,

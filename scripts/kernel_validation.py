@@ -60,6 +60,7 @@ CATALOG = {
         "queue_reuse",
         "ipc_heap_rollback",
         "ipc_shared_backing",
+        "capability_process_handles",
         "ipc_shared_lifecycle",
         "ipc_service_lifecycle",
         "ipc_ring_wrap",
@@ -227,6 +228,7 @@ CATALOG = {
         "clock_relative_interrupted",
         "clock_absolute_interrupted",
     ],
+    "users.ipc": ["roundtrip", "deadline", "peer_death", "signal_cancel", "capability_transfer"],
     "users.signals": [
         "basic_handler",
         "nested_signals",
@@ -339,6 +341,7 @@ FUNCTIONAL = [
     "users.signals",
     "users.lifecycle",
     "users.timers",
+    "users.ipc",
     "users.libc",
     "users.exec",
     "users.busybox",

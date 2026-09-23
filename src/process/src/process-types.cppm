@@ -11,6 +11,7 @@ import moss.arch;
 import moss.abi;
 import moss.containers;
 import moss.mm;
+import moss.capability;
 import moss.logging;
 
 extern "C" void moss_validation_address_space_retiring(moss::kernel::PhysAddr root) noexcept;
@@ -714,6 +715,7 @@ class Process {
 private:
   ProcessId pid_;
   ProcessId parent_pid_;
+  capability::Table capabilities_;
 
   // Only publication/acquisition uses this short IRQ-safe lock. Copy the owner
   // under it, but destroy retired spaces outside it: teardown takes MM locks.
@@ -803,6 +805,8 @@ public:
 
   // Basic property access
   [[nodiscard]] ProcessId pid() const noexcept { return pid_; }
+  [[nodiscard]] capability::Table &capabilities() noexcept { return capabilities_; }
+  [[nodiscard]] const capability::Table &capabilities() const noexcept { return capabilities_; }
   [[nodiscard]] ProcessId parent_pid() const noexcept { return parent_pid_; }
   [[nodiscard]] ProcessState state() const noexcept { return state_; }
   [[nodiscard]] i32 exit_code() const noexcept { return exit_code_; }

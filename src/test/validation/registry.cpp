@@ -155,6 +155,13 @@ void declare_cases() {
     ut::register_test("clock_relative_interrupted", empty_case);
     ut::register_test("clock_absolute_interrupted", empty_case);
   });
+  ut::register_suite("users.ipc", [] {
+    ut::register_test("roundtrip", empty_case);
+    ut::register_test("deadline", empty_case);
+    ut::register_test("peer_death", empty_case);
+    ut::register_test("signal_cancel", empty_case);
+    ut::register_test("capability_transfer", empty_case);
+  });
   ut::register_suite("users.libc", [] {
     ut::register_test("static_runtime", empty_case);
     ut::register_test("filesystem_permissions", empty_case);

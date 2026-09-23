@@ -2,7 +2,7 @@
 
 add_library(moss_kernel OBJECT)
 
-set(KERNEL_SOURCES src/kernel_main.cpp src/runtime_support.cpp src/syscall_table.cpp)
+set(KERNEL_SOURCES src/kernel_main.cpp src/runtime_support.cpp src/syscall_table.cpp src/control_ipc.cpp)
 
 # Architecture-specific assembly files
 if(MOSS_TARGET_ARCH STREQUAL "ARM64")
@@ -53,6 +53,7 @@ target_link_libraries(
             moss_drivers
             moss_interrupts
             moss_ipc
+            moss_capability
             moss_timer
             moss_process
             moss_vfs
