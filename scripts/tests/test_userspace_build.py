@@ -302,6 +302,7 @@ add_subdirectory(src/userspace)
         runtime / "libc_validation.elf",
         runtime / "init.elf",
         runtime / "file-service.elf",
+        runtime / "namespace-service.elf",
         runtime / "moss-file.elf",
         runtime / "busybox/busybox",
     ):
@@ -311,13 +312,15 @@ add_subdirectory(src/userspace)
         assert struct.unpack_from("<Q", elf, 24)[0] >= 0x200000000
     init = (runtime / "init.elf").read_bytes()
     file_service = (runtime / "file-service.elf").read_bytes()
+    namespace_service = (runtime / "namespace-service.elf").read_bytes()
     file_client = (runtime / "moss-file.elf").read_bytes()
     busybox = (runtime / "busybox/busybox").read_bytes()
     archive = (build / "initramfs.cpio").read_bytes()
     assert make_cpio_entry("init.elf", init, ino=1) in archive
     assert make_cpio_entry("file-service.elf", file_service, ino=2) in archive
-    assert make_cpio_entry("moss-file.elf", file_client, ino=3) in archive
-    assert make_cpio_entry("busybox.elf", busybox, ino=4) in archive
+    assert make_cpio_entry("namespace-service.elf", namespace_service, ino=3) in archive
+    assert make_cpio_entry("moss-file.elf", file_client, ino=4) in archive
+    assert make_cpio_entry("busybox.elf", busybox, ino=5) in archive
     for removed in ("hello", "shell", "top", "signal_test"):
         assert not (build / "userspace" / f"{removed}.elf").exists()
         assert f"{removed}.elf\0".encode() not in archive

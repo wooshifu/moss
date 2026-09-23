@@ -80,4 +80,5 @@ target_compile_definitions(
 add_subdirectory("${MOSS_THIRD_PARTY}/busybox" busybox)
 add_moss_runtime_program(moss-init ../moss_init.c init)
 add_moss_runtime_program(moss-file-service ../moss_file_service.c file-service)
+add_moss_runtime_program(moss-namespace-service ../moss_namespace_service.c namespace-service)
 add_moss_runtime_program(moss-file ../moss_file.c moss-file)

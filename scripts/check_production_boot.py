@@ -116,12 +116,16 @@ quit
     )
     child, debugger, console, stage, pending = None, None, None, 0, b""
     service_pid = None
-    # Require direct file-capability calls as well as ash commands, child
-    # reaping and a shell restart by PID 1.
+    namespace_pid = None
+    # Require namespace lookup and direct file-capability calls as well as
+    # ash commands, child reaping and independent service recovery by PID 1.
     steps = [
         (b"moss-init: supervisor ready", None),
         (b"moss-init: file service started", None),
+        (b"moss-init: namespace service started", None),
         (b"built-in shell (ash)", None),
+        (b"moss$ ", b"/moss-file.elf read /missing\n"),
+        (b"\nMOSS_FILE_ERROR\n", None),
         (b"moss$ ", b"/moss-file.elf write native\n"),
         (b"\nMOSS_FILE_WRITE_OK\n", None),
         (b"moss$ ", b"/moss-file.elf read\n"),
@@ -149,9 +153,16 @@ quit
         (b"built-in shell (ash)", None),
         (b"moss$ ", b"/moss-file.elf read\n"),
         (b"\nMOSS_FILE_READ=native\n", None),
-        (b"moss$ ", lambda pid: f"kill {pid}\n".encode()),
+        (b"moss$ ", lambda _file, namespace: f"kill {namespace}\n".encode()),
+        (b"moss-init: namespace service died", None),
+        (b"moss-init: namespace service started", None),
+        (b"built-in shell (ash)", None),
+        (b"moss$ ", b"/moss-file.elf read\n"),
+        (b"\nMOSS_FILE_READ=native\n", None),
+        (b"moss$ ", lambda file, _namespace: f"kill {file}\n".encode()),
         (b"moss-init: file service died", None),
         (b"moss-init: file service started", None),
+        (b"moss-init: namespace service started", None),
         (b"built-in shell (ash)", None),
         (b"moss$ ", b"/moss-file.elf read\n"),
         (b"\nMOSS_FILE_READ=\n", None),
@@ -198,19 +209,23 @@ quit
                         break
                     marker, command = steps[stage]
                     after = pending.split(marker, 1)[1]
-                    if marker == b"moss-init: file service started":
+                    if marker in (b"moss-init: file service started", b"moss-init: namespace service started"):
                         match = re.match(rb" pid=(\d+)\n", after)
                         if not match:
                             break
                         next_pid = int(match.group(1))
-                        if next_pid <= 1 or next_pid == service_pid:
-                            raise ValueError("file service incarnation did not change")
-                        service_pid = next_pid
+                        previous_pid = service_pid if marker == b"moss-init: file service started" else namespace_pid
+                        if next_pid <= 1 or next_pid == previous_pid:
+                            raise ValueError("service incarnation did not change")
+                        if marker == b"moss-init: file service started":
+                            service_pid = next_pid
+                        else:
+                            namespace_pid = next_pid
                         after = after[match.end() :]
                     pending = after
                     if command:
                         if callable(command):
-                            command = command(service_pid)
+                            command = command(service_pid, namespace_pid)
                         if console:
                             console.sendall(command)
                         else:
@@ -218,7 +233,7 @@ quit
                             child.stdin.flush()
                     stage += 1
                 if stage == len(steps) and (not debugger or debugger.poll() is not None):
-                    result.update(status="passed", observed="file_service_restarted_with_new_capability")
+                    result.update(status="passed", observed="namespace_and_file_service_recovered")
                     break
                 if child.poll() is not None:
                     result["observed"] = "unexpected_exit"
