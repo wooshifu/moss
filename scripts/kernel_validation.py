@@ -185,6 +185,8 @@ CATALOG = {
         "mutable_snapshot_rollback",
         "boundary_load_plan",
         "source_version",
+        "registration_gate",
+        "shared_thread_gate",
     ],
     "users.busybox": [
         "ash_exit",

@@ -2117,6 +2117,7 @@ ExecAllocationPressure *exec_allocation_pressure = nullptr;
 // address space and a partially populated VMA list; keep userspace in sync.
 inline constexpr long EXEC_HEAP_PRESSURE_ARM = 48;
 inline constexpr long EXEC_HEAP_PRESSURE_RELEASE = 49;
+inline constexpr long EXEC_REGISTER_DORMANT_PEER = 52;
 inline constexpr unsigned EXEC_HEAP_ALLOCATION_STAGES = 6;
 inline constexpr unsigned EXEC_VMA_ALLOCATION_STAGE = 5;
 HeapPressure *fork_clone_pressure = nullptr;
@@ -5989,6 +5990,8 @@ void declare_cases() {
         "mutable_snapshot_rollback",
         "boundary_load_plan",
         "source_version",
+        "registration_gate",
+        "shared_thread_gate",
     };
     for (const auto *name : names) {
       ut::register_test(name, empty_case);
@@ -6630,10 +6633,28 @@ extern "C" void moss_validation_exec_allocation(unsigned stage, bool entering, u
 
 namespace {
 unsigned exec_source_swaps = 0;
+bool exec_registration_refused = false;
 }
 
 extern "C" void moss_validation_exec_source_snapshot(PhysAddr root, VirtAddr argv) noexcept {
-  if (!ut::same_id(selection, "users.exec") || !ut::same_id(active_case, "source_version")) {
+  if (!ut::same_id(selection, "users.exec")) {
+    return;
+  }
+  if (ut::same_id(active_case, "registration_gate")) {
+    auto owner = process::current_process();
+    auto *peer = owner ? process::Thread::try_create(process::Process::allocate_thread_id(), owner->pid()) : nullptr;
+    if (!ut::expect(owner && peer)) {
+      return;
+    }
+    auto registered = owner->register_thread(peer);
+    exec_registration_refused = !registered && registered.error() == ErrorCode::InvalidState &&
+                                owner->thread_count() == 1;
+    if (!registered) {
+      delete peer;
+    }
+    return;
+  }
+  if (!ut::same_id(active_case, "source_version")) {
     return;
   }
   auto owner = process::current_process();
@@ -6921,6 +6942,9 @@ extern "C" long moss_validation_call(long op, long arg1, [[maybe_unused]] long a
     if (ut::same_id(selection, "users.exec") && ut::same_id(active_case, "source_version")) {
       ut::expect(exec_source_swaps == 1);
     }
+    if (ut::same_id(selection, "users.exec") && ut::same_id(active_case, "registration_gate")) {
+      ut::expect(exec_registration_refused);
+    }
     end_case();
     return failed ? 0 : 1;
   }
@@ -7033,6 +7057,22 @@ extern "C" long moss_validation_call(long op, long arg1, [[maybe_unused]] long a
     owner->set_uid(99);
     owner->set_gid(99);
     return 0;
+  }
+  if (op == EXEC_REGISTER_DORMANT_PEER && ut::same_id(selection, "users.exec") &&
+      ut::same_id(active_case, "shared_thread_gate") &&
+      affinity_valid()) {
+    auto owner = process::current_process();
+    auto *peer = owner ? process::Thread::try_create(process::Process::allocate_thread_id(), owner->pid()) : nullptr;
+    if (!peer) {
+      return 0;
+    }
+    if (!owner->register_thread(peer)) {
+      delete peer;
+      return 0;
+    }
+    // The peer is registered but never enqueued, so this probes exec admission
+    // without running an unsupported shared user-root or second user stack.
+    return owner->thread_count() == 2 ? 1 : 0;
   }
   if (ut::same_id(selection, "users.exec") && ut::same_id(active_case, "mutable_snapshot_rollback") &&
       affinity_valid()) {
