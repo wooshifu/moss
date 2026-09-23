@@ -22,12 +22,16 @@ static unsigned long parse_handle(const char *text) {
   return errno || !handle || *end ? 0 : handle;
 }
 
-static long open_file(unsigned long file, struct moss_ipc_message *opened) {
+static long open_file(unsigned long file, const struct moss_ipc_message *lookup, struct moss_ipc_message *opened) {
   unsigned long now = 0;
   if (syscall2(SYS_CLOCK_GETTIME, MOSS_CLOCK_MONOTONIC, (long)&now) != 0 || now > LONG_MAX - FILE_OPEN_TIMEOUT_NS) {
     return -1;
   }
-  const struct moss_ipc_message request = {.size = 1, .payload = {MOSS_FILE_OPEN}};
+  // The namespace owns absolute path policy; the file service sees only a
+  // name relative to this root mount.
+  struct moss_ipc_message request = {.size = lookup->size - 1, .payload = {MOSS_FILE_OPEN}};
+  request.payload[1] = lookup->payload[1] & MOSS_NAMESPACE_OPEN_CREATE ? MOSS_FILE_OPEN_CREATE : 0;
+  memcpy(request.payload + 2, lookup->payload + 3, lookup->size - 3);
   return syscall6(SYS_IPC_CALL, (long)file, (long)&request, (long)opened, (long)(now + FILE_OPEN_TIMEOUT_NS), 0, 0);
 }
 
@@ -57,20 +61,25 @@ int main(int argc, char **argv) {
       // A lookup never accepts delegated authority. Release an unexpected
       // handle so an untrusted caller cannot exhaust this service's table.
       (void)syscall1(SYS_CAP_CLOSE, (long)request.capability);
-    } else if (request.size >= 2 && request.payload[0] == MOSS_NAMESPACE_OPEN &&
-               request.payload[request.size - 1] == 0) {
-      if (request.size == 1 + sizeof(MOSS_SCRATCH_PATH) &&
-          memcmp(request.payload + 1, MOSS_SCRATCH_PATH, sizeof(MOSS_SCRATCH_PATH)) == 0) {
+    } else if (request.size >= 5 && request.payload[0] == MOSS_NAMESPACE_OPEN &&
+               !(request.payload[1] & ~MOSS_NAMESPACE_OPEN_CREATE)) {
+      const unsigned char *path = request.payload + 2;
+      unsigned long path_size = request.size - 2;
+      // This namespace currently mounts one flat root filesystem. Reject
+      // ambiguous spellings before the filesystem chooses an object.
+      if (path[0] == '/' && path[1] != 0 && memchr(path, 0, path_size) == path + path_size - 1 &&
+          !memchr(path + 1, '/', path_size - 2) && !(path_size == 3 && path[1] == '.') &&
+          !(path_size == 4 && path[1] == '.' && path[2] == '.')) {
         response.payload[0] = MOSS_NAMESPACE_UNAVAILABLE;
-        long result = open_file(file, &opened);
+        long result = open_file(file, &request, &opened);
         if (result == 1 && opened.payload[0] == MOSS_FILE_OK && opened.capability &&
             opened.rights == (MOSS_CAP_SEND | MOSS_CAP_TRANSFER | MOSS_CAP_DUPLICATE)) {
           response.payload[0] = MOSS_NAMESPACE_OK;
           response.capability = opened.capability;
           response.rights = MOSS_CAP_SEND;
+        } else if (result == 1 && opened.payload[0] == MOSS_FILE_NO_ENTRY && !opened.capability) {
+          response.payload[0] = MOSS_NAMESPACE_NO_ENTRY;
         }
-      } else {
-        response.payload[0] = MOSS_NAMESPACE_NO_ENTRY;
       }
     }
     // A returned file cap names its original service incarnation. Restarting

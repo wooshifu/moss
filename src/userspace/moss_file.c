@@ -116,11 +116,12 @@ int main(int argc, char **argv) {
   }
 
   size_t path_size = strlen(path) + 1;
-  if (path_size > MOSS_IPC_MAX_MESSAGE - 1) {
+  if (path_size > MOSS_IPC_MAX_MESSAGE - 2) {
     return 2;
   }
-  struct moss_ipc_message open = {.size = path_size + 1, .payload = {MOSS_NAMESPACE_OPEN}};
-  memcpy(open.payload + 1, path, path_size);
+  struct moss_ipc_message open = {.size = path_size + 2, .payload = {MOSS_NAMESPACE_OPEN}};
+  open.payload[1] = write_text ? MOSS_NAMESPACE_OPEN_CREATE : 0;
+  memcpy(open.payload + 2, path, path_size);
   struct moss_ipc_message opened = {0};
   long lookup = call(namespace, &open, &opened);
   if (lookup != 1 || opened.payload[0] != MOSS_NAMESPACE_OK || !opened.capability || opened.rights != MOSS_CAP_SEND) {

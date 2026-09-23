@@ -2,8 +2,10 @@
 
 #define MOSS_SCRATCH_PATH "/scratch"
 
-// The namespace returns a file endpoint capability only for a valid OPEN.
+// OPEN carries [opcode, flags, absolute NUL-terminated flat-root file path].
+// A successful lookup returns a direct file endpoint capability.
 enum { MOSS_NAMESPACE_OPEN = 1 };
+enum { MOSS_NAMESPACE_OPEN_CREATE = 1U << 0 };
 enum {
   MOSS_NAMESPACE_OK = 0,
   MOSS_NAMESPACE_BAD_REQUEST = 1,

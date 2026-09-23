@@ -40,6 +40,14 @@ assert input() == '/moss-file.elf write native'
 print('\nMOSS_FILE_WRITE_OK\nmoss$ ', end='', flush=True)
 assert input() == '/moss-file.elf read'
 print('\nMOSS_FILE_READ=native\nmoss$ ', end='', flush=True)
+assert input() == '/moss-file.elf write separate /note'
+print('\nMOSS_FILE_WRITE_OK\nmoss$ ', end='', flush=True)
+assert input() == '/moss-file.elf read /note'
+print('\nMOSS_FILE_READ=separate\nmoss$ ', end='', flush=True)
+assert input() == '/moss-file.elf read /../note'
+print('\nMOSS_FILE_ERROR\nmoss$ ', end='', flush=True)
+assert input() == '/moss-file.elf read'
+print('\nMOSS_FILE_READ=native\nmoss$ ', end='', flush=True)
 assert input() == '/busybox.elf ash -c \'printf "MOSS_EXEC_READY\\n"\''
 print('\nMOSS_EXEC_READY\nmoss$ ', end='', flush=True)
 assert input().startswith('mkdir /shell-check && ')
@@ -72,6 +80,8 @@ assert input() == 'echo MOSS_PRODUCTION_READY'
         script += "print('BusyBox built-in shell (ash)\\nmoss$ ', end='', flush=True)\n"
         script += "assert input() == '/moss-file.elf read'\n"
         script += "print('\\nMOSS_FILE_READ=native\\nmoss$ ', end='', flush=True)\n"
+        script += "assert input() == '/moss-file.elf read /note'\n"
+        script += "print('\\nMOSS_FILE_READ=separate\\nmoss$ ', end='', flush=True)\n"
         script += "assert input() == 'kill 42'\n"
         script += (
             "print('moss-init: file service died\\nmoss-init: file service started pid=45\\n"
@@ -80,6 +90,8 @@ assert input() == 'echo MOSS_PRODUCTION_READY'
         script += "print('BusyBox built-in shell (ash)\\nmoss$ ', end='', flush=True)\n"
         script += "assert input() == '/moss-file.elf read'\n"
         script += "print('\\nMOSS_FILE_READ=\\nmoss$ ', end='', flush=True)\n"
+        script += "assert input() == '/moss-file.elf read /note'\n"
+        script += "print('\\nMOSS_FILE_ERROR\\nmoss$ ', end='', flush=True)\n"
         script += 'assert input() == "/moss-file.elf write \\"$(printf \'%0300d\' 0)\\""\n'
         script += "print('\\nMOSS_FILE_WRITE_OK\\nmoss$ ', end='', flush=True)\n"
         script += "assert input() == '/moss-file.elf read'\n"
@@ -103,11 +115,11 @@ assert input() == 'echo MOSS_PRODUCTION_READY'
     assert result["status"] == ("passed" if mode in ("complete", "gdb_complete") else "error")
     assert result["raw_exit"] is not None
     if mode == "echo_only":
-        assert result["completed_steps"] == 18
+        assert result["completed_steps"] == 26
     if mode == "legacy_shell":
         assert result["completed_steps"] == 3
     if mode == "applets_failed":
-        assert result["completed_steps"] == 14
+        assert result["completed_steps"] == 22
     if mode == "late_panic":
         assert "panicked" in result["observed"]
     if mode in ("gdb_unverified", "gdb_failure"):

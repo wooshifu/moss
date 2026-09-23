@@ -39,13 +39,14 @@ an interactive BusyBox ash at the `moss$` prompt, including with
 BusyBox's standalone shell support. The separate validation initramfs starts
 `/validation.elf`, which also contains the signal regression cases.
 
-The capability-backed services currently cover only the volatile `/scratch`
-example used by `/moss-file.elf`. Its namespace lookup asks the file service
-to mint a sender capability; the kernel supplies that capability's file badge
-to the serving process. Ordinary shell files, ELF loading, process
-compatibility, interrupt/timer bootstrap and the early console still use kernel
-implementations. The accepted [architecture decisions](docs/adr/) describe
-their intended migration.
+The capability-backed native file service holds up to 16 volatile, flat root
+files of one page each: `/scratch` exists at boot, and
+`/moss-file.elf write TEXT /name` creates another file. The namespace validates
+the path and asks the file service to mint a per-file sender capability; the
+kernel supplies its badge to the service on later operations. Ordinary shell
+files, ELF loading, process compatibility, interrupt/timer bootstrap and the
+early console still use kernel implementations. The accepted
+[architecture decisions](docs/adr/) describe their intended migration.
 
 For example, after launching QEMU:
 
