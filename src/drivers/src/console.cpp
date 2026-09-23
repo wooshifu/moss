@@ -3,6 +3,8 @@ module moss.drivers.console;
 // The debugger can stop after an empty-buffer check while event_lock is held.
 // Production and validation images both execute the same wait/RX path.
 extern "C" [[gnu::weak, gnu::noinline]] void moss_validation_console_before_register() noexcept {}
+// Validation observes the RX handler before it competes for the same lock.
+extern "C" [[gnu::weak, gnu::noinline]] void moss_validation_console_irq_before_lock() noexcept {}
 
 namespace moss::kernel::drivers::console {
 namespace {
@@ -17,6 +19,7 @@ struct Waiter {
 };
 Waiter *waiters = nullptr;
 void receive() noexcept {
+  moss_validation_console_irq_before_lock();
   containers::LockGuard<containers::IrqSpinLock> guard(event_lock);
   // Clear before draining: clearing after a refill can erase its notification.
   uart::ack_rx_interrupt();

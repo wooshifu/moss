@@ -38,7 +38,36 @@ namespace {
 bool mm_publication_boundary_observed;
 bool mm_ready_visible_at_publication_boundary;
 bool mm_instance_visible_at_publication_boundary;
+#if defined(MOSS_ARCH_ARM64) || defined(MOSS_ARCH_X64)
+u32 console_irq_probe_armed = 0;
+u32 console_reader_at_gap = 0;
+u32 console_irq_before_lock = 0;
+u32 console_irq_cpu = ~u32{0};
+#endif
 } // namespace
+
+#if defined(MOSS_ARCH_ARM64) || defined(MOSS_ARCH_X64)
+extern "C" void moss_validation_console_before_register() noexcept {
+  if (__atomic_load_n(&console_irq_probe_armed, __ATOMIC_ACQUIRE) == 0 || arch::get_current_cpu_id() != 1) {
+    return;
+  }
+  // Hold the empty-check lock until the remote hardware IRQ has reached the
+  // same lock. Registration then races only with a handler already in flight.
+  __atomic_store_n(&console_reader_at_gap, 1U, __ATOMIC_RELEASE);
+  while (__atomic_load_n(&console_irq_before_lock, __ATOMIC_ACQUIRE) == 0 &&
+         __atomic_load_n(&console_irq_probe_armed, __ATOMIC_ACQUIRE) != 0) {
+    arch::cpu_yield();
+  }
+}
+
+extern "C" void moss_validation_console_irq_before_lock() noexcept {
+  if (__atomic_load_n(&console_irq_probe_armed, __ATOMIC_ACQUIRE) == 0) {
+    return;
+  }
+  __atomic_store_n(&console_irq_cpu, arch::get_current_cpu_id(), __ATOMIC_RELEASE);
+  __atomic_store_n(&console_irq_before_lock, 1U, __ATOMIC_RELEASE);
+}
+#endif
 
 extern "C" void moss_validation_mm_before_ready(const void *published_instance) noexcept {
   mm_publication_boundary_observed = true;
@@ -3858,8 +3887,10 @@ struct InterruptUnbind {
     }
     const bool unbinding = controller->enable_interrupt(irq).error() == ErrorCode::ResourceBusy &&
                            controller->unregister_interrupt(irq).error() == ErrorCode::ResourceBusy;
-    descriptor->end_callback();
+    // Unregister may return as soon as the callback lease reaches zero.
+    // Publish the completed checks before releasing that lease.
     __atomic_store_n(&finished, 1U, __ATOMIC_RELEASE);
+    descriptor->end_callback();
     return right_cpu && unbinding;
   }
 
@@ -5910,6 +5941,9 @@ void declare_cases() {
     ut::register_test("console_partial_interrupt", empty_case);
     ut::register_test("console_multi_reader", empty_case);
   });
+#if defined(MOSS_ARCH_ARM64) || defined(MOSS_ARCH_X64)
+  ut::register_suite("users.console_irq", [] { ut::register_test("irq_before_registration", empty_case); });
+#endif
 #if defined(MOSS_ARCH_X64)
   ut::register_suite("users.simd_fault", [] { ut::register_test("isolation", empty_case); });
 #endif
@@ -6696,6 +6730,11 @@ extern "C" long moss_validation_call(long op, long arg1, [[maybe_unused]] long a
     if (ut::same_id(selection, "users.signals")) {
       return 8;
     }
+#if defined(MOSS_ARCH_ARM64) || defined(MOSS_ARCH_X64)
+    if (ut::same_id(selection, "users.console_irq")) {
+      return 24;
+    }
+#endif
     if (ut::same_id(selection, "users.lifecycle")) {
       return 9;
     }
@@ -6818,9 +6857,10 @@ extern "C" long moss_validation_call(long op, long arg1, [[maybe_unused]] long a
   }
   const bool user_suite = ut::same_id(selection, "users") || ut::same_id(selection, "users.vm") ||
                           ut::same_id(selection, "users.frame") || ut::same_id(selection, "users.uaccess") ||
-                          ut::same_id(selection, "users.signals") || is_lifecycle() ||
-                          ut::same_id(selection, "users.timers") || ut::same_id(selection, "users.libc") ||
-                          ut::same_id(selection, "users.busybox") || ut::same_id(selection, "users.exec");
+                          ut::same_id(selection, "users.signals") || ut::same_id(selection, "users.console_irq") ||
+                          is_lifecycle() || ut::same_id(selection, "users.timers") ||
+                          ut::same_id(selection, "users.libc") || ut::same_id(selection, "users.busybox") ||
+                          ut::same_id(selection, "users.exec");
   if (op == 1 && user_suite && !failed && !active_case && arg1 == static_cast<long>(completed) && arg1 >= 0) {
     long index = 0;
     for (unsigned i = 0; i < ut::registry.case_count; ++i) {
@@ -7020,6 +7060,38 @@ extern "C" long moss_validation_call(long op, long arg1, [[maybe_unused]] long a
     }
     return 1;
   }
+#if defined(MOSS_ARCH_ARM64) || defined(MOSS_ARCH_X64)
+  if (op == 58 && ut::same_id(selection, "users.console_irq") && ut::same_id(active_case, "irq_before_registration") &&
+      affinity_valid()) {
+    if (arg1 == 0 && arg2 == 0) {
+      if (g_num_cpus < 2 || !drivers::console::is_initialized()) {
+        return -1;
+      }
+      __atomic_store_n(&console_reader_at_gap, 0U, __ATOMIC_RELEASE);
+      __atomic_store_n(&console_irq_before_lock, 0U, __ATOMIC_RELEASE);
+      __atomic_store_n(&console_irq_cpu, ~u32{0}, __ATOMIC_RELEASE);
+      __atomic_store_n(&console_irq_probe_armed, 1U, __ATOMIC_RELEASE);
+      return 1;
+    }
+    if (arg1 == -1 && arg2 == 0) {
+      __atomic_store_n(&console_irq_probe_armed, 0U, __ATOMIC_RELEASE);
+      return __atomic_load_n(&console_reader_at_gap, __ATOMIC_ACQUIRE) == 1 &&
+                     __atomic_load_n(&console_irq_before_lock, __ATOMIC_ACQUIRE) == 1 &&
+                     __atomic_load_n(&console_irq_cpu, __ATOMIC_ACQUIRE) == 0
+                 ? 1
+                 : -1;
+    }
+    auto parent = process::current_process();
+    if (!parent || arg1 <= 1 || arg1 > ~ProcessId{0} || arg2 != 0) {
+      return -1;
+    }
+    auto child = process::g_process_manager->find_process(static_cast<ProcessId>(arg1));
+    if (!child || child->parent_pid() != parent->pid()) {
+      return -1;
+    }
+    return __atomic_load_n(&console_reader_at_gap, __ATOMIC_ACQUIRE) == 1 ? 1 : 0;
+  }
+#endif
   if (op == 39 && ut::same_id(selection, "users.signals") &&
       (ut::same_id(active_case, "pipe_interrupted") || ut::same_id(active_case, "pipe_noninterrupting_signals") ||
        ut::same_id(active_case, "console_interrupted") || ut::same_id(active_case, "console_partial_interrupt"))) {

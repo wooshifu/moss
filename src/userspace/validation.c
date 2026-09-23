@@ -3299,6 +3299,62 @@ static int test_console_multi_reader(void) {
   return errors;
 }
 
+#if defined(__aarch64__) || defined(__x86_64__)
+static int test_console_irq_registration(void) {
+  long result[2];
+  if (pipe(result) != 0) {
+    return 1;
+  }
+  if (control(58, 0, 0) != 1) {
+    close((int)result[0]);
+    close((int)result[1]);
+    return 1;
+  }
+  long child = fork();
+  if (child == 0) {
+    close((int)result[0]);
+    unsigned cpu_mask = 1U << 1;
+    if (syscall3(20, 0, sizeof(cpu_mask), (long)&cpu_mask) != 0 || current_cpu() != 1) {
+      _exit(98);
+    }
+    long fd = open("/dev/console", 0);
+    char byte = 0;
+    long count = fd >= 0 ? read((int)fd, &byte, 1) : -1;
+    int failed = count != 1 || byte != 'r' || write((int)result[1], &byte, 1) != 1;
+    if (fd >= 0) {
+      close((int)fd);
+    }
+    close((int)result[1]);
+    _exit(failed ? 98 : 42);
+  }
+  close((int)result[1]);
+  int errors = child < 0;
+  if (!errors) {
+    long ready;
+    while ((ready = control(58, child, 0)) == 0) {
+      sched_yield(); // The host case deadline bounds a missing reader.
+    }
+    errors = ready != 1;
+  }
+  if (!errors) {
+    print("MOSS_CONSOLE_IRQ_READY\n");
+    char byte = 0;
+    errors = read((int)result[0], &byte, 1) != 1 || byte != 'r';
+    print("\n"); // Keep validation protocol lines clear of console echo.
+  }
+  close((int)result[0]);
+  errors |= control(58, -1, 0) != 1;
+  if (errors && child > 0) {
+    kill(child, SIGKILL);
+  }
+  if (child > 0) {
+    int status = 0;
+    errors |= waitpid(child, &status, 0) != child || status != (42 << 8);
+  }
+  return errors;
+}
+#endif
+
 static int test_pid_lifecycle(void) {
   // 300 children cross both the 255-user-ASID lease limit and the former
   // 256-slot signal table boundary while keeping concurrent population low.
@@ -3373,6 +3429,11 @@ static int test_pid_lifecycle(void) {
 // signals and writable fixture state cannot leak between cases. The inheritance
 // case also re-executes it to verify the kernel's exec-time signal reset rules.
 static int signal_case(const char *name) {
+#if defined(__aarch64__) || defined(__x86_64__)
+  if (streq(name, "irq_before_registration")) {
+    return test_console_irq_registration();
+  }
+#endif
   const struct {
     const char *name;
     int (*run)(void);
@@ -3672,7 +3733,7 @@ void _start(long argc, const char **argv) {
     }
     control(2, ok && progress == 2, (long)cycle_errors);
     control(3, 0, 0);
-  } else if (mode == 8) {
+  } else if (mode == 8 || mode == 24) {
     const char *cases[] = {"basic_handler",
                            "nested_signals",
                            "sigchld",
@@ -3695,11 +3756,12 @@ void _start(long argc, const char **argv) {
                            "console_interrupted",
                            "console_partial_interrupt",
                            "console_multi_reader"};
-    for (unsigned test = 0; test < sizeof(cases) / sizeof(cases[0]); ++test) {
+    const unsigned count = mode == 24 ? 1 : sizeof(cases) / sizeof(cases[0]);
+    for (unsigned test = 0; test < count; ++test) {
       control(1, test, 0);
       long child = fork();
       if (child == 0) {
-        const char *args[] = {"validation", "signals", cases[test], 0};
+        const char *args[] = {"validation", "signals", mode == 24 ? "irq_before_registration" : cases[test], 0};
         syscall3(SYS_EXECVE, (long)"/validation.elf", (long)args, 0);
         _exit(99);
       }

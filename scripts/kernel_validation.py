@@ -251,6 +251,7 @@ CATALOG = {
         "console_partial_interrupt",
         "console_multi_reader",
     ],
+    "users.console_irq": ["irq_before_registration"],
     "users.simd_fault": ["isolation"],  # Explicit x86 acceptance; TCG may not deliver #XM.
     "mm.permissions": [
         "table_defaults",
@@ -334,8 +335,12 @@ TLB_JOIN = ["mm.tlb_join.request_first", "mm.tlb_join.cpu_first"]
 
 
 def functional_workloads(arch: str) -> list[str]:
-    """Native broadcasts do not participate in the software CPU-join protocol."""
-    return [*FUNCTIONAL, *(TLB_JOIN if arch in ("X64", "RISCV64") else [])]
+    """Select only workloads supported by each architecture's interrupt path."""
+    return [
+        *FUNCTIONAL,
+        *(["users.console_irq"] if arch in ("ARM64", "X64") else []),
+        *(TLB_JOIN if arch in ("X64", "RISCV64") else []),
+    ]
 
 
 BENCHMARK_KINDS = {
@@ -694,7 +699,8 @@ def run_guest(cfg: Artifacts, workload: str, directory: Path, settings: dict, it
         # ARM64 Debug while compiling; retain the same bounded 30 s deadline.
         case_timeout = (
             30.0
-            if workload in ("pfa", "users.signals", "users.busybox", *LIFECYCLE_INTERVAL, *BENCHMARK_KINDS)
+            if workload
+            in ("pfa", "users.signals", "users.console_irq", "users.busybox", *LIFECYCLE_INTERVAL, *BENCHMARK_KINDS)
             else 5.0
         )
     progress_deadline = settings.get("stability", False) or workload == "users.applications"
@@ -774,7 +780,7 @@ def run_guest(cfg: Artifacts, workload: str, directory: Path, settings: dict, it
             process = subprocess.Popen(
                 args,
                 stdin=subprocess.PIPE
-                if settings.get("stability") or workload == "users.signals"
+                if settings.get("stability") or workload in ("users.signals", "users.console_irq")
                 else subprocess.DEVNULL,
                 stdout=serial_out,
                 stderr=diagnostics,
@@ -809,6 +815,14 @@ def run_guest(cfg: Artifacts, workload: str, directory: Path, settings: dict, it
                         process.stdin.write(b"ab")
                         process.stdin.flush()
                         serial_inputs.append({"case": state.active, "hex": "6162"})
+                    if (
+                        workload == "users.console_irq"
+                        and state.active == "irq_before_registration"
+                        and line == b"MOSS_CONSOLE_IRQ_READY"
+                    ):
+                        process.stdin.write(b"r")
+                        process.stdin.flush()
+                        serial_inputs.append({"case": state.active, "hex": "72"})
                 if len(pending) > 65536:
                     raise ValueError("unbounded partial serial line")
                 if state.end:
@@ -1214,6 +1228,8 @@ def run(
     cfg = Artifacts.load(manifest)
     if workload is None and not (benchmark or selftest or stability):
         selected = functional_workloads(cfg.arch)
+    if "users.console_irq" in selected and cfg.arch not in ("ARM64", "X64"):
+        raise typer.BadParameter("users.console_irq requires ARM64 or x64 interrupt-driven console")
     if any(name in TLB_JOIN for name in selected):
         if cfg.arch not in ("X64", "RISCV64"):
             raise typer.BadParameter("TLB CPU-join workloads require x64 or riscv64")

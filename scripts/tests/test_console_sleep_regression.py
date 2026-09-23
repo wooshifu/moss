@@ -60,6 +60,10 @@ static u32 switches;
 static u32 ready_publications;
 static u32 deferred_wakes;
 
+// The standalone fixture uses the production image's no-op validation hooks.
+extern "C" void moss_validation_console_before_register() noexcept {}
+extern "C" void moss_validation_console_irq_before_lock() noexcept {}
+
 [[noreturn]] static void fail(const char *message) {
   std::fprintf(stderr, "%s\n", message);
   std::exit(1);
