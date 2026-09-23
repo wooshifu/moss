@@ -263,6 +263,14 @@ def test_validation_snapshot_survives_in_place_rebuild(tmp_path):
     assert snapshot.require("validation_debug_symbols").read_bytes() == b"artifact"
 
 
+@pytest.mark.parametrize("missing", ["validation_kernel", "validation_initramfs"])
+def test_validation_snapshot_rejects_missing_inputs_without_production_fallback(tmp_path, missing):
+    artifacts = Artifacts.load(manifest(tmp_path))
+    artifacts.require(missing).unlink()
+    with pytest.raises(ValueError, match=f"artifact {missing} is not built"):
+        artifacts.snapshot_validation(tmp_path / "inputs")
+
+
 def test_legacy_manifest_explicitly_has_no_validation_symbols(tmp_path):
     path = manifest(tmp_path)
     data = json.loads(path.read_text())
