@@ -5938,6 +5938,7 @@ void declare_cases() {
     ut::register_test("wait_job_status", empty_case);
     ut::register_test("no_cldstop", empty_case);
     ut::register_test("wait_process_group", empty_case);
+    ut::register_test("wait_group_change", empty_case);
     ut::register_test("no_cldwait", empty_case);
     ut::register_test("signal_exit_status", empty_case);
     ut::register_test("sigprocmask", empty_case);
@@ -7025,7 +7026,8 @@ extern "C" long moss_validation_call(long op, long arg1, [[maybe_unused]] long a
   if (op == 55 && ut::same_id(selection, "users.signals") &&
       (ut::same_id(active_case, "wait_interrupted") || ut::same_id(active_case, "wait_restarted") ||
        ut::same_id(active_case, "wait_job_status") || ut::same_id(active_case, "no_cldstop") ||
-       ut::same_id(active_case, "wait_process_group") || ut::same_id(active_case, "no_cldwait")) &&
+       ut::same_id(active_case, "wait_process_group") || ut::same_id(active_case, "wait_group_change") ||
+       ut::same_id(active_case, "no_cldwait")) &&
       arch::get_current_cpu_id() == 1) {
     auto child = process::current_process();
     if (!child || arg1 != static_cast<long>(child->parent_pid()) || arg2 != static_cast<long>(child->pid())) {
@@ -7042,7 +7044,9 @@ extern "C" long moss_validation_call(long op, long arg1, [[maybe_unused]] long a
     // than treating the child's readiness or a preceding syscall as proof.
     return thread->state == process::ProcessState::Sleeping && thread->sleep_handoff.load() == 0 && frame &&
            frame->syscall_number() == 13 &&
-           frame->argument(0) == static_cast<u64>(ut::same_id(active_case, "wait_process_group") ? -arg2 : arg2);
+           frame->argument(0) == static_cast<u64>(ut::same_id(active_case, "wait_process_group")  ? -arg2
+                                                  : ut::same_id(active_case, "wait_group_change") ? 0
+                                                                                                  : arg2);
   }
   if (ut::same_id(selection, "users.signals") && ut::same_id(active_case, "cpu_bound_irq")) {
     if (op == CPU_BOUND_ARM_PROBE && arch::get_current_cpu_id() == 1 && arg1 > 0 && arg2 > arg1) {

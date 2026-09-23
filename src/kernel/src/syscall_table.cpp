@@ -1148,6 +1148,24 @@ long sys_getsid(long pid_arg, long /*unused*/, long /*unused*/, long /*unused*/,
   return static_cast<long>(proc->sid());
 }
 
+static void change_process_group(process::Process &target, ProcessId pgid) noexcept {
+  if (target.pgid() == pgid) {
+    return;
+  }
+  target.set_pgid(pgid);
+  auto parent = process::g_process_manager->find_process(target.parent_pid());
+  if (!parent) {
+    return;
+  }
+  // Every group-selecting waiter must recheck whether it still has a matching child.
+  parent->child_exit_wait_queue().for_each_waiter([](void *waiting) {
+    auto *thread = static_cast<process::Thread *>(waiting);
+    if (process::g_scheduler) {
+      process::g_scheduler->task_wakeup(thread, thread->wake_cpu);
+    }
+  });
+}
+
 // setpgid(pid, pgid) — set process group of `pid` to `pgid`.
 // pid==0 → calling process;  pgid==0 → use pid as new pgid.
 // POSIX restrictions: can only set own or child's pgid, child must not
@@ -1184,7 +1202,7 @@ long sys_setpgid(long pid_arg, long pgid_arg, long /*unused*/, long /*unused*/, 
     return -errc::EPERM;
   }
 
-  target->set_pgid(new_pgid);
+  change_process_group(*target, new_pgid);
   return 0;
 }
 
@@ -1217,7 +1235,7 @@ long sys_setsid(long /*unused*/, long /*unused*/, long /*unused*/, long /*unused
 
   // Become session leader and process group leader
   proc->set_sid(proc->pid());
-  proc->set_pgid(proc->pid());
+  change_process_group(*proc, proc->pid());
   return static_cast<long>(proc->sid());
 }
 

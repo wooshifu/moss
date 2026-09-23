@@ -18,6 +18,7 @@ enum {
   SYS_GETGID = 5,
   SYS_GETEUID = 6,
   SYS_GETEGID = 7,
+  SYS_SETSID = 8,
   SYS_FORK = 10,
   SYS_EXECVE = 11,
   SYS_WAIT4 = 12,
