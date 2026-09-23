@@ -17,9 +17,9 @@ int main(int argc, char **argv) {
     return 2;
   }
 
-  // ponytail: one control message holds this volatile file; use a Memory
-  // Object data plane when files need to exceed the bounded control payload.
-  unsigned char file[MOSS_IPC_MAX_MESSAGE - 1] = {0};
+  // ponytail: one shared page holds this volatile file; add multi-page
+  // objects when a real filesystem protocol needs a larger transfer window.
+  unsigned char file[MOSS_MEM_OBJECT_BYTES] = {0};
   unsigned long length = 0;
   for (;;) {
     struct moss_ipc_message request = {0};
@@ -33,10 +33,34 @@ int main(int argc, char **argv) {
     }
     struct moss_ipc_message response = {.size = 1, .payload = {MOSS_FILE_BAD_REQUEST}};
     if (request.capability) {
-      // A file request never accepts delegated authority; release unexpected
-      // handles so an untrusted client cannot fill the service's handle table.
+      unsigned long count = (unsigned long)request.payload[1] | ((unsigned long)request.payload[2] << 8);
+      int reading = request.size == 1 && request.payload[0] == MOSS_FILE_READ && request.rights == MOSS_CAP_MAP_WRITE;
+      int writing = request.size == MOSS_FILE_MEMORY_HEADER_BYTES && request.payload[0] == MOSS_FILE_WRITE &&
+                    request.rights == MOSS_CAP_MAP_READ && count <= sizeof(file);
+      if (reading || writing) {
+        long mapped = syscall2(SYS_MEM_MAP, (long)request.capability, reading ? MOSS_CAP_MAP_WRITE : MOSS_CAP_MAP_READ);
+        if (mapped > 0) {
+          if (reading) {
+            memcpy((void *)mapped, file, length);
+            response.size = MOSS_FILE_MEMORY_HEADER_BYTES;
+            response.payload[1] = (unsigned char)(length & 0xff);
+            response.payload[2] = (unsigned char)(length >> 8);
+          } else {
+            memcpy(file, (const void *)mapped, count);
+            length = count;
+          }
+          response.payload[0] = MOSS_FILE_OK;
+          // This service maps a new client page for each operation. A failed
+          // unmap must stop it before leaked mappings accumulate indefinitely.
+          if (syscall2(SYS_MUNMAP, mapped, MOSS_MEM_OBJECT_BYTES) != 0) {
+            return 1;
+          }
+        }
+      }
+      // Even a malformed request may carry a transferred handle. Release it
+      // after use so clients cannot exhaust the service's capability table.
       (void)syscall1(SYS_CAP_CLOSE, (long)request.capability);
-    } else if (request.size == 1 && request.payload[0] == MOSS_FILE_READ) {
+    } else if (request.size == 1 && request.payload[0] == MOSS_FILE_READ && length <= MOSS_IPC_MAX_MESSAGE - 1) {
       response.payload[0] = MOSS_FILE_OK;
       response.size = length + 1;
       memcpy(response.payload + 1, file, length);

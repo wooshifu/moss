@@ -117,6 +117,7 @@ quit
     child, debugger, console, stage, pending = None, None, None, 0, b""
     service_pid = None
     namespace_pid = None
+    bulk_data = b"0" * 300
     # Require namespace lookup and direct file-capability calls as well as
     # ash commands, child reaping and independent service recovery by PID 1.
     steps = [
@@ -166,6 +167,10 @@ quit
         (b"built-in shell (ash)", None),
         (b"moss$ ", b"/moss-file.elf read\n"),
         (b"\nMOSS_FILE_READ=\n", None),
+        (b"moss$ ", b"/moss-file.elf write \"$(printf '%0300d' 0)\"\n"),
+        (b"\nMOSS_FILE_WRITE_OK\n", None),
+        (b"moss$ ", b"/moss-file.elf read\n"),
+        (b"\nMOSS_FILE_READ=" + bulk_data + b"\n", None),
         (b"moss$ ", None),
     ]
     started = time.monotonic()

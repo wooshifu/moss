@@ -80,6 +80,10 @@ assert input() == 'echo MOSS_PRODUCTION_READY'
         script += "print('BusyBox built-in shell (ash)\\nmoss$ ', end='', flush=True)\n"
         script += "assert input() == '/moss-file.elf read'\n"
         script += "print('\\nMOSS_FILE_READ=\\nmoss$ ', end='', flush=True)\n"
+        script += 'assert input() == "/moss-file.elf write \\"$(printf \'%0300d\' 0)\\""\n'
+        script += "print('\\nMOSS_FILE_WRITE_OK\\nmoss$ ', end='', flush=True)\n"
+        script += "assert input() == '/moss-file.elf read'\n"
+        script += "print('\\nMOSS_FILE_READ=' + '0' * 300 + '\\nmoss$ ', end='', flush=True)\n"
         script += "time.sleep(30)\n"
     monkeypatch.setattr(boot, "resolve_qemu", lambda _: "unused")
     monkeypatch.setattr(boot, "build_qemu_args", lambda *_a, **_kw: [sys.executable, "-c", script])

@@ -128,6 +128,8 @@ after child reaping, exits the shell and verifies the same file survives its
 restart, kills and restarts the namespace service while requiring the file
 contents to survive, then kills the file service and requires new service
 instances with empty volatile contents. A prompt or echoed input alone cannot pass.
+It also writes and reads a 300-byte value through the shared Memory Object
+data path, beyond the 256-byte control-message limit.
 Panics, validation output, unexpected exit
 and timeout fail the probe. Image hashes and serial/QEMU logs are retained in
 `<build>/production-boot/run-*/guest/` with `results.json`.
