@@ -1421,6 +1421,12 @@ PVH initrd 原先只要求被 RAM 条目覆盖；当同一物理区间也被非 
 
 原有“大范围重叠”场景改为只保留 RAM bank 中 initrd 之前的区间，使它继续单独约束 PFA：暂时移除保留区传递时内核错误完成启动（`build/x64-debug/pvh-overlap-no-reserve-red/results.json`），恢复后在内存初始化阶段拒绝。x64 Debug、Release、RelWithDebInfo 完整 CTest 合计 16/16 通过；最终报告在 `build/x64-<config>/pvh-reserved-initrd-final/results.json`。完整低地址保留与回收、更多 PVH 异常表组合仍未完成。
 
+### 3.50 x64 PVH 重叠 RAM 描述符验收（2026-09-23，工作区）
+
+在真实 PVH ELF 入口把现有非 RAM 描述符改成与最大 RAM bank 完全重复的 RAM 描述符。`PageFrameAllocator::parse_memory_layout` 应在内存初始化阶段拒绝重叠可用区；暂时移除其重叠检查时，启动越过内存初始化后触发 x64 GP 异常，红例保存在 `build/x64-debug/pvh-ram-overlap-no-guard-red/`。恢复检查后，x64 Debug、Release、RelWithDebInfo 各十一项 PVH 场景与各自的 `moss-pvh-initrd` CTest 均通过，报告见 `build/x64-<config>/pvh-ram-overlap-final/results.json`。
+
+本项验证了现有 PFA 规则在真实 PVH 输入路径上的作用；更多异常表组合及低地址启动对象显式保留/回收仍未完成。
+
 ## 4. 问题总表与当前状态
 
 | 编号 | 优先级 | 审计主题 | 当前状态与下一步 |
@@ -1429,7 +1435,7 @@ PVH initrd 原先只要求被 RAM 条目覆盖；当同一物理区间也被非 
 | MOSS-002 | P0 | 用户域 / uaccess / 调试旁路 | 部分修复（3.13、3.20～3.21、3.31～3.39、3.42～3.46）；共享 uaccess/COW OOM、拥有型地址空间、软件 VM 事务、同步页租约、三架构 TLB 协议、双发布者交错、活动 root 拥有权/本核退休、首次 CPU 注册两顺序、单次 exec 输入版本绑定、缺页/unmap、缺页/fork 与 fork/unmap 交错及多线程 exec 失败关闭已补；完整共享 exec、异步页 pin 与完整并发验收未完成。 |
 | MOSS-003 | P0 | 信号帧与特权状态恢复 | 已关闭（3.40）；修复注册栈容量越界，恶意帧、栈准入/撤销、内核哨兵及合法嵌套现场验收通过；不代表全部信号语义或共享 exec 协调完成。 |
 | MOSS-004 | P0 | 堆与页表/PFA 所有权重叠 | 已关闭（`040d773`）；当前布局、活动页表树/早期表池及元数据哨兵、耗尽、坏布局启动拒绝专项验收通过，见 3.7。 |
-| MOSS-005 | P0 | 启动保留区未排除 | 多 bank、保留洞、非对齐/重叠、容量/溢出及耗尽已验证；x64 PVH 非 RAM 保留、溢出和 initrd 别名拒绝有真实启动验收（3.47～3.49）；低地址启动区仍保守保留，完整保留集合/回收及其他 PVH 异常表待补。 |
+| MOSS-005 | P0 | 启动保留区未排除 | 多 bank、保留洞、非对齐/重叠、容量/溢出及耗尽已验证；x64 PVH 非 RAM 保留、溢出、initrd 别名拒绝及重叠 RAM 有真实启动验收（3.47～3.50）；低地址启动区仍保守保留，完整保留集合/回收及其他 PVH 异常表待补。 |
 | MOSS-006 | P0 | 容器与使用者的所有权 | 部分修复；伪 RCU 已替换为 LockedList/LockedHashMap，持有读者与双 CPU 交错有实测；启动设备已通过 DeviceManager/BootDriver 静态注册并激活，IRQ context、动态解绑和 IPC 等复合生命周期未闭合，见 3.9、3.41。 |
 | MOSS-007 | P0 | 跨 ISA TrapFrame / syscall 参数 | 部分实现（3.18～3.19）；有效原生帧、布局断言、六参数/GP/条件码与 native sigreturn 已通过九配置；全异常交错及完整扩展状态仍待验收。 |
 | MOSS-008 | P0 | 只读页被 COW 放宽权限 | 部分修复；只读 VMA、受控 OOM、多代 COW 与双 CPU fault 软件事务已有回归（3.16、3.31、3.33）；活动硬件 root 拥有权已有 3.38 验收，共享 exec/root 协调与完整并发 VM 生命周期仍待补。 |
@@ -1545,9 +1551,9 @@ _kernel_end / _pagetable_end    0x403fd000
 
 ### MOSS-005 · 物理内存需要保留区集合，不能只用 kernel_end 切一刀
 
-**2026-09-23 更新：部分验收。** `44dedc2` / `6252484` 已在 `platform.cppm::PlatformInfo`、`fdt.cppm`、PVH 解析和 `PageFrameAllocator::parse_memory_layout/initialize_free_lists` 传递实际 RAM、DTB/固件保留信息；metadata 放置及自由块发布会绕过 initrd/reserved ranges。第 3.5 节补齐真实耗尽、保留洞/非对齐/重叠、initrd 校验和与极值区间边界；3.6 进一步联合管理 kernel_end 以上的合格 RAM bank，覆盖乱序多段、相邻合并和后续 bank 安放元数据，当前布局与元数据/页表保护检查见 3.7。3.47～3.49 补 x64 PVH 非 RAM 保留区传递、重叠/溢出表与 initrd 别名拒绝的真实启动红绿验收。低地址启动数据尚未全部显式保留，暂不回收 kernel_end 以下；完整保留集合、回收及其他 PVH 异常表仍待补。
+**2026-09-23 更新：部分验收。** `44dedc2` / `6252484` 已在 `platform.cppm::PlatformInfo`、`fdt.cppm`、PVH 解析和 `PageFrameAllocator::parse_memory_layout/initialize_free_lists` 传递实际 RAM、DTB/固件保留信息；metadata 放置及自由块发布会绕过 initrd/reserved ranges。第 3.5 节补齐真实耗尽、保留洞/非对齐/重叠、initrd 校验和与极值区间边界；3.6 进一步联合管理 kernel_end 以上的合格 RAM bank，覆盖乱序多段、相邻合并和后续 bank 安放元数据，当前布局与元数据/页表保护检查见 3.7。3.47～3.50 补 x64 PVH 非 RAM 保留区传递、重叠/溢出表、initrd 别名拒绝和重叠 RAM 的真实启动红绿验收。低地址启动数据尚未全部显式保留，暂不回收 kernel_end 以下；完整保留集合、回收及其他 PVH 异常表仍待补。
 
-**当前实现：** `PageFrameAllocator::parse_memory_layout/initialize_free_lists` 按实际 RAM bank 建立可分配区，跳过 `kernel_end` 以下、initrd、固件/DTB 保留区及 PFA 元数据；x64 PVH 的非 RAM 条目现在也进入同一保留集合，initrd 与保留区别名会在启动早期拒绝。多 bank、保留洞、非对齐/重叠、耗尽及 initrd 后备数据校验已专项验证，见 3.5～3.7、3.47～3.49。
+**当前实现：** `PageFrameAllocator::parse_memory_layout/initialize_free_lists` 按实际 RAM bank 建立可分配区，跳过 `kernel_end` 以下、initrd、固件/DTB 保留区及 PFA 元数据；x64 PVH 的非 RAM 条目现在也进入同一保留集合，initrd 与保留区别名会在启动早期拒绝。多 bank、保留洞、非对齐/重叠、耗尽及 initrd 后备数据校验已专项验证，见 3.5～3.7、3.47～3.50。
 
 **剩余风险与工作：** `kernel_end` 以下仍整体保留，因为 PVH 低地址启动参数、AP trampoline 等活跃对象尚未全部进入显式集合。按启动协议补齐这些对象的所有权和保留区后，才可回收其余低地址可用页；initrd 也只能在后备引用解除或内容复制完成后归还。其他 PVH 异常表及真机固件交接仍需专项验收。
 
@@ -1972,6 +1978,7 @@ fork 对 VMA 有复制，但未完整继承 `brk_base/brk_current/mmap_next` 等
   - [x] x64 PVH 非 RAM 描述符进入保留集合，重叠主 RAM 的真实启动红绿对照、三构建配置八场景及 CTest 43/43 通过（3.47）。
   - [x] x64 PVH 非 RAM 区间长度回绕的真实启动红绿对照，三构建配置九场景及 CTest 16/16 通过（3.48）。
   - [x] x64 PVH initrd 与非 RAM 描述符别名时启动早期拒绝；保留 PFA 重叠保护的独立红绿对照，三构建配置十场景及 CTest 16/16 通过（3.49）。
+  - [x] x64 PVH 重叠 RAM 条目被 PFA 拒绝；移除检查会引发后续 GP，三构建配置十一场景及各自 PVH CTest 通过（3.50）。
   - [ ] 完整显式启动保留集合、kernel_end 以下可用页回收及其他 PVH 异常内存表。
   - [x] 当前 heap/活动页表树/early pool/链接表区/PFA 元数据布局、增长与耗尽校验和，以及坏布局启动拒绝（004，3.7）；多进程/SMP 引用交错仍待专项验收。
 - [x] A3a：初始自由块按物理对齐、长度和保留区循环降 order；真实 PFA orders/reuse/free-page 检查已接通（013）。

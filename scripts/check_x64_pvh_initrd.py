@@ -69,6 +69,8 @@ PVH_MODULE_SIZE_BYTES = 8
 # These match HvmStartInfo and PvhMemoryEntry in the production boot parser.
 PVH_MEMORY_MAP_OFFSET = 40
 PVH_MEMORY_ENTRY_BYTES = 24
+# PVH memory-map type 1 identifies usable RAM.
+PVH_RAM_TYPE = 1
 PVH_BOOT_ADDRESS_LIMIT = 1 << 32
 # Match the production PVH admission bound before requesting the GDB packet.
 PVH_MAX_MEMORY_ENTRIES = 128
@@ -206,7 +208,7 @@ def mutate_pvh_boot_info(
             if remote.command(f"M{size_address:x},{PVH_MODULE_SIZE_BYTES:x}:{zero_size}") != b"OK":
                 raise RuntimeError("QEMU rejected the invalid-module mutation")
             details = {"module_size_before": original_size}
-        elif mutation in ("reserved-overlap", "reserved-overflow", "reserved-initrd"):
+        elif mutation in ("reserved-overlap", "reserved-overflow", "reserved-initrd", "ram-overlap"):
             map_address, count = struct.unpack_from("<QI", start, PVH_MEMORY_MAP_OFFSET)
             if not map_address or not 1 < count <= PVH_MAX_MEMORY_ENTRIES:
                 raise RuntimeError("QEMU did not provide a usable PVH memory map")
@@ -220,12 +222,12 @@ def mutate_pvh_boot_info(
             entries = [
                 struct.unpack_from("<QQII", memory_map, index * PVH_MEMORY_ENTRY_BYTES) for index in range(count)
             ]
-            reserved = next((index for index, (_, _, kind, _) in enumerate(entries) if kind != 1), None)
+            reserved = next((index for index, (_, _, kind, _) in enumerate(entries) if kind != PVH_RAM_TYPE), None)
             if reserved is None:
                 raise RuntimeError("QEMU did not provide a non-RAM entry for the memory-map check")
             entry_address = map_address + reserved * PVH_MEMORY_ENTRY_BYTES
             reserved_kind = entries[reserved][2]
-            if mutation != "reserved-overflow":
+            if mutation in ("reserved-overlap", "reserved-initrd"):
                 if not module_count or not module_list:
                     raise RuntimeError("QEMU did not provide the expected PVH module descriptor")
                 module_bytes = PVH_MODULE_SIZE_OFFSET + PVH_MODULE_SIZE_BYTES
@@ -239,27 +241,31 @@ def mutate_pvh_boot_info(
                 module_base, module_size = struct.unpack("<QQ", module)
                 if not module_base or not module_size:
                     raise RuntimeError("QEMU supplied an empty PVH module")
-            if mutation == "reserved-overlap":
+            if mutation in ("reserved-overlap", "ram-overlap"):
                 usable = [
                     (size, base)
                     for base, size, kind, _ in entries
-                    if kind == 1 and base < PVH_BOOT_ADDRESS_LIMIT and 0 < size <= PVH_BOOT_ADDRESS_LIMIT - base
+                    if kind == PVH_RAM_TYPE
+                    and base < PVH_BOOT_ADDRESS_LIMIT
+                    and 0 < size <= PVH_BOOT_ADDRESS_LIMIT - base
                 ]
                 if not usable:
                     raise RuntimeError("QEMU did not provide RAM for the overlap check")
-                # Reserve the bank prefix while leaving the module outside it:
-                # this keeps the allocator test independent of module rejection.
                 size, base = max(usable)
-                if not base < module_base < base + size:
-                    raise RuntimeError("QEMU did not place the PVH module in the largest RAM bank")
-                size = module_base - base
+                if mutation == "reserved-overlap":
+                    # Leave the module outside this reservation so the failure
+                    # remains attributable to the allocator's exclusion rule.
+                    if not base < module_base < base + size:
+                        raise RuntimeError("QEMU did not place the PVH module in the largest RAM bank")
+                    size = module_base - base
                 details = {
                     "ram_base": base,
                     "ram_size": size,
-                    "module_base": module_base,
                     "reserved_entry": reserved,
                     "reserved_type": reserved_kind,
                 }
+                if mutation == "reserved-overlap":
+                    details["module_base"] = module_base
             elif mutation == "reserved-overflow":
                 base, size = PVH_OVERFLOW_BASE, PVH_OVERFLOW_BYTES
                 details = {
@@ -276,7 +282,8 @@ def mutate_pvh_boot_info(
                     "reserved_entry": reserved,
                     "reserved_type": reserved_kind,
                 }
-            replacement = struct.pack("<QQII", base, size, reserved_kind, 0)
+            replacement_type = PVH_RAM_TYPE if mutation == "ram-overlap" else reserved_kind
+            replacement = struct.pack("<QQII", base, size, replacement_type, 0)
             if remote.command(f"M{entry_address:x},{len(replacement):x}:{replacement.hex()}") != b"OK":
                 raise RuntimeError(f"QEMU rejected the {mutation} mutation")
         else:
@@ -436,6 +443,14 @@ def main() -> int:
             b"BOOT ERROR: invalid PVH initrd module",
             False,
             "reserved-initrd",
+        ),
+        (
+            "ram-overlap",
+            base,
+            BASE_MEMORY_MIB,
+            b"Error: Memory management setup failed",
+            False,
+            "ram-overlap",
         ),
         ("invalid-archive", invalid, BASE_MEMORY_MIB, b"Error: Invalid initramfs archive", False, None),
         ("missing-init", no_init, BASE_MEMORY_MIB, b"Error: Required init executable is missing", False, None),
