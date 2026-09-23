@@ -253,6 +253,14 @@ _Avoid_: Runtime function profiling.
 **Kernel Validation Image**:
 A bootable Moss kernel dedicated to executing kernel functional tests and kernel benchmarks.
 
+**Kernel Validation Control Protocol**:
+The private contract between the Kernel Validation Image and its userspace validation program for selecting workloads, coordinating cases and benchmarks, and operating suite-owned fixtures. An operation has meaning within the selected Kernel Test Suite; this contract is not part of Moss's production syscall ABI.
+_Avoid_: Production syscall API, globally unique test opcode.
+
+**Kernel Validation Catalog**:
+The ordered inventory of suite, case and benchmark identities that defines which validation workloads a Kernel Validation Image can claim to execute. A changed identity or meaning belongs to a new catalog version so its results are not silently compared with earlier evidence.
+_Avoid_: An unordered list of test files, proof of complete system acceptance.
+
 **Kernel Validation Report**:
 A record of kernel test outcomes, benchmark measurements, and their execution conditions, including failures and selected workloads that did not run.
 
