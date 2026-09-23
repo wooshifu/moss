@@ -241,6 +241,7 @@ CATALOG = {
         "wait_process_group",
         "wait_group_change",
         "no_cldwait",
+        "sigaction_race",
         "signal_exit_status",
         "sigprocmask",
         "sigaltstack",

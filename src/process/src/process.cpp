@@ -145,12 +145,11 @@ extern "C" bool moss_io_wait_interrupted() noexcept {
     return true;
   }
   auto proc = g_process_manager ? g_process_manager->find_process(thread->owner_pid) : shared_ptr<Process>{};
-  auto *state = proc ? get_signal_state(proc.get()) : nullptr;
   for (u32 signo = 1; signo < sig::NSIG; ++signo) {
     if (!(pending & sig::sigmask(signo))) {
       continue;
     }
-    const auto handler = state ? state->actions[signo].handler : SIG_DFL;
+    const auto handler = proc ? proc->signal_action(signo).handler : SIG_DFL;
     if (handler == SIG_IGN) {
       continue;
     }
@@ -665,7 +664,7 @@ KernelResult<VirtAddr> allocate_user_heap(Process *process, usize size) noexcept
 
   // 5. Publish either a waitable Zombie or an auto-reaped exit.
   auto parent = g_process_manager->find_process(proc->parent_pid());
-  const Sigaction chld_action = parent ? parent->signal_state().actions[sig::SIGCHLD] : Sigaction{};
+  const Sigaction chld_action = parent ? parent->signal_action(sig::SIGCHLD) : Sigaction{};
   // Explicit SIG_IGN discards status; the default SIGCHLD action remains waitable.
   const bool auto_reap =
       parent && ((chld_action.flags & sa_flags::SA_NOCLDWAIT) != 0 || chld_action.handler == SIG_IGN);

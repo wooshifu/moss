@@ -6,6 +6,40 @@ namespace moss::kernel::process {
 
 namespace log = moss::kernel::logging;
 
+Sigaction Process::signal_action(u32 signo) const noexcept {
+  containers::LockGuard<containers::IrqSpinLock> guard(signal_state_lock_);
+  return signal_state_.actions[signo];
+}
+
+bool Process::try_replace_signal_action(u32 signo, const Sigaction &expected, const Sigaction &desired) noexcept {
+  containers::LockGuard<containers::IrqSpinLock> guard(signal_state_lock_);
+  auto &current = signal_state_.actions[signo];
+  if (current.handler != expected.handler || current.mask != expected.mask || current.flags != expected.flags) {
+    return false;
+  }
+  current = desired;
+  return true;
+}
+
+void Process::inherit_signal_actions_from(const Process &parent) noexcept {
+  SignalState snapshot;
+  {
+    containers::LockGuard<containers::IrqSpinLock> guard(parent.signal_state_lock_);
+    snapshot = parent.signal_state_;
+  }
+  containers::LockGuard<containers::IrqSpinLock> guard(signal_state_lock_);
+  signal_state_ = snapshot;
+}
+
+void Process::reset_signal_actions_for_exec() noexcept {
+  containers::LockGuard<containers::IrqSpinLock> guard(signal_state_lock_);
+  for (auto &action : signal_state_.actions) {
+    if (action.handler != SIG_IGN) {
+      action = Sigaction{};
+    }
+  }
+}
+
 bool send_signal(Thread *thread, u32 signo) noexcept {
   if (!thread || signo == 0 || signo >= sig::NSIG) {
     return false;
@@ -57,7 +91,7 @@ void notify_parent_job_status(Thread *thread) noexcept {
     return;
   }
   // SA_NOCLDSTOP suppresses the signal, not waitpid's stopped/continued event.
-  if ((parent->signal_state().actions[sig::SIGCHLD].flags & sa_flags::SA_NOCLDSTOP) == 0) {
+  if ((parent->signal_action(sig::SIGCHLD).flags & sa_flags::SA_NOCLDSTOP) == 0) {
     (void)send_signal(parent->get_main_thread(), sig::SIGCHLD);
   }
   // The parent may block, ignore, or suppress SIGCHLD while waiting for status.
@@ -146,8 +180,6 @@ static void write_fpsr(u64 val) noexcept { asm volatile("msr s3_3_c4_c4_1, %0" :
 
 static void write_fpcr(u64 val) noexcept { asm volatile("msr s3_3_c4_c4_0, %0" : : "r"(val)); }
 #endif
-
-SignalState *get_signal_state(Process *proc) noexcept { return proc ? &proc->signal_state() : nullptr; }
 
 // Called on the current thread's user-return path. Shared uaccess holds a VM
 // lease for each copied page; coordinating an entire delivery with concurrent
@@ -340,8 +372,6 @@ u32 do_signal_checkpoint(Thread *thread) noexcept {
     return 0;
   }
 
-  SignalState *sigstate = get_signal_state(proc.get());
-
   // Process all pending signals (lowest numbered first)
   while (signal_pending(thread)) {
     u32 signo = dequeue_signal(thread);
@@ -350,13 +380,10 @@ u32 do_signal_checkpoint(Thread *thread) noexcept {
     }
 
     // Determine handler
-    Sigaction *sa = nullptr;
-    if (sigstate != nullptr && signo < sig::NSIG) {
-      sa = &sigstate->actions[signo];
-    }
+    const Sigaction sa = signo < sig::NSIG ? proc->signal_action(signo) : Sigaction{};
 
     // Uncatchable signals use their default action regardless of sigaction.
-    if (signo == sig::SIGKILL || signo == sig::SIGSTOP || sa == nullptr || sa->handler == SIG_DFL) {
+    if (signo == sig::SIGKILL || signo == sig::SIGSTOP || sa.handler == SIG_DFL) {
       switch (default_action(signo)) {
       case SigDefault::Terminate:
       case SigDefault::CoreDump:
@@ -373,12 +400,12 @@ u32 do_signal_checkpoint(Thread *thread) noexcept {
       default:
         return signo;
       }
-    } else if (sa->handler == SIG_IGN) {
+    } else if (sa.handler == SIG_IGN) {
       // Explicitly ignored
       continue;
     } else {
       // User-space signal handler — set up sigframe for delivery
-      if (!setup_sigframe(thread, signo, *sa)) {
+      if (!setup_sigframe(thread, signo, sa)) {
         log::klog::warn("signal {}: sigframe setup failed for PID={}, terminating", signo,
                         static_cast<u32>(thread->owner_pid));
         return signo; // terminate

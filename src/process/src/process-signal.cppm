@@ -188,10 +188,6 @@ void notify_parent_job_status(Thread *thread) noexcept;
   return signo;
 }
 
-// Get the signal state for a process.
-// Returns nullptr only for a null process.
-[[nodiscard]] SignalState *get_signal_state(Process *proc) noexcept;
-
 // Process pending signals at a checkpoint (syscall return / IRQ return).
 // This is the main signal delivery entry point.
 // Zero means continue; otherwise return the terminating signal number.
