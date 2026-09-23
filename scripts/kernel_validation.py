@@ -71,6 +71,7 @@ CATALOG = {
     ],
     "containers.smp": ["interleaving"],
     "vfs.smp": ["shared_references"],
+    "interrupts.smp": ["irq_context_retirement"],
     "mm.lifetime": ["held_readers", "hardware_root", "kernel_root"],
     "mm.concurrent": ["cow_fault", "demand_fault", "fault_unmap", "fault_fork", "fork_unmap"],
     "mm.uaccess": ["copy_unmap", "copy_fork"],
@@ -305,6 +306,7 @@ FUNCTIONAL = [
     "containers",
     "containers.smp",
     "vfs.smp",
+    "interrupts.smp",
     "vfs",
     "timers",
     "scheduler",
@@ -1173,6 +1175,8 @@ def run(
         raise typer.BadParameter("containers.smp requires at least 2 CPUs; select single-worker workloads for 1 CPU")
     if "vfs.smp" in selected and cpus < 2:
         raise typer.BadParameter("vfs.smp requires at least 2 CPUs; select single-worker workloads for 1 CPU")
+    if "interrupts.smp" in selected and cpus < 2:
+        raise typer.BadParameter("interrupts.smp requires at least 2 CPUs")
     if "mm.lifetime" in selected and cpus < 2:
         raise typer.BadParameter("mm.lifetime requires at least 2 CPUs; select single-worker workloads for 1 CPU")
     if "mm.concurrent" in selected and cpus < 2:

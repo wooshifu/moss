@@ -3829,6 +3829,48 @@ void raw_user_copy_fixup() {
   ut::expect(mm::RuntimeHeapAllocator::get_heap_stats().allocated_bytes == heap);
 }
 
+struct InterruptUnbind {
+  interrupts::GenericInterruptController *controller = moss::boot::g_gic_controller;
+  // The QEMU profiles leave the source adjacent to the UART unused; the test
+  // only exercises software admission and never enables this hardware IRQ.
+  interrupts::InterruptId irq = platform::hardware.uart.irq + 1;
+  shared_ptr<interrupts::InterruptDescriptor> descriptor;
+  u32 entered = 0, finished = 0;
+
+  void prepare() {
+    AddressSpaceReaders::require(controller && !controller->get_interrupt_info(irq));
+    AddressSpaceReaders::require(
+        controller->register_interrupt(irq, +[](u32, void *) noexcept {}, this, "unbind-lifetime"));
+    descriptor = controller->get_interrupt_info(irq);
+    AddressSpaceReaders::require(descriptor && descriptor->context == this);
+  }
+
+  bool peer() {
+    const bool right_cpu = arch::get_current_cpu_id() == 1;
+    if (!descriptor->begin_callback())
+      return false;
+    __atomic_store_n(&entered, 1U, __ATOMIC_RELEASE);
+    // Hold the old callback while the owner starts unbinding. A second
+    // admission must fail before the first callback releases its context.
+    while (descriptor->begin_callback()) {
+      descriptor->end_callback();
+      arch::cpu_yield();
+    }
+    const bool unbinding = controller->enable_interrupt(irq).error() == ErrorCode::ResourceBusy &&
+                           controller->unregister_interrupt(irq).error() == ErrorCode::ResourceBusy;
+    descriptor->end_callback();
+    __atomic_store_n(&finished, 1U, __ATOMIC_RELEASE);
+    return right_cpu && unbinding;
+  }
+
+  void owner() {
+    ContainerInterleaving::wait_for(entered, 1);
+    const auto result = controller->unregister_interrupt(irq);
+    ut::expect(result.has_value() && __atomic_load_n(&finished, __ATOMIC_ACQUIRE) == 1 &&
+               !controller->get_interrupt_info(irq) && affinity_valid());
+  }
+};
+
 // Exercise the same fault transaction as native exception entry, on a real
 // but inactive root. This checks software PTE/frame ownership, not remote TLBs.
 struct FaultTransactions {
@@ -4087,6 +4129,7 @@ struct FaultTransactions {
   }
 };
 FaultTransactions *fault_transactions = nullptr;
+InterruptUnbind *interrupt_unbind = nullptr;
 
 // The target roots are real but never installed in hardware. This isolates
 // software page ownership from the still-separate remote-TLB contract.
@@ -5655,6 +5698,7 @@ void declare_cases() {
   });
   ut::register_suite("containers.smp", [] { ut::register_test("interleaving", empty_case); });
   ut::register_suite("vfs.smp", [] { ut::register_test("shared_references", empty_case); });
+  ut::register_suite("interrupts.smp", [] { ut::register_test("irq_context_retirement", empty_case); });
   ut::register_suite("mm.lifetime", [] {
     ut::register_test("held_readers", empty_case);
     for (const auto *name : HardwareRootLifetime::names) {
@@ -6645,6 +6689,13 @@ extern "C" long moss_validation_call(long op, long arg1, [[maybe_unused]] long a
       file_references = new FileReferences();
       return 3; // Reuse the existing CPU0/CPU1 fork, control and reap protocol.
     }
+    if (ut::same_id(selection, "interrupts.smp")) {
+      start_case("irq_context_retirement");
+      AddressSpaceReaders::require(g_num_cpus >= 2);
+      interrupt_unbind = new InterruptUnbind();
+      interrupt_unbind->prepare();
+      return 3;
+    }
     if (ut::same_id(selection, "mm.lifetime")) {
       start_case("held_readers");
       AddressSpaceReaders::require(g_num_cpus >= 2);
@@ -7301,6 +7352,25 @@ extern "C" long moss_validation_call(long op, long arg1, [[maybe_unused]] long a
       ut::expect(arg1 && affinity_valid());
       delete fault_transactions;
       fault_transactions = nullptr;
+      end_case();
+      finish();
+    }
+  }
+  if (ut::same_id(selection, "interrupts.smp") && active_case && interrupt_unbind) {
+    if (op == 7 && arg1 == 0) {
+      arch::enable_interrupts();
+      return interrupt_unbind->peer() ? 1 : 0;
+    }
+    if (op == 8) {
+      AddressSpaceReaders::require(arg1 && affinity_valid());
+      arch::enable_interrupts();
+      interrupt_unbind->owner();
+      return 0;
+    }
+    if (op == 9) {
+      ut::expect(arg1 && affinity_valid());
+      delete interrupt_unbind;
+      interrupt_unbind = nullptr;
       end_case();
       finish();
     }

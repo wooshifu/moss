@@ -383,19 +383,23 @@ int main() {
   // not be treated as RAM merely because both endpoints are valid.
   MemoryRegion adjacent[] = {{first_bank, bank_bytes}, {second_bank, bank_bytes}};
   HvmModlistEntry module{.paddr = module_start, .size = module_bytes, .cmdline_paddr = 0, .reserved = 0};
-  if (!valid_pvh_initrd(module, adjacent, 2)) return 4;
+  if (!valid_pvh_initrd(module, adjacent, 2, nullptr, 0)) return 4;
   MemoryRegion hole[] = {{first_bank, bank_bytes - range_granule}, {second_bank, bank_bytes}};
-  if (valid_pvh_initrd(module, hole, 2)) return 5;
+  if (valid_pvh_initrd(module, hole, 2, nullptr, 0)) return 5;
 
   const u64 inside_first_bank = first_bank + bank_bytes / 2;
   module = {.paddr = inside_first_bank, .size = 0, .cmdline_paddr = 0, .reserved = 0};
-  if (valid_pvh_initrd(module, adjacent, 2)) return 6;
+  if (valid_pvh_initrd(module, adjacent, 2, nullptr, 0)) return 6;
   module = {.paddr = inside_first_bank, .size = range_granule, .cmdline_paddr = 0, .reserved = 1};
-  if (valid_pvh_initrd(module, adjacent, 2)) return 7;
+  if (valid_pvh_initrd(module, adjacent, 2, nullptr, 0)) return 7;
   module = {.paddr = second_bank + bank_bytes, .size = range_granule, .cmdline_paddr = 0, .reserved = 0};
-  if (valid_pvh_initrd(module, adjacent, 2)) return 8;
+  if (valid_pvh_initrd(module, adjacent, 2, nullptr, 0)) return 8;
   module = {.paddr = inside_first_bank, .size = range_granule, .cmdline_paddr = 0, .reserved = 0};
-  if (!valid_pvh_initrd(module, adjacent, 2)) return 9;
+  if (!valid_pvh_initrd(module, adjacent, 2, nullptr, 0)) return 9;
+  MemoryRegion reserved[] = {{inside_first_bank + range_granule / 2, range_granule}};
+  if (valid_pvh_initrd(module, adjacent, 2, reserved, 1)) return 10;
+  reserved[0].base = inside_first_bank + range_granule;
+  if (!valid_pvh_initrd(module, adjacent, 2, reserved, 1)) return 11;
 }
 """
     )
