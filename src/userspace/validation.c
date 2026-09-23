@@ -2582,6 +2582,42 @@ static int test_wait_process_group(void) {
   return child < 0 || waitpid(0, &status, 0) != child || status != (37 << 8);
 }
 
+static int test_wait_group_change(void) {
+  for (int mode = 0; mode < 2; ++mode) {
+    const long child = fork();
+    if (child == 0) {
+      unsigned cpu_mask = 1U << 1;
+      if (syscall3(SYS_SCHED_SETAFFINITY, 0, sizeof(cpu_mask), (long)&cpu_mask) != 0) {
+        _exit(98);
+      }
+      while (control(55, getppid(), getpid()) != 1) {
+        sched_yield();
+      }
+      const long moved = mode == 0 ? syscall0(SYS_SETPGRP) : syscall0(SYS_SETSID);
+      if (moved != (mode == 0 ? 0 : getpid())) {
+        _exit(98);
+      }
+      long waiting;
+      do {
+        waiting = control(55, getppid(), getpid());
+        sched_yield();
+      } while (waiting == 1);
+      _exit(waiting == 0 ? 42 : 98);
+    }
+    int status = 0x12345678;
+    const long result = child > 0 ? waitpid(0, &status, 0) : -1;
+    int errors = child <= 0 || result != -10 || status != 0x12345678;
+    if (child > 0) {
+      status = 0;
+      errors |= waitpid(child, &status, 0) != child || status != (42 << 8);
+    }
+    if (errors) {
+      return 1;
+    }
+  }
+  return 0;
+}
+
 static int test_no_cldwait(void) {
   enum { NOCLDWAIT_HANDLER, NOCLDWAIT_DEFAULT, SIGCHLD_IGNORED };
   for (int mode = NOCLDWAIT_HANDLER; mode <= SIGCHLD_IGNORED; ++mode) {
@@ -3815,6 +3851,7 @@ static int signal_case(const char *name) {
                {"wait_job_status", test_wait_job_status},
                {"no_cldstop", test_no_cldstop},
                {"wait_process_group", test_wait_process_group},
+               {"wait_group_change", test_wait_group_change},
                {"no_cldwait", test_no_cldwait},
                {"signal_exit_status", test_signal_exit_status},
                {"sigprocmask", test_sigprocmask},
@@ -4122,6 +4159,7 @@ void _start(long argc, const char **argv) {
                            "wait_job_status",
                            "no_cldstop",
                            "wait_process_group",
+                           "wait_group_change",
                            "no_cldwait",
                            "signal_exit_status",
                            "sigprocmask",
