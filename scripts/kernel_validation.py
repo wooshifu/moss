@@ -228,6 +228,7 @@ CATALOG = {
         "basic_handler",
         "nested_signals",
         "sigchld",
+        "wait_registration",
         "sigprocmask",
         "sigaltstack",
         "sig_ign",

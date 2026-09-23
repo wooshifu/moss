@@ -16,6 +16,9 @@ moss_validation_address_space_allocation(bool /*entering*/, bool /*control_block
 extern "C" [[gnu::weak, gnu::noinline]] void moss_validation_vm_contended(moss::kernel::PhysAddr /*root*/) noexcept {}
 extern "C" [[gnu::weak, gnu::noinline]] void
 moss_validation_address_space_retiring(moss::kernel::PhysAddr /*root*/) noexcept {}
+// Validation observes an actual child-exit wakeup before wait registers.
+extern "C" [[gnu::weak, gnu::noinline]] void
+moss_validation_child_exit_notified(moss::kernel::u32 /*child_pid*/, moss::kernel::u32 /*parent_pid*/) noexcept {}
 
 // Assembly/entry symbols from moss.abi
 using moss::abi::context_switch;
@@ -678,6 +681,7 @@ KernelResult<VirtAddr> allocate_user_heap(Process *process, usize size) noexcept
         g_scheduler->task_wakeup(t, t->wake_cpu);
       }
     });
+    moss_validation_child_exit_notified(pid, proc->parent_pid());
   } else {
     log::klog::error("do_exit: PID={} parent PID={} NOT FOUND", pid, proc->parent_pid());
   }

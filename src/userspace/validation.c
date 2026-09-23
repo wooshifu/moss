@@ -2157,6 +2157,42 @@ static int test_sigchld(void) {
   return 1;
 }
 
+static int test_wait_registration(void) {
+  // The ready byte proves the child reached CPU1 before CPU0 pauses in wait4;
+  // otherwise CPU0 could starve a child still waiting to migrate.
+  long ready[2];
+  if (pipe(ready) != 0) {
+    return 1;
+  }
+  if (control(52, 0, 0) != 1) {
+    close((int)ready[0]);
+    close((int)ready[1]);
+    return 1;
+  }
+  long child = fork();
+  if (child == 0) {
+    close((int)ready[0]);
+    unsigned cpu_mask = 2;
+    unsigned char byte = 37; // A nonzero fixture marker, not a syscall result.
+    if (syscall3(20, 0, sizeof(cpu_mask), (long)&cpu_mask) != 0 || write((int)ready[1], &byte, 1) != 1) {
+      _exit(98);
+    }
+    close((int)ready[1]);
+    if (control(53, 0, 0) != 1) {
+      _exit(98);
+    }
+    _exit(42);
+  }
+  close((int)ready[1]);
+  unsigned char byte = 0;
+  int prepared = child > 0 && read((int)ready[0], &byte, 1) == 1 && byte == 37;
+  close((int)ready[0]);
+  int status = 0;
+  long waited = child > 0 ? waitpid(child, &status, 0) : -1;
+  long observed = control(54, child, 0);
+  return !prepared || waited != child || status != (42 << 8) || observed != 1;
+}
+
 // Test 4: sigprocmask — block and unblock
 static int test_sigprocmask(void) {
   print("\n=== Test 4: sigprocmask block/unblock ===\n");
@@ -3166,6 +3202,7 @@ static int signal_case(const char *name) {
   } cases[] = {{"basic_handler", test_basic_handler},
                {"nested_signals", test_nested_signals},
                {"sigchld", test_sigchld},
+               {"wait_registration", test_wait_registration},
                {"sigprocmask", test_sigprocmask},
                {"sigaltstack", test_sigaltstack},
                {"sig_ign", test_sig_ign},
@@ -3453,6 +3490,7 @@ void _start(long argc, const char **argv) {
     const char *cases[] = {"basic_handler",
                            "nested_signals",
                            "sigchld",
+                           "wait_registration",
                            "sigprocmask",
                            "sigaltstack",
                            "sig_ign",

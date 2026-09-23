@@ -1,7 +1,7 @@
 # Moss 内核设计与实现审计报告及修复清单
 
 > 原始审计：2026-09-05，源码基线：`e0e2bbc920b66f91e18802a46106ca5811e588b1`。
-> 当前源码复核：2026-09-23，`604fe85`；最近一次记录的九预设运行验收属于 2026-09-21 的第 3.40 节，本次文档复核未重跑 QEMU。第 3.4～3.20 节保留此前实测及当时状态；后续实现与运行记录见第 3.21～3.40 节，当前源码与历史证据的对应关系见第 3.41 节。本文与 [todo.md](todo.md) 同步。
+> 当前源码复核：2026-09-23，`604fe85`；该次文档复核未重跑 QEMU。第 3.4～3.20 节保留此前实测及当时状态；后续实现与运行记录见第 3.21～3.59 节，源码与历史证据的对应关系见第 3.41 节。本轮九预设运行见第 3.59 节。本文与 [todo.md](todo.md) 同步。
 > 第 3.1～3.2 节保留原始运行证据；第 5～9 节未标新日期的“位置与事实”、地址和行号属于原始审计，不能当作当前仍然失败的运行结果。带日期的“工作区”指当时的验证状态，不表示当前仍未提交；当前状态以第 4 节及各项更新说明为准。
 
 ## 1. 当前结论
@@ -14,7 +14,7 @@ Moss 已具备三架构真实启动、SMP、用户态与进程执行路径。后
 2. **部分基础修复已落地，但所有权验收未完成。** `040d773` 已验证 heap/PFA 对齐与释放、保留洞和多 bank 耗尽、当前布局及页表/元数据哨兵。`4cde9b3` 修复指针发布误删可达节点；伪 RCU 已删除，锁保护的拥有型容器已有持有读者、重入与双 CPU 交错测试。IRQ/驱动/IPC 复合生命周期、页引用并发及完整启动保留集合仍待完成。
 3. **跨架构入口已统一，完整进程语义仍待补。** 三 ISA 用单一原生帧指针传递 syscall，fork 不再猜内核栈偏移，信号返回桩由各 ISA 汇编产生；3.24～3.26 已闭合当前单地址空间模型下的 brk、exec 事务和受支持静态 ELF LoadPlan。GP/条件码和基本信号往返通过，不代表全部 FP/TLS 继承、CPU-bound 信号、nanosleep 中断语义、动态加载、共享 LOAD 页或共享地址空间 VM 并发已经可靠。
 4. **旧停滞记录应保留，不能直接当作当前复现。** 退出已改为经 `context_switch` 返回活跃 bootstrap 栈，不再在 C++ 帧中直接修改 SP。默认 `users.lifecycle` 已覆盖 1,000 次 fork/exec/exit/wait 和资源检查，并随最近记录的九预设矩阵通过；旧第 28 次停滞的原版本红绿对照、1/16 CPU 长循环与更广的生命周期压力仍缺。
-5. **测试已从基础语言检查升级为真实内核检查，覆盖仍有边界。** 最近记录的九预设 CTest 为 43/43，默认用户套件包含 COW/OOM、恶意信号帧、部分用户复制故障、管道信号中断与 1,000 次生命周期；这不是本次 `604fe85` 的重新运行，也不证明全部 uaccess 故障、确定性调度竞争或真机可靠性。
+5. **测试已从基础语言检查升级为真实内核检查，覆盖仍有边界。** 本轮九预设 CTest 为 43/43（3.59），包含 Release 的三个 benchmark。默认用户套件包含 COW/OOM、恶意信号帧、部分用户复制故障、管道信号中断与 1,000 次生命周期；这不证明全部 uaccess 故障、确定性调度竞争或真机可靠性。
 
 保留现有 C++ 模块、AAL/HAL、可用进程/VFS/调度路径；先关闭权限、所有权、等待/退出和失败事务，再扩展高级 IPC、POSIX 或设备栈。内核模型仍是模块化单体，而不是已经实现用户态服务隔离的 hybrid。
 
@@ -1469,6 +1469,12 @@ PVH initrd 原先只要求被 RAM 条目覆盖；当同一物理区间也被非 
 
 新增 `scripts/replay_arm64_containers_smp.sh`，逐次调用生产验证 runner 的 ARM64 Debug `containers.smp`，保留默认四核、2 GiB、5 秒 case deadline 与 60 秒 guest deadline；每次单独保存报告，首个失败立即停止，且比较报告中的镜像/initramfs/符号哈希，拒绝把重建前后的运行混作同一重复样本。命令为 `scripts/replay_arm64_containers_smp.sh build/arm64-debug/moss-artifacts.json 100`，可选第三参数指定输出目录。脚本经 Bash 语法、ShellCheck 和两次端到端冒烟检查；同一当前镜像的独立 100 次定向运行全部通过，100 份报告均 finalized、无未运行项，镜像与 fixture 哈希各只有一种。3.14 的旧 Zombie 后 `case_timeout` 报告已不在当前构建目录，当前 100 次未复现不能证明旧调度/wait 根因已经消失；MOSS-017/018 与 A1b 的历史因果确认继续保持未完成。
 
+### 3.59 wait4 首次扫描与登记间的 child-exit 交错（2026-09-23，工作区）
+
+新增真实用户态 `users.signals/wait_registration`：父进程先布置验证门闩，子进程绑到 CPU1 并用 pipe 确认已运行；父进程首次扫描没有 Zombie 后，验证钩子放行子进程。子进程发布 Zombie 并执行真实父等待队列唤醒，此时父进程尚未登记；另一个钩子确认唤醒已经完成，父进程才继续 `prepare/register/recheck/commit` 并回收状态码 42。钩子只观察和控制顺序，不替代生产唤醒或重查逻辑。
+
+临时移除 `sys_wait4()` 登记后的 Zombie 重查，x64 Debug 的新用例在 `wait_registration` 稳定报告 `case_timeout`（`build/x64-debug/wait-registration-no-recheck-red/results.json`）；恢复后，三架构九预设的定向 `users.signals` 均为 20/20。宿主 runner 回归为 187 passed、1 skipped；九预设完整 CTest 为 x64 16/16、ARM64 14/14、RV64 13/13，合计 43/43（40 项 `kernel` 标签与 3 项 Release benchmark）。RX 与登记交错、多读者、wait EINTR/重启和历史 `containers.smp` Zombie 超时因果仍未关闭。
+
 ## 4. 问题总表与当前状态
 
 | 编号 | 优先级 | 审计主题 | 当前状态与下一步 |
@@ -1490,7 +1496,7 @@ PVH initrd 原先只要求被 RAM 条目覆盖；当同一物理区间也被非 
 | MOSS-015 | P1 | exec 原子替换 | 已关闭（3.25）；全部可失败准备均在旧地址空间仍有效时完成，提交后才回收旧所有权；PFA 与六级 heap 失败、可变 ELF 快照及 FD 语义已在六配置通过。 |
 | MOSS-016 | P1 | ELF 校验与分段策略 | 已关闭（3.26）；不可变 LoadPlan、checked arithmetic、严格拒绝 oracle、17 个畸形映像，以及非页对齐 RX/RW 的实际字节/零填充/最终权限已在六配置通过。 |
 | MOSS-017 | P1 | 运行队列 / 迁移 / on-CPU | 部分修复（3.28）；调用线程收紧自身 affinity 时会在 continuation 保存后同步迁移，确定性红例、单例及 32/32 并发压力通过；远程目标、一般 pick/dequeue/迁移及 on-CPU/check_need_resched 仍未闭合。 |
-| MOSS-018 | P1 | wait/console 丢失唤醒 | 部分修复；wait 已采用 prepare/register/recheck/commit 并保留坏 status 后重试，console 有受锁保护的多 waiter 和信号中断路径。child-exit/RX 确定性交错、多读者及 wait 的 EINTR/重启语义仍待验收，见 3.41。 |
+| MOSS-018 | P1 | wait/console 丢失唤醒 | 部分修复；wait 已采用 prepare/register/recheck/commit 并保留坏 status 后重试，child-exit 早于登记的双 CPU 交错已有红绿验收（3.59）；console 有受锁保护的多 waiter 和信号中断路径。RX 确定性交错、多读者及 wait 的 EINTR/重启语义仍待验收。 |
 | MOSS-019 | P1 | nanosleep / timer 生命周期 | 部分修复；三 ISA 实际睡眠、容量失败、deadline 溢出、跨 CPU 交接及同步取消已有实现；`clock_getres` 用例已进入默认功能集，最近记录的九预设 CTest 包含它。信号中断后的 sleep 语义及更广定时交错仍待验收。 |
 | MOSS-020 | P1 | 信号投递 / STOP/CONT/SIGCHLD | 部分修复；结果/handler 参数写回顺序已补，默认用例已断言 SIGCHLD 基本投递、pipe/console 的中断与部分传输。CPU-bound 的 IRQ 返回投递、STOP/CONT 和 wait/nanosleep 中断语义仍待闭合。 |
 | MOSS-021 | P1 | 信号状态生命周期 | 已关闭（3.23）；状态由 `Process` 拥有，fork/exec/exit 规则已核对，继承/重置及跨旧 256 槽边界的 300 次生命周期在六配置通过。 |
@@ -1774,7 +1780,7 @@ fork 对 VMA 有复制，但未完整继承 `brk_base/brk_current/mmap_next` 等
 
 ### MOSS-018 · 检查条件、登记等待和进入睡眠必须是一个协议
 
-**2026-09-23 源码复核：部分修复，见 3.41。** `sys_wait4()` 已在准备睡眠后登记 waiter 并重查 Zombie；console 的检查与登记由锁串行化，支持多个 waiter 和待处理信号唤醒。已有 console/pipe 信号用例；child exit 与登记、RX 与登记的确定性交错、多读者及 wait EINTR/重启仍待补。
+**2026-09-23 更新：部分修复，见 3.41、3.59。** `sys_wait4()` 已在准备睡眠后登记 waiter 并重查 Zombie；child exit 在登记前完成唤醒的双 CPU 交错已通过红绿对照。console 的检查与登记由锁串行化，支持多个 waiter 和待处理信号唤醒。已有 console/pipe 信号用例；RX 与登记的确定性交错、多读者及 wait EINTR/重启仍待补。
 
 **原始位置与事实（修复前）：** `src/kernel/src/syscall_table.cpp:988` 的 wait4 先扫描 Zombie，再登记等待和改变状态；子进程可在这段窗口退出，使唤醒早于有效等待登记。`:2695` 的 console 阻塞路径也把缓冲区检查、状态/队列修改和单个 `blocked_reader` 注册分开；另一个 CPU 的 RX 可穿过窗口，且单指针无法支持多个等待者。
 
@@ -2099,7 +2105,8 @@ fork 对 VMA 有复制，但未完整继承 `brk_base/brk_current/mmap_next` 等
 ### 阶段 D：闭合调度、等待和退出生命周期
 
 - [ ] D1：运行队列原子取任务、on_cpu 交接、迁移锁序及 affinity（017）。
-- [ ] D2：wait/console 的登记—睡眠、nanosleep 交接与同步取消已实现；补 child-exit/RX 确定性交错、多读者和 wait/nanosleep 中断结果的统一验收（018、019）。
+- [ ] D2：wait/console 的登记—睡眠、nanosleep 交接与同步取消已实现；child-exit/登记交错已验收，继续补 RX 确定性交错、多读者和 wait/nanosleep 中断结果的统一验收（018、019）。
+  - [x] child exit 完成唤醒后才登记 wait 的确定性交错；移除 Zombie 重查的红例与九预设 `users.signals` 20/20 通过（3.59）。
 - [x] D3a：删除 C++ inline 换栈，复用已有 context_switch 返回活跃 bootstrap 调度上下文（023，`44dedc2`）。
 - [ ] D3b：默认 4 CPU 的 1,000 次生命周期与资源检查已有九预设通过记录；补旧第 28 次停滞红绿对照、1/16 CPU 长循环及旧栈/上下文生命周期专项验收（023）。
 - [x] D4a：`Process` 拥有信号状态，fork 继承、exec 重置、exit 回收及跨旧固定槽边界验收通过（021，工作区 3.23）。

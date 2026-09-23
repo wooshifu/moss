@@ -25,6 +25,9 @@ extern "C" [[gnu::weak, gnu::noinline]] void moss_validation_exec_allocation(uns
 // Validation can replace the published source between pathname and vector reads.
 extern "C" [[gnu::weak, gnu::noinline]] void moss_validation_exec_source_snapshot(moss::kernel::PhysAddr /*unused*/,
                                                                                    moss::kernel::VirtAddr /*unused*/) noexcept {}
+// Validation can force child exit after wait's first scan and before registration.
+extern "C" [[gnu::weak, gnu::noinline]] void moss_validation_wait_before_register(moss::kernel::u32 /*parent_pid*/,
+                                                                                  long /*wait_pid*/) noexcept {}
 
 namespace moss::kernel::syscall {
 
@@ -907,6 +910,7 @@ long sys_wait4(long wait_pid, long wstatus_addr, long options, long /*unused*/, 
       return -errc::ESRCH;
     }
 
+    moss_validation_wait_before_register(proc->pid(), wait_pid);
     // Publish a prepared sleeper before registering it. An exit on another
     // CPU must not enqueue us until bootstrap owns our saved context.
     const bool restore_irqs = arch::interrupts_enabled();
