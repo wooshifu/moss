@@ -416,8 +416,11 @@ long sys_fork(long /*unused*/, long /*unused*/, long /*unused*/, long /*unused*/
   child_thread->needs_initial_eret = true;
   child_thread->is_user_task = true;
   child_thread->sched_class = SchedClass::Normal;
-  child_thread->se.nice = parent_thread->se.nice;
-  child_thread->se.weight = parent_thread->se.weight;
+  // A child inherits the configured nice value, not an IPC boost that may
+  // temporarily change the parent's dispatch weight.
+  child_thread->se.nice.store(parent_thread->se.nice.load());
+  child_thread->se.weight.store(cfs_params::nice_to_weight(child_thread->se.nice.load()));
+  child_thread->se.load_weight.store(child_thread->se.weight.load());
   child_thread->cpu_affinity_mask = parent_thread->cpu_affinity_mask;
   child_thread->state = ProcessState::Ready;
 
@@ -1997,25 +2000,22 @@ long sys_nice(long increment, long /*unused*/, long /*unused*/, long /*unused*/,
   using namespace moss::kernel::process;
 
   Thread *cur = CfsScheduler::get_current_task();
-  if (!cur) {
+  if (!cur || !g_scheduler) {
     return -errc::ESRCH;
   }
 
-  i32 new_nice = cur->se.nice + static_cast<i32>(increment);
-
-  // Clamp to valid range [-20, 19]
-  if (new_nice < priority::MIN_NICE) {
+  const i32 current = cur->se.nice.load();
+  i32 new_nice;
+  if (increment < static_cast<long>(priority::MIN_NICE - current))
     new_nice = priority::MIN_NICE;
-  }
-  if (new_nice > priority::MAX_NICE) {
+  else if (increment > static_cast<long>(priority::MAX_NICE - current))
     new_nice = priority::MAX_NICE;
-  }
+  else
+    new_nice = current + static_cast<i32>(increment);
 
-  cur->se.nice = new_nice;
-  cur->se.weight = cfs_params::nice_to_weight(new_nice);
-  cur->se.load_weight = cur->se.weight;
+  g_scheduler->set_base_nice(cur, new_nice);
 
-  log::klog::info("sys_nice: TID={} nice={} weight={}", static_cast<u32>(cur->tid), new_nice, cur->se.weight);
+  log::klog::info("sys_nice: TID={} nice={} weight={}", static_cast<u32>(cur->tid), new_nice, cur->se.weight.load());
   return static_cast<long>(new_nice);
 }
 

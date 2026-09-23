@@ -209,15 +209,24 @@ public:
   void shutdown() noexcept {
     log::klog::info("MOSS kernel shutting down...");
 
-    // Shutdown subsystems in reverse order
-    if (scheduler_) {
-      delete scheduler_;
-      scheduler_ = nullptr;
+    // Keep the scheduler alive until process teardown removes each thread's
+    // outstanding IPC priority links.
+    if (load_balancer_) {
+      delete load_balancer_;
+      load_balancer_ = nullptr;
+      process::g_load_balancer = nullptr;
     }
 
     if (process_manager_) {
       delete process_manager_;
       process_manager_ = nullptr;
+      process::g_process_manager = nullptr;
+    }
+
+    if (scheduler_) {
+      delete scheduler_;
+      scheduler_ = nullptr;
+      process::g_scheduler = nullptr;
     }
 
     if (page_table_manager_) {

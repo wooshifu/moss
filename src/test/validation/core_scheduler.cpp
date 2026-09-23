@@ -139,6 +139,96 @@ void scheduler_self_selection(bool realtime) {
   ut::expect(scheduler->get_cpu_nr_running(cpu) == 0);
 }
 
+void ipc_priority_inheritance() {
+  using namespace process;
+  unique_ptr<CfsScheduler> scheduler(new CfsScheduler());
+  if (!ut::expect(scheduler.get() != nullptr))
+    return;
+
+  Thread high(0, 0), low(1, 0), server(2, 0), backend(3, 0), dying(4, 0);
+  Thread normal_caller(5, 0), normal_server(6, 0), normal_backend(7, 0);
+  PriorityDonation high_call{}, low_call{}, nested{}, cycle{}, death_call{}, normal_call{}, normal_nested{},
+      normal_cycle{};
+  const auto cpu = arch::get_current_cpu_id();
+  high.sched_class = low.sched_class = SchedClass::RealTime;
+  high.rt.priority = 80;
+  low.rt.priority = 60;
+  const bool restore_irqs = arch::interrupts_enabled();
+  arch::disable_interrupts();
+  auto *original = CfsScheduler::get_current_task();
+  CfsScheduler::set_current_task(&high);
+
+  scheduler->enqueue_task(&server, cpu);
+  scheduler->enqueue_task(&backend, cpu);
+  ut::expect(scheduler->begin_ipc_call(&high_call, &high));
+  scheduler->bind_ipc_server(&high_call, &server);
+  ut::expect(server.effective_rt_priority() == 80 && server.rt_on_rq && scheduler->pick_next_task(cpu) == &server);
+
+  scheduler->dequeue_task(&server);
+  server.state = ProcessState::Sleeping;
+  ut::expect(scheduler->begin_ipc_call(&nested, &server));
+  scheduler->bind_ipc_server(&nested, &backend);
+  ut::expect(backend.effective_rt_priority() == 80 && backend.rt_on_rq && scheduler->pick_next_task(cpu) == &backend);
+
+  ut::expect(scheduler->begin_ipc_call(&low_call, &low));
+  scheduler->bind_ipc_server(&low_call, &server);
+  scheduler->end_ipc_call(&high_call);
+  ut::expect(server.effective_rt_priority() == 60 && backend.effective_rt_priority() == 60);
+  scheduler->end_ipc_call(&low_call);
+  ut::expect(server.effective_rt_priority() == 0 && backend.effective_rt_priority() == 0 && !backend.rt_on_rq &&
+             backend.se.rb_on_rq);
+
+  scheduler->dequeue_task(&backend);
+  backend.state = ProcessState::Sleeping;
+  ut::expect(scheduler->begin_ipc_call(&cycle, &backend));
+  scheduler->bind_ipc_server(&cycle, &server);
+  ut::expect(scheduler->begin_ipc_call(&high_call, &high));
+  scheduler->bind_ipc_server(&high_call, &server);
+  ut::expect(server.effective_rt_priority() == 80 && backend.effective_rt_priority() == 80);
+  scheduler->end_ipc_call(&high_call);
+  ut::expect(server.effective_rt_priority() == 0 && backend.effective_rt_priority() == 0);
+  scheduler->end_ipc_call(&cycle);
+  scheduler->end_ipc_call(&nested);
+
+  ut::expect(scheduler->begin_ipc_call(&death_call, &high));
+  scheduler->bind_ipc_server(&death_call, &dying);
+  ut::expect(dying.effective_rt_priority() == 80);
+  scheduler->forget_ipc_thread(&dying);
+  ut::expect(death_call.server == nullptr && dying.ipc_scheduler == nullptr && dying.effective_rt_priority() == 0);
+  scheduler->end_ipc_call(&death_call);
+
+  scheduler->set_base_nice(&normal_caller, -10);
+  scheduler->set_base_nice(&normal_server, 10);
+  scheduler->set_base_nice(&normal_backend, 15);
+  scheduler->enqueue_task(&normal_server, cpu);
+  scheduler->enqueue_task(&normal_backend, cpu);
+  ut::expect(scheduler->begin_ipc_call(&normal_call, &normal_caller));
+  scheduler->bind_ipc_server(&normal_call, &normal_server);
+  ut::expect(normal_server.effective_cfs_nice() == -10 && normal_server.se.rb_on_rq &&
+             normal_server.se.weight == cfs_params::nice_to_weight(-10));
+  scheduler->dequeue_task(&normal_server);
+  normal_server.state = ProcessState::Sleeping;
+  ut::expect(scheduler->begin_ipc_call(&normal_nested, &normal_server));
+  scheduler->bind_ipc_server(&normal_nested, &normal_backend);
+  ut::expect(normal_backend.effective_cfs_nice() == -10);
+  scheduler->dequeue_task(&normal_backend);
+  normal_backend.state = ProcessState::Sleeping;
+  ut::expect(scheduler->begin_ipc_call(&normal_cycle, &normal_backend));
+  scheduler->bind_ipc_server(&normal_cycle, &normal_server);
+  scheduler->set_base_nice(&normal_caller, -5);
+  ut::expect(normal_server.effective_cfs_nice() == -5 && normal_backend.effective_cfs_nice() == -5);
+  scheduler->end_ipc_call(&normal_call);
+  ut::expect(normal_server.effective_cfs_nice() == 10 && normal_backend.effective_cfs_nice() == 10);
+  scheduler->end_ipc_call(&normal_cycle);
+  scheduler->end_ipc_call(&normal_nested);
+  ut::expect(normal_backend.effective_cfs_nice() == 15 && normal_backend.se.weight == cfs_params::nice_to_weight(15));
+
+  CfsScheduler::set_current_task(original);
+  if (restore_irqs)
+    arch::enable_interrupts();
+  ut::expect(scheduler->get_cpu_nr_running(cpu) == 0);
+}
+
 void migration_current_owner() {
   using namespace process;
   if (!ut::expect(g_num_cpus >= 2)) {
@@ -227,6 +317,7 @@ void register_scheduler_cases() {
     ut::register_test("kernel_stack_initialization", kernel_stack_initialization);
     ut::register_test("cfs_self_selection", [] { scheduler_self_selection(false); });
     ut::register_test("rr_self_selection", [] { scheduler_self_selection(true); });
+    ut::register_test("ipc_priority_inheritance", ipc_priority_inheritance);
     ut::register_test("migration_current_owner", migration_current_owner);
   });
 }

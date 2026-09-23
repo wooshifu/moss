@@ -586,10 +586,9 @@ inline bool valid_id(const char *id) {
 struct Registry {
   // Fixed static budgets keep registration available before heap initialization.
   // These are harness capacity choices; exhaustion is a registration error.
-  // Kernel isolation exceeds the previous 192-slot budget. 256 covers the
-  // 233-entry host catalog (including architecture-specific/benchmark entries)
-  // with bounded headroom; this changes test metadata capacity, not kernel pools.
-  static constexpr unsigned case_capacity = 256;
+  // The previous 256 slots were exhausted when IPC scheduling coverage was
+  // registered. Keep a bounded 16-slot margin without changing kernel pools.
+  static constexpr unsigned case_capacity = 272;
   // The current catalogs have 36/35/33 suites on x64/RV64/ARM64 respectively.
   // Budget 40 slots: at least four spare registrations and only 320 bytes of pointers
   // per Registry on supported 64-bit targets. Keep exhaustion fail-closed.

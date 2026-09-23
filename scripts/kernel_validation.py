@@ -110,6 +110,7 @@ CATALOG = {
         "kernel_stack_initialization",
         "cfs_self_selection",
         "rr_self_selection",
+        "ipc_priority_inheritance",
         "migration_current_owner",
     ],
     "process": ["heap_rollback"],

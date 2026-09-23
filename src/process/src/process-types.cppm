@@ -25,6 +25,7 @@ namespace log = moss::kernel::logging;
 
 // Forward declarations
 struct Thread;
+class CfsScheduler;
 
 // Thread entry for LockedList storage
 struct ThreadEntry {
@@ -105,6 +106,7 @@ inline constexpr i32 DEFAULT_NICE = 0;
 inline constexpr u32 MIN_RT_PRIORITY = 1;
 inline constexpr u32 MAX_RT_PRIORITY = 99;
 inline constexpr u32 DEFAULT_RT_PRIORITY = 50;
+inline constexpr i32 NO_INHERITED_NICE = MAX_NICE + 1;
 } // namespace priority
 
 // RT scheduling parameters
@@ -536,11 +538,11 @@ struct SchedEntity {
   u64 sum_exec_runtime;
   u64 prev_sum_exec_runtime;
 
-  u32 weight;
-  i32 nice;
+  moss::atomic<u32> weight;
+  moss::atomic<i32> nice;
   u32 prio;
 
-  u32 load_weight;
+  moss::atomic<u32> load_weight;
   u64 load_sum;
   u64 util_sum;
   u64 load_avg;
@@ -583,6 +585,15 @@ struct RtSchedEntity {
       : priority(priority::DEFAULT_RT_PRIORITY), time_slice_remaining(rt_params::RR_TIMESLICE_NS) {}
 };
 
+// PendingCall owns this record. The scheduler links it into thread lists only
+// while the call is active, so call completion and thread teardown can detach
+// either side without leaving a pointer to a retired reply capability.
+struct PriorityDonation {
+  Thread *caller{nullptr};
+  Thread *server{nullptr};
+  PriorityDonation *next{nullptr};
+};
+
 // Thread structure
 struct Thread {
   static constexpr u64 WAIT_STATUS_MASK = (1ULL << (sizeof(u32) * 8)) - 1;
@@ -609,6 +620,12 @@ struct Thread {
   SchedPolicy sched_policy;
   SchedEntity se;
   RtSchedEntity rt;
+  moss::atomic<u32> inherited_rt_priority{0};
+  moss::atomic<i32> inherited_cfs_nice{priority::NO_INHERITED_NICE};
+  PriorityDonation *ipc_wait{nullptr};
+  PriorityDonation *ipc_donors{nullptr};
+  CfsScheduler *ipc_scheduler{nullptr};
+  u64 ipc_cycle_epoch{0};
 
   u64 start_time;
   u64 utime;
@@ -634,7 +651,7 @@ struct Thread {
 
   // TIF_NEED_RESCHED — set when preemption is needed,
   // checked at safe points (syscall return, IRQ return).
-  bool need_resched{false};
+  moss::atomic<bool> need_resched{false};
 
   // Preemption nesting counter.  When > 0, the scheduler must not
   // context-switch this task away (it holds a spinlock or is in a
@@ -666,6 +683,7 @@ struct Thread {
   // RT run queue intrusive list pointer (next task at same priority).
   // Used by RtRunqueue; nullptr when not enqueued in an RT queue.
   Thread *rt_next_{nullptr};
+  bool rt_on_rq{false};
 
   // Signal alternate stack (sigaltstack)
   VirtAddr alt_stack_sp{0}; // alternate stack base address
@@ -701,6 +719,18 @@ struct Thread {
     }
   }
   [[nodiscard]] bool is_preemptible() const noexcept { return preempt_count == 0; }
+
+  [[nodiscard]] u32 effective_rt_priority() const noexcept {
+    const u32 base = sched_class == SchedClass::RealTime ? rt.priority : 0;
+    const u32 inherited = inherited_rt_priority.load();
+    return base > inherited ? base : inherited;
+  }
+
+  [[nodiscard]] i32 effective_cfs_nice() const noexcept {
+    const i32 base = se.nice.load();
+    const i32 inherited = inherited_cfs_nice.load();
+    return base < inherited ? base : inherited;
+  }
 
   void publish_wait_status(u32 status) noexcept {
     u64 current = wait_status_event.load();

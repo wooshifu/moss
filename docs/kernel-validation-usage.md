@@ -27,6 +27,13 @@ saved. It passes in the current nine-preset functional matrix; this bounded
 regression does not prove every scheduler interleaving. See the retained
 [diagnostic checkpoint](kernel-validation.md#scheduler-migration-diagnostic-checkpoint-2026-09-16).
 
+`scheduler/ipc_priority_inheritance` uses the production run queues with
+synthetic threads to check transitive RT and CFS nice donations, multiple
+callers, cycles, and restoration after call completion or thread death.
+`users.ipc` and production boot exercise the live call lifecycle with ordinary
+threads. They do not yet establish end-to-end inversion bounds under an
+admitted real-time scheduling profile.
+
 Each functional suite boots once, executes its cases sequentially, and stops after failure. Subsequent suites get fresh guests. Panic and timeout self-checks each use their own guest. Five warmups and thirty recorded benchmark batches share one guest per scenario, not one boot per sample.
 
 ```sh

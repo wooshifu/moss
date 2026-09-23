@@ -39,6 +39,7 @@ enum class Outcome : u8 { Pending, Reply, Canceled, Expired, PeerClosed };
 
 struct PendingCall {
   process::Thread *caller;
+  process::PriorityDonation donation{};
   u64 deadline_ns;
   usize request_size;
   usize response_size{0};
@@ -73,7 +74,7 @@ class Channel {
   }
 
   static void wake(process::Thread *thread) noexcept {
-    if (process::g_scheduler)
+    if (thread && process::g_scheduler)
       process::g_scheduler->task_wakeup(thread, thread->wake_cpu);
   }
 
@@ -115,11 +116,12 @@ public:
     }
   }
 
-  [[nodiscard]] bool receive(PendingCall *call) noexcept {
+  [[nodiscard]] bool receive(PendingCall *call, process::Thread *server) noexcept {
     containers::LockGuard<containers::IrqSpinLock> guard(lock_);
     for (const auto &slot : calls_) {
       if (slot.get() == call && call->queued && call->delivery_claimed && call->outcome == Outcome::Pending) {
         call->queued = false;
+        process::g_scheduler->bind_ipc_server(&call->donation, server);
         return true;
       }
     }
@@ -158,6 +160,8 @@ public:
           break;
         }
       }
+      if (process::g_scheduler)
+        process::g_scheduler->end_ipc_call(&call->donation);
       wake(call->caller);
     }
     return outcome;
@@ -196,6 +200,8 @@ public:
         if (calls_[i]) {
           calls_[i]->outcome = Outcome::PeerClosed;
           calls_[i]->queued = false;
+          if (process::g_scheduler)
+            process::g_scheduler->end_ipc_call(&calls_[i]->donation);
           wake(calls_[i]->caller);
           retired[i] = moss::move(calls_[i]);
         }
@@ -422,9 +428,13 @@ long sys_ipc_call(long endpoint, long request_addr, long response_addr, long dea
     return -errc::ENOMEM;
   if (deadline_ns != 0 && timer::TimerSubsystem::instance().now_ns() >= static_cast<u64>(deadline_ns))
     return -errc::ETIMEDOUT;
+  if (!process::g_scheduler->begin_ipc_call(&call->donation, thread))
+    return -errc::EAGAIN;
   const long enqueued = channel->enqueue(call);
-  if (enqueued < 0)
+  if (enqueued < 0) {
+    process::g_scheduler->end_ipc_call(&call->donation);
     return enqueued;
+  }
 
   DeadlineWake wake{channel.get(), call.get()};
   timer::HrTimer deadline_timer;
@@ -544,7 +554,7 @@ long sys_ipc_receive(long endpoint, long request_addr, long reply_addr, long, lo
         channel->release_claim(call.get());
         return -errc::EFAULT;
       }
-      if (channel->receive(call.get())) {
+      if (channel->receive(call.get(), thread)) {
         static_cast<Reply *>(reply.get())->armed.store(true, memory_order_release);
         auto published = proc->capabilities().publish_reserved(handle, delivered.capability);
         if (!published) {

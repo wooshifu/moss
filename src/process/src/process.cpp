@@ -87,6 +87,11 @@ Thread *Thread::try_create(ThreadId id, ProcessId pid) noexcept {
 }
 
 Thread::~Thread() {
+  // A reply capability may outlive its servicing thread; detach donations
+  // before either the reply or another participant observes this dead thread.
+  if (ipc_scheduler) {
+    ipc_scheduler->forget_ipc_thread(this);
+  }
   if (kernel_stack_base != 0 && kernel_stack_size > 0) {
     usize order = 0;
     const usize pages = kernel_stack_size / PAGE_SIZE;
