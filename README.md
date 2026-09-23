@@ -41,8 +41,9 @@ BusyBox's standalone shell support. The separate validation initramfs starts
 
 The capability-backed services currently cover only the volatile `/scratch`
 example used by `/moss-file.elf`. Ordinary shell files, ELF loading, process
-compatibility and boot drivers still use kernel implementations. The accepted
-[architecture decisions](docs/adr/) describe their intended migration; they
+compatibility, interrupt/timer bootstrap and the early console still use kernel
+implementations. The accepted [architecture decisions](docs/adr/) describe
+their intended migration; they
 are not a claim that those services have already replaced the kernel paths.
 
 For example, after launching QEMU:

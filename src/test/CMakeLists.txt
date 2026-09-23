@@ -38,7 +38,7 @@ add_executable(
 get_target_property(_kernel_modules moss.elf LINK_LIBRARIES)
 target_link_libraries(
     moss.test.elf
-    PRIVATE ${_kernel_modules} moss_ipc_validation
+    PRIVATE ${_kernel_modules} moss_ipc_validation moss_drivers_validation
 )
 target_include_directories(moss.test.elf PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 set_target_properties(moss.test.elf PROPERTIES RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)

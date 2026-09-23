@@ -4,6 +4,8 @@ The validation executable links the same production object modules and follows t
 
 The historical `containers.ipc_*` cases link `moss.ipc` only into the validation image. They exercise the old channel and service-manager algorithms, not the production IPC path. `users.ipc` and `moss-production-boot` exercise capability-backed control IPC and Memory Objects used by production.
 
+The `drivers` registry cases likewise link the former `moss.drivers` matching/callback module only into validation. Production boot uses `moss.drivers.console` directly with the boot-owned interrupt controller and timer; the console readiness and RX cases still exercise that production module.
+
 ## Build and Test
 
 Run from the repository root. Replace `arm64` with `x64` or `riscv64` for the other architectures.

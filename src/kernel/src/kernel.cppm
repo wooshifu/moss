@@ -18,7 +18,6 @@ import moss.containers;
 import moss.mm;
 import moss.hal.mmu;
 import moss.interrupts;
-import moss.drivers;
 import moss.fdt;
 import moss.initramfs;
 import moss.process;

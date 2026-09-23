@@ -25,7 +25,7 @@ import moss.hal.mmu;
 import moss.containers;
 import moss.mm;
 import moss.interrupts;
-import moss.drivers;
+import moss.drivers.console;
 import moss.fdt;
 import moss.initramfs;
 import moss.process;
@@ -54,7 +54,7 @@ enum class BootPhase : u8 {
   EarlyInit = 0,     // Early initialization (after assembly)
   MemoryInit = 1,    // Memory management initialization
   SchedulerInit = 2, // Scheduler initialization
-  DeviceInit = 3,    // Device management initialization
+  DeviceInit = 3,    // Bootstrap hardware readiness
   ServiceInit = 4,   // System service startup
   UserInit = 5,      // User-space initialization
   Completed = 6     // Boot completed
@@ -70,7 +70,6 @@ struct KernelStats {
   u32 total_threads;      // Total thread count
   u64 context_switches;   // Context switch count
   u64 interrupts_handled; // Interrupts handled
-  u32 registered_devices; // Registered device count
 };
 
 // Kernel main class
@@ -85,7 +84,6 @@ private:
   process::CfsScheduler *scheduler_;
   process::LoadBalancer *load_balancer_;
   interrupts::GenericInterruptController *gic_;
-  drivers::DeviceManager *device_manager_;
 
   // Boot time recording
   u64 boot_start_time_;
@@ -103,8 +101,7 @@ private:
 public:
   Kernel() noexcept
       : current_phase_(BootPhase::EarlyInit), container_lib_(nullptr), page_table_manager_(nullptr),
-        process_manager_(nullptr), scheduler_(nullptr), load_balancer_(nullptr), gic_(nullptr), device_manager_(nullptr),
-        boot_start_time_(0) {
+        process_manager_(nullptr), scheduler_(nullptr), load_balancer_(nullptr), gic_(nullptr), boot_start_time_(0) {
     // Fixed default budgets: 256 processes, 16 threads/process, 16 MiB heap
     // and a 10 ms configured timeslice. Their exact sizing/tuning evidence
     // is not recorded here; review the consuming subsystem before changing them.
@@ -213,12 +210,6 @@ public:
     log::klog::info("MOSS kernel shutting down...");
 
     // Shutdown subsystems in reverse order
-    if (device_manager_) {
-      drivers::g_device_manager = nullptr;
-      delete device_manager_;
-      device_manager_ = nullptr;
-    }
-
     if (scheduler_) {
       delete scheduler_;
       scheduler_ = nullptr;
@@ -261,11 +252,6 @@ public:
       stats.interrupts_handled = gic_stats.total_interrupts;
     }
 
-    if (device_manager_) {
-      auto dev_stats = device_manager_->get_statistics();
-      stats.registered_devices = dev_stats.total_devices;
-    }
-
     return stats;
   }
 
@@ -280,14 +266,13 @@ public:
     log::klog::info("Uptime: {} cycles", stats.uptime);
     log::klog::info("Active processes: {}", stats.active_processes);
     log::klog::info("Interrupts handled: {}", stats.interrupts_handled);
-    log::klog::info("Registered devices: {}", stats.registered_devices);
     log::klog::info("===============================");
   }
 
 private:
   // Phase-by-phase initialization
   [[nodiscard]] VoidResult initialize_phase_by_phase() noexcept {
-    const char *phase_names[] = {"Early init", "Memory management", "Scheduler", "Device management",
+    const char *phase_names[] = {"Early init", "Memory management", "Scheduler", "Bootstrap hardware",
                                  "System services", "User-space", "Complete"};
 
     // Ordinals before Completed perform initialization; run() publishes it
@@ -524,8 +509,7 @@ private:
     return VoidResult{};
   }
 
-  // IPC system initialization
-  // Device management initialization
+  // Bootstrap hardware readiness
   [[nodiscard]] VoidResult initialize_devices() noexcept {
     // Borrow the boot-owned controller. Reinitializing the live hardware here
     // resets interrupt routes and masks the already configured LAPIC timer.
@@ -534,19 +518,16 @@ private:
     }
     gic_ = moss::boot::g_gic_controller;
 
-    // Create device manager
-    device_manager_ = new drivers::DeviceManager();
-    if (!device_manager_) {
-      gic_ = nullptr;
-      return VoidResult{ErrorCode::OutOfMemory};
-    }
-
-    // Drivers and interrupt dispatch share the controller established at boot.
+    // The console and interrupt dispatcher use the controller established at boot.
     ::moss::kernel::interrupts::g_gic = gic_;
-    drivers::g_device_manager = device_manager_;
-    auto bound = drivers::register_boot_devices(*device_manager_, gic_);
-    if (!bound) {
-      return bound;
+    if (!timer::TimerSubsystem::instance().is_initialized()) {
+      return VoidResult{ErrorCode::InvalidState};
+    }
+    if (platform::hardware.uart.valid) {
+      auto console_ready = drivers::console::initialize();
+      if (!console_ready) {
+        return console_ready;
+      }
     }
 
     // Initialize multi-architecture syscall support

@@ -1,5 +1,4 @@
-// MOSS Drivers Module - Device Management and Driver Framework
-// Passive device descriptions and static built-in driver binding.
+// Legacy device registry retained for validation of its lifecycle algorithms.
 
 export module moss.drivers;
 
@@ -11,9 +10,6 @@ import moss.arch;
 import moss.containers;
 import moss.interrupts;
 import moss.abi;
-import moss.platform;
-import moss.timer;
-import moss.drivers.console;
 
 // ============================================================================
 // Exported driver framework types and classes
@@ -260,7 +256,7 @@ public:
     return type_ == device.type() && hardware_id_ == device.hardware_id() &&
            (!compatible_ || (device.compatible() && moss::abi::bridge::strcmp(compatible_, device.compatible()) == 0));
   }
-  // A failed probe must release only resources it acquired, preserving borrowed boot state.
+  // A failed probe must release only resources it acquired, preserving borrowed state.
   [[nodiscard]] virtual VoidResult probe(Device &device, BindMode mode) noexcept = 0;
   virtual void remove(Device &device) noexcept = 0;
   [[nodiscard]] virtual VoidResult suspend(Device &) noexcept { return VoidResult{}; }
@@ -268,7 +264,6 @@ public:
 };
 
 class DeviceManager {
-  // ponytail: linear scans suit the three boot devices; add an index when device counts grow.
   containers::LockedList<shared_ptr<Device>> devices_;
   containers::LockedList<shared_ptr<Driver>> drivers_;
   mutable containers::IrqSpinLock registry_lock_;
@@ -289,8 +284,8 @@ public:
   DeviceManager(const DeviceManager &) = delete;
   DeviceManager &operator=(const DeviceManager &) = delete;
   ~DeviceManager() noexcept {
-    // Destruction requires callers to have stopped registry operations. Boot devices
-    // borrow hardware that still serves scheduling and logging during shutdown.
+    // Destruction requires callers to have stopped registry operations. Borrowed
+    // devices must not invoke remove for resources owned by another component.
     for (DeviceId after = 0;;) {
       auto device = next_device(after);
       if (!device)
@@ -480,114 +475,4 @@ private:
   }
 };
 
-inline DeviceManager *g_device_manager = nullptr;
-
-// These drivers adopt the selected platform resources, rather than inventing
-// firmware-compatible strings for ACPI or architectural devices.
-class BootDriver final : public Driver {
-  interrupts::GenericInterruptController *controller_;
-
-public:
-  BootDriver(const char *name, DeviceType type, HardwareId id, interrupts::GenericInterruptController *controller)
-      : Driver(name, type, id), controller_(controller) {}
-  VoidResult probe(Device &device, BindMode mode) noexcept override {
-    if (mode != BindMode::AdoptBoot || !controller_)
-      return VoidResult{ErrorCode::InvalidState};
-    if (device.type() == DeviceType::UART)
-      return console::initialize();
-    if (device.type() == DeviceType::Timer && !timer::TimerSubsystem::instance().is_initialized())
-      return VoidResult{ErrorCode::InvalidState};
-    return VoidResult{};
-  }
-  void remove(Device &) noexcept override {}
-};
-
-[[nodiscard]] inline VoidResult register_boot_devices(DeviceManager &manager,
-                                                      interrupts::GenericInterruptController *controller) noexcept {
-#if defined(MOSS_ARCH_ARM64)
-  const auto chip = platform::hardware.intc.gic_version == 1   ? HardwareId::Bcm
-                    : platform::hardware.intc.gic_version == 3 ? HardwareId::GicV3
-                                                               : HardwareId::GicV2;
-  const auto clock = HardwareId::ArmVirtualTimer;
-#elif defined(MOSS_ARCH_X64)
-  const auto chip = HardwareId::Apic;
-  const auto clock = HardwareId::LapicTimer;
-#else
-  const auto chip = HardwareId::Plic;
-  const auto clock = HardwareId::SbiTimer;
-#endif
-  const auto serial =
-      platform::hardware.uart.kind == platform::UartKind::Pl011 ? HardwareId::Pl011 : HardwareId::Ns16550;
-  const DeviceType types[] = {DeviceType::InterruptController, DeviceType::Timer, DeviceType::UART};
-  const HardwareId ids[] = {chip, clock, serial};
-  const char *names[] = {"irqchip", "timer", "console"};
-  const usize count = platform::hardware.uart.valid ? 3 : 2;
-  for (usize i = 0; i < count; ++i) {
-    auto driver = shared_ptr<Driver>::try_make<BootDriver>(moss::abi::bridge::moss_heap_allocate, names[i], types[i],
-                                                           ids[i], controller);
-    if (!driver)
-      return VoidResult{ErrorCode::OutOfMemory};
-    auto registered = manager.register_driver(driver);
-    if (!registered)
-      return registered;
-  }
-  for (usize i = 0; i < count; ++i) {
-    auto device = shared_ptr<Device>::try_make(moss::abi::bridge::moss_heap_allocate, 0U, types[i], names[i], nullptr,
-                                               ids[i], BindMode::AdoptBoot);
-    if (!device)
-      return VoidResult{ErrorCode::OutOfMemory};
-    DeviceResource resource;
-    if (i == 0) {
-      const auto &chip_info = platform::hardware.intc;
-      const PhysAddr bases[] = {chip_info.dist_base, chip_info.cpu_base, chip_info.redist_base};
-      u64 sizes[] = {chip_info.dist_size, chip_info.cpu_size, chip_info.redist_size};
-#if defined(MOSS_ARCH_X64)
-      // The existing xAPIC profile maps each register bank as one 4 KiB MMIO page.
-      sizes[0] = sizes[1] = PAGE_SIZE;
-#endif
-      for (usize bank = 0; bank < 3; ++bank) {
-        if (!bases[bank] || !sizes[bank])
-          continue;
-        resource.type = DeviceResource::Memory;
-        resource.memory = {bases[bank], bases[bank] + sizes[bank], bases[bank]};
-        if (!device->add_resource(resource))
-          return VoidResult{ErrorCode::OutOfMemory};
-      }
-    } else if (i == 2) {
-      const auto &uart = platform::hardware.uart;
-      resource.type = uart.port_io ? DeviceResource::IO : DeviceResource::Memory;
-      if (resource.type == DeviceResource::IO) {
-        resource.io = {static_cast<u32>(uart.base_addr), static_cast<u32>(uart.base_addr + uart.size)};
-      } else {
-        resource.memory = {uart.base_addr, uart.base_addr + uart.size, uart.base_addr};
-      }
-      if (!device->add_resource(resource))
-        return VoidResult{ErrorCode::OutOfMemory};
-    }
-    if (i != 0) {
-      resource.type = DeviceResource::IRQ;
-      resource.interrupt = {i == 1 ? platform::timer_irq() : platform::hardware.uart.irq,
-                            interrupts::TriggerType::LevelHigh};
-#if defined(MOSS_ARCH_X64)
-      resource.interrupt.trigger = interrupts::TriggerType::EdgeRising;
-      if (i == 2) {
-        // MADT override bits 0..1 encode polarity; bits 2..3 encode trigger mode.
-        const u16 flags = platform::hardware.isa_flags[platform::hardware.uart.irq];
-        const bool level = (flags & 12) == 12, low = (flags & 3) == 3;
-        resource.interrupt.trigger =
-            level ? (low ? interrupts::TriggerType::LevelLow : interrupts::TriggerType::LevelHigh)
-                  : (low ? interrupts::TriggerType::EdgeFalling : interrupts::TriggerType::EdgeRising);
-      }
-#endif
-      if (!device->add_resource(resource))
-        return VoidResult{ErrorCode::OutOfMemory};
-    }
-    auto registered = manager.register_device(device);
-    if (!registered)
-      return VoidResult{registered.error()};
-    if (device->state() != DeviceState::Active)
-      return VoidResult{device->probe_error()};
-  }
-  return VoidResult{};
-}
 } // namespace moss::kernel::drivers

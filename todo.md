@@ -2,6 +2,7 @@
 
 > 源码复核基线：2026-09-23，`604fe85`（当次未重跑 QEMU）。之后的当前九预设运行验收见 [moss-todo.md](moss-todo.md) 第 3.59～3.75 节。历史实现与实测保留原日期；源码与旧报告的对应关系见第 3.41 节。
 > ADR 迁移复核基线：2026-09-24，`c970c13`；新增能力和服务的状态见下文“ADR 迁移”。上面的 44/44 九预设记录早于该基线；IPC 收敛后的 **53/53 CTest** 见 [3.76](moss-todo.md#376-旧-ipc-与生产-capability-ipc-分界2026-09-24)。
+> 启动驱动边界复核：2026-09-24，`70e8ccb` 加本次工作树；九预设 **53/53 CTest**、关闭测试的独立生产构建及符号检查见 [3.77](moss-todo.md#377-启动机制与旧设备框架分界2026-09-24隔离工作树)。
 > 本文取代旧清单中“完成即可靠”“x86/RISC-V 64 仅为启动桩”的描述。
 > 审计问题的原始证据、当前状态及完整验收条件见 [moss-todo.md](moss-todo.md)；MOSS-001～032 沿用原编号，不重新编号。
 
@@ -67,7 +68,7 @@ uv run qemu.py --manifest build/arm64-debug/moss-artifacts.json
 | VFS | inode/dentry/File/FdTable、路径/mount/dcache、ramfs、devfs(console/null/zero)、stdio、open/close/read/write/lseek/fstat/dup/dup2/pipe、匿名 pipefs 与有界 I/O 视图；FD 模式检查、稳定引用及 pipe 阻塞/EOF 已实现 | 022、024～026；共享 offset/close 并发、管道多端交错和分配失败注入仍待专项验收 |
 | 核心与同步 | C++ 模块、freestanding types/std/concepts、Result、unique_ptr/shared_ptr、klog；ticket/IRQ spinlock、RAII guard、atomics、PerCpuData/计数/队列、MPSC、拥有型锁容器、WaitQueue | 尤其 006、017、018；容器节点/查找引用安全不等于使用者的复合生命周期或调度协议安全 |
 | Native IPC 与服务 | 进程局部带权限 capability 表、同步控制调用/一次性 reply、单页共享内存对象；`moss-init` 启动并监护文件/命名空间服务，`/moss-file.elf` 通过它们访问内存中的 `/scratch` | ADR-0012 的传递式优先级继承、0024 的执行域/兼容服务拆分、0018 的实际 VFS 迁移等仍未完成；旧 PID/全局 ID IPC 模块尚保留测试代码 |
-| 扩展框架 | DeviceManager 在启动时静态注册并激活中断控制器、计时器、可用串口设备及其 BootDriver；实际硬件操作仍经 HAL；NUMA/hugepage/reclaim/compaction/共享映射等未实现接口显式返回 Unsupported；Process 已有 uid/gid/euid/egid 字段 | 006、031～032 及后续功能清单；动态解绑/总线枚举/通用 DMA 和其他未实现能力仍待处理 |
+| 启动机制与扩展框架 | 中断控制器、计时器及可用串口控制台保留必要的内核启动机制，实际硬件操作仍经 HAL；旧 `DeviceManager`/`Driver` 仅在验证镜像测试生命周期算法；NUMA/hugepage/reclaim/compaction/共享映射等未实现接口显式返回 Unsupported；Process 已有 uid/gid/euid/egid 字段 | ADR-0015 的设备资源 capability、隔离驱动、动态发现和 DMA 限制尚未实现；006、031～032 及其他未实现能力继续追踪 |
 
 主要实现分别位于 `src/boot/`、`src/aal/`、`src/hal/`、`src/drivers/`、`src/mm/`、`src/containers/`、`src/process/`、`src/kernel/`、`src/vfs/`、`src/userspace/` 和 `third_party/mlibc/`。下面以稳定审计编号追踪未完成工作，详细源码符号见 [审计状态表](moss-todo.md#4-问题总表与当前状态)。
 
@@ -78,6 +79,7 @@ ADR-0008～0033 是已接受的目标边界，并非当前实现的完成声明�
 - [x] ADR-0009/0010/0011 的第一条可运行路径：进程局部 capability、同步控制调用和单页共享内存已供独立服务使用；不代表通用权限撤销、完整数据面或传递式优先级继承已完成。
 - [x] ADR-0014/0018 的第一条服务路径：`moss-init` 监护文件与命名空间服务，后者只解析 `/scratch`，服务死亡后的重连由用户态显式处理；内核 VFS 仍处理普通文件。
 - [x] 生产内核不再创建或链接旧的 PID/全局服务 ID IPC 管理器，也不再把它的消息计数展示为 native IPC 统计；旧模块仅留验证镜像专项回归，不作为新服务 ABI。九预设 53/53 CTest 及生产 ELF 符号检查见 3.76。
+- [x] 生产启动不再创建 `DeviceManager` 或通过 `BootDriver` 重新包装已启用的中断控制器、计时器和控制台；旧匹配/回调框架仅链接验证镜像。九预设 53/53 CTest、关闭测试的独立构建及符号检查通过；内核仍保留上述启动机制，资源 capability 和隔离驱动服务仍未实现（ADR-0015，见 3.77）。
 - [ ] 将 IPC 等待依赖纳入内核有效调度优先级并覆盖嵌套调用、取消、超时和服务死亡（ADR-0012/0023）。
 - [ ] 建立 capability 寻址的执行域、用户态兼容进程与普通程序 Loader Service，逐步迁出内核 PID/信号/ELF 政策（ADR-0024/0025）。
 - [ ] 将实际 VFS、pager 和非启动设备迁到隔离服务，补资源授权、失败恢复和 DMA 限制；保留有依据的启动机制例外（ADR-0015～0019）。
@@ -129,11 +131,11 @@ ADR-0008～0033 是已接受的目标边界，并非当前实现的完成声明�
   - [x] 三架构 PFA 耗尽不返回保留页；逐页模式、initrd 校验和及释放后页数恢复通过。
   - [x] ARM64/RV64 Debug/Release 固件输入共 18 项检查；有效区间末端 UINT64_MAX 在裁剪前取整导致回绕的问题已修复，异常输入在启动阶段拒绝（[证据](moss-todo.md#35-pfa-分配归属与固件边界2026-09-06工作区)）。
   - [x] PFA 联合管理 kernel_end 以上多 bank、排序/合并相邻段、独立排除元数据；RV64 实际 DTB 验证两段/乱序八段、元数据放入后续 bank、非对齐相邻段及 RAM 表溢出（[证据](moss-todo.md#36-多-ram-bank-分配2026-09-06工作区)）。
-- [ ] **MOSS-006（部分修复）**：伪 RCU 已删除，锁容器及全部调用者已迁移；启动设备已向 DeviceManager 静态注册并激活，IRQ 注销已等待旧回调退出，IPI 部分注册失败已回滚；旧 IPC 服务/连接发布与注销已串行化，但模块现仅留验证镜像。实际硬件回调、动态解绑和 native IPC 进程清理/在途消息仍待闭合。
+- [ ] **MOSS-006（部分修复）**：伪 RCU 已删除，锁容器及全部调用者已迁移；生产启动改为直接验证计时器并初始化控制台，旧 `DeviceManager` 仅留验证镜像；IRQ 注销已等待旧回调退出，IPI 部分注册失败已回滚；旧 IPC 服务/连接发布与注销已串行化，但模块现仅留验证镜像。实际硬件回调、隔离驱动资源解绑和 native IPC 进程清理/在途消息仍待闭合。
   - [x] 删除 RcuPtr 隐式析构；A/B/C 插入误删可达值已复现并修复（`4cde9b3`，moss-todo.md 第 3.8 节）。
   - [x] LockedList/LockedHashMap 查找复制值/拥有者，串行化摘除与发布；析构及快照回调在锁外执行（工作区，3.9）。
   - [x] 持有读者、1,024 次清空/复用、回调/析构重入与真实双 CPU 同 key 创建/删除交错用例（工作区，3.9）。
-  - [x] 启动时按发现的资源注册并激活 irqchip、timer、可用 console 的 BootDriver/Device；HAL 承担实际硬件操作（3.41）。
+  - [x] 启动时沿用 boot-owned irqchip 和 timer、验证计时器就绪并按发现的 UART 初始化 console；HAL 承担实际硬件操作。3.41 的 `BootDriver` 静态注册是历史状态，现已退出生产路径（3.77）。
   - [x] IRQ 描述符注销停止新回调并等待已有回调退出；双 CPU 去同步红例、九配置目标用例、完整 CTest 43/43 及宿主回归 151/151 通过（3.52）。
   - [x] 硬件 IPI 部分 SGI 注册/启用失败回滚；故障注入覆盖原有注册、两个启用失败和失败后重试（3.53）。
   - [x] IPC 服务注销与连接发布竞态已修复；旧实现会发布孤儿通道，三架构真实内核服务/连接/回收用例通过（3.54）。
@@ -255,9 +257,9 @@ ADR-0008～0033 是已接受的目标边界，并非当前实现的完成声明�
 - [ ] **x64 端口完善**：复用已有 IDT、MMU、APIC、timer、context switch、SYSCALL、fault 和 AP startup；先完成 007/014/019 等跨架构契约，001 的页权限隔离已验收，不再从 boot stub 重写。
 - [ ] **RV64 端口完善**：复用已有 satp/trap/PLIC/SBI/context switch/ecall/HSM；先完成 007/009/014/019，按需求另增 AIA 等驱动。
 - [ ] **同 ISA 通用镜像扩展与真机验收**：已有低于 4 GiB 的多 RAM bank 分配；继续精确回收启动区、细粒度 RAM/MMIO 映射、更多启动协议/设备与真机固件交接，以不变镜像 hash 验收，不能退回 virt/板名编译矩阵。
-- [ ] **块设备与持久文件系统**：块层和实际设备驱动；virtio-blk 可作为首个可验证设备契约，不是内核对 QEMU 的依赖。
-- [ ] **网络设备与协议栈**：设备驱动（可先 virtio-net）、Ethernet/ARP/IP/UDP 与实际 socket 路径。
-- [ ] **设备框架整合**：DeviceManager 已在启动时注册并激活 irqchip、timer、可用 console 的 BootDriver/Device，资源匹配与 HAL 操作已接通；按实际设备需求补动态总线枚举、解绑生命周期、通用 IRQ/DMA 与驱动专项验收。
+- [ ] **块设备与持久文件系统**：按 ADR-0015/0018 在隔离服务实现块设备与持久文件系统；virtio-blk 可作为首个可验证设备契约，不是内核对 QEMU 的依赖。
+- [ ] **网络设备与协议栈**：按隔离服务边界实现设备驱动（可先 virtio-net）、Ethernet/ARP/IP/UDP 与实际 socket 路径。
+- [ ] **隔离驱动资源契约**：内核只保留启动所需机制；补 capability 限定的 MMIO/端口、IRQ、DMA 与独占复位权限，再建立用户态枚举/绑定、故障回收及专项验收。旧 `DeviceManager` 不再是生产驱动扩展入口。
 - [ ] **userspace libc/ABI 兼容**：已集成静态 mlibc，BusyBox 和验证程序使用现有用户态运行时；继续按实际程序需求补 syscall/errno/启动契约与不支持能力的明确返回，不重复实现一套最小 libc。
 - [ ] **NUMA**：固件拓扑、per-node zones 与实际分配策略；现有策略/距离矩阵不是完整 NUMA。
 - [ ] **Huge pages**：已有早期大块映射和管理接口；补用户大页分配/回收与 PMD/PUD 映射。THP/hugetlbfs 按需求单列。

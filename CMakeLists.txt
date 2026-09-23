@@ -129,7 +129,7 @@ target_link_libraries(
             moss_containers
             moss_mm
             moss_capability
-            moss_drivers
+            moss_driver_console
             moss_interrupts
             moss_timer
             moss_process

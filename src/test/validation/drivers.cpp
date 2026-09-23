@@ -231,29 +231,15 @@ void console_ring() {
       ut::expect(ring.get() == static_cast<int>(i));
     }
   }
-  auto *manager = drivers::g_device_manager;
-  if (!ut::expect(manager != nullptr)) {
-    return;
-  }
-  const auto stats = manager->get_statistics();
-  // The bootstrap registry contains irqchip, timer and console (listed below).
-  ut::expect(stats.total_devices == 3 && stats.active_devices == 3);
   auto *controller = moss::boot::g_gic_controller;
   const auto clock = moss::kernel::timer::TimerSubsystem::instance().clocksource().frequency_hz();
+  ut::expect(controller != nullptr && clock != 0);
+  ut::expect(platform::hardware.uart.valid && drivers::console::is_initialized());
   ut::expect(drivers::console::initialize().has_value());
   moss::abi::bridge::console_rx_init();
   ut::expect(drivers::console::is_initialized());
   ut::expect(moss::boot::g_gic_controller == controller);
   ut::expect(moss::kernel::timer::TimerSubsystem::instance().clocksource().frequency_hz() == clock);
-  const char *names[] = {"irqchip", "timer", "console"};
-  for (const char *name : names) {
-    auto boot = manager->get_device_by_name(name);
-    if (!ut::expect(static_cast<bool>(boot))) {
-      return;
-    }
-    ut::expect(boot->state() == DeviceState::Active && boot->bind_mode() == BindMode::AdoptBoot);
-    ut::expect(manager->unregister_device(boot->device_id()).error() == ErrorCode::PermissionDenied);
-  }
 }
 } // namespace driver_tests
 

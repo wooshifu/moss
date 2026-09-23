@@ -17,7 +17,6 @@ namespace moss::kernel {
 // Subsystem global instances
 containers::ContainerLibrary *g_container_lib = nullptr;
 mm::PageTableManager *g_page_table_manager = nullptr;
-drivers::DeviceManager *g_device_manager = nullptr;
 
 } // namespace moss::kernel
 
