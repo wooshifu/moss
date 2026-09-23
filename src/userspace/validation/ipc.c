@@ -556,3 +556,81 @@ unsigned long ipc_domain_control(void) {
   }
   return errors;
 }
+
+unsigned long ipc_domain_selection(void) {
+  struct moss_ipc_endpoints pair = {0};
+  if (syscall1(SYS_IPC_CREATE, (long)&pair) != 0)
+    return 1;
+  unsigned long errors = (unsigned long)(syscall2(SYS_CAP_SET_INHERIT, (long)pair.send, 1) != 0);
+
+  unsigned long empty_domain = 0;
+  long empty_child = syscall1(SYS_FORK_DOMAIN, (long)&empty_domain);
+  if (empty_child == 0)
+    _exit(syscall1(SYS_CAP_CLOSE, (long)pair.send) == -IPC_EBADF &&
+                  syscall1(SYS_CAP_CLOSE, (long)pair.receive) == -IPC_EBADF
+              ? 37
+              : 96);
+  errors |= (unsigned long)(empty_child <= 1 || !empty_domain) << 1;
+  if (empty_child > 1)
+    errors |= (unsigned long)!wait_exit(empty_child, 37) << 2;
+  if (empty_domain)
+    errors |= (unsigned long)(syscall1(SYS_CAP_CLOSE, (long)empty_domain) != 0) << 3;
+
+  const struct moss_fork_capability selected[] = {{pair.receive, MOSS_CAP_RECEIVE, 0}};
+  unsigned long selected_domain = 0;
+  long selected_child = syscall3(SYS_FORK_DOMAIN_SELECT, (long)&selected_domain, (long)selected, 1);
+  if (selected_child == 0) {
+    long denied_duplicate = syscall2(SYS_CAP_DUPLICATE, (long)pair.receive, MOSS_CAP_RECEIVE);
+    long grandchild = syscall0(SYS_FORK);
+    if (grandchild == 0)
+      _exit(syscall1(SYS_CAP_CLOSE, (long)pair.receive) == -IPC_EBADF ? 37 : 96);
+    _exit(denied_duplicate == -IPC_EACCES && grandchild > 1 && wait_exit(grandchild, 37) &&
+                  syscall1(SYS_CAP_CLOSE, (long)pair.receive) == 0 &&
+                  syscall1(SYS_CAP_CLOSE, (long)pair.send) == -IPC_EBADF
+              ? 37
+              : 96);
+  }
+  errors |= (unsigned long)(selected_child <= 1 || !selected_domain) << 4;
+  if (selected_child > 1)
+    errors |= (unsigned long)!wait_exit(selected_child, 37) << 5;
+  if (selected_domain)
+    errors |= (unsigned long)(syscall1(SYS_CAP_CLOSE, (long)selected_domain) != 0) << 6;
+
+  unsigned long rejected_domain = 0;
+  const struct moss_fork_capability duplicated[] = {{pair.receive, MOSS_CAP_RECEIVE, 0},
+                                                    {pair.receive, MOSS_CAP_RECEIVE, 0}};
+  errors |=
+      (unsigned long)(syscall3(SYS_FORK_DOMAIN_SELECT, (long)&rejected_domain, (long)duplicated, 2) != -IPC_EINVAL ||
+                      rejected_domain != 0)
+      << 7;
+  long limited = syscall2(SYS_CAP_DUPLICATE, (long)pair.receive, MOSS_CAP_RECEIVE);
+  errors |= (unsigned long)(limited <= 0) << 8;
+  if (limited > 0) {
+    const struct moss_fork_capability unauthorized[] = {{(unsigned long)limited, MOSS_CAP_RECEIVE, 0}};
+    errors |= (unsigned long)(syscall3(SYS_FORK_DOMAIN_SELECT, (long)&rejected_domain, (long)unauthorized, 1) !=
+                                  -IPC_EACCES ||
+                              rejected_domain != 0)
+              << 9;
+    errors |= (unsigned long)(syscall1(SYS_CAP_CLOSE, limited) != 0) << 10;
+  }
+  errors |= (unsigned long)(syscall3(SYS_FORK_DOMAIN_SELECT, (long)&rejected_domain, 0, 1) != -IPC_EFAULT) << 11;
+  // A bit outside the published selection flags must be rejected.
+  const struct moss_fork_capability invalid_flags[] = {{pair.receive, MOSS_CAP_RECEIVE, MOSS_FORK_CAP_INHERIT << 1}};
+  errors |=
+      (unsigned long)(syscall3(SYS_FORK_DOMAIN_SELECT, (long)&rejected_domain, (long)invalid_flags, 1) != -IPC_EINVAL ||
+                      rejected_domain != 0)
+      << 14;
+  const struct moss_fork_capability unauthorized_inherit[] = {{pair.receive, MOSS_CAP_RECEIVE, MOSS_FORK_CAP_INHERIT}};
+  errors |= (unsigned long)(syscall3(SYS_FORK_DOMAIN_SELECT, (long)&rejected_domain, (long)unauthorized_inherit, 1) !=
+                                -IPC_EACCES ||
+                            rejected_domain != 0)
+            << 15;
+  const struct moss_fork_capability excess_rights[] = {{pair.receive, MOSS_CAP_RECEIVE | MOSS_CAP_MINT, 0}};
+  errors |=
+      (unsigned long)(syscall3(SYS_FORK_DOMAIN_SELECT, (long)&rejected_domain, (long)excess_rights, 1) != -IPC_EACCES ||
+                      rejected_domain != 0)
+      << 16;
+  errors |= (unsigned long)(syscall1(SYS_CAP_CLOSE, (long)pair.receive) != 0) << 12;
+  errors |= (unsigned long)(syscall1(SYS_CAP_CLOSE, (long)pair.send) != 0) << 13;
+  return errors;
+}

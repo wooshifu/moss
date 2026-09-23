@@ -76,7 +76,8 @@ enum {
   SYS_FORK_DOMAIN = 143,
   SYS_DOMAIN_ID = 144,
   SYS_DOMAIN_TERMINATE = 145,
-  SYS_DOMAIN_WAIT = 146
+  SYS_DOMAIN_WAIT = 146,
+  SYS_FORK_DOMAIN_SELECT = 147
 };
 
 enum {
@@ -100,6 +101,16 @@ enum {
 struct moss_ipc_endpoints {
   unsigned long send;
   unsigned long receive;
+};
+
+enum { MOSS_FORK_CAP_INHERIT = 1U << 0 };
+
+// SYS_FORK_DOMAIN_SELECT preserves each selected handle number through exec.
+// INHERIT additionally permits later ordinary forks.
+struct moss_fork_capability {
+  unsigned long handle;
+  unsigned long rights;
+  unsigned long flags;
 };
 
 // One capability may accompany each bounded request or reply. Passing a

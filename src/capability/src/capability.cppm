@@ -23,6 +23,17 @@ inline constexpr u32 DOMAIN_INSPECT = 1U << 8;
 inline constexpr u32 DOMAIN_OBSERVE = 1U << 9;
 } // namespace rights
 
+namespace fork_flags {
+inline constexpr u64 INHERIT = 1U << 0;
+} // namespace fork_flags
+
+struct ForkSelection {
+  Handle handle;
+  u64 rights;
+  u64 flags;
+};
+static_assert(sizeof(ForkSelection) == 3 * sizeof(u64));
+
 class Object {
   ObjectType type_;
   atomic<u32> installed_handles_{0};
@@ -94,7 +105,10 @@ class Table {
   struct Entry {
     Handle handle{INVALID_HANDLE};
     u32 rights{0};
+    // Native startup may preserve a handle through exec without passing it
+    // to a later fork, so these are separate properties.
     bool inheritable{false};
+    bool keep_on_exec{false};
     bool published{false};
     shared_ptr<Object> object{};
   };
@@ -142,6 +156,7 @@ class Table {
         entry.handle = next_handle_++;
         entry.rights = granted_rights;
         entry.inheritable = false;
+        entry.keep_on_exec = false;
         entry.published = published;
         entry.object = moss::move(object);
         return KernelResult<Handle>{entry.handle};
@@ -166,6 +181,7 @@ class Table {
       source->handle = INVALID_HANDLE;
       source->rights = 0;
       source->inheritable = false;
+      source->keep_on_exec = false;
       source->published = false;
     }
     return installed;
@@ -176,6 +192,7 @@ public:
   ~Table() noexcept { clear(); }
   Table(const Table &) = delete;
   Table &operator=(const Table &) = delete;
+  [[nodiscard]] static constexpr usize capacity() noexcept { return CAPACITY; }
 
   [[nodiscard]] KernelResult<Handle> install(shared_ptr<Object> object, u32 granted_rights) noexcept {
     containers::LockGuard<containers::IrqSpinLock> guard(lock_);
@@ -215,6 +232,7 @@ public:
       entry->handle = INVALID_HANDLE;
       entry->rights = 0;
       entry->inheritable = false;
+      entry->keep_on_exec = false;
       entry->published = false;
     }
     retired->release_handle();
@@ -277,6 +295,7 @@ public:
     if (inheritable && !(entry->rights & rights::DUPLICATE))
       return VoidResult{ErrorCode::PermissionDenied};
     entry->inheritable = inheritable;
+    entry->keep_on_exec = inheritable;
     return {};
   }
 
@@ -316,15 +335,75 @@ public:
     return copy_locked();
   }
 
+  // A native fork grants exactly this list. Preserve handle numbers because
+  // the forked address space already contains them, and keep selected handles
+  // through the child's exec without changing the parent's inheritance policy.
+  [[nodiscard]] VoidResult clone_selected_to(Table &target, const ForkSelection *selections,
+                                             usize count) const noexcept {
+    if (this == &target || count > CAPACITY || (count != 0 && !selections))
+      return VoidResult{ErrorCode::InvalidArgument};
+    auto copy_locked = [&]() -> VoidResult {
+      if (target.next_handle_ != 1)
+        return VoidResult{ErrorCode::AlreadyExists};
+      for (const auto &entry : target.entries_) {
+        if (entry.handle != INVALID_HANDLE)
+          return VoidResult{ErrorCode::AlreadyExists};
+      }
+      bool selected[CAPACITY]{};
+      for (usize i = 0; i < count; ++i) {
+        const auto &selection = selections[i];
+        const Entry *entry = find_locked(selection.handle);
+        if (!entry)
+          return VoidResult{ErrorCode::NotFound};
+        if (!(entry->rights & rights::DUPLICATE))
+          return VoidResult{ErrorCode::PermissionDenied};
+        if (selection.rights == 0 || selection.rights > static_cast<u64>(~u32{0}) ||
+            (selection.flags & ~fork_flags::INHERIT) != 0)
+          return VoidResult{ErrorCode::InvalidArgument};
+        const u32 granted = static_cast<u32>(selection.rights);
+        if ((entry->rights & granted) != granted ||
+            ((selection.flags & fork_flags::INHERIT) && !(granted & rights::DUPLICATE)))
+          return VoidResult{ErrorCode::PermissionDenied};
+        const usize slot = static_cast<usize>(entry - entries_);
+        if (selected[slot])
+          return VoidResult{ErrorCode::InvalidArgument};
+        selected[slot] = true;
+      }
+      // The source table stays locked from validation through copying.
+      for (usize i = 0; i < count; ++i) {
+        const auto &selection = selections[i];
+        const Entry *entry = find_locked(selection.handle);
+        const usize slot = static_cast<usize>(entry - entries_);
+        entry->object->acquire_handle();
+        target.entries_[slot] = *entry;
+        target.entries_[slot].rights = static_cast<u32>(selection.rights);
+        target.entries_[slot].inheritable = (selection.flags & fork_flags::INHERIT) != 0;
+        target.entries_[slot].keep_on_exec = true;
+      }
+      target.next_handle_ = next_handle_;
+      return {};
+    };
+    if (reinterpret_cast<usize>(this) < reinterpret_cast<usize>(&target)) {
+      containers::LockGuard<containers::IrqSpinLock> first(lock_);
+      containers::LockGuard<containers::IrqSpinLock> second(target.lock_);
+      return copy_locked();
+    }
+    containers::LockGuard<containers::IrqSpinLock> first(target.lock_);
+    containers::LockGuard<containers::IrqSpinLock> second(lock_);
+    return copy_locked();
+  }
+
   void close_uninheritable() noexcept {
     shared_ptr<Object> retired[CAPACITY];
     {
       containers::LockGuard<containers::IrqSpinLock> guard(lock_);
       for (usize i = 0; i < CAPACITY; ++i) {
-        if (entries_[i].handle != INVALID_HANDLE && !entries_[i].inheritable) {
+        if (entries_[i].handle != INVALID_HANDLE && !entries_[i].keep_on_exec) {
           retired[i] = moss::move(entries_[i].object);
           entries_[i].handle = INVALID_HANDLE;
           entries_[i].rights = 0;
+          entries_[i].inheritable = false;
+          entries_[i].keep_on_exec = false;
           entries_[i].published = false;
         }
       }
@@ -370,6 +449,7 @@ public:
       entry->handle = INVALID_HANDLE;
       entry->rights = 0;
       entry->inheritable = false;
+      entry->keep_on_exec = false;
       entry->published = false;
     }
     retired->release_handle();
@@ -385,6 +465,7 @@ public:
         entries_[i].handle = INVALID_HANDLE;
         entries_[i].rights = 0;
         entries_[i].inheritable = false;
+        entries_[i].keep_on_exec = false;
         entries_[i].published = false;
       }
     }

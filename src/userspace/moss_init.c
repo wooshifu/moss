@@ -35,9 +35,9 @@ static void wait_for(pid_t child) {
   }
 }
 
-static pid_t fork_domain(long *domain) {
+static pid_t fork_domain(long *domain, const struct moss_fork_capability *handles, size_t count) {
   *domain = 0;
-  return (pid_t)syscall1(SYS_FORK_DOMAIN, (long)domain);
+  return (pid_t)syscall3(SYS_FORK_DOMAIN_SELECT, (long)domain, (long)handles, (long)count);
 }
 
 static void stop_child(pid_t child, long domain) {
@@ -94,14 +94,14 @@ static int start_file_service(struct Service *service) {
   }
   long mint = 0;
   long receive = syscall2(SYS_CAP_DUPLICATE, (long)endpoints.receive, MOSS_CAP_RECEIVE | MOSS_CAP_DUPLICATE);
-  if (receive <= 0 || syscall2(SYS_CAP_SET_INHERIT, receive, 1) != 0) {
+  if (receive <= 0) {
     goto fail;
   }
   // The file service owns mint authority. The supervisor retains only an
   // attenuated sender for service lookup and recovery.
   mint = syscall2(SYS_CAP_DUPLICATE, (long)endpoints.send,
                   MOSS_CAP_SEND | MOSS_CAP_TRANSFER | MOSS_CAP_DUPLICATE | MOSS_CAP_MINT);
-  if (mint <= 0 || syscall2(SYS_CAP_SET_INHERIT, mint, 1) != 0) {
+  if (mint <= 0) {
     goto fail;
   }
   char receive_arg[32], mint_arg[32]; // Each holds a decimal 64-bit handle.
@@ -113,7 +113,10 @@ static int start_file_service(struct Service *service) {
   }
 
   long domain = 0;
-  pid_t child = fork_domain(&domain);
+  const struct moss_fork_capability handles[] = {
+      {(unsigned long)receive, MOSS_CAP_RECEIVE, 0},
+      {(unsigned long)mint, MOSS_CAP_SEND | MOSS_CAP_TRANSFER | MOSS_CAP_DUPLICATE | MOSS_CAP_MINT, 0}};
+  pid_t child = fork_domain(&domain, handles, sizeof(handles) / sizeof(handles[0]));
   if (child == 0) {
     char *const argv[] = {"file-service", receive_arg, mint_arg, NULL};
     execve("/file-service.elf", argv, NULL);
@@ -155,28 +158,30 @@ static int start_namespace_service(const struct Service *file, struct Service *s
     return -1;
   }
   long receive = 0;
-  // Inheriting through fork needs DUPLICATE. The namespace can ask the file
+  // Selecting a child capability needs DUPLICATE. The namespace can ask the file
   // service to open an object, but cannot mint or transfer this root sender.
   long file_cap = syscall2(SYS_CAP_DUPLICATE, file->send, MOSS_CAP_SEND | MOSS_CAP_DUPLICATE);
   if (file_cap <= 0) {
     goto fail;
   }
   receive = syscall2(SYS_CAP_DUPLICATE, (long)endpoints.receive, MOSS_CAP_RECEIVE | MOSS_CAP_DUPLICATE);
-  if (receive <= 0 || syscall2(SYS_CAP_SET_INHERIT, receive, 1) != 0) {
+  if (receive <= 0) {
     goto fail;
   }
   char receive_arg[32], file_arg[32]; // Each holds a decimal 64-bit handle.
   int receive_size = snprintf(receive_arg, sizeof(receive_arg), "%lu", (unsigned long)receive);
   int file_size = snprintf(file_arg, sizeof(file_arg), "%lu", (unsigned long)file_cap);
   if (receive_size < 0 || (size_t)receive_size >= sizeof(receive_arg) || file_size < 0 ||
-      (size_t)file_size >= sizeof(file_arg) || syscall2(SYS_CAP_SET_INHERIT, file_cap, 1) != 0) {
+      (size_t)file_size >= sizeof(file_arg)) {
     goto fail;
   }
 
-  // Fork copies opted-in handles with their numbers unchanged. The parent
-  // closes its temporary minted handle before it creates a shell.
+  // The selected child handles keep their numbers for argv. The parent closes
+  // its temporary file handle before it creates a shell.
   long domain = 0;
-  pid_t child = fork_domain(&domain);
+  const struct moss_fork_capability handles[] = {{(unsigned long)receive, MOSS_CAP_RECEIVE, 0},
+                                                 {(unsigned long)file_cap, MOSS_CAP_SEND, 0}};
+  pid_t child = fork_domain(&domain, handles, sizeof(handles) / sizeof(handles[0]));
   if (child == 0) {
     char *const argv[] = {"namespace-service", receive_arg, file_arg, NULL};
     execve("/namespace-service.elf", argv, NULL);
@@ -193,7 +198,7 @@ static int start_namespace_service(const struct Service *file, struct Service *s
 
   long send = syscall2(SYS_CAP_DUPLICATE, (long)endpoints.send, MOSS_CAP_SEND | MOSS_CAP_DUPLICATE);
   (void)syscall1(SYS_CAP_CLOSE, (long)endpoints.send);
-  if (send <= 0 || syscall2(SYS_CAP_SET_INHERIT, send, 1) != 0) {
+  if (send <= 0) {
     if (send > 0) {
       (void)syscall1(SYS_CAP_CLOSE, send);
     }
@@ -225,7 +230,10 @@ static pid_t start_shell(long namespace_capability, long *domain) {
   if (size < 0 || (size_t)size >= sizeof(namespace_env)) {
     return -1;
   }
-  pid_t child = fork_domain(domain);
+  // Shell commands fork before exec; their namespace sender must follow them.
+  const struct moss_fork_capability handles[] = {
+      {(unsigned long)namespace_capability, MOSS_CAP_SEND | MOSS_CAP_DUPLICATE, MOSS_FORK_CAP_INHERIT}};
+  pid_t child = fork_domain(domain, handles, sizeof(handles) / sizeof(handles[0]));
   if (child == 0) {
     char *const argv[] = {"ash", "-i", NULL};
     char *const env[] = {"PATH=/", "HOME=/", "TERM=dumb", "PS1=moss$ ", "PS2=> ", namespace_env, NULL};

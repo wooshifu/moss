@@ -234,6 +234,7 @@ CATALOG = {
         "badged_sender",
         "nested_roundtrip",
         "domain_control",
+        "domain_selection",
     ],
     "users.signals": [
         "basic_handler",

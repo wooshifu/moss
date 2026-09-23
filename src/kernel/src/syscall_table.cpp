@@ -277,7 +277,7 @@ static long domain_cap_error(ErrorCode error) noexcept {
   return -errc::EINVAL;
 }
 
-static long do_fork(u64 domain_cap_out_addr) noexcept {
+static long do_fork(u64 domain_cap_out_addr, const capability::ForkSelection *selected, usize selected_count) noexcept {
   using namespace moss::kernel::process;
   namespace log = moss::kernel::logging;
 
@@ -477,11 +477,14 @@ static long do_fork(u64 domain_cap_out_addr) noexcept {
     child_proc->set_fd_table(child_fdt);
   }
 
-  // Native authority is copied only when the owning process selected it;
-  // POSIX file descriptor inheritance above is a separate compatibility rule.
-  if (!parent_proc->capabilities().clone_inheritable_to(child_proc->capabilities())) {
+  // Native creation selects capabilities per child. POSIX fork retains its
+  // opted-in inheritance rule; descriptor inheritance above is independent.
+  auto copied_caps = domain_cap_out_addr ? parent_proc->capabilities().clone_selected_to(child_proc->capabilities(),
+                                                                                         selected, selected_count)
+                                         : parent_proc->capabilities().clone_inheritable_to(child_proc->capabilities());
+  if (!copied_caps) {
     cleanup_child(child_proc.get());
-    return -errc::EAGAIN;
+    return domain_cap_out_addr ? domain_cap_error(copied_caps.error()) : -errc::EAGAIN;
   }
 
   // 12c. Inherit process name from parent
@@ -553,10 +556,23 @@ static long do_fork(u64 domain_cap_out_addr) noexcept {
   return static_cast<long>(child_proc->pid());
 }
 
-long sys_fork(long, long, long, long, long, long) noexcept { return do_fork(0); }
+long sys_fork(long, long, long, long, long, long) noexcept { return do_fork(0, nullptr, 0); }
 
 long sys_fork_domain(long cap_out_addr, long, long, long, long, long) noexcept {
-  return cap_out_addr ? do_fork(static_cast<u64>(cap_out_addr)) : -errc::EFAULT;
+  return cap_out_addr ? do_fork(static_cast<u64>(cap_out_addr), nullptr, 0) : -errc::EFAULT;
+}
+
+long sys_fork_domain_select(long cap_out_addr, long handles_addr, long count_arg, long, long, long) noexcept {
+  if (!cap_out_addr)
+    return -errc::EFAULT;
+  if (count_arg < 0 || static_cast<usize>(count_arg) > capability::Table::capacity())
+    return -errc::EINVAL;
+  capability::ForkSelection selected[capability::Table::capacity()]{};
+  const auto count = static_cast<usize>(count_arg);
+  if (count != 0 &&
+      (!handles_addr || copy_from_user(selected, static_cast<u64>(handles_addr), count * sizeof(selected[0])) < 0))
+    return -errc::EFAULT;
+  return do_fork(static_cast<u64>(cap_out_addr), selected, count);
 }
 
 long sys_domain_id(long handle, long, long, long, long, long) noexcept {
@@ -2914,7 +2930,8 @@ const SyscallDescriptor SYSCALL_TABLE[static_cast<int>(SyscallNumber::MAX_SYSCAL
     {"fork_domain", handlers::sys_fork_domain, 1, true, "Fork with a child execution-domain capability"},
     {"domain_id", handlers::sys_domain_id, 1, true, "Inspect a domain's diagnostic process ID"},
     {"domain_terminate", handlers::sys_domain_terminate, 1, true, "Request capability-authorized termination"},
-    {"domain_wait", handlers::sys_domain_wait, 1, true, "Wait for a capability-addressed domain to exit"}};
+    {"domain_wait", handlers::sys_domain_wait, 1, true, "Wait for a capability-addressed domain to exit"},
+    {"fork_domain_select", handlers::sys_fork_domain_select, 3, true, "Fork with selected inherited capabilities"}};
 
 // 系统调用分发器实现
 long SyscallDispatcher::dispatch(long syscall_number, long arg0, long arg1, long arg2, long arg3, long arg4,
