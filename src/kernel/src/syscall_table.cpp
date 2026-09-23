@@ -1675,6 +1675,11 @@ long sys_mmap(long addr, long length, long prot, long flags, long fd, long offse
       offset != 0) {
     return -errc::EINVAL;
   }
+  // Anonymous memory has no approved immutable code version. Fail closed
+  // until a capability-checked executable Memory Object path exists.
+  if (prot & PROT_EXEC) {
+    return -errc::EACCES;
+  }
 
   Thread *cur = CfsScheduler::get_current_task();
   if (!cur) {
@@ -1718,10 +1723,6 @@ long sys_mmap(long addr, long length, long prot, long flags, long fd, long offse
   if (prot & PROT_WRITE) {
     vflags |= vma_flags::WRITE;
   }
-  if (prot & PROT_EXEC) {
-    vflags |= vma_flags::EXEC;
-  }
-
   // A valid hint never replaces an existing VMA. On collision try the cursor;
   // MAP_FIXED and unknown flags were rejected above, not silently downgraded.
   if (!as->add_vma(map_addr, map_addr + map_len, vflags, VmaType::MMAP)) {

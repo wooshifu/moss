@@ -356,6 +356,12 @@ fixed `HEAP_START` sentinel used for `brk == brk_base`. The case grows that VMA,
 rejects an overlapping resize without invoking its mutation callback, shrinks
 it back to empty, and rejects a second or displaced HEAP. It also checks access
 across adjacent VMAs and rejection at a gap or incompatible permission.
+It also rejects a writable executable VMA. `users.vm/access_permissions`
+requires anonymous executable `mmap` requests to fail with EACCES, while
+ordinary non-executable mappings remain usable. This closes the current
+anonymous-memory execution path; code approval and immutable executable
+Memory Objects remain separate work under
+[ADR-0026](adr/0026-require-explicit-authority-for-executable-memory.md).
 
 `users.vm/brk_lifecycle` enters through the real `brk`, `mmap`, `munmap`, fork,
 fault and wait paths. It proves that the initial empty heap faults, a page fully

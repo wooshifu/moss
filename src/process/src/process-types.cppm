@@ -454,7 +454,10 @@ public:
                usize b_offset = 0, usize b_size = 0, shared_ptr<capability::Object> memory = {},
                PhysAddr page = 0) noexcept {
     constexpr u32 allowed = vma_flags::READ | vma_flags::WRITE | vma_flags::EXEC | vma_flags::DEMAND_ZERO;
+    // Bootstrap image mappings also use this path; no caller may publish a
+    // VMA that is writable and executable at the same time.
     if (!valid_vma_range(start, end, type) || (flags & ~allowed) != 0 ||
+        (flags & (vma_flags::WRITE | vma_flags::EXEC)) == (vma_flags::WRITE | vma_flags::EXEC) ||
         (type == VmaType::SIGRETURN && flags != (vma_flags::READ | vma_flags::EXEC)) ||
         (static_cast<bool>(memory) != (page != 0)) ||
         (memory && (memory->type() != capability::ObjectType::Memory || type != VmaType::MMAP ||
