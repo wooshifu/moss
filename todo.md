@@ -194,6 +194,7 @@ uv run qemu.py --manifest build/arm64-debug/moss-artifacts.json
 - [ ] **MOSS-026（部分修复）**：inode/pipe/File/FD 槽复用、端点清理及用户 copyout 失败回滚已有实现，1,000 次 pipe 复用与 FD 回滚有用例；补各创建阶段故障注入和并发池复用验收。
 - [x] **MOSS-027（3.22 已关闭）**：PVH 模块表/可用 RAM 校验、严格 newc 和真实完成标记已修复；同一生产镜像的大小/位置变化、缺失/非法模块、坏 archive 与必需 init 失败七场景在 Debug/Release 通过且无假完成标记。
 - [ ] **MOSS-028（框架已落地，覆盖待补）**：保留真实内核套件、协议、失败/panic/timeout 自检；逐项补审计 T01～T12，特别是信号、坏指针、COW、资源长循环、失败回滚及确定性交错；纳入持续验收。
+  - [x] 断言失败后继续执行的 case 不再误报 `invalid case start`；原始失败串口重放为 `failed/assertion`（3.56）。
   - [x] 3.21 扩展 users.uaccess 为九项，九个 workflow/CTest 21/21、宿主 121/121；两份 RV64 Debug 超时继续保留，不能以之后矩阵通过关闭（3.21）。
   - [x] 3.20 新增 users.uaccess 后九个 workflow/CTest 21/21、宿主 121/121；原始报告及仍未验收的范围见 3.20。
   - [x] `0e88344` 提交前九个 workflow/CTest 21/21、宿主 121/121，通过范围和全部原始报告见 3.19；不是全部 T01～T12 验收。
