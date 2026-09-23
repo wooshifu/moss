@@ -249,6 +249,7 @@ CATALOG = {
         "signal_wakeup_affinity",
         "console_interrupted",
         "console_partial_interrupt",
+        "console_multi_reader",
     ],
     "users.simd_fault": ["isolation"],  # Explicit x86 acceptance; TCG may not deliver #XM.
     "mm.permissions": [
@@ -788,17 +789,26 @@ def run_guest(cfg: Artifacts, workload: str, directory: Path, settings: dict, it
                 pending += serial_in.read(2**20)
                 while b"\n" in pending:
                     line, pending = pending.split(b"\n", 1)
-                    state.accept(line.rstrip(b"\r"))
+                    line = line.rstrip(b"\r")
+                    state.accept(line)
                     if (
                         workload == "users.signals"
                         and state.active == "console_partial_interrupt"
-                        and not serial_inputs
+                        and not any(item["case"] == state.active for item in serial_inputs)
                     ):
                         # The fixture consumes one byte before forking, then checks
                         # that a caught signal returns the second as a partial read.
                         process.stdin.write(b"kk")
                         process.stdin.flush()
                         serial_inputs.append({"case": state.active, "hex": "6b6b"})
+                    if (
+                        workload == "users.signals"
+                        and state.active == "console_multi_reader"
+                        and line == b"MOSS_CONSOLE_MULTI_READY"
+                    ):
+                        process.stdin.write(b"ab")
+                        process.stdin.flush()
+                        serial_inputs.append({"case": state.active, "hex": "6162"})
                 if len(pending) > 65536:
                     raise ValueError("unbounded partial serial line")
                 if state.end:

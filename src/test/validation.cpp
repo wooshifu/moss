@@ -5908,6 +5908,7 @@ void declare_cases() {
     ut::register_test("signal_wakeup_affinity", empty_case);
     ut::register_test("console_interrupted", empty_case);
     ut::register_test("console_partial_interrupt", empty_case);
+    ut::register_test("console_multi_reader", empty_case);
   });
 #if defined(MOSS_ARCH_X64)
   ut::register_suite("users.simd_fault", [] { ut::register_test("isolation", empty_case); });
@@ -6986,6 +6987,38 @@ extern "C" long moss_validation_call(long op, long arg1, [[maybe_unused]] long a
     return thread->state == process::ProcessState::Sleeping && thread->sleep_handoff.load() == 0 && frame &&
            frame->syscall_number() == (mode == 0 ? 86U : 87U) &&
            (mode == 0 || frame->argument(1) == static_cast<u64>(mode == 2));
+  }
+  if (op == 57 && ut::same_id(selection, "users.signals") && ut::same_id(active_case, "console_multi_reader") &&
+      affinity_valid()) {
+    auto parent = process::current_process();
+    if (!parent || arg1 <= 1 || arg2 <= 1 || arg1 > ~ProcessId{0} || arg2 > ~ProcessId{0} || arg1 == arg2) {
+      return -1;
+    }
+    const long pids[] = {arg1, arg2};
+    for (long pid : pids) {
+      auto child = process::g_process_manager->find_process(static_cast<ProcessId>(pid));
+      if (!child || child->parent_pid() != parent->pid()) {
+        return -1;
+      }
+      auto *thread = child->get_main_thread();
+      if (!thread) {
+        return -1;
+      }
+      containers::LockGuard<containers::IrqSpinLock> guard(thread->sleep_lock);
+      if (thread->state == process::ProcessState::Zombie) {
+        return -1;
+      }
+#if !defined(MOSS_ARCH_RISCV64)
+      if (thread->state != process::ProcessState::Sleeping || thread->sleep_handoff.load() != 0) {
+        return 0;
+      }
+#endif
+      auto *frame = thread->trap_frame;
+      if (!frame || frame->syscall_number() != 32) { // Native read syscall.
+        return 0;
+      }
+    }
+    return 1;
   }
   if (op == 39 && ut::same_id(selection, "users.signals") &&
       (ut::same_id(active_case, "pipe_interrupted") || ut::same_id(active_case, "pipe_noninterrupting_signals") ||
