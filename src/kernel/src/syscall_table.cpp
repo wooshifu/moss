@@ -642,6 +642,77 @@ long sys_domain_wait(long handle, long, long, long, long, long) noexcept {
   return 0;
 }
 
+long sys_domain_wait_any(long handles_addr, long count_arg, long, long, long, long) noexcept {
+  if (count_arg <= 0 || static_cast<usize>(count_arg) > capability::Table::capacity())
+    return -errc::EINVAL;
+  if (!handles_addr)
+    return -errc::EFAULT;
+  const usize count = static_cast<usize>(count_arg);
+  Handle handles[capability::Table::capacity()]{};
+  if (copy_from_user(handles, static_cast<u64>(handles_addr), count * sizeof(handles[0])) < 0)
+    return -errc::EFAULT;
+
+  auto caller = process::current_process();
+  auto *cur = process::CfsScheduler::get_current_task();
+  if (!caller || !cur || !process::g_scheduler)
+    return -errc::ESRCH;
+  shared_ptr<process::Process> targets[capability::Table::capacity()]{};
+  for (usize i = 0; i < count; ++i) {
+    auto object =
+        caller->capabilities().lookup(handles[i], capability::ObjectType::Domain, capability::rights::DOMAIN_OBSERVE);
+    if (!object)
+      return domain_cap_error(object.error());
+    auto target = static_cast<DomainObject *>((*object).get())->process;
+    if (target.get() == caller.get())
+      return -errc::EINVAL;
+    // Aliased handles would register this sleeper twice on one queue; each
+    // result index must name a distinct domain.
+    for (usize j = 0; j < i; ++j) {
+      if (targets[j].get() == target.get())
+        return -errc::EINVAL;
+    }
+    targets[i] = moss::move(target);
+  }
+
+  auto exited_index = [&]() -> usize {
+    for (usize i = 0; i < count; ++i) {
+      const auto state = targets[i]->state();
+      if (state == process::ProcessState::Zombie || state == process::ProcessState::Terminated)
+        return i;
+    }
+    return count;
+  };
+  for (;;) {
+    const usize exited = exited_index();
+    if (exited != count)
+      return static_cast<long>(exited);
+    if (moss::abi::bridge::moss_io_wait_interrupted())
+      return -errc::EINTR;
+
+    usize registered = 0;
+    for (; registered < count; ++registered) {
+      if (!targets[registered]->domain_exit_wait_queue().try_add_waiter(static_cast<void *>(cur))) {
+        for (usize i = 0; i < registered; ++i)
+          targets[i]->domain_exit_wait_queue().remove_waiter(static_cast<void *>(cur));
+        return -errc::ENOMEM;
+      }
+    }
+    // Register before preparing sleep, then recheck after preparation. Exits
+    // before preparation are observed by the recheck; later wakeups use the
+    // scheduler's prepared-sleeper handoff.
+    const bool restore_irqs = arch::interrupts_enabled();
+    arch::disable_interrupts();
+    (void)moss::abi::bridge::moss_prepare_io_wait();
+    if (exited_index() != count)
+      process::g_scheduler->task_wakeup(cur, cur->wake_cpu);
+    process::g_scheduler->commit_sleep();
+    if (restore_irqs)
+      arch::enable_interrupts();
+    for (usize i = 0; i < count; ++i)
+      targets[i]->domain_exit_wait_queue().remove_waiter(static_cast<void *>(cur));
+  }
+}
+
 long sys_execve(long pathname_addr, long argv_addr, long envp_addr, long /*unused*/, long /*unused*/,
                 long /*unused*/) noexcept {
   using namespace moss::kernel::process;
@@ -2931,7 +3002,8 @@ const SyscallDescriptor SYSCALL_TABLE[static_cast<int>(SyscallNumber::MAX_SYSCAL
     {"domain_id", handlers::sys_domain_id, 1, true, "Inspect a domain's diagnostic process ID"},
     {"domain_terminate", handlers::sys_domain_terminate, 1, true, "Request capability-authorized termination"},
     {"domain_wait", handlers::sys_domain_wait, 1, true, "Wait for a capability-addressed domain to exit"},
-    {"fork_domain_select", handlers::sys_fork_domain_select, 3, true, "Fork with selected inherited capabilities"}};
+    {"fork_domain_select", handlers::sys_fork_domain_select, 3, true, "Fork with selected inherited capabilities"},
+    {"domain_wait_any", handlers::sys_domain_wait_any, 2, true, "Wait for one of several capability-addressed domains"}};
 
 // 系统调用分发器实现
 long SyscallDispatcher::dispatch(long syscall_number, long arg0, long arg1, long arg2, long arg3, long arg4,

@@ -30,6 +30,7 @@ set(BUSYBOX_SOURCES
     coreutils/printf.c
     coreutils/rm.c
     coreutils/rmdir.c
+    coreutils/sleep.c
     coreutils/sort.c
     coreutils/tee.c
     coreutils/test.c

@@ -1,4 +1,5 @@
 #include <errno.h>
+#include <signal.h>
 #include <stddef.h>
 #include <stdio.h>
 #include <string.h>
@@ -31,8 +32,27 @@ static void report_started(const char *name, pid_t pid) {
 
 static void wait_for(pid_t child) {
   int status;
+  // The SIGCHLD handler may have reaped this child already; the domain wait
+  // preceding these calls provides exit synchronization.
   while (waitpid(child, &status, 0) < 0 && errno == EINTR) {
   }
+}
+
+static void reap_finished_children(void) {
+  int status;
+  pid_t child;
+  do {
+    child = waitpid(-1, &status, WNOHANG);
+  } while (child > 0 || (child < 0 && errno == EINTR));
+}
+
+static void child_exited(int signo) {
+  (void)signo;
+  int saved_errno = errno;
+  // Reap in the handler so an orphan cannot exit between a drain and the
+  // supervisor's domain wait. Held domain caps retain service exit state.
+  reap_finished_children();
+  errno = saved_errno;
 }
 
 static pid_t fork_domain(long *domain, const struct moss_fork_capability *handles, size_t count) {
@@ -245,26 +265,30 @@ static pid_t start_shell(long namespace_capability, long *domain) {
 
 static enum ServiceLoss supervise(struct Service *file, struct Service *namespace, pid_t *shell, long *shell_domain) {
   for (;;) {
-    int status;
-    pid_t reaped = waitpid(-1, &status, 0);
-    if (reaped < 0) {
-      if (errno == EINTR) {
-        continue;
-      }
-      report(STDERR_FILENO, "moss-init: wait failed\n");
+    const unsigned long domains[] = {(unsigned long)file->domain, (unsigned long)namespace->domain,
+                                     (unsigned long)*shell_domain};
+    long exited = syscall2(SYS_DOMAIN_WAIT_ANY, (long)domains, 3);
+    if (exited == -EINTR) {
+      continue;
+    }
+    if (exited < 0 || exited > 2) {
+      report(STDERR_FILENO, "moss-init: domain wait failed\n");
       return SUPERVISOR_FAILURE;
     }
-    if (reaped == file->pid) {
+    if (exited == 0) {
+      wait_for(file->pid);
       file->pid = 0;
       report(STDOUT_FILENO, "moss-init: file service died\n");
       return FILE_LOST;
     }
-    if (reaped == namespace->pid) {
+    if (exited == 1) {
+      wait_for(namespace->pid);
       namespace->pid = 0;
       report(STDOUT_FILENO, "moss-init: namespace service died\n");
       return NAMESPACE_LOST;
     }
-    if (reaped == *shell) {
+    if (exited == 2) {
+      wait_for(*shell);
       *shell = 0;
       (void)syscall1(SYS_CAP_CLOSE, *shell_domain);
       *shell_domain = 0;
@@ -283,6 +307,13 @@ static enum ServiceLoss supervise(struct Service *file, struct Service *namespac
 }
 
 int main(void) {
+  // SIGCHLD handles compatibility reaping for both supervised and orphaned
+  // children; capability state remains authoritative for supervision.
+  struct sigaction action = {.sa_handler = child_exited};
+  sigemptyset(&action.sa_mask);
+  if (sigaction(SIGCHLD, &action, NULL) != 0) {
+    return 1;
+  }
   report(STDOUT_FILENO, "moss-init: supervisor ready\n");
   for (;;) {
     struct Service file = {0};

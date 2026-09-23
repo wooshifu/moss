@@ -1,5 +1,6 @@
 #include <dirent.h>
 #include <errno.h>
+#include <limits.h>
 #include <mlibc/all-sysdeps.hpp>
 #include <mlibc/tcb.hpp>
 #include <stddef.h>
@@ -225,6 +226,29 @@ int Sysdeps<ClockGet>::operator()(int clock, time_t *seconds, long *nanoseconds)
     return error(result);
   *seconds = value / 1000000000;
   *nanoseconds = value % 1000000000;
+  return 0;
+}
+int Sysdeps<Sleep>::operator()(time_t *seconds, long *nanoseconds) {
+  constexpr unsigned long nanos_per_second = 1000000000UL;
+  if (*seconds < 0 || *nanoseconds < 0 || *nanoseconds >= static_cast<long>(nanos_per_second))
+    return EINVAL;
+  if (static_cast<unsigned long>(*seconds) > (ULONG_MAX - static_cast<unsigned long>(*nanoseconds)) / nanos_per_second)
+    return EOVERFLOW;
+  unsigned long requested =
+      static_cast<unsigned long>(*seconds) * nanos_per_second + static_cast<unsigned long>(*nanoseconds);
+  unsigned long remaining = 0;
+  long result = syscall2(SYS_NANOSLEEP, reinterpret_cast<long>(&requested), reinterpret_cast<long>(&remaining));
+  // mlibc's sleep() ignores EINTR while nanosleep() reports it with the
+  // remaining duration, so both wrappers need the remainder on interruption.
+  if (result == -EINTR) {
+    *seconds = remaining / nanos_per_second;
+    *nanoseconds = remaining % nanos_per_second;
+    return EINTR;
+  }
+  if (result < 0)
+    return error(result);
+  *seconds = 0;
+  *nanoseconds = 0;
   return 0;
 }
 pid_t Sysdeps<GetPid>::operator()() { return syscall0(SYS_GETPID); }

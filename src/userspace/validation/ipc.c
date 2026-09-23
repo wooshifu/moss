@@ -634,3 +634,69 @@ unsigned long ipc_domain_selection(void) {
   errors |= (unsigned long)(syscall1(SYS_CAP_CLOSE, (long)pair.send) != 0) << 13;
   return errors;
 }
+
+unsigned long ipc_domain_wait_any(void) {
+  enum { CHILD_DELAY_NS = 10000000, SLOW_CHILD_CYCLES = 100, FAST_CHILD_CYCLES = 5 };
+  unsigned long slow_domain = 0;
+  long slow = syscall1(SYS_FORK_DOMAIN, (long)&slow_domain);
+  if (slow == 0) {
+    for (unsigned int i = 0; i < SLOW_CHILD_CYCLES; ++i) {
+      unsigned long delay = CHILD_DELAY_NS;
+      (void)nanosleep_ns(&delay);
+    }
+    _exit(97); // A failed termination must not hang validation indefinitely.
+  }
+  if (slow <= 1 || !slow_domain)
+    return 1;
+
+  unsigned long fast_domain = 0;
+  long fast = syscall1(SYS_FORK_DOMAIN, (long)&fast_domain);
+  if (fast == 0) {
+    for (unsigned int i = 0; i < FAST_CHILD_CYCLES; ++i) {
+      unsigned long delay = CHILD_DELAY_NS;
+      (void)nanosleep_ns(&delay);
+    }
+    _exit(37);
+  }
+  if (fast <= 1 || !fast_domain) {
+    (void)syscall1(SYS_DOMAIN_TERMINATE, (long)slow_domain);
+    (void)wait_signal(slow, SIGKILL);
+    (void)syscall1(SYS_CAP_CLOSE, (long)slow_domain);
+    return 2;
+  }
+
+  unsigned long errors = 0;
+  const unsigned long domains[] = {slow_domain, fast_domain};
+  errors |= (unsigned long)(syscall2(SYS_DOMAIN_WAIT_ANY, (long)domains, 2) != 1) << 0;
+  errors |= (unsigned long)!wait_exit(fast, 37) << 1;
+  errors |= (unsigned long)(syscall2(SYS_DOMAIN_WAIT_ANY, (long)domains, 0) != -IPC_EINVAL) << 2;
+  errors |= (unsigned long)(syscall2(SYS_DOMAIN_WAIT_ANY, 0, 1) != -IPC_EFAULT) << 3;
+  const unsigned long bad[] = {0};
+  errors |= (unsigned long)(syscall2(SYS_DOMAIN_WAIT_ANY, (long)bad, 1) != -IPC_EBADF) << 4;
+
+  long inspect = syscall2(SYS_CAP_DUPLICATE, (long)slow_domain, MOSS_CAP_DOMAIN_INSPECT);
+  long observe = syscall2(SYS_CAP_DUPLICATE, (long)fast_domain, MOSS_CAP_DOMAIN_OBSERVE);
+  errors |= (unsigned long)(inspect <= 0 || observe <= 0) << 5;
+  if (inspect > 0) {
+    const unsigned long unauthorized[] = {(unsigned long)inspect};
+    errors |= (unsigned long)(syscall2(SYS_DOMAIN_WAIT_ANY, (long)unauthorized, 1) != -IPC_EACCES) << 6;
+  }
+  if (observe > 0) {
+    const unsigned long duplicate_target[] = {fast_domain, (unsigned long)observe};
+    errors |= (unsigned long)(syscall2(SYS_DOMAIN_WAIT_ANY, (long)duplicate_target, 2) != -IPC_EINVAL) << 7;
+    errors |= (unsigned long)(syscall2(SYS_DOMAIN_WAIT_ANY, (long)&observe, 1) != 0) << 8;
+  }
+
+  errors |= (unsigned long)(syscall1(SYS_DOMAIN_TERMINATE, (long)slow_domain) != 0) << 9;
+  const unsigned long slow_only[] = {slow_domain};
+  errors |= (unsigned long)(syscall2(SYS_DOMAIN_WAIT_ANY, (long)slow_only, 1) != 0) << 10;
+  errors |= (unsigned long)(syscall2(SYS_DOMAIN_WAIT_ANY, (long)domains, 2) != 0) << 16;
+  errors |= (unsigned long)!wait_signal(slow, SIGKILL) << 11;
+  if (inspect > 0)
+    errors |= (unsigned long)(syscall1(SYS_CAP_CLOSE, inspect) != 0) << 12;
+  if (observe > 0)
+    errors |= (unsigned long)(syscall1(SYS_CAP_CLOSE, observe) != 0) << 13;
+  errors |= (unsigned long)(syscall1(SYS_CAP_CLOSE, (long)slow_domain) != 0) << 14;
+  errors |= (unsigned long)(syscall1(SYS_CAP_CLOSE, (long)fast_domain) != 0) << 15;
+  return errors;
+}

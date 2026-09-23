@@ -14,6 +14,7 @@ unsigned long ipc_roundtrip(void);
 unsigned long ipc_badged_sender(void);
 unsigned long ipc_domain_control(void);
 unsigned long ipc_domain_selection(void);
+unsigned long ipc_domain_wait_any(void);
 unsigned long ipc_deadline(void);
 unsigned long ipc_peer_death(void);
 unsigned long ipc_nested_roundtrip(void);

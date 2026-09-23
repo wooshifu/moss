@@ -15,6 +15,7 @@ from scripts.artifacts import Artifacts
         "echo_only",
         "exit",
         "late_panic",
+        "sleep_runtime_failure",
         "gdb_complete",
         "gdb_unverified",
         "gdb_failure",
@@ -69,8 +70,14 @@ assert input() == 'echo MOSS_PRODUCTION_READY'
     elif mode != "exit":
         script += "print('\\nMOSS_PRODUCTION_READY\\nmoss$ ', end='', flush=True)\n"
     if mode != "exit":
+        script += "assert input() == 'sleep 1 &'\n"
+        if mode == "sleep_runtime_failure":
+            script += "print('mlibc: fatal runtime error', flush=True)\n"
+        script += "print('moss$ ', end='', flush=True)\n"
         script += "assert input() == 'exit'\n"
         script += "print('moss-init: restarting shell\\nBusyBox built-in shell (ash)\\nmoss$ ', end='', flush=True)\n"
+        script += "assert input() == 'sleep 2 && echo MOSS_SLEEP_READY'\n"
+        script += "print('\\nMOSS_SLEEP_READY\\nmoss$ ', end='', flush=True)\n"
         script += "assert input() == '/moss-file.elf read'\n"
         script += "print('\\nMOSS_FILE_READ=native\\nmoss$ ', end='', flush=True)\n"
         script += "assert input() == 'kill 43'\n"
@@ -140,5 +147,7 @@ assert input() == 'echo MOSS_PRODUCTION_READY'
         assert result["completed_steps"] == 22
     if mode == "late_panic":
         assert "panicked" in result["observed"]
+    if mode == "sleep_runtime_failure":
+        assert "fatal runtime error" in result["observed"]
     if mode in ("gdb_unverified", "gdb_failure"):
         assert result["observed"] == "first-read input barrier not verified"

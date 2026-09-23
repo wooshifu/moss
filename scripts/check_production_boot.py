@@ -161,9 +161,12 @@ quit
         (b"\nMOSS_NESTED_SHELL\n", None),
         (b"moss$ ", b"echo MOSS_PRODUCTION_READY\n"),
         (b"\nMOSS_PRODUCTION_READY\n", None),
+        (b"moss$ ", b"sleep 1 &\n"),
         (b"moss$ ", b"exit\n"),
         (b"moss-init: restarting shell", None),
         (b"built-in shell (ash)", None),
+        (b"moss$ ", b"sleep 2 && echo MOSS_SLEEP_READY\n"),
+        (b"\nMOSS_SLEEP_READY\n", None),
         (b"moss$ ", b"/moss-file.elf read\n"),
         (b"\nMOSS_FILE_READ=native\n", None),
         (b"moss$ ", lambda _file, namespace: f"kill {namespace}\n".encode()),
@@ -245,6 +248,8 @@ quit
                     raise ValueError("production serial log exceeds 32 MiB")
                 if any(marker in pending for marker in (b"[P]", b"KERNEL PANIC", b"KERNEL PAGE FAULT", b"@@MOSS")):
                     raise ValueError("production boot panicked or entered validation")
+                if b"mlibc: fatal runtime error" in pending:
+                    raise ValueError("production service hit a fatal runtime error")
                 while stage < len(steps) and steps[stage][0] in pending:
                     if gdb and stage == 0 and pause_marker.encode() not in (output / "gdb.log").read_bytes():
                         break
@@ -315,6 +320,8 @@ quit
         evidence = serial.read_bytes() if serial.exists() else b""
         if any(marker in evidence for marker in (b"[P]", b"KERNEL PANIC", b"KERNEL PAGE FAULT", b"@@MOSS")):
             result.update(status="error", observed="production boot panicked or entered validation")
+        if b"mlibc: fatal runtime error" in evidence:
+            result.update(status="error", observed="production service hit a fatal runtime error")
         result.update(elapsed_seconds=time.monotonic() - started, completed_steps=stage)
         (output / "results.json").write_text(json.dumps(result, indent=2) + "\n")
     return result

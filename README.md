@@ -49,7 +49,8 @@ The namespace validates the path and asks the file service to mint a per-file
 sender capability; the kernel supplies its badge to the service on later
 operations. `moss-init` selects each child's handles and rights when it
 forks a service or shell. The returned execution-domain capability lets it
-terminate and wait for its children; PIDs remain diagnostic identifiers and
+terminate and observe its children, including waiting for any supervised
+domain; PIDs remain diagnostic identifiers and
 the current `waitpid` compatibility path still reaps them. Ordinary shell
 files, ELF loading, process compatibility, interrupt/timer bootstrap and the early console still
 use kernel implementations. The accepted

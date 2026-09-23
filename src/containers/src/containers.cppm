@@ -1103,6 +1103,10 @@ public:
   // Add a thread to the wait queue (non-exclusive by default).
   void add_waiter(void *thread, bool exclusive = false) { waiters_.push_front(WaitQueueEntry(thread, exclusive)); }
 
+  [[nodiscard]] bool try_add_waiter(void *thread, bool exclusive = false) {
+    return waiters_.try_push_front(WaitQueueEntry(thread, exclusive));
+  }
+
   // Remove a specific thread from the wait queue
   void remove_waiter(void *thread) { waiters_.remove(WaitQueueEntry(thread)); }
 

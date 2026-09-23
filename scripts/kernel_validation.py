@@ -235,6 +235,7 @@ CATALOG = {
         "nested_roundtrip",
         "domain_control",
         "domain_selection",
+        "domain_wait_any",
     ],
     "users.signals": [
         "basic_handler",

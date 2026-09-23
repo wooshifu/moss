@@ -213,9 +213,10 @@ enum class SyscallNumber : long {
   SYS_DOMAIN_TERMINATE = 145,
   SYS_DOMAIN_WAIT = 146,
   SYS_FORK_DOMAIN_SELECT = 147,
+  SYS_DOMAIN_WAIT_ANY = 148,
 
   // Total syscall count marker
-  MAX_SYSCALL = 148
+  MAX_SYSCALL = 149
 };
 
 // Syscall handler function type
@@ -256,6 +257,7 @@ long sys_fork_domain_select(long cap_out_addr, long handles_addr, long count, lo
 long sys_domain_id(long handle, long arg1, long arg2, long arg3, long arg4, long arg5) noexcept;
 long sys_domain_terminate(long handle, long arg1, long arg2, long arg3, long arg4, long arg5) noexcept;
 long sys_domain_wait(long handle, long arg1, long arg2, long arg3, long arg4, long arg5) noexcept;
+long sys_domain_wait_any(long handles_addr, long count, long arg2, long arg3, long arg4, long arg5) noexcept;
 long sys_execve(long pathname_addr, long argv_addr, long envp_addr, long arg3, long arg4, long arg5) noexcept;
 long sys_wait4(long wait_pid, long wstatus_addr, long options, long arg3, long arg4, long arg5) noexcept;
 long sys_waitpid(long pid, long wstatus, long options, long arg3, long arg4, long arg5) noexcept;
