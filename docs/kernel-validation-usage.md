@@ -12,7 +12,7 @@ uv run cmake --build --preset arm64-debug
 uv run ctest --preset arm64-debug-test
 ```
 
-CTest runs `moss-functional`, `moss-applications`, `moss-framework` and `moss-production-boot`. The application test performs 10 full workflows, including a baseline and completion resource checkpoint; use `--iterations 1000` for the former extended routine profile. X64 also runs `moss-pvh-initrd`; ARM64 Debug runs `moss-console-input` and requires either `gdb-multiarch` or `gdb` at configure time; Release provides `moss-benchmark`. The `test-kernel` build target includes both functional and application tests; `benchmark-kernel` runs benchmarks in Release. The explicit `stability-kernel` target runs the minimum-30-minute core-path workload; it is not part of routine CTest. Full application stability uses the explicit command below. Use `kernel_validation.py run` for validation; the normal runner does not dispatch tests. Configure with `-DMOSS_BUILD_TESTS=OFF` to exclude validation images and validation userspace programs.
+CTest runs `moss-functional`, `moss-applications`, `moss-framework`, `moss-production-boot` and `moss-supervisor-reset`. The application test performs 10 full workflows, including a baseline and completion resource checkpoint; use `--iterations 1000` for the former extended routine profile. X64 also runs `moss-pvh-initrd`; ARM64 Debug runs `moss-console-input` and requires either `gdb-multiarch` or `gdb` at configure time; Release provides `moss-benchmark`. The `test-kernel` build target includes both functional and application tests; `benchmark-kernel` runs benchmarks in Release. The explicit `stability-kernel` target runs the minimum-30-minute core-path workload; it is not part of routine CTest. Full application stability uses the explicit command below. Use `kernel_validation.py run` for validation; the normal runner does not dispatch tests. Configure with `-DMOSS_BUILD_TESTS=OFF` to exclude validation images and validation userspace programs.
 
 The default is QEMU TCG with four real online vCPUs and 2048 MiB RAM. CPU count is never silently clamped. The resource suite verifies work executed on every requested CPU and writes to owned memory beyond the old 256 MiB window. The present early mappings require RAM/device addresses below 4 GiB; the largest usable RAM size therefore depends on the firmware's physical layout. The default resource profile remains the baseline regression; additional machine/layout profiles verify image portability.
 
@@ -134,8 +134,17 @@ Panics, validation output, unexpected exit
 and timeout fail the probe. Image hashes and serial/QEMU logs are retained in
 `<build>/production-boot/run-*/guest/` with `results.json`.
 
+`moss-supervisor-reset` checks that the production Initial System Supervisor's
+death resets the platform. It kills PID 1 after the shell prompt, then boots a
+valid archive without `/init.elf` to force an early exec failure. Both cases
+require the kernel diagnostic and an actual QEMU reset exit with `-no-reboot`.
+Frozen images, serial logs and results are under `<build>/supervisor-reset/run-*/`.
+The x64 path supports the ACPI FADT 8-bit System I/O reset register; ARM64 uses
+PSCI and RV64 uses SBI SRST.
+
 ```sh
 uv run scripts/check_production_boot.py --manifest build/arm64-debug/moss-artifacts.json
+uv run scripts/check_supervisor_reset.py --manifest build/arm64-debug/moss-artifacts.json
 uv run scripts/check_production_boot.py --manifest build/arm64-debug/moss-artifacts.json --gdb gdb-multiarch
 uv run scripts/check_production_boot.py --manifest build/arm64-debug/moss-artifacts.json --gdb gdb-multiarch --registration-race
 ```

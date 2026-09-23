@@ -409,6 +409,19 @@ static bool discover_acpi(u64 address) noexcept {
         }
         pos += len;
       }
+    } else if (signature(table, "FACP", 4) && length >= 129) {
+      // ACPI 6.5 FADT Table 5.9: Flags +112, RESET_REG GAS +116,
+      // RESET_VALUE +128. Bit 10 advertises the reset register. This
+      // profile uses the 8-bit System I/O form; other GAS spaces need a
+      // separate mapped register or PCI configuration access path.
+      constexpr u32 reset_supported = 1U << 10;
+      u64 port = acpi_value(table + 120, 8);
+      if ((acpi_value(table + 112, 4) & reset_supported) && table[116] == 1 && table[117] == 8 && !table[118] &&
+          table[119] <= 1 && port > 0 && port <= 0xFFFF) {
+        hardware.acpi_reset_port = static_cast<u16>(port);
+        hardware.acpi_reset_value = table[128];
+        hardware.acpi_reset_valid = true;
+      }
     } else if (signature(table, "SPCR", 4) && length >= 80) {
       // SPCR: interface +36, GAS +40 (space/width/offset, address +44),
       // interrupt kind +52, legacy IRQ +53. Require the supported 16550 layout.

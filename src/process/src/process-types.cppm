@@ -707,6 +707,9 @@ class Process {
 private:
   ProcessId pid_;
   ProcessId parent_pid_;
+  // Assigned during boot before this Process is runnable. Forked children
+  // must not inherit the fatal supervisor identity from their parent.
+  bool initial_supervisor_{false};
   capability::Table capabilities_;
 
   // Only publication/acquisition uses this short IRQ-safe lock. Copy the owner
@@ -790,6 +793,8 @@ public:
 
   // Basic property access
   [[nodiscard]] ProcessId pid() const noexcept { return pid_; }
+  void designate_initial_supervisor() noexcept { initial_supervisor_ = true; }
+  [[nodiscard]] bool is_initial_supervisor() const noexcept { return initial_supervisor_; }
   [[nodiscard]] capability::Table &capabilities() noexcept { return capabilities_; }
   [[nodiscard]] const capability::Table &capabilities() const noexcept { return capabilities_; }
   [[nodiscard]] ProcessId parent_pid() const noexcept { return parent_pid_; }

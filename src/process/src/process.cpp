@@ -622,6 +622,14 @@ KernelResult<VirtAddr> allocate_user_heap(Process *process, usize size) noexcept
 
   ProcessId pid = cur->owner_pid;
 
+  if (proc->is_initial_supervisor()) {
+    // Its authority and service graph cannot be rebuilt from a zombie or a
+    // new PID. Reset before ordinary process teardown can leave services
+    // running without their initial supervisor.
+    log::klog::error("initial system supervisor exited: code={}; resetting system", exit_code);
+    arch::system_reset();
+  }
+
   // 1. Mark thread terminated BEFORE dequeue (prevents re-enqueue by scheduler_tick)
   cur->state = ProcessState::Terminated;
   if (g_scheduler) {
