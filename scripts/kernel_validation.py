@@ -229,6 +229,7 @@ CATALOG = {
         "nested_signals",
         "sigchld",
         "wait_registration",
+        "wait_interrupted",
         "sigprocmask",
         "sigaltstack",
         "sig_ign",

@@ -8,7 +8,7 @@
 //
 // Raw ABI conventions used below: mmap prot 3=R|W, flags 0x22=PRIVATE|ANONYMOUS,
 // fd -1 and offset 0; 4096-byte pages and 8192-byte pairs test page boundaries.
-// Native errors are -errno (2=ENOENT, 7=E2BIG, 8=ENOEXEC, 10=ECHILD, 11=EAGAIN, 12=ENOMEM,
+// Native errors are -errno (2=ENOENT, 4=EINTR, 7=E2BIG, 8=ENOEXEC, 10=ECHILD, 11=EAGAIN, 12=ENOMEM,
 // 14=EFAULT, 22=EINVAL, 36=ENAMETOOLONG, 38=ENOSYS). Error masks assign
 // each check a bit. Nonzero byte/canary patterns detect untouched or aliased data;
 // 37/39 are child/exec success markers, while other exit codes identify failures.
@@ -2193,6 +2193,52 @@ static int test_wait_registration(void) {
   return !prepared || waited != child || status != (42 << 8) || observed != 1;
 }
 
+static int test_wait_interrupted(void) {
+  struct sigaction_t action = {(unsigned long)sigusr1_handler, 0, 0};
+  handler_called = 0;
+  if (moss_sigaction(SIGUSR1, &action, 0) != 0) {
+    return 1;
+  }
+  long release[2];
+  if (pipe(release) != 0) {
+    return 1;
+  }
+  long parent = getpid();
+  long child = fork();
+  if (child == 0) {
+    close((int)release[1]);
+    unsigned cpu_mask = 2;
+    if (syscall3(20, 0, sizeof(cpu_mask), (long)&cpu_mask) != 0) {
+      _exit(98);
+    }
+    long ready;
+    while ((ready = control(55, parent, getpid())) == 0) {
+      sched_yield(); // The host case deadline bounds a missing wait.
+    }
+    int errors = ready != 1 || kill(parent, SIGUSR1) != 0;
+    unsigned char byte = 0;
+    errors |= read((int)release[0], &byte, 1) != 1 || byte != 37;
+    close((int)release[0]);
+    _exit(errors ? 98 : 42);
+  }
+  close((int)release[0]);
+  if (child < 0) {
+    close((int)release[1]);
+    return 1;
+  }
+  // EINTR must leave the still-running child's status untouched and reap it later.
+  const int status_canary = 0x5a5a5a5a;
+  int status = status_canary;
+  long result = waitpid(child, &status, 0);
+  int errors = result != -4 || status != status_canary || handler_called != 1;
+  const unsigned char byte = 37;
+  errors |= write((int)release[1], &byte, 1) != 1;
+  close((int)release[1]);
+  status = 0;
+  errors |= waitpid(child, &status, 0) != child || status != (42 << 8);
+  return errors;
+}
+
 // Test 4: sigprocmask — block and unblock
 static int test_sigprocmask(void) {
   print("\n=== Test 4: sigprocmask block/unblock ===\n");
@@ -3203,6 +3249,7 @@ static int signal_case(const char *name) {
                {"nested_signals", test_nested_signals},
                {"sigchld", test_sigchld},
                {"wait_registration", test_wait_registration},
+               {"wait_interrupted", test_wait_interrupted},
                {"sigprocmask", test_sigprocmask},
                {"sigaltstack", test_sigaltstack},
                {"sig_ign", test_sig_ign},
@@ -3491,6 +3538,7 @@ void _start(long argc, const char **argv) {
                            "nested_signals",
                            "sigchld",
                            "wait_registration",
+                           "wait_interrupted",
                            "sigprocmask",
                            "sigaltstack",
                            "sig_ign",

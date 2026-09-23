@@ -906,6 +906,10 @@ long sys_wait4(long wait_pid, long wstatus_addr, long options, long /*unused*/, 
       return 0;
     }
 
+    if (moss::abi::bridge::moss_io_wait_interrupted()) {
+      return -errc::EINTR;
+    }
+
     if (!g_scheduler) {
       return -errc::ESRCH;
     }
@@ -915,7 +919,8 @@ long sys_wait4(long wait_pid, long wstatus_addr, long options, long /*unused*/, 
     // CPU must not enqueue us until bootstrap owns our saved context.
     const bool restore_irqs = arch::interrupts_enabled();
     arch::disable_interrupts();
-    g_scheduler->prepare_sleep();
+    // The shared helper self-wakes if a signal arrived after the check above.
+    (void)moss::abi::bridge::moss_prepare_io_wait();
     proc->child_exit_wait_queue().add_waiter(static_cast<void *>(cur), /*exclusive=*/true);
     // An exit may have happened after the first scan but before registration.
     // Recheck after publishing the waiter so neither side can miss the other.
