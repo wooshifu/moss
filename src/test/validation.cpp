@@ -5936,6 +5936,7 @@ void declare_cases() {
     ut::register_test("cpu_bound_irq", empty_case);
     ut::register_test("stop_continue", empty_case);
     ut::register_test("wait_job_status", empty_case);
+    ut::register_test("signal_exit_status", empty_case);
     ut::register_test("sigprocmask", empty_case);
     ut::register_test("sigaltstack", empty_case);
     ut::register_test("sig_ign", empty_case);

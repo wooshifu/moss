@@ -2,9 +2,8 @@
 
 // 94 marks a forbidden access that unexpectedly returned; 95/96/97 identify
 // startup-vector, FP-reset and boundary-plan failures. 37 is the shared success
-// marker. A SIGSEGV exit is encoded as (-11)&0xff = 245 by the Moss wait ABI.
+// marker. Faults must report a SIGSEGV wait status rather than an exit marker.
 enum { FORBIDDEN_ACCESS_EXIT = 94, STARTUP_EXIT = 95, FP_EXIT = 96, BOUNDARY_EXIT = 97, SUCCESS_EXIT = 37 };
-enum { SEGFAULT_EXIT = 245 };
 
 // Keep this geometry synchronized with gen_validation_initramfs.py. The two
 // additional PT_LOAD ranges are far beyond the linked child image but remain in
@@ -37,11 +36,6 @@ static int text_equal(const char *left, const char *right) {
   return *left == *right;
 }
 
-static int wait_exit(long child, int code) {
-  int status = 0;
-  return child > 1 && waitpid(child, &status, 0) == child && ((status >> 8) & 255) == code;
-}
-
 static int access_faults(unsigned long address, int execute) {
   long child = fork();
   if (child == 0) {
@@ -58,7 +52,8 @@ static int access_faults(unsigned long address, int execute) {
     }
     _exit(FORBIDDEN_ACCESS_EXIT);
   }
-  return wait_exit(child, SEGFAULT_EXIT);
+  int status = 0;
+  return child > 1 && waitpid(child, &status, 0) == child && status == SIGSEGV;
 }
 
 static int boundary_load_plan(void) {

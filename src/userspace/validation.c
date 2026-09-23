@@ -792,8 +792,7 @@ static unsigned long uaccess_sigframe_fault(void) {
   if (child > 0) {
     long waited = waitpid(child, &status, 0);
     control(13, area, 1);
-    // The signal checkpoint currently uses an exit code of 128 + signo.
-    errors |= (unsigned long)(waited != child || ((status >> 8) & 255) != 128 + SIGUSR1) << 2;
+    errors |= (unsigned long)(waited != child || status != SIGUSR1) << 2;
   }
   errors |= (unsigned long)(syscall2(SYS_MUNMAP, area, 4096) != 0) << 3;
   return errors;
@@ -961,9 +960,8 @@ static unsigned long uaccess_cow_fault(int kind) {
   errors |= (unsigned long)(child <= 0 || write((int)gate[1], &ready, 1) != 1) << 1;
   long waited = child > 0 ? waitpid(child, &status, 0) : -1;
   errors |= (unsigned long)!control(COW_FINISH, target, 0) << 2;
-  // The native fault path exits with -SIGSEGV; wait encodes its low byte.
-  const int expected_exit = kind == USER_FAULT ? ((-SIGSEGV) & 255) : 37;
-  errors |= (unsigned long)(waited != child || ((status >> 8) & 255) != expected_exit) << 3;
+  const int expected_status = kind == USER_FAULT ? SIGSEGV : 37 << 8;
+  errors |= (unsigned long)(waited != child || status != expected_status) << 3;
   for (long i = 0; i < page_bytes * 2; ++i) {
     errors |= (unsigned long)(bytes[i] != pattern) << 4;
   }
@@ -1016,6 +1014,11 @@ __attribute__((noinline)) static void vm_text(void) { asm volatile("" ::: "memor
 static int wait_exit(long child, int code) {
   int status = 0;
   return child > 1 && syscall3(SYS_WAITPID, child, (long)&status, 0) == child && ((status >> 8) & 255) == code;
+}
+
+static int wait_signal(long child, int signo) {
+  int status = 0;
+  return child > 1 && waitpid(child, &status, 0) == child && status == signo;
 }
 
 static unsigned long pipe_waits_for_writer(void) {
@@ -1293,7 +1296,7 @@ static int vm_fault(long address, enum vm_fault_access access) {
     }
     _exit(94); // A forbidden access must fault, not reach this exit.
   }
-  return wait_exit(child, 245); // (-SIGSEGV = -11) & 0xff = 245 in Moss's exit-code encoding.
+  return wait_signal(child, SIGSEGV);
 }
 
 static unsigned long vm_private_cow(void) {
@@ -1400,9 +1403,7 @@ static unsigned long vm_kernel_isolation(long target) {
         }
         _exit(94); // A completed forbidden access must never share the fault exit marker.
       }
-      // Moss currently encodes fatal page faults as (-SIGSEGV)&255, not the
-      // POSIX wait signal encoding. The exact code rejects unrelated exits.
-      errors |= (unsigned long)!wait_exit(child, 245) << 1;
+      errors |= (unsigned long)!wait_signal(child, SIGSEGV) << 1;
       errors |= (unsigned long)!control(ISOLATION_VERIFY, target, alias) << 2;
       errors |= (unsigned long)(getpid() != parent || *user != canary) << 3;
       *user = canary ^ 1U;
@@ -1879,8 +1880,7 @@ static int fp_fault_isolated(int simd) {
   }
   int status = 0;
   long waited = child > 0 ? syscall3(SYS_WAITPID, child, (long)&status, 0) : -1;
-  // Moss currently encodes fatal exceptions as negative exit codes, not POSIX signals.
-  return child > 1 && waited == child && ((status >> 8) & 255) == 248; // (-SIGFPE = -8) & 255.
+  return child > 1 && waited == child && status == SIGFPE;
 }
 #endif
 
@@ -2468,7 +2468,7 @@ static int test_stop_continue(void) {
       errors = 1;
     }
     int status = 0;
-    errors |= waitpid(child, &status, 0) != child || status != ((mode == STOP_KILL ? 128 + SIGKILL : 42) << 8);
+    errors |= waitpid(child, &status, 0) != child || status != (mode == STOP_KILL ? SIGKILL : 42 << 8);
     if (errors) {
       return 1;
     }
@@ -2539,6 +2539,31 @@ static int test_wait_job_status(void) {
   status = 0;
   errors |= waitpid(child, &status, 0) != child || (!errors && status != (42 << 8));
   return errors != 0;
+}
+
+static int test_signal_exit_status(void) {
+  for (int mode = 0; mode < 3; ++mode) {
+    const long child = fork();
+    if (child == 0) {
+      if (mode == 0) {
+        kill(getpid(), SIGKILL);
+      } else if (mode == 1) {
+        _exit(-SIGSEGV); // A negative user exit code must remain a normal exit.
+      } else {
+        *(volatile long *)1 = 1;
+      }
+      _exit(98);
+    }
+    int status = 0;
+    if (child < 0 || waitpid(child, &status, 0) != child) {
+      return 1;
+    }
+    const int expected = mode == 0 ? SIGKILL : mode == 1 ? ((unsigned char)-SIGSEGV << 8) : SIGSEGV;
+    if (status != expected) {
+      return 1;
+    }
+  }
+  return 0;
 }
 
 // Test 4: sigprocmask — block and unblock
@@ -2848,9 +2873,8 @@ static int test_altstack_overflow(void) {
     _exit(93);
   }
   int status = 0;
-  // Failed signal-frame setup currently terminates with 128 + signo. Preserve
-  // that native contract, rather than accepting any unrelated child death.
-  const int rejected = child > 1 && waitpid(child, &status, 0) == child && ((status >> 8) & 255) == 128 + SIGUSR2;
+  // Failed signal-frame setup must identify the signal that caused termination.
+  const int rejected = child > 1 && waitpid(child, &status, 0) == child && status == SIGUSR2;
   if (!rejected) {
     print("altstack overflow child status: ");
     print_long(status);
@@ -2924,7 +2948,7 @@ static int test_altstack_boundaries(void) {
       kill(getpid(), SIGUSR1);
       _exit(93); // Delivery unexpectedly returned; handler execution uses 94.
     }
-    errors |= !wait_exit(child, 128 + SIGUSR1);
+    errors |= !wait_signal(child, SIGUSR1);
     errors |= *(volatile unsigned long *)area != canary;
   }
   errors |= !control(51, 2, 0);
@@ -3138,8 +3162,7 @@ static int test_pipe_sigpipe(void) {
     _exit(99); // The default action must terminate at the syscall return.
   }
   int status = 0;
-  // Default signal termination uses the shell convention 128 + SIGPIPE(13).
-  errors |= child < 0 || waitpid(child, &status, 0) != child || ((status >> 8) & 255) != 141;
+  errors |= child < 0 || waitpid(child, &status, 0) != child || status != SIGPIPE;
   errors |= close((int)ends[1]) != 0;
   return errors;
 }
@@ -3712,6 +3735,7 @@ static int signal_case(const char *name) {
                {"cpu_bound_irq", test_cpu_bound_irq},
                {"stop_continue", test_stop_continue},
                {"wait_job_status", test_wait_job_status},
+               {"signal_exit_status", test_signal_exit_status},
                {"sigprocmask", test_sigprocmask},
                {"sigaltstack", test_sigaltstack},
                {"sig_ign", test_sig_ign},
@@ -4015,6 +4039,7 @@ void _start(long argc, const char **argv) {
                            "cpu_bound_irq",
                            "stop_continue",
                            "wait_job_status",
+                           "signal_exit_status",
                            "sigprocmask",
                            "sigaltstack",
                            "sig_ign",

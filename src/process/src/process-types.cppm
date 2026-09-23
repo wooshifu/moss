@@ -727,9 +727,10 @@ private:
   moss::atomic<bool> exec_in_progress_{false};
   ThreadId main_thread_id_;
 
-  // Publishing Zombie makes its exit status visible to a waiter on another CPU.
+  // Publishing Zombie makes both fields visible to a waiter on another CPU.
   moss::atomic<ProcessState> state_;
   i32 exit_code_;
+  u32 terminating_signal_ = 0;
 
   struct {
     u64 max_memory;
@@ -799,6 +800,12 @@ public:
   [[nodiscard]] ProcessId parent_pid() const noexcept { return parent_pid_; }
   [[nodiscard]] ProcessState state() const noexcept { return state_; }
   [[nodiscard]] i32 exit_code() const noexcept { return exit_code_; }
+  // The Linux-compatible wait ABI puts normal exit codes in bits 8..15 and
+  // fatal signals in the low bits. Keep the cause so _exit(-signo) stays normal.
+  [[nodiscard]] i32 wait_status() const noexcept {
+    return terminating_signal_ ? static_cast<i32>(terminating_signal_)
+                               : static_cast<i32>((static_cast<u32>(exit_code_) & 0xffU) << 8);
+  }
   [[nodiscard]] SignalState &signal_state() noexcept { return signal_state_; }
 
   // Process group / session accessors (POSIX job control)
@@ -864,6 +871,10 @@ public:
   // Process state management
   void set_state(ProcessState new_state) noexcept;
   void set_exit_code(i32 code) noexcept { exit_code_ = code; }
+  void set_exit_status(i32 code, u32 signal) noexcept {
+    exit_code_ = code;
+    terminating_signal_ = signal;
+  }
 
   // Statistics update
   void update_cpu_time(u64 user_time, u64 kernel_time) noexcept;
@@ -973,7 +984,9 @@ extern ProcessManager *g_process_manager;
 //   - `cur` is the currently running thread (will be marked Terminated)
 //   - `proc` is the Process owning `cur` (will transition to Zombie)
 //   - Caller must have already validated cur/proc are non-null
-[[noreturn]] void do_exit(Thread *cur, shared_ptr<Process> proc, i32 exit_code) noexcept;
+// Fatal callers retain a shell-style 128 + signo diagnostic code but pass
+// signo separately so wait4 does not mistake it for a normal exit code.
+[[noreturn]] void do_exit(Thread *cur, shared_ptr<Process> proc, i32 exit_code, u32 terminating_signal = 0) noexcept;
 
 // User address space management extensions
 namespace user_space {

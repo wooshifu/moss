@@ -616,7 +616,7 @@ KernelResult<VirtAddr> allocate_user_heap(Process *process, usize size) noexcept
 // Shared Zombie transition — called by sys_exit and terminate_current_user_process
 // ============================================================================
 
-[[noreturn]] void do_exit(Thread *cur, shared_ptr<Process> proc, i32 exit_code) noexcept {
+[[noreturn]] void do_exit(Thread *cur, shared_ptr<Process> proc, i32 exit_code, u32 terminating_signal) noexcept {
   namespace log = moss::kernel::logging;
 
   ProcessId pid = cur->owner_pid;
@@ -663,7 +663,7 @@ KernelResult<VirtAddr> allocate_user_heap(Process *process, usize size) noexcept
   });
 
   // 5. Transition to Zombie state (Process stays in process table)
-  proc->set_exit_code(exit_code);
+  proc->set_exit_status(exit_code, terminating_signal);
   proc->set_state(ProcessState::Zombie);
 
   // 6. Wake parent's wait queue so waitpid() can collect us.

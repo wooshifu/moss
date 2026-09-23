@@ -237,6 +237,7 @@ CATALOG = {
         "cpu_bound_irq",
         "stop_continue",
         "wait_job_status",
+        "signal_exit_status",
         "sigprocmask",
         "sigaltstack",
         "sig_ign",

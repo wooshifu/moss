@@ -116,7 +116,7 @@ extern "C" {
 // mm <-> kernel bridge
 int resolve_current_user_fault(unsigned long long fault_addr, unsigned int access, bool cow_only) noexcept;
 unsigned long long get_current_pgd_phys() noexcept;
-[[noreturn]] void terminate_current_user_process(int exit_code) noexcept;
+[[noreturn]] void terminate_current_user_process(int signal_number) noexcept;
 
 // Console and event wait bridges keep VFS and drivers independent of process.
 extern void (*g_x64_uart_rx_handler)() noexcept;
