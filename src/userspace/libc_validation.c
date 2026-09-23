@@ -494,6 +494,13 @@ static int signal_runtime(void) {
       observed.sa_flags != (SA_ONSTACK | SA_RESTART)) {
     return 0;
   }
+  struct sigaction chld = {0}, previous_chld, observed_chld;
+  chld.sa_handler = SIG_DFL;
+  chld.sa_flags = SA_NOCLDSTOP;
+  if (sigaction(SIGCHLD, &chld, &previous_chld) || sigaction(SIGCHLD, NULL, &observed_chld) ||
+      observed_chld.sa_flags != SA_NOCLDSTOP || sigaction(SIGCHLD, &previous_chld, NULL)) {
+    return 0;
+  }
   sigfillset(&blocked);
   if (sigprocmask(SIG_SETMASK, &blocked, NULL) || sigprocmask(SIG_SETMASK, NULL, &current)) {
     return 0;

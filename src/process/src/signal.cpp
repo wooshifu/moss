@@ -56,8 +56,11 @@ void notify_parent_job_status(Thread *thread) noexcept {
   if (!parent) {
     return;
   }
-  (void)send_signal(parent->get_main_thread(), sig::SIGCHLD);
-  // The parent may block or ignore SIGCHLD while waiting for this status.
+  // SA_NOCLDSTOP suppresses the signal, not waitpid's stopped/continued event.
+  if ((parent->signal_state().actions[sig::SIGCHLD].flags & sa_flags::SA_NOCLDSTOP) == 0) {
+    (void)send_signal(parent->get_main_thread(), sig::SIGCHLD);
+  }
+  // The parent may block, ignore, or suppress SIGCHLD while waiting for status.
   parent->child_exit_wait_queue().wake_up([](void *waiting) {
     auto *task = static_cast<Thread *>(waiting);
     if (g_scheduler) {
