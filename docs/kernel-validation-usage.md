@@ -130,6 +130,7 @@ and timeout fail the probe. Image hashes and serial/QEMU logs are retained in
 ```sh
 uv run scripts/check_production_boot.py --manifest build/arm64-debug/moss-artifacts.json
 uv run scripts/check_production_boot.py --manifest build/arm64-debug/moss-artifacts.json --gdb gdb-multiarch
+uv run scripts/check_production_boot.py --manifest build/arm64-debug/moss-artifacts.json --gdb gdb-multiarch --registration-race
 ```
 
 The optional GDB probe supports ARM64 Debug on the fixed QEMU virt platform.
@@ -143,6 +144,13 @@ The same shell workflow must finish; missing barrier evidence, debugger failure
 or the unchanged 30-second timeout fails the run. The generated GDB script and
 debugger log accompany the ordinary serial log and report. This checks console
 readiness, not general concurrent-reader or scheduler handoff correctness.
+
+The `--registration-race` probe stops inside `console::getc_blocking()` after
+its empty-ring check and before waiter registration, while the event lock is
+held. It confirms a real PL011 byte is queued in UARTFR before resuming, then
+requires the same shell workflow to finish. This covers RX arrival in that
+window on ARM64 Debug virt; it does not force the IRQ handler itself to run
+before waiter registration or cover multiple readers.
 
 ## x64 PVH Initrd Contract
 

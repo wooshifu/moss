@@ -1,5 +1,9 @@
 module moss.drivers.console;
 
+// The debugger can stop after an empty-buffer check while event_lock is held.
+// Production and validation images both execute the same wait/RX path.
+extern "C" [[gnu::weak, gnu::noinline]] void moss_validation_console_before_register() noexcept {}
+
 namespace moss::kernel::drivers::console {
 namespace {
 containers::IrqSpinLock init_lock;
@@ -103,6 +107,7 @@ int getc_blocking() noexcept {
       }
       return -1;
     }
+    moss_validation_console_before_register();
     void *thread = moss::abi::bridge::moss_prepare_io_wait();
     if (!thread) {
       event_lock.unlock();

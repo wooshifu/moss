@@ -26,10 +26,13 @@ def run(
     timeout: float = 30,
     *,
     gdb: str | None = None,
+    registration_race: bool = False,
     machine: str | None = None,
     dtb: Path | None = None,
 ) -> dict:
-    # The first-read barrier below uses virt's Image load base and PL011 registers.
+    # The debugger barriers below use virt's Image load base and PL011 registers.
+    if registration_race and not gdb:
+        raise ValueError("registration race probe requires GDB")
     if gdb and (
         cfg.arch != "ARM64"
         or cfg.build["type"] != "Debug"
@@ -70,23 +73,26 @@ def run(
             port = console_listener.getsockname()[1]
             args[chardev] = f"socket,id=char0,host=127.0.0.1,port={port},mux=on"
     capture = output / "console-input.gdb"
+    pause_marker = "MOSS_CONSOLE_REGISTRATION_PAUSED" if registration_race else "MOSS_CONSOLE_FIRST_READ_PAUSED"
+    breakpoint = "break moss_validation_console_before_register" if registration_race else "rbreak console_read"
     if gdb:
         with socket.socket() as port:
             port.bind(("127.0.0.1", 0))
             address = f"127.0.0.1:{port.getsockname()[1]}"
         args += ["-S", "-gdb", f"tcp:{address}"]
-        # Stop at the real VFS read, after the shell has printed its prompt but
-        # before lazy RX initialization can discard input. Only UARTFR is read;
-        # no FIFO data, kernel state, instruction or return value is changed.
+        # The registration probe stops after the empty ring check, under the
+        # event lock. Queue real UART input before resuming that same path.
+        # The older first-read probe still covers input before lazy RX init.
+        # Neither probe drains FIFO data or changes kernel state.
         capture.write_text(f"""set pagination off
 set confirm off
 symbol-file -readnever -o 0x40200000 {files["debug_symbols"]}
 target remote {address}
-rbreak console_read
+{breakpoint}
 continue
 python
 import gdb, time
-print('MOSS_CONSOLE_FIRST_READ_PAUSED', flush=True)
+print('{pause_marker}', flush=True)
 deadline = time.monotonic() + {timeout!r}
 while int(gdb.parse_and_eval('*(unsigned int*)0x9000018')) & 16:
     if time.monotonic() > deadline:
@@ -105,7 +111,7 @@ quit
         build=cfg.build,
         sha256=hashes,
         qemu_args=args,
-        input_timing="first_read_barrier" if gdb else "prompt",
+        input_timing=("registration_barrier" if registration_race else "first_read_barrier") if gdb else "prompt",
     )
     child, debugger, console, stage, pending = None, None, None, 0, b""
     # Require the real ash, applet lookup, pipelines and mutable files as well
@@ -169,11 +175,7 @@ quit
                 if any(marker in pending for marker in (b"[P]", b"KERNEL PANIC", b"KERNEL PAGE FAULT", b"@@MOSS")):
                     raise ValueError("production boot panicked or entered validation")
                 while stage < len(steps) and steps[stage][0] in pending:
-                    if (
-                        gdb
-                        and stage == 0
-                        and b"MOSS_CONSOLE_FIRST_READ_PAUSED" not in (output / "gdb.log").read_bytes()
-                    ):
+                    if gdb and stage == 0 and pause_marker.encode() not in (output / "gdb.log").read_bytes():
                         break
                     marker, command = steps[stage]
                     pending = pending.split(marker, 1)[1]
@@ -221,7 +223,8 @@ quit
                     debugger.wait()
             result["gdb_exit"] = debugger.returncode
             if debugger.returncode != 0 or b"MOSS_CONSOLE_INPUT_QUEUED" not in (output / "gdb.log").read_bytes():
-                result.update(status="error", observed="first-read input barrier not verified")
+                barrier = "registration input barrier" if registration_race else "first-read input barrier"
+                result.update(status="error", observed=f"{barrier} not verified")
         evidence = serial.read_bytes() if serial.exists() else b""
         if any(marker in evidence for marker in (b"[P]", b"KERNEL PANIC", b"KERNEL PAGE FAULT", b"@@MOSS")):
             result.update(status="error", observed="production boot panicked or entered validation")
@@ -233,7 +236,12 @@ quit
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--manifest", type=Path, required=True)
-    parser.add_argument("--gdb", help="ARM64 Debug: inject input at the first VFS read before it can initialize RX")
+    parser.add_argument("--gdb", help="ARM64 Debug: inject input at a controlled console read boundary")
+    parser.add_argument(
+        "--registration-race",
+        action="store_true",
+        help="Inject RX after the empty check and before waiter registration",
+    )
     parser.add_argument("--machine", help="QEMU machine (defaults to the architecture's normal machine)")
     parser.add_argument("--dtb", type=Path, help="Override the machine's device tree")
     options = parser.parse_args()
@@ -241,7 +249,14 @@ def main() -> int:
     root = cfg.manifest.parent / "production-boot"
     root.mkdir(exist_ok=True)
     directory = Path(tempfile.mkdtemp(prefix="run-", dir=root)) / "guest"
-    result = run(cfg, directory, gdb=options.gdb, machine=options.machine, dtb=options.dtb)
+    result = run(
+        cfg,
+        directory,
+        gdb=options.gdb,
+        registration_race=options.registration_race,
+        machine=options.machine,
+        dtb=options.dtb,
+    )
     print(f"{cfg.arch}: {result['status']} ({result['observed']})\n{directory / 'results.json'}")
     return int(result["status"] != "passed")
 
