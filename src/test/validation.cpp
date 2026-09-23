@@ -3916,6 +3916,13 @@ struct FaultTransactions {
     }
   }
 
+  void committed(PhysAddr root, VirtAddr fault_address, PhysAddr page) {
+    if (target && root == target->pgd_phys && fault_address == address && arch::get_current_cpu_id() == 0 && unmap) {
+      // The peer may unmap immediately after resolve_fault releases vm_lock_.
+      owner_page = page;
+    }
+  }
+
   bool peer() {
     peer_ok = arch::get_current_cpu_id() == 1;
     for (u32 round = 0; round < scenarios; ++round) {
@@ -4010,9 +4017,12 @@ struct FaultTransactions {
     // COW starts with one shared mapping in each root. Demand starts with an
     // empty target and a separate resident zero-page content oracle in source.
     AddressSpaceReaders::require(Pfa::page_ref_get(original) == (demand ? 1U : 2U));
+    owner_page = 0;
     const bool owner_ok = target->resolve_fault(address, mm::UserFaultAccess::Write, !demand);
-    const auto *owner_pte = Tables::get_user_pte(target->pgd_phys, address);
-    owner_page = owner_pte ? owner_pte->get_phys_addr() : 0;
+    if (!unmap) {
+      const auto *owner_pte = Tables::get_user_pte(target->pgd_phys, address);
+      owner_page = owner_pte ? owner_pte->get_phys_addr() : 0;
+    }
     __atomic_store_n(&phase, round_base + 2, __ATOMIC_RELEASE);
     ContainerInterleaving::wait_for(arrived, round_base + 3);
     ut::expect(owner_ok && peer_ok && affinity_valid());
@@ -6565,6 +6575,12 @@ extern "C" void moss_validation_cow_snapshot(PhysAddr root, VirtAddr address) no
 extern "C" void moss_validation_demand_snapshot(PhysAddr root, VirtAddr address) noexcept {
   if (fault_transactions) {
     fault_transactions->snapshot(root, address);
+  }
+}
+
+extern "C" void moss_validation_demand_committed(PhysAddr root, VirtAddr address, PhysAddr page) noexcept {
+  if (fault_transactions) {
+    fault_transactions->committed(root, address, page);
   }
 }
 

@@ -130,6 +130,7 @@ uv run qemu.py --manifest build/arm64-debug/moss-artifacts.json
 - [ ] **MOSS-008**：仅可写私有页允许 COW；RO/text/NX/NONE 不能因 fork 或 fault 被放宽权限。
   - [x] clone 保留真实只读页，fault 检查可写 VMA；真实页表三代引用/释放及用户态多代 COW、最后引用写入、fork 后 text/rodata 写入拒绝，三架构九配置默认回归通过（3.16）。
   - [x] 双引用 COW 页分配失败不放宽权限或损坏内容/引用；共享页错误放开写权限的变异准确变红，恢复后单页分裂、用户异常和回收验收通过（3.31）。
+  - [x] 修复 `mm.concurrent/fault_unmap` 的提交页身份采样竞态；旧版可复现、修复版 200 次通过且去锁红例仍失败（3.55）。
   - [ ] 同时写故障、fork/unmap 交错的 VMA/PTE/ref/TLB 事务锁及并发 OOM 回滚；fork 前只读写入和遗留 COW/VMA 权限冲突的独立异常验收。
 
 ## P1：VM、进程、并发、VFS 与验收

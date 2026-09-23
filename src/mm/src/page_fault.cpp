@@ -31,14 +31,17 @@ module moss.mm;
 
 import moss.abi;
 
-// A no-op in production; validation orders two real fault operations at the
-// exact old-frame snapshot, rather than substituting a mock COW algorithm.
+// No-ops in production. Validation orders real faults at the old-frame
+// snapshot and records a committed frame before a contending unmap can retire it.
 extern "C" [[gnu::weak, gnu::noinline]] void moss_validation_cow_snapshot(moss::kernel::PhysAddr /*root*/,
                                                                           moss::kernel::VirtAddr /*address*/) noexcept {
 }
 
 extern "C" [[gnu::weak, gnu::noinline]] void
 moss_validation_demand_snapshot(moss::kernel::PhysAddr /*root*/, moss::kernel::VirtAddr /*address*/) noexcept {}
+extern "C" [[gnu::weak, gnu::noinline]] void
+moss_validation_demand_committed(moss::kernel::PhysAddr /*root*/, moss::kernel::VirtAddr /*address*/,
+                                 moss::kernel::PhysAddr /*page*/) noexcept {}
 
 namespace moss::kernel::mm {
 
@@ -612,6 +615,7 @@ bool moss::kernel::mm::resolve_user_demand_fault(const UserFaultContext &context
   }
 
   // map_user_page publishes the entry and invalidates this address itself.
+  moss_validation_demand_committed(pgd_phys, fault_page, page_pa);
   return true;
 }
 
