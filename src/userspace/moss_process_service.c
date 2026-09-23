@@ -8,6 +8,7 @@
 
 struct Record {
   unsigned long id;
+  unsigned long parent_id;
   unsigned long native_id;
   unsigned long domain;
 };
@@ -42,6 +43,14 @@ static struct Record *free_record(unsigned long native_id) {
   return free;
 }
 
+static int has_children(unsigned long parent_id) {
+  for (unsigned int i = 0; i < MOSS_PROCESS_RECORD_LIMIT; ++i) {
+    if (records[i].id && records[i].parent_id == parent_id)
+      return 1;
+  }
+  return 0;
+}
+
 int main(int argc, char **argv) {
   if (argc != 3)
     return 2;
@@ -69,16 +78,33 @@ int main(int argc, char **argv) {
     struct Record *registered = NULL;
     struct Record *released = NULL;
     long session = 0;
-    if (request.badge == 0 && request.size == 1 && request.payload[0] == MOSS_PROCESS_REGISTER && request.capability &&
+    const int register_root = request.badge == 0 && request.payload[0] == MOSS_PROCESS_REGISTER;
+    const int register_child = request.badge != 0 && request.payload[0] == MOSS_PROCESS_REGISTER_CHILD;
+    if (request.size == 1 && (register_root || register_child) && request.capability &&
         request.rights == (MOSS_CAP_DOMAIN_OBSERVE | MOSS_CAP_DOMAIN_INSPECT)) {
+      struct Record *parent = register_child ? find_record(request.badge) : NULL;
       long native_id = syscall1(SYS_DOMAIN_ID, (long)request.capability);
-      if (native_id > 0 && next_id <= LONG_MAX) {
+      if (register_child && !parent) {
+        response.payload[0] = MOSS_PROCESS_NO_ENTRY;
+      } else if (register_child) {
+        struct moss_domain_exit parent_status = {0};
+        long state = syscall2(SYS_DOMAIN_STATUS, (long)parent->domain, (long)&parent_status);
+        if (state == 0) {
+          response.payload[0] = MOSS_PROCESS_NO_ENTRY;
+          parent = NULL;
+        } else if (state != -EAGAIN) {
+          response.payload[0] = MOSS_PROCESS_UNAVAILABLE;
+          parent = NULL;
+        }
+      }
+      if ((!register_child || parent) && native_id > 0 && next_id <= LONG_MAX) {
         registered = free_record((unsigned long)native_id);
         if (registered)
           session = syscall2(SYS_IPC_MINT_BADGE, (long)mint, (long)next_id);
       }
       if (session > 0) {
         registered->id = next_id++;
+        registered->parent_id = parent ? parent->id : 0;
         registered->native_id = (unsigned long)native_id;
         registered->domain = request.capability;
         request.capability = 0;
@@ -87,7 +113,7 @@ int main(int argc, char **argv) {
         moss_process_put_u64(response.payload + 1, registered->id);
         response.capability = (unsigned long)session;
         response.rights = MOSS_CAP_SEND | MOSS_CAP_DUPLICATE;
-      } else {
+      } else if (!register_child || parent) {
         response.payload[0] = native_id <= 0 ? MOSS_PROCESS_BAD_REQUEST : MOSS_PROCESS_UNAVAILABLE;
       }
     } else if (request.badge && request.size == 1 && !request.capability && !request.rights) {
@@ -108,9 +134,40 @@ int main(int argc, char **argv) {
         } else {
           response.payload[0] = MOSS_PROCESS_UNAVAILABLE;
         }
+      } else if (request.payload[0] == MOSS_PROCESS_WAIT_ANY) {
+        int pending = 0;
+        int failed = 0;
+        // Scan all children: a running first child must not hide another
+        // child's exit from wait-any.
+        for (unsigned int i = 0; i < MOSS_PROCESS_RECORD_LIMIT; ++i) {
+          struct Record *child = &records[i];
+          if (!child->id || child->parent_id != record->id)
+            continue;
+          pending = 1;
+          struct moss_domain_exit status = {0};
+          long result = syscall2(SYS_DOMAIN_STATUS, (long)child->domain, (long)&status);
+          if (result == 0) {
+            response.size = MOSS_PROCESS_REPLY_WAIT_BYTES;
+            response.payload[0] = MOSS_PROCESS_EXITED;
+            moss_process_put_u64(response.payload + 1, child->id);
+            moss_process_put_u64(response.payload + 9, ((uint64_t)status.signal << 32) | (uint32_t)status.code);
+            released = child;
+            break;
+          }
+          if (result != -EAGAIN)
+            failed = 1;
+        }
+        if (!released)
+          response.payload[0] = failed    ? MOSS_PROCESS_UNAVAILABLE
+                                : pending ? MOSS_PROCESS_RUNNING
+                                          : MOSS_PROCESS_NO_ENTRY;
       } else if (request.payload[0] == MOSS_PROCESS_RELEASE) {
-        response.payload[0] = MOSS_PROCESS_OK;
-        released = record;
+        if (has_children(record->id)) {
+          response.payload[0] = MOSS_PROCESS_BUSY;
+        } else {
+          response.payload[0] = MOSS_PROCESS_OK;
+          released = record;
+        }
       }
     }
     if (request.capability)
