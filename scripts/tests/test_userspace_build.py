@@ -298,16 +298,26 @@ add_subdirectory(src/userspace)
     command = ("cmake", "--build", str(build), "--target", "initramfs", "mlibc-validation", "-j", "4")
     run(*command)
     runtime = build / "src/userspace/mlibc"
-    for path in (runtime / "libc_validation.elf", runtime / "init.elf", runtime / "busybox/busybox"):
+    for path in (
+        runtime / "libc_validation.elf",
+        runtime / "init.elf",
+        runtime / "file-service.elf",
+        runtime / "moss-file.elf",
+        runtime / "busybox/busybox",
+    ):
         elf = path.read_bytes()
         assert elf[:6] == b"\x7fELF\x02\x01"
         assert struct.unpack_from("<H", elf, 18)[0] == machine
         assert struct.unpack_from("<Q", elf, 24)[0] >= 0x200000000
     init = (runtime / "init.elf").read_bytes()
+    file_service = (runtime / "file-service.elf").read_bytes()
+    file_client = (runtime / "moss-file.elf").read_bytes()
     busybox = (runtime / "busybox/busybox").read_bytes()
     archive = (build / "initramfs.cpio").read_bytes()
     assert make_cpio_entry("init.elf", init, ino=1) in archive
-    assert make_cpio_entry("busybox.elf", busybox, ino=2) in archive
+    assert make_cpio_entry("file-service.elf", file_service, ino=2) in archive
+    assert make_cpio_entry("moss-file.elf", file_client, ino=3) in archive
+    assert make_cpio_entry("busybox.elf", busybox, ino=4) in archive
     for removed in ("hello", "shell", "top", "signal_test"):
         assert not (build / "userspace" / f"{removed}.elf").exists()
         assert f"{removed}.elf\0".encode() not in archive

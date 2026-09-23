@@ -3,6 +3,7 @@
 import argparse
 import hashlib
 import json
+import re
 import shutil
 import signal
 import socket
@@ -114,10 +115,17 @@ quit
         input_timing=("registration_barrier" if registration_race else "first_read_barrier") if gdb else "prompt",
     )
     child, debugger, console, stage, pending = None, None, None, 0, b""
-    # Require real ash commands, child reaping and a shell restart by PID 1.
+    service_pid = None
+    # Require direct file-capability calls as well as ash commands, child
+    # reaping and a shell restart by PID 1.
     steps = [
         (b"moss-init: supervisor ready", None),
+        (b"moss-init: file service started", None),
         (b"built-in shell (ash)", None),
+        (b"moss$ ", b"/moss-file.elf write native\n"),
+        (b"\nMOSS_FILE_WRITE_OK\n", None),
+        (b"moss$ ", b"/moss-file.elf read\n"),
+        (b"\nMOSS_FILE_READ=native\n", None),
         (b"moss$ ", b"/busybox.elf ash -c 'printf \"MOSS_EXEC_READY\\n\"'\n"),
         (b"\nMOSS_EXEC_READY\n", None),
         (
@@ -139,6 +147,14 @@ quit
         (b"moss$ ", b"exit\n"),
         (b"moss-init: restarting shell", None),
         (b"built-in shell (ash)", None),
+        (b"moss$ ", b"/moss-file.elf read\n"),
+        (b"\nMOSS_FILE_READ=native\n", None),
+        (b"moss$ ", lambda pid: f"kill {pid}\n".encode()),
+        (b"moss-init: file service died", None),
+        (b"moss-init: file service started", None),
+        (b"built-in shell (ash)", None),
+        (b"moss$ ", b"/moss-file.elf read\n"),
+        (b"\nMOSS_FILE_READ=\n", None),
         (b"moss$ ", None),
     ]
     started = time.monotonic()
@@ -181,8 +197,20 @@ quit
                     if gdb and stage == 0 and pause_marker.encode() not in (output / "gdb.log").read_bytes():
                         break
                     marker, command = steps[stage]
-                    pending = pending.split(marker, 1)[1]
+                    after = pending.split(marker, 1)[1]
+                    if marker == b"moss-init: file service started":
+                        match = re.match(rb" pid=(\d+)\n", after)
+                        if not match:
+                            break
+                        next_pid = int(match.group(1))
+                        if next_pid <= 1 or next_pid == service_pid:
+                            raise ValueError("file service incarnation did not change")
+                        service_pid = next_pid
+                        after = after[match.end() :]
+                    pending = after
                     if command:
+                        if callable(command):
+                            command = command(service_pid)
                         if console:
                             console.sendall(command)
                         else:
@@ -190,7 +218,7 @@ quit
                             child.stdin.flush()
                     stage += 1
                 if stage == len(steps) and (not debugger or debugger.poll() is not None):
-                    result.update(status="passed", observed="supervised_busybox_shell_restart")
+                    result.update(status="passed", observed="file_service_restarted_with_new_capability")
                     break
                 if child.poll() is not None:
                     result["observed"] = "unexpected_exit"

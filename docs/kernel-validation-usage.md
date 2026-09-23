@@ -121,9 +121,11 @@ uv run scripts/kernel_validation.py run --manifest build/arm64-debug/moss-artifa
 ## Production Boot
 
 `moss-production-boot` freezes the production kernel and initramfs, boots four
-vCPUs with 2 GiB, executes `/busybox.elf ash -c` through the real shell, requires a
-second shell command after child reaping, then exits the shell and requires the
-userspace supervisor to restart it. A prompt or echoed input alone cannot pass.
+vCPUs with 2 GiB, writes and reads through the userspace file service, executes
+`/busybox.elf ash -c` through the real shell, requires a second shell command
+after child reaping, exits the shell and verifies the same file survives its
+restart, then kills the file service and requires a new instance with empty
+volatile contents. A prompt or echoed input alone cannot pass.
 Panics, validation output, unexpected exit
 and timeout fail the probe. Image hashes and serial/QEMU logs are retained in
 `<build>/production-boot/run-*/guest/` with `results.json`.

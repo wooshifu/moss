@@ -40,69 +40,44 @@ add_subdirectory("${MOSS_THIRD_PARTY}/compiler-rt" builtins)
 set(MLIBC_BUILTINS_TARGET "clang_rt.builtins-${MLIBC_CPU}")
 add_custom_target(compiler-rt-builtins DEPENDS ${MLIBC_BUILTINS_TARGET})
 
-add_executable(mlibc-validation EXCLUDE_FROM_ALL ../libc_validation.c $<TARGET_OBJECTS:mlibc-crt1>)
-target_compile_options(mlibc-validation PRIVATE ${MLIBC_ARCH_FLAGS} -O2 -ffreestanding -fno-stack-protector)
+function(add_moss_runtime_program TARGET SOURCE OUTPUT)
+    add_executable(${TARGET} EXCLUDE_FROM_ALL ${SOURCE} $<TARGET_OBJECTS:mlibc-crt1>)
+    target_compile_options(${TARGET} PRIVATE ${MLIBC_ARCH_FLAGS} -O2 -ffreestanding -fno-stack-protector)
+    target_include_directories(${TARGET} SYSTEM PRIVATE "${MLIBC_SYSROOT}/usr/include")
+    target_link_libraries(${TARGET} PRIVATE mlibc ${MLIBC_BUILTINS_TARGET})
+    target_link_options(
+        ${TARGET}
+        PRIVATE
+        ${MLIBC_ARCH_FLAGS}
+        -nostdlib
+        -static
+        -fuse-ld=lld
+        # Match userspace.ld: 8 GiB keeps code above inherited kernel identity mappings;
+        # 4096-byte segment alignment permits distinct permissions on base pages.
+        -Wl,--image-base=0x200000000,-z,max-page-size=4096
+    )
+    set_target_properties(
+        ${TARGET}
+        PROPERTIES OUTPUT_NAME ${OUTPUT}.unstripped
+                   SUFFIX .elf
+                   LINKER_LANGUAGE C
+                   RUNTIME_OUTPUT_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}"
+    )
+    add_custom_command(
+        TARGET ${TARGET}
+        POST_BUILD
+        COMMAND ${LLVM_STRIP} --strip-debug -o "${CMAKE_CURRENT_BINARY_DIR}/${OUTPUT}.elf" $<TARGET_FILE:${TARGET}>
+        BYPRODUCTS "${CMAKE_CURRENT_BINARY_DIR}/${OUTPUT}.elf"
+        VERBATIM
+    )
+endfunction()
+
+add_moss_runtime_program(mlibc-validation ../libc_validation.c libc_validation)
 target_compile_definitions(
     mlibc-validation PRIVATE MOSS_TEST_RELEASE="${CMAKE_PROJECT_VERSION}"
                              MOSS_TEST_VERSION="${CMAKE_PROJECT_VERSION}-${CMAKE_BUILD_TYPE}"
 )
-target_include_directories(mlibc-validation SYSTEM PRIVATE "${MLIBC_SYSROOT}/usr/include")
-target_link_libraries(
-    mlibc-validation
-    PRIVATE mlibc ${MLIBC_BUILTINS_TARGET}
-)
-target_link_options(
-    mlibc-validation
-    PRIVATE
-    ${MLIBC_ARCH_FLAGS}
-    -nostdlib
-    -static
-    -fuse-ld=lld
-    # Match userspace.ld: 8 GiB keeps code above inherited kernel identity mappings; 4096-byte segment alignment permits
-    # distinct permissions on base pages.
-    -Wl,--image-base=0x200000000,-z,max-page-size=4096
-)
-set_target_properties(
-    mlibc-validation
-    PROPERTIES OUTPUT_NAME libc_validation.unstripped
-               SUFFIX .elf
-               LINKER_LANGUAGE C
-               RUNTIME_OUTPUT_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}"
-)
-add_custom_command(
-    TARGET mlibc-validation
-    POST_BUILD
-    COMMAND ${LLVM_STRIP} --strip-debug -o "${CMAKE_CURRENT_BINARY_DIR}/libc_validation.elf"
-            $<TARGET_FILE:mlibc-validation>
-    BYPRODUCTS "${CMAKE_CURRENT_BINARY_DIR}/libc_validation.elf"
-    VERBATIM
-)
 add_subdirectory("${MOSS_THIRD_PARTY}/busybox" busybox)
-
-add_executable(moss-init EXCLUDE_FROM_ALL ../moss_init.c $<TARGET_OBJECTS:mlibc-crt1>)
-target_compile_options(moss-init PRIVATE ${MLIBC_ARCH_FLAGS} -O2 -ffreestanding -fno-stack-protector)
-target_include_directories(moss-init SYSTEM PRIVATE "${MLIBC_SYSROOT}/usr/include")
-target_link_libraries(moss-init PRIVATE mlibc ${MLIBC_BUILTINS_TARGET})
-target_link_options(
-    moss-init
-    PRIVATE
-    ${MLIBC_ARCH_FLAGS}
-    -nostdlib
-    -static
-    -fuse-ld=lld
-    -Wl,--image-base=0x200000000,-z,max-page-size=4096
-)
-set_target_properties(
-    moss-init
-    PROPERTIES OUTPUT_NAME init.unstripped
-               SUFFIX .elf
-               LINKER_LANGUAGE C
-               RUNTIME_OUTPUT_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}"
-)
-add_custom_command(
-    TARGET moss-init
-    POST_BUILD
-    COMMAND ${LLVM_STRIP} --strip-debug -o "${CMAKE_CURRENT_BINARY_DIR}/init.elf" $<TARGET_FILE:moss-init>
-    BYPRODUCTS "${CMAKE_CURRENT_BINARY_DIR}/init.elf"
-    VERBATIM
-)
+add_moss_runtime_program(moss-init ../moss_init.c init)
+add_moss_runtime_program(moss-file-service ../moss_file_service.c file-service)
+add_moss_runtime_program(moss-file ../moss_file.c moss-file)
