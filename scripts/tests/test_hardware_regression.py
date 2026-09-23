@@ -335,6 +335,105 @@ int main() {
     assert result.returncode == 0, result.stdout + result.stderr
 
 
+def test_hardware_ipi_initialize_retires_partial_sgi_registration(compiler, tmp_path):
+    sgi_ids = braced_definition((ROOT / "src/interrupts/src/interrupts.cppm").read_text(), "enum class IpiSgiId")
+    implementation = braced_definition(
+        (ROOT / "src/interrupts/src/ipi_hardware_simple.cpp").read_text(),
+        "VoidResult SimpleHardwareIpi::initialize(",
+    )
+    source = (
+        r"""
+#include <cstdint>
+#include <initializer_list>
+using u8 = std::uint8_t;
+using u32 = std::uint32_t;
+using u64 = std::uint64_t;
+using InterruptId = u32;
+enum class ErrorCode { AlreadyExists, InvalidParameter, InvalidState };
+struct VoidResult {
+  bool ok = true;
+  VoidResult() = default;
+  VoidResult(ErrorCode) : ok(false) {}
+  explicit operator bool() const { return ok; }
+};
+"""
+        + sgi_ids
+        + ";\n"
+        + r"""
+namespace containers {
+enum class MemoryOrder { Relaxed };
+struct AtomicU64 { void store(u64, MemoryOrder) {} };
+}
+namespace log::klog {
+void info(const char *) {}
+void error(const char *) {}
+}
+void handle_ping_sgi(InterruptId, void *) noexcept {}
+void handle_reschedule_sgi(InterruptId, void *) noexcept {}
+struct GenericInterruptController {
+  void *owner[static_cast<u32>(IpiSgiId::Ping) + 1]{};
+  bool enabled[static_cast<u32>(IpiSgiId::Ping) + 1]{};
+  int fail_enable = -1;
+  VoidResult register_interrupt(InterruptId irq, void (*)(InterruptId, void *) noexcept, void *context,
+                                const char *) {
+    if (owner[irq]) return {ErrorCode::AlreadyExists};
+    owner[irq] = context;
+    return {};
+  }
+  VoidResult enable_interrupt(InterruptId irq) {
+    if (static_cast<int>(irq) == fail_enable) return {ErrorCode::InvalidState};
+    enabled[irq] = true;
+    return {};
+  }
+  VoidResult unregister_interrupt(InterruptId irq) {
+    owner[irq] = nullptr;
+    enabled[irq] = false;
+    return {};
+  }
+};
+struct SimpleHardwareIpi {
+  GenericInterruptController *gic_ = nullptr;
+  bool initialized_ = false;
+  u32 max_cpus_ = 0;
+  containers::AtomicU64 message_sequence_;
+  VoidResult initialize(GenericInterruptController *, u32) noexcept;
+};
+"""
+        + implementation
+        + r"""
+int main() {
+  constexpr u32 ping = static_cast<u32>(IpiSgiId::Ping);
+  constexpr u32 reschedule = static_cast<u32>(IpiSgiId::Reschedule);
+  int prior_owner;
+  {
+    GenericInterruptController gic;
+    gic.owner[ping] = &prior_owner;
+    SimpleHardwareIpi ipi;
+    if (ipi.initialize(&gic, 2) || gic.owner[ping] != &prior_owner || gic.owner[reschedule] || ipi.gic_) return 1;
+  }
+  {
+    GenericInterruptController gic;
+    gic.owner[reschedule] = &prior_owner;
+    SimpleHardwareIpi ipi;
+    if (ipi.initialize(&gic, 2) || gic.owner[ping] || gic.owner[reschedule] != &prior_owner || ipi.gic_) return 2;
+    gic.owner[reschedule] = nullptr;
+    if (!ipi.initialize(&gic, 2) || gic.owner[ping] != &ipi || gic.owner[reschedule] != &ipi) return 3;
+  }
+  for (int failing_irq : {static_cast<int>(reschedule), static_cast<int>(ping)}) {
+    GenericInterruptController gic;
+    gic.fail_enable = failing_irq;
+    SimpleHardwareIpi ipi;
+    if (ipi.initialize(&gic, 2) || gic.owner[ping] || gic.owner[reschedule] || gic.enabled[ping] ||
+        gic.enabled[reschedule] ||
+        ipi.gic_) return 4;
+  }
+}
+"""
+    )
+    result = run_cpp(compiler, tmp_path, source)
+    assert result.returncode == 0, result.stdout + result.stderr
+
+
 def test_pvh_initrd_metadata_must_describe_usable_ram(compiler, tmp_path):
     text = (ROOT / "src/boot/src/arch/x64/boot_impl.cpp").read_text()
     source = (
