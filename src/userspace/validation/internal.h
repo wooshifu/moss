@@ -11,6 +11,7 @@ int wait_exit(long child, int code);
 int wait_signal(long child, int signo);
 unsigned long exec_probe(long test);
 unsigned long ipc_roundtrip(void);
+unsigned long ipc_badged_sender(void);
 unsigned long ipc_deadline(void);
 unsigned long ipc_peer_death(void);
 unsigned long ipc_signal_cancel(void);

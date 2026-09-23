@@ -3,6 +3,7 @@
 The validation executable links the same production object modules and follows the same boot, memory, VFS, scheduler, userspace entry and exec paths as `moss.elf`. Its initramfs contains deterministic fixtures and real userspace validation programs. The framework is `ut_kernel`, from `unit_kenel`, not Unity.
 
 The historical `containers.ipc_*` cases link `moss.ipc` only into the validation image. They exercise the old channel and service-manager algorithms, not the production IPC path. `users.ipc` and `moss-production-boot` exercise capability-backed control IPC and Memory Objects used by production.
+`users.ipc/badged_sender` checks that the receiver gets the sender capability's badge, user-supplied badges are rejected, and attenuated or minted sender handles cannot mint new identities. Production boot exercises the minted `/scratch` file capability through the namespace and file services; ordinary shell file paths still use the kernel VFS.
 
 The `drivers` registry cases likewise link the former `moss.drivers` matching/callback module only into validation. Production boot uses `moss.drivers.console` directly with the boot-owned interrupt controller and timer; the console readiness and RX cases still exercise that production module.
 

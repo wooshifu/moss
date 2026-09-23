@@ -34,9 +34,11 @@ int main(int argc, char **argv) {
     struct moss_ipc_message response = {.size = 1, .payload = {MOSS_FILE_BAD_REQUEST}};
     if (request.capability) {
       unsigned long count = (unsigned long)request.payload[1] | ((unsigned long)request.payload[2] << 8);
-      int reading = request.size == 1 && request.payload[0] == MOSS_FILE_READ && request.rights == MOSS_CAP_MAP_WRITE;
-      int writing = request.size == MOSS_FILE_MEMORY_HEADER_BYTES && request.payload[0] == MOSS_FILE_WRITE &&
-                    request.rights == MOSS_CAP_MAP_READ && count <= sizeof(file);
+      int reading = request.badge == MOSS_FILE_SCRATCH_BADGE && request.size == 1 &&
+                    request.payload[0] == MOSS_FILE_READ && request.rights == MOSS_CAP_MAP_WRITE;
+      int writing = request.badge == MOSS_FILE_SCRATCH_BADGE && request.size == MOSS_FILE_MEMORY_HEADER_BYTES &&
+                    request.payload[0] == MOSS_FILE_WRITE && request.rights == MOSS_CAP_MAP_READ &&
+                    count <= sizeof(file);
       if (reading || writing) {
         long mapped = syscall2(SYS_MEM_MAP, (long)request.capability, reading ? MOSS_CAP_MAP_WRITE : MOSS_CAP_MAP_READ);
         if (mapped > 0) {
@@ -60,11 +62,12 @@ int main(int argc, char **argv) {
       // Even a malformed request may carry a transferred handle. Release it
       // after use so clients cannot exhaust the service's capability table.
       (void)syscall1(SYS_CAP_CLOSE, (long)request.capability);
-    } else if (request.size == 1 && request.payload[0] == MOSS_FILE_READ && length <= MOSS_IPC_MAX_MESSAGE - 1) {
+    } else if (request.badge == MOSS_FILE_SCRATCH_BADGE && request.size == 1 && request.payload[0] == MOSS_FILE_READ &&
+               length <= MOSS_IPC_MAX_MESSAGE - 1) {
       response.payload[0] = MOSS_FILE_OK;
       response.size = length + 1;
       memcpy(response.payload + 1, file, length);
-    } else if (request.size >= 1 && request.payload[0] == MOSS_FILE_WRITE) {
+    } else if (request.badge == MOSS_FILE_SCRATCH_BADGE && request.size >= 1 && request.payload[0] == MOSS_FILE_WRITE) {
       length = request.size - 1;
       memcpy(file, request.payload + 1, length);
       response.payload[0] = MOSS_FILE_OK;

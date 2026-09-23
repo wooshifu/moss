@@ -71,7 +71,8 @@ enum {
   SYS_IPC_RECEIVE = 138,
   SYS_IPC_REPLY = 139,
   SYS_MEM_CREATE = 140,
-  SYS_MEM_MAP = 141
+  SYS_MEM_MAP = 141,
+  SYS_IPC_MINT_BADGE = 142
 };
 
 enum {
@@ -81,6 +82,7 @@ enum {
   MOSS_CAP_DUPLICATE = 1U << 3,
   MOSS_CAP_MAP_READ = 1U << 4,
   MOSS_CAP_MAP_WRITE = 1U << 5,
+  MOSS_CAP_MINT = 1U << 6,
   MOSS_IPC_MAX_MESSAGE = 256
 };
 
@@ -95,10 +97,13 @@ struct moss_ipc_endpoints {
 
 // One capability may accompany each bounded request or reply. Passing a
 // capability copies reduced rights; zero capability requires zero rights.
+// Request/reply senders must set badge to zero. Receive fills it from the
+// sender capability, so a service can trust it as an object identifier.
 struct moss_ipc_message {
   unsigned long size;
   unsigned long capability;
   unsigned long rights;
+  unsigned long badge;
   unsigned char payload[MOSS_IPC_MAX_MESSAGE];
 };
 

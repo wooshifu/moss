@@ -10,7 +10,8 @@ constexpr usize kMessageBytes = 256;
 // when measured service concurrency needs more outstanding calls.
 constexpr usize kPendingCalls = 16;
 constexpr u32 kAllRights = capability::rights::SEND | capability::rights::RECEIVE | capability::rights::TRANSFER |
-                           capability::rights::DUPLICATE | capability::rights::MAP_READ | capability::rights::MAP_WRITE;
+                           capability::rights::DUPLICATE | capability::rights::MAP_READ |
+                           capability::rights::MAP_WRITE | capability::rights::MINT;
 
 // Keep this wire layout aligned with userspace's moss_ipc_message. All fields
 // are fixed-width on Moss's supported 64-bit ABIs.
@@ -18,12 +19,14 @@ struct ControlMessage {
   u64 size{0};
   Handle capability{INVALID_HANDLE};
   u64 rights{0};
+  u64 badge{0};
   u8 payload[kMessageBytes]{};
 };
-static_assert(sizeof(ControlMessage) == 3 * sizeof(u64) + kMessageBytes);
+static_assert(sizeof(ControlMessage) == 4 * sizeof(u64) + kMessageBytes);
 
 [[nodiscard]] bool valid_message(const ControlMessage &message) noexcept {
-  if (message.size > kMessageBytes)
+  // Only the kernel may attach a badge to a delivered request.
+  if (message.size > kMessageBytes || message.badge != 0)
     return false;
   if (message.capability == INVALID_HANDLE)
     return message.rights == 0;
@@ -41,6 +44,7 @@ struct PendingCall {
   process::Thread *caller;
   process::PriorityDonation donation{};
   u64 deadline_ns;
+  u64 badge;
   usize request_size;
   usize response_size{0};
   Outcome outcome{Outcome::Pending};
@@ -51,9 +55,10 @@ struct PendingCall {
   u8 request[kMessageBytes]{};
   u8 response[kMessageBytes]{};
 
-  PendingCall(process::Thread *thread, u64 deadline, const ControlMessage &message,
+  PendingCall(process::Thread *thread, u64 deadline, u64 sender_badge, const ControlMessage &message,
               capability::Escrow &&transferred) noexcept
-      : caller(thread), deadline_ns(deadline), request_size(message.size), request_cap(moss::move(transferred)) {
+      : caller(thread), deadline_ns(deadline), badge(sender_badge), request_size(message.size),
+        request_cap(moss::move(transferred)) {
     if (request_size)
       __builtin_memcpy(request, message.payload, request_size);
   }
@@ -241,8 +246,9 @@ public:
 class Sender final : public capability::Object {
 public:
   shared_ptr<Channel> channel;
-  explicit Sender(shared_ptr<Channel> target) noexcept
-      : Object(capability::ObjectType::Endpoint), channel(moss::move(target)) {}
+  const u64 badge;
+  explicit Sender(shared_ptr<Channel> target, u64 sender_badge = 0) noexcept
+      : Object(capability::ObjectType::Endpoint), channel(moss::move(target)), badge(sender_badge) {}
 };
 
 class Receiver final : public capability::Object {
@@ -406,8 +412,9 @@ long sys_ipc_create(long pair_addr, long, long, long, long, long) noexcept {
   auto receiver = shared_ptr<capability::Object>::try_make<Receiver>(ipc_allocate, channel);
   if (!sender || !receiver)
     return -errc::ENOMEM;
-  auto send_handle = proc->capabilities().install(
-      moss::move(sender), capability::rights::SEND | capability::rights::TRANSFER | capability::rights::DUPLICATE);
+  auto send_handle =
+      proc->capabilities().install(moss::move(sender), capability::rights::SEND | capability::rights::TRANSFER |
+                                                           capability::rights::DUPLICATE | capability::rights::MINT);
   if (!send_handle)
     return cap_error(send_handle.error());
   auto receive_handle = proc->capabilities().install(
@@ -423,6 +430,29 @@ long sys_ipc_create(long pair_addr, long, long, long, long, long) noexcept {
     return -errc::EFAULT;
   }
   return 0;
+}
+
+long sys_ipc_mint_badge(long endpoint, long badge, long, long, long, long) noexcept {
+  auto proc = caller_process();
+  if (!proc)
+    return -errc::ESRCH;
+  // The derived sender has SEND, TRANSFER and DUPLICATE. Require all three
+  // on the source so minting cannot recover rights removed by attenuation.
+  constexpr u32 mint_authority = capability::rights::SEND | capability::rights::TRANSFER |
+                                 capability::rights::DUPLICATE | capability::rights::MINT;
+  auto looked =
+      proc->capabilities().lookup(static_cast<Handle>(endpoint), capability::ObjectType::Endpoint, mint_authority);
+  if (!looked)
+    return cap_error(looked.error());
+  auto channel = static_cast<Sender *>((*looked).get())->channel;
+  auto sender = shared_ptr<capability::Object>::try_make<Sender>(ipc_allocate, channel, static_cast<u64>(badge));
+  if (!sender)
+    return -errc::ENOMEM;
+  // Minted file-object authority can be delegated, but cannot mint another
+  // identity unless the service explicitly delegates the original mint right.
+  constexpr u32 rights = capability::rights::SEND | capability::rights::TRANSFER | capability::rights::DUPLICATE;
+  auto handle = proc->capabilities().install(moss::move(sender), rights);
+  return handle ? static_cast<long>(*handle) : cap_error(handle.error());
 }
 
 long sys_ipc_call(long endpoint, long request_addr, long response_addr, long deadline_ns, long, long) noexcept {
@@ -448,9 +478,10 @@ long sys_ipc_call(long endpoint, long request_addr, long response_addr, long dea
       return cap_error(snapshot.error());
     transferred = moss::move(*snapshot);
   }
-  auto channel = static_cast<Sender *>((*looked).get())->channel;
-  auto call = shared_ptr<PendingCall>::try_make(ipc_allocate, thread, static_cast<u64>(deadline_ns), request,
-                                                moss::move(transferred));
+  auto *sender = static_cast<Sender *>((*looked).get());
+  auto channel = sender->channel;
+  auto call = shared_ptr<PendingCall>::try_make(ipc_allocate, thread, static_cast<u64>(deadline_ns), sender->badge,
+                                                request, moss::move(transferred));
   if (!call)
     return -errc::ENOMEM;
   if (deadline_ns != 0 && timer::TimerSubsystem::instance().now_ns() >= static_cast<u64>(deadline_ns))
@@ -561,6 +592,7 @@ long sys_ipc_receive(long endpoint, long request_addr, long reply_addr, long, lo
       const Handle handle = *reply_handle;
       ControlMessage delivered{};
       delivered.size = call->request_size;
+      delivered.badge = call->badge;
       if (call->request_size)
         __builtin_memcpy(delivered.payload, call->request, call->request_size);
       if (call->request_cap) {

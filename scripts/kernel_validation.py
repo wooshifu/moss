@@ -237,6 +237,7 @@ CATALOG = {
         "capability_transfer",
         "delivery_rollback",
         "memory_object",
+        "badged_sender",
     ],
     "users.signals": [
         "basic_handler",

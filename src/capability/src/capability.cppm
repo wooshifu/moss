@@ -17,6 +17,7 @@ inline constexpr u32 TRANSFER = 1U << 2;
 inline constexpr u32 DUPLICATE = 1U << 3;
 inline constexpr u32 MAP_READ = 1U << 4;
 inline constexpr u32 MAP_WRITE = 1U << 5;
+inline constexpr u32 MINT = 1U << 6;
 } // namespace rights
 
 class Object {

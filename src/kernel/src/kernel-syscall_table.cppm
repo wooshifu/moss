@@ -207,9 +207,10 @@ enum class SyscallNumber : long {
   SYS_IPC_REPLY = 139,
   SYS_MEM_CREATE = 140,
   SYS_MEM_MAP = 141,
+  SYS_IPC_MINT_BADGE = 142,
 
   // Total syscall count marker
-  MAX_SYSCALL = 142
+  MAX_SYSCALL = 143
 };
 
 // Syscall handler function type
@@ -300,6 +301,7 @@ long sys_cap_close(long handle, long arg1, long arg2, long arg3, long arg4, long
 long sys_cap_duplicate(long handle, long rights, long arg2, long arg3, long arg4, long arg5) noexcept;
 long sys_cap_set_inherit(long handle, long inherit, long arg2, long arg3, long arg4, long arg5) noexcept;
 long sys_ipc_create(long pair_addr, long arg1, long arg2, long arg3, long arg4, long arg5) noexcept;
+long sys_ipc_mint_badge(long endpoint, long badge, long arg2, long arg3, long arg4, long arg5) noexcept;
 long sys_ipc_call(long endpoint, long request_addr, long response_addr, long deadline_ns, long arg4,
                   long arg5) noexcept;
 long sys_ipc_receive(long endpoint, long request_addr, long reply_addr, long arg3, long arg4, long arg5) noexcept;

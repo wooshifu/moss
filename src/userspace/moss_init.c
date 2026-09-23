@@ -8,6 +8,7 @@
 
 #define MOSS_SYSCALL_RAW_ONLY
 #include "syscall.h"
+#include "moss_file_protocol.h"
 
 // One second between launches bounds a failing service's restart rate.
 #define RESTART_DELAY_NS 1000000000UL
@@ -108,31 +109,37 @@ static int start_namespace_service(const struct Service *file, struct Service *s
   if (syscall1(SYS_IPC_CREATE, (long)&endpoints) != 0) {
     return -1;
   }
-  long receive = syscall2(SYS_CAP_DUPLICATE, (long)endpoints.receive, MOSS_CAP_RECEIVE | MOSS_CAP_DUPLICATE);
+  long receive = 0;
+  // The namespace service receives only a sender for this file object. The
+  // original endpoint stays here so clients cannot mint other identities.
+  long file_cap = syscall2(SYS_IPC_MINT_BADGE, file->send, MOSS_FILE_SCRATCH_BADGE);
+  if (file_cap <= 0) {
+    goto fail;
+  }
+  receive = syscall2(SYS_CAP_DUPLICATE, (long)endpoints.receive, MOSS_CAP_RECEIVE | MOSS_CAP_DUPLICATE);
   if (receive <= 0 || syscall2(SYS_CAP_SET_INHERIT, receive, 1) != 0) {
     goto fail;
   }
   char receive_arg[32], file_arg[32]; // Each holds a decimal 64-bit handle.
   int receive_size = snprintf(receive_arg, sizeof(receive_arg), "%lu", (unsigned long)receive);
-  int file_size = snprintf(file_arg, sizeof(file_arg), "%lu", (unsigned long)file->send);
+  int file_size = snprintf(file_arg, sizeof(file_arg), "%lu", (unsigned long)file_cap);
   if (receive_size < 0 || (size_t)receive_size >= sizeof(receive_arg) || file_size < 0 ||
-      (size_t)file_size >= sizeof(file_arg) || syscall2(SYS_CAP_SET_INHERIT, file->send, 1) != 0) {
+      (size_t)file_size >= sizeof(file_arg) || syscall2(SYS_CAP_SET_INHERIT, file_cap, 1) != 0) {
     goto fail;
   }
 
-  // Fork copies opted-in handles with their numbers unchanged. Clear the
-  // file sender's inherit flag before creating a shell: only the namespace
-  // service may delegate this authority to a client.
+  // Fork copies opted-in handles with their numbers unchanged. The parent
+  // closes its temporary minted handle before it creates a shell.
   pid_t child = fork();
   if (child == 0) {
     char *const argv[] = {"namespace-service", receive_arg, file_arg, NULL};
     execve("/namespace-service.elf", argv, NULL);
     _exit(127);
   }
-  long cleared = syscall2(SYS_CAP_SET_INHERIT, file->send, 0);
+  (void)syscall1(SYS_CAP_CLOSE, file_cap);
   (void)syscall1(SYS_CAP_CLOSE, receive);
   (void)syscall1(SYS_CAP_CLOSE, (long)endpoints.receive);
-  if (child < 0 || cleared != 0) {
+  if (child < 0) {
     stop_child(child);
     (void)syscall1(SYS_CAP_CLOSE, (long)endpoints.send);
     return -1;
@@ -152,6 +159,9 @@ static int start_namespace_service(const struct Service *file, struct Service *s
   return 0;
 
 fail:
+  if (file_cap > 0) {
+    (void)syscall1(SYS_CAP_CLOSE, file_cap);
+  }
   if (receive > 0) {
     (void)syscall1(SYS_CAP_CLOSE, receive);
   }

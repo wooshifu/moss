@@ -2785,7 +2785,8 @@ const SyscallDescriptor SYSCALL_TABLE[static_cast<int>(SyscallNumber::MAX_SYSCAL
     {"ipc_receive", handlers::sys_ipc_receive, 3, true, "Receive a control request"},
     {"ipc_reply", handlers::sys_ipc_reply, 2, true, "Complete a pending call"},
     {"mem_create", handlers::sys_mem_create, 1, true, "Create a capability-backed memory page"},
-    {"mem_map", handlers::sys_mem_map, 2, true, "Map a memory capability"}};
+    {"mem_map", handlers::sys_mem_map, 2, true, "Map a memory capability"},
+    {"ipc_mint_badge", handlers::sys_ipc_mint_badge, 2, true, "Mint a sender with a receiver-visible badge"}};
 
 // 系统调用分发器实现
 long SyscallDispatcher::dispatch(long syscall_number, long arg0, long arg1, long arg2, long arg3, long arg4,

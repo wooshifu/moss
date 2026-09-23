@@ -99,6 +99,76 @@ unsigned long ipc_roundtrip(void) {
   return errors;
 }
 
+unsigned long ipc_badged_sender(void) {
+  enum { kTestBadge = 7 }; // Nonzero object identity; unbadged endpoints deliver zero.
+  struct moss_ipc_endpoints pair = {0, 0};
+  if (syscall1(SYS_IPC_CREATE, (long)&pair) != 0)
+    return 1;
+  long minted = syscall2(SYS_IPC_MINT_BADGE, (long)pair.send, kTestBadge);
+  long limited = minted > 0 ? syscall2(SYS_CAP_DUPLICATE, minted, MOSS_CAP_SEND) : -1;
+  long attenuated = syscall2(SYS_CAP_DUPLICATE, (long)pair.send, MOSS_CAP_SEND | MOSS_CAP_MINT);
+  unsigned long errors = (unsigned long)(minted <= 0 || limited <= 0 || attenuated <= 0);
+  if (errors || syscall2(SYS_CAP_SET_INHERIT, (long)pair.receive, 1) != 0) {
+    errors |= 2;
+    goto done;
+  }
+
+  long child = fork();
+  if (child == 0) {
+    for (unsigned int i = 0; i < 2; ++i) {
+      struct moss_ipc_message request = {0};
+      unsigned long reply = 0;
+      unsigned long expected_badge = i == 0 ? kTestBadge : 0;
+      if (ipc_receive(pair.receive, &request, &reply) != 1 || request.badge != expected_badge ||
+          request.payload[0] != 'b')
+        _exit(91);
+      const struct moss_ipc_message response = {.size = 1, .payload = {'b'}};
+      if (ipc_reply(reply, &response) != 0)
+        _exit(92);
+    }
+    _exit(37);
+  }
+  if (child < 0) {
+    errors |= 4;
+    goto done;
+  }
+  (void)syscall1(SYS_CAP_CLOSE, (long)pair.receive);
+  pair.receive = 0;
+  errors |= (unsigned long)(syscall2(SYS_IPC_MINT_BADGE, minted, kTestBadge) != -IPC_EACCES) << 3;
+  errors |= (unsigned long)(syscall2(SYS_IPC_MINT_BADGE, limited, kTestBadge) != -IPC_EACCES) << 4;
+  errors |= (unsigned long)(syscall2(SYS_IPC_MINT_BADGE, attenuated, kTestBadge) != -IPC_EACCES) << 8;
+  struct moss_ipc_message request = {.size = 1, .badge = kTestBadge, .payload = {'b'}};
+  struct moss_ipc_message response = {0};
+  long deadline = deadline_after(ipc_call_timeout_ns);
+  errors |=
+      (unsigned long)(deadline <= 0 || ipc_call((unsigned long)limited, &request, &response, deadline) != -IPC_EINVAL)
+      << 5;
+  request.badge = 0;
+  deadline = deadline_after(ipc_call_timeout_ns);
+  long result = deadline > 0 ? ipc_call((unsigned long)limited, &request, &response, deadline) : -1;
+  errors |= (unsigned long)(result != 1 || response.payload[0] != 'b' || response.badge != 0) << 6;
+  if (result == 1) {
+    deadline = deadline_after(ipc_call_timeout_ns);
+    result = deadline > 0 ? ipc_call(pair.send, &request, &response, deadline) : -1;
+    errors |= (unsigned long)(result != 1 || response.badge != 0) << 9;
+  }
+  if (result != 1)
+    (void)kill(child, SIGKILL);
+  errors |= (unsigned long)!wait_exit(child, 37) << 7;
+
+done:
+  if (attenuated > 0)
+    (void)syscall1(SYS_CAP_CLOSE, attenuated);
+  if (limited > 0)
+    (void)syscall1(SYS_CAP_CLOSE, limited);
+  if (minted > 0)
+    (void)syscall1(SYS_CAP_CLOSE, minted);
+  if (pair.receive)
+    (void)syscall1(SYS_CAP_CLOSE, (long)pair.receive);
+  (void)syscall1(SYS_CAP_CLOSE, (long)pair.send);
+  return errors;
+}
+
 unsigned long ipc_deadline(void) {
   struct moss_ipc_endpoints pair = {0, 0};
   if (syscall1(SYS_IPC_CREATE, (long)&pair) != 0)
