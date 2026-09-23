@@ -1002,6 +1002,12 @@ void declare_cases() {
     ut::register_test("clock_relative_interrupted", empty_case);
     ut::register_test("clock_absolute_interrupted", empty_case);
   });
+  ut::register_suite("users.ipc", [] {
+    ut::register_test("roundtrip", empty_case);
+    ut::register_test("deadline", empty_case);
+    ut::register_test("peer_death", empty_case);
+    ut::register_test("signal_cancel", empty_case);
+  });
   ut::register_suite("users.libc", [] {
     ut::register_test("static_runtime", empty_case);
     ut::register_test("filesystem_permissions", empty_case);
@@ -1796,6 +1802,9 @@ extern "C" long moss_validation_call(long op, long arg1, [[maybe_unused]] long a
     if (ut::same_id(selection, "users.timers")) {
       return 10;
     }
+    if (ut::same_id(selection, "users.ipc")) {
+      return 25;
+    }
     if (ut::same_id(selection, "users.libc")) {
       return 20;
     }
@@ -1865,6 +1874,7 @@ extern "C" long moss_validation_call(long op, long arg1, [[maybe_unused]] long a
                           ut::same_id(selection, "users.frame") || ut::same_id(selection, "users.uaccess") ||
                           ut::same_id(selection, "users.signals") || ut::same_id(selection, "users.console_irq") ||
                           is_lifecycle() || ut::same_id(selection, "users.timers") ||
+                          ut::same_id(selection, "users.ipc") ||
                           ut::same_id(selection, "users.libc") || ut::same_id(selection, "users.busybox") ||
                           ut::same_id(selection, "users.exec");
   if (op == 1 && user_suite && !failed && !active_case && arg1 == static_cast<long>(completed) && arg1 >= 0) {

@@ -11,17 +11,22 @@ inline void process_handles() {
 
   struct TrackedObject final : cap::Object {
     unsigned &destructions;
-    explicit TrackedObject(unsigned &count) : Object(cap::ObjectType::Endpoint), destructions(count) {}
+    unsigned &last_closes;
+    TrackedObject(unsigned &destroyed, unsigned &closed)
+        : Object(cap::ObjectType::Endpoint), destructions(destroyed), last_closes(closed) {}
     ~TrackedObject() override { ++destructions; }
+
+  protected:
+    void on_last_handle_closed() noexcept override { ++last_closes; }
   };
 
-  unsigned destructions = 0;
+  unsigned destructions = 0, last_closes = 0;
   auto object = shared_ptr<cap::Object>::try_make<TrackedObject>(
       [](moss::kernel::usize size, moss::kernel::usize alignment) -> void * {
         auto storage = moss::kernel::mm::RuntimeHeapAllocator::allocate_aligned(size, alignment);
         return storage ? *storage : nullptr;
       },
-      destructions);
+      destructions, last_closes);
   if (!boost::ut::expect(static_cast<bool>(object)))
     return;
 
@@ -58,6 +63,7 @@ inline void process_handles() {
   boost::ut::expect(!sender.close(*send_only));
   boost::ut::expect(!sender.close(moss::kernel::INVALID_HANDLE));
   boost::ut::expect(static_cast<bool>(receiver.close(*moved)));
+  boost::ut::expect(last_closes == 1);
 
   cap::Table parent, child, occupied;
   auto kept = parent.install(object, full_rights);
@@ -90,7 +96,12 @@ inline void process_handles() {
   boost::ut::expect(!parent.lookup(*dropped, cap::ObjectType::Endpoint, 0));
   boost::ut::expect(static_cast<bool>(parent.lookup(*kept, cap::ObjectType::Endpoint, cap::rights::SEND)));
   boost::ut::expect(static_cast<bool>(parent.close(*kept)));
-  boost::ut::expect(static_cast<bool>(child.close(*kept)));
+  {
+    auto held_lookup = child.lookup(*kept, cap::ObjectType::Endpoint, cap::rights::SEND);
+    boost::ut::expect(static_cast<bool>(held_lookup));
+    boost::ut::expect(static_cast<bool>(child.close(*kept)));
+    boost::ut::expect(last_closes == 2);
+  }
   object.reset();
   boost::ut::expect(destructions == 1);
 }

@@ -8,7 +8,7 @@ import moss.containers;
 
 export namespace moss::kernel::capability {
 
-enum class ObjectType : u8 { Endpoint, Reply };
+enum class ObjectType : u8 { Endpoint, Receiver, Reply };
 
 namespace rights {
 inline constexpr u32 SEND = 1U << 0;
@@ -19,6 +19,20 @@ inline constexpr u32 DUPLICATE = 1U << 3;
 
 class Object {
   ObjectType type_;
+  atomic<u32> installed_handles_{0};
+
+  friend class Table;
+  void acquire_handle() noexcept { (void)installed_handles_.fetch_add(1, memory_order_relaxed); }
+  void release_handle() noexcept {
+    if (installed_handles_.fetch_sub(1, memory_order_acq_rel) == 1)
+      on_last_handle_closed();
+  }
+
+protected:
+  // A syscall lookup may still retain this object after its last handle is
+  // closed. Services use this hook to report peer closure at handle lifetime,
+  // rather than waiting for the final transient lookup reference to vanish.
+  virtual void on_last_handle_closed() noexcept {}
 
 public:
   explicit Object(ObjectType type) noexcept : type_(type) {}
@@ -71,6 +85,7 @@ class Table {
       return KernelResult<Handle>{ErrorCode::ResourceExhausted};
     for (auto &entry : entries_) {
       if (entry.handle == INVALID_HANDLE) {
+        object->acquire_handle();
         entry.handle = next_handle_++;
         entry.rights = granted_rights;
         entry.inheritable = false;
@@ -168,8 +183,10 @@ public:
           return VoidResult{ErrorCode::AlreadyExists};
       }
       for (usize i = 0; i < CAPACITY; ++i) {
-        if (entries_[i].handle != INVALID_HANDLE && entries_[i].inheritable)
+        if (entries_[i].handle != INVALID_HANDLE && entries_[i].inheritable) {
+          entries_[i].object->acquire_handle();
           target.entries_[i] = entries_[i];
+        }
       }
       target.next_handle_ = next_handle_;
       return {};
@@ -198,6 +215,10 @@ public:
         }
       }
     }
+    for (auto &object : retired) {
+      if (object)
+        object->release_handle();
+    }
   }
 
   // Both tables stay locked through publication and optional withdrawal, so
@@ -209,14 +230,19 @@ public:
     shared_ptr<Object> retired;
     // The same address order on both transfer directions prevents AB/BA lock
     // inversion; retired ownership is released after both locks leave scope.
-    if (reinterpret_cast<usize>(this) < reinterpret_cast<usize>(&target)) {
-      containers::LockGuard<containers::IrqSpinLock> first(lock_);
-      containers::LockGuard<containers::IrqSpinLock> second(target.lock_);
+    const auto transferred = [&]() -> KernelResult<Handle> {
+      if (reinterpret_cast<usize>(this) < reinterpret_cast<usize>(&target)) {
+        containers::LockGuard<containers::IrqSpinLock> first(lock_);
+        containers::LockGuard<containers::IrqSpinLock> second(target.lock_);
+        return transfer_locked(target, handle, granted_rights, remove_source, retired);
+      }
+      containers::LockGuard<containers::IrqSpinLock> first(target.lock_);
+      containers::LockGuard<containers::IrqSpinLock> second(lock_);
       return transfer_locked(target, handle, granted_rights, remove_source, retired);
-    }
-    containers::LockGuard<containers::IrqSpinLock> first(target.lock_);
-    containers::LockGuard<containers::IrqSpinLock> second(lock_);
-    return transfer_locked(target, handle, granted_rights, remove_source, retired);
+    }();
+    if (retired)
+      retired->release_handle();
+    return transferred;
   }
 
   [[nodiscard]] VoidResult close(Handle handle) noexcept {
@@ -231,6 +257,7 @@ public:
       entry->rights = 0;
       entry->inheritable = false;
     }
+    retired->release_handle();
     return {};
   }
 
@@ -244,6 +271,10 @@ public:
         entries_[i].rights = 0;
         entries_[i].inheritable = false;
       }
+    }
+    for (auto &object : retired) {
+      if (object)
+        object->release_handle();
     }
   }
 };

@@ -228,6 +228,7 @@ CATALOG = {
         "clock_relative_interrupted",
         "clock_absolute_interrupted",
     ],
+    "users.ipc": ["roundtrip", "deadline", "peer_death", "signal_cancel"],
     "users.signals": [
         "basic_handler",
         "nested_signals",
@@ -332,6 +333,7 @@ FUNCTIONAL = [
     "users.signals",
     "users.lifecycle",
     "users.timers",
+    "users.ipc",
     "users.libc",
     "users.exec",
     "users.busybox",
