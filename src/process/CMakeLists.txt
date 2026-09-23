@@ -34,6 +34,7 @@ target_link_libraries(
             moss_aal
             moss_containers
             moss_mm
+            moss_capability
             moss_drivers
             moss_interrupts
             moss_ipc

@@ -89,6 +89,7 @@ add_subdirectory(src/fdt)
 add_subdirectory(src/initramfs)
 add_subdirectory(src/containers)
 add_subdirectory(src/mm)
+add_subdirectory(src/capability)
 add_subdirectory(src/drivers)
 add_subdirectory(src/interrupts)
 add_subdirectory(src/ipc)
@@ -123,6 +124,7 @@ target_link_libraries(
             moss_kernel
             moss_containers
             moss_mm
+            moss_capability
             moss_drivers
             moss_interrupts
             moss_ipc

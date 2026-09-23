@@ -15,20 +15,22 @@ import moss.hal.uart;
 import moss.hal.mmu;
 import moss.logging;
 import moss.ipc;
+import moss.capability;
 import moss.drivers;
 import moss.result;
 import moss.platform;
 import moss.interrupts;
 import moss.drivers.console;
 
+#include "capability_regression.hpp"
 #include "framework/benchmark.hpp"
 #include "framework/ut_kernel.hpp"
 #include "hardware_regression.hpp"
 #include "ipc_regression.hpp"
 #include "queue_regression.hpp"
 #include "scheduler_regression.hpp"
-#include "validation/memory_internal.hpp"
 #include "validation/core_cases.hpp"
+#include "validation/memory_internal.hpp"
 
 using namespace moss::kernel;
 namespace ut = boost::ut;
@@ -664,6 +666,7 @@ void register_containers_cases() {
     ut::register_test("queue_reuse", moss::test::queue_regression::run);
     ut::register_test("ipc_heap_rollback", ipc_heap_rollback);
     ut::register_test("ipc_shared_backing", moss::test::ipc_regression::shared_backing);
+    ut::register_test("capability_process_handles", moss::test::capability_regression::process_handles);
     ut::register_test("ipc_shared_lifecycle", moss::test::ipc_regression::shared_lifecycle);
     ut::register_test("ipc_service_lifecycle", moss::test::ipc_regression::service_lifecycle);
     ut::register_test("ipc_ring_wrap", moss::test::ipc_regression::ring_wrap);
