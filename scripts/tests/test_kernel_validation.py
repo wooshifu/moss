@@ -8,6 +8,7 @@ import xml.etree.ElementTree as ET
 from pathlib import Path
 
 import pytest
+from typer.testing import CliRunner
 
 from scripts import kernel_validation as kv
 from scripts.artifacts import Artifacts
@@ -155,6 +156,41 @@ def test_failed_case_keeps_later_cases_and_reports_assertion():
         "passed",
     ]
     assert state.outcome("protocol_end", None, b"") == ("failed", "assertion")
+
+
+def test_cancelled_run_fails_and_marks_remaining_suite_skipped(tmp_path, monkeypatch):
+    image = tmp_path / "test.Image"
+    fixture = tmp_path / "test.initrd"
+    image.write_bytes(b"image")
+    fixture.write_bytes(b"fixture")
+    cfg = Artifacts(
+        tmp_path / "manifest.json",
+        "ARM64",
+        "linux-image",
+        {"type": "Debug"},
+        {"validation_kernel": image, "validation_initramfs": fixture, "validation_debug_symbols": None},
+    )
+    monkeypatch.setattr(kv.Artifacts, "load", classmethod(lambda _cls, _path: cfg))
+    monkeypatch.setattr(kv, "resolve_qemu", lambda *_args: "unused-qemu")
+    monkeypatch.setattr(kv, "get_qemu_version", lambda *_args: "unused")
+    launched = []
+
+    def cancelled(_cfg, workload, _directory, _settings, _iterations):
+        launched.append(workload)
+        return {"workload": workload, "status": "error", "observed": "cancelled", "expected": "pass", "cases": []}
+
+    monkeypatch.setattr(kv, "run_guest", cancelled)
+    output = tmp_path / "report"
+    result = CliRunner().invoke(
+        kv.app,
+        ["run", "--manifest", str(cfg.manifest), "--workload", "mm", "--workload", "pfa", "--output", str(output)],
+    )
+    assert result.exit_code == 1, result.output
+    report = json.loads((output / "results.json").read_text())
+    assert launched == ["mm"]
+    assert report["finalized"] is True and report["not_run"] == ["pfa"]
+    skipped = ET.parse(output / "junit.xml").getroot().find("./testsuite[@name='pfa']")
+    assert skipped is not None and len(skipped.findall("./testcase/skipped")) == len(kv.CATALOG["pfa"])
 
 
 @pytest.mark.parametrize(
