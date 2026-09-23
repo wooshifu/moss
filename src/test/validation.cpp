@@ -3878,9 +3878,9 @@ struct FaultTransactions {
   using Tables = mm::PageTableManager;
   using Pfa = mm::PageFrameAllocator;
   static constexpr VirtAddr address = process::user_layout::CODE_BASE;
-  // One COW race followed by one demand-zero race, each with the three
-  // snapshot/commit/cleanup milestones described below.
-  static constexpr u32 scenarios = 2, milestones = 3;
+  // COW, demand-zero, then fault versus unmap. Each uses the same three
+  // snapshot/commit/cleanup milestones so the peer contends before commit.
+  static constexpr u32 scenarios = 3, milestones = 3;
   shared_ptr<process::AddressSpace> source, target;
   PhysAddr original = 0, owner_page = 0, peer_page = 0;
   u64 contents = 0;
@@ -3888,7 +3888,7 @@ struct FaultTransactions {
   // ready/contending/finished. The host's normal deadline bounds a stuck peer.
   u32 phase = 0, arrived = 0, snapshots = 0, contentions = 0;
   u32 round_base = 0;
-  bool demand = false;
+  bool demand = false, unmap = false;
   bool peer_ok = false;
 
   void snapshot(PhysAddr root, VirtAddr fault_address) {
@@ -3922,9 +3922,17 @@ struct FaultTransactions {
       const auto base = round * milestones;
       __atomic_store_n(&arrived, base + 1, __ATOMIC_RELEASE);
       ContainerInterleaving::wait_for(phase, base + 1);
-      peer_ok = target->resolve_fault(address, mm::UserFaultAccess::Write, !demand) && peer_ok;
-      const auto *pte = Tables::get_user_pte(target->pgd_phys, address);
-      peer_page = pte ? pte->get_phys_addr() : 0;
+      if (unmap) {
+        auto transaction = target->lock_vm();
+        const auto *pte = Tables::get_user_pte(target->pgd_phys, address);
+        peer_page = pte && pte->is_valid() ? pte->get_phys_addr() : 0;
+        Tables::unmap_user_page(target->pgd_phys, address);
+        peer_ok = target->remove_vma(address, address + page_size) && peer_page != 0 && peer_ok;
+      } else {
+        peer_ok = target->resolve_fault(address, mm::UserFaultAccess::Write, !demand) && peer_ok;
+        const auto *pte = Tables::get_user_pte(target->pgd_phys, address);
+        peer_page = pte ? pte->get_phys_addr() : 0;
+      }
       __atomic_store_n(&arrived, base + 3, __ATOMIC_RELEASE);
       ContainerInterleaving::wait_for(phase, base + 3);
     }
@@ -3936,9 +3944,13 @@ struct FaultTransactions {
       ContainerInterleaving::wait_for(arrived, round * milestones + 1);
       round_base = round * milestones;
       demand = round != 0;
+      unmap = round == 2;
       snapshots = 0;
       contentions = 0;
-      if (demand) {
+      if (unmap) {
+        end_case();
+        start_case("fault_unmap");
+      } else if (demand) {
         end_case();
         start_case("demand_fault");
       }
@@ -3980,6 +3992,18 @@ struct FaultTransactions {
     __atomic_store_n(&phase, round_base + 2, __ATOMIC_RELEASE);
     ContainerInterleaving::wait_for(arrived, round_base + 3);
     ut::expect(owner_ok && peer_ok && affinity_valid());
+    if (unmap) {
+      const auto *pte = Tables::get_user_pte(target->pgd_phys, address);
+      ut::expect(owner_page != 0 && peer_page == owner_page && (!pte || !pte->is_valid()) &&
+                 !target->find_vma(address) && Pfa::page_ref_get(owner_page) == 0);
+      ut::expect(Pfa::page_ref_get(original) == 1 && memory_hash(phys_to_virt(original), page_size) == contents);
+      ut::expect(snapshots == 1 && contentions == 1);
+      target.reset();
+      source.reset();
+      ut::expect(Pfa::get_memory_stats().free_pages == pages);
+      ut::expect(mm::RuntimeHeapAllocator::get_heap_stats().allocated_bytes == heap);
+      return;
+    }
     ut::expect(owner_page != 0 && owner_page == peer_page && owner_page != original);
     const auto old_refs = Pfa::page_ref_get(original);
     const bool ownership = old_refs == 1 && peer_page != 0 && Pfa::page_ref_get(peer_page) == 1;
@@ -5838,6 +5862,7 @@ void declare_cases() {
   ut::register_suite("mm.concurrent", [] {
     ut::register_test("cow_fault", empty_case);
     ut::register_test("demand_fault", empty_case);
+    ut::register_test("fault_unmap", empty_case);
   });
   ut::register_suite("mm.uaccess", [] {
     ut::register_test("copy_unmap", empty_case);
