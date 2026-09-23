@@ -8,7 +8,7 @@
 //
 // Raw ABI conventions used below: mmap prot 3=R|W, flags 0x22=PRIVATE|ANONYMOUS,
 // fd -1 and offset 0; 4096-byte pages and 8192-byte pairs test page boundaries.
-// Native errors are -errno (2=ENOENT, 7=E2BIG, 8=ENOEXEC, 10=ECHILD, 12=ENOMEM,
+// Native errors are -errno (2=ENOENT, 7=E2BIG, 8=ENOEXEC, 10=ECHILD, 11=EAGAIN, 12=ENOMEM,
 // 14=EFAULT, 22=EINVAL, 36=ENAMETOOLONG, 38=ENOSYS). Error masks assign
 // each check a bit. Nonzero byte/canary patterns detect untouched or aliased data;
 // 37/39 are child/exec success markers, while other exit codes identify failures.
@@ -518,6 +518,34 @@ static unsigned long exec_source_version(void) {
     source.argv[0] = source.name;
     source.argv[1] = 0;
     syscall3(SYS_EXECVE, (long)"/validation_child.elf", (long)source.argv, 0);
+    _exit(98);
+  }
+  int status = 0;
+  long waited = child > 0 ? waitpid(child, &status, 0) : -1;
+  return child > 0 && waited == child && status == (37 << 8) ? 0 : 1 | (unsigned long)status << 8;
+}
+
+static unsigned long exec_shared_thread_gate(void) {
+  enum { EXEC_REGISTER_DORMANT_PEER = 52 };
+  long child = fork();
+  if (child == 0) {
+    if (control(EXEC_REGISTER_DORMANT_PEER, 0, 0) != 1) {
+      _exit(98);
+    }
+    const char *args[] = {"must-reject", 0};
+    long result = syscall3(SYS_EXECVE, (long)"/validation_child.elf", (long)args, 0);
+    _exit(result == -11 ? 39 : 98);
+  }
+  int status = 0;
+  long waited = child > 0 ? waitpid(child, &status, 0) : -1;
+  return child > 0 && waited == child && status == (39 << 8) ? 0 : 1 | (unsigned long)status << 8;
+}
+
+static unsigned long exec_registration_gate(void) {
+  long child = fork();
+  if (child == 0) {
+    const char *args[] = {"exec", 0};
+    syscall3(SYS_EXECVE, (long)"/validation_child.elf", (long)args, 0);
     _exit(98);
   }
   int status = 0;
@@ -3332,7 +3360,9 @@ void _start(long argc, const char **argv) {
       EXEC_MUTABLE_CASE = 26,
       EXEC_BOUNDARY_CASE = 27,
       EXEC_SOURCE_VERSION_CASE = 28,
-      EXEC_CASES = 29,
+      EXEC_REGISTRATION_CASE = 29,
+      EXEC_SHARED_THREAD_CASE = 30,
+      EXEC_CASES = 31,
     };
     for (long test = 0; test < EXEC_CASES; ++test) {
       control(1, test, 0);
@@ -3347,6 +3377,10 @@ void _start(long argc, const char **argv) {
         errors = exec_boundary_load_plan();
       } else if (test == EXEC_SOURCE_VERSION_CASE) {
         errors = exec_source_version();
+      } else if (test == EXEC_SHARED_THREAD_CASE) {
+        errors = exec_shared_thread_gate();
+      } else if (test == EXEC_REGISTRATION_CASE) {
+        errors = exec_registration_gate();
       }
       if (!control(2, errors == 0, (long)errors)) {
         break;

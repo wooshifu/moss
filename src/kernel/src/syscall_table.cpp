@@ -496,6 +496,21 @@ long sys_execve(long pathname_addr, long argv_addr, long envp_addr, long /*unuse
   if (!source_as) {
     return -errc::ESRCH;
   }
+  if (!proc->try_begin_exec()) {
+    return -errc::EAGAIN;
+  }
+  struct ExecReservation {
+    Process *owner;
+    ~ExecReservation() noexcept {
+      if (owner) {
+        owner->finish_exec();
+      }
+    }
+    void finish() noexcept {
+      owner->finish_exec();
+      owner = nullptr;
+    }
+  } reservation{proc.get()};
 
   // All exec inputs must come from one published version, even if another
   // thread replaces the Process address space during preparation.
@@ -800,6 +815,8 @@ long sys_execve(long pathname_addr, long argv_addr, long envp_addr, long /*unuse
   cur->state = ProcessState::Running;
   cur->stack_base = stack_bottom;
   cur->stack_size = user_layout::STACK_SIZE;
+  // switch_to_user abandons this kernel frame; its destructor will not run.
+  reservation.finish();
   args.reset();
   proc.reset();
   switch_to_user(&cur->context, cur->context.sp);

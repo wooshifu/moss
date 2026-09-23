@@ -701,6 +701,9 @@ private:
 
   containers::LockedList<ThreadEntry> threads_;
   containers::AtomicCounter<u32> thread_count_;
+  // Exec admits one registered thread; pending registrations reserve the count
+  // before publishing, so a concurrent registrar cannot slip past the gate.
+  moss::atomic<bool> exec_in_progress_{false};
   ThreadId main_thread_id_;
 
   // Publishing Zombie makes its exit status visible to a waiter on another CPU.
@@ -823,6 +826,8 @@ public:
   [[nodiscard]] Thread *get_main_thread() const noexcept;
 
   [[nodiscard]] u32 thread_count() const noexcept { return thread_count_.load(containers::MemoryOrder::Relaxed); }
+  [[nodiscard]] bool try_begin_exec() noexcept;
+  void finish_exec() noexcept;
 
   // Memory management
   [[nodiscard]] VoidResult set_address_space(shared_ptr<AddressSpace> as) noexcept;

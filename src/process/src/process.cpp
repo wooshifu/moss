@@ -367,19 +367,49 @@ VoidResult Process::register_thread(Thread *thread) noexcept {
     return VoidResult{ErrorCode::InvalidArgument};
   }
 
+  if (exec_in_progress_.load()) {
+    return VoidResult{ErrorCode::InvalidState};
+  }
+  // Reserve the count before publishing the thread. Exec either observes the
+  // pending peer and refuses, or wins the gate and makes us withdraw it.
+  const u32 previous_count = thread_count_.fetch_add(1);
+  if (exec_in_progress_.load()) {
+    (void)thread_count_.fetch_sub(1);
+    return VoidResult{ErrorCode::InvalidState};
+  }
+
   ThreadEntry entry(thread->tid, thread);
   if (!threads_.try_push_front(entry)) {
+    (void)thread_count_.fetch_sub(1);
     return VoidResult{ErrorCode::OutOfMemory};
   }
 
   // Set main thread if this is the first thread
-  if (thread_count_.load(containers::MemoryOrder::Relaxed) == 0) {
+  if (previous_count == 0) {
     main_thread_id_ = thread->tid;
   }
 
-  (void)thread_count_.fetch_add(1, containers::MemoryOrder::Relaxed);
   return {};
 }
+
+bool Process::try_begin_exec() noexcept {
+  if (thread_count_.load() != 1) {
+    return false;
+  }
+  bool expected = false;
+  if (!exec_in_progress_.compare_exchange_strong(expected, true)) {
+    return false;
+  }
+  // A registrar may have reserved a count between the first check and gate.
+  // It either backs out after observing the gate or forces this retry to fail.
+  if (thread_count_.load() == 1) {
+    return true;
+  }
+  exec_in_progress_.store(false);
+  return false;
+}
+
+void Process::finish_exec() noexcept { exec_in_progress_.store(false); }
 
 ProcessId Process::find_zombie_child(i64 wait_pid) const noexcept {
   ProcessId found = INVALID_PROCESS_ID;
