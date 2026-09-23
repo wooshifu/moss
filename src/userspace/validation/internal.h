@@ -14,6 +14,7 @@ unsigned long ipc_roundtrip(void);
 unsigned long ipc_badged_sender(void);
 unsigned long ipc_deadline(void);
 unsigned long ipc_peer_death(void);
+unsigned long ipc_nested_roundtrip(void);
 unsigned long ipc_signal_cancel(void);
 unsigned long ipc_capability_transfer(void);
 unsigned long ipc_delivery_rollback(void);

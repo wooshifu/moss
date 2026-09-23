@@ -238,6 +238,7 @@ CATALOG = {
         "delivery_rollback",
         "memory_object",
         "badged_sender",
+        "nested_roundtrip",
     ],
     "users.signals": [
         "basic_handler",

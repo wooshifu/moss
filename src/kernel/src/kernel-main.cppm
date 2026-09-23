@@ -452,14 +452,14 @@ private:
     load_balancer_ = new process::LoadBalancer();
     ::moss::kernel::process::g_load_balancer = load_balancer_;
     if (!load_balancer_) {
-      // NOTE: error handling below covers cleanup
-      delete scheduler_;
+      // Process teardown may still detach threads through the scheduler.
       delete process_manager_;
-      scheduler_ = nullptr;
       process_manager_ = nullptr;
+      ::moss::kernel::process::g_process_manager = nullptr;
+      delete scheduler_;
+      scheduler_ = nullptr;
       ::moss::kernel::process::g_scheduler = nullptr;
       ::moss::kernel::process::g_load_balancer = nullptr;
-      ::moss::kernel::process::g_process_manager = nullptr;
       return VoidResult{ErrorCode::OutOfMemory};
     }
 

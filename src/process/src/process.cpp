@@ -355,8 +355,9 @@ void Process::record_page_fault(bool major) noexcept {
 void Process::cleanup_threads() noexcept {
   threads_.for_each([](const ThreadEntry &entry) {
     if (entry.thread) {
-      // Mark thread as not on any runqueue to avoid dangling reference
-      entry.thread->se.rb_on_rq = false;
+      // Unlink before destruction so a runqueue cannot retain freed Thread storage.
+      if (g_scheduler)
+        g_scheduler->dequeue_task(entry.thread);
       delete entry.thread;
     }
   });
@@ -631,7 +632,8 @@ KernelResult<VirtAddr> allocate_user_heap(Process *process, usize size) noexcept
     // Its authority and service graph cannot be rebuilt from a zombie or a
     // new PID. Reset before ordinary process teardown can leave services
     // running without their initial supervisor.
-    log::klog::error("initial system supervisor exited: code={}; resetting system", exit_code);
+    // Reset can end UART output before a deferred log drains.
+    log::klog::panic("initial system supervisor exited: code={}; resetting system", exit_code);
     arch::system_reset();
   }
 

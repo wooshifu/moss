@@ -2,7 +2,8 @@
 
 > 源码复核基线：2026-09-23，`604fe85`（当次未重跑 QEMU）。之后的当前九预设运行验收见 [moss-todo.md](moss-todo.md) 第 3.59～3.75 节。历史实现与实测保留原日期；源码与旧报告的对应关系见第 3.41 节。
 > ADR 迁移复核基线：2026-09-24，`c970c13`；新增能力和服务的状态见下文“ADR 迁移”。上面的 44/44 九预设记录早于该基线；IPC 收敛后的 **53/53 CTest** 见 [3.76](moss-todo.md#376-旧-ipc-与生产-capability-ipc-分界2026-09-24)。
-> 启动驱动边界复核：2026-09-24，`70e8ccb` 加本次工作树；九预设 **53/53 CTest**、关闭测试的独立生产构建及符号检查见 [3.77](moss-todo.md#377-启动机制与旧设备框架分界2026-09-24隔离工作树)。
+> 启动驱动边界复核：2026-09-24，`290339e`；九预设 **53/53 CTest**、关闭测试的独立生产构建及符号检查见 [3.77](moss-todo.md#377-启动机制与旧设备框架分界2026-09-24隔离工作树)。
+> IPC 优先级继承复核：2026-09-24，`ded02f6` 加本次工作树；九预设 **53/53 CTest**，细节与剩余交错验收见 [3.78](moss-todo.md#378-同步-ipc-的传递式优先级继承2026-09-24)。
 > 本文取代旧清单中“完成即可靠”“x86/RISC-V 64 仅为启动桩”的描述。
 > 审计问题的原始证据、当前状态及完整验收条件见 [moss-todo.md](moss-todo.md)；MOSS-001～032 沿用原编号，不重新编号。
 
@@ -67,7 +68,7 @@ uv run qemu.py --manifest build/arm64-debug/moss-artifacts.json
 | ELF / userspace / initramfs | ELF64 checked LoadPlan、逐段 PT_LOAD/VMA 后备、按 ISA 的 trampoline 和 syscall wrapper；静态 mlibc、BusyBox ash、独立 validation 映像、CPIO newc 与 VFS exec | 014；015/016 的事务与受支持静态 ELF 子集已关闭；动态加载、共享 LOAD 页和完整进程继承不是已支持能力 |
 | VFS | inode/dentry/File/FdTable、路径/mount/dcache、ramfs、devfs(console/null/zero)、stdio、open/close/read/write/lseek/fstat/dup/dup2/pipe、匿名 pipefs 与有界 I/O 视图；FD 模式检查、稳定引用及 pipe 阻塞/EOF 已实现 | 022、024～026；共享 offset/close 并发、管道多端交错和分配失败注入仍待专项验收 |
 | 核心与同步 | C++ 模块、freestanding types/std/concepts、Result、unique_ptr/shared_ptr、klog；ticket/IRQ spinlock、RAII guard、atomics、PerCpuData/计数/队列、MPSC、拥有型锁容器、WaitQueue | 尤其 006、017、018；容器节点/查找引用安全不等于使用者的复合生命周期或调度协议安全 |
-| Native IPC 与服务 | 进程局部带权限 capability 表、同步控制调用/一次性 reply、单页共享内存对象；`moss-init` 启动并监护文件/命名空间服务，`/moss-file.elf` 通过它们访问内存中的 `/scratch` | ADR-0012 的传递式优先级继承、0024 的执行域/兼容服务拆分、0018 的实际 VFS 迁移等仍未完成；旧 PID/全局 ID IPC 模块尚保留测试代码 |
+| Native IPC 与服务 | 进程局部带权限 capability 表、同步控制调用/一次性 reply、单页共享内存对象；`moss-init` 启动并监护文件/命名空间服务，`/moss-file.elf` 通过它们访问内存中的 `/scratch`；同步 IPC 已按等待依赖传递 RT/CFS 有效优先级 | ADR-0012 的取消/超时/reply 交错及端到端延迟验收、0024 的执行域/兼容服务拆分、0018 的实际 VFS 迁移等仍未完成；旧 PID/全局 ID IPC 模块尚保留测试代码 |
 | 启动机制与扩展框架 | 中断控制器、计时器及可用串口控制台保留必要的内核启动机制，实际硬件操作仍经 HAL；旧 `DeviceManager`/`Driver` 仅在验证镜像测试生命周期算法；NUMA/hugepage/reclaim/compaction/共享映射等未实现接口显式返回 Unsupported；Process 已有 uid/gid/euid/egid 字段 | ADR-0015 的设备资源 capability、隔离驱动、动态发现和 DMA 限制尚未实现；006、031～032 及其他未实现能力继续追踪 |
 
 主要实现分别位于 `src/boot/`、`src/aal/`、`src/hal/`、`src/drivers/`、`src/mm/`、`src/containers/`、`src/process/`、`src/kernel/`、`src/vfs/`、`src/userspace/` 和 `third_party/mlibc/`。下面以稳定审计编号追踪未完成工作，详细源码符号见 [审计状态表](moss-todo.md#4-问题总表与当前状态)。
@@ -76,11 +77,12 @@ uv run qemu.py --manifest build/arm64-debug/moss-artifacts.json
 
 ADR-0008～0033 是已接受的目标边界，并非当前实现的完成声明。下面仅勾选行内明确限定的切片；旧 MOSS-001～032 审计项仍按原验收标准追踪。
 
-- [x] ADR-0009/0010/0011 的第一条可运行路径：进程局部 capability、同步控制调用和单页共享内存已供独立服务使用；不代表通用权限撤销、完整数据面或传递式优先级继承已完成。
+- [x] ADR-0009/0010/0011 的第一条可运行路径：进程局部 capability、同步控制调用和单页共享内存已供独立服务使用；不代表通用权限撤销或完整数据面已完成。
 - [x] ADR-0014/0018 的第一条服务路径：`moss-init` 监护文件与命名空间服务，后者只解析 `/scratch`，服务死亡后的重连由用户态显式处理；内核 VFS 仍处理普通文件。
 - [x] 生产内核不再创建或链接旧的 PID/全局服务 ID IPC 管理器，也不再把它的消息计数展示为 native IPC 统计；旧模块仅留验证镜像专项回归，不作为新服务 ABI。九预设 53/53 CTest 及生产 ELF 符号检查见 3.76。
 - [x] 生产启动不再创建 `DeviceManager` 或通过 `BootDriver` 重新包装已启用的中断控制器、计时器和控制台；旧匹配/回调框架仅链接验证镜像。九预设 53/53 CTest、关闭测试的独立构建及符号检查通过；内核仍保留上述启动机制，资源 capability 和隔离驱动服务仍未实现（ADR-0015，见 3.77）。
-- [ ] 将 IPC 等待依赖纳入内核有效调度优先级并覆盖嵌套调用、取消、超时和服务死亡（ADR-0012/0023）。
+- [x] 同步 IPC 的等待依赖参与内核 RT/CFS 有效优先级计算；嵌套调用、多调用者、基础 nice 变更、服务线程死亡和恢复有内核回归，另有实际三进程嵌套 IPC 往返（ADR-0012/0023，见 3.78）。
+- [ ] 完成取消、超时、reply 与服务死亡的确定性交错及端到端优先级倒置时延验收；CPU 预算、deadline 传播和死锁策略仍需单独设计（ADR-0012/0023）。
 - [ ] 建立 capability 寻址的执行域、用户态兼容进程与普通程序 Loader Service，逐步迁出内核 PID/信号/ELF 政策（ADR-0024/0025）。
 - [ ] 将实际 VFS、pager 和非启动设备迁到隔离服务，补资源授权、失败恢复和 DMA 限制；保留有依据的启动机制例外（ADR-0015～0019）。
 - [ ] 建立可执行内容批准与启动信任链，验证服务失败、权限撤销和真实平台交接；现有 W^X 检查不等于这些目标已实现（ADR-0026～0033）。

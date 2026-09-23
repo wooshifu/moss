@@ -1417,9 +1417,10 @@ public:
       return;
     containers::LockGuard<containers::IrqSpinLock> guard(ipc_priority_lock_);
     const i32 old_effective = thread->effective_cfs_nice();
-    const u32 cpu = thread->cpu;
+    u32 cpu;
     {
       containers::LockGuard<containers::IrqSpinLock> queue_guard(task_transition_lock_);
+      cpu = thread->cpu;
       const bool queued = thread->se.rb_on_rq || thread->rt_on_rq;
       if (queued)
         dequeue_task_unlocked(thread);
@@ -1544,9 +1545,10 @@ private:
       thread->inherited_cfs_nice.store(inherited_nice);
       return;
     }
-    const u32 cpu = thread->cpu;
+    u32 cpu;
     {
       containers::LockGuard<containers::IrqSpinLock> guard(task_transition_lock_);
+      cpu = thread->cpu;
       // A selected task is Ready but no longer queued until bootstrap dispatch.
       const bool queued = thread->se.rb_on_rq || thread->rt_on_rq;
       if (queued)
