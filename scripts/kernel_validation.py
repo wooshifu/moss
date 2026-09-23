@@ -480,7 +480,7 @@ class Protocol:
                 raise ValueError("invalid worker affinity")
             self.worker = record
         elif event == "case_start":
-            if not self.worker or self.active or self.failed or len(self.cases) >= len(self.expected):
+            if not self.worker or self.active or len(self.cases) >= len(self.expected):
                 raise ValueError("invalid case start")
             if record.get("case") != self.expected[len(self.cases)]:
                 raise ValueError("unexpected case identity/order")

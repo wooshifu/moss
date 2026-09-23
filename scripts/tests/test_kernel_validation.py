@@ -141,6 +141,22 @@ def test_full_functional_completion_and_exit_are_both_required():
         emit(state, "end", completed=2, selected=2, failed=0)
 
 
+def test_failed_case_keeps_later_cases_and_reports_assertion():
+    state = ready("mm.concurrent")
+    for name in state.expected:
+        emit(state, "case_start", case=name)
+        emit(state, "case_end", case=name, passed=1, failed=int(name == "fault_unmap"))
+    emit(state, "end", completed=len(state.expected), selected=len(state.expected), failed=1)
+    assert [case["status"] for case in state.cases] == [
+        "passed",
+        "passed",
+        "failed",
+        "passed",
+        "passed",
+    ]
+    assert state.outcome("protocol_end", None, b"") == ("failed", "assertion")
+
+
 @pytest.mark.parametrize(
     "field", ["application_cycles", "user_pages", "stack_pages", "vfs_inodes", "vfs_dentries", "vfs_files"]
 )
