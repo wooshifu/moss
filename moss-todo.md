@@ -1,7 +1,7 @@
 # Moss 内核设计与实现审计报告及修复清单
 
 > 原始审计：2026-09-05，源码基线：`e0e2bbc920b66f91e18802a46106ca5811e588b1`。
-> 源码复核基线：2026-09-23，`604fe85`（当次未重跑 QEMU）。第 3.4～3.20 节保留此前实测及当时状态；后续实现与运行记录见第 3.21～3.71 节，源码与历史证据的对应关系见第 3.41 节。本轮九预设运行见第 3.59～3.71 节。本文与 [todo.md](todo.md) 同步。
+> 源码复核基线：2026-09-23，`604fe85`（当次未重跑 QEMU）。第 3.4～3.20 节保留此前实测及当时状态；后续实现与运行记录见第 3.21～3.72 节，源码与历史证据的对应关系见第 3.41 节。本轮九预设运行见第 3.59～3.72 节。本文与 [todo.md](todo.md) 同步。
 > 第 3.1～3.2 节保留原始运行证据；第 5～9 节未标新日期的“位置与事实”、地址和行号属于原始审计，不能当作当前仍然失败的运行结果。带日期的“工作区”指当时的验证状态，不表示当前仍未提交；当前状态以第 4 节及各项更新说明为准。
 
 ## 1. 当前结论
@@ -12,9 +12,9 @@ Moss 已具备三架构真实启动、SMP、用户态与进程执行路径。后
 
 1. **隔离缺陷尚未全部闭合。** 已修复内核映射 USER，并收紧三架构最终内核 W^X；syscall 0 原始 UART 指针旁路已删除，用户地址域/VMA 准入与跨 VMA 权限校验已补。`0e88344` 改为原生 TrapFrame、按 ISA 净化信号返回状态；3.20～3.34 补共享用户复制、受控 COW OOM、地址空间持有、软件 VM 事务和同步页租约。3.35～3.39 补三架构 TLB 失效、活动硬件 root 拥有权及首次 CPU 注册交错；3.40 已关闭原生信号帧/备用栈的恶意输入验收。共享 exec 的线程/root 协调、异步长期页 pin 和更多并发 VM 交错仍未闭合。
 2. **部分基础修复已落地，但所有权验收未完成。** `040d773` 已验证 heap/PFA 对齐与释放、保留洞和多 bank 耗尽、当前布局及页表/元数据哨兵。`4cde9b3` 修复指针发布误删可达节点；伪 RCU 已删除，锁保护的拥有型容器已有持有读者、重入与双 CPU 交错测试。IRQ/驱动/IPC 复合生命周期、页引用并发及完整启动保留集合仍待完成。
-3. **跨架构入口已统一，完整进程语义仍待补。** 三 ISA 用单一原生帧指针传递 syscall，fork 不再猜内核栈偏移，信号返回桩由各 ISA 汇编产生；3.24～3.26 已闭合当前单地址空间模型下的 brk、exec 事务和受支持静态 ELF LoadPlan。GP/条件码、基本信号往返、nanosleep 捕获信号中断、限定 SA_RESTART 重试、CPU-bound IRQ 返回投递、基本 STOP/CONT 交接、SA_NOCLDSTOP、进程组 wait 筛选及 waitpid 停止/继续与信号致死状态报告通过，不代表全部 FP/TLS 继承、完整 POSIX job control、动态加载、共享 LOAD 页或共享地址空间 VM 并发已经可靠。
+3. **跨架构入口已统一，完整进程语义仍待补。** 三 ISA 用单一原生帧指针传递 syscall，fork 不再猜内核栈偏移，信号返回桩由各 ISA 汇编产生；3.24～3.26 已闭合当前单地址空间模型下的 brk、exec 事务和受支持静态 ELF LoadPlan。GP/条件码、基本信号往返、nanosleep 捕获信号中断、限定 SA_RESTART 重试、CPU-bound IRQ 返回投递、基本 STOP/CONT 交接、SA_NOCLDSTOP、SA_NOCLDWAIT/显式 SIG_IGN 自动回收、进程组 wait 筛选及 waitpid 停止/继续与信号致死状态报告通过，不代表全部 FP/TLS 继承、完整 POSIX job control、动态加载、共享 LOAD 页或共享地址空间 VM 并发已经可靠。
 4. **旧停滞记录应保留，不能直接当作当前复现。** 退出已改为经 `context_switch` 返回活跃 bootstrap 栈，不再在 C++ 帧中直接修改 SP。默认 `users.lifecycle` 已覆盖 1,000 次 fork/exec/exit/wait 和资源检查，并随最近记录的九预设矩阵通过；旧第 28 次停滞的原版本红绿对照、1/16 CPU 长循环与更广的生命周期压力仍缺。
-5. **测试已从基础语言检查升级为真实内核检查，覆盖仍有边界。** 本轮九预设 CTest 为 44/44（3.71），包含 Release 的三个 benchmark、ARM64 Debug console 登记探针，以及 ARM64/x64 的真实 IRQ/等待登记交错。默认用户套件包含 COW/OOM、恶意信号帧、部分用户复制故障、双 console 读者、管道与 nanosleep 信号中断、限定 SA_RESTART 重试、基本 STOP/CONT、SA_NOCLDSTOP、进程组 wait 筛选、waitpid 停止/继续与信号致死状态报告及 1,000 次生命周期；这不证明全部 uaccess 故障、确定性调度竞争或真机可靠性。
+5. **测试已从基础语言检查升级为真实内核检查，覆盖仍有边界。** 本轮九预设 CTest 为 44/44（3.72），包含 Release 的三个 benchmark、ARM64 Debug console 登记探针，以及 ARM64/x64 的真实 IRQ/等待登记交错。默认用户套件包含 COW/OOM、恶意信号帧、部分用户复制故障、双 console 读者、管道与 nanosleep 信号中断、限定 SA_RESTART 重试、基本 STOP/CONT、SA_NOCLDSTOP、SA_NOCLDWAIT/显式 SIG_IGN 自动回收、进程组 wait 筛选、waitpid 停止/继续与信号致死状态报告及 1,000 次生命周期；这不证明全部 uaccess 故障、确定性调度竞争或真机可靠性。
 
 保留现有 C++ 模块、AAL/HAL、可用进程/VFS/调度路径；先关闭权限、所有权、等待/退出和失败事务，再扩展高级 IPC、POSIX 或设备栈。内核模型仍是模块化单体，而不是已经实现用户态服务隔离的 hybrid。
 
@@ -1555,7 +1555,7 @@ x64 初始验证在该用例超时：GDB 快照显示子进程仍在 CPU1 的循
 
 旧实现先因拒绝标志使 x64 Debug 新用例失败（报告 `1790160982563842243`）；仅放开标志后用例仍因停止/继续发送 SIGCHLD 而失败（报告 `1790161025512920397`）。现在作业状态通知先检查父进程 SIGCHLD action 的标志；只抑制 SIGCHLD，仍唤醒父进程等待队列。三架构 Debug 定向 `users.signals` 各 30/30、`users.libc` 各 2/2 通过。九预设完整 CTest 为 x64 16/16、ARM64 15/15、RV64 13/13，合计 44/44；宿主测试 393 passed、1 skipped，Ruff 和修改行格式检查通过。
 
-此项只覆盖单线程子进程的停止/继续抑制和退出仍通知；当时进程组选择式 wait、`SA_NOCLDWAIT`、信号 action 的并发更新与更广 job control 仍保留在 MOSS-020。进程组 wait 的后续修复见 3.71。
+此项只覆盖单线程子进程的停止/继续抑制和退出仍通知；当时进程组选择式 wait、`SA_NOCLDWAIT`、信号 action 的并发更新与更广 job control 仍保留在 MOSS-020。进程组 wait、`SA_NOCLDWAIT` 的后续修复分别见 3.71～3.72。
 
 ### 3.71 waitpid 按进程组筛选退出和作业状态（2026-09-23，隔离工作树）
 
@@ -1563,7 +1563,15 @@ x64 初始验证在该用例超时：GDB 快照显示子进程仍在 CPU1 的循
 
 现在 `wait4/waitpid` 对僵尸、停止/继续事件、无匹配子进程以及入睡后的重查使用相同的 PID/进程组选择规则；对超出原生 PID 范围的正负参数返回 ECHILD，先检查范围再取负值。`pgid` 改为原子访问，以免跨 CPU 的 `setpgrp` 写入与父进程扫描形成数据竞争。三架构 Debug 定向 `users.signals` 各 31/31 通过；九预设完整 CTest 合计 44/44，宿主测试 393 passed、1 skipped，Ruff 与修改行格式检查通过。
 
-此项覆盖稳定进程组成员关系下的 wait 筛选和等待唤醒；组成员在等待期间变化的交错、`SA_NOCLDWAIT`、信号 action 的并发更新与完整 job control 仍保留在 MOSS-020。
+此项覆盖稳定进程组成员关系下的 wait 筛选和等待唤醒；当时组成员在等待期间变化的交错、`SA_NOCLDWAIT`、信号 action 的并发更新与完整 job control 仍保留在 MOSS-020。`SA_NOCLDWAIT` 的后续修复见 3.72。
+
+### 3.72 SA_NOCLDWAIT 与显式 SIG_IGN 自动回收子进程（2026-09-23，隔离工作树）
+
+[POSIX.1-2024 的退出语义](https://pubs.opengroup.org/onlinepubs/9799919799/functions/_exit.html)要求父进程设置 `SA_NOCLDWAIT` 或显式将 SIGCHLD 置为 `SIG_IGN` 时丢弃终止状态、避免 Zombie，并使等待该子进程的 `waitpid` 在无匹配子进程时返回 ECHILD。`users.signals/no_cldwait` 分别覆盖带 handler 的 `SA_NOCLDWAIT`、默认 handler 配合该标志、显式 `SIG_IGN` 三种情况：子进程在 CPU1 等父进程真实睡入 `waitpid` 后退出；父进程要求 status 未写、返回 ECHILD、PID 从进程表消失。此实现对非显式忽略的父进程发送 SIGCHLD，带 handler 的用例验证通知到达；显式忽略时不发送。旧实现拒绝新标志，新用例在 x64 Debug 失败（报告 `1790163233055752567`）。
+
+退出路径现在先移除进程表记录和父子关系，再通知父进程；退出进程的最后引用由调度器持有至切回稳定栈之后，避免提前释放当前线程栈。普通 Zombie 仍只唤醒一个独占 wait 者；自动回收时唤醒全部 wait 者，让各自重新判断是否应返回 ECHILD。原生及 mlibc `SA_NOCLDWAIT` 标志往返已接通，默认 SIGCHLD disposition 仍保留可等待的退出状态。三架构 Debug 定向 `users.signals` 各 32/32、`users.libc` 各 2/2 通过，x64 Debug `users.lifecycle` 1,000 次通过。九预设完整 CTest 合计 44/44；宿主测试 393 passed、1 skipped，Ruff 与修改行格式检查通过。
+
+此项覆盖直接子进程的自动回收；信号 action 并发更新、重设 SIGCHLD 时已存在的 Zombie、重认领子进程及更广 job control 交错仍保留在 MOSS-020。
 
 ## 4. 问题总表与当前状态
 
@@ -1588,7 +1596,7 @@ x64 初始验证在该用例超时：GDB 快照显示子进程仍在 CPU1 的循
 | MOSS-017 | P1 | 运行队列 / 迁移 / on-CPU | 部分修复（3.28）；调用线程收紧自身 affinity 时会在 continuation 保存后同步迁移，确定性红例、单例及 32/32 并发压力通过；远程目标、一般 pick/dequeue/迁移及 on-CPU/check_need_resched 仍未闭合。 |
 | MOSS-018 | P1 | wait/console 丢失唤醒 | 部分修复；wait 的 child-exit/登记交错及 EINTR 已有红绿验收（3.59～3.60）；console 的 RX 排队窗口、双读者及跨 CPU IRQ/登记交错分别在 3.62～3.64 验收。SA_RESTART 限定重启子集已验收（3.65）；历史 SMP 超时因果仍待确认。 |
 | MOSS-019 | P1 | nanosleep / timer 生命周期 | 部分修复；三 ISA 实际睡眠、容量失败、deadline 溢出、跨 CPU 交接及同步取消已有实现；捕获信号的 EINTR 与相对剩余时间已有九预设红绿验收（3.61）。更广定时交错仍待验收。 |
-| MOSS-020 | P1 | 信号投递 / STOP/CONT/SIGCHLD | 部分修复；结果/handler 参数写回、SIGCHLD、pipe/console 中断与部分传输、wait/nanosleep EINTR、限定 SA_RESTART 重试及 CPU-bound IRQ 投递已验收（3.60～3.66）。基本 STOP/CONT 交接、waitpid 一次性状态、信号致死状态、SA_NOCLDSTOP 及进程组 wait 筛选通过（3.67～3.71）；完整 job control 与更广交错仍待补。 |
+| MOSS-020 | P1 | 信号投递 / STOP/CONT/SIGCHLD | 部分修复；结果/handler 参数写回、SIGCHLD、pipe/console 中断与部分传输、wait/nanosleep EINTR、限定 SA_RESTART 重试及 CPU-bound IRQ 投递已验收（3.60～3.66）。基本 STOP/CONT 交接、waitpid 一次性状态、信号致死状态、SA_NOCLDSTOP、进程组 wait 筛选及 SA_NOCLDWAIT/显式 SIG_IGN 自动回收通过（3.67～3.72）；完整 job control 与更广交错仍待补。 |
 | MOSS-021 | P1 | 信号状态生命周期 | 已关闭（3.23）；状态由 `Process` 拥有，fork/exec/exit 规则已核对，继承/重置及跨旧 256 槽边界的 300 次生命周期在六配置通过。 |
 | MOSS-022 | P1 | 退出 FD 关闭 | 实现已修复、验收部分；退出在 Zombie 前 close-all、析构兜底，EOF-before-wait 与默认 1,000 次资源恢复已有九预设通过记录。3.23 的 RV64 Debug 30 秒超时是旧报告；原故障复现/原因和更广压力仍待核对。 |
 | MOSS-023 | P1 | 退出换栈 / 连续执行停滞 | 部分验收；已复用 context_switch 返回 bootstrap 栈，默认 `users.lifecycle` 1,000 次随最近九预设矩阵通过；旧第 28 次停滞红绿对照、1/16 CPU 长循环仍缺。 |
@@ -1898,7 +1906,7 @@ fork 对 VMA 有复制，但未完整继承 `brk_base/brk_current/mmap_next` 等
 
 ### MOSS-020 · 信号正常演示通过，仍不代表投递和返回语义正确
 
-**2026-09-23 更新：部分修复，见 3.19、3.41、3.60～3.61、3.65～3.71。** handler 参数/返回值已有回归；默认 `users.signals` 已包含 SIGCHLD 基本断言、pipe/console 中断与部分传输、wait EINTR，`users.timers` 已包含 nanosleep EINTR。SA_RESTART 限定重启子集、CPU-bound IRQ 返回投递、基本 STOP/CONT 停止/恢复、SA_NOCLDSTOP，以及 `waitpid` 的停止、继续、信号致死状态和进程组筛选已补；完整 job control 与更广阻塞/信号交错仍待实现和验收。
+**2026-09-23 更新：部分修复，见 3.19、3.41、3.60～3.61、3.65～3.72。** handler 参数/返回值已有回归；默认 `users.signals` 已包含 SIGCHLD 基本断言、pipe/console 中断与部分传输、wait EINTR，`users.timers` 已包含 nanosleep EINTR。SA_RESTART 限定重启子集、CPU-bound IRQ 返回投递、基本 STOP/CONT 停止/恢复、SA_NOCLDSTOP、SA_NOCLDWAIT/显式 SIG_IGN 自动回收，以及 `waitpid` 的停止、继续、信号致死状态和进程组筛选已补；完整 job control 与更广阻塞/信号交错仍待实现和验收。
 
 **原始位置与事实（修复前）：** `src/process/src/signal.cpp:128` 写 `frame[0] = signo`，但 ARM64 系统调用返回段 `src/boot/src/arch/arm64/start_arm64.S:879` 随后把 C 返回值写回相同槽位，覆盖 handler 参数；建立信号帧时也需要先确定被中断系统调用的最终返回值。当时用户测试 handler 未充分断言该参数，无法检测这个错误。
 
@@ -1908,7 +1916,7 @@ fork 对 VMA 有复制，但未完整继承 `brk_base/brk_current/mmap_next` 等
 
 **修复：** 在共同返回用户态路径处理 pending signal：先提交 syscall 结果，再允许投递修改返回现场，汇编不得覆盖已编辑帧。把 IRQ 返回纳入投递/重调度检查。显式实现 STOP/CONT 状态转换和 SIGCHLD 产生；为可中断阻塞定义 EINTR 或已声明的重启子集；sigreturn 使用专门的“现场已恢复”结果，避免普通返回值覆盖。
 
-**验收：** handler signo/返回值、SIGCHLD 基本断言、CPU-bound 进程投递、STOP 后切出/CONT 后恢复、SA_NOCLDSTOP、一次性 waitpid 停止/继续与信号致死状态、稳定成员关系的进程组 wait 筛选已有覆盖；还需完整进程组 job control、core dump 状态位、wait/console/sleep 更广的中断结果与交错。console 已有部分中断用例，不以此代替整组验收。
+**验收：** handler signo/返回值、SIGCHLD 基本断言、CPU-bound 进程投递、STOP 后切出/CONT 后恢复、SA_NOCLDSTOP、SA_NOCLDWAIT/显式 SIG_IGN 自动回收、一次性 waitpid 停止/继续与信号致死状态、稳定成员关系的进程组 wait 筛选已有覆盖；还需完整进程组 job control、core dump 状态位、wait/console/sleep 更广的中断结果与交错。console 已有部分中断用例，不以此代替整组验收。
 
 ### MOSS-021 · 信号状态不能以绝对 PID 作为固定数组下标
 
@@ -2180,6 +2188,7 @@ fork 对 VMA 有复制，但未完整继承 `brk_base/brk_current/mmap_next` 等
   - [x] waitpid 区分 SIGKILL/SIGSEGV 致死与普通 `_exit(-SIGSEGV)`，旧 VM/uaccess/FP 等断言同步更新并通过九预设验证（3.69）。
   - [x] SA_NOCLDSTOP 抑制 STOP/CONT 的 SIGCHLD，但保留 waitpid 状态及父等待队列唤醒；退出仍通知，三架构用户态验证通过（3.70）。
   - [x] waitpid 的 pid=0/负进程组选择按子进程 pgid 筛选退出与 STOP/CONT，并对无匹配子进程返回 ECHILD（3.71）。
+  - [x] SA_NOCLDWAIT 与显式 SIG_IGN 不留下 Zombie；等待中的父进程返回 ECHILD，三架构真实用户态验收通过（3.72）。
   - [ ] 020 的其余投递语义；不因 003 或基本 STOP/CONT 已验收而勾选整个 B4。
 
 **退出条件：** 各架构静态页表/布局检查通过；能运行用户态的架构上，坏指针、坏栈、特权状态和只读映射攻击只影响调用进程。MOSS-001/003 的限定攻击矩阵已有用户态回归；共享 exec、更多并发 VM 与 MOSS-020 信号投递仍须按各自范围验收。
@@ -2213,7 +2222,7 @@ fork 对 VMA 有复制，但未完整继承 `brk_base/brk_current/mmap_next` 等
 - [ ] D3b：默认 4 CPU 的 1,000 次生命周期与资源检查已有九预设通过记录；补旧第 28 次停滞红绿对照、1/16 CPU 长循环及旧栈/上下文生命周期专项验收（023）。
 - [x] D4a：`Process` 拥有信号状态，fork 继承、exec 重置、exit 回收及跨旧固定槽边界验收通过（021，工作区 3.23）。
 - [ ] D4b：FD 所有权、Zombie 前关闭及 EOF-before-wait 已验证，默认 1,000 次生命周期有最近九预设通过记录；保留 3.23 旧超时，继续查原故障因果和更广压力（022）。
-- [ ] D5：基本 SIGCHLD、pipe/console 中断、wait/nanosleep EINTR、CPU-bound IRQ 返回、STOP/CONT 交接、SA_NOCLDSTOP、进程组 wait 筛选及 waitpid 停止/继续与信号致死状态报告已有用例；补完整 job control 与其余信号交错（020）。
+- [ ] D5：基本 SIGCHLD、pipe/console 中断、wait/nanosleep EINTR、CPU-bound IRQ 返回、STOP/CONT 交接、SA_NOCLDSTOP、SA_NOCLDWAIT/显式 SIG_IGN 自动回收、进程组 wait 筛选及 waitpid 停止/继续与信号致死状态报告已有用例；补完整 job control 与其余信号交错（020）。
   - [x] SA_RESTART 限定子集及 libc 标志往返通过三架构真实内核验证（3.65）。
   - [x] CPU-bound 用户循环中的两次 IRQ 返回及跨 CPU SIGUSR1 处理通过三架构真实内核验证（3.66）。
   - [x] 停止任务退出 CPU、CONT/KILL 恢复与待处理 STOP/CONT 互斥通过三架构真实内核验证（3.67）。
@@ -2221,6 +2230,7 @@ fork 对 VMA 有复制，但未完整继承 `brk_base/brk_current/mmap_next` 等
   - [x] waitpid 对致命信号返回原始信号状态，普通负退出码仍按退出码编码（3.69）。
   - [x] SA_NOCLDSTOP 在停止/继续时保留可等待状态与唤醒，只抑制 SIGCHLD；子进程退出仍产生 SIGCHLD（3.70）。
   - [x] waitpid 对 pid=0 和负进程组 ID 筛选僵尸与停止/继续事件，无匹配子进程时返回 ECHILD（3.71）。
+  - [x] SA_NOCLDWAIT 或显式 SIG_IGN 自动回收子进程；等待中的 waitpid 返回 ECHILD，保留带 handler 的 SIGCHLD 通知（3.72）。
 
 **退出条件：** 连续 1,000 次进程生命周期和可控并发交错通过；CPU-bound 信号可达；阻塞、取消、退出都无丢失唤醒；运行者/队列/资源计数始终满足不变量。一次性启动成功不满足此阶段。
 

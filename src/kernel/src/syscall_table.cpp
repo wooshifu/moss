@@ -1276,7 +1276,8 @@ long sys_sigaction(long sig_arg, long act_addr, long oldact_addr, long /*unused*
     if (copy_from_user(&kact, static_cast<u64>(act_addr), sizeof(kact)) < 0) {
       return -errc::EFAULT;
     }
-    if ((kact.flags & ~static_cast<u64>(sa_flags::SA_ONSTACK | sa_flags::SA_RESTART | sa_flags::SA_NOCLDSTOP)) != 0) {
+    if ((kact.flags & ~static_cast<u64>(sa_flags::SA_ONSTACK | sa_flags::SA_RESTART | sa_flags::SA_NOCLDSTOP |
+                                        sa_flags::SA_NOCLDWAIT)) != 0) {
       return -errc::EINVAL;
     }
     sa.handler = static_cast<VirtAddr>(kact.handler);

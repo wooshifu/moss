@@ -614,7 +614,7 @@ KernelResult<VirtAddr> allocate_user_heap(Process *process, usize size) noexcept
 } // namespace user_space
 
 // ============================================================================
-// Shared Zombie transition — called by sys_exit and terminate_current_user_process
+// Shared process exit — called by sys_exit and terminate_current_user_process
 // ============================================================================
 
 [[noreturn]] void do_exit(Thread *cur, shared_ptr<Process> proc, i32 exit_code, u32 terminating_signal) noexcept {
@@ -663,32 +663,48 @@ KernelResult<VirtAddr> allocate_user_heap(Process *process, usize size) noexcept
     }
   });
 
-  // 5. Transition to Zombie state (Process stays in process table)
-  proc->set_exit_status(exit_code, terminating_signal);
-  proc->set_state(ProcessState::Zombie);
-
-  // 6. Wake parent's wait queue so waitpid() can collect us.
-  //    Use wake_up() which respects exclusive waiters — only wakes
-  //    one exclusive waiter + all non-exclusive ones (avoids thundering herd).
+  // 5. Publish either a waitable Zombie or an auto-reaped exit.
   auto parent = g_process_manager->find_process(proc->parent_pid());
+  const Sigaction chld_action = parent ? parent->signal_state().actions[sig::SIGCHLD] : Sigaction{};
+  // Explicit SIG_IGN discards status; the default SIGCHLD action remains waitable.
+  const bool auto_reap =
+      parent && ((chld_action.flags & sa_flags::SA_NOCLDWAIT) != 0 || chld_action.handler == SIG_IGN);
+  proc->set_exit_status(exit_code, terminating_signal);
+  if (auto_reap) {
+    // The scheduler retains proc until after switching off this thread's stack.
+    (void)g_process_manager->terminate_process(pid, exit_code);
+    parent->remove_child(pid);
+  } else {
+    proc->set_state(ProcessState::Zombie);
+  }
+
+  // 6. Notify the parent only after status or removal becomes visible.
   if (parent) {
-    // Publish child status before SIGCHLD and wakeup: the returning waitpid
-    // checkpoint must observe both the zombie and its notification.
-    send_signal(parent->get_main_thread(), sig::SIGCHLD);
+    // POSIX leaves SA_NOCLDWAIT's SIGCHLD delivery to the implementation;
+    // deliver it for handlers but suppress it when explicitly ignored.
+    if (chld_action.handler != SIG_IGN) {
+      (void)send_signal(parent->get_main_thread(), sig::SIGCHLD);
+    }
     log::klog::info("do_exit: PID={} waking parent PID={}", pid, proc->parent_pid());
-    parent->child_exit_wait_queue().wake_up([](void *thread_ptr) {
+    auto wake_waiter = [](void *thread_ptr) {
       auto *t = static_cast<Thread *>(thread_ptr);
       log::klog::info("do_exit: wake waiter TID={} state->{}", static_cast<u32>(t->tid), "Ready");
       if (g_scheduler) {
         g_scheduler->task_wakeup(t, t->wake_cpu);
       }
-    });
+    };
+    // A Zombie has one consumer; auto-reap removes status for every waiter.
+    if (auto_reap) {
+      parent->child_exit_wait_queue().for_each_waiter(wake_waiter);
+    } else {
+      parent->child_exit_wait_queue().wake_up(wake_waiter);
+    }
     moss_validation_child_exit_notified(pid, proc->parent_pid());
   } else {
     log::klog::error("do_exit: PID={} parent PID={} NOT FOUND", pid, proc->parent_pid());
   }
 
-  log::klog::info("do_exit: PID={} -> Zombie, exit_code={}", pid, exit_code);
+  log::klog::info("do_exit: PID={} -> {}, exit_code={}", pid, auto_reap ? "Terminated" : "Zombie", exit_code);
 
   // 7. Hand control to scheduler (never returns)
   parent.reset();
