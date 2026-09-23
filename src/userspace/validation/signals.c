@@ -383,8 +383,259 @@ static int test_stop_continue(void) {
       errors = 1;
     }
     int status = 0;
-    errors |= waitpid(child, &status, 0) != child || status != ((mode == STOP_KILL ? 128 + SIGKILL : 42) << 8);
+    errors |= waitpid(child, &status, 0) != child || status != (mode == STOP_KILL ? SIGKILL : 42 << 8);
     if (errors) {
+      return 1;
+    }
+  }
+  return 0;
+}
+
+static int run_wait_job_status(int no_cldstop, int group_wait) {
+  enum { WAIT_NOHANG = 1, WAIT_UNTRACED = 2, WAIT_CONTINUED = 8 };
+  long ready[2];
+  if (pipe(ready) != 0) {
+    return 1;
+  }
+  struct sigaction_t previous_chld = {0};
+  if (no_cldstop) {
+    struct sigaction_t action = {(unsigned long)sigchld_handler, 0, SA_NOCLDSTOP};
+    if (moss_sigaction(SIGCHLD, &action, &previous_chld) != 0) {
+      close((int)ready[0]);
+      close((int)ready[1]);
+      return 1;
+    }
+    handler_called = 0;
+  }
+  const long child = fork();
+  if (child == 0) {
+    close((int)ready[0]);
+    unsigned cpu_mask = 1U << 1;
+    struct sigaction_t usr1 = {(unsigned long)sigusr1_handler, 0, 0};
+    handler_called = 0;
+    if (syscall3(20, 0, sizeof(cpu_mask), (long)&cpu_mask) != 0 || moss_sigaction(SIGUSR1, &usr1, 0) != 0 ||
+        (group_wait && syscall0(SYS_SETPGRP) != 0)) {
+      _exit(98);
+    }
+    const unsigned char byte = 37;
+    if (write((int)ready[1], &byte, 1) != 1 || close((int)ready[1]) != 0) {
+      _exit(98);
+    }
+    while (control(55, getppid(), getpid()) != 1) {
+      sched_yield();
+    }
+    if (kill(getpid(), SIGSTOP) != 0) {
+      _exit(98);
+    }
+    while (!handler_called) {
+      __asm__ volatile("" ::: "memory");
+    }
+    _exit(current_cpu() == 1 ? 42 : 98);
+  }
+  close((int)ready[1]);
+  if (child < 0) {
+    close((int)ready[0]);
+    if (no_cldstop) {
+      moss_sigaction(SIGCHLD, &previous_chld, 0);
+    }
+    return 1;
+  }
+  unsigned char byte = 0;
+  int errors = read((int)ready[0], &byte, 1) != 1 || byte != 37;
+  close((int)ready[0]);
+  const long wait_target = group_wait ? -child : child;
+  int status = 0x12345678;
+  if (group_wait) {
+    errors |= waitpid(0, &status, WAIT_NOHANG) != -10 || status != 0x12345678;
+    errors |= waitpid(-child - 1, &status, WAIT_NOHANG) != -10 || status != 0x12345678;
+  }
+  errors |= waitpid(wait_target, &status, WAIT_NOHANG | WAIT_UNTRACED | WAIT_CONTINUED) != 0 || status != 0x12345678;
+  if (!errors) {
+    errors |= waitpid(wait_target, (int *)1, WAIT_UNTRACED) != -14;
+    errors |= waitpid(wait_target, &status, WAIT_UNTRACED) != child || status != ((SIGSTOP << 8) | 0x7f);
+    errors |= no_cldstop && handler_called != 0;
+    status = 0x12345678;
+    errors |= waitpid(wait_target, &status, WAIT_NOHANG | WAIT_UNTRACED) != 0 || status != 0x12345678;
+    errors |= waitpid(wait_target, &status, WAIT_NOHANG) != 0;
+  }
+  if (!errors) {
+    errors |= kill(child, SIGCONT) != 0;
+  }
+  if (!errors) {
+    errors |= waitpid(wait_target, &status, WAIT_CONTINUED) != child || status != 0xffff;
+    errors |= no_cldstop && handler_called != 0;
+    status = 0x12345678;
+    errors |= waitpid(wait_target, &status, WAIT_NOHANG | WAIT_CONTINUED) != 0 || status != 0x12345678;
+    errors |= waitpid(wait_target, &status, WAIT_NOHANG) != 0;
+  }
+  if (errors || kill(child, SIGUSR1) != 0) {
+    kill(child, SIGKILL);
+    errors = 1;
+  }
+  status = 0;
+  errors |= waitpid(wait_target, &status, 0) != child || (!errors && status != (42 << 8));
+  if (no_cldstop) {
+    errors |= handler_called != 1;
+    errors |= moss_sigaction(SIGCHLD, &previous_chld, 0) != 0;
+  }
+  return errors != 0;
+}
+
+static int test_wait_job_status(void) { return run_wait_job_status(0, 0); }
+
+static int test_no_cldstop(void) { return run_wait_job_status(1, 0); }
+
+static int test_wait_process_group(void) {
+  if (run_wait_job_status(0, 1)) {
+    return 1;
+  }
+  const long child = fork();
+  if (child == 0) {
+    _exit(37);
+  }
+  int status = 0;
+  return child < 0 || waitpid(0, &status, 0) != child || status != (37 << 8);
+}
+
+static int test_wait_group_change(void) {
+  for (int mode = 0; mode < 2; ++mode) {
+    const long child = fork();
+    if (child == 0) {
+      unsigned cpu_mask = 1U << 1;
+      if (syscall3(SYS_SCHED_SETAFFINITY, 0, sizeof(cpu_mask), (long)&cpu_mask) != 0) {
+        _exit(98);
+      }
+      while (control(55, getppid(), getpid()) != 1) {
+        sched_yield();
+      }
+      const long moved = mode == 0 ? syscall0(SYS_SETPGRP) : syscall0(SYS_SETSID);
+      if (moved != (mode == 0 ? 0 : getpid())) {
+        _exit(98);
+      }
+      long waiting;
+      do {
+        waiting = control(55, getppid(), getpid());
+        sched_yield();
+      } while (waiting == 1);
+      _exit(waiting == 0 ? 42 : 98);
+    }
+    int status = 0x12345678;
+    const long result = child > 0 ? waitpid(0, &status, 0) : -1;
+    int errors = child <= 0 || result != -10 || status != 0x12345678;
+    if (child > 0) {
+      status = 0;
+      errors |= waitpid(child, &status, 0) != child || status != (42 << 8);
+    }
+    if (errors) {
+      return 1;
+    }
+  }
+  return 0;
+}
+
+static int test_no_cldwait(void) {
+  enum { NOCLDWAIT_HANDLER, NOCLDWAIT_DEFAULT, SIGCHLD_IGNORED };
+  for (int mode = NOCLDWAIT_HANDLER; mode <= SIGCHLD_IGNORED; ++mode) {
+    struct sigaction_t action = {SIG_DFL, 0, SA_NOCLDWAIT};
+    if (mode == NOCLDWAIT_HANDLER) {
+      action.handler = (unsigned long)sigchld_handler;
+    } else if (mode == SIGCHLD_IGNORED) {
+      action.handler = SIG_IGN;
+      action.flags = 0;
+    }
+    struct sigaction_t previous = {0};
+    if (moss_sigaction(SIGCHLD, &action, &previous) != 0) {
+      return 1;
+    }
+    handler_called = 0;
+    const long child = fork();
+    if (child == 0) {
+      unsigned cpu_mask = 1U << 1;
+      if (syscall3(SYS_SCHED_SETAFFINITY, 0, sizeof(cpu_mask), (long)&cpu_mask) != 0) {
+        _exit(98);
+      }
+      while (control(55, getppid(), getpid()) != 1) {
+        sched_yield();
+      }
+      _exit(42);
+    }
+    int status = 0x12345678;
+    const long result = child > 0 ? waitpid(child, &status, 0) : -1;
+    const int errors = child <= 0 || result != -10 || status != 0x12345678 || kill(child, 0) != -3 ||
+                       handler_called != (mode == NOCLDWAIT_HANDLER);
+    if (moss_sigaction(SIGCHLD, &previous, 0) != 0 || errors) {
+      return 1;
+    }
+  }
+  return 0;
+}
+
+static int test_sigaction_race(void) {
+  enum { SIGACTION_RACE_CONTROL = 59 }; // Private validation opcode; keep in sync with the kernel fixture.
+  struct sigaction_t base = {SIG_DFL, 0, 0}, previous = {0};
+  if (moss_sigaction(SIGUSR1, &base, &previous) != 0) {
+    return 1;
+  }
+  struct sigaction_t desired = {(unsigned long)sigusr1_handler, 1UL << SIGUSR1, SA_RESTART};
+  struct sigaction_t observed = {0}, current = {0};
+  int errors = control(SIGACTION_RACE_CONTROL, 0, 0) != 1;
+  if (!errors) {
+    errors |= moss_sigaction(SIGUSR1, &desired, &observed) != 0;
+    errors |= control(SIGACTION_RACE_CONTROL, 1, 0) != 1;
+    errors |= observed.handler != SIG_IGN || observed.mask != (1UL << SIGUSR2) || observed.flags != SA_RESTART;
+    errors |= moss_sigaction(SIGUSR1, 0, &current) != 0;
+    errors |= current.handler != desired.handler || current.mask != desired.mask || current.flags != desired.flags;
+  }
+  errors |= moss_sigaction(SIGUSR1, &previous, 0) != 0;
+  return errors;
+}
+
+static int test_sigaction_discard(void) {
+  const unsigned long mask = 1UL << SIGUSR1;
+  unsigned long previous_mask = 0;
+  if (sigprocmask(SIG_BLOCK, &mask, &previous_mask) != 0) {
+    return 1;
+  }
+
+  struct sigaction_t handler = {(unsigned long)sigusr1_handler, 0, 0};
+  struct sigaction_t ignored = {SIG_IGN, 0, 0}, previous = {0};
+  int errors = moss_sigaction(SIGUSR1, &handler, &previous) != 0;
+  handler_called = 0;
+  if (!errors) {
+    errors |= kill(getpid(), SIGUSR1) != 0;
+    errors |= moss_sigaction(SIGUSR1, &ignored, 0) != 0;
+    errors |= kill(getpid(), SIGUSR1) != 0;
+    errors |= moss_sigaction(SIGUSR1, &handler, 0) != 0;
+    errors |= sigprocmask(SIG_UNBLOCK, &mask, 0) != 0;
+    sched_yield();
+    errors |= handler_called != 0;
+    errors |= kill(getpid(), SIGUSR1) != 0;
+    errors |= handler_called != 1;
+  }
+  errors |= sigprocmask(SIG_SETMASK, &previous_mask, 0) != 0;
+  errors |= moss_sigaction(SIGUSR1, &previous, 0) != 0;
+  return errors;
+}
+
+static int test_signal_exit_status(void) {
+  for (int mode = 0; mode < 3; ++mode) {
+    const long child = fork();
+    if (child == 0) {
+      if (mode == 0) {
+        kill(getpid(), SIGKILL);
+      } else if (mode == 1) {
+        _exit(-SIGSEGV); // A negative user exit code must remain a normal exit.
+      } else {
+        *(volatile long *)1 = 1;
+      }
+      _exit(98);
+    }
+    int status = 0;
+    if (child < 0 || waitpid(child, &status, 0) != child) {
+      return 1;
+    }
+    const int expected = mode == 0 ? SIGKILL : mode == 1 ? ((unsigned char)-SIGSEGV << 8) : SIGSEGV;
+    if (status != expected) {
       return 1;
     }
   }
@@ -580,7 +831,7 @@ static int test_invalid_arguments(void) {
   CHECK(syscall2(SYS_KILL, getpid(), (1L << 32) + SIGUSR1) == -22);
   CHECK(moss_sigaction(SIGUSR1, (void *)0x1000, 0) == -14);
   CHECK(moss_sigaction(SIGUSR1, &sa, (void *)0x1000) == -14);
-  sa.flags = 8; // Unsupported native action bit.
+  sa.flags = 0x20; // Bit 5 remains outside the supported native action flags.
   CHECK(moss_sigaction(SIGUSR1, &sa, 0) == -22);
   unsigned long bits = (1UL << SIGKILL) | (1UL << SIGSTOP), old = 0;
   CHECK(sigprocmask(SIG_SETMASK, &bits, 0) == 0);
@@ -698,9 +949,8 @@ static int test_altstack_overflow(void) {
     _exit(93);
   }
   int status = 0;
-  // Failed signal-frame setup currently terminates with 128 + signo. Preserve
-  // that native contract, rather than accepting any unrelated child death.
-  const int rejected = child > 1 && waitpid(child, &status, 0) == child && ((status >> 8) & 255) == 128 + SIGUSR2;
+  // Failed signal-frame setup must identify the signal that caused termination.
+  const int rejected = child > 1 && waitpid(child, &status, 0) == child && status == SIGUSR2;
   if (!rejected) {
     print("altstack overflow child status: ");
     print_long(status);
@@ -774,7 +1024,7 @@ static int test_altstack_boundaries(void) {
       kill(getpid(), SIGUSR1);
       _exit(93); // Delivery unexpectedly returned; handler execution uses 94.
     }
-    errors |= !wait_exit(child, 128 + SIGUSR1);
+    errors |= !wait_signal(child, SIGUSR1);
     errors |= *(volatile unsigned long *)area != canary;
   }
   errors |= !control(51, 2, 0);
@@ -988,8 +1238,7 @@ static int test_pipe_sigpipe(void) {
     _exit(99); // The default action must terminate at the syscall return.
   }
   int status = 0;
-  // Default signal termination uses the shell convention 128 + SIGPIPE(13).
-  errors |= child < 0 || waitpid(child, &status, 0) != child || ((status >> 8) & 255) != 141;
+  errors |= child < 0 || waitpid(child, &status, 0) != child || status != SIGPIPE;
   errors |= close((int)ends[1]) != 0;
   return errors;
 }
@@ -1561,6 +1810,14 @@ int signal_case(const char *name) {
                {"wait_restarted", test_wait_restarted},
                {"cpu_bound_irq", test_cpu_bound_irq},
                {"stop_continue", test_stop_continue},
+               {"wait_job_status", test_wait_job_status},
+               {"no_cldstop", test_no_cldstop},
+               {"wait_process_group", test_wait_process_group},
+               {"wait_group_change", test_wait_group_change},
+               {"no_cldwait", test_no_cldwait},
+               {"sigaction_race", test_sigaction_race},
+               {"sigaction_discard", test_sigaction_discard},
+               {"signal_exit_status", test_signal_exit_status},
                {"sigprocmask", test_sigprocmask},
                {"sigaltstack", test_sigaltstack},
                {"sig_ign", test_sig_ign},

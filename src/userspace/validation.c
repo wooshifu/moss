@@ -58,6 +58,11 @@ int wait_exit(long child, int code) {
   return child > 1 && syscall3(SYS_WAITPID, child, (long)&status, 0) == child && ((status >> 8) & 255) == code;
 }
 
+int wait_signal(long child, int signo) {
+  int status = 0;
+  return child > 1 && waitpid(child, &status, 0) == child && status == signo;
+}
+
 static unsigned long pipe_waits_for_writer(void) {
   long ends[2] = {-1, -1};
   if (pipe(ends) != 0) {
@@ -349,8 +354,7 @@ static int fp_fault_isolated(int simd) {
   }
   int status = 0;
   long waited = child > 0 ? syscall3(SYS_WAITPID, child, (long)&status, 0) : -1;
-  // Moss currently encodes fatal exceptions as negative exit codes, not POSIX signals.
-  return child > 1 && waited == child && ((status >> 8) & 255) == 248; // (-SIGFPE = -8) & 255.
+  return child > 1 && waited == child && status == SIGFPE;
 }
 #endif
 
@@ -626,6 +630,14 @@ void _start(long argc, const char **argv) {
                            "wait_restarted",
                            "cpu_bound_irq",
                            "stop_continue",
+                           "wait_job_status",
+                           "no_cldstop",
+                           "wait_process_group",
+                           "wait_group_change",
+                           "no_cldwait",
+                           "sigaction_race",
+                           "sigaction_discard",
+                           "signal_exit_status",
                            "sigprocmask",
                            "sigaltstack",
                            "sig_ign",

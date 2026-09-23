@@ -572,6 +572,8 @@ struct RtSchedEntity {
 
 // Thread structure
 struct Thread {
+  static constexpr u64 WAIT_STATUS_MASK = (1ULL << (sizeof(u32) * 8)) - 1;
+
   ThreadId tid;
   ProcessId owner_pid;
 
@@ -583,6 +585,13 @@ struct Thread {
   // 0: no handoff, 1: preparing to block, 2: wake requested before context save.
   moss::atomic<u32> sleep_handoff{0};
   containers::IrqSpinLock sleep_lock;
+  // High word is a generation; low word is the Linux-compatible wait status.
+  // Keeping the generation when consumed prevents a failed copyout from
+  // restoring an old event over a later identical STOP/CONT event.
+  moss::atomic<u64> wait_status_event{0};
+  // State stays Stopped through the wake handoff; this suppresses duplicate
+  // continued events from multiple SIGCONT senders. Protected by sleep_lock.
+  bool job_stopped{false};
   SchedClass sched_class;
   SchedPolicy sched_policy;
   SchedEntity se;
@@ -679,6 +688,14 @@ struct Thread {
     }
   }
   [[nodiscard]] bool is_preemptible() const noexcept { return preempt_count == 0; }
+
+  void publish_wait_status(u32 status) noexcept {
+    u64 current = wait_status_event.load();
+    u64 next;
+    do {
+      next = ((current + WAIT_STATUS_MASK + 1) & ~WAIT_STATUS_MASK) | status;
+    } while (!wait_status_event.compare_exchange_weak(current, next));
+  }
 };
 
 // Owned by Process, independent of the numeric PID. Handler 0 is SIG_DFL.
@@ -710,9 +727,10 @@ private:
   moss::atomic<bool> exec_in_progress_{false};
   ThreadId main_thread_id_;
 
-  // Publishing Zombie makes its exit status visible to a waiter on another CPU.
+  // Publishing Zombie makes both fields visible to a waiter on another CPU.
   moss::atomic<ProcessState> state_;
   i32 exit_code_;
+  u32 terminating_signal_ = 0;
 
   struct {
     u64 max_memory;
@@ -733,7 +751,12 @@ private:
   // VFS: per-process file descriptor table (vfs::FdTable*)
   // Stored as void* to avoid circular dependency on moss.vfs
   void *fd_table_ = nullptr;
+  // Child exit and signal delivery can read dispositions on another CPU.
+  // The lock protects coherent action snapshots; user copies stay outside it.
+  mutable containers::IrqSpinLock signal_state_lock_;
+  friend bool send_signal(Thread *thread, u32 signo) noexcept;
   SignalState signal_state_{};
+  void discard_pending_signals_locked(u64 mask) noexcept;
 
   // Process name (like Linux task_struct.comm), set by execve
   char name_[16]{}; // Linux-style comm: up to 15 bytes plus a terminating NUL.
@@ -741,7 +764,8 @@ private:
   // Process group and session IDs (POSIX job control).
   // Default: pgid = pid (each process is its own group leader),
   //          sid  = parent's sid (inherited on fork, set by setsid).
-  ProcessId pgid_;
+  // A child may change groups on another CPU while its parent scans waitpid.
+  moss::atomic<ProcessId> pgid_;
   ProcessId sid_;
 
   // Children tracking for wait()/waitpid()
@@ -782,12 +806,21 @@ public:
   [[nodiscard]] ProcessId parent_pid() const noexcept { return parent_pid_; }
   [[nodiscard]] ProcessState state() const noexcept { return state_; }
   [[nodiscard]] i32 exit_code() const noexcept { return exit_code_; }
-  [[nodiscard]] SignalState &signal_state() noexcept { return signal_state_; }
+  // The Linux-compatible wait ABI puts normal exit codes in bits 8..15 and
+  // fatal signals in the low bits. Keep the cause so _exit(-signo) stays normal.
+  [[nodiscard]] i32 wait_status() const noexcept {
+    return terminating_signal_ ? static_cast<i32>(terminating_signal_)
+                               : static_cast<i32>((static_cast<u32>(exit_code_) & 0xffU) << 8);
+  }
+  [[nodiscard]] Sigaction signal_action(u32 signo) const noexcept;
+  [[nodiscard]] bool try_replace_signal_action(u32 signo, const Sigaction &expected, const Sigaction &desired) noexcept;
+  void inherit_signal_actions_from(const Process &parent) noexcept;
+  void reset_signal_actions_for_exec() noexcept;
 
   // Process group / session accessors (POSIX job control)
-  [[nodiscard]] ProcessId pgid() const noexcept { return pgid_; }
+  [[nodiscard]] ProcessId pgid() const noexcept { return pgid_.load(); }
   [[nodiscard]] ProcessId sid() const noexcept { return sid_; }
-  void set_pgid(ProcessId pgid) noexcept { pgid_ = pgid; }
+  void set_pgid(ProcessId pgid) noexcept { pgid_.store(pgid); }
   void set_sid(ProcessId sid) noexcept { sid_ = sid; }
 
   // POSIX credentials
@@ -847,6 +880,10 @@ public:
   // Process state management
   void set_state(ProcessState new_state) noexcept;
   void set_exit_code(i32 code) noexcept { exit_code_ = code; }
+  void set_exit_status(i32 code, u32 signal) noexcept {
+    exit_code_ = code;
+    terminating_signal_ = signal;
+  }
 
   // Statistics update
   void update_cpu_time(u64 user_time, u64 kernel_time) noexcept;
@@ -872,11 +909,9 @@ public:
 
   [[nodiscard]] bool has_children() const noexcept { return !children_.empty(); }
 
-  // Find a zombie child matching wait_pid:
-  //   wait_pid > 0  → specific child
-  //   wait_pid == -1 → any zombie child
+  // Find a zombie child matching wait_pid and the selected process group.
   // Returns PID of found zombie, or INVALID_PROCESS_ID if none.
-  [[nodiscard]] ProcessId find_zombie_child(i64 wait_pid) const noexcept;
+  [[nodiscard]] ProcessId find_zombie_child(i64 wait_pid, ProcessId target_pgid) const noexcept;
 
   // Check if a specific PID is in this process's children list
   [[nodiscard]] bool is_child(ProcessId pid) const noexcept { return static_cast<bool>(children_.find(pid)); }
@@ -886,6 +921,10 @@ public:
 
   // Iterate children (for reparenting in sys_exit)
   template <typename Func> void for_each_child(Func func) const { children_.for_each_snapshot(func); }
+
+  // wait4 rechecks with IRQs masked; avoid snapshot allocation there. The
+  // callback must not modify or reenter this child list.
+  template <typename Func> void for_each_child_locked(Func func) const { children_.for_each(func); }
 
   // Parent PID setter (for reparenting)
   void set_parent_pid(ProcessId pid) noexcept { parent_pid_ = pid; }
@@ -952,7 +991,9 @@ extern ProcessManager *g_process_manager;
 //   - `cur` is the currently running thread (will be marked Terminated)
 //   - `proc` is the Process owning `cur` (will transition to Zombie)
 //   - Caller must have already validated cur/proc are non-null
-[[noreturn]] void do_exit(Thread *cur, shared_ptr<Process> proc, i32 exit_code) noexcept;
+// Fatal callers retain a shell-style 128 + signo diagnostic code but pass
+// signo separately so wait4 does not mistake it for a normal exit code.
+[[noreturn]] void do_exit(Thread *cur, shared_ptr<Process> proc, i32 exit_code, u32 terminating_signal = 0) noexcept;
 
 // User address space management extensions
 namespace user_space {

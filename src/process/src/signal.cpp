@@ -6,13 +6,74 @@ namespace moss::kernel::process {
 
 namespace log = moss::kernel::logging;
 
+static bool signal_action_is_ignored(u32 signo, const Sigaction &action) noexcept {
+  return action.handler == SIG_IGN || (action.handler == SIG_DFL && default_action(signo) == SigDefault::Ignore);
+}
+
+void Process::discard_pending_signals_locked(u64 mask) noexcept {
+  // The caller holds the action lock, which also serializes signal generation.
+  threads_.for_each([mask](const ThreadEntry &entry) {
+    if (entry.thread) {
+      entry.thread->pending_signals &= ~mask;
+    }
+  });
+}
+
+Sigaction Process::signal_action(u32 signo) const noexcept {
+  containers::LockGuard<containers::IrqSpinLock> guard(signal_state_lock_);
+  return signal_state_.actions[signo];
+}
+
+bool Process::try_replace_signal_action(u32 signo, const Sigaction &expected, const Sigaction &desired) noexcept {
+  containers::LockGuard<containers::IrqSpinLock> guard(signal_state_lock_);
+  auto &current = signal_state_.actions[signo];
+  if (current.handler != expected.handler || current.mask != expected.mask || current.flags != expected.flags) {
+    return false;
+  }
+  current = desired;
+  if (signal_action_is_ignored(signo, desired)) {
+    discard_pending_signals_locked(sig::sigmask(signo));
+  }
+  return true;
+}
+
+void Process::inherit_signal_actions_from(const Process &parent) noexcept {
+  SignalState snapshot;
+  {
+    containers::LockGuard<containers::IrqSpinLock> guard(parent.signal_state_lock_);
+    snapshot = parent.signal_state_;
+  }
+  containers::LockGuard<containers::IrqSpinLock> guard(signal_state_lock_);
+  signal_state_ = snapshot;
+}
+
+void Process::reset_signal_actions_for_exec() noexcept {
+  containers::LockGuard<containers::IrqSpinLock> guard(signal_state_lock_);
+  u64 discarded = 0;
+  for (u32 signo = 1; signo < sig::NSIG; ++signo) {
+    auto &action = signal_state_.actions[signo];
+    if (action.handler != SIG_IGN) {
+      action = Sigaction{};
+    }
+    if (signal_action_is_ignored(signo, action)) {
+      discarded |= sig::sigmask(signo);
+    }
+  }
+  if (discarded != 0) {
+    discard_pending_signals_locked(discarded);
+  }
+}
+
 bool send_signal(Thread *thread, u32 signo) noexcept {
   if (!thread || signo == 0 || signo >= sig::NSIG) {
     return false;
   }
   const u64 mask = sig::sigmask(signo);
+  auto proc = g_process_manager ? g_process_manager->find_process(thread->owner_pid) : shared_ptr<Process>{};
   bool wake = false;
-  {
+  bool continued = false;
+  const auto publish = [&] {
+    const bool ignored = proc && signal_action_is_ignored(signo, proc->signal_state_.actions[signo]);
     containers::LockGuard<containers::IrqSpinLock> guard(thread->sleep_lock);
     // POSIX stop/continue generation discards the opposite pending group.
     // One CAS keeps concurrent senders from publishing both groups.
@@ -27,17 +88,55 @@ bool send_signal(Thread *thread, u32 signo) noexcept {
       } else if ((mask & stop_mask) != 0) {
         updated &= ~sig::sigmask(sig::SIGCONT);
       }
-      updated |= mask;
+      if (!ignored) {
+        updated |= mask;
+      }
     } while (!thread->pending_signals.compare_exchange_weak(pending, updated));
     const bool deliverable = (mask & sig::UNCATCHABLE_MASK) != 0 || (thread->signal_mask & mask) == 0;
     const auto state = thread->state.load();
     wake = (state == ProcessState::Stopped && (signo == sig::SIGCONT || signo == sig::SIGKILL)) ||
-           (state == ProcessState::Sleeping && deliverable);
+           (state == ProcessState::Sleeping && deliverable && !ignored);
+    if (state == ProcessState::Stopped && signo == sig::SIGCONT && thread->job_stopped) {
+      thread->job_stopped = false;
+      // abi-bits/wait.h recognizes 0xffff as a continued child.
+      thread->publish_wait_status(0xffff);
+      continued = true;
+    }
+  };
+  if (proc) {
+    // Keep disposition publication, pending-bit updates and the SIGCONT state
+    // transition ordered; ignored SIGCONT still resumes a stopped process.
+    containers::LockGuard<containers::IrqSpinLock> guard(proc->signal_state_lock_);
+    publish();
+  } else {
+    publish();
   }
   if (wake && g_scheduler) {
     g_scheduler->task_wakeup(thread, thread->cpu);
   }
+  if (continued) {
+    notify_parent_job_status(thread);
+  }
   return true;
+}
+
+void notify_parent_job_status(Thread *thread) noexcept {
+  auto child = g_process_manager ? g_process_manager->find_process(thread->owner_pid) : shared_ptr<Process>{};
+  auto parent = child ? g_process_manager->find_process(child->parent_pid()) : shared_ptr<Process>{};
+  if (!parent) {
+    return;
+  }
+  // SA_NOCLDSTOP suppresses the signal, not waitpid's stopped/continued event.
+  if ((parent->signal_action(sig::SIGCHLD).flags & sa_flags::SA_NOCLDSTOP) == 0) {
+    (void)send_signal(parent->get_main_thread(), sig::SIGCHLD);
+  }
+  // The parent may block, ignore, or suppress SIGCHLD while waiting for status.
+  parent->child_exit_wait_queue().wake_up([](void *waiting) {
+    auto *task = static_cast<Thread *>(waiting);
+    if (g_scheduler) {
+      g_scheduler->task_wakeup(task, task->wake_cpu);
+    }
+  });
 }
 
 // ============================================================================
@@ -117,8 +216,6 @@ static void write_fpsr(u64 val) noexcept { asm volatile("msr s3_3_c4_c4_1, %0" :
 
 static void write_fpcr(u64 val) noexcept { asm volatile("msr s3_3_c4_c4_0, %0" : : "r"(val)); }
 #endif
-
-SignalState *get_signal_state(Process *proc) noexcept { return proc ? &proc->signal_state() : nullptr; }
 
 // Called on the current thread's user-return path. Shared uaccess holds a VM
 // lease for each copied page; coordinating an entire delivery with concurrent
@@ -311,8 +408,6 @@ u32 do_signal_checkpoint(Thread *thread) noexcept {
     return 0;
   }
 
-  SignalState *sigstate = get_signal_state(proc.get());
-
   // Process all pending signals (lowest numbered first)
   while (signal_pending(thread)) {
     u32 signo = dequeue_signal(thread);
@@ -321,13 +416,10 @@ u32 do_signal_checkpoint(Thread *thread) noexcept {
     }
 
     // Determine handler
-    Sigaction *sa = nullptr;
-    if (sigstate != nullptr && signo < sig::NSIG) {
-      sa = &sigstate->actions[signo];
-    }
+    const Sigaction sa = signo < sig::NSIG ? proc->signal_action(signo) : Sigaction{};
 
     // Uncatchable signals use their default action regardless of sigaction.
-    if (signo == sig::SIGKILL || signo == sig::SIGSTOP || sa == nullptr || sa->handler == SIG_DFL) {
+    if (signo == sig::SIGKILL || signo == sig::SIGSTOP || sa.handler == SIG_DFL) {
       switch (default_action(signo)) {
       case SigDefault::Terminate:
       case SigDefault::CoreDump:
@@ -336,7 +428,7 @@ u32 do_signal_checkpoint(Thread *thread) noexcept {
         if (!g_scheduler) {
           return signo;
         }
-        g_scheduler->stop_current();
+        g_scheduler->stop_current(signo);
         continue;
       case SigDefault::Ignore:
       case SigDefault::Continue:
@@ -344,12 +436,12 @@ u32 do_signal_checkpoint(Thread *thread) noexcept {
       default:
         return signo;
       }
-    } else if (sa->handler == SIG_IGN) {
+    } else if (sa.handler == SIG_IGN) {
       // Explicitly ignored
       continue;
     } else {
       // User-space signal handler — set up sigframe for delivery
-      if (!setup_sigframe(thread, signo, *sa)) {
+      if (!setup_sigframe(thread, signo, sa)) {
         log::klog::warn("signal {}: sigframe setup failed for PID={}, terminating", signo,
                         static_cast<u32>(thread->owner_pid));
         return signo; // terminate

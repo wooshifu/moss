@@ -18,6 +18,7 @@ enum {
   SYS_GETGID = 5,
   SYS_GETEUID = 6,
   SYS_GETEGID = 7,
+  SYS_SETSID = 8,
   SYS_FORK = 10,
   SYS_EXECVE = 11,
   SYS_WAIT4 = 12,
@@ -30,6 +31,7 @@ enum {
   SYS_SCHED_GETAFFINITY = 19,
   SYS_SCHED_SETAFFINITY = 20,
   SYS_SIGALTSTACK = 21,
+  SYS_SETPGRP = 26,
   SYS_OPEN = 30,
   SYS_CLOSE = 31,
   SYS_READ = 32,
@@ -253,10 +255,10 @@ enum { SIG_DFL = 0, SIG_IGN = 1 };
 // sigprocmask 'how' values
 enum { SIG_BLOCK = 0, SIG_UNBLOCK = 1, SIG_SETMASK = 2 };
 
-// Moss-native flags, translated by mlibc: ONSTACK is bit 0 and RESTART bit 1,
-// unlike libc's public encoding. Handler/mask/stack layouts match the kernel.
+// Moss-native flags, translated by mlibc: ONSTACK/RESTART/NOCLDSTOP/NOCLDWAIT
+// occupy bits 0/1/3/4; bit 2 is reserved for SIGINFO. Public libc bits differ.
 // sigaction flags
-enum { SA_ONSTACK = 0x1, SA_RESTART = 0x2 };
+enum { SA_ONSTACK = 0x1, SA_RESTART = 0x2, SA_NOCLDSTOP = 0x8, SA_NOCLDWAIT = 0x10 };
 
 // sigaltstack flags
 enum { SS_ONSTACK = 1, SS_DISABLE = 2 };

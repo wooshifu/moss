@@ -231,6 +231,14 @@ void declare_cases() {
     ut::register_test("wait_restarted", empty_case);
     ut::register_test("cpu_bound_irq", empty_case);
     ut::register_test("stop_continue", empty_case);
+    ut::register_test("wait_job_status", empty_case);
+    ut::register_test("no_cldstop", empty_case);
+    ut::register_test("wait_process_group", empty_case);
+    ut::register_test("wait_group_change", empty_case);
+    ut::register_test("no_cldwait", empty_case);
+    ut::register_test("sigaction_race", empty_case);
+    ut::register_test("sigaction_discard", empty_case);
+    ut::register_test("signal_exit_status", empty_case);
     ut::register_test("sigprocmask", empty_case);
     ut::register_test("sigaltstack", empty_case);
     ut::register_test("sig_ign", empty_case);

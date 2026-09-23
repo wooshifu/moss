@@ -155,9 +155,9 @@ unsigned long wait_status_rollback(void) {
       return errors | 1;
     }
     int status = 0;
-    // 3 includes an unsupported wait option; adding 2^32 must not alias the
+    // 16 includes an unsupported wait option; adding 2^32 must not alias the
     // live child PID through narrowing. Status uses its 8-bit code at bit 8.
-    errors |= (unsigned long)(waitpid(child, &status, 3) != -22) << 1;
+    errors |= (unsigned long)(waitpid(child, &status, 16) != -22) << 1;
     errors |= (unsigned long)(waitpid(child + (1UL << 32), &status, 1) != -10) << 2;
     // A failed copyout must leave the zombie collectable by a later wait.
     errors |= (unsigned long)(waitpid(child, (int *)1, 0) != -14) << 3;

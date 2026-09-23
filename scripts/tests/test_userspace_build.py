@@ -87,8 +87,10 @@ add_custom_target(userspace-fixture DEPENDS
     programs = {"validation", "validation_child"}
     entries = json.loads((build / "compile_commands.json").read_text())
     entries = [entry for entry in entries if "moss_userspace_" in entry["command"]]
-    assert {Path(entry["file"]).stem for entry in entries} == programs | {"validation_frame"}
-    assert len(entries) == len(programs) + 1  # The validation driver also links its register-frame assembly probe.
+    validation_sources = {source.stem for source in (root / "src/userspace/validation").glob("*.c")}
+    expected_sources = programs | {"validation_frame"} | validation_sources
+    assert {Path(entry["file"]).stem for entry in entries} == expected_sources
+    assert len(entries) == len(expected_sources)
     for entry in entries:
         arguments = shlex.split(entry["command"])
         assert "-ffreestanding" in arguments

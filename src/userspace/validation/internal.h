@@ -8,6 +8,7 @@ long frame_register_probe(long number, long signal_pid);
 extern const unsigned char vm_rodata[4096];
 extern const unsigned char __user_text_start[], __user_text_end[];
 int wait_exit(long child, int code);
+int wait_signal(long child, int signo);
 unsigned long exec_probe(long test);
 unsigned long busybox_script(const char *script, const char *expected);
 unsigned long wait_status_rollback(void);

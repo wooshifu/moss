@@ -28,6 +28,9 @@ extern "C" [[gnu::weak, gnu::noinline]] void moss_validation_exec_source_snapsho
 // Validation can force child exit after wait's first scan and before registration.
 extern "C" [[gnu::weak, gnu::noinline]] void moss_validation_wait_before_register(moss::kernel::u32 /*parent_pid*/,
                                                                                   long /*wait_pid*/) noexcept {}
+// Validation can replace a signal action after oldact is copied, before publication.
+extern "C" [[gnu::weak, gnu::noinline]] void
+moss_validation_sigaction_before_replace(moss::kernel::u32 /*pid*/, moss::kernel::u32 /*signo*/) noexcept {}
 
 namespace moss::kernel::syscall {
 
@@ -456,7 +459,7 @@ long sys_fork(long /*unused*/, long /*unused*/, long /*unused*/, long /*unused*/
 
   // Fork duplicates dispositions, mask and the user altstack/context, but not
   // pending notifications. The child's COW stack owns any active signal frame.
-  child_proc->signal_state() = parent_proc->signal_state();
+  child_proc->inherit_signal_actions_from(*parent_proc);
   child_thread->signal_mask = parent_thread->signal_mask.load();
   child_thread->alt_stack_sp = parent_thread->alt_stack_sp;
   child_thread->alt_stack_size = parent_thread->alt_stack_size;
@@ -778,11 +781,7 @@ long sys_execve(long pathname_addr, long argv_addr, long envp_addr, long /*unuse
     }
   }
   proc->set_name(basename);
-  for (auto &action : proc->signal_state().actions) {
-    if (action.handler != SIG_IGN) {
-      action = Sigaction{};
-    }
-  }
+  proc->reset_signal_actions_for_exec();
   cur->alt_stack_sp = cur->alt_stack_size = 0;
   cur->alt_stack_flags = ss_flags::SS_DISABLE;
   cur->on_alt_stack = false;
@@ -829,22 +828,22 @@ long sys_execve(long pathname_addr, long argv_addr, long envp_addr, long /*unuse
 }
 
 // wait4(pid, wstatus, options, rusage) — wait for child process state change
-// pid > 0: wait for specific child
-// pid == -1: wait for any child
-// options: WNOHANG (1) = return immediately if no child has exited
+// pid > 0: specific child; -1: any child; 0: caller's process group;
+// pid < -1: children in process group -pid.
+// options use the Linux-compatible abi-bits/wait.h values.
 long sys_wait4(long wait_pid, long wstatus_addr, long options, long /*unused*/, long /*unused*/,
                long /*unused*/) noexcept {
   using namespace moss::kernel::process;
 
   constexpr long WNOHANG = 1;
-  if ((options & ~WNOHANG) != 0) {
+  constexpr long WUNTRACED = 2;
+  constexpr long WCONTINUED = 8;
+  if ((options & ~(WNOHANG | WUNTRACED | WCONTINUED)) != 0) {
     return -errc::EINVAL;
   }
-  // This ABI currently supports a positive PID or -1, not process-group waits.
-  if (wait_pid == 0 || wait_pid < -1) {
-    return -errc::EINVAL;
-  }
-  if (wait_pid > ~ProcessId{0}) {
+  // Bound both signs before negating a process-group selector (including LONG_MIN).
+  constexpr long MAX_PID = static_cast<long>(~ProcessId{0});
+  if (wait_pid > MAX_PID || wait_pid < -MAX_PID) {
     return -errc::ECHILD;
   }
 
@@ -858,30 +857,77 @@ long sys_wait4(long wait_pid, long wstatus_addr, long options, long /*unused*/, 
     return -errc::EINVAL;
   }
 
-  // Must have children
-  if (!proc->has_children()) {
-    return -errc::ECHILD;
-  }
+  // Resolve pid==0 once so every scan during this wait uses the same group.
+  const ProcessId target_pgid = wait_pid == 0 ? proc->pgid() : (wait_pid < -1 ? static_cast<ProcessId>(-wait_pid) : 0);
+  auto matches_child = [&](ProcessId child_pid, const Process &child) {
+    if (wait_pid == -1) {
+      return true;
+    }
+    if (wait_pid > 0) {
+      return static_cast<ProcessId>(wait_pid) == child_pid;
+    }
+    return child.pgid() == target_pgid;
+  };
+  auto has_matching_child = [&]() {
+    bool found = false;
+    proc->for_each_child_locked([&](ProcessId child_pid) {
+      if (found) {
+        return;
+      }
+      auto child = g_process_manager->find_process(child_pid);
+      found = child && matches_child(child_pid, *child);
+    });
+    return found;
+  };
+
+  struct JobEvent {
+    shared_ptr<Process> child;
+    Thread *thread = nullptr;
+    u64 value = 0;
+  };
+  auto find_job_event = [&]() -> JobEvent {
+    JobEvent found{};
+    if ((options & (WUNTRACED | WCONTINUED)) == 0) {
+      return found;
+    }
+    proc->for_each_child_locked([&](ProcessId child_pid) {
+      if (found.thread) {
+        return;
+      }
+      auto child = g_process_manager->find_process(child_pid);
+      if (!child || child->state() == ProcessState::Zombie || !matches_child(child_pid, *child)) {
+        return;
+      }
+      auto *thread = child->get_main_thread();
+      const u64 event = thread ? thread->wait_status_event.load() : 0;
+      const u32 status = static_cast<u32>(event);
+      if (((options & WUNTRACED) && (status & 0xff) == 0x7f) || ((options & WCONTINUED) && status == 0xffff)) {
+        // Retain the process so another waiter cannot free this thread during
+        // reservation and copyout.
+        found = {child, thread, event};
+      }
+    });
+    return found;
+  };
 
   while (true) {
     // Scan for matching zombie child
-    ProcessId zombie_pid = proc->find_zombie_child(wait_pid);
+    ProcessId zombie_pid = proc->find_zombie_child(wait_pid, target_pgid);
 
     if (zombie_pid != INVALID_PROCESS_ID) {
       // Found a zombie — reap it
       auto zombie = g_process_manager->find_process(zombie_pid);
-      if (!zombie) {
-        // Race: already reaped by another thread, retry
+      if (!zombie || !matches_child(zombie_pid, *zombie)) {
+        // Another waiter may have reaped it, or it may have changed groups.
         continue;
       }
 
       i32 child_exit_code = zombie->exit_code();
       ProcessId result_pid = zombie->pid();
 
-      // Write status to user space if pointer is non-null
-      // Linux WEXITSTATUS encoding: (exit_code & 0xFF) << 8
+      // Write the published wait status only after Zombie is observed.
       if (wstatus_addr != 0) {
-        int wstatus = (static_cast<int>(child_exit_code) & 0xFF) << 8;
+        int wstatus = zombie->wait_status();
         if (copy_to_user(static_cast<u64>(wstatus_addr), &wstatus, sizeof(wstatus)) < 0) {
           return -errc::EFAULT;
         }
@@ -895,9 +941,33 @@ long sys_wait4(long wait_pid, long wstatus_addr, long options, long /*unused*/, 
       return static_cast<long>(result_pid);
     }
 
-    // No zombie found
-    // Check if specified PID is actually a child
-    if (wait_pid > 0 && !proc->is_child(static_cast<ProcessId>(wait_pid))) {
+    if (auto job = find_job_event(); job.thread) {
+      const u64 cleared = job.value & ~Thread::WAIT_STATUS_MASK;
+      u64 expected = job.value;
+      // Reserve before copyout so a competing waiter cannot report the same
+      // event, and a failed consume cannot leave an unreported user status.
+      if (!job.thread->wait_status_event.compare_exchange_strong(expected, cleared)) {
+        continue;
+      }
+      const int status = static_cast<int>(static_cast<u32>(job.value));
+      if (wstatus_addr != 0 && copy_to_user(static_cast<u64>(wstatus_addr), &status, sizeof(status)) < 0) {
+        expected = cleared;
+        if (job.thread->wait_status_event.compare_exchange_strong(expected, job.value)) {
+          // Another waiter may have slept while this event was reserved.
+          proc->child_exit_wait_queue().wake_up([](void *waiting) {
+            auto *task = static_cast<Thread *>(waiting);
+            if (g_scheduler) {
+              g_scheduler->task_wakeup(task, task->wake_cpu);
+            }
+          });
+        }
+        return -errc::EFAULT;
+      }
+      return static_cast<long>(job.child->pid());
+    }
+
+    // Other children do not keep a wait for this selected set alive.
+    if (!has_matching_child()) {
       return -errc::ECHILD;
     }
 
@@ -924,7 +994,8 @@ long sys_wait4(long wait_pid, long wstatus_addr, long options, long /*unused*/, 
     proc->child_exit_wait_queue().add_waiter(static_cast<void *>(cur), /*exclusive=*/true);
     // An exit may have happened after the first scan but before registration.
     // Recheck after publishing the waiter so neither side can miss the other.
-    if (proc->find_zombie_child(wait_pid) != INVALID_PROCESS_ID) {
+    if (proc->find_zombie_child(wait_pid, target_pgid) != INVALID_PROCESS_ID || find_job_event().thread ||
+        !has_matching_child()) {
       g_scheduler->task_wakeup(cur, cur->wake_cpu);
     }
     g_scheduler->commit_sleep();
@@ -933,10 +1004,6 @@ long sys_wait4(long wait_pid, long wstatus_addr, long options, long /*unused*/, 
       arch::enable_interrupts();
     }
 
-    // Check we still have children (might have been reaped by another thread)
-    if (!proc->has_children()) {
-      return -errc::ECHILD;
-    }
   }
 }
 
@@ -1080,6 +1147,24 @@ long sys_getsid(long pid_arg, long /*unused*/, long /*unused*/, long /*unused*/,
   return static_cast<long>(proc->sid());
 }
 
+static void change_process_group(process::Process &target, ProcessId pgid) noexcept {
+  if (target.pgid() == pgid) {
+    return;
+  }
+  target.set_pgid(pgid);
+  auto parent = process::g_process_manager->find_process(target.parent_pid());
+  if (!parent) {
+    return;
+  }
+  // Every group-selecting waiter must recheck whether it still has a matching child.
+  parent->child_exit_wait_queue().for_each_waiter([](void *waiting) {
+    auto *thread = static_cast<process::Thread *>(waiting);
+    if (process::g_scheduler) {
+      process::g_scheduler->task_wakeup(thread, thread->wake_cpu);
+    }
+  });
+}
+
 // setpgid(pid, pgid) — set process group of `pid` to `pgid`.
 // pid==0 → calling process;  pgid==0 → use pid as new pgid.
 // POSIX restrictions: can only set own or child's pgid, child must not
@@ -1116,7 +1201,7 @@ long sys_setpgid(long pid_arg, long pgid_arg, long /*unused*/, long /*unused*/, 
     return -errc::EPERM;
   }
 
-  target->set_pgid(new_pgid);
+  change_process_group(*target, new_pgid);
   return 0;
 }
 
@@ -1149,7 +1234,7 @@ long sys_setsid(long /*unused*/, long /*unused*/, long /*unused*/, long /*unused
 
   // Become session leader and process group leader
   proc->set_sid(proc->pid());
-  proc->set_pgid(proc->pid());
+  change_process_group(*proc, proc->pid());
   return static_cast<long>(proc->sid());
 }
 
@@ -1189,34 +1274,40 @@ long sys_sigaction(long sig_arg, long act_addr, long oldact_addr, long /*unused*
     return -errc::ESRCH;
   }
 
-  Sigaction &sa = proc->signal_state().actions[signo];
-
-  // Return old action if requested
-  if (oldact_addr != 0) {
-    UserSigaction kold;
-    kold.handler = sa.handler;
-    kold.mask = sa.mask;
-    kold.flags = sa.flags;
-    if (copy_to_user(static_cast<u64>(oldact_addr), &kold, sizeof(kold)) < 0) {
-      return -errc::EFAULT;
-    }
-  }
-
-  // Set new action if provided
+  Sigaction desired{};
   if (act_addr != 0) {
     UserSigaction kact;
     if (copy_from_user(&kact, static_cast<u64>(act_addr), sizeof(kact)) < 0) {
       return -errc::EFAULT;
     }
-    if ((kact.flags & ~static_cast<u64>(sa_flags::SA_ONSTACK | sa_flags::SA_RESTART)) != 0) {
+    if ((kact.flags & ~static_cast<u64>(sa_flags::SA_ONSTACK | sa_flags::SA_RESTART | sa_flags::SA_NOCLDSTOP |
+                                        sa_flags::SA_NOCLDWAIT)) != 0) {
       return -errc::EINVAL;
     }
-    sa.handler = static_cast<VirtAddr>(kact.handler);
-    sa.mask = kact.mask & ~sig::UNCATCHABLE_MASK;
-    sa.flags = static_cast<u32>(kact.flags);
+    desired = Sigaction{static_cast<VirtAddr>(kact.handler), kact.mask & ~sig::UNCATCHABLE_MASK,
+                        static_cast<u32>(kact.flags)};
   }
 
-  return 0;
+  for (;;) {
+    const Sigaction previous = proc->signal_action(signo);
+    if (oldact_addr != 0) {
+      const UserSigaction kold{previous.handler, previous.mask, previous.flags};
+      if (copy_to_user(static_cast<u64>(oldact_addr), &kold, sizeof(kold)) < 0) {
+        return -errc::EFAULT;
+      }
+    }
+    if (act_addr == 0) {
+      return 0;
+    }
+    if (oldact_addr != 0) {
+      moss_validation_sigaction_before_replace(proc->pid(), signo);
+    }
+    // User copy cannot run under the IRQ spinlock. Retry if another writer
+    // changed the action so oldact always describes the action we replace.
+    if (proc->try_replace_signal_action(signo, previous, desired)) {
+      return 0;
+    }
+  }
 }
 
 // sigprocmask(how, set, oldset) — modify thread's signal mask.

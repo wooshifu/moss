@@ -57,12 +57,14 @@ constexpr u64 sigmask(u32 signo) noexcept { return (signo > 0 && signo < NSIG) ?
 inline constexpr u64 UNCATCHABLE_MASK = sigmask(SIGKILL) | sigmask(SIGSTOP);
 } // namespace sig
 
-// Native sigaction ABI assigns independent bits 0/1/2; keep these positions
-// in sync with userspace. SIGINFO remains reserved.
+// Native sigaction ABI assigns bits 0..4; keep these positions in sync with
+// userspace. Bit 2 remains reserved for SIGINFO.
 namespace sa_flags {
 inline constexpr u32 SA_ONSTACK = 0x1; // use alternate signal stack
 inline constexpr u32 SA_RESTART = 0x2; // restart interrupted syscalls
 inline constexpr u32 SA_SIGINFO = 0x4; // reserved for siginfo_t
+inline constexpr u32 SA_NOCLDSTOP = 0x8; // suppress SIGCHLD for stop/continue
+inline constexpr u32 SA_NOCLDWAIT = 0x10; // discard child exit status and zombie
 } // namespace sa_flags
 
 // sigaltstack flags
@@ -150,8 +152,9 @@ static_assert(__builtin_offsetof(SignalFrame, fp) % 16 == 0);
 
 // Send a signal to a thread. Sets the pending bit; handler delivery happens
 // at the next checkpoint. SIGCONT resumes a stopped thread at generation.
-// Returns true if the signal was successfully pended.
+// Returns true if the signal was accepted, including when its action discards it.
 bool send_signal(Thread *thread, u32 signo) noexcept;
+void notify_parent_job_status(Thread *thread) noexcept;
 
 // Check if a thread has any unmasked pending signals.
 [[nodiscard]] inline bool signal_pending(const Thread *thread) noexcept {
@@ -184,10 +187,6 @@ bool send_signal(Thread *thread, u32 signo) noexcept;
   thread->pending_signals &= ~sig::sigmask(signo);
   return signo;
 }
-
-// Get the signal state for a process.
-// Returns nullptr only for a null process.
-[[nodiscard]] SignalState *get_signal_state(Process *proc) noexcept;
 
 // Process pending signals at a checkpoint (syscall return / IRQ return).
 // This is the main signal delivery entry point.

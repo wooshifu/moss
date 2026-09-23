@@ -240,7 +240,7 @@ unsigned long uaccess_sigframe_fault(void) {
     long waited = waitpid(child, &status, 0);
     control(13, area, 1);
     // The signal checkpoint currently uses an exit code of 128 + signo.
-    errors |= (unsigned long)(waited != child || ((status >> 8) & 255) != 128 + SIGUSR1) << 2;
+    errors |= (unsigned long)(waited != child || status != SIGUSR1) << 2;
   }
   errors |= (unsigned long)(syscall2(SYS_MUNMAP, area, 4096) != 0) << 3;
   return errors;
@@ -408,9 +408,8 @@ static unsigned long uaccess_cow_fault(int kind) {
   errors |= (unsigned long)(child <= 0 || write((int)gate[1], &ready, 1) != 1) << 1;
   long waited = child > 0 ? waitpid(child, &status, 0) : -1;
   errors |= (unsigned long)!control(COW_FINISH, target, 0) << 2;
-  // The native fault path exits with -SIGSEGV; wait encodes its low byte.
-  const int expected_exit = kind == USER_FAULT ? ((-SIGSEGV) & 255) : 37;
-  errors |= (unsigned long)(waited != child || ((status >> 8) & 255) != expected_exit) << 3;
+  const int expected_status = kind == USER_FAULT ? SIGSEGV : 37 << 8;
+  errors |= (unsigned long)(waited != child || status != expected_status) << 3;
   for (long i = 0; i < page_bytes * 2; ++i) {
     errors |= (unsigned long)(bytes[i] != pattern) << 4;
   }

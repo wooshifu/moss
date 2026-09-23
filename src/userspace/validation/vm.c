@@ -29,7 +29,7 @@ static int vm_fault(long address, enum vm_fault_access access) {
     }
     _exit(94); // A forbidden access must fault, not reach this exit.
   }
-  return wait_exit(child, 245); // (-SIGSEGV = -11) & 0xff = 245 in Moss's exit-code encoding.
+  return wait_signal(child, SIGSEGV);
 }
 
 unsigned long vm_private_cow(void) {
@@ -136,9 +136,7 @@ unsigned long vm_kernel_isolation(long target) {
         }
         _exit(94); // A completed forbidden access must never share the fault exit marker.
       }
-      // Moss currently encodes fatal page faults as (-SIGSEGV)&255, not the
-      // POSIX wait signal encoding. The exact code rejects unrelated exits.
-      errors |= (unsigned long)!wait_exit(child, 245) << 1;
+      errors |= (unsigned long)!wait_signal(child, SIGSEGV) << 1;
       errors |= (unsigned long)!control(ISOLATION_VERIFY, target, alias) << 2;
       errors |= (unsigned long)(getpid() != parent || *user != canary) << 3;
       *user = canary ^ 1U;

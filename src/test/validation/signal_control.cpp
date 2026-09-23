@@ -83,6 +83,9 @@ namespace {
 ProcessId wait_exit_parent = INVALID_PROCESS_ID;
 ProcessId wait_exit_child = INVALID_PROCESS_ID;
 u32 wait_exit_phase = 0;
+u32 sigaction_race_phase = 0;
+ProcessId sigaction_race_parent = INVALID_PROCESS_ID;
+constexpr long SIGACTION_RACE_CONTROL = 59;
 ProcessId cpu_bound_probe_pid = INVALID_PROCESS_ID;
 u64 cpu_bound_probe_start = 0;
 u64 cpu_bound_probe_end = 0;
@@ -118,6 +121,23 @@ extern "C" void moss_validation_wait_before_register(u32 parent_pid, long wait_p
   wait_exit_child = static_cast<ProcessId>(wait_pid);
   __atomic_store_n(&wait_exit_phase, 2U, __ATOMIC_RELEASE);
   moss::test::validation::wait_for_phase(wait_exit_phase, 3);
+}
+
+extern "C" void moss_validation_sigaction_before_replace(u32 pid, u32 signo) noexcept {
+  if (!ut::same_id(active_case, "sigaction_race") || pid != sigaction_race_parent || signo != process::sig::SIGUSR1 ||
+      sigaction_race_phase != 1) {
+    return;
+  }
+  auto parent = process::g_process_manager->find_process(pid);
+  if (!parent) {
+    return;
+  }
+  const auto previous = parent->signal_action(signo);
+  const process::Sigaction injected{process::SIG_IGN, process::sig::sigmask(process::sig::SIGUSR2),
+                                    process::sa_flags::SA_RESTART};
+  if (parent->try_replace_signal_action(signo, previous, injected)) {
+    sigaction_race_phase = 2;
+  }
 }
 
 extern "C" void moss_validation_child_exit_notified(u32 child_pid, u32 parent_pid) noexcept {
@@ -160,7 +180,10 @@ long signal_control(long op, long arg1, long arg2) {
     }
   }
   if (op == 55 && ut::same_id(selection, "users.signals") &&
-      (ut::same_id(active_case, "wait_interrupted") || ut::same_id(active_case, "wait_restarted")) &&
+      (ut::same_id(active_case, "wait_interrupted") || ut::same_id(active_case, "wait_restarted") ||
+       ut::same_id(active_case, "wait_job_status") || ut::same_id(active_case, "no_cldstop") ||
+       ut::same_id(active_case, "wait_process_group") || ut::same_id(active_case, "wait_group_change") ||
+       ut::same_id(active_case, "no_cldwait")) &&
       arch::get_current_cpu_id() == 1) {
     auto child = process::current_process();
     if (!child || arg1 != static_cast<long>(child->parent_pid()) || arg2 != static_cast<long>(child->pid())) {
@@ -176,7 +199,28 @@ long signal_control(long op, long arg1, long arg2) {
     // Native syscall 13 is waitpid; inspect the real blocked frame rather
     // than treating the child's readiness or a preceding syscall as proof.
     return thread->state == process::ProcessState::Sleeping && thread->sleep_handoff.load() == 0 && frame &&
-           frame->syscall_number() == 13 && frame->argument(0) == static_cast<u64>(arg2);
+           frame->syscall_number() == 13 &&
+           frame->argument(0) == static_cast<u64>(ut::same_id(active_case, "wait_process_group")  ? -arg2
+                                                  : ut::same_id(active_case, "wait_group_change") ? 0
+                                                                                                  : arg2);
+  }
+  if (op == SIGACTION_RACE_CONTROL && ut::same_id(selection, "users.signals") &&
+      ut::same_id(active_case, "sigaction_race") && affinity_valid()) {
+    if (arg1 == 0 && sigaction_race_phase == 0) {
+      auto parent = process::current_process();
+      if (!parent) {
+        return 0;
+      }
+      sigaction_race_parent = parent->pid();
+      sigaction_race_phase = 1;
+      return 1;
+    }
+    if (arg1 == 1) {
+      const bool fired = sigaction_race_phase == 2;
+      sigaction_race_phase = 0;
+      sigaction_race_parent = INVALID_PROCESS_ID;
+      return fired;
+    }
   }
   if (ut::same_id(selection, "users.signals") && ut::same_id(active_case, "cpu_bound_irq")) {
     if (op == CPU_BOUND_ARM_PROBE && arch::get_current_cpu_id() == 1 && arg1 > 0 && arg2 > arg1) {

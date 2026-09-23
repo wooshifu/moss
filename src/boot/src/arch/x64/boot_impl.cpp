@@ -670,7 +670,7 @@ extern "C" void x64_interrupt_handler(u64 vector, u64 error_code, [[maybe_unused
 
     // User x87/SIMD arithmetic faults belong to the process, not the kernel.
     if ((vector == 16 || vector == 19) && saved.from_user()) {
-      moss::abi::bridge::terminate_current_user_process(-8); // SIGFPE-equivalent termination
+      moss::abi::bridge::terminate_current_user_process(moss::kernel::process::sig::SIGFPE);
     }
 
     // Other CPU exceptions — print diagnostics and halt
