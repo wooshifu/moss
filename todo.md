@@ -110,6 +110,7 @@ uv run qemu.py --manifest build/arm64-debug/moss-artifacts.json
   - [x] x64 PVH 非 RAM 条目长度溢出时启动早期拒绝；旧逻辑错误完成启动，三构建配置九场景及 CTest 16/16 通过（3.48）。
   - [x] x64 PVH initrd 同时落在 RAM 与非 RAM 描述符内时拒绝启动；旧逻辑错误完成启动，三构建配置十场景及 CTest 16/16 通过（3.49）。
   - [x] x64 PVH 重叠 RAM 描述符在内存初始化阶段拒绝；移除 PFA 重叠检查会在后续触发 GP，三构建配置十一场景及各自 PVH CTest 通过（3.50）。
+  - [x] x64 PVH 内存表计数超 128、描述符保留位非零及 RAM 起点达到 4 GiB 时启动早期拒绝；三构建配置十四场景及各自 PVH CTest 通过（3.51）。
   - [ ] 完整显式保留集合、kernel_end 以下可用页回收及其他 PVH 异常表。
   - [x] 三架构 PFA 耗尽不返回保留页；逐页模式、initrd 校验和及释放后页数恢复通过。
   - [x] ARM64/RV64 Debug/Release 固件输入共 18 项检查；有效区间末端 UINT64_MAX 在裁剪前取整导致回绕的问题已修复，异常输入在启动阶段拒绝（[证据](moss-todo.md#35-pfa-分配归属与固件边界2026-09-06工作区)）。
