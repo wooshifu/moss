@@ -1930,6 +1930,71 @@ static unsigned long timer_invalid_arguments(void) {
   return errors;
 }
 
+static volatile int timer_handler_called;
+static void timer_signal_handler(int signo) { timer_handler_called = signo == SIGUSR1; }
+
+static unsigned long timer_signal_interrupted(unsigned mode) {
+  struct sigaction_t action = {(unsigned long)timer_signal_handler, 0, 0};
+  timer_handler_called = 0;
+  if (moss_sigaction(SIGUSR1, &action, 0) != 0) {
+    return 1;
+  }
+  long release[2];
+  if (pipe(release) != 0) {
+    return 1;
+  }
+  const long parent = getpid();
+  const long child = fork();
+  if (child == 0) {
+    close((int)release[1]);
+    unsigned cpu_mask = 2;
+    if (syscall3(20, 0, sizeof(cpu_mask), (long)&cpu_mask) != 0) {
+      _exit(98);
+    }
+    long ready;
+    while ((ready = control(56, parent, mode)) == 0) {
+      sched_yield(); // The host case deadline bounds a missing sleep.
+    }
+    int errors = ready != 1 || kill(parent, SIGUSR1) != 0;
+    unsigned char byte = 0;
+    errors |= read((int)release[0], &byte, 1) != 1 || byte != 37;
+    close((int)release[0]);
+    _exit(errors ? 98 : 42);
+  }
+  close((int)release[0]);
+  if (child < 0) {
+    close((int)release[1]);
+    return 1;
+  }
+  // The child sends only after observing this syscall asleep on CPU 0, and
+  // cannot exit early to create a second wake source.
+  const unsigned long duration = 2000000000UL; // Two seconds leave time for the cross-CPU signal.
+  unsigned long remaining = ~0UL;
+  unsigned long target = duration;
+  int clock_failed = 0;
+  if (mode == 2) {
+    clock_failed = clock_gettime_ns(&target) != 0;
+    if (clock_failed) {
+      target = 0;
+    }
+    target += duration;
+  }
+  long result = mode == 0 ? syscall2(SYS_NANOSLEEP, (long)&duration, (long)&remaining)
+                          : syscall6(SYS_CLOCK_NANOSLEEP, 1, mode == 2, (long)&target, (long)&remaining, 0, 0);
+  int errors = clock_failed || result != -4 || timer_handler_called != 1;
+  errors |= mode == 2 ? remaining != ~0UL : remaining == 0 || remaining > duration;
+  const unsigned char byte = 37;
+  errors |= write((int)release[1], &byte, 1) != 1;
+  close((int)release[1]);
+  int status = 0;
+  errors |= waitpid(child, &status, 0) != child || status != (42 << 8);
+  return errors;
+}
+
+static unsigned long timer_relative_interrupted(void) { return timer_signal_interrupted(0); }
+static unsigned long timer_clock_relative_interrupted(void) { return timer_signal_interrupted(1); }
+static unsigned long timer_clock_absolute_interrupted(void) { return timer_signal_interrupted(2); }
+
 static unsigned long timer_short_reuse(void) {
   // Reuse a 100 us request 1000 times to exercise timer retirement/rearming.
   // The exact duration/count are fixture choices; no maximum-latency claim follows.
@@ -3490,9 +3555,16 @@ void _start(long argc, const char **argv) {
     }
     control(3, 0, 0);
   } else if (mode == 10) {
-    unsigned long (*const tests[])(void) = {timer_relative_sleep,      timer_absolute_sleep,   timer_invalid_arguments,
-                                            timer_short_reuse,         timer_cancel_in_flight, timer_early_wakeup,
-                                            timer_arm_failure_recovery};
+    unsigned long (*const tests[])(void) = {timer_relative_sleep,
+                                            timer_absolute_sleep,
+                                            timer_invalid_arguments,
+                                            timer_short_reuse,
+                                            timer_cancel_in_flight,
+                                            timer_early_wakeup,
+                                            timer_arm_failure_recovery,
+                                            timer_relative_interrupted,
+                                            timer_clock_relative_interrupted,
+                                            timer_clock_absolute_interrupted};
     for (long test = 0; test < (long)(sizeof(tests) / sizeof(tests[0])); ++test) {
       control(1, test, 0);
       unsigned long errors = tests[test]();
