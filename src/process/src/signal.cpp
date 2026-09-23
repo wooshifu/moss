@@ -11,10 +11,30 @@ bool send_signal(Thread *thread, u32 signo) noexcept {
     return false;
   }
   const u64 mask = sig::sigmask(signo);
-  // Signals from another CPU must not overwrite unrelated pending bits.
-  thread->pending_signals |= mask;
-  const bool deliverable = (mask & sig::UNCATCHABLE_MASK) != 0 || (thread->signal_mask & mask) == 0;
-  if (deliverable && g_scheduler && thread->state == ProcessState::Sleeping) {
+  bool wake = false;
+  {
+    containers::LockGuard<containers::IrqSpinLock> guard(thread->sleep_lock);
+    // POSIX stop/continue generation discards the opposite pending group.
+    // One CAS keeps concurrent senders from publishing both groups.
+    const u64 stop_mask = sig::sigmask(sig::SIGSTOP) | sig::sigmask(sig::SIGTSTP) | sig::sigmask(sig::SIGTTIN) |
+                          sig::sigmask(sig::SIGTTOU);
+    u64 pending = thread->pending_signals.load();
+    u64 updated;
+    do {
+      updated = pending;
+      if (signo == sig::SIGCONT) {
+        updated &= ~stop_mask;
+      } else if ((mask & stop_mask) != 0) {
+        updated &= ~sig::sigmask(sig::SIGCONT);
+      }
+      updated |= mask;
+    } while (!thread->pending_signals.compare_exchange_weak(pending, updated));
+    const bool deliverable = (mask & sig::UNCATCHABLE_MASK) != 0 || (thread->signal_mask & mask) == 0;
+    const auto state = thread->state.load();
+    wake = (state == ProcessState::Stopped && (signo == sig::SIGCONT || signo == sig::SIGKILL)) ||
+           (state == ProcessState::Sleeping && deliverable);
+  }
+  if (wake && g_scheduler) {
     g_scheduler->task_wakeup(thread, thread->cpu);
   }
   return true;
@@ -306,44 +326,23 @@ u32 do_signal_checkpoint(Thread *thread) noexcept {
       sa = &sigstate->actions[signo];
     }
 
-    // SIGKILL/SIGSTOP: always default action, cannot be caught
-    if (signo == sig::SIGKILL || signo == sig::SIGSTOP) {
-      if (do_signal_default(thread, signo)) {
-        return signo; // terminate
-      }
-      // After do_signal_default sets Stopped state, dequeue from scheduler
-      if (thread->state == ProcessState::Stopped && g_scheduler) {
-        g_scheduler->dequeue_task(thread);
-      }
-      continue;
-    }
-
-    // SIGCONT is special: it always resumes a stopped task, even if caught/ignored
-    if (signo == sig::SIGCONT && thread->state == ProcessState::Stopped) {
-      thread->state = ProcessState::Ready;
-      if (g_scheduler) {
-        g_scheduler->enqueue_task(thread, thread->wake_cpu);
-      }
-      log::klog::info("signal {}: continued PID={}", signo, static_cast<u32>(thread->owner_pid));
-      // If handler is not SIG_DFL, still execute handler below
-      if (sa != nullptr && sa->handler != SIG_DFL && sa->handler != SIG_IGN) {
-        if (!setup_sigframe(thread, signo, *sa)) {
-          log::klog::warn("signal {}: sigframe setup failed on SIGCONT for PID={}", signo,
-                          static_cast<u32>(thread->owner_pid));
+    // Uncatchable signals use their default action regardless of sigaction.
+    if (signo == sig::SIGKILL || signo == sig::SIGSTOP || sa == nullptr || sa->handler == SIG_DFL) {
+      switch (default_action(signo)) {
+      case SigDefault::Terminate:
+      case SigDefault::CoreDump:
+        return signo;
+      case SigDefault::Stop:
+        if (!g_scheduler) {
+          return signo;
         }
-        return 0;
-      }
-      continue;
-    }
-
-    if (sa == nullptr || sa->handler == SIG_DFL) {
-      // Default action
-      if (do_signal_default(thread, signo)) {
-        return signo; // terminate
-      }
-      // Handle stop signals (SIGTSTP, SIGTTIN, SIGTTOU) via default action
-      if (thread->state == ProcessState::Stopped && g_scheduler) {
-        g_scheduler->dequeue_task(thread);
+        g_scheduler->stop_current();
+        continue;
+      case SigDefault::Ignore:
+      case SigDefault::Continue:
+        continue;
+      default:
+        return signo;
       }
     } else if (sa->handler == SIG_IGN) {
       // Explicitly ignored

@@ -1,7 +1,7 @@
 // MOSS Process Module - Partition: signal
 // POSIX signal constants, sigaction structure, signal delivery and checking.
 //
-// Design: minimal viable subset — default actions (terminate/ignore) and
+// Design: minimal viable subset — default actions (terminate/ignore/stop/continue) and
 // user-space signal handlers with sigreturn.  Signal queueing is bitmask-
 // based (standard signals 1-31, no real-time signals).
 
@@ -95,7 +95,6 @@ enum class SigDefault : u8 {
 constexpr SigDefault default_action(u32 signo) noexcept {
   switch (signo) {
   case sig::SIGCHLD:
-  case sig::SIGCONT:
   case sig::SIGUSR1: // treat as ignore until handlers are set
   case sig::SIGUSR2:
     return SigDefault::Ignore;
@@ -104,6 +103,8 @@ constexpr SigDefault default_action(u32 signo) noexcept {
   case sig::SIGTTIN:
   case sig::SIGTTOU:
     return SigDefault::Stop;
+  case sig::SIGCONT:
+    return SigDefault::Continue;
   case sig::SIGQUIT:
   case sig::SIGILL:
   case sig::SIGABRT:
@@ -147,8 +148,8 @@ static_assert(__builtin_offsetof(SignalFrame, fp) % 16 == 0);
 // Signal operations — send, check, deliver
 // ============================================================================
 
-// Send a signal to a thread.  Sets the pending bit; actual delivery
-// happens at the next signal checkpoint (syscall return / IRQ return).
+// Send a signal to a thread. Sets the pending bit; handler delivery happens
+// at the next checkpoint. SIGCONT resumes a stopped thread at generation.
 // Returns true if the signal was successfully pended.
 bool send_signal(Thread *thread, u32 signo) noexcept;
 
@@ -182,36 +183,6 @@ bool send_signal(Thread *thread, u32 signo) noexcept;
   u32 signo = static_cast<u32>(intrinsics::bitops::ctzll(pending));
   thread->pending_signals &= ~sig::sigmask(signo);
   return signo;
-}
-
-// Process default signal action for the given signal.
-// Called when the handler is SIG_DFL.
-// Returns true if the process should be terminated.
-[[nodiscard]] inline bool do_signal_default(Thread *thread, u32 signo) noexcept {
-  SigDefault action = default_action(signo);
-  switch (action) {
-  case SigDefault::Terminate:
-  case SigDefault::CoreDump:
-    log::klog::info("signal {}: default action terminate PID={}", signo, static_cast<u32>(thread->owner_pid));
-    return true; // caller should terminate the process
-  case SigDefault::Ignore:
-    return false;
-  case SigDefault::Stop:
-    // Mark thread as Stopped; scheduler dequeue happens in do_signal_checkpoint()
-    // (this inline function cannot access g_scheduler from the :signal partition).
-    thread->state = ProcessState::Stopped;
-    log::klog::info("signal {}: stopped PID={}", signo, static_cast<u32>(thread->owner_pid));
-    return false;
-  case SigDefault::Continue:
-    if (thread->state == ProcessState::Stopped) {
-      // Mark Ready; scheduler enqueue happens in do_signal_checkpoint()
-      thread->state = ProcessState::Ready;
-      log::klog::info("signal {}: continued PID={}", signo, static_cast<u32>(thread->owner_pid));
-    }
-    return false;
-  default:
-    return false;
-  }
 }
 
 // Get the signal state for a process.

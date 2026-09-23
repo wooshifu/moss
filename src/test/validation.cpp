@@ -5511,6 +5511,8 @@ u32 cpu_bound_irq_seen = 0;
 // Validation control IDs shared with the CPU-bound userspace case.
 constexpr long CPU_BOUND_ARM_PROBE = 60;
 constexpr long CPU_BOUND_CHECK_PROBE = 61;
+constexpr long STOP_STATE_PROBE = 62;
+constexpr long STOP_PENDING_PROBE = 63;
 bool dispatch_boundary_checked = false;
 
 void failing_case() { ut::expect(false); }
@@ -5932,6 +5934,7 @@ void declare_cases() {
     ut::register_test("wait_interrupted", empty_case);
     ut::register_test("wait_restarted", empty_case);
     ut::register_test("cpu_bound_irq", empty_case);
+    ut::register_test("stop_continue", empty_case);
     ut::register_test("sigprocmask", empty_case);
     ut::register_test("sigaltstack", empty_case);
     ut::register_test("sig_ign", empty_case);
@@ -7052,6 +7055,31 @@ extern "C" long moss_validation_call(long op, long arg1, [[maybe_unused]] long a
       __atomic_store_n(&cpu_bound_probe_pid, INVALID_PROCESS_ID, __ATOMIC_RELEASE);
       return 1;
     }
+  }
+  if ((op == STOP_STATE_PROBE || op == STOP_PENDING_PROBE) && ut::same_id(selection, "users.signals") &&
+      ut::same_id(active_case, "stop_continue")) {
+    if (!affinity_valid() || arg1 <= 0 || arg1 > static_cast<long>(~ProcessId{0}) || (arg2 != 0 && arg2 != 1)) {
+      return -1;
+    }
+    auto child = process::g_process_manager->find_process(static_cast<ProcessId>(arg1));
+    auto *thread = child ? child->get_main_thread() : nullptr;
+    if (!thread) {
+      return -1;
+    }
+    if (op == STOP_PENDING_PROBE) {
+      const u64 stop_mask = process::sig::sigmask(process::sig::SIGTSTP);
+      const u64 cont_mask = process::sig::sigmask(process::sig::SIGCONT);
+      const u64 expected = arg2 == 0 ? stop_mask : cont_mask;
+      return (thread->signal_mask & (stop_mask | cont_mask)) == (stop_mask | cont_mask) &&
+             (thread->pending_signals & (stop_mask | cont_mask)) == expected;
+    }
+    // A state label alone is insufficient: the old STOP path marked the
+    // thread Stopped while continuing to execute its user return frame.
+    if (thread->state != process::ProcessState::Stopped || thread->sleep_handoff.load() != 0 ||
+        process::CfsScheduler::get_current_task_on_cpu(1) == thread) {
+      return 0;
+    }
+    return arg2 == 0 || (thread->pending_signals & process::sig::sigmask(process::sig::SIGUSR1)) != 0;
   }
   if (op == 56 && ut::same_id(selection, "users.timers") && arch::get_current_cpu_id() == 1) {
     const long mode = ut::same_id(active_case, "relative_interrupted")         ? 0

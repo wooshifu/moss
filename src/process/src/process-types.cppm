@@ -580,7 +580,7 @@ struct Thread {
   u32 wake_cpu;
 
   moss::atomic<ProcessState> state;
-  // 0: no handoff, 1: preparing sleep, 2: wake requested before context save.
+  // 0: no handoff, 1: preparing to block, 2: wake requested before context save.
   moss::atomic<u32> sleep_handoff{0};
   containers::IrqSpinLock sleep_lock;
   SchedClass sched_class;
