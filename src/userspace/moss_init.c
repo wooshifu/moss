@@ -30,14 +30,6 @@ static void report_started(const char *name, pid_t pid) {
   }
 }
 
-static void wait_for(pid_t child) {
-  int status;
-  // The SIGCHLD handler may have reaped this child already; the domain wait
-  // preceding these calls provides exit synchronization.
-  while (waitpid(child, &status, 0) < 0 && errno == EINTR) {
-  }
-}
-
 static void reap_finished_children(void) {
   int status;
   pid_t child;
@@ -50,7 +42,7 @@ static void child_exited(int signo) {
   (void)signo;
   int saved_errno = errno;
   // Reap in the handler so an orphan cannot exit between a drain and the
-  // supervisor's domain wait. Held domain caps retain service exit state.
+  // supervisor's domain wait. Supervised domains retire independently.
   reap_finished_children();
   errno = saved_errno;
 }
@@ -69,8 +61,7 @@ static void stop_child(pid_t child, long domain) {
       report(STDERR_FILENO, "moss-init: child domain termination failed\n");
       _exit(1);
     }
-    // Exit observation is capability-based; waitpid still reaps the
-    // compatibility zombie until the process service owns that state.
+    // Native domains auto-retire their diagnostic PID after publishing exit.
     do {
       result = syscall1(SYS_DOMAIN_WAIT, domain);
     } while (result == -EINTR);
@@ -78,7 +69,6 @@ static void stop_child(pid_t child, long domain) {
       report(STDERR_FILENO, "moss-init: child domain wait failed\n");
       _exit(1);
     }
-    wait_for(child);
   }
   if (domain > 0) {
     (void)syscall1(SYS_CAP_CLOSE, domain);
@@ -272,23 +262,23 @@ static enum ServiceLoss supervise(struct Service *file, struct Service *namespac
       continue;
     }
     if (exited < 0 || exited > 2) {
-      report(STDERR_FILENO, "moss-init: domain wait failed\n");
+      char message[80];
+      int size = snprintf(message, sizeof(message), "moss-init: domain wait failed: %ld\n", exited);
+      if (size > 0 && (size_t)size < sizeof(message))
+        (void)write(STDERR_FILENO, message, (size_t)size);
       return SUPERVISOR_FAILURE;
     }
     if (exited == 0) {
-      wait_for(file->pid);
       file->pid = 0;
       report(STDOUT_FILENO, "moss-init: file service died\n");
       return FILE_LOST;
     }
     if (exited == 1) {
-      wait_for(namespace->pid);
       namespace->pid = 0;
       report(STDOUT_FILENO, "moss-init: namespace service died\n");
       return NAMESPACE_LOST;
     }
     if (exited == 2) {
-      wait_for(*shell);
       *shell = 0;
       (void)syscall1(SYS_CAP_CLOSE, *shell_domain);
       *shell_domain = 0;
@@ -307,8 +297,8 @@ static enum ServiceLoss supervise(struct Service *file, struct Service *namespac
 }
 
 int main(void) {
-  // SIGCHLD handles compatibility reaping for both supervised and orphaned
-  // children; capability state remains authoritative for supervision.
+  // POSIX shell descendants can be reparented to init. Native supervised
+  // domains use capability observation and leave no waitpid zombie.
   struct sigaction action = {.sa_handler = child_exited};
   sigemptyset(&action.sa_mask);
   if (sigaction(SIGCHLD, &action, NULL) != 0) {

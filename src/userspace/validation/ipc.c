@@ -13,6 +13,8 @@ enum {
   IPC_ESRCH = 3,
   IPC_EINTR = 4,
   IPC_EBADF = 9,
+  IPC_ECHILD = 10,
+  IPC_EAGAIN = 11,
   IPC_EACCES = 13,
   IPC_EFAULT = 14,
   IPC_EINVAL = 22,
@@ -41,6 +43,13 @@ static long ipc_receive(unsigned long endpoint, struct moss_ipc_message *request
 
 static long ipc_reply(unsigned long reply, const struct moss_ipc_message *response) {
   return syscall2(SYS_IPC_REPLY, (long)reply, (long)response);
+}
+
+static int domain_exited(unsigned long domain, int code, unsigned int signal) {
+  struct moss_domain_exit status = {0};
+  return syscall1(SYS_DOMAIN_WAIT, (long)domain) == 0 &&
+         syscall2(SYS_DOMAIN_STATUS, (long)domain, (long)&status) == 0 && status.code == code &&
+         status.signal == signal;
 }
 
 unsigned long ipc_roundtrip(void) {
@@ -489,8 +498,8 @@ unsigned long ipc_domain_control(void) {
   unsigned long domain = 0;
   long child = syscall1(SYS_FORK_DOMAIN, (long)&domain);
   if (child == 0) {
-    if (domain != 0)
-      _exit(96); // The parent's newly installed authority must not appear in the child.
+    if (domain != 0 || getppid() != 0)
+      _exit(96); // Native children have neither parent authority nor POSIX parentage.
     for (unsigned int attempt = 0; attempt < DOMAIN_CHILD_SLEEP_CYCLES; ++attempt) {
       unsigned long delay = DOMAIN_CHILD_SLEEP_NS;
       (void)nanosleep_ns(&delay);
@@ -498,21 +507,26 @@ unsigned long ipc_domain_control(void) {
     _exit(97); // Bound a failed termination test instead of hanging the suite.
   }
   if (child <= 1 || !domain) {
-    if (child > 1)
-      (void)wait_exit(child, 97);
-    if (domain)
+    if (domain) {
+      (void)syscall1(SYS_DOMAIN_TERMINATE, (long)domain);
+      (void)syscall1(SYS_DOMAIN_WAIT, (long)domain);
       (void)syscall1(SYS_CAP_CLOSE, (long)domain);
+    }
     return errors | 2;
   }
 
   long inspect = syscall2(SYS_CAP_DUPLICATE, (long)domain, MOSS_CAP_DOMAIN_INSPECT);
   long observe = syscall2(SYS_CAP_DUPLICATE, (long)domain, MOSS_CAP_DOMAIN_OBSERVE);
+  struct moss_domain_exit status = {0};
   errors |= (unsigned long)(syscall1(SYS_DOMAIN_ID, (long)domain) != child) << 2;
+  errors |= (unsigned long)(syscall3(SYS_WAITPID, child, 0, 1) != -IPC_ECHILD) << 24;
+  errors |= (unsigned long)(syscall2(SYS_DOMAIN_STATUS, (long)domain, (long)&status) != -IPC_EAGAIN) << 27;
   errors |= (unsigned long)(inspect <= 0) << 3;
   if (inspect > 0) {
     errors |= (unsigned long)(syscall1(SYS_DOMAIN_ID, inspect) != child) << 4;
     errors |= (unsigned long)(syscall1(SYS_DOMAIN_TERMINATE, inspect) != -IPC_EACCES) << 5;
     errors |= (unsigned long)(syscall1(SYS_DOMAIN_WAIT, inspect) != -IPC_EACCES) << 20;
+    errors |= (unsigned long)(syscall2(SYS_DOMAIN_STATUS, inspect, (long)&status) != -IPC_EACCES) << 28;
   }
   errors |= (unsigned long)(observe <= 0) << 13;
   if (observe > 0) {
@@ -521,9 +535,10 @@ unsigned long ipc_domain_control(void) {
   }
   errors |= (unsigned long)(syscall1(SYS_DOMAIN_TERMINATE, (long)domain) != 0) << 6;
   if (observe > 0)
-    errors |= (unsigned long)(syscall1(SYS_DOMAIN_WAIT, observe) != 0) << 16;
-  errors |= (unsigned long)!wait_signal(child, SIGKILL) << 7;
+    errors |= (unsigned long)!domain_exited((unsigned long)observe, 0, SIGKILL) << 16;
+  errors |= (unsigned long)!domain_exited(domain, 0, SIGKILL) << 7;
   errors |= (unsigned long)(syscall1(SYS_DOMAIN_WAIT, (long)domain) != 0) << 17;
+  errors |= (unsigned long)(syscall3(SYS_WAITPID, child, 0, 1) != -IPC_ECHILD) << 25;
   errors |= (unsigned long)(syscall1(SYS_DOMAIN_TERMINATE, (long)domain) != -IPC_ESRCH) << 8;
   errors |= (unsigned long)(syscall1(SYS_DOMAIN_ID, (long)domain) != child) << 9;
   if (inspect > 0)
@@ -533,6 +548,7 @@ unsigned long ipc_domain_control(void) {
   errors |= (unsigned long)(syscall1(SYS_CAP_CLOSE, (long)domain) != 0) << 11;
   errors |= (unsigned long)(syscall1(SYS_DOMAIN_TERMINATE, (long)domain) != -IPC_EBADF) << 12;
   errors |= (unsigned long)(syscall1(SYS_DOMAIN_WAIT, (long)domain) != -IPC_EBADF) << 19;
+  errors |= (unsigned long)(syscall2(SYS_DOMAIN_STATUS, (long)domain, (long)&status) != -IPC_EBADF) << 29;
 
   unsigned long natural_domain = 0;
   long natural_child = syscall1(SYS_FORK_DOMAIN, (long)&natural_domain);
@@ -545,13 +561,17 @@ unsigned long ipc_domain_control(void) {
   }
   if (natural_child <= 1 || !natural_domain) {
     errors |= 1UL << 21;
-    if (natural_child > 1)
-      (void)wait_exit(natural_child, 37);
-    if (natural_domain)
+    if (natural_domain) {
+      (void)syscall1(SYS_DOMAIN_TERMINATE, (long)natural_domain);
+      (void)syscall1(SYS_DOMAIN_WAIT, (long)natural_domain);
       (void)syscall1(SYS_CAP_CLOSE, (long)natural_domain);
+    }
   } else {
-    errors |= (unsigned long)(syscall1(SYS_DOMAIN_WAIT, (long)natural_domain) != 0) << 21;
-    errors |= (unsigned long)!wait_exit(natural_child, 37) << 22;
+    errors |= (unsigned long)(syscall1(SYS_DOMAIN_WAIT, (long)natural_domain) != 0 ||
+                              syscall2(SYS_DOMAIN_STATUS, (long)natural_domain, 1) != -IPC_EFAULT)
+              << 21;
+    errors |= (unsigned long)!domain_exited(natural_domain, 37, 0) << 22;
+    errors |= (unsigned long)(syscall3(SYS_WAITPID, natural_child, 0, 1) != -IPC_ECHILD) << 26;
     errors |= (unsigned long)(syscall1(SYS_CAP_CLOSE, (long)natural_domain) != 0) << 23;
   }
   return errors;
@@ -566,13 +586,15 @@ unsigned long ipc_domain_selection(void) {
   unsigned long empty_domain = 0;
   long empty_child = syscall1(SYS_FORK_DOMAIN, (long)&empty_domain);
   if (empty_child == 0)
-    _exit(syscall1(SYS_CAP_CLOSE, (long)pair.send) == -IPC_EBADF &&
+    _exit(getppid() == 0 && syscall1(SYS_CAP_CLOSE, (long)pair.send) == -IPC_EBADF &&
                   syscall1(SYS_CAP_CLOSE, (long)pair.receive) == -IPC_EBADF
               ? 37
               : 96);
   errors |= (unsigned long)(empty_child <= 1 || !empty_domain) << 1;
+  if (empty_domain)
+    errors |= (unsigned long)!domain_exited(empty_domain, 37, 0) << 2;
   if (empty_child > 1)
-    errors |= (unsigned long)!wait_exit(empty_child, 37) << 2;
+    errors |= (unsigned long)(syscall3(SYS_WAITPID, empty_child, 0, 1) != -IPC_ECHILD) << 17;
   if (empty_domain)
     errors |= (unsigned long)(syscall1(SYS_CAP_CLOSE, (long)empty_domain) != 0) << 3;
 
@@ -591,8 +613,10 @@ unsigned long ipc_domain_selection(void) {
               : 96);
   }
   errors |= (unsigned long)(selected_child <= 1 || !selected_domain) << 4;
+  if (selected_domain)
+    errors |= (unsigned long)!domain_exited(selected_domain, 37, 0) << 5;
   if (selected_child > 1)
-    errors |= (unsigned long)!wait_exit(selected_child, 37) << 5;
+    errors |= (unsigned long)(syscall3(SYS_WAITPID, selected_child, 0, 1) != -IPC_ECHILD) << 18;
   if (selected_domain)
     errors |= (unsigned long)(syscall1(SYS_CAP_CLOSE, (long)selected_domain) != 0) << 6;
 
@@ -660,15 +684,19 @@ unsigned long ipc_domain_wait_any(void) {
   }
   if (fast <= 1 || !fast_domain) {
     (void)syscall1(SYS_DOMAIN_TERMINATE, (long)slow_domain);
-    (void)wait_signal(slow, SIGKILL);
+    (void)syscall1(SYS_DOMAIN_WAIT, (long)slow_domain);
     (void)syscall1(SYS_CAP_CLOSE, (long)slow_domain);
     return 2;
   }
 
   unsigned long errors = 0;
   const unsigned long domains[] = {slow_domain, fast_domain};
+  struct moss_domain_exit status = {0};
   errors |= (unsigned long)(syscall2(SYS_DOMAIN_WAIT_ANY, (long)domains, 2) != 1) << 0;
-  errors |= (unsigned long)!wait_exit(fast, 37) << 1;
+  errors |= (unsigned long)(syscall2(SYS_DOMAIN_STATUS, (long)fast_domain, (long)&status) != 0) << 20;
+  errors |= (unsigned long)(status.code != 37 || status.signal != 0) << 1;
+  errors |= (unsigned long)(syscall3(SYS_WAITPID, fast, 0, 1) != -IPC_ECHILD) << 17;
+  errors |= (unsigned long)(syscall2(SYS_DOMAIN_STATUS, (long)fast_domain, 1) != -IPC_EFAULT) << 18;
   errors |= (unsigned long)(syscall2(SYS_DOMAIN_WAIT_ANY, (long)domains, 0) != -IPC_EINVAL) << 2;
   errors |= (unsigned long)(syscall2(SYS_DOMAIN_WAIT_ANY, 0, 1) != -IPC_EFAULT) << 3;
   const unsigned long bad[] = {0};
@@ -690,8 +718,13 @@ unsigned long ipc_domain_wait_any(void) {
   errors |= (unsigned long)(syscall1(SYS_DOMAIN_TERMINATE, (long)slow_domain) != 0) << 9;
   const unsigned long slow_only[] = {slow_domain};
   errors |= (unsigned long)(syscall2(SYS_DOMAIN_WAIT_ANY, (long)slow_only, 1) != 0) << 10;
-  errors |= (unsigned long)(syscall2(SYS_DOMAIN_WAIT_ANY, (long)domains, 2) != 0) << 16;
-  errors |= (unsigned long)!wait_signal(slow, SIGKILL) << 11;
+  errors |= (unsigned long)!domain_exited(slow_domain, 0, SIGKILL) << 11;
+  status = (struct moss_domain_exit){0};
+  errors |= (unsigned long)(syscall2(SYS_DOMAIN_WAIT_ANY, (long)domains, 2) != 0 ||
+                            syscall2(SYS_DOMAIN_STATUS, (long)slow_domain, (long)&status) != 0 || status.code != 0 ||
+                            status.signal != SIGKILL)
+            << 16;
+  errors |= (unsigned long)(syscall3(SYS_WAITPID, slow, 0, 1) != -IPC_ECHILD) << 19;
   if (inspect > 0)
     errors |= (unsigned long)(syscall1(SYS_CAP_CLOSE, inspect) != 0) << 12;
   if (observe > 0)

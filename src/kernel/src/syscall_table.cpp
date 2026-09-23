@@ -265,6 +265,18 @@ public:
       : Object(capability::ObjectType::Domain), process(moss::move(target)) {}
 };
 
+struct DomainExitStatus {
+  i32 code;
+  u32 signal;
+};
+static_assert(sizeof(DomainExitStatus) == 8);
+
+static long copy_domain_exit_status(const process::Process &target, u64 address) noexcept {
+  const u32 signal = target.terminating_signal();
+  const DomainExitStatus status{signal ? 0 : target.exit_code(), signal};
+  return copy_to_user(address, &status, sizeof(status)) < 0 ? -errc::EFAULT : 0;
+}
+
 static long domain_cap_error(ErrorCode error) noexcept {
   if (error == ErrorCode::NotFound)
     return -errc::EBADF;
@@ -309,7 +321,10 @@ static long do_fork(u64 domain_cap_out_addr, const capability::ForkSelection *se
   const u64 user_sp = frame->sp;
 
   // 3. Create child process
-  auto child_proc_result = g_process_manager->create_process(parent_proc->pid());
+  // A native domain has no POSIX parent or wait status. The returned PID is
+  // diagnostic; only the domain capability retains authority after exit.
+  const bool native_domain = domain_cap_out_addr != 0;
+  auto child_proc_result = g_process_manager->create_process(native_domain ? INVALID_PROCESS_ID : parent_proc->pid());
   if (!child_proc_result) {
     log::klog::error("sys_fork: create_process failed");
     return -errc::ENOMEM;
@@ -504,20 +519,21 @@ static long do_fork(u64 domain_cap_out_addr, const capability::ForkSelection *se
   child_thread->on_alt_stack = parent_thread->on_alt_stack;
   child_thread->active_signal_frame = parent_thread->active_signal_frame;
 
-  // 13. Register child in parent's children list (for waitpid)
-  moss_validation_fork_metadata(3, true);
-  const bool child_registered = parent_proc->try_add_child(child_proc->pid());
-  moss_validation_fork_metadata(3, false);
-  if (!child_registered) {
-    cleanup_child(child_proc.get());
-    return -errc::ENOMEM;
+  // Only POSIX fork publishes a parent-child relationship for waitpid.
+  if (!native_domain) {
+    moss_validation_fork_metadata(3, true);
+    const bool child_registered = parent_proc->try_add_child(child_proc->pid());
+    moss_validation_fork_metadata(3, false);
+    if (!child_registered) {
+      cleanup_child(child_proc.get());
+      return -errc::ENOMEM;
+    }
   }
 
   if (domain_cap_out_addr) {
     auto object =
         shared_ptr<capability::Object>::try_make<DomainObject>(moss::abi::bridge::moss_heap_allocate, child_proc);
     if (!object) {
-      parent_proc->remove_child(child_proc->pid());
       cleanup_child(child_proc.get());
       return -errc::ENOMEM;
     }
@@ -526,7 +542,6 @@ static long do_fork(u64 domain_cap_out_addr, const capability::ForkSelection *se
                                 capability::rights::DOMAIN_OBSERVE | capability::rights::TRANSFER |
                                 capability::rights::DUPLICATE);
     if (!handle) {
-      parent_proc->remove_child(child_proc->pid());
       cleanup_child(child_proc.get());
       return domain_cap_error(handle.error());
     }
@@ -534,7 +549,6 @@ static long do_fork(u64 domain_cap_out_addr, const capability::ForkSelection *se
     // both the authority and its unpublished child before returning.
     if (copy_to_user(domain_cap_out_addr, &*handle, sizeof(*handle)) < 0) {
       (void)parent_proc->capabilities().close(*handle);
-      parent_proc->remove_child(child_proc->pid());
       cleanup_child(child_proc.get());
       return -errc::EFAULT;
     }
@@ -711,6 +725,25 @@ long sys_domain_wait_any(long handles_addr, long count_arg, long, long, long, lo
     for (usize i = 0; i < count; ++i)
       targets[i]->domain_exit_wait_queue().remove_waiter(static_cast<void *>(cur));
   }
+}
+
+// Exit status has its own syscall: older wait callers leave unused argument
+// registers unspecified, so extending their argument list breaks the ABI.
+long sys_domain_status(long handle, long status_addr, long, long, long, long) noexcept {
+  if (!status_addr)
+    return -errc::EFAULT;
+  auto caller = process::current_process();
+  if (!caller)
+    return -errc::ESRCH;
+  auto object = caller->capabilities().lookup(static_cast<Handle>(handle), capability::ObjectType::Domain,
+                                              capability::rights::DOMAIN_OBSERVE);
+  if (!object)
+    return domain_cap_error(object.error());
+  auto &target = *static_cast<DomainObject *>((*object).get())->process;
+  const auto state = target.state();
+  if (state != process::ProcessState::Zombie && state != process::ProcessState::Terminated)
+    return -errc::EAGAIN;
+  return copy_domain_exit_status(target, static_cast<u64>(status_addr));
 }
 
 long sys_execve(long pathname_addr, long argv_addr, long envp_addr, long /*unused*/, long /*unused*/,
@@ -3003,7 +3036,8 @@ const SyscallDescriptor SYSCALL_TABLE[static_cast<int>(SyscallNumber::MAX_SYSCAL
     {"domain_terminate", handlers::sys_domain_terminate, 1, true, "Request capability-authorized termination"},
     {"domain_wait", handlers::sys_domain_wait, 1, true, "Wait for a capability-addressed domain to exit"},
     {"fork_domain_select", handlers::sys_fork_domain_select, 3, true, "Fork with selected inherited capabilities"},
-    {"domain_wait_any", handlers::sys_domain_wait_any, 2, true, "Wait for one of several capability-addressed domains"}};
+    {"domain_wait_any", handlers::sys_domain_wait_any, 2, true, "Wait for one of several capability-addressed domains"},
+    {"domain_status", handlers::sys_domain_status, 2, true, "Read a capability-addressed domain's exit cause"}};
 
 // 系统调用分发器实现
 long SyscallDispatcher::dispatch(long syscall_number, long arg0, long arg1, long arg2, long arg3, long arg4,

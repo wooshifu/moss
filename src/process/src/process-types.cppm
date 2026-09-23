@@ -843,6 +843,7 @@ public:
   [[nodiscard]] ProcessState state() const noexcept { return state_; }
   containers::WaitQueue &domain_exit_wait_queue() noexcept { return domain_exit_wq_; }
   [[nodiscard]] i32 exit_code() const noexcept { return exit_code_; }
+  [[nodiscard]] u32 terminating_signal() const noexcept { return terminating_signal_; }
   // The Linux-compatible wait ABI puts normal exit codes in bits 8..15 and
   // fatal signals in the low bits. Keep the cause so _exit(-signo) stays normal.
   [[nodiscard]] i32 wait_status() const noexcept {

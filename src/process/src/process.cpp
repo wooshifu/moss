@@ -679,17 +679,18 @@ KernelResult<VirtAddr> allocate_user_heap(Process *process, usize size) noexcept
     }
   });
 
-  // 5. Publish either a waitable Zombie or an auto-reaped exit.
+  // 5. Native domains have no POSIX parent and retire their PID immediately;
+  // the Process remains alive through any held domain capability.
   auto parent = g_process_manager->find_process(proc->parent_pid());
   const Sigaction chld_action = parent ? parent->signal_action(sig::SIGCHLD) : Sigaction{};
-  // Explicit SIG_IGN discards status; the default SIGCHLD action remains waitable.
-  const bool auto_reap =
-      parent && ((chld_action.flags & sa_flags::SA_NOCLDWAIT) != 0 || chld_action.handler == SIG_IGN);
+  // POSIX children still publish a waitable Zombie unless explicitly ignored.
+  const bool auto_reap = !parent || (chld_action.flags & sa_flags::SA_NOCLDWAIT) != 0 || chld_action.handler == SIG_IGN;
   proc->set_exit_status(exit_code, terminating_signal);
   if (auto_reap) {
     // The scheduler retains proc until after switching off this thread's stack.
     (void)g_process_manager->terminate_process(pid, exit_code);
-    parent->remove_child(pid);
+    if (parent)
+      parent->remove_child(pid);
   } else {
     proc->set_state(ProcessState::Zombie);
   }
@@ -720,7 +721,7 @@ KernelResult<VirtAddr> allocate_user_heap(Process *process, usize size) noexcept
       parent->child_exit_wait_queue().wake_up(wake_waiter);
     }
     moss_validation_child_exit_notified(pid, proc->parent_pid());
-  } else {
+  } else if (proc->parent_pid() != INVALID_PROCESS_ID) {
     log::klog::error("do_exit: PID={} parent PID={} NOT FOUND", pid, proc->parent_pid());
   }
 

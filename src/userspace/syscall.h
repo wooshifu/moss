@@ -78,7 +78,8 @@ enum {
   SYS_DOMAIN_TERMINATE = 145,
   SYS_DOMAIN_WAIT = 146,
   SYS_FORK_DOMAIN_SELECT = 147,
-  SYS_DOMAIN_WAIT_ANY = 148
+  SYS_DOMAIN_WAIT_ANY = 148,
+  SYS_DOMAIN_STATUS = 149
 };
 
 enum {
@@ -112,6 +113,13 @@ struct moss_fork_capability {
   unsigned long handle;
   unsigned long rights;
   unsigned long flags;
+};
+
+// SYS_DOMAIN_STATUS returns this after the domain exits. A signal exit sets
+// signal and leaves code zero; a normal exit sets code and clears signal.
+struct moss_domain_exit {
+  int code;
+  unsigned int signal;
 };
 
 // One capability may accompany each bounded request or reply. Passing a
