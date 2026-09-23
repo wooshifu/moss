@@ -58,6 +58,7 @@ endfunction()
 
 add_subdirectory(mlibc)
 set(BUSYBOX_ELF ${CMAKE_CURRENT_BINARY_DIR}/mlibc/busybox/busybox)
+set(MOSS_INIT_ELF ${CMAKE_CURRENT_BINARY_DIR}/mlibc/init.elf)
 if(MOSS_BUILD_TESTS)
     set(LIBC_VALIDATION_ELF ${CMAKE_CURRENT_BINARY_DIR}/mlibc/libc_validation.elf)
     add_userspace_program(validation)
@@ -92,10 +93,11 @@ endif()
 add_custom_command(
     OUTPUT ${CMAKE_BINARY_DIR}/initramfs.cpio
     COMMAND ${CMAKE_COMMAND} -E copy_if_different ${BUSYBOX_ELF} ${CMAKE_BINARY_DIR}/userspace/busybox.elf
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different ${MOSS_INIT_ELF} ${CMAKE_BINARY_DIR}/userspace/init.elf
     COMMAND uv run ${CMAKE_SOURCE_DIR}/scripts/gen_initramfs.py ${CMAKE_BINARY_DIR}/initramfs.cpio
-            ${CMAKE_BINARY_DIR}/userspace busybox.elf
-    DEPENDS busybox-validation ${BUSYBOX_ELF} ${CMAKE_SOURCE_DIR}/scripts/gen_initramfs.py
-    BYPRODUCTS ${CMAKE_BINARY_DIR}/userspace/busybox.elf
+            ${CMAKE_BINARY_DIR}/userspace init.elf busybox.elf
+    DEPENDS moss-init ${MOSS_INIT_ELF} busybox-validation ${BUSYBOX_ELF} ${CMAKE_SOURCE_DIR}/scripts/gen_initramfs.py
+    BYPRODUCTS ${CMAKE_BINARY_DIR}/userspace/init.elf ${CMAKE_BINARY_DIR}/userspace/busybox.elf
     WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
     COMMENT "Generating initramfs.cpio"
     VERBATIM

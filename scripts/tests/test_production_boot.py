@@ -26,6 +26,7 @@ def test_production_probe_requires_exec_and_subsequent_shell_output(tmp_path, mo
         path.write_bytes(b"image")
     cfg = Artifacts(tmp_path / "manifest.json", "ARM64", "linux-image", {"type": "Debug"}, files)
     script = "import signal, sys, time\n"
+    script += "print('moss-init: supervisor ready', flush=True)\n"
     if mode != "legacy_shell":
         script += "print('BusyBox built-in shell (ash)', flush=True)\n"
     script += r"""
@@ -51,6 +52,8 @@ assert input() == 'echo MOSS_PRODUCTION_READY'
     elif mode != "exit":
         script += "print('\\nMOSS_PRODUCTION_READY\\nmoss$ ', end='', flush=True)\n"
     if mode != "exit":
+        script += "assert input() == 'exit'\n"
+        script += "print('moss-init: restarting shell\\nBusyBox built-in shell (ash)\\nmoss$ ', end='', flush=True)\n"
         script += "time.sleep(30)\n"
     monkeypatch.setattr(boot, "resolve_qemu", lambda _: "unused")
     monkeypatch.setattr(boot, "build_qemu_args", lambda *_a, **_kw: [sys.executable, "-c", script])
@@ -70,11 +73,11 @@ assert input() == 'echo MOSS_PRODUCTION_READY'
     assert result["status"] == ("passed" if mode in ("complete", "gdb_complete") else "error")
     assert result["raw_exit"] is not None
     if mode == "echo_only":
-        assert result["completed_steps"] == 9
+        assert result["completed_steps"] == 10
     if mode == "legacy_shell":
-        assert result["completed_steps"] == 0
+        assert result["completed_steps"] == 1
     if mode == "applets_failed":
-        assert result["completed_steps"] == 5
+        assert result["completed_steps"] == 6
     if mode == "late_panic":
         assert "panicked" in result["observed"]
     if mode in ("gdb_unverified", "gdb_failure"):

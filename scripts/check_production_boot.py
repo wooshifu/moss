@@ -1,4 +1,4 @@
-"""Exercise the unmodified production image through its real interactive shell."""
+"""Exercise the production supervisor and its real interactive shell."""
 
 import argparse
 import hashlib
@@ -114,9 +114,9 @@ quit
         input_timing=("registration_barrier" if registration_race else "first_read_barrier") if gdb else "prompt",
     )
     child, debugger, console, stage, pending = None, None, None, 0, b""
-    # Require the real ash, applet lookup, pipelines and mutable files as well
-    # as explicit BusyBox ELF execution and a command after child reaping.
+    # Require real ash commands, child reaping and a shell restart by PID 1.
     steps = [
+        (b"moss-init: supervisor ready", None),
         (b"built-in shell (ash)", None),
         (b"moss$ ", b"/busybox.elf ash -c 'printf \"MOSS_EXEC_READY\\n\"'\n"),
         (b"\nMOSS_EXEC_READY\n", None),
@@ -136,6 +136,9 @@ quit
         (b"\nMOSS_NESTED_SHELL\n", None),
         (b"moss$ ", b"echo MOSS_PRODUCTION_READY\n"),
         (b"\nMOSS_PRODUCTION_READY\n", None),
+        (b"moss$ ", b"exit\n"),
+        (b"moss-init: restarting shell", None),
+        (b"built-in shell (ash)", None),
         (b"moss$ ", None),
     ]
     started = time.monotonic()
@@ -187,7 +190,7 @@ quit
                             child.stdin.flush()
                     stage += 1
                 if stage == len(steps) and (not debugger or debugger.poll() is not None):
-                    result.update(status="passed", observed="busybox_shell_exec_wait")
+                    result.update(status="passed", observed="supervised_busybox_shell_restart")
                     break
                 if child.poll() is not None:
                     result["observed"] = "unexpected_exit"

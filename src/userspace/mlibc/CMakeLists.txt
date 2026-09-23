@@ -78,3 +78,31 @@ add_custom_command(
     VERBATIM
 )
 add_subdirectory("${MOSS_THIRD_PARTY}/busybox" busybox)
+
+add_executable(moss-init EXCLUDE_FROM_ALL ../moss_init.c $<TARGET_OBJECTS:mlibc-crt1>)
+target_compile_options(moss-init PRIVATE ${MLIBC_ARCH_FLAGS} -O2 -ffreestanding -fno-stack-protector)
+target_include_directories(moss-init SYSTEM PRIVATE "${MLIBC_SYSROOT}/usr/include")
+target_link_libraries(moss-init PRIVATE mlibc ${MLIBC_BUILTINS_TARGET})
+target_link_options(
+    moss-init
+    PRIVATE
+    ${MLIBC_ARCH_FLAGS}
+    -nostdlib
+    -static
+    -fuse-ld=lld
+    -Wl,--image-base=0x200000000,-z,max-page-size=4096
+)
+set_target_properties(
+    moss-init
+    PROPERTIES OUTPUT_NAME init.unstripped
+               SUFFIX .elf
+               LINKER_LANGUAGE C
+               RUNTIME_OUTPUT_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}"
+)
+add_custom_command(
+    TARGET moss-init
+    POST_BUILD
+    COMMAND ${LLVM_STRIP} --strip-debug -o "${CMAKE_CURRENT_BINARY_DIR}/init.elf" $<TARGET_FILE:moss-init>
+    BYPRODUCTS "${CMAKE_CURRENT_BINARY_DIR}/init.elf"
+    VERBATIM
+)
