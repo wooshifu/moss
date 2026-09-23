@@ -22,6 +22,9 @@ extern "C" [[gnu::weak, gnu::noinline]] void moss_validation_fork_metadata(unsig
 // The observer never substitutes an allocation result in production.
 extern "C" [[gnu::weak, gnu::noinline]] void moss_validation_exec_allocation(unsigned /*unused*/, bool /*unused*/,
                                                                              moss::kernel::usize /*unused*/) noexcept {}
+// Validation can replace the published source between pathname and vector reads.
+extern "C" [[gnu::weak, gnu::noinline]] void moss_validation_exec_source_snapshot(moss::kernel::PhysAddr /*unused*/,
+                                                                                   moss::kernel::VirtAddr /*unused*/) noexcept {}
 
 namespace moss::kernel::syscall {
 
@@ -90,12 +93,14 @@ static long copy_to_user(u64 user_dst, const void *kernel_src, usize len) noexce
 /// Copy a NUL-terminated string from user space into a kernel buffer.
 /// Check each byte through the shared copy policy, including across VMAs.
 /// No NUL within the bounded buffer is an error, not a truncated pathname.
-static long copy_string_from_user(char *kernel_dst, u64 user_src, usize max_len) noexcept {
+static long copy_string_from_user(char *kernel_dst, u64 user_src, usize max_len,
+                                  process::AddressSpace *source_as = nullptr) noexcept {
   if (!mm::PageTableManager::is_user_range(user_src, 1) || max_len == 0) {
     return -errc::EFAULT;
   }
   for (usize i = 0; i < max_len; ++i) {
-    if (copy_from_user(&kernel_dst[i], user_src + i, 1) < 0) {
+    if (source_as ? source_as->copy_from_user(&kernel_dst[i], user_src + i, 1) != 0
+                  : copy_from_user(&kernel_dst[i], user_src + i, 1) < 0) {
       return -errc::EFAULT;
     }
     if (kernel_dst[i] == '\0') {
@@ -487,16 +492,21 @@ long sys_execve(long pathname_addr, long argv_addr, long envp_addr, long /*unuse
   using namespace moss::kernel::elf;
   Thread *cur = g_scheduler ? CfsScheduler::get_current_task() : nullptr;
   auto proc = cur && g_process_manager ? g_process_manager->find_process(cur->owner_pid) : shared_ptr<Process>{};
-  if (!proc || !proc->address_space()) {
+  auto source_as = proc ? proc->address_space() : shared_ptr<AddressSpace>{};
+  if (!source_as) {
     return -errc::ESRCH;
   }
 
+  // All exec inputs must come from one published version, even if another
+  // thread replaces the Process address space during preparation.
   // Exec retains its narrower 256-byte path limit (including NUL), separate
   // from the VFS full-path limit; its exact original sizing is unrecorded.
   char pathname[256];
-  if (long error = copy_string_from_user(pathname, static_cast<u64>(pathname_addr), sizeof(pathname)); error < 0) {
+  if (long error = copy_string_from_user(pathname, static_cast<u64>(pathname_addr), sizeof(pathname), source_as.get());
+      error < 0) {
     return error;
   }
+  moss_validation_exec_source_snapshot(source_as->pgd_phys, static_cast<VirtAddr>(argv_addr));
 
   // Bounded native exec contract: argv + envp together have at most 128
   // strings and 16 KiB of bytes including their terminators. Never truncate.
@@ -533,7 +543,7 @@ long sys_execve(long pathname_addr, long argv_addr, long envp_addr, long /*unuse
         return -errc::EFAULT;
       }
       u64 pointer = 0;
-      if (copy_from_user(&pointer, base + offset, sizeof(pointer)) < 0) {
+      if (source_as->copy_from_user(&pointer, base + offset, sizeof(pointer)) != 0) {
         return -errc::EFAULT;
       }
       if (!pointer) {
@@ -542,7 +552,8 @@ long sys_execve(long pathname_addr, long argv_addr, long envp_addr, long /*unuse
       if (args->count == MAX_STRINGS || args->used == STRING_BYTES) {
         return -errc::E2BIG;
       }
-      const long error = copy_string_from_user(args->strings + args->used, pointer, STRING_BYTES - args->used);
+      const long error =
+          copy_string_from_user(args->strings + args->used, pointer, STRING_BYTES - args->used, source_as.get());
       if (error < 0) {
         return error == -errc::ENAMETOOLONG ? -errc::E2BIG : error;
       }
@@ -558,6 +569,7 @@ long sys_execve(long pathname_addr, long argv_addr, long envp_addr, long /*unuse
   if (long error = capture(envp_addr); error < 0) {
     return error;
   }
+  source_as.reset();
 
   shared_ptr<ExecutableImage> image;
   const u8 *image_data;

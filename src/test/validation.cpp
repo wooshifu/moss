@@ -5963,6 +5963,7 @@ void declare_cases() {
         "allocation_rollback",
         "mutable_snapshot_rollback",
         "boundary_load_plan",
+        "source_version",
     };
     for (const auto *name : names) {
       ut::register_test(name, empty_case);
@@ -6602,6 +6603,53 @@ extern "C" void moss_validation_exec_allocation(unsigned stage, bool entering, u
   }
 }
 
+namespace {
+unsigned exec_source_swaps = 0;
+}
+
+extern "C" void moss_validation_exec_source_snapshot(PhysAddr root, VirtAddr argv) noexcept {
+  if (!ut::same_id(selection, "users.exec") || !ut::same_id(active_case, "source_version")) {
+    return;
+  }
+  auto owner = process::current_process();
+  auto source = owner ? owner->address_space() : shared_ptr<process::AddressSpace>{};
+  const VirtAddr page = argv & ~(VirtAddr{page_size} - 1);
+  if (!ut::expect(source && source->pgd_phys == root && argv - page <= page_size - sizeof(VirtAddr))) {
+    return;
+  }
+  auto replacement = process::user_space::create_user_address_space();
+  auto frame = mm::allocate_pages(0);
+  if (!ut::expect(replacement && frame)) {
+    if (frame) {
+      (void)mm::free_pages(*frame, 0);
+    }
+    return;
+  }
+  auto *bytes = reinterpret_cast<u8 *>(phys_to_virt(*frame));
+  if (!ut::expect(source->copy_from_user(bytes, page, page_size) == 0)) {
+    (void)mm::free_pages(*frame, 0);
+    return;
+  }
+  VirtAddr name = 0;
+  __builtin_memcpy(&name, bytes + argv - page, sizeof(name));
+  if (!ut::expect(name >= page && name - page <= page_size - sizeof("fail"))) {
+    (void)mm::free_pages(*frame, 0);
+    return;
+  }
+  __builtin_memcpy(bytes + name - page, "fail", sizeof("fail"));
+  if (!ut::expect((*replacement)->add_vma(page, page + page_size, process::vma_flags::READ | process::vma_flags::WRITE,
+                                          process::VmaType::MMAP) &&
+                  mm::PageTableManager::map_user_page((*replacement)->pgd_phys, page, *frame,
+                                                      mm::page_perms::USER_RW))) {
+    (void)mm::free_pages(*frame, 0);
+    return;
+  }
+  // The syscall remains on its retained old hardware root until exec commits;
+  // no user instruction runs from this deliberately incomplete replacement.
+  (void)owner->set_address_space(moss::move(*replacement));
+  ++exec_source_swaps;
+}
+
 extern "C" void moss_validation_user_copy(PhysAddr root, VirtAddr address) noexcept {
   if (user_copy_version) {
     user_copy_version->replace(root, address);
@@ -6844,6 +6892,9 @@ extern "C" long moss_validation_call(long op, long arg1, [[maybe_unused]] long a
     ut::expect(arg1 != 0 && affinity_valid());
     if (is_lifecycle()) {
       ut::expect(lifecycle_complete && dispatch_boundary_checked);
+    }
+    if (ut::same_id(selection, "users.exec") && ut::same_id(active_case, "source_version")) {
+      ut::expect(exec_source_swaps == 1);
     }
     end_case();
     return failed ? 0 : 1;

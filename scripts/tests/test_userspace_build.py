@@ -247,11 +247,13 @@ def test_vendored_runtime_build_is_native_and_incremental(tmp_path, arch, machin
     shutil.copytree(repository / "third_party", root / "third_party", symlinks=True)
     (root / "scripts").mkdir()
     shutil.copy2(repository / "scripts/gen_initramfs.py", root / "scripts/gen_initramfs.py")
+    shutil.copy2(repository / "scripts/gen_busybox_headers.py", root / "scripts/gen_busybox_headers.py")
     (root / "CMakeLists.txt").write_text(
         """cmake_minimum_required(VERSION 3.31)
 set(CMAKE_TRY_COMPILE_TARGET_TYPE STATIC_LIBRARY)
 project(production_userspace LANGUAGES C CXX ASM)
 set(MOSS_BUILD_TESTS OFF)
+find_program(UV_EXECUTABLE uv REQUIRED)
 add_subdirectory(src/userspace)
 """
     )

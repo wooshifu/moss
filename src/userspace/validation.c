@@ -501,6 +501,30 @@ static unsigned long exec_boundary_load_plan(void) {
   return child > 0 && waited == child && status == (37 << 8) ? 0 : 1 | (unsigned long)status << 8;
 }
 
+static unsigned long exec_source_version(void) {
+  long child = fork();
+  if (child == 0) {
+    // Keep the vector and its string on one page so the validation hook can
+    // publish a distinct version after exec has read its pathname.
+    static struct {
+      const char *argv[2];
+      char name[8];
+    } source __attribute__((aligned(4096)));
+    source.name[0] = 'e';
+    source.name[1] = 'x';
+    source.name[2] = 'e';
+    source.name[3] = 'c';
+    source.name[4] = 0;
+    source.argv[0] = source.name;
+    source.argv[1] = 0;
+    syscall3(SYS_EXECVE, (long)"/validation_child.elf", (long)source.argv, 0);
+    _exit(98);
+  }
+  int status = 0;
+  long waited = child > 0 ? waitpid(child, &status, 0) : -1;
+  return child > 0 && waited == child && status == (37 << 8) ? 0 : 1 | (unsigned long)status << 8;
+}
+
 // Control 12/13 exhausts/releases physical pages while the writable test VMA
 // remains valid but absent: a copy must contain the allocation fault as EFAULT.
 static unsigned long uaccess_allocation_fault(void) {
@@ -3307,7 +3331,8 @@ void _start(long argc, const char **argv) {
       EXEC_ALLOCATION_CASE = 25,
       EXEC_MUTABLE_CASE = 26,
       EXEC_BOUNDARY_CASE = 27,
-      EXEC_CASES = 28,
+      EXEC_SOURCE_VERSION_CASE = 28,
+      EXEC_CASES = 29,
     };
     for (long test = 0; test < EXEC_CASES; ++test) {
       control(1, test, 0);
@@ -3320,6 +3345,8 @@ void _start(long argc, const char **argv) {
         errors = exec_mutable_snapshot_rollback();
       } else if (test == EXEC_BOUNDARY_CASE) {
         errors = exec_boundary_load_plan();
+      } else if (test == EXEC_SOURCE_VERSION_CASE) {
+        errors = exec_source_version();
       }
       if (!control(2, errors == 0, (long)errors)) {
         break;
