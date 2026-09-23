@@ -28,7 +28,6 @@ import moss.interrupts;
 import moss.drivers;
 import moss.fdt;
 import moss.initramfs;
-import moss.ipc;
 import moss.process;
 import moss.timer;
 import moss.logging;
@@ -48,19 +47,17 @@ export namespace moss::kernel {
 
 namespace log = moss::kernel::logging;
 
-// Kernel subsystem state
-enum class SubsystemState : u8 { Uninitialized = 0, Initializing = 1, Active = 2, Error = 3 };
-
 // Kernel boot phase
+// Native IPC endpoints and Memory Objects are created on demand, so they do
+// not need a global boot phase or a kernel-owned service registry.
 enum class BootPhase : u8 {
   EarlyInit = 0,     // Early initialization (after assembly)
   MemoryInit = 1,    // Memory management initialization
   SchedulerInit = 2, // Scheduler initialization
-  IpcInit = 3,       // IPC system initialization
-  DeviceInit = 4,    // Device management initialization
-  ServiceInit = 5,   // System service startup
-  UserInit = 6,      // User-space initialization
-  Completed = 7      // Boot completed
+  DeviceInit = 3,    // Device management initialization
+  ServiceInit = 4,   // System service startup
+  UserInit = 5,      // User-space initialization
+  Completed = 6     // Boot completed
 };
 
 // Kernel statistics
@@ -73,7 +70,6 @@ struct KernelStats {
   u32 total_threads;      // Total thread count
   u64 context_switches;   // Context switch count
   u64 interrupts_handled; // Interrupts handled
-  u64 ipc_messages;       // IPC message count
   u32 registered_devices; // Registered device count
 };
 
@@ -82,23 +78,17 @@ class Kernel {
 private:
   // Boot state
   BootPhase current_phase_;
-  [[maybe_unused]] SubsystemState subsystem_states_[8]; // Unused fixed bookkeeping budget; exact sizing is unrecorded.
-
   // Core subsystem instances
   containers::ContainerLibrary *container_lib_;
   mm::PageTableManager *page_table_manager_;
   process::ProcessManager *process_manager_;
   process::CfsScheduler *scheduler_;
   process::LoadBalancer *load_balancer_;
-  ipc::SharedMemoryManager *shared_memory_manager_;
-  ipc::IpcManager *ipc_manager_;
   interrupts::GenericInterruptController *gic_;
   drivers::DeviceManager *device_manager_;
 
   // Boot time recording
   u64 boot_start_time_;
-  u64 phase_start_times_[8]; // Indexed by the eight BootPhase ordinals, not subsystem counts.
-
   // Kernel configuration
   struct KernelConfig {
     bool enable_smp;             // Enable multi-core support
@@ -112,10 +102,9 @@ private:
 
 public:
   Kernel() noexcept
-      : current_phase_(BootPhase::EarlyInit), subsystem_states_{SubsystemState::Uninitialized}, container_lib_(nullptr),
-        page_table_manager_(nullptr), process_manager_(nullptr), scheduler_(nullptr), load_balancer_(nullptr),
-        shared_memory_manager_(nullptr), ipc_manager_(nullptr), gic_(nullptr), device_manager_(nullptr),
-        boot_start_time_(0), phase_start_times_{0} {
+      : current_phase_(BootPhase::EarlyInit), container_lib_(nullptr), page_table_manager_(nullptr),
+        process_manager_(nullptr), scheduler_(nullptr), load_balancer_(nullptr), gic_(nullptr), device_manager_(nullptr),
+        boot_start_time_(0) {
     // Fixed default budgets: 256 processes, 16 threads/process, 16 MiB heap
     // and a 10 ms configured timeslice. Their exact sizing/tuning evidence
     // is not recorded here; review the consuming subsystem before changing them.
@@ -230,16 +219,6 @@ public:
       device_manager_ = nullptr;
     }
 
-    if (ipc_manager_) {
-      delete ipc_manager_;
-      ipc_manager_ = nullptr;
-    }
-
-    if (shared_memory_manager_) {
-      delete shared_memory_manager_;
-      shared_memory_manager_ = nullptr;
-    }
-
     if (scheduler_) {
       delete scheduler_;
       scheduler_ = nullptr;
@@ -282,11 +261,6 @@ public:
       stats.interrupts_handled = gic_stats.total_interrupts;
     }
 
-    if (ipc_manager_) {
-      auto ipc_stats = ipc_manager_->get_statistics();
-      stats.ipc_messages = ipc_stats.messages_processed;
-    }
-
     if (device_manager_) {
       auto dev_stats = device_manager_->get_statistics();
       stats.registered_devices = dev_stats.total_devices;
@@ -306,7 +280,6 @@ public:
     log::klog::info("Uptime: {} cycles", stats.uptime);
     log::klog::info("Active processes: {}", stats.active_processes);
     log::klog::info("Interrupts handled: {}", stats.interrupts_handled);
-    log::klog::info("IPC messages: {}", stats.ipc_messages);
     log::klog::info("Registered devices: {}", stats.registered_devices);
     log::klog::info("===============================");
   }
@@ -314,14 +287,13 @@ public:
 private:
   // Phase-by-phase initialization
   [[nodiscard]] VoidResult initialize_phase_by_phase() noexcept {
-    const char *phase_names[] = {"Early init",        "Memory management", "Scheduler",  "IPC system",
-                                 "Device management", "System services",   "User-space", "Complete"};
+    const char *phase_names[] = {"Early init", "Memory management", "Scheduler", "Device management",
+                                 "System services", "User-space", "Complete"};
 
-    // Ordinals 0..6 perform initialization; Completed=7 is set by initialize()
+    // Ordinals before Completed perform initialization; run() publishes it
     // only after all stages succeed. Keep this bound synchronized with BootPhase.
-    for (int phase = 0; phase < 7; ++phase) {
+    for (int phase = 0; phase < static_cast<int>(BootPhase::Completed); ++phase) {
       current_phase_ = static_cast<BootPhase>(phase);
-      phase_start_times_[phase] = get_current_time();
 
       // Direct UART: avoid klog lock contention after secondary CPUs start
       early_debug_print("[boot] Phase ");
@@ -344,9 +316,6 @@ private:
         break;
       case BootPhase::SchedulerInit:
         result = initialize_scheduler();
-        break;
-      case BootPhase::IpcInit:
-        result = initialize_ipc();
         break;
       case BootPhase::DeviceInit:
         result = initialize_devices();
@@ -556,31 +525,6 @@ private:
   }
 
   // IPC system initialization
-  [[nodiscard]] VoidResult initialize_ipc() noexcept {
-    // Create shared memory manager
-    shared_memory_manager_ = new ipc::SharedMemoryManager();
-    if (!shared_memory_manager_) {
-      return VoidResult{ErrorCode::OutOfMemory};
-    }
-
-    // Set global shared memory manager pointer
-    ::moss::kernel::ipc::g_shared_memory_manager = shared_memory_manager_;
-
-    // Create IPC manager
-    ipc_manager_ = new ipc::IpcManager(shared_memory_manager_);
-    if (!ipc_manager_) {
-      delete shared_memory_manager_;
-      shared_memory_manager_ = nullptr;
-      ::moss::kernel::ipc::g_shared_memory_manager = nullptr;
-      return VoidResult{ErrorCode::OutOfMemory};
-    }
-
-    // Set global IPC manager pointer
-    ::moss::kernel::ipc::g_ipc_manager = ipc_manager_;
-
-    return VoidResult{};
-  }
-
   // Device management initialization
   [[nodiscard]] VoidResult initialize_devices() noexcept {
     // Borrow the boot-owned controller. Reinitializing the live hardware here

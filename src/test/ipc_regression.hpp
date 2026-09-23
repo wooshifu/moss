@@ -132,11 +132,18 @@ inline void shared_lifecycle() {
 
 inline void service_lifecycle() {
   namespace ipc = moss::kernel::ipc;
-  if (!boost::ut::expect(ipc::g_shared_memory_manager != nullptr)) {
-    return;
-  }
-  const auto regions = ipc::g_shared_memory_manager->get_statistics().total_regions;
-  ipc::IpcManager manager(ipc::g_shared_memory_manager);
+  ipc::SharedMemoryManager shared;
+  // This legacy channel fixture looks up backing through a global pointer.
+  // Keep that binding inside validation so production needs no IPC manager.
+  struct ScopedManager {
+    ipc::SharedMemoryManager *previous;
+    explicit ScopedManager(ipc::SharedMemoryManager *current) : previous(ipc::g_shared_memory_manager) {
+      ipc::g_shared_memory_manager = current;
+    }
+    ~ScopedManager() { ipc::g_shared_memory_manager = previous; }
+  } binding(&shared);
+  const auto regions = shared.get_statistics().total_regions;
+  ipc::IpcManager manager(&shared);
   auto service = manager.register_service(1, "validation-service", 1);
   if (!boost::ut::expect(static_cast<bool>(service))) {
     return;
@@ -152,7 +159,7 @@ inline void service_lifecycle() {
   const auto active = manager.get_statistics();
   boost::ut::expect(active.total_services == 1 && active.total_channels == 1);
   boost::ut::expect(static_cast<bool>(manager.disconnect(*channel, 2)));
-  boost::ut::expect(ipc::g_shared_memory_manager->get_statistics().total_regions == regions);
+  boost::ut::expect(shared.get_statistics().total_regions == regions);
   auto reconnected = manager.connect_to_service(3, *service);
   if (!boost::ut::expect(static_cast<bool>(reconnected))) {
     return;
@@ -163,7 +170,7 @@ inline void service_lifecycle() {
   boost::ut::expect(manager.disconnect(*reconnected, 3).error() == moss::kernel::KernelError::NotFound);
   auto absent = manager.connect_to_service_by_name(2, "validation-service");
   boost::ut::expect(!absent && absent.error() == moss::kernel::KernelError::NotFound);
-  boost::ut::expect(ipc::g_shared_memory_manager->get_statistics().total_regions == regions);
+  boost::ut::expect(shared.get_statistics().total_regions == regions);
 }
 
 } // namespace moss::test::ipc_regression

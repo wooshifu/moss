@@ -52,7 +52,6 @@ target_link_libraries(
             moss_mm
             moss_drivers
             moss_interrupts
-            moss_ipc
             moss_capability
             moss_timer
             moss_process

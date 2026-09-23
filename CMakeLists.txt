@@ -74,6 +74,8 @@ else()
     message(FATAL_ERROR "Unsupported architecture: ${MOSS_TARGET_ARCH}")
 endif()
 
+option(MOSS_BUILD_TESTS "构建MOSS内核单元测试" ON)
+
 # === 添加子模块（按依赖顺序）===
 # intrinsics 是零依赖的基础模块，必须最先编译
 add_subdirectory(src/intrinsics)
@@ -92,7 +94,9 @@ add_subdirectory(src/mm)
 add_subdirectory(src/capability)
 add_subdirectory(src/drivers)
 add_subdirectory(src/interrupts)
-add_subdirectory(src/ipc)
+if(MOSS_BUILD_TESTS)
+    add_subdirectory(src/ipc)
+endif()
 add_subdirectory(src/logging)
 add_subdirectory(src/timer)
 add_subdirectory(src/process)
@@ -127,7 +131,6 @@ target_link_libraries(
             moss_capability
             moss_drivers
             moss_interrupts
-            moss_ipc
             moss_timer
             moss_process
             moss_vfs
@@ -179,7 +182,6 @@ if(MOSS_TARGET_ARCH STREQUAL "ARM64"
    OR MOSS_TARGET_ARCH STREQUAL "RISCV64"
    OR MOSS_TARGET_ARCH STREQUAL "X64"
 )
-    option(MOSS_BUILD_TESTS "构建MOSS内核单元测试" ON)
     add_subdirectory(src/userspace)
     add_dependencies(moss.elf initramfs)
 endif()
@@ -192,8 +194,6 @@ add_custom_target(
 )
 
 # === 单元测试支持 (独立的 moss.test.elf) ===
-option(MOSS_BUILD_TESTS "构建MOSS内核单元测试" ON)
-
 if(MOSS_BUILD_TESTS)
     message(STATUS "启用单元测试构建 (独立 moss.test.elf)")
     add_subdirectory(src/test)

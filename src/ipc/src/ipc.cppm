@@ -1036,15 +1036,9 @@ private:
   }
 };
 
-// 全局IPC管理器实例
-extern IpcManager *g_ipc_manager;
-
 // === Module-level variable definitions ===
 
 // Global shared memory manager instance
 SharedMemoryManager *g_shared_memory_manager = nullptr;
-
-// Global IPC manager instance
-IpcManager *g_ipc_manager = nullptr;
 
 } // namespace moss::kernel::ipc

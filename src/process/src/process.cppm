@@ -11,7 +11,6 @@ import moss.smart_ptr;
 import moss.arch;
 import moss.containers;
 import moss.mm;
-import moss.ipc;
 export import moss.capability;
 import moss.interrupts;
 import moss.platform;

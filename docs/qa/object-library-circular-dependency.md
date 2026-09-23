@@ -1,5 +1,7 @@
 # OBJECT 库循环依赖的解决办法
 
+本文保留早期构建依赖问题的诊断记录。下方 `moss_ipc` 依赖图是历史示例；当前旧 IPC 模块仅作为 `moss_ipc_validation` 链接到验证镜像，生产内核使用独立的控制 IPC 和 Memory Object 实现。
+
 ## 问题背景
 
 MOSS 内核使用 CMake OBJECT library 组织各模块。OBJECT library 在链接阶段直接将 `.o` 文件合并进最终的 ELF，不会像 STATIC library 那样丢弃"未引用"的符号——这对内核至关重要，因为中断处理函数、`extern "C"` 入口等符号只从汇编代码引用，链接器无法通过 C++ 符号表发现它们。

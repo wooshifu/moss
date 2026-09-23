@@ -2,6 +2,8 @@
 
 The validation executable links the same production object modules and follows the same boot, memory, VFS, scheduler, userspace entry and exec paths as `moss.elf`. Its initramfs contains deterministic fixtures and real userspace validation programs. The framework is `ut_kernel`, from `unit_kenel`, not Unity.
 
+The historical `containers.ipc_*` cases link `moss.ipc` only into the validation image. They exercise the old channel and service-manager algorithms, not the production IPC path. `users.ipc` and `moss-production-boot` exercise capability-backed control IPC and Memory Objects used by production.
+
 ## Build and Test
 
 Run from the repository root. Replace `arm64` with `x64` or `riscv64` for the other architectures.

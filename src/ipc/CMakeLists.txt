@@ -1,13 +1,15 @@
 # src/ipc/CMakeLists.txt
 
-add_library(moss_ipc OBJECT)
+# Historical IPC algorithms remain available to the validation image while
+# production uses capability-backed control IPC and Memory Objects.
+add_library(moss_ipc_validation OBJECT)
 target_sources(
-    moss_ipc
+    moss_ipc_validation
     PUBLIC FILE_SET CXX_MODULES FILES src/ipc.cppm
 )
 
 target_link_libraries(
-    moss_ipc
+    moss_ipc_validation
     PRIVATE moss_core
             moss_abi
             moss_aal
@@ -15,4 +17,4 @@ target_link_libraries(
             moss_mm
 )
 
-message(STATUS "IPC模块配置完成")
+message(STATUS "Legacy IPC validation fixture configured")
