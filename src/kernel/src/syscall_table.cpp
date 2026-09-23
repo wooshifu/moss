@@ -2770,9 +2770,9 @@ const SyscallDescriptor SYSCALL_TABLE[static_cast<int>(SyscallNumber::MAX_SYSCAL
     {"cap_duplicate", handlers::sys_cap_duplicate, 2, true, "Duplicate with reduced rights"},
     {"cap_set_inherit", handlers::sys_cap_set_inherit, 2, true, "Select fork/exec inheritance"},
     {"ipc_create", handlers::sys_ipc_create, 1, true, "Create a bounded control endpoint"},
-    {"ipc_call", handlers::sys_ipc_call, 6, true, "Call a control endpoint"},
-    {"ipc_receive", handlers::sys_ipc_receive, 4, true, "Receive a control request"},
-    {"ipc_reply", handlers::sys_ipc_reply, 3, true, "Complete a pending call"}};
+    {"ipc_call", handlers::sys_ipc_call, 4, true, "Call a control endpoint"},
+    {"ipc_receive", handlers::sys_ipc_receive, 3, true, "Receive a control request"},
+    {"ipc_reply", handlers::sys_ipc_reply, 2, true, "Complete a pending call"}};
 
 // 系统调用分发器实现
 long SyscallDispatcher::dispatch(long syscall_number, long arg0, long arg1, long arg2, long arg3, long arg4,

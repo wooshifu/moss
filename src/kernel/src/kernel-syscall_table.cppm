@@ -298,11 +298,9 @@ long sys_cap_close(long handle, long arg1, long arg2, long arg3, long arg4, long
 long sys_cap_duplicate(long handle, long rights, long arg2, long arg3, long arg4, long arg5) noexcept;
 long sys_cap_set_inherit(long handle, long inherit, long arg2, long arg3, long arg4, long arg5) noexcept;
 long sys_ipc_create(long pair_addr, long arg1, long arg2, long arg3, long arg4, long arg5) noexcept;
-long sys_ipc_call(long endpoint, long request_addr, long request_size, long response_addr, long response_capacity,
-                  long deadline_ns) noexcept;
-long sys_ipc_receive(long endpoint, long request_addr, long request_capacity, long reply_addr, long arg4,
-                     long arg5) noexcept;
-long sys_ipc_reply(long reply, long response_addr, long response_size, long arg3, long arg4, long arg5) noexcept;
+long sys_ipc_call(long endpoint, long request_addr, long response_addr, long deadline_ns, long arg4, long arg5) noexcept;
+long sys_ipc_receive(long endpoint, long request_addr, long reply_addr, long arg3, long arg4, long arg5) noexcept;
+long sys_ipc_reply(long reply, long response_addr, long arg2, long arg3, long arg4, long arg5) noexcept;
 
 // Default handler for unimplemented syscalls
 long sys_not_implemented(long arg0, long arg1, long arg2, long arg3, long arg4, long arg5) noexcept;

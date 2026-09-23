@@ -228,7 +228,7 @@ CATALOG = {
         "clock_relative_interrupted",
         "clock_absolute_interrupted",
     ],
-    "users.ipc": ["roundtrip", "deadline", "peer_death", "signal_cancel"],
+    "users.ipc": ["roundtrip", "deadline", "peer_death", "signal_cancel", "capability_transfer"],
     "users.signals": [
         "basic_handler",
         "nested_signals",

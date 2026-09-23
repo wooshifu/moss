@@ -22,6 +22,7 @@ class Object {
   atomic<u32> installed_handles_{0};
 
   friend class Table;
+  friend class Escrow;
   void acquire_handle() noexcept { (void)installed_handles_.fetch_add(1, memory_order_relaxed); }
   void release_handle() noexcept {
     if (installed_handles_.fetch_sub(1, memory_order_acq_rel) == 1)
@@ -40,6 +41,45 @@ public:
   [[nodiscard]] ObjectType type() const noexcept { return type_; }
 };
 
+// In-flight control messages retain authority until a destination table has
+// installed it or the message is abandoned. A mere shared_ptr keeps memory
+// alive but would falsely report peer closure when the source handle closes.
+class Escrow {
+  shared_ptr<Object> object_{};
+  u32 rights_{0};
+
+  friend class Table;
+  Escrow(shared_ptr<Object> object, u32 rights) noexcept : object_(moss::move(object)), rights_(rights) {
+    object_->acquire_handle();
+  }
+
+public:
+  Escrow() noexcept = default;
+  ~Escrow() noexcept { reset(); }
+  Escrow(const Escrow &) = delete;
+  Escrow &operator=(const Escrow &) = delete;
+  Escrow(Escrow &&other) noexcept : object_(moss::move(other.object_)), rights_(other.rights_) { other.rights_ = 0; }
+  Escrow &operator=(Escrow &&other) noexcept {
+    if (this != &other) {
+      reset();
+      object_ = moss::move(other.object_);
+      rights_ = other.rights_;
+      other.rights_ = 0;
+    }
+    return *this;
+  }
+
+  [[nodiscard]] explicit operator bool() const noexcept { return static_cast<bool>(object_); }
+  [[nodiscard]] u32 rights() const noexcept { return rights_; }
+  void reset() noexcept {
+    if (object_) {
+      auto retired = moss::move(object_);
+      rights_ = 0;
+      retired->release_handle();
+    }
+  }
+};
+
 class Table {
   // ponytail: fixed slots bound per-process memory and lock hold time; grow
   // this table when real service workloads need more simultaneous handles.
@@ -49,6 +89,7 @@ class Table {
     Handle handle{INVALID_HANDLE};
     u32 rights{0};
     bool inheritable{false};
+    bool published{false};
     shared_ptr<Object> object{};
   };
 
@@ -58,7 +99,7 @@ class Table {
   // stale handle name a later object. Exhaustion is safer than wraparound.
   Handle next_handle_{1};
 
-  [[nodiscard]] Entry *find_locked(Handle handle) noexcept {
+  [[nodiscard]] Entry *find_any_locked(Handle handle) noexcept {
     if (handle == INVALID_HANDLE)
       return nullptr;
     for (auto &entry : entries_) {
@@ -68,17 +109,23 @@ class Table {
     return nullptr;
   }
 
+  [[nodiscard]] Entry *find_locked(Handle handle) noexcept {
+    Entry *entry = find_any_locked(handle);
+    return entry && entry->published ? entry : nullptr;
+  }
+
   [[nodiscard]] const Entry *find_locked(Handle handle) const noexcept {
     if (handle == INVALID_HANDLE)
       return nullptr;
     for (const auto &entry : entries_) {
-      if (entry.handle == handle)
+      if (entry.handle == handle && entry.published)
         return &entry;
     }
     return nullptr;
   }
 
-  [[nodiscard]] KernelResult<Handle> install_locked(shared_ptr<Object> &object, u32 granted_rights) noexcept {
+  [[nodiscard]] KernelResult<Handle> install_locked(shared_ptr<Object> &object, u32 granted_rights,
+                                                    bool published = true) noexcept {
     if (!object || granted_rights == 0)
       return KernelResult<Handle>{ErrorCode::InvalidArgument};
     if (next_handle_ == INVALID_HANDLE)
@@ -89,6 +136,7 @@ class Table {
         entry.handle = next_handle_++;
         entry.rights = granted_rights;
         entry.inheritable = false;
+        entry.published = published;
         entry.object = moss::move(object);
         return KernelResult<Handle>{entry.handle};
       }
@@ -112,6 +160,7 @@ class Table {
       source->handle = INVALID_HANDLE;
       source->rights = 0;
       source->inheritable = false;
+      source->published = false;
     }
     return installed;
   }
@@ -125,6 +174,45 @@ public:
   [[nodiscard]] KernelResult<Handle> install(shared_ptr<Object> object, u32 granted_rights) noexcept {
     containers::LockGuard<containers::IrqSpinLock> guard(lock_);
     return install_locked(object, granted_rights);
+  }
+
+  // A reserved handle has a stable number for copyout but conveys no
+  // authority until the message delivery is committed.
+  [[nodiscard]] KernelResult<Handle> reserve(shared_ptr<Object> object, u32 granted_rights) noexcept {
+    containers::LockGuard<containers::IrqSpinLock> guard(lock_);
+    return install_locked(object, granted_rights, false);
+  }
+
+  // A received request publishes its reply token and delegated capability
+  // together, so another thread never observes only half of the delivery.
+  [[nodiscard]] VoidResult publish_reserved(Handle first, Handle second = INVALID_HANDLE) noexcept {
+    containers::LockGuard<containers::IrqSpinLock> guard(lock_);
+    Entry *first_entry = find_any_locked(first);
+    Entry *second_entry = second == INVALID_HANDLE ? nullptr : find_any_locked(second);
+    if (!first_entry || first_entry->published ||
+        (second != INVALID_HANDLE && (!second_entry || second_entry == first_entry || second_entry->published)))
+      return VoidResult{ErrorCode::NotFound};
+    first_entry->published = true;
+    if (second_entry)
+      second_entry->published = true;
+    return {};
+  }
+
+  [[nodiscard]] VoidResult discard_reserved(Handle handle) noexcept {
+    shared_ptr<Object> retired;
+    {
+      containers::LockGuard<containers::IrqSpinLock> guard(lock_);
+      Entry *entry = find_any_locked(handle);
+      if (!entry || entry->published)
+        return VoidResult{ErrorCode::NotFound};
+      retired = moss::move(entry->object);
+      entry->handle = INVALID_HANDLE;
+      entry->rights = 0;
+      entry->inheritable = false;
+      entry->published = false;
+    }
+    retired->release_handle();
+    return {};
   }
 
   [[nodiscard]] KernelResult<shared_ptr<Object>> lookup(Handle handle, ObjectType type,
@@ -152,6 +240,25 @@ public:
       return KernelResult<Handle>{ErrorCode::PermissionDenied};
     shared_ptr<Object> copy = source->object;
     return install_locked(copy, granted_rights);
+  }
+
+  [[nodiscard]] KernelResult<Escrow> snapshot_for_transfer(Handle handle, u32 granted_rights) const noexcept {
+    containers::LockGuard<containers::IrqSpinLock> guard(lock_);
+    const Entry *source = find_locked(handle);
+    if (!source)
+      return KernelResult<Escrow>{ErrorCode::NotFound};
+    constexpr u32 required = rights::TRANSFER | rights::DUPLICATE;
+    if (granted_rights == 0 || (source->rights & required) != required ||
+        (source->rights & granted_rights) != granted_rights)
+      return KernelResult<Escrow>{ErrorCode::PermissionDenied};
+    return KernelResult<Escrow>{Escrow{source->object, granted_rights}};
+  }
+
+  // Retain message authority until copyout and delivery both succeed.
+  [[nodiscard]] KernelResult<Handle> reserve_escrow(const Escrow &escrow) noexcept {
+    if (!escrow)
+      return KernelResult<Handle>{ErrorCode::InvalidArgument};
+    return reserve(escrow.object_, escrow.rights_);
   }
 
   [[nodiscard]] VoidResult set_inheritable(Handle handle, bool inheritable) noexcept {
@@ -212,6 +319,7 @@ public:
           retired[i] = moss::move(entries_[i].object);
           entries_[i].handle = INVALID_HANDLE;
           entries_[i].rights = 0;
+          entries_[i].published = false;
         }
       }
     }
@@ -256,6 +364,7 @@ public:
       entry->handle = INVALID_HANDLE;
       entry->rights = 0;
       entry->inheritable = false;
+      entry->published = false;
     }
     retired->release_handle();
     return {};
@@ -270,6 +379,7 @@ public:
         entries_[i].handle = INVALID_HANDLE;
         entries_[i].rights = 0;
         entries_[i].inheritable = false;
+        entries_[i].published = false;
       }
     }
     for (auto &object : retired) {

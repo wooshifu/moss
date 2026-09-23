@@ -12,6 +12,24 @@ constexpr usize kPendingCalls = 16;
 constexpr u32 kAllRights = capability::rights::SEND | capability::rights::RECEIVE | capability::rights::TRANSFER |
                            capability::rights::DUPLICATE;
 
+// Keep this wire layout aligned with userspace's moss_ipc_message. All fields
+// are fixed-width on Moss's supported 64-bit ABIs.
+struct ControlMessage {
+  u64 size{0};
+  Handle capability{INVALID_HANDLE};
+  u64 rights{0};
+  u8 payload[kMessageBytes]{};
+};
+static_assert(sizeof(ControlMessage) == 3 * sizeof(u64) + kMessageBytes);
+
+[[nodiscard]] bool valid_message(const ControlMessage &message) noexcept {
+  if (message.size > kMessageBytes)
+    return false;
+  if (message.capability == INVALID_HANDLE)
+    return message.rights == 0;
+  return message.rights != 0 && (message.rights & ~static_cast<u64>(kAllRights)) == 0;
+}
+
 void *ipc_allocate(usize size, usize alignment) noexcept {
   auto storage = mm::RuntimeHeapAllocator::allocate_aligned(size, alignment);
   return storage ? *storage : nullptr;
@@ -26,13 +44,17 @@ struct PendingCall {
   usize response_size{0};
   Outcome outcome{Outcome::Pending};
   bool queued{true};
+  bool delivery_claimed{false};
+  capability::Escrow request_cap{};
+  capability::Escrow response_cap{};
   u8 request[kMessageBytes]{};
   u8 response[kMessageBytes]{};
 
-  PendingCall(process::Thread *thread, u64 deadline, const u8 *data, usize size) noexcept
-      : caller(thread), deadline_ns(deadline), request_size(size) {
-    if (size)
-      __builtin_memcpy(request, data, size);
+  PendingCall(process::Thread *thread, u64 deadline, const ControlMessage &message,
+              capability::Escrow &&transferred) noexcept
+      : caller(thread), deadline_ns(deadline), request_size(message.size), request_cap(moss::move(transferred)) {
+    if (request_size)
+      __builtin_memcpy(request, message.payload, request_size);
   }
 };
 
@@ -44,7 +66,7 @@ class Channel {
 
   [[nodiscard]] bool has_queued_locked() const noexcept {
     for (const auto &call : calls_) {
-      if (call && call->queued && call->outcome == Outcome::Pending)
+      if (call && call->queued && !call->delivery_claimed && call->outcome == Outcome::Pending)
         return true;
     }
     return false;
@@ -72,19 +94,31 @@ public:
     return -errc::EAGAIN;
   }
 
-  [[nodiscard]] shared_ptr<PendingCall> peek() noexcept {
+  // Claim before copyout: only one receiver may inspect or release the
+  // in-flight capability while competing receivers race for this call.
+  [[nodiscard]] shared_ptr<PendingCall> claim() noexcept {
     containers::LockGuard<containers::IrqSpinLock> guard(lock_);
     for (const auto &call : calls_) {
-      if (call && call->queued && call->outcome == Outcome::Pending)
+      if (call && call->queued && !call->delivery_claimed && call->outcome == Outcome::Pending) {
+        call->delivery_claimed = true;
         return call;
+      }
     }
     return {};
+  }
+
+  void release_claim(PendingCall *call) noexcept {
+    containers::LockGuard<containers::IrqSpinLock> guard(lock_);
+    if (call->delivery_claimed && call->queued && call->outcome == Outcome::Pending) {
+      call->delivery_claimed = false;
+      receivers_.wake_one([](void *thread) { wake(static_cast<process::Thread *>(thread)); });
+    }
   }
 
   [[nodiscard]] bool receive(PendingCall *call) noexcept {
     containers::LockGuard<containers::IrqSpinLock> guard(lock_);
     for (const auto &slot : calls_) {
-      if (slot.get() == call && call->queued && call->outcome == Outcome::Pending) {
+      if (slot.get() == call && call->queued && call->delivery_claimed && call->outcome == Outcome::Pending) {
         call->queued = false;
         return true;
       }
@@ -93,7 +127,7 @@ public:
   }
 
   [[nodiscard]] Outcome complete(PendingCall *call, Outcome outcome, const u8 *data = nullptr, usize size = 0,
-                                 bool *committed = nullptr) noexcept {
+                                 bool *committed = nullptr, capability::Escrow *transferred = nullptr) noexcept {
     shared_ptr<PendingCall> retired;
     {
       containers::LockGuard<containers::IrqSpinLock> guard(lock_);
@@ -111,6 +145,8 @@ public:
         call->response_size = size;
         if (size)
           __builtin_memcpy(call->response, data, size);
+        if (transferred)
+          call->response_cap = moss::move(*transferred);
       }
       call->outcome = outcome;
       if (committed)
@@ -284,26 +320,32 @@ long sys_ipc_create(long pair_addr, long, long, long, long, long) noexcept {
   return 0;
 }
 
-long sys_ipc_call(long endpoint, long request_addr, long request_size, long response_addr, long response_capacity,
-                  long deadline_ns) noexcept {
+long sys_ipc_call(long endpoint, long request_addr, long response_addr, long deadline_ns, long, long) noexcept {
   auto proc = caller_process();
   auto *thread = process::CfsScheduler::get_current_task();
   if (!proc || !thread || !process::g_scheduler)
     return -errc::ESRCH;
-  if (request_size < 0 || request_size > static_cast<long>(kMessageBytes) || response_capacity < 0 ||
-      response_capacity > static_cast<long>(kMessageBytes) || deadline_ns < 0)
+  if (deadline_ns < 0)
     return -errc::EINVAL;
   auto looked = proc->capabilities().lookup(static_cast<Handle>(endpoint), capability::ObjectType::Endpoint,
                                             capability::rights::SEND);
   if (!looked)
     return cap_error(looked.error());
-  u8 request[kMessageBytes]{};
-  if (request_size &&
-      process::copy_from_user(request, static_cast<u64>(request_addr), static_cast<usize>(request_size)) != 0)
+  ControlMessage request{};
+  if (process::copy_from_user(&request, static_cast<u64>(request_addr), sizeof(request)) != 0)
     return -errc::EFAULT;
+  if (!valid_message(request))
+    return -errc::EINVAL;
+  capability::Escrow transferred;
+  if (request.capability != INVALID_HANDLE) {
+    auto snapshot = proc->capabilities().snapshot_for_transfer(request.capability, static_cast<u32>(request.rights));
+    if (!snapshot)
+      return cap_error(snapshot.error());
+    transferred = moss::move(*snapshot);
+  }
   auto channel = static_cast<Sender *>((*looked).get())->channel;
   auto call = shared_ptr<PendingCall>::try_make(ipc_allocate, thread, static_cast<u64>(deadline_ns), request,
-                                                static_cast<usize>(request_size));
+                                                moss::move(transferred));
   if (!call)
     return -errc::ENOMEM;
   if (deadline_ns != 0 && timer::TimerSubsystem::instance().now_ns() >= static_cast<u64>(deadline_ns))
@@ -347,12 +389,31 @@ long sys_ipc_call(long endpoint, long request_addr, long request_size, long resp
   if (timer_armed)
     deadline_timer.cancel_sync();
   switch (result) {
-  case Outcome::Reply:
-    if (response_size > static_cast<usize>(response_capacity))
-      return -errc::E2BIG;
-    if (response_size && process::copy_to_user(static_cast<u64>(response_addr), response, response_size) != 0)
+  case Outcome::Reply: {
+    ControlMessage delivered{};
+    delivered.size = response_size;
+    if (response_size)
+      __builtin_memcpy(delivered.payload, response, response_size);
+    if (call->response_cap) {
+      delivered.rights = call->response_cap.rights();
+      auto reserved = proc->capabilities().reserve_escrow(call->response_cap);
+      if (!reserved)
+        return cap_error(reserved.error());
+      delivered.capability = *reserved;
+    }
+    if (process::copy_to_user(static_cast<u64>(response_addr), &delivered, sizeof(delivered)) != 0) {
+      if (delivered.capability != INVALID_HANDLE)
+        (void)proc->capabilities().discard_reserved(delivered.capability);
       return -errc::EFAULT;
+    }
+    if (delivered.capability != INVALID_HANDLE) {
+      auto published = proc->capabilities().publish_reserved(delivered.capability);
+      if (!published)
+        return cap_error(published.error());
+      call->response_cap.reset();
+    }
     return static_cast<long>(response_size);
+  }
   case Outcome::Canceled:
     return -errc::EINTR;
   case Outcome::Expired:
@@ -365,42 +426,67 @@ long sys_ipc_call(long endpoint, long request_addr, long request_size, long resp
   }
 }
 
-long sys_ipc_receive(long endpoint, long request_addr, long request_capacity, long reply_addr, long, long) noexcept {
+long sys_ipc_receive(long endpoint, long request_addr, long reply_addr, long, long, long) noexcept {
   auto proc = caller_process();
   auto *thread = process::CfsScheduler::get_current_task();
   if (!proc || !thread || !process::g_scheduler)
     return -errc::ESRCH;
-  if (request_capacity < 0 || request_capacity > static_cast<long>(kMessageBytes))
-    return -errc::EINVAL;
   auto looked = proc->capabilities().lookup(static_cast<Handle>(endpoint), capability::ObjectType::Receiver,
                                             capability::rights::RECEIVE);
   if (!looked)
     return cap_error(looked.error());
   auto channel = static_cast<Receiver *>((*looked).get())->channel;
   while (true) {
-    auto call = channel->peek();
+    auto call = channel->claim();
     if (call) {
-      if (call->request_size > static_cast<usize>(request_capacity))
-        return -errc::E2BIG;
-      if (call->request_size &&
-          process::copy_to_user(static_cast<u64>(request_addr), call->request, call->request_size) != 0)
-        return -errc::EFAULT;
       auto reply = shared_ptr<capability::Object>::try_make<Reply>(ipc_allocate, channel, call);
-      if (!reply)
+      if (!reply) {
+        channel->release_claim(call.get());
         return -errc::ENOMEM;
-      auto reply_handle = proc->capabilities().install(reply, capability::rights::SEND);
-      if (!reply_handle)
+      }
+      auto reply_handle = proc->capabilities().reserve(reply, capability::rights::SEND);
+      if (!reply_handle) {
+        channel->release_claim(call.get());
         return cap_error(reply_handle.error());
+      }
       const Handle handle = *reply_handle;
-      if (process::copy_to_user(static_cast<u64>(reply_addr), &handle, sizeof(handle)) != 0) {
-        (void)proc->capabilities().close(handle);
+      ControlMessage delivered{};
+      delivered.size = call->request_size;
+      if (call->request_size)
+        __builtin_memcpy(delivered.payload, call->request, call->request_size);
+      if (call->request_cap) {
+        delivered.rights = call->request_cap.rights();
+        auto installed = proc->capabilities().reserve_escrow(call->request_cap);
+        if (!installed) {
+          (void)proc->capabilities().discard_reserved(handle);
+          channel->release_claim(call.get());
+          return cap_error(installed.error());
+        }
+        delivered.capability = *installed;
+      }
+      if (process::copy_to_user(static_cast<u64>(request_addr), &delivered, sizeof(delivered)) != 0 ||
+          process::copy_to_user(static_cast<u64>(reply_addr), &handle, sizeof(handle)) != 0) {
+        if (delivered.capability != INVALID_HANDLE)
+          (void)proc->capabilities().discard_reserved(delivered.capability);
+        (void)proc->capabilities().discard_reserved(handle);
+        channel->release_claim(call.get());
         return -errc::EFAULT;
       }
       if (channel->receive(call.get())) {
         static_cast<Reply *>(reply.get())->armed.store(true, memory_order_release);
+        auto published = proc->capabilities().publish_reserved(handle, delivered.capability);
+        if (!published) {
+          (void)channel->complete(call.get(), Outcome::PeerClosed);
+          (void)proc->capabilities().discard_reserved(delivered.capability);
+          (void)proc->capabilities().discard_reserved(handle);
+          return cap_error(published.error());
+        }
+        call->request_cap.reset();
         return static_cast<long>(call->request_size);
       }
-      (void)proc->capabilities().close(handle);
+      if (delivered.capability != INVALID_HANDLE)
+        (void)proc->capabilities().discard_reserved(delivered.capability);
+      (void)proc->capabilities().discard_reserved(handle);
       continue;
     }
     if (channel->closed())
@@ -418,30 +504,35 @@ long sys_ipc_receive(long endpoint, long request_addr, long request_capacity, lo
   }
 }
 
-long sys_ipc_reply(long reply_handle, long response_addr, long response_size, long, long, long) noexcept {
+long sys_ipc_reply(long reply_handle, long response_addr, long, long, long, long) noexcept {
   auto proc = caller_process();
   if (!proc)
     return -errc::ESRCH;
-  if (response_size < 0 || response_size > static_cast<long>(kMessageBytes))
-    return -errc::EINVAL;
   auto looked = proc->capabilities().lookup(static_cast<Handle>(reply_handle), capability::ObjectType::Reply,
                                             capability::rights::SEND);
   if (!looked)
     return cap_error(looked.error());
-  u8 response[kMessageBytes]{};
-  if (response_size &&
-      process::copy_from_user(response, static_cast<u64>(response_addr), static_cast<usize>(response_size)) != 0)
+  ControlMessage response{};
+  if (process::copy_from_user(&response, static_cast<u64>(response_addr), sizeof(response)) != 0)
     return -errc::EFAULT;
+  if (!valid_message(response))
+    return -errc::EINVAL;
   auto *reply = static_cast<Reply *>((*looked).get());
-  // Another thread in this process may guess the new numeric handle before
-  // receive finishes publishing the request and its one-shot authority.
+  // Receive arms the one-shot token before its reserved handle becomes visible.
   if (!reply->armed.load(memory_order_acquire))
     return -errc::EAGAIN;
+  capability::Escrow transferred;
+  if (response.capability != INVALID_HANDLE) {
+    auto snapshot = proc->capabilities().snapshot_for_transfer(response.capability, static_cast<u32>(response.rights));
+    if (!snapshot)
+      return cap_error(snapshot.error());
+    transferred = moss::move(*snapshot);
+  }
   // A cached Reply outcome does not mean this invocation won the one-shot
   // transition: another thread may have looked up the same handle earlier.
   bool committed = false;
-  const Outcome result = reply->channel->complete(reply->call.get(), Outcome::Reply, response,
-                                                  static_cast<usize>(response_size), &committed);
+  const Outcome result = reply->channel->complete(reply->call.get(), Outcome::Reply, response.payload,
+                                                  static_cast<usize>(response.size), &committed, &transferred);
   (void)proc->capabilities().close(static_cast<Handle>(reply_handle));
   if (result == Outcome::Reply && committed)
     return 0;

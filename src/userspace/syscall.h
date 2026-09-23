@@ -83,8 +83,17 @@ struct moss_ipc_endpoints {
   unsigned long receive;
 };
 
-// SYS_IPC_CALL's deadline is an absolute monotonic nanosecond value; zero
-// disables it. Request and response lengths must not exceed the ABI bound.
+// One capability may accompany each bounded request or reply. Passing a
+// capability copies reduced rights; zero capability requires zero rights.
+struct moss_ipc_message {
+  unsigned long size;
+  unsigned long capability;
+  unsigned long rights;
+  unsigned char payload[MOSS_IPC_MAX_MESSAGE];
+};
+
+// SYS_IPC_CALL uses (endpoint, request*, response*, absolute deadline_ns).
+// A zero deadline disables it; both messages use the fixed structure above.
 
 // No payload; succeeds only on a terminal. Not a Linux termios command.
 // 0x4d01 is a Moss-specific command ID shared with vfs:types; its exact
