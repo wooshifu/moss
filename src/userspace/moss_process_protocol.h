@@ -13,7 +13,11 @@ enum {
   MOSS_PROCESS_STATUS = 2,
   MOSS_PROCESS_RELEASE = 3,
   MOSS_PROCESS_REGISTER_CHILD = 4,
-  MOSS_PROCESS_WAIT_ANY = 5
+  MOSS_PROCESS_WAIT_ANY = 5,
+  MOSS_PROCESS_PREPARE_CHILD = 6,
+  MOSS_PROCESS_ATTACH_CHILD = 7,
+  MOSS_PROCESS_CANCEL_CHILD = 8,
+  MOSS_PROCESS_IDENTITY = 9
 };
 enum {
   MOSS_PROCESS_OK = 0,
@@ -26,12 +30,21 @@ enum {
 };
 // ponytail: a fixed table bounds orphaned registrations until sender-lifetime
 // notifications or a service-side lease can reclaim clients that die abruptly.
-enum { MOSS_PROCESS_REPLY_VALUE_BYTES = 9, MOSS_PROCESS_REPLY_WAIT_BYTES = 17, MOSS_PROCESS_RECORD_LIMIT = 16 };
+enum {
+  MOSS_PROCESS_REPLY_VALUE_BYTES = 9,
+  MOSS_PROCESS_REPLY_WAIT_BYTES = 17,
+  MOSS_PROCESS_REPLY_IDENTITY_BYTES = MOSS_PROCESS_REPLY_WAIT_BYTES,
+  MOSS_PROCESS_RECORD_LIMIT = 16
+};
 
 // REGISTER returns [OK, ID:u64 LE]. STATUS returns [EXITED, status:u64 LE].
 // WAIT_ANY returns [EXITED, child ID:u64 LE, status:u64 LE] and atomically
 // reaps that child after a successful reply. Status packs signal in the high
 // 32 bits and exit code in the low 32 bits. Other replies are one byte.
+// PREPARE_CHILD returns a child ID and a badged session to inherit across a
+// native fork. ATTACH_CHILD transfers the new domain under the parent's
+// session; CANCEL_CHILD removes only an unattached reservation. IDENTITY
+// returns [OK, ID:u64 LE, parent ID:u64 LE] through the child's session.
 static inline uint64_t moss_process_get_u64(const unsigned char *bytes) {
   uint64_t value = 0;
   for (unsigned int index = 0; index < 8; ++index)
