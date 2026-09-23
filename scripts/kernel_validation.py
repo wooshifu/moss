@@ -235,6 +235,7 @@ CATALOG = {
         "wait_interrupted",
         "wait_restarted",
         "cpu_bound_irq",
+        "stop_continue",
         "sigprocmask",
         "sigaltstack",
         "sig_ign",

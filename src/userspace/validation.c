@@ -2376,6 +2376,106 @@ __attribute__((optnone)) static int test_cpu_bound_irq(void) {
   return errors;
 }
 
+enum { STOP_STATE_PROBE = 62, STOP_PENDING_PROBE = 63 };
+enum {
+  STOP_DEFAULT_CONT,
+  STOP_MASKED_CONT,
+  STOP_IGNORED_CONT,
+  STOP_KILL,
+  STOP_JOB_CONT,
+  STOP_PENDING_ORDER,
+  STOP_CASE_COUNT
+};
+static void sigcont_handler(int signo) { handler2_called = signo == SIGCONT; }
+
+static int test_stop_continue(void) {
+  const unsigned long cont_mask = 1UL << SIGCONT;
+  const unsigned long blocked_stop_cont = cont_mask | (1UL << SIGTSTP);
+  for (int mode = STOP_DEFAULT_CONT; mode < STOP_CASE_COUNT; ++mode) {
+    long ready[2];
+    if (pipe(ready) != 0) {
+      return 1;
+    }
+    const long child = fork();
+    if (child == 0) {
+      close((int)ready[0]);
+      unsigned cpu_mask = 1U << 1;
+      struct sigaction_t usr1 = {(unsigned long)sigusr1_handler, 0, 0};
+      struct sigaction_t cont = {mode == STOP_MASKED_CONT    ? (unsigned long)sigcont_handler
+                                 : mode == STOP_IGNORED_CONT ? SIG_IGN
+                                                             : SIG_DFL,
+                                 0, 0};
+      handler_called = 0;
+      handler2_called = 0;
+      if (syscall3(20, 0, sizeof(cpu_mask), (long)&cpu_mask) != 0 || moss_sigaction(SIGUSR1, &usr1, 0) != 0 ||
+          moss_sigaction(SIGCONT, &cont, 0) != 0 ||
+          (mode == STOP_MASKED_CONT && sigprocmask(SIG_BLOCK, &cont_mask, 0) != 0) ||
+          (mode == STOP_PENDING_ORDER && sigprocmask(SIG_BLOCK, &blocked_stop_cont, 0) != 0)) {
+        _exit(98);
+      }
+      const unsigned char byte = 37;
+      if (write((int)ready[1], &byte, 1) != 1 || close((int)ready[1]) != 0) {
+        _exit(98);
+      }
+      while (!handler_called) {
+        __asm__ volatile("" ::: "memory");
+      }
+      int good = current_cpu() == 1 && handler2_called == 0;
+      if (mode == STOP_MASKED_CONT) {
+        good &= sigprocmask(SIG_UNBLOCK, &cont_mask, 0) == 0 && handler2_called == 1;
+      } else if (mode == STOP_PENDING_ORDER) {
+        good &= sigprocmask(SIG_UNBLOCK, &blocked_stop_cont, 0) == 0;
+      }
+      _exit(good ? 42 : 98);
+    }
+    close((int)ready[1]);
+    if (child < 0) {
+      close((int)ready[0]);
+      return 1;
+    }
+    unsigned char byte = 0;
+    int errors = read((int)ready[0], &byte, 1) != 1 || byte != 37;
+    close((int)ready[0]);
+    if (mode == STOP_PENDING_ORDER) {
+      // The signals are blocked, so generation order alone determines which
+      // member of the stop/continue pair remains pending.
+      errors |= kill(child, SIGTSTP) != 0 || control(STOP_PENDING_PROBE, child, 0) != 1;
+      errors |= kill(child, SIGCONT) != 0 || control(STOP_PENDING_PROBE, child, 1) != 1;
+      errors |= kill(child, SIGTSTP) != 0 || control(STOP_PENDING_PROBE, child, 0) != 1;
+      errors |= kill(child, SIGCONT) != 0 || control(STOP_PENDING_PROBE, child, 1) != 1;
+      if (errors || kill(child, SIGUSR1) != 0) {
+        kill(child, SIGKILL);
+        errors = 1;
+      }
+      int status = 0;
+      errors |= waitpid(child, &status, 0) != child || status != (42 << 8);
+      if (errors) {
+        return 1;
+      }
+      continue;
+    }
+    errors |= kill(child, mode == STOP_JOB_CONT ? SIGTSTP : SIGSTOP) != 0;
+    long stopped = 0;
+    while (!errors && (stopped = control(STOP_STATE_PROBE, child, 0)) == 0) {
+      sched_yield(); // The host case deadline bounds a missing stop handoff.
+    }
+    errors |= stopped != 1;
+    if (!errors && mode != STOP_KILL) {
+      errors |= kill(child, SIGUSR1) != 0 || control(STOP_STATE_PROBE, child, 1) != 1;
+    }
+    if (errors || kill(child, mode == STOP_KILL ? SIGKILL : SIGCONT) != 0) {
+      kill(child, SIGKILL);
+      errors = 1;
+    }
+    int status = 0;
+    errors |= waitpid(child, &status, 0) != child || status != ((mode == STOP_KILL ? 128 + SIGKILL : 42) << 8);
+    if (errors) {
+      return 1;
+    }
+  }
+  return 0;
+}
+
 // Test 4: sigprocmask — block and unblock
 static int test_sigprocmask(void) {
   print("\n=== Test 4: sigprocmask block/unblock ===\n");
@@ -3545,6 +3645,7 @@ static int signal_case(const char *name) {
                {"wait_interrupted", test_wait_interrupted},
                {"wait_restarted", test_wait_restarted},
                {"cpu_bound_irq", test_cpu_bound_irq},
+               {"stop_continue", test_stop_continue},
                {"sigprocmask", test_sigprocmask},
                {"sigaltstack", test_sigaltstack},
                {"sig_ign", test_sig_ign},
@@ -3846,6 +3947,7 @@ void _start(long argc, const char **argv) {
                            "wait_interrupted",
                            "wait_restarted",
                            "cpu_bound_irq",
+                           "stop_continue",
                            "sigprocmask",
                            "sigaltstack",
                            "sig_ign",

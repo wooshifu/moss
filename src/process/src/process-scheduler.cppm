@@ -4,6 +4,7 @@
 export module moss.process:scheduler;
 
 import :types;
+import :signal;
 
 import moss.intrinsics;
 import moss.std;
@@ -1807,6 +1808,29 @@ public:
     const auto cpu = get_current_cpu_id();
     sleeping_tasks_.get_cpu(cpu) = task;
     switch_to_bootstrap(task->context);
+  }
+
+  void stop_current() noexcept {
+    auto *task = get_current_task();
+    if (!task || arch::interrupts_enabled()) {
+      return;
+    }
+    {
+      containers::LockGuard<containers::IrqSpinLock> guard(task->sleep_lock);
+      // SIGCONT resumes even when masked. If it arrived before this handoff,
+      // do not suspend after its wake attempt has already observed Running.
+      const u64 resume = sig::sigmask(sig::SIGCONT) | sig::sigmask(sig::SIGKILL);
+      if ((task->pending_signals & resume) != 0) {
+        return;
+      }
+      task->sleep_handoff.store(1);
+      task->wake_cpu = get_current_cpu_id();
+      task->state = ProcessState::Stopped;
+      dequeue_task(task);
+    }
+    // The same bootstrap acknowledgement as an interruptible sleep prevents
+    // a concurrent CONT/KILL from dispatching an unsaved kernel continuation.
+    commit_sleep();
   }
 
   // Move the calling thread only after its continuation has been saved on the
