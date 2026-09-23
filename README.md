@@ -53,7 +53,9 @@ their capabilities authorize termination and retain exit status after the
 diagnostic PID is retired. `moss-init` observes service exits by capability
 and reaps orphaned POSIX shell descendants through `waitpid`. Ordinary shell
 files, ELF loading, process compatibility, interrupt/timer bootstrap and the
-early console still use kernel implementations. The accepted
+early console still use kernel implementations. The transitional kernel
+`kill(pid)` path can still target a running native domain; removing that PID
+authority requires the Process Compatibility Service. The accepted
 [architecture decisions](docs/adr/) describe their intended migration.
 
 For example, after launching QEMU:
