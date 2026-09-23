@@ -29,8 +29,10 @@ regression does not prove every scheduler interleaving. See the retained
 
 `scheduler/ipc_priority_inheritance` uses the production run queues with
 synthetic threads to check transitive RT and CFS nice donations, multiple
-callers, cycles, and restoration after call completion or thread death.
-`users.ipc` and production boot exercise the live call lifecycle with ordinary
+callers, receiver handoff, cycles, and restoration after call completion or
+thread death. The receive path assigns a queued call to a waiting receiver
+before waking it, then transfers the donation to the actual claimant.
+`users.ipc` and production boot exercise that call lifecycle with ordinary
 threads. They do not yet establish end-to-end inversion bounds under an
 admitted real-time scheduling profile.
 

@@ -163,6 +163,12 @@ void ipc_priority_inheritance() {
   ut::expect(scheduler->begin_ipc_call(&high_call, &high));
   scheduler->bind_ipc_server(&high_call, &server);
   ut::expect(server.effective_rt_priority() == 80 && server.rt_on_rq && scheduler->pick_next_task(cpu) == &server);
+  ut::expect(!scheduler->rebind_ipc_server(&high_call, &backend, nullptr));
+  ut::expect(scheduler->rebind_ipc_server(&high_call, &server, &backend));
+  ut::expect(server.effective_rt_priority() == 0 && server.se.rb_on_rq && backend.effective_rt_priority() == 80);
+  scheduler->bind_ipc_server(&high_call, nullptr);
+  ut::expect(backend.effective_rt_priority() == 0 && backend.se.rb_on_rq);
+  scheduler->bind_ipc_server(&high_call, &server);
 
   scheduler->dequeue_task(&server);
   server.state = ProcessState::Sleeping;

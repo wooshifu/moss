@@ -1341,16 +1341,22 @@ public:
   }
 
   void bind_ipc_server(PriorityDonation *donation, Thread *server) noexcept {
-    if (!donation || !server)
+    if (!donation)
       return;
     containers::LockGuard<containers::IrqSpinLock> guard(ipc_priority_lock_);
-    if (!donation->caller || donation->caller->ipc_wait != donation || donation->server)
+    if (!donation->caller || donation->caller->ipc_wait != donation)
       return;
-    donation->server = server;
-    donation->next = server->ipc_donors;
-    server->ipc_donors = donation;
-    server->ipc_scheduler = this;
-    recompute_ipc_priority(server);
+    bind_ipc_server_locked(donation, server);
+  }
+
+  [[nodiscard]] bool rebind_ipc_server(PriorityDonation *donation, Thread *expected, Thread *server) noexcept {
+    if (!donation)
+      return false;
+    containers::LockGuard<containers::IrqSpinLock> guard(ipc_priority_lock_);
+    if (!donation->caller || donation->caller->ipc_wait != donation || donation->server != expected)
+      return false;
+    bind_ipc_server_locked(donation, server);
+    return true;
   }
 
   void end_ipc_call(PriorityDonation *donation) noexcept {
@@ -1471,6 +1477,29 @@ public:
   }
 
 private:
+  // The caller holds ipc_priority_lock_ through list repair and recomputation.
+  void bind_ipc_server_locked(PriorityDonation *donation, Thread *server) noexcept {
+    if (donation->server == server)
+      return;
+    Thread *old_server = donation->server;
+    if (old_server)
+      unlink_ipc_donor(old_server, donation);
+    donation->server = server;
+    donation->next = nullptr;
+    if (server) {
+      donation->next = server->ipc_donors;
+      server->ipc_donors = donation;
+      server->ipc_scheduler = this;
+    }
+    if (old_server) {
+      recompute_ipc_priority(old_server);
+      if (!old_server->ipc_wait && !old_server->ipc_donors)
+        old_server->ipc_scheduler = nullptr;
+    }
+    if (server)
+      recompute_ipc_priority(server);
+  }
+
   [[nodiscard]] static Thread *ipc_wait_target(Thread *thread) noexcept {
     return thread && thread->ipc_wait ? thread->ipc_wait->server : nullptr;
   }

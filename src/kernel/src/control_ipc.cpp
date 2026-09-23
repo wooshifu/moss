@@ -65,17 +65,22 @@ class Channel {
   shared_ptr<PendingCall> calls_[kPendingCalls]{};
   bool closed_{false};
 
-  [[nodiscard]] bool has_queued_locked() const noexcept {
-    for (const auto &call : calls_) {
-      if (call && call->queued && !call->delivery_claimed && call->outcome == Outcome::Pending)
-        return true;
-    }
-    return false;
-  }
-
   static void wake(process::Thread *thread) noexcept {
     if (thread && process::g_scheduler)
       process::g_scheduler->task_wakeup(thread, thread->wake_cpu);
+  }
+
+  // The selected waiting receiver needs the caller's priority before it can
+  // run and claim the request. Claim may hand the call to a different worker.
+  void wake_receiver(PendingCall *call) noexcept {
+    const bool assigned = receivers_.wake_one([&](void *waiter) {
+      auto *thread = static_cast<process::Thread *>(waiter);
+      if (process::g_scheduler)
+        process::g_scheduler->bind_ipc_server(&call->donation, thread);
+      wake(thread);
+    });
+    if (!assigned && process::g_scheduler)
+      process::g_scheduler->bind_ipc_server(&call->donation, nullptr);
   }
 
 public:
@@ -88,7 +93,7 @@ public:
     for (auto &slot : calls_) {
       if (!slot) {
         slot = moss::move(call);
-        receivers_.wake_one([](void *thread) { wake(static_cast<process::Thread *>(thread)); });
+        wake_receiver(slot.get());
         return 0;
       }
     }
@@ -97,11 +102,15 @@ public:
 
   // Claim before copyout: only one receiver may inspect or release the
   // in-flight capability while competing receivers race for this call.
-  [[nodiscard]] shared_ptr<PendingCall> claim() noexcept {
+  [[nodiscard]] shared_ptr<PendingCall> claim(process::Thread *server) noexcept {
     containers::LockGuard<containers::IrqSpinLock> guard(lock_);
+    // Keep the waiter registered through wakeup so a new call can donate
+    // before this thread gets CPU time to claim it.
+    receivers_.remove_waiter(server);
     for (const auto &call : calls_) {
       if (call && call->queued && !call->delivery_claimed && call->outcome == Outcome::Pending) {
         call->delivery_claimed = true;
+        process::g_scheduler->bind_ipc_server(&call->donation, server);
         return call;
       }
     }
@@ -112,16 +121,15 @@ public:
     containers::LockGuard<containers::IrqSpinLock> guard(lock_);
     if (call->delivery_claimed && call->queued && call->outcome == Outcome::Pending) {
       call->delivery_claimed = false;
-      receivers_.wake_one([](void *thread) { wake(static_cast<process::Thread *>(thread)); });
+      wake_receiver(call);
     }
   }
 
-  [[nodiscard]] bool receive(PendingCall *call, process::Thread *server) noexcept {
+  [[nodiscard]] bool receive(PendingCall *call) noexcept {
     containers::LockGuard<containers::IrqSpinLock> guard(lock_);
     for (const auto &slot : calls_) {
       if (slot.get() == call && call->queued && call->delivery_claimed && call->outcome == Outcome::Pending) {
         call->queued = false;
-        process::g_scheduler->bind_ipc_server(&call->donation, server);
         return true;
       }
     }
@@ -178,11 +186,30 @@ public:
   void arm_receiver_wait(process::Thread *thread) noexcept {
     containers::LockGuard<containers::IrqSpinLock> guard(lock_);
     receivers_.add_waiter(thread, true);
-    if (closed_ || has_queued_locked())
+    if (closed_) {
       wake(thread);
+      return;
+    }
+    for (const auto &call : calls_) {
+      if (call && call->queued && !call->delivery_claimed && call->outcome == Outcome::Pending) {
+        process::g_scheduler->bind_ipc_server(&call->donation, thread);
+        wake(thread);
+        break;
+      }
+    }
   }
 
-  void disarm_receiver_wait(process::Thread *thread) noexcept { receivers_.remove_waiter(thread); }
+  void release_receiver(process::Thread *thread) noexcept {
+    containers::LockGuard<containers::IrqSpinLock> guard(lock_);
+    for (const auto &call : calls_) {
+      if (call && call->queued && !call->delivery_claimed && process::g_scheduler) {
+        process::Thread *next = nullptr;
+        receivers_.wake_one([&](void *waiter) { next = static_cast<process::Thread *>(waiter); });
+        if (process::g_scheduler->rebind_ipc_server(&call->donation, thread, next))
+          wake(next);
+      }
+    }
+  }
 
   [[nodiscard]] bool closed() noexcept {
     containers::LockGuard<containers::IrqSpinLock> guard(lock_);
@@ -519,7 +546,7 @@ long sys_ipc_receive(long endpoint, long request_addr, long reply_addr, long, lo
     return cap_error(looked.error());
   auto channel = static_cast<Receiver *>((*looked).get())->channel;
   while (true) {
-    auto call = channel->claim();
+    auto call = channel->claim(thread);
     if (call) {
       auto reply = shared_ptr<capability::Object>::try_make<Reply>(ipc_allocate, channel, call);
       if (!reply) {
@@ -554,7 +581,7 @@ long sys_ipc_receive(long endpoint, long request_addr, long reply_addr, long, lo
         channel->release_claim(call.get());
         return -errc::EFAULT;
       }
-      if (channel->receive(call.get(), thread)) {
+      if (channel->receive(call.get())) {
         static_cast<Reply *>(reply.get())->armed.store(true, memory_order_release);
         auto published = proc->capabilities().publish_reserved(handle, delivered.capability);
         if (!published) {
@@ -571,16 +598,19 @@ long sys_ipc_receive(long endpoint, long request_addr, long reply_addr, long, lo
       (void)proc->capabilities().discard_reserved(handle);
       continue;
     }
-    if (channel->closed())
+    if (channel->closed()) {
+      channel->release_receiver(thread);
       return -errc::EPIPE;
-    if (moss::abi::bridge::moss_io_wait_interrupted())
+    }
+    if (moss::abi::bridge::moss_io_wait_interrupted()) {
+      channel->release_receiver(thread);
       return -errc::EINTR;
+    }
     const bool restore_irqs = arch::interrupts_enabled();
     arch::disable_interrupts();
     (void)moss::abi::bridge::moss_prepare_io_wait();
     channel->arm_receiver_wait(thread);
     process::g_scheduler->commit_sleep();
-    channel->disarm_receiver_wait(thread);
     if (restore_irqs)
       arch::enable_interrupts();
   }
