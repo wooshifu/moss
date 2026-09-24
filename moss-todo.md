@@ -1,8 +1,8 @@
 # Moss 内核设计与实现审计报告及修复清单
 
 > 原始审计：2026-09-05，源码基线：`d86077b258d5abcea6b8c02fb340421cd4aeb532`。
-> 源码复核基线：2026-09-23，`abeba591`（当次未重跑 QEMU）。第 3.4～3.20 节保留此前实测及当时状态；后续实现与运行记录见第 3.21～3.94 节，源码与历史证据的对应关系见第 3.41 节。前一轮九预设运行见第 3.59～3.75 节。本文与 [todo.md](todo.md) 同步。
-> ADR 迁移复核基线：2026-09-24，`ded02f6` 加后续实现。第 3.75 节以前的测试数值不自动覆盖新服务路径或 ADR 收敛改动；IPC 分界见 3.76，启动驱动边界见 3.77，优先级继承见 3.78，取消与服务死亡交错见 3.79，已认领请求的 deadline 见 3.80，reply/取消竞争见 3.81，执行域构造机制见 3.82，不可变代码版本见 3.83，多页代码范围见 3.84，可信版本长度见 3.85，优先级倒置时延见 3.86，代码批准实例撤销见 3.87，批准服务死亡后的权能存续见 3.88，真实审批服务与监督者交接见 3.89，普通原生域的用户态装载见 3.90，Reply capability 跨进程交接见 3.91，失败回滚见 3.92，Loader/Process Service 交接见 3.93，质量门禁参数长度见 3.94，Loader 启动参数见 3.95，启动文件与交接整合见 3.96，当前目标与进度另见 [todo.md 的 ADR 迁移清单](todo.md#adr-迁移)。
+> 源码复核基线：2026-09-23，`abeba591`（当次未重跑 QEMU）。第 3.4～3.20 节保留此前实测及当时状态；后续实现与运行记录见第 3.21～3.98 节，源码与历史证据的对应关系见第 3.41 节。前一轮九预设运行见第 3.59～3.75 节。本文与 [todo.md](todo.md) 同步。
+> ADR 迁移复核基线：2026-09-24，`ded02f6` 加后续实现。第 3.75 节以前的测试数值不自动覆盖新服务路径或 ADR 收敛改动；IPC 分界见 3.76，启动驱动边界见 3.77，优先级继承见 3.78，取消与服务死亡交错见 3.79，已认领请求的 deadline 见 3.80，reply/取消竞争见 3.81，执行域构造机制见 3.82，不可变代码版本见 3.83，多页代码范围见 3.84，可信版本长度见 3.85，优先级倒置时延见 3.86，代码批准实例撤销见 3.87，批准服务死亡后的权能存续见 3.88，真实审批服务与监督者交接见 3.89，普通原生域的用户态装载见 3.90，Reply capability 跨进程交接见 3.91，失败回滚见 3.92，Loader/Process Service 交接见 3.93，质量门禁参数长度见 3.94，Loader 启动参数见 3.95，静态 libc 镜像与 TLS 模板见 3.96，私有镜像封存见 3.97，启动文件与交接整合见 3.98，当前目标与进度另见 [todo.md 的 ADR 迁移清单](todo.md#adr-迁移)。
 > 第 3.1～3.2 节保留原始运行证据；第 5～9 节未标新日期的“位置与事实”、地址和行号属于原始审计，不能当作当前仍然失败的运行结果。带日期的“工作区”指当时的验证状态，不表示当前仍未提交；当前状态以第 4 节及各项更新说明为准。
 
 ## 1. 当前结论
@@ -1720,9 +1720,9 @@ x64 Debug 的反向对照临时禁用 `CfsScheduler::bind_ipc_server` 捐赠时�
 
 生产 initramfs 增加独立的 `loader-service.elf` 与不依赖 libc 的 `loader_probe.elf`。supervisor 用现有内核文件路径读取探针镜像，仅在启动时复制到易失 File Service 的不具名对象，另写入短小畸形映像；Loader 本身不通过内核 VFS 读映像。`OPEN_UNLISTED` 创建的对象仍按 badge 存活，却不进入名称索引；即使持有文件服务根发送端，也不能靠猜名字重新打开。supervisor 保留两份对象 capability，显式选择代码审批服务 `SEND` 和执行域工厂 `DOMAIN_SPAWN` 权限给 Loader，并单独保留私有 `RUN` 请求端。shell 和普通进程均未得到这些文件对象、装载请求端或代码审批请求端。
 
-supervisor 的 `RUN` 请求显式传递单个文件 capability；Loader 经 File Service IPC 读取镜像，按当前文件服务 64 KiB 容量限制验证固定地址 ELF64：ISA、程序头与文件边界、对齐、用户地址范围、栈/堆/信号页保留区、段页面重叠、W^X 和可执行入口。它为代码页创建不可变版本，经独立 Code Authority Service 请求批准，再用通用 `SYS_DOMAIN_SPAWN` 建立原生域；仅返回观察和终止权限。启动探针要求畸形映像被拒绝、有效镜像以退出码 37 结束。Loader 死亡时 supervisor 重建服务及 shell；代码审批服务换代时还更新 Loader 持有的审批端点。生产启动回归显式终止 Loader，检查新 PID、shell 与既有文件内容；shell 可以创建同名公开文件，但无法读写不具名对象，也不能改变 Loader 探针结果。
+supervisor 的 `RUN` 请求显式传递单个文件 capability；Loader 经 File Service IPC 读取镜像，按当时文件服务 64 KiB 容量限制验证固定地址 ELF64：ISA、程序头与文件边界、对齐、用户地址范围、栈/堆/信号页保留区、段页面重叠、W^X 和可执行入口。它为代码页创建不可变版本，经独立 Code Authority Service 请求批准，再用通用 `SYS_DOMAIN_SPAWN` 建立原生域；仅返回观察和终止权限。启动探针要求畸形映像被拒绝、有效镜像以退出码 37 结束。Loader 死亡时 supervisor 重建服务及 shell；代码审批服务换代时还更新 Loader 持有的审批端点。生产启动回归显式终止 Loader，检查新 PID、shell 与既有文件内容；shell 可以创建同名公开文件，但无法读写不具名对象，也不能改变 Loader 探针结果。
 
-这是一条受限的原生装载路径：当前只支持静态 `ET_EXEC`，至多 64 个程序头和 16 页镜像；解释器、动态链接和 TLS 模板未实现。请求端的私有持有者及其显式传入的文件对象是现阶段授权策略，Code Authority Service 尚无签名或内容身份策略。File Service 是易失存储，内核仍解析和装载初始 supervisor、服务、shell 与 POSIX `execve` 的 ELF；POSIX 原子替换、Pager Service、启动认证及 ADR-0025/0026 的完整迁移仍待完成。
+这是一条当时受限的原生装载路径：仅支持静态 `ET_EXEC`，至多 64 个程序头和 16 页镜像；此后的容量扩大及静态 TLS 模板见 3.96。请求端的私有持有者及其显式传入的文件对象是现阶段授权策略，Code Authority Service 尚无签名或内容身份策略。File Service 是易失存储，内核仍解析和装载初始 supervisor、服务、shell 与 POSIX `execve` 的 ELF；POSIX 原子替换、Pager Service、启动认证及 ADR-0025/0026 的完整迁移仍待完成。
 
 三架构九预设串行 workflow **53/53 CTest** 全部通过，九份生产启动结果均完成 **109 步**，包括根发送端名称查找拒绝、公开同名文件与不具名探针隔离、Loader 自身死亡后新 PID、代码服务换代后的 Loader 重建，以及文件/命名空间服务恢复。ARM64 的 freestanding 探针最初因链接器默认 64 KiB 段对齐达到 66,112 字节，超过文件服务容量；显式使用三架构统一的 4 KiB 基础页对齐后，探针为 4,672 字节且实际启动通过。上述结果为 QEMU/宿主验证，不是硬件或产品代码认证。
 
@@ -1760,19 +1760,40 @@ supervisor 的 `RUN` 请求显式传递单个文件 capability；Loader 经 File
 
 此前 Loader 用 16 字节全零初始栈启动静态探针，没有为真实程序构造 `argc/argv/envp`；即使域工厂已有三个入口寄存器，服务也未填写。私有 `RUN` 请求现在随文件 capability 携带一个字节宽度的参数与环境字符串数量，以及按顺序拼接的 NUL 结尾字符串。Loader 在读取镜像和请求代码批准之前检查计数、终止符及恰好消费的消息长度；再用运行时 `SYS_DOMAIN_LAYOUT` 给出的栈边界，构造与现有 Moss `execve` 相同的 `argc, argv..., NULL, envp..., NULL, AT_NULL, 0` 启动向量。x64 预留原生 C 入口所需的返回槽，并把 `argc/argv/envp` 地址放进 `SYS_DOMAIN_SPAWN` 的三个入口参数。
 
-生产探针不再无条件退出 37：它逐项检查两个实参、一个环境变量、栈向量里的 `argc` 和 `AT_NULL`，失败时退出 1；supervisor 还先发送声明一个实参却没有字符串的请求，要求 Loader 返回 `BAD_REQUEST` 且无域句柄。畸形请求在读文件前被拒绝；有效探针在 Loader 每次启动及 Process Service 交接时走真实文件、代码批准与域构造路径。此阶段的参数仍受单条 256 字节 IPC 消息限制，文件容量与静态 ET_EXEC 限制未变；大参数传递、动态链接、TLS、普通 POSIX `execve` 和兼容身份原子替换继续开放。
+生产探针不再无条件退出 37：它逐项检查两个实参、一个环境变量、栈向量里的 `argc` 和 `AT_NULL`，失败时退出 1；supervisor 还先发送声明一个实参却没有字符串的请求，要求 Loader 返回 `BAD_REQUEST` 且无域句柄。畸形请求在读文件前被拒绝；有效探针在 Loader 每次启动及 Process Service 交接时走真实文件、代码批准与域构造路径。此阶段的参数仍受单条 256 字节 IPC 消息限制，文件容量与静态 ET_EXEC 限制未变；后续容量及静态 TLS 模板见 3.96。大参数传递、动态链接、普通 POSIX `execve` 和兼容身份原子替换继续开放。
 
 三架构九预设串行 workflow **9/9**、CTest **53/53** 通过；保留的 **11 份**生产启动报告各完成 **113 步**。X64 Debug/Release/RelWithDebInfo 分别为 6/7/6，ARM64 为 7/6/5，RV64 为 5/6/5。每个预设的 workflow 日志、CTest 原始日志和生产启动 JSON 保存在本工作区 `build/loader-startup-*` 与 `build/loader-startup-evidence/`；逐预设保存结果后清理可重建的生成目录，避免磁盘耗尽。
 
 最终源码的 X64 Debug 另复跑 **6/6 CTest**、生产启动 **113 步**，替换了该预设的保存报告。宿主 `scripts/tests` **380 passed、1 skipped**，Ruff、改动 C 文件与协议头的 clang-format、`git diff --check` 均通过。定向 `lint.py` 对两个 C 文件仅报 `readability-braces-around-statements`；这项现有规则与用户态 C 的单句分支风格冲突，关闭该规则后本次三个翻译单元无其他 clang-tidy 诊断。全仓 `format --check` 仍报告未改文件的既有差异。上述验收不覆盖大参数协议、动态装载或内核 `execve` 替换。
 
-### 3.96 启动文件与 Loader/Process 交接整合（2026-09-24）
+### 3.96 Loader 静态 libc 镜像与 TLS 模板（2026-09-24）
+
+此前 File Service 的内容总额仅 64 KiB，Loader 单次最多构造 16 个页面并拒绝 `PT_TLS`，因此 3.95 的启动向量只能供小型 freestanding 探针使用。现在文件服务总额扩大到 16 MiB，与原生域工厂的 4096 个 4 KiB 映像页面上限一致；对象数仍限制为 16。Loader 同步扩大有界文件和页面缓冲，继续拒绝解释器及动态段；对于静态 `PT_TLS`，核对文件、地址、标志及对齐边界，要求含初始化字节的模板在同一个 `PT_LOAD` 中有一致的文件/虚拟地址映射。TLS 不生成额外页面：静态 mlibc 运行时负责建立线程指针。
+
+生产 initramfs 新增静态 `loader_libc_probe.elf`，其文件大小超过旧的 64 KiB 限制，并含有初始化数据和零初始化 TLS。supervisor 将它写入不可按名字重开的 File Service 对象；已知种子文件长度先一次性预留，避免服务恢复时逐页 `realloc` 反复复制增长中的镜像，并要求最终读取量与文件长度一致。每次 Loader 启动时都通过 `RUN` 传入实参和环境，等待真实原生域读取 `argv/envp`、`getenv` 和两类 TLS 变量后以 41 退出，探针失败则 Loader 不标记就绪。生产文件配额回归改为要求已占用对象存在时，对完整 16 MiB 的另一文件扩容失败且旧内容保持。此路径仍为静态 `ET_EXEC`；内核 VFS 提供启动种子，普通 POSIX `execve`、动态链接、运行时页调入及产品代码审批策略仍待迁移。
+
+最终源码的三架构九预设串行 workflow **9/9**、CTest **53/53** 通过；X64 Debug/Release/RelWithDebInfo 分别为 6/7/6，ARM64 为 7/6/5，RV64 为 5/6/5。保存的 **11 份**生产启动报告各完成 **113 步**，包含 ARM64 Debug 两项受控串口输入。RV64 Debug 的初轮在 30 秒时停于文件服务恢复后的第 81 步；60 秒观察窗口下全程耗时 36.29 秒。种子预分配后，单项按原 30 秒窗口耗时 26.22 秒，最终完整 workflow 耗时 26.39 秒；未放宽超时或省略恢复步骤。逐预设保存的 workflow、CTest 日志及生产启动 JSON 位于本工作区 `build/loader-libc-final-evidence/`，可重建构建目录在保存结果后清理。
+
+最终宿主 `scripts/tests` **380 passed、1 skipped**，其中相关的 `test_userspace_build.py` 与 `test_production_boot.py` 另单独完成 **19/19**。Ruff、改动 Python 文件的格式、改动 C 文件与协议头的 clang-format、`git diff --check` 通过。定向 clang-tidy 的两个原有用户态翻译单元只报仓库现有单句分支风格触发的 `readability-braces-around-statements`；关闭该规则后本次三个 C 翻译单元无其他诊断。全仓 `format --check` 仍报告既有源码及 CMake 格式差异，包括本次涉及但原本已不符合 cmake-format 的两个文件。验收为 QEMU/宿主结果，不代表动态链接、普通 POSIX `execve` 已迁移或真实硬件已验证。
+
+### 3.97 Loader 私有镜像封存与拒绝写入（2026-09-24）
+
+3.96 的 Loader 已把文件页复制到自身缓冲并请求代码批准，但 File Service 中原始不具名对象仍可通过留存或复制的发送端写入、缩容。现在 File Service 接受对不具名对象的幂等 `SEAL`，由单个接收循环把它排在此前写入之后、后续请求之前；对象封存后所有发送端的 `WRITE` 与 `RESIZE` 都返回 `BAD_REQUEST`，`READ` 仍可用。具名文件不接受封存，避免普通读取者拿到 `SEND` 后阻止其他客户端写入。File Service 仍是易失服务，此处没有引入持久文件或签名身份。
+
+supervisor 每次写完三份私有镜像并核对名称不可重新打开后，先封存，再用原发送端尝试将文件头改成 `BAD` 以及缩容到零；两次必须由真实 File Service IPC 拒绝，之后才将镜像句柄交给 Loader。若任一步失败，该次服务初始化失败并重新建立文件服务，不会把可变镜像当成已验证输入。公开 `/scratch` 和公开同名文件的既有写入、读取、服务重启回归仍在生产启动脚本中执行。代码批准仍由独立 Code Authority Service 对不可变代码版本完成；此切片只固定私有启动镜像在 File Service 当前存活期内的字节，不代表普通 POSIX `execve`、pager、产品代码策略或恶意文件服务已解决。
+
+验收：三架构 Debug、Release、RelWithDebInfo 九预设构建与测试全部通过，共 **53/53 CTest**；11 份生产启动报告均为 `passed`、各完成 **113 步**（ARM64 Debug 三次，其他预设各一次）。仅调整分支大括号后，又以最终源码重跑 x64 Debug **6/6 CTest**，其中生产启动通过。宿主 `scripts/tests` **380 passed、1 skipped**；改动 C 文件与协议头的 clang-format、Ruff 和 `git diff --check` 通过。定向 clang-tidy 仍因仓库既有的单句分支大括号规则失败，关闭该规则后两个改动翻译单元无其他诊断。生产启动路径在每次服务重建时对三份镜像实际执行封存和拒绝写入、缩容检查；这些结果属于 QEMU 和宿主验证，尚无真实硬件或持久存储验证。
+### 3.98 启动文件与 Loader/Process 交接整合（2026-09-24）
 
 当前工作树把只读启动归档的用户态 File Service 路径与 Loader 启动参数、Process Service 交接合在一起。supervisor 仍用普通 Loader 验证私有不具名镜像；每次创建 Process Service 恢复 scope 后，另起一个处于该 scope 的 Loader，将其创建的探针域经 supervisor 的带 badge 父会话登记为子进程。交给 Process Service 的域权限仅为 `OBSERVE|INSPECT|SIGNAL`，supervisor 保留终止权；探针验证父子身份、退出码和父会话等待。这样服务重启后的交接和 scope 清理使用同一所有权边界。
 
 旧生产探针把 Loader 镜像固定算作两页，再要求 `/note` 扩至 49152 字节；合并后的 x64 Debug 镜像实际为 13032 字节、占四页，这一容量假设不再成立。删除该镜像大小相关的重复断言；仍验证超过服务总预算的扩容被拒绝且原内容保持不变。
 
 定向 clang-tidy 在关闭用户态 C 既有的单句分支大括号规则后，对 init、Loader 和探针没有诊断；发现的五处 init 可读性问题已做等价清理。最终源码的九个 CMake 预设构建和 CTest **53/53** 通过，九份真实 QEMU 生产启动报告均为 `passed`、完成 **165 步**。宿主 `scripts/tests` 为 **381 passed、1 skipped**；Ruff、改动行 clang-format 和 `git diff --check` 通过。日志保存在本工作树 `build/results/merge-matrix-final/`，不把这些 QEMU 与宿主结果当作真机、普通 POSIX `execve` 或完整 ADR 迁移的验收。
+
+后续把 3.96 的 16 MiB 文件预算、静态 libc TLS 探针和 3.97 的私有镜像封存合入同一启动路径。supervisor 从只读 File Service 对象查询种子长度，再一次性预留、逐页复制并封存私有镜像；Loader 运行前的真实 IPC 现在同时要求 `WRITE`、`APPEND`、`RESIZE` 无法修改它。合并后发现旧描述符探针把 BusyBox 镜像大小与易失文件预算比较，预算提高后这一条件失效；改为跨 4 KiB 页面读取启动文件。归档新增 libc 探针后目录可超过 16 个易失对象，遍历上限也改用文件服务执行的 64 个启动项加 16 个易失对象，并保留一次末尾检查。
+
+这次整合后的九预设 workflow 再次 **53/53 CTest** 通过，九份生产启动报告均为 `passed`、各 **165 步**；原始日志与 JSON 保存在 `build/results/merge-master-libc/`。相关宿主测试 **20/20** 通过。后续还需将主线新增的 Loader 入站封存门禁合入并复测；以上数字只覆盖本节这一阶段的源码。
 
 ## 4. 问题总表与当前状态
 

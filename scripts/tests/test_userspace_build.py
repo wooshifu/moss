@@ -307,6 +307,7 @@ add_subdirectory(src/userspace)
         runtime / "init.elf",
         runtime / "code-authority-service.elf",
         runtime / "loader-service.elf",
+        runtime / "loader_libc_probe.elf",
         runtime / "file-service.elf",
         runtime / "namespace-service.elf",
         runtime / "moss-file.elf",
@@ -325,7 +326,10 @@ add_subdirectory(src/userspace)
     code_service = (runtime / "code-authority-service.elf").read_bytes()
     loader_service = (runtime / "loader-service.elf").read_bytes()
     loader_probe = (build / "userspace/loader_probe.elf").read_bytes()
-    assert len(loader_probe) <= 16 * 4096  # Current File Service complete-file budget.
+    libc_probe = (runtime / "loader_libc_probe.elf").read_bytes()
+    assert len(loader_probe) <= 16 * 4096  # The freestanding probe remains small.
+    assert len(libc_probe) > 16 * 4096  # A real static libc image crosses the old service ceiling.
+    assert len(libc_probe) <= 4096 * 4096  # The bounded File Service image budget.
     file_service = (runtime / "file-service.elf").read_bytes()
     namespace_service = (runtime / "namespace-service.elf").read_bytes()
     file_client = (runtime / "moss-file.elf").read_bytes()
@@ -349,6 +353,7 @@ add_subdirectory(src/userspace)
     assert make_cpio_entry("console-service.elf", console_service, ino=11) in archive
     assert make_cpio_entry("loader-service.elf", loader_service, ino=12) in archive
     assert make_cpio_entry("loader_probe.elf", loader_probe, ino=13) in archive
+    assert make_cpio_entry("loader_libc_probe.elf", libc_probe, ino=14) in archive
     for removed in ("hello", "shell", "top", "signal_test"):
         assert not (build / "userspace" / f"{removed}.elf").exists()
         assert f"{removed}.elf\0".encode() not in archive

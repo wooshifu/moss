@@ -879,7 +879,8 @@ static int fd_directory_probe(unsigned long session, unsigned long memory, const
             name_size == sizeof("..") && strcmp(page, "..") == 0;
   int saw_scratch = 0, saw_note = 0, saw_exclusive = 0, ended = 0;
   unsigned long previous = cookie;
-  for (unsigned int index = 0; valid && index <= MOSS_FILE_OBJECT_LIMIT; ++index) {
+  // Include one final request for END after every permitted boot and volatile entry.
+  for (unsigned int index = 0; valid && index <= MOSS_FILE_OBJECT_LIMIT + MOSS_FILE_BOOT_ENTRY_LIMIT; ++index) {
     valid = fd_readdir(session, directory, memory, page, &type, &id, &cookie, &name_size);
     if (!valid)
       break;
@@ -936,14 +937,13 @@ static int fd_view_probe(void) {
     valid = fd_open(session, "/busybox.elf", MOSS_PROCESS_FD_READABLE, &boot);
     if (valid)
       valid = fd_stat(session, boot, &kind, &boot_id, &boot_size) && kind == MOSS_PROCESS_FD_KIND_FILE &&
-              boot_size > MOSS_FILE_CONTENT_BUDGET_BYTES &&
-              path_stat(session, "/busybox.elf", &kind, &path_id, &path_size) && path_id == boot_id &&
-              path_size == boot_size;
+              boot_size > MOSS_MEM_OBJECT_BYTES && path_stat(session, "/busybox.elf", &kind, &path_id, &path_size) &&
+              path_id == boot_id && path_size == boot_size;
     if (valid)
       valid = fd_io(session, MOSS_PROCESS_FD_READ, boot, memory, 4, &transferred) && transferred == 4 &&
               memcmp((const void *)mapped, "\177ELF", 4) == 0 &&
-              fd_seek_to(session, boot, MOSS_PROCESS_FD_SEEK_SET, MOSS_FILE_CONTENT_BUDGET_BYTES, &position) &&
-              position == MOSS_FILE_CONTENT_BUDGET_BYTES &&
+              fd_seek_to(session, boot, MOSS_PROCESS_FD_SEEK_SET, MOSS_MEM_OBJECT_BYTES, &position) &&
+              position == MOSS_MEM_OBJECT_BYTES &&
               fd_io(session, MOSS_PROCESS_FD_READ, boot, memory, 4, &transferred) && transferred == 4;
     if (boot)
       valid &= fd_command(session, MOSS_PROCESS_FD_CLOSE, boot, NULL);

@@ -16,7 +16,7 @@ struct NewcHeader {
   char devmajor[8], devminor[8], rdevmajor[8], rdevminor[8], namesize[8], check[8];
 };
 _Static_assert(sizeof(struct NewcHeader) == 110, "CPIO newc header size");
-enum { CPIO_TYPE_MASK = 0170000, CPIO_REGULAR = 0100000, CPIO_ALIGNMENT = 4, BOOT_FILE_LIMIT = 64 };
+enum { CPIO_TYPE_MASK = 0170000, CPIO_REGULAR = 0100000, CPIO_ALIGNMENT = 4 };
 
 struct FileObject {
   struct FileObject *next;
@@ -24,6 +24,7 @@ struct FileObject {
   unsigned long length;
   unsigned long capacity;
   unsigned long name_size;
+  unsigned int sealed;
   char name[FILE_NAME_BYTES];
   unsigned char *data;
   const unsigned char *boot_data;
@@ -157,7 +158,7 @@ static int load_boot_files(const unsigned char *archive, unsigned long size, str
     if ((mode & CPIO_TYPE_MASK) == CPIO_REGULAR && valid_name(name, name_bytes)) {
       // The bootstrap parser accepts at most 64 entries. Keep that bound
       // separate from the client-created file budget.
-      if (*boot_count == BOOT_FILE_LIMIT || find_name(*files, name, name_bytes))
+      if (*boot_count == MOSS_FILE_BOOT_ENTRY_LIMIT || find_name(*files, name, name_bytes))
         return 0;
       struct FileObject *file = calloc(1, sizeof(*file));
       if (!file)
@@ -281,11 +282,11 @@ int main(int argc, char **argv) {
       unsigned int count = valid_header ? moss_file_get_u16(request.payload + 9) : 0;
       int valid_count = valid_header && count <= MOSS_MEM_OBJECT_BYTES;
       int reading = file && valid_count && request.payload[0] == MOSS_FILE_READ && request.rights == MOSS_CAP_MAP_WRITE;
-      int writing = file && !file->boot_data && valid_count && request.payload[0] == MOSS_FILE_WRITE &&
+      int writing = file && !file->boot_data && !file->sealed && valid_count && request.payload[0] == MOSS_FILE_WRITE &&
                     request.rights == MOSS_CAP_MAP_READ && offset <= MOSS_FILE_CONTENT_BUDGET_BYTES &&
                     count <= MOSS_FILE_CONTENT_BUDGET_BYTES - offset;
-      int appending = file && !file->boot_data && valid_count && request.payload[0] == MOSS_FILE_APPEND &&
-                      request.rights == MOSS_CAP_MAP_READ && offset == 0;
+      int appending = file && !file->boot_data && !file->sealed && valid_count &&
+                      request.payload[0] == MOSS_FILE_APPEND && request.rights == MOSS_CAP_MAP_READ && offset == 0;
       if (reading || writing || appending) {
         long mapped = syscall2(SYS_MEM_MAP, (long)request.capability, reading ? MOSS_CAP_MAP_WRITE : MOSS_CAP_MAP_READ);
         if (mapped > 0) {
@@ -400,12 +401,22 @@ int main(int argc, char **argv) {
       response.size = MOSS_FILE_STAT_REPLY_BYTES;
       moss_file_put_u64(response.payload + 1, file ? file->badge : MOSS_FILE_ROOT_BADGE);
       moss_file_put_u64(response.payload + 9, file ? file->length : 0);
+    } else if (file && !file->name_size && request.size == 1 && request.payload[0] == MOSS_FILE_SEAL &&
+               !request.rights) {
+      // The single receiver orders this transition after earlier writes and
+      // before every later request through any sender copy. Public names stay
+      // mutable because a reader must not be able to deny writers service.
+      file->sealed = 1;
+      response.payload[0] = MOSS_FILE_OK;
     } else if (file && request.size == MOSS_FILE_RESIZE_HEADER_BYTES && request.payload[0] == MOSS_FILE_RESIZE) {
       uint64_t length = moss_file_get_u64(request.payload + 1);
-      response.payload[0] =
-          length <= MOSS_FILE_CONTENT_BUDGET_BYTES && resize_file(file, (unsigned long)length, &allocated)
-              ? MOSS_FILE_OK
-              : MOSS_FILE_UNAVAILABLE;
+      if (file->sealed) {
+        response.payload[0] = MOSS_FILE_BAD_REQUEST;
+      } else if (length > MOSS_FILE_CONTENT_BUDGET_BYTES || !resize_file(file, (unsigned long)length, &allocated)) {
+        response.payload[0] = MOSS_FILE_UNAVAILABLE;
+      } else {
+        response.payload[0] = MOSS_FILE_OK;
+      }
     }
     // A timed-out caller may have discarded its Reply; the file remains
     // usable for later requests regardless of that caller's outcome.

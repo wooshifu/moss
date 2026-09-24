@@ -27,7 +27,8 @@ enum {
   MOSS_FILE_APPEND = 6,
   MOSS_FILE_STAT = 7,
   MOSS_FILE_ROOT = 8,
-  MOSS_FILE_LIST = 9
+  MOSS_FILE_LIST = 9,
+  MOSS_FILE_SEAL = 10
 };
 enum { MOSS_FILE_OPEN_CREATE = 1U << 0, MOSS_FILE_OPEN_EXCLUSIVE = 1U << 1, MOSS_FILE_OPEN_UNLISTED = 1U << 2,
        MOSS_FILE_OPEN_WRITE = 1U << 3 };
@@ -42,9 +43,14 @@ enum {
 };
 // Preserve the kernel dirent d_type values when libc moves to this service.
 enum { MOSS_FILE_TYPE_DIRECTORY = 4, MOSS_FILE_TYPE_REGULAR = 8 };
-// Until service resource accounting exists, limit client-triggered allocation
-// to 16 file objects and 16 shared pages of data per service incarnation.
-enum { MOSS_FILE_OBJECT_LIMIT = 16, MOSS_FILE_CONTENT_BUDGET_BYTES = 16 * 4096 };
+// Until service resource accounting exists, bound client-triggered allocation.
+// 16 MiB matches the current 4096-page native domain construction ceiling,
+// allowing a static libc image through this volatile file service. Boot
+// archive entries have a separate limit and do not consume that budget.
+enum { MOSS_FILE_OBJECT_LIMIT = 16, MOSS_FILE_BOOT_ENTRY_LIMIT = 64, MOSS_FILE_CONTENT_BUDGET_BYTES = 4096 * 4096 };
+// SEAL is an idempotent one-byte request on an unlisted object sender. It
+// permanently rejects WRITE, APPEND and RESIZE through every sender copy.
+// Named files remain mutable for existing public clients.
 // READ/WRITE transfer one shared page at an explicit byte offset. Their
 // request carries [opcode, offset: u64 LE, count: u16 LE], and the reply
 // carries [status, transferred: u16 LE]. RESIZE carries [opcode, size: u64 LE].

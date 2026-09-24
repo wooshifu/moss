@@ -12,9 +12,10 @@
 #include "moss_loader_protocol.h"
 #include "syscall.h"
 
-// The current File Service caps a complete file at 16 pages. Keep one
-// construction request within the same page budget until domain quotas exist.
+// Keep a construction request within the File Service's bounded content
+// budget and the kernel's 4096-page domain limit until domain quotas exist.
 enum { LOADER_MAX_PAGES = MOSS_FILE_CONTENT_BUDGET_BYTES / MOSS_MEM_OBJECT_BYTES, LOADER_MAX_HEADERS = 64 };
+_Static_assert(LOADER_MAX_PAGES == MOSS_DOMAIN_MAX_IMAGE_PAGES, "loader and domain image limits must agree");
 // Five vector words hold argc, both list terminators and the AT_NULL pair;
 // the extra 64 bytes cover the top gap, alignment and x64 return slot.
 enum { LOADER_STARTUP_BUFFER_BYTES = MOSS_IPC_MAX_MESSAGE + (MOSS_IPC_MAX_MESSAGE + 5) * sizeof(uint64_t) + 64 };
@@ -184,8 +185,21 @@ static int plan_elf(size_t size, const struct moss_domain_layout *layout, size_t
   for (unsigned int index = 0; index < header.e_phnum; ++index) {
     Elf64_Phdr segment;
     memcpy(&segment, file_bytes + header.e_phoff + index * sizeof(segment), sizeof(segment));
-    if (segment.p_type == PT_INTERP || segment.p_type == PT_DYNAMIC || segment.p_type == PT_TLS)
-      return 0; // No interpreter, relocator or TLS startup exists in this loader yet.
+    if (segment.p_type == PT_INTERP || segment.p_type == PT_DYNAMIC)
+      return 0; // No interpreter or relocator exists in this loader yet.
+    if (segment.p_type == PT_TLS) {
+      // TLS is runtime metadata. The static runtime installs each thread's
+      // pointer; file-backed templates must also be covered by a LOAD below.
+      if (segment.p_offset > size || segment.p_filesz > size - segment.p_offset || segment.p_filesz > segment.p_memsz)
+        return 0;
+      if (segment.p_memsz &&
+          (segment.p_vaddr < layout->user_begin || segment.p_vaddr >= layout->user_end ||
+           segment.p_memsz > layout->user_end - segment.p_vaddr || (segment.p_flags & ~(PF_R | PF_W)) ||
+           (segment.p_align > 1 && ((segment.p_align & (segment.p_align - 1)) ||
+                                    ((segment.p_offset ^ segment.p_vaddr) & (segment.p_align - 1))))))
+        return 0;
+      continue;
+    }
     if (segment.p_type != PT_LOAD || !segment.p_memsz)
       continue;
     if (segment.p_offset > size || segment.p_filesz > size - segment.p_offset || segment.p_filesz > segment.p_memsz ||
@@ -240,6 +254,27 @@ static int plan_elf(size_t size, const struct moss_domain_layout *layout, size_t
       }
       ++*page_count;
     }
+  }
+  for (unsigned int index = 0; index < header.e_phnum; ++index) {
+    Elf64_Phdr tls;
+    memcpy(&tls, file_bytes + header.e_phoff + index * sizeof(tls), sizeof(tls));
+    if (tls.p_type != PT_TLS || !tls.p_filesz)
+      continue;
+    int covered = 0;
+    for (unsigned int candidate = 0; candidate < header.e_phnum; ++candidate) {
+      Elf64_Phdr load;
+      memcpy(&load, file_bytes + header.e_phoff + candidate * sizeof(load), sizeof(load));
+      if (load.p_type != PT_LOAD || !load.p_memsz || tls.p_vaddr < load.p_vaddr ||
+          tls.p_vaddr > load.p_vaddr + load.p_memsz || tls.p_memsz > load.p_vaddr + load.p_memsz - tls.p_vaddr ||
+          tls.p_offset < load.p_offset || tls.p_offset > load.p_offset + load.p_filesz ||
+          tls.p_filesz > load.p_offset + load.p_filesz - tls.p_offset ||
+          tls.p_vaddr - load.p_vaddr != tls.p_offset - load.p_offset)
+        continue;
+      covered = 1;
+      break;
+    }
+    if (!covered)
+      return 0;
   }
   return *page_count && *code_count && entry_in_code;
 }

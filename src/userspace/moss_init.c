@@ -31,6 +31,7 @@ struct Service {
 
 struct LoaderImages {
   long probe;
+  long libc_probe;
   long bad;
 };
 
@@ -106,6 +107,8 @@ static void stop_service(struct Service *service) {
 static void close_loader_images(struct LoaderImages *images) {
   if (images->probe > 0)
     (void)syscall1(SYS_CAP_CLOSE, images->probe);
+  if (images->libc_probe > 0)
+    (void)syscall1(SYS_CAP_CLOSE, images->libc_probe);
   if (images->bad > 0)
     (void)syscall1(SYS_CAP_CLOSE, images->bad);
   *images = (struct LoaderImages){0};
@@ -453,6 +456,7 @@ static long call_service(long send, const struct moss_ipc_message *request, stru
 static int seed_loader_file(long file, const char *name, const char *source, long *image) {
   *image = 0;
   long source_object = 0;
+  unsigned long source_length = 0;
   if (source) {
     struct moss_ipc_message lookup = {.size = strlen(source) + 3, .payload = {MOSS_FILE_OPEN}};
     memcpy(lookup.payload + 2, source, strlen(source) + 1);
@@ -465,6 +469,19 @@ static int seed_loader_file(long file, const char *name, const char *source, lon
       return -1;
     }
     source_object = (long)found.capability;
+    struct moss_ipc_message size_request = {.size = 1, .payload = {MOSS_FILE_SIZE}};
+    struct moss_ipc_message size_reply = {0};
+    long measured = call_service(source_object, &size_request, &size_reply);
+    uint64_t length = measured == MOSS_FILE_SIZE_REPLY_BYTES ? moss_file_get_u64(size_reply.payload + 1) : 0;
+    if (size_reply.capability)
+      (void)syscall1(SYS_CAP_CLOSE, (long)size_reply.capability);
+    if (measured != MOSS_FILE_SIZE_REPLY_BYTES || size_reply.size != MOSS_FILE_SIZE_REPLY_BYTES ||
+        size_reply.payload[0] != MOSS_FILE_OK || size_reply.capability || size_reply.rights || !length ||
+        length > MOSS_FILE_CONTENT_BUDGET_BYTES) {
+      (void)syscall1(SYS_CAP_CLOSE, source_object);
+      return -1;
+    }
+    source_length = (unsigned long)length;
   }
   struct moss_ipc_message request = {.size = strlen(name) + 3,
                                      .payload = {MOSS_FILE_OPEN, MOSS_FILE_OPEN_CREATE | MOSS_FILE_OPEN_UNLISTED}};
@@ -480,6 +497,22 @@ static int seed_loader_file(long file, const char *name, const char *source, lon
     return -1;
   }
   long object = (long)response.capability;
+  // Reserve the known immutable seed length once: per-page realloc would
+  // repeatedly copy the growing libc image during each service recovery.
+  if (source) {
+    request = (struct moss_ipc_message){.size = MOSS_FILE_RESIZE_HEADER_BYTES, .payload = {MOSS_FILE_RESIZE}};
+    moss_file_put_u64(request.payload + 1, source_length);
+    response = (struct moss_ipc_message){0};
+    sent = call_service(object, &request, &response);
+    if (response.capability)
+      (void)syscall1(SYS_CAP_CLOSE, (long)response.capability);
+    if (sent != 1 || response.size != 1 || response.payload[0] != MOSS_FILE_OK || response.capability ||
+        response.rights) {
+      (void)syscall1(SYS_CAP_CLOSE, object);
+      (void)syscall1(SYS_CAP_CLOSE, source_object);
+      return -1;
+    }
+  }
   long memory = syscall1(SYS_MEM_CREATE, MOSS_MEM_OBJECT_BYTES);
   long mapped = memory > 0 ? syscall2(SYS_MEM_MAP, memory, MOSS_CAP_MAP_READ | MOSS_CAP_MAP_WRITE) : -1;
   int valid = mapped > 0;
@@ -528,12 +561,8 @@ static int seed_loader_file(long file, const char *name, const char *source, lon
     }
     offset += (size_t)count;
   }
-  if (mapped > 0 && syscall2(SYS_MUNMAP, mapped, MOSS_MEM_OBJECT_BYTES) != 0)
-    _exit(1); // Init cannot safely retry with an accumulating leaked mapping.
-  if (memory > 0)
-    (void)syscall1(SYS_CAP_CLOSE, memory);
-  if (source_object > 0)
-    (void)syscall1(SYS_CAP_CLOSE, source_object);
+  if (source && offset != source_length)
+    valid = 0;
   if (valid && offset) {
     // A root sender can create an unlisted object, but must not be able to
     // recover its authority by a later name lookup.
@@ -543,9 +572,69 @@ static int seed_loader_file(long file, const char *name, const char *source, lon
     sent = call_service(file, &request, &response);
     valid = sent == 1 && response.size == 1 && response.payload[0] == MOSS_FILE_NO_ENTRY && !response.capability &&
             !response.rights;
+    if (response.capability) {
+      (void)syscall1(SYS_CAP_CLOSE, (long)response.capability);
+    }
+  }
+  if (valid && offset) {
+    request = (struct moss_ipc_message){.size = 1, .payload = {MOSS_FILE_SEAL}};
+    response = (struct moss_ipc_message){0};
+    sent = call_service(object, &request, &response);
+    valid = sent == 1 && response.size == 1 && response.payload[0] == MOSS_FILE_OK && !response.capability &&
+            !response.rights;
+    if (response.capability) {
+      (void)syscall1(SYS_CAP_CLOSE, (long)response.capability);
+    }
+  }
+  if (valid && offset) {
+    // Deliberately try to corrupt the sealed ELF while we still own a sender
+    // and mapped page. A bad WRITE implementation makes startup fail here.
+    memcpy((void *)mapped, "BAD", 3);
+    request = (struct moss_ipc_message){.size = MOSS_FILE_IO_HEADER_BYTES,
+                                        .capability = (unsigned long)memory,
+                                        .rights = MOSS_CAP_MAP_READ,
+                                        .payload = {MOSS_FILE_WRITE}};
+    moss_file_put_u64(request.payload + 1, 0);
+    moss_file_put_u16(request.payload + 9, 3);
+    response = (struct moss_ipc_message){0};
+    sent = call_service(object, &request, &response);
+    valid = sent == 1 && response.size == 1 && response.payload[0] == MOSS_FILE_BAD_REQUEST && !response.capability &&
+            !response.rights;
+    if (response.capability) {
+      (void)syscall1(SYS_CAP_CLOSE, (long)response.capability);
+    }
+  }
+  if (valid && offset) {
+    request = (struct moss_ipc_message){.size = MOSS_FILE_IO_HEADER_BYTES,
+                                        .capability = (unsigned long)memory,
+                                        .rights = MOSS_CAP_MAP_READ,
+                                        .payload = {MOSS_FILE_APPEND}};
+    moss_file_put_u64(request.payload + 1, 0);
+    moss_file_put_u16(request.payload + 9, 3);
+    response = (struct moss_ipc_message){0};
+    sent = call_service(object, &request, &response);
+    valid = sent == 1 && response.size == 1 && response.payload[0] == MOSS_FILE_BAD_REQUEST && !response.capability &&
+            !response.rights;
     if (response.capability)
       (void)syscall1(SYS_CAP_CLOSE, (long)response.capability);
   }
+  if (valid && offset) {
+    request = (struct moss_ipc_message){.size = MOSS_FILE_RESIZE_HEADER_BYTES, .payload = {MOSS_FILE_RESIZE}};
+    moss_file_put_u64(request.payload + 1, 0);
+    response = (struct moss_ipc_message){0};
+    sent = call_service(object, &request, &response);
+    valid = sent == 1 && response.size == 1 && response.payload[0] == MOSS_FILE_BAD_REQUEST && !response.capability &&
+            !response.rights;
+    if (response.capability) {
+      (void)syscall1(SYS_CAP_CLOSE, (long)response.capability);
+    }
+  }
+  if (mapped > 0 && syscall2(SYS_MUNMAP, mapped, MOSS_MEM_OBJECT_BYTES) != 0)
+    _exit(1); // Init cannot safely retry with an accumulating leaked mapping.
+  if (memory > 0)
+    (void)syscall1(SYS_CAP_CLOSE, memory);
+  if (source_object > 0)
+    (void)syscall1(SYS_CAP_CLOSE, source_object);
   if (!valid || !offset) {
     (void)syscall1(SYS_CAP_CLOSE, object);
     return -1;
@@ -597,12 +686,12 @@ fail:
   return -1;
 }
 
-static int request_loader(long send, long image, unsigned char expected, long *domain) {
+static int request_loader(long send, long image, const char *program, unsigned char expected, long *domain) {
   struct moss_ipc_message request = {.size = MOSS_LOADER_RUN_HEADER_BYTES,
                                      .capability = (unsigned long)image,
                                      .rights = MOSS_CAP_SEND,
                                      .payload = {MOSS_LOADER_RUN, 2, 1}};
-  const char *const strings[] = {"loader-probe", "from-supervisor", "MOSS_LOADER=ready"};
+  const char *const strings[] = {program, "from-supervisor", "MOSS_LOADER=ready"};
   for (size_t index = 0; index < sizeof(strings) / sizeof(strings[0]); ++index) {
     size_t length = strlen(strings[index]) + 1;
     if (length > sizeof(request.payload) - request.size)
@@ -625,6 +714,25 @@ static int request_loader(long send, long image, unsigned char expected, long *d
   return -1;
 }
 
+static int run_loader_probe(long send, long image, const char *program, int expected_exit) {
+  long domain = 0;
+  if (request_loader(send, image, program, MOSS_LOADER_OK, &domain) != 0)
+    return -1;
+  long waited;
+  do {
+    waited = syscall1(SYS_DOMAIN_WAIT, domain);
+  } while (waited == -EINTR);
+  struct moss_domain_exit status = {0};
+  int valid = waited == 0 && syscall2(SYS_DOMAIN_STATUS, domain, (long)&status) == 0 && status.code == expected_exit &&
+              status.signal == 0;
+  if (!valid) {
+    (void)syscall1(SYS_DOMAIN_TERMINATE, domain);
+    (void)syscall1(SYS_DOMAIN_WAIT, domain);
+  }
+  (void)syscall1(SYS_CAP_CLOSE, domain);
+  return valid ? 0 : -1;
+}
+
 static int launch_loader_service(const struct Service *code, const struct LoaderImages *images, long factory,
                                  struct Service *loader) {
   if (start_loader_service(code, factory, 0, loader) != 0)
@@ -640,19 +748,10 @@ static int launch_loader_service(const struct Service *code, const struct Loader
   if (rejected.capability)
     (void)syscall1(SYS_CAP_CLOSE, (long)rejected.capability);
   long domain = 0;
-  valid = valid && request_loader(loader->send, images->bad, MOSS_LOADER_BAD_IMAGE, &domain) == 0 &&
-          request_loader(loader->send, images->probe, MOSS_LOADER_OK, &domain) == 0;
-  struct moss_domain_exit status = {0};
-  if (valid)
-    valid = syscall1(SYS_DOMAIN_WAIT, domain) == 0 && syscall2(SYS_DOMAIN_STATUS, domain, (long)&status) == 0 &&
-            status.code == MOSS_LOADER_PROBE_EXIT_CODE && status.signal == 0;
-  if (domain > 0) {
-    if (!valid) {
-      (void)syscall1(SYS_DOMAIN_TERMINATE, domain);
-      (void)syscall1(SYS_DOMAIN_WAIT, domain);
-    }
-    (void)syscall1(SYS_CAP_CLOSE, domain);
-  }
+  valid =
+      valid && request_loader(loader->send, images->bad, "loader-bad", MOSS_LOADER_BAD_IMAGE, &domain) == 0 &&
+      run_loader_probe(loader->send, images->probe, "loader-probe", MOSS_LOADER_PROBE_EXIT_CODE) == 0 &&
+      run_loader_probe(loader->send, images->libc_probe, "loader-libc-probe", MOSS_LOADER_LIBC_PROBE_EXIT_CODE) == 0;
   if (!valid) {
     stop_service(loader);
     return -1;
@@ -671,7 +770,7 @@ static int verify_loader_process_bridge(const struct Service *code, long factory
   long domain = 0;
   long session = 0;
   uint64_t identity = 0;
-  int valid = request_loader(scoped_loader.send, image, MOSS_LOADER_OK, &domain) == 0;
+  int valid = request_loader(scoped_loader.send, image, "loader-probe", MOSS_LOADER_OK, &domain) == 0;
   struct moss_ipc_message request = {0}, response = {0};
   long received = 0;
   if (valid) {
@@ -1158,6 +1257,7 @@ int main(void) {
     // read-only boot object, so its image authority survives namespace restarts.
     struct LoaderImages images = {0};
     if (seed_loader_file(file.send, "loader-probe", "loader_probe.elf", &images.probe) != 0 ||
+        seed_loader_file(file.send, "loader-libc-probe", "loader_libc_probe.elf", &images.libc_probe) != 0 ||
         seed_loader_file(file.send, "loader-bad", NULL, &images.bad) != 0) {
       report(STDERR_FILENO, "moss-init: loader image seeding failed\n");
       close_loader_images(&images);
