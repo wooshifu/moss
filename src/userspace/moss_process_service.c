@@ -4,14 +4,15 @@
 #include <string.h>
 
 #define MOSS_SYSCALL_RAW_ONLY
+#include "moss_console_protocol.h"
 #include "moss_file_protocol.h"
 #include "moss_namespace_protocol.h"
 #include "moss_pipe_protocol.h"
 #include "moss_process_protocol.h"
 #include "syscall.h"
 
-enum { DESCRIPTION_FILE, DESCRIPTION_PIPE };
-enum { PIPE_TRANSFER_WOULD_BLOCK = 2, PIPE_TRANSFER_BROKEN = 3 };
+enum { DESCRIPTION_FILE, DESCRIPTION_PIPE, DESCRIPTION_CONSOLE };
+enum { BACKEND_WOULD_BLOCK = 2, BACKEND_BROKEN_PIPE = 3 };
 
 struct OpenDescription {
   unsigned long object;
@@ -20,6 +21,7 @@ struct OpenDescription {
   unsigned char flags;
   unsigned char uncertain;
   unsigned char kind;
+  unsigned char stream;
 };
 
 struct Descriptor {
@@ -85,7 +87,7 @@ static struct Descriptor *find_descriptor(struct Record *record, unsigned long n
 
 static struct Descriptor *add_descriptor_at(struct Record *record, struct OpenDescription *description,
                                             unsigned long number) {
-  if (number < MOSS_PROCESS_FD_FIRST || number >= MOSS_PROCESS_FD_LIMIT || find_descriptor(record, number))
+  if (number >= MOSS_PROCESS_FD_LIMIT || find_descriptor(record, number))
     return NULL;
   struct Descriptor *entry = calloc(1, sizeof(*entry));
   if (!entry)
@@ -99,10 +101,37 @@ static struct Descriptor *add_descriptor_at(struct Record *record, struct OpenDe
 }
 
 static unsigned long first_free_descriptor(struct Record *record, unsigned long minimum) {
-  unsigned long number = minimum < MOSS_PROCESS_FD_FIRST ? MOSS_PROCESS_FD_FIRST : minimum;
+  unsigned long number = minimum;
   while (number < MOSS_PROCESS_FD_LIMIT && find_descriptor(record, number))
     ++number;
   return number;
+}
+
+static int seed_console_descriptors(struct Record *record, unsigned long console) {
+  // The supervisor's console authority becomes three independent open
+  // descriptions before any managed child can inherit descriptor numbers.
+  for (unsigned long stream = 0; stream < MOSS_PROCESS_FD_FIRST; ++stream) {
+    long object = syscall2(SYS_CAP_DUPLICATE, (long)console, MOSS_CAP_SEND);
+    struct OpenDescription *description = object > 0 ? calloc(1, sizeof(*description)) : NULL;
+    if (!description) {
+      if (object > 0)
+        (void)syscall1(SYS_CAP_CLOSE, object);
+      drop_descriptors(record);
+      return 0;
+    }
+    description->object = (unsigned long)object;
+    description->references = 0;
+    description->flags = stream == 0 ? MOSS_PROCESS_FD_READABLE : MOSS_PROCESS_FD_WRITABLE;
+    description->kind = DESCRIPTION_CONSOLE;
+    description->stream = (unsigned char)stream;
+    if (!add_descriptor_at(record, description, stream)) {
+      (void)syscall1(SYS_CAP_CLOSE, object);
+      free(description);
+      drop_descriptors(record);
+      return 0;
+    }
+  }
+  return 1;
 }
 
 static struct Descriptor *add_descriptor_from(struct Record *record, struct OpenDescription *description,
@@ -428,9 +457,9 @@ static int pipe_transfer(struct OpenDescription *description, unsigned long memo
     return -1;
   if (result == 1) {
     if (response.payload[0] == MOSS_PIPE_WOULD_BLOCK)
-      return PIPE_TRANSFER_WOULD_BLOCK;
+      return BACKEND_WOULD_BLOCK;
     if (response.payload[0] == MOSS_PIPE_BROKEN)
-      return PIPE_TRANSFER_BROKEN;
+      return BACKEND_BROKEN_PIPE;
     if (response.payload[0] == MOSS_PIPE_BAD_REQUEST || response.payload[0] == MOSS_PIPE_UNAVAILABLE ||
         response.payload[0] == MOSS_PIPE_NO_ENTRY)
       return 0;
@@ -439,6 +468,32 @@ static int pipe_transfer(struct OpenDescription *description, unsigned long memo
     return -1;
   *transferred = moss_pipe_get_u16(response.payload + 1);
   return *transferred <= count && (!writing || *transferred == count) ? 1 : -1;
+}
+
+static int console_transfer(struct OpenDescription *description, unsigned long memory, unsigned int count, int writing,
+                            unsigned int *transferred) {
+  struct moss_ipc_message request = {
+      .size = MOSS_CONSOLE_IO_BYTES,
+      .capability = memory,
+      .rights = writing ? MOSS_CAP_MAP_READ : MOSS_CAP_MAP_WRITE,
+      .payload = {writing ? MOSS_CONSOLE_WRITE : MOSS_CONSOLE_READ, description->stream}};
+  moss_console_put_u16(request.payload + 2, count);
+  struct moss_ipc_message response = {0};
+  long result = service_call(description->object, &request, &response);
+  if (response.capability)
+    (void)syscall1(SYS_CAP_CLOSE, (long)response.capability);
+  if (response.capability || response.rights)
+    return -1;
+  if (result == 1) {
+    if (response.payload[0] == MOSS_CONSOLE_WOULD_BLOCK)
+      return BACKEND_WOULD_BLOCK;
+    if (response.payload[0] == MOSS_CONSOLE_BAD_REQUEST || response.payload[0] == MOSS_CONSOLE_UNAVAILABLE)
+      return 0;
+  }
+  if (result != MOSS_CONSOLE_IO_REPLY_BYTES || response.payload[0] != MOSS_CONSOLE_OK)
+    return -1;
+  *transferred = moss_console_get_u16(response.payload + 1);
+  return *transferred <= count ? 1 : -1;
 }
 
 // Publish descriptor and offset changes only after the caller receives the
@@ -489,7 +544,7 @@ static void handle_fd_request(struct Record *owner, unsigned long namespace, uns
   if (operation == MOSS_PROCESS_FD_PIPE) {
     if (request->size != 1 || request->capability || request->rights)
       return;
-    unsigned long read_number = first_free_descriptor(owner, MOSS_PROCESS_FD_FIRST);
+    unsigned long read_number = first_free_descriptor(owner, 0);
     unsigned long write_number = first_free_descriptor(owner, read_number + 1);
     if (write_number >= MOSS_PROCESS_FD_LIMIT) {
       response->payload[0] = MOSS_PROCESS_TOO_MANY_FILES;
@@ -550,7 +605,7 @@ static void handle_fd_request(struct Record *owner, unsigned long namespace, uns
         ((flags & (MOSS_PROCESS_FD_TRUNCATE | MOSS_PROCESS_FD_APPEND)) && !(flags & MOSS_PROCESS_FD_WRITABLE)) ||
         path[0] != '/' || memchr(path, 0, path_size) != path + path_size - 1)
       return;
-    unsigned long number = first_free_descriptor(owner, MOSS_PROCESS_FD_FIRST);
+    unsigned long number = first_free_descriptor(owner, 0);
     if (number == MOSS_PROCESS_FD_LIMIT) {
       response->payload[0] = MOSS_PROCESS_TOO_MANY_FILES;
       return;
@@ -619,7 +674,7 @@ static void handle_fd_request(struct Record *owner, unsigned long namespace, uns
     description->flags = flags & ~MOSS_PROCESS_FD_CLOEXEC;
     description->kind = DESCRIPTION_FILE;
     int full = 0;
-    action->added = add_descriptor_from(owner, description, MOSS_PROCESS_FD_FIRST, &full);
+    action->added = add_descriptor_from(owner, description, 0, &full);
     if (!action->added) {
       free(description);
       response->payload[0] = full ? MOSS_PROCESS_TOO_MANY_FILES : MOSS_PROCESS_UNAVAILABLE;
@@ -649,7 +704,7 @@ static void handle_fd_request(struct Record *owner, unsigned long namespace, uns
       response->payload[0] = MOSS_PROCESS_OK;
     } else {
       int full = 0;
-      action->added = add_descriptor_from(owner, description, MOSS_PROCESS_FD_FIRST, &full);
+      action->added = add_descriptor_from(owner, description, 0, &full);
       if (action->added)
         fd_reply_value(response, action->added->number);
       else
@@ -662,7 +717,7 @@ static void handle_fd_request(struct Record *owner, unsigned long namespace, uns
     if (request->size != MOSS_PROCESS_FD_DUP_TO_BYTES || request->capability || request->rights)
       return;
     unsigned long target = moss_process_get_u64(request->payload + 9);
-    if (target < MOSS_PROCESS_FD_FIRST || target >= MOSS_PROCESS_FD_LIMIT) {
+    if (target >= MOSS_PROCESS_FD_LIMIT) {
       response->payload[0] = MOSS_PROCESS_BAD_REQUEST;
       return;
     }
@@ -756,18 +811,20 @@ static void handle_fd_request(struct Record *owner, unsigned long namespace, uns
     unsigned int transferred = 0;
     int result = description->kind == DESCRIPTION_PIPE
                      ? pipe_transfer(description, request->capability, count, writing, &transferred)
+                 : description->kind == DESCRIPTION_CONSOLE
+                     ? console_transfer(description, request->capability, count, writing, &transferred)
                      : file_transfer(description, request->capability, count, writing, &position, &transferred);
     if (result == 1) {
       response->size = MOSS_PROCESS_FD_IO_REPLY_BYTES;
       response->payload[0] = MOSS_PROCESS_OK;
       moss_file_put_u16(response->payload + 1, transferred);
       action->offset_description = description;
-      action->next_offset = description->kind == DESCRIPTION_PIPE ? 0 : position + transferred;
+      action->next_offset = description->kind == DESCRIPTION_FILE ? position + transferred : 0;
       action->completed_write = writing;
     } else {
-      response->payload[0] = result == PIPE_TRANSFER_WOULD_BLOCK ? MOSS_PROCESS_WOULD_BLOCK
-                             : result == PIPE_TRANSFER_BROKEN    ? MOSS_PROCESS_BROKEN_PIPE
-                                                                 : MOSS_PROCESS_UNAVAILABLE;
+      response->payload[0] = result == BACKEND_WOULD_BLOCK   ? MOSS_PROCESS_WOULD_BLOCK
+                             : result == BACKEND_BROKEN_PIPE ? MOSS_PROCESS_BROKEN_PIPE
+                                                             : MOSS_PROCESS_UNAVAILABLE;
       if (result < 0 && writing)
         description->uncertain = 1;
     }
@@ -777,7 +834,7 @@ static void handle_fd_request(struct Record *owner, unsigned long namespace, uns
   if (operation == MOSS_PROCESS_FD_SEEK) {
     if (request->size != MOSS_PROCESS_FD_SEEK_BYTES || request->capability || request->rights || description->uncertain)
       return;
-    if (description->kind == DESCRIPTION_PIPE) {
+    if (description->kind != DESCRIPTION_FILE) {
       response->payload[0] = MOSS_PROCESS_NOT_SEEKABLE;
       return;
     }
@@ -841,14 +898,15 @@ static void finish_fd_action(struct FdAction *action, long sent) {
 }
 
 int main(int argc, char **argv) {
-  if (argc != 6)
+  if (argc != 7)
     return 2;
   unsigned long receive = parse_handle(argv[1]);
   unsigned long mint = parse_handle(argv[2]);
   unsigned long scope = parse_handle(argv[3]);
   unsigned long namespace = parse_handle(argv[4]);
   unsigned long pipe = parse_handle(argv[5]);
-  if (!receive || !mint || !scope || !namespace || !pipe)
+  unsigned long console = parse_handle(argv[6]);
+  if (!receive || !mint || !scope || !namespace || !pipe || !console)
     return 2;
 
   // IDs are never recycled while this service incarnation is alive. A stale
@@ -919,6 +977,10 @@ int main(int argc, char **argv) {
           session = syscall2(SYS_IPC_MINT_BADGE, (long)mint, (long)next_id);
       }
       if (session > 0 && parent && !clone_descriptors(parent, registered)) {
+        (void)syscall1(SYS_CAP_CLOSE, session);
+        session = 0;
+      }
+      if (session > 0 && register_root && !seed_console_descriptors(registered, console)) {
         (void)syscall1(SYS_CAP_CLOSE, session);
         session = 0;
       }

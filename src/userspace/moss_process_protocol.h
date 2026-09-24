@@ -63,8 +63,8 @@ enum {
 // BAD_DESCRIPTOR also covers I/O through a descriptor opened without the
 // requested access mode, matching POSIX EBADF rather than process DENIED.
 enum { MOSS_PROCESS_INIT_ID = 1 };
-// Match the current kernel compatibility limit while reserving 0..2 for the
-// console entries that the unified descriptor view will also own.
+// Match the current kernel compatibility limit. The supervisor seeds 0..2
+// with console descriptions before managed children inherit the view.
 enum { MOSS_PROCESS_FD_LIMIT = 256, MOSS_PROCESS_FD_FIRST = 3 };
 enum {
   MOSS_PROCESS_FD_READABLE = 1U << 0,
@@ -133,7 +133,7 @@ enum { MOSS_PROCESS_FD_PIPE_REPLY_BYTES = 17 };
 // FD_GET_STATUS returns [OK, READABLE|WRITABLE|APPEND:u64 LE] for the shared
 // open description. FD_DUP_MIN carries [opcode, source:u64 LE, minimum:u64 LE,
 // close-on-exec:u8] and returns the first available descriptor at or above
-// minimum; values below FD_FIRST select FD_FIRST until stdio joins this view.
+// minimum; a closed stdio slot can be reused like any other descriptor.
 // FD_INSTALL carries [opcode, READABLE|WRITABLE|APPEND|CLOEXEC:u8] and a
 // transferred File Object Capability with SEND rights. The caller needs
 // TRANSFER|DUPLICATE on its source for synchronous IPC; reply failure releases

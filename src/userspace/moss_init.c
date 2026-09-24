@@ -8,6 +8,7 @@
 #include <unistd.h>
 
 #define MOSS_SYSCALL_RAW_ONLY
+#include "moss_console_protocol.h"
 #include "moss_process_protocol.h"
 #include "syscall.h"
 
@@ -23,7 +24,7 @@ struct Service {
   long domain;
 };
 
-enum ServiceLoss { FILE_LOST, NAMESPACE_LOST, PROCESS_LOST, PIPE_LOST, SUPERVISOR_FAILURE };
+enum ServiceLoss { FILE_LOST, NAMESPACE_LOST, PROCESS_LOST, PIPE_LOST, CONSOLE_LOST, SUPERVISOR_FAILURE };
 
 static void report(int fd, const char *message) { (void)write(fd, message, strlen(message)); }
 
@@ -160,6 +161,18 @@ static long register_supervisor(long root) {
   return 0;
 }
 
+static long console_input_sender(long root) {
+  struct moss_ipc_message request = {.size = 1, .payload = {MOSS_CONSOLE_INPUT_CAP}};
+  struct moss_ipc_message response = {0};
+  long result = process_call(root, &request, &response);
+  if (result == 1 && response.payload[0] == MOSS_CONSOLE_OK && response.capability &&
+      response.rights == (MOSS_CAP_SEND | MOSS_CAP_DUPLICATE))
+    return (long)response.capability;
+  if (response.capability)
+    (void)syscall1(SYS_CAP_CLOSE, (long)response.capability);
+  return 0;
+}
+
 static int process_rejects_unscoped_child(long session, long domain) {
   // A leaked parent badge must not register a domain outside this epoch's
   // cleanup scope. The supervisor itself is deliberately unscoped.
@@ -209,7 +222,7 @@ static int reap_shell(long parent_session, unsigned long child_id) {
 }
 
 static int start_endpoint_service(struct Service *service, const char *program, long scope, long namespace_capability,
-                                  long pipe_capability) {
+                                  long pipe_capability, long console_capability) {
   struct moss_ipc_endpoints endpoints = {0};
   if (syscall1(SYS_IPC_CREATE, (long)&endpoints) != 0) {
     return -1;
@@ -226,7 +239,8 @@ static int start_endpoint_service(struct Service *service, const char *program, 
   if (mint <= 0) {
     goto fail;
   }
-  char receive_arg[32], mint_arg[32], scope_arg[32], namespace_arg[32], pipe_arg[32]; // Decimal 64-bit handles.
+  char receive_arg[32], mint_arg[32], scope_arg[32], namespace_arg[32], pipe_arg[32],
+      console_arg[32]; // Decimal 64-bit handles.
   int receive_size = snprintf(receive_arg, sizeof(receive_arg), "%lu", (unsigned long)receive);
   int mint_size = snprintf(mint_arg, sizeof(mint_arg), "%lu", (unsigned long)mint);
   int scope_size = scope > 0 ? snprintf(scope_arg, sizeof(scope_arg), "%lu", (unsigned long)scope) : 0;
@@ -234,13 +248,16 @@ static int start_endpoint_service(struct Service *service, const char *program, 
                            ? snprintf(namespace_arg, sizeof(namespace_arg), "%lu", (unsigned long)namespace_capability)
                            : 0;
   int pipe_size = pipe_capability > 0 ? snprintf(pipe_arg, sizeof(pipe_arg), "%lu", (unsigned long)pipe_capability) : 0;
+  int console_size =
+      console_capability > 0 ? snprintf(console_arg, sizeof(console_arg), "%lu", (unsigned long)console_capability) : 0;
   if (receive_size < 0 || (size_t)receive_size >= sizeof(receive_arg) || mint_size < 0 ||
       (size_t)mint_size >= sizeof(mint_arg) || scope_size < 0 || (size_t)scope_size >= sizeof(scope_arg)) {
     goto fail;
   }
   if (namespace_size < 0 || (size_t)namespace_size >= sizeof(namespace_arg) || pipe_size < 0 ||
-      (size_t)pipe_size >= sizeof(pipe_arg) || (namespace_capability > 0 && scope <= 0) ||
-      (pipe_capability > 0 && namespace_capability <= 0))
+      (size_t)pipe_size >= sizeof(pipe_arg) || console_size < 0 || (size_t)console_size >= sizeof(console_arg) ||
+      (namespace_capability > 0 && scope <= 0) || (pipe_capability > 0 && namespace_capability <= 0) ||
+      (console_capability > 0 && pipe_capability <= 0))
     goto fail;
 
   long domain = 0;
@@ -249,8 +266,9 @@ static int start_endpoint_service(struct Service *service, const char *program, 
       {(unsigned long)mint, MOSS_CAP_SEND | MOSS_CAP_TRANSFER | MOSS_CAP_DUPLICATE | MOSS_CAP_MINT, 0},
       {(unsigned long)scope, MOSS_CAP_DOMAIN_SCOPE_INSPECT, 0},
       {(unsigned long)namespace_capability, MOSS_CAP_SEND, 0},
-      {(unsigned long)pipe_capability, MOSS_CAP_SEND, 0}};
-  size_t handle_count = 2 + (scope > 0) + (namespace_capability > 0) + (pipe_capability > 0);
+      {(unsigned long)pipe_capability, MOSS_CAP_SEND, 0},
+      {(unsigned long)console_capability, MOSS_CAP_SEND | MOSS_CAP_DUPLICATE, 0}};
+  size_t handle_count = 2 + (scope > 0) + (namespace_capability > 0) + (pipe_capability > 0) + (console_capability > 0);
   pid_t child = fork_domain(&domain, handles, handle_count, 0);
   if (child == 0) {
     char *const argv[] = {(char *)program,
@@ -259,6 +277,7 @@ static int start_endpoint_service(struct Service *service, const char *program, 
                           scope > 0 ? scope_arg : NULL,
                           namespace_capability > 0 ? namespace_arg : NULL,
                           pipe_capability > 0 ? pipe_arg : NULL,
+                          console_capability > 0 ? console_arg : NULL,
                           NULL};
     execve(program, argv, NULL);
     _exit(127);
@@ -364,19 +383,20 @@ fail:
   return -1;
 }
 
-static pid_t start_shell(long namespace_capability, long process_capability, long pipe_capability, long parent_session,
-                         long scope, long file_domain, long namespace_domain, long process_domain, long pipe_domain,
+static pid_t start_shell(long namespace_capability, long process_capability, long pipe_capability,
+                         long console_input_capability, long parent_session, long scope, long file_domain,
+                         long namespace_domain, long process_domain, long pipe_domain, long console_domain,
                          long supervisor_domain, long *domain, unsigned long *shell_id, long *delegated_session) {
   *domain = 0;
   *shell_id = 0;
   *delegated_session = 0;
-  if (namespace_capability <= 0 || process_capability <= 0 || pipe_capability <= 0 || parent_session <= 0 ||
-      scope <= 0 || file_domain <= 0 || namespace_domain <= 0 || process_domain <= 0 || pipe_domain <= 0 ||
-      supervisor_domain <= 0)
+  if (namespace_capability <= 0 || process_capability <= 0 || pipe_capability <= 0 || console_input_capability <= 0 ||
+      parent_session <= 0 || scope <= 0 || file_domain <= 0 || namespace_domain <= 0 || process_domain <= 0 ||
+      pipe_domain <= 0 || console_domain <= 0 || supervisor_domain <= 0)
     return -1;
   char namespace_env[64]; // Environment key plus decimal 64-bit handle.
-  char process_env[64], pipe_env[64], file_domain_env[64], namespace_domain_env[64], process_domain_env[64],
-      pipe_domain_env[64], supervisor_domain_env[64];
+  char process_env[64], pipe_env[64], console_input_env[64], file_domain_env[64], namespace_domain_env[64],
+      process_domain_env[64], pipe_domain_env[64], console_domain_env[64], supervisor_domain_env[64];
   int size =
       snprintf(namespace_env, sizeof(namespace_env), "MOSS_NAMESPACE_CAP=%lu", (unsigned long)namespace_capability);
   if (size < 0 || (size_t)size >= sizeof(namespace_env)) {
@@ -387,6 +407,10 @@ static pid_t start_shell(long namespace_capability, long process_capability, lon
     return -1;
   size = snprintf(pipe_env, sizeof(pipe_env), "MOSS_PIPE_CAP=%lu", (unsigned long)pipe_capability);
   if (size < 0 || (size_t)size >= sizeof(pipe_env))
+    return -1;
+  size = snprintf(console_input_env, sizeof(console_input_env), "MOSS_CONSOLE_INPUT_CAP=%lu",
+                  (unsigned long)console_input_capability);
+  if (size < 0 || (size_t)size >= sizeof(console_input_env))
     return -1;
   size = snprintf(file_domain_env, sizeof(file_domain_env), "MOSS_FILE_DOMAIN_CAP=%lu", (unsigned long)file_domain);
   if (size < 0 || (size_t)size >= sizeof(file_domain_env))
@@ -401,6 +425,10 @@ static pid_t start_shell(long namespace_capability, long process_capability, lon
     return -1;
   size = snprintf(pipe_domain_env, sizeof(pipe_domain_env), "MOSS_PIPE_DOMAIN_CAP=%lu", (unsigned long)pipe_domain);
   if (size < 0 || (size_t)size >= sizeof(pipe_domain_env))
+    return -1;
+  size = snprintf(console_domain_env, sizeof(console_domain_env), "MOSS_CONSOLE_DOMAIN_CAP=%lu",
+                  (unsigned long)console_domain);
+  if (size < 0 || (size_t)size >= sizeof(console_domain_env))
     return -1;
   size = snprintf(supervisor_domain_env, sizeof(supervisor_domain_env), "MOSS_SUPERVISOR_DOMAIN_CAP=%lu",
                   (unsigned long)supervisor_domain);
@@ -430,29 +458,21 @@ static pid_t start_shell(long namespace_capability, long process_capability, lon
       {(unsigned long)namespace_capability, MOSS_CAP_SEND | MOSS_CAP_DUPLICATE, MOSS_FORK_CAP_INHERIT},
       {(unsigned long)process_capability, MOSS_CAP_SEND | MOSS_CAP_DUPLICATE, MOSS_FORK_CAP_INHERIT},
       {(unsigned long)pipe_capability, MOSS_CAP_SEND | MOSS_CAP_DUPLICATE, MOSS_FORK_CAP_INHERIT},
+      {(unsigned long)console_input_capability, MOSS_CAP_SEND | MOSS_CAP_DUPLICATE, MOSS_FORK_CAP_INHERIT},
       {(unsigned long)file_domain, MOSS_CAP_DOMAIN_TERMINATE | MOSS_CAP_DUPLICATE, MOSS_FORK_CAP_INHERIT},
       {(unsigned long)namespace_domain, MOSS_CAP_DOMAIN_TERMINATE | MOSS_CAP_DUPLICATE, MOSS_FORK_CAP_INHERIT},
       {(unsigned long)process_domain, MOSS_CAP_DOMAIN_TERMINATE | MOSS_CAP_DUPLICATE, MOSS_FORK_CAP_INHERIT},
       {(unsigned long)pipe_domain, MOSS_CAP_DOMAIN_TERMINATE | MOSS_CAP_DUPLICATE, MOSS_FORK_CAP_INHERIT},
+      {(unsigned long)console_domain, MOSS_CAP_DOMAIN_TERMINATE | MOSS_CAP_DUPLICATE, MOSS_FORK_CAP_INHERIT},
       {(unsigned long)supervisor_domain, MOSS_CAP_DOMAIN_TERMINATE | MOSS_CAP_DUPLICATE, MOSS_FORK_CAP_INHERIT},
       {(unsigned long)child_session, MOSS_CAP_SEND | MOSS_CAP_DUPLICATE, MOSS_FORK_CAP_INHERIT}};
   pid_t child = fork_domain(domain, handles, sizeof(handles) / sizeof(handles[0]), scope);
   if (child == 0) {
     char *const argv[] = {"ash", "-i", NULL};
-    char *const env[] = {"PATH=/",
-                         "HOME=/",
-                         "TERM=dumb",
-                         "PS1=moss$ ",
-                         "PS2=> ",
-                         namespace_env,
-                         process_env,
-                         pipe_env,
-                         file_domain_env,
-                         namespace_domain_env,
-                         process_domain_env,
-                         pipe_domain_env,
-                         supervisor_domain_env,
-                         NULL};
+    char *const env[] = {"PATH=/",          "HOME=/",           "TERM=dumb",           "PS1=moss$ ",
+                         "PS2=> ",          namespace_env,      process_env,           pipe_env,
+                         console_input_env, file_domain_env,    namespace_domain_env,  process_domain_env,
+                         pipe_domain_env,   console_domain_env, supervisor_domain_env, NULL};
     long self = syscall0(SYS_DOMAIN_SELF);
     int attached = self > 0 && process_child_request(child_session, MOSS_PROCESS_ATTACH_CHILD, child_id, self);
     if (self > 0)
@@ -483,17 +503,18 @@ static pid_t start_shell(long namespace_capability, long process_capability, lon
 }
 
 static enum ServiceLoss supervise(struct Service *file, struct Service *namespace, struct Service *process,
-                                  struct Service *pipe, long process_session, long scope, long supervisor_domain,
-                                  pid_t *shell, long *shell_domain, unsigned long *shell_id, long *shell_session) {
+                                  struct Service *pipe, struct Service *console, long console_input,
+                                  long process_session, long scope, long supervisor_domain, pid_t *shell,
+                                  long *shell_domain, unsigned long *shell_id, long *shell_session) {
   for (;;) {
-    const unsigned long domains[] = {(unsigned long)file->domain, (unsigned long)namespace->domain,
+    const unsigned long domains[] = {(unsigned long)file->domain,    (unsigned long)namespace->domain,
                                      (unsigned long)process->domain, (unsigned long)*shell_domain,
-                                     (unsigned long)pipe->domain};
-    long exited = syscall2(SYS_DOMAIN_WAIT_ANY, (long)domains, 5);
+                                     (unsigned long)pipe->domain,    (unsigned long)console->domain};
+    long exited = syscall2(SYS_DOMAIN_WAIT_ANY, (long)domains, 6);
     if (exited == -EINTR) {
       continue;
     }
-    if (exited < 0 || exited > 4) {
+    if (exited < 0 || exited > 5) {
       char message[80];
       int size = snprintf(message, sizeof(message), "moss-init: domain wait failed: %ld\n", exited);
       if (size > 0 && (size_t)size < sizeof(message))
@@ -520,6 +541,11 @@ static enum ServiceLoss supervise(struct Service *file, struct Service *namespac
       report(STDOUT_FILENO, "moss-init: pipe service died\n");
       return PIPE_LOST;
     }
+    if (exited == 5) {
+      console->pid = 0;
+      report(STDOUT_FILENO, "moss-init: console service died\n");
+      return CONSOLE_LOST;
+    }
     if (exited == 3) {
       *shell = 0;
       (void)syscall1(SYS_CAP_CLOSE, *shell_domain);
@@ -534,9 +560,9 @@ static enum ServiceLoss supervise(struct Service *file, struct Service *namespac
       if (restart_delay() != 0) {
         return SUPERVISOR_FAILURE;
       }
-      *shell = start_shell(namespace->send, process->send, pipe->send, process_session, scope, file->domain,
-                           namespace->domain, process->domain, pipe->domain, supervisor_domain, shell_domain, shell_id,
-                           shell_session);
+      *shell = start_shell(namespace->send, process->send, pipe->send, console_input, process_session, scope,
+                           file->domain, namespace->domain, process->domain, pipe->domain, console->domain,
+                           supervisor_domain, shell_domain, shell_id, shell_session);
       if (*shell < 0) {
         report(STDERR_FILENO, "moss-init: shell launch failed\n");
         *shell = 0;
@@ -562,7 +588,7 @@ int main(void) {
   report(STDOUT_FILENO, "moss-init: supervisor ready\n");
   for (;;) {
     struct Service file = {0};
-    if (start_endpoint_service(&file, "/file-service.elf", 0, 0, 0) != 0) {
+    if (start_endpoint_service(&file, "/file-service.elf", 0, 0, 0, 0) != 0) {
       report(STDERR_FILENO, "moss-init: file service launch failed\n");
       if (restart_delay() != 0) {
         return 1;
@@ -583,8 +609,10 @@ int main(void) {
       for (;;) {
         struct Service process = {0};
         struct Service pipe = {0};
+        struct Service console = {0};
         long scope = syscall0(SYS_DOMAIN_SCOPE_CREATE);
         long process_session = 0;
+        long console_input = 0;
         long shell_domain = 0;
         long shell_session = 0;
         unsigned long shell_id = 0;
@@ -592,14 +620,22 @@ int main(void) {
         if (scope <= 0) {
           report(STDERR_FILENO, "moss-init: process scope creation failed\n");
           lost = PROCESS_LOST;
-        } else if (start_endpoint_service(&pipe, "/pipe-service.elf", 0, 0, 0) != 0) {
+        } else if (start_endpoint_service(&pipe, "/pipe-service.elf", 0, 0, 0, 0) != 0) {
           report(STDERR_FILENO, "moss-init: pipe service launch failed\n");
           lost = PIPE_LOST;
-        } else if (start_endpoint_service(&process, "/process-service.elf", scope, namespace.send, pipe.send) != 0) {
+        } else if (start_endpoint_service(&console, "/console-service.elf", 0, 0, 0, 0) != 0) {
+          report(STDERR_FILENO, "moss-init: console service launch failed\n");
+          lost = CONSOLE_LOST;
+        } else if ((console_input = console_input_sender(console.send)) <= 0) {
+          report(STDERR_FILENO, "moss-init: console input sender acquisition failed\n");
+          lost = CONSOLE_LOST;
+        } else if (start_endpoint_service(&process, "/process-service.elf", scope, namespace.send, pipe.send,
+                                          console.send) != 0) {
           report(STDERR_FILENO, "moss-init: process service launch failed\n");
           lost = PROCESS_LOST;
         } else {
           report_started("pipe service", pipe.pid);
+          report_started("console service", console.pid);
           report_started("process service", process.pid);
           process_session = register_supervisor(process.send);
           if (process_session > 0 && (stale_session > 0 || stale_delegate > 0)) {
@@ -617,15 +653,15 @@ int main(void) {
             }
           }
           if (process_session > 0 && process_rejects_unscoped_child(process_session, supervisor_domain))
-            shell = start_shell(namespace.send, process.send, pipe.send, process_session, scope, file.domain,
-                                namespace.domain, process.domain, pipe.domain, supervisor_domain, &shell_domain,
-                                &shell_id, &shell_session);
+            shell = start_shell(namespace.send, process.send, pipe.send, console_input, process_session, scope,
+                                file.domain, namespace.domain, process.domain, pipe.domain, console.domain,
+                                supervisor_domain, &shell_domain, &shell_id, &shell_session);
           if (shell < 0) {
             report(STDERR_FILENO, "moss-init: shell launch failed\n");
             lost = PROCESS_LOST;
           } else {
-            lost = supervise(&file, &namespace, &process, &pipe, process_session, scope, supervisor_domain, &shell,
-                             &shell_domain, &shell_id, &shell_session);
+            lost = supervise(&file, &namespace, &process, &pipe, &console, console_input, process_session, scope,
+                             supervisor_domain, &shell, &shell_domain, &shell_id, &shell_session);
           }
         }
         if (scope > 0) {
@@ -636,7 +672,7 @@ int main(void) {
           (void)syscall1(SYS_CAP_CLOSE, scope);
         }
         stop_child(shell, shell_domain);
-        if (lost == PROCESS_LOST || lost == PIPE_LOST) {
+        if (lost == PROCESS_LOST || lost == PIPE_LOST || lost == CONSOLE_LOST) {
           if (process_session > 0)
             stale_session = process_session;
           if (shell_session > 0)
@@ -648,10 +684,13 @@ int main(void) {
             (void)syscall1(SYS_CAP_CLOSE, shell_session);
         }
         stop_service(&process);
-        // Pipe object authority belongs to this Process Service epoch. Drain
-        // its managed children before discarding the pipe service.
+        if (console_input > 0)
+          (void)syscall1(SYS_CAP_CLOSE, console_input);
+        // These object authorities belong to this Process Service epoch.
+        // Drain managed children before discarding the serving domains.
+        stop_service(&console);
         stop_service(&pipe);
-        if (lost != PROCESS_LOST && lost != PIPE_LOST)
+        if (lost != PROCESS_LOST && lost != PIPE_LOST && lost != CONSOLE_LOST)
           break;
         if (restart_delay() != 0) {
           stop_service(&namespace);

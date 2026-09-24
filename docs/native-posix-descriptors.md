@@ -10,8 +10,13 @@ The kernel [FdTable](../src/vfs/src/vfs-file.cppm) allocates 0–255 for console
 regular files and pipes. Managed [mlibc](../third_party/mlibc/sysdeps/moss/sysdeps.cpp)
 still sends `open`, `read`, `write`, `close`, `dup`, `fcntl`, `pipe` and `lseek`
 to that table. The [Process Compatibility Service](../src/userspace/moss_process_service.c)
-independently allocates 3–255 for its file and pipe view; the same number can name
-different objects in the two tables. Its shared open descriptions already
+independently allocates 0–255 for its console, file and pipe view; the same
+number can name different objects in the two tables. The supervisor seeds
+0–2 from a supervised Console Object Service before managed children fork.
+That service can write through the bootstrap kernel console and has a bounded
+input ring, but physical input is not connected to it yet. A privileged probe
+uses a badged input sender to exercise its read path without racing the
+legacy shell for keyboard bytes. Its shared open descriptions already
 preserve offsets across `dup` and `fork`, and its per-descriptor flags survive
 `fork` and close before managed constructors after `exec`. A caller can import
 a transferable File Object Capability into this view. Its `FD_PIPE` request
@@ -29,8 +34,10 @@ a known-full table or local allocation failure cannot mutate the file first.
 The process service currently waits synchronously for each object call
 while processing one request at a time. A blocking console read or pipe read
 would therefore delay unrelated process registration, wait and signal calls.
-Pipe reads and writes return `WOULD_BLOCK` instead of waiting; the existing
-one-second backend deadline bounds a stalled call. Blocking I/O, client
+Console and pipe reads return `WOULD_BLOCK` instead of waiting; the existing
+one-second backend deadline bounds a stalled call. Kernel `SYS_POLL` is still
+unimplemented, so physical console input needs a dedicated blocking reader
+domain or a native readiness mechanism before libc switches. Blocking I/O, client
 cancellation and a lost Process Service reply still need a complete transaction
 contract before libc can use these descriptors.
 

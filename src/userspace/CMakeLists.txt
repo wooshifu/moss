@@ -66,6 +66,7 @@ set(MOSS_DOMAIN_ELF ${CMAKE_CURRENT_BINARY_DIR}/mlibc/moss-domain.elf)
 set(MOSS_PROCESS_SERVICE_ELF ${CMAKE_CURRENT_BINARY_DIR}/mlibc/process-service.elf)
 set(MOSS_PROCESS_ELF ${CMAKE_CURRENT_BINARY_DIR}/mlibc/moss-process.elf)
 set(MOSS_PIPE_SERVICE_ELF ${CMAKE_CURRENT_BINARY_DIR}/mlibc/pipe-service.elf)
+set(MOSS_CONSOLE_SERVICE_ELF ${CMAKE_CURRENT_BINARY_DIR}/mlibc/console-service.elf)
 if(MOSS_BUILD_TESTS)
     set(LIBC_VALIDATION_ELF ${CMAKE_CURRENT_BINARY_DIR}/mlibc/libc_validation.elf)
     add_userspace_program(validation)
@@ -108,20 +109,23 @@ add_custom_command(
     COMMAND ${CMAKE_COMMAND} -E copy_if_different ${MOSS_PROCESS_SERVICE_ELF} ${CMAKE_BINARY_DIR}/userspace/process-service.elf
     COMMAND ${CMAKE_COMMAND} -E copy_if_different ${MOSS_PROCESS_ELF} ${CMAKE_BINARY_DIR}/userspace/moss-process.elf
     COMMAND ${CMAKE_COMMAND} -E copy_if_different ${MOSS_PIPE_SERVICE_ELF} ${CMAKE_BINARY_DIR}/userspace/pipe-service.elf
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different ${MOSS_CONSOLE_SERVICE_ELF} ${CMAKE_BINARY_DIR}/userspace/console-service.elf
     COMMAND uv run ${CMAKE_SOURCE_DIR}/scripts/gen_initramfs.py ${CMAKE_BINARY_DIR}/initramfs.cpio
             ${CMAKE_BINARY_DIR}/userspace init.elf file-service.elf namespace-service.elf moss-file.elf busybox.elf
-            moss-domain.elf process-service.elf moss-process.elf pipe-service.elf
+            moss-domain.elf process-service.elf moss-process.elf pipe-service.elf console-service.elf
     DEPENDS moss-init ${MOSS_INIT_ELF} moss-file-service ${MOSS_FILE_SERVICE_ELF}
             moss-namespace-service ${MOSS_NAMESPACE_SERVICE_ELF} moss-file ${MOSS_FILE_ELF}
             moss-domain ${MOSS_DOMAIN_ELF}
             moss-process-service ${MOSS_PROCESS_SERVICE_ELF} moss-process ${MOSS_PROCESS_ELF}
             moss-pipe-service ${MOSS_PIPE_SERVICE_ELF}
+            moss-console-service ${MOSS_CONSOLE_SERVICE_ELF}
             busybox-validation ${BUSYBOX_ELF} ${CMAKE_SOURCE_DIR}/scripts/gen_initramfs.py
     BYPRODUCTS ${CMAKE_BINARY_DIR}/userspace/init.elf ${CMAKE_BINARY_DIR}/userspace/file-service.elf
                ${CMAKE_BINARY_DIR}/userspace/namespace-service.elf ${CMAKE_BINARY_DIR}/userspace/moss-file.elf
                ${CMAKE_BINARY_DIR}/userspace/busybox.elf ${CMAKE_BINARY_DIR}/userspace/moss-domain.elf
                ${CMAKE_BINARY_DIR}/userspace/process-service.elf ${CMAKE_BINARY_DIR}/userspace/moss-process.elf
                ${CMAKE_BINARY_DIR}/userspace/pipe-service.elf
+               ${CMAKE_BINARY_DIR}/userspace/console-service.elf
     WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
     COMMENT "Generating initramfs.cpio"
     VERBATIM

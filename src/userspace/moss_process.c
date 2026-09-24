@@ -9,6 +9,7 @@
 #include <unistd.h>
 
 #define MOSS_SYSCALL_RAW_ONLY
+#include "moss_console_protocol.h"
 #include "moss_file_protocol.h"
 #include "moss_namespace_protocol.h"
 #include "moss_pipe_protocol.h"
@@ -1100,7 +1101,7 @@ static int fd_pipe(unsigned long session, unsigned long *reader, unsigned long *
     return 0;
   *reader = moss_process_get_u64(response.payload + 1);
   *writer = moss_process_get_u64(response.payload + 9);
-  return *reader >= MOSS_PROCESS_FD_FIRST && *writer > *reader && *writer < MOSS_PROCESS_FD_LIMIT;
+  return *reader < MOSS_PROCESS_FD_LIMIT && *writer > *reader && *writer < MOSS_PROCESS_FD_LIMIT;
 }
 
 static int fd_io_rejected(unsigned long session, unsigned char operation, unsigned long number, unsigned long memory,
@@ -1122,9 +1123,9 @@ static int fd_pipe_probe(void) {
   unsigned int transferred = 0;
   long memory = syscall1(SYS_MEM_CREATE, MOSS_MEM_OBJECT_BYTES);
   long mapped = memory > 0 ? syscall2(SYS_MEM_MAP, memory, MOSS_CAP_MAP_READ | MOSS_CAP_MAP_WRITE) : 0;
-  int valid = session && mapped > 0 && fd_pipe(session, &reader, &writer) && fd_status(session, reader, &flags) &&
-              flags == MOSS_PROCESS_FD_READABLE && fd_status(session, writer, &flags) &&
-              flags == MOSS_PROCESS_FD_WRITABLE;
+  int valid = session && mapped > 0 && fd_pipe(session, &reader, &writer) && reader >= MOSS_PROCESS_FD_FIRST &&
+              fd_status(session, reader, &flags) && flags == MOSS_PROCESS_FD_READABLE &&
+              fd_status(session, writer, &flags) && flags == MOSS_PROCESS_FD_WRITABLE;
   if (valid) {
     memcpy((void *)mapped, "pipe", 4);
     valid = fd_io(session, MOSS_PROCESS_FD_WRITE, writer, memory, 4, &transferred) && transferred == 4 &&
@@ -1173,6 +1174,51 @@ static int fd_pipe_probe(void) {
   return valid;
 }
 
+static int console_fd_probe(void) {
+  unsigned long session = getauxval(MOSS_AT_STARTUP_CAP);
+  const char *text = getenv("MOSS_CONSOLE_INPUT_CAP");
+  char *end = NULL;
+  errno = 0;
+  unsigned long input = text ? strtoul(text, &end, 10) : 0;
+  if (errno || !session || !input || input > LONG_MAX || *end)
+    return 0;
+  long memory = syscall1(SYS_MEM_CREATE, MOSS_MEM_OBJECT_BYTES);
+  long mapped = memory > 0 ? syscall2(SYS_MEM_MAP, memory, MOSS_CAP_MAP_READ | MOSS_CAP_MAP_WRITE) : 0;
+  unsigned long status = 0;
+  unsigned int transferred = 0;
+  int valid = mapped > 0 && fd_status(session, 0, &status) && status == MOSS_PROCESS_FD_READABLE &&
+              fd_status(session, 1, &status) && status == MOSS_PROCESS_FD_WRITABLE && fd_status(session, 2, &status) &&
+              status == MOSS_PROCESS_FD_WRITABLE &&
+              fd_io_rejected(session, MOSS_PROCESS_FD_READ, 0, memory, 1, MOSS_PROCESS_WOULD_BLOCK);
+  if (valid) {
+    struct moss_ipc_message request = {.size = 2, .payload = {MOSS_CONSOLE_FEED, '@'}};
+    struct moss_ipc_message response = {0};
+    long result = call(input, &request, &response);
+    valid = no_capability(&response) && result == 1 && response.payload[0] == MOSS_CONSOLE_OK &&
+            fd_io(session, MOSS_PROCESS_FD_READ, 0, memory, 1, &transferred) && transferred == 1 &&
+            *(unsigned char *)mapped == '@';
+  }
+  if (valid) {
+    static const char message[] = "MOSS_CONSOLE_OBJECT_WRITE\n";
+    memcpy((void *)mapped, message, sizeof(message) - 1);
+    valid = fd_dup_to(session, 1, 0) && fd_status(session, 0, &status) && status == MOSS_PROCESS_FD_WRITABLE &&
+            fd_io(session, MOSS_PROCESS_FD_WRITE, 0, memory, sizeof(message) - 1, &transferred) &&
+            transferred == sizeof(message) - 1 && fd_command(session, MOSS_PROCESS_FD_CLOSE, 0, NULL) &&
+            fd_io_rejected(session, MOSS_PROCESS_FD_WRITE, 0, memory, 1, MOSS_PROCESS_BAD_DESCRIPTOR);
+  }
+  if (valid) {
+    unsigned long reader = MOSS_PROCESS_FD_LIMIT, writer = MOSS_PROCESS_FD_LIMIT;
+    valid = fd_pipe(session, &reader, &writer) && reader == 0 && writer >= MOSS_PROCESS_FD_FIRST &&
+            fd_command(session, MOSS_PROCESS_FD_CLOSE, reader, NULL) &&
+            fd_command(session, MOSS_PROCESS_FD_CLOSE, writer, NULL);
+  }
+  if (mapped > 0)
+    (void)syscall2(SYS_MUNMAP, mapped, MOSS_MEM_OBJECT_BYTES);
+  if (memory > 0)
+    (void)syscall1(SYS_CAP_CLOSE, memory);
+  return valid;
+}
+
 int main(int argc, char **argv) {
   if (argc == 3 && strcmp(argv[1], "fd-exec-child") == 0)
     return fd_exec_child(argv[2]) ? 37 : 43;
@@ -1194,6 +1240,13 @@ int main(int argc, char **argv) {
     if (!fd_pipe_probe())
       return error();
     static const char message[] = "MOSS_FD_PIPE_READY\n";
+    (void)write(STDOUT_FILENO, message, sizeof(message) - 1);
+    return 0;
+  }
+  if (argc == 2 && strcmp(argv[1], "console-fd-probe") == 0) {
+    if (!console_fd_probe())
+      return error();
+    static const char message[] = "MOSS_CONSOLE_READY\n";
     (void)write(STDOUT_FILENO, message, sizeof(message) - 1);
     return 0;
   }
