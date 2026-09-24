@@ -101,7 +101,7 @@ static int restart_delay(void) {
 
 static long process_call(long session, const struct moss_ipc_message *request, struct moss_ipc_message *response) {
   // A dead or wedged registry must not stall init's recovery loop forever.
-  static const unsigned long call_timeout_ns = 5000000000UL;
+  static const unsigned long call_timeout_ns = MOSS_PROCESS_RESERVATION_TIMEOUT_NS;
   unsigned long now = 0;
   if (syscall2(SYS_CLOCK_GETTIME, MOSS_CLOCK_MONOTONIC, (long)&now) != 0 || now > LONG_MAX - call_timeout_ns)
     return -1;
@@ -158,29 +158,6 @@ static int reap_shell(long parent_session, unsigned long child_id) {
     (void)syscall1(SYS_CAP_CLOSE, (long)response.capability);
   return result == MOSS_PROCESS_REPLY_WAIT_BYTES && response.payload[0] == MOSS_PROCESS_EXITED &&
          moss_process_get_u64(response.payload + 1) == child_id && !response.capability && !response.rights;
-}
-
-static int process_child_ready(long session) {
-  // ATTACH races the child's first instruction; bounded polling lets a failed
-  // supervisor launch exit instead of running with an unattached identity.
-  enum { READY_RETRIES = 500, READY_DELAY_NS = 10000000UL };
-  for (unsigned int retry = 0; retry < READY_RETRIES; ++retry) {
-    struct moss_ipc_message request = {.size = 1, .payload = {MOSS_PROCESS_READY}};
-    struct moss_ipc_message response = {0};
-    long result = process_call(session, &request, &response);
-    if (response.capability)
-      (void)syscall1(SYS_CAP_CLOSE, (long)response.capability);
-    if (result != 1 || response.capability || response.rights)
-      return 0;
-    if (response.payload[0] == MOSS_PROCESS_OK)
-      return 1;
-    if (response.payload[0] != MOSS_PROCESS_RUNNING)
-      return 0;
-    unsigned long delay = READY_DELAY_NS;
-    if (syscall1(SYS_NANOSLEEP, (long)&delay) != 0)
-      return 0;
-  }
-  return 0;
 }
 
 static int start_endpoint_service(struct Service *service, const char *program) {
@@ -394,7 +371,11 @@ static pid_t start_shell(long namespace_capability, long process_capability, lon
                          process_domain_env,
                          supervisor_domain_env,
                          NULL};
-    if (!process_child_ready(child_session))
+    long self = syscall0(SYS_DOMAIN_SELF);
+    int attached = self > 0 && process_child_request(child_session, MOSS_PROCESS_ATTACH_CHILD, child_id, self);
+    if (self > 0)
+      (void)syscall1(SYS_CAP_CLOSE, self);
+    if (!attached)
       _exit(127);
     (void)syscall6(SYS_EXECVE_CAP, (long)"/busybox.elf", (long)argv, (long)env, child_session, 0, 0);
     _exit(127);

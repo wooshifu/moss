@@ -34,7 +34,7 @@ unsigned long process_session() {
 long process_call(unsigned long session, const moss_ipc_message &request,
                   moss_ipc_message &response) {
   // Keep a lost process service from hanging a managed libc call indefinitely.
-  constexpr unsigned long timeout_ns = 5000000000UL;
+  constexpr unsigned long timeout_ns = MOSS_PROCESS_RESERVATION_TIMEOUT_NS;
   unsigned long now = 0;
   if (syscall2(SYS_CLOCK_GETTIME, MOSS_CLOCK_MONOTONIC,
                reinterpret_cast<long>(&now)) != 0 ||
@@ -50,31 +50,6 @@ bool no_capability(moss_ipc_message &response) {
     return false;
   }
   return !response.rights;
-}
-
-int ready_for_parent(unsigned long session) {
-  // A parent attaches the new domain after fork returns. Do not expose a
-  // compatibility identity until its service record has that domain. Match
-  // the production probe's five-second launch bound.
-  constexpr unsigned int retries = 500;
-  for (unsigned int i = 0; i < retries; ++i) {
-    moss_ipc_message request{};
-    request.size = 1;
-    request.payload[0] = MOSS_PROCESS_READY;
-    moss_ipc_message response{};
-    long result = process_call(session, request, response);
-    if (!no_capability(response) || result != 1)
-      return result < 0 ? error(result) : EIO;
-    if (response.payload[0] == MOSS_PROCESS_OK)
-      return 0;
-    if (response.payload[0] != MOSS_PROCESS_RUNNING)
-      return EIO;
-    unsigned long delay = process_poll_ns;
-    result = syscall1(SYS_NANOSLEEP, reinterpret_cast<long>(&delay));
-    if (result < 0)
-      return error(result);
-  }
-  return ETIMEDOUT;
 }
 
 int process_identity(unsigned long session, unsigned long &id,
@@ -478,8 +453,13 @@ int Sysdeps<Fork>::operator()(pid_t *child) {
       // its siblings. The child keeps only its own newly badged session.
       syscall1(SYS_CAP_CLOSE, session);
       forked_session = child_session;
-      int ready = ready_for_parent(child_session);
-      if (ready)
+      long self = syscall0(SYS_DOMAIN_SELF);
+      bool attached =
+          self > 0 && process_child_request(
+                          child_session, MOSS_PROCESS_ATTACH_CHILD, id, self);
+      if (self > 0)
+        syscall1(SYS_CAP_CLOSE, self);
+      if (!attached)
         sysdep<Exit>(127);
       *child = 0;
       return 0;

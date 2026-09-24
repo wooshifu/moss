@@ -11,6 +11,7 @@ struct Record {
   unsigned long parent_id;
   // A reserved child has an identity before fork and no domain until attach.
   unsigned long domain;
+  unsigned long reservation_deadline_ns;
   unsigned char orphaned;
 };
 
@@ -65,14 +66,10 @@ static void adopt_children(unsigned long parent_id) {
     struct Record *child = &records[i];
     if (!child->id || child->parent_id != parent_id)
       continue;
-    if (!child->domain) {
-      // A reservation has no domain to adopt. Fail closed if its parent dies
-      // during the fork handshake instead of retaining an unusable identity.
-      *child = (struct Record){0};
-    } else {
-      child->parent_id = MOSS_PROCESS_INIT_ID;
-      child->orphaned = 1;
-    }
+    // The child can attach itself with its own badged session even if its
+    // parent exits during the fork handshake. A lease reclaims unused ones.
+    child->parent_id = MOSS_PROCESS_INIT_ID;
+    child->orphaned = 1;
   }
 }
 
@@ -98,6 +95,15 @@ static void refresh_orphans(void) {
     if (syscall2(SYS_DOMAIN_STATUS, (long)orphan->domain, (long)&status) == 0) {
       (void)syscall1(SYS_CAP_CLOSE, (long)orphan->domain);
       *orphan = (struct Record){0};
+    }
+  }
+  unsigned long now = 0;
+  if (syscall2(SYS_CLOCK_GETTIME, MOSS_CLOCK_MONOTONIC, (long)&now) == 0) {
+    for (unsigned int i = 0; i < MOSS_PROCESS_RECORD_LIMIT; ++i) {
+      struct Record *reserved = &records[i];
+      if (reserved->id && !reserved->domain && reserved->reservation_deadline_ns &&
+          now >= reserved->reservation_deadline_ns)
+        *reserved = (struct Record){0};
     }
   }
 }
@@ -141,6 +147,15 @@ int main(int argc, char **argv) {
       struct Record *parent = register_child || prepare_child ? find_record(request.badge) : NULL;
       long valid_domain =
           prepare_child ? 1 : syscall2(SYS_DOMAIN_SAME, (long)request.capability, (long)request.capability);
+      unsigned long reservation_deadline_ns = 0;
+      int deadline_ready = 1;
+      if (prepare_child) {
+        unsigned long now = 0;
+        deadline_ready = syscall2(SYS_CLOCK_GETTIME, MOSS_CLOCK_MONOTONIC, (long)&now) == 0 &&
+                         now <= LONG_MAX - MOSS_PROCESS_RESERVATION_TIMEOUT_NS;
+        if (deadline_ready)
+          reservation_deadline_ns = now + MOSS_PROCESS_RESERVATION_TIMEOUT_NS;
+      }
       if ((register_child || prepare_child) && (!parent || !parent->domain)) {
         response.payload[0] = MOSS_PROCESS_NO_ENTRY;
         parent = NULL;
@@ -155,7 +170,7 @@ int main(int argc, char **argv) {
           parent = NULL;
         }
       }
-      if ((register_root || parent) && valid_domain == 1 && next_id <= LONG_MAX &&
+      if ((register_root || parent) && valid_domain == 1 && deadline_ready && next_id <= LONG_MAX &&
           (prepare_child || domain_available(request.capability))) {
         registered = free_record();
         if (registered)
@@ -165,6 +180,7 @@ int main(int argc, char **argv) {
         registered->id = next_id++;
         registered->parent_id = parent ? parent->id : 0;
         registered->domain = prepare_child ? 0 : request.capability;
+        registered->reservation_deadline_ns = reservation_deadline_ns;
         if (!prepare_child)
           request.capability = 0;
         response.size = MOSS_PROCESS_REPLY_VALUE_BYTES;
@@ -179,8 +195,14 @@ int main(int argc, char **argv) {
                request.payload[0] == MOSS_PROCESS_ATTACH_CHILD && request.capability &&
                request.rights == (MOSS_CAP_DOMAIN_OBSERVE | MOSS_CAP_DOMAIN_INSPECT | MOSS_CAP_DOMAIN_SIGNAL)) {
       struct Record *child = find_record(moss_process_get_u64(request.payload + 1));
-      if (!child || child->parent_id != request.badge || child->domain) {
+      if (!child || (child->parent_id != request.badge && child->id != request.badge)) {
         response.payload[0] = MOSS_PROCESS_NO_ENTRY;
+      } else if (child->domain) {
+        // Parent and child may attach concurrently. Only a repeat for the
+        // same domain is idempotent.
+        response.payload[0] = syscall2(SYS_DOMAIN_SAME, (long)request.capability, (long)child->domain) == 1
+                                  ? MOSS_PROCESS_OK
+                                  : MOSS_PROCESS_BAD_REQUEST;
       } else if (syscall2(SYS_DOMAIN_SAME, (long)request.capability, (long)request.capability) != 1 ||
                  !domain_available(request.capability)) {
         response.payload[0] = MOSS_PROCESS_BAD_REQUEST;
@@ -321,6 +343,8 @@ int main(int argc, char **argv) {
       (void)syscall1(SYS_CAP_CLOSE, (long)attached->domain);
       attached->domain = 0;
     }
+    if (attached && sent == 0)
+      attached->reservation_deadline_ns = 0;
     if (released && sent == 0) {
       if (released->id != MOSS_PROCESS_INIT_ID)
         adopt_children(released->id);

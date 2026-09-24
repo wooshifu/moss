@@ -2,7 +2,7 @@
 
 #include <stdint.h>
 
-// A registration transfers OBSERVE|INSPECT authority for one native domain.
+// A registration transfers OBSERVE|INSPECT|SIGNAL authority for one native domain.
 // The returned sender's kernel-authenticated badge is the compatibility identity;
 // numeric IDs in payloads never authorize status, parentage, or wait operations.
 // REGISTER_CHILD requires the parent's badged sender and creates a child
@@ -32,6 +32,9 @@ enum {
   MOSS_PROCESS_BUSY = 6
 };
 enum { MOSS_PROCESS_INIT_ID = 1 };
+// Match the managed IPC call bound so an abandoned fork reservation cannot
+// occupy a record indefinitely after its parent or child exits.
+#define MOSS_PROCESS_RESERVATION_TIMEOUT_NS 5000000000UL
 // ponytail: the fixed table bounds concurrent registrations; use an indexed
 // registry when process fanout needs to exceed the production boot workload.
 enum {
@@ -47,8 +50,9 @@ enum {
 // reaps that child after a successful reply. Status packs signal in the high
 // 32 bits and exit code in the low 32 bits. Other replies are one byte.
 // PREPARE_CHILD returns a child ID and a badged session to inherit across a
-// native fork. ATTACH_CHILD transfers the new domain under the parent's
-// session; CANCEL_CHILD removes only an unattached reservation. IDENTITY
+// native fork. ATTACH_CHILD transfers the new domain under the parent's or
+// child's session and accepts a repeat for the same domain. CANCEL_CHILD
+// removes only an unattached reservation. IDENTITY
 // returns [OK, ID:u64 LE, parent ID:u64 LE] through the child's session.
 // READY returns RUNNING until the reserved identity is attached. WAIT_CHILD
 // selects one child by ID under the parent's badge and uses WAIT_ANY's reply.

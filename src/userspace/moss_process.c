@@ -226,20 +226,12 @@ static int observe_family(unsigned long root, unsigned long *last_id) {
       // managed parent's session inherited by the native fork.
       if (borrowed_session)
         (void)syscall1(SYS_CAP_CLOSE, (long)parent_session);
-      // The parent must attach the reserved domain before this child can
-      // create descendants under its service identity.
-      int ready = -1;
-      for (unsigned int retry = 0; retry < STATUS_RETRIES; ++retry) {
-        ready = session_result(child_sessions[i], MOSS_PROCESS_READY);
-        if (ready == MOSS_PROCESS_OK)
-          break;
-        if (ready != MOSS_PROCESS_RUNNING)
-          _exit(41);
-        unsigned long delay = status_retry_ns;
-        if (syscall1(SYS_NANOSLEEP, (long)&delay) != 0)
-          _exit(41);
-      }
-      if (ready != MOSS_PROCESS_OK)
+      long self = syscall0(SYS_DOMAIN_SELF);
+      int attached = self > 0 && child_record_call(child_sessions[i], MOSS_PROCESS_ATTACH_CHILD, child_ids[i],
+                                                   (unsigned long)self, MOSS_PROCESS_OK);
+      if (self > 0)
+        (void)syscall1(SYS_CAP_CLOSE, self);
+      if (!attached || session_result(child_sessions[i], MOSS_PROCESS_READY) != MOSS_PROCESS_OK)
         _exit(41);
       struct moss_ipc_message identity = {.size = 1, .payload = {MOSS_PROCESS_IDENTITY}};
       struct moss_ipc_message response = {0};
@@ -273,9 +265,6 @@ static int observe_family(unsigned long root, unsigned long *last_id) {
       valid = 0;
       break;
     }
-    if (i == 0)
-      valid &=
-          child_record_call(child_sessions[i], MOSS_PROCESS_ATTACH_CHILD, child_ids[i], domain, MOSS_PROCESS_NO_ENTRY);
     int attached = child_record_call(parent_session, MOSS_PROCESS_ATTACH_CHILD, child_ids[i], domain, MOSS_PROCESS_OK);
     if (!attached) {
       (void)syscall1(SYS_DOMAIN_TERMINATE, (long)domain);
