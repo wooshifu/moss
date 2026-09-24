@@ -790,6 +790,11 @@ long sys_domain_spawn(long factory_handle, long image_addr, long, long, long, lo
                                                capability::ObjectType::DomainFactory, capability::rights::DOMAIN_SPAWN);
   if (!factory)
     return domain_cap_error(factory.error());
+  // A delegated factory must not let a service create domains outside its
+  // recovery scope.
+  auto scope = caller->domain_scope();
+  if (scope && static_cast<DomainScopeObject *>(scope.get())->closed())
+    return -errc::EACCES;
   auto source_space = caller->address_space();
   if (!source_space)
     return -errc::ESRCH;
@@ -918,7 +923,7 @@ long sys_domain_spawn(long factory_handle, long image_addr, long, long, long, lo
       return error;
   }
 
-  auto created_process = g_process_manager->create_process(INVALID_PROCESS_ID);
+  auto created_process = g_process_manager->create_process(INVALID_PROCESS_ID, scope);
   if (!created_process)
     return -errc::ENOMEM;
   auto child = *created_process;
@@ -968,6 +973,12 @@ long sys_domain_spawn(long factory_handle, long image_addr, long, long, long, lo
   auto handle = caller->capabilities().install(moss::move(object), kFullDomainRights);
   if (!handle)
     return rollback(domain_cap_error(handle.error()));
+  // Scope closure can pass its process-table scan during image preparation.
+  // Recheck after insertion so a late child cannot escape that recovery unit.
+  if (scope && static_cast<DomainScopeObject *>(scope.get())->closed()) {
+    (void)caller->capabilities().close(*handle);
+    return rollback(-errc::EACCES);
+  }
 
   // After authority publication no preparation may fail. The child has no
   // POSIX parent; its diagnostic PID retires on exit while the handle remains.

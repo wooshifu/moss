@@ -65,6 +65,20 @@ __attribute__((naked, noinline, used, aligned(16))) static void spawned_stack_ex
 #endif
 }
 
+// Raw image code cannot call libc; keep these embedded syscall numbers in sync
+// with the shared ABI so scope recovery can be checked before normal exit.
+// Alignment keeps this short entry inside the single page copied for the image.
+_Static_assert(SYS_NANOSLEEP == 86 && SYS_EXIT == 1, "raw domain syscall numbers changed");
+__attribute__((naked, noinline, used, aligned(64))) static void spawned_delayed_exit(void) {
+#if defined(__x86_64__)
+  __asm__ volatile("mov %rsi, %rdi\n\tmov $86, %eax\n\tsyscall\n\tmov $37, %edi\n\tmov $1, %eax\n\tsyscall\n\tud2");
+#elif defined(__riscv)
+  __asm__ volatile("mv a0, a1\n\tli a7, 86\n\tecall\n\tli a0, 37\n\tli a7, 1\n\tecall\n\tebreak");
+#else
+  __asm__ volatile("mov x0, x1\n\tmov x8, #86\n\tsvc #0\n\tmov x0, #37\n\tmov x8, #1\n\tsvc #0\n\tbrk #0");
+#endif
+}
+
 unsigned long ipc_domain_spawn(void) {
   struct moss_domain_layout layout = {0};
   if (syscall1(SYS_DOMAIN_LAYOUT, (long)&layout) != 0 || layout.page_size != MOSS_DOMAIN_PAGE_BYTES ||
@@ -1111,7 +1125,7 @@ unsigned long ipc_domain_selection(void) {
   errors |= (unsigned long)(syscall1(SYS_CAP_CLOSE, (long)pair.send) != 0) << 13;
 
   // The two-second fallback bounds a missed termination; the one-second
-  // parent poll leaves time to observe both live generations first.
+  // parent poll leaves time to observe the child, grandchild and spawned domain.
   enum { SCOPE_CHILD_DELAY_NS = 10000000, SCOPE_CHILD_CYCLES = 200, SCOPE_STATUS_CYCLES = 100 };
   long scope = syscall0(SYS_DOMAIN_SCOPE_CREATE);
   errors |= (unsigned long)(scope <= 0) << 34;
@@ -1153,9 +1167,34 @@ unsigned long ipc_domain_selection(void) {
       (void)syscall1(SYS_CAP_CLOSE, other);
     }
 
+    long factory = syscall0(SYS_DOMAIN_FACTORY);
+    errors |= (unsigned long)(factory <= 0) << 54;
+    const struct moss_fork_capability spawn_authority[] = {{(unsigned long)factory, MOSS_CAP_DOMAIN_SPAWN, 0}};
     unsigned long live_domain = 0;
-    long live = syscall6(SYS_FORK_DOMAIN_SCOPED, (long)&live_domain, 0, 0, scope, 0, 0);
+    long live = syscall6(SYS_FORK_DOMAIN_SCOPED, (long)&live_domain, factory > 0 ? (long)spawn_authority : 0,
+                         factory > 0 ? 1 : 0, scope, 0, 0);
     if (live == 0) {
+      struct moss_domain_layout layout = {0};
+      if (factory <= 0 || syscall1(SYS_DOMAIN_LAYOUT, (long)&layout) != 0 || layout.page_size != MOSS_DOMAIN_PAGE_BYTES)
+        _exit(96);
+      const unsigned long entry = (unsigned long)spawned_delayed_exit;
+      const unsigned long stack_pointer = layout.stack_top - sizeof(unsigned long);
+      const unsigned long duration_ns = (unsigned long)SCOPE_CHILD_DELAY_NS * SCOPE_CHILD_CYCLES;
+      struct moss_domain_page page = {.address = entry & ~(MOSS_DOMAIN_PAGE_BYTES - 1UL),
+                                      .source = entry & ~(MOSS_DOMAIN_PAGE_BYTES - 1UL),
+                                      .size = MOSS_DOMAIN_PAGE_BYTES,
+                                      .flags = MOSS_DOMAIN_PAGE_READ | MOSS_DOMAIN_PAGE_EXEC};
+      struct moss_domain_spawn image = {.entry = entry,
+                                        .stack_pointer = stack_pointer,
+                                        .stack_source = (unsigned long)&duration_ns,
+                                        .stack_size = sizeof(duration_ns),
+                                        .arg1 = stack_pointer,
+                                        .pages = (unsigned long)&page,
+                                        .page_count = 1};
+      long native = syscall2(SYS_DOMAIN_SPAWN, factory, (long)&image);
+      if (native <= 0)
+        _exit(96);
+      (void)syscall1(SYS_CAP_CLOSE, native);
       unsigned long grandchild_domain = 0;
       long grandchild = syscall1(SYS_FORK_DOMAIN, (long)&grandchild_domain);
       if (grandchild == 0) {
@@ -1185,12 +1224,12 @@ unsigned long ipc_domain_selection(void) {
       }
     }
     long members = syscall1(SYS_DOMAIN_SCOPE_STATUS, scope);
-    for (unsigned int i = 0; members >= 0 && members < 2 && i < SCOPE_STATUS_CYCLES; ++i) {
+    for (unsigned int i = 0; members >= 0 && members < 3 && i < SCOPE_STATUS_CYCLES; ++i) {
       unsigned long delay = SCOPE_CHILD_DELAY_NS;
       (void)nanosleep_ns(&delay);
       members = syscall1(SYS_DOMAIN_SCOPE_STATUS, scope);
     }
-    errors |= (unsigned long)(members != 2) << 43;
+    errors |= (unsigned long)(members != 3) << 43;
     errors |= (unsigned long)(syscall1(SYS_DOMAIN_SCOPE_TERMINATE, scope) != 0) << 44;
     if (live_domain) {
       errors |= (unsigned long)!domain_exited(live_domain, 0, SIGKILL) << 45;
@@ -1207,6 +1246,8 @@ unsigned long ipc_domain_selection(void) {
     errors |= (unsigned long)(syscall6(SYS_FORK_DOMAIN_SCOPED, (long)&rejected, 0, 0, scope, 0, 0) != -IPC_EACCES ||
                               rejected != 0)
               << 47;
+    if (factory > 0)
+      errors |= (unsigned long)(syscall1(SYS_CAP_CLOSE, factory) != 0) << 55;
     errors |= (unsigned long)(syscall1(SYS_CAP_CLOSE, scope) != 0) << 48;
   }
   return errors;
