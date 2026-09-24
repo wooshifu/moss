@@ -26,6 +26,7 @@ enum {
   MOSS_CAP_DOMAIN_TERMINATE = 1U << 7,
   MOSS_CAP_DOMAIN_INSPECT = 1U << 8,
   MOSS_CAP_DOMAIN_OBSERVE = 1U << 9,
+  MOSS_CAP_DOMAIN_SIGNAL = 1U << 10,
   MOSS_IPC_MAX_MESSAGE = 256
 };
 
@@ -57,6 +58,8 @@ struct moss_fork_capability {
 
 // SYS_DOMAIN_SAME requires INSPECT on both handles and returns 1 for the same
 // domain incarnation, 0 for different domains; it never compares PID values.
+// DOMAIN_SIGNAL authorizes ordinary signals, including SIGKILL, to that exact
+// domain incarnation. A numeric diagnostic PID never grants this authority.
 // SYS_DOMAIN_STATUS returns this after the domain exits. A signal exit sets
 // signal and leaves code zero; a normal exit sets code and clears signal.
 struct moss_domain_exit {

@@ -268,8 +268,8 @@ public:
 };
 
 inline constexpr u32 kFullDomainRights = capability::rights::DOMAIN_TERMINATE | capability::rights::DOMAIN_INSPECT |
-                                         capability::rights::DOMAIN_OBSERVE | capability::rights::TRANSFER |
-                                         capability::rights::DUPLICATE;
+                                         capability::rights::DOMAIN_OBSERVE | capability::rights::DOMAIN_SIGNAL |
+                                         capability::rights::TRANSFER | capability::rights::DUPLICATE;
 
 struct DomainExitStatus {
   i32 code;
@@ -657,6 +657,25 @@ long sys_domain_terminate(long handle, long, long, long, long, long) noexcept {
   // The current single-thread process implementation uses uncatchable SIGKILL
   // as its exit wakeup; authorization comes solely from this domain handle.
   return process::send_signal(thread, process::sig::SIGKILL) ? 0 : -errc::ESRCH;
+}
+
+long sys_domain_signal(long handle, long signo, long, long, long, long) noexcept {
+  if (signo < 0 || signo >= process::sig::NSIG)
+    return -errc::EINVAL;
+  auto caller = process::current_process();
+  if (!caller)
+    return -errc::ESRCH;
+  auto object = caller->capabilities().lookup(static_cast<Handle>(handle), capability::ObjectType::Domain,
+                                              capability::rights::DOMAIN_SIGNAL);
+  if (!object)
+    return domain_cap_error(object.error());
+  auto &target = *static_cast<DomainObject *>((*object).get())->process;
+  if (target.state() != process::ProcessState::Running)
+    return -errc::ESRCH;
+  auto *thread = target.get_main_thread();
+  if (!thread)
+    return -errc::ESRCH;
+  return signo == 0 || process::send_signal(thread, static_cast<u32>(signo)) ? 0 : -errc::ESRCH;
 }
 
 long sys_domain_wait(long handle, long, long, long, long, long) noexcept {
@@ -3123,7 +3142,8 @@ const SyscallDescriptor SYSCALL_TABLE[static_cast<int>(SyscallNumber::MAX_SYSCAL
     {"domain_same", handlers::sys_domain_same, 2, true, "Compare two inspected domain incarnations"},
     {"fork_domain_inherit", handlers::sys_fork_domain_inherit, 1, true,
      "Fork a native domain with capabilities marked for inheritance"},
-    {"execve_cap", handlers::sys_execve_cap, 4, true, "Exec with an explicit retained startup capability"}};
+    {"execve_cap", handlers::sys_execve_cap, 4, true, "Exec with an explicit retained startup capability"},
+    {"domain_signal", handlers::sys_domain_signal, 2, true, "Signal a capability-addressed domain"}};
 
 // 系统调用分发器实现
 long SyscallDispatcher::dispatch(long syscall_number, long arg0, long arg1, long arg2, long arg3, long arg4,

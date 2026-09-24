@@ -122,7 +122,8 @@ static long register_supervisor(long root) {
     return 0;
   struct moss_ipc_message request = {.size = 1,
                                      .capability = (unsigned long)self,
-                                     .rights = MOSS_CAP_DOMAIN_OBSERVE | MOSS_CAP_DOMAIN_INSPECT,
+                                     .rights =
+                                         MOSS_CAP_DOMAIN_OBSERVE | MOSS_CAP_DOMAIN_INSPECT | MOSS_CAP_DOMAIN_SIGNAL,
                                      .payload = {MOSS_PROCESS_REGISTER}};
   struct moss_ipc_message response = {0};
   long result = process_call(root, &request, &response);
@@ -138,10 +139,11 @@ static long register_supervisor(long root) {
 
 static int process_child_request(long parent_session, unsigned char operation, unsigned long child_id,
                                  unsigned long domain) {
-  struct moss_ipc_message request = {.size = MOSS_PROCESS_REPLY_VALUE_BYTES,
-                                     .capability = domain,
-                                     .rights = domain ? MOSS_CAP_DOMAIN_OBSERVE | MOSS_CAP_DOMAIN_INSPECT : 0,
-                                     .payload = {operation}};
+  struct moss_ipc_message request = {
+      .size = MOSS_PROCESS_REPLY_VALUE_BYTES,
+      .capability = domain,
+      .rights = domain ? MOSS_CAP_DOMAIN_OBSERVE | MOSS_CAP_DOMAIN_INSPECT | MOSS_CAP_DOMAIN_SIGNAL : 0,
+      .payload = {operation}};
   moss_process_put_u64(request.payload + 1, child_id);
   struct moss_ipc_message response = {0};
   return process_reply_ok(process_call(parent_session, &request, &response), &response);

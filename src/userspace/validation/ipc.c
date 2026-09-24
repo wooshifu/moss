@@ -625,6 +625,39 @@ unsigned long ipc_domain_control(void) {
   }
   if (self > 0)
     errors |= (unsigned long)(syscall1(SYS_CAP_CLOSE, self) != 0) << 36;
+
+  unsigned long signal_domain = 0;
+  long signal_child = syscall1(SYS_FORK_DOMAIN, (long)&signal_domain);
+  if (signal_child == 0) {
+    for (unsigned int attempt = 0; attempt < DOMAIN_CHILD_SLEEP_CYCLES; ++attempt) {
+      unsigned long delay = DOMAIN_CHILD_SLEEP_NS;
+      (void)nanosleep_ns(&delay);
+    }
+    _exit(97); // A missed signal must finish the test instead of hanging it.
+  }
+  if (signal_child <= 1 || !signal_domain) {
+    errors |= 1UL << 47;
+  } else {
+    long signal_only = syscall2(SYS_CAP_DUPLICATE, (long)signal_domain, MOSS_CAP_DOMAIN_SIGNAL);
+    errors |= (unsigned long)(signal_only <= 0) << 48;
+    if (signal_only <= 0) {
+      (void)syscall1(SYS_DOMAIN_TERMINATE, (long)signal_domain);
+      (void)syscall1(SYS_DOMAIN_WAIT, (long)signal_domain);
+    }
+    if (signal_only > 0) {
+      errors |= (unsigned long)(syscall1(SYS_DOMAIN_ID, signal_only) != -IPC_EACCES) << 49;
+      errors |= (unsigned long)(syscall1(SYS_DOMAIN_WAIT, signal_only) != -IPC_EACCES) << 50;
+      errors |= (unsigned long)(syscall1(SYS_DOMAIN_TERMINATE, signal_only) != -IPC_EACCES) << 51;
+      errors |= (unsigned long)(syscall2(SYS_DOMAIN_SIGNAL, signal_only, 0) != 0) << 52;
+      errors |= (unsigned long)(syscall2(SYS_DOMAIN_SIGNAL, signal_only, -1) != -IPC_EINVAL) << 53;
+      errors |= (unsigned long)(syscall2(SYS_DOMAIN_SIGNAL, signal_only, SIGTERM) != 0) << 54;
+      errors |= (unsigned long)(syscall1(SYS_DOMAIN_WAIT, (long)signal_domain) != 0) << 55;
+      errors |= (unsigned long)!domain_exited(signal_domain, 0, SIGTERM) << 56;
+      errors |= (unsigned long)(syscall2(SYS_DOMAIN_SIGNAL, signal_only, 0) != -IPC_ESRCH) << 57;
+      errors |= (unsigned long)(syscall1(SYS_CAP_CLOSE, signal_only) != 0) << 58;
+    }
+    errors |= (unsigned long)(syscall1(SYS_CAP_CLOSE, (long)signal_domain) != 0) << 59;
+  }
   return errors;
 }
 

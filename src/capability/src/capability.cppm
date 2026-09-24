@@ -21,6 +21,7 @@ inline constexpr u32 MINT = 1U << 6;
 inline constexpr u32 DOMAIN_TERMINATE = 1U << 7;
 inline constexpr u32 DOMAIN_INSPECT = 1U << 8;
 inline constexpr u32 DOMAIN_OBSERVE = 1U << 9;
+inline constexpr u32 DOMAIN_SIGNAL = 1U << 10;
 } // namespace rights
 
 namespace fork_flags {

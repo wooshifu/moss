@@ -99,8 +99,9 @@ bool process_child_request(unsigned long session, unsigned char operation,
   moss_ipc_message request{};
   request.size = MOSS_PROCESS_REPLY_VALUE_BYTES;
   request.capability = domain;
-  request.rights =
-      domain ? MOSS_CAP_DOMAIN_OBSERVE | MOSS_CAP_DOMAIN_INSPECT : 0;
+  request.rights = domain ? MOSS_CAP_DOMAIN_OBSERVE | MOSS_CAP_DOMAIN_INSPECT |
+                                MOSS_CAP_DOMAIN_SIGNAL
+                          : 0;
   request.payload[0] = operation;
   moss_process_put_u64(request.payload + 1, child_id);
   moss_ipc_message response{};
@@ -376,8 +377,38 @@ gid_t Sysdeps<GetGid>::operator()() { return syscall0(SYS_GETGID); }
 gid_t Sysdeps<GetEgid>::operator()() { return syscall0(SYS_GETEGID); }
 int Sysdeps<Kill>::operator()(pid_t pid, int signo) {
   // A compatibility PID is never a native PID; forwarding it could signal an
-  // unrelated domain until the process service implements signal routing.
-  return process_session() ? ENOSYS : error(syscall2(SYS_KILL, pid, signo));
+  // unrelated domain. The badged session limits this route to self and
+  // children.
+  unsigned long session = process_session();
+  if (!session)
+    return error(syscall2(SYS_KILL, pid, signo));
+  if (pid <= 0)
+    return ENOSYS; // Process groups are not represented by the service yet.
+  moss_ipc_message request{};
+  request.size = MOSS_PROCESS_SIGNAL_REQUEST_BYTES;
+  request.payload[0] = MOSS_PROCESS_SIGNAL;
+  moss_process_put_u64(request.payload + 1, static_cast<unsigned long>(pid));
+  moss_process_put_u64(request.payload + 9, static_cast<unsigned long>(signo));
+  moss_ipc_message response{};
+  long result = process_call(session, request, response);
+  if (!no_capability(response))
+    return EIO;
+  if (result < 0)
+    return error(result);
+  if (result != 1)
+    return EIO;
+  switch (response.payload[0]) {
+  case MOSS_PROCESS_OK:
+    return 0;
+  case MOSS_PROCESS_NO_ENTRY:
+    return ESRCH;
+  case MOSS_PROCESS_BAD_REQUEST:
+    return EINVAL;
+  case MOSS_PROCESS_RUNNING:
+    return EAGAIN;
+  default:
+    return EIO;
+  }
 }
 int Sysdeps<Sigaction>::operator()(int signo, const struct sigaction *action, struct sigaction *previous) {
   // mlibc explicitly accepts ENOSYS here to opt out of pthread cancellation.

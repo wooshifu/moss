@@ -89,9 +89,10 @@ int main(int argc, char **argv) {
     const int register_root = request.badge == 0 && request.payload[0] == MOSS_PROCESS_REGISTER;
     const int register_child = request.badge != 0 && request.payload[0] == MOSS_PROCESS_REGISTER_CHILD;
     const int prepare_child = request.badge != 0 && request.payload[0] == MOSS_PROCESS_PREPARE_CHILD;
-    if (request.size == 1 && (((register_root || register_child) && request.capability &&
-                               request.rights == (MOSS_CAP_DOMAIN_OBSERVE | MOSS_CAP_DOMAIN_INSPECT)) ||
-                              (prepare_child && !request.capability && !request.rights))) {
+    if (request.size == 1 &&
+        (((register_root || register_child) && request.capability &&
+          request.rights == (MOSS_CAP_DOMAIN_OBSERVE | MOSS_CAP_DOMAIN_INSPECT | MOSS_CAP_DOMAIN_SIGNAL)) ||
+         (prepare_child && !request.capability && !request.rights))) {
       struct Record *parent = register_child || prepare_child ? find_record(request.badge) : NULL;
       long valid_domain =
           prepare_child ? 1 : syscall2(SYS_DOMAIN_SAME, (long)request.capability, (long)request.capability);
@@ -131,7 +132,7 @@ int main(int argc, char **argv) {
       }
     } else if (request.badge && request.size == MOSS_PROCESS_REPLY_VALUE_BYTES &&
                request.payload[0] == MOSS_PROCESS_ATTACH_CHILD && request.capability &&
-               request.rights == (MOSS_CAP_DOMAIN_OBSERVE | MOSS_CAP_DOMAIN_INSPECT)) {
+               request.rights == (MOSS_CAP_DOMAIN_OBSERVE | MOSS_CAP_DOMAIN_INSPECT | MOSS_CAP_DOMAIN_SIGNAL)) {
       struct Record *child = find_record(moss_process_get_u64(request.payload + 1));
       if (!child || child->parent_id != request.badge || child->domain) {
         response.payload[0] = MOSS_PROCESS_NO_ENTRY;
@@ -172,6 +173,29 @@ int main(int argc, char **argv) {
           released = child;
         } else {
           response.payload[0] = result == -EAGAIN ? MOSS_PROCESS_RUNNING : MOSS_PROCESS_UNAVAILABLE;
+        }
+      }
+    } else if (request.badge && request.size == MOSS_PROCESS_SIGNAL_REQUEST_BYTES &&
+               request.payload[0] == MOSS_PROCESS_SIGNAL && !request.capability && !request.rights) {
+      struct Record *caller = find_record(request.badge);
+      struct Record *target = find_record(moss_process_get_u64(request.payload + 1));
+      if (!caller || !caller->domain || !target || (target != caller && target->parent_id != caller->id)) {
+        response.payload[0] = MOSS_PROCESS_NO_ENTRY;
+      } else {
+        struct moss_domain_exit caller_status = {0};
+        // A delegated sender may outlive its domain; its stale badge must not
+        // retain signal authority after that domain exits.
+        if (syscall2(SYS_DOMAIN_STATUS, (long)caller->domain, (long)&caller_status) != -EAGAIN) {
+          response.payload[0] = MOSS_PROCESS_NO_ENTRY;
+        } else if (!target->domain) {
+          response.payload[0] = MOSS_PROCESS_RUNNING;
+        } else {
+          uint64_t signo = moss_process_get_u64(request.payload + 9);
+          long signaled = signo <= LONG_MAX ? syscall2(SYS_DOMAIN_SIGNAL, (long)target->domain, (long)signo) : -EINVAL;
+          response.payload[0] = signaled == 0         ? MOSS_PROCESS_OK
+                                : signaled == -ESRCH  ? MOSS_PROCESS_NO_ENTRY
+                                : signaled == -EINVAL ? MOSS_PROCESS_BAD_REQUEST
+                                                      : MOSS_PROCESS_UNAVAILABLE;
         }
       }
     } else if (request.badge && request.size == 1 && !request.capability && !request.rights) {

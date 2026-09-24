@@ -49,7 +49,7 @@ static int new_session(unsigned long endpoint, unsigned long domain, unsigned ch
   struct moss_ipc_message request = {
       .size = 1,
       .capability = domain,
-      .rights = domain ? MOSS_CAP_DOMAIN_OBSERVE | MOSS_CAP_DOMAIN_INSPECT : 0,
+      .rights = domain ? MOSS_CAP_DOMAIN_OBSERVE | MOSS_CAP_DOMAIN_INSPECT | MOSS_CAP_DOMAIN_SIGNAL : 0,
       .payload = {operation},
   };
   struct moss_ipc_message response = {0};
@@ -72,7 +72,7 @@ static int child_record_call(unsigned long parent_session, unsigned char operati
   struct moss_ipc_message request = {
       .size = MOSS_PROCESS_REPLY_VALUE_BYTES,
       .capability = domain,
-      .rights = domain ? MOSS_CAP_DOMAIN_OBSERVE | MOSS_CAP_DOMAIN_INSPECT : 0,
+      .rights = domain ? MOSS_CAP_DOMAIN_OBSERVE | MOSS_CAP_DOMAIN_INSPECT | MOSS_CAP_DOMAIN_SIGNAL : 0,
       .payload = {operation},
   };
   moss_process_put_u64(request.payload + 1, child_id);
@@ -392,12 +392,14 @@ static int managed_libc_probe(void) {
   if (!session || parent_id <= 0 || getppid() <= 0)
     return 0;
   errno = 0;
-  if (kill(parent_id, 0) != -1 || errno != ENOSYS)
+  if (kill(parent_id, 0) != 0 || kill(getppid(), 0) != -1 || errno != ESRCH)
     return 0;
   pid_t child = fork();
   if (child == 0) {
     pid_t child_id = getpid();
-    if (child_id <= 0 || getppid() != parent_id || syscall1(SYS_CAP_CLOSE, (long)session) != -EBADF)
+    errno = 0;
+    if (child_id <= 0 || getppid() != parent_id || syscall1(SYS_CAP_CLOSE, (long)session) != -EBADF ||
+        kill(parent_id, 0) != -1 || errno != ESRCH || kill(child_id, 0) != 0)
       _exit(41);
     char child_text[21], parent_text[21]; // Decimal 64-bit values plus NUL.
     if (snprintf(child_text, sizeof(child_text), "%lu", (unsigned long)child_id) <= 0 ||
@@ -408,8 +410,17 @@ static int managed_libc_probe(void) {
     _exit(42);
   }
   int status = 0;
-  return child > 0 && waitpid(child, &status, 0) == child && status == (37 << 8) &&
-         waitpid(child, &status, WNOHANG) == -1 && errno == ECHILD;
+  if (child <= 0 || waitpid(child, &status, 0) != child || status != (37 << 8) ||
+      waitpid(child, &status, WNOHANG) != -1 || errno != ECHILD)
+    return 0;
+  pid_t signaled = fork();
+  if (signaled == 0) {
+    unsigned long delay = 1000000000UL;
+    (void)syscall1(SYS_NANOSLEEP, (long)&delay);
+    _exit(97); // Bound a lost-signal regression instead of hanging the probe.
+  }
+  return signaled > 0 && kill(signaled, SIGTERM) == 0 && waitpid(signaled, &status, 0) == signaled &&
+         WIFSIGNALED(status) && WTERMSIG(status) == SIGTERM;
 }
 
 int main(int argc, char **argv) {

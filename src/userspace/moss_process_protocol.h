@@ -19,7 +19,8 @@ enum {
   MOSS_PROCESS_CANCEL_CHILD = 8,
   MOSS_PROCESS_IDENTITY = 9,
   MOSS_PROCESS_READY = 10,
-  MOSS_PROCESS_WAIT_CHILD = 11
+  MOSS_PROCESS_WAIT_CHILD = 11,
+  MOSS_PROCESS_SIGNAL = 12
 };
 enum {
   MOSS_PROCESS_OK = 0,
@@ -35,6 +36,7 @@ enum {
 enum {
   MOSS_PROCESS_REPLY_VALUE_BYTES = 9,
   MOSS_PROCESS_REPLY_WAIT_BYTES = 17,
+  MOSS_PROCESS_SIGNAL_REQUEST_BYTES = 17,
   MOSS_PROCESS_REPLY_IDENTITY_BYTES = MOSS_PROCESS_REPLY_WAIT_BYTES,
   MOSS_PROCESS_RECORD_LIMIT = 16
 };
@@ -49,6 +51,8 @@ enum {
 // returns [OK, ID:u64 LE, parent ID:u64 LE] through the child's session.
 // READY returns RUNNING until the reserved identity is attached. WAIT_CHILD
 // selects one child by ID under the parent's badge and uses WAIT_ANY's reply.
+// SIGNAL accepts [operation, target ID:u64 LE, signal:u64 LE]. Only a record's
+// own badge or its parent's badge may signal it; a bare numeric ID has no authority.
 static inline uint64_t moss_process_get_u64(const unsigned char *bytes) {
   uint64_t value = 0;
   for (unsigned int index = 0; index < 8; ++index)
