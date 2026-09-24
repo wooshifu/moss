@@ -168,6 +168,7 @@ void declare_cases() {
     ut::register_test("domain_selection", empty_case);
     ut::register_test("domain_wait_any", empty_case);
     ut::register_test("domain_spawn", empty_case);
+    ut::register_test("code_revocation", empty_case);
   });
   ut::register_suite("users.libc", [] {
     ut::register_test("static_runtime", empty_case);

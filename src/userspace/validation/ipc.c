@@ -72,6 +72,77 @@ __attribute__((naked, noinline, used, aligned(16))) static void spawned_stack_ex
 #endif
 }
 
+// A previously admitted domain must still execute after its approval is
+// revoked. The stack supplies a native nanosecond duration and exit code.
+// The immediate syscall IDs are guarded against moss/syscall_numbers.def.
+_Static_assert(SYS_NANOSLEEP == 86 && SYS_EXIT == 1, "native sleep/exit syscall IDs changed");
+__attribute__((naked, noinline, used, aligned(16))) static void spawned_sleep_exit(void) {
+#if defined(__x86_64__)
+  __asm__ volatile("mov %rsi, %rbx\n\tmov %rbx, %rdi\n\txor %esi, %esi\n\tmov $86, %eax\n\tsyscall\n\t"
+                   "mov 8(%rbx), %edi\n\tmov $1, %eax\n\tsyscall\n\tud2");
+#elif defined(__riscv)
+  __asm__ volatile("mv s0, a1\n\tmv a0, s0\n\tli a1, 0\n\tli a7, 86\n\tecall\n\t"
+                   "lw a0, 8(s0)\n\tli a7, 1\n\tecall\n\tebreak");
+#else
+  __asm__ volatile("mov x19, x1\n\tmov x0, x19\n\tmov x1, xzr\n\tmov x8, #86\n\tsvc #0\n\t"
+                   "ldr w0, [x19, #8]\n\tmov x8, #1\n\tsvc #0\n\tbrk #0");
+#endif
+}
+
+static int ipc_expect_spawn_error(long factory, struct moss_domain_spawn *image, long expected) {
+  long result = syscall2(SYS_DOMAIN_SPAWN, factory, (long)image);
+  if (result > 0) {
+    (void)syscall1(SYS_DOMAIN_TERMINATE, result);
+    (void)syscall1(SYS_DOMAIN_WAIT, result);
+    (void)syscall1(SYS_CAP_CLOSE, result);
+  }
+  return result == expected;
+}
+
+static long ipc_return_code_cap(long source) {
+  struct moss_ipc_endpoints endpoint = {0, 0};
+  if (syscall1(SYS_IPC_CREATE, (long)&endpoint) != 0)
+    return -1;
+  if (syscall2(SYS_CAP_SET_INHERIT, (long)endpoint.receive, 1) != 0) {
+    (void)syscall1(SYS_CAP_CLOSE, (long)endpoint.receive);
+    (void)syscall1(SYS_CAP_CLOSE, (long)endpoint.send);
+    return -1;
+  }
+  long child = fork();
+  if (child == 0) {
+    struct moss_ipc_message request = {0};
+    unsigned long reply = 0;
+    const unsigned long sent_rights = MOSS_CAP_CODE_EXEC | MOSS_CAP_TRANSFER | MOSS_CAP_DUPLICATE;
+    if (ipc_receive(endpoint.receive, &request, &reply) != 1 || request.payload[0] != 'c' ||
+        request.rights != sent_rights || request.capability == 0)
+      _exit(91);
+    const struct moss_ipc_message response = {
+        .size = 1, .capability = request.capability, .rights = MOSS_CAP_CODE_EXEC, .payload = {'c'}};
+    _exit(ipc_reply(reply, &response) == 0 ? 37 : 92);
+  }
+  (void)syscall1(SYS_CAP_CLOSE, (long)endpoint.receive);
+  long returned = -1;
+  if (child > 0) {
+    const struct moss_ipc_message request = {.size = 1,
+                                             .capability = (unsigned long)source,
+                                             .rights = MOSS_CAP_CODE_EXEC | MOSS_CAP_TRANSFER | MOSS_CAP_DUPLICATE,
+                                             .payload = {'c'}};
+    struct moss_ipc_message response = {0};
+    long deadline = deadline_after(ipc_call_timeout_ns);
+    long result = deadline > 0 ? ipc_call(endpoint.send, &request, &response, deadline) : -1;
+    if (result != 1 || response.payload[0] != 'c' || response.rights != MOSS_CAP_CODE_EXEC || response.capability == 0)
+      (void)kill(child, SIGKILL);
+    int child_ok = wait_exit(child, 37);
+    if (result == 1 && response.payload[0] == 'c' && response.rights == MOSS_CAP_CODE_EXEC &&
+        response.capability != 0 && child_ok)
+      returned = (long)response.capability;
+    else if (response.capability != 0)
+      (void)syscall1(SYS_CAP_CLOSE, (long)response.capability);
+  }
+  (void)syscall1(SYS_CAP_CLOSE, (long)endpoint.send);
+  return returned;
+}
+
 unsigned long ipc_domain_spawn(void) {
   // Exceed capability::Table's current 64 slots: one approved version must
   // supply a text range that cannot fit as one handle per executable page.
@@ -238,6 +309,110 @@ unsigned long ipc_domain_spawn(void) {
   errors |= (unsigned long)(diagnostic_id <= 1 || syscall3(SYS_WAITPID, diagnostic_id, 0, 1) != -IPC_ECHILD) << 7;
   errors |= (unsigned long)!domain_exited((unsigned long)domain, 37, 0) << 8;
   errors |= (unsigned long)(syscall1(SYS_CAP_CLOSE, domain) != 0) << 9;
+  return errors;
+}
+
+unsigned long ipc_code_revocation(void) {
+  static unsigned char code_copy[MOSS_DOMAIN_PAGE_BYTES] __attribute__((aligned(MOSS_DOMAIN_PAGE_BYTES)));
+  struct moss_domain_layout layout = {0};
+  if (syscall1(SYS_DOMAIN_LAYOUT, (long)&layout) != 0 || layout.page_size != MOSS_DOMAIN_PAGE_BYTES ||
+      layout.stack_size < 16 || layout.stack_top <= layout.stack_size)
+    return 1;
+
+  const unsigned long entry = (unsigned long)spawned_sleep_exit;
+  const unsigned long code_page = entry & ~(MOSS_DOMAIN_PAGE_BYTES - 1UL);
+  const unsigned long stack_pointer = layout.stack_top - 16;
+  // Keep the first domain alive while its already admitted code is revoked.
+  const unsigned long live_domain_delay_ns = 300000000UL;
+  const unsigned long initial_stack[2] = {live_domain_delay_ns, 37};
+  const volatile unsigned char *original = (const volatile unsigned char *)code_page;
+  for (unsigned long i = 0; i < MOSS_DOMAIN_PAGE_BYTES; ++i)
+    code_copy[i] = original[i];
+  struct moss_domain_page page = {.address = code_page, .flags = MOSS_DOMAIN_PAGE_READ | MOSS_DOMAIN_PAGE_EXEC};
+  struct moss_domain_spawn image = {.entry = entry,
+                                    .stack_pointer = stack_pointer,
+                                    .stack_source = (unsigned long)initial_stack,
+                                    .stack_size = sizeof(initial_stack),
+                                    .arg1 = stack_pointer,
+                                    .pages = (unsigned long)&page,
+                                    .page_count = 1};
+  unsigned long errors = 0;
+  long factory = syscall0(SYS_DOMAIN_FACTORY);
+  long authority = syscall0(SYS_CODE_AUTHORITY);
+  long other_scope = syscall0(SYS_CODE_AUTHORITY);
+  long version = syscall1(SYS_CODE_SNAPSHOT, (long)code_copy);
+  long approved = 0, identify = 0, stale = 0, transferred = 0, revoker = 0, approver = 0, second = 0;
+  long domain = 0, second_domain = 0;
+  if (factory <= 0 || authority <= 0 || other_scope <= 0 || version <= 0) {
+    errors |= 1;
+    goto cleanup;
+  }
+  for (unsigned long i = 0; i < MOSS_DOMAIN_PAGE_BYTES; ++i)
+    code_copy[i] = 0;
+  approved = syscall2(SYS_CODE_APPROVE, authority, version);
+  if (approved <= 0) {
+    errors |= 1UL << 1;
+    goto cleanup;
+  }
+  identify = syscall2(SYS_CAP_DUPLICATE, approved, MOSS_CAP_CODE_IDENTIFY);
+  stale = syscall2(SYS_CAP_DUPLICATE, approved, MOSS_CAP_CODE_EXEC | MOSS_CAP_TRANSFER | MOSS_CAP_DUPLICATE);
+  revoker = syscall2(SYS_CAP_DUPLICATE, authority, MOSS_CAP_CODE_REVOKE);
+  approver = syscall2(SYS_CAP_DUPLICATE, authority, MOSS_CAP_CODE_APPROVE);
+  if (identify <= 0 || stale <= 0 || revoker <= 0 || approver <= 0) {
+    errors |= (unsigned long)(identify <= 0) << 2 | (unsigned long)(stale <= 0) << 3 |
+              (unsigned long)(revoker <= 0) << 4 | (unsigned long)(approver <= 0) << 5;
+    goto cleanup;
+  }
+  page.code = (unsigned long)approved;
+  domain = syscall2(SYS_DOMAIN_SPAWN, factory, (long)&image);
+  if (domain <= 0) {
+    errors |= 1UL << 3;
+    goto cleanup;
+  }
+  struct moss_domain_exit status = {0};
+  errors |= (unsigned long)(syscall2(SYS_DOMAIN_STATUS, domain, (long)&status) != -IPC_EAGAIN) << 4;
+  page.code = (unsigned long)identify;
+  errors |= (unsigned long)!ipc_expect_spawn_error(factory, &image, -IPC_EACCES) << 5;
+  page.code = (unsigned long)approved;
+  errors |= (unsigned long)(syscall2(SYS_CODE_REVOKE, approver, identify) != -IPC_EACCES) << 6;
+  errors |= (unsigned long)(syscall2(SYS_CODE_APPROVE, revoker, version) != -IPC_EACCES) << 7;
+  errors |= (unsigned long)(syscall2(SYS_CODE_REVOKE, other_scope, identify) != -IPC_EACCES) << 8;
+  errors |= (unsigned long)(syscall2(SYS_CODE_REVOKE, revoker, stale) != -IPC_EACCES) << 9;
+  errors |= (unsigned long)(syscall2(SYS_CODE_REVOKE, revoker, identify) != 0) << 10;
+  errors |= (unsigned long)(syscall2(SYS_CODE_REVOKE, revoker, identify) != 0) << 11;
+  errors |= (unsigned long)!ipc_expect_spawn_error(factory, &image, -IPC_EACCES) << 12;
+  page.code = (unsigned long)stale;
+  errors |= (unsigned long)!ipc_expect_spawn_error(factory, &image, -IPC_EACCES) << 13;
+  transferred = ipc_return_code_cap(stale);
+  errors |= (unsigned long)(transferred <= 0) << 21;
+  if (transferred > 0) {
+    page.code = (unsigned long)transferred;
+    errors |= (unsigned long)!ipc_expect_spawn_error(factory, &image, -IPC_EACCES) << 22;
+  }
+  page.code = (unsigned long)stale;
+  second = syscall2(SYS_CODE_APPROVE, approver, version);
+  if (second <= 0) {
+    errors |= 1UL << 14;
+    goto cleanup;
+  }
+  errors |= (unsigned long)!ipc_expect_spawn_error(factory, &image, -IPC_EACCES) << 15;
+  page.code = (unsigned long)second;
+  second_domain = syscall2(SYS_DOMAIN_SPAWN, factory, (long)&image);
+  errors |= (unsigned long)(second_domain <= 0) << 16;
+  errors |= (unsigned long)(syscall2(SYS_CODE_REVOKE, revoker, second) != 0) << 17;
+  errors |= (unsigned long)!ipc_expect_spawn_error(factory, &image, -IPC_EACCES) << 18;
+
+cleanup:
+  if (domain > 0)
+    errors |= (unsigned long)!domain_exited((unsigned long)domain, 37, 0) << 19;
+  if (second_domain > 0)
+    errors |= (unsigned long)!domain_exited((unsigned long)second_domain, 37, 0) << 20;
+  const long handles[] = {domain,   second_domain, second,  approver,  revoker,     transferred, stale,
+                          identify, approved,      version, authority, other_scope, factory};
+  for (unsigned long i = 0; i < sizeof(handles) / sizeof(handles[0]); ++i) {
+    if (handles[i] > 0)
+      (void)syscall1(SYS_CAP_CLOSE, handles[i]);
+  }
   return errors;
 }
 

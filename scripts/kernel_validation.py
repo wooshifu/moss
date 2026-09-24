@@ -238,6 +238,7 @@ CATALOG = {
         "domain_selection",
         "domain_wait_any",
         "domain_spawn",
+        "code_revocation",
     ],
     "users.signals": [
         "basic_handler",

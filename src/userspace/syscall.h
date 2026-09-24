@@ -29,8 +29,14 @@ enum {
   MOSS_CAP_DOMAIN_SPAWN = 1U << 10,
   MOSS_CAP_CODE_APPROVE = 1U << 11,
   MOSS_CAP_CODE_EXEC = 1U << 12,
+  MOSS_CAP_CODE_IDENTIFY = 1U << 13,
+  MOSS_CAP_CODE_REVOKE = 1U << 14,
   MOSS_IPC_MAX_MESSAGE = 256
 };
+
+// CODE_IDENTIFY can name an approval without granting execution. CODE_REVOKE
+// is scoped to the authority that issued it; SYS_CODE_REVOKE requires both.
+// Revocation blocks new native-domain admission, not existing mappings.
 
 // The initial Memory Object is one 4 KiB page. MAP_WRITE mappings are also
 // readable on all supported architectures; closing a handle keeps mappings.

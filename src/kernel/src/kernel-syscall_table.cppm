@@ -103,6 +103,7 @@ long sys_code_snapshot_range(long source, long page_count, long arg2, long arg3,
 long sys_code_read_range(long version, long first_page, long destination, long page_count, long arg4,
                          long arg5) noexcept;
 long sys_code_page_count(long version, long arg1, long arg2, long arg3, long arg4, long arg5) noexcept;
+long sys_code_revoke(long authority, long approval, long arg2, long arg3, long arg4, long arg5) noexcept;
 long sys_execve(long pathname_addr, long argv_addr, long envp_addr, long arg3, long arg4, long arg5) noexcept;
 long sys_wait4(long wait_pid, long wstatus_addr, long options, long arg3, long arg4, long arg5) noexcept;
 long sys_waitpid(long pid, long wstatus, long options, long arg3, long arg4, long arg5) noexcept;
