@@ -14,9 +14,12 @@ enum {
 
 struct moss_domain_page {
   uint64_t address; // Page-aligned target virtual address.
-  uint64_t source;  // Caller buffer; zero means a zero-filled page.
-  uint64_t size;    // Bytes copied from source, at most one 4 KiB page.
+  uint64_t source;  // Caller buffer for a non-executable page.
+  uint64_t size;    // Bytes copied from source; zero fills the remainder.
   uint64_t flags;
+  // Executable pages use only an approved immutable code version. source and
+  // size must be zero; each version supplies one complete 4 KiB page.
+  uint64_t code;
 };
 
 struct moss_domain_spawn {
