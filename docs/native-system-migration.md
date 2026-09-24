@@ -39,6 +39,12 @@ networking and persistent storage.
    file-object capabilities. Run real ash and file-utility workflows on the
    new path in all six architecture/build combinations. Keep the old VFS path
    until those workflows and failure cleanup pass on the replacement.
+   The current managed process session survives `exec` through the startup
+   auxiliary vector; a userspace descriptor table needs an equally explicit
+   handoff. During the transition, kernel-backed pipes and console handles
+   still share POSIX descriptor numbers with capability-backed files. A table
+   copied only in libc memory would split offsets after `fork` and disappear
+   after `exec`.
 3. Move ordinary image parsing and external page supply to userspace after
    their kernel authority and immutable-content invariants are testable. Use
    separate checks for approval, revocation, repaging and failed services.
