@@ -14,8 +14,8 @@ static unsigned char input[MOSS_CONSOLE_RING_BYTES];
 static unsigned int head;
 static unsigned int length;
 static unsigned int prepared_count;
-// Keep wait replies bounded below the domain's 64 capability slots. An
-// evicted waiter wakes to retry and a canceled waiter releases its slot.
+// ponytail: Cap pending input readers at 16 of the domain's 64 capability
+// slots; an evicted reader wakes to retry and frees its slot.
 enum { CONSOLE_WAIT_LIMIT = 16 };
 static unsigned long waiters[CONSOLE_WAIT_LIMIT];
 static unsigned int waiter_count;

@@ -24,7 +24,9 @@ static const unsigned long process_call_timeout_ns = 5000000000UL;
 static const unsigned long status_retry_ns = 10000000UL;
 // Give the service time to accept a wait before the cancellation probe expires.
 static const unsigned long fd_wait_cancel_timeout_ns = 1000000000UL;
-enum { STATUS_RETRIES = 500 };
+// The child pauses briefly so the parent usually reaches FD_WAIT first. The
+// readiness contract still holds if the producer wins that scheduling race.
+enum { STATUS_RETRIES = 500, FD_WAIT_PROBE_DELAY_US = 50000 };
 
 static int error(void) {
   static const char message[] = "MOSS_PROCESS_ERROR\n";
@@ -1324,7 +1326,7 @@ static int fd_wait_child(const char *number_text, const char *direction_text) {
   if (errno || !number || number >= MOSS_PROCESS_FD_LIMIT || *end || !session ||
       (!writing && strcmp(direction_text, "read") != 0))
     return 0;
-  usleep(50000);
+  usleep(FD_WAIT_PROBE_DELAY_US);
   long memory = syscall1(SYS_MEM_CREATE, MOSS_MEM_OBJECT_BYTES);
   long page = memory > 0 ? syscall2(SYS_MEM_MAP, memory, MOSS_CAP_MAP_READ | MOSS_CAP_MAP_WRITE) : 0;
   if (page > 0 && writing)
@@ -1487,7 +1489,7 @@ static int console_fd_probe(void) {
   if (valid) {
     pid_t child = fork();
     if (child == 0) {
-      usleep(50000);
+      usleep(FD_WAIT_PROBE_DELAY_US);
       _exit(console_feed(input, '?') ? 37 : 43);
     }
     valid = child > 0 && fd_wait(session, 0, MOSS_PROCESS_FD_WAIT_READ, 1) &&

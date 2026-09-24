@@ -9,8 +9,8 @@
 
 enum { PIPE_CONTROL = 1, PIPE_READER = 2, PIPE_WRITER = 3 };
 enum { PIPE_BYTES = MOSS_MEM_OBJECT_BYTES };
-// A service domain has 64 capability slots. Keep room for its endpoint,
-// in-flight messages and minted pipe ends even if callers abandon waits.
+// ponytail: Cap pending waits at 32 of the domain's 64 capability slots;
+// evict with a spurious wake if concurrency exceeds the reserved headroom.
 enum { PIPE_WAIT_LIMIT = 32 };
 
 struct Pipe {
