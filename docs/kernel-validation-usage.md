@@ -11,6 +11,8 @@ Production boot starts a userspace process service, registers init as compatibil
 
 Managed `setpgid` does not yet reject a parent changing a child after `execve`. The unmanaged kernel path exposes only `setpgrp(0, 0)`; mlibc returns `ENOSYS` for other `setpgid` arguments instead of reporting a change the kernel did not make.
 
+The unbadged process registration is a one-use bootstrap for init. The production probe confirms that a second root registration is rejected and that the same native child can register through its parent's badged session.
+
 The `drivers` registry cases likewise link the former `moss.drivers` matching/callback module only into validation. Production boot uses `moss.drivers.console` directly with the boot-owned interrupt controller and timer; the console readiness and RX cases still exercise that production module.
 
 ## Build and Test

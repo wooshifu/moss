@@ -90,7 +90,7 @@ static int session_result(unsigned long session, unsigned char operation) {
   return result == 1 && clean ? response.payload[0] : -1;
 }
 
-static int observe_child(unsigned long root, unsigned long *last_id, int exit_code) {
+static int observe_child(unsigned long root, unsigned long parent_session, unsigned long *last_id, int exit_code) {
   unsigned long domain = 0;
   long child = syscall1(SYS_FORK_DOMAIN, (long)&domain);
   if (child == 0)
@@ -101,17 +101,30 @@ static int observe_child(unsigned long root, unsigned long *last_id, int exit_co
     return 0;
   }
 
+  struct moss_ipc_message request = {
+      .size = 1,
+      .capability = domain,
+      .rights = MOSS_CAP_DOMAIN_OBSERVE | MOSS_CAP_DOMAIN_INSPECT | MOSS_CAP_DOMAIN_SIGNAL,
+      .payload = {MOSS_PROCESS_REGISTER},
+  };
+  struct moss_ipc_message response = {0};
+  long result = call(root, &request, &response);
+  if (result != 1 || response.payload[0] != MOSS_PROCESS_BAD_REQUEST || !no_capability(&response)) {
+    (void)syscall1(SYS_CAP_CLOSE, (long)domain);
+    return 0;
+  }
+
   unsigned long id = 0, session = 0;
-  if (!new_session(root, domain, MOSS_PROCESS_REGISTER, &id, &session))
+  if (!new_session(parent_session, domain, MOSS_PROCESS_REGISTER_CHILD, &id, &session))
     return 0;
   int valid = id > *last_id && syscall3(SYS_WAITPID, child, 0, 1) == -ECHILD;
   *last_id = id;
   // The root sender carries no record badge. Supplying the numeric ID in a
   // request must not turn that ambient value into observation authority.
-  struct moss_ipc_message request = {.size = MOSS_PROCESS_REPLY_VALUE_BYTES, .payload = {MOSS_PROCESS_STATUS}};
+  request = (struct moss_ipc_message){.size = MOSS_PROCESS_REPLY_VALUE_BYTES, .payload = {MOSS_PROCESS_STATUS}};
   moss_process_put_u64(request.payload + 1, id);
-  struct moss_ipc_message response = {0};
-  long result = call(root, &request, &response);
+  response = (struct moss_ipc_message){0};
+  result = call(root, &request, &response);
   int clean = no_capability(&response);
   valid &= result == 1 && response.payload[0] == MOSS_PROCESS_BAD_REQUEST && clean;
   request = (struct moss_ipc_message){.size = 1, .payload = {MOSS_PROCESS_STATUS}};
@@ -143,8 +156,17 @@ static int observe_child(unsigned long root, unsigned long *last_id, int exit_co
   response = (struct moss_ipc_message){0};
   result = call(session, &request, &response);
   clean = no_capability(&response);
-  valid &= result == 1 && response.payload[0] == MOSS_PROCESS_OK && clean;
+  valid &= result == 1 && response.payload[0] == MOSS_PROCESS_BUSY && clean;
+  request = (struct moss_ipc_message){.size = MOSS_PROCESS_REPLY_VALUE_BYTES, .payload = {MOSS_PROCESS_WAIT_CHILD}};
+  moss_process_put_u64(request.payload + 1, id);
+  response = (struct moss_ipc_message){0};
+  result = call(parent_session, &request, &response);
+  clean = no_capability(&response);
+  valid &= result == MOSS_PROCESS_REPLY_WAIT_BYTES && response.payload[0] == MOSS_PROCESS_EXITED &&
+           moss_process_get_u64(response.payload + 1) == id &&
+           moss_process_get_u64(response.payload + 9) == (uint32_t)exit_code && clean;
   request.payload[0] = MOSS_PROCESS_STATUS;
+  request.size = 1;
   response = (struct moss_ipc_message){0};
   result = call(session, &request, &response);
   clean = no_capability(&response);
@@ -155,24 +177,18 @@ static int observe_child(unsigned long root, unsigned long *last_id, int exit_co
 
 static int observe_family(unsigned long root, unsigned long *last_id) {
   unsigned long parent_session = getauxval(MOSS_AT_STARTUP_CAP);
-  const int borrowed_session = parent_session != 0;
+  if (!parent_session)
+    return 0;
   unsigned long parent_id = 0;
-  if (borrowed_session) {
-    struct moss_ipc_message identity = {.size = 1, .payload = {MOSS_PROCESS_IDENTITY}};
-    struct moss_ipc_message response = {0};
-    long result = call(parent_session, &identity, &response);
-    int clean = no_capability(&response);
-    if (result != MOSS_PROCESS_REPLY_IDENTITY_BYTES || response.payload[0] != MOSS_PROCESS_OK || !clean)
-      return 0;
-    parent_id = moss_process_get_u64(response.payload + 1);
-  } else {
-    long self = syscall0(SYS_DOMAIN_SELF);
-    if (self <= 0 || !new_session(root, (unsigned long)self, MOSS_PROCESS_REGISTER, &parent_id, &parent_session))
-      return 0;
-  }
-  int valid = parent_id && (borrowed_session || parent_id > *last_id);
-  if (!borrowed_session)
-    *last_id = parent_id;
+  struct moss_ipc_message identity = {.size = 1, .payload = {MOSS_PROCESS_IDENTITY}};
+  struct moss_ipc_message identity_response = {0};
+  long identity_result = call(parent_session, &identity, &identity_response);
+  int identity_clean = no_capability(&identity_response);
+  if (identity_result != MOSS_PROCESS_REPLY_IDENTITY_BYTES || identity_response.payload[0] != MOSS_PROCESS_OK ||
+      !identity_clean)
+    return 0;
+  parent_id = moss_process_get_u64(identity_response.payload + 1);
+  int valid = parent_id != 0;
   unsigned long cancelled_id = 0, cancelled_session = 0;
   if (!new_session(parent_session, 0, MOSS_PROCESS_PREPARE_CHILD, &cancelled_id, &cancelled_session))
     valid = 0;
@@ -224,8 +240,7 @@ static int observe_family(unsigned long root, unsigned long *last_id) {
     if (child == 0) {
       // This raw child uses only its reserved badge; it must not retain the
       // managed parent's session inherited by the native fork.
-      if (borrowed_session)
-        (void)syscall1(SYS_CAP_CLOSE, (long)parent_session);
+      (void)syscall1(SYS_CAP_CLOSE, (long)parent_session);
       long self = syscall0(SYS_DOMAIN_SELF);
       int attached = self > 0 && child_record_call(child_sessions[i], MOSS_PROCESS_ATTACH_CHILD, child_ids[i],
                                                    (unsigned long)self, MOSS_PROCESS_OK);
@@ -363,14 +378,6 @@ static int observe_family(unsigned long root, unsigned long *last_id) {
     (void)call(child_sessions[i], &request, &response);
     (void)no_capability(&response);
     (void)syscall1(SYS_CAP_CLOSE, (long)child_sessions[i]);
-  }
-  if (!borrowed_session) {
-    request.payload[0] = MOSS_PROCESS_RELEASE;
-    response = (struct moss_ipc_message){0};
-    result = call(parent_session, &request, &response);
-    clean = no_capability(&response);
-    valid &= result == 1 && response.payload[0] == MOSS_PROCESS_OK && clean;
-    (void)syscall1(SYS_CAP_CLOSE, (long)parent_session);
   }
   return valid;
 }
@@ -570,8 +577,10 @@ int main(int argc, char **argv) {
   if (errno || !root || root > LONG_MAX || *end)
     return error();
   unsigned long last_id = MOSS_PROCESS_INIT_ID;
+  unsigned long parent_session = getauxval(MOSS_AT_STARTUP_CAP);
   if (!managed_libc_probe() || !managed_group_probe() || !managed_orphan_probe() ||
-      !observe_child(root, &last_id, 37) || !observe_child(root, &last_id, 38) || !observe_family(root, &last_id))
+      !observe_child(root, parent_session, &last_id, 37) || !observe_child(root, parent_session, &last_id, 38) ||
+      !observe_family(root, &last_id))
     return error();
   static const char message[] = "MOSS_PROCESS_READY\n";
   (void)write(STDOUT_FILENO, message, sizeof(message) - 1);

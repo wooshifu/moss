@@ -194,7 +194,9 @@ int main(int argc, char **argv) {
     struct Record *changed_group = NULL;
     unsigned long old_group_id = 0, old_session_id = 0;
     long session = 0;
-    const int register_root = request.badge == 0 && request.payload[0] == MOSS_PROCESS_REGISTER;
+    // The unbadged sender bootstraps init once; later callers must prove parentage with a badge.
+    const int register_root =
+        request.badge == 0 && request.payload[0] == MOSS_PROCESS_REGISTER && next_id == MOSS_PROCESS_INIT_ID;
     const int register_child = request.badge != 0 && request.payload[0] == MOSS_PROCESS_REGISTER_CHILD;
     const int prepare_child = request.badge != 0 && request.payload[0] == MOSS_PROCESS_PREPARE_CHILD;
     if (request.size == 1 &&
@@ -457,6 +459,9 @@ int main(int argc, char **argv) {
       changed_group->session_id = old_session_id;
     }
     if (registered && sent != 0) {
+      // A failed bootstrap reply delivered no badge, so init may retry as ID 1.
+      if (registered->id == MOSS_PROCESS_INIT_ID)
+        next_id = MOSS_PROCESS_INIT_ID;
       if (registered->domain)
         (void)syscall1(SYS_CAP_CLOSE, (long)registered->domain);
       *registered = (struct Record){0};

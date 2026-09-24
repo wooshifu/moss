@@ -2,6 +2,8 @@
 
 #include <stdint.h>
 
+// The unbadged REGISTER operation bootstraps init once as ID 1. Later domains
+// require REGISTER_CHILD or PREPARE_CHILD through a parent's badged sender.
 // A registration transfers OBSERVE|INSPECT|SIGNAL authority for one native domain.
 // The returned sender's kernel-authenticated badge is the compatibility identity;
 // numeric IDs in payloads never authorize status, parentage, or wait operations.
