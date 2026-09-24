@@ -34,7 +34,8 @@ enum {
   MOSS_PROCESS_FD_READ = 21,
   MOSS_PROCESS_FD_WRITE = 22,
   MOSS_PROCESS_FD_SEEK = 23,
-  MOSS_PROCESS_FD_EXEC = 24
+  MOSS_PROCESS_FD_EXEC = 24,
+  MOSS_PROCESS_FD_DUP_TO = 25
 };
 enum {
   MOSS_PROCESS_OK = 0,
@@ -72,7 +73,12 @@ enum {
   MOSS_PROCESS_REPLY_GROUP_BYTES = 17,
   MOSS_PROCESS_REPLY_IDENTITY_BYTES = MOSS_PROCESS_REPLY_WAIT_BYTES
 };
-enum { MOSS_PROCESS_FD_IO_BYTES = 11, MOSS_PROCESS_FD_IO_REPLY_BYTES = 3, MOSS_PROCESS_FD_SEEK_BYTES = 18 };
+enum {
+  MOSS_PROCESS_FD_IO_BYTES = 11,
+  MOSS_PROCESS_FD_IO_REPLY_BYTES = 3,
+  MOSS_PROCESS_FD_SEEK_BYTES = 18,
+  MOSS_PROCESS_FD_DUP_TO_BYTES = 17
+};
 
 // REGISTER returns [OK, ID:u64 LE]. STATUS returns [EXITED, status:u64 LE].
 // WAIT_ANY returns [EXITED, child ID:u64 LE, status:u64 LE] and atomically
@@ -96,7 +102,10 @@ enum { MOSS_PROCESS_FD_IO_BYTES = 11, MOSS_PROCESS_FD_IO_REPLY_BYTES = 3, MOSS_P
 // caller and its direct children that belong to that group.
 // FD_OPEN carries [opcode, flags, absolute NUL-terminated namespace path] and
 // returns [OK, descriptor:u64 LE]. FD_CLOSE and FD_DUP carry [opcode,
-// descriptor:u64 LE]; DUP returns the new descriptor. FD_READ/WRITE carry
+// descriptor:u64 LE]; DUP returns the new descriptor. FD_DUP_TO carries
+// [opcode, source:u64 LE, target:u64 LE] and returns the target. A different
+// source replaces an occupied target and clears its close-on-exec flag;
+// duplicating a descriptor onto itself preserves that flag. FD_READ/WRITE carry
 // [opcode, descriptor:u64 LE, count:u16 LE] plus a transferred Memory Object
 // with MAP_WRITE|TRANSFER|DUPLICATE or MAP_READ|TRANSFER|DUPLICATE respectively,
 // and return

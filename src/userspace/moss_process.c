@@ -644,6 +644,16 @@ static int fd_command(unsigned long session, unsigned char operation, unsigned l
   return *value >= MOSS_PROCESS_FD_FIRST && *value < MOSS_PROCESS_FD_LIMIT;
 }
 
+static int fd_dup_to(unsigned long session, unsigned long source, unsigned long target) {
+  struct moss_ipc_message request = {.size = MOSS_PROCESS_FD_DUP_TO_BYTES, .payload = {MOSS_PROCESS_FD_DUP_TO}};
+  moss_process_put_u64(request.payload + 1, source);
+  moss_process_put_u64(request.payload + 9, target);
+  struct moss_ipc_message response = {0};
+  long result = call(session, &request, &response);
+  return no_capability(&response) && result == MOSS_PROCESS_REPLY_VALUE_BYTES &&
+         response.payload[0] == MOSS_PROCESS_OK && moss_process_get_u64(response.payload + 1) == target;
+}
+
 static int fd_seek(unsigned long session, unsigned long number, unsigned char whence, unsigned long *position) {
   struct moss_ipc_message request = {.size = MOSS_PROCESS_FD_SEEK_BYTES, .payload = {MOSS_PROCESS_FD_SEEK}};
   moss_process_put_u64(request.payload + 1, number);
@@ -702,7 +712,7 @@ static int fd_exec_child(const char *kept_text) {
 
 static int fd_view_probe(void) {
   unsigned long session = getauxval(MOSS_AT_STARTUP_CAP);
-  unsigned long first = 0, duplicate = 0, position = 0;
+  unsigned long first = 0, duplicate = 0, victim = 0, spare = 0, position = 0;
   unsigned int transferred = 0;
   if (!session || !fd_open(session, "/note",
                            MOSS_PROCESS_FD_READABLE | MOSS_PROCESS_FD_WRITABLE | MOSS_PROCESS_FD_CREATE |
@@ -731,11 +741,22 @@ static int fd_view_probe(void) {
             transferred == 1 && *(unsigned char *)mapped == 'b';
   }
   if (valid) {
+    valid = fd_open(session, "/scratch", MOSS_PROCESS_FD_READABLE | MOSS_PROCESS_FD_CLOEXEC, &victim) &&
+            fd_dup_to(session, duplicate, victim) && fd_dup_to(session, first, first);
+  }
+  if (valid) {
+    const unsigned long free_target = MOSS_PROCESS_FD_LIMIT - 1;
+    valid = fd_dup_to(session, duplicate, free_target);
+    if (valid)
+      spare = free_target;
+    valid = valid && !fd_dup_to(session, duplicate, MOSS_PROCESS_FD_LIMIT);
+  }
+  if (valid) {
     pid_t child = fork();
     if (child == 0) {
       char environment[64], kept_text[32];
       int env_size = snprintf(environment, sizeof(environment), "MOSS_FD_PROBE_CLOEXEC=%lu", first);
-      int kept_size = snprintf(kept_text, sizeof(kept_text), "%lu", duplicate);
+      int kept_size = snprintf(kept_text, sizeof(kept_text), "%lu", victim);
       if (env_size <= 0 || (size_t)env_size >= sizeof(environment) || kept_size <= 0 ||
           (size_t)kept_size >= sizeof(kept_text))
         _exit(43);
@@ -749,6 +770,10 @@ static int fd_view_probe(void) {
     valid = child > 0 && waited == child && status == (37 << 8) &&
             fd_io(session, MOSS_PROCESS_FD_READ, first, memory, 1, &transferred) && transferred == 0;
   }
+  if (spare)
+    valid &= fd_command(session, MOSS_PROCESS_FD_CLOSE, spare, NULL);
+  if (victim)
+    valid &= fd_command(session, MOSS_PROCESS_FD_CLOSE, victim, NULL);
   if (duplicate)
     valid &= fd_command(session, MOSS_PROCESS_FD_CLOSE, duplicate, NULL);
   valid &= fd_command(session, MOSS_PROCESS_FD_CLOSE, first, NULL);

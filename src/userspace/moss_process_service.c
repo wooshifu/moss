@@ -75,11 +75,9 @@ static struct Descriptor *find_descriptor(struct Record *record, unsigned long n
   return NULL;
 }
 
-static struct Descriptor *add_descriptor(struct Record *record, struct OpenDescription *description) {
-  unsigned long number = MOSS_PROCESS_FD_FIRST;
-  while (number < MOSS_PROCESS_FD_LIMIT && find_descriptor(record, number))
-    ++number;
-  if (number == MOSS_PROCESS_FD_LIMIT)
+static struct Descriptor *add_descriptor_at(struct Record *record, struct OpenDescription *description,
+                                            unsigned long number) {
+  if (number < MOSS_PROCESS_FD_FIRST || number >= MOSS_PROCESS_FD_LIMIT || find_descriptor(record, number))
     return NULL;
   struct Descriptor *entry = calloc(1, sizeof(*entry));
   if (!entry)
@@ -90,6 +88,13 @@ static struct Descriptor *add_descriptor(struct Record *record, struct OpenDescr
   entry->next = record->descriptors;
   record->descriptors = entry;
   return entry;
+}
+
+static struct Descriptor *add_descriptor(struct Record *record, struct OpenDescription *description) {
+  unsigned long number = MOSS_PROCESS_FD_FIRST;
+  while (number < MOSS_PROCESS_FD_LIMIT && find_descriptor(record, number))
+    ++number;
+  return add_descriptor_at(record, description, number);
 }
 
 static void remove_descriptor(struct Record *record, struct Descriptor *entry) {
@@ -350,6 +355,9 @@ struct FdAction {
   struct Record *owner;
   struct Descriptor *added;
   struct Descriptor *closing;
+  struct Descriptor *replaced;
+  struct OpenDescription *previous_description;
+  unsigned char previous_cloexec;
   struct OpenDescription *offset_description;
   unsigned long next_offset;
   int completed_write;
@@ -454,6 +462,37 @@ static void handle_fd_request(struct Record *owner, unsigned long namespace, con
     return;
   }
 
+  if (operation == MOSS_PROCESS_FD_DUP_TO) {
+    if (request->size != MOSS_PROCESS_FD_DUP_TO_BYTES || request->capability || request->rights)
+      return;
+    unsigned long target = moss_process_get_u64(request->payload + 9);
+    if (target < MOSS_PROCESS_FD_FIRST || target >= MOSS_PROCESS_FD_LIMIT) {
+      response->payload[0] = MOSS_PROCESS_BAD_REQUEST;
+      return;
+    }
+    if (target != number) {
+      struct Descriptor *occupied = find_descriptor(owner, target);
+      if (occupied) {
+        // The service processes one request at a time; retain the old target
+        // until reply delivery decides whether this replacement commits.
+        ++description->references;
+        action->replaced = occupied;
+        action->previous_description = occupied->description;
+        action->previous_cloexec = occupied->close_on_exec;
+        occupied->description = description;
+        occupied->close_on_exec = 0;
+      } else {
+        action->added = add_descriptor_at(owner, description, target);
+        if (!action->added) {
+          response->payload[0] = MOSS_PROCESS_UNAVAILABLE;
+          return;
+        }
+      }
+    }
+    fd_reply_value(response, target);
+    return;
+  }
+
   if (operation == MOSS_PROCESS_FD_READ || operation == MOSS_PROCESS_FD_WRITE) {
     int writing = operation == MOSS_PROCESS_FD_WRITE;
     if (request->size != MOSS_PROCESS_FD_IO_BYTES || !request->capability ||
@@ -530,6 +569,15 @@ static void finish_fd_action(struct FdAction *action, long sent) {
     remove_descriptor(action->owner, action->added);
   if (action->closing && sent == 0)
     remove_descriptor(action->owner, action->closing);
+  if (action->replaced) {
+    if (sent == 0) {
+      release_description(action->previous_description);
+    } else {
+      release_description(action->replaced->description);
+      action->replaced->description = action->previous_description;
+      action->replaced->close_on_exec = action->previous_cloexec;
+    }
+  }
   if (action->offset_description) {
     if (sent == 0)
       action->offset_description->offset = action->next_offset;
@@ -808,7 +856,7 @@ int main(int argc, char **argv) {
         response.payload[0] = sent_signal ? MOSS_PROCESS_OK : failed ? MOSS_PROCESS_UNAVAILABLE : MOSS_PROCESS_NO_ENTRY;
       }
     } else if (request.badge && request.size && request.payload[0] >= MOSS_PROCESS_FD_OPEN &&
-               request.payload[0] <= MOSS_PROCESS_FD_EXEC) {
+               request.payload[0] <= MOSS_PROCESS_FD_DUP_TO) {
       handle_fd_request(find_record(request.badge), namespace, &request, &response, &fd_action);
     } else if (request.badge && request.size == 1 && !request.capability && !request.rights) {
       struct Record *record = find_record(request.badge);
