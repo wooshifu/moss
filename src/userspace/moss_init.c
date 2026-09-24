@@ -515,21 +515,34 @@ static int run_loader_probe(long send, long image, const char *program, int expe
   return valid ? 0 : -1;
 }
 
-static int launch_loader_service(const struct Service *code, const struct LoaderImages *images, long factory,
-                                 struct Service *loader) {
+static int launch_loader_service(const struct Service *code, const struct LoaderImages *images, long file_root,
+                                 long factory, struct Service *loader) {
   if (start_loader_service(code, factory, loader) != 0)
     return -1;
+  struct moss_ipc_message open = {.size = sizeof("scratch") + 2, .payload = {MOSS_FILE_OPEN}};
+  memcpy(open.payload + 2, "scratch", sizeof("scratch"));
+  struct moss_ipc_message opened = {0};
+  long result = call_service(file_root, &open, &opened);
+  long named = (long)opened.capability;
+  int named_valid = result == 1 && opened.size == 1 && opened.payload[0] == MOSS_FILE_OK && named > 0 &&
+                    opened.rights == (MOSS_CAP_SEND | MOSS_CAP_TRANSFER | MOSS_CAP_DUPLICATE);
+  long domain = 0;
+  // A public file is readable, but its readers must not be able to seal it.
+  // This request checks that Loader rejects it before reading any content.
+  named_valid = named_valid && request_loader(loader->send, named, "loader-named", MOSS_LOADER_NO_IMAGE, &domain) == 0;
+  if (named > 0) {
+    (void)syscall1(SYS_CAP_CLOSE, named);
+  }
   struct moss_ipc_message malformed = {.size = MOSS_LOADER_RUN_HEADER_BYTES,
                                        .capability = (unsigned long)images->probe,
                                        .rights = MOSS_CAP_SEND,
                                        .payload = {MOSS_LOADER_RUN, 1, 0}};
   struct moss_ipc_message rejected = {0};
   long sent = call_service(loader->send, &malformed, &rejected);
-  int valid = sent == 1 && rejected.size == 1 && rejected.payload[0] == MOSS_LOADER_BAD_REQUEST &&
+  int valid = named_valid && sent == 1 && rejected.size == 1 && rejected.payload[0] == MOSS_LOADER_BAD_REQUEST &&
               !rejected.capability && !rejected.rights;
   if (rejected.capability)
     (void)syscall1(SYS_CAP_CLOSE, (long)rejected.capability);
-  long domain = 0;
   valid =
       valid && request_loader(loader->send, images->bad, "loader-bad", MOSS_LOADER_BAD_IMAGE, &domain) == 0 &&
       run_loader_probe(loader->send, images->probe, "loader-probe", MOSS_LOADER_PROBE_EXIT_CODE) == 0 &&
@@ -799,7 +812,7 @@ static enum ServiceLoss supervise(struct Service *file, struct Service *namespac
         report(STDERR_FILENO, "moss-init: code authority service launch failed\n");
         return SUPERVISOR_FAILURE;
       }
-      if (launch_loader_service(code, images, factory, loader) != 0) {
+      if (launch_loader_service(code, images, file->send, factory, loader) != 0) {
         report(STDERR_FILENO, "moss-init: loader service launch failed\n");
         return SUPERVISOR_FAILURE;
       }
@@ -818,7 +831,7 @@ static enum ServiceLoss supervise(struct Service *file, struct Service *namespac
       loader->pid = 0;
       report(STDOUT_FILENO, "moss-init: loader service died\n");
       stop_service(loader);
-      if (restart_delay() != 0 || launch_loader_service(code, images, factory, loader) != 0) {
+      if (restart_delay() != 0 || launch_loader_service(code, images, file->send, factory, loader) != 0) {
         report(STDERR_FILENO, "moss-init: loader service launch failed\n");
         return SUPERVISOR_FAILURE;
       }
@@ -921,7 +934,7 @@ int main(void) {
       }
       report_started("namespace service", namespace.pid);
       struct Service loader = {0};
-      if (launch_loader_service(&code, &images, factory, &loader) != 0) {
+      if (launch_loader_service(&code, &images, file.send, factory, &loader) != 0) {
         report(STDERR_FILENO, "moss-init: loader service launch failed\n");
         stop_service(&namespace);
         break;

@@ -1,7 +1,9 @@
 #pragma once
 
 // RUN carries [opcode, argc, envc, NUL-terminated argv strings, then envp
-// strings] and a SEND capability naming the authorized File Service object.
+// strings] and a SEND capability naming a sealable, unlisted File Service
+// object. Loader seals it before reading; named or unavailable objects return
+// NO_IMAGE without granting execution.
 // Each count occupies one byte; all strings must fit the single IPC payload exactly.
 // A successful reply gives the private supervisor observation, identity
 // inspection and termination rights, plus the ability to delegate a reduced
