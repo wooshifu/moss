@@ -1,10 +1,27 @@
 #include <errno.h>
 #include <limits.h>
 #include <stdlib.h>
+#include <string.h>
 
 #define MOSS_SYSCALL_RAW_ONLY
+#include "moss_file_protocol.h"
+#include "moss_namespace_protocol.h"
 #include "moss_process_protocol.h"
 #include "syscall.h"
+
+struct OpenDescription {
+  unsigned long file;
+  unsigned long offset;
+  unsigned long references;
+  unsigned char flags;
+  unsigned char uncertain;
+};
+
+struct Descriptor {
+  struct Descriptor *next;
+  struct OpenDescription *description;
+  unsigned long number;
+};
 
 struct Record {
   struct Record *next;
@@ -16,15 +33,91 @@ struct Record {
   unsigned long domain;
   unsigned long reservation_deadline_ns;
   unsigned char orphaned;
+  struct Descriptor *descriptors;
 };
 
 // Retain empty nodes for reuse: reply rollback keeps record pointers until
 // after SYS_IPC_REPLY, so allocations must not move live records.
 static struct Record *records;
 
+static void release_description(struct OpenDescription *description) {
+  if (description && --description->references == 0) {
+    (void)syscall1(SYS_CAP_CLOSE, (long)description->file);
+    free(description);
+  }
+}
+
+static void drop_descriptors(struct Record *record) {
+  struct Descriptor *entry = record->descriptors;
+  record->descriptors = NULL;
+  while (entry) {
+    struct Descriptor *next = entry->next;
+    release_description(entry->description);
+    free(entry);
+    entry = next;
+  }
+}
+
 static void clear_record(struct Record *record) {
   struct Record *next = record->next;
+  drop_descriptors(record);
   *record = (struct Record){.next = next};
+}
+
+static struct Descriptor *find_descriptor(struct Record *record, unsigned long number) {
+  if (!record || number >= MOSS_PROCESS_FD_LIMIT)
+    return NULL;
+  for (struct Descriptor *entry = record->descriptors; entry; entry = entry->next) {
+    if (entry->number == number)
+      return entry;
+  }
+  return NULL;
+}
+
+static struct Descriptor *add_descriptor(struct Record *record, struct OpenDescription *description) {
+  unsigned long number = MOSS_PROCESS_FD_FIRST;
+  while (number < MOSS_PROCESS_FD_LIMIT && find_descriptor(record, number))
+    ++number;
+  if (number == MOSS_PROCESS_FD_LIMIT)
+    return NULL;
+  struct Descriptor *entry = calloc(1, sizeof(*entry));
+  if (!entry)
+    return NULL;
+  entry->number = number;
+  entry->description = description;
+  ++description->references;
+  entry->next = record->descriptors;
+  record->descriptors = entry;
+  return entry;
+}
+
+static void remove_descriptor(struct Record *record, struct Descriptor *entry) {
+  for (struct Descriptor **slot = &record->descriptors; *slot; slot = &(*slot)->next) {
+    if (*slot == entry) {
+      *slot = entry->next;
+      release_description(entry->description);
+      free(entry);
+      return;
+    }
+  }
+}
+
+static int clone_descriptors(const struct Record *parent, struct Record *child) {
+  // Fork copies descriptor numbers while retaining each shared open offset.
+  struct Descriptor **tail = &child->descriptors;
+  for (const struct Descriptor *entry = parent->descriptors; entry; entry = entry->next) {
+    struct Descriptor *copy = calloc(1, sizeof(*copy));
+    if (!copy) {
+      drop_descriptors(child);
+      return 0;
+    }
+    copy->number = entry->number;
+    copy->description = entry->description;
+    ++copy->description->references;
+    *tail = copy;
+    tail = &copy->next;
+  }
+  return 1;
 }
 
 static unsigned long parse_handle(const char *text) {
@@ -147,11 +240,18 @@ static void refresh_orphans(void) {
   // ponytail: Parentage scans are quadratic; index them if large live process
   // sets make this sweep measurable.
   for (struct Record *parent = records; parent; parent = parent->next) {
-    if (!parent->id || parent->id == MOSS_PROCESS_INIT_ID || !parent->domain || !has_children(parent->id))
+    if (!parent->id || !parent->domain)
+      continue;
+    int children = parent->id != MOSS_PROCESS_INIT_ID && has_children(parent->id);
+    if (!children && !parent->descriptors)
       continue;
     struct moss_domain_exit status = {0};
-    if (syscall2(SYS_DOMAIN_STATUS, (long)parent->domain, (long)&status) == 0)
-      adopt_children(parent->id);
+    if (syscall2(SYS_DOMAIN_STATUS, (long)parent->domain, (long)&status) == 0) {
+      // Wait records outlive their domains; file capabilities must not.
+      drop_descriptors(parent);
+      if (children)
+        adopt_children(parent->id);
+    }
   }
   for (struct Record *orphan = records; orphan; orphan = orphan->next) {
     if (!orphan->id || !orphan->orphaned || !orphan->domain)
@@ -174,13 +274,261 @@ static void refresh_orphans(void) {
   }
 }
 
+// Keep a stalled filesystem below the five-second managed call deadline so
+// one file request cannot indefinitely hold this single-threaded registry.
+#define PROCESS_FILE_CALL_TIMEOUT_NS 1000000000UL
+
+static long file_call(unsigned long endpoint, const struct moss_ipc_message *request,
+                      struct moss_ipc_message *response) {
+  unsigned long now = 0;
+  if (syscall2(SYS_CLOCK_GETTIME, MOSS_CLOCK_MONOTONIC, (long)&now) != 0 ||
+      now > LONG_MAX - PROCESS_FILE_CALL_TIMEOUT_NS)
+    return -EIO;
+  return syscall6(SYS_IPC_CALL, (long)endpoint, (long)request, (long)response,
+                  (long)(now + PROCESS_FILE_CALL_TIMEOUT_NS), 0, 0);
+}
+
+static int file_resize(unsigned long file, unsigned long length) {
+  struct moss_ipc_message request = {.size = MOSS_FILE_RESIZE_HEADER_BYTES, .payload = {MOSS_FILE_RESIZE}};
+  moss_file_put_u64(request.payload + 1, length);
+  struct moss_ipc_message response = {0};
+  long result = file_call(file, &request, &response);
+  if (response.capability)
+    (void)syscall1(SYS_CAP_CLOSE, (long)response.capability);
+  return result == 1 && response.payload[0] == MOSS_FILE_OK && !response.capability && !response.rights;
+}
+
+static int file_size(unsigned long file, unsigned long *size) {
+  struct moss_ipc_message request = {.size = 1, .payload = {MOSS_FILE_SIZE}};
+  struct moss_ipc_message response = {0};
+  long result = file_call(file, &request, &response);
+  if (response.capability)
+    (void)syscall1(SYS_CAP_CLOSE, (long)response.capability);
+  if (result != MOSS_FILE_SIZE_REPLY_BYTES || response.payload[0] != MOSS_FILE_OK || response.capability ||
+      response.rights)
+    return 0;
+  *size = moss_file_get_u64(response.payload + 1);
+  return *size <= MOSS_FILE_CONTENT_BUDGET_BYTES;
+}
+
+// -1 means the write may have completed without a reply; callers poison that
+// open description instead of retrying at an offset whose state is unknown.
+static int file_transfer(struct OpenDescription *description, unsigned long memory, unsigned int count, int writing,
+                         unsigned long *position, unsigned int *transferred) {
+  unsigned char operation =
+      writing ? (description->flags & MOSS_PROCESS_FD_APPEND ? MOSS_FILE_APPEND : MOSS_FILE_WRITE) : MOSS_FILE_READ;
+  struct moss_ipc_message request = {.size = MOSS_FILE_IO_HEADER_BYTES,
+                                     .capability = memory,
+                                     .rights = writing ? MOSS_CAP_MAP_READ : MOSS_CAP_MAP_WRITE,
+                                     .payload = {operation}};
+  moss_file_put_u64(request.payload + 1, operation == MOSS_FILE_APPEND ? 0 : description->offset);
+  moss_file_put_u16(request.payload + 9, count);
+  struct moss_ipc_message response = {0};
+  long result = file_call(description->file, &request, &response);
+  if (response.capability)
+    (void)syscall1(SYS_CAP_CLOSE, (long)response.capability);
+  if (result == 1 && (response.payload[0] == MOSS_FILE_UNAVAILABLE || response.payload[0] == MOSS_FILE_BAD_REQUEST) &&
+      !response.capability && !response.rights)
+    return 0;
+  long expected = operation == MOSS_FILE_APPEND ? MOSS_FILE_APPEND_REPLY_BYTES : MOSS_FILE_IO_REPLY_BYTES;
+  if (result != expected || response.payload[0] != MOSS_FILE_OK || response.capability || response.rights)
+    return -1;
+  *position = operation == MOSS_FILE_APPEND ? moss_file_get_u64(response.payload + 1) : description->offset;
+  *transferred = moss_file_get_u16(response.payload + (operation == MOSS_FILE_APPEND ? 9 : 1));
+  if (*transferred > count || (writing && *transferred != count) ||
+      (*position > MOSS_FILE_CONTENT_BUDGET_BYTES ? writing || *transferred != 0
+                                                  : *transferred > MOSS_FILE_CONTENT_BUDGET_BYTES - *position))
+    return -1;
+  return 1;
+}
+
+// Publish descriptor and offset changes only after the caller receives the
+// reply. A completed write with a lost reply instead poisons its shared offset.
+struct FdAction {
+  struct Record *owner;
+  struct Descriptor *added;
+  struct Descriptor *closing;
+  struct OpenDescription *offset_description;
+  unsigned long next_offset;
+  int completed_write;
+};
+
+static void fd_reply_value(struct moss_ipc_message *response, unsigned long value) {
+  response->size = MOSS_PROCESS_REPLY_VALUE_BYTES;
+  response->payload[0] = MOSS_PROCESS_OK;
+  moss_process_put_u64(response->payload + 1, value);
+}
+
+static void handle_fd_request(struct Record *owner, unsigned long namespace, const struct moss_ipc_message *request,
+                              struct moss_ipc_message *response, struct FdAction *action) {
+  if (!record_running(owner)) {
+    response->payload[0] = MOSS_PROCESS_NO_ENTRY;
+    return;
+  }
+  action->owner = owner;
+  unsigned char operation = request->payload[0];
+  if (operation == MOSS_PROCESS_FD_OPEN) {
+    unsigned char flags = request->payload[1];
+    const unsigned char *path = request->payload + 2;
+    unsigned long path_size = request->size >= 2 ? request->size - 2 : 0;
+    if (request->size < 5 || request->capability || request->rights ||
+        flags & ~(MOSS_PROCESS_FD_READABLE | MOSS_PROCESS_FD_WRITABLE | MOSS_PROCESS_FD_CREATE |
+                  MOSS_PROCESS_FD_TRUNCATE | MOSS_PROCESS_FD_APPEND) ||
+        !(flags & (MOSS_PROCESS_FD_READABLE | MOSS_PROCESS_FD_WRITABLE)) ||
+        ((flags & (MOSS_PROCESS_FD_TRUNCATE | MOSS_PROCESS_FD_APPEND)) && !(flags & MOSS_PROCESS_FD_WRITABLE)) ||
+        path[0] != '/' || memchr(path, 0, path_size) != path + path_size - 1)
+      return;
+    struct moss_ipc_message lookup = {.size = request->size, .payload = {MOSS_NAMESPACE_OPEN}};
+    lookup.payload[1] = flags & MOSS_PROCESS_FD_CREATE ? MOSS_NAMESPACE_OPEN_CREATE : 0;
+    memcpy(lookup.payload + 2, path, path_size);
+    struct moss_ipc_message opened = {0};
+    long result = file_call(namespace, &lookup, &opened);
+    if (result == 1 && opened.payload[0] == MOSS_NAMESPACE_NO_ENTRY && !opened.capability && !opened.rights) {
+      response->payload[0] = MOSS_PROCESS_NO_ENTRY;
+    } else if (result == 1 && opened.payload[0] == MOSS_NAMESPACE_OK && opened.capability &&
+               opened.rights == MOSS_CAP_SEND &&
+               (!(flags & MOSS_PROCESS_FD_TRUNCATE) || file_resize(opened.capability, 0))) {
+      struct OpenDescription *description = calloc(1, sizeof(*description));
+      if (description) {
+        description->file = opened.capability;
+        description->flags = flags;
+        struct Descriptor *entry = add_descriptor(owner, description);
+        if (entry) {
+          opened.capability = 0;
+          action->added = entry;
+          fd_reply_value(response, entry->number);
+        } else {
+          free(description);
+        }
+      }
+      if (!action->added)
+        response->payload[0] = MOSS_PROCESS_UNAVAILABLE;
+    } else {
+      response->payload[0] = MOSS_PROCESS_UNAVAILABLE;
+    }
+    if (opened.capability)
+      (void)syscall1(SYS_CAP_CLOSE, (long)opened.capability);
+    return;
+  }
+
+  if (request->size < MOSS_PROCESS_REPLY_VALUE_BYTES ||
+      (request->capability && operation != MOSS_PROCESS_FD_READ && operation != MOSS_PROCESS_FD_WRITE))
+    return;
+  unsigned long number = moss_process_get_u64(request->payload + 1);
+  struct Descriptor *entry = find_descriptor(owner, number);
+  if (!entry) {
+    response->payload[0] = MOSS_PROCESS_NO_ENTRY;
+    return;
+  }
+  struct OpenDescription *description = entry->description;
+  if (operation == MOSS_PROCESS_FD_CLOSE || operation == MOSS_PROCESS_FD_DUP) {
+    if (request->size != MOSS_PROCESS_REPLY_VALUE_BYTES || request->capability || request->rights)
+      return;
+    if (operation == MOSS_PROCESS_FD_CLOSE) {
+      action->closing = entry;
+      response->payload[0] = MOSS_PROCESS_OK;
+    } else {
+      action->added = add_descriptor(owner, description);
+      if (action->added)
+        fd_reply_value(response, action->added->number);
+      else
+        response->payload[0] = MOSS_PROCESS_UNAVAILABLE;
+    }
+    return;
+  }
+
+  if (operation == MOSS_PROCESS_FD_READ || operation == MOSS_PROCESS_FD_WRITE) {
+    int writing = operation == MOSS_PROCESS_FD_WRITE;
+    if (request->size != MOSS_PROCESS_FD_IO_BYTES || !request->capability ||
+        request->rights !=
+            ((writing ? MOSS_CAP_MAP_READ : MOSS_CAP_MAP_WRITE) | MOSS_CAP_TRANSFER | MOSS_CAP_DUPLICATE))
+      return;
+    if (!(description->flags & (writing ? MOSS_PROCESS_FD_WRITABLE : MOSS_PROCESS_FD_READABLE))) {
+      response->payload[0] = MOSS_PROCESS_DENIED;
+      return;
+    }
+    if (description->uncertain) {
+      response->payload[0] = MOSS_PROCESS_UNAVAILABLE;
+      return;
+    }
+    unsigned int count = moss_file_get_u16(request->payload + 9);
+    if (count > MOSS_MEM_OBJECT_BYTES)
+      return;
+    unsigned long position = 0;
+    unsigned int transferred = 0;
+    int result = file_transfer(description, request->capability, count, writing, &position, &transferred);
+    if (result == 1) {
+      response->size = MOSS_PROCESS_FD_IO_REPLY_BYTES;
+      response->payload[0] = MOSS_PROCESS_OK;
+      moss_file_put_u16(response->payload + 1, transferred);
+      action->offset_description = description;
+      action->next_offset = position + transferred;
+      action->completed_write = writing;
+    } else {
+      response->payload[0] = MOSS_PROCESS_UNAVAILABLE;
+      if (result < 0 && writing)
+        description->uncertain = 1;
+    }
+    return;
+  }
+
+  if (operation == MOSS_PROCESS_FD_SEEK) {
+    if (request->size != MOSS_PROCESS_FD_SEEK_BYTES || request->capability || request->rights || description->uncertain)
+      return;
+    unsigned char whence = request->payload[17];
+    unsigned long base = 0;
+    if (whence == MOSS_PROCESS_FD_SEEK_CUR)
+      base = description->offset;
+    else if (whence == MOSS_PROCESS_FD_SEEK_END) {
+      if (!file_size(description->file, &base)) {
+        response->payload[0] = MOSS_PROCESS_UNAVAILABLE;
+        return;
+      }
+    } else if (whence != MOSS_PROCESS_FD_SEEK_SET) {
+      return;
+    }
+    uint64_t bits = moss_process_get_u64(request->payload + 9);
+    unsigned long position;
+    if (bits >> 63) {
+      // Work in unsigned arithmetic so INT64_MIN has a representable magnitude.
+      uint64_t magnitude = ~bits + 1;
+      if (base < magnitude)
+        return;
+      position = base - magnitude;
+    } else {
+      if (base > LONG_MAX - bits)
+        return;
+      position = base + bits;
+    }
+    action->offset_description = description;
+    action->next_offset = position;
+    fd_reply_value(response, position);
+  }
+}
+
+static void finish_fd_action(struct FdAction *action, long sent) {
+  if (!action->owner)
+    return;
+  if (action->added && sent != 0)
+    remove_descriptor(action->owner, action->added);
+  if (action->closing && sent == 0)
+    remove_descriptor(action->owner, action->closing);
+  if (action->offset_description) {
+    if (sent == 0)
+      action->offset_description->offset = action->next_offset;
+    else if (action->completed_write)
+      action->offset_description->uncertain = 1;
+  }
+}
+
 int main(int argc, char **argv) {
-  if (argc != 4)
+  if (argc != 5)
     return 2;
   unsigned long receive = parse_handle(argv[1]);
   unsigned long mint = parse_handle(argv[2]);
   unsigned long scope = parse_handle(argv[3]);
-  if (!receive || !mint || !scope)
+  unsigned long namespace = parse_handle(argv[4]);
+  if (!receive || !mint || !scope || !namespace)
     return 2;
 
   // IDs are never recycled while this service incarnation is alive. A stale
@@ -204,6 +552,7 @@ int main(int argc, char **argv) {
     struct Record *attached = NULL;
     struct Record *released = NULL;
     struct Record *changed_group = NULL;
+    struct FdAction fd_action = {0};
     unsigned long old_group_id = 0, old_session_id = 0;
     long session = 0;
     // The unbadged sender bootstraps init once; later callers must prove parentage with a badge.
@@ -248,6 +597,10 @@ int main(int argc, char **argv) {
         registered = free_record();
         if (registered)
           session = syscall2(SYS_IPC_MINT_BADGE, (long)mint, (long)next_id);
+      }
+      if (session > 0 && parent && !clone_descriptors(parent, registered)) {
+        (void)syscall1(SYS_CAP_CLOSE, session);
+        session = 0;
       }
       if (session > 0) {
         registered->id = next_id++;
@@ -437,6 +790,9 @@ int main(int argc, char **argv) {
         }
         response.payload[0] = sent_signal ? MOSS_PROCESS_OK : failed ? MOSS_PROCESS_UNAVAILABLE : MOSS_PROCESS_NO_ENTRY;
       }
+    } else if (request.badge && request.size && request.payload[0] >= MOSS_PROCESS_FD_OPEN &&
+               request.payload[0] <= MOSS_PROCESS_FD_SEEK) {
+      handle_fd_request(find_record(request.badge), namespace, &request, &response, &fd_action);
     } else if (request.badge && request.size == 1 && !request.capability && !request.rights) {
       struct Record *record = find_record(request.badge);
       if (!record) {
@@ -477,6 +833,7 @@ int main(int argc, char **argv) {
     if (request.capability)
       (void)syscall1(SYS_CAP_CLOSE, (long)request.capability);
     long sent = syscall2(SYS_IPC_REPLY, (long)reply, (long)&response);
+    finish_fd_action(&fd_action, sent);
     if (changed_group && sent != 0) {
       changed_group->group_id = old_group_id;
       changed_group->session_id = old_session_id;

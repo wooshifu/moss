@@ -27,7 +27,13 @@ enum {
   MOSS_PROCESS_SET_GROUP = 14,
   MOSS_PROCESS_NEW_SESSION = 15,
   MOSS_PROCESS_WAIT_GROUP = 16,
-  MOSS_PROCESS_SIGNAL_GROUP = 17
+  MOSS_PROCESS_SIGNAL_GROUP = 17,
+  MOSS_PROCESS_FD_OPEN = 18,
+  MOSS_PROCESS_FD_CLOSE = 19,
+  MOSS_PROCESS_FD_DUP = 20,
+  MOSS_PROCESS_FD_READ = 21,
+  MOSS_PROCESS_FD_WRITE = 22,
+  MOSS_PROCESS_FD_SEEK = 23
 };
 enum {
   MOSS_PROCESS_OK = 0,
@@ -40,6 +46,17 @@ enum {
   MOSS_PROCESS_DENIED = 7
 };
 enum { MOSS_PROCESS_INIT_ID = 1 };
+// Match the current kernel compatibility limit while reserving 0..2 for the
+// console entries that the unified descriptor view will also own.
+enum { MOSS_PROCESS_FD_LIMIT = 256, MOSS_PROCESS_FD_FIRST = 3 };
+enum {
+  MOSS_PROCESS_FD_READABLE = 1U << 0,
+  MOSS_PROCESS_FD_WRITABLE = 1U << 1,
+  MOSS_PROCESS_FD_CREATE = 1U << 2,
+  MOSS_PROCESS_FD_TRUNCATE = 1U << 3,
+  MOSS_PROCESS_FD_APPEND = 1U << 4
+};
+enum { MOSS_PROCESS_FD_SEEK_SET = 0, MOSS_PROCESS_FD_SEEK_CUR = 1, MOSS_PROCESS_FD_SEEK_END = 2 };
 // Native process::sig::NSIG is 32: zero probes existence, 1..31 are signals.
 enum { MOSS_PROCESS_SIGNAL_LIMIT = 32 };
 // Match the managed IPC call bound so an abandoned fork reservation cannot
@@ -53,6 +70,7 @@ enum {
   MOSS_PROCESS_REPLY_GROUP_BYTES = 17,
   MOSS_PROCESS_REPLY_IDENTITY_BYTES = MOSS_PROCESS_REPLY_WAIT_BYTES
 };
+enum { MOSS_PROCESS_FD_IO_BYTES = 11, MOSS_PROCESS_FD_IO_REPLY_BYTES = 3, MOSS_PROCESS_FD_SEEK_BYTES = 18 };
 
 // REGISTER returns [OK, ID:u64 LE]. STATUS returns [EXITED, status:u64 LE].
 // WAIT_ANY returns [EXITED, child ID:u64 LE, status:u64 LE] and atomically
@@ -74,6 +92,14 @@ enum {
 // current group; the service still requires the parent's badge to reap them.
 // SIGNAL_GROUP selects the caller's group for ID zero. It can signal only the
 // caller and its direct children that belong to that group.
+// FD_OPEN carries [opcode, flags, absolute NUL-terminated namespace path] and
+// returns [OK, descriptor:u64 LE]. FD_CLOSE and FD_DUP carry [opcode,
+// descriptor:u64 LE]; DUP returns the new descriptor. FD_READ/WRITE carry
+// [opcode, descriptor:u64 LE, count:u16 LE] plus a transferred Memory Object
+// with MAP_WRITE|TRANSFER|DUPLICATE or MAP_READ|TRANSFER|DUPLICATE respectively,
+// and return
+// [OK, transferred:u16 LE]. FD_SEEK carries [opcode, descriptor:u64 LE,
+// offset:i64 LE, whence] and returns [OK, position:u64 LE].
 static inline uint64_t moss_process_get_u64(const unsigned char *bytes) {
   uint64_t value = 0;
   for (unsigned int index = 0; index < 8; ++index)

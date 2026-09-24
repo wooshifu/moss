@@ -9,6 +9,7 @@
 #include <unistd.h>
 
 #define MOSS_SYSCALL_RAW_ONLY
+#include "moss_file_protocol.h"
 #include "moss_process_protocol.h"
 #include "syscall.h"
 
@@ -589,7 +590,154 @@ static int managed_fanout_probe(void) {
   return valid;
 }
 
+static int fd_open(unsigned long session, const char *path, unsigned char flags, unsigned long *number) {
+  size_t path_size = strlen(path) + 1;
+  if (path_size > MOSS_IPC_MAX_MESSAGE - 2)
+    return 0;
+  struct moss_ipc_message request = {.size = path_size + 2, .payload = {MOSS_PROCESS_FD_OPEN}};
+  request.payload[1] = flags;
+  memcpy(request.payload + 2, path, path_size);
+  struct moss_ipc_message response = {0};
+  long result = call(session, &request, &response);
+  if (!no_capability(&response) || result != MOSS_PROCESS_REPLY_VALUE_BYTES || response.payload[0] != MOSS_PROCESS_OK)
+    return 0;
+  *number = moss_process_get_u64(response.payload + 1);
+  return *number >= MOSS_PROCESS_FD_FIRST && *number < MOSS_PROCESS_FD_LIMIT;
+}
+
+static int fd_command(unsigned long session, unsigned char operation, unsigned long number, unsigned long *value) {
+  struct moss_ipc_message request = {.size = MOSS_PROCESS_REPLY_VALUE_BYTES, .payload = {operation}};
+  moss_process_put_u64(request.payload + 1, number);
+  struct moss_ipc_message response = {0};
+  long result = call(session, &request, &response);
+  if (!no_capability(&response) || response.payload[0] != MOSS_PROCESS_OK)
+    return 0;
+  if (operation == MOSS_PROCESS_FD_CLOSE)
+    return result == 1;
+  if (result != MOSS_PROCESS_REPLY_VALUE_BYTES)
+    return 0;
+  *value = moss_process_get_u64(response.payload + 1);
+  return *value >= MOSS_PROCESS_FD_FIRST && *value < MOSS_PROCESS_FD_LIMIT;
+}
+
+static int fd_seek(unsigned long session, unsigned long number, unsigned char whence, unsigned long *position) {
+  struct moss_ipc_message request = {.size = MOSS_PROCESS_FD_SEEK_BYTES, .payload = {MOSS_PROCESS_FD_SEEK}};
+  moss_process_put_u64(request.payload + 1, number);
+  moss_process_put_u64(request.payload + 9, 0);
+  request.payload[17] = whence;
+  struct moss_ipc_message response = {0};
+  long result = call(session, &request, &response);
+  if (!no_capability(&response) || result != MOSS_PROCESS_REPLY_VALUE_BYTES || response.payload[0] != MOSS_PROCESS_OK)
+    return 0;
+  *position = moss_process_get_u64(response.payload + 1);
+  return 1;
+}
+
+static int fd_io(unsigned long session, unsigned char operation, unsigned long number, unsigned long memory,
+                 unsigned int count, unsigned int *transferred) {
+  // Forwarding through the process service needs both delegation rights on
+  // the service's received handle; the file service receives only MAP_*.
+  struct moss_ipc_message request = {.size = MOSS_PROCESS_FD_IO_BYTES,
+                                     .capability = memory,
+                                     .rights =
+                                         (operation == MOSS_PROCESS_FD_WRITE ? MOSS_CAP_MAP_READ : MOSS_CAP_MAP_WRITE) |
+                                         MOSS_CAP_TRANSFER | MOSS_CAP_DUPLICATE,
+                                     .payload = {operation}};
+  moss_process_put_u64(request.payload + 1, number);
+  moss_file_put_u16(request.payload + 9, count);
+  struct moss_ipc_message response = {0};
+  long result = call(session, &request, &response);
+  if (!no_capability(&response) || result != MOSS_PROCESS_FD_IO_REPLY_BYTES || response.payload[0] != MOSS_PROCESS_OK)
+    return 0;
+  *transferred = moss_file_get_u16(response.payload + 1);
+  return *transferred <= count && (operation == MOSS_PROCESS_FD_READ || *transferred == count);
+}
+
+static int fd_exec_child(const char *number_text) {
+  char *end = NULL;
+  errno = 0;
+  unsigned long number = strtoul(number_text, &end, 10);
+  unsigned long session = getauxval(MOSS_AT_STARTUP_CAP);
+  if (errno || !number || *end || !session)
+    return 0;
+  long memory = syscall1(SYS_MEM_CREATE, MOSS_MEM_OBJECT_BYTES);
+  long mapped = memory > 0 ? syscall2(SYS_MEM_MAP, memory, MOSS_CAP_MAP_READ | MOSS_CAP_MAP_WRITE) : 0;
+  unsigned int transferred = 0;
+  int valid = mapped > 0 && fd_io(session, MOSS_PROCESS_FD_READ, number, memory, 1, &transferred) && transferred == 1 &&
+              *(unsigned char *)mapped == 'c';
+  if (mapped > 0)
+    (void)syscall2(SYS_MUNMAP, mapped, MOSS_MEM_OBJECT_BYTES);
+  if (memory > 0)
+    (void)syscall1(SYS_CAP_CLOSE, memory);
+  return valid;
+}
+
+static int fd_view_probe(void) {
+  unsigned long session = getauxval(MOSS_AT_STARTUP_CAP);
+  unsigned long first = 0, duplicate = 0, position = 0;
+  unsigned int transferred = 0;
+  if (!session ||
+      !fd_open(session, "/note",
+               MOSS_PROCESS_FD_READABLE | MOSS_PROCESS_FD_WRITABLE | MOSS_PROCESS_FD_CREATE | MOSS_PROCESS_FD_TRUNCATE,
+               &first))
+    return 0;
+  long memory = syscall1(SYS_MEM_CREATE, MOSS_MEM_OBJECT_BYTES);
+  long mapped = memory > 0 ? syscall2(SYS_MEM_MAP, memory, MOSS_CAP_MAP_READ | MOSS_CAP_MAP_WRITE) : 0;
+  int valid = mapped > 0;
+  if (valid) {
+    memcpy((void *)mapped, "abc", 3);
+    valid = fd_io(session, MOSS_PROCESS_FD_WRITE, first, memory, 3, &transferred) && transferred == 3;
+  }
+  if (valid) {
+    valid = fd_seek(session, first, MOSS_PROCESS_FD_SEEK_END, &position) && position == 3;
+  }
+  if (valid) {
+    valid = fd_seek(session, first, MOSS_PROCESS_FD_SEEK_SET, &position) && position == 0;
+  }
+  if (valid) {
+    valid = fd_command(session, MOSS_PROCESS_FD_DUP, first, &duplicate);
+  }
+  if (valid) {
+    valid = fd_io(session, MOSS_PROCESS_FD_READ, duplicate, memory, 1, &transferred) && transferred == 1 &&
+            *(unsigned char *)mapped == 'a' && fd_io(session, MOSS_PROCESS_FD_READ, first, memory, 1, &transferred) &&
+            transferred == 1 && *(unsigned char *)mapped == 'b';
+  }
+  if (valid) {
+    pid_t child = fork();
+    if (child == 0) {
+      char number_text[32];
+      int length = snprintf(number_text, sizeof(number_text), "%lu", duplicate);
+      if (length <= 0 || (size_t)length >= sizeof(number_text))
+        _exit(43);
+      char *const argv[] = {"moss-process.elf", "fd-exec-child", number_text, NULL};
+      char *const empty_env[] = {NULL};
+      execve("/moss-process.elf", argv, empty_env);
+      _exit(43);
+    }
+    int status = 0;
+    valid = child > 0 && waitpid(child, &status, 0) == child && status == (37 << 8) &&
+            fd_io(session, MOSS_PROCESS_FD_READ, first, memory, 1, &transferred) && transferred == 0;
+  }
+  if (duplicate)
+    valid &= fd_command(session, MOSS_PROCESS_FD_CLOSE, duplicate, NULL);
+  valid &= fd_command(session, MOSS_PROCESS_FD_CLOSE, first, NULL);
+  if (mapped > 0)
+    (void)syscall2(SYS_MUNMAP, mapped, MOSS_MEM_OBJECT_BYTES);
+  if (memory > 0)
+    (void)syscall1(SYS_CAP_CLOSE, memory);
+  return valid;
+}
+
 int main(int argc, char **argv) {
+  if (argc == 3 && strcmp(argv[1], "fd-exec-child") == 0)
+    return fd_exec_child(argv[2]) ? 37 : 43;
+  if (argc == 2 && strcmp(argv[1], "fd-probe") == 0) {
+    if (!fd_view_probe())
+      return error();
+    static const char message[] = "MOSS_FD_READY\n";
+    (void)write(STDOUT_FILENO, message, sizeof(message) - 1);
+    return 0;
+  }
   if (argc == 2 && strcmp(argv[1], "crash-survivor") == 0) {
     static const char started[] = "MOSS_OLD_CHILD_STARTED\n";
     static const char survived[] = "MOSS_OLD_CHILD_SURVIVED\n";

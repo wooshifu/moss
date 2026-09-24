@@ -89,9 +89,7 @@ assert input() == 'echo MOSS_PRODUCTION_READY'
         script += "assert input() == '/moss-process.elf crash-survivor &'\n"
         script += "print('MOSS_OLD_CHILD_STARTED\\nmoss$ ', end='', flush=True)\n"
         script += "assert input() == '/moss-domain.elf terminate process'\n"
-        script += (
-            "print('moss-init: process service died\\nmoss-init: process service started pid=45', flush=True)\n"
-        )
+        script += "print('moss-init: process service died\\nmoss-init: process service started pid=45', flush=True)\n"
         script += "print('BusyBox built-in shell (ash)\\nmoss$ ', end='', flush=True)\n"
         script += "assert input() == 'sleep 3'\n"
         if mode == "old_child_survived":
@@ -154,10 +152,12 @@ assert input() == 'echo MOSS_PRODUCTION_READY'
         script += "print('\\nMOSS_FILE_SIZE=9\\nmoss$ ', end='', flush=True)\n"
         script += "assert input() == '/moss-file.elf resize 61440 /note'\n"
         script += "print('\\nMOSS_FILE_RESIZE_OK\\nmoss$ ', end='', flush=True)\n"
-        script += "assert input() == \"/moss-file.elf append \\\"$(printf '%04096d' 0)\\\" /note\"\n"
+        script += 'assert input() == "/moss-file.elf append \\"$(printf \'%04096d\' 0)\\" /note"\n'
         script += "print('\\nMOSS_FILE_ERROR\\nmoss$ ', end='', flush=True)\n"
         script += "assert input() == '/moss-file.elf size /note'\n"
         script += "print('\\nMOSS_FILE_SIZE=61440\\nmoss$ ', end='', flush=True)\n"
+        script += "assert input() == '/moss-process.elf fd-probe'\n"
+        script += "print('\\nMOSS_FD_READY\\nmoss$ ', end='', flush=True)\n"
         script += "time.sleep(30)\n"
     monkeypatch.setattr(boot, "resolve_qemu", lambda _: "unused")
     monkeypatch.setattr(boot, "build_qemu_args", lambda *_a, **_kw: [sys.executable, "-c", script])

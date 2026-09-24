@@ -208,7 +208,7 @@ static int reap_shell(long parent_session, unsigned long child_id) {
          moss_process_get_u64(response.payload + 1) == child_id && !response.capability && !response.rights;
 }
 
-static int start_endpoint_service(struct Service *service, const char *program, long scope) {
+static int start_endpoint_service(struct Service *service, const char *program, long scope, long namespace_capability) {
   struct moss_ipc_endpoints endpoints = {0};
   if (syscall1(SYS_IPC_CREATE, (long)&endpoints) != 0) {
     return -1;
@@ -225,23 +225,34 @@ static int start_endpoint_service(struct Service *service, const char *program, 
   if (mint <= 0) {
     goto fail;
   }
-  char receive_arg[32], mint_arg[32], scope_arg[32]; // Each holds a decimal 64-bit handle.
+  char receive_arg[32], mint_arg[32], scope_arg[32], namespace_arg[32]; // Decimal 64-bit handles.
   int receive_size = snprintf(receive_arg, sizeof(receive_arg), "%lu", (unsigned long)receive);
   int mint_size = snprintf(mint_arg, sizeof(mint_arg), "%lu", (unsigned long)mint);
   int scope_size = scope > 0 ? snprintf(scope_arg, sizeof(scope_arg), "%lu", (unsigned long)scope) : 0;
+  int namespace_size = namespace_capability > 0
+                           ? snprintf(namespace_arg, sizeof(namespace_arg), "%lu", (unsigned long)namespace_capability)
+                           : 0;
   if (receive_size < 0 || (size_t)receive_size >= sizeof(receive_arg) || mint_size < 0 ||
       (size_t)mint_size >= sizeof(mint_arg) || scope_size < 0 || (size_t)scope_size >= sizeof(scope_arg)) {
     goto fail;
   }
+  if (namespace_size < 0 || (size_t)namespace_size >= sizeof(namespace_arg) || (namespace_capability > 0 && scope <= 0))
+    goto fail;
 
   long domain = 0;
   const struct moss_fork_capability handles[] = {
       {(unsigned long)receive, MOSS_CAP_RECEIVE, 0},
       {(unsigned long)mint, MOSS_CAP_SEND | MOSS_CAP_TRANSFER | MOSS_CAP_DUPLICATE | MOSS_CAP_MINT, 0},
-      {(unsigned long)scope, MOSS_CAP_DOMAIN_SCOPE_INSPECT, 0}};
-  pid_t child = fork_domain(&domain, handles, scope > 0 ? 3 : 2, 0);
+      {(unsigned long)scope, MOSS_CAP_DOMAIN_SCOPE_INSPECT, 0},
+      {(unsigned long)namespace_capability, MOSS_CAP_SEND, 0}};
+  pid_t child = fork_domain(&domain, handles, namespace_capability > 0 ? 4 : scope > 0 ? 3 : 2, 0);
   if (child == 0) {
-    char *const argv[] = {(char *)program, receive_arg, mint_arg, scope > 0 ? scope_arg : NULL, NULL};
+    char *const argv[] = {(char *)program,
+                          receive_arg,
+                          mint_arg,
+                          scope > 0 ? scope_arg : NULL,
+                          namespace_capability > 0 ? namespace_arg : NULL,
+                          NULL};
     execve(program, argv, NULL);
     _exit(127);
   }
@@ -514,7 +525,7 @@ int main(void) {
   report(STDOUT_FILENO, "moss-init: supervisor ready\n");
   for (;;) {
     struct Service file = {0};
-    if (start_endpoint_service(&file, "/file-service.elf", 0) != 0) {
+    if (start_endpoint_service(&file, "/file-service.elf", 0, 0) != 0) {
       report(STDERR_FILENO, "moss-init: file service launch failed\n");
       if (restart_delay() != 0) {
         return 1;
@@ -541,7 +552,7 @@ int main(void) {
         if (scope <= 0) {
           report(STDERR_FILENO, "moss-init: process scope creation failed\n");
           lost = PROCESS_LOST;
-        } else if (start_endpoint_service(&process, "/process-service.elf", scope) != 0) {
+        } else if (start_endpoint_service(&process, "/process-service.elf", scope, namespace.send) != 0) {
           report(STDERR_FILENO, "moss-init: process service launch failed\n");
           lost = PROCESS_LOST;
         } else {

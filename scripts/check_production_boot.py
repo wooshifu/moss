@@ -244,6 +244,8 @@ quit
         (b"\nMOSS_FILE_ERROR\n", None),
         (b"moss$ ", b"/moss-file.elf size /note\n"),
         (b"\nMOSS_FILE_SIZE=61440\n", None),
+        (b"moss$ ", b"/moss-process.elf fd-probe\n"),
+        (b"\nMOSS_FD_READY\n", None),
         (b"moss$ ", None),
     ]
     started = time.monotonic()
@@ -292,8 +294,11 @@ quit
                     if command == b"/moss-domain.elf terminate process\n" and not old_child_started:
                         break
                     after = pending.split(marker, 1)[1]
-                    if marker in (b"moss-init: file service started", b"moss-init: namespace service started",
-                                  b"moss-init: process service started"):
+                    if marker in (
+                        b"moss-init: file service started",
+                        b"moss-init: namespace service started",
+                        b"moss-init: process service started",
+                    ):
                         match = re.match(rb" pid=(\d+)\n", after)
                         if not match:
                             break
