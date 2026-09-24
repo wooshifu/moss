@@ -1201,6 +1201,13 @@ static int fd_pipe_probe(void) {
   return valid;
 }
 
+static int console_feed(unsigned long input, unsigned char byte) {
+  struct moss_ipc_message request = {.size = 2, .payload = {MOSS_CONSOLE_FEED, byte}};
+  struct moss_ipc_message response = {0};
+  long result = call(input, &request, &response);
+  return no_capability(&response) && result == 1 && response.payload[0] == MOSS_CONSOLE_OK;
+}
+
 static int console_fd_probe(void) {
   unsigned long session = getauxval(MOSS_AT_STARTUP_CAP);
   const char *text = getenv("MOSS_CONSOLE_INPUT_CAP");
@@ -1217,14 +1224,11 @@ static int console_fd_probe(void) {
               fd_status(session, 1, &status) && status == MOSS_PROCESS_FD_WRITABLE && fd_status(session, 2, &status) &&
               status == MOSS_PROCESS_FD_WRITABLE &&
               fd_io_rejected(session, MOSS_PROCESS_FD_READ, 0, memory, 1, MOSS_PROCESS_WOULD_BLOCK);
-  if (valid) {
-    struct moss_ipc_message request = {.size = 2, .payload = {MOSS_CONSOLE_FEED, '@'}};
-    struct moss_ipc_message response = {0};
-    long result = call(input, &request, &response);
-    valid = no_capability(&response) && result == 1 && response.payload[0] == MOSS_CONSOLE_OK &&
+  if (valid)
+    valid = console_feed(input, '@') && console_feed(input, '!') &&
             fd_io(session, MOSS_PROCESS_FD_READ, 0, memory, 1, &transferred) && transferred == 1 &&
-            *(unsigned char *)mapped == '@';
-  }
+            *(unsigned char *)mapped == '@' && fd_io(session, MOSS_PROCESS_FD_READ, 0, memory, 1, &transferred) &&
+            transferred == 1 && *(unsigned char *)mapped == '!';
   if (valid) {
     static const char message[] = "MOSS_CONSOLE_OBJECT_WRITE\n";
     memcpy((void *)mapped, message, sizeof(message) - 1);

@@ -13,6 +13,7 @@ enum { INPUT_BADGE = 1 };
 static unsigned char input[MOSS_CONSOLE_RING_BYTES];
 static unsigned int head;
 static unsigned int length;
+static unsigned int prepared_count;
 
 static unsigned long parse_handle(const char *text) {
   if (!text)
@@ -44,6 +45,8 @@ int main(int argc, char **argv) {
     long minted = 0;
     unsigned int consumed = 0;
     int fed = 0;
+    int prepared = 0;
+    int finish_read = -1;
     if (request.badge == 0 && request.size == 1 && request.payload[0] == MOSS_CONSOLE_INPUT_CAP &&
         !request.capability && !request.rights) {
       minted = syscall2(SYS_IPC_MINT_BADGE, (long)mint, INPUT_BADGE);
@@ -62,11 +65,18 @@ int main(int argc, char **argv) {
         response.payload[0] = MOSS_CONSOLE_OK;
         fed = 1;
       }
+    } else if (request.badge == 0 && request.size == MOSS_CONSOLE_READ_FINISH_BYTES &&
+               request.payload[0] == MOSS_CONSOLE_READ_FINISH && request.payload[1] <= 1 && !request.capability &&
+               !request.rights && prepared_count) {
+      response.payload[0] = MOSS_CONSOLE_OK;
+      finish_read = request.payload[1];
     } else if (request.badge == 0 && request.capability && request.size == MOSS_CONSOLE_IO_BYTES) {
       unsigned char operation = request.payload[0];
       unsigned int stream = request.payload[1];
       unsigned int count = moss_console_get_u16(request.payload + 2);
-      int reading = operation == MOSS_CONSOLE_READ && stream == 0 && request.rights == MOSS_CAP_MAP_WRITE;
+      int preparing = operation == MOSS_CONSOLE_READ_PREPARE;
+      int reading =
+          (operation == MOSS_CONSOLE_READ || preparing) && stream == 0 && request.rights == MOSS_CAP_MAP_WRITE;
       int writing =
           operation == MOSS_CONSOLE_WRITE && (stream == 1 || stream == 2) && request.rights == MOSS_CAP_MAP_READ;
       if ((reading || writing) && count <= MOSS_MEM_OBJECT_BYTES) {
@@ -74,6 +84,8 @@ int main(int argc, char **argv) {
           response.size = MOSS_CONSOLE_IO_REPLY_BYTES;
           response.payload[0] = MOSS_CONSOLE_OK;
           moss_console_put_u16(response.payload + 1, 0);
+        } else if (reading && prepared_count) {
+          response.payload[0] = MOSS_CONSOLE_WOULD_BLOCK;
         } else if (reading && !length) {
           response.payload[0] = MOSS_CONSOLE_WOULD_BLOCK;
         } else {
@@ -88,6 +100,7 @@ int main(int argc, char **argv) {
               memcpy((void *)mapped, input + head, first);
               memcpy((unsigned char *)mapped + first, input, consumed - first);
               transferred = consumed;
+              prepared = preparing;
             } else {
               transferred = syscall3(SYS_WRITE, stream, mapped, count);
             }
@@ -111,14 +124,25 @@ int main(int argc, char **argv) {
       (void)syscall1(SYS_CAP_CLOSE, (long)request.capability);
     long sent = syscall2(SYS_IPC_REPLY, (long)reply, (long)&response);
     // Input ownership changes only after the immediate IPC reply commits;
-    // a timed-out feeder must be able to retry without duplicating a byte.
+    // a timed-out feeder or reader must be able to retry without duplication.
     if (sent == 0 && fed) {
       input[(head + length) % MOSS_CONSOLE_RING_BYTES] = request.payload[1];
       ++length;
     }
     if (sent == 0 && consumed) {
-      head = (head + consumed) % MOSS_CONSOLE_RING_BYTES;
-      length -= consumed;
+      if (prepared) {
+        prepared_count = consumed;
+      } else {
+        head = (head + consumed) % MOSS_CONSOLE_RING_BYTES;
+        length -= consumed;
+      }
+    }
+    if (sent == 0 && finish_read >= 0) {
+      if (finish_read) {
+        head = (head + prepared_count) % MOSS_CONSOLE_RING_BYTES;
+        length -= prepared_count;
+      }
+      prepared_count = 0;
     }
     if (minted > 0)
       (void)syscall1(SYS_CAP_CLOSE, minted);

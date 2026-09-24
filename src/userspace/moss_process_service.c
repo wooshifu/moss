@@ -470,14 +470,17 @@ static int pipe_transfer(struct OpenDescription *description, unsigned long memo
   return *transferred <= count && (!writing || *transferred == count) ? 1 : -1;
 }
 
-static int finish_pipe_read(unsigned long reader, int commit) {
-  struct moss_ipc_message request = {.size = MOSS_PIPE_READ_FINISH_BYTES,
-                                     .payload = {MOSS_PIPE_READ_FINISH, (unsigned char)commit}};
+static int finish_object_read(struct OpenDescription *description, int commit) {
+  int pipe = description->kind == DESCRIPTION_PIPE;
+  struct moss_ipc_message request = {
+      .size = pipe ? MOSS_PIPE_READ_FINISH_BYTES : MOSS_CONSOLE_READ_FINISH_BYTES,
+      .payload = {pipe ? MOSS_PIPE_READ_FINISH : MOSS_CONSOLE_READ_FINISH, (unsigned char)commit}};
   struct moss_ipc_message response = {0};
-  long result = service_call(reader, &request, &response);
+  long result = service_call(description->object, &request, &response);
   if (response.capability)
     (void)syscall1(SYS_CAP_CLOSE, (long)response.capability);
-  return result == 1 && response.payload[0] == MOSS_PIPE_OK && !response.capability && !response.rights;
+  return result == 1 && response.payload[0] == (pipe ? MOSS_PIPE_OK : MOSS_CONSOLE_OK) && !response.capability &&
+         !response.rights;
 }
 
 static int console_transfer(struct OpenDescription *description, unsigned long memory, unsigned int count, int writing,
@@ -486,7 +489,7 @@ static int console_transfer(struct OpenDescription *description, unsigned long m
       .size = MOSS_CONSOLE_IO_BYTES,
       .capability = memory,
       .rights = writing ? MOSS_CAP_MAP_READ : MOSS_CAP_MAP_WRITE,
-      .payload = {writing ? MOSS_CONSOLE_WRITE : MOSS_CONSOLE_READ, description->stream}};
+      .payload = {writing ? MOSS_CONSOLE_WRITE : MOSS_CONSOLE_READ_PREPARE, description->stream}};
   moss_console_put_u16(request.payload + 2, count);
   struct moss_ipc_message response = {0};
   long result = service_call(description->object, &request, &response);
@@ -507,7 +510,8 @@ static int console_transfer(struct OpenDescription *description, unsigned long m
 }
 
 // Publish descriptor and offset changes only after the caller receives the
-// reply. A completed write with a lost reply instead poisons its shared offset.
+// reply. Prepared input is finalized then; a completed write with a lost
+// reply instead poisons its shared offset.
 struct FdAction {
   struct Record *owner;
   struct Descriptor *added;
@@ -518,7 +522,7 @@ struct FdAction {
   struct OpenDescription *previous_description;
   unsigned char previous_cloexec;
   struct OpenDescription *offset_description;
-  struct OpenDescription *prepared_pipe;
+  struct OpenDescription *prepared_read;
   unsigned long next_offset;
   int completed_write;
   int fatal_backend;
@@ -833,15 +837,15 @@ static void handle_fd_request(struct Record *owner, unsigned long namespace, uns
       action->offset_description = description;
       action->next_offset = description->kind == DESCRIPTION_FILE ? position + transferred : 0;
       action->completed_write = writing;
-      if (description->kind == DESCRIPTION_PIPE && !writing && transferred)
-        action->prepared_pipe = description;
+      if (description->kind != DESCRIPTION_FILE && !writing && transferred)
+        action->prepared_read = description;
     } else {
       response->payload[0] = result == BACKEND_WOULD_BLOCK   ? MOSS_PROCESS_WOULD_BLOCK
                              : result == BACKEND_BROKEN_PIPE ? MOSS_PROCESS_BROKEN_PIPE
                                                              : MOSS_PROCESS_UNAVAILABLE;
       if (result < 0 && writing)
         description->uncertain = 1;
-      if (result < 0 && !writing && description->kind == DESCRIPTION_PIPE)
+      if (result < 0 && !writing && description->kind != DESCRIPTION_FILE)
         action->fatal_backend = 1;
     }
     return;
@@ -915,7 +919,7 @@ static int finish_fd_action(struct FdAction *action, long sent) {
     return 0;
   // The backend holds the bytes until the client's one-shot reply commits.
   // An uncertain FINISH outcome retires the whole epoch before another read.
-  return !action->prepared_pipe || finish_pipe_read(action->prepared_pipe->object, sent == 0);
+  return !action->prepared_read || finish_object_read(action->prepared_read, sent == 0);
 }
 
 int main(int argc, char **argv) {

@@ -23,10 +23,10 @@ a transferable File Object Capability into this view. Its `FD_PIPE` request
 installs both pipe ends in one reply transaction; the final shared-description
 close notifies the supervised Pipe Object Service. The pipe service has bounded
 one-page rings, explicit `WOULD_BLOCK`, EOF and broken-write results. A direct
-pipe transfer commits only after its immediate IPC reply succeeds. A read
-through the Process Service now reserves bytes until that service confirms
-whether its reply reached the managed caller; a failed finalization retires
-the Process Service epoch before another read. The supervisor also restarts
+pipe transfer commits only after its immediate IPC reply succeeds. Managed
+pipe and console reads reserve bytes until the Process Service confirms
+whether its reply reached the caller; a failed finalization retires that
+service epoch before another read. The supervisor also restarts
 that epoch if the Pipe Object Service dies;
 old endpoint capabilities cannot reach the replacement service. The protocol
 now distinguishes missing paths, bad descriptors and a full per-process table;
@@ -41,9 +41,8 @@ Console and pipe reads return `WOULD_BLOCK` instead of waiting; the existing
 one-second backend deadline bounds a stalled call. Kernel `SYS_POLL` is still
 unimplemented, so physical console input needs a dedicated blocking reader
 domain or a native readiness mechanism before libc switches. Blocking I/O,
-console read finalization, uncertain writes and cancellation across service
-death still need a complete transaction contract before libc can use these
-descriptors.
+uncertain writes and cancellation across service death still need a complete
+transaction contract before libc can use these descriptors.
 
 ## Ownership boundary
 
