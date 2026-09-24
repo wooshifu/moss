@@ -175,6 +175,16 @@ static int process_rejects_unscoped_child(long session, long domain) {
   return result == 1 && response.payload[0] == MOSS_PROCESS_BAD_REQUEST && !response.capability && !response.rights;
 }
 
+static int stale_process_session_closed(long session) {
+  struct moss_ipc_message request = {.size = 1, .payload = {MOSS_PROCESS_STATUS}};
+  struct moss_ipc_message response = {0};
+  long result = process_call(session, &request, &response);
+  if (response.capability)
+    (void)syscall1(SYS_CAP_CLOSE, (long)response.capability);
+  // An old badge names its original endpoint; it cannot join a new registry.
+  return result == -EPIPE && !response.capability;
+}
+
 static int process_child_request(long parent_session, unsigned char operation, unsigned long child_id,
                                  unsigned long domain) {
   struct moss_ipc_message request = {
@@ -520,6 +530,7 @@ int main(void) {
       }
       report_started("namespace service", namespace.pid);
       enum ServiceLoss lost;
+      long stale_session = 0;
       for (;;) {
         struct Service process = {0};
         long scope = syscall0(SYS_DOMAIN_SCOPE_CREATE);
@@ -536,6 +547,15 @@ int main(void) {
         } else {
           report_started("process service", process.pid);
           process_session = register_supervisor(process.send);
+          if (process_session > 0 && stale_session > 0) {
+            int stale_closed = stale_process_session_closed(stale_session);
+            (void)syscall1(SYS_CAP_CLOSE, stale_session);
+            stale_session = 0;
+            if (!stale_closed) {
+              report(STDERR_FILENO, "moss-init: stale process session remained usable\n");
+              _exit(1);
+            }
+          }
           if (process_session > 0 && process_rejects_unscoped_child(process_session, supervisor_domain))
             shell = start_shell(namespace.send, process.send, process_session, scope, file.domain, namespace.domain,
                                 process.domain, supervisor_domain, &shell_domain, &shell_id);
@@ -555,8 +575,12 @@ int main(void) {
           (void)syscall1(SYS_CAP_CLOSE, scope);
         }
         stop_child(shell, shell_domain);
-        if (process_session > 0)
-          (void)syscall1(SYS_CAP_CLOSE, process_session);
+        if (process_session > 0) {
+          if (lost == PROCESS_LOST)
+            stale_session = process_session;
+          else
+            (void)syscall1(SYS_CAP_CLOSE, process_session);
+        }
         stop_service(&process);
         if (lost != PROCESS_LOST)
           break;
@@ -566,6 +590,8 @@ int main(void) {
           return 1;
         }
       }
+      if (stale_session > 0)
+        (void)syscall1(SYS_CAP_CLOSE, stale_session);
       stop_service(&namespace);
       if (lost == SUPERVISOR_FAILURE) {
         stop_service(&file);
