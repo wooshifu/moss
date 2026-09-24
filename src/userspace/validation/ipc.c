@@ -847,7 +847,8 @@ unsigned long ipc_peer_death(void) {
     const struct moss_ipc_message request = {.size = 1, .payload = {20}};
     struct moss_ipc_message response = {0};
     long deadline = deadline_after(ipc_call_timeout_ns);
-    _exit(deadline > 0 && ipc_call(pair.send, &request, &response, deadline) == -IPC_EPIPE ? 38 : 92);
+    long result = deadline > 0 ? ipc_call(pair.send, &request, &response, deadline) : -1;
+    _exit(result == 1 && response.payload[0] == 'r' ? 38 : 92);
   }
   if (child < 0) {
     errors |= 1UL << 8;
@@ -856,12 +857,15 @@ unsigned long ipc_peer_death(void) {
     unsigned long reply = 0;
     long size = ipc_receive(pair.receive, &received, &reply);
     errors |= (unsigned long)(size != 1 || received.payload[0] != 20 || !reply) << 9;
-    // Keep the reply handle alive: receiver closure alone must wake the call.
+    // Delivery transfers authority to the Reply holder, so closing the
+    // receiver must not cancel this already delivered call.
     errors |= (unsigned long)(syscall1(SYS_CAP_CLOSE, (long)pair.receive) != 0) << 10;
     pair.receive = 0;
+    const struct moss_ipc_message answer = {.size = 1, .payload = {'r'}};
+    errors |= (unsigned long)(ipc_reply(reply, &answer) != 0) << 12;
     errors |= (unsigned long)!wait_exit(child, 38) << 11;
     if (reply)
-      errors |= (unsigned long)(syscall1(SYS_CAP_CLOSE, (long)reply) != 0) << 12;
+      errors |= (unsigned long)(syscall1(SYS_CAP_CLOSE, (long)reply) != -IPC_EBADF) << 15;
   }
   if (pair.receive)
     errors |= (unsigned long)(syscall1(SYS_CAP_CLOSE, (long)pair.receive) != 0) << 13;

@@ -28,9 +28,10 @@ networking and persistent storage.
    target domains in the same scope. After a restart, the supervisor confirms
    both its previous badged session and the session delegated to its old shell
    cannot call the replacement endpoint. Exercise orphaned exit records under
-   concurrent service loss. Kernel IPC validation checks that receiver closure wakes a claimed
-   call even while its reply handle is still alive; exercise the same race
-   against the process service before treating its recovery as complete.
+   concurrent service loss. Kernel IPC validation checks that a delivered call
+   survives receiver closure while its reply holder is alive, then fails when
+   that holder exits; exercise the same race against the process service before
+   treating its recovery as complete.
 2. Establish one POSIX descriptor view for regular files, pipes and console
    under the [descriptor migration contract](native-posix-descriptors.md)
    before redirecting mlibc's `open`/`read`/`write`/`close` calls. Its interface
