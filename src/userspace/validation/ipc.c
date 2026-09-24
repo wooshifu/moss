@@ -448,6 +448,81 @@ static unsigned long ipc_claimed_signal_cancel(struct moss_ipc_endpoints pair) {
   return errors;
 }
 
+static unsigned long ipc_reply_signal_races(struct moss_ipc_endpoints pair) {
+  if (syscall2(SYS_CAP_SET_INHERIT, (long)pair.receive, 1) != 0) {
+    return 1;
+  }
+  unsigned long errors = 0;
+  const long parent = getpid();
+  for (unsigned mode = 0; mode < 2; ++mode) {
+    long outcome[2];
+    if (pipe(outcome) != 0) {
+      return errors | (1UL << (mode * 4));
+    }
+    ipc_signal_seen = 0;
+    long child = fork();
+    if (child == 0) {
+      close((int)outcome[0]);
+      struct moss_ipc_message request = {0};
+      unsigned long reply = 0;
+      if (ipc_receive(pair.receive, &request, &reply) != 1 || request.payload[0] != 'r') {
+        _exit(91);
+      }
+      const struct moss_ipc_message answer = {.size = 1, .payload = {'y'}};
+      long result = 0;
+      if (mode == 0) {
+        result = ipc_reply(reply, &answer);
+        if (kill(parent, SIGUSR1) != 0) {
+          _exit(92);
+        }
+      } else {
+        if (kill(parent, SIGUSR1) != 0) {
+          _exit(92);
+        }
+        result = ipc_reply(reply, &answer);
+      }
+      _exit(write((int)outcome[1], &result, sizeof(result)) == sizeof(result) ? 37 : 93);
+    }
+    close((int)outcome[1]);
+    if (child < 0) {
+      close((int)outcome[0]);
+      return errors | (1UL << (mode * 4));
+    }
+    const struct moss_ipc_message request = {.size = 1, .payload = {'r'}};
+    struct moss_ipc_message response = {0};
+    long deadline = deadline_after(ipc_call_timeout_ns);
+    long result = deadline > 0 ? ipc_call(pair.send, &request, &response, deadline) : -1;
+    if (result != 1 && result != -IPC_EINTR) {
+      (void)kill(child, SIGKILL);
+    }
+    long replied = -1;
+    // The signal under test may interrupt either blocking operation.
+    long received = 0;
+    do {
+      received = read((int)outcome[0], &replied, sizeof(replied));
+    } while (received == -IPC_EINTR);
+    const int reported = received == sizeof(replied);
+    close((int)outcome[0]);
+    const int reply_won = result == 1 && response.size == 1 && response.payload[0] == 'y' && replied == 0;
+    const int cancel_won = result == -IPC_EINTR && replied == -IPC_EPIPE;
+    // The first ordering commits reply before signal; the second allows
+    // either winner, but the caller and reply holder must agree on it.
+    errors |= (unsigned long)!(reply_won || (mode == 1 && cancel_won)) << (mode * 4);
+    errors |= (unsigned long)!reported << (mode * 4 + 2);
+    int child_status = 0;
+    long waited = 0;
+    do {
+      waited = syscall3(SYS_WAITPID, child, (long)&child_status, 0);
+    } while (waited == -IPC_EINTR);
+    errors |= (unsigned long)(ipc_signal_seen != SIGUSR1) << (mode * 4 + 1);
+    errors |= (unsigned long)(waited != child || ((child_status >> 8) & 255) != 37) << (mode * 4 + 3);
+    if (errors) {
+      break;
+    }
+  }
+  return errors;
+}
+
 unsigned long ipc_signal_cancel(void) {
   struct moss_ipc_endpoints pair = {0, 0};
   struct sigaction_t action = {(unsigned long)ipc_signal_handler, 0, 0};
@@ -476,6 +551,9 @@ unsigned long ipc_signal_cancel(void) {
   }
   if (!errors) {
     errors |= ipc_claimed_signal_cancel(pair) << 6;
+  }
+  if (!errors) {
+    errors |= ipc_reply_signal_races(pair) << 9;
   }
   errors |= (unsigned long)(moss_sigaction(SIGUSR1, &old_action, 0) != 0) << 3;
   errors |= (unsigned long)(syscall1(SYS_CAP_CLOSE, (long)pair.receive) != 0) << 4;
