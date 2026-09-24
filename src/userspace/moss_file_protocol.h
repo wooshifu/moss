@@ -10,7 +10,14 @@ enum { MOSS_FILE_SCRATCH_BADGE = 1 };
 // sender to the namespace, which transfers only SEND to the client. File
 // operations then bypass the namespace service.
 // The first byte is an operation in requests and a status in replies.
-enum { MOSS_FILE_READ = 1, MOSS_FILE_WRITE = 2, MOSS_FILE_OPEN = 3, MOSS_FILE_RESIZE = 4, MOSS_FILE_SIZE = 5 };
+enum {
+  MOSS_FILE_READ = 1,
+  MOSS_FILE_WRITE = 2,
+  MOSS_FILE_OPEN = 3,
+  MOSS_FILE_RESIZE = 4,
+  MOSS_FILE_SIZE = 5,
+  MOSS_FILE_APPEND = 6
+};
 enum { MOSS_FILE_OPEN_CREATE = 1U << 0 };
 enum { MOSS_FILE_OK = 0, MOSS_FILE_BAD_REQUEST = 1, MOSS_FILE_NO_ENTRY = 2, MOSS_FILE_UNAVAILABLE = 3 };
 // Until service resource accounting exists, limit client-triggered allocation
@@ -20,11 +27,14 @@ enum { MOSS_FILE_OBJECT_LIMIT = 16, MOSS_FILE_CONTENT_BUDGET_BYTES = 16 * 4096 }
 // request carries [opcode, offset: u64 LE, count: u16 LE], and the reply
 // carries [status, transferred: u16 LE]. RESIZE carries [opcode, size: u64 LE].
 // SIZE returns [OK, size: u64 LE] through the file object's own capability.
+// APPEND uses the I/O request with offset zero and returns [OK, start: u64 LE,
+// transferred: u16 LE]. The service chooses start when it performs the write.
 enum {
   MOSS_FILE_IO_HEADER_BYTES = 11,
   MOSS_FILE_IO_REPLY_BYTES = 3,
   MOSS_FILE_RESIZE_HEADER_BYTES = 9,
-  MOSS_FILE_SIZE_REPLY_BYTES = 9
+  MOSS_FILE_SIZE_REPLY_BYTES = 9,
+  MOSS_FILE_APPEND_REPLY_BYTES = 11
 };
 
 static inline uint64_t moss_file_get_u64(const unsigned char *bytes) {

@@ -229,6 +229,21 @@ quit
         (b"\nMOSS_FILE_READ=short\0\0\n", None),
         (b"moss$ ", b"/moss-file.elf read\n"),
         (b"\nMOSS_FILE_READ=" + bulk_data + b"\n", None),
+        (b"moss$ ", b"/moss-file.elf append A /note\n"),
+        (b"\nMOSS_FILE_APPEND_OK\n", None),
+        (b"moss$ ", b"/moss-file.elf append B /note\n"),
+        (b"\nMOSS_FILE_APPEND_OK\n", None),
+        (b"moss$ ", b"/moss-file.elf read /note\n"),
+        (b"\nMOSS_FILE_READ=short\0\0AB\n", None),
+        (b"moss$ ", b"/moss-file.elf size /note\n"),
+        (b"\nMOSS_FILE_SIZE=9\n", None),
+        # /scratch occupies one page, leaving at most fifteen for /note.
+        (b"moss$ ", b"/moss-file.elf resize 61440 /note\n"),
+        (b"\nMOSS_FILE_RESIZE_OK\n", None),
+        (b"moss$ ", b"/moss-file.elf append \"$(printf '%04096d' 0)\" /note\n"),
+        (b"\nMOSS_FILE_ERROR\n", None),
+        (b"moss$ ", b"/moss-file.elf size /note\n"),
+        (b"\nMOSS_FILE_SIZE=61440\n", None),
         (b"moss$ ", None),
     ]
     started = time.monotonic()

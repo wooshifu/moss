@@ -44,12 +44,19 @@ static int transfer(unsigned long file, unsigned long memory, unsigned char oper
   if (response.capability) {
     (void)syscall1(SYS_CAP_CLOSE, (long)response.capability);
   }
-  if (result != MOSS_FILE_IO_REPLY_BYTES || response.payload[0] != MOSS_FILE_OK || response.capability ||
-      response.rights) {
+  long expected = operation == MOSS_FILE_APPEND ? MOSS_FILE_APPEND_REPLY_BYTES : MOSS_FILE_IO_REPLY_BYTES;
+  if (result != expected || response.payload[0] != MOSS_FILE_OK || response.capability || response.rights) {
     return 0;
   }
-  *transferred = moss_file_get_u16(response.payload + 1);
-  return *transferred <= count && (operation != MOSS_FILE_WRITE || *transferred == count);
+  if (operation == MOSS_FILE_APPEND) {
+    uint64_t start = moss_file_get_u64(response.payload + 1);
+    *transferred = moss_file_get_u16(response.payload + 9);
+    if (start > MOSS_FILE_CONTENT_BUDGET_BYTES || *transferred > MOSS_FILE_CONTENT_BUDGET_BYTES - start)
+      return 0;
+  } else {
+    *transferred = moss_file_get_u16(response.payload + 1);
+  }
+  return *transferred <= count && (operation == MOSS_FILE_READ || *transferred == count);
 }
 
 static int resize_file(unsigned long file, uint64_t size) {
@@ -76,7 +83,7 @@ static int file_size(unsigned long file, uint64_t *size) {
   return 1;
 }
 
-static int operate(unsigned long file, const char *write_text, size_t write_size) {
+static int operate(unsigned long file, const char *write_text, size_t write_size, int append) {
   long memory = syscall1(SYS_MEM_CREATE, MOSS_MEM_OBJECT_BYTES);
   if (memory <= 0) {
     return error();
@@ -89,21 +96,24 @@ static int operate(unsigned long file, const char *write_text, size_t write_size
 
   int valid = 1;
   if (write_text) {
-    // Clear first so a shorter replacement has no stale tail. Each page is
-    // a separate call; if one fails, preserve the visible partial result and
-    // never retry an ambiguous timed-out write.
-    valid = resize_file(file, 0);
+    // Replacement clears stale tail bytes. Append selects the current end in
+    // the file service for each page. Preserve any completed pages if a later
+    // call fails; retrying an ambiguous write could duplicate data.
+    valid = append || resize_file(file, 0);
     for (size_t offset = 0; valid && offset < write_size;) {
       unsigned int count =
           write_size - offset < MOSS_MEM_OBJECT_BYTES ? (unsigned int)(write_size - offset) : MOSS_MEM_OBJECT_BYTES;
       memcpy((void *)mapped, write_text + offset, count);
       unsigned int transferred = 0;
-      valid = transfer(file, (unsigned long)memory, MOSS_FILE_WRITE, offset, count, &transferred);
+      valid = transfer(file, (unsigned long)memory, append ? MOSS_FILE_APPEND : MOSS_FILE_WRITE, append ? 0 : offset,
+                       count, &transferred);
       offset += transferred;
     }
     if (valid) {
-      static const char success[] = "MOSS_FILE_WRITE_OK\n";
-      (void)write(STDOUT_FILENO, success, sizeof(success) - 1);
+      static const char write_success[] = "MOSS_FILE_WRITE_OK\n";
+      static const char append_success[] = "MOSS_FILE_APPEND_OK\n";
+      const char *message = append ? append_success : write_success;
+      (void)write(STDOUT_FILENO, message, strlen(message));
     }
   } else {
     static const char prefix[] = "MOSS_FILE_READ=";
@@ -155,15 +165,17 @@ int main(int argc, char **argv) {
   size_t write_size = 0;
   int resizing = 0;
   int sizing = 0;
+  int appending = 0;
   uint64_t resize_size = 0;
   if ((argc == 2 || argc == 3) && strcmp(argv[1], "read") == 0) {
     path = argc == 3 ? argv[2] : MOSS_SCRATCH_PATH;
-  } else if ((argc == 3 || argc == 4) && strcmp(argv[1], "write") == 0) {
+  } else if ((argc == 3 || argc == 4) && (strcmp(argv[1], "write") == 0 || strcmp(argv[1], "append") == 0)) {
     write_text = argv[2];
     write_size = strlen(write_text);
     if (write_size > MOSS_FILE_CONTENT_BUDGET_BYTES) {
       return 2;
     }
+    appending = strcmp(argv[1], "append") == 0;
     path = argc == 4 ? argv[3] : MOSS_SCRATCH_PATH;
   } else if ((argc == 3 || argc == 4) && strcmp(argv[1], "resize") == 0) {
     char *size_end = NULL;
@@ -217,7 +229,7 @@ int main(int argc, char **argv) {
       (void)write(STDOUT_FILENO, success, sizeof(success) - 1);
     }
   } else {
-    result = operate(opened.capability, write_text, write_size);
+    result = operate(opened.capability, write_text, write_size, appending);
   }
   (void)syscall1(SYS_CAP_CLOSE, (long)opened.capability);
   return result;

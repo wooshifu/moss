@@ -137,20 +137,23 @@ int main(int argc, char **argv) {
       int writing = file && valid_count && request.payload[0] == MOSS_FILE_WRITE &&
                     request.rights == MOSS_CAP_MAP_READ && offset <= MOSS_FILE_CONTENT_BUDGET_BYTES &&
                     count <= MOSS_FILE_CONTENT_BUDGET_BYTES - offset;
-      if (reading || writing) {
+      int appending = file && valid_count && request.payload[0] == MOSS_FILE_APPEND &&
+                      request.rights == MOSS_CAP_MAP_READ && offset == 0;
+      if (reading || writing || appending) {
         long mapped = syscall2(SYS_MEM_MAP, (long)request.capability, reading ? MOSS_CAP_MAP_WRITE : MOSS_CAP_MAP_READ);
         if (mapped > 0) {
           unsigned int transferred = 0;
+          unsigned long write_offset = appending ? file->length : (unsigned long)offset;
           if (reading) {
             if (offset < file->length) {
               unsigned long available = file->length - (unsigned long)offset;
               transferred = available < count ? (unsigned int)available : count;
               memcpy((void *)mapped, file->data + offset, transferred);
             }
-          } else if (!count || (offset + count <= file->length) ||
-                     resize_file(file, (unsigned long)offset + count, &allocated)) {
+          } else if (!count || (write_offset + count <= file->length) ||
+                     resize_file(file, write_offset + count, &allocated)) {
             if (count) {
-              memcpy(file->data + offset, (const void *)mapped, count);
+              memcpy(file->data + write_offset, (const void *)mapped, count);
             }
             transferred = count;
           } else {
@@ -158,8 +161,13 @@ int main(int argc, char **argv) {
           }
           if (reading || !count || transferred == count) {
             response.payload[0] = MOSS_FILE_OK;
-            response.size = MOSS_FILE_IO_REPLY_BYTES;
-            moss_file_put_u16(response.payload + 1, transferred);
+            response.size = appending ? MOSS_FILE_APPEND_REPLY_BYTES : MOSS_FILE_IO_REPLY_BYTES;
+            if (appending) {
+              moss_file_put_u64(response.payload + 1, write_offset);
+              moss_file_put_u16(response.payload + 9, transferred);
+            } else {
+              moss_file_put_u16(response.payload + 1, transferred);
+            }
           }
           // This service maps a new client page for each operation. A failed
           // unmap must stop it before leaked mappings accumulate indefinitely.
