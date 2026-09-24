@@ -30,7 +30,10 @@ service epoch before another read. The supervisor also restarts
 that epoch if the Pipe Object Service dies;
 old endpoint capabilities cannot reach the replacement service. The protocol
 now distinguishes missing paths, bad descriptors and a full per-process table;
-other backend failures still need precise POSIX error mapping.
+content-budget exhaustion reaches the native descriptor view as `NO_SPACE`
+without changing the file or offset. The mlibc status mapper recognizes it as
+`ENOSPC`, but mlibc descriptor calls still use the kernel path. Other backend
+failures still need precise POSIX error mapping.
 Descriptor allocation now precedes namespace `CREATE` and file `TRUNCATE`, so
 a known-full table or local allocation failure cannot mutate the file first.
 `FD_STAT` reports descriptor kind and asks the serving file service for current

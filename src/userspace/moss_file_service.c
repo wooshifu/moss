@@ -30,21 +30,20 @@ struct FileObject {
   const unsigned char *boot_data;
 };
 
-static int resize_file(struct FileObject *file, unsigned long new_length, unsigned long *allocated) {
-  if (file->boot_data || new_length > MOSS_FILE_CONTENT_BUDGET_BYTES) {
-    return 0;
-  }
+static unsigned char resize_file(struct FileObject *file, unsigned long new_length, unsigned long *allocated) {
+  if (file->boot_data)
+    return MOSS_FILE_READ_ONLY;
+  if (new_length > MOSS_FILE_CONTENT_BUDGET_BYTES)
+    return MOSS_FILE_NO_SPACE;
   unsigned long new_capacity =
       ((new_length + MOSS_MEM_OBJECT_BYTES - 1) / MOSS_MEM_OBJECT_BYTES) * MOSS_MEM_OBJECT_BYTES;
   if (new_capacity > file->capacity) {
     unsigned long growth = new_capacity - file->capacity;
-    if (growth > MOSS_FILE_CONTENT_BUDGET_BYTES - *allocated) {
-      return 0;
-    }
+    if (growth > MOSS_FILE_CONTENT_BUDGET_BYTES - *allocated)
+      return MOSS_FILE_NO_SPACE;
     unsigned char *data = realloc(file->data, new_capacity);
-    if (!data) {
-      return 0;
-    }
+    if (!data)
+      return MOSS_FILE_UNAVAILABLE;
     file->data = data;
     file->capacity = new_capacity;
     *allocated += growth;
@@ -70,7 +69,7 @@ static int resize_file(struct FileObject *file, unsigned long new_length, unsign
     memset(file->data + file->length, 0, new_length - file->length);
   }
   file->length = new_length;
-  return 1;
+  return MOSS_FILE_OK;
 }
 
 static int valid_name(const unsigned char *name, unsigned long size) {
@@ -283,9 +282,10 @@ int main(int argc, char **argv) {
       unsigned int count = valid_header ? moss_file_get_u16(request.payload + 9) : 0;
       int valid_count = valid_header && count <= MOSS_MEM_OBJECT_BYTES;
       int reading = file && valid_count && request.payload[0] == MOSS_FILE_READ && request.rights == MOSS_CAP_MAP_WRITE;
-      int writing = file && !file->boot_data && !file->sealed && valid_count && request.payload[0] == MOSS_FILE_WRITE &&
-                    request.rights == MOSS_CAP_MAP_READ && offset <= MOSS_FILE_CONTENT_BUDGET_BYTES &&
-                    count <= MOSS_FILE_CONTENT_BUDGET_BYTES - offset;
+      int write_request = file && !file->boot_data && !file->sealed && valid_count &&
+                          request.payload[0] == MOSS_FILE_WRITE && request.rights == MOSS_CAP_MAP_READ;
+      int writing =
+          write_request && offset <= MOSS_FILE_CONTENT_BUDGET_BYTES && count <= MOSS_FILE_CONTENT_BUDGET_BYTES - offset;
       int appending = file && !file->boot_data && !file->sealed && valid_count &&
                       request.payload[0] == MOSS_FILE_APPEND && request.rights == MOSS_CAP_MAP_READ && offset == 0;
       if (reading || writing || appending) {
@@ -293,6 +293,9 @@ int main(int argc, char **argv) {
         if (mapped > 0) {
           unsigned int transferred = 0;
           unsigned long write_offset = appending ? file->length : (unsigned long)offset;
+          unsigned char resize_status = MOSS_FILE_OK;
+          if (!reading && count && write_offset + count > file->length)
+            resize_status = resize_file(file, write_offset + count, &allocated);
           if (reading) {
             if (offset < file->length) {
               unsigned long available = file->length - (unsigned long)offset;
@@ -300,14 +303,13 @@ int main(int argc, char **argv) {
               const unsigned char *data = file->boot_data ? file->boot_data : file->data;
               memcpy((void *)mapped, data + offset, transferred);
             }
-          } else if (!count || (write_offset + count <= file->length) ||
-                     resize_file(file, write_offset + count, &allocated)) {
+          } else if (resize_status == MOSS_FILE_OK) {
             if (count) {
               memcpy(file->data + write_offset, (const void *)mapped, count);
             }
             transferred = count;
           } else {
-            response.payload[0] = MOSS_FILE_UNAVAILABLE;
+            response.payload[0] = resize_status;
           }
           if (reading || !count || transferred == count) {
             response.payload[0] = MOSS_FILE_OK;
@@ -325,6 +327,8 @@ int main(int argc, char **argv) {
             return 1;
           }
         }
+      } else if (write_request) {
+        response.payload[0] = MOSS_FILE_NO_SPACE;
       }
       // Even a malformed request may carry a transferred handle. Release it
       // after use so clients cannot exhaust the service's capability table.
@@ -418,7 +422,7 @@ int main(int argc, char **argv) {
         response.payload[0] = MOSS_FILE_UNAVAILABLE;
         if (next_badge < MOSS_FILE_ROOT_BADGE - 2 && volatile_count < MOSS_FILE_OBJECT_LIMIT) {
           struct FileObject *copy = calloc(1, sizeof(*copy));
-          if (copy && resize_file(copy, file->length, &allocated)) {
+          if (copy && resize_file(copy, file->length, &allocated) == MOSS_FILE_OK) {
             if (file->length) {
               memcpy(copy->data, file->boot_data ? file->boot_data : file->data, file->length);
             }
@@ -447,10 +451,10 @@ int main(int argc, char **argv) {
       uint64_t length = moss_file_get_u64(request.payload + 1);
       if (file->sealed) {
         response.payload[0] = MOSS_FILE_BAD_REQUEST;
-      } else if (length > MOSS_FILE_CONTENT_BUDGET_BYTES || !resize_file(file, (unsigned long)length, &allocated)) {
-        response.payload[0] = MOSS_FILE_UNAVAILABLE;
       } else {
-        response.payload[0] = MOSS_FILE_OK;
+        response.payload[0] = length > MOSS_FILE_CONTENT_BUDGET_BYTES
+                                  ? MOSS_FILE_NO_SPACE
+                                  : resize_file(file, (unsigned long)length, &allocated);
       }
     }
     // A timed-out caller does not invalidate the existing source file.

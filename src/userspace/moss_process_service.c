@@ -19,7 +19,7 @@ enum {
 };
 _Static_assert(MOSS_NAMESPACE_STAT_REPLY_BYTES == MOSS_PROCESS_FD_STAT_REPLY_BYTES,
                "namespace and process metadata replies share a layout");
-enum { BACKEND_WOULD_BLOCK = 2, BACKEND_BROKEN_PIPE = 3 };
+enum { BACKEND_WOULD_BLOCK = 2, BACKEND_BROKEN_PIPE = 3, BACKEND_NO_SPACE = 4 };
 
 struct OpenDescription {
   unsigned long object;
@@ -436,6 +436,8 @@ static int file_transfer(struct OpenDescription *description, unsigned long memo
   long result = service_call(description->object, &request, &response);
   if (response.capability)
     (void)syscall1(SYS_CAP_CLOSE, (long)response.capability);
+  if (result == 1 && response.payload[0] == MOSS_FILE_NO_SPACE && !response.capability && !response.rights)
+    return BACKEND_NO_SPACE;
   if (result == 1 && (response.payload[0] == MOSS_FILE_UNAVAILABLE || response.payload[0] == MOSS_FILE_BAD_REQUEST) &&
       !response.capability && !response.rights)
     return 0;
@@ -1032,6 +1034,7 @@ static void handle_fd_request(struct Record *owner, unsigned long namespace, uns
     } else {
       response->payload[0] = result == BACKEND_WOULD_BLOCK   ? MOSS_PROCESS_WOULD_BLOCK
                              : result == BACKEND_BROKEN_PIPE ? MOSS_PROCESS_BROKEN_PIPE
+                             : result == BACKEND_NO_SPACE    ? MOSS_PROCESS_NO_SPACE
                                                              : MOSS_PROCESS_UNAVAILABLE;
       if (result < 0 && writing)
         description->uncertain = 1;

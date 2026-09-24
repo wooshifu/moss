@@ -40,7 +40,8 @@ enum {
   MOSS_FILE_UNAVAILABLE = 3,
   MOSS_FILE_EXISTS = 4,
   MOSS_FILE_END = 5,
-  MOSS_FILE_READ_ONLY = 6
+  MOSS_FILE_READ_ONLY = 6,
+  MOSS_FILE_NO_SPACE = 7
 };
 // Preserve the kernel dirent d_type values when libc moves to this service.
 enum { MOSS_FILE_TYPE_DIRECTORY = 4, MOSS_FILE_TYPE_REGULAR = 8 };
@@ -49,6 +50,8 @@ enum { MOSS_FILE_TYPE_DIRECTORY = 4, MOSS_FILE_TYPE_REGULAR = 8 };
 // allowing a static libc image through this volatile file service. Boot
 // archive entries have a separate limit and do not consume that budget.
 enum { MOSS_FILE_OBJECT_LIMIT = 16, MOSS_FILE_BOOT_ENTRY_LIMIT = 64, MOSS_FILE_CONTENT_BUDGET_BYTES = 4096 * 4096 };
+// NO_SPACE means the content budget rejected a write, append or resize before
+// mutation. Heap allocation failure remains UNAVAILABLE.
 // SEAL is an idempotent one-byte request on an unlisted object sender. It
 // permanently rejects WRITE, APPEND and RESIZE through every sender copy.
 // Named files remain mutable for existing public clients.

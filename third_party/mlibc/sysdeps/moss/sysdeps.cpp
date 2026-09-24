@@ -64,6 +64,8 @@ int process_status_error(unsigned char status) {
     return ENOENT;
   case MOSS_PROCESS_TOO_MANY_FILES:
     return EMFILE;
+  case MOSS_PROCESS_NO_SPACE:
+    return ENOSPC;
   case MOSS_PROCESS_EXISTS:
     return EEXIST;
   case MOSS_PROCESS_READ_ONLY:

@@ -983,6 +983,24 @@ static int fd_view_probe(void) {
             object_id == file_id && object_size == 3 && path_stat(session, "/", &kind, &object_id, &object_size) &&
             kind == MOSS_PROCESS_FD_KIND_DIRECTORY && object_id == MOSS_FILE_ROOT_BADGE && object_size == 0;
   if (valid) {
+    struct moss_ipc_message full = {.size = MOSS_PROCESS_FD_IO_BYTES,
+                                    .capability = (unsigned long)memory,
+                                    .rights = MOSS_CAP_MAP_READ | MOSS_CAP_TRANSFER | MOSS_CAP_DUPLICATE,
+                                    .payload = {MOSS_PROCESS_FD_WRITE}};
+    moss_process_put_u64(full.payload + 1, first);
+    moss_file_put_u16(full.payload + 9, 1);
+    // Other live files already charge this service's budget. A failed sparse
+    // extension must keep both the original bytes and its shared offset usable.
+    valid = fd_seek_to(session, first, MOSS_PROCESS_FD_SEEK_SET, MOSS_FILE_CONTENT_BUDGET_BYTES - 1, &position) &&
+            position == MOSS_FILE_CONTENT_BUDGET_BYTES - 1 && fd_rejected(session, &full, MOSS_PROCESS_NO_SPACE) &&
+            fd_seek_to(session, first, MOSS_PROCESS_FD_SEEK_CUR, 0, &position) &&
+            position == MOSS_FILE_CONTENT_BUDGET_BYTES - 1 &&
+            fd_stat(session, first, &kind, &object_id, &object_size) && object_size == 3 &&
+            fd_seek_to(session, first, MOSS_PROCESS_FD_SEEK_SET, 0, &position) && position == 0 &&
+            fd_io(session, MOSS_PROCESS_FD_READ, first, memory, 3, &transferred) && transferred == 3 &&
+            memcmp((const void *)mapped, "abc", 3) == 0;
+  }
+  if (valid) {
     unsigned long relative = 0, dot = 0;
     valid = path_stat(session, "note", &kind, &object_id, &object_size) && kind == MOSS_PROCESS_FD_KIND_FILE &&
             object_id == file_id && object_size == 3 && path_stat(session, "./note", &kind, &object_id, &object_size) &&

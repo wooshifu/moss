@@ -65,7 +65,8 @@ enum {
   MOSS_PROCESS_NOT_SEEKABLE = 14,
   MOSS_PROCESS_NOT_DIRECTORY = 15,
   MOSS_PROCESS_IS_DIRECTORY = 16,
-  MOSS_PROCESS_READ_ONLY = 17
+  MOSS_PROCESS_READ_ONLY = 17,
+  MOSS_PROCESS_NO_SPACE = 18
 };
 // BAD_DESCRIPTOR also covers I/O through a descriptor opened without the
 // requested access mode, matching POSIX EBADF rather than process DENIED.
@@ -175,8 +176,9 @@ enum { MOSS_PROCESS_FD_READDIR_REPLY_BYTES = 20 };
 // Empty reads and full writes return WOULD_BLOCK; writes after the final read
 // endpoint closes return BROKEN_PIPE. Seeking either endpoint returns
 // NOT_SEEKABLE.
-// File requests distinguish BAD_DESCRIPTOR, NOT_FOUND, TOO_MANY_FILES and
-// READ_ONLY from process identity NO_ENTRY and backend UNAVAILABLE.
+// File requests distinguish BAD_DESCRIPTOR, NOT_FOUND, TOO_MANY_FILES,
+// READ_ONLY and content-budget NO_SPACE from process identity NO_ENTRY and
+// backend UNAVAILABLE.
 // FD_READ/WRITE carry
 // [opcode, descriptor:u64 LE, count:u16 LE] plus a transferred Memory Object
 // with MAP_WRITE|TRANSFER|DUPLICATE or MAP_READ|TRANSFER|DUPLICATE respectively,
