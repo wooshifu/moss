@@ -155,6 +155,68 @@ static long ipc_return_code_cap(long source) {
   return returned;
 }
 
+// Each fork is a separate issuer incarnation. Only the explicitly inherited
+// approval handle lets it issue; the caller retains revocation authority.
+static long ipc_approve_from_child(long approver, long version, int delegated) {
+  struct moss_ipc_endpoints endpoint = {0, 0};
+  if (syscall1(SYS_IPC_CREATE, (long)&endpoint) != 0)
+    return -1;
+  if (syscall2(SYS_CAP_SET_INHERIT, (long)endpoint.receive, 1) != 0 ||
+      (delegated && syscall2(SYS_CAP_SET_INHERIT, approver, 1) != 0)) {
+    (void)syscall1(SYS_CAP_CLOSE, (long)endpoint.receive);
+    (void)syscall1(SYS_CAP_CLOSE, (long)endpoint.send);
+    return -1;
+  }
+  long child = fork();
+  if (child == 0) {
+    struct moss_ipc_message request = {0};
+    unsigned long reply = 0;
+    if (syscall0(SYS_CODE_AUTHORITY) != -IPC_EACCES || ipc_receive(endpoint.receive, &request, &reply) != 1 ||
+        request.capability == 0 || request.rights != MOSS_CAP_MAP_READ)
+      _exit(91);
+    long approved = syscall2(SYS_CODE_APPROVE, approver, (long)request.capability);
+    if (!delegated) {
+      const struct moss_ipc_message denied = {.size = 1, .payload = {'n'}};
+      _exit(approved == -IPC_EBADF && ipc_reply(reply, &denied) == 0 ? 37 : 92);
+    }
+    if (approved <= 0)
+      _exit(93);
+    const struct moss_ipc_message issued = {.size = 1,
+                                            .capability = (unsigned long)approved,
+                                            .rights = MOSS_CAP_CODE_EXEC | MOSS_CAP_CODE_IDENTIFY | MOSS_CAP_TRANSFER |
+                                                      MOSS_CAP_DUPLICATE,
+                                            .payload = {'a'}};
+    _exit(ipc_reply(reply, &issued) == 0 ? 37 : 94);
+  }
+  long unmarked = delegated ? syscall2(SYS_CAP_SET_INHERIT, approver, 0) : 0;
+  (void)syscall1(SYS_CAP_CLOSE, (long)endpoint.receive);
+  long result = -1;
+  if (unmarked != 0 && child > 0)
+    (void)kill(child, SIGKILL);
+  if (child > 0 && unmarked == 0) {
+    const struct moss_ipc_message request = {
+        .size = 1, .capability = (unsigned long)version, .rights = MOSS_CAP_MAP_READ, .payload = {'v'}};
+    struct moss_ipc_message response = {0};
+    long deadline = deadline_after(ipc_call_timeout_ns);
+    long received = deadline > 0 ? ipc_call(endpoint.send, &request, &response, deadline) : -1;
+    int valid =
+        received == 1 && response.payload[0] == (delegated ? 'a' : 'n') && (response.capability != 0) == delegated &&
+        response.rights ==
+            (delegated ? (MOSS_CAP_CODE_EXEC | MOSS_CAP_CODE_IDENTIFY | MOSS_CAP_TRANSFER | MOSS_CAP_DUPLICATE) : 0);
+    if (!valid)
+      (void)kill(child, SIGKILL);
+    int child_ok = wait_exit(child, 37);
+    if (valid && child_ok)
+      result = delegated ? (long)response.capability : 0;
+    else if (response.capability != 0)
+      (void)syscall1(SYS_CAP_CLOSE, (long)response.capability);
+  }
+  if (child > 0 && unmarked != 0)
+    (void)wait_exit(child, 37);
+  (void)syscall1(SYS_CAP_CLOSE, (long)endpoint.send);
+  return result;
+}
+
 unsigned long ipc_domain_spawn(void) {
   // Exceed capability::Table's current 64 slots: one approved version must
   // supply a text range that cannot fit as one handle per executable page.
@@ -424,6 +486,93 @@ cleanup:
   for (unsigned long i = 0; i < sizeof(handles) / sizeof(handles[0]); ++i) {
     if (handles[i] > 0)
       (void)syscall1(SYS_CAP_CLOSE, handles[i]);
+  }
+  return errors;
+}
+
+unsigned long ipc_code_service_survival(void) {
+  static unsigned char code_copy[MOSS_DOMAIN_PAGE_BYTES] __attribute__((aligned(MOSS_DOMAIN_PAGE_BYTES)));
+  struct moss_domain_layout layout = {0};
+  if (syscall1(SYS_DOMAIN_LAYOUT, (long)&layout) != 0 || layout.page_size != MOSS_DOMAIN_PAGE_BYTES ||
+      layout.stack_size < 16 || layout.stack_top <= layout.stack_size)
+    return 1;
+
+  const unsigned long entry = (unsigned long)spawned_stack_exit;
+  const unsigned long code_page = entry & ~(MOSS_DOMAIN_PAGE_BYTES - 1UL);
+  const unsigned long stack_pointer = layout.stack_top - 16;
+  const unsigned char initial_stack[16] = {37};
+  const volatile unsigned char *original = (const volatile unsigned char *)code_page;
+  for (unsigned long i = 0; i < MOSS_DOMAIN_PAGE_BYTES; ++i)
+    code_copy[i] = original[i];
+  struct moss_domain_page page = {.address = code_page, .flags = MOSS_DOMAIN_PAGE_READ | MOSS_DOMAIN_PAGE_EXEC};
+  struct moss_domain_spawn image = {.entry = entry,
+                                    .stack_pointer = stack_pointer,
+                                    .stack_source = (unsigned long)initial_stack,
+                                    .stack_size = sizeof(initial_stack),
+                                    .arg1 = stack_pointer,
+                                    .pages = (unsigned long)&page,
+                                    .page_count = 1};
+  unsigned long errors = 0;
+  long factory = syscall0(SYS_DOMAIN_FACTORY);
+  long authority = syscall0(SYS_CODE_AUTHORITY);
+  long version = syscall1(SYS_CODE_SNAPSHOT, (long)code_copy);
+  long approver = 0, revoker = 0, first = 0, replacement = 0, domain = 0;
+  if (factory <= 0 || authority <= 0 || version <= 0) {
+    errors |= 1;
+    goto cleanup;
+  }
+  approver = syscall2(SYS_CAP_DUPLICATE, authority, MOSS_CAP_CODE_APPROVE | MOSS_CAP_DUPLICATE);
+  revoker = syscall2(SYS_CAP_DUPLICATE, authority, MOSS_CAP_CODE_REVOKE);
+  if (approver <= 0 || revoker <= 0) {
+    errors |= 1UL << 1;
+    goto cleanup;
+  }
+  if (syscall1(SYS_CAP_CLOSE, authority) != 0) {
+    errors |= 1UL << 15;
+    goto cleanup;
+  }
+  authority = 0;
+  first = ipc_approve_from_child(approver, version, 1);
+  if (first <= 0) {
+    errors |= 1UL << 2;
+    goto cleanup;
+  }
+  page.code = (unsigned long)first;
+  domain = syscall2(SYS_DOMAIN_SPAWN, factory, (long)&image);
+  errors |= (unsigned long)(domain <= 0) << 3;
+  if (domain > 0) {
+    errors |= (unsigned long)!domain_exited((unsigned long)domain, 37, 0) << 4;
+    (void)syscall1(SYS_CAP_CLOSE, domain);
+    domain = 0;
+  }
+  errors |= (unsigned long)(ipc_approve_from_child(approver, version, 0) != 0) << 5;
+  errors |= (unsigned long)(syscall2(SYS_CODE_APPROVE, revoker, version) != -IPC_EACCES) << 6;
+  errors |= (unsigned long)(syscall2(SYS_CODE_REVOKE, revoker, first) != 0) << 7;
+  errors |= (unsigned long)!ipc_expect_spawn_error(factory, &image, -IPC_EACCES) << 8;
+  replacement = ipc_approve_from_child(approver, version, 1);
+  if (replacement <= 0) {
+    errors |= 1UL << 9;
+    goto cleanup;
+  }
+  errors |= (unsigned long)!ipc_expect_spawn_error(factory, &image, -IPC_EACCES) << 10;
+  page.code = (unsigned long)replacement;
+  domain = syscall2(SYS_DOMAIN_SPAWN, factory, (long)&image);
+  errors |= (unsigned long)(domain <= 0) << 11;
+  if (domain > 0) {
+    errors |= (unsigned long)!domain_exited((unsigned long)domain, 37, 0) << 12;
+    (void)syscall1(SYS_CAP_CLOSE, domain);
+    domain = 0;
+  }
+  errors |= (unsigned long)(syscall2(SYS_CODE_REVOKE, revoker, replacement) != 0) << 13;
+  errors |= (unsigned long)!ipc_expect_spawn_error(factory, &image, -IPC_EACCES) << 14;
+
+cleanup:
+  {
+    const long handles[] = {domain, replacement, first, revoker, approver, version, authority, factory};
+    for (unsigned long i = 0; i < sizeof(handles) / sizeof(handles[0]); ++i) {
+      if (handles[i] > 0)
+        (void)syscall1(SYS_CAP_CLOSE, handles[i]);
+    }
   }
   return errors;
 }
