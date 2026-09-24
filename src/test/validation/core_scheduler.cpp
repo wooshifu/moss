@@ -158,7 +158,10 @@ void ipc_priority_inheritance() {
 
   scheduler->enqueue_task(&server, cpu);
   scheduler->enqueue_task(&backend, cpu);
-  ut::expect(scheduler->begin_ipc_call(&high_call, &high));
+  // Synthetic absolute times verify the min rule without depending on a timer.
+  u64 high_deadline = 900;
+  ut::expect(scheduler->begin_ipc_call(&high_call, &high, &high_deadline));
+  ut::expect(high_deadline == 900 && high_call.deadline_ns == 900);
   scheduler->bind_ipc_server(&high_call, &server);
   ut::expect(server.effective_rt_priority() == 80 && server.rt_on_rq && scheduler->pick_next_task(cpu) == &server);
   ut::expect(!scheduler->rebind_ipc_server(&high_call, &backend, nullptr));
@@ -170,7 +173,9 @@ void ipc_priority_inheritance() {
 
   scheduler->dequeue_task(&server);
   server.state = ProcessState::Sleeping;
-  ut::expect(scheduler->begin_ipc_call(&nested, &server));
+  u64 nested_deadline = 0;
+  ut::expect(scheduler->begin_ipc_call(&nested, &server, &nested_deadline));
+  ut::expect(nested_deadline == high_deadline && nested.deadline_ns == high_deadline);
   scheduler->bind_ipc_server(&nested, &backend);
   ut::expect(backend.effective_rt_priority() == 80 && backend.rt_on_rq && scheduler->pick_next_task(cpu) == &backend);
 
@@ -206,18 +211,23 @@ void ipc_priority_inheritance() {
   scheduler->set_base_nice(&normal_backend, 15);
   scheduler->enqueue_task(&normal_server, cpu);
   scheduler->enqueue_task(&normal_backend, cpu);
-  ut::expect(scheduler->begin_ipc_call(&normal_call, &normal_caller));
+  u64 normal_deadline = 600;
+  ut::expect(scheduler->begin_ipc_call(&normal_call, &normal_caller, &normal_deadline));
   scheduler->bind_ipc_server(&normal_call, &normal_server);
   ut::expect(normal_server.effective_cfs_nice() == -10 && normal_server.se.rb_on_rq &&
              normal_server.se.weight == cfs_params::nice_to_weight(-10));
   scheduler->dequeue_task(&normal_server);
   normal_server.state = ProcessState::Sleeping;
-  ut::expect(scheduler->begin_ipc_call(&normal_nested, &normal_server));
+  u64 shorter_deadline = 500;
+  ut::expect(scheduler->begin_ipc_call(&normal_nested, &normal_server, &shorter_deadline));
+  ut::expect(shorter_deadline == 500 && normal_nested.deadline_ns == 500);
   scheduler->bind_ipc_server(&normal_nested, &normal_backend);
   ut::expect(normal_backend.effective_cfs_nice() == -10);
   scheduler->dequeue_task(&normal_backend);
   normal_backend.state = ProcessState::Sleeping;
-  ut::expect(scheduler->begin_ipc_call(&normal_cycle, &normal_backend));
+  u64 transitive_deadline = 0;
+  ut::expect(scheduler->begin_ipc_call(&normal_cycle, &normal_backend, &transitive_deadline));
+  ut::expect(transitive_deadline == shorter_deadline && normal_cycle.deadline_ns == shorter_deadline);
   scheduler->bind_ipc_server(&normal_cycle, &normal_server);
   scheduler->set_base_nice(&normal_caller, -5);
   ut::expect(normal_server.effective_cfs_nice() == -5 && normal_backend.effective_cfs_nice() == -5);
@@ -225,7 +235,21 @@ void ipc_priority_inheritance() {
   ut::expect(normal_server.effective_cfs_nice() == 10 && normal_backend.effective_cfs_nice() == 10);
   scheduler->end_ipc_call(&normal_cycle);
   scheduler->end_ipc_call(&normal_nested);
+  ut::expect(normal_cycle.deadline_ns == 0 && normal_nested.deadline_ns == 0);
   ut::expect(normal_backend.effective_cfs_nice() == 15 && normal_backend.se.weight == cfs_params::nice_to_weight(15));
+
+  Thread deadline_server(8, 0);
+  PriorityDonation first_deadline{}, second_deadline{}, earliest_nested{};
+  u64 first = 900, second = 400, requested = 700;
+  ut::expect(scheduler->begin_ipc_call(&first_deadline, &high, &first));
+  scheduler->bind_ipc_server(&first_deadline, &deadline_server);
+  ut::expect(scheduler->begin_ipc_call(&second_deadline, &low, &second));
+  scheduler->bind_ipc_server(&second_deadline, &deadline_server);
+  ut::expect(scheduler->begin_ipc_call(&earliest_nested, &deadline_server, &requested));
+  ut::expect(requested == second && earliest_nested.deadline_ns == second);
+  scheduler->end_ipc_call(&earliest_nested);
+  scheduler->end_ipc_call(&second_deadline);
+  scheduler->end_ipc_call(&first_deadline);
 
   CfsScheduler::set_current_task(original);
   if (restore_irqs)

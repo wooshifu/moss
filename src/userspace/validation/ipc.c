@@ -776,6 +776,73 @@ unsigned long ipc_deadline(void) {
   return errors;
 }
 
+unsigned long ipc_deadline_propagation(void) {
+  struct moss_ipc_endpoints front = {0, 0}, back = {0, 0};
+  if (syscall1(SYS_IPC_CREATE, (long)&front) != 0 || syscall1(SYS_IPC_CREATE, (long)&back) != 0 ||
+      syscall2(SYS_CAP_SET_INHERIT, (long)front.receive, 1) != 0 ||
+      syscall2(SYS_CAP_SET_INHERIT, (long)back.receive, 1) != 0 ||
+      syscall2(SYS_CAP_SET_INHERIT, (long)back.send, 1) != 0) {
+    return 1;
+  }
+  // The backend reply arrives after the outer deadline. A nested call with
+  // deadline zero must still expire with its caller, within the case watchdog.
+  const unsigned long outer_timeout_ns = 2000000000UL;
+  const unsigned long backend_pause_ns = 3000000000UL;
+  long backend = fork();
+  if (backend == 0) {
+    struct moss_ipc_message request = {0};
+    unsigned long reply = 0;
+    if (ipc_receive(back.receive, &request, &reply) != 1 || request.payload[0] != 'b') {
+      _exit(91);
+    }
+    unsigned long pause = backend_pause_ns;
+    if (nanosleep_ns(&pause) != 0) {
+      _exit(92);
+    }
+    const struct moss_ipc_message answer = {.size = 1, .payload = {'c'}};
+    _exit(ipc_reply(reply, &answer) == -IPC_ETIMEDOUT ? 37 : 93);
+  }
+  if (backend < 0) {
+    return 2;
+  }
+  long frontend = fork();
+  if (frontend == 0) {
+    struct moss_ipc_message request = {0}, response = {0};
+    unsigned long reply = 0;
+    if (ipc_receive(front.receive, &request, &reply) != 1 || request.payload[0] != 'a') {
+      _exit(94);
+    }
+    const struct moss_ipc_message nested = {.size = 1, .payload = {'b'}};
+    if (ipc_call(back.send, &nested, &response, 0) != -IPC_ETIMEDOUT) {
+      _exit(95);
+    }
+    const struct moss_ipc_message answer = {.size = 1, .payload = {'d'}};
+    _exit(ipc_reply(reply, &answer) == -IPC_ETIMEDOUT ? 37 : 96);
+  }
+  if (frontend < 0) {
+    kill(backend, SIGKILL);
+    (void)wait_exit(backend, 37);
+    return 4;
+  }
+  unsigned long errors = syscall1(SYS_CAP_CLOSE, (long)front.receive) != 0;
+  errors |= (unsigned long)(syscall1(SYS_CAP_CLOSE, (long)back.receive) != 0);
+  const struct moss_ipc_message request = {.size = 1, .payload = {'a'}};
+  struct moss_ipc_message response = {0};
+  long deadline = deadline_after(outer_timeout_ns);
+  long result = deadline > 0 ? ipc_call(front.send, &request, &response, deadline) : -1;
+  if (result != -IPC_ETIMEDOUT) {
+    kill(frontend, SIGKILL);
+    kill(backend, SIGKILL);
+  }
+  errors |= (unsigned long)(result != -IPC_ETIMEDOUT) << 1;
+  errors |= (unsigned long)!wait_exit(frontend, 37) << 2;
+  errors |= (unsigned long)!wait_exit(backend, 37) << 3;
+  errors |=
+      (unsigned long)(syscall1(SYS_CAP_CLOSE, (long)front.send) != 0 || syscall1(SYS_CAP_CLOSE, (long)back.send) != 0)
+      << 4;
+  return errors;
+}
+
 unsigned long ipc_peer_death(void) {
   struct moss_ipc_endpoints pair = {0, 0};
   if (syscall1(SYS_IPC_CREATE, (long)&pair) != 0 || syscall2(SYS_CAP_SET_INHERIT, (long)pair.receive, 1) != 0)
@@ -922,9 +989,9 @@ unsigned long ipc_nested_roundtrip(void) {
   if (errors)
     kill(backend, SIGKILL);
   errors |= (unsigned long)!wait_exit(backend, 37) << 3;
-  errors |= (unsigned long)(syscall1(SYS_CAP_CLOSE, (long)front.send) != 0 ||
-                            syscall1(SYS_CAP_CLOSE, (long)back.send) != 0)
-            << 4;
+  errors |=
+      (unsigned long)(syscall1(SYS_CAP_CLOSE, (long)front.send) != 0 || syscall1(SYS_CAP_CLOSE, (long)back.send) != 0)
+      << 4;
   return errors;
 }
 

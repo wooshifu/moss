@@ -580,6 +580,8 @@ struct PriorityDonation {
   Thread *caller{nullptr};
   Thread *server{nullptr};
   PriorityDonation *next{nullptr};
+  // The absolute deadline follows this wait dependency through Reply handoff.
+  u64 deadline_ns{0};
 };
 
 // Thread structure

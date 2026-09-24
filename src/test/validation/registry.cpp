@@ -156,6 +156,7 @@ void declare_cases() {
   ut::register_suite("users.ipc", [] {
     ut::register_test("roundtrip", empty_case);
     ut::register_test("deadline", empty_case);
+    ut::register_test("deadline_propagation", empty_case);
     ut::register_test("peer_death", empty_case);
     ut::register_test("signal_cancel", empty_case);
     ut::register_test("capability_transfer", empty_case);

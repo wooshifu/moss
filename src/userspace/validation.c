@@ -422,6 +422,7 @@ void _start(long argc, const char **argv) {
   } else if (mode == 25) {
     unsigned long (*const tests[])(void) = {ipc_roundtrip,
                                             ipc_deadline,
+                                            ipc_deadline_propagation,
                                             ipc_peer_death,
                                             ipc_signal_cancel,
                                             ipc_capability_transfer,

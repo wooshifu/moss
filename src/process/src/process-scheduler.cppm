@@ -1326,12 +1326,24 @@ public:
     return rt_runqueues_.get_cpu(cpu_id).nr_running() > 0 || runqueues_.get_cpu(cpu_id).nr_running() > 0;
   }
 
-  [[nodiscard]] bool begin_ipc_call(PriorityDonation *donation, Thread *caller) noexcept {
+  [[nodiscard]] bool begin_ipc_call(PriorityDonation *donation, Thread *caller, u64 *deadline_ns = nullptr) noexcept {
     if (!donation || !caller)
       return false;
     containers::LockGuard<containers::IrqSpinLock> guard(ipc_priority_lock_);
     if (caller->ipc_wait)
       return false;
+    u64 effective_deadline = deadline_ns ? *deadline_ns : 0;
+    // A service thread may hold several replies. Its next call inherits the
+    // earliest active caller deadline, captured with the donor-list lock.
+    for (auto *active = caller->ipc_donors; active; active = active->next) {
+      if (active->deadline_ns && (!effective_deadline || active->deadline_ns < effective_deadline)) {
+        effective_deadline = active->deadline_ns;
+      }
+    }
+    donation->deadline_ns = effective_deadline;
+    if (deadline_ns) {
+      *deadline_ns = effective_deadline;
+    }
     donation->caller = caller;
     donation->server = nullptr;
     donation->next = nullptr;
@@ -1372,6 +1384,7 @@ public:
     donation->caller = nullptr;
     donation->server = nullptr;
     donation->next = nullptr;
+    donation->deadline_ns = 0;
     if (caller && !caller->ipc_wait && !caller->ipc_donors)
       caller->ipc_scheduler = nullptr;
     if (server) {
