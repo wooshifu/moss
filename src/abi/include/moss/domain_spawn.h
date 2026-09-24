@@ -3,10 +3,12 @@
 #include <stdint.h>
 
 // Native image construction ABI. SYS_DOMAIN_SPAWN requires a factory handle;
-// the caller supplies page bytes and the startup stack. The kernel validates
+// the caller supplies data-page bytes, approved code versions, and the startup stack. The kernel validates
 // mappings and publishes the domain only after all resources are prepared.
 enum {
   MOSS_DOMAIN_PAGE_BYTES = 4096,
+  // Bound one construction request until per-domain memory quotas exist.
+  MOSS_DOMAIN_MAX_IMAGE_PAGES = 4096,
   MOSS_DOMAIN_PAGE_READ = 1U << 0,
   MOSS_DOMAIN_PAGE_WRITE = 1U << 1,
   MOSS_DOMAIN_PAGE_EXEC = 1U << 2,
@@ -14,9 +16,13 @@ enum {
 
 struct moss_domain_page {
   uint64_t address; // Page-aligned target virtual address.
-  uint64_t source;  // Caller buffer; zero means a zero-filled page.
-  uint64_t size;    // Bytes copied from source, at most one 4 KiB page.
+  uint64_t source;  // Caller buffer for a non-executable page.
+  uint64_t size;    // Bytes copied from source; zero fills the remainder.
   uint64_t flags;
+  // Executable pages use only an approved immutable code version. source and
+  // size must be zero; code_page_index selects a complete page in that version.
+  uint64_t code;
+  uint64_t code_page_index;
 };
 
 struct moss_domain_spawn {

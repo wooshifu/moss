@@ -282,6 +282,37 @@ public:
   DomainFactoryObject() noexcept : Object(capability::ObjectType::DomainFactory) {}
 };
 
+class CodeVersionObject final : public capability::Object {
+  PhysAddr *pages_{nullptr};
+  usize capacity_{0};
+  usize count_{0};
+
+public:
+  CodeVersionObject() noexcept : Object(capability::ObjectType::CodeVersion) {}
+  ~CodeVersionObject() override {
+    for (usize i = 0; i < count_; ++i) {
+      if (mm::PageFrameAllocator::page_ref_dec(pages_[i]) == 0)
+        (void)mm::free_pages(pages_[i], 0);
+    }
+    if (pages_)
+      (void)mm::RuntimeHeapAllocator::deallocate(pages_, capacity_ * sizeof(pages_[0]));
+  }
+  void adopt_storage(PhysAddr *pages, usize capacity) noexcept {
+    pages_ = pages;
+    capacity_ = capacity;
+  }
+  void append_page(PhysAddr page) noexcept { pages_[count_++] = page; }
+  [[nodiscard]] usize count() const noexcept { return count_; }
+  [[nodiscard]] const u8 *bytes(usize index) const noexcept {
+    return reinterpret_cast<const u8 *>(phys_to_virt(pages_[index]));
+  }
+};
+
+class CodeAuthorityObject final : public capability::Object {
+public:
+  CodeAuthorityObject() noexcept : Object(capability::ObjectType::CodeAuthority) {}
+};
+
 inline constexpr u32 kFullDomainRights = capability::rights::DOMAIN_TERMINATE | capability::rights::DOMAIN_INSPECT |
                                          capability::rights::DOMAIN_OBSERVE | capability::rights::DOMAIN_SIGNAL |
                                          capability::rights::TRANSFER | capability::rights::DUPLICATE;
@@ -290,6 +321,12 @@ inline constexpr u32 kFullDomainScopeRights =
     capability::rights::DOMAIN_SCOPE_INSPECT | capability::rights::TRANSFER | capability::rights::DUPLICATE;
 inline constexpr u32 kFactoryRights =
     capability::rights::DOMAIN_SPAWN | capability::rights::TRANSFER | capability::rights::DUPLICATE;
+inline constexpr u32 kCodeReadRights =
+    capability::rights::MAP_READ | capability::rights::TRANSFER | capability::rights::DUPLICATE;
+inline constexpr u32 kCodeExecuteRights =
+    capability::rights::CODE_EXEC | capability::rights::TRANSFER | capability::rights::DUPLICATE;
+inline constexpr u32 kCodeAuthorityRights =
+    capability::rights::CODE_APPROVE | capability::rights::TRANSFER | capability::rights::DUPLICATE;
 
 struct DomainExitStatus {
   i32 code;
@@ -778,6 +815,114 @@ long sys_domain_factory(long, long, long, long, long, long) noexcept {
   return handle ? static_cast<long>(*handle) : domain_cap_error(handle.error());
 }
 
+static long create_code_snapshot(u64 source, long page_count_arg) noexcept {
+  if (page_count_arg <= 0 || page_count_arg > MOSS_DOMAIN_MAX_IMAGE_PAGES)
+    return -errc::EINVAL;
+  const usize count = static_cast<usize>(page_count_arg);
+  const usize bytes = count * PAGE_SIZE;
+  if (!source || source > ~u64{0} - bytes)
+    return -errc::EFAULT;
+  auto caller = process::current_process();
+  if (!caller)
+    return -errc::ESRCH;
+  auto source_space = caller->address_space();
+  if (!source_space)
+    return -errc::ESRCH;
+  auto object = shared_ptr<capability::Object>::try_make<CodeVersionObject>(moss::abi::bridge::moss_heap_allocate);
+  if (!object)
+    return -errc::ENOMEM;
+  auto storage = mm::RuntimeHeapAllocator::allocate(count * sizeof(PhysAddr));
+  if (!storage)
+    return -errc::ENOMEM;
+  auto *version = static_cast<CodeVersionObject *>(object.get());
+  version->adopt_storage(static_cast<PhysAddr *>(*storage), count);
+  for (usize i = 0; i < count; ++i) {
+    auto page = mm::allocate_pages(0);
+    if (!page)
+      return -errc::ENOMEM;
+    if (source_space->copy_from_user(reinterpret_cast<void *>(phys_to_virt(*page)), source + i * PAGE_SIZE,
+                                     PAGE_SIZE) != 0) {
+      (void)mm::free_pages(*page, 0);
+      return -errc::EFAULT;
+    }
+    version->append_page(*page);
+  }
+  // Approval binds this whole immutable version. The policy service reads
+  // these exact bytes, never the caller's possibly changing source buffer.
+  auto handle = caller->capabilities().install(moss::move(object), kCodeReadRights);
+  return handle ? static_cast<long>(*handle) : domain_cap_error(handle.error());
+}
+
+long sys_code_snapshot(long source, long, long, long, long, long) noexcept {
+  return create_code_snapshot(static_cast<u64>(source), 1);
+}
+
+long sys_code_snapshot_range(long source, long page_count, long, long, long, long) noexcept {
+  return create_code_snapshot(static_cast<u64>(source), page_count);
+}
+
+long sys_code_read_range(long version_handle, long first_page_arg, long destination, long page_count_arg, long,
+                         long) noexcept {
+  if (first_page_arg < 0 || page_count_arg <= 0 || page_count_arg > MOSS_DOMAIN_MAX_IMAGE_PAGES)
+    return -errc::EINVAL;
+  auto caller = process::current_process();
+  if (!caller)
+    return -errc::ESRCH;
+  auto version = caller->capabilities().lookup(static_cast<Handle>(version_handle), capability::ObjectType::CodeVersion,
+                                               capability::rights::MAP_READ);
+  if (!version)
+    return domain_cap_error(version.error());
+  auto *snapshot = static_cast<CodeVersionObject *>((*version).get());
+  const usize first_page = static_cast<usize>(first_page_arg);
+  const usize count = static_cast<usize>(page_count_arg);
+  if (first_page > snapshot->count() || count > snapshot->count() - first_page)
+    return -errc::EINVAL;
+  const u64 address = static_cast<u64>(destination);
+  if (!address || address > ~u64{0} - count * PAGE_SIZE)
+    return -errc::EFAULT;
+  auto destination_space = caller->address_space();
+  if (!destination_space)
+    return -errc::ESRCH;
+  for (usize i = 0; i < count; ++i) {
+    if (destination_space->copy_to_user(address + i * PAGE_SIZE, snapshot->bytes(first_page + i), PAGE_SIZE) != 0)
+      return -errc::EFAULT;
+  }
+  return 0;
+}
+
+long sys_code_read(long version_handle, long destination, long, long, long, long) noexcept {
+  return sys_code_read_range(version_handle, 0, destination, 1, 0, 0);
+}
+
+long sys_code_authority(long, long, long, long, long, long) noexcept {
+  auto caller = process::current_process();
+  if (!caller)
+    return -errc::ESRCH;
+  if (!caller->is_domain_factory_source())
+    return -errc::EACCES;
+  auto object = shared_ptr<capability::Object>::try_make<CodeAuthorityObject>(moss::abi::bridge::moss_heap_allocate);
+  if (!object)
+    return -errc::ENOMEM;
+  auto handle = caller->capabilities().install(moss::move(object), kCodeAuthorityRights);
+  return handle ? static_cast<long>(*handle) : domain_cap_error(handle.error());
+}
+
+long sys_code_approve(long authority_handle, long version_handle, long, long, long, long) noexcept {
+  auto caller = process::current_process();
+  if (!caller)
+    return -errc::ESRCH;
+  auto authority = caller->capabilities().lookup(
+      static_cast<Handle>(authority_handle), capability::ObjectType::CodeAuthority, capability::rights::CODE_APPROVE);
+  if (!authority)
+    return domain_cap_error(authority.error());
+  auto version = caller->capabilities().lookup(static_cast<Handle>(version_handle), capability::ObjectType::CodeVersion,
+                                               capability::rights::MAP_READ);
+  if (!version)
+    return domain_cap_error(version.error());
+  auto handle = caller->capabilities().install(moss::move(*version), kCodeExecuteRights);
+  return handle ? static_cast<long>(*handle) : domain_cap_error(handle.error());
+}
+
 long sys_domain_spawn(long factory_handle, long image_addr, long, long, long, long) noexcept {
   using namespace moss::kernel::process;
   static_assert(PAGE_SIZE == MOSS_DOMAIN_PAGE_BYTES);
@@ -809,8 +954,7 @@ long sys_domain_spawn(long factory_handle, long image_addr, long, long, long, lo
 
   // A single construction call is bounded until per-domain memory quotas are
   // available. The image still reaches 16 MiB without a kernel ELF parser.
-  constexpr usize MAX_IMAGE_PAGES = 4096;
-  if (!image.pages || image.page_count == 0 || image.page_count > MAX_IMAGE_PAGES ||
+  if (!image.pages || image.page_count == 0 || image.page_count > MOSS_DOMAIN_MAX_IMAGE_PAGES ||
       image.capability_count > capability::Table::capacity() || (image.capability_count && !image.capabilities) ||
       image.stack_size > user_layout::STACK_SIZE || (image.stack_size && !image.stack_source) ||
       image.stack_pointer < user_layout::STACK_TOP - user_layout::STACK_SIZE ||
@@ -847,15 +991,19 @@ long sys_domain_spawn(long factory_handle, long image_addr, long, long, long, lo
   // Every page is private to the new address space. If any copy or page-table
   // allocation fails, its owner frees all previously mapped pages on return.
   auto install_page = [&](VirtAddr address, u32 flags, VmaType type, u64 source, usize count, usize destination_offset,
-                          bool add_region) -> long {
+                          const u8 *approved_code, bool add_region) -> long {
     auto frame = mm::allocate_pages(0);
     if (!frame)
       return -errc::ENOMEM;
     auto *bytes = reinterpret_cast<u8 *>(phys_to_virt(*frame));
-    __builtin_memset(bytes, 0, PAGE_SIZE);
-    if (count && !read_source(bytes + destination_offset, source, count)) {
-      (void)mm::free_pages(*frame, 0);
-      return -errc::EFAULT;
+    if (approved_code)
+      __builtin_memcpy(bytes, approved_code, PAGE_SIZE);
+    else {
+      __builtin_memset(bytes, 0, PAGE_SIZE);
+      if (count && !read_source(bytes + destination_offset, source, count)) {
+        (void)mm::free_pages(*frame, 0);
+        return -errc::EFAULT;
+      }
     }
 #if defined(MOSS_ARCH_ARM64)
     if (flags & vma_flags::EXEC) {
@@ -897,15 +1045,28 @@ long sys_domain_spawn(long factory_handle, long image_addr, long, long, long, lo
         (page.flags & (MOSS_DOMAIN_PAGE_WRITE | MOSS_DOMAIN_PAGE_EXEC)) ==
             (MOSS_DOMAIN_PAGE_WRITE | MOSS_DOMAIN_PAGE_EXEC) ||
         page.size > PAGE_SIZE || (page.size && (!page.source || page.source > ~u64{0} - page.size)) ||
+        ((page.flags & MOSS_DOMAIN_PAGE_EXEC) ? (!page.code || page.source || page.size)
+                                              : (page.code != 0 || page.code_page_index != 0)) ||
         (page.address >= user_layout::HEAP_START && page.address < user_layout::HEAP_START + user_layout::HEAP_INIT) ||
         space->find_vma(page.address))
       return -errc::EINVAL;
     const u32 flags = vma_flags::READ | ((page.flags & MOSS_DOMAIN_PAGE_WRITE) ? vma_flags::WRITE : 0U) |
                       ((page.flags & MOSS_DOMAIN_PAGE_EXEC) ? vma_flags::EXEC : 0U);
-    if (page.flags & MOSS_DOMAIN_PAGE_EXEC)
+    shared_ptr<capability::Object> approved;
+    if (page.flags & MOSS_DOMAIN_PAGE_EXEC) {
+      auto looked = caller->capabilities().lookup(static_cast<Handle>(page.code), capability::ObjectType::CodeVersion,
+                                                  capability::rights::CODE_EXEC);
+      if (!looked)
+        return domain_cap_error(looked.error());
+      approved = moss::move(*looked);
+      if (page.code_page_index >= static_cast<CodeVersionObject *>(approved.get())->count())
+        return -errc::EINVAL;
       entry_in_image |= image.entry >= page.address && image.entry - page.address < PAGE_SIZE;
-    if (long error = install_page(page.address, flags, (flags & vma_flags::EXEC) ? VmaType::CODE : VmaType::DATA,
-                                  page.source, static_cast<usize>(page.size), 0, true);
+    }
+    if (long error = install_page(
+            page.address, flags, (flags & vma_flags::EXEC) ? VmaType::CODE : VmaType::DATA, page.source,
+            static_cast<usize>(page.size), 0,
+            approved ? static_cast<CodeVersionObject *>(approved.get())->bytes(page.code_page_index) : nullptr, true);
         error < 0)
       return error;
   }
@@ -916,9 +1077,9 @@ long sys_domain_spawn(long factory_handle, long image_addr, long, long, long, lo
   for (VirtAddr address = image.stack_pointer & ~(VirtAddr{PAGE_SIZE} - 1); address < stack_end; address += PAGE_SIZE) {
     const VirtAddr begin = address > image.stack_pointer ? address : image.stack_pointer;
     const VirtAddr end = address + PAGE_SIZE < stack_end ? address + PAGE_SIZE : stack_end;
-    if (long error =
-            install_page(address, vma_flags::READ | vma_flags::WRITE, VmaType::STACK,
-                         image.stack_source + begin - image.stack_pointer, end - begin, begin - address, false);
+    if (long error = install_page(address, vma_flags::READ | vma_flags::WRITE, VmaType::STACK,
+                                  image.stack_source + begin - image.stack_pointer, end - begin, begin - address,
+                                  nullptr, false);
         error < 0)
       return error;
   }
@@ -3511,6 +3672,12 @@ const SyscallDescriptor SYSCALL_TABLE[static_cast<int>(SyscallNumber::MAX_SYSCAL
     {"domain_spawn", handlers::sys_domain_spawn, 2, true, "Build and start an authorized native domain"},
     {"domain_layout", handlers::sys_domain_layout, 1, true, "Read the active native-domain virtual layout"},
     {"domain_factory", handlers::sys_domain_factory, 0, true, "Mint boot-owned domain construction authority"},
+    {"code_snapshot", handlers::sys_code_snapshot, 1, true, "Snapshot an immutable code page"},
+    {"code_read", handlers::sys_code_read, 2, true, "Read an immutable code-page version"},
+    {"code_authority", handlers::sys_code_authority, 0, true, "Mint boot-owned code approval authority"},
+    {"code_approve", handlers::sys_code_approve, 2, true, "Approve an immutable version for execution"},
+    {"code_snapshot_range", handlers::sys_code_snapshot_range, 2, true, "Snapshot a bounded immutable code range"},
+    {"code_read_range", handlers::sys_code_read_range, 4, true, "Read pages from an immutable code version"},
     {"execve_cap", handlers::sys_execve_cap, 4, true, "Exec with an explicit retained startup capability"},
     {"domain_signal", handlers::sys_domain_signal, 2, true, "Signal a capability-addressed domain"},
     {"domain_scope_create", handlers::sys_domain_scope_create, 0, true, "Create a fork-inherited domain scope"},
