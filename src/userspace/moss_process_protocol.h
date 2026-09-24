@@ -53,7 +53,8 @@ enum {
   MOSS_PROCESS_DENIED = 7,
   MOSS_PROCESS_BAD_DESCRIPTOR = 8,
   MOSS_PROCESS_NOT_FOUND = 9,
-  MOSS_PROCESS_TOO_MANY_FILES = 10
+  MOSS_PROCESS_TOO_MANY_FILES = 10,
+  MOSS_PROCESS_EXISTS = 11
 };
 enum { MOSS_PROCESS_INIT_ID = 1 };
 // Match the current kernel compatibility limit while reserving 0..2 for the
@@ -65,7 +66,8 @@ enum {
   MOSS_PROCESS_FD_CREATE = 1U << 2,
   MOSS_PROCESS_FD_TRUNCATE = 1U << 3,
   MOSS_PROCESS_FD_APPEND = 1U << 4,
-  MOSS_PROCESS_FD_CLOEXEC = 1U << 5
+  MOSS_PROCESS_FD_CLOEXEC = 1U << 5,
+  MOSS_PROCESS_FD_EXCLUSIVE = 1U << 6
 };
 enum { MOSS_PROCESS_FD_SEEK_SET = 0, MOSS_PROCESS_FD_SEEK_CUR = 1, MOSS_PROCESS_FD_SEEK_END = 2 };
 // Native process::sig::NSIG is 32: zero probes existence, 1..31 are signals.
@@ -112,8 +114,9 @@ enum {
 // SIGNAL_GROUP selects the caller's group for ID zero. It can signal only the
 // caller and its direct children that belong to that group.
 // FD_OPEN carries [opcode, flags, absolute NUL-terminated namespace path] and
-// returns [OK, descriptor:u64 LE]. FD_CLOSE and FD_DUP carry [opcode,
-// descriptor:u64 LE]; DUP returns the new descriptor. FD_DUP_TO carries
+// returns [OK, descriptor:u64 LE]. EXCLUSIVE requires CREATE and reports
+// EXISTS without truncating or opening an existing file. FD_CLOSE and FD_DUP
+// carry [opcode, descriptor:u64 LE]; DUP returns the new descriptor. FD_DUP_TO carries
 // [opcode, source:u64 LE, target:u64 LE] and returns the target. A different
 // source replaces an occupied target and clears its close-on-exec flag;
 // duplicating a descriptor onto itself preserves that flag.

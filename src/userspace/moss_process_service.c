@@ -405,8 +405,10 @@ static void handle_fd_request(struct Record *owner, unsigned long namespace, str
     unsigned long path_size = request->size >= 2 ? request->size - 2 : 0;
     if (request->size < 5 || request->capability || request->rights ||
         flags & ~(MOSS_PROCESS_FD_READABLE | MOSS_PROCESS_FD_WRITABLE | MOSS_PROCESS_FD_CREATE |
-                  MOSS_PROCESS_FD_TRUNCATE | MOSS_PROCESS_FD_APPEND | MOSS_PROCESS_FD_CLOEXEC) ||
+                  MOSS_PROCESS_FD_TRUNCATE | MOSS_PROCESS_FD_APPEND | MOSS_PROCESS_FD_CLOEXEC |
+                  MOSS_PROCESS_FD_EXCLUSIVE) ||
         !(flags & (MOSS_PROCESS_FD_READABLE | MOSS_PROCESS_FD_WRITABLE)) ||
+        ((flags & MOSS_PROCESS_FD_EXCLUSIVE) && !(flags & MOSS_PROCESS_FD_CREATE)) ||
         ((flags & (MOSS_PROCESS_FD_TRUNCATE | MOSS_PROCESS_FD_APPEND)) && !(flags & MOSS_PROCESS_FD_WRITABLE)) ||
         path[0] != '/' || memchr(path, 0, path_size) != path + path_size - 1)
       return;
@@ -426,12 +428,15 @@ static void handle_fd_request(struct Record *owner, unsigned long namespace, str
       return;
     }
     struct moss_ipc_message lookup = {.size = request->size, .payload = {MOSS_NAMESPACE_OPEN}};
-    lookup.payload[1] = flags & MOSS_PROCESS_FD_CREATE ? MOSS_NAMESPACE_OPEN_CREATE : 0;
+    lookup.payload[1] = (flags & MOSS_PROCESS_FD_CREATE ? MOSS_NAMESPACE_OPEN_CREATE : 0) |
+                        (flags & MOSS_PROCESS_FD_EXCLUSIVE ? MOSS_NAMESPACE_OPEN_EXCLUSIVE : 0);
     memcpy(lookup.payload + 2, path, path_size);
     struct moss_ipc_message opened = {0};
     long result = file_call(namespace, &lookup, &opened);
     if (result == 1 && opened.payload[0] == MOSS_NAMESPACE_NO_ENTRY && !opened.capability && !opened.rights) {
       response->payload[0] = MOSS_PROCESS_NOT_FOUND;
+    } else if (result == 1 && opened.payload[0] == MOSS_NAMESPACE_EXISTS && !opened.capability && !opened.rights) {
+      response->payload[0] = MOSS_PROCESS_EXISTS;
     } else if (result == 1 && opened.payload[0] == MOSS_NAMESPACE_OK && opened.capability &&
                opened.rights == MOSS_CAP_SEND &&
                (!(flags & MOSS_PROCESS_FD_TRUNCATE) || file_resize(opened.capability, 0))) {

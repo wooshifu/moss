@@ -831,6 +831,24 @@ static int fd_view_probe(void) {
     memcpy((void *)mapped, "abc", 3);
     valid = fd_io(session, MOSS_PROCESS_FD_WRITE, first, memory, 3, &transferred) && transferred == 3;
   }
+  unsigned long exclusive = 0;
+  if (valid)
+    valid = fd_open(session, "/fd-exclusive",
+                    MOSS_PROCESS_FD_READABLE | MOSS_PROCESS_FD_WRITABLE | MOSS_PROCESS_FD_CREATE |
+                        MOSS_PROCESS_FD_EXCLUSIVE,
+                    &exclusive);
+  if (valid) {
+    struct moss_ipc_message existing = {.size = 2 + sizeof("/note"), .payload = {MOSS_PROCESS_FD_OPEN}};
+    existing.payload[1] = MOSS_PROCESS_FD_READABLE | MOSS_PROCESS_FD_WRITABLE | MOSS_PROCESS_FD_CREATE |
+                          MOSS_PROCESS_FD_EXCLUSIVE | MOSS_PROCESS_FD_TRUNCATE;
+    memcpy(existing.payload + 2, "/note", sizeof("/note"));
+    valid = fd_rejected(session, &existing, MOSS_PROCESS_EXISTS) &&
+            fd_seek(session, first, MOSS_PROCESS_FD_SEEK_SET, &position) && position == 0 &&
+            fd_io(session, MOSS_PROCESS_FD_READ, first, memory, 3, &transferred) && transferred == 3 &&
+            memcmp((const void *)mapped, "abc", 3) == 0;
+  }
+  if (exclusive)
+    valid &= fd_command(session, MOSS_PROCESS_FD_CLOSE, exclusive, NULL);
   if (valid) {
     valid = fd_seek(session, first, MOSS_PROCESS_FD_SEEK_END, &position) && position == 3;
   }
