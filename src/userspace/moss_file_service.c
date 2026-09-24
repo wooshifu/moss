@@ -228,6 +228,11 @@ int main(int argc, char **argv) {
       response.payload[0] = MOSS_FILE_OK;
       response.size = MOSS_FILE_SIZE_REPLY_BYTES;
       moss_file_put_u64(response.payload + 1, file->length);
+    } else if (file && request.size == 1 && request.payload[0] == MOSS_FILE_STAT && !request.rights) {
+      response.payload[0] = MOSS_FILE_OK;
+      response.size = MOSS_FILE_STAT_REPLY_BYTES;
+      moss_file_put_u64(response.payload + 1, file->badge);
+      moss_file_put_u64(response.payload + 9, file->length);
     } else if (file && request.size == MOSS_FILE_RESIZE_HEADER_BYTES && request.payload[0] == MOSS_FILE_RESIZE) {
       uint64_t length = moss_file_get_u64(request.payload + 1);
       response.payload[0] =

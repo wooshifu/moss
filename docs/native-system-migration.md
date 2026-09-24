@@ -48,7 +48,9 @@ networking and persistent storage.
    after `exec`.
    An internal file, pipe and console descriptor view now shares offsets and
    object references through the process service and clones references for
-   managed children. Managed libc reports successful exec from the preinit
+   managed children. Native `FD_STAT` reports file kind, incarnation-scoped
+   identity and size without changing a shared open-description offset.
+   Managed libc reports successful exec from the preinit
    array so the service closes marked entries before program constructors.
    The production probe checks that
    `dup` clears that flag, the duplicate survives fork and exec, and the

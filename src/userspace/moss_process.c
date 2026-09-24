@@ -723,6 +723,20 @@ static int fd_status(unsigned long session, unsigned long number, unsigned long 
   return 1;
 }
 
+static int fd_stat(unsigned long session, unsigned long number, unsigned char *kind, unsigned long *id,
+                   unsigned long *size) {
+  struct moss_ipc_message request = {.size = MOSS_PROCESS_REPLY_VALUE_BYTES, .payload = {MOSS_PROCESS_FD_STAT}};
+  moss_process_put_u64(request.payload + 1, number);
+  struct moss_ipc_message response = {0};
+  long result = call(session, &request, &response);
+  if (!no_capability(&response) || result != MOSS_PROCESS_FD_STAT_REPLY_BYTES || response.payload[0] != MOSS_PROCESS_OK)
+    return 0;
+  *kind = response.payload[1];
+  *id = moss_process_get_u64(response.payload + 2);
+  *size = moss_process_get_u64(response.payload + 10);
+  return *kind >= MOSS_PROCESS_FD_KIND_FILE && *kind <= MOSS_PROCESS_FD_KIND_CONSOLE;
+}
+
 static int fd_dup_min(unsigned long session, unsigned long source, unsigned long minimum, unsigned char flags,
                       unsigned long *target) {
   struct moss_ipc_message request = {.size = MOSS_PROCESS_FD_DUP_MIN_BYTES, .payload = {MOSS_PROCESS_FD_DUP_MIN}};
@@ -803,7 +817,9 @@ static int fd_view_probe(void) {
     return 0;
   unsigned long first = 0, duplicate = 0, imported = 0, victim = 0, spare = 0, minimum_first = 0, minimum_second = 0,
                 position = 0;
+  unsigned long file_id = 0, object_id = 0, object_size = 0;
   unsigned char flags = 0;
+  unsigned char kind = 0;
   unsigned int transferred = 0;
   if (!session || !fd_open(session, "/note",
                            MOSS_PROCESS_FD_READABLE | MOSS_PROCESS_FD_WRITABLE | MOSS_PROCESS_FD_CREATE |
@@ -829,6 +845,9 @@ static int fd_view_probe(void) {
     memcpy((void *)mapped, "abc", 3);
     valid = fd_io(session, MOSS_PROCESS_FD_WRITE, first, memory, 3, &transferred) && transferred == 3;
   }
+  if (valid)
+    valid = fd_stat(session, first, &kind, &file_id, &object_size) && kind == MOSS_PROCESS_FD_KIND_FILE &&
+            file_id > 0 && object_size == 3;
   unsigned long exclusive = 0;
   if (valid)
     valid = fd_open(session, "/fd-exclusive",
@@ -856,6 +875,9 @@ static int fd_view_probe(void) {
   if (valid) {
     valid = fd_command(session, MOSS_PROCESS_FD_DUP, first, &duplicate);
   }
+  if (valid)
+    valid = fd_stat(session, duplicate, &kind, &object_id, &object_size) && kind == MOSS_PROCESS_FD_KIND_FILE &&
+            object_id == file_id && object_size == 3;
   if (valid) {
     valid = fd_io(session, MOSS_PROCESS_FD_READ, duplicate, memory, 1, &transferred) && transferred == 1 &&
             *(unsigned char *)mapped == 'a' && fd_io(session, MOSS_PROCESS_FD_READ, first, memory, 1, &transferred) &&
@@ -890,7 +912,9 @@ static int fd_view_probe(void) {
   }
   if (valid) {
     valid = fd_open(session, "/scratch", MOSS_PROCESS_FD_READABLE | MOSS_PROCESS_FD_CLOEXEC, &victim) &&
-            fd_dup_to(session, duplicate, victim) && fd_dup_to(session, first, first) &&
+            fd_stat(session, victim, &kind, &object_id, &object_size) && kind == MOSS_PROCESS_FD_KIND_FILE &&
+            object_id != file_id && fd_dup_to(session, duplicate, victim) && fd_dup_to(session, first, first) &&
+            fd_stat(session, victim, &kind, &object_id, &object_size) && object_id == file_id && object_size == 3 &&
             fd_flags(session, MOSS_PROCESS_FD_GET_FLAGS, victim, &flags) && flags == 0 &&
             fd_flags(session, MOSS_PROCESS_FD_GET_FLAGS, first, &flags) && flags == 1;
   }
@@ -1145,12 +1169,17 @@ static int fd_io_rejected(unsigned long session, unsigned char operation, unsign
 static int fd_pipe_probe(void) {
   unsigned long session = getauxval(MOSS_AT_STARTUP_CAP);
   unsigned long reader = 0, writer = 0, duplicate = 0, flags = 0;
+  unsigned long object_id = 0, object_size = 0;
+  unsigned char kind = 0;
   unsigned int transferred = 0;
   long memory = syscall1(SYS_MEM_CREATE, MOSS_MEM_OBJECT_BYTES);
   long mapped = memory > 0 ? syscall2(SYS_MEM_MAP, memory, MOSS_CAP_MAP_READ | MOSS_CAP_MAP_WRITE) : 0;
   int valid = session && mapped > 0 && fd_pipe(session, &reader, &writer) && reader >= MOSS_PROCESS_FD_FIRST &&
               fd_status(session, reader, &flags) && flags == MOSS_PROCESS_FD_READABLE &&
-              fd_status(session, writer, &flags) && flags == MOSS_PROCESS_FD_WRITABLE;
+              fd_status(session, writer, &flags) && flags == MOSS_PROCESS_FD_WRITABLE &&
+              fd_stat(session, reader, &kind, &object_id, &object_size) && kind == MOSS_PROCESS_FD_KIND_PIPE &&
+              object_id == 0 && object_size == 0 && fd_stat(session, writer, &kind, &object_id, &object_size) &&
+              kind == MOSS_PROCESS_FD_KIND_PIPE && object_id == 0 && object_size == 0;
   if (valid) {
     memcpy((void *)mapped, "pipe", 4);
     valid = fd_io(session, MOSS_PROCESS_FD_WRITE, writer, memory, 4, &transferred) && transferred == 4 &&
@@ -1219,10 +1248,15 @@ static int console_fd_probe(void) {
   long memory = syscall1(SYS_MEM_CREATE, MOSS_MEM_OBJECT_BYTES);
   long mapped = memory > 0 ? syscall2(SYS_MEM_MAP, memory, MOSS_CAP_MAP_READ | MOSS_CAP_MAP_WRITE) : 0;
   unsigned long status = 0;
+  unsigned long object_id = 0, object_size = 0;
+  unsigned char kind = 0;
   unsigned int transferred = 0;
   int valid = mapped > 0 && fd_status(session, 0, &status) && status == MOSS_PROCESS_FD_READABLE &&
               fd_status(session, 1, &status) && status == MOSS_PROCESS_FD_WRITABLE && fd_status(session, 2, &status) &&
-              status == MOSS_PROCESS_FD_WRITABLE &&
+              status == MOSS_PROCESS_FD_WRITABLE && fd_stat(session, 0, &kind, &object_id, &object_size) &&
+              kind == MOSS_PROCESS_FD_KIND_CONSOLE && object_id == 0 && object_size == 0 &&
+              fd_stat(session, 1, &kind, &object_id, &object_size) && kind == MOSS_PROCESS_FD_KIND_CONSOLE &&
+              object_id == 0 && object_size == 0 &&
               fd_io_rejected(session, MOSS_PROCESS_FD_READ, 0, memory, 1, MOSS_PROCESS_WOULD_BLOCK);
   if (valid)
     valid = console_feed(input, '@') && console_feed(input, '!') &&

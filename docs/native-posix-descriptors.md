@@ -33,6 +33,10 @@ now distinguishes missing paths, bad descriptors and a full per-process table;
 other backend failures still need precise POSIX error mapping.
 Descriptor allocation now precedes namespace `CREATE` and file `TRUNCATE`, so
 a known-full table or local allocation failure cannot mutate the file first.
+`FD_STAT` reports descriptor kind and asks the serving file service for current
+size and a file ID scoped to that service incarnation. Pipe and console report
+their kind with zero ID and size; directory entries, timestamps, credentials
+and readiness metadata remain to be defined.
 
 The process service currently waits synchronously for each object call
 while processing one request at a time. A blocking console read or pipe read

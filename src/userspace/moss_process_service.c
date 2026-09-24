@@ -11,7 +11,11 @@
 #include "moss_process_protocol.h"
 #include "syscall.h"
 
-enum { DESCRIPTION_FILE, DESCRIPTION_PIPE, DESCRIPTION_CONSOLE };
+enum {
+  DESCRIPTION_FILE = MOSS_PROCESS_FD_KIND_FILE,
+  DESCRIPTION_PIPE = MOSS_PROCESS_FD_KIND_PIPE,
+  DESCRIPTION_CONSOLE = MOSS_PROCESS_FD_KIND_CONSOLE
+};
 enum { BACKEND_WOULD_BLOCK = 2, BACKEND_BROKEN_PIPE = 3 };
 
 struct OpenDescription {
@@ -394,17 +398,23 @@ static int file_resize(unsigned long file, unsigned long length) {
   return result == 1 && response.payload[0] == MOSS_FILE_OK && !response.capability && !response.rights;
 }
 
-static int file_size(unsigned long file, unsigned long *size) {
-  struct moss_ipc_message request = {.size = 1, .payload = {MOSS_FILE_SIZE}};
+static int file_stat(unsigned long file, unsigned long *id, unsigned long *size) {
+  struct moss_ipc_message request = {.size = 1, .payload = {MOSS_FILE_STAT}};
   struct moss_ipc_message response = {0};
   long result = service_call(file, &request, &response);
   if (response.capability)
     (void)syscall1(SYS_CAP_CLOSE, (long)response.capability);
-  if (result != MOSS_FILE_SIZE_REPLY_BYTES || response.payload[0] != MOSS_FILE_OK || response.capability ||
+  if (result != MOSS_FILE_STAT_REPLY_BYTES || response.payload[0] != MOSS_FILE_OK || response.capability ||
       response.rights)
     return 0;
-  *size = moss_file_get_u64(response.payload + 1);
-  return *size <= MOSS_FILE_CONTENT_BUDGET_BYTES;
+  unsigned long file_id = moss_file_get_u64(response.payload + 1);
+  unsigned long file_size = moss_file_get_u64(response.payload + 9);
+  if (!file_id || file_size > MOSS_FILE_CONTENT_BUDGET_BYTES)
+    return 0;
+  if (id)
+    *id = file_id;
+  *size = file_size;
+  return 1;
 }
 
 // -1 means the write may have completed without a reply; callers poison that
@@ -786,6 +796,22 @@ static void handle_fd_request(struct Record *owner, unsigned long namespace, uns
     return;
   }
 
+  if (operation == MOSS_PROCESS_FD_STAT) {
+    if (request->size != MOSS_PROCESS_REPLY_VALUE_BYTES || request->capability || request->rights)
+      return;
+    unsigned long id = 0, size = 0;
+    if (description->kind == DESCRIPTION_FILE && !file_stat(description->object, &id, &size)) {
+      response->payload[0] = MOSS_PROCESS_UNAVAILABLE;
+      return;
+    }
+    response->size = MOSS_PROCESS_FD_STAT_REPLY_BYTES;
+    response->payload[0] = MOSS_PROCESS_OK;
+    response->payload[1] = description->kind;
+    moss_process_put_u64(response->payload + 2, id);
+    moss_process_put_u64(response->payload + 10, size);
+    return;
+  }
+
   if (operation == MOSS_PROCESS_FD_DUP_MIN) {
     if (request->size != MOSS_PROCESS_FD_DUP_MIN_BYTES || request->capability || request->rights ||
         request->payload[17] > 1)
@@ -863,7 +889,7 @@ static void handle_fd_request(struct Record *owner, unsigned long namespace, uns
     if (whence == MOSS_PROCESS_FD_SEEK_CUR)
       base = description->offset;
     else if (whence == MOSS_PROCESS_FD_SEEK_END) {
-      if (!file_size(description->object, &base)) {
+      if (!file_stat(description->object, NULL, &base)) {
         response->payload[0] = MOSS_PROCESS_UNAVAILABLE;
         return;
       }
@@ -1198,7 +1224,7 @@ int main(int argc, char **argv) {
         response.payload[0] = sent_signal ? MOSS_PROCESS_OK : failed ? MOSS_PROCESS_UNAVAILABLE : MOSS_PROCESS_NO_ENTRY;
       }
     } else if (request.badge && request.size && request.payload[0] >= MOSS_PROCESS_FD_OPEN &&
-               request.payload[0] <= MOSS_PROCESS_FD_PIPE) {
+               request.payload[0] <= MOSS_PROCESS_FD_STAT) {
       handle_fd_request(find_record(request.badge), namespace, pipe, &request, &response, &fd_action);
     } else if (request.badge && request.size == 1 && !request.capability && !request.rights) {
       struct Record *record = find_record(request.badge);

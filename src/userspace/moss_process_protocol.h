@@ -41,7 +41,8 @@ enum {
   MOSS_PROCESS_FD_GET_STATUS = 28,
   MOSS_PROCESS_FD_DUP_MIN = 29,
   MOSS_PROCESS_FD_INSTALL = 30,
-  MOSS_PROCESS_FD_PIPE = 31
+  MOSS_PROCESS_FD_PIPE = 31,
+  MOSS_PROCESS_FD_STAT = 32
 };
 enum {
   MOSS_PROCESS_OK = 0,
@@ -66,6 +67,7 @@ enum { MOSS_PROCESS_INIT_ID = 1 };
 // Match the current kernel compatibility limit. The supervisor seeds 0..2
 // with console descriptions before managed children inherit the view.
 enum { MOSS_PROCESS_FD_LIMIT = 256, MOSS_PROCESS_FD_FIRST = 3 };
+enum { MOSS_PROCESS_FD_KIND_FILE = 1, MOSS_PROCESS_FD_KIND_PIPE = 2, MOSS_PROCESS_FD_KIND_CONSOLE = 3 };
 enum {
   MOSS_PROCESS_FD_READABLE = 1U << 0,
   MOSS_PROCESS_FD_WRITABLE = 1U << 1,
@@ -99,6 +101,9 @@ enum {
   MOSS_PROCESS_FD_INSTALL_BYTES = 2
 };
 enum { MOSS_PROCESS_FD_PIPE_REPLY_BYTES = 17 };
+// FD_STAT returns [OK, kind, file ID: u64 LE, size: u64 LE]. Pipe and console
+// report zero ID/size until their own metadata contracts are defined.
+enum { MOSS_PROCESS_FD_STAT_REPLY_BYTES = 18 };
 
 // REGISTER returns [OK, ID:u64 LE]. STATUS returns [EXITED, status:u64 LE].
 // WAIT_ANY returns [EXITED, child ID:u64 LE, status:u64 LE] and atomically
