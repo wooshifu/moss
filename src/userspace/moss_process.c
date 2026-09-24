@@ -654,6 +654,26 @@ static int fd_dup_to(unsigned long session, unsigned long source, unsigned long 
          response.payload[0] == MOSS_PROCESS_OK && moss_process_get_u64(response.payload + 1) == target;
 }
 
+static int fd_flags(unsigned long session, unsigned char operation, unsigned long number, unsigned char *flags) {
+  struct moss_ipc_message request = {.size = operation == MOSS_PROCESS_FD_SET_FLAGS
+                                                ? MOSS_PROCESS_FD_SET_FLAGS_BYTES
+                                                : MOSS_PROCESS_REPLY_VALUE_BYTES,
+                                     .payload = {operation}};
+  moss_process_put_u64(request.payload + 1, number);
+  if (operation == MOSS_PROCESS_FD_SET_FLAGS)
+    request.payload[9] = *flags;
+  struct moss_ipc_message response = {0};
+  long result = call(session, &request, &response);
+  if (!no_capability(&response) || response.payload[0] != MOSS_PROCESS_OK)
+    return 0;
+  if (operation == MOSS_PROCESS_FD_SET_FLAGS)
+    return result == 1;
+  if (result != MOSS_PROCESS_REPLY_VALUE_BYTES || moss_process_get_u64(response.payload + 1) > 1)
+    return 0;
+  *flags = (unsigned char)moss_process_get_u64(response.payload + 1);
+  return 1;
+}
+
 static int fd_seek(unsigned long session, unsigned long number, unsigned char whence, unsigned long *position) {
   struct moss_ipc_message request = {.size = MOSS_PROCESS_FD_SEEK_BYTES, .payload = {MOSS_PROCESS_FD_SEEK}};
   moss_process_put_u64(request.payload + 1, number);
@@ -713,6 +733,7 @@ static int fd_exec_child(const char *kept_text) {
 static int fd_view_probe(void) {
   unsigned long session = getauxval(MOSS_AT_STARTUP_CAP);
   unsigned long first = 0, duplicate = 0, victim = 0, spare = 0, position = 0;
+  unsigned char flags = 0;
   unsigned int transferred = 0;
   if (!session || !fd_open(session, "/note",
                            MOSS_PROCESS_FD_READABLE | MOSS_PROCESS_FD_WRITABLE | MOSS_PROCESS_FD_CREATE |
@@ -722,6 +743,8 @@ static int fd_view_probe(void) {
   long memory = syscall1(SYS_MEM_CREATE, MOSS_MEM_OBJECT_BYTES);
   long mapped = memory > 0 ? syscall2(SYS_MEM_MAP, memory, MOSS_CAP_MAP_READ | MOSS_CAP_MAP_WRITE) : 0;
   int valid = mapped > 0;
+  if (valid)
+    valid = fd_flags(session, MOSS_PROCESS_FD_GET_FLAGS, first, &flags) && flags == 1;
   if (valid) {
     memcpy((void *)mapped, "abc", 3);
     valid = fd_io(session, MOSS_PROCESS_FD_WRITE, first, memory, 3, &transferred) && transferred == 3;
@@ -742,7 +765,20 @@ static int fd_view_probe(void) {
   }
   if (valid) {
     valid = fd_open(session, "/scratch", MOSS_PROCESS_FD_READABLE | MOSS_PROCESS_FD_CLOEXEC, &victim) &&
-            fd_dup_to(session, duplicate, victim) && fd_dup_to(session, first, first);
+            fd_dup_to(session, duplicate, victim) && fd_dup_to(session, first, first) &&
+            fd_flags(session, MOSS_PROCESS_FD_GET_FLAGS, victim, &flags) && flags == 0 &&
+            fd_flags(session, MOSS_PROCESS_FD_GET_FLAGS, first, &flags) && flags == 1;
+  }
+  if (valid) {
+    flags = 1;
+    valid = fd_flags(session, MOSS_PROCESS_FD_SET_FLAGS, victim, &flags) &&
+            fd_flags(session, MOSS_PROCESS_FD_GET_FLAGS, victim, &flags) && flags == 1;
+    flags = 0;
+    valid = valid && fd_flags(session, MOSS_PROCESS_FD_SET_FLAGS, victim, &flags) &&
+            fd_flags(session, MOSS_PROCESS_FD_GET_FLAGS, victim, &flags) && flags == 0;
+    flags = 2;
+    valid = valid && !fd_flags(session, MOSS_PROCESS_FD_SET_FLAGS, victim, &flags) &&
+            fd_flags(session, MOSS_PROCESS_FD_GET_FLAGS, victim, &flags) && flags == 0;
   }
   if (valid) {
     const unsigned long free_target = MOSS_PROCESS_FD_LIMIT - 1;

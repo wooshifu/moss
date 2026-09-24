@@ -35,7 +35,9 @@ enum {
   MOSS_PROCESS_FD_WRITE = 22,
   MOSS_PROCESS_FD_SEEK = 23,
   MOSS_PROCESS_FD_EXEC = 24,
-  MOSS_PROCESS_FD_DUP_TO = 25
+  MOSS_PROCESS_FD_DUP_TO = 25,
+  MOSS_PROCESS_FD_GET_FLAGS = 26,
+  MOSS_PROCESS_FD_SET_FLAGS = 27
 };
 enum {
   MOSS_PROCESS_OK = 0,
@@ -77,7 +79,8 @@ enum {
   MOSS_PROCESS_FD_IO_BYTES = 11,
   MOSS_PROCESS_FD_IO_REPLY_BYTES = 3,
   MOSS_PROCESS_FD_SEEK_BYTES = 18,
-  MOSS_PROCESS_FD_DUP_TO_BYTES = 17
+  MOSS_PROCESS_FD_DUP_TO_BYTES = 17,
+  MOSS_PROCESS_FD_SET_FLAGS_BYTES = 10
 };
 
 // REGISTER returns [OK, ID:u64 LE]. STATUS returns [EXITED, status:u64 LE].
@@ -105,7 +108,11 @@ enum {
 // descriptor:u64 LE]; DUP returns the new descriptor. FD_DUP_TO carries
 // [opcode, source:u64 LE, target:u64 LE] and returns the target. A different
 // source replaces an occupied target and clears its close-on-exec flag;
-// duplicating a descriptor onto itself preserves that flag. FD_READ/WRITE carry
+// duplicating a descriptor onto itself preserves that flag.
+// FD_GET_FLAGS returns [OK, close-on-exec:u64 LE]. FD_SET_FLAGS carries
+// [opcode, descriptor:u64 LE, close-on-exec:u8] where only values 0 and 1 are
+// valid. The new flag commits after the reply reaches the caller.
+// FD_READ/WRITE carry
 // [opcode, descriptor:u64 LE, count:u16 LE] plus a transferred Memory Object
 // with MAP_WRITE|TRANSFER|DUPLICATE or MAP_READ|TRANSFER|DUPLICATE respectively,
 // and return

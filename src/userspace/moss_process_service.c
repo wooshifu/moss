@@ -356,6 +356,7 @@ struct FdAction {
   struct Descriptor *added;
   struct Descriptor *closing;
   struct Descriptor *replaced;
+  struct Descriptor *flagged;
   struct OpenDescription *previous_description;
   unsigned char previous_cloexec;
   struct OpenDescription *offset_description;
@@ -493,6 +494,24 @@ static void handle_fd_request(struct Record *owner, unsigned long namespace, con
     return;
   }
 
+  if (operation == MOSS_PROCESS_FD_GET_FLAGS || operation == MOSS_PROCESS_FD_SET_FLAGS) {
+    if (request->capability || request->rights ||
+        request->size != (operation == MOSS_PROCESS_FD_GET_FLAGS ? MOSS_PROCESS_REPLY_VALUE_BYTES
+                                                                : MOSS_PROCESS_FD_SET_FLAGS_BYTES))
+      return;
+    if (operation == MOSS_PROCESS_FD_GET_FLAGS) {
+      fd_reply_value(response, entry->close_on_exec);
+    } else if (request->payload[9] > 1) {
+      response->payload[0] = MOSS_PROCESS_BAD_REQUEST;
+    } else {
+      action->flagged = entry;
+      action->previous_cloexec = entry->close_on_exec;
+      entry->close_on_exec = request->payload[9];
+      response->payload[0] = MOSS_PROCESS_OK;
+    }
+    return;
+  }
+
   if (operation == MOSS_PROCESS_FD_READ || operation == MOSS_PROCESS_FD_WRITE) {
     int writing = operation == MOSS_PROCESS_FD_WRITE;
     if (request->size != MOSS_PROCESS_FD_IO_BYTES || !request->capability ||
@@ -578,6 +597,8 @@ static void finish_fd_action(struct FdAction *action, long sent) {
       action->replaced->close_on_exec = action->previous_cloexec;
     }
   }
+  if (action->flagged && sent != 0)
+    action->flagged->close_on_exec = action->previous_cloexec;
   if (action->offset_description) {
     if (sent == 0)
       action->offset_description->offset = action->next_offset;
@@ -856,7 +877,7 @@ int main(int argc, char **argv) {
         response.payload[0] = sent_signal ? MOSS_PROCESS_OK : failed ? MOSS_PROCESS_UNAVAILABLE : MOSS_PROCESS_NO_ENTRY;
       }
     } else if (request.badge && request.size && request.payload[0] >= MOSS_PROCESS_FD_OPEN &&
-               request.payload[0] <= MOSS_PROCESS_FD_DUP_TO) {
+               request.payload[0] <= MOSS_PROCESS_FD_SET_FLAGS) {
       handle_fd_request(find_record(request.badge), namespace, &request, &response, &fd_action);
     } else if (request.badge && request.size == 1 && !request.capability && !request.rights) {
       struct Record *record = find_record(request.badge);
