@@ -43,7 +43,8 @@ enum {
   MOSS_PROCESS_FD_INSTALL = 30,
   MOSS_PROCESS_FD_PIPE = 31,
   MOSS_PROCESS_FD_STAT = 32,
-  MOSS_PROCESS_FD_READDIR = 33
+  MOSS_PROCESS_FD_READDIR = 33,
+  MOSS_PROCESS_PATH_STAT = 34
 };
 enum {
   MOSS_PROCESS_OK = 0,
@@ -118,6 +119,9 @@ enum { MOSS_PROCESS_FD_STAT_REPLY_BYTES = 18 };
 // bytes means EOF and returns the unchanged cursor. A failed reply leaves
 // the shared directory cursor intact.
 enum { MOSS_PROCESS_FD_READDIR_REPLY_BYTES = 20 };
+// PATH_STAT carries [opcode, zero flags, absolute NUL-terminated path] and
+// returns the same [OK, kind, ID, size] shape as FD_STAT. No descriptor is
+// allocated, and it reports the object's current metadata by path.
 
 // REGISTER returns [OK, ID:u64 LE]. STATUS returns [EXITED, status:u64 LE].
 // WAIT_ANY returns [EXITED, child ID:u64 LE, status:u64 LE] and atomically

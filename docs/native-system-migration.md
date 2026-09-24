@@ -52,6 +52,8 @@ networking and persistent storage.
    identity and size without changing a shared open-description offset.
    Native `FD_READDIR` lists the flat root using a shared cursor; libc still
    uses kernel `getdents`.
+   Native `PATH_STAT` queries an absolute path through the namespace without
+   allocating a descriptor; libc still uses kernel `stat` and `lstat`.
    Managed libc reports successful exec from the preinit
    array so the service closes marked entries before program constructors.
    The production probe checks that

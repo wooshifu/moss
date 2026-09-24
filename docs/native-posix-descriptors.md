@@ -39,7 +39,9 @@ their kind with zero ID and size. The flat root now has a read-only directory
 capability. `FD_READDIR` enumerates `.`, `..` and named file objects through a
 shared open-description cookie, with the cookie committed only after the
 caller receives the reply. Unlisted Loader images stay out of that listing.
-Managed libc still uses the kernel `getdents` path; nested traversal,
+Native `PATH_STAT` asks the namespace to resolve an absolute path and query
+the file object without allocating a descriptor.
+Managed libc still uses kernel `stat`, `lstat` and `getdents`; nested traversal,
 timestamps, credentials and readiness metadata remain to be defined.
 
 The process service currently waits synchronously for each object call

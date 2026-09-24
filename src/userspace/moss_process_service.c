@@ -17,6 +17,8 @@ enum {
   DESCRIPTION_CONSOLE = MOSS_PROCESS_FD_KIND_CONSOLE,
   DESCRIPTION_DIRECTORY = MOSS_PROCESS_FD_KIND_DIRECTORY
 };
+_Static_assert(MOSS_NAMESPACE_STAT_REPLY_BYTES == MOSS_PROCESS_FD_STAT_REPLY_BYTES,
+               "namespace and process metadata replies share a layout");
 enum { BACKEND_WOULD_BLOCK = 2, BACKEND_BROKEN_PIPE = 3 };
 
 struct OpenDescription {
@@ -580,6 +582,38 @@ static void handle_fd_request(struct Record *owner, unsigned long namespace, uns
   }
   action->owner = owner;
   unsigned char operation = request->payload[0];
+  if (operation == MOSS_PROCESS_PATH_STAT) {
+    const unsigned char *path = request->payload + 2;
+    unsigned long path_size = request->size >= 2 ? request->size - 2 : 0;
+    if (request->size < 4 || request->payload[1] || request->capability || request->rights || path[0] != '/' ||
+        memchr(path, 0, path_size) != path + path_size - 1)
+      return;
+    // A received badge authenticates the caller only at this hop; outgoing
+    // requests must not replay it as a caller-supplied badge.
+    struct moss_ipc_message lookup = {.size = request->size};
+    memcpy(lookup.payload, request->payload, request->size);
+    lookup.payload[0] = MOSS_NAMESPACE_STAT;
+    struct moss_ipc_message stat = {0};
+    long result = service_call(namespace, &lookup, &stat);
+    if (stat.capability)
+      (void)syscall1(SYS_CAP_CLOSE, (long)stat.capability);
+    if (result == 1 && !stat.capability && !stat.rights && stat.payload[0] == MOSS_NAMESPACE_NO_ENTRY) {
+      response->payload[0] = MOSS_PROCESS_NOT_FOUND;
+    } else if (result == 1 && !stat.capability && !stat.rights && stat.payload[0] == MOSS_NAMESPACE_BAD_REQUEST) {
+      response->payload[0] = MOSS_PROCESS_BAD_REQUEST;
+    } else if (result == MOSS_NAMESPACE_STAT_REPLY_BYTES && !stat.capability && !stat.rights &&
+               stat.payload[0] == MOSS_NAMESPACE_OK &&
+               (stat.payload[1] == MOSS_NAMESPACE_KIND_FILE || stat.payload[1] == MOSS_NAMESPACE_KIND_DIRECTORY) &&
+               moss_process_get_u64(stat.payload + 2) &&
+               moss_process_get_u64(stat.payload + 10) <= MOSS_FILE_CONTENT_BUDGET_BYTES) {
+      response->size = MOSS_PROCESS_FD_STAT_REPLY_BYTES;
+      memcpy(response->payload, stat.payload, response->size);
+      response->payload[1] = stat.payload[1] == MOSS_NAMESPACE_KIND_FILE ? DESCRIPTION_FILE : DESCRIPTION_DIRECTORY;
+    } else {
+      response->payload[0] = MOSS_PROCESS_UNAVAILABLE;
+    }
+    return;
+  }
   if (operation == MOSS_PROCESS_FD_EXEC) {
     if (request->size == 1 && !request->capability && !request->rights) {
       // Exec already committed before this request. A lost reply must not
@@ -1288,7 +1322,7 @@ int main(int argc, char **argv) {
         response.payload[0] = sent_signal ? MOSS_PROCESS_OK : failed ? MOSS_PROCESS_UNAVAILABLE : MOSS_PROCESS_NO_ENTRY;
       }
     } else if (request.badge && request.size && request.payload[0] >= MOSS_PROCESS_FD_OPEN &&
-               request.payload[0] <= MOSS_PROCESS_FD_READDIR) {
+               request.payload[0] <= MOSS_PROCESS_PATH_STAT) {
       handle_fd_request(find_record(request.badge), namespace, pipe, &request, &response, &fd_action);
     } else if (request.badge && request.size == 1 && !request.capability && !request.rights) {
       struct Record *record = find_record(request.badge);

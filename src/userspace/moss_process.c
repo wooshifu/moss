@@ -737,6 +737,23 @@ static int fd_stat(unsigned long session, unsigned long number, unsigned char *k
   return *kind >= MOSS_PROCESS_FD_KIND_FILE && *kind <= MOSS_PROCESS_FD_KIND_DIRECTORY;
 }
 
+static int path_stat(unsigned long session, const char *path, unsigned char *kind, unsigned long *id,
+                     unsigned long *size) {
+  size_t path_size = strlen(path) + 1;
+  if (path_size > MOSS_IPC_MAX_MESSAGE - 2)
+    return 0;
+  struct moss_ipc_message request = {.size = path_size + 2, .payload = {MOSS_PROCESS_PATH_STAT}};
+  memcpy(request.payload + 2, path, path_size);
+  struct moss_ipc_message response = {0};
+  long result = call(session, &request, &response);
+  if (!no_capability(&response) || result != MOSS_PROCESS_FD_STAT_REPLY_BYTES || response.payload[0] != MOSS_PROCESS_OK)
+    return 0;
+  *kind = response.payload[1];
+  *id = moss_process_get_u64(response.payload + 2);
+  *size = moss_process_get_u64(response.payload + 10);
+  return (*kind == MOSS_PROCESS_FD_KIND_FILE || *kind == MOSS_PROCESS_FD_KIND_DIRECTORY) && *id;
+}
+
 static int fd_readdir(unsigned long session, unsigned long number, unsigned long memory, const char *page,
                       unsigned char *type, unsigned long *id, unsigned long *cookie, unsigned int *name_size) {
   struct moss_ipc_message request = {.size = MOSS_PROCESS_REPLY_VALUE_BYTES,
@@ -919,6 +936,18 @@ static int fd_view_probe(void) {
   if (valid)
     valid = fd_stat(session, first, &kind, &file_id, &object_size) && kind == MOSS_PROCESS_FD_KIND_FILE &&
             file_id > 0 && object_size == 3;
+  if (valid)
+    valid = path_stat(session, "/note", &kind, &object_id, &object_size) && kind == MOSS_PROCESS_FD_KIND_FILE &&
+            object_id == file_id && object_size == 3 && path_stat(session, "/", &kind, &object_id, &object_size) &&
+            kind == MOSS_PROCESS_FD_KIND_DIRECTORY && object_id == MOSS_FILE_ROOT_BADGE && object_size == 0;
+  if (valid) {
+    struct moss_ipc_message missing = {.size = 2 + sizeof("/path-stat-absent"), .payload = {MOSS_PROCESS_PATH_STAT}};
+    memcpy(missing.payload + 2, "/path-stat-absent", sizeof("/path-stat-absent"));
+    struct moss_ipc_message nested = {.size = 2 + sizeof("/note/child"), .payload = {MOSS_PROCESS_PATH_STAT}};
+    memcpy(nested.payload + 2, "/note/child", sizeof("/note/child"));
+    valid = fd_rejected(session, &missing, MOSS_PROCESS_NOT_FOUND) &&
+            fd_rejected(session, &nested, MOSS_PROCESS_BAD_REQUEST);
+  }
   unsigned long exclusive = 0;
   if (valid)
     valid = fd_open(session, "/fd-exclusive",
