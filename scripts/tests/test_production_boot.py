@@ -43,6 +43,8 @@ assert input() == '/moss-file.elf read /missing'
 print('\nMOSS_FILE_ERROR\nmoss$ ', end='', flush=True)
 assert input() == '/moss-file.elf write native'
 print('\nMOSS_FILE_WRITE_OK\nmoss$ ', end='', flush=True)
+assert input() == '/moss-file.elf size'
+print('\nMOSS_FILE_SIZE=6\nmoss$ ', end='', flush=True)
 assert input() == '/moss-file.elf read'
 print('\nMOSS_FILE_READ=native\nmoss$ ', end='', flush=True)
 assert input() == '/moss-file.elf write separate /note'
@@ -132,6 +134,8 @@ assert input() == 'echo MOSS_PRODUCTION_READY'
         script += "print('\\nMOSS_FILE_READ=short\\nmoss$ ', end='', flush=True)\n"
         script += "assert input() == '/moss-file.elf resize 7 /note'\n"
         script += "print('\\nMOSS_FILE_RESIZE_OK\\nmoss$ ', end='', flush=True)\n"
+        script += "assert input() == '/moss-file.elf size /note'\n"
+        script += "print('\\nMOSS_FILE_SIZE=7\\nmoss$ ', end='', flush=True)\n"
         script += "assert input() == '/moss-file.elf read /note'\n"
         script += "print('\\nMOSS_FILE_READ=short\\0\\0\\nmoss$ ', end='', flush=True)\n"
         script += "assert input() == '/moss-file.elf resize 65536 /note'\n"
@@ -159,11 +163,11 @@ assert input() == 'echo MOSS_PRODUCTION_READY'
     assert result["status"] == ("passed" if mode in ("complete", "gdb_complete") else "error")
     assert result["raw_exit"] is not None
     if mode == "echo_only":
-        assert result["completed_steps"] == 29
+        assert result["completed_steps"] == 31
     if mode == "legacy_shell":
         assert result["completed_steps"] == 4
     if mode == "applets_failed":
-        assert result["completed_steps"] == 25
+        assert result["completed_steps"] == 27
     if mode == "late_panic":
         assert "panicked" in result["observed"]
     if mode == "sleep_runtime_failure":

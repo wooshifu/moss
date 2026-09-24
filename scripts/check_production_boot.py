@@ -138,6 +138,8 @@ quit
         (b"\nMOSS_FILE_ERROR\n", None),
         (b"moss$ ", b"/moss-file.elf write native\n"),
         (b"\nMOSS_FILE_WRITE_OK\n", None),
+        (b"moss$ ", b"/moss-file.elf size\n"),
+        (b"\nMOSS_FILE_SIZE=6\n", None),
         (b"moss$ ", b"/moss-file.elf read\n"),
         (b"\nMOSS_FILE_READ=native\n", None),
         (b"moss$ ", b"/moss-file.elf write separate /note\n"),
@@ -215,6 +217,8 @@ quit
         (b"\nMOSS_FILE_READ=short\n", None),
         (b"moss$ ", b"/moss-file.elf resize 7 /note\n"),
         (b"\nMOSS_FILE_RESIZE_OK\n", None),
+        (b"moss$ ", b"/moss-file.elf size /note\n"),
+        (b"\nMOSS_FILE_SIZE=7\n", None),
         (b"moss$ ", b"/moss-file.elf read /note\n"),
         (b"\nMOSS_FILE_READ=short\0\0\n", None),
         # /scratch retains one page, so /note cannot claim the full 16-page

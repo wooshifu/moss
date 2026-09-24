@@ -1,5 +1,6 @@
 #include <errno.h>
 #include <limits.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
@@ -60,6 +61,19 @@ static int resize_file(unsigned long file, uint64_t size) {
     (void)syscall1(SYS_CAP_CLOSE, (long)response.capability);
   }
   return result == 1 && response.payload[0] == MOSS_FILE_OK && !response.capability && !response.rights;
+}
+
+static int file_size(unsigned long file, uint64_t *size) {
+  struct moss_ipc_message request = {.size = 1, .payload = {MOSS_FILE_SIZE}};
+  struct moss_ipc_message response = {0};
+  long result = call(file, &request, &response);
+  if (response.capability)
+    (void)syscall1(SYS_CAP_CLOSE, (long)response.capability);
+  if (result != MOSS_FILE_SIZE_REPLY_BYTES || response.payload[0] != MOSS_FILE_OK || response.capability ||
+      response.rights)
+    return 0;
+  *size = moss_file_get_u64(response.payload + 1);
+  return 1;
 }
 
 static int operate(unsigned long file, const char *write_text, size_t write_size) {
@@ -140,6 +154,7 @@ int main(int argc, char **argv) {
   const char *write_text = NULL;
   size_t write_size = 0;
   int resizing = 0;
+  int sizing = 0;
   uint64_t resize_size = 0;
   if ((argc == 2 || argc == 3) && strcmp(argv[1], "read") == 0) {
     path = argc == 3 ? argv[2] : MOSS_SCRATCH_PATH;
@@ -160,6 +175,9 @@ int main(int argc, char **argv) {
     resizing = 1;
     resize_size = parsed;
     path = argc == 4 ? argv[3] : MOSS_SCRATCH_PATH;
+  } else if ((argc == 2 || argc == 3) && strcmp(argv[1], "size") == 0) {
+    sizing = 1;
+    path = argc == 3 ? argv[2] : MOSS_SCRATCH_PATH;
   } else {
     return 2;
   }
@@ -181,7 +199,18 @@ int main(int argc, char **argv) {
   }
 
   int result;
-  if (resizing) {
+  if (sizing) {
+    uint64_t size = 0;
+    result = file_size(opened.capability, &size) ? 0 : error();
+    if (!result) {
+      char message[64];
+      int length = snprintf(message, sizeof(message), "MOSS_FILE_SIZE=%llu\n", (unsigned long long)size);
+      if (length <= 0 || (size_t)length >= sizeof(message))
+        result = error();
+      else
+        (void)write(STDOUT_FILENO, message, (size_t)length);
+    }
+  } else if (resizing) {
     result = resize_file(opened.capability, resize_size) ? 0 : error();
     if (!result) {
       static const char success[] = "MOSS_FILE_RESIZE_OK\n";
