@@ -29,10 +29,17 @@ static long open_file(unsigned long file, const struct moss_ipc_message *lookup,
   }
   // The namespace owns absolute path policy; the file service sees only a
   // name relative to this root mount.
-  struct moss_ipc_message request = {.size = lookup->size - 1, .payload = {MOSS_FILE_OPEN}};
-  request.payload[1] = (lookup->payload[1] & MOSS_NAMESPACE_OPEN_CREATE ? MOSS_FILE_OPEN_CREATE : 0) |
-                       (lookup->payload[1] & MOSS_NAMESPACE_OPEN_EXCLUSIVE ? MOSS_FILE_OPEN_EXCLUSIVE : 0);
-  memcpy(request.payload + 2, lookup->payload + 3, lookup->size - 3);
+  struct moss_ipc_message request = {0};
+  if (lookup->size == 4) {
+    request.size = 1;
+    request.payload[0] = MOSS_FILE_ROOT;
+  } else {
+    request.size = lookup->size - 1;
+    request.payload[0] = MOSS_FILE_OPEN;
+    request.payload[1] = (lookup->payload[1] & MOSS_NAMESPACE_OPEN_CREATE ? MOSS_FILE_OPEN_CREATE : 0) |
+                         (lookup->payload[1] & MOSS_NAMESPACE_OPEN_EXCLUSIVE ? MOSS_FILE_OPEN_EXCLUSIVE : 0);
+    memcpy(request.payload + 2, lookup->payload + 3, lookup->size - 3);
+  }
   return syscall6(SYS_IPC_CALL, (long)file, (long)&request, (long)opened, (long)(now + FILE_OPEN_TIMEOUT_NS), 0, 0);
 }
 
@@ -62,18 +69,20 @@ int main(int argc, char **argv) {
       // A lookup never accepts delegated authority. Release an unexpected
       // handle so an untrusted caller cannot exhaust this service's table.
       (void)syscall1(SYS_CAP_CLOSE, (long)request.capability);
-    } else if (request.size >= 5 && request.payload[0] == MOSS_NAMESPACE_OPEN &&
-               !(request.payload[1] & ~(MOSS_NAMESPACE_OPEN_CREATE | MOSS_NAMESPACE_OPEN_TRANSFER |
-                                       MOSS_NAMESPACE_OPEN_EXCLUSIVE)) &&
+    } else if (request.size >= 4 && request.payload[0] == MOSS_NAMESPACE_OPEN &&
+               !(request.payload[1] &
+                 ~(MOSS_NAMESPACE_OPEN_CREATE | MOSS_NAMESPACE_OPEN_TRANSFER | MOSS_NAMESPACE_OPEN_EXCLUSIVE)) &&
                (!(request.payload[1] & MOSS_NAMESPACE_OPEN_EXCLUSIVE) ||
                 (request.payload[1] & MOSS_NAMESPACE_OPEN_CREATE))) {
       const unsigned char *path = request.payload + 2;
       unsigned long path_size = request.size - 2;
       // This namespace currently mounts one flat root filesystem. Reject
       // ambiguous spellings before the filesystem chooses an object.
-      if (path[0] == '/' && path[1] != 0 && memchr(path, 0, path_size) == path + path_size - 1 &&
-          !memchr(path + 1, '/', path_size - 2) && !(path_size == 3 && path[1] == '.') &&
-          !(path_size == 4 && path[1] == '.' && path[2] == '.')) {
+      int root = path_size == 2 && path[0] == '/' && path[1] == 0 && request.payload[1] == 0;
+      int regular = path[0] == '/' && path[1] != 0 && memchr(path, 0, path_size) == path + path_size - 1 &&
+                    !memchr(path + 1, '/', path_size - 2) && !(path_size == 3 && path[1] == '.') &&
+                    !(path_size == 4 && path[1] == '.' && path[2] == '.');
+      if (root || regular) {
         response.payload[0] = MOSS_NAMESPACE_UNAVAILABLE;
         long result = open_file(file, &request, &opened);
         if (result == 1 && opened.payload[0] == MOSS_FILE_OK && opened.capability &&

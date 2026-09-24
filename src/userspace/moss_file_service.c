@@ -90,6 +90,43 @@ static struct FileObject *find_badge(struct FileObject *files, unsigned long bad
   return NULL;
 }
 
+static void list_root(struct FileObject *files, unsigned long cookie, unsigned char *page,
+                      struct moss_ipc_message *response) {
+  const char *name = NULL;
+  unsigned long id = MOSS_FILE_ROOT_BADGE;
+  unsigned long next_cookie = cookie + 1;
+  unsigned int name_size = 0;
+  unsigned char type = MOSS_FILE_TYPE_DIRECTORY;
+  if (cookie < 2) {
+    name = cookie ? ".." : ".";
+    name_size = cookie ? sizeof("..") : sizeof(".");
+  } else {
+    struct FileObject *next = NULL;
+    // Badges are never recycled, so insertion cannot shift an existing
+    // cursor. Unlisted Loader images have no name and stay invisible here.
+    for (struct FileObject *file = files; file; file = file->next) {
+      if (file->name_size && file->badge > cookie - 2 && (!next || file->badge < next->badge))
+        next = file;
+    }
+    if (!next) {
+      response->payload[0] = MOSS_FILE_END;
+      return;
+    }
+    name = next->name;
+    name_size = next->name_size;
+    id = next->badge;
+    next_cookie = id + 2;
+    type = MOSS_FILE_TYPE_REGULAR;
+  }
+  memcpy(page, name, name_size);
+  response->size = MOSS_FILE_LIST_REPLY_BYTES;
+  response->payload[0] = MOSS_FILE_OK;
+  response->payload[1] = type;
+  moss_file_put_u64(response->payload + 2, id);
+  moss_file_put_u64(response->payload + 10, next_cookie);
+  moss_file_put_u16(response->payload + 18, name_size);
+}
+
 int main(int argc, char **argv) {
   if (argc != 3 || !argv[1] || !argv[2]) {
     return 2;
@@ -128,7 +165,16 @@ int main(int argc, char **argv) {
     struct moss_ipc_message response = {.size = 1, .payload = {MOSS_FILE_BAD_REQUEST}};
     long minted = 0;
     struct FileObject *file = find_badge(files, request.badge);
-    if (request.capability) {
+    if (request.capability && request.badge == MOSS_FILE_ROOT_BADGE && request.size == MOSS_FILE_LIST_BYTES &&
+        request.payload[0] == MOSS_FILE_LIST && request.rights == MOSS_CAP_MAP_WRITE) {
+      long mapped = syscall2(SYS_MEM_MAP, (long)request.capability, MOSS_CAP_MAP_WRITE);
+      if (mapped > 0) {
+        list_root(files, moss_file_get_u64(request.payload + 1), (unsigned char *)mapped, &response);
+        if (syscall2(SYS_MUNMAP, mapped, MOSS_MEM_OBJECT_BYTES) != 0)
+          return 1;
+      }
+      (void)syscall1(SYS_CAP_CLOSE, (long)request.capability);
+    } else if (request.capability) {
       int valid_header = request.size == MOSS_FILE_IO_HEADER_BYTES;
       uint64_t offset = valid_header ? moss_file_get_u64(request.payload + 1) : 0;
       unsigned int count = valid_header ? moss_file_get_u16(request.payload + 9) : 0;
@@ -179,6 +225,15 @@ int main(int argc, char **argv) {
       // Even a malformed request may carry a transferred handle. Release it
       // after use so clients cannot exhaust the service's capability table.
       (void)syscall1(SYS_CAP_CLOSE, (long)request.capability);
+    } else if (request.badge == 0 && request.size == 1 && request.payload[0] == MOSS_FILE_ROOT && !request.rights) {
+      minted = syscall2(SYS_IPC_MINT_BADGE, (long)mint, MOSS_FILE_ROOT_BADGE);
+      if (minted > 0) {
+        response.payload[0] = MOSS_FILE_OK;
+        response.capability = (unsigned long)minted;
+        response.rights = MOSS_CAP_SEND | MOSS_CAP_TRANSFER | MOSS_CAP_DUPLICATE;
+      } else {
+        response.payload[0] = MOSS_FILE_UNAVAILABLE;
+      }
     } else if (request.badge == 0 && request.size >= 4 && request.payload[0] == MOSS_FILE_OPEN &&
                !(request.payload[1] & ~(MOSS_FILE_OPEN_CREATE | MOSS_FILE_OPEN_EXCLUSIVE | MOSS_FILE_OPEN_UNLISTED)) &&
                (!(request.payload[1] & (MOSS_FILE_OPEN_EXCLUSIVE | MOSS_FILE_OPEN_UNLISTED)) ||
@@ -192,7 +247,8 @@ int main(int argc, char **argv) {
       // cannot both observe a missing name before either publishes its badge.
       file = unlisted ? NULL : find_name(files, name, name_size);
       struct FileObject *created = NULL;
-      if (!file && (request.payload[1] & MOSS_FILE_OPEN_CREATE) && next_badge != 0 &&
+      // Directory cookies add two synthetic entries to each file badge.
+      if (!file && (request.payload[1] & MOSS_FILE_OPEN_CREATE) && next_badge < MOSS_FILE_ROOT_BADGE - 2 &&
           file_count < MOSS_FILE_OBJECT_LIMIT) {
         created = calloc(1, sizeof(*created));
         if (created) {
@@ -233,11 +289,12 @@ int main(int argc, char **argv) {
       response.payload[0] = MOSS_FILE_OK;
       response.size = MOSS_FILE_SIZE_REPLY_BYTES;
       moss_file_put_u64(response.payload + 1, file->length);
-    } else if (file && request.size == 1 && request.payload[0] == MOSS_FILE_STAT && !request.rights) {
+    } else if ((file || request.badge == MOSS_FILE_ROOT_BADGE) && request.size == 1 &&
+               request.payload[0] == MOSS_FILE_STAT && !request.rights) {
       response.payload[0] = MOSS_FILE_OK;
       response.size = MOSS_FILE_STAT_REPLY_BYTES;
-      moss_file_put_u64(response.payload + 1, file->badge);
-      moss_file_put_u64(response.payload + 9, file->length);
+      moss_file_put_u64(response.payload + 1, file ? file->badge : MOSS_FILE_ROOT_BADGE);
+      moss_file_put_u64(response.payload + 9, file ? file->length : 0);
     } else if (file && request.size == MOSS_FILE_RESIZE_HEADER_BYTES && request.payload[0] == MOSS_FILE_RESIZE) {
       uint64_t length = moss_file_get_u64(request.payload + 1);
       response.payload[0] =

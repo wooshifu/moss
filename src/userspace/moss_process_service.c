@@ -14,7 +14,8 @@
 enum {
   DESCRIPTION_FILE = MOSS_PROCESS_FD_KIND_FILE,
   DESCRIPTION_PIPE = MOSS_PROCESS_FD_KIND_PIPE,
-  DESCRIPTION_CONSOLE = MOSS_PROCESS_FD_KIND_CONSOLE
+  DESCRIPTION_CONSOLE = MOSS_PROCESS_FD_KIND_CONSOLE,
+  DESCRIPTION_DIRECTORY = MOSS_PROCESS_FD_KIND_DIRECTORY
 };
 enum { BACKEND_WOULD_BLOCK = 2, BACKEND_BROKEN_PIPE = 3 };
 
@@ -448,6 +449,32 @@ static int file_transfer(struct OpenDescription *description, unsigned long memo
   return 1;
 }
 
+static int file_readdir(struct OpenDescription *description, unsigned long memory, struct moss_ipc_message *response) {
+  struct moss_ipc_message request = {
+      .size = MOSS_FILE_LIST_BYTES, .capability = memory, .rights = MOSS_CAP_MAP_WRITE, .payload = {MOSS_FILE_LIST}};
+  moss_file_put_u64(request.payload + 1, description->offset);
+  struct moss_ipc_message listed = {0};
+  long result = service_call(description->object, &request, &listed);
+  if (listed.capability)
+    (void)syscall1(SYS_CAP_CLOSE, (long)listed.capability);
+  if (listed.capability || listed.rights)
+    return -1;
+  if (result == 1 && listed.payload[0] == MOSS_FILE_END) {
+    response->size = MOSS_PROCESS_FD_READDIR_REPLY_BYTES;
+    response->payload[0] = MOSS_PROCESS_OK;
+    moss_process_put_u64(response->payload + 10, description->offset);
+    return 0;
+  }
+  if (result != MOSS_FILE_LIST_REPLY_BYTES || listed.payload[0] != MOSS_FILE_OK ||
+      (listed.payload[1] != MOSS_FILE_TYPE_DIRECTORY && listed.payload[1] != MOSS_FILE_TYPE_REGULAR) ||
+      !moss_file_get_u64(listed.payload + 2) || moss_file_get_u64(listed.payload + 10) <= description->offset ||
+      moss_file_get_u16(listed.payload + 18) < 2 || moss_file_get_u16(listed.payload + 18) > MOSS_IPC_MAX_MESSAGE - 2)
+    return -1;
+  response->size = MOSS_PROCESS_FD_READDIR_REPLY_BYTES;
+  memcpy(response->payload, listed.payload, MOSS_FILE_LIST_REPLY_BYTES);
+  return 1;
+}
+
 // WOULD_BLOCK and BROKEN are complete, non-mutating pipe responses. A lost
 // write reply remains uncertain because the pipe may already contain bytes.
 // A prepared read keeps bytes in the backend until the client's reply outcome
@@ -622,7 +649,7 @@ static void handle_fd_request(struct Record *owner, unsigned long namespace, uns
     unsigned char flags = request->payload[1];
     const unsigned char *path = request->payload + 2;
     unsigned long path_size = request->size >= 2 ? request->size - 2 : 0;
-    if (request->size < 5 || request->capability || request->rights ||
+    if (request->size < 4 || request->capability || request->rights ||
         flags &
             ~(MOSS_PROCESS_FD_READABLE | MOSS_PROCESS_FD_WRITABLE | MOSS_PROCESS_FD_CREATE | MOSS_PROCESS_FD_TRUNCATE |
               MOSS_PROCESS_FD_APPEND | MOSS_PROCESS_FD_CLOEXEC | MOSS_PROCESS_FD_EXCLUSIVE) ||
@@ -631,6 +658,11 @@ static void handle_fd_request(struct Record *owner, unsigned long namespace, uns
         ((flags & (MOSS_PROCESS_FD_TRUNCATE | MOSS_PROCESS_FD_APPEND)) && !(flags & MOSS_PROCESS_FD_WRITABLE)) ||
         path[0] != '/' || memchr(path, 0, path_size) != path + path_size - 1)
       return;
+    int directory = path_size == 2 && path[1] == 0;
+    if (directory && flags & ~(MOSS_PROCESS_FD_READABLE | MOSS_PROCESS_FD_CLOEXEC)) {
+      response->payload[0] = MOSS_PROCESS_IS_DIRECTORY;
+      return;
+    }
     unsigned long number = first_free_descriptor(owner, 0);
     if (number == MOSS_PROCESS_FD_LIMIT) {
       response->payload[0] = MOSS_PROCESS_TOO_MANY_FILES;
@@ -658,11 +690,11 @@ static void handle_fd_request(struct Record *owner, unsigned long namespace, uns
       response->payload[0] = MOSS_PROCESS_EXISTS;
     } else if (result == 1 && opened.payload[0] == MOSS_NAMESPACE_OK && opened.capability &&
                opened.rights == MOSS_CAP_SEND &&
-               (!(flags & MOSS_PROCESS_FD_TRUNCATE) || file_resize(opened.capability, 0))) {
+               (directory || !(flags & MOSS_PROCESS_FD_TRUNCATE) || file_resize(opened.capability, 0))) {
       description->object = opened.capability;
       description->flags = flags & (MOSS_PROCESS_FD_READABLE | MOSS_PROCESS_FD_WRITABLE | MOSS_PROCESS_FD_APPEND);
       description->references = 1;
-      description->kind = DESCRIPTION_FILE;
+      description->kind = directory ? DESCRIPTION_DIRECTORY : DESCRIPTION_FILE;
       entry->number = number;
       entry->description = description;
       entry->close_on_exec = !!(flags & MOSS_PROCESS_FD_CLOEXEC);
@@ -713,7 +745,8 @@ static void handle_fd_request(struct Record *owner, unsigned long namespace, uns
   }
 
   if (request->size < MOSS_PROCESS_REPLY_VALUE_BYTES ||
-      (request->capability && operation != MOSS_PROCESS_FD_READ && operation != MOSS_PROCESS_FD_WRITE))
+      (request->capability && operation != MOSS_PROCESS_FD_READ && operation != MOSS_PROCESS_FD_WRITE &&
+       operation != MOSS_PROCESS_FD_READDIR))
     return;
   unsigned long number = moss_process_get_u64(request->payload + 1);
   struct Descriptor *entry = find_descriptor(owner, number);
@@ -800,7 +833,8 @@ static void handle_fd_request(struct Record *owner, unsigned long namespace, uns
     if (request->size != MOSS_PROCESS_REPLY_VALUE_BYTES || request->capability || request->rights)
       return;
     unsigned long id = 0, size = 0;
-    if (description->kind == DESCRIPTION_FILE && !file_stat(description->object, &id, &size)) {
+    if ((description->kind == DESCRIPTION_FILE || description->kind == DESCRIPTION_DIRECTORY) &&
+        !file_stat(description->object, &id, &size)) {
       response->payload[0] = MOSS_PROCESS_UNAVAILABLE;
       return;
     }
@@ -832,6 +866,28 @@ static void handle_fd_request(struct Record *owner, unsigned long namespace, uns
     return;
   }
 
+  if (operation == MOSS_PROCESS_FD_READDIR) {
+    if (request->size != MOSS_PROCESS_REPLY_VALUE_BYTES || !request->capability ||
+        request->rights != (MOSS_CAP_MAP_WRITE | MOSS_CAP_TRANSFER | MOSS_CAP_DUPLICATE))
+      return;
+    if (description->kind != DESCRIPTION_DIRECTORY) {
+      response->payload[0] = MOSS_PROCESS_NOT_DIRECTORY;
+      return;
+    }
+    if (!(description->flags & MOSS_PROCESS_FD_READABLE)) {
+      response->payload[0] = MOSS_PROCESS_BAD_DESCRIPTOR;
+      return;
+    }
+    int result = file_readdir(description, request->capability, response);
+    if (result > 0) {
+      action->offset_description = description;
+      action->next_offset = moss_file_get_u64(response->payload + 10);
+    } else if (result < 0) {
+      response->payload[0] = MOSS_PROCESS_UNAVAILABLE;
+    }
+    return;
+  }
+
   if (operation == MOSS_PROCESS_FD_READ || operation == MOSS_PROCESS_FD_WRITE) {
     int writing = operation == MOSS_PROCESS_FD_WRITE;
     if (request->size != MOSS_PROCESS_FD_IO_BYTES || !request->capability ||
@@ -840,6 +896,10 @@ static void handle_fd_request(struct Record *owner, unsigned long namespace, uns
       return;
     if (!(description->flags & (writing ? MOSS_PROCESS_FD_WRITABLE : MOSS_PROCESS_FD_READABLE))) {
       response->payload[0] = MOSS_PROCESS_BAD_DESCRIPTOR;
+      return;
+    }
+    if (description->kind == DESCRIPTION_DIRECTORY) {
+      response->payload[0] = MOSS_PROCESS_IS_DIRECTORY;
       return;
     }
     if (description->uncertain) {
@@ -880,7 +940,7 @@ static void handle_fd_request(struct Record *owner, unsigned long namespace, uns
   if (operation == MOSS_PROCESS_FD_SEEK) {
     if (request->size != MOSS_PROCESS_FD_SEEK_BYTES || request->capability || request->rights || description->uncertain)
       return;
-    if (description->kind != DESCRIPTION_FILE) {
+    if (description->kind != DESCRIPTION_FILE && description->kind != DESCRIPTION_DIRECTORY) {
       response->payload[0] = MOSS_PROCESS_NOT_SEEKABLE;
       return;
     }
@@ -889,6 +949,10 @@ static void handle_fd_request(struct Record *owner, unsigned long namespace, uns
     if (whence == MOSS_PROCESS_FD_SEEK_CUR)
       base = description->offset;
     else if (whence == MOSS_PROCESS_FD_SEEK_END) {
+      if (description->kind == DESCRIPTION_DIRECTORY) {
+        response->payload[0] = MOSS_PROCESS_NOT_SEEKABLE;
+        return;
+      }
       if (!file_stat(description->object, NULL, &base)) {
         response->payload[0] = MOSS_PROCESS_UNAVAILABLE;
         return;
@@ -1224,7 +1288,7 @@ int main(int argc, char **argv) {
         response.payload[0] = sent_signal ? MOSS_PROCESS_OK : failed ? MOSS_PROCESS_UNAVAILABLE : MOSS_PROCESS_NO_ENTRY;
       }
     } else if (request.badge && request.size && request.payload[0] >= MOSS_PROCESS_FD_OPEN &&
-               request.payload[0] <= MOSS_PROCESS_FD_STAT) {
+               request.payload[0] <= MOSS_PROCESS_FD_READDIR) {
       handle_fd_request(find_record(request.badge), namespace, pipe, &request, &response, &fd_action);
     } else if (request.badge && request.size == 1 && !request.capability && !request.rights) {
       struct Record *record = find_record(request.badge);

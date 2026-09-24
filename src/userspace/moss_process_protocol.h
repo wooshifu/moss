@@ -42,7 +42,8 @@ enum {
   MOSS_PROCESS_FD_DUP_MIN = 29,
   MOSS_PROCESS_FD_INSTALL = 30,
   MOSS_PROCESS_FD_PIPE = 31,
-  MOSS_PROCESS_FD_STAT = 32
+  MOSS_PROCESS_FD_STAT = 32,
+  MOSS_PROCESS_FD_READDIR = 33
 };
 enum {
   MOSS_PROCESS_OK = 0,
@@ -59,7 +60,9 @@ enum {
   MOSS_PROCESS_EXISTS = 11,
   MOSS_PROCESS_WOULD_BLOCK = 12,
   MOSS_PROCESS_BROKEN_PIPE = 13,
-  MOSS_PROCESS_NOT_SEEKABLE = 14
+  MOSS_PROCESS_NOT_SEEKABLE = 14,
+  MOSS_PROCESS_NOT_DIRECTORY = 15,
+  MOSS_PROCESS_IS_DIRECTORY = 16
 };
 // BAD_DESCRIPTOR also covers I/O through a descriptor opened without the
 // requested access mode, matching POSIX EBADF rather than process DENIED.
@@ -67,7 +70,12 @@ enum { MOSS_PROCESS_INIT_ID = 1 };
 // Match the current kernel compatibility limit. The supervisor seeds 0..2
 // with console descriptions before managed children inherit the view.
 enum { MOSS_PROCESS_FD_LIMIT = 256, MOSS_PROCESS_FD_FIRST = 3 };
-enum { MOSS_PROCESS_FD_KIND_FILE = 1, MOSS_PROCESS_FD_KIND_PIPE = 2, MOSS_PROCESS_FD_KIND_CONSOLE = 3 };
+enum {
+  MOSS_PROCESS_FD_KIND_FILE = 1,
+  MOSS_PROCESS_FD_KIND_PIPE = 2,
+  MOSS_PROCESS_FD_KIND_CONSOLE = 3,
+  MOSS_PROCESS_FD_KIND_DIRECTORY = 4
+};
 enum {
   MOSS_PROCESS_FD_READABLE = 1U << 0,
   MOSS_PROCESS_FD_WRITABLE = 1U << 1,
@@ -104,6 +112,12 @@ enum { MOSS_PROCESS_FD_PIPE_REPLY_BYTES = 17 };
 // FD_STAT returns [OK, kind, file ID: u64 LE, size: u64 LE]. Pipe and console
 // report zero ID/size until their own metadata contracts are defined.
 enum { MOSS_PROCESS_FD_STAT_REPLY_BYTES = 18 };
+// FD_READDIR carries [opcode, descriptor:u64 LE] plus a writable shared
+// page. The response is [OK, type:u8, id:u64 LE, next cookie:u64 LE,
+// name bytes:u16 LE] with the NUL-terminated name in that page. Zero name
+// bytes means EOF and returns the unchanged cursor. A failed reply leaves
+// the shared directory cursor intact.
+enum { MOSS_PROCESS_FD_READDIR_REPLY_BYTES = 20 };
 
 // REGISTER returns [OK, ID:u64 LE]. STATUS returns [EXITED, status:u64 LE].
 // WAIT_ANY returns [EXITED, child ID:u64 LE, status:u64 LE] and atomically

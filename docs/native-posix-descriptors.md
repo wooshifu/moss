@@ -35,8 +35,12 @@ Descriptor allocation now precedes namespace `CREATE` and file `TRUNCATE`, so
 a known-full table or local allocation failure cannot mutate the file first.
 `FD_STAT` reports descriptor kind and asks the serving file service for current
 size and a file ID scoped to that service incarnation. Pipe and console report
-their kind with zero ID and size; directory entries, timestamps, credentials
-and readiness metadata remain to be defined.
+their kind with zero ID and size. The flat root now has a read-only directory
+capability. `FD_READDIR` enumerates `.`, `..` and named file objects through a
+shared open-description cookie, with the cookie committed only after the
+caller receives the reply. Unlisted Loader images stay out of that listing.
+Managed libc still uses the kernel `getdents` path; nested traversal,
+timestamps, credentials and readiness metadata remain to be defined.
 
 The process service currently waits synchronously for each object call
 while processing one request at a time. A blocking console read or pipe read

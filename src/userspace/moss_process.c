@@ -734,7 +734,26 @@ static int fd_stat(unsigned long session, unsigned long number, unsigned char *k
   *kind = response.payload[1];
   *id = moss_process_get_u64(response.payload + 2);
   *size = moss_process_get_u64(response.payload + 10);
-  return *kind >= MOSS_PROCESS_FD_KIND_FILE && *kind <= MOSS_PROCESS_FD_KIND_CONSOLE;
+  return *kind >= MOSS_PROCESS_FD_KIND_FILE && *kind <= MOSS_PROCESS_FD_KIND_DIRECTORY;
+}
+
+static int fd_readdir(unsigned long session, unsigned long number, unsigned long memory, const char *page,
+                      unsigned char *type, unsigned long *id, unsigned long *cookie, unsigned int *name_size) {
+  struct moss_ipc_message request = {.size = MOSS_PROCESS_REPLY_VALUE_BYTES,
+                                     .capability = memory,
+                                     .rights = MOSS_CAP_MAP_WRITE | MOSS_CAP_TRANSFER | MOSS_CAP_DUPLICATE,
+                                     .payload = {MOSS_PROCESS_FD_READDIR}};
+  moss_process_put_u64(request.payload + 1, number);
+  struct moss_ipc_message response = {0};
+  long result = call(session, &request, &response);
+  if (!no_capability(&response) || result != MOSS_PROCESS_FD_READDIR_REPLY_BYTES ||
+      response.payload[0] != MOSS_PROCESS_OK)
+    return 0;
+  *type = response.payload[1];
+  *id = moss_process_get_u64(response.payload + 2);
+  *cookie = moss_process_get_u64(response.payload + 10);
+  *name_size = moss_file_get_u16(response.payload + 18);
+  return !*name_size || (*name_size <= MOSS_IPC_MAX_MESSAGE - 2 && page[*name_size - 1] == 0);
 }
 
 static int fd_dup_min(unsigned long session, unsigned long source, unsigned long minimum, unsigned char flags,
@@ -807,6 +826,58 @@ static int fd_exec_child(const char *kept_text) {
   return valid;
 }
 
+static int fd_directory_probe(unsigned long session, unsigned long memory, const char *page, unsigned long note_id) {
+  unsigned long directory = 0, duplicate = 0, id = 0, size = 0, cookie = 0;
+  unsigned char kind = 0, type = 0;
+  unsigned int name_size = 0;
+  int valid = fd_open(session, "/", MOSS_PROCESS_FD_READABLE | MOSS_PROCESS_FD_CLOEXEC, &directory) &&
+              fd_stat(session, directory, &kind, &id, &size) && kind == MOSS_PROCESS_FD_KIND_DIRECTORY &&
+              id == MOSS_FILE_ROOT_BADGE && size == 0;
+  if (valid) {
+    struct moss_ipc_message writable = {.size = 2 + sizeof("/"), .payload = {MOSS_PROCESS_FD_OPEN}};
+    writable.payload[1] = MOSS_PROCESS_FD_WRITABLE;
+    memcpy(writable.payload + 2, "/", sizeof("/"));
+    valid = fd_rejected(session, &writable, MOSS_PROCESS_IS_DIRECTORY) &&
+            fd_readdir(session, directory, memory, page, &type, &id, &cookie, &name_size) &&
+            type == MOSS_FILE_TYPE_DIRECTORY && id == MOSS_FILE_ROOT_BADGE && cookie == 1 && name_size == sizeof(".") &&
+            strcmp(page, ".") == 0 && fd_command(session, MOSS_PROCESS_FD_DUP, directory, &duplicate);
+  }
+  if (valid)
+    valid = fd_readdir(session, duplicate, memory, page, &type, &id, &cookie, &name_size) &&
+            type == MOSS_FILE_TYPE_DIRECTORY && id == MOSS_FILE_ROOT_BADGE && cookie == 2 &&
+            name_size == sizeof("..") && strcmp(page, "..") == 0;
+  int saw_scratch = 0, saw_note = 0, saw_exclusive = 0, ended = 0;
+  unsigned long previous = cookie;
+  for (unsigned int index = 0; valid && index <= MOSS_FILE_OBJECT_LIMIT; ++index) {
+    valid = fd_readdir(session, directory, memory, page, &type, &id, &cookie, &name_size);
+    if (!valid)
+      break;
+    if (!name_size) {
+      ended = cookie == previous;
+      break;
+    }
+    valid = type == MOSS_FILE_TYPE_REGULAR && cookie > previous && id > 0 && id < MOSS_FILE_ROOT_BADGE &&
+            strcmp(page, "loader-probe") != 0 && strcmp(page, "loader-bad") != 0;
+    previous = cookie;
+    if (strcmp(page, "scratch") == 0)
+      saw_scratch = id == MOSS_FILE_SCRATCH_BADGE;
+    else if (strcmp(page, "note") == 0)
+      saw_note = id == note_id;
+    else if (strcmp(page, "fd-exclusive") == 0)
+      saw_exclusive = 1;
+  }
+  valid = valid && ended && saw_scratch && saw_note && saw_exclusive;
+  if (valid)
+    valid = fd_seek(session, duplicate, MOSS_PROCESS_FD_SEEK_SET, &cookie) && cookie == 0 &&
+            fd_readdir(session, directory, memory, page, &type, &id, &cookie, &name_size) &&
+            type == MOSS_FILE_TYPE_DIRECTORY && strcmp(page, ".") == 0 && cookie == 1;
+  if (duplicate)
+    valid &= fd_command(session, MOSS_PROCESS_FD_CLOSE, duplicate, NULL);
+  if (directory)
+    valid &= fd_command(session, MOSS_PROCESS_FD_CLOSE, directory, NULL);
+  return valid;
+}
+
 static int fd_view_probe(void) {
   unsigned long session = getauxval(MOSS_AT_STARTUP_CAP);
   const char *namespace_text = getenv("MOSS_NAMESPACE_CAP");
@@ -854,6 +925,8 @@ static int fd_view_probe(void) {
                     MOSS_PROCESS_FD_READABLE | MOSS_PROCESS_FD_WRITABLE | MOSS_PROCESS_FD_CREATE |
                         MOSS_PROCESS_FD_EXCLUSIVE,
                     &exclusive);
+  if (valid)
+    valid = fd_directory_probe(session, (unsigned long)memory, (const char *)mapped, file_id);
   if (valid) {
     struct moss_ipc_message existing = {.size = 2 + sizeof("/note"), .payload = {MOSS_PROCESS_FD_OPEN}};
     existing.payload[1] = MOSS_PROCESS_FD_READABLE | MOSS_PROCESS_FD_WRITABLE | MOSS_PROCESS_FD_CREATE |

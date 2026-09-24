@@ -2,7 +2,9 @@
 
 #define MOSS_SCRATCH_PATH "/scratch"
 
-// OPEN carries [opcode, flags, absolute NUL-terminated flat-root file path].
+// OPEN carries [opcode, flags, absolute NUL-terminated flat-root path].
+// The root path "/" is read-only and requires zero namespace flags; its
+// returned sender names the root directory object.
 // A successful lookup returns a direct file endpoint capability. TRANSFER
 // explicitly permits handing that authority to a POSIX descriptor view;
 // synchronous IPC requires both TRANSFER and DUPLICATE on the source handle.
