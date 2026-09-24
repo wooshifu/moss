@@ -118,6 +118,7 @@ quit
     service_pid = None
     namespace_pid = None
     process_pid = None
+    old_child_started = False
     bulk_data = b"0" * 300
     # One byte past a shared transfer page proves the file service retains
     # content across multiple positional calls.
@@ -173,10 +174,12 @@ quit
         (b"\nMOSS_SLEEP_READY\n", None),
         (b"moss$ ", b"/moss-file.elf read\n"),
         (b"\nMOSS_FILE_READ=native\n", None),
+        (b"moss$ ", b"/moss-process.elf crash-survivor &\n"),
         (b"moss$ ", b"/moss-domain.elf terminate process\n"),
         (b"moss-init: process service died", None),
         (b"moss-init: process service started", None),
         (b"built-in shell (ash)", None),
+        (b"moss$ ", b"sleep 3\n"),
         (b"moss$ ", b"/moss-process.elf probe\n"),
         (b"\nMOSS_PROCESS_READY\n", None),
         (b"moss$ ", b"/moss-domain.elf terminate namespace\n"),
@@ -256,6 +259,7 @@ quit
                     out.flush()
                 chunk = chunk.replace(b"\r", b"")
                 pending += chunk
+                old_child_started |= b"MOSS_OLD_CHILD_STARTED" in pending
                 if serial.stat().st_size > 32 * 2**20:
                     raise ValueError("production serial log exceeds 32 MiB")
                 if any(marker in pending for marker in (b"[P]", b"KERNEL PANIC", b"KERNEL PAGE FAULT", b"@@MOSS")):
@@ -266,6 +270,8 @@ quit
                     if gdb and stage == 0 and pause_marker.encode() not in (output / "gdb.log").read_bytes():
                         break
                     marker, command = steps[stage]
+                    if command == b"/moss-domain.elf terminate process\n" and not old_child_started:
+                        break
                     after = pending.split(marker, 1)[1]
                     if marker in (b"moss-init: file service started", b"moss-init: namespace service started",
                                   b"moss-init: process service started"):
@@ -298,6 +304,13 @@ quit
                             child.stdin.flush()
                     stage += 1
                 if stage == len(steps) and (not debugger or debugger.poll() is not None):
+                    trace = serial.read_bytes().replace(b"\r", b"")
+                    started = trace.find(b"MOSS_OLD_CHILD_STARTED")
+                    lost = trace.find(b"moss-init: process service died")
+                    if started < 0 or lost < started:
+                        raise ValueError("managed child was not live before process service loss")
+                    if b"MOSS_OLD_CHILD_SURVIVED" in trace:
+                        raise ValueError("old managed child survived process service loss")
                     result.update(status="passed", observed="process_namespace_and_file_services_recovered")
                     break
                 if child.poll() is not None:

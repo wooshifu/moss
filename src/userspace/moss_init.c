@@ -13,6 +13,9 @@
 
 // One second between launches bounds a failing service's restart rate.
 #define RESTART_DELAY_NS 1000000000UL
+// A failed scope drain cannot be followed by a new compatibility namespace.
+#define SCOPE_SHUTDOWN_TIMEOUT_NS 5000000000UL
+#define SCOPE_SHUTDOWN_POLL_NS 10000000UL
 
 struct Service {
   pid_t pid;
@@ -49,8 +52,10 @@ static void child_exited(int signo) {
   errno = saved_errno;
 }
 
-static pid_t fork_domain(long *domain, const struct moss_fork_capability *handles, size_t count) {
+static pid_t fork_domain(long *domain, const struct moss_fork_capability *handles, size_t count, long scope) {
   *domain = 0;
+  if (scope > 0)
+    return (pid_t)syscall6(SYS_FORK_DOMAIN_SCOPED, (long)domain, (long)handles, (long)count, scope, 0, 0);
   return (pid_t)syscall3(SYS_FORK_DOMAIN_SELECT, (long)domain, (long)handles, (long)count);
 }
 
@@ -85,6 +90,24 @@ static void stop_service(struct Service *service) {
   service->pid = 0;
   service->send = 0;
   service->domain = 0;
+}
+
+static int retire_scope(long scope) {
+  if (syscall1(SYS_DOMAIN_SCOPE_TERMINATE, scope) != 0)
+    return -1;
+  unsigned long now = 0;
+  if (syscall2(SYS_CLOCK_GETTIME, MOSS_CLOCK_MONOTONIC, (long)&now) != 0 || now > LONG_MAX - SCOPE_SHUTDOWN_TIMEOUT_NS)
+    return -1;
+  unsigned long deadline = now + SCOPE_SHUTDOWN_TIMEOUT_NS;
+  for (;;) {
+    long live = syscall1(SYS_DOMAIN_SCOPE_STATUS, scope);
+    if (live == 0)
+      return 0;
+    if (live < 0 || syscall2(SYS_CLOCK_GETTIME, MOSS_CLOCK_MONOTONIC, (long)&now) != 0 || now >= deadline)
+      return -1;
+    unsigned long delay = SCOPE_SHUTDOWN_POLL_NS;
+    (void)syscall1(SYS_NANOSLEEP, (long)&delay);
+  }
 }
 
 static int restart_delay(void) {
@@ -189,7 +212,7 @@ static int start_endpoint_service(struct Service *service, const char *program) 
   const struct moss_fork_capability handles[] = {
       {(unsigned long)receive, MOSS_CAP_RECEIVE, 0},
       {(unsigned long)mint, MOSS_CAP_SEND | MOSS_CAP_TRANSFER | MOSS_CAP_DUPLICATE | MOSS_CAP_MINT, 0}};
-  pid_t child = fork_domain(&domain, handles, sizeof(handles) / sizeof(handles[0]));
+  pid_t child = fork_domain(&domain, handles, sizeof(handles) / sizeof(handles[0]), 0);
   if (child == 0) {
     char *const argv[] = {(char *)program, receive_arg, mint_arg, NULL};
     execve(program, argv, NULL);
@@ -255,7 +278,7 @@ static int start_namespace_service(const struct Service *file, struct Service *s
   long domain = 0;
   const struct moss_fork_capability handles[] = {{(unsigned long)receive, MOSS_CAP_RECEIVE, 0},
                                                  {(unsigned long)file_cap, MOSS_CAP_SEND, 0}};
-  pid_t child = fork_domain(&domain, handles, sizeof(handles) / sizeof(handles[0]));
+  pid_t child = fork_domain(&domain, handles, sizeof(handles) / sizeof(handles[0]), 0);
   if (child == 0) {
     char *const argv[] = {"namespace-service", receive_arg, file_arg, NULL};
     execve("/namespace-service.elf", argv, NULL);
@@ -296,12 +319,12 @@ fail:
   return -1;
 }
 
-static pid_t start_shell(long namespace_capability, long process_capability, long parent_session, long file_domain,
-                         long namespace_domain, long process_domain, long supervisor_domain, long *domain,
-                         unsigned long *shell_id) {
+static pid_t start_shell(long namespace_capability, long process_capability, long parent_session, long scope,
+                         long file_domain, long namespace_domain, long process_domain, long supervisor_domain,
+                         long *domain, unsigned long *shell_id) {
   *domain = 0;
   *shell_id = 0;
-  if (namespace_capability <= 0 || process_capability <= 0 || parent_session <= 0 || file_domain <= 0 ||
+  if (namespace_capability <= 0 || process_capability <= 0 || parent_session <= 0 || scope <= 0 || file_domain <= 0 ||
       namespace_domain <= 0 || process_domain <= 0 || supervisor_domain <= 0)
     return -1;
   char namespace_env[64]; // Environment key plus decimal 64-bit handle.
@@ -356,7 +379,7 @@ static pid_t start_shell(long namespace_capability, long process_capability, lon
       {(unsigned long)process_domain, MOSS_CAP_DOMAIN_TERMINATE | MOSS_CAP_DUPLICATE, MOSS_FORK_CAP_INHERIT},
       {(unsigned long)supervisor_domain, MOSS_CAP_DOMAIN_TERMINATE | MOSS_CAP_DUPLICATE, MOSS_FORK_CAP_INHERIT},
       {(unsigned long)child_session, MOSS_CAP_SEND | MOSS_CAP_DUPLICATE, MOSS_FORK_CAP_INHERIT}};
-  pid_t child = fork_domain(domain, handles, sizeof(handles) / sizeof(handles[0]));
+  pid_t child = fork_domain(domain, handles, sizeof(handles) / sizeof(handles[0]), scope);
   if (child == 0) {
     char *const argv[] = {"ash", "-i", NULL};
     char *const env[] = {"PATH=/",
@@ -395,8 +418,8 @@ static pid_t start_shell(long namespace_capability, long process_capability, lon
 }
 
 static enum ServiceLoss supervise(struct Service *file, struct Service *namespace, struct Service *process,
-                                  long process_session, long supervisor_domain, pid_t *shell, long *shell_domain,
-                                  unsigned long *shell_id) {
+                                  long process_session, long scope, long supervisor_domain, pid_t *shell,
+                                  long *shell_domain, unsigned long *shell_id) {
   for (;;) {
     const unsigned long domains[] = {(unsigned long)file->domain, (unsigned long)namespace->domain,
                                      (unsigned long)process->domain, (unsigned long)*shell_domain};
@@ -437,7 +460,7 @@ static enum ServiceLoss supervise(struct Service *file, struct Service *namespac
       if (restart_delay() != 0) {
         return SUPERVISOR_FAILURE;
       }
-      *shell = start_shell(namespace->send, process->send, process_session, file->domain, namespace->domain,
+      *shell = start_shell(namespace->send, process->send, process_session, scope, file->domain, namespace->domain,
                            process->domain, supervisor_domain, shell_domain, shell_id);
       if (*shell < 0) {
         report(STDERR_FILENO, "moss-init: shell launch failed\n");
@@ -487,19 +510,27 @@ int main(void) {
           lost = PROCESS_LOST;
         } else {
           report_started("process service", process.pid);
-          long process_session = register_supervisor(process.send);
+          long scope = syscall0(SYS_DOMAIN_SCOPE_CREATE);
+          long process_session = scope > 0 ? register_supervisor(process.send) : 0;
           long shell_domain = 0;
           unsigned long shell_id = 0;
           pid_t shell = process_session > 0
-                            ? start_shell(namespace.send, process.send, process_session, file.domain, namespace.domain,
-                                          process.domain, supervisor_domain, &shell_domain, &shell_id)
+                            ? start_shell(namespace.send, process.send, process_session, scope, file.domain,
+                                          namespace.domain, process.domain, supervisor_domain, &shell_domain, &shell_id)
                             : -1;
           if (shell < 0) {
             report(STDERR_FILENO, "moss-init: shell launch failed\n");
             lost = PROCESS_LOST;
           } else {
-            lost = supervise(&file, &namespace, &process, process_session, supervisor_domain, &shell, &shell_domain,
-                             &shell_id);
+            lost = supervise(&file, &namespace, &process, process_session, scope, supervisor_domain, &shell,
+                             &shell_domain, &shell_id);
+          }
+          if (scope > 0) {
+            if (retire_scope(scope) != 0) {
+              report(STDERR_FILENO, "moss-init: process scope did not drain\n");
+              _exit(1);
+            }
+            (void)syscall1(SYS_CAP_CLOSE, scope);
           }
           stop_child(shell, shell_domain);
           if (process_session > 0)

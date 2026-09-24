@@ -85,6 +85,8 @@ long sys_fork(long arg0, long arg1, long arg2, long arg3, long arg4, long arg5) 
 long sys_fork_domain(long cap_out_addr, long arg1, long arg2, long arg3, long arg4, long arg5) noexcept;
 long sys_fork_domain_inherit(long cap_out_addr, long arg1, long arg2, long arg3, long arg4, long arg5) noexcept;
 long sys_fork_domain_select(long cap_out_addr, long handles_addr, long count, long arg3, long arg4, long arg5) noexcept;
+long sys_fork_domain_scoped(long cap_out_addr, long handles_addr, long count, long scope_handle, long arg4,
+                            long arg5) noexcept;
 long sys_domain_id(long handle, long arg1, long arg2, long arg3, long arg4, long arg5) noexcept;
 long sys_domain_same(long left, long right, long arg2, long arg3, long arg4, long arg5) noexcept;
 long sys_domain_terminate(long handle, long arg1, long arg2, long arg3, long arg4, long arg5) noexcept;
@@ -93,6 +95,9 @@ long sys_domain_wait(long handle, long arg1, long arg2, long arg3, long arg4, lo
 long sys_domain_wait_any(long handles_addr, long count, long arg2, long arg3, long arg4, long arg5) noexcept;
 long sys_domain_status(long handle, long status_addr, long arg2, long arg3, long arg4, long arg5) noexcept;
 long sys_domain_self(long arg0, long arg1, long arg2, long arg3, long arg4, long arg5) noexcept;
+long sys_domain_scope_create(long arg0, long arg1, long arg2, long arg3, long arg4, long arg5) noexcept;
+long sys_domain_scope_terminate(long handle, long arg1, long arg2, long arg3, long arg4, long arg5) noexcept;
+long sys_domain_scope_status(long handle, long arg1, long arg2, long arg3, long arg4, long arg5) noexcept;
 long sys_execve(long pathname_addr, long argv_addr, long envp_addr, long arg3, long arg4, long arg5) noexcept;
 long sys_execve_cap(long pathname_addr, long argv_addr, long envp_addr, long startup_cap, long arg4,
                     long arg5) noexcept;

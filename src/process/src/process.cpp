@@ -447,13 +447,15 @@ ProcessId Process::find_zombie_child(i64 wait_pid, ProcessId target_pgid) const 
 }
 
 // ProcessManager类方法实现
-KernelResult<shared_ptr<Process>> ProcessManager::create_process(ProcessId parent_pid) noexcept {
+KernelResult<shared_ptr<Process>> ProcessManager::create_process(ProcessId parent_pid,
+                                                                 shared_ptr<capability::Object> domain_scope) noexcept {
   ProcessId new_pid = allocate_pid();
   if (new_pid == INVALID_PROCESS_ID) {
     return KernelResult<shared_ptr<Process>>{ErrorCode::ResourceExhausted};
   }
 
-  auto process = shared_ptr<Process>::try_make(moss::abi::bridge::moss_heap_allocate, new_pid, parent_pid);
+  auto process = shared_ptr<Process>::try_make(moss::abi::bridge::moss_heap_allocate, new_pid, parent_pid,
+                                               moss::move(domain_scope));
   if (!process) {
     return KernelResult<shared_ptr<Process>>{ErrorCode::OutOfMemory};
   }

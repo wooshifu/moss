@@ -10,26 +10,23 @@ networking and persistent storage.
 | Boundary | Current source and observed behavior | Work before the accepted boundary is reached |
 | --- | --- | --- |
 | Native authority and IPC | Capability handles, bounded calls, Memory Objects, domain observation and termination are exercised by [production validation](kernel-validation-usage.md). The [supervisor](../src/userspace/moss_init.c) starts and restarts isolated process, namespace and file services. | Close service-specific recovery and resource ownership under caller timeout, concurrent exit and service death. A restarted endpoint must not inherit authority from the old incarnation. |
-| POSIX processes | The [Process Compatibility Service](../src/userspace/moss_process_service.c) owns managed IDs, parentage, groups, sessions, wait records and scoped signals. [Managed mlibc](../third_party/mlibc/sysdeps/moss/sysdeps.cpp) uses badged sessions for these operations. The [kernel syscall table](../src/kernel/src/syscall_table.cpp) still supplies the legacy PID, credential, signal and wait paths. | Define ownership of surviving managed domains when the process service dies; reconstruct or retire their namespace state before accepting new clients. Move compatibility credentials and complete child notification, terminal job control and signal policy. Remove legacy POSIX policy only after its remaining callers migrate. |
+| POSIX processes | The [Process Compatibility Service](../src/userspace/moss_process_service.c) owns managed IDs, parentage, groups, sessions, wait records and scoped signals. [Managed mlibc](../third_party/mlibc/sysdeps/moss/sysdeps.cpp) uses badged sessions for these operations. The [supervisor](../src/userspace/moss_init.c) places its shell tree in a native scope and drains that scope before replacing a failed process service. The [kernel syscall table](../src/kernel/src/syscall_table.cpp) still supplies the legacy PID, credential, signal and wait paths. | Cover other paths that can register managed clients, pending calls and old badged senders under service loss. Move compatibility credentials and complete child notification, terminal job control and signal policy. Remove legacy POSIX policy only after its remaining callers migrate. |
 | Files and paths | The [native namespace service](../src/userspace/moss_namespace_service.c) handles a flat root; the [file service](../src/userspace/moss_file_service.c) keeps volatile file contents and returns file capabilities. The [mlibc open/read/write path](../third_party/mlibc/sysdeps/moss/sysdeps.cpp) still calls the kernel, whose [open handler](../src/kernel/src/syscall_table.cpp) invokes kernel VFS. | Make POSIX descriptors, current directories, traversal, metadata and handle inheritance a userspace view over file capabilities. Migrate the selected BusyBox workflows before deleting the kernel VFS path. Define filesystem-service restart and file-object lifetime separately from namespace restart. |
 | Executable images and memory | The kernel [exec path](../src/kernel/src/syscall_table.cpp) still parses and maps ELF. Anonymous executable `mmap` is denied and `mprotect` returns `ENOSYS`; this is a fail-closed interim rule, not the immutable-version authority in [ADR-0026](adr/0026-require-explicit-authority-for-executable-memory.md). | Introduce the userspace loader and pager contracts, then enforce immutable code versions and approval-instance rights across aliases, repaging, revocation and service failure before moving ordinary loading out of the kernel. Verified bootstrap authority is a separate [ADR-0027](adr/0027-establish-initial-authority-through-verified-boot.md) gate. |
 | Devices and higher services | Production still links [console and platform drivers](../src/drivers/) in the kernel. The kernel socket handlers return `ENOSYS`; this does not provide the Network Stack Service in [ADR-0020](adr/0020-run-network-stacks-as-userspace-services.md). | Isolate a driver only after interrupt, MMIO, DMA and reset authority are scoped to its recovery domain, with hardware DMA confinement or an explicit trusted exception. Network, graphics and power policy services follow their own device and recovery prerequisites. |
 
 ## Implementation order
 
-1. Close process-service recovery first. The supervisor currently restarts a
-   failed process service and shell, while the old service's registry is lost.
-   Prove what happens to live grandchildren, old badged senders, pending calls
-   and orphaned exit records. Give each surviving domain a recovery owner or
-   terminate it under explicit native authority before accepting a new
-   compatibility namespace. The source path already shows why this is required:
-   [native fork](../src/kernel/src/syscall_table.cpp) creates no kernel POSIX
-   parent, [managed `fork()`](../third_party/mlibc/sysdeps/moss/sysdeps.cpp)
-   closes its parent-side domain handle after attachment, and the
-   [supervisor](../src/userspace/moss_init.c) retains a handle for its direct
-   shell but not for grandchildren. Once the old process service exits,
-   restarting those two programs cannot account for a live grandchild. Fault
-   injection with a live grandchild is still needed.
+1. Close process-service recovery first. Fault injection showed that an old
+   managed grandchild survived process-service restart because the old
+   registry disappeared and the supervisor only retained its direct shell
+   handle. Native fork now inherits the supervisor's shell scope, and the
+   supervisor closes, terminates and drains that scope before starting a new
+   compatibility namespace. The production boot probe waits for a live old
+   child before killing the process service and rejects survival after restart.
+   Still prove that every managed registration path belongs to the scope, and
+   exercise old badged senders, pending calls and orphaned exit records under
+   concurrent service loss.
 2. Move the POSIX file view one operation family at a time through namespace
    and file-object capabilities. Run the real ash and file-utility workflows
    on the new path in all six architecture/build combinations. Keep the old

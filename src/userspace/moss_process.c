@@ -590,6 +590,16 @@ static int managed_fanout_probe(void) {
 }
 
 int main(int argc, char **argv) {
+  if (argc == 2 && strcmp(argv[1], "crash-survivor") == 0) {
+    static const char started[] = "MOSS_OLD_CHILD_STARTED\n";
+    static const char survived[] = "MOSS_OLD_CHILD_SURVIVED\n";
+    (void)write(STDOUT_FILENO, started, sizeof(started) - 1);
+    // The boot probe waits beyond this delay after crashing the old service.
+    unsigned long delay = 3000000000UL;
+    (void)syscall1(SYS_NANOSLEEP, (long)&delay);
+    (void)write(STDOUT_FILENO, survived, sizeof(survived) - 1);
+    return 0;
+  }
   if (argc == 4 && strcmp(argv[1], "libc-child") == 0) {
     char *end = NULL;
     unsigned long child_id = strtoul(argv[2], &end, 10);

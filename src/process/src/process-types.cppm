@@ -741,6 +741,9 @@ class Process {
 private:
   ProcessId pid_;
   ProcessId parent_pid_;
+  // Fork fixes membership before publication. Exec and orphaning do not
+  // change it, so a failed service cannot lose an unregistered descendant.
+  shared_ptr<capability::Object> domain_scope_;
   // Assigned during boot before this Process is runnable. Forked children
   // must not inherit the fatal supervisor identity from their parent.
   bool initial_supervisor_{false};
@@ -813,10 +816,11 @@ private:
   u32 egid_{0};
 
 public:
-  Process(ProcessId pid, ProcessId parent = INVALID_PROCESS_ID) noexcept
-      : pid_(pid), parent_pid_(parent), address_space_(nullptr), thread_count_(0), main_thread_id_(INVALID_THREAD_ID),
-        state_(ProcessState::Created), exit_code_(0), domain_exit_wq_{}, limits_{}, stats_{}, pgid_(pid), sid_(0),
-        children_{}, child_exit_wq_{} {}
+  Process(ProcessId pid, ProcessId parent = INVALID_PROCESS_ID,
+          shared_ptr<capability::Object> domain_scope = {}) noexcept
+      : pid_(pid), parent_pid_(parent), domain_scope_(moss::move(domain_scope)), address_space_(nullptr),
+        thread_count_(0), main_thread_id_(INVALID_THREAD_ID), state_(ProcessState::Created), exit_code_(0),
+        domain_exit_wq_{}, limits_{}, stats_{}, pgid_(pid), sid_(0), children_{}, child_exit_wq_{} {}
 
   ~Process() noexcept {
     cleanup_threads();
@@ -840,6 +844,7 @@ public:
   [[nodiscard]] capability::Table &capabilities() noexcept { return capabilities_; }
   [[nodiscard]] const capability::Table &capabilities() const noexcept { return capabilities_; }
   [[nodiscard]] ProcessId parent_pid() const noexcept { return parent_pid_; }
+  [[nodiscard]] const shared_ptr<capability::Object> &domain_scope() const noexcept { return domain_scope_; }
   [[nodiscard]] ProcessState state() const noexcept { return state_; }
   containers::WaitQueue &domain_exit_wait_queue() noexcept { return domain_exit_wq_; }
   [[nodiscard]] i32 exit_code() const noexcept { return exit_code_; }
@@ -991,7 +996,8 @@ public:
   // PID zero is reserved for kernel/idle ownership; the first process is init (1).
   ProcessManager() noexcept : next_pid_(1) {}
 
-  [[nodiscard]] KernelResult<shared_ptr<Process>> create_process(ProcessId parent_pid = INVALID_PROCESS_ID) noexcept;
+  [[nodiscard]] KernelResult<shared_ptr<Process>>
+  create_process(ProcessId parent_pid = INVALID_PROCESS_ID, shared_ptr<capability::Object> domain_scope = {}) noexcept;
   [[nodiscard]] VoidResult terminate_process(ProcessId pid, i32 exit_code) noexcept;
 
   [[nodiscard]] shared_ptr<Process> find_process(ProcessId pid) const noexcept;

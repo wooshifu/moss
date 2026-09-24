@@ -267,9 +267,21 @@ public:
       : Object(capability::ObjectType::Domain), process(moss::move(target)) {}
 };
 
+class DomainScopeObject final : public capability::Object {
+  moss::atomic<bool> closed_{false};
+
+public:
+  DomainScopeObject() noexcept : Object(capability::ObjectType::DomainScope) {}
+  void close() noexcept { closed_.store(true); }
+  [[nodiscard]] bool closed() const noexcept { return closed_.load(); }
+};
+
 inline constexpr u32 kFullDomainRights = capability::rights::DOMAIN_TERMINATE | capability::rights::DOMAIN_INSPECT |
                                          capability::rights::DOMAIN_OBSERVE | capability::rights::DOMAIN_SIGNAL |
                                          capability::rights::TRANSFER | capability::rights::DUPLICATE;
+inline constexpr u32 kFullDomainScopeRights =
+    capability::rights::DOMAIN_SCOPE_ASSIGN | capability::rights::DOMAIN_SCOPE_TERMINATE |
+    capability::rights::DOMAIN_SCOPE_INSPECT | capability::rights::TRANSFER | capability::rights::DUPLICATE;
 
 struct DomainExitStatus {
   i32 code;
@@ -296,7 +308,7 @@ static long domain_cap_error(ErrorCode error) noexcept {
 }
 
 static long do_fork(u64 domain_cap_out_addr, const capability::ForkSelection *selected, usize selected_count,
-                    bool inherit_marked) noexcept {
+                    bool inherit_marked, u64 scope_handle) noexcept {
   using namespace moss::kernel::process;
   namespace log = moss::kernel::logging;
 
@@ -319,6 +331,21 @@ static long do_fork(u64 domain_cap_out_addr, const capability::ForkSelection *se
     return -errc::EAGAIN;
   }
 
+  auto scope = parent_proc->domain_scope();
+  if (scope_handle) {
+    // Existing members cannot escape containment by selecting another scope.
+    if (scope)
+      return -errc::EACCES;
+    auto selected_scope =
+        parent_proc->capabilities().lookup(static_cast<Handle>(scope_handle), capability::ObjectType::DomainScope,
+                                           capability::rights::DOMAIN_SCOPE_ASSIGN);
+    if (!selected_scope)
+      return domain_cap_error(selected_scope.error());
+    scope = *selected_scope;
+  }
+  if (scope && static_cast<DomainScopeObject *>(scope.get())->closed())
+    return -errc::EACCES;
+
   // The live entry owns the frame; never infer it from a stack-top offset.
   auto *frame = parent_thread->trap_frame;
   if (!frame || !frame->from_user()) {
@@ -331,7 +358,8 @@ static long do_fork(u64 domain_cap_out_addr, const capability::ForkSelection *se
   // A native domain has no POSIX parent or wait status. The returned PID is
   // diagnostic; only the domain capability retains authority after exit.
   const bool native_domain = domain_cap_out_addr != 0;
-  auto child_proc_result = g_process_manager->create_process(native_domain ? INVALID_PROCESS_ID : parent_proc->pid());
+  auto child_proc_result =
+      g_process_manager->create_process(native_domain ? INVALID_PROCESS_ID : parent_proc->pid(), scope);
   if (!child_proc_result) {
     log::klog::error("sys_fork: create_process failed");
     return -errc::ENOMEM;
@@ -342,6 +370,8 @@ static long do_fork(u64 domain_cap_out_addr, const capability::ForkSelection *se
   // Helper: clean up the child process on error (removes from process
   // table and triggers ~Process which frees address space, threads, etc.)
   auto cleanup_child = [&](Process *cp) {
+    if (!domain_cap_out_addr)
+      parent_proc->remove_child(cp->pid());
     if (g_process_manager) {
       (void)g_process_manager->terminate_process(cp->pid(), -1);
     }
@@ -537,6 +567,7 @@ static long do_fork(u64 domain_cap_out_addr, const capability::ForkSelection *se
     }
   }
 
+  Handle installed_domain_handle = 0;
   if (domain_cap_out_addr) {
     auto object =
         shared_ptr<capability::Object>::try_make<DomainObject>(moss::abi::bridge::moss_heap_allocate, child_proc);
@@ -549,6 +580,7 @@ static long do_fork(u64 domain_cap_out_addr, const capability::ForkSelection *se
       cleanup_child(child_proc.get());
       return domain_cap_error(handle.error());
     }
+    installed_domain_handle = *handle;
     // The child is not runnable yet. If copying the handle faults, remove
     // both the authority and its unpublished child before returning.
     if (copy_to_user(domain_cap_out_addr, &*handle, sizeof(*handle)) < 0) {
@@ -556,6 +588,15 @@ static long do_fork(u64 domain_cap_out_addr, const capability::ForkSelection *se
       cleanup_child(child_proc.get());
       return -errc::EFAULT;
     }
+  }
+
+  // A close racing with fork must catch a child that was inserted after the
+  // terminator's process-table scan but before it became runnable.
+  if (scope && static_cast<DomainScopeObject *>(scope.get())->closed()) {
+    if (installed_domain_handle)
+      (void)parent_proc->capabilities().close(installed_domain_handle);
+    cleanup_child(child_proc.get());
+    return -errc::EACCES;
   }
 
   // 14. Enqueue child into scheduler (scatter across CPUs via load balancer)
@@ -574,17 +615,17 @@ static long do_fork(u64 domain_cap_out_addr, const capability::ForkSelection *se
   return static_cast<long>(child_proc->pid());
 }
 
-long sys_fork(long, long, long, long, long, long) noexcept { return do_fork(0, nullptr, 0, true); }
+long sys_fork(long, long, long, long, long, long) noexcept { return do_fork(0, nullptr, 0, true, 0); }
 
 long sys_fork_domain(long cap_out_addr, long, long, long, long, long) noexcept {
-  return cap_out_addr ? do_fork(static_cast<u64>(cap_out_addr), nullptr, 0, false) : -errc::EFAULT;
+  return cap_out_addr ? do_fork(static_cast<u64>(cap_out_addr), nullptr, 0, false, 0) : -errc::EFAULT;
 }
 
 long sys_fork_domain_inherit(long cap_out_addr, long, long, long, long, long) noexcept {
-  return cap_out_addr ? do_fork(static_cast<u64>(cap_out_addr), nullptr, 0, true) : -errc::EFAULT;
+  return cap_out_addr ? do_fork(static_cast<u64>(cap_out_addr), nullptr, 0, true, 0) : -errc::EFAULT;
 }
 
-long sys_fork_domain_select(long cap_out_addr, long handles_addr, long count_arg, long, long, long) noexcept {
+static long fork_domain_selected(long cap_out_addr, long handles_addr, long count_arg, long scope_handle) noexcept {
   if (!cap_out_addr)
     return -errc::EFAULT;
   if (count_arg < 0 || static_cast<usize>(count_arg) > capability::Table::capacity())
@@ -594,7 +635,17 @@ long sys_fork_domain_select(long cap_out_addr, long handles_addr, long count_arg
   if (count != 0 &&
       (!handles_addr || copy_from_user(selected, static_cast<u64>(handles_addr), count * sizeof(selected[0])) < 0))
     return -errc::EFAULT;
-  return do_fork(static_cast<u64>(cap_out_addr), selected, count, false);
+  return do_fork(static_cast<u64>(cap_out_addr), selected, count, false, static_cast<u64>(scope_handle));
+}
+
+long sys_fork_domain_select(long cap_out_addr, long handles_addr, long count_arg, long, long, long) noexcept {
+  // Existing three-argument callers do not initialize a fourth syscall register.
+  return fork_domain_selected(cap_out_addr, handles_addr, count_arg, 0);
+}
+
+long sys_fork_domain_scoped(long cap_out_addr, long handles_addr, long count_arg, long scope_handle, long,
+                            long) noexcept {
+  return scope_handle > 0 ? fork_domain_selected(cap_out_addr, handles_addr, count_arg, scope_handle) : -errc::EINVAL;
 }
 
 long sys_domain_id(long handle, long, long, long, long, long) noexcept {
@@ -638,6 +689,56 @@ long sys_domain_self(long, long, long, long, long, long) noexcept {
     return -errc::ENOMEM;
   auto handle = caller->capabilities().install(moss::move(object), kFullDomainRights);
   return handle ? static_cast<long>(*handle) : domain_cap_error(handle.error());
+}
+
+long sys_domain_scope_create(long, long, long, long, long, long) noexcept {
+  auto caller = process::current_process();
+  if (!caller)
+    return -errc::ESRCH;
+  auto scope = shared_ptr<capability::Object>::try_make<DomainScopeObject>(moss::abi::bridge::moss_heap_allocate);
+  if (!scope)
+    return -errc::ENOMEM;
+  auto handle = caller->capabilities().install(moss::move(scope), kFullDomainScopeRights);
+  return handle ? static_cast<long>(*handle) : domain_cap_error(handle.error());
+}
+
+long sys_domain_scope_terminate(long handle, long, long, long, long, long) noexcept {
+  auto caller = process::current_process();
+  if (!caller)
+    return -errc::ESRCH;
+  auto object = caller->capabilities().lookup(static_cast<Handle>(handle), capability::ObjectType::DomainScope,
+                                              capability::rights::DOMAIN_SCOPE_TERMINATE);
+  if (!object)
+    return domain_cap_error(object.error());
+  auto *scope = static_cast<DomainScopeObject *>((*object).get());
+  scope->close();
+  // ponytail: recovery scans an O(process count) snapshot; track members per
+  // scope only if recovery latency grows with the deployed process count.
+  process::g_process_manager->for_each_process([&](ProcessId, process::Process *target) {
+    if (target->domain_scope().get() != scope || target->state() == process::ProcessState::Terminated ||
+        target->state() == process::ProcessState::Zombie)
+      return;
+    if (auto *thread = target->get_main_thread())
+      (void)process::send_signal(thread, process::sig::SIGKILL);
+  });
+  return 0;
+}
+
+long sys_domain_scope_status(long handle, long, long, long, long, long) noexcept {
+  auto caller = process::current_process();
+  if (!caller)
+    return -errc::ESRCH;
+  auto object = caller->capabilities().lookup(static_cast<Handle>(handle), capability::ObjectType::DomainScope,
+                                              capability::rights::DOMAIN_SCOPE_INSPECT);
+  if (!object)
+    return domain_cap_error(object.error());
+  long live = 0;
+  process::g_process_manager->for_each_process([&](ProcessId, process::Process *target) {
+    if (target->domain_scope().get() == (*object).get() && target->state() != process::ProcessState::Terminated &&
+        target->state() != process::ProcessState::Zombie)
+      ++live;
+  });
+  return live;
 }
 
 long sys_domain_terminate(long handle, long, long, long, long, long) noexcept {
@@ -3143,7 +3244,12 @@ const SyscallDescriptor SYSCALL_TABLE[static_cast<int>(SyscallNumber::MAX_SYSCAL
     {"fork_domain_inherit", handlers::sys_fork_domain_inherit, 1, true,
      "Fork a native domain with capabilities marked for inheritance"},
     {"execve_cap", handlers::sys_execve_cap, 4, true, "Exec with an explicit retained startup capability"},
-    {"domain_signal", handlers::sys_domain_signal, 2, true, "Signal a capability-addressed domain"}};
+    {"domain_signal", handlers::sys_domain_signal, 2, true, "Signal a capability-addressed domain"},
+    {"domain_scope_create", handlers::sys_domain_scope_create, 0, true, "Create a fork-inherited domain scope"},
+    {"domain_scope_terminate", handlers::sys_domain_scope_terminate, 1, true,
+     "Close a domain scope and terminate its members"},
+    {"domain_scope_status", handlers::sys_domain_scope_status, 1, true, "Count live domain scope members"},
+    {"fork_domain_scoped", handlers::sys_fork_domain_scoped, 4, true, "Fork a native domain into a specified scope"}};
 
 // 系统调用分发器实现
 long SyscallDispatcher::dispatch(long syscall_number, long arg0, long arg1, long arg2, long arg3, long arg4,

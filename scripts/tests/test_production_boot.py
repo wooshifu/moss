@@ -16,6 +16,7 @@ from scripts.artifacts import Artifacts
         "exit",
         "late_panic",
         "sleep_runtime_failure",
+        "old_child_survived",
         "gdb_complete",
         "gdb_unverified",
         "gdb_failure",
@@ -83,11 +84,17 @@ assert input() == 'echo MOSS_PRODUCTION_READY'
         script += "print('\\nMOSS_SLEEP_READY\\nmoss$ ', end='', flush=True)\n"
         script += "assert input() == '/moss-file.elf read'\n"
         script += "print('\\nMOSS_FILE_READ=native\\nmoss$ ', end='', flush=True)\n"
+        script += "assert input() == '/moss-process.elf crash-survivor &'\n"
+        script += "print('MOSS_OLD_CHILD_STARTED\\nmoss$ ', end='', flush=True)\n"
         script += "assert input() == '/moss-domain.elf terminate process'\n"
         script += (
             "print('moss-init: process service died\\nmoss-init: process service started pid=45', flush=True)\n"
         )
         script += "print('BusyBox built-in shell (ash)\\nmoss$ ', end='', flush=True)\n"
+        script += "assert input() == 'sleep 3'\n"
+        if mode == "old_child_survived":
+            script += "print('MOSS_OLD_CHILD_SURVIVED', flush=True)\n"
+        script += "print('moss$ ', end='', flush=True)\n"
         script += "assert input() == '/moss-process.elf probe'\n"
         script += "print('\\nMOSS_PROCESS_READY\\nmoss$ ', end='', flush=True)\n"
         script += "assert input() == '/moss-domain.elf terminate namespace'\n"

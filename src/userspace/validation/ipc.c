@@ -789,6 +789,91 @@ unsigned long ipc_domain_selection(void) {
       << 16;
   errors |= (unsigned long)(syscall1(SYS_CAP_CLOSE, (long)pair.receive) != 0) << 12;
   errors |= (unsigned long)(syscall1(SYS_CAP_CLOSE, (long)pair.send) != 0) << 13;
+
+  // The two-second fallback bounds a missed termination; the one-second
+  // parent poll leaves time to observe both live generations first.
+  enum { SCOPE_CHILD_DELAY_NS = 10000000, SCOPE_CHILD_CYCLES = 200, SCOPE_STATUS_CYCLES = 100 };
+  long scope = syscall0(SYS_DOMAIN_SCOPE_CREATE);
+  errors |= (unsigned long)(scope <= 0) << 34;
+  if (scope > 0) {
+    long inspect = syscall2(SYS_CAP_DUPLICATE, scope, MOSS_CAP_DOMAIN_SCOPE_INSPECT);
+    errors |= (unsigned long)(inspect <= 0) << 35;
+    if (inspect > 0) {
+      unsigned long rejected = 0;
+      errors |= (unsigned long)(syscall1(SYS_DOMAIN_SCOPE_STATUS, inspect) != 0) << 36;
+      errors |= (unsigned long)(syscall1(SYS_DOMAIN_SCOPE_TERMINATE, inspect) != -IPC_EACCES) << 37;
+      errors |= (unsigned long)(syscall6(SYS_FORK_DOMAIN_SCOPED, (long)&rejected, 0, 0, inspect, 0, 0) != -IPC_EACCES ||
+                                rejected != 0)
+                << 38;
+      (void)syscall1(SYS_CAP_CLOSE, inspect);
+    }
+
+    long other = syscall0(SYS_DOMAIN_SCOPE_CREATE);
+    errors |= (unsigned long)(other <= 0) << 39;
+    if (other > 0) {
+      const struct moss_fork_capability alternative[] = {{(unsigned long)other, MOSS_CAP_DOMAIN_SCOPE_ASSIGN, 0}};
+      unsigned long escape_domain = 0;
+      long escape = syscall6(SYS_FORK_DOMAIN_SCOPED, (long)&escape_domain, (long)alternative, 1, scope, 0, 0);
+      if (escape == 0) {
+        unsigned long rejected = 0;
+        long result = syscall6(SYS_FORK_DOMAIN_SCOPED, (long)&rejected, 0, 0, other, 0, 0);
+        _exit(result == -IPC_EACCES && rejected == 0 ? 37 : 96);
+      }
+      errors |= (unsigned long)(escape <= 1 || !escape_domain) << 40;
+      if (escape_domain) {
+        errors |= (unsigned long)!domain_exited(escape_domain, 37, 0) << 41;
+        (void)syscall1(SYS_CAP_CLOSE, (long)escape_domain);
+      }
+      (void)syscall1(SYS_CAP_CLOSE, other);
+    }
+
+    unsigned long live_domain = 0;
+    long live = syscall6(SYS_FORK_DOMAIN_SCOPED, (long)&live_domain, 0, 0, scope, 0, 0);
+    if (live == 0) {
+      unsigned long grandchild_domain = 0;
+      long grandchild = syscall1(SYS_FORK_DOMAIN, (long)&grandchild_domain);
+      if (grandchild == 0) {
+        for (unsigned int i = 0; i < SCOPE_CHILD_CYCLES; ++i) {
+          unsigned long delay = SCOPE_CHILD_DELAY_NS;
+          (void)nanosleep_ns(&delay);
+        }
+        _exit(97);
+      }
+      if (grandchild <= 1 || !grandchild_domain)
+        _exit(96);
+      (void)syscall1(SYS_CAP_CLOSE, (long)grandchild_domain);
+      for (unsigned int i = 0; i < SCOPE_CHILD_CYCLES; ++i) {
+        unsigned long delay = SCOPE_CHILD_DELAY_NS;
+        (void)nanosleep_ns(&delay);
+      }
+      _exit(97);
+    }
+    errors |= (unsigned long)(live <= 1 || !live_domain) << 42;
+    long members = syscall1(SYS_DOMAIN_SCOPE_STATUS, scope);
+    for (unsigned int i = 0; members >= 0 && members < 2 && i < SCOPE_STATUS_CYCLES; ++i) {
+      unsigned long delay = SCOPE_CHILD_DELAY_NS;
+      (void)nanosleep_ns(&delay);
+      members = syscall1(SYS_DOMAIN_SCOPE_STATUS, scope);
+    }
+    errors |= (unsigned long)(members != 2) << 43;
+    errors |= (unsigned long)(syscall1(SYS_DOMAIN_SCOPE_TERMINATE, scope) != 0) << 44;
+    if (live_domain) {
+      errors |= (unsigned long)!domain_exited(live_domain, 0, SIGKILL) << 45;
+      (void)syscall1(SYS_CAP_CLOSE, (long)live_domain);
+    }
+    members = syscall1(SYS_DOMAIN_SCOPE_STATUS, scope);
+    for (unsigned int i = 0; members > 0 && i < SCOPE_STATUS_CYCLES; ++i) {
+      unsigned long delay = SCOPE_CHILD_DELAY_NS;
+      (void)nanosleep_ns(&delay);
+      members = syscall1(SYS_DOMAIN_SCOPE_STATUS, scope);
+    }
+    errors |= (unsigned long)(members != 0) << 46;
+    unsigned long rejected = 0;
+    errors |= (unsigned long)(syscall6(SYS_FORK_DOMAIN_SCOPED, (long)&rejected, 0, 0, scope, 0, 0) != -IPC_EACCES ||
+                              rejected != 0)
+              << 47;
+    errors |= (unsigned long)(syscall1(SYS_CAP_CLOSE, scope) != 0) << 48;
+  }
   return errors;
 }
 
