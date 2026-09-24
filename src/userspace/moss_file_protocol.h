@@ -7,8 +7,9 @@
 enum { MOSS_FILE_SCRATCH_BADGE = 1 };
 // OPEN carries [opcode, flags, relative NUL-terminated name]. CREATE adds a
 // missing file without changing an existing file. OPEN returns a
-// sender to the namespace, which transfers only SEND to the client. File
-// operations then bypass the namespace service.
+// sender to the namespace, which normally grants only SEND to the client;
+// an explicit delegable lookup can retain TRANSFER|DUPLICATE. File operations
+// then bypass the namespace service.
 // The first byte is an operation in requests and a status in replies.
 enum {
   MOSS_FILE_READ = 1,

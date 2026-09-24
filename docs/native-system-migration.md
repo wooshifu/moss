@@ -32,6 +32,7 @@ networking and persistent storage.
    call even while its reply handle is still alive; exercise the same race
    against the process service before treating its recovery as complete.
 2. Establish one POSIX descriptor view for regular files, pipes and console
+   under the [descriptor migration contract](native-posix-descriptors.md)
    before redirecting mlibc's `open`/`read`/`write`/`close` calls. Its interface
    must preserve shared open-description offsets across `dup` and `fork`,
    per-descriptor close-on-exec behavior, and capability cleanup on close,
