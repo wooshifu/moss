@@ -139,6 +139,7 @@ quit
         (b"moss-init: pipe service started", None),
         (b"moss-init: console service started", None),
         (b"moss-init: process service started", None),
+        (b"moss-init: loader process bridge ready", None),
         (b"built-in shell (ash)", None),
         (b"moss$ ", b"/moss-process.elf probe\n"),
         (b"\nMOSS_PROCESS_READY\n", None),
@@ -212,6 +213,7 @@ quit
         (b"moss-init: pipe service started", None),
         (b"moss-init: console service started", None),
         (b"moss-init: process service started", None),
+        (b"moss-init: loader process bridge ready", None),
         (b"built-in shell (ash)", None),
         (b"moss$ ", b"sleep 3\n"),
         (b"moss$ ", b"/moss-process.elf probe\n"),
@@ -223,6 +225,7 @@ quit
         (b"moss-init: pipe service started", None),
         (b"moss-init: console service started", None),
         (b"moss-init: process service started", None),
+        (b"moss-init: loader process bridge ready", None),
         (b"built-in shell (ash)", None),
         (b"moss$ ", b"/moss-file.elf read\n"),
         (b"\nMOSS_FILE_READ=native\n", None),
@@ -236,6 +239,7 @@ quit
         (b"moss-init: pipe service started", None),
         (b"moss-init: console service started", None),
         (b"moss-init: process service started", None),
+        (b"moss-init: loader process bridge ready", None),
         (b"built-in shell (ash)", None),
         (b"moss$ ", b"/moss-file.elf read\n"),
         (b"\nMOSS_FILE_READ=\n", None),
@@ -259,8 +263,8 @@ quit
         (b"\nMOSS_FILE_SIZE=7\n", None),
         (b"moss$ ", b"/moss-file.elf read /note\n"),
         (b"\nMOSS_FILE_READ=short\0\0\n", None),
-        # /scratch retains one page, so /note cannot claim the full 16-page
-        # service budget; rejected resize must preserve its bytes.
+        # Other mutable files retain budget; rejected resize must preserve
+        # /note's bytes regardless of the architecture's Loader image size.
         (b"moss$ ", b"/moss-file.elf resize 65536 /note\n"),
         (b"\nMOSS_FILE_ERROR\n", None),
         (b"moss$ ", b"/moss-file.elf read /note\n"),
@@ -275,14 +279,6 @@ quit
         (b"\nMOSS_FILE_READ=short\0\0AB\n", None),
         (b"moss$ ", b"/moss-file.elf size /note\n"),
         (b"\nMOSS_FILE_SIZE=9\n", None),
-        # Two loader image pages, one invalid-image page and /scratch leave
-        # twelve of the sixteen service pages for /note in this incarnation.
-        (b"moss$ ", b"/moss-file.elf resize 49152 /note\n"),
-        (b"\nMOSS_FILE_RESIZE_OK\n", None),
-        (b"moss$ ", b"/moss-file.elf append \"$(printf '%04096d' 0)\" /note\n"),
-        (b"\nMOSS_FILE_ERROR\n", None),
-        (b"moss$ ", b"/moss-file.elf size /note\n"),
-        (b"\nMOSS_FILE_SIZE=49152\n", None),
         (b"moss$ ", b"/moss-process.elf fd-probe\n"),
         (b"\nMOSS_FD_READY\n", None),
         (b"moss$ ", b"/moss-process.elf pipe-probe\n"),
@@ -297,6 +293,7 @@ quit
         (b"moss-init: pipe service started", None),
         (b"moss-init: console service started", None),
         (b"moss-init: process service started", None),
+        (b"moss-init: loader process bridge ready", None),
         (b"built-in shell (ash)", None),
         (b"moss$ ", b"/moss-process.elf fd-pipe-probe\n"),
         (b"\nMOSS_FD_PIPE_READY\n", None),
@@ -305,6 +302,7 @@ quit
         (b"moss-init: pipe service started", None),
         (b"moss-init: console service started", None),
         (b"moss-init: process service started", None),
+        (b"moss-init: loader process bridge ready", None),
         (b"built-in shell (ash)", None),
         (b"moss$ ", b"/moss-process.elf console-fd-probe\n"),
         (b"MOSS_CONSOLE_OBJECT_WRITE\n", None),

@@ -11,6 +11,7 @@ from scripts.artifacts import Artifacts
     "mode",
     [
         "complete",
+        "missing_bridge",
         "legacy_shell",
         "applets_failed",
         "echo_only",
@@ -36,7 +37,9 @@ def test_production_probe_requires_exec_and_subsequent_shell_output(tmp_path, mo
         "moss-init: loader service started pid=44\\n"
         "moss-init: pipe service started pid=45\\n"
         "moss-init: console service started pid=46\\n"
-        "moss-init: process service started pid=47', flush=True)\n"
+        "moss-init: process service started pid=47"
+        + ("" if mode == "missing_bridge" else "\\nmoss-init: loader process bridge ready")
+        + "', flush=True)\n"
     )
     if mode != "legacy_shell":
         script += "print('BusyBox built-in shell (ash)', flush=True)\n"
@@ -120,7 +123,8 @@ assert input() == 'echo MOSS_PRODUCTION_READY'
         script += (
             "print('moss-init: process service died\\nmoss-init: pipe service started pid=51\\n"
             "moss-init: console service started pid=52\\n"
-            "moss-init: process service started pid=53', flush=True)\n"
+            "moss-init: process service started pid=53\\n"
+            "moss-init: loader process bridge ready', flush=True)\n"
         )
         script += "print('BusyBox built-in shell (ash)\\nmoss$ ', end='', flush=True)\n"
         script += "assert input() == 'sleep 3'\n"
@@ -134,7 +138,8 @@ assert input() == 'echo MOSS_PRODUCTION_READY'
             "print('moss-init: namespace service died\\nmoss-init: namespace service started pid=54\\n"
             "moss-init: loader service started pid=55\\n"
             "moss-init: pipe service started pid=56\\nmoss-init: console service started pid=57\\n"
-            "moss-init: process service started pid=58', flush=True)\n"
+            "moss-init: process service started pid=58\\n"
+            "moss-init: loader process bridge ready', flush=True)\n"
         )
         script += "print('BusyBox built-in shell (ash)\\nmoss$ ', end='', flush=True)\n"
         script += "assert input() == '/moss-file.elf read'\n"
@@ -147,7 +152,8 @@ assert input() == 'echo MOSS_PRODUCTION_READY'
             "moss-init: namespace service started pid=60\\n"
             "moss-init: loader service started pid=61\\n"
             "moss-init: pipe service started pid=62\\nmoss-init: console service started pid=63\\n"
-            "moss-init: process service started pid=64', flush=True)\n"
+            "moss-init: process service started pid=64\\n"
+            "moss-init: loader process bridge ready', flush=True)\n"
         )
         script += "print('BusyBox built-in shell (ash)\\nmoss$ ', end='', flush=True)\n"
         script += "assert input() == '/moss-file.elf read'\n"
@@ -186,12 +192,6 @@ assert input() == 'echo MOSS_PRODUCTION_READY'
         script += "print('\\nMOSS_FILE_READ=short\\0\\0AB\\nmoss$ ', end='', flush=True)\n"
         script += "assert input() == '/moss-file.elf size /note'\n"
         script += "print('\\nMOSS_FILE_SIZE=9\\nmoss$ ', end='', flush=True)\n"
-        script += "assert input() == '/moss-file.elf resize 49152 /note'\n"
-        script += "print('\\nMOSS_FILE_RESIZE_OK\\nmoss$ ', end='', flush=True)\n"
-        script += 'assert input() == "/moss-file.elf append \\"$(printf \'%04096d\' 0)\\" /note"\n'
-        script += "print('\\nMOSS_FILE_ERROR\\nmoss$ ', end='', flush=True)\n"
-        script += "assert input() == '/moss-file.elf size /note'\n"
-        script += "print('\\nMOSS_FILE_SIZE=49152\\nmoss$ ', end='', flush=True)\n"
         script += "assert input() == '/moss-process.elf fd-probe'\n"
         script += "print('\\nMOSS_FD_READY\\nmoss$ ', end='', flush=True)\n"
         script += "assert input() == '/moss-process.elf pipe-probe'\n"
@@ -204,7 +204,8 @@ assert input() == 'echo MOSS_PRODUCTION_READY'
         script += (
             "print('moss-init: pipe service died\\nmoss-init: pipe service started pid=65\\n"
             "moss-init: console service started pid=66\\n"
-            "moss-init: process service started pid=67\\nBusyBox built-in shell (ash)\\nmoss$ ', end='', flush=True)\n"
+            "moss-init: process service started pid=67\\n"
+            "moss-init: loader process bridge ready\\nBusyBox built-in shell (ash)\\nmoss$ ', end='', flush=True)\n"
         )
         script += "assert input() == '/moss-process.elf fd-pipe-probe'\n"
         script += "print('\\nMOSS_FD_PIPE_READY\\nmoss$ ', end='', flush=True)\n"
@@ -212,7 +213,8 @@ assert input() == 'echo MOSS_PRODUCTION_READY'
         script += (
             "print('moss-init: console service died\\nmoss-init: pipe service started pid=68\\n"
             "moss-init: console service started pid=69\\n"
-            "moss-init: process service started pid=70\\nBusyBox built-in shell (ash)\\nmoss$ ', end='', flush=True)\n"
+            "moss-init: process service started pid=70\\n"
+            "moss-init: loader process bridge ready\\nBusyBox built-in shell (ash)\\nmoss$ ', end='', flush=True)\n"
         )
         script += "assert input() == '/moss-process.elf console-fd-probe'\n"
         script += "print('MOSS_CONSOLE_OBJECT_WRITE\\n\\nMOSS_CONSOLE_READY\\nmoss$ ', end='', flush=True)\n"
@@ -239,11 +241,13 @@ assert input() == 'echo MOSS_PRODUCTION_READY'
     # Partial fake shells stop at their first missing marker; prompts and
     # command outputs each count as one completed probe step.
     if mode == "echo_only":
-        assert result["completed_steps"] == 43
+        assert result["completed_steps"] == 44
     if mode == "legacy_shell":
+        assert result["completed_steps"] == 9
+    if mode == "missing_bridge":
         assert result["completed_steps"] == 8
     if mode == "applets_failed":
-        assert result["completed_steps"] == 39
+        assert result["completed_steps"] == 40
     if mode == "late_panic":
         assert "panicked" in result["observed"]
     if mode == "sleep_runtime_failure":

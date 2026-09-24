@@ -179,13 +179,16 @@ static long register_supervisor(long root) {
   return 0;
 }
 
-static long console_input_sender(long root) {
+static int console_input_sender(long root, long *input) {
+  *input = 0;
   struct moss_ipc_message request = {.size = 1, .payload = {MOSS_CONSOLE_INPUT_CAP}};
   struct moss_ipc_message response = {0};
   long result = process_call(root, &request, &response);
   if (result == 1 && response.payload[0] == MOSS_CONSOLE_OK && response.capability &&
-      response.rights == (MOSS_CAP_SEND | MOSS_CAP_DUPLICATE))
-    return (long)response.capability;
+      response.rights == (MOSS_CAP_SEND | MOSS_CAP_DUPLICATE)) {
+    *input = (long)response.capability;
+    return 1;
+  }
   if (response.capability)
     (void)syscall1(SYS_CAP_CLOSE, (long)response.capability);
   return 0;
@@ -305,12 +308,21 @@ static int start_endpoint_service(struct Service *service, const char *program, 
                         (pipe_capability > 0) + (console_capability > 0);
   pid_t child = fork_domain(&domain, handles, handle_count, 0);
   if (child == 0) {
+    char *role_arg = NULL;
+    char *next_arg = NULL;
+    if (archive_capability > 0) {
+      role_arg = archive_arg;
+      next_arg = archive_size_arg;
+    } else if (scope > 0) {
+      role_arg = scope_arg;
+      if (namespace_capability > 0)
+        next_arg = namespace_arg;
+    }
     char *const argv[] = {(char *)program,
                           receive_arg,
                           mint_arg,
-                          archive_capability > 0 ? archive_arg : scope > 0 ? scope_arg : NULL,
-                          archive_capability > 0 ? archive_size_arg
-                                                 : namespace_capability > 0 ? namespace_arg : NULL,
+                          role_arg,
+                          next_arg,
                           pipe_capability > 0 ? pipe_arg : NULL,
                           console_capability > 0 ? console_arg : NULL,
                           NULL};
@@ -504,13 +516,13 @@ static int seed_loader_file(long file, const char *name, const char *source, lon
                                         .rights = MOSS_CAP_MAP_READ,
                                         .payload = {MOSS_FILE_WRITE}};
     moss_file_put_u64(request.payload + 1, offset);
-    moss_file_put_u16(request.payload + 9, (unsigned int)count);
+    moss_file_put_u16(request.payload + 9, count);
     response = (struct moss_ipc_message){0};
     sent = call_service(object, &request, &response);
     if (response.capability)
       (void)syscall1(SYS_CAP_CLOSE, (long)response.capability);
     if (sent != MOSS_FILE_IO_REPLY_BYTES || response.payload[0] != MOSS_FILE_OK || response.capability ||
-        response.rights || moss_file_get_u16(response.payload + 1) != (unsigned int)count) {
+        response.rights || moss_file_get_u16(response.payload + 1) != count) {
       valid = 0;
       break;
     }
@@ -542,7 +554,7 @@ static int seed_loader_file(long file, const char *name, const char *source, lon
   return 0;
 }
 
-static int start_loader_service(const struct Service *code, long factory, struct Service *service) {
+static int start_loader_service(const struct Service *code, long factory, long scope, struct Service *service) {
   struct moss_ipc_endpoints endpoints = {0};
   if (syscall1(SYS_IPC_CREATE, (long)&endpoints) != 0)
     return -1;
@@ -559,7 +571,7 @@ static int start_loader_service(const struct Service *code, long factory, struct
                                                  {(unsigned long)code->send, MOSS_CAP_SEND, 0},
                                                  {(unsigned long)factory, MOSS_CAP_DOMAIN_SPAWN, 0}};
   long domain = 0;
-  pid_t child = fork_domain(&domain, handles, sizeof(handles) / sizeof(handles[0]), 0);
+  pid_t child = fork_domain(&domain, handles, sizeof(handles) / sizeof(handles[0]), scope);
   if (child == 0) {
     char *const argv[] = {"loader-service", receive_arg, code_arg, factory_arg, NULL};
     execve("/loader-service.elf", argv, NULL);
@@ -586,13 +598,24 @@ fail:
 }
 
 static int request_loader(long send, long image, unsigned char expected, long *domain) {
-  struct moss_ipc_message request = {
-      .size = 1, .capability = (unsigned long)image, .rights = MOSS_CAP_SEND, .payload = {MOSS_LOADER_RUN}};
+  struct moss_ipc_message request = {.size = MOSS_LOADER_RUN_HEADER_BYTES,
+                                     .capability = (unsigned long)image,
+                                     .rights = MOSS_CAP_SEND,
+                                     .payload = {MOSS_LOADER_RUN, 2, 1}};
+  const char *const strings[] = {"loader-probe", "from-supervisor", "MOSS_LOADER=ready"};
+  for (size_t index = 0; index < sizeof(strings) / sizeof(strings[0]); ++index) {
+    size_t length = strlen(strings[index]) + 1;
+    if (length > sizeof(request.payload) - request.size)
+      return -1;
+    memcpy(request.payload + request.size, strings[index], length);
+    request.size += length;
+  }
   struct moss_ipc_message response = {0};
   long sent = call_service(send, &request, &response);
   if (sent == 1 && response.size == 1 && response.payload[0] == expected &&
       ((expected == MOSS_LOADER_OK && response.capability &&
-        response.rights == (MOSS_CAP_DOMAIN_OBSERVE | MOSS_CAP_DOMAIN_TERMINATE)) ||
+        response.rights == (MOSS_CAP_DOMAIN_OBSERVE | MOSS_CAP_DOMAIN_INSPECT | MOSS_CAP_DOMAIN_SIGNAL |
+                            MOSS_CAP_DOMAIN_TERMINATE | MOSS_CAP_TRANSFER | MOSS_CAP_DUPLICATE)) ||
        (expected != MOSS_LOADER_OK && !response.capability && !response.rights))) {
     *domain = (long)response.capability;
     return 0;
@@ -604,11 +627,21 @@ static int request_loader(long send, long image, unsigned char expected, long *d
 
 static int launch_loader_service(const struct Service *code, const struct LoaderImages *images, long factory,
                                  struct Service *loader) {
-  if (start_loader_service(code, factory, loader) != 0)
+  if (start_loader_service(code, factory, 0, loader) != 0)
     return -1;
+  struct moss_ipc_message malformed = {.size = MOSS_LOADER_RUN_HEADER_BYTES,
+                                       .capability = (unsigned long)images->probe,
+                                       .rights = MOSS_CAP_SEND,
+                                       .payload = {MOSS_LOADER_RUN, 1, 0}};
+  struct moss_ipc_message rejected = {0};
+  long sent = call_service(loader->send, &malformed, &rejected);
+  int valid = sent == 1 && rejected.size == 1 && rejected.payload[0] == MOSS_LOADER_BAD_REQUEST &&
+              !rejected.capability && !rejected.rights;
+  if (rejected.capability)
+    (void)syscall1(SYS_CAP_CLOSE, (long)rejected.capability);
   long domain = 0;
-  int valid = request_loader(loader->send, images->bad, MOSS_LOADER_BAD_IMAGE, &domain) == 0 &&
-              request_loader(loader->send, images->probe, MOSS_LOADER_OK, &domain) == 0;
+  valid = valid && request_loader(loader->send, images->bad, MOSS_LOADER_BAD_IMAGE, &domain) == 0 &&
+          request_loader(loader->send, images->probe, MOSS_LOADER_OK, &domain) == 0;
   struct moss_domain_exit status = {0};
   if (valid)
     valid = syscall1(SYS_DOMAIN_WAIT, domain) == 0 && syscall2(SYS_DOMAIN_STATUS, domain, (long)&status) == 0 &&
@@ -626,6 +659,91 @@ static int launch_loader_service(const struct Service *code, const struct Loader
   }
   report_started("loader service", loader->pid);
   return 0;
+}
+
+static int verify_loader_process_bridge(const struct Service *code, long factory, long image, long parent_session,
+                                        long scope) {
+  // The compatibility registry accepts children only inside its recovery
+  // scope. A scoped Loader also places the domain it spawns in that scope.
+  struct Service scoped_loader = {0};
+  if (start_loader_service(code, factory, scope, &scoped_loader) != 0)
+    return -1;
+  long domain = 0;
+  long session = 0;
+  uint64_t identity = 0;
+  int valid = request_loader(scoped_loader.send, image, MOSS_LOADER_OK, &domain) == 0;
+  struct moss_ipc_message request = {0}, response = {0};
+  long received = 0;
+  if (valid) {
+    request =
+        (struct moss_ipc_message){.size = 1,
+                                  .capability = (unsigned long)domain,
+                                  .rights = MOSS_CAP_DOMAIN_OBSERVE | MOSS_CAP_DOMAIN_INSPECT | MOSS_CAP_DOMAIN_SIGNAL,
+                                  .payload = {MOSS_PROCESS_REGISTER_CHILD}};
+    received = call_service(parent_session, &request, &response);
+    identity = received == MOSS_PROCESS_REPLY_VALUE_BYTES ? moss_process_get_u64(response.payload + 1) : 0;
+    valid = received == MOSS_PROCESS_REPLY_VALUE_BYTES && response.size == MOSS_PROCESS_REPLY_VALUE_BYTES &&
+            response.payload[0] == MOSS_PROCESS_OK && response.capability && identity > MOSS_PROCESS_INIT_ID &&
+            response.rights == (MOSS_CAP_SEND | MOSS_CAP_DUPLICATE);
+    if (valid)
+      session = (long)response.capability;
+    else if (response.capability)
+      (void)syscall1(SYS_CAP_CLOSE, (long)response.capability);
+  }
+  if (valid) {
+    request = (struct moss_ipc_message){.size = 1, .payload = {MOSS_PROCESS_IDENTITY}};
+    response = (struct moss_ipc_message){0};
+    received = call_service(session, &request, &response);
+    valid = received == MOSS_PROCESS_REPLY_IDENTITY_BYTES && response.size == MOSS_PROCESS_REPLY_IDENTITY_BYTES &&
+            response.payload[0] == MOSS_PROCESS_OK && moss_process_get_u64(response.payload + 1) == identity &&
+            moss_process_get_u64(response.payload + 9) == MOSS_PROCESS_INIT_ID && !response.capability &&
+            !response.rights;
+    if (response.capability)
+      (void)syscall1(SYS_CAP_CLOSE, (long)response.capability);
+  }
+  if (valid) {
+    long waited;
+    do {
+      waited = syscall1(SYS_DOMAIN_WAIT, domain);
+    } while (waited == -EINTR);
+    valid = waited == 0;
+  }
+  if (valid) {
+    request.payload[0] = MOSS_PROCESS_STATUS;
+    response = (struct moss_ipc_message){0};
+    received = call_service(session, &request, &response);
+    valid = received == MOSS_PROCESS_REPLY_VALUE_BYTES && response.size == MOSS_PROCESS_REPLY_VALUE_BYTES &&
+            response.payload[0] == MOSS_PROCESS_EXITED &&
+            moss_process_get_u64(response.payload + 1) == MOSS_LOADER_PROBE_EXIT_CODE && !response.capability &&
+            !response.rights;
+    if (response.capability)
+      (void)syscall1(SYS_CAP_CLOSE, (long)response.capability);
+  }
+  if (valid) {
+    request = (struct moss_ipc_message){.size = MOSS_PROCESS_REPLY_VALUE_BYTES, .payload = {MOSS_PROCESS_WAIT_CHILD}};
+    moss_process_put_u64(request.payload + 1, identity);
+    response = (struct moss_ipc_message){0};
+    received = call_service(parent_session, &request, &response);
+    valid = received == MOSS_PROCESS_REPLY_WAIT_BYTES && response.size == MOSS_PROCESS_REPLY_WAIT_BYTES &&
+            response.payload[0] == MOSS_PROCESS_EXITED && moss_process_get_u64(response.payload + 1) == identity &&
+            moss_process_get_u64(response.payload + 9) == MOSS_LOADER_PROBE_EXIT_CODE && !response.capability &&
+            !response.rights;
+    if (response.capability)
+      (void)syscall1(SYS_CAP_CLOSE, (long)response.capability);
+  }
+  if (session > 0)
+    (void)syscall1(SYS_CAP_CLOSE, session);
+  if (domain > 0) {
+    if (!valid) {
+      (void)syscall1(SYS_DOMAIN_TERMINATE, domain);
+      (void)syscall1(SYS_DOMAIN_WAIT, domain);
+    }
+    (void)syscall1(SYS_CAP_CLOSE, domain);
+  }
+  stop_service(&scoped_loader);
+  if (valid)
+    report(STDOUT_FILENO, "moss-init: loader process bridge ready\n");
+  return valid ? 0 : -1;
 }
 
 static int start_namespace_service(const struct Service *file, struct Service *service) {
@@ -1084,7 +1202,7 @@ int main(void) {
         } else if (start_endpoint_service(&console, "/console-service.elf", 0, 0, 0, 0, 0, 0) != 0) {
           report(STDERR_FILENO, "moss-init: console service launch failed\n");
           lost = CONSOLE_LOST;
-        } else if ((console_input = console_input_sender(console.send)) <= 0) {
+        } else if (!console_input_sender(console.send, &console_input)) {
           report(STDERR_FILENO, "moss-init: console input sender acquisition failed\n");
           lost = CONSOLE_LOST;
         } else if (start_endpoint_service(&process, "/process-service.elf", scope, namespace.send, pipe.send,
@@ -1095,6 +1213,7 @@ int main(void) {
           report_started("pipe service", pipe.pid);
           report_started("console service", console.pid);
           report_started("process service", process.pid);
+          lost = PROCESS_LOST;
           process_session = register_supervisor(process.send);
           if (process_session > 0 && (stale_session > 0 || stale_delegate > 0)) {
             int stale_closed = stale_session <= 0 || stale_process_session_closed(stale_session);
@@ -1110,17 +1229,26 @@ int main(void) {
               _exit(1);
             }
           }
-          if (process_session > 0 && process_rejects_unscoped_child(process_session, supervisor_domain))
-            shell = start_shell(namespace.send, process.send, pipe.send, console_input, process_session, scope,
-                                file.domain, namespace.domain, process.domain, pipe.domain, console.domain, code.domain,
-                                loader.domain, supervisor_domain, &shell_domain, &shell_id, &shell_session);
-          if (shell < 0) {
-            report(STDERR_FILENO, "moss-init: shell launch failed\n");
-            lost = PROCESS_LOST;
-          } else {
-            lost = supervise(&file, &namespace, &process, &pipe, &console, &code, &loader, console_input,
-                             process_session, scope, approver, revoker, &code_probe, factory, &images,
-                             supervisor_domain, &shell, &shell_domain, &shell_id, &shell_session);
+          if (process_session > 0 && process_rejects_unscoped_child(process_session, supervisor_domain)) {
+            if (verify_loader_process_bridge(&code, factory, images.probe, process_session, scope) != 0) {
+              report(STDERR_FILENO, "moss-init: loader process bridge failed\n");
+              lost = SUPERVISOR_FAILURE;
+            } else {
+              shell =
+                  start_shell(namespace.send, process.send, pipe.send, console_input, process_session, scope,
+                              file.domain, namespace.domain, process.domain, pipe.domain, console.domain, code.domain,
+                              loader.domain, supervisor_domain, &shell_domain, &shell_id, &shell_session);
+            }
+          }
+          if (lost != SUPERVISOR_FAILURE) {
+            if (shell < 0) {
+              report(STDERR_FILENO, "moss-init: shell launch failed\n");
+              lost = PROCESS_LOST;
+            } else {
+              lost = supervise(&file, &namespace, &process, &pipe, &console, &code, &loader, console_input,
+                               process_session, scope, approver, revoker, &code_probe, factory, &images,
+                               supervisor_domain, &shell, &shell_domain, &shell_id, &shell_session);
+            }
           }
         }
         if (scope > 0) {

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shlex
 import shutil
 import signal
@@ -98,7 +99,8 @@ def test_full_selection_uses_index_and_database_and_keeps_cppm(project, fake_too
     assert f"-p={build}" in command
     build_command = next(argv for path, argv, _live in calls if path == "cmake")
     assert build_command[1:4] == ("--build", str(build), "--parallel")
-    assert any(arg.startswith("--exclude-header-filter=") and "vendor" in arg for arg in command)
+    response = next(arg[1:] for arg in command if arg.startswith("@"))
+    assert "vendor" in Path(response).read_text()
 
 
 @pytest.mark.parametrize("changed", [False, True])
@@ -121,9 +123,23 @@ def test_selection_and_exclusions_cover_the_whole_repository(project, fake_tools
     assert checked == {"src/main.cpp", "src/other.cpp", "src/api.cppm", "tools/helper.cpp"}
     assert "skipped:" not in capsys.readouterr().err
     command = next(argv for path, argv, _live in calls if path == "src/main.cpp")
-    header_filter = next(arg for arg in command if arg.startswith("--exclude-header-filter="))
+    response = next(arg[1:] for arg in command if arg.startswith("@"))
+    header_filter = shlex.split(Path(response).read_text())[0]
     assert "src/vendor/api" in header_filter
     assert "third_party/library/api" in header_filter
+
+
+def test_large_exclusion_filter_stays_out_of_argv(tmp_path):
+    excluded = [f"third_party/dependency_{index:04}/some_long_header.hpp" for index in range(4000)]
+    argument = lint.exclude_header_response(excluded, tmp_path)
+    assert argument == f"@{tmp_path / 'moss-clang-tidy-exclusions.rsp'}"
+    response = (tmp_path / "moss-clang-tidy-exclusions.rsp").read_text()
+    # Linux MAX_ARG_STRLEN is 128 KiB (include/uapi/linux/binfmts.h).
+    assert len(response.encode()) > 128 * 1024
+    assert len(argument.encode()) < 128 * 1024
+    parsed = shlex.split(response)
+    assert len(parsed) == 1
+    assert re.escape(excluded[0]) in parsed[0] and re.escape(excluded[-1]) in parsed[0]
 
 
 @pytest.mark.parametrize("path", ["tools/helper.cpp", "tools/api.hpp", "tools/api.cppm"])
