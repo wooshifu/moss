@@ -7,10 +7,11 @@
 enum { MOSS_FILE_SCRATCH_BADGE = 1 };
 // OPEN carries [opcode, flags, relative NUL-terminated name]. CREATE adds a
 // missing file without changing an existing file. EXCLUSIVE requires CREATE
-// and rejects an existing file before returning its capability. OPEN returns a
-// sender to the namespace, which normally grants only SEND to the client;
-// an explicit delegable lookup can retain TRANSFER|DUPLICATE. File operations
-// then bypass the namespace service.
+// and rejects an existing file before returning its capability. UNLISTED
+// requires CREATE and creates an object that cannot be looked up by name.
+// OPEN returns a sender to the namespace, which normally grants only SEND to
+// the client; an explicit delegable lookup can retain TRANSFER|DUPLICATE.
+// File operations then bypass the namespace service.
 // The first byte is an operation in requests and a status in replies.
 enum {
   MOSS_FILE_READ = 1,
@@ -21,7 +22,7 @@ enum {
   MOSS_FILE_APPEND = 6,
   MOSS_FILE_STAT = 7
 };
-enum { MOSS_FILE_OPEN_CREATE = 1U << 0, MOSS_FILE_OPEN_EXCLUSIVE = 1U << 1 };
+enum { MOSS_FILE_OPEN_CREATE = 1U << 0, MOSS_FILE_OPEN_EXCLUSIVE = 1U << 1, MOSS_FILE_OPEN_UNLISTED = 1U << 2 };
 enum { MOSS_FILE_OK = 0, MOSS_FILE_BAD_REQUEST = 1, MOSS_FILE_NO_ENTRY = 2, MOSS_FILE_UNAVAILABLE = 3,
        MOSS_FILE_EXISTS = 4 };
 // Until service resource accounting exists, limit client-triggered allocation

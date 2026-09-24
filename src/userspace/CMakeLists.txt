@@ -34,6 +34,10 @@ set(USERSPACE_LINK_FLAGS
     --oformat=elf
     -nostdlib
     -static
+    # ARM64's default 64 KiB segment alignment exceeds the bounded File
+    # Service image budget for this one-page loader probe.
+    -z
+    max-page-size=4096
 )
 
 function(add_userspace_program NAME)
@@ -60,6 +64,7 @@ add_subdirectory(mlibc)
 set(BUSYBOX_ELF ${CMAKE_CURRENT_BINARY_DIR}/mlibc/busybox/busybox)
 set(MOSS_INIT_ELF ${CMAKE_CURRENT_BINARY_DIR}/mlibc/init.elf)
 set(MOSS_CODE_AUTHORITY_SERVICE_ELF ${CMAKE_CURRENT_BINARY_DIR}/mlibc/code-authority-service.elf)
+set(MOSS_LOADER_SERVICE_ELF ${CMAKE_CURRENT_BINARY_DIR}/mlibc/loader-service.elf)
 set(MOSS_FILE_SERVICE_ELF ${CMAKE_CURRENT_BINARY_DIR}/mlibc/file-service.elf)
 set(MOSS_NAMESPACE_SERVICE_ELF ${CMAKE_CURRENT_BINARY_DIR}/mlibc/namespace-service.elf)
 set(MOSS_FILE_ELF ${CMAKE_CURRENT_BINARY_DIR}/mlibc/moss-file.elf)
@@ -68,6 +73,7 @@ set(MOSS_PROCESS_SERVICE_ELF ${CMAKE_CURRENT_BINARY_DIR}/mlibc/process-service.e
 set(MOSS_PROCESS_ELF ${CMAKE_CURRENT_BINARY_DIR}/mlibc/moss-process.elf)
 set(MOSS_PIPE_SERVICE_ELF ${CMAKE_CURRENT_BINARY_DIR}/mlibc/pipe-service.elf)
 set(MOSS_CONSOLE_SERVICE_ELF ${CMAKE_CURRENT_BINARY_DIR}/mlibc/console-service.elf)
+add_userspace_program(loader_probe)
 if(MOSS_BUILD_TESTS)
     set(LIBC_VALIDATION_ELF ${CMAKE_CURRENT_BINARY_DIR}/mlibc/libc_validation.elf)
     add_userspace_program(validation)
@@ -104,6 +110,7 @@ add_custom_command(
     COMMAND ${CMAKE_COMMAND} -E copy_if_different ${BUSYBOX_ELF} ${CMAKE_BINARY_DIR}/userspace/busybox.elf
     COMMAND ${CMAKE_COMMAND} -E copy_if_different ${MOSS_INIT_ELF} ${CMAKE_BINARY_DIR}/userspace/init.elf
     COMMAND ${CMAKE_COMMAND} -E copy_if_different ${MOSS_CODE_AUTHORITY_SERVICE_ELF} ${CMAKE_BINARY_DIR}/userspace/code-authority-service.elf
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different ${MOSS_LOADER_SERVICE_ELF} ${CMAKE_BINARY_DIR}/userspace/loader-service.elf
     COMMAND ${CMAKE_COMMAND} -E copy_if_different ${MOSS_FILE_SERVICE_ELF} ${CMAKE_BINARY_DIR}/userspace/file-service.elf
     COMMAND ${CMAKE_COMMAND} -E copy_if_different ${MOSS_NAMESPACE_SERVICE_ELF} ${CMAKE_BINARY_DIR}/userspace/namespace-service.elf
     COMMAND ${CMAKE_COMMAND} -E copy_if_different ${MOSS_FILE_ELF} ${CMAKE_BINARY_DIR}/userspace/moss-file.elf
@@ -115,7 +122,9 @@ add_custom_command(
     COMMAND uv run ${CMAKE_SOURCE_DIR}/scripts/gen_initramfs.py ${CMAKE_BINARY_DIR}/initramfs.cpio
             ${CMAKE_BINARY_DIR}/userspace init.elf code-authority-service.elf file-service.elf namespace-service.elf moss-file.elf busybox.elf
             moss-domain.elf process-service.elf moss-process.elf pipe-service.elf console-service.elf
+            loader-service.elf loader_probe.elf
     DEPENDS moss-init ${MOSS_INIT_ELF} moss-code-authority-service ${MOSS_CODE_AUTHORITY_SERVICE_ELF}
+            moss-loader-service ${MOSS_LOADER_SERVICE_ELF} ${CMAKE_BINARY_DIR}/userspace/loader_probe.elf
             moss-file-service ${MOSS_FILE_SERVICE_ELF}
             moss-namespace-service ${MOSS_NAMESPACE_SERVICE_ELF} moss-file ${MOSS_FILE_ELF}
             moss-domain ${MOSS_DOMAIN_ELF}
@@ -124,6 +133,7 @@ add_custom_command(
             moss-console-service ${MOSS_CONSOLE_SERVICE_ELF}
             busybox-validation ${BUSYBOX_ELF} ${CMAKE_SOURCE_DIR}/scripts/gen_initramfs.py
     BYPRODUCTS ${CMAKE_BINARY_DIR}/userspace/init.elf ${CMAKE_BINARY_DIR}/userspace/code-authority-service.elf
+               ${CMAKE_BINARY_DIR}/userspace/loader-service.elf
                ${CMAKE_BINARY_DIR}/userspace/file-service.elf
                ${CMAKE_BINARY_DIR}/userspace/namespace-service.elf ${CMAKE_BINARY_DIR}/userspace/moss-file.elf
                ${CMAKE_BINARY_DIR}/userspace/busybox.elf ${CMAKE_BINARY_DIR}/userspace/moss-domain.elf

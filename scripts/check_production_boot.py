@@ -24,7 +24,7 @@ from scripts.artifacts import Artifacts
 def run(
     cfg: Artifacts,
     output: Path,
-    timeout: float = 30,
+    timeout: float = 50,
     *,
     gdb: str | None = None,
     registration_race: bool = False,
@@ -122,6 +122,7 @@ quit
     process_pid = None
     old_child_started = False
     code_pid = None
+    loader_pid = None
     bulk_data = b"0" * 300
     # One byte past a shared transfer page proves the file service retains
     # content across multiple positional calls.
@@ -134,6 +135,7 @@ quit
         (b"moss-init: code authority service started", None),
         (b"moss-init: file service started", None),
         (b"moss-init: namespace service started", None),
+        (b"moss-init: loader service started", None),
         (b"moss-init: pipe service started", None),
         (b"moss-init: console service started", None),
         (b"moss-init: process service started", None),
@@ -142,6 +144,12 @@ quit
         (b"\nMOSS_PROCESS_READY\n", None),
         (b"moss$ ", b"/moss-file.elf read /missing\n"),
         (b"\nMOSS_FILE_ERROR\n", None),
+        (b"moss$ ", b"/moss-file.elf read /loader-probe\n"),
+        (b"\nMOSS_FILE_ERROR\n", None),
+        (b"moss$ ", b"/moss-file.elf write hijack /loader-probe\n"),
+        (b"\nMOSS_FILE_WRITE_OK\n", None),
+        (b"moss$ ", b"/moss-file.elf read /loader-probe\n"),
+        (b"\nMOSS_FILE_READ=hijack\n", None),
         (b"moss$ ", b"/moss-file.elf write native\n"),
         (b"\nMOSS_FILE_WRITE_OK\n", None),
         (b"moss$ ", b"/moss-file.elf size\n"),
@@ -183,6 +191,14 @@ quit
         (b"moss$ ", b"/moss-domain.elf terminate code\n"),
         (b"moss-init: code authority service died", None),
         (b"moss-init: code authority service started", None),
+        (b"moss-init: loader service started", None),
+        (b"moss-init: restarting shell", None),
+        (b"built-in shell (ash)", None),
+        (b"moss$ ", b"/moss-file.elf read\n"),
+        (b"\nMOSS_FILE_READ=native\n", None),
+        (b"moss$ ", b"/moss-domain.elf terminate loader\n"),
+        (b"moss-init: loader service died", None),
+        (b"moss-init: loader service started", None),
         (b"moss-init: restarting shell", None),
         (b"built-in shell (ash)", None),
         (b"moss$ ", b"/moss-file.elf read\n"),
@@ -200,6 +216,7 @@ quit
         (b"moss$ ", b"/moss-domain.elf terminate namespace\n"),
         (b"moss-init: namespace service died", None),
         (b"moss-init: namespace service started", None),
+        (b"moss-init: loader service started", None),
         (b"moss-init: pipe service started", None),
         (b"moss-init: console service started", None),
         (b"moss-init: process service started", None),
@@ -212,6 +229,7 @@ quit
         (b"moss-init: file service died", None),
         (b"moss-init: file service started", None),
         (b"moss-init: namespace service started", None),
+        (b"moss-init: loader service started", None),
         (b"moss-init: pipe service started", None),
         (b"moss-init: console service started", None),
         (b"moss-init: process service started", None),
@@ -254,13 +272,14 @@ quit
         (b"\nMOSS_FILE_READ=short\0\0AB\n", None),
         (b"moss$ ", b"/moss-file.elf size /note\n"),
         (b"\nMOSS_FILE_SIZE=9\n", None),
-        # /scratch occupies one page, leaving at most fifteen for /note.
-        (b"moss$ ", b"/moss-file.elf resize 61440 /note\n"),
+        # Two loader image pages, one invalid-image page and /scratch leave
+        # twelve of the sixteen service pages for /note in this incarnation.
+        (b"moss$ ", b"/moss-file.elf resize 49152 /note\n"),
         (b"\nMOSS_FILE_RESIZE_OK\n", None),
         (b"moss$ ", b"/moss-file.elf append \"$(printf '%04096d' 0)\" /note\n"),
         (b"\nMOSS_FILE_ERROR\n", None),
         (b"moss$ ", b"/moss-file.elf size /note\n"),
-        (b"\nMOSS_FILE_SIZE=61440\n", None),
+        (b"\nMOSS_FILE_SIZE=49152\n", None),
         (b"moss$ ", b"/moss-process.elf fd-probe\n"),
         (b"\nMOSS_FD_READY\n", None),
         (b"moss$ ", b"/moss-process.elf pipe-probe\n"),
@@ -342,6 +361,7 @@ quit
                         b"moss-init: console service started",
                         b"moss-init: process service started",
                         b"moss-init: code authority service started",
+                        b"moss-init: loader service started",
                     ):
                         match = re.match(rb" pid=(\d+)\n", after)
                         if not match:
@@ -354,6 +374,7 @@ quit
                             b"moss-init: console service started": console_pid,
                             b"moss-init: process service started": process_pid,
                             b"moss-init: code authority service started": code_pid,
+                            b"moss-init: loader service started": loader_pid,
                         }[marker]
                         if next_pid <= 1 or next_pid == previous_pid:
                             raise ValueError("service incarnation did not change")
@@ -367,6 +388,8 @@ quit
                             console_pid = next_pid
                         elif marker == b"moss-init: process service started":
                             process_pid = next_pid
+                        elif marker == b"moss-init: loader service started":
+                            loader_pid = next_pid
                         else:
                             code_pid = next_pid
                         after = after[match.end() :]
@@ -388,7 +411,7 @@ quit
                         raise ValueError("adopted managed grandchild was not live before process service loss")
                     if b"MOSS_OLD_CHILD_SURVIVED" in trace:
                         raise ValueError("old managed child survived process service loss")
-                    result.update(status="passed", observed="code_process_namespace_and_file_services_recovered")
+                    result.update(status="passed", observed="code_loader_process_namespace_and_file_services_recovered")
                     break
                 if child.poll() is not None:
                     result["observed"] = "unexpected_exit"

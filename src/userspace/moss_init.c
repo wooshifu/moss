@@ -1,4 +1,5 @@
 #include <errno.h>
+#include <fcntl.h>
 #include <limits.h>
 #include <signal.h>
 #include <stddef.h>
@@ -10,6 +11,8 @@
 #define MOSS_SYSCALL_RAW_ONLY
 #include "moss_code_authority_protocol.h"
 #include "moss_console_protocol.h"
+#include "moss_file_protocol.h"
+#include "moss_loader_protocol.h"
 #include "moss_process_protocol.h"
 #include "syscall.h"
 
@@ -25,6 +28,11 @@ struct Service {
   pid_t pid;
   long send;
   long domain;
+};
+
+struct LoaderImages {
+  long probe;
+  long bad;
 };
 
 enum ServiceLoss { FILE_LOST, NAMESPACE_LOST, PROCESS_LOST, PIPE_LOST, CONSOLE_LOST, SUPERVISOR_FAILURE };
@@ -94,6 +102,14 @@ static void stop_service(struct Service *service) {
   service->pid = 0;
   service->send = 0;
   service->domain = 0;
+}
+
+static void close_loader_images(struct LoaderImages *images) {
+  if (images->probe > 0)
+    (void)syscall1(SYS_CAP_CLOSE, images->probe);
+  if (images->bad > 0)
+    (void)syscall1(SYS_CAP_CLOSE, images->bad);
+  *images = (struct LoaderImages){0};
 }
 
 static int retire_scope(long scope) {
@@ -344,7 +360,8 @@ static int start_code_service(struct Service *service, long approver) {
     (void)syscall1(SYS_CAP_CLOSE, (long)endpoints.send);
     return -1;
   }
-  long send = syscall2(SYS_CAP_DUPLICATE, (long)endpoints.send, MOSS_CAP_SEND);
+  // The loader receives only a selected sender for this code authority epoch.
+  long send = syscall2(SYS_CAP_DUPLICATE, (long)endpoints.send, MOSS_CAP_SEND | MOSS_CAP_DUPLICATE);
   (void)syscall1(SYS_CAP_CLOSE, (long)endpoints.send);
   if (send <= 0) {
     stop_child(child, domain);
@@ -395,6 +412,181 @@ static int launch_code_service(struct Service *service, long approver, long *pro
     return -1;
   }
   report_started("code authority service", service->pid);
+  return 0;
+}
+
+static long call_service(long send, const struct moss_ipc_message *request, struct moss_ipc_message *response) {
+  unsigned long now = 0;
+  if (syscall2(SYS_CLOCK_GETTIME, MOSS_CLOCK_MONOTONIC, (long)&now) != 0 || now > LONG_MAX - CODE_CALL_TIMEOUT_NS)
+    return -1;
+  return syscall6(SYS_IPC_CALL, send, (long)request, (long)response, (long)(now + CODE_CALL_TIMEOUT_NS), 0, 0);
+}
+
+static int seed_loader_file(long file, const char *name, const char *source, long *image) {
+  *image = 0;
+  int fd = source ? open(source, O_RDONLY) : -1;
+  if (source && fd < 0)
+    return -1;
+  struct moss_ipc_message request = {.size = strlen(name) + 3,
+                                     .payload = {MOSS_FILE_OPEN, MOSS_FILE_OPEN_CREATE | MOSS_FILE_OPEN_UNLISTED}};
+  memcpy(request.payload + 2, name, strlen(name) + 1);
+  struct moss_ipc_message response = {0};
+  long sent = call_service(file, &request, &response);
+  if (sent != 1 || response.size != 1 || response.payload[0] != MOSS_FILE_OK || !response.capability ||
+      response.rights != (MOSS_CAP_SEND | MOSS_CAP_TRANSFER | MOSS_CAP_DUPLICATE)) {
+    if (response.capability)
+      (void)syscall1(SYS_CAP_CLOSE, (long)response.capability);
+    if (fd >= 0)
+      (void)close(fd);
+    return -1;
+  }
+  long object = (long)response.capability;
+  long memory = syscall1(SYS_MEM_CREATE, MOSS_MEM_OBJECT_BYTES);
+  long mapped = memory > 0 ? syscall2(SYS_MEM_MAP, memory, MOSS_CAP_MAP_READ | MOSS_CAP_MAP_WRITE) : -1;
+  int valid = mapped > 0;
+  size_t offset = 0;
+  while (valid) {
+    ssize_t count;
+    if (source) {
+      count = read(fd, (void *)mapped, MOSS_MEM_OBJECT_BYTES);
+      if (count < 0 && errno == EINTR)
+        continue;
+    } else {
+      memcpy((void *)mapped, "BAD", 3);
+      count = offset ? 0 : 3;
+    }
+    if (count < 0 || (size_t)count > MOSS_FILE_CONTENT_BUDGET_BYTES - offset) {
+      valid = 0;
+      break;
+    }
+    if (!count)
+      break;
+    request = (struct moss_ipc_message){.size = MOSS_FILE_IO_HEADER_BYTES,
+                                        .capability = (unsigned long)memory,
+                                        .rights = MOSS_CAP_MAP_READ,
+                                        .payload = {MOSS_FILE_WRITE}};
+    moss_file_put_u64(request.payload + 1, offset);
+    moss_file_put_u16(request.payload + 9, (unsigned int)count);
+    response = (struct moss_ipc_message){0};
+    sent = call_service(object, &request, &response);
+    if (response.capability)
+      (void)syscall1(SYS_CAP_CLOSE, (long)response.capability);
+    if (sent != MOSS_FILE_IO_REPLY_BYTES || response.payload[0] != MOSS_FILE_OK || response.capability ||
+        response.rights || moss_file_get_u16(response.payload + 1) != (unsigned int)count) {
+      valid = 0;
+      break;
+    }
+    offset += (size_t)count;
+  }
+  if (mapped > 0 && syscall2(SYS_MUNMAP, mapped, MOSS_MEM_OBJECT_BYTES) != 0)
+    _exit(1); // Init cannot safely retry with an accumulating leaked mapping.
+  if (memory > 0)
+    (void)syscall1(SYS_CAP_CLOSE, memory);
+  if (fd >= 0)
+    (void)close(fd);
+  if (valid && offset) {
+    // A root sender can create an unlisted object, but must not be able to
+    // recover its authority by a later name lookup.
+    request = (struct moss_ipc_message){.size = strlen(name) + 3, .payload = {MOSS_FILE_OPEN}};
+    memcpy(request.payload + 2, name, strlen(name) + 1);
+    response = (struct moss_ipc_message){0};
+    sent = call_service(file, &request, &response);
+    valid = sent == 1 && response.size == 1 && response.payload[0] == MOSS_FILE_NO_ENTRY && !response.capability &&
+            !response.rights;
+    if (response.capability)
+      (void)syscall1(SYS_CAP_CLOSE, (long)response.capability);
+  }
+  if (!valid || !offset) {
+    (void)syscall1(SYS_CAP_CLOSE, object);
+    return -1;
+  }
+  *image = object;
+  return 0;
+}
+
+static int start_loader_service(const struct Service *code, long factory, struct Service *service) {
+  struct moss_ipc_endpoints endpoints = {0};
+  if (syscall1(SYS_IPC_CREATE, (long)&endpoints) != 0)
+    return -1;
+  char receive_arg[32], code_arg[32], factory_arg[32];
+  int sizes[] = {snprintf(receive_arg, sizeof(receive_arg), "%lu", endpoints.receive),
+                 snprintf(code_arg, sizeof(code_arg), "%lu", (unsigned long)code->send),
+                 snprintf(factory_arg, sizeof(factory_arg), "%lu", (unsigned long)factory)};
+  if (sizes[0] < 0 || (size_t)sizes[0] >= sizeof(receive_arg) || sizes[1] < 0 || (size_t)sizes[1] >= sizeof(code_arg) ||
+      sizes[2] < 0 || (size_t)sizes[2] >= sizeof(factory_arg))
+    goto fail;
+  // This child accepts explicitly transferred file objects, requests code
+  // approval and spawns domains; it cannot discover unrelated files or mint.
+  const struct moss_fork_capability handles[] = {{endpoints.receive, MOSS_CAP_RECEIVE, 0},
+                                                 {(unsigned long)code->send, MOSS_CAP_SEND, 0},
+                                                 {(unsigned long)factory, MOSS_CAP_DOMAIN_SPAWN, 0}};
+  long domain = 0;
+  pid_t child = fork_domain(&domain, handles, sizeof(handles) / sizeof(handles[0]), 0);
+  if (child == 0) {
+    char *const argv[] = {"loader-service", receive_arg, code_arg, factory_arg, NULL};
+    execve("/loader-service.elf", argv, NULL);
+    _exit(127);
+  }
+  (void)syscall1(SYS_CAP_CLOSE, (long)endpoints.receive);
+  if (child < 0) {
+    stop_child(child, domain);
+    (void)syscall1(SYS_CAP_CLOSE, (long)endpoints.send);
+    return -1;
+  }
+  long send = syscall2(SYS_CAP_DUPLICATE, (long)endpoints.send, MOSS_CAP_SEND);
+  (void)syscall1(SYS_CAP_CLOSE, (long)endpoints.send);
+  if (send <= 0) {
+    stop_child(child, domain);
+    return -1;
+  }
+  *service = (struct Service){.pid = child, .send = send, .domain = domain};
+  return 0;
+fail:
+  (void)syscall1(SYS_CAP_CLOSE, (long)endpoints.receive);
+  (void)syscall1(SYS_CAP_CLOSE, (long)endpoints.send);
+  return -1;
+}
+
+static int request_loader(long send, long image, unsigned char expected, long *domain) {
+  struct moss_ipc_message request = {
+      .size = 1, .capability = (unsigned long)image, .rights = MOSS_CAP_SEND, .payload = {MOSS_LOADER_RUN}};
+  struct moss_ipc_message response = {0};
+  long sent = call_service(send, &request, &response);
+  if (sent == 1 && response.size == 1 && response.payload[0] == expected &&
+      ((expected == MOSS_LOADER_OK && response.capability &&
+        response.rights == (MOSS_CAP_DOMAIN_OBSERVE | MOSS_CAP_DOMAIN_TERMINATE)) ||
+       (expected != MOSS_LOADER_OK && !response.capability && !response.rights))) {
+    *domain = (long)response.capability;
+    return 0;
+  }
+  if (response.capability)
+    (void)syscall1(SYS_CAP_CLOSE, (long)response.capability);
+  return -1;
+}
+
+static int launch_loader_service(const struct Service *code, const struct LoaderImages *images, long factory,
+                                 struct Service *loader) {
+  if (start_loader_service(code, factory, loader) != 0)
+    return -1;
+  long domain = 0;
+  int valid = request_loader(loader->send, images->bad, MOSS_LOADER_BAD_IMAGE, &domain) == 0 &&
+              request_loader(loader->send, images->probe, MOSS_LOADER_OK, &domain) == 0;
+  struct moss_domain_exit status = {0};
+  if (valid)
+    valid = syscall1(SYS_DOMAIN_WAIT, domain) == 0 && syscall2(SYS_DOMAIN_STATUS, domain, (long)&status) == 0 &&
+            status.code == MOSS_LOADER_PROBE_EXIT_CODE && status.signal == 0;
+  if (domain > 0) {
+    if (!valid) {
+      (void)syscall1(SYS_DOMAIN_TERMINATE, domain);
+      (void)syscall1(SYS_DOMAIN_WAIT, domain);
+    }
+    (void)syscall1(SYS_CAP_CLOSE, domain);
+  }
+  if (!valid) {
+    stop_service(loader);
+    return -1;
+  }
+  report_started("loader service", loader->pid);
   return 0;
 }
 
@@ -471,18 +663,18 @@ fail:
 static pid_t start_shell(long namespace_capability, long process_capability, long pipe_capability,
                          long console_input_capability, long parent_session, long scope, long file_domain,
                          long namespace_domain, long process_domain, long pipe_domain, long console_domain,
-                         long code_domain, long supervisor_domain, long *domain, unsigned long *shell_id,
-                         long *delegated_session) {
+                         long code_domain, long loader_domain, long supervisor_domain, long *domain,
+                         unsigned long *shell_id, long *delegated_session) {
   *domain = 0;
   *shell_id = 0;
   *delegated_session = 0;
   if (namespace_capability <= 0 || process_capability <= 0 || pipe_capability <= 0 || console_input_capability <= 0 ||
       parent_session <= 0 || scope <= 0 || file_domain <= 0 || namespace_domain <= 0 || process_domain <= 0 ||
-      pipe_domain <= 0 || console_domain <= 0 || code_domain <= 0 || supervisor_domain <= 0)
+      pipe_domain <= 0 || console_domain <= 0 || code_domain <= 0 || loader_domain <= 0 || supervisor_domain <= 0)
     return -1;
   char namespace_env[64]; // Environment key plus decimal 64-bit handle.
   char process_env[64], pipe_env[64], console_input_env[64], file_domain_env[64], namespace_domain_env[64],
-      process_domain_env[64], pipe_domain_env[64], console_domain_env[64], code_domain_env[64],
+      process_domain_env[64], pipe_domain_env[64], console_domain_env[64], code_domain_env[64], loader_domain_env[64],
       supervisor_domain_env[64];
   int size =
       snprintf(namespace_env, sizeof(namespace_env), "MOSS_NAMESPACE_CAP=%lu", (unsigned long)namespace_capability);
@@ -520,6 +712,10 @@ static pid_t start_shell(long namespace_capability, long process_capability, lon
   size = snprintf(code_domain_env, sizeof(code_domain_env), "MOSS_CODE_DOMAIN_CAP=%lu", (unsigned long)code_domain);
   if (size < 0 || (size_t)size >= sizeof(code_domain_env))
     return -1;
+  size = snprintf(loader_domain_env, sizeof(loader_domain_env), "MOSS_LOADER_DOMAIN_CAP=%lu",
+                  (unsigned long)loader_domain);
+  if (size < 0 || (size_t)size >= sizeof(loader_domain_env))
+    return -1;
   size = snprintf(supervisor_domain_env, sizeof(supervisor_domain_env), "MOSS_SUPERVISOR_DOMAIN_CAP=%lu",
                   (unsigned long)supervisor_domain);
   if (size < 0 || (size_t)size >= sizeof(supervisor_domain_env))
@@ -555,6 +751,7 @@ static pid_t start_shell(long namespace_capability, long process_capability, lon
       {(unsigned long)pipe_domain, MOSS_CAP_DOMAIN_TERMINATE | MOSS_CAP_DUPLICATE, MOSS_FORK_CAP_INHERIT},
       {(unsigned long)console_domain, MOSS_CAP_DOMAIN_TERMINATE | MOSS_CAP_DUPLICATE, MOSS_FORK_CAP_INHERIT},
       {(unsigned long)code_domain, MOSS_CAP_DOMAIN_TERMINATE | MOSS_CAP_DUPLICATE, MOSS_FORK_CAP_INHERIT},
+      {(unsigned long)loader_domain, MOSS_CAP_DOMAIN_TERMINATE | MOSS_CAP_DUPLICATE, MOSS_FORK_CAP_INHERIT},
       {(unsigned long)supervisor_domain, MOSS_CAP_DOMAIN_TERMINATE | MOSS_CAP_DUPLICATE, MOSS_FORK_CAP_INHERIT},
       {(unsigned long)child_session, MOSS_CAP_SEND | MOSS_CAP_DUPLICATE, MOSS_FORK_CAP_INHERIT}};
   pid_t child = fork_domain(domain, handles, sizeof(handles) / sizeof(handles[0]), scope);
@@ -575,6 +772,7 @@ static pid_t start_shell(long namespace_capability, long process_capability, lon
                          pipe_domain_env,
                          console_domain_env,
                          code_domain_env,
+                         loader_domain_env,
                          supervisor_domain_env,
                          NULL};
     long self = syscall0(SYS_DOMAIN_SELF);
@@ -608,18 +806,19 @@ static pid_t start_shell(long namespace_capability, long process_capability, lon
 
 static enum ServiceLoss supervise(struct Service *file, struct Service *namespace, struct Service *process,
                                   struct Service *pipe, struct Service *console, struct Service *code,
-                                  long console_input, long process_session, long scope, long approver, long revoker,
-                                  long *code_probe, long supervisor_domain, pid_t *shell, long *shell_domain,
-                                  unsigned long *shell_id, long *shell_session) {
+                                  struct Service *loader, long console_input, long process_session, long scope,
+                                  long approver, long revoker, long *code_probe, long factory,
+                                  const struct LoaderImages *images, long supervisor_domain, pid_t *shell,
+                                  long *shell_domain, unsigned long *shell_id, long *shell_session) {
   for (;;) {
     const unsigned long domains[] = {(unsigned long)file->domain,    (unsigned long)namespace->domain,
                                      (unsigned long)process->domain, (unsigned long)*shell_domain,
                                      (unsigned long)pipe->domain,    (unsigned long)console->domain,
-                                     (unsigned long)code->domain};
-    long exited = syscall2(SYS_DOMAIN_WAIT_ANY, (long)domains, 7);
+                                     (unsigned long)code->domain,    (unsigned long)loader->domain};
+    long exited = syscall2(SYS_DOMAIN_WAIT_ANY, (long)domains, 8);
     if (exited == -EINTR)
       continue;
-    if (exited < 0 || exited > 6) {
+    if (exited < 0 || exited > 7) {
       char message[80];
       int size = snprintf(message, sizeof(message), "moss-init: domain wait failed: %ld\n", exited);
       if (size > 0 && (size_t)size < sizeof(message))
@@ -654,6 +853,8 @@ static enum ServiceLoss supervise(struct Service *file, struct Service *namespac
     if (exited == 6) {
       code->pid = 0;
       report(STDOUT_FILENO, "moss-init: code authority service died\n");
+      // A loader's selected sender names this code-authority incarnation.
+      stop_service(loader);
       // The independent revoker retires the surviving approval before a
       // replacement receives approval power.
       if (syscall2(SYS_CODE_REVOKE, revoker, *code_probe) != 0)
@@ -663,6 +864,10 @@ static enum ServiceLoss supervise(struct Service *file, struct Service *namespac
       stop_service(code);
       if (restart_delay() != 0 || launch_code_service(code, approver, code_probe) != 0) {
         report(STDERR_FILENO, "moss-init: code authority service launch failed\n");
+        return SUPERVISOR_FAILURE;
+      }
+      if (launch_loader_service(code, images, factory, loader) != 0) {
+        report(STDERR_FILENO, "moss-init: loader service launch failed\n");
         return SUPERVISOR_FAILURE;
       }
       // Refresh the management shell's old termination handle while keeping
@@ -679,7 +884,32 @@ static enum ServiceLoss supervise(struct Service *file, struct Service *namespac
       report(STDOUT_FILENO, "moss-init: restarting shell\n");
       *shell = start_shell(namespace->send, process->send, pipe->send, console_input, process_session, scope,
                            file->domain, namespace->domain, process->domain, pipe->domain, console->domain,
-                           code->domain, supervisor_domain, shell_domain, shell_id, shell_session);
+                           code->domain, loader->domain, supervisor_domain, shell_domain, shell_id, shell_session);
+      if (*shell < 0)
+        return SUPERVISOR_FAILURE;
+      continue;
+    }
+    if (exited == 7) {
+      loader->pid = 0;
+      report(STDOUT_FILENO, "moss-init: loader service died\n");
+      stop_service(loader);
+      if (restart_delay() != 0 || launch_loader_service(code, images, factory, loader) != 0) {
+        report(STDERR_FILENO, "moss-init: loader service launch failed\n");
+        return SUPERVISOR_FAILURE;
+      }
+      stop_child(*shell, *shell_domain);
+      *shell = 0;
+      *shell_domain = 0;
+      if (*shell_session > 0)
+        (void)syscall1(SYS_CAP_CLOSE, *shell_session);
+      *shell_session = 0;
+      if (!reap_shell(process_session, *shell_id))
+        return PROCESS_LOST;
+      *shell_id = 0;
+      report(STDOUT_FILENO, "moss-init: restarting shell\n");
+      *shell = start_shell(namespace->send, process->send, pipe->send, console_input, process_session, scope,
+                           file->domain, namespace->domain, process->domain, pipe->domain, console->domain,
+                           code->domain, loader->domain, supervisor_domain, shell_domain, shell_id, shell_session);
       if (*shell < 0)
         return SUPERVISOR_FAILURE;
       continue;
@@ -698,7 +928,7 @@ static enum ServiceLoss supervise(struct Service *file, struct Service *namespac
       return SUPERVISOR_FAILURE;
     *shell = start_shell(namespace->send, process->send, pipe->send, console_input, process_session, scope,
                          file->domain, namespace->domain, process->domain, pipe->domain, console->domain, code->domain,
-                         supervisor_domain, shell_domain, shell_id, shell_session);
+                         loader->domain, supervisor_domain, shell_domain, shell_id, shell_session);
     if (*shell < 0) {
       report(STDERR_FILENO, "moss-init: shell launch failed\n");
       *shell = 0;
@@ -731,6 +961,15 @@ int main(void) {
     report(STDERR_FILENO, "moss-init: code authority acquisition failed\n");
     return 1;
   }
+  long root_factory = syscall0(SYS_DOMAIN_FACTORY);
+  long factory =
+      root_factory > 0 ? syscall2(SYS_CAP_DUPLICATE, root_factory, MOSS_CAP_DOMAIN_SPAWN | MOSS_CAP_DUPLICATE) : -1;
+  if (root_factory > 0)
+    (void)syscall1(SYS_CAP_CLOSE, root_factory);
+  if (factory <= 0) {
+    report(STDERR_FILENO, "moss-init: domain factory acquisition failed\n");
+    return 1;
+  }
   struct Service code = {0};
   long code_probe = 0;
   while (launch_code_service(&code, approver, &code_probe) != 0) {
@@ -748,6 +987,18 @@ int main(void) {
       continue;
     }
     report_started("file service", file.pid);
+    // The kernel filesystem remains the bootstrap image source. The loader
+    // receives only capability-addressed private copies after seeding.
+    struct LoaderImages images = {0};
+    if (seed_loader_file(file.send, "loader-probe", "/loader_probe.elf", &images.probe) != 0 ||
+        seed_loader_file(file.send, "loader-bad", NULL, &images.bad) != 0) {
+      report(STDERR_FILENO, "moss-init: loader image seeding failed\n");
+      close_loader_images(&images);
+      stop_service(&file);
+      if (restart_delay() != 0)
+        return 1;
+      continue;
+    }
     for (;;) {
       struct Service namespace = {0};
       if (start_namespace_service(&file, &namespace) != 0) {
@@ -755,6 +1006,12 @@ int main(void) {
         break;
       }
       report_started("namespace service", namespace.pid);
+      struct Service loader = {0};
+      if (launch_loader_service(&code, &images, factory, &loader) != 0) {
+        report(STDERR_FILENO, "moss-init: loader service launch failed\n");
+        stop_service(&namespace);
+        break;
+      }
       enum ServiceLoss lost;
       long stale_session = 0;
       long stale_delegate = 0;
@@ -807,14 +1064,14 @@ int main(void) {
           if (process_session > 0 && process_rejects_unscoped_child(process_session, supervisor_domain))
             shell = start_shell(namespace.send, process.send, pipe.send, console_input, process_session, scope,
                                 file.domain, namespace.domain, process.domain, pipe.domain, console.domain, code.domain,
-                                supervisor_domain, &shell_domain, &shell_id, &shell_session);
+                                loader.domain, supervisor_domain, &shell_domain, &shell_id, &shell_session);
           if (shell < 0) {
             report(STDERR_FILENO, "moss-init: shell launch failed\n");
             lost = PROCESS_LOST;
           } else {
-            lost = supervise(&file, &namespace, &process, &pipe, &console, &code, console_input, process_session, scope,
-                             approver, revoker, &code_probe, supervisor_domain, &shell, &shell_domain, &shell_id,
-                             &shell_session);
+            lost = supervise(&file, &namespace, &process, &pipe, &console, &code, &loader, console_input,
+                             process_session, scope, approver, revoker, &code_probe, factory, &images,
+                             supervisor_domain, &shell, &shell_domain, &shell_id, &shell_session);
           }
         }
         if (scope > 0) {
@@ -846,7 +1103,9 @@ int main(void) {
         if (lost != PROCESS_LOST && lost != PIPE_LOST && lost != CONSOLE_LOST)
           break;
         if (restart_delay() != 0) {
+          stop_service(&loader);
           stop_service(&namespace);
+          close_loader_images(&images);
           stop_service(&file);
           return 1;
         }
@@ -855,8 +1114,10 @@ int main(void) {
         (void)syscall1(SYS_CAP_CLOSE, stale_session);
       if (stale_delegate > 0)
         (void)syscall1(SYS_CAP_CLOSE, stale_delegate);
+      stop_service(&loader);
       stop_service(&namespace);
       if (lost == SUPERVISOR_FAILURE) {
+        close_loader_images(&images);
         stop_service(&file);
         return 1;
       }
@@ -866,10 +1127,12 @@ int main(void) {
       // Namespace policy can restart while the independent file object and
       // capabilities already transferred to clients remain valid.
       if (restart_delay() != 0) {
+        close_loader_images(&images);
         stop_service(&file);
         return 1;
       }
     }
+    close_loader_images(&images);
     stop_service(&file);
     if (restart_delay() != 0) {
       return 1;

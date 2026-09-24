@@ -235,7 +235,7 @@ if(MOSS_BUILD_TESTS)
     set_tests_properties(
         moss-production-boot
         PROPERTIES TIMEOUT
-                   45
+                   65 # RISC-V TCG now exercises loader, process, pipe and console recovery before cleanup.
                    RUN_SERIAL
                    TRUE
                    LABELS
