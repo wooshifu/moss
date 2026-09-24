@@ -300,6 +300,18 @@ static unsigned char load_and_spawn(const struct moss_ipc_message *request, long
   struct LoaderStartup startup;
   if (!prepare_startup(request, &layout, &startup))
     return MOSS_LOADER_BAD_REQUEST;
+  // The caller can retain or copy its file sender. Seal the object here so
+  // no later write can change bytes between the Loader's page reads.
+  struct moss_ipc_message seal_request = {.size = 1, .payload = {MOSS_FILE_SEAL}};
+  struct moss_ipc_message seal_response = {0};
+  long sealed = call(file, &seal_request, &seal_response);
+  if (seal_response.capability) {
+    (void)syscall1(SYS_CAP_CLOSE, (long)seal_response.capability);
+  }
+  if (sealed != 1 || seal_response.size != 1 || seal_response.payload[0] != MOSS_FILE_OK || seal_response.capability ||
+      seal_response.rights) {
+    return MOSS_LOADER_NO_IMAGE;
+  }
   size_t size = 0;
   if (!read_file(file, &size))
     return MOSS_LOADER_NO_IMAGE;
