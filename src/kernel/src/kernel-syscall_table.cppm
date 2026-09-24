@@ -92,6 +92,9 @@ long sys_domain_wait(long handle, long arg1, long arg2, long arg3, long arg4, lo
 long sys_domain_wait_any(long handles_addr, long count, long arg2, long arg3, long arg4, long arg5) noexcept;
 long sys_domain_status(long handle, long status_addr, long arg2, long arg3, long arg4, long arg5) noexcept;
 long sys_domain_self(long arg0, long arg1, long arg2, long arg3, long arg4, long arg5) noexcept;
+long sys_domain_spawn(long factory, long image_addr, long arg2, long arg3, long arg4, long arg5) noexcept;
+long sys_domain_layout(long layout_addr, long arg1, long arg2, long arg3, long arg4, long arg5) noexcept;
+long sys_domain_factory(long arg0, long arg1, long arg2, long arg3, long arg4, long arg5) noexcept;
 long sys_execve(long pathname_addr, long argv_addr, long envp_addr, long arg3, long arg4, long arg5) noexcept;
 long sys_wait4(long wait_pid, long wstatus_addr, long options, long arg3, long arg4, long arg5) noexcept;
 long sys_waitpid(long pid, long wstatus, long options, long arg3, long arg4, long arg5) noexcept;

@@ -2442,7 +2442,8 @@ private:
     task->se.exec_start = get_current_time(); // Reset for vruntime accounting
     record_context_switch();
 
-    if (task->needs_initial_eret) {
+    const bool first_user_entry = task->needs_initial_eret;
+    if (first_user_entry) {
       // First entry into user space.  We MUST go through context_switch
       // (not direct switch_to_user) so the caller's bootstrap context is
       // properly saved.  Without this, waitpid's context_switch back to
@@ -2516,6 +2517,10 @@ private:
         if (as && as->pgd_phys != 0) {
           use_address_space(moss::move(as));
         }
+        // A newly populated executable page may have been written on a
+        // different CPU. Synchronize this CPU before its first user fetch.
+        if (first_user_entry)
+          arch::invalidate_icache();
 
 #if defined(MOSS_ARCH_ARM64)
         // Set TPIDR_EL1 for per-thread kernel stack.

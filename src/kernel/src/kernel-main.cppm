@@ -587,6 +587,9 @@ private:
     }
     auto init_proc = proc_result.value();
     ProcessId init_pid = init_proc->pid();
+    // The fixed boot image is the only source of domain-construction
+    // authority. It can explicitly pass a reduced factory handle to a loader.
+    init_proc->designate_domain_factory_source();
     // The fixed boot trampoline tries validation.elf first. Only the
     // production image creates the Initial System Supervisor; designate its
     // Process before it can run so even an early exec failure is fatal.

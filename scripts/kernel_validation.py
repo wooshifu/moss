@@ -236,6 +236,7 @@ CATALOG = {
         "domain_control",
         "domain_selection",
         "domain_wait_any",
+        "domain_spawn",
     ],
     "users.signals": [
         "basic_handler",

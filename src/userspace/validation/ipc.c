@@ -53,6 +53,76 @@ static int domain_exited(unsigned long domain, int code, unsigned int signal) {
          status.signal == signal;
 }
 
+// This position-independent entry reads its exit code from the new domain's
+// startup stack. It has no relocations or dependency on the caller's libc.
+__attribute__((naked, noinline, used, aligned(16))) static void spawned_stack_exit(void) {
+#if defined(__x86_64__)
+  __asm__ volatile("mov (%rsi), %edi\n\tmov $1, %eax\n\tsyscall\n\tud2");
+#elif defined(__riscv)
+  __asm__ volatile("lw a0, 0(a1)\n\tli a7, 1\n\tecall\n\tebreak");
+#else
+  __asm__ volatile("ldr w0, [x1]\n\tmov x8, #1\n\tsvc #0\n\tbrk #0");
+#endif
+}
+
+unsigned long ipc_domain_spawn(void) {
+  struct moss_domain_layout layout = {0};
+  if (syscall1(SYS_DOMAIN_LAYOUT, (long)&layout) != 0 || layout.page_size != MOSS_DOMAIN_PAGE_BYTES ||
+      layout.stack_size < 16 || layout.stack_top <= layout.stack_size)
+    return 1;
+
+  const unsigned long entry = (unsigned long)spawned_stack_exit;
+  const unsigned long code_page = entry & ~(MOSS_DOMAIN_PAGE_BYTES - 1UL);
+  const unsigned long stack_pointer = layout.stack_top - 16;
+  const unsigned char initial_stack[16] = {37};
+  struct moss_domain_page page = {.address = code_page,
+                                  .source = code_page,
+                                  .size = MOSS_DOMAIN_PAGE_BYTES,
+                                  .flags = MOSS_DOMAIN_PAGE_READ | MOSS_DOMAIN_PAGE_EXEC};
+  struct moss_domain_spawn image = {.entry = entry,
+                                    .stack_pointer = stack_pointer,
+                                    .stack_source = (unsigned long)initial_stack,
+                                    .stack_size = sizeof(initial_stack),
+                                    .arg0 = 99,
+                                    .arg1 = stack_pointer,
+                                    .pages = (unsigned long)&page,
+                                    .page_count = 1};
+  unsigned long errors = 0;
+  long factory = syscall0(SYS_DOMAIN_FACTORY);
+  if (factory <= 0)
+    return 1;
+  errors |= (unsigned long)(syscall2(SYS_DOMAIN_SPAWN, 0, (long)&image) != -IPC_EBADF);
+  long limited = syscall2(SYS_CAP_DUPLICATE, factory, MOSS_CAP_TRANSFER);
+  errors |= (unsigned long)(limited <= 0 || syscall2(SYS_DOMAIN_SPAWN, limited, (long)&image) != -IPC_EACCES) << 1;
+  if (limited > 0)
+    (void)syscall1(SYS_CAP_CLOSE, limited);
+  long child = fork();
+  if (child == 0)
+    _exit(syscall0(SYS_DOMAIN_FACTORY) == -IPC_EACCES ? 37 : 96);
+  errors |= (unsigned long)(child < 0 || !wait_exit(child, 37)) << 2;
+  page.flags |= MOSS_DOMAIN_PAGE_WRITE;
+  errors |= (unsigned long)(syscall2(SYS_DOMAIN_SPAWN, factory, (long)&image) != -IPC_EINVAL) << 3;
+  page.flags &= ~MOSS_DOMAIN_PAGE_WRITE;
+  image.entry = stack_pointer;
+  errors |= (unsigned long)(syscall2(SYS_DOMAIN_SPAWN, factory, (long)&image) != -IPC_EINVAL) << 4;
+  image.entry = entry;
+  page.source = 1;
+  page.size = 1;
+  errors |= (unsigned long)(syscall2(SYS_DOMAIN_SPAWN, factory, (long)&image) != -IPC_EFAULT) << 5;
+  page.source = code_page;
+  page.size = MOSS_DOMAIN_PAGE_BYTES;
+
+  long domain = syscall2(SYS_DOMAIN_SPAWN, factory, (long)&image);
+  (void)syscall1(SYS_CAP_CLOSE, factory);
+  if (domain <= 0)
+    return errors | (1UL << 6);
+  long diagnostic_id = syscall1(SYS_DOMAIN_ID, domain);
+  errors |= (unsigned long)(diagnostic_id <= 1 || syscall3(SYS_WAITPID, diagnostic_id, 0, 1) != -IPC_ECHILD) << 7;
+  errors |= (unsigned long)!domain_exited((unsigned long)domain, 37, 0) << 8;
+  errors |= (unsigned long)(syscall1(SYS_CAP_CLOSE, domain) != 0) << 9;
+  return errors;
+}
+
 unsigned long ipc_roundtrip(void) {
   struct moss_ipc_endpoints pair = {0, 0};
   if (syscall1(SYS_IPC_CREATE, (long)&pair) != 0)

@@ -8,7 +8,7 @@ import moss.containers;
 
 export namespace moss::kernel::capability {
 
-enum class ObjectType : u8 { Endpoint, Receiver, Reply, Memory, Domain };
+enum class ObjectType : u8 { Endpoint, Receiver, Reply, Memory, Domain, DomainFactory };
 
 namespace rights {
 inline constexpr u32 SEND = 1U << 0;
@@ -21,6 +21,7 @@ inline constexpr u32 MINT = 1U << 6;
 inline constexpr u32 DOMAIN_TERMINATE = 1U << 7;
 inline constexpr u32 DOMAIN_INSPECT = 1U << 8;
 inline constexpr u32 DOMAIN_OBSERVE = 1U << 9;
+inline constexpr u32 DOMAIN_SPAWN = 1U << 10;
 } // namespace rights
 
 namespace fork_flags {

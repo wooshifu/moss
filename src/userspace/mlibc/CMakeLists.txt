@@ -37,6 +37,7 @@ configure_file(../syscall.h "${MLIBC_GENERATED}/moss-syscall.h" COPYONLY)
 file(MAKE_DIRECTORY "${MLIBC_GENERATED}/moss")
 configure_file("${MOSS_ROOT}/src/abi/include/moss/syscall_numbers.def"
                "${MLIBC_GENERATED}/moss/syscall_numbers.def" COPYONLY)
+configure_file("${MOSS_ROOT}/src/abi/include/moss/domain_spawn.h" "${MLIBC_GENERATED}/moss/domain_spawn.h" COPYONLY)
 find_program(LLVM_STRIP llvm-strip REQUIRED)
 add_subdirectory("${MOSS_THIRD_PARTY}/mlibc" mlibc)
 add_subdirectory("${MOSS_THIRD_PARTY}/compiler-rt" builtins)
