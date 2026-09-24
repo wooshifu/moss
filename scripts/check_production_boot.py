@@ -121,6 +121,7 @@ quit
     console_pid = None
     process_pid = None
     old_child_started = False
+    code_pid = None
     bulk_data = b"0" * 300
     # One byte past a shared transfer page proves the file service retains
     # content across multiple positional calls.
@@ -130,6 +131,7 @@ quit
     # capabilities alongside shell workflows and independent service recovery.
     steps = [
         (b"moss-init: supervisor ready", None),
+        (b"moss-init: code authority service started", None),
         (b"moss-init: file service started", None),
         (b"moss-init: namespace service started", None),
         (b"moss-init: pipe service started", None),
@@ -178,6 +180,11 @@ quit
         (b"built-in shell (ash)", None),
         (b"moss$ ", b"sleep 2 && echo MOSS_SLEEP_READY\n"),
         (b"\nMOSS_SLEEP_READY\n", None),
+        (b"moss$ ", b"/moss-domain.elf terminate code\n"),
+        (b"moss-init: code authority service died", None),
+        (b"moss-init: code authority service started", None),
+        (b"moss-init: restarting shell", None),
+        (b"built-in shell (ash)", None),
         (b"moss$ ", b"/moss-file.elf read\n"),
         (b"\nMOSS_FILE_READ=native\n", None),
         (b"moss$ ", b"/moss-process.elf crash-survivor &\n"),
@@ -334,6 +341,7 @@ quit
                         b"moss-init: pipe service started",
                         b"moss-init: console service started",
                         b"moss-init: process service started",
+                        b"moss-init: code authority service started",
                     ):
                         match = re.match(rb" pid=(\d+)\n", after)
                         if not match:
@@ -345,6 +353,7 @@ quit
                             b"moss-init: pipe service started": pipe_pid,
                             b"moss-init: console service started": console_pid,
                             b"moss-init: process service started": process_pid,
+                            b"moss-init: code authority service started": code_pid,
                         }[marker]
                         if next_pid <= 1 or next_pid == previous_pid:
                             raise ValueError("service incarnation did not change")
@@ -356,8 +365,10 @@ quit
                             pipe_pid = next_pid
                         elif marker == b"moss-init: console service started":
                             console_pid = next_pid
-                        else:
+                        elif marker == b"moss-init: process service started":
                             process_pid = next_pid
+                        else:
+                            code_pid = next_pid
                         after = after[match.end() :]
                     pending = after
                     if command:
@@ -371,13 +382,13 @@ quit
                     stage += 1
                 if stage == len(steps) and (not debugger or debugger.poll() is not None):
                     trace = serial.read_bytes().replace(b"\r", b"")
-                    started = trace.find(b"MOSS_OLD_CHILD_STARTED")
-                    lost = trace.find(b"moss-init: process service died")
-                    if started < 0 or lost < started:
+                    child_start_offset = trace.find(b"MOSS_OLD_CHILD_STARTED")
+                    process_loss_offset = trace.find(b"moss-init: process service died")
+                    if child_start_offset < 0 or process_loss_offset < child_start_offset:
                         raise ValueError("adopted managed grandchild was not live before process service loss")
                     if b"MOSS_OLD_CHILD_SURVIVED" in trace:
                         raise ValueError("old managed child survived process service loss")
-                    result.update(status="passed", observed="process_namespace_and_file_services_recovered")
+                    result.update(status="passed", observed="code_process_namespace_and_file_services_recovered")
                     break
                 if child.poll() is not None:
                     result["observed"] = "unexpected_exit"
