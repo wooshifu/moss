@@ -754,9 +754,13 @@ unsigned long ipc_signal_cancel(void) {
 }
 
 unsigned long ipc_capability_transfer(void) {
+  enum { kDelegatedBadge = 17 }; // A nonzero badge distinguishes this sender from the endpoint's default.
   struct moss_ipc_endpoints control = {0, 0}, delegated = {0, 0};
   if (syscall1(SYS_IPC_CREATE, (long)&control) != 0 || syscall1(SYS_IPC_CREATE, (long)&delegated) != 0 ||
       syscall2(SYS_CAP_SET_INHERIT, (long)control.receive, 1) != 0)
+    return 1;
+  long badged = syscall2(SYS_IPC_MINT_BADGE, (long)delegated.send, kDelegatedBadge);
+  if (badged <= 0)
     return 1;
   long child = fork();
   if (child == 0) {
@@ -785,13 +789,16 @@ unsigned long ipc_capability_transfer(void) {
     if (deadline <= 0 || ipc_call(returned.send, &returned_request, &returned_response, deadline) != 1 ||
         returned_response.payload[0] != 'c')
       _exit(95);
+    deadline = deadline_after(ipc_call_timeout_ns);
+    if (deadline <= 0 || ipc_call(request.capability, &delegated_request, &delegated_response, deadline) != -IPC_EPIPE)
+      _exit(96);
     _exit(37);
   }
   if (child < 0)
     return 2;
   unsigned long errors = syscall1(SYS_CAP_CLOSE, (long)control.receive) != 0;
   const struct moss_ipc_message request = {
-      .size = 1, .capability = delegated.send, .rights = MOSS_CAP_SEND, .payload = {'a'}};
+      .size = 1, .capability = (unsigned long)badged, .rights = MOSS_CAP_SEND, .payload = {'a'}};
   struct moss_ipc_message response = {0};
   long deadline = deadline_after(ipc_call_timeout_ns);
   long completed = deadline > 0 ? ipc_call(control.send, &request, &response, deadline) : -1;
@@ -803,7 +810,8 @@ unsigned long ipc_capability_transfer(void) {
     errors |= (unsigned long)(syscall1(SYS_CAP_CLOSE, (long)delegated.send) != 0) << 3;
     struct moss_ipc_message incoming = {0};
     unsigned long reply = 0;
-    errors |= (unsigned long)(ipc_receive(delegated.receive, &incoming, &reply) != 1 || incoming.payload[0] != 'b')
+    errors |= (unsigned long)(ipc_receive(delegated.receive, &incoming, &reply) != 1 || incoming.payload[0] != 'b' ||
+                              incoming.badge != kDelegatedBadge)
               << 4;
     const struct moss_ipc_message accepted = {.size = 1, .payload = {'b'}};
     errors |= (unsigned long)(ipc_reply(reply, &accepted) != 0) << 5;
@@ -811,12 +819,18 @@ unsigned long ipc_capability_transfer(void) {
     errors |= (unsigned long)(ipc_receive(response.capability, &incoming, &reply) != 1 || incoming.payload[0] != 'c')
               << 6;
     const struct moss_ipc_message returned = {.size = 1, .payload = {'c'}};
+    // The returned endpoint is the barrier: the delegate cannot call again
+    // until the receiver has closed, so the stale send must return EPIPE.
+    errors |= (unsigned long)(syscall1(SYS_CAP_CLOSE, (long)delegated.receive) != 0) << 12;
+    delegated.receive = 0;
     errors |= (unsigned long)(ipc_reply(reply, &returned) != 0) << 7;
     errors |= (unsigned long)(syscall1(SYS_CAP_CLOSE, (long)response.capability) != 0) << 8;
   }
   errors |= (unsigned long)!wait_exit(child, 37) << 9;
   errors |= (unsigned long)(syscall1(SYS_CAP_CLOSE, (long)control.send) != 0) << 10;
-  errors |= (unsigned long)(syscall1(SYS_CAP_CLOSE, (long)delegated.receive) != 0) << 11;
+  errors |= (unsigned long)(syscall1(SYS_CAP_CLOSE, badged) != 0) << 11;
+  if (delegated.receive)
+    errors |= (unsigned long)(syscall1(SYS_CAP_CLOSE, (long)delegated.receive) != 0) << 13;
   return errors;
 }
 
