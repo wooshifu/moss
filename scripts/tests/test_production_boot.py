@@ -19,6 +19,7 @@ from scripts.artifacts import Artifacts
         "late_panic",
         "sleep_runtime_failure",
         "old_child_survived",
+        "pending_call_not_released",
         "gdb_complete",
         "gdb_unverified",
         "gdb_failure",
@@ -119,9 +120,13 @@ assert input() == 'echo MOSS_PRODUCTION_READY'
         script += "print('\\nMOSS_FILE_READ=native\\nmoss$ ', end='', flush=True)\n"
         script += "assert input() == '/moss-process.elf crash-survivor &'\n"
         script += "print('MOSS_OLD_CHILD_STARTED\\nmoss$ ', end='', flush=True)\n"
+        script += "assert input() == '/moss-domain.elf arm process'\n"
+        script += "print('moss-init: pending process call armed\\nmoss$ ', end='', flush=True)\n"
         script += "assert input() == '/moss-domain.elf terminate process'\n"
         script += (
-            "print('moss-init: process service died\\nmoss-init: pipe service started pid=51\\n"
+            "print('moss-init: process service died\\n"
+            + ("" if mode == "pending_call_not_released" else "moss-init: pending process call released\\n")
+            + "moss-init: pipe service started pid=51\\n"
             "moss-init: console service started pid=52\\n"
             "moss-init: process service started pid=53\\n"
             "moss-init: loader process bridge ready', flush=True)\n"

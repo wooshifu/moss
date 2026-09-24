@@ -1,5 +1,6 @@
 #include <errno.h>
 #include <limits.h>
+#include <signal.h>
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
@@ -14,11 +15,16 @@ static int error(void) {
 }
 
 int main(int argc, char **argv) {
-  if (argc != 3 || strcmp(argv[1], "terminate") != 0)
+  if (argc != 3)
+    return error();
+  int arm = strcmp(argv[1], "arm") == 0 && strcmp(argv[2], "process") == 0;
+  if (!arm && strcmp(argv[1], "terminate") != 0)
     return error();
 
   const char *variable;
-  if (strcmp(argv[2], "file") == 0)
+  if (arm)
+    variable = "MOSS_SUPERVISOR_DOMAIN_CAP";
+  else if (strcmp(argv[2], "file") == 0)
     variable = "MOSS_FILE_DOMAIN_CAP";
   else if (strcmp(argv[2], "namespace") == 0)
     variable = "MOSS_NAMESPACE_DOMAIN_CAP";
@@ -43,7 +49,8 @@ int main(int argc, char **argv) {
   char *end = NULL;
   errno = 0;
   unsigned long handle = strtoul(value, &end, 10);
-  if (errno || !handle || handle > LONG_MAX || *end || syscall1(SYS_DOMAIN_TERMINATE, (long)handle) != 0)
+  if (errno || !handle || handle > LONG_MAX || *end ||
+      (arm ? syscall2(SYS_DOMAIN_SIGNAL, (long)handle, SIGUSR1) : syscall1(SYS_DOMAIN_TERMINATE, (long)handle)) != 0)
     return error();
 
   return 0;

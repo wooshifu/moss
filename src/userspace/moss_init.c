@@ -22,6 +22,10 @@
 #define SCOPE_SHUTDOWN_POLL_NS 10000000UL
 // Match the native IPC validation bound so a stalled service cannot hold boot indefinitely.
 #define CODE_CALL_TIMEOUT_NS 5000000000UL
+// Five seconds bounds both delivery and release in the boot recovery probe.
+#define RECOVERY_PROBE_TIMEOUT_NS 5000000000UL
+// Only the observed EPIPE path uses this child exit code; other returns exit 1.
+#define RECOVERY_PROBE_EXIT_CODE 37
 
 struct Service {
   pid_t pid;
@@ -37,7 +41,14 @@ struct LoaderImages {
   long named_snapshot;
 };
 
+struct PendingProbe {
+  pid_t pid;
+  long domain;
+};
+
 enum ServiceLoss { FILE_LOST, NAMESPACE_LOST, PROCESS_LOST, PIPE_LOST, CONSOLE_LOST, SUPERVISOR_FAILURE };
+
+static volatile sig_atomic_t pending_probe_requested;
 
 static void report(int fd, const char *message) { (void)write(fd, message, strlen(message)); }
 
@@ -64,6 +75,11 @@ static void child_exited(int signo) {
   // supervisor's domain wait. Supervised domains retire independently.
   reap_finished_children();
   errno = saved_errno;
+}
+
+static void request_pending_probe(int signo) {
+  (void)signo;
+  pending_probe_requested = 1;
 }
 
 static pid_t fork_domain(long *domain, const struct moss_fork_capability *handles, size_t count, long scope) {
@@ -152,13 +168,88 @@ static int restart_delay(void) {
   return result == 0 ? 0 : -1;
 }
 
-static long process_call(long session, const struct moss_ipc_message *request, struct moss_ipc_message *response) {
-  // A dead or wedged registry must not stall init's recovery loop forever.
+static long bounded_call(long session, const struct moss_ipc_message *request, struct moss_ipc_message *response) {
+  // A dead or wedged service must not stall init's recovery loop forever.
   static const unsigned long call_timeout_ns = MOSS_PROCESS_RESERVATION_TIMEOUT_NS;
   unsigned long now = 0;
   if (syscall2(SYS_CLOCK_GETTIME, MOSS_CLOCK_MONOTONIC, (long)&now) != 0 || now > LONG_MAX - call_timeout_ns)
     return -1;
   return syscall6(SYS_IPC_CALL, session, (long)request, (long)response, (long)(now + call_timeout_ns), 0, 0);
+}
+
+static int console_waiter_count(long console) {
+  struct moss_ipc_message request = {.size = 1, .payload = {MOSS_CONSOLE_WAITER_COUNT}};
+  struct moss_ipc_message response = {0};
+  long result = bounded_call(console, &request, &response);
+  if (response.capability)
+    (void)syscall1(SYS_CAP_CLOSE, (long)response.capability);
+  return result == MOSS_CONSOLE_WAITER_COUNT_REPLY_BYTES && response.payload[0] == MOSS_CONSOLE_OK &&
+                 !response.capability && !response.rights
+             ? response.payload[1]
+             : -1;
+}
+
+static int pending_probe_running(long domain) {
+  struct moss_domain_exit status = {0};
+  return domain > 0 && syscall2(SYS_DOMAIN_STATUS, domain, (long)&status) == -EAGAIN;
+}
+
+static int start_pending_probe(long session, long console, struct PendingProbe *probe) {
+  // The management shell still uses kernel stdio, so this native Console
+  // Service has no waiters before the probe transfers its Reply.
+  if (console_waiter_count(console) != 0)
+    return -1;
+  const struct moss_fork_capability handles[] = {
+      {(unsigned long)session, MOSS_CAP_SEND, 0},
+  };
+  pid_t child = fork_domain(&probe->domain, handles, 1, 0);
+  if (child == 0) {
+    struct moss_ipc_message request = {.size = MOSS_PROCESS_FD_WAIT_BYTES, .payload = {MOSS_PROCESS_FD_WAIT}};
+    struct moss_ipc_message response = {0};
+    // This child is outside the shell scope so its pending call remains
+    // observable while that scope drains after Process Service death.
+    moss_process_put_u64(request.payload + 1, 0);
+    request.payload[9] = MOSS_PROCESS_FD_WAIT_READ;
+    request.payload[10] = 1;
+    long result = syscall6(SYS_IPC_CALL, session, (long)&request, (long)&response, 0, 0, 0);
+    _exit(result == -EPIPE ? RECOVERY_PROBE_EXIT_CODE : 1);
+  }
+  if (child <= 0 || probe->domain <= 0)
+    return -1;
+  probe->pid = child;
+
+  unsigned long now = 0;
+  if (syscall2(SYS_CLOCK_GETTIME, MOSS_CLOCK_MONOTONIC, (long)&now) != 0 || now > LONG_MAX - RECOVERY_PROBE_TIMEOUT_NS)
+    return -1;
+  unsigned long deadline = now + RECOVERY_PROBE_TIMEOUT_NS;
+  for (;;) {
+    int held = console_waiter_count(console);
+    if (!pending_probe_running(probe->domain) || held < 0 || held > 1)
+      return -1;
+    if (held == 1)
+      return 0;
+    if (syscall2(SYS_CLOCK_GETTIME, MOSS_CLOCK_MONOTONIC, (long)&now) != 0 || now >= deadline)
+      return -1;
+    unsigned long delay = SCOPE_SHUTDOWN_POLL_NS;
+    (void)syscall1(SYS_NANOSLEEP, (long)&delay);
+  }
+}
+
+static int pending_probe_released(long domain) {
+  unsigned long now = 0;
+  if (syscall2(SYS_CLOCK_GETTIME, MOSS_CLOCK_MONOTONIC, (long)&now) != 0 || now > LONG_MAX - RECOVERY_PROBE_TIMEOUT_NS)
+    return 0;
+  unsigned long deadline = now + RECOVERY_PROBE_TIMEOUT_NS;
+  for (;;) {
+    struct moss_domain_exit status = {0};
+    long result = syscall2(SYS_DOMAIN_STATUS, domain, (long)&status);
+    if (result == 0)
+      return status.code == RECOVERY_PROBE_EXIT_CODE && status.signal == 0;
+    if (result != -EAGAIN || syscall2(SYS_CLOCK_GETTIME, MOSS_CLOCK_MONOTONIC, (long)&now) != 0 || now >= deadline)
+      return 0;
+    unsigned long delay = SCOPE_SHUTDOWN_POLL_NS;
+    (void)syscall1(SYS_NANOSLEEP, (long)&delay);
+  }
 }
 
 static int process_reply_ok(long result, struct moss_ipc_message *response) {
@@ -179,7 +270,7 @@ static long register_supervisor(long root) {
                                          MOSS_CAP_DOMAIN_OBSERVE | MOSS_CAP_DOMAIN_INSPECT | MOSS_CAP_DOMAIN_SIGNAL,
                                      .payload = {MOSS_PROCESS_REGISTER}};
   struct moss_ipc_message response = {0};
-  long result = process_call(root, &request, &response);
+  long result = bounded_call(root, &request, &response);
   (void)syscall1(SYS_CAP_CLOSE, self);
   if (result == MOSS_PROCESS_REPLY_VALUE_BYTES && response.payload[0] == MOSS_PROCESS_OK &&
       moss_process_get_u64(response.payload + 1) == MOSS_PROCESS_INIT_ID && response.capability &&
@@ -194,7 +285,7 @@ static int console_input_sender(long root, long *input) {
   *input = 0;
   struct moss_ipc_message request = {.size = 1, .payload = {MOSS_CONSOLE_INPUT_CAP}};
   struct moss_ipc_message response = {0};
-  long result = process_call(root, &request, &response);
+  long result = bounded_call(root, &request, &response);
   if (result == 1 && response.payload[0] == MOSS_CONSOLE_OK && response.capability &&
       response.rights == (MOSS_CAP_SEND | MOSS_CAP_DUPLICATE)) {
     *input = (long)response.capability;
@@ -214,7 +305,7 @@ static int process_rejects_unscoped_child(long session, long domain) {
                                          MOSS_CAP_DOMAIN_OBSERVE | MOSS_CAP_DOMAIN_INSPECT | MOSS_CAP_DOMAIN_SIGNAL,
                                      .payload = {MOSS_PROCESS_REGISTER_CHILD}};
   struct moss_ipc_message response = {0};
-  long result = process_call(session, &request, &response);
+  long result = bounded_call(session, &request, &response);
   if (response.capability)
     (void)syscall1(SYS_CAP_CLOSE, (long)response.capability);
   return result == 1 && response.payload[0] == MOSS_PROCESS_BAD_REQUEST && !response.capability && !response.rights;
@@ -223,7 +314,7 @@ static int process_rejects_unscoped_child(long session, long domain) {
 static int stale_process_session_closed(long session) {
   struct moss_ipc_message request = {.size = 1, .payload = {MOSS_PROCESS_STATUS}};
   struct moss_ipc_message response = {0};
-  long result = process_call(session, &request, &response);
+  long result = bounded_call(session, &request, &response);
   if (response.capability)
     (void)syscall1(SYS_CAP_CLOSE, (long)response.capability);
   // An old badge names its original endpoint; it cannot join a new registry.
@@ -239,14 +330,14 @@ static int process_child_request(long parent_session, unsigned char operation, u
       .payload = {operation}};
   moss_process_put_u64(request.payload + 1, child_id);
   struct moss_ipc_message response = {0};
-  return process_reply_ok(process_call(parent_session, &request, &response), &response);
+  return process_reply_ok(bounded_call(parent_session, &request, &response), &response);
 }
 
 static int reap_shell(long parent_session, unsigned long child_id) {
   struct moss_ipc_message request = {.size = MOSS_PROCESS_REPLY_VALUE_BYTES, .payload = {MOSS_PROCESS_WAIT_CHILD}};
   moss_process_put_u64(request.payload + 1, child_id);
   struct moss_ipc_message response = {0};
-  long result = process_call(parent_session, &request, &response);
+  long result = bounded_call(parent_session, &request, &response);
   if (response.capability)
     (void)syscall1(SYS_CAP_CLOSE, (long)response.capability);
   return result == MOSS_PROCESS_REPLY_WAIT_BYTES && response.payload[0] == MOSS_PROCESS_EXITED &&
@@ -1091,7 +1182,7 @@ static pid_t start_shell(long namespace_capability, long process_capability, lon
     return -1;
   struct moss_ipc_message prepare = {.size = 1, .payload = {MOSS_PROCESS_PREPARE_CHILD}};
   struct moss_ipc_message reservation = {0};
-  long prepared = process_call(parent_session, &prepare, &reservation);
+  long prepared = bounded_call(parent_session, &prepare, &reservation);
   if (prepared != MOSS_PROCESS_REPLY_VALUE_BYTES || reservation.payload[0] != MOSS_PROCESS_OK ||
       !reservation.capability || reservation.rights != (MOSS_CAP_SEND | MOSS_CAP_DUPLICATE)) {
     if (reservation.capability)
@@ -1104,7 +1195,7 @@ static pid_t start_shell(long namespace_capability, long process_capability, lon
     (void)syscall1(SYS_CAP_CLOSE, child_session);
     return -1;
   }
-  // The privileged management shell receives attenuated termination rights.
+  // The privileged management shell receives attenuated domain-control rights.
   // Commands need INHERIT because ash forks before executing them; stable
   // handle numbers let their environment refer to the same local authority.
   // The pipe root is inherited only for the privileged direct-service probe;
@@ -1121,7 +1212,8 @@ static pid_t start_shell(long namespace_capability, long process_capability, lon
       {(unsigned long)console_domain, MOSS_CAP_DOMAIN_TERMINATE | MOSS_CAP_DUPLICATE, MOSS_FORK_CAP_INHERIT},
       {(unsigned long)code_domain, MOSS_CAP_DOMAIN_TERMINATE | MOSS_CAP_DUPLICATE, MOSS_FORK_CAP_INHERIT},
       {(unsigned long)loader_domain, MOSS_CAP_DOMAIN_TERMINATE | MOSS_CAP_DUPLICATE, MOSS_FORK_CAP_INHERIT},
-      {(unsigned long)supervisor_domain, MOSS_CAP_DOMAIN_TERMINATE | MOSS_CAP_DUPLICATE, MOSS_FORK_CAP_INHERIT},
+      {(unsigned long)supervisor_domain, MOSS_CAP_DOMAIN_TERMINATE | MOSS_CAP_DOMAIN_SIGNAL | MOSS_CAP_DUPLICATE,
+       MOSS_FORK_CAP_INHERIT},
       {(unsigned long)child_session, MOSS_CAP_SEND | MOSS_CAP_DUPLICATE, MOSS_FORK_CAP_INHERIT}};
   pid_t child = fork_domain(domain, handles, sizeof(handles) / sizeof(handles[0]), scope);
   if (child == 0) {
@@ -1178,8 +1270,17 @@ static enum ServiceLoss supervise(struct Service *file, struct Service *namespac
                                   struct Service *loader, long console_input, long process_session, long scope,
                                   long approver, long revoker, long *code_probe, long factory,
                                   const struct LoaderImages *images, long supervisor_domain, pid_t *shell,
-                                  long *shell_domain, unsigned long *shell_id, long *shell_session) {
+                                  long *shell_domain, unsigned long *shell_id, long *shell_session,
+                                  struct PendingProbe *pending_probe) {
   for (;;) {
+    if (pending_probe_requested) {
+      pending_probe_requested = 0;
+      if (pending_probe->domain || start_pending_probe(process_session, console->send, pending_probe) != 0) {
+        report(STDERR_FILENO, "moss-init: pending process call did not reach console service\n");
+        return SUPERVISOR_FAILURE;
+      }
+      report(STDOUT_FILENO, "moss-init: pending process call armed\n");
+    }
     const unsigned long domains[] = {(unsigned long)file->domain,    (unsigned long)namespace->domain,
                                      (unsigned long)process->domain, (unsigned long)*shell_domain,
                                      (unsigned long)pipe->domain,    (unsigned long)console->domain,
@@ -1207,6 +1308,10 @@ static enum ServiceLoss supervise(struct Service *file, struct Service *namespac
     if (exited == 2) {
       process->pid = 0;
       report(STDOUT_FILENO, "moss-init: process service died\n");
+      if (pending_probe->domain && !pending_probe_running(pending_probe->domain)) {
+        report(STDERR_FILENO, "moss-init: pending process call ended with its receiver\n");
+        return SUPERVISOR_FAILURE;
+      }
       return PROCESS_LOST;
     }
     if (exited == 4) {
@@ -1314,6 +1419,9 @@ int main(void) {
   if (sigaction(SIGCHLD, &action, NULL) != 0) {
     return 1;
   }
+  action.sa_handler = request_pending_probe;
+  if (sigaction(SIGUSR1, &action, NULL) != 0)
+    return 1;
   long supervisor_domain = syscall0(SYS_DOMAIN_SELF);
   if (supervisor_domain <= 0) {
     report(STDERR_FILENO, "moss-init: self domain acquisition failed\n");
@@ -1409,6 +1517,7 @@ int main(void) {
         long shell_session = 0;
         unsigned long shell_id = 0;
         pid_t shell = -1;
+        struct PendingProbe pending_probe = {0};
         if (scope <= 0) {
           report(STDERR_FILENO, "moss-init: process scope creation failed\n");
           lost = PROCESS_LOST;
@@ -1463,7 +1572,7 @@ int main(void) {
             } else {
               lost = supervise(&file, &namespace, &process, &pipe, &console, &code, &loader, console_input,
                                process_session, scope, approver, revoker, &code_probe, factory, &images,
-                               supervisor_domain, &shell, &shell_domain, &shell_id, &shell_session);
+                               supervisor_domain, &shell, &shell_domain, &shell_id, &shell_session, &pending_probe);
             }
           }
         }
@@ -1487,11 +1596,23 @@ int main(void) {
             (void)syscall1(SYS_CAP_CLOSE, shell_session);
         }
         stop_service(&process);
+        if (lost == PROCESS_LOST && pending_probe.domain && !pending_probe_running(pending_probe.domain)) {
+          report(STDERR_FILENO, "moss-init: pending process call ended before reply holder exited\n");
+          _exit(1);
+        }
         if (console_input > 0)
           (void)syscall1(SYS_CAP_CLOSE, console_input);
         // These object authorities belong to this Process Service epoch.
         // Drain managed children before discarding the serving domains.
         stop_service(&console);
+        if (lost == PROCESS_LOST && pending_probe.domain) {
+          if (!pending_probe_released(pending_probe.domain)) {
+            report(STDERR_FILENO, "moss-init: pending process call did not fail after reply holder exited\n");
+            _exit(1);
+          }
+          report(STDOUT_FILENO, "moss-init: pending process call released\n");
+        }
+        stop_child(pending_probe.pid, pending_probe.domain);
         stop_service(&pipe);
         if (lost != PROCESS_LOST && lost != PIPE_LOST && lost != CONSOLE_LOST)
           break;

@@ -99,6 +99,11 @@ int main(int argc, char **argv) {
       waiters[waiter_count++] = request.capability;
       request.capability = 0;
       response.payload[0] = MOSS_CONSOLE_OK;
+    } else if (request.badge == 0 && request.size == 1 && request.payload[0] == MOSS_CONSOLE_WAITER_COUNT &&
+               !request.capability && !request.rights) {
+      response.size = MOSS_CONSOLE_WAITER_COUNT_REPLY_BYTES;
+      response.payload[0] = MOSS_CONSOLE_OK;
+      response.payload[1] = (unsigned char)waiter_count;
     } else if (request.badge == 0 && request.capability && request.size == MOSS_CONSOLE_IO_BYTES) {
       unsigned char operation = request.payload[0];
       unsigned int stream = request.payload[1];

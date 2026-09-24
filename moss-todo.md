@@ -1822,7 +1822,7 @@ supervisor 每次写完三份私有镜像并核对名称不可重新打开后，
 
 supervisor 启动时从只读启动文件复制一份具名 ELF 到易失 File Service，经根发送端按名称重新打开；验证普通具名发送端不能申请快照后，由根发送端只生成一次快照。快照句柄随 File Service 存续，供每次 Loader 重启复用，避免当前没有对象回收协议时耗尽对象槽位。每次 Loader 启动验收先确认快照拒绝写入，再把原具名文件的 ELF 头改坏；Loader 仍从快照启动探针并得到预期退出码，随后恢复源文件头。原来的直接具名 `RUN` 拒绝和三份私有镜像封存检查仍保留。这个路径还没有把普通 POSIX `execve`、持久文件、pager、动态链接或产品代码审批迁出内核。
 
-原快照工作树基于 `5ae617d` 的验收：九预设 **53/53 CTest**，11 份生产启动报告均为 `passed`、各完成 **113 步**；其余旧基线检查见提交 `44cd106`。这些数字不覆盖随后合入的只读启动归档和原生服务路径。
+原快照工作树基于 `5578eb3` 的验收：九预设 **53/53 CTest**，11 份生产启动报告均为 `passed`、各完成 **113 步**；其余旧基线检查见提交 `ec222fb`。这些数字不覆盖随后合入的只读启动归档和原生服务路径。
 
 与当前主线合并后，三架构 Debug、Release、RelWithDebInfo 九预设重新执行 **53/53 CTest**；九份最新生产启动报告均为 `passed`、各完成 **165 步**，包含每次 Loader 启动的权限、封存、源文件破坏后装载及换代检查。宿主 `scripts/tests` **381 passed、1 skipped**，本次改动行 clang-format 与 `git diff --check` 通过。逐预设 workflow 日志和生产 JSON 保存在 `build/results/merge-master-file-snapshot/`。这些结果来自 QEMU 和宿主，不证明恶意文件服务、持久存储或真实硬件上的镜像身份。
 
@@ -1831,6 +1831,12 @@ supervisor 启动时从只读启动文件复制一份具名 ELF 到易失 File S
 原 File Service 的 `resize_file` 把 16 MiB 内容配额与堆分配失败合并为 `UNAVAILABLE`；Process Service 因而只能向原生描述符调用方返回通用失败，受管状态映射会成为 `EIO`。本次为内容配额增加独立的 `MOSS_FILE_NO_SPACE` 和 `MOSS_PROCESS_NO_SPACE`，写入、追加和扩容在超出配额前拒绝，堆分配失败仍报告 `UNAVAILABLE`。受管 mlibc 状态映射将新状态转换为 `ENOSPC`。普通 mlibc 描述符调用仍走内核 VFS；这里只修正了将来切换所需的服务协议。
 
 生产 `fd-probe` 先在 `/note` 写入 `abc`，再把共享 offset 移到内容上限前一字节并尝试写入一字节。其他启动镜像已计入同一配额，服务必须返回 `NO_SPACE`，探针随后检查 offset、文件长度和原字节不变。旧实现的 x64 Debug 反例在 `build/x64-debug/production-boot/run-tpufj2t8/guest/` 输出 `MOSS_PROCESS_ERROR`，生产启动因缺少 `MOSS_FD_READY` 而超时。修复后三架构 Debug、Release、RelWithDebInfo 九预设完整 CTest **53/53**；九份生产启动报告均为 `passed`、各完成 **165 步**。三架构 Debug 在补充 offset 不变断言后又单独重跑生产启动通过。对象数量配额、分配失败的精确 POSIX 映射、不确定写入和取消协议仍未关闭。
+
+### 3.103 Process Service 在途 Reply 持有者的恢复交错（2026-09-25）
+
+此前内核 IPC 回归已验证 Reply 转交，但生产恢复只检查旧会话失效与 scope 排空，尚未让实际 Process Service 的已交付请求跨越接收端死亡。现在管理 shell 用仅授予该 shell 的 supervisor `DOMAIN_SIGNAL` 权能触发一次受控探针。Supervisor 创建 scope 外的原生调用方，只给它带 badge 的 Process Service 发送权；调用方对 supervisor 已有的控制台描述符 0 发起 `FD_WAIT`，Process Service 把唯一的 Reply 转交 Console Service。管理 shell 仍使用内核 stdio，因此 Console Service 的根端点可先确认 waiter 数为零，再确认该 Reply 已被持有且调用方仍在等待。这个 scope 外调用方可以在旧 shell tree 排空后继续被观察。
+
+生产脚本等到旧受管孙进程确实已被收养后才武装探针，再等 supervisor 报告 Reply 已到 Console Service，随后终止 Process Service。Supervisor 在发现服务死亡和清理旧服务之后两次确认调用方尚未退出；停止 Console Service 后，要求调用方仅因 `SYS_IPC_CALL` 返回 `EPIPE` 才以指定退出码结束。宿主假串口测试还覆盖缺少释放标记时的拒绝。三架构 Debug、Release、RelWithDebInfo 九预设工作流均通过，完整 CTest **53/53**；九份最新 QEMU 生产启动报告均为 `passed`、各完成 **167 步**。格式调整后的 x64 Debug 完整 CTest 另行重跑 **6/6**；宿主 `scripts/tests` **382 passed、1 skipped**。这只覆盖实际 `FD_WAIT` 的单个转交与服务重启顺序；孤儿退出记录在并发服务死亡下的回收、其他后端与恶意服务仍待验收。
 
 ## 4. 问题总表与当前状态
 
