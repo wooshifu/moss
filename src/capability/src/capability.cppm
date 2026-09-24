@@ -102,6 +102,8 @@ public:
   }
 
   [[nodiscard]] explicit operator bool() const noexcept { return static_cast<bool>(object_); }
+  // The pointer stays valid until this escrow is reset or destroyed.
+  [[nodiscard]] Object *get() const noexcept { return object_.get(); }
   [[nodiscard]] u32 rights() const noexcept { return rights_; }
   void reset() noexcept {
     if (object_) {
@@ -281,16 +283,36 @@ public:
     return install_locked(copy, granted_rights);
   }
 
-  [[nodiscard]] KernelResult<Escrow> snapshot_for_transfer(Handle handle, u32 granted_rights) const noexcept {
-    containers::LockGuard<containers::IrqSpinLock> guard(lock_);
-    const Entry *source = find_locked(handle);
-    if (!source)
-      return KernelResult<Escrow>{ErrorCode::NotFound};
-    constexpr u32 required = rights::TRANSFER | rights::DUPLICATE;
-    if (granted_rights == 0 || (source->rights & required) != required ||
-        (source->rights & granted_rights) != granted_rights)
-      return KernelResult<Escrow>{ErrorCode::PermissionDenied};
-    return KernelResult<Escrow>{Escrow{source->object, granted_rights}};
+  // Reply authority is linear: an IPC message moves its one-shot handle,
+  // whereas ordinary transferable capabilities retain copy semantics.
+  // Abandoning the message releases the moved handle instead of restoring it.
+  [[nodiscard]] KernelResult<Escrow> capture_for_ipc(Handle handle, u32 granted_rights) noexcept {
+    shared_ptr<Object> retired;
+    Escrow moved;
+    {
+      containers::LockGuard<containers::IrqSpinLock> guard(lock_);
+      Entry *source = find_locked(handle);
+      if (!source)
+        return KernelResult<Escrow>{ErrorCode::NotFound};
+      const bool is_reply = source->object->type() == ObjectType::Reply;
+      const u32 required = rights::TRANSFER | (is_reply ? 0U : rights::DUPLICATE);
+      if (granted_rights == 0 || (source->rights & required) != required ||
+          (source->rights & granted_rights) != granted_rights)
+        return KernelResult<Escrow>{ErrorCode::PermissionDenied};
+      moved = Escrow{source->object, granted_rights};
+      if (is_reply) {
+        // Escrow acquires its handle before the source releases the last one.
+        retired = moss::move(source->object);
+        source->handle = INVALID_HANDLE;
+        source->rights = 0;
+        source->inheritable = false;
+        source->keep_on_exec = false;
+        source->published = false;
+      }
+    }
+    if (retired)
+      retired->release_handle();
+    return KernelResult<Escrow>{moss::move(moved)};
   }
 
   // Retain message authority until copyout and delivery both succeed.

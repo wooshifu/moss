@@ -67,6 +67,10 @@ struct PendingCall {
   }
 };
 
+// Redirect the original caller's donation before a delegated recipient has
+// to compete for CPU time; binding only after userspace wakeup is too late.
+void bind_delegated_reply(const capability::Escrow &transferred, process::Thread *recipient) noexcept;
+
 class Channel {
   containers::IrqSpinLock lock_;
   containers::WaitQueue receivers_;
@@ -85,6 +89,7 @@ class Channel {
       auto *thread = static_cast<process::Thread *>(waiter);
       if (process::g_scheduler)
         process::g_scheduler->bind_ipc_server(&call->donation, thread);
+      bind_delegated_reply(call->request_cap, thread);
       wake(thread);
     });
     if (!assigned && process::g_scheduler)
@@ -119,6 +124,7 @@ public:
       if (call && call->queued && !call->delivery_claimed && call->outcome == Outcome::Pending) {
         call->delivery_claimed = true;
         process::g_scheduler->bind_ipc_server(&call->donation, server);
+        bind_delegated_reply(call->request_cap, server);
         return call;
       }
     }
@@ -178,6 +184,8 @@ public:
       }
       if (process::g_scheduler)
         process::g_scheduler->end_ipc_call(&call->donation);
+      if (outcome == Outcome::Reply)
+        bind_delegated_reply(call->response_cap, call->caller);
       wake(call->caller);
     }
     return outcome;
@@ -201,6 +209,7 @@ public:
     for (const auto &call : calls_) {
       if (call && call->queued && !call->delivery_claimed && call->outcome == Outcome::Pending) {
         process::g_scheduler->bind_ipc_server(&call->donation, thread);
+        bind_delegated_reply(call->request_cap, thread);
         wake(thread);
         break;
       }
@@ -232,7 +241,9 @@ public:
         return;
       closed_ = true;
       for (usize i = 0; i < kPendingCalls; ++i) {
-        if (calls_[i]) {
+        // Once delivered, a Reply holder owns the call even if the original
+        // receiver closes. Only requests without an owner fail with the channel.
+        if (calls_[i] && calls_[i]->queued) {
           calls_[i]->outcome = Outcome::PeerClosed;
           calls_[i]->queued = false;
           if (process::g_scheduler)
@@ -295,6 +306,16 @@ public:
       (void)channel->complete(call.get(), Outcome::PeerClosed);
   }
 };
+
+void bind_delegated_reply(const capability::Escrow &transferred, process::Thread *recipient) noexcept {
+  if (!process::g_scheduler)
+    return;
+  auto *object = transferred.get();
+  if (object && object->type() == capability::ObjectType::Reply) {
+    auto *reply = static_cast<Reply *>(object);
+    process::g_scheduler->bind_ipc_server(&reply->call->donation, recipient);
+  }
+}
 
 [[nodiscard]] long cap_error(ErrorCode error) noexcept {
   if (error == ErrorCode::NotFound)
@@ -486,10 +507,10 @@ long sys_ipc_call(long endpoint, long request_addr, long response_addr, long dea
     return -errc::EINVAL;
   capability::Escrow transferred;
   if (request.capability != INVALID_HANDLE) {
-    auto snapshot = proc->capabilities().snapshot_for_transfer(request.capability, static_cast<u32>(request.rights));
-    if (!snapshot)
-      return cap_error(snapshot.error());
-    transferred = moss::move(*snapshot);
+    auto captured = proc->capabilities().capture_for_ipc(request.capability, static_cast<u32>(request.rights));
+    if (!captured)
+      return cap_error(captured.error());
+    transferred = moss::move(*captured);
   }
   auto *sender = static_cast<Sender *>((*looked).get());
   auto channel = sender->channel;
@@ -597,7 +618,7 @@ long sys_ipc_receive(long endpoint, long request_addr, long reply_addr, long, lo
         channel->release_claim(call.get());
         return -errc::ENOMEM;
       }
-      auto reply_handle = proc->capabilities().reserve(reply, capability::rights::SEND);
+      auto reply_handle = proc->capabilities().reserve(reply, capability::rights::SEND | capability::rights::TRANSFER);
       if (!reply_handle) {
         channel->release_claim(call.get());
         return cap_error(reply_handle.error());
@@ -678,19 +699,27 @@ long sys_ipc_reply(long reply_handle, long response_addr, long, long, long, long
   // Receive arms the one-shot token before its reserved handle becomes visible.
   if (!reply->armed.load(memory_order_acquire))
     return -errc::EAGAIN;
+  // A Reply cannot carry itself in its response: the call would then own its
+  // own Reply through response escrow and neither object could be retired.
+  if (response.capability == static_cast<Handle>(reply_handle))
+    return -errc::EINVAL;
   capability::Escrow transferred;
   if (response.capability != INVALID_HANDLE) {
-    auto snapshot = proc->capabilities().snapshot_for_transfer(response.capability, static_cast<u32>(response.rights));
-    if (!snapshot)
-      return cap_error(snapshot.error());
-    transferred = moss::move(*snapshot);
+    auto captured = proc->capabilities().capture_for_ipc(response.capability, static_cast<u32>(response.rights));
+    if (!captured)
+      return cap_error(captured.error());
+    transferred = moss::move(*captured);
   }
+  // Consume table authority before completing the call. A concurrent
+  // transfer may retain the object, but only one side may spend its handle.
+  auto consumed = proc->capabilities().close(static_cast<Handle>(reply_handle));
+  if (!consumed)
+    return cap_error(consumed.error());
   // A cached Reply outcome does not mean this invocation won the one-shot
-  // transition: another thread may have looked up the same handle earlier.
+  // transition against cancellation or deadline expiry.
   bool committed = false;
   const Outcome result = reply->channel->complete(reply->call.get(), Outcome::Reply, response.payload,
                                                   static_cast<usize>(response.size), &committed, &transferred);
-  (void)proc->capabilities().close(static_cast<Handle>(reply_handle));
   if (result == Outcome::Reply && committed)
     return 0;
   return result == Outcome::Expired ? -errc::ETIMEDOUT : -errc::EPIPE;

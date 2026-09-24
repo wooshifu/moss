@@ -12,6 +12,7 @@
 > 批准服务死亡后权能存续复核：2026-09-24，九预设 **53/53 CTest**，`users.ipc/code_service_survival` 全部通过；服务进程退出后的已发行实例准入、保留撤销权及替代进程的显式重新委托见 [3.88](moss-todo.md#388-代码批准服务进程退出后的权能存续2026-09-24)。
 > 独立代码审批服务复核：2026-09-24，九预设串行 workflow **53/53 CTest**、全部生产启动 92 步通过；supervisor 私有请求、旧服务死亡后的独立撤销和新服务交接见 [3.89](moss-todo.md#389-独立代码审批服务与-supervisor-交接2026-09-24)。
 > 用户态 Loader 首条原生程序路径复核：2026-09-24，九预设串行 workflow **53/53 CTest**、全部生产启动 109 步通过；不具名文件 capability、有效/畸形 ELF、服务死亡恢复及限定范围见 [3.90](moss-todo.md#390-用户态-loader-service-的首条原生程序路径2026-09-24)。
+> Reply capability 交接复核：2026-09-24，九预设 **53/53 CTest**，三项新增 `users.ipc` 用例全部通过；请求/响应路径的跨进程移动、持有者丢弃与服务退出后的优先级重绑见 [3.91](moss-todo.md#391-reply-capability-跨进程交接2026-09-24)。
 > 本文取代旧清单中“完成即可靠”“x86/RISC-V 64 仅为启动桩”的描述。
 > 审计问题的原始证据、当前状态及完整验收条件见 [moss-todo.md](moss-todo.md)；MOSS-001～032 沿用原编号，不重新编号。
 
@@ -25,7 +26,7 @@
 
 ## 当前架构与构建边界
 
-MOSS 当前是 C++26 freestanding 内核，三架构已有实际启动、中断、调度及用户态执行路径。内核仍承担 POSIX 进程、ELF、VFS 和启动驱动，但已经有独立的用户态 supervisor、文件与命名空间服务、capability 控制 IPC，以及受工厂 capability 授权的原生域构造和不可变代码版本机制；这些服务目前只承载 `/scratch` 示例，不能把它们等同于普通 shell 文件路径已经迁移。
+MOSS 当前是 C++26 freestanding 内核，三架构已有实际启动、中断、调度及用户态执行路径。内核仍承担 POSIX 进程、普通 ELF、VFS 和启动驱动；独立的用户态 supervisor、文件/命名空间服务、Code Authority Service 和受限 Loader Service 已经通过 capability 控制 IPC 协作。文件/命名空间服务承载 `/scratch` 示例，Loader 可从不具名文件装载有界静态原生域；普通 shell 文件路径和 POSIX `execve` 尚未迁出内核。
 
 按 [ADR-0005](docs/adr/0005-generic-kernels-and-independent-runners.md)，同一源码树生成三个 ISA 各自的原生镜像；**同一 ISA 的镜像在满足已支持启动协议和设备契约的机器间复用，不是一个二进制跨三个 ISA 运行**。
 
@@ -76,7 +77,7 @@ uv run qemu.py --manifest build/arm64-debug/moss-artifacts.json
 | ELF / userspace / initramfs | ELF64 checked LoadPlan、逐段 PT_LOAD/VMA 后备、按 ISA 的 trampoline 和 syscall wrapper；静态 mlibc、BusyBox ash、独立 validation 映像、CPIO newc 与 VFS exec | 014；015/016 的事务与受支持静态 ELF 子集已关闭；动态加载、共享 LOAD 页和完整进程继承不是已支持能力 |
 | VFS | inode/dentry/File/FdTable、路径/mount/dcache、ramfs、devfs(console/null/zero)、stdio、open/close/read/write/lseek/fstat/dup/dup2/pipe、匿名 pipefs 与有界 I/O 视图；FD 模式检查、稳定引用及 pipe 阻塞/EOF 已实现 | 022、024～026；共享 offset/close 并发、管道多端交错和分配失败注入仍待专项验收 |
 | 核心与同步 | C++ 模块、freestanding types/std/concepts、Result、unique_ptr/shared_ptr、klog；ticket/IRQ spinlock、RAII guard、atomics、PerCpuData/计数/队列、MPSC、拥有型锁容器、WaitQueue | 尤其 006、017、018；容器节点/查找引用安全不等于使用者的复合生命周期或调度协议安全 |
-| Native IPC 与服务 | 进程局部带权限 capability 表、同步控制调用/一次性 reply、单页共享内存对象；`moss-init` 启动并监护文件/命名空间服务，`/moss-file.elf` 通过它们访问内存中的 `/scratch`；同步 IPC 已按等待依赖传递 RT/CFS 有效优先级，绑核竞争的用户态延迟回归已通过 | ADR-0012 的回复句柄交接、CPU 预算、deadline 传播和死锁策略，0024 的执行域/兼容服务拆分、0018 的实际 VFS 迁移等仍未完成；旧 PID/全局 ID IPC 模块尚保留测试代码 |
+| Native IPC 与服务 | 进程局部带权限 capability 表、同步控制调用/一次性 reply、单页共享内存对象；Reply 可经请求或响应跨进程移动，转交时重绑调用者优先级；`moss-init` 监护文件、命名空间、代码审批和受限装载服务，实际用户态时延与交接回归已通过 | ADR-0012/0023 的 CPU 预算、deadline 传播、调用链深度与死锁策略，0024 的兼容服务拆分、0018 的实际 VFS 迁移等仍未完成；旧 PID/全局 ID IPC 模块尚保留测试代码 |
 | 启动机制与扩展框架 | 中断控制器、计时器及可用串口控制台保留必要的内核启动机制，实际硬件操作仍经 HAL；旧 `DeviceManager`/`Driver` 仅在验证镜像测试生命周期算法；NUMA/hugepage/reclaim/compaction/共享映射等未实现接口显式返回 Unsupported；Process 已有 uid/gid/euid/egid 字段 | ADR-0015 的设备资源 capability、隔离驱动、动态发现和 DMA 限制尚未实现；006、031～032 及其他未实现能力继续追踪 |
 
 主要实现分别位于 `src/boot/`、`src/aal/`、`src/hal/`、`src/drivers/`、`src/mm/`、`src/containers/`、`src/process/`、`src/kernel/`、`src/vfs/`、`src/userspace/` 和 `third_party/mlibc/`。下面以稳定审计编号追踪未完成工作，详细源码符号见 [审计状态表](moss-todo.md#4-问题总表与当前状态)。
@@ -102,7 +103,8 @@ ADR-0008～0033 是已接受的目标边界，并非当前实现的完成声明�
 - [x] 独立 Code Authority Service 以仅有批准权的用户域运行；supervisor 保留同作用域的独立撤销权和私有请求端，通过真实 IPC 提交自身文本页版本并在服务死亡后撤销存续探针、重新委托新服务。产品策略、完整普通装载和启动认证仍待实现（ADR-0026/0031/0032 的限定生产服务切片，见 3.89；后续 Loader 委托见 3.90）。
 - [x] 独立 Loader Service 从 capability 寻址的易失文件读取有界静态 ELF，请求代码批准后经执行域工厂启动普通原生域；有效镜像退出码、畸形镜像拒绝及服务死亡后重启已在生产启动路径验证。内核 VFS 仍供应启动种子和 POSIX `execve`，动态链接、TLS、产品代码策略与完整迁移继续开放（ADR-0025 的限定切片，见 3.90）。
 - [x] 三架构真实用户态 IPC 在同核八个中优先级 CPU 负载下，由高优先级调用低优先级服务，服务完成计算后在调用截止前回复；九预设通过，关闭捐赠的 x64 反向对照超时（ADR-0012/0023 的限定时延验收，见 3.86）。
-- [ ] 补齐回复句柄交接；CPU 预算、deadline 传播和死锁策略仍需单独设计（ADR-0012/0023）。
+- [x] 一次性 Reply capability 可在同步 IPC 的请求或响应中跨进程移动；原句柄失效、持有者丢弃唤醒调用方、接收端退出后已交付调用继续有效，优先级捐赠在唤醒新持有者前重绑。九预设和反向对照见 3.91（ADR-0011/0012/0023 的限定交接机制）。
+- [ ] CPU 预算、deadline 传播、最大调用链深度及死锁策略仍需单独设计和验收（ADR-0012/0023）。
 - [ ] 完成 capability 寻址的执行域、用户态兼容进程与通用 Loader Service；现有 Loader 仅支持受限静态原生域，内核 PID/信号/普通 `execve` 的 ELF 政策仍待逐步迁出（ADR-0024/0025）。
 - [ ] 将实际 VFS、pager 和非启动设备迁到隔离服务，补资源授权、失败恢复和 DMA 限制；保留有依据的启动机制例外（ADR-0015～0019）。
 - [ ] 将代码批准及撤销准入扩展到普通 exec、fork、权限升级和 pager；把现有 supervisor 私有 Code Authority Service 扩展为具备产品审核策略和授权输入的装载链，建立启动认证并验证并发撤销及真实平台交接。现有原生域机制和受限服务不等于这些目标已实现（ADR-0026～0033）。
