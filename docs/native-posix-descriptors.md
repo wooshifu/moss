@@ -10,21 +10,29 @@ The kernel [FdTable](../src/vfs/src/vfs-file.cppm) allocates 0–255 for console
 regular files and pipes. Managed [mlibc](../third_party/mlibc/sysdeps/moss/sysdeps.cpp)
 still sends `open`, `read`, `write`, `close`, `dup`, `fcntl`, `pipe` and `lseek`
 to that table. The [Process Compatibility Service](../src/userspace/moss_process_service.c)
-independently allocates 3–255 for its file-only view; the same number can name
+independently allocates 3–255 for its file and pipe view; the same number can name
 different objects in the two tables. Its shared open descriptions already
 preserve offsets across `dup` and `fork`, and its per-descriptor flags survive
 `fork` and close before managed constructors after `exec`. A caller can import
-a transferable File Object Capability into this view. The protocol now
-distinguishes missing paths, bad descriptors and a full per-process table;
+a transferable File Object Capability into this view. Its `FD_PIPE` request
+installs both pipe ends in one reply transaction; the final shared-description
+close notifies the supervised Pipe Object Service. The pipe service has bounded
+one-page rings, explicit `WOULD_BLOCK`, EOF and broken-write results, and
+commits a ring transfer only after its immediate IPC reply succeeds. The
+supervisor restarts the Process Service epoch if the Pipe Object Service dies;
+old endpoint capabilities cannot reach the replacement service. The protocol
+now distinguishes missing paths, bad descriptors and a full per-process table;
 other backend failures still need precise POSIX error mapping.
 Descriptor allocation now precedes namespace `CREATE` and file `TRUNCATE`, so
 a known-full table or local allocation failure cannot mutate the file first.
 
-The process service currently waits synchronously for each file-object call
+The process service currently waits synchronously for each object call
 while processing one request at a time. A blocking console read or pipe read
 would therefore delay unrelated process registration, wait and signal calls.
-The existing one-second file-call deadline bounds this delay; it does not make
-blocking I/O semantics or concurrent service progress correct.
+Pipe reads and writes return `WOULD_BLOCK` instead of waiting; the existing
+one-second backend deadline bounds a stalled call. Blocking I/O, client
+cancellation and a lost Process Service reply still need a complete transaction
+contract before libc can use these descriptors.
 
 ## Ownership boundary
 

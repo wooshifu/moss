@@ -40,7 +40,8 @@ enum {
   MOSS_PROCESS_FD_SET_FLAGS = 27,
   MOSS_PROCESS_FD_GET_STATUS = 28,
   MOSS_PROCESS_FD_DUP_MIN = 29,
-  MOSS_PROCESS_FD_INSTALL = 30
+  MOSS_PROCESS_FD_INSTALL = 30,
+  MOSS_PROCESS_FD_PIPE = 31
 };
 enum {
   MOSS_PROCESS_OK = 0,
@@ -54,7 +55,10 @@ enum {
   MOSS_PROCESS_BAD_DESCRIPTOR = 8,
   MOSS_PROCESS_NOT_FOUND = 9,
   MOSS_PROCESS_TOO_MANY_FILES = 10,
-  MOSS_PROCESS_EXISTS = 11
+  MOSS_PROCESS_EXISTS = 11,
+  MOSS_PROCESS_WOULD_BLOCK = 12,
+  MOSS_PROCESS_BROKEN_PIPE = 13,
+  MOSS_PROCESS_NOT_SEEKABLE = 14
 };
 // BAD_DESCRIPTOR also covers I/O through a descriptor opened without the
 // requested access mode, matching POSIX EBADF rather than process DENIED.
@@ -94,6 +98,7 @@ enum {
   MOSS_PROCESS_FD_DUP_MIN_BYTES = 18,
   MOSS_PROCESS_FD_INSTALL_BYTES = 2
 };
+enum { MOSS_PROCESS_FD_PIPE_REPLY_BYTES = 17 };
 
 // REGISTER returns [OK, ID:u64 LE]. STATUS returns [EXITED, status:u64 LE].
 // WAIT_ANY returns [EXITED, child ID:u64 LE, status:u64 LE] and atomically
@@ -133,6 +138,11 @@ enum {
 // transferred File Object Capability with SEND rights. The caller needs
 // TRANSFER|DUPLICATE on its source for synchronous IPC; reply failure releases
 // the import.
+// FD_PIPE carries only its opcode and returns [OK, read FD:u64 LE, write
+// FD:u64 LE]. The pair is installed only if the reply reaches the caller.
+// Empty reads and full writes return WOULD_BLOCK; writes after the final read
+// endpoint closes return BROKEN_PIPE. Seeking either endpoint returns
+// NOT_SEEKABLE.
 // File requests distinguish BAD_DESCRIPTOR, NOT_FOUND and TOO_MANY_FILES from
 // process identity NO_ENTRY and backend UNAVAILABLE.
 // FD_READ/WRITE carry

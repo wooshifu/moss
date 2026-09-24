@@ -24,6 +24,8 @@ int main(int argc, char **argv) {
     variable = "MOSS_NAMESPACE_DOMAIN_CAP";
   else if (strcmp(argv[2], "process") == 0)
     variable = "MOSS_PROCESS_DOMAIN_CAP";
+  else if (strcmp(argv[2], "pipe") == 0)
+    variable = "MOSS_PIPE_DOMAIN_CAP";
   else if (strcmp(argv[2], "supervisor") == 0)
     variable = "MOSS_SUPERVISOR_DOMAIN_CAP";
   else

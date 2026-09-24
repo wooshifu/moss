@@ -11,6 +11,7 @@
 #define MOSS_SYSCALL_RAW_ONLY
 #include "moss_file_protocol.h"
 #include "moss_namespace_protocol.h"
+#include "moss_pipe_protocol.h"
 #include "moss_process_protocol.h"
 #include "syscall.h"
 
@@ -650,7 +651,7 @@ static int fd_rejected(unsigned long session, const struct moss_ipc_message *req
 }
 
 static unsigned long opened_file_cap(unsigned long namespace, const char *path, unsigned char flags,
-                                    unsigned int rights) {
+                                     unsigned int rights) {
   size_t path_size = strlen(path) + 1;
   if (path_size > MOSS_IPC_MAX_MESSAGE - 2)
     return 0;
@@ -692,9 +693,8 @@ static int fd_dup_to(unsigned long session, unsigned long source, unsigned long 
 }
 
 static int fd_flags(unsigned long session, unsigned char operation, unsigned long number, unsigned char *flags) {
-  struct moss_ipc_message request = {.size = operation == MOSS_PROCESS_FD_SET_FLAGS
-                                                ? MOSS_PROCESS_FD_SET_FLAGS_BYTES
-                                                : MOSS_PROCESS_REPLY_VALUE_BYTES,
+  struct moss_ipc_message request = {.size = operation == MOSS_PROCESS_FD_SET_FLAGS ? MOSS_PROCESS_FD_SET_FLAGS_BYTES
+                                                                                    : MOSS_PROCESS_REPLY_VALUE_BYTES,
                                      .payload = {operation}};
   moss_process_put_u64(request.payload + 1, number);
   if (operation == MOSS_PROCESS_FD_SET_FLAGS)
@@ -712,8 +712,7 @@ static int fd_flags(unsigned long session, unsigned char operation, unsigned lon
 }
 
 static int fd_status(unsigned long session, unsigned long number, unsigned long *status) {
-  struct moss_ipc_message request = {.size = MOSS_PROCESS_REPLY_VALUE_BYTES,
-                                     .payload = {MOSS_PROCESS_FD_GET_STATUS}};
+  struct moss_ipc_message request = {.size = MOSS_PROCESS_REPLY_VALUE_BYTES, .payload = {MOSS_PROCESS_FD_GET_STATUS}};
   moss_process_put_u64(request.payload + 1, number);
   struct moss_ipc_message response = {0};
   long result = call(session, &request, &response);
@@ -801,8 +800,8 @@ static int fd_view_probe(void) {
   unsigned long namespace = namespace_text ? strtoul(namespace_text, &namespace_end, 10) : 0;
   if (errno || !namespace || *namespace_end)
     return 0;
-  unsigned long first = 0, duplicate = 0, imported = 0, victim = 0, spare = 0, minimum_first = 0,
-                minimum_second = 0, position = 0;
+  unsigned long first = 0, duplicate = 0, imported = 0, victim = 0, spare = 0, minimum_first = 0, minimum_second = 0,
+                position = 0;
   unsigned char flags = 0;
   unsigned int transferred = 0;
   if (!session || !fd_open(session, "/note",
@@ -817,16 +816,14 @@ static int fd_view_probe(void) {
     struct moss_ipc_message missing = {.size = 2 + sizeof("/fd-absent"), .payload = {MOSS_PROCESS_FD_OPEN}};
     missing.payload[1] = MOSS_PROCESS_FD_READABLE;
     memcpy(missing.payload + 2, "/fd-absent", sizeof("/fd-absent"));
-    struct moss_ipc_message bad_fd = {.size = MOSS_PROCESS_REPLY_VALUE_BYTES,
-                                      .payload = {MOSS_PROCESS_FD_CLOSE}};
+    struct moss_ipc_message bad_fd = {.size = MOSS_PROCESS_REPLY_VALUE_BYTES, .payload = {MOSS_PROCESS_FD_CLOSE}};
     moss_process_put_u64(bad_fd.payload + 1, MOSS_PROCESS_FD_LIMIT);
     valid = fd_rejected(session, &missing, MOSS_PROCESS_NOT_FOUND) &&
             fd_rejected(session, &bad_fd, MOSS_PROCESS_BAD_DESCRIPTOR);
   }
   if (valid)
     valid = fd_flags(session, MOSS_PROCESS_FD_GET_FLAGS, first, &flags) && flags == 1 &&
-            fd_status(session, first, &position) &&
-            position == (MOSS_PROCESS_FD_READABLE | MOSS_PROCESS_FD_WRITABLE);
+            fd_status(session, first, &position) && position == (MOSS_PROCESS_FD_READABLE | MOSS_PROCESS_FD_WRITABLE);
   if (valid) {
     memcpy((void *)mapped, "abc", 3);
     valid = fd_io(session, MOSS_PROCESS_FD_WRITE, first, memory, 3, &transferred) && transferred == 3;
@@ -919,8 +916,7 @@ static int fd_view_probe(void) {
             !fd_dup_min(session, duplicate, MOSS_PROCESS_FD_LIMIT, 0, &position);
   }
   if (valid) {
-    struct moss_ipc_message full = {.size = MOSS_PROCESS_FD_DUP_MIN_BYTES,
-                                    .payload = {MOSS_PROCESS_FD_DUP_MIN}};
+    struct moss_ipc_message full = {.size = MOSS_PROCESS_FD_DUP_MIN_BYTES, .payload = {MOSS_PROCESS_FD_DUP_MIN}};
     moss_process_put_u64(full.payload + 1, duplicate);
     moss_process_put_u64(full.payload + 9, MOSS_PROCESS_FD_LIMIT - 2);
     valid = fd_rejected(session, &full, MOSS_PROCESS_TOO_MANY_FILES);
@@ -979,7 +975,9 @@ static int fd_view_probe(void) {
     struct moss_ipc_message truncate = {.size = 2 + sizeof("/note"), .payload = {MOSS_PROCESS_FD_OPEN}};
     truncate.payload[1] = MOSS_PROCESS_FD_READABLE | MOSS_PROCESS_FD_WRITABLE | MOSS_PROCESS_FD_TRUNCATE;
     memcpy(truncate.payload + 2, "/note", sizeof("/note"));
+    struct moss_ipc_message pipe = {.size = 1, .payload = {MOSS_PROCESS_FD_PIPE}};
     valid = fd_rejected(session, &truncate, MOSS_PROCESS_TOO_MANY_FILES) &&
+            fd_rejected(session, &pipe, MOSS_PROCESS_TOO_MANY_FILES) &&
             fd_seek(session, first, MOSS_PROCESS_FD_SEEK_SET, &position) && position == 0 &&
             fd_io(session, MOSS_PROCESS_FD_READ, first, memory, 3, &transferred) && transferred == 3 &&
             memcmp((const void *)mapped, "abc", 3) == 0;
@@ -996,6 +994,185 @@ static int fd_view_probe(void) {
   return valid;
 }
 
+static int pipe_status(unsigned long endpoint, unsigned char operation) {
+  struct moss_ipc_message request = {.size = 1, .payload = {operation}};
+  struct moss_ipc_message response = {0};
+  long result = call(endpoint, &request, &response);
+  int clean = no_capability(&response);
+  return clean && result == 1 ? response.payload[0] : -1;
+}
+
+static int pipe_capability(unsigned long endpoint, unsigned char operation, unsigned long *capability) {
+  struct moss_ipc_message request = {.size = 1, .payload = {operation}};
+  struct moss_ipc_message response = {0};
+  long result = call(endpoint, &request, &response);
+  if (result == 1 && response.payload[0] == MOSS_PIPE_OK && response.capability && response.rights == MOSS_CAP_SEND) {
+    *capability = response.capability;
+    return 1;
+  }
+  if (response.capability)
+    (void)syscall1(SYS_CAP_CLOSE, (long)response.capability);
+  return 0;
+}
+
+static int pipe_io(unsigned long endpoint, unsigned char operation, unsigned long memory, unsigned int count,
+                   unsigned char expected, unsigned int transferred) {
+  struct moss_ipc_message request = {.size = MOSS_PIPE_IO_BYTES,
+                                     .capability = memory,
+                                     .rights = operation == MOSS_PIPE_READ ? MOSS_CAP_MAP_WRITE : MOSS_CAP_MAP_READ,
+                                     .payload = {operation}};
+  moss_pipe_put_u16(request.payload + 1, count);
+  struct moss_ipc_message response = {0};
+  long result = call(endpoint, &request, &response);
+  if (!no_capability(&response) || response.payload[0] != expected)
+    return 0;
+  if (expected != MOSS_PIPE_OK)
+    return result == 1;
+  return result == MOSS_PIPE_IO_REPLY_BYTES && moss_pipe_get_u16(response.payload + 1) == transferred;
+}
+
+static int pipe_probe(void) {
+  const char *text = getenv("MOSS_PIPE_CAP");
+  char *end = NULL;
+  errno = 0;
+  unsigned long root = text ? strtoul(text, &end, 10) : 0;
+  if (errno || !root || root > LONG_MAX || *end)
+    return 0;
+  unsigned long control = 0, reader = 0, writer = 0;
+  long memory = syscall1(SYS_MEM_CREATE, MOSS_MEM_OBJECT_BYTES);
+  long mapped = memory > 0 ? syscall2(SYS_MEM_MAP, memory, MOSS_CAP_MAP_READ | MOSS_CAP_MAP_WRITE) : 0;
+  int valid = mapped > 0 && pipe_capability(root, MOSS_PIPE_CREATE, &control) &&
+              pipe_capability(control, MOSS_PIPE_READ_END, &reader) &&
+              pipe_capability(control, MOSS_PIPE_WRITE_END, &writer);
+  if (valid) {
+    unsigned char *page = (unsigned char *)mapped;
+    for (unsigned int index = 0; index < MOSS_MEM_OBJECT_BYTES; ++index)
+      page[index] = (unsigned char)index;
+    valid = pipe_io(writer, MOSS_PIPE_WRITE, memory, MOSS_MEM_OBJECT_BYTES, MOSS_PIPE_OK, MOSS_MEM_OBJECT_BYTES) &&
+            pipe_io(writer, MOSS_PIPE_WRITE, memory, 1, MOSS_PIPE_WOULD_BLOCK, 0) &&
+            pipe_io(reader, MOSS_PIPE_READ, memory, 1, MOSS_PIPE_OK, 1) && page[0] == 0 &&
+            pipe_io(writer, MOSS_PIPE_WRITE, memory, 2, MOSS_PIPE_WOULD_BLOCK, 0);
+    if (valid) {
+      page[0] = '!';
+      valid = pipe_io(writer, MOSS_PIPE_WRITE, memory, 1, MOSS_PIPE_OK, 1) &&
+              pipe_status(writer, MOSS_PIPE_CLOSE) == MOSS_PIPE_OK &&
+              pipe_io(reader, MOSS_PIPE_READ, memory, MOSS_MEM_OBJECT_BYTES, MOSS_PIPE_OK, MOSS_MEM_OBJECT_BYTES);
+    }
+    if (valid) {
+      for (unsigned int index = 0; index < MOSS_MEM_OBJECT_BYTES - 1; ++index)
+        valid &= page[index] == (unsigned char)(index + 1);
+      valid &= page[MOSS_MEM_OBJECT_BYTES - 1] == '!';
+      valid &= pipe_io(reader, MOSS_PIPE_READ, memory, 1, MOSS_PIPE_OK, 0) &&
+               pipe_status(reader, MOSS_PIPE_CLOSE) == MOSS_PIPE_OK &&
+               pipe_io(reader, MOSS_PIPE_READ, memory, 1, MOSS_PIPE_NO_ENTRY, 0);
+    }
+  }
+  if (valid) {
+    (void)syscall1(SYS_CAP_CLOSE, (long)reader);
+    (void)syscall1(SYS_CAP_CLOSE, (long)writer);
+    (void)syscall1(SYS_CAP_CLOSE, (long)control);
+    reader = writer = control = 0;
+    valid = pipe_capability(root, MOSS_PIPE_CREATE, &control) &&
+            pipe_capability(control, MOSS_PIPE_READ_END, &reader) &&
+            pipe_status(control, MOSS_PIPE_CANCEL) == MOSS_PIPE_OK &&
+            pipe_io(reader, MOSS_PIPE_READ, memory, 1, MOSS_PIPE_NO_ENTRY, 0);
+  }
+  if (!valid && control)
+    (void)pipe_status(control, MOSS_PIPE_CANCEL);
+  if (reader)
+    (void)syscall1(SYS_CAP_CLOSE, (long)reader);
+  if (writer)
+    (void)syscall1(SYS_CAP_CLOSE, (long)writer);
+  if (control)
+    (void)syscall1(SYS_CAP_CLOSE, (long)control);
+  if (mapped > 0)
+    (void)syscall2(SYS_MUNMAP, mapped, MOSS_MEM_OBJECT_BYTES);
+  if (memory > 0)
+    (void)syscall1(SYS_CAP_CLOSE, memory);
+  return valid;
+}
+
+static int fd_pipe(unsigned long session, unsigned long *reader, unsigned long *writer) {
+  struct moss_ipc_message request = {.size = 1, .payload = {MOSS_PROCESS_FD_PIPE}};
+  struct moss_ipc_message response = {0};
+  long result = call(session, &request, &response);
+  if (!no_capability(&response) || result != MOSS_PROCESS_FD_PIPE_REPLY_BYTES || response.payload[0] != MOSS_PROCESS_OK)
+    return 0;
+  *reader = moss_process_get_u64(response.payload + 1);
+  *writer = moss_process_get_u64(response.payload + 9);
+  return *reader >= MOSS_PROCESS_FD_FIRST && *writer > *reader && *writer < MOSS_PROCESS_FD_LIMIT;
+}
+
+static int fd_io_rejected(unsigned long session, unsigned char operation, unsigned long number, unsigned long memory,
+                          unsigned int count, unsigned char status) {
+  struct moss_ipc_message request = {.size = MOSS_PROCESS_FD_IO_BYTES,
+                                     .capability = memory,
+                                     .rights =
+                                         (operation == MOSS_PROCESS_FD_WRITE ? MOSS_CAP_MAP_READ : MOSS_CAP_MAP_WRITE) |
+                                         MOSS_CAP_TRANSFER | MOSS_CAP_DUPLICATE,
+                                     .payload = {operation}};
+  moss_process_put_u64(request.payload + 1, number);
+  moss_pipe_put_u16(request.payload + 9, count);
+  return fd_rejected(session, &request, status);
+}
+
+static int fd_pipe_probe(void) {
+  unsigned long session = getauxval(MOSS_AT_STARTUP_CAP);
+  unsigned long reader = 0, writer = 0, duplicate = 0, flags = 0;
+  unsigned int transferred = 0;
+  long memory = syscall1(SYS_MEM_CREATE, MOSS_MEM_OBJECT_BYTES);
+  long mapped = memory > 0 ? syscall2(SYS_MEM_MAP, memory, MOSS_CAP_MAP_READ | MOSS_CAP_MAP_WRITE) : 0;
+  int valid = session && mapped > 0 && fd_pipe(session, &reader, &writer) && fd_status(session, reader, &flags) &&
+              flags == MOSS_PROCESS_FD_READABLE && fd_status(session, writer, &flags) &&
+              flags == MOSS_PROCESS_FD_WRITABLE;
+  if (valid) {
+    memcpy((void *)mapped, "pipe", 4);
+    valid = fd_io(session, MOSS_PROCESS_FD_WRITE, writer, memory, 4, &transferred) && transferred == 4 &&
+            fd_command(session, MOSS_PROCESS_FD_DUP, reader, &duplicate) &&
+            fd_command(session, MOSS_PROCESS_FD_CLOSE, reader, NULL);
+    if (valid)
+      reader = 0;
+  }
+  if (valid)
+    valid = fd_io(session, MOSS_PROCESS_FD_READ, duplicate, memory, 4, &transferred) && transferred == 4 &&
+            memcmp((const void *)mapped, "pipe", 4) == 0 &&
+            fd_io_rejected(session, MOSS_PROCESS_FD_READ, duplicate, memory, 1, MOSS_PROCESS_WOULD_BLOCK);
+  if (valid) {
+    struct moss_ipc_message seek = {.size = MOSS_PROCESS_FD_SEEK_BYTES, .payload = {MOSS_PROCESS_FD_SEEK}};
+    moss_process_put_u64(seek.payload + 1, duplicate);
+    seek.payload[17] = MOSS_PROCESS_FD_SEEK_SET;
+    valid = fd_rejected(session, &seek, MOSS_PROCESS_NOT_SEEKABLE) &&
+            fd_command(session, MOSS_PROCESS_FD_CLOSE, writer, NULL);
+    if (valid)
+      writer = 0;
+  }
+  if (valid)
+    valid = fd_io(session, MOSS_PROCESS_FD_READ, duplicate, memory, 1, &transferred) && transferred == 0 &&
+            fd_command(session, MOSS_PROCESS_FD_CLOSE, duplicate, NULL);
+  if (valid)
+    duplicate = 0;
+  if (valid)
+    valid = fd_pipe(session, &reader, &writer) && fd_command(session, MOSS_PROCESS_FD_CLOSE, reader, NULL);
+  if (valid)
+    reader = 0;
+  if (valid)
+    valid = fd_io_rejected(session, MOSS_PROCESS_FD_WRITE, writer, memory, 1, MOSS_PROCESS_BROKEN_PIPE) &&
+            fd_command(session, MOSS_PROCESS_FD_CLOSE, writer, NULL);
+  if (valid)
+    writer = 0;
+  if (reader)
+    (void)fd_command(session, MOSS_PROCESS_FD_CLOSE, reader, NULL);
+  if (writer)
+    (void)fd_command(session, MOSS_PROCESS_FD_CLOSE, writer, NULL);
+  if (duplicate)
+    (void)fd_command(session, MOSS_PROCESS_FD_CLOSE, duplicate, NULL);
+  if (mapped > 0)
+    (void)syscall2(SYS_MUNMAP, mapped, MOSS_MEM_OBJECT_BYTES);
+  if (memory > 0)
+    (void)syscall1(SYS_CAP_CLOSE, memory);
+  return valid;
+}
+
 int main(int argc, char **argv) {
   if (argc == 3 && strcmp(argv[1], "fd-exec-child") == 0)
     return fd_exec_child(argv[2]) ? 37 : 43;
@@ -1003,6 +1180,20 @@ int main(int argc, char **argv) {
     if (!fd_view_probe())
       return error();
     static const char message[] = "MOSS_FD_READY\n";
+    (void)write(STDOUT_FILENO, message, sizeof(message) - 1);
+    return 0;
+  }
+  if (argc == 2 && strcmp(argv[1], "pipe-probe") == 0) {
+    if (!pipe_probe())
+      return error();
+    static const char message[] = "MOSS_PIPE_READY\n";
+    (void)write(STDOUT_FILENO, message, sizeof(message) - 1);
+    return 0;
+  }
+  if (argc == 2 && strcmp(argv[1], "fd-pipe-probe") == 0) {
+    if (!fd_pipe_probe())
+      return error();
+    static const char message[] = "MOSS_FD_PIPE_READY\n";
     (void)write(STDOUT_FILENO, message, sizeof(message) - 1);
     return 0;
   }

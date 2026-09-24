@@ -117,6 +117,7 @@ quit
     child, debugger, console, stage, pending = None, None, None, 0, b""
     service_pid = None
     namespace_pid = None
+    pipe_pid = None
     process_pid = None
     old_child_started = False
     bulk_data = b"0" * 300
@@ -130,6 +131,7 @@ quit
         (b"moss-init: supervisor ready", None),
         (b"moss-init: file service started", None),
         (b"moss-init: namespace service started", None),
+        (b"moss-init: pipe service started", None),
         (b"moss-init: process service started", None),
         (b"built-in shell (ash)", None),
         (b"moss$ ", b"/moss-process.elf probe\n"),
@@ -179,6 +181,7 @@ quit
         (b"moss$ ", b"/moss-process.elf crash-survivor &\n"),
         (b"moss$ ", b"/moss-domain.elf terminate process\n"),
         (b"moss-init: process service died", None),
+        (b"moss-init: pipe service started", None),
         (b"moss-init: process service started", None),
         (b"built-in shell (ash)", None),
         (b"moss$ ", b"sleep 3\n"),
@@ -187,6 +190,7 @@ quit
         (b"moss$ ", b"/moss-domain.elf terminate namespace\n"),
         (b"moss-init: namespace service died", None),
         (b"moss-init: namespace service started", None),
+        (b"moss-init: pipe service started", None),
         (b"moss-init: process service started", None),
         (b"built-in shell (ash)", None),
         (b"moss$ ", b"/moss-file.elf read\n"),
@@ -197,6 +201,7 @@ quit
         (b"moss-init: file service died", None),
         (b"moss-init: file service started", None),
         (b"moss-init: namespace service started", None),
+        (b"moss-init: pipe service started", None),
         (b"moss-init: process service started", None),
         (b"built-in shell (ash)", None),
         (b"moss$ ", b"/moss-file.elf read\n"),
@@ -246,6 +251,17 @@ quit
         (b"\nMOSS_FILE_SIZE=61440\n", None),
         (b"moss$ ", b"/moss-process.elf fd-probe\n"),
         (b"\nMOSS_FD_READY\n", None),
+        (b"moss$ ", b"/moss-process.elf pipe-probe\n"),
+        (b"\nMOSS_PIPE_READY\n", None),
+        (b"moss$ ", b"/moss-process.elf fd-pipe-probe\n"),
+        (b"\nMOSS_FD_PIPE_READY\n", None),
+        (b"moss$ ", b"/moss-domain.elf terminate pipe\n"),
+        (b"moss-init: pipe service died", None),
+        (b"moss-init: pipe service started", None),
+        (b"moss-init: process service started", None),
+        (b"built-in shell (ash)", None),
+        (b"moss$ ", b"/moss-process.elf fd-pipe-probe\n"),
+        (b"\nMOSS_FD_PIPE_READY\n", None),
         (b"moss$ ", None),
     ]
     started = time.monotonic()
@@ -297,6 +313,7 @@ quit
                     if marker in (
                         b"moss-init: file service started",
                         b"moss-init: namespace service started",
+                        b"moss-init: pipe service started",
                         b"moss-init: process service started",
                     ):
                         match = re.match(rb" pid=(\d+)\n", after)
@@ -306,6 +323,7 @@ quit
                         previous_pid = {
                             b"moss-init: file service started": service_pid,
                             b"moss-init: namespace service started": namespace_pid,
+                            b"moss-init: pipe service started": pipe_pid,
                             b"moss-init: process service started": process_pid,
                         }[marker]
                         if next_pid <= 1 or next_pid == previous_pid:
@@ -314,6 +332,8 @@ quit
                             service_pid = next_pid
                         elif marker == b"moss-init: namespace service started":
                             namespace_pid = next_pid
+                        elif marker == b"moss-init: pipe service started":
+                            pipe_pid = next_pid
                         else:
                             process_pid = next_pid
                         after = after[match.end() :]
