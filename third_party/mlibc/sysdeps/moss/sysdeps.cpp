@@ -52,6 +52,55 @@ bool no_capability(moss_ipc_message &response) {
   return !response.rights;
 }
 
+int process_status_error(unsigned char status) {
+  switch (status) {
+  case MOSS_PROCESS_OK:
+    return 0;
+  case MOSS_PROCESS_NO_ENTRY:
+    return ESRCH;
+  case MOSS_PROCESS_BAD_REQUEST:
+    return EINVAL;
+  case MOSS_PROCESS_DENIED:
+    return EPERM;
+  case MOSS_PROCESS_RUNNING:
+    return EAGAIN;
+  case MOSS_PROCESS_BUSY:
+    return EBUSY;
+  default:
+    return EIO;
+  }
+}
+
+int process_group_ids(unsigned long session, pid_t pid, pid_t &group,
+                      pid_t &sid) {
+  if (pid < 0)
+    return EINVAL;
+  moss_ipc_message request{};
+  request.size = MOSS_PROCESS_REPLY_VALUE_BYTES;
+  request.payload[0] = MOSS_PROCESS_GET_GROUP;
+  moss_process_put_u64(request.payload + 1, static_cast<unsigned long>(pid));
+  moss_ipc_message response{};
+  long result = process_call(session, request, response);
+  if (!no_capability(response))
+    return EIO;
+  if (result < 0)
+    return error(result);
+  if (result == 1)
+    return response.payload[0] == MOSS_PROCESS_OK
+               ? EIO
+               : process_status_error(response.payload[0]);
+  if (result != MOSS_PROCESS_REPLY_GROUP_BYTES ||
+      response.payload[0] != MOSS_PROCESS_OK)
+    return EIO;
+  unsigned long group_id = moss_process_get_u64(response.payload + 1);
+  unsigned long session_id = moss_process_get_u64(response.payload + 9);
+  if (!group_id || !session_id || group_id > INT_MAX || session_id > INT_MAX)
+    return EOVERFLOW;
+  group = static_cast<pid_t>(group_id);
+  sid = static_cast<pid_t>(session_id);
+  return 0;
+}
+
 int process_identity(unsigned long session, unsigned long &id,
                      unsigned long &parent) {
   moss_ipc_message request{};
@@ -346,6 +395,82 @@ pid_t Sysdeps<GetPpid>::operator()() {
   }
   return static_cast<pid_t>(parent);
 }
+int Sysdeps<GetPgid>::operator()(pid_t pid, pid_t *group) {
+  unsigned long session = process_session();
+  if (!session) {
+    long result = syscall1(SYS_GETPGID, pid);
+    if (result < 0)
+      return error(result);
+    *group = static_cast<pid_t>(result);
+    return 0;
+  }
+  pid_t sid = 0;
+  return process_group_ids(session, pid, *group, sid);
+}
+int Sysdeps<GetSid>::operator()(pid_t pid, pid_t *sid) {
+  unsigned long session = process_session();
+  if (!session) {
+    long result = syscall1(SYS_GETSID, pid);
+    if (result < 0)
+      return error(result);
+    *sid = static_cast<pid_t>(result);
+    return 0;
+  }
+  pid_t group = 0;
+  return process_group_ids(session, pid, group, *sid);
+}
+int Sysdeps<SetPgid>::operator()(pid_t pid, pid_t group) {
+  unsigned long session = process_session();
+  if (!session) {
+    // The legacy kernel ABI only provides setpgrp(0, 0); it ignores arguments.
+    return pid || group ? ENOSYS : error(syscall0(SYS_SETPGRP));
+  }
+  if (pid < 0 || group < 0)
+    return EINVAL;
+  moss_ipc_message request{};
+  request.size = MOSS_PROCESS_SET_GROUP_REQUEST_BYTES;
+  request.payload[0] = MOSS_PROCESS_SET_GROUP;
+  moss_process_put_u64(request.payload + 1, static_cast<unsigned long>(pid));
+  moss_process_put_u64(request.payload + 9, static_cast<unsigned long>(group));
+  moss_ipc_message response{};
+  long result = process_call(session, request, response);
+  if (!no_capability(response))
+    return EIO;
+  if (result < 0)
+    return error(result);
+  return result == 1 ? process_status_error(response.payload[0]) : EIO;
+}
+int Sysdeps<SetSid>::operator()(pid_t *sid) {
+  unsigned long session = process_session();
+  if (!session) {
+    long result = syscall0(SYS_SETSID);
+    if (result < 0)
+      return error(result);
+    *sid = static_cast<pid_t>(result);
+    return 0;
+  }
+  moss_ipc_message request{};
+  request.size = 1;
+  request.payload[0] = MOSS_PROCESS_NEW_SESSION;
+  moss_ipc_message response{};
+  long result = process_call(session, request, response);
+  if (!no_capability(response))
+    return EIO;
+  if (result < 0)
+    return error(result);
+  if (result == 1)
+    return response.payload[0] == MOSS_PROCESS_OK
+               ? EIO
+               : process_status_error(response.payload[0]);
+  if (result != MOSS_PROCESS_REPLY_VALUE_BYTES ||
+      response.payload[0] != MOSS_PROCESS_OK)
+    return EIO;
+  unsigned long id = moss_process_get_u64(response.payload + 1);
+  if (!id || id > INT_MAX)
+    return EOVERFLOW;
+  *sid = static_cast<pid_t>(id);
+  return 0;
+}
 uid_t Sysdeps<GetUid>::operator()() { return syscall0(SYS_GETUID); }
 uid_t Sysdeps<GetEuid>::operator()() { return syscall0(SYS_GETEUID); }
 gid_t Sysdeps<GetGid>::operator()() { return syscall0(SYS_GETGID); }
@@ -357,12 +482,19 @@ int Sysdeps<Kill>::operator()(pid_t pid, int signo) {
   unsigned long session = process_session();
   if (!session)
     return error(syscall2(SYS_KILL, pid, signo));
-  if (pid <= 0)
-    return ENOSYS; // Process groups are not represented by the service yet.
+  if (pid == -1)
+    return ENOSYS; // Broadcast needs a compatibility credential policy.
+  if (signo < 0 || signo >= MOSS_PROCESS_SIGNAL_LIMIT)
+    return EINVAL;
   moss_ipc_message request{};
   request.size = MOSS_PROCESS_SIGNAL_REQUEST_BYTES;
-  request.payload[0] = MOSS_PROCESS_SIGNAL;
-  moss_process_put_u64(request.payload + 1, static_cast<unsigned long>(pid));
+  request.payload[0] =
+      pid > 0 ? MOSS_PROCESS_SIGNAL : MOSS_PROCESS_SIGNAL_GROUP;
+  unsigned long target =
+      pid < -1  ? static_cast<unsigned long>(-static_cast<long>(pid))
+      : pid > 0 ? static_cast<unsigned long>(pid)
+                : 0;
+  moss_process_put_u64(request.payload + 1, target);
   moss_process_put_u64(request.payload + 9, static_cast<unsigned long>(signo));
   moss_ipc_message response{};
   long result = process_call(session, request, response);
@@ -372,18 +504,7 @@ int Sysdeps<Kill>::operator()(pid_t pid, int signo) {
     return error(result);
   if (result != 1)
     return EIO;
-  switch (response.payload[0]) {
-  case MOSS_PROCESS_OK:
-    return 0;
-  case MOSS_PROCESS_NO_ENTRY:
-    return ESRCH;
-  case MOSS_PROCESS_BAD_REQUEST:
-    return EINVAL;
-  case MOSS_PROCESS_RUNNING:
-    return EAGAIN;
-  default:
-    return EIO;
-  }
+  return process_status_error(response.payload[0]);
 }
 int Sysdeps<Sigaction>::operator()(int signo, const struct sigaction *action, struct sigaction *previous) {
   // mlibc explicitly accepts ENOSYS here to opt out of pthread cancellation.
@@ -493,15 +614,19 @@ int Sysdeps<Waitpid>::operator()(pid_t pid, int *status, int flags, rusage *usag
     return ENOSYS;
   unsigned long session = process_session();
   if (session) {
-    if ((flags & ~WNOHANG) || (pid <= 0 && pid != -1))
+    if (flags & ~WNOHANG)
       return EINVAL;
     moss_ipc_message request{};
     request.size = pid == -1 ? 1 : MOSS_PROCESS_REPLY_VALUE_BYTES;
-    request.payload[0] =
-        pid == -1 ? MOSS_PROCESS_WAIT_ANY : MOSS_PROCESS_WAIT_CHILD;
+    request.payload[0] = pid == -1 ? MOSS_PROCESS_WAIT_ANY
+                         : pid > 0 ? MOSS_PROCESS_WAIT_CHILD
+                                   : MOSS_PROCESS_WAIT_GROUP;
     if (pid > 0)
       moss_process_put_u64(request.payload + 1,
                            static_cast<unsigned long>(pid));
+    else if (pid < -1)
+      moss_process_put_u64(request.payload + 1,
+                           static_cast<unsigned long>(-static_cast<long>(pid)));
     for (;;) {
       moss_ipc_message response{};
       long result = process_call(session, request, response);

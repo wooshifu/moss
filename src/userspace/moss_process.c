@@ -412,6 +412,94 @@ static int managed_libc_probe(void) {
          WIFSIGNALED(status) && WTERMSIG(status) == SIGTERM;
 }
 
+static int managed_group_probe(void) {
+  pid_t self = getpid();
+  pid_t group = getpgrp();
+  pid_t session = getsid(0);
+  if (self <= 0 || group <= 0 || session <= 0 || getpgid(0) != group || getpgid(self) != group ||
+      getsid(self) != session)
+    return 0;
+
+  int wake[2], ready[2];
+  if (pipe(wake) != 0)
+    return 0;
+  if (pipe(ready) != 0) {
+    close(wake[0]);
+    close(wake[1]);
+    return 0;
+  }
+  pid_t children[2] = {-1, -1};
+  for (unsigned int i = 0; i < 2; ++i) {
+    children[i] = fork();
+    if (children[i] == 0) {
+      close(wake[1]);
+      close(ready[0]);
+      char byte = 0;
+      pid_t group_id = i ? children[0] : getpid();
+      if (read(wake[0], &byte, 1) != 1 || byte != '1' || getpgrp() != group_id || getsid(0) != session ||
+          kill(0, 0) != 0 || kill(-group_id, 0) != 0)
+        _exit(41);
+      byte = '1';
+      if (write(ready[1], &byte, 1) != 1)
+        _exit(41);
+      // Bound a lost group signal instead of hanging the boot probe.
+      unsigned long delay = 1000000000UL;
+      (void)syscall1(SYS_NANOSLEEP, (long)&delay);
+      _exit(97);
+    }
+    if (children[i] < 0)
+      break;
+  }
+  close(wake[0]);
+  close(ready[1]);
+  int status = 0;
+  char wake_bytes[2] = {'1', '1'}, ready_byte = 0;
+  int valid = children[0] > 0 && children[1] > 0 && setpgid(children[0], children[0]) == 0 &&
+              setpgid(children[1], children[0]) == 0 && getpgid(children[0]) == children[0] &&
+              getpgid(children[1]) == children[0] && getsid(children[1]) == session &&
+              write(wake[1], wake_bytes, sizeof(wake_bytes)) == sizeof(wake_bytes) &&
+              read(ready[0], &ready_byte, 1) == 1 && ready_byte == '1' && read(ready[0], &ready_byte, 1) == 1 &&
+              ready_byte == '1' && waitpid(-children[0], &status, WNOHANG) == 0 && kill(-children[0], SIGTERM) == 0;
+  int reaped[2] = {0};
+  for (unsigned int i = 0; valid && i < 2; ++i) {
+    pid_t done = waitpid(-children[0], &status, 0);
+    valid = WIFSIGNALED(status) && WTERMSIG(status) == SIGTERM;
+    if (done == children[0] && !reaped[0])
+      reaped[0] = 1;
+    else if (done == children[1] && !reaped[1])
+      reaped[1] = 1;
+    else
+      valid = 0;
+  }
+  valid &= reaped[0] && reaped[1];
+  close(wake[1]);
+  close(ready[0]);
+  if (!valid) {
+    for (unsigned int i = 0; i < 2; ++i) {
+      if (children[i] > 0 && !reaped[i]) {
+        (void)kill(children[i], SIGKILL);
+        (void)waitpid(children[i], &status, 0);
+      }
+    }
+  }
+  if (!valid)
+    return 0;
+
+  pid_t child = fork();
+  if (child == 0)
+    _exit(getpgrp() == group && getsid(0) == session ? 29 : 41);
+  if (child <= 0 || waitpid(0, &status, 0) != child || status != (29 << 8))
+    return 0;
+
+  child = fork();
+  if (child == 0) {
+    pid_t id = getpid();
+    errno = 0;
+    _exit(setsid() == id && getpgrp() == id && getsid(0) == id && setsid() == -1 && errno == EPERM ? 0 : 41);
+  }
+  return child > 0 && waitpid(child, &status, 0) == child && status == 0;
+}
+
 static int managed_orphan_probe(void) {
   // More orphan generations than registry slots expose records that nobody
   // can wait for after their original parent has exited.
@@ -482,8 +570,8 @@ int main(int argc, char **argv) {
   if (errno || !root || root > LONG_MAX || *end)
     return error();
   unsigned long last_id = MOSS_PROCESS_INIT_ID;
-  if (!managed_libc_probe() || !managed_orphan_probe() || !observe_child(root, &last_id, 37) ||
-      !observe_child(root, &last_id, 38) || !observe_family(root, &last_id))
+  if (!managed_libc_probe() || !managed_group_probe() || !managed_orphan_probe() ||
+      !observe_child(root, &last_id, 37) || !observe_child(root, &last_id, 38) || !observe_family(root, &last_id))
     return error();
   static const char message[] = "MOSS_PROCESS_READY\n";
   (void)write(STDOUT_FILENO, message, sizeof(message) - 1);

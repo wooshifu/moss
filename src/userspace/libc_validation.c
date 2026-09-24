@@ -1033,6 +1033,12 @@ int main(int argc, char **argv) {
   if (cwd_error) {
     return 170 + cwd_error;
   }
+  pid_t initial_group = getpgrp();
+  errno = 0;
+  // The native setpgrp syscall ignores arguments; libc must reject general setpgid.
+  if (initial_group <= 0 || setpgid(getpid(), getpid()) != -1 || errno != ENOSYS || getpgrp() != initial_group) {
+    return 161;
+  }
   if (!signal_runtime()) {
     return 105;
   }

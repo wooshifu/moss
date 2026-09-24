@@ -9,6 +9,8 @@
 struct Record {
   unsigned long id;
   unsigned long parent_id;
+  unsigned long group_id;
+  unsigned long session_id;
   // A reserved child has an identity before fork and no domain until attach.
   unsigned long domain;
   unsigned long reservation_deadline_ns;
@@ -59,6 +61,59 @@ static int has_children(unsigned long parent_id) {
       return 1;
   }
   return 0;
+}
+
+static int record_running(const struct Record *record) {
+  // A delegated sender can outlive its domain; stale badges lose control authority.
+  if (!record || !record->domain)
+    return 0;
+  struct moss_domain_exit status = {0};
+  return syscall2(SYS_DOMAIN_STATUS, (long)record->domain, (long)&status) == -EAGAIN;
+}
+
+static int group_exists(unsigned long group_id, unsigned long session_id) {
+  for (unsigned int i = 0; i < MOSS_PROCESS_RECORD_LIMIT; ++i) {
+    if (records[i].id && records[i].domain && records[i].group_id == group_id && records[i].session_id == session_id)
+      return 1;
+  }
+  return 0;
+}
+
+static int group_id_used(unsigned long group_id) {
+  for (unsigned int i = 0; i < MOSS_PROCESS_RECORD_LIMIT; ++i) {
+    if (records[i].id && records[i].domain && records[i].group_id == group_id)
+      return 1;
+  }
+  return 0;
+}
+
+static struct Record *select_exited_child(struct Record *parent, unsigned long group_id, int group_only,
+                                          struct moss_ipc_message *response) {
+  int pending = 0;
+  int failed = 0;
+  // A running first child must not hide another child's exit.
+  for (unsigned int i = 0; i < MOSS_PROCESS_RECORD_LIMIT; ++i) {
+    struct Record *child = &records[i];
+    if (!child->id || child->parent_id != parent->id || (group_only && child->group_id != group_id))
+      continue;
+    pending = 1;
+    // Reservations count as children but cannot have an exit status yet.
+    if (!child->domain)
+      continue;
+    struct moss_domain_exit status = {0};
+    long result = syscall2(SYS_DOMAIN_STATUS, (long)child->domain, (long)&status);
+    if (result == 0) {
+      response->size = MOSS_PROCESS_REPLY_WAIT_BYTES;
+      response->payload[0] = MOSS_PROCESS_EXITED;
+      moss_process_put_u64(response->payload + 1, child->id);
+      moss_process_put_u64(response->payload + 9, ((uint64_t)status.signal << 32) | (uint32_t)status.code);
+      return child;
+    }
+    if (result != -EAGAIN)
+      failed = 1;
+  }
+  response->payload[0] = failed ? MOSS_PROCESS_UNAVAILABLE : pending ? MOSS_PROCESS_RUNNING : MOSS_PROCESS_NO_ENTRY;
+  return NULL;
 }
 
 static void adopt_children(unsigned long parent_id) {
@@ -136,6 +191,8 @@ int main(int argc, char **argv) {
     struct Record *registered = NULL;
     struct Record *attached = NULL;
     struct Record *released = NULL;
+    struct Record *changed_group = NULL;
+    unsigned long old_group_id = 0, old_session_id = 0;
     long session = 0;
     const int register_root = request.badge == 0 && request.payload[0] == MOSS_PROCESS_REGISTER;
     const int register_child = request.badge != 0 && request.payload[0] == MOSS_PROCESS_REGISTER_CHILD;
@@ -179,6 +236,8 @@ int main(int argc, char **argv) {
       if (session > 0) {
         registered->id = next_id++;
         registered->parent_id = parent ? parent->id : 0;
+        registered->group_id = parent ? parent->group_id : registered->id;
+        registered->session_id = parent ? parent->session_id : registered->id;
         registered->domain = prepare_child ? 0 : request.capability;
         registered->reservation_deadline_ns = reservation_deadline_ns;
         if (!prepare_child)
@@ -242,28 +301,116 @@ int main(int argc, char **argv) {
           response.payload[0] = result == -EAGAIN ? MOSS_PROCESS_RUNNING : MOSS_PROCESS_UNAVAILABLE;
         }
       }
+    } else if (request.badge && request.size == MOSS_PROCESS_REPLY_VALUE_BYTES &&
+               request.payload[0] == MOSS_PROCESS_WAIT_GROUP && !request.capability && !request.rights) {
+      struct Record *parent = find_record(request.badge);
+      if (!parent) {
+        response.payload[0] = MOSS_PROCESS_NO_ENTRY;
+      } else {
+        unsigned long group_id = moss_process_get_u64(request.payload + 1);
+        if (group_id > LONG_MAX)
+          response.payload[0] = MOSS_PROCESS_BAD_REQUEST;
+        else
+          released = select_exited_child(parent, group_id ? group_id : parent->group_id, 1, &response);
+      }
+    } else if (request.badge && request.size == MOSS_PROCESS_REPLY_VALUE_BYTES &&
+               request.payload[0] == MOSS_PROCESS_GET_GROUP && !request.capability && !request.rights) {
+      struct Record *caller = find_record(request.badge);
+      unsigned long target_id = moss_process_get_u64(request.payload + 1);
+      struct Record *target = target_id ? find_record(target_id) : caller;
+      if (!record_running(caller) || !target || (target != caller && target->parent_id != caller->id) ||
+          !record_running(target)) {
+        response.payload[0] = MOSS_PROCESS_NO_ENTRY;
+      } else {
+        response.size = MOSS_PROCESS_REPLY_GROUP_BYTES;
+        response.payload[0] = MOSS_PROCESS_OK;
+        moss_process_put_u64(response.payload + 1, target->group_id);
+        moss_process_put_u64(response.payload + 9, target->session_id);
+      }
+    } else if (request.badge && request.size == MOSS_PROCESS_SET_GROUP_REQUEST_BYTES &&
+               request.payload[0] == MOSS_PROCESS_SET_GROUP && !request.capability && !request.rights) {
+      struct Record *caller = find_record(request.badge);
+      unsigned long target_id = moss_process_get_u64(request.payload + 1);
+      unsigned long group_id = moss_process_get_u64(request.payload + 9);
+      struct Record *target = target_id ? find_record(target_id) : caller;
+      if (target_id > LONG_MAX || group_id > LONG_MAX) {
+        response.payload[0] = MOSS_PROCESS_BAD_REQUEST;
+      } else if (!record_running(caller) || !target || (target != caller && target->parent_id != caller->id) ||
+                 !record_running(target)) {
+        response.payload[0] = MOSS_PROCESS_NO_ENTRY;
+      } else {
+        if (!group_id)
+          group_id = target->id;
+        if (target->session_id != caller->session_id || target->session_id == target->id ||
+            (group_id != target->id && !group_exists(group_id, caller->session_id))) {
+          response.payload[0] = MOSS_PROCESS_DENIED;
+        } else {
+          changed_group = target;
+          old_group_id = target->group_id;
+          old_session_id = target->session_id;
+          target->group_id = group_id;
+          response.payload[0] = MOSS_PROCESS_OK;
+        }
+      }
+    } else if (request.badge && request.size == 1 && request.payload[0] == MOSS_PROCESS_NEW_SESSION &&
+               !request.capability && !request.rights) {
+      struct Record *caller = find_record(request.badge);
+      // A new session cannot reuse a group ID still held by another member.
+      if (!record_running(caller)) {
+        response.payload[0] = MOSS_PROCESS_NO_ENTRY;
+      } else if (group_id_used(caller->id)) {
+        response.payload[0] = MOSS_PROCESS_DENIED;
+      } else {
+        changed_group = caller;
+        old_group_id = caller->group_id;
+        old_session_id = caller->session_id;
+        caller->group_id = caller->id;
+        caller->session_id = caller->id;
+        response.size = MOSS_PROCESS_REPLY_VALUE_BYTES;
+        response.payload[0] = MOSS_PROCESS_OK;
+        moss_process_put_u64(response.payload + 1, caller->id);
+      }
     } else if (request.badge && request.size == MOSS_PROCESS_SIGNAL_REQUEST_BYTES &&
                request.payload[0] == MOSS_PROCESS_SIGNAL && !request.capability && !request.rights) {
       struct Record *caller = find_record(request.badge);
       struct Record *target = find_record(moss_process_get_u64(request.payload + 1));
-      if (!caller || !caller->domain || !target || (target != caller && target->parent_id != caller->id)) {
+      if (!record_running(caller) || !target || (target != caller && target->parent_id != caller->id)) {
         response.payload[0] = MOSS_PROCESS_NO_ENTRY;
+      } else if (!target->domain) {
+        response.payload[0] = MOSS_PROCESS_RUNNING;
       } else {
-        struct moss_domain_exit caller_status = {0};
-        // A delegated sender may outlive its domain; its stale badge must not
-        // retain signal authority after that domain exits.
-        if (syscall2(SYS_DOMAIN_STATUS, (long)caller->domain, (long)&caller_status) != -EAGAIN) {
-          response.payload[0] = MOSS_PROCESS_NO_ENTRY;
-        } else if (!target->domain) {
-          response.payload[0] = MOSS_PROCESS_RUNNING;
-        } else {
-          uint64_t signo = moss_process_get_u64(request.payload + 9);
-          long signaled = signo <= LONG_MAX ? syscall2(SYS_DOMAIN_SIGNAL, (long)target->domain, (long)signo) : -EINVAL;
-          response.payload[0] = signaled == 0         ? MOSS_PROCESS_OK
-                                : signaled == -ESRCH  ? MOSS_PROCESS_NO_ENTRY
-                                : signaled == -EINVAL ? MOSS_PROCESS_BAD_REQUEST
-                                                      : MOSS_PROCESS_UNAVAILABLE;
+        uint64_t signo = moss_process_get_u64(request.payload + 9);
+        long signaled = signo <= LONG_MAX ? syscall2(SYS_DOMAIN_SIGNAL, (long)target->domain, (long)signo) : -EINVAL;
+        response.payload[0] = signaled == 0         ? MOSS_PROCESS_OK
+                              : signaled == -ESRCH  ? MOSS_PROCESS_NO_ENTRY
+                              : signaled == -EINVAL ? MOSS_PROCESS_BAD_REQUEST
+                                                    : MOSS_PROCESS_UNAVAILABLE;
+      }
+    } else if (request.badge && request.size == MOSS_PROCESS_SIGNAL_REQUEST_BYTES &&
+               request.payload[0] == MOSS_PROCESS_SIGNAL_GROUP && !request.capability && !request.rights) {
+      struct Record *caller = find_record(request.badge);
+      unsigned long group_id = moss_process_get_u64(request.payload + 1);
+      unsigned long signo = moss_process_get_u64(request.payload + 9);
+      if (!record_running(caller)) {
+        response.payload[0] = MOSS_PROCESS_NO_ENTRY;
+      } else if (group_id > LONG_MAX || signo >= MOSS_PROCESS_SIGNAL_LIMIT) {
+        response.payload[0] = MOSS_PROCESS_BAD_REQUEST;
+      } else {
+        if (!group_id)
+          group_id = caller->group_id;
+        int sent_signal = 0, failed = 0;
+        for (unsigned int i = 0; i < MOSS_PROCESS_RECORD_LIMIT; ++i) {
+          struct Record *target = &records[i];
+          if (!target->id || !target->domain || target->group_id != group_id ||
+              (target != caller && target->parent_id != caller->id))
+            continue;
+          long result = syscall2(SYS_DOMAIN_SIGNAL, (long)target->domain, (long)signo);
+          if (result == 0)
+            sent_signal = 1;
+          else if (result != -ESRCH)
+            failed = 1;
         }
+        response.payload[0] = sent_signal ? MOSS_PROCESS_OK : failed ? MOSS_PROCESS_UNAVAILABLE : MOSS_PROCESS_NO_ENTRY;
       }
     } else if (request.badge && request.size == 1 && !request.capability && !request.rights) {
       struct Record *record = find_record(request.badge);
@@ -291,35 +438,7 @@ int main(int argc, char **argv) {
           response.payload[0] = MOSS_PROCESS_UNAVAILABLE;
         }
       } else if (request.payload[0] == MOSS_PROCESS_WAIT_ANY) {
-        int pending = 0;
-        int failed = 0;
-        // Scan all children: a running first child must not hide another
-        // child's exit from wait-any.
-        for (unsigned int i = 0; i < MOSS_PROCESS_RECORD_LIMIT; ++i) {
-          struct Record *child = &records[i];
-          if (!child->id || child->parent_id != record->id)
-            continue;
-          pending = 1;
-          // Reservations count as children but cannot have an exit status yet.
-          if (!child->domain)
-            continue;
-          struct moss_domain_exit status = {0};
-          long result = syscall2(SYS_DOMAIN_STATUS, (long)child->domain, (long)&status);
-          if (result == 0) {
-            response.size = MOSS_PROCESS_REPLY_WAIT_BYTES;
-            response.payload[0] = MOSS_PROCESS_EXITED;
-            moss_process_put_u64(response.payload + 1, child->id);
-            moss_process_put_u64(response.payload + 9, ((uint64_t)status.signal << 32) | (uint32_t)status.code);
-            released = child;
-            break;
-          }
-          if (result != -EAGAIN)
-            failed = 1;
-        }
-        if (!released)
-          response.payload[0] = failed    ? MOSS_PROCESS_UNAVAILABLE
-                                : pending ? MOSS_PROCESS_RUNNING
-                                          : MOSS_PROCESS_NO_ENTRY;
+        released = select_exited_child(record, 0, 0, &response);
       } else if (request.payload[0] == MOSS_PROCESS_RELEASE) {
         // A child cannot discard the parent's wait record with its own badge.
         if (record->parent_id || has_children(record->id)) {
@@ -333,6 +452,10 @@ int main(int argc, char **argv) {
     if (request.capability)
       (void)syscall1(SYS_CAP_CLOSE, (long)request.capability);
     long sent = syscall2(SYS_IPC_REPLY, (long)reply, (long)&response);
+    if (changed_group && sent != 0) {
+      changed_group->group_id = old_group_id;
+      changed_group->session_id = old_session_id;
+    }
     if (registered && sent != 0) {
       if (registered->domain)
         (void)syscall1(SYS_CAP_CLOSE, (long)registered->domain);
