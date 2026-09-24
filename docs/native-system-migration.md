@@ -27,8 +27,10 @@ networking and persistent storage.
    The process service now requires that child registration and attachment
    target domains in the same scope. After a restart, the supervisor confirms
    its previous badged session cannot call the replacement endpoint. Exercise
-   delegated old senders, pending calls and orphaned exit records under
-   concurrent service loss.
+   delegated old senders and orphaned exit records under concurrent service
+   loss. Kernel IPC validation checks that receiver closure wakes a claimed
+   call even while its reply handle is still alive; exercise the same race
+   against the process service before treating its recovery as complete.
 2. Move the POSIX file view one operation family at a time through namespace
    and file-object capabilities. Run the real ash and file-utility workflows
    on the new path in all six architecture/build combinations. Keep the old
