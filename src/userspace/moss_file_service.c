@@ -266,6 +266,7 @@ int main(int argc, char **argv) {
     }
     struct moss_ipc_message response = {.size = 1, .payload = {MOSS_FILE_BAD_REQUEST}};
     long minted = 0;
+    struct FileObject *snapshot = NULL;
     struct FileObject *file = find_badge(files, request.badge);
     if (request.capability && request.badge == MOSS_FILE_ROOT_BADGE && request.size == MOSS_FILE_LIST_BYTES &&
         request.payload[0] == MOSS_FILE_LIST && request.rights == MOSS_CAP_MAP_WRITE) {
@@ -408,6 +409,40 @@ int main(int argc, char **argv) {
       // mutable because a reader must not be able to deny writers service.
       file->sealed = 1;
       response.payload[0] = MOSS_FILE_OK;
+    } else if (request.badge == 0 && request.size >= 4 && request.payload[0] == MOSS_FILE_SNAPSHOT &&
+               request.payload[1] == 0 && valid_name(request.payload + 2, request.size - 2) && !request.rights) {
+      file = find_name(files, request.payload + 2, request.size - 2);
+      if (!file) {
+        response.payload[0] = MOSS_FILE_NO_ENTRY;
+      } else {
+        response.payload[0] = MOSS_FILE_UNAVAILABLE;
+        if (next_badge < MOSS_FILE_ROOT_BADGE - 2 && volatile_count < MOSS_FILE_OBJECT_LIMIT) {
+          struct FileObject *copy = calloc(1, sizeof(*copy));
+          if (copy && resize_file(copy, file->length, &allocated)) {
+            if (file->length) {
+              memcpy(copy->data, file->boot_data ? file->boot_data : file->data, file->length);
+            }
+            copy->badge = next_badge;
+            copy->sealed = 1;
+            minted = syscall2(SYS_IPC_MINT_BADGE, (long)mint, (long)copy->badge);
+            if (minted > 0) {
+              copy->next = files;
+              files = copy;
+              snapshot = copy;
+              ++volatile_count;
+              ++next_badge;
+              response.payload[0] = MOSS_FILE_OK;
+              response.capability = (unsigned long)minted;
+              response.rights = MOSS_CAP_SEND | MOSS_CAP_TRANSFER | MOSS_CAP_DUPLICATE;
+            }
+          }
+          if (!snapshot && copy) {
+            allocated -= copy->capacity;
+            free(copy->data);
+            free(copy);
+          }
+        }
+      }
     } else if (file && request.size == MOSS_FILE_RESIZE_HEADER_BYTES && request.payload[0] == MOSS_FILE_RESIZE) {
       uint64_t length = moss_file_get_u64(request.payload + 1);
       if (file->sealed) {
@@ -418,9 +453,18 @@ int main(int argc, char **argv) {
         response.payload[0] = MOSS_FILE_OK;
       }
     }
-    // A timed-out caller may have discarded its Reply; the file remains
-    // usable for later requests regardless of that caller's outcome.
-    (void)syscall2(SYS_IPC_REPLY, (long)reply, (long)&response);
+    // A timed-out caller does not invalidate the existing source file.
+    long replied = syscall2(SYS_IPC_REPLY, (long)reply, (long)&response);
+    if (snapshot && replied != 0) {
+      // A failed handoff must not strand a private clone in the bounded file
+      // table or content budget. This single receiver cannot change the list
+      // head between linking the clone and finishing its Reply.
+      files = snapshot->next;
+      --volatile_count;
+      allocated -= snapshot->capacity;
+      free(snapshot->data);
+      free(snapshot);
+    }
     // Reply transfer snapshots the handle. Keep no local object handle after
     // the reply, including when the caller timed out before delivery.
     if (minted > 0) {

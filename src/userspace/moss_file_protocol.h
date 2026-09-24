@@ -28,7 +28,8 @@ enum {
   MOSS_FILE_STAT = 7,
   MOSS_FILE_ROOT = 8,
   MOSS_FILE_LIST = 9,
-  MOSS_FILE_SEAL = 10
+  MOSS_FILE_SEAL = 10,
+  MOSS_FILE_SNAPSHOT = 11
 };
 enum { MOSS_FILE_OPEN_CREATE = 1U << 0, MOSS_FILE_OPEN_EXCLUSIVE = 1U << 1, MOSS_FILE_OPEN_UNLISTED = 1U << 2,
        MOSS_FILE_OPEN_WRITE = 1U << 3 };
@@ -51,6 +52,9 @@ enum { MOSS_FILE_OBJECT_LIMIT = 16, MOSS_FILE_BOOT_ENTRY_LIMIT = 64, MOSS_FILE_C
 // SEAL is an idempotent one-byte request on an unlisted object sender. It
 // permanently rejects WRITE, APPEND and RESIZE through every sender copy.
 // Named files remain mutable for existing public clients.
+// SNAPSHOT carries [opcode, reserved zero, relative NUL-terminated name] on
+// the unbadged root sender. It returns an unlisted, sealed copy while the
+// named source remains unchanged; ordinary named-file senders cannot clone.
 // READ/WRITE transfer one shared page at an explicit byte offset. Their
 // request carries [opcode, offset: u64 LE, count: u16 LE], and the reply
 // carries [status, transferred: u16 LE]. RESIZE carries [opcode, size: u64 LE].
