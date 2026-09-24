@@ -63,6 +63,8 @@ print('\nMOSS_FILE_WRITE_OK\nmoss$ ', end='', flush=True)
 assert input() == '/moss-file.elf read /note'
 print('\nMOSS_FILE_READ=separate\nmoss$ ', end='', flush=True)
 assert input() == '/moss-file.elf read /../note'
+print('\nMOSS_FILE_READ=separate\nmoss$ ', end='', flush=True)
+assert input() == '/moss-file.elf read /note/../scratch'
 print('\nMOSS_FILE_ERROR\nmoss$ ', end='', flush=True)
 assert input() == '/moss-file.elf read'
 print('\nMOSS_FILE_READ=native\nmoss$ ', end='', flush=True)
@@ -234,12 +236,14 @@ assert input() == 'echo MOSS_PRODUCTION_READY'
     assert 0 <= result["elapsed_seconds"] <= time.monotonic() - started
     assert result["status"] == ("passed" if mode in ("complete", "gdb_complete") else "error")
     assert result["raw_exit"] is not None
+    # Partial fake shells stop at their first missing marker; prompts and
+    # command outputs each count as one completed probe step.
     if mode == "echo_only":
-        assert result["completed_steps"] == 41
+        assert result["completed_steps"] == 43
     if mode == "legacy_shell":
         assert result["completed_steps"] == 8
     if mode == "applets_failed":
-        assert result["completed_steps"] == 37
+        assert result["completed_steps"] == 39
     if mode == "late_panic":
         assert "panicked" in result["observed"]
     if mode == "sleep_runtime_failure":

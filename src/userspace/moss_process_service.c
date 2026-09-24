@@ -573,6 +573,28 @@ static void fd_reply_value(struct moss_ipc_message *response, unsigned long valu
   moss_process_put_u64(response->payload + 1, value);
 }
 
+static int namespace_path_request(const struct moss_ipc_message *incoming, unsigned char operation, unsigned char flags,
+                                  struct moss_ipc_message *lookup) {
+  if (incoming->size < 4 || incoming->capability || incoming->rights)
+    return 0;
+  const unsigned char *path = incoming->payload + 2;
+  unsigned long path_size = incoming->size - 2;
+  if (!path[0] || memchr(path, 0, path_size) != path + path_size - 1)
+    return 0;
+  // ponytail: Root is the only native cwd. Prefix relative paths here; a
+  // per-record directory capability is needed when nested mounts arrive.
+  int relative = path[0] != '/';
+  if (incoming->size + relative > MOSS_IPC_MAX_MESSAGE)
+    return 0;
+  lookup->size = incoming->size + relative;
+  lookup->payload[0] = operation;
+  lookup->payload[1] = flags;
+  if (relative)
+    lookup->payload[2] = '/';
+  memcpy(lookup->payload + 2 + relative, path, path_size);
+  return 1;
+}
+
 static void handle_fd_request(struct Record *owner, unsigned long namespace, unsigned long pipe,
                               struct moss_ipc_message *request, struct moss_ipc_message *response,
                               struct FdAction *action) {
@@ -583,16 +605,11 @@ static void handle_fd_request(struct Record *owner, unsigned long namespace, uns
   action->owner = owner;
   unsigned char operation = request->payload[0];
   if (operation == MOSS_PROCESS_PATH_STAT) {
-    const unsigned char *path = request->payload + 2;
-    unsigned long path_size = request->size >= 2 ? request->size - 2 : 0;
-    if (request->size < 4 || request->payload[1] || request->capability || request->rights || path[0] != '/' ||
-        memchr(path, 0, path_size) != path + path_size - 1)
+    struct moss_ipc_message lookup = {0};
+    if (request->payload[1] || !namespace_path_request(request, MOSS_NAMESPACE_STAT, 0, &lookup))
       return;
     // A received badge authenticates the caller only at this hop; outgoing
     // requests must not replay it as a caller-supplied badge.
-    struct moss_ipc_message lookup = {.size = request->size};
-    memcpy(lookup.payload, request->payload, request->size);
-    lookup.payload[0] = MOSS_NAMESPACE_STAT;
     struct moss_ipc_message stat = {0};
     long result = service_call(namespace, &lookup, &stat);
     if (stat.capability)
@@ -681,22 +698,18 @@ static void handle_fd_request(struct Record *owner, unsigned long namespace, uns
   }
   if (operation == MOSS_PROCESS_FD_OPEN) {
     unsigned char flags = request->payload[1];
-    const unsigned char *path = request->payload + 2;
-    unsigned long path_size = request->size >= 2 ? request->size - 2 : 0;
-    if (request->size < 4 || request->capability || request->rights ||
-        flags &
+    struct moss_ipc_message lookup = {0};
+    if (flags &
             ~(MOSS_PROCESS_FD_READABLE | MOSS_PROCESS_FD_WRITABLE | MOSS_PROCESS_FD_CREATE | MOSS_PROCESS_FD_TRUNCATE |
               MOSS_PROCESS_FD_APPEND | MOSS_PROCESS_FD_CLOEXEC | MOSS_PROCESS_FD_EXCLUSIVE) ||
         !(flags & (MOSS_PROCESS_FD_READABLE | MOSS_PROCESS_FD_WRITABLE)) ||
         ((flags & MOSS_PROCESS_FD_EXCLUSIVE) && !(flags & MOSS_PROCESS_FD_CREATE)) ||
         ((flags & (MOSS_PROCESS_FD_TRUNCATE | MOSS_PROCESS_FD_APPEND)) && !(flags & MOSS_PROCESS_FD_WRITABLE)) ||
-        path[0] != '/' || memchr(path, 0, path_size) != path + path_size - 1)
+        !namespace_path_request(request, MOSS_NAMESPACE_OPEN,
+                                (flags & MOSS_PROCESS_FD_CREATE ? MOSS_NAMESPACE_OPEN_CREATE : 0) |
+                                    (flags & MOSS_PROCESS_FD_EXCLUSIVE ? MOSS_NAMESPACE_OPEN_EXCLUSIVE : 0),
+                                &lookup))
       return;
-    int directory = path_size == 2 && path[1] == 0;
-    if (directory && flags & ~(MOSS_PROCESS_FD_READABLE | MOSS_PROCESS_FD_CLOEXEC)) {
-      response->payload[0] = MOSS_PROCESS_IS_DIRECTORY;
-      return;
-    }
     unsigned long number = first_free_descriptor(owner, 0);
     if (number == MOSS_PROCESS_FD_LIMIT) {
       response->payload[0] = MOSS_PROCESS_TOO_MANY_FILES;
@@ -712,31 +725,39 @@ static void handle_fd_request(struct Record *owner, unsigned long namespace, uns
       response->payload[0] = MOSS_PROCESS_UNAVAILABLE;
       return;
     }
-    struct moss_ipc_message lookup = {.size = request->size, .payload = {MOSS_NAMESPACE_OPEN}};
-    lookup.payload[1] = (flags & MOSS_PROCESS_FD_CREATE ? MOSS_NAMESPACE_OPEN_CREATE : 0) |
-                        (flags & MOSS_PROCESS_FD_EXCLUSIVE ? MOSS_NAMESPACE_OPEN_EXCLUSIVE : 0);
-    memcpy(lookup.payload + 2, path, path_size);
     struct moss_ipc_message opened = {0};
     long result = service_call(namespace, &lookup, &opened);
     if (result == 1 && opened.payload[0] == MOSS_NAMESPACE_NO_ENTRY && !opened.capability && !opened.rights) {
       response->payload[0] = MOSS_PROCESS_NOT_FOUND;
     } else if (result == 1 && opened.payload[0] == MOSS_NAMESPACE_EXISTS && !opened.capability && !opened.rights) {
       response->payload[0] = MOSS_PROCESS_EXISTS;
-    } else if (result == 1 && opened.payload[0] == MOSS_NAMESPACE_OK && opened.capability &&
-               opened.rights == MOSS_CAP_SEND &&
-               (directory || !(flags & MOSS_PROCESS_FD_TRUNCATE) || file_resize(opened.capability, 0))) {
-      description->object = opened.capability;
-      description->flags = flags & (MOSS_PROCESS_FD_READABLE | MOSS_PROCESS_FD_WRITABLE | MOSS_PROCESS_FD_APPEND);
-      description->references = 1;
-      description->kind = directory ? DESCRIPTION_DIRECTORY : DESCRIPTION_FILE;
-      entry->number = number;
-      entry->description = description;
-      entry->close_on_exec = !!(flags & MOSS_PROCESS_FD_CLOEXEC);
-      entry->next = owner->descriptors;
-      owner->descriptors = entry;
-      opened.capability = 0;
-      action->added = entry;
-      fd_reply_value(response, number);
+    } else if (result == 1 && opened.payload[0] == MOSS_NAMESPACE_IS_DIRECTORY && !opened.capability &&
+               !opened.rights) {
+      response->payload[0] = MOSS_PROCESS_IS_DIRECTORY;
+    } else if (result == 1 && opened.payload[0] == MOSS_NAMESPACE_BAD_REQUEST && !opened.capability && !opened.rights) {
+      response->payload[0] = MOSS_PROCESS_BAD_REQUEST;
+    } else if (result == MOSS_NAMESPACE_OPEN_REPLY_BYTES && opened.payload[0] == MOSS_NAMESPACE_OK &&
+               (opened.payload[1] == MOSS_NAMESPACE_KIND_FILE || opened.payload[1] == MOSS_NAMESPACE_KIND_DIRECTORY) &&
+               opened.capability && opened.rights == MOSS_CAP_SEND) {
+      int directory = opened.payload[1] == MOSS_NAMESPACE_KIND_DIRECTORY;
+      if (directory && flags & ~(MOSS_PROCESS_FD_READABLE | MOSS_PROCESS_FD_CLOEXEC)) {
+        response->payload[0] = MOSS_PROCESS_IS_DIRECTORY;
+      } else if (!directory && (flags & MOSS_PROCESS_FD_TRUNCATE) && !file_resize(opened.capability, 0)) {
+        response->payload[0] = MOSS_PROCESS_UNAVAILABLE;
+      } else {
+        description->object = opened.capability;
+        description->flags = flags & (MOSS_PROCESS_FD_READABLE | MOSS_PROCESS_FD_WRITABLE | MOSS_PROCESS_FD_APPEND);
+        description->references = 1;
+        description->kind = directory ? DESCRIPTION_DIRECTORY : DESCRIPTION_FILE;
+        entry->number = number;
+        entry->description = description;
+        entry->close_on_exec = !!(flags & MOSS_PROCESS_FD_CLOEXEC);
+        entry->next = owner->descriptors;
+        owner->descriptors = entry;
+        opened.capability = 0;
+        action->added = entry;
+        fd_reply_value(response, number);
+      }
     } else {
       response->payload[0] = MOSS_PROCESS_UNAVAILABLE;
     }

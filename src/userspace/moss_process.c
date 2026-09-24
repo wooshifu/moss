@@ -661,7 +661,8 @@ static unsigned long opened_file_cap(unsigned long namespace, const char *path, 
   memcpy(request.payload + 2, path, path_size);
   struct moss_ipc_message response = {0};
   long result = call(namespace, &request, &response);
-  if (result == 1 && response.payload[0] == MOSS_NAMESPACE_OK && response.capability && response.rights == rights)
+  if (result == MOSS_NAMESPACE_OPEN_REPLY_BYTES && response.payload[0] == MOSS_NAMESPACE_OK &&
+      response.payload[1] == MOSS_NAMESPACE_KIND_FILE && response.capability && response.rights == rights)
     return response.capability;
   if (response.capability)
     (void)syscall1(SYS_CAP_CLOSE, (long)response.capability);
@@ -854,7 +855,11 @@ static int fd_directory_probe(unsigned long session, unsigned long memory, const
     struct moss_ipc_message writable = {.size = 2 + sizeof("/"), .payload = {MOSS_PROCESS_FD_OPEN}};
     writable.payload[1] = MOSS_PROCESS_FD_WRITABLE;
     memcpy(writable.payload + 2, "/", sizeof("/"));
+    struct moss_ipc_message create = {.size = 2 + sizeof("."), .payload = {MOSS_PROCESS_FD_OPEN}};
+    create.payload[1] = MOSS_PROCESS_FD_READABLE | MOSS_PROCESS_FD_CREATE;
+    memcpy(create.payload + 2, ".", sizeof("."));
     valid = fd_rejected(session, &writable, MOSS_PROCESS_IS_DIRECTORY) &&
+            fd_rejected(session, &create, MOSS_PROCESS_IS_DIRECTORY) &&
             fd_readdir(session, directory, memory, page, &type, &id, &cookie, &name_size) &&
             type == MOSS_FILE_TYPE_DIRECTORY && id == MOSS_FILE_ROOT_BADGE && cookie == 1 && name_size == sizeof(".") &&
             strcmp(page, ".") == 0 && fd_command(session, MOSS_PROCESS_FD_DUP, directory, &duplicate);
@@ -940,6 +945,22 @@ static int fd_view_probe(void) {
     valid = path_stat(session, "/note", &kind, &object_id, &object_size) && kind == MOSS_PROCESS_FD_KIND_FILE &&
             object_id == file_id && object_size == 3 && path_stat(session, "/", &kind, &object_id, &object_size) &&
             kind == MOSS_PROCESS_FD_KIND_DIRECTORY && object_id == MOSS_FILE_ROOT_BADGE && object_size == 0;
+  if (valid) {
+    unsigned long relative = 0, dot = 0;
+    valid = path_stat(session, "note", &kind, &object_id, &object_size) && kind == MOSS_PROCESS_FD_KIND_FILE &&
+            object_id == file_id && object_size == 3 && path_stat(session, "./note", &kind, &object_id, &object_size) &&
+            object_id == file_id && path_stat(session, "..", &kind, &object_id, &object_size) &&
+            kind == MOSS_PROCESS_FD_KIND_DIRECTORY && object_id == MOSS_FILE_ROOT_BADGE &&
+            fd_open(session, "../note", MOSS_PROCESS_FD_READABLE, &relative) &&
+            fd_stat(session, relative, &kind, &object_id, &object_size) && kind == MOSS_PROCESS_FD_KIND_FILE &&
+            object_id == file_id && fd_open(session, ".", MOSS_PROCESS_FD_READABLE, &dot) &&
+            fd_stat(session, dot, &kind, &object_id, &object_size) && kind == MOSS_PROCESS_FD_KIND_DIRECTORY &&
+            object_id == MOSS_FILE_ROOT_BADGE;
+    if (dot)
+      valid &= fd_command(session, MOSS_PROCESS_FD_CLOSE, dot, NULL);
+    if (relative)
+      valid &= fd_command(session, MOSS_PROCESS_FD_CLOSE, relative, NULL);
+  }
   if (valid) {
     struct moss_ipc_message missing = {.size = 2 + sizeof("/path-stat-absent"), .payload = {MOSS_PROCESS_PATH_STAT}};
     memcpy(missing.payload + 2, "/path-stat-absent", sizeof("/path-stat-absent"));

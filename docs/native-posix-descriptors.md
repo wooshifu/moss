@@ -39,8 +39,11 @@ their kind with zero ID and size. The flat root now has a read-only directory
 capability. `FD_READDIR` enumerates `.`, `..` and named file objects through a
 shared open-description cookie, with the cookie committed only after the
 caller receives the reply. Unlisted Loader images stay out of that listing.
-Native `PATH_STAT` asks the namespace to resolve an absolute path and query
-the file object without allocating a descriptor.
+Native `PATH_STAT` asks the namespace to resolve a path and query the file
+object without allocating a descriptor. Relative names currently start at
+the only native cwd, the flat root; the namespace resolves leading `.` and
+`..` there. Native open reports object kind so the process service can
+identify the root directory without guessing from path spelling.
 Managed libc still uses kernel `stat`, `lstat` and `getdents`; nested traversal,
 timestamps, credentials and readiness metadata remain to be defined.
 

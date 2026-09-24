@@ -119,9 +119,10 @@ enum { MOSS_PROCESS_FD_STAT_REPLY_BYTES = 18 };
 // bytes means EOF and returns the unchanged cursor. A failed reply leaves
 // the shared directory cursor intact.
 enum { MOSS_PROCESS_FD_READDIR_REPLY_BYTES = 20 };
-// PATH_STAT carries [opcode, zero flags, absolute NUL-terminated path] and
+// PATH_STAT carries [opcode, zero flags, NUL-terminated path] and
 // returns the same [OK, kind, ID, size] shape as FD_STAT. No descriptor is
-// allocated, and it reports the object's current metadata by path.
+// allocated, and it reports the object's current metadata by path. Relative
+// names resolve from the only native cwd, the root directory.
 
 // REGISTER returns [OK, ID:u64 LE]. STATUS returns [EXITED, status:u64 LE].
 // WAIT_ANY returns [EXITED, child ID:u64 LE, status:u64 LE] and atomically
@@ -143,8 +144,9 @@ enum { MOSS_PROCESS_FD_READDIR_REPLY_BYTES = 20 };
 // current group; the service still requires the parent's badge to reap them.
 // SIGNAL_GROUP selects the caller's group for ID zero. It can signal only the
 // caller and its direct children that belong to that group.
-// FD_OPEN carries [opcode, flags, absolute NUL-terminated namespace path] and
-// returns [OK, descriptor:u64 LE]. EXCLUSIVE requires CREATE and reports
+// FD_OPEN carries [opcode, flags, NUL-terminated namespace path], resolves
+// relative names from the native root cwd, and returns [OK, descriptor:u64 LE].
+// EXCLUSIVE requires CREATE and reports
 // EXISTS without truncating or opening an existing file. FD_CLOSE and FD_DUP
 // carry [opcode, descriptor:u64 LE]; DUP returns the new descriptor. FD_DUP_TO carries
 // [opcode, source:u64 LE, target:u64 LE] and returns the target. A different

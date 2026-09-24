@@ -161,6 +161,9 @@ quit
         (b"moss$ ", b"/moss-file.elf read /note\n"),
         (b"\nMOSS_FILE_READ=separate\n", None),
         (b"moss$ ", b"/moss-file.elf read /../note\n"),
+        (b"\nMOSS_FILE_READ=separate\n", None),
+        # Root's parent is root, but a regular file cannot be traversed.
+        (b"moss$ ", b"/moss-file.elf read /note/../scratch\n"),
         (b"\nMOSS_FILE_ERROR\n", None),
         (b"moss$ ", b"/moss-file.elf read\n"),
         (b"\nMOSS_FILE_READ=native\n", None),

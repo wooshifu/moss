@@ -203,7 +203,8 @@ int main(int argc, char **argv) {
   memcpy(open.payload + 2, path, path_size);
   struct moss_ipc_message opened = {0};
   long lookup = call(namespace, &open, &opened);
-  if (lookup != 1 || opened.payload[0] != MOSS_NAMESPACE_OK || !opened.capability || opened.rights != MOSS_CAP_SEND) {
+  if (lookup != MOSS_NAMESPACE_OPEN_REPLY_BYTES || opened.payload[0] != MOSS_NAMESPACE_OK ||
+      opened.payload[1] != MOSS_NAMESPACE_KIND_FILE || !opened.capability || opened.rights != MOSS_CAP_SEND) {
     if (opened.capability) {
       (void)syscall1(SYS_CAP_CLOSE, (long)opened.capability);
     }
