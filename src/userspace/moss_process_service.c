@@ -412,7 +412,7 @@ static int file_stat(unsigned long file, unsigned long *id, unsigned long *size)
     return 0;
   unsigned long file_id = moss_file_get_u64(response.payload + 1);
   unsigned long file_size = moss_file_get_u64(response.payload + 9);
-  if (!file_id || file_size > MOSS_FILE_CONTENT_BUDGET_BYTES)
+  if (!file_id)
     return 0;
   if (id)
     *id = file_id;
@@ -444,9 +444,8 @@ static int file_transfer(struct OpenDescription *description, unsigned long memo
     return -1;
   *position = operation == MOSS_FILE_APPEND ? moss_file_get_u64(response.payload + 1) : description->offset;
   *transferred = moss_file_get_u16(response.payload + (operation == MOSS_FILE_APPEND ? 9 : 1));
-  if (*transferred > count || (writing && *transferred != count) ||
-      (*position > MOSS_FILE_CONTENT_BUDGET_BYTES ? writing || *transferred != 0
-                                                  : *transferred > MOSS_FILE_CONTENT_BUDGET_BYTES - *position))
+  if (*transferred > count || (writing && (*transferred != count || *position > MOSS_FILE_CONTENT_BUDGET_BYTES ||
+                                          *transferred > MOSS_FILE_CONTENT_BUDGET_BYTES - *position)))
     return -1;
   return 1;
 }
@@ -622,8 +621,7 @@ static void handle_fd_request(struct Record *owner, unsigned long namespace, uns
     } else if (result == MOSS_NAMESPACE_STAT_REPLY_BYTES && !stat.capability && !stat.rights &&
                stat.payload[0] == MOSS_NAMESPACE_OK &&
                (stat.payload[1] == MOSS_NAMESPACE_KIND_FILE || stat.payload[1] == MOSS_NAMESPACE_KIND_DIRECTORY) &&
-               moss_process_get_u64(stat.payload + 2) &&
-               moss_process_get_u64(stat.payload + 10) <= MOSS_FILE_CONTENT_BUDGET_BYTES) {
+               moss_process_get_u64(stat.payload + 2)) {
       response->size = MOSS_PROCESS_FD_STAT_REPLY_BYTES;
       memcpy(response->payload, stat.payload, response->size);
       response->payload[1] = stat.payload[1] == MOSS_NAMESPACE_KIND_FILE ? DESCRIPTION_FILE : DESCRIPTION_DIRECTORY;

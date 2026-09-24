@@ -123,8 +123,7 @@ int main(int argc, char **argv) {
             struct moss_ipc_message stat_response = {0};
             long stat_result = file_call(opened.capability, &stat_request, &stat_response);
             if (stat_result == MOSS_FILE_STAT_REPLY_BYTES && stat_response.payload[0] == MOSS_FILE_OK &&
-                !stat_response.capability && !stat_response.rights && moss_file_get_u64(stat_response.payload + 1) &&
-                moss_file_get_u64(stat_response.payload + 9) <= MOSS_FILE_CONTENT_BUDGET_BYTES) {
+                !stat_response.capability && !stat_response.rights && moss_file_get_u64(stat_response.payload + 1)) {
               response.size = MOSS_NAMESPACE_STAT_REPLY_BYTES;
               response.payload[0] = MOSS_NAMESPACE_OK;
               response.payload[1] = root ? MOSS_NAMESPACE_KIND_DIRECTORY : MOSS_NAMESPACE_KIND_FILE;

@@ -261,6 +261,8 @@ public:
 
   [[nodiscard]] u32 file_count() const noexcept { return file_count_; }
   [[nodiscard]] bool is_initialized() const noexcept { return initialized_; }
+  [[nodiscard]] const u8 *bytes() const noexcept { return initialized_ ? base_ : nullptr; }
+  [[nodiscard]] usize size_bytes() const noexcept { return initialized_ ? archive_size_ : 0; }
 
   /// Iterate over all entries
   template <typename F> void for_each(F &&callback) const noexcept {

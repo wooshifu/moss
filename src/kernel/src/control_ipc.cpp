@@ -304,6 +304,36 @@ public:
   [[nodiscard]] usize count() const noexcept { return count_; }
 };
 
+[[nodiscard]] shared_ptr<capability::Object> make_memory_object(usize bytes, const u8 *source) noexcept {
+  const usize count = bytes / PAGE_SIZE + (bytes % PAGE_SIZE != 0);
+  if (count == 0 || count > USER_MAX / PAGE_SIZE)
+    return {};
+  // try_make may destroy a constructed object if its control block allocation
+  // fails, so no physical page may be owned until it returns.
+  auto object = shared_ptr<capability::Object>::try_make<MemoryObject>(ipc_allocate);
+  if (!object)
+    return {};
+  auto storage = mm::RuntimeHeapAllocator::allocate(count * sizeof(PhysAddr));
+  if (!storage)
+    return {};
+  auto *memory = static_cast<MemoryObject *>(object.get());
+  memory->adopt_storage(static_cast<PhysAddr *>(*storage), count);
+  for (usize i = 0; i < count; ++i) {
+    auto page = mm::allocate_pages(0);
+    if (!page)
+      return {};
+    auto *target = reinterpret_cast<u8 *>(phys_to_virt(*page));
+    const usize offset = i * PAGE_SIZE;
+    const usize available = source ? bytes - offset : 0;
+    const usize copied = available < PAGE_SIZE ? available : PAGE_SIZE;
+    if (copied)
+      __builtin_memcpy(target, source + offset, copied);
+    __builtin_memset(target + copied, 0, PAGE_SIZE - copied);
+    memory->append_page(*page);
+  }
+  return object;
+}
+
 class Reply final : public capability::Object {
 public:
   shared_ptr<Channel> channel;
@@ -397,27 +427,40 @@ long sys_mem_create(long size, long, long, long, long, long) noexcept {
   auto proc = caller_process();
   if (!proc)
     return -errc::ESRCH;
-  // Construct first: try_make may destroy a constructed object if its control
-  // block allocation fails, so no physical page may be owned until it returns.
-  auto object = shared_ptr<capability::Object>::try_make<MemoryObject>(ipc_allocate);
+  auto object = make_memory_object(static_cast<usize>(size), nullptr);
   if (!object)
     return -errc::ENOMEM;
-  const usize count = static_cast<usize>(size) / PAGE_SIZE;
-  auto storage = mm::RuntimeHeapAllocator::allocate(count * sizeof(PhysAddr));
-  if (!storage)
-    return -errc::ENOMEM;
-  auto *memory = static_cast<MemoryObject *>(object.get());
-  memory->adopt_storage(static_cast<PhysAddr *>(*storage), count);
-  for (usize i = 0; i < count; ++i) {
-    auto page = mm::allocate_pages(0);
-    if (!page)
-      return -errc::ENOMEM;
-    __builtin_memset(reinterpret_cast<void *>(phys_to_virt(*page)), 0, PAGE_SIZE);
-    memory->append_page(*page);
-  }
   constexpr u32 initial_rights = capability::rights::MAP_READ | capability::rights::MAP_WRITE |
                                  capability::rights::TRANSFER | capability::rights::DUPLICATE;
   auto handle = proc->capabilities().install(moss::move(object), initial_rights);
+  return handle ? static_cast<long>(*handle) : cap_error(handle.error());
+}
+
+long sys_boot_archive(long size_addr, long, long, long, long, long) noexcept {
+  auto proc = caller_process();
+  if (!proc)
+    return -errc::ESRCH;
+  // The whole boot image is bootstrap authority, delegated only by the
+  // initial supervisor. Other domains cannot acquire this raw source.
+  if (!proc->is_initial_supervisor())
+    return -errc::EACCES;
+  const u8 *source = initramfs::g_initramfs.bytes();
+  const usize size = initramfs::g_initramfs.size_bytes();
+  if (!source || !size)
+    return -errc::ENOENT;
+  auto as = proc->address_space();
+  if (!as)
+    return -errc::ESRCH;
+  const u64 actual_size = size;
+  if (as->copy_to_user(static_cast<VirtAddr>(size_addr), &actual_size, sizeof(actual_size)) != 0)
+    return -errc::EFAULT;
+  // Copy raw bytes into ordinary Memory Object frames so domain mappings use
+  // the same frame ownership and read-only rights as other shared objects.
+  auto object = make_memory_object(size, source);
+  if (!object)
+    return -errc::ENOMEM;
+  constexpr u32 rights = capability::rights::MAP_READ | capability::rights::TRANSFER | capability::rights::DUPLICATE;
+  auto handle = proc->capabilities().install(moss::move(object), rights);
   return handle ? static_cast<long>(*handle) : cap_error(handle.error());
 }
 

@@ -1,5 +1,4 @@
 #include <errno.h>
-#include <fcntl.h>
 #include <limits.h>
 #include <signal.h>
 #include <stddef.h>
@@ -241,7 +240,8 @@ static int reap_shell(long parent_session, unsigned long child_id) {
 }
 
 static int start_endpoint_service(struct Service *service, const char *program, long scope, long namespace_capability,
-                                  long pipe_capability, long console_capability) {
+                                  long pipe_capability, long console_capability, long archive_capability,
+                                  unsigned long archive_size) {
   struct moss_ipc_endpoints endpoints = {0};
   if (syscall1(SYS_IPC_CREATE, (long)&endpoints) != 0) {
     return -1;
@@ -258,8 +258,8 @@ static int start_endpoint_service(struct Service *service, const char *program, 
   if (mint <= 0) {
     goto fail;
   }
-  char receive_arg[32], mint_arg[32], scope_arg[32], namespace_arg[32], pipe_arg[32],
-      console_arg[32]; // Decimal 64-bit handles.
+  char receive_arg[32], mint_arg[32], scope_arg[32], namespace_arg[32], pipe_arg[32], console_arg[32],
+      archive_arg[32], archive_size_arg[32]; // Decimal 64-bit handles and archive size.
   int receive_size = snprintf(receive_arg, sizeof(receive_arg), "%lu", (unsigned long)receive);
   int mint_size = snprintf(mint_arg, sizeof(mint_arg), "%lu", (unsigned long)mint);
   int scope_size = scope > 0 ? snprintf(scope_arg, sizeof(scope_arg), "%lu", (unsigned long)scope) : 0;
@@ -269,6 +269,12 @@ static int start_endpoint_service(struct Service *service, const char *program, 
   int pipe_size = pipe_capability > 0 ? snprintf(pipe_arg, sizeof(pipe_arg), "%lu", (unsigned long)pipe_capability) : 0;
   int console_size =
       console_capability > 0 ? snprintf(console_arg, sizeof(console_arg), "%lu", (unsigned long)console_capability) : 0;
+  int archive_arg_size = archive_capability > 0
+                             ? snprintf(archive_arg, sizeof(archive_arg), "%lu", (unsigned long)archive_capability)
+                             : 0;
+  int archive_size_size = archive_capability > 0
+                              ? snprintf(archive_size_arg, sizeof(archive_size_arg), "%lu", archive_size)
+                              : 0;
   if (receive_size < 0 || (size_t)receive_size >= sizeof(receive_arg) || mint_size < 0 ||
       (size_t)mint_size >= sizeof(mint_arg) || scope_size < 0 || (size_t)scope_size >= sizeof(scope_arg)) {
     goto fail;
@@ -276,25 +282,35 @@ static int start_endpoint_service(struct Service *service, const char *program, 
   if (namespace_size < 0 || (size_t)namespace_size >= sizeof(namespace_arg) || pipe_size < 0 ||
       (size_t)pipe_size >= sizeof(pipe_arg) || console_size < 0 || (size_t)console_size >= sizeof(console_arg) ||
       (namespace_capability > 0 && scope <= 0) || (pipe_capability > 0 && namespace_capability <= 0) ||
-      (console_capability > 0 && pipe_capability <= 0))
+      (console_capability > 0 && pipe_capability <= 0) || archive_arg_size < 0 ||
+      (size_t)archive_arg_size >= sizeof(archive_arg) || archive_size_size < 0 ||
+      (size_t)archive_size_size >= sizeof(archive_size_arg) ||
+      (archive_capability > 0 && (!archive_size || scope > 0 || namespace_capability > 0 || pipe_capability > 0 ||
+                                  console_capability > 0)) ||
+      (archive_capability <= 0 && archive_size))
     goto fail;
 
   long domain = 0;
+  // Slot three carries either the boot archive or the process scope. The
+  // argument checks above keep those service roles mutually exclusive.
   const struct moss_fork_capability handles[] = {
       {(unsigned long)receive, MOSS_CAP_RECEIVE, 0},
       {(unsigned long)mint, MOSS_CAP_SEND | MOSS_CAP_TRANSFER | MOSS_CAP_DUPLICATE | MOSS_CAP_MINT, 0},
-      {(unsigned long)scope, MOSS_CAP_DOMAIN_SCOPE_INSPECT, 0},
+      {(unsigned long)(archive_capability > 0 ? archive_capability : scope),
+       archive_capability > 0 ? MOSS_CAP_MAP_READ : MOSS_CAP_DOMAIN_SCOPE_INSPECT, 0},
       {(unsigned long)namespace_capability, MOSS_CAP_SEND, 0},
       {(unsigned long)pipe_capability, MOSS_CAP_SEND, 0},
       {(unsigned long)console_capability, MOSS_CAP_SEND | MOSS_CAP_DUPLICATE, 0}};
-  size_t handle_count = 2 + (scope > 0) + (namespace_capability > 0) + (pipe_capability > 0) + (console_capability > 0);
+  size_t handle_count = 2 + (archive_capability > 0) + (scope > 0) + (namespace_capability > 0) +
+                        (pipe_capability > 0) + (console_capability > 0);
   pid_t child = fork_domain(&domain, handles, handle_count, 0);
   if (child == 0) {
     char *const argv[] = {(char *)program,
                           receive_arg,
                           mint_arg,
-                          scope > 0 ? scope_arg : NULL,
-                          namespace_capability > 0 ? namespace_arg : NULL,
+                          archive_capability > 0 ? archive_arg : scope > 0 ? scope_arg : NULL,
+                          archive_capability > 0 ? archive_size_arg
+                                                 : namespace_capability > 0 ? namespace_arg : NULL,
                           pipe_capability > 0 ? pipe_arg : NULL,
                           console_capability > 0 ? console_arg : NULL,
                           NULL};
@@ -424,9 +440,20 @@ static long call_service(long send, const struct moss_ipc_message *request, stru
 
 static int seed_loader_file(long file, const char *name, const char *source, long *image) {
   *image = 0;
-  int fd = source ? open(source, O_RDONLY) : -1;
-  if (source && fd < 0)
-    return -1;
+  long source_object = 0;
+  if (source) {
+    struct moss_ipc_message lookup = {.size = strlen(source) + 3, .payload = {MOSS_FILE_OPEN}};
+    memcpy(lookup.payload + 2, source, strlen(source) + 1);
+    struct moss_ipc_message found = {0};
+    long opened = call_service(file, &lookup, &found);
+    if (opened != 1 || found.size != 1 || found.payload[0] != MOSS_FILE_OK || !found.capability ||
+        found.rights != (MOSS_CAP_SEND | MOSS_CAP_TRANSFER | MOSS_CAP_DUPLICATE)) {
+      if (found.capability)
+        (void)syscall1(SYS_CAP_CLOSE, (long)found.capability);
+      return -1;
+    }
+    source_object = (long)found.capability;
+  }
   struct moss_ipc_message request = {.size = strlen(name) + 3,
                                      .payload = {MOSS_FILE_OPEN, MOSS_FILE_OPEN_CREATE | MOSS_FILE_OPEN_UNLISTED}};
   memcpy(request.payload + 2, name, strlen(name) + 1);
@@ -436,8 +463,8 @@ static int seed_loader_file(long file, const char *name, const char *source, lon
       response.rights != (MOSS_CAP_SEND | MOSS_CAP_TRANSFER | MOSS_CAP_DUPLICATE)) {
     if (response.capability)
       (void)syscall1(SYS_CAP_CLOSE, (long)response.capability);
-    if (fd >= 0)
-      (void)close(fd);
+    if (source_object > 0)
+      (void)syscall1(SYS_CAP_CLOSE, source_object);
     return -1;
   }
   long object = (long)response.capability;
@@ -446,16 +473,27 @@ static int seed_loader_file(long file, const char *name, const char *source, lon
   int valid = mapped > 0;
   size_t offset = 0;
   while (valid) {
-    ssize_t count;
+    unsigned int count;
     if (source) {
-      count = read(fd, (void *)mapped, MOSS_MEM_OBJECT_BYTES);
-      if (count < 0 && errno == EINTR)
-        continue;
+      request = (struct moss_ipc_message){.size = MOSS_FILE_IO_HEADER_BYTES,
+                                          .capability = (unsigned long)memory,
+                                          .rights = MOSS_CAP_MAP_WRITE,
+                                          .payload = {MOSS_FILE_READ}};
+      moss_file_put_u64(request.payload + 1, offset);
+      moss_file_put_u16(request.payload + 9, MOSS_MEM_OBJECT_BYTES);
+      response = (struct moss_ipc_message){0};
+      sent = call_service(source_object, &request, &response);
+      count = sent == MOSS_FILE_IO_REPLY_BYTES && response.payload[0] == MOSS_FILE_OK && !response.capability &&
+                      !response.rights
+                  ? moss_file_get_u16(response.payload + 1)
+                  : MOSS_MEM_OBJECT_BYTES + 1;
+      if (response.capability)
+        (void)syscall1(SYS_CAP_CLOSE, (long)response.capability);
     } else {
       memcpy((void *)mapped, "BAD", 3);
       count = offset ? 0 : 3;
     }
-    if (count < 0 || (size_t)count > MOSS_FILE_CONTENT_BUDGET_BYTES - offset) {
+    if (count > MOSS_MEM_OBJECT_BYTES || count > MOSS_FILE_CONTENT_BUDGET_BYTES - offset) {
       valid = 0;
       break;
     }
@@ -482,8 +520,8 @@ static int seed_loader_file(long file, const char *name, const char *source, lon
     _exit(1); // Init cannot safely retry with an accumulating leaked mapping.
   if (memory > 0)
     (void)syscall1(SYS_CAP_CLOSE, memory);
-  if (fd >= 0)
-    (void)close(fd);
+  if (source_object > 0)
+    (void)syscall1(SYS_CAP_CLOSE, source_object);
   if (valid && offset) {
     // A root sender can create an unlisted object, but must not be able to
     // recover its authority by a later name lookup.
@@ -970,6 +1008,17 @@ int main(void) {
     report(STDERR_FILENO, "moss-init: domain factory acquisition failed\n");
     return 1;
   }
+  unsigned long archive_size = 0;
+  long archive = syscall1(SYS_BOOT_ARCHIVE, (long)&archive_size);
+  long writable = archive > 0 ? syscall2(SYS_MEM_MAP, archive, MOSS_CAP_MAP_WRITE) : 0;
+  if (archive <= 0 || !archive_size || writable != -EACCES) {
+    char message[128];
+    int length = snprintf(message, sizeof(message), "moss-init: boot archive failed cap=%ld size=%lu write=%ld\n",
+                          archive, archive_size, writable);
+    if (length > 0 && (size_t)length < sizeof(message))
+      report(STDERR_FILENO, message);
+    return 1;
+  }
   struct Service code = {0};
   long code_probe = 0;
   while (launch_code_service(&code, approver, &code_probe) != 0) {
@@ -979,7 +1028,7 @@ int main(void) {
   }
   for (;;) {
     struct Service file = {0};
-    if (start_endpoint_service(&file, "/file-service.elf", 0, 0, 0, 0) != 0) {
+    if (start_endpoint_service(&file, "/file-service.elf", 0, 0, 0, 0, archive, archive_size) != 0) {
       report(STDERR_FILENO, "moss-init: file service launch failed\n");
       if (restart_delay() != 0) {
         return 1;
@@ -987,10 +1036,10 @@ int main(void) {
       continue;
     }
     report_started("file service", file.pid);
-    // The kernel filesystem remains the bootstrap image source. The loader
-    // receives only capability-addressed private copies after seeding.
+    // The Loader receives capability-addressed private copies from the
+    // read-only boot object, so its image authority survives namespace restarts.
     struct LoaderImages images = {0};
-    if (seed_loader_file(file.send, "loader-probe", "/loader_probe.elf", &images.probe) != 0 ||
+    if (seed_loader_file(file.send, "loader-probe", "loader_probe.elf", &images.probe) != 0 ||
         seed_loader_file(file.send, "loader-bad", NULL, &images.bad) != 0) {
       report(STDERR_FILENO, "moss-init: loader image seeding failed\n");
       close_loader_images(&images);
@@ -1029,17 +1078,17 @@ int main(void) {
         if (scope <= 0) {
           report(STDERR_FILENO, "moss-init: process scope creation failed\n");
           lost = PROCESS_LOST;
-        } else if (start_endpoint_service(&pipe, "/pipe-service.elf", 0, 0, 0, 0) != 0) {
+        } else if (start_endpoint_service(&pipe, "/pipe-service.elf", 0, 0, 0, 0, 0, 0) != 0) {
           report(STDERR_FILENO, "moss-init: pipe service launch failed\n");
           lost = PIPE_LOST;
-        } else if (start_endpoint_service(&console, "/console-service.elf", 0, 0, 0, 0) != 0) {
+        } else if (start_endpoint_service(&console, "/console-service.elf", 0, 0, 0, 0, 0, 0) != 0) {
           report(STDERR_FILENO, "moss-init: console service launch failed\n");
           lost = CONSOLE_LOST;
         } else if ((console_input = console_input_sender(console.send)) <= 0) {
           report(STDERR_FILENO, "moss-init: console input sender acquisition failed\n");
           lost = CONSOLE_LOST;
         } else if (start_endpoint_service(&process, "/process-service.elf", scope, namespace.send, pipe.send,
-                                          console.send) != 0) {
+                                          console.send, 0, 0) != 0) {
           report(STDERR_FILENO, "moss-init: process service launch failed\n");
           lost = PROCESS_LOST;
         } else {

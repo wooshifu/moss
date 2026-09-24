@@ -47,6 +47,9 @@ enum {
 // the whole object. MAP_WRITE mappings are also readable on all supported
 // architectures; closing a handle keeps mappings.
 #define MOSS_MEM_OBJECT_BYTES 4096UL
+// SYS_BOOT_ARCHIVE is reserved for the initial supervisor. It writes the
+// archive's exact byte size to an unsigned long and returns a read-only Memory
+// Object capability; the mapped final page is zero-padded.
 
 struct moss_ipc_endpoints {
   unsigned long send;

@@ -1562,6 +1562,8 @@ unsigned long ipc_memory_object(void) {
   const long memory_bytes = 3 * MOSS_MEM_OBJECT_BYTES;
   if (syscall1(SYS_MEM_CREATE, 0) != -IPC_EINVAL || syscall1(SYS_MEM_CREATE, MOSS_MEM_OBJECT_BYTES + 1) != -IPC_EINVAL)
     return 1;
+  if (syscall1(SYS_BOOT_ARCHIVE, 0) != -IPC_EACCES)
+    return 1;
   long memory = syscall1(SYS_MEM_CREATE, memory_bytes);
   if (memory <= 0)
     return 2;

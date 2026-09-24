@@ -9,6 +9,15 @@
 enum { FILE_NAME_BYTES = MOSS_IPC_MAX_MESSAGE - 2 };
 _Static_assert(MOSS_MEM_OBJECT_BYTES == 4096, "file protocol page size");
 
+// CPIO newc stores each numeric field as eight ASCII hex digits and pads
+// records to four-byte boundaries. The service owns boot path parsing.
+struct NewcHeader {
+  char magic[6], ino[8], mode[8], uid[8], gid[8], nlink[8], mtime[8], filesize[8];
+  char devmajor[8], devminor[8], rdevmajor[8], rdevminor[8], namesize[8], check[8];
+};
+_Static_assert(sizeof(struct NewcHeader) == 110, "CPIO newc header size");
+enum { CPIO_TYPE_MASK = 0170000, CPIO_REGULAR = 0100000, CPIO_ALIGNMENT = 4, BOOT_FILE_LIMIT = 64 };
+
 struct FileObject {
   struct FileObject *next;
   unsigned long badge;
@@ -17,10 +26,11 @@ struct FileObject {
   unsigned long name_size;
   char name[FILE_NAME_BYTES];
   unsigned char *data;
+  const unsigned char *boot_data;
 };
 
 static int resize_file(struct FileObject *file, unsigned long new_length, unsigned long *allocated) {
-  if (new_length > MOSS_FILE_CONTENT_BUDGET_BYTES) {
+  if (file->boot_data || new_length > MOSS_FILE_CONTENT_BUDGET_BYTES) {
     return 0;
   }
   unsigned long new_capacity =
@@ -90,6 +100,82 @@ static struct FileObject *find_badge(struct FileObject *files, unsigned long bad
   return NULL;
 }
 
+static int hex8(const char field[8], unsigned long *value) {
+  unsigned long parsed = 0;
+  for (unsigned int i = 0; i < 8; ++i) {
+    unsigned char digit = (unsigned char)field[i];
+    if (digit >= '0' && digit <= '9')
+      digit -= '0';
+    else if (digit >= 'a' && digit <= 'f')
+      digit = digit - 'a' + 10;
+    else if (digit >= 'A' && digit <= 'F')
+      digit = digit - 'A' + 10;
+    else
+      return 0;
+    parsed = (parsed << 4) | digit;
+  }
+  *value = parsed;
+  return 1;
+}
+
+static unsigned long cpio_align(unsigned long value) {
+  return (value + CPIO_ALIGNMENT - 1) & ~(unsigned long)(CPIO_ALIGNMENT - 1);
+}
+
+static int load_boot_files(const unsigned char *archive, unsigned long size, struct FileObject **files,
+                           unsigned long *boot_count, unsigned long *next_badge) {
+  unsigned long offset = 0;
+  while (size - offset >= sizeof(struct NewcHeader)) {
+    const struct NewcHeader *header = (const struct NewcHeader *)(archive + offset);
+    unsigned long name_bytes = 0, file_bytes = 0, mode = 0;
+    if (memcmp(header->magic, "070701", 6) != 0 || !hex8(header->namesize, &name_bytes) ||
+        !hex8(header->filesize, &file_bytes) || !hex8(header->mode, &mode) ||
+        name_bytes == 0 || name_bytes > size - offset - sizeof(*header))
+      return 0;
+    unsigned long record_size = size - offset;
+    unsigned long data_offset = cpio_align(sizeof(*header) + name_bytes);
+    if (data_offset > record_size || file_bytes > record_size - data_offset)
+      return 0;
+    unsigned long next_offset = cpio_align(data_offset + file_bytes);
+    if (next_offset > record_size)
+      return 0;
+    const unsigned char *name = archive + offset + sizeof(*header);
+    if (name[name_bytes - 1] != 0 || memchr(name, 0, name_bytes - 1))
+      return 0;
+    if (name_bytes == sizeof("TRAILER!!!") && memcmp(name, "TRAILER!!!", sizeof("TRAILER!!!")) == 0)
+      return file_bytes == 0;
+    if (name_bytes > 2 && name[0] == '.' && name[1] == '/') {
+      name += 2;
+      name_bytes -= 2;
+    }
+    if (name_bytes > 1 && name[0] == '/') {
+      ++name;
+      --name_bytes;
+    }
+    // The current namespace publishes flat root entries; deeper archive paths
+    // remain hidden until it gains directories.
+    if ((mode & CPIO_TYPE_MASK) == CPIO_REGULAR && valid_name(name, name_bytes)) {
+      // The bootstrap parser accepts at most 64 entries. Keep that bound
+      // separate from the client-created file budget.
+      if (*boot_count == BOOT_FILE_LIMIT || find_name(*files, name, name_bytes))
+        return 0;
+      struct FileObject *file = calloc(1, sizeof(*file));
+      if (!file)
+        return 0;
+      file->badge = (*next_badge)++;
+      file->name_size = name_bytes;
+      memcpy(file->name, name, name_bytes);
+      file->length = file_bytes;
+      file->boot_data = archive + offset + data_offset;
+      file->next = *files;
+      *files = file;
+      ++*boot_count;
+    }
+    offset += next_offset;
+  }
+  return 0; // A valid newc archive ends with TRAILER!!!.
+}
+
 static void list_root(struct FileObject *files, unsigned long cookie, unsigned char *page,
                       struct moss_ipc_message *response) {
   const char *name = NULL;
@@ -128,7 +214,7 @@ static void list_root(struct FileObject *files, unsigned long cookie, unsigned c
 }
 
 int main(int argc, char **argv) {
-  if (argc != 3 || !argv[1] || !argv[2]) {
+  if (argc != 5 || !argv[1] || !argv[2] || !argv[3] || !argv[4]) {
     return 2;
   }
   char *end = NULL;
@@ -142,16 +228,31 @@ int main(int argc, char **argv) {
   if (errno || !mint || *end) {
     return 2;
   }
+  errno = 0;
+  unsigned long archive_cap = strtoul(argv[3], &end, 10);
+  if (errno || !archive_cap || *end)
+    return 2;
+  errno = 0;
+  unsigned long archive_size = strtoul(argv[4], &end, 10);
+  if (errno || !archive_size || *end)
+    return 2;
+  long mapped_archive = syscall2(SYS_MEM_MAP, archive_cap, MOSS_CAP_MAP_READ);
+  (void)syscall1(SYS_CAP_CLOSE, archive_cap);
+  if (mapped_archive <= 0)
+    return 2;
 
   // Existing clients can always reopen /scratch after a volatile service
   // restart. New files are created explicitly and live until this service dies.
   static struct FileObject scratch = {
       .badge = MOSS_FILE_SCRATCH_BADGE, .name_size = sizeof("scratch"), .name = "scratch"};
   struct FileObject *files = &scratch;
-  unsigned long file_count = 1;
+  unsigned long volatile_count = 1;
+  unsigned long boot_count = 0;
   unsigned long allocated = 0;
   // Never recycle a badge while old file capabilities may still exist.
   unsigned long next_badge = MOSS_FILE_SCRATCH_BADGE + 1;
+  if (!load_boot_files((const unsigned char *)mapped_archive, archive_size, &files, &boot_count, &next_badge))
+    return 2;
   for (;;) {
     struct moss_ipc_message request = {0};
     unsigned long reply = 0;
@@ -180,10 +281,10 @@ int main(int argc, char **argv) {
       unsigned int count = valid_header ? moss_file_get_u16(request.payload + 9) : 0;
       int valid_count = valid_header && count <= MOSS_MEM_OBJECT_BYTES;
       int reading = file && valid_count && request.payload[0] == MOSS_FILE_READ && request.rights == MOSS_CAP_MAP_WRITE;
-      int writing = file && valid_count && request.payload[0] == MOSS_FILE_WRITE &&
+      int writing = file && !file->boot_data && valid_count && request.payload[0] == MOSS_FILE_WRITE &&
                     request.rights == MOSS_CAP_MAP_READ && offset <= MOSS_FILE_CONTENT_BUDGET_BYTES &&
                     count <= MOSS_FILE_CONTENT_BUDGET_BYTES - offset;
-      int appending = file && valid_count && request.payload[0] == MOSS_FILE_APPEND &&
+      int appending = file && !file->boot_data && valid_count && request.payload[0] == MOSS_FILE_APPEND &&
                       request.rights == MOSS_CAP_MAP_READ && offset == 0;
       if (reading || writing || appending) {
         long mapped = syscall2(SYS_MEM_MAP, (long)request.capability, reading ? MOSS_CAP_MAP_WRITE : MOSS_CAP_MAP_READ);
@@ -194,7 +295,8 @@ int main(int argc, char **argv) {
             if (offset < file->length) {
               unsigned long available = file->length - (unsigned long)offset;
               transferred = available < count ? (unsigned int)available : count;
-              memcpy((void *)mapped, file->data + offset, transferred);
+              const unsigned char *data = file->boot_data ? file->boot_data : file->data;
+              memcpy((void *)mapped, data + offset, transferred);
             }
           } else if (!count || (write_offset + count <= file->length) ||
                      resize_file(file, write_offset + count, &allocated)) {
@@ -249,7 +351,7 @@ int main(int argc, char **argv) {
       struct FileObject *created = NULL;
       // Directory cookies add two synthetic entries to each file badge.
       if (!file && (request.payload[1] & MOSS_FILE_OPEN_CREATE) && next_badge < MOSS_FILE_ROOT_BADGE - 2 &&
-          file_count < MOSS_FILE_OBJECT_LIMIT) {
+          volatile_count < MOSS_FILE_OBJECT_LIMIT) {
         created = calloc(1, sizeof(*created));
         if (created) {
           created->badge = next_badge;
@@ -273,7 +375,7 @@ int main(int argc, char **argv) {
             // reopen one identity. Unlisted objects remain capability-only.
             created->next = files;
             files = created;
-            ++file_count;
+            ++volatile_count;
             ++next_badge;
           }
           response.payload[0] = MOSS_FILE_OK;

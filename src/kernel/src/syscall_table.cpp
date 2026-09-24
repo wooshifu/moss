@@ -3759,7 +3759,7 @@ const SyscallDescriptor SYSCALL_TABLE[static_cast<int>(SyscallNumber::MAX_SYSCAL
     {"ipc_call", handlers::sys_ipc_call, 4, true, "Call a control endpoint"},
     {"ipc_receive", handlers::sys_ipc_receive, 3, true, "Receive a control request"},
     {"ipc_reply", handlers::sys_ipc_reply, 2, true, "Complete a pending call"},
-    {"mem_create", handlers::sys_mem_create, 1, true, "Create a capability-backed memory page"},
+    {"mem_create", handlers::sys_mem_create, 1, true, "Create a capability-backed memory object"},
     {"mem_map", handlers::sys_mem_map, 2, true, "Map a memory capability"},
     {"ipc_mint_badge", handlers::sys_ipc_mint_badge, 2, true, "Mint a sender with a receiver-visible badge"},
     {"fork_domain", handlers::sys_fork_domain, 1, true, "Fork with a child execution-domain capability"},
@@ -3793,7 +3793,8 @@ const SyscallDescriptor SYSCALL_TABLE[static_cast<int>(SyscallNumber::MAX_SYSCAL
     {"domain_scope_status", handlers::sys_domain_scope_status, 1, true, "Count live domain scope members"},
     {"fork_domain_scoped", handlers::sys_fork_domain_scoped, 4, true, "Fork a native domain into a specified scope"},
     {"domain_scope_contains", handlers::sys_domain_scope_contains, 2, true,
-     "Check whether an inspected domain belongs to a scope"}};
+     "Check whether an inspected domain belongs to a scope"},
+    {"boot_archive", handlers::sys_boot_archive, 1, true, "Get read-only boot archive memory"}};
 
 // 系统调用分发器实现
 long SyscallDispatcher::dispatch(long syscall_number, long arg0, long arg1, long arg2, long arg3, long arg4,

@@ -792,10 +792,11 @@ static int fd_dup_min(unsigned long session, unsigned long source, unsigned long
   return *target >= minimum && *target >= MOSS_PROCESS_FD_FIRST && *target < MOSS_PROCESS_FD_LIMIT;
 }
 
-static int fd_seek(unsigned long session, unsigned long number, unsigned char whence, unsigned long *position) {
+static int fd_seek_to(unsigned long session, unsigned long number, unsigned char whence, unsigned long offset,
+                      unsigned long *position) {
   struct moss_ipc_message request = {.size = MOSS_PROCESS_FD_SEEK_BYTES, .payload = {MOSS_PROCESS_FD_SEEK}};
   moss_process_put_u64(request.payload + 1, number);
-  moss_process_put_u64(request.payload + 9, 0);
+  moss_process_put_u64(request.payload + 9, offset);
   request.payload[17] = whence;
   struct moss_ipc_message response = {0};
   long result = call(session, &request, &response);
@@ -803,6 +804,10 @@ static int fd_seek(unsigned long session, unsigned long number, unsigned char wh
     return 0;
   *position = moss_process_get_u64(response.payload + 1);
   return 1;
+}
+
+static int fd_seek(unsigned long session, unsigned long number, unsigned char whence, unsigned long *position) {
+  return fd_seek_to(session, number, whence, 0, position);
 }
 
 static int fd_io(unsigned long session, unsigned char operation, unsigned long number, unsigned long memory,
@@ -926,6 +931,30 @@ static int fd_view_probe(void) {
   long memory = syscall1(SYS_MEM_CREATE, MOSS_MEM_OBJECT_BYTES);
   long mapped = memory > 0 ? syscall2(SYS_MEM_MAP, memory, MOSS_CAP_MAP_READ | MOSS_CAP_MAP_WRITE) : 0;
   int valid = mapped > 0;
+  if (valid) {
+    unsigned long boot = 0, boot_id = 0, boot_size = 0, path_id = 0, path_size = 0;
+    valid = fd_open(session, "/busybox.elf", MOSS_PROCESS_FD_READABLE, &boot);
+    if (valid)
+      valid = fd_stat(session, boot, &kind, &boot_id, &boot_size) && kind == MOSS_PROCESS_FD_KIND_FILE &&
+              boot_size > MOSS_FILE_CONTENT_BUDGET_BYTES &&
+              path_stat(session, "/busybox.elf", &kind, &path_id, &path_size) && path_id == boot_id &&
+              path_size == boot_size;
+    if (valid)
+      valid = fd_io(session, MOSS_PROCESS_FD_READ, boot, memory, 4, &transferred) && transferred == 4 &&
+              memcmp((const void *)mapped, "\177ELF", 4) == 0 &&
+              fd_seek_to(session, boot, MOSS_PROCESS_FD_SEEK_SET, MOSS_FILE_CONTENT_BUDGET_BYTES, &position) &&
+              position == MOSS_FILE_CONTENT_BUDGET_BYTES &&
+              fd_io(session, MOSS_PROCESS_FD_READ, boot, memory, 4, &transferred) && transferred == 4;
+    if (boot)
+      valid &= fd_command(session, MOSS_PROCESS_FD_CLOSE, boot, NULL);
+    if (valid) {
+      struct moss_ipc_message truncate = {.size = 2 + sizeof("/busybox.elf"),
+                                          .payload = {MOSS_PROCESS_FD_OPEN, MOSS_PROCESS_FD_WRITABLE |
+                                                                                MOSS_PROCESS_FD_TRUNCATE}};
+      memcpy(truncate.payload + 2, "/busybox.elf", sizeof("/busybox.elf"));
+      valid = fd_rejected(session, &truncate, MOSS_PROCESS_UNAVAILABLE);
+    }
+  }
   if (valid) {
     struct moss_ipc_message missing = {.size = 2 + sizeof("/fd-absent"), .payload = {MOSS_PROCESS_FD_OPEN}};
     missing.payload[1] = MOSS_PROCESS_FD_READABLE;

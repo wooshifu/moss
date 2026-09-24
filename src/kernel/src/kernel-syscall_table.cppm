@@ -177,6 +177,7 @@ long sys_ipc_receive(long endpoint, long request_addr, long reply_addr, long arg
 long sys_ipc_reply(long reply, long response_addr, long arg2, long arg3, long arg4, long arg5) noexcept;
 long sys_mem_create(long size, long arg1, long arg2, long arg3, long arg4, long arg5) noexcept;
 long sys_mem_map(long handle, long rights, long arg2, long arg3, long arg4, long arg5) noexcept;
+long sys_boot_archive(long size_addr, long arg1, long arg2, long arg3, long arg4, long arg5) noexcept;
 
 // Default handler for unimplemented syscalls
 long sys_not_implemented(long arg0, long arg1, long arg2, long arg3, long arg4, long arg5) noexcept;
