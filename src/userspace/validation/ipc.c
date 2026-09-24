@@ -1,4 +1,5 @@
 #include "validation/internal.h"
+#include <limits.h>
 
 // The freestanding validation image has no libc; Clang lowers zeroing the
 // fixed-size IPC message aggregate to this routine.
@@ -44,6 +45,12 @@ static long ipc_receive(unsigned long endpoint, struct moss_ipc_message *request
 
 static long ipc_reply(unsigned long reply, const struct moss_ipc_message *response) {
   return syscall2(SYS_IPC_REPLY, (long)reply, (long)response);
+}
+
+static int ipc_set_nice(int target) {
+  // The native getpriority result uses Linux's 20 - nice encoding.
+  long priority = syscall2(SYS_GETPRIORITY, 0, 0);
+  return priority >= 1 && priority <= 40 && syscall1(SYS_NICE, target + priority - 20) == target;
 }
 
 static int domain_exited(unsigned long domain, int code, unsigned int signal) {
@@ -545,6 +552,185 @@ unsigned long ipc_nested_roundtrip(void) {
   errors |= (unsigned long)(syscall1(SYS_CAP_CLOSE, (long)front.send) != 0 ||
                             syscall1(SYS_CAP_CLOSE, (long)back.send) != 0)
             << 4;
+  return errors;
+}
+
+unsigned long ipc_priority_latency(void) {
+  // All participants share the validation worker's CPU. A low-priority
+  // receiver must answer a high-priority caller before unrelated runnable
+  // work completes; the bound is a regression fixture, not a product SLA.
+  // Eight hogs and a two-second run keep the CPU contested beyond the
+  // one-second call deadline in the no-donation control.
+  enum { HOG_COUNT = 8, HOG_CLOCK_SAMPLE_SPINS = 4096, SERVER_WORK_ITERATIONS = 10000000 };
+  const unsigned long hog_duration_ns = 2000000000UL;
+  const unsigned long call_budget_ns = 1000000000UL;
+  struct moss_ipc_endpoints endpoint = {0, 0};
+  long server_ready[2] = {-1, -1};
+  long hog_start[2] = {-1, -1};
+  long hog_ready[2] = {-1, -1};
+  long hogs[HOG_COUNT] = {0};
+  long server = -1;
+  unsigned long errors = 0;
+  unsigned long hog_count = 0;
+  const unsigned int cpu_zero = 1;
+  long priority = syscall2(SYS_GETPRIORITY, 0, 0);
+  if (priority < 1 || priority > 40)
+    return 1;
+  const int original_nice = 20 - (int)priority;
+  int parent_nice_changed = 0;
+  if (syscall1(SYS_IPC_CREATE, (long)&endpoint) != 0 || syscall2(SYS_CAP_SET_INHERIT, (long)endpoint.receive, 1) != 0 ||
+      pipe(server_ready) != 0) {
+    errors |= 1;
+    goto cleanup;
+  }
+  server = fork();
+  if (server == 0) {
+    close(server_ready[0]);
+    (void)syscall1(SYS_CAP_CLOSE, (long)endpoint.send);
+    int nice_ok = ipc_set_nice(19);
+    long affinity = syscall3(SYS_SCHED_SETAFFINITY, 0, sizeof(cpu_zero), (long)&cpu_zero);
+    const char ready = affinity != 0 ? 'a' : !nice_ok ? 'n' : 'r';
+    if (write(server_ready[1], &ready, 1) != 1)
+      _exit(91);
+    close(server_ready[1]);
+    if (ready != 'r')
+      _exit(91);
+    struct moss_ipc_message request = {0};
+    unsigned long reply = 0;
+    if (ipc_receive(endpoint.receive, &request, &reply) != 1 || request.payload[0] != 'p')
+      _exit(92);
+    // Ten million volatile additions exceeded the initial wakeup slice in
+    // x64 QEMU calibration; a shorter reply hid missing priority donation.
+    volatile unsigned long work = 0;
+    for (unsigned long i = 0; i < SERVER_WORK_ITERATIONS; ++i)
+      work += i;
+    const struct moss_ipc_message response = {.size = 1, .payload = {'q'}};
+    _exit(ipc_reply(reply, &response) == 0 ? 37 : 93);
+  }
+  close(server_ready[1]);
+  server_ready[1] = -1;
+  if (server < 0) {
+    errors |= 1UL << 1;
+    goto cleanup;
+  }
+  char ready = 0;
+  if (read(server_ready[0], &ready, 1) != 1 || ready != 'r') {
+    errors |= (1UL << 2) | ((unsigned long)(unsigned char)ready << 16);
+    goto cleanup;
+  }
+  close(server_ready[0]);
+  server_ready[0] = -1;
+  if (syscall1(SYS_CAP_CLOSE, (long)endpoint.receive) != 0) {
+    errors |= 1UL << 3;
+    goto cleanup;
+  }
+  endpoint.receive = 0;
+  if (pipe(hog_start) != 0 || pipe(hog_ready) != 0) {
+    errors |= 1UL << 3;
+    goto cleanup;
+  }
+  for (; hog_count < HOG_COUNT; ++hog_count) {
+    long child = fork();
+    if (child == 0) {
+      close(hog_start[1]);
+      close(hog_ready[0]);
+      char gate = 0;
+      if (!ipc_set_nice(0) || syscall3(SYS_SCHED_SETAFFINITY, 0, sizeof(cpu_zero), (long)&cpu_zero) != 0 ||
+          read(hog_start[0], &gate, 1) != 1 || gate != 'g' || write(hog_ready[1], &gate, 1) != 1)
+        _exit(94);
+      close(hog_start[0]);
+      close(hog_ready[1]);
+      unsigned long start = 0, now = 0;
+      if (clock_gettime_ns(&start) != 0)
+        _exit(95);
+      now = start;
+      volatile unsigned long spins = 0;
+      while (now - start < hog_duration_ns) {
+        ++spins;
+        // Sample the clock every 4096 spins so syscalls do not dominate load.
+        if ((spins & (HOG_CLOCK_SAMPLE_SPINS - 1)) == 0 && clock_gettime_ns(&now) != 0)
+          _exit(96);
+      }
+      _exit(37);
+    }
+    if (child < 0) {
+      errors |= 1UL << 4;
+      goto cleanup;
+    }
+    hogs[hog_count] = child;
+  }
+  close(hog_start[0]);
+  hog_start[0] = -1;
+  close(hog_ready[1]);
+  hog_ready[1] = -1;
+  for (unsigned long i = 0; i < HOG_COUNT; ++i) {
+    const char gate = 'g';
+    if (write(hog_start[1], &gate, 1) != 1) {
+      errors |= 1UL << 5;
+      goto cleanup;
+    }
+  }
+  close(hog_start[1]);
+  hog_start[1] = -1;
+  for (unsigned long i = 0; i < HOG_COUNT; ++i) {
+    char gate = 0;
+    if (read(hog_ready[0], &gate, 1) != 1 || gate != 'g') {
+      errors |= 1UL << 6;
+      goto cleanup;
+    }
+  }
+  close(hog_ready[0]);
+  hog_ready[0] = -1;
+  (void)sched_yield();
+  parent_nice_changed = 1;
+  if (!ipc_set_nice(-10)) {
+    errors |= 1UL << 7;
+    goto cleanup;
+  }
+  unsigned long start = 0, end = 0;
+  if (clock_gettime_ns(&start) != 0 || start > (unsigned long)LONG_MAX - call_budget_ns) {
+    errors |= 1UL << 8;
+  } else {
+    const struct moss_ipc_message request = {.size = 1, .payload = {'p'}};
+    struct moss_ipc_message response = {0};
+    long result = ipc_call(endpoint.send, &request, &response, (long)(start + call_budget_ns));
+    if (clock_gettime_ns(&end) != 0 || end < start)
+      errors |= 1UL << 9;
+    else if (end - start > call_budget_ns)
+      errors |= (1UL << 10) | ((end - start) / 1000000UL << 16);
+    if (result != 1 || response.payload[0] != 'q')
+      errors |= 1UL << 11;
+  }
+cleanup:
+  if (parent_nice_changed && !ipc_set_nice(original_nice))
+    errors |= 1UL << 12;
+  if (server_ready[0] >= 0)
+    close(server_ready[0]);
+  if (server_ready[1] >= 0)
+    close(server_ready[1]);
+  if (hog_start[0] >= 0)
+    close(hog_start[0]);
+  if (hog_start[1] >= 0)
+    close(hog_start[1]);
+  if (hog_ready[0] >= 0)
+    close(hog_ready[0]);
+  if (hog_ready[1] >= 0)
+    close(hog_ready[1]);
+  if (errors && server > 0)
+    (void)kill(server, SIGKILL);
+  for (unsigned long i = 0; i < hog_count; ++i) {
+    if (errors)
+      (void)kill(hogs[i], SIGKILL);
+    int clean_exit = wait_exit(hogs[i], 37);
+    if (!errors && !clean_exit)
+      errors |= 1UL << 13;
+  }
+  if (server > 0 && !wait_exit(server, 37))
+    errors |= 1UL << 14;
+  if (endpoint.receive)
+    (void)syscall1(SYS_CAP_CLOSE, (long)endpoint.receive);
+  if (endpoint.send)
+    (void)syscall1(SYS_CAP_CLOSE, (long)endpoint.send);
   return errors;
 }
 

@@ -233,6 +233,7 @@ CATALOG = {
         "memory_object",
         "badged_sender",
         "nested_roundtrip",
+        "priority_latency",
         "domain_control",
         "domain_selection",
         "domain_wait_any",

@@ -421,9 +421,9 @@ void _start(long argc, const char **argv) {
     control(3, 0, 0);
   } else if (mode == 25) {
     unsigned long (*const tests[])(void) = {
-        ipc_roundtrip,         ipc_deadline,        ipc_peer_death,    ipc_signal_cancel,    ipc_capability_transfer,
-        ipc_delivery_rollback, ipc_memory_object,   ipc_badged_sender, ipc_nested_roundtrip, ipc_domain_control,
-        ipc_domain_selection,  ipc_domain_wait_any, ipc_domain_spawn};
+        ipc_roundtrip,         ipc_deadline,         ipc_peer_death,      ipc_signal_cancel,    ipc_capability_transfer,
+        ipc_delivery_rollback, ipc_memory_object,    ipc_badged_sender,   ipc_nested_roundtrip, ipc_priority_latency,
+        ipc_domain_control,    ipc_domain_selection, ipc_domain_wait_any, ipc_domain_spawn};
     for (long test = 0; test < (long)(sizeof(tests) / sizeof(tests[0])); ++test) {
       control(1, test, 0);
       unsigned long errors = tests[test]();

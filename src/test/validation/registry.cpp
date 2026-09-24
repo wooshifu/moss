@@ -163,6 +163,7 @@ void declare_cases() {
     ut::register_test("memory_object", empty_case);
     ut::register_test("badged_sender", empty_case);
     ut::register_test("nested_roundtrip", empty_case);
+    ut::register_test("priority_latency", empty_case);
     ut::register_test("domain_control", empty_case);
     ut::register_test("domain_selection", empty_case);
     ut::register_test("domain_wait_any", empty_case);
