@@ -33,7 +33,8 @@ enum {
   MOSS_PROCESS_FD_DUP = 20,
   MOSS_PROCESS_FD_READ = 21,
   MOSS_PROCESS_FD_WRITE = 22,
-  MOSS_PROCESS_FD_SEEK = 23
+  MOSS_PROCESS_FD_SEEK = 23,
+  MOSS_PROCESS_FD_EXEC = 24
 };
 enum {
   MOSS_PROCESS_OK = 0,
@@ -54,7 +55,8 @@ enum {
   MOSS_PROCESS_FD_WRITABLE = 1U << 1,
   MOSS_PROCESS_FD_CREATE = 1U << 2,
   MOSS_PROCESS_FD_TRUNCATE = 1U << 3,
-  MOSS_PROCESS_FD_APPEND = 1U << 4
+  MOSS_PROCESS_FD_APPEND = 1U << 4,
+  MOSS_PROCESS_FD_CLOEXEC = 1U << 5
 };
 enum { MOSS_PROCESS_FD_SEEK_SET = 0, MOSS_PROCESS_FD_SEEK_CUR = 1, MOSS_PROCESS_FD_SEEK_END = 2 };
 // Native process::sig::NSIG is 32: zero probes existence, 1..31 are signals.
@@ -99,7 +101,9 @@ enum { MOSS_PROCESS_FD_IO_BYTES = 11, MOSS_PROCESS_FD_IO_REPLY_BYTES = 3, MOSS_P
 // with MAP_WRITE|TRANSFER|DUPLICATE or MAP_READ|TRANSFER|DUPLICATE respectively,
 // and return
 // [OK, transferred:u16 LE]. FD_SEEK carries [opcode, descriptor:u64 LE,
-// offset:i64 LE, whence] and returns [OK, position:u64 LE].
+// offset:i64 LE, whence] and returns [OK, position:u64 LE]. FD_CLOEXEC is a
+// descriptor flag: DUP clears it, fork copies it, and FD_EXEC closes marked
+// entries after a successful exec. FD_EXEC carries only its opcode.
 static inline uint64_t moss_process_get_u64(const unsigned char *bytes) {
   uint64_t value = 0;
   for (unsigned int index = 0; index < 8; ++index)

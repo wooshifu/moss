@@ -21,6 +21,7 @@ struct Descriptor {
   struct Descriptor *next;
   struct OpenDescription *description;
   unsigned long number;
+  unsigned char close_on_exec;
 };
 
 struct Record {
@@ -113,6 +114,7 @@ static int clone_descriptors(const struct Record *parent, struct Record *child) 
     }
     copy->number = entry->number;
     copy->description = entry->description;
+    copy->close_on_exec = entry->close_on_exec;
     ++copy->description->references;
     *tail = copy;
     tail = &copy->next;
@@ -367,13 +369,27 @@ static void handle_fd_request(struct Record *owner, unsigned long namespace, con
   }
   action->owner = owner;
   unsigned char operation = request->payload[0];
+  if (operation == MOSS_PROCESS_FD_EXEC) {
+    if (request->size == 1 && !request->capability && !request->rights) {
+      // Exec already committed before this request. A lost reply must not
+      // preserve marked descriptors; retrying the request is idempotent.
+      for (struct Descriptor *entry = owner->descriptors; entry;) {
+        struct Descriptor *next = entry->next;
+        if (entry->close_on_exec)
+          remove_descriptor(owner, entry);
+        entry = next;
+      }
+      response->payload[0] = MOSS_PROCESS_OK;
+    }
+    return;
+  }
   if (operation == MOSS_PROCESS_FD_OPEN) {
     unsigned char flags = request->payload[1];
     const unsigned char *path = request->payload + 2;
     unsigned long path_size = request->size >= 2 ? request->size - 2 : 0;
     if (request->size < 5 || request->capability || request->rights ||
         flags & ~(MOSS_PROCESS_FD_READABLE | MOSS_PROCESS_FD_WRITABLE | MOSS_PROCESS_FD_CREATE |
-                  MOSS_PROCESS_FD_TRUNCATE | MOSS_PROCESS_FD_APPEND) ||
+                  MOSS_PROCESS_FD_TRUNCATE | MOSS_PROCESS_FD_APPEND | MOSS_PROCESS_FD_CLOEXEC) ||
         !(flags & (MOSS_PROCESS_FD_READABLE | MOSS_PROCESS_FD_WRITABLE)) ||
         ((flags & (MOSS_PROCESS_FD_TRUNCATE | MOSS_PROCESS_FD_APPEND)) && !(flags & MOSS_PROCESS_FD_WRITABLE)) ||
         path[0] != '/' || memchr(path, 0, path_size) != path + path_size - 1)
@@ -391,9 +407,10 @@ static void handle_fd_request(struct Record *owner, unsigned long namespace, con
       struct OpenDescription *description = calloc(1, sizeof(*description));
       if (description) {
         description->file = opened.capability;
-        description->flags = flags;
+        description->flags = flags & ~MOSS_PROCESS_FD_CLOEXEC;
         struct Descriptor *entry = add_descriptor(owner, description);
         if (entry) {
+          entry->close_on_exec = !!(flags & MOSS_PROCESS_FD_CLOEXEC);
           opened.capability = 0;
           action->added = entry;
           fd_reply_value(response, entry->number);
@@ -791,7 +808,7 @@ int main(int argc, char **argv) {
         response.payload[0] = sent_signal ? MOSS_PROCESS_OK : failed ? MOSS_PROCESS_UNAVAILABLE : MOSS_PROCESS_NO_ENTRY;
       }
     } else if (request.badge && request.size && request.payload[0] >= MOSS_PROCESS_FD_OPEN &&
-               request.payload[0] <= MOSS_PROCESS_FD_SEEK) {
+               request.payload[0] <= MOSS_PROCESS_FD_EXEC) {
       handle_fd_request(find_record(request.badge), namespace, &request, &response, &fd_action);
     } else if (request.badge && request.size == 1 && !request.capability && !request.rights) {
       struct Record *record = find_record(request.badge);

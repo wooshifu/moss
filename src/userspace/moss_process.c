@@ -43,6 +43,30 @@ static int no_capability(struct moss_ipc_message *response) {
   return response->rights == 0;
 }
 
+static int fd_constructor_closed;
+__attribute__((constructor)) static void check_fd_before_main(void) {
+  const char *text = getenv("MOSS_FD_PROBE_CLOEXEC");
+  if (!text)
+    return;
+  // This constructor runs before mlibc finishes startup; strtoul aborts here.
+  // The probe only accepts a bounded decimal descriptor number.
+  unsigned long number = 0;
+  for (const char *digit = text; *digit; ++digit) {
+    if (*digit < '0' || *digit > '9' || number > (MOSS_PROCESS_FD_LIMIT - 1UL - (*digit - '0')) / 10UL)
+      return;
+    number = number * 10UL + (*digit - '0');
+  }
+  unsigned long session = getauxval(MOSS_AT_STARTUP_CAP);
+  if (!number || !session)
+    return;
+  struct moss_ipc_message request = {.size = MOSS_PROCESS_REPLY_VALUE_BYTES, .payload = {MOSS_PROCESS_FD_CLOSE}};
+  moss_process_put_u64(request.payload + 1, number);
+  struct moss_ipc_message response = {0};
+  long result = call(session, &request, &response);
+  int clean = no_capability(&response);
+  fd_constructor_closed = result == 1 && response.payload[0] == MOSS_PROCESS_NO_ENTRY && clean;
+}
+
 static int new_session(unsigned long endpoint, unsigned long domain, unsigned char operation, unsigned long *id,
                        unsigned long *session) {
   if (!domain && operation != MOSS_PROCESS_PREPARE_CHILD)
@@ -653,17 +677,21 @@ static int fd_io(unsigned long session, unsigned char operation, unsigned long n
   return *transferred <= count && (operation == MOSS_PROCESS_FD_READ || *transferred == count);
 }
 
-static int fd_exec_child(const char *number_text) {
+static int fd_exec_child(const char *kept_text) {
+  if (!fd_constructor_closed) {
+    fprintf(stderr, "MOSS_FD_CLOEXEC_EARLY_FAILED\n");
+    return 0;
+  }
   char *end = NULL;
   errno = 0;
-  unsigned long number = strtoul(number_text, &end, 10);
+  unsigned long kept = strtoul(kept_text, &end, 10);
   unsigned long session = getauxval(MOSS_AT_STARTUP_CAP);
-  if (errno || !number || *end || !session)
+  if (errno || !kept || *end || !session)
     return 0;
   long memory = syscall1(SYS_MEM_CREATE, MOSS_MEM_OBJECT_BYTES);
   long mapped = memory > 0 ? syscall2(SYS_MEM_MAP, memory, MOSS_CAP_MAP_READ | MOSS_CAP_MAP_WRITE) : 0;
   unsigned int transferred = 0;
-  int valid = mapped > 0 && fd_io(session, MOSS_PROCESS_FD_READ, number, memory, 1, &transferred) && transferred == 1 &&
+  int valid = mapped > 0 && fd_io(session, MOSS_PROCESS_FD_READ, kept, memory, 1, &transferred) && transferred == 1 &&
               *(unsigned char *)mapped == 'c';
   if (mapped > 0)
     (void)syscall2(SYS_MUNMAP, mapped, MOSS_MEM_OBJECT_BYTES);
@@ -676,10 +704,10 @@ static int fd_view_probe(void) {
   unsigned long session = getauxval(MOSS_AT_STARTUP_CAP);
   unsigned long first = 0, duplicate = 0, position = 0;
   unsigned int transferred = 0;
-  if (!session ||
-      !fd_open(session, "/note",
-               MOSS_PROCESS_FD_READABLE | MOSS_PROCESS_FD_WRITABLE | MOSS_PROCESS_FD_CREATE | MOSS_PROCESS_FD_TRUNCATE,
-               &first))
+  if (!session || !fd_open(session, "/note",
+                           MOSS_PROCESS_FD_READABLE | MOSS_PROCESS_FD_WRITABLE | MOSS_PROCESS_FD_CREATE |
+                               MOSS_PROCESS_FD_TRUNCATE | MOSS_PROCESS_FD_CLOEXEC,
+                           &first))
     return 0;
   long memory = syscall1(SYS_MEM_CREATE, MOSS_MEM_OBJECT_BYTES);
   long mapped = memory > 0 ? syscall2(SYS_MEM_MAP, memory, MOSS_CAP_MAP_READ | MOSS_CAP_MAP_WRITE) : 0;
@@ -705,17 +733,20 @@ static int fd_view_probe(void) {
   if (valid) {
     pid_t child = fork();
     if (child == 0) {
-      char number_text[32];
-      int length = snprintf(number_text, sizeof(number_text), "%lu", duplicate);
-      if (length <= 0 || (size_t)length >= sizeof(number_text))
+      char environment[64], kept_text[32];
+      int env_size = snprintf(environment, sizeof(environment), "MOSS_FD_PROBE_CLOEXEC=%lu", first);
+      int kept_size = snprintf(kept_text, sizeof(kept_text), "%lu", duplicate);
+      if (env_size <= 0 || (size_t)env_size >= sizeof(environment) || kept_size <= 0 ||
+          (size_t)kept_size >= sizeof(kept_text))
         _exit(43);
-      char *const argv[] = {"moss-process.elf", "fd-exec-child", number_text, NULL};
-      char *const empty_env[] = {NULL};
-      execve("/moss-process.elf", argv, empty_env);
+      char *const argv[] = {"moss-process.elf", "fd-exec-child", kept_text, NULL};
+      char *const env[] = {environment, NULL};
+      execve("/moss-process.elf", argv, env);
       _exit(43);
     }
     int status = 0;
-    valid = child > 0 && waitpid(child, &status, 0) == child && status == (37 << 8) &&
+    pid_t waited = child > 0 ? waitpid(child, &status, 0) : -1;
+    valid = child > 0 && waited == child && status == (37 << 8) &&
             fd_io(session, MOSS_PROCESS_FD_READ, first, memory, 1, &transferred) && transferred == 0;
   }
   if (duplicate)

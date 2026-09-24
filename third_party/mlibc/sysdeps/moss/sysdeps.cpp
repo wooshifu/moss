@@ -163,6 +163,18 @@ struct MossStat {
 static_assert(sizeof(MossStat) == 48);
 } // namespace
 
+extern "C" int __moss_process_after_exec() {
+	unsigned long session = process_session();
+	if (!session)
+		return 1;
+	moss_ipc_message request{};
+	request.size = 1;
+	request.payload[0] = MOSS_PROCESS_FD_EXEC;
+	moss_ipc_message response{};
+	long result = process_call(session, request, response);
+	return no_capability(response) && result == 1 && response.payload[0] == MOSS_PROCESS_OK;
+}
+
 namespace mlibc {
 void Sysdeps<Exit>::operator()(int status) {
   syscall1(SYS_EXIT, status);
