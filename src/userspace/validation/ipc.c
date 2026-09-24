@@ -180,6 +180,52 @@ done:
   return errors;
 }
 
+static unsigned long ipc_claimed_deadline(struct moss_ipc_endpoints pair) {
+  if (syscall2(SYS_CAP_SET_INHERIT, (long)pair.send, 1) != 0) {
+    return 1;
+  }
+  long done[2];
+  if (pipe(done) != 0) {
+    return 2;
+  }
+  long child = fork();
+  if (child == 0) {
+    close((int)done[0]);
+    const struct moss_ipc_message request = {.size = 1, .payload = {'t'}};
+    struct moss_ipc_message response = {0};
+    // Two seconds lets the forked caller enqueue while leaving room under
+    // the five-second case watchdog to observe expiry and clean up.
+    long deadline = deadline_after(2000000000UL);
+    const unsigned char expired = deadline > 0 && ipc_call(pair.send, &request, &response, deadline) == -IPC_ETIMEDOUT;
+    const int reported = write((int)done[1], &expired, 1) == 1;
+    _exit(expired && reported ? 37 : 91);
+  }
+  close((int)done[1]);
+  if (child < 0) {
+    close((int)done[0]);
+    return 4;
+  }
+  struct moss_ipc_message request = {0};
+  unsigned long reply = 0;
+  if (ipc_receive(pair.receive, &request, &reply) != 1 || request.payload[0] != 't') {
+    (void)kill(child, SIGKILL);
+    close((int)done[0]);
+    (void)wait_exit(child, 37);
+    if (reply) {
+      (void)syscall1(SYS_CAP_CLOSE, (long)reply);
+    }
+    return 8;
+  }
+  unsigned char expired = 0;
+  // Wait until the caller has observed expiry before attempting its reply.
+  unsigned long errors = read((int)done[0], &expired, 1) != 1 || expired != 1;
+  close((int)done[0]);
+  const struct moss_ipc_message answer = {.size = 1, .payload = {'r'}};
+  errors |= (unsigned long)(ipc_reply(reply, &answer) != -IPC_ETIMEDOUT) << 1;
+  errors |= (unsigned long)!wait_exit(child, 37) << 2;
+  return errors;
+}
+
 unsigned long ipc_deadline(void) {
   struct moss_ipc_endpoints pair = {0, 0};
   if (syscall1(SYS_IPC_CREATE, (long)&pair) != 0)
@@ -196,6 +242,9 @@ unsigned long ipc_deadline(void) {
       errors |= 2;
       break;
     }
+  }
+  if (!errors) {
+    errors |= ipc_claimed_deadline(pair) << 5;
   }
   errors |= (unsigned long)(syscall1(SYS_CAP_CLOSE, (long)pair.receive) != 0) << 2;
   errors |= (unsigned long)(ipc_call(pair.send, &request, &response, 0) != -IPC_EPIPE) << 3;
