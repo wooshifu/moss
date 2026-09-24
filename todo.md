@@ -14,6 +14,7 @@
 > 用户态 Loader 首条原生程序路径复核：2026-09-24，九预设串行 workflow **53/53 CTest**、全部生产启动 109 步通过；不具名文件 capability、有效/畸形 ELF、服务死亡恢复及限定范围见 [3.90](moss-todo.md#390-用户态-loader-service-的首条原生程序路径2026-09-24)。
 > Reply capability 交接复核：2026-09-24，九预设 **53/53 CTest**，三项新增 `users.ipc` 用例全部通过；请求/响应路径的跨进程移动、持有者丢弃与服务退出后的优先级重绑见 [3.91](moss-todo.md#391-reply-capability-跨进程交接2026-09-24)。
 > Loader/Process Service 交接复核：2026-09-24，九预设 **53/53 CTest**、11 份生产启动报告各完成 **113 步**；原生域登记、身份与退出观察、服务换代后的再次交接见 [3.93](moss-todo.md#393-loader-原生域与-process-compatibility-service-交接2026-09-24)。
+> Lint 工具可执行性复核：2026-09-24，排除 3363 个 vendored 文件时不再把约 181 KiB 正则放进单个命令行参数；47 个定向宿主测试和真实 ARM64 clang-tidy 启动通过，见 [3.94](moss-todo.md#394-clang-tidy-排除过滤器的参数长度2026-09-24)。
 > 本文取代旧清单中“完成即可靠”“x86/RISC-V 64 仅为启动桩”的描述。
 > 审计问题的原始证据、当前状态及完整验收条件见 [moss-todo.md](moss-todo.md)；MOSS-001～032 沿用原编号，不重新编号。
 
@@ -274,6 +275,7 @@ ADR-0008～0033 是已接受的目标边界，并非当前实现的完成声明�
   - [x] 旧 IPC 模块的共享区 create/destroy/stats/sync 只报告真实对象状态；其尚无进程地址空间所有权协议的 map/unmap/process-cleanup 明确返回 `NotSupported`，不再返回固定地址或空成功。新 capability 内存对象有独立的映射路径，不适用这条旧接口结论。三架构九 preset 的 `mm.unsupported_contracts` 均为 27/27，完整 CTest 43/43（3.29）。
 - [ ] **MOSS-031**：收敛 UserAccess/AddressSpace/TrapFrame/ProcessResources/ExecLoader 等已有职责；明确 Moss ABI、号表、定长结构与错误语义，不把同名 syscall 宣称为 Linux/POSIX ABI。
 - [ ] **MOSS-032（本文档部分已更新）**：持续同步代码、启动错误、统计和 pass/fail/skip；MOSS-030 的假能力契约已关闭，其他文档与验收缺口仍需继续同步。
+  - [x] clang-tidy 排除过滤器改由 response file 传入，避免 vendored 文件列表超过单个命令行参数限制；真实 lint 入口恢复可执行，其他既有诊断和全仓格式差异仍单独开放（3.94）。
 
 依赖顺序及每阶段退出条件见 [审计实施顺序](moss-todo.md#11-实施顺序与可交付阶段)。各编号只有满足原验收条件后才整体关闭；上面的“已修复”子问题不免除同项剩余工作。
 

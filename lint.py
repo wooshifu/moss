@@ -415,21 +415,29 @@ def rebuild(root: Path, build_dir: Path, jobs: int, registry: ProcessRegistry) -
         raise LintError(f"CMake build failed with exit {result.returncode}; lint requires current module BMIs")
 
 
+def exclude_header_response(excluded: Sequence[str], build_dir: Path) -> str | None:
+    if not excluded:
+        return None
+    expression = "|".join(re.escape(path) for path in sorted(excluded))
+    response = build_dir / "moss-clang-tidy-exclusions.rsp"
+    # Vendored path lists can exceed the kernel's limit for one argv string.
+    response.write_text(shlex.quote(f"--exclude-header-filter=(^|.*/)({expression})$") + "\n", encoding="utf-8")
+    return f"@{response}"
+
+
 def build_command(
     path: str,
     root: Path,
     build_dir: Path,
     tidy: Tool,
-    excluded: Sequence[str],
+    exclude_argument: str | None,
     extra_args: Sequence[str] = (),
     export_fixes: Path | None = None,
 ) -> list[str]:
     argv = [str(tidy.path), path, "--quiet", f"-p={build_dir}", f"--config-file={root / '.clang-tidy'}"]
     argv.extend(f"--extra-arg-before={arg}" for arg in extra_args)
-    if excluded:
-        # Expand Git patterns once, then escape actual paths for LLVM's regex engine.
-        expression = "|".join(re.escape(path) for path in sorted(excluded))
-        argv.append(f"--exclude-header-filter=(^|.*/)({expression})$")
+    if exclude_argument:
+        argv.append(exclude_argument)
     if export_fixes is not None:
         argv.append(f"--export-fixes={export_fixes}")
     return argv
@@ -456,11 +464,12 @@ def run_tidy(
     results = []
     futures = []
     console = Console(stderr=True)
+    exclude_argument = exclude_header_response(excluded, build_dir)
     with ThreadPoolExecutor(max_workers=args.jobs) as pool:
         try:
             for index, path in enumerate(paths):
                 fixes = replacements_dir / f"{index:06}.yaml" if replacements_dir else None
-                argv = build_command(path, root, build_dir, tidy, excluded, args.clang_extra_arg_before, fixes)
+                argv = build_command(path, root, build_dir, tidy, exclude_argument, args.clang_extra_arg_before, fixes)
                 if args.verbose:
                     print(f"[{path}] $ {shlex.join(argv)}", flush=True)
                 futures.append(pool.submit(registry.run, path, argv, root))
