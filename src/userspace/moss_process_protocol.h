@@ -31,8 +31,9 @@ enum {
   MOSS_PROCESS_EXITED = 5,
   MOSS_PROCESS_BUSY = 6
 };
-// ponytail: a fixed table bounds orphaned registrations until sender-lifetime
-// notifications or a service-side lease can reclaim clients that die abruptly.
+enum { MOSS_PROCESS_INIT_ID = 1 };
+// ponytail: the fixed table bounds concurrent registrations; use an indexed
+// registry when process fanout needs to exceed the production boot workload.
 enum {
   MOSS_PROCESS_REPLY_VALUE_BYTES = 9,
   MOSS_PROCESS_REPLY_WAIT_BYTES = 17,

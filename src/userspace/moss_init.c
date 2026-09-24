@@ -129,7 +129,7 @@ static long register_supervisor(long root) {
   long result = process_call(root, &request, &response);
   (void)syscall1(SYS_CAP_CLOSE, self);
   if (result == MOSS_PROCESS_REPLY_VALUE_BYTES && response.payload[0] == MOSS_PROCESS_OK &&
-      moss_process_get_u64(response.payload + 1) == 1 && response.capability &&
+      moss_process_get_u64(response.payload + 1) == MOSS_PROCESS_INIT_ID && response.capability &&
       response.rights == (MOSS_CAP_SEND | MOSS_CAP_DUPLICATE))
     return (long)response.capability;
   if (response.capability)

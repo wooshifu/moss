@@ -423,6 +423,53 @@ static int managed_libc_probe(void) {
          WIFSIGNALED(status) && WTERMSIG(status) == SIGTERM;
 }
 
+static int managed_orphan_probe(void) {
+  // More orphan generations than registry slots expose records that nobody
+  // can wait for after their original parent has exited.
+  for (unsigned int cycle = 0; cycle < MOSS_PROCESS_RECORD_LIMIT; ++cycle) {
+    int channel[2];
+    if (pipe(channel) != 0)
+      return 0;
+    pid_t intermediate = fork();
+    if (intermediate == 0) {
+      close(channel[0]);
+      pid_t orphan = fork();
+      if (orphan == 0) {
+        for (unsigned int retry = 0; retry < STATUS_RETRIES; ++retry) {
+          pid_t parent = getppid();
+          if (parent <= 0)
+            _exit(1);
+          if (parent == MOSS_PROCESS_INIT_ID) {
+            const char adopted = '1';
+            _exit(write(channel[1], &adopted, 1) == 1 ? 0 : 1);
+          }
+          unsigned long delay = status_retry_ns;
+          (void)syscall1(SYS_NANOSLEEP, (long)&delay);
+        }
+        _exit(1);
+      }
+      _exit(orphan > 0 ? 0 : 1);
+    }
+    close(channel[1]);
+    if (intermediate <= 0) {
+      close(channel[0]);
+      return 0;
+    }
+    char adopted = 0, extra = 0;
+    ssize_t got = read(channel[0], &adopted, 1);
+    ssize_t eof = read(channel[0], &extra, 1);
+    close(channel[0]);
+    int status = 0;
+    // The orphan must see init before anyone reaps its former parent.
+    pid_t waited = waitpid(intermediate, &status, 0);
+    if (got != 1 || adopted != '1' || eof != 0 || waited != intermediate || status != 0)
+      return 0;
+    unsigned long delay = status_retry_ns;
+    (void)syscall1(SYS_NANOSLEEP, (long)&delay);
+  }
+  return 1;
+}
+
 int main(int argc, char **argv) {
   if (argc == 4 && strcmp(argv[1], "libc-child") == 0) {
     char *end = NULL;
@@ -445,9 +492,9 @@ int main(int argc, char **argv) {
   unsigned long root = strtoul(value, &end, 10);
   if (errno || !root || root > LONG_MAX || *end)
     return error();
-  unsigned long last_id = 1;
-  if (!managed_libc_probe() || !observe_child(root, &last_id, 37) || !observe_child(root, &last_id, 38) ||
-      !observe_family(root, &last_id))
+  unsigned long last_id = MOSS_PROCESS_INIT_ID;
+  if (!managed_libc_probe() || !managed_orphan_probe() || !observe_child(root, &last_id, 37) ||
+      !observe_child(root, &last_id, 38) || !observe_family(root, &last_id))
     return error();
   static const char message[] = "MOSS_PROCESS_READY\n";
   (void)write(STDOUT_FILENO, message, sizeof(message) - 1);

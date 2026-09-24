@@ -11,6 +11,7 @@ struct Record {
   unsigned long parent_id;
   // A reserved child has an identity before fork and no domain until attach.
   unsigned long domain;
+  unsigned char orphaned;
 };
 
 static struct Record records[MOSS_PROCESS_RECORD_LIMIT];
@@ -59,6 +60,48 @@ static int has_children(unsigned long parent_id) {
   return 0;
 }
 
+static void adopt_children(unsigned long parent_id) {
+  for (unsigned int i = 0; i < MOSS_PROCESS_RECORD_LIMIT; ++i) {
+    struct Record *child = &records[i];
+    if (!child->id || child->parent_id != parent_id)
+      continue;
+    if (!child->domain) {
+      // A reservation has no domain to adopt. Fail closed if its parent dies
+      // during the fork handshake instead of retaining an unusable identity.
+      *child = (struct Record){0};
+    } else {
+      child->parent_id = MOSS_PROCESS_INIT_ID;
+      child->orphaned = 1;
+    }
+  }
+}
+
+static void refresh_orphans(void) {
+  // The service has no exit notification yet. Sweep its bounded registry on
+  // each request so a child observes reparenting before its next getppid().
+  // ponytail: Index parentage if the fixed record limit grows.
+  for (unsigned int i = 0; i < MOSS_PROCESS_RECORD_LIMIT; ++i) {
+    struct Record *parent = &records[i];
+    if (!parent->id || parent->id == MOSS_PROCESS_INIT_ID || !parent->domain || !has_children(parent->id))
+      continue;
+    struct moss_domain_exit status = {0};
+    if (syscall2(SYS_DOMAIN_STATUS, (long)parent->domain, (long)&status) == 0)
+      adopt_children(parent->id);
+  }
+  for (unsigned int i = 0; i < MOSS_PROCESS_RECORD_LIMIT; ++i) {
+    struct Record *orphan = &records[i];
+    if (!orphan->id || !orphan->orphaned || !orphan->domain)
+      continue;
+    // Native init cannot wait through this service yet; retain live orphans
+    // but reclaim their exited records on the next request.
+    struct moss_domain_exit status = {0};
+    if (syscall2(SYS_DOMAIN_STATUS, (long)orphan->domain, (long)&status) == 0) {
+      (void)syscall1(SYS_CAP_CLOSE, (long)orphan->domain);
+      *orphan = (struct Record){0};
+    }
+  }
+}
+
 int main(int argc, char **argv) {
   if (argc != 3)
     return 2;
@@ -71,7 +114,7 @@ int main(int argc, char **argv) {
   // badged sender cannot select a later record in a reused slot; a restart
   // creates a new endpoint, so its old sender cannot reach the new registry.
   // The supervisor registers first, so compatibility init retains ID 1.
-  unsigned long next_id = 1;
+  unsigned long next_id = MOSS_PROCESS_INIT_ID;
   for (;;) {
     struct moss_ipc_message request = {0};
     unsigned long reply = 0;
@@ -80,6 +123,8 @@ int main(int argc, char **argv) {
       continue;
     if (received < 0)
       return 1;
+
+    refresh_orphans();
 
     struct moss_ipc_message response = {.size = 1, .payload = {MOSS_PROCESS_BAD_REQUEST}};
     struct Record *registered = NULL;
@@ -277,6 +322,8 @@ int main(int argc, char **argv) {
       attached->domain = 0;
     }
     if (released && sent == 0) {
+      if (released->id != MOSS_PROCESS_INIT_ID)
+        adopt_children(released->id);
       if (released->domain)
         (void)syscall1(SYS_CAP_CLOSE, (long)released->domain);
       *released = (struct Record){0};
