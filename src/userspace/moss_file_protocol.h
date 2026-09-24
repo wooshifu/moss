@@ -13,6 +13,7 @@ enum { MOSS_FILE_SCRATCH_BADGE = 1 };
 // missing file without changing an existing file. EXCLUSIVE requires CREATE
 // and rejects an existing file before returning its capability. UNLISTED
 // requires CREATE and creates an object that cannot be looked up by name.
+// WRITE requests a writable object and rejects immutable boot files at open.
 // OPEN returns a sender to the namespace, which normally grants only SEND to
 // the client; an explicit delegable lookup can retain TRANSFER|DUPLICATE.
 // File operations then bypass the namespace service.
@@ -28,14 +29,16 @@ enum {
   MOSS_FILE_ROOT = 8,
   MOSS_FILE_LIST = 9
 };
-enum { MOSS_FILE_OPEN_CREATE = 1U << 0, MOSS_FILE_OPEN_EXCLUSIVE = 1U << 1, MOSS_FILE_OPEN_UNLISTED = 1U << 2 };
+enum { MOSS_FILE_OPEN_CREATE = 1U << 0, MOSS_FILE_OPEN_EXCLUSIVE = 1U << 1, MOSS_FILE_OPEN_UNLISTED = 1U << 2,
+       MOSS_FILE_OPEN_WRITE = 1U << 3 };
 enum {
   MOSS_FILE_OK = 0,
   MOSS_FILE_BAD_REQUEST = 1,
   MOSS_FILE_NO_ENTRY = 2,
   MOSS_FILE_UNAVAILABLE = 3,
   MOSS_FILE_EXISTS = 4,
-  MOSS_FILE_END = 5
+  MOSS_FILE_END = 5,
+  MOSS_FILE_READ_ONLY = 6
 };
 // Preserve the kernel dirent d_type values when libc moves to this service.
 enum { MOSS_FILE_TYPE_DIRECTORY = 4, MOSS_FILE_TYPE_REGULAR = 8 };

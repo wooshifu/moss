@@ -337,7 +337,8 @@ int main(int argc, char **argv) {
         response.payload[0] = MOSS_FILE_UNAVAILABLE;
       }
     } else if (request.badge == 0 && request.size >= 4 && request.payload[0] == MOSS_FILE_OPEN &&
-               !(request.payload[1] & ~(MOSS_FILE_OPEN_CREATE | MOSS_FILE_OPEN_EXCLUSIVE | MOSS_FILE_OPEN_UNLISTED)) &&
+               !(request.payload[1] &
+                 ~(MOSS_FILE_OPEN_CREATE | MOSS_FILE_OPEN_EXCLUSIVE | MOSS_FILE_OPEN_UNLISTED | MOSS_FILE_OPEN_WRITE)) &&
                (!(request.payload[1] & (MOSS_FILE_OPEN_EXCLUSIVE | MOSS_FILE_OPEN_UNLISTED)) ||
                 (request.payload[1] & MOSS_FILE_OPEN_CREATE)) &&
                !(request.payload[1] & MOSS_FILE_OPEN_EXCLUSIVE && request.payload[1] & MOSS_FILE_OPEN_UNLISTED) &&
@@ -365,6 +366,8 @@ int main(int argc, char **argv) {
       }
       if (file && !created && (request.payload[1] & MOSS_FILE_OPEN_EXCLUSIVE)) {
         response.payload[0] = MOSS_FILE_EXISTS;
+      } else if (file && file->boot_data && (request.payload[1] & MOSS_FILE_OPEN_WRITE)) {
+        response.payload[0] = MOSS_FILE_READ_ONLY;
       } else if (!file) {
         response.payload[0] = request.payload[1] & MOSS_FILE_OPEN_CREATE ? MOSS_FILE_UNAVAILABLE : MOSS_FILE_NO_ENTRY;
       } else {

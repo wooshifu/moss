@@ -68,7 +68,8 @@ static long open_file(unsigned long file, unsigned char flags, const unsigned ch
     request.size = name_size + 2;
     request.payload[0] = MOSS_FILE_OPEN;
     request.payload[1] = (flags & MOSS_NAMESPACE_OPEN_CREATE ? MOSS_FILE_OPEN_CREATE : 0) |
-                         (flags & MOSS_NAMESPACE_OPEN_EXCLUSIVE ? MOSS_FILE_OPEN_EXCLUSIVE : 0);
+                         (flags & MOSS_NAMESPACE_OPEN_EXCLUSIVE ? MOSS_FILE_OPEN_EXCLUSIVE : 0) |
+                         (flags & MOSS_NAMESPACE_OPEN_WRITE ? MOSS_FILE_OPEN_WRITE : 0);
     memcpy(request.payload + 2, name, name_size);
   }
   return file_call(file, &request, opened);
@@ -104,13 +105,15 @@ int main(int argc, char **argv) {
                (request.payload[0] == MOSS_NAMESPACE_OPEN || request.payload[0] == MOSS_NAMESPACE_STAT) &&
                (request.payload[0] == MOSS_NAMESPACE_OPEN || request.payload[1] == 0) &&
                !(request.payload[1] &
-                 ~(MOSS_NAMESPACE_OPEN_CREATE | MOSS_NAMESPACE_OPEN_TRANSFER | MOSS_NAMESPACE_OPEN_EXCLUSIVE)) &&
+                 ~(MOSS_NAMESPACE_OPEN_CREATE | MOSS_NAMESPACE_OPEN_TRANSFER | MOSS_NAMESPACE_OPEN_EXCLUSIVE |
+                   MOSS_NAMESPACE_OPEN_WRITE)) &&
                (!(request.payload[1] & MOSS_NAMESPACE_OPEN_EXCLUSIVE) ||
                 (request.payload[1] & MOSS_NAMESPACE_OPEN_CREATE))) {
       const unsigned char *name = NULL;
       unsigned long name_size = 0;
       int valid_path = flat_root_name(request.payload + 2, request.size - 2, &name, &name_size);
-      if (valid_path && name_size == 1 && (request.payload[1] & MOSS_NAMESPACE_OPEN_CREATE)) {
+      if (valid_path && name_size == 1 &&
+          (request.payload[1] & (MOSS_NAMESPACE_OPEN_CREATE | MOSS_NAMESPACE_OPEN_WRITE))) {
         response.payload[0] = MOSS_NAMESPACE_IS_DIRECTORY;
       } else if (valid_path && (name_size != 1 || request.payload[1] == 0)) {
         int root = name_size == 1;
@@ -144,6 +147,8 @@ int main(int argc, char **argv) {
           response.payload[0] = MOSS_NAMESPACE_NO_ENTRY;
         } else if (result == 1 && opened.payload[0] == MOSS_FILE_EXISTS && !opened.capability && !opened.rights) {
           response.payload[0] = MOSS_NAMESPACE_EXISTS;
+        } else if (result == 1 && opened.payload[0] == MOSS_FILE_READ_ONLY && !opened.capability && !opened.rights) {
+          response.payload[0] = MOSS_NAMESPACE_READ_ONLY;
         }
       }
     }

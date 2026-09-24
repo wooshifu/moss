@@ -948,11 +948,15 @@ static int fd_view_probe(void) {
     if (boot)
       valid &= fd_command(session, MOSS_PROCESS_FD_CLOSE, boot, NULL);
     if (valid) {
+      struct moss_ipc_message writable = {.size = 2 + sizeof("/busybox.elf"),
+                                          .payload = {MOSS_PROCESS_FD_OPEN, MOSS_PROCESS_FD_WRITABLE}};
+      memcpy(writable.payload + 2, "/busybox.elf", sizeof("/busybox.elf"));
       struct moss_ipc_message truncate = {.size = 2 + sizeof("/busybox.elf"),
                                           .payload = {MOSS_PROCESS_FD_OPEN, MOSS_PROCESS_FD_WRITABLE |
                                                                                 MOSS_PROCESS_FD_TRUNCATE}};
       memcpy(truncate.payload + 2, "/busybox.elf", sizeof("/busybox.elf"));
-      valid = fd_rejected(session, &truncate, MOSS_PROCESS_UNAVAILABLE);
+      valid = fd_rejected(session, &writable, MOSS_PROCESS_READ_ONLY) &&
+              fd_rejected(session, &truncate, MOSS_PROCESS_READ_ONLY);
     }
   }
   if (valid) {

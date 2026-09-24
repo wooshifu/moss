@@ -706,7 +706,8 @@ static void handle_fd_request(struct Record *owner, unsigned long namespace, uns
         ((flags & (MOSS_PROCESS_FD_TRUNCATE | MOSS_PROCESS_FD_APPEND)) && !(flags & MOSS_PROCESS_FD_WRITABLE)) ||
         !namespace_path_request(request, MOSS_NAMESPACE_OPEN,
                                 (flags & MOSS_PROCESS_FD_CREATE ? MOSS_NAMESPACE_OPEN_CREATE : 0) |
-                                    (flags & MOSS_PROCESS_FD_EXCLUSIVE ? MOSS_NAMESPACE_OPEN_EXCLUSIVE : 0),
+                                    (flags & MOSS_PROCESS_FD_EXCLUSIVE ? MOSS_NAMESPACE_OPEN_EXCLUSIVE : 0) |
+                                    (flags & MOSS_PROCESS_FD_WRITABLE ? MOSS_NAMESPACE_OPEN_WRITE : 0),
                                 &lookup))
       return;
     unsigned long number = first_free_descriptor(owner, 0);
@@ -730,6 +731,8 @@ static void handle_fd_request(struct Record *owner, unsigned long namespace, uns
       response->payload[0] = MOSS_PROCESS_NOT_FOUND;
     } else if (result == 1 && opened.payload[0] == MOSS_NAMESPACE_EXISTS && !opened.capability && !opened.rights) {
       response->payload[0] = MOSS_PROCESS_EXISTS;
+    } else if (result == 1 && opened.payload[0] == MOSS_NAMESPACE_READ_ONLY && !opened.capability && !opened.rights) {
+      response->payload[0] = MOSS_PROCESS_READ_ONLY;
     } else if (result == 1 && opened.payload[0] == MOSS_NAMESPACE_IS_DIRECTORY && !opened.capability &&
                !opened.rights) {
       response->payload[0] = MOSS_PROCESS_IS_DIRECTORY;

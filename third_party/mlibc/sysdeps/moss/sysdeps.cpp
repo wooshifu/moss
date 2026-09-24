@@ -66,6 +66,8 @@ int process_status_error(unsigned char status) {
     return EMFILE;
   case MOSS_PROCESS_EXISTS:
     return EEXIST;
+  case MOSS_PROCESS_READ_ONLY:
+    return EROFS;
   case MOSS_PROCESS_BAD_REQUEST:
     return EINVAL;
   case MOSS_PROCESS_DENIED:
