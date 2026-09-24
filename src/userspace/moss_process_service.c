@@ -90,11 +90,16 @@ static struct Descriptor *add_descriptor_at(struct Record *record, struct OpenDe
   return entry;
 }
 
-static struct Descriptor *add_descriptor(struct Record *record, struct OpenDescription *description) {
-  unsigned long number = MOSS_PROCESS_FD_FIRST;
+static struct Descriptor *add_descriptor_from(struct Record *record, struct OpenDescription *description,
+                                              unsigned long minimum) {
+  unsigned long number = minimum < MOSS_PROCESS_FD_FIRST ? MOSS_PROCESS_FD_FIRST : minimum;
   while (number < MOSS_PROCESS_FD_LIMIT && find_descriptor(record, number))
     ++number;
   return add_descriptor_at(record, description, number);
+}
+
+static struct Descriptor *add_descriptor(struct Record *record, struct OpenDescription *description) {
+  return add_descriptor_from(record, description, MOSS_PROCESS_FD_FIRST);
 }
 
 static void remove_descriptor(struct Record *record, struct Descriptor *entry) {
@@ -512,6 +517,33 @@ static void handle_fd_request(struct Record *owner, unsigned long namespace, con
     return;
   }
 
+  if (operation == MOSS_PROCESS_FD_GET_STATUS) {
+    if (request->size != MOSS_PROCESS_REPLY_VALUE_BYTES || request->capability || request->rights)
+      return;
+    fd_reply_value(response, description->flags &
+                                 (MOSS_PROCESS_FD_READABLE | MOSS_PROCESS_FD_WRITABLE | MOSS_PROCESS_FD_APPEND));
+    return;
+  }
+
+  if (operation == MOSS_PROCESS_FD_DUP_MIN) {
+    if (request->size != MOSS_PROCESS_FD_DUP_MIN_BYTES || request->capability || request->rights ||
+        request->payload[17] > 1)
+      return;
+    unsigned long minimum = moss_process_get_u64(request->payload + 9);
+    if (minimum >= MOSS_PROCESS_FD_LIMIT) {
+      response->payload[0] = MOSS_PROCESS_BAD_REQUEST;
+      return;
+    }
+    action->added = add_descriptor_from(owner, description, minimum);
+    if (!action->added) {
+      response->payload[0] = MOSS_PROCESS_UNAVAILABLE;
+      return;
+    }
+    action->added->close_on_exec = request->payload[17];
+    fd_reply_value(response, action->added->number);
+    return;
+  }
+
   if (operation == MOSS_PROCESS_FD_READ || operation == MOSS_PROCESS_FD_WRITE) {
     int writing = operation == MOSS_PROCESS_FD_WRITE;
     if (request->size != MOSS_PROCESS_FD_IO_BYTES || !request->capability ||
@@ -877,7 +909,7 @@ int main(int argc, char **argv) {
         response.payload[0] = sent_signal ? MOSS_PROCESS_OK : failed ? MOSS_PROCESS_UNAVAILABLE : MOSS_PROCESS_NO_ENTRY;
       }
     } else if (request.badge && request.size && request.payload[0] >= MOSS_PROCESS_FD_OPEN &&
-               request.payload[0] <= MOSS_PROCESS_FD_SET_FLAGS) {
+               request.payload[0] <= MOSS_PROCESS_FD_DUP_MIN) {
       handle_fd_request(find_record(request.badge), namespace, &request, &response, &fd_action);
     } else if (request.badge && request.size == 1 && !request.capability && !request.rights) {
       struct Record *record = find_record(request.badge);

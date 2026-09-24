@@ -674,6 +674,32 @@ static int fd_flags(unsigned long session, unsigned char operation, unsigned lon
   return 1;
 }
 
+static int fd_status(unsigned long session, unsigned long number, unsigned long *status) {
+  struct moss_ipc_message request = {.size = MOSS_PROCESS_REPLY_VALUE_BYTES,
+                                     .payload = {MOSS_PROCESS_FD_GET_STATUS}};
+  moss_process_put_u64(request.payload + 1, number);
+  struct moss_ipc_message response = {0};
+  long result = call(session, &request, &response);
+  if (!no_capability(&response) || result != MOSS_PROCESS_REPLY_VALUE_BYTES || response.payload[0] != MOSS_PROCESS_OK)
+    return 0;
+  *status = moss_process_get_u64(response.payload + 1);
+  return 1;
+}
+
+static int fd_dup_min(unsigned long session, unsigned long source, unsigned long minimum, unsigned char flags,
+                      unsigned long *target) {
+  struct moss_ipc_message request = {.size = MOSS_PROCESS_FD_DUP_MIN_BYTES, .payload = {MOSS_PROCESS_FD_DUP_MIN}};
+  moss_process_put_u64(request.payload + 1, source);
+  moss_process_put_u64(request.payload + 9, minimum);
+  request.payload[17] = flags;
+  struct moss_ipc_message response = {0};
+  long result = call(session, &request, &response);
+  if (!no_capability(&response) || result != MOSS_PROCESS_REPLY_VALUE_BYTES || response.payload[0] != MOSS_PROCESS_OK)
+    return 0;
+  *target = moss_process_get_u64(response.payload + 1);
+  return *target >= minimum && *target >= MOSS_PROCESS_FD_FIRST && *target < MOSS_PROCESS_FD_LIMIT;
+}
+
 static int fd_seek(unsigned long session, unsigned long number, unsigned char whence, unsigned long *position) {
   struct moss_ipc_message request = {.size = MOSS_PROCESS_FD_SEEK_BYTES, .payload = {MOSS_PROCESS_FD_SEEK}};
   moss_process_put_u64(request.payload + 1, number);
@@ -732,7 +758,7 @@ static int fd_exec_child(const char *kept_text) {
 
 static int fd_view_probe(void) {
   unsigned long session = getauxval(MOSS_AT_STARTUP_CAP);
-  unsigned long first = 0, duplicate = 0, victim = 0, spare = 0, position = 0;
+  unsigned long first = 0, duplicate = 0, victim = 0, spare = 0, minimum_first = 0, minimum_second = 0, position = 0;
   unsigned char flags = 0;
   unsigned int transferred = 0;
   if (!session || !fd_open(session, "/note",
@@ -744,7 +770,9 @@ static int fd_view_probe(void) {
   long mapped = memory > 0 ? syscall2(SYS_MEM_MAP, memory, MOSS_CAP_MAP_READ | MOSS_CAP_MAP_WRITE) : 0;
   int valid = mapped > 0;
   if (valid)
-    valid = fd_flags(session, MOSS_PROCESS_FD_GET_FLAGS, first, &flags) && flags == 1;
+    valid = fd_flags(session, MOSS_PROCESS_FD_GET_FLAGS, first, &flags) && flags == 1 &&
+            fd_status(session, first, &position) &&
+            position == (MOSS_PROCESS_FD_READABLE | MOSS_PROCESS_FD_WRITABLE);
   if (valid) {
     memcpy((void *)mapped, "abc", 3);
     valid = fd_io(session, MOSS_PROCESS_FD_WRITE, first, memory, 3, &transferred) && transferred == 3;
@@ -781,6 +809,21 @@ static int fd_view_probe(void) {
             fd_flags(session, MOSS_PROCESS_FD_GET_FLAGS, victim, &flags) && flags == 0;
   }
   if (valid) {
+    valid = fd_dup_min(session, duplicate, MOSS_PROCESS_FD_LIMIT - 2, 1, &minimum_first) &&
+            minimum_first == MOSS_PROCESS_FD_LIMIT - 2 &&
+            fd_flags(session, MOSS_PROCESS_FD_GET_FLAGS, minimum_first, &flags) && flags == 1 &&
+            fd_status(session, minimum_first, &position) &&
+            position == (MOSS_PROCESS_FD_READABLE | MOSS_PROCESS_FD_WRITABLE) &&
+            fd_dup_min(session, duplicate, MOSS_PROCESS_FD_LIMIT - 2, 0, &minimum_second) &&
+            minimum_second == MOSS_PROCESS_FD_LIMIT - 1 &&
+            fd_flags(session, MOSS_PROCESS_FD_GET_FLAGS, minimum_second, &flags) && flags == 0 &&
+            !fd_dup_min(session, duplicate, MOSS_PROCESS_FD_LIMIT, 0, &position);
+  }
+  if (minimum_second) {
+    valid &= fd_command(session, MOSS_PROCESS_FD_CLOSE, minimum_second, NULL);
+    minimum_second = 0;
+  }
+  if (valid) {
     const unsigned long free_target = MOSS_PROCESS_FD_LIMIT - 1;
     valid = fd_dup_to(session, duplicate, free_target);
     if (valid)
@@ -808,6 +851,8 @@ static int fd_view_probe(void) {
   }
   if (spare)
     valid &= fd_command(session, MOSS_PROCESS_FD_CLOSE, spare, NULL);
+  if (minimum_first)
+    valid &= fd_command(session, MOSS_PROCESS_FD_CLOSE, minimum_first, NULL);
   if (victim)
     valid &= fd_command(session, MOSS_PROCESS_FD_CLOSE, victim, NULL);
   if (duplicate)

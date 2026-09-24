@@ -37,7 +37,9 @@ enum {
   MOSS_PROCESS_FD_EXEC = 24,
   MOSS_PROCESS_FD_DUP_TO = 25,
   MOSS_PROCESS_FD_GET_FLAGS = 26,
-  MOSS_PROCESS_FD_SET_FLAGS = 27
+  MOSS_PROCESS_FD_SET_FLAGS = 27,
+  MOSS_PROCESS_FD_GET_STATUS = 28,
+  MOSS_PROCESS_FD_DUP_MIN = 29
 };
 enum {
   MOSS_PROCESS_OK = 0,
@@ -80,7 +82,8 @@ enum {
   MOSS_PROCESS_FD_IO_REPLY_BYTES = 3,
   MOSS_PROCESS_FD_SEEK_BYTES = 18,
   MOSS_PROCESS_FD_DUP_TO_BYTES = 17,
-  MOSS_PROCESS_FD_SET_FLAGS_BYTES = 10
+  MOSS_PROCESS_FD_SET_FLAGS_BYTES = 10,
+  MOSS_PROCESS_FD_DUP_MIN_BYTES = 18
 };
 
 // REGISTER returns [OK, ID:u64 LE]. STATUS returns [EXITED, status:u64 LE].
@@ -112,6 +115,10 @@ enum {
 // FD_GET_FLAGS returns [OK, close-on-exec:u64 LE]. FD_SET_FLAGS carries
 // [opcode, descriptor:u64 LE, close-on-exec:u8] where only values 0 and 1 are
 // valid. The new flag commits after the reply reaches the caller.
+// FD_GET_STATUS returns [OK, READABLE|WRITABLE|APPEND:u64 LE] for the shared
+// open description. FD_DUP_MIN carries [opcode, source:u64 LE, minimum:u64 LE,
+// close-on-exec:u8] and returns the first available descriptor at or above
+// minimum; values below FD_FIRST select FD_FIRST until stdio joins this view.
 // FD_READ/WRITE carry
 // [opcode, descriptor:u64 LE, count:u16 LE] plus a transferred Memory Object
 // with MAP_WRITE|TRANSFER|DUPLICATE or MAP_READ|TRANSFER|DUPLICATE respectively,
