@@ -45,16 +45,13 @@ enum { MOSS_PROCESS_SIGNAL_LIMIT = 32 };
 // Match the managed IPC call bound so an abandoned fork reservation cannot
 // occupy a record indefinitely after its parent or child exits.
 #define MOSS_PROCESS_RESERVATION_TIMEOUT_NS 5000000000UL
-// ponytail: the fixed table bounds concurrent registrations; use an indexed
-// registry when process fanout needs to exceed the production boot workload.
 enum {
   MOSS_PROCESS_REPLY_VALUE_BYTES = 9,
   MOSS_PROCESS_REPLY_WAIT_BYTES = 17,
   MOSS_PROCESS_SIGNAL_REQUEST_BYTES = 17,
   MOSS_PROCESS_SET_GROUP_REQUEST_BYTES = 17,
   MOSS_PROCESS_REPLY_GROUP_BYTES = 17,
-  MOSS_PROCESS_REPLY_IDENTITY_BYTES = MOSS_PROCESS_REPLY_WAIT_BYTES,
-  MOSS_PROCESS_RECORD_LIMIT = 16
+  MOSS_PROCESS_REPLY_IDENTITY_BYTES = MOSS_PROCESS_REPLY_WAIT_BYTES
 };
 
 // REGISTER returns [OK, ID:u64 LE]. STATUS returns [EXITED, status:u64 LE].

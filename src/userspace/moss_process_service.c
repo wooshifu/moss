@@ -7,6 +7,7 @@
 #include "syscall.h"
 
 struct Record {
+  struct Record *next;
   unsigned long id;
   unsigned long parent_id;
   unsigned long group_id;
@@ -17,7 +18,14 @@ struct Record {
   unsigned char orphaned;
 };
 
-static struct Record records[MOSS_PROCESS_RECORD_LIMIT];
+// Retain empty nodes for reuse: reply rollback keeps record pointers until
+// after SYS_IPC_REPLY, so allocations must not move live records.
+static struct Record *records;
+
+static void clear_record(struct Record *record) {
+  struct Record *next = record->next;
+  *record = (struct Record){.next = next};
+}
 
 static unsigned long parse_handle(const char *text) {
   if (!text)
@@ -29,26 +37,33 @@ static unsigned long parse_handle(const char *text) {
 }
 
 static struct Record *find_record(unsigned long id) {
-  for (unsigned int i = 0; i < MOSS_PROCESS_RECORD_LIMIT; ++i) {
-    if (records[i].id == id)
-      return &records[i];
+  if (!id)
+    return NULL;
+  for (struct Record *record = records; record; record = record->next) {
+    if (record->id == id)
+      return record;
   }
   return NULL;
 }
 
 static struct Record *free_record(void) {
-  for (unsigned int i = 0; i < MOSS_PROCESS_RECORD_LIMIT; ++i) {
-    if (!records[i].id)
-      return &records[i];
+  for (struct Record *record = records; record; record = record->next) {
+    if (!record->id)
+      return record;
   }
-  return NULL;
+  struct Record *record = calloc(1, sizeof(*record));
+  if (record) {
+    record->next = records;
+    records = record;
+  }
+  return record;
 }
 
 static int domain_available(unsigned long domain) {
-  for (unsigned int i = 0; i < MOSS_PROCESS_RECORD_LIMIT; ++i) {
-    if (records[i].id && records[i].domain) {
+  for (struct Record *record = records; record; record = record->next) {
+    if (record->id && record->domain) {
       // A comparison error cannot prove uniqueness, so reject the domain.
-      if (syscall2(SYS_DOMAIN_SAME, (long)domain, (long)records[i].domain) != 0)
+      if (syscall2(SYS_DOMAIN_SAME, (long)domain, (long)record->domain) != 0)
         return 0;
     }
   }
@@ -56,8 +71,8 @@ static int domain_available(unsigned long domain) {
 }
 
 static int has_children(unsigned long parent_id) {
-  for (unsigned int i = 0; i < MOSS_PROCESS_RECORD_LIMIT; ++i) {
-    if (records[i].id && records[i].parent_id == parent_id)
+  for (struct Record *record = records; record; record = record->next) {
+    if (record->id && record->parent_id == parent_id)
       return 1;
   }
   return 0;
@@ -72,16 +87,16 @@ static int record_running(const struct Record *record) {
 }
 
 static int group_exists(unsigned long group_id, unsigned long session_id) {
-  for (unsigned int i = 0; i < MOSS_PROCESS_RECORD_LIMIT; ++i) {
-    if (records[i].id && records[i].domain && records[i].group_id == group_id && records[i].session_id == session_id)
+  for (struct Record *record = records; record; record = record->next) {
+    if (record->id && record->domain && record->group_id == group_id && record->session_id == session_id)
       return 1;
   }
   return 0;
 }
 
 static int group_id_used(unsigned long group_id) {
-  for (unsigned int i = 0; i < MOSS_PROCESS_RECORD_LIMIT; ++i) {
-    if (records[i].id && records[i].domain && records[i].group_id == group_id)
+  for (struct Record *record = records; record; record = record->next) {
+    if (record->id && record->domain && record->group_id == group_id)
       return 1;
   }
   return 0;
@@ -92,8 +107,7 @@ static struct Record *select_exited_child(struct Record *parent, unsigned long g
   int pending = 0;
   int failed = 0;
   // A running first child must not hide another child's exit.
-  for (unsigned int i = 0; i < MOSS_PROCESS_RECORD_LIMIT; ++i) {
-    struct Record *child = &records[i];
+  for (struct Record *child = records; child; child = child->next) {
     if (!child->id || child->parent_id != parent->id || (group_only && child->group_id != group_id))
       continue;
     pending = 1;
@@ -117,8 +131,7 @@ static struct Record *select_exited_child(struct Record *parent, unsigned long g
 }
 
 static void adopt_children(unsigned long parent_id) {
-  for (unsigned int i = 0; i < MOSS_PROCESS_RECORD_LIMIT; ++i) {
-    struct Record *child = &records[i];
+  for (struct Record *child = records; child; child = child->next) {
     if (!child->id || child->parent_id != parent_id)
       continue;
     // The child can attach itself with its own badged session even if its
@@ -129,19 +142,18 @@ static void adopt_children(unsigned long parent_id) {
 }
 
 static void refresh_orphans(void) {
-  // The service has no exit notification yet. Sweep its bounded registry on
+  // The service has no exit notification yet. Sweep its live registry on
   // each request so a child observes reparenting before its next getppid().
-  // ponytail: Index parentage if the fixed record limit grows.
-  for (unsigned int i = 0; i < MOSS_PROCESS_RECORD_LIMIT; ++i) {
-    struct Record *parent = &records[i];
+  // ponytail: Parentage scans are quadratic; index them if large live process
+  // sets make this sweep measurable.
+  for (struct Record *parent = records; parent; parent = parent->next) {
     if (!parent->id || parent->id == MOSS_PROCESS_INIT_ID || !parent->domain || !has_children(parent->id))
       continue;
     struct moss_domain_exit status = {0};
     if (syscall2(SYS_DOMAIN_STATUS, (long)parent->domain, (long)&status) == 0)
       adopt_children(parent->id);
   }
-  for (unsigned int i = 0; i < MOSS_PROCESS_RECORD_LIMIT; ++i) {
-    struct Record *orphan = &records[i];
+  for (struct Record *orphan = records; orphan; orphan = orphan->next) {
     if (!orphan->id || !orphan->orphaned || !orphan->domain)
       continue;
     // Native init cannot wait through this service yet; retain live orphans
@@ -149,16 +161,15 @@ static void refresh_orphans(void) {
     struct moss_domain_exit status = {0};
     if (syscall2(SYS_DOMAIN_STATUS, (long)orphan->domain, (long)&status) == 0) {
       (void)syscall1(SYS_CAP_CLOSE, (long)orphan->domain);
-      *orphan = (struct Record){0};
+      clear_record(orphan);
     }
   }
   unsigned long now = 0;
   if (syscall2(SYS_CLOCK_GETTIME, MOSS_CLOCK_MONOTONIC, (long)&now) == 0) {
-    for (unsigned int i = 0; i < MOSS_PROCESS_RECORD_LIMIT; ++i) {
-      struct Record *reserved = &records[i];
+    for (struct Record *reserved = records; reserved; reserved = reserved->next) {
       if (reserved->id && !reserved->domain && reserved->reservation_deadline_ns &&
           now >= reserved->reservation_deadline_ns)
-        *reserved = (struct Record){0};
+        clear_record(reserved);
     }
   }
 }
@@ -409,8 +420,7 @@ int main(int argc, char **argv) {
         if (!group_id)
           group_id = caller->group_id;
         int sent_signal = 0, failed = 0;
-        for (unsigned int i = 0; i < MOSS_PROCESS_RECORD_LIMIT; ++i) {
-          struct Record *target = &records[i];
+        for (struct Record *target = records; target; target = target->next) {
           if (!target->id || !target->domain || target->group_id != group_id ||
               (target != caller && target->parent_id != caller->id))
             continue;
@@ -472,7 +482,7 @@ int main(int argc, char **argv) {
         next_id = MOSS_PROCESS_INIT_ID;
       if (registered->domain)
         (void)syscall1(SYS_CAP_CLOSE, (long)registered->domain);
-      *registered = (struct Record){0};
+      clear_record(registered);
     }
     if (attached && sent != 0) {
       // Keep the reservation retryable if the parent did not get the reply.
@@ -486,7 +496,7 @@ int main(int argc, char **argv) {
         adopt_children(released->id);
       if (released->domain)
         (void)syscall1(SYS_CAP_CLOSE, (long)released->domain);
-      *released = (struct Record){0};
+      clear_record(released);
     }
     if (session > 0)
       (void)syscall1(SYS_CAP_CLOSE, session);

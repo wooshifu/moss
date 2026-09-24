@@ -513,9 +513,9 @@ static int managed_group_probe(void) {
 }
 
 static int managed_orphan_probe(void) {
-  // More orphan generations than registry slots expose records that nobody
-  // can wait for after their original parent has exited.
-  for (unsigned int cycle = 0; cycle < MOSS_PROCESS_RECORD_LIMIT; ++cycle) {
+  // Preserve the former registry-sized churn run as an adoption regression.
+  enum { ORPHAN_CYCLES = 16 };
+  for (unsigned int cycle = 0; cycle < ORPHAN_CYCLES; ++cycle) {
     int channel[2];
     if (pipe(channel) != 0)
       return 0;
@@ -559,6 +559,36 @@ static int managed_orphan_probe(void) {
   return 1;
 }
 
+static int managed_fanout_probe(void) {
+  // More live children than the former 16-record table exercises growth.
+  enum { FANOUT_CHILDREN = 20 };
+  int channel[2];
+  if (pipe(channel) != 0)
+    return 0;
+  pid_t children[FANOUT_CHILDREN];
+  unsigned int count = 0;
+  for (; count < FANOUT_CHILDREN; ++count) {
+    pid_t child = fork();
+    if (child == 0) {
+      close(channel[1]);
+      char byte;
+      _exit(read(channel[0], &byte, 1) == 0 ? 0 : 1);
+    }
+    if (child < 0)
+      break;
+    children[count] = child;
+  }
+  close(channel[0]);
+  close(channel[1]);
+  int valid = count == FANOUT_CHILDREN;
+  for (unsigned int i = 0; i < count; ++i) {
+    int status = 0;
+    if (waitpid(children[i], &status, 0) != children[i] || status != 0)
+      valid = 0;
+  }
+  return valid;
+}
+
 int main(int argc, char **argv) {
   if (argc == 4 && strcmp(argv[1], "libc-child") == 0) {
     char *end = NULL;
@@ -583,7 +613,7 @@ int main(int argc, char **argv) {
     return error();
   unsigned long last_id = MOSS_PROCESS_INIT_ID;
   unsigned long parent_session = getauxval(MOSS_AT_STARTUP_CAP);
-  if (!managed_libc_probe() || !managed_group_probe() || !managed_orphan_probe() ||
+  if (!managed_libc_probe() || !managed_group_probe() || !managed_orphan_probe() || !managed_fanout_probe() ||
       !observe_child(root, parent_session, &last_id, 37, 1) || !observe_child(root, parent_session, &last_id, 38, 0) ||
       !observe_family(root, &last_id))
     return error();
