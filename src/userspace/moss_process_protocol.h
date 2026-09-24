@@ -56,6 +56,8 @@ enum {
   MOSS_PROCESS_TOO_MANY_FILES = 10,
   MOSS_PROCESS_EXISTS = 11
 };
+// BAD_DESCRIPTOR also covers I/O through a descriptor opened without the
+// requested access mode, matching POSIX EBADF rather than process DENIED.
 enum { MOSS_PROCESS_INIT_ID = 1 };
 // Match the current kernel compatibility limit while reserving 0..2 for the
 // console entries that the unified descriptor view will also own.

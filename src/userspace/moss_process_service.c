@@ -441,7 +441,7 @@ static void handle_fd_request(struct Record *owner, unsigned long namespace, str
                opened.rights == MOSS_CAP_SEND &&
                (!(flags & MOSS_PROCESS_FD_TRUNCATE) || file_resize(opened.capability, 0))) {
       description->file = opened.capability;
-      description->flags = flags & ~MOSS_PROCESS_FD_CLOEXEC;
+      description->flags = flags & (MOSS_PROCESS_FD_READABLE | MOSS_PROCESS_FD_WRITABLE | MOSS_PROCESS_FD_APPEND);
       description->references = 1;
       entry->number = number;
       entry->description = description;
@@ -602,7 +602,7 @@ static void handle_fd_request(struct Record *owner, unsigned long namespace, str
             ((writing ? MOSS_CAP_MAP_READ : MOSS_CAP_MAP_WRITE) | MOSS_CAP_TRANSFER | MOSS_CAP_DUPLICATE))
       return;
     if (!(description->flags & (writing ? MOSS_PROCESS_FD_WRITABLE : MOSS_PROCESS_FD_READABLE))) {
-      response->payload[0] = MOSS_PROCESS_DENIED;
+      response->payload[0] = MOSS_PROCESS_BAD_DESCRIPTOR;
       return;
     }
     if (description->uncertain) {

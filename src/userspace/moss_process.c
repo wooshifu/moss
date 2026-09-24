@@ -880,6 +880,13 @@ static int fd_view_probe(void) {
     valid = file && fd_install(session, file, MOSS_PROCESS_FD_READABLE, &imported);
     if (file)
       (void)syscall1(SYS_CAP_CLOSE, (long)file);
+    struct moss_ipc_message wrong_access = {.size = MOSS_PROCESS_FD_IO_BYTES,
+                                            .capability = (unsigned long)memory,
+                                            .rights = MOSS_CAP_MAP_READ | MOSS_CAP_TRANSFER | MOSS_CAP_DUPLICATE,
+                                            .payload = {MOSS_PROCESS_FD_WRITE}};
+    moss_process_put_u64(wrong_access.payload + 1, imported);
+    moss_file_put_u16(wrong_access.payload + 9, 1);
+    valid = valid && fd_rejected(session, &wrong_access, MOSS_PROCESS_BAD_DESCRIPTOR);
     valid = valid && fd_io(session, MOSS_PROCESS_FD_READ, imported, memory, 1, &transferred) && transferred == 1 &&
             *(unsigned char *)mapped == 'a';
   }
