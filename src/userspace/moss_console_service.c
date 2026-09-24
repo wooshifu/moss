@@ -14,6 +14,27 @@ static unsigned char input[MOSS_CONSOLE_RING_BYTES];
 static unsigned int head;
 static unsigned int length;
 static unsigned int prepared_count;
+// Keep wait replies bounded below the domain's 64 capability slots. An
+// evicted waiter wakes to retry and a canceled waiter releases its slot.
+enum { CONSOLE_WAIT_LIMIT = 16 };
+static unsigned long waiters[CONSOLE_WAIT_LIMIT];
+static unsigned int waiter_count;
+
+static void wake_waiter(unsigned int index) {
+  const struct moss_ipc_message response = {.size = 1, .payload = {MOSS_CONSOLE_OK}};
+  (void)syscall2(SYS_IPC_REPLY, (long)waiters[index], (long)&response);
+  (void)syscall1(SYS_CAP_CLOSE, (long)waiters[index]);
+  --waiter_count;
+  if (index < waiter_count)
+    memmove(waiters + index, waiters + index + 1, (waiter_count - index) * sizeof(waiters[0]));
+}
+
+static void wake_input_waiters(void) {
+  if (length && !prepared_count) {
+    while (waiter_count)
+      wake_waiter(0);
+  }
+}
 
 static unsigned long parse_handle(const char *text) {
   if (!text)
@@ -70,6 +91,14 @@ int main(int argc, char **argv) {
                !request.rights && prepared_count) {
       response.payload[0] = MOSS_CONSOLE_OK;
       finish_read = request.payload[1];
+    } else if (request.badge == 0 && request.size == MOSS_CONSOLE_WAIT_BYTES &&
+               request.payload[0] == MOSS_CONSOLE_WAIT && request.payload[1] == 0 && request.capability &&
+               request.rights == MOSS_CAP_SEND) {
+      if (waiter_count == CONSOLE_WAIT_LIMIT)
+        wake_waiter(0); // A spurious wake also reclaims an abandoned reply.
+      waiters[waiter_count++] = request.capability;
+      request.capability = 0;
+      response.payload[0] = MOSS_CONSOLE_OK;
     } else if (request.badge == 0 && request.capability && request.size == MOSS_CONSOLE_IO_BYTES) {
       unsigned char operation = request.payload[0];
       unsigned int stream = request.payload[1];
@@ -144,6 +173,7 @@ int main(int argc, char **argv) {
       }
       prepared_count = 0;
     }
+    wake_input_waiters();
     if (minted > 0)
       (void)syscall1(SYS_CAP_CLOSE, minted);
   }

@@ -44,7 +44,8 @@ enum {
   MOSS_PROCESS_FD_PIPE = 31,
   MOSS_PROCESS_FD_STAT = 32,
   MOSS_PROCESS_FD_READDIR = 33,
-  MOSS_PROCESS_PATH_STAT = 34
+  MOSS_PROCESS_PATH_STAT = 34,
+  MOSS_PROCESS_FD_WAIT = 35
 };
 enum {
   MOSS_PROCESS_OK = 0,
@@ -109,6 +110,11 @@ enum {
   MOSS_PROCESS_FD_DUP_MIN_BYTES = 18,
   MOSS_PROCESS_FD_INSTALL_BYTES = 2
 };
+// FD_WAIT carries [opcode, descriptor:u64 LE, direction:u8, count:u16 LE]
+// without a capability. Direction 0 waits for read, 1 for write. The reply
+// is [OK] when the caller should retry FD_READ/WRITE; it can wake spuriously.
+// A canceled call consumes no backend bytes and does not block the registry.
+enum { MOSS_PROCESS_FD_WAIT_BYTES = 12, MOSS_PROCESS_FD_WAIT_READ = 0, MOSS_PROCESS_FD_WAIT_WRITE = 1 };
 enum { MOSS_PROCESS_FD_PIPE_REPLY_BYTES = 17 };
 // FD_STAT returns [OK, kind, file ID: u64 LE, size: u64 LE]. Pipe and console
 // report zero ID/size until their own metadata contracts are defined.

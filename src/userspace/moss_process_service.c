@@ -565,6 +565,7 @@ struct FdAction {
   unsigned long next_offset;
   int completed_write;
   int fatal_backend;
+  int delegated_reply;
 };
 
 static void fd_reply_value(struct moss_ipc_message *response, unsigned long value) {
@@ -595,7 +596,7 @@ static int namespace_path_request(const struct moss_ipc_message *incoming, unsig
   return 1;
 }
 
-static void handle_fd_request(struct Record *owner, unsigned long namespace, unsigned long pipe,
+static void handle_fd_request(struct Record *owner, unsigned long namespace, unsigned long pipe, unsigned long reply,
                               struct moss_ipc_message *request, struct moss_ipc_message *response,
                               struct FdAction *action) {
   if (!record_running(owner)) {
@@ -796,6 +797,53 @@ static void handle_fd_request(struct Record *owner, unsigned long namespace, uns
     action->added->close_on_exec = !!(flags & MOSS_PROCESS_FD_CLOEXEC);
     request->capability = 0;
     fd_reply_value(response, action->added->number);
+    return;
+  }
+
+  if (operation == MOSS_PROCESS_FD_WAIT) {
+    if (request->size != MOSS_PROCESS_FD_WAIT_BYTES || request->capability || request->rights)
+      return;
+    unsigned long number = moss_process_get_u64(request->payload + 1);
+    struct Descriptor *entry = find_descriptor(owner, number);
+    if (!entry) {
+      response->payload[0] = MOSS_PROCESS_BAD_DESCRIPTOR;
+      return;
+    }
+    unsigned int direction = request->payload[9];
+    unsigned int count = moss_file_get_u16(request->payload + 10);
+    if (direction > MOSS_PROCESS_FD_WAIT_WRITE || !count || count > MOSS_MEM_OBJECT_BYTES)
+      return;
+    struct OpenDescription *description = entry->description;
+    int writing = direction == MOSS_PROCESS_FD_WAIT_WRITE;
+    if (!(description->flags & (writing ? MOSS_PROCESS_FD_WRITABLE : MOSS_PROCESS_FD_READABLE))) {
+      response->payload[0] = MOSS_PROCESS_BAD_DESCRIPTOR;
+      return;
+    }
+    if (description->kind == DESCRIPTION_DIRECTORY) {
+      response->payload[0] = MOSS_PROCESS_IS_DIRECTORY;
+      return;
+    }
+    if (description->kind == DESCRIPTION_FILE || (description->kind == DESCRIPTION_CONSOLE && writing)) {
+      response->payload[0] = MOSS_PROCESS_OK;
+      return;
+    }
+    struct moss_ipc_message wait = {.capability = reply, .rights = MOSS_CAP_SEND};
+    if (description->kind == DESCRIPTION_PIPE) {
+      wait.size = MOSS_PIPE_WAIT_BYTES;
+      wait.payload[0] = MOSS_PIPE_WAIT;
+      moss_pipe_put_u16(wait.payload + 1, count);
+    } else {
+      wait.size = MOSS_CONSOLE_WAIT_BYTES;
+      wait.payload[0] = MOSS_CONSOLE_WAIT;
+      wait.payload[1] = description->stream;
+    }
+    // Transfer the one-shot Reply so the backend can wait while this service
+    // keeps accepting registration, signal and descriptor requests.
+    action->delegated_reply = 1;
+    struct moss_ipc_message accepted = {0};
+    (void)service_call(description->object, &wait, &accepted);
+    if (accepted.capability)
+      (void)syscall1(SYS_CAP_CLOSE, (long)accepted.capability);
     return;
   }
 
@@ -1343,8 +1391,8 @@ int main(int argc, char **argv) {
         response.payload[0] = sent_signal ? MOSS_PROCESS_OK : failed ? MOSS_PROCESS_UNAVAILABLE : MOSS_PROCESS_NO_ENTRY;
       }
     } else if (request.badge && request.size && request.payload[0] >= MOSS_PROCESS_FD_OPEN &&
-               request.payload[0] <= MOSS_PROCESS_PATH_STAT) {
-      handle_fd_request(find_record(request.badge), namespace, pipe, &request, &response, &fd_action);
+               request.payload[0] <= MOSS_PROCESS_FD_WAIT) {
+      handle_fd_request(find_record(request.badge), namespace, pipe, reply, &request, &response, &fd_action);
     } else if (request.badge && request.size == 1 && !request.capability && !request.rights) {
       struct Record *record = find_record(request.badge);
       if (!record) {
@@ -1384,6 +1432,14 @@ int main(int argc, char **argv) {
     }
     if (request.capability)
       (void)syscall1(SYS_CAP_CLOSE, (long)request.capability);
+    if (fd_action.delegated_reply) {
+      // If the backend never accepted the transfer, this Reply still belongs
+      // to us. Otherwise its stale handle is rejected and the backend wakes
+      // the caller or releases it on service death.
+      response.payload[0] = MOSS_PROCESS_UNAVAILABLE;
+      (void)syscall2(SYS_IPC_REPLY, (long)reply, (long)&response);
+      continue;
+    }
     long sent = syscall2(SYS_IPC_REPLY, (long)reply, (long)&response);
     if (!finish_fd_action(&fd_action, sent))
       return 1;

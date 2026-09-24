@@ -9,6 +9,9 @@
 
 enum { PIPE_CONTROL = 1, PIPE_READER = 2, PIPE_WRITER = 3 };
 enum { PIPE_BYTES = MOSS_MEM_OBJECT_BYTES };
+// A service domain has 64 capability slots. Keep room for its endpoint,
+// in-flight messages and minted pipe ends even if callers abandon waits.
+enum { PIPE_WAIT_LIMIT = 32 };
 
 struct Pipe {
   struct Pipe *next;
@@ -26,6 +29,39 @@ struct Pipe {
 static struct Pipe *pipes;
 static unsigned int pipe_count;
 static unsigned long next_id = 1;
+struct PipeWaiter {
+  struct Pipe *pipe;
+  unsigned long reply;
+  unsigned int count;
+  unsigned char role;
+};
+static struct PipeWaiter waiters[PIPE_WAIT_LIMIT];
+static unsigned int waiter_count;
+
+static int wait_ready(const struct PipeWaiter *waiter) {
+  const struct Pipe *pipe = waiter->pipe;
+  return waiter->role == PIPE_READER
+             ? (pipe->reader_closed || pipe->writer_closed || (pipe->length && !pipe->prepared_count))
+             : (pipe->writer_closed || pipe->reader_closed || waiter->count <= PIPE_BYTES - pipe->length);
+}
+
+static void wake_waiter(unsigned int index) {
+  const struct moss_ipc_message response = {.size = 1, .payload = {MOSS_PIPE_OK}};
+  (void)syscall2(SYS_IPC_REPLY, (long)waiters[index].reply, (long)&response);
+  (void)syscall1(SYS_CAP_CLOSE, (long)waiters[index].reply);
+  --waiter_count;
+  if (index < waiter_count)
+    memmove(waiters + index, waiters + index + 1, (waiter_count - index) * sizeof(waiters[0]));
+}
+
+static void wake_pipe_waiters(struct Pipe *pipe, int closing) {
+  for (unsigned int index = 0; index < waiter_count;) {
+    if (waiters[index].pipe == pipe && (closing || wait_ready(&waiters[index])))
+      wake_waiter(index);
+    else
+      ++index;
+  }
+}
 
 static unsigned long parse_handle(const char *text) {
   if (!text)
@@ -160,6 +196,19 @@ int main(int argc, char **argv) {
       response.payload[0] = MOSS_PIPE_OK;
       finished_read_pipe = pipe;
       finish_commit = request.payload[1];
+    } else if (pipe && (role == PIPE_READER || role == PIPE_WRITER) && request.size == MOSS_PIPE_WAIT_BYTES &&
+               request.payload[0] == MOSS_PIPE_WAIT && request.capability && request.rights == MOSS_CAP_SEND &&
+               (role == PIPE_READER ? pipe->reader_issued && !pipe->reader_closed
+                                    : pipe->writer_issued && !pipe->writer_closed)) {
+      unsigned int count = moss_pipe_get_u16(request.payload + 1);
+      if (count && count <= PIPE_BYTES) {
+        if (waiter_count == PIPE_WAIT_LIMIT)
+          wake_waiter(0); // A spurious wake frees a slot, including for a canceled caller.
+        waiters[waiter_count++] =
+            (struct PipeWaiter){.pipe = pipe, .reply = request.capability, .count = count, .role = (unsigned char)role};
+        request.capability = 0;
+        response.payload[0] = MOSS_PIPE_OK;
+      }
     } else if (pipe && (role == PIPE_READER || role == PIPE_WRITER) && request.size == 1 &&
                request.payload[0] == MOSS_PIPE_CLOSE && !request.capability && !request.rights) {
       if (role == PIPE_READER) {
@@ -254,6 +303,8 @@ int main(int argc, char **argv) {
       *issued = 1;
     if (minted > 0)
       (void)syscall1(SYS_CAP_CLOSE, minted);
+    if (pipe)
+      wake_pipe_waiters(pipe, finished != NULL);
     if (finished)
       remove_pipe(finished);
   }

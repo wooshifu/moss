@@ -22,6 +22,8 @@ extern char **environ;
 // replying or a child never publishes its exit status.
 static const unsigned long process_call_timeout_ns = 5000000000UL;
 static const unsigned long status_retry_ns = 10000000UL;
+// Give the service time to accept a wait before the cancellation probe expires.
+static const unsigned long fd_wait_cancel_timeout_ns = 1000000000UL;
 enum { STATUS_RETRIES = 500 };
 
 static int error(void) {
@@ -1289,6 +1291,55 @@ static int fd_io_rejected(unsigned long session, unsigned char operation, unsign
   return fd_rejected(session, &request, status);
 }
 
+static int fd_wait(unsigned long session, unsigned long number, unsigned char direction, unsigned int count) {
+  struct moss_ipc_message request = {.size = MOSS_PROCESS_FD_WAIT_BYTES, .payload = {MOSS_PROCESS_FD_WAIT}};
+  moss_process_put_u64(request.payload + 1, number);
+  request.payload[9] = direction;
+  moss_file_put_u16(request.payload + 10, count);
+  struct moss_ipc_message response = {0};
+  long result = call(session, &request, &response);
+  return no_capability(&response) && result == 1 && response.payload[0] == MOSS_PROCESS_OK;
+}
+
+static int fd_wait_expires(unsigned long session, unsigned long number) {
+  struct moss_ipc_message request = {.size = MOSS_PROCESS_FD_WAIT_BYTES, .payload = {MOSS_PROCESS_FD_WAIT}};
+  moss_process_put_u64(request.payload + 1, number);
+  request.payload[9] = MOSS_PROCESS_FD_WAIT_READ;
+  moss_file_put_u16(request.payload + 10, 1);
+  unsigned long now = 0;
+  if (syscall2(SYS_CLOCK_GETTIME, MOSS_CLOCK_MONOTONIC, (long)&now) != 0 || now > LONG_MAX - fd_wait_cancel_timeout_ns)
+    return 0;
+  struct moss_ipc_message response = {0};
+  long result = syscall6(SYS_IPC_CALL, (long)session, (long)&request, (long)&response,
+                         (long)(now + fd_wait_cancel_timeout_ns), 0, 0);
+  return no_capability(&response) && result == -ETIMEDOUT;
+}
+
+static int fd_wait_child(const char *number_text, const char *direction_text) {
+  char *end = NULL;
+  errno = 0;
+  unsigned long number = strtoul(number_text, &end, 10);
+  unsigned long session = getauxval(MOSS_AT_STARTUP_CAP);
+  int writing = strcmp(direction_text, "write") == 0;
+  if (errno || !number || number >= MOSS_PROCESS_FD_LIMIT || *end || !session ||
+      (!writing && strcmp(direction_text, "read") != 0))
+    return 0;
+  usleep(50000);
+  long memory = syscall1(SYS_MEM_CREATE, MOSS_MEM_OBJECT_BYTES);
+  long page = memory > 0 ? syscall2(SYS_MEM_MAP, memory, MOSS_CAP_MAP_READ | MOSS_CAP_MAP_WRITE) : 0;
+  if (page > 0 && writing)
+    *(unsigned char *)page = 'w';
+  unsigned int transferred = 0;
+  int valid = page > 0 &&
+              fd_io(session, writing ? MOSS_PROCESS_FD_WRITE : MOSS_PROCESS_FD_READ, number, memory, 1, &transferred) &&
+              transferred == 1 && (writing || *(unsigned char *)page == 'x');
+  if (page > 0)
+    (void)syscall2(SYS_MUNMAP, page, MOSS_MEM_OBJECT_BYTES);
+  if (memory > 0)
+    (void)syscall1(SYS_CAP_CLOSE, memory);
+  return valid;
+}
+
 static int fd_pipe_probe(void) {
   unsigned long session = getauxval(MOSS_AT_STARTUP_CAP);
   unsigned long reader = 0, writer = 0, duplicate = 0, flags = 0;
@@ -1317,12 +1368,56 @@ static int fd_pipe_probe(void) {
             fd_io(session, MOSS_PROCESS_FD_READ, duplicate, memory, 2, &transferred) && transferred == 2 &&
             memcmp((const void *)mapped, "pe", 2) == 0 &&
             fd_io_rejected(session, MOSS_PROCESS_FD_READ, duplicate, memory, 1, MOSS_PROCESS_WOULD_BLOCK);
+  if (valid)
+    valid = fd_wait_expires(session, duplicate);
+  if (valid) {
+    char writer_text[24];
+    snprintf(writer_text, sizeof(writer_text), "%lu", writer);
+    pid_t child = fork();
+    if (child == 0) {
+      char *const child_argv[] = {"moss-process", "fd-wait-child", writer_text, "write", NULL};
+      execve("/moss-process.elf", child_argv, environ);
+      _exit(43);
+    }
+    valid = child > 0 && fd_wait(session, duplicate, MOSS_PROCESS_FD_WAIT_READ, 1) &&
+            fd_io(session, MOSS_PROCESS_FD_READ, duplicate, memory, 1, &transferred) && transferred == 1 &&
+            *(unsigned char *)mapped == 'w';
+    int status = 0;
+    if (child > 0)
+      valid &= waitpid(child, &status, 0) == child && WIFEXITED(status) && WEXITSTATUS(status) == 37;
+  }
+  if (valid) {
+    memset((void *)mapped, 'x', MOSS_MEM_OBJECT_BYTES);
+    valid = fd_io(session, MOSS_PROCESS_FD_WRITE, writer, memory, MOSS_MEM_OBJECT_BYTES, &transferred) &&
+            transferred == MOSS_MEM_OBJECT_BYTES;
+  }
+  if (valid) {
+    char reader_text[24];
+    snprintf(reader_text, sizeof(reader_text), "%lu", duplicate);
+    pid_t child = fork();
+    if (child == 0) {
+      char *const child_argv[] = {"moss-process", "fd-wait-child", reader_text, "read", NULL};
+      execve("/moss-process.elf", child_argv, environ);
+      _exit(43);
+    }
+    valid = child > 0 && fd_wait(session, writer, MOSS_PROCESS_FD_WAIT_WRITE, 1);
+    if (valid) {
+      *(unsigned char *)mapped = 'y';
+      valid = fd_io(session, MOSS_PROCESS_FD_WRITE, writer, memory, 1, &transferred) && transferred == 1 &&
+              fd_io(session, MOSS_PROCESS_FD_READ, duplicate, memory, MOSS_MEM_OBJECT_BYTES, &transferred) &&
+              transferred == MOSS_MEM_OBJECT_BYTES;
+    }
+    int status = 0;
+    if (child > 0)
+      valid &= waitpid(child, &status, 0) == child && WIFEXITED(status) && WEXITSTATUS(status) == 37;
+  }
   if (valid) {
     struct moss_ipc_message seek = {.size = MOSS_PROCESS_FD_SEEK_BYTES, .payload = {MOSS_PROCESS_FD_SEEK}};
     moss_process_put_u64(seek.payload + 1, duplicate);
     seek.payload[17] = MOSS_PROCESS_FD_SEEK_SET;
     valid = fd_rejected(session, &seek, MOSS_PROCESS_NOT_SEEKABLE) &&
-            fd_command(session, MOSS_PROCESS_FD_CLOSE, writer, NULL);
+            fd_command(session, MOSS_PROCESS_FD_CLOSE, writer, NULL) &&
+            fd_wait(session, duplicate, MOSS_PROCESS_FD_WAIT_READ, 1);
     if (valid)
       writer = 0;
   }
@@ -1336,7 +1431,8 @@ static int fd_pipe_probe(void) {
   if (valid)
     reader = 0;
   if (valid)
-    valid = fd_io_rejected(session, MOSS_PROCESS_FD_WRITE, writer, memory, 1, MOSS_PROCESS_BROKEN_PIPE) &&
+    valid = fd_wait(session, writer, MOSS_PROCESS_FD_WAIT_WRITE, 1) &&
+            fd_io_rejected(session, MOSS_PROCESS_FD_WRITE, writer, memory, 1, MOSS_PROCESS_BROKEN_PIPE) &&
             fd_command(session, MOSS_PROCESS_FD_CLOSE, writer, NULL);
   if (valid)
     writer = 0;
@@ -1386,6 +1482,21 @@ static int console_fd_probe(void) {
             fd_io(session, MOSS_PROCESS_FD_READ, 0, memory, 1, &transferred) && transferred == 1 &&
             *(unsigned char *)mapped == '@' && fd_io(session, MOSS_PROCESS_FD_READ, 0, memory, 1, &transferred) &&
             transferred == 1 && *(unsigned char *)mapped == '!';
+  if (valid)
+    valid = syscall2(SYS_CAP_SET_INHERIT, (long)input, 1) == 0;
+  if (valid) {
+    pid_t child = fork();
+    if (child == 0) {
+      usleep(50000);
+      _exit(console_feed(input, '?') ? 37 : 43);
+    }
+    valid = child > 0 && fd_wait(session, 0, MOSS_PROCESS_FD_WAIT_READ, 1) &&
+            fd_io(session, MOSS_PROCESS_FD_READ, 0, memory, 1, &transferred) && transferred == 1 &&
+            *(unsigned char *)mapped == '?';
+    int status = 0;
+    if (child > 0)
+      valid &= waitpid(child, &status, 0) == child && WIFEXITED(status) && WEXITSTATUS(status) == 37;
+  }
   if (valid) {
     static const char message[] = "MOSS_CONSOLE_OBJECT_WRITE\n";
     memcpy((void *)mapped, message, sizeof(message) - 1);
@@ -1410,6 +1521,8 @@ static int console_fd_probe(void) {
 int main(int argc, char **argv) {
   if (argc == 3 && strcmp(argv[1], "fd-exec-child") == 0)
     return fd_exec_child(argv[2]) ? 37 : 43;
+  if (argc == 4 && strcmp(argv[1], "fd-wait-child") == 0)
+    return fd_wait_child(argv[2], argv[3]) ? 37 : 43;
   if (argc == 2 && strcmp(argv[1], "fd-probe") == 0) {
     if (!fd_view_probe())
       return error();

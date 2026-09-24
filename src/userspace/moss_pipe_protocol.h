@@ -15,7 +15,8 @@ enum {
   MOSS_PIPE_WRITE = 6,
   MOSS_PIPE_CLOSE = 7,
   MOSS_PIPE_READ_PREPARE = 8,
-  MOSS_PIPE_READ_FINISH = 9
+  MOSS_PIPE_READ_FINISH = 9,
+  MOSS_PIPE_WAIT = 10
 };
 
 enum {
@@ -38,6 +39,10 @@ enum { MOSS_PIPE_IO_BYTES = 3, MOSS_PIPE_IO_REPLY_BYTES = 3 };
 // reaches the caller; commit=0 cancels the reservation. One read may be
 // prepared per pipe because the Process Service serializes descriptor calls.
 enum { MOSS_PIPE_READ_FINISH_BYTES = 2 };
+// WAIT carries [opcode, count:u16 LE] and a transferred SEND-only Reply.
+// The reader wakes when data or EOF is available; the writer wakes when count
+// bytes fit or the reader has closed. A wake only asks the caller to retry I/O.
+enum { MOSS_PIPE_WAIT_BYTES = 3 };
 // Bound service-owned ring storage until pipes have per-client quotas.
 enum { MOSS_PIPE_OBJECT_LIMIT = 16 };
 

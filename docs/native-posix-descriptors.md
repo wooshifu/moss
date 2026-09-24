@@ -47,15 +47,18 @@ identify the root directory without guessing from path spelling.
 Managed libc still uses kernel `stat`, `lstat` and `getdents`; nested traversal,
 timestamps, credentials and readiness metadata remain to be defined.
 
-The process service currently waits synchronously for each object call
-while processing one request at a time. A blocking console read or pipe read
-would therefore delay unrelated process registration, wait and signal calls.
-Console and pipe reads return `WOULD_BLOCK` instead of waiting; the existing
-one-second backend deadline bounds a stalled call. Kernel `SYS_POLL` is still
-unimplemented, so physical console input needs a dedicated blocking reader
-domain or a native readiness mechanism before libc switches. Blocking I/O,
-uncertain writes and cancellation across service death still need a complete
-transaction contract before libc can use these descriptors.
+The process service still processes one request at a time. Console and pipe
+reads return `WOULD_BLOCK`; a separate `FD_WAIT` request transfers the
+caller's one-shot Reply Capability to the object service. That service keeps a
+bounded waiter list and replies when input, free pipe space, EOF or a broken
+pipe makes retrying useful. A wake can be spurious. Cancellation invalidates
+the Reply Capability; the object service reclaims its handle on the next
+state change or when a full waiter list evicts its oldest entry. The existing
+one-second backend deadline bounds the handoff, not the caller's wait.
+Physical console input still needs a dedicated reader domain, and managed
+libc still uses the kernel descriptor table. Kernel `SYS_POLL` remains
+unimplemented. Uncertain writes and cancellation across service death still
+need a complete transaction contract before libc can use these descriptors.
 
 ## Ownership boundary
 

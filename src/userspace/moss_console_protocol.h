@@ -9,7 +9,8 @@ enum {
   MOSS_CONSOLE_WRITE = 3,
   MOSS_CONSOLE_FEED = 4,
   MOSS_CONSOLE_READ_PREPARE = 5,
-  MOSS_CONSOLE_READ_FINISH = 6
+  MOSS_CONSOLE_READ_FINISH = 6,
+  MOSS_CONSOLE_WAIT = 7
 };
 
 enum { MOSS_CONSOLE_OK = 0, MOSS_CONSOLE_BAD_REQUEST = 1, MOSS_CONSOLE_WOULD_BLOCK = 2, MOSS_CONSOLE_UNAVAILABLE = 3 };
@@ -23,6 +24,9 @@ enum { MOSS_CONSOLE_IO_BYTES = 4, MOSS_CONSOLE_IO_REPLY_BYTES = 3 };
 // [opcode, commit:u8] and consumes the reserved bytes only after its reply
 // reaches the Process Service; commit=0 leaves them available for retry.
 enum { MOSS_CONSOLE_READ_FINISH_BYTES = 2 };
+// WAIT carries [opcode, input stream 0] and a transferred SEND-only Reply.
+// A wake asks the caller to retry the read; it does not reserve input.
+enum { MOSS_CONSOLE_WAIT_BYTES = 2 };
 enum { MOSS_CONSOLE_RING_BYTES = 4096 };
 
 static inline unsigned int moss_console_get_u16(const unsigned char *bytes) {
