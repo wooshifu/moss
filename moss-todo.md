@@ -1,8 +1,8 @@
 # Moss 内核设计与实现审计报告及修复清单
 
 > 原始审计：2026-09-05，源码基线：`d86077b258d5abcea6b8c02fb340421cd4aeb532`。
-> 源码复核基线：2026-09-23，`abeba591`（当次未重跑 QEMU）。第 3.4～3.20 节保留此前实测及当时状态；后续实现与运行记录见第 3.21～3.92 节，源码与历史证据的对应关系见第 3.41 节。前一轮九预设运行见第 3.59～3.75 节。本文与 [todo.md](todo.md) 同步。
-> ADR 迁移复核基线：2026-09-24，`ded02f6` 加后续实现。第 3.75 节以前的测试数值不自动覆盖新服务路径或 ADR 收敛改动；IPC 分界见 3.76，启动驱动边界见 3.77，优先级继承见 3.78，取消与服务死亡交错见 3.79，已认领请求的 deadline 见 3.80，reply/取消竞争见 3.81，执行域构造机制见 3.82，不可变代码版本见 3.83，多页代码范围见 3.84，可信版本长度见 3.85，优先级倒置时延见 3.86，代码批准实例撤销见 3.87，批准服务死亡后的权能存续见 3.88，真实审批服务与监督者交接见 3.89，普通原生域的用户态装载见 3.90，Reply capability 跨进程交接见 3.91，失败回滚见 3.92，当前目标与进度另见 [todo.md 的 ADR 迁移清单](todo.md#adr-迁移)。
+> 源码复核基线：2026-09-23，`abeba591`（当次未重跑 QEMU）。第 3.4～3.20 节保留此前实测及当时状态；后续实现与运行记录见第 3.21～3.93 节，源码与历史证据的对应关系见第 3.41 节。前一轮九预设运行见第 3.59～3.75 节。本文与 [todo.md](todo.md) 同步。
+> ADR 迁移复核基线：2026-09-24，`ded02f6` 加后续实现。第 3.75 节以前的测试数值不自动覆盖新服务路径或 ADR 收敛改动；IPC 分界见 3.76，启动驱动边界见 3.77，优先级继承见 3.78，取消与服务死亡交错见 3.79，已认领请求的 deadline 见 3.80，reply/取消竞争见 3.81，执行域构造机制见 3.82，不可变代码版本见 3.83，多页代码范围见 3.84，可信版本长度见 3.85，优先级倒置时延见 3.86，代码批准实例撤销见 3.87，批准服务死亡后的权能存续见 3.88，真实审批服务与监督者交接见 3.89，普通原生域的用户态装载见 3.90，Reply capability 跨进程交接见 3.91，失败回滚见 3.92，Loader/Process Service 交接见 3.93，当前目标与进度另见 [todo.md 的 ADR 迁移清单](todo.md#adr-迁移)。
 > 第 3.1～3.2 节保留原始运行证据；第 5～9 节未标新日期的“位置与事实”、地址和行号属于原始审计，不能当作当前仍然失败的运行结果。带日期的“工作区”指当时的验证状态，不表示当前仍未提交；当前状态以第 4 节及各项更新说明为准。
 
 ## 1. 当前结论
@@ -17,7 +17,7 @@ Moss 已具备三架构真实启动、SMP、用户态与进程执行路径。后
 4. **旧停滞记录应保留，不能直接当作当前复现。** 退出已改为经 `context_switch` 返回活跃 bootstrap 栈，不再在 C++ 帧中直接修改 SP。默认 `users.lifecycle` 已覆盖 1,000 次 fork/exec/exit/wait 和资源检查，并随最近记录的九预设矩阵通过；旧第 28 次停滞的原版本红绿对照、1/16 CPU 长循环与更广的生命周期压力仍缺。
 5. **测试已从基础语言检查升级为真实内核检查，覆盖仍有边界。** 3.75 的九预设 CTest 为 44/44，IPC 和启动驱动边界收敛后的两轮均为 53/53（3.76～3.77）；后者包含 Release 的三个 benchmark、ARM64 Debug console 登记探针，以及 ARM64/x64 的真实 IRQ/等待登记交错。默认用户套件包含 COW/OOM、恶意信号帧、部分用户复制故障、双 console 读者、管道与 nanosleep 信号中断、限定 SA_RESTART 重试、基本 STOP/CONT、SA_NOCLDSTOP、SA_NOCLDWAIT/显式 SIG_IGN 自动回收、信号 action 更新的受控交错及忽略动作的待处理清理、进程组 wait 筛选和成员变更唤醒、waitpid 停止/继续与信号致死状态报告及 1,000 次生命周期；这不证明全部 uaccess 故障、确定性调度竞争或真机可靠性。
 
-2026-09-24 的代码已经有进程局部 capability、同步控制 IPC、共享内存对象、用户态 supervisor、处理 `/scratch` 的文件/命名空间服务，以及由启动域工厂 capability 授权的原生域构造和独立的代码执行授权机制。Code Authority Service 已作为独立用户域运行，但当前只接收 supervisor 私有请求，未接入普通程序装载。普通 shell 文件、ELF 加载、POSIX 进程/信号和启动设备仍依赖内核路径；这些初始服务与机制不能视为 ADR-0015、0018、0024～0027 已完成。后续按已接受的 ADR 逐步迁移，并继续验证现存路径的安全与所有权边界。
+2026-09-24 的代码已经有进程局部 capability、同步控制 IPC、共享内存对象、用户态 supervisor、处理 `/scratch` 的文件/命名空间服务，以及由启动域工厂 capability 授权的原生域构造。独立 Code Authority Service 接受 supervisor 与受委托 Loader 的私有批准请求；Loader 可从不具名文件装载受限静态原生域，supervisor 可将该域的观察权交给 Process Compatibility Service。普通 shell 文件、ELF 加载、POSIX 进程/信号和启动设备仍依赖内核路径；这些限定服务与机制不能视为 ADR-0015、0018、0024～0027 已完成。后续按已接受的 ADR 逐步迁移，并继续验证现存路径的安全与所有权边界。
 
 本文继续追踪 **32 个审计项**。有些子问题已修复，完整审计项仍按原验收关闭；不能只因相关提交或基础测试通过而整体勾选。
 
@@ -63,7 +63,7 @@ P0 是本项目的实现优先级，不是 CVSS 评级。研究内核也需要�
   → VM、VFS、信号、调度、wait/exit/回收
 ```
 
-该图描述原审计时的主要内核路径。当前生产 initramfs 还包含 `/init.elf`、文件/命名空间服务和 `/moss-file.elf`：`moss-init` 在用户态启动、监护服务，`/scratch` 请求经 capability 控制 IPC 与共享内存对象处理。内核 VFS、ELF 加载、POSIX 进程和启动设备仍在特权域；因此现状是已有**有限隔离服务路径**的过渡架构，距离 ADR-0008～0033 的目标仍有明确缺口。
+该图描述原审计时的主要内核路径。当前生产 initramfs 还包含 `/init.elf`、文件/命名空间、代码审批、Loader 和 Process Compatibility 服务：`moss-init` 在用户态启动并监护这些服务，`/scratch` 请求经 capability 控制 IPC 与共享内存对象处理。Loader 产生的受限原生域可由 supervisor 交给 Process Service 观察。内核 VFS、普通 ELF 加载、POSIX 进程和启动设备仍在特权域；因此现状是已有**有限隔离服务路径**的过渡架构，距离 ADR-0008～0033 的目标仍有明确缺口。
 
 值得保留的基础包括 C++ 模块边界、架构封装、显式错误结果、现有 ELF/用户态闭环、调度器的红黑树实现以及 libfdt 的复用。主要设计改进应集中在少数深层接口：内存所有权、用户访问、陷阱现场、阻塞/唤醒和进程资源事务。
 
@@ -1741,6 +1741,14 @@ supervisor 的 `RUN` 请求显式传递单个文件 capability；Loader 经 File
 能力表现在把待移动的 Reply 源句柄暂时隐藏，并以 escrow 保持对象存活；请求成功入队或回复确实提交后才撤销原句柄。这两个提交点之前的失败恢复相同句柄和权限，普通可复制 capability 继续按既有语义处理。`capability_regression` 覆盖隐藏、失败回滚、原句柄复用和成功提交；`users.ipc/reply_handoff` 先以同一个 Reply 调用已关闭的端点，要求得到 `EPIPE`，再用恢复的原句柄完成真实跨进程交接。已入队消息之后被丢弃仍终止原调用，这不是失败回滚的范围。
 
 三架构九预设串行 workflow **9/9**、CTest **53/53** 通过。九份已定稿的 `users.ipc` 功能报告中，`reply_handoff`、`reply_handoff_drop` 和 `reply_handoff_latency` 均通过；保留的生产启动结果均完成 **109 步**。宿主 `scripts/tests` **378 passed、1 skipped**，改动行 clang-format 检查和 `git diff --check` 通过。矩阵原始日志及结果 JSON 保存在本工作区的 `build/ipc-transfer-*` 与 `build/ipc-transfer-evidence/`；为避免磁盘写满，逐预设保存结果后清理了可重建的生成产物。这项回归只证明失败的权能提交可回滚，不代表 CPU 预算、deadline 传播、调用链深度或死锁策略已完成。
+
+### 3.93 Loader 原生域与 Process Compatibility Service 交接（2026-09-24）
+
+此前 Loader 的成功响应只给 supervisor 域观察与终止权限，缺少 `INSPECT` 以及 IPC 转交普通 capability 所需的 `TRANSFER|DUPLICATE`，因此 Process Service 无法登记 Loader 新建的域。现在 Loader 只向私有 supervisor 返回完整的这组权限；supervisor 发起 `MOSS_PROCESS_REGISTER` 时把附件削减为 `OBSERVE|INSPECT`，Process Service 无法借登记句柄终止域。登记返回带 badge 的会话及非零身份号；supervisor 通过该会话核对父身份为 0，等原生域结束后读取退出码 37，并释放记录。这样验证的是真实 Loader→域工厂→Process Service 路径，不是由 Process Service 自行创建测试域。
+
+每个 Process Service incarnation 启动后都重复这次交接；生产启动探针要求首次启动和三次服务恢复各出现一次成功标记。此处登记的是一次性探针根记录，尚未把普通 POSIX 子进程、shell `execve` 或长期存活域的兼容身份迁移到服务；服务重启后的旧身份恢复与动态装载也仍未实现。ADR-0024/0025 总项继续打开。
+
+三架构九预设串行 workflow **9/9**、CTest **53/53** 通过；保存的 **11 份**生产启动报告各完成 **113 步**，其中 ARM64 Debug 的三份包括受控串口输入探针。宿主 `scripts/tests` **379 passed、1 skipped**，包含缺少交接成功标记必须失败的负向用例。Ruff、改动文件格式与 `git diff --check` 通过。仓库 `lint.py` 在构建后因扩展排除文件正则导致命令行过长，未进入 clang-tidy；使用同一编译数据库直接检查本次两个 C 文件时，关闭已有源码普遍违反的 `readability-braces-around-statements` 规则后无诊断。全仓格式检查仍报告未改文件的既有差异。原始 workflow 日志、CTest 日志和结果 JSON 保存在本工作区的 `build/bridge-*` 与 `build/bridge-evidence/`；每个预设结束后仅清理可重建的构建目录，以免磁盘写满。
 
 ## 4. 问题总表与当前状态
 

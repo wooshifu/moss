@@ -247,7 +247,10 @@ int main(int argc, char **argv) {
       response.payload[0] = load_and_spawn((long)request.capability, authority, factory, &domain);
       if (domain > 0) {
         response.capability = (unsigned long)domain;
-        response.rights = MOSS_CAP_DOMAIN_OBSERVE | MOSS_CAP_DOMAIN_TERMINATE;
+        // The private supervisor must be able to delegate only observation
+        // and identity checks to the Process Compatibility Service.
+        response.rights = MOSS_CAP_DOMAIN_OBSERVE | MOSS_CAP_DOMAIN_INSPECT | MOSS_CAP_DOMAIN_TERMINATE |
+                          MOSS_CAP_TRANSFER | MOSS_CAP_DUPLICATE;
       }
     }
     if (request.capability)

@@ -134,6 +134,7 @@ quit
         (b"moss-init: namespace service started", None),
         (b"moss-init: loader service started", None),
         (b"moss-init: process service started", None),
+        (b"moss-init: loader process bridge ready", None),
         (b"built-in shell (ash)", None),
         (b"moss$ ", b"/moss-process.elf probe\n"),
         (b"\nMOSS_PROCESS_READY\n", None),
@@ -199,6 +200,7 @@ quit
         (b"moss$ ", b"/moss-domain.elf terminate process\n"),
         (b"moss-init: process service died", None),
         (b"moss-init: process service started", None),
+        (b"moss-init: loader process bridge ready", None),
         (b"built-in shell (ash)", None),
         (b"moss$ ", b"/moss-process.elf probe\n"),
         (b"\nMOSS_PROCESS_READY\n", None),
@@ -207,6 +209,7 @@ quit
         (b"moss-init: namespace service started", None),
         (b"moss-init: loader service started", None),
         (b"moss-init: process service started", None),
+        (b"moss-init: loader process bridge ready", None),
         (b"built-in shell (ash)", None),
         (b"moss$ ", b"/moss-file.elf read\n"),
         (b"\nMOSS_FILE_READ=native\n", None),
@@ -218,6 +221,7 @@ quit
         (b"moss-init: namespace service started", None),
         (b"moss-init: loader service started", None),
         (b"moss-init: process service started", None),
+        (b"moss-init: loader process bridge ready", None),
         (b"built-in shell (ash)", None),
         (b"moss$ ", b"/moss-file.elf read\n"),
         (b"\nMOSS_FILE_READ=\n", None),
@@ -292,9 +296,13 @@ quit
                         break
                     marker, command = steps[stage]
                     after = pending.split(marker, 1)[1]
-                    if marker in (b"moss-init: file service started", b"moss-init: namespace service started",
-                                  b"moss-init: process service started", b"moss-init: code authority service started",
-                                  b"moss-init: loader service started"):
+                    if marker in (
+                        b"moss-init: file service started",
+                        b"moss-init: namespace service started",
+                        b"moss-init: process service started",
+                        b"moss-init: code authority service started",
+                        b"moss-init: loader service started",
+                    ):
                         match = re.match(rb" pid=(\d+)\n", after)
                         if not match:
                             break

@@ -12,6 +12,7 @@
 #include "moss_code_authority_protocol.h"
 #include "moss_file_protocol.h"
 #include "moss_loader_protocol.h"
+#include "moss_process_protocol.h"
 #include "syscall.h"
 
 // One second between launches bounds a failing service's restart rate.
@@ -406,7 +407,8 @@ static int request_loader(long send, long image, unsigned char expected, long *d
   long sent = call_service(send, &request, &response);
   if (sent == 1 && response.size == 1 && response.payload[0] == expected &&
       ((expected == MOSS_LOADER_OK && response.capability &&
-        response.rights == (MOSS_CAP_DOMAIN_OBSERVE | MOSS_CAP_DOMAIN_TERMINATE)) ||
+        response.rights == (MOSS_CAP_DOMAIN_OBSERVE | MOSS_CAP_DOMAIN_INSPECT | MOSS_CAP_DOMAIN_TERMINATE |
+                            MOSS_CAP_TRANSFER | MOSS_CAP_DUPLICATE)) ||
        (expected != MOSS_LOADER_OK && !response.capability && !response.rights))) {
     *domain = (long)response.capability;
     return 0;
@@ -440,6 +442,68 @@ static int launch_loader_service(const struct Service *code, const struct Loader
   }
   report_started("loader service", loader->pid);
   return 0;
+}
+
+static int verify_loader_process_bridge(long loader, long image, long process) {
+  long domain = 0;
+  if (request_loader(loader, image, MOSS_LOADER_OK, &domain) != 0)
+    return -1;
+
+  struct moss_ipc_message request = {.size = 1,
+                                     .capability = (unsigned long)domain,
+                                     .rights = MOSS_CAP_DOMAIN_OBSERVE | MOSS_CAP_DOMAIN_INSPECT,
+                                     .payload = {MOSS_PROCESS_REGISTER}};
+  struct moss_ipc_message response = {0};
+  long received = call_service(process, &request, &response);
+  long session = (long)response.capability;
+  uint64_t identity = received == MOSS_PROCESS_REPLY_VALUE_BYTES ? moss_process_get_u64(response.payload + 1) : 0;
+  int valid = received == MOSS_PROCESS_REPLY_VALUE_BYTES && response.size == MOSS_PROCESS_REPLY_VALUE_BYTES &&
+              response.payload[0] == MOSS_PROCESS_OK && session > 0 && identity != 0 &&
+              response.rights == (MOSS_CAP_SEND | MOSS_CAP_DUPLICATE);
+
+  if (valid) {
+    request = (struct moss_ipc_message){.size = 1, .payload = {MOSS_PROCESS_IDENTITY}};
+    response = (struct moss_ipc_message){0};
+    received = call_service(session, &request, &response);
+    valid = received == MOSS_PROCESS_REPLY_IDENTITY_BYTES && response.size == MOSS_PROCESS_REPLY_IDENTITY_BYTES &&
+            response.payload[0] == MOSS_PROCESS_OK && moss_process_get_u64(response.payload + 1) == identity &&
+            moss_process_get_u64(response.payload + 9) == 0 && !response.capability && !response.rights;
+  }
+  if (valid) {
+    long waited;
+    do {
+      waited = syscall1(SYS_DOMAIN_WAIT, domain);
+    } while (waited == -EINTR);
+    valid = waited == 0;
+  }
+  if (valid) {
+    request.payload[0] = MOSS_PROCESS_STATUS;
+    response = (struct moss_ipc_message){0};
+    received = call_service(session, &request, &response);
+    valid = received == MOSS_PROCESS_REPLY_VALUE_BYTES && response.size == MOSS_PROCESS_REPLY_VALUE_BYTES &&
+            response.payload[0] == MOSS_PROCESS_EXITED &&
+            moss_process_get_u64(response.payload + 1) == MOSS_LOADER_PROBE_EXIT_CODE && !response.capability &&
+            !response.rights;
+  }
+  if (valid) {
+    request.payload[0] = MOSS_PROCESS_RELEASE;
+    response = (struct moss_ipc_message){0};
+    received = call_service(session, &request, &response);
+    valid = received == 1 && response.size == 1 && response.payload[0] == MOSS_PROCESS_OK && !response.capability &&
+            !response.rights;
+  }
+  if (response.capability && response.capability != (unsigned long)session)
+    (void)syscall1(SYS_CAP_CLOSE, (long)response.capability);
+  if (session > 0)
+    (void)syscall1(SYS_CAP_CLOSE, session);
+  if (!valid) {
+    (void)syscall1(SYS_DOMAIN_TERMINATE, domain);
+    (void)syscall1(SYS_DOMAIN_WAIT, domain);
+  }
+  (void)syscall1(SYS_CAP_CLOSE, domain);
+  if (valid)
+    report(STDOUT_FILENO, "moss-init: loader process bridge ready\n");
+  return valid ? 0 : -1;
 }
 
 static int start_namespace_service(const struct Service *file, struct Service *service) {
@@ -772,14 +836,20 @@ int main(void) {
         } else {
           report_started("process service", process.pid);
           long shell_domain = 0;
-          pid_t shell = start_shell(namespace.send, process.send, file.domain, namespace.domain, process.domain,
-                                    code.domain, loader.domain, supervisor_domain, &shell_domain);
-          if (shell < 0) {
-            report(STDERR_FILENO, "moss-init: shell launch failed\n");
-            lost = PROCESS_LOST;
+          pid_t shell = 0;
+          if (verify_loader_process_bridge(loader.send, images.probe, process.send) != 0) {
+            report(STDERR_FILENO, "moss-init: loader process bridge failed\n");
+            lost = SUPERVISOR_FAILURE;
           } else {
-            lost = supervise(&file, &namespace, &process, &code, &loader, approver, revoker, &code_probe, factory,
-                             &images, supervisor_domain, &shell, &shell_domain);
+            shell = start_shell(namespace.send, process.send, file.domain, namespace.domain, process.domain,
+                                code.domain, loader.domain, supervisor_domain, &shell_domain);
+            if (shell < 0) {
+              report(STDERR_FILENO, "moss-init: shell launch failed\n");
+              lost = PROCESS_LOST;
+            } else {
+              lost = supervise(&file, &namespace, &process, &code, &loader, approver, revoker, &code_probe, factory,
+                               &images, supervisor_domain, &shell, &shell_domain);
+            }
           }
           stop_child(shell, shell_domain);
           stop_service(&process);

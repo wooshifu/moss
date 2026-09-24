@@ -1,8 +1,9 @@
 #pragma once
 
 // RUN carries [opcode] and a SEND capability naming the authorized File
-// Service object. A successful reply transfers only observation and
-// termination rights for the new native domain.
+// Service object. A successful reply gives the private supervisor observation,
+// identity inspection and termination rights, plus the ability to delegate a
+// reduced observation handle to the Process Compatibility Service.
 enum { MOSS_LOADER_RUN = 1 };
 enum {
   MOSS_LOADER_OK = 0,
