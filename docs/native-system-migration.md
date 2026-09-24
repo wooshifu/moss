@@ -31,10 +31,14 @@ networking and persistent storage.
    loss. Kernel IPC validation checks that receiver closure wakes a claimed
    call even while its reply handle is still alive; exercise the same race
    against the process service before treating its recovery as complete.
-2. Move the POSIX file view one operation family at a time through namespace
-   and file-object capabilities. Run the real ash and file-utility workflows
-   on the new path in all six architecture/build combinations. Keep the old
-   VFS path until those workflows and failure cleanup pass on the replacement.
+2. Establish one POSIX descriptor view for regular files, pipes and console
+   before redirecting mlibc's `open`/`read`/`write`/`close` calls. Its interface
+   must preserve shared open-description offsets across `dup` and `fork`,
+   per-descriptor close-on-exec behavior, and capability cleanup on close,
+   exit and service death. Then move operation families through namespace and
+   file-object capabilities. Run real ash and file-utility workflows on the
+   new path in all six architecture/build combinations. Keep the old VFS path
+   until those workflows and failure cleanup pass on the replacement.
 3. Move ordinary image parsing and external page supply to userspace after
    their kernel authority and immutable-content invariants are testable. Use
    separate checks for approval, revocation, repaging and failed services.
