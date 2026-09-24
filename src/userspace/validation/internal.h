@@ -19,6 +19,7 @@ unsigned long ipc_domain_spawn(void);
 unsigned long ipc_code_revocation(void);
 unsigned long ipc_code_service_survival(void);
 unsigned long ipc_deadline(void);
+unsigned long ipc_deadline_propagation(void);
 unsigned long ipc_peer_death(void);
 unsigned long ipc_nested_roundtrip(void);
 unsigned long ipc_reply_handoff(void);

@@ -520,10 +520,15 @@ long sys_ipc_call(long endpoint, long request_addr, long response_addr, long dea
                                                 request, moss::move(transferred));
   if (!call)
     return -errc::ENOMEM;
-  if (deadline_ns != 0 && timer::TimerSubsystem::instance().now_ns() >= static_cast<u64>(deadline_ns))
-    return -errc::ETIMEDOUT;
-  if (!process::g_scheduler->begin_ipc_call(&call->donation, thread))
+  u64 effective_deadline = static_cast<u64>(deadline_ns);
+  if (!process::g_scheduler->begin_ipc_call(&call->donation, thread, &effective_deadline)) {
     return -errc::EAGAIN;
+  }
+  call->deadline_ns = effective_deadline;
+  if (effective_deadline != 0 && timer::TimerSubsystem::instance().now_ns() >= effective_deadline) {
+    process::g_scheduler->end_ipc_call(&call->donation);
+    return -errc::ETIMEDOUT;
+  }
   const long enqueued = channel->enqueue(call);
   if (enqueued < 0) {
     process::g_scheduler->end_ipc_call(&call->donation);
@@ -534,9 +539,9 @@ long sys_ipc_call(long endpoint, long request_addr, long response_addr, long dea
   DeadlineWake wake{channel.get(), call.get()};
   timer::HrTimer deadline_timer;
   bool timer_armed = false;
-  if (deadline_ns != 0) {
+  if (effective_deadline != 0) {
     deadline_timer.init(timer::TimerMode::OneShot, deadline_wake, &wake);
-    auto started = deadline_timer.start(static_cast<u64>(deadline_ns));
+    auto started = deadline_timer.start(effective_deadline);
     if (!started) {
       (void)channel->complete(call.get(), Outcome::Canceled);
       return started.error() == ErrorCode::ResourceExhausted ? -errc::ENOMEM : -errc::EINVAL;

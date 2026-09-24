@@ -8,6 +8,7 @@
 > IPC 已认领超时复核：2026-09-24，九预设 **53/53 CTest**；调用方及迟到 reply 的 `ETIMEDOUT` 顺序见 [3.80](moss-todo.md#380-已认领-ipc-的-deadline-与迟到-reply2026-09-24)。
 > IPC reply 与取消竞争复核：2026-09-24，九预设 **53/53 CTest**、x64 Debug 重复五次；胜者一致性见 [3.81](moss-todo.md#381-同步-reply-与信号取消的胜者一致性2026-09-24)。
 > IPC 优先级倒置时延复核：2026-09-24，九预设 **53/53 CTest**，全部 `users.ipc/priority_latency` 通过；关闭优先级捐赠的 x64 反向对照超时，见 [3.86](moss-todo.md#386-同步-ipc-优先级倒置时延验收2026-09-24)。
+> IPC deadline 继承复核：2026-09-24，嵌套调用按当前调用者的最早绝对 deadline 截止；验证范围与在途调用的限制见 [3.99](moss-todo.md#399-同步-ipc-嵌套调用的-deadline-继承2026-09-24)。
 > 代码批准实例撤销复核：2026-09-24，九预设最终 **53/53 CTest**，`users.ipc/code_revocation` 全部通过；关闭撤销状态变更的 x64 反向对照失败。并发矩阵中两次 x64 `vfs` 超时已在串行重跑通过，见 [3.87](moss-todo.md#387-原生域代码批准实例与撤销2026-09-24)。
 > 批准服务死亡后权能存续复核：2026-09-24，九预设 **53/53 CTest**，`users.ipc/code_service_survival` 全部通过；服务进程退出后的已发行实例准入、保留撤销权及替代进程的显式重新委托见 [3.88](moss-todo.md#388-代码批准服务进程退出后的权能存续2026-09-24)。
 > 独立代码审批服务复核：2026-09-24，九预设串行 workflow **53/53 CTest**、全部生产启动 92 步通过；supervisor 私有请求、旧服务死亡后的独立撤销和新服务交接见 [3.89](moss-todo.md#389-独立代码审批服务与-supervisor-交接2026-09-24)。
@@ -83,7 +84,7 @@ uv run qemu.py --manifest build/arm64-debug/moss-artifacts.json
 | ELF / userspace / initramfs | ELF64 checked LoadPlan、逐段 PT_LOAD/VMA 后备、按 ISA 的 trampoline 和 syscall wrapper；静态 mlibc、BusyBox ash、独立 validation 映像、CPIO newc 与 VFS exec | 014；015/016 的事务与受支持静态 ELF 子集已关闭；动态加载、共享 LOAD 页和完整进程继承不是已支持能力 |
 | VFS | inode/dentry/File/FdTable、路径/mount/dcache、ramfs、devfs(console/null/zero)、stdio、open/close/read/write/lseek/fstat/dup/dup2/pipe、匿名 pipefs 与有界 I/O 视图；FD 模式检查、稳定引用及 pipe 阻塞/EOF 已实现 | 022、024～026；共享 offset/close 并发、管道多端交错和分配失败注入仍待专项验收 |
 | 核心与同步 | C++ 模块、freestanding types/std/concepts、Result、unique_ptr/shared_ptr、klog；ticket/IRQ spinlock、RAII guard、atomics、PerCpuData/计数/队列、MPSC、拥有型锁容器、WaitQueue | 尤其 006、017、018；容器节点/查找引用安全不等于使用者的复合生命周期或调度协议安全 |
-| Native IPC 与服务 | 进程局部带权限 capability 表、同步控制调用/一次性 reply、单页共享内存对象；Reply 可经请求或响应跨进程移动，提交前失败恢复原句柄，成功交接时重绑调用者优先级；`moss-init` 监护文件、命名空间、代码审批、受限装载及进程兼容服务，Loader 原生域可衰减权限后登记到进程服务 | ADR-0012/0023 的 CPU 预算、deadline 传播、调用链深度与死锁策略，0024 的完整兼容服务拆分、0018 的实际 VFS 迁移等仍未完成；旧 PID/全局 ID IPC 模块尚保留测试代码 |
+| Native IPC 与服务 | 进程局部带权限 capability 表、同步控制调用/一次性 reply、单页共享内存对象；Reply 可经请求或响应跨进程移动，提交前失败恢复原句柄，成功交接时重绑调用者优先级；嵌套调用继承当前活跃调用者的最早绝对 deadline；`moss-init` 监护文件、命名空间、代码审批、受限装载及进程兼容服务，Loader 原生域可衰减权限后登记到进程服务 | ADR-0012/0023 的 CPU 预算、在途调用的动态 deadline 收紧、调用链深度与死锁策略，0024 的完整兼容服务拆分、0018 的实际 VFS 迁移等仍未完成；旧 PID/全局 ID IPC 模块尚保留测试代码 |
 | 启动机制与扩展框架 | 中断控制器、计时器及可用串口控制台保留必要的内核启动机制，实际硬件操作仍经 HAL；旧 `DeviceManager`/`Driver` 仅在验证镜像测试生命周期算法；NUMA/hugepage/reclaim/compaction/共享映射等未实现接口显式返回 Unsupported；Process 已有 uid/gid/euid/egid 字段 | ADR-0015 的设备资源 capability、隔离驱动、动态发现和 DMA 限制尚未实现；006、031～032 及其他未实现能力继续追踪 |
 
 主要实现分别位于 `src/boot/`、`src/aal/`、`src/hal/`、`src/drivers/`、`src/mm/`、`src/containers/`、`src/process/`、`src/kernel/`、`src/vfs/`、`src/userspace/` 和 `third_party/mlibc/`。下面以稳定审计编号追踪未完成工作，详细源码符号见 [审计状态表](moss-todo.md#4-问题总表与当前状态)。
@@ -97,6 +98,7 @@ ADR-0008～0033 是已接受的目标边界，并非当前实现的完成声明�
 - [x] 生产内核不再创建或链接旧的 PID/全局服务 ID IPC 管理器，也不再把它的消息计数展示为 native IPC 统计；旧模块仅留验证镜像专项回归，不作为新服务 ABI。九预设 53/53 CTest 及生产 ELF 符号检查见 3.76。
 - [x] 生产启动不再创建 `DeviceManager` 或通过 `BootDriver` 重新包装已启用的中断控制器、计时器和控制台；旧匹配/回调框架仅链接验证镜像。九预设 53/53 CTest、关闭测试的独立构建及符号检查通过；内核仍保留上述启动机制，资源 capability 和隔离驱动服务仍未实现（ADR-0015，见 3.77）。
 - [x] 同步 IPC 的等待依赖参与内核 RT/CFS 有效优先级计算；嵌套调用、多调用者、基础 nice 变更、服务线程死亡和恢复有内核回归，另有实际三进程嵌套 IPC 往返（ADR-0012/0023，见 3.78）。
+- [x] 服务线程发起嵌套同步 IPC 时，以本次显式 deadline 和当前活跃调用者的最早绝对 deadline 为界；无显式截止时间的下游调用也随上游超时，迟到 Reply 被拒绝。只保证调用开始时的快照，后来新增的更早 deadline 不追溯缩短在途调用（ADR-0012/0023 的限定传播切片，见 3.99）。
 - [x] 已认领 IPC 请求收到信号后取消调用，过期 reply 返回 `EPIPE`；服务持有 reply 退出时等待者得到 `EPIPE`，原通道由替代服务继续使用（ADR-0012，见 3.79）。
 - [x] 已认领 IPC 请求到期后，调用方与迟到 reply 均返回 `ETIMEDOUT`；服务只在调用方报告超时后回复（ADR-0012，见 3.80）。
 - [x] 已认领同步调用在 reply 先提交时保持回复结果，在信号与 reply 并发时调用方和服务端只观察到一致的胜者（ADR-0012，见 3.81）。
@@ -116,7 +118,7 @@ ADR-0008～0033 是已接受的目标边界，并非当前实现的完成声明�
 - [x] 三架构真实用户态 IPC 在同核八个中优先级 CPU 负载下，由高优先级调用低优先级服务，服务完成计算后在调用截止前回复；九预设通过，关闭捐赠的 x64 反向对照超时（ADR-0012/0023 的限定时延验收，见 3.86）。
 - [x] 一次性 Reply capability 可在同步 IPC 的请求或响应中跨进程移动；原句柄失效、持有者丢弃唤醒调用方、接收端退出后已交付调用继续有效，优先级捐赠在唤醒新持有者前重绑。九预设和反向对照见 3.91（ADR-0011/0012/0023 的限定交接机制）。
 - [x] 附带 Reply 的请求入队或回复提交失败时恢复原句柄；成功提交仍保持一次性移动。能力表回滚及已关闭端点上的真实 IPC 失败后重试见 3.92（ADR-0011 的权能提交边界）。
-- [ ] CPU 预算、deadline 传播、最大调用链深度及死锁策略仍需单独设计和验收（ADR-0012/0023）。
+- [ ] CPU 预算、在途调用的动态 deadline 收紧、最大调用链深度及死锁策略仍需单独设计和验收（ADR-0012/0023）。
 - [ ] 完成 capability 寻址的执行域、用户态兼容进程与通用 Loader Service；现有 Loader 仅支持受限静态原生域，内核 PID/信号/普通 `execve` 的 ELF 政策仍待逐步迁出（ADR-0024/0025）。
 - [ ] 将实际 VFS、pager 和非启动设备迁到隔离服务，补资源授权、失败恢复和 DMA 限制；保留有依据的启动机制例外（ADR-0015～0019）。
 - [ ] 将代码批准及撤销准入扩展到普通 exec、fork、权限升级和 pager；把现有 supervisor 私有 Code Authority Service 扩展为具备产品审核策略和授权输入的装载链，建立启动认证并验证并发撤销及真实平台交接。现有原生域机制和受限服务不等于这些目标已实现（ADR-0026～0033）。

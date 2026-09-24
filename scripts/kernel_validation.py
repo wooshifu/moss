@@ -226,6 +226,7 @@ CATALOG = {
     "users.ipc": [
         "roundtrip",
         "deadline",
+        "deadline_propagation",
         "peer_death",
         "signal_cancel",
         "capability_transfer",
