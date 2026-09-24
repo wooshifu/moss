@@ -1,0 +1,40 @@
+# Native System Migration Status
+
+This is an implementation snapshot of the accepted architecture in
+[ADRs 0008–0033](adr/0008-default-to-isolated-system-services.md). An accepted
+ADR defines the destination; a passing boot or focused probe establishes only
+the path that it exercised. Keep the [general-purpose BusyBox profile](adr/0006-validate-general-purpose-kernel-capabilities.md)
+separate from the wider native-system design: that profile currently excludes
+networking and persistent storage.
+
+| Boundary | Current source and observed behavior | Work before the accepted boundary is reached |
+| --- | --- | --- |
+| Native authority and IPC | Capability handles, bounded calls, Memory Objects, domain observation and termination are exercised by [production validation](kernel-validation-usage.md). The [supervisor](../src/userspace/moss_init.c) starts and restarts isolated process, namespace and file services. | Close service-specific recovery and resource ownership under caller timeout, concurrent exit and service death. A restarted endpoint must not inherit authority from the old incarnation. |
+| POSIX processes | The [Process Compatibility Service](../src/userspace/moss_process_service.c) owns managed IDs, parentage, groups, sessions, wait records and scoped signals. [Managed mlibc](../third_party/mlibc/sysdeps/moss/sysdeps.cpp) uses badged sessions for these operations. The [kernel syscall table](../src/kernel/src/syscall_table.cpp) still supplies the legacy PID, credential, signal and wait paths. | Define ownership of surviving managed domains when the process service dies; reconstruct or retire their namespace state before accepting new clients. Move compatibility credentials and complete child notification, terminal job control and signal policy. Remove legacy POSIX policy only after its remaining callers migrate. |
+| Files and paths | The [native namespace service](../src/userspace/moss_namespace_service.c) handles a flat root; the [file service](../src/userspace/moss_file_service.c) keeps volatile file contents and returns file capabilities. The [mlibc open/read/write path](../third_party/mlibc/sysdeps/moss/sysdeps.cpp) still calls the kernel, whose [open handler](../src/kernel/src/syscall_table.cpp) invokes kernel VFS. | Make POSIX descriptors, current directories, traversal, metadata and handle inheritance a userspace view over file capabilities. Migrate the selected BusyBox workflows before deleting the kernel VFS path. Define filesystem-service restart and file-object lifetime separately from namespace restart. |
+| Executable images and memory | The kernel [exec path](../src/kernel/src/syscall_table.cpp) still parses and maps ELF. Anonymous executable `mmap` is denied and `mprotect` returns `ENOSYS`; this is a fail-closed interim rule, not the immutable-version authority in [ADR-0026](adr/0026-require-explicit-authority-for-executable-memory.md). | Introduce the userspace loader and pager contracts, then enforce immutable code versions and approval-instance rights across aliases, repaging, revocation and service failure before moving ordinary loading out of the kernel. Verified bootstrap authority is a separate [ADR-0027](adr/0027-establish-initial-authority-through-verified-boot.md) gate. |
+| Devices and higher services | Production still links [console and platform drivers](../src/drivers/) in the kernel. The kernel socket handlers return `ENOSYS`; this does not provide the Network Stack Service in [ADR-0020](adr/0020-run-network-stacks-as-userspace-services.md). | Isolate a driver only after interrupt, MMIO, DMA and reset authority are scoped to its recovery domain, with hardware DMA confinement or an explicit trusted exception. Network, graphics and power policy services follow their own device and recovery prerequisites. |
+
+## Implementation order
+
+1. Close process-service recovery first. The supervisor currently restarts a
+   failed process service and shell, while the old service's registry is lost.
+   Prove what happens to live grandchildren, old badged senders, pending calls
+   and orphaned exit records. Give each surviving domain a recovery owner or
+   terminate it under explicit native authority before accepting a new
+   compatibility namespace.
+2. Move the POSIX file view one operation family at a time through namespace
+   and file-object capabilities. Run the real ash and file-utility workflows
+   on the new path in all six architecture/build combinations. Keep the old
+   VFS path until those workflows and failure cleanup pass on the replacement.
+3. Move ordinary image parsing and external page supply to userspace after
+   their kernel authority and immutable-content invariants are testable. Use
+   separate checks for approval, revocation, repaging and failed services.
+4. Isolate device recovery domains and add network, graphics and power policy
+   services when their platform mechanisms exist. QEMU results alone do not
+   establish physical DMA confinement, display isolation or power behavior.
+
+For each migrated boundary, retain the original failure evidence and require
+six-configuration build/application/production checks, targeted fault
+injection, resource recovery and comparable performance evidence. Report
+physical-board validation separately from QEMU and cross-compilation.
