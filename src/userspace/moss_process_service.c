@@ -276,11 +276,19 @@ int main(int argc, char **argv) {
     } else if (request.badge && request.size == MOSS_PROCESS_REPLY_VALUE_BYTES &&
                request.payload[0] == MOSS_PROCESS_CANCEL_CHILD && !request.capability && !request.rights) {
       struct Record *child = find_record(moss_process_get_u64(request.payload + 1));
-      if (!child || child->parent_id != request.badge || child->domain) {
+      if (!child || child->parent_id != request.badge) {
         response.payload[0] = MOSS_PROCESS_NO_ENTRY;
       } else {
-        response.payload[0] = MOSS_PROCESS_OK;
-        released = child;
+        // A lost attach reply may make fork fail after the child attached.
+        // Its parent may discard the invisible record once the domain exited.
+        struct moss_domain_exit status = {0};
+        long state = child->domain ? syscall2(SYS_DOMAIN_STATUS, (long)child->domain, (long)&status) : 0;
+        if (state == 0) {
+          response.payload[0] = MOSS_PROCESS_OK;
+          released = child;
+        } else {
+          response.payload[0] = state == -EAGAIN ? MOSS_PROCESS_NO_ENTRY : MOSS_PROCESS_UNAVAILABLE;
+        }
       }
     } else if (request.badge && request.size == MOSS_PROCESS_REPLY_VALUE_BYTES &&
                request.payload[0] == MOSS_PROCESS_WAIT_CHILD && !request.capability && !request.rights) {

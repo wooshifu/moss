@@ -13,6 +13,8 @@ Managed `setpgid` does not yet reject a parent changing a child after `execve`. 
 
 The unbadged process registration is a one-use bootstrap for init. The production probe confirms that a second root registration is rejected and that the same native child can register through its parent's badged session.
 
+A parent can cancel an attached child record only after the native domain has exited. This reclaims a child that became invisible to the parent when the attach reply was lost; a running child cannot be canceled.
+
 The `drivers` registry cases likewise link the former `moss.drivers` matching/callback module only into validation. Production boot uses `moss.drivers.console` directly with the boot-owned interrupt controller and timer; the console readiness and RX cases still exercise that production module.
 
 ## Build and Test

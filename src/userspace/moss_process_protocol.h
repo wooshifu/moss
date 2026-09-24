@@ -64,8 +64,8 @@ enum {
 // PREPARE_CHILD returns a child ID and a badged session to inherit across a
 // native fork. ATTACH_CHILD transfers the new domain under the parent's or
 // child's session and accepts a repeat for the same domain. CANCEL_CHILD
-// removes only an unattached reservation. IDENTITY
-// returns [OK, ID:u64 LE, parent ID:u64 LE] through the child's session.
+// removes an unattached reservation or a child whose attached domain exited.
+// IDENTITY returns [OK, ID:u64 LE, parent ID:u64 LE] through the child's session.
 // READY returns RUNNING until the reserved identity is attached. WAIT_CHILD
 // selects one child by ID under the parent's badge and uses WAIT_ANY's reply.
 // SIGNAL accepts [operation, target ID:u64 LE, signal:u64 LE]. Only a record's
