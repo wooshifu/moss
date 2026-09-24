@@ -66,7 +66,11 @@ __attribute__((naked, noinline, used, aligned(16))) static void spawned_stack_ex
 }
 
 unsigned long ipc_domain_spawn(void) {
-  static unsigned char mutable_code[MOSS_DOMAIN_PAGE_BYTES] __attribute__((aligned(MOSS_DOMAIN_PAGE_BYTES)));
+  // Exceed capability::Table's current 64 slots: one approved version must
+  // supply a text range that cannot fit as one handle per executable page.
+  enum { CODE_RANGE_TEST_PAGES = 65 };
+  static unsigned char mutable_code[CODE_RANGE_TEST_PAGES * MOSS_DOMAIN_PAGE_BYTES]
+      __attribute__((aligned(MOSS_DOMAIN_PAGE_BYTES)));
   static unsigned char readback[MOSS_DOMAIN_PAGE_BYTES];
   struct moss_domain_layout layout = {0};
   if (syscall1(SYS_DOMAIN_LAYOUT, (long)&layout) != 0 || layout.page_size != MOSS_DOMAIN_PAGE_BYTES ||
@@ -80,8 +84,12 @@ unsigned long ipc_domain_spawn(void) {
   // The executable version must remain unchanged after its source is edited.
   volatile unsigned char *source = mutable_code;
   const volatile unsigned char *original = (const volatile unsigned char *)code_page;
-  for (unsigned long i = 0; i < MOSS_DOMAIN_PAGE_BYTES; ++i)
-    source[i] = original[i];
+  const unsigned char snapshot_marker = 0xa5;
+  const unsigned long last_page = CODE_RANGE_TEST_PAGES - 1;
+  for (unsigned long i = 0; i < MOSS_DOMAIN_PAGE_BYTES; ++i) {
+    source[i] = snapshot_marker;
+    source[last_page * MOSS_DOMAIN_PAGE_BYTES + i] = original[i];
+  }
   struct moss_domain_page page = {.address = code_page,
                                   .source = code_page,
                                   .size = MOSS_DOMAIN_PAGE_BYTES,
@@ -97,18 +105,40 @@ unsigned long ipc_domain_spawn(void) {
   unsigned long errors = 0;
   long factory = syscall0(SYS_DOMAIN_FACTORY);
   long authority = syscall0(SYS_CODE_AUTHORITY);
-  long version = syscall1(SYS_CODE_SNAPSHOT, (long)mutable_code);
+  long single = syscall1(SYS_CODE_SNAPSHOT, (long)(mutable_code + last_page * MOSS_DOMAIN_PAGE_BYTES));
+  errors |= (unsigned long)(single <= 0 || syscall2(SYS_CODE_READ, single, (long)readback) != 0 ||
+                            readback[entry - code_page] != original[entry - code_page])
+            << 18;
+  if (single > 0)
+    (void)syscall1(SYS_CAP_CLOSE, single);
+  long version = syscall2(SYS_CODE_SNAPSHOT_RANGE, (long)mutable_code, CODE_RANGE_TEST_PAGES);
   if (factory <= 0 || authority <= 0 || version <= 0)
-    return 1;
-  for (unsigned long i = 0; i < MOSS_DOMAIN_PAGE_BYTES; ++i)
+    return errors | 1;
+  errors |= (unsigned long)(syscall2(SYS_CODE_SNAPSHOT_RANGE, (long)mutable_code, MOSS_DOMAIN_MAX_IMAGE_PAGES + 1) !=
+                            -IPC_EINVAL)
+            << 19;
+  errors |= (unsigned long)(syscall2(SYS_CODE_SNAPSHOT_RANGE, (long)(layout.stack_top - MOSS_DOMAIN_PAGE_BYTES), 2) !=
+                            -IPC_EFAULT)
+            << 20;
+  for (unsigned long i = 0; i < sizeof(mutable_code); ++i)
     source[i] = 0;
-  errors |= (unsigned long)(syscall2(SYS_CODE_READ, version, (long)readback) != 0) << 10;
+  errors |= (unsigned long)(syscall2(SYS_CODE_READ, version, (long)readback) != 0 || readback[0] != snapshot_marker)
+            << 21;
+  errors |=
+      (unsigned long)(syscall6(SYS_CODE_READ_RANGE, version, 0, (long)mutable_code, CODE_RANGE_TEST_PAGES, 0, 0) != 0 ||
+                      source[0] != snapshot_marker ||
+                      source[last_page * MOSS_DOMAIN_PAGE_BYTES + entry - code_page] != original[entry - code_page])
+      << 24;
+  errors |= (unsigned long)(syscall6(SYS_CODE_READ_RANGE, version, last_page, (long)readback, 1, 0, 0) != 0) << 10;
   for (unsigned long i = 0; i < MOSS_DOMAIN_PAGE_BYTES; ++i) {
     if (readback[i] != original[i]) {
       errors |= 1UL << 11;
       break;
     }
   }
+  errors |= (unsigned long)(syscall6(SYS_CODE_READ_RANGE, version, CODE_RANGE_TEST_PAGES, (long)readback, 1, 0, 0) !=
+                            -IPC_EINVAL)
+            << 22;
   errors |= (unsigned long)(syscall2(SYS_CODE_APPROVE, 0, version) != -IPC_EBADF) << 12;
   long reduced_authority = syscall2(SYS_CAP_DUPLICATE, authority, MOSS_CAP_TRANSFER);
   errors |=
@@ -119,6 +149,7 @@ unsigned long ipc_domain_spawn(void) {
   page.source = 0;
   page.size = 0;
   page.code = (unsigned long)version;
+  page.code_page_index = last_page;
   errors |= (unsigned long)(syscall2(SYS_DOMAIN_SPAWN, factory, (long)&image) != -IPC_EACCES) << 14;
   long approved = syscall2(SYS_CODE_APPROVE, authority, version);
   if (approved <= 0)
@@ -168,11 +199,15 @@ unsigned long ipc_domain_spawn(void) {
   image.entry = stack_pointer;
   errors |= (unsigned long)(syscall2(SYS_DOMAIN_SPAWN, factory, (long)&image) != -IPC_EINVAL) << 4;
   image.entry = entry;
+  page.code_page_index = CODE_RANGE_TEST_PAGES;
+  errors |= (unsigned long)(syscall2(SYS_DOMAIN_SPAWN, factory, (long)&image) != -IPC_EINVAL) << 23;
+  page.code_page_index = last_page;
   page.code = 0;
   page.source = code_page;
   page.size = MOSS_DOMAIN_PAGE_BYTES;
   errors |= (unsigned long)(syscall2(SYS_DOMAIN_SPAWN, factory, (long)&image) != -IPC_EINVAL) << 17;
   page.flags = MOSS_DOMAIN_PAGE_READ;
+  page.code_page_index = 0;
   page.source = 1;
   page.size = 1;
   errors |= (unsigned long)(syscall2(SYS_DOMAIN_SPAWN, factory, (long)&image) != -IPC_EFAULT) << 5;
@@ -180,6 +215,7 @@ unsigned long ipc_domain_spawn(void) {
   page.source = 0;
   page.size = 0;
   page.code = (unsigned long)approved;
+  page.code_page_index = last_page;
 
   long domain = syscall2(SYS_DOMAIN_SPAWN, factory, (long)&image);
   (void)syscall1(SYS_CAP_CLOSE, factory);
