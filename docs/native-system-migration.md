@@ -22,7 +22,14 @@ networking and persistent storage.
    Prove what happens to live grandchildren, old badged senders, pending calls
    and orphaned exit records. Give each surviving domain a recovery owner or
    terminate it under explicit native authority before accepting a new
-   compatibility namespace.
+   compatibility namespace. The source path already shows why this is required:
+   [native fork](../src/kernel/src/syscall_table.cpp) creates no kernel POSIX
+   parent, [managed `fork()`](../third_party/mlibc/sysdeps/moss/sysdeps.cpp)
+   closes its parent-side domain handle after attachment, and the
+   [supervisor](../src/userspace/moss_init.c) retains a handle for its direct
+   shell but not for grandchildren. Once the old process service exits,
+   restarting those two programs cannot account for a live grandchild. Fault
+   injection with a live grandchild is still needed.
 2. Move the POSIX file view one operation family at a time through namespace
    and file-object capabilities. Run the real ash and file-utility workflows
    on the new path in all six architecture/build combinations. Keep the old
