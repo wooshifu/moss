@@ -28,7 +28,8 @@ def test_production_probe_requires_exec_and_subsequent_shell_output(tmp_path, mo
     cfg = Artifacts(tmp_path / "manifest.json", "ARM64", "linux-image", {"type": "Debug"}, files)
     script = "import signal, sys, time\n"
     script += (
-        "print('moss-init: supervisor ready\\nmoss-init: file service started pid=42\\n"
+        "print('moss-init: supervisor ready\\nmoss-init: code authority service started pid=41\\n"
+        "moss-init: file service started pid=42\\n"
         "moss-init: namespace service started pid=43\\n"
         "moss-init: process service started pid=44', flush=True)\n"
     )
@@ -81,6 +82,12 @@ assert input() == 'echo MOSS_PRODUCTION_READY'
         script += "print('moss-init: restarting shell\\nBusyBox built-in shell (ash)\\nmoss$ ', end='', flush=True)\n"
         script += "assert input() == 'sleep 2 && echo MOSS_SLEEP_READY'\n"
         script += "print('\\nMOSS_SLEEP_READY\\nmoss$ ', end='', flush=True)\n"
+        script += "assert input() == '/moss-domain.elf terminate code'\n"
+        script += (
+            "print('moss-init: code authority service died\\n"
+            "moss-init: code authority service started pid=51\\n"
+            "moss-init: restarting shell\\nBusyBox built-in shell (ash)\\nmoss$ ', end='', flush=True)\n"
+        )
         script += "assert input() == '/moss-file.elf read'\n"
         script += "print('\\nMOSS_FILE_READ=native\\nmoss$ ', end='', flush=True)\n"
         script += "assert input() == '/moss-domain.elf terminate process'\n"
@@ -152,11 +159,11 @@ assert input() == 'echo MOSS_PRODUCTION_READY'
     assert result["status"] == ("passed" if mode in ("complete", "gdb_complete") else "error")
     assert result["raw_exit"] is not None
     if mode == "echo_only":
-        assert result["completed_steps"] == 29
+        assert result["completed_steps"] == 30
     if mode == "legacy_shell":
-        assert result["completed_steps"] == 4
+        assert result["completed_steps"] == 5
     if mode == "applets_failed":
-        assert result["completed_steps"] == 25
+        assert result["completed_steps"] == 26
     if mode == "late_panic":
         assert "panicked" in result["observed"]
     if mode == "sleep_runtime_failure":

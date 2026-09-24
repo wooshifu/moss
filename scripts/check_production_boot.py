@@ -118,6 +118,7 @@ quit
     service_pid = None
     namespace_pid = None
     process_pid = None
+    code_pid = None
     bulk_data = b"0" * 300
     # One byte past a shared transfer page proves the file service retains
     # content across multiple positional calls.
@@ -127,6 +128,7 @@ quit
     # capabilities alongside shell workflows and independent service recovery.
     steps = [
         (b"moss-init: supervisor ready", None),
+        (b"moss-init: code authority service started", None),
         (b"moss-init: file service started", None),
         (b"moss-init: namespace service started", None),
         (b"moss-init: process service started", None),
@@ -171,6 +173,11 @@ quit
         (b"built-in shell (ash)", None),
         (b"moss$ ", b"sleep 2 && echo MOSS_SLEEP_READY\n"),
         (b"\nMOSS_SLEEP_READY\n", None),
+        (b"moss$ ", b"/moss-domain.elf terminate code\n"),
+        (b"moss-init: code authority service died", None),
+        (b"moss-init: code authority service started", None),
+        (b"moss-init: restarting shell", None),
+        (b"built-in shell (ash)", None),
         (b"moss$ ", b"/moss-file.elf read\n"),
         (b"\nMOSS_FILE_READ=native\n", None),
         (b"moss$ ", b"/moss-domain.elf terminate process\n"),
@@ -268,7 +275,7 @@ quit
                     marker, command = steps[stage]
                     after = pending.split(marker, 1)[1]
                     if marker in (b"moss-init: file service started", b"moss-init: namespace service started",
-                                  b"moss-init: process service started"):
+                                  b"moss-init: process service started", b"moss-init: code authority service started"):
                         match = re.match(rb" pid=(\d+)\n", after)
                         if not match:
                             break
@@ -277,6 +284,7 @@ quit
                             b"moss-init: file service started": service_pid,
                             b"moss-init: namespace service started": namespace_pid,
                             b"moss-init: process service started": process_pid,
+                            b"moss-init: code authority service started": code_pid,
                         }[marker]
                         if next_pid <= 1 or next_pid == previous_pid:
                             raise ValueError("service incarnation did not change")
@@ -284,8 +292,10 @@ quit
                             service_pid = next_pid
                         elif marker == b"moss-init: namespace service started":
                             namespace_pid = next_pid
-                        else:
+                        elif marker == b"moss-init: process service started":
                             process_pid = next_pid
+                        else:
+                            code_pid = next_pid
                         after = after[match.end() :]
                     pending = after
                     if command:
@@ -298,7 +308,7 @@ quit
                             child.stdin.flush()
                     stage += 1
                 if stage == len(steps) and (not debugger or debugger.poll() is not None):
-                    result.update(status="passed", observed="process_namespace_and_file_services_recovered")
+                    result.update(status="passed", observed="code_process_namespace_and_file_services_recovered")
                     break
                 if child.poll() is not None:
                     result["observed"] = "unexpected_exit"

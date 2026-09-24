@@ -31,10 +31,11 @@ The static mlibc/BusyBox runtime is built directly from checked-in
 sources with native CMake targets. See [third-party sources](docs/third-party-sources.md)
 for exact upstream revisions, licenses, the supported profile and build requirements.
 
-The normal initramfs contains `/init.elf`, `/file-service.elf`,
-`/namespace-service.elf`, `/moss-file.elf` and `/busybox.elf`. The embedded
-trampoline starts `/init.elf`; that supervisor launches the two services and
-an interactive BusyBox ash at the `moss$` prompt, including with
+The normal initramfs contains `/init.elf`, `/code-authority-service.elf`,
+`/file-service.elf`, `/namespace-service.elf`, `/process-service.elf`,
+`/moss-file.elf`, `/moss-process.elf`, `/moss-domain.elf` and `/busybox.elf`.
+The embedded trampoline starts `/init.elf`; that supervisor launches the
+services and an interactive BusyBox ash at the `moss$` prompt, including with
 `MOSS_BUILD_TESTS=OFF`. The selected applets can be invoked by name using
 BusyBox's standalone shell support. The separate validation initramfs starts
 `/validation.elf`, which also contains the signal regression cases.
@@ -57,6 +58,9 @@ early console still use kernel implementations. The transitional kernel
 `kill(pid)` path continues to serve POSIX child relationships but rejects
 unrelated control of native domains. The privileged management shell receives
 selected service and supervisor termination capabilities for recovery checks.
+The Code Authority Service receives approval authority and a private request
+endpoint; only the supervisor holds its request sender and an independent
+revocation handle. Product code policy and ordinary ELF approval are pending.
 Moving the remaining POSIX identity and signal policy into the Process
 Compatibility Service is still pending. The accepted
 [architecture decisions](docs/adr/) describe their intended migration.
