@@ -747,6 +747,7 @@ private:
   // Assigned during boot before this Process is runnable. Forked children
   // must not inherit the fatal supervisor identity from their parent.
   bool initial_supervisor_{false};
+  bool domain_factory_source_{false};
   capability::Table capabilities_;
 
   // Only publication/acquisition uses this short IRQ-safe lock. Copy the owner
@@ -841,6 +842,8 @@ public:
   [[nodiscard]] ProcessId pid() const noexcept { return pid_; }
   void designate_initial_supervisor() noexcept { initial_supervisor_ = true; }
   [[nodiscard]] bool is_initial_supervisor() const noexcept { return initial_supervisor_; }
+  void designate_domain_factory_source() noexcept { domain_factory_source_ = true; }
+  [[nodiscard]] bool is_domain_factory_source() const noexcept { return domain_factory_source_; }
   [[nodiscard]] capability::Table &capabilities() noexcept { return capabilities_; }
   [[nodiscard]] const capability::Table &capabilities() const noexcept { return capabilities_; }
   [[nodiscard]] ProcessId parent_pid() const noexcept { return parent_pid_; }

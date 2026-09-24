@@ -5,6 +5,7 @@
 
 #pragma once
 
+#include <moss/domain_spawn.h>
 #include <moss/startup_auxv.h>
 
 // ============================================================================
@@ -26,10 +27,11 @@ enum {
   MOSS_CAP_DOMAIN_TERMINATE = 1U << 7,
   MOSS_CAP_DOMAIN_INSPECT = 1U << 8,
   MOSS_CAP_DOMAIN_OBSERVE = 1U << 9,
-  MOSS_CAP_DOMAIN_SIGNAL = 1U << 10,
-  MOSS_CAP_DOMAIN_SCOPE_ASSIGN = 1U << 11,
-  MOSS_CAP_DOMAIN_SCOPE_TERMINATE = 1U << 12,
-  MOSS_CAP_DOMAIN_SCOPE_INSPECT = 1U << 13,
+  MOSS_CAP_DOMAIN_SPAWN = 1U << 10,
+  MOSS_CAP_DOMAIN_SIGNAL = 1U << 11,
+  MOSS_CAP_DOMAIN_SCOPE_ASSIGN = 1U << 12,
+  MOSS_CAP_DOMAIN_SCOPE_TERMINATE = 1U << 13,
+  MOSS_CAP_DOMAIN_SCOPE_INSPECT = 1U << 14,
   MOSS_IPC_MAX_MESSAGE = 256
 };
 

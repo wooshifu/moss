@@ -182,11 +182,12 @@ inline constexpr u64 KERNEL_RW =
     page_attr::VALID | page_attr::AF | page_attr::ATTR_NORMAL | page_attr::PXN | page_attr::XN | (3ULL << 8);
 inline constexpr u64 KERNEL_RX =
     page_attr::VALID | page_attr::AF | page_attr::ATTR_NORMAL | page_attr::READONLY | page_attr::XN | (3ULL << 8);
-inline constexpr u64 USER_RO =
-    page_attr::VALID | page_attr::AF | page_attr::USER | page_attr::READONLY | page_attr::ATTR_NORMAL;
-inline constexpr u64 USER_RW = page_attr::VALID | page_attr::AF | page_attr::USER | page_attr::ATTR_NORMAL;
+inline constexpr u64 USER_RO = page_attr::VALID | page_attr::AF | page_attr::USER | page_attr::READONLY |
+                               page_attr::ATTR_NORMAL | page_attr::PXN | page_attr::XN;
+inline constexpr u64 USER_RW =
+    page_attr::VALID | page_attr::AF | page_attr::USER | page_attr::ATTR_NORMAL | page_attr::PXN | page_attr::XN;
 inline constexpr u64 USER_RX =
-    page_attr::VALID | page_attr::AF | page_attr::USER | page_attr::READONLY | page_attr::ATTR_NORMAL;
+    page_attr::VALID | page_attr::AF | page_attr::USER | page_attr::READONLY | page_attr::ATTR_NORMAL | page_attr::PXN;
 inline constexpr u64 DEVICE =
     page_attr::VALID | page_attr::AF | page_attr::ATTR_DEVICE | page_attr::XN | page_attr::PXN;
 

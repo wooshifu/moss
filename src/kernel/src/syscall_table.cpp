@@ -3,6 +3,7 @@
 
 module;
 
+#include <moss/domain_spawn.h>
 #include <moss/startup_auxv.h>
 
 module moss.kernel;
@@ -276,12 +277,19 @@ public:
   [[nodiscard]] bool closed() const noexcept { return closed_.load(); }
 };
 
+class DomainFactoryObject final : public capability::Object {
+public:
+  DomainFactoryObject() noexcept : Object(capability::ObjectType::DomainFactory) {}
+};
+
 inline constexpr u32 kFullDomainRights = capability::rights::DOMAIN_TERMINATE | capability::rights::DOMAIN_INSPECT |
                                          capability::rights::DOMAIN_OBSERVE | capability::rights::DOMAIN_SIGNAL |
                                          capability::rights::TRANSFER | capability::rights::DUPLICATE;
 inline constexpr u32 kFullDomainScopeRights =
     capability::rights::DOMAIN_SCOPE_ASSIGN | capability::rights::DOMAIN_SCOPE_TERMINATE |
     capability::rights::DOMAIN_SCOPE_INSPECT | capability::rights::TRANSFER | capability::rights::DUPLICATE;
+inline constexpr u32 kFactoryRights =
+    capability::rights::DOMAIN_SPAWN | capability::rights::TRANSFER | capability::rights::DUPLICATE;
 
 struct DomainExitStatus {
   i32 code;
@@ -755,6 +763,236 @@ long sys_domain_scope_contains(long scope_handle, long domain_handle, long, long
     return domain_cap_error(domain.error());
   auto *target = static_cast<DomainObject *>((*domain).get())->process.get();
   return target->domain_scope().get() == (*scope).get() ? 1 : 0;
+}
+
+long sys_domain_factory(long, long, long, long, long, long) noexcept {
+  auto caller = process::current_process();
+  if (!caller)
+    return -errc::ESRCH;
+  if (!caller->is_domain_factory_source())
+    return -errc::EACCES;
+  auto factory = shared_ptr<capability::Object>::try_make<DomainFactoryObject>(moss::abi::bridge::moss_heap_allocate);
+  if (!factory)
+    return -errc::ENOMEM;
+  auto handle = caller->capabilities().install(moss::move(factory), kFactoryRights);
+  return handle ? static_cast<long>(*handle) : domain_cap_error(handle.error());
+}
+
+long sys_domain_spawn(long factory_handle, long image_addr, long, long, long, long) noexcept {
+  using namespace moss::kernel::process;
+  static_assert(PAGE_SIZE == MOSS_DOMAIN_PAGE_BYTES);
+  if (!image_addr)
+    return -errc::EFAULT;
+  auto caller = current_process();
+  if (!caller || !g_process_manager || !g_scheduler)
+    return -errc::ESRCH;
+  auto factory = caller->capabilities().lookup(static_cast<Handle>(factory_handle),
+                                               capability::ObjectType::DomainFactory, capability::rights::DOMAIN_SPAWN);
+  if (!factory)
+    return domain_cap_error(factory.error());
+  auto source_space = caller->address_space();
+  if (!source_space)
+    return -errc::ESRCH;
+  // Image metadata, page bytes, and inherited-handle selection must all come
+  // from one retained caller address-space version across concurrent exec.
+  auto read_source = [&](void *destination, u64 address, usize size) {
+    return source_space->copy_from_user(destination, address, size) == 0;
+  };
+  moss_domain_spawn image{};
+  if (!read_source(&image, static_cast<u64>(image_addr), sizeof(image)))
+    return -errc::EFAULT;
+
+  // A single construction call is bounded until per-domain memory quotas are
+  // available. The image still reaches 16 MiB without a kernel ELF parser.
+  constexpr usize MAX_IMAGE_PAGES = 4096;
+  if (!image.pages || image.page_count == 0 || image.page_count > MAX_IMAGE_PAGES ||
+      image.capability_count > capability::Table::capacity() || (image.capability_count && !image.capabilities) ||
+      image.stack_size > user_layout::STACK_SIZE || (image.stack_size && !image.stack_source) ||
+      image.stack_pointer < user_layout::STACK_TOP - user_layout::STACK_SIZE ||
+      image.stack_pointer >= user_layout::STACK_TOP || (image.stack_pointer & 7) != 0 ||
+      image.stack_size > user_layout::STACK_TOP - image.stack_pointer)
+    return -errc::EINVAL;
+  if (image.pages > ~u64{0} - image.page_count * sizeof(moss_domain_page) ||
+      (image.capability_count &&
+       image.capabilities > ~u64{0} - image.capability_count * sizeof(capability::ForkSelection)) ||
+      (image.stack_size && image.stack_source > ~u64{0} - image.stack_size))
+    return -errc::EFAULT;
+
+  capability::ForkSelection selected[capability::Table::capacity()]{};
+  if (image.capability_count &&
+      !read_source(selected, image.capabilities, image.capability_count * sizeof(selected[0])))
+    return -errc::EFAULT;
+
+  auto created = user_space::create_user_address_space();
+  if (!created)
+    return -errc::ENOMEM;
+  auto space = moss::move(*created);
+  const VirtAddr stack_bottom = user_layout::STACK_TOP - user_layout::STACK_SIZE;
+  if (!space->add_vma(user_layout::SIGRETURN_PAGE, user_layout::SIGRETURN_PAGE + PAGE_SIZE,
+                      vma_flags::READ | vma_flags::EXEC, VmaType::SIGRETURN, moss::abi::signal::trampoline(), 0,
+                      moss::abi::signal::trampoline_size()) ||
+      !space->add_vma(stack_bottom, user_layout::STACK_TOP, vma_flags::READ | vma_flags::WRITE | vma_flags::DEMAND_ZERO,
+                      VmaType::STACK) ||
+      !space->add_vma(user_layout::HEAP_START, user_layout::HEAP_START,
+                      vma_flags::READ | vma_flags::WRITE | vma_flags::DEMAND_ZERO, VmaType::HEAP))
+    return -errc::ENOMEM;
+  space->brk_base = space->brk_current = user_layout::HEAP_START;
+  space->mmap_next = user_layout::MMAP_BASE;
+
+  // Every page is private to the new address space. If any copy or page-table
+  // allocation fails, its owner frees all previously mapped pages on return.
+  auto install_page = [&](VirtAddr address, u32 flags, VmaType type, u64 source, usize count, usize destination_offset,
+                          bool add_region) -> long {
+    auto frame = mm::allocate_pages(0);
+    if (!frame)
+      return -errc::ENOMEM;
+    auto *bytes = reinterpret_cast<u8 *>(phys_to_virt(*frame));
+    __builtin_memset(bytes, 0, PAGE_SIZE);
+    if (count && !read_source(bytes + destination_offset, source, count)) {
+      (void)mm::free_pages(*frame, 0);
+      return -errc::EFAULT;
+    }
+#if defined(MOSS_ARCH_ARM64)
+    if (flags & vma_flags::EXEC) {
+      // Direct-map writes must reach the point of coherency before another
+      // CPU's first user dispatch invalidates its instruction cache.
+      u64 ctr = 0;
+      asm volatile("mrs %0, ctr_el0" : "=r"(ctr));
+      const usize line_bytes = usize{4} << ((ctr >> 16) & 0xf);
+      for (usize offset = 0; offset < PAGE_SIZE; offset += line_bytes)
+        arch::flush_cache_line(phys_to_virt(*frame) + offset);
+      arch::data_sync_barrier();
+    }
+#endif
+    if (add_region && !space->add_vma(address, address + PAGE_SIZE, flags, type)) {
+      (void)mm::free_pages(*frame, 0);
+      return -errc::ENOMEM;
+    }
+    const u64 permissions = (flags & vma_flags::WRITE)  ? hal::mmu::page_perms::USER_RW
+                            : (flags & vma_flags::EXEC) ? hal::mmu::page_perms::USER_RX
+                                                        : hal::mmu::page_perms::USER_RO;
+    if (!mm::PageTableManager::map_user_page(space->pgd_phys, address, *frame, permissions)) {
+      if (add_region)
+        (void)space->remove_vma(address, address + PAGE_SIZE);
+      (void)mm::free_pages(*frame, 0);
+      return -errc::ENOMEM;
+    }
+    (void)space->resident_pages.fetch_add(1, containers::MemoryOrder::Relaxed);
+    return 0;
+  };
+
+  bool entry_in_image = false;
+  for (usize i = 0; i < image.page_count; ++i) {
+    moss_domain_page page{};
+    if (!read_source(&page, image.pages + i * sizeof(page), sizeof(page)))
+      return -errc::EFAULT;
+    constexpr u64 allowed = MOSS_DOMAIN_PAGE_READ | MOSS_DOMAIN_PAGE_WRITE | MOSS_DOMAIN_PAGE_EXEC;
+    if ((page.address & (PAGE_SIZE - 1)) != 0 || !mm::PageTableManager::is_user_range(page.address, PAGE_SIZE) ||
+        (page.flags & ~allowed) != 0 || (page.flags & MOSS_DOMAIN_PAGE_READ) == 0 ||
+        (page.flags & (MOSS_DOMAIN_PAGE_WRITE | MOSS_DOMAIN_PAGE_EXEC)) ==
+            (MOSS_DOMAIN_PAGE_WRITE | MOSS_DOMAIN_PAGE_EXEC) ||
+        page.size > PAGE_SIZE || (page.size && (!page.source || page.source > ~u64{0} - page.size)) ||
+        (page.address >= user_layout::HEAP_START && page.address < user_layout::HEAP_START + user_layout::HEAP_INIT) ||
+        space->find_vma(page.address))
+      return -errc::EINVAL;
+    const u32 flags = vma_flags::READ | ((page.flags & MOSS_DOMAIN_PAGE_WRITE) ? vma_flags::WRITE : 0U) |
+                      ((page.flags & MOSS_DOMAIN_PAGE_EXEC) ? vma_flags::EXEC : 0U);
+    if (page.flags & MOSS_DOMAIN_PAGE_EXEC)
+      entry_in_image |= image.entry >= page.address && image.entry - page.address < PAGE_SIZE;
+    if (long error = install_page(page.address, flags, (flags & vma_flags::EXEC) ? VmaType::CODE : VmaType::DATA,
+                                  page.source, static_cast<usize>(page.size), 0, true);
+        error < 0)
+      return error;
+  }
+  if (!entry_in_image)
+    return -errc::EINVAL;
+
+  const VirtAddr stack_end = image.stack_pointer + image.stack_size;
+  for (VirtAddr address = image.stack_pointer & ~(VirtAddr{PAGE_SIZE} - 1); address < stack_end; address += PAGE_SIZE) {
+    const VirtAddr begin = address > image.stack_pointer ? address : image.stack_pointer;
+    const VirtAddr end = address + PAGE_SIZE < stack_end ? address + PAGE_SIZE : stack_end;
+    if (long error =
+            install_page(address, vma_flags::READ | vma_flags::WRITE, VmaType::STACK,
+                         image.stack_source + begin - image.stack_pointer, end - begin, begin - address, false);
+        error < 0)
+      return error;
+  }
+
+  auto created_process = g_process_manager->create_process(INVALID_PROCESS_ID);
+  if (!created_process)
+    return -errc::ENOMEM;
+  auto child = *created_process;
+  auto rollback = [&](long error) -> long {
+    (void)g_process_manager->terminate_process(child->pid(), -1);
+    return error;
+  };
+  if (!child->set_address_space(space))
+    return rollback(-errc::ENOMEM);
+  const ThreadId tid = Process::allocate_thread_id();
+  if (tid == INVALID_THREAD_ID)
+    return rollback(-errc::EAGAIN);
+  auto *thread = Thread::try_create(tid, child->pid());
+  if (!thread)
+    return rollback(-errc::ENOMEM);
+  thread->context.pc = image.entry;
+  thread->context.sp = image.stack_pointer;
+#if defined(MOSS_ARCH_ARM64)
+  thread->context.x[0] = image.arg0;
+  thread->context.x[1] = image.arg1;
+  thread->context.x[2] = image.arg2;
+#elif defined(MOSS_ARCH_RISCV64)
+  thread->context.x[10] = image.arg0;
+  thread->context.x[11] = image.arg1;
+  thread->context.x[12] = image.arg2;
+#elif defined(MOSS_ARCH_X64)
+  thread->context.rdi = image.arg0;
+  thread->context.rsi = image.arg1;
+  thread->context.rdx = image.arg2;
+  thread->context.pstate = 0x202; // RFLAGS bit 1 is required; bit 9 enables user interrupts.
+#endif
+  thread->stack_base = stack_bottom;
+  thread->stack_size = user_layout::STACK_SIZE;
+  thread->needs_initial_eret = true;
+  thread->is_user_task = true;
+  thread->state = ProcessState::Ready;
+  if (!thread->allocate_kernel_stack() || !child->register_thread(thread)) {
+    delete thread;
+    return rollback(-errc::ENOMEM);
+  }
+  auto copied = caller->capabilities().clone_selected_to(child->capabilities(), selected, image.capability_count);
+  if (!copied)
+    return rollback(domain_cap_error(copied.error()));
+  auto object = shared_ptr<capability::Object>::try_make<DomainObject>(moss::abi::bridge::moss_heap_allocate, child);
+  if (!object)
+    return rollback(-errc::ENOMEM);
+  auto handle = caller->capabilities().install(moss::move(object), kFullDomainRights);
+  if (!handle)
+    return rollback(domain_cap_error(handle.error()));
+
+  // After authority publication no preparation may fail. The child has no
+  // POSIX parent; its diagnostic PID retires on exit while the handle remains.
+  child->set_state(ProcessState::Running);
+  const u32 cpu =
+      g_load_balancer ? g_load_balancer->select_cpu_for_task(thread, *g_scheduler) : arch::get_current_cpu_id();
+  g_scheduler->place_entity(thread, cpu, /*is_fork=*/true);
+  g_scheduler->enqueue_task(thread, cpu);
+  return static_cast<long>(*handle);
+}
+
+long sys_domain_layout(long layout_addr, long, long, long, long, long) noexcept {
+  if (!layout_addr)
+    return -errc::EFAULT;
+  const moss_domain_layout layout{PAGE_SIZE,
+                                  mm::PageTableManager::KERNEL_IDENTITY_END,
+                                  USER_MAX,
+                                  process::user_layout::STACK_TOP,
+                                  process::user_layout::STACK_SIZE,
+                                  process::user_layout::STACK_MAX,
+                                  process::user_layout::HEAP_START,
+                                  process::user_layout::HEAP_INIT,
+                                  process::user_layout::SIGRETURN_PAGE,
+                                  process::user_layout::MMAP_BASE};
+  return copy_to_user(static_cast<u64>(layout_addr), &layout, sizeof(layout));
 }
 
 long sys_domain_terminate(long handle, long, long, long, long, long) noexcept {
@@ -3259,6 +3497,9 @@ const SyscallDescriptor SYSCALL_TABLE[static_cast<int>(SyscallNumber::MAX_SYSCAL
     {"domain_same", handlers::sys_domain_same, 2, true, "Compare two inspected domain incarnations"},
     {"fork_domain_inherit", handlers::sys_fork_domain_inherit, 1, true,
      "Fork a native domain with capabilities marked for inheritance"},
+    {"domain_spawn", handlers::sys_domain_spawn, 2, true, "Build and start an authorized native domain"},
+    {"domain_layout", handlers::sys_domain_layout, 1, true, "Read the active native-domain virtual layout"},
+    {"domain_factory", handlers::sys_domain_factory, 0, true, "Mint boot-owned domain construction authority"},
     {"execve_cap", handlers::sys_execve_cap, 4, true, "Exec with an explicit retained startup capability"},
     {"domain_signal", handlers::sys_domain_signal, 2, true, "Signal a capability-addressed domain"},
     {"domain_scope_create", handlers::sys_domain_scope_create, 0, true, "Create a fork-inherited domain scope"},
