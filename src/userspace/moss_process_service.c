@@ -440,14 +440,14 @@ static int file_transfer(struct OpenDescription *description, unsigned long memo
 
 // WOULD_BLOCK and BROKEN are complete, non-mutating pipe responses. A lost
 // write reply remains uncertain because the pipe may already contain bytes.
-// ponytail: A read consumed by the backend cannot be undone if this service's
-// reply is lost; add an acknowledged transaction before libc routes pipe I/O here.
+// A prepared read keeps bytes in the backend until the client's reply outcome
+// is known. On an uncertain backend response, retire this service epoch.
 static int pipe_transfer(struct OpenDescription *description, unsigned long memory, unsigned int count, int writing,
                          unsigned int *transferred) {
   struct moss_ipc_message request = {.size = MOSS_PIPE_IO_BYTES,
                                      .capability = memory,
                                      .rights = writing ? MOSS_CAP_MAP_READ : MOSS_CAP_MAP_WRITE,
-                                     .payload = {writing ? MOSS_PIPE_WRITE : MOSS_PIPE_READ}};
+                                     .payload = {writing ? MOSS_PIPE_WRITE : MOSS_PIPE_READ_PREPARE}};
   moss_pipe_put_u16(request.payload + 1, count);
   struct moss_ipc_message response = {0};
   long result = service_call(description->object, &request, &response);
@@ -468,6 +468,16 @@ static int pipe_transfer(struct OpenDescription *description, unsigned long memo
     return -1;
   *transferred = moss_pipe_get_u16(response.payload + 1);
   return *transferred <= count && (!writing || *transferred == count) ? 1 : -1;
+}
+
+static int finish_pipe_read(unsigned long reader, int commit) {
+  struct moss_ipc_message request = {.size = MOSS_PIPE_READ_FINISH_BYTES,
+                                     .payload = {MOSS_PIPE_READ_FINISH, (unsigned char)commit}};
+  struct moss_ipc_message response = {0};
+  long result = service_call(reader, &request, &response);
+  if (response.capability)
+    (void)syscall1(SYS_CAP_CLOSE, (long)response.capability);
+  return result == 1 && response.payload[0] == MOSS_PIPE_OK && !response.capability && !response.rights;
 }
 
 static int console_transfer(struct OpenDescription *description, unsigned long memory, unsigned int count, int writing,
@@ -508,8 +518,10 @@ struct FdAction {
   struct OpenDescription *previous_description;
   unsigned char previous_cloexec;
   struct OpenDescription *offset_description;
+  struct OpenDescription *prepared_pipe;
   unsigned long next_offset;
   int completed_write;
+  int fatal_backend;
 };
 
 static void fd_reply_value(struct moss_ipc_message *response, unsigned long value) {
@@ -821,12 +833,16 @@ static void handle_fd_request(struct Record *owner, unsigned long namespace, uns
       action->offset_description = description;
       action->next_offset = description->kind == DESCRIPTION_FILE ? position + transferred : 0;
       action->completed_write = writing;
+      if (description->kind == DESCRIPTION_PIPE && !writing && transferred)
+        action->prepared_pipe = description;
     } else {
       response->payload[0] = result == BACKEND_WOULD_BLOCK   ? MOSS_PROCESS_WOULD_BLOCK
                              : result == BACKEND_BROKEN_PIPE ? MOSS_PROCESS_BROKEN_PIPE
                                                              : MOSS_PROCESS_UNAVAILABLE;
       if (result < 0 && writing)
         description->uncertain = 1;
+      if (result < 0 && !writing && description->kind == DESCRIPTION_PIPE)
+        action->fatal_backend = 1;
     }
     return;
   }
@@ -869,9 +885,9 @@ static void handle_fd_request(struct Record *owner, unsigned long namespace, uns
   }
 }
 
-static void finish_fd_action(struct FdAction *action, long sent) {
+static int finish_fd_action(struct FdAction *action, long sent) {
   if (!action->owner)
-    return;
+    return 1;
   if (action->added && sent != 0)
     remove_descriptor(action->owner, action->added);
   if (action->added_second && sent != 0)
@@ -895,6 +911,11 @@ static void finish_fd_action(struct FdAction *action, long sent) {
     else if (action->completed_write)
       action->offset_description->uncertain = 1;
   }
+  if (action->fatal_backend)
+    return 0;
+  // The backend holds the bytes until the client's one-shot reply commits.
+  // An uncertain FINISH outcome retires the whole epoch before another read.
+  return !action->prepared_pipe || finish_pipe_read(action->prepared_pipe->object, sent == 0);
 }
 
 int main(int argc, char **argv) {
@@ -1215,7 +1236,8 @@ int main(int argc, char **argv) {
     if (request.capability)
       (void)syscall1(SYS_CAP_CLOSE, (long)request.capability);
     long sent = syscall2(SYS_IPC_REPLY, (long)reply, (long)&response);
-    finish_fd_action(&fd_action, sent);
+    if (!finish_fd_action(&fd_action, sent))
+      return 1;
     if (changed_group && sent != 0) {
       changed_group->group_id = old_group_id;
       changed_group->session_id = old_session_id;

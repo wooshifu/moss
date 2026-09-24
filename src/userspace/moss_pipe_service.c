@@ -15,6 +15,7 @@ struct Pipe {
   unsigned long id;
   unsigned int head;
   unsigned int length;
+  unsigned int prepared_count;
   unsigned char reader_issued;
   unsigned char writer_issued;
   unsigned char reader_closed;
@@ -100,8 +101,11 @@ int main(int argc, char **argv) {
     struct Pipe *created = NULL;
     struct Pipe *finished = NULL;
     struct Pipe *transferred_pipe = NULL;
+    struct Pipe *prepared_pipe = NULL;
+    struct Pipe *finished_read_pipe = NULL;
     unsigned int transferred_count = 0;
     unsigned int transferred_role = 0;
+    unsigned int finish_commit = 0;
     unsigned char *issued = NULL;
     long minted = 0;
     unsigned int role = request.badge ? role_of(request.badge) : 0;
@@ -150,18 +154,26 @@ int main(int argc, char **argv) {
           }
         }
       }
+    } else if (pipe && role == PIPE_READER && request.size == MOSS_PIPE_READ_FINISH_BYTES &&
+               request.payload[0] == MOSS_PIPE_READ_FINISH && request.payload[1] <= 1 && !request.capability &&
+               !request.rights && pipe->prepared_count) {
+      response.payload[0] = MOSS_PIPE_OK;
+      finished_read_pipe = pipe;
+      finish_commit = request.payload[1];
     } else if (pipe && (role == PIPE_READER || role == PIPE_WRITER) && request.size == 1 &&
                request.payload[0] == MOSS_PIPE_CLOSE && !request.capability && !request.rights) {
-      if (role == PIPE_READER)
+      if (role == PIPE_READER) {
         pipe->reader_closed = 1;
-      else
+        pipe->prepared_count = 0;
+      } else
         pipe->writer_closed = 1;
       response.payload[0] = MOSS_PIPE_OK;
       if (pipe->reader_closed && pipe->writer_closed)
         finished = pipe;
     } else if (pipe && request.capability && request.size == MOSS_PIPE_IO_BYTES &&
-               ((role == PIPE_READER && request.payload[0] == MOSS_PIPE_READ && request.rights == MOSS_CAP_MAP_WRITE &&
-                 pipe->reader_issued && !pipe->reader_closed) ||
+               ((role == PIPE_READER &&
+                 (request.payload[0] == MOSS_PIPE_READ || request.payload[0] == MOSS_PIPE_READ_PREPARE) &&
+                 request.rights == MOSS_CAP_MAP_WRITE && pipe->reader_issued && !pipe->reader_closed) ||
                 (role == PIPE_WRITER && request.payload[0] == MOSS_PIPE_WRITE && request.rights == MOSS_CAP_MAP_READ &&
                  pipe->writer_issued && !pipe->writer_closed))) {
       unsigned int count = moss_pipe_get_u16(request.payload + 1);
@@ -170,6 +182,8 @@ int main(int argc, char **argv) {
           response.size = MOSS_PIPE_IO_REPLY_BYTES;
           response.payload[0] = MOSS_PIPE_OK;
           moss_pipe_put_u16(response.payload + 1, 0);
+        } else if (role == PIPE_READER && pipe->prepared_count) {
+          response.payload[0] = MOSS_PIPE_WOULD_BLOCK;
         } else if (role == PIPE_WRITER && pipe->reader_closed) {
           response.payload[0] = MOSS_PIPE_BROKEN;
         } else if ((role == PIPE_READER && !pipe->length) ||
@@ -187,9 +201,14 @@ int main(int argc, char **argv) {
             response.size = MOSS_PIPE_IO_REPLY_BYTES;
             response.payload[0] = MOSS_PIPE_OK;
             moss_pipe_put_u16(response.payload + 1, transferred);
-            transferred_pipe = pipe;
-            transferred_count = transferred;
-            transferred_role = role;
+            if (request.payload[0] == MOSS_PIPE_READ_PREPARE) {
+              prepared_pipe = pipe;
+              transferred_count = transferred;
+            } else {
+              transferred_pipe = pipe;
+              transferred_count = transferred;
+              transferred_role = role;
+            }
             if (syscall2(SYS_MUNMAP, mapped, MOSS_MEM_OBJECT_BYTES) != 0)
               return 1;
           } else {
@@ -211,6 +230,15 @@ int main(int argc, char **argv) {
       } else {
         transferred_pipe->length += transferred_count;
       }
+    }
+    if (prepared_pipe && sent == 0)
+      prepared_pipe->prepared_count = transferred_count;
+    if (finished_read_pipe && sent == 0) {
+      if (finish_commit) {
+        finished_read_pipe->head = (finished_read_pipe->head + finished_read_pipe->prepared_count) % PIPE_BYTES;
+        finished_read_pipe->length -= finished_read_pipe->prepared_count;
+      }
+      finished_read_pipe->prepared_count = 0;
     }
     if (created) {
       if (sent == 0) {

@@ -1003,6 +1003,13 @@ static int pipe_status(unsigned long endpoint, unsigned char operation) {
   return clean && result == 1 ? response.payload[0] : -1;
 }
 
+static int pipe_finish(unsigned long reader, unsigned char commit) {
+  struct moss_ipc_message request = {.size = MOSS_PIPE_READ_FINISH_BYTES, .payload = {MOSS_PIPE_READ_FINISH, commit}};
+  struct moss_ipc_message response = {0};
+  long result = call(reader, &request, &response);
+  return no_capability(&response) && result == 1 && response.payload[0] == MOSS_PIPE_OK;
+}
+
 static int pipe_capability(unsigned long endpoint, unsigned char operation, unsigned long *capability) {
   struct moss_ipc_message request = {.size = 1, .payload = {operation}};
   struct moss_ipc_message response = {0};
@@ -1020,7 +1027,9 @@ static int pipe_io(unsigned long endpoint, unsigned char operation, unsigned lon
                    unsigned char expected, unsigned int transferred) {
   struct moss_ipc_message request = {.size = MOSS_PIPE_IO_BYTES,
                                      .capability = memory,
-                                     .rights = operation == MOSS_PIPE_READ ? MOSS_CAP_MAP_WRITE : MOSS_CAP_MAP_READ,
+                                     .rights = operation == MOSS_PIPE_READ || operation == MOSS_PIPE_READ_PREPARE
+                                                   ? MOSS_CAP_MAP_WRITE
+                                                   : MOSS_CAP_MAP_READ,
                                      .payload = {operation}};
   moss_pipe_put_u16(request.payload + 1, count);
   struct moss_ipc_message response = {0};
@@ -1067,6 +1076,22 @@ static int pipe_probe(void) {
                pipe_status(reader, MOSS_PIPE_CLOSE) == MOSS_PIPE_OK &&
                pipe_io(reader, MOSS_PIPE_READ, memory, 1, MOSS_PIPE_NO_ENTRY, 0);
     }
+  }
+  if (valid) {
+    (void)syscall1(SYS_CAP_CLOSE, (long)reader);
+    (void)syscall1(SYS_CAP_CLOSE, (long)writer);
+    (void)syscall1(SYS_CAP_CLOSE, (long)control);
+    reader = writer = control = 0;
+    *(unsigned char *)mapped = 'z';
+    valid =
+        pipe_capability(root, MOSS_PIPE_CREATE, &control) && pipe_capability(control, MOSS_PIPE_READ_END, &reader) &&
+        pipe_capability(control, MOSS_PIPE_WRITE_END, &writer) &&
+        pipe_io(writer, MOSS_PIPE_WRITE, memory, 1, MOSS_PIPE_OK, 1) &&
+        pipe_io(reader, MOSS_PIPE_READ_PREPARE, memory, 1, MOSS_PIPE_OK, 1) && *(unsigned char *)mapped == 'z' &&
+        pipe_io(reader, MOSS_PIPE_READ, memory, 1, MOSS_PIPE_WOULD_BLOCK, 0) && pipe_finish(reader, 0) &&
+        pipe_io(reader, MOSS_PIPE_READ_PREPARE, memory, 1, MOSS_PIPE_OK, 1) && *(unsigned char *)mapped == 'z' &&
+        pipe_finish(reader, 1) && pipe_io(reader, MOSS_PIPE_READ, memory, 1, MOSS_PIPE_WOULD_BLOCK, 0) &&
+        pipe_status(reader, MOSS_PIPE_CLOSE) == MOSS_PIPE_OK && pipe_status(writer, MOSS_PIPE_CLOSE) == MOSS_PIPE_OK;
   }
   if (valid) {
     (void)syscall1(SYS_CAP_CLOSE, (long)reader);
@@ -1135,8 +1160,10 @@ static int fd_pipe_probe(void) {
       reader = 0;
   }
   if (valid)
-    valid = fd_io(session, MOSS_PROCESS_FD_READ, duplicate, memory, 4, &transferred) && transferred == 4 &&
-            memcmp((const void *)mapped, "pipe", 4) == 0 &&
+    valid = fd_io(session, MOSS_PROCESS_FD_READ, duplicate, memory, 2, &transferred) && transferred == 2 &&
+            memcmp((const void *)mapped, "pi", 2) == 0 &&
+            fd_io(session, MOSS_PROCESS_FD_READ, duplicate, memory, 2, &transferred) && transferred == 2 &&
+            memcmp((const void *)mapped, "pe", 2) == 0 &&
             fd_io_rejected(session, MOSS_PROCESS_FD_READ, duplicate, memory, 1, MOSS_PROCESS_WOULD_BLOCK);
   if (valid) {
     struct moss_ipc_message seek = {.size = MOSS_PROCESS_FD_SEEK_BYTES, .payload = {MOSS_PROCESS_FD_SEEK}};

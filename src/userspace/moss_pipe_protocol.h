@@ -13,7 +13,9 @@ enum {
   MOSS_PIPE_CANCEL = 4,
   MOSS_PIPE_READ = 5,
   MOSS_PIPE_WRITE = 6,
-  MOSS_PIPE_CLOSE = 7
+  MOSS_PIPE_CLOSE = 7,
+  MOSS_PIPE_READ_PREPARE = 8,
+  MOSS_PIPE_READ_FINISH = 9
 };
 
 enum {
@@ -31,6 +33,11 @@ enum {
 // WOULD_BLOCK never changes the pipe. READ returns OK with count zero at EOF;
 // WRITE returns BROKEN when the read end is closed.
 enum { MOSS_PIPE_IO_BYTES = 3, MOSS_PIPE_IO_REPLY_BYTES = 3 };
+// PREPARE copies a nonempty read without consuming it. FINISH carries
+// [opcode, commit:u8] and consumes the prepared bytes only after its reply
+// reaches the caller; commit=0 cancels the reservation. One read may be
+// prepared per pipe because the Process Service serializes descriptor calls.
+enum { MOSS_PIPE_READ_FINISH_BYTES = 2 };
 // Bound service-owned ring storage until pipes have per-client quotas.
 enum { MOSS_PIPE_OBJECT_LIMIT = 16 };
 
