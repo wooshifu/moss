@@ -15,6 +15,9 @@
 // The current File Service caps a complete file at 16 pages. Keep one
 // construction request within the same page budget until domain quotas exist.
 enum { LOADER_MAX_PAGES = MOSS_FILE_CONTENT_BUDGET_BYTES / MOSS_MEM_OBJECT_BYTES, LOADER_MAX_HEADERS = 64 };
+// Five vector words hold argc, both list terminators and the AT_NULL pair;
+// the extra 64 bytes cover the top gap, alignment and x64 return slot.
+enum { LOADER_STARTUP_BUFFER_BYTES = MOSS_IPC_MAX_MESSAGE + (MOSS_IPC_MAX_MESSAGE + 5) * sizeof(uint64_t) + 64 };
 // A stalled dependency cannot hold a supervisor probe indefinitely.
 #define LOADER_CALL_TIMEOUT_NS 5000000000UL
 
@@ -24,6 +27,15 @@ static unsigned char page_bytes[LOADER_MAX_PAGES][MOSS_MEM_OBJECT_BYTES]
 static unsigned char code_bytes[LOADER_MAX_PAGES][MOSS_MEM_OBJECT_BYTES]
     __attribute__((aligned(MOSS_MEM_OBJECT_BYTES)));
 static struct moss_domain_page pages[LOADER_MAX_PAGES];
+
+struct LoaderStartup {
+  unsigned char bytes[LOADER_STARTUP_BUFFER_BYTES];
+  uint64_t stack_pointer;
+  uint64_t size;
+  uint64_t argc;
+  uint64_t argv;
+  uint64_t envp;
+};
 
 static long parse_handle(const char *text) {
   if (!text || *text < '0' || *text > '9')
@@ -84,6 +96,63 @@ static int read_file(long file, size_t *size) {
 
 static int overlaps(uint64_t start, uint64_t end, uint64_t other_start, uint64_t other_end) {
   return start < other_end && end > other_start;
+}
+
+static int prepare_startup(const struct moss_ipc_message *request, const struct moss_domain_layout *layout,
+                           struct LoaderStartup *startup) {
+  if (request->size < MOSS_LOADER_RUN_HEADER_BYTES || request->size > sizeof(request->payload) ||
+      layout->stack_top < layout->stack_size)
+    return 0;
+  const size_t argc = request->payload[1];
+  const size_t count = argc + request->payload[2];
+  const size_t string_bytes = request->size - MOSS_LOADER_RUN_HEADER_BYTES;
+  if (count > string_bytes || layout->stack_top < 16 + string_bytes)
+    return 0;
+
+  size_t cursor = MOSS_LOADER_RUN_HEADER_BYTES;
+  for (size_t index = 0; index < count; ++index) {
+    const unsigned char *end = memchr(request->payload + cursor, 0, request->size - cursor);
+    if (!end)
+      return 0;
+    cursor = (size_t)(end - request->payload) + 1;
+  }
+  if (cursor != request->size)
+    return 0;
+
+  // Match the existing Moss exec startup vector so native C entry and mlibc
+  // consume the same argc/argv/envp layout on all three supported ISAs.
+  const uint64_t strings_base = (layout->stack_top - 16 - string_bytes) & ~(uint64_t)7;
+  const size_t vector_bytes = (count + 5) * sizeof(uint64_t);
+  if (strings_base < vector_bytes + sizeof(uint64_t))
+    return 0;
+  const uint64_t vector_base = (strings_base - vector_bytes) & ~(uint64_t)15;
+  if (vector_base < sizeof(uint64_t))
+    return 0;
+  uint64_t stack_pointer = vector_base;
+#if defined(__x86_64__)
+  stack_pointer -= sizeof(uint64_t); // C entry expects RSP % 16 == 8.
+#endif
+  if (stack_pointer < layout->stack_top - layout->stack_size ||
+      layout->stack_top - stack_pointer > sizeof(startup->bytes))
+    return 0;
+
+  startup->stack_pointer = stack_pointer;
+  startup->size = layout->stack_top - stack_pointer;
+  startup->argc = argc;
+  startup->argv = vector_base + sizeof(uint64_t);
+  startup->envp = startup->argv + (argc + 1) * sizeof(uint64_t);
+  memset(startup->bytes, 0, startup->size);
+  memcpy(startup->bytes + strings_base - stack_pointer, request->payload + MOSS_LOADER_RUN_HEADER_BYTES, string_bytes);
+  memcpy(startup->bytes + vector_base - stack_pointer, &startup->argc, sizeof(startup->argc));
+  cursor = MOSS_LOADER_RUN_HEADER_BYTES;
+  for (size_t index = 0; index < count; ++index) {
+    const uint64_t pointer = strings_base + cursor - MOSS_LOADER_RUN_HEADER_BYTES;
+    const size_t word = 1 + index + (index >= argc);
+    memcpy(startup->bytes + vector_base - stack_pointer + word * sizeof(uint64_t), &pointer, sizeof(pointer));
+    const unsigned char *end = memchr(request->payload + cursor, 0, request->size - cursor);
+    cursor = (size_t)(end - request->payload) + 1;
+  }
+  return 1;
 }
 
 static int plan_elf(size_t size, const struct moss_domain_layout *layout, size_t *page_count, size_t *code_count,
@@ -188,13 +257,17 @@ static long request_approval(long authority, long version) {
   return -1;
 }
 
-static unsigned char load_and_spawn(long file, long authority, long factory, long *domain) {
-  size_t size = 0;
-  if (!read_file(file, &size))
-    return MOSS_LOADER_NO_IMAGE;
+static unsigned char load_and_spawn(const struct moss_ipc_message *request, long file, long authority, long factory,
+                                    long *domain) {
   struct moss_domain_layout layout = {0};
   if (syscall1(SYS_DOMAIN_LAYOUT, (long)&layout) != 0)
     return MOSS_LOADER_UNAVAILABLE;
+  struct LoaderStartup startup;
+  if (!prepare_startup(request, &layout, &startup))
+    return MOSS_LOADER_BAD_REQUEST;
+  size_t size = 0;
+  if (!read_file(file, &size))
+    return MOSS_LOADER_NO_IMAGE;
   size_t page_count = 0, code_count = 0;
   uint64_t entry = 0;
   if (!plan_elf(size, &layout, &page_count, &code_count, &entry))
@@ -211,11 +284,13 @@ static unsigned char load_and_spawn(long file, long authority, long factory, lon
     if (pages[index].flags & MOSS_DOMAIN_PAGE_EXEC)
       pages[index].code = (uint64_t)approval;
   }
-  const unsigned char initial_stack[16] = {0};
   struct moss_domain_spawn image = {.entry = entry,
-                                    .stack_pointer = layout.stack_top - sizeof(initial_stack),
-                                    .stack_source = (uint64_t)initial_stack,
-                                    .stack_size = sizeof(initial_stack),
+                                    .stack_pointer = startup.stack_pointer,
+                                    .stack_source = (uint64_t)startup.bytes,
+                                    .stack_size = startup.size,
+                                    .arg0 = startup.argc,
+                                    .arg1 = startup.argv,
+                                    .arg2 = startup.envp,
                                     .pages = (uint64_t)pages,
                                     .page_count = page_count};
   *domain = syscall2(SYS_DOMAIN_SPAWN, factory, (long)&image);
@@ -242,9 +317,9 @@ int main(int argc, char **argv) {
       return 1;
     struct moss_ipc_message response = {.size = 1, .payload = {MOSS_LOADER_BAD_REQUEST}};
     long domain = 0;
-    if (request.capability && request.rights == MOSS_CAP_SEND && request.badge == 0 && request.size == 1 &&
-        request.payload[0] == MOSS_LOADER_RUN) {
-      response.payload[0] = load_and_spawn((long)request.capability, authority, factory, &domain);
+    if (request.capability && request.rights == MOSS_CAP_SEND && request.badge == 0 &&
+        request.size >= MOSS_LOADER_RUN_HEADER_BYTES && request.payload[0] == MOSS_LOADER_RUN) {
+      response.payload[0] = load_and_spawn(&request, (long)request.capability, authority, factory, &domain);
       if (domain > 0) {
         response.capability = (unsigned long)domain;
         // The private supervisor must be able to delegate only observation

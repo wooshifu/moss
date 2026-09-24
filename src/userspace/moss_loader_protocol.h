@@ -1,10 +1,12 @@
 #pragma once
 
-// RUN carries [opcode] and a SEND capability naming the authorized File
-// Service object. A successful reply gives the private supervisor observation,
-// identity inspection and termination rights, plus the ability to delegate a
-// reduced observation handle to the Process Compatibility Service.
-enum { MOSS_LOADER_RUN = 1 };
+// RUN carries [opcode, argc, envc, NUL-terminated argv strings, then envp
+// strings] and a SEND capability naming the authorized File Service object.
+// Each count occupies one byte; all strings must fit the single IPC payload exactly.
+// A successful reply gives the private supervisor observation, identity
+// inspection and termination rights, plus the ability to delegate a reduced
+// observation handle to the Process Compatibility Service.
+enum { MOSS_LOADER_RUN = 1, MOSS_LOADER_RUN_HEADER_BYTES = 3 };
 enum {
   MOSS_LOADER_OK = 0,
   MOSS_LOADER_BAD_REQUEST = 1,

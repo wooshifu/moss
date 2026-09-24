@@ -401,8 +401,18 @@ fail:
 }
 
 static int request_loader(long send, long image, unsigned char expected, long *domain) {
-  struct moss_ipc_message request = {
-      .size = 1, .capability = (unsigned long)image, .rights = MOSS_CAP_SEND, .payload = {MOSS_LOADER_RUN}};
+  struct moss_ipc_message request = {.size = MOSS_LOADER_RUN_HEADER_BYTES,
+                                     .capability = (unsigned long)image,
+                                     .rights = MOSS_CAP_SEND,
+                                     .payload = {MOSS_LOADER_RUN, 2, 1}};
+  const char *const strings[] = {"loader-probe", "from-supervisor", "MOSS_LOADER=ready"};
+  for (size_t index = 0; index < sizeof(strings) / sizeof(strings[0]); ++index) {
+    size_t length = strlen(strings[index]) + 1;
+    if (length > sizeof(request.payload) - request.size)
+      return -1;
+    memcpy(request.payload + request.size, strings[index], length);
+    request.size += length;
+  }
   struct moss_ipc_message response = {0};
   long sent = call_service(send, &request, &response);
   if (sent == 1 && response.size == 1 && response.payload[0] == expected &&
@@ -422,9 +432,19 @@ static int launch_loader_service(const struct Service *code, const struct Loader
                                  struct Service *loader) {
   if (start_loader_service(code, factory, loader) != 0)
     return -1;
+  struct moss_ipc_message malformed = {.size = MOSS_LOADER_RUN_HEADER_BYTES,
+                                       .capability = (unsigned long)images->probe,
+                                       .rights = MOSS_CAP_SEND,
+                                       .payload = {MOSS_LOADER_RUN, 1, 0}};
+  struct moss_ipc_message rejected = {0};
+  long sent = call_service(loader->send, &malformed, &rejected);
+  int valid = sent == 1 && rejected.size == 1 && rejected.payload[0] == MOSS_LOADER_BAD_REQUEST &&
+              !rejected.capability && !rejected.rights;
+  if (rejected.capability)
+    (void)syscall1(SYS_CAP_CLOSE, (long)rejected.capability);
   long domain = 0;
-  int valid = request_loader(loader->send, images->bad, MOSS_LOADER_BAD_IMAGE, &domain) == 0 &&
-              request_loader(loader->send, images->probe, MOSS_LOADER_OK, &domain) == 0;
+  valid = valid && request_loader(loader->send, images->bad, MOSS_LOADER_BAD_IMAGE, &domain) == 0 &&
+          request_loader(loader->send, images->probe, MOSS_LOADER_OK, &domain) == 0;
   struct moss_domain_exit status = {0};
   if (valid)
     valid = syscall1(SYS_DOMAIN_WAIT, domain) == 0 && syscall2(SYS_DOMAIN_STATUS, domain, (long)&status) == 0 &&
