@@ -14,7 +14,11 @@ independently allocates 3–255 for its file-only view; the same number can name
 different objects in the two tables. Its shared open descriptions already
 preserve offsets across `dup` and `fork`, and its per-descriptor flags survive
 `fork` and close before managed constructors after `exec`. A caller can import
-a transferable File Object Capability into this view.
+a transferable File Object Capability into this view. The protocol now
+distinguishes missing paths, bad descriptors and a full per-process table;
+other backend failures still need precise POSIX error mapping.
+Descriptor allocation now precedes namespace `CREATE` and file `TRUNCATE`, so
+a known-full table or local allocation failure cannot mutate the file first.
 
 The process service currently waits synchronously for each file-object call
 while processing one request at a time. A blocking console read or pipe read

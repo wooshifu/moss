@@ -50,7 +50,10 @@ enum {
   MOSS_PROCESS_RUNNING = 4,
   MOSS_PROCESS_EXITED = 5,
   MOSS_PROCESS_BUSY = 6,
-  MOSS_PROCESS_DENIED = 7
+  MOSS_PROCESS_DENIED = 7,
+  MOSS_PROCESS_BAD_DESCRIPTOR = 8,
+  MOSS_PROCESS_NOT_FOUND = 9,
+  MOSS_PROCESS_TOO_MANY_FILES = 10
 };
 enum { MOSS_PROCESS_INIT_ID = 1 };
 // Match the current kernel compatibility limit while reserving 0..2 for the
@@ -125,6 +128,8 @@ enum {
 // transferred File Object Capability with SEND rights. The caller needs
 // TRANSFER|DUPLICATE on its source for synchronous IPC; reply failure releases
 // the import.
+// File requests distinguish BAD_DESCRIPTOR, NOT_FOUND and TOO_MANY_FILES from
+// process identity NO_ENTRY and backend UNAVAILABLE.
 // FD_READ/WRITE carry
 // [opcode, descriptor:u64 LE, count:u16 LE] plus a transferred Memory Object
 // with MAP_WRITE|TRANSFER|DUPLICATE or MAP_READ|TRANSFER|DUPLICATE respectively,

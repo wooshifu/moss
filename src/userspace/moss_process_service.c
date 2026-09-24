@@ -90,16 +90,18 @@ static struct Descriptor *add_descriptor_at(struct Record *record, struct OpenDe
   return entry;
 }
 
-static struct Descriptor *add_descriptor_from(struct Record *record, struct OpenDescription *description,
-                                              unsigned long minimum) {
+static unsigned long first_free_descriptor(struct Record *record, unsigned long minimum) {
   unsigned long number = minimum < MOSS_PROCESS_FD_FIRST ? MOSS_PROCESS_FD_FIRST : minimum;
   while (number < MOSS_PROCESS_FD_LIMIT && find_descriptor(record, number))
     ++number;
-  return add_descriptor_at(record, description, number);
+  return number;
 }
 
-static struct Descriptor *add_descriptor(struct Record *record, struct OpenDescription *description) {
-  return add_descriptor_from(record, description, MOSS_PROCESS_FD_FIRST);
+static struct Descriptor *add_descriptor_from(struct Record *record, struct OpenDescription *description,
+                                              unsigned long minimum, int *full) {
+  unsigned long number = first_free_descriptor(record, minimum);
+  *full = number >= MOSS_PROCESS_FD_LIMIT;
+  return *full ? NULL : add_descriptor_at(record, description, number);
 }
 
 static void remove_descriptor(struct Record *record, struct Descriptor *entry) {
@@ -408,37 +410,51 @@ static void handle_fd_request(struct Record *owner, unsigned long namespace, str
         ((flags & (MOSS_PROCESS_FD_TRUNCATE | MOSS_PROCESS_FD_APPEND)) && !(flags & MOSS_PROCESS_FD_WRITABLE)) ||
         path[0] != '/' || memchr(path, 0, path_size) != path + path_size - 1)
       return;
+    unsigned long number = first_free_descriptor(owner, MOSS_PROCESS_FD_FIRST);
+    if (number == MOSS_PROCESS_FD_LIMIT) {
+      response->payload[0] = MOSS_PROCESS_TOO_MANY_FILES;
+      return;
+    }
+    // Allocate before CREATE/TRUNCATE: allocation failure must not mutate a
+    // file when no descriptor can be delivered. This request loop is serial.
+    struct Descriptor *entry = calloc(1, sizeof(*entry));
+    struct OpenDescription *description = calloc(1, sizeof(*description));
+    if (!entry || !description) {
+      free(entry);
+      free(description);
+      response->payload[0] = MOSS_PROCESS_UNAVAILABLE;
+      return;
+    }
     struct moss_ipc_message lookup = {.size = request->size, .payload = {MOSS_NAMESPACE_OPEN}};
     lookup.payload[1] = flags & MOSS_PROCESS_FD_CREATE ? MOSS_NAMESPACE_OPEN_CREATE : 0;
     memcpy(lookup.payload + 2, path, path_size);
     struct moss_ipc_message opened = {0};
     long result = file_call(namespace, &lookup, &opened);
     if (result == 1 && opened.payload[0] == MOSS_NAMESPACE_NO_ENTRY && !opened.capability && !opened.rights) {
-      response->payload[0] = MOSS_PROCESS_NO_ENTRY;
+      response->payload[0] = MOSS_PROCESS_NOT_FOUND;
     } else if (result == 1 && opened.payload[0] == MOSS_NAMESPACE_OK && opened.capability &&
                opened.rights == MOSS_CAP_SEND &&
                (!(flags & MOSS_PROCESS_FD_TRUNCATE) || file_resize(opened.capability, 0))) {
-      struct OpenDescription *description = calloc(1, sizeof(*description));
-      if (description) {
-        description->file = opened.capability;
-        description->flags = flags & ~MOSS_PROCESS_FD_CLOEXEC;
-        struct Descriptor *entry = add_descriptor(owner, description);
-        if (entry) {
-          entry->close_on_exec = !!(flags & MOSS_PROCESS_FD_CLOEXEC);
-          opened.capability = 0;
-          action->added = entry;
-          fd_reply_value(response, entry->number);
-        } else {
-          free(description);
-        }
-      }
-      if (!action->added)
-        response->payload[0] = MOSS_PROCESS_UNAVAILABLE;
+      description->file = opened.capability;
+      description->flags = flags & ~MOSS_PROCESS_FD_CLOEXEC;
+      description->references = 1;
+      entry->number = number;
+      entry->description = description;
+      entry->close_on_exec = !!(flags & MOSS_PROCESS_FD_CLOEXEC);
+      entry->next = owner->descriptors;
+      owner->descriptors = entry;
+      opened.capability = 0;
+      action->added = entry;
+      fd_reply_value(response, number);
     } else {
       response->payload[0] = MOSS_PROCESS_UNAVAILABLE;
     }
     if (opened.capability)
       (void)syscall1(SYS_CAP_CLOSE, (long)opened.capability);
+    if (!action->added) {
+      free(entry);
+      free(description);
+    }
     return;
   }
 
@@ -457,10 +473,11 @@ static void handle_fd_request(struct Record *owner, unsigned long namespace, str
     }
     description->file = request->capability;
     description->flags = flags & ~MOSS_PROCESS_FD_CLOEXEC;
-    action->added = add_descriptor(owner, description);
+    int full = 0;
+    action->added = add_descriptor_from(owner, description, MOSS_PROCESS_FD_FIRST, &full);
     if (!action->added) {
       free(description);
-      response->payload[0] = MOSS_PROCESS_UNAVAILABLE;
+      response->payload[0] = full ? MOSS_PROCESS_TOO_MANY_FILES : MOSS_PROCESS_UNAVAILABLE;
       return;
     }
     action->added->close_on_exec = !!(flags & MOSS_PROCESS_FD_CLOEXEC);
@@ -475,7 +492,7 @@ static void handle_fd_request(struct Record *owner, unsigned long namespace, str
   unsigned long number = moss_process_get_u64(request->payload + 1);
   struct Descriptor *entry = find_descriptor(owner, number);
   if (!entry) {
-    response->payload[0] = MOSS_PROCESS_NO_ENTRY;
+    response->payload[0] = MOSS_PROCESS_BAD_DESCRIPTOR;
     return;
   }
   struct OpenDescription *description = entry->description;
@@ -486,11 +503,12 @@ static void handle_fd_request(struct Record *owner, unsigned long namespace, str
       action->closing = entry;
       response->payload[0] = MOSS_PROCESS_OK;
     } else {
-      action->added = add_descriptor(owner, description);
+      int full = 0;
+      action->added = add_descriptor_from(owner, description, MOSS_PROCESS_FD_FIRST, &full);
       if (action->added)
         fd_reply_value(response, action->added->number);
       else
-        response->payload[0] = MOSS_PROCESS_UNAVAILABLE;
+        response->payload[0] = full ? MOSS_PROCESS_TOO_MANY_FILES : MOSS_PROCESS_UNAVAILABLE;
     }
     return;
   }
@@ -561,9 +579,10 @@ static void handle_fd_request(struct Record *owner, unsigned long namespace, str
       response->payload[0] = MOSS_PROCESS_BAD_REQUEST;
       return;
     }
-    action->added = add_descriptor_from(owner, description, minimum);
+    int full = 0;
+    action->added = add_descriptor_from(owner, description, minimum, &full);
     if (!action->added) {
-      response->payload[0] = MOSS_PROCESS_UNAVAILABLE;
+      response->payload[0] = full ? MOSS_PROCESS_TOO_MANY_FILES : MOSS_PROCESS_UNAVAILABLE;
       return;
     }
     action->added->close_on_exec = request->payload[17];

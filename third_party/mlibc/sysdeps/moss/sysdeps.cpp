@@ -58,6 +58,12 @@ int process_status_error(unsigned char status) {
     return 0;
   case MOSS_PROCESS_NO_ENTRY:
     return ESRCH;
+  case MOSS_PROCESS_BAD_DESCRIPTOR:
+    return EBADF;
+  case MOSS_PROCESS_NOT_FOUND:
+    return ENOENT;
+  case MOSS_PROCESS_TOO_MANY_FILES:
+    return EMFILE;
   case MOSS_PROCESS_BAD_REQUEST:
     return EINVAL;
   case MOSS_PROCESS_DENIED:

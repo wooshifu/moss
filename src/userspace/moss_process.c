@@ -65,7 +65,7 @@ __attribute__((constructor)) static void check_fd_before_main(void) {
   struct moss_ipc_message response = {0};
   long result = call(session, &request, &response);
   int clean = no_capability(&response);
-  fd_constructor_closed = result == 1 && response.payload[0] == MOSS_PROCESS_NO_ENTRY && clean;
+  fd_constructor_closed = result == 1 && response.payload[0] == MOSS_PROCESS_BAD_DESCRIPTOR && clean;
 }
 
 static int new_session(unsigned long endpoint, unsigned long domain, unsigned char operation, unsigned long *id,
@@ -643,6 +643,12 @@ static int fd_install(unsigned long session, unsigned long file, unsigned char f
   return *number >= MOSS_PROCESS_FD_FIRST && *number < MOSS_PROCESS_FD_LIMIT;
 }
 
+static int fd_rejected(unsigned long session, const struct moss_ipc_message *request, unsigned char status) {
+  struct moss_ipc_message response = {0};
+  long result = call(session, request, &response);
+  return no_capability(&response) && result == 1 && response.payload[0] == status;
+}
+
 static unsigned long opened_file_cap(unsigned long namespace, const char *path, unsigned char flags,
                                     unsigned int rights) {
   size_t path_size = strlen(path) + 1;
@@ -807,6 +813,16 @@ static int fd_view_probe(void) {
   long memory = syscall1(SYS_MEM_CREATE, MOSS_MEM_OBJECT_BYTES);
   long mapped = memory > 0 ? syscall2(SYS_MEM_MAP, memory, MOSS_CAP_MAP_READ | MOSS_CAP_MAP_WRITE) : 0;
   int valid = mapped > 0;
+  if (valid) {
+    struct moss_ipc_message missing = {.size = 2 + sizeof("/fd-absent"), .payload = {MOSS_PROCESS_FD_OPEN}};
+    missing.payload[1] = MOSS_PROCESS_FD_READABLE;
+    memcpy(missing.payload + 2, "/fd-absent", sizeof("/fd-absent"));
+    struct moss_ipc_message bad_fd = {.size = MOSS_PROCESS_REPLY_VALUE_BYTES,
+                                      .payload = {MOSS_PROCESS_FD_CLOSE}};
+    moss_process_put_u64(bad_fd.payload + 1, MOSS_PROCESS_FD_LIMIT);
+    valid = fd_rejected(session, &missing, MOSS_PROCESS_NOT_FOUND) &&
+            fd_rejected(session, &bad_fd, MOSS_PROCESS_BAD_DESCRIPTOR);
+  }
   if (valid)
     valid = fd_flags(session, MOSS_PROCESS_FD_GET_FLAGS, first, &flags) && flags == 1 &&
             fd_status(session, first, &position) &&
@@ -877,6 +893,13 @@ static int fd_view_probe(void) {
             fd_flags(session, MOSS_PROCESS_FD_GET_FLAGS, minimum_second, &flags) && flags == 0 &&
             !fd_dup_min(session, duplicate, MOSS_PROCESS_FD_LIMIT, 0, &position);
   }
+  if (valid) {
+    struct moss_ipc_message full = {.size = MOSS_PROCESS_FD_DUP_MIN_BYTES,
+                                    .payload = {MOSS_PROCESS_FD_DUP_MIN}};
+    moss_process_put_u64(full.payload + 1, duplicate);
+    moss_process_put_u64(full.payload + 9, MOSS_PROCESS_FD_LIMIT - 2);
+    valid = fd_rejected(session, &full, MOSS_PROCESS_TOO_MANY_FILES);
+  }
   if (minimum_second) {
     valid &= fd_command(session, MOSS_PROCESS_FD_CLOSE, minimum_second, NULL);
     minimum_second = 0;
@@ -917,6 +940,29 @@ static int fd_view_probe(void) {
     valid &= fd_command(session, MOSS_PROCESS_FD_CLOSE, imported, NULL);
   if (duplicate)
     valid &= fd_command(session, MOSS_PROCESS_FD_CLOSE, duplicate, NULL);
+  unsigned long filled_through = MOSS_PROCESS_FD_FIRST - 1;
+  if (valid) {
+    for (unsigned long target = MOSS_PROCESS_FD_FIRST; target < MOSS_PROCESS_FD_LIMIT; ++target) {
+      if (!fd_dup_to(session, first, target)) {
+        valid = 0;
+        break;
+      }
+      filled_through = target;
+    }
+  }
+  if (valid) {
+    struct moss_ipc_message truncate = {.size = 2 + sizeof("/note"), .payload = {MOSS_PROCESS_FD_OPEN}};
+    truncate.payload[1] = MOSS_PROCESS_FD_READABLE | MOSS_PROCESS_FD_WRITABLE | MOSS_PROCESS_FD_TRUNCATE;
+    memcpy(truncate.payload + 2, "/note", sizeof("/note"));
+    valid = fd_rejected(session, &truncate, MOSS_PROCESS_TOO_MANY_FILES) &&
+            fd_seek(session, first, MOSS_PROCESS_FD_SEEK_SET, &position) && position == 0 &&
+            fd_io(session, MOSS_PROCESS_FD_READ, first, memory, 3, &transferred) && transferred == 3 &&
+            memcmp((const void *)mapped, "abc", 3) == 0;
+  }
+  for (unsigned long target = MOSS_PROCESS_FD_FIRST; target <= filled_through; ++target) {
+    if (target != first)
+      valid &= fd_command(session, MOSS_PROCESS_FD_CLOSE, target, NULL);
+  }
   valid &= fd_command(session, MOSS_PROCESS_FD_CLOSE, first, NULL);
   if (mapped > 0)
     (void)syscall2(SYS_MUNMAP, mapped, MOSS_MEM_OBJECT_BYTES);
