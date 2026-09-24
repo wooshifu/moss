@@ -239,6 +239,7 @@ CATALOG = {
         "domain_wait_any",
         "domain_spawn",
         "code_revocation",
+        "code_service_survival",
     ],
     "users.signals": [
         "basic_handler",
