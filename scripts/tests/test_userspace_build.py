@@ -89,7 +89,7 @@ add_custom_target(userspace-fixture DEPENDS
     entries = json.loads((build / "compile_commands.json").read_text())
     entries = [entry for entry in entries if "moss_userspace_" in entry["command"]]
     validation_sources = {source.stem for source in (root / "src/userspace/validation").glob("*.c")}
-    expected_sources = programs | {"validation_frame"} | validation_sources
+    expected_sources = programs | {"loader_probe", "validation_frame"} | validation_sources
     assert {Path(entry["file"]).stem for entry in entries} == expected_sources
     assert len(entries) == len(expected_sources)
     for entry in entries:
@@ -306,6 +306,7 @@ add_subdirectory(src/userspace)
         runtime / "libc_validation.elf",
         runtime / "init.elf",
         runtime / "code-authority-service.elf",
+        runtime / "loader-service.elf",
         runtime / "file-service.elf",
         runtime / "namespace-service.elf",
         runtime / "moss-file.elf",
@@ -320,6 +321,9 @@ add_subdirectory(src/userspace)
         assert struct.unpack_from("<Q", elf, 24)[0] >= 0x200000000
     init = (runtime / "init.elf").read_bytes()
     code_service = (runtime / "code-authority-service.elf").read_bytes()
+    loader_service = (runtime / "loader-service.elf").read_bytes()
+    loader_probe = (build / "userspace/loader_probe.elf").read_bytes()
+    assert len(loader_probe) <= 16 * 4096  # The current File Service's complete-file budget.
     file_service = (runtime / "file-service.elf").read_bytes()
     namespace_service = (runtime / "namespace-service.elf").read_bytes()
     file_client = (runtime / "moss-file.elf").read_bytes()
@@ -337,6 +341,8 @@ add_subdirectory(src/userspace)
     assert make_cpio_entry("moss-domain.elf", domain_client, ino=7) in archive
     assert make_cpio_entry("process-service.elf", process_service, ino=8) in archive
     assert make_cpio_entry("moss-process.elf", process_client, ino=9) in archive
+    assert make_cpio_entry("loader-service.elf", loader_service, ino=10) in archive
+    assert make_cpio_entry("loader_probe.elf", loader_probe, ino=11) in archive
     for removed in ("hello", "shell", "top", "signal_test"):
         assert not (build / "userspace" / f"{removed}.elf").exists()
         assert f"{removed}.elf\0".encode() not in archive

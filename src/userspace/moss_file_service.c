@@ -172,18 +172,24 @@ int main(int argc, char **argv) {
       // after use so clients cannot exhaust the service's capability table.
       (void)syscall1(SYS_CAP_CLOSE, (long)request.capability);
     } else if (request.badge == 0 && request.size >= 4 && request.payload[0] == MOSS_FILE_OPEN &&
-               !(request.payload[1] & ~MOSS_FILE_OPEN_CREATE) && valid_name(request.payload + 2, request.size - 2)) {
+               !(request.payload[1] & ~(MOSS_FILE_OPEN_CREATE | MOSS_FILE_OPEN_UNLISTED)) &&
+               valid_name(request.payload + 2, request.size - 2)) {
       const unsigned char *name = request.payload + 2;
       unsigned long name_size = request.size - 2;
-      file = find_name(files, name, name_size);
+      int unlisted = !!(request.payload[1] & MOSS_FILE_OPEN_UNLISTED);
+      file = unlisted ? NULL : find_name(files, name, name_size);
       struct FileObject *created = NULL;
       if (!file && (request.payload[1] & MOSS_FILE_OPEN_CREATE) && next_badge != 0 &&
           file_count < MOSS_FILE_OBJECT_LIMIT) {
         created = calloc(1, sizeof(*created));
         if (created) {
           created->badge = next_badge;
-          created->name_size = name_size;
-          memcpy(created->name, name, name_size);
+          // A zero name size is impossible for public OPEN. Keep the object
+          // in the badge list without granting root senders a lookup path.
+          if (!unlisted) {
+            created->name_size = name_size;
+            memcpy(created->name, name, name_size);
+          }
           file = created;
         }
       }
@@ -193,8 +199,9 @@ int main(int argc, char **argv) {
         minted = syscall2(SYS_IPC_MINT_BADGE, (long)mint, (long)file->badge);
         if (minted > 0) {
           if (created) {
-            // Publish before replying so a timed-out client can reopen the
-            // same object, rather than creating a second identity on retry.
+            // Publish a named file before replying so a timed-out client can
+            // reopen its identity. Unlisted objects are deliberately reachable
+            // only through the returned capability.
             created->next = files;
             files = created;
             ++file_count;

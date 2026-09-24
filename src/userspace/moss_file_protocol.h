@@ -6,12 +6,15 @@
 // nonzero badge to each live file and keeps its MINT authority private.
 enum { MOSS_FILE_SCRATCH_BADGE = 1 };
 // OPEN carries [opcode, flags, relative NUL-terminated name]. CREATE adds a
-// missing file without changing an existing file. OPEN returns a
-// sender to the namespace, which transfers only SEND to the client. File
+// missing file without changing an existing file. OPEN returns an object
+// sender; the public namespace transfers only SEND to clients. File
 // operations then bypass the namespace service.
 // The first byte is an operation in requests and a status in replies.
 enum { MOSS_FILE_READ = 1, MOSS_FILE_WRITE = 2, MOSS_FILE_OPEN = 3, MOSS_FILE_RESIZE = 4 };
-enum { MOSS_FILE_OPEN_CREATE = 1U << 0 };
+// UNLISTED creates a file object without inserting a name into the root
+// index. Only the returned object capability can address it; even another
+// holder of the root sender cannot reopen it by guessing the supplied name.
+enum { MOSS_FILE_OPEN_CREATE = 1U << 0, MOSS_FILE_OPEN_UNLISTED = 1U << 1 };
 enum { MOSS_FILE_OK = 0, MOSS_FILE_BAD_REQUEST = 1, MOSS_FILE_NO_ENTRY = 2, MOSS_FILE_UNAVAILABLE = 3 };
 // Until service resource accounting exists, limit client-triggered allocation
 // to 16 file objects and 16 shared pages of data per service incarnation.
