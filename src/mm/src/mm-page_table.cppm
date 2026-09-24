@@ -38,7 +38,8 @@ struct UserFaultContext {
   const u8 *backing;
   usize backing_offset;
   usize backing_size;
-  PhysAddr shared_page;
+  const PhysAddr *shared_pages;
+  usize shared_page_count;
 };
 
 [[nodiscard]] bool resolve_user_cow_fault(const UserFaultContext &context, VirtAddr far_addr) noexcept;

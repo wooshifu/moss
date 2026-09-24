@@ -518,8 +518,9 @@ static long do_fork(u64 domain_cap_out_addr, const capability::ForkSelection *se
         return;
       }
       moss_validation_fork_metadata(0, true);
-      vmas_copied = child_as->add_vma(vma.start_addr, vma.end_addr, vma.flags, vma.type, vma.backing_data,
-                                      vma.backing_offset, vma.backing_size, vma.memory_object, vma.shared_page);
+      vmas_copied =
+          child_as->add_vma(vma.start_addr, vma.end_addr, vma.flags, vma.type, vma.backing_data, vma.backing_offset,
+                            vma.backing_size, vma.memory_object, vma.shared_pages, vma.shared_page_count);
       moss_validation_fork_metadata(0, false);
     });
     if (!vmas_copied) {

@@ -43,8 +43,9 @@ enum {
 // is scoped to the authority that issued it; SYS_CODE_REVOKE requires both.
 // Revocation blocks new native-domain admission, not existing mappings.
 
-// The initial Memory Object is one 4 KiB page. MAP_WRITE mappings are also
-// readable on all supported architectures; closing a handle keeps mappings.
+// Memory Object sizes must be positive multiples of 4 KiB. SYS_MEM_MAP maps
+// the whole object. MAP_WRITE mappings are also readable on all supported
+// architectures; closing a handle keeps mappings.
 #define MOSS_MEM_OBJECT_BYTES 4096UL
 
 struct moss_ipc_endpoints {

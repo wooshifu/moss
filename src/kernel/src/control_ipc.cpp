@@ -280,21 +280,28 @@ public:
 };
 
 class MemoryObject final : public capability::Object {
-  PhysAddr page_{0};
-  bool has_page_{false};
+  PhysAddr *pages_{nullptr};
+  usize count_{0};
+  usize capacity_{0};
 
 public:
   MemoryObject() noexcept : Object(capability::ObjectType::Memory) {}
   ~MemoryObject() override {
-    // The allocation owns one reference; each resident mapping owns another.
-    if (has_page_ && mm::PageFrameAllocator::page_ref_dec(page_) == 0)
-      (void)mm::free_pages(page_, 0);
+    // The object owns one reference per frame; resident PTEs own the rest.
+    for (usize i = 0; i < count_; ++i) {
+      if (mm::PageFrameAllocator::page_ref_dec(pages_[i]) == 0)
+        (void)mm::free_pages(pages_[i], 0);
+    }
+    if (pages_)
+      (void)mm::RuntimeHeapAllocator::deallocate(pages_, capacity_ * sizeof(pages_[0]));
   }
-  void adopt_page(PhysAddr page) noexcept {
-    page_ = page;
-    has_page_ = true;
+  void adopt_storage(PhysAddr *pages, usize capacity) noexcept {
+    pages_ = pages;
+    capacity_ = capacity;
   }
-  [[nodiscard]] PhysAddr page() const noexcept { return page_; }
+  void append_page(PhysAddr page) noexcept { pages_[count_++] = page; }
+  [[nodiscard]] const PhysAddr *pages() const noexcept { return pages_; }
+  [[nodiscard]] usize count() const noexcept { return count_; }
 };
 
 class Reply final : public capability::Object {
@@ -385,9 +392,7 @@ long sys_cap_set_exec(long handle, long keep, long, long, long, long) noexcept {
 }
 
 long sys_mem_create(long size, long, long, long, long, long) noexcept {
-  // ponytail: one page is enough to establish the shared data path; extend
-  // object sizing when a service protocol needs a larger contiguous window.
-  if (size != static_cast<long>(PAGE_SIZE))
+  if (size <= 0 || (static_cast<usize>(size) & (PAGE_SIZE - 1)) != 0)
     return -errc::EINVAL;
   auto proc = caller_process();
   if (!proc)
@@ -397,11 +402,19 @@ long sys_mem_create(long size, long, long, long, long, long) noexcept {
   auto object = shared_ptr<capability::Object>::try_make<MemoryObject>(ipc_allocate);
   if (!object)
     return -errc::ENOMEM;
-  auto page = mm::allocate_pages(0);
-  if (!page)
+  const usize count = static_cast<usize>(size) / PAGE_SIZE;
+  auto storage = mm::RuntimeHeapAllocator::allocate(count * sizeof(PhysAddr));
+  if (!storage)
     return -errc::ENOMEM;
-  __builtin_memset(reinterpret_cast<void *>(phys_to_virt(*page)), 0, PAGE_SIZE);
-  static_cast<MemoryObject *>(object.get())->adopt_page(*page);
+  auto *memory = static_cast<MemoryObject *>(object.get());
+  memory->adopt_storage(static_cast<PhysAddr *>(*storage), count);
+  for (usize i = 0; i < count; ++i) {
+    auto page = mm::allocate_pages(0);
+    if (!page)
+      return -errc::ENOMEM;
+    __builtin_memset(reinterpret_cast<void *>(phys_to_virt(*page)), 0, PAGE_SIZE);
+    memory->append_page(*page);
+  }
   constexpr u32 initial_rights = capability::rights::MAP_READ | capability::rights::MAP_WRITE |
                                  capability::rights::TRANSFER | capability::rights::DUPLICATE;
   auto handle = proc->capabilities().install(moss::move(object), initial_rights);
@@ -426,15 +439,17 @@ long sys_mem_map(long handle, long rights, long, long, long, long) noexcept {
   // ponytail: use the existing monotonic mmap cursor; add hole search when
   // services need to recycle virtual ranges after unmap.
   const VirtAddr address = as->mmap_next;
-  if (address > USER_MAX - PAGE_SIZE || !mm::PageTableManager::is_user_range(address, PAGE_SIZE))
+  auto *memory = static_cast<MemoryObject *>((*looked).get());
+  const usize size = memory->count() * PAGE_SIZE;
+  if (size > USER_MAX || address > USER_MAX - size || !mm::PageTableManager::is_user_range(address, size))
     return -errc::ENOMEM;
   // Every supported architecture makes a writable user mapping readable.
   const u32 flags =
       process::vma_flags::READ | ((rights & capability::rights::MAP_WRITE) ? process::vma_flags::WRITE : 0U);
-  if (!as->add_vma(address, address + PAGE_SIZE, flags, process::VmaType::MMAP, nullptr, 0, 0, *looked,
-                   static_cast<MemoryObject *>((*looked).get())->page()))
+  if (!as->add_vma(address, address + size, flags, process::VmaType::MMAP, nullptr, 0, 0, *looked, memory->pages(),
+                   memory->count()))
     return -errc::ENOMEM;
-  as->mmap_next = address + PAGE_SIZE;
+  as->mmap_next = address + size;
   return static_cast<long>(address);
 }
 

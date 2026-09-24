@@ -284,21 +284,23 @@ struct VmaRegion {
   const moss::kernel::u8 *backing_data; // pointer to ELF data in kernel memory
   moss::kernel::usize backing_offset;   // offset into backing_data for this VMA
   moss::kernel::usize backing_size;     // valid backing data length (rest is zero)
-  // A Memory Object VMA keeps backing alive after its handle is closed; PTEs
-  // retain their own page references until unmap or address-space teardown.
+  // The VMA retains the Memory Object while borrowing its immutable page list;
+  // resident PTEs hold separate frame references until unmap or teardown.
   shared_ptr<capability::Object> memory_object;
-  PhysAddr shared_page;
+  const PhysAddr *shared_pages;
+  usize shared_page_count;
 
   VmaRegion() noexcept
       : start_addr(0), end_addr(0), flags(0), type(VmaType::DATA), backing_data(nullptr), backing_offset(0),
-        backing_size(0), memory_object{}, shared_page(0) {}
+        backing_size(0), memory_object{}, shared_pages(nullptr), shared_page_count(0) {}
 
   VmaRegion(moss::kernel::VirtAddr start, moss::kernel::VirtAddr end, moss::kernel::u32 region_flags,
             VmaType vma_type = VmaType::DATA, const moss::kernel::u8 *backing = nullptr,
             moss::kernel::usize b_offset = 0, moss::kernel::usize b_size = 0,
-            shared_ptr<capability::Object> memory = {}, PhysAddr page = 0) noexcept
+            shared_ptr<capability::Object> memory = {}, const PhysAddr *pages = nullptr, usize page_count = 0) noexcept
       : start_addr(start), end_addr(end), flags(region_flags), type(vma_type), backing_data(backing),
-        backing_offset(b_offset), backing_size(b_size), memory_object(moss::move(memory)), shared_page(page) {}
+        backing_offset(b_offset), backing_size(b_size), memory_object(moss::move(memory)), shared_pages(pages),
+        shared_page_count(page_count) {}
 
   [[nodiscard]] bool is_demand_zero() const noexcept { return (flags & vma_flags::DEMAND_ZERO) != 0; }
 
@@ -438,16 +440,18 @@ public:
   // space. The list lock alone cannot serialize metadata with PTE changes.
   bool add_vma(VirtAddr start, VirtAddr end, u32 flags, VmaType type = VmaType::DATA, const u8 *backing = nullptr,
                usize b_offset = 0, usize b_size = 0, shared_ptr<capability::Object> memory = {},
-               PhysAddr page = 0) noexcept {
+               const PhysAddr *pages = nullptr, usize page_count = 0) noexcept {
     constexpr u32 allowed = vma_flags::READ | vma_flags::WRITE | vma_flags::EXEC | vma_flags::DEMAND_ZERO;
     // Bootstrap image mappings also use this path; no caller may publish a
-    // VMA that is writable and executable at the same time.
+    // VMA that is writable and executable at the same time. A shared VMA must
+    // cover exactly the retained object's page list before faults index it.
     if (!valid_vma_range(start, end, type) || (flags & ~allowed) != 0 ||
         (flags & (vma_flags::WRITE | vma_flags::EXEC)) == (vma_flags::WRITE | vma_flags::EXEC) ||
         (type == VmaType::SIGRETURN && flags != (vma_flags::READ | vma_flags::EXEC)) ||
-        (static_cast<bool>(memory) != (page != 0)) ||
-        (memory && (memory->type() != capability::ObjectType::Memory || type != VmaType::MMAP ||
-                    end - start != PAGE_SIZE || (flags & (vma_flags::EXEC | vma_flags::DEMAND_ZERO)) != 0))) {
+        (static_cast<bool>(memory) != (pages != nullptr)) || (!memory && page_count != 0) ||
+        (memory &&
+         (memory->type() != capability::ObjectType::Memory || type != VmaType::MMAP || page_count == 0 ||
+          (end - start) / PAGE_SIZE != page_count || (flags & (vma_flags::EXEC | vma_flags::DEMAND_ZERO)) != 0))) {
       return false;
     }
     return vmas.push_front_unless(
@@ -456,7 +460,7 @@ public:
           // reject a second HEAP explicitly to keep one authoritative break.
           return (type == VmaType::HEAP && v.type == VmaType::HEAP) || (start < v.end_addr && end > v.start_addr);
         },
-        start, end, flags, type, backing, b_offset, b_size, moss::move(memory), page);
+        start, end, flags, type, backing, b_offset, b_size, moss::move(memory), pages, page_count);
   }
 
   // Resize one exact VMA without a check/update race. before_update runs while

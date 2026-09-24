@@ -1559,9 +1559,10 @@ unsigned long ipc_delivery_rollback(void) {
 }
 
 unsigned long ipc_memory_object(void) {
-  if (syscall1(SYS_MEM_CREATE, 0) != -IPC_EINVAL)
+  const long memory_bytes = 3 * MOSS_MEM_OBJECT_BYTES;
+  if (syscall1(SYS_MEM_CREATE, 0) != -IPC_EINVAL || syscall1(SYS_MEM_CREATE, MOSS_MEM_OBJECT_BYTES + 1) != -IPC_EINVAL)
     return 1;
-  long memory = syscall1(SYS_MEM_CREATE, MOSS_MEM_OBJECT_BYTES);
+  long memory = syscall1(SYS_MEM_CREATE, memory_bytes);
   if (memory <= 0)
     return 2;
   long read_only = syscall2(SYS_CAP_DUPLICATE, memory, MOSS_CAP_MAP_READ);
@@ -1575,7 +1576,11 @@ unsigned long ipc_memory_object(void) {
   volatile unsigned char *writable = (volatile unsigned char *)writable_addr;
   volatile const unsigned char *readable = (volatile const unsigned char *)readable_addr;
   writable[0] = 'm';
-  errors |= (unsigned long)(readable[0] != 'm') << 1;
+  writable[MOSS_MEM_OBJECT_BYTES] = 'b';
+  writable[memory_bytes - 1] = 'z';
+  errors |= (unsigned long)(readable[0] != 'm' || readable[MOSS_MEM_OBJECT_BYTES] != 'b' ||
+                            readable[memory_bytes - 1] != 'z' || readable[MOSS_MEM_OBJECT_BYTES - 1] != 0)
+            << 1;
 
   struct moss_ipc_endpoints control = {0, 0};
   if (syscall1(SYS_IPC_CREATE, (long)&control) != 0 || syscall2(SYS_CAP_SET_INHERIT, (long)control.receive, 1) != 0)
@@ -1585,7 +1590,8 @@ unsigned long ipc_memory_object(void) {
     // This inherited writable VMA must remain shared after fork.
     if (writable[0] != 'm')
       _exit(91);
-    writable[1] = 'f';
+    writable[MOSS_MEM_OBJECT_BYTES + 1] = 'f';
+    writable[memory_bytes - 1] = 'q';
     struct moss_ipc_message request = {0};
     unsigned long reply = 0;
     if (ipc_receive(control.receive, &request, &reply) != 1 || request.capability == 0 ||
@@ -1596,10 +1602,14 @@ unsigned long ipc_memory_object(void) {
     if (transferred_addr <= 0)
       _exit(93);
     volatile unsigned char *transferred = (volatile unsigned char *)transferred_addr;
-    if (transferred[0] != 'm' || transferred[1] != 'f')
+    if (transferred[0] != 'm' || transferred[MOSS_MEM_OBJECT_BYTES] != 'b' ||
+        transferred[MOSS_MEM_OBJECT_BYTES + 1] != 'f' || transferred[memory_bytes - 1] != 'q')
       _exit(94);
     transferred[0] = 's';
-    if (syscall1(SYS_CAP_CLOSE, (long)request.capability) != 0 || transferred[0] != 's')
+    transferred[MOSS_MEM_OBJECT_BYTES] = 't';
+    transferred[memory_bytes - 1] = 'x';
+    if (syscall1(SYS_CAP_CLOSE, (long)request.capability) != 0 || transferred[0] != 's' ||
+        transferred[memory_bytes - 1] != 'x')
       _exit(95);
     const struct moss_ipc_message response = {.size = 1, .payload = {'s'}};
     _exit(ipc_reply(reply, &response) == 0 ? 37 : 96);
@@ -1618,12 +1628,14 @@ unsigned long ipc_memory_object(void) {
     kill(child, SIGKILL); // A failed enqueue could leave the child waiting to receive forever.
   errors |= (unsigned long)(completed != 1 || response.payload[0] != 's') << 4;
   errors |= (unsigned long)!wait_exit(child, 37) << 5;
-  errors |= (unsigned long)(readable[0] != 's' || readable[1] != 'f') << 6;
+  errors |= (unsigned long)(readable[0] != 's' || readable[MOSS_MEM_OBJECT_BYTES] != 't' ||
+                            readable[MOSS_MEM_OBJECT_BYTES + 1] != 'f' || readable[memory_bytes - 1] != 'x')
+            << 6;
   errors |= (unsigned long)(syscall1(SYS_CAP_CLOSE, memory) != 0 || syscall1(SYS_CAP_CLOSE, read_only) != 0 ||
                             writable[0] != 's')
             << 7;
-  errors |= (unsigned long)(syscall2(SYS_MUNMAP, writable_addr, MOSS_MEM_OBJECT_BYTES) != 0 ||
-                            syscall2(SYS_MUNMAP, readable_addr, MOSS_MEM_OBJECT_BYTES) != 0)
+  errors |= (unsigned long)(syscall2(SYS_MUNMAP, writable_addr, memory_bytes) != 0 ||
+                            syscall2(SYS_MUNMAP, readable_addr, memory_bytes) != 0)
             << 8;
   errors |= (unsigned long)(syscall1(SYS_CAP_CLOSE, (long)control.send) != 0) << 9;
   return errors;

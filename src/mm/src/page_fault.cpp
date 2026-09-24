@@ -545,16 +545,18 @@ bool moss::kernel::mm::resolve_user_demand_fault(const UserFaultContext &context
   }
 
   moss_validation_demand_snapshot(pgd_phys, far_addr & ~(static_cast<VirtAddr>(PAGE_SIZE) - 1));
-  constexpr usize PG_SIZE = 4096; // Matches mm::PAGE_SIZE; fills exactly one order-0 frame.
-  const bool shared = context.shared_page != 0;
+  const bool shared = context.shared_pages != nullptr;
+  const VirtAddr fault_page = far_addr & ~(static_cast<VirtAddr>(PAGE_SIZE) - 1);
   PhysAddr page_pa = 0;
   if (shared) {
-    // The VMA owns the Memory Object's original frame reference. Each PTE
-    // acquires another reference before publication, including fork aliases.
-    if ((vma_flags & VMA_EXEC) != 0 || mm::PageFrameAllocator::page_ref_get(context.shared_page) == 0) {
+    const usize page_index = (fault_page - vma_start) / PAGE_SIZE;
+    if ((vma_flags & VMA_EXEC) != 0 || page_index >= context.shared_page_count)
       return false;
-    }
-    page_pa = context.shared_page;
+    page_pa = context.shared_pages[page_index];
+    // The Memory Object owns the original reference. Each resident PTE
+    // acquires another before publication, including fork aliases.
+    if (mm::PageFrameAllocator::page_ref_get(page_pa) == 0)
+      return false;
     mm::PageFrameAllocator::page_ref_inc(page_pa);
   } else {
     auto page_result = mm::page_alloc::alloc_kernel_pages(0);
@@ -564,26 +566,25 @@ bool moss::kernel::mm::resolve_user_demand_fault(const UserFaultContext &context
     page_pa = *page_result;
   }
 
-  VirtAddr fault_page = far_addr & ~(static_cast<u64>(PG_SIZE) - 1);
   if (!shared) {
     auto *page_va = reinterpret_cast<u8 *>(phys_to_virt(page_pa));
     const u64 page_offset = fault_page - vma_start;
     if (backing_data != nullptr && page_offset < backing_size) {
       u64 copy_size = backing_size - page_offset;
-      if (copy_size > PG_SIZE) {
-        copy_size = PG_SIZE;
+      if (copy_size > PAGE_SIZE) {
+        copy_size = PAGE_SIZE;
       }
       for (u64 i = 0; i < copy_size; i++) {
         page_va[i] = backing_data[backing_offset + page_offset + i];
       }
-      for (u64 i = copy_size; i < PG_SIZE; i++) {
+      for (u64 i = copy_size; i < PAGE_SIZE; i++) {
         page_va[i] = 0;
       }
     } else {
       // Fresh physical pages are page-aligned. Clear whole words so the Debug
       // demand-zero path does not execute a byte loop for every slab page.
       auto *words = reinterpret_cast<u64 *>(page_va);
-      for (usize i = 0; i < PG_SIZE / sizeof(u64); i++) {
+      for (usize i = 0; i < PAGE_SIZE / sizeof(u64); i++) {
         words[i] = 0;
       }
     }
