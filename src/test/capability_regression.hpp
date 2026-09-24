@@ -118,12 +118,12 @@ inline void process_handles() {
     return;
   boost::ut::expect(static_cast<bool>(source.close(*source_handle)));
   boost::ut::expect(escrow_last_closes == 0);
-  auto reserved = destination.reserve_escrow(*escrow);
+  auto reserved = destination.reserve_escrow(escrow->escrow());
   if (!boost::ut::expect(static_cast<bool>(reserved)))
     return;
   boost::ut::expect(!destination.lookup(*reserved, cap::ObjectType::Endpoint, cap::rights::SEND));
   boost::ut::expect(!destination.close(*reserved));
-  auto rolled_back = destination.reserve_escrow(*escrow);
+  auto rolled_back = destination.reserve_escrow(escrow->escrow());
   if (!boost::ut::expect(static_cast<bool>(rolled_back)))
     return;
   boost::ut::expect(static_cast<bool>(destination.discard_reserved(*rolled_back)));
@@ -134,7 +134,7 @@ inline void process_handles() {
   boost::ut::expect(static_cast<bool>(destination.lookup(*reserved, cap::ObjectType::Endpoint, cap::rights::SEND)));
   boost::ut::expect(!destination.lookup(*reserved, cap::ObjectType::Endpoint, cap::rights::RECEIVE));
   boost::ut::expect(!destination.capture_for_ipc(*reserved, cap::rights::SEND));
-  escrow->reset();
+  escrow->escrow().reset();
   boost::ut::expect(escrow_last_closes == 0);
   boost::ut::expect(static_cast<bool>(destination.close(*reserved)));
   boost::ut::expect(escrow_last_closes == 1);
@@ -151,17 +151,29 @@ inline void process_handles() {
     return;
   boost::ut::expect(!source.duplicate(*reply_handle, cap::rights::SEND));
   boost::ut::expect(!source.set_inheritable(*reply_handle, true));
+  cap::Escrow abandoned_reply;
+  {
+    auto rejected = source.capture_for_ipc(*reply_handle, cap::rights::SEND);
+    if (!boost::ut::expect(static_cast<bool>(rejected)))
+      return;
+    abandoned_reply = rejected->take_escrow();
+    boost::ut::expect(!source.lookup(*reply_handle, cap::ObjectType::Reply, cap::rights::SEND));
+  }
+  abandoned_reply.reset();
+  boost::ut::expect(static_cast<bool>(source.lookup(*reply_handle, cap::ObjectType::Reply, cap::rights::SEND)));
+  boost::ut::expect(reply_last_closes == 0);
   auto reply_escrow = source.capture_for_ipc(*reply_handle, cap::rights::SEND);
   if (!boost::ut::expect(static_cast<bool>(reply_escrow)))
     return;
   boost::ut::expect(!source.lookup(*reply_handle, cap::ObjectType::Reply, cap::rights::SEND));
   boost::ut::expect(!source.close(*reply_handle));
   boost::ut::expect(reply_last_closes == 0);
-  auto received_reply = destination.reserve_escrow(*reply_escrow);
+  auto received_reply = destination.reserve_escrow(reply_escrow->escrow());
   if (!boost::ut::expect(static_cast<bool>(received_reply)))
     return;
   boost::ut::expect(static_cast<bool>(destination.publish_reserved(*received_reply)));
-  reply_escrow->reset();
+  reply_escrow->commit();
+  reply_escrow->escrow().reset();
   boost::ut::expect(reply_last_closes == 0);
   boost::ut::expect(static_cast<bool>(destination.close(*received_reply)));
   boost::ut::expect(reply_last_closes == 1);

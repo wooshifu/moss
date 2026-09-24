@@ -918,6 +918,13 @@ static unsigned long ipc_reply_handoff_case(int drop) {
       _exit(95);
     const struct moss_ipc_message nested = {
         .size = 1, .capability = original_reply, .rights = MOSS_CAP_SEND | MOSS_CAP_TRANSFER, .payload = {'b'}};
+    if (!drop) {
+      struct moss_ipc_endpoints rejected = {0, 0};
+      if (syscall1(SYS_IPC_CREATE, (long)&rejected) != 0 || syscall1(SYS_CAP_CLOSE, (long)rejected.receive) != 0 ||
+          ipc_call(rejected.send, &nested, &response, 0) != -IPC_EPIPE ||
+          syscall1(SYS_CAP_CLOSE, (long)rejected.send) != 0)
+        _exit(97);
+    }
     long deadline = deadline_after(ipc_call_timeout_ns);
     if (deadline <= 0 || ipc_call(back.send, &nested, &response, deadline) != 1 || response.payload[0] != 'c' ||
         syscall1(SYS_CAP_CLOSE, (long)original_reply) != -IPC_EBADF || ipc_reply(original_reply, &self) != -IPC_EBADF)

@@ -88,6 +88,8 @@ struct moss_ipc_message {
 
 // SYS_IPC_CALL uses (endpoint, request*, response*, absolute deadline_ns).
 // A zero deadline disables it; both messages use the fixed structure above.
+// A failed request enqueue or reply commit leaves an attached Reply handle
+// usable by its sender; successful delivery moves that one-shot authority.
 // Closing the last receiver rejects new and queued calls; a delivered call
 // remains owned by its Reply holder until reply, cancellation or expiry.
 

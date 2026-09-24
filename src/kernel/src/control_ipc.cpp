@@ -505,12 +505,14 @@ long sys_ipc_call(long endpoint, long request_addr, long response_addr, long dea
     return -errc::EFAULT;
   if (!valid_message(request))
     return -errc::EINVAL;
+  capability::IpcCapture capture;
   capability::Escrow transferred;
   if (request.capability != INVALID_HANDLE) {
     auto captured = proc->capabilities().capture_for_ipc(request.capability, static_cast<u32>(request.rights));
     if (!captured)
       return cap_error(captured.error());
-    transferred = moss::move(*captured);
+    capture = moss::move(*captured);
+    transferred = capture.take_escrow();
   }
   auto *sender = static_cast<Sender *>((*looked).get());
   auto channel = sender->channel;
@@ -527,6 +529,7 @@ long sys_ipc_call(long endpoint, long request_addr, long response_addr, long dea
     process::g_scheduler->end_ipc_call(&call->donation);
     return enqueued;
   }
+  capture.commit();
 
   DeadlineWake wake{channel.get(), call.get()};
   timer::HrTimer deadline_timer;
@@ -703,12 +706,14 @@ long sys_ipc_reply(long reply_handle, long response_addr, long, long, long, long
   // own Reply through response escrow and neither object could be retired.
   if (response.capability == static_cast<Handle>(reply_handle))
     return -errc::EINVAL;
+  capability::IpcCapture capture;
   capability::Escrow transferred;
   if (response.capability != INVALID_HANDLE) {
     auto captured = proc->capabilities().capture_for_ipc(response.capability, static_cast<u32>(response.rights));
     if (!captured)
       return cap_error(captured.error());
-    transferred = moss::move(*captured);
+    capture = moss::move(*captured);
+    transferred = capture.take_escrow();
   }
   // Consume table authority before completing the call. A concurrent
   // transfer may retain the object, but only one side may spend its handle.
@@ -720,8 +725,10 @@ long sys_ipc_reply(long reply_handle, long response_addr, long, long, long, long
   bool committed = false;
   const Outcome result = reply->channel->complete(reply->call.get(), Outcome::Reply, response.payload,
                                                   static_cast<usize>(response.size), &committed, &transferred);
-  if (result == Outcome::Reply && committed)
+  if (result == Outcome::Reply && committed) {
+    capture.commit();
     return 0;
+  }
   return result == Outcome::Expired ? -errc::ETIMEDOUT : -errc::EPIPE;
 }
 

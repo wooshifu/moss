@@ -77,7 +77,7 @@ uv run qemu.py --manifest build/arm64-debug/moss-artifacts.json
 | ELF / userspace / initramfs | ELF64 checked LoadPlan、逐段 PT_LOAD/VMA 后备、按 ISA 的 trampoline 和 syscall wrapper；静态 mlibc、BusyBox ash、独立 validation 映像、CPIO newc 与 VFS exec | 014；015/016 的事务与受支持静态 ELF 子集已关闭；动态加载、共享 LOAD 页和完整进程继承不是已支持能力 |
 | VFS | inode/dentry/File/FdTable、路径/mount/dcache、ramfs、devfs(console/null/zero)、stdio、open/close/read/write/lseek/fstat/dup/dup2/pipe、匿名 pipefs 与有界 I/O 视图；FD 模式检查、稳定引用及 pipe 阻塞/EOF 已实现 | 022、024～026；共享 offset/close 并发、管道多端交错和分配失败注入仍待专项验收 |
 | 核心与同步 | C++ 模块、freestanding types/std/concepts、Result、unique_ptr/shared_ptr、klog；ticket/IRQ spinlock、RAII guard、atomics、PerCpuData/计数/队列、MPSC、拥有型锁容器、WaitQueue | 尤其 006、017、018；容器节点/查找引用安全不等于使用者的复合生命周期或调度协议安全 |
-| Native IPC 与服务 | 进程局部带权限 capability 表、同步控制调用/一次性 reply、单页共享内存对象；Reply 可经请求或响应跨进程移动，转交时重绑调用者优先级；`moss-init` 监护文件、命名空间、代码审批和受限装载服务，实际用户态时延与交接回归已通过 | ADR-0012/0023 的 CPU 预算、deadline 传播、调用链深度与死锁策略，0024 的兼容服务拆分、0018 的实际 VFS 迁移等仍未完成；旧 PID/全局 ID IPC 模块尚保留测试代码 |
+| Native IPC 与服务 | 进程局部带权限 capability 表、同步控制调用/一次性 reply、单页共享内存对象；Reply 可经请求或响应跨进程移动，提交前失败恢复原句柄，成功交接时重绑调用者优先级；`moss-init` 监护文件、命名空间、代码审批和受限装载服务，实际用户态时延与交接回归已通过 | ADR-0012/0023 的 CPU 预算、deadline 传播、调用链深度与死锁策略，0024 的兼容服务拆分、0018 的实际 VFS 迁移等仍未完成；旧 PID/全局 ID IPC 模块尚保留测试代码 |
 | 启动机制与扩展框架 | 中断控制器、计时器及可用串口控制台保留必要的内核启动机制，实际硬件操作仍经 HAL；旧 `DeviceManager`/`Driver` 仅在验证镜像测试生命周期算法；NUMA/hugepage/reclaim/compaction/共享映射等未实现接口显式返回 Unsupported；Process 已有 uid/gid/euid/egid 字段 | ADR-0015 的设备资源 capability、隔离驱动、动态发现和 DMA 限制尚未实现；006、031～032 及其他未实现能力继续追踪 |
 
 主要实现分别位于 `src/boot/`、`src/aal/`、`src/hal/`、`src/drivers/`、`src/mm/`、`src/containers/`、`src/process/`、`src/kernel/`、`src/vfs/`、`src/userspace/` 和 `third_party/mlibc/`。下面以稳定审计编号追踪未完成工作，详细源码符号见 [审计状态表](moss-todo.md#4-问题总表与当前状态)。
@@ -104,6 +104,7 @@ ADR-0008～0033 是已接受的目标边界，并非当前实现的完成声明�
 - [x] 独立 Loader Service 从 capability 寻址的易失文件读取有界静态 ELF，请求代码批准后经执行域工厂启动普通原生域；有效镜像退出码、畸形镜像拒绝及服务死亡后重启已在生产启动路径验证。内核 VFS 仍供应启动种子和 POSIX `execve`，动态链接、TLS、产品代码策略与完整迁移继续开放（ADR-0025 的限定切片，见 3.90）。
 - [x] 三架构真实用户态 IPC 在同核八个中优先级 CPU 负载下，由高优先级调用低优先级服务，服务完成计算后在调用截止前回复；九预设通过，关闭捐赠的 x64 反向对照超时（ADR-0012/0023 的限定时延验收，见 3.86）。
 - [x] 一次性 Reply capability 可在同步 IPC 的请求或响应中跨进程移动；原句柄失效、持有者丢弃唤醒调用方、接收端退出后已交付调用继续有效，优先级捐赠在唤醒新持有者前重绑。九预设和反向对照见 3.91（ADR-0011/0012/0023 的限定交接机制）。
+- [x] 附带 Reply 的请求入队或回复提交失败时恢复原句柄；成功提交仍保持一次性移动。能力表回滚及已关闭端点上的真实 IPC 失败后重试见 3.92（ADR-0011 的权能提交边界）。
 - [ ] CPU 预算、deadline 传播、最大调用链深度及死锁策略仍需单独设计和验收（ADR-0012/0023）。
 - [ ] 完成 capability 寻址的执行域、用户态兼容进程与通用 Loader Service；现有 Loader 仅支持受限静态原生域，内核 PID/信号/普通 `execve` 的 ELF 政策仍待逐步迁出（ADR-0024/0025）。
 - [ ] 将实际 VFS、pager 和非启动设备迁到隔离服务，补资源授权、失败恢复和 DMA 限制；保留有依据的启动机制例外（ADR-0015～0019）。
