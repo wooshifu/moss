@@ -15,6 +15,7 @@ struct FileObject {
   unsigned long length;
   unsigned long capacity;
   unsigned long name_size;
+  unsigned int sealed;
   char name[FILE_NAME_BYTES];
   unsigned char *data;
 };
@@ -134,7 +135,7 @@ int main(int argc, char **argv) {
       unsigned int count = valid_header ? moss_file_get_u16(request.payload + 9) : 0;
       int valid_count = valid_header && count <= MOSS_MEM_OBJECT_BYTES;
       int reading = file && valid_count && request.payload[0] == MOSS_FILE_READ && request.rights == MOSS_CAP_MAP_WRITE;
-      int writing = file && valid_count && request.payload[0] == MOSS_FILE_WRITE &&
+      int writing = file && !file->sealed && valid_count && request.payload[0] == MOSS_FILE_WRITE &&
                     request.rights == MOSS_CAP_MAP_READ && offset <= MOSS_FILE_CONTENT_BUDGET_BYTES &&
                     count <= MOSS_FILE_CONTENT_BUDGET_BYTES - offset;
       if (reading || writing) {
@@ -216,12 +217,22 @@ int main(int argc, char **argv) {
           response.payload[0] = MOSS_FILE_UNAVAILABLE;
         }
       }
+    } else if (file && !file->name_size && request.size == 1 && request.payload[0] == MOSS_FILE_SEAL &&
+               !request.rights) {
+      // The single receiver orders this transition after earlier writes and
+      // before every later request through any sender copy. Public names stay
+      // mutable because a reader must not be able to deny writers service.
+      file->sealed = 1;
+      response.payload[0] = MOSS_FILE_OK;
     } else if (file && request.size == MOSS_FILE_RESIZE_HEADER_BYTES && request.payload[0] == MOSS_FILE_RESIZE) {
       uint64_t length = moss_file_get_u64(request.payload + 1);
-      response.payload[0] =
-          length <= MOSS_FILE_CONTENT_BUDGET_BYTES && resize_file(file, (unsigned long)length, &allocated)
-              ? MOSS_FILE_OK
-              : MOSS_FILE_UNAVAILABLE;
+      if (file->sealed) {
+        response.payload[0] = MOSS_FILE_BAD_REQUEST;
+      } else if (length > MOSS_FILE_CONTENT_BUDGET_BYTES || !resize_file(file, (unsigned long)length, &allocated)) {
+        response.payload[0] = MOSS_FILE_UNAVAILABLE;
+      } else {
+        response.payload[0] = MOSS_FILE_OK;
+      }
     }
     // A timed-out caller may have discarded its Reply; the file remains
     // usable for later requests regardless of that caller's outcome.

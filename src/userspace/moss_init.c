@@ -357,12 +357,6 @@ static int seed_loader_file(long file, const char *name, const char *source, lon
     }
     offset += (size_t)count;
   }
-  if (mapped > 0 && syscall2(SYS_MUNMAP, mapped, MOSS_MEM_OBJECT_BYTES) != 0)
-    _exit(1); // Init cannot safely retry with an accumulating leaked mapping.
-  if (memory > 0)
-    (void)syscall1(SYS_CAP_CLOSE, memory);
-  if (fd >= 0)
-    (void)close(fd);
   if (source && offset != (size_t)source_status.st_size)
     valid = 0;
   if (valid && offset) {
@@ -374,9 +368,55 @@ static int seed_loader_file(long file, const char *name, const char *source, lon
     sent = call_service(file, &request, &response);
     valid = sent == 1 && response.size == 1 && response.payload[0] == MOSS_FILE_NO_ENTRY && !response.capability &&
             !response.rights;
-    if (response.capability)
+    if (response.capability) {
       (void)syscall1(SYS_CAP_CLOSE, (long)response.capability);
+    }
   }
+  if (valid && offset) {
+    request = (struct moss_ipc_message){.size = 1, .payload = {MOSS_FILE_SEAL}};
+    response = (struct moss_ipc_message){0};
+    sent = call_service(object, &request, &response);
+    valid = sent == 1 && response.size == 1 && response.payload[0] == MOSS_FILE_OK && !response.capability &&
+            !response.rights;
+    if (response.capability) {
+      (void)syscall1(SYS_CAP_CLOSE, (long)response.capability);
+    }
+  }
+  if (valid && offset) {
+    // Deliberately try to corrupt the sealed ELF while we still own a sender
+    // and mapped page. A bad WRITE implementation makes startup fail here.
+    memcpy((void *)mapped, "BAD", 3);
+    request = (struct moss_ipc_message){.size = MOSS_FILE_IO_HEADER_BYTES,
+                                        .capability = (unsigned long)memory,
+                                        .rights = MOSS_CAP_MAP_READ,
+                                        .payload = {MOSS_FILE_WRITE}};
+    moss_file_put_u64(request.payload + 1, 0);
+    moss_file_put_u16(request.payload + 9, 3);
+    response = (struct moss_ipc_message){0};
+    sent = call_service(object, &request, &response);
+    valid = sent == 1 && response.size == 1 && response.payload[0] == MOSS_FILE_BAD_REQUEST && !response.capability &&
+            !response.rights;
+    if (response.capability) {
+      (void)syscall1(SYS_CAP_CLOSE, (long)response.capability);
+    }
+  }
+  if (valid && offset) {
+    request = (struct moss_ipc_message){.size = MOSS_FILE_RESIZE_HEADER_BYTES, .payload = {MOSS_FILE_RESIZE}};
+    moss_file_put_u64(request.payload + 1, 0);
+    response = (struct moss_ipc_message){0};
+    sent = call_service(object, &request, &response);
+    valid = sent == 1 && response.size == 1 && response.payload[0] == MOSS_FILE_BAD_REQUEST && !response.capability &&
+            !response.rights;
+    if (response.capability) {
+      (void)syscall1(SYS_CAP_CLOSE, (long)response.capability);
+    }
+  }
+  if (mapped > 0 && syscall2(SYS_MUNMAP, mapped, MOSS_MEM_OBJECT_BYTES) != 0)
+    _exit(1); // Init cannot safely retry with an accumulating leaked mapping.
+  if (memory > 0)
+    (void)syscall1(SYS_CAP_CLOSE, memory);
+  if (fd >= 0)
+    (void)close(fd);
   if (!valid || !offset) {
     (void)syscall1(SYS_CAP_CLOSE, object);
     return -1;

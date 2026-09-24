@@ -17,6 +17,7 @@
 > Lint 工具可执行性复核：2026-09-24，排除 3363 个 vendored 文件时不再把约 181 KiB 正则放进单个命令行参数；47 个定向宿主测试和真实 ARM64 clang-tidy 启动通过，见 [3.94](moss-todo.md#394-clang-tidy-排除过滤器的参数长度2026-09-24)。
 > Loader 启动参数复核：2026-09-24，九预设 **53/53 CTest**、11 份生产启动报告各完成 **113 步**；私有 `RUN` 请求传递有界 `argv/envp`、畸形请求拒绝与三架构真实启动验收见 [3.95](moss-todo.md#395-loader-原生域启动参数2026-09-24)。
 > Loader 静态 libc 镜像复核：2026-09-24，九预设 **53/53 CTest**、11 份生产启动报告各 **113 步**；文件服务容量与原生域 4096 页上限对齐，用户态 Loader 可装载含文件初始化 TLS 的静态 mlibc 程序，见 [3.96](moss-todo.md#396-loader-静态-libc-镜像与-tls-模板2026-09-24)。
+> Loader 私有镜像封存复核：2026-09-24，九预设 **53/53 CTest**、11 份生产启动报告各 **113 步**；不具名镜像在交给 Loader 前不可再写入或缩容，见 [3.97](moss-todo.md#397-loader-私有镜像封存与拒绝写入2026-09-24)。
 > 本文取代旧清单中“完成即可靠”“x86/RISC-V 64 仅为启动桩”的描述。
 > 审计问题的原始证据、当前状态及完整验收条件见 [moss-todo.md](moss-todo.md)；MOSS-001～032 沿用原编号，不重新编号。
 
@@ -30,7 +31,7 @@
 
 ## 当前架构与构建边界
 
-MOSS 当前是 C++26 freestanding 内核，三架构已有实际启动、中断、调度及用户态执行路径。内核仍承担 POSIX 进程、普通 ELF、VFS 和启动驱动；独立的用户态 supervisor、文件/命名空间服务、Code Authority Service、受限 Loader Service 和 Process Compatibility Service 已经通过 capability 控制 IPC 协作。文件/命名空间服务承载 `/scratch` 示例，Loader 可从不具名文件装载带有界启动参数及静态 libc TLS 模板的原生域，再由 supervisor 将该域的观察句柄登记到 Process Service；普通 shell 文件路径和 POSIX `execve` 尚未迁出内核。
+MOSS 当前是 C++26 freestanding 内核，三架构已有实际启动、中断、调度及用户态执行路径。内核仍承担 POSIX 进程、普通 ELF、VFS 和启动驱动；独立的用户态 supervisor、文件/命名空间服务、Code Authority Service、受限 Loader Service 和 Process Compatibility Service 已经通过 capability 控制 IPC 协作。文件/命名空间服务承载 `/scratch` 示例，Loader 可从已封存的不具名文件装载带有界启动参数及静态 libc TLS 模板的原生域，再由 supervisor 将该域的观察句柄登记到 Process Service；普通 shell 文件路径和 POSIX `execve` 尚未迁出内核。
 
 按 [ADR-0005](docs/adr/0005-generic-kernels-and-independent-runners.md)，同一源码树生成三个 ISA 各自的原生镜像；**同一 ISA 的镜像在满足已支持启动协议和设备契约的机器间复用，不是一个二进制跨三个 ISA 运行**。
 
@@ -109,6 +110,7 @@ ADR-0008～0033 是已接受的目标边界，并非当前实现的完成声明�
 - [x] Loader 新建的原生域可由私有 supervisor 以 `OBSERVE|INSPECT` 削减权限登记到 Process Compatibility Service；带 badge 的会话完成身份、退出状态及释放检查，并在每个服务 incarnation 重新验证。普通 POSIX 进程身份和 `execve` 仍未迁出内核（ADR-0024/0025 的限定交接，见 3.93）。
 - [x] Loader 的私有 `RUN` 协议接收单次 IPC 内的有界 `argv/envp`，在用户态构造与现有 `execve` 一致的启动向量、对齐栈和三个入口参数寄存器；畸形参数在读镜像及请求代码批准前拒绝，生产探针检查实参、环境和 `AT_NULL`。后续静态 TLS 模板路径见 3.96；大参数、动态链接与普通 POSIX `execve` 迁移仍开放（ADR-0025 的启动状态切片，见 3.95）。
 - [x] Loader 从能力寻址的易失文件装载超过旧 64 KiB 限制的静态 mlibc ELF；`PT_TLS` 文件模板须由匹配的 `PT_LOAD` 承载，静态运行时可读取初始化与零初始化线程变量。supervisor 每次启动 Loader 都等待探针退出码 41；三架构九预设 53/53 CTest、11 份生产启动报告各 113 步。文件服务总容量仍限 16 MiB，内核 VFS 启动种子及普通 `execve` 尚未迁移（ADR-0025 的静态 libc 切片，见 3.96）。
+- [x] supervisor 将私有不具名镜像写入 File Service 后，在交给 Loader 前执行不可逆 `SEAL`；同一对象后续通过任何发送端的 `WRITE`、`RESIZE` 均被拒绝，启动时以真实 IPC 尝试破坏镜像并检查拒绝。公开具名文件保持可写；持久文件、pager 与普通 POSIX `execve` 的内容身份仍待迁移（ADR-0025/0026 的有界镜像身份切片，见 3.97）。
 - [x] 三架构真实用户态 IPC 在同核八个中优先级 CPU 负载下，由高优先级调用低优先级服务，服务完成计算后在调用截止前回复；九预设通过，关闭捐赠的 x64 反向对照超时（ADR-0012/0023 的限定时延验收，见 3.86）。
 - [x] 一次性 Reply capability 可在同步 IPC 的请求或响应中跨进程移动；原句柄失效、持有者丢弃唤醒调用方、接收端退出后已交付调用继续有效，优先级捐赠在唤醒新持有者前重绑。九预设和反向对照见 3.91（ADR-0011/0012/0023 的限定交接机制）。
 - [x] 附带 Reply 的请求入队或回复提交失败时恢复原句柄；成功提交仍保持一次性移动。能力表回滚及已关闭端点上的真实 IPC 失败后重试见 3.92（ADR-0011 的权能提交边界）。

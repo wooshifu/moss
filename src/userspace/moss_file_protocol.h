@@ -10,11 +10,14 @@ enum { MOSS_FILE_SCRATCH_BADGE = 1 };
 // sender; the public namespace transfers only SEND to clients. File
 // operations then bypass the namespace service.
 // The first byte is an operation in requests and a status in replies.
-enum { MOSS_FILE_READ = 1, MOSS_FILE_WRITE = 2, MOSS_FILE_OPEN = 3, MOSS_FILE_RESIZE = 4 };
+enum { MOSS_FILE_READ = 1, MOSS_FILE_WRITE = 2, MOSS_FILE_OPEN = 3, MOSS_FILE_RESIZE = 4, MOSS_FILE_SEAL = 5 };
 // UNLISTED creates a file object without inserting a name into the root
 // index. Only the returned object capability can address it; even another
 // holder of the root sender cannot reopen it by guessing the supplied name.
 enum { MOSS_FILE_OPEN_CREATE = 1U << 0, MOSS_FILE_OPEN_UNLISTED = 1U << 1 };
+// SEAL is an idempotent one-byte request on an unlisted object sender. It
+// permanently rejects WRITE and RESIZE, including through duplicated senders.
+// Named files remain mutable for existing public clients.
 enum { MOSS_FILE_OK = 0, MOSS_FILE_BAD_REQUEST = 1, MOSS_FILE_NO_ENTRY = 2, MOSS_FILE_UNAVAILABLE = 3 };
 // Until service resource accounting exists, bound client-triggered allocation.
 // 16 MiB matches the current 4096-page native domain construction ceiling,
