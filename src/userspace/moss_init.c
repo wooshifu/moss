@@ -359,9 +359,10 @@ fail:
 
 static pid_t start_shell(long namespace_capability, long process_capability, long parent_session, long scope,
                          long file_domain, long namespace_domain, long process_domain, long supervisor_domain,
-                         long *domain, unsigned long *shell_id) {
+                         long *domain, unsigned long *shell_id, long *delegated_session) {
   *domain = 0;
   *shell_id = 0;
+  *delegated_session = 0;
   if (namespace_capability <= 0 || process_capability <= 0 || parent_session <= 0 || scope <= 0 || file_domain <= 0 ||
       namespace_domain <= 0 || process_domain <= 0 || supervisor_domain <= 0)
     return -1;
@@ -451,13 +452,19 @@ static pid_t start_shell(long namespace_capability, long process_capability, lon
   } else {
     *shell_id = child_id;
   }
-  (void)syscall1(SYS_CAP_CLOSE, child_session);
+  if (child > 0) {
+    // Retain the session actually delegated to the shell so recovery can
+    // verify that its old endpoint cannot reach the replacement service.
+    *delegated_session = child_session;
+  } else {
+    (void)syscall1(SYS_CAP_CLOSE, child_session);
+  }
   return child;
 }
 
 static enum ServiceLoss supervise(struct Service *file, struct Service *namespace, struct Service *process,
                                   long process_session, long scope, long supervisor_domain, pid_t *shell,
-                                  long *shell_domain, unsigned long *shell_id) {
+                                  long *shell_domain, unsigned long *shell_id, long *shell_session) {
   for (;;) {
     const unsigned long domains[] = {(unsigned long)file->domain, (unsigned long)namespace->domain,
                                      (unsigned long)process->domain, (unsigned long)*shell_domain};
@@ -491,6 +498,9 @@ static enum ServiceLoss supervise(struct Service *file, struct Service *namespac
       *shell = 0;
       (void)syscall1(SYS_CAP_CLOSE, *shell_domain);
       *shell_domain = 0;
+      if (*shell_session > 0)
+        (void)syscall1(SYS_CAP_CLOSE, *shell_session);
+      *shell_session = 0;
       if (!reap_shell(process_session, *shell_id))
         return PROCESS_LOST;
       *shell_id = 0;
@@ -499,7 +509,7 @@ static enum ServiceLoss supervise(struct Service *file, struct Service *namespac
         return SUPERVISOR_FAILURE;
       }
       *shell = start_shell(namespace->send, process->send, process_session, scope, file->domain, namespace->domain,
-                           process->domain, supervisor_domain, shell_domain, shell_id);
+                           process->domain, supervisor_domain, shell_domain, shell_id, shell_session);
       if (*shell < 0) {
         report(STDERR_FILENO, "moss-init: shell launch failed\n");
         *shell = 0;
@@ -542,11 +552,13 @@ int main(void) {
       report_started("namespace service", namespace.pid);
       enum ServiceLoss lost;
       long stale_session = 0;
+      long stale_delegate = 0;
       for (;;) {
         struct Service process = {0};
         long scope = syscall0(SYS_DOMAIN_SCOPE_CREATE);
         long process_session = 0;
         long shell_domain = 0;
+        long shell_session = 0;
         unsigned long shell_id = 0;
         pid_t shell = -1;
         if (scope <= 0) {
@@ -558,24 +570,29 @@ int main(void) {
         } else {
           report_started("process service", process.pid);
           process_session = register_supervisor(process.send);
-          if (process_session > 0 && stale_session > 0) {
-            int stale_closed = stale_process_session_closed(stale_session);
-            (void)syscall1(SYS_CAP_CLOSE, stale_session);
+          if (process_session > 0 && (stale_session > 0 || stale_delegate > 0)) {
+            int stale_closed = stale_session <= 0 || stale_process_session_closed(stale_session);
+            int delegated_closed = stale_delegate <= 0 || stale_process_session_closed(stale_delegate);
+            if (stale_session > 0)
+              (void)syscall1(SYS_CAP_CLOSE, stale_session);
+            if (stale_delegate > 0)
+              (void)syscall1(SYS_CAP_CLOSE, stale_delegate);
             stale_session = 0;
-            if (!stale_closed) {
-              report(STDERR_FILENO, "moss-init: stale process session remained usable\n");
+            stale_delegate = 0;
+            if (!stale_closed || !delegated_closed) {
+              report(STDERR_FILENO, "moss-init: stale process session or delegate remained usable\n");
               _exit(1);
             }
           }
           if (process_session > 0 && process_rejects_unscoped_child(process_session, supervisor_domain))
             shell = start_shell(namespace.send, process.send, process_session, scope, file.domain, namespace.domain,
-                                process.domain, supervisor_domain, &shell_domain, &shell_id);
+                                process.domain, supervisor_domain, &shell_domain, &shell_id, &shell_session);
           if (shell < 0) {
             report(STDERR_FILENO, "moss-init: shell launch failed\n");
             lost = PROCESS_LOST;
           } else {
             lost = supervise(&file, &namespace, &process, process_session, scope, supervisor_domain, &shell,
-                             &shell_domain, &shell_id);
+                             &shell_domain, &shell_id, &shell_session);
           }
         }
         if (scope > 0) {
@@ -586,11 +603,16 @@ int main(void) {
           (void)syscall1(SYS_CAP_CLOSE, scope);
         }
         stop_child(shell, shell_domain);
-        if (process_session > 0) {
-          if (lost == PROCESS_LOST)
+        if (lost == PROCESS_LOST) {
+          if (process_session > 0)
             stale_session = process_session;
-          else
+          if (shell_session > 0)
+            stale_delegate = shell_session;
+        } else {
+          if (process_session > 0)
             (void)syscall1(SYS_CAP_CLOSE, process_session);
+          if (shell_session > 0)
+            (void)syscall1(SYS_CAP_CLOSE, shell_session);
         }
         stop_service(&process);
         if (lost != PROCESS_LOST)
@@ -603,6 +625,8 @@ int main(void) {
       }
       if (stale_session > 0)
         (void)syscall1(SYS_CAP_CLOSE, stale_session);
+      if (stale_delegate > 0)
+        (void)syscall1(SYS_CAP_CLOSE, stale_delegate);
       stop_service(&namespace);
       if (lost == SUPERVISOR_FAILURE) {
         stop_service(&file);
