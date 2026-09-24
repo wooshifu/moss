@@ -332,7 +332,7 @@ quit
                     started = trace.find(b"MOSS_OLD_CHILD_STARTED")
                     lost = trace.find(b"moss-init: process service died")
                     if started < 0 or lost < started:
-                        raise ValueError("managed child was not live before process service loss")
+                        raise ValueError("adopted managed grandchild was not live before process service loss")
                     if b"MOSS_OLD_CHILD_SURVIVED" in trace:
                         raise ValueError("old managed child survived process service loss")
                     result.update(status="passed", observed="process_namespace_and_file_services_recovered")

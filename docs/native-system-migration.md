@@ -22,8 +22,8 @@ networking and persistent storage.
    registry disappeared and the supervisor only retained its direct shell
    handle. Native fork now inherits the supervisor's shell scope, and the
    supervisor closes, terminates and drains that scope before starting a new
-   compatibility namespace. The production boot probe waits for a live old
-   child before killing the process service and rejects survival after restart.
+   compatibility namespace. The production boot probe waits for an adopted,
+   live grandchild before killing the process service and rejects survival after restart.
    The process service now requires that child registration and attachment
    target domains in the same scope. After a restart, the supervisor confirms
    its previous badged session cannot call the replacement endpoint. Exercise

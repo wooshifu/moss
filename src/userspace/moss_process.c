@@ -770,6 +770,24 @@ int main(int argc, char **argv) {
     return 0;
   }
   if (argc == 2 && strcmp(argv[1], "crash-survivor") == 0) {
+    pid_t orphan = fork();
+    if (orphan < 0)
+      return error();
+    if (orphan > 0)
+      return 0;
+    // The marker must prove that the service adopted a live grandchild;
+    // otherwise the crash probe could pass by killing only a shell child.
+    int adopted = 0;
+    for (unsigned int retry = 0; retry < STATUS_RETRIES; ++retry) {
+      if (getppid() == MOSS_PROCESS_INIT_ID) {
+        adopted = 1;
+        break;
+      }
+      unsigned long delay = status_retry_ns;
+      (void)syscall1(SYS_NANOSLEEP, (long)&delay);
+    }
+    if (!adopted)
+      _exit(1);
     static const char started[] = "MOSS_OLD_CHILD_STARTED\n";
     static const char survived[] = "MOSS_OLD_CHILD_SURVIVED\n";
     (void)write(STDOUT_FILENO, started, sizeof(started) - 1);
