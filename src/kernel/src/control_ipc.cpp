@@ -15,6 +15,7 @@ constexpr u32 kAllRights = capability::rights::SEND | capability::rights::RECEIV
                            capability::rights::DOMAIN_TERMINATE | capability::rights::DOMAIN_INSPECT |
                            capability::rights::DOMAIN_OBSERVE | capability::rights::DOMAIN_SPAWN |
                            capability::rights::CODE_APPROVE | capability::rights::CODE_EXEC |
+                           capability::rights::CODE_IDENTIFY | capability::rights::CODE_REVOKE |
                            capability::rights::DOMAIN_SIGNAL | capability::rights::DOMAIN_SCOPE_ASSIGN |
                            capability::rights::DOMAIN_SCOPE_TERMINATE | capability::rights::DOMAIN_SCOPE_INSPECT;
 

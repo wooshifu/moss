@@ -111,6 +111,7 @@ long sys_code_snapshot_range(long source, long page_count, long arg2, long arg3,
 long sys_code_read_range(long version, long first_page, long destination, long page_count, long arg4,
                          long arg5) noexcept;
 long sys_code_page_count(long version, long arg1, long arg2, long arg3, long arg4, long arg5) noexcept;
+long sys_code_revoke(long authority, long approval, long arg2, long arg3, long arg4, long arg5) noexcept;
 long sys_execve(long pathname_addr, long argv_addr, long envp_addr, long arg3, long arg4, long arg5) noexcept;
 long sys_execve_cap(long pathname_addr, long argv_addr, long envp_addr, long startup_cap, long arg4,
                     long arg5) noexcept;

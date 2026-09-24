@@ -313,6 +313,66 @@ public:
   CodeAuthorityObject() noexcept : Object(capability::ObjectType::CodeAuthority) {}
 };
 
+class CodeApprovalObject final : public capability::Object {
+  shared_ptr<capability::Object> version_;
+  shared_ptr<capability::Object> scope_;
+  bool revoked_{false}; // Protected by g_code_approval_lock.
+
+public:
+  CodeApprovalObject(shared_ptr<capability::Object> version, shared_ptr<capability::Object> scope) noexcept
+      : Object(capability::ObjectType::CodeApproval), version_(moss::move(version)), scope_(moss::move(scope)) {}
+  [[nodiscard]] CodeVersionObject *version() const noexcept { return static_cast<CodeVersionObject *>(version_.get()); }
+  [[nodiscard]] bool same_scope(const capability::Object *scope) const noexcept { return scope_.get() == scope; }
+  [[nodiscard]] bool revoked() const noexcept { return revoked_; }
+  void revoke() noexcept { revoked_ = true; }
+};
+
+// Revocation and a new domain's final admission check share one commit order.
+containers::IrqSpinLock g_code_approval_lock;
+
+class CodeAdmissionSet {
+  // Keep at most the bounded image page count of references off the kernel stack;
+  // construct only used slots. ponytail: deduplicate if spawn cost warrants it.
+  shared_ptr<capability::Object> *approvals_{nullptr};
+  usize capacity_;
+  usize count_{0};
+
+public:
+  explicit CodeAdmissionSet(usize capacity) noexcept : capacity_(capacity) {}
+  CodeAdmissionSet(const CodeAdmissionSet &) = delete;
+  CodeAdmissionSet &operator=(const CodeAdmissionSet &) = delete;
+  ~CodeAdmissionSet() {
+    for (usize i = 0; i < count_; ++i)
+      approvals_[i].~SharedPtr();
+    if (approvals_)
+      (void)mm::RuntimeHeapAllocator::deallocate(approvals_, capacity_ * sizeof(approvals_[0]));
+  }
+
+  [[nodiscard]] bool add(shared_ptr<capability::Object> approval) noexcept {
+    if (count_ == capacity_)
+      return false;
+    if (!approvals_) {
+      auto storage = mm::RuntimeHeapAllocator::allocate(capacity_ * sizeof(approvals_[0]));
+      if (!storage)
+        return false;
+      approvals_ = static_cast<shared_ptr<capability::Object> *>(*storage);
+    }
+    new (approvals_ + count_++) shared_ptr<capability::Object>(moss::move(approval));
+    return true;
+  }
+
+  [[nodiscard]] bool commit() const noexcept {
+    // All referenced approvals stay alive until this admission point; the
+    // same lock orders it against revoke without locking page allocation.
+    containers::LockGuard<containers::IrqSpinLock> guard(g_code_approval_lock);
+    for (usize i = 0; i < count_; ++i) {
+      if (static_cast<CodeApprovalObject *>(approvals_[i].get())->revoked())
+        return false;
+    }
+    return true;
+  }
+};
+
 inline constexpr u32 kFullDomainRights = capability::rights::DOMAIN_TERMINATE | capability::rights::DOMAIN_INSPECT |
                                          capability::rights::DOMAIN_OBSERVE | capability::rights::DOMAIN_SIGNAL |
                                          capability::rights::TRANSFER | capability::rights::DUPLICATE;
@@ -323,10 +383,10 @@ inline constexpr u32 kFactoryRights =
     capability::rights::DOMAIN_SPAWN | capability::rights::TRANSFER | capability::rights::DUPLICATE;
 inline constexpr u32 kCodeReadRights =
     capability::rights::MAP_READ | capability::rights::TRANSFER | capability::rights::DUPLICATE;
-inline constexpr u32 kCodeExecuteRights =
-    capability::rights::CODE_EXEC | capability::rights::TRANSFER | capability::rights::DUPLICATE;
-inline constexpr u32 kCodeAuthorityRights =
-    capability::rights::CODE_APPROVE | capability::rights::TRANSFER | capability::rights::DUPLICATE;
+inline constexpr u32 kCodeExecuteRights = capability::rights::CODE_EXEC | capability::rights::CODE_IDENTIFY |
+                                          capability::rights::TRANSFER | capability::rights::DUPLICATE;
+inline constexpr u32 kCodeAuthorityRights = capability::rights::CODE_APPROVE | capability::rights::CODE_REVOKE |
+                                            capability::rights::TRANSFER | capability::rights::DUPLICATE;
 
 struct DomainExitStatus {
   i32 code;
@@ -350,6 +410,12 @@ static long domain_cap_error(ErrorCode error) noexcept {
   if (error == ErrorCode::OutOfMemory)
     return -errc::ENOMEM;
   return -errc::EINVAL;
+}
+
+static long code_cap_error(ErrorCode error) noexcept {
+  // Approval instances now have a separate object type. Keep the prior
+  // EACCES result when an otherwise valid code handle lacks this operation.
+  return error == ErrorCode::InvalidArgument ? -errc::EACCES : domain_cap_error(error);
 }
 
 static long do_fork(u64 domain_cap_out_addr, const capability::ForkSelection *selected, usize selected_count,
@@ -871,7 +937,7 @@ long sys_code_read_range(long version_handle, long first_page_arg, long destinat
   auto version = caller->capabilities().lookup(static_cast<Handle>(version_handle), capability::ObjectType::CodeVersion,
                                                capability::rights::MAP_READ);
   if (!version)
-    return domain_cap_error(version.error());
+    return code_cap_error(version.error());
   auto *snapshot = static_cast<CodeVersionObject *>((*version).get());
   const usize first_page = static_cast<usize>(first_page_arg);
   const usize count = static_cast<usize>(page_count_arg);
@@ -902,7 +968,7 @@ long sys_code_page_count(long version_handle, long, long, long, long, long) noex
   auto version = caller->capabilities().lookup(static_cast<Handle>(version_handle), capability::ObjectType::CodeVersion,
                                                capability::rights::MAP_READ);
   if (!version)
-    return domain_cap_error(version.error());
+    return code_cap_error(version.error());
   return static_cast<long>(static_cast<CodeVersionObject *>((*version).get())->count());
 }
 
@@ -931,8 +997,32 @@ long sys_code_approve(long authority_handle, long version_handle, long, long, lo
                                                capability::rights::MAP_READ);
   if (!version)
     return domain_cap_error(version.error());
-  auto handle = caller->capabilities().install(moss::move(*version), kCodeExecuteRights);
+  auto approval = shared_ptr<capability::Object>::try_make<CodeApprovalObject>(
+      moss::abi::bridge::moss_heap_allocate, moss::move(*version), moss::move(*authority));
+  if (!approval)
+    return -errc::ENOMEM;
+  auto handle = caller->capabilities().install(moss::move(approval), kCodeExecuteRights);
   return handle ? static_cast<long>(*handle) : domain_cap_error(handle.error());
+}
+
+long sys_code_revoke(long authority_handle, long approval_handle, long, long, long, long) noexcept {
+  auto caller = process::current_process();
+  if (!caller)
+    return -errc::ESRCH;
+  auto authority = caller->capabilities().lookup(
+      static_cast<Handle>(authority_handle), capability::ObjectType::CodeAuthority, capability::rights::CODE_REVOKE);
+  if (!authority)
+    return domain_cap_error(authority.error());
+  auto approval = caller->capabilities().lookup(
+      static_cast<Handle>(approval_handle), capability::ObjectType::CodeApproval, capability::rights::CODE_IDENTIFY);
+  if (!approval)
+    return domain_cap_error(approval.error());
+  auto *target = static_cast<CodeApprovalObject *>((*approval).get());
+  if (!target->same_scope((*authority).get()))
+    return -errc::EACCES;
+  containers::LockGuard<containers::IrqSpinLock> guard(g_code_approval_lock);
+  target->revoke();
+  return 0;
 }
 
 long sys_domain_spawn(long factory_handle, long image_addr, long, long, long, long) noexcept {
@@ -983,6 +1073,7 @@ long sys_domain_spawn(long factory_handle, long image_addr, long, long, long, lo
   if (image.capability_count &&
       !read_source(selected, image.capabilities, image.capability_count * sizeof(selected[0])))
     return -errc::EFAULT;
+  CodeAdmissionSet approvals(image.page_count);
 
   auto created = user_space::create_user_address_space();
   if (!created)
@@ -1064,21 +1155,22 @@ long sys_domain_spawn(long factory_handle, long image_addr, long, long, long, lo
       return -errc::EINVAL;
     const u32 flags = vma_flags::READ | ((page.flags & MOSS_DOMAIN_PAGE_WRITE) ? vma_flags::WRITE : 0U) |
                       ((page.flags & MOSS_DOMAIN_PAGE_EXEC) ? vma_flags::EXEC : 0U);
-    shared_ptr<capability::Object> approved;
+    const u8 *approved_code = nullptr;
     if (page.flags & MOSS_DOMAIN_PAGE_EXEC) {
-      auto looked = caller->capabilities().lookup(static_cast<Handle>(page.code), capability::ObjectType::CodeVersion,
+      auto looked = caller->capabilities().lookup(static_cast<Handle>(page.code), capability::ObjectType::CodeApproval,
                                                   capability::rights::CODE_EXEC);
       if (!looked)
-        return domain_cap_error(looked.error());
-      approved = moss::move(*looked);
-      if (page.code_page_index >= static_cast<CodeVersionObject *>(approved.get())->count())
+        return code_cap_error(looked.error());
+      auto *approval = static_cast<CodeApprovalObject *>((*looked).get());
+      if (page.code_page_index >= approval->version()->count())
         return -errc::EINVAL;
+      approved_code = approval->version()->bytes(page.code_page_index);
+      if (!approvals.add(moss::move(*looked)))
+        return -errc::ENOMEM;
       entry_in_image |= image.entry >= page.address && image.entry - page.address < PAGE_SIZE;
     }
-    if (long error = install_page(
-            page.address, flags, (flags & vma_flags::EXEC) ? VmaType::CODE : VmaType::DATA, page.source,
-            static_cast<usize>(page.size), 0,
-            approved ? static_cast<CodeVersionObject *>(approved.get())->bytes(page.code_page_index) : nullptr, true);
+    if (long error = install_page(page.address, flags, (flags & vma_flags::EXEC) ? VmaType::CODE : VmaType::DATA,
+                                  page.source, static_cast<usize>(page.size), 0, approved_code, true);
         error < 0)
       return error;
   }
@@ -1148,13 +1240,13 @@ long sys_domain_spawn(long factory_handle, long image_addr, long, long, long, lo
     return rollback(domain_cap_error(handle.error()));
   // Scope closure can pass its process-table scan during image preparation.
   // Recheck after insertion so a late child cannot escape that recovery unit.
-  if (scope && static_cast<DomainScopeObject *>(scope.get())->closed()) {
+  if ((scope && static_cast<DomainScopeObject *>(scope.get())->closed()) || !approvals.commit()) {
     (void)caller->capabilities().close(*handle);
     return rollback(-errc::EACCES);
   }
 
-  // After authority publication no preparation may fail. The child has no
-  // POSIX parent; its diagnostic PID retires on exit while the handle remains.
+  // Admission is now committed in revoke order. No later preparation fails;
+  // the child has no POSIX parent and its diagnostic PID retires on exit.
   child->set_state(ProcessState::Running);
   const u32 cpu =
       g_load_balancer ? g_load_balancer->select_cpu_for_task(thread, *g_scheduler) : arch::get_current_cpu_id();
@@ -3691,6 +3783,7 @@ const SyscallDescriptor SYSCALL_TABLE[static_cast<int>(SyscallNumber::MAX_SYSCAL
     {"code_snapshot_range", handlers::sys_code_snapshot_range, 2, true, "Snapshot a bounded immutable code range"},
     {"code_read_range", handlers::sys_code_read_range, 4, true, "Read pages from an immutable code version"},
     {"code_page_count", handlers::sys_code_page_count, 1, true, "Get the immutable version's full page count"},
+    {"code_revoke", handlers::sys_code_revoke, 2, true, "Revoke one code approval instance"},
     {"execve_cap", handlers::sys_execve_cap, 4, true, "Exec with an explicit retained startup capability"},
     {"domain_signal", handlers::sys_domain_signal, 2, true, "Signal a capability-addressed domain"},
     {"domain_scope_create", handlers::sys_domain_scope_create, 0, true, "Create a fork-inherited domain scope"},

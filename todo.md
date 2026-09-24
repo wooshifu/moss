@@ -7,6 +7,8 @@
 > IPC 取消与服务死亡复核：2026-09-24，九预设 **53/53 CTest**，两个已认领请求交错见 [3.79](moss-todo.md#379-已认领-ipc-的取消与服务死亡交错2026-09-24)。
 > IPC 已认领超时复核：2026-09-24，九预设 **53/53 CTest**；调用方及迟到 reply 的 `ETIMEDOUT` 顺序见 [3.80](moss-todo.md#380-已认领-ipc-的-deadline-与迟到-reply2026-09-24)。
 > IPC reply 与取消竞争复核：2026-09-24，九预设 **53/53 CTest**、x64 Debug 重复五次；胜者一致性见 [3.81](moss-todo.md#381-同步-reply-与信号取消的胜者一致性2026-09-24)。
+> IPC 优先级倒置时延复核：2026-09-24，九预设 **53/53 CTest**，全部 `users.ipc/priority_latency` 通过；关闭优先级捐赠的 x64 反向对照超时，见 [3.86](moss-todo.md#386-同步-ipc-优先级倒置时延验收2026-09-24)。
+> 代码批准实例撤销复核：2026-09-24，九预设最终 **53/53 CTest**，`users.ipc/code_revocation` 全部通过；关闭撤销状态变更的 x64 反向对照失败。并发矩阵中两次 x64 `vfs` 超时已在串行重跑通过，见 [3.87](moss-todo.md#387-原生域代码批准实例与撤销2026-09-24)。
 > 本文取代旧清单中“完成即可靠”“x86/RISC-V 64 仅为启动桩”的描述。
 > 审计问题的原始证据、当前状态及完整验收条件见 [moss-todo.md](moss-todo.md)；MOSS-001～032 沿用原编号，不重新编号。
 
@@ -71,7 +73,7 @@ uv run qemu.py --manifest build/arm64-debug/moss-artifacts.json
 | ELF / userspace / initramfs | ELF64 checked LoadPlan、逐段 PT_LOAD/VMA 后备、按 ISA 的 trampoline 和 syscall wrapper；静态 mlibc、BusyBox ash、独立 validation 映像、CPIO newc 与 VFS exec | 014；015/016 的事务与受支持静态 ELF 子集已关闭；动态加载、共享 LOAD 页和完整进程继承不是已支持能力 |
 | VFS | inode/dentry/File/FdTable、路径/mount/dcache、ramfs、devfs(console/null/zero)、stdio、open/close/read/write/lseek/fstat/dup/dup2/pipe、匿名 pipefs 与有界 I/O 视图；FD 模式检查、稳定引用及 pipe 阻塞/EOF 已实现 | 022、024～026；共享 offset/close 并发、管道多端交错和分配失败注入仍待专项验收 |
 | 核心与同步 | C++ 模块、freestanding types/std/concepts、Result、unique_ptr/shared_ptr、klog；ticket/IRQ spinlock、RAII guard、atomics、PerCpuData/计数/队列、MPSC、拥有型锁容器、WaitQueue | 尤其 006、017、018；容器节点/查找引用安全不等于使用者的复合生命周期或调度协议安全 |
-| Native IPC 与服务 | 进程局部带权限 capability 表、同步控制调用/一次性 reply、单页共享内存对象；`moss-init` 启动并监护文件/命名空间服务，`/moss-file.elf` 通过它们访问内存中的 `/scratch`；同步 IPC 已按等待依赖传递 RT/CFS 有效优先级 | ADR-0012 的取消/超时/reply 交错及端到端延迟验收、0024 的执行域/兼容服务拆分、0018 的实际 VFS 迁移等仍未完成；旧 PID/全局 ID IPC 模块尚保留测试代码 |
+| Native IPC 与服务 | 进程局部带权限 capability 表、同步控制调用/一次性 reply、单页共享内存对象；`moss-init` 启动并监护文件/命名空间服务，`/moss-file.elf` 通过它们访问内存中的 `/scratch`；同步 IPC 已按等待依赖传递 RT/CFS 有效优先级，绑核竞争的用户态延迟回归已通过 | ADR-0012 的回复句柄交接、CPU 预算、deadline 传播和死锁策略，0024 的执行域/兼容服务拆分、0018 的实际 VFS 迁移等仍未完成；旧 PID/全局 ID IPC 模块尚保留测试代码 |
 | 启动机制与扩展框架 | 中断控制器、计时器及可用串口控制台保留必要的内核启动机制，实际硬件操作仍经 HAL；旧 `DeviceManager`/`Driver` 仅在验证镜像测试生命周期算法；NUMA/hugepage/reclaim/compaction/共享映射等未实现接口显式返回 Unsupported；Process 已有 uid/gid/euid/egid 字段 | ADR-0015 的设备资源 capability、隔离驱动、动态发现和 DMA 限制尚未实现；006、031～032 及其他未实现能力继续追踪 |
 
 主要实现分别位于 `src/boot/`、`src/aal/`、`src/hal/`、`src/drivers/`、`src/mm/`、`src/containers/`、`src/process/`、`src/kernel/`、`src/vfs/`、`src/userspace/` 和 `third_party/mlibc/`。下面以稳定审计编号追踪未完成工作，详细源码符号见 [审计状态表](moss-todo.md#4-问题总表与当前状态)。
@@ -92,10 +94,12 @@ ADR-0008～0033 是已接受的目标边界，并非当前实现的完成声明�
 - [x] 原生域的可执行页面只能取自不可变代码版本；代码版本可读取供策略服务审核，必须另持 `CODE_APPROVE` 才能派生 `CODE_EXEC` 句柄。域工厂、普通内存写权限及未批准版本均不能直接授予执行权。九预设 53/53 CTest 与新域执行通过（ADR-0026 的机制切片，见 3.83）。
 - [x] 一个不可变代码版本可覆盖至多 4096 页，批准一次后按页索引构造可执行页；65 页范围的快照、读取及新域执行已验证，旧单页接口保留（ADR-0025/0026 的装载前提，见 3.84）。
 - [x] 审批服务可用要求 `MAP_READ` 的内核接口取得代码版本完整页数，避免依赖请求者报告的长度；单页、65 页及仅执行句柄权限边界已验证（ADR-0026，见 3.85）。
-- [ ] 补齐回复句柄交接及端到端优先级倒置时延验收；CPU 预算、deadline 传播和死锁策略仍需单独设计（ADR-0012/0023）。
+- [x] 原生新域的代码批准具有独立实例和作用域；撤销旧实例阻止复制、IPC 转交及重批后的旧句柄新建可执行域，已准入域仍能正常退出，批准/撤销/目标识别权限可独立削减（ADR-0028/0030/0032 的限定机制，见 3.87）。
+- [x] 三架构真实用户态 IPC 在同核八个中优先级 CPU 负载下，由高优先级调用低优先级服务，服务完成计算后在调用截止前回复；九预设通过，关闭捐赠的 x64 反向对照超时（ADR-0012/0023 的限定时延验收，见 3.86）。
+- [ ] 补齐回复句柄交接；CPU 预算、deadline 传播和死锁策略仍需单独设计（ADR-0012/0023）。
 - [ ] 建立 capability 寻址的执行域、用户态兼容进程与普通程序 Loader Service，逐步迁出内核 PID/信号/ELF 政策（ADR-0024/0025）。
 - [ ] 将实际 VFS、pager 和非启动设备迁到隔离服务，补资源授权、失败恢复和 DMA 限制；保留有依据的启动机制例外（ADR-0015～0019）。
-- [ ] 建立可执行内容批准与启动信任链，验证服务失败、权限撤销和真实平台交接；现有 W^X 检查不等于这些目标已实现（ADR-0026～0033）。
+- [ ] 将代码批准及撤销准入扩展到普通 exec、fork、权限升级和 pager，建立 Code Authority Service、supervisor 独立保留的撤销作用域及启动信任链，验证服务失败、并发撤销和真实平台交接；现有原生域机制不等于这些目标已实现（ADR-0026～0033）。
 
 ## P0：隔离与基础所有权
 
