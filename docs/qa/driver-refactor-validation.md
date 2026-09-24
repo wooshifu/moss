@@ -1,7 +1,7 @@
 # Driver refactor validation
 
 Validated on 2026-09-18 against the uncommitted driver refactor based on
-`caaab1bce5259ddf2c23437b8f13bb12c233a9c7`. See [driver boundaries and ownership](../drivers.md).
+`915ebdbf6abfd5fdd894e2a2e99e30beebe3aeb0`. See [driver boundaries and ownership](../drivers.md).
 
 ## Build and QEMU matrix
 

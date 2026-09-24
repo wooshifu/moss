@@ -696,11 +696,10 @@ checkpoints. The initial improvement was not a complete fix.
 The existing `users.vm/private_cow` check now verifies every byte of both new
 pages before its COW checks. It passed in **`1789492721199574362`**. A deliberate
 nonzero final-word mutation failed with exactly **`mask=0x10`** in
-**`1789492770782882882`**; that mutation was removed. The strengthened check and
-word-zero implementation use source
-**`2e25535ca13f93c6f64c2cb581b52b8205281a5f78767af59c8ad3114b5a677d`**.
-All six builds and functional reports succeeded (**22 suites/116 cases each**),
-and host tests passed **234/234**. The functional report IDs are ARM64 Debug
+**`1789492770782882882`**; that mutation was removed. With the strengthened
+check and word-zero implementation, all six builds and functional reports
+succeeded (**22 suites/116 cases each**), and host tests passed **234/234**.
+The functional report IDs are ARM64 Debug
 `1789492823464130538`, ARM64 Release `1789492843278652988`, x64 Debug
 `1789492843608621904`, x64 Release `1789492844290395534`, RV64 Debug
 `1789492824372525209`, and RV64 Release `1789492845610620647`. Debug ARM64's four
@@ -710,7 +709,6 @@ jobs remain in progress on these frozen inputs.
 A second, separate change removes the demand handler's duplicate TLB invalidation:
 every successful `map_user_page` branch already publishes and invalidates the
 entry. No required invalidation or barrier was removed from that mapping helper.
-This source is **`e076c1e2b62bb307fc546f083e3f7471e2470976ec3bba7b36eab955873baa2e`**.
 The ARM64 and RV64 Debug focused reports `1789493215238322680` and
 `1789493215938969769` passed **five suites/38 cases** each: users.vm, users.uaccess,
 users.exec, mm.permissions and mm.transactions. Nevertheless, unpinned ARM64
@@ -727,14 +725,14 @@ acceptance. No deadline, checkpoint interval, resource assertion or required
 lifecycle count was relaxed. Six full-profile long runs and calibrated Release
 performance gates remain outstanding.
 
-At **2026-09-15 17:33 UTC**, source `2e25535c...` x64 Release application report
+At **2026-09-15 17:33 UTC**, the x64 Release application report
 `1789493020900324532` finalized successfully with 1000 cycles and 101 matching
 resource checkpoints. ARM64 Release `1789493020899932542`, x64 Debug
 `1789493046160047054` and RV64 Release `1789493020901125663` were still live at
 cycles 700, 710 and 800 respectively. Their CTest jobs must reach terminal state;
-none establishes the newer `e076c1e2...` source's complete acceptance.
+none establishes complete acceptance of the newer demand-handler TLB change.
 
-At **2026-09-15 17:41 UTC**, all four of those source `2e25535c...` CTest
+At **2026-09-15 17:41 UTC**, all four of those CTest
 processes had exited successfully. Each application report finalized with 1000
 core/application cycles and 101 resource checkpoints. The ARM64/RV64 Debug
 application failures are still failures; this does not close the six-config
@@ -743,7 +741,7 @@ application matrix or calibrated performance acceptance.
 ### Recycled Kernel Stack Initialization (2026-09-16)
 
 Further diagnostics are retained under `build/page-progress-BbgHo3/`. Host
-`perf` on the frozen failing `e076c1e2...` ARM64 Debug image attributed **69.94%**
+`perf` on the frozen failing ARM64 Debug image attributed **69.94%**
 of inclusive samples to QEMU 7.2.22's `notdirty_write`, not ordinary guest
 page-zero computation. Its software MMU checks writes to physical pages still
 containing translated code. An eight-second, 32 MiB-capped QEMU trace contained
@@ -773,9 +771,8 @@ The real-kernel `scheduler/kernel_stack_initialization` regression exhausts the
 PFA, verifies OOM rollback, then offers only a fully poisoned four-page block.
 It checks complete zeroing, alignment/top and rejected repeated allocation.
 Without zeroing, report **`1789495252276812605`** failed only its `zeroed`
-assertion (527 passed/1 failed). The corrected source is
-**`5666b8f0694d6f8bc14fddbdf81cf02569a480bda23bb0f36a0be254341df452`**;
-ARM64 focused report **`1789495298703999823`** passed scheduler, users.frame,
+assertion (527 passed/1 failed). After the correction, ARM64 focused report
+**`1789495298703999823`** passed scheduler, users.frame,
 users.vm and users.exec (**4 suites/21 cases**). All six builds succeeded and
 host tests passed **234/234**. The final source's complete six-configuration
 runtime matrix, long runs and calibrated performance gates are not established
@@ -797,7 +794,7 @@ passed **1000 core/application cycles with 101 matching resource checkpoints**:
 | RV64 Debug | `1789495742957063851` | 803.32 |
 | RV64 Release | `1789495713898431604` | 536.49 |
 
-All six application reports retain the same `5666b8f0...` source identity.
+All six application reports correspond to that corrected source.
 Their CTest processes also exited successfully. Follow-on CTests select their
 own inputs: ARM64 rebuilding overlapped that outer CTest process, so its later
 framework/console results must not be attributed to this earlier source without
@@ -852,8 +849,7 @@ root execute rules, immutable files, ancestor search permissions, relative
 lookup and resource recovery across **64 lifecycles**. A temporary permission
 bypass caused **384 failures / 896 passes** in `access-permissions-red`; it was
 removed. Corrected `access-permissions-green` passed **3 suites / 21 cases**
-(VFS, libc and BusyBox), with no terminal/flush/Access diagnostics. Source:
-**`defc3559057155d9cb905a948115b6e4bcb72b72b7a1a96ed2e2f3b5b8a2c3bb`**.
+(VFS, libc and BusyBox), with no terminal/flush/Access diagnostics.
 All six builds and their non-application CTests succeeded. Each functional
 report passed **22 suites / 118 cases**:
 
@@ -866,8 +862,8 @@ report passed **22 suites / 118 cases**:
 | RV64 Debug | `1789496859841523950` |
 | RV64 Release | `1789496860896324786` |
 
-All six retain the `defc3559...` source identity. Framework, production boot,
-ARM64 Debug console input and Release benchmark smoke also passed; smoke runs
+Framework, production boot, ARM64 Debug console input and Release benchmark
+smoke also passed; smoke runs
 do not establish calibrated performance acceptance. Host tests passed
 **234/234**. Uname diagnostics remain, as do the broader permissions,
 dirfd/symlink, shared-FD and fallible-metadata gaps already recorded above.
@@ -997,8 +993,7 @@ that capacity and reject the next entry. No test was dropped and no acceptance
 deadline or performance threshold changed. Those original functional/framework
 failures and the other configurations' results remain retained.
 
-The next source, `109a315e5493a3d3636b22b50acd8f287c318a279e1c4024362f85b5ceebec2d`,
-passed all six functional reports with **22 suites / 119 cases**:
+The subsequent source passed all six functional reports with **22 suites / 119 cases**:
 ARM64 Debug `1789501443794047513`, ARM64 Release `1789501444697286392`,
 x64 Debug `1789501443605344300`, x64 Release `1789501444547656776`,
 RV64 Debug `1789501443956241875` and RV64 Release `1789501444726636835`.
@@ -1036,7 +1031,7 @@ count, waiting window or host deadline. That diagnostic-only revision passed
 the targeted `timer-diagnostics` run; it has not completed a new matrix. Both
 the timer failure and x64 pipe-interruption failure remain under investigation.
 
-Separately, the earlier **`109a315e...`** source completed 1000 core/application
+Separately, that earlier source completed 1000 core/application
 cycles in ARM64 Debug/Release, x64 Release and RV64 Debug/Release. Each finalized
 `<configuration>-application/results.json` under the evidence root passed with
 101 matching resource checkpoints. x64 Debug did not start that application
@@ -2419,7 +2414,7 @@ Architecture return-state rules are checked against the [RISC-V 64 privileged IS
 
 #### Expanded Performance Acceptance on 2026-09-15
 
-Work resumed on `c81ce06` with the existing dirty worktree preserved, including
+Work resumed on `c90cbaaf` with the existing dirty worktree preserved, including
 the committed `x64` / `riscv64` preset rename. The expanded thirteen-scenario
 catalog uses real page faults/COW, saved-context transfers, timer callbacks,
 process lifecycle, user signal delivery and pipe transfers. The
@@ -2561,7 +2556,7 @@ in earlier checkpoints; it does not change the kernel acceptance boundary.
 
 Fresh build directories were created under
 `/dev/shm/moss-native-cmake.3Y6k9s/<preset>` rather than reusing the old `_deps`
-trees. The tested working tree was based on `07a943d` plus this migration;
+trees. The tested working tree was based on `7b401cda` plus this migration;
 individual reports retain their actual source/artifact fingerprints and frozen
 inputs, not a fabricated clean-commit identity. Durable copies of the reports,
 serial logs, frozen inputs and command logs are under the ignored local directory
@@ -2718,7 +2713,7 @@ also timed out in `1789566570611905000` and `1789566682810399000`. Its diagnosti
 run `1789566720978969000` explicitly used 15 seconds and passed; it does not
 replace the subsequent default-budget result in the table.
 
-A comparison using the pre-change BusyBox profile from `41903c3`, the same
+A comparison using the pre-change BusyBox profile from `60cde52d`, the same
 RISC-V Release kernel, and a fixture differing only in `busybox.elf` passed all
 nine cases at 5 seconds as well. The preserved comparison is under
 `build/riscv64-release/validation/busybox-shell-baseline-20260916/`. These reruns
@@ -2751,8 +2746,8 @@ The lifecycle warmup observes final pipe EOF before `waitpid`; the subsequent
 resource checkpoints.
 
 All six affected Debug/Release builds completed. At execution time, these
-finalized reports recorded revision
-`caaab1bce5259ddf2c23437b8f13bb12c233a9c7`, a dirty source tree, and source
+finalized reports recorded a pre-rewrite revision (current corresponding commit:
+`915ebdbf6abfd5fdd894e2a2e99e30beebe3aeb0`), a dirty source tree, and source
 hash `af2d1442f941a79e901a0e3cbf5f5542cf93ba4f1df126d4e89c9c6aa2470531`.
 Delivery-document edits followed the runs, so that hash is not presented as the
 post-documentation worktree identity:
@@ -2807,7 +2802,8 @@ After the repair and the subsequent LoadPlan acceptance, all six
 Debug/Release builds succeeded. One finalized report per preset contains all six
 selected suites and 73 cases: four `users.vm`, seven `mm.permissions`, nine
 `mm.transactions`, 28 `users.exec`, and the libc/BusyBox consumers. All passed. The reports
-recorded revision `caaab1bce5259ddf2c23437b8f13bb12c233a9c7`, dirty=true, and
+recorded a pre-rewrite revision (current corresponding commit:
+`915ebdbf6abfd5fdd894e2a2e99e30beebe3aeb0`), dirty=true, and
 execution-time source hash
 `c936891a8035d9aaaaead297cd85f5ab002b3dc07cd865edfad75804503cfe8b`.
 Documentation edits followed those executions, so this is not the final

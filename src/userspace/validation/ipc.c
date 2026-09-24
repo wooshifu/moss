@@ -180,6 +180,52 @@ done:
   return errors;
 }
 
+static unsigned long ipc_claimed_deadline(struct moss_ipc_endpoints pair) {
+  if (syscall2(SYS_CAP_SET_INHERIT, (long)pair.send, 1) != 0) {
+    return 1;
+  }
+  long done[2];
+  if (pipe(done) != 0) {
+    return 2;
+  }
+  long child = fork();
+  if (child == 0) {
+    close((int)done[0]);
+    const struct moss_ipc_message request = {.size = 1, .payload = {'t'}};
+    struct moss_ipc_message response = {0};
+    // Two seconds lets the forked caller enqueue while leaving room under
+    // the five-second case watchdog to observe expiry and clean up.
+    long deadline = deadline_after(2000000000UL);
+    const unsigned char expired = deadline > 0 && ipc_call(pair.send, &request, &response, deadline) == -IPC_ETIMEDOUT;
+    const int reported = write((int)done[1], &expired, 1) == 1;
+    _exit(expired && reported ? 37 : 91);
+  }
+  close((int)done[1]);
+  if (child < 0) {
+    close((int)done[0]);
+    return 4;
+  }
+  struct moss_ipc_message request = {0};
+  unsigned long reply = 0;
+  if (ipc_receive(pair.receive, &request, &reply) != 1 || request.payload[0] != 't') {
+    (void)kill(child, SIGKILL);
+    close((int)done[0]);
+    (void)wait_exit(child, 37);
+    if (reply) {
+      (void)syscall1(SYS_CAP_CLOSE, (long)reply);
+    }
+    return 8;
+  }
+  unsigned char expired = 0;
+  // Wait until the caller has observed expiry before attempting its reply.
+  unsigned long errors = read((int)done[0], &expired, 1) != 1 || expired != 1;
+  close((int)done[0]);
+  const struct moss_ipc_message answer = {.size = 1, .payload = {'r'}};
+  errors |= (unsigned long)(ipc_reply(reply, &answer) != -IPC_ETIMEDOUT) << 1;
+  errors |= (unsigned long)!wait_exit(child, 37) << 2;
+  return errors;
+}
+
 unsigned long ipc_deadline(void) {
   struct moss_ipc_endpoints pair = {0, 0};
   if (syscall1(SYS_IPC_CREATE, (long)&pair) != 0)
@@ -196,6 +242,9 @@ unsigned long ipc_deadline(void) {
       errors |= 2;
       break;
     }
+  }
+  if (!errors) {
+    errors |= ipc_claimed_deadline(pair) << 5;
   }
   errors |= (unsigned long)(syscall1(SYS_CAP_CLOSE, (long)pair.receive) != 0) << 2;
   errors |= (unsigned long)(ipc_call(pair.send, &request, &response, 0) != -IPC_EPIPE) << 3;
@@ -216,23 +265,58 @@ unsigned long ipc_peer_death(void) {
     // Exit without replying: the one-shot reply capability must wake the caller.
     _exit(37);
   }
-  if (child < 0)
+  if (child < 0) {
+    (void)syscall1(SYS_CAP_CLOSE, (long)pair.receive);
+    (void)syscall1(SYS_CAP_CLOSE, (long)pair.send);
     return 2;
-  unsigned long errors = syscall1(SYS_CAP_CLOSE, (long)pair.receive) != 0;
+  }
+  // Keep this receiver alive: EPIPE must come from the dead reply owner,
+  // not from closing the channel's last receive capability.
+  unsigned long errors = 0;
   const struct moss_ipc_message request = {.size = 1, .payload = {19}};
   struct moss_ipc_message response = {0};
   long deadline = deadline_after(ipc_call_timeout_ns);
-  errors |= (unsigned long)(deadline <= 0 || ipc_call(pair.send, &request, &response, deadline) != -IPC_EPIPE) << 1;
+  long result = deadline > 0 ? ipc_call(pair.send, &request, &response, deadline) : -1;
+  if (result != -IPC_EPIPE) {
+    (void)kill(child, SIGKILL);
+  }
+  errors |= (unsigned long)(result != -IPC_EPIPE) << 1;
   errors |= (unsigned long)!wait_exit(child, 37) << 2;
+
+  if (!errors) {
+    long replacement = fork();
+    if (replacement == 0) {
+      struct moss_ipc_message next = {0};
+      unsigned long reply = 0;
+      if (ipc_receive(pair.receive, &next, &reply) != 1 || next.payload[0] != 20) {
+        _exit(93);
+      }
+      const struct moss_ipc_message answer = {.size = 1, .payload = {'r'}};
+      _exit(ipc_reply(reply, &answer) == 0 ? 37 : 94);
+    }
+    if (replacement < 0) {
+      errors |= 1UL << 4;
+    } else {
+      const struct moss_ipc_message next = {.size = 1, .payload = {20}};
+      deadline = deadline_after(ipc_call_timeout_ns);
+      result = deadline > 0 ? ipc_call(pair.send, &next, &response, deadline) : -1;
+      if (result != 1) {
+        (void)kill(replacement, SIGKILL);
+      }
+      errors |= (unsigned long)(result != 1 || response.payload[0] != 'r') << 5;
+      errors |= (unsigned long)!wait_exit(replacement, 37) << 6;
+    }
+  }
+  errors |= (unsigned long)(syscall1(SYS_CAP_CLOSE, (long)pair.receive) != 0);
   errors |= (unsigned long)(syscall1(SYS_CAP_CLOSE, (long)pair.send) != 0) << 3;
 
   pair = (struct moss_ipc_endpoints){0};
   if (syscall1(SYS_IPC_CREATE, (long)&pair) != 0)
-    return errors | (1UL << 4);
+    return errors | (1UL << 7);
   if (syscall2(SYS_CAP_SET_INHERIT, (long)pair.send, 1) != 0) {
     (void)syscall1(SYS_CAP_CLOSE, (long)pair.receive);
     (void)syscall1(SYS_CAP_CLOSE, (long)pair.send);
-    return errors | (1UL << 4);
+    return errors | (1UL << 7);
   }
   child = fork();
   if (child == 0) {
@@ -242,22 +326,22 @@ unsigned long ipc_peer_death(void) {
     _exit(deadline > 0 && ipc_call(pair.send, &request, &response, deadline) == -IPC_EPIPE ? 38 : 92);
   }
   if (child < 0) {
-    errors |= 1UL << 5;
+    errors |= 1UL << 8;
   } else {
     struct moss_ipc_message received = {0};
     unsigned long reply = 0;
     long size = ipc_receive(pair.receive, &received, &reply);
-    errors |= (unsigned long)(size != 1 || received.payload[0] != 20 || !reply) << 6;
+    errors |= (unsigned long)(size != 1 || received.payload[0] != 20 || !reply) << 9;
     // Keep the reply handle alive: receiver closure alone must wake the call.
-    errors |= (unsigned long)(syscall1(SYS_CAP_CLOSE, (long)pair.receive) != 0) << 7;
+    errors |= (unsigned long)(syscall1(SYS_CAP_CLOSE, (long)pair.receive) != 0) << 10;
     pair.receive = 0;
-    errors |= (unsigned long)!wait_exit(child, 38) << 8;
+    errors |= (unsigned long)!wait_exit(child, 38) << 11;
     if (reply)
-      errors |= (unsigned long)(syscall1(SYS_CAP_CLOSE, (long)reply) != 0) << 9;
+      errors |= (unsigned long)(syscall1(SYS_CAP_CLOSE, (long)reply) != 0) << 12;
   }
   if (pair.receive)
-    errors |= (unsigned long)(syscall1(SYS_CAP_CLOSE, (long)pair.receive) != 0) << 10;
-  errors |= (unsigned long)(syscall1(SYS_CAP_CLOSE, (long)pair.send) != 0) << 11;
+    errors |= (unsigned long)(syscall1(SYS_CAP_CLOSE, (long)pair.receive) != 0) << 13;
+  errors |= (unsigned long)(syscall1(SYS_CAP_CLOSE, (long)pair.send) != 0) << 14;
   return errors;
 }
 
@@ -316,6 +400,54 @@ unsigned long ipc_nested_roundtrip(void) {
   return errors;
 }
 
+static unsigned long ipc_claimed_signal_cancel(struct moss_ipc_endpoints pair) {
+  if (syscall2(SYS_CAP_SET_INHERIT, (long)pair.receive, 1) != 0) {
+    return 1;
+  }
+  long release[2];
+  if (pipe(release) != 0) {
+    return 2;
+  }
+  const long parent = getpid();
+  long child = fork();
+  if (child == 0) {
+    close((int)release[1]);
+    struct moss_ipc_message request = {0};
+    unsigned long reply = 0;
+    if (ipc_receive(pair.receive, &request, &reply) != 1 || request.payload[0] != 'c') {
+      _exit(91);
+    }
+    if (kill(parent, SIGUSR1) != 0) {
+      _exit(92);
+    }
+    unsigned char ignored = 0;
+    if (read((int)release[0], &ignored, 1) != 0) {
+      _exit(93);
+    }
+    const struct moss_ipc_message answer = {.size = 1, .payload = {'r'}};
+    _exit(ipc_reply(reply, &answer) == -IPC_EPIPE ? 37 : 94);
+  }
+  close((int)release[0]);
+  if (child < 0) {
+    close((int)release[1]);
+    return 4;
+  }
+  ipc_signal_seen = 0;
+  const struct moss_ipc_message request = {.size = 1, .payload = {'c'}};
+  struct moss_ipc_message response = {0};
+  long deadline = deadline_after(ipc_call_timeout_ns);
+  long result = deadline > 0 ? ipc_call(pair.send, &request, &response, deadline) : -1;
+  const int canceled = result == -IPC_EINTR && ipc_signal_seen == SIGUSR1;
+  unsigned long errors = (unsigned long)!canceled;
+  // EOF releases the service only after the caller has observed cancellation.
+  if (!canceled) {
+    (void)kill(child, SIGKILL);
+  }
+  close((int)release[1]);
+  errors |= (unsigned long)!wait_exit(child, 37) << 2;
+  return errors;
+}
+
 unsigned long ipc_signal_cancel(void) {
   struct moss_ipc_endpoints pair = {0, 0};
   struct sigaction_t action = {(unsigned long)ipc_signal_handler, 0, 0};
@@ -341,6 +473,9 @@ unsigned long ipc_signal_cancel(void) {
                               ipc_signal_seen != SIGUSR1)
               << 1;
     errors |= (unsigned long)!wait_exit(child, 37) << 2;
+  }
+  if (!errors) {
+    errors |= ipc_claimed_signal_cancel(pair) << 6;
   }
   errors |= (unsigned long)(moss_sigaction(SIGUSR1, &old_action, 0) != 0) << 3;
   errors |= (unsigned long)(syscall1(SYS_CAP_CLOSE, (long)pair.receive) != 0) << 4;
