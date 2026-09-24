@@ -160,6 +160,21 @@ static long register_supervisor(long root) {
   return 0;
 }
 
+static int process_rejects_unscoped_child(long session, long domain) {
+  // A leaked parent badge must not register a domain outside this epoch's
+  // cleanup scope. The supervisor itself is deliberately unscoped.
+  struct moss_ipc_message request = {.size = 1,
+                                     .capability = (unsigned long)domain,
+                                     .rights =
+                                         MOSS_CAP_DOMAIN_OBSERVE | MOSS_CAP_DOMAIN_INSPECT | MOSS_CAP_DOMAIN_SIGNAL,
+                                     .payload = {MOSS_PROCESS_REGISTER_CHILD}};
+  struct moss_ipc_message response = {0};
+  long result = process_call(session, &request, &response);
+  if (response.capability)
+    (void)syscall1(SYS_CAP_CLOSE, (long)response.capability);
+  return result == 1 && response.payload[0] == MOSS_PROCESS_BAD_REQUEST && !response.capability && !response.rights;
+}
+
 static int process_child_request(long parent_session, unsigned char operation, unsigned long child_id,
                                  unsigned long domain) {
   struct moss_ipc_message request = {
@@ -183,7 +198,7 @@ static int reap_shell(long parent_session, unsigned long child_id) {
          moss_process_get_u64(response.payload + 1) == child_id && !response.capability && !response.rights;
 }
 
-static int start_endpoint_service(struct Service *service, const char *program) {
+static int start_endpoint_service(struct Service *service, const char *program, long scope) {
   struct moss_ipc_endpoints endpoints = {0};
   if (syscall1(SYS_IPC_CREATE, (long)&endpoints) != 0) {
     return -1;
@@ -200,21 +215,23 @@ static int start_endpoint_service(struct Service *service, const char *program) 
   if (mint <= 0) {
     goto fail;
   }
-  char receive_arg[32], mint_arg[32]; // Each holds a decimal 64-bit handle.
+  char receive_arg[32], mint_arg[32], scope_arg[32]; // Each holds a decimal 64-bit handle.
   int receive_size = snprintf(receive_arg, sizeof(receive_arg), "%lu", (unsigned long)receive);
   int mint_size = snprintf(mint_arg, sizeof(mint_arg), "%lu", (unsigned long)mint);
+  int scope_size = scope > 0 ? snprintf(scope_arg, sizeof(scope_arg), "%lu", (unsigned long)scope) : 0;
   if (receive_size < 0 || (size_t)receive_size >= sizeof(receive_arg) || mint_size < 0 ||
-      (size_t)mint_size >= sizeof(mint_arg)) {
+      (size_t)mint_size >= sizeof(mint_arg) || scope_size < 0 || (size_t)scope_size >= sizeof(scope_arg)) {
     goto fail;
   }
 
   long domain = 0;
   const struct moss_fork_capability handles[] = {
       {(unsigned long)receive, MOSS_CAP_RECEIVE, 0},
-      {(unsigned long)mint, MOSS_CAP_SEND | MOSS_CAP_TRANSFER | MOSS_CAP_DUPLICATE | MOSS_CAP_MINT, 0}};
-  pid_t child = fork_domain(&domain, handles, sizeof(handles) / sizeof(handles[0]), 0);
+      {(unsigned long)mint, MOSS_CAP_SEND | MOSS_CAP_TRANSFER | MOSS_CAP_DUPLICATE | MOSS_CAP_MINT, 0},
+      {(unsigned long)scope, MOSS_CAP_DOMAIN_SCOPE_INSPECT, 0}};
+  pid_t child = fork_domain(&domain, handles, scope > 0 ? 3 : 2, 0);
   if (child == 0) {
-    char *const argv[] = {(char *)program, receive_arg, mint_arg, NULL};
+    char *const argv[] = {(char *)program, receive_arg, mint_arg, scope > 0 ? scope_arg : NULL, NULL};
     execve(program, argv, NULL);
     _exit(127);
   }
@@ -487,7 +504,7 @@ int main(void) {
   report(STDOUT_FILENO, "moss-init: supervisor ready\n");
   for (;;) {
     struct Service file = {0};
-    if (start_endpoint_service(&file, "/file-service.elf") != 0) {
+    if (start_endpoint_service(&file, "/file-service.elf", 0) != 0) {
       report(STDERR_FILENO, "moss-init: file service launch failed\n");
       if (restart_delay() != 0) {
         return 1;
@@ -505,19 +522,23 @@ int main(void) {
       enum ServiceLoss lost;
       for (;;) {
         struct Service process = {0};
-        if (start_endpoint_service(&process, "/process-service.elf") != 0) {
+        long scope = syscall0(SYS_DOMAIN_SCOPE_CREATE);
+        long process_session = 0;
+        long shell_domain = 0;
+        unsigned long shell_id = 0;
+        pid_t shell = -1;
+        if (scope <= 0) {
+          report(STDERR_FILENO, "moss-init: process scope creation failed\n");
+          lost = PROCESS_LOST;
+        } else if (start_endpoint_service(&process, "/process-service.elf", scope) != 0) {
           report(STDERR_FILENO, "moss-init: process service launch failed\n");
           lost = PROCESS_LOST;
         } else {
           report_started("process service", process.pid);
-          long scope = syscall0(SYS_DOMAIN_SCOPE_CREATE);
-          long process_session = scope > 0 ? register_supervisor(process.send) : 0;
-          long shell_domain = 0;
-          unsigned long shell_id = 0;
-          pid_t shell = process_session > 0
-                            ? start_shell(namespace.send, process.send, process_session, scope, file.domain,
-                                          namespace.domain, process.domain, supervisor_domain, &shell_domain, &shell_id)
-                            : -1;
+          process_session = register_supervisor(process.send);
+          if (process_session > 0 && process_rejects_unscoped_child(process_session, supervisor_domain))
+            shell = start_shell(namespace.send, process.send, process_session, scope, file.domain, namespace.domain,
+                                process.domain, supervisor_domain, &shell_domain, &shell_id);
           if (shell < 0) {
             report(STDERR_FILENO, "moss-init: shell launch failed\n");
             lost = PROCESS_LOST;
@@ -525,18 +546,18 @@ int main(void) {
             lost = supervise(&file, &namespace, &process, process_session, scope, supervisor_domain, &shell,
                              &shell_domain, &shell_id);
           }
-          if (scope > 0) {
-            if (retire_scope(scope) != 0) {
-              report(STDERR_FILENO, "moss-init: process scope did not drain\n");
-              _exit(1);
-            }
-            (void)syscall1(SYS_CAP_CLOSE, scope);
-          }
-          stop_child(shell, shell_domain);
-          if (process_session > 0)
-            (void)syscall1(SYS_CAP_CLOSE, process_session);
-          stop_service(&process);
         }
+        if (scope > 0) {
+          if (retire_scope(scope) != 0) {
+            report(STDERR_FILENO, "moss-init: process scope did not drain\n");
+            _exit(1);
+          }
+          (void)syscall1(SYS_CAP_CLOSE, scope);
+        }
+        stop_child(shell, shell_domain);
+        if (process_session > 0)
+          (void)syscall1(SYS_CAP_CLOSE, process_session);
+        stop_service(&process);
         if (lost != PROCESS_LOST)
           break;
         if (restart_delay() != 0) {

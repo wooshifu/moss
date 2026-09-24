@@ -796,6 +796,12 @@ unsigned long ipc_domain_selection(void) {
   long scope = syscall0(SYS_DOMAIN_SCOPE_CREATE);
   errors |= (unsigned long)(scope <= 0) << 34;
   if (scope > 0) {
+    long self = syscall0(SYS_DOMAIN_SELF);
+    errors |= (unsigned long)(self <= 0) << 49;
+    if (self > 0) {
+      errors |= (unsigned long)(syscall2(SYS_DOMAIN_SCOPE_CONTAINS, scope, self) != 0) << 50;
+      (void)syscall1(SYS_CAP_CLOSE, self);
+    }
     long inspect = syscall2(SYS_CAP_DUPLICATE, scope, MOSS_CAP_DOMAIN_SCOPE_INSPECT);
     errors |= (unsigned long)(inspect <= 0) << 35;
     if (inspect > 0) {
@@ -849,6 +855,15 @@ unsigned long ipc_domain_selection(void) {
       _exit(97);
     }
     errors |= (unsigned long)(live <= 1 || !live_domain) << 42;
+    if (live_domain) {
+      errors |= (unsigned long)(syscall2(SYS_DOMAIN_SCOPE_CONTAINS, scope, (long)live_domain) != 1) << 51;
+      long observe = syscall2(SYS_CAP_DUPLICATE, (long)live_domain, MOSS_CAP_DOMAIN_OBSERVE);
+      errors |= (unsigned long)(observe <= 0) << 52;
+      if (observe > 0) {
+        errors |= (unsigned long)(syscall2(SYS_DOMAIN_SCOPE_CONTAINS, scope, observe) != -IPC_EACCES) << 53;
+        (void)syscall1(SYS_CAP_CLOSE, observe);
+      }
+    }
     long members = syscall1(SYS_DOMAIN_SCOPE_STATUS, scope);
     for (unsigned int i = 0; members >= 0 && members < 2 && i < SCOPE_STATUS_CYCLES; ++i) {
       unsigned long delay = SCOPE_CHILD_DELAY_NS;

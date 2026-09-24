@@ -175,11 +175,12 @@ static void refresh_orphans(void) {
 }
 
 int main(int argc, char **argv) {
-  if (argc != 3)
+  if (argc != 4)
     return 2;
   unsigned long receive = parse_handle(argv[1]);
   unsigned long mint = parse_handle(argv[2]);
-  if (!receive || !mint)
+  unsigned long scope = parse_handle(argv[3]);
+  if (!receive || !mint || !scope)
     return 2;
 
   // IDs are never recycled while this service incarnation is alive. A stale
@@ -217,6 +218,8 @@ int main(int argc, char **argv) {
       struct Record *parent = register_child || prepare_child ? find_record(request.badge) : NULL;
       long valid_domain =
           prepare_child ? 1 : syscall2(SYS_DOMAIN_SAME, (long)request.capability, (long)request.capability);
+      if (register_child && valid_domain == 1)
+        valid_domain = syscall2(SYS_DOMAIN_SCOPE_CONTAINS, (long)scope, (long)request.capability);
       unsigned long reservation_deadline_ns = 0;
       int deadline_ready = 1;
       if (prepare_child) {
@@ -269,6 +272,8 @@ int main(int argc, char **argv) {
       struct Record *child = find_record(moss_process_get_u64(request.payload + 1));
       if (!child || (child->parent_id != request.badge && child->id != request.badge)) {
         response.payload[0] = MOSS_PROCESS_NO_ENTRY;
+      } else if (syscall2(SYS_DOMAIN_SCOPE_CONTAINS, (long)scope, (long)request.capability) != 1) {
+        response.payload[0] = MOSS_PROCESS_BAD_REQUEST;
       } else if (child->domain) {
         // Parent and child may attach concurrently. Only a repeat for the
         // same domain is idempotent.

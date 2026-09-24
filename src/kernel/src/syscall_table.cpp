@@ -741,6 +741,22 @@ long sys_domain_scope_status(long handle, long, long, long, long, long) noexcept
   return live;
 }
 
+long sys_domain_scope_contains(long scope_handle, long domain_handle, long, long, long, long) noexcept {
+  auto caller = process::current_process();
+  if (!caller)
+    return -errc::ESRCH;
+  auto scope = caller->capabilities().lookup(static_cast<Handle>(scope_handle), capability::ObjectType::DomainScope,
+                                             capability::rights::DOMAIN_SCOPE_INSPECT);
+  if (!scope)
+    return domain_cap_error(scope.error());
+  auto domain = caller->capabilities().lookup(static_cast<Handle>(domain_handle), capability::ObjectType::Domain,
+                                              capability::rights::DOMAIN_INSPECT);
+  if (!domain)
+    return domain_cap_error(domain.error());
+  auto *target = static_cast<DomainObject *>((*domain).get())->process.get();
+  return target->domain_scope().get() == (*scope).get() ? 1 : 0;
+}
+
 long sys_domain_terminate(long handle, long, long, long, long, long) noexcept {
   auto caller = process::current_process();
   if (!caller)
@@ -3249,7 +3265,9 @@ const SyscallDescriptor SYSCALL_TABLE[static_cast<int>(SyscallNumber::MAX_SYSCAL
     {"domain_scope_terminate", handlers::sys_domain_scope_terminate, 1, true,
      "Close a domain scope and terminate its members"},
     {"domain_scope_status", handlers::sys_domain_scope_status, 1, true, "Count live domain scope members"},
-    {"fork_domain_scoped", handlers::sys_fork_domain_scoped, 4, true, "Fork a native domain into a specified scope"}};
+    {"fork_domain_scoped", handlers::sys_fork_domain_scoped, 4, true, "Fork a native domain into a specified scope"},
+    {"domain_scope_contains", handlers::sys_domain_scope_contains, 2, true,
+     "Check whether an inspected domain belongs to a scope"}};
 
 // 系统调用分发器实现
 long SyscallDispatcher::dispatch(long syscall_number, long arg0, long arg1, long arg2, long arg3, long arg4,
