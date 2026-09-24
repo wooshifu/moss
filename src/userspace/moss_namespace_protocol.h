@@ -3,9 +3,11 @@
 #define MOSS_SCRATCH_PATH "/scratch"
 
 // OPEN carries [opcode, flags, absolute NUL-terminated flat-root file path].
-// A successful lookup returns a direct file endpoint capability.
+// A successful lookup returns a direct file endpoint capability. TRANSFER
+// explicitly permits handing that authority to a POSIX descriptor view;
+// synchronous IPC requires both TRANSFER and DUPLICATE on the source handle.
 enum { MOSS_NAMESPACE_OPEN = 1 };
-enum { MOSS_NAMESPACE_OPEN_CREATE = 1U << 0 };
+enum { MOSS_NAMESPACE_OPEN_CREATE = 1U << 0, MOSS_NAMESPACE_OPEN_TRANSFER = 1U << 1 };
 enum {
   MOSS_NAMESPACE_OK = 0,
   MOSS_NAMESPACE_BAD_REQUEST = 1,

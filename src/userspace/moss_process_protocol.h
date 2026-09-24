@@ -39,7 +39,8 @@ enum {
   MOSS_PROCESS_FD_GET_FLAGS = 26,
   MOSS_PROCESS_FD_SET_FLAGS = 27,
   MOSS_PROCESS_FD_GET_STATUS = 28,
-  MOSS_PROCESS_FD_DUP_MIN = 29
+  MOSS_PROCESS_FD_DUP_MIN = 29,
+  MOSS_PROCESS_FD_INSTALL = 30
 };
 enum {
   MOSS_PROCESS_OK = 0,
@@ -83,7 +84,8 @@ enum {
   MOSS_PROCESS_FD_SEEK_BYTES = 18,
   MOSS_PROCESS_FD_DUP_TO_BYTES = 17,
   MOSS_PROCESS_FD_SET_FLAGS_BYTES = 10,
-  MOSS_PROCESS_FD_DUP_MIN_BYTES = 18
+  MOSS_PROCESS_FD_DUP_MIN_BYTES = 18,
+  MOSS_PROCESS_FD_INSTALL_BYTES = 2
 };
 
 // REGISTER returns [OK, ID:u64 LE]. STATUS returns [EXITED, status:u64 LE].
@@ -119,6 +121,10 @@ enum {
 // open description. FD_DUP_MIN carries [opcode, source:u64 LE, minimum:u64 LE,
 // close-on-exec:u8] and returns the first available descriptor at or above
 // minimum; values below FD_FIRST select FD_FIRST until stdio joins this view.
+// FD_INSTALL carries [opcode, READABLE|WRITABLE|APPEND|CLOEXEC:u8] and a
+// transferred File Object Capability with SEND rights. The caller needs
+// TRANSFER|DUPLICATE on its source for synchronous IPC; reply failure releases
+// the import.
 // FD_READ/WRITE carry
 // [opcode, descriptor:u64 LE, count:u16 LE] plus a transferred Memory Object
 // with MAP_WRITE|TRANSFER|DUPLICATE or MAP_READ|TRANSFER|DUPLICATE respectively,

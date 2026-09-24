@@ -375,7 +375,7 @@ static void fd_reply_value(struct moss_ipc_message *response, unsigned long valu
   moss_process_put_u64(response->payload + 1, value);
 }
 
-static void handle_fd_request(struct Record *owner, unsigned long namespace, const struct moss_ipc_message *request,
+static void handle_fd_request(struct Record *owner, unsigned long namespace, struct moss_ipc_message *request,
                               struct moss_ipc_message *response, struct FdAction *action) {
   if (!record_running(owner)) {
     response->payload[0] = MOSS_PROCESS_NO_ENTRY;
@@ -439,6 +439,33 @@ static void handle_fd_request(struct Record *owner, unsigned long namespace, con
     }
     if (opened.capability)
       (void)syscall1(SYS_CAP_CLOSE, (long)opened.capability);
+    return;
+  }
+
+  if (operation == MOSS_PROCESS_FD_INSTALL) {
+    unsigned char flags = request->payload[1];
+    if (request->size != MOSS_PROCESS_FD_INSTALL_BYTES || !request->capability || request->rights != MOSS_CAP_SEND ||
+        flags & ~(MOSS_PROCESS_FD_READABLE | MOSS_PROCESS_FD_WRITABLE | MOSS_PROCESS_FD_APPEND |
+                  MOSS_PROCESS_FD_CLOEXEC) ||
+        !(flags & (MOSS_PROCESS_FD_READABLE | MOSS_PROCESS_FD_WRITABLE)) ||
+        ((flags & MOSS_PROCESS_FD_APPEND) && !(flags & MOSS_PROCESS_FD_WRITABLE)))
+      return;
+    struct OpenDescription *description = calloc(1, sizeof(*description));
+    if (!description) {
+      response->payload[0] = MOSS_PROCESS_UNAVAILABLE;
+      return;
+    }
+    description->file = request->capability;
+    description->flags = flags & ~MOSS_PROCESS_FD_CLOEXEC;
+    action->added = add_descriptor(owner, description);
+    if (!action->added) {
+      free(description);
+      response->payload[0] = MOSS_PROCESS_UNAVAILABLE;
+      return;
+    }
+    action->added->close_on_exec = !!(flags & MOSS_PROCESS_FD_CLOEXEC);
+    request->capability = 0;
+    fd_reply_value(response, action->added->number);
     return;
   }
 
@@ -909,7 +936,7 @@ int main(int argc, char **argv) {
         response.payload[0] = sent_signal ? MOSS_PROCESS_OK : failed ? MOSS_PROCESS_UNAVAILABLE : MOSS_PROCESS_NO_ENTRY;
       }
     } else if (request.badge && request.size && request.payload[0] >= MOSS_PROCESS_FD_OPEN &&
-               request.payload[0] <= MOSS_PROCESS_FD_DUP_MIN) {
+               request.payload[0] <= MOSS_PROCESS_FD_INSTALL) {
       handle_fd_request(find_record(request.badge), namespace, &request, &response, &fd_action);
     } else if (request.badge && request.size == 1 && !request.capability && !request.rights) {
       struct Record *record = find_record(request.badge);

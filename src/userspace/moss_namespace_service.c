@@ -62,7 +62,7 @@ int main(int argc, char **argv) {
       // handle so an untrusted caller cannot exhaust this service's table.
       (void)syscall1(SYS_CAP_CLOSE, (long)request.capability);
     } else if (request.size >= 5 && request.payload[0] == MOSS_NAMESPACE_OPEN &&
-               !(request.payload[1] & ~MOSS_NAMESPACE_OPEN_CREATE)) {
+               !(request.payload[1] & ~(MOSS_NAMESPACE_OPEN_CREATE | MOSS_NAMESPACE_OPEN_TRANSFER))) {
       const unsigned char *path = request.payload + 2;
       unsigned long path_size = request.size - 2;
       // This namespace currently mounts one flat root filesystem. Reject
@@ -76,7 +76,10 @@ int main(int argc, char **argv) {
             opened.rights == (MOSS_CAP_SEND | MOSS_CAP_TRANSFER | MOSS_CAP_DUPLICATE)) {
           response.payload[0] = MOSS_NAMESPACE_OK;
           response.capability = opened.capability;
-          response.rights = MOSS_CAP_SEND;
+          response.rights = MOSS_CAP_SEND |
+                            (request.payload[1] & MOSS_NAMESPACE_OPEN_TRANSFER
+                                 ? MOSS_CAP_TRANSFER | MOSS_CAP_DUPLICATE
+                                 : 0);
         } else if (result == 1 && opened.payload[0] == MOSS_FILE_NO_ENTRY && !opened.capability) {
           response.payload[0] = MOSS_NAMESPACE_NO_ENTRY;
         }

@@ -10,6 +10,7 @@
 
 #define MOSS_SYSCALL_RAW_ONLY
 #include "moss_file_protocol.h"
+#include "moss_namespace_protocol.h"
 #include "moss_process_protocol.h"
 #include "syscall.h"
 
@@ -629,6 +630,36 @@ static int fd_open(unsigned long session, const char *path, unsigned char flags,
   return *number >= MOSS_PROCESS_FD_FIRST && *number < MOSS_PROCESS_FD_LIMIT;
 }
 
+static int fd_install(unsigned long session, unsigned long file, unsigned char flags, unsigned long *number) {
+  struct moss_ipc_message request = {.size = MOSS_PROCESS_FD_INSTALL_BYTES,
+                                     .capability = file,
+                                     .rights = MOSS_CAP_SEND,
+                                     .payload = {MOSS_PROCESS_FD_INSTALL, flags}};
+  struct moss_ipc_message response = {0};
+  long result = call(session, &request, &response);
+  if (!no_capability(&response) || result != MOSS_PROCESS_REPLY_VALUE_BYTES || response.payload[0] != MOSS_PROCESS_OK)
+    return 0;
+  *number = moss_process_get_u64(response.payload + 1);
+  return *number >= MOSS_PROCESS_FD_FIRST && *number < MOSS_PROCESS_FD_LIMIT;
+}
+
+static unsigned long opened_file_cap(unsigned long namespace, const char *path, unsigned char flags,
+                                    unsigned int rights) {
+  size_t path_size = strlen(path) + 1;
+  if (path_size > MOSS_IPC_MAX_MESSAGE - 2)
+    return 0;
+  struct moss_ipc_message request = {.size = path_size + 2, .payload = {MOSS_NAMESPACE_OPEN}};
+  request.payload[1] = flags;
+  memcpy(request.payload + 2, path, path_size);
+  struct moss_ipc_message response = {0};
+  long result = call(namespace, &request, &response);
+  if (result == 1 && response.payload[0] == MOSS_NAMESPACE_OK && response.capability && response.rights == rights)
+    return response.capability;
+  if (response.capability)
+    (void)syscall1(SYS_CAP_CLOSE, (long)response.capability);
+  return 0;
+}
+
 static int fd_command(unsigned long session, unsigned char operation, unsigned long number, unsigned long *value) {
   struct moss_ipc_message request = {.size = MOSS_PROCESS_REPLY_VALUE_BYTES, .payload = {operation}};
   moss_process_put_u64(request.payload + 1, number);
@@ -758,7 +789,14 @@ static int fd_exec_child(const char *kept_text) {
 
 static int fd_view_probe(void) {
   unsigned long session = getauxval(MOSS_AT_STARTUP_CAP);
-  unsigned long first = 0, duplicate = 0, victim = 0, spare = 0, minimum_first = 0, minimum_second = 0, position = 0;
+  const char *namespace_text = getenv("MOSS_NAMESPACE_CAP");
+  char *namespace_end = NULL;
+  errno = 0;
+  unsigned long namespace = namespace_text ? strtoul(namespace_text, &namespace_end, 10) : 0;
+  if (errno || !namespace || *namespace_end)
+    return 0;
+  unsigned long first = 0, duplicate = 0, imported = 0, victim = 0, spare = 0, minimum_first = 0,
+                minimum_second = 0, position = 0;
   unsigned char flags = 0;
   unsigned int transferred = 0;
   if (!session || !fd_open(session, "/note",
@@ -790,6 +828,26 @@ static int fd_view_probe(void) {
     valid = fd_io(session, MOSS_PROCESS_FD_READ, duplicate, memory, 1, &transferred) && transferred == 1 &&
             *(unsigned char *)mapped == 'a' && fd_io(session, MOSS_PROCESS_FD_READ, first, memory, 1, &transferred) &&
             transferred == 1 && *(unsigned char *)mapped == 'b';
+  }
+  if (valid) {
+    unsigned long bare = opened_file_cap(namespace, "/note", 0, MOSS_CAP_SEND);
+    struct moss_ipc_message request = {.size = MOSS_PROCESS_FD_INSTALL_BYTES,
+                                       .capability = bare,
+                                       .rights = MOSS_CAP_SEND,
+                                       .payload = {MOSS_PROCESS_FD_INSTALL, MOSS_PROCESS_FD_READABLE}};
+    struct moss_ipc_message response = {0};
+    valid = bare && call(session, &request, &response) == -EACCES && no_capability(&response);
+    if (bare)
+      (void)syscall1(SYS_CAP_CLOSE, (long)bare);
+  }
+  if (valid) {
+    unsigned long file = opened_file_cap(namespace, "/note", MOSS_NAMESPACE_OPEN_TRANSFER,
+                                         MOSS_CAP_SEND | MOSS_CAP_TRANSFER | MOSS_CAP_DUPLICATE);
+    valid = file && fd_install(session, file, MOSS_PROCESS_FD_READABLE, &imported);
+    if (file)
+      (void)syscall1(SYS_CAP_CLOSE, (long)file);
+    valid = valid && fd_io(session, MOSS_PROCESS_FD_READ, imported, memory, 1, &transferred) && transferred == 1 &&
+            *(unsigned char *)mapped == 'a';
   }
   if (valid) {
     valid = fd_open(session, "/scratch", MOSS_PROCESS_FD_READABLE | MOSS_PROCESS_FD_CLOEXEC, &victim) &&
@@ -855,6 +913,8 @@ static int fd_view_probe(void) {
     valid &= fd_command(session, MOSS_PROCESS_FD_CLOSE, minimum_first, NULL);
   if (victim)
     valid &= fd_command(session, MOSS_PROCESS_FD_CLOSE, victim, NULL);
+  if (imported)
+    valid &= fd_command(session, MOSS_PROCESS_FD_CLOSE, imported, NULL);
   if (duplicate)
     valid &= fd_command(session, MOSS_PROCESS_FD_CLOSE, duplicate, NULL);
   valid &= fd_command(session, MOSS_PROCESS_FD_CLOSE, first, NULL);
