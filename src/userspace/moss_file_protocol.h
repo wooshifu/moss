@@ -16,9 +16,10 @@ enum { MOSS_FILE_READ = 1, MOSS_FILE_WRITE = 2, MOSS_FILE_OPEN = 3, MOSS_FILE_RE
 // holder of the root sender cannot reopen it by guessing the supplied name.
 enum { MOSS_FILE_OPEN_CREATE = 1U << 0, MOSS_FILE_OPEN_UNLISTED = 1U << 1 };
 enum { MOSS_FILE_OK = 0, MOSS_FILE_BAD_REQUEST = 1, MOSS_FILE_NO_ENTRY = 2, MOSS_FILE_UNAVAILABLE = 3 };
-// Until service resource accounting exists, limit client-triggered allocation
-// to 16 file objects and 16 shared pages of data per service incarnation.
-enum { MOSS_FILE_OBJECT_LIMIT = 16, MOSS_FILE_CONTENT_BUDGET_BYTES = 16 * 4096 };
+// Until service resource accounting exists, bound client-triggered allocation.
+// 16 MiB matches the current 4096-page native domain construction ceiling,
+// allowing a static libc image through this volatile file service.
+enum { MOSS_FILE_OBJECT_LIMIT = 16, MOSS_FILE_CONTENT_BUDGET_BYTES = 4096 * 4096 };
 // READ/WRITE transfer one shared page at an explicit byte offset. Their
 // request carries [opcode, offset: u64 LE, count: u16 LE], and the reply
 // carries [status, transferred: u16 LE]. RESIZE carries [opcode, size: u64 LE].

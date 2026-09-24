@@ -5,6 +5,7 @@
 #include <stddef.h>
 #include <stdio.h>
 #include <string.h>
+#include <sys/stat.h>
 #include <sys/wait.h>
 #include <unistd.h>
 
@@ -28,6 +29,7 @@ struct Service {
 
 struct LoaderImages {
   long probe;
+  long libc_probe;
   long bad;
 };
 
@@ -101,6 +103,8 @@ static void stop_service(struct Service *service) {
 static void close_loader_images(struct LoaderImages *images) {
   if (images->probe > 0)
     (void)syscall1(SYS_CAP_CLOSE, images->probe);
+  if (images->libc_probe > 0)
+    (void)syscall1(SYS_CAP_CLOSE, images->libc_probe);
   if (images->bad > 0)
     (void)syscall1(SYS_CAP_CLOSE, images->bad);
   *images = (struct LoaderImages){0};
@@ -280,6 +284,12 @@ static int seed_loader_file(long file, const char *name, const char *source, lon
   int fd = source ? open(source, O_RDONLY) : -1;
   if (source && fd < 0)
     return -1;
+  struct stat source_status = {0};
+  if (source && (fstat(fd, &source_status) != 0 || source_status.st_size <= 0 ||
+                 source_status.st_size > MOSS_FILE_CONTENT_BUDGET_BYTES)) {
+    (void)close(fd);
+    return -1;
+  }
   struct moss_ipc_message request = {.size = strlen(name) + 3,
                                      .payload = {MOSS_FILE_OPEN, MOSS_FILE_OPEN_CREATE | MOSS_FILE_OPEN_UNLISTED}};
   memcpy(request.payload + 2, name, strlen(name) + 1);
@@ -294,6 +304,22 @@ static int seed_loader_file(long file, const char *name, const char *source, lon
     return -1;
   }
   long object = (long)response.capability;
+  // Reserve the known immutable seed length once: per-page realloc would
+  // repeatedly copy the growing libc image during each service recovery.
+  if (source) {
+    request = (struct moss_ipc_message){.size = MOSS_FILE_RESIZE_HEADER_BYTES, .payload = {MOSS_FILE_RESIZE}};
+    moss_file_put_u64(request.payload + 1, (uint64_t)source_status.st_size);
+    response = (struct moss_ipc_message){0};
+    sent = call_service(object, &request, &response);
+    if (response.capability)
+      (void)syscall1(SYS_CAP_CLOSE, (long)response.capability);
+    if (sent != 1 || response.size != 1 || response.payload[0] != MOSS_FILE_OK || response.capability ||
+        response.rights) {
+      (void)syscall1(SYS_CAP_CLOSE, object);
+      (void)close(fd);
+      return -1;
+    }
+  }
   long memory = syscall1(SYS_MEM_CREATE, MOSS_MEM_OBJECT_BYTES);
   long mapped = memory > 0 ? syscall2(SYS_MEM_MAP, memory, MOSS_CAP_MAP_READ | MOSS_CAP_MAP_WRITE) : -1;
   int valid = mapped > 0;
@@ -337,6 +363,8 @@ static int seed_loader_file(long file, const char *name, const char *source, lon
     (void)syscall1(SYS_CAP_CLOSE, memory);
   if (fd >= 0)
     (void)close(fd);
+  if (source && offset != (size_t)source_status.st_size)
+    valid = 0;
   if (valid && offset) {
     // A root sender can create an unlisted object, but must not be able to
     // recover its authority by a later name lookup.
@@ -400,12 +428,12 @@ fail:
   return -1;
 }
 
-static int request_loader(long send, long image, unsigned char expected, long *domain) {
+static int request_loader(long send, long image, const char *program, unsigned char expected, long *domain) {
   struct moss_ipc_message request = {.size = MOSS_LOADER_RUN_HEADER_BYTES,
                                      .capability = (unsigned long)image,
                                      .rights = MOSS_CAP_SEND,
                                      .payload = {MOSS_LOADER_RUN, 2, 1}};
-  const char *const strings[] = {"loader-probe", "from-supervisor", "MOSS_LOADER=ready"};
+  const char *const strings[] = {program, "from-supervisor", "MOSS_LOADER=ready"};
   for (size_t index = 0; index < sizeof(strings) / sizeof(strings[0]); ++index) {
     size_t length = strlen(strings[index]) + 1;
     if (length > sizeof(request.payload) - request.size)
@@ -428,6 +456,25 @@ static int request_loader(long send, long image, unsigned char expected, long *d
   return -1;
 }
 
+static int run_loader_probe(long send, long image, const char *program, int expected_exit) {
+  long domain = 0;
+  if (request_loader(send, image, program, MOSS_LOADER_OK, &domain) != 0)
+    return -1;
+  long waited;
+  do {
+    waited = syscall1(SYS_DOMAIN_WAIT, domain);
+  } while (waited == -EINTR);
+  struct moss_domain_exit status = {0};
+  int valid = waited == 0 && syscall2(SYS_DOMAIN_STATUS, domain, (long)&status) == 0 && status.code == expected_exit &&
+              status.signal == 0;
+  if (!valid) {
+    (void)syscall1(SYS_DOMAIN_TERMINATE, domain);
+    (void)syscall1(SYS_DOMAIN_WAIT, domain);
+  }
+  (void)syscall1(SYS_CAP_CLOSE, domain);
+  return valid ? 0 : -1;
+}
+
 static int launch_loader_service(const struct Service *code, const struct LoaderImages *images, long factory,
                                  struct Service *loader) {
   if (start_loader_service(code, factory, loader) != 0)
@@ -443,19 +490,10 @@ static int launch_loader_service(const struct Service *code, const struct Loader
   if (rejected.capability)
     (void)syscall1(SYS_CAP_CLOSE, (long)rejected.capability);
   long domain = 0;
-  valid = valid && request_loader(loader->send, images->bad, MOSS_LOADER_BAD_IMAGE, &domain) == 0 &&
-          request_loader(loader->send, images->probe, MOSS_LOADER_OK, &domain) == 0;
-  struct moss_domain_exit status = {0};
-  if (valid)
-    valid = syscall1(SYS_DOMAIN_WAIT, domain) == 0 && syscall2(SYS_DOMAIN_STATUS, domain, (long)&status) == 0 &&
-            status.code == MOSS_LOADER_PROBE_EXIT_CODE && status.signal == 0;
-  if (domain > 0) {
-    if (!valid) {
-      (void)syscall1(SYS_DOMAIN_TERMINATE, domain);
-      (void)syscall1(SYS_DOMAIN_WAIT, domain);
-    }
-    (void)syscall1(SYS_CAP_CLOSE, domain);
-  }
+  valid =
+      valid && request_loader(loader->send, images->bad, "loader-bad", MOSS_LOADER_BAD_IMAGE, &domain) == 0 &&
+      run_loader_probe(loader->send, images->probe, "loader-probe", MOSS_LOADER_PROBE_EXIT_CODE) == 0 &&
+      run_loader_probe(loader->send, images->libc_probe, "loader-libc-probe", MOSS_LOADER_LIBC_PROBE_EXIT_CODE) == 0;
   if (!valid) {
     stop_service(loader);
     return -1;
@@ -466,7 +504,7 @@ static int launch_loader_service(const struct Service *code, const struct Loader
 
 static int verify_loader_process_bridge(long loader, long image, long process) {
   long domain = 0;
-  if (request_loader(loader, image, MOSS_LOADER_OK, &domain) != 0)
+  if (request_loader(loader, image, "loader-probe", MOSS_LOADER_OK, &domain) != 0)
     return -1;
 
   struct moss_ipc_message request = {.size = 1,
@@ -826,6 +864,7 @@ int main(void) {
     // image reads below use private capability-addressed File Service objects.
     struct LoaderImages images = {0};
     if (seed_loader_file(file.send, "loader-probe", "/loader_probe.elf", &images.probe) != 0 ||
+        seed_loader_file(file.send, "loader-libc-probe", "/loader_libc_probe.elf", &images.libc_probe) != 0 ||
         seed_loader_file(file.send, "loader-bad", NULL, &images.bad) != 0) {
       report(STDERR_FILENO, "moss-init: loader image seeding failed\n");
       close_loader_images(&images);

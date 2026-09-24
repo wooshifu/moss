@@ -14,5 +14,5 @@ enum {
   MOSS_LOADER_BAD_IMAGE = 3,
   MOSS_LOADER_UNAVAILABLE = 4
 };
-// Distinct from normal success and the service's execve failure status (127).
-enum { MOSS_LOADER_PROBE_EXIT_CODE = 37 };
+// Distinct from each other, normal success and execve failure status (127).
+enum { MOSS_LOADER_PROBE_EXIT_CODE = 37, MOSS_LOADER_LIBC_PROBE_EXIT_CODE = 41 };

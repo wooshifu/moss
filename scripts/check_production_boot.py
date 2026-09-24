@@ -20,6 +20,9 @@ if __package__ in (None, ""):
 from qemu import build_qemu_args, resolve_dtb, resolve_qemu
 from scripts.artifacts import Artifacts
 
+# Match the aggregate limit in src/userspace/moss_file_protocol.h.
+FILE_CONTENT_BUDGET_BYTES = 4096 * 4096
+
 
 def run(
     cfg: Artifacts,
@@ -243,9 +246,9 @@ quit
         (b"\nMOSS_FILE_RESIZE_OK\n", None),
         (b"moss$ ", b"/moss-file.elf read /note\n"),
         (b"\nMOSS_FILE_READ=short\0\0\n", None),
-        # /scratch retains one page, so /note cannot claim the full 16-page
-        # service budget; rejected resize must preserve its bytes.
-        (b"moss$ ", b"/moss-file.elf resize 65536 /note\n"),
+        # /scratch and the private loader images still own storage, so /note
+        # cannot claim the entire service budget; rejection preserves bytes.
+        (b"moss$ ", f"/moss-file.elf resize {FILE_CONTENT_BUDGET_BYTES} /note\n".encode()),
         (b"\nMOSS_FILE_ERROR\n", None),
         (b"moss$ ", b"/moss-file.elf read /note\n"),
         (b"\nMOSS_FILE_READ=short\0\0\n", None),

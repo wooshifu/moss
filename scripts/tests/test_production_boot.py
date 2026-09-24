@@ -158,7 +158,7 @@ assert input() == 'echo MOSS_PRODUCTION_READY'
         script += "print('\\nMOSS_FILE_RESIZE_OK\\nmoss$ ', end='', flush=True)\n"
         script += "assert input() == '/moss-file.elf read /note'\n"
         script += "print('\\nMOSS_FILE_READ=short\\0\\0\\nmoss$ ', end='', flush=True)\n"
-        script += "assert input() == '/moss-file.elf resize 65536 /note'\n"
+        script += f"assert input() == '/moss-file.elf resize {boot.FILE_CONTENT_BUDGET_BYTES} /note'\n"
         script += "print('\\nMOSS_FILE_ERROR\\nmoss$ ', end='', flush=True)\n"
         script += "assert input() == '/moss-file.elf read /note'\n"
         script += "print('\\nMOSS_FILE_READ=short\\0\\0\\nmoss$ ', end='', flush=True)\n"
