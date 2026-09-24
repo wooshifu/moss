@@ -107,6 +107,8 @@ public:
   }
 
   [[nodiscard]] explicit operator bool() const noexcept { return static_cast<bool>(object_); }
+  // The pointer stays valid until this escrow is reset or destroyed.
+  [[nodiscard]] Object *get() const noexcept { return object_.get(); }
   [[nodiscard]] u32 rights() const noexcept { return rights_; }
   void reset() noexcept {
     if (object_) {
@@ -115,6 +117,50 @@ public:
       retired->release_handle();
     }
   }
+};
+
+class Table;
+
+// A Reply source stays hidden until its enclosing IPC operation commits.
+// Failed enqueue/reply attempts restore the same handle instead of dropping
+// the original caller's one-shot reply authority.
+// The syscall retains its Process (and Table) until this stack-scoped capture
+// is committed or destroyed.
+class IpcCapture {
+  Table *source_{nullptr};
+  Handle source_handle_{INVALID_HANDLE};
+  Escrow escrow_{};
+
+  friend class Table;
+  IpcCapture(Table *source, Handle handle, Escrow &&escrow) noexcept
+      : source_(source), source_handle_(handle), escrow_(moss::move(escrow)) {}
+  void finish(bool commit) noexcept;
+
+public:
+  IpcCapture() noexcept = default;
+  ~IpcCapture() noexcept { finish(false); }
+  IpcCapture(const IpcCapture &) = delete;
+  IpcCapture &operator=(const IpcCapture &) = delete;
+  IpcCapture(IpcCapture &&other) noexcept
+      : source_(other.source_), source_handle_(other.source_handle_), escrow_(moss::move(other.escrow_)) {
+    other.source_ = nullptr;
+    other.source_handle_ = INVALID_HANDLE;
+  }
+  IpcCapture &operator=(IpcCapture &&other) noexcept {
+    if (this != &other) {
+      finish(false);
+      escrow_ = moss::move(other.escrow_);
+      source_ = other.source_;
+      source_handle_ = other.source_handle_;
+      other.source_ = nullptr;
+      other.source_handle_ = INVALID_HANDLE;
+    }
+    return *this;
+  }
+
+  [[nodiscard]] Escrow &escrow() noexcept { return escrow_; }
+  [[nodiscard]] Escrow take_escrow() noexcept { return moss::move(escrow_); }
+  void commit() noexcept { finish(true); }
 };
 
 class Table {
@@ -138,6 +184,29 @@ class Table {
   // Never reuse a handle value within one table: closing a slot cannot make a
   // stale handle name a later object. Exhaustion is safer than wraparound.
   Handle next_handle_{1};
+
+  friend class IpcCapture;
+
+  void finish_ipc_capture(Handle handle, bool commit) noexcept {
+    shared_ptr<Object> retired;
+    {
+      containers::LockGuard<containers::IrqSpinLock> guard(lock_);
+      Entry *source = find_any_locked(handle);
+      if (!source || source->published)
+        return;
+      if (commit) {
+        retired = moss::move(source->object);
+        source->handle = INVALID_HANDLE;
+        source->rights = 0;
+        source->inheritable = false;
+        source->keep_on_exec = false;
+      } else {
+        source->published = true;
+      }
+    }
+    if (retired)
+      retired->release_handle();
+  }
 
   [[nodiscard]] Entry *find_any_locked(Handle handle) noexcept {
     if (handle == INVALID_HANDLE)
@@ -286,16 +355,23 @@ public:
     return install_locked(copy, granted_rights);
   }
 
-  [[nodiscard]] KernelResult<Escrow> snapshot_for_transfer(Handle handle, u32 granted_rights) const noexcept {
+  // Ordinary capabilities copy; a Reply source is hidden while delivery is
+  // tentative, then either restored on failure or retired after commit.
+  [[nodiscard]] KernelResult<IpcCapture> capture_for_ipc(Handle handle, u32 granted_rights) noexcept {
     containers::LockGuard<containers::IrqSpinLock> guard(lock_);
-    const Entry *source = find_locked(handle);
+    Entry *source = find_locked(handle);
     if (!source)
-      return KernelResult<Escrow>{ErrorCode::NotFound};
-    constexpr u32 required = rights::TRANSFER | rights::DUPLICATE;
+      return KernelResult<IpcCapture>{ErrorCode::NotFound};
+    const bool is_reply = source->object->type() == ObjectType::Reply;
+    const u32 required = rights::TRANSFER | (is_reply ? 0U : rights::DUPLICATE);
     if (granted_rights == 0 || (source->rights & required) != required ||
         (source->rights & granted_rights) != granted_rights)
-      return KernelResult<Escrow>{ErrorCode::PermissionDenied};
-    return KernelResult<Escrow>{Escrow{source->object, granted_rights}};
+      return KernelResult<IpcCapture>{ErrorCode::PermissionDenied};
+    Escrow escrow{source->object, granted_rights};
+    if (is_reply)
+      source->published = false;
+    return KernelResult<IpcCapture>{
+        IpcCapture{is_reply ? this : nullptr, is_reply ? handle : INVALID_HANDLE, moss::move(escrow)}};
   }
 
   // Retain message authority until copyout and delivery both succeed.
@@ -510,5 +586,13 @@ public:
     }
   }
 };
+
+void IpcCapture::finish(bool commit) noexcept {
+  if (source_) {
+    source_->finish_ipc_capture(source_handle_, commit);
+    source_ = nullptr;
+    source_handle_ = INVALID_HANDLE;
+  }
+}
 
 } // namespace moss::kernel::capability

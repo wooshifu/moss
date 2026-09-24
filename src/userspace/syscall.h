@@ -80,8 +80,11 @@ struct moss_domain_exit {
   unsigned int signal;
 };
 
-// One capability may accompany each bounded request or reply. Passing a
-// capability copies reduced rights; zero capability requires zero rights.
+// One capability may accompany each bounded request or reply. Ordinary
+// capabilities copy reduced rights; a Reply capability moves its one-shot
+// handle and cannot be duplicated. If its message is abandoned while the
+// original call is pending, that caller receives EPIPE. Zero capability
+// requires zero rights.
 // Request/reply senders must set badge to zero. Receive fills it from the
 // sender capability, so a service can trust it as an object identifier.
 struct moss_ipc_message {
@@ -94,6 +97,10 @@ struct moss_ipc_message {
 
 // SYS_IPC_CALL uses (endpoint, request*, response*, absolute deadline_ns).
 // A zero deadline disables it; both messages use the fixed structure above.
+// A failed request enqueue or reply commit leaves an attached Reply handle
+// usable by its sender; successful delivery moves that one-shot authority.
+// Closing the last receiver rejects new and queued calls; a delivered call
+// remains owned by its Reply holder until reply, cancellation or expiry.
 
 // No payload; succeeds only on a terminal. Not a Linux termios command.
 // 0x4d01 is a Moss-specific command ID shared with vfs:types; its exact

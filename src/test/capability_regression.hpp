@@ -12,8 +12,8 @@ inline void process_handles() {
   struct TrackedObject final : cap::Object {
     unsigned &destructions;
     unsigned &last_closes;
-    TrackedObject(unsigned &destroyed, unsigned &closed)
-        : Object(cap::ObjectType::Endpoint), destructions(destroyed), last_closes(closed) {}
+    TrackedObject(unsigned &destroyed, unsigned &closed, cap::ObjectType type = cap::ObjectType::Endpoint)
+        : Object(type), destructions(destroyed), last_closes(closed) {}
     ~TrackedObject() override { ++destructions; }
 
   protected:
@@ -113,17 +113,17 @@ inline void process_handles() {
   auto source_handle = source.install(escrow_object, full_rights);
   if (!boost::ut::expect(static_cast<bool>(source_handle)))
     return;
-  auto escrow = source.snapshot_for_transfer(*source_handle, cap::rights::SEND);
+  auto escrow = source.capture_for_ipc(*source_handle, cap::rights::SEND);
   if (!boost::ut::expect(static_cast<bool>(escrow)))
     return;
   boost::ut::expect(static_cast<bool>(source.close(*source_handle)));
   boost::ut::expect(escrow_last_closes == 0);
-  auto reserved = destination.reserve_escrow(*escrow);
+  auto reserved = destination.reserve_escrow(escrow->escrow());
   if (!boost::ut::expect(static_cast<bool>(reserved)))
     return;
   boost::ut::expect(!destination.lookup(*reserved, cap::ObjectType::Endpoint, cap::rights::SEND));
   boost::ut::expect(!destination.close(*reserved));
-  auto rolled_back = destination.reserve_escrow(*escrow);
+  auto rolled_back = destination.reserve_escrow(escrow->escrow());
   if (!boost::ut::expect(static_cast<bool>(rolled_back)))
     return;
   boost::ut::expect(static_cast<bool>(destination.discard_reserved(*rolled_back)));
@@ -133,13 +133,52 @@ inline void process_handles() {
   boost::ut::expect(static_cast<bool>(destination.publish_reserved(*reserved)));
   boost::ut::expect(static_cast<bool>(destination.lookup(*reserved, cap::ObjectType::Endpoint, cap::rights::SEND)));
   boost::ut::expect(!destination.lookup(*reserved, cap::ObjectType::Endpoint, cap::rights::RECEIVE));
-  boost::ut::expect(!destination.snapshot_for_transfer(*reserved, cap::rights::SEND));
-  escrow->reset();
+  boost::ut::expect(!destination.capture_for_ipc(*reserved, cap::rights::SEND));
+  escrow->escrow().reset();
   boost::ut::expect(escrow_last_closes == 0);
   boost::ut::expect(static_cast<bool>(destination.close(*reserved)));
   boost::ut::expect(escrow_last_closes == 1);
   escrow_object.reset();
   boost::ut::expect(escrow_destructions == 1);
+
+  unsigned reply_destructions = 0, reply_last_closes = 0;
+  auto reply_object = shared_ptr<cap::Object>::try_make<TrackedObject>(allocate, reply_destructions, reply_last_closes,
+                                                                       cap::ObjectType::Reply);
+  if (!boost::ut::expect(static_cast<bool>(reply_object)))
+    return;
+  auto reply_handle = source.install(reply_object, cap::rights::SEND | cap::rights::TRANSFER);
+  if (!boost::ut::expect(static_cast<bool>(reply_handle)))
+    return;
+  boost::ut::expect(!source.duplicate(*reply_handle, cap::rights::SEND));
+  boost::ut::expect(!source.set_inheritable(*reply_handle, true));
+  cap::Escrow abandoned_reply;
+  {
+    auto rejected = source.capture_for_ipc(*reply_handle, cap::rights::SEND);
+    if (!boost::ut::expect(static_cast<bool>(rejected)))
+      return;
+    abandoned_reply = rejected->take_escrow();
+    boost::ut::expect(!source.lookup(*reply_handle, cap::ObjectType::Reply, cap::rights::SEND));
+  }
+  abandoned_reply.reset();
+  boost::ut::expect(static_cast<bool>(source.lookup(*reply_handle, cap::ObjectType::Reply, cap::rights::SEND)));
+  boost::ut::expect(reply_last_closes == 0);
+  auto reply_escrow = source.capture_for_ipc(*reply_handle, cap::rights::SEND);
+  if (!boost::ut::expect(static_cast<bool>(reply_escrow)))
+    return;
+  boost::ut::expect(!source.lookup(*reply_handle, cap::ObjectType::Reply, cap::rights::SEND));
+  boost::ut::expect(!source.close(*reply_handle));
+  boost::ut::expect(reply_last_closes == 0);
+  auto received_reply = destination.reserve_escrow(reply_escrow->escrow());
+  if (!boost::ut::expect(static_cast<bool>(received_reply)))
+    return;
+  boost::ut::expect(static_cast<bool>(destination.publish_reserved(*received_reply)));
+  reply_escrow->commit();
+  reply_escrow->escrow().reset();
+  boost::ut::expect(reply_last_closes == 0);
+  boost::ut::expect(static_cast<bool>(destination.close(*received_reply)));
+  boost::ut::expect(reply_last_closes == 1);
+  reply_object.reset();
+  boost::ut::expect(reply_destructions == 1);
 }
 
 } // namespace moss::test::capability_regression

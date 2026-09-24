@@ -924,21 +924,111 @@ unsigned long ipc_nested_roundtrip(void) {
   return errors;
 }
 
-unsigned long ipc_priority_latency(void) {
+static unsigned long ipc_reply_handoff_case(int drop) {
+  struct moss_ipc_endpoints front = {0, 0}, back = {0, 0};
+  if (syscall1(SYS_IPC_CREATE, (long)&front) != 0 || syscall1(SYS_IPC_CREATE, (long)&back) != 0 ||
+      syscall2(SYS_CAP_SET_INHERIT, (long)front.receive, 1) != 0 ||
+      syscall2(SYS_CAP_SET_INHERIT, (long)back.receive, 1) != 0 ||
+      syscall2(SYS_CAP_SET_INHERIT, (long)back.send, 1) != 0)
+    return 1;
+  long backend = fork();
+  if (backend == 0) {
+    struct moss_ipc_message request = {0};
+    unsigned long nested_reply = 0;
+    if (ipc_receive(back.receive, &request, &nested_reply) != 1 || request.payload[0] != 'b' ||
+        request.capability == 0 || request.rights != (MOSS_CAP_SEND | MOSS_CAP_TRANSFER) ||
+        syscall2(SYS_CAP_DUPLICATE, (long)request.capability, MOSS_CAP_SEND) != -IPC_EACCES ||
+        syscall2(SYS_CAP_SET_INHERIT, (long)request.capability, 1) != -IPC_EACCES)
+      _exit(91);
+    const struct moss_ipc_message original_response = {.size = 1, .payload = {'d'}};
+    long completed =
+        drop ? syscall1(SYS_CAP_CLOSE, (long)request.capability) : ipc_reply(request.capability, &original_response);
+    if (completed != 0 || ipc_reply(request.capability, &original_response) != -IPC_EBADF)
+      _exit(92);
+    const struct moss_ipc_message nested_response = {.size = 1, .payload = {'c'}};
+    _exit(ipc_reply(nested_reply, &nested_response) == 0 ? 37 : 93);
+  }
+  if (backend < 0)
+    return 2;
+  long frontend = fork();
+  if (frontend == 0) {
+    struct moss_ipc_message request = {0}, response = {0};
+    unsigned long original_reply = 0;
+    if (ipc_receive(front.receive, &request, &original_reply) != 1 || request.payload[0] != 'a' ||
+        syscall2(SYS_CAP_DUPLICATE, (long)original_reply, MOSS_CAP_SEND) != -IPC_EACCES)
+      _exit(94);
+    const struct moss_ipc_message self = {
+        .size = 1, .capability = original_reply, .rights = MOSS_CAP_SEND, .payload = {'x'}};
+    if (ipc_reply(original_reply, &self) != -IPC_EINVAL)
+      _exit(95);
+    const struct moss_ipc_message nested = {
+        .size = 1, .capability = original_reply, .rights = MOSS_CAP_SEND | MOSS_CAP_TRANSFER, .payload = {'b'}};
+    if (!drop) {
+      struct moss_ipc_endpoints rejected = {0, 0};
+      if (syscall1(SYS_IPC_CREATE, (long)&rejected) != 0 || syscall1(SYS_CAP_CLOSE, (long)rejected.receive) != 0 ||
+          ipc_call(rejected.send, &nested, &response, 0) != -IPC_EPIPE ||
+          syscall1(SYS_CAP_CLOSE, (long)rejected.send) != 0)
+        _exit(97);
+    }
+    long deadline = deadline_after(ipc_call_timeout_ns);
+    if (deadline <= 0 || ipc_call(back.send, &nested, &response, deadline) != 1 || response.payload[0] != 'c' ||
+        syscall1(SYS_CAP_CLOSE, (long)original_reply) != -IPC_EBADF || ipc_reply(original_reply, &self) != -IPC_EBADF)
+      _exit(96);
+    _exit(37);
+  }
+  if (frontend < 0) {
+    kill(backend, SIGKILL);
+    wait_exit(backend, 37);
+    return 4;
+  }
+  unsigned long errors = syscall1(SYS_CAP_CLOSE, (long)back.receive) != 0;
+  const struct moss_ipc_message request = {.size = 1, .payload = {'a'}};
+  struct moss_ipc_message response = {0};
+  long deadline = deadline_after(ipc_call_timeout_ns);
+  long result = deadline > 0 ? ipc_call(front.send, &request, &response, deadline) : -1;
+  if (result != (drop ? -IPC_EPIPE : 1))
+    kill(frontend, SIGKILL);
+  errors |= (unsigned long)(result != (drop ? -IPC_EPIPE : 1) || (!drop && response.payload[0] != 'd')) << 1;
+  errors |= (unsigned long)!wait_exit(frontend, 37) << 2;
+  if (errors)
+    kill(backend, SIGKILL);
+  errors |= (unsigned long)!wait_exit(backend, 37) << 3;
+  errors |=
+      (unsigned long)(syscall1(SYS_CAP_CLOSE, (long)front.receive) != 0 ||
+                      syscall1(SYS_CAP_CLOSE, (long)front.send) != 0 || syscall1(SYS_CAP_CLOSE, (long)back.send) != 0)
+      << 4;
+  return errors;
+}
+
+unsigned long ipc_reply_handoff(void) { return ipc_reply_handoff_case(0); }
+
+unsigned long ipc_reply_handoff_drop(void) { return ipc_reply_handoff_case(1); }
+
+static unsigned long ipc_priority_latency_case(int handoff) {
   // All participants share the validation worker's CPU. A low-priority
   // receiver must answer a high-priority caller before unrelated runnable
   // work completes; the bound is a regression fixture, not a product SLA.
   // Eight hogs and a two-second run keep the CPU contested beyond the
   // one-second call deadline in the no-donation control.
-  enum { HOG_COUNT = 8, HOG_CLOCK_SAMPLE_SPINS = 4096, SERVER_WORK_ITERATIONS = 10000000 };
+  // The high mask fields retain a failed handoff's wait status and errno
+  // without colliding with the fixture's low error bits or elapsed millis.
+  enum {
+    HOG_COUNT = 8,
+    HOG_CLOCK_SAMPLE_SPINS = 4096,
+    SERVER_WORK_ITERATIONS = 10000000,
+    WORKER_STATUS_SHIFT = 32,
+    CALL_ERRNO_SHIFT = 48
+  };
   const unsigned long hog_duration_ns = 2000000000UL;
   const unsigned long call_budget_ns = 1000000000UL;
-  struct moss_ipc_endpoints endpoint = {0, 0};
+  struct moss_ipc_endpoints endpoint = {0, 0}, worker_endpoint = {0, 0};
   long server_ready[2] = {-1, -1};
+  long worker_ready[2] = {-1, -1};
   long hog_start[2] = {-1, -1};
   long hog_ready[2] = {-1, -1};
   long hogs[HOG_COUNT] = {0};
   long server = -1;
+  long worker = -1;
   unsigned long errors = 0;
   unsigned long hog_count = 0;
   const unsigned int cpu_zero = 1;
@@ -948,7 +1038,10 @@ unsigned long ipc_priority_latency(void) {
   const int original_nice = 20 - (int)priority;
   int parent_nice_changed = 0;
   if (syscall1(SYS_IPC_CREATE, (long)&endpoint) != 0 || syscall2(SYS_CAP_SET_INHERIT, (long)endpoint.receive, 1) != 0 ||
-      pipe(server_ready) != 0) {
+      pipe(server_ready) != 0 ||
+      (handoff && (syscall1(SYS_IPC_CREATE, (long)&worker_endpoint) != 0 ||
+                   syscall2(SYS_CAP_SET_INHERIT, (long)worker_endpoint.receive, 1) != 0 ||
+                   syscall2(SYS_CAP_SET_INHERIT, (long)worker_endpoint.send, 1) != 0 || pipe(worker_ready) != 0))) {
     errors |= 1;
     goto cleanup;
   }
@@ -968,6 +1061,15 @@ unsigned long ipc_priority_latency(void) {
     unsigned long reply = 0;
     if (ipc_receive(endpoint.receive, &request, &reply) != 1 || request.payload[0] != 'p')
       _exit(92);
+    if (handoff) {
+      struct moss_ipc_message work_request = {0};
+      unsigned long work_reply = 0;
+      if (ipc_receive(worker_endpoint.receive, &work_request, &work_reply) != 1 || work_request.payload[0] != 'w')
+        _exit(92);
+      const struct moss_ipc_message delegated = {
+          .size = 1, .capability = reply, .rights = MOSS_CAP_SEND, .payload = {'h'}};
+      _exit(ipc_reply(work_reply, &delegated) == 0 && syscall1(SYS_CAP_CLOSE, (long)reply) == -IPC_EBADF ? 37 : 93);
+    }
     // Ten million volatile additions exceeded the initial wakeup slice in
     // x64 QEMU calibration; a shorter reply hid missing priority donation.
     volatile unsigned long work = 0;
@@ -994,6 +1096,54 @@ unsigned long ipc_priority_latency(void) {
     goto cleanup;
   }
   endpoint.receive = 0;
+  if (handoff) {
+    worker = fork();
+    if (worker == 0) {
+      close(worker_ready[0]);
+      (void)syscall1(SYS_CAP_CLOSE, (long)endpoint.send);
+      (void)syscall1(SYS_CAP_CLOSE, (long)worker_endpoint.receive);
+      int nice_ok = ipc_set_nice(19);
+      long affinity = syscall3(SYS_SCHED_SETAFFINITY, 0, sizeof(cpu_zero), (long)&cpu_zero);
+      const char ready = affinity != 0 ? 'a' : !nice_ok ? 'n' : 'r';
+      if (write(worker_ready[1], &ready, 1) != 1)
+        _exit(97);
+      close(worker_ready[1]);
+      if (ready != 'r')
+        _exit(97);
+      const struct moss_ipc_message work_request = {.size = 1, .payload = {'w'}};
+      struct moss_ipc_message delegated = {0};
+      long deadline = deadline_after(ipc_call_timeout_ns);
+      if (deadline <= 0 || ipc_call(worker_endpoint.send, &work_request, &delegated, deadline) != 1 ||
+          delegated.payload[0] != 'h' || delegated.capability == 0 || delegated.rights != MOSS_CAP_SEND)
+        _exit(98);
+      // Work after the server has exited requires donation to move to this
+      // low-priority holder before it is woken into the contended run queue.
+      volatile unsigned long work = 0;
+      for (unsigned long i = 0; i < SERVER_WORK_ITERATIONS; ++i)
+        work += i;
+      const struct moss_ipc_message response = {.size = 1, .payload = {'q'}};
+      _exit(ipc_reply(delegated.capability, &response) == 0 ? 37 : 99);
+    }
+    close(worker_ready[1]);
+    worker_ready[1] = -1;
+    if (worker < 0) {
+      errors |= 1UL << 15;
+      goto cleanup;
+    }
+    char worker_signal = 0;
+    if (read(worker_ready[0], &worker_signal, 1) != 1 || worker_signal != 'r') {
+      errors |= 1UL << 16;
+      goto cleanup;
+    }
+    close(worker_ready[0]);
+    worker_ready[0] = -1;
+    if (syscall1(SYS_CAP_CLOSE, (long)worker_endpoint.receive) != 0 ||
+        syscall1(SYS_CAP_CLOSE, (long)worker_endpoint.send) != 0) {
+      errors |= 1UL << 17;
+      goto cleanup;
+    }
+    worker_endpoint.receive = worker_endpoint.send = 0;
+  }
   if (pipe(hog_start) != 0 || pipe(hog_ready) != 0) {
     errors |= 1UL << 3;
     goto cleanup;
@@ -1069,6 +1219,8 @@ unsigned long ipc_priority_latency(void) {
       errors |= (1UL << 10) | ((end - start) / 1000000UL << 16);
     if (result != 1 || response.payload[0] != 'q')
       errors |= 1UL << 11;
+    if (handoff && result < 0)
+      errors |= ((unsigned long)(-result & 255)) << CALL_ERRNO_SHIFT;
   }
 cleanup:
   if (parent_nice_changed && !ipc_set_nice(original_nice))
@@ -1077,6 +1229,10 @@ cleanup:
     close(server_ready[0]);
   if (server_ready[1] >= 0)
     close(server_ready[1]);
+  if (worker_ready[0] >= 0)
+    close(worker_ready[0]);
+  if (worker_ready[1] >= 0)
+    close(worker_ready[1]);
   if (hog_start[0] >= 0)
     close(hog_start[0]);
   if (hog_start[1] >= 0)
@@ -1096,12 +1252,27 @@ cleanup:
   }
   if (server > 0 && !wait_exit(server, 37))
     errors |= 1UL << 14;
+  if (errors && worker > 0)
+    (void)kill(worker, SIGKILL);
+  if (worker > 0) {
+    int status = 0;
+    if (syscall3(SYS_WAITPID, worker, (long)&status, 0) != worker || ((status >> 8) & 255) != 37)
+      errors |= (1UL << 15) | ((unsigned long)(status & 0xffff) << WORKER_STATUS_SHIFT);
+  }
   if (endpoint.receive)
     (void)syscall1(SYS_CAP_CLOSE, (long)endpoint.receive);
   if (endpoint.send)
     (void)syscall1(SYS_CAP_CLOSE, (long)endpoint.send);
+  if (worker_endpoint.receive)
+    (void)syscall1(SYS_CAP_CLOSE, (long)worker_endpoint.receive);
+  if (worker_endpoint.send)
+    (void)syscall1(SYS_CAP_CLOSE, (long)worker_endpoint.send);
   return errors;
 }
+
+unsigned long ipc_priority_latency(void) { return ipc_priority_latency_case(0); }
+
+unsigned long ipc_reply_handoff_latency(void) { return ipc_priority_latency_case(1); }
 
 static unsigned long ipc_claimed_signal_cancel(struct moss_ipc_endpoints pair) {
   if (syscall2(SYS_CAP_SET_INHERIT, (long)pair.receive, 1) != 0) {
