@@ -20,6 +20,7 @@
 > Loader 静态 libc 镜像复核：2026-09-24，九预设 **53/53 CTest**、11 份生产启动报告各 **113 步**；文件服务容量与原生域 4096 页上限对齐，用户态 Loader 可装载含文件初始化 TLS 的静态 mlibc 程序，见 [3.96](moss-todo.md#396-loader-静态-libc-镜像与-tls-模板2026-09-24)。
 > Loader 私有镜像封存复核：2026-09-24，九预设 **53/53 CTest**、11 份生产启动报告各 **113 步**；不具名镜像在交给 Loader 前不可再写入或缩容，见 [3.97](moss-todo.md#397-loader-私有镜像封存与拒绝写入2026-09-24)。
 > Loader 入站封存门禁复核：2026-09-24，九预设 **53/53 CTest**、11 份生产启动报告各 **113 步**；Loader 在读取前自行封存，公开具名文件经真实 `RUN` 被拒绝，见 [3.98](moss-todo.md#398-loader-入站文件封存门禁2026-09-24)。
+> 具名文件快照装载复核：2026-09-24，九预设 **53/53 CTest**、11 份生产启动报告各 **113 步**；根端点按名生成已封存快照，源文件继续可写，Loader 在源文件被改坏时仍从快照启动，见 [3.100](moss-todo.md#3100-具名文件的不可变装载快照2026-09-24)。
 > 本文取代旧清单中“完成即可靠”“x86/RISC-V 64 仅为启动桩”的描述。
 > 审计问题的原始证据、当前状态及完整验收条件见 [moss-todo.md](moss-todo.md)；MOSS-001～032 沿用原编号，不重新编号。
 
@@ -84,7 +85,7 @@ uv run qemu.py --manifest build/arm64-debug/moss-artifacts.json
 | ELF / userspace / initramfs | ELF64 checked LoadPlan、逐段 PT_LOAD/VMA 后备、按 ISA 的 trampoline 和 syscall wrapper；静态 mlibc、BusyBox ash、独立 validation 映像、CPIO newc 与 VFS exec | 014；015/016 的事务与受支持静态 ELF 子集已关闭；动态加载、共享 LOAD 页和完整进程继承不是已支持能力 |
 | VFS | inode/dentry/File/FdTable、路径/mount/dcache、ramfs、devfs(console/null/zero)、stdio、open/close/read/write/lseek/fstat/dup/dup2/pipe、匿名 pipefs 与有界 I/O 视图；FD 模式检查、稳定引用及 pipe 阻塞/EOF 已实现 | 022、024～026；共享 offset/close 并发、管道多端交错和分配失败注入仍待专项验收 |
 | 核心与同步 | C++ 模块、freestanding types/std/concepts、Result、unique_ptr/shared_ptr、klog；ticket/IRQ spinlock、RAII guard、atomics、PerCpuData/计数/队列、MPSC、拥有型锁容器、WaitQueue | 尤其 006、017、018；容器节点/查找引用安全不等于使用者的复合生命周期或调度协议安全 |
-| Native IPC 与服务 | 进程局部带权限 capability 表、同步控制调用/一次性 reply、单页共享内存对象；Reply 可经请求或响应跨进程移动，提交前失败恢复原句柄，成功交接时重绑调用者优先级；嵌套调用继承当前活跃调用者的最早绝对 deadline；`moss-init` 监护文件、命名空间、代码审批、受限装载及进程兼容服务，Loader 原生域可衰减权限后登记到进程服务 | ADR-0012/0023 的 CPU 预算、在途调用的动态 deadline 收紧、调用链深度与死锁策略，0024 的完整兼容服务拆分、0018 的实际 VFS 迁移等仍未完成；旧 PID/全局 ID IPC 模块尚保留测试代码 |
+| Native IPC 与服务 | 进程局部带权限 capability 表、同步控制调用/一次性 reply、单页共享内存对象；Reply 可经请求或响应跨进程移动，提交前失败恢复原句柄，成功交接时重绑调用者优先级；嵌套调用继承当前活跃调用者的最早绝对 deadline；File Service 根端点可按名生成封存快照供 Loader 装载；`moss-init` 监护文件、命名空间、代码审批、受限装载及进程兼容服务，Loader 原生域可衰减权限后登记到进程服务 | ADR-0012/0023 的 CPU 预算、在途调用的动态 deadline 收紧、调用链深度与死锁策略，0024 的完整兼容服务拆分、0018 的实际 VFS 迁移及普通 `execve` 等仍未完成；旧 PID/全局 ID IPC 模块尚保留测试代码 |
 | 启动机制与扩展框架 | 中断控制器、计时器及可用串口控制台保留必要的内核启动机制，实际硬件操作仍经 HAL；旧 `DeviceManager`/`Driver` 仅在验证镜像测试生命周期算法；NUMA/hugepage/reclaim/compaction/共享映射等未实现接口显式返回 Unsupported；Process 已有 uid/gid/euid/egid 字段 | ADR-0015 的设备资源 capability、隔离驱动、动态发现和 DMA 限制尚未实现；006、031～032 及其他未实现能力继续追踪 |
 
 主要实现分别位于 `src/boot/`、`src/aal/`、`src/hal/`、`src/drivers/`、`src/mm/`、`src/containers/`、`src/process/`、`src/kernel/`、`src/vfs/`、`src/userspace/` 和 `third_party/mlibc/`。下面以稳定审计编号追踪未完成工作，详细源码符号见 [审计状态表](moss-todo.md#4-问题总表与当前状态)。
@@ -94,7 +95,7 @@ uv run qemu.py --manifest build/arm64-debug/moss-artifacts.json
 ADR-0008～0033 是已接受的目标边界，并非当前实现的完成声明。下面仅勾选行内明确限定的切片；旧 MOSS-001～032 审计项仍按原验收标准追踪。
 
 - [x] ADR-0009/0010/0011 的第一条可运行路径：进程局部 capability、同步控制调用和单页共享内存已供独立服务使用；不代表通用权限撤销或完整数据面已完成。
-- [x] ADR-0014/0018 的第一条服务路径：`moss-init` 监护文件与命名空间服务，后者只解析 `/scratch`，服务死亡后的重连由用户态显式处理；内核 VFS 仍处理普通文件。
+- [x] ADR-0014/0018 的第一条服务路径：`moss-init` 监护文件与命名空间服务，后者解析单层绝对路径（默认已有 `/scratch`，也可创建其他具名文件），服务死亡后的重连由用户态显式处理；内核 VFS 仍处理普通文件。
 - [x] 生产内核不再创建或链接旧的 PID/全局服务 ID IPC 管理器，也不再把它的消息计数展示为 native IPC 统计；旧模块仅留验证镜像专项回归，不作为新服务 ABI。九预设 53/53 CTest 及生产 ELF 符号检查见 3.76。
 - [x] 生产启动不再创建 `DeviceManager` 或通过 `BootDriver` 重新包装已启用的中断控制器、计时器和控制台；旧匹配/回调框架仅链接验证镜像。九预设 53/53 CTest、关闭测试的独立构建及符号检查通过；内核仍保留上述启动机制，资源 capability 和隔离驱动服务仍未实现（ADR-0015，见 3.77）。
 - [x] 同步 IPC 的等待依赖参与内核 RT/CFS 有效优先级计算；嵌套调用、多调用者、基础 nice 变更、服务线程死亡和恢复有内核回归，另有实际三进程嵌套 IPC 往返（ADR-0012/0023，见 3.78）。
@@ -115,6 +116,7 @@ ADR-0008～0033 是已接受的目标边界，并非当前实现的完成声明�
 - [x] Loader 从能力寻址的易失文件装载超过旧 64 KiB 限制的静态 mlibc ELF；`PT_TLS` 文件模板须由匹配的 `PT_LOAD` 承载，静态运行时可读取初始化与零初始化线程变量。supervisor 每次启动 Loader 都等待探针退出码 41；三架构九预设 53/53 CTest、11 份生产启动报告各 113 步。文件服务总容量仍限 16 MiB，内核 VFS 启动种子及普通 `execve` 尚未迁移（ADR-0025 的静态 libc 切片，见 3.96）。
 - [x] supervisor 将私有不具名镜像写入 File Service 后，在交给 Loader 前执行不可逆 `SEAL`；同一对象后续通过任何发送端的 `WRITE`、`RESIZE` 均被拒绝，启动时以真实 IPC 尝试破坏镜像并检查拒绝。公开具名文件保持可写；持久文件、pager 与普通 POSIX `execve` 的内容身份仍待迁移（ADR-0025/0026 的有界镜像身份切片，见 3.97）。
 - [x] Loader 对每个 `RUN` 附带的不具名 File Object 在首次读取前自行执行 `SEAL`，精确校验回执；无法封存则不读取、不申请代码批准、不创建域。每次服务启动时用公开 `/scratch` 的具名句柄验证 `NO_IMAGE` 拒绝，避免未来新调用方绕过 supervisor 的封存步骤；普通 POSIX `execve`、持久文件及恶意文件服务仍待迁移（ADR-0025/0026 的 Loader 入站门禁切片，见 3.98）。
+- [x] File Service 根发送端可按名称把具名文件复制为不具名、已封存快照；普通具名 `SEND` 句柄不能申请快照。supervisor 每个文件服务存活期只保留一份，原文件头被写坏期间 Loader 仍从快照启动；九预设 53/53 CTest、11 份生产启动报告各 113 步。对象回收、完整资源计费、持久文件及普通 POSIX `execve` 仍开放（ADR-0025/0026 的限定内容身份切片，见 3.100）。
 - [x] 三架构真实用户态 IPC 在同核八个中优先级 CPU 负载下，由高优先级调用低优先级服务，服务完成计算后在调用截止前回复；九预设通过，关闭捐赠的 x64 反向对照超时（ADR-0012/0023 的限定时延验收，见 3.86）。
 - [x] 一次性 Reply capability 可在同步 IPC 的请求或响应中跨进程移动；原句柄失效、持有者丢弃唤醒调用方、接收端退出后已交付调用继续有效，优先级捐赠在唤醒新持有者前重绑。九预设和反向对照见 3.91（ADR-0011/0012/0023 的限定交接机制）。
 - [x] 附带 Reply 的请求入队或回复提交失败时恢复原句柄；成功提交仍保持一次性移动。能力表回滚及已关闭端点上的真实 IPC 失败后重试见 3.92（ADR-0011 的权能提交边界）。
