@@ -109,11 +109,13 @@ unsigned long ipc_domain_spawn(void) {
   errors |= (unsigned long)(single <= 0 || syscall2(SYS_CODE_READ, single, (long)readback) != 0 ||
                             readback[entry - code_page] != original[entry - code_page])
             << 18;
+  errors |= (unsigned long)(single <= 0 || syscall1(SYS_CODE_PAGE_COUNT, single) != 1) << 25;
   if (single > 0)
     (void)syscall1(SYS_CAP_CLOSE, single);
   long version = syscall2(SYS_CODE_SNAPSHOT_RANGE, (long)mutable_code, CODE_RANGE_TEST_PAGES);
   if (factory <= 0 || authority <= 0 || version <= 0)
     return errors | 1;
+  errors |= (unsigned long)(syscall1(SYS_CODE_PAGE_COUNT, version) != CODE_RANGE_TEST_PAGES) << 26;
   errors |= (unsigned long)(syscall2(SYS_CODE_SNAPSHOT_RANGE, (long)mutable_code, MOSS_DOMAIN_MAX_IMAGE_PAGES + 1) !=
                             -IPC_EINVAL)
             << 19;
@@ -155,6 +157,7 @@ unsigned long ipc_domain_spawn(void) {
   if (approved <= 0)
     return errors | (1UL << 15);
   errors |= (unsigned long)(syscall2(SYS_CODE_READ, approved, (long)readback) != -IPC_EACCES) << 16;
+  errors |= (unsigned long)(syscall1(SYS_CODE_PAGE_COUNT, approved) != -IPC_EACCES) << 27;
   page.code = (unsigned long)approved;
   errors |= (unsigned long)(syscall2(SYS_DOMAIN_SPAWN, 0, (long)&image) != -IPC_EBADF);
   long limited = syscall2(SYS_CAP_DUPLICATE, factory, MOSS_CAP_TRANSFER);

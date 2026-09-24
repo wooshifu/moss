@@ -776,6 +776,18 @@ long sys_code_read(long version_handle, long destination, long, long, long, long
   return sys_code_read_range(version_handle, 0, destination, 1, 0, 0);
 }
 
+// Approval covers the whole version, so review must use its kernel-held length.
+long sys_code_page_count(long version_handle, long, long, long, long, long) noexcept {
+  auto caller = process::current_process();
+  if (!caller)
+    return -errc::ESRCH;
+  auto version = caller->capabilities().lookup(static_cast<Handle>(version_handle), capability::ObjectType::CodeVersion,
+                                               capability::rights::MAP_READ);
+  if (!version)
+    return domain_cap_error(version.error());
+  return static_cast<long>(static_cast<CodeVersionObject *>((*version).get())->count());
+}
+
 long sys_code_authority(long, long, long, long, long, long) noexcept {
   auto caller = process::current_process();
   if (!caller)
@@ -3509,7 +3521,8 @@ const SyscallDescriptor SYSCALL_TABLE[static_cast<int>(SyscallNumber::MAX_SYSCAL
     {"code_authority", handlers::sys_code_authority, 0, true, "Mint boot-owned code approval authority"},
     {"code_approve", handlers::sys_code_approve, 2, true, "Approve an immutable version for execution"},
     {"code_snapshot_range", handlers::sys_code_snapshot_range, 2, true, "Snapshot a bounded immutable code range"},
-    {"code_read_range", handlers::sys_code_read_range, 4, true, "Read pages from an immutable code version"}};
+    {"code_read_range", handlers::sys_code_read_range, 4, true, "Read pages from an immutable code version"},
+    {"code_page_count", handlers::sys_code_page_count, 1, true, "Get the immutable version's full page count"}};
 
 // 系统调用分发器实现
 long SyscallDispatcher::dispatch(long syscall_number, long arg0, long arg1, long arg2, long arg3, long arg4,
