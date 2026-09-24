@@ -291,8 +291,9 @@ static void empty_case() {}
 void register_lifetime_smp() {
   ut::register_suite("mm.lifetime", [] {
     ut::register_test("held_readers", empty_case);
-    for (const auto *name : HardwareRootLifetime::names)
+    for (const auto *name : HardwareRootLifetime::names) {
       ut::register_test(name, empty_case);
+    }
   });
 }
 

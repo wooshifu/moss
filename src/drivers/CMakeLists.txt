@@ -7,7 +7,10 @@ target_sources(
     PUBLIC FILE_SET CXX_MODULES FILES src/console.cppm
 )
 
-target_sources(moss_driver_console PRIVATE src/console.cpp)
+target_sources(
+    moss_driver_console
+    PRIVATE src/console.cpp
+)
 
 target_link_libraries(
     moss_driver_console
@@ -20,8 +23,8 @@ target_link_libraries(
             moss_platform
 )
 
-# Keep the former in-kernel matching/callback framework available for its
-# lifecycle regressions without making it part of the production image.
+# Keep the former in-kernel matching/callback framework available for its lifecycle regressions without making it part
+# of the production image.
 add_library(moss_drivers_validation OBJECT EXCLUDE_FROM_ALL)
 target_sources(
     moss_drivers_validation
@@ -29,7 +32,11 @@ target_sources(
 )
 target_link_libraries(
     moss_drivers_validation
-    PRIVATE moss_core moss_abi moss_aal moss_containers moss_interrupts
+    PRIVATE moss_core
+            moss_abi
+            moss_aal
+            moss_containers
+            moss_interrupts
 )
 
 message(STATUS "驱动模块配置完成")

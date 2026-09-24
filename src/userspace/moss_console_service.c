@@ -25,20 +25,23 @@ static void wake_waiter(unsigned int index) {
   (void)syscall2(SYS_IPC_REPLY, (long)waiters[index], (long)&response);
   (void)syscall1(SYS_CAP_CLOSE, (long)waiters[index]);
   --waiter_count;
-  if (index < waiter_count)
+  if (index < waiter_count) {
     memmove(waiters + index, waiters + index + 1, (waiter_count - index) * sizeof(waiters[0]));
+  }
 }
 
 static void wake_input_waiters(void) {
   if (length && !prepared_count) {
-    while (waiter_count)
+    while (waiter_count) {
       wake_waiter(0);
+    }
   }
 }
 
 static unsigned long parse_handle(const char *text) {
-  if (!text)
+  if (!text) {
     return 0;
+  }
   char *end = NULL;
   errno = 0;
   unsigned long handle = strtoul(text, &end, 10);
@@ -46,21 +49,25 @@ static unsigned long parse_handle(const char *text) {
 }
 
 int main(int argc, char **argv) {
-  if (argc != 3)
+  if (argc != 3) {
     return 2;
+  }
   unsigned long receive = parse_handle(argv[1]);
   unsigned long mint = parse_handle(argv[2]);
-  if (!receive || !mint)
+  if (!receive || !mint) {
     return 2;
+  }
 
   for (;;) {
     struct moss_ipc_message request = {0};
     unsigned long reply = 0;
     long received = syscall3(SYS_IPC_RECEIVE, (long)receive, (long)&request, (long)&reply);
-    if (received == -EINTR)
+    if (received == -EINTR) {
       continue;
-    if (received < 0)
+    }
+    if (received < 0) {
       return 1;
+    }
 
     struct moss_ipc_message response = {.size = 1, .payload = {MOSS_CONSOLE_BAD_REQUEST}};
     long minted = 0;
@@ -94,8 +101,9 @@ int main(int argc, char **argv) {
     } else if (request.badge == 0 && request.size == MOSS_CONSOLE_WAIT_BYTES &&
                request.payload[0] == MOSS_CONSOLE_WAIT && request.payload[1] == 0 && request.capability &&
                request.rights == MOSS_CAP_SEND) {
-      if (waiter_count == CONSOLE_WAIT_LIMIT)
+      if (waiter_count == CONSOLE_WAIT_LIMIT) {
         wake_waiter(0); // A spurious wake also reclaims an abandoned reply.
+      }
       waiters[waiter_count++] = request.capability;
       request.capability = 0;
       response.payload[0] = MOSS_CONSOLE_OK;
@@ -118,9 +126,7 @@ int main(int argc, char **argv) {
           response.size = MOSS_CONSOLE_IO_REPLY_BYTES;
           response.payload[0] = MOSS_CONSOLE_OK;
           moss_console_put_u16(response.payload + 1, 0);
-        } else if (reading && prepared_count) {
-          response.payload[0] = MOSS_CONSOLE_WOULD_BLOCK;
-        } else if (reading && !length) {
+        } else if (reading && (prepared_count || !length)) {
           response.payload[0] = MOSS_CONSOLE_WOULD_BLOCK;
         } else {
           long mapped =
@@ -145,8 +151,9 @@ int main(int argc, char **argv) {
             } else {
               response.payload[0] = MOSS_CONSOLE_UNAVAILABLE;
             }
-            if (syscall2(SYS_MUNMAP, mapped, MOSS_MEM_OBJECT_BYTES) != 0)
+            if (syscall2(SYS_MUNMAP, mapped, MOSS_MEM_OBJECT_BYTES) != 0) {
               return 1;
+            }
           } else {
             response.payload[0] = MOSS_CONSOLE_UNAVAILABLE;
           }
@@ -154,8 +161,9 @@ int main(int argc, char **argv) {
       }
     }
 
-    if (request.capability)
+    if (request.capability) {
       (void)syscall1(SYS_CAP_CLOSE, (long)request.capability);
+    }
     long sent = syscall2(SYS_IPC_REPLY, (long)reply, (long)&response);
     // Input ownership changes only after the immediate IPC reply commits;
     // a timed-out feeder or reader must be able to retry without duplication.
@@ -179,7 +187,8 @@ int main(int argc, char **argv) {
       prepared_count = 0;
     }
     wake_input_waiters();
-    if (minted > 0)
+    if (minted > 0) {
       (void)syscall1(SYS_CAP_CLOSE, minted);
+    }
   }
 }

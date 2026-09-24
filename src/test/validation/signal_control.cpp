@@ -93,6 +93,7 @@ constexpr long CPU_BOUND_ARM_PROBE = 60;
 constexpr long CPU_BOUND_CHECK_PROBE = 61;
 constexpr long STOP_STATE_PROBE = 62;
 constexpr long STOP_PENDING_PROBE = 63;
+constexpr long MAX_PROCESS_ID = (1L << (sizeof(ProcessId) * 8)) - 1;
 } // namespace
 
 extern "C" void moss_validation_user_return(void *raw_frame) noexcept {
@@ -112,7 +113,7 @@ extern "C" void moss_validation_user_return(void *raw_frame) noexcept {
 
 extern "C" void moss_validation_wait_before_register(u32 parent_pid, long wait_pid) noexcept {
   if (!ut::same_id(active_case, "wait_registration") || parent_pid != wait_exit_parent || wait_pid <= 1 ||
-      wait_pid > static_cast<long>(~ProcessId{0}) || __atomic_load_n(&wait_exit_phase, __ATOMIC_ACQUIRE) != 1) {
+      wait_pid > MAX_PROCESS_ID || __atomic_load_n(&wait_exit_phase, __ATOMIC_ACQUIRE) != 1) {
     return;
   }
   // The child can leave its gate only after the first Zombie scan missed it.
@@ -131,8 +132,9 @@ extern "C" void moss_validation_sigaction_before_replace(u32 pid, u32 signo) noe
     return;
   }
   const auto previous = parent->signal_action(signo);
-  const process::Sigaction injected{process::SIG_IGN, process::sig::sigmask(process::sig::SIGUSR2),
-                                    process::sa_flags::SA_RESTART};
+  const process::Sigaction injected{.handler = process::SIG_IGN,
+                                    .mask = process::sig::sigmask(process::sig::SIGUSR2),
+                                    .flags = process::sa_flags::SA_RESTART};
   if (parent->try_replace_signal_action(signo, previous, injected)) {
     sigaction_race_phase = 2;
   }
@@ -196,11 +198,14 @@ long signal_control(long op, long arg1, long arg2) {
     auto *frame = thread->trap_frame;
     // Native syscall 13 is waitpid; inspect the real blocked frame rather
     // than treating the child's readiness or a preceding syscall as proof.
+    long expected_wait_pid = arg2;
+    if (ut::same_id(active_case, "wait_process_group")) {
+      expected_wait_pid = -arg2;
+    } else if (ut::same_id(active_case, "wait_group_change")) {
+      expected_wait_pid = 0;
+    }
     return thread->state == process::ProcessState::Sleeping && thread->sleep_handoff.load() == 0 && frame &&
-           frame->syscall_number() == 13 &&
-           frame->argument(0) == static_cast<u64>(ut::same_id(active_case, "wait_process_group")  ? -arg2
-                                                  : ut::same_id(active_case, "wait_group_change") ? 0
-                                                                                                  : arg2);
+           frame->syscall_number() == 13 && frame->argument(0) == static_cast<u64>(expected_wait_pid);
   }
   if (op == SIGACTION_RACE_CONTROL && ut::same_id(selection, "users.signals") &&
       ut::same_id(active_case, "sigaction_race") && affinity_valid()) {
@@ -242,7 +247,7 @@ long signal_control(long op, long arg1, long arg2) {
   }
   if ((op == STOP_STATE_PROBE || op == STOP_PENDING_PROBE) && ut::same_id(selection, "users.signals") &&
       ut::same_id(active_case, "stop_continue")) {
-    if (!affinity_valid() || arg1 <= 0 || arg1 > static_cast<long>(~ProcessId{0}) || (arg2 != 0 && arg2 != 1)) {
+    if (!affinity_valid() || arg1 <= 0 || arg1 > MAX_PROCESS_ID || (arg2 != 0 && arg2 != 1)) {
       return -1;
     }
     auto child = process::g_process_manager->find_process(static_cast<ProcessId>(arg1));

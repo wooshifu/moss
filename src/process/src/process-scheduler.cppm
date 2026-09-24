@@ -1327,11 +1327,13 @@ public:
   }
 
   [[nodiscard]] bool begin_ipc_call(PriorityDonation *donation, Thread *caller, u64 *deadline_ns = nullptr) noexcept {
-    if (!donation || !caller)
+    if (!donation || !caller) {
       return false;
+    }
     containers::LockGuard<containers::IrqSpinLock> guard(ipc_priority_lock_);
-    if (caller->ipc_wait)
+    if (caller->ipc_wait) {
       return false;
+    }
     u64 effective_deadline = deadline_ns ? *deadline_ns : 0;
     // A service thread may hold several replies. Its next call inherits the
     // earliest active caller deadline, captured with the donor-list lock.
@@ -1353,55 +1355,66 @@ public:
   }
 
   void bind_ipc_server(PriorityDonation *donation, Thread *server) noexcept {
-    if (!donation)
+    if (!donation) {
       return;
+    }
     containers::LockGuard<containers::IrqSpinLock> guard(ipc_priority_lock_);
-    if (!donation->caller || donation->caller->ipc_wait != donation)
+    if (!donation->caller || donation->caller->ipc_wait != donation) {
       return;
+    }
     bind_ipc_server_locked(donation, server);
   }
 
   [[nodiscard]] bool rebind_ipc_server(PriorityDonation *donation, Thread *expected, Thread *server) noexcept {
-    if (!donation)
+    if (!donation) {
       return false;
+    }
     containers::LockGuard<containers::IrqSpinLock> guard(ipc_priority_lock_);
-    if (!donation->caller || donation->caller->ipc_wait != donation || donation->server != expected)
+    if (!donation->caller || donation->caller->ipc_wait != donation || donation->server != expected) {
       return false;
+    }
     bind_ipc_server_locked(donation, server);
     return true;
   }
 
   void end_ipc_call(PriorityDonation *donation) noexcept {
-    if (!donation)
+    if (!donation) {
       return;
+    }
     containers::LockGuard<containers::IrqSpinLock> guard(ipc_priority_lock_);
     Thread *caller = donation->caller;
     Thread *server = donation->server;
-    if (caller && caller->ipc_wait == donation)
+    if (caller && caller->ipc_wait == donation) {
       caller->ipc_wait = nullptr;
-    if (server)
+    }
+    if (server) {
       unlink_ipc_donor(server, donation);
+    }
     donation->caller = nullptr;
     donation->server = nullptr;
     donation->next = nullptr;
     donation->deadline_ns = 0;
-    if (caller && !caller->ipc_wait && !caller->ipc_donors)
+    if (caller && !caller->ipc_wait && !caller->ipc_donors) {
       caller->ipc_scheduler = nullptr;
+    }
     if (server) {
       recompute_ipc_priority(server);
-      if (!server->ipc_wait && !server->ipc_donors)
+      if (!server->ipc_wait && !server->ipc_donors) {
         server->ipc_scheduler = nullptr;
+      }
     }
   }
 
   void forget_ipc_thread(Thread *thread) noexcept {
-    if (!thread)
+    if (!thread) {
       return;
+    }
     containers::LockGuard<containers::IrqSpinLock> guard(ipc_priority_lock_);
     Thread *server = thread->ipc_wait ? thread->ipc_wait->server : nullptr;
     if (thread->ipc_wait) {
-      if (server)
+      if (server) {
         unlink_ipc_donor(server, thread->ipc_wait);
+      }
       thread->ipc_wait->caller = nullptr;
       thread->ipc_wait->server = nullptr;
       thread->ipc_wait->next = nullptr;
@@ -1420,14 +1433,16 @@ public:
     thread->ipc_scheduler = nullptr;
     if (server && server != thread) {
       recompute_ipc_priority(server);
-      if (!server->ipc_wait && !server->ipc_donors)
+      if (!server->ipc_wait && !server->ipc_donors) {
         server->ipc_scheduler = nullptr;
+      }
     }
   }
 
   void set_base_nice(Thread *thread, i32 nice) noexcept {
-    if (!thread || nice < priority::MIN_NICE || nice > priority::MAX_NICE)
+    if (!thread || nice < priority::MIN_NICE || nice > priority::MAX_NICE) {
       return;
+    }
     containers::LockGuard<containers::IrqSpinLock> guard(ipc_priority_lock_);
     const i32 old_effective = thread->effective_cfs_nice();
     u32 cpu;
@@ -1435,24 +1450,29 @@ public:
       containers::LockGuard<containers::IrqSpinLock> queue_guard(task_transition_lock_);
       cpu = thread->cpu;
       const bool queued = thread->se.rb_on_rq || thread->rt_on_rq;
-      if (queued)
+      if (queued) {
         dequeue_task_unlocked(thread);
+      }
       thread->se.nice.store(nice);
       const u32 weight = cfs_params::nice_to_weight(thread->effective_cfs_nice());
       thread->se.weight.store(weight);
       thread->se.load_weight.store(weight);
       if (queued) {
-        if (thread->effective_rt_priority() == 0 && thread->effective_cfs_nice() < old_effective)
+        if (thread->effective_rt_priority() == 0 && thread->effective_cfs_nice() < old_effective) {
           runqueues_.get_cpu(cpu).place_entity(thread, false);
+        }
         enqueue_task_unlocked(thread, cpu);
       }
-      if (thread->state == ProcessState::Running && thread->effective_cfs_nice() > old_effective)
+      if (thread->state == ProcessState::Running && thread->effective_cfs_nice() > old_effective) {
         thread->need_resched = true;
+      }
     }
-    if (auto *server = ipc_wait_target(thread))
+    if (auto *server = ipc_wait_target(thread)) {
       recompute_ipc_priority(server);
-    if (cpu < g_num_cpus && thread->effective_cfs_nice() != old_effective)
+    }
+    if (cpu < g_num_cpus && thread->effective_cfs_nice() != old_effective) {
       send_reschedule_ipi(cpu);
+    }
   }
 
   // Place entity vruntime for fork or wakeup (before enqueue)
@@ -1493,11 +1513,13 @@ public:
 private:
   // The caller holds ipc_priority_lock_ through list repair and recomputation.
   void bind_ipc_server_locked(PriorityDonation *donation, Thread *server) noexcept {
-    if (donation->server == server)
+    if (donation->server == server) {
       return;
+    }
     Thread *old_server = donation->server;
-    if (old_server)
+    if (old_server) {
       unlink_ipc_donor(old_server, donation);
+    }
     donation->server = server;
     donation->next = nullptr;
     if (server) {
@@ -1507,11 +1529,13 @@ private:
     }
     if (old_server) {
       recompute_ipc_priority(old_server);
-      if (!old_server->ipc_wait && !old_server->ipc_donors)
+      if (!old_server->ipc_wait && !old_server->ipc_donors) {
         old_server->ipc_scheduler = nullptr;
+      }
     }
-    if (server)
+    if (server) {
       recompute_ipc_priority(server);
+    }
   }
 
   [[nodiscard]] static Thread *ipc_wait_target(Thread *thread) noexcept {
@@ -1534,8 +1558,9 @@ private:
       slow = ipc_wait_target(slow);
       fast = ipc_wait_target(ipc_wait_target(fast));
     } while (slow && fast && slow != fast);
-    if (!slow || !fast)
+    if (!slow || !fast) {
       return nullptr;
+    }
     slow = start;
     while (slow != fast) {
       slow = ipc_wait_target(slow);
@@ -1545,8 +1570,9 @@ private:
   }
 
   void set_inherited_priority(Thread *thread, u32 inherited_rt, i32 inherited_nice) noexcept {
-    if (thread->inherited_rt_priority.load() == inherited_rt && thread->inherited_cfs_nice.load() == inherited_nice)
+    if (thread->inherited_rt_priority.load() == inherited_rt && thread->inherited_cfs_nice.load() == inherited_nice) {
       return;
+    }
     const u32 old_rt = thread->effective_rt_priority();
     const i32 old_nice = thread->effective_cfs_nice();
     const u32 base_rt = thread->sched_class == SchedClass::RealTime ? thread->rt.priority : 0;
@@ -1564,25 +1590,29 @@ private:
       cpu = thread->cpu;
       // A selected task is Ready but no longer queued until bootstrap dispatch.
       const bool queued = thread->se.rb_on_rq || thread->rt_on_rq;
-      if (queued)
+      if (queued) {
         dequeue_task_unlocked(thread);
+      }
       thread->inherited_rt_priority.store(inherited_rt);
       thread->inherited_cfs_nice.store(inherited_nice);
       const u32 weight = cfs_params::nice_to_weight(thread->effective_cfs_nice());
       thread->se.weight.store(weight);
       thread->se.load_weight.store(weight);
       if (queued) {
-        if (thread->effective_rt_priority() == 0 && thread->effective_cfs_nice() < old_nice)
+        if (thread->effective_rt_priority() == 0 && thread->effective_cfs_nice() < old_nice) {
           runqueues_.get_cpu(cpu).place_entity(thread, false);
+        }
         enqueue_task_unlocked(thread, cpu);
       }
       if (thread->state == ProcessState::Running &&
           (old_rt > thread->effective_rt_priority() ||
-           (old_rt == thread->effective_rt_priority() && old_nice < thread->effective_cfs_nice())))
+           (old_rt == thread->effective_rt_priority() && old_nice < thread->effective_cfs_nice()))) {
         thread->need_resched = true;
+      }
     }
-    if ((old_rt != thread->effective_rt_priority() || old_nice != thread->effective_cfs_nice()) && cpu < g_num_cpus)
+    if ((old_rt != thread->effective_rt_priority() || old_nice != thread->effective_cfs_nice()) && cpu < g_num_cpus) {
       send_reschedule_ipi(cpu);
+    }
   }
 
   void recompute_ipc_priority(Thread *start) noexcept {
@@ -1592,16 +1622,19 @@ private:
       i32 inherited_nice = priority::NO_INHERITED_NICE;
       for (auto *donation = thread->ipc_donors; donation; donation = donation->next) {
         if (donation->caller) {
-          if (donation->caller->effective_rt_priority() > inherited_rt)
+          if (donation->caller->effective_rt_priority() > inherited_rt) {
             inherited_rt = donation->caller->effective_rt_priority();
-          if (donation->caller->effective_cfs_nice() < inherited_nice)
+          }
+          if (donation->caller->effective_cfs_nice() < inherited_nice) {
             inherited_nice = donation->caller->effective_cfs_nice();
+          }
         }
       }
       set_inherited_priority(thread, inherited_rt, inherited_nice);
     }
-    if (!cycle)
+    if (!cycle) {
       return;
+    }
 
     // A cycle must not retain a priority after its last external donor exits.
     // Rebuild its common maximum from base priorities and outside callers.
@@ -1609,34 +1642,41 @@ private:
     for (Thread *thread = cycle;;) {
       thread->ipc_cycle_epoch = epoch;
       thread = ipc_wait_target(thread);
-      if (thread == cycle)
+      if (thread == cycle) {
         break;
+      }
     }
     u32 highest_rt = 0;
     i32 highest_nice = priority::NO_INHERITED_NICE;
     for (Thread *thread = cycle;;) {
       const u32 base = thread->sched_class == SchedClass::RealTime ? thread->rt.priority : 0;
-      if (base > highest_rt)
+      if (base > highest_rt) {
         highest_rt = base;
-      if (thread->se.nice.load() < highest_nice)
+      }
+      if (thread->se.nice.load() < highest_nice) {
         highest_nice = thread->se.nice.load();
+      }
       for (auto *donation = thread->ipc_donors; donation; donation = donation->next) {
         if (donation->caller && donation->caller->ipc_cycle_epoch != epoch) {
-          if (donation->caller->effective_rt_priority() > highest_rt)
+          if (donation->caller->effective_rt_priority() > highest_rt) {
             highest_rt = donation->caller->effective_rt_priority();
-          if (donation->caller->effective_cfs_nice() < highest_nice)
+          }
+          if (donation->caller->effective_cfs_nice() < highest_nice) {
             highest_nice = donation->caller->effective_cfs_nice();
+          }
         }
       }
       thread = ipc_wait_target(thread);
-      if (thread == cycle)
+      if (thread == cycle) {
         break;
+      }
     }
     for (Thread *thread = cycle;;) {
       set_inherited_priority(thread, highest_rt, highest_nice);
       thread = ipc_wait_target(thread);
-      if (thread == cycle)
+      if (thread == cycle) {
         break;
+      }
     }
   }
 
@@ -1782,7 +1822,7 @@ public:
           // not reload the count, so arm the secondary CPU before user dispatch.
           // CPU 0's timer is programmed by the shared HrTimer queue instead.
           if (cpu_id != 0) {
-            auto &clock = timer::TimerSubsystem::instance().clocksource();
+            const auto &clock = timer::TimerSubsystem::instance().clocksource();
             hal::timer::set_compare(hal::timer::read_counter() + clock.ns_to_cycles(cfs_params::SCHED_LATENCY_NS));
           }
 #endif
@@ -2532,8 +2572,9 @@ private:
         }
         // A newly populated executable page may have been written on a
         // different CPU. Synchronize this CPU before its first user fetch.
-        if (first_user_entry)
+        if (first_user_entry) {
           arch::invalidate_icache();
+        }
 
 #if defined(MOSS_ARCH_ARM64)
         // Set TPIDR_EL1 for per-thread kernel stack.

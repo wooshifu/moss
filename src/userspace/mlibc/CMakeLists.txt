@@ -36,10 +36,10 @@ set(MLIBC_GENERATED "${CMAKE_CURRENT_BINARY_DIR}/include")
 configure_file(../syscall.h "${MLIBC_GENERATED}/moss-syscall.h" COPYONLY)
 configure_file(../moss_process_protocol.h "${MLIBC_GENERATED}/moss-process-protocol.h" COPYONLY)
 file(MAKE_DIRECTORY "${MLIBC_GENERATED}/moss")
-configure_file("${MOSS_ROOT}/src/abi/include/moss/syscall_numbers.def"
-               "${MLIBC_GENERATED}/moss/syscall_numbers.def" COPYONLY)
-configure_file("${MOSS_ROOT}/src/abi/include/moss/startup_auxv.h"
-               "${MLIBC_GENERATED}/moss/startup_auxv.h" COPYONLY)
+configure_file(
+    "${MOSS_ROOT}/src/abi/include/moss/syscall_numbers.def" "${MLIBC_GENERATED}/moss/syscall_numbers.def" COPYONLY
+)
+configure_file("${MOSS_ROOT}/src/abi/include/moss/startup_auxv.h" "${MLIBC_GENERATED}/moss/startup_auxv.h" COPYONLY)
 configure_file("${MOSS_ROOT}/src/abi/include/moss/domain_spawn.h" "${MLIBC_GENERATED}/moss/domain_spawn.h" COPYONLY)
 find_program(LLVM_STRIP llvm-strip REQUIRED)
 add_subdirectory("${MOSS_THIRD_PARTY}/mlibc" mlibc)
@@ -60,8 +60,8 @@ function(add_moss_runtime_program TARGET SOURCE OUTPUT)
         -nostdlib
         -static
         -fuse-ld=lld
-        # Match userspace.ld: 8 GiB keeps code above inherited kernel identity mappings;
-        # 4096-byte segment alignment permits distinct permissions on base pages.
+        # Match userspace.ld: 8 GiB keeps code above inherited kernel identity mappings; 4096-byte segment alignment
+        # permits distinct permissions on base pages.
         -Wl,--image-base=0x200000000,-z,max-page-size=4096
     )
     set_target_properties(

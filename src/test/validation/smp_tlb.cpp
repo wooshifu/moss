@@ -369,8 +369,9 @@ bool tlb_read(u8 &value, VirtAddr address) { return TlbBroadcast::read(value, ad
 static void empty_case() {}
 void register_tlb_smp() {
   ut::register_suite("mm.tlb_broadcast", [] {
-    for (const auto *name : TlbBroadcast::names)
+    for (const auto *name : TlbBroadcast::names) {
       ut::register_test(name, empty_case);
+    }
   });
 }
 
@@ -410,15 +411,18 @@ long control_tlb_smp(long op, long arg1, [[maybe_unused]] long arg2) {
   invalid_control();
 }
 void tlb_broadcast_contended(PhysAddr root) {
-  if (tlb_broadcast)
+  if (tlb_broadcast) {
     tlb_broadcast->contended(root);
+  }
 }
 void tlb_broadcast_tlb_contended() {
-  if (tlb_broadcast)
+  if (tlb_broadcast) {
     tlb_broadcast->publishers.contended();
+  }
 }
 void tlb_broadcast_tlb_publishing() {
-  if (tlb_broadcast)
+  if (tlb_broadcast) {
     tlb_broadcast->publishers.publishing();
+  }
 }
 } // namespace moss::test::validation

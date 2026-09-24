@@ -73,8 +73,9 @@ private:
 public:
   [[nodiscard]] bool begin_callback() noexcept {
     containers::LockGuard<containers::IrqSpinLock> guard(callback_lock_);
-    if (retiring_)
+    if (retiring_) {
       return false;
+    }
     (void)active_callbacks_.fetch_add(1, containers::MemoryOrder::Relaxed);
     return true;
   }
@@ -84,8 +85,9 @@ public:
 
   [[nodiscard]] bool stop_callbacks() noexcept {
     containers::LockGuard<containers::IrqSpinLock> guard(callback_lock_);
-    if (retiring_)
+    if (retiring_) {
       return false;
+    }
     retiring_ = true;
     return true;
   }
@@ -97,8 +99,9 @@ public:
 
   void wait_callbacks() const noexcept {
     // Called from thread context, never from this IRQ's own callback.
-    while (active_callbacks_.load(containers::MemoryOrder::Acquire) != 0)
+    while (active_callbacks_.load(containers::MemoryOrder::Acquire) != 0) {
       arch::cpu_yield();
+    }
   }
 
   // Priority 128 matches HAL's 0x80 default under PMR=0xff; target mask 1
@@ -235,11 +238,13 @@ public:
     {
       containers::LockGuard<containers::IrqSpinLock> guard(table_write_lock_);
       auto found = interrupt_table_.find(irq);
-      if (!found)
+      if (!found) {
         return VoidResult{ErrorCode::NotFound};
+      }
       desc = *found;
-      if (!desc->stop_callbacks())
+      if (!desc->stop_callbacks()) {
         return VoidResult{ErrorCode::ResourceBusy};
+      }
       ::moss::kernel::hal::intc::disable_irq(distributor_base_, irq);
       desc->enabled.store(0, containers::MemoryOrder::Release);
     }
@@ -258,8 +263,9 @@ public:
 
     containers::LockGuard<containers::IrqSpinLock> guard(table_write_lock_);
     auto desc_ptr = interrupt_table_.find(irq);
-    if (desc_ptr && (*desc_ptr)->callbacks_stopped())
+    if (desc_ptr && (*desc_ptr)->callbacks_stopped()) {
       return VoidResult{ErrorCode::ResourceBusy};
+    }
     ::moss::kernel::hal::intc::enable_irq(distributor_base_, irq);
     if (static_cast<bool>(desc_ptr)) {
       auto desc = *desc_ptr;

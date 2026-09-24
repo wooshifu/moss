@@ -95,7 +95,7 @@ def compress_usage(usage_executable: Path, output: Path) -> None:
     if not compressed.startswith(b"BZ"):
         raise RuntimeError("Python's bzip2 output does not have the expected BZ header")
 
-    lines = ["#define UNPACKED_USAGE \"\" \\"]
+    lines = ['#define UNPACKED_USAGE "" \\']
     lines.extend(f'"{chunk}" \\' for chunk in _octal_chunks(usage, prefix="\\", separator=""))
     lines.extend(("", f"#define UNPACKED_USAGE_LENGTH {len(usage)}", "", "#define PACKED_USAGE \\"))
     lines.extend(f"{chunk}, \\" for chunk in _octal_chunks(compressed[2:], prefix="0", separator=","))

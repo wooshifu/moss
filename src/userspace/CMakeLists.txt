@@ -34,8 +34,8 @@ set(USERSPACE_LINK_FLAGS
     --oformat=elf
     -nostdlib
     -static
-    # Use 4 KiB segment alignment to match Moss base pages.
-    # ARM64's 64 KiB default inflates ELF files and hides page-layout mistakes.
+    # Use 4 KiB segment alignment to match Moss base pages. ARM64's 64 KiB default inflates ELF files and hides
+    # page-layout mistakes.
     -z
     max-page-size=4096
 )
@@ -80,8 +80,15 @@ if(MOSS_BUILD_TESTS)
     add_userspace_program(validation)
     target_sources(
         moss_userspace_validation
-        PRIVATE validation_frame.S validation/basics.c validation/benchmarks.c validation/exec.c validation/ipc.c
-                validation/signals.c validation/timers.c validation/uaccess.c validation/vm.c
+        PRIVATE validation_frame.S
+                validation/basics.c
+                validation/benchmarks.c
+                validation/exec.c
+                validation/ipc.c
+                validation/signals.c
+                validation/timers.c
+                validation/uaccess.c
+                validation/vm.c
     )
     add_userspace_program(validation_child)
 
@@ -110,37 +117,69 @@ add_custom_command(
     OUTPUT ${CMAKE_BINARY_DIR}/initramfs.cpio
     COMMAND ${CMAKE_COMMAND} -E copy_if_different ${BUSYBOX_ELF} ${CMAKE_BINARY_DIR}/userspace/busybox.elf
     COMMAND ${CMAKE_COMMAND} -E copy_if_different ${MOSS_INIT_ELF} ${CMAKE_BINARY_DIR}/userspace/init.elf
-    COMMAND ${CMAKE_COMMAND} -E copy_if_different ${MOSS_CODE_AUTHORITY_SERVICE_ELF} ${CMAKE_BINARY_DIR}/userspace/code-authority-service.elf
-    COMMAND ${CMAKE_COMMAND} -E copy_if_different ${MOSS_LOADER_SERVICE_ELF} ${CMAKE_BINARY_DIR}/userspace/loader-service.elf
-    COMMAND ${CMAKE_COMMAND} -E copy_if_different ${MOSS_LOADER_LIBC_PROBE_ELF} ${CMAKE_BINARY_DIR}/userspace/loader_libc_probe.elf
-    COMMAND ${CMAKE_COMMAND} -E copy_if_different ${MOSS_FILE_SERVICE_ELF} ${CMAKE_BINARY_DIR}/userspace/file-service.elf
-    COMMAND ${CMAKE_COMMAND} -E copy_if_different ${MOSS_NAMESPACE_SERVICE_ELF} ${CMAKE_BINARY_DIR}/userspace/namespace-service.elf
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different ${MOSS_CODE_AUTHORITY_SERVICE_ELF}
+            ${CMAKE_BINARY_DIR}/userspace/code-authority-service.elf
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different ${MOSS_LOADER_SERVICE_ELF}
+            ${CMAKE_BINARY_DIR}/userspace/loader-service.elf
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different ${MOSS_LOADER_LIBC_PROBE_ELF}
+            ${CMAKE_BINARY_DIR}/userspace/loader_libc_probe.elf
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different ${MOSS_FILE_SERVICE_ELF}
+            ${CMAKE_BINARY_DIR}/userspace/file-service.elf
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different ${MOSS_NAMESPACE_SERVICE_ELF}
+            ${CMAKE_BINARY_DIR}/userspace/namespace-service.elf
     COMMAND ${CMAKE_COMMAND} -E copy_if_different ${MOSS_FILE_ELF} ${CMAKE_BINARY_DIR}/userspace/moss-file.elf
     COMMAND ${CMAKE_COMMAND} -E copy_if_different ${MOSS_DOMAIN_ELF} ${CMAKE_BINARY_DIR}/userspace/moss-domain.elf
-    COMMAND ${CMAKE_COMMAND} -E copy_if_different ${MOSS_PROCESS_SERVICE_ELF} ${CMAKE_BINARY_DIR}/userspace/process-service.elf
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different ${MOSS_PROCESS_SERVICE_ELF}
+            ${CMAKE_BINARY_DIR}/userspace/process-service.elf
     COMMAND ${CMAKE_COMMAND} -E copy_if_different ${MOSS_PROCESS_ELF} ${CMAKE_BINARY_DIR}/userspace/moss-process.elf
-    COMMAND ${CMAKE_COMMAND} -E copy_if_different ${MOSS_PIPE_SERVICE_ELF} ${CMAKE_BINARY_DIR}/userspace/pipe-service.elf
-    COMMAND ${CMAKE_COMMAND} -E copy_if_different ${MOSS_CONSOLE_SERVICE_ELF} ${CMAKE_BINARY_DIR}/userspace/console-service.elf
-    COMMAND uv run ${CMAKE_SOURCE_DIR}/scripts/gen_initramfs.py ${CMAKE_BINARY_DIR}/initramfs.cpio
-            ${CMAKE_BINARY_DIR}/userspace init.elf code-authority-service.elf file-service.elf namespace-service.elf moss-file.elf busybox.elf
-            moss-domain.elf process-service.elf moss-process.elf pipe-service.elf console-service.elf
-            loader-service.elf loader_probe.elf loader_libc_probe.elf
-    DEPENDS moss-init ${MOSS_INIT_ELF} moss-code-authority-service ${MOSS_CODE_AUTHORITY_SERVICE_ELF}
-            moss-loader-service ${MOSS_LOADER_SERVICE_ELF} moss-loader-libc-probe ${MOSS_LOADER_LIBC_PROBE_ELF}
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different ${MOSS_PIPE_SERVICE_ELF}
+            ${CMAKE_BINARY_DIR}/userspace/pipe-service.elf
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different ${MOSS_CONSOLE_SERVICE_ELF}
+            ${CMAKE_BINARY_DIR}/userspace/console-service.elf
+    COMMAND
+        uv run ${CMAKE_SOURCE_DIR}/scripts/gen_initramfs.py ${CMAKE_BINARY_DIR}/initramfs.cpio
+        ${CMAKE_BINARY_DIR}/userspace init.elf code-authority-service.elf file-service.elf namespace-service.elf
+        moss-file.elf busybox.elf moss-domain.elf process-service.elf moss-process.elf pipe-service.elf
+        console-service.elf loader-service.elf loader_probe.elf loader_libc_probe.elf
+    DEPENDS moss-init
+            ${MOSS_INIT_ELF}
+            moss-code-authority-service
+            ${MOSS_CODE_AUTHORITY_SERVICE_ELF}
+            moss-loader-service
+            ${MOSS_LOADER_SERVICE_ELF}
+            moss-loader-libc-probe
+            ${MOSS_LOADER_LIBC_PROBE_ELF}
             ${CMAKE_BINARY_DIR}/userspace/loader_probe.elf
-            moss-file-service ${MOSS_FILE_SERVICE_ELF}
-            moss-namespace-service ${MOSS_NAMESPACE_SERVICE_ELF} moss-file ${MOSS_FILE_ELF}
-            moss-domain ${MOSS_DOMAIN_ELF}
-            moss-process-service ${MOSS_PROCESS_SERVICE_ELF} moss-process ${MOSS_PROCESS_ELF}
-            moss-pipe-service ${MOSS_PIPE_SERVICE_ELF}
-            moss-console-service ${MOSS_CONSOLE_SERVICE_ELF}
-            busybox-validation ${BUSYBOX_ELF} ${CMAKE_SOURCE_DIR}/scripts/gen_initramfs.py
-    BYPRODUCTS ${CMAKE_BINARY_DIR}/userspace/init.elf ${CMAKE_BINARY_DIR}/userspace/code-authority-service.elf
-               ${CMAKE_BINARY_DIR}/userspace/loader-service.elf ${CMAKE_BINARY_DIR}/userspace/loader_libc_probe.elf
+            moss-file-service
+            ${MOSS_FILE_SERVICE_ELF}
+            moss-namespace-service
+            ${MOSS_NAMESPACE_SERVICE_ELF}
+            moss-file
+            ${MOSS_FILE_ELF}
+            moss-domain
+            ${MOSS_DOMAIN_ELF}
+            moss-process-service
+            ${MOSS_PROCESS_SERVICE_ELF}
+            moss-process
+            ${MOSS_PROCESS_ELF}
+            moss-pipe-service
+            ${MOSS_PIPE_SERVICE_ELF}
+            moss-console-service
+            ${MOSS_CONSOLE_SERVICE_ELF}
+            busybox-validation
+            ${BUSYBOX_ELF}
+            ${CMAKE_SOURCE_DIR}/scripts/gen_initramfs.py
+    BYPRODUCTS ${CMAKE_BINARY_DIR}/userspace/init.elf
+               ${CMAKE_BINARY_DIR}/userspace/code-authority-service.elf
+               ${CMAKE_BINARY_DIR}/userspace/loader-service.elf
+               ${CMAKE_BINARY_DIR}/userspace/loader_libc_probe.elf
                ${CMAKE_BINARY_DIR}/userspace/file-service.elf
-               ${CMAKE_BINARY_DIR}/userspace/namespace-service.elf ${CMAKE_BINARY_DIR}/userspace/moss-file.elf
-               ${CMAKE_BINARY_DIR}/userspace/busybox.elf ${CMAKE_BINARY_DIR}/userspace/moss-domain.elf
-               ${CMAKE_BINARY_DIR}/userspace/process-service.elf ${CMAKE_BINARY_DIR}/userspace/moss-process.elf
+               ${CMAKE_BINARY_DIR}/userspace/namespace-service.elf
+               ${CMAKE_BINARY_DIR}/userspace/moss-file.elf
+               ${CMAKE_BINARY_DIR}/userspace/busybox.elf
+               ${CMAKE_BINARY_DIR}/userspace/moss-domain.elf
+               ${CMAKE_BINARY_DIR}/userspace/process-service.elf
+               ${CMAKE_BINARY_DIR}/userspace/moss-process.elf
                ${CMAKE_BINARY_DIR}/userspace/pipe-service.elf
                ${CMAKE_BINARY_DIR}/userspace/console-service.elf
     WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}

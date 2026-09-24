@@ -1078,8 +1078,10 @@ int main(int argc, char **argv) {
   unsigned long base = 0, after = 0;
   if (syscall2(SYS_ARCH_PRCTL, 0x1003, (long)&base) || !base || syscall2(SYS_ARCH_PRCTL, 0, 0) != -EINVAL ||
       syscall2(SYS_ARCH_PRCTL, 0x1002, 1) != -EINVAL || syscall2(SYS_ARCH_PRCTL, 0x1002, -1) != -EINVAL ||
-      syscall2(SYS_ARCH_PRCTL, 0x1003, 1) != -EFAULT || syscall2(SYS_ARCH_PRCTL, 0x1003, (long)&after) || after != base)
+      syscall2(SYS_ARCH_PRCTL, 0x1003, 1) != -EFAULT || syscall2(SYS_ARCH_PRCTL, 0x1003, (long)&after) ||
+      after != base) {
     return 103;
+  }
 #endif
   // Two pages test allocator startup and a later byte (4096) beyond the first
   // page; independent parent/child TLS markers verify COW isolation after fork.

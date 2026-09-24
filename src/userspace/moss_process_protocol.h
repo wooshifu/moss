@@ -189,12 +189,14 @@ enum { MOSS_PROCESS_FD_READDIR_REPLY_BYTES = 20 };
 // entries after a successful exec. FD_EXEC carries only its opcode.
 static inline uint64_t moss_process_get_u64(const unsigned char *bytes) {
   uint64_t value = 0;
-  for (unsigned int index = 0; index < 8; ++index)
+  for (unsigned int index = 0; index < 8; ++index) {
     value |= (uint64_t)bytes[index] << (index * 8);
+  }
   return value;
 }
 
 static inline void moss_process_put_u64(unsigned char *bytes, uint64_t value) {
-  for (unsigned int index = 0; index < 8; ++index)
+  for (unsigned int index = 0; index < 8; ++index) {
     bytes[index] = (unsigned char)(value >> (index * 8));
+  }
 }

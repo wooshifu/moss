@@ -221,12 +221,20 @@ static u32 interrupt_number(const void *fdt, int node, u32 index = 0) noexcept {
       return first < 12 ? 16 + first : 0;
     }
     if (compatible_match(fdt, controller, "brcm,bcm2836-armctrl-ic")) {
-      return first == 0 ? (number < 8 ? 96 + number : 0)
-                        : (first <= 2 && number < 32 ? 32 + (first - 1) * 32 + number : 0);
+      if (first == 0) {
+        return number < 8 ? 96 + number : 0;
+      }
+      if (first <= 2 && number < 32) {
+        return 32 + (first - 1) * 32 + number;
+      }
+      return 0;
     }
     return 0;
   }
-  return first <= 1 ? number + (first == 0 ? 32 : 16) : 0;
+  if (first > 1) {
+    return 0;
+  }
+  return number + (first == 0 ? 32 : 16);
 }
 
 static void parse_timer_and_firmware(const void *fdt) noexcept {

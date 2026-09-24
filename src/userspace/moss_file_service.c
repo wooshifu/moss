@@ -31,19 +31,23 @@ struct FileObject {
 };
 
 static unsigned char resize_file(struct FileObject *file, unsigned long new_length, unsigned long *allocated) {
-  if (file->boot_data)
+  if (file->boot_data) {
     return MOSS_FILE_READ_ONLY;
-  if (new_length > MOSS_FILE_CONTENT_BUDGET_BYTES)
+  }
+  if (new_length > MOSS_FILE_CONTENT_BUDGET_BYTES) {
     return MOSS_FILE_NO_SPACE;
+  }
   unsigned long new_capacity =
       ((new_length + MOSS_MEM_OBJECT_BYTES - 1) / MOSS_MEM_OBJECT_BYTES) * MOSS_MEM_OBJECT_BYTES;
   if (new_capacity > file->capacity) {
     unsigned long growth = new_capacity - file->capacity;
-    if (growth > MOSS_FILE_CONTENT_BUDGET_BYTES - *allocated)
+    if (growth > MOSS_FILE_CONTENT_BUDGET_BYTES - *allocated) {
       return MOSS_FILE_NO_SPACE;
+    }
     unsigned char *data = realloc(file->data, new_capacity);
-    if (!data)
+    if (!data) {
       return MOSS_FILE_UNAVAILABLE;
+    }
     file->data = data;
     file->capacity = new_capacity;
     *allocated += growth;
@@ -104,14 +108,15 @@ static int hex8(const char field[8], unsigned long *value) {
   unsigned long parsed = 0;
   for (unsigned int i = 0; i < 8; ++i) {
     unsigned char digit = (unsigned char)field[i];
-    if (digit >= '0' && digit <= '9')
+    if (digit >= '0' && digit <= '9') {
       digit -= '0';
-    else if (digit >= 'a' && digit <= 'f')
+    } else if (digit >= 'a' && digit <= 'f') {
       digit = digit - 'a' + 10;
-    else if (digit >= 'A' && digit <= 'F')
+    } else if (digit >= 'A' && digit <= 'F') {
       digit = digit - 'A' + 10;
-    else
+    } else {
       return 0;
+    }
     parsed = (parsed << 4) | digit;
   }
   *value = parsed;
@@ -129,21 +134,26 @@ static int load_boot_files(const unsigned char *archive, unsigned long size, str
     const struct NewcHeader *header = (const struct NewcHeader *)(archive + offset);
     unsigned long name_bytes = 0, file_bytes = 0, mode = 0;
     if (memcmp(header->magic, "070701", 6) != 0 || !hex8(header->namesize, &name_bytes) ||
-        !hex8(header->filesize, &file_bytes) || !hex8(header->mode, &mode) ||
-        name_bytes == 0 || name_bytes > size - offset - sizeof(*header))
+        !hex8(header->filesize, &file_bytes) || !hex8(header->mode, &mode) || name_bytes == 0 ||
+        name_bytes > size - offset - sizeof(*header)) {
       return 0;
+    }
     unsigned long record_size = size - offset;
     unsigned long data_offset = cpio_align(sizeof(*header) + name_bytes);
-    if (data_offset > record_size || file_bytes > record_size - data_offset)
+    if (data_offset > record_size || file_bytes > record_size - data_offset) {
       return 0;
+    }
     unsigned long next_offset = cpio_align(data_offset + file_bytes);
-    if (next_offset > record_size)
+    if (next_offset > record_size) {
       return 0;
+    }
     const unsigned char *name = archive + offset + sizeof(*header);
-    if (name[name_bytes - 1] != 0 || memchr(name, 0, name_bytes - 1))
+    if (name[name_bytes - 1] != 0 || memchr(name, 0, name_bytes - 1)) {
       return 0;
-    if (name_bytes == sizeof("TRAILER!!!") && memcmp(name, "TRAILER!!!", sizeof("TRAILER!!!")) == 0)
+    }
+    if (name_bytes == sizeof("TRAILER!!!") && memcmp(name, "TRAILER!!!", sizeof("TRAILER!!!")) == 0) {
       return file_bytes == 0;
+    }
     if (name_bytes > 2 && name[0] == '.' && name[1] == '/') {
       name += 2;
       name_bytes -= 2;
@@ -157,11 +167,13 @@ static int load_boot_files(const unsigned char *archive, unsigned long size, str
     if ((mode & CPIO_TYPE_MASK) == CPIO_REGULAR && valid_name(name, name_bytes)) {
       // The bootstrap parser accepts at most 64 entries. Keep that bound
       // separate from the client-created file budget.
-      if (*boot_count == MOSS_FILE_BOOT_ENTRY_LIMIT || find_name(*files, name, name_bytes))
+      if (*boot_count == MOSS_FILE_BOOT_ENTRY_LIMIT || find_name(*files, name, name_bytes)) {
         return 0;
+      }
       struct FileObject *file = calloc(1, sizeof(*file));
-      if (!file)
+      if (!file) {
         return 0;
+      }
       file->badge = (*next_badge)++;
       file->name_size = name_bytes;
       memcpy(file->name, name, name_bytes);
@@ -191,8 +203,9 @@ static void list_root(struct FileObject *files, unsigned long cookie, unsigned c
     // Badges are never recycled, so insertion cannot shift an existing
     // cursor. Unlisted Loader images have no name and stay invisible here.
     for (struct FileObject *file = files; file; file = file->next) {
-      if (file->name_size && file->badge > cookie - 2 && (!next || file->badge < next->badge))
+      if (file->name_size && file->badge > cookie - 2 && (!next || file->badge < next->badge)) {
         next = file;
+      }
     }
     if (!next) {
       response->payload[0] = MOSS_FILE_END;
@@ -230,16 +243,19 @@ int main(int argc, char **argv) {
   }
   errno = 0;
   unsigned long archive_cap = strtoul(argv[3], &end, 10);
-  if (errno || !archive_cap || *end)
+  if (errno || !archive_cap || *end) {
     return 2;
+  }
   errno = 0;
   unsigned long archive_size = strtoul(argv[4], &end, 10);
-  if (errno || !archive_size || *end)
+  if (errno || !archive_size || *end) {
     return 2;
+  }
   long mapped_archive = syscall2(SYS_MEM_MAP, archive_cap, MOSS_CAP_MAP_READ);
   (void)syscall1(SYS_CAP_CLOSE, archive_cap);
-  if (mapped_archive <= 0)
+  if (mapped_archive <= 0) {
     return 2;
+  }
 
   // Existing clients can always reopen /scratch after a volatile service
   // restart. New files are created explicitly and live until this service dies.
@@ -251,8 +267,9 @@ int main(int argc, char **argv) {
   unsigned long allocated = 0;
   // Never recycle a badge while old file capabilities may still exist.
   unsigned long next_badge = MOSS_FILE_SCRATCH_BADGE + 1;
-  if (!load_boot_files((const unsigned char *)mapped_archive, archive_size, &files, &boot_count, &next_badge))
+  if (!load_boot_files((const unsigned char *)mapped_archive, archive_size, &files, &boot_count, &next_badge)) {
     return 2;
+  }
   for (;;) {
     struct moss_ipc_message request = {0};
     unsigned long reply = 0;
@@ -272,8 +289,9 @@ int main(int argc, char **argv) {
       long mapped = syscall2(SYS_MEM_MAP, (long)request.capability, MOSS_CAP_MAP_WRITE);
       if (mapped > 0) {
         list_root(files, moss_file_get_u64(request.payload + 1), (unsigned char *)mapped, &response);
-        if (syscall2(SYS_MUNMAP, mapped, MOSS_MEM_OBJECT_BYTES) != 0)
+        if (syscall2(SYS_MUNMAP, mapped, MOSS_MEM_OBJECT_BYTES) != 0) {
           return 1;
+        }
       }
       (void)syscall1(SYS_CAP_CLOSE, (long)request.capability);
     } else if (request.capability) {
@@ -294,8 +312,9 @@ int main(int argc, char **argv) {
           unsigned int transferred = 0;
           unsigned long write_offset = appending ? file->length : (unsigned long)offset;
           unsigned char resize_status = MOSS_FILE_OK;
-          if (!reading && count && write_offset + count > file->length)
+          if (!reading && count && write_offset + count > file->length) {
             resize_status = resize_file(file, write_offset + count, &allocated);
+          }
           if (reading) {
             if (offset < file->length) {
               unsigned long available = file->length - (unsigned long)offset;
@@ -343,8 +362,8 @@ int main(int argc, char **argv) {
         response.payload[0] = MOSS_FILE_UNAVAILABLE;
       }
     } else if (request.badge == 0 && request.size >= 4 && request.payload[0] == MOSS_FILE_OPEN &&
-               !(request.payload[1] &
-                 ~(MOSS_FILE_OPEN_CREATE | MOSS_FILE_OPEN_EXCLUSIVE | MOSS_FILE_OPEN_UNLISTED | MOSS_FILE_OPEN_WRITE)) &&
+               !(request.payload[1] & ~(MOSS_FILE_OPEN_CREATE | MOSS_FILE_OPEN_EXCLUSIVE | MOSS_FILE_OPEN_UNLISTED |
+                                        MOSS_FILE_OPEN_WRITE)) &&
                (!(request.payload[1] & (MOSS_FILE_OPEN_EXCLUSIVE | MOSS_FILE_OPEN_UNLISTED)) ||
                 (request.payload[1] & MOSS_FILE_OPEN_CREATE)) &&
                !(request.payload[1] & MOSS_FILE_OPEN_EXCLUSIVE && request.payload[1] & MOSS_FILE_OPEN_UNLISTED) &&

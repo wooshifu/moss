@@ -32,13 +32,15 @@ static long file_call(unsigned long file, const struct moss_ipc_message *request
 
 static int flat_root_name(const unsigned char *path, unsigned long size, const unsigned char **name,
                           unsigned long *name_size) {
-  if (size < 2 || path[0] != '/' || memchr(path, 0, size) != path + size - 1)
+  if (size < 2 || path[0] != '/' || memchr(path, 0, size) != path + size - 1) {
     return 0;
+  }
   const unsigned char *cursor = path + 1;
   const unsigned char *end = path + size - 1;
   while (cursor < end) {
-    while (cursor < end && *cursor == '/')
+    while (cursor < end && *cursor == '/') {
       ++cursor;
+    }
     if (cursor < end && cursor[0] == '.' && (cursor + 1 == end || cursor[1] == '/')) {
       ++cursor;
     } else if (cursor + 1 < end && cursor[0] == '.' && cursor[1] == '.' && (cursor + 2 == end || cursor[2] == '/')) {
@@ -49,8 +51,9 @@ static int flat_root_name(const unsigned char *path, unsigned long size, const u
   }
   // A non-root component is a file in this flat mount; traversal through it
   // must wait for directory objects and cannot be simplified lexically.
-  if (memchr(cursor, '/', end - cursor))
+  if (memchr(cursor, '/', end - cursor)) {
     return 0;
+  }
   *name = cursor;
   *name_size = end - cursor + 1;
   return 1;
@@ -104,9 +107,8 @@ int main(int argc, char **argv) {
     } else if (request.size >= 4 &&
                (request.payload[0] == MOSS_NAMESPACE_OPEN || request.payload[0] == MOSS_NAMESPACE_STAT) &&
                (request.payload[0] == MOSS_NAMESPACE_OPEN || request.payload[1] == 0) &&
-               !(request.payload[1] &
-                 ~(MOSS_NAMESPACE_OPEN_CREATE | MOSS_NAMESPACE_OPEN_TRANSFER | MOSS_NAMESPACE_OPEN_EXCLUSIVE |
-                   MOSS_NAMESPACE_OPEN_WRITE)) &&
+               !(request.payload[1] & ~(MOSS_NAMESPACE_OPEN_CREATE | MOSS_NAMESPACE_OPEN_TRANSFER |
+                                        MOSS_NAMESPACE_OPEN_EXCLUSIVE | MOSS_NAMESPACE_OPEN_WRITE)) &&
                (!(request.payload[1] & MOSS_NAMESPACE_OPEN_EXCLUSIVE) ||
                 (request.payload[1] & MOSS_NAMESPACE_OPEN_CREATE))) {
       const unsigned char *name = NULL;
@@ -132,8 +134,9 @@ int main(int argc, char **argv) {
               response.payload[1] = root ? MOSS_NAMESPACE_KIND_DIRECTORY : MOSS_NAMESPACE_KIND_FILE;
               memcpy(response.payload + 2, stat_response.payload + 1, 16);
             }
-            if (stat_response.capability)
+            if (stat_response.capability) {
               (void)syscall1(SYS_CAP_CLOSE, (long)stat_response.capability);
+            }
           } else {
             response.size = MOSS_NAMESPACE_OPEN_REPLY_BYTES;
             response.payload[0] = MOSS_NAMESPACE_OK;

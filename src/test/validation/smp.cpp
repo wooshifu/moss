@@ -52,39 +52,53 @@ void register_smp_cases() {
 }
 
 long start_smp_suite() {
-  if (const long mode = start_containers_smp())
+  if (const long mode = start_containers_smp()) {
     return mode;
-  if (const long mode = start_vfs_smp_suite())
+  }
+  if (const long mode = start_vfs_smp_suite()) {
     return mode;
-  if (const long mode = start_interrupt_smp())
+  }
+  if (const long mode = start_interrupt_smp()) {
     return mode;
-  if (const long mode = start_lifetime_smp())
+  }
+  if (const long mode = start_lifetime_smp()) {
     return mode;
-  if (const long mode = start_fault_smp())
+  }
+  if (const long mode = start_fault_smp()) {
     return mode;
-  if (const long mode = start_leases_smp())
+  }
+  if (const long mode = start_leases_smp()) {
     return mode;
-  if (const long mode = start_tlb_smp())
+  }
+  if (const long mode = start_tlb_smp()) {
     return mode;
+  }
   return 0;
 }
 
 long smp_control(long op, long arg1, long arg2) {
   const char *selection = selected_suite();
-  if (ut::same_id(selection, "mm.tlb_broadcast"))
+  if (ut::same_id(selection, "mm.tlb_broadcast")) {
     return control_tlb_smp(op, arg1, arg2);
-  if (ut::same_id(selection, "mm.uaccess"))
+  }
+  if (ut::same_id(selection, "mm.uaccess")) {
     return control_leases_smp(op, arg1, arg2);
-  if (ut::same_id(selection, "mm.concurrent"))
+  }
+  if (ut::same_id(selection, "mm.concurrent")) {
     return control_fault_smp(op, arg1, arg2);
-  if (ut::same_id(selection, "interrupts.smp"))
+  }
+  if (ut::same_id(selection, "interrupts.smp")) {
     return control_interrupt_smp(op, arg1, arg2);
-  if (ut::same_id(selection, "mm.lifetime"))
+  }
+  if (ut::same_id(selection, "mm.lifetime")) {
     return control_lifetime_smp(op, arg1, arg2);
-  if (ut::same_id(selection, "vfs.smp"))
+  }
+  if (ut::same_id(selection, "vfs.smp")) {
     return vfs_smp_control(op, arg1, arg2);
-  if (ut::same_id(selection, "containers.smp"))
+  }
+  if (ut::same_id(selection, "containers.smp")) {
     return control_containers_smp(op, arg1, arg2);
+  }
   invalid_control();
 }
 

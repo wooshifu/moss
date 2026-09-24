@@ -550,13 +550,15 @@ bool moss::kernel::mm::resolve_user_demand_fault(const UserFaultContext &context
   PhysAddr page_pa = 0;
   if (shared) {
     const usize page_index = (fault_page - vma_start) / PAGE_SIZE;
-    if ((vma_flags & VMA_EXEC) != 0 || page_index >= context.shared_page_count)
+    if ((vma_flags & VMA_EXEC) != 0 || page_index >= context.shared_page_count) {
       return false;
+    }
     page_pa = context.shared_pages[page_index];
     // The Memory Object owns the original reference. Each resident PTE
     // acquires another before publication, including fork aliases.
-    if (mm::PageFrameAllocator::page_ref_get(page_pa) == 0)
+    if (mm::PageFrameAllocator::page_ref_get(page_pa) == 0) {
       return false;
+    }
     mm::PageFrameAllocator::page_ref_inc(page_pa);
   } else {
     auto page_result = mm::page_alloc::alloc_kernel_pages(0);
@@ -725,7 +727,12 @@ extern "C" void riscv64_page_fault_handler(unsigned long long scause, unsigned l
   using namespace moss::kernel;
 
   bool is_write = scause == 15 || scause == 7; // Store/AMO page or access fault
-  const auto access = scause == 12 ? FaultAccess::Execute : is_write ? FaultAccess::Write : FaultAccess::Read;
+  FaultAccess access = FaultAccess::Read;
+  if (scause == 12) {
+    access = FaultAccess::Execute;
+  } else if (is_write) {
+    access = FaultAccess::Write;
+  }
   // scause 12 = Instruction page fault, 13 = Load page fault
 
   // 1. Resolve a resident, COW-marked write fault without refilling the page.
@@ -740,8 +747,9 @@ extern "C" void riscv64_page_fault_handler(unsigned long long scause, unsigned l
     return; // Fault resolved — sret retries instruction
   }
 
-  if (access != FaultAccess::Execute && fixup_user_access(raw_frame, stval))
+  if (access != FaultAccess::Execute && fixup_user_access(raw_frame, stval)) {
     return;
+  }
 
   // 3. Determine if this is a kernel-mode or user-mode fault.
   //    S-mode faults that reach here are unrecoverable kernel bugs.
@@ -777,7 +785,12 @@ extern "C" void x64_page_fault_handler(unsigned long long error_code, unsigned l
   bool is_write = (error_code & (1ULL << 1)) != 0;
   const bool is_execute = (error_code & (1ULL << 4)) != 0;
   const bool reserved_bit_fault = (error_code & (1ULL << 3)) != 0;
-  const auto access = is_execute ? FaultAccess::Execute : is_write ? FaultAccess::Write : FaultAccess::Read;
+  FaultAccess access = FaultAccess::Read;
+  if (is_execute) {
+    access = FaultAccess::Execute;
+  } else if (is_write) {
+    access = FaultAccess::Write;
+  }
 
   // 1. Not-present fault (translation fault equivalent) — demand paging
   if (!is_present && !reserved_bit_fault) {
@@ -793,8 +806,9 @@ extern "C" void x64_page_fault_handler(unsigned long long error_code, unsigned l
     }
   }
 
-  if (!is_execute && !reserved_bit_fault && fixup_user_access(raw_frame, cr2))
+  if (!is_execute && !reserved_bit_fault && fixup_user_access(raw_frame, cr2)) {
     return;
+  }
 
   // 3. Unresolvable fault
   bool is_user_mode = (error_code & (1ULL << 2)) != 0;

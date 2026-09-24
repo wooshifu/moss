@@ -415,10 +415,22 @@ def rebuild(root: Path, build_dir: Path, jobs: int, registry: ProcessRegistry) -
         raise LintError(f"CMake build failed with exit {result.returncode}; lint requires current module BMIs")
 
 
-def exclude_header_response(excluded: Sequence[str], build_dir: Path) -> str | None:
+def exclude_header_response(
+    excluded: Sequence[str], build_dir: Path, patterns: Sequence[ExcludePattern] = ()
+) -> str | None:
     if not excluded:
         return None
-    expression = "|".join(re.escape(path) for path in sorted(excluded))
+    # clang-tidy cannot reliably apply a regex containing every file in large
+    # vendored trees, even when the argument is supplied through a response file.
+    directories = {
+        pattern.source[:-2]
+        for pattern in patterns
+        if pattern.source.endswith("/**") and not re.search(r"[*?\[\]]", pattern.source[:-2])
+    }
+    files = [path for path in excluded if not any(path.startswith(directory) for directory in directories)]
+    expression = "|".join(
+        [*(re.escape(directory) + ".*" for directory in sorted(directories)), *(re.escape(path) for path in files)]
+    )
     response = build_dir / "moss-clang-tidy-exclusions.rsp"
     # Vendored path lists can exceed the kernel's limit for one argv string.
     response.write_text(shlex.quote(f"--exclude-header-filter=(^|.*/)({expression})$") + "\n", encoding="utf-8")
@@ -455,6 +467,7 @@ def run_tidy(
     build_dir: Path,
     tidy: Tool,
     excluded: Sequence[str],
+    excludes: Sequence[ExcludePattern],
     args: argparse.Namespace,
     registry: ProcessRegistry,
     replacements_dir: Path | None = None,
@@ -464,7 +477,7 @@ def run_tidy(
     results = []
     futures = []
     console = Console(stderr=True)
-    exclude_argument = exclude_header_response(excluded, build_dir)
+    exclude_argument = exclude_header_response(excluded, build_dir, excludes)
     with ThreadPoolExecutor(max_workers=args.jobs) as pool:
         try:
             for index, path in enumerate(paths):
@@ -552,7 +565,7 @@ def run(argv: Sequence[str] | None = None, *, repository_root: Path | None = Non
                 )
             with tempfile.TemporaryDirectory(prefix="moss-clang-tidy-") as temporary:
                 replacements = Path(temporary)
-                results = run_tidy(paths, root, build_dir, tidy, excluded, args, registry, replacements)
+                results = run_tidy(paths, root, build_dir, tidy, excluded, excludes, args, registry, replacements)
                 if not args.fix_errors and any(has_compiler_error(result) for result in results):
                     raise LintError(
                         "compiler errors prevented applying fixes; fix the build/extra arguments or use --fix-errors"
@@ -570,7 +583,7 @@ def run(argv: Sequence[str] | None = None, *, repository_root: Path | None = Non
             commands = load_compilation_database(root, build_dir)
             if set(paths) - {command.path for command in commands}:
                 raise LintError("selected translation units disappeared from the compilation database after fixes")
-        results = run_tidy(paths, root, build_dir, tidy, excluded, args, registry)
+        results = run_tidy(paths, root, build_dir, tidy, excluded, excludes, args, registry)
         failures = [result for result in results if result.returncode]
         if failures:
             print(f"clang-tidy reported diagnostics in {len(failures)} translation unit(s):", file=sys.stderr)

@@ -60,10 +60,10 @@ inline constexpr u64 UNCATCHABLE_MASK = sigmask(SIGKILL) | sigmask(SIGSTOP);
 // Native sigaction ABI assigns bits 0..4; keep these positions in sync with
 // userspace. Bit 2 remains reserved for SIGINFO.
 namespace sa_flags {
-inline constexpr u32 SA_ONSTACK = 0x1; // use alternate signal stack
-inline constexpr u32 SA_RESTART = 0x2; // restart interrupted syscalls
-inline constexpr u32 SA_SIGINFO = 0x4; // reserved for siginfo_t
-inline constexpr u32 SA_NOCLDSTOP = 0x8; // suppress SIGCHLD for stop/continue
+inline constexpr u32 SA_ONSTACK = 0x1;    // use alternate signal stack
+inline constexpr u32 SA_RESTART = 0x2;    // restart interrupted syscalls
+inline constexpr u32 SA_SIGINFO = 0x4;    // reserved for siginfo_t
+inline constexpr u32 SA_NOCLDSTOP = 0x8;  // suppress SIGCHLD for stop/continue
 inline constexpr u32 SA_NOCLDWAIT = 0x10; // discard child exit status and zombie
 } // namespace sa_flags
 

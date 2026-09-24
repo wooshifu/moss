@@ -159,7 +159,7 @@ long sys_sched_setaffinity(long pid_arg, long arg1, long mask_addr, long arg3, l
 // Time syscalls
 long sys_clock_gettime(long arg0, long time_ns_addr, long arg2, long arg3, long arg4, long arg5) noexcept;
 long sys_clock_getres(long clock_id, long resolution_ns_addr, long arg2, long arg3, long arg4, long arg5) noexcept;
-long sys_nanosleep(long ns_addr, long arg1, long arg2, long arg3, long arg4, long arg5) noexcept;
+long sys_nanosleep(long ns_addr, long remaining_addr, long arg2, long arg3, long arg4, long arg5) noexcept;
 long sys_clock_nanosleep(long clockid, long flags, long ns_addr, long remaining, long arg4, long arg5) noexcept;
 
 // System monitoring

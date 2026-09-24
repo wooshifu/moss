@@ -443,8 +443,9 @@ void _start(long argc, const char **argv) {
     for (long test = 0; test < (long)(sizeof(tests) / sizeof(tests[0])); ++test) {
       control(1, test, 0);
       unsigned long errors = tests[test]();
-      if (!control(2, errors == 0, (long)errors))
+      if (!control(2, errors == 0, (long)errors)) {
         break;
+      }
     }
     control(3, 0, 0);
   } else if (mode == 21) {

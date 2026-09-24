@@ -357,8 +357,9 @@ void Process::cleanup_threads() noexcept {
   threads_.for_each([](const ThreadEntry &entry) {
     if (entry.thread) {
       // Unlink before destruction so a runqueue cannot retain freed Thread storage.
-      if (g_scheduler)
+      if (g_scheduler) {
         g_scheduler->dequeue_task(entry.thread);
+      }
       delete entry.thread;
     }
   });
@@ -692,8 +693,9 @@ KernelResult<VirtAddr> allocate_user_heap(Process *process, usize size) noexcept
   if (auto_reap) {
     // The scheduler retains proc until after switching off this thread's stack.
     (void)g_process_manager->terminate_process(pid, exit_code);
-    if (parent)
+    if (parent) {
       parent->remove_child(pid);
+    }
   } else {
     proc->set_state(ProcessState::Zombie);
   }

@@ -57,7 +57,7 @@ enum class BootPhase : u8 {
   DeviceInit = 3,    // Bootstrap hardware readiness
   ServiceInit = 4,   // System service startup
   UserInit = 5,      // User-space initialization
-  Completed = 6     // Boot completed
+  Completed = 6      // Boot completed
 };
 
 // Kernel statistics
@@ -281,8 +281,8 @@ public:
 private:
   // Phase-by-phase initialization
   [[nodiscard]] VoidResult initialize_phase_by_phase() noexcept {
-    const char *phase_names[] = {"Early init", "Memory management", "Scheduler", "Bootstrap hardware",
-                                 "System services", "User-space", "Complete"};
+    const char *phase_names[] = {"Early init",      "Memory management", "Scheduler", "Bootstrap hardware",
+                                 "System services", "User-space",        "Complete"};
 
     // Ordinals before Completed perform initialization; run() publishes it
     // only after all stages succeed. Keep this bound synchronized with BootPhase.

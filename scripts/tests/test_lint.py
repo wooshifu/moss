@@ -125,8 +125,12 @@ def test_selection_and_exclusions_cover_the_whole_repository(project, fake_tools
     command = next(argv for path, argv, _live in calls if path == "src/main.cpp")
     response = next(arg[1:] for arg in command if arg.startswith("@"))
     header_filter = shlex.split(Path(response).read_text())[0]
-    assert "src/vendor/api" in header_filter
-    assert "third_party/library/api" in header_filter
+    assert "src/vendor/.*" in header_filter
+    assert "third_party/.*" in header_filter
+    expression = header_filter.split("=", 1)[1]
+    assert re.search(expression, str(root / "src/vendor/api.h"))
+    assert re.search(expression, str(root / "third_party/library/api.h"))
+    assert not re.search(expression, str(root / "src/api.hpp"))
 
 
 def test_large_exclusion_filter_stays_out_of_argv(tmp_path):
@@ -140,6 +144,12 @@ def test_large_exclusion_filter_stays_out_of_argv(tmp_path):
     parsed = shlex.split(response)
     assert len(parsed) == 1
     assert re.escape(excluded[0]) in parsed[0] and re.escape(excluded[-1]) in parsed[0]
+
+    write(tmp_path, "lint.toml", 'exclude = ["third_party/**"]\n')
+    lint.exclude_header_response(excluded, tmp_path, lint.load_excludes(tmp_path))
+    compact = shlex.split((tmp_path / "moss-clang-tidy-exclusions.rsp").read_text())[0]
+    assert len(compact) < 128
+    assert re.search(compact.split("=", 1)[1], "/repo/third_party/dependency_3999/some_long_header.hpp")
 
 
 @pytest.mark.parametrize("path", ["tools/helper.cpp", "tools/api.hpp", "tools/api.cppm"])

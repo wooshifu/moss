@@ -140,8 +140,9 @@ void scheduler_self_selection(bool realtime) {
 void ipc_priority_inheritance() {
   using namespace process;
   unique_ptr<CfsScheduler> scheduler(new CfsScheduler());
-  if (!ut::expect(scheduler.get() != nullptr))
+  if (!ut::expect(scheduler.get() != nullptr)) {
     return;
+  }
 
   Thread high(0, 0), low(1, 0), server(2, 0), backend(3, 0), dying(4, 0);
   Thread normal_caller(5, 0), normal_server(6, 0), normal_backend(7, 0);
@@ -252,8 +253,9 @@ void ipc_priority_inheritance() {
   scheduler->end_ipc_call(&first_deadline);
 
   CfsScheduler::set_current_task(original);
-  if (restore_irqs)
+  if (restore_irqs) {
     arch::enable_interrupts();
+  }
   ut::expect(scheduler->get_cpu_nr_running(cpu) == 0);
 }
 

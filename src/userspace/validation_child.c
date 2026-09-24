@@ -39,11 +39,13 @@ static int text_equal(const char *left, const char *right) {
 
 static unsigned long parse_handle(const char *text) {
   unsigned long handle = 0;
-  if (!text || !*text)
+  if (!text || !*text) {
     return 0;
+  }
   for (; *text; ++text) {
-    if (*text < '0' || *text > '9')
+    if (*text < '0' || *text > '9') {
       return 0;
+    }
     handle = handle * 10 + (unsigned long)(*text - '0');
   }
   return handle;
@@ -99,14 +101,16 @@ void _start(long argc, const char **argv, const char **envp) {
     _exit(STARTUP_EXIT);
   }
   if (text_equal(argv[0], "cap-present")) {
-    if (argc != 2 || !argv[1] || argv[2])
+    if (argc != 2 || !argv[1] || argv[2]) {
       _exit(STARTUP_EXIT);
+    }
     unsigned long handle = parse_handle(argv[1]);
     _exit(handle && syscall1(SYS_CAP_CLOSE, (long)handle) == 0 ? SUCCESS_EXIT : STARTUP_EXIT);
   }
   if (text_equal(argv[0], "cap-exec")) {
-    if (argc != 3 || !argv[1] || !argv[2] || argv[3])
+    if (argc != 3 || !argv[1] || !argv[2] || argv[3]) {
       _exit(STARTUP_EXIT);
+    }
     unsigned long closed = parse_handle(argv[1]);
     unsigned long kept = parse_handle(argv[2]);
     _exit(closed && kept && syscall1(SYS_CAP_CLOSE, (long)closed) == -BAD_HANDLE_ERROR &&
@@ -115,8 +119,9 @@ void _start(long argc, const char **argv, const char **envp) {
               : STARTUP_EXIT);
   }
   if (text_equal(argv[0], "startup-cap")) {
-    if (argc != 2 || !argv[1] || argv[2] || !envp || envp[0])
+    if (argc != 2 || !argv[1] || argv[2] || !envp || envp[0]) {
       _exit(STARTUP_EXIT);
+    }
     unsigned long handle = parse_handle(argv[1]);
     const unsigned long *auxv = (const unsigned long *)(envp + 1);
     _exit(handle && auxv[0] == MOSS_AT_STARTUP_CAP && auxv[1] == handle && auxv[2] == 0 && auxv[3] == 0 &&
@@ -143,8 +148,9 @@ void _start(long argc, const char **argv, const char **envp) {
                : "memory");
   // x87 control 0x37f and MXCSR 0x1f80 are the default masked, nearest-rounding
   // states; exec must clear the inherited x87 status and XMM15 contents too.
-  if (cw != 0x37f || status != 0 || mxcsr != 0x1f80 || vector[0] || vector[1])
+  if (cw != 0x37f || status != 0 || mxcsr != 0x1f80 || vector[0] || vector[1]) {
     _exit(FP_EXIT);
+  }
 #endif
   // The parent must observe this exit code only after a successful real exec.
   _exit(SUCCESS_EXIT);

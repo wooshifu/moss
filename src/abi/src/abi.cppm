@@ -93,10 +93,10 @@ void user_return_handler(void *raw_frame) noexcept;
 void irq_handler_c(void) noexcept;
 void kernel_page_fault_handler(unsigned long long esr, unsigned long long far_addr, unsigned long long elr,
                                void *raw_frame) noexcept;
-void riscv64_page_fault_handler(unsigned long long cause, unsigned long long address, unsigned long long pc,
-                                void *trap_frame) noexcept;
-void x64_page_fault_handler(unsigned long long error, unsigned long long address, unsigned long long pc,
-                            void *trap_frame) noexcept;
+void riscv64_page_fault_handler(unsigned long long scause, unsigned long long stval, unsigned long long sepc,
+                                void *raw_frame) noexcept;
+void x64_page_fault_handler(unsigned long long error_code, unsigned long long cr2, unsigned long long rip,
+                            void *raw_frame) noexcept;
 void user_page_fault_handler(unsigned long long esr, unsigned long long far_addr, unsigned long long elr) noexcept;
 void unhandled_exception_handler(unsigned long long esr, unsigned long long far_addr, unsigned long long elr,
                                  unsigned long long saved_x30, unsigned long long frame_sp) noexcept;

@@ -205,10 +205,9 @@ if(MOSS_BUILD_TESTS)
         ${CMAKE_BINARY_DIR}/moss-artifacts.json
     )
     add_test(NAME moss-functional COMMAND ${_validation})
-    # Ten complete BusyBox lifecycles keep routine CTest bounded while still
-    # exercising fork/exec/reap and resource recovery. Baseline, midpoint and
-    # completion checkpoints distinguish a slow live guest from a stalled one;
-    # the explicit stability workload remains the long-duration coverage tier.
+    # Ten complete BusyBox lifecycles keep routine CTest bounded while still exercising fork/exec/reap and resource
+    # recovery. Baseline, midpoint and completion checkpoints distinguish a slow live guest from a stalled one; the
+    # explicit stability workload remains the long-duration coverage tier.
     add_test(NAME moss-applications COMMAND ${_validation} --workload users.applications --iterations 10)
     set_tests_properties(
         moss-applications
@@ -230,7 +229,14 @@ if(MOSS_BUILD_TESTS)
     )
     set_tests_properties(
         moss-supervisor-reset
-        PROPERTIES TIMEOUT 55 RUN_SERIAL TRUE LABELS "kernel" WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+        PROPERTIES TIMEOUT
+                   55
+                   RUN_SERIAL
+                   TRUE
+                   LABELS
+                   "kernel"
+                   WORKING_DIRECTORY
+                   ${CMAKE_SOURCE_DIR}
     )
     set_tests_properties(
         moss-production-boot
@@ -245,7 +251,7 @@ if(MOSS_BUILD_TESTS)
     )
     if(MOSS_TARGET_ARCH STREQUAL "X64")
         add_test(NAME moss-pvh-initrd COMMAND uv run ${CMAKE_SOURCE_DIR}/scripts/check_x64_pvh_initrd.py --manifest
-                                            ${CMAKE_BINARY_DIR}/moss-artifacts.json
+                                              ${CMAKE_BINARY_DIR}/moss-artifacts.json
         )
         set_tests_properties(
             moss-pvh-initrd
@@ -260,16 +266,15 @@ if(MOSS_BUILD_TESTS)
         )
     endif()
     if(MOSS_TARGET_ARCH STREQUAL "ARM64" AND CMAKE_BUILD_TYPE STREQUAL "Debug")
-        # Debian names the cross-target debugger gdb-multiarch, while native
-        # Native GDB builds on macOS expose the same remote
-        # protocol support as gdb. The controlled input test requires either.
+        # Debian names the cross-target debugger gdb-multiarch, while native Native GDB builds on macOS expose the same
+        # remote protocol support as gdb. The controlled input test requires either.
         find_program(MOSS_GDB_EXECUTABLE NAMES gdb-multiarch gdb REQUIRED)
         add_test(NAME moss-console-input COMMAND uv run ${CMAKE_SOURCE_DIR}/scripts/check_production_boot.py --manifest
                                                  ${CMAKE_BINARY_DIR}/moss-artifacts.json --gdb ${MOSS_GDB_EXECUTABLE}
         )
-        add_test(NAME moss-console-registration COMMAND uv run ${CMAKE_SOURCE_DIR}/scripts/check_production_boot.py
-                                                        --manifest ${CMAKE_BINARY_DIR}/moss-artifacts.json
-                                                        --gdb ${MOSS_GDB_EXECUTABLE} --registration-race
+        add_test(NAME moss-console-registration
+                 COMMAND uv run ${CMAKE_SOURCE_DIR}/scripts/check_production_boot.py --manifest
+                         ${CMAKE_BINARY_DIR}/moss-artifacts.json --gdb ${MOSS_GDB_EXECUTABLE} --registration-race
         )
         set_tests_properties(
             moss-console-input moss-console-registration

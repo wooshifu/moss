@@ -291,11 +291,13 @@ public:
   CodeVersionObject() noexcept : Object(capability::ObjectType::CodeVersion) {}
   ~CodeVersionObject() override {
     for (usize i = 0; i < count_; ++i) {
-      if (mm::PageFrameAllocator::page_ref_dec(pages_[i]) == 0)
+      if (mm::PageFrameAllocator::page_ref_dec(pages_[i]) == 0) {
         (void)mm::free_pages(pages_[i], 0);
+      }
     }
-    if (pages_)
+    if (pages_) {
       (void)mm::RuntimeHeapAllocator::deallocate(pages_, capacity_ * sizeof(pages_[0]));
+    }
   }
   void adopt_storage(PhysAddr *pages, usize capacity) noexcept {
     pages_ = pages;
@@ -342,19 +344,23 @@ public:
   CodeAdmissionSet(const CodeAdmissionSet &) = delete;
   CodeAdmissionSet &operator=(const CodeAdmissionSet &) = delete;
   ~CodeAdmissionSet() {
-    for (usize i = 0; i < count_; ++i)
+    for (usize i = 0; i < count_; ++i) {
       approvals_[i].~SharedPtr();
-    if (approvals_)
+    }
+    if (approvals_) {
       (void)mm::RuntimeHeapAllocator::deallocate(approvals_, capacity_ * sizeof(approvals_[0]));
+    }
   }
 
   [[nodiscard]] bool add(shared_ptr<capability::Object> approval) noexcept {
-    if (count_ == capacity_)
+    if (count_ == capacity_) {
       return false;
+    }
     if (!approvals_) {
       auto storage = mm::RuntimeHeapAllocator::allocate(capacity_ * sizeof(approvals_[0]));
-      if (!storage)
+      if (!storage) {
         return false;
+      }
       approvals_ = static_cast<shared_ptr<capability::Object> *>(*storage);
     }
     new (approvals_ + count_++) shared_ptr<capability::Object>(moss::move(approval));
@@ -366,8 +372,9 @@ public:
     // same lock orders it against revoke without locking page allocation.
     containers::LockGuard<containers::IrqSpinLock> guard(g_code_approval_lock);
     for (usize i = 0; i < count_; ++i) {
-      if (static_cast<CodeApprovalObject *>(approvals_[i].get())->revoked())
+      if (static_cast<CodeApprovalObject *>(approvals_[i].get())->revoked()) {
         return false;
+      }
     }
     return true;
   }
@@ -396,19 +403,23 @@ static_assert(sizeof(DomainExitStatus) == 8);
 
 static long copy_domain_exit_status(const process::Process &target, u64 address) noexcept {
   const u32 signal = target.terminating_signal();
-  const DomainExitStatus status{signal ? 0 : target.exit_code(), signal};
+  const DomainExitStatus status{.code = signal ? 0 : target.exit_code(), .signal = signal};
   return copy_to_user(address, &status, sizeof(status)) < 0 ? -errc::EFAULT : 0;
 }
 
 static long domain_cap_error(ErrorCode error) noexcept {
-  if (error == ErrorCode::NotFound)
+  if (error == ErrorCode::NotFound) {
     return -errc::EBADF;
-  if (error == ErrorCode::PermissionDenied)
+  }
+  if (error == ErrorCode::PermissionDenied) {
     return -errc::EACCES;
-  if (error == ErrorCode::ResourceExhausted)
+  }
+  if (error == ErrorCode::ResourceExhausted) {
     return -errc::EMFILE;
-  if (error == ErrorCode::OutOfMemory)
+  }
+  if (error == ErrorCode::OutOfMemory) {
     return -errc::ENOMEM;
+  }
   return -errc::EINVAL;
 }
 
@@ -445,17 +456,20 @@ static long do_fork(u64 domain_cap_out_addr, const capability::ForkSelection *se
   auto scope = parent_proc->domain_scope();
   if (scope_handle) {
     // Existing members cannot escape containment by selecting another scope.
-    if (scope)
+    if (scope) {
       return -errc::EACCES;
+    }
     auto selected_scope =
         parent_proc->capabilities().lookup(static_cast<Handle>(scope_handle), capability::ObjectType::DomainScope,
                                            capability::rights::DOMAIN_SCOPE_ASSIGN);
-    if (!selected_scope)
+    if (!selected_scope) {
       return domain_cap_error(selected_scope.error());
+    }
     scope = *selected_scope;
   }
-  if (scope && static_cast<DomainScopeObject *>(scope.get())->closed())
+  if (scope && static_cast<DomainScopeObject *>(scope.get())->closed()) {
     return -errc::EACCES;
+  }
 
   // The live entry owns the frame; never infer it from a stack-top offset.
   auto *frame = parent_thread->trap_frame;
@@ -481,8 +495,9 @@ static long do_fork(u64 domain_cap_out_addr, const capability::ForkSelection *se
   // Helper: clean up the child process on error (removes from process
   // table and triggers ~Process which frees address space, threads, etc.)
   auto cleanup_child = [&](Process *cp) {
-    if (!domain_cap_out_addr)
+    if (!domain_cap_out_addr) {
       parent_proc->remove_child(cp->pid());
+    }
     if (g_process_manager) {
       (void)g_process_manager->terminate_process(cp->pid(), -1);
     }
@@ -705,8 +720,9 @@ static long do_fork(u64 domain_cap_out_addr, const capability::ForkSelection *se
   // A close racing with fork must catch a child that was inserted after the
   // terminator's process-table scan but before it became runnable.
   if (scope && static_cast<DomainScopeObject *>(scope.get())->closed()) {
-    if (installed_domain_handle)
+    if (installed_domain_handle) {
       (void)parent_proc->capabilities().close(installed_domain_handle);
+    }
     cleanup_child(child_proc.get());
     return -errc::EACCES;
   }
@@ -727,62 +743,78 @@ static long do_fork(u64 domain_cap_out_addr, const capability::ForkSelection *se
   return static_cast<long>(child_proc->pid());
 }
 
-long sys_fork(long, long, long, long, long, long) noexcept { return do_fork(0, nullptr, 0, true, 0); }
+long sys_fork(long /*unused*/, long /*unused*/, long /*unused*/, long /*unused*/, long /*unused*/,
+              long /*unused*/) noexcept {
+  return do_fork(0, nullptr, 0, true, 0);
+}
 
-long sys_fork_domain(long cap_out_addr, long, long, long, long, long) noexcept {
+long sys_fork_domain(long cap_out_addr, long /*unused*/, long /*unused*/, long /*unused*/, long /*unused*/,
+                     long /*unused*/) noexcept {
   return cap_out_addr ? do_fork(static_cast<u64>(cap_out_addr), nullptr, 0, false, 0) : -errc::EFAULT;
 }
 
-long sys_fork_domain_inherit(long cap_out_addr, long, long, long, long, long) noexcept {
+long sys_fork_domain_inherit(long cap_out_addr, long /*unused*/, long /*unused*/, long /*unused*/, long /*unused*/,
+                             long /*unused*/) noexcept {
   return cap_out_addr ? do_fork(static_cast<u64>(cap_out_addr), nullptr, 0, true, 0) : -errc::EFAULT;
 }
 
 static long fork_domain_selected(long cap_out_addr, long handles_addr, long count_arg, long scope_handle) noexcept {
-  if (!cap_out_addr)
+  if (!cap_out_addr) {
     return -errc::EFAULT;
-  if (count_arg < 0 || static_cast<usize>(count_arg) > capability::Table::capacity())
+  }
+  if (count_arg < 0 || static_cast<usize>(count_arg) > capability::Table::capacity()) {
     return -errc::EINVAL;
+  }
   capability::ForkSelection selected[capability::Table::capacity()]{};
   const auto count = static_cast<usize>(count_arg);
   if (count != 0 &&
-      (!handles_addr || copy_from_user(selected, static_cast<u64>(handles_addr), count * sizeof(selected[0])) < 0))
+      (!handles_addr || copy_from_user(selected, static_cast<u64>(handles_addr), count * sizeof(selected[0])) < 0)) {
     return -errc::EFAULT;
+  }
   return do_fork(static_cast<u64>(cap_out_addr), selected, count, false, static_cast<u64>(scope_handle));
 }
 
-long sys_fork_domain_select(long cap_out_addr, long handles_addr, long count_arg, long, long, long) noexcept {
+long sys_fork_domain_select(long cap_out_addr, long handles_addr, long count_arg, long /*unused*/, long /*unused*/,
+                            long /*unused*/) noexcept {
   // Existing three-argument callers do not initialize a fourth syscall register.
   return fork_domain_selected(cap_out_addr, handles_addr, count_arg, 0);
 }
 
-long sys_fork_domain_scoped(long cap_out_addr, long handles_addr, long count_arg, long scope_handle, long,
-                            long) noexcept {
+long sys_fork_domain_scoped(long cap_out_addr, long handles_addr, long count_arg, long scope_handle, long /*unused*/,
+                            long /*unused*/) noexcept {
   return scope_handle > 0 ? fork_domain_selected(cap_out_addr, handles_addr, count_arg, scope_handle) : -errc::EINVAL;
 }
 
-long sys_domain_id(long handle, long, long, long, long, long) noexcept {
+long sys_domain_id(long handle, long /*unused*/, long /*unused*/, long /*unused*/, long /*unused*/,
+                   long /*unused*/) noexcept {
   auto caller = process::current_process();
-  if (!caller)
+  if (!caller) {
     return -errc::ESRCH;
+  }
   auto object = caller->capabilities().lookup(static_cast<Handle>(handle), capability::ObjectType::Domain,
                                               capability::rights::DOMAIN_INSPECT);
-  if (!object)
+  if (!object) {
     return domain_cap_error(object.error());
+  }
   return static_cast<long>(static_cast<DomainObject *>((*object).get())->process->pid());
 }
 
-long sys_domain_same(long left, long right, long, long, long, long) noexcept {
+long sys_domain_same(long left, long right, long /*unused*/, long /*unused*/, long /*unused*/,
+                     long /*unused*/) noexcept {
   auto caller = process::current_process();
-  if (!caller)
+  if (!caller) {
     return -errc::ESRCH;
+  }
   auto first = caller->capabilities().lookup(static_cast<Handle>(left), capability::ObjectType::Domain,
                                              capability::rights::DOMAIN_INSPECT);
-  if (!first)
+  if (!first) {
     return domain_cap_error(first.error());
+  }
   auto second = caller->capabilities().lookup(static_cast<Handle>(right), capability::ObjectType::Domain,
                                               capability::rights::DOMAIN_INSPECT);
-  if (!second)
+  if (!second) {
     return domain_cap_error(second.error());
+  }
   // SYS_DOMAIN_SELF creates a fresh wrapper for each handle. Compare the
   // retained process incarnation, not wrapper identity or a reusable PID.
   const auto *left_domain = static_cast<DomainObject *>((*first).get())->process.get();
@@ -790,123 +822,153 @@ long sys_domain_same(long left, long right, long, long, long, long) noexcept {
   return left_domain == right_domain ? 1 : 0;
 }
 
-long sys_domain_self(long, long, long, long, long, long) noexcept {
+long sys_domain_self(long /*unused*/, long /*unused*/, long /*unused*/, long /*unused*/, long /*unused*/,
+                     long /*unused*/) noexcept {
   auto caller = process::current_process();
-  if (!caller)
+  if (!caller) {
     return -errc::ESRCH;
+  }
   // Ordinary do_exit clears the caller's table before publishing exit,
   // breaking this self-handle cycle. Initial-supervisor exit resets the system.
   auto object = shared_ptr<capability::Object>::try_make<DomainObject>(moss::abi::bridge::moss_heap_allocate, caller);
-  if (!object)
+  if (!object) {
     return -errc::ENOMEM;
+  }
   auto handle = caller->capabilities().install(moss::move(object), kFullDomainRights);
   return handle ? static_cast<long>(*handle) : domain_cap_error(handle.error());
 }
 
-long sys_domain_scope_create(long, long, long, long, long, long) noexcept {
+long sys_domain_scope_create(long /*unused*/, long /*unused*/, long /*unused*/, long /*unused*/, long /*unused*/,
+                             long /*unused*/) noexcept {
   auto caller = process::current_process();
-  if (!caller)
+  if (!caller) {
     return -errc::ESRCH;
+  }
   auto scope = shared_ptr<capability::Object>::try_make<DomainScopeObject>(moss::abi::bridge::moss_heap_allocate);
-  if (!scope)
+  if (!scope) {
     return -errc::ENOMEM;
+  }
   auto handle = caller->capabilities().install(moss::move(scope), kFullDomainScopeRights);
   return handle ? static_cast<long>(*handle) : domain_cap_error(handle.error());
 }
 
-long sys_domain_scope_terminate(long handle, long, long, long, long, long) noexcept {
+long sys_domain_scope_terminate(long handle, long /*unused*/, long /*unused*/, long /*unused*/, long /*unused*/,
+                                long /*unused*/) noexcept {
   auto caller = process::current_process();
-  if (!caller)
+  if (!caller) {
     return -errc::ESRCH;
+  }
   auto object = caller->capabilities().lookup(static_cast<Handle>(handle), capability::ObjectType::DomainScope,
                                               capability::rights::DOMAIN_SCOPE_TERMINATE);
-  if (!object)
+  if (!object) {
     return domain_cap_error(object.error());
+  }
   auto *scope = static_cast<DomainScopeObject *>((*object).get());
   scope->close();
   // ponytail: recovery scans an O(process count) snapshot; track members per
   // scope only if recovery latency grows with the deployed process count.
   process::g_process_manager->for_each_process([&](ProcessId, process::Process *target) {
     if (target->domain_scope().get() != scope || target->state() == process::ProcessState::Terminated ||
-        target->state() == process::ProcessState::Zombie)
+        target->state() == process::ProcessState::Zombie) {
       return;
-    if (auto *thread = target->get_main_thread())
+    }
+    if (auto *thread = target->get_main_thread()) {
       (void)process::send_signal(thread, process::sig::SIGKILL);
+    }
   });
   return 0;
 }
 
-long sys_domain_scope_status(long handle, long, long, long, long, long) noexcept {
+long sys_domain_scope_status(long handle, long /*unused*/, long /*unused*/, long /*unused*/, long /*unused*/,
+                             long /*unused*/) noexcept {
   auto caller = process::current_process();
-  if (!caller)
+  if (!caller) {
     return -errc::ESRCH;
+  }
   auto object = caller->capabilities().lookup(static_cast<Handle>(handle), capability::ObjectType::DomainScope,
                                               capability::rights::DOMAIN_SCOPE_INSPECT);
-  if (!object)
+  if (!object) {
     return domain_cap_error(object.error());
+  }
   long live = 0;
   process::g_process_manager->for_each_process([&](ProcessId, process::Process *target) {
     if (target->domain_scope().get() == (*object).get() && target->state() != process::ProcessState::Terminated &&
-        target->state() != process::ProcessState::Zombie)
+        target->state() != process::ProcessState::Zombie) {
       ++live;
+    }
   });
   return live;
 }
 
-long sys_domain_scope_contains(long scope_handle, long domain_handle, long, long, long, long) noexcept {
+long sys_domain_scope_contains(long scope_handle, long domain_handle, long /*unused*/, long /*unused*/, long /*unused*/,
+                               long /*unused*/) noexcept {
   auto caller = process::current_process();
-  if (!caller)
+  if (!caller) {
     return -errc::ESRCH;
+  }
   auto scope = caller->capabilities().lookup(static_cast<Handle>(scope_handle), capability::ObjectType::DomainScope,
                                              capability::rights::DOMAIN_SCOPE_INSPECT);
-  if (!scope)
+  if (!scope) {
     return domain_cap_error(scope.error());
+  }
   auto domain = caller->capabilities().lookup(static_cast<Handle>(domain_handle), capability::ObjectType::Domain,
                                               capability::rights::DOMAIN_INSPECT);
-  if (!domain)
+  if (!domain) {
     return domain_cap_error(domain.error());
+  }
   auto *target = static_cast<DomainObject *>((*domain).get())->process.get();
   return target->domain_scope().get() == (*scope).get() ? 1 : 0;
 }
 
-long sys_domain_factory(long, long, long, long, long, long) noexcept {
+long sys_domain_factory(long /*unused*/, long /*unused*/, long /*unused*/, long /*unused*/, long /*unused*/,
+                        long /*unused*/) noexcept {
   auto caller = process::current_process();
-  if (!caller)
+  if (!caller) {
     return -errc::ESRCH;
-  if (!caller->is_domain_factory_source())
+  }
+  if (!caller->is_domain_factory_source()) {
     return -errc::EACCES;
+  }
   auto factory = shared_ptr<capability::Object>::try_make<DomainFactoryObject>(moss::abi::bridge::moss_heap_allocate);
-  if (!factory)
+  if (!factory) {
     return -errc::ENOMEM;
+  }
   auto handle = caller->capabilities().install(moss::move(factory), kFactoryRights);
   return handle ? static_cast<long>(*handle) : domain_cap_error(handle.error());
 }
 
 static long create_code_snapshot(u64 source, long page_count_arg) noexcept {
-  if (page_count_arg <= 0 || page_count_arg > MOSS_DOMAIN_MAX_IMAGE_PAGES)
+  if (page_count_arg <= 0 || page_count_arg > MOSS_DOMAIN_MAX_IMAGE_PAGES) {
     return -errc::EINVAL;
+  }
   const usize count = static_cast<usize>(page_count_arg);
   const usize bytes = count * PAGE_SIZE;
-  if (!source || source > ~u64{0} - bytes)
+  if (!source || source > ~u64{0} - bytes) {
     return -errc::EFAULT;
+  }
   auto caller = process::current_process();
-  if (!caller)
+  if (!caller) {
     return -errc::ESRCH;
+  }
   auto source_space = caller->address_space();
-  if (!source_space)
+  if (!source_space) {
     return -errc::ESRCH;
+  }
   auto object = shared_ptr<capability::Object>::try_make<CodeVersionObject>(moss::abi::bridge::moss_heap_allocate);
-  if (!object)
+  if (!object) {
     return -errc::ENOMEM;
+  }
   auto storage = mm::RuntimeHeapAllocator::allocate(count * sizeof(PhysAddr));
-  if (!storage)
+  if (!storage) {
     return -errc::ENOMEM;
+  }
   auto *version = static_cast<CodeVersionObject *>(object.get());
   version->adopt_storage(static_cast<PhysAddr *>(*storage), count);
   for (usize i = 0; i < count; ++i) {
     auto page = mm::allocate_pages(0);
-    if (!page)
+    if (!page) {
       return -errc::ENOMEM;
+    }
     if (source_space->copy_from_user(reinterpret_cast<void *>(phys_to_virt(*page)), source + i * PAGE_SIZE,
                                      PAGE_SIZE) != 0) {
       (void)mm::free_pages(*page, 0);
@@ -920,140 +982,174 @@ static long create_code_snapshot(u64 source, long page_count_arg) noexcept {
   return handle ? static_cast<long>(*handle) : domain_cap_error(handle.error());
 }
 
-long sys_code_snapshot(long source, long, long, long, long, long) noexcept {
+long sys_code_snapshot(long source, long /*unused*/, long /*unused*/, long /*unused*/, long /*unused*/,
+                       long /*unused*/) noexcept {
   return create_code_snapshot(static_cast<u64>(source), 1);
 }
 
-long sys_code_snapshot_range(long source, long page_count, long, long, long, long) noexcept {
+long sys_code_snapshot_range(long source, long page_count, long /*unused*/, long /*unused*/, long /*unused*/,
+                             long /*unused*/) noexcept {
   return create_code_snapshot(static_cast<u64>(source), page_count);
 }
 
-long sys_code_read_range(long version_handle, long first_page_arg, long destination, long page_count_arg, long,
-                         long) noexcept {
-  if (first_page_arg < 0 || page_count_arg <= 0 || page_count_arg > MOSS_DOMAIN_MAX_IMAGE_PAGES)
+long sys_code_read_range(long version_handle, long first_page_arg, long destination, long page_count_arg,
+                         long /*unused*/, long /*unused*/) noexcept {
+  if (first_page_arg < 0 || page_count_arg <= 0 || page_count_arg > MOSS_DOMAIN_MAX_IMAGE_PAGES) {
     return -errc::EINVAL;
+  }
   auto caller = process::current_process();
-  if (!caller)
+  if (!caller) {
     return -errc::ESRCH;
+  }
   auto version = caller->capabilities().lookup(static_cast<Handle>(version_handle), capability::ObjectType::CodeVersion,
                                                capability::rights::MAP_READ);
-  if (!version)
+  if (!version) {
     return code_cap_error(version.error());
+  }
   auto *snapshot = static_cast<CodeVersionObject *>((*version).get());
   const usize first_page = static_cast<usize>(first_page_arg);
   const usize count = static_cast<usize>(page_count_arg);
-  if (first_page > snapshot->count() || count > snapshot->count() - first_page)
+  if (first_page > snapshot->count() || count > snapshot->count() - first_page) {
     return -errc::EINVAL;
+  }
   const u64 address = static_cast<u64>(destination);
-  if (!address || address > ~u64{0} - count * PAGE_SIZE)
+  if (!address || address > ~u64{0} - count * PAGE_SIZE) {
     return -errc::EFAULT;
+  }
   auto destination_space = caller->address_space();
-  if (!destination_space)
+  if (!destination_space) {
     return -errc::ESRCH;
+  }
   for (usize i = 0; i < count; ++i) {
-    if (destination_space->copy_to_user(address + i * PAGE_SIZE, snapshot->bytes(first_page + i), PAGE_SIZE) != 0)
+    if (destination_space->copy_to_user(address + i * PAGE_SIZE, snapshot->bytes(first_page + i), PAGE_SIZE) != 0) {
       return -errc::EFAULT;
+    }
   }
   return 0;
 }
 
-long sys_code_read(long version_handle, long destination, long, long, long, long) noexcept {
+long sys_code_read(long version_handle, long destination, long /*unused*/, long /*unused*/, long /*unused*/,
+                   long /*unused*/) noexcept {
   return sys_code_read_range(version_handle, 0, destination, 1, 0, 0);
 }
 
 // Approval covers the whole version, so review must use its kernel-held length.
-long sys_code_page_count(long version_handle, long, long, long, long, long) noexcept {
+long sys_code_page_count(long version_handle, long /*unused*/, long /*unused*/, long /*unused*/, long /*unused*/,
+                         long /*unused*/) noexcept {
   auto caller = process::current_process();
-  if (!caller)
+  if (!caller) {
     return -errc::ESRCH;
+  }
   auto version = caller->capabilities().lookup(static_cast<Handle>(version_handle), capability::ObjectType::CodeVersion,
                                                capability::rights::MAP_READ);
-  if (!version)
+  if (!version) {
     return code_cap_error(version.error());
+  }
   return static_cast<long>(static_cast<CodeVersionObject *>((*version).get())->count());
 }
 
-long sys_code_authority(long, long, long, long, long, long) noexcept {
+long sys_code_authority(long /*unused*/, long /*unused*/, long /*unused*/, long /*unused*/, long /*unused*/,
+                        long /*unused*/) noexcept {
   auto caller = process::current_process();
-  if (!caller)
+  if (!caller) {
     return -errc::ESRCH;
-  if (!caller->is_domain_factory_source())
+  }
+  if (!caller->is_domain_factory_source()) {
     return -errc::EACCES;
+  }
   auto object = shared_ptr<capability::Object>::try_make<CodeAuthorityObject>(moss::abi::bridge::moss_heap_allocate);
-  if (!object)
+  if (!object) {
     return -errc::ENOMEM;
+  }
   auto handle = caller->capabilities().install(moss::move(object), kCodeAuthorityRights);
   return handle ? static_cast<long>(*handle) : domain_cap_error(handle.error());
 }
 
-long sys_code_approve(long authority_handle, long version_handle, long, long, long, long) noexcept {
+long sys_code_approve(long authority_handle, long version_handle, long /*unused*/, long /*unused*/, long /*unused*/,
+                      long /*unused*/) noexcept {
   auto caller = process::current_process();
-  if (!caller)
+  if (!caller) {
     return -errc::ESRCH;
+  }
   auto authority = caller->capabilities().lookup(
       static_cast<Handle>(authority_handle), capability::ObjectType::CodeAuthority, capability::rights::CODE_APPROVE);
-  if (!authority)
+  if (!authority) {
     return domain_cap_error(authority.error());
+  }
   auto version = caller->capabilities().lookup(static_cast<Handle>(version_handle), capability::ObjectType::CodeVersion,
                                                capability::rights::MAP_READ);
-  if (!version)
+  if (!version) {
     return domain_cap_error(version.error());
+  }
   auto approval = shared_ptr<capability::Object>::try_make<CodeApprovalObject>(
       moss::abi::bridge::moss_heap_allocate, moss::move(*version), moss::move(*authority));
-  if (!approval)
+  if (!approval) {
     return -errc::ENOMEM;
+  }
   auto handle = caller->capabilities().install(moss::move(approval), kCodeExecuteRights);
   return handle ? static_cast<long>(*handle) : domain_cap_error(handle.error());
 }
 
-long sys_code_revoke(long authority_handle, long approval_handle, long, long, long, long) noexcept {
+long sys_code_revoke(long authority_handle, long approval_handle, long /*unused*/, long /*unused*/, long /*unused*/,
+                     long /*unused*/) noexcept {
   auto caller = process::current_process();
-  if (!caller)
+  if (!caller) {
     return -errc::ESRCH;
+  }
   auto authority = caller->capabilities().lookup(
       static_cast<Handle>(authority_handle), capability::ObjectType::CodeAuthority, capability::rights::CODE_REVOKE);
-  if (!authority)
+  if (!authority) {
     return domain_cap_error(authority.error());
+  }
   auto approval = caller->capabilities().lookup(
       static_cast<Handle>(approval_handle), capability::ObjectType::CodeApproval, capability::rights::CODE_IDENTIFY);
-  if (!approval)
+  if (!approval) {
     return domain_cap_error(approval.error());
+  }
   auto *target = static_cast<CodeApprovalObject *>((*approval).get());
-  if (!target->same_scope((*authority).get()))
+  if (!target->same_scope((*authority).get())) {
     return -errc::EACCES;
+  }
   containers::LockGuard<containers::IrqSpinLock> guard(g_code_approval_lock);
   target->revoke();
   return 0;
 }
 
-long sys_domain_spawn(long factory_handle, long image_addr, long, long, long, long) noexcept {
+long sys_domain_spawn(long factory_handle, long image_addr, long /*unused*/, long /*unused*/, long /*unused*/,
+                      long /*unused*/) noexcept {
   using namespace moss::kernel::process;
   static_assert(PAGE_SIZE == MOSS_DOMAIN_PAGE_BYTES);
-  if (!image_addr)
+  if (!image_addr) {
     return -errc::EFAULT;
+  }
   auto caller = current_process();
-  if (!caller || !g_process_manager || !g_scheduler)
+  if (!caller || !g_process_manager || !g_scheduler) {
     return -errc::ESRCH;
+  }
   auto factory = caller->capabilities().lookup(static_cast<Handle>(factory_handle),
                                                capability::ObjectType::DomainFactory, capability::rights::DOMAIN_SPAWN);
-  if (!factory)
+  if (!factory) {
     return domain_cap_error(factory.error());
+  }
   // A delegated factory must not let a service create domains outside its
   // recovery scope.
   auto scope = caller->domain_scope();
-  if (scope && static_cast<DomainScopeObject *>(scope.get())->closed())
+  if (scope && static_cast<DomainScopeObject *>(scope.get())->closed()) {
     return -errc::EACCES;
+  }
   auto source_space = caller->address_space();
-  if (!source_space)
+  if (!source_space) {
     return -errc::ESRCH;
+  }
   // Image metadata, page bytes, and inherited-handle selection must all come
   // from one retained caller address-space version across concurrent exec.
   auto read_source = [&](void *destination, u64 address, usize size) {
     return source_space->copy_from_user(destination, address, size) == 0;
   };
   moss_domain_spawn image{};
-  if (!read_source(&image, static_cast<u64>(image_addr), sizeof(image)))
+  if (!read_source(&image, static_cast<u64>(image_addr), sizeof(image))) {
     return -errc::EFAULT;
+  }
 
   // A single construction call is bounded until per-domain memory quotas are
   // available. The image still reaches 16 MiB without a kernel ELF parser.
@@ -1062,23 +1158,27 @@ long sys_domain_spawn(long factory_handle, long image_addr, long, long, long, lo
       image.stack_size > user_layout::STACK_SIZE || (image.stack_size && !image.stack_source) ||
       image.stack_pointer < user_layout::STACK_TOP - user_layout::STACK_SIZE ||
       image.stack_pointer >= user_layout::STACK_TOP || (image.stack_pointer & 7) != 0 ||
-      image.stack_size > user_layout::STACK_TOP - image.stack_pointer)
+      image.stack_size > user_layout::STACK_TOP - image.stack_pointer) {
     return -errc::EINVAL;
+  }
   if (image.pages > ~u64{0} - image.page_count * sizeof(moss_domain_page) ||
       (image.capability_count &&
        image.capabilities > ~u64{0} - image.capability_count * sizeof(capability::ForkSelection)) ||
-      (image.stack_size && image.stack_source > ~u64{0} - image.stack_size))
+      (image.stack_size && image.stack_source > ~u64{0} - image.stack_size)) {
     return -errc::EFAULT;
+  }
 
   capability::ForkSelection selected[capability::Table::capacity()]{};
   if (image.capability_count &&
-      !read_source(selected, image.capabilities, image.capability_count * sizeof(selected[0])))
+      !read_source(selected, image.capabilities, image.capability_count * sizeof(selected[0]))) {
     return -errc::EFAULT;
+  }
   CodeAdmissionSet approvals(image.page_count);
 
   auto created = user_space::create_user_address_space();
-  if (!created)
+  if (!created) {
     return -errc::ENOMEM;
+  }
   auto space = moss::move(*created);
   const VirtAddr stack_bottom = user_layout::STACK_TOP - user_layout::STACK_SIZE;
   if (!space->add_vma(user_layout::SIGRETURN_PAGE, user_layout::SIGRETURN_PAGE + PAGE_SIZE,
@@ -1087,8 +1187,9 @@ long sys_domain_spawn(long factory_handle, long image_addr, long, long, long, lo
       !space->add_vma(stack_bottom, user_layout::STACK_TOP, vma_flags::READ | vma_flags::WRITE | vma_flags::DEMAND_ZERO,
                       VmaType::STACK) ||
       !space->add_vma(user_layout::HEAP_START, user_layout::HEAP_START,
-                      vma_flags::READ | vma_flags::WRITE | vma_flags::DEMAND_ZERO, VmaType::HEAP))
+                      vma_flags::READ | vma_flags::WRITE | vma_flags::DEMAND_ZERO, VmaType::HEAP)) {
     return -errc::ENOMEM;
+  }
   space->brk_base = space->brk_current = user_layout::HEAP_START;
   space->mmap_next = user_layout::MMAP_BASE;
 
@@ -1097,12 +1198,13 @@ long sys_domain_spawn(long factory_handle, long image_addr, long, long, long, lo
   auto install_page = [&](VirtAddr address, u32 flags, VmaType type, u64 source, usize count, usize destination_offset,
                           const u8 *approved_code, bool add_region) -> long {
     auto frame = mm::allocate_pages(0);
-    if (!frame)
+    if (!frame) {
       return -errc::ENOMEM;
+    }
     auto *bytes = reinterpret_cast<u8 *>(phys_to_virt(*frame));
-    if (approved_code)
+    if (approved_code) {
       __builtin_memcpy(bytes, approved_code, PAGE_SIZE);
-    else {
+    } else {
       __builtin_memset(bytes, 0, PAGE_SIZE);
       if (count && !read_source(bytes + destination_offset, source, count)) {
         (void)mm::free_pages(*frame, 0);
@@ -1116,8 +1218,9 @@ long sys_domain_spawn(long factory_handle, long image_addr, long, long, long, lo
       u64 ctr = 0;
       asm volatile("mrs %0, ctr_el0" : "=r"(ctr));
       const usize line_bytes = usize{4} << ((ctr >> 16) & 0xf);
-      for (usize offset = 0; offset < PAGE_SIZE; offset += line_bytes)
+      for (usize offset = 0; offset < PAGE_SIZE; offset += line_bytes) {
         arch::flush_cache_line(phys_to_virt(*frame) + offset);
+      }
       arch::data_sync_barrier();
     }
 #endif
@@ -1125,12 +1228,16 @@ long sys_domain_spawn(long factory_handle, long image_addr, long, long, long, lo
       (void)mm::free_pages(*frame, 0);
       return -errc::ENOMEM;
     }
-    const u64 permissions = (flags & vma_flags::WRITE)  ? hal::mmu::page_perms::USER_RW
-                            : (flags & vma_flags::EXEC) ? hal::mmu::page_perms::USER_RX
-                                                        : hal::mmu::page_perms::USER_RO;
+    u64 permissions = hal::mmu::page_perms::USER_RO;
+    if (flags & vma_flags::WRITE) {
+      permissions = hal::mmu::page_perms::USER_RW;
+    } else if (flags & vma_flags::EXEC) {
+      permissions = hal::mmu::page_perms::USER_RX;
+    }
     if (!mm::PageTableManager::map_user_page(space->pgd_phys, address, *frame, permissions)) {
-      if (add_region)
+      if (add_region) {
         (void)space->remove_vma(address, address + PAGE_SIZE);
+      }
       (void)mm::free_pages(*frame, 0);
       return -errc::ENOMEM;
     }
@@ -1141,8 +1248,9 @@ long sys_domain_spawn(long factory_handle, long image_addr, long, long, long, lo
   bool entry_in_image = false;
   for (usize i = 0; i < image.page_count; ++i) {
     moss_domain_page page{};
-    if (!read_source(&page, image.pages + i * sizeof(page), sizeof(page)))
+    if (!read_source(&page, image.pages + i * sizeof(page), sizeof(page))) {
       return -errc::EFAULT;
+    }
     constexpr u64 allowed = MOSS_DOMAIN_PAGE_READ | MOSS_DOMAIN_PAGE_WRITE | MOSS_DOMAIN_PAGE_EXEC;
     if ((page.address & (PAGE_SIZE - 1)) != 0 || !mm::PageTableManager::is_user_range(page.address, PAGE_SIZE) ||
         (page.flags & ~allowed) != 0 || (page.flags & MOSS_DOMAIN_PAGE_READ) == 0 ||
@@ -1152,31 +1260,37 @@ long sys_domain_spawn(long factory_handle, long image_addr, long, long, long, lo
         ((page.flags & MOSS_DOMAIN_PAGE_EXEC) ? (!page.code || page.source || page.size)
                                               : (page.code != 0 || page.code_page_index != 0)) ||
         (page.address >= user_layout::HEAP_START && page.address < user_layout::HEAP_START + user_layout::HEAP_INIT) ||
-        space->find_vma(page.address))
+        space->find_vma(page.address)) {
       return -errc::EINVAL;
+    }
     const u32 flags = vma_flags::READ | ((page.flags & MOSS_DOMAIN_PAGE_WRITE) ? vma_flags::WRITE : 0U) |
                       ((page.flags & MOSS_DOMAIN_PAGE_EXEC) ? vma_flags::EXEC : 0U);
     const u8 *approved_code = nullptr;
     if (page.flags & MOSS_DOMAIN_PAGE_EXEC) {
       auto looked = caller->capabilities().lookup(static_cast<Handle>(page.code), capability::ObjectType::CodeApproval,
                                                   capability::rights::CODE_EXEC);
-      if (!looked)
+      if (!looked) {
         return code_cap_error(looked.error());
+      }
       auto *approval = static_cast<CodeApprovalObject *>((*looked).get());
-      if (page.code_page_index >= approval->version()->count())
+      if (page.code_page_index >= approval->version()->count()) {
         return -errc::EINVAL;
+      }
       approved_code = approval->version()->bytes(page.code_page_index);
-      if (!approvals.add(moss::move(*looked)))
+      if (!approvals.add(moss::move(*looked))) {
         return -errc::ENOMEM;
+      }
       entry_in_image |= image.entry >= page.address && image.entry - page.address < PAGE_SIZE;
     }
     if (long error = install_page(page.address, flags, (flags & vma_flags::EXEC) ? VmaType::CODE : VmaType::DATA,
                                   page.source, static_cast<usize>(page.size), 0, approved_code, true);
-        error < 0)
+        error < 0) {
       return error;
+    }
   }
-  if (!entry_in_image)
+  if (!entry_in_image) {
     return -errc::EINVAL;
+  }
 
   const VirtAddr stack_end = image.stack_pointer + image.stack_size;
   for (VirtAddr address = image.stack_pointer & ~(VirtAddr{PAGE_SIZE} - 1); address < stack_end; address += PAGE_SIZE) {
@@ -1185,26 +1299,31 @@ long sys_domain_spawn(long factory_handle, long image_addr, long, long, long, lo
     if (long error = install_page(address, vma_flags::READ | vma_flags::WRITE, VmaType::STACK,
                                   image.stack_source + begin - image.stack_pointer, end - begin, begin - address,
                                   nullptr, false);
-        error < 0)
+        error < 0) {
       return error;
+    }
   }
 
   auto created_process = g_process_manager->create_process(INVALID_PROCESS_ID, scope);
-  if (!created_process)
+  if (!created_process) {
     return -errc::ENOMEM;
+  }
   auto child = *created_process;
   auto rollback = [&](long error) -> long {
     (void)g_process_manager->terminate_process(child->pid(), -1);
     return error;
   };
-  if (!child->set_address_space(space))
+  if (!child->set_address_space(space)) {
     return rollback(-errc::ENOMEM);
+  }
   const ThreadId tid = Process::allocate_thread_id();
-  if (tid == INVALID_THREAD_ID)
+  if (tid == INVALID_THREAD_ID) {
     return rollback(-errc::EAGAIN);
+  }
   auto *thread = Thread::try_create(tid, child->pid());
-  if (!thread)
+  if (!thread) {
     return rollback(-errc::ENOMEM);
+  }
   thread->context.pc = image.entry;
   thread->context.sp = image.stack_pointer;
 #if defined(MOSS_ARCH_ARM64)
@@ -1231,14 +1350,17 @@ long sys_domain_spawn(long factory_handle, long image_addr, long, long, long, lo
     return rollback(-errc::ENOMEM);
   }
   auto copied = caller->capabilities().clone_selected_to(child->capabilities(), selected, image.capability_count);
-  if (!copied)
+  if (!copied) {
     return rollback(domain_cap_error(copied.error()));
+  }
   auto object = shared_ptr<capability::Object>::try_make<DomainObject>(moss::abi::bridge::moss_heap_allocate, child);
-  if (!object)
+  if (!object) {
     return rollback(-errc::ENOMEM);
+  }
   auto handle = caller->capabilities().install(moss::move(object), kFullDomainRights);
-  if (!handle)
+  if (!handle) {
     return rollback(domain_cap_error(handle.error()));
+  }
   // Scope closure can pass its process-table scan during image preparation.
   // Recheck after insertion so a late child cannot escape that recovery unit.
   if ((scope && static_cast<DomainScopeObject *>(scope.get())->closed()) || !approvals.commit()) {
@@ -1256,125 +1378,154 @@ long sys_domain_spawn(long factory_handle, long image_addr, long, long, long, lo
   return static_cast<long>(*handle);
 }
 
-long sys_domain_layout(long layout_addr, long, long, long, long, long) noexcept {
-  if (!layout_addr)
+long sys_domain_layout(long layout_addr, long /*unused*/, long /*unused*/, long /*unused*/, long /*unused*/,
+                       long /*unused*/) noexcept {
+  if (!layout_addr) {
     return -errc::EFAULT;
-  const moss_domain_layout layout{PAGE_SIZE,
-                                  mm::PageTableManager::KERNEL_IDENTITY_END,
-                                  USER_MAX,
-                                  process::user_layout::STACK_TOP,
-                                  process::user_layout::STACK_SIZE,
-                                  process::user_layout::STACK_MAX,
-                                  process::user_layout::HEAP_START,
-                                  process::user_layout::HEAP_INIT,
-                                  process::user_layout::SIGRETURN_PAGE,
-                                  process::user_layout::MMAP_BASE};
+  }
+  const moss_domain_layout layout{.page_size = PAGE_SIZE,
+                                  .user_begin = mm::PageTableManager::KERNEL_IDENTITY_END,
+                                  .user_end = USER_MAX,
+                                  .stack_top = process::user_layout::STACK_TOP,
+                                  .stack_size = process::user_layout::STACK_SIZE,
+                                  .stack_max = process::user_layout::STACK_MAX,
+                                  .heap_start = process::user_layout::HEAP_START,
+                                  .heap_reserve = process::user_layout::HEAP_INIT,
+                                  .sigreturn_page = process::user_layout::SIGRETURN_PAGE,
+                                  .mmap_base = process::user_layout::MMAP_BASE};
   return copy_to_user(static_cast<u64>(layout_addr), &layout, sizeof(layout));
 }
 
-long sys_domain_terminate(long handle, long, long, long, long, long) noexcept {
+long sys_domain_terminate(long handle, long /*unused*/, long /*unused*/, long /*unused*/, long /*unused*/,
+                          long /*unused*/) noexcept {
   auto caller = process::current_process();
-  if (!caller)
+  if (!caller) {
     return -errc::ESRCH;
+  }
   auto object = caller->capabilities().lookup(static_cast<Handle>(handle), capability::ObjectType::Domain,
                                               capability::rights::DOMAIN_TERMINATE);
-  if (!object)
+  if (!object) {
     return domain_cap_error(object.error());
+  }
   auto &target = *static_cast<DomainObject *>((*object).get())->process;
-  if (target.state() != process::ProcessState::Running)
+  if (target.state() != process::ProcessState::Running) {
     return -errc::ESRCH; // Retired domains cannot accept new control requests.
+  }
   auto *thread = target.get_main_thread();
-  if (!thread)
+  if (!thread) {
     return -errc::ESRCH;
+  }
   // The current single-thread process implementation uses uncatchable SIGKILL
   // as its exit wakeup; authorization comes solely from this domain handle.
   return process::send_signal(thread, process::sig::SIGKILL) ? 0 : -errc::ESRCH;
 }
 
-long sys_domain_signal(long handle, long signo, long, long, long, long) noexcept {
-  if (signo < 0 || signo >= process::sig::NSIG)
+long sys_domain_signal(long handle, long signo, long /*unused*/, long /*unused*/, long /*unused*/,
+                       long /*unused*/) noexcept {
+  if (signo < 0 || signo >= process::sig::NSIG) {
     return -errc::EINVAL;
+  }
   auto caller = process::current_process();
-  if (!caller)
+  if (!caller) {
     return -errc::ESRCH;
+  }
   auto object = caller->capabilities().lookup(static_cast<Handle>(handle), capability::ObjectType::Domain,
                                               capability::rights::DOMAIN_SIGNAL);
-  if (!object)
+  if (!object) {
     return domain_cap_error(object.error());
+  }
   auto &target = *static_cast<DomainObject *>((*object).get())->process;
-  if (target.state() != process::ProcessState::Running)
+  if (target.state() != process::ProcessState::Running) {
     return -errc::ESRCH;
+  }
   auto *thread = target.get_main_thread();
-  if (!thread)
+  if (!thread) {
     return -errc::ESRCH;
+  }
   return signo == 0 || process::send_signal(thread, static_cast<u32>(signo)) ? 0 : -errc::ESRCH;
 }
 
-long sys_domain_wait(long handle, long, long, long, long, long) noexcept {
+long sys_domain_wait(long handle, long /*unused*/, long /*unused*/, long /*unused*/, long /*unused*/,
+                     long /*unused*/) noexcept {
   auto caller = process::current_process();
-  if (!caller)
+  if (!caller) {
     return -errc::ESRCH;
+  }
   auto object = caller->capabilities().lookup(static_cast<Handle>(handle), capability::ObjectType::Domain,
                                               capability::rights::DOMAIN_OBSERVE);
-  if (!object)
+  if (!object) {
     return domain_cap_error(object.error());
+  }
   auto &target = *static_cast<DomainObject *>((*object).get())->process;
-  if (&target == caller.get())
+  if (&target == caller.get()) {
     return -errc::EINVAL;
+  }
   auto *cur = process::CfsScheduler::get_current_task();
-  if (!cur || !process::g_scheduler)
+  if (!cur || !process::g_scheduler) {
     return -errc::ESRCH;
+  }
   auto exited = [&] {
     const auto state = target.state();
     return state == process::ProcessState::Zombie || state == process::ProcessState::Terminated;
   };
   while (!exited()) {
-    if (moss::abi::bridge::moss_io_wait_interrupted())
+    if (moss::abi::bridge::moss_io_wait_interrupted()) {
       return -errc::EINTR;
+    }
     // Prepare before registration, then recheck after registration: exit on
     // another CPU must neither miss this waiter nor wake it before handoff.
     const bool restore_irqs = arch::interrupts_enabled();
     arch::disable_interrupts();
     (void)moss::abi::bridge::moss_prepare_io_wait();
     target.domain_exit_wait_queue().add_waiter(static_cast<void *>(cur));
-    if (exited())
+    if (exited()) {
       process::g_scheduler->task_wakeup(cur, cur->wake_cpu);
+    }
     process::g_scheduler->commit_sleep();
     target.domain_exit_wait_queue().remove_waiter(static_cast<void *>(cur));
-    if (restore_irqs)
+    if (restore_irqs) {
       arch::enable_interrupts();
+    }
   }
   return 0;
 }
 
-long sys_domain_wait_any(long handles_addr, long count_arg, long, long, long, long) noexcept {
-  if (count_arg <= 0 || static_cast<usize>(count_arg) > capability::Table::capacity())
+long sys_domain_wait_any(long handles_addr, long count_arg, long /*unused*/, long /*unused*/, long /*unused*/,
+                         long /*unused*/) noexcept {
+  if (count_arg <= 0 || static_cast<usize>(count_arg) > capability::Table::capacity()) {
     return -errc::EINVAL;
-  if (!handles_addr)
+  }
+  if (!handles_addr) {
     return -errc::EFAULT;
+  }
   const usize count = static_cast<usize>(count_arg);
   Handle handles[capability::Table::capacity()]{};
-  if (copy_from_user(handles, static_cast<u64>(handles_addr), count * sizeof(handles[0])) < 0)
+  if (copy_from_user(handles, static_cast<u64>(handles_addr), count * sizeof(handles[0])) < 0) {
     return -errc::EFAULT;
+  }
 
   auto caller = process::current_process();
   auto *cur = process::CfsScheduler::get_current_task();
-  if (!caller || !cur || !process::g_scheduler)
+  if (!caller || !cur || !process::g_scheduler) {
     return -errc::ESRCH;
+  }
   shared_ptr<process::Process> targets[capability::Table::capacity()]{};
   for (usize i = 0; i < count; ++i) {
     auto object =
         caller->capabilities().lookup(handles[i], capability::ObjectType::Domain, capability::rights::DOMAIN_OBSERVE);
-    if (!object)
+    if (!object) {
       return domain_cap_error(object.error());
+    }
     auto target = static_cast<DomainObject *>((*object).get())->process;
-    if (target.get() == caller.get())
+    if (target.get() == caller.get()) {
       return -errc::EINVAL;
+    }
     // Aliased handles would register this sleeper twice on one queue; each
     // result index must name a distinct domain.
     for (usize j = 0; j < i; ++j) {
-      if (targets[j].get() == target.get())
+      if (targets[j].get() == target.get()) {
         return -errc::EINVAL;
+      }
     }
     targets[i] = moss::move(target);
   }
@@ -1382,23 +1533,27 @@ long sys_domain_wait_any(long handles_addr, long count_arg, long, long, long, lo
   auto exited_index = [&]() -> usize {
     for (usize i = 0; i < count; ++i) {
       const auto state = targets[i]->state();
-      if (state == process::ProcessState::Zombie || state == process::ProcessState::Terminated)
+      if (state == process::ProcessState::Zombie || state == process::ProcessState::Terminated) {
         return i;
+      }
     }
     return count;
   };
   for (;;) {
     const usize exited = exited_index();
-    if (exited != count)
+    if (exited != count) {
       return static_cast<long>(exited);
-    if (moss::abi::bridge::moss_io_wait_interrupted())
+    }
+    if (moss::abi::bridge::moss_io_wait_interrupted()) {
       return -errc::EINTR;
+    }
 
     usize registered = 0;
     for (; registered < count; ++registered) {
       if (!targets[registered]->domain_exit_wait_queue().try_add_waiter(static_cast<void *>(cur))) {
-        for (usize i = 0; i < registered; ++i)
+        for (usize i = 0; i < registered; ++i) {
           targets[i]->domain_exit_wait_queue().remove_waiter(static_cast<void *>(cur));
+        }
         return -errc::ENOMEM;
       }
     }
@@ -1408,32 +1563,40 @@ long sys_domain_wait_any(long handles_addr, long count_arg, long, long, long, lo
     const bool restore_irqs = arch::interrupts_enabled();
     arch::disable_interrupts();
     (void)moss::abi::bridge::moss_prepare_io_wait();
-    if (exited_index() != count)
+    if (exited_index() != count) {
       process::g_scheduler->task_wakeup(cur, cur->wake_cpu);
+    }
     process::g_scheduler->commit_sleep();
-    if (restore_irqs)
+    if (restore_irqs) {
       arch::enable_interrupts();
-    for (usize i = 0; i < count; ++i)
+    }
+    for (usize i = 0; i < count; ++i) {
       targets[i]->domain_exit_wait_queue().remove_waiter(static_cast<void *>(cur));
+    }
   }
 }
 
 // Exit status has its own syscall: older wait callers leave unused argument
 // registers unspecified, so extending their argument list breaks the ABI.
-long sys_domain_status(long handle, long status_addr, long, long, long, long) noexcept {
-  if (!status_addr)
+long sys_domain_status(long handle, long status_addr, long /*unused*/, long /*unused*/, long /*unused*/,
+                       long /*unused*/) noexcept {
+  if (!status_addr) {
     return -errc::EFAULT;
+  }
   auto caller = process::current_process();
-  if (!caller)
+  if (!caller) {
     return -errc::ESRCH;
+  }
   auto object = caller->capabilities().lookup(static_cast<Handle>(handle), capability::ObjectType::Domain,
                                               capability::rights::DOMAIN_OBSERVE);
-  if (!object)
+  if (!object) {
     return domain_cap_error(object.error());
+  }
   auto &target = *static_cast<DomainObject *>((*object).get())->process;
   const auto state = target.state();
-  if (state != process::ProcessState::Zombie && state != process::ProcessState::Terminated)
+  if (state != process::ProcessState::Zombie && state != process::ProcessState::Terminated) {
     return -errc::EAGAIN;
+  }
   return copy_domain_exit_status(target, static_cast<u64>(status_addr));
 }
 
@@ -1716,8 +1879,9 @@ static long do_execve(long pathname_addr, long argv_addr, long envp_addr, Handle
   // and the selected handle must survive close_uninheritable at commit.
   if (startup_cap) {
     auto kept = proc->capabilities().set_keep_on_exec(startup_cap, true);
-    if (!kept)
+    if (!kept) {
       return domain_cap_error(kept.error());
+    }
   }
 
   // Commit: no remaining fallible preparation. IRQs stay masked while the
@@ -1784,11 +1948,13 @@ static long do_execve(long pathname_addr, long argv_addr, long envp_addr, Handle
   }
 }
 
-long sys_execve(long pathname_addr, long argv_addr, long envp_addr, long, long, long) noexcept {
+long sys_execve(long pathname_addr, long argv_addr, long envp_addr, long /*unused*/, long /*unused*/,
+                long /*unused*/) noexcept {
   return do_execve(pathname_addr, argv_addr, envp_addr, 0);
 }
 
-long sys_execve_cap(long pathname_addr, long argv_addr, long envp_addr, long startup_cap, long, long) noexcept {
+long sys_execve_cap(long pathname_addr, long argv_addr, long envp_addr, long startup_cap, long /*unused*/,
+                    long /*unused*/) noexcept {
   return startup_cap > 0 ? do_execve(pathname_addr, argv_addr, envp_addr, static_cast<Handle>(startup_cap))
                          : -errc::EBADF;
 }
@@ -1808,7 +1974,7 @@ long sys_wait4(long wait_pid, long wstatus_addr, long options, long /*unused*/, 
     return -errc::EINVAL;
   }
   // Bound both signs before negating a process-group selector (including LONG_MIN).
-  constexpr long MAX_PID = static_cast<long>(~ProcessId{0});
+  constexpr long MAX_PID = (1L << (sizeof(ProcessId) * 8)) - 1;
   if (wait_pid > MAX_PID || wait_pid < -MAX_PID) {
     return -errc::ECHILD;
   }
@@ -1824,7 +1990,12 @@ long sys_wait4(long wait_pid, long wstatus_addr, long options, long /*unused*/, 
   }
 
   // Resolve pid==0 once so every scan during this wait uses the same group.
-  const ProcessId target_pgid = wait_pid == 0 ? proc->pgid() : (wait_pid < -1 ? static_cast<ProcessId>(-wait_pid) : 0);
+  ProcessId target_pgid = 0;
+  if (wait_pid == 0) {
+    target_pgid = proc->pgid();
+  } else if (wait_pid < -1) {
+    target_pgid = static_cast<ProcessId>(-wait_pid);
+  }
   auto matches_child = [&](ProcessId child_pid, const Process &child) {
     if (wait_pid == -1) {
       return true;
@@ -1870,7 +2041,7 @@ long sys_wait4(long wait_pid, long wstatus_addr, long options, long /*unused*/, 
       if (((options & WUNTRACED) && (status & 0xff) == 0x7f) || ((options & WCONTINUED) && status == 0xffff)) {
         // Retain the process so another waiter cannot free this thread during
         // reservation and copyout.
-        found = {child, thread, event};
+        found = {.child = child, .thread = thread, .value = event};
       }
     });
     return found;
@@ -1969,7 +2140,6 @@ long sys_wait4(long wait_pid, long wstatus_addr, long options, long /*unused*/, 
     if (restore_irqs) {
       arch::enable_interrupts();
     }
-
   }
 }
 
@@ -2262,14 +2432,15 @@ long sys_sigaction(long sig_arg, long act_addr, long oldact_addr, long /*unused*
                                         sa_flags::SA_NOCLDWAIT)) != 0) {
       return -errc::EINVAL;
     }
-    desired = Sigaction{static_cast<VirtAddr>(kact.handler), kact.mask & ~sig::UNCATCHABLE_MASK,
-                        static_cast<u32>(kact.flags)};
+    desired = Sigaction{.handler = static_cast<VirtAddr>(kact.handler),
+                        .mask = kact.mask & ~sig::UNCATCHABLE_MASK,
+                        .flags = static_cast<u32>(kact.flags)};
   }
 
   for (;;) {
     const Sigaction previous = proc->signal_action(signo);
     if (oldact_addr != 0) {
-      const UserSigaction kold{previous.handler, previous.mask, previous.flags};
+      const UserSigaction kold{.handler = previous.handler, .mask = previous.mask, .flags = previous.flags};
       if (copy_to_user(static_cast<u64>(oldact_addr), &kold, sizeof(kold)) < 0) {
         return -errc::EFAULT;
       }
@@ -2973,12 +3144,13 @@ long sys_nice(long increment, long /*unused*/, long /*unused*/, long /*unused*/,
 
   const i32 current = cur->se.nice.load();
   i32 new_nice;
-  if (increment < static_cast<long>(priority::MIN_NICE - current))
+  if (increment < static_cast<long>(priority::MIN_NICE - current)) {
     new_nice = priority::MIN_NICE;
-  else if (increment > static_cast<long>(priority::MAX_NICE - current))
+  } else if (increment > static_cast<long>(priority::MAX_NICE - current)) {
     new_nice = priority::MAX_NICE;
-  else
+  } else {
     new_nice = current + static_cast<i32>(increment);
+  }
 
   g_scheduler->set_base_nice(cur, new_nice);
 

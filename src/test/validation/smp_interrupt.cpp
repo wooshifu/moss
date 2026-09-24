@@ -50,8 +50,9 @@ struct InterruptUnbind {
 
   bool peer() {
     const bool right_cpu = arch::get_current_cpu_id() == 1;
-    if (!descriptor->begin_callback())
+    if (!descriptor->begin_callback()) {
       return false;
+    }
     __atomic_store_n(&entered, 1U, __ATOMIC_RELEASE);
     // Hold the old callback while the owner starts unbinding. A second
     // admission must fail before the first callback releases its context.

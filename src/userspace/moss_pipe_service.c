@@ -50,22 +50,25 @@ static void wake_waiter(unsigned int index) {
   (void)syscall2(SYS_IPC_REPLY, (long)waiters[index].reply, (long)&response);
   (void)syscall1(SYS_CAP_CLOSE, (long)waiters[index].reply);
   --waiter_count;
-  if (index < waiter_count)
+  if (index < waiter_count) {
     memmove(waiters + index, waiters + index + 1, (waiter_count - index) * sizeof(waiters[0]));
+  }
 }
 
 static void wake_pipe_waiters(struct Pipe *pipe, int closing) {
   for (unsigned int index = 0; index < waiter_count;) {
-    if (waiters[index].pipe == pipe && (closing || wait_ready(&waiters[index])))
+    if (waiters[index].pipe == pipe && (closing || wait_ready(&waiters[index]))) {
       wake_waiter(index);
-    else
+    } else {
       ++index;
+    }
   }
 }
 
 static unsigned long parse_handle(const char *text) {
-  if (!text)
+  if (!text) {
     return 0;
+  }
   char *end = NULL;
   errno = 0;
   unsigned long handle = strtoul(text, &end, 10);
@@ -74,8 +77,9 @@ static unsigned long parse_handle(const char *text) {
 
 static struct Pipe *find_pipe(unsigned long id) {
   for (struct Pipe *pipe = pipes; pipe; pipe = pipe->next) {
-    if (pipe->id == id)
+    if (pipe->id == id) {
       return pipe;
+    }
   }
   return NULL;
 }
@@ -117,21 +121,25 @@ static void write_pipe(struct Pipe *pipe, const void *source, unsigned int count
 }
 
 int main(int argc, char **argv) {
-  if (argc != 3)
+  if (argc != 3) {
     return 2;
+  }
   unsigned long receive = parse_handle(argv[1]);
   unsigned long mint = parse_handle(argv[2]);
-  if (!receive || !mint)
+  if (!receive || !mint) {
     return 2;
+  }
 
   for (;;) {
     struct moss_ipc_message request = {0};
     unsigned long reply = 0;
     long received = syscall3(SYS_IPC_RECEIVE, (long)receive, (long)&request, (long)&reply);
-    if (received == -EINTR)
+    if (received == -EINTR) {
       continue;
-    if (received < 0)
+    }
+    if (received < 0) {
       return 1;
+    }
 
     struct moss_ipc_message response = {.size = 1, .payload = {MOSS_PIPE_BAD_REQUEST}};
     struct Pipe *created = NULL;
@@ -146,8 +154,9 @@ int main(int argc, char **argv) {
     long minted = 0;
     unsigned int role = request.badge ? role_of(request.badge) : 0;
     struct Pipe *pipe = request.badge ? find_pipe(id_of(request.badge)) : NULL;
-    if (request.badge && !pipe)
+    if (request.badge && !pipe) {
       response.payload[0] = MOSS_PIPE_NO_ENTRY;
+    }
 
     if (request.badge == 0 && request.size == 1 && request.payload[0] == MOSS_PIPE_CREATE && !request.capability &&
         !request.rights) {
@@ -202,8 +211,9 @@ int main(int argc, char **argv) {
                                     : pipe->writer_issued && !pipe->writer_closed)) {
       unsigned int count = moss_pipe_get_u16(request.payload + 1);
       if (count && count <= PIPE_BYTES) {
-        if (waiter_count == PIPE_WAIT_LIMIT)
+        if (waiter_count == PIPE_WAIT_LIMIT) {
           wake_waiter(0); // A spurious wake frees a slot, including for a canceled caller.
+        }
         waiters[waiter_count++] =
             (struct PipeWaiter){.pipe = pipe, .reply = request.capability, .count = count, .role = (unsigned char)role};
         request.capability = 0;
@@ -214,11 +224,13 @@ int main(int argc, char **argv) {
       if (role == PIPE_READER) {
         pipe->reader_closed = 1;
         pipe->prepared_count = 0;
-      } else
+      } else {
         pipe->writer_closed = 1;
+      }
       response.payload[0] = MOSS_PIPE_OK;
-      if (pipe->reader_closed && pipe->writer_closed)
+      if (pipe->reader_closed && pipe->writer_closed) {
         finished = pipe;
+      }
     } else if (pipe && request.capability && request.size == MOSS_PIPE_IO_BYTES &&
                ((role == PIPE_READER &&
                  (request.payload[0] == MOSS_PIPE_READ || request.payload[0] == MOSS_PIPE_READ_PREPARE) &&
@@ -231,11 +243,9 @@ int main(int argc, char **argv) {
           response.size = MOSS_PIPE_IO_REPLY_BYTES;
           response.payload[0] = MOSS_PIPE_OK;
           moss_pipe_put_u16(response.payload + 1, 0);
-        } else if (role == PIPE_READER && pipe->prepared_count) {
-          response.payload[0] = MOSS_PIPE_WOULD_BLOCK;
         } else if (role == PIPE_WRITER && pipe->reader_closed) {
           response.payload[0] = MOSS_PIPE_BROKEN;
-        } else if ((role == PIPE_READER && !pipe->length) ||
+        } else if ((role == PIPE_READER && (pipe->prepared_count || !pipe->length)) ||
                    (role == PIPE_WRITER && count > PIPE_BYTES - pipe->length)) {
           response.payload[0] = MOSS_PIPE_WOULD_BLOCK;
         } else {
@@ -243,10 +253,11 @@ int main(int argc, char **argv) {
                                  role == PIPE_READER ? MOSS_CAP_MAP_WRITE : MOSS_CAP_MAP_READ);
           if (mapped > 0) {
             unsigned int transferred = role == PIPE_READER ? copy_count(count, pipe->length) : count;
-            if (role == PIPE_READER)
+            if (role == PIPE_READER) {
               read_pipe(pipe, (void *)mapped, transferred);
-            else
+            } else {
               write_pipe(pipe, (const void *)mapped, transferred);
+            }
             response.size = MOSS_PIPE_IO_REPLY_BYTES;
             response.payload[0] = MOSS_PIPE_OK;
             moss_pipe_put_u16(response.payload + 1, transferred);
@@ -258,8 +269,9 @@ int main(int argc, char **argv) {
               transferred_count = transferred;
               transferred_role = role;
             }
-            if (syscall2(SYS_MUNMAP, mapped, MOSS_MEM_OBJECT_BYTES) != 0)
+            if (syscall2(SYS_MUNMAP, mapped, MOSS_MEM_OBJECT_BYTES) != 0) {
               return 1;
+            }
           } else {
             response.payload[0] = MOSS_PIPE_UNAVAILABLE;
           }
@@ -267,8 +279,9 @@ int main(int argc, char **argv) {
       }
     }
 
-    if (request.capability)
+    if (request.capability) {
       (void)syscall1(SYS_CAP_CLOSE, (long)request.capability);
+    }
     long sent = syscall2(SYS_IPC_REPLY, (long)reply, (long)&response);
     if (transferred_pipe && sent == 0) {
       // The shared page may be filled before replying, but ring ownership
@@ -280,8 +293,9 @@ int main(int argc, char **argv) {
         transferred_pipe->length += transferred_count;
       }
     }
-    if (prepared_pipe && sent == 0)
+    if (prepared_pipe && sent == 0) {
       prepared_pipe->prepared_count = transferred_count;
+    }
     if (finished_read_pipe && sent == 0) {
       if (finish_commit) {
         finished_read_pipe->head = (finished_read_pipe->head + finished_read_pipe->prepared_count) % PIPE_BYTES;
@@ -299,13 +313,17 @@ int main(int argc, char **argv) {
         free(created);
       }
     }
-    if (issued && sent == 0)
+    if (issued && sent == 0) {
       *issued = 1;
-    if (minted > 0)
+    }
+    if (minted > 0) {
       (void)syscall1(SYS_CAP_CLOSE, minted);
-    if (pipe)
+    }
+    if (pipe) {
       wake_pipe_waiters(pipe, finished != NULL);
-    if (finished)
+    }
+    if (finished) {
       remove_pipe(finished);
+    }
   }
 }

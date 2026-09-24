@@ -259,8 +259,8 @@ public:
   // A failed probe must release only resources it acquired, preserving borrowed state.
   [[nodiscard]] virtual VoidResult probe(Device &device, BindMode mode) noexcept = 0;
   virtual void remove(Device &device) noexcept = 0;
-  [[nodiscard]] virtual VoidResult suspend(Device &) noexcept { return VoidResult{}; }
-  [[nodiscard]] virtual VoidResult resume(Device &) noexcept { return VoidResult{}; }
+  [[nodiscard]] virtual VoidResult suspend(Device & /*unused*/) noexcept { return VoidResult{}; }
+  [[nodiscard]] virtual VoidResult resume(Device & /*unused*/) noexcept { return VoidResult{}; }
 };
 
 class DeviceManager {
@@ -273,8 +273,9 @@ class DeviceManager {
     containers::LockGuard<containers::IrqSpinLock> guard(registry_lock_);
     shared_ptr<Device> result;
     devices_.for_each([&](const shared_ptr<Device> &device) {
-      if (device->device_id() > after && (!result || device->device_id() < result->device_id()))
+      if (device->device_id() > after && (!result || device->device_id() < result->device_id())) {
         result = device;
+      }
     });
     return result;
   }
@@ -288,11 +289,13 @@ public:
     // devices must not invoke remove for resources owned by another component.
     for (DeviceId after = 0;;) {
       auto device = next_device(after);
-      if (!device)
+      if (!device) {
         break;
+      }
       after = device->device_id();
-      if (device->driver_ && device->bind_mode() != BindMode::AdoptBoot)
+      if (device->driver_ && device->bind_mode() != BindMode::AdoptBoot) {
         device->driver_->remove(*device);
+      }
       device->driver_.reset();
       device->set_state(DeviceState::Removed);
       __atomic_store_n(&device->manager_, static_cast<DeviceManager *>(nullptr), __ATOMIC_RELEASE);
@@ -302,13 +305,15 @@ public:
   }
 
   [[nodiscard]] KernelResult<DeviceId> register_device(shared_ptr<Device> device) noexcept {
-    if (!device || !device->name())
+    if (!device || !device->name()) {
       return KernelResult<DeviceId>{Err<ErrorCode>(ErrorCode::InvalidParameter)};
+    }
     {
       containers::LockGuard<containers::IrqSpinLock> guard(registry_lock_);
       DeviceManager *expected = nullptr;
-      if (!__atomic_compare_exchange_n(&device->manager_, &expected, this, false, __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE))
+      if (!__atomic_compare_exchange_n(&device->manager_, &expected, this, false, __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE)) {
         return KernelResult<DeviceId>{Err<ErrorCode>(ErrorCode::AlreadyExists)};
+      }
       auto duplicate = devices_.find_if([&](const shared_ptr<Device> &other) {
         return moss::abi::bridge::strcmp(other->name(), device->name()) == 0;
       });
@@ -324,24 +329,29 @@ public:
   }
 
   [[nodiscard]] VoidResult register_driver(shared_ptr<Driver> driver) noexcept {
-    if (!driver || !driver->name())
+    if (!driver || !driver->name()) {
       return VoidResult{ErrorCode::InvalidParameter};
+    }
     {
       containers::LockGuard<containers::IrqSpinLock> guard(registry_lock_);
       if (drivers_.find_if([&](const shared_ptr<Driver> &other) {
             return other.get() == driver.get() || moss::abi::bridge::strcmp(other->name(), driver->name()) == 0;
-          }))
+          })) {
         return VoidResult{ErrorCode::AlreadyExists};
-      if (!drivers_.try_push_front(driver))
+      }
+      if (!drivers_.try_push_front(driver)) {
         return VoidResult{ErrorCode::OutOfMemory};
+      }
     }
     for (DeviceId after = 0;;) {
       auto device = next_device(after);
-      if (!device)
+      if (!device) {
         break;
+      }
       after = device->device_id();
-      if (device->state() == DeviceState::Uninitialized)
+      if (device->state() == DeviceState::Uninitialized) {
         (void)bind_device(after);
+      }
     }
     return VoidResult{};
   }
@@ -352,14 +362,17 @@ public:
     {
       containers::LockGuard<containers::IrqSpinLock> guard(registry_lock_);
       auto found = devices_.find_if([&](const shared_ptr<Device> &item) { return item->device_id() == id; });
-      if (!found)
+      if (!found) {
         return VoidResult{ErrorCode::NotFound};
+      }
       device = *found;
-      if (device->state() != DeviceState::Uninitialized)
+      if (device->state() != DeviceState::Uninitialized) {
         return VoidResult{ErrorCode::InvalidState};
+      }
       auto matched = drivers_.find_if([&](const shared_ptr<Driver> &item) { return item->matches(*device); });
-      if (!matched)
+      if (!matched) {
         return VoidResult{ErrorCode::NotFound};
+      }
       driver = *matched;
       device->set_state(DeviceState::Initializing);
     }
@@ -369,8 +382,9 @@ public:
       containers::LockGuard<containers::IrqSpinLock> guard(registry_lock_);
       __atomic_store_n(&device->probe_error_, static_cast<u32>(result ? ErrorCode::Success : result.error()),
                        __ATOMIC_RELEASE);
-      if (result)
+      if (result) {
         device->driver_ = driver;
+      }
       device->set_state(result ? DeviceState::Active : DeviceState::Error);
     }
     return result;
@@ -382,18 +396,22 @@ public:
     {
       containers::LockGuard<containers::IrqSpinLock> guard(registry_lock_);
       auto found = devices_.find_if([&](const shared_ptr<Device> &item) { return item->device_id() == id; });
-      if (!found)
+      if (!found) {
         return VoidResult{ErrorCode::NotFound};
+      }
       device = *found;
-      if (device->bind_mode() == BindMode::AdoptBoot)
+      if (device->bind_mode() == BindMode::AdoptBoot) {
         return VoidResult{ErrorCode::PermissionDenied};
-      if (device->state() == DeviceState::Initializing)
+      }
+      if (device->state() == DeviceState::Initializing) {
         return VoidResult{ErrorCode::ResourceBusy};
+      }
       device->set_state(DeviceState::Initializing);
       driver = device->driver_;
     }
-    if (driver)
+    if (driver) {
       driver->remove(*device);
+    }
     {
       containers::LockGuard<containers::IrqSpinLock> guard(registry_lock_);
       devices_.remove_if([&](const shared_ptr<Device> &item) { return item.get() == device.get(); });
@@ -410,8 +428,9 @@ public:
     return found ? *found : shared_ptr<Device>{};
   }
   [[nodiscard]] shared_ptr<Device> get_device_by_name(const char *name) const noexcept {
-    if (!name)
+    if (!name) {
       return {};
+    }
     containers::LockGuard<containers::IrqSpinLock> guard(registry_lock_);
     auto found = devices_.find_if(
         [&](const shared_ptr<Device> &item) { return moss::abi::bridge::strcmp(item->name(), name) == 0; });
@@ -424,18 +443,22 @@ public:
   };
   [[nodiscard]] DeviceManagerStats get_statistics() const noexcept {
     containers::LockGuard<containers::IrqSpinLock> guard(registry_lock_);
-    DeviceManagerStats stats{static_cast<u32>(devices_.size()), 0, static_cast<u32>(drivers_.size())};
+    DeviceManagerStats stats{.total_devices = static_cast<u32>(devices_.size()),
+                             .active_devices = 0,
+                             .registered_drivers = static_cast<u32>(drivers_.size())};
     devices_.for_each([&](const shared_ptr<Device> &device) {
-      if (device->state() == DeviceState::Active)
+      if (device->state() == DeviceState::Active) {
         ++stats.active_devices;
+      }
     });
     return stats;
   }
   void list_devices(void (*callback)(const Device &, void *), void *context) const noexcept {
     for (DeviceId after = 0;;) {
       auto device = next_device(after);
-      if (!device)
+      if (!device) {
         break;
+      }
       after = device->device_id();
       callback(*device, context);
     }
@@ -447,29 +470,35 @@ private:
   [[nodiscard]] VoidResult change_power_state(bool resume) noexcept {
     for (DeviceId after = 0;;) {
       auto device = next_device(after);
-      if (!device)
+      if (!device) {
         break;
+      }
       after = device->device_id();
       shared_ptr<Driver> driver;
       {
         containers::LockGuard<containers::IrqSpinLock> guard(registry_lock_);
-        if (__atomic_load_n(&device->manager_, __ATOMIC_ACQUIRE) != this)
+        if (__atomic_load_n(&device->manager_, __ATOMIC_ACQUIRE) != this) {
           continue;
-        if (device->bind_mode() == BindMode::AdoptBoot)
+        }
+        if (device->bind_mode() == BindMode::AdoptBoot) {
           return VoidResult{ErrorCode::PermissionDenied};
-        if (device->state() != (resume ? DeviceState::Suspended : DeviceState::Active))
+        }
+        if (device->state() != (resume ? DeviceState::Suspended : DeviceState::Active)) {
           continue;
+        }
         driver = device->driver_;
         device->set_state(DeviceState::Initializing);
       }
       auto result = resume ? driver->resume(*device) : driver->suspend(*device);
       {
         containers::LockGuard<containers::IrqSpinLock> guard(registry_lock_);
-        device->set_state(result ? (resume ? DeviceState::Active : DeviceState::Suspended)
-                                 : (resume ? DeviceState::Suspended : DeviceState::Active));
+        const DeviceState completed_state = resume ? DeviceState::Active : DeviceState::Suspended;
+        const DeviceState previous_state = resume ? DeviceState::Suspended : DeviceState::Active;
+        device->set_state(result ? completed_state : previous_state);
       }
-      if (!result)
+      if (!result) {
         return result;
+      }
     }
     return VoidResult{};
   }

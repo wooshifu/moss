@@ -51,8 +51,9 @@ static int transfer(unsigned long file, unsigned long memory, unsigned char oper
   if (operation == MOSS_FILE_APPEND) {
     uint64_t start = moss_file_get_u64(response.payload + 1);
     *transferred = moss_file_get_u16(response.payload + 9);
-    if (start > MOSS_FILE_CONTENT_BUDGET_BYTES || *transferred > MOSS_FILE_CONTENT_BUDGET_BYTES - start)
+    if (start > MOSS_FILE_CONTENT_BUDGET_BYTES || *transferred > MOSS_FILE_CONTENT_BUDGET_BYTES - start) {
       return 0;
+    }
   } else {
     *transferred = moss_file_get_u16(response.payload + 1);
   }
@@ -74,11 +75,13 @@ static int file_size(unsigned long file, uint64_t *size) {
   struct moss_ipc_message request = {.size = 1, .payload = {MOSS_FILE_SIZE}};
   struct moss_ipc_message response = {0};
   long result = call(file, &request, &response);
-  if (response.capability)
+  if (response.capability) {
     (void)syscall1(SYS_CAP_CLOSE, (long)response.capability);
+  }
   if (result != MOSS_FILE_SIZE_REPLY_BYTES || response.payload[0] != MOSS_FILE_OK || response.capability ||
-      response.rights)
+      response.rights) {
     return 0;
+  }
   *size = moss_file_get_u64(response.payload + 1);
   return 1;
 }
@@ -218,10 +221,11 @@ int main(int argc, char **argv) {
     if (!result) {
       char message[64];
       int length = snprintf(message, sizeof(message), "MOSS_FILE_SIZE=%llu\n", (unsigned long long)size);
-      if (length <= 0 || (size_t)length >= sizeof(message))
+      if (length <= 0 || (size_t)length >= sizeof(message)) {
         result = error();
-      else
+      } else {
         (void)write(STDOUT_FILENO, message, (size_t)length);
+      }
     }
   } else if (resizing) {
     result = resize_file(opened.capability, resize_size) ? 0 : error();

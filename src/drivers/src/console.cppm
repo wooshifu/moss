@@ -21,15 +21,17 @@ public:
   [[nodiscard]] bool empty() const noexcept { return head_ == tail_; }
   bool put(u8 value) noexcept {
     const usize next = (head_ + 1) & (capacity - 1);
-    if (next == tail_)
+    if (next == tail_) {
       return false;
+    }
     bytes_[head_] = value;
     head_ = next;
     return true;
   }
   int get() noexcept {
-    if (empty())
+    if (empty()) {
       return -1;
+    }
     const int value = bytes_[tail_];
     tail_ = (tail_ + 1) & (capacity - 1);
     return value;

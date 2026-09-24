@@ -5,8 +5,9 @@
 // fixed-size IPC message aggregate to this routine.
 void *memset(void *destination, int value, unsigned long count) {
   volatile unsigned char *bytes = (volatile unsigned char *)destination;
-  for (unsigned long i = 0; i < count; ++i)
+  for (unsigned long i = 0; i < count; ++i) {
     bytes[i] = (unsigned char)value;
+  }
   return destination;
 }
 
@@ -113,8 +114,9 @@ static int ipc_expect_spawn_error(long factory, struct moss_domain_spawn *image,
 
 static long ipc_return_code_cap(long source) {
   struct moss_ipc_endpoints endpoint = {0, 0};
-  if (syscall1(SYS_IPC_CREATE, (long)&endpoint) != 0)
+  if (syscall1(SYS_IPC_CREATE, (long)&endpoint) != 0) {
     return -1;
+  }
   if (syscall2(SYS_CAP_SET_INHERIT, (long)endpoint.receive, 1) != 0) {
     (void)syscall1(SYS_CAP_CLOSE, (long)endpoint.receive);
     (void)syscall1(SYS_CAP_CLOSE, (long)endpoint.send);
@@ -126,8 +128,9 @@ static long ipc_return_code_cap(long source) {
     unsigned long reply = 0;
     const unsigned long sent_rights = MOSS_CAP_CODE_EXEC | MOSS_CAP_TRANSFER | MOSS_CAP_DUPLICATE;
     if (ipc_receive(endpoint.receive, &request, &reply) != 1 || request.payload[0] != 'c' ||
-        request.rights != sent_rights || request.capability == 0)
+        request.rights != sent_rights || request.capability == 0) {
       _exit(91);
+    }
     const struct moss_ipc_message response = {
         .size = 1, .capability = request.capability, .rights = MOSS_CAP_CODE_EXEC, .payload = {'c'}};
     _exit(ipc_reply(reply, &response) == 0 ? 37 : 92);
@@ -142,14 +145,17 @@ static long ipc_return_code_cap(long source) {
     struct moss_ipc_message response = {0};
     long deadline = deadline_after(ipc_call_timeout_ns);
     long result = deadline > 0 ? ipc_call(endpoint.send, &request, &response, deadline) : -1;
-    if (result != 1 || response.payload[0] != 'c' || response.rights != MOSS_CAP_CODE_EXEC || response.capability == 0)
+    if (result != 1 || response.payload[0] != 'c' || response.rights != MOSS_CAP_CODE_EXEC ||
+        response.capability == 0) {
       (void)kill(child, SIGKILL);
+    }
     int child_ok = wait_exit(child, 37);
     if (result == 1 && response.payload[0] == 'c' && response.rights == MOSS_CAP_CODE_EXEC &&
-        response.capability != 0 && child_ok)
+        response.capability != 0 && child_ok) {
       returned = (long)response.capability;
-    else if (response.capability != 0)
+    } else if (response.capability != 0) {
       (void)syscall1(SYS_CAP_CLOSE, (long)response.capability);
+    }
   }
   (void)syscall1(SYS_CAP_CLOSE, (long)endpoint.send);
   return returned;
@@ -159,8 +165,9 @@ static long ipc_return_code_cap(long source) {
 // approval handle lets it issue; the caller retains revocation authority.
 static long ipc_approve_from_child(long approver, long version, int delegated) {
   struct moss_ipc_endpoints endpoint = {0, 0};
-  if (syscall1(SYS_IPC_CREATE, (long)&endpoint) != 0)
+  if (syscall1(SYS_IPC_CREATE, (long)&endpoint) != 0) {
     return -1;
+  }
   if (syscall2(SYS_CAP_SET_INHERIT, (long)endpoint.receive, 1) != 0 ||
       (delegated && syscall2(SYS_CAP_SET_INHERIT, approver, 1) != 0)) {
     (void)syscall1(SYS_CAP_CLOSE, (long)endpoint.receive);
@@ -172,15 +179,17 @@ static long ipc_approve_from_child(long approver, long version, int delegated) {
     struct moss_ipc_message request = {0};
     unsigned long reply = 0;
     if (syscall0(SYS_CODE_AUTHORITY) != -IPC_EACCES || ipc_receive(endpoint.receive, &request, &reply) != 1 ||
-        request.capability == 0 || request.rights != MOSS_CAP_MAP_READ)
+        request.capability == 0 || request.rights != MOSS_CAP_MAP_READ) {
       _exit(91);
+    }
     long approved = syscall2(SYS_CODE_APPROVE, approver, (long)request.capability);
     if (!delegated) {
       const struct moss_ipc_message denied = {.size = 1, .payload = {'n'}};
       _exit(approved == -IPC_EBADF && ipc_reply(reply, &denied) == 0 ? 37 : 92);
     }
-    if (approved <= 0)
+    if (approved <= 0) {
       _exit(93);
+    }
     const struct moss_ipc_message issued = {.size = 1,
                                             .capability = (unsigned long)approved,
                                             .rights = MOSS_CAP_CODE_EXEC | MOSS_CAP_CODE_IDENTIFY | MOSS_CAP_TRANSFER |
@@ -191,8 +200,9 @@ static long ipc_approve_from_child(long approver, long version, int delegated) {
   long unmarked = delegated ? syscall2(SYS_CAP_SET_INHERIT, approver, 0) : 0;
   (void)syscall1(SYS_CAP_CLOSE, (long)endpoint.receive);
   long result = -1;
-  if (unmarked != 0 && child > 0)
+  if (unmarked != 0 && child > 0) {
     (void)kill(child, SIGKILL);
+  }
   if (child > 0 && unmarked == 0) {
     const struct moss_ipc_message request = {
         .size = 1, .capability = (unsigned long)version, .rights = MOSS_CAP_MAP_READ, .payload = {'v'}};
@@ -203,16 +213,19 @@ static long ipc_approve_from_child(long approver, long version, int delegated) {
         received == 1 && response.payload[0] == (delegated ? 'a' : 'n') && (response.capability != 0) == delegated &&
         response.rights ==
             (delegated ? (MOSS_CAP_CODE_EXEC | MOSS_CAP_CODE_IDENTIFY | MOSS_CAP_TRANSFER | MOSS_CAP_DUPLICATE) : 0);
-    if (!valid)
+    if (!valid) {
       (void)kill(child, SIGKILL);
+    }
     int child_ok = wait_exit(child, 37);
-    if (valid && child_ok)
+    if (valid && child_ok) {
       result = delegated ? (long)response.capability : 0;
-    else if (response.capability != 0)
+    } else if (response.capability != 0) {
       (void)syscall1(SYS_CAP_CLOSE, (long)response.capability);
+    }
   }
-  if (child > 0 && unmarked != 0)
+  if (child > 0 && unmarked != 0) {
     (void)wait_exit(child, 37);
+  }
   (void)syscall1(SYS_CAP_CLOSE, (long)endpoint.send);
   return result;
 }
@@ -226,8 +239,9 @@ unsigned long ipc_domain_spawn(void) {
   static unsigned char readback[MOSS_DOMAIN_PAGE_BYTES];
   struct moss_domain_layout layout = {0};
   if (syscall1(SYS_DOMAIN_LAYOUT, (long)&layout) != 0 || layout.page_size != MOSS_DOMAIN_PAGE_BYTES ||
-      layout.stack_size < 16 || layout.stack_top <= layout.stack_size)
+      layout.stack_size < 16 || layout.stack_top <= layout.stack_size) {
     return 1;
+  }
 
   const unsigned long entry = (unsigned long)spawned_stack_exit;
   const unsigned long code_page = entry & ~(MOSS_DOMAIN_PAGE_BYTES - 1UL);
@@ -262,11 +276,13 @@ unsigned long ipc_domain_spawn(void) {
                             readback[entry - code_page] != original[entry - code_page])
             << 18;
   errors |= (unsigned long)(single <= 0 || syscall1(SYS_CODE_PAGE_COUNT, single) != 1) << 25;
-  if (single > 0)
+  if (single > 0) {
     (void)syscall1(SYS_CAP_CLOSE, single);
+  }
   long version = syscall2(SYS_CODE_SNAPSHOT_RANGE, (long)mutable_code, CODE_RANGE_TEST_PAGES);
-  if (factory <= 0 || authority <= 0 || version <= 0)
+  if (factory <= 0 || authority <= 0 || version <= 0) {
     return errors | 1;
+  }
   errors |= (unsigned long)(syscall1(SYS_CODE_PAGE_COUNT, version) != CODE_RANGE_TEST_PAGES) << 26;
   errors |= (unsigned long)(syscall2(SYS_CODE_SNAPSHOT_RANGE, (long)mutable_code, MOSS_DOMAIN_MAX_IMAGE_PAGES + 1) !=
                             -IPC_EINVAL)
@@ -274,8 +290,9 @@ unsigned long ipc_domain_spawn(void) {
   errors |= (unsigned long)(syscall2(SYS_CODE_SNAPSHOT_RANGE, (long)(layout.stack_top - MOSS_DOMAIN_PAGE_BYTES), 2) !=
                             -IPC_EFAULT)
             << 20;
-  for (unsigned long i = 0; i < sizeof(mutable_code); ++i)
+  for (unsigned long i = 0; i < sizeof(mutable_code); ++i) {
     source[i] = 0;
+  }
   errors |= (unsigned long)(syscall2(SYS_CODE_READ, version, (long)readback) != 0 || readback[0] != snapshot_marker)
             << 21;
   errors |=
@@ -298,39 +315,45 @@ unsigned long ipc_domain_spawn(void) {
   errors |=
       (unsigned long)(reduced_authority <= 0 || syscall2(SYS_CODE_APPROVE, reduced_authority, version) != -IPC_EACCES)
       << 13;
-  if (reduced_authority > 0)
+  if (reduced_authority > 0) {
     (void)syscall1(SYS_CAP_CLOSE, reduced_authority);
+  }
   page.source = 0;
   page.size = 0;
   page.code = (unsigned long)version;
   page.code_page_index = last_page;
   errors |= (unsigned long)(syscall2(SYS_DOMAIN_SPAWN, factory, (long)&image) != -IPC_EACCES) << 14;
   long approved = syscall2(SYS_CODE_APPROVE, authority, version);
-  if (approved <= 0)
+  if (approved <= 0) {
     return errors | (1UL << 15);
+  }
   errors |= (unsigned long)(syscall2(SYS_CODE_READ, approved, (long)readback) != -IPC_EACCES) << 16;
   errors |= (unsigned long)(syscall1(SYS_CODE_PAGE_COUNT, approved) != -IPC_EACCES) << 27;
   page.code = (unsigned long)approved;
   errors |= (unsigned long)(syscall2(SYS_DOMAIN_SPAWN, 0, (long)&image) != -IPC_EBADF);
   long limited = syscall2(SYS_CAP_DUPLICATE, factory, MOSS_CAP_TRANSFER);
   errors |= (unsigned long)(limited <= 0 || syscall2(SYS_DOMAIN_SPAWN, limited, (long)&image) != -IPC_EACCES) << 1;
-  if (limited > 0)
+  if (limited > 0) {
     (void)syscall1(SYS_CAP_CLOSE, limited);
+  }
   struct moss_ipc_endpoints delegation = {0, 0};
   if (syscall1(SYS_IPC_CREATE, (long)&delegation) != 0 ||
-      syscall2(SYS_CAP_SET_INHERIT, (long)delegation.receive, 1) != 0)
+      syscall2(SYS_CAP_SET_INHERIT, (long)delegation.receive, 1) != 0) {
     return errors | (1UL << 2);
+  }
   long child = fork();
   if (child == 0) {
-    if (syscall0(SYS_DOMAIN_FACTORY) != -IPC_EACCES || syscall0(SYS_CODE_AUTHORITY) != -IPC_EACCES)
+    if (syscall0(SYS_DOMAIN_FACTORY) != -IPC_EACCES || syscall0(SYS_CODE_AUTHORITY) != -IPC_EACCES) {
       _exit(96);
+    }
     struct moss_ipc_message incoming = {0};
     unsigned long reply = 0;
     struct moss_domain_spawn invalid_image = {0};
     if (ipc_receive(delegation.receive, &incoming, &reply) != 1 || incoming.rights != MOSS_CAP_DOMAIN_SPAWN ||
         incoming.capability == 0 ||
-        syscall2(SYS_DOMAIN_SPAWN, (long)incoming.capability, (long)&invalid_image) != -IPC_EINVAL)
+        syscall2(SYS_DOMAIN_SPAWN, (long)incoming.capability, (long)&invalid_image) != -IPC_EINVAL) {
       _exit(97);
+    }
     const struct moss_ipc_message accepted = {.size = 1, .payload = {37}};
     _exit(ipc_reply(reply, &accepted) == 0 ? 37 : 98);
   }
@@ -341,8 +364,9 @@ unsigned long ipc_domain_spawn(void) {
     struct moss_ipc_message accepted = {0};
     long deadline = deadline_after(ipc_call_timeout_ns);
     long sent = deadline > 0 ? ipc_call(delegation.send, &delegated, &accepted, deadline) : -1;
-    if (sent != 1 || accepted.payload[0] != 37)
+    if (sent != 1 || accepted.payload[0] != 37) {
       (void)kill(child, SIGKILL);
+    }
     errors |= (unsigned long)(sent != 1 || accepted.payload[0] != 37 || !wait_exit(child, 37)) << 2;
   } else {
     errors |= 1UL << 2;
@@ -377,8 +401,9 @@ unsigned long ipc_domain_spawn(void) {
   (void)syscall1(SYS_CAP_CLOSE, authority);
   (void)syscall1(SYS_CAP_CLOSE, version);
   (void)syscall1(SYS_CAP_CLOSE, approved);
-  if (domain <= 0)
+  if (domain <= 0) {
     return errors | (1UL << 6);
+  }
   long diagnostic_id = syscall1(SYS_DOMAIN_ID, domain);
   errors |= (unsigned long)(diagnostic_id <= 1 || syscall3(SYS_WAITPID, diagnostic_id, 0, 1) != -IPC_ECHILD) << 7;
   errors |= (unsigned long)!domain_exited((unsigned long)domain, 37, 0) << 8;
@@ -390,8 +415,9 @@ unsigned long ipc_code_revocation(void) {
   static unsigned char code_copy[MOSS_DOMAIN_PAGE_BYTES] __attribute__((aligned(MOSS_DOMAIN_PAGE_BYTES)));
   struct moss_domain_layout layout = {0};
   if (syscall1(SYS_DOMAIN_LAYOUT, (long)&layout) != 0 || layout.page_size != MOSS_DOMAIN_PAGE_BYTES ||
-      layout.stack_size < 16 || layout.stack_top <= layout.stack_size)
+      layout.stack_size < 16 || layout.stack_top <= layout.stack_size) {
     return 1;
+  }
 
   const unsigned long entry = (unsigned long)spawned_sleep_exit;
   const unsigned long code_page = entry & ~(MOSS_DOMAIN_PAGE_BYTES - 1UL);
@@ -400,8 +426,9 @@ unsigned long ipc_code_revocation(void) {
   const unsigned long live_domain_delay_ns = 300000000UL;
   const unsigned long initial_stack[2] = {live_domain_delay_ns, 37};
   const volatile unsigned char *original = (const volatile unsigned char *)code_page;
-  for (unsigned long i = 0; i < MOSS_DOMAIN_PAGE_BYTES; ++i)
+  for (unsigned long i = 0; i < MOSS_DOMAIN_PAGE_BYTES; ++i) {
     code_copy[i] = original[i];
+  }
   struct moss_domain_page page = {.address = code_page, .flags = MOSS_DOMAIN_PAGE_READ | MOSS_DOMAIN_PAGE_EXEC};
   struct moss_domain_spawn image = {.entry = entry,
                                     .stack_pointer = stack_pointer,
@@ -421,8 +448,9 @@ unsigned long ipc_code_revocation(void) {
     errors |= 1;
     goto cleanup;
   }
-  for (unsigned long i = 0; i < MOSS_DOMAIN_PAGE_BYTES; ++i)
+  for (unsigned long i = 0; i < MOSS_DOMAIN_PAGE_BYTES; ++i) {
     code_copy[i] = 0;
+  }
   approved = syscall2(SYS_CODE_APPROVE, authority, version);
   if (approved <= 0) {
     errors |= 1UL << 1;
@@ -477,15 +505,18 @@ unsigned long ipc_code_revocation(void) {
   errors |= (unsigned long)!ipc_expect_spawn_error(factory, &image, -IPC_EACCES) << 18;
 
 cleanup:
-  if (domain > 0)
+  if (domain > 0) {
     errors |= (unsigned long)!domain_exited((unsigned long)domain, 37, 0) << 19;
-  if (second_domain > 0)
+  }
+  if (second_domain > 0) {
     errors |= (unsigned long)!domain_exited((unsigned long)second_domain, 37, 0) << 20;
+  }
   const long handles[] = {domain,   second_domain, second,  approver,  revoker,     transferred, stale,
                           identify, approved,      version, authority, other_scope, factory};
   for (unsigned long i = 0; i < sizeof(handles) / sizeof(handles[0]); ++i) {
-    if (handles[i] > 0)
+    if (handles[i] > 0) {
       (void)syscall1(SYS_CAP_CLOSE, handles[i]);
+    }
   }
   return errors;
 }
@@ -494,16 +525,18 @@ unsigned long ipc_code_service_survival(void) {
   static unsigned char code_copy[MOSS_DOMAIN_PAGE_BYTES] __attribute__((aligned(MOSS_DOMAIN_PAGE_BYTES)));
   struct moss_domain_layout layout = {0};
   if (syscall1(SYS_DOMAIN_LAYOUT, (long)&layout) != 0 || layout.page_size != MOSS_DOMAIN_PAGE_BYTES ||
-      layout.stack_size < 16 || layout.stack_top <= layout.stack_size)
+      layout.stack_size < 16 || layout.stack_top <= layout.stack_size) {
     return 1;
+  }
 
   const unsigned long entry = (unsigned long)spawned_stack_exit;
   const unsigned long code_page = entry & ~(MOSS_DOMAIN_PAGE_BYTES - 1UL);
   const unsigned long stack_pointer = layout.stack_top - 16;
   const unsigned char initial_stack[16] = {37};
   const volatile unsigned char *original = (const volatile unsigned char *)code_page;
-  for (unsigned long i = 0; i < MOSS_DOMAIN_PAGE_BYTES; ++i)
+  for (unsigned long i = 0; i < MOSS_DOMAIN_PAGE_BYTES; ++i) {
     code_copy[i] = original[i];
+  }
   struct moss_domain_page page = {.address = code_page, .flags = MOSS_DOMAIN_PAGE_READ | MOSS_DOMAIN_PAGE_EXEC};
   struct moss_domain_spawn image = {.entry = entry,
                                     .stack_pointer = stack_pointer,
@@ -570,8 +603,9 @@ cleanup:
   {
     const long handles[] = {domain, replacement, first, revoker, approver, version, authority, factory};
     for (unsigned long i = 0; i < sizeof(handles) / sizeof(handles[0]); ++i) {
-      if (handles[i] > 0)
+      if (handles[i] > 0) {
         (void)syscall1(SYS_CAP_CLOSE, handles[i]);
+      }
     }
   }
   return errors;
@@ -579,8 +613,9 @@ cleanup:
 
 unsigned long ipc_roundtrip(void) {
   struct moss_ipc_endpoints pair = {0, 0};
-  if (syscall1(SYS_IPC_CREATE, (long)&pair) != 0)
+  if (syscall1(SYS_IPC_CREATE, (long)&pair) != 0) {
     return 1;
+  }
   long limited = syscall2(SYS_CAP_DUPLICATE, (long)pair.send, MOSS_CAP_SEND);
   unsigned long errors = limited <= 0;
   if (limited > 0) {
@@ -590,27 +625,33 @@ unsigned long ipc_roundtrip(void) {
     unsigned long reply = 0;
     errors |= (unsigned long)(ipc_receive((unsigned long)limited, &unused, &reply) != -IPC_EINVAL) << 3;
   }
-  if (syscall2(SYS_CAP_SET_INHERIT, (long)pair.receive, 1) != 0)
+  if (syscall2(SYS_CAP_SET_INHERIT, (long)pair.receive, 1) != 0) {
     errors |= 1UL << 4;
+  }
   long child = fork();
   if (child == 0) {
     unsigned cpu1 = 2; // Affinity mask bit 1 selects CPU1, away from the parent on CPU0.
     unsigned long migration_wait = 1000000UL;
     if (syscall3(SYS_SCHED_SETAFFINITY, 0, sizeof(cpu1), (long)&cpu1) != 0 || nanosleep_ns(&migration_wait) != 0 ||
-        current_cpu() != 1)
+        current_cpu() != 1) {
       _exit(96);
+    }
     struct moss_ipc_message request = {0};
     unsigned long reply = 0;
-    if (syscall1(SYS_CAP_CLOSE, (long)pair.send) != -IPC_EBADF)
+    if (syscall1(SYS_CAP_CLOSE, (long)pair.send) != -IPC_EBADF) {
       _exit(91);
+    }
     if (ipc_receive(pair.receive, &request, &reply) != 2 || request.size != 2 || request.payload[0] != 'h' ||
-        request.payload[1] != 'i' || request.capability != 0)
+        request.payload[1] != 'i' || request.capability != 0) {
       _exit(92);
-    if (syscall2(SYS_CAP_DUPLICATE, (long)reply, MOSS_CAP_SEND) != -IPC_EACCES)
+    }
+    if (syscall2(SYS_CAP_DUPLICATE, (long)reply, MOSS_CAP_SEND) != -IPC_EACCES) {
       _exit(93);
+    }
     const struct moss_ipc_message response = {.size = 2, .payload = {'o', 'k'}};
-    if (ipc_reply(reply, &response) != 0 || syscall1(SYS_CAP_CLOSE, (long)reply) != -IPC_EBADF)
+    if (ipc_reply(reply, &response) != 0 || syscall1(SYS_CAP_CLOSE, (long)reply) != -IPC_EBADF) {
       _exit(94);
+    }
     _exit(syscall1(SYS_CAP_CLOSE, (long)pair.receive) == 0 ? 37 : 95);
   }
   if (child < 0) {
@@ -629,16 +670,18 @@ unsigned long ipc_roundtrip(void) {
   errors |= (unsigned long)!wait_exit(child, 37) << 8;
   errors |= (unsigned long)(ipc_call(pair.send, &request, &response, 0) != -IPC_EPIPE) << 9;
   errors |= (unsigned long)(syscall1(SYS_CAP_CLOSE, (long)pair.send) != 0) << 10;
-  if (limited > 0)
+  if (limited > 0) {
     errors |= (unsigned long)(syscall1(SYS_CAP_CLOSE, limited) != 0) << 11;
+  }
   return errors;
 }
 
 unsigned long ipc_badged_sender(void) {
   enum { kTestBadge = 7 }; // Nonzero object identity; unbadged endpoints deliver zero.
   struct moss_ipc_endpoints pair = {0, 0};
-  if (syscall1(SYS_IPC_CREATE, (long)&pair) != 0)
+  if (syscall1(SYS_IPC_CREATE, (long)&pair) != 0) {
     return 1;
+  }
   long minted = syscall2(SYS_IPC_MINT_BADGE, (long)pair.send, kTestBadge);
   long limited = minted > 0 ? syscall2(SYS_CAP_DUPLICATE, minted, MOSS_CAP_SEND) : -1;
   long attenuated = syscall2(SYS_CAP_DUPLICATE, (long)pair.send, MOSS_CAP_SEND | MOSS_CAP_MINT);
@@ -655,11 +698,13 @@ unsigned long ipc_badged_sender(void) {
       unsigned long reply = 0;
       unsigned long expected_badge = i == 0 ? kTestBadge : 0;
       if (ipc_receive(pair.receive, &request, &reply) != 1 || request.badge != expected_badge ||
-          request.payload[0] != 'b')
+          request.payload[0] != 'b') {
         _exit(91);
+      }
       const struct moss_ipc_message response = {.size = 1, .payload = {'b'}};
-      if (ipc_reply(reply, &response) != 0)
+      if (ipc_reply(reply, &response) != 0) {
         _exit(92);
+      }
     }
     _exit(37);
   }
@@ -687,19 +732,24 @@ unsigned long ipc_badged_sender(void) {
     result = deadline > 0 ? ipc_call(pair.send, &request, &response, deadline) : -1;
     errors |= (unsigned long)(result != 1 || response.badge != 0) << 9;
   }
-  if (result != 1)
+  if (result != 1) {
     (void)kill(child, SIGKILL);
+  }
   errors |= (unsigned long)!wait_exit(child, 37) << 7;
 
 done:
-  if (attenuated > 0)
+  if (attenuated > 0) {
     (void)syscall1(SYS_CAP_CLOSE, attenuated);
-  if (limited > 0)
+  }
+  if (limited > 0) {
     (void)syscall1(SYS_CAP_CLOSE, limited);
-  if (minted > 0)
+  }
+  if (minted > 0) {
     (void)syscall1(SYS_CAP_CLOSE, minted);
-  if (pair.receive)
+  }
+  if (pair.receive) {
     (void)syscall1(SYS_CAP_CLOSE, (long)pair.receive);
+  }
   (void)syscall1(SYS_CAP_CLOSE, (long)pair.send);
   return errors;
 }
@@ -752,8 +802,9 @@ static unsigned long ipc_claimed_deadline(struct moss_ipc_endpoints pair) {
 
 unsigned long ipc_deadline(void) {
   struct moss_ipc_endpoints pair = {0, 0};
-  if (syscall1(SYS_IPC_CREATE, (long)&pair) != 0)
+  if (syscall1(SYS_IPC_CREATE, (long)&pair) != 0) {
     return 1;
+  }
   unsigned long errors = 0;
   struct moss_ipc_message request = {.size = MOSS_IPC_MAX_MESSAGE + 1, .payload = {7}};
   struct moss_ipc_message response = {0};
@@ -845,14 +896,16 @@ unsigned long ipc_deadline_propagation(void) {
 
 unsigned long ipc_peer_death(void) {
   struct moss_ipc_endpoints pair = {0, 0};
-  if (syscall1(SYS_IPC_CREATE, (long)&pair) != 0 || syscall2(SYS_CAP_SET_INHERIT, (long)pair.receive, 1) != 0)
+  if (syscall1(SYS_IPC_CREATE, (long)&pair) != 0 || syscall2(SYS_CAP_SET_INHERIT, (long)pair.receive, 1) != 0) {
     return 1;
+  }
   long child = fork();
   if (child == 0) {
     struct moss_ipc_message request = {0};
     unsigned long reply = 0;
-    if (ipc_receive(pair.receive, &request, &reply) != 1 || request.size != 1 || request.payload[0] != 19)
+    if (ipc_receive(pair.receive, &request, &reply) != 1 || request.size != 1 || request.payload[0] != 19) {
       _exit(91);
+    }
     // Exit without replying: the one-shot reply capability must wake the caller.
     _exit(37);
   }
@@ -902,8 +955,9 @@ unsigned long ipc_peer_death(void) {
   errors |= (unsigned long)(syscall1(SYS_CAP_CLOSE, (long)pair.send) != 0) << 3;
 
   pair = (struct moss_ipc_endpoints){0};
-  if (syscall1(SYS_IPC_CREATE, (long)&pair) != 0)
+  if (syscall1(SYS_IPC_CREATE, (long)&pair) != 0) {
     return errors | (1UL << 7);
+  }
   if (syscall2(SYS_CAP_SET_INHERIT, (long)pair.send, 1) != 0) {
     (void)syscall1(SYS_CAP_CLOSE, (long)pair.receive);
     (void)syscall1(SYS_CAP_CLOSE, (long)pair.send);
@@ -931,11 +985,13 @@ unsigned long ipc_peer_death(void) {
     const struct moss_ipc_message answer = {.size = 1, .payload = {'r'}};
     errors |= (unsigned long)(ipc_reply(reply, &answer) != 0) << 12;
     errors |= (unsigned long)!wait_exit(child, 38) << 11;
-    if (reply)
+    if (reply) {
       errors |= (unsigned long)(syscall1(SYS_CAP_CLOSE, (long)reply) != -IPC_EBADF) << 15;
+    }
   }
-  if (pair.receive)
+  if (pair.receive) {
     errors |= (unsigned long)(syscall1(SYS_CAP_CLOSE, (long)pair.receive) != 0) << 13;
+  }
   errors |= (unsigned long)(syscall1(SYS_CAP_CLOSE, (long)pair.send) != 0) << 14;
   return errors;
 }
@@ -945,29 +1001,34 @@ unsigned long ipc_nested_roundtrip(void) {
   if (syscall1(SYS_IPC_CREATE, (long)&front) != 0 || syscall1(SYS_IPC_CREATE, (long)&back) != 0 ||
       syscall2(SYS_CAP_SET_INHERIT, (long)front.receive, 1) != 0 ||
       syscall2(SYS_CAP_SET_INHERIT, (long)back.receive, 1) != 0 ||
-      syscall2(SYS_CAP_SET_INHERIT, (long)back.send, 1) != 0)
+      syscall2(SYS_CAP_SET_INHERIT, (long)back.send, 1) != 0) {
     return 1;
+  }
   long backend = fork();
   if (backend == 0) {
     struct moss_ipc_message request = {0};
     unsigned long reply = 0;
-    if (ipc_receive(back.receive, &request, &reply) != 1 || request.payload[0] != 'b')
+    if (ipc_receive(back.receive, &request, &reply) != 1 || request.payload[0] != 'b') {
       _exit(91);
+    }
     const struct moss_ipc_message response = {.size = 1, .payload = {'c'}};
     _exit(ipc_reply(reply, &response) == 0 ? 37 : 92);
   }
-  if (backend < 0)
+  if (backend < 0) {
     return 2;
+  }
   long frontend = fork();
   if (frontend == 0) {
     struct moss_ipc_message request = {0}, response = {0};
     unsigned long reply = 0;
-    if (ipc_receive(front.receive, &request, &reply) != 1 || request.payload[0] != 'a')
+    if (ipc_receive(front.receive, &request, &reply) != 1 || request.payload[0] != 'a') {
       _exit(93);
+    }
     const struct moss_ipc_message nested = {.size = 1, .payload = {'b'}};
     long deadline = deadline_after(ipc_call_timeout_ns);
-    if (deadline <= 0 || ipc_call(back.send, &nested, &response, deadline) != 1 || response.payload[0] != 'c')
+    if (deadline <= 0 || ipc_call(back.send, &nested, &response, deadline) != 1 || response.payload[0] != 'c') {
       _exit(94);
+    }
     const struct moss_ipc_message delivered = {.size = 1, .payload = {'d'}};
     _exit(ipc_reply(reply, &delivered) == 0 ? 37 : 95);
   }
@@ -982,12 +1043,14 @@ unsigned long ipc_nested_roundtrip(void) {
   struct moss_ipc_message response = {0};
   long deadline = deadline_after(ipc_call_timeout_ns);
   long result = deadline > 0 ? ipc_call(front.send, &request, &response, deadline) : -1;
-  if (result != 1)
+  if (result != 1) {
     kill(frontend, SIGKILL);
+  }
   errors |= (unsigned long)(result != 1 || response.payload[0] != 'd') << 1;
   errors |= (unsigned long)!wait_exit(frontend, 37) << 2;
-  if (errors)
+  if (errors) {
     kill(backend, SIGKILL);
+  }
   errors |= (unsigned long)!wait_exit(backend, 37) << 3;
   errors |=
       (unsigned long)(syscall1(SYS_CAP_CLOSE, (long)front.send) != 0 || syscall1(SYS_CAP_CLOSE, (long)back.send) != 0)
@@ -1000,8 +1063,9 @@ static unsigned long ipc_reply_handoff_case(int drop) {
   if (syscall1(SYS_IPC_CREATE, (long)&front) != 0 || syscall1(SYS_IPC_CREATE, (long)&back) != 0 ||
       syscall2(SYS_CAP_SET_INHERIT, (long)front.receive, 1) != 0 ||
       syscall2(SYS_CAP_SET_INHERIT, (long)back.receive, 1) != 0 ||
-      syscall2(SYS_CAP_SET_INHERIT, (long)back.send, 1) != 0)
+      syscall2(SYS_CAP_SET_INHERIT, (long)back.send, 1) != 0) {
     return 1;
+  }
   long backend = fork();
   if (backend == 0) {
     struct moss_ipc_message request = {0};
@@ -1009,42 +1073,49 @@ static unsigned long ipc_reply_handoff_case(int drop) {
     if (ipc_receive(back.receive, &request, &nested_reply) != 1 || request.payload[0] != 'b' ||
         request.capability == 0 || request.rights != (MOSS_CAP_SEND | MOSS_CAP_TRANSFER) ||
         syscall2(SYS_CAP_DUPLICATE, (long)request.capability, MOSS_CAP_SEND) != -IPC_EACCES ||
-        syscall2(SYS_CAP_SET_INHERIT, (long)request.capability, 1) != -IPC_EACCES)
+        syscall2(SYS_CAP_SET_INHERIT, (long)request.capability, 1) != -IPC_EACCES) {
       _exit(91);
+    }
     const struct moss_ipc_message original_response = {.size = 1, .payload = {'d'}};
     long completed =
         drop ? syscall1(SYS_CAP_CLOSE, (long)request.capability) : ipc_reply(request.capability, &original_response);
-    if (completed != 0 || ipc_reply(request.capability, &original_response) != -IPC_EBADF)
+    if (completed != 0 || ipc_reply(request.capability, &original_response) != -IPC_EBADF) {
       _exit(92);
+    }
     const struct moss_ipc_message nested_response = {.size = 1, .payload = {'c'}};
     _exit(ipc_reply(nested_reply, &nested_response) == 0 ? 37 : 93);
   }
-  if (backend < 0)
+  if (backend < 0) {
     return 2;
+  }
   long frontend = fork();
   if (frontend == 0) {
     struct moss_ipc_message request = {0}, response = {0};
     unsigned long original_reply = 0;
     if (ipc_receive(front.receive, &request, &original_reply) != 1 || request.payload[0] != 'a' ||
-        syscall2(SYS_CAP_DUPLICATE, (long)original_reply, MOSS_CAP_SEND) != -IPC_EACCES)
+        syscall2(SYS_CAP_DUPLICATE, (long)original_reply, MOSS_CAP_SEND) != -IPC_EACCES) {
       _exit(94);
+    }
     const struct moss_ipc_message self = {
         .size = 1, .capability = original_reply, .rights = MOSS_CAP_SEND, .payload = {'x'}};
-    if (ipc_reply(original_reply, &self) != -IPC_EINVAL)
+    if (ipc_reply(original_reply, &self) != -IPC_EINVAL) {
       _exit(95);
+    }
     const struct moss_ipc_message nested = {
         .size = 1, .capability = original_reply, .rights = MOSS_CAP_SEND | MOSS_CAP_TRANSFER, .payload = {'b'}};
     if (!drop) {
       struct moss_ipc_endpoints rejected = {0, 0};
       if (syscall1(SYS_IPC_CREATE, (long)&rejected) != 0 || syscall1(SYS_CAP_CLOSE, (long)rejected.receive) != 0 ||
           ipc_call(rejected.send, &nested, &response, 0) != -IPC_EPIPE ||
-          syscall1(SYS_CAP_CLOSE, (long)rejected.send) != 0)
+          syscall1(SYS_CAP_CLOSE, (long)rejected.send) != 0) {
         _exit(97);
+      }
     }
     long deadline = deadline_after(ipc_call_timeout_ns);
     if (deadline <= 0 || ipc_call(back.send, &nested, &response, deadline) != 1 || response.payload[0] != 'c' ||
-        syscall1(SYS_CAP_CLOSE, (long)original_reply) != -IPC_EBADF || ipc_reply(original_reply, &self) != -IPC_EBADF)
+        syscall1(SYS_CAP_CLOSE, (long)original_reply) != -IPC_EBADF || ipc_reply(original_reply, &self) != -IPC_EBADF) {
       _exit(96);
+    }
     _exit(37);
   }
   if (frontend < 0) {
@@ -1057,12 +1128,14 @@ static unsigned long ipc_reply_handoff_case(int drop) {
   struct moss_ipc_message response = {0};
   long deadline = deadline_after(ipc_call_timeout_ns);
   long result = deadline > 0 ? ipc_call(front.send, &request, &response, deadline) : -1;
-  if (result != (drop ? -IPC_EPIPE : 1))
+  if (result != (drop ? -IPC_EPIPE : 1)) {
     kill(frontend, SIGKILL);
+  }
   errors |= (unsigned long)(result != (drop ? -IPC_EPIPE : 1) || (!drop && response.payload[0] != 'd')) << 1;
   errors |= (unsigned long)!wait_exit(frontend, 37) << 2;
-  if (errors)
+  if (errors) {
     kill(backend, SIGKILL);
+  }
   errors |= (unsigned long)!wait_exit(backend, 37) << 3;
   errors |=
       (unsigned long)(syscall1(SYS_CAP_CLOSE, (long)front.receive) != 0 ||
@@ -1104,8 +1177,9 @@ static unsigned long ipc_priority_latency_case(int handoff) {
   unsigned long hog_count = 0;
   const unsigned int cpu_zero = 1;
   long priority = syscall2(SYS_GETPRIORITY, 0, 0);
-  if (priority < 1 || priority > 40)
+  if (priority < 1 || priority > 40) {
     return 1;
+  }
   const int original_nice = 20 - (int)priority;
   int parent_nice_changed = 0;
   if (syscall1(SYS_IPC_CREATE, (long)&endpoint) != 0 || syscall2(SYS_CAP_SET_INHERIT, (long)endpoint.receive, 1) != 0 ||
@@ -1122,21 +1196,30 @@ static unsigned long ipc_priority_latency_case(int handoff) {
     (void)syscall1(SYS_CAP_CLOSE, (long)endpoint.send);
     int nice_ok = ipc_set_nice(19);
     long affinity = syscall3(SYS_SCHED_SETAFFINITY, 0, sizeof(cpu_zero), (long)&cpu_zero);
-    const char ready = affinity != 0 ? 'a' : !nice_ok ? 'n' : 'r';
-    if (write(server_ready[1], &ready, 1) != 1)
+    char ready = 'r';
+    if (affinity != 0) {
+      ready = 'a';
+    } else if (!nice_ok) {
+      ready = 'n';
+    }
+    if (write(server_ready[1], &ready, 1) != 1) {
       _exit(91);
+    }
     close(server_ready[1]);
-    if (ready != 'r')
+    if (ready != 'r') {
       _exit(91);
+    }
     struct moss_ipc_message request = {0};
     unsigned long reply = 0;
-    if (ipc_receive(endpoint.receive, &request, &reply) != 1 || request.payload[0] != 'p')
+    if (ipc_receive(endpoint.receive, &request, &reply) != 1 || request.payload[0] != 'p') {
       _exit(92);
+    }
     if (handoff) {
       struct moss_ipc_message work_request = {0};
       unsigned long work_reply = 0;
-      if (ipc_receive(worker_endpoint.receive, &work_request, &work_reply) != 1 || work_request.payload[0] != 'w')
+      if (ipc_receive(worker_endpoint.receive, &work_request, &work_reply) != 1 || work_request.payload[0] != 'w') {
         _exit(92);
+      }
       const struct moss_ipc_message delegated = {
           .size = 1, .capability = reply, .rights = MOSS_CAP_SEND, .payload = {'h'}};
       _exit(ipc_reply(work_reply, &delegated) == 0 && syscall1(SYS_CAP_CLOSE, (long)reply) == -IPC_EBADF ? 37 : 93);
@@ -1144,8 +1227,9 @@ static unsigned long ipc_priority_latency_case(int handoff) {
     // Ten million volatile additions exceeded the initial wakeup slice in
     // x64 QEMU calibration; a shorter reply hid missing priority donation.
     volatile unsigned long work = 0;
-    for (unsigned long i = 0; i < SERVER_WORK_ITERATIONS; ++i)
+    for (unsigned long i = 0; i < SERVER_WORK_ITERATIONS; ++i) {
       work += i;
+    }
     const struct moss_ipc_message response = {.size = 1, .payload = {'q'}};
     _exit(ipc_reply(reply, &response) == 0 ? 37 : 93);
   }
@@ -1175,23 +1259,32 @@ static unsigned long ipc_priority_latency_case(int handoff) {
       (void)syscall1(SYS_CAP_CLOSE, (long)worker_endpoint.receive);
       int nice_ok = ipc_set_nice(19);
       long affinity = syscall3(SYS_SCHED_SETAFFINITY, 0, sizeof(cpu_zero), (long)&cpu_zero);
-      const char ready = affinity != 0 ? 'a' : !nice_ok ? 'n' : 'r';
-      if (write(worker_ready[1], &ready, 1) != 1)
+      char ready = 'r';
+      if (affinity != 0) {
+        ready = 'a';
+      } else if (!nice_ok) {
+        ready = 'n';
+      }
+      if (write(worker_ready[1], &ready, 1) != 1) {
         _exit(97);
+      }
       close(worker_ready[1]);
-      if (ready != 'r')
+      if (ready != 'r') {
         _exit(97);
+      }
       const struct moss_ipc_message work_request = {.size = 1, .payload = {'w'}};
       struct moss_ipc_message delegated = {0};
       long deadline = deadline_after(ipc_call_timeout_ns);
       if (deadline <= 0 || ipc_call(worker_endpoint.send, &work_request, &delegated, deadline) != 1 ||
-          delegated.payload[0] != 'h' || delegated.capability == 0 || delegated.rights != MOSS_CAP_SEND)
+          delegated.payload[0] != 'h' || delegated.capability == 0 || delegated.rights != MOSS_CAP_SEND) {
         _exit(98);
+      }
       // Work after the server has exited requires donation to move to this
       // low-priority holder before it is woken into the contended run queue.
       volatile unsigned long work = 0;
-      for (unsigned long i = 0; i < SERVER_WORK_ITERATIONS; ++i)
+      for (unsigned long i = 0; i < SERVER_WORK_ITERATIONS; ++i) {
         work += i;
+      }
       const struct moss_ipc_message response = {.size = 1, .payload = {'q'}};
       _exit(ipc_reply(delegated.capability, &response) == 0 ? 37 : 99);
     }
@@ -1226,20 +1319,23 @@ static unsigned long ipc_priority_latency_case(int handoff) {
       close(hog_ready[0]);
       char gate = 0;
       if (!ipc_set_nice(0) || syscall3(SYS_SCHED_SETAFFINITY, 0, sizeof(cpu_zero), (long)&cpu_zero) != 0 ||
-          read(hog_start[0], &gate, 1) != 1 || gate != 'g' || write(hog_ready[1], &gate, 1) != 1)
+          read(hog_start[0], &gate, 1) != 1 || gate != 'g' || write(hog_ready[1], &gate, 1) != 1) {
         _exit(94);
+      }
       close(hog_start[0]);
       close(hog_ready[1]);
       unsigned long start = 0, now = 0;
-      if (clock_gettime_ns(&start) != 0)
+      if (clock_gettime_ns(&start) != 0) {
         _exit(95);
+      }
       now = start;
       volatile unsigned long spins = 0;
       while (now - start < hog_duration_ns) {
         ++spins;
         // Sample the clock every 4096 spins so syscalls do not dominate load.
-        if ((spins & (HOG_CLOCK_SAMPLE_SPINS - 1)) == 0 && clock_gettime_ns(&now) != 0)
+        if ((spins & (HOG_CLOCK_SAMPLE_SPINS - 1)) == 0 && clock_gettime_ns(&now) != 0) {
           _exit(96);
+        }
       }
       _exit(37);
     }
@@ -1284,60 +1380,82 @@ static unsigned long ipc_priority_latency_case(int handoff) {
     const struct moss_ipc_message request = {.size = 1, .payload = {'p'}};
     struct moss_ipc_message response = {0};
     long result = ipc_call(endpoint.send, &request, &response, (long)(start + call_budget_ns));
-    if (clock_gettime_ns(&end) != 0 || end < start)
+    if (clock_gettime_ns(&end) != 0 || end < start) {
       errors |= 1UL << 9;
-    else if (end - start > call_budget_ns)
+    } else if (end - start > call_budget_ns) {
       errors |= (1UL << 10) | ((end - start) / 1000000UL << 16);
-    if (result != 1 || response.payload[0] != 'q')
+    }
+    if (result != 1 || response.payload[0] != 'q') {
       errors |= 1UL << 11;
-    if (handoff && result < 0)
+    }
+    if (handoff && result < 0) {
       errors |= ((unsigned long)(-result & 255)) << CALL_ERRNO_SHIFT;
+    }
   }
 cleanup:
-  if (parent_nice_changed && !ipc_set_nice(original_nice))
+  if (parent_nice_changed && !ipc_set_nice(original_nice)) {
     errors |= 1UL << 12;
-  if (server_ready[0] >= 0)
-    close(server_ready[0]);
-  if (server_ready[1] >= 0)
-    close(server_ready[1]);
-  if (worker_ready[0] >= 0)
-    close(worker_ready[0]);
-  if (worker_ready[1] >= 0)
-    close(worker_ready[1]);
-  if (hog_start[0] >= 0)
-    close(hog_start[0]);
-  if (hog_start[1] >= 0)
-    close(hog_start[1]);
-  if (hog_ready[0] >= 0)
-    close(hog_ready[0]);
-  if (hog_ready[1] >= 0)
-    close(hog_ready[1]);
-  if (errors && server > 0)
-    (void)kill(server, SIGKILL);
-  for (unsigned long i = 0; i < hog_count; ++i) {
-    if (errors)
-      (void)kill(hogs[i], SIGKILL);
-    int clean_exit = wait_exit(hogs[i], 37);
-    if (!errors && !clean_exit)
-      errors |= 1UL << 13;
   }
-  if (server > 0 && !wait_exit(server, 37))
+  if (server_ready[0] >= 0) {
+    close(server_ready[0]);
+  }
+  if (server_ready[1] >= 0) {
+    close(server_ready[1]);
+  }
+  if (worker_ready[0] >= 0) {
+    close(worker_ready[0]);
+  }
+  if (worker_ready[1] >= 0) {
+    close(worker_ready[1]);
+  }
+  if (hog_start[0] >= 0) {
+    close(hog_start[0]);
+  }
+  if (hog_start[1] >= 0) {
+    close(hog_start[1]);
+  }
+  if (hog_ready[0] >= 0) {
+    close(hog_ready[0]);
+  }
+  if (hog_ready[1] >= 0) {
+    close(hog_ready[1]);
+  }
+  if (errors && server > 0) {
+    (void)kill(server, SIGKILL);
+  }
+  for (unsigned long i = 0; i < hog_count; ++i) {
+    if (errors) {
+      (void)kill(hogs[i], SIGKILL);
+    }
+    int clean_exit = wait_exit(hogs[i], 37);
+    if (!errors && !clean_exit) {
+      errors |= 1UL << 13;
+    }
+  }
+  if (server > 0 && !wait_exit(server, 37)) {
     errors |= 1UL << 14;
-  if (errors && worker > 0)
+  }
+  if (errors && worker > 0) {
     (void)kill(worker, SIGKILL);
+  }
   if (worker > 0) {
     int status = 0;
-    if (syscall3(SYS_WAITPID, worker, (long)&status, 0) != worker || ((status >> 8) & 255) != 37)
+    if (syscall3(SYS_WAITPID, worker, (long)&status, 0) != worker || ((status >> 8) & 255) != 37) {
       errors |= (1UL << 15) | ((unsigned long)(status & 0xffff) << WORKER_STATUS_SHIFT);
+    }
   }
-  if (endpoint.receive)
+  if (endpoint.receive) {
     (void)syscall1(SYS_CAP_CLOSE, (long)endpoint.receive);
-  if (endpoint.send)
+  }
+  if (endpoint.send) {
     (void)syscall1(SYS_CAP_CLOSE, (long)endpoint.send);
-  if (worker_endpoint.receive)
+  }
+  if (worker_endpoint.receive) {
     (void)syscall1(SYS_CAP_CLOSE, (long)worker_endpoint.receive);
-  if (worker_endpoint.send)
+  }
+  if (worker_endpoint.send) {
     (void)syscall1(SYS_CAP_CLOSE, (long)worker_endpoint.send);
+  }
   return errors;
 }
 
@@ -1472,10 +1590,12 @@ unsigned long ipc_signal_cancel(void) {
   struct moss_ipc_endpoints pair = {0, 0};
   struct sigaction_t action = {(unsigned long)ipc_signal_handler, 0, 0};
   struct sigaction_t old_action = {0, 0, 0};
-  if (syscall1(SYS_IPC_CREATE, (long)&pair) != 0)
+  if (syscall1(SYS_IPC_CREATE, (long)&pair) != 0) {
     return 1;
-  if (moss_sigaction(SIGUSR1, &action, &old_action) != 0)
+  }
+  if (moss_sigaction(SIGUSR1, &action, &old_action) != 0) {
     return 2;
+  }
   ipc_signal_seen = 0;
   long parent = getpid();
   long child = fork();
@@ -1510,45 +1630,55 @@ unsigned long ipc_capability_transfer(void) {
   enum { kDelegatedBadge = 17 }; // A nonzero badge distinguishes this sender from the endpoint's default.
   struct moss_ipc_endpoints control = {0, 0}, delegated = {0, 0};
   if (syscall1(SYS_IPC_CREATE, (long)&control) != 0 || syscall1(SYS_IPC_CREATE, (long)&delegated) != 0 ||
-      syscall2(SYS_CAP_SET_INHERIT, (long)control.receive, 1) != 0)
+      syscall2(SYS_CAP_SET_INHERIT, (long)control.receive, 1) != 0) {
     return 1;
+  }
   long badged = syscall2(SYS_IPC_MINT_BADGE, (long)delegated.send, kDelegatedBadge);
-  if (badged <= 0)
+  if (badged <= 0) {
     return 1;
+  }
   long child = fork();
   if (child == 0) {
     struct moss_ipc_message request = {0};
     unsigned long control_reply = 0;
     if (ipc_receive(control.receive, &request, &control_reply) != 1 || request.payload[0] != 'a' ||
         request.capability == 0 || request.rights != MOSS_CAP_SEND ||
-        syscall2(SYS_CAP_DUPLICATE, (long)request.capability, MOSS_CAP_SEND) != -IPC_EACCES)
+        syscall2(SYS_CAP_DUPLICATE, (long)request.capability, MOSS_CAP_SEND) != -IPC_EACCES) {
       _exit(91);
+    }
     struct moss_ipc_endpoints returned = {0, 0};
-    if (syscall1(SYS_IPC_CREATE, (long)&returned) != 0)
+    if (syscall1(SYS_IPC_CREATE, (long)&returned) != 0) {
       _exit(92);
+    }
     const struct moss_ipc_message answer = {
         .size = 1, .capability = returned.receive, .rights = MOSS_CAP_RECEIVE, .payload = {'a'}};
-    if (ipc_reply(control_reply, &answer) != 0 || syscall1(SYS_CAP_CLOSE, (long)returned.receive) != 0)
+    if (ipc_reply(control_reply, &answer) != 0 || syscall1(SYS_CAP_CLOSE, (long)returned.receive) != 0) {
       _exit(93);
+    }
     const struct moss_ipc_message delegated_request = {.size = 1, .payload = {'b'}};
     struct moss_ipc_message delegated_response = {0};
     long deadline = deadline_after(ipc_call_timeout_ns);
     if (deadline <= 0 || ipc_call(request.capability, &delegated_request, &delegated_response, deadline) != 1 ||
-        delegated_response.payload[0] != 'b')
+        delegated_response.payload[0] != 'b') {
       _exit(94);
+    }
     const struct moss_ipc_message returned_request = {.size = 1, .payload = {'c'}};
     struct moss_ipc_message returned_response = {0};
     deadline = deadline_after(ipc_call_timeout_ns);
     if (deadline <= 0 || ipc_call(returned.send, &returned_request, &returned_response, deadline) != 1 ||
-        returned_response.payload[0] != 'c')
+        returned_response.payload[0] != 'c') {
       _exit(95);
+    }
     deadline = deadline_after(ipc_call_timeout_ns);
-    if (deadline <= 0 || ipc_call(request.capability, &delegated_request, &delegated_response, deadline) != -IPC_EPIPE)
+    if (deadline <= 0 ||
+        ipc_call(request.capability, &delegated_request, &delegated_response, deadline) != -IPC_EPIPE) {
       _exit(96);
+    }
     _exit(37);
   }
-  if (child < 0)
+  if (child < 0) {
     return 2;
+  }
   unsigned long errors = syscall1(SYS_CAP_CLOSE, (long)control.receive) != 0;
   const struct moss_ipc_message request = {
       .size = 1, .capability = (unsigned long)badged, .rights = MOSS_CAP_SEND, .payload = {'a'}};
@@ -1582,34 +1712,39 @@ unsigned long ipc_capability_transfer(void) {
   errors |= (unsigned long)!wait_exit(child, 37) << 9;
   errors |= (unsigned long)(syscall1(SYS_CAP_CLOSE, (long)control.send) != 0) << 10;
   errors |= (unsigned long)(syscall1(SYS_CAP_CLOSE, badged) != 0) << 11;
-  if (delegated.receive)
+  if (delegated.receive) {
     errors |= (unsigned long)(syscall1(SYS_CAP_CLOSE, (long)delegated.receive) != 0) << 13;
+  }
   return errors;
 }
 
 unsigned long ipc_delivery_rollback(void) {
   struct moss_ipc_endpoints control = {0, 0}, delegated = {0, 0};
   if (syscall1(SYS_IPC_CREATE, (long)&control) != 0 || syscall1(SYS_IPC_CREATE, (long)&delegated) != 0 ||
-      syscall2(SYS_CAP_SET_INHERIT, (long)control.receive, 1) != 0)
+      syscall2(SYS_CAP_SET_INHERIT, (long)control.receive, 1) != 0) {
     return 1;
+  }
   long child = fork();
   if (child == 0) {
     struct moss_ipc_message first = {0};
     // The request copyout succeeds, but the reply-handle copyout fails.
     if (ipc_receive(control.receive, &first, 0) != -IPC_EFAULT || first.size != 1 || first.capability == 0 ||
         first.rights != MOSS_CAP_SEND || syscall1(SYS_CAP_CLOSE, (long)first.capability) != -IPC_EBADF ||
-        syscall2(SYS_CAP_DUPLICATE, (long)first.capability, MOSS_CAP_SEND) != -IPC_EBADF)
+        syscall2(SYS_CAP_DUPLICATE, (long)first.capability, MOSS_CAP_SEND) != -IPC_EBADF) {
       _exit(91);
+    }
     struct moss_ipc_message request = {0};
     unsigned long reply = 0;
     if (ipc_receive(control.receive, &request, &reply) != 1 || request.payload[0] != 'r' || request.capability == 0 ||
-        request.capability == first.capability || syscall1(SYS_CAP_CLOSE, (long)request.capability) != 0)
+        request.capability == first.capability || syscall1(SYS_CAP_CLOSE, (long)request.capability) != 0) {
       _exit(92);
+    }
     const struct moss_ipc_message response = {.size = 1, .payload = {'r'}};
     _exit(ipc_reply(reply, &response) == 0 ? 37 : 93);
   }
-  if (child < 0)
+  if (child < 0) {
     return 2;
+  }
   unsigned long errors = syscall1(SYS_CAP_CLOSE, (long)control.receive) != 0;
   const struct moss_ipc_message request = {
       .size = 1, .capability = delegated.send, .rights = MOSS_CAP_SEND, .payload = {'r'}};
@@ -1627,21 +1762,27 @@ unsigned long ipc_delivery_rollback(void) {
 
 unsigned long ipc_memory_object(void) {
   const long memory_bytes = 3 * MOSS_MEM_OBJECT_BYTES;
-  if (syscall1(SYS_MEM_CREATE, 0) != -IPC_EINVAL || syscall1(SYS_MEM_CREATE, MOSS_MEM_OBJECT_BYTES + 1) != -IPC_EINVAL)
+  if (syscall1(SYS_MEM_CREATE, 0) != -IPC_EINVAL ||
+      syscall1(SYS_MEM_CREATE, MOSS_MEM_OBJECT_BYTES + 1) != -IPC_EINVAL) {
     return 1;
-  if (syscall1(SYS_BOOT_ARCHIVE, 0) != -IPC_EACCES)
+  }
+  if (syscall1(SYS_BOOT_ARCHIVE, 0) != -IPC_EACCES) {
     return 1;
+  }
   long memory = syscall1(SYS_MEM_CREATE, memory_bytes);
-  if (memory <= 0)
+  if (memory <= 0) {
     return 2;
+  }
   long read_only = syscall2(SYS_CAP_DUPLICATE, memory, MOSS_CAP_MAP_READ);
-  if (read_only <= 0)
+  if (read_only <= 0) {
     return 4;
+  }
   unsigned long errors = syscall2(SYS_MEM_MAP, read_only, MOSS_CAP_MAP_WRITE) != -IPC_EACCES;
   long writable_addr = syscall2(SYS_MEM_MAP, memory, MOSS_CAP_MAP_READ | MOSS_CAP_MAP_WRITE);
   long readable_addr = syscall2(SYS_MEM_MAP, read_only, MOSS_CAP_MAP_READ);
-  if (writable_addr <= 0 || readable_addr <= 0)
+  if (writable_addr <= 0 || readable_addr <= 0) {
     return errors | 2;
+  }
   volatile unsigned char *writable = (volatile unsigned char *)writable_addr;
   volatile const unsigned char *readable = (volatile const unsigned char *)readable_addr;
   writable[0] = 'm';
@@ -1652,39 +1793,46 @@ unsigned long ipc_memory_object(void) {
             << 1;
 
   struct moss_ipc_endpoints control = {0, 0};
-  if (syscall1(SYS_IPC_CREATE, (long)&control) != 0 || syscall2(SYS_CAP_SET_INHERIT, (long)control.receive, 1) != 0)
+  if (syscall1(SYS_IPC_CREATE, (long)&control) != 0 || syscall2(SYS_CAP_SET_INHERIT, (long)control.receive, 1) != 0) {
     return errors | 4;
+  }
   long child = fork();
   if (child == 0) {
     // This inherited writable VMA must remain shared after fork.
-    if (writable[0] != 'm')
+    if (writable[0] != 'm') {
       _exit(91);
+    }
     writable[MOSS_MEM_OBJECT_BYTES + 1] = 'f';
     writable[memory_bytes - 1] = 'q';
     struct moss_ipc_message request = {0};
     unsigned long reply = 0;
     if (ipc_receive(control.receive, &request, &reply) != 1 || request.capability == 0 ||
         request.rights != (MOSS_CAP_MAP_READ | MOSS_CAP_MAP_WRITE) ||
-        syscall2(SYS_CAP_DUPLICATE, (long)request.capability, MOSS_CAP_MAP_READ) != -IPC_EACCES)
+        syscall2(SYS_CAP_DUPLICATE, (long)request.capability, MOSS_CAP_MAP_READ) != -IPC_EACCES) {
       _exit(92);
+    }
     long transferred_addr = syscall2(SYS_MEM_MAP, (long)request.capability, MOSS_CAP_MAP_WRITE);
-    if (transferred_addr <= 0)
+    if (transferred_addr <= 0) {
       _exit(93);
+    }
     volatile unsigned char *transferred = (volatile unsigned char *)transferred_addr;
     if (transferred[0] != 'm' || transferred[MOSS_MEM_OBJECT_BYTES] != 'b' ||
-        transferred[MOSS_MEM_OBJECT_BYTES + 1] != 'f' || transferred[memory_bytes - 1] != 'q')
+        transferred[MOSS_MEM_OBJECT_BYTES + 1] != 'f' || transferred[memory_bytes - 1] != 'q') {
       _exit(94);
+    }
     transferred[0] = 's';
     transferred[MOSS_MEM_OBJECT_BYTES] = 't';
     transferred[memory_bytes - 1] = 'x';
     if (syscall1(SYS_CAP_CLOSE, (long)request.capability) != 0 || transferred[0] != 's' ||
-        transferred[memory_bytes - 1] != 'x')
+        transferred[memory_bytes - 1] != 'x') {
       _exit(95);
+    }
     const struct moss_ipc_message response = {.size = 1, .payload = {'s'}};
     _exit(ipc_reply(reply, &response) == 0 ? 37 : 96);
   }
-  if (child < 0)
+  if (child < 0) {
     return errors | 8;
+  }
   errors |= (unsigned long)(syscall1(SYS_CAP_CLOSE, (long)control.receive) != 0) << 3;
   const struct moss_ipc_message request = {.size = 1,
                                            .capability = (unsigned long)memory,
@@ -1693,8 +1841,9 @@ unsigned long ipc_memory_object(void) {
   struct moss_ipc_message response = {0};
   long deadline = deadline_after(ipc_call_timeout_ns);
   long completed = deadline > 0 ? ipc_call(control.send, &request, &response, deadline) : -1;
-  if (completed != 1)
+  if (completed != 1) {
     kill(child, SIGKILL); // A failed enqueue could leave the child waiting to receive forever.
+  }
   errors |= (unsigned long)(completed != 1 || response.payload[0] != 's') << 4;
   errors |= (unsigned long)!wait_exit(child, 37) << 5;
   errors |= (unsigned long)(readable[0] != 's' || readable[MOSS_MEM_OBJECT_BYTES] != 't' ||
@@ -1730,8 +1879,9 @@ unsigned long ipc_domain_control(void) {
   unsigned long domain = 0;
   long child = syscall1(SYS_FORK_DOMAIN, (long)&domain);
   if (child == 0) {
-    if (domain != 0 || getppid() != 0)
+    if (domain != 0 || getppid() != 0) {
       _exit(96); // Native children have neither parent authority nor POSIX parentage.
+    }
     for (unsigned int attempt = 0; attempt < DOMAIN_CHILD_SLEEP_CYCLES; ++attempt) {
       unsigned long delay = DOMAIN_CHILD_SLEEP_NS;
       (void)nanosleep_ns(&delay);
@@ -1744,8 +1894,9 @@ unsigned long ipc_domain_control(void) {
       (void)syscall1(SYS_DOMAIN_WAIT, (long)domain);
       (void)syscall1(SYS_CAP_CLOSE, (long)domain);
     }
-    if (self > 0)
+    if (self > 0) {
       errors |= (unsigned long)(syscall1(SYS_CAP_CLOSE, self) != 0) << 36;
+    }
     return errors | 2;
   }
 
@@ -1774,8 +1925,9 @@ unsigned long ipc_domain_control(void) {
     errors |= (unsigned long)(syscall1(SYS_DOMAIN_TERMINATE, observe) != -IPC_EACCES) << 15;
     errors |= (unsigned long)(syscall2(SYS_DOMAIN_SAME, (long)domain, observe) != -IPC_EACCES) << 41;
   }
-  if (self > 0)
+  if (self > 0) {
     errors |= (unsigned long)(syscall2(SYS_DOMAIN_SAME, self, (long)domain) != 0) << 39;
+  }
   errors |= (unsigned long)(syscall2(SYS_DOMAIN_SAME, (long)domain, 0) != -IPC_EBADF) << 42;
   struct moss_ipc_endpoints pair = {0};
   if (syscall1(SYS_IPC_CREATE, (long)&pair) != 0) {
@@ -1786,8 +1938,9 @@ unsigned long ipc_domain_control(void) {
     (void)syscall1(SYS_CAP_CLOSE, (long)pair.receive);
   }
   errors |= (unsigned long)(syscall1(SYS_DOMAIN_TERMINATE, (long)domain) != 0) << 6;
-  if (observe > 0)
+  if (observe > 0) {
     errors |= (unsigned long)!domain_exited((unsigned long)observe, 0, SIGKILL) << 16;
+  }
   errors |= (unsigned long)!domain_exited(domain, 0, SIGKILL) << 7;
   errors |= (unsigned long)(syscall1(SYS_DOMAIN_WAIT, (long)domain) != 0) << 17;
   errors |= (unsigned long)(syscall3(SYS_WAITPID, child, 0, 1) != -IPC_ECHILD) << 25;
@@ -1798,8 +1951,9 @@ unsigned long ipc_domain_control(void) {
     errors |= (unsigned long)(syscall1(SYS_CAP_CLOSE, inspect) != 0) << 10;
     errors |= (unsigned long)(syscall2(SYS_DOMAIN_SAME, (long)domain, inspect) != -IPC_EBADF) << 46;
   }
-  if (observe > 0)
+  if (observe > 0) {
     errors |= (unsigned long)(syscall1(SYS_CAP_CLOSE, observe) != 0) << 18;
+  }
   errors |= (unsigned long)(syscall1(SYS_CAP_CLOSE, (long)domain) != 0) << 11;
   errors |= (unsigned long)(syscall1(SYS_DOMAIN_TERMINATE, (long)domain) != -IPC_EBADF) << 12;
   errors |= (unsigned long)(syscall1(SYS_DOMAIN_WAIT, (long)domain) != -IPC_EBADF) << 19;
@@ -1819,12 +1973,14 @@ unsigned long ipc_domain_control(void) {
                 ? 37
                 : 96);
     }
-    if (!wait_exit(ordinary_child, 37))
+    if (!wait_exit(ordinary_child, 37)) {
       _exit(96);
+    }
     // This fixture delay exercises the blocking path, not a timing contract.
     unsigned long delay = DOMAIN_OBSERVER_DELAY_NS;
-    if (nanosleep_ns(&delay) != 0)
+    if (nanosleep_ns(&delay) != 0) {
       _exit(96);
+    }
     _exit(37);
   }
   if (natural_child <= 1 || !natural_domain) {
@@ -1842,8 +1998,9 @@ unsigned long ipc_domain_control(void) {
     errors |= (unsigned long)(syscall3(SYS_WAITPID, natural_child, 0, 1) != -IPC_ECHILD) << 26;
     errors |= (unsigned long)(syscall1(SYS_CAP_CLOSE, (long)natural_domain) != 0) << 23;
   }
-  if (self > 0)
+  if (self > 0) {
     errors |= (unsigned long)(syscall1(SYS_CAP_CLOSE, self) != 0) << 36;
+  }
 
   unsigned long signal_domain = 0;
   long signal_child = syscall1(SYS_FORK_DOMAIN, (long)&signal_domain);
@@ -1882,30 +2039,36 @@ unsigned long ipc_domain_control(void) {
 
 unsigned long ipc_domain_selection(void) {
   struct moss_ipc_endpoints pair = {0};
-  if (syscall1(SYS_IPC_CREATE, (long)&pair) != 0)
+  if (syscall1(SYS_IPC_CREATE, (long)&pair) != 0) {
     return 1;
+  }
   unsigned long errors = (unsigned long)(syscall2(SYS_CAP_SET_INHERIT, (long)pair.send, 1) != 0);
 
   unsigned long empty_domain = 0;
   long empty_child = syscall1(SYS_FORK_DOMAIN, (long)&empty_domain);
-  if (empty_child == 0)
+  if (empty_child == 0) {
     _exit(getppid() == 0 && syscall1(SYS_CAP_CLOSE, (long)pair.send) == -IPC_EBADF &&
                   syscall1(SYS_CAP_CLOSE, (long)pair.receive) == -IPC_EBADF
               ? 37
               : 96);
+  }
   errors |= (unsigned long)(empty_child <= 1 || !empty_domain) << 1;
-  if (empty_domain)
+  if (empty_domain) {
     errors |= (unsigned long)!domain_exited(empty_domain, 37, 0) << 2;
-  if (empty_child > 1)
+  }
+  if (empty_child > 1) {
     errors |= (unsigned long)(syscall3(SYS_WAITPID, empty_child, 0, 1) != -IPC_ECHILD) << 17;
-  if (empty_domain)
+  }
+  if (empty_domain) {
     errors |= (unsigned long)(syscall1(SYS_CAP_CLOSE, (long)empty_domain) != 0) << 3;
+  }
 
   unsigned long inherited_domain = 0;
   long inherited_child = syscall1(SYS_FORK_DOMAIN_INHERIT, (long)&inherited_domain);
   if (inherited_child == 0) {
-    if (getppid() != 0 || syscall1(SYS_CAP_CLOSE, (long)pair.receive) != -IPC_EBADF)
+    if (getppid() != 0 || syscall1(SYS_CAP_CLOSE, (long)pair.receive) != -IPC_EBADF) {
       _exit(96);
+    }
     char inherited_arg[MOSS_DECIMAL_BUFFER_SIZE];
     (void)ultoa(pair.send, inherited_arg, sizeof(inherited_arg));
     const char *args[] = {"cap-present", inherited_arg, 0};
@@ -1913,12 +2076,15 @@ unsigned long ipc_domain_selection(void) {
     _exit(96);
   }
   errors |= (unsigned long)(inherited_child <= 1 || !inherited_domain) << 29;
-  if (inherited_domain)
+  if (inherited_domain) {
     errors |= (unsigned long)!domain_exited(inherited_domain, 37, 0) << 30;
-  if (inherited_child > 1)
+  }
+  if (inherited_child > 1) {
     errors |= (unsigned long)(syscall3(SYS_WAITPID, inherited_child, 0, 1) != -IPC_ECHILD) << 31;
-  if (inherited_domain)
+  }
+  if (inherited_domain) {
     errors |= (unsigned long)(syscall1(SYS_CAP_CLOSE, (long)inherited_domain) != 0) << 32;
+  }
   errors |= (unsigned long)(syscall1(SYS_FORK_DOMAIN_INHERIT, 0) != -IPC_EFAULT) << 33;
 
   const struct moss_fork_capability selected[] = {{pair.receive, MOSS_CAP_RECEIVE, 0}};
@@ -1927,11 +2093,13 @@ unsigned long ipc_domain_selection(void) {
   if (selected_child == 0) {
     long denied_duplicate = syscall2(SYS_CAP_DUPLICATE, (long)pair.receive, MOSS_CAP_RECEIVE);
     long grandchild = syscall0(SYS_FORK);
-    if (grandchild == 0)
+    if (grandchild == 0) {
       _exit(syscall1(SYS_CAP_CLOSE, (long)pair.receive) == -IPC_EBADF ? 37 : 96);
+    }
     if (denied_duplicate != -IPC_EACCES || grandchild <= 1 || !wait_exit(grandchild, 37) ||
-        syscall1(SYS_CAP_CLOSE, (long)pair.send) != -IPC_EBADF)
+        syscall1(SYS_CAP_CLOSE, (long)pair.send) != -IPC_EBADF) {
       _exit(96);
+    }
     char selected_arg[MOSS_DECIMAL_BUFFER_SIZE];
     (void)ultoa(pair.receive, selected_arg, sizeof(selected_arg));
     const char *args[] = {"cap-present", selected_arg, 0};
@@ -1939,12 +2107,15 @@ unsigned long ipc_domain_selection(void) {
     _exit(96);
   }
   errors |= (unsigned long)(selected_child <= 1 || !selected_domain) << 4;
-  if (selected_domain)
+  if (selected_domain) {
     errors |= (unsigned long)!domain_exited(selected_domain, 37, 0) << 5;
-  if (selected_child > 1)
+  }
+  if (selected_child > 1) {
     errors |= (unsigned long)(syscall3(SYS_WAITPID, selected_child, 0, 1) != -IPC_ECHILD) << 18;
-  if (selected_domain)
+  }
+  if (selected_domain) {
     errors |= (unsigned long)(syscall1(SYS_CAP_CLOSE, (long)selected_domain) != 0) << 6;
+  }
 
   unsigned long rejected_domain = 0;
   const struct moss_fork_capability duplicated[] = {{pair.receive, MOSS_CAP_RECEIVE, 0},
@@ -1979,8 +2150,9 @@ unsigned long ipc_domain_selection(void) {
             << 27;
   long exec_child = fork();
   if (exec_child == 0) {
-    if (syscall2(SYS_CAP_SET_EXEC, (long)pair.send, 0) != 0)
+    if (syscall2(SYS_CAP_SET_EXEC, (long)pair.send, 0) != 0) {
       _exit(96);
+    }
     char closed_arg[MOSS_DECIMAL_BUFFER_SIZE], kept_arg[MOSS_DECIMAL_BUFFER_SIZE];
     (void)ultoa(pair.send, closed_arg, sizeof(closed_arg));
     (void)ultoa(pair.receive, kept_arg, sizeof(kept_arg));
@@ -2055,22 +2227,22 @@ unsigned long ipc_domain_selection(void) {
     long factory = syscall0(SYS_DOMAIN_FACTORY);
     errors |= (unsigned long)(factory <= 0) << 54;
     long code_authority = syscall0(SYS_CODE_AUTHORITY);
-    long code_version = syscall1(SYS_CODE_SNAPSHOT,
-                                 (long)((unsigned long)spawned_delayed_exit & ~(MOSS_DOMAIN_PAGE_BYTES - 1UL)));
-    long approved_code = code_authority > 0 && code_version > 0
-                             ? syscall2(SYS_CODE_APPROVE, code_authority, code_version)
-                             : -1;
+    long code_version =
+        syscall1(SYS_CODE_SNAPSHOT, (long)((unsigned long)spawned_delayed_exit & ~(MOSS_DOMAIN_PAGE_BYTES - 1UL)));
+    long approved_code =
+        code_authority > 0 && code_version > 0 ? syscall2(SYS_CODE_APPROVE, code_authority, code_version) : -1;
     errors |= (unsigned long)(code_authority <= 0 || code_version <= 0 || approved_code <= 0) << 56;
     const struct moss_fork_capability spawn_authority[] = {{(unsigned long)factory, MOSS_CAP_DOMAIN_SPAWN, 0},
-                                                            {(unsigned long)approved_code, MOSS_CAP_CODE_EXEC, 0}};
+                                                           {(unsigned long)approved_code, MOSS_CAP_CODE_EXEC, 0}};
     unsigned long live_domain = 0;
     long live = factory > 0 && approved_code > 0
                     ? syscall6(SYS_FORK_DOMAIN_SCOPED, (long)&live_domain, (long)spawn_authority, 2, scope, 0, 0)
                     : -1;
     if (live == 0) {
       struct moss_domain_layout layout = {0};
-      if (syscall1(SYS_DOMAIN_LAYOUT, (long)&layout) != 0 || layout.page_size != MOSS_DOMAIN_PAGE_BYTES)
+      if (syscall1(SYS_DOMAIN_LAYOUT, (long)&layout) != 0 || layout.page_size != MOSS_DOMAIN_PAGE_BYTES) {
         _exit(96);
+      }
       const unsigned long entry = (unsigned long)spawned_delayed_exit;
       const unsigned long stack_pointer = layout.stack_top - sizeof(unsigned long);
       const unsigned long duration_ns = (unsigned long)SCOPE_CHILD_DELAY_NS * SCOPE_CHILD_CYCLES;
@@ -2085,8 +2257,9 @@ unsigned long ipc_domain_selection(void) {
                                         .pages = (unsigned long)&page,
                                         .page_count = 1};
       long native = syscall2(SYS_DOMAIN_SPAWN, factory, (long)&image);
-      if (native <= 0)
+      if (native <= 0) {
         _exit(96);
+      }
       (void)syscall1(SYS_CAP_CLOSE, native);
       unsigned long grandchild_domain = 0;
       long grandchild = syscall1(SYS_FORK_DOMAIN, (long)&grandchild_domain);
@@ -2097,8 +2270,9 @@ unsigned long ipc_domain_selection(void) {
         }
         _exit(97);
       }
-      if (grandchild <= 1 || !grandchild_domain)
+      if (grandchild <= 1 || !grandchild_domain) {
         _exit(96);
+      }
       (void)syscall1(SYS_CAP_CLOSE, (long)grandchild_domain);
       for (unsigned int i = 0; i < SCOPE_CHILD_CYCLES; ++i) {
         unsigned long delay = SCOPE_CHILD_DELAY_NS;
@@ -2139,14 +2313,18 @@ unsigned long ipc_domain_selection(void) {
     errors |= (unsigned long)(syscall6(SYS_FORK_DOMAIN_SCOPED, (long)&rejected, 0, 0, scope, 0, 0) != -IPC_EACCES ||
                               rejected != 0)
               << 47;
-    if (factory > 0)
+    if (factory > 0) {
       errors |= (unsigned long)(syscall1(SYS_CAP_CLOSE, factory) != 0) << 55;
-    if (code_authority > 0)
+    }
+    if (code_authority > 0) {
       (void)syscall1(SYS_CAP_CLOSE, code_authority);
-    if (code_version > 0)
+    }
+    if (code_version > 0) {
       (void)syscall1(SYS_CAP_CLOSE, code_version);
-    if (approved_code > 0)
+    }
+    if (approved_code > 0) {
       (void)syscall1(SYS_CAP_CLOSE, approved_code);
+    }
     errors |= (unsigned long)(syscall1(SYS_CAP_CLOSE, scope) != 0) << 48;
   }
   return errors;
@@ -2163,8 +2341,9 @@ unsigned long ipc_domain_wait_any(void) {
     }
     _exit(97); // A failed termination must not hang validation indefinitely.
   }
-  if (slow <= 1 || !slow_domain)
+  if (slow <= 1 || !slow_domain) {
     return 1;
+  }
 
   unsigned long fast_domain = 0;
   long fast = syscall1(SYS_FORK_DOMAIN, (long)&fast_domain);
@@ -2218,10 +2397,12 @@ unsigned long ipc_domain_wait_any(void) {
                             status.signal != SIGKILL)
             << 16;
   errors |= (unsigned long)(syscall3(SYS_WAITPID, slow, 0, 1) != -IPC_ECHILD) << 19;
-  if (inspect > 0)
+  if (inspect > 0) {
     errors |= (unsigned long)(syscall1(SYS_CAP_CLOSE, inspect) != 0) << 12;
-  if (observe > 0)
+  }
+  if (observe > 0) {
     errors |= (unsigned long)(syscall1(SYS_CAP_CLOSE, observe) != 0) << 13;
+  }
   errors |= (unsigned long)(syscall1(SYS_CAP_CLOSE, (long)slow_domain) != 0) << 14;
   errors |= (unsigned long)(syscall1(SYS_CAP_CLOSE, (long)fast_domain) != 0) << 15;
   return errors;

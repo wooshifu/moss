@@ -254,8 +254,7 @@ __attribute__((optnone)) static int test_cpu_bound_irq(void) {
     unsigned cpu_mask = 2;
     struct sigaction_t action = {(unsigned long)sigusr1_handler, 0, 0};
     handler_called = 0;
-    if (syscall3(20, 0, sizeof(cpu_mask), (long)&cpu_mask) != 0 ||
-        moss_sigaction(SIGUSR1, &action, 0) != 0 ||
+    if (syscall3(20, 0, sizeof(cpu_mask), (long)&cpu_mask) != 0 || moss_sigaction(SIGUSR1, &action, 0) != 0 ||
         control(CPU_BOUND_ARM_PROBE, (long)&&spin_begin, (long)&&spin_end) != 1) {
       _exit(98);
     }
@@ -316,10 +315,13 @@ static int test_stop_continue(void) {
       close((int)ready[0]);
       unsigned cpu_mask = 1U << 1;
       struct sigaction_t usr1 = {(unsigned long)sigusr1_handler, 0, 0};
-      struct sigaction_t cont = {mode == STOP_MASKED_CONT    ? (unsigned long)sigcont_handler
-                                 : mode == STOP_IGNORED_CONT ? SIG_IGN
-                                                             : SIG_DFL,
-                                 0, 0};
+      unsigned long cont_handler = SIG_DFL;
+      if (mode == STOP_MASKED_CONT) {
+        cont_handler = (unsigned long)sigcont_handler;
+      } else if (mode == STOP_IGNORED_CONT) {
+        cont_handler = SIG_IGN;
+      }
+      struct sigaction_t cont = {cont_handler, 0, 0};
       handler_called = 0;
       handler2_called = 0;
       if (syscall3(20, 0, sizeof(cpu_mask), (long)&cpu_mask) != 0 || moss_sigaction(SIGUSR1, &usr1, 0) != 0 ||
@@ -634,7 +636,12 @@ static int test_signal_exit_status(void) {
     if (child < 0 || waitpid(child, &status, 0) != child) {
       return 1;
     }
-    const int expected = mode == 0 ? SIGKILL : mode == 1 ? ((unsigned char)-SIGSEGV << 8) : SIGSEGV;
+    int expected = SIGSEGV;
+    if (mode == 0) {
+      expected = SIGKILL;
+    } else if (mode == 1) {
+      expected = (unsigned char)-SIGSEGV << 8;
+    }
     if (status != expected) {
       return 1;
     }

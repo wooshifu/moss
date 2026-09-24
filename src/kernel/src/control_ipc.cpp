@@ -9,15 +9,14 @@ constexpr usize kMessageBytes = 256;
 // ponytail: 16 pending calls bound kernel memory per endpoint; raise this only
 // when measured service concurrency needs more outstanding calls.
 constexpr usize kPendingCalls = 16;
-constexpr u32 kAllRights = capability::rights::SEND | capability::rights::RECEIVE | capability::rights::TRANSFER |
-                           capability::rights::DUPLICATE | capability::rights::MAP_READ |
-                           capability::rights::MAP_WRITE | capability::rights::MINT |
-                           capability::rights::DOMAIN_TERMINATE | capability::rights::DOMAIN_INSPECT |
-                           capability::rights::DOMAIN_OBSERVE | capability::rights::DOMAIN_SPAWN |
-                           capability::rights::CODE_APPROVE | capability::rights::CODE_EXEC |
-                           capability::rights::CODE_IDENTIFY | capability::rights::CODE_REVOKE |
-                           capability::rights::DOMAIN_SIGNAL | capability::rights::DOMAIN_SCOPE_ASSIGN |
-                           capability::rights::DOMAIN_SCOPE_TERMINATE | capability::rights::DOMAIN_SCOPE_INSPECT;
+constexpr u32 kAllRights =
+    capability::rights::SEND | capability::rights::RECEIVE | capability::rights::TRANSFER |
+    capability::rights::DUPLICATE | capability::rights::MAP_READ | capability::rights::MAP_WRITE |
+    capability::rights::MINT | capability::rights::DOMAIN_TERMINATE | capability::rights::DOMAIN_INSPECT |
+    capability::rights::DOMAIN_OBSERVE | capability::rights::DOMAIN_SPAWN | capability::rights::CODE_APPROVE |
+    capability::rights::CODE_EXEC | capability::rights::CODE_IDENTIFY | capability::rights::CODE_REVOKE |
+    capability::rights::DOMAIN_SIGNAL | capability::rights::DOMAIN_SCOPE_ASSIGN |
+    capability::rights::DOMAIN_SCOPE_TERMINATE | capability::rights::DOMAIN_SCOPE_INSPECT;
 
 // Keep this wire layout aligned with userspace's moss_ipc_message. All fields
 // are fixed-width on Moss's supported 64-bit ABIs.
@@ -32,10 +31,12 @@ static_assert(sizeof(ControlMessage) == 4 * sizeof(u64) + kMessageBytes);
 
 [[nodiscard]] bool valid_message(const ControlMessage &message) noexcept {
   // Only the kernel may attach a badge to a delivered request.
-  if (message.size > kMessageBytes || message.badge != 0)
+  if (message.size > kMessageBytes || message.badge != 0) {
     return false;
-  if (message.capability == INVALID_HANDLE)
+  }
+  if (message.capability == INVALID_HANDLE) {
     return message.rights == 0;
+  }
   return message.rights != 0 && (message.rights & ~static_cast<u64>(kAllRights)) == 0;
 }
 
@@ -65,8 +66,9 @@ struct PendingCall {
               capability::Escrow &&transferred) noexcept
       : caller(thread), deadline_ns(deadline), badge(sender_badge), request_size(message.size),
         request_cap(moss::move(transferred)) {
-    if (request_size)
+    if (request_size) {
       __builtin_memcpy(request, message.payload, request_size);
+    }
   }
 };
 
@@ -81,8 +83,9 @@ class Channel {
   bool closed_{false};
 
   static void wake(process::Thread *thread) noexcept {
-    if (thread && process::g_scheduler)
+    if (thread && process::g_scheduler) {
       process::g_scheduler->task_wakeup(thread, thread->wake_cpu);
+    }
   }
 
   // The selected waiting receiver needs the caller's priority before it can
@@ -90,13 +93,15 @@ class Channel {
   void wake_receiver(PendingCall *call) noexcept {
     const bool assigned = receivers_.wake_one([&](void *waiter) {
       auto *thread = static_cast<process::Thread *>(waiter);
-      if (process::g_scheduler)
+      if (process::g_scheduler) {
         process::g_scheduler->bind_ipc_server(&call->donation, thread);
+      }
       bind_delegated_reply(call->request_cap, thread);
       wake(thread);
     });
-    if (!assigned && process::g_scheduler)
+    if (!assigned && process::g_scheduler) {
       process::g_scheduler->bind_ipc_server(&call->donation, nullptr);
+    }
   }
 
 public:
@@ -104,8 +109,9 @@ public:
 
   [[nodiscard]] long enqueue(shared_ptr<PendingCall> call) noexcept {
     containers::LockGuard<containers::IrqSpinLock> guard(lock_);
-    if (closed_)
+    if (closed_) {
       return -errc::EPIPE;
+    }
     for (auto &slot : calls_) {
       if (!slot) {
         slot = moss::move(call);
@@ -159,25 +165,30 @@ public:
     {
       containers::LockGuard<containers::IrqSpinLock> guard(lock_);
       if (call->outcome != Outcome::Pending) {
-        if (committed)
+        if (committed) {
           *committed = false;
+        }
         return call->outcome;
       }
       // The same lock serializes reply, cancellation, timer expiry and peer
       // loss. A reply after its absolute deadline cannot win by timer delay.
       if (outcome == Outcome::Reply && call->deadline_ns != 0 &&
-          timer::TimerSubsystem::instance().now_ns() >= call->deadline_ns)
+          timer::TimerSubsystem::instance().now_ns() >= call->deadline_ns) {
         outcome = Outcome::Expired;
+      }
       if (outcome == Outcome::Reply) {
         call->response_size = size;
-        if (size)
+        if (size) {
           __builtin_memcpy(call->response, data, size);
-        if (transferred)
+        }
+        if (transferred) {
           call->response_cap = moss::move(*transferred);
+        }
       }
       call->outcome = outcome;
-      if (committed)
+      if (committed) {
         *committed = true;
+      }
       call->queued = false;
       for (auto &slot : calls_) {
         if (slot.get() == call) {
@@ -185,10 +196,12 @@ public:
           break;
         }
       }
-      if (process::g_scheduler)
+      if (process::g_scheduler) {
         process::g_scheduler->end_ipc_call(&call->donation);
-      if (outcome == Outcome::Reply)
+      }
+      if (outcome == Outcome::Reply) {
         bind_delegated_reply(call->response_cap, call->caller);
+      }
       wake(call->caller);
     }
     return outcome;
@@ -197,8 +210,9 @@ public:
   [[nodiscard]] Outcome snapshot(PendingCall *call, u8 *response, usize &size) noexcept {
     containers::LockGuard<containers::IrqSpinLock> guard(lock_);
     size = call->response_size;
-    if (call->outcome == Outcome::Reply && size)
+    if (call->outcome == Outcome::Reply && size) {
       __builtin_memcpy(response, call->response, size);
+    }
     return call->outcome;
   }
 
@@ -225,8 +239,9 @@ public:
       if (call && call->queued && !call->delivery_claimed && process::g_scheduler) {
         process::Thread *next = nullptr;
         receivers_.wake_one([&](void *waiter) { next = static_cast<process::Thread *>(waiter); });
-        if (process::g_scheduler->rebind_ipc_server(&call->donation, thread, next))
+        if (process::g_scheduler->rebind_ipc_server(&call->donation, thread, next)) {
           wake(next);
+        }
       }
     }
   }
@@ -240,8 +255,9 @@ public:
     shared_ptr<PendingCall> retired[kPendingCalls];
     {
       containers::LockGuard<containers::IrqSpinLock> guard(lock_);
-      if (closed_)
+      if (closed_) {
         return;
+      }
       closed_ = true;
       for (usize i = 0; i < kPendingCalls; ++i) {
         // Once delivered, a Reply holder owns the call even if the original
@@ -249,8 +265,9 @@ public:
         if (calls_[i] && calls_[i]->queued) {
           calls_[i]->outcome = Outcome::PeerClosed;
           calls_[i]->queued = false;
-          if (process::g_scheduler)
+          if (process::g_scheduler) {
             process::g_scheduler->end_ipc_call(&calls_[i]->donation);
+          }
           wake(calls_[i]->caller);
           retired[i] = moss::move(calls_[i]);
         }
@@ -289,11 +306,13 @@ public:
   ~MemoryObject() override {
     // The object owns one reference per frame; resident PTEs own the rest.
     for (usize i = 0; i < count_; ++i) {
-      if (mm::PageFrameAllocator::page_ref_dec(pages_[i]) == 0)
+      if (mm::PageFrameAllocator::page_ref_dec(pages_[i]) == 0) {
         (void)mm::free_pages(pages_[i], 0);
+      }
     }
-    if (pages_)
+    if (pages_) {
       (void)mm::RuntimeHeapAllocator::deallocate(pages_, capacity_ * sizeof(pages_[0]));
+    }
   }
   void adopt_storage(PhysAddr *pages, usize capacity) noexcept {
     pages_ = pages;
@@ -306,28 +325,33 @@ public:
 
 [[nodiscard]] shared_ptr<capability::Object> make_memory_object(usize bytes, const u8 *source) noexcept {
   const usize count = bytes / PAGE_SIZE + (bytes % PAGE_SIZE != 0);
-  if (count == 0 || count > USER_MAX / PAGE_SIZE)
+  if (count == 0 || count > USER_MAX / PAGE_SIZE) {
     return {};
+  }
   // try_make may destroy a constructed object if its control block allocation
   // fails, so no physical page may be owned until it returns.
   auto object = shared_ptr<capability::Object>::try_make<MemoryObject>(ipc_allocate);
-  if (!object)
+  if (!object) {
     return {};
+  }
   auto storage = mm::RuntimeHeapAllocator::allocate(count * sizeof(PhysAddr));
-  if (!storage)
+  if (!storage) {
     return {};
+  }
   auto *memory = static_cast<MemoryObject *>(object.get());
   memory->adopt_storage(static_cast<PhysAddr *>(*storage), count);
   for (usize i = 0; i < count; ++i) {
     auto page = mm::allocate_pages(0);
-    if (!page)
+    if (!page) {
       return {};
+    }
     auto *target = reinterpret_cast<u8 *>(phys_to_virt(*page));
     const usize offset = i * PAGE_SIZE;
     const usize available = source ? bytes - offset : 0;
     const usize copied = available < PAGE_SIZE ? available : PAGE_SIZE;
-    if (copied)
+    if (copied) {
       __builtin_memcpy(target, source + offset, copied);
+    }
     __builtin_memset(target + copied, 0, PAGE_SIZE - copied);
     memory->append_page(*page);
   }
@@ -342,14 +366,16 @@ public:
   Reply(shared_ptr<Channel> owner, shared_ptr<PendingCall> pending) noexcept
       : Object(capability::ObjectType::Reply), channel(moss::move(owner)), call(moss::move(pending)) {}
   ~Reply() override {
-    if (armed.load(memory_order_acquire))
+    if (armed.load(memory_order_acquire)) {
       (void)channel->complete(call.get(), Outcome::PeerClosed);
+    }
   }
 };
 
 void bind_delegated_reply(const capability::Escrow &transferred, process::Thread *recipient) noexcept {
-  if (!process::g_scheduler)
+  if (!process::g_scheduler) {
     return;
+  }
   auto *object = transferred.get();
   if (object && object->type() == capability::ObjectType::Reply) {
     auto *reply = static_cast<Reply *>(object);
@@ -358,14 +384,18 @@ void bind_delegated_reply(const capability::Escrow &transferred, process::Thread
 }
 
 [[nodiscard]] long cap_error(ErrorCode error) noexcept {
-  if (error == ErrorCode::NotFound)
+  if (error == ErrorCode::NotFound) {
     return -errc::EBADF;
-  if (error == ErrorCode::PermissionDenied)
+  }
+  if (error == ErrorCode::PermissionDenied) {
     return -errc::EACCES;
-  if (error == ErrorCode::ResourceExhausted)
+  }
+  if (error == ErrorCode::ResourceExhausted) {
     return -errc::EMFILE;
-  if (error == ErrorCode::OutOfMemory)
+  }
+  if (error == ErrorCode::OutOfMemory) {
     return -errc::ENOMEM;
+  }
   return -errc::EINVAL;
 }
 
@@ -383,135 +413,169 @@ void deadline_wake(void *context) noexcept {
 
 } // namespace
 
-long sys_cap_close(long handle, long, long, long, long, long) noexcept {
+long sys_cap_close(long handle, long /*unused*/, long /*unused*/, long /*unused*/, long /*unused*/,
+                   long /*unused*/) noexcept {
   auto proc = caller_process();
-  if (!proc)
+  if (!proc) {
     return -errc::ESRCH;
+  }
   auto result = proc->capabilities().close(static_cast<Handle>(handle));
   return result ? 0 : cap_error(result.error());
 }
 
-long sys_cap_duplicate(long handle, long rights, long, long, long, long) noexcept {
+long sys_cap_duplicate(long handle, long rights, long /*unused*/, long /*unused*/, long /*unused*/,
+                       long /*unused*/) noexcept {
   auto proc = caller_process();
-  if (!proc)
+  if (!proc) {
     return -errc::ESRCH;
-  if (rights <= 0 || (static_cast<u64>(rights) & ~static_cast<u64>(kAllRights)) != 0)
+  }
+  if (rights <= 0 || (static_cast<u64>(rights) & ~static_cast<u64>(kAllRights)) != 0) {
     return -errc::EINVAL;
+  }
   auto result = proc->capabilities().duplicate(static_cast<Handle>(handle), static_cast<u32>(rights));
   return result ? static_cast<long>(*result) : cap_error(result.error());
 }
 
-long sys_cap_set_inherit(long handle, long inherit, long, long, long, long) noexcept {
+long sys_cap_set_inherit(long handle, long inherit, long /*unused*/, long /*unused*/, long /*unused*/,
+                         long /*unused*/) noexcept {
   auto proc = caller_process();
-  if (!proc)
+  if (!proc) {
     return -errc::ESRCH;
-  if (inherit != 0 && inherit != 1)
+  }
+  if (inherit != 0 && inherit != 1) {
     return -errc::EINVAL;
+  }
   auto result = proc->capabilities().set_inheritable(static_cast<Handle>(handle), inherit == 1);
   return result ? 0 : cap_error(result.error());
 }
 
-long sys_cap_set_exec(long handle, long keep, long, long, long, long) noexcept {
+long sys_cap_set_exec(long handle, long keep, long /*unused*/, long /*unused*/, long /*unused*/,
+                      long /*unused*/) noexcept {
   auto proc = caller_process();
-  if (!proc)
+  if (!proc) {
     return -errc::ESRCH;
-  if (keep != 0 && keep != 1)
+  }
+  if (keep != 0 && keep != 1) {
     return -errc::EINVAL;
+  }
   auto result = proc->capabilities().set_keep_on_exec(static_cast<Handle>(handle), keep == 1);
   return result ? 0 : cap_error(result.error());
 }
 
-long sys_mem_create(long size, long, long, long, long, long) noexcept {
-  if (size <= 0 || (static_cast<usize>(size) & (PAGE_SIZE - 1)) != 0)
+long sys_mem_create(long size, long /*unused*/, long /*unused*/, long /*unused*/, long /*unused*/,
+                    long /*unused*/) noexcept {
+  if (size <= 0 || (static_cast<usize>(size) & (PAGE_SIZE - 1)) != 0) {
     return -errc::EINVAL;
+  }
   auto proc = caller_process();
-  if (!proc)
+  if (!proc) {
     return -errc::ESRCH;
+  }
   auto object = make_memory_object(static_cast<usize>(size), nullptr);
-  if (!object)
+  if (!object) {
     return -errc::ENOMEM;
+  }
   constexpr u32 initial_rights = capability::rights::MAP_READ | capability::rights::MAP_WRITE |
                                  capability::rights::TRANSFER | capability::rights::DUPLICATE;
   auto handle = proc->capabilities().install(moss::move(object), initial_rights);
   return handle ? static_cast<long>(*handle) : cap_error(handle.error());
 }
 
-long sys_boot_archive(long size_addr, long, long, long, long, long) noexcept {
+long sys_boot_archive(long size_addr, long /*unused*/, long /*unused*/, long /*unused*/, long /*unused*/,
+                      long /*unused*/) noexcept {
   auto proc = caller_process();
-  if (!proc)
+  if (!proc) {
     return -errc::ESRCH;
+  }
   // The whole boot image is bootstrap authority, delegated only by the
   // initial supervisor. Other domains cannot acquire this raw source.
-  if (!proc->is_initial_supervisor())
+  if (!proc->is_initial_supervisor()) {
     return -errc::EACCES;
+  }
   const u8 *source = initramfs::g_initramfs.bytes();
   const usize size = initramfs::g_initramfs.size_bytes();
-  if (!source || !size)
+  if (!source || !size) {
     return -errc::ENOENT;
+  }
   auto as = proc->address_space();
-  if (!as)
+  if (!as) {
     return -errc::ESRCH;
+  }
   const u64 actual_size = size;
-  if (as->copy_to_user(static_cast<VirtAddr>(size_addr), &actual_size, sizeof(actual_size)) != 0)
+  if (as->copy_to_user(static_cast<VirtAddr>(size_addr), &actual_size, sizeof(actual_size)) != 0) {
     return -errc::EFAULT;
+  }
   // Copy raw bytes into ordinary Memory Object frames so domain mappings use
   // the same frame ownership and read-only rights as other shared objects.
   auto object = make_memory_object(size, source);
-  if (!object)
+  if (!object) {
     return -errc::ENOMEM;
+  }
   constexpr u32 rights = capability::rights::MAP_READ | capability::rights::TRANSFER | capability::rights::DUPLICATE;
   auto handle = proc->capabilities().install(moss::move(object), rights);
   return handle ? static_cast<long>(*handle) : cap_error(handle.error());
 }
 
-long sys_mem_map(long handle, long rights, long, long, long, long) noexcept {
+long sys_mem_map(long handle, long rights, long /*unused*/, long /*unused*/, long /*unused*/,
+                 long /*unused*/) noexcept {
   constexpr u32 mapping_rights = capability::rights::MAP_READ | capability::rights::MAP_WRITE;
-  if (rights <= 0 || (static_cast<u64>(rights) & ~static_cast<u64>(mapping_rights)) != 0)
+  if (rights <= 0 || (static_cast<u64>(rights) & ~static_cast<u64>(mapping_rights)) != 0) {
     return -errc::EINVAL;
+  }
   auto proc = caller_process();
-  if (!proc)
+  if (!proc) {
     return -errc::ESRCH;
+  }
   auto looked = proc->capabilities().lookup(static_cast<Handle>(handle), capability::ObjectType::Memory,
                                             static_cast<u32>(rights));
-  if (!looked)
+  if (!looked) {
     return cap_error(looked.error());
+  }
   auto as = proc->address_space();
-  if (!as)
+  if (!as) {
     return -errc::ESRCH;
+  }
   auto transaction = as->lock_vm();
   // ponytail: use the existing monotonic mmap cursor; add hole search when
   // services need to recycle virtual ranges after unmap.
   const VirtAddr address = as->mmap_next;
   auto *memory = static_cast<MemoryObject *>((*looked).get());
   const usize size = memory->count() * PAGE_SIZE;
-  if (size > USER_MAX || address > USER_MAX - size || !mm::PageTableManager::is_user_range(address, size))
+  if (size > USER_MAX || address > USER_MAX - size || !mm::PageTableManager::is_user_range(address, size)) {
     return -errc::ENOMEM;
+  }
   // Every supported architecture makes a writable user mapping readable.
   const u32 flags =
       process::vma_flags::READ | ((rights & capability::rights::MAP_WRITE) ? process::vma_flags::WRITE : 0U);
   if (!as->add_vma(address, address + size, flags, process::VmaType::MMAP, nullptr, 0, 0, *looked, memory->pages(),
-                   memory->count()))
+                   memory->count())) {
     return -errc::ENOMEM;
+  }
   as->mmap_next = address + size;
   return static_cast<long>(address);
 }
 
-long sys_ipc_create(long pair_addr, long, long, long, long, long) noexcept {
+long sys_ipc_create(long pair_addr, long /*unused*/, long /*unused*/, long /*unused*/, long /*unused*/,
+                    long /*unused*/) noexcept {
   auto proc = caller_process();
-  if (!proc)
+  if (!proc) {
     return -errc::ESRCH;
+  }
   auto channel = shared_ptr<Channel>::try_make(ipc_allocate);
-  if (!channel)
+  if (!channel) {
     return -errc::ENOMEM;
+  }
   auto sender = shared_ptr<capability::Object>::try_make<Sender>(ipc_allocate, channel);
   auto receiver = shared_ptr<capability::Object>::try_make<Receiver>(ipc_allocate, channel);
-  if (!sender || !receiver)
+  if (!sender || !receiver) {
     return -errc::ENOMEM;
+  }
   auto send_handle =
       proc->capabilities().install(moss::move(sender), capability::rights::SEND | capability::rights::TRANSFER |
                                                            capability::rights::DUPLICATE | capability::rights::MINT);
-  if (!send_handle)
+  if (!send_handle) {
     return cap_error(send_handle.error());
+  }
   auto receive_handle = proc->capabilities().install(
       moss::move(receiver), capability::rights::RECEIVE | capability::rights::TRANSFER | capability::rights::DUPLICATE);
   if (!receive_handle) {
@@ -527,22 +591,26 @@ long sys_ipc_create(long pair_addr, long, long, long, long, long) noexcept {
   return 0;
 }
 
-long sys_ipc_mint_badge(long endpoint, long badge, long, long, long, long) noexcept {
+long sys_ipc_mint_badge(long endpoint, long badge, long /*unused*/, long /*unused*/, long /*unused*/,
+                        long /*unused*/) noexcept {
   auto proc = caller_process();
-  if (!proc)
+  if (!proc) {
     return -errc::ESRCH;
+  }
   // The derived sender has SEND, TRANSFER and DUPLICATE. Require all three
   // on the source so minting cannot recover rights removed by attenuation.
   constexpr u32 mint_authority = capability::rights::SEND | capability::rights::TRANSFER |
                                  capability::rights::DUPLICATE | capability::rights::MINT;
   auto looked =
       proc->capabilities().lookup(static_cast<Handle>(endpoint), capability::ObjectType::Endpoint, mint_authority);
-  if (!looked)
+  if (!looked) {
     return cap_error(looked.error());
+  }
   auto channel = static_cast<Sender *>((*looked).get())->channel;
   auto sender = shared_ptr<capability::Object>::try_make<Sender>(ipc_allocate, channel, static_cast<u64>(badge));
-  if (!sender)
+  if (!sender) {
     return -errc::ENOMEM;
+  }
   // Minted file-object authority can be delegated, but cannot mint another
   // identity unless the service explicitly delegates the original mint right.
   constexpr u32 rights = capability::rights::SEND | capability::rights::TRANSFER | capability::rights::DUPLICATE;
@@ -550,28 +618,35 @@ long sys_ipc_mint_badge(long endpoint, long badge, long, long, long, long) noexc
   return handle ? static_cast<long>(*handle) : cap_error(handle.error());
 }
 
-long sys_ipc_call(long endpoint, long request_addr, long response_addr, long deadline_ns, long, long) noexcept {
+long sys_ipc_call(long endpoint, long request_addr, long response_addr, long deadline_ns, long /*unused*/,
+                  long /*unused*/) noexcept {
   auto proc = caller_process();
   auto *thread = process::CfsScheduler::get_current_task();
-  if (!proc || !thread || !process::g_scheduler)
+  if (!proc || !thread || !process::g_scheduler) {
     return -errc::ESRCH;
-  if (deadline_ns < 0)
+  }
+  if (deadline_ns < 0) {
     return -errc::EINVAL;
+  }
   auto looked = proc->capabilities().lookup(static_cast<Handle>(endpoint), capability::ObjectType::Endpoint,
                                             capability::rights::SEND);
-  if (!looked)
+  if (!looked) {
     return cap_error(looked.error());
+  }
   ControlMessage request{};
-  if (process::copy_from_user(&request, static_cast<u64>(request_addr), sizeof(request)) != 0)
+  if (process::copy_from_user(&request, static_cast<u64>(request_addr), sizeof(request)) != 0) {
     return -errc::EFAULT;
-  if (!valid_message(request))
+  }
+  if (!valid_message(request)) {
     return -errc::EINVAL;
+  }
   capability::IpcCapture capture;
   capability::Escrow transferred;
   if (request.capability != INVALID_HANDLE) {
     auto captured = proc->capabilities().capture_for_ipc(request.capability, static_cast<u32>(request.rights));
-    if (!captured)
+    if (!captured) {
       return cap_error(captured.error());
+    }
     capture = moss::move(*captured);
     transferred = capture.take_escrow();
   }
@@ -579,8 +654,9 @@ long sys_ipc_call(long endpoint, long request_addr, long response_addr, long dea
   auto channel = sender->channel;
   auto call = shared_ptr<PendingCall>::try_make(ipc_allocate, thread, static_cast<u64>(deadline_ns), sender->badge,
                                                 request, moss::move(transferred));
-  if (!call)
+  if (!call) {
     return -errc::ENOMEM;
+  }
   u64 effective_deadline = static_cast<u64>(deadline_ns);
   if (!process::g_scheduler->begin_ipc_call(&call->donation, thread, &effective_deadline)) {
     return -errc::EAGAIN;
@@ -597,7 +673,7 @@ long sys_ipc_call(long endpoint, long request_addr, long response_addr, long dea
   }
   capture.commit();
 
-  DeadlineWake wake{channel.get(), call.get()};
+  DeadlineWake wake{.channel = channel.get(), .call = call.get()};
   timer::HrTimer deadline_timer;
   bool timer_armed = false;
   if (effective_deadline != 0) {
@@ -623,36 +699,43 @@ long sys_ipc_call(long endpoint, long request_addr, long response_addr, long dea
     (void)moss::abi::bridge::moss_prepare_io_wait();
     usize ignored = 0;
     u8 unused[kMessageBytes];
-    if (channel->snapshot(call.get(), unused, ignored) != Outcome::Pending)
+    if (channel->snapshot(call.get(), unused, ignored) != Outcome::Pending) {
       process::g_scheduler->task_wakeup(thread, thread->wake_cpu);
+    }
     process::g_scheduler->commit_sleep();
-    if (restore_irqs)
+    if (restore_irqs) {
       arch::enable_interrupts();
+    }
   }
-  if (timer_armed)
+  if (timer_armed) {
     deadline_timer.cancel_sync();
+  }
   switch (result) {
   case Outcome::Reply: {
     ControlMessage delivered{};
     delivered.size = response_size;
-    if (response_size)
+    if (response_size) {
       __builtin_memcpy(delivered.payload, response, response_size);
+    }
     if (call->response_cap) {
       delivered.rights = call->response_cap.rights();
       auto reserved = proc->capabilities().reserve_escrow(call->response_cap);
-      if (!reserved)
+      if (!reserved) {
         return cap_error(reserved.error());
+      }
       delivered.capability = *reserved;
     }
     if (process::copy_to_user(static_cast<u64>(response_addr), &delivered, sizeof(delivered)) != 0) {
-      if (delivered.capability != INVALID_HANDLE)
+      if (delivered.capability != INVALID_HANDLE) {
         (void)proc->capabilities().discard_reserved(delivered.capability);
+      }
       return -errc::EFAULT;
     }
     if (delivered.capability != INVALID_HANDLE) {
       auto published = proc->capabilities().publish_reserved(delivered.capability);
-      if (!published)
+      if (!published) {
         return cap_error(published.error());
+      }
       call->response_cap.reset();
     }
     return static_cast<long>(response_size);
@@ -663,21 +746,23 @@ long sys_ipc_call(long endpoint, long request_addr, long response_addr, long dea
     return -errc::ETIMEDOUT;
   case Outcome::PeerClosed:
   case Outcome::Pending:
-    return -errc::EPIPE;
   default:
     return -errc::EPIPE;
   }
 }
 
-long sys_ipc_receive(long endpoint, long request_addr, long reply_addr, long, long, long) noexcept {
+long sys_ipc_receive(long endpoint, long request_addr, long reply_addr, long /*unused*/, long /*unused*/,
+                     long /*unused*/) noexcept {
   auto proc = caller_process();
   auto *thread = process::CfsScheduler::get_current_task();
-  if (!proc || !thread || !process::g_scheduler)
+  if (!proc || !thread || !process::g_scheduler) {
     return -errc::ESRCH;
+  }
   auto looked = proc->capabilities().lookup(static_cast<Handle>(endpoint), capability::ObjectType::Receiver,
                                             capability::rights::RECEIVE);
-  if (!looked)
+  if (!looked) {
     return cap_error(looked.error());
+  }
   auto channel = static_cast<Receiver *>((*looked).get())->channel;
   while (true) {
     auto call = channel->claim(thread);
@@ -696,8 +781,9 @@ long sys_ipc_receive(long endpoint, long request_addr, long reply_addr, long, lo
       ControlMessage delivered{};
       delivered.size = call->request_size;
       delivered.badge = call->badge;
-      if (call->request_size)
+      if (call->request_size) {
         __builtin_memcpy(delivered.payload, call->request, call->request_size);
+      }
       if (call->request_cap) {
         delivered.rights = call->request_cap.rights();
         auto installed = proc->capabilities().reserve_escrow(call->request_cap);
@@ -710,8 +796,9 @@ long sys_ipc_receive(long endpoint, long request_addr, long reply_addr, long, lo
       }
       if (process::copy_to_user(static_cast<u64>(request_addr), &delivered, sizeof(delivered)) != 0 ||
           process::copy_to_user(static_cast<u64>(reply_addr), &handle, sizeof(handle)) != 0) {
-        if (delivered.capability != INVALID_HANDLE)
+        if (delivered.capability != INVALID_HANDLE) {
           (void)proc->capabilities().discard_reserved(delivered.capability);
+        }
         (void)proc->capabilities().discard_reserved(handle);
         channel->release_claim(call.get());
         return -errc::EFAULT;
@@ -728,8 +815,9 @@ long sys_ipc_receive(long endpoint, long request_addr, long reply_addr, long, lo
         call->request_cap.reset();
         return static_cast<long>(call->request_size);
       }
-      if (delivered.capability != INVALID_HANDLE)
+      if (delivered.capability != INVALID_HANDLE) {
         (void)proc->capabilities().discard_reserved(delivered.capability);
+      }
       (void)proc->capabilities().discard_reserved(handle);
       continue;
     }
@@ -746,46 +834,56 @@ long sys_ipc_receive(long endpoint, long request_addr, long reply_addr, long, lo
     (void)moss::abi::bridge::moss_prepare_io_wait();
     channel->arm_receiver_wait(thread);
     process::g_scheduler->commit_sleep();
-    if (restore_irqs)
+    if (restore_irqs) {
       arch::enable_interrupts();
+    }
   }
 }
 
-long sys_ipc_reply(long reply_handle, long response_addr, long, long, long, long) noexcept {
+long sys_ipc_reply(long reply_handle, long response_addr, long /*unused*/, long /*unused*/, long /*unused*/,
+                   long /*unused*/) noexcept {
   auto proc = caller_process();
-  if (!proc)
+  if (!proc) {
     return -errc::ESRCH;
+  }
   auto looked = proc->capabilities().lookup(static_cast<Handle>(reply_handle), capability::ObjectType::Reply,
                                             capability::rights::SEND);
-  if (!looked)
+  if (!looked) {
     return cap_error(looked.error());
+  }
   ControlMessage response{};
-  if (process::copy_from_user(&response, static_cast<u64>(response_addr), sizeof(response)) != 0)
+  if (process::copy_from_user(&response, static_cast<u64>(response_addr), sizeof(response)) != 0) {
     return -errc::EFAULT;
-  if (!valid_message(response))
+  }
+  if (!valid_message(response)) {
     return -errc::EINVAL;
+  }
   auto *reply = static_cast<Reply *>((*looked).get());
   // Receive arms the one-shot token before its reserved handle becomes visible.
-  if (!reply->armed.load(memory_order_acquire))
+  if (!reply->armed.load(memory_order_acquire)) {
     return -errc::EAGAIN;
+  }
   // A Reply cannot carry itself in its response: the call would then own its
   // own Reply through response escrow and neither object could be retired.
-  if (response.capability == static_cast<Handle>(reply_handle))
+  if (response.capability == static_cast<Handle>(reply_handle)) {
     return -errc::EINVAL;
+  }
   capability::IpcCapture capture;
   capability::Escrow transferred;
   if (response.capability != INVALID_HANDLE) {
     auto captured = proc->capabilities().capture_for_ipc(response.capability, static_cast<u32>(response.rights));
-    if (!captured)
+    if (!captured) {
       return cap_error(captured.error());
+    }
     capture = moss::move(*captured);
     transferred = capture.take_escrow();
   }
   // Consume table authority before completing the call. A concurrent
   // transfer may retain the object, but only one side may spend its handle.
   auto consumed = proc->capabilities().close(static_cast<Handle>(reply_handle));
-  if (!consumed)
+  if (!consumed) {
     return cap_error(consumed.error());
+  }
   // A cached Reply outcome does not mean this invocation won the one-shot
   // transition against cancellation or deadline expiry.
   bool committed = false;

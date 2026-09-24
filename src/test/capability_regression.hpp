@@ -26,18 +26,21 @@ inline void process_handles() {
   };
   unsigned destructions = 0, last_closes = 0;
   auto object = shared_ptr<cap::Object>::try_make<TrackedObject>(allocate, destructions, last_closes);
-  if (!boost::ut::expect(static_cast<bool>(object)))
+  if (!boost::ut::expect(static_cast<bool>(object))) {
     return;
+  }
 
   cap::Table sender, receiver;
   constexpr auto full_rights =
       cap::rights::SEND | cap::rights::RECEIVE | cap::rights::TRANSFER | cap::rights::DUPLICATE;
   auto original = sender.install(object, full_rights);
-  if (!boost::ut::expect(static_cast<bool>(original)))
+  if (!boost::ut::expect(static_cast<bool>(original))) {
     return;
+  }
   auto send_only = sender.duplicate(*original, cap::rights::SEND);
-  if (!boost::ut::expect(static_cast<bool>(send_only)))
+  if (!boost::ut::expect(static_cast<bool>(send_only))) {
     return;
+  }
   auto denied = sender.lookup(*send_only, cap::ObjectType::Endpoint, cap::rights::RECEIVE);
   boost::ut::expect(!denied && denied.error() == ErrorCode::PermissionDenied);
   auto amplified = sender.duplicate(*send_only, full_rights);
@@ -46,14 +49,16 @@ inline void process_handles() {
   boost::ut::expect(!wrong_type && wrong_type.error() == ErrorCode::InvalidArgument);
 
   auto copied = sender.transfer_to(receiver, *original, cap::rights::SEND, false);
-  if (!boost::ut::expect(static_cast<bool>(copied)))
+  if (!boost::ut::expect(static_cast<bool>(copied))) {
     return;
+  }
   boost::ut::expect(static_cast<bool>(sender.lookup(*original, cap::ObjectType::Endpoint, cap::rights::SEND)));
   boost::ut::expect(static_cast<bool>(receiver.close(*copied)));
 
   auto moved = sender.transfer_to(receiver, *original, cap::rights::RECEIVE, true);
-  if (!boost::ut::expect(static_cast<bool>(moved)))
+  if (!boost::ut::expect(static_cast<bool>(moved))) {
     return;
+  }
   boost::ut::expect(!sender.lookup(*original, cap::ObjectType::Endpoint, 0));
   boost::ut::expect(static_cast<bool>(receiver.lookup(*moved, cap::ObjectType::Endpoint, cap::rights::RECEIVE)));
   boost::ut::expect(!receiver.lookup(*moved, cap::ObjectType::Endpoint, cap::rights::SEND));
@@ -66,11 +71,13 @@ inline void process_handles() {
 
   cap::Table parent, child, occupied;
   auto kept = parent.install(object, full_rights);
-  if (!boost::ut::expect(static_cast<bool>(kept)))
+  if (!boost::ut::expect(static_cast<bool>(kept))) {
     return;
+  }
   auto dropped = parent.duplicate(*kept, cap::rights::SEND);
-  if (!boost::ut::expect(static_cast<bool>(dropped)))
+  if (!boost::ut::expect(static_cast<bool>(dropped))) {
     return;
+  }
   auto denied_inherit = parent.set_inheritable(*dropped, true);
   boost::ut::expect(!denied_inherit && denied_inherit.error() == ErrorCode::PermissionDenied);
   boost::ut::expect(static_cast<bool>(parent.set_inheritable(*kept, true)));
@@ -78,8 +85,9 @@ inline void process_handles() {
   boost::ut::expect(static_cast<bool>(child.lookup(*kept, cap::ObjectType::Endpoint, cap::rights::SEND)));
   boost::ut::expect(!child.lookup(*dropped, cap::ObjectType::Endpoint, 0));
   auto after_fork = child.install(object, cap::rights::SEND);
-  if (!boost::ut::expect(static_cast<bool>(after_fork)))
+  if (!boost::ut::expect(static_cast<bool>(after_fork))) {
     return;
+  }
   boost::ut::expect(*after_fork > *dropped);
   child.close_uninheritable();
   boost::ut::expect(static_cast<bool>(child.lookup(*kept, cap::ObjectType::Endpoint, cap::rights::SEND)));
@@ -107,25 +115,30 @@ inline void process_handles() {
   unsigned escrow_destructions = 0, escrow_last_closes = 0;
   auto escrow_object =
       shared_ptr<cap::Object>::try_make<TrackedObject>(allocate, escrow_destructions, escrow_last_closes);
-  if (!boost::ut::expect(static_cast<bool>(escrow_object)))
+  if (!boost::ut::expect(static_cast<bool>(escrow_object))) {
     return;
+  }
   cap::Table source, destination;
   auto source_handle = source.install(escrow_object, full_rights);
-  if (!boost::ut::expect(static_cast<bool>(source_handle)))
+  if (!boost::ut::expect(static_cast<bool>(source_handle))) {
     return;
+  }
   auto escrow = source.capture_for_ipc(*source_handle, cap::rights::SEND);
-  if (!boost::ut::expect(static_cast<bool>(escrow)))
+  if (!boost::ut::expect(static_cast<bool>(escrow))) {
     return;
+  }
   boost::ut::expect(static_cast<bool>(source.close(*source_handle)));
   boost::ut::expect(escrow_last_closes == 0);
   auto reserved = destination.reserve_escrow(escrow->escrow());
-  if (!boost::ut::expect(static_cast<bool>(reserved)))
+  if (!boost::ut::expect(static_cast<bool>(reserved))) {
     return;
+  }
   boost::ut::expect(!destination.lookup(*reserved, cap::ObjectType::Endpoint, cap::rights::SEND));
   boost::ut::expect(!destination.close(*reserved));
   auto rolled_back = destination.reserve_escrow(escrow->escrow());
-  if (!boost::ut::expect(static_cast<bool>(rolled_back)))
+  if (!boost::ut::expect(static_cast<bool>(rolled_back))) {
     return;
+  }
   boost::ut::expect(static_cast<bool>(destination.discard_reserved(*rolled_back)));
   boost::ut::expect(!destination.publish_reserved(*reserved, *rolled_back));
   boost::ut::expect(!destination.lookup(*reserved, cap::ObjectType::Endpoint, cap::rights::SEND));
@@ -144,18 +157,21 @@ inline void process_handles() {
   unsigned reply_destructions = 0, reply_last_closes = 0;
   auto reply_object = shared_ptr<cap::Object>::try_make<TrackedObject>(allocate, reply_destructions, reply_last_closes,
                                                                        cap::ObjectType::Reply);
-  if (!boost::ut::expect(static_cast<bool>(reply_object)))
+  if (!boost::ut::expect(static_cast<bool>(reply_object))) {
     return;
+  }
   auto reply_handle = source.install(reply_object, cap::rights::SEND | cap::rights::TRANSFER);
-  if (!boost::ut::expect(static_cast<bool>(reply_handle)))
+  if (!boost::ut::expect(static_cast<bool>(reply_handle))) {
     return;
+  }
   boost::ut::expect(!source.duplicate(*reply_handle, cap::rights::SEND));
   boost::ut::expect(!source.set_inheritable(*reply_handle, true));
   cap::Escrow abandoned_reply;
   {
     auto rejected = source.capture_for_ipc(*reply_handle, cap::rights::SEND);
-    if (!boost::ut::expect(static_cast<bool>(rejected)))
+    if (!boost::ut::expect(static_cast<bool>(rejected))) {
       return;
+    }
     abandoned_reply = rejected->take_escrow();
     boost::ut::expect(!source.lookup(*reply_handle, cap::ObjectType::Reply, cap::rights::SEND));
   }
@@ -163,14 +179,16 @@ inline void process_handles() {
   boost::ut::expect(static_cast<bool>(source.lookup(*reply_handle, cap::ObjectType::Reply, cap::rights::SEND)));
   boost::ut::expect(reply_last_closes == 0);
   auto reply_escrow = source.capture_for_ipc(*reply_handle, cap::rights::SEND);
-  if (!boost::ut::expect(static_cast<bool>(reply_escrow)))
+  if (!boost::ut::expect(static_cast<bool>(reply_escrow))) {
     return;
+  }
   boost::ut::expect(!source.lookup(*reply_handle, cap::ObjectType::Reply, cap::rights::SEND));
   boost::ut::expect(!source.close(*reply_handle));
   boost::ut::expect(reply_last_closes == 0);
   auto received_reply = destination.reserve_escrow(reply_escrow->escrow());
-  if (!boost::ut::expect(static_cast<bool>(received_reply)))
+  if (!boost::ut::expect(static_cast<bool>(received_reply))) {
     return;
+  }
   boost::ut::expect(static_cast<bool>(destination.publish_reserved(*received_reply)));
   reply_escrow->commit();
   reply_escrow->escrow().reset();

@@ -7,8 +7,9 @@
 #include "syscall.h"
 
 static long parse_handle(const char *text) {
-  if (!text || *text < '0' || *text > '9')
+  if (!text || *text < '0' || *text > '9') {
     return 0;
+  }
   char *end = NULL;
   errno = 0;
   unsigned long value = strtoul(text, &end, 10);
@@ -16,21 +17,25 @@ static long parse_handle(const char *text) {
 }
 
 int main(int argc, char **argv) {
-  if (argc != 3)
+  if (argc != 3) {
     return 2;
+  }
   long receive = parse_handle(argv[1]);
   long approver = parse_handle(argv[2]);
-  if (!receive || !approver)
+  if (!receive || !approver) {
     return 2;
+  }
 
   for (;;) {
     struct moss_ipc_message request = {0};
     unsigned long reply = 0;
     long received = syscall3(SYS_IPC_RECEIVE, receive, (long)&request, (long)&reply);
-    if (received == -EINTR)
+    if (received == -EINTR) {
       continue;
-    if (received < 0)
+    }
+    if (received < 0) {
       return 1;
+    }
 
     struct moss_ipc_message response = {.size = 1, .payload = {MOSS_CODE_BAD_REQUEST}};
     long approved = 0;
@@ -43,11 +48,14 @@ int main(int argc, char **argv) {
         response.rights = MOSS_CAP_CODE_EXEC | MOSS_CAP_CODE_IDENTIFY | MOSS_CAP_TRANSFER | MOSS_CAP_DUPLICATE;
       }
     }
-    if (request.capability)
+    if (request.capability) {
       (void)syscall1(SYS_CAP_CLOSE, (long)request.capability);
-    if (syscall2(SYS_IPC_REPLY, (long)reply, (long)&response) != 0)
+    }
+    if (syscall2(SYS_IPC_REPLY, (long)reply, (long)&response) != 0) {
       (void)syscall1(SYS_CAP_CLOSE, (long)reply);
-    if (approved > 0)
+    }
+    if (approved > 0) {
       (void)syscall1(SYS_CAP_CLOSE, approved);
+    }
   }
 }

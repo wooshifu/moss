@@ -241,7 +241,8 @@ extern "C" void moss_validation_user_page(PhysAddr root, VirtAddr address, PhysA
 }
 
 void leases_contended(PhysAddr root) {
-  if (user_page_leases)
+  if (user_page_leases) {
     user_page_leases->contended(root);
+  }
 }
 } // namespace moss::test::validation

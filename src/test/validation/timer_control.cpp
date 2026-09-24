@@ -185,10 +185,14 @@ extern "C" void moss_validation_sleep_armed(void *pending) noexcept {
 
 long timer_control(long op, long arg1, long arg2) {
   if (op == 56 && ut::same_id(selection, "users.timers") && arch::get_current_cpu_id() == 1) {
-    const long mode = ut::same_id(active_case, "relative_interrupted")         ? 0
-                      : ut::same_id(active_case, "clock_relative_interrupted") ? 1
-                      : ut::same_id(active_case, "clock_absolute_interrupted") ? 2
-                                                                               : -1;
+    long mode = -1;
+    if (ut::same_id(active_case, "relative_interrupted")) {
+      mode = 0;
+    } else if (ut::same_id(active_case, "clock_relative_interrupted")) {
+      mode = 1;
+    } else if (ut::same_id(active_case, "clock_absolute_interrupted")) {
+      mode = 2;
+    }
     auto child = process::current_process();
     if (!child || mode != arg2 || arg1 != static_cast<long>(child->parent_pid())) {
       return -1;

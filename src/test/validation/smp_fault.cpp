@@ -367,7 +367,8 @@ extern "C" void moss_validation_demand_committed(PhysAddr root, VirtAddr address
 }
 
 void fault_contended(PhysAddr root) {
-  if (fault_transactions)
+  if (fault_transactions) {
     fault_transactions->contended(root);
+  }
 }
 } // namespace moss::test::validation

@@ -15,43 +15,46 @@ static int error(void) {
 }
 
 int main(int argc, char **argv) {
-  if (argc != 3)
+  if (argc != 3) {
     return error();
+  }
   int arm = strcmp(argv[1], "arm") == 0 && strcmp(argv[2], "process") == 0;
-  if (!arm && strcmp(argv[1], "terminate") != 0)
+  if (!arm && strcmp(argv[1], "terminate") != 0) {
     return error();
+  }
 
   const char *variable;
-  if (arm)
+  if (arm || strcmp(argv[2], "supervisor") == 0) {
     variable = "MOSS_SUPERVISOR_DOMAIN_CAP";
-  else if (strcmp(argv[2], "file") == 0)
+  } else if (strcmp(argv[2], "file") == 0) {
     variable = "MOSS_FILE_DOMAIN_CAP";
-  else if (strcmp(argv[2], "namespace") == 0)
+  } else if (strcmp(argv[2], "namespace") == 0) {
     variable = "MOSS_NAMESPACE_DOMAIN_CAP";
-  else if (strcmp(argv[2], "process") == 0)
+  } else if (strcmp(argv[2], "process") == 0) {
     variable = "MOSS_PROCESS_DOMAIN_CAP";
-  else if (strcmp(argv[2], "pipe") == 0)
+  } else if (strcmp(argv[2], "pipe") == 0) {
     variable = "MOSS_PIPE_DOMAIN_CAP";
-  else if (strcmp(argv[2], "console") == 0)
+  } else if (strcmp(argv[2], "console") == 0) {
     variable = "MOSS_CONSOLE_DOMAIN_CAP";
-  else if (strcmp(argv[2], "code") == 0)
+  } else if (strcmp(argv[2], "code") == 0) {
     variable = "MOSS_CODE_DOMAIN_CAP";
-  else if (strcmp(argv[2], "loader") == 0)
+  } else if (strcmp(argv[2], "loader") == 0) {
     variable = "MOSS_LOADER_DOMAIN_CAP";
-  else if (strcmp(argv[2], "supervisor") == 0)
-    variable = "MOSS_SUPERVISOR_DOMAIN_CAP";
-  else
+  } else {
     return error();
+  }
 
   const char *value = getenv(variable);
-  if (!value || *value < '0' || *value > '9')
+  if (!value || *value < '0' || *value > '9') {
     return error();
+  }
   char *end = NULL;
   errno = 0;
   unsigned long handle = strtoul(value, &end, 10);
   if (errno || !handle || handle > LONG_MAX || *end ||
-      (arm ? syscall2(SYS_DOMAIN_SIGNAL, (long)handle, SIGUSR1) : syscall1(SYS_DOMAIN_TERMINATE, (long)handle)) != 0)
+      (arm ? syscall2(SYS_DOMAIN_SIGNAL, (long)handle, SIGUSR1) : syscall1(SYS_DOMAIN_TERMINATE, (long)handle)) != 0) {
     return error();
+  }
 
   return 0;
 }
