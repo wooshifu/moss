@@ -11,6 +11,7 @@ from scripts.artifacts import Artifacts
     "mode",
     [
         "complete",
+        "interleaved_kernel_log",
         "missing_bridge",
         "legacy_shell",
         "applets_failed",
@@ -31,10 +32,17 @@ def test_production_probe_requires_exec_and_subsequent_shell_output(tmp_path, mo
         path.write_bytes(b"image")
     cfg = Artifacts(tmp_path / "manifest.json", "ARM64", "linux-image", {"type": "Debug"}, files)
     script = "import signal, sys, time\n"
+    file_service_start = "moss-init: file service started pid=42"
+    if mode == "interleaved_kernel_log":
+        # Reproduce the RV64 Debug serial log interrupting this marker after "mo".
+        file_service_start = (
+            "mo[D][0.792][process-scheduler.cppm:1819(@cpu_startup_entry)] task running\\n"
+            "ss-init: file service started pid=42"
+        )
     script += (
         "print('moss-init: supervisor ready\\nmoss-init: code authority service started pid=41\\n"
-        "moss-init: file service started pid=42\\n"
-        "moss-init: namespace service started pid=43\\n"
+        + file_service_start
+        + "\\nmoss-init: namespace service started pid=43\\n"
         "moss-init: loader service started pid=44\\n"
         "moss-init: pipe service started pid=45\\n"
         "moss-init: console service started pid=46\\n"
@@ -241,7 +249,10 @@ assert input() == 'echo MOSS_PRODUCTION_READY'
     started = time.monotonic()
     result = boot.run(cfg, tmp_path / "run", timeout=4, gdb="fake-gdb" if mode.startswith("gdb_") else None)
     assert 0 <= result["elapsed_seconds"] <= time.monotonic() - started
-    assert result["status"] == ("passed" if mode in ("complete", "gdb_complete") else "error")
+    assert result["status"] == ("passed" if mode in ("complete", "interleaved_kernel_log", "gdb_complete") else "error")
+    if mode == "interleaved_kernel_log":
+        assert result["completed_steps"] == 167
+        assert b"mo[D][0.792]" in (tmp_path / "run" / "serial.log").read_bytes()
     assert result["raw_exit"] is not None
     # Partial fake shells stop at their first missing marker; prompts and
     # command outputs each count as one completed probe step.

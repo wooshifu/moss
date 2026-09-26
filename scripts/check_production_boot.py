@@ -22,18 +22,27 @@ from scripts.artifacts import Artifacts
 
 # Match the aggregate limit in src/userspace/moss_file_protocol.h.
 FILE_CONTENT_BUDGET_BYTES = 4096 * 4096
+# Kernel diagnostics can interrupt a userspace serial write mid-marker. Strip
+# complete diagnostic lines from matching, while serial.log retains raw bytes.
+KERNEL_DIAGNOSTIC = re.compile(rb"\[[DIEW]\]\[\d+\.\d+\]\[[^\r\n]*\r?\n")
 
 
 def run(
     cfg: Artifacts,
     output: Path,
-    timeout: float = 50,
+    timeout: float | None = None,
     *,
     gdb: str | None = None,
     registration_race: bool = False,
     machine: str | None = None,
     dtb: Path | None = None,
 ) -> dict:
+    if timeout is None:
+        # The 167-stage RISC-V Debug TCG probe completed in 65.94 s; 90 s
+        # leaves room for host contention while still bounding a stalled run.
+        # Controlled ARM GDB probes retain their 50 s barrier bound; recent
+        # complete runs took at most 44.38 s.
+        timeout = 50 if gdb else 90
     # The debugger barriers below use virt's Image load base and PL011 registers.
     if registration_race and not gdb:
         raise ValueError("registration race probe requires GDB")
@@ -346,13 +355,14 @@ quit
                     out.flush()
                 chunk = chunk.replace(b"\r", b"")
                 pending += chunk
-                old_child_started |= b"MOSS_OLD_CHILD_STARTED" in pending
                 if serial.stat().st_size > 32 * 2**20:
                     raise ValueError("production serial log exceeds 32 MiB")
                 if any(marker in pending for marker in (b"[P]", b"KERNEL PANIC", b"KERNEL PAGE FAULT", b"@@MOSS")):
                     raise ValueError("production boot panicked or entered validation")
                 if b"mlibc: fatal runtime error" in pending:
                     raise ValueError("production service hit a fatal runtime error")
+                pending = KERNEL_DIAGNOSTIC.sub(b"", pending)
+                old_child_started |= b"MOSS_OLD_CHILD_STARTED" in pending
                 while stage < len(steps) and steps[stage][0] in pending:
                     if gdb and stage == 0 and pause_marker.encode() not in (output / "gdb.log").read_bytes():
                         break
@@ -410,7 +420,7 @@ quit
                             child.stdin.flush()
                     stage += 1
                 if stage == len(steps) and (not debugger or debugger.poll() is not None):
-                    trace = serial.read_bytes().replace(b"\r", b"")
+                    trace = KERNEL_DIAGNOSTIC.sub(b"", serial.read_bytes().replace(b"\r", b""))
                     child_start_offset = trace.find(b"MOSS_OLD_CHILD_STARTED")
                     process_loss_offset = trace.find(b"moss-init: process service died")
                     if child_start_offset < 0 or process_loss_offset < child_start_offset:

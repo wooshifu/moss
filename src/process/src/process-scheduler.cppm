@@ -1507,7 +1507,9 @@ public:
     if (curr->se.vruntime > min_vr) {
       curr->se.vruntime = min_vr;
     }
-    curr->se.exec_start = get_current_time();
+    // Polling can reset CFS fairness, but its elapsed CPU time still belongs
+    // to this thread before the next scheduling interval begins.
+    (void)curr->se.charge_runtime(get_current_time());
   }
 
 private:
@@ -2094,6 +2096,10 @@ public:
     // Keep the outgoing owner visible until bootstrap resumes after the
     // assembly save. Clearing it here would permit migrating a Ready task
     // whose continuation is still executing on this CPU.
+    if (auto *outgoing = get_current_task()) {
+      // Capture the final sub-tick interval on sleep, yield, exit and migration.
+      (void)outgoing->se.charge_runtime(get_current_time());
+    }
     context_switch(&previous, &bootstrap_contexts_.get_local());
   }
 
@@ -2278,25 +2284,24 @@ public:
     bool preempt_blocked = (curr->preempt_count > 0);
 
     u64 now = get_current_time();
-    // A non-advancing timestamp still charges a 1 us fallback; the exact
-    // fallback choice is unrecorded and is not a hardware clock resolution.
-    u64 delta = (now > curr->se.exec_start) ? (now - curr->se.exec_start) : 1000;
+    const u64 actual_delta = curr->se.charge_runtime(now);
+    // A non-advancing timestamp still advances CFS fairness by a 1 us
+    // fallback. The exact choice is unrecorded; it is not actual CPU time.
+    u64 delta = actual_delta ? actual_delta : 1000;
 
     // ---- RT scheduling tick ----
     if (curr->effective_rt_priority() != 0) {
-      curr->se.exec_start = now;
-
       // Check if a higher-priority RT task arrived
       u32 hp = rt_runqueues_.get_cpu(cpu).highest_priority();
       bool need_preempt = (hp > curr->effective_rt_priority());
 
       // SCHED_RR: decrement time slice, rotate on expiry
       if (!need_preempt && curr->sched_policy == SchedPolicy::RR) {
-        if (delta >= curr->rt.time_slice_remaining) {
+        if (actual_delta >= curr->rt.time_slice_remaining) {
           curr->rt.time_slice_remaining = rt_params::RR_TIMESLICE_NS;
           need_preempt = true; // time slice expired → rotate
         } else {
-          curr->rt.time_slice_remaining -= delta;
+          curr->rt.time_slice_remaining -= actual_delta;
         }
       }
       // SCHED_FIFO: no time slice — only preempted by higher priority
@@ -2320,7 +2325,6 @@ public:
     // If an RT task is waiting, preempt CFS immediately
     if (rt_runqueues_.get_cpu(cpu).nr_running() > 0) {
       curr->need_resched = true;
-      curr->se.exec_start = now;
       update_current(curr, delta);
       if (preempt_blocked) {
         return; // defer until preempt_enable()
@@ -2340,7 +2344,6 @@ public:
     if (delta > cfs_params::SCHED_LATENCY_NS * 2) {
       delta = cfs_params::SCHED_LATENCY_NS;
     }
-    curr->se.exec_start = now;
     update_current(curr, delta);
 
     // Check if a higher-priority task is waiting (CFS: lower vruntime)
@@ -2492,7 +2495,7 @@ private:
     // the next selection. No task continuation is replaced before its save.
     CfsScheduler::set_current_task(task);
     task->state = ProcessState::Running;
-    task->se.exec_start = get_current_time(); // Reset for vruntime accounting
+    task->se.exec_start = get_current_time(); // Start both CPU-time and CFS accounting at dispatch.
     record_context_switch();
 
     const bool first_user_entry = task->needs_initial_eret;
@@ -2629,7 +2632,9 @@ private:
 
   [[nodiscard]] static u32 get_current_cpu_id() noexcept { return arch::get_current_cpu_id(); }
 
-  [[nodiscard]] static u64 get_current_time() noexcept { return arch::get_timestamp_counter(); }
+  // CFS periods, load-balance intervals and CPU runtime are nanoseconds;
+  // cntvct/rdtsc/rdtime are raw ticks with different frequencies.
+  [[nodiscard]] static u64 get_current_time() noexcept { return timer::TimerSubsystem::instance().now_ns(); }
 
 public:
   // Called after a process exits (sys_exit).  Picks the next runnable task

@@ -137,6 +137,30 @@ void scheduler_self_selection(bool realtime) {
   ut::expect(scheduler->get_cpu_nr_running(cpu) == 0);
 }
 
+void cpu_runtime_accounting() {
+  using namespace process;
+  Thread cfs(0, 0), rt(1, 0);
+  rt.sched_class = SchedClass::RealTime;
+
+  // Synthetic nanosecond timestamps yield 60 ns, then 50 ns of running time.
+  // A backward sample must not move the baseline or double-count the interval.
+  constexpr u64 start_ns = 100;
+  constexpr u64 first_ns = 160;
+  constexpr u64 second_ns = 210;
+  Thread *threads[] = {&cfs, &rt};
+  for (auto *thread : threads) {
+    auto &se = thread->se;
+    se.exec_start = start_ns;
+    ut::expect(se.charge_runtime(first_ns) == first_ns - start_ns);
+    ut::expect(se.cpu_runtime_ns == first_ns - start_ns && se.exec_start == first_ns);
+    ut::expect(se.charge_runtime(first_ns) == 0);
+    ut::expect(se.charge_runtime(start_ns) == 0);
+    ut::expect(se.cpu_runtime_ns == first_ns - start_ns && se.exec_start == first_ns);
+    ut::expect(se.charge_runtime(second_ns) == second_ns - first_ns);
+    ut::expect(se.cpu_runtime_ns == second_ns - start_ns && se.exec_start == second_ns);
+  }
+}
+
 void ipc_priority_inheritance() {
   using namespace process;
   unique_ptr<CfsScheduler> scheduler(new CfsScheduler());
@@ -347,6 +371,7 @@ void register_scheduler_cases() {
     ut::register_test("kernel_stack_initialization", kernel_stack_initialization);
     ut::register_test("cfs_self_selection", [] { scheduler_self_selection(false); });
     ut::register_test("rr_self_selection", [] { scheduler_self_selection(true); });
+    ut::register_test("cpu_runtime_accounting", cpu_runtime_accounting);
     ut::register_test("ipc_priority_inheritance", ipc_priority_inheritance);
     ut::register_test("migration_current_owner", migration_current_owner);
   });

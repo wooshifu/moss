@@ -104,6 +104,7 @@ CATALOG = {
         "kernel_stack_initialization",
         "cfs_self_selection",
         "rr_self_selection",
+        "cpu_runtime_accounting",
         "ipc_priority_inheritance",
         "migration_current_owner",
     ],
@@ -331,6 +332,9 @@ CATALOG = {
         )
     },
 }
+# The scheduler.cpu_runtime_accounting case changes the ordered inventory from
+# catalog v1. Older reports lack this field and remain readable as v1 evidence.
+CATALOG_VERSION = 2
 FUNCTIONAL = [
     "drivers",
     "resources",
@@ -1029,6 +1033,8 @@ def run_guest(cfg: Artifacts, workload: str, directory: Path, settings: dict, it
 def validate_report(report: dict) -> None:
     if integer(report, "schema_version") != 2 or report.get("finalized") is not True:
         raise ValueError("unsupported or unfinished report")
+    if "catalog_version" in report and integer(report, "catalog_version") not in (1, CATALOG_VERSION):
+        raise ValueError("unsupported catalog version")
     requested, guests = report.get("requested"), report.get("guests")
     if not isinstance(requested, list) or not requested or any(name not in CATALOG for name in requested):
         raise ValueError("invalid requested workloads")
@@ -1122,7 +1128,8 @@ def comparison(before: dict, after: dict) -> list[dict]:
         old = prior.get(item["workload"])
         result = {"workload": item["workload"], "status": "unavailable"}
         if old:
-            same = before.get("comparison_environment") == after.get("comparison_environment")
+            same = before.get("catalog_version", 1) == after.get("catalog_version", 1)
+            same &= before.get("comparison_environment") == after.get("comparison_environment")
             same &= old.get("parameters") == item.get("parameters")
             old_clock, new_clock = old.get("clock") or {}, item.get("clock") or {}
             same &= bool(old_clock and new_clock and old_clock.get("source") == new_clock.get("source"))
@@ -1147,7 +1154,8 @@ def comparison(before: dict, after: dict) -> list[dict]:
                 )
             else:
                 result.update(
-                    status="not_comparable", reason="environment, workload, iterations, clock or validity differs"
+                    status="not_comparable",
+                    reason="catalog, environment, workload, iterations, clock or validity differs",
                 )
         output.append(result)
     return output
@@ -1339,6 +1347,7 @@ def run(
     environment["cpu_model"] = cpu or ARCH_CONFIG[cfg.arch]["cpu"]
     report: dict[str, Any] = {
         "schema_version": 2,
+        "catalog_version": CATALOG_VERSION,
         "finalized": False,
         "requested": selected,
         "guests": [],

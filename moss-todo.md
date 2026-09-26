@@ -1838,6 +1838,16 @@ supervisor 启动时从只读启动文件复制一份具名 ELF 到易失 File S
 
 生产脚本等到旧受管孙进程确实已被收养后才武装探针，再等 supervisor 报告 Reply 已到 Console Service，随后终止 Process Service。Supervisor 在发现服务死亡和清理旧服务之后两次确认调用方尚未退出；停止 Console Service 后，要求调用方仅因 `SYS_IPC_CALL` 返回 `EPIPE` 才以指定退出码结束。宿主假串口测试还覆盖缺少释放标记时的拒绝。三架构 Debug、Release、RelWithDebInfo 九预设工作流均通过，完整 CTest **53/53**；九份最新 QEMU 生产启动报告均为 `passed`、各完成 **167 步**。格式调整后的 x64 Debug 完整 CTest 另行重跑 **6/6**；宿主 `scripts/tests` **382 passed、1 skipped**。这只覆盖实际 `FD_WAIT` 的单个转交与服务重启顺序；孤儿退出记录在并发服务死亡下的回收、其他后端与恶意服务仍待验收。
 
+### 3.104 调度器 CPU 时间记账基础（2026-09-26）
+
+原 `CfsScheduler::get_current_time()` 直接返回 ARM64 `cntvct`、x64 `rdtsc` 或 RV64 `rdtime` 的原始计数，虽然 CFS、RR 时间片和负载均衡间隔以纳秒定义，各架构的频率并不相同。现在复用已校准的 `TimerSubsystem::now_ns()`；`SchedEntity::cpu_runtime_ns` 独立累计线程已获 CPU 时的纳秒间隔，在调度 tick、主动阻塞/让出/迁移/退出的统一离开路径及轮询公平性重置前结算。CFS 的 `sum_exec_runtime` 仍可按原规则截断用于公平性，不作为预算计数；非前进的时间戳不会回退基线或重复计费。
+
+新增 `scheduler.cpu_runtime_accounting` 用合成纳秒时间覆盖 RT/CFS 两类线程的分段累加、同值和回退采样。目录身份随新用例升级为 v2；旧版报告仍可读取，但不跨目录版本比较性能。三架构 Debug 的真实 QEMU `scheduler` 均为 10/10、`timers` 均为 4/4，三份 v2 报告均 finalized 且全部通过：x64 `1790404064785282000`、ARM64 `1790404075783326000`、RV64 `1790403781333065000`。修复串口和宿主脚本前，x64 Debug 完整 CTest **6/6**、ARM64 Debug **7/7**；修复后 x64 生产启动 **1/1**、ARM64 控制输入探针 **2/2**，RV64 Debug 完整 CTest **5/5**，其中 `users.signals.console_multi_reader`、`users.uaccess.write_fault` 和 `users.lifecycle.core_paths_recovery` 均通过。定向宿主测试：`test_kernel_validation.py` **144 passed**、`test_production_boot.py` **14 passed**。
+
+RV64 Debug 首轮完整 CTest **4/5**，生产启动在原 50 秒总上限处中止；同一构建以 120 秒诊断上限完成 167/167 步，耗时 65.94 秒。随后一次并行 QEMU 重跑中，三个用户态用例失败或超时，生产启动被调试日志插入 `moss-init` 消息中间后卡在第 2 步；相同功能套件在后续独占运行中 32 个 workload 全部通过。生产脚本现在只在匹配时去除完整内核日志行，保留原始串口证据；RV64 多读者轮询以短锁保护 16550 状态检查与取字节，修正真实串口竞态。普通生产启动总上限改为 90 秒，CTest 外层 105 秒；ARM GDB 探针保留 50 秒内部上限，CTest 外层 65 秒。修复后的 RV64 Debug 生产启动两次均完成 167/167 步，分别耗时 62.09 和 65.78 秒。
+
+这建立了预算计时前提，不提供 CPU 预算的范围、补充周期、超额动作或权能准入；计时器初始化失败时也不能把未校准的时间作为预算依据。在途 deadline 收紧和 IPC 死锁/调用链深度策略仍开放。
+
 ## 4. 问题总表与当前状态
 
 | 编号 | 优先级 | 审计主题 | 当前状态与下一步 |

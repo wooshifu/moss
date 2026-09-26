@@ -522,7 +522,12 @@ public:
 // enqueue/dequeue never needs pool allocation (mirrors Linux sched_entity).
 struct SchedEntity {
   u64 vruntime;
+  // Monotonic nanoseconds at dispatch/last charge. This and cpu_runtime_ns
+  // use the calibrated clocksource; raw ISA counters have different rates.
   u64 exec_start;
+  // Elapsed time while dispatched for both RT and CFS, including sub-tick time.
+  // CFS sum_exec_runtime can be capped for fairness and is not a budget meter.
+  u64 cpu_runtime_ns;
   u64 sum_exec_runtime;
   u64 prev_sum_exec_runtime;
 
@@ -558,9 +563,21 @@ struct SchedEntity {
   SchedEntity() noexcept
       // Neutral nice=0 uses weight 1024; prio 120 is the retained Linux-style
       // normal-priority default. The exact reason for retaining 120 is unrecorded.
-      : vruntime(0), exec_start(0), sum_exec_runtime(0), prev_sum_exec_runtime(0), weight(1024), nice(0), prio(120),
-        load_weight(1024), load_sum(0), util_sum(0), load_avg(0), util_avg(0), rb_on_rq(false), rb_data(nullptr),
-        rb_left(nullptr), rb_right(nullptr), rb_parent(nullptr), rb_red(true) {}
+      : vruntime(0), exec_start(0), cpu_runtime_ns(0), sum_exec_runtime(0), prev_sum_exec_runtime(0), weight(1024),
+        nice(0), prio(120), load_weight(1024), load_sum(0), util_sum(0), load_avg(0), util_avg(0), rb_on_rq(false),
+        rb_data(nullptr), rb_left(nullptr), rb_right(nullptr), rb_parent(nullptr), rb_red(true) {}
+
+  [[nodiscard]] u64 charge_runtime(u64 now_ns) noexcept {
+    // A stalled or slightly backward cross-CPU clock must not charge time or
+    // move the start backward, which would charge the same interval twice.
+    if (now_ns <= exec_start) {
+      return 0;
+    }
+    const u64 elapsed = now_ns - exec_start;
+    cpu_runtime_ns += elapsed;
+    exec_start = now_ns;
+    return elapsed;
+  }
 };
 
 // Real-time scheduling entity — per-thread RT state.

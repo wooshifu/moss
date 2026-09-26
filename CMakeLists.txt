@@ -241,7 +241,7 @@ if(MOSS_BUILD_TESTS)
     set_tests_properties(
         moss-production-boot
         PROPERTIES TIMEOUT
-                   65 # RISC-V TCG now exercises loader, process, pipe and console recovery before cleanup.
+                   105 # 90 s guest probe plus 15 s for artifact copies, uv startup and cleanup/reporting.
                    RUN_SERIAL
                    TRUE
                    LABELS
@@ -279,7 +279,7 @@ if(MOSS_BUILD_TESTS)
         set_tests_properties(
             moss-console-input moss-console-registration
             PROPERTIES TIMEOUT
-                       45 # Existing bound around a 30 s probe; the rationale for the 15 s margin is not recorded.
+                       65 # 50 s GDB probe plus 15 s for startup, bounded cleanup and report writing.
                        RUN_SERIAL
                        TRUE
                        LABELS

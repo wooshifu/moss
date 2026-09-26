@@ -786,11 +786,9 @@ static long console_open([[maybe_unused]] File *file, [[maybe_unused]] Inode *in
 static long console_release([[maybe_unused]] File *file) noexcept { return 0; }
 
 static long console_read([[maybe_unused]] File *file, OutputBuffer buffer) noexcept {
-  // Interrupt-driven, line-buffered console input with echo.
-  // Each moss::abi::bridge::console_getc_blocking() call either returns instantly from the
-  // ring buffer (fast path) or blocks the calling thread until the UART
-  // RX interrupt delivers a character (slow path).  The CPU enters idle
-  // (WFI/HLT) while blocked; actual host CPU usage depends on the platform.
+  // Console input is line-buffered with echo. ARM64/x64 read from an RX ring
+  // filled by UART interrupts; RISC-V polls the 16550 between idle waits.
+  // Actual host CPU usage while waiting depends on the platform.
   const usize count = buffer.size();
   usize pos = 0;
   while (pos < count) {

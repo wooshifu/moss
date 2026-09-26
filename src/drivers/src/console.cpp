@@ -1,9 +1,9 @@
 module moss.drivers.console;
 
-// The debugger can stop after an empty-buffer check while event_lock is held.
-// Production and validation images both execute the same wait/RX path.
+// On ARM64/x64 the debugger can stop after an empty-buffer check while
+// event_lock is held. Production and validation images use the same IRQ path.
 extern "C" [[gnu::weak, gnu::noinline]] void moss_validation_console_before_register() noexcept {}
-// Validation observes the RX handler before it competes for the same lock.
+// ARM64/x64 validation observes RX before the handler competes for that lock.
 extern "C" [[gnu::weak, gnu::noinline]] void moss_validation_console_irq_before_lock() noexcept {}
 
 namespace moss::kernel::drivers::console {
@@ -35,6 +35,10 @@ void receive() noexcept {
 #if defined(MOSS_ARCH_ARM64)
 void receive_irq([[maybe_unused]] u32 irq, [[maybe_unused]] void *context) noexcept { receive(); }
 #endif
+#else
+// RISC-V polls the 16550: two readers must not both observe LSR.DR before
+// either consumes RBR, or the second can return an empty-register byte.
+containers::IrqSpinLock poll_lock;
 #endif
 } // namespace
 
@@ -86,6 +90,7 @@ int try_getc() noexcept {
   containers::LockGuard<containers::IrqSpinLock> guard(event_lock);
   return ring.get();
 #else
+  containers::LockGuard<containers::IrqSpinLock> guard(poll_lock);
   return uart::getc();
 #endif
 }
@@ -137,7 +142,12 @@ int getc_blocking() noexcept {
   }
 #else
   for (;;) {
-    if (int ch = uart::getc(); ch >= 0) {
+    int ch;
+    {
+      containers::LockGuard<containers::IrqSpinLock> guard(poll_lock);
+      ch = uart::getc();
+    }
+    if (ch >= 0) {
       return ch;
     }
     if (moss::abi::bridge::moss_io_wait_interrupted()) {
