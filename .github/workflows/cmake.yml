@@ -10,14 +10,8 @@ permissions:
 
 jobs:
   workflow:
-    name: ${{ matrix.arch }}-${{ matrix.build_type }}
     # Keep the runner release fixed so apt.llvm.org selects a supported repository.
     runs-on: ubuntu-24.04
-    strategy:
-      fail-fast: false
-      matrix:
-        arch: [arm64, x64, riscv64]
-        build_type: [debug, release, relwithdebinfo]
     env:
       # Match the minimum in cmake/toolchain_detection.cmake and check_prerequisites.py.
       LLVM_VERSION: "23"
@@ -49,4 +43,5 @@ jobs:
 
       - name: Configure, build and test
         # uv supplies the locked CMake/Ninja versions required by the project.
-        run: uv run --frozen cmake --workflow --preset "${{ matrix.arch }}-${{ matrix.build_type }}"
+        # One worker serializes all presets; verbose preserves their build and test logs.
+        run: uv run --frozen build.py --jobs 1 --verbose
