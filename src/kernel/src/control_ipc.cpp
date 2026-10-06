@@ -46,7 +46,17 @@ void *ipc_allocate(usize size, usize alignment) noexcept {
   return storage ? *storage : nullptr;
 }
 
-enum class Outcome : u8 { Pending, Reply, Canceled, Expired, PeerClosed };
+enum class Outcome : u8 { Pending, Reply, Canceled, Expired, PeerClosed, Deadlock, TooDeep };
+
+[[nodiscard]] Outcome rejected_outcome(process::IpcBindResult result, Outcome fallback) noexcept {
+  if (result == process::IpcBindResult::Deadlock) {
+    return Outcome::Deadlock;
+  }
+  if (result == process::IpcBindResult::TooDeep) {
+    return Outcome::TooDeep;
+  }
+  return fallback;
+}
 
 struct PendingCall {
   process::Thread *caller;
@@ -89,18 +99,24 @@ class Channel {
 
   // The selected waiting receiver needs the caller's priority before it can
   // run and claim the request. Claim may hand the call to a different worker.
-  void wake_receiver(PendingCall *call) noexcept {
+  [[nodiscard]] process::IpcBindResult wake_receiver(PendingCall *call) noexcept {
+    process::IpcBindResult result = process::IpcBindResult::Bound;
     const bool assigned = receivers_.wake_one([&](void *waiter) {
       auto *thread = static_cast<process::Thread *>(waiter);
       if (process::g_scheduler) {
-        process::g_scheduler->bind_ipc_server(&call->donation, thread);
+        result = process::g_scheduler->bind_ipc_server(&call->donation, thread);
       }
-      bind_delegated_reply(call->request_cap, thread);
+      if (result == process::IpcBindResult::Bound) {
+        bind_delegated_reply(call->request_cap, thread);
+      }
+      // wake_one removed this waiter even if admission failed. Let it re-arm
+      // for the next request rather than leaving it asleep off the queue.
       wake(thread);
     });
     if (!assigned && process::g_scheduler) {
-      process::g_scheduler->bind_ipc_server(&call->donation, nullptr);
+      result = process::g_scheduler->bind_ipc_server(&call->donation, nullptr);
     }
+    return result;
   }
 
 public:
@@ -113,11 +129,19 @@ public:
     }
     for (auto &slot : calls_) {
       if (!slot) {
-        slot = moss::move(call);
+        slot = call;
         // Publication and timer arming share this lock: the caller can be
         // preempted after enqueue returns, even if no receiver replies.
         process::g_scheduler->arm_ipc_deadline_timer(&slot->donation, deadline_timer);
-        wake_receiver(slot.get());
+        const auto bound = wake_receiver(slot.get());
+        if (bound == process::IpcBindResult::Deadlock || bound == process::IpcBindResult::TooDeep) {
+          // The slot was never visible outside this lock. Returning before
+          // capture.commit() restores a transferred Reply's source handle.
+          // The argument and syscall still own the PendingCall, so clearing
+          // this slot cannot destroy its escrow while the Channel is locked.
+          slot = {};
+          return bound == process::IpcBindResult::Deadlock ? -errc::EDEADLK : -errc::ELOOP;
+        }
         return 0;
       }
     }
@@ -132,9 +156,12 @@ public:
     // before this thread gets CPU time to claim it.
     receivers_.remove_waiter(server);
     for (const auto &call : calls_) {
-      if (call && call->queued && !call->delivery_claimed && call->outcome == Outcome::Pending) {
+      if (call && call->queued && !call->delivery_claimed && call->outcome == Outcome::Pending &&
+          call->donation.rejection.load(memory_order_acquire) == process::IpcBindResult::Bound) {
+        if (process::g_scheduler->bind_ipc_server(&call->donation, server) != process::IpcBindResult::Bound) {
+          continue;
+        }
         call->delivery_claimed = true;
-        process::g_scheduler->bind_ipc_server(&call->donation, server);
         bind_delegated_reply(call->request_cap, server);
         return call;
       }
@@ -146,14 +173,15 @@ public:
     containers::LockGuard<containers::IrqSpinLock> guard(lock_);
     if (call->delivery_claimed && call->queued && call->outcome == Outcome::Pending) {
       call->delivery_claimed = false;
-      wake_receiver(call);
+      (void)wake_receiver(call);
     }
   }
 
   [[nodiscard]] bool receive(PendingCall *call) noexcept {
     containers::LockGuard<containers::IrqSpinLock> guard(lock_);
     for (const auto &slot : calls_) {
-      if (slot.get() == call && call->queued && call->delivery_claimed && call->outcome == Outcome::Pending) {
+      if (slot.get() == call && call->queued && call->delivery_claimed && call->outcome == Outcome::Pending &&
+          call->donation.rejection.load(memory_order_acquire) == process::IpcBindResult::Bound) {
         call->queued = false;
         return true;
       }
@@ -172,11 +200,13 @@ public:
         }
         return call->outcome;
       }
-      // This lock serializes terminal outcomes. Reply admission uses the
-      // deadline observed by this atomic read; a concurrent tightening may
-      // win or lose that race, but timer callback delay cannot admit a reply
-      // past the observed deadline.
-      const u64 deadline = call->donation.deadline_ns.load(moss::memory_order_acquire);
+      // Channel and IPC locks choose one terminal outcome together. A bind
+      // rejected on a different Channel must beat a later Reply, while a
+      // Reply that detached the dependency first makes the bind stale.
+      u64 deadline = 0;
+      if (process::g_scheduler) {
+        outcome = rejected_outcome(process::g_scheduler->end_ipc_call(&call->donation, &deadline), outcome);
+      }
       if (outcome == Outcome::Reply && deadline != 0 && timer::TimerSubsystem::instance().now_ns() >= deadline) {
         outcome = Outcome::Expired;
       }
@@ -200,9 +230,6 @@ public:
           break;
         }
       }
-      if (process::g_scheduler) {
-        process::g_scheduler->end_ipc_call(&call->donation);
-      }
       if (outcome == Outcome::Reply) {
         bind_delegated_reply(call->response_cap, call->caller);
       }
@@ -220,6 +247,14 @@ public:
     return call->outcome;
   }
 
+  void settle_rejection(PendingCall *call) noexcept {
+    if (call->donation.rejection.load(memory_order_acquire) != process::IpcBindResult::Bound) {
+      // A transferred Reply may have been rejected while another Channel was
+      // locked. Only this Channel may publish the original caller's result.
+      (void)complete(call, Outcome::PeerClosed);
+    }
+  }
+
   void arm_receiver_wait(process::Thread *thread) noexcept {
     containers::LockGuard<containers::IrqSpinLock> guard(lock_);
     receivers_.add_waiter(thread, true);
@@ -228,9 +263,11 @@ public:
       return;
     }
     for (const auto &call : calls_) {
-      if (call && call->queued && !call->delivery_claimed && call->outcome == Outcome::Pending) {
-        process::g_scheduler->bind_ipc_server(&call->donation, thread);
-        bind_delegated_reply(call->request_cap, thread);
+      if (call && call->queued && !call->delivery_claimed && call->outcome == Outcome::Pending &&
+          call->donation.rejection.load(memory_order_acquire) == process::IpcBindResult::Bound) {
+        if (process::g_scheduler->bind_ipc_server(&call->donation, thread) == process::IpcBindResult::Bound) {
+          bind_delegated_reply(call->request_cap, thread);
+        }
         wake(thread);
         break;
       }
@@ -240,12 +277,15 @@ public:
   void release_receiver(process::Thread *thread) noexcept {
     containers::LockGuard<containers::IrqSpinLock> guard(lock_);
     for (const auto &call : calls_) {
-      if (call && call->queued && !call->delivery_claimed && process::g_scheduler) {
+      if (call && call->queued && !call->delivery_claimed && process::g_scheduler &&
+          call->donation.rejection.load(memory_order_acquire) == process::IpcBindResult::Bound) {
         process::Thread *next = nullptr;
         receivers_.wake_one([&](void *waiter) { next = static_cast<process::Thread *>(waiter); });
-        if (process::g_scheduler->rebind_ipc_server(&call->donation, thread, next)) {
-          wake(next);
+        if (process::g_scheduler->rebind_ipc_server(&call->donation, thread, next) == process::IpcBindResult::Bound) {
+          bind_delegated_reply(call->request_cap, next);
         }
+        // The selected receiver has left the wait queue even on rejection.
+        wake(next);
       }
     }
   }
@@ -267,11 +307,10 @@ public:
         // Once delivered, a Reply holder owns the call even if the original
         // receiver closes. Only requests without an owner fail with the channel.
         if (calls_[i] && calls_[i]->queued) {
-          calls_[i]->outcome = Outcome::PeerClosed;
+          const auto rejection = process::g_scheduler ? process::g_scheduler->end_ipc_call(&calls_[i]->donation)
+                                                      : process::IpcBindResult::Bound;
+          calls_[i]->outcome = rejected_outcome(rejection, Outcome::PeerClosed);
           calls_[i]->queued = false;
-          if (process::g_scheduler) {
-            process::g_scheduler->end_ipc_call(&calls_[i]->donation);
-          }
           wake(calls_[i]->caller);
           retired[i] = moss::move(calls_[i]);
         }
@@ -690,7 +729,12 @@ long sys_ipc_call(long endpoint, long request_addr, long response_addr, long dea
   u8 response[kMessageBytes]{};
   usize response_size = 0;
   Outcome result;
-  while ((result = channel->snapshot(call.get(), response, response_size)) == Outcome::Pending) {
+  while (true) {
+    channel->settle_rejection(call.get());
+    result = channel->snapshot(call.get(), response, response_size);
+    if (result != Outcome::Pending) {
+      break;
+    }
     if (moss::abi::bridge::moss_io_wait_interrupted()) {
       (void)channel->complete(call.get(), Outcome::Canceled);
       continue;
@@ -698,6 +742,9 @@ long sys_ipc_call(long endpoint, long request_addr, long response_addr, long dea
     const bool restore_irqs = arch::interrupts_enabled();
     arch::disable_interrupts();
     (void)moss::abi::bridge::moss_prepare_io_wait();
+    // The rejection may have arrived while this thread was still running,
+    // before prepare_io_wait could record an early wakeup.
+    channel->settle_rejection(call.get());
     usize ignored = 0;
     u8 unused[kMessageBytes];
     if (channel->snapshot(call.get(), unused, ignored) != Outcome::Pending) {
@@ -743,6 +790,10 @@ long sys_ipc_call(long endpoint, long request_addr, long response_addr, long dea
     return -errc::EINTR;
   case Outcome::Expired:
     return -errc::ETIMEDOUT;
+  case Outcome::Deadlock:
+    return -errc::EDEADLK;
+  case Outcome::TooDeep:
+    return -errc::ELOOP;
   case Outcome::PeerClosed:
   case Outcome::Pending:
   default:
@@ -892,7 +943,13 @@ long sys_ipc_reply(long reply_handle, long response_addr, long /*unused*/, long 
     capture.commit();
     return 0;
   }
-  return result == Outcome::Expired ? -errc::ETIMEDOUT : -errc::EPIPE;
+  if (result == Outcome::Expired) {
+    return -errc::ETIMEDOUT;
+  }
+  if (result == Outcome::Deadlock) {
+    return -errc::EDEADLK;
+  }
+  return result == Outcome::TooDeep ? -errc::ELOOP : -errc::EPIPE;
 }
 
 } // namespace moss::kernel::syscall::handlers

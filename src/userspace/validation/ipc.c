@@ -895,6 +895,141 @@ unsigned long ipc_deadline_propagation(void) {
   return errors;
 }
 
+unsigned long ipc_bounded_mutual_wait(void) {
+  // 37 is the existing child-success sentinel; 91 through 98 distinguish which of
+  // the two services or replacement receiver failed when wait_exit reaps it.
+  struct moss_ipc_endpoints front = {0, 0}, back = {0, 0};
+  if (syscall1(SYS_IPC_CREATE, (long)&front) != 0) {
+    return 1;
+  }
+  if (syscall1(SYS_IPC_CREATE, (long)&back) != 0) {
+    (void)syscall1(SYS_CAP_CLOSE, (long)front.receive);
+    (void)syscall1(SYS_CAP_CLOSE, (long)front.send);
+    return 2;
+  }
+  unsigned long errors = 0;
+  long frontend = -1, backend = -1, replacement = -1;
+  if (syscall2(SYS_CAP_SET_INHERIT, (long)front.receive, 1) != 0 ||
+      syscall2(SYS_CAP_SET_INHERIT, (long)front.send, 1) != 0 ||
+      syscall2(SYS_CAP_SET_INHERIT, (long)back.receive, 1) != 0 ||
+      syscall2(SYS_CAP_SET_INHERIT, (long)back.send, 1) != 0) {
+    errors = 4;
+    goto done;
+  }
+
+  backend = fork();
+  if (backend == 0) {
+    (void)syscall1(SYS_CAP_CLOSE, (long)front.receive);
+    (void)syscall1(SYS_CAP_CLOSE, (long)back.send);
+    struct moss_ipc_message request = {0}, response = {0};
+    unsigned long reply = 0;
+    if (ipc_receive(back.receive, &request, &reply) != 1 || request.payload[0] != 'b') {
+      _exit(91);
+    }
+    const struct moss_ipc_message nested = {.size = 1, .payload = {'c'}};
+    if (ipc_call(front.send, &nested, &response, 0) != -IPC_ETIMEDOUT) {
+      _exit(92);
+    }
+    const struct moss_ipc_message answer = {.size = 1, .payload = {'d'}};
+    if (ipc_reply(reply, &answer) != -IPC_ETIMEDOUT || ipc_reply(reply, &answer) != -IPC_EBADF) {
+      _exit(93);
+    }
+    _exit(37);
+  }
+  if (backend < 0) {
+    errors = 8;
+    goto done;
+  }
+  frontend = fork();
+  if (frontend == 0) {
+    (void)syscall1(SYS_CAP_CLOSE, (long)front.send);
+    (void)syscall1(SYS_CAP_CLOSE, (long)back.receive);
+    struct moss_ipc_message request = {0}, response = {0};
+    unsigned long reply = 0;
+    if (ipc_receive(front.receive, &request, &reply) != 1 || request.payload[0] != 'a') {
+      _exit(94);
+    }
+    const struct moss_ipc_message nested = {.size = 1, .payload = {'b'}};
+    if (ipc_call(back.send, &nested, &response, 0) != -IPC_ETIMEDOUT) {
+      _exit(95);
+    }
+    const struct moss_ipc_message answer = {.size = 1, .payload = {'e'}};
+    if (ipc_reply(reply, &answer) != -IPC_ETIMEDOUT || ipc_reply(reply, &answer) != -IPC_EBADF) {
+      _exit(96);
+    }
+    _exit(37);
+  }
+  if (frontend < 0) {
+    errors = 16;
+    goto done;
+  }
+
+  const struct moss_ipc_message request = {.size = 1, .payload = {'a'}};
+  struct moss_ipc_message response = {0};
+  // One second bounds the user-level A→B→A wait and leaves time under the
+  // five-second case watchdog to reap both children and retry the endpoint.
+  const unsigned long outer_timeout_ns = 1000000000UL;
+  long deadline = deadline_after(outer_timeout_ns);
+  long result = deadline > 0 ? ipc_call(front.send, &request, &response, deadline) : -1;
+  errors |= (unsigned long)(result != -IPC_ETIMEDOUT) << 5;
+  if (result != -IPC_ETIMEDOUT) {
+    goto done;
+  }
+  errors |= (unsigned long)!wait_exit(frontend, 37) << 6;
+  frontend = -1;
+  if (errors) {
+    goto done;
+  }
+  errors |= (unsigned long)!wait_exit(backend, 37) << 7;
+  backend = -1;
+  if (errors) {
+    goto done;
+  }
+
+  replacement = fork();
+  if (replacement == 0) {
+    struct moss_ipc_message next = {0};
+    unsigned long reply = 0;
+    if (ipc_receive(front.receive, &next, &reply) != 1 || next.payload[0] != 'r') {
+      _exit(97);
+    }
+    const struct moss_ipc_message answer = {.size = 1, .payload = {'s'}};
+    _exit(ipc_reply(reply, &answer) == 0 ? 37 : 98);
+  }
+  if (replacement < 0) {
+    errors |= 1UL << 8;
+    goto done;
+  }
+  const struct moss_ipc_message retry = {.size = 1, .payload = {'r'}};
+  deadline = deadline_after(ipc_call_timeout_ns);
+  result = deadline > 0 ? ipc_call(front.send, &retry, &response, deadline) : -1;
+  errors |= (unsigned long)(result != 1 || response.payload[0] != 's') << 9;
+  if (result != 1) {
+    (void)kill(replacement, SIGKILL);
+  }
+  errors |= (unsigned long)!wait_exit(replacement, 37) << 10;
+  replacement = -1;
+
+done:
+  if (frontend > 0) {
+    (void)kill(frontend, SIGKILL);
+    (void)wait_exit(frontend, 37);
+  }
+  if (backend > 0) {
+    (void)kill(backend, SIGKILL);
+    (void)wait_exit(backend, 37);
+  }
+  if (replacement > 0) {
+    (void)kill(replacement, SIGKILL);
+    (void)wait_exit(replacement, 37);
+  }
+  errors |= (unsigned long)(syscall1(SYS_CAP_CLOSE, (long)front.receive) != 0) << 11;
+  errors |= (unsigned long)(syscall1(SYS_CAP_CLOSE, (long)front.send) != 0) << 12;
+  errors |= (unsigned long)(syscall1(SYS_CAP_CLOSE, (long)back.receive) != 0) << 13;
+  errors |= (unsigned long)(syscall1(SYS_CAP_CLOSE, (long)back.send) != 0) << 14;
+  return errors;
+}
+
 unsigned long ipc_peer_death(void) {
   struct moss_ipc_endpoints pair = {0, 0};
   if (syscall1(SYS_IPC_CREATE, (long)&pair) != 0 || syscall2(SYS_CAP_SET_INHERIT, (long)pair.receive, 1) != 0) {

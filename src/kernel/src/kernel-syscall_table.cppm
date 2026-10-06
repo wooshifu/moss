@@ -30,10 +30,12 @@ inline constexpr long ENOTDIR = 20;      // Not a directory
 inline constexpr long EISDIR = 21;       // Is a directory
 inline constexpr long EINVAL = 22;       // Invalid argument
 inline constexpr long EMFILE = 24;       // Too many open files
-inline constexpr long EPIPE = 32;        // Peer closed
 inline constexpr long ESPIPE = 29;       // Illegal seek (pipe)
+inline constexpr long EPIPE = 32;        // Peer closed
+inline constexpr long EDEADLK = 35;      // Bound IPC wait would form a cycle
 inline constexpr long ENAMETOOLONG = 36; // File name too long
 inline constexpr long ENOSYS = 38;       // Function not implemented
+inline constexpr long ELOOP = 40;        // Bound IPC wait would exceed the chain limit
 inline constexpr long ETIMEDOUT = 110;   // Deadline expired
 } // namespace errc
 

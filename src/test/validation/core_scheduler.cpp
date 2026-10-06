@@ -460,8 +460,8 @@ void ipc_priority_inheritance() {
   ut::expect(high_deadline == 900 && high_call.deadline_ns.load() == 900);
   scheduler->bind_ipc_server(&high_call, &server);
   ut::expect(server.effective_rt_priority() == 80 && server.rt_on_rq && scheduler->pick_next_task(cpu) == &server);
-  ut::expect(!scheduler->rebind_ipc_server(&high_call, &backend, nullptr));
-  ut::expect(scheduler->rebind_ipc_server(&high_call, &server, &backend));
+  ut::expect(scheduler->rebind_ipc_server(&high_call, &backend, nullptr) == IpcBindResult::Stale);
+  ut::expect(scheduler->rebind_ipc_server(&high_call, &server, &backend) == IpcBindResult::Bound);
   ut::expect(server.effective_rt_priority() == 0 && server.se.rb_on_rq && backend.effective_rt_priority() == 80);
   scheduler->bind_ipc_server(&high_call, nullptr);
   ut::expect(backend.effective_rt_priority() == 0 && backend.se.rb_on_rq);
@@ -486,7 +486,13 @@ void ipc_priority_inheritance() {
   scheduler->dequeue_task(&backend);
   backend.state = ProcessState::Sleeping;
   ut::expect(scheduler->begin_ipc_call(&cycle, &backend));
-  scheduler->bind_ipc_server(&cycle, &server);
+  ut::expect(scheduler->bind_ipc_server(&cycle, &server) == IpcBindResult::Deadlock);
+  ut::expect(cycle.server == nullptr && server.ipc_donors == nullptr);
+  ut::expect(backend.state == ProcessState::Ready && backend.se.rb_on_rq);
+  // A real rejected caller resumes in userspace. This synthetic thread has
+  // no context to run, so remove its wakeup before checking later donations.
+  scheduler->dequeue_task(&backend);
+  backend.state = ProcessState::Sleeping;
   ut::expect(scheduler->begin_ipc_call(&high_call, &high));
   scheduler->bind_ipc_server(&high_call, &server);
   ut::expect(server.effective_rt_priority() == 80 && backend.effective_rt_priority() == 80);
@@ -524,7 +530,11 @@ void ipc_priority_inheritance() {
   u64 transitive_deadline = 0;
   ut::expect(scheduler->begin_ipc_call(&normal_cycle, &normal_backend, &transitive_deadline));
   ut::expect(transitive_deadline == shorter_deadline && normal_cycle.deadline_ns.load() == shorter_deadline);
-  scheduler->bind_ipc_server(&normal_cycle, &normal_server);
+  ut::expect(scheduler->bind_ipc_server(&normal_cycle, &normal_server) == IpcBindResult::Deadlock);
+  ut::expect(normal_cycle.server == nullptr);
+  ut::expect(normal_backend.state == ProcessState::Ready && normal_backend.se.rb_on_rq);
+  scheduler->dequeue_task(&normal_backend);
+  normal_backend.state = ProcessState::Sleeping;
   scheduler->set_base_nice(&normal_caller, -5);
   ut::expect(normal_server.effective_cfs_nice() == -5 && normal_backend.effective_cfs_nice() == -5);
   scheduler->end_ipc_call(&normal_call);
@@ -565,7 +575,8 @@ void ipc_deadline_tightening() {
   const bool restore_irqs = arch::interrupts_enabled();
   arch::disable_interrupts();
 
-  Thread front(0, 0), middle(1, 0), back(2, 0), redirect(3, 0), redirect_back(4, 0), late(5, 0), earlier(6, 0);
+  Thread front(0, 0), middle(1, 0), back(2, 0), redirect(3, 0), redirect_back(4, 0), late(5, 0), earlier(6, 0),
+      back_terminal(7, 0);
   PriorityDonation front_wait{}, middle_wait{}, back_wait{}, redirect_wait{}, late_call{}, earlier_call{}, fresh{};
   // These are synthetic absolute nanoseconds, not clock samples: each value
   // distinguishes an inherited limit from a later, strictly earlier donor.
@@ -592,34 +603,36 @@ void ipc_deadline_tightening() {
   ut::expect(front_wait.deadline_ns.load() == late_ns && middle_wait.deadline_ns.load() == late_ns);
   ut::expect(front.effective_rt_priority() == late.rt.priority && back.effective_rt_priority() == late.rt.priority);
 
-  ut::expect(scheduler->rebind_ipc_server(&late_call, &front, &redirect));
+  ut::expect(scheduler->rebind_ipc_server(&late_call, &front, &redirect) == IpcBindResult::Bound);
   ut::expect(redirect_wait.deadline_ns.load() == late_ns && front_wait.deadline_ns.load() == late_ns &&
              middle_wait.deadline_ns.load() == late_ns);
   ut::expect(front.effective_rt_priority() == 0 && back.effective_rt_priority() == 0 &&
              redirect.effective_rt_priority() == late.rt.priority);
 
-  // Back now calls front, closing the dependency cycle. A new external donor
-  // must tighten each wait once, then stop when it revisits the same deadline.
+  // Extend the wait chain to a terminal server. A new donor on front must
+  // tighten every downstream wait without relying on a deadlocked cycle.
   deadline = 0;
   ut::expect(scheduler->begin_ipc_call(&back_wait, &back, &deadline));
   ut::expect(deadline == late_ns);
-  scheduler->bind_ipc_server(&back_wait, &front);
+  scheduler->bind_ipc_server(&back_wait, &back_terminal);
   earlier.sched_class = SchedClass::RealTime;
   // A distinct higher RT priority makes its later removal observable.
   earlier.rt.priority = late.rt.priority + 1;
   deadline = earlier_ns;
   ut::expect(scheduler->begin_ipc_call(&earlier_call, &earlier, &deadline));
-  scheduler->bind_ipc_server(&earlier_call, &back);
+  scheduler->bind_ipc_server(&earlier_call, &front);
   ut::expect(front_wait.deadline_ns.load() == earlier_ns && middle_wait.deadline_ns.load() == earlier_ns &&
              back_wait.deadline_ns.load() == earlier_ns);
   ut::expect(front.effective_rt_priority() == earlier.rt.priority &&
              middle.effective_rt_priority() == earlier.rt.priority &&
-             back.effective_rt_priority() == earlier.rt.priority);
+             back.effective_rt_priority() == earlier.rt.priority &&
+             back_terminal.effective_rt_priority() == earlier.rt.priority);
 
   scheduler->end_ipc_call(&earlier_call);
   scheduler->end_ipc_call(&late_call);
   ut::expect(front.effective_rt_priority() == 0 && middle.effective_rt_priority() == 0 &&
-             back.effective_rt_priority() == 0 && redirect.effective_rt_priority() == 0);
+             back.effective_rt_priority() == 0 && back_terminal.effective_rt_priority() == 0 &&
+             redirect.effective_rt_priority() == 0);
   // Donor removal restores priority, but a live call cannot regain time it
   // already promised to an earlier donor; only its own completion clears it.
   ut::expect(front_wait.deadline_ns.load() == earlier_ns && middle_wait.deadline_ns.load() == earlier_ns &&
@@ -681,6 +694,128 @@ void ipc_deadline_tightening() {
   }
   if (restore_irqs) {
     arch::enable_interrupts();
+  }
+}
+
+void ipc_call_graph_limits() {
+  using namespace process;
+  unique_ptr<CfsScheduler> scheduler(new CfsScheduler());
+  if (!ut::expect(scheduler.get() != nullptr)) {
+    return;
+  }
+  Thread *chain[kMaxIpcCallDepth + 2]{};
+  bool allocated = true;
+  for (usize i = 0; i < kMaxIpcCallDepth + 2; ++i) {
+    chain[i] = new Thread(static_cast<ThreadId>(i), 0);
+    allocated = allocated && chain[i] != nullptr;
+  }
+  if (!ut::expect(allocated)) {
+    for (auto *thread : chain) {
+      delete thread;
+    }
+    return;
+  }
+  const bool restore_irqs = arch::interrupts_enabled();
+  arch::disable_interrupts();
+
+  Thread self(0, 0);
+  PriorityDonation call{};
+  if (ut::expect(scheduler->begin_ipc_call(&call, &self))) {
+    ut::expect(scheduler->bind_ipc_server(&call, &self) == IpcBindResult::Deadlock);
+    // A thread waiting for its own Reply cannot make progress; the rejected
+    // bind must leave no donor or wait edge for later calls to inherit.
+    ut::expect(call.server == nullptr && self.ipc_donors == nullptr);
+    ut::expect(scheduler->end_ipc_call(&call) == IpcBindResult::Deadlock);
+  }
+  ut::expect(self.ipc_wait == nullptr && self.ipc_scheduler == nullptr);
+
+  Thread a(1, 0), b(2, 0), c(3, 0), d(4, 0);
+  PriorityDonation ab{}, bc{}, ca{}, recovered{};
+  a.sched_class = SchedClass::RealTime;
+  a.rt.priority = priority::DEFAULT_RT_PRIORITY;
+  if (ut::expect(scheduler->begin_ipc_call(&ab, &a))) {
+    ut::expect(scheduler->bind_ipc_server(&ab, &b) == IpcBindResult::Bound);
+    if (ut::expect(scheduler->begin_ipc_call(&bc, &b))) {
+      ut::expect(scheduler->bind_ipc_server(&bc, &c) == IpcBindResult::Bound);
+      if (ut::expect(scheduler->begin_ipc_call(&ca, &c))) {
+        ut::expect(scheduler->bind_ipc_server(&ca, &a) == IpcBindResult::Deadlock);
+        ut::expect(ca.server == nullptr && a.ipc_donors == nullptr);
+        ut::expect(scheduler->end_ipc_call(&ca) == IpcBindResult::Deadlock);
+      }
+      // Rebinding b to a would close a shorter cycle. Keep the original donor
+      // until this rejected call is detached, then permit a fresh call to d.
+      ut::expect(scheduler->rebind_ipc_server(&bc, &c, &a) == IpcBindResult::Deadlock);
+      ut::expect(bc.server == &c && c.ipc_donors == &bc && c.effective_rt_priority() == a.rt.priority);
+      ut::expect(scheduler->end_ipc_call(&bc) == IpcBindResult::Deadlock);
+      ut::expect(c.ipc_donors == nullptr && c.effective_rt_priority() == 0);
+      if (ut::expect(scheduler->begin_ipc_call(&recovered, &b))) {
+        ut::expect(scheduler->bind_ipc_server(&recovered, &d) == IpcBindResult::Bound);
+        ut::expect(d.effective_rt_priority() == a.rt.priority);
+        scheduler->end_ipc_call(&recovered);
+      }
+    }
+    scheduler->end_ipc_call(&ab);
+  }
+  ut::expect(a.ipc_wait == nullptr && b.ipc_wait == nullptr && c.ipc_wait == nullptr && a.ipc_donors == nullptr &&
+             b.ipc_donors == nullptr && c.ipc_donors == nullptr && d.ipc_donors == nullptr &&
+             b.effective_rt_priority() == 0 && d.effective_rt_priority() == 0);
+
+  PriorityDonation edges[kMaxIpcCallDepth + 1]{};
+  usize started = 0;
+  for (; started < kMaxIpcCallDepth; ++started) {
+    if (!ut::expect(scheduler->begin_ipc_call(&edges[started], chain[started]))) {
+      break;
+    }
+    // Sixteen bound edges are allowed; the next edge must account for the
+    // longest upstream donor, even when another donor is closer to the leaf.
+    if (!ut::expect(scheduler->bind_ipc_server(&edges[started], chain[started + 1]) == IpcBindResult::Bound)) {
+      ++started;
+      break;
+    }
+  }
+  if (started == kMaxIpcCallDepth) {
+    Thread branch(5, 0);
+    PriorityDonation branch_call{};
+    bool oldest_ended = false;
+    if (ut::expect(scheduler->begin_ipc_call(&branch_call, &branch))) {
+      ut::expect(scheduler->bind_ipc_server(&branch_call, chain[kMaxIpcCallDepth / 2]) == IpcBindResult::Bound);
+      if (ut::expect(scheduler->begin_ipc_call(&edges[started], chain[started]))) {
+        ut::expect(scheduler->bind_ipc_server(&edges[started], chain[started + 1]) == IpcBindResult::TooDeep);
+        ut::expect(edges[started].server == nullptr && chain[started + 1]->ipc_donors == nullptr);
+        ut::expect(scheduler->end_ipc_call(&edges[started]) == IpcBindResult::TooDeep);
+        scheduler->end_ipc_call(&edges[0]);
+        oldest_ended = true;
+        // The rejected call is terminal. Removing the oldest upstream edge
+        // permits a new call over the same endpoint without stale state.
+        PriorityDonation retry{};
+        if (ut::expect(scheduler->begin_ipc_call(&retry, chain[started]))) {
+          ut::expect(scheduler->bind_ipc_server(&retry, chain[started + 1]) == IpcBindResult::Bound);
+          ut::expect(retry.server == chain[started + 1]);
+          scheduler->end_ipc_call(&retry);
+        }
+      }
+      scheduler->end_ipc_call(&branch_call);
+    }
+    if (!oldest_ended) {
+      scheduler->end_ipc_call(&edges[0]);
+    }
+    for (usize i = started; i > 1; --i) {
+      scheduler->end_ipc_call(&edges[i - 1]);
+    }
+  } else {
+    for (usize i = started; i > 0; --i) {
+      scheduler->end_ipc_call(&edges[i - 1]);
+    }
+  }
+  for (auto *thread : chain) {
+    ut::expect(thread->ipc_wait == nullptr && thread->ipc_donors == nullptr && thread->ipc_scheduler == nullptr);
+  }
+
+  if (restore_irqs) {
+    arch::enable_interrupts();
+  }
+  for (auto *thread : chain) {
+    delete thread;
   }
 }
 
@@ -779,6 +914,7 @@ void register_scheduler_cases() {
     ut::register_test("rt_cpu_budget_queue", [] { cpu_budget_queue(true); });
     ut::register_test("ipc_priority_inheritance", ipc_priority_inheritance);
     ut::register_test("ipc_deadline_tightening", ipc_deadline_tightening);
+    ut::register_test("ipc_call_graph_limits", ipc_call_graph_limits);
     ut::register_test("migration_current_owner", migration_current_owner);
   });
 }

@@ -111,6 +111,7 @@ CATALOG = {
         "rt_cpu_budget_queue",
         "ipc_priority_inheritance",
         "ipc_deadline_tightening",
+        "ipc_call_graph_limits",
         "migration_current_owner",
     ],
     "process": ["heap_rollback"],
@@ -234,6 +235,7 @@ CATALOG = {
         "roundtrip",
         "deadline",
         "deadline_propagation",
+        "bounded_mutual_wait",
         "peer_death",
         "signal_cancel",
         "capability_transfer",
@@ -338,9 +340,9 @@ CATALOG = {
         )
     },
 }
-# Dynamic IPC deadline coverage changes the ordered inventory from catalog v4.
-# Earlier reports retain their recorded version for comparison checks.
-CATALOG_VERSION = 5
+# The new scheduler graph-limit and users.ipc mutual-wait cases change the
+# ordered inventory from v5; earlier reports keep their recorded version.
+CATALOG_VERSION = 6
 FUNCTIONAL = [
     "drivers",
     "resources",

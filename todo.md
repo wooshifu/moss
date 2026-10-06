@@ -88,7 +88,7 @@ uv run qemu.py --manifest build/arm64-debug/moss-artifacts.json
 | ELF / userspace / initramfs | ELF64 checked LoadPlan、逐段 PT_LOAD/VMA 后备、按 ISA 的 trampoline 和 syscall wrapper；静态 mlibc、BusyBox ash、独立 validation 映像、CPIO newc 与 VFS exec | 014；015/016 的事务与受支持静态 ELF 子集已关闭；动态加载、共享 LOAD 页和完整进程继承不是已支持能力 |
 | VFS | inode/dentry/File/FdTable、路径/mount/dcache、ramfs、devfs(console/null/zero)、stdio、open/close/read/write/lseek/fstat/dup/dup2/pipe、匿名 pipefs 与有界 I/O 视图；FD 模式检查、稳定引用及 pipe 阻塞/EOF 已实现 | 022、024～026；共享 offset/close 并发、管道多端交错和分配失败注入仍待专项验收 |
 | 核心与同步 | C++ 模块、freestanding types/std/concepts、Result、unique_ptr/shared_ptr、klog；ticket/IRQ spinlock、RAII guard、atomics、PerCpuData/计数/队列、MPSC、拥有型锁容器、WaitQueue | 尤其 006、017、018；容器节点/查找引用安全不等于使用者的复合生命周期或调度协议安全 |
-| Native IPC 与服务 | 进程局部带权限 capability 表、同步控制调用/一次性 reply、多页共享内存对象；Reply 可经请求或响应跨进程移动，提交前失败恢复原句柄，成功交接时重绑调用者优先级；嵌套调用继承当前活跃调用者的最早绝对 deadline；File Service 根端点可按名生成封存快照供 Loader 装载；`moss-init` 监护文件、命名空间、代码审批、受限装载及进程兼容服务，Loader 原生域可衰减权限后登记到进程服务 | ADR-0012/0023 的 CPU 预算、在途调用的动态 deadline 收紧、调用链深度与死锁策略，0024 的完整兼容服务拆分、0018 的实际 VFS 迁移等仍未完成；旧 PID/全局 ID IPC 模块尚保留测试代码 |
+| Native IPC 与服务 | 进程局部带权限 capability 表、同步控制调用/一次性 reply、多页共享内存对象；Reply 可经请求或响应跨进程移动，提交前失败恢复原句柄，成功交接时重绑调用者优先级；嵌套调用继承当前活跃调用者的最早绝对 deadline，后续绑定也可收紧在途期限；已知调用边按 16 层上限拒绝成环或过深的绑定；File Service 根端点可按名生成封存快照供 Loader 装载；`moss-init` 监护文件、命名空间、代码审批、受限装载及进程兼容服务，Loader 原生域可衰减权限后登记到进程服务 | ADR-0012 的真实迟到 donor 入口及端到端期限验收、0024 的完整兼容服务拆分、0018 的实际 VFS 迁移等仍未完成；未绑定接收者的无限期调用仍可能等待，旧 PID/全局 ID IPC 模块尚保留测试代码 |
 | 启动机制与扩展框架 | 中断控制器、计时器及可用串口控制台保留必要的内核启动机制，实际硬件操作仍经 HAL；旧 `DeviceManager`/`Driver` 仅在验证镜像测试生命周期算法；NUMA/hugepage/reclaim/compaction/共享映射等未实现接口显式返回 Unsupported；Process 已有 uid/gid/euid/egid 字段 | ADR-0015 的设备资源 capability、隔离驱动、动态发现和 DMA 限制尚未实现；006、031～032 及其他未实现能力继续追踪 |
 
 主要实现分别位于 `src/boot/`、`src/aal/`、`src/hal/`、`src/drivers/`、`src/mm/`、`src/containers/`、`src/process/`、`src/kernel/`、`src/vfs/`、`src/userspace/` 和 `third_party/mlibc/`。下面以稳定审计编号追踪未完成工作，详细源码符号见 [审计状态表](moss-todo.md#4-问题总表与当前状态)。
@@ -125,11 +125,12 @@ ADR-0008～0033 是已接受的目标边界，并非当前实现的完成声明�
 - [x] 三架构真实用户态 IPC 在同核八个中优先级 CPU 负载下，由高优先级调用低优先级服务，服务完成计算后在调用截止前回复；九预设通过，关闭捐赠的 x64 反向对照超时（ADR-0012/0023 的限定时延验收，见 3.86）。
 - [x] 一次性 Reply capability 可在同步 IPC 的请求或响应中跨进程移动；原句柄失效、持有者丢弃唤醒调用方、接收端退出后已交付调用继续有效，优先级捐赠在唤醒新持有者前重绑。九预设和反向对照见 3.91（ADR-0011/0012/0023 的限定交接机制）。
 - [x] 附带 Reply 的请求入队或回复提交失败时恢复原句柄；成功提交仍保持一次性移动。能力表回滚及已关闭端点上的真实 IPC 失败后重试见 3.92（ADR-0011 的权能提交边界）。
-- [ ] CPU 预算、在途调用的动态 deadline 收紧、最大调用链深度及死锁策略仍需单独设计和验收（ADR-0012/0023）。
+- [ ] 完成在途调用动态 deadline 的真实迟到 donor 入口与端到端验收；CPU 预算和已知 IPC 调用边的深度、成环准入已有各自的限定验收（ADR-0012/0023）。
   - [x] CPU 预算的计时基础：三架构调度器统一使用校准后的纳秒时钟，RT/CFS 在线程运行 tick 与离开 CPU 时累计调度占用时间；CFS 公平性计数仍独立。合成时间回归及真实 QEMU 范围见 3.104；后续内部周期机制见 3.105。
   - [x] CPU 预算的内核内部线程周期机制：显式配置运行量与周期后，按实际执行线程扣费；超额线程离开运行队列，到期按未偿超额补充，普通阻塞仍等待自身事件。入队、离开 CPU、派发和跨 CPU 亲和性路径均有门禁；三架构调度和信号回归见 3.105。这是随调度 tick 检查的软限制，尚无生产配置入口。
-  - [x] 定义对外预算契约并实现有界 Scheduling Profile Capability、准入和可观察指标；还须决定线程/组范围、同步 IPC 的费用归属、时钟不可用时的拒绝规则及策略服务失效行为。动态 deadline、调用链深度和死锁策略仍单独开放。
+  - [x] 定义对外预算契约并实现有界 Scheduling Profile Capability、准入和可观察指标；线程范围、同步 IPC 的费用归属、时钟不可用时的拒绝规则及策略服务失效行为见 3.106。动态 deadline 的完整验收仍开放。
   - [x] 在途 deadline 的内核收紧机制：后续绑定的更早 donor 沿当前等待链单调收紧绝对期限，预留定时器容量并原地提前到期，Reply 按最新可见期限判定；合成等待链与定时器集成回归见 3.107。现有用户态 Reply 不能复制且服务线程阻塞后不能再接收，尚无真实在途新增 donor 的入口与端到端验收，故上级动态 deadline 项继续开放。
+  - [x] 已知 IPC 调用边的深度与死锁准入：绑定和重绑在 IPC 依赖锁下拒绝成环及超过 16 条边的路径，分别返回 `EDEADLK`、`ELOOP`；多 donor 分支、16/17 边界、拒绝清理和有限期限互等恢复经三架构 Debug QEMU 验收，见 3.108。尚未绑定接收线程的无限期调用仍需外部取消，不能据此声称所有用户态死锁已解决。
 - [ ] 完成 capability 寻址的执行域、用户态兼容进程与通用 Loader Service；现有 Loader 仅支持受限静态原生域，内核 PID/信号/普通 `execve` 的 ELF 政策仍待逐步迁出（ADR-0024/0025）。
 - [ ] 将实际 VFS、pager 和非启动设备迁到隔离服务，补资源授权、失败恢复和 DMA 限制；保留有依据的启动机制例外（ADR-0015～0019）。
 - [ ] 将代码批准及撤销准入扩展到普通 exec、fork、权限升级和 pager；把现有 supervisor 私有 Code Authority Service 扩展为具备产品审核策略和授权输入的装载链，建立启动认证并验证并发撤销及真实平台交接。现有原生域机制和受限服务不等于这些目标已实现（ADR-0026～0033）。

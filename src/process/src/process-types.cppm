@@ -676,6 +676,8 @@ struct RtSchedEntity {
       : priority(priority::DEFAULT_RT_PRIORITY), time_slice_remaining(rt_params::RR_TIMESLICE_NS) {}
 };
 
+enum class IpcBindResult : u8 { Bound, Stale, Deadlock, TooDeep };
+
 // PendingCall owns this record. The scheduler links it into thread lists only
 // while the call is active, so call completion and thread teardown can detach
 // either side without leaving a pointer to a retired reply capability.
@@ -683,8 +685,12 @@ struct PriorityDonation {
   Thread *caller{nullptr};
   Thread *server{nullptr};
   PriorityDonation *next{nullptr};
+  // A rejected bind may belong to a Reply transferred through another
+  // Channel. Its caller settles the error on its own Channel, avoiding nested
+  // Channel locks; end_ipc_call arbitrates this flag against a concurrent reply.
+  moss::atomic<IpcBindResult> rejection{IpcBindResult::Bound};
   // Zero means no deadline. Binds only tighten this value while the call is
-  // active; reply completion reads it without holding the IPC dependency lock.
+  // active; completion samples it under the IPC dependency lock before detach.
   moss::atomic<u64> deadline_ns{0};
   // Protected by the IPC dependency lock. Completion detaches the timer before
   // the caller cancels it, so a late donor cannot access retired stack storage.

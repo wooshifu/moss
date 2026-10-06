@@ -1878,6 +1878,14 @@ RV64 Debug 首轮完整 CTest **4/5**，生产启动在原 50 秒总上限处中
 
 x64 Debug 完整 CTest **6/6** 通过；三架构 `lint.py --check` 各检查 **141** 个翻译单元并通过（各预设跳过其余架构的两个启动源文件）。宿主 `test_kernel_validation.py` **144 passed**；改动 C/C++ 文件的 clang-format、Python 的 Ruff 与 `git diff --check` 均通过。
 
+### 3.108 已知 IPC 调用边的深度与成环准入（2026-10-06）
+
+在同步调用的接收线程绑定或重绑时，调度器在同一 IPC 依赖锁下检查拟加入的边：从接收线程沿下游等待链到达调用者则拒绝为 `EDEADLK`；最长上游 donor 分支加本边及下游路径超过 16 条边则拒绝为 `ELOOP`。16 是当前固定策略上限，用于限制嵌套服务调用和持锁图遍历，不是测得的生产链深，也不由单个 Channel 的待决槽数推导。拒绝不发布新边、不捐赠优先级或 deadline；已排队调用由其自身 Channel 发表终态，避免 Reply 跨 Channel 转交时嵌套 Channel 锁。Channel 终态与 IPC 摘边共用锁顺序，迟到 Reply 不会覆盖先发生的拒绝。入队前立即拒绝仍走原有 escrow 回滚；成功入队后权能转移的契约不变。
+
+接收线程未知时没有可检查的边。真实三进程 A→B→A 互等用例让最末调用保持未绑定，依靠有限绝对期限让三方退出，再验证迟到 Reply 失败与同端点的新一轮通信；这证明有界恢复，不表示无限期、未绑定的用户态等待都不会死锁。合成调度器用例还检查自环、两/三节点成环、重绑、16/17 边界、多 donor 分支取最长路径、拒绝后的图和优先级清理及重新准入。
+
+旧实现的 x64 Debug QEMU `scheduler/ipc_call_graph_limits` 红例为 **2 个断言通过、1 个失败**，见 `build/x64-debug/validation/ipc-depth-old-red-v2-20261006/results.json`；首次尝试因测试注册表 272 槽耗尽而未进入用例，随后扩充 16 个槽并记录了有效红例。最终三架构 Debug 构建通过，catalog v6 的 `scheduler` 各 **16/16**、`users.ipc` 各 **22/22**，六个 workload 均为 `passed`、报告 `finalized` 且无 `not_run`，见 `build/<arch>-debug/validation/ipc-depth-final-20261006/results.json`。x64 Debug 生产启动的独立探针以 150 秒上限完整通过 **168/168** 步，实际用时 64.06 秒，见 `build/x64-debug/production-boot/ipc-depth-extended-20261006/results.json`；同一宿主同时有 Xcode 编译高负载，默认 90 秒 CTest 两次分别在 150 和 90 步超时，因此本阶段不记为默认 CTest 通过。宿主 `test_kernel_validation.py` **144 passed**；定向 x64 clang-tidy **5** 个翻译单元、改动 C/C++ 文件格式（历史未整体格式化的测试框架头文件除外）、Ruff 与 `git diff --check` 通过。
+
 ## 4. 问题总表与当前状态
 
 | 编号 | 优先级 | 审计主题 | 当前状态与下一步 |

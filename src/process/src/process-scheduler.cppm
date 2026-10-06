@@ -1173,6 +1173,12 @@ private:
 // double-dispatch race (two CPUs execute the same Thread simultaneously).
 inline containers::AtomicBool g_bsp_scheduling_ready{};
 
+// Fixed policy limit on bound synchronous IPC edges, not a measured service
+// depth and not derived from the per-Channel pending-call capacity. It bounds
+// wait-chain length and admission recursion under the IPC lock; the scan may
+// still visit all donor branches, so increasing it raises worst-case lock work.
+inline constexpr u32 kMaxIpcCallDepth = 16;
+
 // CFS scheduler class (also dispatches RT tasks)
 class CfsScheduler {
 private:
@@ -1500,6 +1506,7 @@ public:
     donation->caller = caller;
     donation->server = nullptr;
     donation->next = nullptr;
+    donation->rejection.store(IpcBindResult::Bound, moss::memory_order_relaxed);
     donation->deadline_timer = nullptr;
     caller->ipc_wait = donation;
     caller->ipc_scheduler = this;
@@ -1526,34 +1533,40 @@ public:
     }
   }
 
-  void bind_ipc_server(PriorityDonation *donation, Thread *server) noexcept {
+  IpcBindResult bind_ipc_server(PriorityDonation *donation, Thread *server) noexcept {
     if (!donation) {
-      return;
+      return IpcBindResult::Stale;
     }
     containers::LockGuard<containers::IrqSpinLock> guard(ipc_priority_lock_);
     if (!donation->caller || donation->caller->ipc_wait != donation) {
-      return;
+      return IpcBindResult::Stale;
     }
-    bind_ipc_server_locked(donation, server);
+    return bind_ipc_server_locked(donation, server);
   }
 
-  [[nodiscard]] bool rebind_ipc_server(PriorityDonation *donation, Thread *expected, Thread *server) noexcept {
+  [[nodiscard]] IpcBindResult rebind_ipc_server(PriorityDonation *donation, Thread *expected, Thread *server) noexcept {
     if (!donation) {
-      return false;
+      return IpcBindResult::Stale;
     }
     containers::LockGuard<containers::IrqSpinLock> guard(ipc_priority_lock_);
     if (!donation->caller || donation->caller->ipc_wait != donation || donation->server != expected) {
-      return false;
+      return IpcBindResult::Stale;
     }
-    bind_ipc_server_locked(donation, server);
-    return true;
+    return bind_ipc_server_locked(donation, server);
   }
 
-  void end_ipc_call(PriorityDonation *donation) noexcept {
+  // Return the rejection and final deadline while holding the dependency
+  // lock. A Reply that detaches first wins; a rejected bind that records its
+  // result first cannot be overtaken by a late Reply on another Channel.
+  IpcBindResult end_ipc_call(PriorityDonation *donation, u64 *final_deadline_ns = nullptr) noexcept {
     if (!donation) {
-      return;
+      return IpcBindResult::Stale;
     }
     containers::LockGuard<containers::IrqSpinLock> guard(ipc_priority_lock_);
+    const IpcBindResult result = donation->rejection.load(moss::memory_order_relaxed);
+    if (final_deadline_ns) {
+      *final_deadline_ns = donation->deadline_ns.load(moss::memory_order_relaxed);
+    }
     Thread *caller = donation->caller;
     Thread *server = donation->server;
     if (caller && caller->ipc_wait == donation) {
@@ -1567,6 +1580,7 @@ public:
     donation->next = nullptr;
     donation->deadline_timer = nullptr;
     donation->deadline_ns.store(0, moss::memory_order_release);
+    donation->rejection.store(IpcBindResult::Bound, moss::memory_order_release);
     if (caller && !caller->ipc_wait && !caller->ipc_donors) {
       caller->ipc_scheduler = nullptr;
     }
@@ -1576,6 +1590,7 @@ public:
         server->ipc_scheduler = nullptr;
       }
     }
+    return result;
   }
 
   void forget_ipc_thread(Thread *thread) noexcept {
@@ -1686,10 +1701,60 @@ public:
   }
 
 private:
+  // The graph has one outgoing bound wait per thread, but can have many
+  // incoming donors. Stop at the policy limit to keep recursion bounded even
+  // if a damaged or older graph already contains a cycle.
+  [[nodiscard]] static u32 longest_ipc_upstream(Thread *thread, u32 distance = 0) noexcept {
+    u32 longest = distance;
+    if (distance == kMaxIpcCallDepth) {
+      return longest;
+    }
+    for (auto *donation = thread->ipc_donors; donation; donation = donation->next) {
+      if (donation->caller && donation->caller->ipc_wait == donation) {
+        const u32 branch = longest_ipc_upstream(donation->caller, distance + 1);
+        if (branch > longest) {
+          longest = branch;
+        }
+        if (longest == kMaxIpcCallDepth) {
+          break;
+        }
+      }
+    }
+    return longest;
+  }
+
+  [[nodiscard]] static IpcBindResult check_ipc_bind(PriorityDonation *donation, Thread *server) noexcept {
+    u32 downstream = 0;
+    for (Thread *waiting = server; waiting; waiting = ipc_wait_target(waiting)) {
+      if (waiting == donation->caller) {
+        return IpcBindResult::Deadlock;
+      }
+      if (ipc_wait_target(waiting) && ++downstream == kMaxIpcCallDepth) {
+        return IpcBindResult::TooDeep;
+      }
+    }
+    const u32 upstream = longest_ipc_upstream(donation->caller);
+    return upstream + 1 + downstream > kMaxIpcCallDepth ? IpcBindResult::TooDeep : IpcBindResult::Bound;
+  }
+
   // The caller holds ipc_priority_lock_ through list repair and recomputation.
-  void bind_ipc_server_locked(PriorityDonation *donation, Thread *server) noexcept {
+  IpcBindResult bind_ipc_server_locked(PriorityDonation *donation, Thread *server) noexcept {
+    const IpcBindResult prior = donation->rejection.load(moss::memory_order_relaxed);
+    if (prior != IpcBindResult::Bound) {
+      return prior;
+    }
     if (donation->server == server) {
-      return;
+      return IpcBindResult::Bound;
+    }
+    if (server) {
+      const IpcBindResult checked = check_ipc_bind(donation, server);
+      if (checked != IpcBindResult::Bound) {
+        // Do not publish the candidate edge or change the old donation. The
+        // blocked caller will settle its own Channel after this wakeup.
+        donation->rejection.store(checked, moss::memory_order_release);
+        task_wakeup(donation->caller, donation->caller->wake_cpu);
+        return checked;
+      }
     }
     Thread *old_server = donation->server;
     if (old_server) {
@@ -1725,6 +1790,7 @@ private:
     if (server) {
       recompute_ipc_priority(server);
     }
+    return IpcBindResult::Bound;
   }
 
   [[nodiscard]] static Thread *ipc_wait_target(Thread *thread) noexcept {
