@@ -521,7 +521,8 @@ public:
 // An opt-in periodic limit on the CPU time actually spent by one thread.
 // Unused time expires at a period boundary; execution past the limit becomes
 // debt, so a long IRQ-masked interval cannot earn fresh CPU time by crossing
-// that boundary. Configure before the thread is made runnable.
+// that boundary. A public profile may be installed on a running thread only
+// after its owner CPU charges the interval before the new allowance.
 struct CpuBudget {
   u64 runtime_ns{0};
   u64 period_ns{0}; // Zero means no budget is configured for this thread.
@@ -607,7 +608,9 @@ struct SchedEntity {
   u64 exec_start;
   // Elapsed time while dispatched for both RT and CFS, including sub-tick time.
   // CFS sum_exec_runtime can be capped for fairness and is not a budget meter.
-  u64 cpu_runtime_ns;
+  // The owner CPU charges this counter; a profile holder may read it from
+  // another CPU while the thread runs.
+  moss::atomic<u64> cpu_runtime_ns;
   CpuBudget cpu_budget;
   u64 sum_exec_runtime;
   u64 prev_sum_exec_runtime;
@@ -655,7 +658,7 @@ struct SchedEntity {
       return 0;
     }
     const u64 elapsed = now_ns - exec_start;
-    cpu_runtime_ns += elapsed;
+    (void)cpu_runtime_ns.fetch_add(elapsed, moss::memory_order_relaxed);
     cpu_budget.charge(exec_start, now_ns);
     exec_start = now_ns;
     return elapsed;
@@ -681,6 +684,22 @@ struct PriorityDonation {
   PriorityDonation *next{nullptr};
   // The absolute deadline follows this wait dependency through Reply handoff.
   u64 deadline_ns{0};
+};
+
+enum class BudgetProfileResult { Applied, Invalid, ClockUnavailable, AlreadyConfigured, Capacity };
+
+struct BudgetProfileStatus {
+  u64 runtime_ns{0};
+  u64 period_ns{0};
+  u64 cpu_runtime_ns{0};
+  u64 throttle_count{0};
+  // Consecutive low bits mirror MOSS_SCHED_PROFILE_* in the native ABI. Each
+  // condition must remain independently testable; changing a bit breaks
+  // existing status readers.
+  static constexpr u64 Pending = 1;
+  static constexpr u64 Parked = 2;
+  static constexpr u64 Terminated = 4;
+  u64 flags{0};
 };
 
 // Thread structure
@@ -777,6 +796,14 @@ struct Thread {
   // Protected by CfsScheduler::task_transition_lock_, like runqueue links.
   Thread *budget_next_{nullptr};
   bool budget_parked{false};
+  // Admission and status fields are protected by task_transition_lock_. The
+  // owner CPU reads pending without that lock on each tick to keep the normal
+  // unbudgeted path free of a global lock.
+  bool budget_profile_reserved{false};
+  moss::atomic<bool> budget_profile_pending{false};
+  u64 budget_profile_runtime_ns{0};
+  u64 budget_profile_period_ns{0};
+  u64 budget_throttle_count{0};
 
   // Signal alternate stack (sigaltstack)
   VirtAddr alt_stack_sp{0}; // alternate stack base address

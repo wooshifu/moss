@@ -36,7 +36,38 @@ enum {
   MOSS_CAP_DOMAIN_SCOPE_ASSIGN = 1U << 16,
   MOSS_CAP_DOMAIN_SCOPE_TERMINATE = 1U << 17,
   MOSS_CAP_DOMAIN_SCOPE_INSPECT = 1U << 18,
+  // Stable capability ABI bits following the domain-scope rights.
+  MOSS_CAP_SCHED_APPLY = 1U << 19,
+  MOSS_CAP_SCHED_OBSERVE = 1U << 20,
   MOSS_IPC_MAX_MESSAGE = 256
+};
+
+// A profile is minted only by the boot-owned factory source for an inspected
+// domain's current main thread. Bounds and target incarnation never change.
+// Runtime and period are positive nanoseconds with runtime <= period. APPLY
+// chooses a runtime no larger than the minted maximum and succeeds once per
+// thread; closing a handle or losing the service does not remove an active
+// budget. The kernel conservatively admits at most one CPU of equal-period
+// demand. Excess capacity or unavailable monotonic time returns EAGAIN; a
+// period mismatch returns EINVAL.
+// This is a soft CPU-time limit at scheduler safe points, not a hard deadline;
+// overshoot within a tick or kernel section becomes debt in later periods.
+// CPU time is charged to the executing thread for user and kernel work, also
+// while serving synchronous IPC; donation does not charge the IPC caller.
+// STATUS can be read after target exit while the capability retains its domain.
+// These first three status bits are fixed ABI positions shared with the kernel.
+enum {
+  MOSS_SCHED_PROFILE_PENDING = 1U << 0,   // Awaiting installation on the target CPU.
+  MOSS_SCHED_PROFILE_PARKED = 1U << 1,    // Runnable thread waits for replenishment.
+  MOSS_SCHED_PROFILE_TERMINATED = 1U << 2 // Target thread has exited.
+};
+
+struct moss_sched_profile_status {
+  unsigned long runtime_ns;     // Admitted runtime in each period, or zero before apply/after exit.
+  unsigned long period_ns;      // Period in nanoseconds, or zero before apply.
+  unsigned long cpu_runtime_ns; // Lifetime executed CPU time through the last accounting point.
+  unsigned long throttle_count; // Transitions into the parked state.
+  unsigned long flags;          // MOSS_SCHED_PROFILE_* bits.
 };
 
 // CODE_IDENTIFY can name an approval without granting execution. CODE_REVOKE
@@ -265,6 +296,18 @@ static inline long syscall6(long number, long arg0, long arg1, long arg2, long a
 
 #endif
 
+static inline long moss_profile_create(long domain_handle, long max_runtime_ns, long period_ns) {
+  return syscall3(SYS_PROFILE_CREATE, domain_handle, max_runtime_ns, period_ns);
+}
+
+static inline long moss_profile_apply(long profile_handle, long runtime_ns) {
+  return syscall2(SYS_PROFILE_APPLY, profile_handle, runtime_ns);
+}
+
+static inline long moss_profile_status(long profile_handle, struct moss_sched_profile_status *status) {
+  return syscall2(SYS_PROFILE_STATUS, profile_handle, (long)status);
+}
+
 // ============================================================================
 // Signal constants
 // ============================================================================
@@ -407,7 +450,7 @@ struct TopProcessInfo {
   unsigned long cpu;   // current CPU
   long nice;
   unsigned long vruntime;
-  unsigned long sum_exec_runtime; // total CPU time in nanoseconds
+  unsigned long sum_exec_runtime; // CFS fairness time in nanoseconds; may be capped per tick.
   unsigned long load_avg;
   unsigned long util_avg;
   char name[16];

@@ -191,6 +191,10 @@
   SYS_FORK_DOMAIN_SCOPED = 170,
   SYS_DOMAIN_SCOPE_CONTAINS = 171,
   SYS_BOOT_ARCHIVE = 172,
+  // The next free native ABI slots carry bounded CPU-budget authority.
+  SYS_PROFILE_CREATE = 173,
+  SYS_PROFILE_APPLY = 174,
+  SYS_PROFILE_STATUS = 175,
 
   // Total syscall count marker
-  MAX_SYSCALL = 173
+  MAX_SYSCALL = 176

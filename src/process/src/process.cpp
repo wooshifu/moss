@@ -356,7 +356,10 @@ void Process::record_page_fault(bool major) noexcept {
 void Process::cleanup_threads() noexcept {
   threads_.for_each([](const ThreadEntry &entry) {
     if (entry.thread) {
-      // Unlink before destruction so a runqueue cannot retain freed Thread storage.
+      // Destruction also visits a main thread left by a different thread's
+      // exit. Mark it dead before dequeue so pending or active CPU admission
+      // is released before this storage goes away.
+      entry.thread->state = ProcessState::Terminated;
       if (g_scheduler) {
         g_scheduler->dequeue_task(entry.thread);
       }

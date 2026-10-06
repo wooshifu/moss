@@ -24,6 +24,7 @@ inline constexpr long EAGAIN = 11;       // Try again / resource temporarily una
 inline constexpr long ENOMEM = 12;       // Out of memory
 inline constexpr long EACCES = 13;       // Permission denied
 inline constexpr long EFAULT = 14;       // Bad address
+inline constexpr long EBUSY = 16;        // Linux-compatible busy resource; the thread already has a budget.
 inline constexpr long EEXIST = 17;       // File exists
 inline constexpr long ENOTDIR = 20;      // Not a directory
 inline constexpr long EISDIR = 21;       // Is a directory
@@ -98,6 +99,10 @@ long sys_domain_self(long arg0, long arg1, long arg2, long arg3, long arg4, long
 long sys_domain_spawn(long factory, long image_addr, long arg2, long arg3, long arg4, long arg5) noexcept;
 long sys_domain_layout(long layout_addr, long arg1, long arg2, long arg3, long arg4, long arg5) noexcept;
 long sys_domain_factory(long arg0, long arg1, long arg2, long arg3, long arg4, long arg5) noexcept;
+long sys_profile_create(long domain_handle, long max_runtime_ns, long period_ns, long arg3, long arg4,
+                        long arg5) noexcept;
+long sys_profile_apply(long profile_handle, long runtime_ns, long arg2, long arg3, long arg4, long arg5) noexcept;
+long sys_profile_status(long profile_handle, long status_addr, long arg2, long arg3, long arg4, long arg5) noexcept;
 long sys_domain_scope_create(long arg0, long arg1, long arg2, long arg3, long arg4, long arg5) noexcept;
 long sys_domain_scope_terminate(long handle, long arg1, long arg2, long arg3, long arg4, long arg5) noexcept;
 long sys_domain_scope_status(long handle, long arg1, long arg2, long arg3, long arg4, long arg5) noexcept;

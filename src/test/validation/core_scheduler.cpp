@@ -204,6 +204,61 @@ void cpu_budget_accounting() {
   ut::expect(cfs_budget.spent_ns == runtime_ns && rt.se.cpu_runtime_ns == crossed_ns);
 }
 
+void cpu_budget_admission() {
+  using namespace process;
+  unique_ptr<CfsScheduler> scheduler(new CfsScheduler());
+  if (!ut::expect(scheduler.get() != nullptr)) {
+    return;
+  }
+  Thread first(0, 0), second(1, 0);
+  const auto cpu = arch::get_current_cpu_id();
+  first.cpu = second.cpu = cpu;
+  // Fractions of one second make capacity and period-mismatch outcomes exact;
+  // this synthetic test does not depend on elapsed time or scheduler ticks.
+  constexpr u64 period_ns = 1'000'000'000ULL;
+  constexpr u64 first_runtime_ns = period_ns * 3 / 4;
+  constexpr u64 second_runtime_ns = period_ns / 2;
+  ut::expect(scheduler->request_cpu_budget(&first, 0, period_ns) == BudgetProfileResult::Invalid);
+  ut::expect(scheduler->request_cpu_budget(&first, period_ns + 1, period_ns) == BudgetProfileResult::Invalid);
+  if (!ut::expect(scheduler->request_cpu_budget(&first, first_runtime_ns, period_ns) == BudgetProfileResult::Applied)) {
+    return;
+  }
+  const auto pending = scheduler->cpu_budget_status(&first);
+  ut::expect((pending.flags & BudgetProfileStatus::Pending) != 0);
+  // The local enqueue is an owner-CPU safe point and installs the request;
+  // keep interrupts off until both synthetic contexts leave the runqueue,
+  // as in cpu_budget_queue, so a real timer cannot dispatch either one.
+  // The existing queue tests cover actual throttling and migration.
+  const bool restore_irqs = arch::interrupts_enabled();
+  arch::disable_interrupts();
+  scheduler->enqueue_task(&first, cpu);
+  ut::expect(scheduler->request_cpu_budget(&first, first_runtime_ns, period_ns) ==
+             BudgetProfileResult::AlreadyConfigured);
+  ut::expect(scheduler->request_cpu_budget(&second, second_runtime_ns, 2 * period_ns) == BudgetProfileResult::Invalid);
+  ut::expect(scheduler->request_cpu_budget(&second, second_runtime_ns, period_ns) == BudgetProfileResult::Capacity);
+  const auto admitted = scheduler->cpu_budget_status(&first);
+  ut::expect(admitted.runtime_ns == first_runtime_ns && admitted.period_ns == period_ns &&
+             (admitted.flags & (BudgetProfileStatus::Pending | BudgetProfileStatus::Terminated)) == 0 &&
+             first.se.cpu_budget.configured());
+
+  first.state = ProcessState::Terminated;
+  scheduler->dequeue_task(&first);
+  const auto released = scheduler->cpu_budget_status(&first);
+  ut::expect(released.runtime_ns == 0 && released.period_ns == 0 &&
+             (released.flags & BudgetProfileStatus::Terminated) != 0 &&
+             released.cpu_runtime_ns >= admitted.cpu_runtime_ns);
+  ut::expect(scheduler->request_cpu_budget(&second, second_runtime_ns, period_ns) == BudgetProfileResult::Applied);
+  scheduler->enqueue_task(&second, cpu);
+  const auto replacement = scheduler->cpu_budget_status(&second);
+  ut::expect(replacement.runtime_ns == second_runtime_ns && replacement.period_ns == period_ns &&
+             (replacement.flags & BudgetProfileStatus::Pending) == 0 && second.se.cpu_budget.configured());
+  second.state = ProcessState::Terminated;
+  scheduler->dequeue_task(&second);
+  if (restore_irqs) {
+    arch::enable_interrupts();
+  }
+}
+
 void cpu_budget_queue(bool realtime) {
   using namespace process;
   unique_ptr<CfsScheduler> scheduler(new CfsScheduler());
@@ -249,7 +304,10 @@ void cpu_budget_queue(bool realtime) {
   const bool sleeper_parked = sleeper.budget_parked && !sleeper.se.rb_on_rq && !sleeper.rt_on_rq;
   scheduler->dequeue_task(&sleeper);
   sleeper.state = ProcessState::Sleeping;
+  // Each exhausted Ready thread has made exactly one transition into the
+  // budget wait list; status counts that transition, not later tick checks.
   const bool gated = limited.budget_parked && !limited.se.rb_on_rq && !limited.rt_on_rq && sleeper_parked &&
+                     scheduler->cpu_budget_status(&limited).throttle_count == 1 &&
                      scheduler->get_cpu_nr_running(cpu) == 1 && scheduler->pick_next_task(cpu) == &peer;
 
   bool donation_safe = true;
@@ -586,6 +644,7 @@ void register_scheduler_cases() {
     ut::register_test("rr_self_selection", [] { scheduler_self_selection(true); });
     ut::register_test("cpu_runtime_accounting", cpu_runtime_accounting);
     ut::register_test("cpu_budget_accounting", cpu_budget_accounting);
+    ut::register_test("cpu_budget_admission", cpu_budget_admission);
     ut::register_test("cfs_cpu_budget_queue", [] { cpu_budget_queue(false); });
     ut::register_test("rt_cpu_budget_queue", [] { cpu_budget_queue(true); });
     ut::register_test("ipc_priority_inheritance", ipc_priority_inheritance);

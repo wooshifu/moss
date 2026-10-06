@@ -18,7 +18,8 @@ enum class ObjectType : u8 {
   CodeVersion,
   CodeAuthority,
   CodeApproval,
-  DomainScope
+  DomainScope,
+  SchedulingProfile
 };
 
 namespace rights {
@@ -41,6 +42,9 @@ inline constexpr u32 DOMAIN_SIGNAL = 1U << 15;
 inline constexpr u32 DOMAIN_SCOPE_ASSIGN = 1U << 16;
 inline constexpr u32 DOMAIN_SCOPE_TERMINATE = 1U << 17;
 inline constexpr u32 DOMAIN_SCOPE_INSPECT = 1U << 18;
+// The next two stable capability ABI bits separate budget application from observation.
+inline constexpr u32 SCHED_APPLY = 1U << 19;
+inline constexpr u32 SCHED_OBSERVE = 1U << 20;
 } // namespace rights
 
 namespace fork_flags {

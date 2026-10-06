@@ -710,7 +710,7 @@ def test_catalog_version_keeps_legacy_evidence_but_rejects_cross_version():
     previous["catalog_version"] = 2
     current = copy.deepcopy(legacy)
     current["catalog_version"] = kv.CATALOG_VERSION
-    assert current["catalog_version"] == 3
+    assert current["catalog_version"] == 4
     assert kv.saved_measurement(legacy, legacy["guests"][0]) is not None
     assert kv.comparison(legacy, legacy)[0]["status"] == "comparable"
     assert kv.comparison(previous, previous)[0]["status"] == "comparable"

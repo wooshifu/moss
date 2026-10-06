@@ -16,7 +16,8 @@ constexpr u32 kAllRights =
     capability::rights::DOMAIN_OBSERVE | capability::rights::DOMAIN_SPAWN | capability::rights::CODE_APPROVE |
     capability::rights::CODE_EXEC | capability::rights::CODE_IDENTIFY | capability::rights::CODE_REVOKE |
     capability::rights::DOMAIN_SIGNAL | capability::rights::DOMAIN_SCOPE_ASSIGN |
-    capability::rights::DOMAIN_SCOPE_TERMINATE | capability::rights::DOMAIN_SCOPE_INSPECT;
+    capability::rights::DOMAIN_SCOPE_TERMINATE | capability::rights::DOMAIN_SCOPE_INSPECT |
+    capability::rights::SCHED_APPLY | capability::rights::SCHED_OBSERVE;
 
 // Keep this wire layout aligned with userspace's moss_ipc_message. All fields
 // are fixed-width on Moss's supported 64-bit ABIs.

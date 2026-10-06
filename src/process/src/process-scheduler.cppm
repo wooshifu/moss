@@ -1196,6 +1196,12 @@ private:
   // count lets each CPU's tick skip that global lock while nothing is parked.
   Thread *budget_waiters_{nullptr};
   containers::AtomicCounter<u32> budget_parked_count_;
+  // Public budgets share one period and at most one CPU's allowance. This is
+  // safe for every affinity mask, even if all admitted threads pin one CPU.
+  // ponytail: use per-CPU or affinity-aware admission only if measured demand
+  // makes this conservative common-period ceiling inadequate.
+  u64 admitted_budget_period_ns_{0};
+  u64 admitted_budget_runtime_ns_{0};
 
   containers::PerCpuAtomicCounter<u64> total_switches_;
   containers::PerCpuAtomicCounter<u64> total_preemptions_;
@@ -1252,6 +1258,74 @@ public:
 
     containers::LockGuard<containers::IrqSpinLock> guard(task_transition_lock_);
     dequeue_task_unlocked(thread);
+    // do_exit publishes Terminated before calling us. Release even a pending
+    // request here; a retained Process may keep this Thread alive afterward.
+    if ((thread->state == ProcessState::Terminated || thread->state == ProcessState::Zombie) &&
+        thread->budget_profile_reserved) {
+      admitted_budget_runtime_ns_ -= thread->budget_profile_runtime_ns;
+      if (admitted_budget_runtime_ns_ == 0) {
+        admitted_budget_period_ns_ = 0;
+      }
+      thread->budget_profile_reserved = false;
+      thread->budget_profile_pending.store(false, moss::memory_order_release);
+      thread->budget_profile_runtime_ns = 0;
+      thread->budget_profile_period_ns = 0;
+    }
+  }
+
+  [[nodiscard]] BudgetProfileResult request_cpu_budget(Thread *thread, u64 runtime_ns, u64 period_ns) noexcept {
+    if (!thread || runtime_ns == 0 || runtime_ns > period_ns) {
+      return BudgetProfileResult::Invalid;
+    }
+    if (!timer::TimerSubsystem::instance().is_initialized()) {
+      return BudgetProfileResult::ClockUnavailable;
+    }
+    containers::LockGuard<containers::IrqSpinLock> guard(task_transition_lock_);
+    if (thread->state == ProcessState::Terminated || thread->state == ProcessState::Zombie) {
+      return BudgetProfileResult::Invalid;
+    }
+    if (thread->budget_profile_reserved || thread->se.cpu_budget.configured()) {
+      return BudgetProfileResult::AlreadyConfigured;
+    }
+    if (admitted_budget_runtime_ns_ != 0 && admitted_budget_period_ns_ != period_ns) {
+      return BudgetProfileResult::Invalid;
+    }
+    // Subtract before comparing so a hostile u64 runtime cannot wrap the sum.
+    if (runtime_ns > period_ns - admitted_budget_runtime_ns_) {
+      return BudgetProfileResult::Capacity;
+    }
+    admitted_budget_period_ns_ = period_ns;
+    admitted_budget_runtime_ns_ += runtime_ns;
+    thread->budget_profile_runtime_ns = runtime_ns;
+    thread->budget_profile_period_ns = period_ns;
+    thread->budget_profile_reserved = true;
+    // The target CPU installs this only after charging its prior interval.
+    thread->budget_profile_pending.store(true, moss::memory_order_release);
+    return BudgetProfileResult::Applied;
+  }
+
+  [[nodiscard]] BudgetProfileStatus cpu_budget_status(Thread *thread) noexcept {
+    BudgetProfileStatus status{};
+    if (!thread) {
+      return status;
+    }
+    containers::LockGuard<containers::IrqSpinLock> guard(task_transition_lock_);
+    if (thread->budget_profile_reserved) {
+      status.runtime_ns = thread->budget_profile_runtime_ns;
+      status.period_ns = thread->budget_profile_period_ns;
+    }
+    status.cpu_runtime_ns = thread->se.cpu_runtime_ns.load(moss::memory_order_relaxed);
+    status.throttle_count = thread->budget_throttle_count;
+    if (thread->budget_profile_pending.load(moss::memory_order_relaxed)) {
+      status.flags |= BudgetProfileStatus::Pending;
+    }
+    if (thread->budget_parked) {
+      status.flags |= BudgetProfileStatus::Parked;
+    }
+    if (thread->state == ProcessState::Terminated || thread->state == ProcessState::Zombie) {
+      status.flags |= BudgetProfileStatus::Terminated;
+    }
+    return status;
   }
 
   // Called by the scheduler tick. A blocked thread is never on this list:
@@ -1324,6 +1398,13 @@ public:
     containers::LockGuard<containers::IrqSpinLock> guard(task_transition_lock_);
     for (auto *task = pick_next_task_unlocked(cpu); task; task = pick_next_task_unlocked(cpu)) {
       dequeue_task_unlocked(task);
+      if (task->budget_profile_pending.load(moss::memory_order_relaxed)) {
+        const u64 now = get_current_time();
+        if (get_current_task_on_cpu(cpu) == task) {
+          (void)task->se.charge_runtime(now);
+        }
+        install_pending_budget_unlocked(task, now);
+      }
       // A yield can publish Ready before switch_to_bootstrap charges its
       // final sub-tick interval. Check again at the dispatch boundary.
       if (task->se.cpu_budget.configured() && task->se.cpu_budget.exhausted(get_current_time())) {
@@ -1787,7 +1868,23 @@ private:
     thread->budget_next_ = budget_waiters_;
     budget_waiters_ = thread;
     thread->budget_parked = true;
+    // Count an actual transition off the runqueue, not every exhausted tick.
+    ++thread->budget_throttle_count;
     (void)budget_parked_count_.fetch_add(1, containers::MemoryOrder::Relaxed);
+  }
+
+  // Only a dispatch/owner-CPU scheduling boundary calls this. The transition
+  // lock excludes a concurrent request or exit while the validated fields are
+  // copied into the live meter.
+  void install_pending_budget_unlocked(Thread *thread, u64 now_ns) noexcept {
+    if (!thread->budget_profile_pending.load(moss::memory_order_relaxed)) {
+      return;
+    }
+    if (thread->se.cpu_budget.configured() ||
+        !thread->se.cpu_budget.configure(thread->budget_profile_runtime_ns, thread->budget_profile_period_ns, now_ns)) {
+      arch::kernel_panic("invalid pending CPU budget");
+    }
+    thread->budget_profile_pending.store(false, moss::memory_order_release);
   }
 
   void dequeue_task_unlocked(Thread *thread) noexcept {
@@ -1808,6 +1905,15 @@ private:
     // placement before linking the node so a target CPU cannot observe an
     // intrusive node with the old CPU after acquiring that same lock.
     thread->cpu = cpu;
+    if (thread->budget_profile_pending.load(moss::memory_order_relaxed) && get_current_cpu_id() == cpu) {
+      const u64 now = get_current_time();
+      // Yield may publish Ready before its running interval has been saved.
+      // Keep that prior interval out of the newly installed allowance.
+      if (get_current_task_on_cpu(cpu) == thread) {
+        (void)thread->se.charge_runtime(now);
+      }
+      install_pending_budget_unlocked(thread, now);
+    }
     if (thread->se.cpu_budget.configured()) {
       const u64 now = get_current_time();
       // sched_yield publishes Ready before leaving the CPU. Charge that live
@@ -2061,9 +2167,9 @@ public:
 
     ProcessState old_state = task->state;
     task->state = ProcessState::Terminated;
-
+    // A sleeper can hold a pending admission without being on a runqueue.
+    dequeue_task(task);
     if (old_state == ProcessState::Running || old_state == ProcessState::Ready) {
-      dequeue_task(task);
       log::klog::info("task terminated and dequeued: TID={}", static_cast<u32>(task->tid));
     }
   }
@@ -2403,8 +2509,18 @@ public:
 
     // Donation changes the server's dispatch priority, not which thread
     // consumed the CPU. Charge the dispatched thread's own allowance.
-    const u64 actual_delta = curr->se.charge_runtime(now);
-    const bool budget_exhausted = curr->se.cpu_budget.exhausted(now);
+    u64 actual_delta = curr->se.charge_runtime(now);
+    u64 budget_now = now;
+    if (curr->budget_profile_pending.load(moss::memory_order_acquire)) {
+      containers::LockGuard<containers::IrqSpinLock> guard(task_transition_lock_);
+      // The remote requester may have published after the tick's first time
+      // sample. Charge through a fresh sample before starting its allowance.
+      const u64 install_time = get_current_time();
+      actual_delta += curr->se.charge_runtime(install_time);
+      install_pending_budget_unlocked(curr, install_time);
+      budget_now = install_time;
+    }
+    const bool budget_exhausted = curr->se.cpu_budget.exhausted(budget_now);
     // A non-advancing timestamp still advances CFS fairness by a 1 us
     // fallback. The exact choice is unrecorded; it is not actual CPU time.
     u64 delta = actual_delta ? actual_delta : 1000;
@@ -2613,11 +2729,6 @@ private:
     }
     moss_validation_dispatch_selected();
 
-    // Guard: never switch to a terminated task (e.g. sys_exit race)
-    if (task->state == ProcessState::Terminated) {
-      return;
-    }
-
     // Task identity, initial context, address space and entry stack must be
     // published as one local IRQ-masked transition. In particular, RV64's
     // nonzero sscratch would otherwise make an S-mode IRQ use (and overwrite)
@@ -2625,11 +2736,38 @@ private:
     const bool restore_irqs = arch::interrupts_enabled();
     arch::disable_interrupts();
 
-    // Dispatch runs on bootstrap: every outgoing task returns there before
-    // the next selection. No task continuation is replaced before its save.
-    CfsScheduler::set_current_task(task);
-    task->state = ProcessState::Running;
-    task->se.exec_start = get_current_time(); // Start both CPU-time and CFS accounting at dispatch.
+    // A requester can publish while the task is selected but off both queues.
+    // Join that publication with the final dispatch state transition, before
+    // either accounting or executing the task under its new allowance.
+    // ponytail: this global lock serializes final dispatch; use an owner-CPU
+    // request handshake if measured SMP contention makes that cost material.
+    bool skip_dispatch = false;
+    {
+      containers::LockGuard<containers::IrqSpinLock> guard(task_transition_lock_);
+      if (task->state == ProcessState::Terminated) {
+        skip_dispatch = true;
+      } else {
+        const u64 now = get_current_time();
+        install_pending_budget_unlocked(task, now);
+        if (task->se.cpu_budget.configured() && task->se.cpu_budget.exhausted(now)) {
+          task->state = ProcessState::Ready;
+          park_budget_unlocked(task);
+          skip_dispatch = true;
+        } else {
+          // Dispatch runs on bootstrap: every outgoing task returns there before
+          // the next selection. No continuation is replaced before its save.
+          CfsScheduler::set_current_task(task);
+          task->state = ProcessState::Running;
+          task->se.exec_start = now; // Start both CPU-time and CFS accounting at dispatch.
+        }
+      }
+    }
+    if (skip_dispatch) {
+      if (restore_irqs) {
+        arch::enable_interrupts();
+      }
+      return;
+    }
     record_context_switch();
 
     const bool first_user_entry = task->needs_initial_eret;

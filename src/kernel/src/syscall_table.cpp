@@ -268,6 +268,20 @@ public:
       : Object(capability::ObjectType::Domain), process(moss::move(target)) {}
 };
 
+class SchedulingProfileObject final : public capability::Object {
+public:
+  // Retain the exact domain incarnation and main TID. A later PID or main
+  // thread cannot inherit this profile's authority through identifier reuse.
+  shared_ptr<process::Process> process;
+  const ThreadId main_tid;
+  const u64 max_runtime_ns;
+  const u64 period_ns;
+
+  SchedulingProfileObject(shared_ptr<process::Process> target, ThreadId tid, u64 maximum, u64 period) noexcept
+      : Object(capability::ObjectType::SchedulingProfile), process(moss::move(target)), main_tid(tid),
+        max_runtime_ns(maximum), period_ns(period) {}
+};
+
 class DomainScopeObject final : public capability::Object {
   moss::atomic<bool> closed_{false};
 
@@ -394,6 +408,8 @@ inline constexpr u32 kCodeExecuteRights = capability::rights::CODE_EXEC | capabi
                                           capability::rights::TRANSFER | capability::rights::DUPLICATE;
 inline constexpr u32 kCodeAuthorityRights = capability::rights::CODE_APPROVE | capability::rights::CODE_REVOKE |
                                             capability::rights::TRANSFER | capability::rights::DUPLICATE;
+inline constexpr u32 kSchedulingProfileRights = capability::rights::SCHED_APPLY | capability::rights::SCHED_OBSERVE |
+                                                capability::rights::TRANSFER | capability::rights::DUPLICATE;
 
 struct DomainExitStatus {
   i32 code;
@@ -935,6 +951,116 @@ long sys_domain_factory(long /*unused*/, long /*unused*/, long /*unused*/, long 
   }
   auto handle = caller->capabilities().install(moss::move(factory), kFactoryRights);
   return handle ? static_cast<long>(*handle) : domain_cap_error(handle.error());
+}
+
+long sys_profile_create(long domain_handle, long max_runtime_ns, long period_ns, long /*unused*/, long /*unused*/,
+                        long /*unused*/) noexcept {
+  auto caller = process::current_process();
+  if (!caller) {
+    return -errc::ESRCH;
+  }
+  // Only the boot-owned source can mint a new budget bound. A Domain handle
+  // alone, including SYS_DOMAIN_SELF, grants no scheduling authority.
+  if (!caller->is_domain_factory_source()) {
+    return -errc::EACCES;
+  }
+  if (max_runtime_ns <= 0 || period_ns <= 0 || max_runtime_ns > period_ns) {
+    return -errc::EINVAL;
+  }
+  auto domain = caller->capabilities().lookup(static_cast<Handle>(domain_handle), capability::ObjectType::Domain,
+                                              capability::rights::DOMAIN_INSPECT);
+  if (!domain) {
+    return domain_cap_error(domain.error());
+  }
+  auto target = static_cast<DomainObject *>((*domain).get())->process;
+  auto *thread = target->get_main_thread();
+  if (!thread || thread->state.load() == process::ProcessState::Terminated ||
+      thread->state.load() == process::ProcessState::Zombie) {
+    return -errc::ESRCH;
+  }
+  auto profile = shared_ptr<capability::Object>::try_make<SchedulingProfileObject>(
+      moss::abi::bridge::moss_heap_allocate, moss::move(target), thread->tid, static_cast<u64>(max_runtime_ns),
+      static_cast<u64>(period_ns));
+  if (!profile) {
+    return -errc::ENOMEM;
+  }
+  auto handle = caller->capabilities().install(moss::move(profile), kSchedulingProfileRights);
+  return handle ? static_cast<long>(*handle) : domain_cap_error(handle.error());
+}
+
+long sys_profile_apply(long profile_handle, long runtime_ns, long /*unused*/, long /*unused*/, long /*unused*/,
+                       long /*unused*/) noexcept {
+  auto caller = process::current_process();
+  if (!caller) {
+    return -errc::ESRCH;
+  }
+  auto object = caller->capabilities().lookup(
+      static_cast<Handle>(profile_handle), capability::ObjectType::SchedulingProfile, capability::rights::SCHED_APPLY);
+  if (!object) {
+    return domain_cap_error(object.error());
+  }
+  auto *profile = static_cast<SchedulingProfileObject *>((*object).get());
+  if (runtime_ns <= 0 || static_cast<u64>(runtime_ns) > profile->max_runtime_ns) {
+    return -errc::EINVAL;
+  }
+  auto *thread = profile->process->get_main_thread();
+  if (!thread || thread->tid != profile->main_tid || thread->state.load() == process::ProcessState::Terminated ||
+      thread->state.load() == process::ProcessState::Zombie) {
+    return -errc::ESRCH;
+  }
+  if (!process::g_scheduler) {
+    return -errc::EAGAIN;
+  }
+  // The scheduler owns one-shot admission, so duplicate or transferred
+  // profile handles cannot restart the target's accounting period.
+  switch (process::g_scheduler->request_cpu_budget(thread, static_cast<u64>(runtime_ns), profile->period_ns)) {
+  case process::BudgetProfileResult::Applied:
+    return 0;
+  case process::BudgetProfileResult::Invalid:
+    // The target may exit after the lookup above but before scheduler
+    // admission. Its retained Process keeps the Thread valid for this check.
+    if (thread->state == process::ProcessState::Terminated || thread->state == process::ProcessState::Zombie) {
+      return -errc::ESRCH;
+    }
+    return -errc::EINVAL;
+  case process::BudgetProfileResult::AlreadyConfigured:
+    return -errc::EBUSY;
+  case process::BudgetProfileResult::ClockUnavailable:
+  case process::BudgetProfileResult::Capacity:
+    return -errc::EAGAIN;
+  default:
+    return -errc::EINVAL;
+  }
+}
+
+long sys_profile_status(long profile_handle, long status_addr, long /*unused*/, long /*unused*/, long /*unused*/,
+                        long /*unused*/) noexcept {
+  if (!status_addr) {
+    return -errc::EFAULT;
+  }
+  auto caller = process::current_process();
+  if (!caller) {
+    return -errc::ESRCH;
+  }
+  auto object =
+      caller->capabilities().lookup(static_cast<Handle>(profile_handle), capability::ObjectType::SchedulingProfile,
+                                    capability::rights::SCHED_OBSERVE);
+  if (!object) {
+    return domain_cap_error(object.error());
+  }
+  auto *profile = static_cast<SchedulingProfileObject *>((*object).get());
+  auto *thread = profile->process->get_main_thread();
+  if (!thread || thread->tid != profile->main_tid) {
+    return -errc::ESRCH;
+  }
+  if (!process::g_scheduler) {
+    return -errc::EAGAIN;
+  }
+  // Five 64-bit words are the fixed native ABI; no runqueue pointers or
+  // mutable scheduler internals escape through the status snapshot.
+  static_assert(sizeof(process::BudgetProfileStatus) == 5 * sizeof(u64));
+  const auto status = process::g_scheduler->cpu_budget_status(thread);
+  return ::moss::kernel::syscall::handlers::copy_to_user(static_cast<u64>(status_addr), &status, sizeof(status));
 }
 
 static long create_code_snapshot(u64 source, long page_count_arg) noexcept {
@@ -3748,6 +3874,8 @@ long sys_topinfo(long info_addr, long /*unused*/, long /*unused*/, long /*unused
         pe.cpu = main->cpu;
         pe.nice = main->se.nice;
         pe.vruntime = main->se.vruntime;
+        // This is CFS fairness time, which may be capped per tick. Profile
+        // status reports the separate actual CPU-time accounting metric.
         pe.sum_exec_runtime = main->se.sum_exec_runtime;
         pe.load_avg = main->se.load_avg;
         pe.util_avg = main->se.util_avg;
@@ -3976,7 +4104,10 @@ const SyscallDescriptor SYSCALL_TABLE[static_cast<int>(SyscallNumber::MAX_SYSCAL
     {"fork_domain_scoped", handlers::sys_fork_domain_scoped, 4, true, "Fork a native domain into a specified scope"},
     {"domain_scope_contains", handlers::sys_domain_scope_contains, 2, true,
      "Check whether an inspected domain belongs to a scope"},
-    {"boot_archive", handlers::sys_boot_archive, 1, true, "Get read-only boot archive memory"}};
+    {"boot_archive", handlers::sys_boot_archive, 1, true, "Get read-only boot archive memory"},
+    {"profile_create", handlers::sys_profile_create, 3, true, "Mint a bounded main-thread CPU profile"},
+    {"profile_apply", handlers::sys_profile_apply, 2, true, "Admit a one-shot thread CPU budget"},
+    {"profile_status", handlers::sys_profile_status, 2, true, "Read bounded thread CPU budget metrics"}};
 
 // 系统调用分发器实现
 long SyscallDispatcher::dispatch(long syscall_number, long arg0, long arg1, long arg2, long arg3, long arg4,

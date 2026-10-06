@@ -174,6 +174,7 @@ void declare_cases() {
     ut::register_test("domain_spawn", empty_case);
     ut::register_test("code_revocation", empty_case);
     ut::register_test("code_service_survival", empty_case);
+    ut::register_test("sched_profile", empty_case);
   });
   ut::register_suite("users.libc", [] {
     ut::register_test("static_runtime", empty_case);

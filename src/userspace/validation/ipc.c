@@ -20,6 +20,7 @@ enum {
   IPC_EAGAIN = 11,
   IPC_EACCES = 13,
   IPC_EFAULT = 14,
+  IPC_EBUSY = 16,
   IPC_EINVAL = 22,
   IPC_EPIPE = 32,
   IPC_ETIMEDOUT = 110
@@ -2405,5 +2406,199 @@ unsigned long ipc_domain_wait_any(void) {
   }
   errors |= (unsigned long)(syscall1(SYS_CAP_CLOSE, (long)slow_domain) != 0) << 14;
   errors |= (unsigned long)(syscall1(SYS_CAP_CLOSE, (long)fast_domain) != 0) << 15;
+  return errors;
+}
+
+static long profile_park_target(unsigned long *domain) {
+  // Local watchdog status: any positive code distinct from the expected
+  // SIGKILL termination would work; 97 identifies this failure in logs.
+  enum { PROFILE_TARGET_WATCHDOG_EXIT = 97 };
+  long child = syscall1(SYS_FORK_DOMAIN, (long)domain);
+  if (child == 0) {
+    // Repeat the existing five-second IPC timeout four times to leave the
+    // service call and admission checks time to finish; the child still exits
+    // on a broken parent cleanup path instead of remaining an immortal test.
+    for (unsigned int attempt = 0; attempt < 4; ++attempt) {
+      unsigned long delay = ipc_call_timeout_ns;
+      (void)nanosleep_ns(&delay);
+    }
+    _exit(PROFILE_TARGET_WATCHDOG_EXIT); // Distinct from the expected forced-termination status.
+  }
+  return child;
+}
+
+static int profile_apply_from_service(long profile, unsigned long runtime_ns, unsigned long period_ns) {
+  // Local diagnostic exit codes: 37 is the image's shared success marker;
+  // 96 and 98 distinguish rejection from reply failure in child-exit logs.
+  enum { PROFILE_SERVICE_OK = 37, PROFILE_SERVICE_REJECTED = 96, PROFILE_SERVICE_REPLY_FAILED = 98 };
+  struct moss_ipc_endpoints endpoint = {0};
+  if (syscall1(SYS_IPC_CREATE, (long)&endpoint) != 0) {
+    return 0;
+  }
+  if (syscall2(SYS_CAP_SET_INHERIT, (long)endpoint.receive, 1) != 0) {
+    (void)syscall1(SYS_CAP_CLOSE, (long)endpoint.receive);
+    (void)syscall1(SYS_CAP_CLOSE, (long)endpoint.send);
+    return 0;
+  }
+  long service = fork();
+  if (service == 0) {
+    // An ordinary child can receive bounded APPLY authority but cannot mint
+    // profiles from its otherwise usable self-domain capability.
+    long self = syscall0(SYS_DOMAIN_SELF);
+    int denied = self > 0 && moss_profile_create(self, runtime_ns, period_ns) == -IPC_EACCES;
+    if (self > 0) {
+      (void)syscall1(SYS_CAP_CLOSE, self);
+    }
+    struct moss_ipc_message incoming = {0};
+    unsigned long reply = 0;
+    if (!denied || ipc_receive(endpoint.receive, &incoming, &reply) != 1 || incoming.rights != MOSS_CAP_SCHED_APPLY ||
+        incoming.capability == 0 || moss_profile_apply((long)incoming.capability, runtime_ns) != 0) {
+      _exit(PROFILE_SERVICE_REJECTED); // Authorization, transfer, or apply violated the service contract.
+    }
+    const struct moss_ipc_message accepted = {.size = 1, .payload = {PROFILE_SERVICE_OK}};
+    _exit(ipc_reply(reply, &accepted) == 0 ? PROFILE_SERVICE_OK : PROFILE_SERVICE_REPLY_FAILED);
+  }
+  (void)syscall1(SYS_CAP_CLOSE, (long)endpoint.receive);
+  int success = 0;
+  if (service > 1) {
+    const struct moss_ipc_message request = {.size = 1,
+                                             .capability = (unsigned long)profile,
+                                             .rights = MOSS_CAP_SCHED_APPLY,
+                                             .payload = {PROFILE_SERVICE_OK}};
+    struct moss_ipc_message response = {0};
+    long deadline = deadline_after(ipc_call_timeout_ns);
+    long sent = deadline > 0 ? ipc_call(endpoint.send, &request, &response, deadline) : -1;
+    if (sent != 1 || response.payload[0] != PROFILE_SERVICE_OK) {
+      (void)kill(service, SIGKILL);
+    }
+    // 37 is the validation image's shared successful child-exit marker.
+    int exited = wait_exit(service, PROFILE_SERVICE_OK); // Reap even after a failed call or forced kill.
+    success = sent == 1 && response.payload[0] == PROFILE_SERVICE_OK && exited;
+  }
+  (void)syscall1(SYS_CAP_CLOSE, (long)endpoint.send);
+  return success;
+}
+
+unsigned long ipc_sched_profile(void) {
+  // A one-second common period and its three-quarter/half quotas make the
+  // admission sum exceed one full CPU period. These ratios test capacity,
+  // without asserting any wall-time or QEMU instruction-throughput bound.
+  const unsigned long period_ns = 1000000000UL;
+  const unsigned long first_runtime_ns = period_ns * 3 / 4;
+  const unsigned long second_runtime_ns = period_ns / 2;
+  unsigned long first_domain = 0, second_domain = 0;
+  long first_child = profile_park_target(&first_domain);
+  long second_child = profile_park_target(&second_domain);
+  long first = 0, second = 0, different_period = 0, observe_first = 0, post_close = 0, apply_only = 0;
+  long reduced_domain = 0;
+  unsigned long errors =
+      (unsigned long)(first_child <= 1 || !first_domain) | ((unsigned long)(second_child <= 1 || !second_domain) << 1);
+  if (errors) {
+    goto cleanup;
+  }
+
+  errors |= (unsigned long)(moss_profile_create(0, first_runtime_ns, period_ns) != -IPC_EBADF) << 2;
+  errors |= (unsigned long)(moss_profile_create((long)first_domain, 0, period_ns) != -IPC_EINVAL) << 3;
+  errors |= (unsigned long)(moss_profile_create((long)first_domain, first_runtime_ns, 0) != -IPC_EINVAL) << 4;
+  errors |= (unsigned long)(moss_profile_create((long)first_domain, period_ns + 1, period_ns) != -IPC_EINVAL) << 5;
+  reduced_domain = syscall2(SYS_CAP_DUPLICATE, (long)first_domain, MOSS_CAP_DOMAIN_OBSERVE);
+  errors |= (unsigned long)(reduced_domain <= 0 ||
+                            moss_profile_create(reduced_domain, first_runtime_ns, period_ns) != -IPC_EACCES)
+            << 6;
+  first = moss_profile_create((long)first_domain, first_runtime_ns, period_ns);
+  second = moss_profile_create((long)second_domain, second_runtime_ns, period_ns);
+  different_period = moss_profile_create((long)second_domain, second_runtime_ns, period_ns * 2);
+  errors |= (unsigned long)(first <= 0 || second <= 0 || different_period <= 0) << 7;
+  if (first <= 0 || second <= 0 || different_period <= 0) {
+    goto cleanup;
+  }
+  errors |= (unsigned long)(moss_profile_create(first, first_runtime_ns, period_ns) != -IPC_EINVAL) << 8;
+
+  struct moss_sched_profile_status before = {0}, active = {0}, terminated = {0};
+  errors |= (unsigned long)(moss_profile_status(first, &before) != 0 || before.runtime_ns != 0 ||
+                            before.period_ns != 0 || before.flags != 0)
+            << 9;
+  observe_first = syscall2(SYS_CAP_DUPLICATE, first, MOSS_CAP_SCHED_OBSERVE);
+  apply_only = syscall2(SYS_CAP_DUPLICATE, first, MOSS_CAP_SCHED_APPLY);
+  errors |= (unsigned long)(observe_first <= 0 || apply_only <= 0) << 10;
+  if (observe_first > 0) {
+    errors |= (unsigned long)(moss_profile_apply(observe_first, first_runtime_ns) != -IPC_EACCES) << 11;
+  }
+  if (apply_only > 0) {
+    errors |= (unsigned long)(moss_profile_status(apply_only, &active) != -IPC_EACCES) << 12;
+    errors |= (unsigned long)(syscall2(SYS_CAP_DUPLICATE, apply_only, MOSS_CAP_SCHED_APPLY) != -IPC_EACCES) << 13;
+  }
+  errors |= (unsigned long)(moss_profile_apply((long)first_domain, first_runtime_ns) != -IPC_EINVAL) << 14;
+  errors |= (unsigned long)(moss_profile_status((long)first_domain, &active) != -IPC_EINVAL) << 15;
+  errors |= (unsigned long)(moss_profile_apply(first, 0) != -IPC_EINVAL) << 16;
+  errors |= (unsigned long)(moss_profile_apply(first, first_runtime_ns + 1) != -IPC_EINVAL) << 17;
+  errors |= (unsigned long)(moss_profile_status(first, 0) != -IPC_EFAULT) << 18;
+
+  errors |= (unsigned long)!profile_apply_from_service(first, first_runtime_ns, period_ns) << 19;
+  errors |= (unsigned long)(observe_first <= 0 || moss_profile_status(observe_first, &active) != 0 ||
+                            active.runtime_ns != first_runtime_ns || active.period_ns != period_ns ||
+                            active.cpu_runtime_ns < before.cpu_runtime_ns ||
+                            (active.flags & MOSS_SCHED_PROFILE_TERMINATED) != 0)
+            << 20;
+  errors |= (unsigned long)(moss_profile_apply(first, first_runtime_ns) != -IPC_EBUSY) << 21;
+  errors |= (unsigned long)(moss_profile_apply(different_period, second_runtime_ns) != -IPC_EINVAL) << 22;
+  errors |= (unsigned long)(moss_profile_apply(second, second_runtime_ns) != -IPC_EAGAIN) << 23;
+
+  errors |= (unsigned long)(syscall1(SYS_DOMAIN_TERMINATE, (long)first_domain) != 0) << 24;
+  errors |= (unsigned long)!domain_exited(first_domain, 0, SIGKILL) << 25;
+  errors |= (unsigned long)(moss_profile_status(first, &terminated) != 0 ||
+                            (terminated.flags & MOSS_SCHED_PROFILE_TERMINATED) == 0 || terminated.runtime_ns != 0 ||
+                            terminated.period_ns != 0 || terminated.cpu_runtime_ns < active.cpu_runtime_ns ||
+                            terminated.throttle_count < active.throttle_count)
+            << 26;
+  errors |= (unsigned long)(moss_profile_apply(first, first_runtime_ns) != -IPC_ESRCH) << 27;
+  errors |= (unsigned long)(moss_profile_create((long)first_domain, first_runtime_ns, period_ns) != -IPC_ESRCH) << 28;
+
+  errors |= (unsigned long)(moss_profile_apply(second, second_runtime_ns) != 0) << 29;
+  // Close the last profile handle for this live target, then mint a new one.
+  // Admission belongs to the thread, not to the lifetime of a policy handle.
+  long close_different = syscall1(SYS_CAP_CLOSE, different_period);
+  long close_second = syscall1(SYS_CAP_CLOSE, second);
+  errors |= (unsigned long)(close_different != 0 || close_second != 0) << 30;
+  if (close_different == 0) {
+    different_period = 0;
+  }
+  if (close_second == 0) {
+    second = 0;
+  }
+  post_close = moss_profile_create((long)second_domain, second_runtime_ns, period_ns);
+  errors |= (unsigned long)(post_close <= 0) << 31;
+  if (post_close > 0) {
+    errors |= (unsigned long)(moss_profile_status(post_close, &active) != 0 || active.runtime_ns != second_runtime_ns ||
+                              active.period_ns != period_ns || (active.flags & MOSS_SCHED_PROFILE_TERMINATED) != 0)
+              << 32;
+    errors |= (unsigned long)(moss_profile_apply(post_close, second_runtime_ns) != -IPC_EBUSY) << 36;
+  }
+  errors |= (unsigned long)(syscall1(SYS_DOMAIN_TERMINATE, (long)second_domain) != 0) << 33;
+  errors |= (unsigned long)!domain_exited(second_domain, 0, SIGKILL) << 34;
+  if (post_close > 0) {
+    errors |= (unsigned long)(moss_profile_status(post_close, &terminated) != 0 ||
+                              (terminated.flags & MOSS_SCHED_PROFILE_TERMINATED) == 0 || terminated.runtime_ns != 0 ||
+                              terminated.period_ns != 0 || terminated.cpu_runtime_ns < active.cpu_runtime_ns)
+              << 35;
+  }
+
+cleanup:
+  {
+    const long handles[] = {apply_only, post_close, observe_first, different_period, second, first, reduced_domain};
+    for (unsigned long i = 0; i < sizeof(handles) / sizeof(handles[0]); ++i) {
+      if (handles[i] > 0) {
+        (void)syscall1(SYS_CAP_CLOSE, handles[i]);
+      }
+    }
+  }
+  const unsigned long domains[] = {first_domain, second_domain};
+  for (unsigned long i = 0; i < sizeof(domains) / sizeof(domains[0]); ++i) {
+    if (domains[i]) {
+      (void)syscall1(SYS_DOMAIN_TERMINATE, (long)domains[i]);
+      (void)syscall1(SYS_DOMAIN_WAIT, (long)domains[i]);
+      (void)syscall1(SYS_CAP_CLOSE, (long)domains[i]);
+    }
+  }
   return errors;
 }

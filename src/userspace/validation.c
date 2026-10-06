@@ -439,7 +439,8 @@ void _start(long argc, const char **argv) {
                                             ipc_domain_wait_any,
                                             ipc_domain_spawn,
                                             ipc_code_revocation,
-                                            ipc_code_service_survival};
+                                            ipc_code_service_survival,
+                                            ipc_sched_profile};
     for (long test = 0; test < (long)(sizeof(tests) / sizeof(tests[0])); ++test) {
       control(1, test, 0);
       unsigned long errors = tests[test]();

@@ -106,6 +106,7 @@ CATALOG = {
         "rr_self_selection",
         "cpu_runtime_accounting",
         "cpu_budget_accounting",
+        "cpu_budget_admission",
         "cfs_cpu_budget_queue",
         "rt_cpu_budget_queue",
         "ipc_priority_inheritance",
@@ -249,6 +250,7 @@ CATALOG = {
         "domain_spawn",
         "code_revocation",
         "code_service_survival",
+        "sched_profile",
     ],
     "users.signals": [
         "basic_handler",
@@ -335,9 +337,9 @@ CATALOG = {
         )
     },
 }
-# Scheduler CPU budget cases change the ordered inventory from catalog v2.
+# Public scheduling-profile coverage changes the ordered inventory from catalog v3.
 # Earlier reports retain their recorded version for comparison checks.
-CATALOG_VERSION = 3
+CATALOG_VERSION = 4
 FUNCTIONAL = [
     "drivers",
     "resources",
