@@ -2,46 +2,84 @@ name: CMake workflow
 
 on:
   push:
+    # Toolchain-only changes run after publication, including the first image.
+    paths-ignore:
+      - .github/workflows/cmake.yml
+      - .github/workflows/toolchain.yml
+      - docker/Dockerfile.ci
+      - pyproject.toml
+      - uv.lock
   pull_request:
   workflow_dispatch:
+  workflow_run:
+    workflows: [Toolchain image]
+    branches: [master]
+    types: [completed]
 
 permissions:
   contents: read
+  packages: read
 
 jobs:
   workflow:
-    # Keep the runner release fixed so apt.llvm.org selects a supported repository.
+    if: github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success'
     runs-on: ubuntu-24.04
+    container:
+      image: ghcr.io/${{ github.repository }}-toolchain:latest
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+    defaults:
+      run:
+        # Container jobs otherwise use sh; pipefail must preserve listing errors.
+        shell: bash
     env:
-      # Match the minimum in cmake/toolchain_detection.cmake and check_prerequisites.py.
-      LLVM_VERSION: "23"
+      SCCACHE_DIR: /tmp/sccache
     steps:
       - uses: actions/checkout@v7
         with:
+          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
           persist-credentials: false
 
-      - name: Install latest stable uv and QEMU
-        run: |
-          # The Ubuntu runner includes Homebrew, but its bin directory is not on PATH.
-          eval "$(/home/linuxbrew/.linuxbrew/bin/brew shellenv)"
-          brew update
-          brew install uv qemu
-          echo "$(brew --prefix)/bin" >> "$GITHUB_PATH"
-          qemu-system-aarch64 --version
-          qemu-system-x86_64 --version
-          qemu-system-riscv64 --version
+      - name: Sync locked build dependencies
+        # Usually a no-op; also supports PRs that change the lockfile before publication.
+        run: uv sync --frozen --no-install-project
 
-      - name: Install LLVM and test dependencies
+      - name: Identify compiler cache versions
+        id: toolchain
         run: |
-          curl -fsSL https://apt.llvm.org/llvm.sh -o "$RUNNER_TEMP/llvm.sh"
-          sudo bash "$RUNNER_TEMP/llvm.sh" "$LLVM_VERSION"
-          # clang-scan-deps is required by C++ modules; ARM64 Debug tests also use GDB.
-          sudo apt-get install -y --no-install-recommends \
-            "clang-tools-${LLVM_VERSION}" "llvm-${LLVM_VERSION}" \
-            gdb-multiarch bzip2
-          echo "/usr/lib/llvm-${LLVM_VERSION}/bin" >> "$GITHUB_PATH"
+          echo "llvm=$(llvm-config --version)" >> "$GITHUB_OUTPUT"
+          echo "sccache=$(sccache --version | awk '{print $2}')" >> "$GITHUB_OUTPUT"
+
+      - name: Restore compiler cache
+        id: compiler-cache
+        uses: actions/cache/restore@v6
+        with:
+          path: ${{ env.SCCACHE_DIR }}
+          # Cache archives are immutable; each attempt saves the accumulated results under a new key.
+          key: sccache-${{ runner.os }}-${{ runner.arch }}-${{ steps.toolchain.outputs.llvm }}-${{ steps.toolchain.outputs.sccache }}-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: |
+            sccache-${{ runner.os }}-${{ runner.arch }}-${{ steps.toolchain.outputs.llvm }}-${{ steps.toolchain.outputs.sccache }}-
 
       - name: Configure, build and test
-        # uv supplies the locked CMake/Ninja versions required by the project.
-        # One worker serializes all presets; verbose preserves their build and test logs.
-        run: uv run --frozen build.py --jobs 1 --verbose
+        env:
+          # CMake applies these launchers to every preset without replacing the real Clang compiler.
+          CMAKE_C_COMPILER_LAUNCHER: sccache
+          CMAKE_CXX_COMPILER_LAUNCHER: sccache
+        # Skip CMake's two header lines; xargs runs the matching workflow names serially.
+        run: cmake --list-presets=build|awk ' NR > 2 { print $1 } '|xargs -I{} cmake --workflow --preset {}
+
+      - name: Report compiler cache statistics
+        if: always() && steps.toolchain.outcome == 'success'
+        run: |
+          sccache --show-stats
+          # Stop the server before archiving so all cache writes have finished.
+          sccache --stop-server
+
+      - name: Save compiler cache
+        # A QEMU test failure should not discard successful compilation results.
+        if: always() && steps.compiler-cache.outcome == 'success'
+        uses: actions/cache/save@v6
+        with:
+          path: ${{ env.SCCACHE_DIR }}
+          key: ${{ steps.compiler-cache.outputs.cache-primary-key }}

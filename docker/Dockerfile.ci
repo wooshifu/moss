@@ -1,0 +1,36 @@
+# Build and publish separately so normal CI only pulls the installed toolchain.
+FROM ubuntu:24.04
+
+# Homebrew's installer needs Git, curl and a host compiler. ARM64 Debug tests
+# need cross-target GDB; zstd supports actions/cache archives.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+        build-essential ca-certificates curl file git procps \
+        gdb-multiarch bzip2 python3 zstd \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN useradd --create-home --shell /bin/bash linuxbrew \
+    && install -d -o linuxbrew -g linuxbrew /home/linuxbrew/.linuxbrew
+USER linuxbrew
+# Provision a writable default prefix above so the installer needs no sudo.
+RUN curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh -o /tmp/install-brew.sh \
+    && NONINTERACTIVE=1 /bin/bash /tmp/install-brew.sh \
+    && rm /tmp/install-brew.sh
+ENV PATH="/home/linuxbrew/.linuxbrew/bin:/home/linuxbrew/.linuxbrew/sbin:${PATH}"
+# Refresh on every image build to pick up the latest stable formula versions.
+# Homebrew packages LLD separately from LLVM.
+RUN brew update \
+    && brew install uv qemu llvm lld sccache \
+    && brew cleanup --prune=all \
+    && rm -rf /home/linuxbrew/.cache/Homebrew
+
+# Actions needs root to write the runner's mounted workspace and cache paths.
+USER root
+# Keep the preinstalled environment outside the checkout mount; CMake invokes uv
+# for its Python helpers and must use the same environment as CMake/Ninja.
+ENV UV_PROJECT_ENVIRONMENT=/opt/moss-venv \
+    UV_PYTHON=/usr/bin/python3 \
+    PATH="/opt/moss-venv/bin:/home/linuxbrew/.linuxbrew/opt/llvm/bin:/home/linuxbrew/.linuxbrew/opt/lld/bin:${PATH}"
+WORKDIR /opt/moss-toolchain
+COPY pyproject.toml uv.lock ./
+RUN uv sync --frozen --no-install-project && uv cache clean

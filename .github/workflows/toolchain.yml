@@ -1,0 +1,60 @@
+name: Toolchain image
+
+on:
+  push:
+    branches: [master]
+    paths:
+      - .github/workflows/cmake.yml
+      - .github/workflows/toolchain.yml
+      - docker/Dockerfile.ci
+      - pyproject.toml
+      - uv.lock
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+# Prevent overlapping publishers from updating the same latest tag.
+concurrency:
+  group: toolchain-image
+
+jobs:
+  publish:
+    if: github.ref == 'refs/heads/master'
+    runs-on: ubuntu-24.04
+    env:
+      IMAGE: ghcr.io/${{ github.repository }}-toolchain:latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Build latest stable toolchain image
+        # Bypass old install layers so relevant changes also refresh stable tools.
+        run: >-
+          docker build --pull --no-cache --file docker/Dockerfile.ci
+          --label "org.opencontainers.image.source=https://github.com/$GITHUB_REPOSITORY"
+          --tag "$IMAGE" .
+
+      - name: Verify installed tools
+        run: |
+          docker run --rm "$IMAGE" bash -e -c '
+            cmake --version
+            ninja --version
+            clang --version
+            clang-scan-deps --version
+            ld.lld --version
+            sccache --version
+            qemu-system-aarch64 --version
+            qemu-system-x86_64 --version
+            qemu-system-riscv64 --version
+            python -c "import packaging, pydantic, rich, typer"
+          '
+
+      - name: Publish to GHCR
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          echo "$GH_TOKEN" | docker login ghcr.io --username "$GITHUB_ACTOR" --password-stdin
+          docker push "$IMAGE"
