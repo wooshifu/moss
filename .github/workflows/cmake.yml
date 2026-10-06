@@ -1,0 +1,52 @@
+name: CMake workflow
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  workflow:
+    name: ${{ matrix.arch }}-${{ matrix.build_type }}
+    # Keep the runner release fixed so apt.llvm.org selects a supported repository.
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: [arm64, x64, riscv64]
+        build_type: [debug, release, relwithdebinfo]
+    env:
+      # Match the minimum in cmake/toolchain_detection.cmake and check_prerequisites.py.
+      LLVM_VERSION: "23"
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Install latest stable uv and QEMU
+        run: |
+          # The Ubuntu runner includes Homebrew, but its bin directory is not on PATH.
+          eval "$(/home/linuxbrew/.linuxbrew/bin/brew shellenv)"
+          brew update
+          brew install uv qemu
+          echo "$(brew --prefix)/bin" >> "$GITHUB_PATH"
+          qemu-system-aarch64 --version
+          qemu-system-x86_64 --version
+          qemu-system-riscv64 --version
+
+      - name: Install LLVM and test dependencies
+        run: |
+          curl -fsSL https://apt.llvm.org/llvm.sh -o "$RUNNER_TEMP/llvm.sh"
+          sudo bash "$RUNNER_TEMP/llvm.sh" "$LLVM_VERSION"
+          # clang-scan-deps is required by C++ modules; ARM64 Debug tests also use GDB.
+          sudo apt-get install -y --no-install-recommends \
+            "clang-tools-${LLVM_VERSION}" "llvm-${LLVM_VERSION}" \
+            gdb-multiarch bzip2
+          echo "/usr/lib/llvm-${LLVM_VERSION}/bin" >> "$GITHUB_PATH"
+
+      - name: Configure, build and test
+        # uv supplies the locked CMake/Ninja versions required by the project.
+        run: uv run --frozen cmake --workflow --preset "${{ matrix.arch }}-${{ matrix.build_type }}"
