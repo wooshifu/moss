@@ -518,6 +518,86 @@ public:
   }
 };
 
+// An opt-in periodic limit on the CPU time actually spent by one thread.
+// Unused time expires at a period boundary; execution past the limit becomes
+// debt, so a long IRQ-masked interval cannot earn fresh CPU time by crossing
+// that boundary. Configure before the thread is made runnable.
+struct CpuBudget {
+  u64 runtime_ns{0};
+  u64 period_ns{0}; // Zero means no budget is configured for this thread.
+  u64 period_start_ns{0};
+  u64 spent_ns{0};
+
+  [[nodiscard]] bool configure(u64 runtime, u64 period, u64 now_ns) noexcept {
+    if (runtime == 0 || runtime > period) {
+      return false;
+    }
+    runtime_ns = runtime;
+    period_ns = period;
+    period_start_ns = now_ns;
+    spent_ns = 0;
+    return true;
+  }
+
+  // Each elapsed period repays at most one runtime allowance. Time that a
+  // thread did not use is not banked for a later burst.
+  void advance(u64 now_ns) noexcept {
+    if (period_ns == 0 || now_ns <= period_start_ns) {
+      return;
+    }
+    const u64 periods = (now_ns - period_start_ns) / period_ns;
+    if (periods == 0) {
+      return;
+    }
+    const u64 allowance = periods * runtime_ns; // runtime <= period, so this fits in elapsed wall time.
+    spent_ns = spent_ns > allowance ? spent_ns - allowance : 0;
+    period_start_ns += periods * period_ns;
+  }
+
+  void charge(u64 start_ns, u64 end_ns) noexcept {
+    if (period_ns == 0 || end_ns <= start_ns || end_ns <= period_start_ns) {
+      return;
+    }
+    if (start_ns < period_start_ns) {
+      start_ns = period_start_ns;
+    }
+    advance(start_ns);
+    const u64 elapsed_in_window = end_ns - period_start_ns;
+    if (elapsed_in_window < period_ns) {
+      spent_ns = saturating_add(spent_ns, end_ns - start_ns);
+      return;
+    }
+
+    // The thread ran continuously across the first boundary. Full later
+    // periods add (period-runtime) of debt; only the final tail belongs to
+    // the new window. This arithmetic avoids looping over missed ticks.
+    spent_ns = saturating_add(spent_ns, period_ns - (start_ns - period_start_ns));
+    const u64 debt = spent_ns > runtime_ns ? spent_ns - runtime_ns : 0;
+    const u64 after_first = elapsed_in_window - period_ns;
+    const u64 full_periods = after_first / period_ns;
+    const u64 tail_ns = after_first % period_ns;
+    spent_ns = saturating_add(saturating_add(debt, full_periods * (period_ns - runtime_ns)), tail_ns);
+    period_start_ns += (full_periods + 1) * period_ns;
+  }
+
+  // Unbudgeted threads skip the clock read on enqueue and dispatch.
+  [[nodiscard]] bool configured() const noexcept { return period_ns != 0; }
+
+  [[nodiscard]] bool exhausted(u64 now_ns) noexcept {
+    if (period_ns == 0) {
+      return false;
+    }
+    advance(now_ns);
+    return spent_ns >= runtime_ns;
+  }
+
+private:
+  [[nodiscard]] static u64 saturating_add(u64 left, u64 right) noexcept {
+    const u64 maximum = ~static_cast<u64>(0);
+    return right > maximum - left ? maximum : left + right;
+  }
+};
+
 // CFS scheduling entity — includes embedded RB-tree node fields so that
 // enqueue/dequeue never needs pool allocation (mirrors Linux sched_entity).
 struct SchedEntity {
@@ -528,6 +608,7 @@ struct SchedEntity {
   // Elapsed time while dispatched for both RT and CFS, including sub-tick time.
   // CFS sum_exec_runtime can be capped for fairness and is not a budget meter.
   u64 cpu_runtime_ns;
+  CpuBudget cpu_budget;
   u64 sum_exec_runtime;
   u64 prev_sum_exec_runtime;
 
@@ -563,9 +644,9 @@ struct SchedEntity {
   SchedEntity() noexcept
       // Neutral nice=0 uses weight 1024; prio 120 is the retained Linux-style
       // normal-priority default. The exact reason for retaining 120 is unrecorded.
-      : vruntime(0), exec_start(0), cpu_runtime_ns(0), sum_exec_runtime(0), prev_sum_exec_runtime(0), weight(1024),
-        nice(0), prio(120), load_weight(1024), load_sum(0), util_sum(0), load_avg(0), util_avg(0), rb_on_rq(false),
-        rb_data(nullptr), rb_left(nullptr), rb_right(nullptr), rb_parent(nullptr), rb_red(true) {}
+      : vruntime(0), exec_start(0), cpu_runtime_ns(0), cpu_budget{}, sum_exec_runtime(0), prev_sum_exec_runtime(0),
+        weight(1024), nice(0), prio(120), load_weight(1024), load_sum(0), util_sum(0), load_avg(0), util_avg(0),
+        rb_on_rq(false), rb_data(nullptr), rb_left(nullptr), rb_right(nullptr), rb_parent(nullptr), rb_red(true) {}
 
   [[nodiscard]] u64 charge_runtime(u64 now_ns) noexcept {
     // A stalled or slightly backward cross-CPU clock must not charge time or
@@ -575,6 +656,7 @@ struct SchedEntity {
     }
     const u64 elapsed = now_ns - exec_start;
     cpu_runtime_ns += elapsed;
+    cpu_budget.charge(exec_start, now_ns);
     exec_start = now_ns;
     return elapsed;
   }
@@ -691,6 +773,10 @@ struct Thread {
   // Used by RtRunqueue; nullptr when not enqueued in an RT queue.
   Thread *rt_next_{nullptr};
   bool rt_on_rq{false};
+  // Only Ready threads waiting for their own CPU allowance use this list.
+  // Protected by CfsScheduler::task_transition_lock_, like runqueue links.
+  Thread *budget_next_{nullptr};
+  bool budget_parked{false};
 
   // Signal alternate stack (sigaltstack)
   VirtAddr alt_stack_sp{0}; // alternate stack base address
@@ -793,6 +879,8 @@ private:
 
   struct {
     u64 max_memory;
+    // Reserved process lifetime cap; the scheduler does not read it. The
+    // periodic per-thread budget above has separate accounting and limits.
     u64 max_cpu_time;
     u32 max_threads;
     u32 max_files;

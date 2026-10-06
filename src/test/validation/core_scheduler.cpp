@@ -161,6 +161,219 @@ void cpu_runtime_accounting() {
   }
 }
 
+void cpu_budget_accounting() {
+  using namespace process;
+  Thread cfs(0, 0), rt(1, 0);
+  rt.sched_class = SchedClass::RealTime;
+
+  // Synthetic 10 ns/20 ns windows expose the exact quota and carry-over debt
+  // with small values; their scale is irrelevant to scheduler policy.
+  constexpr u64 runtime_ns = 10;
+  constexpr u64 period_ns = 2 * runtime_ns;
+  auto &cfs_budget = cfs.se.cpu_budget;
+  ut::expect(!cfs_budget.exhausted(0)); // A thread has no limit until configured.
+  ut::expect(!cfs_budget.configure(0, period_ns, 0));
+  ut::expect(!cfs_budget.configure(runtime_ns, 0, 0));
+  ut::expect(!cfs_budget.configure(period_ns + 1, period_ns, 0));
+  if (!ut::expect(cfs_budget.configure(runtime_ns, period_ns, 0))) {
+    return;
+  }
+  ut::expect(!cfs_budget.configure(period_ns + 1, period_ns, 0));
+  ut::expect(cfs.se.charge_runtime(runtime_ns) == runtime_ns);
+  ut::expect(cfs_budget.spent_ns == runtime_ns && cfs_budget.exhausted(runtime_ns));
+  ut::expect(cfs.se.charge_runtime(runtime_ns) == 0 && cfs.se.charge_runtime(0) == 0);
+  ut::expect(cfs_budget.spent_ns == runtime_ns && cfs.se.cpu_runtime_ns == runtime_ns);
+  ut::expect(!cfs_budget.exhausted(period_ns) && cfs_budget.spent_ns == 0);
+  ut::expect(!cfs_budget.exhausted(2 * period_ns) && cfs_budget.spent_ns == 0);
+  // A new dispatch starts at the new window; unused quota did not accumulate.
+  cfs.se.exec_start = 2 * period_ns;
+  ut::expect(cfs.se.charge_runtime(2 * period_ns + runtime_ns) == runtime_ns);
+  ut::expect(cfs_budget.exhausted(2 * period_ns + runtime_ns));
+
+  auto &rt_budget = rt.se.cpu_budget;
+  if (!ut::expect(rt_budget.configure(runtime_ns, period_ns, 0))) {
+    return;
+  }
+  // A single RT interval crossing the boundary consumes the new window and
+  // carries the old overrun forward; CFS fairness counters cannot erase it.
+  const u64 crossed_ns = period_ns + runtime_ns / 2;
+  ut::expect(rt.se.charge_runtime(crossed_ns) == crossed_ns);
+  ut::expect(rt_budget.period_start_ns == period_ns && rt_budget.spent_ns == runtime_ns + runtime_ns / 2);
+  ut::expect(rt_budget.exhausted(crossed_ns));
+  ut::expect(!rt_budget.exhausted(2 * period_ns) && rt_budget.spent_ns == runtime_ns / 2);
+  ut::expect(cfs_budget.spent_ns == runtime_ns && rt.se.cpu_runtime_ns == crossed_ns);
+}
+
+void cpu_budget_queue(bool realtime) {
+  using namespace process;
+  unique_ptr<CfsScheduler> scheduler(new CfsScheduler());
+  if (!ut::expect(scheduler.get() != nullptr)) {
+    return;
+  }
+  Thread limited(0, 0), peer(1, 0), caller(2, 0), sleeper(3, 0);
+  const auto cpu = arch::get_current_cpu_id();
+  // A synthetic minute keeps the real clock inside the first window while
+  // this local-queue test forces a refill at the precise period boundary.
+  constexpr u64 period_ns = 60'000'000'000ULL;
+  constexpr u64 runtime_ns = period_ns / 2;
+  const u64 anchor_ns = timer::TimerSubsystem::instance().now_ns();
+  if (!ut::expect(anchor_ns > 0)) {
+    return;
+  }
+  if (realtime) {
+    limited.sched_class = SchedClass::RealTime;
+    limited.sched_policy = SchedPolicy::Fifo;
+  }
+  caller.sched_class = SchedClass::RealTime;
+  caller.state = ProcessState::Running;
+  caller.cpu = cpu;
+  limited.se.exec_start = anchor_ns;
+  if (!ut::expect(limited.se.cpu_budget.configure(runtime_ns, period_ns, anchor_ns))) {
+    return;
+  }
+  ut::expect(limited.se.charge_runtime(anchor_ns + runtime_ns) == runtime_ns);
+  sleeper.se.exec_start = anchor_ns;
+  if (!ut::expect(sleeper.se.cpu_budget.configure(runtime_ns, period_ns, anchor_ns))) {
+    return;
+  }
+  ut::expect(sleeper.se.charge_runtime(anchor_ns + runtime_ns) == runtime_ns);
+
+  // Keep synthetic contexts off the dispatch path, as in self-selection tests.
+  const bool restore_irqs = arch::interrupts_enabled();
+  arch::disable_interrupts();
+  auto *original = CfsScheduler::get_current_task();
+  CfsScheduler::set_current_task(&caller);
+  scheduler->enqueue_task(&limited, cpu);
+  scheduler->enqueue_task(&peer, cpu);
+  scheduler->enqueue_task(&sleeper, cpu);
+  const bool sleeper_parked = sleeper.budget_parked && !sleeper.se.rb_on_rq && !sleeper.rt_on_rq;
+  scheduler->dequeue_task(&sleeper);
+  sleeper.state = ProcessState::Sleeping;
+  const bool gated = limited.budget_parked && !limited.se.rb_on_rq && !limited.rt_on_rq && sleeper_parked &&
+                     scheduler->get_cpu_nr_running(cpu) == 1 && scheduler->pick_next_task(cpu) == &peer;
+
+  bool donation_safe = true;
+  if (!realtime) {
+    PriorityDonation donation{};
+    if (ut::expect(scheduler->begin_ipc_call(&donation, &caller))) {
+      scheduler->bind_ipc_server(&donation, &limited);
+      donation_safe = limited.effective_rt_priority() == caller.effective_rt_priority() && limited.budget_parked &&
+                      !limited.se.rb_on_rq && !limited.rt_on_rq && scheduler->pick_next_task(cpu) == &peer;
+      scheduler->end_ipc_call(&donation);
+    } else {
+      donation_safe = false;
+    }
+  }
+
+  scheduler->replenish_cpu_budgets(anchor_ns + period_ns);
+  const bool replenished = !limited.budget_parked && (limited.se.rb_on_rq || limited.rt_on_rq) &&
+                           scheduler->get_cpu_nr_running(cpu) == 2 &&
+                           (!realtime || scheduler->pick_next_task(cpu) == &limited);
+  const bool sleeper_blocked =
+      sleeper.state == ProcessState::Sleeping && !sleeper.budget_parked && !sleeper.se.rb_on_rq && !sleeper.rt_on_rq;
+  bool dispatch_gated = true;
+  if (realtime && replenished) {
+    // The RT task wins selection, then a fresh sub-tick charge must keep it
+    // parked at dispatch while the unbudgeted peer remains eligible.
+    limited.se.exec_start = anchor_ns + period_ns;
+    ut::expect(limited.se.charge_runtime(anchor_ns + period_ns + runtime_ns) == runtime_ns);
+    dispatch_gated = scheduler->take_next_task(cpu) == &peer && limited.budget_parked && !limited.rt_on_rq &&
+                     scheduler->get_cpu_nr_running(cpu) == 0;
+  }
+  scheduler->dequeue_task(&limited);
+  scheduler->dequeue_task(&peer);
+  scheduler->dequeue_task(&sleeper);
+
+  bool yield_charged = true;
+  if (!realtime) {
+    Thread yielding(4, 0);
+    // One nanosecond behind the already sampled clock guarantees that the
+    // current thread has spent its one-nanosecond quota at enqueue.
+    constexpr u64 yield_runtime_ns = 1;
+    const u64 yield_start_ns = anchor_ns - yield_runtime_ns;
+    yielding.se.exec_start = yield_start_ns;
+    yielding.cpu = cpu;
+    yielding.state = ProcessState::Running;
+    if (ut::expect(yielding.se.cpu_budget.configure(yield_runtime_ns, period_ns, yield_start_ns))) {
+      CfsScheduler::set_current_task(&yielding);
+      scheduler->enqueue_task(&yielding, cpu);
+      yield_charged = yielding.budget_parked && !yielding.se.rb_on_rq && !yielding.rt_on_rq &&
+                      yielding.se.cpu_budget.spent_ns >= yield_runtime_ns;
+      scheduler->dequeue_task(&yielding);
+      CfsScheduler::set_current_task(&caller);
+    } else {
+      yield_charged = false;
+    }
+  }
+
+  bool affinity_moved = true;
+  if (!realtime && g_num_cpus >= 2) {
+    Thread affinity(5, 0);
+    const u32 target = (cpu + 1) % g_num_cpus;
+    affinity.se.exec_start = anchor_ns;
+    if (ut::expect(affinity.se.cpu_budget.configure(runtime_ns, period_ns, anchor_ns))) {
+      ut::expect(affinity.se.charge_runtime(anchor_ns + runtime_ns) == runtime_ns);
+      scheduler->enqueue_task(&affinity, cpu);
+      const bool parked = affinity.budget_parked && affinity.cpu == cpu && !affinity.se.rb_on_rq;
+      // A parked task can lose its old CPU while it waits for the next period.
+      {
+        containers::LockGuard<containers::IrqSpinLock> guard(affinity.sleep_lock);
+        scheduler->set_task_affinity_mask(&affinity, CpuBitmap::single(target).low_word());
+      }
+      scheduler->replenish_cpu_budgets(anchor_ns + period_ns);
+      affinity_moved = parked && affinity.cpu == target && affinity.cpu_affinity_mask.test(affinity.cpu) &&
+                       affinity.se.rb_on_rq && scheduler->get_cpu_nr_running(cpu) == 0 &&
+                       scheduler->get_cpu_nr_running(target) == 1 && scheduler->pick_next_task(target) == &affinity;
+      scheduler->dequeue_task(&affinity);
+    } else {
+      affinity_moved = false;
+    }
+  }
+
+  Thread tick_task(6, 0);
+  const u64 tick_anchor_ns = timer::TimerSubsystem::instance().now_ns();
+  // Starting one nanosecond before the sampled clock makes the tick's live
+  // charge reach this quota even at the clock's coarsest resolution.
+  constexpr u64 tick_runtime_ns = 1;
+  bool tick_deferred = false;
+  if (tick_anchor_ns > 0 &&
+      ut::expect(tick_task.se.cpu_budget.configure(tick_runtime_ns, period_ns, tick_anchor_ns - tick_runtime_ns))) {
+    tick_task.se.exec_start = tick_anchor_ns - tick_runtime_ns;
+    tick_task.cpu = cpu;
+    tick_task.state = ProcessState::Running;
+    tick_task.preempt_count = 1; // Hold off context switching while the tick charges CPU time.
+    if (realtime) {
+      tick_task.sched_class = SchedClass::RealTime;
+      tick_task.sched_policy = SchedPolicy::Fifo;
+    } else {
+      scheduler->enqueue_task(&peer, cpu);
+    }
+    CfsScheduler::set_current_task(&tick_task);
+    scheduler->scheduler_tick();
+    tick_deferred = tick_task.need_resched && tick_task.state == ProcessState::Running &&
+                    tick_task.se.cpu_runtime_ns >= tick_runtime_ns &&
+                    tick_task.se.cpu_budget.exhausted(timer::TimerSubsystem::instance().now_ns()) &&
+                    scheduler->total_preemptions() == 0;
+    CfsScheduler::set_current_task(&caller);
+    if (!realtime) {
+      scheduler->dequeue_task(&peer);
+    }
+  }
+  CfsScheduler::set_current_task(original);
+  if (restore_irqs) {
+    arch::enable_interrupts();
+  }
+  ut::expect(gated);
+  ut::expect(donation_safe);
+  ut::expect(replenished);
+  ut::expect(sleeper_blocked);
+  ut::expect(dispatch_gated);
+  ut::expect(yield_charged);
+  ut::expect(affinity_moved);
+  ut::expect(tick_deferred);
+  ut::expect(scheduler->get_cpu_nr_running(cpu) == 0);
+}
+
 void ipc_priority_inheritance() {
   using namespace process;
   unique_ptr<CfsScheduler> scheduler(new CfsScheduler());
@@ -372,6 +585,9 @@ void register_scheduler_cases() {
     ut::register_test("cfs_self_selection", [] { scheduler_self_selection(false); });
     ut::register_test("rr_self_selection", [] { scheduler_self_selection(true); });
     ut::register_test("cpu_runtime_accounting", cpu_runtime_accounting);
+    ut::register_test("cpu_budget_accounting", cpu_budget_accounting);
+    ut::register_test("cfs_cpu_budget_queue", [] { cpu_budget_queue(false); });
+    ut::register_test("rt_cpu_budget_queue", [] { cpu_budget_queue(true); });
     ut::register_test("ipc_priority_inheritance", ipc_priority_inheritance);
     ut::register_test("migration_current_owner", migration_current_owner);
   });

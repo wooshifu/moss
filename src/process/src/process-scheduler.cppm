@@ -1191,6 +1191,11 @@ private:
   containers::PerCpuData<CfsRunqueue> runqueues_;
   containers::PerCpuData<RtRunqueue> rt_runqueues_;
   containers::PerCpuData<IdleTask *> idle_tasks_;
+  // Ready tasks that have used their periodic CPU allowance stay off both
+  // runqueues. The transition lock also protects this intrusive list; the
+  // count lets each CPU's tick skip that global lock while nothing is parked.
+  Thread *budget_waiters_{nullptr};
+  containers::AtomicCounter<u32> budget_parked_count_;
 
   containers::PerCpuAtomicCounter<u64> total_switches_;
   containers::PerCpuAtomicCounter<u64> total_preemptions_;
@@ -1217,6 +1222,13 @@ public:
   /// Called after enqueue_task() so the task is already in the runqueue.
   void set_init_task(Thread *task) noexcept { init_task_ = task; }
 
+  // Call while holding sleep_lock when changing a live task's affinity.
+  // Budget refill reads the mask under this same transition lock.
+  void set_task_affinity_mask(Thread *thread, u32 mask) noexcept {
+    containers::LockGuard<containers::IrqSpinLock> guard(task_transition_lock_);
+    thread->cpu_affinity_mask.set_from_u32(mask);
+  }
+
   void enqueue_task(Thread *thread, u32 cpu) noexcept {
     if (thread == nullptr || cpu >= g_num_cpus) {
       return;
@@ -1242,6 +1254,57 @@ public:
     dequeue_task_unlocked(thread);
   }
 
+  // Called by the scheduler tick. A blocked thread is never on this list:
+  // period expiry must not complete an unrelated IPC, I/O or signal wait.
+  void replenish_cpu_budgets(u64 now_ns) noexcept {
+    // A stale zero only defers a refill to a later tick on some CPU; the
+    // soft limit is already checked at tick granularity.
+    if (budget_parked_count_.load(containers::MemoryOrder::Relaxed) == 0) {
+      return;
+    }
+    // The boot CPU ceiling is 16, so the inline CpuBitmap needs no IRQ-time
+    // allocation. Send IPIs after releasing the runqueue transition lock.
+    CpuBitmap wake_cpus;
+    {
+      containers::LockGuard<containers::IrqSpinLock> guard(task_transition_lock_);
+      Thread **link = &budget_waiters_;
+      while (*link) {
+        Thread *task = *link;
+        if (task->state != ProcessState::Ready) {
+          unlink_budget_waiter_unlocked(link);
+          continue;
+        }
+        // reschedule_current may park a task before assembly saves its
+        // continuation. Wait for bootstrap to release that CPU ownership.
+        if (get_current_task_on_cpu(task->cpu) == task || task->se.cpu_budget.exhausted(now_ns)) {
+          link = &task->budget_next_;
+          continue;
+        }
+        u32 target_cpu = task->cpu;
+        if (!task->cpu_affinity_mask.test(target_cpu)) {
+          // A remote affinity change can exclude the CPU on which this task
+          // exhausted its budget. Keep it parked if no online CPU is allowed.
+          target_cpu = 0;
+          while (target_cpu < g_num_cpus && !task->cpu_affinity_mask.test(target_cpu)) {
+            ++target_cpu;
+          }
+          if (target_cpu == g_num_cpus) {
+            link = &task->budget_next_;
+            continue;
+          }
+        }
+        unlink_budget_waiter_unlocked(link);
+        enqueue_task_unlocked(task, target_cpu);
+        wake_cpus.set(target_cpu);
+      }
+    }
+    for (u32 cpu = 0; cpu < g_num_cpus; ++cpu) {
+      if (wake_cpus.test(cpu)) {
+        send_reschedule_ipi(cpu);
+      }
+    }
+  }
+
   // Pick the next task to run — RT tasks always take precedence over CFS.
   [[nodiscard]] Thread *pick_next_task(u32 cpu) noexcept {
     if (cpu >= g_num_cpus) {
@@ -1259,11 +1322,17 @@ public:
       return nullptr;
     }
     containers::LockGuard<containers::IrqSpinLock> guard(task_transition_lock_);
-    auto *task = pick_next_task_unlocked(cpu);
-    if (task) {
+    for (auto *task = pick_next_task_unlocked(cpu); task; task = pick_next_task_unlocked(cpu)) {
       dequeue_task_unlocked(task);
+      // A yield can publish Ready before switch_to_bootstrap charges its
+      // final sub-tick interval. Check again at the dispatch boundary.
+      if (task->se.cpu_budget.configured() && task->se.cpu_budget.exhausted(get_current_time())) {
+        park_budget_unlocked(task);
+        continue;
+      }
+      return task;
     }
-    return task;
+    return nullptr;
   }
 
   bool migrate_ready_task(u32 source, u32 destination) noexcept {
@@ -1690,7 +1759,39 @@ private:
     return runqueues_.get_cpu(cpu).pick_next_task();
   }
 
+  void unlink_budget_waiter_unlocked(Thread **link) noexcept {
+    Thread *thread = *link;
+    *link = thread->budget_next_;
+    thread->budget_next_ = nullptr;
+    thread->budget_parked = false;
+    (void)budget_parked_count_.fetch_sub(1, containers::MemoryOrder::Relaxed);
+  }
+
+  void unpark_budget_unlocked(Thread *thread) noexcept {
+    if (!thread->budget_parked) {
+      return;
+    }
+    // ponytail: a linear list keeps the timer path allocation-free; replace
+    // it with an expiry heap only if measured parked-thread counts demand it.
+    Thread **link = &budget_waiters_;
+    while (*link != thread) {
+      link = &(*link)->budget_next_;
+    }
+    unlink_budget_waiter_unlocked(link);
+  }
+
+  void park_budget_unlocked(Thread *thread) noexcept {
+    if (thread->budget_parked) {
+      return;
+    }
+    thread->budget_next_ = budget_waiters_;
+    budget_waiters_ = thread;
+    thread->budget_parked = true;
+    (void)budget_parked_count_.fetch_add(1, containers::MemoryOrder::Relaxed);
+  }
+
   void dequeue_task_unlocked(Thread *thread) noexcept {
+    unpark_budget_unlocked(thread);
     const u32 cpu = thread->cpu;
     if (cpu >= g_num_cpus) {
       return;
@@ -1707,6 +1808,19 @@ private:
     // placement before linking the node so a target CPU cannot observe an
     // intrusive node with the old CPU after acquiring that same lock.
     thread->cpu = cpu;
+    if (thread->se.cpu_budget.configured()) {
+      const u64 now = get_current_time();
+      // sched_yield publishes Ready before leaving the CPU. Charge that live
+      // interval before a period rollover can discard time from the old window.
+      if (get_current_task_on_cpu(cpu) == thread) {
+        (void)thread->se.charge_runtime(now);
+      }
+      if (thread->se.cpu_budget.exhausted(now)) {
+        park_budget_unlocked(thread);
+        return;
+      }
+    }
+    unpark_budget_unlocked(thread);
     if (thread->effective_rt_priority() != 0) {
       rt_runqueues_.get_cpu(cpu).enqueue_task(thread);
     } else {
@@ -2098,6 +2212,9 @@ public:
     // whose continuation is still executing on this CPU.
     if (auto *outgoing = get_current_task()) {
       // Capture the final sub-tick interval on sleep, yield, exit and migration.
+      // A yielding task may already be Ready on its queue, so serialize this
+      // charge with another CPU's take/priority transition.
+      containers::LockGuard<containers::IrqSpinLock> guard(task_transition_lock_);
       (void)outgoing->se.charge_runtime(get_current_time());
     }
     context_switch(&previous, &bootstrap_contexts_.get_local());
@@ -2255,11 +2372,14 @@ public:
 
     tick_count_++;
     u32 cpu = get_current_cpu_id();
+    const u64 now = get_current_time();
+    // Even an idle CPU must release parked work after its period expires.
+    replenish_cpu_budgets(now);
 
     // Amortize balance scans over eight 6 ms ticks (~48 ms); the choice of
     // eight ticks has no recorded workload calibration.
     if (tick_count_ % 8 == 0 && balance_callback_) {
-      balance_callback_(get_current_time(), this);
+      balance_callback_(now, this);
     }
 
     Thread *curr = get_current_task();
@@ -2277,14 +2397,14 @@ public:
     }
 
     // Preemption guard: if the task holds a spinlock (preempt_count > 0),
-    // do NOT context-switch.  Just mark need_resched and return; the
-    // actual switch happens when preempt_enable() drops the count to 0.
-    // We still update vruntime/time-slice accounting below so CFS and
-    // RR accounting stay accurate even during non-preemptible sections.
+    // do NOT context-switch. Mark need_resched; the next timer tick after
+    // the critical section retries. Account time even while it cannot switch.
     bool preempt_blocked = (curr->preempt_count > 0);
 
-    u64 now = get_current_time();
+    // Donation changes the server's dispatch priority, not which thread
+    // consumed the CPU. Charge the dispatched thread's own allowance.
     const u64 actual_delta = curr->se.charge_runtime(now);
+    const bool budget_exhausted = curr->se.cpu_budget.exhausted(now);
     // A non-advancing timestamp still advances CFS fairness by a 1 us
     // fallback. The exact choice is unrecorded; it is not actual CPU time.
     u64 delta = actual_delta ? actual_delta : 1000;
@@ -2293,7 +2413,7 @@ public:
     if (curr->effective_rt_priority() != 0) {
       // Check if a higher-priority RT task arrived
       u32 hp = rt_runqueues_.get_cpu(cpu).highest_priority();
-      bool need_preempt = (hp > curr->effective_rt_priority());
+      bool need_preempt = budget_exhausted || (hp > curr->effective_rt_priority());
 
       // SCHED_RR: decrement time slice, rotate on expiry
       if (!need_preempt && curr->sched_policy == SchedPolicy::RR) {
@@ -2304,7 +2424,7 @@ public:
           curr->rt.time_slice_remaining -= actual_delta;
         }
       }
-      // SCHED_FIFO: no time slice — only preempted by higher priority
+      // SCHED_FIFO has no time slice; its budget still limits execution.
 
       if (need_preempt) {
         if (curr->state == ProcessState::Terminated) {
@@ -2312,7 +2432,7 @@ public:
         }
         curr->need_resched = true;
         if (preempt_blocked) {
-          return; // defer switch until preempt_enable()
+          return; // Retry at the next tick after preemption becomes possible.
         }
         curr->state = ProcessState::Ready;
         record_preemption();
@@ -2327,7 +2447,7 @@ public:
       curr->need_resched = true;
       update_current(curr, delta);
       if (preempt_blocked) {
-        return; // defer until preempt_enable()
+        return; // Retry at the next tick after preemption becomes possible.
       }
       curr->state = ProcessState::Ready;
       record_preemption();
@@ -2346,6 +2466,20 @@ public:
     }
     update_current(curr, delta);
 
+    if (budget_exhausted) {
+      // This soft limit is checked at the 6 ms scheduler tick. A masked IRQ
+      // or critical section can overrun; CpuBudget carries that debt forward.
+      curr->need_resched = true;
+      if (preempt_blocked) {
+        return;
+      }
+      curr->se.prev_sum_exec_runtime = curr->se.sum_exec_runtime;
+      curr->state = ProcessState::Ready;
+      record_preemption();
+      reschedule_current(curr, cpu);
+      return;
+    }
+
     // Check if a higher-priority task is waiting (CFS: lower vruntime)
     if (should_preempt_current(curr)) {
       // Guard: task may have been marked Terminated by sys_exit
@@ -2357,7 +2491,7 @@ public:
       curr->need_resched = true;
 
       if (preempt_blocked) {
-        return; // defer until preempt_enable()
+        return; // Retry at the next tick after preemption becomes possible.
       }
 
       // Reset time-slice accounting so curr gets a fresh slice next time

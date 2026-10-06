@@ -706,11 +706,15 @@ def test_offline_comparison_recomputes_samples_and_allows_revision_changes():
 
 def test_catalog_version_keeps_legacy_evidence_but_rejects_cross_version():
     legacy = benchmark_report()  # Reports written before catalog v2 had no catalog_version field.
+    previous = copy.deepcopy(legacy)
+    previous["catalog_version"] = 2
     current = copy.deepcopy(legacy)
     current["catalog_version"] = kv.CATALOG_VERSION
-    assert current["catalog_version"] == 2
+    assert current["catalog_version"] == 3
     assert kv.saved_measurement(legacy, legacy["guests"][0]) is not None
     assert kv.comparison(legacy, legacy)[0]["status"] == "comparable"
+    assert kv.comparison(previous, previous)[0]["status"] == "comparable"
+    assert kv.comparison(previous, current)[0]["status"] == "not_comparable"
     assert kv.comparison(legacy, current)[0]["status"] == "not_comparable"
     assert kv.comparison(current, current)[0]["status"] == "comparable"
 

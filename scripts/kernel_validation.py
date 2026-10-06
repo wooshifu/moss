@@ -105,6 +105,9 @@ CATALOG = {
         "cfs_self_selection",
         "rr_self_selection",
         "cpu_runtime_accounting",
+        "cpu_budget_accounting",
+        "cfs_cpu_budget_queue",
+        "rt_cpu_budget_queue",
         "ipc_priority_inheritance",
         "migration_current_owner",
     ],
@@ -332,9 +335,9 @@ CATALOG = {
         )
     },
 }
-# The scheduler.cpu_runtime_accounting case changes the ordered inventory from
-# catalog v1. Older reports lack this field and remain readable as v1 evidence.
-CATALOG_VERSION = 2
+# Scheduler CPU budget cases change the ordered inventory from catalog v2.
+# Earlier reports retain their recorded version for comparison checks.
+CATALOG_VERSION = 3
 FUNCTIONAL = [
     "drivers",
     "resources",
@@ -1033,7 +1036,7 @@ def run_guest(cfg: Artifacts, workload: str, directory: Path, settings: dict, it
 def validate_report(report: dict) -> None:
     if integer(report, "schema_version") != 2 or report.get("finalized") is not True:
         raise ValueError("unsupported or unfinished report")
-    if "catalog_version" in report and integer(report, "catalog_version") not in (1, CATALOG_VERSION):
+    if "catalog_version" in report and integer(report, "catalog_version") not in range(1, CATALOG_VERSION + 1):
         raise ValueError("unsupported catalog version")
     requested, guests = report.get("requested"), report.get("guests")
     if not isinstance(requested, list) or not requested or any(name not in CATALOG for name in requested):

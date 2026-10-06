@@ -3410,7 +3410,13 @@ long sys_sched_setaffinity(long pid_arg, long /*unused*/, long mask_addr, long /
   {
     containers::LockGuard<containers::IrqSpinLock> guard(target->sleep_lock);
     old_mask = target->cpu_affinity_mask.low_word();
-    target->cpu_affinity_mask.set_from_u32(new_mask);
+    // Join budget refill's mask read under the scheduler transition lock;
+    // sleep_lock stays outermost, as on the ordinary wakeup path.
+    if (g_scheduler) {
+      g_scheduler->set_task_affinity_mask(target, new_mask);
+    } else {
+      target->cpu_affinity_mask.set_from_u32(new_mask);
+    }
     if (changes_current && !target->cpu_affinity_mask.test(current_cpu)) {
       needs_migration = true;
       destination = 0;
@@ -3426,7 +3432,11 @@ long sys_sched_setaffinity(long pid_arg, long /*unused*/, long mask_addr, long /
       // obey. Restoring the prior mask keeps the syscall failure atomic.
       {
         containers::LockGuard<containers::IrqSpinLock> guard(target->sleep_lock);
-        target->cpu_affinity_mask.set_from_u32(old_mask);
+        if (g_scheduler) {
+          g_scheduler->set_task_affinity_mask(target, old_mask);
+        } else {
+          target->cpu_affinity_mask.set_from_u32(old_mask);
+        }
       }
       if (restore_irqs) {
         arch::enable_interrupts();
