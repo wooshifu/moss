@@ -51,11 +51,17 @@ def run(
     dtb: Path | None = None,
 ) -> dict:
     if timeout is None:
-        # The 167-stage RISC-V Debug TCG probe completed in 65.94 s; 90 s
-        # leaves room for host contention while still bounding a stalled run.
+        # Other presets completed within the existing 90 s CI bound; retain it.
         # Controlled ARM GDB probes retain their 50 s barrier bound; recent
         # complete runs took at most 44.38 s.
         timeout = 50 if gdb else 90
+        if not gdb and cfg.arch == "RISCV64" and cfg.build["type"] == "Debug":
+            # The 90 s cutoff interrupted a live run at stage 138/168; the same
+            # Debug TCG workload completed in 124.67 s with a larger budget.
+            # Double the old bound to leave headroom on shared hosts while
+            # still bounding stalled guests.
+            # Keep CMake's outer timeout above this bound for copies and cleanup.
+            timeout = 180
     # The debugger barriers below use virt's Image load base and PL011 registers.
     if registration_race and not gdb:
         raise ValueError("registration race probe requires GDB")

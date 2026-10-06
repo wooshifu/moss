@@ -230,7 +230,7 @@ if(MOSS_BUILD_TESTS)
     set_tests_properties(
         moss-supervisor-reset
         PROPERTIES TIMEOUT
-                   55
+                   55 # Two 20 s guest reset probes plus 15 s for copies, uv startup and cleanup/reporting.
                    RUN_SERIAL
                    TRUE
                    LABELS
@@ -238,10 +238,16 @@ if(MOSS_BUILD_TESTS)
                    WORKING_DIRECTORY
                    ${CMAKE_SOURCE_DIR}
     )
+    # 90 s guest probe plus 15 s for artifact copies, uv startup and cleanup/reporting.
+    set(_production_boot_timeout 105)
+    if(MOSS_TARGET_ARCH STREQUAL "RISCV64" AND CMAKE_BUILD_TYPE STREQUAL "Debug")
+        # Match check_production_boot.py's 180 s Debug TCG budget, plus the same 15 s host allowance.
+        set(_production_boot_timeout 195)
+    endif()
     set_tests_properties(
         moss-production-boot
         PROPERTIES TIMEOUT
-                   105 # 90 s guest probe plus 15 s for artifact copies, uv startup and cleanup/reporting.
+                   ${_production_boot_timeout}
                    RUN_SERIAL
                    TRUE
                    LABELS
@@ -266,8 +272,8 @@ if(MOSS_BUILD_TESTS)
         )
     endif()
     if(MOSS_TARGET_ARCH STREQUAL "ARM64" AND CMAKE_BUILD_TYPE STREQUAL "Debug")
-        # Debian names the cross-target debugger gdb-multiarch, while native Native GDB builds on macOS expose the same
-        # remote protocol support as gdb. The controlled input test requires either.
+        # Debian names the cross-target debugger gdb-multiarch, while native GDB builds on macOS expose the same remote
+        # protocol support as gdb. The controlled input test requires either.
         find_program(MOSS_GDB_EXECUTABLE NAMES gdb-multiarch gdb REQUIRED)
         add_test(NAME moss-console-input COMMAND uv run ${CMAKE_SOURCE_DIR}/scripts/check_production_boot.py --manifest
                                                  ${CMAKE_BINARY_DIR}/moss-artifacts.json --gdb ${MOSS_GDB_EXECUTABLE}

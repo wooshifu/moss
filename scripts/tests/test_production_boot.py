@@ -1,6 +1,7 @@
 import hashlib
 import sys
 import time
+from types import SimpleNamespace
 
 import pytest
 
@@ -24,6 +25,7 @@ def test_validation_marker_is_added_only_to_copy():
     "mode",
     [
         "complete",
+        "slow_riscv_debug",
         "interleaved_kernel_log",
         "missing_validation_mode",
         "missing_bridge",
@@ -46,7 +48,8 @@ def test_production_probe_requires_exec_and_subsequent_shell_output(tmp_path, mo
     for path in files.values():
         path.write_bytes(b"image")
     files["initramfs"].write_bytes(make_cpio_entry("init.elf", b"ELF", ino=1) + make_cpio_trailer())
-    cfg = Artifacts(tmp_path / "manifest.json", "ARM64", "linux-image", {"type": "Debug"}, files)
+    arch = "RISCV64" if mode == "slow_riscv_debug" else "ARM64"
+    cfg = Artifacts(tmp_path / "manifest.json", arch, "linux-image", {"type": "Debug"}, files)
     script = "import signal, sys, time\n"
     file_service_start = "moss-init: file service started pid=42"
     if mode == "interleaved_kernel_log":
@@ -266,11 +269,29 @@ assert input() == 'echo MOSS_PRODUCTION_READY'
         return popen(args, **kwargs)
 
     monkeypatch.setattr(boot.subprocess, "Popen", launch)
-    started = time.monotonic()
-    result = boot.run(cfg, tmp_path / "run", timeout=4, gdb="fake-gdb" if mode.startswith("gdb_") else None)
-    assert 0 <= result["elapsed_seconds"] <= time.monotonic() - started
+    if mode == "slow_riscv_debug":
+
+        def slow_clock():
+            serial = tmp_path / "run" / "serial.log"
+            # Simulate 100 s elapsed while the guest is still recovering services:
+            # this exceeds the old 90 s bound without delaying the test itself.
+            slow = serial.exists() and b"moss-init: process service died" in serial.read_bytes()
+            return time.monotonic() + (100 if slow else 0)
+
+        monkeypatch.setattr(boot, "time", SimpleNamespace(monotonic=slow_clock, sleep=time.sleep))
+    started = boot.time.monotonic()
+    result = boot.run(
+        cfg,
+        tmp_path / "run",
+        timeout=None if mode == "slow_riscv_debug" else 4,
+        gdb="fake-gdb" if mode.startswith("gdb_") else None,
+    )
+    assert 0 <= result["elapsed_seconds"] <= boot.time.monotonic() - started
     assert result["status"] == (
-        "passed" if mode in ("complete", "interleaved_kernel_log", "old_child_reported_before_loss", "gdb_complete") else "error"
+        "passed"
+        if mode
+        in ("complete", "slow_riscv_debug", "interleaved_kernel_log", "old_child_reported_before_loss", "gdb_complete")
+        else "error"
     )
     source = files["initramfs"].read_bytes()
     runtime = (tmp_path / "run" / "initramfs-initramfs").read_bytes()
