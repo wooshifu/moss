@@ -457,7 +457,7 @@ void ipc_priority_inheritance() {
   // Synthetic absolute times verify the min rule without depending on a timer.
   u64 high_deadline = 900;
   ut::expect(scheduler->begin_ipc_call(&high_call, &high, &high_deadline));
-  ut::expect(high_deadline == 900 && high_call.deadline_ns == 900);
+  ut::expect(high_deadline == 900 && high_call.deadline_ns.load() == 900);
   scheduler->bind_ipc_server(&high_call, &server);
   ut::expect(server.effective_rt_priority() == 80 && server.rt_on_rq && scheduler->pick_next_task(cpu) == &server);
   ut::expect(!scheduler->rebind_ipc_server(&high_call, &backend, nullptr));
@@ -471,7 +471,7 @@ void ipc_priority_inheritance() {
   server.state = ProcessState::Sleeping;
   u64 nested_deadline = 0;
   ut::expect(scheduler->begin_ipc_call(&nested, &server, &nested_deadline));
-  ut::expect(nested_deadline == high_deadline && nested.deadline_ns == high_deadline);
+  ut::expect(nested_deadline == high_deadline && nested.deadline_ns.load() == high_deadline);
   scheduler->bind_ipc_server(&nested, &backend);
   ut::expect(backend.effective_rt_priority() == 80 && backend.rt_on_rq && scheduler->pick_next_task(cpu) == &backend);
 
@@ -516,14 +516,14 @@ void ipc_priority_inheritance() {
   normal_server.state = ProcessState::Sleeping;
   u64 shorter_deadline = 500;
   ut::expect(scheduler->begin_ipc_call(&normal_nested, &normal_server, &shorter_deadline));
-  ut::expect(shorter_deadline == 500 && normal_nested.deadline_ns == 500);
+  ut::expect(shorter_deadline == 500 && normal_nested.deadline_ns.load() == 500);
   scheduler->bind_ipc_server(&normal_nested, &normal_backend);
   ut::expect(normal_backend.effective_cfs_nice() == -10);
   scheduler->dequeue_task(&normal_backend);
   normal_backend.state = ProcessState::Sleeping;
   u64 transitive_deadline = 0;
   ut::expect(scheduler->begin_ipc_call(&normal_cycle, &normal_backend, &transitive_deadline));
-  ut::expect(transitive_deadline == shorter_deadline && normal_cycle.deadline_ns == shorter_deadline);
+  ut::expect(transitive_deadline == shorter_deadline && normal_cycle.deadline_ns.load() == shorter_deadline);
   scheduler->bind_ipc_server(&normal_cycle, &normal_server);
   scheduler->set_base_nice(&normal_caller, -5);
   ut::expect(normal_server.effective_cfs_nice() == -5 && normal_backend.effective_cfs_nice() == -5);
@@ -531,7 +531,7 @@ void ipc_priority_inheritance() {
   ut::expect(normal_server.effective_cfs_nice() == 10 && normal_backend.effective_cfs_nice() == 10);
   scheduler->end_ipc_call(&normal_cycle);
   scheduler->end_ipc_call(&normal_nested);
-  ut::expect(normal_cycle.deadline_ns == 0 && normal_nested.deadline_ns == 0);
+  ut::expect(normal_cycle.deadline_ns.load() == 0 && normal_nested.deadline_ns.load() == 0);
   ut::expect(normal_backend.effective_cfs_nice() == 15 && normal_backend.se.weight == cfs_params::nice_to_weight(15));
 
   Thread deadline_server(8, 0);
@@ -542,7 +542,7 @@ void ipc_priority_inheritance() {
   ut::expect(scheduler->begin_ipc_call(&second_deadline, &low, &second));
   scheduler->bind_ipc_server(&second_deadline, &deadline_server);
   ut::expect(scheduler->begin_ipc_call(&earliest_nested, &deadline_server, &requested));
-  ut::expect(requested == second && earliest_nested.deadline_ns == second);
+  ut::expect(requested == second && earliest_nested.deadline_ns.load() == second);
   scheduler->end_ipc_call(&earliest_nested);
   scheduler->end_ipc_call(&second_deadline);
   scheduler->end_ipc_call(&first_deadline);
@@ -552,6 +552,136 @@ void ipc_priority_inheritance() {
     arch::enable_interrupts();
   }
   ut::expect(scheduler->get_cpu_nr_running(cpu) == 0);
+}
+
+void ipc_deadline_tightening() {
+  using namespace process;
+  unique_ptr<CfsScheduler> scheduler(new CfsScheduler());
+  if (!ut::expect(scheduler.get() != nullptr)) {
+    return;
+  }
+  // Priority recomputation sends reschedule IPIs; mutate these synthetic wait
+  // graphs with interrupts disabled. The threads never enter a run queue.
+  const bool restore_irqs = arch::interrupts_enabled();
+  arch::disable_interrupts();
+
+  Thread front(0, 0), middle(1, 0), back(2, 0), redirect(3, 0), redirect_back(4, 0), late(5, 0), earlier(6, 0);
+  PriorityDonation front_wait{}, middle_wait{}, back_wait{}, redirect_wait{}, late_call{}, earlier_call{}, fresh{};
+  // These are synthetic absolute nanoseconds, not clock samples: each value
+  // distinguishes an inherited limit from a later, strictly earlier donor.
+  constexpr u64 front_ns = 900;
+  constexpr u64 middle_ns = 800;
+  constexpr u64 late_ns = 500;
+  constexpr u64 earlier_ns = 300;
+  u64 deadline = front_ns;
+  ut::expect(scheduler->begin_ipc_call(&front_wait, &front, &deadline));
+  scheduler->bind_ipc_server(&front_wait, &middle);
+  deadline = middle_ns;
+  ut::expect(scheduler->begin_ipc_call(&middle_wait, &middle, &deadline));
+  scheduler->bind_ipc_server(&middle_wait, &back);
+  deadline = 0;
+  ut::expect(scheduler->begin_ipc_call(&redirect_wait, &redirect, &deadline));
+  scheduler->bind_ipc_server(&redirect_wait, &redirect_back);
+  ut::expect(redirect_wait.deadline_ns.load() == 0);
+
+  late.sched_class = SchedClass::RealTime;
+  late.rt.priority = priority::DEFAULT_RT_PRIORITY;
+  deadline = late_ns;
+  ut::expect(scheduler->begin_ipc_call(&late_call, &late, &deadline));
+  scheduler->bind_ipc_server(&late_call, &front);
+  ut::expect(front_wait.deadline_ns.load() == late_ns && middle_wait.deadline_ns.load() == late_ns);
+  ut::expect(front.effective_rt_priority() == late.rt.priority && back.effective_rt_priority() == late.rt.priority);
+
+  ut::expect(scheduler->rebind_ipc_server(&late_call, &front, &redirect));
+  ut::expect(redirect_wait.deadline_ns.load() == late_ns && front_wait.deadline_ns.load() == late_ns &&
+             middle_wait.deadline_ns.load() == late_ns);
+  ut::expect(front.effective_rt_priority() == 0 && back.effective_rt_priority() == 0 &&
+             redirect.effective_rt_priority() == late.rt.priority);
+
+  // Back now calls front, closing the dependency cycle. A new external donor
+  // must tighten each wait once, then stop when it revisits the same deadline.
+  deadline = 0;
+  ut::expect(scheduler->begin_ipc_call(&back_wait, &back, &deadline));
+  ut::expect(deadline == late_ns);
+  scheduler->bind_ipc_server(&back_wait, &front);
+  earlier.sched_class = SchedClass::RealTime;
+  // A distinct higher RT priority makes its later removal observable.
+  earlier.rt.priority = late.rt.priority + 1;
+  deadline = earlier_ns;
+  ut::expect(scheduler->begin_ipc_call(&earlier_call, &earlier, &deadline));
+  scheduler->bind_ipc_server(&earlier_call, &back);
+  ut::expect(front_wait.deadline_ns.load() == earlier_ns && middle_wait.deadline_ns.load() == earlier_ns &&
+             back_wait.deadline_ns.load() == earlier_ns);
+  ut::expect(front.effective_rt_priority() == earlier.rt.priority &&
+             middle.effective_rt_priority() == earlier.rt.priority &&
+             back.effective_rt_priority() == earlier.rt.priority);
+
+  scheduler->end_ipc_call(&earlier_call);
+  scheduler->end_ipc_call(&late_call);
+  ut::expect(front.effective_rt_priority() == 0 && middle.effective_rt_priority() == 0 &&
+             back.effective_rt_priority() == 0 && redirect.effective_rt_priority() == 0);
+  // Donor removal restores priority, but a live call cannot regain time it
+  // already promised to an earlier donor; only its own completion clears it.
+  ut::expect(front_wait.deadline_ns.load() == earlier_ns && middle_wait.deadline_ns.load() == earlier_ns &&
+             back_wait.deadline_ns.load() == earlier_ns && redirect_wait.deadline_ns.load() == late_ns);
+  scheduler->end_ipc_call(&back_wait);
+  scheduler->end_ipc_call(&middle_wait);
+  scheduler->end_ipc_call(&front_wait);
+  scheduler->end_ipc_call(&redirect_wait);
+  ut::expect(front_wait.deadline_ns.load() == 0 && middle_wait.deadline_ns.load() == 0 &&
+             back_wait.deadline_ns.load() == 0 && redirect_wait.deadline_ns.load() == 0);
+  deadline = 0;
+  ut::expect(scheduler->begin_ipc_call(&fresh, &front, &deadline));
+  ut::expect(deadline == 0 && fresh.deadline_ns.load() == 0);
+  scheduler->end_ipc_call(&fresh);
+
+  Thread waiting(7, 0), downstream(8, 0), new_donor(9, 0);
+  PriorityDonation waiting_call{}, incoming_call{};
+  timer::HrTimer deadline_timer;
+  moss::atomic<u64> fired_ns{0};
+  deadline_timer.init(
+      timer::TimerMode::OneShot,
+      [](void *data) noexcept {
+        static_cast<moss::atomic<u64> *>(data)->store(timer::TimerSubsystem::instance().now_ns(),
+                                                      moss::memory_order_release);
+      },
+      &fired_ns);
+  if (ut::expect(static_cast<bool>(deadline_timer.reserve()))) {
+    auto &clock = timer::TimerSubsystem::instance();
+    // The original 5 s timer cannot fire during the 200 ms observation. A
+    // later 5 ms donor deadline must move its already armed expiry while the
+    // waiting thread stays blocked. The 200 ms bound matches timer_capacity's
+    // QEMU timer check; it is not a measured worst-case dispatch latency.
+    constexpr u64 original_delay_ns = 5'000'000'000ULL;
+    constexpr u64 tighter_delay_ns = 5'000'000ULL;
+    constexpr u64 observation_ns = 200'000'000ULL;
+    const u64 original_deadline = clock.now_ns() + original_delay_ns;
+    deadline = original_deadline;
+    ut::expect(scheduler->begin_ipc_call(&waiting_call, &waiting, &deadline));
+    scheduler->arm_ipc_deadline_timer(&waiting_call, &deadline_timer);
+    scheduler->bind_ipc_server(&waiting_call, &downstream);
+    const u64 tightened_deadline = clock.now_ns() + tighter_delay_ns;
+    deadline = tightened_deadline;
+    ut::expect(scheduler->begin_ipc_call(&incoming_call, &new_donor, &deadline));
+    scheduler->bind_ipc_server(&incoming_call, &waiting);
+    ut::expect(waiting_call.deadline_ns.load() == tightened_deadline);
+
+    arch::enable_interrupts();
+    const u64 observation_end = clock.now_ns() + observation_ns;
+    ut::expect(observation_end < original_deadline);
+    while (fired_ns.load(moss::memory_order_acquire) == 0 && clock.now_ns() < observation_end) {
+      arch::cpu_yield();
+    }
+    arch::disable_interrupts();
+    scheduler->end_ipc_call(&incoming_call);
+    scheduler->end_ipc_call(&waiting_call);
+    deadline_timer.cancel_sync();
+    const u64 observed_ns = fired_ns.load(moss::memory_order_acquire);
+    ut::expect(observed_ns >= tightened_deadline && observed_ns < observation_end);
+  }
+  if (restore_irqs) {
+    arch::enable_interrupts();
+  }
 }
 
 void migration_current_owner() {
@@ -648,6 +778,7 @@ void register_scheduler_cases() {
     ut::register_test("cfs_cpu_budget_queue", [] { cpu_budget_queue(false); });
     ut::register_test("rt_cpu_budget_queue", [] { cpu_budget_queue(true); });
     ut::register_test("ipc_priority_inheritance", ipc_priority_inheritance);
+    ut::register_test("ipc_deadline_tightening", ipc_deadline_tightening);
     ut::register_test("migration_current_owner", migration_current_owner);
   });
 }

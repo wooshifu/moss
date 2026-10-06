@@ -1488,20 +1488,42 @@ public:
     // A service thread may hold several replies. Its next call inherits the
     // earliest active caller deadline, captured with the donor-list lock.
     for (auto *active = caller->ipc_donors; active; active = active->next) {
-      if (active->deadline_ns && (!effective_deadline || active->deadline_ns < effective_deadline)) {
-        effective_deadline = active->deadline_ns;
+      const u64 active_deadline = active->deadline_ns.load(moss::memory_order_relaxed);
+      if (active_deadline && (!effective_deadline || active_deadline < effective_deadline)) {
+        effective_deadline = active_deadline;
       }
     }
-    donation->deadline_ns = effective_deadline;
+    donation->deadline_ns.store(effective_deadline, moss::memory_order_release);
     if (deadline_ns) {
       *deadline_ns = effective_deadline;
     }
     donation->caller = caller;
     donation->server = nullptr;
     donation->next = nullptr;
+    donation->deadline_timer = nullptr;
     caller->ipc_wait = donation;
     caller->ipc_scheduler = this;
     return true;
+  }
+
+  // The timer is reserved before Channel publication and stays valid until
+  // end_ipc_call detaches it. An early bind during enqueue is captured here.
+  void arm_ipc_deadline_timer(PriorityDonation *donation, timer::HrTimer *deadline_timer) noexcept {
+    if (!donation || !deadline_timer) {
+      return;
+    }
+    containers::LockGuard<containers::IrqSpinLock> guard(ipc_priority_lock_);
+    if (!donation->caller || donation->caller->ipc_wait != donation) {
+      return;
+    }
+    if (donation->deadline_timer && donation->deadline_timer != deadline_timer) {
+      arch::kernel_panic("IPC deadline timer changed while call is active");
+    }
+    donation->deadline_timer = deadline_timer;
+    const u64 deadline = donation->deadline_ns.load(moss::memory_order_relaxed);
+    if (deadline && !deadline_timer->tighten(deadline)) {
+      arch::kernel_panic("reserved IPC deadline timer rejected deadline");
+    }
   }
 
   void bind_ipc_server(PriorityDonation *donation, Thread *server) noexcept {
@@ -1543,7 +1565,8 @@ public:
     donation->caller = nullptr;
     donation->server = nullptr;
     donation->next = nullptr;
-    donation->deadline_ns = 0;
+    donation->deadline_timer = nullptr;
+    donation->deadline_ns.store(0, moss::memory_order_release);
     if (caller && !caller->ipc_wait && !caller->ipc_donors) {
       caller->ipc_scheduler = nullptr;
     }
@@ -1678,6 +1701,20 @@ private:
       donation->next = server->ipc_donors;
       server->ipc_donors = donation;
       server->ipc_scheduler = this;
+      const u64 deadline = donation->deadline_ns.load(moss::memory_order_relaxed);
+      // Zero is infinity. A strict improvement at each wait makes cycles
+      // terminate and never extends a deadline when a donor leaves or rebinds.
+      for (Thread *waiting = server; deadline && waiting && waiting->ipc_wait; waiting = waiting->ipc_wait->server) {
+        auto *next_call = waiting->ipc_wait;
+        const u64 old = next_call->deadline_ns.load(moss::memory_order_relaxed);
+        if (old && old <= deadline) {
+          break;
+        }
+        next_call->deadline_ns.store(deadline, moss::memory_order_release);
+        if (next_call->deadline_timer && !next_call->deadline_timer->tighten(deadline)) {
+          arch::kernel_panic("reserved IPC deadline timer rejected tighter deadline");
+        }
+      }
     }
     if (old_server) {
       recompute_ipc_priority(old_server);

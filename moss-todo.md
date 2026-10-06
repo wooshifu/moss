@@ -1868,6 +1868,16 @@ RV64 Debug 首轮完整 CTest **4/5**，生产启动在原 50 秒总上限处中
 
 审查补齐目标在申请与调度准入之间退出时的 `ESRCH` 映射，并明确 Zombie 线程不可创建或申请 Profile。修订后重新构建三架构；最终 QEMU `scheduler` 各 **14/14**、`users.ipc` 各 **21/21**，六份报告均为 catalog v4、`finalized`、无 `not_run` 且通过，见 `build/<arch>-debug/validation/profile-final-20261006/results.json`。同阶段 x64 Debug 完整 CTest **6/6** 通过；三架构最终 `lint.py --check` 各检查 **141** 个翻译单元并通过。
 
+### 3.107 在途 IPC deadline 的内核收紧机制（2026-10-06）
+
+原 3.100 只在下游调用开始时取 donor deadline 快照。现在每个待决调用先预留一个固定定时器槽，再与请求一起在 Channel 锁下装载；后续绑定更早 donor 时，在 IPC 依赖锁下沿服务线程的等待链单调收紧期限，并原地提前定时器堆键。零仍表示无限期，解绑 donor 不延长已承诺的期限；严格递减使有环等待链的传播停下，但不解决死锁。Reply 读取当前原子期限，Channel 锁仍决定回复、取消、超时等终态的唯一胜者。定时器队列由 CPU 0 处理，其他 CPU 的变更通知 CPU 0 重装其本地比较寄存器，避免覆盖发送 CPU 的调度 tick。
+
+这是内核机制切片，尚非完整用户态动态 deadline 验收。当前 Reply 只有 `SEND|TRANSFER`，不能复制或经 fork 继承；接收线程领取请求后离开等待队列，阻塞于下游调用时无法再接收新 donor。因此现有生产 ABI 不能构造“下游已阻塞后新增更早 donor”的交错。调度器合成等待链、定时器及其接线测试覆盖内核路径；真实 IPC 仍只覆盖初始与开始时继承的期限。将来增加可触发该交错的生产操作时，须补真实阻塞调用与迟到 Reply 的端到端验收，清单上级项目保持未完成。
+
+最终源码三架构 Debug 构建与 catalog v5 定向 QEMU 通过：`scheduler` 各 **15/15**、`timers` 各 **4/4**、`users.ipc` 各 **21/21**、`users.timers` 各 **10/10**；共十二个报告分组均为 `passed`，三份结果均 `finalized`、无 `not_run`，见 `build/<arch>-debug/validation/deadline-final-v2-20261006/results.json`。新增 `ipc_deadline_tightening` 以合成等待链核对多级传播、重绑、有环停止、donor 退出后单调性，并将预留定时器接入等待链后观测实际提前触发；`users.timers/cancel_in_flight` 的多核前奏让 CPU1 装载已过期定时器、CPU0 的本地比较值先停在一秒后，检查回调在较短窗口内发生。其他 SGI0 也可能重装该比较值，因此这个探针不单独证明通知来源；观察窗口仅是 QEMU 回归界限，未测得硬件最坏时延。
+
+x64 Debug 完整 CTest **6/6** 通过；三架构 `lint.py --check` 各检查 **141** 个翻译单元并通过（各预设跳过其余架构的两个启动源文件）。宿主 `test_kernel_validation.py` **144 passed**；改动 C/C++ 文件的 clang-format、Python 的 Ruff 与 `git diff --check` 均通过。
+
 ## 4. 问题总表与当前状态
 
 | 编号 | 优先级 | 审计主题 | 当前状态与下一步 |

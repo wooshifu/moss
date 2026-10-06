@@ -51,7 +51,6 @@ enum class Outcome : u8 { Pending, Reply, Canceled, Expired, PeerClosed };
 struct PendingCall {
   process::Thread *caller;
   process::PriorityDonation donation{};
-  u64 deadline_ns;
   u64 badge;
   usize request_size;
   usize response_size{0};
@@ -63,10 +62,9 @@ struct PendingCall {
   u8 request[kMessageBytes]{};
   u8 response[kMessageBytes]{};
 
-  PendingCall(process::Thread *thread, u64 deadline, u64 sender_badge, const ControlMessage &message,
+  PendingCall(process::Thread *thread, u64 sender_badge, const ControlMessage &message,
               capability::Escrow &&transferred) noexcept
-      : caller(thread), deadline_ns(deadline), badge(sender_badge), request_size(message.size),
-        request_cap(moss::move(transferred)) {
+      : caller(thread), badge(sender_badge), request_size(message.size), request_cap(moss::move(transferred)) {
     if (request_size) {
       __builtin_memcpy(request, message.payload, request_size);
     }
@@ -108,7 +106,7 @@ class Channel {
 public:
   ~Channel() noexcept { close(); }
 
-  [[nodiscard]] long enqueue(shared_ptr<PendingCall> call) noexcept {
+  [[nodiscard]] long enqueue(shared_ptr<PendingCall> call, timer::HrTimer *deadline_timer) noexcept {
     containers::LockGuard<containers::IrqSpinLock> guard(lock_);
     if (closed_) {
       return -errc::EPIPE;
@@ -116,6 +114,9 @@ public:
     for (auto &slot : calls_) {
       if (!slot) {
         slot = moss::move(call);
+        // Publication and timer arming share this lock: the caller can be
+        // preempted after enqueue returns, even if no receiver replies.
+        process::g_scheduler->arm_ipc_deadline_timer(&slot->donation, deadline_timer);
         wake_receiver(slot.get());
         return 0;
       }
@@ -171,10 +172,12 @@ public:
         }
         return call->outcome;
       }
-      // The same lock serializes reply, cancellation, timer expiry and peer
-      // loss. A reply after its absolute deadline cannot win by timer delay.
-      if (outcome == Outcome::Reply && call->deadline_ns != 0 &&
-          timer::TimerSubsystem::instance().now_ns() >= call->deadline_ns) {
+      // This lock serializes terminal outcomes. Reply admission uses the
+      // deadline observed by this atomic read; a concurrent tightening may
+      // win or lose that race, but timer callback delay cannot admit a reply
+      // past the observed deadline.
+      const u64 deadline = call->donation.deadline_ns.load(moss::memory_order_acquire);
+      if (outcome == Outcome::Reply && deadline != 0 && timer::TimerSubsystem::instance().now_ns() >= deadline) {
         outcome = Outcome::Expired;
       }
       if (outcome == Outcome::Reply) {
@@ -653,8 +656,7 @@ long sys_ipc_call(long endpoint, long request_addr, long response_addr, long dea
   }
   auto *sender = static_cast<Sender *>((*looked).get());
   auto channel = sender->channel;
-  auto call = shared_ptr<PendingCall>::try_make(ipc_allocate, thread, static_cast<u64>(deadline_ns), sender->badge,
-                                                request, moss::move(transferred));
+  auto call = shared_ptr<PendingCall>::try_make(ipc_allocate, thread, sender->badge, request, moss::move(transferred));
   if (!call) {
     return -errc::ENOMEM;
   }
@@ -662,30 +664,28 @@ long sys_ipc_call(long endpoint, long request_addr, long response_addr, long dea
   if (!process::g_scheduler->begin_ipc_call(&call->donation, thread, &effective_deadline)) {
     return -errc::EAGAIN;
   }
-  call->deadline_ns = effective_deadline;
   if (effective_deadline != 0 && timer::TimerSubsystem::instance().now_ns() >= effective_deadline) {
     process::g_scheduler->end_ipc_call(&call->donation);
     return -errc::ETIMEDOUT;
   }
-  const long enqueued = channel->enqueue(call);
+  DeadlineWake wake{.channel = channel.get(), .call = call.get()};
+  timer::HrTimer deadline_timer;
+  deadline_timer.init(timer::TimerMode::OneShot, deadline_wake, &wake);
+  // Every call reserves a timer slot before publication. A previously
+  // unlimited call can then gain a deadline while its caller is parked,
+  // without depending on that caller to run or on spare timer capacity.
+  auto timer_reservation = deadline_timer.reserve();
+  if (!timer_reservation) {
+    process::g_scheduler->end_ipc_call(&call->donation);
+    return timer_reservation.error() == ErrorCode::ResourceExhausted ? -errc::ENOMEM : -errc::EINVAL;
+  }
+  const long enqueued = channel->enqueue(call, &deadline_timer);
   if (enqueued < 0) {
     process::g_scheduler->end_ipc_call(&call->donation);
+    deadline_timer.cancel_sync();
     return enqueued;
   }
   capture.commit();
-
-  DeadlineWake wake{.channel = channel.get(), .call = call.get()};
-  timer::HrTimer deadline_timer;
-  bool timer_armed = false;
-  if (effective_deadline != 0) {
-    deadline_timer.init(timer::TimerMode::OneShot, deadline_wake, &wake);
-    auto started = deadline_timer.start(effective_deadline);
-    if (!started) {
-      (void)channel->complete(call.get(), Outcome::Canceled);
-      return started.error() == ErrorCode::ResourceExhausted ? -errc::ENOMEM : -errc::EINVAL;
-    }
-    timer_armed = true;
-  }
 
   u8 response[kMessageBytes]{};
   usize response_size = 0;
@@ -708,9 +708,7 @@ long sys_ipc_call(long endpoint, long request_addr, long response_addr, long dea
       arch::enable_interrupts();
     }
   }
-  if (timer_armed) {
-    deadline_timer.cancel_sync();
-  }
+  deadline_timer.cancel_sync();
   switch (result) {
   case Outcome::Reply: {
     ControlMessage delivered{};

@@ -13,6 +13,7 @@ import moss.containers;
 import moss.mm;
 import moss.capability;
 import moss.logging;
+import moss.timer;
 
 extern "C" void moss_validation_address_space_retiring(moss::kernel::PhysAddr root) noexcept;
 
@@ -682,8 +683,12 @@ struct PriorityDonation {
   Thread *caller{nullptr};
   Thread *server{nullptr};
   PriorityDonation *next{nullptr};
-  // The absolute deadline follows this wait dependency through Reply handoff.
-  u64 deadline_ns{0};
+  // Zero means no deadline. Binds only tighten this value while the call is
+  // active; reply completion reads it without holding the IPC dependency lock.
+  moss::atomic<u64> deadline_ns{0};
+  // Protected by the IPC dependency lock. Completion detaches the timer before
+  // the caller cancels it, so a late donor cannot access retired stack storage.
+  timer::HrTimer *deadline_timer{nullptr};
 };
 
 enum class BudgetProfileResult { Applied, Invalid, ClockUnavailable, AlreadyConfigured, Capacity };

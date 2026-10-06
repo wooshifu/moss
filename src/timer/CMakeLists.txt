@@ -11,5 +11,6 @@ target_link_libraries(
             moss_aal
             moss_platform
             moss_hal_timer
+            moss_hal_intc
             moss_containers
 )

@@ -15,6 +15,8 @@ import moss.types;
 import moss.result;
 import moss.arch;
 import moss.hal.timer;
+import moss.hal.intc;
+import moss.platform;
 import moss.containers;
 
 export namespace moss::kernel::timer {
@@ -106,8 +108,15 @@ class HrTimer {
 public:
   HrTimer() noexcept = default;
 
-  /// Configure this timer (must be called before start).
+  /// Configure an idle timer before reserve or start.
   void init(TimerMode mode, TimerCallback callback, void *data = nullptr) noexcept;
+
+  /// Hold one queue slot for a one-shot timer without setting an expiry.
+  [[nodiscard]] VoidResult reserve() noexcept;
+
+  /// Set or move a one-shot expiry earlier without releasing its queue slot.
+  /// A callback already dispatched at the old expiry satisfies the new one.
+  [[nodiscard]] VoidResult tighten(u64 earlier_abs_ns) noexcept;
 
   /// Start with absolute expiry (ns since boot).
   [[nodiscard]] VoidResult start(u64 expires_ns) noexcept;
@@ -134,6 +143,8 @@ private:
   void *callback_data_{nullptr};
   TimerMode mode_{TimerMode::OneShot};
   bool active_{false};
+  bool reserved_{false};
+  bool fired_{false};          // One-shot expiry was extracted for dispatch; guarded by queue_lock_.
   u32 callbacks_in_flight_{0}; // guarded by TimerSubsystem::queue_lock_
 
   // Heap index: position of this timer in TimerSubsystem's min-heap array.
@@ -172,6 +183,10 @@ public:
   /// Insert a timer into the min-heap.
   [[nodiscard]] VoidResult enqueue(HrTimer *timer, u64 expires_ns, u64 interval_ns) noexcept;
 
+  /// Reserve capacity now so a future one-shot expiry can be armed infallibly.
+  [[nodiscard]] VoidResult reserve(HrTimer *timer) noexcept;
+  [[nodiscard]] VoidResult tighten(HrTimer *timer, u64 earlier_abs_ns) noexcept;
+
   /// Remove a timer from the min-heap.
   void dequeue(HrTimer *timer) noexcept;
   void cancel_sync(HrTimer *timer) noexcept;
@@ -182,6 +197,9 @@ public:
 
   /// Called from the timer interrupt handler.
   void handle_interrupt() noexcept;
+
+  /// CPU 0 IPI hook: apply the latest global heap root to its local timer.
+  void reprogram_local() noexcept;
 
   /// Is the subsystem initialized?
   [[nodiscard]] bool is_initialized() const noexcept { return initialized_; }
@@ -211,12 +229,14 @@ private:
   // ── Min-heap of HrTimer pointers, keyed by expires_ns ──────────
   // O(log n) enqueue/dequeue, O(1) peek (heap_[0] = earliest).
   // Each HrTimer stores its own heap_index_ for O(log n) cancel.
-  // 256 bounds fixed queue storage without interrupt-time allocation; enqueue
-  // returns ResourceExhausted when full. The workload basis for 256 is not
-  // recorded, so increasing concurrency requires revisiting this capacity.
+  // 256 bounds fixed queue storage without interrupt-time allocation. Queued
+  // timers and unarmed reservations share it; admission returns
+  // ResourceExhausted when full. The workload basis for 256 is not recorded,
+  // so increasing concurrency requires revisiting this capacity.
   static constexpr u32 MAX_TIMERS = 256;
   HrTimer *heap_[MAX_TIMERS]{};
   u32 heap_size_{0};
+  u32 reserved_count_{0}; // Unarmed timers consume the same fixed capacity as heap entries.
 
   /// Reprogram hardware for next pending expiry.
   void reprogram_next() noexcept;
@@ -308,6 +328,13 @@ void HrTimer::init(TimerMode mode, TimerCallback callback, void *data) noexcept 
   callback_data_ = data;
   active_ = false;
   heap_index_ = ~0U;
+  fired_ = false;
+}
+
+VoidResult HrTimer::reserve() noexcept { return TimerSubsystem::instance().reserve(this); }
+
+VoidResult HrTimer::tighten(u64 earlier_abs_ns) noexcept {
+  return TimerSubsystem::instance().tighten(this, earlier_abs_ns);
 }
 
 VoidResult HrTimer::start(u64 abs_expires_ns) noexcept {
@@ -416,25 +443,78 @@ void TimerSubsystem::heap_sift_down(u32 idx) noexcept {
 
 VoidResult TimerSubsystem::enqueue(HrTimer *timer, u64 expires_ns, u64 interval_ns) noexcept {
   containers::LockGuard<containers::IrqSpinLock> guard(queue_lock_);
-  if (!initialized_ || timer->active_ || timer->heap_index_ != ~0U || timer->callbacks_in_flight_ != 0) {
+  if (!initialized_ || timer->active_ || timer->reserved_ || timer->heap_index_ != ~0U ||
+      timer->callbacks_in_flight_ != 0) {
     return VoidResult{ErrorCode::InvalidState};
   }
   if (!timer->callback_) {
     return VoidResult{ErrorCode::InvalidParameter};
   }
-  if (heap_size_ == MAX_TIMERS) {
+  if (heap_size_ + reserved_count_ == MAX_TIMERS) {
     return VoidResult{ErrorCode::ResourceExhausted};
   }
   timer->expires_ns_ = expires_ns;
   timer->interval_ns_ = interval_ns;
   timer->active_ = true;
+  timer->fired_ = false;
   enqueue_locked(timer);
   return VoidResult{};
 }
 
+VoidResult TimerSubsystem::reserve(HrTimer *timer) noexcept {
+  containers::LockGuard<containers::IrqSpinLock> guard(queue_lock_);
+  if (!initialized_ || timer->active_ || timer->reserved_ || timer->heap_index_ != ~0U ||
+      timer->callbacks_in_flight_ != 0) {
+    return VoidResult{ErrorCode::InvalidState};
+  }
+  if (timer->mode_ != TimerMode::OneShot || !timer->callback_) {
+    return VoidResult{ErrorCode::InvalidParameter};
+  }
+  if (heap_size_ + reserved_count_ == MAX_TIMERS) {
+    return VoidResult{ErrorCode::ResourceExhausted};
+  }
+  timer->reserved_ = true;
+  timer->fired_ = false;
+  ++reserved_count_;
+  return VoidResult{};
+}
+
+VoidResult TimerSubsystem::tighten(HrTimer *timer, u64 earlier_abs_ns) noexcept {
+  containers::LockGuard<containers::IrqSpinLock> guard(queue_lock_);
+  // IPC uses zero for no deadline. The all-ones timestamp is also reserved:
+  // treating it as a finite expiry would occupy a fixed slot indefinitely.
+  if (timer->mode_ != TimerMode::OneShot || earlier_abs_ns == 0 || earlier_abs_ns == ~u64{0}) {
+    return VoidResult{ErrorCode::InvalidParameter};
+  }
+  if (timer->reserved_) {
+    // The reservation already owns a slot, so concurrent enqueues cannot make
+    // this first finite deadline fail for lack of capacity.
+    --reserved_count_;
+    timer->reserved_ = false;
+    timer->expires_ns_ = earlier_abs_ns;
+    timer->interval_ns_ = 0;
+    timer->active_ = true;
+    enqueue_locked(timer);
+    return VoidResult{};
+  }
+  if (timer->active_ && timer->heap_index_ != ~0U) {
+    if (earlier_abs_ns < timer->expires_ns_) {
+      timer->expires_ns_ = earlier_abs_ns;
+      heap_sift_up(timer->heap_index_);
+      if (timer->heap_index_ == 0) {
+        reprogram_next();
+      }
+    }
+    return VoidResult{};
+  }
+  // Expiry extraction and callback publication share queue_lock_. Once
+  // extracted, the callback will run at or after every earlier deadline.
+  return timer->fired_ ? VoidResult{} : VoidResult{ErrorCode::InvalidState};
+}
+
 void TimerSubsystem::enqueue_locked(HrTimer *timer) noexcept {
-  // Callers hold queue_lock_ and either checked capacity or just extracted an
-  // expired periodic timer, so a slot is reserved before active_ is published.
+  // Callers hold queue_lock_ and either checked capacity, converted a held
+  // reservation, or extracted a periodic timer whose slot is being reused.
 
   u32 idx = heap_size_;
   heap_[idx] = timer;
@@ -451,6 +531,11 @@ void TimerSubsystem::enqueue_locked(HrTimer *timer) noexcept {
 void TimerSubsystem::dequeue(HrTimer *timer) noexcept {
   containers::LockGuard<containers::IrqSpinLock> guard(queue_lock_);
   timer->active_ = false;
+  timer->fired_ = false;
+  if (timer->reserved_) {
+    timer->reserved_ = false;
+    --reserved_count_;
+  }
   if (heap_size_ == 0 || timer->heap_index_ == ~0U) {
     return;
   }
@@ -526,6 +611,7 @@ void TimerSubsystem::handle_interrupt() noexcept {
     }
     expired->heap_index_ = ~0U;
     expired->active_ = false;
+    expired->fired_ = expired->mode_ == TimerMode::OneShot;
 
     stats_.timers_fired++;
 
@@ -566,7 +652,31 @@ void TimerSubsystem::handle_interrupt() noexcept {
   queue_lock_.unlock();
 }
 
+void TimerSubsystem::reprogram_local() noexcept {
+  if (arch::get_current_cpu_id() != 0) {
+    return;
+  }
+  containers::LockGuard<containers::IrqSpinLock> guard(queue_lock_);
+  // A reschedule IPI can arrive during boot before the clocksource is ready.
+  if (initialized_) {
+    reprogram_next();
+  }
+}
+
 void TimerSubsystem::reprogram_next() noexcept {
+  // Only CPU 0 drains the global heap. Hardware compare registers are local
+  // to each CPU; writing here on a remote caller would replace that CPU's
+  // scheduler tick without making CPU 0 observe the new deadline. SGI 0 is
+  // already the reschedule IPI, and its send path waits for delivery only,
+  // never for the target handler to acquire queue_lock_.
+  if (arch::get_current_cpu_id() != 0) {
+    constexpr u32 RESCHEDULE_SGI = 0;
+    constexpr u32 BOOT_CPU_MASK = 1U; // CPU 0 owns the global timer heap.
+    if (!hal::intc::send_sgi(platform::intc_dist_base(), platform::intc_cpu_base(), RESCHEDULE_SGI, BOOT_CPU_MASK)) {
+      arch::kernel_panic("failed to notify timer heap owner");
+    }
+    return;
+  }
   if (heap_size_ > 0) {
     // Convert expires_ns to absolute cycle count for hardware compare:
     //   compare = current_counter + ns_to_cycles(expires_ns - now_ns)
@@ -579,6 +689,13 @@ void TimerSubsystem::reprogram_next() noexcept {
     constexpr u64 MIN_DELTA_NS = 100000; // 100 µs
     if (delta_ns < MIN_DELTA_NS) {
       delta_ns = MIN_DELTA_NS;
+    }
+    // The existing 1-second quiet interval also bounds conversion to raw
+    // cycles at the HAL's accepted 100 GHz ceiling. Far timers are rechecked
+    // once per second; the policy basis for that interval is not recorded.
+    constexpr u64 MAX_DELTA_NS = 1000000000ULL;
+    if (delta_ns > MAX_DELTA_NS) {
+      delta_ns = MAX_DELTA_NS;
     }
     u64 delta_cycles = clocksource_.ns_to_cycles(delta_ns);
     u64 counter_now = hal::timer::read_counter();

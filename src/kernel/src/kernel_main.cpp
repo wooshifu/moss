@@ -245,12 +245,14 @@ void irq_handler_c(void) noexcept {
   intc_hal::eoi(gicc_base, ack_val);
 
   // SGI 0 (Reschedule IPI): another CPU wants us to re-examine our runqueue.
-  // Just EOI + return — the interrupted context (WFI or running task) will
-  // naturally re-check the runqueue.  No further action needed because:
+  // CPU 0 also owns the global timer heap; a remote enqueue uses this IPI to
+  // reprogram CPU 0's banked compare without changing the sender's tick.
+  // The interrupted context (WFI or running task) will re-check the runqueue:
   //   - If in WFI (idle loop), eret returns to the scheduling loop
   //   - If running a task, the next timer tick will preempt if needed
   constexpr u32 RESCHEDULE_SGI = 0;
   if (irq == RESCHEDULE_SGI) {
+    ::moss::kernel::timer::TimerSubsystem::instance().reprogram_local();
     return; // EOI already sent above
   }
 
@@ -381,6 +383,9 @@ void riscv64_software_handler() noexcept {
   // SBI software IPIs share SSIP. Reschedule-only notifications have no TLB
   // request; polling the mailbox is harmless and never takes scheduler locks.
   ::moss::kernel::arch::service_tlb_shootdown();
+  // CPU 0 owns the global timer heap; a remote heap change shares this IPI
+  // and must update CPU 0's local SBI timer, not the sender's timer.
+  ::moss::kernel::timer::TimerSubsystem::instance().reprogram_local();
 }
 
 // S-mode timer interrupt handler.

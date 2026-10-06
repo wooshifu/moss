@@ -110,6 +110,7 @@ CATALOG = {
         "cfs_cpu_budget_queue",
         "rt_cpu_budget_queue",
         "ipc_priority_inheritance",
+        "ipc_deadline_tightening",
         "migration_current_owner",
     ],
     "process": ["heap_rollback"],
@@ -337,9 +338,9 @@ CATALOG = {
         )
     },
 }
-# Public scheduling-profile coverage changes the ordered inventory from catalog v3.
+# Dynamic IPC deadline coverage changes the ordered inventory from catalog v4.
 # Earlier reports retain their recorded version for comparison checks.
-CATALOG_VERSION = 4
+CATALOG_VERSION = 5
 FUNCTIONAL = [
     "drivers",
     "resources",

@@ -707,6 +707,14 @@ extern "C" void x64_interrupt_handler(u64 vector, u64 error_code, [[maybe_unused
     return;
   }
 
+  // send_sgi maps reschedule SGI 0 to LAPIC vector 64. CPU 0 uses the same
+  // notification to rearm the global timer heap on its own local LAPIC.
+  constexpr u64 RESCHEDULE_IPI_VECTOR = 64;
+  if (vector == RESCHEDULE_IPI_VECTOR) {
+    moss::kernel::timer::TimerSubsystem::instance().reprogram_local();
+    return;
+  }
+
   // LAPIC timer (vector 48)
   if (vector == 48 && g_x64_timer_handler != nullptr) {
     g_x64_timer_handler();
