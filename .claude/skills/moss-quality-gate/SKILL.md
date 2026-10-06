@@ -17,10 +17,10 @@ Run these three checks **in order** before every commit. Stop and fix on first f
 ### Step 1 — Build
 
 ```bash
-cmake --build build/arm64-qemu-debug
+uv run cmake --build --preset arm64-debug
 ```
 
-The project uses `-Weverything -Werror`. Any warning is a build failure. Fix all warnings before proceeding.
+If `build/arm64-debug` does not exist yet, configure it first with `uv run cmake --preset arm64-debug`. The project uses `-Weverything -Werror`. Any warning is a build failure. Fix all warnings before proceeding. For architecture-specific changes, also build `x64-debug` and `riscv64-debug`.
 
 ### Step 2 — Lint
 
@@ -29,7 +29,7 @@ uv run lint.py --check
 uv run ruff check .
 ```
 
-Runs system clang-tidy (C++, including modules) and ruff check (Python). All clang-tidy warnings are errors (`WarningsAsErrors: '*'`). The C++ entrypoint incrementally builds before checking to refresh BMIs; use `--preset <name>` for another configured architecture.
+Runs system clang-tidy (C++, including modules) and ruff check (Python). All clang-tidy warnings are errors (`WarningsAsErrors: '*'`). The C++ entrypoint incrementally builds before checking to refresh BMIs; use `--preset <name>` for another configured architecture. To check only your changes relative to `merge-base(HEAD, origin/master)`, use `uv run lint.py --check --changed`. Positional paths narrow the selection further (e.g. `uv run lint.py --check src/mm`).
 
 If there are violations, fix them. For auto-fixable issues:
 
@@ -64,6 +64,7 @@ Then re-run `format --check` to verify clean.
 | Auto-fix C++ lint issues | `uv run lint.py --fix` |
 | Auto-fix format issues | `uv run format` |
 | C++ only lint | `uv run lint.py --check` |
+| C++ lint, changed files only | `uv run lint.py --check --changed` |
 | Python only lint | `uv run ruff check .` |
 
 ## Rules
@@ -77,10 +78,10 @@ Then re-run `format --check` to verify clean.
 
 ## What Gets Checked
 
-**clang-tidy** (59 checks): identifier naming, braces, bugprone patterns, modernize idioms, designated initializers, and more. Full list in `.clang-tidy`.
+**clang-tidy**: identifier naming, braces, bugprone patterns, modernize idioms, designated initializers, and more. Full list in the `Checks:` section of `.clang-tidy`.
 
 **clang-format**: Code formatting per `.clang-format`.
 
-**cmake-format**: CMake file formatting per `.cmake-format.yaml`.
+**cmake-format**: CMake file formatting per `.cmake-format.json`.
 
 **ruff**: Python linting and formatting per `pyproject.toml`.

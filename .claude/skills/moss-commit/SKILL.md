@@ -14,7 +14,7 @@ English only. No Co-Authored-By line.
 
 **Before staging any files**, verify the `moss-quality-gate` skill passes:
 
-1. `cmake --build build/arm64-qemu-debug` — zero warnings
+1. `uv run cmake --build --preset arm64-debug` — zero warnings
 2. `uv run lint.py --check` and `uv run ruff check .` — zero issues
 3. `uv run format --check` — zero diffs
 
@@ -54,15 +54,20 @@ Pick from these based on which `src/` directory the change primarily affects:
 | `[process]` | Process management (scheduler, load balancer, fork) |
 | `[boot]` | Boot sequence and arch-specific startup |
 | `[ipc]` | Inter-process communication |
+| `[userspace]` | Supervisor, isolated services, userspace validation programs, mlibc/BusyBox integration |
+| `[test]` | Kernel validation framework, test cases, validation runner |
 | `[drivers]` | Device drivers (UART, etc.) |
 | `[interrupts]` | Interrupt handling (GIC, exception vectors) |
 | `[containers]` | Data structures (lists, queues, slab allocator) |
 | `[core]` | Core modules (std, types, result, arch, platform) |
 | `[abi]` | ABI definitions (linker symbols, extern C) |
 | `[cmake]` | Build system changes |
+| `[build]` | Build orchestration: presets, `build.py`, toolchain integration |
 | `[docs]` | Documentation, CLAUDE.md, skills |
 | `[infra]` | Scripts, CI, Docker, tooling |
 | `[cleanup]` | Refactoring that spans multiple modules |
+
+Other `src/` areas use their directory name as the tag (e.g. `[vfs]`, `[timer]`, `[logging]`, `[fdt]`, `[hal]`, `[capability]`).
 
 For cross-cutting changes, use the most impactful module as `[module]` and `[cleanup]` or a descriptive subsystem as `[subsystem]`.
 
