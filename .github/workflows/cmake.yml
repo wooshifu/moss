@@ -35,6 +35,9 @@ jobs:
         shell: bash
     env:
       SCCACHE_DIR: /tmp/sccache
+      # Every workflow uses the same launchers without replacing the real Clang compiler.
+      CMAKE_C_COMPILER_LAUNCHER: sccache
+      CMAKE_CXX_COMPILER_LAUNCHER: sccache
     steps:
       - uses: actions/checkout@v7
         with:
@@ -61,13 +64,43 @@ jobs:
           restore-keys: |
             sccache-${{ runner.os }}-${{ runner.arch }}-${{ steps.toolchain.outputs.llvm }}-${{ steps.toolchain.outputs.sccache }}-
 
-      - name: Configure, build and test
-        env:
-          # CMake applies these launchers to every preset without replacing the real Clang compiler.
-          CMAKE_C_COMPILER_LAUNCHER: sccache
-          CMAKE_CXX_COMPILER_LAUNCHER: sccache
-        # Skip CMake's two header lines; xargs runs the matching workflow names serially.
-        run: cmake --list-presets=build|awk ' NR > 2 { print $1 } '|xargs -I{} cmake --workflow --preset {}
+      # Keep checking subsequent presets after a failure, but skip them if preparation
+      # failed or the run was cancelled. Any failed step still fails the job.
+      - name: ARM64 Debug
+        if: ${{ !cancelled() && steps.compiler-cache.outcome == 'success' }}
+        run: cmake --workflow --preset arm64-debug
+
+      - name: ARM64 Release
+        if: ${{ !cancelled() && steps.compiler-cache.outcome == 'success' }}
+        run: cmake --workflow --preset arm64-release
+
+      - name: ARM64 RelWithDebInfo
+        if: ${{ !cancelled() && steps.compiler-cache.outcome == 'success' }}
+        run: cmake --workflow --preset arm64-relwithdebinfo
+
+      - name: X64 Debug
+        if: ${{ !cancelled() && steps.compiler-cache.outcome == 'success' }}
+        run: cmake --workflow --preset x64-debug
+
+      - name: X64 Release
+        if: ${{ !cancelled() && steps.compiler-cache.outcome == 'success' }}
+        run: cmake --workflow --preset x64-release
+
+      - name: X64 RelWithDebInfo
+        if: ${{ !cancelled() && steps.compiler-cache.outcome == 'success' }}
+        run: cmake --workflow --preset x64-relwithdebinfo
+
+      - name: RISCV64 Debug
+        if: ${{ !cancelled() && steps.compiler-cache.outcome == 'success' }}
+        run: cmake --workflow --preset riscv64-debug
+
+      - name: RISCV64 Release
+        if: ${{ !cancelled() && steps.compiler-cache.outcome == 'success' }}
+        run: cmake --workflow --preset riscv64-release
+
+      - name: RISCV64 RelWithDebInfo
+        if: ${{ !cancelled() && steps.compiler-cache.outcome == 'success' }}
+        run: cmake --workflow --preset riscv64-relwithdebinfo
 
       - name: Report compiler cache statistics
         if: always() && steps.toolchain.outcome == 'success'
