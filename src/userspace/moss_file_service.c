@@ -441,9 +441,15 @@ int main(int argc, char **argv) {
         response.payload[0] = MOSS_FILE_UNAVAILABLE;
         if (next_badge < MOSS_FILE_ROOT_BADGE - 2 && volatile_count < MOSS_FILE_OBJECT_LIMIT) {
           struct FileObject *copy = calloc(1, sizeof(*copy));
-          if (copy && resize_file(copy, file->length, &allocated) == MOSS_FILE_OK) {
-            if (file->length) {
-              memcpy(copy->data, file->boot_data ? file->boot_data : file->data, file->length);
+          if (copy && (file->boot_data || resize_file(copy, file->length, &allocated) == MOSS_FILE_OK)) {
+            if (file->boot_data) {
+              // The CPIO mapping remains read-only for this service's lifetime.
+              // A sealed snapshot can share it without charging heap capacity.
+              copy->boot_data = file->boot_data;
+              copy->length = file->length;
+            } else if (file->length) {
+              // Named volatile files remain writable, so freeze their bytes.
+              memcpy(copy->data, file->data, file->length);
             }
             copy->badge = next_badge;
             copy->sealed = 1;

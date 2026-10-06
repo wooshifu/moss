@@ -22,6 +22,9 @@ extern char **environ;
 // replying or a child never publishes its exit status.
 static const unsigned long process_call_timeout_ns = 5000000000UL;
 static const unsigned long status_retry_ns = 10000000UL;
+// A one-second interval gives several chances during the probe's three-second
+// wait, while limiting serial output to one line per second before teardown.
+static const unsigned long survivor_report_interval_ns = 1000000000UL;
 // Give the service time to accept a wait before the cancellation probe expires.
 static const unsigned long fd_wait_cancel_timeout_ns = 1000000000UL;
 // The child pauses briefly so the parent usually reaches FD_WAIT first. The
@@ -1779,11 +1782,13 @@ int main(int argc, char **argv) {
     static const char started[] = "MOSS_OLD_CHILD_STARTED\n";
     static const char survived[] = "MOSS_OLD_CHILD_SURVIVED\n";
     (void)write(STDOUT_FILENO, started, sizeof(started) - 1);
-    // The boot probe waits beyond this delay after crashing the old service.
-    unsigned long delay = 3000000000UL;
-    (void)syscall1(SYS_NANOSLEEP, (long)&delay);
-    (void)write(STDOUT_FILENO, survived, sizeof(survived) - 1);
-    return 0;
+    // Stay live until scope teardown kills this grandchild. A one-shot marker
+    // could fire before the terminate command reaches the old service.
+    for (;;) {
+      unsigned long delay = survivor_report_interval_ns;
+      (void)syscall1(SYS_NANOSLEEP, (long)&delay);
+      (void)write(STDOUT_FILENO, survived, sizeof(survived) - 1);
+    }
   }
   if (argc == 4 && strcmp(argv[1], "libc-child") == 0) {
     char *end = NULL;

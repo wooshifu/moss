@@ -53,6 +53,8 @@ enum { MOSS_FILE_TYPE_DIRECTORY = 4, MOSS_FILE_TYPE_REGULAR = 8 };
 // 16 MiB matches the current 4096-page native domain construction ceiling,
 // allowing a static libc image through this volatile file service. Boot
 // archive entries have a separate limit and do not consume that budget.
+// The specific 16-object and 64-entry caps have no documented sizing evidence;
+// changing them affects live object capacity and which boot archives load.
 enum { MOSS_FILE_OBJECT_LIMIT = 16, MOSS_FILE_BOOT_ENTRY_LIMIT = 64, MOSS_FILE_CONTENT_BUDGET_BYTES = 4096 * 4096 };
 // NO_SPACE means the content budget rejected a write, append or resize before
 // mutation. Heap allocation failure remains UNAVAILABLE.
@@ -60,8 +62,11 @@ enum { MOSS_FILE_OBJECT_LIMIT = 16, MOSS_FILE_BOOT_ENTRY_LIMIT = 64, MOSS_FILE_C
 // permanently rejects WRITE, APPEND and RESIZE through every sender copy.
 // Named files remain mutable for existing public clients.
 // SNAPSHOT carries [opcode, reserved zero, relative NUL-terminated name] on
-// the unbadged root sender. It returns an unlisted, sealed copy while the
+// the unbadged root sender. It returns an unlisted, sealed snapshot while the
 // named source remains unchanged; ordinary named-file senders cannot clone.
+// Boot archive entries share their read-only mapping within the current File
+// Service lifetime. Such snapshots count as objects but consume no content
+// budget; mutable named files get a private content copy.
 // READ/WRITE transfer one shared page at an explicit byte offset. Their
 // request carries [opcode, offset: u64 LE, count: u16 LE], and the reply
 // carries [status, transferred: u16 LE]. RESIZE carries [opcode, size: u64 LE].

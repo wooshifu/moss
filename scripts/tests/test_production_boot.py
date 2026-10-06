@@ -1,3 +1,4 @@
+import hashlib
 import sys
 import time
 
@@ -5,6 +6,18 @@ import pytest
 
 from scripts import check_production_boot as boot
 from scripts.artifacts import Artifacts
+from scripts.gen_initramfs import make_cpio_entry, make_cpio_trailer
+
+
+def test_validation_marker_is_added_only_to_copy():
+    trailer = make_cpio_trailer()
+    source = make_cpio_entry("init.elf", trailer, ino=1) + trailer
+    marker = make_cpio_entry(boot.VALIDATION_MARKER, b"", ino=0, mode=0o100444)
+
+    assert boot.add_validation_marker(source) == source[: -len(trailer)] + marker + trailer
+    assert source.endswith(trailer)
+    with pytest.raises(ValueError, match="lacks its expected newc trailer"):
+        boot.add_validation_marker(source[:-1])
 
 
 @pytest.mark.parametrize(
@@ -12,6 +25,7 @@ from scripts.artifacts import Artifacts
     [
         "complete",
         "interleaved_kernel_log",
+        "missing_validation_mode",
         "missing_bridge",
         "legacy_shell",
         "applets_failed",
@@ -19,6 +33,7 @@ from scripts.artifacts import Artifacts
         "exit",
         "late_panic",
         "sleep_runtime_failure",
+        "old_child_reported_before_loss",
         "old_child_survived",
         "pending_call_not_released",
         "gdb_complete",
@@ -30,6 +45,7 @@ def test_production_probe_requires_exec_and_subsequent_shell_output(tmp_path, mo
     files = {name: tmp_path / name for name in ("kernel", "initramfs", "debug_symbols")}
     for path in files.values():
         path.write_bytes(b"image")
+    files["initramfs"].write_bytes(make_cpio_entry("init.elf", b"ELF", ino=1) + make_cpio_trailer())
     cfg = Artifacts(tmp_path / "manifest.json", "ARM64", "linux-image", {"type": "Debug"}, files)
     script = "import signal, sys, time\n"
     file_service_start = "moss-init: file service started pid=42"
@@ -40,7 +56,9 @@ def test_production_probe_requires_exec_and_subsequent_shell_output(tmp_path, mo
             "ss-init: file service started pid=42"
         )
     script += (
-        "print('moss-init: supervisor ready\\nmoss-init: code authority service started pid=41\\n"
+        "print('moss-init: supervisor ready\\n"
+        + ("" if mode == "missing_validation_mode" else "moss-init: validation mode\\n")
+        + "moss-init: code authority service started pid=41\\n"
         + file_service_start
         + "\\nmoss-init: namespace service started pid=43\\n"
         "moss-init: loader service started pid=44\\n"
@@ -132,7 +150,9 @@ assert input() == 'echo MOSS_PRODUCTION_READY'
         script += "print('moss-init: pending process call armed\\nmoss$ ', end='', flush=True)\n"
         script += "assert input() == '/moss-domain.elf terminate process'\n"
         script += (
-            "print('moss-init: process service died\\n"
+            "print('"
+            + ("MOSS_OLD_CHILD_SURVIVED\\n" if mode == "old_child_reported_before_loss" else "")
+            + "moss-init: process service died\\n"
             + ("" if mode == "pending_call_not_released" else "moss-init: pending process call released\\n")
             + "moss-init: pipe service started pid=51\\n"
             "moss-init: console service started pid=52\\n"
@@ -249,24 +269,35 @@ assert input() == 'echo MOSS_PRODUCTION_READY'
     started = time.monotonic()
     result = boot.run(cfg, tmp_path / "run", timeout=4, gdb="fake-gdb" if mode.startswith("gdb_") else None)
     assert 0 <= result["elapsed_seconds"] <= time.monotonic() - started
-    assert result["status"] == ("passed" if mode in ("complete", "interleaved_kernel_log", "gdb_complete") else "error")
+    assert result["status"] == (
+        "passed" if mode in ("complete", "interleaved_kernel_log", "old_child_reported_before_loss", "gdb_complete") else "error"
+    )
+    source = files["initramfs"].read_bytes()
+    runtime = (tmp_path / "run" / "initramfs-initramfs").read_bytes()
+    assert result["source_sha256"]["initramfs"] == hashlib.sha256(source).hexdigest()
+    assert result["sha256"]["initramfs"] == hashlib.sha256(runtime).hexdigest()
+    assert runtime == boot.add_validation_marker(source)
     if mode == "interleaved_kernel_log":
-        assert result["completed_steps"] == 167
+        assert result["completed_steps"] == 168
         assert b"mo[D][0.792]" in (tmp_path / "run" / "serial.log").read_bytes()
     assert result["raw_exit"] is not None
     # Partial fake shells stop at their first missing marker; prompts and
     # command outputs each count as one completed probe step.
     if mode == "echo_only":
-        assert result["completed_steps"] == 44
+        assert result["completed_steps"] == 45
     if mode == "legacy_shell":
-        assert result["completed_steps"] == 9
+        assert result["completed_steps"] == 10
     if mode == "missing_bridge":
-        assert result["completed_steps"] == 8
+        assert result["completed_steps"] == 9
+    if mode == "missing_validation_mode":
+        assert result["completed_steps"] == 1
     if mode == "applets_failed":
-        assert result["completed_steps"] == 40
+        assert result["completed_steps"] == 41
     if mode == "late_panic":
         assert "panicked" in result["observed"]
     if mode == "sleep_runtime_failure":
         assert "fatal runtime error" in result["observed"]
+    if mode == "old_child_survived":
+        assert result["observed"] == "old managed child survived process service loss"
     if mode in ("gdb_unverified", "gdb_failure"):
         assert result["observed"] == "first-read input barrier not verified"

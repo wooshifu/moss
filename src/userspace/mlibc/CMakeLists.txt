@@ -74,7 +74,10 @@ function(add_moss_runtime_program TARGET SOURCE OUTPUT)
     add_custom_command(
         TARGET ${TARGET}
         POST_BUILD
-        COMMAND ${LLVM_STRIP} --strip-debug -o "${CMAKE_CURRENT_BINARY_DIR}/${OUTPUT}.elf" $<TARGET_FILE:${TARGET}>
+        # The boot archive is copied before the shell starts. Runtime ELF
+        # loading uses program headers; keep symbols in the companion
+        # .unstripped.elf instead of copying them into the boot archive.
+        COMMAND ${LLVM_STRIP} --strip-all -o "${CMAKE_CURRENT_BINARY_DIR}/${OUTPUT}.elf" $<TARGET_FILE:${TARGET}>
         BYPRODUCTS "${CMAKE_CURRENT_BINARY_DIR}/${OUTPUT}.elf"
         VERBATIM
     )

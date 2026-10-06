@@ -19,12 +19,25 @@ if __package__ in (None, ""):
 
 from qemu import build_qemu_args, resolve_dtb, resolve_qemu
 from scripts.artifacts import Artifacts
+from scripts.gen_initramfs import make_cpio_entry, make_cpio_trailer
 
 # Match the aggregate limit in src/userspace/moss_file_protocol.h.
 FILE_CONTENT_BUDGET_BYTES = 4096 * 4096
 # Kernel diagnostics can interrupt a userspace serial write mid-marker. Strip
 # complete diagnostic lines from matching, while serial.log retains raw bytes.
 KERNEL_DIAGNOSTIC = re.compile(rb"\[[DIEW]\]\[\d+\.\d+\]\[[^\r\n]*\r?\n")
+VALIDATION_MARKER = "moss-init-selftest"
+
+
+def add_validation_marker(archive: bytes) -> bytes:
+    """Enable init self-tests in the runner's copied production archive."""
+    trailer = make_cpio_trailer()
+    if not archive.endswith(trailer):
+        raise ValueError("production initramfs lacks its expected newc trailer")
+    # The kernel parser ignores inode numbers; generated files start at one,
+    # so zero identifies this runner-only, empty regular read-only file.
+    marker = make_cpio_entry(VALIDATION_MARKER, b"", ino=0, mode=0o100444)
+    return archive[: -len(trailer)] + marker + trailer
 
 
 def run(
@@ -55,6 +68,7 @@ def run(
     dtb = resolve_dtb(cfg.arch, machine, dtb)
     output.mkdir(parents=True, exist_ok=False)
     files, hashes = dict(cfg.files), {"probe": hashlib.sha256(Path(__file__).read_bytes()).hexdigest()}
+    source_hashes = {}
     sources = {key: cfg.require(key) for key in ("kernel", "initramfs") + (("debug_symbols",) if gdb else ())}
     if dtb is not None:
         sources["dtb"] = dtb
@@ -64,7 +78,10 @@ def run(
         shutil.copy2(source, target)
         if hashlib.sha256(target.read_bytes()).hexdigest() != before:
             raise ValueError("production artifact changed during copy")
-        files[key], hashes[key] = target, before
+        files[key], hashes[key], source_hashes[key] = target, before, before
+    initramfs = files["initramfs"]
+    initramfs.write_bytes(add_validation_marker(initramfs.read_bytes()))
+    hashes["initramfs"] = hashlib.sha256(initramfs.read_bytes()).hexdigest()
     args = build_qemu_args(
         replace(cfg, files=files),
         qemu=resolve_qemu(cfg.arch),
@@ -123,6 +140,7 @@ quit
         arch=cfg.arch,
         build=cfg.build,
         sha256=hashes,
+        source_sha256=source_hashes,
         qemu_args=args,
         input_timing=("registration_barrier" if registration_race else "first_read_barrier") if gdb else "prompt",
     )
@@ -144,6 +162,7 @@ quit
     # capabilities alongside shell workflows and independent service recovery.
     steps = [
         (b"moss-init: supervisor ready", None),
+        (b"moss-init: validation mode", None),
         (b"moss-init: code authority service started", None),
         (b"moss-init: file service started", None),
         (b"moss-init: namespace service started", None),
@@ -277,8 +296,8 @@ quit
         (b"\nMOSS_FILE_SIZE=7\n", None),
         (b"moss$ ", b"/moss-file.elf read /note\n"),
         (b"\nMOSS_FILE_READ=short\0\0\n", None),
-        # /scratch and the private loader images still own storage, so /note
-        # cannot claim the entire service budget; rejection preserves bytes.
+        # /scratch and the volatile private probes still own storage, so /note
+        # cannot claim the whole budget. Boot-backed snapshots consume none.
         (b"moss$ ", f"/moss-file.elf resize {FILE_CONTENT_BUDGET_BYTES} /note\n".encode()),
         (b"\nMOSS_FILE_ERROR\n", None),
         (b"moss$ ", b"/moss-file.elf read /note\n"),
@@ -425,7 +444,12 @@ quit
                     process_loss_offset = trace.find(b"moss-init: process service died")
                     if child_start_offset < 0 or process_loss_offset < child_start_offset:
                         raise ValueError("adopted managed grandchild was not live before process service loss")
-                    if b"MOSS_OLD_CHILD_SURVIVED" in trace:
+                    # The old child can report while command dispatch is delayed.
+                    # A report after the new service starts means scope drain failed.
+                    recovery_offset = trace.find(b"moss-init: process service started", process_loss_offset)
+                    if recovery_offset < 0:
+                        raise ValueError("process service did not restart after scope drain")
+                    if b"MOSS_OLD_CHILD_SURVIVED" in trace[recovery_offset:]:
                         raise ValueError("old managed child survived process service loss")
                     result.update(status="passed", observed="code_loader_process_namespace_and_file_services_recovered")
                     break

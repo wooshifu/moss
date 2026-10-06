@@ -149,8 +149,9 @@ uv run scripts/kernel_validation.py run --manifest build/arm64-debug/moss-artifa
 
 ## Production Boot
 
-`moss-production-boot` freezes the production kernel and initramfs, boots four
-vCPUs with 2 GiB, rejects an unknown namespace path, opens `/scratch` and
+`moss-production-boot` freezes the production kernel and copies the initramfs,
+adds `/moss-init-selftest` only to its QEMU copy, then boots four vCPUs with
+2 GiB. It rejects an unknown namespace path, opens `/scratch` and
 writes and reads through the userspace file service, executes
 `/busybox.elf ash -c` through the real shell, requires a second shell command
 after child reaping, exits the shell and verifies the same file survives its
@@ -160,7 +161,9 @@ instances with empty volatile contents. A prompt or echoed input alone cannot pa
 It also writes and reads a 300-byte value through the shared Memory Object
 data path, beyond the 256-byte control-message limit.
 Panics, validation output, unexpected exit
-and timeout fail the probe. Image hashes and serial/QEMU logs are retained in
+and timeout fail the probe. The mlibc-backed ELF copies in the initramfs omit
+symbol tables; their `.unstripped.elf` companions remain in the build for debugging.
+Source and runtime image hashes plus serial/QEMU logs are retained in
 `<build>/production-boot/run-*/guest/` with `results.json`.
 
 `moss-supervisor-reset` checks that the production Initial System Supervisor's
