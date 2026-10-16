@@ -255,6 +255,26 @@ VoidResult PageTableManager::setup_kernel_high_half_tables() {
   }
 #endif
 
+#if defined(MOSS_ARCH_ARM64)
+  // MMU-off secondaries cannot see CPU0's dirty Normal-memory cache lines.
+  // Publish both roots and every early table to the point of coherency before
+  // firmware releases them; barriers alone left the high root null on Pi 3B+.
+  u64 ctr;
+  asm volatile("mrs %0, ctr_el0" : "=r"(ctr));
+  // CTR_EL0.DminLine [19:16] encodes log2(words); an architectural word is 4 bytes.
+  const usize line_size = 4ULL << ((ctr >> 16) & 0xF);
+  auto clean = [line_size](const void *data, usize bytes) {
+    auto begin = reinterpret_cast<VirtAddr>(data);
+    for (auto address = begin & ~(line_size - 1); address < begin + bytes; address += line_size) {
+      asm volatile("dc cvac, %0" ::"r"(address) : "memory");
+    }
+  };
+  clean(early_tables, next_table_index * sizeof(PageTable));
+  clean(&kernel_pgd, sizeof(kernel_pgd));
+  clean(&kernel_high_pgd, sizeof(kernel_high_pgd));
+  asm volatile("dsb sy" ::: "memory");
+#endif
+
   log::klog::info("high-half page table: PGD[{}] -> NX direct map", pgd_idx);
   return VoidResult{};
 }

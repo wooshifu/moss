@@ -309,6 +309,18 @@ bool wait_for_cpu_state(u32 cpu_id, CpuState expected_state, u32 timeout_ms) noe
 // Secondary CPU entry point — park first, then full subsystem initialization
 // on activation by CPU 0 (after GIC distributor and timer are ready).
 extern "C" [[noreturn]] void secondary_cpu_entry() noexcept {
+  // Firmware enters with the MMU off. Enable shared Normal-memory attributes
+  // before UART locks or any atomic topology handshake: A53 rejects exclusive
+  // accesses to the Device memory implied by SCTLR.M=0 (ESR=0x96000035).
+  asm volatile("msr vbar_el1, %0; isb" ::"r"(exception_vectors) : "memory");
+  using Tables = moss::kernel::mm::PageTableManager;
+  auto *kernel_pgd = Tables::get_kernel_pgd();
+  auto *high_pgd = Tables::get_kernel_high_pgd();
+  if (!kernel_pgd || !high_pgd || !moss::kernel::hal::mmu::enable_mmu(Tables::get_physical_address(kernel_pgd))) {
+    moss::kernel::arch::kernel_panic("secondary CPU MMU initialization failed");
+  }
+  moss::kernel::arch::setup_kernel_mmu(Tables::get_physical_address(high_pgd));
+
   // 1. Read CPU ID from hardware
   u32 cpu_id = moss::kernel::arch::get_current_cpu_id();
 
@@ -342,21 +354,6 @@ extern "C" [[noreturn]] void secondary_cpu_entry() noexcept {
   early_uart_lock_release();
 
   // --- Phase 2: Full subsystem initialization (GIC/timer are ready) ---
-
-  // 2. Set exception vectors (same as CPU 0), including for MMU activation.
-  asm volatile("msr vbar_el1, %0" ::"r"(exception_vectors));
-  asm volatile("isb");
-
-  // Page tables are shared, but MMU registers and enable state are per CPU.
-  // Activate both the identity map and the kernel direct map before any user
-  // dispatch or page-table walk through a high-half address on this CPU.
-  using Tables = moss::kernel::mm::PageTableManager;
-  auto *kernel_pgd = Tables::get_kernel_pgd();
-  auto *high_pgd = Tables::get_kernel_high_pgd();
-  if (!kernel_pgd || !high_pgd || !moss::kernel::hal::mmu::enable_mmu(Tables::get_physical_address(kernel_pgd))) {
-    moss::kernel::arch::kernel_panic("secondary CPU MMU initialization failed");
-  }
-  moss::kernel::arch::setup_kernel_mmu(Tables::get_physical_address(high_pgd));
 
   // 3. Enable FP/NEON access
   u64 cpacr = (3ULL << 20);

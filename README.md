@@ -94,6 +94,8 @@ Replace `arm64` with `riscv64` or `x64`. Machine, CPU, RAM and firmware
 are runner options, not build options. See [generic boot](docs/generic-boot.md)
 and [ADR-0005](docs/adr/0005-generic-kernels-and-independent-runners.md).
 
+For a physical Raspberry Pi 3B+, see the [uv serial console and JTAG RAM loader](docs/rpi3b.md).
+
 ## Lint and formatting
 
 Install system LLVM with `clang-tidy` and `clang-apply-replacements` matching the

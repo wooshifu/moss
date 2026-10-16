@@ -182,12 +182,16 @@ inline constexpr u64 KERNEL_RW =
     page_attr::VALID | page_attr::AF | page_attr::ATTR_NORMAL | page_attr::PXN | page_attr::XN | (3ULL << 8);
 inline constexpr u64 KERNEL_RX =
     page_attr::VALID | page_attr::AF | page_attr::ATTR_NORMAL | page_attr::READONLY | page_attr::XN | (3ULL << 8);
+// User pages alias the same RAM through the kernel direct map and can migrate
+// between CPUs. SH[9:8]=3 must match those mappings for cache coherency.
+// NG binds these translations to their ASID: root switches do not flush the
+// entire TLB, so global user stack entries could otherwise survive exec/fork.
 inline constexpr u64 USER_RO = page_attr::VALID | page_attr::AF | page_attr::USER | page_attr::READONLY |
-                               page_attr::ATTR_NORMAL | page_attr::PXN | page_attr::XN;
-inline constexpr u64 USER_RW =
-    page_attr::VALID | page_attr::AF | page_attr::USER | page_attr::ATTR_NORMAL | page_attr::PXN | page_attr::XN;
-inline constexpr u64 USER_RX =
-    page_attr::VALID | page_attr::AF | page_attr::USER | page_attr::READONLY | page_attr::ATTR_NORMAL | page_attr::PXN;
+                               page_attr::ATTR_NORMAL | page_attr::PXN | page_attr::XN | page_attr::NG | (3ULL << 8);
+inline constexpr u64 USER_RW = page_attr::VALID | page_attr::AF | page_attr::USER | page_attr::ATTR_NORMAL |
+                               page_attr::PXN | page_attr::XN | page_attr::NG | (3ULL << 8);
+inline constexpr u64 USER_RX = page_attr::VALID | page_attr::AF | page_attr::USER | page_attr::READONLY |
+                               page_attr::ATTR_NORMAL | page_attr::PXN | page_attr::NG | (3ULL << 8);
 inline constexpr u64 DEVICE =
     page_attr::VALID | page_attr::AF | page_attr::ATTR_DEVICE | page_attr::XN | page_attr::PXN;
 

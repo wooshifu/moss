@@ -131,7 +131,7 @@ static void boot_print(const char *message) { moss::kernel::hal::uart::puts(mess
     ArchBoot::arch_panic("Interrupt/exception setup failed");
   }
 
-  // Stage 4: SMP support — boot secondary CPUs via PSCI
+  // Stage 4: SMP support — use each CPU's firmware-discovered PSCI/spin-table/SBI startup method.
   boot_print("Stage 4: SMP support setup\n");
   auto smp_result = ArchBoot::setup_smp_support(ctx);
   if (!smp_result) {

@@ -243,7 +243,9 @@ static void parse_timer_and_firmware(const void *fdt) noexcept {
     if (!enabled(fdt, node)) {
       continue;
     }
-    if (compatible_match(fdt, node, "arm,armv8-timer")) {
+    // The architected timer binding also names AArch64-capable Pi firmware timers
+    // arm,armv7-timer; both expose the same secure/physical/virtual/hyp interrupt order.
+    if (compatible_match(fdt, node, "arm,armv8-timer") || compatible_match(fdt, node, "arm,armv7-timer")) {
       // ARM timer binding 顺序为 secure/nonsecure physical、virtual、hyp；
       // 索引 2 对应 HAL 使用的 cntv_* 虚拟计时器，不能改成另一条 PPI。
       g_platform_info.timer_interrupt = interrupt_number(fdt, node, 2); // virtual timer PPI
@@ -691,6 +693,18 @@ bool parse_dtb(const void *dtb_ptr) noexcept {
         int length = 0;
         const auto *data = static_cast<const u8 *>(fdt_getprop(dtb_ptr, node, "reg", &length));
         u32 stride = (address_cells + size_cells) * 4;
+        if (!data && compatible_match(dtb_ptr, node, "shared-dma-pool")) {
+          int requested_length = 0;
+          const auto *requested = static_cast<const u8 *>(fdt_getprop(dtb_ptr, node, "size", &requested_length));
+          // A reusable, size-only CMA pool is an OS allocation request, not a
+          // firmware carveout. No RAM is owned until a supporting driver allocates
+          // it; fixed reg ranges and malformed/unsupported reservations still fail closed.
+          if (requested && requested_length == static_cast<int>(size_cells * 4) &&
+              read_cells_value(requested, size_cells) && fdt_getprop(dtb_ptr, node, "reusable", nullptr) &&
+              !fdt_getprop(dtb_ptr, node, "no-map", nullptr)) {
+            continue;
+          }
+        }
         if (!data || length <= 0 || static_cast<u32>(length) % stride != 0) {
           g_platform_info.memory_map_valid = false;
           continue;

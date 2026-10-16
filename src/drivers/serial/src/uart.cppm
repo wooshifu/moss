@@ -35,11 +35,20 @@ inline u32 transmit_lock = 0;
 // and sstatus.SIE bit 1 on RV64; only restore the caller's prior enable state.
 class TransmitGuard {
   u64 flags_ = 0;
+  bool locked_ = false;
 
 public:
   TransmitGuard() noexcept {
 #if defined(MOSS_ARCH_ARM64)
     asm volatile("mrs %0, daif; msr daifset, #2" : "=r"(flags_)::"memory");
+    u64 control;
+    asm volatile("mrs %0, sctlr_el1" : "=r"(control));
+    // With SCTLR.M clear, RAM has Device attributes: Cortex-A53 rejects LDAXR
+    // here (ESR=0x96000035). Only the boot CPU prints before MMU setup;
+    // secondary CPUs enable their shared Normal-memory mappings before logging.
+    if (!(control & 1ULL)) { // SCTLR_EL1.M, bit 0, enables address translation and its memory attributes.
+      return;
+    }
 #elif defined(MOSS_ARCH_X64)
     asm volatile("pushfq; popq %0; cli" : "=r"(flags_)::"memory");
 #else
@@ -50,9 +59,12 @@ public:
         asm volatile("" ::: "memory");
       }
     }
+    locked_ = true;
   }
   ~TransmitGuard() {
-    __atomic_store_n(&transmit_lock, 0U, __ATOMIC_RELEASE);
+    if (locked_) {
+      __atomic_store_n(&transmit_lock, 0U, __ATOMIC_RELEASE);
+    }
 #if defined(MOSS_ARCH_ARM64)
     asm volatile("msr daif, %0" ::"r"(flags_) : "memory");
 #elif defined(MOSS_ARCH_X64)
@@ -144,8 +156,10 @@ inline void enable_rx_interrupt() noexcept {
     return;
   }
   if (platform::hardware.uart.kind == platform::UartKind::Pl011) {
-    // IMSC=0x38: RXIM bit 4 unmasks FIFO receive interrupts.
-    write_register(0x38, read_register(0x38) | (1U << 4));
+    // IMSC=0x38: RXIM bit 4 handles the FIFO threshold; RTIM bit 6 handles
+    // a partial FIFO after 32 idle bit periods. Without RTIM, the final bytes
+    // of a command below the threshold never wake a blocked console on Pi 3B+.
+    write_register(0x38, read_register(0x38) | (1U << 4) | (1U << 6));
   } else {
     // 16550 IER register 1 bit 0 enables RX; MCR register 4 bit 3 (OUT2)
     // opens the legacy PC interrupt output gate.
