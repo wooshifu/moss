@@ -138,7 +138,8 @@ static u32 probe_available_cpus() noexcept {
   const auto &plat = moss::fdt::get_platform_info();
   if (plat.dtb_valid && plat.cpu_count > 0) {
     u32 count = plat.cpu_count;
-    // Store the full count in g_num_cpus (runtime, unlimited)
+    // Preserve the firmware count for scheduling and system queries; early
+    // hardware validation rejects topologies beyond the supported CPU limit.
     moss::kernel::g_num_cpus = count;
     // Boot arrays are limited to BOOT_MAX_CPUS
     if (count > moss::kernel::BOOT_MAX_CPUS) {

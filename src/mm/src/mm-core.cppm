@@ -120,10 +120,10 @@ public:
   static PageAllocVoidResult free_pages(PhysAddr addr, usize order) noexcept;
 
   struct MemoryStats {
-    usize total_pages;
+    usize total_pages; // Managed pool after boot/firmware/metadata reservations are excluded.
     usize free_pages;
     usize used_pages;
-    usize kernel_pages;
+    usize kernel_pages; // Residual within that pool, not boot-reserved kernel memory.
     PhysAddr metadata_start;
     usize metadata_size; // Reserved bytes, including page-alignment padding.
   };
