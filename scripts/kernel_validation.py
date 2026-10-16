@@ -161,6 +161,7 @@ CATALOG = {
     "users.lifecycle": ["core_paths_recovery"],
     "users.applications": ["core_application_recovery"],
     "users.libc": ["static_runtime", "filesystem_permissions"],
+    "users.sysinfo": ["snapshot", "affinity", "memory", "commands"],
     "users.exec": [
         "rejects_invalid_entry",
         "rejects_phentsize",
@@ -342,9 +343,9 @@ CATALOG = {
         )
     },
 }
-# Runtime-memory and backing/COW cases change the ordered inventory from v6;
-# earlier reports retain their recorded version for comparison.
-CATALOG_VERSION = 7
+# System-info cases extend the ordered inventory from v7; earlier reports
+# retain their recorded version so cross-version comparisons are rejected.
+CATALOG_VERSION = 8
 FUNCTIONAL = [
     "drivers",
     "resources",
@@ -374,6 +375,7 @@ FUNCTIONAL = [
     "users.timers",
     "users.ipc",
     "users.libc",
+    "users.sysinfo",
     "users.exec",
     "users.busybox",
 ]
@@ -744,10 +746,19 @@ def run_guest(cfg: Artifacts, workload: str, directory: Path, settings: dict, it
         # Exhaustive RAM access and repeated process lifecycles can exceed 5 s
         # under host pressure. BusyBox's file-rename workflow took 6.32 s on
         # ARM64 Debug while compiling; retain the same bounded 30 s deadline.
+        # users.sysinfo likewise launches a matrix of BusyBox shell commands.
         case_timeout = (
             30.0
             if workload
-            in ("pfa", "users.signals", "users.console_irq", "users.busybox", *LIFECYCLE_INTERVAL, *BENCHMARK_KINDS)
+            in (
+                "pfa",
+                "users.signals",
+                "users.console_irq",
+                "users.busybox",
+                "users.sysinfo",
+                *LIFECYCLE_INTERVAL,
+                *BENCHMARK_KINDS,
+            )
             else 5.0
         )
     progress_deadline = settings.get("stability", False) or workload == "users.applications"

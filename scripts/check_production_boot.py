@@ -178,6 +178,21 @@ quit
         (b"moss-init: process service started", None),
         (b"moss-init: loader process bridge ready", None),
         (b"built-in shell (ash)", None),
+        # This runner boots four vCPUs; exercise the installed ash applets and
+        # managed fork path, not just the validation image's raw-PID runtime.
+        (
+            b"moss$ ",
+            b'[ "$(nproc)" = 4 ] && [ "$(nproc --all)" = 4 ] && '
+            b'[ "$(nproc --ignore=1)" = 3 ] && printf "MOSS_NPROC_OK\\n"\n',
+        ),
+        (b"\nMOSS_NPROC_OK\n", None),
+        (
+            b"moss$ ",
+            b"free -b > /free-output && set -- $(cat /free-output | grep '^Mem:') && "
+            b'[ "$2" -gt 0 ] && [ "$7" -eq "$4" ] && cat /free-output && '
+            b'free -h && rm /free-output && printf "MOSS_FREE_OK\\n"\n',
+        ),
+        (b"\nMOSS_FREE_OK\n", None),
         (b"moss$ ", b"/moss-process.elf probe\n"),
         (b"\nMOSS_PROCESS_READY\n", None),
         (b"moss$ ", b"/moss-file.elf read /missing\n"),
@@ -457,6 +472,11 @@ quit
                         raise ValueError("process service did not restart after scope drain")
                     if b"MOSS_OLD_CHILD_SURVIVED" in trace[recovery_offset:]:
                         raise ValueError("old managed child survived process service loss")
+                    # ash's fixed profile has no arithmetic expansion. Check
+                    # byte accounting here, using the real captured free output.
+                    free_row = re.search(rb"^Mem:\s+(\d+)\s+(\d+)\s+(\d+)\s+", trace, re.MULTILINE)
+                    if not free_row or int(free_row[1]) != int(free_row[2]) + int(free_row[3]):
+                        raise ValueError("free memory accounting does not balance")
                     result.update(status="passed", observed="code_loader_process_namespace_and_file_services_recovered")
                     break
                 if child.poll() is not None:

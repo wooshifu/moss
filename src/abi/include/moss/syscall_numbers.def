@@ -199,5 +199,8 @@
   // Observe native domain, receiver and reply readiness in one blocking wait.
   SYS_OBJECT_WAIT = 176,
   SYS_IPC_TRY_RECEIVE = 177,
+  // Reserve domain inspection so the validated system-info ABI keeps its number.
+  SYS_DOMAIN_INFO = 178,
+  SYS_SYSTEM_INFO = 179,
   // Total syscall count marker
-  MAX_SYSCALL = 178
+  MAX_SYSCALL = 180

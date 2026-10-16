@@ -1,3 +1,4 @@
+#define _GNU_SOURCE
 #include <dirent.h>
 #include <errno.h>
 #include <fcntl.h>
@@ -10,12 +11,14 @@
 #include <string.h>
 #include <sys/mman.h>
 #include <sys/stat.h>
+#include <sys/sysinfo.h>
 #include <sys/utsname.h>
 #include <sys/wait.h>
 #include <unistd.h>
 
 #define MOSS_SYSCALL_RAW_ONLY
 #include "syscall.h"
+#include <moss/monitor.h>
 
 // Fixture exit protocol: 37 reports a completed runtime/permission worker;
 // 39 proves a selected exec continuation ran. Other nonzero returns identify
@@ -36,6 +39,209 @@ static _Thread_local volatile unsigned long tls_zero;
 static const unsigned char snapshot_canary[8192] __attribute__((aligned(4096))) = {[0] = 0x37, [8191] = 0xa9};
 
 static volatile sig_atomic_t delivered;
+
+static int system_snapshot_runtime(void) {
+  struct {
+    unsigned long before;
+    struct moss_system_info info;
+    unsigned long after;
+  } result;
+  // Distinct nonzero guards expose short or oversized writes to the native ABI.
+  memset(&result, 0xa5, sizeof(result));
+  if (syscall2(SYS_SYSTEM_INFO, (long)&result.info, sizeof(result.info)) || result.before != 0xa5a5a5a5a5a5a5a5UL ||
+      result.after != result.before) {
+    return 1;
+  }
+  struct sysinfo info;
+  if (sysinfo(&info) || !info.totalram || !info.mem_unit || info.freeram > info.totalram ||
+      info.totalram * info.mem_unit != result.info.memory_total_bytes || !info.procs ||
+      sysconf(_SC_PHYS_PAGES) != (long)(result.info.memory_total_bytes / (unsigned long)sysconf(_SC_PAGESIZE))) {
+    return 2;
+  }
+  if (syscall2(SYS_SYSTEM_INFO, (long)&result.info, sizeof(result.info) - 1) != -EINVAL ||
+      syscall2(SYS_SYSTEM_INFO, 0, sizeof(result.info)) != -EFAULT ||
+      syscall2(SYS_SYSTEM_INFO, -1, sizeof(result.info)) != -EFAULT ||
+      syscall2(SYS_SYSTEM_INFO, (long)snapshot_canary, sizeof(result.info)) != -EFAULT) {
+    return 3;
+  }
+  const size_t page = (size_t)sysconf(_SC_PAGESIZE);
+  char *area = mmap(NULL, page, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+  char *guard = mmap(NULL, page, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+  if (area == MAP_FAILED || guard == MAP_FAILED || guard != area + page || munmap(guard, page)) {
+    return 4;
+  }
+  // Half the structure falls into an unmapped page; the kernel must not fault.
+  int failed = syscall2(SYS_SYSTEM_INFO, (long)(guard - sizeof(result.info) / 2), sizeof(result.info)) != -EFAULT;
+  failed |= syscall2(SYS_SYSTEM_INFO, (long)area, sizeof(result.info)) != 0;
+  failed |= munmap(area, page) != 0;
+  if (failed) {
+    return 5;
+  }
+  printf("SYSTEM_INFO configured=%lu online=%lu total=%lu free=%lu\n", result.info.cpu_count,
+         result.info.online_cpu_count, result.info.memory_total_bytes, result.info.memory_free_bytes);
+  return 37;
+}
+
+static int system_affinity_runtime(void) {
+  cpu_set_t original, one, actual;
+  memset(&original, 0xa5, sizeof(original));
+  const long configured = sysconf(_SC_NPROCESSORS_CONF), online = sysconf(_SC_NPROCESSORS_ONLN);
+  if (configured <= 0 || online <= 0 || online > configured || get_nprocs() != online ||
+      get_nprocs_conf() != configured || sched_getaffinity(0, sizeof(original), &original) ||
+      CPU_COUNT(&original) != online) {
+    return 1;
+  }
+  unsigned first = 0;
+  while (!CPU_ISSET(first, &original)) {
+    ++first;
+  }
+  CPU_ZERO(&one);
+  CPU_SET(first, &one);
+  if (sched_setaffinity(0, sizeof(one), &one) || sched_getaffinity(0, sizeof(actual), &actual) ||
+      CPU_COUNT(&actual) != 1 || !CPU_ISSET(first, &actual) || sysconf(_SC_NPROCESSORS_ONLN) != online ||
+      sysconf(_SC_NPROCESSORS_CONF) != configured) {
+    return 2;
+  }
+  uint32_t native;
+  if (syscall3(SYS_SCHED_GETAFFINITY, 0, sizeof(native) - 1, (long)&native) != -EINVAL ||
+      syscall3(SYS_SCHED_SETAFFINITY, 0, sizeof(native) - 1, (long)&native) != -EINVAL ||
+      syscall3(SYS_SCHED_GETAFFINITY, 0, sizeof(native), 0) != -EFAULT ||
+      syscall3(SYS_SCHED_GETAFFINITY, 0, sizeof(native), -1) != -EFAULT ||
+      syscall3(SYS_SCHED_SETAFFINITY, 0, sizeof(native), -1) != -EFAULT) {
+    return 3;
+  }
+  CPU_ZERO(&one);
+  errno = 0;
+  if (sched_setaffinity(0, sizeof(one), &one) != -1 || errno != EINVAL ||
+      sched_setaffinity(0, sizeof(original), &original)) {
+    return 4;
+  }
+  return 37;
+}
+
+static int system_memory_runtime(void) {
+  const size_t page = (size_t)sysconf(_SC_PAGESIZE);
+  // Sixteen touched pages make the change visible without stressing small guests.
+  const size_t length = page * 16;
+  volatile char *area = mmap(NULL, length, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+  struct sysinfo before, during, after;
+  if ((void *)area == MAP_FAILED || sysinfo(&before)) {
+    return 1;
+  }
+  for (size_t i = 0; i < length; i += page) {
+    area[i] = 1; // Force lazy anonymous pages to become real physical allocations.
+  }
+  if (sysinfo(&during) || during.totalram != before.totalram || before.freeram < during.freeram ||
+      (before.freeram - during.freeram) * before.mem_unit < length) {
+    return 2;
+  }
+  long available = sysconf(_SC_AVPHYS_PAGES);
+  if (available <= 0 || (unsigned long)available * page > before.freeram * before.mem_unit ||
+      munmap((void *)area, length) || sysinfo(&after) || after.totalram != before.totalram ||
+      after.freeram < during.freeram || (after.freeram - during.freeram) * after.mem_unit < length) {
+    return 3;
+  }
+  printf("SYSTEM_MEMORY before=%lu allocated=%lu released=%lu bytes=%lu\n", before.freeram * before.mem_unit,
+         during.freeram * during.mem_unit, after.freeram * after.mem_unit, (unsigned long)length);
+  return 37;
+}
+
+static int capture_system_command(const char *script, char *output, size_t capacity) {
+  int fds[2];
+  if (pipe(fds)) {
+    return -1;
+  }
+  pid_t child = fork();
+  if (!child) {
+    close(fds[0]);
+    if (dup2(fds[1], STDOUT_FILENO) < 0) {
+      _exit(1);
+    }
+    close(fds[1]);
+    char *const args[] = {"busybox", "ash", "-c", (char *)script, NULL};
+    execve("/busybox.elf", args, NULL);
+    _exit(1);
+  }
+  close(fds[1]);
+  size_t used = 0;
+  ssize_t count;
+  int overflow = 0;
+  // Fixture choice: 128-byte chunks bound scratch stack use; correctness is
+  // independent of the chunk size. Drain overflow too, avoiding pipe deadlock.
+  char chunk[128];
+  while ((count = read(fds[0], chunk, sizeof(chunk))) > 0) {
+    if ((size_t)count >= capacity - used) {
+      overflow = 1;
+    } else {
+      memcpy(output + used, chunk, (size_t)count);
+      used += (size_t)count;
+    }
+  }
+  output[used] = 0;
+  close(fds[0]);
+  int status;
+  const int reaped = child > 0 && waitpid(child, &status, 0) == child;
+  return reaped && count == 0 && !overflow && status == 0 ? 0 : -1;
+}
+
+static int system_commands_runtime(void) {
+  // One KiB covers free's three formatted lines, including the longest byte totals.
+  // The expected CPU output needs at most four 20-digit longs plus newlines;
+  // rounding that capacity up to 128 bytes leaves room for the terminating NUL.
+  char output[1024], expected[128];
+  long configured = sysconf(_SC_NPROCESSORS_CONF), online = sysconf(_SC_NPROCESSORS_ONLN);
+  snprintf(expected, sizeof(expected), "%ld\n%ld\n%ld\n1\n", online, configured, online > 1 ? online - 1 : 1);
+  // INT_MAX exercises the largest BusyBox --ignore value and its minimum-one rule.
+  if (capture_system_command("nproc && nproc --all && nproc --ignore=1 && nproc --ignore=2147483647", output,
+                             sizeof(output)) ||
+      strcmp(output, expected)) {
+    return 1;
+  }
+  cpu_set_t original, one;
+  if (sched_getaffinity(0, sizeof(original), &original) || CPU_COUNT(&original) <= 0) {
+    return 2;
+  }
+  unsigned first = 0;
+  while (!CPU_ISSET(first, &original)) {
+    ++first;
+  }
+  CPU_ZERO(&one);
+  CPU_SET(first, &one);
+  snprintf(expected, sizeof(expected), "1\n%ld\n", configured);
+  if (sched_setaffinity(0, sizeof(one), &one) ||
+      capture_system_command("nproc && nproc --all", output, sizeof(output)) || strcmp(output, expected) ||
+      sched_setaffinity(0, sizeof(original), &original)) {
+    return 3;
+  }
+  struct sysinfo info;
+  if (sysinfo(&info)) {
+    return 4;
+  }
+  const char *commands[] = {"free -b", "free", "free -k", "free -m", "free -g"};
+  // Binary display units used by BusyBox; default and -k both mean KiB.
+  const unsigned long units[] = {1, 1024, 1024, 1024 * 1024, 1024 * 1024 * 1024};
+  for (size_t i = 0; i < sizeof(commands) / sizeof(commands[0]); ++i) {
+    unsigned long total, used, available, shared, cached, idle;
+    if (capture_system_command(commands[i], output, sizeof(output))) {
+      return 5;
+    }
+    char *line = strstr(output, "Mem:");
+    if (!line ||
+        sscanf(line, "Mem: %lu %lu %lu %lu %lu %lu", &total, &used, &idle, &shared, &cached, &available) != 6 ||
+        // Each field is rounded independently by BusyBox's formatter, allowing
+        // used + free to differ from total by one display unit.
+        total != (info.totalram * info.mem_unit + units[i] / 2) / units[i] || used > total || idle > total ||
+        used + idle > total + 1 || total > used + idle + 1 || available != idle || shared || cached ||
+        !strstr(output, "Swap:")) {
+      return 6;
+    }
+  }
+  if (capture_system_command("free -h", output, sizeof(output)) || !strstr(output, "Mem:") ||
+      !strstr(output, "available")) {
+    return 7;
+  }
+  return 37;
+}
 
 static int uname_runtime(void) {
   struct {
@@ -988,6 +1194,18 @@ int main(int argc, char **argv) {
   }
   if (!strcmp(argv[1], "permissions")) {
     return filesystem_permissions_runtime();
+  }
+  if (!strcmp(argv[1], "system-snapshot")) {
+    return system_snapshot_runtime();
+  }
+  if (!strcmp(argv[1], "system-affinity")) {
+    return system_affinity_runtime();
+  }
+  if (!strcmp(argv[1], "system-memory")) {
+    return system_memory_runtime();
+  }
+  if (!strcmp(argv[1], "system-commands")) {
+    return system_commands_runtime();
   }
   if (!strcmp(argv[1], "credentials-after-exec")) {
     return getuid() == 99 && geteuid() == 99 && getgid() == 99 && getegid() == 99 ? 37 : 29;

@@ -2,16 +2,19 @@
 #include <errno.h>
 #include <limits.h>
 #include <mlibc/all-sysdeps.hpp>
+#include <mlibc/arch-defs.hpp>
 #include <mlibc/tcb.hpp>
 #include <stddef.h>
 #include <string.h>
 #include <sys/auxv.h>
 #include <sys/stat.h>
+#include <sys/sysinfo.h>
 #include <sys/utsname.h>
 #include <sys/wait.h>
 
 #define MOSS_SYSCALL_RAW_ONLY
 #include <moss-process-protocol.h>
+#include <moss/monitor.h>
 #include <moss-syscall.h>
 
 namespace {
@@ -232,6 +235,82 @@ int Sysdeps<Uname>::operator()(struct utsname *out) {
                 offsetof(utsname, release) == 130 && offsetof(utsname, version) == 195 &&
                 offsetof(utsname, machine) == 260);
   return error(syscall1(SYS_UNAME, reinterpret_cast<long>(out)));
+}
+int Sysdeps<Sysinfo>::operator()(struct sysinfo *out) {
+  if (!out)
+    return EFAULT;
+  moss_system_info native{};
+  if (int e = error(syscall2(SYS_SYSTEM_INFO, reinterpret_cast<long>(&native), sizeof(native))))
+    return e;
+  memset(out, 0, sizeof(*out));
+  // Native time is in ns; sysinfo uptime is in whole seconds.
+  out->uptime = native.uptime_ns / 1000000000UL;
+  out->totalram = native.memory_total_bytes;
+  out->freeram = native.memory_free_bytes;
+  out->mem_unit = 1; // Native memory counters are already bytes.
+  out->procs = native.process_count > USHRT_MAX ? USHRT_MAX : native.process_count;
+  // Moss has no swap/highmem pool or reclaimable block/page cache. Shared
+  // mappings remain in used RAM; there is no separate shmem accounting yet.
+  // shortcut: load averages remain unavailable, add them when CFS tracks history.
+  return 0;
+}
+int Sysdeps<Sysconf>::operator()(int number, long *out) {
+  switch (number) {
+  case _SC_NPROCESSORS_CONF:
+  case _SC_NPROCESSORS_ONLN:
+  case _SC_PHYS_PAGES:
+  case _SC_AVPHYS_PAGES:
+    break;
+  default:
+    return EINVAL; // Let mlibc handle its existing static POSIX values.
+  }
+  moss_system_info info{};
+  if (int e = error(syscall2(SYS_SYSTEM_INFO, reinterpret_cast<long>(&info), sizeof(info))))
+    return e;
+  switch (number) {
+  case _SC_NPROCESSORS_CONF:
+    *out = info.cpu_count;
+    break;
+  case _SC_NPROCESSORS_ONLN:
+    *out = info.online_cpu_count;
+    break;
+  case _SC_PHYS_PAGES:
+    *out = info.memory_total_bytes / mlibc::page_size;
+    break;
+  case _SC_AVPHYS_PAGES:
+    *out = info.memory_free_bytes / mlibc::page_size;
+    break;
+  }
+  return 0;
+}
+int Sysdeps<GetAffinity>::operator()(pid_t pid, size_t size, cpu_set_t *mask) {
+  if (size < sizeof(uint32_t))
+    return EINVAL;
+  if (!mask)
+    return EFAULT;
+  // Managed POSIX PIDs belong to Process Service, not the kernel's PID table.
+  // Self works in either model; foreign managed PIDs need service translation.
+  if (pid && process_session())
+    return ENOSYS;
+  uint32_t native = 0;
+  if (int e = error(syscall3(SYS_SCHED_GETAFFINITY, pid, sizeof(native), reinterpret_cast<long>(&native))))
+    return e;
+  memset(mask, 0, size); // BusyBox counts the entire caller-provided set.
+  memcpy(mask, &native, sizeof(native));
+  return 0;
+}
+int Sysdeps<SetAffinity>::operator()(pid_t pid, size_t size, const cpu_set_t *mask) {
+  if (size < sizeof(uint32_t))
+    return EINVAL;
+  if (!mask)
+    return EFAULT;
+  if (pid && process_session())
+    return ENOSYS;
+  // The kernel intersects this native word with online CPUs. Higher bits
+  // cannot select a CPU on Moss's current firmware-supported topology.
+  uint32_t native;
+  memcpy(&native, mask, sizeof(native));
+  return error(syscall3(SYS_SCHED_SETAFFINITY, pid, sizeof(native), reinterpret_cast<long>(&native)));
 }
 int Sysdeps<GetCwd>::operator()(char *buffer, size_t size) {
   return error(syscall2(SYS_GETCWD, reinterpret_cast<long>(buffer), size));

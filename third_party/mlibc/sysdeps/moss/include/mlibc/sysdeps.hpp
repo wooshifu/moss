@@ -1,8 +1,18 @@
 #pragma once
 
 #include <mlibc/sysdep-signatures.hpp>
+#include <sys/sysinfo.h>
 
+// Moss reuses this public structure without enabling the Linux syscall profile.
+#if !__MLIBC_LINUX_OPTION
+struct Sysinfo {};
+#endif
 namespace mlibc {
+#if !__MLIBC_LINUX_OPTION
+template <> struct SysdepImpl<Sysinfo> {
+  static int operator()(struct ::sysinfo *info);
+};
+#endif
 struct MossSysdepTags : LibcPanic,
                         LibcLog,
                         Write,
@@ -36,6 +46,10 @@ struct MossSysdepTags : LibcPanic,
                         ClockGet,
                         Sleep,
                         Uname,
+                        Sysinfo,
+                        Sysconf,
+                        GetAffinity,
+                        SetAffinity,
                         GetPid,
                         GetPpid,
                         GetPgid,

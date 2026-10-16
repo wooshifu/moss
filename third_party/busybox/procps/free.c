@@ -19,7 +19,7 @@
 //kbuild:lib-$(CONFIG_FREE) += free.o
 
 //usage:#define free_trivial_usage
-//usage:       "" IF_DESKTOP("[-bkmgh]")
+//usage:       "[-bkmgh]"
 //usage:#define free_full_usage "\n\n"
 //usage:       "Display free and used memory"
 //usage:
@@ -52,18 +52,14 @@
 //NB: if we implement -s or -c, need to stop being NOFORK!
 
 #include "libbb.h"
-#ifdef __linux__
+#if defined(__linux__) || defined(__moss__)
 # include <sys/sysinfo.h>
 #endif
 
 struct globals {
 	unsigned mem_unit;
-#if ENABLE_DESKTOP
 	unsigned unit;
 # define G_unit g->unit
-#else
-# define G_unit (1 << 10)
-#endif
 	unsigned long cached_kb, available_kb, reclaimable_kb;
 };
 /* Because of NOFORK, "globals" are not in global data */
@@ -78,6 +74,7 @@ static const char *scale(struct globals *g, unsigned long d)
 }
 
 /* NOINLINE reduces main() stack usage, which makes code smaller (on x86 at least) */
+#ifndef __moss__
 static NOINLINE unsigned int parse_meminfo(struct globals *g)
 {
 	char buf[60]; /* actual lines we expect are ~30 chars or less */
@@ -103,16 +100,17 @@ static NOINLINE unsigned int parse_meminfo(struct globals *g)
 
 	return seen_cached_and_available_and_reclaimable == 0;
 }
+#endif
 
 int free_main(int argc, char **argv) MAIN_EXTERNALLY_VISIBLE;
-int free_main(int argc UNUSED_PARAM, char **argv IF_NOT_DESKTOP(UNUSED_PARAM))
+int free_main(int argc UNUSED_PARAM, char **argv)
 {
 	struct globals G;
 	struct sysinfo info;
 	unsigned long long cached, cached_plus_free, available;
 	int seen_available;
 
-#if ENABLE_DESKTOP
+	/* KiB is the default display unit; -h uses the formatter's auto-unit mode. */
 	G.unit = 1 << 10;
 	if (argv[1] && argv[1][0] == '-') {
 		switch (argv[1][1]) {
@@ -139,7 +137,8 @@ int free_main(int argc UNUSED_PARAM, char **argv IF_NOT_DESKTOP(UNUSED_PARAM))
 			bb_show_usage();
 		}
 	}
-#endif
+	if (sysinfo(&info) != 0)
+		bb_perror_msg_and_die("sysinfo");
 	printf("       %12s%12s%12s%12s%12s%12s\n"
 	"Mem:   ",
 		"total",
@@ -148,14 +147,21 @@ int free_main(int argc UNUSED_PARAM, char **argv IF_NOT_DESKTOP(UNUSED_PARAM))
 		"shared", "buff/cache", "available" /* swap and total don't have these columns */
 	);
 
-	sysinfo(&info);
-	/* Extract cached and memavailable from /proc/meminfo and convert to mem_units */
-	seen_available = parse_meminfo(&G);
 	G.mem_unit = (info.mem_unit ? info.mem_unit : 1); /* kernels < 2.4.x return mem_unit==0, so cope */
+#ifdef __moss__
+	/* There is no procfs or reclaimable page cache on Moss. Only free physical
+	 * pages are immediately available; live allocations stay in used memory. */
+	seen_available = 1;
+	available = info.freeram;
+	cached = info.bufferram;
+#else
+	/* Extract cached and memavailable from /proc/meminfo and convert to mem_units. */
+	seen_available = parse_meminfo(&G);
 	available = ((unsigned long long) G.available_kb * 1024) / G.mem_unit;
 	cached = ((unsigned long long) G.cached_kb * 1024) / G.mem_unit;
 	cached += info.bufferram;
 	cached += ((unsigned long long) G.reclaimable_kb * 1024) / G.mem_unit;
+#endif
 	cached_plus_free = cached + info.freeram;
 
 	printf("%12s%12s%12s",

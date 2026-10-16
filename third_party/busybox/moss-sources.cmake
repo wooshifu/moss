@@ -27,6 +27,7 @@ set(BUSYBOX_SOURCES
     coreutils/ls.c
     coreutils/mkdir.c
     coreutils/mv.c
+    coreutils/nproc.c
     coreutils/printf.c
     coreutils/rm.c
     coreutils/rmdir.c
@@ -43,6 +44,7 @@ set(BUSYBOX_SOURCES
     findutils/find.c
     findutils/grep.c
     libbb/appletlib.c
+    libbb/alloc_affinity.c
     libbb/ask_confirmation.c
     libbb/auto_string.c
     libbb/bb_askpass.c
@@ -169,6 +171,7 @@ set(BUSYBOX_SOURCES
     libbb/xregcomp.c
     libpwdgrp/uidgid_get.c
     procps/kill.c
+    procps/free.c
     shell/ash.c
     shell/ash_ptr_hack.c
     shell/shell_common.c

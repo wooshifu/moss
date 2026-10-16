@@ -41,6 +41,7 @@ configure_file(
 )
 configure_file("${MOSS_ROOT}/src/abi/include/moss/startup_auxv.h" "${MLIBC_GENERATED}/moss/startup_auxv.h" COPYONLY)
 configure_file("${MOSS_ROOT}/src/abi/include/moss/domain_spawn.h" "${MLIBC_GENERATED}/moss/domain_spawn.h" COPYONLY)
+configure_file("${MOSS_ROOT}/src/abi/include/moss/monitor.h" "${MLIBC_GENERATED}/moss/monitor.h" COPYONLY)
 find_program(LLVM_STRIP llvm-strip REQUIRED)
 add_subdirectory("${MOSS_THIRD_PARTY}/mlibc" mlibc)
 add_subdirectory("${MOSS_THIRD_PARTY}/compiler-rt" builtins)

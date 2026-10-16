@@ -309,6 +309,10 @@ extern "C" long moss_validation_call(long op, long arg1, [[maybe_unused]] long a
     if (ut::same_id(selection, "users.libc")) {
       return 20;
     }
+    if (ut::same_id(selection, "users.sysinfo")) {
+      // Dedicated dispatch ID permits single-CPU/resource-variation guests.
+      return 26;
+    }
     if (ut::same_id(selection, "users.exec")) {
       return 22;
     }
@@ -341,7 +345,8 @@ extern "C" long moss_validation_call(long op, long arg1, [[maybe_unused]] long a
                           ut::same_id(selection, "users.signals") || ut::same_id(selection, "users.console_irq") ||
                           is_lifecycle() || ut::same_id(selection, "users.timers") ||
                           ut::same_id(selection, "users.ipc") || ut::same_id(selection, "users.libc") ||
-                          ut::same_id(selection, "users.busybox") || ut::same_id(selection, "users.exec");
+                          ut::same_id(selection, "users.sysinfo") || ut::same_id(selection, "users.busybox") ||
+                          ut::same_id(selection, "users.exec");
   if (op == 1 && user_suite && !failed && !active_case && arg1 == static_cast<long>(completed) && arg1 >= 0) {
     long index = 0;
     for (unsigned i = 0; i < ut::registry.case_count; ++i) {

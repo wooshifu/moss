@@ -19,7 +19,15 @@ extern "C" {
 
 #if __MLIBC_LINUX_OPTION && defined(_GNU_SOURCE)
 #include <bits/linux/linux_sched.h>
+#endif
+
+/* GNU CPU affinity is also available on non-Linux ports such as Moss. */
+#if (__MLIBC_LINUX_OPTION || __MLIBC_GLIBC_OPTION) && defined(_GNU_SOURCE)
 #include <bits/linux/cpu_set.h>
+#ifndef __MLIBC_ABI_ONLY
+int sched_setaffinity(pid_t __pid, size_t __cpusetsize, const cpu_set_t *__mask);
+int sched_getaffinity(pid_t __pid, size_t __cpusetsize, cpu_set_t *__mask);
+#endif
 #endif
 
 #ifndef __MLIBC_ABI_ONLY

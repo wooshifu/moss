@@ -3528,9 +3528,17 @@ long sys_sched_yield(long /*unused*/, long /*unused*/, long /*unused*/, long /*u
 // sched_getaffinity(pid, cpusetsize, mask_addr) — get CPU affinity mask
 // pid: 0 = calling thread
 // Returns 0 on success, -errno on failure
-long sys_sched_getaffinity(long pid_arg, long /*unused*/, long mask_addr, long /*unused*/, long /*unused*/,
+long sys_sched_getaffinity(long pid_arg, long mask_size, long mask_addr, long /*unused*/, long /*unused*/,
                            long /*unused*/) noexcept {
   using namespace moss::kernel::process;
+
+  // The native affinity ABI transfers one u32; libc expands it to cpu_set_t.
+  if (mask_size < static_cast<long>(sizeof(u32))) {
+    return -errc::EINVAL;
+  }
+  if (!mask_addr) {
+    return -errc::EFAULT;
+  }
 
   shared_ptr<Process> proc; // Own target threads throughout this syscall.
   Thread *target = nullptr;
@@ -3552,15 +3560,15 @@ long sys_sched_getaffinity(long pid_arg, long /*unused*/, long mask_addr, long /
     return -errc::ESRCH;
   }
 
-  if (mask_addr != 0) {
-    u32 mask_val;
-    {
-      containers::LockGuard<containers::IrqSpinLock> guard(target->sleep_lock);
-      mask_val = target->cpu_affinity_mask.low_word();
-    }
-    if (copy_to_user(static_cast<u64>(mask_addr), &mask_val, sizeof(mask_val)) < 0) {
-      return -errc::EFAULT;
-    }
+  u32 mask_val;
+  {
+    containers::LockGuard<containers::IrqSpinLock> guard(target->sleep_lock);
+    // New threads allow every CPU. Only online CPUs are actually usable.
+    mask_val = target->cpu_affinity_mask.low_word() &
+               static_cast<u32>(__atomic_load_n(&moss::boot::online_cpu_mask, __ATOMIC_ACQUIRE));
+  }
+  if (copy_to_user(static_cast<u64>(mask_addr), &mask_val, sizeof(mask_val)) < 0) {
+    return -errc::EFAULT;
   }
 
   return 0;
@@ -3569,10 +3577,13 @@ long sys_sched_getaffinity(long pid_arg, long /*unused*/, long mask_addr, long /
 // sched_setaffinity(pid, cpusetsize, mask_addr) — set CPU affinity mask
 // pid: 0 = calling thread
 // Returns 0 on success, -errno on failure
-long sys_sched_setaffinity(long pid_arg, long /*unused*/, long mask_addr, long /*unused*/, long /*unused*/,
+long sys_sched_setaffinity(long pid_arg, long mask_size, long mask_addr, long /*unused*/, long /*unused*/,
                            long /*unused*/) noexcept {
   using namespace moss::kernel::process;
 
+  if (mask_size < static_cast<long>(sizeof(u32))) {
+    return -errc::EINVAL;
+  }
   if (mask_addr == 0) {
     return -errc::EFAULT;
   }
@@ -3593,6 +3604,7 @@ long sys_sched_setaffinity(long pid_arg, long /*unused*/, long mask_addr, long /
   // Mask out CPUs beyond available CPU count.
   u32 num_cpus = g_num_cpus;
   u32 valid_mask = (num_cpus >= kNativeAffinityBits) ? ~0U : ((1U << num_cpus) - 1);
+  valid_mask &= static_cast<u32>(__atomic_load_n(&moss::boot::online_cpu_mask, __ATOMIC_ACQUIRE));
   new_mask &= valid_mask;
   if (new_mask == 0) {
     return -errc::EINVAL;
@@ -3836,6 +3848,32 @@ long sys_clock_nanosleep(long clockid, long flags, long ns_addr, long remaining_
     target_ns += now;
   }
   return sleep_until(target_ns, flags == 0 ? static_cast<u64>(remaining_addr) : 0);
+}
+
+long sys_system_info(long output, long size, long, long, long, long) noexcept {
+  if (size != static_cast<long>(sizeof(moss::abi::SystemInfo))) {
+    return -errc::EINVAL;
+  }
+  moss::abi::SystemInfo info{};
+  info.uptime_ns = timer::TimerSubsystem::instance().now_ns();
+  const auto memory = mm::PageFrameAllocator::get_memory_stats();
+  info.memory_total_bytes = memory.total_pages * PAGE_SIZE;
+  info.memory_free_bytes = memory.free_pages * PAGE_SIZE;
+  info.cpu_count = g_num_cpus;
+  info.online_cpu_count =
+      static_cast<u64>(__builtin_popcountll(__atomic_load_n(&moss::boot::online_cpu_mask, __ATOMIC_ACQUIRE)));
+  if (process::g_process_manager) {
+    info.process_count = process::g_process_manager->total_processes();
+  }
+  for (u32 cpu = 0; cpu < info.cpu_count; ++cpu) {
+    if (auto *idle = process::get_idle_task(cpu)) {
+      info.idle_time_ns += idle->snapshot_idle_time_ns(info.uptime_ns);
+    }
+    if (process::g_scheduler) {
+      info.runnable_threads += process::g_scheduler->monitor_runnable(cpu);
+    }
+  }
+  return copy_to_user(static_cast<u64>(output), &info, sizeof(info));
 }
 
 // ── System monitoring: topinfo ──────────────────────────────
@@ -4215,7 +4253,9 @@ const SyscallDescriptor SYSCALL_TABLE[static_cast<int>(SyscallNumber::MAX_SYSCAL
     {"profile_apply", handlers::sys_profile_apply, 2, true, "Admit a one-shot thread CPU budget"},
     {"profile_status", handlers::sys_profile_status, 2, true, "Read bounded thread CPU budget metrics"},
     {"object_wait", handlers::sys_object_wait, 4, true, "Wait for native object readiness"},
-    {"ipc_try_receive", handlers::sys_ipc_try_receive, 3, true, "Receive a queued control request without blocking"}};
+    {"ipc_try_receive", handlers::sys_ipc_try_receive, 3, true, "Receive a queued control request without blocking"},
+    {"domain_info", handlers::sys_not_implemented, 3, false, "Reserved for domain inspection"},
+    {"system_info", handlers::sys_system_info, 2, true, "Read system resource statistics"}};
 
 // 系统调用分发器实现
 long SyscallDispatcher::dispatch(long syscall_number, long arg0, long arg1, long arg2, long arg3, long arg4,

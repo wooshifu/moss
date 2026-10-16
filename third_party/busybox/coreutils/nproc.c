@@ -38,6 +38,12 @@ int nproc_main(int argc UNUSED_PARAM, char **argv UNUSED_PARAM)
 	);
 
 	if (opts & (1 << 1)) {
+#ifdef __moss__
+		/* Moss exposes firmware topology through sysconf, without sysfs. */
+		count = sysconf(_SC_NPROCESSORS_CONF);
+		if (count < 0)
+			bb_perror_msg_and_die("sysconf");
+#else
 		DIR *cpusd = opendir("/sys/devices/system/cpu");
 		if (cpusd) {
 			struct dirent *de;
@@ -48,6 +54,7 @@ int nproc_main(int argc UNUSED_PARAM, char **argv UNUSED_PARAM)
 			}
 			IF_FEATURE_CLEAN_UP(closedir(cpusd);)
 		}
+#endif
 	} else
 #endif
 	{

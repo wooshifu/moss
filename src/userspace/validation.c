@@ -572,12 +572,24 @@ void _start(long argc, const char **argv) {
       }
     }
     control(3, 0, 0);
-  } else if (mode == 20) {
-    const char *programs[] = {"runtime", "permissions"};
-    for (long test = 0; test < 2; ++test) {
+  } else if (mode == 20 || mode == 26) {
+    const char *libc_programs[] = {"runtime", "permissions"};
+    const char *system_programs[] = {"system-snapshot", "system-affinity", "system-memory", "system-commands"};
+    const char **programs = mode == 20 ? libc_programs : system_programs;
+    const long count = mode == 20 ? sizeof(libc_programs) / sizeof(libc_programs[0])
+                                  : sizeof(system_programs) / sizeof(system_programs[0]);
+    for (long test = 0; test < count; ++test) {
       control(1, test, 0);
       long child = fork();
       if (child == 0) {
+        if (mode == 26) {
+          // The controller stays pinned to CPU0. These disposable workers need
+          // all online CPUs so nproc can prove topology and affinity separately.
+          unsigned all_cpus = ~0U;
+          if (syscall3(SYS_SCHED_SETAFFINITY, 0, sizeof(all_cpus), (long)&all_cpus)) {
+            _exit(99);
+          }
+        }
         const char *libc_args[] = {"libc_validation", programs[test], 0};
         syscall3(SYS_EXECVE, (long)"/libc_validation.elf", (long)libc_args, 0);
         _exit(99);

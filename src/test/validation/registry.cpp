@@ -181,6 +181,12 @@ void declare_cases() {
     ut::register_test("static_runtime", empty_case);
     ut::register_test("filesystem_permissions", empty_case);
   });
+  ut::register_suite("users.sysinfo", [] {
+    ut::register_test("snapshot", empty_case);
+    ut::register_test("affinity", empty_case);
+    ut::register_test("memory", empty_case);
+    ut::register_test("commands", empty_case);
+  });
   ut::register_suite("users.exec", [] {
     constexpr const char *names[] = {
         "rejects_invalid_entry",

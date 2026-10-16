@@ -601,6 +601,7 @@ def test_case_duration_uses_host_observation_time(monkeypatch):
         ("pfa", 40, 40),
         ("users.busybox", None, 30),
         ("users.busybox", 1, 1),
+        ("users.sysinfo", None, 30),
     ],
 )
 def test_workload_deadline_is_recorded_and_explicit_override_wins(tmp_path, monkeypatch, workload, override, expected):
@@ -710,7 +711,7 @@ def test_catalog_version_keeps_legacy_evidence_but_rejects_cross_version():
     previous["catalog_version"] = 2
     current = copy.deepcopy(legacy)
     current["catalog_version"] = kv.CATALOG_VERSION
-    assert current["catalog_version"] == 7
+    assert current["catalog_version"] == 8
     assert kv.saved_measurement(legacy, legacy["guests"][0]) is not None
     assert kv.comparison(legacy, legacy)[0]["status"] == "comparable"
     assert kv.comparison(previous, previous)[0]["status"] == "comparable"

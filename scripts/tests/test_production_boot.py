@@ -75,6 +75,10 @@ def test_production_probe_requires_exec_and_subsequent_shell_output(tmp_path, mo
         script += "print('BusyBox built-in shell (ash)', flush=True)\n"
     script += r"""
 print('moss$ ', end='', flush=True)
+assert input().startswith('[ "$(nproc)" = 4 ]')
+print('\nMOSS_NPROC_OK\nmoss$ ', end='', flush=True)
+assert input().startswith('free -b > /free-output && ')
+print('\nMem: 1000 400 600 0 0 600\nMOSS_FREE_OK\nmoss$ ', end='', flush=True)
 assert input() == '/moss-process.elf probe'
 print('\nMOSS_PROCESS_READY\nmoss$ ', end='', flush=True)
 assert input() == '/moss-file.elf read /missing'
@@ -299,13 +303,13 @@ assert input() == 'echo MOSS_PRODUCTION_READY'
     assert result["sha256"]["initramfs"] == hashlib.sha256(runtime).hexdigest()
     assert runtime == boot.add_validation_marker(source)
     if mode == "interleaved_kernel_log":
-        assert result["completed_steps"] == 168
+        assert result["completed_steps"] == 172
         assert b"mo[D][0.792]" in (tmp_path / "run" / "serial.log").read_bytes()
     assert result["raw_exit"] is not None
     # Partial fake shells stop at their first missing marker; prompts and
     # command outputs each count as one completed probe step.
     if mode == "echo_only":
-        assert result["completed_steps"] == 45
+        assert result["completed_steps"] == 49
     if mode == "legacy_shell":
         assert result["completed_steps"] == 10
     if mode == "missing_bridge":
@@ -313,7 +317,7 @@ assert input() == 'echo MOSS_PRODUCTION_READY'
     if mode == "missing_validation_mode":
         assert result["completed_steps"] == 1
     if mode == "applets_failed":
-        assert result["completed_steps"] == 41
+        assert result["completed_steps"] == 45
     if mode == "late_panic":
         assert "panicked" in result["observed"]
     if mode == "sleep_runtime_failure":

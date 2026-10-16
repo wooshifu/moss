@@ -102,7 +102,7 @@ def generate_cpio(source_dir: Path, filenames: list[str]) -> bytes:
 
     parts.append(make_cpio_trailer())
 
-    # Pad archive to 512-byte boundary (block alignment, matches GNU cpio behavior)
+    # Keep the final archive aligned to the same four-byte boundary as newc records.
     archive = b"".join(parts)
     block_padding = align4(len(archive)) - len(archive)
 

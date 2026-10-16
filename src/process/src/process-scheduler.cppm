@@ -302,10 +302,15 @@ public:
 
   u32 get_cpu_id() const noexcept { return cpu_id_; }
 
-  u64 get_idle_time_ns() const noexcept { return idle_time_ns_; }
+  u64 get_idle_time_ns() const noexcept {
+    containers::LockGuard<containers::IrqSpinLock> guard(idle_lock_);
+    return idle_time_ns_;
+  }
 
-  // Snapshot idle time including in-progress idle period (for topinfo)
+  // Remote CPUs must observe the accumulated count and open interval together.
+  // Mixing both sides of exit_idle would double-count a completed interval.
   u64 snapshot_idle_time_ns(u64 now_ns) const noexcept {
+    containers::LockGuard<containers::IrqSpinLock> guard(idle_lock_);
     u64 total = idle_time_ns_;
     u64 start = last_idle_start_;
     if (start != 0 && now_ns > start) {
@@ -314,23 +319,34 @@ public:
     return total;
   }
 
-  void accumulate_idle_time(u64 delta_ns) noexcept { idle_time_ns_ += delta_ns; }
+  void accumulate_idle_time(u64 delta_ns) noexcept {
+    containers::LockGuard<containers::IrqSpinLock> guard(idle_lock_);
+    idle_time_ns_ += delta_ns;
+  }
 
   // Mark idle entry — called when CPU enters idle (before WFI)
-  void enter_idle(u64 now_ns) noexcept { last_idle_start_ = now_ns; }
+  void enter_idle(u64 now_ns) noexcept {
+    containers::LockGuard<containers::IrqSpinLock> guard(idle_lock_);
+    last_idle_start_ = now_ns;
+  }
 
   // Mark idle exit — called when CPU exits idle (WFI returned)
   void exit_idle(u64 now_ns) noexcept {
+    containers::LockGuard<containers::IrqSpinLock> guard(idle_lock_);
     if (last_idle_start_ != 0 && now_ns > last_idle_start_) {
       idle_time_ns_ += (now_ns - last_idle_start_);
     }
     last_idle_start_ = 0;
   }
 
-  void reset_idle_time() noexcept { idle_time_ns_ = 0; }
+  void reset_idle_time() noexcept {
+    containers::LockGuard<containers::IrqSpinLock> guard(idle_lock_);
+    idle_time_ns_ = 0;
+  }
 
 private:
   u32 cpu_id_;
+  mutable containers::IrqSpinLock idle_lock_;
   u64 idle_time_ns_;
   u64 last_idle_start_;
 };
@@ -1308,6 +1324,12 @@ public:
     // The target CPU installs this only after charging its prior interval.
     thread->budget_profile_pending.store(true, moss::memory_order_release);
     return BudgetProfileResult::Applied;
+  }
+
+  [[nodiscard]] u32 monitor_runnable(u32 cpu) noexcept {
+    containers::LockGuard<containers::IrqSpinLock> guard(task_transition_lock_);
+    // Running tasks are dequeued, so count the current task separately.
+    return get_cpu_nr_running(cpu) + (get_current_task_on_cpu(cpu) != nullptr);
   }
 
   [[nodiscard]] BudgetProfileStatus cpu_budget_status(Thread *thread) noexcept {

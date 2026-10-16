@@ -5,6 +5,8 @@
 
 module;
 
+#include <moss/monitor.h>
+
 // ============================================================================
 // Linker script symbols (all architectures)
 // ============================================================================
@@ -232,6 +234,9 @@ inline void call_global_constructors() noexcept {
 // Assembly function re-exports
 // ============================================================================
 export namespace moss::abi {
+// Import the C wire layouts once. Re-including them in several module units
+// produces distinct declarations under Clang's module ownership diagnostics.
+using SystemInfo = ::moss_system_info;
 
 using ::_start;
 using ::context_switch;

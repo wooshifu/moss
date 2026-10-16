@@ -271,6 +271,8 @@ set(MLIBC_LIBC_SOURCES
     options/posix/generic/pwd.cpp
     options/posix/generic/resolv_conf.cpp
     options/posix/generic/sched.cpp
+    options/linux/generic/cpuset.cpp
+    options/linux/generic/sys-sysinfo.cpp
     options/posix/generic/spawn.cpp
     options/posix/generic/strings.cpp
     options/posix/generic/services.cpp
@@ -500,6 +502,8 @@ set(MLIBC_PUBLIC_HEADERS
     sysdeps/moss/include/abi-bits/aio.h
     sysdeps/moss/include/abi-bits/sched_param.h
     options/linux/include/sys/sysmacros.h
+    options/linux/include/sys/sysinfo.h
+    options/linux/include/bits/linux/cpu_set.h
     options/internal/include/stdint.h
     options/internal/include/bits/wchar_t.h
     options/internal/include/bits/wchar.h
