@@ -151,6 +151,9 @@ struct moss_ipc_message {
 // 0x4d01 is a Moss-specific command ID shared with vfs:types; its exact
 // allocation rationale is unrecorded. Do not substitute a Linux termios opcode.
 enum { MOSS_IOCTL_ISATTY = 0x4d01 };
+// Next Moss-native command; no payload, returns one raw byte or -EAGAIN.
+// It consumes input only on readable console descriptors, without mode changes.
+enum { MOSS_IOCTL_TRY_GETC = 0x4d02 };
 
 // Native clock ID 1 selects monotonic nanoseconds, not a POSIX timespec.
 enum { MOSS_CLOCK_MONOTONIC = 1 };
@@ -444,8 +447,9 @@ static inline long nanosleep_ns(unsigned long *ns) { return syscall2(SYS_NANOSLE
 #endif // MOSS_SYSCALL_RAW_ONLY
 
 // ============================================================================
-// TopInfo — system monitoring structures (for top command)
-// Layout must match kernel-side topinfo_layout exactly.
+// TopInfo — legacy fixed-capacity native scheduler diagnostics
+// Layout must match kernel-side topinfo_layout exactly. Production ps/top
+// use monitor.h and Process Service identities instead of these native IDs.
 // ============================================================================
 
 // Fixed ABI capacities and 16-byte names below match topinfo_layout; they bound

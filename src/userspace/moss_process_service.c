@@ -1,5 +1,6 @@
 #include <errno.h>
 #include <limits.h>
+#include <moss/monitor.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -1360,6 +1361,56 @@ static int finish_fd_action(struct FdAction *action, long sent) {
   return !action->prepared_read || finish_object_read(action->prepared_read, sent == 0);
 }
 
+static void monitor_request(const struct moss_ipc_message *request, struct moss_ipc_message *response,
+                            unsigned long next_id) {
+  struct Record *caller = find_record(request->badge);
+  if (!record_running(caller)) {
+    response->payload[0] = MOSS_PROCESS_NO_ENTRY;
+    return;
+  }
+  const uint64_t after = moss_process_get_u64(request->payload + 1);
+  uint64_t ceiling = moss_process_get_u64(request->payload + 1 + sizeof(uint64_t));
+  if (!ceiling || ceiling >= next_id) {
+    ceiling = next_id - 1;
+  }
+  struct Record *selected = NULL;
+  for (struct Record *record = records; record; record = record->next) {
+    // Reservations have no execution to report. Exit records remain visible
+    // until their ordinary waiter reaps them; observing never consumes status.
+    if (!record->domain || !record->id || record->id > ceiling) {
+      continue;
+    }
+    if (request->payload[0] == MOSS_PROCESS_MONITOR_GET
+            ? record->id == after
+            : record->id > after && (!selected || record->id < selected->id)) {
+      selected = record;
+    }
+  }
+  if (!selected) {
+    response->payload[0] = MOSS_PROCESS_NO_ENTRY;
+    return;
+  }
+  struct moss_process_info info = {.pid = selected->id,
+                                   .ppid = selected->parent_id,
+                                   .pgid = selected->group_id,
+                                   .sid = selected->session_id,
+                                   .ceiling = ceiling};
+  long result = syscall3(SYS_DOMAIN_INFO, (long)selected->domain, (long)&info.domain, sizeof(info.domain));
+  if (result < 0) {
+    response->payload[0] = MOSS_PROCESS_UNAVAILABLE;
+    return;
+  }
+  // Native auto-reap retires a domain before the compatibility waiter runs.
+  // Both native terminal states therefore represent a POSIX zombie here.
+  if (info.domain.state == 5) {
+    info.domain.state = 6; // ProcessState::Terminated -> ProcessState::Zombie.
+  }
+  _Static_assert(1 + sizeof(info) <= sizeof(response->payload), "monitor reply fits one control message");
+  response->size = 1 + sizeof(info);
+  response->payload[0] = MOSS_PROCESS_OK;
+  memcpy(response->payload + 1, &info, sizeof(info));
+}
+
 int main(int argc, char **argv) {
   if (argc != 7) {
     return 2;
@@ -1669,6 +1720,10 @@ int main(int argc, char **argv) {
           response.payload[0] = MOSS_PROCESS_NO_ENTRY;
         }
       }
+    } else if (request.badge && request.size == MOSS_PROCESS_MONITOR_REQUEST_BYTES &&
+               (request.payload[0] == MOSS_PROCESS_MONITOR_NEXT || request.payload[0] == MOSS_PROCESS_MONITOR_GET) &&
+               !request.capability && !request.rights) {
+      monitor_request(&request, &response, next_id);
     } else if (request.badge && request.size && request.payload[0] >= MOSS_PROCESS_FD_OPEN &&
                request.payload[0] <= MOSS_PROCESS_FD_WAIT) {
       handle_fd_request(find_record(request.badge), namespace, pipe, reply, &request, &response, &fd_action);

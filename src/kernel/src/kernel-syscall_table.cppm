@@ -171,6 +171,7 @@ long sys_nanosleep(long ns_addr, long remaining_addr, long arg2, long arg3, long
 long sys_clock_nanosleep(long clockid, long flags, long ns_addr, long remaining, long arg4, long arg5) noexcept;
 
 // System monitoring
+long sys_domain_info(long handle, long output, long size, long arg3, long arg4, long arg5) noexcept;
 long sys_system_info(long output, long size, long arg2, long arg3, long arg4, long arg5) noexcept;
 long sys_topinfo(long info_addr, long arg1, long arg2, long arg3, long arg4, long arg5) noexcept;
 

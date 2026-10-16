@@ -318,6 +318,34 @@ PageTableEntry *PageTableManager::get_user_pte(PhysAddr pgd_phys, VirtAddr va) {
   return &pte->entries[bd.pte_index];
 }
 
+static usize count_user_pages(const PageTable *table, unsigned shift, u64 base) noexcept {
+  usize pages = 0;
+  for (usize i = 0; i < PageTable::ENTRIES_PER_TABLE; ++i) {
+    const u64 address = base | (static_cast<u64>(i) << shift);
+    const auto &entry = table->entries[i];
+    if (shared_kernel_entry(address, shift) || !entry.is_valid()) {
+      continue;
+    }
+    if (shift == PAGE_SHIFT || !entry.is_table()) {
+      if (entry.raw & page_attr::USER) {
+        // A leaf covers 2^shift bytes; report its size in base pages.
+        pages += usize{1} << (shift - PAGE_SHIFT);
+      }
+    } else {
+      // Each page-table level consumes nine VA bits (512 entries).
+      pages += count_user_pages(PageTableManager::get_table_from_physical(entry.get_phys_addr()), shift - 9, address);
+    }
+  }
+  return pages;
+}
+
+usize PageTableManager::resident_user_pages(PhysAddr pgd_phys) noexcept {
+  if (!pgd_phys || pgd_phys == get_physical_address(kernel_pgd) || pgd_phys == get_physical_address(kernel_high_pgd)) {
+    return 0;
+  }
+  return count_user_pages(get_table_from_physical(pgd_phys), root_shift(), 0);
+}
+
 static void prune_empty_user_tables(PageTable *table, unsigned shift, VirtAddr va) noexcept {
   if (shift == PAGE_SHIFT) {
     return;

@@ -848,7 +848,20 @@ void test30() {
 	assert(!strcmp(test_argv[4], "non-arg2"));
 }
 
+static void required_dash_argument(void) {
+	char *args[] = {"top", "-b", "-n", "-2", "-d", "-1", NULL};
+	optind = 0;
+	const int argc = COUNT_OF(args) - 1; /* argv's terminating NULL is not an argument. */
+	assert(getopt(argc, args, "bn:d:") == 'b');
+	assert(getopt(argc, args, "bn:d:") == 'n');
+	assert(!strcmp(optarg, "-2"));
+	assert(getopt(argc, args, "bn:d:") == 'd');
+	assert(!strcmp(optarg, "-1"));
+	assert(getopt(argc, args, "bn:d:") == -1);
+}
+
 int main() {
+	required_dash_argument();
 	test1();
 	test2();
 	test3();

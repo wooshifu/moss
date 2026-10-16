@@ -116,6 +116,10 @@
 //kbuild:lib-$(CONFIG_TOP) += top.o
 
 #include "libbb.h"
+#ifdef __moss__
+# include <moss/monitor.h>
+static struct moss_system_info moss_system;
+#endif
 
 #define ESC "\033"
 
@@ -301,6 +305,22 @@ static NOINLINE int read_cpu_jiffy(FILE *fp, jiffy_counts_t *p_jif)
 
 static void get_jiffy_counts(void)
 {
+#ifdef __moss__
+	int error = moss_monitor_system(&moss_system);
+	if (error) {
+		errno = error;
+		bb_perror_msg_and_die("system monitor");
+	}
+	prev_jif = cur_jif;
+	/* Same 100 Hz unit as procps_scan; aggregate capacity includes every CPU.
+	 * Moss accounts combined execution, so only busy and idle are displayed. */
+	cur_jif.total = moss_system.uptime_ns / 10000000 * moss_system.cpu_count;
+	cur_jif.idle = moss_system.idle_time_ns / 10000000;
+	if (cur_jif.idle > cur_jif.total)
+		cur_jif.idle = cur_jif.total;
+	cur_jif.busy = cur_jif.usr = cur_jif.total - cur_jif.idle;
+#else
+
 	FILE* fp = xfopen_for_read("stat");
 
 	/* We need to parse cumulative counts even if SMP CPU display is on,
@@ -350,6 +370,7 @@ static void get_jiffy_counts(void)
 	}
 #endif
 	fclose(fp);
+#endif
 }
 
 static void do_stats(void)
@@ -435,6 +456,19 @@ static char *fmt_100percent_8(char pbuf[8], unsigned value, unsigned total)
 #if ENABLE_FEATURE_TOP_CPU_GLOBAL_PERCENTS
 static void display_cpus(int scr_width, char *scrbuf, int *lines_rem_p)
 {
+#ifdef __moss__
+	unsigned long long elapsed = cur_jif.total - prev_jif.total;
+	unsigned long long idle = cur_jif.idle - prev_jif.idle;
+	/* Tenths of a percent: 1000 represents 100.0%. A separately sampled
+	 * idle counter can cross a tick boundary; clamp before subtraction. */
+	unsigned idle_tenths = elapsed ? (idle >= elapsed ? 1000 : idle * 1000 / elapsed) : 0;
+	unsigned busy_tenths = elapsed ? 1000 - idle_tenths : 0;
+	snprintf(scrbuf, scr_width, "CPU: %3u.%u%% busy %3u.%u%% idle",
+		busy_tenths / 10, busy_tenths % 10, idle_tenths / 10, idle_tenths % 10);
+	puts(scrbuf);
+	--*lines_rem_p;
+#else
+
 	/*
 	 * xxx% = (cur_jif.xxx - prev_jif.xxx) / (cur_jif.total - prev_jif.total) * 100%
 	 */
@@ -508,6 +542,7 @@ static void display_cpus(int scr_width, char *scrbuf, int *lines_rem_p)
 # undef CALC_STAT
 # undef FMT
 	*lines_rem_p -= i;
+#endif
 }
 #else  /* !ENABLE_FEATURE_TOP_CPU_GLOBAL_PERCENTS */
 # define display_cpus(scr_width, scrbuf, lines_rem) ((void)0)
@@ -532,6 +567,13 @@ enum {
 
 static void parse_meminfo(unsigned long meminfo[MI_MAX])
 {
+#ifdef __moss__
+	memset(meminfo, 0, sizeof(meminfo[0]) * MI_MAX);
+	/* Kernel counters are bytes; BusyBox renders KiB. */
+	meminfo[MI_MEMTOTAL] = moss_system.memory_total_bytes / 1024;
+	meminfo[MI_MEMFREE] = moss_system.memory_free_bytes / 1024;
+#else
+
 	static const char fields[] ALIGN1 =
 		"MemTotal\0"
 		"MemFree\0"
@@ -562,6 +604,7 @@ static void parse_meminfo(unsigned long meminfo[MI_MAX])
 			meminfo[i] = strtoul(c+1, NULL, 10);
 	}
 	fclose(f);
+#endif
 }
 
 static unsigned long display_header(int scr_width, int *lines_rem_p)
@@ -575,6 +618,10 @@ static unsigned long display_header(int scr_width, int *lines_rem_p)
 	/* Output memory info */
 	if (scr_width > (int)sizeof(scrbuf))
 		scr_width = sizeof(scrbuf);
+#ifdef __moss__
+	snprintf(scrbuf, scr_width, "Mem: %luK used, %luK free, %luK total",
+		meminfo[MI_MEMTOTAL] - meminfo[MI_MEMFREE], meminfo[MI_MEMFREE], meminfo[MI_MEMTOTAL]);
+#else
 	snprintf(scrbuf, scr_width,
 		"Mem: %luK used, %luK free, %luK shrd, %luK buff, %luK cached",
 		meminfo[MI_MEMTOTAL] - meminfo[MI_MEMFREE],
@@ -582,6 +629,7 @@ static unsigned long display_header(int scr_width, int *lines_rem_p)
 		meminfo[MI_MEMSHARED] + meminfo[MI_SHMEM],
 		meminfo[MI_BUFFERS],
 		meminfo[MI_CACHED]);
+#endif
 	/* Go to top & clear to the end of screen */
 	printf(OPT_BATCH_MODE ? "%s\n" : ESC"[H" ESC"[J" "%s\n", scrbuf);
 	(*lines_rem_p)--;
@@ -591,11 +639,18 @@ static unsigned long display_header(int scr_width, int *lines_rem_p)
 	 */
 	display_cpus(scr_width, scrbuf, lines_rem_p);
 
+#ifdef __moss__
+	/* Scheduler load weights are not Linux 1/5/15-minute load averages. */
+	snprintf(scrbuf, scr_width, "Uptime: %llus  Tasks: %u  CPUs: %llu  Runnable: %llu",
+		(unsigned long long)(moss_system.uptime_ns / 1000000000), ntop,
+		(unsigned long long)moss_system.cpu_count, (unsigned long long)moss_system.runnable_threads);
+#else
 	/* Read load average as a string */
 	buf = stpcpy(scrbuf, "Load average: ");
 	open_read_close("loadavg", buf, sizeof(scrbuf) - sizeof("Load average: "));
 	scrbuf[scr_width - 1] = '\0';
 	strchrnul(buf, '\n')[0] = '\0';
+#endif
 	puts(scrbuf);
 	(*lines_rem_p)--;
 
@@ -613,7 +668,7 @@ static NOINLINE void display_process_list(int lines_rem, int scr_width)
 	/* xxx_shift and xxx_scale variables allow us to replace
 	 * expensive divides with multiply and shift */
 	unsigned pmem_shift, pmem_scale, pmem_half;
-#if ENABLE_FEATURE_TOP_CPU_USAGE_PERCENTAGE
+#if ENABLE_FEATURE_TOP_CPU_USAGE_PERCENTAGE && !defined(__moss__)
 	unsigned tmp_unsigned;
 	unsigned pcpu_shift, pcpu_scale, pcpu_half;
 	unsigned busy_jifs;
@@ -656,7 +711,7 @@ typedef struct { unsigned quot, rem; } bb_div_t;
 		pmem_shift -= 2;
 	}
 	pmem_half = (1U << pmem_shift) / (ENABLE_FEATURE_TOP_DECIMALS ? 20 : 2);
-#if ENABLE_FEATURE_TOP_CPU_USAGE_PERCENTAGE
+#if ENABLE_FEATURE_TOP_CPU_USAGE_PERCENTAGE && !defined(__moss__)
 	busy_jifs = cur_jif.busy - prev_jif.busy;
 	/* This happens if there were lots of short-lived processes
 	 * between two top updates (e.g. compilation) */
@@ -704,7 +759,14 @@ typedef struct { unsigned quot, rem; } bb_div_t;
 
 		CALC_STAT(pmem, (s->vsz*pmem_scale + pmem_half) >> pmem_shift);
 #if ENABLE_FEATURE_TOP_CPU_USAGE_PERCENTAGE
+#ifdef __moss__
+		/* 100% is the capacity of all CPUs. Clamp a racing tick-boundary sample. */
+		unsigned long long elapsed = cur_jif.total - prev_jif.total;
+		unsigned usage = elapsed ? (unsigned long long)s->pcpu * UPSCALE / elapsed : 0;
+		CALC_STAT(pcpu, usage > UPSCALE ? UPSCALE : usage);
+#else
 		CALC_STAT(pcpu, (s->pcpu*pcpu_scale + pcpu_half) >> pcpu_shift);
+#endif
 #endif
 
 		smart_ulltoa5(s->vsz, vsz_str_buf, " mgtpezy");
@@ -773,8 +835,10 @@ static void clearmems(void)
 #if ENABLE_FEATURE_TOP_INTERACTIVE
 static void reset_term(void)
 {
+#ifndef __moss__
 	if (!OPT_BATCH_MODE)
 		tcsetattr_stdin_TCSANOW(&initial_settings);
+#endif
 }
 
 static void sig_catcher(int sig)
@@ -965,7 +1029,12 @@ static unsigned handle_input(unsigned scan_mask, duration_t interval)
 	while (1) {
 		int32_t c;
 
+#ifdef __moss__
+		/* Read raw console bytes without changing the shell's line mode. */
+		c = moss_monitor_key(interval * 1000);
+#else
 		c = safe_read_key(STDIN_FILENO, G.kbd_input, interval * 1000);
+#endif
 		if (c == -1 && errno != EAGAIN) {
 			/* error/EOF */
 			option_mask32 |= OPT_EOF;
@@ -973,11 +1042,17 @@ static unsigned handle_input(unsigned scan_mask, duration_t interval)
 		}
 		interval = 0;
 
+#ifdef __moss__
+		/* ASCII ETX/EOT are the conventional Ctrl-C/Ctrl-D keys. */
+		if (c == 3 || c == 4)
+			return EXIT_MASK;
+#else
 		if (c == initial_settings.c_cc[VINTR])
 			return EXIT_MASK;
 		if (c == initial_settings.c_cc[VEOF])
 			return EXIT_MASK;
 
+#endif
 		if (c == KEYCODE_UP) {
 			G_scroll_ofs--;
 			goto normalize_ofs;
@@ -1105,7 +1180,7 @@ static unsigned handle_input(unsigned scan_mask, duration_t interval)
 //usage:       " [-n COUNT] [-d SECONDS]"
 //usage:#define top_full_usage "\n\n"
 //usage:       "Show a view of process activity in real time."
-//usage:   "\n""Read the status of all processes from /proc each SECONDS"
+//usage:   "\n""Read the status of all processes each SECONDS"
 //usage:   "\n""and show a screenful of them."
 //usage:   "\n"
 //usage:	IF_FEATURE_TOP_INTERACTIVE(
@@ -1187,6 +1262,12 @@ int top_main(int argc UNUSED_PARAM, char **argv)
 		if (interval > INT_MAX / 1000)
 			interval = INT_MAX / 1000;
 	}
+#ifdef __moss__
+	/* Zero-delay batch sampling is valid; interactive mode needs a positive
+	 * delay to avoid continuously redrawing the serial console. */
+	if (!interval && !(col & OPT_b))
+		bb_simple_error_msg_and_die("zero delay requires batch mode (-b)");
+#endif
 	if (col & OPT_n) {
 		if (str_iterations[0] == '-')
 			str_iterations++;
@@ -1198,8 +1279,10 @@ int top_main(int argc UNUSED_PARAM, char **argv)
 	}
 #endif
 
-	/* change to /proc */
+#ifndef __moss__
+	/* Linux obtains its statistics from procfs; Moss uses the process service. */
 	xchdir("/proc");
+#endif
 
 #if ENABLE_FEATURE_TOP_CPU_USAGE_PERCENTAGE
 	sort_function[0] = pcpu_sort;
@@ -1215,7 +1298,9 @@ int top_main(int argc UNUSED_PARAM, char **argv)
 #if ENABLE_FEATURE_TOP_INTERACTIVE
 	else {
 		/* Turn on unbuffered input; turn off echoing, ^C ^Z etc */
+#ifndef __moss__
 		set_termios_to_raw(STDIN_FILENO, &initial_settings, TERMIOS_CLEAR_ISIG);
+#endif
 		die_func = reset_term;
 	}
 
@@ -1286,7 +1371,7 @@ int top_main(int argc UNUSED_PARAM, char **argv)
 #endif
 		} /* end of "while we read /proc" */
 		if (ntop == 0) {
-			bb_simple_error_msg("no process info in /proc");
+			bb_simple_error_msg("no process information");
 			break;
 		}
 

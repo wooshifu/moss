@@ -24,9 +24,6 @@ moss_validation_child_exit_notified(moss::kernel::u32 /*child_pid*/, moss::kerne
 using moss::abi::context_switch;
 using moss::abi::entry::early_debug_print;
 
-// 获取当前时间的辅助函数
-static moss::u64 get_current_time() noexcept { return moss::kernel::arch::get_timestamp_counter(); }
-
 namespace moss::kernel::process {
 
 AddressSpace::VmTransaction::VmTransaction(AddressSpace &owner) noexcept : owner_(owner) {
@@ -284,7 +281,6 @@ KernelResult<ThreadId> Process::create_thread(VirtAddr entry_point, VirtAddr sta
 
   // 设置线程状态
   thread->state = ProcessState::Ready;
-  thread->start_time = get_current_time();
 
   auto registered = register_thread(thread);
   if (!registered) {
@@ -353,6 +349,47 @@ void Process::record_page_fault(bool major) noexcept {
   }
 }
 
+void Process::monitor_snapshot(moss::abi::DomainInfo &info) const noexcept {
+  info = {};
+  info.sampled_ns = timer::TimerSubsystem::instance().now_ns();
+  info.uid = uid_;
+  info.gid = gid_;
+  {
+    containers::LockGuard<containers::IrqSpinLock> guard(monitor_lock_);
+    __builtin_memcpy(info.name, name_, sizeof(info.name));
+    __builtin_memcpy(info.command, command_, sizeof(info.command));
+  }
+  // The retained domain owns its threads; the list lock excludes registration.
+  // Counters are atomic and intentionally omit the current uncharged tick tail.
+  threads_.for_each([&](const ThreadEntry &entry) {
+    const auto *thread = entry.thread;
+    if (!thread) {
+      return;
+    }
+    ++info.threads;
+    info.cpu_time_ns += thread->se.cpu_runtime_ns.load(moss::memory_order_relaxed);
+    if (entry.tid == main_thread_id_) {
+      info.start_time_ns = thread->start_time;
+      info.nice = thread->se.nice.load();
+      info.cpu = g_scheduler ? g_scheduler->monitor_cpu(thread) : 0;
+      info.state = static_cast<u32>(thread->state.load());
+    }
+  });
+  const auto domain_state = state();
+  if (domain_state == ProcessState::Zombie || domain_state == ProcessState::Terminated) {
+    info.state = static_cast<u32>(domain_state);
+  }
+  // Hold the published space across exec/exit; do not traverse freed VMA/PTEs.
+  if (auto space = address_space()) {
+    auto transaction = space->lock_vm();
+    space->vmas.for_each([&](const VmaRegion &vma) { info.virtual_bytes += vma.end_addr - vma.start_addr; });
+    // The legacy resident_pages counter only tracks eagerly installed pages.
+    // Walk existing tables so demand faults, fork and unmap are all reflected;
+    // sparse virtual reservations do not require probing every possible page.
+    info.resident_bytes = mm::PageTableManager::resident_user_pages(space->pgd_phys) * PAGE_SIZE;
+  }
+}
+
 void Process::cleanup_threads() noexcept {
   threads_.for_each([](const ThreadEntry &entry) {
     if (entry.thread) {
@@ -392,6 +429,8 @@ VoidResult Process::register_thread(Thread *thread) noexcept {
     return VoidResult{ErrorCode::InvalidState};
   }
 
+  // Monotonic nanoseconds, established before publication on every creation path.
+  thread->start_time = timer::TimerSubsystem::instance().now_ns();
   ThreadEntry entry(thread->tid, thread);
   if (!threads_.try_push_front(entry)) {
     (void)thread_count_.fetch_sub(1);

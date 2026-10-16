@@ -238,12 +238,9 @@ if(MOSS_BUILD_TESTS)
                    WORKING_DIRECTORY
                    ${CMAKE_SOURCE_DIR}
     )
-    # 90 s guest probe plus 15 s for artifact copies, uv startup and cleanup/reporting.
-    set(_production_boot_timeout 105)
-    if(MOSS_TARGET_ARCH STREQUAL "RISCV64" AND CMAKE_BUILD_TYPE STREQUAL "Debug")
-        # Match check_production_boot.py's 180 s Debug TCG budget, plus the same 15 s host allowance.
-        set(_production_boot_timeout 195)
-    endif()
+    # Match the production monitor/recovery probe's 180 s guest budget, plus the existing 15 s allowance for copies, uv
+    # startup and cleanup/reporting.
+    set(_production_boot_timeout 195)
     set_tests_properties(
         moss-production-boot
         PROPERTIES TIMEOUT

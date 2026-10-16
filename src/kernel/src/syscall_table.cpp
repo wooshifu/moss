@@ -688,7 +688,7 @@ static long do_fork(u64 domain_cap_out_addr, const capability::ForkSelection *se
   }
 
   // 12c. Inherit process name from parent
-  child_proc->set_name(parent_proc->name());
+  child_proc->inherit_monitor_identity(*parent_proc);
 
   // 12d. Inherit process group and session from parent (POSIX semantics)
   child_proc->set_pgid(parent_proc->pgid());
@@ -2134,6 +2134,9 @@ static long do_execve(long pathname_addr, long argv_addr, long envp_addr, Handle
     }
   }
   proc->set_name(basename);
+  // offsets[argc] begins envp; exclude environment strings from monitoring.
+  const usize command_bytes = argc < args->count ? args->offsets[argc] : args->used;
+  proc->set_command(args->strings, command_bytes);
   proc->reset_signal_actions_for_exec();
   cur->alt_stack_sp = cur->alt_stack_size = 0;
   cur->alt_stack_flags = ss_flags::SS_DISABLE;
@@ -3850,6 +3853,28 @@ long sys_clock_nanosleep(long clockid, long flags, long ns_addr, long remaining_
   return sleep_until(target_ns, flags == 0 ? static_cast<u64>(remaining_addr) : 0);
 }
 
+// These fixed wire sizes include the explicit-width fields and bounded strings.
+// The process reply adds five u64 identities/cursors and fits a 256-byte message.
+static_assert(sizeof(moss::abi::DomainInfo) == 176 && sizeof(moss::abi::ProcessInfo) == 216);
+
+long sys_domain_info(long handle, long output, long size, long, long, long) noexcept {
+  if (size != static_cast<long>(sizeof(moss::abi::DomainInfo))) {
+    return -errc::EINVAL;
+  }
+  auto caller = process::current_process();
+  if (!caller) {
+    return -errc::ESRCH;
+  }
+  auto object = caller->capabilities().lookup(static_cast<Handle>(handle), capability::ObjectType::Domain,
+                                              capability::rights::DOMAIN_INSPECT);
+  if (!object) {
+    return domain_cap_error(object.error());
+  }
+  moss::abi::DomainInfo info{};
+  static_cast<DomainObject *>((*object).get())->process->monitor_snapshot(info);
+  return copy_to_user(static_cast<u64>(output), &info, sizeof(info));
+}
+
 long sys_system_info(long output, long size, long, long, long, long) noexcept {
   if (size != static_cast<long>(sizeof(moss::abi::SystemInfo))) {
     return -errc::EINVAL;
@@ -4254,7 +4279,7 @@ const SyscallDescriptor SYSCALL_TABLE[static_cast<int>(SyscallNumber::MAX_SYSCAL
     {"profile_status", handlers::sys_profile_status, 2, true, "Read bounded thread CPU budget metrics"},
     {"object_wait", handlers::sys_object_wait, 4, true, "Wait for native object readiness"},
     {"ipc_try_receive", handlers::sys_ipc_try_receive, 3, true, "Receive a queued control request without blocking"},
-    {"domain_info", handlers::sys_not_implemented, 3, false, "Reserved for domain inspection"},
+    {"domain_info", handlers::sys_domain_info, 3, true, "Inspect capability-authorized domain statistics"},
     {"system_info", handlers::sys_system_info, 2, true, "Read system resource statistics"}};
 
 // 系统调用分发器实现

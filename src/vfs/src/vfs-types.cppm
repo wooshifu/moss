@@ -50,6 +50,9 @@ inline constexpr u32 PIPE_BUF_SIZE = 4096;
 /// Moss-native, no-payload terminal query; not a Linux termios ioctl.
 /// 0x4d01 is shared with syscall.h/mlibc; its original allocation is unrecorded.
 inline constexpr u32 MOSS_IOCTL_ISATTY = 0x4d01;
+// Next Moss-native command: consume one raw byte without changing line mode;
+// no payload, byte result or EAGAIN. Keep in sync with userspace/syscall.h.
+inline constexpr u32 MOSS_IOCTL_TRY_GETC = 0x4d02;
 
 // ============================================================================
 // Inode / file identity types

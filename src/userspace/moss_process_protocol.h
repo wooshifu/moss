@@ -48,7 +48,9 @@ enum {
   MOSS_PROCESS_FD_READDIR = 33,
   MOSS_PROCESS_PATH_STAT = 34,
   MOSS_PROCESS_FD_WAIT = 35,
-  MOSS_PROCESS_WAIT_BLOCK = 36
+  MOSS_PROCESS_WAIT_BLOCK = 36,
+  MOSS_PROCESS_MONITOR_NEXT = 37,
+  MOSS_PROCESS_MONITOR_GET = 38
 };
 enum {
   MOSS_PROCESS_OK = 0,
@@ -207,3 +209,9 @@ static inline void moss_process_put_u64(unsigned char *bytes, uint64_t value) {
     bytes[index] = (unsigned char)(value >> (index * 8));
   }
 }
+
+// Monitoring requires a live badged session and exposes only this service's
+// namespace. NEXT carries (after_pid, ceiling), GET carries (pid, 0).
+// A zero ceiling starts a scan. Replies are status + moss_process_info bytes;
+// NO_ENTRY ends enumeration. These operations never transfer capabilities.
+enum { MOSS_PROCESS_MONITOR_REQUEST_BYTES = 1 + 2 * sizeof(uint64_t) };

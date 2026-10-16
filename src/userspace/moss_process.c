@@ -1,10 +1,13 @@
 #include <errno.h>
+#include <fcntl.h>
 #include <limits.h>
+#include <moss/monitor.h>
 #include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/auxv.h>
+#include <sys/mman.h>
 #include <sys/wait.h>
 #include <unistd.h>
 
@@ -739,7 +742,9 @@ static int managed_orphan_probe(void) {
 }
 
 static int managed_fanout_probe(void) {
-  // More live children than the former 16-record table exercises growth.
+  // The service has a 64-slot native capability table, shared with backend
+  // handles and in-flight replies. Keep this existing 20-child workload within
+  // that quota and require the monitor to enumerate every live child.
   enum { FANOUT_CHILDREN = 20 };
   int channel[2];
   if (pipe(channel) != 0) {
@@ -759,9 +764,21 @@ static int managed_fanout_probe(void) {
     }
     children[count] = child;
   }
+  int valid = count == FANOUT_CHILDREN;
+  unsigned int observed = 0;
+  uint64_t cursor = 0, ceiling = 0;
+  struct moss_process_info info;
+  int result;
+  while ((result = moss_monitor_process(cursor, ceiling, 0, &info)) == 0) {
+    cursor = info.pid;
+    ceiling = info.ceiling;
+    if (info.ppid == (uint64_t)getpid()) {
+      ++observed;
+    }
+  }
+  valid &= result == ESRCH && observed == count;
   close(channel[0]);
   close(channel[1]);
-  int valid = count == FANOUT_CHILDREN;
   for (unsigned int i = 0; i < count; ++i) {
     int status = 0;
     if (waitpid(children[i], &status, 0) != children[i] || status != 0) {
@@ -1822,7 +1839,180 @@ static int console_fd_probe(void) {
   return valid;
 }
 
+static int monitor_state(pid_t pid, unsigned int state) {
+  for (unsigned retry = 0; retry < STATUS_RETRIES; ++retry) {
+    struct moss_process_info info;
+    if (moss_monitor_process(pid, 0, 1, &info) != 0) {
+      return 0;
+    }
+    if (info.domain.state == state) {
+      return 1;
+    }
+    unsigned long delay = status_retry_ns;
+    (void)syscall1(SYS_NANOSLEEP, (long)&delay);
+  }
+  return 0;
+}
+
+static int monitor_probe(void) {
+  struct moss_system_info system;
+  struct moss_domain_info before = {0}, after = {0};
+  struct moss_process_info process;
+  long domain = syscall0(SYS_DOMAIN_SELF);
+  long observe = domain > 0 ? syscall2(SYS_CAP_DUPLICATE, domain, MOSS_CAP_DOMAIN_OBSERVE) : -1;
+  if (domain <= 0 || observe <= 0) {
+    return 0;
+  }
+  int valid = moss_monitor_system(&system) == 0 && system.uptime_ns && system.cpu_count &&
+              system.memory_total_bytes >= system.memory_free_bytes && system.memory_free_bytes &&
+              syscall3(SYS_DOMAIN_INFO, domain, (long)&before, sizeof(before)) == 0 && before.resident_bytes &&
+              before.virtual_bytes >= before.resident_bytes && before.threads && before.start_time_ns &&
+              before.start_time_ns <= before.sampled_ns &&
+              syscall3(SYS_DOMAIN_INFO, observe, (long)&after, sizeof(after)) == -EACCES &&
+              syscall3(SYS_DOMAIN_INFO, domain, 0, sizeof(after)) == -EFAULT &&
+              syscall3(SYS_DOMAIN_INFO, domain, (long)&after, sizeof(after) - 1) == -EINVAL &&
+              syscall2(SYS_SYSTEM_INFO, 0, sizeof(system)) == -EFAULT &&
+              syscall2(SYS_SYSTEM_INFO, (long)&system, sizeof(system) - 1) == -EINVAL &&
+              moss_monitor_process(getpid(), 0, 1, &process) == 0 && process.ppid == (uint64_t)getppid() &&
+              process.pgid == (uint64_t)getpgrp() && strstr(process.domain.command, "monitor-probe");
+  // 50 ms spans multiple 6 ms scheduler ticks; real charged CPU time must grow.
+  const unsigned long sample_ns = 50000000UL;
+  unsigned long now = before.sampled_ns;
+  while (valid && now - before.sampled_ns < sample_ns) {
+    valid = syscall2(SYS_CLOCK_GETTIME, MOSS_CLOCK_MONOTONIC, (long)&now) == 0;
+  }
+  valid &= syscall3(SYS_DOMAIN_INFO, domain, (long)&after, sizeof(after)) == 0 &&
+           after.cpu_time_ns > before.cpu_time_ns && after.sampled_ns >= before.sampled_ns;
+  // Three demand pages distinguish resident memory from reserved VMAs and
+  // eager stack accounting. Unmap must remove exactly those mapped leaves.
+  const size_t page_size = (size_t)sysconf(_SC_PAGESIZE);
+  const size_t sample_size = 3 * page_size;
+  volatile unsigned char *pages = mmap(NULL, sample_size, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+  if (pages == MAP_FAILED) {
+    valid = 0;
+  } else {
+    valid &= syscall3(SYS_DOMAIN_INFO, domain, (long)&before, sizeof(before)) == 0;
+    for (size_t offset = 0; offset < sample_size; offset += page_size) {
+      pages[offset] = 1;
+    }
+    valid &= syscall3(SYS_DOMAIN_INFO, domain, (long)&after, sizeof(after)) == 0 &&
+             after.resident_bytes >= before.resident_bytes + sample_size;
+    valid &= munmap((void *)pages, sample_size) == 0 &&
+             syscall3(SYS_DOMAIN_INFO, domain, (long)&before, sizeof(before)) == 0 &&
+             before.resident_bytes == after.resident_bytes - sample_size;
+  }
+  // Reading a key must validate the descriptor and reject payloads before
+  // consuming console input; the runner sends the actual q only in top.
+  valid &= syscall3(SYS_IOCTL, -1, MOSS_IOCTL_TRY_GETC, 0) == -EBADF &&
+           syscall3(SYS_IOCTL, 0, MOSS_IOCTL_TRY_GETC, 1) == -EINVAL;
+  int write_only_console = open("/dev/console", O_WRONLY);
+  valid &= write_only_console >= 0 && syscall3(SYS_IOCTL, write_only_console, MOSS_IOCTL_TRY_GETC, 0) == -EBADF;
+  if (write_only_console >= 0) {
+    valid &= close(write_only_console) == 0;
+  }
+  (void)syscall1(SYS_CAP_CLOSE, observe);
+  (void)syscall1(SYS_CAP_CLOSE, domain);
+  if (!valid) {
+    return 0;
+  }
+  // A failed exec must leave the committed monitoring identity intact.
+  char *const missing[] = {"missing-monitor-image", NULL};
+  valid &= execve("/missing-monitor-image", missing, environ) == -1 &&
+           moss_monitor_process(getpid(), 0, 1, &process) == 0 && strstr(process.domain.command, "monitor-probe");
+  pid_t child = fork();
+  if (child == 0) {
+    for (;;) {
+      unsigned long delay = process_call_timeout_ns;
+      (void)syscall1(SYS_NANOSLEEP, (long)&delay);
+    }
+  }
+  if (child < 0) {
+    return 0;
+  }
+  // ProcessState::Sleeping, Stopped, Zombie: observe without consuming wait status.
+  valid &= monitor_state(child, 3) && kill(child, SIGSTOP) == 0 && monitor_state(child, 7);
+  valid &= kill(child, SIGKILL) == 0 && monitor_state(child, 6);
+  int status = 0;
+  valid &= waitpid(child, &status, 0) == child && WIFSIGNALED(status) && WTERMSIG(status) == SIGKILL;
+  valid &= moss_monitor_process(child, 0, 1, &process) == ESRCH;
+  child = fork();
+  if (child == 0) {
+    // Twice the display capacity forces truncation. ESC/newline in argv[0]
+    // must become spaces; exec still preserves the compatibility PID.
+    char long_argument[MOSS_MONITOR_COMMAND_BYTES * 2];
+    memset(long_argument, 'x', sizeof(long_argument) - 1);
+    long_argument[sizeof(long_argument) - 1] = 0;
+    char *const args[] = {"mon\033\n", "monitor-exec-child", long_argument, NULL};
+    execve("/moss-process.elf", args, environ);
+    _exit(1);
+  }
+  valid &= child > 0 && waitpid(child, &status, 0) == child && status == 0;
+  return valid;
+}
+
+static int monitor_top_probe(void) {
+  // Use waitpid here: ash's background-job wait needs sigsuspend, which the
+  // current Moss libc does not provide. Both children are always reaped.
+  pid_t busy = fork();
+  if (busy == 0) {
+    char *const args[] = {"/moss-process.elf", "monitor-busy", NULL};
+    execve(args[0], args, environ);
+    _exit(1);
+  }
+  if (busy < 0) {
+    return 0;
+  }
+  pid_t monitor = fork();
+  if (monitor == 0) {
+    // Two frames one second apart exercise the CPU delta, not only startup.
+    char *const args[] = {"top", "-b", "-n", "2", "-d", "1", NULL};
+    execve("/busybox.elf", args, environ);
+    _exit(1);
+  }
+  int status = 0;
+  int valid = monitor > 0 && waitpid(monitor, &status, 0) == monitor && status == 0;
+  valid &= kill(busy, SIGKILL) == 0;
+  valid &= waitpid(busy, &status, 0) == busy;
+  return valid;
+}
+
 int main(int argc, char **argv) {
+  if (argc == 2 && strcmp(argv[1], "monitor-top") == 0) {
+    if (!monitor_top_probe()) {
+      return error();
+    }
+    puts("MOSS_TOP_BATCH_READY");
+    return 0;
+  }
+  if (argc == 3 && strcmp(argv[1], "monitor-exec-child") == 0) {
+    struct moss_process_info info;
+    return moss_monitor_process(getpid(), 0, 1, &info) != 0 ||
+           strlen(info.domain.command) != MOSS_MONITOR_COMMAND_BYTES - 1 || strchr(info.domain.command, '\033') ||
+           strchr(info.domain.command, '\n') || !strstr(info.domain.command, "monitor-exec-child");
+  }
+  if (argc == 2 && strcmp(argv[1], "monitor-busy") == 0) {
+    // A bounded 10-second CPU load outlives top's two 1-second samples, but
+    // still terminates if the runner loses its cleanup command.
+    unsigned long start = 0, now = 0;
+    (void)syscall2(SYS_CLOCK_GETTIME, MOSS_CLOCK_MONOTONIC, (long)&start);
+    do {
+      for (volatile unsigned work = 0; work < 10000; ++work) {
+        // Amortize clock syscalls; the iteration count is not a timing oracle.
+      }
+      if (syscall2(SYS_CLOCK_GETTIME, MOSS_CLOCK_MONOTONIC, (long)&now)) {
+        return error();
+      }
+    } while (now - start < 10000000000UL);
+    return 0;
+  }
+  if (argc == 2 && strcmp(argv[1], "monitor-probe") == 0) {
+    if (!monitor_probe()) {
+      return error();
+    }
+    puts("MOSS_MONITOR_READY");
+    return 0;
+  }
+
   if (argc == 3 && strcmp(argv[1], "fd-exec-child") == 0) {
     return fd_exec_child(argv[2]) ? 37 : 43;
   }

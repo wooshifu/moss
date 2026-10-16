@@ -309,6 +309,10 @@ public:
   // Used by the COW fault handler to modify PTE in-place.
   [[nodiscard]] static PageTableEntry *get_user_pte(PhysAddr pgd_phys, VirtAddr va);
 
+  // Count mapped user pages, including shared/COW leaves once per mapping.
+  // Caller retains the root and holds its AddressSpace VM transaction.
+  [[nodiscard]] static usize resident_user_pages(PhysAddr pgd_phys) noexcept;
+
   // Unmap a single user page: clear PTE, invalidate TLB, free physical page
   // when refcount drops to 0 (COW-aware), and reclaim empty private tables.
   // No-op if the PTE is not mapped. Caller excludes concurrent address-space

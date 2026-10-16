@@ -9,6 +9,9 @@
  * Licensed under GPLv2 or later, see file LICENSE in this source tree.
  */
 #include "libbb.h"
+#ifdef __moss__
+# include <moss/monitor.h>
+#endif
 
 
 typedef struct id_to_name_map_t {
@@ -97,7 +100,8 @@ static procps_status_t* FAST_FUNC alloc_procps_scan(void)
 
 void FAST_FUNC free_procps_scan(procps_status_t* sp)
 {
-	closedir(sp->dir);
+	if (sp->dir)
+		closedir(sp->dir);
 #if ENABLE_FEATURE_SHOW_THREADS
 	if (sp->task_dir)
 		closedir(sp->task_dir);
@@ -281,6 +285,56 @@ int FAST_FUNC procps_read_smaps(pid_t pid, struct smaprec *total,
 
 procps_status_t* FAST_FUNC procps_scan(procps_status_t* sp, int flags)
 {
+#ifdef __moss__
+	struct moss_process_info info;
+	int error;
+	if (!sp)
+		sp = xzalloc(sizeof(*sp));
+	error = moss_monitor_process(sp->pid, sp->moss_ceiling, 0, &info);
+	if (error) {
+		free_procps_scan(sp);
+		if (error != ESRCH) {
+			errno = error;
+			bb_perror_msg_and_die("process monitor");
+		}
+		return NULL;
+	}
+	free(sp->argv0);
+	sp->argv0 = NULL;
+	memset(&sp->vsz, 0, sizeof(*sp) - offsetof(procps_status_t, vsz));
+	sp->moss_ceiling = info.ceiling;
+	sp->pid = info.pid;
+	sp->ppid = info.ppid;
+	sp->pgid = info.pgid;
+	sp->sid = info.sid;
+	sp->uid = info.domain.uid;
+	sp->gid = info.domain.gid;
+	/* BusyBox uses KiB and ticks. Moss uses 100 ticks/s here, matching
+	 * top's bounded integer delta arithmetic and subsecond warm-up sample. */
+	sp->vsz = info.domain.virtual_bytes / 1024;
+	sp->rss = info.domain.resident_bytes / 1024;
+	sp->utime = info.domain.cpu_time_ns / 10000000;
+	sp->start_time = info.domain.start_time_ns / 10000000;
+	/* ProcessState values: Created, Ready, Running, Sleeping, DiskSleep,
+	 * Terminated, Zombie, Stopped. Native terminal states are both zombies. */
+	sp->state[0] = info.domain.state < sizeof("RRRSDZZT") - 1 ? "RRRSDZZT"[info.domain.state] : '?';
+	sp->state[1] = info.domain.nice < 0 ? '<' : info.domain.nice > 0 ? 'N' : ' ';
+	safe_strncpy(sp->comm, info.domain.name, sizeof(sp->comm));
+#if ENABLE_FEATURE_TOP_SMP_PROCESS
+	sp->last_seen_on_cpu = info.domain.cpu;
+#endif
+#if ENABLE_FEATURE_PS_ADDITIONAL_COLUMNS
+	sp->niceness = info.domain.nice;
+	sp->ruid = info.domain.uid;
+	sp->rgid = info.domain.gid;
+#endif
+	if (flags & (PSSCAN_ARGV0 | PSSCAN_ARGVN)) {
+		sp->argv0 = xstrdup(info.domain.command);
+		sp->argv_len = strlen(sp->argv0);
+	}
+	return sp;
+#else
+
 	if (!sp)
 		sp = alloc_procps_scan();
 
@@ -564,10 +618,24 @@ procps_status_t* FAST_FUNC procps_scan(procps_status_t* sp, int flags)
 	} /* for (;;) */
 
 	return sp;
+#endif
 }
 
 void FAST_FUNC read_cmdline(char *buf, int col, unsigned pid, const char *comm)
 {
+#ifdef __moss__
+	struct moss_process_info info;
+	if (col <= 0) {
+		/* ps still calls puts when the fixed columns fill its entire width. */
+		buf[0] = '\0';
+		return;
+	}
+	if (!moss_monitor_process(pid, 0, 1, &info) && info.domain.command[0])
+		safe_strncpy(buf, info.domain.command, col);
+	else
+		snprintf(buf, col, "[%s]", comm ? comm : "?");
+#else
+
 	int sz;
 	char filename[sizeof("/proc/%u/cmdline") + sizeof(int)*3];
 
@@ -616,6 +684,7 @@ void FAST_FUNC read_cmdline(char *buf, int col, unsigned pid, const char *comm)
 	} else {
 		snprintf(buf, col, "[%s]", comm ? comm : "?");
 	}
+#endif
 }
 
 /* from kernel:

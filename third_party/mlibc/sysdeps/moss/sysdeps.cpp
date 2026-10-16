@@ -179,6 +179,71 @@ struct MossStat {
 static_assert(sizeof(MossStat) == 48);
 } // namespace
 
+extern "C" int moss_monitor_process(uint64_t cursor, uint64_t ceiling, int exact, moss_process_info *info) {
+  if (!info)
+    return EFAULT;
+  unsigned long session = process_session();
+  if (!session)
+    return ENOTSUP;
+  moss_ipc_message request{};
+  request.size = MOSS_PROCESS_MONITOR_REQUEST_BYTES;
+  request.payload[0] = exact ? MOSS_PROCESS_MONITOR_GET : MOSS_PROCESS_MONITOR_NEXT;
+  moss_process_put_u64(request.payload + 1, cursor);
+  moss_process_put_u64(request.payload + 1 + sizeof(uint64_t), ceiling);
+  moss_ipc_message response{};
+  long result = process_call(session, request, response);
+  if (!no_capability(response))
+    return EIO;
+  if (result < 0)
+    return error(result);
+  if (result == 1 && response.payload[0] != MOSS_PROCESS_OK)
+    return process_status_error(response.payload[0]);
+  if (result != 1 + sizeof(*info) || response.payload[0] != MOSS_PROCESS_OK)
+    return EIO;
+  memcpy(info, response.payload + 1, sizeof(*info));
+  // Treat malformed/stale replies as errors, never an endless cursor loop.
+  if (!info->pid || info->pid > INT_MAX || info->pid > info->ceiling ||
+      (exact ? info->pid != cursor : info->pid <= cursor) || (ceiling && info->ceiling != ceiling) ||
+      !memchr(info->domain.name, 0, sizeof(info->domain.name)) ||
+      !memchr(info->domain.command, 0, sizeof(info->domain.command)))
+    return EIO;
+  return 0;
+}
+
+extern "C" int moss_monitor_key(unsigned timeout_ms) {
+  unsigned long now = 0;
+  long result = syscall2(SYS_CLOCK_GETTIME, MOSS_CLOCK_MONOTONIC, reinterpret_cast<long>(&now));
+  if (result < 0) {
+    errno = error(result);
+    return -1;
+  }
+  const unsigned long deadline = now + static_cast<unsigned long>(timeout_ms) * 1000000; // ms -> ns.
+  for (;;) {
+    result = syscall3(SYS_IOCTL, 0, MOSS_IOCTL_TRY_GETC, 0);
+    if (result >= 0)
+      return static_cast<int>(result);
+    if (result != -EAGAIN || now >= deadline) {
+      errno = error(result);
+      return -1;
+    }
+    // shortcut: native stdio has no timed readiness wait. Poll at most 100
+    // times/second (10 ms input latency); replace when console poll is wired.
+    const unsigned long poll_ns = 10000000;
+    unsigned long delay = deadline - now < poll_ns ? deadline - now : poll_ns;
+    result = syscall2(SYS_NANOSLEEP, reinterpret_cast<long>(&delay), 0);
+    if (result >= 0)
+      result = syscall2(SYS_CLOCK_GETTIME, MOSS_CLOCK_MONOTONIC, reinterpret_cast<long>(&now));
+    if (result < 0) {
+      errno = error(result);
+      return -1;
+    }
+  }
+}
+
+extern "C" int moss_monitor_system(moss_system_info *info) {
+  return info ? error(syscall2(SYS_SYSTEM_INFO, reinterpret_cast<long>(info), sizeof(*info))) : EFAULT;
+}
+
 extern "C" int __moss_process_after_exec() {
 	unsigned long session = process_session();
 	if (!session)

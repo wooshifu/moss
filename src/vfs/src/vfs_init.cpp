@@ -865,7 +865,17 @@ static long console_lseek([[maybe_unused]] File *file, [[maybe_unused]] i64 offs
   return -static_cast<long>(VfsError::IsPipe); // not seekable
 }
 
-static long console_ioctl([[maybe_unused]] File *file, u32 command, u64 argument) noexcept {
+static long console_ioctl(File *file, u32 command, u64 argument) noexcept {
+  if (command == MOSS_IOCTL_TRY_GETC) {
+    if (argument) {
+      return -static_cast<long>(VfsError::InvalidArg);
+    }
+    if ((file->flags & O_ACCMODE) == O_WRONLY) {
+      return -static_cast<long>(VfsError::BadFd);
+    }
+    const int byte = moss::abi::bridge::console_try_getc();
+    return byte < 0 ? -static_cast<long>(VfsError::WouldBlock) : byte;
+  }
   if (command != MOSS_IOCTL_ISATTY) {
     return -static_cast<long>(VfsError::NotTerminal);
   }

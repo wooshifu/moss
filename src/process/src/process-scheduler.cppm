@@ -1332,6 +1332,12 @@ public:
     return get_cpu_nr_running(cpu) + (get_current_task_on_cpu(cpu) != nullptr);
   }
 
+  [[nodiscard]] u32 monitor_cpu(const Thread *thread) noexcept {
+    // Migration changes placement under this same transition lock.
+    containers::LockGuard<containers::IrqSpinLock> guard(task_transition_lock_);
+    return thread->cpu;
+  }
+
   [[nodiscard]] BudgetProfileStatus cpu_budget_status(Thread *thread) noexcept {
     BudgetProfileStatus status{};
     if (!thread) {

@@ -50,7 +50,8 @@
 //config:	depends on (PS || MINIPS) && DESKTOP
 
 //                 APPLET_NOEXEC:name    main location    suid_type     help
-//applet:IF_PS(    APPLET_NOEXEC(ps,     ps,  BB_DIR_BIN, BB_SUID_DROP, ps))
+// Moss re-execs ps so its committed argv is visible to the process monitor.
+//applet:IF_PS(    APPLET(ps, BB_DIR_BIN, BB_SUID_DROP))
 //applet:IF_MINIPS(APPLET_NOEXEC(minips, ps,  BB_DIR_BIN, BB_SUID_DROP, ps))
 
 //kbuild:lib-$(CONFIG_PS) += ps.o
@@ -125,7 +126,7 @@ static unsigned long get_uptime(void)
 	if (sysinfo(&info) < 0)
 		return 0;
 	return info.uptime;
-#elif 1
+#elif !defined(__moss__)
 	unsigned long uptime;
 	char buf[sizeof(uptime)*3 + 2];
 	/* /proc/uptime is "UPTIME_SEC.NN IDLE_SEC.NN\n"
@@ -137,6 +138,7 @@ static unsigned long get_uptime(void)
 	sscanf(buf, "%lu", &uptime);
 	return uptime;
 #else
+	/* Moss has a monotonic clock but no /proc/uptime. */
 	struct timespec ts;
 	if (clock_gettime(CLOCK_MONOTONIC, &ts) < 0)
 		return 0;

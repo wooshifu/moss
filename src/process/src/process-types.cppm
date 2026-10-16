@@ -944,6 +944,8 @@ private:
   void discard_pending_signals_locked(u64 mask) noexcept;
 
   // Process name (like Linux task_struct.comm), set by execve
+  mutable containers::IrqSpinLock monitor_lock_;
+  char command_[sizeof(moss::abi::DomainInfo::command)]{};
   char name_[16]{}; // Linux-style comm: up to 15 bytes plus a terminating NUL.
 
   // Process group and session IDs (POSIX job control).
@@ -1041,14 +1043,38 @@ public:
   // Process name (set by execve, inherited by fork)
   [[nodiscard]] const char *name() const noexcept { return name_; }
   void set_name(const char *n) noexcept {
+    containers::LockGuard<containers::IrqSpinLock> guard(monitor_lock_);
     usize i = 0;
     // Reserve the sixteenth byte for NUL even when the input is longer.
     while (i < 15 && n[i] != '\0') {
-      name_[i] = n[i];
+      const auto c = static_cast<unsigned char>(n[i]);
+      // An empty argv uses this basename as the terminal-safe display fallback.
+      name_[i] = c < ' ' || c == 127 ? ' ' : static_cast<char>(c);
       ++i;
     }
     name_[i] = '\0';
   }
+
+  // Only exec's committed, kernel-owned argv bytes enter this display summary.
+  void set_command(const char *strings, usize bytes) noexcept {
+    containers::LockGuard<containers::IrqSpinLock> guard(monitor_lock_);
+    usize i = 0;
+    for (; i + 1 < sizeof(command_) && i < bytes; ++i) {
+      const auto c = static_cast<unsigned char>(strings[i]);
+      // Flatten argv separators and reject terminal control sequences.
+      command_[i] = c < ' ' || c == 127 ? ' ' : static_cast<char>(c);
+    }
+    while (i && command_[i - 1] == ' ') {
+      --i;
+    }
+    command_[i] = '\0';
+  }
+  void inherit_monitor_identity(const Process &parent) noexcept {
+    containers::LockGuard<containers::IrqSpinLock> guard(parent.monitor_lock_);
+    __builtin_memcpy(name_, parent.name_, sizeof(name_));
+    __builtin_memcpy(command_, parent.command_, sizeof(command_));
+  }
+  void monitor_snapshot(moss::abi::DomainInfo &info) const noexcept;
 
   // Thread management
   [[nodiscard]] KernelResult<ThreadId> create_thread(VirtAddr entry_point, VirtAddr stack_base,

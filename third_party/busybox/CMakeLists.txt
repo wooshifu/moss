@@ -113,7 +113,7 @@ foreach(target busybox-lib busybox-validation)
     )
     target_compile_definitions(${target} PRIVATE _GNU_SOURCE NDEBUG __moss__ BB_VER="1.37.0")
     target_include_directories(
-        ${target} PRIVATE "${BUSYBOX_BINARY_DIR}/include" "${BUSYBOX_SOURCE_DIR}/include" "${BUSYBOX_SOURCE_DIR}/libbb"
+        ${target} PRIVATE "${MLIBC_GENERATED}" "${BUSYBOX_BINARY_DIR}/include" "${BUSYBOX_SOURCE_DIR}/include" "${BUSYBOX_SOURCE_DIR}/libbb"
     )
     target_include_directories(${target} SYSTEM PRIVATE "${MLIBC_SYSROOT}/usr/include")
 endforeach()

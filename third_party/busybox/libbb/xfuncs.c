@@ -266,6 +266,7 @@ int FAST_FUNC get_terminal_width_height(int fd, unsigned *width, unsigned *heigh
 {
 	struct winsize win;
 	int err;
+#ifndef __moss__
 	int close_me = -1;
 
 	if (fd == -1) {
@@ -280,19 +281,30 @@ int FAST_FUNC get_terminal_width_height(int fd, unsigned *width, unsigned *heigh
 		else
 			close_me = fd = open("/dev/tty", O_RDONLY);
 	}
+#else
+	(void)fd;
+#endif
 
 	win.ws_row = 0;
 	win.ws_col = 0;
 	/* I've seen ioctl returning 0, but row/col is (still?) 0.
 	 * We treat that as an error too.  */
+#ifdef __moss__
+	/* The native console has no geometry ioctl. Keep BusyBox's LINES/COLUMNS
+	 * overrides and conventional 80x24 fallback until it can report a size. */
+	err = 1;
+#else
 	err = ioctl(fd, TIOCGWINSZ, &win) != 0 || win.ws_row == 0;
+#endif
 	if (height)
 		*height = wh_helper(win.ws_row, 24, "LINES", &err);
 	if (width)
 		*width = wh_helper(win.ws_col, 80, "COLUMNS", &err);
 
+#ifndef __moss__
 	if (close_me >= 0)
 		close(close_me);
+#endif
 
 	return err;
 }

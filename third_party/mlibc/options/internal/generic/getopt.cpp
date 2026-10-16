@@ -281,9 +281,9 @@ int getopt_common_internal(int argc, char * const argv[], const char *optstring,
 
 						if(arg[i+1]) {
 							optarg = arg + i + 1;
-						} else if(optind + 1 < argc && argv[optind + 1] && required && argv[optind + 1][0] != '-') {
-							/* there is an argument to this short option, separated by a space,
-								* and the shortopt specification does not specify an optional arg */
+						} else if(optind + 1 < argc && argv[optind + 1] && required) {
+							// Required arguments consume the next word even when it begins
+							// with '-'; BusyBox top also relies on this for numeric options.
 							optarg = argv[optind + 1];
 							optind++;
 							__optpos = 1;

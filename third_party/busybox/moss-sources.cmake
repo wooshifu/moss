@@ -69,6 +69,7 @@ set(BUSYBOX_SOURCES
     libbb/default_error_retval.c
     libbb/device_open.c
     libbb/dump.c
+    libbb/duration.c
     libbb/endofname.c
     libbb/executable.c
     libbb/fclose_nonstdin.c
@@ -172,6 +173,8 @@ set(BUSYBOX_SOURCES
     libpwdgrp/uidgid_get.c
     procps/kill.c
     procps/free.c
+    procps/ps.c
+    procps/top.c
     shell/ash.c
     shell/ash_ptr_hack.c
     shell/shell_common.c

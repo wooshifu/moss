@@ -2061,6 +2061,9 @@ int FAST_FUNC procps_read_smaps(pid_t pid, struct smaprec *total,
 		void (*cb)(struct smaprec *, void *), void *data);
 
 typedef struct procps_status_t {
+#ifdef __moss__
+	uint64_t moss_ceiling; /* Fixed upper PID for one bounded scan. */
+#endif
 	DIR *dir;
 	IF_FEATURE_SHOW_THREADS(DIR *task_dir;)
 	uint8_t shift_pages_to_bytes;

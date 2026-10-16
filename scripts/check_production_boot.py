@@ -40,6 +40,21 @@ def add_validation_marker(archive: bytes) -> bytes:
     return archive[: -len(trailer)] + marker + trailer
 
 
+def monitor_cpu_observed(trace: bytes) -> bool:
+    """Require a numeric top row, not an echoed command or an empty header."""
+    for line in trace.splitlines():
+        fields = line.split()
+        # PID PPID USER STAT VSZ %VSZ CPU %CPU COMMAND ARG; Moss top uses
+        # the existing BusyBox decimal columns and the real busy probe argv.
+        if len(fields) == 10 and fields[-1] == b"monitor-busy" and fields[0].isdigit() and fields[1].isdigit():
+            try:
+                if 0 < float(fields[7]) <= 100:
+                    return True
+            except ValueError:
+                pass
+    return False
+
+
 def run(
     cfg: Artifacts,
     output: Path,
@@ -51,17 +66,13 @@ def run(
     dtb: Path | None = None,
 ) -> dict:
     if timeout is None:
-        # Other presets completed within the existing 90 s CI bound; retain it.
         # Controlled ARM GDB probes retain their 50 s barrier bound; recent
         # complete runs took at most 44.38 s.
-        timeout = 50 if gdb else 90
-        if not gdb and cfg.arch == "RISCV64" and cfg.build["type"] == "Debug":
-            # The 90 s cutoff interrupted a live run at stage 138/168; the same
-            # Debug TCG workload completed in 124.67 s with a larger budget.
-            # Double the old bound to leave headroom on shared hosts while
-            # still bounding stalled guests.
-            # Keep CMake's outer timeout above this bound for copies and cleanup.
-            timeout = 180
+        # With monitor checks, ARM64 Debug completed all 184 steps in 100.35 s
+        # on a shared host; RISCV64 previously needed 124.67 s. Reuse its 180 s
+        # budget for ordinary runs, including headroom and bounded failure.
+        # Keep CMake's outer timeout above this bound for copies and cleanup.
+        timeout = 50 if gdb else 180
     # The debugger barriers below use virt's Image load base and PL011 registers.
     if registration_race and not gdb:
         raise ValueError("registration race probe requires GDB")
@@ -195,6 +206,22 @@ quit
         (b"\nMOSS_FREE_OK\n", None),
         (b"moss$ ", b"/moss-process.elf probe\n"),
         (b"\nMOSS_PROCESS_READY\n", None),
+        (b"moss$ ", b"/moss-process.elf monitor-probe\n"),
+        (b"\nMOSS_MONITOR_READY\n", None),
+        (
+            b"moss$ ",
+            b"ps && ps -lw > /monitor-ps && cat /monitor-ps && "
+            b"grep 'ash -i' /monitor-ps && rm /monitor-ps && echo MOSS_PS_READY\n",
+        ),
+        (b"\nMOSS_PS_READY\n", None),
+        (b"moss$ ", b"/moss-process.elf monitor-top\n"),
+        (b"Uptime:", None),
+        (b"Uptime:", None),
+        (b"\nMOSS_TOP_BATCH_READY\n", None),
+        (b"moss$ ", b"top -d 1\n"),
+        (b"Uptime:", b"q"),
+        (b"moss$ ", b"top -n invalid > /monitor-invalid 2>&1; [ $? -ne 0 ] && echo MOSS_TOP_TERMINAL_READY\n"),
+        (b"\nMOSS_TOP_TERMINAL_READY\n", None),
         (b"moss$ ", b"/moss-file.elf read /missing\n"),
         (b"\nMOSS_FILE_ERROR\n", None),
         (b"moss$ ", b"/moss-file.elf read /loader-probe\n"),
@@ -477,6 +504,8 @@ quit
                     free_row = re.search(rb"^Mem:\s+(\d+)\s+(\d+)\s+(\d+)\s+", trace, re.MULTILINE)
                     if not free_row or int(free_row[1]) != int(free_row[2]) + int(free_row[3]):
                         raise ValueError("free memory accounting does not balance")
+                    if not monitor_cpu_observed(trace):
+                        raise ValueError("top did not report CPU usage for the busy process")
                     result.update(status="passed", observed="code_loader_process_namespace_and_file_services_recovered")
                     break
                 if child.poll() is not None:

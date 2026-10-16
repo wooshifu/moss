@@ -236,7 +236,9 @@ inline void call_global_constructors() noexcept {
 export namespace moss::abi {
 // Import the C wire layouts once. Re-including them in several module units
 // produces distinct declarations under Clang's module ownership diagnostics.
+using DomainInfo = ::moss_domain_info;
 using SystemInfo = ::moss_system_info;
+using ProcessInfo = ::moss_process_info;
 
 using ::_start;
 using ::context_switch;

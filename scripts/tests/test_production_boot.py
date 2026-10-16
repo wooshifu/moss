@@ -26,6 +26,7 @@ def test_validation_marker_is_added_only_to_copy():
     [
         "complete",
         "slow_riscv_debug",
+        "slow_arm_debug",
         "interleaved_kernel_log",
         "missing_validation_mode",
         "missing_bridge",
@@ -81,6 +82,20 @@ assert input().startswith('free -b > /free-output && ')
 print('\nMem: 1000 400 600 0 0 600\nMOSS_FREE_OK\nmoss$ ', end='', flush=True)
 assert input() == '/moss-process.elf probe'
 print('\nMOSS_PROCESS_READY\nmoss$ ', end='', flush=True)
+assert input() == '/moss-process.elf monitor-probe'
+print('\nMOSS_MONITOR_READY\nmoss$ ', end='', flush=True)
+assert input() == ("ps && ps -lw > /monitor-ps && cat /monitor-ps && "
+                   "grep 'ash -i' /monitor-ps && rm /monitor-ps && echo MOSS_PS_READY")
+print('  PID PPID USER STAT VSZ COMMAND\n 2 1 root S 1000 ash -i\nMOSS_PS_READY\nmoss$ ', end='', flush=True)
+assert input() == '/moss-process.elf monitor-top'
+print('Uptime: 1s\n 3 2 root R 1000 1.0 0 10.0 /moss-process.elf monitor-busy\n'
+      'Uptime: 2s\nMOSS_TOP_BATCH_READY\nmoss$ ', end='', flush=True)
+assert input() == 'top -d 1'
+print('Uptime: 3s', flush=True)
+assert sys.stdin.read(1) == 'q'
+print('moss$ ', end='', flush=True)
+assert input() == 'top -n invalid > /monitor-invalid 2>&1; [ $? -ne 0 ] && echo MOSS_TOP_TERMINAL_READY'
+print('\nMOSS_TOP_TERMINAL_READY\nmoss$ ', end='', flush=True)
 assert input() == '/moss-file.elf read /missing'
 print('\nMOSS_FILE_ERROR\nmoss$ ', end='', flush=True)
 assert input() == '/moss-file.elf read /loader-probe'
@@ -273,7 +288,7 @@ assert input() == 'echo MOSS_PRODUCTION_READY'
         return popen(args, **kwargs)
 
     monkeypatch.setattr(boot.subprocess, "Popen", launch)
-    if mode == "slow_riscv_debug":
+    if mode in ("slow_riscv_debug", "slow_arm_debug"):
 
         def slow_clock():
             serial = tmp_path / "run" / "serial.log"
@@ -287,14 +302,21 @@ assert input() == 'echo MOSS_PRODUCTION_READY'
     result = boot.run(
         cfg,
         tmp_path / "run",
-        timeout=None if mode == "slow_riscv_debug" else 4,
+        timeout=None if mode in ("slow_riscv_debug", "slow_arm_debug") else 4,
         gdb="fake-gdb" if mode.startswith("gdb_") else None,
     )
     assert 0 <= result["elapsed_seconds"] <= boot.time.monotonic() - started
     assert result["status"] == (
         "passed"
         if mode
-        in ("complete", "slow_riscv_debug", "interleaved_kernel_log", "old_child_reported_before_loss", "gdb_complete")
+        in (
+            "complete",
+            "slow_riscv_debug",
+            "slow_arm_debug",
+            "interleaved_kernel_log",
+            "old_child_reported_before_loss",
+            "gdb_complete",
+        )
         else "error"
     )
     source = files["initramfs"].read_bytes()
@@ -303,13 +325,13 @@ assert input() == 'echo MOSS_PRODUCTION_READY'
     assert result["sha256"]["initramfs"] == hashlib.sha256(runtime).hexdigest()
     assert runtime == boot.add_validation_marker(source)
     if mode == "interleaved_kernel_log":
-        assert result["completed_steps"] == 172
+        assert result["completed_steps"] == 184
         assert b"mo[D][0.792]" in (tmp_path / "run" / "serial.log").read_bytes()
     assert result["raw_exit"] is not None
     # Partial fake shells stop at their first missing marker; prompts and
     # command outputs each count as one completed probe step.
     if mode == "echo_only":
-        assert result["completed_steps"] == 49
+        assert result["completed_steps"] == 61
     if mode == "legacy_shell":
         assert result["completed_steps"] == 10
     if mode == "missing_bridge":
@@ -317,7 +339,7 @@ assert input() == 'echo MOSS_PRODUCTION_READY'
     if mode == "missing_validation_mode":
         assert result["completed_steps"] == 1
     if mode == "applets_failed":
-        assert result["completed_steps"] == 45
+        assert result["completed_steps"] == 57
     if mode == "late_panic":
         assert "panicked" in result["observed"]
     if mode == "sleep_runtime_failure":
@@ -326,3 +348,12 @@ assert input() == 'echo MOSS_PRODUCTION_READY'
         assert result["observed"] == "old managed child survived process service loss"
     if mode in ("gdb_unverified", "gdb_failure"):
         assert result["observed"] == "first-read input barrier not verified"
+
+
+@pytest.mark.parametrize(
+    "cpu, expected", [("0.0", False), ("0.1", True), ("100.0", True), ("101.0", False), ("oops", False)]
+)
+def test_monitor_requires_real_busy_cpu_row(cpu, expected):
+    row = f" 3 2 root R 1000 1.0 0 {cpu} /moss-process.elf monitor-busy\n".encode()
+    assert boot.monitor_cpu_observed(row) is expected
+    assert not boot.monitor_cpu_observed(b"/moss-process.elf monitor-busy & top -b -n 2 -d 1\nUptime: 1s\n")
