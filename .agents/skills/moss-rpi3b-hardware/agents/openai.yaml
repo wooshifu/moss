@@ -1,0 +1,4 @@
+interface:
+  display_name: "树莓派 3B+ 真机运行与验证"
+  short_description: "树莓派 3B+ 的 Moss 构建、JTAG 部署、串口调试与真机验证"
+  default_prompt: "使用 $moss-rpi3b-hardware，在树莓派 3B+ 真机上构建、部署并验证 Moss，保留串口日志和产物身份。"
