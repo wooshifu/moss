@@ -69,6 +69,7 @@ struct PendingCall {
   bool delivery_claimed{false};
   capability::Escrow request_cap{};
   capability::Escrow response_cap{};
+  containers::WaitQueue events;
   u8 request[kMessageBytes]{};
   u8 response[kMessageBytes]{};
 
@@ -88,6 +89,7 @@ void bind_delegated_reply(const capability::Escrow &transferred, process::Thread
 class Channel {
   containers::IrqSpinLock lock_;
   containers::WaitQueue receivers_;
+  containers::WaitQueue readable_events_;
   shared_ptr<PendingCall> calls_[kPendingCalls]{};
   bool closed_{false};
 
@@ -101,7 +103,7 @@ class Channel {
   // run and claim the request. Claim may hand the call to a different worker.
   [[nodiscard]] process::IpcBindResult wake_receiver(PendingCall *call) noexcept {
     process::IpcBindResult result = process::IpcBindResult::Bound;
-    const bool assigned = receivers_.wake_one([&](void *waiter) {
+    const auto bind = [&](void *waiter) {
       auto *thread = static_cast<process::Thread *>(waiter);
       if (process::g_scheduler) {
         result = process::g_scheduler->bind_ipc_server(&call->donation, thread);
@@ -109,10 +111,12 @@ class Channel {
       if (result == process::IpcBindResult::Bound) {
         bind_delegated_reply(call->request_cap, thread);
       }
-      // wake_one removed this waiter even if admission failed. Let it re-arm
-      // for the next request rather than leaving it asleep off the queue.
+      // Wake even after rejected admission so the receiver can recheck state.
       wake(thread);
-    });
+    };
+    // An object-wait receiver needs the same priority donation as a thread
+    // sleeping directly in receive, before either can run and claim the call.
+    const bool assigned = receivers_.wake_one(bind) || readable_events_.wake_one(bind);
     if (!assigned && process::g_scheduler) {
       result = process::g_scheduler->bind_ipc_server(&call->donation, nullptr);
     }
@@ -121,6 +125,24 @@ class Channel {
 
 public:
   ~Channel() noexcept { close(); }
+
+  [[nodiscard]] containers::WaitQueue *event_queue() noexcept { return &readable_events_; }
+  [[nodiscard]] bool readable() noexcept {
+    containers::LockGuard<containers::IrqSpinLock> guard(lock_);
+    if (closed_)
+      return true;
+    for (const auto &call : calls_) {
+      if (call && call->queued && !call->delivery_claimed && call->outcome == Outcome::Pending &&
+          call->donation.rejection.load(memory_order_acquire) == process::IpcBindResult::Bound)
+        return true;
+    }
+    return false;
+  }
+  [[nodiscard]] bool terminal(PendingCall *call) noexcept {
+    settle_rejection(call);
+    containers::LockGuard<containers::IrqSpinLock> guard(lock_);
+    return call->outcome != Outcome::Pending;
+  }
 
   [[nodiscard]] long enqueue(shared_ptr<PendingCall> call, timer::HrTimer *deadline_timer) noexcept {
     containers::LockGuard<containers::IrqSpinLock> guard(lock_);
@@ -142,6 +164,7 @@ public:
           slot = {};
           return bound == process::IpcBindResult::Deadlock ? -errc::EDEADLK : -errc::ELOOP;
         }
+        readable_events_.for_each_waiter([](void *waiter) { wake(static_cast<process::Thread *>(waiter)); });
         return 0;
       }
     }
@@ -174,6 +197,7 @@ public:
     if (call->delivery_claimed && call->queued && call->outcome == Outcome::Pending) {
       call->delivery_claimed = false;
       (void)wake_receiver(call);
+      readable_events_.for_each_waiter([](void *waiter) { wake(static_cast<process::Thread *>(waiter)); });
     }
   }
 
@@ -220,6 +244,9 @@ public:
         }
       }
       call->outcome = outcome;
+      // Services retaining a Reply must observe cancellation even if no new
+      // request or domain exit arrives to wake their event loop.
+      call->events.for_each_waiter([](void *waiter) { wake(static_cast<process::Thread *>(waiter)); });
       if (committed) {
         *committed = true;
       }
@@ -310,12 +337,14 @@ public:
           const auto rejection = process::g_scheduler ? process::g_scheduler->end_ipc_call(&calls_[i]->donation)
                                                       : process::IpcBindResult::Bound;
           calls_[i]->outcome = rejected_outcome(rejection, Outcome::PeerClosed);
+          calls_[i]->events.for_each_waiter([](void *waiter) { wake(static_cast<process::Thread *>(waiter)); });
           calls_[i]->queued = false;
           wake(calls_[i]->caller);
           retired[i] = moss::move(calls_[i]);
         }
       }
       receivers_.wake_up([](void *thread) { wake(static_cast<process::Thread *>(thread)); });
+      readable_events_.for_each_waiter([](void *thread) { wake(static_cast<process::Thread *>(thread)); });
     }
   }
 };
@@ -337,6 +366,8 @@ public:
   explicit Receiver(shared_ptr<Channel> target) noexcept
       : Object(capability::ObjectType::Receiver), channel(moss::move(target)) {}
   ~Receiver() override { channel->close(); }
+  [[nodiscard]] containers::WaitQueue *event_queue() noexcept override { return channel->event_queue(); }
+  [[nodiscard]] bool event_ready() noexcept override { return channel->readable(); }
 };
 
 class MemoryObject final : public capability::Object {
@@ -402,12 +433,26 @@ public:
 }
 
 class Reply final : public capability::Object {
+protected:
+  void on_last_handle_closed() noexcept override {
+    // A concurrent object_wait may retain this object. Wake it on authority
+    // closure, but leave completion to reply/teardown: sys_ipc_reply closes
+    // its one-shot handle before committing the response.
+    call->events.for_each_waiter([](void *data) {
+      auto *thread = static_cast<process::Thread *>(data);
+      if (process::g_scheduler)
+        process::g_scheduler->task_wakeup(thread, thread->wake_cpu);
+    });
+  }
+
 public:
   shared_ptr<Channel> channel;
   shared_ptr<PendingCall> call;
   atomic<bool> armed{false};
   Reply(shared_ptr<Channel> owner, shared_ptr<PendingCall> pending) noexcept
       : Object(capability::ObjectType::Reply), channel(moss::move(owner)), call(moss::move(pending)) {}
+  [[nodiscard]] containers::WaitQueue *event_queue() noexcept override { return &call->events; }
+  [[nodiscard]] bool event_ready() noexcept override { return !has_handles() || channel->terminal(call.get()); }
   ~Reply() override {
     if (armed.load(memory_order_acquire)) {
       (void)channel->complete(call.get(), Outcome::PeerClosed);
@@ -801,8 +846,7 @@ long sys_ipc_call(long endpoint, long request_addr, long response_addr, long dea
   }
 }
 
-long sys_ipc_receive(long endpoint, long request_addr, long reply_addr, long /*unused*/, long /*unused*/,
-                     long /*unused*/) noexcept {
+static long receive_message(long endpoint, long request_addr, long reply_addr, bool blocking) noexcept {
   auto proc = caller_process();
   auto *thread = process::CfsScheduler::get_current_task();
   if (!proc || !thread || !process::g_scheduler) {
@@ -875,6 +919,10 @@ long sys_ipc_receive(long endpoint, long request_addr, long reply_addr, long /*u
       channel->release_receiver(thread);
       return -errc::EPIPE;
     }
+    if (!blocking) {
+      channel->release_receiver(thread);
+      return -errc::EAGAIN;
+    }
     if (moss::abi::bridge::moss_io_wait_interrupted()) {
       channel->release_receiver(thread);
       return -errc::EINTR;
@@ -888,6 +936,13 @@ long sys_ipc_receive(long endpoint, long request_addr, long reply_addr, long /*u
       arch::enable_interrupts();
     }
   }
+}
+
+long sys_ipc_receive(long endpoint, long request_addr, long reply_addr, long, long, long) noexcept {
+  return receive_message(endpoint, request_addr, reply_addr, true);
+}
+long sys_ipc_try_receive(long endpoint, long request_addr, long reply_addr, long, long, long) noexcept {
+  return receive_message(endpoint, request_addr, reply_addr, false);
 }
 
 long sys_ipc_reply(long reply_handle, long response_addr, long /*unused*/, long /*unused*/, long /*unused*/,

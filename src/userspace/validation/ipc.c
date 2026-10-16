@@ -791,9 +791,13 @@ static unsigned long ipc_claimed_deadline(struct moss_ipc_endpoints pair) {
     }
     return 8;
   }
+  // Observe Reply cancellation directly, with no endpoint traffic or domain
+  // exit needed to wake the service. The ordinary five-second fixture bound
+  // prevents a missing notification from hanging the validation guest.
+  unsigned long errors = syscall6(SYS_OBJECT_WAIT, (long)&reply, 1, 0, deadline_after(ipc_call_timeout_ns), 0, 0) != 0;
   unsigned char expired = 0;
   // Wait until the caller has observed expiry before attempting its reply.
-  unsigned long errors = read((int)done[0], &expired, 1) != 1 || expired != 1;
+  errors |= read((int)done[0], &expired, 1) != 1 || expired != 1;
   close((int)done[0]);
   const struct moss_ipc_message answer = {.size = 1, .payload = {'r'}};
   errors |= (unsigned long)(ipc_reply(reply, &answer) != -IPC_ETIMEDOUT) << 1;
@@ -2498,6 +2502,28 @@ unsigned long ipc_domain_wait_any(void) {
   }
 
   unsigned long errors = 0;
+  struct moss_ipc_endpoints events = {0};
+  errors |= (unsigned long)(syscall1(SYS_IPC_CREATE, (long)&events) != 0) << 21;
+  const unsigned long mixed[] = {events.receive, fast_domain};
+  errors |=
+      (unsigned long)(syscall6(SYS_OBJECT_WAIT, (long)&slow_domain, 1, MOSS_WAIT_NONBLOCK, 0, 0, 0) != -IPC_EAGAIN)
+      << 22;
+  // One millisecond is shorter than the fast child's 50 ms delay. This is a
+  // timeout/cleanup check, not a timer accuracy or performance assertion.
+  errors |= (unsigned long)(syscall6(SYS_OBJECT_WAIT, (long)&events.receive, 1, 0, deadline_after(1000000UL), 0, 0) !=
+                            -IPC_ETIMEDOUT)
+            << 23;
+  struct moss_ipc_message empty = {0};
+  unsigned long token = 0;
+  errors |=
+      (unsigned long)(syscall3(SYS_IPC_TRY_RECEIVE, (long)events.receive, (long)&empty, (long)&token) != -IPC_EAGAIN)
+      << 24;
+  errors |= (unsigned long)(syscall6(SYS_OBJECT_WAIT, (long)mixed, 2, 0, 0, 0, 0) != 1) << 25;
+  errors |= (unsigned long)(syscall6(SYS_OBJECT_WAIT, (long)mixed, 0, 0, 0, 0, 0) != -IPC_EINVAL) << 26;
+  const unsigned long aliases[] = {fast_domain, fast_domain};
+  errors |= (unsigned long)(syscall6(SYS_OBJECT_WAIT, (long)aliases, 2, 0, 0, 0, 0) != -IPC_EINVAL) << 27;
+  (void)syscall1(SYS_CAP_CLOSE, (long)events.send);
+  (void)syscall1(SYS_CAP_CLOSE, (long)events.receive);
   const unsigned long domains[] = {slow_domain, fast_domain};
   struct moss_domain_exit status = {0};
   errors |= (unsigned long)(syscall2(SYS_DOMAIN_WAIT_ANY, (long)domains, 2) != 1) << 0;
@@ -2516,6 +2542,9 @@ unsigned long ipc_domain_wait_any(void) {
   if (inspect > 0) {
     const unsigned long unauthorized[] = {(unsigned long)inspect};
     errors |= (unsigned long)(syscall2(SYS_DOMAIN_WAIT_ANY, (long)unauthorized, 1) != -IPC_EACCES) << 6;
+    errors |=
+        (unsigned long)(syscall6(SYS_OBJECT_WAIT, (long)unauthorized, 1, MOSS_WAIT_NONBLOCK, 0, 0, 0) != -IPC_EACCES)
+        << 28;
   }
   if (observe > 0) {
     const unsigned long duplicate_target[] = {fast_domain, (unsigned long)observe};

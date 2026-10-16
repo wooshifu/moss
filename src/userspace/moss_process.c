@@ -487,6 +487,110 @@ static int managed_libc_probe(void) {
          WIFSIGNALED(status) && WTERMSIG(status) == SIGTERM;
 }
 
+static volatile sig_atomic_t wait_signal_seen;
+static void wait_signal_handler(int signo) { wait_signal_seen = signo; }
+
+static int managed_wait_probe(void) {
+  // Match managed_libc_probe: 37 marks success, 41 a child fixture failure.
+  unsigned long session = getauxval(MOSS_AT_STARTUP_CAP);
+  int status = 0;
+  // Keep the child alive beyond a deliberately short call deadline so a
+  // canceled retained Reply cannot consume its exit or block later requests.
+  const unsigned long child_delay_ns = 100000000UL; // 100 ms exceeds the 20 ms cancellation deadline.
+  // Leave time to accept the wait while expiring well before the child exits;
+  // this is fixture policy, not a measured scheduling-latency guarantee.
+  const unsigned long cancel_delay_ns = 20000000UL;
+  pid_t child = fork();
+  if (child == 0) {
+    unsigned long delay = child_delay_ns;
+    (void)syscall1(SYS_NANOSLEEP, (long)&delay);
+    _exit(37);
+  }
+  if (child < 0 || waitpid(child, &status, WNOHANG) != 0) {
+    return 0;
+  }
+  struct moss_ipc_message request = {.size = MOSS_PROCESS_WAIT_REQUEST_BYTES,
+                                     .payload = {MOSS_PROCESS_WAIT_BLOCK, MOSS_PROCESS_WAIT_CHILD}};
+  moss_process_put_u64(request.payload + 2, (unsigned long)child);
+  struct moss_ipc_message response = {0};
+  unsigned long now = 0;
+  int valid = syscall2(SYS_CLOCK_GETTIME, MOSS_CLOCK_MONOTONIC, (long)&now) == 0 &&
+              syscall6(SYS_IPC_CALL, (long)session, (long)&request, (long)&response, (long)(now + cancel_delay_ns), 0,
+                       0) == -ETIMEDOUT &&
+              no_capability(&response);
+  valid &= waitpid(child, &status, 0) == child && status == (37 << 8);
+  if (!valid) {
+    return 0;
+  }
+
+  struct sigaction action = {.sa_handler = wait_signal_handler}, previous = {0};
+  sigemptyset(&action.sa_mask);
+  if (sigaction(SIGUSR1, &action, &previous) != 0) {
+    return 0;
+  }
+  long parent_domain = syscall0(SYS_DOMAIN_SELF);
+  if (parent_domain <= 0 || syscall2(SYS_CAP_SET_INHERIT, parent_domain, 1) != 0) {
+    (void)sigaction(SIGUSR1, &previous, NULL);
+    return 0;
+  }
+  wait_signal_seen = 0;
+  child = fork();
+  if (child == 0) {
+    unsigned long delay = child_delay_ns;
+    (void)syscall1(SYS_NANOSLEEP, (long)&delay);
+    // Native domains require explicit signal authority, including from a
+    // child. Inherit the exact parent's capability rather than a numeric PID.
+    long sent = syscall2(SYS_DOMAIN_SIGNAL, parent_domain, SIGUSR1);
+    (void)syscall1(SYS_CAP_CLOSE, parent_domain);
+    if (sent != 0)
+      _exit(41);
+    delay = child_delay_ns;
+    (void)syscall1(SYS_NANOSLEEP, (long)&delay);
+    _exit(37);
+  }
+  (void)syscall1(SYS_CAP_CLOSE, parent_domain);
+  errno = 0;
+  valid = child > 0 && waitpid(child, &status, 0) == -1 && errno == EINTR && wait_signal_seen == SIGUSR1;
+  if (child > 0) {
+    valid &= waitpid(child, &status, 0) == child && status == (37 << 8);
+  }
+  valid &= sigaction(SIGUSR1, &previous, NULL) == 0;
+  if (!valid) {
+    return 0;
+  }
+
+  child = fork();
+  if (child == 0) {
+    // Six seconds deliberately crosses process_call's five-second deadline.
+    // The identity/group request after sleep must succeed while the parent
+    // waits, proving that one retained wait does not stall the registry.
+    unsigned long delay = 6000000000UL;
+    (void)syscall1(SYS_NANOSLEEP, (long)&delay);
+    _exit(getpid() > 0 && getpgid(0) > 0 && getppid() > 0 ? 37 : 41);
+  }
+  if (child <= 0 || waitpid(-1, &status, 0) != child || status != (37 << 8)) {
+    return 0;
+  }
+
+  // An abandoned pre-fork reservation has no domain-exit event. Its lease
+  // deadline must wake the registry and complete the wait without new traffic.
+  request = (struct moss_ipc_message){.size = 1, .payload = {MOSS_PROCESS_PREPARE_CHILD}};
+  response = (struct moss_ipc_message){0};
+  if (call(session, &request, &response) != MOSS_PROCESS_REPLY_VALUE_BYTES || response.payload[0] != MOSS_PROCESS_OK ||
+      !response.capability || response.rights != (MOSS_CAP_SEND | MOSS_CAP_DUPLICATE)) {
+    (void)no_capability(&response);
+    return 0;
+  }
+  unsigned long reserved = moss_process_get_u64(response.payload + 1);
+  (void)syscall1(SYS_CAP_CLOSE, (long)response.capability);
+  request = (struct moss_ipc_message){.size = MOSS_PROCESS_WAIT_REQUEST_BYTES,
+                                      .payload = {MOSS_PROCESS_WAIT_BLOCK, MOSS_PROCESS_WAIT_CHILD}};
+  moss_process_put_u64(request.payload + 2, reserved);
+  response = (struct moss_ipc_message){0};
+  return syscall6(SYS_IPC_CALL, (long)session, (long)&request, (long)&response, 0, 0, 0) == 1 &&
+         response.payload[0] == MOSS_PROCESS_NO_ENTRY && no_capability(&response);
+}
+
 static int managed_group_probe(void) {
   pid_t self = getpid();
   pid_t group = getpgrp();
@@ -1817,9 +1921,9 @@ int main(int argc, char **argv) {
   }
   unsigned long last_id = MOSS_PROCESS_INIT_ID;
   unsigned long parent_session = getauxval(MOSS_AT_STARTUP_CAP);
-  if (!managed_libc_probe() || !managed_group_probe() || !managed_orphan_probe() || !managed_fanout_probe() ||
-      !observe_child(root, parent_session, &last_id, 37, 1) || !observe_child(root, parent_session, &last_id, 38, 0) ||
-      !observe_family(root, &last_id)) {
+  if (!managed_libc_probe() || !managed_wait_probe() || !managed_group_probe() || !managed_orphan_probe() ||
+      !managed_fanout_probe() || !observe_child(root, parent_session, &last_id, 37, 1) ||
+      !observe_child(root, parent_session, &last_id, 38, 0) || !observe_family(root, &last_id)) {
     return error();
   }
   static const char message[] = "MOSS_PROCESS_READY\n";

@@ -1,7 +1,7 @@
 module moss.process;
 
 // Validation observes the real admission and per-page ownership boundaries.
-// Production retains the identical policy, resolution and byte-copy path.
+// Production retains the identical policy, resolution and memory-copy path.
 extern "C" [[gnu::weak, gnu::noinline]] void moss_validation_user_copy(moss::kernel::PhysAddr /*root*/,
                                                                        moss::kernel::VirtAddr /*address*/) noexcept {}
 extern "C" [[gnu::weak, gnu::noinline]] void moss_validation_user_page(moss::kernel::PhysAddr /*root*/,
@@ -20,9 +20,7 @@ void clear_uncopied(void *destination, usize size, usize remaining) noexcept {
   auto *tail = static_cast<u8 *>(destination) + (size - remaining);
   // Preserve the shared input-copy contract: failed bytes never expose stale
   // kernel storage, even when earlier pages were copied successfully.
-  for (usize index = 0; index < remaining; ++index) {
-    tail[index] = 0;
-  }
+  moss::memset(tail, 0, remaining);
 }
 } // namespace
 
@@ -79,14 +77,10 @@ usize AddressSpace::transfer_user_pages(VirtAddr address, void *kernel_output, c
     moss_validation_user_page(pgd_phys, cursor, page, write);
     if (write) {
       const auto *input = static_cast<const u8 *>(kernel_input) + copied;
-      for (usize index = 0; index < chunk; ++index) {
-        bytes[index] = input[index];
-      }
+      moss::memcpy(bytes, input, chunk);
     } else {
       auto *output = static_cast<u8 *>(kernel_output) + copied;
-      for (usize index = 0; index < chunk; ++index) {
-        output[index] = bytes[index];
-      }
+      moss::memcpy(output, bytes, chunk);
     }
     // Hardware observes the kernel alias, not this user leaf. Preserve the
     // user mapping's access/dirty accounting without losing concurrent CPU

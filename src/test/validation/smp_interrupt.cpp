@@ -3,6 +3,7 @@ import moss.types;
 import moss.arch;
 import moss.abi;
 import moss.hal.timer;
+import moss.hal.intc;
 import moss.boot;
 import moss.fdt;
 import moss.mm;
@@ -40,6 +41,9 @@ struct InterruptUnbind {
   interrupts::InterruptId irq = platform::hardware.uart.irq + 1;
   shared_ptr<interrupts::InterruptDescriptor> descriptor;
   u32 entered = 0, finished = 0;
+#if defined(MOSS_ARCH_ARM64)
+  u32 probe_requested = 0;
+#endif
 
   void prepare() {
     smp_require(controller && !controller->get_interrupt_info(irq));
@@ -66,7 +70,16 @@ struct InterruptUnbind {
     // Publish the completed checks before releasing that lease.
     __atomic_store_n(&finished, 1U, __ATOMIC_RELEASE);
     descriptor->end_callback();
+#if defined(MOSS_ARCH_ARM64)
+    wait_for_phase(probe_requested, 1);
+    // SGI/mailbox 0 is the scheduler's real reschedule source; target bit zero
+    // selects the BSP and exercises the previously missing CPU1 -> CPU0 route.
+    const auto &intc = platform::hardware.intc;
+    const auto sent = hal::intc::send_sgi(intc.dist_base, intc.cpu_base, 0, 1);
+    return right_cpu && unbinding && sent.has_value();
+#else
     return right_cpu && unbinding;
+#endif
   }
 
   void owner() {
@@ -74,6 +87,25 @@ struct InterruptUnbind {
     const auto result = controller->unregister_interrupt(irq);
     ut::expect(result.has_value() && __atomic_load_n(&finished, __ATOMIC_ACQUIRE) == 1 &&
                !controller->get_interrupt_info(irq) && affinity_valid());
+#if defined(MOSS_ARCH_ARM64)
+    auto &timers = timer::TimerSubsystem::instance();
+    // Park this CPU's timer one second ahead. Only an IPI can reprogram it
+    // during the probe; a periodic tick cannot hide a disabled mailbox.
+    // Reuse timer_control.cpp's 200 ms host-scheduling margin, not a latency SLA.
+    const auto parked = hal::timer::read_counter() + timers.clocksource().ns_to_cycles(1000000000ULL);
+    const auto deadline = hal::timer::read_counter() + timers.clocksource().ns_to_cycles(200000000ULL);
+    arch::disable_interrupts();
+    hal::timer::set_compare(parked);
+    __atomic_store_n(&probe_requested, 1U, __ATOMIC_RELEASE);
+    arch::enable_interrupts();
+    u64 compare = parked;
+    while (compare == parked && hal::timer::read_counter() < deadline) {
+      asm volatile("mrs %0, cntv_cval_el0" : "=r"(compare));
+      arch::cpu_yield();
+    }
+    ut::expect(arch::get_current_cpu_id() == 0 && compare != parked);
+    timers.reprogram_local();
+#endif
   }
 };
 InterruptUnbind *interrupt_unbind = nullptr;

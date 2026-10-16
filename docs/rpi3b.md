@@ -110,3 +110,6 @@ The separate console also wrote and read a RAM file. BusyBox `mkdir -p` emitted
 mlibc's missing `Umask` sysdep diagnostics during that check; this is not a claim
 of complete userspace compatibility or long-term stability. The 18 host tests
 and QEMU Pi 3 production boot/service recovery check passed as well.
+
+For the Release hardware measurements, kernel/userspace findings, optimization
+order and repeatable probe commands, see [Pi 3B+ performance analysis](rpi3b-performance.md).

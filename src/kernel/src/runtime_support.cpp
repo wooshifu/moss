@@ -8,47 +8,95 @@ module moss.kernel;
 // 在freestanding环境中定义必要的类型
 using size_t = moss::kernel::usize;
 
+namespace {
+// Word accesses stay naturally aligned even under ARM64 -mstrict-align. The
+// alias attribute permits ordinary object representations without violating
+// C++ aliasing rules; MMIO must use the dedicated volatile hardware accessors.
+using CopyWord [[gnu::may_alias]] = moss::kernel::u64;
+constexpr size_t word_bytes = sizeof(CopyWord);
+} // namespace
+
 extern "C" {
 
-// 基本内存操作函数
 void *memset(void *dst, int c, size_t n) noexcept {
-  unsigned char *d = static_cast<unsigned char *>(dst);
-  unsigned char value = static_cast<unsigned char>(c);
-
-  for (size_t i = 0; i < n; ++i) {
-    d[i] = value;
+  auto *d = static_cast<unsigned char *>(dst);
+  const auto value = static_cast<unsigned char>(c);
+  while (n && (reinterpret_cast<size_t>(d) & (word_bytes - 1))) {
+    *d++ = value;
+    --n;
   }
-
+  // Replicate the byte across the word; all-ones / 255 has one bit per byte.
+  const CopyWord fill = (~CopyWord{0} / 255) * value;
+  auto *words = reinterpret_cast<CopyWord *>(d);
+  while (n >= word_bytes) {
+    *words++ = fill;
+    n -= word_bytes;
+  }
+  d = reinterpret_cast<unsigned char *>(words);
+  while (n--) {
+    *d++ = value;
+  }
   return dst;
 }
 
 void *memcpy(void *dst, const void *src, size_t n) noexcept {
-  unsigned char *d = static_cast<unsigned char *>(dst);
-  const unsigned char *s = static_cast<const unsigned char *>(src);
-
-  for (size_t i = 0; i < n; ++i) {
-    d[i] = s[i];
+  auto *d = static_cast<unsigned char *>(dst);
+  auto *s = static_cast<const unsigned char *>(src);
+  // Matching alignment allows both pointers to reach a word boundary together.
+  // Other alignments keep the byte path; never read beyond either supplied range.
+  if (((reinterpret_cast<size_t>(d) ^ reinterpret_cast<size_t>(s)) & (word_bytes - 1)) == 0) {
+    while (n && (reinterpret_cast<size_t>(d) & (word_bytes - 1))) {
+      *d++ = *s++;
+      --n;
+    }
+    auto *out = reinterpret_cast<CopyWord *>(d);
+    auto *in = reinterpret_cast<const CopyWord *>(s);
+    while (n >= word_bytes) {
+      *out++ = *in++;
+      n -= word_bytes;
+    }
+    d = reinterpret_cast<unsigned char *>(out);
+    s = reinterpret_cast<const unsigned char *>(in);
   }
-
+  while (n--) {
+    *d++ = *s++;
+  }
   return dst;
 }
 
 void *memmove(void *dst, const void *src, size_t n) noexcept {
-  unsigned char *d = static_cast<unsigned char *>(dst);
-  const unsigned char *s = static_cast<const unsigned char *>(src);
-
-  if (d < s) {
-    // 向前拷贝
-    for (size_t i = 0; i < n; ++i) {
-      d[i] = s[i];
+  auto *d = static_cast<unsigned char *>(dst);
+  auto *s = static_cast<const unsigned char *>(src);
+  if (reinterpret_cast<size_t>(d) < reinterpret_cast<size_t>(s)) {
+    // Keep overlap out of the public memcpy contract, which the compiler
+    // may treat as non-overlapping even when our byte loop would be safe.
+    while (n--) {
+      *d++ = *s++;
     }
-  } else if (d > s) {
-    // 向后拷贝
-    for (size_t i = n; i > 0; --i) {
-      d[i - 1] = s[i - 1];
-    }
+    return dst;
   }
-
+  if (d == s) {
+    return dst;
+  }
+  d += n;
+  s += n;
+  if (((reinterpret_cast<size_t>(d) ^ reinterpret_cast<size_t>(s)) & (word_bytes - 1)) == 0) {
+    while (n && (reinterpret_cast<size_t>(d) & (word_bytes - 1))) {
+      *--d = *--s;
+      --n;
+    }
+    auto *out = reinterpret_cast<CopyWord *>(d);
+    auto *in = reinterpret_cast<const CopyWord *>(s);
+    while (n >= word_bytes) {
+      *--out = *--in;
+      n -= word_bytes;
+    }
+    d = reinterpret_cast<unsigned char *>(out);
+    s = reinterpret_cast<const unsigned char *>(in);
+  }
+  while (n--) {
+    *--d = *--s;
+  }
   return dst;
 }
 

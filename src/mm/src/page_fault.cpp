@@ -447,12 +447,11 @@ bool moss::kernel::mm::resolve_user_cow_fault(const UserFaultContext &context, V
     }
     PhysAddr new_pa = *new_page;
 
-    // Copy 4KB from old page to new page
+    // Both aliases are stable, distinct Normal-memory frames under the VM
+    // transaction. Reuse the runtime's aligned copy before publishing the PTE.
     const auto *src = reinterpret_cast<const u8 *>(phys_to_virt(old_pa));
     auto *dst = reinterpret_cast<u8 *>(phys_to_virt(new_pa));
-    for (usize i = 0; i < PG_SIZE; i++) {
-      dst[i] = src[i];
-    }
+    moss::memcpy(dst, src, PG_SIZE);
 
     // Reuse the architecture's PTE encoder (RISC-V 64 stores PPN, not PA).
     // Keep permissions/cache attributes unchanged except COW and writability.
@@ -576,12 +575,10 @@ bool moss::kernel::mm::resolve_user_demand_fault(const UserFaultContext &context
       if (copy_size > PAGE_SIZE) {
         copy_size = PAGE_SIZE;
       }
-      for (u64 i = 0; i < copy_size; i++) {
-        page_va[i] = backing_data[backing_offset + page_offset + i];
-      }
-      for (u64 i = copy_size; i < PAGE_SIZE; i++) {
-        page_va[i] = 0;
-      }
+      // Backing stays owned by the locked address space. The shared copy
+      // handles unaligned ELF offsets; zero the exact tail before publication.
+      moss::memcpy(page_va, backing_data + backing_offset + page_offset, copy_size);
+      moss::memset(page_va + copy_size, 0, PAGE_SIZE - copy_size);
     } else {
       // Fresh physical pages are page-aligned. Clear whole words so the Debug
       // demand-zero path does not execute a byte loop for every slab page.

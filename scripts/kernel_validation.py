@@ -47,6 +47,7 @@ CATALOG = {
     ],
     "resources": ["cpu_memory"],
     "mm": [
+        "runtime_memory_ranges",
         "initialization_publication",
         "unsupported_contracts",
         "pageblock_units",
@@ -301,6 +302,7 @@ CATALOG = {
         "kernel_wx",
         "address_space_ownership",
         "cow_clone_permissions",
+        "fault_backing_and_cow_contents",
         "vma_boundaries",
     ],
     "mm.transactions": [
@@ -340,9 +342,9 @@ CATALOG = {
         )
     },
 }
-# The new scheduler graph-limit and users.ipc mutual-wait cases change the
-# ordered inventory from v5; earlier reports keep their recorded version.
-CATALOG_VERSION = 6
+# Runtime-memory and backing/COW cases change the ordered inventory from v6;
+# earlier reports retain their recorded version for comparison.
+CATALOG_VERSION = 7
 FUNCTIONAL = [
     "drivers",
     "resources",

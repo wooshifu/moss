@@ -318,9 +318,138 @@ static void adopt_children(unsigned long parent_id) {
   }
 }
 
+static void reap_record(struct Record *record) {
+  if (record->id != MOSS_PROCESS_INIT_ID) {
+    adopt_children(record->id);
+  }
+  if (record->domain) {
+    (void)syscall1(SYS_CAP_CLOSE, (long)record->domain);
+  }
+  clear_record(record);
+}
+
+static struct Record *select_wait_child(struct Record *parent, unsigned char selector, unsigned long target,
+                                        struct moss_ipc_message *response) {
+  if (!parent) {
+    response->payload[0] = MOSS_PROCESS_NO_ENTRY;
+    return NULL;
+  }
+  if (selector != MOSS_PROCESS_WAIT_CHILD) {
+    return select_exited_child(parent, target, selector == MOSS_PROCESS_WAIT_GROUP, response);
+  }
+  struct Record *child = find_record(target);
+  if (!child || child->parent_id != parent->id) {
+    response->payload[0] = MOSS_PROCESS_NO_ENTRY;
+    return NULL;
+  }
+  struct moss_domain_exit status = {0};
+  long result = child->domain ? syscall2(SYS_DOMAIN_STATUS, (long)child->domain, (long)&status) : -EAGAIN;
+  if (result != 0) {
+    response->payload[0] = result == -EAGAIN ? MOSS_PROCESS_RUNNING : MOSS_PROCESS_UNAVAILABLE;
+    return NULL;
+  }
+  response->size = MOSS_PROCESS_REPLY_WAIT_BYTES;
+  response->payload[0] = MOSS_PROCESS_EXITED;
+  moss_process_put_u64(response->payload + 1, child->id);
+  moss_process_put_u64(response->payload + 9, ((uint64_t)status.signal << 32) | (uint32_t)status.code);
+  return child;
+}
+
+// Match control_ipc.cpp's endpoint admission bound. Retained waits consume
+// bounded Reply authority; further waits fail explicitly instead of allocating
+// an unbounded registry. The capability table imposes an additional limit.
+enum { PROCESS_PENDING_WAITS = 16 };
+struct PendingWait {
+  unsigned long reply;
+  unsigned long parent_id;
+  unsigned long target;
+  unsigned char selector;
+};
+static struct PendingWait pending_waits[PROCESS_PENDING_WAITS];
+
+static void complete_waiters(void) {
+  for (unsigned int i = 0; i < PROCESS_PENDING_WAITS; ++i) {
+    struct PendingWait *waiter = &pending_waits[i];
+    if (!waiter->reply) {
+      continue;
+    }
+    // Cancellation wins without consuming an exit. A later reply races it
+    // atomically in the kernel; only a committed reply may reap the record.
+    long state = syscall6(SYS_OBJECT_WAIT, (long)&waiter->reply, 1, MOSS_WAIT_NONBLOCK, 0, 0, 0);
+    struct Record *parent = find_record(waiter->parent_id);
+    if (state != -EAGAIN || !record_running(parent)) {
+      (void)syscall1(SYS_CAP_CLOSE, (long)waiter->reply);
+      *waiter = (struct PendingWait){0};
+      continue;
+    }
+    struct moss_ipc_message response = {.size = 1};
+    struct Record *child = select_wait_child(parent, waiter->selector, waiter->target, &response);
+    if (response.payload[0] == MOSS_PROCESS_RUNNING) {
+      continue;
+    }
+    long sent = syscall2(SYS_IPC_REPLY, (long)waiter->reply, (long)&response);
+    if (sent == 0 && child) {
+      reap_record(child);
+    }
+    (void)syscall1(SYS_CAP_CLOSE, (long)waiter->reply);
+    *waiter = (struct PendingWait){0};
+  }
+}
+
+static void add_wait_handle(unsigned long *handles, unsigned long *count, unsigned long handle) {
+  if (!handle) {
+    return;
+  }
+  for (unsigned long i = 0; i < *count; ++i) {
+    if (handles[i] == handle) {
+      return;
+    }
+  }
+  // Every entry is a distinct live handle owned by this service, so their
+  // union cannot exceed the kernel capability-table capacity.
+  if (*count < MOSS_WAIT_MAX_HANDLES) {
+    handles[(*count)++] = handle;
+  }
+}
+
+static long receive_next(unsigned long receive, struct moss_ipc_message *request, unsigned long *reply) {
+  unsigned long handles[MOSS_WAIT_MAX_HANDLES] = {receive};
+  unsigned long count = 1, deadline = 0;
+  for (unsigned int i = 0; i < PROCESS_PENDING_WAITS; ++i) {
+    const struct PendingWait *waiter = &pending_waits[i];
+    if (!waiter->reply) {
+      continue;
+    }
+    add_wait_handle(handles, &count, waiter->reply);
+    struct Record *parent = find_record(waiter->parent_id);
+    add_wait_handle(handles, &count, parent ? parent->domain : 0);
+    for (struct Record *child = records; child; child = child->next) {
+      if (!child->id || child->parent_id != waiter->parent_id ||
+          (waiter->selector == MOSS_PROCESS_WAIT_CHILD && child->id != waiter->target) ||
+          (waiter->selector == MOSS_PROCESS_WAIT_GROUP && child->group_id != waiter->target)) {
+        continue;
+      }
+      add_wait_handle(handles, &count, child->domain);
+      if (child->reservation_deadline_ns && (!deadline || child->reservation_deadline_ns < deadline)) {
+        deadline = child->reservation_deadline_ns;
+      }
+    }
+  }
+  if (count == 1) {
+    return syscall3(SYS_IPC_RECEIVE, (long)receive, (long)request, (long)reply);
+  }
+  long ready = syscall6(SYS_OBJECT_WAIT, (long)handles, (long)count, 0, (long)deadline, 0, 0);
+  if (ready < 0) {
+    return ready == -ETIMEDOUT ? -EAGAIN : ready;
+  }
+  // Readiness is not a reservation: the sender can cancel before receive.
+  // Never block here and lose an already delivered domain-exit notification.
+  return ready == 0 ? syscall3(SYS_IPC_TRY_RECEIVE, (long)receive, (long)request, (long)reply) : -EAGAIN;
+}
+
 static void refresh_orphans(void) {
-  // The service has no exit notification yet. Sweep its live registry on
-  // each request so a child observes reparenting before its next getppid().
+  // Sweep before requests and after wait events so children observe current
+  // parentage and abandoned reservations expire even without new requests.
   // ponytail: Parentage scans are quadratic; index them if large live process
   // sets make this sweep measurable.
   for (struct Record *parent = records; parent; parent = parent->next) {
@@ -1251,10 +1380,14 @@ int main(int argc, char **argv) {
   // The supervisor registers first, so compatibility init retains ID 1.
   unsigned long next_id = MOSS_PROCESS_INIT_ID;
   for (;;) {
+    complete_waiters();
     struct moss_ipc_message request = {0};
     unsigned long reply = 0;
-    long received = syscall3(SYS_IPC_RECEIVE, (long)receive, (long)&request, (long)&reply);
-    if (received == -EINTR) {
+    long received = receive_next(receive, &request, &reply);
+    if (received == -EINTR || received == -EAGAIN) {
+      // Exit/cancellation and reservation-expiry events also require a sweep.
+      // Successful receives already sweep below; avoid scanning twice per RPC.
+      refresh_orphans();
       continue;
     }
     if (received < 0) {
@@ -1385,39 +1518,43 @@ int main(int argc, char **argv) {
           response.payload[0] = state == -EAGAIN ? MOSS_PROCESS_NO_ENTRY : MOSS_PROCESS_UNAVAILABLE;
         }
       }
-    } else if (request.badge && request.size == MOSS_PROCESS_REPLY_VALUE_BYTES &&
-               request.payload[0] == MOSS_PROCESS_WAIT_CHILD && !request.capability && !request.rights) {
+    } else if (request.badge && request.size == MOSS_PROCESS_WAIT_REQUEST_BYTES &&
+               request.payload[0] == MOSS_PROCESS_WAIT_BLOCK && !request.capability && !request.rights) {
       struct Record *parent = find_record(request.badge);
-      struct Record *child = find_record(moss_process_get_u64(request.payload + 1));
-      if (!parent || !child || child->parent_id != parent->id) {
-        response.payload[0] = MOSS_PROCESS_NO_ENTRY;
-      } else if (!child->domain) {
-        response.payload[0] = MOSS_PROCESS_RUNNING;
-      } else {
-        struct moss_domain_exit status = {0};
-        long result = syscall2(SYS_DOMAIN_STATUS, (long)child->domain, (long)&status);
-        if (result == 0) {
-          response.size = MOSS_PROCESS_REPLY_WAIT_BYTES;
-          response.payload[0] = MOSS_PROCESS_EXITED;
-          moss_process_put_u64(response.payload + 1, child->id);
-          moss_process_put_u64(response.payload + 9, ((uint64_t)status.signal << 32) | (uint32_t)status.code);
-          released = child;
-        } else {
-          response.payload[0] = result == -EAGAIN ? MOSS_PROCESS_RUNNING : MOSS_PROCESS_UNAVAILABLE;
+      unsigned char selector = request.payload[1];
+      unsigned long target = moss_process_get_u64(request.payload + 2);
+      if ((selector == MOSS_PROCESS_WAIT_CHILD || selector == MOSS_PROCESS_WAIT_ANY ||
+           selector == MOSS_PROCESS_WAIT_GROUP) &&
+          target <= LONG_MAX) {
+        // A zero group selects the caller's group at registration time.
+        if (selector == MOSS_PROCESS_WAIT_GROUP && !target && parent) {
+          target = parent->group_id;
+        }
+        released = select_wait_child(parent, selector, target, &response);
+        if (response.payload[0] == MOSS_PROCESS_RUNNING) {
+          response.payload[0] = MOSS_PROCESS_UNAVAILABLE;
+          for (unsigned int i = 0; i < PROCESS_PENDING_WAITS; ++i) {
+            if (!pending_waits[i].reply) {
+              pending_waits[i] = (struct PendingWait){reply, request.badge, target, selector};
+              reply = 0;
+              break;
+            }
+          }
+          if (!reply) {
+            continue; // The event loop owns this Reply until completion/cancellation.
+          }
         }
       }
     } else if (request.badge && request.size == MOSS_PROCESS_REPLY_VALUE_BYTES &&
-               request.payload[0] == MOSS_PROCESS_WAIT_GROUP && !request.capability && !request.rights) {
+               (request.payload[0] == MOSS_PROCESS_WAIT_CHILD || request.payload[0] == MOSS_PROCESS_WAIT_GROUP) &&
+               !request.capability && !request.rights) {
       struct Record *parent = find_record(request.badge);
-      if (!parent) {
-        response.payload[0] = MOSS_PROCESS_NO_ENTRY;
-      } else {
-        unsigned long group_id = moss_process_get_u64(request.payload + 1);
-        if (group_id > LONG_MAX) {
-          response.payload[0] = MOSS_PROCESS_BAD_REQUEST;
-        } else {
-          released = select_exited_child(parent, group_id ? group_id : parent->group_id, 1, &response);
+      unsigned long target = moss_process_get_u64(request.payload + 1);
+      if (target <= LONG_MAX) {
+        if (request.payload[0] == MOSS_PROCESS_WAIT_GROUP && !target && parent) {
+          target = parent->group_id;
         }
+        released = select_wait_child(parent, request.payload[0], target, &response);
       }
     } else if (request.badge && request.size == MOSS_PROCESS_REPLY_VALUE_BYTES &&
                request.payload[0] == MOSS_PROCESS_GET_GROUP && !request.capability && !request.rights) {
@@ -1610,13 +1747,7 @@ int main(int argc, char **argv) {
       attached->reservation_deadline_ns = 0;
     }
     if (released && sent == 0) {
-      if (released->id != MOSS_PROCESS_INIT_ID) {
-        adopt_children(released->id);
-      }
-      if (released->domain) {
-        (void)syscall1(SYS_CAP_CLOSE, (long)released->domain);
-      }
-      clear_record(released);
+      reap_record(released);
     }
     if (session > 0) {
       (void)syscall1(SYS_CAP_CLOSE, session);

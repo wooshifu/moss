@@ -6,6 +6,7 @@ namespace {
 	[[gnu::always_inline]]
 	inline T alias_load(const unsigned char *&p) {
 		T value;
+		// Preserve unaligned and alias-safe loads; the compiler can still emit wide moves.
 		__builtin_memcpy(&value, p, sizeof(value));
 		p += sizeof(T);
 		return value;
@@ -23,6 +24,8 @@ namespace {
 		auto curDest = reinterpret_cast<unsigned char *>(dest);
 		auto curSrc = reinterpret_cast<const unsigned char *>(src);
 
+		// Eight uint64_t transfers cover 64 bytes; the original tuning evidence
+		// for this unroll factor is not recorded here.
 		while(n >= 8 * 8) {
 			auto w1 = alias_load<uint64_t>(curSrc);
 			auto w2 = alias_load<uint64_t>(curSrc);

@@ -96,6 +96,7 @@ long sys_domain_terminate(long handle, long arg1, long arg2, long arg3, long arg
 long sys_domain_signal(long handle, long signo, long arg2, long arg3, long arg4, long arg5) noexcept;
 long sys_domain_wait(long handle, long arg1, long arg2, long arg3, long arg4, long arg5) noexcept;
 long sys_domain_wait_any(long handles_addr, long count, long arg2, long arg3, long arg4, long arg5) noexcept;
+long sys_object_wait(long handles_addr, long count, long flags, long deadline_ns, long arg4, long arg5) noexcept;
 long sys_domain_status(long handle, long status_addr, long arg2, long arg3, long arg4, long arg5) noexcept;
 long sys_domain_self(long arg0, long arg1, long arg2, long arg3, long arg4, long arg5) noexcept;
 long sys_domain_spawn(long factory, long image_addr, long arg2, long arg3, long arg4, long arg5) noexcept;
@@ -181,6 +182,7 @@ long sys_ipc_mint_badge(long endpoint, long badge, long arg2, long arg3, long ar
 long sys_ipc_call(long endpoint, long request_addr, long response_addr, long deadline_ns, long arg4,
                   long arg5) noexcept;
 long sys_ipc_receive(long endpoint, long request_addr, long reply_addr, long arg3, long arg4, long arg5) noexcept;
+long sys_ipc_try_receive(long endpoint, long request_addr, long reply_addr, long arg3, long arg4, long arg5) noexcept;
 long sys_ipc_reply(long reply, long response_addr, long arg2, long arg3, long arg4, long arg5) noexcept;
 long sys_mem_create(long size, long arg1, long arg2, long arg3, long arg4, long arg5) noexcept;
 long sys_mem_map(long handle, long rights, long arg2, long arg3, long arg4, long arg5) noexcept;

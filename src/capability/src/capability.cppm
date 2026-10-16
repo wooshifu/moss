@@ -72,6 +72,7 @@ class Object {
   }
 
 protected:
+  [[nodiscard]] bool has_handles() const noexcept { return installed_handles_.load(memory_order_acquire) != 0; }
   // A syscall lookup may still retain this object after its last handle is
   // closed. Services use this hook to report peer closure at handle lifetime,
   // rather than waiting for the final transient lookup reference to vanish.
@@ -81,6 +82,10 @@ public:
   explicit Object(ObjectType type) noexcept : type_(type) {}
   virtual ~Object() = default;
   [[nodiscard]] ObjectType type() const noexcept { return type_; }
+  // Readiness is level-triggered and never consumes the event. A retained
+  // lookup keeps both this queue and its backing state alive during a wait.
+  [[nodiscard]] virtual containers::WaitQueue *event_queue() noexcept { return nullptr; }
+  [[nodiscard]] virtual bool event_ready() noexcept { return false; }
 };
 
 // In-flight control messages retain authority until a destination table has
@@ -360,6 +365,40 @@ public:
       return KernelResult<shared_ptr<Object>>{ErrorCode::InvalidArgument};
     }
     if ((entry->rights & required_rights) != required_rights) {
+      return KernelResult<shared_ptr<Object>>{ErrorCode::PermissionDenied};
+    }
+    return KernelResult<shared_ptr<Object>>{entry->object};
+  }
+
+  [[nodiscard]] KernelResult<shared_ptr<Object>> lookup_waitable(Handle handle) const noexcept {
+    containers::LockGuard<containers::IrqSpinLock> guard(lock_);
+    const Entry *entry = find_locked(handle);
+    if (!entry) {
+      return KernelResult<shared_ptr<Object>>{ErrorCode::NotFound};
+    }
+    u32 required = 0;
+    switch (entry->object->type()) {
+    case ObjectType::Domain:
+      required = rights::DOMAIN_OBSERVE;
+      break;
+    case ObjectType::Receiver:
+      required = rights::RECEIVE;
+      break;
+    case ObjectType::Reply:
+      required = rights::SEND;
+      break;
+    case ObjectType::Endpoint:
+    case ObjectType::Memory:
+    case ObjectType::DomainFactory:
+    case ObjectType::CodeVersion:
+    case ObjectType::CodeAuthority:
+    case ObjectType::CodeApproval:
+    case ObjectType::DomainScope:
+    case ObjectType::SchedulingProfile:
+    default:
+      return KernelResult<shared_ptr<Object>>{ErrorCode::InvalidArgument};
+    }
+    if ((entry->rights & required) != required) {
       return KernelResult<shared_ptr<Object>>{ErrorCode::PermissionDenied};
     }
     return KernelResult<shared_ptr<Object>>{entry->object};

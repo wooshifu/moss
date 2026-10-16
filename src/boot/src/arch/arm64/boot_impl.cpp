@@ -52,6 +52,44 @@ using moss::u64;
 using moss::u8;
 using moss::VirtAddr;
 
+#if defined(MOSS_ARM64_PERF_PROBE)
+// Diagnostic-only per-core counters: they include IRQs and other scheduled tasks.
+// Production does not enable this access; no overflow interrupts or sampling hooks.
+static void enable_performance_probe() noexcept {
+  u64 pmcr, events;
+  asm volatile("mrs %0, pmcr_el0; mrs %1, pmceid0_el0" : "=r"(pmcr), "=r"(events));
+  // PMCR.N is bits [15:11]; the A53 provides six programmable event counters.
+  constexpr u64 required_events = (1ULL << 0x03) | (1ULL << 0x08) | (1ULL << 0x11) | (1ULL << 0x17);
+  if (((pmcr >> 11) & 0x1f) < 6 || (events & required_events) != required_events) {
+    moss::kernel::arch::kernel_panic("performance probe requires six PMUv3 counters and A53 events");
+  }
+  // PMEVTYPER.P/U exclude EL1/EL0 respectively. Event IDs are ARM PMUv3's
+  // INST_RETIRED=0x08, CPU_CYCLES=0x11, L1D_REFILL=0x03 and L2D_REFILL=0x17.
+  constexpr u64 types[] = {
+      (1ULL << 31) | 0x08, (1ULL << 30) | 0x08, (1ULL << 31) | 0x11, (1ULL << 30) | 0x11, 0x03, 0x17};
+  constexpr u64 all_counters = 0xffffffffULL; // Clear every event enable/overflow bit, plus cycle bit 31.
+  asm volatile("msr pmcr_el0, xzr; msr pmcntenclr_el0, %0; msr pmintenclr_el1, %0; "
+               "msr pmovsclr_el0, %0; isb" ::"r"(all_counters)
+               : "memory");
+  for (u64 index = 0; index < sizeof(types) / sizeof(types[0]); ++index) {
+    asm volatile("msr pmselr_el0, %0; isb; msr pmxevtyper_el0, %1" ::"r"(index), "r"(types[index]) : "memory");
+  }
+  // PMCCFILTR=0 counts both EL0/EL1. CR|ER grants reads only (not general EN).
+  constexpr u64 read_access = (1ULL << 2) | (1ULL << 3);
+  constexpr u64 enabled = (1ULL << 31) | 0x3f; // Cycle counter and event counters 0..5.
+  // PMCR E|P|C|LC: enable, reset events/cycles, use the 64-bit cycle counter; no /64 divider.
+  constexpr u64 control = (1ULL << 0) | (1ULL << 1) | (1ULL << 2) | (1ULL << 6);
+  asm volatile("msr pmccfiltr_el0, xzr; msr pmuserenr_el0, %0; msr pmcntenset_el0, %1; "
+               "msr pmcr_el0, %2; isb" ::"r"(read_access),
+               "r"(enabled), "r"(control)
+               : "memory");
+  u64 timer_control;
+  asm volatile("mrs %0, cntkctl_el1" : "=r"(timer_control));
+  timer_control |= 1ULL << 1; // EL0VCTEN permits direct, low-overhead virtual timer reads.
+  asm volatile("msr cntkctl_el1, %0; isb" ::"r"(timer_control) : "memory");
+}
+#endif
+
 // Forward declaration
 u32 get_current_cpu_id_impl() noexcept;
 
@@ -387,6 +425,10 @@ extern "C" [[noreturn]] void secondary_cpu_entry() noexcept {
       moss::kernel::process::cfs_params::SCHED_LATENCY_NS);
   moss::kernel::hal::timer::set_compare(counter_now + first_tick_cycles);
 
+#if defined(MOSS_ARM64_PERF_PROBE)
+  enable_performance_probe();
+#endif
+
   // 6. Mark CPU as online (init complete)
   // mark_cpu_online uses __ATOMIC_RELEASE for state + __ATOMIC_ACQ_REL for count
   moss::boot::record_cpu_online();
@@ -649,6 +691,16 @@ void update_boot_stage(BootStage stage, ::moss::kernel::ErrorCode error) noexcep
     return result;
   }
   g_gic_hardware_available = true;
+
+  // Reschedule IPI 0 must also be enabled on the BSP. Initialization clears
+  // BCM2836's per-core mailbox mask; AP startup already enables this source.
+  // Without it, remote wakeups on CPU0 wait until the next scheduler tick.
+  moss::kernel::hal::intc::enable_irq(intc.dist_base, 0);
+
+#if defined(MOSS_ARM64_PERF_PROBE)
+  enable_performance_probe();
+  early_print("RPI_PMU enabled: EL0/EL1 instructions/cycles, L1D/L2D refills\n");
+#endif
 
   early_print("ARM64 interrupt/exception setup complete\n\n");
   return ::moss::kernel::VoidResult{};

@@ -48,6 +48,12 @@ extern "C" void moss_validation_mm_before_ready(const void *published_instance) 
   mm_instance_visible_at_publication_boundary = published_instance != nullptr;
 }
 
+// Distinct names prevent Clang from replacing calls with builtin constants;
+// these declarations resolve to the exact production runtime symbols.
+extern "C" void *runtime_copy(void *, const void *, __SIZE_TYPE__) noexcept asm("memcpy");
+extern "C" void *runtime_move(void *, const void *, __SIZE_TYPE__) noexcept asm("memmove");
+extern "C" void *runtime_fill(void *, int, __SIZE_TYPE__) noexcept asm("memset");
+
 namespace moss::test::validation {
 void mm_initialization_publication() {
   ut::expect(mm_publication_boundary_observed);
@@ -256,6 +262,68 @@ void address_space_ownership() {
   layout.verify();
 }
 
+void fault_backing_and_cow_contents() {
+  using Tables = mm::PageTableManager;
+  using Pfa = mm::PageFrameAllocator;
+  const auto free_before = Pfa::get_memory_stats().free_pages;
+  // Exercise both word-aligned backing and a one-byte offset. Three BSS bytes
+  // leave a partial word at EOF and must never expose the backing's remaining bytes.
+  alignas(u64) u8 backing[page_size + sizeof(u64)];
+  for (usize i = 0; i < sizeof(backing); ++i) {
+    backing[i] = static_cast<u8>(i ^ (i >> 8)); // Vary both page offset bytes to catch shifted copies.
+  }
+  for (usize offset = 0; offset <= 1; ++offset) {
+    auto parent = process::user_space::create_user_address_space();
+    auto child = process::user_space::create_user_address_space();
+    if (!ut::expect(parent && child)) {
+      return;
+    }
+    constexpr VirtAddr address = process::user_layout::CODE_BASE;
+    constexpr usize initialized = page_size - 3;
+    mm::UserFaultContext context{.root = (*parent)->pgd_phys,
+                                 .flags = process::vma_flags::READ | process::vma_flags::WRITE,
+                                 .start = address,
+                                 .backing = backing,
+                                 .backing_offset = offset,
+                                 .backing_size = initialized,
+                                 .shared_pages = nullptr,
+                                 .shared_page_count = 0};
+    // These address spaces are inactive and owned exclusively by this test,
+    // satisfying the fault resolver's exclusion of concurrent clone/unmap.
+    if (!ut::expect(mm::resolve_user_demand_fault(context, address, mm::UserFaultAccess::Read))) {
+      return;
+    }
+    auto *original = Tables::get_user_pte(context.root, address);
+    if (!ut::expect(original && original->is_valid())) {
+      return;
+    }
+    auto *bytes = reinterpret_cast<u8 *>(phys_to_virt(original->get_phys_addr()));
+    for (usize i = 0; i < page_size; ++i) {
+      ut::expect(bytes[i] == (i < initialized ? backing[offset + i] : 0));
+    }
+    if (!ut::expect(Tables::clone_user_page_tables(context.root, (*child)->pgd_phys).has_value())) {
+      return;
+    }
+    context.root = (*child)->pgd_phys;
+    if (!ut::expect(mm::resolve_user_cow_fault(context, address))) {
+      return;
+    }
+    auto *copy = Tables::get_user_pte(context.root, address);
+    if (!ut::expect(copy && copy->is_writable() && !copy->is_cow() &&
+                    copy->get_phys_addr() != original->get_phys_addr())) {
+      return;
+    }
+    auto *copied = reinterpret_cast<u8 *>(phys_to_virt(copy->get_phys_addr()));
+    for (usize i = 0; i < page_size; ++i) {
+      ut::expect(copied[i] == bytes[i]);
+      copied[i] ^= 0xff; // Change every child byte; the parent's entire page must remain intact.
+      ut::expect(bytes[i] == (i < initialized ? backing[offset + i] : 0));
+    }
+    ut::expect(Pfa::page_ref_get(original->get_phys_addr()) == 1 && Pfa::page_ref_get(copy->get_phys_addr()) == 1);
+  }
+  ut::expect(Pfa::get_memory_stats().free_pages == free_before);
+}
+
 void cow_clone_permissions() {
   using Tables = mm::PageTableManager;
   using Pfa = mm::PageFrameAllocator;
@@ -311,8 +379,46 @@ void cow_clone_permissions() {
   ut::expect(Pfa::get_memory_stats().free_pages == free_before);
 }
 
+void runtime_memory_ranges() {
+  // Offsets span all 64-bit alignments and whole-word overlapping shifts;
+  // lengths straddle word and page boundaries. Whole-buffer comparisons
+  // detect writes outside the range, including a copy ending at the buffer end.
+  constexpr usize bytes = page_size + 2 * sizeof(u64);
+  alignas(u64) static u8 source[bytes], actual[bytes], expected[bytes];
+  const usize lengths[] = {0, 1, 7, 8, 9, 31, 32, 33, page_size - 1, page_size};
+  const usize offsets[] = {0, 1, 2, 3, 4, 5, 6, 7, sizeof(u64), 2 * sizeof(u64)};
+  for (usize from : offsets) {
+    for (usize to : offsets) {
+      for (usize length : lengths) {
+        for (usize i = 0; i < bytes; ++i) {
+          source[i] = static_cast<u8>(i);
+          actual[i] = expected[i] = static_cast<u8>(~i);
+        }
+        for (usize i = 0; i < length; ++i)
+          expected[to + i] = source[from + i];
+        ut::expect(runtime_copy(actual + to, source + from, length) == actual + to);
+        ut::expect(moss::memcmp(actual, expected, bytes) == 0);
+        for (usize i = 0; i < length; ++i)
+          expected[to + i] = static_cast<u8>(~length);
+        ut::expect(runtime_fill(actual + to, static_cast<int>(~length), length) == actual + to);
+        ut::expect(moss::memcmp(actual, expected, bytes) == 0);
+        for (unsigned direction = 0; direction != 2; ++direction) {
+          for (usize i = 0; i < bytes; ++i)
+            actual[i] = expected[i] = source[i];
+          const usize input = direction ? from : to, output = direction ? to : from;
+          for (usize i = 0; i < length; ++i)
+            expected[output + i] = source[input + i];
+          ut::expect(runtime_move(actual + output, actual + input, length) == actual + output);
+          ut::expect(moss::memcmp(actual, expected, bytes) == 0);
+        }
+      }
+    }
+  }
+}
+
 void register_mm_cases() {
   ut::register_suite("mm", [] {
+    ut::register_test("runtime_memory_ranges", runtime_memory_ranges);
     ut::register_test("initialization_publication", mm_initialization_publication);
     ut::register_test("unsupported_contracts", mm_unsupported_contracts);
     ut::register_test("pageblock_units", moss::test::scheduler_regression::pageblock_units);
@@ -347,6 +453,7 @@ void register_mm_permissions_cases() {
     ut::register_test("kernel_wx", kernel_wx_permissions);
     ut::register_test("address_space_ownership", address_space_ownership);
     ut::register_test("cow_clone_permissions", cow_clone_permissions);
+    ut::register_test("fault_backing_and_cow_contents", fault_backing_and_cow_contents);
     ut::register_test("vma_boundaries", vma_boundaries);
   });
 }

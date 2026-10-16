@@ -18,9 +18,10 @@ namespace {
 int error(long result) { return result < 0 ? static_cast<int>(-result) : 0; }
 
 unsigned long forked_session = 0;
-// The service has no asynchronous exit notification yet; 10 ms polling
-// bounds wait latency without spinning while a child runs.
-constexpr unsigned long process_poll_ns = 10000000UL;
+// Compatibility PIDs are stable for an image lifetime. Fork publishes the
+// reserved child identity before returning; exec starts with a fresh cache.
+// Atomic access allows concurrent getpid calls without a libc lock after fork.
+unsigned long cached_pid = 0;
 
 unsigned long process_session() {
   if (forked_session)
@@ -399,12 +400,15 @@ pid_t Sysdeps<GetPid>::operator()() {
   unsigned long session = process_session();
   if (!session)
     return syscall0(SYS_GETPID);
-  unsigned long id = 0, parent = 0;
+  unsigned long id = __atomic_load_n(&cached_pid, __ATOMIC_RELAXED), parent = 0;
+  if (id)
+    return static_cast<pid_t>(id);
   int result = process_identity(session, id, parent);
   if (result) {
     errno = result;
     return -1;
   }
+  __atomic_store_n(&cached_pid, id, __ATOMIC_RELAXED);
   return static_cast<pid_t>(id);
 }
 pid_t Sysdeps<GetPpid>::operator()() {
@@ -598,6 +602,7 @@ int Sysdeps<Fork>::operator()(pid_t *child) {
       // its siblings. The child keeps only its own newly badged session.
       syscall1(SYS_CAP_CLOSE, session);
       forked_session = child_session;
+      __atomic_store_n(&cached_pid, id, __ATOMIC_RELAXED);
       long self = syscall0(SYS_DOMAIN_SELF);
       bool attached =
           self > 0 && process_child_request(
@@ -651,42 +656,50 @@ int Sysdeps<Waitpid>::operator()(pid_t pid, int *status, int flags, rusage *usag
     else if (pid < -1)
       moss_process_put_u64(request.payload + 1,
                            static_cast<unsigned long>(-static_cast<long>(pid)));
-    for (;;) {
-      moss_ipc_message response{};
-      long result = process_call(session, request, response);
-      if (!no_capability(response))
-        return EIO;
-      if (result < 0)
-        return error(result);
-      if (result == MOSS_PROCESS_REPLY_WAIT_BYTES &&
-          response.payload[0] == MOSS_PROCESS_EXITED) {
-        unsigned long id = moss_process_get_u64(response.payload + 1);
-        unsigned long state = moss_process_get_u64(response.payload + 9);
-        if (!id || (pid > 0 && id != static_cast<unsigned long>(pid)))
-          return EIO;
-        if (id > INT_MAX)
-          return EOVERFLOW;
-        if (status)
-          *status = state >> 32 ? static_cast<int>((state >> 32) & 0x7f)
-                                : static_cast<int>((state & 0xff) << 8);
-        *waited = static_cast<pid_t>(id);
-        return 0;
-      }
-      if (result != 1)
-        return EIO;
-      if (response.payload[0] == MOSS_PROCESS_NO_ENTRY)
-        return ECHILD;
-      if (response.payload[0] != MOSS_PROCESS_RUNNING)
-        return EIO;
-      if (flags & WNOHANG) {
-        *waited = 0;
-        return 0;
-      }
-      unsigned long delay = process_poll_ns;
-      result = syscall1(SYS_NANOSLEEP, reinterpret_cast<long>(&delay));
-      if (result < 0)
-        return error(result);
+    const bool blocking = !(flags & WNOHANG);
+    if (blocking) {
+      // Blocking POSIX waits may outlive the ordinary five-second service
+      // timeout. The kernel still cancels this call on a delivered signal.
+      const unsigned char selector = request.payload[0];
+      unsigned long target = request.size > 1 ? moss_process_get_u64(request.payload + 1) : 0;
+      request.size = MOSS_PROCESS_WAIT_REQUEST_BYTES;
+      request.payload[0] = MOSS_PROCESS_WAIT_BLOCK;
+      request.payload[1] = selector;
+      moss_process_put_u64(request.payload + 2, target);
     }
+    moss_ipc_message response{};
+    long result = blocking ? syscall6(SYS_IPC_CALL, session, reinterpret_cast<long>(&request),
+                                     reinterpret_cast<long>(&response), 0, 0, 0)
+                           : process_call(session, request, response);
+    if (!no_capability(response))
+      return EIO;
+    if (result < 0)
+      return error(result);
+    if (result == MOSS_PROCESS_REPLY_WAIT_BYTES &&
+        response.payload[0] == MOSS_PROCESS_EXITED) {
+      unsigned long id = moss_process_get_u64(response.payload + 1);
+      unsigned long state = moss_process_get_u64(response.payload + 9);
+      if (!id || (pid > 0 && id != static_cast<unsigned long>(pid)))
+        return EIO;
+      if (id > INT_MAX)
+        return EOVERFLOW;
+      if (status)
+        *status = state >> 32 ? static_cast<int>((state >> 32) & 0x7f)
+                              : static_cast<int>((state & 0xff) << 8);
+      *waited = static_cast<pid_t>(id);
+      return 0;
+    }
+    if (result != 1)
+      return EIO;
+    if (response.payload[0] == MOSS_PROCESS_NO_ENTRY)
+      return ECHILD;
+    if (response.payload[0] != MOSS_PROCESS_RUNNING)
+      return EIO;
+    if (!blocking) {
+      *waited = 0;
+      return 0;
+    }
+    return EIO; // A retained blocking request must never answer RUNNING.
   }
   long result = syscall3(SYS_WAITPID, pid, reinterpret_cast<long>(status), flags);
   if (result >= 0)

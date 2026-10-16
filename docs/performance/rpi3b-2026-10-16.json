@@ -1,0 +1,4803 @@
+{
+  "schema_version": 1,
+  "date": "2026-10-16",
+  "revision": "b9d788931cb7312874c59e71df96c2d042e7ef17",
+  "purpose": "Exploratory physical Pi 3B+ Release kernel and userspace timings; not a calibrated regression verdict",
+  "environment": {
+    "board": "Raspberry Pi 3B+",
+    "architecture": "ARM64",
+    "cores": 4,
+    "caller_cpu": 0,
+    "same_core_server_cpu": 0,
+    "cross_core_server_cpu": 1,
+    "serial": "CH340 115200 8N1",
+    "jtag": "J-Link V11, OpenOCD 0.12",
+    "compiler": "Clang 23.1.2",
+    "userspace_optimization": "-O2",
+    "kernel_manifest": {
+      "schema_version": 1,
+      "target": {
+        "architecture": "ARM64",
+        "boot_protocol": "linux-image"
+      },
+      "build": {
+        "type": "Release",
+        "compiler": "Clang 23.1.2",
+        "flags": {
+          "compile": "-march=armv8-a -mgeneral-regs-only -mstrict-align -ffreestanding -fno-exceptions -fno-rtti -fno-stack-protector -fpie -Weverything -Werror -Wno-c++-compat -Wno-c++98-compat -Wno-c++98-compat-pedantic -Wno-c++11-compat -Wno-c++14-compat -Wno-c++17-compat -Wno-c++20-compat -Wno-padded -Wno-unsafe-buffer-usage -Wno-gnu-zero-variadic-macro-arguments -Wno-gnu-anonymous-struct -Wno-nested-anon-types -Wno-missing-prototypes -Wno-missing-variable-declarations -Wno-global-constructors -Wno-exit-time-destructors -Wno-weak-vtables -Wno-inline -Wno-reserved-identifier -Wno-reserved-macro-identifier -Wno-covered-switch-default -Wno-nrvo -Wno-lifetime-safety-suggestions -g0 -Os -DNDEBUG -ffunction-sections -fdata-sections",
+          "link": "-fuse-ld=lld -nostdlib -nostartfiles -Wl,-pie,--no-dynamic-linker,-z,notext,-Bsymbolic -T src/linker/kernel_arm64.ld -Wl,-z,max-page-size=0x1000 -Wl,--gc-sections -Wl,--strip-all"
+        }
+      },
+      "artifacts": {
+        "kernel": "moss.bin",
+        "debug_symbols": "moss.elf",
+        "initramfs": "initramfs.cpio",
+        "validation_kernel": null,
+        "validation_initramfs": null,
+        "validation_debug_symbols": null
+      }
+    },
+    "timer_frequency_hz": 19200000,
+    "cpu_frequency_temperature_and_pmu": "not recorded"
+  },
+  "method": {
+    "warmup_batches": 2,
+    "retained_batches": 7,
+    "unit": "nanoseconds",
+    "statistic": "median of retained batch elapsed_ns / iterations",
+    "clock": "kernel monotonic Generic Timer; elapsed wall time includes scheduling and waiting",
+    "timed_overhead": "probe loop, workload string selection, return-value checks; no empty-loop subtraction",
+    "untimed": "serial output, batch topinfo snapshots, setup, batch data comparisons and teardown",
+    "switches": "system-wide batch context-switch delta, not task-exclusive",
+    "limitations": [
+      "no per-operation percentiles",
+      "no exclusive kernel/userspace CPU split",
+      "two full runs in one boot, not cold-boot repetitions",
+      "no sustained thermal/power workload",
+      "file workloads use RAM files, not SD",
+      "file service native protocol not measured"
+    ]
+  },
+  "artifacts": {
+    "baseline_deployment": {
+      "deployment": "JTAG RAM only",
+      "image_base": 2097152,
+      "dtb_base": 805306368,
+      "initrd_base": 536870912,
+      "boot_check": "shell_input_passed",
+      "files": {
+        "kernel": {
+          "path": "build/rpi3b/perf/moss.bin",
+          "sha256": "a6cbbfa6cd9d49f9ed31c43f423ff5e57099e1b41963922b0a069548cf9a9482"
+        },
+        "initramfs": {
+          "path": "build/rpi3b/perf/initramfs.cpio",
+          "sha256": "125bcc43b6c6aae1af0eab37825eaa5646e8e449ded31ddefcfcd9824c7a6da5"
+        },
+        "dtb": {
+          "path": "build/rpi3b/perf/deploy/moss.dtb",
+          "sha256": "7b26f407d7cda0aa13bf11f968d3abd877350e163bd72eee3ef9c0fd609b67fb"
+        }
+      }
+    },
+    "original_production_initramfs_sha256": "c354f27d1eeaa8be7cc4e071351f2b8a0e2e7ed1773050ef8964ee1a491bcd83",
+    "probe_sha256": "36d813ab36b21d3349aa523ad36866f54dfa77109c954fec3ed02f1d88d15925",
+    "probe_measured_source_sha256": "808309231c0005628cae44b2153529f5879620ff6436cd427e43d70254f1ce3d",
+    "probe_current_source_sha256": "dd954cd57fbfd022e7582ea6eb1196662b67b9e2f80105d1a93409105aa19920",
+    "probe_rebuild_verification": "After comment correction, rebuilt ELF is byte-identical to measured probe"
+  },
+  "baseline_runs": [
+    {
+      "source_path": "build/rpi3b/perf/measurements-1792159605427094000.json",
+      "source_sha256": "b748fb744f1f9e3f23e937e74efd8a14673f3cfcf7bdcb1a9a0d9ff8d32ea5cd",
+      "report": {
+        "port": "/dev/cu.usbserial-14440",
+        "probe_sha256": "36d813ab36b21d3349aa523ad36866f54dfa77109c954fec3ed02f1d88d15925",
+        "cases": [
+          {
+            "workload": "clock",
+            "bytes": 1,
+            "median_ns": 4250.67445,
+            "min_ns": 4234.21875,
+            "max_ns": 4297.40885,
+            "samples": [
+              {
+                "workload": "clock",
+                "sample": 0,
+                "warmup": true,
+                "iterations": 20000,
+                "bytes": 1,
+                "ns": 83403333,
+                "switches": 28
+              },
+              {
+                "workload": "clock",
+                "sample": 1,
+                "warmup": true,
+                "iterations": 20000,
+                "bytes": 1,
+                "ns": 85248229,
+                "switches": 28
+              },
+              {
+                "workload": "clock",
+                "sample": 2,
+                "warmup": false,
+                "iterations": 20000,
+                "bytes": 1,
+                "ns": 84684375,
+                "switches": 28
+              },
+              {
+                "workload": "clock",
+                "sample": 3,
+                "warmup": false,
+                "iterations": 20000,
+                "bytes": 1,
+                "ns": 85011927,
+                "switches": 32
+              },
+              {
+                "workload": "clock",
+                "sample": 4,
+                "warmup": false,
+                "iterations": 20000,
+                "bytes": 1,
+                "ns": 85046198,
+                "switches": 28
+              },
+              {
+                "workload": "clock",
+                "sample": 5,
+                "warmup": false,
+                "iterations": 20000,
+                "bytes": 1,
+                "ns": 85013489,
+                "switches": 28
+              },
+              {
+                "workload": "clock",
+                "sample": 6,
+                "warmup": false,
+                "iterations": 20000,
+                "bytes": 1,
+                "ns": 84745365,
+                "switches": 28
+              },
+              {
+                "workload": "clock",
+                "sample": 7,
+                "warmup": false,
+                "iterations": 20000,
+                "bytes": 1,
+                "ns": 85948177,
+                "switches": 28
+              },
+              {
+                "workload": "clock",
+                "sample": 8,
+                "warmup": false,
+                "iterations": 20000,
+                "bytes": 1,
+                "ns": 85464791,
+                "switches": 28
+              }
+            ]
+          },
+          {
+            "workload": "getpid_raw",
+            "bytes": 1,
+            "median_ns": 841.76825,
+            "min_ns": 835.72135,
+            "max_ns": 846.0703,
+            "samples": [
+              {
+                "workload": "getpid_raw",
+                "sample": 0,
+                "warmup": true,
+                "iterations": 20000,
+                "bytes": 1,
+                "ns": 17015417,
+                "switches": 8
+              },
+              {
+                "workload": "getpid_raw",
+                "sample": 1,
+                "warmup": true,
+                "iterations": 20000,
+                "bytes": 1,
+                "ns": 16806250,
+                "switches": 4
+              },
+              {
+                "workload": "getpid_raw",
+                "sample": 2,
+                "warmup": false,
+                "iterations": 20000,
+                "bytes": 1,
+                "ns": 16813073,
+                "switches": 4
+              },
+              {
+                "workload": "getpid_raw",
+                "sample": 3,
+                "warmup": false,
+                "iterations": 20000,
+                "bytes": 1,
+                "ns": 16921406,
+                "switches": 8
+              },
+              {
+                "workload": "getpid_raw",
+                "sample": 4,
+                "warmup": false,
+                "iterations": 20000,
+                "bytes": 1,
+                "ns": 16804636,
+                "switches": 4
+              },
+              {
+                "workload": "getpid_raw",
+                "sample": 5,
+                "warmup": false,
+                "iterations": 20000,
+                "bytes": 1,
+                "ns": 16837187,
+                "switches": 4
+              },
+              {
+                "workload": "getpid_raw",
+                "sample": 6,
+                "warmup": false,
+                "iterations": 20000,
+                "bytes": 1,
+                "ns": 16911302,
+                "switches": 8
+              },
+              {
+                "workload": "getpid_raw",
+                "sample": 7,
+                "warmup": false,
+                "iterations": 20000,
+                "bytes": 1,
+                "ns": 16714427,
+                "switches": 4
+              },
+              {
+                "workload": "getpid_raw",
+                "sample": 8,
+                "warmup": false,
+                "iterations": 20000,
+                "bytes": 1,
+                "ns": 16835365,
+                "switches": 4
+              }
+            ]
+          },
+          {
+            "workload": "getpid_libc",
+            "bytes": 1,
+            "median_ns": 130944.218,
+            "min_ns": 130910.0,
+            "max_ns": 131022.812,
+            "samples": [
+              {
+                "workload": "getpid_libc",
+                "sample": 0,
+                "warmup": true,
+                "iterations": 1000,
+                "bytes": 1,
+                "ns": 131357760,
+                "switches": 2039
+              },
+              {
+                "workload": "getpid_libc",
+                "sample": 1,
+                "warmup": true,
+                "iterations": 1000,
+                "bytes": 1,
+                "ns": 130973594,
+                "switches": 2036
+              },
+              {
+                "workload": "getpid_libc",
+                "sample": 2,
+                "warmup": false,
+                "iterations": 1000,
+                "bytes": 1,
+                "ns": 130928073,
+                "switches": 2036
+              },
+              {
+                "workload": "getpid_libc",
+                "sample": 3,
+                "warmup": false,
+                "iterations": 1000,
+                "bytes": 1,
+                "ns": 130959687,
+                "switches": 2036
+              },
+              {
+                "workload": "getpid_libc",
+                "sample": 4,
+                "warmup": false,
+                "iterations": 1000,
+                "bytes": 1,
+                "ns": 130978333,
+                "switches": 2036
+              },
+              {
+                "workload": "getpid_libc",
+                "sample": 5,
+                "warmup": false,
+                "iterations": 1000,
+                "bytes": 1,
+                "ns": 131022812,
+                "switches": 2036
+              },
+              {
+                "workload": "getpid_libc",
+                "sample": 6,
+                "warmup": false,
+                "iterations": 1000,
+                "bytes": 1,
+                "ns": 130928281,
+                "switches": 2036
+              },
+              {
+                "workload": "getpid_libc",
+                "sample": 7,
+                "warmup": false,
+                "iterations": 1000,
+                "bytes": 1,
+                "ns": 130910000,
+                "switches": 2036
+              },
+              {
+                "workload": "getpid_libc",
+                "sample": 8,
+                "warmup": false,
+                "iterations": 1000,
+                "bytes": 1,
+                "ns": 130944218,
+                "switches": 2036
+              }
+            ]
+          },
+          {
+            "workload": "yield",
+            "bytes": 1,
+            "median_ns": 6447.448,
+            "min_ns": 6428.229,
+            "max_ns": 6640.677,
+            "samples": [
+              {
+                "workload": "yield",
+                "sample": 0,
+                "warmup": true,
+                "iterations": 1000,
+                "bytes": 1,
+                "ns": 6726354,
+                "switches": 1003
+              },
+              {
+                "workload": "yield",
+                "sample": 1,
+                "warmup": true,
+                "iterations": 1000,
+                "bytes": 1,
+                "ns": 6417969,
+                "switches": 1000
+              },
+              {
+                "workload": "yield",
+                "sample": 2,
+                "warmup": false,
+                "iterations": 1000,
+                "bytes": 1,
+                "ns": 6453281,
+                "switches": 1000
+              },
+              {
+                "workload": "yield",
+                "sample": 3,
+                "warmup": false,
+                "iterations": 1000,
+                "bytes": 1,
+                "ns": 6449479,
+                "switches": 1000
+              },
+              {
+                "workload": "yield",
+                "sample": 4,
+                "warmup": false,
+                "iterations": 1000,
+                "bytes": 1,
+                "ns": 6428229,
+                "switches": 1000
+              },
+              {
+                "workload": "yield",
+                "sample": 5,
+                "warmup": false,
+                "iterations": 1000,
+                "bytes": 1,
+                "ns": 6447448,
+                "switches": 1000
+              },
+              {
+                "workload": "yield",
+                "sample": 6,
+                "warmup": false,
+                "iterations": 1000,
+                "bytes": 1,
+                "ns": 6640677,
+                "switches": 1003
+              },
+              {
+                "workload": "yield",
+                "sample": 7,
+                "warmup": false,
+                "iterations": 1000,
+                "bytes": 1,
+                "ns": 6445208,
+                "switches": 1000
+              },
+              {
+                "workload": "yield",
+                "sample": 8,
+                "warmup": false,
+                "iterations": 1000,
+                "bytes": 1,
+                "ns": 6442083,
+                "switches": 1000
+              }
+            ]
+          },
+          {
+            "workload": "memcpy",
+            "bytes": 1048576,
+            "median_ns": 1194801.4296875,
+            "min_ns": 1171519.9765625,
+            "max_ns": 1218722.125,
+            "samples": [
+              {
+                "workload": "memcpy",
+                "sample": 0,
+                "warmup": true,
+                "iterations": 256,
+                "bytes": 1048576,
+                "ns": 304133125,
+                "switches": 104
+              },
+              {
+                "workload": "memcpy",
+                "sample": 1,
+                "warmup": true,
+                "iterations": 256,
+                "bytes": 1048576,
+                "ns": 301326719,
+                "switches": 104
+              },
+              {
+                "workload": "memcpy",
+                "sample": 2,
+                "warmup": false,
+                "iterations": 256,
+                "bytes": 1048576,
+                "ns": 304358490,
+                "switches": 104
+              },
+              {
+                "workload": "memcpy",
+                "sample": 3,
+                "warmup": false,
+                "iterations": 256,
+                "bytes": 1048576,
+                "ns": 302814271,
+                "switches": 96
+              },
+              {
+                "workload": "memcpy",
+                "sample": 4,
+                "warmup": false,
+                "iterations": 256,
+                "bytes": 1048576,
+                "ns": 306082135,
+                "switches": 104
+              },
+              {
+                "workload": "memcpy",
+                "sample": 5,
+                "warmup": false,
+                "iterations": 256,
+                "bytes": 1048576,
+                "ns": 305869166,
+                "switches": 100
+              },
+              {
+                "workload": "memcpy",
+                "sample": 6,
+                "warmup": false,
+                "iterations": 256,
+                "bytes": 1048576,
+                "ns": 311992864,
+                "switches": 100
+              },
+              {
+                "workload": "memcpy",
+                "sample": 7,
+                "warmup": false,
+                "iterations": 256,
+                "bytes": 1048576,
+                "ns": 299909114,
+                "switches": 100
+              },
+              {
+                "workload": "memcpy",
+                "sample": 8,
+                "warmup": false,
+                "iterations": 256,
+                "bytes": 1048576,
+                "ns": 309184792,
+                "switches": 104
+              }
+            ]
+          },
+          {
+            "workload": "open_close",
+            "bytes": 1,
+            "median_ns": 53510.833,
+            "min_ns": 53475.677,
+            "max_ns": 53681.198,
+            "samples": [
+              {
+                "workload": "open_close",
+                "sample": 0,
+                "warmup": true,
+                "iterations": 1000,
+                "bytes": 1,
+                "ns": 53582916,
+                "switches": 16
+              },
+              {
+                "workload": "open_close",
+                "sample": 1,
+                "warmup": true,
+                "iterations": 1000,
+                "bytes": 1,
+                "ns": 53423750,
+                "switches": 16
+              },
+              {
+                "workload": "open_close",
+                "sample": 2,
+                "warmup": false,
+                "iterations": 1000,
+                "bytes": 1,
+                "ns": 53475677,
+                "switches": 16
+              },
+              {
+                "workload": "open_close",
+                "sample": 3,
+                "warmup": false,
+                "iterations": 1000,
+                "bytes": 1,
+                "ns": 53492709,
+                "switches": 16
+              },
+              {
+                "workload": "open_close",
+                "sample": 4,
+                "warmup": false,
+                "iterations": 1000,
+                "bytes": 1,
+                "ns": 53486979,
+                "switches": 16
+              },
+              {
+                "workload": "open_close",
+                "sample": 5,
+                "warmup": false,
+                "iterations": 1000,
+                "bytes": 1,
+                "ns": 53520990,
+                "switches": 16
+              },
+              {
+                "workload": "open_close",
+                "sample": 6,
+                "warmup": false,
+                "iterations": 1000,
+                "bytes": 1,
+                "ns": 53656355,
+                "switches": 20
+              },
+              {
+                "workload": "open_close",
+                "sample": 7,
+                "warmup": false,
+                "iterations": 1000,
+                "bytes": 1,
+                "ns": 53510833,
+                "switches": 16
+              },
+              {
+                "workload": "open_close",
+                "sample": 8,
+                "warmup": false,
+                "iterations": 1000,
+                "bytes": 1,
+                "ns": 53681198,
+                "switches": 20
+              }
+            ]
+          },
+          {
+            "workload": "read_seek",
+            "bytes": 64,
+            "median_ns": 10289.103271484375,
+            "min_ns": 10249.379638671875,
+            "max_ns": 10339.72412109375,
+            "samples": [
+              {
+                "workload": "read_seek",
+                "sample": 0,
+                "warmup": true,
+                "iterations": 4096,
+                "bytes": 64,
+                "ns": 42152032,
+                "switches": 12
+              },
+              {
+                "workload": "read_seek",
+                "sample": 1,
+                "warmup": true,
+                "iterations": 4096,
+                "bytes": 64,
+                "ns": 41967031,
+                "switches": 12
+              },
+              {
+                "workload": "read_seek",
+                "sample": 2,
+                "warmup": false,
+                "iterations": 4096,
+                "bytes": 64,
+                "ns": 42169219,
+                "switches": 12
+              },
+              {
+                "workload": "read_seek",
+                "sample": 3,
+                "warmup": false,
+                "iterations": 4096,
+                "bytes": 64,
+                "ns": 42041875,
+                "switches": 12
+              },
+              {
+                "workload": "read_seek",
+                "sample": 4,
+                "warmup": false,
+                "iterations": 4096,
+                "bytes": 64,
+                "ns": 42351510,
+                "switches": 12
+              },
+              {
+                "workload": "read_seek",
+                "sample": 5,
+                "warmup": false,
+                "iterations": 4096,
+                "bytes": 64,
+                "ns": 42129375,
+                "switches": 12
+              },
+              {
+                "workload": "read_seek",
+                "sample": 6,
+                "warmup": false,
+                "iterations": 4096,
+                "bytes": 64,
+                "ns": 42144167,
+                "switches": 12
+              },
+              {
+                "workload": "read_seek",
+                "sample": 7,
+                "warmup": false,
+                "iterations": 4096,
+                "bytes": 64,
+                "ns": 41981459,
+                "switches": 12
+              },
+              {
+                "workload": "read_seek",
+                "sample": 8,
+                "warmup": false,
+                "iterations": 4096,
+                "bytes": 64,
+                "ns": 42182031,
+                "switches": 12
+              }
+            ]
+          },
+          {
+            "workload": "read_seek",
+            "bytes": 512,
+            "median_ns": 12566.935302734375,
+            "min_ns": 12518.730224609375,
+            "max_ns": 12646.560791015625,
+            "samples": [
+              {
+                "workload": "read_seek",
+                "sample": 0,
+                "warmup": true,
+                "iterations": 4096,
+                "bytes": 512,
+                "ns": 51485938,
+                "switches": 16
+              },
+              {
+                "workload": "read_seek",
+                "sample": 1,
+                "warmup": true,
+                "iterations": 4096,
+                "bytes": 512,
+                "ns": 51322083,
+                "switches": 16
+              },
+              {
+                "workload": "read_seek",
+                "sample": 2,
+                "warmup": false,
+                "iterations": 4096,
+                "bytes": 512,
+                "ns": 51276719,
+                "switches": 12
+              },
+              {
+                "workload": "read_seek",
+                "sample": 3,
+                "warmup": false,
+                "iterations": 4096,
+                "bytes": 512,
+                "ns": 51673854,
+                "switches": 20
+              },
+              {
+                "workload": "read_seek",
+                "sample": 4,
+                "warmup": false,
+                "iterations": 4096,
+                "bytes": 512,
+                "ns": 51474167,
+                "switches": 20
+              },
+              {
+                "workload": "read_seek",
+                "sample": 5,
+                "warmup": false,
+                "iterations": 4096,
+                "bytes": 512,
+                "ns": 51728906,
+                "switches": 20
+              },
+              {
+                "workload": "read_seek",
+                "sample": 6,
+                "warmup": false,
+                "iterations": 4096,
+                "bytes": 512,
+                "ns": 51412916,
+                "switches": 20
+              },
+              {
+                "workload": "read_seek",
+                "sample": 7,
+                "warmup": false,
+                "iterations": 4096,
+                "bytes": 512,
+                "ns": 51301198,
+                "switches": 16
+              },
+              {
+                "workload": "read_seek",
+                "sample": 8,
+                "warmup": false,
+                "iterations": 4096,
+                "bytes": 512,
+                "ns": 51800313,
+                "switches": 16
+              }
+            ]
+          },
+          {
+            "workload": "read_seek",
+            "bytes": 4096,
+            "median_ns": 32042.7451171875,
+            "min_ns": 32004.7509765625,
+            "max_ns": 32133.83984375,
+            "samples": [
+              {
+                "workload": "read_seek",
+                "sample": 0,
+                "warmup": true,
+                "iterations": 1024,
+                "bytes": 4096,
+                "ns": 33063021,
+                "switches": 12
+              },
+              {
+                "workload": "read_seek",
+                "sample": 1,
+                "warmup": true,
+                "iterations": 1024,
+                "bytes": 4096,
+                "ns": 32770729,
+                "switches": 8
+              },
+              {
+                "workload": "read_seek",
+                "sample": 2,
+                "warmup": false,
+                "iterations": 1024,
+                "bytes": 4096,
+                "ns": 32784010,
+                "switches": 8
+              },
+              {
+                "workload": "read_seek",
+                "sample": 3,
+                "warmup": false,
+                "iterations": 1024,
+                "bytes": 4096,
+                "ns": 32905052,
+                "switches": 8
+              },
+              {
+                "workload": "read_seek",
+                "sample": 4,
+                "warmup": false,
+                "iterations": 1024,
+                "bytes": 4096,
+                "ns": 32826979,
+                "switches": 8
+              },
+              {
+                "workload": "read_seek",
+                "sample": 5,
+                "warmup": false,
+                "iterations": 1024,
+                "bytes": 4096,
+                "ns": 32772865,
+                "switches": 8
+              },
+              {
+                "workload": "read_seek",
+                "sample": 6,
+                "warmup": false,
+                "iterations": 1024,
+                "bytes": 4096,
+                "ns": 32818177,
+                "switches": 8
+              },
+              {
+                "workload": "read_seek",
+                "sample": 7,
+                "warmup": false,
+                "iterations": 1024,
+                "bytes": 4096,
+                "ns": 32799531,
+                "switches": 8
+              },
+              {
+                "workload": "read_seek",
+                "sample": 8,
+                "warmup": false,
+                "iterations": 1024,
+                "bytes": 4096,
+                "ns": 32811771,
+                "switches": 8
+              }
+            ]
+          },
+          {
+            "workload": "read_seek",
+            "bytes": 65536,
+            "median_ns": 372238.765625,
+            "min_ns": 372040.203125,
+            "max_ns": 372365.734375,
+            "samples": [
+              {
+                "workload": "read_seek",
+                "sample": 0,
+                "warmup": true,
+                "iterations": 64,
+                "bytes": 65536,
+                "ns": 23984844,
+                "switches": 8
+              },
+              {
+                "workload": "read_seek",
+                "sample": 1,
+                "warmup": true,
+                "iterations": 64,
+                "bytes": 65536,
+                "ns": 23822187,
+                "switches": 8
+              },
+              {
+                "workload": "read_seek",
+                "sample": 2,
+                "warmup": false,
+                "iterations": 64,
+                "bytes": 65536,
+                "ns": 23823281,
+                "switches": 8
+              },
+              {
+                "workload": "read_seek",
+                "sample": 3,
+                "warmup": false,
+                "iterations": 64,
+                "bytes": 65536,
+                "ns": 23818333,
+                "switches": 8
+              },
+              {
+                "workload": "read_seek",
+                "sample": 4,
+                "warmup": false,
+                "iterations": 64,
+                "bytes": 65536,
+                "ns": 23810573,
+                "switches": 8
+              },
+              {
+                "workload": "read_seek",
+                "sample": 5,
+                "warmup": false,
+                "iterations": 64,
+                "bytes": 65536,
+                "ns": 23818073,
+                "switches": 8
+              },
+              {
+                "workload": "read_seek",
+                "sample": 6,
+                "warmup": false,
+                "iterations": 64,
+                "bytes": 65536,
+                "ns": 23831407,
+                "switches": 8
+              },
+              {
+                "workload": "read_seek",
+                "sample": 7,
+                "warmup": false,
+                "iterations": 64,
+                "bytes": 65536,
+                "ns": 23829635,
+                "switches": 8
+              },
+              {
+                "workload": "read_seek",
+                "sample": 8,
+                "warmup": false,
+                "iterations": 64,
+                "bytes": 65536,
+                "ns": 23828229,
+                "switches": 8
+              }
+            ]
+          },
+          {
+            "workload": "write_seek",
+            "bytes": 4096,
+            "median_ns": 32111.2568359375,
+            "min_ns": 32087.9619140625,
+            "max_ns": 32208.658203125,
+            "samples": [
+              {
+                "workload": "write_seek",
+                "sample": 0,
+                "warmup": true,
+                "iterations": 1024,
+                "bytes": 4096,
+                "ns": 33119323,
+                "switches": 12
+              },
+              {
+                "workload": "write_seek",
+                "sample": 1,
+                "warmup": true,
+                "iterations": 1024,
+                "bytes": 4096,
+                "ns": 32870000,
+                "switches": 8
+              },
+              {
+                "workload": "write_seek",
+                "sample": 2,
+                "warmup": false,
+                "iterations": 1024,
+                "bytes": 4096,
+                "ns": 32877291,
+                "switches": 8
+              },
+              {
+                "workload": "write_seek",
+                "sample": 3,
+                "warmup": false,
+                "iterations": 1024,
+                "bytes": 4096,
+                "ns": 32887135,
+                "switches": 8
+              },
+              {
+                "workload": "write_seek",
+                "sample": 4,
+                "warmup": false,
+                "iterations": 1024,
+                "bytes": 4096,
+                "ns": 32864531,
+                "switches": 8
+              },
+              {
+                "workload": "write_seek",
+                "sample": 5,
+                "warmup": false,
+                "iterations": 1024,
+                "bytes": 4096,
+                "ns": 32966354,
+                "switches": 8
+              },
+              {
+                "workload": "write_seek",
+                "sample": 6,
+                "warmup": false,
+                "iterations": 1024,
+                "bytes": 4096,
+                "ns": 32881927,
+                "switches": 8
+              },
+              {
+                "workload": "write_seek",
+                "sample": 7,
+                "warmup": false,
+                "iterations": 1024,
+                "bytes": 4096,
+                "ns": 32858073,
+                "switches": 8
+              },
+              {
+                "workload": "write_seek",
+                "sample": 8,
+                "warmup": false,
+                "iterations": 1024,
+                "bytes": 4096,
+                "ns": 32981666,
+                "switches": 8
+              }
+            ]
+          },
+          {
+            "workload": "fault",
+            "bytes": 1048576,
+            "median_ns": 2587740.875,
+            "min_ns": 2580983.125,
+            "max_ns": 2593261.75,
+            "samples": [
+              {
+                "workload": "fault",
+                "sample": 0,
+                "warmup": true,
+                "iterations": 8,
+                "bytes": 1048576,
+                "ns": 20926511,
+                "switches": 8
+              },
+              {
+                "workload": "fault",
+                "sample": 1,
+                "warmup": true,
+                "iterations": 8,
+                "bytes": 1048576,
+                "ns": 19765885,
+                "switches": 4
+              },
+              {
+                "workload": "fault",
+                "sample": 2,
+                "warmup": false,
+                "iterations": 8,
+                "bytes": 1048576,
+                "ns": 20666771,
+                "switches": 4
+              },
+              {
+                "workload": "fault",
+                "sample": 3,
+                "warmup": false,
+                "iterations": 8,
+                "bytes": 1048576,
+                "ns": 20746094,
+                "switches": 4
+              },
+              {
+                "workload": "fault",
+                "sample": 4,
+                "warmup": false,
+                "iterations": 8,
+                "bytes": 1048576,
+                "ns": 20701927,
+                "switches": 4
+              },
+              {
+                "workload": "fault",
+                "sample": 5,
+                "warmup": false,
+                "iterations": 8,
+                "bytes": 1048576,
+                "ns": 20647865,
+                "switches": 4
+              },
+              {
+                "workload": "fault",
+                "sample": 6,
+                "warmup": false,
+                "iterations": 8,
+                "bytes": 1048576,
+                "ns": 20706771,
+                "switches": 4
+              },
+              {
+                "workload": "fault",
+                "sample": 7,
+                "warmup": false,
+                "iterations": 8,
+                "bytes": 1048576,
+                "ns": 20702031,
+                "switches": 4
+              },
+              {
+                "workload": "fault",
+                "sample": 8,
+                "warmup": false,
+                "iterations": 8,
+                "bytes": 1048576,
+                "ns": 20682969,
+                "switches": 4
+              }
+            ]
+          },
+          {
+            "workload": "fork_raw",
+            "bytes": 1,
+            "median_ns": 1085436.25,
+            "min_ns": 1074498.75,
+            "max_ns": 1086556.0,
+            "samples": [
+              {
+                "workload": "fork_raw",
+                "sample": 0,
+                "warmup": true,
+                "iterations": 8,
+                "bytes": 1,
+                "ns": 8657500,
+                "switches": 20
+              },
+              {
+                "workload": "fork_raw",
+                "sample": 1,
+                "warmup": true,
+                "iterations": 8,
+                "bytes": 1,
+                "ns": 8713541,
+                "switches": 16
+              },
+              {
+                "workload": "fork_raw",
+                "sample": 2,
+                "warmup": false,
+                "iterations": 8,
+                "bytes": 1,
+                "ns": 8692448,
+                "switches": 16
+              },
+              {
+                "workload": "fork_raw",
+                "sample": 3,
+                "warmup": false,
+                "iterations": 8,
+                "bytes": 1,
+                "ns": 8689375,
+                "switches": 16
+              },
+              {
+                "workload": "fork_raw",
+                "sample": 4,
+                "warmup": false,
+                "iterations": 8,
+                "bytes": 1,
+                "ns": 8688438,
+                "switches": 16
+              },
+              {
+                "workload": "fork_raw",
+                "sample": 5,
+                "warmup": false,
+                "iterations": 8,
+                "bytes": 1,
+                "ns": 8601614,
+                "switches": 16
+              },
+              {
+                "workload": "fork_raw",
+                "sample": 6,
+                "warmup": false,
+                "iterations": 8,
+                "bytes": 1,
+                "ns": 8595990,
+                "switches": 16
+              },
+              {
+                "workload": "fork_raw",
+                "sample": 7,
+                "warmup": false,
+                "iterations": 8,
+                "bytes": 1,
+                "ns": 8683490,
+                "switches": 16
+              },
+              {
+                "workload": "fork_raw",
+                "sample": 8,
+                "warmup": false,
+                "iterations": 8,
+                "bytes": 1,
+                "ns": 8682969,
+                "switches": 16
+              }
+            ]
+          },
+          {
+            "workload": "fork_libc",
+            "bytes": 1,
+            "median_ns": 11287864.625,
+            "min_ns": 11286536.375,
+            "max_ns": 11288157.625,
+            "samples": [
+              {
+                "workload": "fork_libc",
+                "sample": 0,
+                "warmup": true,
+                "iterations": 8,
+                "bytes": 1,
+                "ns": 90461822,
+                "switches": 123
+              },
+              {
+                "workload": "fork_libc",
+                "sample": 1,
+                "warmup": true,
+                "iterations": 8,
+                "bytes": 1,
+                "ns": 90315105,
+                "switches": 120
+              },
+              {
+                "workload": "fork_libc",
+                "sample": 2,
+                "warmup": false,
+                "iterations": 8,
+                "bytes": 1,
+                "ns": 90302917,
+                "switches": 120
+              },
+              {
+                "workload": "fork_libc",
+                "sample": 3,
+                "warmup": false,
+                "iterations": 8,
+                "bytes": 1,
+                "ns": 90298177,
+                "switches": 120
+              },
+              {
+                "workload": "fork_libc",
+                "sample": 4,
+                "warmup": false,
+                "iterations": 8,
+                "bytes": 1,
+                "ns": 90303802,
+                "switches": 120
+              },
+              {
+                "workload": "fork_libc",
+                "sample": 5,
+                "warmup": false,
+                "iterations": 8,
+                "bytes": 1,
+                "ns": 90292291,
+                "switches": 120
+              },
+              {
+                "workload": "fork_libc",
+                "sample": 6,
+                "warmup": false,
+                "iterations": 8,
+                "bytes": 1,
+                "ns": 90305261,
+                "switches": 120
+              },
+              {
+                "workload": "fork_libc",
+                "sample": 7,
+                "warmup": false,
+                "iterations": 8,
+                "bytes": 1,
+                "ns": 90295157,
+                "switches": 120
+              },
+              {
+                "workload": "fork_libc",
+                "sample": 8,
+                "warmup": false,
+                "iterations": 8,
+                "bytes": 1,
+                "ns": 90303021,
+                "switches": 120
+              }
+            ]
+          },
+          {
+            "workload": "exec",
+            "bytes": 1,
+            "median_ns": 11583795.625,
+            "min_ns": 11571321.625,
+            "max_ns": 11601660.125,
+            "samples": [
+              {
+                "workload": "exec",
+                "sample": 0,
+                "warmup": true,
+                "iterations": 8,
+                "bytes": 1,
+                "ns": 92565521,
+                "switches": 171
+              },
+              {
+                "workload": "exec",
+                "sample": 1,
+                "warmup": true,
+                "iterations": 8,
+                "bytes": 1,
+                "ns": 92742239,
+                "switches": 170
+              },
+              {
+                "workload": "exec",
+                "sample": 2,
+                "warmup": false,
+                "iterations": 8,
+                "bytes": 1,
+                "ns": 92600729,
+                "switches": 171
+              },
+              {
+                "workload": "exec",
+                "sample": 3,
+                "warmup": false,
+                "iterations": 8,
+                "bytes": 1,
+                "ns": 92757709,
+                "switches": 171
+              },
+              {
+                "workload": "exec",
+                "sample": 4,
+                "warmup": false,
+                "iterations": 8,
+                "bytes": 1,
+                "ns": 92570573,
+                "switches": 171
+              },
+              {
+                "workload": "exec",
+                "sample": 5,
+                "warmup": false,
+                "iterations": 8,
+                "bytes": 1,
+                "ns": 92670365,
+                "switches": 171
+              },
+              {
+                "workload": "exec",
+                "sample": 6,
+                "warmup": false,
+                "iterations": 8,
+                "bytes": 1,
+                "ns": 92676302,
+                "switches": 171
+              },
+              {
+                "workload": "exec",
+                "sample": 7,
+                "warmup": false,
+                "iterations": 8,
+                "bytes": 1,
+                "ns": 92813281,
+                "switches": 171
+              },
+              {
+                "workload": "exec",
+                "sample": 8,
+                "warmup": false,
+                "iterations": 8,
+                "bytes": 1,
+                "ns": 92594844,
+                "switches": 171
+              }
+            ]
+          },
+          {
+            "workload": "ipc0",
+            "bytes": 1,
+            "median_ns": 120618.958,
+            "min_ns": 120565.885,
+            "max_ns": 120648.75,
+            "samples": [
+              {
+                "workload": "ipc0",
+                "sample": 0,
+                "warmup": true,
+                "iterations": 1000,
+                "bytes": 1,
+                "ns": 120556563,
+                "switches": 2034
+              },
+              {
+                "workload": "ipc0",
+                "sample": 1,
+                "warmup": true,
+                "iterations": 1000,
+                "bytes": 1,
+                "ns": 121208489,
+                "switches": 2033
+              },
+              {
+                "workload": "ipc0",
+                "sample": 2,
+                "warmup": false,
+                "iterations": 1000,
+                "bytes": 1,
+                "ns": 120648750,
+                "switches": 2033
+              },
+              {
+                "workload": "ipc0",
+                "sample": 3,
+                "warmup": false,
+                "iterations": 1000,
+                "bytes": 1,
+                "ns": 120565885,
+                "switches": 2033
+              },
+              {
+                "workload": "ipc0",
+                "sample": 4,
+                "warmup": false,
+                "iterations": 1000,
+                "bytes": 1,
+                "ns": 120605208,
+                "switches": 2033
+              },
+              {
+                "workload": "ipc0",
+                "sample": 5,
+                "warmup": false,
+                "iterations": 1000,
+                "bytes": 1,
+                "ns": 120630260,
+                "switches": 2033
+              },
+              {
+                "workload": "ipc0",
+                "sample": 6,
+                "warmup": false,
+                "iterations": 1000,
+                "bytes": 1,
+                "ns": 120648646,
+                "switches": 2033
+              },
+              {
+                "workload": "ipc0",
+                "sample": 7,
+                "warmup": false,
+                "iterations": 1000,
+                "bytes": 1,
+                "ns": 120618958,
+                "switches": 2033
+              },
+              {
+                "workload": "ipc0",
+                "sample": 8,
+                "warmup": false,
+                "iterations": 1000,
+                "bytes": 1,
+                "ns": 120595157,
+                "switches": 2033
+              }
+            ]
+          },
+          {
+            "workload": "ipc0_deadline",
+            "bytes": 1,
+            "median_ns": 125545.573,
+            "min_ns": 125507.604,
+            "max_ns": 125704.843,
+            "samples": [
+              {
+                "workload": "ipc0_deadline",
+                "sample": 0,
+                "warmup": true,
+                "iterations": 1000,
+                "bytes": 1,
+                "ns": 125731719,
+                "switches": 2040
+              },
+              {
+                "workload": "ipc0_deadline",
+                "sample": 1,
+                "warmup": true,
+                "iterations": 1000,
+                "bytes": 1,
+                "ns": 125841145,
+                "switches": 2039
+              },
+              {
+                "workload": "ipc0_deadline",
+                "sample": 2,
+                "warmup": false,
+                "iterations": 1000,
+                "bytes": 1,
+                "ns": 125516197,
+                "switches": 2036
+              },
+              {
+                "workload": "ipc0_deadline",
+                "sample": 3,
+                "warmup": false,
+                "iterations": 1000,
+                "bytes": 1,
+                "ns": 125704843,
+                "switches": 2039
+              },
+              {
+                "workload": "ipc0_deadline",
+                "sample": 4,
+                "warmup": false,
+                "iterations": 1000,
+                "bytes": 1,
+                "ns": 125507604,
+                "switches": 2036
+              },
+              {
+                "workload": "ipc0_deadline",
+                "sample": 5,
+                "warmup": false,
+                "iterations": 1000,
+                "bytes": 1,
+                "ns": 125704792,
+                "switches": 2039
+              },
+              {
+                "workload": "ipc0_deadline",
+                "sample": 6,
+                "warmup": false,
+                "iterations": 1000,
+                "bytes": 1,
+                "ns": 125545573,
+                "switches": 2036
+              },
+              {
+                "workload": "ipc0_deadline",
+                "sample": 7,
+                "warmup": false,
+                "iterations": 1000,
+                "bytes": 1,
+                "ns": 125508230,
+                "switches": 2036
+              },
+              {
+                "workload": "ipc0_deadline",
+                "sample": 8,
+                "warmup": false,
+                "iterations": 1000,
+                "bytes": 1,
+                "ns": 125699740,
+                "switches": 2039
+              }
+            ]
+          },
+          {
+            "workload": "ipc1",
+            "bytes": 1,
+            "median_ns": 3768199.01,
+            "min_ns": 3768155.937,
+            "max_ns": 3768241.51,
+            "samples": [
+              {
+                "workload": "ipc1",
+                "sample": 0,
+                "warmup": true,
+                "iterations": 1000,
+                "bytes": 1,
+                "ns": 3777462552,
+                "switches": 3121
+              },
+              {
+                "workload": "ipc1",
+                "sample": 1,
+                "warmup": true,
+                "iterations": 1000,
+                "bytes": 1,
+                "ns": 3767654323,
+                "switches": 3116
+              },
+              {
+                "workload": "ipc1",
+                "sample": 2,
+                "warmup": false,
+                "iterations": 1000,
+                "bytes": 1,
+                "ns": 3768241510,
+                "switches": 3116
+              },
+              {
+                "workload": "ipc1",
+                "sample": 3,
+                "warmup": false,
+                "iterations": 1000,
+                "bytes": 1,
+                "ns": 3768199010,
+                "switches": 3116
+              },
+              {
+                "workload": "ipc1",
+                "sample": 4,
+                "warmup": false,
+                "iterations": 1000,
+                "bytes": 1,
+                "ns": 3768157552,
+                "switches": 3116
+              },
+              {
+                "workload": "ipc1",
+                "sample": 5,
+                "warmup": false,
+                "iterations": 1000,
+                "bytes": 1,
+                "ns": 3768197656,
+                "switches": 3116
+              },
+              {
+                "workload": "ipc1",
+                "sample": 6,
+                "warmup": false,
+                "iterations": 1000,
+                "bytes": 1,
+                "ns": 3768203073,
+                "switches": 3116
+              },
+              {
+                "workload": "ipc1",
+                "sample": 7,
+                "warmup": false,
+                "iterations": 1000,
+                "bytes": 1,
+                "ns": 3768155937,
+                "switches": 3116
+              },
+              {
+                "workload": "ipc1",
+                "sample": 8,
+                "warmup": false,
+                "iterations": 1000,
+                "bytes": 1,
+                "ns": 3768202865,
+                "switches": 3116
+              }
+            ]
+          },
+          {
+            "workload": "ipc1_deadline",
+            "bytes": 1,
+            "median_ns": 3767418.073,
+            "min_ns": 3767236.667,
+            "max_ns": 3768051.407,
+            "samples": [
+              {
+                "workload": "ipc1_deadline",
+                "sample": 0,
+                "warmup": true,
+                "iterations": 1000,
+                "bytes": 1,
+                "ns": 3789030781,
+                "switches": 3125
+              },
+              {
+                "workload": "ipc1_deadline",
+                "sample": 1,
+                "warmup": true,
+                "iterations": 1000,
+                "bytes": 1,
+                "ns": 3777292031,
+                "switches": 3119
+              },
+              {
+                "workload": "ipc1_deadline",
+                "sample": 2,
+                "warmup": false,
+                "iterations": 1000,
+                "bytes": 1,
+                "ns": 3767500312,
+                "switches": 3116
+              },
+              {
+                "workload": "ipc1_deadline",
+                "sample": 3,
+                "warmup": false,
+                "iterations": 1000,
+                "bytes": 1,
+                "ns": 3767377031,
+                "switches": 3116
+              },
+              {
+                "workload": "ipc1_deadline",
+                "sample": 4,
+                "warmup": false,
+                "iterations": 1000,
+                "bytes": 1,
+                "ns": 3768051407,
+                "switches": 3116
+              },
+              {
+                "workload": "ipc1_deadline",
+                "sample": 5,
+                "warmup": false,
+                "iterations": 1000,
+                "bytes": 1,
+                "ns": 3767236667,
+                "switches": 3116
+              },
+              {
+                "workload": "ipc1_deadline",
+                "sample": 6,
+                "warmup": false,
+                "iterations": 1000,
+                "bytes": 1,
+                "ns": 3767418073,
+                "switches": 3116
+              },
+              {
+                "workload": "ipc1_deadline",
+                "sample": 7,
+                "warmup": false,
+                "iterations": 1000,
+                "bytes": 1,
+                "ns": 3767378125,
+                "switches": 3116
+              },
+              {
+                "workload": "ipc1_deadline",
+                "sample": 8,
+                "warmup": false,
+                "iterations": 1000,
+                "bytes": 1,
+                "ns": 3767418802,
+                "switches": 3116
+              }
+            ]
+          }
+        ],
+        "status": "passed"
+      }
+    },
+    {
+      "source_path": "build/rpi3b/perf/measurements-1792159980719935000.json",
+      "source_sha256": "b8f7c38a5566355d2ee636ac815b9be2499d764d0790813ae7c5ba1bca23aa39",
+      "report": {
+        "port": "/dev/cu.usbserial-14440",
+        "probe_sha256": "36d813ab36b21d3349aa523ad36866f54dfa77109c954fec3ed02f1d88d15925",
+        "cases": [
+          {
+            "workload": "clock",
+            "bytes": 1,
+            "median_ns": 4257.16145,
+            "min_ns": 4242.21875,
+            "max_ns": 4271.4974,
+            "samples": [
+              {
+                "workload": "clock",
+                "sample": 0,
+                "warmup": true,
+                "iterations": 20000,
+                "bytes": 1,
+                "ns": 84077292,
+                "switches": 28
+              },
+              {
+                "workload": "clock",
+                "sample": 1,
+                "warmup": true,
+                "iterations": 20000,
+                "bytes": 1,
+                "ns": 84502656,
+                "switches": 28
+              },
+              {
+                "workload": "clock",
+                "sample": 2,
+                "warmup": false,
+                "iterations": 20000,
+                "bytes": 1,
+                "ns": 85389896,
+                "switches": 28
+              },
+              {
+                "workload": "clock",
+                "sample": 3,
+                "warmup": false,
+                "iterations": 20000,
+                "bytes": 1,
+                "ns": 84844375,
+                "switches": 28
+              },
+              {
+                "workload": "clock",
+                "sample": 4,
+                "warmup": false,
+                "iterations": 20000,
+                "bytes": 1,
+                "ns": 85021614,
+                "switches": 32
+              },
+              {
+                "workload": "clock",
+                "sample": 5,
+                "warmup": false,
+                "iterations": 20000,
+                "bytes": 1,
+                "ns": 84939218,
+                "switches": 28
+              },
+              {
+                "workload": "clock",
+                "sample": 6,
+                "warmup": false,
+                "iterations": 20000,
+                "bytes": 1,
+                "ns": 85143229,
+                "switches": 28
+              },
+              {
+                "workload": "clock",
+                "sample": 7,
+                "warmup": false,
+                "iterations": 20000,
+                "bytes": 1,
+                "ns": 85241302,
+                "switches": 32
+              },
+              {
+                "workload": "clock",
+                "sample": 8,
+                "warmup": false,
+                "iterations": 20000,
+                "bytes": 1,
+                "ns": 85429948,
+                "switches": 28
+              }
+            ]
+          },
+          {
+            "workload": "getpid_raw",
+            "bytes": 1,
+            "median_ns": 840.06775,
+            "min_ns": 835.487,
+            "max_ns": 847.15365,
+            "samples": [
+              {
+                "workload": "getpid_raw",
+                "sample": 0,
+                "warmup": true,
+                "iterations": 20000,
+                "bytes": 1,
+                "ns": 16836355,
+                "switches": 4
+              },
+              {
+                "workload": "getpid_raw",
+                "sample": 1,
+                "warmup": true,
+                "iterations": 20000,
+                "bytes": 1,
+                "ns": 16831459,
+                "switches": 4
+              },
+              {
+                "workload": "getpid_raw",
+                "sample": 2,
+                "warmup": false,
+                "iterations": 20000,
+                "bytes": 1,
+                "ns": 16943073,
+                "switches": 8
+              },
+              {
+                "workload": "getpid_raw",
+                "sample": 3,
+                "warmup": false,
+                "iterations": 20000,
+                "bytes": 1,
+                "ns": 16710052,
+                "switches": 4
+              },
+              {
+                "workload": "getpid_raw",
+                "sample": 4,
+                "warmup": false,
+                "iterations": 20000,
+                "bytes": 1,
+                "ns": 16801355,
+                "switches": 4
+              },
+              {
+                "workload": "getpid_raw",
+                "sample": 5,
+                "warmup": false,
+                "iterations": 20000,
+                "bytes": 1,
+                "ns": 16894896,
+                "switches": 8
+              },
+              {
+                "workload": "getpid_raw",
+                "sample": 6,
+                "warmup": false,
+                "iterations": 20000,
+                "bytes": 1,
+                "ns": 16709740,
+                "switches": 4
+              },
+              {
+                "workload": "getpid_raw",
+                "sample": 7,
+                "warmup": false,
+                "iterations": 20000,
+                "bytes": 1,
+                "ns": 16794688,
+                "switches": 4
+              },
+              {
+                "workload": "getpid_raw",
+                "sample": 8,
+                "warmup": false,
+                "iterations": 20000,
+                "bytes": 1,
+                "ns": 16935104,
+                "switches": 8
+              }
+            ]
+          },
+          {
+            "workload": "getpid_libc",
+            "bytes": 1,
+            "median_ns": 133481.094,
+            "min_ns": 133433.646,
+            "max_ns": 133537.76,
+            "samples": [
+              {
+                "workload": "getpid_libc",
+                "sample": 0,
+                "warmup": true,
+                "iterations": 1000,
+                "bytes": 1,
+                "ns": 133752552,
+                "switches": 2039
+              },
+              {
+                "workload": "getpid_libc",
+                "sample": 1,
+                "warmup": true,
+                "iterations": 1000,
+                "bytes": 1,
+                "ns": 133491770,
+                "switches": 2039
+              },
+              {
+                "workload": "getpid_libc",
+                "sample": 2,
+                "warmup": false,
+                "iterations": 1000,
+                "bytes": 1,
+                "ns": 133490573,
+                "switches": 2040
+              },
+              {
+                "workload": "getpid_libc",
+                "sample": 3,
+                "warmup": false,
+                "iterations": 1000,
+                "bytes": 1,
+                "ns": 133507500,
+                "switches": 2039
+              },
+              {
+                "workload": "getpid_libc",
+                "sample": 4,
+                "warmup": false,
+                "iterations": 1000,
+                "bytes": 1,
+                "ns": 133481094,
+                "switches": 2039
+              },
+              {
+                "workload": "getpid_libc",
+                "sample": 5,
+                "warmup": false,
+                "iterations": 1000,
+                "bytes": 1,
+                "ns": 133477239,
+                "switches": 2040
+              },
+              {
+                "workload": "getpid_libc",
+                "sample": 6,
+                "warmup": false,
+                "iterations": 1000,
+                "bytes": 1,
+                "ns": 133537760,
+                "switches": 2039
+              },
+              {
+                "workload": "getpid_libc",
+                "sample": 7,
+                "warmup": false,
+                "iterations": 1000,
+                "bytes": 1,
+                "ns": 133479948,
+                "switches": 2039
+              },
+              {
+                "workload": "getpid_libc",
+                "sample": 8,
+                "warmup": false,
+                "iterations": 1000,
+                "bytes": 1,
+                "ns": 133433646,
+                "switches": 2039
+              }
+            ]
+          },
+          {
+            "workload": "yield",
+            "bytes": 1,
+            "median_ns": 6447.187,
+            "min_ns": 6428.802,
+            "max_ns": 6461.25,
+            "samples": [
+              {
+                "workload": "yield",
+                "sample": 0,
+                "warmup": true,
+                "iterations": 1000,
+                "bytes": 1,
+                "ns": 6728959,
+                "switches": 1003
+              },
+              {
+                "workload": "yield",
+                "sample": 1,
+                "warmup": true,
+                "iterations": 1000,
+                "bytes": 1,
+                "ns": 6474636,
+                "switches": 1000
+              },
+              {
+                "workload": "yield",
+                "sample": 2,
+                "warmup": false,
+                "iterations": 1000,
+                "bytes": 1,
+                "ns": 6447187,
+                "switches": 1004
+              },
+              {
+                "workload": "yield",
+                "sample": 3,
+                "warmup": false,
+                "iterations": 1000,
+                "bytes": 1,
+                "ns": 6428802,
+                "switches": 1000
+              },
+              {
+                "workload": "yield",
+                "sample": 4,
+                "warmup": false,
+                "iterations": 1000,
+                "bytes": 1,
+                "ns": 6456406,
+                "switches": 1000
+              },
+              {
+                "workload": "yield",
+                "sample": 5,
+                "warmup": false,
+                "iterations": 1000,
+                "bytes": 1,
+                "ns": 6428958,
+                "switches": 1000
+              },
+              {
+                "workload": "yield",
+                "sample": 6,
+                "warmup": false,
+                "iterations": 1000,
+                "bytes": 1,
+                "ns": 6453385,
+                "switches": 1000
+              },
+              {
+                "workload": "yield",
+                "sample": 7,
+                "warmup": false,
+                "iterations": 1000,
+                "bytes": 1,
+                "ns": 6461250,
+                "switches": 1000
+              },
+              {
+                "workload": "yield",
+                "sample": 8,
+                "warmup": false,
+                "iterations": 1000,
+                "bytes": 1,
+                "ns": 6436041,
+                "switches": 1000
+              }
+            ]
+          },
+          {
+            "workload": "memcpy",
+            "bytes": 1048576,
+            "median_ns": 1192860.30859375,
+            "min_ns": 1166223.14453125,
+            "max_ns": 1199084.06640625,
+            "samples": [
+              {
+                "workload": "memcpy",
+                "sample": 0,
+                "warmup": true,
+                "iterations": 256,
+                "bytes": 1048576,
+                "ns": 305582917,
+                "switches": 104
+              },
+              {
+                "workload": "memcpy",
+                "sample": 1,
+                "warmup": true,
+                "iterations": 256,
+                "bytes": 1048576,
+                "ns": 302080156,
+                "switches": 96
+              },
+              {
+                "workload": "memcpy",
+                "sample": 2,
+                "warmup": false,
+                "iterations": 256,
+                "bytes": 1048576,
+                "ns": 298553125,
+                "switches": 100
+              },
+              {
+                "workload": "memcpy",
+                "sample": 3,
+                "warmup": false,
+                "iterations": 256,
+                "bytes": 1048576,
+                "ns": 304251146,
+                "switches": 100
+              },
+              {
+                "workload": "memcpy",
+                "sample": 4,
+                "warmup": false,
+                "iterations": 256,
+                "bytes": 1048576,
+                "ns": 306515573,
+                "switches": 100
+              },
+              {
+                "workload": "memcpy",
+                "sample": 5,
+                "warmup": false,
+                "iterations": 256,
+                "bytes": 1048576,
+                "ns": 306965521,
+                "switches": 100
+              },
+              {
+                "workload": "memcpy",
+                "sample": 6,
+                "warmup": false,
+                "iterations": 256,
+                "bytes": 1048576,
+                "ns": 305372239,
+                "switches": 100
+              },
+              {
+                "workload": "memcpy",
+                "sample": 7,
+                "warmup": false,
+                "iterations": 256,
+                "bytes": 1048576,
+                "ns": 305565677,
+                "switches": 100
+              },
+              {
+                "workload": "memcpy",
+                "sample": 8,
+                "warmup": false,
+                "iterations": 256,
+                "bytes": 1048576,
+                "ns": 304938334,
+                "switches": 100
+              }
+            ]
+          },
+          {
+            "workload": "open_close",
+            "bytes": 1,
+            "median_ns": 53520.781,
+            "min_ns": 53485.208,
+            "max_ns": 53690.469,
+            "samples": [
+              {
+                "workload": "open_close",
+                "sample": 0,
+                "warmup": true,
+                "iterations": 1000,
+                "bytes": 1,
+                "ns": 53813282,
+                "switches": 20
+              },
+              {
+                "workload": "open_close",
+                "sample": 1,
+                "warmup": true,
+                "iterations": 1000,
+                "bytes": 1,
+                "ns": 53420469,
+                "switches": 16
+              },
+              {
+                "workload": "open_close",
+                "sample": 2,
+                "warmup": false,
+                "iterations": 1000,
+                "bytes": 1,
+                "ns": 53657708,
+                "switches": 20
+              },
+              {
+                "workload": "open_close",
+                "sample": 3,
+                "warmup": false,
+                "iterations": 1000,
+                "bytes": 1,
+                "ns": 53520781,
+                "switches": 16
+              },
+              {
+                "workload": "open_close",
+                "sample": 4,
+                "warmup": false,
+                "iterations": 1000,
+                "bytes": 1,
+                "ns": 53690469,
+                "switches": 20
+              },
+              {
+                "workload": "open_close",
+                "sample": 5,
+                "warmup": false,
+                "iterations": 1000,
+                "bytes": 1,
+                "ns": 53502761,
+                "switches": 16
+              },
+              {
+                "workload": "open_close",
+                "sample": 6,
+                "warmup": false,
+                "iterations": 1000,
+                "bytes": 1,
+                "ns": 53485208,
+                "switches": 16
+              },
+              {
+                "workload": "open_close",
+                "sample": 7,
+                "warmup": false,
+                "iterations": 1000,
+                "bytes": 1,
+                "ns": 53498802,
+                "switches": 16
+              },
+              {
+                "workload": "open_close",
+                "sample": 8,
+                "warmup": false,
+                "iterations": 1000,
+                "bytes": 1,
+                "ns": 53521094,
+                "switches": 16
+              }
+            ]
+          },
+          {
+            "workload": "read_seek",
+            "bytes": 64,
+            "median_ns": 10235.0107421875,
+            "min_ns": 10192.03173828125,
+            "max_ns": 10277.07421875,
+            "samples": [
+              {
+                "workload": "read_seek",
+                "sample": 0,
+                "warmup": true,
+                "iterations": 4096,
+                "bytes": 64,
+                "ns": 41757604,
+                "switches": 12
+              },
+              {
+                "workload": "read_seek",
+                "sample": 1,
+                "warmup": true,
+                "iterations": 4096,
+                "bytes": 64,
+                "ns": 42178178,
+                "switches": 12
+              },
+              {
+                "workload": "read_seek",
+                "sample": 2,
+                "warmup": false,
+                "iterations": 4096,
+                "bytes": 64,
+                "ns": 42094896,
+                "switches": 12
+              },
+              {
+                "workload": "read_seek",
+                "sample": 3,
+                "warmup": false,
+                "iterations": 4096,
+                "bytes": 64,
+                "ns": 41922604,
+                "switches": 12
+              },
+              {
+                "workload": "read_seek",
+                "sample": 4,
+                "warmup": false,
+                "iterations": 4096,
+                "bytes": 64,
+                "ns": 41993229,
+                "switches": 12
+              },
+              {
+                "workload": "read_seek",
+                "sample": 5,
+                "warmup": false,
+                "iterations": 4096,
+                "bytes": 64,
+                "ns": 41837761,
+                "switches": 16
+              },
+              {
+                "workload": "read_seek",
+                "sample": 6,
+                "warmup": false,
+                "iterations": 4096,
+                "bytes": 64,
+                "ns": 41758750,
+                "switches": 12
+              },
+              {
+                "workload": "read_seek",
+                "sample": 7,
+                "warmup": false,
+                "iterations": 4096,
+                "bytes": 64,
+                "ns": 41746562,
+                "switches": 12
+              },
+              {
+                "workload": "read_seek",
+                "sample": 8,
+                "warmup": false,
+                "iterations": 4096,
+                "bytes": 64,
+                "ns": 42077656,
+                "switches": 12
+              }
+            ]
+          },
+          {
+            "workload": "read_seek",
+            "bytes": 512,
+            "median_ns": 12570.203125,
+            "min_ns": 12535.09521484375,
+            "max_ns": 12622.0703125,
+            "samples": [
+              {
+                "workload": "read_seek",
+                "sample": 0,
+                "warmup": true,
+                "iterations": 4096,
+                "bytes": 512,
+                "ns": 51300989,
+                "switches": 20
+              },
+              {
+                "workload": "read_seek",
+                "sample": 1,
+                "warmup": true,
+                "iterations": 4096,
+                "bytes": 512,
+                "ns": 51339740,
+                "switches": 16
+              },
+              {
+                "workload": "read_seek",
+                "sample": 2,
+                "warmup": false,
+                "iterations": 4096,
+                "bytes": 512,
+                "ns": 51359427,
+                "switches": 12
+              },
+              {
+                "workload": "read_seek",
+                "sample": 3,
+                "warmup": false,
+                "iterations": 4096,
+                "bytes": 512,
+                "ns": 51358073,
+                "switches": 16
+              },
+              {
+                "workload": "read_seek",
+                "sample": 4,
+                "warmup": false,
+                "iterations": 4096,
+                "bytes": 512,
+                "ns": 51700000,
+                "switches": 20
+              },
+              {
+                "workload": "read_seek",
+                "sample": 5,
+                "warmup": false,
+                "iterations": 4096,
+                "bytes": 512,
+                "ns": 51690469,
+                "switches": 20
+              },
+              {
+                "workload": "read_seek",
+                "sample": 6,
+                "warmup": false,
+                "iterations": 4096,
+                "bytes": 512,
+                "ns": 51684218,
+                "switches": 20
+              },
+              {
+                "workload": "read_seek",
+                "sample": 7,
+                "warmup": false,
+                "iterations": 4096,
+                "bytes": 512,
+                "ns": 51487552,
+                "switches": 16
+              },
+              {
+                "workload": "read_seek",
+                "sample": 8,
+                "warmup": false,
+                "iterations": 4096,
+                "bytes": 512,
+                "ns": 51343750,
+                "switches": 16
+              }
+            ]
+          },
+          {
+            "workload": "read_seek",
+            "bytes": 4096,
+            "median_ns": 32039.6923828125,
+            "min_ns": 32028.1982421875,
+            "max_ns": 32124.53125,
+            "samples": [
+              {
+                "workload": "read_seek",
+                "sample": 0,
+                "warmup": true,
+                "iterations": 1024,
+                "bytes": 4096,
+                "ns": 33089375,
+                "switches": 12
+              },
+              {
+                "workload": "read_seek",
+                "sample": 1,
+                "warmup": true,
+                "iterations": 1024,
+                "bytes": 4096,
+                "ns": 32807968,
+                "switches": 8
+              },
+              {
+                "workload": "read_seek",
+                "sample": 2,
+                "warmup": false,
+                "iterations": 1024,
+                "bytes": 4096,
+                "ns": 32799427,
+                "switches": 8
+              },
+              {
+                "workload": "read_seek",
+                "sample": 3,
+                "warmup": false,
+                "iterations": 1024,
+                "bytes": 4096,
+                "ns": 32816823,
+                "switches": 8
+              },
+              {
+                "workload": "read_seek",
+                "sample": 4,
+                "warmup": false,
+                "iterations": 1024,
+                "bytes": 4096,
+                "ns": 32895520,
+                "switches": 8
+              },
+              {
+                "workload": "read_seek",
+                "sample": 5,
+                "warmup": false,
+                "iterations": 1024,
+                "bytes": 4096,
+                "ns": 32808645,
+                "switches": 8
+              },
+              {
+                "workload": "read_seek",
+                "sample": 6,
+                "warmup": false,
+                "iterations": 1024,
+                "bytes": 4096,
+                "ns": 32797917,
+                "switches": 8
+              },
+              {
+                "workload": "read_seek",
+                "sample": 7,
+                "warmup": false,
+                "iterations": 1024,
+                "bytes": 4096,
+                "ns": 32796875,
+                "switches": 8
+              },
+              {
+                "workload": "read_seek",
+                "sample": 8,
+                "warmup": false,
+                "iterations": 1024,
+                "bytes": 4096,
+                "ns": 32852761,
+                "switches": 8
+              }
+            ]
+          },
+          {
+            "workload": "read_seek",
+            "bytes": 65536,
+            "median_ns": 371991.359375,
+            "min_ns": 371738.28125,
+            "max_ns": 372285.15625,
+            "samples": [
+              {
+                "workload": "read_seek",
+                "sample": 0,
+                "warmup": true,
+                "iterations": 64,
+                "bytes": 65536,
+                "ns": 23958177,
+                "switches": 8
+              },
+              {
+                "workload": "read_seek",
+                "sample": 1,
+                "warmup": true,
+                "iterations": 64,
+                "bytes": 65536,
+                "ns": 23814063,
+                "switches": 8
+              },
+              {
+                "workload": "read_seek",
+                "sample": 2,
+                "warmup": false,
+                "iterations": 64,
+                "bytes": 65536,
+                "ns": 23819531,
+                "switches": 8
+              },
+              {
+                "workload": "read_seek",
+                "sample": 3,
+                "warmup": false,
+                "iterations": 64,
+                "bytes": 65536,
+                "ns": 23813750,
+                "switches": 8
+              },
+              {
+                "workload": "read_seek",
+                "sample": 4,
+                "warmup": false,
+                "iterations": 64,
+                "bytes": 65536,
+                "ns": 23807447,
+                "switches": 8
+              },
+              {
+                "workload": "read_seek",
+                "sample": 5,
+                "warmup": false,
+                "iterations": 64,
+                "bytes": 65536,
+                "ns": 23791250,
+                "switches": 8
+              },
+              {
+                "workload": "read_seek",
+                "sample": 6,
+                "warmup": false,
+                "iterations": 64,
+                "bytes": 65536,
+                "ns": 23826250,
+                "switches": 8
+              },
+              {
+                "workload": "read_seek",
+                "sample": 7,
+                "warmup": false,
+                "iterations": 64,
+                "bytes": 65536,
+                "ns": 23803542,
+                "switches": 8
+              },
+              {
+                "workload": "read_seek",
+                "sample": 8,
+                "warmup": false,
+                "iterations": 64,
+                "bytes": 65536,
+                "ns": 23800000,
+                "switches": 8
+              }
+            ]
+          },
+          {
+            "workload": "write_seek",
+            "bytes": 4096,
+            "median_ns": 32172.1904296875,
+            "min_ns": 32158.966796875,
+            "max_ns": 32248.8916015625,
+            "samples": [
+              {
+                "workload": "write_seek",
+                "sample": 0,
+                "warmup": true,
+                "iterations": 1024,
+                "bytes": 4096,
+                "ns": 33012864,
+                "switches": 8
+              },
+              {
+                "workload": "write_seek",
+                "sample": 1,
+                "warmup": true,
+                "iterations": 1024,
+                "bytes": 4096,
+                "ns": 33003281,
+                "switches": 8
+              },
+              {
+                "workload": "write_seek",
+                "sample": 2,
+                "warmup": false,
+                "iterations": 1024,
+                "bytes": 4096,
+                "ns": 32945052,
+                "switches": 8
+              },
+              {
+                "workload": "write_seek",
+                "sample": 3,
+                "warmup": false,
+                "iterations": 1024,
+                "bytes": 4096,
+                "ns": 32939427,
+                "switches": 8
+              },
+              {
+                "workload": "write_seek",
+                "sample": 4,
+                "warmup": false,
+                "iterations": 1024,
+                "bytes": 4096,
+                "ns": 32977239,
+                "switches": 8
+              },
+              {
+                "workload": "write_seek",
+                "sample": 5,
+                "warmup": false,
+                "iterations": 1024,
+                "bytes": 4096,
+                "ns": 32939010,
+                "switches": 8
+              },
+              {
+                "workload": "write_seek",
+                "sample": 6,
+                "warmup": false,
+                "iterations": 1024,
+                "bytes": 4096,
+                "ns": 32944323,
+                "switches": 8
+              },
+              {
+                "workload": "write_seek",
+                "sample": 7,
+                "warmup": false,
+                "iterations": 1024,
+                "bytes": 4096,
+                "ns": 33022865,
+                "switches": 8
+              },
+              {
+                "workload": "write_seek",
+                "sample": 8,
+                "warmup": false,
+                "iterations": 1024,
+                "bytes": 4096,
+                "ns": 32930782,
+                "switches": 8
+              }
+            ]
+          },
+          {
+            "workload": "fault",
+            "bytes": 1048576,
+            "median_ns": 2590905.0,
+            "min_ns": 2582591.125,
+            "max_ns": 2595351.625,
+            "samples": [
+              {
+                "workload": "fault",
+                "sample": 0,
+                "warmup": true,
+                "iterations": 8,
+                "bytes": 1048576,
+                "ns": 20982813,
+                "switches": 8
+              },
+              {
+                "workload": "fault",
+                "sample": 1,
+                "warmup": true,
+                "iterations": 8,
+                "bytes": 1048576,
+                "ns": 19863802,
+                "switches": 4
+              },
+              {
+                "workload": "fault",
+                "sample": 2,
+                "warmup": false,
+                "iterations": 8,
+                "bytes": 1048576,
+                "ns": 20736614,
+                "switches": 4
+              },
+              {
+                "workload": "fault",
+                "sample": 3,
+                "warmup": false,
+                "iterations": 8,
+                "bytes": 1048576,
+                "ns": 20711667,
+                "switches": 4
+              },
+              {
+                "workload": "fault",
+                "sample": 4,
+                "warmup": false,
+                "iterations": 8,
+                "bytes": 1048576,
+                "ns": 20712500,
+                "switches": 4
+              },
+              {
+                "workload": "fault",
+                "sample": 5,
+                "warmup": false,
+                "iterations": 8,
+                "bytes": 1048576,
+                "ns": 20748645,
+                "switches": 4
+              },
+              {
+                "workload": "fault",
+                "sample": 6,
+                "warmup": false,
+                "iterations": 8,
+                "bytes": 1048576,
+                "ns": 20762813,
+                "switches": 4
+              },
+              {
+                "workload": "fault",
+                "sample": 7,
+                "warmup": false,
+                "iterations": 8,
+                "bytes": 1048576,
+                "ns": 20660729,
+                "switches": 4
+              },
+              {
+                "workload": "fault",
+                "sample": 8,
+                "warmup": false,
+                "iterations": 8,
+                "bytes": 1048576,
+                "ns": 20727240,
+                "switches": 4
+              }
+            ]
+          },
+          {
+            "workload": "fork_raw",
+            "bytes": 1,
+            "median_ns": 1101328.125,
+            "min_ns": 1089010.375,
+            "max_ns": 1101640.625,
+            "samples": [
+              {
+                "workload": "fork_raw",
+                "sample": 0,
+                "warmup": true,
+                "iterations": 8,
+                "bytes": 1,
+                "ns": 8735573,
+                "switches": 19
+              },
+              {
+                "workload": "fork_raw",
+                "sample": 1,
+                "warmup": true,
+                "iterations": 8,
+                "bytes": 1,
+                "ns": 8833645,
+                "switches": 16
+              },
+              {
+                "workload": "fork_raw",
+                "sample": 2,
+                "warmup": false,
+                "iterations": 8,
+                "bytes": 1,
+                "ns": 8808021,
+                "switches": 16
+              },
+              {
+                "workload": "fork_raw",
+                "sample": 3,
+                "warmup": false,
+                "iterations": 8,
+                "bytes": 1,
+                "ns": 8810990,
+                "switches": 16
+              },
+              {
+                "workload": "fork_raw",
+                "sample": 4,
+                "warmup": false,
+                "iterations": 8,
+                "bytes": 1,
+                "ns": 8810625,
+                "switches": 16
+              },
+              {
+                "workload": "fork_raw",
+                "sample": 5,
+                "warmup": false,
+                "iterations": 8,
+                "bytes": 1,
+                "ns": 8716614,
+                "switches": 16
+              },
+              {
+                "workload": "fork_raw",
+                "sample": 6,
+                "warmup": false,
+                "iterations": 8,
+                "bytes": 1,
+                "ns": 8712083,
+                "switches": 16
+              },
+              {
+                "workload": "fork_raw",
+                "sample": 7,
+                "warmup": false,
+                "iterations": 8,
+                "bytes": 1,
+                "ns": 8810989,
+                "switches": 16
+              },
+              {
+                "workload": "fork_raw",
+                "sample": 8,
+                "warmup": false,
+                "iterations": 8,
+                "bytes": 1,
+                "ns": 8813125,
+                "switches": 16
+              }
+            ]
+          },
+          {
+            "workload": "fork_libc",
+            "bytes": 1,
+            "median_ns": 11302382.875,
+            "min_ns": 11301497.375,
+            "max_ns": 11302695.25,
+            "samples": [
+              {
+                "workload": "fork_libc",
+                "sample": 0,
+                "warmup": true,
+                "iterations": 8,
+                "bytes": 1,
+                "ns": 90551511,
+                "switches": 123
+              },
+              {
+                "workload": "fork_libc",
+                "sample": 1,
+                "warmup": true,
+                "iterations": 8,
+                "bytes": 1,
+                "ns": 90434271,
+                "switches": 120
+              },
+              {
+                "workload": "fork_libc",
+                "sample": 2,
+                "warmup": false,
+                "iterations": 8,
+                "bytes": 1,
+                "ns": 90421562,
+                "switches": 120
+              },
+              {
+                "workload": "fork_libc",
+                "sample": 3,
+                "warmup": false,
+                "iterations": 8,
+                "bytes": 1,
+                "ns": 90419688,
+                "switches": 120
+              },
+              {
+                "workload": "fork_libc",
+                "sample": 4,
+                "warmup": false,
+                "iterations": 8,
+                "bytes": 1,
+                "ns": 90411979,
+                "switches": 120
+              },
+              {
+                "workload": "fork_libc",
+                "sample": 5,
+                "warmup": false,
+                "iterations": 8,
+                "bytes": 1,
+                "ns": 90418646,
+                "switches": 120
+              },
+              {
+                "workload": "fork_libc",
+                "sample": 6,
+                "warmup": false,
+                "iterations": 8,
+                "bytes": 1,
+                "ns": 90415730,
+                "switches": 120
+              },
+              {
+                "workload": "fork_libc",
+                "sample": 7,
+                "warmup": false,
+                "iterations": 8,
+                "bytes": 1,
+                "ns": 90420677,
+                "switches": 120
+              },
+              {
+                "workload": "fork_libc",
+                "sample": 8,
+                "warmup": false,
+                "iterations": 8,
+                "bytes": 1,
+                "ns": 90419063,
+                "switches": 120
+              }
+            ]
+          },
+          {
+            "workload": "exec",
+            "bytes": 1,
+            "median_ns": 11582265.625,
+            "min_ns": 11574908.875,
+            "max_ns": 11594160.125,
+            "samples": [
+              {
+                "workload": "exec",
+                "sample": 0,
+                "warmup": true,
+                "iterations": 8,
+                "bytes": 1,
+                "ns": 92570416,
+                "switches": 171
+              },
+              {
+                "workload": "exec",
+                "sample": 1,
+                "warmup": true,
+                "iterations": 8,
+                "bytes": 1,
+                "ns": 92628802,
+                "switches": 170
+              },
+              {
+                "workload": "exec",
+                "sample": 2,
+                "warmup": false,
+                "iterations": 8,
+                "bytes": 1,
+                "ns": 92688021,
+                "switches": 171
+              },
+              {
+                "workload": "exec",
+                "sample": 3,
+                "warmup": false,
+                "iterations": 8,
+                "bytes": 1,
+                "ns": 92652864,
+                "switches": 171
+              },
+              {
+                "workload": "exec",
+                "sample": 4,
+                "warmup": false,
+                "iterations": 8,
+                "bytes": 1,
+                "ns": 92658125,
+                "switches": 171
+              },
+              {
+                "workload": "exec",
+                "sample": 5,
+                "warmup": false,
+                "iterations": 8,
+                "bytes": 1,
+                "ns": 92661198,
+                "switches": 171
+              },
+              {
+                "workload": "exec",
+                "sample": 6,
+                "warmup": false,
+                "iterations": 8,
+                "bytes": 1,
+                "ns": 92599271,
+                "switches": 171
+              },
+              {
+                "workload": "exec",
+                "sample": 7,
+                "warmup": false,
+                "iterations": 8,
+                "bytes": 1,
+                "ns": 92608906,
+                "switches": 171
+              },
+              {
+                "workload": "exec",
+                "sample": 8,
+                "warmup": false,
+                "iterations": 8,
+                "bytes": 1,
+                "ns": 92753281,
+                "switches": 171
+              }
+            ]
+          },
+          {
+            "workload": "ipc0",
+            "bytes": 1,
+            "median_ns": 120540.469,
+            "min_ns": 120295.937,
+            "max_ns": 120589.062,
+            "samples": [
+              {
+                "workload": "ipc0",
+                "sample": 0,
+                "warmup": true,
+                "iterations": 1000,
+                "bytes": 1,
+                "ns": 120818229,
+                "switches": 2037
+              },
+              {
+                "workload": "ipc0",
+                "sample": 1,
+                "warmup": true,
+                "iterations": 1000,
+                "bytes": 1,
+                "ns": 119803489,
+                "switches": 2015
+              },
+              {
+                "workload": "ipc0",
+                "sample": 2,
+                "warmup": false,
+                "iterations": 1000,
+                "bytes": 1,
+                "ns": 120295937,
+                "switches": 2033
+              },
+              {
+                "workload": "ipc0",
+                "sample": 3,
+                "warmup": false,
+                "iterations": 1000,
+                "bytes": 1,
+                "ns": 120545886,
+                "switches": 2033
+              },
+              {
+                "workload": "ipc0",
+                "sample": 4,
+                "warmup": false,
+                "iterations": 1000,
+                "bytes": 1,
+                "ns": 120540469,
+                "switches": 2033
+              },
+              {
+                "workload": "ipc0",
+                "sample": 5,
+                "warmup": false,
+                "iterations": 1000,
+                "bytes": 1,
+                "ns": 120502396,
+                "switches": 2033
+              },
+              {
+                "workload": "ipc0",
+                "sample": 6,
+                "warmup": false,
+                "iterations": 1000,
+                "bytes": 1,
+                "ns": 120520469,
+                "switches": 2033
+              },
+              {
+                "workload": "ipc0",
+                "sample": 7,
+                "warmup": false,
+                "iterations": 1000,
+                "bytes": 1,
+                "ns": 120589062,
+                "switches": 2033
+              },
+              {
+                "workload": "ipc0",
+                "sample": 8,
+                "warmup": false,
+                "iterations": 1000,
+                "bytes": 1,
+                "ns": 120553750,
+                "switches": 2033
+              }
+            ]
+          },
+          {
+            "workload": "ipc0_deadline",
+            "bytes": 1,
+            "median_ns": 125513.073,
+            "min_ns": 125306.302,
+            "max_ns": 125556.562,
+            "samples": [
+              {
+                "workload": "ipc0_deadline",
+                "sample": 0,
+                "warmup": true,
+                "iterations": 1000,
+                "bytes": 1,
+                "ns": 125127656,
+                "switches": 2037
+              },
+              {
+                "workload": "ipc0_deadline",
+                "sample": 1,
+                "warmup": true,
+                "iterations": 1000,
+                "bytes": 1,
+                "ns": 125649583,
+                "switches": 2039
+              },
+              {
+                "workload": "ipc0_deadline",
+                "sample": 2,
+                "warmup": false,
+                "iterations": 1000,
+                "bytes": 1,
+                "ns": 125345729,
+                "switches": 2036
+              },
+              {
+                "workload": "ipc0_deadline",
+                "sample": 3,
+                "warmup": false,
+                "iterations": 1000,
+                "bytes": 1,
+                "ns": 125513438,
+                "switches": 2039
+              },
+              {
+                "workload": "ipc0_deadline",
+                "sample": 4,
+                "warmup": false,
+                "iterations": 1000,
+                "bytes": 1,
+                "ns": 125306302,
+                "switches": 2036
+              },
+              {
+                "workload": "ipc0_deadline",
+                "sample": 5,
+                "warmup": false,
+                "iterations": 1000,
+                "bytes": 1,
+                "ns": 125556562,
+                "switches": 2039
+              },
+              {
+                "workload": "ipc0_deadline",
+                "sample": 6,
+                "warmup": false,
+                "iterations": 1000,
+                "bytes": 1,
+                "ns": 125359062,
+                "switches": 2036
+              },
+              {
+                "workload": "ipc0_deadline",
+                "sample": 7,
+                "warmup": false,
+                "iterations": 1000,
+                "bytes": 1,
+                "ns": 125529948,
+                "switches": 2039
+              },
+              {
+                "workload": "ipc0_deadline",
+                "sample": 8,
+                "warmup": false,
+                "iterations": 1000,
+                "bytes": 1,
+                "ns": 125513073,
+                "switches": 2040
+              }
+            ]
+          },
+          {
+            "workload": "ipc1",
+            "bytes": 1,
+            "median_ns": 3777033.646,
+            "min_ns": 3770789.687,
+            "max_ns": 3782950.781,
+            "samples": [
+              {
+                "workload": "ipc1",
+                "sample": 0,
+                "warmup": true,
+                "iterations": 1000,
+                "bytes": 1,
+                "ns": 3773699167,
+                "switches": 3119
+              },
+              {
+                "workload": "ipc1",
+                "sample": 1,
+                "warmup": true,
+                "iterations": 1000,
+                "bytes": 1,
+                "ns": 3770237135,
+                "switches": 3113
+              },
+              {
+                "workload": "ipc1",
+                "sample": 2,
+                "warmup": false,
+                "iterations": 1000,
+                "bytes": 1,
+                "ns": 3777033646,
+                "switches": 3116
+              },
+              {
+                "workload": "ipc1",
+                "sample": 3,
+                "warmup": false,
+                "iterations": 1000,
+                "bytes": 1,
+                "ns": 3770789687,
+                "switches": 3113
+              },
+              {
+                "workload": "ipc1",
+                "sample": 4,
+                "warmup": false,
+                "iterations": 1000,
+                "bytes": 1,
+                "ns": 3782950781,
+                "switches": 3119
+              },
+              {
+                "workload": "ipc1",
+                "sample": 5,
+                "warmup": false,
+                "iterations": 1000,
+                "bytes": 1,
+                "ns": 3770793125,
+                "switches": 3113
+              },
+              {
+                "workload": "ipc1",
+                "sample": 6,
+                "warmup": false,
+                "iterations": 1000,
+                "bytes": 1,
+                "ns": 3782950573,
+                "switches": 3119
+              },
+              {
+                "workload": "ipc1",
+                "sample": 7,
+                "warmup": false,
+                "iterations": 1000,
+                "bytes": 1,
+                "ns": 3770793125,
+                "switches": 3113
+              },
+              {
+                "workload": "ipc1",
+                "sample": 8,
+                "warmup": false,
+                "iterations": 1000,
+                "bytes": 1,
+                "ns": 3777260209,
+                "switches": 3119
+              }
+            ]
+          },
+          {
+            "workload": "ipc1_deadline",
+            "bytes": 1,
+            "median_ns": 3767416.875,
+            "min_ns": 3767239.48,
+            "max_ns": 3770169.167,
+            "samples": [
+              {
+                "workload": "ipc1_deadline",
+                "sample": 0,
+                "warmup": true,
+                "iterations": 1000,
+                "bytes": 1,
+                "ns": 3770003229,
+                "switches": 3118
+              },
+              {
+                "workload": "ipc1_deadline",
+                "sample": 1,
+                "warmup": true,
+                "iterations": 1000,
+                "bytes": 1,
+                "ns": 3777302761,
+                "switches": 3119
+              },
+              {
+                "workload": "ipc1_deadline",
+                "sample": 2,
+                "warmup": false,
+                "iterations": 1000,
+                "bytes": 1,
+                "ns": 3767501041,
+                "switches": 3116
+              },
+              {
+                "workload": "ipc1_deadline",
+                "sample": 3,
+                "warmup": false,
+                "iterations": 1000,
+                "bytes": 1,
+                "ns": 3767378438,
+                "switches": 3116
+              },
+              {
+                "workload": "ipc1_deadline",
+                "sample": 4,
+                "warmup": false,
+                "iterations": 1000,
+                "bytes": 1,
+                "ns": 3768047239,
+                "switches": 3116
+              },
+              {
+                "workload": "ipc1_deadline",
+                "sample": 5,
+                "warmup": false,
+                "iterations": 1000,
+                "bytes": 1,
+                "ns": 3770169167,
+                "switches": 3116
+              },
+              {
+                "workload": "ipc1_deadline",
+                "sample": 6,
+                "warmup": false,
+                "iterations": 1000,
+                "bytes": 1,
+                "ns": 3767239480,
+                "switches": 3116
+              },
+              {
+                "workload": "ipc1_deadline",
+                "sample": 7,
+                "warmup": false,
+                "iterations": 1000,
+                "bytes": 1,
+                "ns": 3767416875,
+                "switches": 3116
+              },
+              {
+                "workload": "ipc1_deadline",
+                "sample": 8,
+                "warmup": false,
+                "iterations": 1000,
+                "bytes": 1,
+                "ns": 3767377865,
+                "switches": 3116
+              }
+            ]
+          }
+        ],
+        "status": "passed"
+      }
+    }
+  ],
+  "experiments": [
+    {
+      "name": "idle_masked_wfi",
+      "hypothesis": "The unmask-before-WFI window is sufficient to explain the cross-core latency",
+      "changed_variable": "ARM64 cpu_idle_once IRQ/WFI sequence only",
+      "source_patch": "--- baseline/arch.cppm\n+++ idle-masked/arch.cppm\n@@ -143,13 +143,13 @@\n // (used by scheduler idle tasks)\n inline void cpu_idle_once() noexcept {\n #if defined(MOSS_ARCH_ARM64)\n-  // Match x64 (sti;hlt;cli) and RISC-V 64 (csrsi;wfi;csrci) pattern:\n-  // enable IRQ → WFI → disable IRQ.\n-  // Enable IRQ delivery so wakeups can run their handlers; keep the caller's\n-  // scheduler bookkeeping after this sequence protected by masking again.\n+  // Diagnostic variant: test whether servicing and clearing a wakeup before\n+  // WFI loses the runqueue notification. ARM WFI wakes on a pending physical\n+  // IRQ even with DAIF.I set; unmask only after returning from the wait.\n+  asm volatile(\"msr daifset, #0x2\" ::: \"memory\"); // DAIF.I masks IRQ delivery, not WFI wakeup.\n   asm volatile(\"dsb sy\" ::: \"memory\");\n-  asm volatile(\"msr daifclr, #0x2\" ::: \"memory\"); // enable IRQ (clear DAIF.I)\n   asm volatile(\"wfi\" ::: \"memory\");\n+  asm volatile(\"msr daifclr, #0x2; isb\" ::: \"memory\"); // Deliver the pending wakeup before bookkeeping.\n   asm volatile(\"msr daifset, #0x2\" ::: \"memory\"); // disable IRQ (set DAIF.I)\n   asm volatile(\"isb\" ::: \"memory\");\n #elif defined(MOSS_ARCH_X64)\n",
+      "candidate_kernel_sha256": "3368d3364d7b884e42aae9b612e4d49ed9b43167a876fa6d10431061c0fccdd2",
+      "candidate_initramfs_sha256": "125bcc43b6c6aae1af0eab37825eaa5646e8e449ded31ddefcfcd9824c7a6da5",
+      "failed_attempt": {
+        "stage": "initramfs readback before kernel entry",
+        "jtag_khz": 4000,
+        "error": "Invalid ACK (7) in DAP response; dump_image at 0x200c0000 returned -107",
+        "record": {
+          "deployment": "JTAG RAM only",
+          "image_base": 2097152,
+          "dtb_base": 805306368,
+          "initrd_base": 536870912,
+          "boot_check": "not_run",
+          "files": {
+            "kernel": {
+              "path": "build/rpi3b/perf/idle-masked/moss.bin",
+              "sha256": "3368d3364d7b884e42aae9b612e4d49ed9b43167a876fa6d10431061c0fccdd2"
+            },
+            "initramfs": {
+              "path": "build/rpi3b/perf/idle-masked/initramfs.cpio",
+              "sha256": "125bcc43b6c6aae1af0eab37825eaa5646e8e449ded31ddefcfcd9824c7a6da5"
+            },
+            "dtb": {
+              "path": "build/rpi3b/perf/idle-masked/deploy/moss.dtb",
+              "sha256": "7b26f407d7cda0aa13bf11f968d3abd877350e163bd72eee3ef9c0fd609b67fb"
+            }
+          }
+        },
+        "classification": "transport failure, not a kernel runtime result"
+      },
+      "successful_deployment": {
+        "deployment": "JTAG RAM only",
+        "image_base": 2097152,
+        "dtb_base": 805306368,
+        "initrd_base": 536870912,
+        "boot_check": "shell_input_passed",
+        "files": {
+          "kernel": {
+            "path": "build/rpi3b/perf/idle-masked/moss.bin",
+            "sha256": "3368d3364d7b884e42aae9b612e4d49ed9b43167a876fa6d10431061c0fccdd2"
+          },
+          "initramfs": {
+            "path": "build/rpi3b/perf/idle-masked/initramfs.cpio",
+            "sha256": "125bcc43b6c6aae1af0eab37825eaa5646e8e449ded31ddefcfcd9824c7a6da5"
+          },
+          "dtb": {
+            "path": "build/rpi3b/perf/idle-masked/deploy-retry/moss.dtb",
+            "sha256": "7b26f407d7cda0aa13bf11f968d3abd877350e163bd72eee3ef9c0fd609b67fb"
+          }
+        }
+      },
+      "successful_deployment_jtag_khz": 2000,
+      "measurement_source_path": "build/rpi3b/perf/idle-masked/measurements-1792160676651422000.json",
+      "report": {
+        "port": "/dev/cu.usbserial-14440",
+        "probe_sha256": "36d813ab36b21d3349aa523ad36866f54dfa77109c954fec3ed02f1d88d15925",
+        "probe_source_sha256": "808309231c0005628cae44b2153529f5879620ff6436cd427e43d70254f1ce3d",
+        "cases": [
+          {
+            "workload": "fork_libc",
+            "bytes": 1,
+            "median_ns": 11275175.75,
+            "min_ns": 11274459.625,
+            "max_ns": 11277278.625,
+            "samples": [
+              {
+                "workload": "fork_libc",
+                "sample": 0,
+                "warmup": true,
+                "iterations": 8,
+                "bytes": 1,
+                "ns": 90341980,
+                "switches": 123
+              },
+              {
+                "workload": "fork_libc",
+                "sample": 1,
+                "warmup": true,
+                "iterations": 8,
+                "bytes": 1,
+                "ns": 90242865,
+                "switches": 120
+              },
+              {
+                "workload": "fork_libc",
+                "sample": 2,
+                "warmup": false,
+                "iterations": 8,
+                "bytes": 1,
+                "ns": 90218229,
+                "switches": 120
+              },
+              {
+                "workload": "fork_libc",
+                "sample": 3,
+                "warmup": false,
+                "iterations": 8,
+                "bytes": 1,
+                "ns": 90208646,
+                "switches": 120
+              },
+              {
+                "workload": "fork_libc",
+                "sample": 4,
+                "warmup": false,
+                "iterations": 8,
+                "bytes": 1,
+                "ns": 90200209,
+                "switches": 120
+              },
+              {
+                "workload": "fork_libc",
+                "sample": 5,
+                "warmup": false,
+                "iterations": 8,
+                "bytes": 1,
+                "ns": 90196875,
+                "switches": 120
+              },
+              {
+                "workload": "fork_libc",
+                "sample": 6,
+                "warmup": false,
+                "iterations": 8,
+                "bytes": 1,
+                "ns": 90201406,
+                "switches": 120
+              },
+              {
+                "workload": "fork_libc",
+                "sample": 7,
+                "warmup": false,
+                "iterations": 8,
+                "bytes": 1,
+                "ns": 90195677,
+                "switches": 120
+              },
+              {
+                "workload": "fork_libc",
+                "sample": 8,
+                "warmup": false,
+                "iterations": 8,
+                "bytes": 1,
+                "ns": 90202604,
+                "switches": 120
+              }
+            ]
+          },
+          {
+            "workload": "ipc0",
+            "bytes": 1,
+            "median_ns": 115220.729,
+            "min_ns": 115046.094,
+            "max_ns": 115258.593,
+            "samples": [
+              {
+                "workload": "ipc0",
+                "sample": 0,
+                "warmup": true,
+                "iterations": 1000,
+                "bytes": 1,
+                "ns": 115373541,
+                "switches": 2037
+              },
+              {
+                "workload": "ipc0",
+                "sample": 1,
+                "warmup": true,
+                "iterations": 1000,
+                "bytes": 1,
+                "ns": 114994948,
+                "switches": 2033
+              },
+              {
+                "workload": "ipc0",
+                "sample": 2,
+                "warmup": false,
+                "iterations": 1000,
+                "bytes": 1,
+                "ns": 115229636,
+                "switches": 2036
+              },
+              {
+                "workload": "ipc0",
+                "sample": 3,
+                "warmup": false,
+                "iterations": 1000,
+                "bytes": 1,
+                "ns": 115220729,
+                "switches": 2036
+              },
+              {
+                "workload": "ipc0",
+                "sample": 4,
+                "warmup": false,
+                "iterations": 1000,
+                "bytes": 1,
+                "ns": 115198750,
+                "switches": 2036
+              },
+              {
+                "workload": "ipc0",
+                "sample": 5,
+                "warmup": false,
+                "iterations": 1000,
+                "bytes": 1,
+                "ns": 115050885,
+                "switches": 2037
+              },
+              {
+                "workload": "ipc0",
+                "sample": 6,
+                "warmup": false,
+                "iterations": 1000,
+                "bytes": 1,
+                "ns": 115228698,
+                "switches": 2036
+              },
+              {
+                "workload": "ipc0",
+                "sample": 7,
+                "warmup": false,
+                "iterations": 1000,
+                "bytes": 1,
+                "ns": 115258593,
+                "switches": 2036
+              },
+              {
+                "workload": "ipc0",
+                "sample": 8,
+                "warmup": false,
+                "iterations": 1000,
+                "bytes": 1,
+                "ns": 115046094,
+                "switches": 2033
+              }
+            ]
+          },
+          {
+            "workload": "ipc0_deadline",
+            "bytes": 1,
+            "median_ns": 123538.802,
+            "min_ns": 123478.229,
+            "max_ns": 123597.031,
+            "samples": [
+              {
+                "workload": "ipc0_deadline",
+                "sample": 0,
+                "warmup": true,
+                "iterations": 1000,
+                "bytes": 1,
+                "ns": 123608125,
+                "switches": 2040
+              },
+              {
+                "workload": "ipc0_deadline",
+                "sample": 1,
+                "warmup": true,
+                "iterations": 1000,
+                "bytes": 1,
+                "ns": 123615833,
+                "switches": 2039
+              },
+              {
+                "workload": "ipc0_deadline",
+                "sample": 2,
+                "warmup": false,
+                "iterations": 1000,
+                "bytes": 1,
+                "ns": 123478229,
+                "switches": 2039
+              },
+              {
+                "workload": "ipc0_deadline",
+                "sample": 3,
+                "warmup": false,
+                "iterations": 1000,
+                "bytes": 1,
+                "ns": 123541145,
+                "switches": 2039
+              },
+              {
+                "workload": "ipc0_deadline",
+                "sample": 4,
+                "warmup": false,
+                "iterations": 1000,
+                "bytes": 1,
+                "ns": 123535209,
+                "switches": 2039
+              },
+              {
+                "workload": "ipc0_deadline",
+                "sample": 5,
+                "warmup": false,
+                "iterations": 1000,
+                "bytes": 1,
+                "ns": 123591875,
+                "switches": 2039
+              },
+              {
+                "workload": "ipc0_deadline",
+                "sample": 6,
+                "warmup": false,
+                "iterations": 1000,
+                "bytes": 1,
+                "ns": 123597031,
+                "switches": 2039
+              },
+              {
+                "workload": "ipc0_deadline",
+                "sample": 7,
+                "warmup": false,
+                "iterations": 1000,
+                "bytes": 1,
+                "ns": 123538802,
+                "switches": 2039
+              },
+              {
+                "workload": "ipc0_deadline",
+                "sample": 8,
+                "warmup": false,
+                "iterations": 1000,
+                "bytes": 1,
+                "ns": 123507708,
+                "switches": 2039
+              }
+            ]
+          },
+          {
+            "workload": "ipc1",
+            "bytes": 1,
+            "median_ns": 3771046.458,
+            "min_ns": 3770806.979,
+            "max_ns": 3776963.698,
+            "samples": [
+              {
+                "workload": "ipc1",
+                "sample": 0,
+                "warmup": true,
+                "iterations": 1000,
+                "bytes": 1,
+                "ns": 3783796406,
+                "switches": 3121
+              },
+              {
+                "workload": "ipc1",
+                "sample": 1,
+                "warmup": true,
+                "iterations": 1000,
+                "bytes": 1,
+                "ns": 3770247500,
+                "switches": 3113
+              },
+              {
+                "workload": "ipc1",
+                "sample": 2,
+                "warmup": false,
+                "iterations": 1000,
+                "bytes": 1,
+                "ns": 3771046458,
+                "switches": 3116
+              },
+              {
+                "workload": "ipc1",
+                "sample": 3,
+                "warmup": false,
+                "iterations": 1000,
+                "bytes": 1,
+                "ns": 3776962708,
+                "switches": 3116
+              },
+              {
+                "workload": "ipc1",
+                "sample": 4,
+                "warmup": false,
+                "iterations": 1000,
+                "bytes": 1,
+                "ns": 3770806979,
+                "switches": 3113
+              },
+              {
+                "workload": "ipc1",
+                "sample": 5,
+                "warmup": false,
+                "iterations": 1000,
+                "bytes": 1,
+                "ns": 3776963645,
+                "switches": 3116
+              },
+              {
+                "workload": "ipc1",
+                "sample": 6,
+                "warmup": false,
+                "iterations": 1000,
+                "bytes": 1,
+                "ns": 3770807656,
+                "switches": 3113
+              },
+              {
+                "workload": "ipc1",
+                "sample": 7,
+                "warmup": false,
+                "iterations": 1000,
+                "bytes": 1,
+                "ns": 3776963698,
+                "switches": 3116
+              },
+              {
+                "workload": "ipc1",
+                "sample": 8,
+                "warmup": false,
+                "iterations": 1000,
+                "bytes": 1,
+                "ns": 3770809323,
+                "switches": 3113
+              }
+            ]
+          },
+          {
+            "workload": "ipc1_deadline",
+            "bytes": 1,
+            "median_ns": 3767445.104,
+            "min_ns": 3767363.646,
+            "max_ns": 3776862.344,
+            "samples": [
+              {
+                "workload": "ipc1_deadline",
+                "sample": 0,
+                "warmup": true,
+                "iterations": 1000,
+                "bytes": 1,
+                "ns": 3771678750,
+                "switches": 3118
+              },
+              {
+                "workload": "ipc1_deadline",
+                "sample": 1,
+                "warmup": true,
+                "iterations": 1000,
+                "bytes": 1,
+                "ns": 3781470469,
+                "switches": 3116
+              },
+              {
+                "workload": "ipc1_deadline",
+                "sample": 2,
+                "warmup": false,
+                "iterations": 1000,
+                "bytes": 1,
+                "ns": 3776862344,
+                "switches": 3116
+              },
+              {
+                "workload": "ipc1_deadline",
+                "sample": 3,
+                "warmup": false,
+                "iterations": 1000,
+                "bytes": 1,
+                "ns": 3767368073,
+                "switches": 3116
+              },
+              {
+                "workload": "ipc1_deadline",
+                "sample": 4,
+                "warmup": false,
+                "iterations": 1000,
+                "bytes": 1,
+                "ns": 3767445104,
+                "switches": 3116
+              },
+              {
+                "workload": "ipc1_deadline",
+                "sample": 5,
+                "warmup": false,
+                "iterations": 1000,
+                "bytes": 1,
+                "ns": 3767447188,
+                "switches": 3116
+              },
+              {
+                "workload": "ipc1_deadline",
+                "sample": 6,
+                "warmup": false,
+                "iterations": 1000,
+                "bytes": 1,
+                "ns": 3767367656,
+                "switches": 3116
+              },
+              {
+                "workload": "ipc1_deadline",
+                "sample": 7,
+                "warmup": false,
+                "iterations": 1000,
+                "bytes": 1,
+                "ns": 3767448177,
+                "switches": 3116
+              },
+              {
+                "workload": "ipc1_deadline",
+                "sample": 8,
+                "warmup": false,
+                "iterations": 1000,
+                "bytes": 1,
+                "ns": 3767363646,
+                "switches": 3116
+              }
+            ]
+          }
+        ],
+        "status": "passed",
+        "deployment_record": {
+          "deployment": "JTAG RAM only",
+          "image_base": 2097152,
+          "dtb_base": 805306368,
+          "initrd_base": 536870912,
+          "boot_check": "shell_input_passed",
+          "files": {
+            "kernel": {
+              "path": "build/rpi3b/perf/idle-masked/moss.bin",
+              "sha256": "3368d3364d7b884e42aae9b612e4d49ed9b43167a876fa6d10431061c0fccdd2"
+            },
+            "initramfs": {
+              "path": "build/rpi3b/perf/idle-masked/initramfs.cpio",
+              "sha256": "125bcc43b6c6aae1af0eab37825eaa5646e8e449ded31ddefcfcd9824c7a6da5"
+            },
+            "dtb": {
+              "path": "build/rpi3b/perf/idle-masked/deploy-retry/moss.dtb",
+              "sha256": "7b26f407d7cda0aa13bf11f968d3abd877350e163bd72eee3ef9c0fd609b67fb"
+            }
+          }
+        }
+      },
+      "effects": [
+        {
+          "workload": "fork_libc",
+          "bytes": 1,
+          "baseline_median_ns": 11287864.625,
+          "candidate_median_ns": 11275175.75,
+          "change_ratio": -0.0011241165110978946
+        },
+        {
+          "workload": "ipc0",
+          "bytes": 1,
+          "baseline_median_ns": 120618.958,
+          "candidate_median_ns": 115220.729,
+          "change_ratio": -0.04475439922138935
+        },
+        {
+          "workload": "ipc0_deadline",
+          "bytes": 1,
+          "baseline_median_ns": 125545.573,
+          "candidate_median_ns": 123538.802,
+          "change_ratio": -0.015984402731588188
+        },
+        {
+          "workload": "ipc1",
+          "bytes": 1,
+          "baseline_median_ns": 3768199.01,
+          "candidate_median_ns": 3771046.458,
+          "change_ratio": 0.0007556522339833283
+        },
+        {
+          "workload": "ipc1_deadline",
+          "bytes": 1,
+          "baseline_median_ns": 3767418.073,
+          "candidate_median_ns": 3767445.104,
+          "change_ratio": 7.174940364063076e-06
+        }
+      ],
+      "conclusion": "No material cross-core improvement: changing this sequence alone did not remove the roughly 3.77 ms latency. Exact scheduling/wakeup cause remains unresolved.",
+      "production_source_restored": true
+    }
+  ],
+  "jtag_diagnostic": {
+    "separate_from_baseline": true,
+    "workload": "ipc1",
+    "samples": [
+      {
+        "cpu": 0,
+        "pc": "0x22efd8",
+        "cpsr": "0x40000345",
+        "symbol": "moss::kernel::process::CfsScheduler@moss.process::run_idle_task_simplified(moss::kernel::process::IdleTask@moss.process*, unsigned int)",
+        "offset": "0x6c"
+      },
+      {
+        "cpu": 1,
+        "pc": "0x22efd8",
+        "cpsr": "0x40000345",
+        "symbol": "moss::kernel::process::CfsScheduler@moss.process::run_idle_task_simplified(moss::kernel::process::IdleTask@moss.process*, unsigned int)",
+        "offset": "0x6c"
+      },
+      {
+        "cpu": 0,
+        "pc": "0x22efd8",
+        "cpsr": "0x40000345",
+        "symbol": "moss::kernel::process::CfsScheduler@moss.process::run_idle_task_simplified(moss::kernel::process::IdleTask@moss.process*, unsigned int)",
+        "offset": "0x6c"
+      },
+      {
+        "cpu": 1,
+        "pc": "0x22efd8",
+        "cpsr": "0x40000345",
+        "symbol": "moss::kernel::process::CfsScheduler@moss.process::run_idle_task_simplified(moss::kernel::process::IdleTask@moss.process*, unsigned int)",
+        "offset": "0x6c"
+      },
+      {
+        "cpu": 0,
+        "pc": "0x22efd8",
+        "cpsr": "0x40000345",
+        "symbol": "moss::kernel::process::CfsScheduler@moss.process::run_idle_task_simplified(moss::kernel::process::IdleTask@moss.process*, unsigned int)",
+        "offset": "0x6c"
+      },
+      {
+        "cpu": 1,
+        "pc": "0x22efd8",
+        "cpsr": "0x40000345",
+        "symbol": "moss::kernel::process::CfsScheduler@moss.process::run_idle_task_simplified(moss::kernel::process::IdleTask@moss.process*, unsigned int)",
+        "offset": "0x6c"
+      },
+      {
+        "cpu": 0,
+        "pc": "0x22efd8",
+        "cpsr": "0x40000345",
+        "symbol": "moss::kernel::process::CfsScheduler@moss.process::run_idle_task_simplified(moss::kernel::process::IdleTask@moss.process*, unsigned int)",
+        "offset": "0x6c"
+      },
+      {
+        "cpu": 1,
+        "pc": "0x22efd8",
+        "cpsr": "0x40000345",
+        "symbol": "moss::kernel::process::CfsScheduler@moss.process::run_idle_task_simplified(moss::kernel::process::IdleTask@moss.process*, unsigned int)",
+        "offset": "0x6c"
+      },
+      {
+        "cpu": 0,
+        "pc": "0x22efd8",
+        "cpsr": "0x40000345",
+        "symbol": "moss::kernel::process::CfsScheduler@moss.process::run_idle_task_simplified(moss::kernel::process::IdleTask@moss.process*, unsigned int)",
+        "offset": "0x6c"
+      },
+      {
+        "cpu": 1,
+        "pc": "0x22efd8",
+        "cpsr": "0x40000345",
+        "symbol": "moss::kernel::process::CfsScheduler@moss.process::run_idle_task_simplified(moss::kernel::process::IdleTask@moss.process*, unsigned int)",
+        "offset": "0x6c"
+      },
+      {
+        "cpu": 0,
+        "pc": "0x22efd8",
+        "cpsr": "0x40000345",
+        "symbol": "moss::kernel::process::CfsScheduler@moss.process::run_idle_task_simplified(moss::kernel::process::IdleTask@moss.process*, unsigned int)",
+        "offset": "0x6c"
+      },
+      {
+        "cpu": 1,
+        "pc": "0x22efd8",
+        "cpsr": "0x40000345",
+        "symbol": "moss::kernel::process::CfsScheduler@moss.process::run_idle_task_simplified(moss::kernel::process::IdleTask@moss.process*, unsigned int)",
+        "offset": "0x6c"
+      },
+      {
+        "cpu": 0,
+        "pc": "0x22efd8",
+        "cpsr": "0x40000345",
+        "symbol": "moss::kernel::process::CfsScheduler@moss.process::run_idle_task_simplified(moss::kernel::process::IdleTask@moss.process*, unsigned int)",
+        "offset": "0x6c"
+      },
+      {
+        "cpu": 1,
+        "pc": "0x22efd8",
+        "cpsr": "0x40000345",
+        "symbol": "moss::kernel::process::CfsScheduler@moss.process::run_idle_task_simplified(moss::kernel::process::IdleTask@moss.process*, unsigned int)",
+        "offset": "0x6c"
+      },
+      {
+        "cpu": 0,
+        "pc": "0x22efd8",
+        "cpsr": "0x40000345",
+        "symbol": "moss::kernel::process::CfsScheduler@moss.process::run_idle_task_simplified(moss::kernel::process::IdleTask@moss.process*, unsigned int)",
+        "offset": "0x6c"
+      },
+      {
+        "cpu": 1,
+        "pc": "0x22efd8",
+        "cpsr": "0x40000345",
+        "symbol": "moss::kernel::process::CfsScheduler@moss.process::run_idle_task_simplified(moss::kernel::process::IdleTask@moss.process*, unsigned int)",
+        "offset": "0x6c"
+      },
+      {
+        "cpu": 0,
+        "pc": "0x22efd8",
+        "cpsr": "0x40000345",
+        "symbol": "moss::kernel::process::CfsScheduler@moss.process::run_idle_task_simplified(moss::kernel::process::IdleTask@moss.process*, unsigned int)",
+        "offset": "0x6c"
+      },
+      {
+        "cpu": 1,
+        "pc": "0x22efd8",
+        "cpsr": "0x40000345",
+        "symbol": "moss::kernel::process::CfsScheduler@moss.process::run_idle_task_simplified(moss::kernel::process::IdleTask@moss.process*, unsigned int)",
+        "offset": "0x6c"
+      },
+      {
+        "cpu": 0,
+        "pc": "0x22efd8",
+        "cpsr": "0x40000345",
+        "symbol": "moss::kernel::process::CfsScheduler@moss.process::run_idle_task_simplified(moss::kernel::process::IdleTask@moss.process*, unsigned int)",
+        "offset": "0x6c"
+      },
+      {
+        "cpu": 1,
+        "pc": "0x22efd8",
+        "cpsr": "0x40000345",
+        "symbol": "moss::kernel::process::CfsScheduler@moss.process::run_idle_task_simplified(moss::kernel::process::IdleTask@moss.process*, unsigned int)",
+        "offset": "0x6c"
+      },
+      {
+        "cpu": 0,
+        "pc": "0x22efd8",
+        "cpsr": "0x40000345",
+        "symbol": "moss::kernel::process::CfsScheduler@moss.process::run_idle_task_simplified(moss::kernel::process::IdleTask@moss.process*, unsigned int)",
+        "offset": "0x6c"
+      },
+      {
+        "cpu": 1,
+        "pc": "0x22efd8",
+        "cpsr": "0x40000345",
+        "symbol": "moss::kernel::process::CfsScheduler@moss.process::run_idle_task_simplified(moss::kernel::process::IdleTask@moss.process*, unsigned int)",
+        "offset": "0x6c"
+      },
+      {
+        "cpu": 0,
+        "pc": "0x22efd8",
+        "cpsr": "0x40000345",
+        "symbol": "moss::kernel::process::CfsScheduler@moss.process::run_idle_task_simplified(moss::kernel::process::IdleTask@moss.process*, unsigned int)",
+        "offset": "0x6c"
+      },
+      {
+        "cpu": 1,
+        "pc": "0x22efd8",
+        "cpsr": "0x40000345",
+        "symbol": "moss::kernel::process::CfsScheduler@moss.process::run_idle_task_simplified(moss::kernel::process::IdleTask@moss.process*, unsigned int)",
+        "offset": "0x6c"
+      },
+      {
+        "cpu": 0,
+        "pc": "0x22efd8",
+        "cpsr": "0x40000345",
+        "symbol": "moss::kernel::process::CfsScheduler@moss.process::run_idle_task_simplified(moss::kernel::process::IdleTask@moss.process*, unsigned int)",
+        "offset": "0x6c"
+      },
+      {
+        "cpu": 1,
+        "pc": "0x22efd8",
+        "cpsr": "0x40000345",
+        "symbol": "moss::kernel::process::CfsScheduler@moss.process::run_idle_task_simplified(moss::kernel::process::IdleTask@moss.process*, unsigned int)",
+        "offset": "0x6c"
+      },
+      {
+        "cpu": 0,
+        "pc": "0x22efd8",
+        "cpsr": "0x40000345",
+        "symbol": "moss::kernel::process::CfsScheduler@moss.process::run_idle_task_simplified(moss::kernel::process::IdleTask@moss.process*, unsigned int)",
+        "offset": "0x6c"
+      },
+      {
+        "cpu": 1,
+        "pc": "0x22efd8",
+        "cpsr": "0x40000345",
+        "symbol": "moss::kernel::process::CfsScheduler@moss.process::run_idle_task_simplified(moss::kernel::process::IdleTask@moss.process*, unsigned int)",
+        "offset": "0x6c"
+      },
+      {
+        "cpu": 0,
+        "pc": "0x22efd8",
+        "cpsr": "0x40000345",
+        "symbol": "moss::kernel::process::CfsScheduler@moss.process::run_idle_task_simplified(moss::kernel::process::IdleTask@moss.process*, unsigned int)",
+        "offset": "0x6c"
+      },
+      {
+        "cpu": 1,
+        "pc": "0x22efd8",
+        "cpsr": "0x40000345",
+        "symbol": "moss::kernel::process::CfsScheduler@moss.process::run_idle_task_simplified(moss::kernel::process::IdleTask@moss.process*, unsigned int)",
+        "offset": "0x6c"
+      },
+      {
+        "cpu": 0,
+        "pc": "0x22efd8",
+        "cpsr": "0x40000345",
+        "symbol": "moss::kernel::process::CfsScheduler@moss.process::run_idle_task_simplified(moss::kernel::process::IdleTask@moss.process*, unsigned int)",
+        "offset": "0x6c"
+      },
+      {
+        "cpu": 1,
+        "pc": "0x22efd8",
+        "cpsr": "0x40000345",
+        "symbol": "moss::kernel::process::CfsScheduler@moss.process::run_idle_task_simplified(moss::kernel::process::IdleTask@moss.process*, unsigned int)",
+        "offset": "0x6c"
+      },
+      {
+        "cpu": 0,
+        "pc": "0x22efd8",
+        "cpsr": "0x40000345",
+        "symbol": "moss::kernel::process::CfsScheduler@moss.process::run_idle_task_simplified(moss::kernel::process::IdleTask@moss.process*, unsigned int)",
+        "offset": "0x6c"
+      },
+      {
+        "cpu": 1,
+        "pc": "0x22efd8",
+        "cpsr": "0x40000345",
+        "symbol": "moss::kernel::process::CfsScheduler@moss.process::run_idle_task_simplified(moss::kernel::process::IdleTask@moss.process*, unsigned int)",
+        "offset": "0x6c"
+      },
+      {
+        "cpu": 0,
+        "pc": "0x22efd8",
+        "cpsr": "0x40000345",
+        "symbol": "moss::kernel::process::CfsScheduler@moss.process::run_idle_task_simplified(moss::kernel::process::IdleTask@moss.process*, unsigned int)",
+        "offset": "0x6c"
+      },
+      {
+        "cpu": 1,
+        "pc": "0x22efd8",
+        "cpsr": "0x40000345",
+        "symbol": "moss::kernel::process::CfsScheduler@moss.process::run_idle_task_simplified(moss::kernel::process::IdleTask@moss.process*, unsigned int)",
+        "offset": "0x6c"
+      }
+    ],
+    "symbol_binary_equivalence": "Symbol-bearing ELF linked from production objects objcopies byte-identically to production moss.bin",
+    "conclusion": "All 36 halted observations were at idle WFI return PC; halted sampling perturbs execution and is not an unbiased CPU profile"
+  },
+  "boot_observation": {
+    "source_log_sha256": "ee4219cc85217bee11aebb389338277baa9ea58c0f90d5d177d530c7eb210a2a",
+    "captured_bytes_through_first_prompt": 14792,
+    "uart_effective_bytes_per_second": 11520,
+    "serial_transmission_lower_bound_seconds": 1.2840277777777778,
+    "services_ready_since_init_ms": 149,
+    "archive_ready_delta_ms": 56,
+    "limitation": "Capture begins in kernel, omits firmware; kernel monotonic origin and init origin differ"
+  },
+  "final_deployment": {
+    "deployment": "JTAG RAM only",
+    "image_base": 2097152,
+    "dtb_base": 805306368,
+    "initrd_base": 536870912,
+    "boot_check": "shell_input_passed",
+    "files": {
+      "kernel": {
+        "path": "build/rpi3b/perf/moss.bin",
+        "sha256": "a6cbbfa6cd9d49f9ed31c43f423ff5e57099e1b41963922b0a069548cf9a9482"
+      },
+      "initramfs": {
+        "path": "build/rpi3b/perf/initramfs.cpio",
+        "sha256": "125bcc43b6c6aae1af0eab37825eaa5646e8e449ded31ddefcfcd9824c7a6da5"
+      },
+      "dtb": {
+        "path": "build/rpi3b/perf/final-deploy/moss.dtb",
+        "sha256": "7b26f407d7cda0aa13bf11f968d3abd877350e163bd72eee3ef9c0fd609b67fb"
+      }
+    }
+  },
+  "final_deployment_jtag_khz": 2000,
+  "verification": {
+    "host_pytest": {
+      "command": "uv run pytest -q scripts/tests/test_rpi.py scripts/tests/test_rpi_perf.py",
+      "passed": 13
+    },
+    "ruff_check_format_and_c_format": "passed",
+    "probe_build_flags": "-Wall -Wextra -Werror; passed",
+    "prepare_archive_check": "all 14 production entries preserved byte-for-byte; one probe appended",
+    "final_console": "uname -a\nMoss moss 0.9.9 0.9.9-Release aarch64 Moss\n"
+  },
+  "final_targeted_measurements": [
+    {
+      "port": "/dev/cu.usbserial-14440",
+      "probe_sha256": "36d813ab36b21d3349aa523ad36866f54dfa77109c954fec3ed02f1d88d15925",
+      "probe_source_sha256": "dd954cd57fbfd022e7582ea6eb1196662b67b9e2f80105d1a93409105aa19920",
+      "cases": [
+        {
+          "workload": "getpid_libc",
+          "bytes": 1,
+          "median_ns": 128408.906,
+          "min_ns": 128379.531,
+          "max_ns": 128448.594,
+          "samples": [
+            {
+              "workload": "getpid_libc",
+              "sample": 0,
+              "warmup": true,
+              "iterations": 1000,
+              "bytes": 1,
+              "ns": 128777344,
+              "switches": 2039
+            },
+            {
+              "workload": "getpid_libc",
+              "sample": 1,
+              "warmup": true,
+              "iterations": 1000,
+              "bytes": 1,
+              "ns": 128416666,
+              "switches": 2036
+            },
+            {
+              "workload": "getpid_libc",
+              "sample": 2,
+              "warmup": false,
+              "iterations": 1000,
+              "bytes": 1,
+              "ns": 128424791,
+              "switches": 2036
+            },
+            {
+              "workload": "getpid_libc",
+              "sample": 3,
+              "warmup": false,
+              "iterations": 1000,
+              "bytes": 1,
+              "ns": 128408906,
+              "switches": 2036
+            },
+            {
+              "workload": "getpid_libc",
+              "sample": 4,
+              "warmup": false,
+              "iterations": 1000,
+              "bytes": 1,
+              "ns": 128399063,
+              "switches": 2036
+            },
+            {
+              "workload": "getpid_libc",
+              "sample": 5,
+              "warmup": false,
+              "iterations": 1000,
+              "bytes": 1,
+              "ns": 128406875,
+              "switches": 2036
+            },
+            {
+              "workload": "getpid_libc",
+              "sample": 6,
+              "warmup": false,
+              "iterations": 1000,
+              "bytes": 1,
+              "ns": 128448594,
+              "switches": 2036
+            },
+            {
+              "workload": "getpid_libc",
+              "sample": 7,
+              "warmup": false,
+              "iterations": 1000,
+              "bytes": 1,
+              "ns": 128379531,
+              "switches": 2036
+            },
+            {
+              "workload": "getpid_libc",
+              "sample": 8,
+              "warmup": false,
+              "iterations": 1000,
+              "bytes": 1,
+              "ns": 128426770,
+              "switches": 2036
+            }
+          ]
+        },
+        {
+          "workload": "fork_libc",
+          "bytes": 1,
+          "median_ns": 11272441.375,
+          "min_ns": 11271484.375,
+          "max_ns": 11279062.5,
+          "samples": [
+            {
+              "workload": "fork_libc",
+              "sample": 0,
+              "warmup": true,
+              "iterations": 8,
+              "bytes": 1,
+              "ns": 90316354,
+              "switches": 123
+            },
+            {
+              "workload": "fork_libc",
+              "sample": 1,
+              "warmup": true,
+              "iterations": 8,
+              "bytes": 1,
+              "ns": 90201979,
+              "switches": 120
+            },
+            {
+              "workload": "fork_libc",
+              "sample": 2,
+              "warmup": false,
+              "iterations": 8,
+              "bytes": 1,
+              "ns": 90232500,
+              "switches": 120
+            },
+            {
+              "workload": "fork_libc",
+              "sample": 3,
+              "warmup": false,
+              "iterations": 8,
+              "bytes": 1,
+              "ns": 90182448,
+              "switches": 120
+            },
+            {
+              "workload": "fork_libc",
+              "sample": 4,
+              "warmup": false,
+              "iterations": 8,
+              "bytes": 1,
+              "ns": 90179531,
+              "switches": 120
+            },
+            {
+              "workload": "fork_libc",
+              "sample": 5,
+              "warmup": false,
+              "iterations": 8,
+              "bytes": 1,
+              "ns": 90179115,
+              "switches": 120
+            },
+            {
+              "workload": "fork_libc",
+              "sample": 6,
+              "warmup": false,
+              "iterations": 8,
+              "bytes": 1,
+              "ns": 90177084,
+              "switches": 120
+            },
+            {
+              "workload": "fork_libc",
+              "sample": 7,
+              "warmup": false,
+              "iterations": 8,
+              "bytes": 1,
+              "ns": 90181042,
+              "switches": 120
+            },
+            {
+              "workload": "fork_libc",
+              "sample": 8,
+              "warmup": false,
+              "iterations": 8,
+              "bytes": 1,
+              "ns": 90171875,
+              "switches": 120
+            }
+          ]
+        },
+        {
+          "workload": "ipc0",
+          "bytes": 1,
+          "median_ns": 118004.011,
+          "min_ns": 117954.948,
+          "max_ns": 118187.344,
+          "samples": [
+            {
+              "workload": "ipc0",
+              "sample": 0,
+              "warmup": true,
+              "iterations": 1000,
+              "bytes": 1,
+              "ns": 117844583,
+              "switches": 2034
+            },
+            {
+              "workload": "ipc0",
+              "sample": 1,
+              "warmup": true,
+              "iterations": 1000,
+              "bytes": 1,
+              "ns": 118518385,
+              "switches": 2033
+            },
+            {
+              "workload": "ipc0",
+              "sample": 2,
+              "warmup": false,
+              "iterations": 1000,
+              "bytes": 1,
+              "ns": 118121407,
+              "switches": 2033
+            },
+            {
+              "workload": "ipc0",
+              "sample": 3,
+              "warmup": false,
+              "iterations": 1000,
+              "bytes": 1,
+              "ns": 118187344,
+              "switches": 2036
+            },
+            {
+              "workload": "ipc0",
+              "sample": 4,
+              "warmup": false,
+              "iterations": 1000,
+              "bytes": 1,
+              "ns": 118004011,
+              "switches": 2033
+            },
+            {
+              "workload": "ipc0",
+              "sample": 5,
+              "warmup": false,
+              "iterations": 1000,
+              "bytes": 1,
+              "ns": 117981302,
+              "switches": 2033
+            },
+            {
+              "workload": "ipc0",
+              "sample": 6,
+              "warmup": false,
+              "iterations": 1000,
+              "bytes": 1,
+              "ns": 117974219,
+              "switches": 2033
+            },
+            {
+              "workload": "ipc0",
+              "sample": 7,
+              "warmup": false,
+              "iterations": 1000,
+              "bytes": 1,
+              "ns": 118020521,
+              "switches": 2033
+            },
+            {
+              "workload": "ipc0",
+              "sample": 8,
+              "warmup": false,
+              "iterations": 1000,
+              "bytes": 1,
+              "ns": 117954948,
+              "switches": 2033
+            }
+          ]
+        },
+        {
+          "workload": "ipc1",
+          "bytes": 1,
+          "median_ns": 3771047.709,
+          "min_ns": 3770806.771,
+          "max_ns": 3776965.209,
+          "samples": [
+            {
+              "workload": "ipc1",
+              "sample": 0,
+              "warmup": true,
+              "iterations": 1000,
+              "bytes": 1,
+              "ns": 3781539896,
+              "switches": 3121
+            },
+            {
+              "workload": "ipc1",
+              "sample": 1,
+              "warmup": true,
+              "iterations": 1000,
+              "bytes": 1,
+              "ns": 3770247760,
+              "switches": 3113
+            },
+            {
+              "workload": "ipc1",
+              "sample": 2,
+              "warmup": false,
+              "iterations": 1000,
+              "bytes": 1,
+              "ns": 3771047709,
+              "switches": 3116
+            },
+            {
+              "workload": "ipc1",
+              "sample": 3,
+              "warmup": false,
+              "iterations": 1000,
+              "bytes": 1,
+              "ns": 3776963959,
+              "switches": 3116
+            },
+            {
+              "workload": "ipc1",
+              "sample": 4,
+              "warmup": false,
+              "iterations": 1000,
+              "bytes": 1,
+              "ns": 3770807604,
+              "switches": 3113
+            },
+            {
+              "workload": "ipc1",
+              "sample": 5,
+              "warmup": false,
+              "iterations": 1000,
+              "bytes": 1,
+              "ns": 3776965209,
+              "switches": 3116
+            },
+            {
+              "workload": "ipc1",
+              "sample": 6,
+              "warmup": false,
+              "iterations": 1000,
+              "bytes": 1,
+              "ns": 3770807552,
+              "switches": 3113
+            },
+            {
+              "workload": "ipc1",
+              "sample": 7,
+              "warmup": false,
+              "iterations": 1000,
+              "bytes": 1,
+              "ns": 3776963854,
+              "switches": 3116
+            },
+            {
+              "workload": "ipc1",
+              "sample": 8,
+              "warmup": false,
+              "iterations": 1000,
+              "bytes": 1,
+              "ns": 3770806771,
+              "switches": 3113
+            }
+          ]
+        }
+      ],
+      "status": "passed",
+      "deployment_record": {
+        "deployment": "JTAG RAM only",
+        "image_base": 2097152,
+        "dtb_base": 805306368,
+        "initrd_base": 536870912,
+        "boot_check": "shell_input_passed",
+        "files": {
+          "kernel": {
+            "path": "build/rpi3b/perf/moss.bin",
+            "sha256": "a6cbbfa6cd9d49f9ed31c43f423ff5e57099e1b41963922b0a069548cf9a9482"
+          },
+          "initramfs": {
+            "path": "build/rpi3b/perf/initramfs.cpio",
+            "sha256": "125bcc43b6c6aae1af0eab37825eaa5646e8e449ded31ddefcfcd9824c7a6da5"
+          },
+          "dtb": {
+            "path": "build/rpi3b/perf/final-deploy/moss.dtb",
+            "sha256": "7b26f407d7cda0aa13bf11f968d3abd877350e163bd72eee3ef9c0fd609b67fb"
+          }
+        }
+      }
+    }
+  ]
+}

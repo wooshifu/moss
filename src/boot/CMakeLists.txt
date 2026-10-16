@@ -16,6 +16,13 @@ elseif(MOSS_TARGET_ARCH STREQUAL "RISCV64")
 endif()
 add_library(moss_boot OBJECT ${BOOT_SOURCES})
 
+# Diagnostic images expose per-core PMU readings, including other tasks' activity.
+# Keep this off in production; it is not a process-isolated profiling interface.
+option(MOSS_ARM64_PERF_PROBE "Enable ARM64 EL0 PMU/timer reads for the hardware probe" OFF)
+if(MOSS_ARM64_PERF_PROBE AND MOSS_TARGET_ARCH STREQUAL "ARM64")
+    target_compile_definitions(moss_boot PRIVATE MOSS_ARM64_PERF_PROBE=1)
+endif()
+
 target_sources(
     moss_boot
     PUBLIC FILE_SET CXX_MODULES FILES src/boot.cppm

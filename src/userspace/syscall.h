@@ -87,6 +87,16 @@ struct moss_ipc_endpoints {
   unsigned long receive;
 };
 
+// OBJECT_WAIT observes a domain's exit, a receiver's queued request/closure,
+// or a Reply's terminal outcome/last-handle closure. It returns the first ready index without
+// consuming it; NONBLOCK returns -EAGAIN if none are ready. Aliases are rejected.
+// Argument four is an absolute monotonic deadline in ns, or zero for no timeout.
+// Pass all four defined arguments, including a zero deadline for NONBLOCK.
+// Readiness may change before consumption: IPC_TRY_RECEIVE returns -EAGAIN
+// rather than blocking when a caller cancels after OBJECT_WAIT reported ready.
+// The array bound matches capability::Table's 64 installed handles.
+enum { MOSS_WAIT_NONBLOCK = 1, MOSS_WAIT_MAX_HANDLES = 64 };
+
 enum { MOSS_FORK_CAP_INHERIT = 1U << 0 };
 
 // SYS_CAP_SET_INHERIT changes fork inheritance and exec retention together.

@@ -9,7 +9,9 @@
 // numeric IDs in payloads never authorize status, parentage, or wait operations.
 // REGISTER_CHILD requires the parent's badged sender and creates a child
 // relationship. WAIT_ANY uses that sender to reap one exited child without
-// blocking the service; RUNNING means the caller can poll again.
+// blocking the service; RUNNING is an immediate, nonblocking observation.
+// WAIT_BLOCK retains its Reply until an exit/error and leaves the service free
+// to process other clients. Cancellation does not reap the selected child.
 enum {
   MOSS_PROCESS_REGISTER = 1,
   MOSS_PROCESS_STATUS = 2,
@@ -45,7 +47,8 @@ enum {
   MOSS_PROCESS_FD_STAT = 32,
   MOSS_PROCESS_FD_READDIR = 33,
   MOSS_PROCESS_PATH_STAT = 34,
-  MOSS_PROCESS_FD_WAIT = 35
+  MOSS_PROCESS_FD_WAIT = 35,
+  MOSS_PROCESS_WAIT_BLOCK = 36
 };
 enum {
   MOSS_PROCESS_OK = 0,
@@ -103,6 +106,10 @@ enum {
   MOSS_PROCESS_REPLY_GROUP_BYTES = 17,
   MOSS_PROCESS_REPLY_IDENTITY_BYTES = MOSS_PROCESS_REPLY_WAIT_BYTES
 };
+// WAIT_BLOCK: opcode, WAIT_CHILD/ANY/GROUP selector, then one little-endian
+// u64 child/group ID. A retained one-shot Reply completes on exit, never RUNNING.
+// Keep the old wait operations as nonblocking queries for existing clients.
+enum { MOSS_PROCESS_WAIT_REQUEST_BYTES = 10 };
 enum {
   MOSS_PROCESS_FD_IO_BYTES = 11,
   MOSS_PROCESS_FD_IO_REPLY_BYTES = 3,

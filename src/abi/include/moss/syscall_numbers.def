@@ -196,5 +196,8 @@
   SYS_PROFILE_APPLY = 174,
   SYS_PROFILE_STATUS = 175,
 
+  // Observe native domain, receiver and reply readiness in one blocking wait.
+  SYS_OBJECT_WAIT = 176,
+  SYS_IPC_TRY_RECEIVE = 177,
   // Total syscall count marker
-  MAX_SYSCALL = 176
+  MAX_SYSCALL = 178

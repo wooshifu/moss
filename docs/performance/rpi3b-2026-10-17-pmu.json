@@ -1,0 +1,4352 @@
+{
+  "schema_version": 1,
+  "date": "2026-10-17",
+  "hardware": "Raspberry Pi 3B+ / BCM2837 / Cortex-A53; J-Link 50120677",
+  "source_base": "b9d788931cb7312874c59e71df96c2d042e7ef17",
+  "build": "ARM64 Release; isolated worktree; excludes concurrent main-worktree features",
+  "method": "CPU0 probe; IPC peer CPU0/1; controlled services CPU2; temperature CPU3; two warmups and seven retained batches; nearest-rank individual tails",
+  "limits": [
+    "CPU0-wide PMU counts include other tasks and IRQs; exclude CPU1/2 work and include read overhead",
+    "Pinned diagnostic service layout is not production scheduling policy",
+    "No statistical confidence bound or universal improvement claim; slower IPC observations retained, version attribution unresolved",
+    "Thermal stress is bounded single-core work, with debugger sampling; no four-core long-duration validation",
+    "No firmware clock/throttling-flag readings and no x64/RISC-V validation"
+  ],
+  "runs": [
+    {
+      "record": "baseline/measurements-1792166906527059000.json",
+      "status": "failed",
+      "error": "/rpi-perf.elf em024 1 pmu; echo RPI_COMMAND_STATUS=$?\r\nRPI_PERF_ERROR arguments\r\nRPI_COMMAND_STATUS=1\r\nmoss$ ",
+      "service_affinity_cpu": null,
+      "collector_sha256": null,
+      "probe_sha256": "84d4c421c225273ddf4182dd91a231b7556c6a9a5643ed144c339b0da262c480",
+      "probe_source_sha256": "122f3fcdf1a9e8a2b9ee11bafb62f872ee9ede1c770ea309b082f677c72f97f5",
+      "cases": []
+    },
+    {
+      "record": "baseline/measurements-1792166948782536000.json",
+      "status": "passed",
+      "error": null,
+      "service_affinity_cpu": null,
+      "collector_sha256": null,
+      "probe_sha256": "84d4c421c225273ddf4182dd91a231b7556c6a9a5643ed144c339b0da262c480",
+      "probe_source_sha256": "122f3fcdf1a9e8a2b9ee11bafb62f872ee9ede1c770ea309b082f677c72f97f5",
+      "cases": [
+        {
+          "workload": "empty",
+          "bytes": 1,
+          "batch_median_ns": 319.72265625,
+          "count": 7168,
+          "individual_tail_ns": {
+            "50": 208.33333333333334,
+            "95": 208.33333333333334,
+            "99": 208.33333333333334,
+            "100": 364.5833333333333
+          },
+          "cpu0_counters_per_op": {
+            "el0_instructions": 102.00209263392857,
+            "el1_instructions": 0.0,
+            "el0_cycles": 149.2783203125,
+            "el1_cycles": 0.0,
+            "l1d_refills": 0.004324776785714286,
+            "l2d_refills": 0.0,
+            "cycles": 149.2783203125
+          },
+          "system_switches_per_op": 0.0,
+          "temperature_before": {
+            "time_ns": 1792166948788380000,
+            "control": 70778886,
+            "status": 1709,
+            "millidegrees_c": 43470
+          },
+          "temperature_after": {
+            "time_ns": 1792166964040926000,
+            "control": 70778886,
+            "status": 1709,
+            "millidegrees_c": 43470
+          }
+        },
+        {
+          "workload": "instructions",
+          "bytes": 1,
+          "batch_median_ns": 17146.4033203125,
+          "count": 7168,
+          "individual_tail_ns": {
+            "50": 17031.25,
+            "95": 17031.25,
+            "99": 17031.25,
+            "100": 20625.0
+          },
+          "cpu0_counters_per_op": {
+            "el0_instructions": 20168.10226004464,
+            "el1_instructions": 3.850864955357143,
+            "el0_cycles": 10239.789481026786,
+            "el1_cycles": 5.471958705357143,
+            "l1d_refills": 0.027901785714285716,
+            "l2d_refills": 0.0004185267857142857,
+            "cycles": 10245.261439732143
+          },
+          "system_switches_per_op": 0.0,
+          "temperature_before": {
+            "time_ns": 1792166977828349000,
+            "control": 70778886,
+            "status": 1709,
+            "millidegrees_c": 43470
+          },
+          "temperature_after": {
+            "time_ns": 1792166995001531000,
+            "control": 70778886,
+            "status": 1709,
+            "millidegrees_c": 43470
+          }
+        },
+        {
+          "workload": "getpid_raw",
+          "bytes": 1,
+          "batch_median_ns": 1139.1201171875,
+          "count": 7168,
+          "individual_tail_ns": {
+            "50": 989.5833333333334,
+            "95": 1041.6666666666667,
+            "99": 1041.6666666666667,
+            "100": 4583.333333333333
+          },
+          "cpu0_counters_per_op": {
+            "el0_instructions": 190.59207589285714,
+            "el1_instructions": 299.1865234375,
+            "el0_cycles": 267.07003348214283,
+            "el1_cycles": 372.47084263392856,
+            "l1d_refills": 0.017299107142857144,
+            "l2d_refills": 0.0,
+            "cycles": 639.5408761160714
+          },
+          "system_switches_per_op": 0.0,
+          "temperature_before": {
+            "time_ns": 1792167008200251000,
+            "control": 70778886,
+            "status": 1708,
+            "millidegrees_c": 44008
+          },
+          "temperature_after": {
+            "time_ns": 1792167024197037000,
+            "control": 70778886,
+            "status": 1708,
+            "millidegrees_c": 44008
+          }
+        },
+        {
+          "workload": "getpid_libc",
+          "bytes": 1,
+          "batch_median_ns": 806.986328125,
+          "count": 7168,
+          "individual_tail_ns": {
+            "50": 677.0833333333334,
+            "95": 729.1666666666666,
+            "99": 729.1666666666666,
+            "100": 1302.0833333333333
+          },
+          "cpu0_counters_per_op": {
+            "el0_instructions": 367.61258370535717,
+            "el1_instructions": 0.0,
+            "el0_cycles": 441.54854910714283,
+            "el1_cycles": 0.0,
+            "l1d_refills": 0.011439732142857142,
+            "l2d_refills": 0.00013950892857142856,
+            "cycles": 441.54854910714283
+          },
+          "system_switches_per_op": 0.0,
+          "temperature_before": {
+            "time_ns": 1792167037523489000,
+            "control": 70778886,
+            "status": 1708,
+            "millidegrees_c": 44008
+          },
+          "temperature_after": {
+            "time_ns": 1792167053454456000,
+            "control": 70778886,
+            "status": 1709,
+            "millidegrees_c": 43470
+          }
+        }
+      ]
+    },
+    {
+      "record": "baseline/measurements-1792167082980040000.json",
+      "status": "passed",
+      "error": null,
+      "service_affinity_cpu": null,
+      "collector_sha256": null,
+      "probe_sha256": "84d4c421c225273ddf4182dd91a231b7556c6a9a5643ed144c339b0da262c480",
+      "probe_source_sha256": "122f3fcdf1a9e8a2b9ee11bafb62f872ee9ede1c770ea309b082f677c72f97f5",
+      "cases": [
+        {
+          "workload": "memcpy",
+          "bytes": 1048576,
+          "batch_median_ns": 1158396.810546875,
+          "count": 7168,
+          "individual_tail_ns": {
+            "50": 1091510.4166666667,
+            "95": 1746718.75,
+            "99": 1901562.5,
+            "100": 2026250.0
+          },
+          "cpu0_counters_per_op": {
+            "el0_instructions": 164080.51241629463,
+            "el1_instructions": 265.36411830357144,
+            "el0_cycles": 693553.6124441965,
+            "el1_cycles": 856.3097098214286,
+            "l1d_refills": 719.521484375,
+            "l2d_refills": 15115.517578125,
+            "cycles": 694409.9221540178
+          },
+          "system_switches_per_op": 0.0,
+          "temperature_before": {
+            "time_ns": 1792167082985537000,
+            "control": 70778886,
+            "status": 1708,
+            "millidegrees_c": 44008
+          },
+          "temperature_after": {
+            "time_ns": 1792167112238529000,
+            "control": 70778886,
+            "status": 1708,
+            "millidegrees_c": 44008
+          }
+        },
+        {
+          "workload": "read_seek",
+          "bytes": 64,
+          "batch_median_ns": 9756.876953125,
+          "count": 7168,
+          "individual_tail_ns": {
+            "50": 9583.333333333334,
+            "95": 9739.583333333334,
+            "99": 9791.666666666666,
+            "100": 13645.833333333334
+          },
+          "cpu0_counters_per_op": {
+            "el0_instructions": 308.1870814732143,
+            "el1_instructions": 4159.781668526785,
+            "el0_cycles": 464.9603794642857,
+            "el1_cycles": 5337.956752232143,
+            "l1d_refills": 0.12430245535714286,
+            "l2d_refills": 0.0004185267857142857,
+            "cycles": 5802.917131696428
+          },
+          "system_switches_per_op": 0.0,
+          "temperature_before": {
+            "time_ns": 1792167125542701000,
+            "control": 70778886,
+            "status": 1708,
+            "millidegrees_c": 44008
+          },
+          "temperature_after": {
+            "time_ns": 1792167142462415000,
+            "control": 70778886,
+            "status": 1708,
+            "millidegrees_c": 44008
+          }
+        },
+        {
+          "workload": "read_seek",
+          "bytes": 512,
+          "batch_median_ns": 10057.626953125,
+          "count": 7168,
+          "individual_tail_ns": {
+            "50": 9895.833333333334,
+            "95": 10000.0,
+            "99": 10052.083333333334,
+            "100": 14062.5
+          },
+          "cpu0_counters_per_op": {
+            "el0_instructions": 308.27650669642856,
+            "el1_instructions": 4437.671735491072,
+            "el0_cycles": 460.26534598214283,
+            "el1_cycles": 5520.459821428572,
+            "l1d_refills": 0.10825892857142858,
+            "l2d_refills": 0.0009765625,
+            "cycles": 5980.725167410715
+          },
+          "system_switches_per_op": 0.0,
+          "temperature_before": {
+            "time_ns": 1792167155676486000,
+            "control": 70778886,
+            "status": 1709,
+            "millidegrees_c": 43470
+          },
+          "temperature_after": {
+            "time_ns": 1792167172540722000,
+            "control": 70778886,
+            "status": 1708,
+            "millidegrees_c": 44008
+          }
+        },
+        {
+          "workload": "read_seek",
+          "bytes": 4096,
+          "batch_median_ns": 13695.7294921875,
+          "count": 7168,
+          "individual_tail_ns": {
+            "50": 13541.666666666666,
+            "95": 13645.833333333334,
+            "99": 13697.916666666666,
+            "100": 18489.583333333332
+          },
+          "cpu0_counters_per_op": {
+            "el0_instructions": 308.04073660714283,
+            "el1_instructions": 7270.234235491072,
+            "el0_cycles": 475.00167410714283,
+            "el1_cycles": 7680.423828125,
+            "l1d_refills": 8.835239955357142,
+            "l2d_refills": 0.0012555803571428572,
+            "cycles": 8155.425502232143
+          },
+          "system_switches_per_op": 0.0,
+          "temperature_before": {
+            "time_ns": 1792167185723427000,
+            "control": 70778886,
+            "status": 1707,
+            "millidegrees_c": 44546
+          },
+          "temperature_after": {
+            "time_ns": 1792167202632065000,
+            "control": 70778886,
+            "status": 1708,
+            "millidegrees_c": 44008
+          }
+        },
+        {
+          "workload": "read_seek",
+          "bytes": 65536,
+          "batch_median_ns": 75485.9921875,
+          "count": 7168,
+          "individual_tail_ns": {
+            "50": 75260.41666666667,
+            "95": 77135.41666666667,
+            "99": 78593.75,
+            "100": 82760.41666666667
+          },
+          "cpu0_counters_per_op": {
+            "el0_instructions": 309.0259486607143,
+            "el1_instructions": 54526.08091517857,
+            "el0_cycles": 587.9317801339286,
+            "el1_cycles": 44629.42173549107,
+            "l1d_refills": 306.2650669642857,
+            "l2d_refills": 0.0023716517857142855,
+            "cycles": 45217.353515625
+          },
+          "system_switches_per_op": 0.0,
+          "temperature_before": {
+            "time_ns": 1792167215854772000,
+            "control": 70778886,
+            "status": 1708,
+            "millidegrees_c": 44008
+          },
+          "temperature_after": {
+            "time_ns": 1792167234162633000,
+            "control": 70778886,
+            "status": 1708,
+            "millidegrees_c": 44008
+          }
+        },
+        {
+          "workload": "fault",
+          "bytes": 1048576,
+          "batch_median_ns": 2943447.6220703125,
+          "count": 7168,
+          "individual_tail_ns": {
+            "50": 2941250.0,
+            "95": 3333229.1666666665,
+            "99": 3372604.1666666665,
+            "100": 3404218.75
+          },
+          "cpu0_counters_per_op": {
+            "el0_instructions": 2879.0724051339284,
+            "el1_instructions": 1655593.6187220982,
+            "el0_cycles": 48583.9365234375,
+            "el1_cycles": 1716933.5518973214,
+            "l1d_refills": 2831.994698660714,
+            "l2d_refills": 1513.462193080357,
+            "cycles": 1765517.4884207589
+          },
+          "system_switches_per_op": 0.0,
+          "temperature_before": {
+            "time_ns": 1792167247362080000,
+            "control": 70778886,
+            "status": 1708,
+            "millidegrees_c": 44008
+          },
+          "temperature_after": {
+            "time_ns": 1792167292466375000,
+            "control": 70778886,
+            "status": 1708,
+            "millidegrees_c": 44008
+          }
+        },
+        {
+          "workload": "fork_raw",
+          "bytes": 1,
+          "batch_median_ns": 1084802.7548828125,
+          "count": 7168,
+          "individual_tail_ns": {
+            "50": 1081197.9166666667,
+            "95": 1086302.0833333333,
+            "99": 1088020.8333333333,
+            "100": 1090885.4166666667
+          },
+          "cpu0_counters_per_op": {
+            "el0_instructions": 426.20926339285717,
+            "el1_instructions": 569448.5613839285,
+            "el0_cycles": 1612.806640625,
+            "el1_cycles": 647475.8816964285,
+            "l1d_refills": 2060.860909598214,
+            "l2d_refills": 0.003627232142857143,
+            "cycles": 649088.6883370535
+          },
+          "system_switches_per_op": 2.0,
+          "temperature_before": {
+            "time_ns": 1792167305653100000,
+            "control": 70778886,
+            "status": 1707,
+            "millidegrees_c": 44546
+          },
+          "temperature_after": {
+            "time_ns": 1792167334054463000,
+            "control": 70778886,
+            "status": 1708,
+            "millidegrees_c": 44008
+          }
+        },
+        {
+          "workload": "fork_libc",
+          "bytes": 1,
+          "batch_median_ns": 1780529.3271484375,
+          "count": 7168,
+          "individual_tail_ns": {
+            "50": 1780729.1666666667,
+            "95": 1788802.0833333333,
+            "99": 1793854.1666666667,
+            "100": 1808072.9166666667
+          },
+          "cpu0_counters_per_op": {
+            "el0_instructions": 1190.0230189732142,
+            "el1_instructions": 789669.7781808035,
+            "el0_cycles": 4539.268694196428,
+            "el1_cycles": 897316.0206473215,
+            "l1d_refills": 2956.407645089286,
+            "l2d_refills": 0.018694196428571428,
+            "cycles": 901855.2893415178
+          },
+          "system_switches_per_op": 7.0009765625,
+          "temperature_before": {
+            "time_ns": 1792167347230596000,
+            "control": 70778886,
+            "status": 1707,
+            "millidegrees_c": 44546
+          },
+          "temperature_after": {
+            "time_ns": 1792167382068998000,
+            "control": 70778886,
+            "status": 1706,
+            "millidegrees_c": 45084
+          }
+        },
+        {
+          "workload": "exec",
+          "bytes": 1,
+          "batch_median_ns": 11009255.77734375,
+          "count": 1792,
+          "individual_tail_ns": {
+            "50": 11015208.333333334,
+            "95": 11061979.166666666,
+            "99": 11074895.833333334,
+            "100": 11131145.833333334
+          },
+          "cpu0_counters_per_op": {
+            "el0_instructions": 489078.00167410716,
+            "el1_instructions": 5153415.815848215,
+            "el0_cycles": 529253.8136160715,
+            "el1_cycles": 5680466.356026785,
+            "l1d_refills": 26205.397321428572,
+            "l2d_refills": 19899.083147321428,
+            "cycles": 6209720.169642857
+          },
+          "system_switches_per_op": 13.00390625,
+          "temperature_before": {
+            "time_ns": 1792167395355243000,
+            "control": 70778886,
+            "status": 1707,
+            "millidegrees_c": 44546
+          },
+          "temperature_after": {
+            "time_ns": 1792167435694147000,
+            "control": 70778886,
+            "status": 1706,
+            "millidegrees_c": 45084
+          }
+        },
+        {
+          "workload": "ipc0",
+          "bytes": 1,
+          "batch_median_ns": 118479.15625,
+          "count": 7168,
+          "individual_tail_ns": {
+            "50": 118177.08333333333,
+            "95": 118854.16666666667,
+            "99": 122239.58333333333,
+            "100": 125729.16666666667
+          },
+          "cpu0_counters_per_op": {
+            "el0_instructions": 452.8736049107143,
+            "el1_instructions": 55601.8779296875,
+            "el0_cycles": 714.5891462053571,
+            "el1_cycles": 70305.7529296875,
+            "l1d_refills": 56.90708705357143,
+            "l2d_refills": 0.0023716517857142855,
+            "cycles": 71020.34207589286
+          },
+          "system_switches_per_op": 2.0,
+          "temperature_before": {
+            "time_ns": 1792167448857255000,
+            "control": 70778886,
+            "status": 1706,
+            "millidegrees_c": 45084
+          },
+          "temperature_after": {
+            "time_ns": 1792167467465039000,
+            "control": 70778886,
+            "status": 1707,
+            "millidegrees_c": 44546
+          }
+        },
+        {
+          "workload": "ipc1",
+          "bytes": 1,
+          "batch_median_ns": 98869.62890625,
+          "count": 7168,
+          "individual_tail_ns": {
+            "50": 98750.0,
+            "95": 99218.75,
+            "99": 99479.16666666667,
+            "100": 102187.5
+          },
+          "cpu0_counters_per_op": {
+            "el0_instructions": 424.3413783482143,
+            "el1_instructions": 31091.186941964286,
+            "el0_cycles": 608.9093191964286,
+            "el1_cycles": 39780.05385044643,
+            "l1d_refills": 73.81124441964286,
+            "l2d_refills": 0.0011160714285714285,
+            "cycles": 40388.963169642855
+          },
+          "system_switches_per_op": 2.0,
+          "temperature_before": {
+            "time_ns": 1792167480651315000,
+            "control": 70778886,
+            "status": 1706,
+            "millidegrees_c": 45084
+          },
+          "temperature_after": {
+            "time_ns": 1792167499206215000,
+            "control": 70778886,
+            "status": 1707,
+            "millidegrees_c": 44546
+          }
+        }
+      ]
+    },
+    {
+      "record": "baseline/measurements-1792167530623467000.json",
+      "status": "passed",
+      "error": null,
+      "service_affinity_cpu": null,
+      "collector_sha256": null,
+      "probe_sha256": "84d4c421c225273ddf4182dd91a231b7556c6a9a5643ed144c339b0da262c480",
+      "probe_source_sha256": "122f3fcdf1a9e8a2b9ee11bafb62f872ee9ede1c770ea309b082f677c72f97f5",
+      "cases": [
+        {
+          "workload": "memcpy",
+          "bytes": 1048576,
+          "batch_median_ns": 1161745.5546875,
+          "count": 7168,
+          "individual_tail_ns": {
+            "50": 1091562.5,
+            "95": 1760156.25,
+            "99": 1900729.1666666667,
+            "100": 2023802.0833333333
+          },
+          "cpu0_counters_per_op": {
+            "el0_instructions": 164080.37527901787,
+            "el1_instructions": 254.25209263392858,
+            "el0_cycles": 694706.150530134,
+            "el1_cycles": 812.8955078125,
+            "l1d_refills": 728.0337611607143,
+            "l2d_refills": 15117.1533203125,
+            "cycles": 695519.0460379465
+          },
+          "system_switches_per_op": 0.0,
+          "temperature_before": {
+            "time_ns": 1792167530629155000,
+            "observation_ns": 13261265000,
+            "control": 70778886,
+            "status": 1707,
+            "millidegrees_c": 44546
+          },
+          "temperature_after": {
+            "time_ns": 1792167559890727000,
+            "observation_ns": 13175260000,
+            "control": 70778886,
+            "status": 1707,
+            "millidegrees_c": 44546
+          }
+        },
+        {
+          "workload": "fault",
+          "bytes": 1048576,
+          "batch_median_ns": 2929355.46875,
+          "count": 7168,
+          "individual_tail_ns": {
+            "50": 2929843.75,
+            "95": 3320729.1666666665,
+            "99": 3358177.0833333335,
+            "100": 3384531.25
+          },
+          "cpu0_counters_per_op": {
+            "el0_instructions": 2879.1064453125,
+            "el1_instructions": 1655579.892857143,
+            "el0_cycles": 49369.7939453125,
+            "el1_cycles": 1708282.9927455357,
+            "l1d_refills": 3610.8327287946427,
+            "l2d_refills": 2057.3507254464284,
+            "cycles": 1757652.7866908482
+          },
+          "system_switches_per_op": 0.0,
+          "temperature_before": {
+            "time_ns": 1792167573067800000,
+            "observation_ns": 13189824000,
+            "control": 70778886,
+            "status": 1706,
+            "millidegrees_c": 45084
+          },
+          "temperature_after": {
+            "time_ns": 1792167617997210000,
+            "observation_ns": 13909704000,
+            "control": 70778886,
+            "status": 1707,
+            "millidegrees_c": 44546
+          }
+        },
+        {
+          "workload": "fork_raw",
+          "bytes": 1,
+          "batch_median_ns": 1084304.7080078125,
+          "count": 7168,
+          "individual_tail_ns": {
+            "50": 1080677.0833333333,
+            "95": 1086145.8333333333,
+            "99": 1087812.5,
+            "100": 1090625.0
+          },
+          "cpu0_counters_per_op": {
+            "el0_instructions": 426.0556640625,
+            "el1_instructions": 569461.8881138393,
+            "el0_cycles": 1624.5756138392858,
+            "el1_cycles": 647176.4306640625,
+            "l1d_refills": 2048.369140625,
+            "l2d_refills": 0.003208705357142857,
+            "cycles": 648801.0062779018
+          },
+          "system_switches_per_op": 2.0,
+          "temperature_before": {
+            "time_ns": 1792167631909970000,
+            "observation_ns": 13631098000,
+            "control": 70778886,
+            "status": 1707,
+            "millidegrees_c": 44546
+          },
+          "temperature_after": {
+            "time_ns": 1792167660725240000,
+            "observation_ns": 16577814000,
+            "control": 70778886,
+            "status": 1706,
+            "millidegrees_c": 45084
+          }
+        },
+        {
+          "workload": "fork_libc",
+          "bytes": 1,
+          "batch_median_ns": 1781774.1904296875,
+          "count": 7168,
+          "individual_tail_ns": {
+            "50": 1781666.6666666667,
+            "95": 1789947.9166666667,
+            "99": 1793437.5,
+            "100": 1817291.6666666667
+          },
+          "cpu0_counters_per_op": {
+            "el0_instructions": 1190.1648995535713,
+            "el1_instructions": 789667.986188616,
+            "el0_cycles": 4528.389787946428,
+            "el1_cycles": 897951.9377790178,
+            "l1d_refills": 2982.9454520089284,
+            "l2d_refills": 0.015066964285714286,
+            "cycles": 902480.3275669643
+          },
+          "system_switches_per_op": 7.0009765625,
+          "temperature_before": {
+            "time_ns": 1792167677306342000,
+            "observation_ns": 13506427000,
+            "control": 70778886,
+            "status": 1706,
+            "millidegrees_c": 45084
+          },
+          "temperature_after": {
+            "time_ns": 1792167712417688000,
+            "observation_ns": 13376994000,
+            "control": 70778886,
+            "status": 1706,
+            "millidegrees_c": 45084
+          }
+        },
+        {
+          "workload": "exec",
+          "bytes": 1,
+          "batch_median_ns": 11092773.03125,
+          "count": 1792,
+          "individual_tail_ns": {
+            "50": 11089479.166666666,
+            "95": 11130781.25,
+            "99": 11148906.25,
+            "100": 11179531.25
+          },
+          "cpu0_counters_per_op": {
+            "el0_instructions": 489093.4386160714,
+            "el1_instructions": 5175718.969866072,
+            "el0_cycles": 529661.7745535715,
+            "el1_cycles": 5710707.791294643,
+            "l1d_refills": 26292.15625,
+            "l2d_refills": 19907.89620535714,
+            "cycles": 6240369.565848215
+          },
+          "system_switches_per_op": 13.00390625,
+          "temperature_before": {
+            "time_ns": 1792167725799970000,
+            "observation_ns": 13204355000,
+            "control": 70778886,
+            "status": 1708,
+            "millidegrees_c": 44008
+          },
+          "temperature_after": {
+            "time_ns": 1792167766336711000,
+            "observation_ns": 13677464000,
+            "control": 70778886,
+            "status": 1706,
+            "millidegrees_c": 45084
+          }
+        }
+      ]
+    },
+    {
+      "record": "baseline/measurements-1792168036286187000.json",
+      "status": "passed",
+      "error": null,
+      "service_affinity_cpu": null,
+      "collector_sha256": "3f7e10685147bebca569b7dd657498dbbf26faf794d9fa19bc70d0b5ff8a6295",
+      "probe_sha256": "84d4c421c225273ddf4182dd91a231b7556c6a9a5643ed144c339b0da262c480",
+      "probe_source_sha256": "122f3fcdf1a9e8a2b9ee11bafb62f872ee9ede1c770ea309b082f677c72f97f5",
+      "cases": [
+        {
+          "workload": "empty",
+          "bytes": 1,
+          "batch_median_ns": 319.671875,
+          "count": 7168,
+          "individual_tail_ns": {
+            "50": 208.33333333333334,
+            "95": 208.33333333333334,
+            "99": 208.33333333333334,
+            "100": 364.5833333333333
+          },
+          "cpu0_counters_per_op": {
+            "el0_instructions": 102.00181361607143,
+            "el1_instructions": 0.0,
+            "el0_cycles": 149.27455357142858,
+            "el1_cycles": 0.0,
+            "l1d_refills": 0.003627232142857143,
+            "l2d_refills": 0.0,
+            "cycles": 149.27455357142858
+          },
+          "system_switches_per_op": 0.0,
+          "temperature_before": {
+            "time_ns": 1792168036291629000,
+            "observation_ns": 73080000,
+            "access": "CPU3 kernel identity MMIO mapping",
+            "control": 70778886,
+            "status": 1707,
+            "millidegrees_c": 44546
+          },
+          "temperature_after": {
+            "time_ns": 1792168038310327000,
+            "observation_ns": 67040000,
+            "access": "CPU3 kernel identity MMIO mapping",
+            "control": 70778886,
+            "status": 1705,
+            "millidegrees_c": 45622
+          }
+        },
+        {
+          "workload": "instructions",
+          "bytes": 1,
+          "batch_median_ns": 17146.4541015625,
+          "count": 7168,
+          "individual_tail_ns": {
+            "50": 17031.25,
+            "95": 17031.25,
+            "99": 17031.25,
+            "100": 20677.083333333332
+          },
+          "cpu0_counters_per_op": {
+            "el0_instructions": 20168.102399553572,
+            "el1_instructions": 3.6642020089285716,
+            "el0_cycles": 10239.82505580357,
+            "el1_cycles": 5.272879464285714,
+            "l1d_refills": 0.0283203125,
+            "l2d_refills": 0.00027901785714285713,
+            "cycles": 10245.097935267857
+          },
+          "system_switches_per_op": 0.0,
+          "temperature_before": {
+            "time_ns": 1792168038379158000,
+            "observation_ns": 66478000,
+            "access": "CPU3 kernel identity MMIO mapping",
+            "control": 70778886,
+            "status": 1706,
+            "millidegrees_c": 45084
+          },
+          "temperature_after": {
+            "time_ns": 1792168042190787000,
+            "observation_ns": 89664000,
+            "access": "CPU3 kernel identity MMIO mapping",
+            "control": 70778886,
+            "status": 1706,
+            "millidegrees_c": 45084
+          }
+        },
+        {
+          "workload": "memcpy",
+          "bytes": 1048576,
+          "batch_median_ns": 1161261.1396484375,
+          "count": 7168,
+          "individual_tail_ns": {
+            "50": 1092031.25,
+            "95": 1745677.0833333333,
+            "99": 1905885.4166666667,
+            "100": 2057708.3333333333
+          },
+          "cpu0_counters_per_op": {
+            "el0_instructions": 164080.4652622768,
+            "el1_instructions": 280.7212611607143,
+            "el0_cycles": 694438.8744419643,
+            "el1_cycles": 867.7286551339286,
+            "l1d_refills": 727.0405970982143,
+            "l2d_refills": 15130.296456473214,
+            "cycles": 695306.6030970982
+          },
+          "system_switches_per_op": 0.0,
+          "temperature_before": {
+            "time_ns": 1792168042284786000,
+            "observation_ns": 100138000,
+            "access": "CPU3 kernel identity MMIO mapping",
+            "control": 70778886,
+            "status": 1706,
+            "millidegrees_c": 45084
+          },
+          "temperature_after": {
+            "time_ns": 1792168058370935000,
+            "observation_ns": 75622000,
+            "access": "CPU3 kernel identity MMIO mapping",
+            "control": 70778886,
+            "status": 1705,
+            "millidegrees_c": 45622
+          }
+        },
+        {
+          "workload": "fault",
+          "bytes": 1048576,
+          "batch_median_ns": 2941776.0205078125,
+          "count": 7168,
+          "individual_tail_ns": {
+            "50": 2942395.8333333335,
+            "95": 3332500.0,
+            "99": 3371145.8333333335,
+            "100": 3396093.75
+          },
+          "cpu0_counters_per_op": {
+            "el0_instructions": 2879.0193917410716,
+            "el1_instructions": 1655852.6082589286,
+            "el0_cycles": 48466.95717075893,
+            "el1_cycles": 1716869.205357143,
+            "l1d_refills": 2775.9288504464284,
+            "l2d_refills": 1471.2520926339287,
+            "cycles": 1765336.1625279018
+          },
+          "system_switches_per_op": 0.0,
+          "temperature_before": {
+            "time_ns": 1792168058452462000,
+            "observation_ns": 71677000,
+            "access": "CPU3 kernel identity MMIO mapping",
+            "control": 70778886,
+            "status": 1706,
+            "millidegrees_c": 45084
+          },
+          "temperature_after": {
+            "time_ns": 1792168090382954000,
+            "observation_ns": 66666000,
+            "access": "CPU3 kernel identity MMIO mapping",
+            "control": 70778886,
+            "status": 1703,
+            "millidegrees_c": 46698
+          }
+        },
+        {
+          "workload": "fork_raw",
+          "bytes": 1,
+          "batch_median_ns": 1100601.654296875,
+          "count": 7168,
+          "individual_tail_ns": {
+            "50": 1096927.0833333333,
+            "95": 1102083.3333333333,
+            "99": 1103697.9166666667,
+            "100": 1106875.0
+          },
+          "cpu0_counters_per_op": {
+            "el0_instructions": 426.17843191964283,
+            "el1_instructions": 576767.2926897322,
+            "el0_cycles": 1605.2924107142858,
+            "el1_cycles": 656905.0892857143,
+            "l1d_refills": 2070.3360770089284,
+            "l2d_refills": 0.0033482142857142855,
+            "cycles": 658510.3816964285
+          },
+          "system_switches_per_op": 2.0,
+          "temperature_before": {
+            "time_ns": 1792168090453817000,
+            "observation_ns": 66044000,
+            "access": "CPU3 kernel identity MMIO mapping",
+            "control": 70778886,
+            "status": 1704,
+            "millidegrees_c": 46160
+          },
+          "temperature_after": {
+            "time_ns": 1792168105859413000,
+            "observation_ns": 241003000,
+            "access": "CPU3 kernel identity MMIO mapping",
+            "control": 70778886,
+            "status": 1704,
+            "millidegrees_c": 46160
+          }
+        },
+        {
+          "workload": "fork_libc",
+          "bytes": 1,
+          "batch_median_ns": 1828861.439453125,
+          "count": 7168,
+          "individual_tail_ns": {
+            "50": 1820833.3333333333,
+            "95": 1839427.0833333333,
+            "99": 1842916.6666666667,
+            "100": 1852604.1666666667
+          },
+          "cpu0_counters_per_op": {
+            "el0_instructions": 1187.921595982143,
+            "el1_instructions": 805640.3203125,
+            "el0_cycles": 4506.498465401785,
+            "el1_cycles": 917362.6163504465,
+            "l1d_refills": 2938.322823660714,
+            "l2d_refills": 0.008928571428571428,
+            "cycles": 921869.1148158482
+          },
+          "system_switches_per_op": 7.0009765625,
+          "temperature_before": {
+            "time_ns": 1792168106132066000,
+            "observation_ns": 225276000,
+            "access": "CPU3 kernel identity MMIO mapping",
+            "control": 70778886,
+            "status": 1704,
+            "millidegrees_c": 46160
+          },
+          "temperature_after": {
+            "time_ns": 1792168128408918000,
+            "observation_ns": 66597000,
+            "access": "CPU3 kernel identity MMIO mapping",
+            "control": 70778886,
+            "status": 1704,
+            "millidegrees_c": 46160
+          }
+        },
+        {
+          "workload": "exec",
+          "bytes": 1,
+          "batch_median_ns": 11097131.14453125,
+          "count": 1792,
+          "individual_tail_ns": {
+            "50": 11091562.5,
+            "95": 11126145.833333334,
+            "99": 11142291.666666666,
+            "100": 11179114.583333334
+          },
+          "cpu0_counters_per_op": {
+            "el0_instructions": 489088.04129464284,
+            "el1_instructions": 5178488.891741072,
+            "el0_cycles": 529656.7087053572,
+            "el1_cycles": 5710654.771205357,
+            "l1d_refills": 26133.42020089286,
+            "l2d_refills": 19925.047433035714,
+            "cycles": 6240311.479910715
+          },
+          "system_switches_per_op": 13.00390625,
+          "temperature_before": {
+            "time_ns": 1792168128483055000,
+            "observation_ns": 65934000,
+            "access": "CPU3 kernel identity MMIO mapping",
+            "control": 70778886,
+            "status": 1704,
+            "millidegrees_c": 46160
+          },
+          "temperature_after": {
+            "time_ns": 1792168155893330000,
+            "observation_ns": 65856000,
+            "access": "CPU3 kernel identity MMIO mapping",
+            "control": 70778886,
+            "status": 1703,
+            "millidegrees_c": 46698
+          }
+        },
+        {
+          "workload": "ipc0",
+          "bytes": 1,
+          "batch_median_ns": 117635.599609375,
+          "count": 7168,
+          "individual_tail_ns": {
+            "50": 117395.83333333333,
+            "95": 118333.33333333333,
+            "99": 121406.25,
+            "100": 125260.41666666667
+          },
+          "cpu0_counters_per_op": {
+            "el0_instructions": 452.78794642857144,
+            "el1_instructions": 55599.68568638393,
+            "el0_cycles": 714.7388392857143,
+            "el1_cycles": 69805.12513950893,
+            "l1d_refills": 35.1396484375,
+            "l2d_refills": 0.00390625,
+            "cycles": 70519.86397879464
+          },
+          "system_switches_per_op": 2.0,
+          "temperature_before": {
+            "time_ns": 1792168155965014000,
+            "observation_ns": 65937000,
+            "access": "CPU3 kernel identity MMIO mapping",
+            "control": 70778886,
+            "status": 1703,
+            "millidegrees_c": 46698
+          },
+          "temperature_after": {
+            "time_ns": 1792168161475907000,
+            "observation_ns": 84948000,
+            "access": "CPU3 kernel identity MMIO mapping",
+            "control": 70778886,
+            "status": 1704,
+            "millidegrees_c": 46160
+          }
+        },
+        {
+          "workload": "ipc1",
+          "bytes": 1,
+          "batch_median_ns": 101790.873046875,
+          "count": 7168,
+          "individual_tail_ns": {
+            "50": 101666.66666666667,
+            "95": 102135.41666666667,
+            "99": 102968.75,
+            "100": 104739.58333333333
+          },
+          "cpu0_counters_per_op": {
+            "el0_instructions": 424.96414620535717,
+            "el1_instructions": 32253.35770089286,
+            "el0_cycles": 598.2191685267857,
+            "el1_cycles": 41311.16015625,
+            "l1d_refills": 73.83161272321429,
+            "l2d_refills": 0.0020926339285714285,
+            "cycles": 41909.37932477678
+          },
+          "system_switches_per_op": 2.0,
+          "temperature_before": {
+            "time_ns": 1792168161571028000,
+            "observation_ns": 79533000,
+            "access": "CPU3 kernel identity MMIO mapping",
+            "control": 70778886,
+            "status": 1703,
+            "millidegrees_c": 46698
+          },
+          "temperature_after": {
+            "time_ns": 1792168166958181000,
+            "observation_ns": 135598000,
+            "access": "CPU3 kernel identity MMIO mapping",
+            "control": 70778886,
+            "status": 1704,
+            "millidegrees_c": 46160
+          }
+        }
+      ]
+    },
+    {
+      "record": "candidate/measurements-1792168433437592000.json",
+      "status": "passed",
+      "error": null,
+      "service_affinity_cpu": null,
+      "collector_sha256": "3f7e10685147bebca569b7dd657498dbbf26faf794d9fa19bc70d0b5ff8a6295",
+      "probe_sha256": "84d4c421c225273ddf4182dd91a231b7556c6a9a5643ed144c339b0da262c480",
+      "probe_source_sha256": "719017788eddf50177103ba5332a7639f628332ef5e49af1735eb57bdab525c9",
+      "cases": [
+        {
+          "workload": "empty",
+          "bytes": 1,
+          "batch_median_ns": 319.6201171875,
+          "count": 7168,
+          "individual_tail_ns": {
+            "50": 208.33333333333334,
+            "95": 208.33333333333334,
+            "99": 208.33333333333334,
+            "100": 312.5
+          },
+          "cpu0_counters_per_op": {
+            "el0_instructions": 102.00139508928571,
+            "el1_instructions": 0.0,
+            "el0_cycles": 149.25837053571428,
+            "el1_cycles": 0.0,
+            "l1d_refills": 0.0034877232142857145,
+            "l2d_refills": 0.0,
+            "cycles": 149.25837053571428
+          },
+          "system_switches_per_op": 0.0,
+          "temperature_before": {
+            "time_ns": 1792168433443408000,
+            "observation_ns": 96187000,
+            "access": "CPU3 kernel identity MMIO mapping",
+            "control": 70778886,
+            "status": 1714,
+            "millidegrees_c": 40780
+          },
+          "temperature_after": {
+            "time_ns": 1792168435480503000,
+            "observation_ns": 75726000,
+            "access": "CPU3 kernel identity MMIO mapping",
+            "control": 70778886,
+            "status": 1713,
+            "millidegrees_c": 41318
+          }
+        },
+        {
+          "workload": "instructions",
+          "bytes": 1,
+          "batch_median_ns": 17146.40234375,
+          "count": 7168,
+          "individual_tail_ns": {
+            "50": 17031.25,
+            "95": 17031.25,
+            "99": 17031.25,
+            "100": 21354.166666666668
+          },
+          "cpu0_counters_per_op": {
+            "el0_instructions": 20168.10128348214,
+            "el1_instructions": 3.7059151785714284,
+            "el0_cycles": 10239.80859375,
+            "el1_cycles": 5.353376116071429,
+            "l1d_refills": 0.030552455357142856,
+            "l2d_refills": 0.00027901785714285713,
+            "cycles": 10245.16196986607
+          },
+          "system_switches_per_op": 0.0,
+          "temperature_before": {
+            "time_ns": 1792168435558768000,
+            "observation_ns": 75289000,
+            "access": "CPU3 kernel identity MMIO mapping",
+            "control": 70778886,
+            "status": 1713,
+            "millidegrees_c": 41318
+          },
+          "temperature_after": {
+            "time_ns": 1792168439356672000,
+            "observation_ns": 71198000,
+            "access": "CPU3 kernel identity MMIO mapping",
+            "control": 70778886,
+            "status": 1713,
+            "millidegrees_c": 41318
+          }
+        },
+        {
+          "workload": "memcpy",
+          "bytes": 1048576,
+          "batch_median_ns": 1128347.5751953125,
+          "count": 7168,
+          "individual_tail_ns": {
+            "50": 1060677.0833333333,
+            "95": 1718802.0833333333,
+            "99": 1854427.0833333333,
+            "100": 1957395.8333333333
+          },
+          "cpu0_counters_per_op": {
+            "el0_instructions": 164080.52762276787,
+            "el1_instructions": 247.47154017857142,
+            "el0_cycles": 676826.542829241,
+            "el1_cycles": 808.3773716517857,
+            "l1d_refills": 727.5539899553571,
+            "l2d_refills": 15082.059988839286,
+            "cycles": 677634.9202008928
+          },
+          "system_switches_per_op": 0.0,
+          "temperature_before": {
+            "time_ns": 1792168439430134000,
+            "observation_ns": 73394000,
+            "access": "CPU3 kernel identity MMIO mapping",
+            "control": 70778886,
+            "status": 1713,
+            "millidegrees_c": 41318
+          },
+          "temperature_after": {
+            "time_ns": 1792168455216650000,
+            "observation_ns": 67407000,
+            "access": "CPU3 kernel identity MMIO mapping",
+            "control": 70778886,
+            "status": 1712,
+            "millidegrees_c": 41856
+          }
+        },
+        {
+          "workload": "fault",
+          "bytes": 1048576,
+          "batch_median_ns": 2911685.638671875,
+          "count": 7168,
+          "individual_tail_ns": {
+            "50": 2911145.8333333335,
+            "95": 3302395.8333333335,
+            "99": 3339531.25,
+            "100": 3365000.0
+          },
+          "cpu0_counters_per_op": {
+            "el0_instructions": 2878.7137276785716,
+            "el1_instructions": 1654294.9363839286,
+            "el0_cycles": 47597.07854352678,
+            "el1_cycles": 1698729.697544643,
+            "l1d_refills": 2951.9606584821427,
+            "l2d_refills": 1621.423549107143,
+            "cycles": 1746326.7766462055
+          },
+          "system_switches_per_op": 0.0,
+          "temperature_before": {
+            "time_ns": 1792168455287037000,
+            "observation_ns": 67617000,
+            "access": "CPU3 kernel identity MMIO mapping",
+            "control": 70778886,
+            "status": 1711,
+            "millidegrees_c": 42394
+          },
+          "temperature_after": {
+            "time_ns": 1792168486916109000,
+            "observation_ns": 66662000,
+            "access": "CPU3 kernel identity MMIO mapping",
+            "control": 70778886,
+            "status": 1712,
+            "millidegrees_c": 41856
+          }
+        },
+        {
+          "workload": "fork_raw",
+          "bytes": 1,
+          "batch_median_ns": 1007040.150390625,
+          "count": 7168,
+          "individual_tail_ns": {
+            "50": 1003385.4166666666,
+            "95": 1008177.0833333334,
+            "99": 1009895.8333333334,
+            "100": 1013229.1666666666
+          },
+          "cpu0_counters_per_op": {
+            "el0_instructions": 426.37109375,
+            "el1_instructions": 524358.0336216518,
+            "el0_cycles": 1584.5093470982142,
+            "el1_cycles": 600794.6279296875,
+            "l1d_refills": 1983.2377232142858,
+            "l2d_refills": 0.0027901785714285715,
+            "cycles": 602379.1372767857
+          },
+          "system_switches_per_op": 2.0,
+          "temperature_before": {
+            "time_ns": 1792168486987014000,
+            "observation_ns": 66734000,
+            "access": "CPU3 kernel identity MMIO mapping",
+            "control": 70778886,
+            "status": 1711,
+            "millidegrees_c": 42394
+          },
+          "temperature_after": {
+            "time_ns": 1792168501512199000,
+            "observation_ns": 68625000,
+            "access": "CPU3 kernel identity MMIO mapping",
+            "control": 70778886,
+            "status": 1712,
+            "millidegrees_c": 41856
+          }
+        },
+        {
+          "workload": "fork_libc",
+          "bytes": 1,
+          "batch_median_ns": 2084620.7177734375,
+          "count": 7168,
+          "individual_tail_ns": {
+            "50": 2082135.4166666667,
+            "95": 2089739.5833333333,
+            "99": 2091927.0833333333,
+            "100": 2104531.25
+          },
+          "cpu0_counters_per_op": {
+            "el0_instructions": 7336.665597098215,
+            "el1_instructions": 998678.1224888393,
+            "el0_cycles": 19383.688616071428,
+            "el1_cycles": 1229501.9213169643,
+            "l1d_refills": 3943.8932756696427,
+            "l2d_refills": 0.025948660714285716,
+            "cycles": 1248885.6099330357
+          },
+          "system_switches_per_op": 10.0,
+          "temperature_before": {
+            "time_ns": 1792168501586513000,
+            "observation_ns": 69108000,
+            "access": "CPU3 kernel identity MMIO mapping",
+            "control": 70778886,
+            "status": 1711,
+            "millidegrees_c": 42394
+          },
+          "temperature_after": {
+            "time_ns": 1792168526050842000,
+            "observation_ns": 69261000,
+            "access": "CPU3 kernel identity MMIO mapping",
+            "control": 70778886,
+            "status": 1711,
+            "millidegrees_c": 42394
+          }
+        },
+        {
+          "workload": "exec",
+          "bytes": 1,
+          "batch_median_ns": 10114452.109375,
+          "count": 1792,
+          "individual_tail_ns": {
+            "50": 10109895.833333334,
+            "95": 10158645.833333334,
+            "99": 10174427.083333334,
+            "100": 10196041.666666666
+          },
+          "cpu0_counters_per_op": {
+            "el0_instructions": 498776.28069196426,
+            "el1_instructions": 4326694.919642857,
+            "el0_cycles": 575593.2260044643,
+            "el1_cycles": 5489673.461495535,
+            "l1d_refills": 26972.764508928572,
+            "l2d_refills": 19832.670758928572,
+            "cycles": 6065266.6875
+          },
+          "system_switches_per_op": 16.0,
+          "temperature_before": {
+            "time_ns": 1792168526129752000,
+            "observation_ns": 69100000,
+            "access": "CPU3 kernel identity MMIO mapping",
+            "control": 70778886,
+            "status": 1711,
+            "millidegrees_c": 42394
+          },
+          "temperature_after": {
+            "time_ns": 1792168551245355000,
+            "observation_ns": 68946000,
+            "access": "CPU3 kernel identity MMIO mapping",
+            "control": 70778886,
+            "status": 1711,
+            "millidegrees_c": 42394
+          }
+        },
+        {
+          "workload": "ipc0",
+          "bytes": 1,
+          "batch_median_ns": 105149.5361328125,
+          "count": 7168,
+          "individual_tail_ns": {
+            "50": 104895.83333333333,
+            "95": 105468.75,
+            "99": 109062.5,
+            "100": 112031.25
+          },
+          "cpu0_counters_per_op": {
+            "el0_instructions": 452.4388950892857,
+            "el1_instructions": 49193.17829241072,
+            "el0_cycles": 719.1565290178571,
+            "el1_cycles": 62298.70786830357,
+            "l1d_refills": 61.672154017857146,
+            "l2d_refills": 0.0037667410714285715,
+            "cycles": 63017.86439732143
+          },
+          "system_switches_per_op": 2.0,
+          "temperature_before": {
+            "time_ns": 1792168551322602000,
+            "observation_ns": 70427000,
+            "access": "CPU3 kernel identity MMIO mapping",
+            "control": 70778886,
+            "status": 1712,
+            "millidegrees_c": 41856
+          },
+          "temperature_after": {
+            "time_ns": 1792168556717672000,
+            "observation_ns": 66968000,
+            "access": "CPU3 kernel identity MMIO mapping",
+            "control": 70778886,
+            "status": 1712,
+            "millidegrees_c": 41856
+          }
+        },
+        {
+          "workload": "ipc1",
+          "bytes": 1,
+          "batch_median_ns": 88546.2451171875,
+          "count": 7168,
+          "individual_tail_ns": {
+            "50": 88489.58333333333,
+            "95": 88906.25,
+            "99": 89166.66666666667,
+            "100": 91666.66666666667
+          },
+          "cpu0_counters_per_op": {
+            "el0_instructions": 425.23953683035717,
+            "el1_instructions": 27044.283761160714,
+            "el0_cycles": 613.3362165178571,
+            "el1_cycles": 34890.1142578125,
+            "l1d_refills": 68.83286830357143,
+            "l2d_refills": 0.00027901785714285713,
+            "cycles": 35503.450474330355
+          },
+          "system_switches_per_op": 2.0,
+          "temperature_before": {
+            "time_ns": 1792168556794353000,
+            "observation_ns": 67050000,
+            "access": "CPU3 kernel identity MMIO mapping",
+            "control": 70778886,
+            "status": 1712,
+            "millidegrees_c": 41856
+          },
+          "temperature_after": {
+            "time_ns": 1792168562041949000,
+            "observation_ns": 81908000,
+            "access": "CPU3 kernel identity MMIO mapping",
+            "control": 70778886,
+            "status": 1712,
+            "millidegrees_c": 41856
+          }
+        }
+      ]
+    },
+    {
+      "record": "baseline-pinned/measurements-1792169311607447000.json",
+      "status": "passed",
+      "error": null,
+      "service_affinity_cpu": 2,
+      "collector_sha256": "8c8bc2a68b9f043cf6f150bd269dab42c3018c7e007edadf73e6d3ade0bdc6eb",
+      "probe_sha256": "d7c71fec9ee8729d5100a41be3f635b068935581bd65ffc51ce145e2cf01f982",
+      "probe_source_sha256": "56e9bafc2fdc63b5746eba22c26340f3a9af4c597a6a60e21a1fb252fa1b55a9",
+      "cases": [
+        {
+          "workload": "empty",
+          "bytes": 1,
+          "batch_median_ns": 311.279296875,
+          "count": 7168,
+          "individual_tail_ns": {
+            "50": 208.33333333333334,
+            "95": 208.33333333333334,
+            "99": 208.33333333333334,
+            "100": 364.5833333333333
+          },
+          "cpu0_counters_per_op": {
+            "el0_instructions": 102.00237165178571,
+            "el1_instructions": 0.0,
+            "el0_cycles": 148.2548828125,
+            "el1_cycles": 0.0,
+            "l1d_refills": 0.003627232142857143,
+            "l2d_refills": 0.0,
+            "cycles": 148.2548828125
+          },
+          "system_switches_per_op": 0.0,
+          "temperature_before": {
+            "time_ns": 1792169311614631000,
+            "observation_ns": 97861000,
+            "access": "CPU3 kernel identity MMIO mapping",
+            "control": 70778886,
+            "status": 1718,
+            "millidegrees_c": 38628
+          },
+          "temperature_after": {
+            "time_ns": 1792169313693068000,
+            "observation_ns": 68267000,
+            "access": "CPU3 kernel identity MMIO mapping",
+            "control": 70778886,
+            "status": 1718,
+            "millidegrees_c": 38628
+          }
+        },
+        {
+          "workload": "instructions",
+          "bytes": 1,
+          "batch_median_ns": 17137.9599609375,
+          "count": 7168,
+          "individual_tail_ns": {
+            "50": 17031.25,
+            "95": 17031.25,
+            "99": 17031.25,
+            "100": 20572.916666666668
+          },
+          "cpu0_counters_per_op": {
+            "el0_instructions": 20168.1005859375,
+            "el1_instructions": 3.846958705357143,
+            "el0_cycles": 10238.83705357143,
+            "el1_cycles": 5.481305803571429,
+            "l1d_refills": 0.025390625,
+            "l2d_refills": 0.0,
+            "cycles": 10244.318359375
+          },
+          "system_switches_per_op": 0.0,
+          "temperature_before": {
+            "time_ns": 1792169313762739000,
+            "observation_ns": 66729000,
+            "access": "CPU3 kernel identity MMIO mapping",
+            "control": 70778886,
+            "status": 1718,
+            "millidegrees_c": 38628
+          },
+          "temperature_after": {
+            "time_ns": 1792169317600640000,
+            "observation_ns": 67531000,
+            "access": "CPU3 kernel identity MMIO mapping",
+            "control": 70778886,
+            "status": 1718,
+            "millidegrees_c": 38628
+          }
+        },
+        {
+          "workload": "memcpy",
+          "bytes": 1048576,
+          "batch_median_ns": 1124764.201171875,
+          "count": 7168,
+          "individual_tail_ns": {
+            "50": 1073541.6666666667,
+            "95": 1575364.5833333333,
+            "99": 1905677.0833333333,
+            "100": 2035000.0
+          },
+          "cpu0_counters_per_op": {
+            "el0_instructions": 164080.43819754463,
+            "el1_instructions": 272.1060267857143,
+            "el0_cycles": 674312.1519252232,
+            "el1_cycles": 821.5403180803571,
+            "l1d_refills": 621.3272879464286,
+            "l2d_refills": 15205.00083705357,
+            "cycles": 675133.6861049107
+          },
+          "system_switches_per_op": 0.0,
+          "temperature_before": {
+            "time_ns": 1792169317670154000,
+            "observation_ns": 67324000,
+            "access": "CPU3 kernel identity MMIO mapping",
+            "control": 70778886,
+            "status": 1718,
+            "millidegrees_c": 38628
+          },
+          "temperature_after": {
+            "time_ns": 1792169333458897000,
+            "observation_ns": 67018000,
+            "access": "CPU3 kernel identity MMIO mapping",
+            "control": 70778886,
+            "status": 1716,
+            "millidegrees_c": 39704
+          }
+        },
+        {
+          "workload": "fault",
+          "bytes": 1048576,
+          "batch_median_ns": 2908678.7412109375,
+          "count": 7168,
+          "individual_tail_ns": {
+            "50": 2908541.6666666665,
+            "95": 3299635.4166666665,
+            "99": 3336093.75,
+            "100": 3361093.75
+          },
+          "cpu0_counters_per_op": {
+            "el0_instructions": 2878.992745535714,
+            "el1_instructions": 1654806.2455357143,
+            "el0_cycles": 46629.44391741072,
+            "el1_cycles": 1698586.9095982143,
+            "l1d_refills": 2614.5294363839284,
+            "l2d_refills": 1500.3623046875,
+            "cycles": 1745216.3489118305
+          },
+          "system_switches_per_op": 0.0,
+          "temperature_before": {
+            "time_ns": 1792169333529055000,
+            "observation_ns": 67723000,
+            "access": "CPU3 kernel identity MMIO mapping",
+            "control": 70778886,
+            "status": 1716,
+            "millidegrees_c": 39704
+          },
+          "temperature_after": {
+            "time_ns": 1792169365194178000,
+            "observation_ns": 67685000,
+            "access": "CPU3 kernel identity MMIO mapping",
+            "control": 70778886,
+            "status": 1715,
+            "millidegrees_c": 40242
+          }
+        },
+        {
+          "workload": "fork_raw",
+          "bytes": 1,
+          "batch_median_ns": 1085792.6943359375,
+          "count": 7168,
+          "individual_tail_ns": {
+            "50": 1082135.4166666667,
+            "95": 1087135.4166666667,
+            "99": 1088697.9166666667,
+            "100": 1092552.0833333333
+          },
+          "cpu0_counters_per_op": {
+            "el0_instructions": 424.28976004464283,
+            "el1_instructions": 569490.0927734375,
+            "el0_cycles": 1683.5528738839287,
+            "el1_cycles": 647960.78125,
+            "l1d_refills": 2069.9090401785716,
+            "l2d_refills": 0.0020926339285714285,
+            "cycles": 649644.334123884
+          },
+          "system_switches_per_op": 2.0,
+          "temperature_before": {
+            "time_ns": 1792169365267153000,
+            "observation_ns": 68245000,
+            "access": "CPU3 kernel identity MMIO mapping",
+            "control": 70778886,
+            "status": 1716,
+            "millidegrees_c": 39704
+          },
+          "temperature_after": {
+            "time_ns": 1792169380561302000,
+            "observation_ns": 67519000,
+            "access": "CPU3 kernel identity MMIO mapping",
+            "control": 70778886,
+            "status": 1716,
+            "millidegrees_c": 39704
+          }
+        },
+        {
+          "workload": "fork_libc",
+          "bytes": 1,
+          "batch_median_ns": 1792570.2919921875,
+          "count": 7168,
+          "individual_tail_ns": {
+            "50": 1792500.0,
+            "95": 1805000.0,
+            "99": 1814010.4166666667,
+            "100": 1838333.3333333333
+          },
+          "cpu0_counters_per_op": {
+            "el0_instructions": 1184.505859375,
+            "el1_instructions": 791143.4750279018,
+            "el0_cycles": 4481.806082589285,
+            "el1_cycles": 900353.1840122768,
+            "l1d_refills": 2973.552734375,
+            "l2d_refills": 0.006556919642857143,
+            "cycles": 904834.990094866
+          },
+          "system_switches_per_op": 7.0009765625,
+          "temperature_before": {
+            "time_ns": 1792169380634764000,
+            "observation_ns": 67324000,
+            "access": "CPU3 kernel identity MMIO mapping",
+            "control": 70778886,
+            "status": 1716,
+            "millidegrees_c": 39704
+          },
+          "temperature_after": {
+            "time_ns": 1792169402442354000,
+            "observation_ns": 73068000,
+            "access": "CPU3 kernel identity MMIO mapping",
+            "control": 70778886,
+            "status": 1715,
+            "millidegrees_c": 40242
+          }
+        },
+        {
+          "workload": "exec",
+          "bytes": 1,
+          "batch_median_ns": 11043123.57421875,
+          "count": 1792,
+          "individual_tail_ns": {
+            "50": 11041458.333333334,
+            "95": 11080989.583333334,
+            "99": 11093541.666666666,
+            "100": 11132239.583333334
+          },
+          "cpu0_counters_per_op": {
+            "el0_instructions": 489089.80412946426,
+            "el1_instructions": 5171983.602120535,
+            "el0_cycles": 526731.8169642857,
+            "el1_cycles": 5688376.771205357,
+            "l1d_refills": 27425.934151785714,
+            "l2d_refills": 20289.10379464286,
+            "cycles": 6215108.588169643
+          },
+          "system_switches_per_op": 13.00390625,
+          "temperature_before": {
+            "time_ns": 1792169402523839000,
+            "observation_ns": 67309000,
+            "access": "CPU3 kernel identity MMIO mapping",
+            "control": 70778886,
+            "status": 1716,
+            "millidegrees_c": 39704
+          },
+          "temperature_after": {
+            "time_ns": 1792169429865174000,
+            "observation_ns": 67133000,
+            "access": "CPU3 kernel identity MMIO mapping",
+            "control": 70778886,
+            "status": 1714,
+            "millidegrees_c": 40780
+          }
+        },
+        {
+          "workload": "ipc0",
+          "bytes": 1,
+          "batch_median_ns": 115307.71875,
+          "count": 7168,
+          "individual_tail_ns": {
+            "50": 115052.08333333333,
+            "95": 115729.16666666667,
+            "99": 119375.0,
+            "100": 122864.58333333333
+          },
+          "cpu0_counters_per_op": {
+            "el0_instructions": 452.6049107142857,
+            "el1_instructions": 54264.29799107143,
+            "el0_cycles": 718.5301339285714,
+            "el1_cycles": 68417.10365513393,
+            "l1d_refills": 39.378487723214285,
+            "l2d_refills": 0.0037667410714285715,
+            "cycles": 69135.6337890625
+          },
+          "system_switches_per_op": 2.0,
+          "temperature_before": {
+            "time_ns": 1792169429938824000,
+            "observation_ns": 68875000,
+            "access": "CPU3 kernel identity MMIO mapping",
+            "control": 70778886,
+            "status": 1714,
+            "millidegrees_c": 40780
+          },
+          "temperature_after": {
+            "time_ns": 1792169435480761000,
+            "observation_ns": 67589000,
+            "access": "CPU3 kernel identity MMIO mapping",
+            "control": 70778886,
+            "status": 1714,
+            "millidegrees_c": 40780
+          }
+        },
+        {
+          "workload": "ipc1",
+          "bytes": 1,
+          "batch_median_ns": 98746.388671875,
+          "count": 7168,
+          "individual_tail_ns": {
+            "50": 98593.75,
+            "95": 99062.5,
+            "99": 99322.91666666667,
+            "100": 102656.25
+          },
+          "cpu0_counters_per_op": {
+            "el0_instructions": 424.4818638392857,
+            "el1_instructions": 31132.591378348214,
+            "el0_cycles": 617.0922154017857,
+            "el1_cycles": 39839.828822544645,
+            "l1d_refills": 68.57854352678571,
+            "l2d_refills": 0.0011160714285714285,
+            "cycles": 40456.92103794643
+          },
+          "system_switches_per_op": 2.0,
+          "temperature_before": {
+            "time_ns": 1792169435556709000,
+            "observation_ns": 67977000,
+            "access": "CPU3 kernel identity MMIO mapping",
+            "control": 70778886,
+            "status": 1715,
+            "millidegrees_c": 40242
+          },
+          "temperature_after": {
+            "time_ns": 1792169440950674000,
+            "observation_ns": 68016000,
+            "access": "CPU3 kernel identity MMIO mapping",
+            "control": 70778886,
+            "status": 1716,
+            "millidegrees_c": 39704
+          }
+        }
+      ]
+    },
+    {
+      "record": "baseline-pinned/measurements-1792169473428178000.json",
+      "status": "passed",
+      "error": null,
+      "service_affinity_cpu": 2,
+      "collector_sha256": "67ef57007b0e8688b8122128e0acf9ba2afa27d9b4fdd2c6c1f3bea985d432d2",
+      "probe_sha256": "d7c71fec9ee8729d5100a41be3f635b068935581bd65ffc51ce145e2cf01f982",
+      "probe_source_sha256": "56e9bafc2fdc63b5746eba22c26340f3a9af4c597a6a60e21a1fb252fa1b55a9",
+      "cases": [
+        {
+          "workload": "empty",
+          "bytes": 1,
+          "batch_median_ns": 311.177734375,
+          "count": 7168,
+          "individual_tail_ns": {
+            "50": 208.33333333333334,
+            "95": 208.33333333333334,
+            "99": 208.33333333333334,
+            "100": 312.5
+          },
+          "cpu0_counters_per_op": {
+            "el0_instructions": 102.00181361607143,
+            "el1_instructions": 0.0,
+            "el0_cycles": 148.25432477678572,
+            "el1_cycles": 0.0,
+            "l1d_refills": 0.0033482142857142855,
+            "l2d_refills": 0.0,
+            "cycles": 148.25279017857142
+          },
+          "system_switches_per_op": 0.0,
+          "temperature_before": {
+            "time_ns": 1792169473435804000,
+            "observation_ns": 71088000,
+            "access": "CPU3 kernel identity MMIO mapping",
+            "control": 70778886,
+            "status": 1718,
+            "millidegrees_c": 38628
+          },
+          "temperature_after": {
+            "time_ns": 1792169475499809000,
+            "observation_ns": 69252000,
+            "access": "CPU3 kernel identity MMIO mapping",
+            "control": 70778886,
+            "status": 1716,
+            "millidegrees_c": 39704
+          }
+        },
+        {
+          "workload": "instructions",
+          "bytes": 1,
+          "batch_median_ns": 17138.0107421875,
+          "count": 7168,
+          "individual_tail_ns": {
+            "50": 17031.25,
+            "95": 17031.25,
+            "99": 17031.25,
+            "100": 20625.0
+          },
+          "cpu0_counters_per_op": {
+            "el0_instructions": 20168.101004464286,
+            "el1_instructions": 3.8477957589285716,
+            "el0_cycles": 10238.832728794643,
+            "el1_cycles": 5.571428571428571,
+            "l1d_refills": 0.027483258928571428,
+            "l2d_refills": 0.0004185267857142857,
+            "cycles": 10244.40415736607
+          },
+          "system_switches_per_op": 0.0,
+          "temperature_before": {
+            "time_ns": 1792169475570464000,
+            "observation_ns": 66196000,
+            "access": "CPU3 kernel identity MMIO mapping",
+            "control": 70778886,
+            "status": 1717,
+            "millidegrees_c": 39166
+          },
+          "temperature_after": {
+            "time_ns": 1792169479421160000,
+            "observation_ns": 66738000,
+            "access": "CPU3 kernel identity MMIO mapping",
+            "control": 70778886,
+            "status": 1716,
+            "millidegrees_c": 39704
+          }
+        },
+        {
+          "workload": "fork_raw",
+          "bytes": 1,
+          "batch_median_ns": 1087109.5283203125,
+          "count": 7168,
+          "individual_tail_ns": {
+            "50": 1083489.5833333333,
+            "95": 1088489.5833333333,
+            "99": 1090208.3333333333,
+            "100": 1094947.9166666667
+          },
+          "cpu0_counters_per_op": {
+            "el0_instructions": 424.3189174107143,
+            "el1_instructions": 569488.2020089285,
+            "el0_cycles": 1691.886439732143,
+            "el1_cycles": 648680.2763671875,
+            "l1d_refills": 2090.354073660714,
+            "l2d_refills": 0.00390625,
+            "cycles": 650372.1628069197
+          },
+          "system_switches_per_op": 2.0,
+          "temperature_before": {
+            "time_ns": 1792169479490055000,
+            "observation_ns": 67281000,
+            "access": "CPU3 kernel identity MMIO mapping",
+            "control": 70778886,
+            "status": 1716,
+            "millidegrees_c": 39704
+          },
+          "temperature_after": {
+            "time_ns": 1792169494800131000,
+            "observation_ns": 74887000,
+            "access": "CPU3 kernel identity MMIO mapping",
+            "control": 70778886,
+            "status": 1717,
+            "millidegrees_c": 39166
+          }
+        },
+        {
+          "workload": "fork_libc",
+          "bytes": 1,
+          "batch_median_ns": 1793686.1162109375,
+          "count": 7168,
+          "individual_tail_ns": {
+            "50": 1793333.3333333333,
+            "95": 1803072.9166666667,
+            "99": 1813593.75,
+            "100": 1837135.4166666667
+          },
+          "cpu0_counters_per_op": {
+            "el0_instructions": 1184.449497767857,
+            "el1_instructions": 791521.925641741,
+            "el0_cycles": 4468.754185267857,
+            "el1_cycles": 900470.3949497768,
+            "l1d_refills": 2942.1356026785716,
+            "l2d_refills": 0.009347098214285714,
+            "cycles": 904939.1491350447
+          },
+          "system_switches_per_op": 7.0009765625,
+          "temperature_before": {
+            "time_ns": 1792169494878397000,
+            "observation_ns": 67487000,
+            "access": "CPU3 kernel identity MMIO mapping",
+            "control": 70778886,
+            "status": 1717,
+            "millidegrees_c": 39166
+          },
+          "temperature_after": {
+            "time_ns": 1792169516706512000,
+            "observation_ns": 67899000,
+            "access": "CPU3 kernel identity MMIO mapping",
+            "control": 70778886,
+            "status": 1715,
+            "millidegrees_c": 40242
+          }
+        },
+        {
+          "workload": "exec",
+          "bytes": 1,
+          "batch_median_ns": 11040234.578125,
+          "count": 1792,
+          "individual_tail_ns": {
+            "50": 11038906.25,
+            "95": 11078072.916666666,
+            "99": 11091718.75,
+            "100": 11114635.416666666
+          },
+          "cpu0_counters_per_op": {
+            "el0_instructions": 489095.7354910714,
+            "el1_instructions": 5170372.761160715,
+            "el0_cycles": 526789.5518973215,
+            "el1_cycles": 5687180.577008928,
+            "l1d_refills": 27326.604352678572,
+            "l2d_refills": 20304.33816964286,
+            "cycles": 6213970.12890625
+          },
+          "system_switches_per_op": 13.00390625,
+          "temperature_before": {
+            "time_ns": 1792169516778841000,
+            "observation_ns": 69820000,
+            "access": "CPU3 kernel identity MMIO mapping",
+            "control": 70778886,
+            "status": 1716,
+            "millidegrees_c": 39704
+          },
+          "temperature_after": {
+            "time_ns": 1792169544072421000,
+            "observation_ns": 68801000,
+            "access": "CPU3 kernel identity MMIO mapping",
+            "control": 70778886,
+            "status": 1714,
+            "millidegrees_c": 40780
+          }
+        }
+      ]
+    },
+    {
+      "record": "candidate-pinned/measurements-1792169958117349000.json",
+      "status": "passed",
+      "error": null,
+      "service_affinity_cpu": 2,
+      "collector_sha256": "67ef57007b0e8688b8122128e0acf9ba2afa27d9b4fdd2c6c1f3bea985d432d2",
+      "probe_sha256": "d7c71fec9ee8729d5100a41be3f635b068935581bd65ffc51ce145e2cf01f982",
+      "probe_source_sha256": "56e9bafc2fdc63b5746eba22c26340f3a9af4c597a6a60e21a1fb252fa1b55a9",
+      "cases": [
+        {
+          "workload": "empty",
+          "bytes": 1,
+          "batch_median_ns": 311.431640625,
+          "count": 7168,
+          "individual_tail_ns": {
+            "50": 208.33333333333334,
+            "95": 208.33333333333334,
+            "99": 208.33333333333334,
+            "100": 3437.5
+          },
+          "cpu0_counters_per_op": {
+            "el0_instructions": 102.00237165178571,
+            "el1_instructions": 0.17982700892857142,
+            "el0_cycles": 148.36383928571428,
+            "el1_cycles": 0.2670200892857143,
+            "l1d_refills": 0.005161830357142857,
+            "l2d_refills": 0.0,
+            "cycles": 148.630859375
+          },
+          "system_switches_per_op": 0.0,
+          "temperature_before": {
+            "time_ns": 1792169958123303000,
+            "observation_ns": 100040000,
+            "access": "CPU3 kernel identity MMIO mapping",
+            "control": 70778886,
+            "status": 1722,
+            "millidegrees_c": 36476
+          },
+          "temperature_after": {
+            "time_ns": 1792169960205216000,
+            "observation_ns": 90113000,
+            "access": "CPU3 kernel identity MMIO mapping",
+            "control": 70778886,
+            "status": 1721,
+            "millidegrees_c": 37014
+          }
+        },
+        {
+          "workload": "instructions",
+          "bytes": 1,
+          "batch_median_ns": 17137.9599609375,
+          "count": 7168,
+          "individual_tail_ns": {
+            "50": 17031.25,
+            "95": 17031.25,
+            "99": 17031.25,
+            "100": 20885.416666666668
+          },
+          "cpu0_counters_per_op": {
+            "el0_instructions": 20168.104910714286,
+            "el1_instructions": 3.8480747767857144,
+            "el0_cycles": 10238.72154017857,
+            "el1_cycles": 5.625837053571429,
+            "l1d_refills": 0.026925223214285716,
+            "l2d_refills": 0.0006975446428571429,
+            "cycles": 10244.347377232143
+          },
+          "system_switches_per_op": 0.0,
+          "temperature_before": {
+            "time_ns": 1792169960296785000,
+            "observation_ns": 73775000,
+            "access": "CPU3 kernel identity MMIO mapping",
+            "control": 70778886,
+            "status": 1722,
+            "millidegrees_c": 36476
+          },
+          "temperature_after": {
+            "time_ns": 1792169964145815000,
+            "observation_ns": 72089000,
+            "access": "CPU3 kernel identity MMIO mapping",
+            "control": 70778886,
+            "status": 1721,
+            "millidegrees_c": 37014
+          }
+        },
+        {
+          "workload": "memcpy",
+          "bytes": 1048576,
+          "batch_median_ns": 1127010.599609375,
+          "count": 7168,
+          "individual_tail_ns": {
+            "50": 1073281.25,
+            "95": 1621875.0,
+            "99": 1911510.4166666667,
+            "100": 2049114.5833333333
+          },
+          "cpu0_counters_per_op": {
+            "el0_instructions": 164080.4224330357,
+            "el1_instructions": 246.93317522321428,
+            "el0_cycles": 675607.3491908482,
+            "el1_cycles": 774.6185825892857,
+            "l1d_refills": 633.4186662946429,
+            "l2d_refills": 15196.62876674107,
+            "cycles": 676381.9631696428
+          },
+          "system_switches_per_op": 0.0,
+          "temperature_before": {
+            "time_ns": 1792169964219926000,
+            "observation_ns": 71839000,
+            "access": "CPU3 kernel identity MMIO mapping",
+            "control": 70778886,
+            "status": 1721,
+            "millidegrees_c": 37014
+          },
+          "temperature_after": {
+            "time_ns": 1792169980037355000,
+            "observation_ns": 72429000,
+            "access": "CPU3 kernel identity MMIO mapping",
+            "control": 70778886,
+            "status": 1720,
+            "millidegrees_c": 37552
+          }
+        },
+        {
+          "workload": "fault",
+          "bytes": 1048576,
+          "batch_median_ns": 2905726.166015625,
+          "count": 7168,
+          "individual_tail_ns": {
+            "50": 2904791.6666666665,
+            "95": 3295468.75,
+            "99": 3332031.25,
+            "100": 3355312.5
+          },
+          "cpu0_counters_per_op": {
+            "el0_instructions": 2879.091238839286,
+            "el1_instructions": 1655241.9836774555,
+            "el0_cycles": 46396.84375,
+            "el1_cycles": 1696339.3818359375,
+            "l1d_refills": 2566.2565569196427,
+            "l2d_refills": 1447.208286830357,
+            "cycles": 1742736.2225167411
+          },
+          "system_switches_per_op": 0.0,
+          "temperature_before": {
+            "time_ns": 1792169980113000000,
+            "observation_ns": 71451000,
+            "access": "CPU3 kernel identity MMIO mapping",
+            "control": 70778886,
+            "status": 1719,
+            "millidegrees_c": 38090
+          },
+          "temperature_after": {
+            "time_ns": 1792170011749400000,
+            "observation_ns": 73348000,
+            "access": "CPU3 kernel identity MMIO mapping",
+            "control": 70778886,
+            "status": 1718,
+            "millidegrees_c": 38628
+          }
+        },
+        {
+          "workload": "fork_raw",
+          "bytes": 1,
+          "batch_median_ns": 1081709.5439453125,
+          "count": 7168,
+          "individual_tail_ns": {
+            "50": 1077916.6666666667,
+            "95": 1083437.5,
+            "99": 1084947.9166666667,
+            "100": 1088177.0833333333
+          },
+          "cpu0_counters_per_op": {
+            "el0_instructions": 425.3988560267857,
+            "el1_instructions": 558895.6469029018,
+            "el0_cycles": 1652.0913783482142,
+            "el1_cycles": 645531.0023716518,
+            "l1d_refills": 2025.777064732143,
+            "l2d_refills": 0.0033482142857142855,
+            "cycles": 647183.0934709822
+          },
+          "system_switches_per_op": 2.0,
+          "temperature_before": {
+            "time_ns": 1792170011827189000,
+            "observation_ns": 85367000,
+            "access": "CPU3 kernel identity MMIO mapping",
+            "control": 70778886,
+            "status": 1719,
+            "millidegrees_c": 38090
+          },
+          "temperature_after": {
+            "time_ns": 1792170027093681000,
+            "observation_ns": 74522000,
+            "access": "CPU3 kernel identity MMIO mapping",
+            "control": 70778886,
+            "status": 1718,
+            "millidegrees_c": 38628
+          }
+        },
+        {
+          "workload": "fork_libc",
+          "bytes": 1,
+          "batch_median_ns": 1807381.845703125,
+          "count": 7168,
+          "individual_tail_ns": {
+            "50": 1807343.75,
+            "95": 1814947.9166666667,
+            "99": 1818281.25,
+            "100": 1844062.5
+          },
+          "cpu0_counters_per_op": {
+            "el0_instructions": 1181.7442801339287,
+            "el1_instructions": 738848.0192522322,
+            "el0_cycles": 4535.120675223215,
+            "el1_cycles": 879972.3311941965,
+            "l1d_refills": 2857.7197265625,
+            "l2d_refills": 0.008231026785714286,
+            "cycles": 884507.4518694197
+          },
+          "system_switches_per_op": 7.0009765625,
+          "temperature_before": {
+            "time_ns": 1792170027175325000,
+            "observation_ns": 83340000,
+            "access": "CPU3 kernel identity MMIO mapping",
+            "control": 70778886,
+            "status": 1718,
+            "millidegrees_c": 38628
+          },
+          "temperature_after": {
+            "time_ns": 1792170049127091000,
+            "observation_ns": 72408000,
+            "access": "CPU3 kernel identity MMIO mapping",
+            "control": 70778886,
+            "status": 1718,
+            "millidegrees_c": 38628
+          }
+        },
+        {
+          "workload": "exec",
+          "bytes": 1,
+          "batch_median_ns": 9668282.47265625,
+          "count": 1792,
+          "individual_tail_ns": {
+            "50": 9662135.416666666,
+            "95": 9705833.333333334,
+            "99": 9736354.166666666,
+            "100": 9794270.833333334
+          },
+          "cpu0_counters_per_op": {
+            "el0_instructions": 489071.9051339286,
+            "el1_instructions": 3930849.8616071427,
+            "el0_cycles": 520291.97823660716,
+            "el1_cycles": 4836463.708705357,
+            "l1d_refills": 26104.31863839286,
+            "l2d_refills": 16144.171875,
+            "cycles": 5356755.686941965
+          },
+          "system_switches_per_op": 13.00390625,
+          "temperature_before": {
+            "time_ns": 1792170049205775000,
+            "observation_ns": 71973000,
+            "access": "CPU3 kernel identity MMIO mapping",
+            "control": 70778886,
+            "status": 1718,
+            "millidegrees_c": 38628
+          },
+          "temperature_after": {
+            "time_ns": 1792170073327982000,
+            "observation_ns": 73055000,
+            "access": "CPU3 kernel identity MMIO mapping",
+            "control": 70778886,
+            "status": 1717,
+            "millidegrees_c": 39166
+          }
+        },
+        {
+          "workload": "ipc0",
+          "bytes": 1,
+          "batch_median_ns": 118888.6005859375,
+          "count": 7168,
+          "individual_tail_ns": {
+            "50": 118645.83333333333,
+            "95": 119270.83333333333,
+            "99": 122916.66666666667,
+            "100": 125885.41666666667
+          },
+          "cpu0_counters_per_op": {
+            "el0_instructions": 452.3392857142857,
+            "el1_instructions": 55632.55873325893,
+            "el0_cycles": 709.5938895089286,
+            "el1_cycles": 70578.43136160714,
+            "l1d_refills": 41.072684151785715,
+            "l2d_refills": 0.0018136160714285715,
+            "cycles": 71288.02525111607
+          },
+          "system_switches_per_op": 2.0,
+          "temperature_before": {
+            "time_ns": 1792170073407258000,
+            "observation_ns": 72851000,
+            "access": "CPU3 kernel identity MMIO mapping",
+            "control": 70778886,
+            "status": 1717,
+            "millidegrees_c": 39166
+          },
+          "temperature_after": {
+            "time_ns": 1792170078974969000,
+            "observation_ns": 75139000,
+            "access": "CPU3 kernel identity MMIO mapping",
+            "control": 70778886,
+            "status": 1718,
+            "millidegrees_c": 38628
+          }
+        },
+        {
+          "workload": "ipc1",
+          "bytes": 1,
+          "batch_median_ns": 101961.365234375,
+          "count": 7168,
+          "individual_tail_ns": {
+            "50": 101822.91666666667,
+            "95": 102395.83333333333,
+            "99": 103020.83333333333,
+            "100": 104791.66666666667
+          },
+          "cpu0_counters_per_op": {
+            "el0_instructions": 424.4047154017857,
+            "el1_instructions": 32327.165178571428,
+            "el0_cycles": 628.7057756696429,
+            "el1_cycles": 41401.15625,
+            "l1d_refills": 62.012137276785715,
+            "l2d_refills": 0.0008370535714285714,
+            "cycles": 42029.862025669645
+          },
+          "system_switches_per_op": 2.0,
+          "temperature_before": {
+            "time_ns": 1792170079058883000,
+            "observation_ns": 73064000,
+            "access": "CPU3 kernel identity MMIO mapping",
+            "control": 70778886,
+            "status": 1719,
+            "millidegrees_c": 38090
+          },
+          "temperature_after": {
+            "time_ns": 1792170084475264000,
+            "observation_ns": 72444000,
+            "access": "CPU3 kernel identity MMIO mapping",
+            "control": 70778886,
+            "status": 1718,
+            "millidegrees_c": 38628
+          }
+        }
+      ]
+    },
+    {
+      "record": "candidate-pinned/measurements-1792170285033828000.json",
+      "status": "passed",
+      "error": null,
+      "service_affinity_cpu": 2,
+      "collector_sha256": "67ef57007b0e8688b8122128e0acf9ba2afa27d9b4fdd2c6c1f3bea985d432d2",
+      "probe_sha256": "d7c71fec9ee8729d5100a41be3f635b068935581bd65ffc51ce145e2cf01f982",
+      "probe_source_sha256": "56e9bafc2fdc63b5746eba22c26340f3a9af4c597a6a60e21a1fb252fa1b55a9",
+      "cases": [
+        {
+          "workload": "empty",
+          "bytes": 1,
+          "batch_median_ns": 311.126953125,
+          "count": 7168,
+          "individual_tail_ns": {
+            "50": 208.33333333333334,
+            "95": 208.33333333333334,
+            "99": 208.33333333333334,
+            "100": 312.5
+          },
+          "cpu0_counters_per_op": {
+            "el0_instructions": 102.00111607142857,
+            "el1_instructions": 0.0,
+            "el0_cycles": 148.32854352678572,
+            "el1_cycles": 0.0,
+            "l1d_refills": 0.002650669642857143,
+            "l2d_refills": 0.0,
+            "cycles": 148.32854352678572
+          },
+          "system_switches_per_op": 0.0,
+          "temperature_before": {
+            "time_ns": 1792170285047018000,
+            "observation_ns": 102776000,
+            "access": "CPU3 kernel identity MMIO mapping",
+            "control": 70778886,
+            "status": 1721,
+            "millidegrees_c": 37014
+          },
+          "temperature_after": {
+            "time_ns": 1792170287127205000,
+            "observation_ns": 84256000,
+            "access": "CPU3 kernel identity MMIO mapping",
+            "control": 70778886,
+            "status": 1720,
+            "millidegrees_c": 37552
+          }
+        },
+        {
+          "workload": "instructions",
+          "bytes": 1,
+          "batch_median_ns": 17137.9091796875,
+          "count": 7168,
+          "individual_tail_ns": {
+            "50": 17031.25,
+            "95": 17031.25,
+            "99": 17031.25,
+            "100": 20625.0
+          },
+          "cpu0_counters_per_op": {
+            "el0_instructions": 20168.1025390625,
+            "el1_instructions": 3.84765625,
+            "el0_cycles": 10238.70689174107,
+            "el1_cycles": 5.604910714285714,
+            "l1d_refills": 0.028599330357142856,
+            "l2d_refills": 0.0,
+            "cycles": 10244.311802455357
+          },
+          "system_switches_per_op": 0.0,
+          "temperature_before": {
+            "time_ns": 1792170287213146000,
+            "observation_ns": 81024000,
+            "access": "CPU3 kernel identity MMIO mapping",
+            "control": 70778886,
+            "status": 1720,
+            "millidegrees_c": 37552
+          },
+          "temperature_after": {
+            "time_ns": 1792170291071140000,
+            "observation_ns": 89064000,
+            "access": "CPU3 kernel identity MMIO mapping",
+            "control": 70778886,
+            "status": 1720,
+            "millidegrees_c": 37552
+          }
+        },
+        {
+          "workload": "fork_raw",
+          "bytes": 1,
+          "batch_median_ns": 1082249.1455078125,
+          "count": 7168,
+          "individual_tail_ns": {
+            "50": 1078437.5,
+            "95": 1084062.5,
+            "99": 1085677.0833333333,
+            "100": 1089010.4166666667
+          },
+          "cpu0_counters_per_op": {
+            "el0_instructions": 425.4507533482143,
+            "el1_instructions": 558896.538922991,
+            "el0_cycles": 1671.5611049107142,
+            "el1_cycles": 645833.6595982143,
+            "l1d_refills": 2038.9130859375,
+            "l2d_refills": 0.0037667410714285715,
+            "cycles": 647505.220703125
+          },
+          "system_switches_per_op": 2.0,
+          "temperature_before": {
+            "time_ns": 1792170291167158000,
+            "observation_ns": 106645000,
+            "access": "CPU3 kernel identity MMIO mapping",
+            "control": 70778886,
+            "status": 1720,
+            "millidegrees_c": 37552
+          },
+          "temperature_after": {
+            "time_ns": 1792170306463572000,
+            "observation_ns": 76311000,
+            "access": "CPU3 kernel identity MMIO mapping",
+            "control": 70778886,
+            "status": 1719,
+            "millidegrees_c": 38090
+          }
+        },
+        {
+          "workload": "fork_libc",
+          "bytes": 1,
+          "batch_median_ns": 1807036.7939453125,
+          "count": 7168,
+          "individual_tail_ns": {
+            "50": 1806822.9166666667,
+            "95": 1814531.25,
+            "99": 1818437.5,
+            "100": 1844687.5
+          },
+          "cpu0_counters_per_op": {
+            "el0_instructions": 1181.4234095982142,
+            "el1_instructions": 738855.3225446428,
+            "el0_cycles": 4522.759068080357,
+            "el1_cycles": 879753.0230189732,
+            "l1d_refills": 2866.5456194196427,
+            "l2d_refills": 0.013532366071428572,
+            "cycles": 884275.7820870535
+          },
+          "system_switches_per_op": 7.0009765625,
+          "temperature_before": {
+            "time_ns": 1792170306544038000,
+            "observation_ns": 80520000,
+            "access": "CPU3 kernel identity MMIO mapping",
+            "control": 70778886,
+            "status": 1720,
+            "millidegrees_c": 37552
+          },
+          "temperature_after": {
+            "time_ns": 1792170328499488000,
+            "observation_ns": 82268000,
+            "access": "CPU3 kernel identity MMIO mapping",
+            "control": 70778886,
+            "status": 1718,
+            "millidegrees_c": 38628
+          }
+        },
+        {
+          "workload": "exec",
+          "bytes": 1,
+          "batch_median_ns": 9646822.3046875,
+          "count": 1792,
+          "individual_tail_ns": {
+            "50": 9643802.083333334,
+            "95": 9693489.583333334,
+            "99": 9726822.916666666,
+            "100": 9765312.5
+          },
+          "cpu0_counters_per_op": {
+            "el0_instructions": 489084.15848214284,
+            "el1_instructions": 3927474.378348214,
+            "el0_cycles": 520078.4893973214,
+            "el1_cycles": 4828820.125,
+            "l1d_refills": 25603.059151785714,
+            "l2d_refills": 16086.46484375,
+            "cycles": 5348898.614397322
+          },
+          "system_switches_per_op": 13.00390625,
+          "temperature_before": {
+            "time_ns": 1792170328586548000,
+            "observation_ns": 75736000,
+            "access": "CPU3 kernel identity MMIO mapping",
+            "control": 70778886,
+            "status": 1717,
+            "millidegrees_c": 39166
+          },
+          "temperature_after": {
+            "time_ns": 1792170352667786000,
+            "observation_ns": 75677000,
+            "access": "CPU3 kernel identity MMIO mapping",
+            "control": 70778886,
+            "status": 1716,
+            "millidegrees_c": 39704
+          }
+        },
+        {
+          "workload": "ipc0",
+          "bytes": 1,
+          "batch_median_ns": 119040.62890625,
+          "count": 7168,
+          "individual_tail_ns": {
+            "50": 118854.16666666667,
+            "95": 119479.16666666667,
+            "99": 123020.83333333333,
+            "100": 129895.83333333333
+          },
+          "cpu0_counters_per_op": {
+            "el0_instructions": 452.974609375,
+            "el1_instructions": 55602.68596540178,
+            "el0_cycles": 734.4776785714286,
+            "el1_cycles": 70649.4375,
+            "l1d_refills": 55.314453125,
+            "l2d_refills": 0.0033482142857142855,
+            "cycles": 71383.91517857143
+          },
+          "system_switches_per_op": 2.0,
+          "temperature_before": {
+            "time_ns": 1792170352749370000,
+            "observation_ns": 79407000,
+            "access": "CPU3 kernel identity MMIO mapping",
+            "control": 70778886,
+            "status": 1717,
+            "millidegrees_c": 39166
+          },
+          "temperature_after": {
+            "time_ns": 1792170358324172000,
+            "observation_ns": 77020000,
+            "access": "CPU3 kernel identity MMIO mapping",
+            "control": 70778886,
+            "status": 1718,
+            "millidegrees_c": 38628
+          }
+        },
+        {
+          "workload": "ipc1",
+          "bytes": 1,
+          "batch_median_ns": 102101.6435546875,
+          "count": 7168,
+          "individual_tail_ns": {
+            "50": 101979.16666666667,
+            "95": 102552.08333333333,
+            "99": 103072.91666666667,
+            "100": 104843.75
+          },
+          "cpu0_counters_per_op": {
+            "el0_instructions": 424.4585658482143,
+            "el1_instructions": 32288.43526785714,
+            "el0_cycles": 623.7123325892857,
+            "el1_cycles": 41601.51743861607,
+            "l1d_refills": 70.71316964285714,
+            "l2d_refills": 0.0005580357142857143,
+            "cycles": 42225.229771205355
+          },
+          "system_switches_per_op": 2.0,
+          "temperature_before": {
+            "time_ns": 1792170358409704000,
+            "observation_ns": 77670000,
+            "access": "CPU3 kernel identity MMIO mapping",
+            "control": 70778886,
+            "status": 1718,
+            "millidegrees_c": 38628
+          },
+          "temperature_after": {
+            "time_ns": 1792170363829164000,
+            "observation_ns": 77239000,
+            "access": "CPU3 kernel identity MMIO mapping",
+            "control": 70778886,
+            "status": 1718,
+            "millidegrees_c": 38628
+          }
+        }
+      ]
+    },
+    {
+      "record": "baseline-crossback/measurements-1792170784053455000.json",
+      "status": "passed",
+      "error": null,
+      "service_affinity_cpu": 2,
+      "collector_sha256": "67ef57007b0e8688b8122128e0acf9ba2afa27d9b4fdd2c6c1f3bea985d432d2",
+      "probe_sha256": "d7c71fec9ee8729d5100a41be3f635b068935581bd65ffc51ce145e2cf01f982",
+      "probe_source_sha256": "56e9bafc2fdc63b5746eba22c26340f3a9af4c597a6a60e21a1fb252fa1b55a9",
+      "cases": [
+        {
+          "workload": "empty",
+          "bytes": 1,
+          "batch_median_ns": 311.279296875,
+          "count": 7168,
+          "individual_tail_ns": {
+            "50": 208.33333333333334,
+            "95": 208.33333333333334,
+            "99": 208.33333333333334,
+            "100": 312.5
+          },
+          "cpu0_counters_per_op": {
+            "el0_instructions": 102.0009765625,
+            "el1_instructions": 0.0,
+            "el0_cycles": 148.24679129464286,
+            "el1_cycles": 0.0,
+            "l1d_refills": 0.0034877232142857145,
+            "l2d_refills": 0.0,
+            "cycles": 148.24679129464286
+          },
+          "system_switches_per_op": 0.0,
+          "temperature_before": {
+            "time_ns": 1792170784060193000,
+            "observation_ns": 118780000,
+            "access": "CPU3 kernel identity MMIO mapping",
+            "control": 70778886,
+            "status": 1712,
+            "millidegrees_c": 41856
+          },
+          "temperature_after": {
+            "time_ns": 1792170786160187000,
+            "observation_ns": 78714000,
+            "access": "CPU3 kernel identity MMIO mapping",
+            "control": 70778886,
+            "status": 1709,
+            "millidegrees_c": 43470
+          }
+        },
+        {
+          "workload": "instructions",
+          "bytes": 1,
+          "batch_median_ns": 17138.0107421875,
+          "count": 7168,
+          "individual_tail_ns": {
+            "50": 17031.25,
+            "95": 17031.25,
+            "99": 17031.25,
+            "100": 20729.166666666668
+          },
+          "cpu0_counters_per_op": {
+            "el0_instructions": 20168.101143973214,
+            "el1_instructions": 3.8510044642857144,
+            "el0_cycles": 10238.799107142857,
+            "el1_cycles": 5.548549107142857,
+            "l1d_refills": 0.025530133928571428,
+            "l2d_refills": 0.00013950892857142856,
+            "cycles": 10244.34765625
+          },
+          "system_switches_per_op": 0.0,
+          "temperature_before": {
+            "time_ns": 1792170786240314000,
+            "observation_ns": 74099000,
+            "access": "CPU3 kernel identity MMIO mapping",
+            "control": 70778886,
+            "status": 1710,
+            "millidegrees_c": 42932
+          },
+          "temperature_after": {
+            "time_ns": 1792170790089220000,
+            "observation_ns": 81070000,
+            "access": "CPU3 kernel identity MMIO mapping",
+            "control": 70778886,
+            "status": 1710,
+            "millidegrees_c": 42932
+          }
+        },
+        {
+          "workload": "memcpy",
+          "bytes": 1048576,
+          "batch_median_ns": 1158158.4677734375,
+          "count": 7168,
+          "individual_tail_ns": {
+            "50": 1103645.8333333333,
+            "95": 1676250.0,
+            "99": 1977343.75,
+            "100": 2096614.5833333333
+          },
+          "cpu0_counters_per_op": {
+            "el0_instructions": 164080.36844308037,
+            "el1_instructions": 254.20270647321428,
+            "el0_cycles": 693608.673828125,
+            "el1_cycles": 778.0163225446429,
+            "l1d_refills": 639.6851283482143,
+            "l2d_refills": 15231.030970982143,
+            "cycles": 694386.6870814732
+          },
+          "system_switches_per_op": 0.0,
+          "temperature_before": {
+            "time_ns": 1792170790173052000,
+            "observation_ns": 79549000,
+            "access": "CPU3 kernel identity MMIO mapping",
+            "control": 70778886,
+            "status": 1709,
+            "millidegrees_c": 43470
+          },
+          "temperature_after": {
+            "time_ns": 1792170806280333000,
+            "observation_ns": 76630000,
+            "access": "CPU3 kernel identity MMIO mapping",
+            "control": 70778886,
+            "status": 1708,
+            "millidegrees_c": 44008
+          }
+        },
+        {
+          "workload": "fault",
+          "bytes": 1048576,
+          "batch_median_ns": 2932536.0615234375,
+          "count": 7168,
+          "individual_tail_ns": {
+            "50": 2932760.4166666665,
+            "95": 3323645.8333333335,
+            "99": 3361406.25,
+            "100": 3388489.5833333335
+          },
+          "cpu0_counters_per_op": {
+            "el0_instructions": 2878.8984375,
+            "el1_instructions": 1655097.5945870536,
+            "el0_cycles": 48655.738002232145,
+            "el1_cycles": 1710968.2931082589,
+            "l1d_refills": 2544.2149832589284,
+            "l2d_refills": 1445.1788504464287,
+            "cycles": 1759624.029575893
+          },
+          "system_switches_per_op": 0.0,
+          "temperature_before": {
+            "time_ns": 1792170806360210000,
+            "observation_ns": 81376000,
+            "access": "CPU3 kernel identity MMIO mapping",
+            "control": 70778886,
+            "status": 1708,
+            "millidegrees_c": 44008
+          },
+          "temperature_after": {
+            "time_ns": 1792170838310231000,
+            "observation_ns": 79349000,
+            "access": "CPU3 kernel identity MMIO mapping",
+            "control": 70778886,
+            "status": 1706,
+            "millidegrees_c": 45084
+          }
+        },
+        {
+          "workload": "fork_raw",
+          "bytes": 1,
+          "batch_median_ns": 1101198.83203125,
+          "count": 7168,
+          "individual_tail_ns": {
+            "50": 1097500.0,
+            "95": 1102604.1666666667,
+            "99": 1104114.5833333333,
+            "100": 1106927.0833333333
+          },
+          "cpu0_counters_per_op": {
+            "el0_instructions": 424.31263950892856,
+            "el1_instructions": 576808.894391741,
+            "el0_cycles": 1670.2608816964287,
+            "el1_cycles": 657208.3074776785,
+            "l1d_refills": 2048.5778459821427,
+            "l2d_refills": 0.00390625,
+            "cycles": 658878.568359375
+          },
+          "system_switches_per_op": 2.0,
+          "temperature_before": {
+            "time_ns": 1792170838394898000,
+            "observation_ns": 76001000,
+            "access": "CPU3 kernel identity MMIO mapping",
+            "control": 70778886,
+            "status": 1706,
+            "millidegrees_c": 45084
+          },
+          "temperature_after": {
+            "time_ns": 1792170853835338000,
+            "observation_ns": 79608000,
+            "access": "CPU3 kernel identity MMIO mapping",
+            "control": 70778886,
+            "status": 1707,
+            "millidegrees_c": 44546
+          }
+        },
+        {
+          "workload": "fork_libc",
+          "bytes": 1,
+          "batch_median_ns": 1840412.6484375,
+          "count": 7168,
+          "individual_tail_ns": {
+            "50": 1834427.0833333333,
+            "95": 1850000.0,
+            "99": 1853281.25,
+            "100": 1870520.8333333333
+          },
+          "cpu0_counters_per_op": {
+            "el0_instructions": 1183.228794642857,
+            "el1_instructions": 806367.5263671875,
+            "el0_cycles": 4450.022879464285,
+            "el1_cycles": 919910.453264509,
+            "l1d_refills": 2958.313895089286,
+            "l2d_refills": 0.007114955357142857,
+            "cycles": 924360.4761439732
+          },
+          "system_switches_per_op": 7.0009765625,
+          "temperature_before": {
+            "time_ns": 1792170853921863000,
+            "observation_ns": 75895000,
+            "access": "CPU3 kernel identity MMIO mapping",
+            "control": 70778886,
+            "status": 1707,
+            "millidegrees_c": 44546
+          },
+          "temperature_after": {
+            "time_ns": 1792170876178247000,
+            "observation_ns": 73906000,
+            "access": "CPU3 kernel identity MMIO mapping",
+            "control": 70778886,
+            "status": 1706,
+            "millidegrees_c": 45084
+          }
+        },
+        {
+          "workload": "exec",
+          "bytes": 1,
+          "batch_median_ns": 11180578.61328125,
+          "count": 1792,
+          "individual_tail_ns": {
+            "50": 11176927.083333334,
+            "95": 11229114.583333334,
+            "99": 11246875.0,
+            "100": 17065729.166666668
+          },
+          "cpu0_counters_per_op": {
+            "el0_instructions": 489088.61886160716,
+            "el1_instructions": 5194161.859375,
+            "el0_cycles": 530000.77734375,
+            "el1_cycles": 5753105.44140625,
+            "l1d_refills": 27561.553571428572,
+            "l2d_refills": 20209.47265625,
+            "cycles": 6283106.21875
+          },
+          "system_switches_per_op": 13.00390625,
+          "temperature_before": {
+            "time_ns": 1792170876260132000,
+            "observation_ns": 78256000,
+            "access": "CPU3 kernel identity MMIO mapping",
+            "control": 70778886,
+            "status": 1706,
+            "millidegrees_c": 45084
+          },
+          "temperature_after": {
+            "time_ns": 1792170903878913000,
+            "observation_ns": 79203000,
+            "access": "CPU3 kernel identity MMIO mapping",
+            "control": 70778886,
+            "status": 1704,
+            "millidegrees_c": 46160
+          }
+        },
+        {
+          "workload": "ipc0",
+          "bytes": 1,
+          "batch_median_ns": 118535.15625,
+          "count": 7168,
+          "individual_tail_ns": {
+            "50": 118333.33333333333,
+            "95": 118958.33333333333,
+            "99": 122395.83333333333,
+            "100": 125677.08333333333
+          },
+          "cpu0_counters_per_op": {
+            "el0_instructions": 452.49832589285717,
+            "el1_instructions": 55634.314174107145,
+            "el0_cycles": 713.3447265625,
+            "el1_cycles": 70365.84779575893,
+            "l1d_refills": 49.400111607142854,
+            "l2d_refills": 0.0018136160714285715,
+            "cycles": 71079.19252232143
+          },
+          "system_switches_per_op": 2.0,
+          "temperature_before": {
+            "time_ns": 1792170903965304000,
+            "observation_ns": 75583000,
+            "access": "CPU3 kernel identity MMIO mapping",
+            "control": 70778886,
+            "status": 1706,
+            "millidegrees_c": 45084
+          },
+          "temperature_after": {
+            "time_ns": 1792170909529688000,
+            "observation_ns": 75060000,
+            "access": "CPU3 kernel identity MMIO mapping",
+            "control": 70778886,
+            "status": 1706,
+            "millidegrees_c": 45084
+          }
+        },
+        {
+          "workload": "ipc1",
+          "bytes": 1,
+          "batch_median_ns": 101865.7939453125,
+          "count": 7168,
+          "individual_tail_ns": {
+            "50": 101718.75,
+            "95": 102187.5,
+            "99": 102812.5,
+            "100": 104583.33333333333
+          },
+          "cpu0_counters_per_op": {
+            "el0_instructions": 424.63351004464283,
+            "el1_instructions": 32330.66476004464,
+            "el0_cycles": 617.1803850446429,
+            "el1_cycles": 41300.865513392855,
+            "l1d_refills": 68.79547991071429,
+            "l2d_refills": 0.0012555803571428572,
+            "cycles": 41918.0458984375
+          },
+          "system_switches_per_op": 2.0,
+          "temperature_before": {
+            "time_ns": 1792170909614929000,
+            "observation_ns": 73632000,
+            "access": "CPU3 kernel identity MMIO mapping",
+            "control": 70778886,
+            "status": 1706,
+            "millidegrees_c": 45084
+          },
+          "temperature_after": {
+            "time_ns": 1792170915025215000,
+            "observation_ns": 80971000,
+            "access": "CPU3 kernel identity MMIO mapping",
+            "control": 70778886,
+            "status": 1706,
+            "millidegrees_c": 45084
+          }
+        }
+      ]
+    }
+  ],
+  "thermal": {
+    "scope": "single-core repeated 1 MiB copies; temperature sampling halts idle CPU3; not a throughput benchmark",
+    "samples": [
+      {
+        "time_ns": 1792167974184081000,
+        "observation_ns": 73628000,
+        "access": "CPU3 kernel identity MMIO mapping",
+        "control": 70778886,
+        "status": 1707,
+        "millidegrees_c": 44546,
+        "elapsed_s": 0.07364577002590522
+      },
+      {
+        "time_ns": 1792167976328684000,
+        "observation_ns": 66787000,
+        "access": "CPU3 kernel identity MMIO mapping",
+        "control": 70778886,
+        "status": 1706,
+        "millidegrees_c": 45084,
+        "elapsed_s": 2.211365189985372
+      },
+      {
+        "time_ns": 1792167978470324000,
+        "observation_ns": 67557000,
+        "access": "CPU3 kernel identity MMIO mapping",
+        "control": 70778886,
+        "status": 1704,
+        "millidegrees_c": 46160,
+        "elapsed_s": 4.353731140028685
+      },
+      {
+        "time_ns": 1792167980620214000,
+        "observation_ns": 66460000,
+        "access": "CPU3 kernel identity MMIO mapping",
+        "control": 70778886,
+        "status": 1704,
+        "millidegrees_c": 46160,
+        "elapsed_s": 6.502481890027411
+      },
+      {
+        "time_ns": 1792167982760004000,
+        "observation_ns": 66595000,
+        "access": "CPU3 kernel identity MMIO mapping",
+        "control": 70778886,
+        "status": 1704,
+        "millidegrees_c": 46160,
+        "elapsed_s": 8.642363380989991
+      },
+      {
+        "time_ns": 1792167984870088000,
+        "observation_ns": 67156000,
+        "access": "CPU3 kernel identity MMIO mapping",
+        "control": 70778886,
+        "status": 1704,
+        "millidegrees_c": 46160,
+        "elapsed_s": 10.752966683998238
+      },
+      {
+        "time_ns": 1792167987007223000,
+        "observation_ns": 107206000,
+        "access": "CPU3 kernel identity MMIO mapping",
+        "control": 70778886,
+        "status": 1704,
+        "millidegrees_c": 46160,
+        "elapsed_s": 12.930111316032708
+      },
+      {
+        "time_ns": 1792167989115429000,
+        "observation_ns": 66347000,
+        "access": "CPU3 kernel identity MMIO mapping",
+        "control": 70778886,
+        "status": 1704,
+        "millidegrees_c": 46160,
+        "elapsed_s": 14.997414177982137
+      },
+      {
+        "time_ns": 1792167991260975000,
+        "observation_ns": 67755000,
+        "access": "CPU3 kernel identity MMIO mapping",
+        "control": 70778886,
+        "status": 1702,
+        "millidegrees_c": 47236,
+        "elapsed_s": 17.144323728978634
+      },
+      {
+        "time_ns": 1792167993355946000,
+        "observation_ns": 66667000,
+        "access": "CPU3 kernel identity MMIO mapping",
+        "control": 70778886,
+        "status": 1704,
+        "millidegrees_c": 46160,
+        "elapsed_s": 19.238166114024352
+      },
+      {
+        "time_ns": 1792167995485335000,
+        "observation_ns": 263932000,
+        "access": "CPU3 kernel identity MMIO mapping",
+        "control": 70778886,
+        "status": 1703,
+        "millidegrees_c": 46698,
+        "elapsed_s": 21.56483891699463
+      },
+      {
+        "time_ns": 1792167997820266000,
+        "observation_ns": 196570000,
+        "access": "CPU3 kernel identity MMIO mapping",
+        "control": 70778886,
+        "status": 1703,
+        "millidegrees_c": 46698,
+        "elapsed_s": 23.832319771987386
+      },
+      {
+        "time_ns": 1792168000066229000,
+        "observation_ns": 240569000,
+        "access": "CPU3 kernel identity MMIO mapping",
+        "control": 70778886,
+        "status": 1704,
+        "millidegrees_c": 46160,
+        "elapsed_s": 26.1222341840039
+      },
+      {
+        "time_ns": 1792168002375021000,
+        "observation_ns": 241655000,
+        "access": "CPU3 kernel identity MMIO mapping",
+        "control": 70778886,
+        "status": 1703,
+        "millidegrees_c": 46698,
+        "elapsed_s": 28.43208145198878
+      },
+      {
+        "time_ns": 1792168004663666000,
+        "observation_ns": 90023000,
+        "access": "CPU3 kernel identity MMIO mapping",
+        "control": 70778886,
+        "status": 1704,
+        "millidegrees_c": 46160,
+        "elapsed_s": 30.5690151519957
+      },
+      {
+        "time_ns": 1792168006834402000,
+        "observation_ns": 66640000,
+        "access": "CPU3 kernel identity MMIO mapping",
+        "control": 70778886,
+        "status": 1703,
+        "millidegrees_c": 46698,
+        "elapsed_s": 32.7163236530032
+      },
+      {
+        "time_ns": 1792168008968176000,
+        "observation_ns": 66571000,
+        "access": "CPU3 kernel identity MMIO mapping",
+        "control": 70778886,
+        "status": 1702,
+        "millidegrees_c": 47236,
+        "elapsed_s": 34.849987155990675
+      },
+      {
+        "time_ns": 1792168011107848000,
+        "observation_ns": 66708000,
+        "access": "CPU3 kernel identity MMIO mapping",
+        "control": 70778886,
+        "status": 1703,
+        "millidegrees_c": 46698,
+        "elapsed_s": 36.989752000023145
+      },
+      {
+        "time_ns": 1792168013179328000,
+        "observation_ns": 66736000,
+        "access": "CPU3 kernel identity MMIO mapping",
+        "control": 70778886,
+        "status": 1704,
+        "millidegrees_c": 46160,
+        "elapsed_s": 39.061218117014505
+      },
+      {
+        "time_ns": 1792168015324415000,
+        "observation_ns": 66965000,
+        "access": "CPU3 kernel identity MMIO mapping",
+        "control": 70778886,
+        "status": 1702,
+        "millidegrees_c": 47236,
+        "elapsed_s": 41.20649093698012
+      }
+    ],
+    "status": "passed",
+    "elapsed_s": 41.99862343497807,
+    "transcript": "/rpi-perf.elf memcpy 4096 1048576; echo RPI_COMMAND_STATUS=$?\r\nRPI_PERF {\"workload\":\"memcpy\",\"sample\":0,\"warmup\":true,\"iterations\":4096,\"bytes\":1048576,\"ns\":4634475938,\"switches\":0}\r\nRPI_PERF {\"workload\":\"memcpy\",\"sample\":1,\"warmup\":true,\"iterations\":4096,\"bytes\":1048576,\"ns\":4645472031,\"switches\":0}\r\nRPI_PERF {\"workload\":\"memcpy\",\"sample\":2,\"warmup\":false,\"iterations\":4096,\"bytes\":1048576,\"ns\":4635629323,\"switches\":0}\r\nRPI_PERF {\"workload\":\"memcpy\",\"sample\":3,\"warmup\":false,\"iterations\":4096,\"bytes\":1048576,\"ns\":4638025417,\"switches\":0}\r\nRPI_PERF {\"workload\":\"memcpy\",\"sample\":4,\"warmup\":false,\"iterations\":4096,\"bytes\":1048576,\"ns\":4653436979,\"switches\":0}\r\nRPI_PERF {\"workload\":\"memcpy\",\"sample\":5,\"warmup\":false,\"iterations\":4096,\"bytes\":1048576,\"ns\":4628404062,\"switches\":0}\r\nRPI_PERF {\"workload\":\"memcpy\",\"sample\":6,\"warmup\":false,\"iterations\":4096,\"bytes\":1048576,\"ns\":4656285573,\"switches\":0}\r\nRPI_PERF {\"workload\":\"memcpy\",\"sample\":7,\"warmup\":false,\"iterations\":4096,\"bytes\":1048576,\"ns\":4650821823,\"switches\":0}\r\nRPI_PERF {\"workload\":\"memcpy\",\"sample\":8,\"warmup\":false,\"iterations\":4096,\"bytes\":1048576,\"ns\":4636471875,\"switches\":0}\r\nRPI_PERF_DONE\r\nRPI_COMMAND_STATUS=0\r\nmoss$ "
+  },
+  "hardware_validation": {
+    "status": "passed",
+    "reason": "pass",
+    "hardware": "Raspberry Pi 3B+",
+    "ready": {
+      "v": 1,
+      "event": "ready",
+      "workload": "mm.permissions",
+      "detected_cpus": 4,
+      "online_mask": 15,
+      "work_mask": 15,
+      "ram_bytes": 994050048,
+      "managed_pages": 238142
+    },
+    "cases": [
+      {
+        "v": 1,
+        "event": "case_end",
+        "workload": "mm.permissions",
+        "case": "table_defaults",
+        "passed": 6,
+        "failed": 0
+      },
+      {
+        "v": 1,
+        "event": "case_end",
+        "workload": "mm.permissions",
+        "case": "kernel_mappings",
+        "passed": 2062,
+        "failed": 0
+      },
+      {
+        "v": 1,
+        "event": "case_end",
+        "workload": "mm.permissions",
+        "case": "active_user_mappings",
+        "passed": 1040,
+        "failed": 0
+      },
+      {
+        "v": 1,
+        "event": "case_end",
+        "workload": "mm.permissions",
+        "case": "kernel_wx",
+        "passed": 8496,
+        "failed": 0
+      },
+      {
+        "v": 1,
+        "event": "case_end",
+        "workload": "mm.permissions",
+        "case": "address_space_ownership",
+        "passed": 4417,
+        "failed": 0
+      },
+      {
+        "v": 1,
+        "event": "case_end",
+        "workload": "mm.permissions",
+        "case": "cow_clone_permissions",
+        "passed": 25,
+        "failed": 0
+      },
+      {
+        "v": 1,
+        "event": "case_end",
+        "workload": "mm.permissions",
+        "case": "fault_backing_and_cow_contents",
+        "passed": 24591,
+        "failed": 0
+      },
+      {
+        "v": 1,
+        "event": "case_end",
+        "workload": "mm.permissions",
+        "case": "vma_boundaries",
+        "passed": 38,
+        "failed": 0
+      }
+    ],
+    "end": {
+      "v": 1,
+      "event": "end",
+      "workload": "mm.permissions",
+      "completed": 8,
+      "selected": 8,
+      "failed": 0,
+      "reason": "complete"
+    },
+    "jtag_khz": 1000
+  },
+  "final_production_deployment": {
+    "deployment": "JTAG RAM only",
+    "image_base": 2097152,
+    "dtb_base": 805306368,
+    "initrd_base": 536870912,
+    "boot_check": "shell_input_passed",
+    "files": {
+      "kernel": {
+        "path": "/Users/shifu/code/os/moss/build/rpi3b/pmu/production/moss.bin",
+        "sha256": "322f1739acc413cfcd35dea2003ea886b547befcfd9249de233c2899710090f3"
+      },
+      "initramfs": {
+        "path": "/Users/shifu/code/os/moss/build/rpi3b/pmu/production/initramfs.cpio",
+        "sha256": "61b7f760dfdef1710d3ed386e66064af76c1e4de4f9499fcb980b97011547314"
+      },
+      "dtb": {
+        "path": "/Users/shifu/code/os/moss/build/rpi3b/pmu/production/deploy/moss.dtb",
+        "sha256": "85bc151d9dc11337879e90d05a3ab4649796ac1c3f3ee89a942eada6cf4cc921"
+      }
+    }
+  },
+  "final_hardware_state": {
+    "observed_host_time_ns": 1792171427577268000,
+    "cpus": {
+      "cpu0": "running",
+      "cpu1": "running",
+      "cpu2": "running",
+      "cpu3": "running"
+    },
+    "boot_check": "shell_input_passed",
+    "pmu_option": "OFF in the frozen production build",
+    "pmu_banner_present": false,
+    "jtag_khz": 1000,
+    "source_scope": "isolated performance worktree; concurrent monitor/top excluded"
+  },
+  "host_validation": {
+    "command": "uv run --frozen pytest scripts/tests/test_rpi_perf.py scripts/tests/test_kernel_validation.py -q",
+    "status": "passed",
+    "tests": 165,
+    "elapsed_seconds": 18.61,
+    "ruff": "passed",
+    "clang_format": "passed",
+    "git_diff_check": "passed",
+    "scope": "After narrow integration into main; no full rebuild of concurrent main features"
+  },
+  "supplementary_qemu": {
+    "suites": [
+      {
+        "workload": "mm.permissions",
+        "status": "passed",
+        "cases": 8
+      },
+      {
+        "workload": "mm.uaccess",
+        "status": "passed",
+        "cases": 2
+      },
+      {
+        "workload": "mm.lifetime",
+        "status": "passed",
+        "cases": 3
+      },
+      {
+        "workload": "users.vm",
+        "status": "passed",
+        "cases": 9
+      },
+      {
+        "workload": "users.libc",
+        "status": "passed",
+        "cases": 2
+      }
+    ],
+    "production": {
+      "status": "passed",
+      "completed_steps": 168,
+      "elapsed_seconds": 67.41602324496489
+    }
+  },
+  "evidence_archive": {
+    "path": "rpi3b-2026-10-17-pmu-evidence.tar.gz",
+    "sha256": "d57e4cfbaf81b5dc03f628c01d4187fd18b8ff9771073df45e60955cd8dcbf98",
+    "files": [
+      {
+        "path": "baseline/deploy/moss.dtb",
+        "bytes": 29415,
+        "sha256": "00cf599fa1b2bf707a8fa14841dc9b2bf4687915165873ccd187bae28390742e"
+      },
+      {
+        "path": "baseline/deploy/result.json",
+        "bytes": 731,
+        "sha256": "4562a5b4cddd601a3e37ce6314d689b23a3044160f6ea6969e1d954c281c6d40"
+      },
+      {
+        "path": "baseline/deploy/serial.log",
+        "bytes": 14938,
+        "sha256": "8fa4da2e98207e1c13e7e23d45c9d1dd53fbcf437dcd263d266838da063cbaf3"
+      },
+      {
+        "path": "baseline/deploy.log",
+        "bytes": 22890,
+        "sha256": "f43ffc8781d6442259014aa196212c652dfb4750ec55cee92793cba60d5873b5"
+      },
+      {
+        "path": "baseline/disassembly.txt",
+        "bytes": 2500922,
+        "sha256": "d1a4d80e8684fc027cbadd7840fffee20c4700ec25982be64f292c8eba9e0276"
+      },
+      {
+        "path": "baseline/measurements-1792166906527059000.json",
+        "bytes": 1290,
+        "sha256": "e13ade2d14fa2e4a746f0ee47acfd3ac57d1746ed3d05e07c6c1486866927ef2"
+      },
+      {
+        "path": "baseline/measurements-1792166906527059000.log",
+        "bytes": 109,
+        "sha256": "bb37ee2254ab7e54d4269c1e0d386eea17a27093fd906c5321a38676b7c5c30b"
+      },
+      {
+        "path": "baseline/measurements-1792166948782536000.json",
+        "bytes": 686635,
+        "sha256": "3a68a2df61236d6f84b42102a2e6b8166447bd2ff083488c14fa4d42ff582771"
+      },
+      {
+        "path": "baseline/measurements-1792166948782536000.log",
+        "bytes": 118346,
+        "sha256": "023374d28d1d2f5992d71cc33692cb7d96424557a7faf21be11353a2f7159cc8"
+      },
+      {
+        "path": "baseline/measurements-1792167082980040000.json",
+        "bytes": 1966911,
+        "sha256": "63dabb48d695aae3803b9db8449be32867e20c76c5fd13b98648c62189efcd79"
+      },
+      {
+        "path": "baseline/measurements-1792167082980040000.log",
+        "bytes": 509532,
+        "sha256": "02e7bf847d595014515e5b593310c4d179596f22cd5a989441b77c3188b351e2"
+      },
+      {
+        "path": "baseline/measurements-1792167530623467000.json",
+        "bytes": 855228,
+        "sha256": "c659a4a6974a8445aa306dd87b8f438b358d0225e956124857a7dfea02a7d8f0"
+      },
+      {
+        "path": "baseline/measurements-1792167530623467000.log",
+        "bytes": 248348,
+        "sha256": "d07aa39c644f122d22bb4ad1855b94f826673ba28a1c21da8794a11fa5da6749"
+      },
+      {
+        "path": "baseline/measurements-1792168036286187000.json",
+        "bytes": 1579220,
+        "sha256": "6433d20b52e6815799bc5b494f58b4ec5b4e81013bb80efeae40e7303cebb08b"
+      },
+      {
+        "path": "baseline/measurements-1792168036286187000.log",
+        "bytes": 403768,
+        "sha256": "6dd9a4cd87238187130d00c27ae69156628a09a5024f74d27aee7d1af385edf5"
+      },
+      {
+        "path": "baseline/moss-artifacts.json",
+        "bytes": 1393,
+        "sha256": "9c5d46b54275405964434cced69163ae79184834699040bc43e5f8d8632b5e4e"
+      },
+      {
+        "path": "baseline/page-fault-disassembly.txt",
+        "bytes": 313284,
+        "sha256": "0c6ce6b42faf4271ebf56beae4c1b6a44dbb7b3b2672c3fc50d0db72dc38fa20"
+      },
+      {
+        "path": "baseline/source/scripts/rpi_perf.c",
+        "bytes": 11610,
+        "sha256": "122f3fcdf1a9e8a2b9ee11bafb62f872ee9ede1c770ea309b082f677c72f97f5"
+      },
+      {
+        "path": "baseline/source/scripts/rpi_perf.py",
+        "bytes": 13366,
+        "sha256": "d8311d101bc6ae74313b66b05441e89ad33dd0adeb4d73143a6b543ed7d8b5ff"
+      },
+      {
+        "path": "baseline/source/scripts/tests/test_rpi_perf.py",
+        "bytes": 3945,
+        "sha256": "b96dba90fde78546f9c29f194b931df9238ff1e602654274bbf7589403be0e6f"
+      },
+      {
+        "path": "baseline/source/src/boot/CMakeLists.txt",
+        "bytes": 1375,
+        "sha256": "101e64f3d1e2f282bf18e7f7bcf4f2d505aef98f5955998d122adb76bc1ea184"
+      },
+      {
+        "path": "baseline/source/src/boot/src/arch/arm64/boot_impl.cpp",
+        "bytes": 33977,
+        "sha256": "70cf58836eec466e049792feb48ee9018a52ff7efddd46d5a1764cda0fa36388"
+      },
+      {
+        "path": "baseline/source-provenance.json",
+        "bytes": 661,
+        "sha256": "4dcf433fc06e06c0d75cc0e6e2fda043f2491d4a570c1c5e12a48953d6a0c6fa"
+      },
+      {
+        "path": "baseline/source.patch",
+        "bytes": 66883,
+        "sha256": "a90ceee9493400ffe18f73d0815d35b05adf6d369cfc5daeb78aa6dc875ea260"
+      },
+      {
+        "path": "baseline-crossback/measurements-1792170784053455000.json",
+        "bytes": 1591108,
+        "sha256": "20cef38c4a90fb502fe87fb73378a76fbc3b46928264f1737b8805c40289601d"
+      },
+      {
+        "path": "baseline-crossback/measurements-1792170784053455000.log",
+        "bytes": 407807,
+        "sha256": "942aa85526e02c957ffbb87c2bd112ad593c5a547a677a1dbecbf021dbee1317"
+      },
+      {
+        "path": "baseline-crossback/probe-preparation.json",
+        "bytes": 819,
+        "sha256": "0206f2b18ccf85c0303ad52cb46d7753f1cb236a0a6502eb6c55d7c8ecca5627"
+      },
+      {
+        "path": "baseline-crossback/rpi-perf.c",
+        "bytes": 12049,
+        "sha256": "56e9bafc2fdc63b5746eba22c26340f3a9af4c597a6a60e21a1fb252fa1b55a9"
+      },
+      {
+        "path": "baseline-crossback/source/scripts/rpi_perf.c",
+        "bytes": 12049,
+        "sha256": "56e9bafc2fdc63b5746eba22c26340f3a9af4c597a6a60e21a1fb252fa1b55a9"
+      },
+      {
+        "path": "baseline-crossback/source/scripts/rpi_perf.py",
+        "bytes": 17575,
+        "sha256": "8c8bc2a68b9f043cf6f150bd269dab42c3018c7e007edadf73e6d3ade0bdc6eb"
+      },
+      {
+        "path": "baseline-crossback/source/scripts/tests/test_rpi_perf.py",
+        "bytes": 5795,
+        "sha256": "8a64100c7c7cbcdc735c0b2bab5e69f40bb478ffc6fa70c10ce8128ff7ca651b"
+      },
+      {
+        "path": "baseline-pinned/code-authority-service.c",
+        "bytes": 386,
+        "sha256": "8b8fa581793a817676b6c68318486eaaacb3133c6b1017d5088f56fe7f8c5eb8"
+      },
+      {
+        "path": "baseline-pinned/console-service.c",
+        "bytes": 379,
+        "sha256": "a91bfb0232020c100b666f86e718adcf700fae56d34445ba5097b85dbe590b7d"
+      },
+      {
+        "path": "baseline-pinned/deploy/moss.dtb",
+        "bytes": 29415,
+        "sha256": "883313a02c6edd59ab151a4e8e8d20c9d2cea28b52cb7a051d53e9ea6ac7d685"
+      },
+      {
+        "path": "baseline-pinned/deploy/result.json",
+        "bytes": 760,
+        "sha256": "ff831c4c4a4491525d8712a9331539dded27fcbf4e2b3f3b51463db17c53e080"
+      },
+      {
+        "path": "baseline-pinned/deploy/serial.log",
+        "bytes": 14935,
+        "sha256": "08aab7e04f7c1f2766915f9a3de2a184718cedae380a83fd1992d3859228ef78"
+      },
+      {
+        "path": "baseline-pinned/deploy-crossback/moss.dtb",
+        "bytes": 29415,
+        "sha256": "883313a02c6edd59ab151a4e8e8d20c9d2cea28b52cb7a051d53e9ea6ac7d685"
+      },
+      {
+        "path": "baseline-pinned/deploy-crossback/result.json",
+        "bytes": 770,
+        "sha256": "b5cd4146639323af7b5dbff4ba2cccb948610fcd201e4a6e0cc966d7f97a42fd"
+      },
+      {
+        "path": "baseline-pinned/deploy-crossback/serial.log",
+        "bytes": 14935,
+        "sha256": "9a49f5ecf6f7582a1749f83bc3a01d973bc1a016ccbd4c2c6db794e8fb024745"
+      },
+      {
+        "path": "baseline-pinned/deploy-crossback.log",
+        "bytes": 23002,
+        "sha256": "3144b203423c95a3af25efa1dd0c5f176cb96117d9e18deaf42de658f0155eae"
+      },
+      {
+        "path": "baseline-pinned/deploy.log",
+        "bytes": 22979,
+        "sha256": "5116d76480c54304d8e9897338df4722c777d0eb1f17c4c968bcd676faaf9279"
+      },
+      {
+        "path": "baseline-pinned/file-service.c",
+        "bytes": 376,
+        "sha256": "9166686d2b9c8221d1531bfad30a98598c956526b9f90b7b69dcf0d8ae30916c"
+      },
+      {
+        "path": "baseline-pinned/loader-service.c",
+        "bytes": 378,
+        "sha256": "ed354b1464cca896b3b02ca8284934181b5bf2f890b0f53f69374d9b743e7af9"
+      },
+      {
+        "path": "baseline-pinned/measurements-1792169311607447000.json",
+        "bytes": 1591102,
+        "sha256": "28d9ea617f06e1fba2c5900888edf3cba345336412bbc13568a228bf3b7972a6"
+      },
+      {
+        "path": "baseline-pinned/measurements-1792169311607447000.log",
+        "bytes": 407805,
+        "sha256": "f0c4181f98c61af7eae9a9c659acbfc0e30809eea5ba4875f2bf4fe4a895c284"
+      },
+      {
+        "path": "baseline-pinned/measurements-1792169473428178000.json",
+        "bytes": 806942,
+        "sha256": "3ddfc8ba12579c50a20c96080a0f07763edaa763536076b4386f0c3580150c45"
+      },
+      {
+        "path": "baseline-pinned/measurements-1792169473428178000.log",
+        "bytes": 194697,
+        "sha256": "9cd21c9fc7959bf20cd305b8dd70e3d4476dd5ad89e8f2a508d94753acf9d168"
+      },
+      {
+        "path": "baseline-pinned/moss-artifacts.json",
+        "bytes": 1409,
+        "sha256": "1759598cb46b418e1303a1d484f39fc65802d971e5900e0ddeefbac84409a7bf"
+      },
+      {
+        "path": "baseline-pinned/namespace-service.c",
+        "bytes": 381,
+        "sha256": "5667d8ed89e158ee5c5d48ad22eb196f2ae93f3ffb5be6af4bb58ed88adaf014"
+      },
+      {
+        "path": "baseline-pinned/pipe-service.c",
+        "bytes": 376,
+        "sha256": "cad890b241ec15df471bf5ffdb3f8a4d8abb7412baa774dfc047e2c4adad165f"
+      },
+      {
+        "path": "baseline-pinned/probe-preparation.json",
+        "bytes": 819,
+        "sha256": "0206f2b18ccf85c0303ad52cb46d7753f1cb236a0a6502eb6c55d7c8ecca5627"
+      },
+      {
+        "path": "baseline-pinned/process-service.c",
+        "bytes": 379,
+        "sha256": "ce41d391803c53729631a243a453f154163f1eb1404fb331b68c9bfeacf788f1"
+      },
+      {
+        "path": "baseline-pinned/rpi-perf.c",
+        "bytes": 12049,
+        "sha256": "56e9bafc2fdc63b5746eba22c26340f3a9af4c597a6a60e21a1fb252fa1b55a9"
+      },
+      {
+        "path": "baseline-pinned/source/scripts/rpi_perf.c",
+        "bytes": 12049,
+        "sha256": "56e9bafc2fdc63b5746eba22c26340f3a9af4c597a6a60e21a1fb252fa1b55a9"
+      },
+      {
+        "path": "baseline-pinned/source/scripts/rpi_perf.py",
+        "bytes": 17575,
+        "sha256": "8c8bc2a68b9f043cf6f150bd269dab42c3018c7e007edadf73e6d3ade0bdc6eb"
+      },
+      {
+        "path": "baseline-pinned/source/scripts/tests/test_rpi_perf.py",
+        "bytes": 5795,
+        "sha256": "8a64100c7c7cbcdc735c0b2bab5e69f40bb478ffc6fa70c10ce8128ff7ca651b"
+      },
+      {
+        "path": "binary-inventory.json",
+        "bytes": 11479,
+        "sha256": "bbf2b92eea504b36fbc1253f8f16213a36b4dd0d8d9fc014c4b9e72132b7bca1"
+      },
+      {
+        "path": "build.log",
+        "bytes": 21360,
+        "sha256": "25bd3e9e306766a9b4907987370bb94e57f3bd2cf284299e9983bd230065b5b9"
+      },
+      {
+        "path": "candidate/deploy/moss.dtb",
+        "bytes": 29415,
+        "sha256": "00cf599fa1b2bf707a8fa14841dc9b2bf4687915165873ccd187bae28390742e"
+      },
+      {
+        "path": "candidate/deploy/result.json",
+        "bytes": 734,
+        "sha256": "1e3cba46bb1320a389e66f71801eebb8248549bab4beebd77ff7ad72a9715667"
+      },
+      {
+        "path": "candidate/deploy/serial.log",
+        "bytes": 14940,
+        "sha256": "552949eb56f8d868a6bf0b4e61b00a6275a4add2c61ed9e2bfbb0bdbe0f7234f"
+      },
+      {
+        "path": "candidate/deploy.log",
+        "bytes": 22950,
+        "sha256": "fc78321d2bd12e2987fac19dffbcaa541a2565d64e3916b0fafecd72a8c7ae16"
+      },
+      {
+        "path": "candidate/measurements-1792168433437592000.json",
+        "bytes": 1579249,
+        "sha256": "9501187d370c09d99f233e62f982268ddcc799e74ceb356df6d17108602305ab"
+      },
+      {
+        "path": "candidate/measurements-1792168433437592000.log",
+        "bytes": 403807,
+        "sha256": "794b4dafb786b7f693178c71011e1be3c93d86c1d5659508934a8cf06f06772b"
+      },
+      {
+        "path": "candidate/moss-artifacts.json",
+        "bytes": 1393,
+        "sha256": "9c5d46b54275405964434cced69163ae79184834699040bc43e5f8d8632b5e4e"
+      },
+      {
+        "path": "candidate/page-fault-disassembly.txt",
+        "bytes": 368245,
+        "sha256": "80c6906e0d54278f1a7f41a62b05c352c3ccfa305d414277363f2f1249979673"
+      },
+      {
+        "path": "candidate/source/scripts/kernel_validation.py",
+        "bytes": 58540,
+        "sha256": "41ac612fc831b18337cffe6c1487e44137acdae56ae3cf3e99832ec97598c760"
+      },
+      {
+        "path": "candidate/source/scripts/rpi_perf.c",
+        "bytes": 11598,
+        "sha256": "719017788eddf50177103ba5332a7639f628332ef5e49af1735eb57bdab525c9"
+      },
+      {
+        "path": "candidate/source/scripts/rpi_perf.py",
+        "bytes": 14377,
+        "sha256": "3f7e10685147bebca569b7dd657498dbbf26faf794d9fa19bc70d0b5ff8a6295"
+      },
+      {
+        "path": "candidate/source/scripts/tests/test_rpi_perf.py",
+        "bytes": 4837,
+        "sha256": "f4f7297f8fccb47a211423b08e47d7ab62e47a77c1315476a76691253c36ae20"
+      },
+      {
+        "path": "candidate/source/src/boot/CMakeLists.txt",
+        "bytes": 1375,
+        "sha256": "101e64f3d1e2f282bf18e7f7bcf4f2d505aef98f5955998d122adb76bc1ea184"
+      },
+      {
+        "path": "candidate/source/src/boot/src/arch/arm64/boot_impl.cpp",
+        "bytes": 33998,
+        "sha256": "f15926dbf613b3ca77f388b4317706ef8a6b12cbe0b21b9e0df0efb67f5d6236"
+      },
+      {
+        "path": "candidate/source/src/mm/src/page_fault.cpp",
+        "bytes": 32805,
+        "sha256": "041edea99903c611f214f6e027d0b410bb771f476613e6bf8f998d85ad4b4e24"
+      },
+      {
+        "path": "candidate/source/src/test/validation/memory.cpp",
+        "bytes": 21259,
+        "sha256": "034b21d8c347521d8223f11c8a906fb51b19e614fd428b3edf746ad0470c12eb"
+      },
+      {
+        "path": "candidate/source-provenance.json",
+        "bytes": 972,
+        "sha256": "6d773a717cc80786400eb0cc93812b674b14a83abbab5d2ac167921ec4793776"
+      },
+      {
+        "path": "candidate/source.patch",
+        "bytes": 72643,
+        "sha256": "a724ee9db28197adb9b9b07a3d48077b1d0355e1c1b588f345d081fc4e2ee9a6"
+      },
+      {
+        "path": "candidate-build.log",
+        "bytes": 9576,
+        "sha256": "e813db633cff3e96a89020c3723237f802e66a6b0341a8b945164d34d2422eac"
+      },
+      {
+        "path": "candidate-configure.log",
+        "bytes": 1812,
+        "sha256": "c42a1f2e6d6ccf66ba9179c25aa614cb311297842b8c49c3cbe239dd07f5ef0e"
+      },
+      {
+        "path": "candidate-normal-build.log",
+        "bytes": 1589,
+        "sha256": "44739fcc75aef300c82d927c60b117d1d267e8301debd795de981ecd5fc62868"
+      },
+      {
+        "path": "candidate-normal-tests/inputs/validation_kernel/moss.test.bin.provenance.json",
+        "bytes": 1547,
+        "sha256": "b8f86bd02d4b2d666f0cccceaba0b2bd42cb847acbfc04ba69c2802d1bbb3ace"
+      },
+      {
+        "path": "candidate-normal-tests/junit.xml",
+        "bytes": 1675,
+        "sha256": "ce3769e36cc519554f17a3cc6d3fb6f9c22e88b5c42f84fc815ba78f07e5a0db"
+      },
+      {
+        "path": "candidate-normal-tests/mm.lifetime/qemu.log",
+        "bytes": 81,
+        "sha256": "de56fb60982194ca56737ec3a766c9f5e2ea917ee1923a7bd381edbc9f0aab66"
+      },
+      {
+        "path": "candidate-normal-tests/mm.lifetime/serial.log",
+        "bytes": 16677,
+        "sha256": "44adebf75da0450cbbf12a4dfde00f3d5da60bcd081b038b4969b7d7f3bfd6c0"
+      },
+      {
+        "path": "candidate-normal-tests/mm.permissions/qemu.log",
+        "bytes": 81,
+        "sha256": "de56fb60982194ca56737ec3a766c9f5e2ea917ee1923a7bd381edbc9f0aab66"
+      },
+      {
+        "path": "candidate-normal-tests/mm.permissions/serial.log",
+        "bytes": 18081,
+        "sha256": "bdd25e619b87f241a50ec6279d887527b0b65af090c89151e2b55cf366cb5e3c"
+      },
+      {
+        "path": "candidate-normal-tests/mm.uaccess/qemu.log",
+        "bytes": 81,
+        "sha256": "de56fb60982194ca56737ec3a766c9f5e2ea917ee1923a7bd381edbc9f0aab66"
+      },
+      {
+        "path": "candidate-normal-tests/mm.uaccess/serial.log",
+        "bytes": 16292,
+        "sha256": "5b5e7b5fdf5f36ac494148b5a4a61207bd50c1fc4982c6808d53d1e51eca9a05"
+      },
+      {
+        "path": "candidate-normal-tests/results.json",
+        "bytes": 26337,
+        "sha256": "c763f98b1a9c231bd960de01cfdd65ec05aff6d755e5d6fe75232237612c12c1"
+      },
+      {
+        "path": "candidate-normal-tests/users.libc/qemu.log",
+        "bytes": 81,
+        "sha256": "de56fb60982194ca56737ec3a766c9f5e2ea917ee1923a7bd381edbc9f0aab66"
+      },
+      {
+        "path": "candidate-normal-tests/users.libc/serial.log",
+        "bytes": 16282,
+        "sha256": "b379b79d177cff55a9114a2054c43f84122a902f21d193ebb83dd2f21ead89a5"
+      },
+      {
+        "path": "candidate-normal-tests/users.vm/qemu.log",
+        "bytes": 81,
+        "sha256": "de56fb60982194ca56737ec3a766c9f5e2ea917ee1923a7bd381edbc9f0aab66"
+      },
+      {
+        "path": "candidate-normal-tests/users.vm/serial.log",
+        "bytes": 31508,
+        "sha256": "124851c49934cb2d43e31baa8ce6e648d8216e0b35f3f37923113ee5467f7edf"
+      },
+      {
+        "path": "candidate-pinned/code-authority-service.c",
+        "bytes": 386,
+        "sha256": "8b8fa581793a817676b6c68318486eaaacb3133c6b1017d5088f56fe7f8c5eb8"
+      },
+      {
+        "path": "candidate-pinned/console-service.c",
+        "bytes": 379,
+        "sha256": "a91bfb0232020c100b666f86e718adcf700fae56d34445ba5097b85dbe590b7d"
+      },
+      {
+        "path": "candidate-pinned/deploy/failed-readback-result.json",
+        "bytes": 753,
+        "sha256": "046cf4aac3280e2197f83d0086ee41285810f512c23fd92c462b14851fbc503a"
+      },
+      {
+        "path": "candidate-pinned/deploy/moss.dtb",
+        "bytes": 29415,
+        "sha256": "883313a02c6edd59ab151a4e8e8d20c9d2cea28b52cb7a051d53e9ea6ac7d685"
+      },
+      {
+        "path": "candidate-pinned/deploy/result.json",
+        "bytes": 1042,
+        "sha256": "b247192aefdf1d1fad088408417450eaa42ae04543ada8e38771eb8a73175e9d"
+      },
+      {
+        "path": "candidate-pinned/deploy/serial.log",
+        "bytes": 14902,
+        "sha256": "5b10b6b0311c5b80dbfcfd1154699b155231a692db943a5116807a1f539800d3"
+      },
+      {
+        "path": "candidate-pinned/deploy.log",
+        "bytes": 7348,
+        "sha256": "233cc7a24ec4f82f1973c78040a71dfaa51936f40a4302fe33deb6227a4a9f23"
+      },
+      {
+        "path": "candidate-pinned/file-service.c",
+        "bytes": 376,
+        "sha256": "9166686d2b9c8221d1531bfad30a98598c956526b9f90b7b69dcf0d8ae30916c"
+      },
+      {
+        "path": "candidate-pinned/loader-service.c",
+        "bytes": 378,
+        "sha256": "ed354b1464cca896b3b02ca8284934181b5bf2f890b0f53f69374d9b743e7af9"
+      },
+      {
+        "path": "candidate-pinned/measurements-1792169958117349000.json",
+        "bytes": 1591463,
+        "sha256": "ea133ff3fe83badca14ef20bcf1990efc63fcedb7c9be0c1b5bdaadef177c506"
+      },
+      {
+        "path": "candidate-pinned/measurements-1792169958117349000.log",
+        "bytes": 407814,
+        "sha256": "7c368e3da102cf624be53da50bef76e9ec3f35a4e8792364281b949c72e17689"
+      },
+      {
+        "path": "candidate-pinned/measurements-1792170285033828000.json",
+        "bytes": 1189887,
+        "sha256": "9d22f3ebbe0c21b33081d41544c3697da7da74ae0838610ce6b143fe87def843"
+      },
+      {
+        "path": "candidate-pinned/measurements-1792170285033828000.log",
+        "bytes": 291867,
+        "sha256": "3eded689f8fb4598aa57b548ace002fe5f686f8d0d22b7a9f8d06bdd3820179b"
+      },
+      {
+        "path": "candidate-pinned/moss-artifacts.json",
+        "bytes": 1411,
+        "sha256": "0ab02fadc09c9a8b936943b97a737e835d39c30f1267dfb56f8c9eb4171559c3"
+      },
+      {
+        "path": "candidate-pinned/namespace-service.c",
+        "bytes": 381,
+        "sha256": "5667d8ed89e158ee5c5d48ad22eb196f2ae93f3ffb5be6af4bb58ed88adaf014"
+      },
+      {
+        "path": "candidate-pinned/pipe-service.c",
+        "bytes": 376,
+        "sha256": "cad890b241ec15df471bf5ffdb3f8a4d8abb7412baa774dfc047e2c4adad165f"
+      },
+      {
+        "path": "candidate-pinned/probe-preparation.json",
+        "bytes": 819,
+        "sha256": "0206f2b18ccf85c0303ad52cb46d7753f1cb236a0a6502eb6c55d7c8ecca5627"
+      },
+      {
+        "path": "candidate-pinned/process-service.c",
+        "bytes": 379,
+        "sha256": "ce41d391803c53729631a243a453f154163f1eb1404fb331b68c9bfeacf788f1"
+      },
+      {
+        "path": "candidate-pinned/recovery.log",
+        "bytes": 16748,
+        "sha256": "5c22f3690362733e7af99efb780d7273349f129699c4b56dabce21433591a037"
+      },
+      {
+        "path": "candidate-pinned/rpi-perf.c",
+        "bytes": 12049,
+        "sha256": "56e9bafc2fdc63b5746eba22c26340f3a9af4c597a6a60e21a1fb252fa1b55a9"
+      },
+      {
+        "path": "candidate-pinned/source/scripts/rpi_perf.c",
+        "bytes": 12049,
+        "sha256": "56e9bafc2fdc63b5746eba22c26340f3a9af4c597a6a60e21a1fb252fa1b55a9"
+      },
+      {
+        "path": "candidate-pinned/source/scripts/rpi_perf.py",
+        "bytes": 17575,
+        "sha256": "8c8bc2a68b9f043cf6f150bd269dab42c3018c7e007edadf73e6d3ade0bdc6eb"
+      },
+      {
+        "path": "candidate-pinned/source/scripts/tests/test_rpi_perf.py",
+        "bytes": 5795,
+        "sha256": "8a64100c7c7cbcdc735c0b2bab5e69f40bb478ffc6fa70c10ce8128ff7ca651b"
+      },
+      {
+        "path": "configure.log",
+        "bytes": 1868,
+        "sha256": "b88825c9915ca52071d6696350aec6c3c2a822d1b062827f10b5c3d85ee5c918"
+      },
+      {
+        "path": "export-evidence.py",
+        "bytes": 5964,
+        "sha256": "309284e2e7fa9dd12d550860466e6f0e1418a83a393f64c7703b9514855b85b5"
+      },
+      {
+        "path": "failed-stress-attempt.json",
+        "bytes": 307,
+        "sha256": "df6f954bd408c4508d3d92c6833a07c059b885b1cb9126763fd238b1e3e8ef1a"
+      },
+      {
+        "path": "final-source/scripts/kernel_validation.py",
+        "bytes": 58546,
+        "sha256": "1dcb1ff8b2ba5348a47475f227a83bdb5e16f5f248b9467a0042a19fca387c0f"
+      },
+      {
+        "path": "final-source/scripts/rpi_perf.c",
+        "bytes": 12049,
+        "sha256": "56e9bafc2fdc63b5746eba22c26340f3a9af4c597a6a60e21a1fb252fa1b55a9"
+      },
+      {
+        "path": "final-source/scripts/rpi_perf.py",
+        "bytes": 18216,
+        "sha256": "67ef57007b0e8688b8122128e0acf9ba2afa27d9b4fdd2c6c1f3bea985d432d2"
+      },
+      {
+        "path": "final-source/scripts/tests/test_rpi_perf.py",
+        "bytes": 6590,
+        "sha256": "e427b6b00a5bdf1707a19dcb1b81acb98b6de5a5b644f97ce48a616f602aad6f"
+      },
+      {
+        "path": "final-source/src/boot/CMakeLists.txt",
+        "bytes": 1375,
+        "sha256": "101e64f3d1e2f282bf18e7f7bcf4f2d505aef98f5955998d122adb76bc1ea184"
+      },
+      {
+        "path": "final-source/src/boot/src/arch/arm64/boot_impl.cpp",
+        "bytes": 33999,
+        "sha256": "c9789f6925e08d9096ad3c374032dea1ecab945af9470fe5b66be37f48589add"
+      },
+      {
+        "path": "final-source/src/mm/src/page_fault.cpp",
+        "bytes": 32805,
+        "sha256": "041edea99903c611f214f6e027d0b410bb771f476613e6bf8f998d85ad4b4e24"
+      },
+      {
+        "path": "final-source/src/test/validation/memory.cpp",
+        "bytes": 21259,
+        "sha256": "034b21d8c347521d8223f11c8a906fb51b19e614fd428b3edf746ad0470c12eb"
+      },
+      {
+        "path": "final-source/third_party/mlibc/options/internal/generic/essential.cpp",
+        "bytes": 6284,
+        "sha256": "37b784bcb4a3bcdf376a128ef1019c26f5ee0d991c4c41ba9e8412f096efdd0c"
+      },
+      {
+        "path": "final-source.patch",
+        "bytes": 73611,
+        "sha256": "43ad9635a509709ebaa369315ac3f83f831c9ede7d77c353d00e2d1136dbf3c6"
+      },
+      {
+        "path": "first-pass-tools/rpi_perf.c",
+        "bytes": 8180,
+        "sha256": "dd954cd57fbfd022e7582ea6eb1196662b67b9e2f80105d1a93409105aa19920"
+      },
+      {
+        "path": "first-pass-tools/rpi_perf.py",
+        "bytes": 9161,
+        "sha256": "32e432946000baa23cfebf3e1a2efb18102a808f32a2234fb78805d87281ccb5"
+      },
+      {
+        "path": "first-pass-tools/tests/test_rpi_perf.py",
+        "bytes": 2341,
+        "sha256": "06b037343edfa4276e5d8d2c8249f6e84b3b511221e4fc0cf17fd970e0bf66e3"
+      },
+      {
+        "path": "first-pass.patch",
+        "bytes": 62970,
+        "sha256": "0f09751dede92e0b7f13017f25b7dc572571bc737b2addd6e215ac17173ca2f9"
+      },
+      {
+        "path": "host-tools/.agents/skills/moss-rpi3b-hardware/scripts/deploy.py",
+        "bytes": 3328,
+        "sha256": "cc9169c33c869dceb4488ec1cadba9233f1439e69c48f5b60713fd83e3dd8462"
+      },
+      {
+        "path": "host-tools/hashes.json",
+        "bytes": 511,
+        "sha256": "86a7a3db60d38ccba64ec26799e2e500a010dfe9872967846ffcf4fd3f19a6b7"
+      },
+      {
+        "path": "host-tools/optimization-deploy.py",
+        "bytes": 480,
+        "sha256": "56d7a5b237784e564183fe8955aa194c1ab68988ec40e6aa5b1c41f040e2b1e9"
+      },
+      {
+        "path": "host-tools/scripts/artifacts.py",
+        "bytes": 8039,
+        "sha256": "b398b77f322307afb56816efacd86e3e8fc1218456392a753c94d9381f849fd4"
+      },
+      {
+        "path": "host-tools/scripts/rpi.py",
+        "bytes": 23249,
+        "sha256": "39d675850a7bc546a3fce376badd391b9db087d21cf3a653064f817c3f61916f"
+      },
+      {
+        "path": "host-tools/scripts/rpi_boot.S",
+        "bytes": 2505,
+        "sha256": "49dd88d96d1bdf93a0523b3c89236e7a8d89d1cdd69c084b8a95addb2cebae22"
+      },
+      {
+        "path": "host-validation.json",
+        "bytes": 354,
+        "sha256": "ed02a0a8b99a0b7b67a9fc57f973fe76c020aa62e748446e9c1b771b4decd34e"
+      },
+      {
+        "path": "integration.json",
+        "bytes": 2661,
+        "sha256": "3d68cd6bb2214ca6ba072d8e38b0205d4158a0a0194570a9c3efc6faa63fa692"
+      },
+      {
+        "path": "jtag-baseline-crossback.log",
+        "bytes": 13215,
+        "sha256": "25780e588f5a12cc8d4a9c5c08341ddb3c5f79f563c25373469c2ac2cc644707"
+      },
+      {
+        "path": "jtag-baseline-pinned.log",
+        "bytes": 38758,
+        "sha256": "d062f3d04a632ec92b211f7aac3b49026d2414c92c3ce9d411aedfe178d1bb29"
+      },
+      {
+        "path": "jtag-baseline.log",
+        "bytes": 31089,
+        "sha256": "c3926d730ffe72fc511863dc346942ca90884447e6842384a7a8af7d58ce18df"
+      },
+      {
+        "path": "jtag-candidate-pinned.log",
+        "bytes": 50533,
+        "sha256": "214bbb2388edae4be028b458a2d683d9c2b134c23e9f775426904aeb22aa8059"
+      },
+      {
+        "path": "jtag-candidate.log",
+        "bytes": 45026,
+        "sha256": "cd172c546fcfb1468bcc95f63c3df6aa31f4d72b2a5b8420e6e294d27dff140a"
+      },
+      {
+        "path": "jtag-production.log",
+        "bytes": 7721,
+        "sha256": "de91b24299edb1b7dcecd0d22029b0035fbc69a211d0437640263cd67794d950"
+      },
+      {
+        "path": "jtag-validation.log",
+        "bytes": 4182,
+        "sha256": "23180a556da25ee8cedc949c64d99b7c15eff07f4e97ec8b1ad960de3698fe80"
+      },
+      {
+        "path": "libc-memory-disassembly.txt",
+        "bytes": 11811,
+        "sha256": "fc71a9175eacba742bcfb485bd35ef1eeac5b775e8c8a6828f69bcb9fbb598a4"
+      },
+      {
+        "path": "production/deploy/final-state.json",
+        "bytes": 386,
+        "sha256": "8f4a14b0199cd5e515f7586bc4d0497f148137dcf292c7ab02ae2990a134294b"
+      },
+      {
+        "path": "production/deploy/moss.dtb",
+        "bytes": 29415,
+        "sha256": "85bc151d9dc11337879e90d05a3ab4649796ac1c3f3ee89a942eada6cf4cc921"
+      },
+      {
+        "path": "production/deploy/result.json",
+        "bytes": 737,
+        "sha256": "7bd012e0a737ccbce0a781ae9f229d3bffb2a4938c219a465147fde7a2bd44d4"
+      },
+      {
+        "path": "production/deploy/serial.log",
+        "bytes": 14693,
+        "sha256": "9efc0aecf72790c1f4451c5268b406db14835d8d2d824423613bf1c22cf29643"
+      },
+      {
+        "path": "production/deploy.log",
+        "bytes": 22174,
+        "sha256": "c3b71dcf164806ab7bde5743297bbb505ba297d048b6e60c5e978e7291dfbfff"
+      },
+      {
+        "path": "production/moss-artifacts.json",
+        "bytes": 1393,
+        "sha256": "9c5d46b54275405964434cced69163ae79184834699040bc43e5f8d8632b5e4e"
+      },
+      {
+        "path": "production-build.log",
+        "bytes": 9576,
+        "sha256": "7600c5f6ce56871fd8e2961a3b3a450daa48f8a56ffae9834c08b9647d03c17d"
+      },
+      {
+        "path": "production-check/gdb.log",
+        "bytes": 0,
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      {
+        "path": "production-check/qemu.log",
+        "bytes": 81,
+        "sha256": "7bb293ff30ca577c78d75cee50233afc638656504787945beb81b726def53a9c"
+      },
+      {
+        "path": "production-check/results.json",
+        "bytes": 2446,
+        "sha256": "fbcaef8e270aa82d681b8df2b72faa247c0e64ce825ec37a0922333491e5c41a"
+      },
+      {
+        "path": "production-check/serial.log",
+        "bytes": 25336,
+        "sha256": "413dc15e3ca31153f259e29350b7b4782b70f1ed62dee701dedfa77bcda9b4d2"
+      },
+      {
+        "path": "production-check.log",
+        "bytes": 237,
+        "sha256": "d0cf9a6dfff43595787912faead87188e4d6fba5d71d59415070b5bb787eb52b"
+      },
+      {
+        "path": "production-configure.log",
+        "bytes": 1813,
+        "sha256": "ae90d7c5e499e9faf6124d77920fbb4fbd7c1e0e92d49516d1f23a54aba0eb9f"
+      },
+      {
+        "path": "recover-candidate.py",
+        "bytes": 2415,
+        "sha256": "02c2b8117f7dfb155f131290a91da951095d262cc274c18201674858ee4b7f78"
+      },
+      {
+        "path": "references/arm_pmuv3.h",
+        "bytes": 13073,
+        "sha256": "482325fbabeee9bb7f57733bcc0feb7ab33b258ad21d5fa40b7cfac1729f4d68"
+      },
+      {
+        "path": "references/bcm2835_thermal.c",
+        "bytes": 7443,
+        "sha256": "7e2d676e9ef78d7933e21f3307c1d0fbef03a478fcb57026fb488b5f2b829874"
+      },
+      {
+        "path": "references/bcm2837.dtsi",
+        "bytes": 4046,
+        "sha256": "f984c5e2e25ce31b829ea2f2d3ea74767bd9667f27f8470d037b3b59693288a8"
+      },
+      {
+        "path": "references/bcm283x.dtsi",
+        "bytes": 12630,
+        "sha256": "999bc1a10e79136b30e1f87633ba4eb2eb9e5d2b79edece0b6d5133625167447"
+      },
+      {
+        "path": "references/firmware.dtb",
+        "bytes": 29703,
+        "sha256": "6b3c3d5b1bdb9b1f22c7b00701865cf1f31cac7d0b1b3ed275dae924ec89bbe4"
+      },
+      {
+        "path": "references/hashes.json",
+        "bytes": 612,
+        "sha256": "48ed70af8f0fe762aaba8012c2e1a4a33bc7f972d5b9915b0bb3be754e7baef0"
+      },
+      {
+        "path": "references/mailbox.md",
+        "bytes": 29399,
+        "sha256": "1197d7f52ae2ce6b731bb1ea8e1fce93df4395983629994069e71d498160dd8b"
+      },
+      {
+        "path": "references/openocd-aarch64.c",
+        "bytes": 87593,
+        "sha256": "3e7ca95297004474264decbc7cff6576eeb30e29e64c59f4c6b6ce0c8e132734"
+      },
+      {
+        "path": "references/sources.json",
+        "bytes": 687,
+        "sha256": "d4e51da82d56ab4f6ca7bebd661a211effaece16bd06d139592fdd7b434abb58"
+      },
+      {
+        "path": "stress-recovery.log",
+        "bytes": 326,
+        "sha256": "d4c9c80d3f811a4f0982122c8f651d93b23770fca5afd2baa0287b5d255a164a"
+      },
+      {
+        "path": "stress.py",
+        "bytes": 1938,
+        "sha256": "e3197efa19e3365754d7f355215e6c89ed9e0f169060fb1262a16893963544b9"
+      },
+      {
+        "path": "test-before/inputs/validation_kernel/moss.test.bin.provenance.json",
+        "bytes": 1547,
+        "sha256": "500c4068bc478a11ce736216ab6a465fe8d4b54cc8d6d17fc5b034c6fb7427a9"
+      },
+      {
+        "path": "test-before/junit.xml",
+        "bytes": 1045,
+        "sha256": "b08d4bc3cbee6566d926f6d26483fb831956a723ba9654bbe87c59e01e474018"
+      },
+      {
+        "path": "test-before/mm.permissions/diagnostics/gdb.gdb",
+        "bytes": 2421,
+        "sha256": "c621186d29df3621748853a754ed91d24195aed578670d7e0d62ea3ea31946ef"
+      },
+      {
+        "path": "test-before/mm.permissions/diagnostics/gdb.json",
+        "bytes": 38428,
+        "sha256": "3b26efda9bdba35b1a73c201a25c7dfe8b19050ee455f2d45e21b23e209afb2b"
+      },
+      {
+        "path": "test-before/mm.permissions/diagnostics/gdb.log",
+        "bytes": 37439,
+        "sha256": "477871a236e89ab4c00e931f1f14d640c47765e2cf7181feb0266bddbf3c51d0"
+      },
+      {
+        "path": "test-before/mm.permissions/diagnostics/qmp.json",
+        "bytes": 6643,
+        "sha256": "83c8cbafab3a58b55ce475cccbb3b944c8388ecd416b1f1e46285d5202e421a1"
+      },
+      {
+        "path": "test-before/mm.permissions/qemu.log",
+        "bytes": 81,
+        "sha256": "9e6e25fdd1758fa8523f82284728ce9f5fcc3d8590c604f934867a96baa90375"
+      },
+      {
+        "path": "test-before/mm.permissions/serial.log",
+        "bytes": 3651,
+        "sha256": "f212f2190ca1e2d50a8ae82b791c220785f09182be186c70e3154e8a99909296"
+      },
+      {
+        "path": "test-before/results.json",
+        "bytes": 15215,
+        "sha256": "687ee328dd23380c97a8c72b2223fb25d30045a91032eb54bb52e0fb819bef2b"
+      },
+      {
+        "path": "test-before-build-2.log",
+        "bytes": 1016,
+        "sha256": "2668d1cc3c6b9a1d680b52d838b9b1ead17add7fd5028e756b6480f7aca1225d"
+      },
+      {
+        "path": "test-before-build-3.log",
+        "bytes": 9576,
+        "sha256": "596bf50f8bfea023587233fc1474ed95c2bda82ef3d8c433ce63c9858449b9d0"
+      },
+      {
+        "path": "test-before-build.log",
+        "bytes": 2333,
+        "sha256": "e41e5da876f66e447896a2087122cc5563a9d5c0d8ef00e36847e10c015f5b0b"
+      },
+      {
+        "path": "test-before-configure.log",
+        "bytes": 1812,
+        "sha256": "daa1e89a8ade6fe55670ce27c908e815c0d2720b2190191574c4fe3891009797"
+      },
+      {
+        "path": "test-before-normal/inputs/validation_kernel/moss.test.bin.provenance.json",
+        "bytes": 1547,
+        "sha256": "40c87a042625fb6005fa88a0713d54c807c59cf6566db0f37a5dd11e515c2f8d"
+      },
+      {
+        "path": "test-before-normal/junit.xml",
+        "bytes": 631,
+        "sha256": "ec935be19267eee263de0f12810787fcc376d7f8694a9d099636118337afe559"
+      },
+      {
+        "path": "test-before-normal/mm.permissions/qemu.log",
+        "bytes": 81,
+        "sha256": "3f667e743ebe9e0ebddd42bcb179ac4febc6d3b99aa18f8aeb3b35d29a40c575"
+      },
+      {
+        "path": "test-before-normal/mm.permissions/serial.log",
+        "bytes": 18081,
+        "sha256": "ff2948a8c060c7ccc60afb21eff9d4ea8371b96c27b6d710b67805530e284441"
+      },
+      {
+        "path": "test-before-normal/results.json",
+        "bytes": 10010,
+        "sha256": "9e7bec89ac3d206382ad1f3de2148bc38b59c557ffaaffe86f44688c4c913992"
+      },
+      {
+        "path": "thermal-stress-1792167974027072000.json",
+        "bytes": 6686,
+        "sha256": "bb8c7c6beeab6b7cd0af3792aa4376ef482f6ef4519b5dd5b9a2639822a73e37"
+      },
+      {
+        "path": "validation/deploy/moss.dtb",
+        "bytes": 29475,
+        "sha256": "819440a40c83c559fb2965e1a615dcb9bedb97cfe8d34f7256741c7a871aa269"
+      },
+      {
+        "path": "validation/deploy/result.json",
+        "bytes": 760,
+        "sha256": "a06fff745d79084f470242703e5705c306a9cc2e3ea68a24f2cce455b28d2e15"
+      },
+      {
+        "path": "validation/deploy/serial.log",
+        "bytes": 18116,
+        "sha256": "9f06f3ff872c5373f1ff0125fce793a1c55681620a363a81a7d72fd2f079488f"
+      },
+      {
+        "path": "validation/deploy/validation-result.json",
+        "bytes": 1813,
+        "sha256": "a2633cf7678889fbbea1d5b2fbfee9265b2ee35d4f205dab18b9fa3a1420b2e1"
+      },
+      {
+        "path": "validation/deploy-test.py",
+        "bytes": 1934,
+        "sha256": "a21048b80c6d9276e8588ffa570543bd94a72340b17f88d46bee50684d70f258"
+      },
+      {
+        "path": "validation/deploy.log",
+        "bytes": 21776,
+        "sha256": "0a4121c59c7db697dd06668dea9020aff857cabcae8337b8bb3e11d2b4244bd2"
+      },
+      {
+        "path": "validation/moss-artifacts.json",
+        "bytes": 1422,
+        "sha256": "9adeab1aa4c684bfe90965f2e3282ac809ac8ea03c98050aca1aaec6501e4081"
+      }
+    ]
+  }
+}

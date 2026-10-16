@@ -266,6 +266,11 @@ public:
   shared_ptr<process::Process> process;
   explicit DomainObject(shared_ptr<process::Process> target) noexcept
       : Object(capability::ObjectType::Domain), process(moss::move(target)) {}
+  [[nodiscard]] containers::WaitQueue *event_queue() noexcept override { return &process->domain_exit_wait_queue(); }
+  [[nodiscard]] bool event_ready() noexcept override {
+    const auto state = process->state();
+    return state == process::ProcessState::Zombie || state == process::ProcessState::Terminated;
+  }
 };
 
 class SchedulingProfileObject final : public capability::Object {
@@ -1699,6 +1704,107 @@ long sys_domain_wait_any(long handles_addr, long count_arg, long /*unused*/, lon
     for (usize i = 0; i < count; ++i) {
       targets[i]->domain_exit_wait_queue().remove_waiter(static_cast<void *>(cur));
     }
+  }
+}
+
+// Wait on native object readiness, so a single-threaded service can retain
+// replies while still receiving requests and observing domain exits/cancellation.
+long sys_object_wait(long handles_addr, long count_arg, long flags, long deadline_ns, long /*unused*/,
+                     long /*unused*/) noexcept {
+  constexpr long NONBLOCK = 1; // Bit zero is MOSS_WAIT_NONBLOCK in the userspace ABI.
+  if (count_arg <= 0 || static_cast<usize>(count_arg) > capability::Table::capacity() || (flags & ~NONBLOCK) ||
+      deadline_ns < 0) {
+    return -errc::EINVAL;
+  }
+  const usize count = static_cast<usize>(count_arg);
+  Handle handles[capability::Table::capacity()]{};
+  if (!handles_addr || copy_from_user(handles, static_cast<u64>(handles_addr), count * sizeof(handles[0])) < 0) {
+    return -errc::EFAULT;
+  }
+  auto caller = process::current_process();
+  auto *thread = process::CfsScheduler::get_current_task();
+  if (!caller || !thread || !process::g_scheduler) {
+    return -errc::ESRCH;
+  }
+  shared_ptr<capability::Object> objects[capability::Table::capacity()]{};
+  containers::WaitQueue *queues[capability::Table::capacity()]{};
+  for (usize i = 0; i < count; ++i) {
+    auto found = caller->capabilities().lookup_waitable(handles[i]);
+    if (!found) {
+      return domain_cap_error(found.error());
+    }
+    objects[i] = moss::move(*found);
+    queues[i] = objects[i]->event_queue();
+    if (!queues[i] || queues[i] == &caller->domain_exit_wait_queue()) {
+      return -errc::EINVAL;
+    }
+    for (usize j = 0; j < i; ++j) {
+      if (queues[j] == queues[i]) {
+        return -errc::EINVAL;
+      }
+    }
+  }
+  auto ready_index = [&]() -> usize {
+    for (usize i = 0; i < count; ++i) {
+      if (objects[i]->event_ready()) {
+        return i;
+      }
+    }
+    return count;
+  };
+  for (;;) {
+    const usize ready = ready_index();
+    if (ready != count) {
+      return static_cast<long>(ready);
+    }
+    if (flags & NONBLOCK) {
+      return -errc::EAGAIN;
+    }
+    if (deadline_ns && timer::TimerSubsystem::instance().now_ns() >= static_cast<u64>(deadline_ns)) {
+      return -errc::ETIMEDOUT;
+    }
+    if (moss::abi::bridge::moss_io_wait_interrupted()) {
+      return -errc::EINTR;
+    }
+    usize registered = 0;
+    for (; registered < count; ++registered) {
+      if (!queues[registered]->try_add_waiter(thread)) {
+        for (usize i = 0; i < registered; ++i)
+          queues[i]->remove_waiter(thread);
+        return -errc::ENOMEM;
+      }
+    }
+    const bool restore_irqs = arch::interrupts_enabled();
+    arch::disable_interrupts();
+    (void)moss::abi::bridge::moss_prepare_io_wait();
+    // Registration precedes the final level check. Earlier notifications are
+    // observed here; later ones use the prepared-sleeper handoff.
+    if (ready_index() != count) {
+      process::g_scheduler->task_wakeup(thread, thread->wake_cpu);
+    }
+    timer::HrTimer timeout;
+    bool armed = true;
+    if (deadline_ns) {
+      timeout.init(
+          timer::TimerMode::OneShot,
+          [](void *data) noexcept {
+            auto *waiting = static_cast<process::Thread *>(data);
+            process::g_scheduler->task_wakeup(waiting, waiting->wake_cpu);
+          },
+          thread);
+      armed = static_cast<bool>(timeout.start(static_cast<u64>(deadline_ns)));
+      if (!armed)
+        process::g_scheduler->task_wakeup(thread, thread->wake_cpu);
+    }
+    process::g_scheduler->commit_sleep();
+    // A remote timer callback must release this stack-owned timer before return.
+    timeout.cancel_sync();
+    for (usize i = 0; i < count; ++i)
+      queues[i]->remove_waiter(thread);
+    if (restore_irqs)
+      arch::enable_interrupts();
+    if (!armed)
+      return -errc::ENOMEM;
   }
 }
 
@@ -4107,7 +4213,9 @@ const SyscallDescriptor SYSCALL_TABLE[static_cast<int>(SyscallNumber::MAX_SYSCAL
     {"boot_archive", handlers::sys_boot_archive, 1, true, "Get read-only boot archive memory"},
     {"profile_create", handlers::sys_profile_create, 3, true, "Mint a bounded main-thread CPU profile"},
     {"profile_apply", handlers::sys_profile_apply, 2, true, "Admit a one-shot thread CPU budget"},
-    {"profile_status", handlers::sys_profile_status, 2, true, "Read bounded thread CPU budget metrics"}};
+    {"profile_status", handlers::sys_profile_status, 2, true, "Read bounded thread CPU budget metrics"},
+    {"object_wait", handlers::sys_object_wait, 4, true, "Wait for native object readiness"},
+    {"ipc_try_receive", handlers::sys_ipc_try_receive, 3, true, "Receive a queued control request without blocking"}};
 
 // 系统调用分发器实现
 long SyscallDispatcher::dispatch(long syscall_number, long arg0, long arg1, long arg2, long arg3, long arg4,
