@@ -1,6 +1,7 @@
 # Raspberry Pi 3B+ serial console and JTAG deployment
 
-`scripts/rpi.py` runs with uv and Python's standard library on macOS/Linux.
+`scripts/rpi.py` runs with uv on macOS/Linux; validation reuses the project's
+Pydantic/Typer-based kernel protocol checker.
 It provides an interactive 115200 8N1 console and loads the production ARM64
 Image/initramfs into RAM through OpenOCD. It does not modify the SD card.
 
@@ -56,7 +57,7 @@ OpenOCD's `dump_image` while U-Boot is halted.
 In another terminal, deploy and check real shell input automatically:
 
 ```sh
-uv run scripts/rpi.py deploy --dtb build/rpi3b/firmware.dtb --check
+uv run scripts/rpi.py deploy --dtb build/rpi3b/firmware.dtb --jtag-khz 1000 --check
 ```
 
 Deployment prints five stages, with separate upload and readback percentages for
@@ -64,6 +65,9 @@ each file, transferred bytes, speed, elapsed time and estimated time remaining.
 Transfers update after each completed 256 KiB block. A terminal refreshes the
 current progress line; redirected output keeps each update on its own line.
 `Verified` appears only after the complete readback matches the source bytes.
+The default transfer rate is the conservative 1 MHz attach rate. Use
+`--jtag-khz` to select a rate checked on the actual probe/wiring/board;
+each deployment still verifies all bytes, and failed readbacks are retained.
 
 The loader requires a halted U-Boot CPU0 in AArch64 EL2h. Its small handoff stub
 cleans and invalidates caches, disables EL2 translation/caches, and stops at a
@@ -77,6 +81,41 @@ and requires its output and the next prompt. Exit status zero proves shell input
 and response for this run. `build/rpi3b/result.json` records image hashes and the
 result; `serial.log` contains received bytes. This smoke check does not establish
 complete device support or stability.
+
+## Physical kernel suite validation
+
+Build with `MOSS_BUILD_TESTS=ON`, then start `jtag` with CPU0 halted in U-Boot.
+Use a new output directory for every run:
+
+```sh
+uv run cmake --preset arm64-debug -DMOSS_BUILD_TESTS=ON
+uv run cmake --build --preset arm64-debug
+uv run scripts/rpi.py validate \
+  --manifest build/arm64-debug/moss-artifacts.json \
+  --dtb build/rpi3b/firmware.dtb --jtag-khz 1000 \
+  --workload users.frame --output build/rpi3b/frame-run-1
+```
+
+The runner snapshots matching validation Image/initramfs/symbols and their
+provenance into a relative-path manifest. It adds validation boot arguments,
+opens UART before resume, discards prior-run bytes while CPU0 is halted and
+uses the same cache-off/full-readback deployment. It requires all four cores
+to execute work and derives expected memory from the actual firmware DTB.
+
+`validation-result.json` records strict ready/catalog/worker/case/end checks;
+`result.json` records uploaded hashes and `serial.log` retains raw bytes.
+Textual PASS is insufficient. A protocol violation, panic, timeout or failed
+assertion returns nonzero, with later cases marked `not_run`. Deployment
+errors are also retained. Boot/total deadlines default to 30/60 seconds and
+each case to 30 seconds, measured after transfer; these are host watchdogs,
+not performance budgets. Reset and attach again before the next suite.
+
+The initial supported suites are `mm`, `users.frame`, `users.uaccess` and
+`users.ipc`. Other suites requiring serial input injection, lifecycle release
+or benchmark calibration are not advertised by this runner. Physical suite
+validation is distinct from QEMU `--machine raspi3b` and from shell `--check`.
+Each completed feature additionally needs the corresponding real-board
+consumer/failure checks under [ADR-0036](adr/0036-develop-a-general-purpose-hybrid-kernel.md).
 
 For interactive input, omit `--check` in a terminal, or connect to the running
 kernel afterward:

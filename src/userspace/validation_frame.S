@@ -1,4 +1,5 @@
-// Execute real syscalls with every preservable GP register seeded. The
+// Execute real syscalls with every preservable GP register seeded (plus
+// ARM64 FP/NEON state). The
 // function restores its C caller's registers and returns the syscall result,
 // or -(1000 + register index) on corruption. Fork executes the same checks in
 // both processes, before any exec or userspace C code can hide the difference.
@@ -43,9 +44,10 @@ uaccess_sigreturn_probe:
 frame_register_probe:
 #if defined(__aarch64__)
     // 31 caller-register slots occupy 248 bytes; result is at 248, argument
-    // scratch at 256, and padding at 264 makes the total 272 a multiple of 16.
+    // scratch at 256, and padding at 264. FPCR/FPSR occupy 272/280, followed
+    // by 32 16-byte vectors at 288; the total 800 stays aligned to 16.
     // Register i lives at i*8, so these offsets must follow the restore block.
-    sub sp, sp, #272
+    sub sp, sp, #800
     str x0, [sp, #0]
     str x1, [sp, #8]
     str x2, [sp, #16]
@@ -77,6 +79,24 @@ frame_register_probe:
     str x28, [sp, #224]
     str x29, [sp, #232]
     str x30, [sp, #240]
+    mrs x0, fpcr
+    mrs x1, fpsr
+    stp x0, x1, [sp, #272]
+    // Distinct halves catch lane swaps as well as missing/incorrect vectors.
+    // Bases 256/512 simply separate low/high lane seeds from each other.
+    .irp n,0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,30,31
+    str q\n, [sp, #(288 + \n * 16)]
+    mov x0, #(256 + \n)
+    mov x1, #(512 + \n)
+    ins v\n\().d[0], x0
+    ins v\n\().d[1], x1
+    .endr
+    // FPCR.RMode[23:22]=01 rounds toward +infinity; FPSR.IOC[0] is sticky
+    // invalid-operation status. Both differ from a new thread's zero state.
+    mov x0, #(1 << 22)
+    msr fpcr, x0
+    mov x0, #1
+    msr fpsr, x0
     mov x0, #256
     mov x1, #257
     mov x2, #258
@@ -228,6 +248,31 @@ frame_register_probe:
     mov x0, #286
     cmp x30, x0
     b.ne .Lbad_arm_30
+    // All GP checks finished: x0/x1 can now check both lanes without hiding
+    // GP corruption. Negative 1100+n identifies vector n, 1132/1133 FPCR/FPSR.
+    .irp n,0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,30,31
+    mov x2, #-(1100 + \n)
+    umov x0, v\n\().d[0]
+    mov x1, #(256 + \n)
+    cmp x0, x1
+    b.ne .Lbad_arm_fp
+    umov x0, v\n\().d[1]
+    mov x1, #(512 + \n)
+    cmp x0, x1
+    b.ne .Lbad_arm_fp
+    .endr
+    mov x2, #-1132
+    mrs x0, fpcr
+    mov x1, #(1 << 22)
+    cmp x0, x1
+    b.ne .Lbad_arm_fp
+    mov x2, #-1133
+    mrs x0, fpsr
+    cmp x0, #1
+    b.ne .Lbad_arm_fp
+    b .Ldone_arm
+.Lbad_arm_fp:
+    str x2, [sp, #248]
     b .Ldone_arm
 .Lbad_arm_1:
     mov x0, #-1001
@@ -353,6 +398,14 @@ frame_register_probe:
     mov x0, #-1099
     str x0, [sp, #248]
 .Ldone_arm:
+    ldp x0, x1, [sp, #272]
+    msr fpcr, x0
+    msr fpsr, x1
+    // Restore the caller's original FP state in both parent and child; the
+    // regression must respect AAPCS64, including the preserved d8..d15 lanes.
+    .irp n,0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,30,31
+    ldr q\n, [sp, #(288 + \n * 16)]
+    .endr
     ldr x1, [sp, #8]
     ldr x2, [sp, #16]
     ldr x3, [sp, #24]
@@ -384,7 +437,7 @@ frame_register_probe:
     ldr x29, [sp, #232]
     ldr x30, [sp, #240]
     ldr x0, [sp, #248]
-    add sp, sp, #272
+    add sp, sp, #800
     ret
 #elif defined(__riscv)
     // Slots use architectural index*8 through x31 at 248; x0 and SP need no

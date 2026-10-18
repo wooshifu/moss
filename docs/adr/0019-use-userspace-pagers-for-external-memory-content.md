@@ -5,6 +5,10 @@ date: 2026-09-19
 
 # Use Userspace Pagers for External Memory Content
 
+> The mandatory residency/migration boundary below is superseded by
+> [ADR-0036](0036-develop-a-general-purpose-hybrid-kernel.md). Preserve this
+> decision as historical context; use ADR-0036 for new implementation work.
+
 Moss will represent file-backed and other externally supplied mappings as Pager-Backed Memory Objects. On a missing-page fault, the Mechanism Kernel Domain validates access, blocks the faulting thread and requests content from the object's authorized Pager Service. The pager interprets the object offset, obtains the content and supplies it through a kernel-controlled mechanism.
 
 The kernel owns physical-frame allocation, page-table installation, mapping permissions, resident-page lifetime, dirty-state observation, global memory accounting and selection of reclaim candidates. The pager owns logical content identity, backing-store access, coherence, truncation and writeback policy. Processes sharing the same Pager-Backed Memory Object observe the kernel-managed resident pages for that object; the kernel does not identify them by pathname, inode or filesystem format.

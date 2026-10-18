@@ -1886,6 +1886,26 @@ x64 Debug 完整 CTest **6/6** 通过；三架构 `lint.py --check` 各检查 **
 
 旧实现的 x64 Debug QEMU `scheduler/ipc_call_graph_limits` 红例为 **2 个断言通过、1 个失败**，见 `build/x64-debug/validation/ipc-depth-old-red-v2-20261006/results.json`；首次尝试因测试注册表 272 槽耗尽而未进入用例，随后扩充 16 个槽并记录了有效红例。最终三架构 Debug 构建通过，catalog v6 的 `scheduler` 各 **16/16**、`users.ipc` 各 **22/22**，六个 workload 均为 `passed`、报告 `finalized` 且无 `not_run`，见 `build/<arch>-debug/validation/ipc-depth-final-20261006/results.json`。x64 Debug 生产启动的独立探针以 150 秒上限完整通过 **168/168** 步，实际用时 64.06 秒，见 `build/x64-debug/production-boot/ipc-depth-extended-20261006/results.json`；同一宿主同时有 Xcode 编译高负载，默认 90 秒 CTest 两次分别在 150 和 90 步超时，因此本阶段不记为默认 CTest 通过。宿主 `test_kernel_validation.py` **144 passed**；定向 x64 clang-tidy **5** 个翻译单元、改动 C/C++ 文件格式（历史未整体格式化的测试框架头文件除外）、Ruff 与 `git diff --check` 通过。
 
+### 3.109 通用混合目标与 Pi fork FP/NEON 红绿验证（2026-10-18）
+
+按本轮确认的 [ADR-0036](docs/adr/0036-develop-a-general-purpose-hybrid-kernel.md)
+保留内核 VFS/VM/普通 exec 及首批存储/网络数据路径，服务监督和管理策略保持隔离。
+旧服务迁移 ADR、README 容量、MOSS-010/017 和共享内存表述已按当前源码澄清，
+后续优先级见 [开发路线](docs/kernel-roadmap.md)，不据此把未实现目标勾为完成。
+
+新增 `rpi.py validate` 复用完整 RAM 回读与严格 Protocol，独立快照验证镜像、
+initramfs、symbols/provenance；首批选择无输入注入的四个套件。ARM64 fork
+捕获实时 q0～q31、FPCR/FPSR，汇编探针在父子进程不经 exec 检查，catalog 升至 v9。
+旧实现 QEMU/Pi 均在 fork_registers 失败，最终 Pi 的 users.frame **3/3**、
+同镜像 mm **7/7** 通过；未执行的旧 signal_return 正确为 not_run。
+
+三架构 Debug 构建和 8 个相关 QEMU workload、共 **152 个 case** 通过；
+记录及逐字节原始 UART 见 [Pi 验收](docs/rpi3b-fork-validation.md)。
+宿主全量首轮唯一失败为 ARM64 冷构建 300 秒超时，该节点按原时限单独重跑通过；
+定向回归、lint/格式检查及精确验证范围亦见验收记录，首轮失败保留。
+本轮未建立 Release/Linux 性能对照，也未关闭 MOSS-014 整项、抢占闭环、
+完整 VM/进程事务或其余套件的物理覆盖。
+
 ## 4. 问题总表与当前状态
 
 | 编号 | 优先级 | 审计主题 | 当前状态与下一步 |
@@ -1899,14 +1919,14 @@ x64 Debug 完整 CTest **6/6** 通过；三架构 `lint.py --check` 各检查 **
 | MOSS-007 | P0 | 跨 ISA TrapFrame / syscall 参数 | 部分实现（3.18～3.19）；有效原生帧、布局断言、六参数/GP/条件码与 native sigreturn 已通过九配置；全异常交错及完整扩展状态仍待验收。 |
 | MOSS-008 | P0 | 只读页被 COW 放宽权限 | 部分修复；只读 VMA、受控 OOM、多代 COW 与双 CPU fault 软件事务已有回归（3.16、3.31、3.33）；活动硬件 root 拥有权已有 3.38 验收，fault/unmap 夹具的提交页采样竞态已修复（3.55）；共享 exec/root 协调与完整并发 VM 生命周期仍待补。 |
 | MOSS-009 | P1 | RV64 fault 分类 / PPN | 部分修复；访问类型与驻留检查、COW 优先和 HAL PPN 编码已补，Sv39/Sv48 回归通过；受控 COW OOM 引用回归见 3.31，多地址编码、其他拒绝访问及并发生命周期专项仍待补。 |
-| MOSS-010 | P1 | 页表 clone/map 回滚 | 部分修复（3.17、3.32～3.33）；map/clone 表页准备失败不改原树和数据页引用，fork 检查 clone 结果且持有父 VM 事务；地址空间对象/控制块真实 OOM 回滚已验收。完整 fork 后续失败事务、并发 clone/unmap 与活动 root 协调待补。 |
+| MOSS-010 | P1 | 页表 clone/map 回滚 | 部分修复；除 3.17、3.32～3.33 外，当前已有 users.exec 的 fork FD/process/metadata allocation rollback 用例；继续核对全部后续分配点、并发 clone/unmap 与活动 root 协调，不重复列作全部未实现。 |
 | MOSS-011 | P1 | 活跃 ASID 回绕重用 | 已关闭（3.23）；加锁的 1…255 活跃租约、耗尽错误、析构归还和 ARM64 广播失效已核对，内核边界测试及同 VA/跨 CPU 的 300 次用户复用在六配置通过。 |
 | MOSS-012 | P1 | brk/VMA/PTE 权限生命周期 | 已关闭（3.24）；空堆、缩堆 PTE/ref/TLB 撤销、重新增长清零、增长冲突回滚及权限拒绝已在六配置通过；部分 munmap 与共享地址空间并发仍明确留在范围外。 |
 | MOSS-013 | P1 | 对齐 / buddy / 释放契约 | 已关闭（`e7fe8c91`）；heap/PFA 对齐、释放归属、保留洞分段/耗尽专项验收通过；页引用并发不在此结论内，见 3.4～3.5。 |
-| MOSS-014 | P1 | fork 用户现场与继承状态 | 部分实现；三 ISA 实际用户帧 GP 复制、ARM64 x30 和 x86 CF 修复有不立即 exec 的回归（3.19）；VM/凭据/全部 FP/TLS 继承及失败验收仍缺。 |
+| MOSS-014 | P1 | fork 用户现场与继承状态 | 部分实现；三 ISA GP/条件码及 x64 legacy FP 已有回归；2026-10-18 补 ARM64 实时 FP/NEON 继承和 Pi 红绿对照。完整属性继承、其他扩展状态/信号组合及失败覆盖仍开放，不能关闭整项。 |
 | MOSS-015 | P1 | exec 原子替换 | 已关闭（3.25）；全部可失败准备均在旧地址空间仍有效时完成，提交后才回收旧所有权；PFA 与六级 heap 失败、可变 ELF 快照及 FD 语义已在六配置通过。 |
 | MOSS-016 | P1 | ELF 校验与分段策略 | 已关闭（3.26）；不可变 LoadPlan、checked arithmetic、严格拒绝 oracle、17 个畸形映像，以及非页对齐 RX/RW 的实际字节/零填充/最终权限已在六配置通过。 |
-| MOSS-017 | P1 | 运行队列 / 迁移 / on-CPU | 部分修复（3.28）；调用线程收紧自身 affinity 时会在 continuation 保存后同步迁移，确定性红例、单例及 32/32 并发压力通过；远程目标、一般 pick/dequeue/迁移及 on-CPU/check_need_resched 仍未闭合。 |
+| MOSS-017 | P1 | 运行队列 / 迁移 / on-CPU | 部分修复；已有 task_transition_lock_、take_next_task、migrate_ready_task 与 migration_current_owner 回归，3.28 自身 affinity 红绿证据保留；剩余为交接/抢占安全点和完整负载验收，check_need_resched 仍不调度。 |
 | MOSS-018 | P1 | wait/console 丢失唤醒 | 部分修复；wait 的 child-exit/登记交错及 EINTR 已有红绿验收（3.59～3.60）；console 的 RX 排队窗口、双读者及跨 CPU IRQ/登记交错分别在 3.62～3.64 验收。SA_RESTART 限定重启子集已验收（3.65）；历史 SMP 超时因果仍待确认。 |
 | MOSS-019 | P1 | nanosleep / timer 生命周期 | 部分修复；三 ISA 实际睡眠、容量失败、deadline 溢出、跨 CPU 交接及同步取消已有实现；捕获信号的 EINTR 与相对剩余时间已有九预设红绿验收（3.61）。更广定时交错仍待验收。 |
 | MOSS-020 | P1 | 信号投递 / STOP/CONT/SIGCHLD | 部分修复；结果/handler 参数写回、SIGCHLD、pipe/console 中断与部分传输、wait/nanosleep EINTR、限定 SA_RESTART 重试及 CPU-bound IRQ 投递已验收（3.60～3.66）。基本 STOP/CONT 交接、waitpid 一次性状态、信号致死状态、SA_NOCLDSTOP、进程组 wait 筛选与成员变更唤醒、SA_NOCLDWAIT/显式 SIG_IGN 自动回收及 action 一致快照通过（3.67～3.74）；完整 job control 与更广交错仍待补。 |
@@ -2125,13 +2145,19 @@ _kernel_end / _pagetable_end    0x403fd000
 
 ### MOSS-014 · fork 应复制用户执行状态，不应复制再清空内核切换现场
 
+**2026-10-18 更新：** ARM64 fork 直接快照调用线程实时 q0～q31、FPCR、FPSR；
+不能复制上次切换遗留的 CpuContext。扩展原有汇编探针，使父子进程在任何 exec/C 调用前
+检查两个向量半部和非默认控制/状态值，再恢复调用方 ABI。旧内核在 QEMU 与 Pi 3B+ 均于
+fork_registers 失败，修复后两者通过；catalog 升至 v9，旧 GP-only 覆盖不能充当新基线。
+完整继承表和其他扩展状态仍开放。
+
 **2026-09-07 工作区更新：** x86 legacy FP 的实时 fork 快照、切换恢复和 exec 默认化已补，限定状态及红绿证据见 3.14。完整继承表、其他 ISA 扩展状态、信号及 OOM 回滚仍未完成。
 
 **2026-09-06 更新：部分实现。** `f7768373` 的 `sys_fork` 已提取 x86 PC/SP、RV64/x86 GP 寄存器；首次运行先在新内核栈保存完整 CpuContext，再经架构 trampoline 返回用户态。三架构 `validation.c` 的一次 fork/exec/exit/wait 已通过。尚需 fork 不立即 exec 的快照验证、VM 元数据/凭据/信号继承、FP/SIMD 状态与资源失败回滚；共用 syscall 仍手写架构槽位。
 
-**位置与事实：** `src/kernel/src/syscall_table.cpp:238` 的 fork 初始化用户 PC/SP 为 0；ARM64、RISC-V 64 有部分提取，x86 路径没有补齐用户 PC/SP。RISC-V 64/x86 的部分处理复制内核保存上下文，但 `src/process/src/process-scheduler.cppm:1874` 的首次运行路径重新清空上下文并只重建部分参数寄存器。这不是对父用户寄存器现场的完整克隆。
+**原始位置与事实（修复前）：** `src/kernel/src/syscall_table.cpp:238` 的 fork 初始化用户 PC/SP 为 0；ARM64、RISC-V 64 有部分提取，x86 路径没有补齐用户 PC/SP。RISC-V 64/x86 的部分处理复制内核保存上下文，但 `src/process/src/process-scheduler.cppm:1874` 的首次运行路径重新清空上下文并只重建部分参数寄存器。这不是对父用户寄存器现场的完整克隆。
 
-fork 对 VMA 有复制，但未完整继承 `brk_base/brk_current/mmap_next` 等 VM 状态，以及凭据、信号动作/掩码/备用栈。ARM64 的通用寄存器路径更完整，也仍需核对 FP/SIMD 等扩展状态的复制与首次使用语义。
+原始审计时 fork 对 VMA 有复制，但未完整继承 `brk_base/brk_current/mmap_next` 等 VM 状态，以及凭据、信号动作/掩码/备用栈。当前源码已有这些 VM 游标复制；剩余属性须按继承表继续核对，不沿用原始缺项当作当前源码结论。
 
 **影响：** 子进程的 PC/SP、调用保存寄存器或堆状态可能不符合父进程观察到的 fork 语义；x86 子进程可能从 0 地址开始。当前 shell 的“fork 后立即 exec”会掩盖许多寄存器和进程属性继承错误。
 
@@ -2172,7 +2198,12 @@ fork 对 VMA 有复制，但未完整继承 `brk_base/brk_current/mmap_next` 等
 
 ### MOSS-017 · 调度器缺少从运行、入队到迁移的统一所有权协议
 
-**位置与事实：** `src/process/src/process-scheduler.cppm:407` 的入队会初始化节点，缺少足够的重复入队防护；`:452` 选中任务后返回裸指针并解锁，之后另行出队。`:1156` 的公共入队路径在队列操作后再更新部分线程状态。`:1630` 的 tick 在旧任务现场完全切换保存前将其重新放回可被选择的集合。
+**2026-10-18 源码复核：** 当前已有 `task_transition_lock_` 下的取任务/迁移、
+出队当前任务和保存 continuation 后交接，以及 `migration_current_owner` 回归。
+下面保留原审计位置作为历史；尚需闭合的是完整交错与抢占安全点。
+`check_need_resched()` 仍没有执行调度，本轮只修正其误导注释。
+
+**原始位置与事实（修复前）：** `src/process/src/process-scheduler.cppm:407` 的入队会初始化节点，缺少足够的重复入队防护；`:452` 选中任务后返回裸指针并解锁，之后另行出队。`:1156` 的公共入队路径在队列操作后再更新部分线程状态。`:1630` 的 tick 在旧任务现场完全切换保存前将其重新放回可被选择的集合。
 
 `src/process/src/process-load_balancer.cppm:124`、`:260` 的迁移/窃取分开进行选择、出队、入队，没有一个同时保护来源、目标和任务拥有者的转移事务；迁移路径也没有完整落实目标 CPU affinity 检查。
 
@@ -2625,7 +2656,7 @@ fork 对 VMA 有复制，但未完整继承 `brk_base/brk_current/mmap_next` 等
 - 3.21 两份 RV64 Debug 用户复制超时继续保留；特别是首个 allocation_fault 的超时没有停机 PC，不能仅凭后续矩阵通过认定根因已经消除。
 - 调度迁移和 timer cancel 的具体交错触发概率、影响 CPU 数量，以及页表/TLB 跨 CPU 回收是否还有遗漏，需要在基础内存和所有权修复后用确定性交错验证。
 - 3.30 已执行三架构用户态对内核 text/rodata/data/页表/MMIO 的直接读写攻击并验证异常隔离；3.40 补齐原生信号帧/备用栈输入验收。经 syscall 用户指针的完整攻击矩阵及共享 exec 协调仍未完成，不能从这些已测边界外推。
-- 未完成真实硬件、长期负载、全部 FP/SIMD/向量扩展、完整文件系统格式攻击面、第三方代码、所有锁顺序和每条系统调用的穷尽检查。因此“本文列出的问题全部修复”不等于“内核再无缺陷”。
+- 未完成所有功能的真实硬件覆盖、长期负载、全部 FP/SIMD/向量扩展、完整文件系统格式攻击面、第三方代码、所有锁顺序和每条系统调用的穷尽检查。已有有限 Pi 真机结果不关闭这些缺口。因此“本文列出的问题全部修复”不等于“内核再无缺陷”。
 
 这些限制不妨碍开始已经有充分证据的修复。应先消除确定的所有权和权限错误，再用更可信的运行状态定位剩余故障。
 

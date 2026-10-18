@@ -42,7 +42,8 @@ BusyBox's standalone shell support. The separate validation initramfs starts
 `/validation.elf`, which also contains the signal regression cases.
 
 The capability-backed native file service holds up to 16 volatile, flat root
-files within a 64 KiB aggregate storage allocation budget. `/scratch` exists
+files within a 16 MiB writable-content allocation budget. Read-only boot
+archive mappings use a separate entry limit and do not consume that budget. `/scratch` exists
 at boot, and `/moss-file.elf write TEXT /name` creates another file. Reads and
 writes use positional, page-sized transfers; a shorter replacement truncates
 the file. `/moss-file.elf resize SIZE /name` changes an existing file's length
@@ -62,9 +63,11 @@ selected service and supervisor termination capabilities for recovery checks.
 The Code Authority Service receives approval authority and a private request
 endpoint; only the supervisor holds its request sender and an independent
 revocation handle. Product code policy and ordinary ELF approval are pending.
-Moving the remaining POSIX identity and signal policy into the Process
-Compatibility Service is still pending. The accepted
-[architecture decisions](docs/adr/) describe their intended migration.
+The general-purpose hybrid target keeps ordinary POSIX execution, VFS, VM
+and initial storage/network data paths in the kernel, while preserving
+isolated supervision and capability authority. See
+[ADR-0036](docs/adr/0036-develop-a-general-purpose-hybrid-kernel.md) and the
+[ordered roadmap](docs/kernel-roadmap.md) for the current boundary and gaps.
 
 For example, after launching QEMU:
 

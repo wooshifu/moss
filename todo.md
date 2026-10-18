@@ -1,5 +1,8 @@
 # MOSS 内核能力与待办
 
+> 当前目标（2026-10-18）：按 [ADR-0036](docs/adr/0036-develop-a-general-purpose-hybrid-kernel.md)
+> 开发通用混合内核，优先级与验收门槛见 [路线图](docs/kernel-roadmap.md)。旧 ADR 的服务迁移清单保留为历史切片，不再要求迁出普通 VFS/VM/exec 或先完成第二套 POSIX 系统。
+
 > 源码复核基线：2026-09-23，`abeba591`（当次未重跑 QEMU）。之后的当前九预设运行验收见 [moss-todo.md](moss-todo.md) 第 3.59～3.75 节。历史实现与实测保留原日期；源码与旧报告的对应关系见第 3.41 节。
 > ADR 迁移复核基线：2026-09-24，`c970c13`；新增能力和服务的状态见下文“ADR 迁移”。上面的 44/44 九预设记录早于该基线；IPC 收敛后的 **53/53 CTest** 见 [3.76](moss-todo.md#376-旧-ipc-与生产-capability-ipc-分界2026-09-24)。
 > 启动驱动边界复核：2026-09-24，`290339e`；九预设 **53/53 CTest**、关闭测试的独立生产构建及符号检查见 [3.77](moss-todo.md#377-启动机制与旧设备框架分界2026-09-24隔离工作树)。
@@ -43,7 +46,7 @@ MOSS 当前是 C++26 freestanding 内核，三架构已有实际启动、中断�
 
 | 架构 | 当前启动和硬件发现 | 已有运行证据 | 尚不能声称 |
 | --- | --- | --- | --- |
-| ARM64 | Linux Image + DTB；PL011/16550；GICv2/v3；PSCI 或 spin-table | Debug/Release 默认四核真实内核测试；GICv3 16 核资源测试；同镜像 QEMU `raspi4b` 合成 DTB 测试 | 任意 SoC、真实树莓派、完整信号投递/阻塞语义 |
+| ARM64 | Linux Image + DTB；PL011/16550；GICv2/v3；PSCI 或 spin-table | Debug/Release 默认四核真实内核测试；GICv3 16 核资源测试；QEMU 合成 DTB；另有 [Pi 3B+ 有限真机/PMU 记录](docs/rpi3b-pmu.md) | 任意 SoC、所有功能真机覆盖、完整信号投递/阻塞语义 |
 | RV64 | Linux Image + DTB/SBI；Sv39/Sv48；16550、PLIC、SBI TIME/IPI/HSM | Debug/Release 默认四核真实内核测试；同镜像 `sstc=false` 双核配置 | 完整信号投递/阻塞语义、并发 COW/VM、AIA/IMSIC/APLIC 支持 |
 | x64 | PVH + 内存表、最小 ACPI MADT/SPCR/BDA 发现；IDT、xAPIC/I/O APIC、PIT 校准、SYSCALL、AP 启动 | Debug/Release 默认四核真实内核测试；同镜像 `q35`/`pc`；正常镜像 shell；三个构建配置的页权限和用户违规访存隔离验收（3.30） | 完整信号投递/阻塞语义、并发 VM 隔离、UEFI/x2APIC/完整 ACPI |
 
@@ -95,7 +98,7 @@ uv run qemu.py --manifest build/arm64-debug/moss-artifacts.json
 
 ## ADR 迁移
 
-ADR-0008～0033 是已接受的目标边界，并非当前实现的完成声明。下面仅勾选行内明确限定的切片；旧 MOSS-001～032 审计项仍按原验收标准追踪。
+ADR-0008～0033 中的实现记录不是完成声明；其强制服务迁移边界现按 ADR-0036 调整。下面仅勾选行内明确限定的历史切片；旧 MOSS-001～032 审计项仍按原验收标准追踪。
 
 - [x] ADR-0009/0010/0011 的第一条可运行路径：进程局部 capability、同步控制调用和单页共享内存已供独立服务使用；不代表通用权限撤销或完整数据面已完成。
 - [x] ADR-0014/0018 的第一条服务路径：`moss-init` 监护文件与命名空间服务，后者解析单层绝对路径（默认已有 `/scratch`，也可创建其他具名文件），服务死亡后的重连由用户态显式处理；内核 VFS 仍处理普通文件。
@@ -209,7 +212,7 @@ ADR-0008～0033 是已接受的目标边界，并非当前实现的完成声明�
   - [x] map 拒绝已有叶子与中间 block；完整缺失路径准备失败不改原树/数据页引用，逐级真实 PFA 耗尽与恢复后成功通过（3.17）。
   - [x] clone 校验与表页分配先于 PTE/引用修改，显式返回错误且 fork 检查结果；跨表级/分支的逐点 PFA 耗尽、父页权限/数据/引用保持、目标拒绝及恰好足够预算成功，三架构九配置与 Sv39 专项通过（3.17）。
   - [x] AddressSpace 对象和共享引用控制块的堆分配失败均显式返回 OOM，归还页表、ASID 和堆对象；真实控制块耗尽、泄漏变异反例、九配置及 Sv39 补验通过（3.32）。
-  - [ ] 把 clone 成功后的 kernel-stack、VMA、FD 等失败纳入整次 fork 的事务，补真实系统调用逐点 OOM 验收；3.33 已补父地址空间软件事务，更多并发 clone/unmap 交错与活动 root 协调仍待完成。
+  - [ ] 已有 `users.exec` 的 fork FD/process/metadata allocation rollback 回归，不再从零补同名测试；继续核对 kernel-stack 等全部分配点及并发 clone/unmap/活动 root 的覆盖，未测分支保持开放。
 - [x] **MOSS-011（3.23 已关闭）**：活跃 ASID 使用加锁租约表，地址空间销毁前不复用，ARM64 复用前广播失效；255 个用户标签耗尽显式失败。
   - [x] `mm.transactions/asid_leases` 验证全部活跃标签唯一、耗尽、隔项释放后只复用已归还标签并恢复页计数；当前三架构 Debug/Release 均通过。
   - [x] `users.signals/pid_lifecycle` 顺序创建 300 个子进程，在同一用户 VA 写入逐次唯一模式，交替迁移 CPU0/CPU1 并重复调度；父地址空间始终保持原值，当前六配置均通过。
@@ -221,6 +224,7 @@ ADR-0008～0033 是已接受的目标边界，并非当前实现的完成声明�
   - [x] PFA 拒绝错误 order、内部/非对齐地址、重复释放及仍有共享引用的整块释放，失败不部分改变元数据、数据或统计。
   - [x] heap 返回地址对齐、溢出拒绝、原块/请求大小追踪与错误释放检查；4,096 次混合分配/释放和计数恢复，六配置真实内核测试通过。
 - [ ] **MOSS-014（部分实现）**：RV64/x86 首次用户返回及 GP 快照已补；补 fork 不立即 exec 的寄存器、VM 游标、凭据、FD 及扩展状态继承。
+  - [x] ARM64 fork 实时复制 q0～q31、FPCR/FPSR；父子进程不经 exec 的全向量/状态检查在旧内核 QEMU/Pi 红、修复后绿（2026-10-18，catalog v9）。限定为 ARM64 基础 FP/NEON，不关闭全部扩展状态或整项继承验收。
   - [x] fork 从实际用户帧复制 GP，不再猜栈顶偏移；ARM64 x30 和 x86 CF 修复有不立即 exec 的用户汇编回归，九配置通过（`3461c749`，3.19）。
   - [x] x86 legacy FP 实时快照/切换/exec 默认化；yield、fork、真实 CPU1 子进程状态及 x87 异常后父继续的子检查（工作区 3.14）。
   - [ ] 全扩展状态与信号帧；显式 users.simd_fault 在本机 TCG 仍失败，不能算 #XM 验收。
@@ -234,6 +238,7 @@ ADR-0008～0033 是已接受的目标边界，并非当前实现的完成声明�
   - [x] 独立非页对齐 RX/RW fixture 检查页前缀、跨页文件字节、BSS/圆整页尾清零、真实执行/写入，以及 RX 禁写、RW 禁执行；严格拒绝 oracle 防止误接受伪装成成功，六配置 `users.exec` 28/28 通过。
   - [x] 当前契约明确拒绝 PT_INTERP/PT_DYNAMIC 和共享页的 LOAD；纯 NOBITS TLS 可作为 runtime 元数据，file-backed TLS 必须由一个 LOAD 覆盖。关闭本项不表示支持动态加载、内核 TLS 初始化或任意可加载 ELF。
 - [ ] **MOSS-017**：原子取任务、去重入队、on-CPU 交接、迁移锁序和 affinity；对已有 RB 算法补不变量/交错测试，不重写一套。
+  - 当前源码已有 `task_transition_lock_`、`take_next_task()`、`migrate_ready_task()` 和 `migration_current_owner` 回归；剩余是所有权交接/抢占安全点和负载验收，不是缺少整套原子队列实现。本次不凭源码将整项关闭。
   - [x] current task、初始上下文、地址空间及入口栈在本 CPU 的同一 IRQ 临界区内发布；这不替代跨 CPU 的运行队列/on-CPU 所有权协议（3.18）。
   - [x] 修复实际双 CPU 用例暴露的 ARM64 从核未开启 MMU：复用主核已建页表，在各从核配置 MMU 和高地址直映后才发布 online（工作区，3.9）；不代表运行队列所有权或运行中任务迁移已完成。
   - [x] ARM64 激活从核时补齐 `Active` 发布后的 `DSB SY → SEV` 完成顺序；三模式构建、Debug/Release CTest 5/5 与实际指令检查通过，偶发挂起完整验收另列（3.15）。
@@ -308,15 +313,15 @@ ADR-0008～0033 是已接受的目标边界，并非当前实现的完成声明�
 - [ ] **x64 端口完善**：复用已有 IDT、MMU、APIC、timer、context switch、SYSCALL、fault 和 AP startup；先完成 007/014/019 等跨架构契约，001 的页权限隔离已验收，不再从 boot stub 重写。
 - [ ] **RV64 端口完善**：复用已有 satp/trap/PLIC/SBI/context switch/ecall/HSM；先完成 007/009/014/019，按需求另增 AIA 等驱动。
 - [ ] **同 ISA 通用镜像扩展与真机验收**：已有低于 4 GiB 的多 RAM bank 分配；继续精确回收启动区、细粒度 RAM/MMIO 映射、更多启动协议/设备与真机固件交接，以不变镜像 hash 验收，不能退回 virt/板名编译矩阵。
-- [ ] **块设备与持久文件系统**：按 ADR-0015/0018 在隔离服务实现块设备与持久文件系统；virtio-blk 可作为首个可验证设备契约，不是内核对 QEMU 的依赖。
-- [ ] **网络设备与协议栈**：按隔离服务边界实现设备驱动（可先 virtio-net）、Ethernet/ARP/IP/UDP 与实际 socket 路径。
-- [ ] **隔离驱动资源契约**：内核只保留启动所需机制；补 capability 限定的 MMIO/端口、IRQ、DMA 与独占复位权限，再建立用户态枚举/绑定、故障回收及专项验收。旧 `DeviceManager` 不再是生产驱动扩展入口。
+- [ ] **块设备与持久文件系统**：按 ADR-0036 先接 Pi SD 控制器、块 I/O、缓存与内核文件系统；virtio-blk 补 QEMU 回归，不能代替真机持久化验收。
+- [ ] **网络设备与协议栈**：先完成 Pi USB 主机/LAN7800，再接内核 Ethernet/ARP/IP/UDP/TCP 与 socket 路径；virtio-net 仅是补充回归设备。
+- [ ] **隔离驱动资源契约**：按 ADR-0036 保留首批内核设备数据路径；后续隔离设备时补 capability 限定的 MMIO/端口、IRQ、DMA 与独占复位权限、用户态枚举/绑定及故障回收。不得把未约束 DMA 的用户驱动称为已隔离。
 - [ ] **userspace libc/ABI 兼容**：已集成静态 mlibc，BusyBox 和验证程序使用现有用户态运行时；继续按实际程序需求补 syscall/errno/启动契约与不支持能力的明确返回，不重复实现一套最小 libc。
 - [ ] **NUMA**：固件拓扑、per-node zones 与实际分配策略；现有策略/距离矩阵不是完整 NUMA。
 - [ ] **Huge pages**：已有早期大块映射和管理接口；补用户大页分配/回收与 PMD/PUD 映射。THP/hugetlbfs 按需求单列。
 - [ ] **Memory reclaim**：实际 LRU、可回收页和水位触发；依赖可信所有权及文件后备页等可回收对象。
 - [ ] **Memory compaction**：迁移、PTE/TLB 更新和扫描/触发；先修空成功接口，再接真实算法。
-- [ ] **共享内存 IPC**：真实页面/映射/引用及进程退出清理；选择 shm API 或 MAP_SHARED 后再公开用户能力。
+- [ ] **POSIX 共享内存**：已有 capability Memory Object 的页面/映射与 IPC 路径；仍需补 POSIX shm/MAP_SHARED、文件后备与相应生命周期契约，不将两类能力混为未实现。
 - [ ] **多用户/权限**：复用 Process 已有 uid/gid/euid/egid 字段，补继承、鉴权、setuid/setgid 和文件权限，不再新增重复凭据字段。
 
 ## `e7fe8c91` 内存修复的验证证据

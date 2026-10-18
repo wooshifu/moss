@@ -5,6 +5,10 @@ date: 2026-09-19
 
 # Separate Execution Domains from POSIX Processes
 
+> The mandatory residency/migration boundary below is superseded by
+> [ADR-0036](0036-develop-a-general-purpose-hybrid-kernel.md). Preserve this
+> decision as historical context; use ADR-0036 for new implementation work.
+
 Moss will expose capability-addressed Execution Domains and Threads as its native kernel execution objects. An Execution Domain owns an address space, capability table, resource accounting and termination state. Threads own register, scheduling and exception state. Kernel-internal object identifiers are diagnostic values only and do not grant authority.
 
 A Process Compatibility Service will construct POSIX PID namespaces, parent and child relationships, process groups, sessions, compatibility credentials, wait or zombie state, job control and signal semantics over those native objects. It coordinates `fork` and `exec` behavior using kernel mechanisms for address-space copying or construction, thread creation, termination and explicit handle inheritance. Capability-authorized termination or thread control remains enforced by the kernel.

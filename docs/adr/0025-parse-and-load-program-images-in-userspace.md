@@ -5,6 +5,10 @@ date: 2026-09-19
 
 # Parse and Load Program Images in Userspace
 
+> The mandatory residency/migration boundary below is superseded by
+> [ADR-0036](0036-develop-a-general-purpose-hybrid-kernel.md). Preserve this
+> decision as historical context; use ADR-0036 for new implementation work.
+
 Moss will use a Loader Service to parse ordinary ELF and any future executable formats. The service obtains an authorized file or Memory Object, interprets segments, interpreters, dynamic-linking and TLS metadata, creates an Execution Domain, requests mappings, builds initial stack and thread state and transfers only the capabilities selected for inheritance.
 
 The Mechanism Kernel Domain validates the caller's authority, address ranges, mapping rights, resource limits and generic executable-memory invariants, then installs mappings and creates the initial Thread. It does not parse ELF headers or implement dynamic linking. Starting the Initial System Supervisor uses a minimal fixed boot protocol or an image description already authenticated by the boot environment; that bootstrap exception does not become the normal execution ABI.

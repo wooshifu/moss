@@ -5,6 +5,10 @@ date: 2026-09-19
 
 # Move VFS and Filesystems to Userspace
 
+> The mandatory residency/migration boundary below is superseded by
+> [ADR-0036](0036-develop-a-general-purpose-hybrid-kernel.md). Preserve this
+> decision as historical context; use ADR-0036 for new implementation work.
+
 Moss will implement pathname and mount policy in a Filesystem Namespace Service and every filesystem object model and format in one or more Filesystem Services. The Mechanism Kernel Domain will not retain a VFS object model and will not interpret paths, mounts, inodes, dentries, superblocks or filesystem media formats.
 
 A successful lookup or open returns a File Object Capability associated with the serving filesystem. Subsequent operations use that authority directly and need not traverse a global namespace service again. POSIX file descriptors, current directories and related behavior are a POSIX Compatibility View over capabilities and userspace namespace state. Kernel support remains limited to generic capabilities, IPC, process lifecycle and Memory Object or paging mechanisms selected separately.

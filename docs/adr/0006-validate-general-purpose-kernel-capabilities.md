@@ -5,6 +5,10 @@ date: 2026-09-15
 
 # Validate General-Purpose Kernel Capabilities
 
+> The network/persistence exclusions below describe the original BusyBox
+> delivery. [ADR-0036](0036-develop-a-general-purpose-hybrid-kernel.md) expands
+> the development goal; this historical profile and its evidence remain intact.
+
 The current general-purpose kernel acceptance profile covers reliable command-line applications, with system-level correctness, stability and performance acceptance. The six core paths in ADR-0001 remain prerequisites; the expanded goal includes the missing production capabilities needed by these in-scope applications, together with their end-to-end tests. Networking and persistent storage are explicitly outside this delivery as clarified below; concrete system workloads, execution environments and additional acceptance thresholds remain decisions for the ongoing interview, and existing core or benchmark results do not establish completion of this profile.
 
 ## Application Compatibility Confirmed on 2026-09-15

@@ -1,0 +1,586 @@
+{
+  "schema_version": 1,
+  "date": "2026-10-18",
+  "catalog_version": 9,
+  "board": "Raspberry Pi 3 Model B Plus Rev 1.3",
+  "build_type": "Debug",
+  "compiler": "Clang 23.1.2",
+  "runs": [
+    {
+      "label": "before-fix",
+      "workload": "users.frame",
+      "status": "failed",
+      "observed": "assertion",
+      "termination": "protocol_end",
+      "completion": {
+        "v": 1,
+        "event": "end",
+        "workload": "users.frame",
+        "completed": 2,
+        "selected": 3,
+        "failed": 1,
+        "reason": "complete"
+      },
+      "cases": [
+        {
+          "name": "native_frame",
+          "status": "passed",
+          "assertions": {
+            "v": 1,
+            "event": "case_end",
+            "workload": "users.frame",
+            "case": "native_frame",
+            "passed": 11,
+            "failed": 0
+          },
+          "elapsed_seconds": 0.016891384031623602
+        },
+        {
+          "name": "fork_registers",
+          "status": "failed",
+          "assertions": {
+            "v": 1,
+            "event": "case_end",
+            "workload": "users.frame",
+            "case": "fork_registers",
+            "passed": 0,
+            "failed": 1
+          },
+          "elapsed_seconds": 0.03899210807867348
+        },
+        {
+          "name": "signal_return",
+          "status": "not_run",
+          "reason": "assertion"
+        }
+      ],
+      "ready": {
+        "v": 1,
+        "event": "ready",
+        "workload": "users.frame",
+        "detected_cpus": 4,
+        "online_mask": 15,
+        "work_mask": 15,
+        "ram_bytes": 994050048,
+        "managed_pages": 238038
+      },
+      "worker": {
+        "v": 1,
+        "event": "worker",
+        "workload": "users.frame",
+        "cpu": 0,
+        "affinity": 1
+      },
+      "provenance": {
+        "build": {
+          "type": "Debug",
+          "compiler": "Clang 23.1.2",
+          "flags": {
+            "compile": "-march=armv8-a -mgeneral-regs-only -mstrict-align -ffreestanding -fno-exceptions -fno-rtti -fno-stack-protector -fpie -Weverything -Werror -Wno-c++-compat -Wno-c++98-compat -Wno-c++98-compat-pedantic -Wno-c++11-compat -Wno-c++14-compat -Wno-c++17-compat -Wno-c++20-compat -Wno-padded -Wno-unsafe-buffer-usage -Wno-gnu-zero-variadic-macro-arguments -Wno-gnu-anonymous-struct -Wno-nested-anon-types -Wno-missing-prototypes -Wno-missing-variable-declarations -Wno-global-constructors -Wno-exit-time-destructors -Wno-weak-vtables -Wno-inline -Wno-reserved-identifier -Wno-reserved-macro-identifier -Wno-covered-switch-default -Wno-nrvo -Wno-lifetime-safety-suggestions -g",
+            "link": "-fuse-ld=lld -nostdlib -nostartfiles -Wl,-pie,--no-dynamic-linker,-z,notext,-Bsymbolic -T /Users/shifu/code/os/moss/src/linker/kernel_arm64.ld "
+          }
+        },
+        "image_sha256": "1621c724405ac99aa90adf7b75b1b51609ab83562e3df62d5275560a93434fa9",
+        "fixture_sha256": "da4e9abb8cf58c4fce658f3a9055fd6f28b1792643b54d2ebe03242b4e30a5aa",
+        "symbols_sha256": "c45b5e6c183e2770a9616daa51a72856332650ae72fef139cf7dbe4e31420ed1",
+        "schema_version": 1,
+        "source_status": "recorded",
+        "revision": "6274d11628bbba6f859f595b5f2315117ffc3625",
+        "dirty": true,
+        "source_sha256": "55eae53bcd37eeacd4d78ebb99322a6876755f5234408c6daf6d8dc65bb62504"
+      },
+      "jtag_khz": 1000,
+      "uploaded_sha256": {
+        "kernel": "1621c724405ac99aa90adf7b75b1b51609ab83562e3df62d5275560a93434fa9",
+        "initramfs": "da4e9abb8cf58c4fce658f3a9055fd6f28b1792643b54d2ebe03242b4e30a5aa",
+        "dtb": "a572f5c58c22fb91c6b20dadd5ca8dac3f24c170c9863bf19f215f14d068acde"
+      },
+      "boot_check": "validation_failed",
+      "serial_log": "rpi3b-fork-fp-2026-10-18-before-fix.log",
+      "serial_sha256": "13a1d9fefe6966cefb9d50aa320d5891398032ba821bc9e3ce18606f41ccda10"
+    },
+    {
+      "label": "initial-fix",
+      "workload": "users.frame",
+      "status": "passed",
+      "observed": "pass",
+      "termination": "protocol_end",
+      "completion": {
+        "v": 1,
+        "event": "end",
+        "workload": "users.frame",
+        "completed": 3,
+        "selected": 3,
+        "failed": 0,
+        "reason": "complete"
+      },
+      "cases": [
+        {
+          "name": "native_frame",
+          "status": "passed",
+          "assertions": {
+            "v": 1,
+            "event": "case_end",
+            "workload": "users.frame",
+            "case": "native_frame",
+            "passed": 11,
+            "failed": 0
+          },
+          "elapsed_seconds": 0.016730619012378156
+        },
+        {
+          "name": "fork_registers",
+          "status": "passed",
+          "assertions": {
+            "v": 1,
+            "event": "case_end",
+            "workload": "users.frame",
+            "case": "fork_registers",
+            "passed": 1,
+            "failed": 0
+          },
+          "elapsed_seconds": 0.01930828602053225
+        },
+        {
+          "name": "signal_return",
+          "status": "passed",
+          "assertions": {
+            "v": 1,
+            "event": "case_end",
+            "workload": "users.frame",
+            "case": "signal_return",
+            "passed": 1,
+            "failed": 0
+          },
+          "elapsed_seconds": 0.016547390026971698
+        }
+      ],
+      "ready": {
+        "v": 1,
+        "event": "ready",
+        "workload": "users.frame",
+        "detected_cpus": 4,
+        "online_mask": 15,
+        "work_mask": 15,
+        "ram_bytes": 994050048,
+        "managed_pages": 238038
+      },
+      "worker": {
+        "v": 1,
+        "event": "worker",
+        "workload": "users.frame",
+        "cpu": 0,
+        "affinity": 1
+      },
+      "provenance": {
+        "build": {
+          "type": "Debug",
+          "compiler": "Clang 23.1.2",
+          "flags": {
+            "compile": "-march=armv8-a -mgeneral-regs-only -mstrict-align -ffreestanding -fno-exceptions -fno-rtti -fno-stack-protector -fpie -Weverything -Werror -Wno-c++-compat -Wno-c++98-compat -Wno-c++98-compat-pedantic -Wno-c++11-compat -Wno-c++14-compat -Wno-c++17-compat -Wno-c++20-compat -Wno-padded -Wno-unsafe-buffer-usage -Wno-gnu-zero-variadic-macro-arguments -Wno-gnu-anonymous-struct -Wno-nested-anon-types -Wno-missing-prototypes -Wno-missing-variable-declarations -Wno-global-constructors -Wno-exit-time-destructors -Wno-weak-vtables -Wno-inline -Wno-reserved-identifier -Wno-reserved-macro-identifier -Wno-covered-switch-default -Wno-nrvo -Wno-lifetime-safety-suggestions -g",
+            "link": "-fuse-ld=lld -nostdlib -nostartfiles -Wl,-pie,--no-dynamic-linker,-z,notext,-Bsymbolic -T /Users/shifu/code/os/moss/src/linker/kernel_arm64.ld "
+          }
+        },
+        "image_sha256": "1790dbee6f97f57285cd4416861406797ea78308bad2db597b11dfd457014fcb",
+        "fixture_sha256": "da4e9abb8cf58c4fce658f3a9055fd6f28b1792643b54d2ebe03242b4e30a5aa",
+        "symbols_sha256": "2ba7808923aa67d385e199057f48914fd3303a929f5b8b84b3e2474ba54ca28c",
+        "schema_version": 1,
+        "source_status": "recorded",
+        "revision": "6274d11628bbba6f859f595b5f2315117ffc3625",
+        "dirty": true,
+        "source_sha256": "06a2fca86bd4dba7124d67adb1687336ccab03f7c26e3b82944dba78d3ed83db"
+      },
+      "jtag_khz": 2000,
+      "uploaded_sha256": {
+        "kernel": "1790dbee6f97f57285cd4416861406797ea78308bad2db597b11dfd457014fcb",
+        "initramfs": "da4e9abb8cf58c4fce658f3a9055fd6f28b1792643b54d2ebe03242b4e30a5aa",
+        "dtb": "2c45a4c6d01b43cb71563a95c400be2149478105a50ca75589a86e62619f8813"
+      },
+      "boot_check": "validation_passed",
+      "serial_log": "rpi3b-fork-fp-2026-10-18-initial-fix.log",
+      "serial_sha256": "6cc3eb78148b819d7da50cf641504c81de89439ba714bb43111273590229a84c"
+    },
+    {
+      "label": "final-fix",
+      "workload": "users.frame",
+      "status": "passed",
+      "observed": "pass",
+      "termination": "protocol_end",
+      "completion": {
+        "v": 1,
+        "event": "end",
+        "workload": "users.frame",
+        "completed": 3,
+        "selected": 3,
+        "failed": 0,
+        "reason": "complete"
+      },
+      "cases": [
+        {
+          "name": "native_frame",
+          "status": "passed",
+          "assertions": {
+            "v": 1,
+            "event": "case_end",
+            "workload": "users.frame",
+            "case": "native_frame",
+            "passed": 11,
+            "failed": 0
+          },
+          "elapsed_seconds": 0.016717444988898933
+        },
+        {
+          "name": "fork_registers",
+          "status": "passed",
+          "assertions": {
+            "v": 1,
+            "event": "case_end",
+            "workload": "users.frame",
+            "case": "fork_registers",
+            "passed": 1,
+            "failed": 0
+          },
+          "elapsed_seconds": 0.019170079031027853
+        },
+        {
+          "name": "signal_return",
+          "status": "passed",
+          "assertions": {
+            "v": 1,
+            "event": "case_end",
+            "workload": "users.frame",
+            "case": "signal_return",
+            "passed": 1,
+            "failed": 0
+          },
+          "elapsed_seconds": 0.016656355001032352
+        }
+      ],
+      "ready": {
+        "v": 1,
+        "event": "ready",
+        "workload": "users.frame",
+        "detected_cpus": 4,
+        "online_mask": 15,
+        "work_mask": 15,
+        "ram_bytes": 994050048,
+        "managed_pages": 238038
+      },
+      "worker": {
+        "v": 1,
+        "event": "worker",
+        "workload": "users.frame",
+        "cpu": 0,
+        "affinity": 1
+      },
+      "provenance": {
+        "build": {
+          "type": "Debug",
+          "compiler": "Clang 23.1.2",
+          "flags": {
+            "compile": "-march=armv8-a -mgeneral-regs-only -mstrict-align -ffreestanding -fno-exceptions -fno-rtti -fno-stack-protector -fpie -Weverything -Werror -Wno-c++-compat -Wno-c++98-compat -Wno-c++98-compat-pedantic -Wno-c++11-compat -Wno-c++14-compat -Wno-c++17-compat -Wno-c++20-compat -Wno-padded -Wno-unsafe-buffer-usage -Wno-gnu-zero-variadic-macro-arguments -Wno-gnu-anonymous-struct -Wno-nested-anon-types -Wno-missing-prototypes -Wno-missing-variable-declarations -Wno-global-constructors -Wno-exit-time-destructors -Wno-weak-vtables -Wno-inline -Wno-reserved-identifier -Wno-reserved-macro-identifier -Wno-covered-switch-default -Wno-nrvo -Wno-lifetime-safety-suggestions -g",
+            "link": "-fuse-ld=lld -nostdlib -nostartfiles -Wl,-pie,--no-dynamic-linker,-z,notext,-Bsymbolic -T /Users/shifu/code/os/moss/src/linker/kernel_arm64.ld "
+          }
+        },
+        "image_sha256": "20c0c05249a8701e377e16da1093a8cbfd35a845f6cc210eb3ab746d315bd581",
+        "fixture_sha256": "da4e9abb8cf58c4fce658f3a9055fd6f28b1792643b54d2ebe03242b4e30a5aa",
+        "symbols_sha256": "92802b45f7bf432e450856b7abc682cfb36f15f3c0df7a439fd810cce34c3e23",
+        "schema_version": 1,
+        "source_status": "recorded",
+        "revision": "6274d11628bbba6f859f595b5f2315117ffc3625",
+        "dirty": true,
+        "source_sha256": "02bcb1e39ef4ab521bbd985621ac2c458cab2f9d14988bbd251369db0a4c163d"
+      },
+      "jtag_khz": 2000,
+      "uploaded_sha256": {
+        "kernel": "20c0c05249a8701e377e16da1093a8cbfd35a845f6cc210eb3ab746d315bd581",
+        "initramfs": "da4e9abb8cf58c4fce658f3a9055fd6f28b1792643b54d2ebe03242b4e30a5aa",
+        "dtb": "2c45a4c6d01b43cb71563a95c400be2149478105a50ca75589a86e62619f8813"
+      },
+      "boot_check": "validation_passed",
+      "serial_log": "rpi3b-fork-fp-2026-10-18-final-fix.log",
+      "serial_sha256": "08422ded15764e4a6cc6b3b91af25a0ac6869364a010e89a577e88fa7b5ecf45"
+    },
+    {
+      "label": "final-mm",
+      "workload": "mm",
+      "status": "passed",
+      "observed": "pass",
+      "termination": "protocol_end",
+      "completion": {
+        "v": 1,
+        "event": "end",
+        "workload": "mm",
+        "completed": 7,
+        "selected": 7,
+        "failed": 0,
+        "reason": "complete"
+      },
+      "cases": [
+        {
+          "name": "runtime_memory_ranges",
+          "status": "passed",
+          "assertions": {
+            "v": 1,
+            "event": "case_end",
+            "workload": "mm",
+            "case": "runtime_memory_ranges",
+            "passed": 8000,
+            "failed": 0
+          },
+          "elapsed_seconds": 1.4599523630458862
+        },
+        {
+          "name": "initialization_publication",
+          "status": "passed",
+          "assertions": {
+            "v": 1,
+            "event": "case_end",
+            "workload": "mm",
+            "case": "initialization_publication",
+            "passed": 4,
+            "failed": 0
+          },
+          "elapsed_seconds": 0.008442463004030287
+        },
+        {
+          "name": "unsupported_contracts",
+          "status": "passed",
+          "assertions": {
+            "v": 1,
+            "event": "case_end",
+            "workload": "mm",
+            "case": "unsupported_contracts",
+            "passed": 27,
+            "failed": 0
+          },
+          "elapsed_seconds": 0.008504712022840977
+        },
+        {
+          "name": "pageblock_units",
+          "status": "passed",
+          "assertions": {
+            "v": 1,
+            "event": "case_end",
+            "workload": "mm",
+            "case": "pageblock_units",
+            "passed": 3,
+            "failed": 0
+          },
+          "elapsed_seconds": 0.008347068098373711
+        },
+        {
+          "name": "mmu_granule",
+          "status": "passed",
+          "assertions": {
+            "v": 1,
+            "event": "case_end",
+            "workload": "mm",
+            "case": "mmu_granule",
+            "passed": 1,
+            "failed": 0
+          },
+          "elapsed_seconds": 0.008453039918094873
+        },
+        {
+          "name": "orders_alignment",
+          "status": "passed",
+          "assertions": {
+            "v": 1,
+            "event": "case_end",
+            "workload": "mm",
+            "case": "orders_alignment",
+            "passed": 61,
+            "failed": 0
+          },
+          "elapsed_seconds": 0.008610639022663236
+        },
+        {
+          "name": "reuse",
+          "status": "passed",
+          "assertions": {
+            "v": 1,
+            "event": "case_end",
+            "workload": "mm",
+            "case": "reuse",
+            "passed": 259,
+            "failed": 0
+          },
+          "elapsed_seconds": 0.007521993014961481
+        }
+      ],
+      "ready": {
+        "v": 1,
+        "event": "ready",
+        "workload": "mm",
+        "detected_cpus": 4,
+        "online_mask": 15,
+        "work_mask": 15,
+        "ram_bytes": 994050048,
+        "managed_pages": 238038
+      },
+      "worker": {
+        "v": 1,
+        "event": "worker",
+        "workload": "mm",
+        "cpu": 0,
+        "affinity": 1
+      },
+      "provenance": {
+        "build": {
+          "type": "Debug",
+          "compiler": "Clang 23.1.2",
+          "flags": {
+            "compile": "-march=armv8-a -mgeneral-regs-only -mstrict-align -ffreestanding -fno-exceptions -fno-rtti -fno-stack-protector -fpie -Weverything -Werror -Wno-c++-compat -Wno-c++98-compat -Wno-c++98-compat-pedantic -Wno-c++11-compat -Wno-c++14-compat -Wno-c++17-compat -Wno-c++20-compat -Wno-padded -Wno-unsafe-buffer-usage -Wno-gnu-zero-variadic-macro-arguments -Wno-gnu-anonymous-struct -Wno-nested-anon-types -Wno-missing-prototypes -Wno-missing-variable-declarations -Wno-global-constructors -Wno-exit-time-destructors -Wno-weak-vtables -Wno-inline -Wno-reserved-identifier -Wno-reserved-macro-identifier -Wno-covered-switch-default -Wno-nrvo -Wno-lifetime-safety-suggestions -g",
+            "link": "-fuse-ld=lld -nostdlib -nostartfiles -Wl,-pie,--no-dynamic-linker,-z,notext,-Bsymbolic -T /Users/shifu/code/os/moss/src/linker/kernel_arm64.ld "
+          }
+        },
+        "image_sha256": "20c0c05249a8701e377e16da1093a8cbfd35a845f6cc210eb3ab746d315bd581",
+        "fixture_sha256": "da4e9abb8cf58c4fce658f3a9055fd6f28b1792643b54d2ebe03242b4e30a5aa",
+        "symbols_sha256": "92802b45f7bf432e450856b7abc682cfb36f15f3c0df7a439fd810cce34c3e23",
+        "schema_version": 1,
+        "source_status": "recorded",
+        "revision": "6274d11628bbba6f859f595b5f2315117ffc3625",
+        "dirty": true,
+        "source_sha256": "02bcb1e39ef4ab521bbd985621ac2c458cab2f9d14988bbd251369db0a4c163d"
+      },
+      "jtag_khz": 2000,
+      "uploaded_sha256": {
+        "kernel": "20c0c05249a8701e377e16da1093a8cbfd35a845f6cc210eb3ab746d315bd581",
+        "initramfs": "da4e9abb8cf58c4fce658f3a9055fd6f28b1792643b54d2ebe03242b4e30a5aa",
+        "dtb": "4ba61e176284443f778943cbbe2d945ae17f9290483bade9a12a796b2db0c5d3"
+      },
+      "boot_check": "validation_passed",
+      "serial_log": "rpi3b-fork-fp-2026-10-18-final-mm.log",
+      "serial_sha256": "c9d3577b461d849e23bfacbb56c962859790d6ef9a888fcefea668e02c08d015"
+    }
+  ],
+  "qemu": [
+    {
+      "architecture": "ARM64",
+      "provenance": {
+        "build": {
+          "type": "Debug",
+          "compiler": "Clang 23.1.2",
+          "flags": {
+            "compile": "-march=armv8-a -mgeneral-regs-only -mstrict-align -ffreestanding -fno-exceptions -fno-rtti -fno-stack-protector -fpie -Weverything -Werror -Wno-c++-compat -Wno-c++98-compat -Wno-c++98-compat-pedantic -Wno-c++11-compat -Wno-c++14-compat -Wno-c++17-compat -Wno-c++20-compat -Wno-padded -Wno-unsafe-buffer-usage -Wno-gnu-zero-variadic-macro-arguments -Wno-gnu-anonymous-struct -Wno-nested-anon-types -Wno-missing-prototypes -Wno-missing-variable-declarations -Wno-global-constructors -Wno-exit-time-destructors -Wno-weak-vtables -Wno-inline -Wno-reserved-identifier -Wno-reserved-macro-identifier -Wno-covered-switch-default -Wno-nrvo -Wno-lifetime-safety-suggestions -g",
+            "link": "-fuse-ld=lld -nostdlib -nostartfiles -Wl,-pie,--no-dynamic-linker,-z,notext,-Bsymbolic -T /Users/shifu/code/os/moss/src/linker/kernel_arm64.ld "
+          }
+        },
+        "image_sha256": "20c0c05249a8701e377e16da1093a8cbfd35a845f6cc210eb3ab746d315bd581",
+        "fixture_sha256": "da4e9abb8cf58c4fce658f3a9055fd6f28b1792643b54d2ebe03242b4e30a5aa",
+        "symbols_sha256": "92802b45f7bf432e450856b7abc682cfb36f15f3c0df7a439fd810cce34c3e23",
+        "schema_version": 1,
+        "source_status": "recorded",
+        "revision": "6274d11628bbba6f859f595b5f2315117ffc3625",
+        "dirty": true,
+        "source_sha256": "02bcb1e39ef4ab521bbd985621ac2c458cab2f9d14988bbd251369db0a4c163d"
+      },
+      "workloads": [
+        {
+          "workload": "users.frame",
+          "status": "passed",
+          "cases": 3
+        },
+        {
+          "workload": "users.uaccess",
+          "status": "passed",
+          "cases": 12
+        },
+        {
+          "workload": "users.exec",
+          "status": "passed",
+          "cases": 32
+        },
+        {
+          "workload": "users.signals",
+          "status": "passed",
+          "cases": 35
+        }
+      ]
+    },
+    {
+      "architecture": "X64",
+      "provenance": {
+        "build": {
+          "type": "Debug",
+          "compiler": "Clang 23.1.2",
+          "flags": {
+            "compile": "-mno-red-zone -mno-mmx -mno-sse -mno-sse2 -mno-sse3 -mno-ssse3 -mno-sse4.1 -mno-sse4.2 -mno-avx -mno-avx2 -mno-80387 -mno-fp-ret-in-387 -mtune=x86-64 -mcmodel=kernel -ffreestanding -fno-exceptions -fno-rtti -fno-stack-protector -fno-pic -fno-pie -Weverything -Werror -Wno-c++-compat -Wno-c++98-compat -Wno-c++98-compat-pedantic -Wno-c++11-compat -Wno-c++14-compat -Wno-c++17-compat -Wno-c++20-compat -Wno-padded -Wno-unsafe-buffer-usage -Wno-gnu-zero-variadic-macro-arguments -Wno-gnu-anonymous-struct -Wno-nested-anon-types -Wno-missing-prototypes -Wno-missing-variable-declarations -Wno-global-constructors -Wno-exit-time-destructors -Wno-weak-vtables -Wno-inline -Wno-reserved-identifier -Wno-reserved-macro-identifier -Wno-covered-switch-default -Wno-nrvo -Wno-lifetime-safety-suggestions -g",
+            "link": "-fuse-ld=lld -nostdlib -nostartfiles -static -T /Users/shifu/code/os/moss/src/linker/kernel_x64.ld "
+          }
+        },
+        "image_sha256": "ec50e0972e2d8fe1aa05273e2cbccce32160f74b2553370e964ab5a2dfc56ed3",
+        "fixture_sha256": "8319fe3952004acf3e1781ea72756411f8f17c5679d2e4daa4f37dd3fcc57aae",
+        "symbols_sha256": "ec50e0972e2d8fe1aa05273e2cbccce32160f74b2553370e964ab5a2dfc56ed3",
+        "schema_version": 1,
+        "source_status": "recorded",
+        "revision": "6274d11628bbba6f859f595b5f2315117ffc3625",
+        "dirty": true,
+        "source_sha256": "246d44af43051bc4edb2ecbe5a8b7b81f9e9d6e7be60140facbe4aea89e8d605"
+      },
+      "workloads": [
+        {
+          "workload": "users.frame",
+          "status": "passed",
+          "cases": 3
+        },
+        {
+          "workload": "users.exec",
+          "status": "passed",
+          "cases": 32
+        }
+      ]
+    },
+    {
+      "architecture": "RISCV64",
+      "provenance": {
+        "build": {
+          "type": "Debug",
+          "compiler": "Clang 23.1.2",
+          "flags": {
+            "compile": "-march=rv64imac -mabi=lp64 -mcmodel=medany -mstrict-align -ffreestanding -fno-exceptions -fno-rtti -fno-stack-protector -fpie -Weverything -Werror -Wno-c++-compat -Wno-c++98-compat -Wno-c++98-compat-pedantic -Wno-c++11-compat -Wno-c++14-compat -Wno-c++17-compat -Wno-c++20-compat -Wno-padded -Wno-unsafe-buffer-usage -Wno-gnu-zero-variadic-macro-arguments -Wno-gnu-anonymous-struct -Wno-nested-anon-types -Wno-missing-prototypes -Wno-missing-variable-declarations -Wno-global-constructors -Wno-exit-time-destructors -Wno-weak-vtables -Wno-inline -Wno-reserved-identifier -Wno-reserved-macro-identifier -Wno-covered-switch-default -Wno-nrvo -Wno-lifetime-safety-suggestions -g",
+            "link": "-fuse-ld=lld -nostdlib -nostartfiles -Wl,-pie,--no-dynamic-linker,-z,notext,-Bsymbolic -T /Users/shifu/code/os/moss/src/linker/kernel_riscv64.ld "
+          }
+        },
+        "image_sha256": "3a22fde6e9cf298e12f6b46fa27d9acccefd5dfcfdce7597b68e1d38268978d7",
+        "fixture_sha256": "472c57a766be3c7c857b9fb471b5f7dd564d3d24e5e5bb3fb2991047f939251e",
+        "symbols_sha256": "e3aa2ca0297ebaa9a7aaeb8d9729f838b24e8e37a1c76e34ee51edcb43cd3144",
+        "schema_version": 1,
+        "source_status": "recorded",
+        "revision": "6274d11628bbba6f859f595b5f2315117ffc3625",
+        "dirty": true,
+        "source_sha256": "246d44af43051bc4edb2ecbe5a8b7b81f9e9d6e7be60140facbe4aea89e8d605"
+      },
+      "workloads": [
+        {
+          "workload": "users.frame",
+          "status": "passed",
+          "cases": 3
+        },
+        {
+          "workload": "users.exec",
+          "status": "passed",
+          "cases": 32
+        }
+      ]
+    }
+  ],
+  "limits": [
+    "Functional evidence only; no Release or Linux performance comparison.",
+    "Only users.frame and mm ran on physical hardware in this record.",
+    "Other advertised suites require separate hardware acceptance.",
+    "Build provenance belongs to each binary; subsequent document/tool-only changes do not relabel it."
+  ],
+  "production_boot": {
+    "boot_check": "shell_input_passed",
+    "serial_log": "rpi3b-fork-fp-2026-10-18-production.log",
+    "serial_sha256": "aab0dda954584274d964fd4ec9576d281bd6e77cac56188faef34152360deaba",
+    "uploaded_sha256": {
+      "kernel": "5679309fe7730e99393fcef0d4cbf09a0a0e07a621945d15c9bb98ab06833f31",
+      "initramfs": "839e2f1d42fc0ff96e5851a8db283255ebbe936c6b6d375cb20cae656c15f8ad",
+      "dtb": "60818341fe7c3ffc97abff7b458570934a6b2954a0e1bbff462858efa9ae03ab"
+    },
+    "connection_note": "A later reset failed after J-Link USB disconnected; a fresh connection, reset, full readback and production check then passed. No image started after a failed transfer."
+  }
+}

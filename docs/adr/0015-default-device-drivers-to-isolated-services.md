@@ -5,6 +5,10 @@ date: 2026-09-19
 
 # Default Device Drivers to Isolated Services
 
+> The mandatory residency/migration boundary below is superseded by
+> [ADR-0036](0036-develop-a-general-purpose-hybrid-kernel.md). Preserve this
+> decision as historical context; use ADR-0036 for new implementation work.
+
 Moss will run device drivers as Isolated Device Drivers by default. Device enumeration and matching policy, hardware protocol state machines, descriptor-ring management, firmware-loading policy, device-class behavior and operational suspend, resume and recovery logic belong in userspace driver services.
 
 The Mechanism Kernel Domain retains Device Authority Primitives: interrupt-controller operation and safe interrupt delivery, capability-scoped MMIO or I/O-port mapping, DMA/IOMMU mapping and page-lifetime enforcement, exclusive device ownership and reset authority. It may also retain the minimal platform-specific code required to reach the Initial System Supervisor, such as CPU, interrupt, timer and early diagnostic mechanisms. Any larger in-kernel driver remains a Kernel Residency Exception.

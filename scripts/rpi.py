@@ -1,9 +1,11 @@
 #!/usr/bin/env -S uv run --script
 # /// script
 # requires-python = ">=3.12"
-# dependencies = []
+# dependencies = ["pydantic>=2.11", "typer>=0.24.1"]
 # ///
 """Pi 3B+ serial console and JTAG RAM deployment (macOS/Linux; no SD writes)."""
+
+from __future__ import annotations
 
 import argparse
 import contextlib
@@ -12,6 +14,7 @@ import fcntl
 import glob
 import hashlib
 import json
+import math
 import os
 import select
 import shutil
@@ -24,11 +27,15 @@ import termios
 import time
 import tty
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 if __package__ in (None, ""):
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from scripts.artifacts import Artifacts
+
+if TYPE_CHECKING:
+    from scripts.kernel_validation import Protocol
 
 # ARM64 Image placement must be 2 MiB aligned. Keep the small handoff stub below it.
 IMAGE_BASE = 0x200000
@@ -41,7 +48,8 @@ BAUD = termios.B115200
 # OpenOCD's Tcl protocol uses SUB to frame requests; its standard local control port is 6666.
 TCL_END = b"\x1a"
 TCL_PORT = 6666
-# At the validated 4 MHz JTAG rate, allow up to ten minutes for a large initramfs and readback.
+# Retain the ten-minute allowance for slow tools/Tcl requests. This is a
+# per-request deadline; a chunked deployment may take longer in total.
 TRANSFER_TIMEOUT = 600
 # A 4 KiB chunk bounds console buffers and matches a typical host page size.
 CHUNK = 4096
@@ -52,6 +60,9 @@ TRANSFER_CHUNK = 256 * 1024
 PROMPT = b"moss$ "
 PROBE_COMMAND = b"echo MOSS_RPI_INPUT_OK\n"
 PROBE_RESULT = b"\nMOSS_RPI_INPUT_OK\n"
+# These suites need no host input injection, lifecycle release or benchmark
+# calibration. Add other suites only with their corresponding host contracts.
+VALIDATION_WORKLOADS = ("mm", "users.frame", "users.uaccess", "users.ipc")
 
 
 def transfer_progress(label: str, completed: int, total: int, started: float) -> None:
@@ -262,7 +273,7 @@ def tool(name: str) -> str:
     return found
 
 
-def prepare_image(manifest: Path, dtb: Path, output: Path):
+def prepare_image(manifest: Path, dtb: Path, output: Path, *, bootargs: str = ""):
     cfg = Artifacts.load(manifest)
     if cfg.arch != "ARM64":
         raise ValueError("Pi 3B+ requires the ARM64 Linux Image artifact")
@@ -289,7 +300,7 @@ def prepare_image(manifest: Path, dtb: Path, output: Path):
     shutil.copyfile(dtb, prepared)
     fdtput = tool("fdtput")
     run(fdtput, "-p", "-t", "s", str(prepared), "/chosen", "stdout-path", "serial0:115200n8")
-    run(fdtput, "-t", "s", str(prepared), "/chosen", "bootargs", "console=ttyAMA0,115200")
+    run(fdtput, "-t", "s", str(prepared), "/chosen", "bootargs", f"console=ttyAMA0,115200 {bootargs}".rstrip())
     for name, value in (("linux,initrd-start", INITRD_BASE), ("linux,initrd-end", INITRD_BASE + initrd.stat().st_size)):
         run(fdtput, "-t", "x", str(prepared), "/chosen", name, f"{value:x}")
     source = Path(__file__).with_name("rpi_boot.S")
@@ -312,10 +323,173 @@ def prepare_image(manifest: Path, dtb: Path, output: Path):
     return kernel, initrd, prepared, stub_bin, barrier
 
 
-def deploy(args):
+def collect_validation(
+    fd: int, log: Path, state: Protocol, *, startup_timeout: float, case_timeout: float, timeout: float
+):
+    """Use the QEMU runner's fail-closed protocol over the actual UART."""
+    from scripts.kernel_validation import Protocol
+
+    pending, received = b"", bytearray()
+    start = time.monotonic()
+    termination, reason = "timeout", None
+    print(f"Validation serial log: {log}", file=sys.stderr, flush=True)
+    try:
+        with log.open("wb", buffering=0) as output:
+            while True:
+                # Match the QEMU collector's bounded polling and evidence limits;
+                # deadlines start after upload, so JTAG time cannot consume them.
+                if select.select([fd], [], [], 0.02)[0]:
+                    data = os.read(fd, CHUNK)
+                    if not data:
+                        raise OSError("Serial adapter disconnected")
+                    output.write(data)
+                    received.extend(data)
+                    if len(received) > 32 * 2**20:  # Same 32 MiB log ceiling as run_guest().
+                        raise ValueError("serial log exceeded 32 MiB")
+                    pending += data
+                    while b"\n" in pending:
+                        line, pending = pending.split(b"\n", 1)
+                        state.accept(line.rstrip(b"\r"))
+                    if len(pending) > 65536:  # Same partial-line ceiling as run_guest().
+                        raise ValueError("unbounded partial serial line")
+                # Two chunks retain a panic marker split across reads without
+                # rescanning a growing log on every poll. Recheck all bytes below.
+                if state.outcome(None, None, received[-2 * CHUNK :])[1] == "unexpected_kernel_panic":
+                    termination = "panic"
+                    break
+                if state.end:
+                    termination = "protocol_end"
+                    break
+                now = time.monotonic()
+                if not state.ready and now - start >= startup_timeout:
+                    reason = "startup_timeout"
+                elif state.case_started is not None and now - state.case_started >= case_timeout:
+                    reason = "case_timeout"
+                elif now - start >= timeout:
+                    reason = "guest_timeout"
+                if reason:
+                    break
+    except (OSError, ValueError) as error:
+        termination, reason = "infrastructure", f"infrastructure: {error}"
+    except KeyboardInterrupt:
+        termination, reason = "cancelled", "cancelled"
+    if termination == "protocol_end":
+        # Match run_guest's final replay, including an unterminated protocol
+        # fragment after end that the newline parser has not accepted yet.
+        try:
+            replay = Protocol(state.workload, state.cpus, state.memory_mib, state.warmup, state.samples)
+            for line in received.splitlines():
+                replay.accept(line)
+        except ValueError as error:
+            reason = f"infrastructure: {error}"
+    status, observed = state.outcome(termination, reason, received)
+    cases = list(state.cases)
+    for name in state.expected[len(cases) :]:
+        cases.append({"name": name, "status": "error" if name == state.active else "not_run", "reason": observed})
+    return {
+        "workload": state.workload,
+        "status": status,
+        "observed": observed,
+        "cases": cases,
+        "ready": state.ready,
+        "worker": state.worker,
+        "completion": state.end,
+        "termination": termination,
+        "elapsed_seconds": time.monotonic() - start,
+        "serial_log": str(log),
+    }
+
+
+def validate(args):
+    """Snapshot a matched validation set; never deploy the production image by mistake."""
+    # Keep production deployment helpers usable by rpi_perf's stdlib-only
+    # script environment; only validation needs the shared protocol packages.
+    from scripts.kernel_validation import CATALOG_VERSION, Protocol
+
+    output = args.output.resolve()
+    # A fresh directory preserves failed runs and prevents stale logs/results
+    # from being interpreted as evidence for a new upload.
+    output.mkdir(parents=True, exist_ok=False)
+    cfg = Artifacts.load(args.manifest).snapshot_validation(output / "artifacts")
+    files = {
+        name: str(cfg.require(name).relative_to(output / "artifacts"))
+        for name in ("validation_kernel", "validation_initramfs", "validation_debug_symbols")
+    }
+    files.update(
+        kernel=files["validation_kernel"],
+        initramfs=files["validation_initramfs"],
+        debug_symbols=files["validation_debug_symbols"],
+    )
+    args.manifest = output / "artifacts" / "moss-artifacts.json"
+    args.manifest.write_text(
+        json.dumps(
+            dict(
+                schema_version=1,
+                target=dict(architecture=cfg.arch, boot_protocol=cfg.boot_protocol),
+                build=cfg.build,
+                artifacts=files,
+            ),
+            indent=2,
+        )
+        + "\n"
+    )
+    # Derive expected RAM from this board's firmware allocation, not QEMU's
+    # default or the nominal 1 GiB (the GPU/firmware reserve is unavailable).
+    cells = run(tool("fdtget"), "-tx", str(args.dtb), "/memory@0", "reg").split()
+    if len(cells) != 2:
+        raise ValueError("Expected Pi firmware's single 32-bit memory range")
+    memory_mib = int(cells[1], 16) // 2**20  # Device-tree reg is in bytes; protocol expects MiB.
+    # BCM2837 has four cores; require all four to execute validation work.
+    # Functional suites use the existing runner's default sampling contract.
+    state = Protocol(args.workload, 4, memory_mib, 5, 30)
+    bootargs = f"moss.validation={args.workload} moss.cpus=4 moss.memory={memory_mib}"
+    report = dict(
+        schema_version=1,
+        catalog_version=CATALOG_VERSION,
+        finalized=False,
+        provenance=cfg.validation_provenance(),
+        workload=args.workload,
+        status="not_run",
+        parameters=dict(
+            cpus=4,
+            memory_mib=memory_mib,
+            startup_timeout=args.startup_timeout,
+            case_timeout=args.case_timeout,
+            timeout=args.timeout,
+        ),
+    )
+    result = output / "validation-result.json"
+    result.write_text(json.dumps(report, indent=2) + "\n")
+    try:
+        report.update(deploy(args, state=state, bootargs=bootargs))
+    except (OSError, ValueError, RuntimeError, subprocess.SubprocessError) as error:
+        report.update(
+            status="error",
+            observed=f"deployment: {error}",
+            cases=[dict(name=name, status="not_run", reason="deployment_failed") for name in state.expected],
+        )
+        raise
+    except KeyboardInterrupt:
+        report.update(
+            status="error",
+            observed="cancelled",
+            cases=[dict(name=name, status="not_run", reason="cancelled") for name in state.expected],
+        )
+        raise
+    finally:
+        report["finalized"] = True
+        result.write_text(json.dumps(report, indent=2) + "\n")
+    if report["observed"] == "cancelled":
+        raise KeyboardInterrupt
+    if report["status"] != "passed":
+        raise RuntimeError(f"Validation {args.workload}: {report['observed']}; inspect {result}")
+    print(f"Validation {args.workload} passed; result: {result}", flush=True)
+
+
+def deploy(args, *, state: Protocol | None = None, bootargs: str = ""):
     print("[1/5] Preparing kernel, initramfs and firmware DTB...", flush=True)
     output = args.output.resolve()
-    kernel, initrd, dtb, stub, barrier = prepare_image(args.manifest, args.dtb, output)
+    kernel, initrd, dtb, stub, barrier = prepare_image(args.manifest, args.dtb, output, bootargs=bootargs)
     record = {
         "deployment": "JTAG RAM only",
         "image_base": IMAGE_BASE,
@@ -336,8 +510,8 @@ def deploy(args):
         cpsr = ocd.command("reg cpsr")
         if int(cpsr.split()[-1], 16) & 0xF != 9:  # SPSR.M=9 is AArch64 EL2h, required by the handoff stub.
             raise ValueError(f"Expected the bootloader in EL2h, got {cpsr}")
-        # This clock passed a live scan/read on this setup; it reduces RAM upload time.
-        ocd.command("adapter speed 4000")
+        # The caller selects a rate verified for this probe, wiring and board.
+        ocd.command(f"adapter speed {args.jtag_khz}")
         print("[3/5] Loading handoff stub and disabling bootloader caches...", flush=True)
         ocd.load(stub, STUB_BASE)
         ocd.command(f"bp {barrier:#x} 4 hw")  # An AArch64 instruction/breakpoint occupies four bytes.
@@ -356,12 +530,28 @@ def deploy(args):
         for name, value in (("x0", DTB_BASE), ("x1", 0), ("x2", 0), ("x3", 0)):
             ocd.command(f"reg {name} {value:#x}")  # Linux Image passes DTB in x0 and reserves x1..x3 as zero.
         # UART is already open, so no initial kernel output can be lost to host setup.
-        if args.check:
+        if state is not None:
+            print(f"[5/5] Starting Moss validation: {state.workload}...", flush=True)
+        elif args.check:
             print(f"[5/5] Starting Moss; waiting for shell and input check (timeout {args.timeout:g}s)...", flush=True)
         else:
             print("[5/5] Starting Moss; opening serial console...", flush=True)
+        # CPU0 is still halted. Remove bootloader/previous-run bytes before
+        # resume so an old complete protocol cannot pass a new validation.
+        termios.tcflush(fd, termios.TCIFLUSH)
         ocd.command(f"resume {IMAGE_BASE:#x}")
         try:
+            if state is not None:
+                validation = collect_validation(
+                    fd,
+                    output / "serial.log",
+                    state,
+                    startup_timeout=args.startup_timeout,
+                    case_timeout=args.case_timeout,
+                    timeout=args.timeout,
+                )
+                record["boot_check"] = f"validation_{validation['status']}"
+                return validation
             console(fd, output / "serial.log", timeout=args.timeout, send=None, expect=None, check=args.check)
             record["boot_check"] = "shell_input_passed" if args.check else "interactive_session_ended"
         except Exception as error:
@@ -441,7 +631,7 @@ def main():
     attach.add_argument("--timeout", type=float, default=30, help="Failed-attach retry window in seconds")
     reboot = sub.add_parser("reset", help="Reset the Pi through the running JTAG server; stops that server")
     reboot.set_defaults(timeout=None)
-    for mode in ("console", "deploy"):
+    for mode in ("console", "deploy", "validate"):
         cmd = sub.add_parser(mode)
         cmd.add_argument("--port", help="Serial device; auto-select when exactly one is connected")
         cmd.add_argument("--timeout", type=float, help="Console duration/boot check deadline in seconds")
@@ -453,11 +643,26 @@ def main():
             cmd.add_argument("--manifest", type=Path, default=Path("build/arm64-debug/moss-artifacts.json"))
             cmd.add_argument("--dtb", type=Path, required=True, help="Real firmware DTB captured from this board")
             cmd.add_argument("--output", type=Path, default=Path("build/rpi3b"))
-            cmd.add_argument("--check", action="store_true", help="Wait for shell, send echo, verify reply, then exit")
+            # 1 MHz matches the existing conservative attach rate. Higher
+            # rates require an actual stable scan/readback on this setup.
+            cmd.add_argument("--jtag-khz", type=int, default=1000, help="Verified JTAG transfer rate in kHz")
+            if mode == "deploy":
+                cmd.add_argument(
+                    "--check", action="store_true", help="Wait for shell, send echo, verify reply, then exit"
+                )
+            else:
+                cmd.add_argument("--workload", choices=VALIDATION_WORKLOADS, required=True)
+                # Same boot/guest budgets as run_guest(); allow 30 s for
+                # expensive IPC/uaccess cases, matching its long-case budget.
+                cmd.add_argument("--startup-timeout", type=float, default=30)
+                cmd.add_argument("--case-timeout", type=float, default=30)
+                cmd.set_defaults(check=False, timeout=60)
     args = parser.parse_args()
     try:
-        if args.timeout is not None and args.timeout <= 0:
+        if args.timeout is not None and (not math.isfinite(args.timeout) or args.timeout <= 0):
             raise ValueError("--timeout must be positive")
+        if args.mode in ("deploy", "validate") and args.jtag_khz <= 0:
+            raise ValueError("--jtag-khz must be positive")
         if args.mode == "jtag":
             jtag(args)
         elif args.mode == "reset":
@@ -467,6 +672,10 @@ def main():
                 # Match the repository's production boot smoke-test budget.
                 args.timeout = 90
             deploy(args)
+        elif args.mode == "validate":
+            if any(not math.isfinite(value) or value <= 0 for value in (args.startup_timeout, args.case_timeout)):
+                raise ValueError("validation deadlines must be positive")
+            validate(args)
         else:
             if args.expect is not None and args.timeout is None:
                 args.timeout = 30  # Bound scripted serial requests; interactive sessions remain unlimited.

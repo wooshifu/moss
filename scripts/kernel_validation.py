@@ -343,9 +343,9 @@ CATALOG = {
         )
     },
 }
-# System-info cases extend the ordered inventory from v7; earlier reports
-# retain their recorded version so cross-version comparisons are rejected.
-CATALOG_VERSION = 8
+# ARM64 register probes now also enforce FP/NEON inheritance. Version the
+# stronger coverage so older GP-only reports cannot serve as its baseline.
+CATALOG_VERSION = 9
 FUNCTIONAL = [
     "drivers",
     "resources",

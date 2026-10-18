@@ -5,6 +5,10 @@ date: 2026-09-19
 
 # Run Network Stacks as Userspace Services
 
+> The mandatory residency/migration boundary below is superseded by
+> [ADR-0036](0036-develop-a-general-purpose-hybrid-kernel.md). Preserve this
+> decision as historical context; use ADR-0036 for new implementation work.
+
 Moss will implement Ethernet and related link protocols, ARP or NDP, IP, ICMP, transport protocols, routing, interface configuration, firewalling, NAT and network-namespace policy in one or more Network Stack Services. Socket state, congestion control and protocol timers belong to those services rather than the Mechanism Kernel Domain.
 
 An Isolated Device Driver owns each NIC Driver Recovery Domain and exchanges capability-authorized packet buffers with a selected Network Stack Service through a Shared Memory Data Plane. Control and availability notifications use bounded IPC. Applications receive Socket Capabilities, with POSIX socket file descriptors provided by the POSIX Compatibility View. VPN and proxy services can be composed above restricted network capabilities without kernel protocol hooks.

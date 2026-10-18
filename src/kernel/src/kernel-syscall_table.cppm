@@ -161,8 +161,8 @@ long sys_accept(long arg0, long arg1, long arg2, long arg3, long arg4, long arg5
 long sys_nice(long increment, long arg1, long arg2, long arg3, long arg4, long arg5) noexcept;
 long sys_getpriority(long which, long who, long arg2, long arg3, long arg4, long arg5) noexcept;
 long sys_sched_yield(long arg0, long arg1, long arg2, long arg3, long arg4, long arg5) noexcept;
-long sys_sched_getaffinity(long pid_arg, long arg1, long mask_addr, long arg3, long arg4, long arg5) noexcept;
-long sys_sched_setaffinity(long pid_arg, long arg1, long mask_addr, long arg3, long arg4, long arg5) noexcept;
+long sys_sched_getaffinity(long pid_arg, long mask_size, long mask_addr, long arg3, long arg4, long arg5) noexcept;
+long sys_sched_setaffinity(long pid_arg, long mask_size, long mask_addr, long arg3, long arg4, long arg5) noexcept;
 
 // Time syscalls
 long sys_clock_gettime(long arg0, long time_ns_addr, long arg2, long arg3, long arg4, long arg5) noexcept;

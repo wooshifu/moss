@@ -70,15 +70,32 @@ uv run scripts/rpi_perf.py measure --port "$PORT" --output "$RUN/perf" \
 
 温度依据 Linux `drivers/thermal/broadcom/bcm2835_thermal.c`、`arch/arm/boot/dts/broadcom/bcm2837.dtsi`；PMU 常量可核对 `include/linux/perf/arm_pmuv3.h` 与 Arm 文档。没有访问总数分母时，不把 refill 计数叫 cache miss rate。
 
-## 完整内核测试：需要真机 runner 的适配
+## 物理板内核套件 runner
+
+当前 `scripts/rpi.py validate` 可运行无需输入注入的 `mm`、`users.frame`、
+`users.uaccess`、`users.ipc`，每次一套件、独立启动。使用新结果目录：
+
+```sh
+uv run --frozen python scripts/rpi.py validate \
+  --manifest "$MANIFEST" --dtb "$DTB_PATH" --port "$PORT" \
+  --jtag-khz "$JTAG_KHZ" --workload users.frame --output "$RUN/frame"
+```
+
+先构建 `MOSS_BUILD_TESTS=ON`，停于 U-Boot EL2h。runner 复制匹配的验证产物和
+provenance，生成相对路径 manifest，在 prepare_image 的明确 bootargs 输入中选择套件，
+并复用 cache-off、全回读和 `kernel_validation.Protocol`。检查 finalized 的
+`validation-result.json`、部署 `result.json` 和原始 `serial.log`；失败保留 not_run，
+复位并重新附加后再运行下一套件。`--check` 仍只用于生产 shell。
+
+## 扩展其他内核套件时
 
 `kernel_validation.py`、`check_production_boot.py` 当前启动 QEMU；使用 `--machine raspi3b` 或板上 DTB 仍不是物理板测试。QEMU 只能补充功能回归。
 
-用户要求在板上运行 `mm`、`users.uaccess`、`users.ipc` 等套件时，先确认是否已有硬件 runner。没有则复用现有协议作最小适配，不能声称以下流程已有现成 CLI：
+未列出的套件不自动视为受支持；扩展时复用现有协议并核实其主机交互：
 
 1. `MOSS_BUILD_TESTS=ON`，使用成套 `validation_kernel` / `validation_initramfs` / `validation_debug_symbols`，保留 provenance。
 2. 新建硬件验证 manifest，复制文件到新目录，使用目录内相对路径。`Artifacts` 拒绝绝对路径与越出目录的 `../`；不修改生产 manifest。
-3. 按当前 `run_guest()` 协议和实际板配置加入 `moss.validation`、`moss.cpus`、`moss.memory` 等 bootargs。**当前 `rpi.prepare_image()` 会将 bootargs 覆盖为 console 参数**，先改输入 DTB 无效；需要在准备之后、上传之前增加明确适配点。
+3. 按当前 `run_guest()` 协议和实际板配置加入 `moss.validation`、`moss.cpus`、`moss.memory` 等 bootargs，使用 `prepare_image(..., bootargs=...)`；仅修改输入 DTB 的 bootargs 仍会被准备过程覆盖。
 4. 复用 cache-off 与完整回读路径，进入 kernel 前打开 UART。验证内核不一定有 shell，不能套用生产 `--check` 判据。
 5. 复用 `kernel_validation.Protocol` 的 catalog/ready/case/end 状态机和失败规则；需输入注入的套件移植对应交互。物理板没有 QEMU 进程退出信号，应以完整协议和有界 watchdog 判断，不搜索文字 PASS 代替。
 6. panic/assertion/缺项/超时/清理失败保留证据并停止本次套件链，后续标 `not_run`。按既有授权恢复生产镜像或保留调试现场。

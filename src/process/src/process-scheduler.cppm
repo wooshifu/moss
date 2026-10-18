@@ -1326,7 +1326,7 @@ public:
     return BudgetProfileResult::Applied;
   }
 
-  [[nodiscard]] u32 monitor_runnable(u32 cpu) noexcept {
+  [[nodiscard]] u32 monitor_runnable(u32 cpu) const noexcept {
     containers::LockGuard<containers::IrqSpinLock> guard(task_transition_lock_);
     // Running tasks are dequeued, so count the current task separately.
     return get_cpu_nr_running(cpu) + (get_current_task_on_cpu(cpu) != nullptr);
@@ -3028,8 +3028,9 @@ private:
   void check_need_resched() noexcept {
     Thread *curr = get_current_task();
     if (curr && curr->need_resched) {
-      // Preemption pending — will be serviced at next safe preemption point
-      // (IRQ return, syscall return).
+      // This hook does not dispatch. Wiring a safe return/unlock preemption
+      // point still needs a lock/IRQ-context audit; scheduling here blindly
+      // could suspend a lock owner needed by the next task.
     }
   }
 

@@ -604,6 +604,35 @@ static long do_fork(u64 domain_cap_out_addr, const capability::ForkSelection *se
   }
   context.x[0] = 0;
   asm volatile("mrs %0, tpidr_el0" : "=r"(context.tpidr_el0));
+  // The parent's saved CpuContext can predate this syscall. Kernel C++ uses
+  // -mgeneral-regs-only, so capture the live user FP/NEON state here, just as
+  // x64 does below; the child's first user return restores this new context.
+  // Qn is 16 bytes. Use the same paired layout as the ARM64 context switch,
+  // without adding 512 bytes of FP saves to every ordinary syscall frame.
+  asm volatile(".arch_extension fp\n"
+               "stp q0,  q1,  [%0, #(0  * 16)]\n"
+               "stp q2,  q3,  [%0, #(2  * 16)]\n"
+               "stp q4,  q5,  [%0, #(4  * 16)]\n"
+               "stp q6,  q7,  [%0, #(6  * 16)]\n"
+               "stp q8,  q9,  [%0, #(8  * 16)]\n"
+               "stp q10, q11, [%0, #(10 * 16)]\n"
+               "stp q12, q13, [%0, #(12 * 16)]\n"
+               "stp q14, q15, [%0, #(14 * 16)]\n"
+               "stp q16, q17, [%0, #(16 * 16)]\n"
+               "stp q18, q19, [%0, #(18 * 16)]\n"
+               "stp q20, q21, [%0, #(20 * 16)]\n"
+               "stp q22, q23, [%0, #(22 * 16)]\n"
+               "stp q24, q25, [%0, #(24 * 16)]\n"
+               "stp q26, q27, [%0, #(26 * 16)]\n"
+               "stp q28, q29, [%0, #(28 * 16)]\n"
+               "stp q30, q31, [%0, #(30 * 16)]\n"
+               ".arch_extension nofp\n"
+               :
+               : "r"(context.v)
+               : "memory");
+  // Raw FPCR/FPSR encodings remain accepted with -mgeneral-regs-only.
+  asm volatile("mrs %0, s3_3_c4_c4_0" : "=r"(context.fpcr));
+  asm volatile("mrs %0, s3_3_c4_c4_1" : "=r"(context.fpsr));
 #elif defined(MOSS_ARCH_RISCV64)
   for (u32 i = 0; i < moss::abi::TrapFrame::GPR_COUNT; ++i) {
     context.x[i + 1] = frame->gpr(i);
@@ -1769,8 +1798,9 @@ long sys_object_wait(long handles_addr, long count_arg, long flags, long deadlin
     usize registered = 0;
     for (; registered < count; ++registered) {
       if (!queues[registered]->try_add_waiter(thread)) {
-        for (usize i = 0; i < registered; ++i)
+        for (usize i = 0; i < registered; ++i) {
           queues[i]->remove_waiter(thread);
+        }
         return -errc::ENOMEM;
       }
     }
@@ -1793,18 +1823,22 @@ long sys_object_wait(long handles_addr, long count_arg, long flags, long deadlin
           },
           thread);
       armed = static_cast<bool>(timeout.start(static_cast<u64>(deadline_ns)));
-      if (!armed)
+      if (!armed) {
         process::g_scheduler->task_wakeup(thread, thread->wake_cpu);
+      }
     }
     process::g_scheduler->commit_sleep();
     // A remote timer callback must release this stack-owned timer before return.
     timeout.cancel_sync();
-    for (usize i = 0; i < count; ++i)
+    for (usize i = 0; i < count; ++i) {
       queues[i]->remove_waiter(thread);
-    if (restore_irqs)
+    }
+    if (restore_irqs) {
       arch::enable_interrupts();
-    if (!armed)
+    }
+    if (!armed) {
       return -errc::ENOMEM;
+    }
   }
 }
 
@@ -3857,7 +3891,7 @@ long sys_clock_nanosleep(long clockid, long flags, long ns_addr, long remaining_
 // The process reply adds five u64 identities/cursors and fits a 256-byte message.
 static_assert(sizeof(moss::abi::DomainInfo) == 176 && sizeof(moss::abi::ProcessInfo) == 216);
 
-long sys_domain_info(long handle, long output, long size, long, long, long) noexcept {
+long sys_domain_info(long handle, long output, long size, long /*unused*/, long /*unused*/, long /*unused*/) noexcept {
   if (size != static_cast<long>(sizeof(moss::abi::DomainInfo))) {
     return -errc::EINVAL;
   }
@@ -3875,7 +3909,8 @@ long sys_domain_info(long handle, long output, long size, long, long, long) noex
   return copy_to_user(static_cast<u64>(output), &info, sizeof(info));
 }
 
-long sys_system_info(long output, long size, long, long, long, long) noexcept {
+long sys_system_info(long output, long size, long /*unused*/, long /*unused*/, long /*unused*/,
+                     long /*unused*/) noexcept {
   if (size != static_cast<long>(sizeof(moss::abi::SystemInfo))) {
     return -errc::EINVAL;
   }

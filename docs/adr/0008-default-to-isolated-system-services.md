@@ -5,6 +5,10 @@ date: 2026-09-19
 
 # Default to Isolated System Services
 
+> The mandatory residency/migration boundary below is superseded by
+> [ADR-0036](0036-develop-a-general-purpose-hybrid-kernel.md). Preserve this
+> decision as historical context; use ADR-0036 for new implementation work.
+
 Moss will preserve fault containment by default: the Mechanism Kernel Domain owns only the privileged mechanisms and global invariants required to isolate and schedule the system, while policy-rich or failure-prone functionality runs as Isolated System Services. A service failure may fail outstanding work or require client reconnection, but it must not corrupt the Mechanism Kernel Domain; restart and state-recovery contracts are defined per service.
 
 Kernel residency is an exception, justified only by a bootstrap dependency, privilege that cannot be safely mediated, or measurements showing that the isolated boundary cannot meet an explicit latency, throughput or power budget. Describing code as performance-sensitive is not evidence. A justified exception should keep policy and complex state machines isolated when a smaller kernel fast path is sufficient.

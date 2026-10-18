@@ -1,13 +1,16 @@
 # Native System Migration Status
 
-This is an implementation snapshot of the accepted architecture in
-[ADRs 0008–0033](adr/0008-default-to-isolated-system-services.md). An accepted
-ADR defines the destination; a passing boot or focused probe establishes only
-the path that it exercised. Keep the [general-purpose BusyBox profile](adr/0006-validate-general-purpose-kernel-capabilities.md)
-separate from the wider native-system design: that profile currently excludes
-networking and persistent storage.
+This preserves the implementation snapshot and historical service-migration
+plan under [ADRs 0008–0033](adr/0008-default-to-isolated-system-services.md).
+[ADR-0036](adr/0036-develop-a-general-purpose-hybrid-kernel.md) now changes the
+destination: ordinary VFS, VM, POSIX execution and initial storage/network
+data paths remain in the kernel. The first two table columns describe existing
+paths; the third column and implementation order below retain the superseded
+plan for reference. Use the [current roadmap](kernel-roadmap.md) for new work.
+The earlier [BusyBox delivery](adr/0006-validate-general-purpose-kernel-capabilities.md)
+excluded network/persistence; that exclusion does not limit the expanded goal.
 
-| Boundary | Current source and observed behavior | Work before the accepted boundary is reached |
+| Boundary | Current source and observed behavior | Historical service-migration plan (superseded) |
 | --- | --- | --- |
 | Native authority and IPC | Capability handles, bounded calls, Memory Objects, domain observation and termination are exercised by [production validation](kernel-validation-usage.md). Nested calls inherit the earliest active caller deadline when each call begins; the kernel also tightens an active wait chain when a later donor is bound. The [supervisor](../src/userspace/moss_init.c) starts and restarts isolated process, namespace and file services. | Close service-specific recovery and resource ownership under caller timeout, concurrent exit and service death. The current user ABI cannot bind a new donor to a server already blocked downstream, so this deadline path still needs a production interleaving test. A restarted endpoint must not inherit authority from the old incarnation. |
 | POSIX processes | The [Process Compatibility Service](../src/userspace/moss_process_service.c) owns managed IDs, parentage, groups, sessions, wait records and scoped signals. [Managed mlibc](../third_party/mlibc/sysdeps/moss/sysdeps.cpp) uses badged sessions for these operations. The [supervisor](../src/userspace/moss_init.c) places its shell tree in a native scope and drains that scope before replacing a failed process service. In validation mode it also launches a scoped Loader to register a native probe as its managed child. The service checks native scope membership for child registration and attachment. After replacement, the supervisor checks that both its old session and a session delegated to the old shell return `EPIPE`. A controlled recovery probe now checks that a Console Service holding a delegated Reply keeps a real Process Service call pending across that service's death, and that dropping the holder releases the caller with `EPIPE`. The [kernel syscall table](../src/kernel/src/syscall_table.cpp) still supplies the legacy PID, credential, signal and wait paths. | Exercise orphaned exit records under concurrent service loss. Move compatibility credentials and complete child notification, terminal job control and signal policy. Remove legacy POSIX policy only after its remaining callers migrate. |
@@ -19,7 +22,7 @@ The file service receives the raw boot archive as a read-only Memory Object, par
 
 Normal boot starts the services needed by the managed shell, creates that shell, then launches Code Authority and Loader without waiting for protocol self-tests. The first shell has no termination handles for those two later services. `shell_spawned` timing marks the parent's successful shell attach, not the first interactive prompt; `services_ready` marks completion of the deferred launches. The production boot runner adds `/moss-init-selftest` only to its private copy of the boot archive, enabling the full Loader, Code Authority and Process bridge checks before shell creation for validation and recovery coverage.
 
-## Implementation order
+## Historical implementation order (superseded by ADR-0036)
 
 1. Close process-service recovery first. Fault injection showed that an old
    managed grandchild survived process-service restart because the old
