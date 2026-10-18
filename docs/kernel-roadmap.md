@@ -28,7 +28,7 @@
 | --- | --- | --- |
 | P0-1 | 建立可重用的 Pi 内核套件 runner | 成套镜像/fixture/symbols 与 provenance；先开 UART、cache-off、上传全回读；严格 ready/catalog/case/end；失败后未执行 case 标 not_run。首批仅接通无需输入注入的 mm、users.frame、users.uaccess、users.ipc |
 | P0-2 | 修复 ARM64 fork FP/NEON 继承 | 捕获调用线程实时状态，父子进程不经 exec 检查所有向量及 FPCR/FPSR；保留旧实现红例、新实现绿例和真机证据，不扩大普通 syscall 帧 |
-| P0-3 | 完成抢占与调度交接审计 | check_need_resched 当前没有执行调度；沿 IRQ/系统调用返回和 preempt_enable 核实安全点，补确定性交错、锁持有者、affinity/on-CPU 单一所有者验收，避免无条件调用 schedule |
+| P0-3 | 完成抢占与调度交接审计 | 已接通统一用户返回的 check_need_resched；继续核实内核态 IRQ 返回与最外层抢占恢复，补确定性交错、锁持有者、affinity/on-CPU 单一所有者验收和 Release 成本，避免在任意 unlock 调度 |
 | P0-4 | 关闭生命周期与失败事务的剩余缺口 | 复用已有 fork FD/process/metadata OOM 和 migration_current_owner 用例；补共享 exec/root、并发 unmap/fault/退出、迟到 IPC donor、取消/服务死亡交错，逐项核对资源计数 |
 | P1-1 | 存储基础：Pi SD 控制器、块 I/O、缓存和持久文件系统 | 根据实际 DTB 选择 SDHCI/SDHOST 路径；先完成 IRQ/超时/DMA/页寿命与 flush 契约，再接文件系统；验证落盘、重启、故障恢复及读写性能。virtio-blk 可补 QEMU 回归，不能代替 Pi 验收 |
 | P1-2 | VM/VFS 的通用映射能力 | 部分 unmap、mprotect、共享/文件后备 mmap、统一页缓存与脏页/writeback；并发截断、权限、OOM 与回收先明确，再开放接口；复用现有 Memory Objects |
@@ -50,8 +50,9 @@ P1 的存储与网络可按具体消费者分片推进，TCP 依赖可用的收�
   MOSS-017 未体现已有原子取任务/迁移实现，MOSS-010 仍把已有 OOM 用例列作全新工作。
 - README 的文件服务容量写成 64 KiB，源码当前为 16 MiB，启动归档映射不占该可写内容预算。
 - “共享内存未实现”过于笼统：capability Memory Object 已存在，POSIX shm/MAP_SHARED 仍未完成。
-- `check_need_resched()` 原注释暗示已在返回点处理，但函数体不调度；本轮仅澄清注释，
-  功能保留在 P0-3。全局任务交接锁等可能限制扩展性，须用锁竞争/等待时间证据再优化。
+- 首次评估时 `check_need_resched()` 原注释暗示已在返回点处理，但函数体不调度；
+  第三批接通统一用户返回安全点，其他安全点和完整交接仍属于 P0-3。
+  全局任务交接锁等可能限制扩展性，须用锁竞争/等待时间证据再优化。
 - socket/bind/listen/accept 等内核入口返回 ENOSYS，不能把接口占位或旧网络服务 ADR 算成网络实现。
 - 代码审批原生域、普通 ELF、凭据字段和实际授权并非同一完成状态；安全启动、
   完整权限控制以及所有执行入口的一致性仍需专项闭合。
@@ -85,7 +86,21 @@ P1 的存储与网络可按具体消费者分片推进，TCP 依赖可用的收�
 - [x] 新增真实 scheduler_tick 回归，检查两种锁的成功/失败/嵌套计数，以及持外层锁时延后抢占；
   旧 ARM64 QEMU 为 3 个断言通过、2 个失败，新 Pi scheduler 17/17 通过。
 - [x] 真机 runner 增加无需主机输入的 scheduler 套件，catalog 升至 v10。
-- [ ] check_need_resched、IRQ/syscall 返回安全点、完整 on-CPU 交接和性能预算仍属于 P0-3，
-  不因这次锁保护修复而关闭。
+- [ ] 第二批结束时 check_need_resched、IRQ/syscall 返回安全点、完整 on-CPU 交接和性能预算
+  仍属于 P0-3；统一用户返回随后见第三批，不因锁保护修复而关闭其余工作。
 
 详见 [本批验收记录](rpi3b-try-lock-validation.md)。
+
+## 第三批实施结果（2026-10-18）
+
+- [x] 统一用户返回在信号检查前消费安全的 need_resched 请求；不安全时保留请求，
+  复用 bootstrap 保存/恢复、实际时间记账与自选路径，不在任意 unlock 内调度。
+- [x] 新增持锁/状态/一次消费回归和关闭 timer 的真实用户寄存器交接探针；
+  旧空实现分别断言失败，新 Pi 同一镜像 users.frame 4/4、scheduler 18/18、users.ipc 22/22。
+- [x] 三架构 Debug 构建通过，ARM64/x64 QEMU 各 147/147；RV64 本轮矩阵为
+  140 passed、1 个 5 秒超时、6 not_run。相同镜像隔离 users.exec 32/32 通过；
+  原始超时/GDB 现场、首次 x64 探针错误和 Pi 回读失败均保留，不能记为一次三架构全绿。
+- [ ] RV64 压力回收超时原因、其他内核抢占安全点、完整 on-CPU/迁移协议、
+  长期负载和 Release/Linux 同板性能仍需后续批次；MOSS-017 保持开放。
+
+详见 [本批验收记录](rpi3b-return-reschedule-validation.md)。

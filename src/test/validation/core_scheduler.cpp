@@ -194,6 +194,54 @@ void try_lock_preemption() {
   ut::expect(scheduler->get_cpu_nr_running(cpu) == 0);
 }
 
+void reschedule_safe_point() {
+  using namespace process;
+  unique_ptr<CfsScheduler> scheduler(new CfsScheduler());
+  if (!ut::expect(scheduler.get() != nullptr)) {
+    return;
+  }
+  Thread current(0, 0);
+  const auto cpu = arch::get_current_cpu_id();
+  current.cpu = cpu;
+  current.cpu_affinity_mask = CpuBitmap::single(cpu);
+  current.state = ProcessState::Running;
+  current.sched_class = SchedClass::RealTime;
+  current.sched_policy = SchedPolicy::RR;
+  current.rt.priority = priority::DEFAULT_RT_PRIORITY;
+
+  // Only self-selection is possible in this private queue. Keep IRQs masked
+  // until the real current pointer is restored, as in the tick regressions.
+  const bool restore_irqs = arch::interrupts_enabled();
+  arch::disable_interrupts();
+  auto *original = CfsScheduler::get_current_task();
+  CfsScheduler::set_current_task(&current);
+  const auto switches = scheduler->total_preemptions();
+  current.need_resched = true;
+  current.preempt_disable();
+  scheduler->check_need_resched();
+  const bool guarded = current.need_resched && scheduler->total_preemptions() == switches;
+  current.preempt_enable();
+  current.state = ProcessState::Sleeping;
+  scheduler->check_need_resched();
+  const bool blocked =
+      current.need_resched && current.state == ProcessState::Sleeping && scheduler->total_preemptions() == switches;
+  current.state = ProcessState::Running;
+  scheduler->check_need_resched();
+  const bool consumed =
+      !current.need_resched && current.state == ProcessState::Running && scheduler->total_preemptions() == switches + 1;
+  scheduler->check_need_resched();
+  const bool once = scheduler->total_preemptions() == switches + 1;
+  CfsScheduler::set_current_task(original);
+  if (restore_irqs) {
+    arch::enable_interrupts();
+  }
+  ut::expect(guarded);
+  ut::expect(blocked);
+  ut::expect(consumed);
+  ut::expect(once);
+  ut::expect(scheduler->get_cpu_nr_running(cpu) == 0);
+}
+
 void cpu_runtime_accounting() {
   using namespace process;
   Thread cfs(0, 0), rt(1, 0);
@@ -965,6 +1013,7 @@ void register_scheduler_cases() {
     ut::register_test("cfs_self_selection", [] { scheduler_self_selection(false); });
     ut::register_test("rr_self_selection", [] { scheduler_self_selection(true); });
     ut::register_test("try_lock_preemption", try_lock_preemption);
+    ut::register_test("reschedule_safe_point", reschedule_safe_point);
     ut::register_test("cpu_runtime_accounting", cpu_runtime_accounting);
     ut::register_test("cpu_budget_accounting", cpu_budget_accounting);
     ut::register_test("cpu_budget_admission", cpu_budget_admission);

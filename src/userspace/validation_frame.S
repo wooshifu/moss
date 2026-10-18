@@ -40,6 +40,9 @@ uaccess_sigreturn_probe:
 .size uaccess_sigreturn_probe, . - uaccess_sigreturn_probe
 
 .global frame_register_probe
+// Expose the post-syscall PC to the validation coordinator. x64 overwrites
+// the syscall-number register with the result before user_return_handler.
+.global frame_register_probe_return
 .type frame_register_probe, @function
 frame_register_probe:
 #if defined(__aarch64__)
@@ -146,6 +149,7 @@ frame_register_probe:
     msr nzcv, x0
     ldr x0, [sp, #256]
     svc #0
+frame_register_probe_return:
     str x0, [sp, #248]
     mrs x0, nzcv
     lsr x0, x0, #28
@@ -515,6 +519,7 @@ frame_register_probe:
     li a0, 266
 .Lrv_call:
     ecall
+frame_register_probe_return:
     sd a0, 256(sp)
     li a0, 257
     bne x1, a0, .Lbad_rv_1
@@ -775,6 +780,7 @@ frame_register_probe:
 .Lx86_call:
     stc // Carry is RFLAGS bit 0; test $1 below checks preservation through the trap.
     syscall
+frame_register_probe_return:
     movq %rax, 120(%rsp)
     pushfq
     popq %rax

@@ -1,0 +1,22 @@
+[1/5] Preparing kernel, initramfs and firmware DTB...
+[2/5] Connecting to serial and JTAG; checking boot CPU...
+[3/5] Loading handoff stub and disabling bootloader caches...
+JTAG load handoff.bin: 196 bytes at 0x100000
+Upload handoff.bin:   0.0%  0.00/0.19 KiB  0.0 KiB/s  elapsed 0s  ETA --
+Upload handoff.bin: 100.0%  0.19/0.19 KiB  14.2 KiB/s  elapsed 0s  ETA 0s
+Readback handoff.bin:   0.0%  0.00/0.19 KiB  0.0 KiB/s  elapsed 0s  ETA --
+Readback handoff.bin: 100.0%  0.19/0.19 KiB  10.6 KiB/s  elapsed 0s  ETA 0s
+Verified handoff.bin: all 196 bytes match
+[4/5] Uploading and verifying kernel, initramfs and DTB...
+JTAG load moss.test.bin: 1,005,896 bytes at 0x200000
+Upload moss.test.bin:   0.0%  0.00/982.32 KiB  0.0 KiB/s  elapsed 0s  ETA --
+Upload moss.test.bin:  26.1%  256.00/982.32 KiB  116.0 KiB/s  elapsed 2s  ETA 6s
+Upload moss.test.bin:  52.1%  512.00/982.32 KiB  117.0 KiB/s  elapsed 4s  ETA 4s
+Upload moss.test.bin:  78.2%  768.00/982.32 KiB  117.2 KiB/s  elapsed 7s  ETA 2s
+Upload moss.test.bin: 100.0%  982.32/982.32 KiB  117.1 KiB/s  elapsed 8s  ETA 0s
+Readback moss.test.bin:   0.0%  0.00/982.32 KiB  0.0 KiB/s  elapsed 0s  ETA --
+Readback moss.test.bin:  26.1%  256.00/982.32 KiB  96.8 KiB/s  elapsed 3s  ETA 8s
+Readback moss.test.bin:  52.1%  512.00/982.32 KiB  96.4 KiB/s  elapsed 5s  ETA 5s
+Readback moss.test.bin:  78.2%  768.00/982.32 KiB  95.7 KiB/s  elapsed 8s  ETA 2s
+Readback moss.test.bin: 100.0%  982.32/982.32 KiB  93.3 KiB/s  elapsed 11s  ETA 0s
+Error: JTAG readback differs from /Volumes/MossBuild/moss/evidence/resched-pi-final-frame/artifacts/validation_kernel/moss.test.bin; saved /Volumes/MossBuild/moss/evidence/resched-pi-final-frame/artifacts/validation_kernel/moss.test.bin.readback

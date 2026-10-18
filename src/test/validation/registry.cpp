@@ -124,6 +124,7 @@ void declare_cases() {
     ut::register_test("native_frame", empty_case);
     ut::register_test("fork_registers", empty_case);
     ut::register_test("signal_return", empty_case);
+    ut::register_test("return_reschedule", empty_case);
   });
   ut::register_suite("users.uaccess", [] {
     for (const auto *name : uaccess_cases) {

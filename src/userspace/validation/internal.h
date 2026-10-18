@@ -5,6 +5,7 @@
 static inline long control(long op, long a, long b) { return syscall3(511, op, a, b); }
 
 long frame_register_probe(long number, long signal_pid);
+extern const unsigned char frame_register_probe_return[];
 extern const unsigned char vm_rodata[4096];
 extern const unsigned char __user_text_start[], __user_text_end[];
 int wait_exit(long child, int code);

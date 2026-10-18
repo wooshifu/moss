@@ -1,0 +1,51 @@
+[1/5] Preparing kernel, initramfs and firmware DTB...
+[2/5] Connecting to serial and JTAG; checking boot CPU...
+[3/5] Loading handoff stub and disabling bootloader caches...
+JTAG load handoff.bin: 196 bytes at 0x100000
+Upload handoff.bin:   0.0%  0.00/0.19 KiB  0.0 KiB/s  elapsed 0s  ETA --
+Upload handoff.bin: 100.0%  0.19/0.19 KiB  9.9 KiB/s  elapsed 0s  ETA 0s
+Readback handoff.bin:   0.0%  0.00/0.19 KiB  0.0 KiB/s  elapsed 0s  ETA --
+Readback handoff.bin: 100.0%  0.19/0.19 KiB  9.0 KiB/s  elapsed 0s  ETA 0s
+Verified handoff.bin: all 196 bytes match
+[4/5] Uploading and verifying kernel, initramfs and DTB...
+JTAG load moss.test.bin: 1,005,896 bytes at 0x200000
+Upload moss.test.bin:   0.0%  0.00/982.32 KiB  0.0 KiB/s  elapsed 0s  ETA --
+Upload moss.test.bin:  26.1%  256.00/982.32 KiB  58.8 KiB/s  elapsed 4s  ETA 12s
+Upload moss.test.bin:  52.1%  512.00/982.32 KiB  54.2 KiB/s  elapsed 9s  ETA 9s
+Upload moss.test.bin:  78.2%  768.00/982.32 KiB  52.4 KiB/s  elapsed 15s  ETA 4s
+Upload moss.test.bin: 100.0%  982.32/982.32 KiB  50.7 KiB/s  elapsed 19s  ETA 0s
+Readback moss.test.bin:   0.0%  0.00/982.32 KiB  0.0 KiB/s  elapsed 0s  ETA --
+Readback moss.test.bin:  26.1%  256.00/982.32 KiB  32.4 KiB/s  elapsed 8s  ETA 22s
+Readback moss.test.bin:  52.1%  512.00/982.32 KiB  34.2 KiB/s  elapsed 15s  ETA 14s
+Readback moss.test.bin:  78.2%  768.00/982.32 KiB  35.4 KiB/s  elapsed 22s  ETA 6s
+Readback moss.test.bin: 100.0%  982.32/982.32 KiB  34.7 KiB/s  elapsed 28s  ETA 0s
+Verified moss.test.bin: all 1,005,896 bytes match
+JTAG load validation-initramfs.cpio: 1,974,324 bytes at 0x20000000
+Upload validation-initramfs.cpio:   0.0%  0.00/1.88 MiB  0.0 KiB/s  elapsed 0s  ETA --
+Upload validation-initramfs.cpio:  13.3%  0.25/1.88 MiB  49.9 KiB/s  elapsed 5s  ETA 34s
+Upload validation-initramfs.cpio:  26.6%  0.50/1.88 MiB  47.3 KiB/s  elapsed 11s  ETA 30s
+Upload validation-initramfs.cpio:  39.8%  0.75/1.88 MiB  49.0 KiB/s  elapsed 16s  ETA 24s
+Upload validation-initramfs.cpio:  53.1%  1.00/1.88 MiB  49.0 KiB/s  elapsed 21s  ETA 18s
+Upload validation-initramfs.cpio:  66.4%  1.25/1.88 MiB  49.0 KiB/s  elapsed 26s  ETA 13s
+Upload validation-initramfs.cpio:  79.7%  1.50/1.88 MiB  49.6 KiB/s  elapsed 31s  ETA 8s
+Upload validation-initramfs.cpio:  92.9%  1.75/1.88 MiB  49.9 KiB/s  elapsed 36s  ETA 3s
+Upload validation-initramfs.cpio: 100.0%  1.88/1.88 MiB  49.9 KiB/s  elapsed 39s  ETA 0s
+Readback validation-initramfs.cpio:   0.0%  0.00/1.88 MiB  0.0 KiB/s  elapsed 0s  ETA --
+Readback validation-initramfs.cpio:  13.3%  0.25/1.88 MiB  39.5 KiB/s  elapsed 6s  ETA 42s
+Readback validation-initramfs.cpio:  26.6%  0.50/1.88 MiB  38.4 KiB/s  elapsed 13s  ETA 37s
+Readback validation-initramfs.cpio:  39.8%  0.75/1.88 MiB  41.8 KiB/s  elapsed 18s  ETA 28s
+Readback validation-initramfs.cpio:  53.1%  1.00/1.88 MiB  44.0 KiB/s  elapsed 23s  ETA 21s
+Readback validation-initramfs.cpio:  66.4%  1.25/1.88 MiB  45.8 KiB/s  elapsed 28s  ETA 14s
+Readback validation-initramfs.cpio:  79.7%  1.50/1.88 MiB  47.1 KiB/s  elapsed 33s  ETA 8s
+Readback validation-initramfs.cpio:  92.9%  1.75/1.88 MiB  47.8 KiB/s  elapsed 37s  ETA 3s
+Readback validation-initramfs.cpio: 100.0%  1.88/1.88 MiB  47.7 KiB/s  elapsed 40s  ETA 0s
+Verified validation-initramfs.cpio: all 1,974,324 bytes match
+JTAG load moss.dtb: 29,471 bytes at 0x30000000
+Upload moss.dtb:   0.0%  0.00/28.78 KiB  0.0 KiB/s  elapsed 0s  ETA --
+Upload moss.dtb: 100.0%  28.78/28.78 KiB  59.8 KiB/s  elapsed 0s  ETA 0s
+Readback moss.dtb:   0.0%  0.00/28.78 KiB  0.0 KiB/s  elapsed 0s  ETA --
+Readback moss.dtb: 100.0%  28.78/28.78 KiB  47.7 KiB/s  elapsed 1s  ETA 0s
+Verified moss.dtb: all 29,471 bytes match
+[5/5] Starting Moss validation: users.ipc...
+Validation serial log: /Volumes/MossBuild/moss/evidence/resched-pi-final-ipc/serial.log
+Validation users.ipc passed; result: /Volumes/MossBuild/moss/evidence/resched-pi-final-ipc/validation-result.json

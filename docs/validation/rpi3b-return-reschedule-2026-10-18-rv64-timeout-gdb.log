@@ -1,0 +1,269 @@
+warning: No executable has been specified and target does not support
+determining executable automatically.  Try using the "file" command.
+0x000000008027168c in ?? ()
+info threads
+  Id   Target Id                    Frame 
+* 1    Thread 1.1 (CPU#0 [halted ]) moss::kernel::arch::cpu_idle_once@moss.arch() () at /Users/shifu/code/os/moss/src/aal/src/arch.cppm:163
+  2    Thread 1.2 (CPU#1 [halted ]) moss::kernel::arch::cpu_idle_once@moss.arch() () at /Users/shifu/code/os/moss/src/aal/src/arch.cppm:163
+  3    Thread 1.3 (CPU#2 [running]) 0x000000008021e262 in moss::kernel::mm::PageFrameAllocator@moss.mm::free_pages(unsigned long long, unsigned long) (addr=3783262208, order=10) at /Users/shifu/code/os/moss/src/mm/src/page_frame_allocator.cpp:153
+  4    Thread 1.4 (CPU#3 [halted ]) moss::kernel::arch::cpu_idle_once@moss.arch() () at /Users/shifu/code/os/moss/src/aal/src/arch.cppm:163
+
+info registers
+ra             0x8022cafa	0x8022cafa <moss::kernel::process::CfsScheduler@moss.process::idle_task_loop(unsigned int)+16>
+sp             0x802d4dd0	0x802d4dd0 <moss::boot::secondary_stacks+97744>
+gp             0x802af5c8	0x802af5c8
+tp             0x0	0x0
+t0             0x9000000000080406	-8070450532247403514
+t1             0x802080fc	2149613820
+t2             0x8004c000	2147794944
+fp             0x802d4de0	0x802d4de0 <moss::boot::secondary_stacks+97760>
+s1             0x802000dc	2149581020
+a0             0x804d05c0	2152531392
+a1             0x2	2
+a2             0x3	3
+a3             0x300000000	12884901888
+a4             0xffffffffffffffdf	-33
+a5             0x1	1
+a6             0x0	0
+a7             0x54494d45	1414090053
+s2             0x0	0
+s3             0x0	0
+s4             0x8033d020	2150879264
+s5             0x0	0
+s6             0x0	0
+s7             0x4	4
+s8             0x2000	8192
+s9             0x80044928	2147764520
+s10            0x0	0
+s11            0x0	0
+t3             0x80044bb0	2147765168
+t4             0x1	1
+t5             0x20	32
+t6             0x0	0
+pc             0x8027168c	0x8027168c <moss::kernel::arch::cpu_idle_once@moss.arch()+16>
+
+bt 12
+#0  moss::kernel::arch::cpu_idle_once@moss.arch() () at /Users/shifu/code/os/moss/src/aal/src/arch.cppm:163
+#1  0x000000008022cafa in moss::kernel::process::CfsScheduler@moss.process::idle_task_loop(unsigned int) (this=0x804d05c0, cpu_id=2) at /Users/shifu/code/os/moss/src/process/src/process-scheduler.cppm:2112
+#2  0x000000008022ca88 in moss::kernel::process::CfsScheduler@moss.process::run_idle_task_simplified(moss::kernel::process::IdleTask@moss.process*, unsigned int) (this=0x804d05c0, idle_task=0x804da080, cpu_id=2) at /Users/shifu/code/os/moss/src/process/src/process-scheduler.cppm:2106
+#3  0x000000008022cd6e in moss::kernel::process::CfsScheduler@moss.process::cpu_startup_entry(unsigned int) (this=0x804d05c0, cpu_id=2) at /Users/shifu/code/os/moss/src/process/src/process-scheduler.cppm:2216
+#4  0x000000008022627a in moss::kernel::process::secondary_cpu_schedule_loop@moss.process(unsigned int) (cpu_id=2) at /Users/shifu/code/os/moss/src/process/src/process.cpp:799
+#5  0x0000000080207ba4 in riscv64_secondary_entry () at /Users/shifu/code/os/moss/src/boot/src/arch/riscv64/boot_impl.cpp:386
+#6  0x0000000080005b52 in ?? ()
+
+x/8i $pc
+=> 0x8027168c <_ZN4moss6kernel4archW4mossW4arch13cpu_idle_onceEv+16>:	csrci	sstatus,2
+   0x80271690 <_ZN4moss6kernel4archW4mossW4arch13cpu_idle_onceEv+20>:	ld	ra,8(sp)
+   0x80271692 <_ZN4moss6kernel4archW4mossW4arch13cpu_idle_onceEv+22>:	ld	s0,0(sp)
+   0x80271694 <_ZN4moss6kernel4archW4mossW4arch13cpu_idle_onceEv+24>:	addi	sp,sp,16
+   0x80271696 <_ZN4moss6kernel4archW4mossW4arch13cpu_idle_onceEv+26>:	ret
+   0x80271698 <_ZN4moss6kernel10containersW4mossW10containers13AtomicCounterIyE9fetch_addEyNS_S2_W3std11MemoryOrderE>:	addi	sp,sp,-64
+   0x8027169a <_ZN4moss6kernel10containersW4mossW10containers13AtomicCounterIyE9fetch_addEyNS_S2_W3std11MemoryOrderE+2>:	sd	ra,56(sp)
+   0x8027169c <_ZN4moss6kernel10containersW4mossW10containers13AtomicCounterIyE9fetch_addEyNS_S2_W3std11MemoryOrderE+4>:	sd	s0,48(sp)
+
+x/16gx $sp
+0x802d4dd0 <_ZN4moss4bootL16secondary_stacksE+97744>:	0x00000000802d4e00	0x000000008022cafa
+0x802d4de0 <_ZN4moss4bootL16secondary_stacksE+97760>:	0x000000028dde1a08	0x00000000804d05c0
+0x802d4df0 <_ZN4moss4bootL16secondary_stacksE+97776>:	0x00000000802d4e40	0x000000008022ca88
+0x802d4e00 <_ZN4moss4bootL16secondary_stacksE+97792>:	0x00000000804da080	0x000000008034d378
+0x802d4e10 <_ZN4moss4bootL16secondary_stacksE+97808>:	0x00000000804d05c0	0x0000000200000001
+0x802d4e20 <_ZN4moss4bootL16secondary_stacksE+97824>:	0x00000000804da080	0x00000000804d05c0
+0x802d4e30 <_ZN4moss4bootL16secondary_stacksE+97840>:	0x00000000802d4fc0	0x000000008022cd6e
+0x802d4e40 <_ZN4moss4bootL16secondary_stacksE+97856>:	0x00000000802d4e70	0x0000000080218b0a
+
+info registers
+ra             0x8022cafa	0x8022cafa <moss::kernel::process::CfsScheduler@moss.process::idle_task_loop(unsigned int)+16>
+sp             0x802ccdd0	0x802ccdd0 <moss::boot::secondary_stacks+64976>
+gp             0x802af5c8	0x802af5c8
+tp             0x1	0x1
+t0             0x9000000000080406	-8070450532247403514
+t1             0x802080fc	2149613820
+t2             0x8004a000	2147786752
+fp             0x802ccde0	0x802ccde0 <moss::boot::secondary_stacks+64992>
+s1             0x802000dc	2149581020
+a0             0x804d05c0	2152531392
+a1             0x1	1
+a2             0x3	3
+a3             0x300000000	12884901888
+a4             0xffffffffffffffdf	-33
+a5             0x1	1
+a6             0x0	0
+a7             0x54494d45	1414090053
+s2             0x1	1
+s3             0x1	1
+s4             0x8033d010	2150879248
+s5             0x0	0
+s6             0x1	1
+s7             0x4	4
+s8             0x2000	8192
+s9             0x8004492c	2147764524
+s10            0x0	0
+s11            0x0	0
+t3             0x80044bb0	2147765168
+t4             0x1	1
+t5             0x20	32
+t6             0x0	0
+pc             0x8027168c	0x8027168c <moss::kernel::arch::cpu_idle_once@moss.arch()+16>
+
+bt 12
+#0  moss::kernel::arch::cpu_idle_once@moss.arch() () at /Users/shifu/code/os/moss/src/aal/src/arch.cppm:163
+#1  0x000000008022cafa in moss::kernel::process::CfsScheduler@moss.process::idle_task_loop(unsigned int) (this=0x804d05c0, cpu_id=1) at /Users/shifu/code/os/moss/src/process/src/process-scheduler.cppm:2112
+#2  0x000000008022ca88 in moss::kernel::process::CfsScheduler@moss.process::run_idle_task_simplified(moss::kernel::process::IdleTask@moss.process*, unsigned int) (this=0x804d05c0, idle_task=0x804d9d10, cpu_id=1) at /Users/shifu/code/os/moss/src/process/src/process-scheduler.cppm:2106
+#3  0x000000008022cd6e in moss::kernel::process::CfsScheduler@moss.process::cpu_startup_entry(unsigned int) (this=0x804d05c0, cpu_id=1) at /Users/shifu/code/os/moss/src/process/src/process-scheduler.cppm:2216
+#4  0x000000008022627a in moss::kernel::process::secondary_cpu_schedule_loop@moss.process(unsigned int) (cpu_id=1) at /Users/shifu/code/os/moss/src/process/src/process.cpp:799
+#5  0x0000000080207ba4 in riscv64_secondary_entry () at /Users/shifu/code/os/moss/src/boot/src/arch/riscv64/boot_impl.cpp:386
+#6  0x0000000080005b52 in ?? ()
+
+x/8i $pc
+=> 0x8027168c <_ZN4moss6kernel4archW4mossW4arch13cpu_idle_onceEv+16>:	csrci	sstatus,2
+   0x80271690 <_ZN4moss6kernel4archW4mossW4arch13cpu_idle_onceEv+20>:	ld	ra,8(sp)
+   0x80271692 <_ZN4moss6kernel4archW4mossW4arch13cpu_idle_onceEv+22>:	ld	s0,0(sp)
+   0x80271694 <_ZN4moss6kernel4archW4mossW4arch13cpu_idle_onceEv+24>:	addi	sp,sp,16
+   0x80271696 <_ZN4moss6kernel4archW4mossW4arch13cpu_idle_onceEv+26>:	ret
+   0x80271698 <_ZN4moss6kernel10containersW4mossW10containers13AtomicCounterIyE9fetch_addEyNS_S2_W3std11MemoryOrderE>:	addi	sp,sp,-64
+   0x8027169a <_ZN4moss6kernel10containersW4mossW10containers13AtomicCounterIyE9fetch_addEyNS_S2_W3std11MemoryOrderE+2>:	sd	ra,56(sp)
+   0x8027169c <_ZN4moss6kernel10containersW4mossW10containers13AtomicCounterIyE9fetch_addEyNS_S2_W3std11MemoryOrderE+4>:	sd	s0,48(sp)
+
+x/16gx $sp
+0x802ccdd0 <_ZN4moss4bootL16secondary_stacksE+64976>:	0x00000000802cce00	0x000000008022cafa
+0x802ccde0 <_ZN4moss4bootL16secondary_stacksE+64992>:	0x000000018ddf8938	0x00000000804d05c0
+0x802ccdf0 <_ZN4moss4bootL16secondary_stacksE+65008>:	0x00000000802cce40	0x000000008022ca88
+0x802cce00 <_ZN4moss4bootL16secondary_stacksE+65024>:	0x00000000804d9d10	0x000000008034d378
+0x802cce10 <_ZN4moss4bootL16secondary_stacksE+65040>:	0x00000000804d05c0	0x0000000100000001
+0x802cce20 <_ZN4moss4bootL16secondary_stacksE+65056>:	0x00000000804d9d10	0x00000000804d05c0
+0x802cce30 <_ZN4moss4bootL16secondary_stacksE+65072>:	0x00000000802ccfc0	0x000000008022cd6e
+0x802cce40 <_ZN4moss4bootL16secondary_stacksE+65088>:	0x00000000802cce70	0x0000000080218b0a
+
+info registers
+ra             0x8021e262	0x8021e262 <moss::kernel::mm::PageFrameAllocator@moss.mm::free_pages(unsigned long long, unsigned long)+366>
+sp             0xffe07290	0xffe07290
+gp             0x802af5c8	0x802af5c8
+tp             0x2	0x2
+t0             0x200003bb4	8589949876
+t1             0x8	8
+t2             0xfffffffffffffff4	-12
+fp             0xffe07370	0xffe07370
+s1             0x18	24
+a0             0x1	1
+a1             0x5	5
+a2             0x3dc	988
+a3             0x80294d8f	2150190479
+a4             0xa8	168
+a5             0xfffffffffffffff4	-12
+a6             0x4	4
+a7             0x1ff	511
+s2             0x1f	31
+s3             0x2000130a0	8590012576
+s4             0x0	0
+s5             0x0	0
+s6             0x0	0
+s7             0x0	0
+s8             0x0	0
+s9             0x0	0
+s10            0x0	0
+s11            0x0	0
+t3             0x12345678	305419896
+t4             0x1	1
+t5             0x0	0
+t6             0x0	0
+pc             0x8021e262	0x8021e262 <moss::kernel::mm::PageFrameAllocator@moss.mm::free_pages(unsigned long long, unsigned long)+366>
+
+bt 12
+#0  0x000000008021e262 in moss::kernel::mm::PageFrameAllocator@moss.mm::free_pages(unsigned long long, unsigned long) (addr=3783262208, order=10) at /Users/shifu/code/os/moss/src/mm/src/page_frame_allocator.cpp:153
+#1  0x000000008021f282 in moss::kernel::mm::BuddyAllocatorV2@moss.mm::free_pages(unsigned long long, unsigned long) (addr=3783262208, order=10) at /Users/shifu/code/os/moss/src/mm/src/mm_interface_impl.cpp:32
+#2  0x00000000802653ee in moss::kernel::mm::free_pages@moss.mm(unsigned long long, unsigned long) (addr=3783262208, order=10) at /Users/shifu/code/os/moss/src/mm/src/mm-core.cppm:363
+#3  0x0000000080280c14 in moss::test::validation::PagePressure::release (this=0x804dc3f0) at /Users/shifu/code/os/moss/src/test/validation/memory_internal.hpp:168
+#4  0x0000000080280c66 in moss::test::validation::PagePressure::~PagePressure (this=0x804dc3f0) at /Users/shifu/code/os/moss/src/test/validation/memory_internal.hpp:175
+#5  0x000000008024fcb4 in moss::test::validation::exec_control (op=37, arg1=4, arg2=0) at /Users/shifu/code/os/moss/src/test/validation/exec_control.cpp:269
+#6  0x0000000080236658 in moss_validation_call (op=37, arg1=4, arg2=0) at /Users/shifu/code/os/moss/src/test/validation.cpp:406
+#7  0x0000000080208288 in system_call_handler (raw_frame=0xffe07ed0) at /Users/shifu/code/os/moss/src/kernel/src/kernel_main.cpp:166
+#8  0x00000000802170ba in syscall_entry_point () at /Users/shifu/code/os/moss/src/kernel/src/arch/riscv64_syscall.S:109
+Backtrace stopped: frame did not save the PC
+
+x/8i $pc
+=> 0x8021e262 <_ZN4moss6kernel2mmW4mossW2mm18PageFrameAllocator10free_pagesEym+366>:	lw	a1,92(sp)
+   0x8021e264 <_ZN4moss6kernel2mmW4mossW2mm18PageFrameAllocator10free_pagesEym+368>:	beq	a0,a1,0x8021e27c <_ZN4moss6kernel2mmW4mossW2mm18PageFrameAllocator10free_pagesEym+392>
+   0x8021e268 <_ZN4moss6kernel2mmW4mossW2mm18PageFrameAllocator10free_pagesEym+372>:	j	0x8021e26a <_ZN4moss6kernel2mmW4mossW2mm18PageFrameAllocator10free_pagesEym+374>
+   0x8021e26a <_ZN4moss6kernel2mmW4mossW2mm18PageFrameAllocator10free_pagesEym+374>:	ld	a0,40(sp)
+   0x8021e26c <_ZN4moss6kernel2mmW4mossW2mm18PageFrameAllocator10free_pagesEym+376>:	li	a1,3
+   0x8021e26e <_ZN4moss6kernel2mmW4mossW2mm18PageFrameAllocator10free_pagesEym+378>:	sw	a1,88(sp)
+   0x8021e270 <_ZN4moss6kernel2mmW4mossW2mm18PageFrameAllocator10free_pagesEym+380>:	addi	a1,sp,88
+   0x8021e272 <_ZN4moss6kernel2mmW4mossW2mm18PageFrameAllocator10free_pagesEym+382>:	jal	0x8026fb2a <_ZN4moss6kernelW4mossW6result6ResultIvNS0_2mmS1_W2mm14PageAllocErrorEEC2EOS6_>
+
+x/16gx $sp
+0xffe07290:	0x0000000000000005	0x000000008034d188
+0xffe072a0:	0x0000000000000000	0x0000000000000002
+0xffe072b0:	0x0000000000000001	0x00000000ffe07390
+0xffe072c0:	0x000000000006013d	0x000000000001e824
+0xffe072d0:	0x00000000e1400000	0x0000000000000400
+0xffe072e0:	0x00000000ffe07310	0x000000018026260a
+0xffe072f0:	0x00000000812ebff0	0x00000000000003dc
+0xffe07300:	0x00000000ffe07320	0x0000000000000400
+
+info registers
+ra             0x8022cafa	0x8022cafa <moss::kernel::process::CfsScheduler@moss.process::idle_task_loop(unsigned int)+16>
+sp             0x802dcdd0	0x802dcdd0 <moss::boot::secondary_stacks+130512>
+gp             0x802af5c8	0x802af5c8
+tp             0x3	0x3
+t0             0x9000000000080406	-8070450532247403514
+t1             0x802080fc	2149613820
+t2             0x80046000	2147770368
+fp             0x802dcde0	0x802dcde0 <moss::boot::secondary_stacks+130528>
+s1             0x802000dc	2149581020
+a0             0x804d05c0	2152531392
+a1             0x3	3
+a2             0x3	3
+a3             0x300000000	12884901888
+a4             0xffffffffffffffdf	-33
+a5             0x1	1
+a6             0x0	0
+a7             0x54494d45	1414090053
+s2             0x3	3
+s3             0x3	3
+s4             0x8033d030	2150879280
+s5             0x0	0
+s6             0x3	3
+s7             0x4	4
+s8             0x2000	8192
+s9             0x80044934	2147764532
+s10            0x0	0
+s11            0x0	0
+t3             0x80044bb0	2147765168
+t4             0x1	1
+t5             0x20	32
+t6             0x0	0
+pc             0x8027168c	0x8027168c <moss::kernel::arch::cpu_idle_once@moss.arch()+16>
+
+bt 12
+#0  moss::kernel::arch::cpu_idle_once@moss.arch() () at /Users/shifu/code/os/moss/src/aal/src/arch.cppm:163
+#1  0x000000008022cafa in moss::kernel::process::CfsScheduler@moss.process::idle_task_loop(unsigned int) (this=0x804d05c0, cpu_id=3) at /Users/shifu/code/os/moss/src/process/src/process-scheduler.cppm:2112
+#2  0x000000008022ca88 in moss::kernel::process::CfsScheduler@moss.process::run_idle_task_simplified(moss::kernel::process::IdleTask@moss.process*, unsigned int) (this=0x804d05c0, idle_task=0x804da3f0, cpu_id=3) at /Users/shifu/code/os/moss/src/process/src/process-scheduler.cppm:2106
+#3  0x000000008022cd6e in moss::kernel::process::CfsScheduler@moss.process::cpu_startup_entry(unsigned int) (this=0x804d05c0, cpu_id=3) at /Users/shifu/code/os/moss/src/process/src/process-scheduler.cppm:2216
+#4  0x000000008022627a in moss::kernel::process::secondary_cpu_schedule_loop@moss.process(unsigned int) (cpu_id=3) at /Users/shifu/code/os/moss/src/process/src/process.cpp:799
+#5  0x0000000080207ba4 in riscv64_secondary_entry () at /Users/shifu/code/os/moss/src/boot/src/arch/riscv64/boot_impl.cpp:386
+#6  0x0000000080005b52 in ?? ()
+
+x/8i $pc
+=> 0x8027168c <_ZN4moss6kernel4archW4mossW4arch13cpu_idle_onceEv+16>:	csrci	sstatus,2
+   0x80271690 <_ZN4moss6kernel4archW4mossW4arch13cpu_idle_onceEv+20>:	ld	ra,8(sp)
+   0x80271692 <_ZN4moss6kernel4archW4mossW4arch13cpu_idle_onceEv+22>:	ld	s0,0(sp)
+   0x80271694 <_ZN4moss6kernel4archW4mossW4arch13cpu_idle_onceEv+24>:	addi	sp,sp,16
+   0x80271696 <_ZN4moss6kernel4archW4mossW4arch13cpu_idle_onceEv+26>:	ret
+   0x80271698 <_ZN4moss6kernel10containersW4mossW10containers13AtomicCounterIyE9fetch_addEyNS_S2_W3std11MemoryOrderE>:	addi	sp,sp,-64
+   0x8027169a <_ZN4moss6kernel10containersW4mossW10containers13AtomicCounterIyE9fetch_addEyNS_S2_W3std11MemoryOrderE+2>:	sd	ra,56(sp)
+   0x8027169c <_ZN4moss6kernel10containersW4mossW10containers13AtomicCounterIyE9fetch_addEyNS_S2_W3std11MemoryOrderE+4>:	sd	s0,48(sp)
+
+x/16gx $sp
+0x802dcdd0 <_ZN4moss4bootL16secondary_stacksE+130512>:	0x00000000802dce00	0x000000008022cafa
+0x802dcde0 <_ZN4moss4bootL16secondary_stacksE+130528>:	0x000000038dde7bb0	0x00000000804d05c0
+0x802dcdf0 <_ZN4moss4bootL16secondary_stacksE+130544>:	0x00000000802dce40	0x000000008022ca88
+0x802dce00 <_ZN4moss4bootL16secondary_stacksE+130560>:	0x00000000804da3f0	0x000000008034d378
+0x802dce10 <_ZN4moss4bootL16secondary_stacksE+130576>:	0x00000000804d05c0	0x0000000300000001
+0x802dce20 <_ZN4moss4bootL16secondary_stacksE+130592>:	0x00000000804da3f0	0x00000000804d05c0
+0x802dce30 <_ZN4moss4bootL16secondary_stacksE+130608>:	0x00000000802dcfc0	0x000000008022cd6e
+0x802dce40 <_ZN4moss4bootL16secondary_stacksE+130624>:	0x00000000802dce70	0x0000000080218b0a
+
+p '_ZN4moss6kernel7processW4mossW7process11g_schedulerE'
+$1 = (moss::kernel::process::CfsScheduler *) 0x804d05c0
+
+MOSS_DIAGNOSTICS_DONE

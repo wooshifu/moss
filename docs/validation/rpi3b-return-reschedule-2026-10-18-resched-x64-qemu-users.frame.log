@@ -1,0 +1,335 @@
+c[?7l[2J[0mSeaBIOS (version rel-1.17.0-0-gb52ca86e094d-prebuilt.qemu.org)
+Booting from ROM..PVH memory and ACPI hardware discovered
+Stage 2: Memory management setup
+=== x64 Memory Management Setup ===
+  Phase 1: kernel page table setup
+[I][page_table.cpp:1076(@print_page_table_details)] ========================================
+[I][page_table.cpp:1077(@print_page_table_details)]         MOSS页表详细信息调试输出
+[I][page_table.cpp:1078(@print_page_table_details)] ========================================
+[I][page_table.cpp:1081(@print_page_table_details)] === 页表分配器状态 ===
+[D]最大页表数量: 0x40
+[D]已分配页表数: 0x6
+[D]可用页表数:   0x3a
+[D]总内存占用:   0x100 KB
+[I][page_table.cpp:1088(@print_page_table_details)] === 页表内存布局 ===
+[D]early_tables起始: 0x33a000
+[D]单个页表大小:     0x1000 字节
+[D]每页表条目数:     0x200 个
+[D]内核PGD位置: early_tables[0x0] (0x33a000)
+[I][page_table.cpp:959(@print_mmu_registers)] === MMU寄存器详细状态 ===
+[D][page_table.cpp:1000(@print_mmu_registers)] 非ARM64架构，跳过MMU寄存器读取
+[I][page_table.cpp:1008(@print_pgd_entries)] === PGD级页表项详细信息 ===
+[D]PGD物理地址: 0x33a000
+[D][page_table.cpp:1016(@print_pgd_entries)] L0 (PGD): [0-511], each entry covers 512GB
+[D][page_table.cpp:1017(@print_pgd_entries)] L1 (PUD): [0-511], each entry covers 1GB
+[D]PGD[0x0] = 0x33b023 -> L1 table @ 0x33b000
+[D]  PUD[0x0] = 0x33c023
+[D]    VA: 0x0 - 0x3fffffff -> PA: 0x33c000 (1GB table)
+[I][page_table.cpp:1076(@print_page_table_details)] ========================================
+[I][page_table.cpp:1077(@print_page_table_details)]         MOSS页表详细信息调试输出
+[I][page_table.cpp:1078(@print_page_table_details)] ========================================
+[I][page_table.cpp:1081(@print_page_table_details)] === 页表分配器状态 ===
+[D]最大页表数量: 0x40
+[D]已分配页表数: 0x6
+[D]可用页表数:   0x3a
+[D]总内存占用:   0x100 KB
+[I][page_table.cpp:1088(@print_page_table_details)] === 页表内存布局 ===
+[D]early_tables起始: 0x33a000
+[D]单个页表大小:     0x1000 字节
+[D]每页表条目数:     0x200 个
+[D]内核PGD位置: early_tables[0x0] (0x33a000)
+[I][page_table.cpp:959(@print_mmu_registers)] === MMU寄存器详细状态 ===
+[D][page_table.cpp:1000(@print_mmu_registers)] 非ARM64架构，跳过MMU寄存器读取
+[I][page_table.cpp:1008(@print_pgd_entries)] === PGD级页表项详细信息 ===
+[D]PGD物理地址: 0x33a000
+[D][page_table.cpp:1016(@print_pgd_entries)] L0 (PGD): [0-511], each entry covers 512GB
+[D][page_table.cpp:1017(@print_pgd_entries)] L1 (PUD): [0-511], each entry covers 1GB
+[D]PGD[0x0] = 0x33b023 -> L1 table @ 0x33b000
+[D]  PUD[0x0] = 0x33c023
+[D]    VA: 0x0 - 0x3fffffff -> PA: 0x33c000 (1GB table)
+[D]    AttrIndx=0x0 Device
+[D]  PUD[0x1] = 0x33e023
+[D]    VA: 0x40000000 - 0x7fffffff -> PA: 0x33e000 (1GB table)
+[I][page_table.cpp:1076(@print_page_table_details)] ========================================
+[I][page_table.cpp:1077(@print_page_table_details)]         MOSS页表详细信息调试输出
+[I][page_table.cpp:1078(@print_page_table_details)] ========================================
+[I][page_table.cpp:1081(@print_page_table_details)] === 页表分配器状态 ===
+[D]最大页表数量: 0x40
+[D]已分配页表数: 0x6
+[D]可用页表数:   0x3a
+[D]总内存占用:   0x100 KB
+[I][page_table.cpp:1088(@print_page_table_details)] === 页表内存布局 ===
+[D]early_tables起始: 0x33a000
+[D]单个页表大小:     0x1000 字节
+[D]每页表条目数:     0x200 个
+[D]内核PGD位置: early_tables[0x0] (0x33a000)
+[I][page_table.cpp:959(@print_mmu_registers)] === MMU寄存器详细状态 ===
+[D][page_table.cpp:1000(@print_mmu_registers)] 非ARM64架构，跳过MMU寄存器读取
+[I][page_table.cpp:1008(@print_pgd_entries)] === PGD级页表项详细信息 ===
+[D]PGD物理地址: 0x33a000
+[D][page_table.cpp:1016(@print_pgd_entries)] L0 (PGD): [0-511], each entry covers 512GB
+[D][page_table.cpp:1017(@print_pgd_entries)] L1 (PUD): [0-511], each entry covers 1GB
+[D]PGD[0x0] = 0x33b023 -> L1 table @ 0x33b000
+[D]  PUD[0x0] = 0x33c023
+[D]    VA: 0x0 - 0x3fffffff -> PA: 0x33c000 (1GB table)
+[D]    AttrIndx=0x0 Device
+[D]  PUD[0x1] = 0x33e023
+[D]    VA: 0x40000000 - 0x7fffffff -> PA: 0x33e000 (1GB table)
+[D]    AttrIndx=0x0 Device
+[D]  PUD[0x2] = 0x80000000800000b3
+[D]    VA: 0x80000000 - 0xbfffffff -> PA: 0x80000000 (1GB block)
+[I][page_table.cpp:1076(@print_page_table_details)] ========================================
+[I][page_table.cpp:1077(@print_page_table_details)]         MOSS页表详细信息调试输出
+[I][page_table.cpp:1078(@print_page_table_details)] ========================================
+[I][page_table.cpp:1081(@print_page_table_details)] === 页表分配器状态 ===
+[D]最大页表数量: 0x40
+[D]已分配页表数: 0x6
+[D]可用页表数:   0x3a
+[D]总内存占用:   0x100 KB
+[I][page_table.cpp:1088(@print_page_table_details)] === 页表内存布局 ===
+[D]early_tables起始: 0x33a000
+[D]单个页表大小:     0x1000 字节
+[D]每页表条目数:     0x200 个
+[D]内核PGD位置: early_tables[0x0] (0x33a000)
+[I][page_table.cpp:959(@print_mmu_registers)] === MMU寄存器详细状态 ===
+[D][page_table.cpp:1000(@print_mmu_registers)] 非ARM64架构，跳过MMU寄存器读取
+[I][page_table.cpp:1008(@print_pgd_entries)] === PGD级页表项详细信息 ===
+[D]PGD物理地址: 0x33a000
+[D][page_table.cpp:1016(@print_pgd_entries)] L0 (PGD): [0-511], each entry covers 512GB
+[D][page_table.cpp:1017(@print_pgd_entries)] L1 (PUD): [0-511], each entry covers 1GB
+[D]PGD[0x0] = 0x33b023 -> L1 table @ 0x33b000
+[D]  PUD[0x0] = 0x33c023
+[D]    VA: 0x0 - 0x3fffffff -> PA: 0x33c000 (1GB table)
+[D]    AttrIndx=0x0 Device
+[D]  PUD[0x1] = 0x33e023
+[D]    VA: 0x40000000 - 0x7fffffff -> PA: 0x33e000 (1GB table)
+[D]    AttrIndx=0x0 Device
+[D]  PUD[0x2] = 0x80000000800000b3
+[D]    VA: 0x80000000 - 0xbfffffff -> PA: 0x80000000 (1GB block)
+[D]    AttrIndx=0x4 NC
+[D]  PUD[0x3] = 0x80000000c00000b3
+[D]    VA: 0xc0000000 - 0xffffffff -> PA: 0xc0000000 (1GB block)
+[I][page_table.cpp:1076(@print_page_table_details)] ========================================
+[I][page_table.cpp:1077(@print_page_table_details)]         MOSS页表详细信息调试输出
+[I][page_table.cpp:1078(@print_page_table_details)] ========================================
+[I][page_table.cpp:1081(@print_page_table_details)] === 页表分配器状态 ===
+[D]最大页表数量: 0x40
+[D]已分配页表数: 0x6
+[D]可用页表数:   0x3a
+[D]总内存占用:   0x100 KB
+[I][page_table.cpp:1088(@print_page_table_details)] === 页表内存布局 ===
+[D]early_tables起始: 0x33a000
+[D]单个页表大小:     0x1000 字节
+[D]每页表条目数:     0x200 个
+[D]内核PGD位置: early_tables[0x0] (0x33a000)
+[I][page_table.cpp:959(@print_mmu_registers)] === MMU寄存器详细状态 ===
+[D][page_table.cpp:1000(@print_mmu_registers)] 非ARM64架构，跳过MMU寄存器读取
+[I][page_table.cpp:1008(@print_pgd_entries)] === PGD级页表项详细信息 ===
+[D]PGD物理地址: 0x33a000
+[D][page_table.cpp:1016(@print_pgd_entries)] L0 (PGD): [0-511], each entry covers 512GB
+[D][page_table.cpp:1017(@print_pgd_entries)] L1 (PUD): [0-511], each entry covers 1GB
+[D]PGD[0x0] = 0x33b023 -> L1 table @ 0x33b000
+[D]  PUD[0x0] = 0x33c023
+[D]    VA: 0x0 - 0x3fffffff -> PA: 0x33c000 (1GB table)
+[D]    AttrIndx=0x0 Device
+[D]  PUD[0x1] = 0x33e023
+[D]    VA: 0x40000000 - 0x7fffffff -> PA: 0x33e000 (1GB table)
+[D]    AttrIndx=0x0 Device
+[D]  PUD[0x2] = 0x80000000800000b3
+[D]    VA: 0x80000000 - 0xbfffffff -> PA: 0x80000000 (1GB block)
+[D]    AttrIndx=0x4 NC
+[D]  PUD[0x3] = 0x80000000c00000b3
+[D]    VA: 0xc0000000 - 0xffffffff -> PA: 0xc0000000 (1GB block)
+[D]    AttrIndx=0x4 NC
+[D]Total 1GB blocks mapped: 0x4
+[I][page_table.cpp:1113(@print_page_table_details)] === 地址转换示例 (L0→L1 1GB block mapping) ===
+[D]VA 0x0 (RAM start): L0[0x0] L1[0x0] offset=0x0
+[D]VA 0x3f8 (UART MMIO): L0[0x0] L1[0x0] offset=0x3f8
+[D]VA 0x40000000 (1GB boundary): L0[0x0] L1[0x1] offset=0x0
+[D]VA 0x80000000 (2GB boundary): L0[0x0] L1[0x2] offset=0x0
+[D]VA 0xc0000000 (3GB boundary): L0[0x0] L1[0x3] offset=0x0
+[I][page_table.cpp:1136(@print_page_table_details)] ========================================
+[I][page_table.cpp:1137(@print_page_table_details)]         页表详细信息输出完成
+[I][page_table.cpp:1138(@print_page_table_details)] ========================================
+  Phase 1 complete: kernel PGD initialized
+[I][page_frame_allocator.cpp:41(@initialize)] PFA layout: heap=0x401000..0xc01000, tables=0xc01000..0xc11000, metadata=0xc11000 (8339456 bytes), 518502 pages
+[I][page_table.cpp:278(@setup_kernel_high_half_tables)] high-half page table: PGD[256] -> NX direct map
+x64 memory management setup complete
+
+Stage 3: Interrupts and exceptions setup
+=== x64 Interrupts and Exceptions Setup ===
+  IDT loaded (256 entries)
+  Local APIC initialized
+  LAPIC timer configured (vec=48, masked)
+x64 interrupt/exception setup complete
+
+Stage 4: SMP support setup
+=== x64 SMP Support Setup ===
+  Detected CPUs: 0x0000000000000004 (BSP only for now)
+x64 SMP setup complete
+
+Stage 4: SMP support setup complete
+Stage 5: Architecture init complete
+=== x64 Architecture Init Complete ===
+Runtime heap marked ready
+x64 architecture-specific init all complete
+
+=== Architecture-specific boot complete ===
+Handing off to architecture-independent system init...
+
+Launching MOSS kernel main...
+[I][kernel_main.cpp:36(@kernel_main)] === MOSS kernel main starting ===
+[I][kernel_main.cpp:37(@kernel_main)] detected CPUs: 4
+[I][kernel_main.cpp:40(@kernel_main)] creating kernel instance...
+[I][kernel_main.cpp:48(@kernel_main)] kernel instance created
+[I][kernel_main.cpp:51(@kernel_main)] initializing kernel subsystems...
+[I][kernel-main.cppm:792(@print_banner)] 
+[I][kernel-main.cppm:793(@print_banner)] MOSS Hybrid Kernel v1.0
+[I][kernel-main.cppm:794(@print_banner)] 
+[boot] Phase 0: Early init
+[I][kernel-main.cppm:352(@initialize_early)] Initializing timer subsystem...
+[I][0.001][kernel-main.cppm:359(@initialize_early)] Timer subsystem initialized: freq=2200104352 Hz
+[boot] Phase 0 complete
+[boot] Phase 1: Memory management
+[I][0.004][kernel-main.cppm:367(@initialize_memory)] Initializing unified memory management system...
+[I][0.007][kernel-main.cppm:374(@initialize_memory)] Unified memory management system initialized
+[I][0.008][kernel-main.cppm:402(@initialize_memory)] Memory pressure monitoring: unsupported
+[boot] Phase 1 complete
+[boot] Phase 2: Scheduler
+[I][0.018][idle_process.cpp:84(@create_idle_task)] idle task created for CPU0 TID=1000
+[I][0.020][process-scheduler.cppm:1493(@set_idle_task)] set idle task CPU0: TID=1000
+[I][0.021][idle_process.cpp:84(@create_idle_task)] idle task created for CPU1 TID=1001
+[I][0.022][process-scheduler.cppm:1493(@set_idle_task)] set idle task CPU1: TID=1001
+[I][0.024][idle_process.cpp:84(@create_idle_task)] idle task created for CPU2 TID=1002
+[I][0.025][process-scheduler.cppm:1493(@set_idle_task)] set idle task CPU2: TID=1002
+[I][0.026][idle_process.cpp:84(@create_idle_task)] idle task created for CPU3 TID=1003
+[I][0.027][process-scheduler.cppm:1493(@set_idle_task)] set idle task CPU3: TID=1003
+[SEC] CPU entering scheduling loop
+[I][0.058][process-scheduler.cppm:2121(@cpu_startup_entry)] CPU1: per-CPU scheduling loop started
+[SEC] CPU entering scheduling loop
+[I][0.098][process-scheduler.cppm:2121(@cpu_startup_entry)] CPU2: per-CPU scheduling loop started
+[SEC] CPU entering scheduling loop
+[I][0.140][process-scheduler.cppm:2121(@cpu_startup_entry)] CPU3: per-CPU scheduling loop started
+[I][0.153][kernel-main.cppm:514(@initialize_scheduler)] SMP: 4 CPUs active
+[boot] Phase 2 complete
+[boot] Phase 3: Bootstrap hardware
+[I][0.156][kernel-main.cppm:543(@initialize_devices)] Initializing multi-architecture syscall support...
+[I][0.157][kernel-main.cppm:548(@initialize_devices)] Syscall architecture initialization succeeded
+[I][0.158][kernel_main.cpp:461(@print_syscall_convention)] === syscall architecture info ===
+[I][0.159][kernel_main.cpp:462(@print_syscall_convention)] arch: x64
+[I][0.160][kernel_main.cpp:463(@print_syscall_convention)] instruction: SYSCALL
+[I][0.160][kernel_main.cpp:464(@print_syscall_convention)] syscall_nr: rax
+[I][0.161][kernel_main.cpp:465(@print_syscall_convention)] return_reg: rax
+[INFO]  arg_regs: rdi, rsi, rdx, r10, r8, r9
+[I][0.163][kernel_main.cpp:476(@print_syscall_convention)] ================================
+[boot] Phase 3 complete
+[boot] Phase 4: System services
+[boot] Phase 4 complete
+[boot] Phase 5: User-space
+[boot] Phase 5 complete
+[I][0.165][kernel_main.cpp:59(@kernel_main)] kernel subsystem initialization complete
+[I][0.166][kernel_main.cpp:62(@kernel_main)] === kernel system status ===
+[I][0.167][kernel-main.cppm:269(@print_system_info)] === MOSS Kernel System Info ===
+[I][0.168][kernel-main.cppm:270(@print_system_info)] Boot phase: 5
+[I][0.169][kernel-main.cppm:271(@print_system_info)] SMP support: enabled
+[I][0.169][kernel-main.cppm:272(@print_system_info)] Preemptive scheduling: enabled
+[I][0.170][kernel-main.cppm:275(@print_system_info)] Uptime: 388598122 cycles
+[I][0.171][kernel-main.cppm:276(@print_system_info)] Active processes: 0
+[I][0.172][kernel-main.cppm:277(@print_system_info)] Interrupts handled: 0
+[I][0.172][kernel-main.cppm:278(@print_system_info)] ===============================
+[I][0.173][kernel_main.cpp:66(@kernel_main)] === subsystem verification ===
+[I][0.174][kernel_main.cpp:74(@kernel_main)] memory: ready, pressure=unsupported
+[I][0.175][kernel_main.cpp:104(@kernel_main)] interrupts: GIC initialized
+[I][0.175][kernel_main.cpp:111(@kernel_main)] timer: initialized
+[I][0.176][kernel_main.cpp:118(@kernel_main)] scheduler: CFS ready
+[I][0.177][kernel_main.cpp:126(@kernel_main)] MOSS kernel subsystem verification complete
+[I][0.177][kernel_main.cpp:127(@kernel_main)] entering userspace bootstrap and scheduling phase...
+[I][0.178][kernel_main.cpp:130(@kernel_main)] starting kernel run system
+[I][0.180][kernel-main.cppm:153(@run)] initramfs: found at 0x7fd63000-0x7ffd7b54 (2575188 bytes)
+[I][0.184][initramfs.cppm:232(@init)] initramfs: parsed 23 files from 0x7fd63000 (2575188 bytes)
+[I][0.186][initramfs.cppm:234(@init)]   [0] 'validation.elf' 162224 bytes mode=33261
+[I][0.188][initramfs.cppm:234(@init)]   [1] 'validation_child.elf' 13040 bytes mode=33261
+[I][0.189][initramfs.cppm:234(@init)]   [2] 'fixture.bin' 65536 bytes mode=33060
+[I][0.190][initramfs.cppm:234(@init)]   [3] 'libc_validation.elf' 959472 bytes mode=33261
+[I][0.191][initramfs.cppm:234(@init)]   [4] 'busybox.elf' 1137792 bytes mode=33261
+[I][0.192][initramfs.cppm:234(@init)]   [5] 'bad_entry.elf' 13040 bytes mode=33261
+[I][0.194][initramfs.cppm:234(@init)]   [6] 'bad_phentsize.elf' 13040 bytes mode=33261
+[I][0.195][initramfs.cppm:234(@init)]   [7] 'bad_load.elf' 13040 bytes mode=33261
+[I][0.196][initramfs.cppm:234(@init)]   [8] 'truncated_header.elf' 63 bytes mode=33261
+[I][0.197][initramfs.cppm:234(@init)]   [9] 'truncated_phdr.elf' 13040 bytes mode=33261
+[I][0.198][initramfs.cppm:234(@init)]   [10] 'bad_file_range.elf' 13040 bytes mode=33261
+[I][0.199][initramfs.cppm:234(@init)]   [11] 'bad_user_range.elf' 13040 bytes mode=33261
+[I][0.201][initramfs.cppm:234(@init)]   [12] 'bad_address_overflow.elf' 13040 bytes mode=33261
+[I][0.202][initramfs.cppm:234(@init)]   [13] 'bad_page_offset.elf' 13040 bytes mode=33261
+[I][0.204][initramfs.cppm:234(@init)]   [14] 'bad_alignment.elf' 13040 bytes mode=33261
+[I][0.205][initramfs.cppm:234(@init)]   [15] 'bad_reserved.elf' 13040 bytes mode=33261
+[I][0.206][initramfs.cppm:234(@init)]   [16] 'bad_overlap.elf' 13040 bytes mode=33261
+[I][0.207][initramfs.cppm:234(@init)]   [17] 'too_many_phdrs.elf' 13040 bytes mode=33261
+[I][0.208][initramfs.cppm:234(@init)]   [18] 'bad_rwx.elf' 13040 bytes mode=33261
+[I][0.209][initramfs.cppm:234(@init)]   [19] 'bad_dynamic.elf' 13040 bytes mode=33261
+[I][0.210][initramfs.cppm:234(@init)]   [20] 'bad_interp.elf' 13040 bytes mode=33261
+[I][0.211][initramfs.cppm:234(@init)]   [21] 'bad_tls_file.elf' 13040 bytes mode=33261
+[I][0.212][initramfs.cppm:234(@init)]   [22] 'boundary_load.elf' 25331 bytes mode=33261
+[I][0.216][vfs_init.cpp:1452(@operator())] ramfs: mounted 'validation.elf' (162224 bytes, ino=2)
+[I][0.218][vfs_init.cpp:1452(@operator())] ramfs: mounted 'validation_child.elf' (13040 bytes, ino=3)
+[I][0.219][vfs_init.cpp:1452(@operator())] ramfs: mounted 'fixture.bin' (65536 bytes, ino=4)
+[I][0.220][vfs_init.cpp:1452(@operator())] ramfs: mounted 'libc_validation.elf' (959472 bytes, ino=5)
+[I][0.221][vfs_init.cpp:1452(@operator())] ramfs: mounted 'busybox.elf' (1137792 bytes, ino=6)
+[I][0.222][vfs_init.cpp:1452(@operator())] ramfs: mounted 'bad_entry.elf' (13040 bytes, ino=7)
+[I][0.223][vfs_init.cpp:1452(@operator())] ramfs: mounted 'bad_phentsize.elf' (13040 bytes, ino=8)
+[I][0.224][vfs_init.cpp:1452(@operator())] ramfs: mounted 'bad_load.elf' (13040 bytes, ino=9)
+[I][0.226][vfs_init.cpp:1452(@operator())] ramfs: mounted 'truncated_header.elf' (63 bytes, ino=10)
+[I][0.227][vfs_init.cpp:1452(@operator())] ramfs: mounted 'truncated_phdr.elf' (13040 bytes, ino=11)
+[I][0.229][vfs_init.cpp:1452(@operator())] ramfs: mounted 'bad_file_range.elf' (13040 bytes, ino=12)
+[I][0.230][vfs_init.cpp:1452(@operator())] ramfs: mounted 'bad_user_range.elf' (13040 bytes, ino=13)
+[I][0.232][vfs_init.cpp:1452(@operator())] ramfs: mounted 'bad_address_overflow.elf' (13040 bytes, ino=14)
+[I][0.233][vfs_init.cpp:1452(@operator())] ramfs: mounted 'bad_page_offset.elf' (13040 bytes, ino=15)
+[I][0.234][vfs_init.cpp:1452(@operator())] ramfs: mounted 'bad_alignment.elf' (13040 bytes, ino=16)
+[I][0.235][vfs_init.cpp:1452(@operator())] ramfs: mounted 'bad_reserved.elf' (13040 bytes, ino=17)
+[I][0.236][vfs_init.cpp:1452(@operator())] ramfs: mounted 'bad_overlap.elf' (13040 bytes, ino=18)
+[I][0.238][vfs_init.cpp:1452(@operator())] ramfs: mounted 'too_many_phdrs.elf' (13040 bytes, ino=19)
+[I][0.239][vfs_init.cpp:1452(@operator())] ramfs: mounted 'bad_rwx.elf' (13040 bytes, ino=20)
+[I][0.240][vfs_init.cpp:1452(@operator())] ramfs: mounted 'bad_dynamic.elf' (13040 bytes, ino=21)
+[I][0.241][vfs_init.cpp:1452(@operator())] ramfs: mounted 'bad_interp.elf' (13040 bytes, ino=22)
+[I][0.241][vfs_init.cpp:1452(@operator())] ramfs: mounted 'bad_tls_file.elf' (13040 bytes, ino=23)
+[I][0.242][vfs_init.cpp:1452(@operator())] ramfs: mounted 'boundary_load.elf' (25331 bytes, ino=24)
+[I][0.243][vfs_init.cpp:1457(@ramfs_init)] ramfs: initialized with 23 children
+[I][0.245][vfs_init.cpp:1489(@vfs_init)] vfs: mounted ramfs at /
+[I][0.247][vfs_init.cpp:1501(@vfs_init)] vfs: mounted devfs at /dev
+[I][0.248][vfs_init.cpp:1505(@vfs_init)] vfs: initialization complete
+@@MOSS {"v":1,"event":"ready","workload":"users.frame","detected_cpus":4,"online_mask":15,"work_mask":15,"ram_bytes":2146958336,"managed_pages":518502}
+@@MOSS {"v":1,"event":"catalog","workload":"users.frame","case":"native_frame"}
+@@MOSS {"v":1,"event":"catalog","workload":"users.frame","case":"fork_registers"}
+@@MOSS {"v":1,"event":"catalog","workload":"users.frame","case":"signal_return"}
+@@MOSS {"v":1,"event":"catalog","workload":"users.frame","case":"return_reschedule"}
+[I][0.271][kernel-main.cppm:578(@create_init_process)] creating init user process
+[I][0.289][vfs_init.cpp:1523(@vfs_init_stdio)] vfs: stdio initialized (fd 0/1/2 -> /dev/console)
+[I][0.292][kernel-main.cppm:764(@create_init_process)] init process created: PID=1 entry=0x200000000
+[boot] MOSS kernel boot completed
+[sched] CFS scheduler starting
+[sched] registering timer IRQ handler
+[sched] timer IRQ registered and enabled
+[sched] arming scheduler tick timer (6ms period)
+[sched] tick armed, entering idle loop
+[sched] dispatching init process
+init: calling execve...
+[I][0.328][process-scheduler.cppm:2149(@cpu_startup_entry)] CPU2: entering per-CPU scheduling loop
+[I][0.328][process-scheduler.cppm:2149(@cpu_startup_entry)] CPU3: entering per-CPU scheduling loop
+[I][0.329][process-scheduler.cppm:2149(@cpu_startup_entry)] CPU1: entering per-CPU scheduling loop
+[D][0.330][process-scheduler.cppm:2194(@cpu_startup_entry)] [CPU3] entering idle
+[D][0.330][process-scheduler.cppm:2194(@cpu_startup_entry)] [CPU1] entering idle
+[D][0.330][process-scheduler.cppm:2194(@cpu_startup_entry)] [CPU2] entering idle
+[I][0.354][syscall_table.cpp:3733(@sys_sched_setaffinity)] sys_sched_setaffinity: TID=1004 mask=0x1
+@@MOSS {"v":1,"event":"worker","workload":"users.frame","cpu":0,"affinity":1}
+@@MOSS {"v":1,"event":"case_start","workload":"users.frame","case":"native_frame"}
+@@MOSS {"v":1,"event":"case_end","workload":"users.frame","case":"native_frame","passed":11,"failed":0}
+@@MOSS {"v":1,"event":"case_start","workload":"users.frame","case":"fork_registers"}
+[E][0.400][validation.cpp:362(@moss_validation_call)] users checks failed: mask=0x2500
+@@MOSS {"v":1,"event":"case_end","workload":"users.frame","case":"fork_registers","passed":1,"failed":0}
+@@MOSS {"v":1,"event":"case_start","workload":"users.frame","case":"signal_return"}
+@@MOSS {"v":1,"event":"case_end","workload":"users.frame","case":"signal_return","passed":1,"failed":0}
+@@MOSS {"v":1,"event":"case_start","workload":"users.frame","case":"return_reschedule"}
+[E][0.428][validation.cpp:362(@moss_validation_call)] users checks failed: mask=0x4
+  FAIL  test/validation.cpp:364  arg1 != 0 && affinity_valid()
+@@MOSS {"v":1,"event":"case_end","workload":"users.frame","case":"return_reschedule","passed":0,"failed":1}
+@@MOSS {"v":1,"event":"end","workload":"users.frame","completed":4,"selected":4,"failed":1,"reason":"complete"}

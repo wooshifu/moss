@@ -387,7 +387,8 @@ extern "C" long moss_validation_call(long op, long arg1, [[maybe_unused]] long a
   if (ut::same_id(selection, "users.timers")) {
     return moss::test::validation::timer_control(op, arg1, arg2);
   }
-  if (ut::same_id(selection, "users.signals") || ut::same_id(selection, "users.console_irq")) {
+  if (ut::same_id(selection, "users.signals") || ut::same_id(selection, "users.console_irq") ||
+      (ut::same_id(selection, "users.frame") && op == moss::test::validation::RETURN_RESCHEDULE_PROBE)) {
     return moss::test::validation::signal_control(op, arg1, arg2);
   }
   if (op == 38 && arg1 == 0 && arg2 == 0 && ut::same_id(selection, "users.libc") &&

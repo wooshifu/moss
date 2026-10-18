@@ -208,6 +208,12 @@ void user_return_handler(void *raw_frame) noexcept {
   auto *previous = thread->trap_frame;
   thread->trap_frame = &frame;
   moss_validation_user_return(raw_frame);
+  // All three entry paths mask IRQs before this user-only checkpoint. Keep
+  // the borrowed frame live across bootstrap's save/resume, then deliver any
+  // signals that arrived while this thread was off the CPU.
+  if (g_scheduler) {
+    g_scheduler->check_need_resched();
+  }
   u32 signo = 0;
   if (signal_pending(thread)) {
     signo = do_signal_checkpoint(thread);
@@ -247,9 +253,9 @@ void irq_handler_c(void) noexcept {
   // SGI 0 (Reschedule IPI): another CPU wants us to re-examine our runqueue.
   // CPU 0 also owns the global timer heap; a remote enqueue uses this IPI to
   // reprogram CPU 0's banked compare without changing the sender's tick.
-  // The interrupted context (WFI or running task) will re-check the runqueue:
-  //   - If in WFI (idle loop), eret returns to the scheduling loop
-  //   - If running a task, the next timer tick will preempt if needed
+  // Bootstrap rechecks its queue after WFI. A user task consumes its pending
+  // request at the common return checkpoint; kernel code waits for an audited
+  // checkpoint or the next eligible timer tick.
   constexpr u32 RESCHEDULE_SGI = 0;
   if (irq == RESCHEDULE_SGI) {
     ::moss::kernel::timer::TimerSubsystem::instance().reprogram_local();

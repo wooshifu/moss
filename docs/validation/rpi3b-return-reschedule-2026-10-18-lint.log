@@ -1,0 +1,13 @@
+Preset: arm64-debug
+Build directory: /Volumes/MossBuild/moss/build/arm64-debug
+compiler: /usr/local/Cellar/llvm/23.1.2/bin/clang-23 (23.1.2)
+clang-tidy: /usr/local/Cellar/llvm/23.1.2/bin/clang-tidy (23.1.2)
+Extra compiler arguments: (none)
+Updating build artifacts: /Users/shifu/code/os/moss/.venv/bin/cmake --build /Volumes/MossBuild/moss/build/arm64-debug --parallel 4
+ninja: no work to do.
+WARNING: compilation database does not cover 3 tracked translation unit(s):
+  skipped: scripts/rpi_perf.c
+  skipped: src/boot/src/arch/riscv64/boot_impl.cpp
+  skipped: src/boot/src/arch/x64/boot_impl.cpp
+Checking: 3 translation unit(s), 4 job(s).
+Successfully checked 3 translation unit(s).

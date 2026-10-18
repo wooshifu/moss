@@ -49,6 +49,28 @@ static unsigned long frame_signal_return(void) {
   return errors;
 }
 
+static unsigned long frame_reschedule_return(void) {
+  const long parent = getpid();
+  const long child = fork();
+  // Validation opcode 64: park the child (action 0), arm the parent's return
+  // (1), then observe and clean up (2). The child must run before getpid returns.
+  if (child == 0) {
+    _exit(control(64, 0, 0) == 1 ? 37 : 91);
+  }
+  if (child < 0) {
+    return 1;
+  }
+  long armed;
+  while ((armed = control(64, 1, (long)frame_register_probe_return)) == 0) {
+    sched_yield();
+  }
+  const long probe = armed == 1 ? frame_register_probe(SYS_GETPID, 0) : -1;
+  const long observed = control(64, 2, child); // Restore the timer even if the register probe failed.
+  unsigned long errors = (armed != 1) | ((unsigned long)(probe != parent) << 1) | ((unsigned long)(observed != 1) << 2);
+  errors |= (unsigned long)!wait_exit(child, 37) << 3;
+  return errors;
+}
+
 // A whole aligned base page isolates the read-only permission under test;
 // 0x5a distinguishes preserved data from a demand-zero or clobbered page.
 const unsigned char vm_rodata[4096] __attribute__((aligned(4096))) = {0x5a};
@@ -417,6 +439,11 @@ void _start(long argc, const char **argv) {
 #if defined(__x86_64__)
     errors |= (unsigned long)!parent_fp_state() << 4;
 #endif
+    if (!control(2, errors == 0, (long)errors)) {
+      control(3, 0, 0);
+    }
+    control(1, 3, 0);
+    errors = frame_reschedule_return();
     control(2, errors == 0, (long)errors);
     control(3, 0, 0);
   } else if (mode == 25) {

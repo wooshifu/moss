@@ -1,0 +1,3646 @@
+{
+  "schema_version": 1,
+  "date": "2026-10-18",
+  "catalog_version": 11,
+  "board": "Raspberry Pi 3 Model B Plus Rev 1.3",
+  "adapter": "J-Link 000050120677",
+  "build_type": "Debug",
+  "compiler": "Clang 23.1.2",
+  "scope": "Common user-return rescheduling; kernel-return checkpoints, complete migration ownership and Release performance remain open.",
+  "before_fix": [
+    {
+      "label": "resched-red-scheduler",
+      "finalized": true,
+      "catalog_version": 11,
+      "provenance": {
+        "build": {
+          "type": "Debug",
+          "compiler": "Clang 23.1.2",
+          "flags": {
+            "compile": "-march=armv8-a -mgeneral-regs-only -mstrict-align -ffreestanding -fno-exceptions -fno-rtti -fno-stack-protector -fpie -Weverything -Werror -Wno-c++-compat -Wno-c++98-compat -Wno-c++98-compat-pedantic -Wno-c++11-compat -Wno-c++14-compat -Wno-c++17-compat -Wno-c++20-compat -Wno-padded -Wno-unsafe-buffer-usage -Wno-gnu-zero-variadic-macro-arguments -Wno-gnu-anonymous-struct -Wno-nested-anon-types -Wno-missing-prototypes -Wno-missing-variable-declarations -Wno-global-constructors -Wno-exit-time-destructors -Wno-weak-vtables -Wno-inline -Wno-reserved-identifier -Wno-reserved-macro-identifier -Wno-covered-switch-default -Wno-nrvo -Wno-lifetime-safety-suggestions -g",
+            "link": "-fuse-ld=lld -nostdlib -nostartfiles -Wl,-pie,--no-dynamic-linker,-z,notext,-Bsymbolic -T /Users/shifu/code/os/moss/src/linker/kernel_arm64.ld "
+          }
+        },
+        "image_sha256": "58a3f83d9e38cff1e001f384d209841d291add9bdf4a06de54f0236a39301866",
+        "fixture_sha256": "965138dbdf571bd03baba89c909ef5735669569a550faf611314f60093524211",
+        "symbols_sha256": "655204f7b046fa310229ee0d84abcb05ea5adee94daa81e623d065c0804458a9",
+        "schema_version": 1,
+        "source_status": "recorded",
+        "revision": "cd9abbff3525d8e5bff8e7e85ce736bf48fc8caa",
+        "dirty": true,
+        "source_sha256": "a3644ec914959534c59dbb918798902d9660ee5099487a1446764f77706693bb",
+        "manifest": "/Volumes/MossBuild/moss/build/arm64-debug/moss-artifacts.json"
+      },
+      "comparison_environment": {
+        "arch": "ARM64",
+        "build": {
+          "type": "Debug",
+          "compiler": "Clang 23.1.2",
+          "flags": {
+            "compile": "-march=armv8-a -mgeneral-regs-only -mstrict-align -ffreestanding -fno-exceptions -fno-rtti -fno-stack-protector -fpie -Weverything -Werror -Wno-c++-compat -Wno-c++98-compat -Wno-c++98-compat-pedantic -Wno-c++11-compat -Wno-c++14-compat -Wno-c++17-compat -Wno-c++20-compat -Wno-padded -Wno-unsafe-buffer-usage -Wno-gnu-zero-variadic-macro-arguments -Wno-gnu-anonymous-struct -Wno-nested-anon-types -Wno-missing-prototypes -Wno-missing-variable-declarations -Wno-global-constructors -Wno-exit-time-destructors -Wno-weak-vtables -Wno-inline -Wno-reserved-identifier -Wno-reserved-macro-identifier -Wno-covered-switch-default -Wno-nrvo -Wno-lifetime-safety-suggestions -g",
+            "link": "-fuse-ld=lld -nostdlib -nostartfiles -Wl,-pie,--no-dynamic-linker,-z,notext,-Bsymbolic -T /Users/shifu/code/os/moss/src/linker/kernel_arm64.ld "
+          }
+        },
+        "qemu": "QEMU emulator version 11.1.2",
+        "host": {
+          "system": "Darwin",
+          "node": "wus-MacBook-Pro.local",
+          "release": "24.6.0",
+          "version": "Darwin Kernel Version 24.6.0: Sun Aug 23 20:30:56 PDT 2026; root:xnu-11417.140.69.712.69~1/RELEASE_X86_64",
+          "machine": "x86_64",
+          "processor": "i386",
+          "cpu_affinity": null,
+          "cpu_governors": {}
+        },
+        "settings": {
+          "cpus": 4,
+          "host_cpus": null,
+          "memory_mib": 2048,
+          "expected_ram_mib": 2048,
+          "warmup": 5,
+          "samples": 30,
+          "order": 0,
+          "startup_timeout": 30.0,
+          "case_timeout": null,
+          "guest_timeout": null,
+          "stability": false
+        },
+        "accelerator": "tcg",
+        "tcg_cache_mib": 64,
+        "clock_policy": 1,
+        "fixture_sha256": "965138dbdf571bd03baba89c909ef5735669569a550faf611314f60093524211",
+        "dtb_sha256": null,
+        "machine": "virt,gic-version=2",
+        "cpu_model": "cortex-a72"
+      },
+      "workloads": [
+        {
+          "workload": "scheduler",
+          "status": "failed",
+          "observed": "assertion",
+          "termination": "protocol_end",
+          "completion": {
+            "v": 1,
+            "event": "end",
+            "workload": "scheduler",
+            "completed": 9,
+            "selected": 18,
+            "failed": 1,
+            "reason": "complete"
+          },
+          "case_timeout_seconds": 5.0,
+          "guest_timeout_seconds": 60.0,
+          "elapsed_seconds": 1.2973140799440444,
+          "case_counts": {
+            "passed": 8,
+            "failed": 1,
+            "error": 0,
+            "not_run": 9
+          },
+          "nonpassing_cases": [
+            {
+              "name": "reschedule_safe_point",
+              "status": "failed",
+              "assertions": {
+                "v": 1,
+                "event": "case_end",
+                "workload": "scheduler",
+                "case": "reschedule_safe_point",
+                "passed": 4,
+                "failed": 2
+              },
+              "elapsed_seconds": 4.5066000893712044e-05
+            },
+            {
+              "name": "cpu_runtime_accounting",
+              "status": "not_run",
+              "reason": "assertion"
+            },
+            {
+              "name": "cpu_budget_accounting",
+              "status": "not_run",
+              "reason": "assertion"
+            },
+            {
+              "name": "cpu_budget_admission",
+              "status": "not_run",
+              "reason": "assertion"
+            },
+            {
+              "name": "cfs_cpu_budget_queue",
+              "status": "not_run",
+              "reason": "assertion"
+            },
+            {
+              "name": "rt_cpu_budget_queue",
+              "status": "not_run",
+              "reason": "assertion"
+            },
+            {
+              "name": "ipc_priority_inheritance",
+              "status": "not_run",
+              "reason": "assertion"
+            },
+            {
+              "name": "ipc_deadline_tightening",
+              "status": "not_run",
+              "reason": "assertion"
+            },
+            {
+              "name": "ipc_call_graph_limits",
+              "status": "not_run",
+              "reason": "assertion"
+            },
+            {
+              "name": "migration_current_owner",
+              "status": "not_run",
+              "reason": "assertion"
+            }
+          ],
+          "cases": [
+            {
+              "name": "pelt_large_runtime",
+              "status": "passed",
+              "assertions": {
+                "v": 1,
+                "event": "case_end",
+                "workload": "scheduler",
+                "case": "pelt_large_runtime",
+                "passed": 20,
+                "failed": 0
+              },
+              "elapsed_seconds": 0.0001246100291609764
+            },
+            {
+              "name": "pelt_partitioned_runtime",
+              "status": "passed",
+              "assertions": {
+                "v": 1,
+                "event": "case_end",
+                "workload": "scheduler",
+                "case": "pelt_partitioned_runtime",
+                "passed": 5,
+                "failed": 0
+              },
+              "elapsed_seconds": 4.546996206045151e-05
+            },
+            {
+              "name": "pelt_half_life",
+              "status": "passed",
+              "assertions": {
+                "v": 1,
+                "event": "case_end",
+                "workload": "scheduler",
+                "case": "pelt_half_life",
+                "passed": 2,
+                "failed": 0
+              },
+              "elapsed_seconds": 3.117998130619526e-05
+            },
+            {
+              "name": "pelt_continuous_normalization",
+              "status": "passed",
+              "assertions": {
+                "v": 1,
+                "event": "case_end",
+                "workload": "scheduler",
+                "case": "pelt_continuous_normalization",
+                "passed": 4,
+                "failed": 0
+              },
+              "elapsed_seconds": 0.022879446973092854
+            },
+            {
+              "name": "kernel_stack_initialization",
+              "status": "passed",
+              "assertions": {
+                "v": 1,
+                "event": "case_end",
+                "workload": "scheduler",
+                "case": "kernel_stack_initialization",
+                "passed": 528,
+                "failed": 0
+              },
+              "elapsed_seconds": 0.5939439890207723
+            },
+            {
+              "name": "cfs_self_selection",
+              "status": "passed",
+              "assertions": {
+                "v": 1,
+                "event": "case_end",
+                "workload": "scheduler",
+                "case": "cfs_self_selection",
+                "passed": 5,
+                "failed": 0
+              },
+              "elapsed_seconds": 0.024481969070620835
+            },
+            {
+              "name": "rr_self_selection",
+              "status": "passed",
+              "assertions": {
+                "v": 1,
+                "event": "case_end",
+                "workload": "scheduler",
+                "case": "rr_self_selection",
+                "passed": 5,
+                "failed": 0
+              },
+              "elapsed_seconds": 5.2367919124662876e-05
+            },
+            {
+              "name": "try_lock_preemption",
+              "status": "passed",
+              "assertions": {
+                "v": 1,
+                "event": "case_end",
+                "workload": "scheduler",
+                "case": "try_lock_preemption",
+                "passed": 5,
+                "failed": 0
+              },
+              "elapsed_seconds": 5.016999784857035e-05
+            },
+            {
+              "name": "reschedule_safe_point",
+              "status": "failed",
+              "assertions": {
+                "v": 1,
+                "event": "case_end",
+                "workload": "scheduler",
+                "case": "reschedule_safe_point",
+                "passed": 4,
+                "failed": 2
+              },
+              "elapsed_seconds": 4.5066000893712044e-05
+            },
+            {
+              "name": "cpu_runtime_accounting",
+              "status": "not_run",
+              "reason": "assertion"
+            },
+            {
+              "name": "cpu_budget_accounting",
+              "status": "not_run",
+              "reason": "assertion"
+            },
+            {
+              "name": "cpu_budget_admission",
+              "status": "not_run",
+              "reason": "assertion"
+            },
+            {
+              "name": "cfs_cpu_budget_queue",
+              "status": "not_run",
+              "reason": "assertion"
+            },
+            {
+              "name": "rt_cpu_budget_queue",
+              "status": "not_run",
+              "reason": "assertion"
+            },
+            {
+              "name": "ipc_priority_inheritance",
+              "status": "not_run",
+              "reason": "assertion"
+            },
+            {
+              "name": "ipc_deadline_tightening",
+              "status": "not_run",
+              "reason": "assertion"
+            },
+            {
+              "name": "ipc_call_graph_limits",
+              "status": "not_run",
+              "reason": "assertion"
+            },
+            {
+              "name": "migration_current_owner",
+              "status": "not_run",
+              "reason": "assertion"
+            }
+          ],
+          "serial": {
+            "path": "rpi3b-return-reschedule-2026-10-18-resched-red-scheduler-scheduler.log",
+            "sha256": "7d11dbc7c5de44f1806128406204a0fc5e7d698bef155c1b80eafb12213086c5"
+          }
+        }
+      ],
+      "report_sha256": "706b942dae9871cf0d8fcdf454e90ad58ae077db14217ff93042648fe50634a8"
+    },
+    {
+      "label": "resched-red-frame",
+      "finalized": true,
+      "catalog_version": 11,
+      "provenance": {
+        "build": {
+          "type": "Debug",
+          "compiler": "Clang 23.1.2",
+          "flags": {
+            "compile": "-march=armv8-a -mgeneral-regs-only -mstrict-align -ffreestanding -fno-exceptions -fno-rtti -fno-stack-protector -fpie -Weverything -Werror -Wno-c++-compat -Wno-c++98-compat -Wno-c++98-compat-pedantic -Wno-c++11-compat -Wno-c++14-compat -Wno-c++17-compat -Wno-c++20-compat -Wno-padded -Wno-unsafe-buffer-usage -Wno-gnu-zero-variadic-macro-arguments -Wno-gnu-anonymous-struct -Wno-nested-anon-types -Wno-missing-prototypes -Wno-missing-variable-declarations -Wno-global-constructors -Wno-exit-time-destructors -Wno-weak-vtables -Wno-inline -Wno-reserved-identifier -Wno-reserved-macro-identifier -Wno-covered-switch-default -Wno-nrvo -Wno-lifetime-safety-suggestions -g",
+            "link": "-fuse-ld=lld -nostdlib -nostartfiles -Wl,-pie,--no-dynamic-linker,-z,notext,-Bsymbolic -T /Users/shifu/code/os/moss/src/linker/kernel_arm64.ld "
+          }
+        },
+        "image_sha256": "58a3f83d9e38cff1e001f384d209841d291add9bdf4a06de54f0236a39301866",
+        "fixture_sha256": "965138dbdf571bd03baba89c909ef5735669569a550faf611314f60093524211",
+        "symbols_sha256": "655204f7b046fa310229ee0d84abcb05ea5adee94daa81e623d065c0804458a9",
+        "schema_version": 1,
+        "source_status": "recorded",
+        "revision": "cd9abbff3525d8e5bff8e7e85ce736bf48fc8caa",
+        "dirty": true,
+        "source_sha256": "a3644ec914959534c59dbb918798902d9660ee5099487a1446764f77706693bb",
+        "manifest": "/Volumes/MossBuild/moss/build/arm64-debug/moss-artifacts.json"
+      },
+      "comparison_environment": {
+        "arch": "ARM64",
+        "build": {
+          "type": "Debug",
+          "compiler": "Clang 23.1.2",
+          "flags": {
+            "compile": "-march=armv8-a -mgeneral-regs-only -mstrict-align -ffreestanding -fno-exceptions -fno-rtti -fno-stack-protector -fpie -Weverything -Werror -Wno-c++-compat -Wno-c++98-compat -Wno-c++98-compat-pedantic -Wno-c++11-compat -Wno-c++14-compat -Wno-c++17-compat -Wno-c++20-compat -Wno-padded -Wno-unsafe-buffer-usage -Wno-gnu-zero-variadic-macro-arguments -Wno-gnu-anonymous-struct -Wno-nested-anon-types -Wno-missing-prototypes -Wno-missing-variable-declarations -Wno-global-constructors -Wno-exit-time-destructors -Wno-weak-vtables -Wno-inline -Wno-reserved-identifier -Wno-reserved-macro-identifier -Wno-covered-switch-default -Wno-nrvo -Wno-lifetime-safety-suggestions -g",
+            "link": "-fuse-ld=lld -nostdlib -nostartfiles -Wl,-pie,--no-dynamic-linker,-z,notext,-Bsymbolic -T /Users/shifu/code/os/moss/src/linker/kernel_arm64.ld "
+          }
+        },
+        "qemu": "QEMU emulator version 11.1.2",
+        "host": {
+          "system": "Darwin",
+          "node": "wus-MacBook-Pro.local",
+          "release": "24.6.0",
+          "version": "Darwin Kernel Version 24.6.0: Sun Aug 23 20:30:56 PDT 2026; root:xnu-11417.140.69.712.69~1/RELEASE_X86_64",
+          "machine": "x86_64",
+          "processor": "i386",
+          "cpu_affinity": null,
+          "cpu_governors": {}
+        },
+        "settings": {
+          "cpus": 4,
+          "host_cpus": null,
+          "memory_mib": 2048,
+          "expected_ram_mib": 2048,
+          "warmup": 5,
+          "samples": 30,
+          "order": 0,
+          "startup_timeout": 30.0,
+          "case_timeout": null,
+          "guest_timeout": null,
+          "stability": false
+        },
+        "accelerator": "tcg",
+        "tcg_cache_mib": 64,
+        "clock_policy": 1,
+        "fixture_sha256": "965138dbdf571bd03baba89c909ef5735669569a550faf611314f60093524211",
+        "dtb_sha256": null,
+        "machine": "virt,gic-version=2",
+        "cpu_model": "cortex-a72"
+      },
+      "workloads": [
+        {
+          "workload": "users.frame",
+          "status": "failed",
+          "observed": "assertion",
+          "termination": "protocol_end",
+          "completion": {
+            "v": 1,
+            "event": "end",
+            "workload": "users.frame",
+            "completed": 4,
+            "selected": 4,
+            "failed": 1,
+            "reason": "complete"
+          },
+          "case_timeout_seconds": 5.0,
+          "guest_timeout_seconds": 60.0,
+          "elapsed_seconds": 0.6819612779654562,
+          "case_counts": {
+            "passed": 3,
+            "failed": 1,
+            "error": 0,
+            "not_run": 0
+          },
+          "nonpassing_cases": [
+            {
+              "name": "return_reschedule",
+              "status": "failed",
+              "assertions": {
+                "v": 1,
+                "event": "case_end",
+                "workload": "users.frame",
+                "case": "return_reschedule",
+                "passed": 0,
+                "failed": 1
+              },
+              "elapsed_seconds": 3.826699685305357e-05
+            }
+          ],
+          "cases": [
+            {
+              "name": "native_frame",
+              "status": "passed",
+              "assertions": {
+                "v": 1,
+                "event": "case_end",
+                "workload": "users.frame",
+                "case": "native_frame",
+                "passed": 11,
+                "failed": 0
+              },
+              "elapsed_seconds": 4.872702993452549e-05
+            },
+            {
+              "name": "fork_registers",
+              "status": "passed",
+              "assertions": {
+                "v": 1,
+                "event": "case_end",
+                "workload": "users.frame",
+                "case": "fork_registers",
+                "passed": 1,
+                "failed": 0
+              },
+              "elapsed_seconds": 0.02403471095021814
+            },
+            {
+              "name": "signal_return",
+              "status": "passed",
+              "assertions": {
+                "v": 1,
+                "event": "case_end",
+                "workload": "users.frame",
+                "case": "signal_return",
+                "passed": 1,
+                "failed": 0
+              },
+              "elapsed_seconds": 0.025216112029738724
+            },
+            {
+              "name": "return_reschedule",
+              "status": "failed",
+              "assertions": {
+                "v": 1,
+                "event": "case_end",
+                "workload": "users.frame",
+                "case": "return_reschedule",
+                "passed": 0,
+                "failed": 1
+              },
+              "elapsed_seconds": 3.826699685305357e-05
+            }
+          ],
+          "serial": {
+            "path": "rpi3b-return-reschedule-2026-10-18-resched-red-frame-users.frame.log",
+            "sha256": "a1c82aafe44e9f69dc5c6d4559a3ce77f0ba2c6863b169b44882e1543512d8a7"
+          }
+        }
+      ],
+      "report_sha256": "3e70ca476f38462462bf43713b8660f33d63e60030dd987a4417217d4ab404c4"
+    }
+  ],
+  "initial_fixture": {
+    "x64": {
+      "label": "resched-x64-qemu",
+      "finalized": true,
+      "catalog_version": 11,
+      "provenance": {
+        "build": {
+          "type": "Debug",
+          "compiler": "Clang 23.1.2",
+          "flags": {
+            "compile": "-mno-red-zone -mno-mmx -mno-sse -mno-sse2 -mno-sse3 -mno-ssse3 -mno-sse4.1 -mno-sse4.2 -mno-avx -mno-avx2 -mno-80387 -mno-fp-ret-in-387 -mtune=x86-64 -mcmodel=kernel -ffreestanding -fno-exceptions -fno-rtti -fno-stack-protector -fno-pic -fno-pie -Weverything -Werror -Wno-c++-compat -Wno-c++98-compat -Wno-c++98-compat-pedantic -Wno-c++11-compat -Wno-c++14-compat -Wno-c++17-compat -Wno-c++20-compat -Wno-padded -Wno-unsafe-buffer-usage -Wno-gnu-zero-variadic-macro-arguments -Wno-gnu-anonymous-struct -Wno-nested-anon-types -Wno-missing-prototypes -Wno-missing-variable-declarations -Wno-global-constructors -Wno-exit-time-destructors -Wno-weak-vtables -Wno-inline -Wno-reserved-identifier -Wno-reserved-macro-identifier -Wno-covered-switch-default -Wno-nrvo -Wno-lifetime-safety-suggestions -g",
+            "link": "-fuse-ld=lld -nostdlib -nostartfiles -static -T /Users/shifu/code/os/moss/src/linker/kernel_x64.ld "
+          }
+        },
+        "image_sha256": "54dc2461de76dd6ce4de1360ea3593dce076dc9bda7c5257c2d6193c63b6ef1f",
+        "fixture_sha256": "ed607ca8fbf2093bf8484f6e9e7d9b60f8969b944ab3e9576f1b666aa6eb318e",
+        "symbols_sha256": "54dc2461de76dd6ce4de1360ea3593dce076dc9bda7c5257c2d6193c63b6ef1f",
+        "schema_version": 1,
+        "source_status": "recorded",
+        "revision": "cd9abbff3525d8e5bff8e7e85ce736bf48fc8caa",
+        "dirty": true,
+        "source_sha256": "95b8d47216e84e0c61b19f4c9b9ae0eb3b271a2378e1a93c4a15ea338a4a7e27",
+        "manifest": "/Volumes/MossBuild/moss/build/x64-debug/moss-artifacts.json"
+      },
+      "comparison_environment": {
+        "arch": "X64",
+        "build": {
+          "type": "Debug",
+          "compiler": "Clang 23.1.2",
+          "flags": {
+            "compile": "-mno-red-zone -mno-mmx -mno-sse -mno-sse2 -mno-sse3 -mno-ssse3 -mno-sse4.1 -mno-sse4.2 -mno-avx -mno-avx2 -mno-80387 -mno-fp-ret-in-387 -mtune=x86-64 -mcmodel=kernel -ffreestanding -fno-exceptions -fno-rtti -fno-stack-protector -fno-pic -fno-pie -Weverything -Werror -Wno-c++-compat -Wno-c++98-compat -Wno-c++98-compat-pedantic -Wno-c++11-compat -Wno-c++14-compat -Wno-c++17-compat -Wno-c++20-compat -Wno-padded -Wno-unsafe-buffer-usage -Wno-gnu-zero-variadic-macro-arguments -Wno-gnu-anonymous-struct -Wno-nested-anon-types -Wno-missing-prototypes -Wno-missing-variable-declarations -Wno-global-constructors -Wno-exit-time-destructors -Wno-weak-vtables -Wno-inline -Wno-reserved-identifier -Wno-reserved-macro-identifier -Wno-covered-switch-default -Wno-nrvo -Wno-lifetime-safety-suggestions -g",
+            "link": "-fuse-ld=lld -nostdlib -nostartfiles -static -T /Users/shifu/code/os/moss/src/linker/kernel_x64.ld "
+          }
+        },
+        "qemu": "QEMU emulator version 11.1.2",
+        "host": {
+          "system": "Darwin",
+          "node": "wus-MacBook-Pro.local",
+          "release": "24.6.0",
+          "version": "Darwin Kernel Version 24.6.0: Sun Aug 23 20:30:56 PDT 2026; root:xnu-11417.140.69.712.69~1/RELEASE_X86_64",
+          "machine": "x86_64",
+          "processor": "i386",
+          "cpu_affinity": null,
+          "cpu_governors": {}
+        },
+        "settings": {
+          "cpus": 4,
+          "host_cpus": null,
+          "memory_mib": 2048,
+          "expected_ram_mib": 2048,
+          "warmup": 5,
+          "samples": 30,
+          "order": 0,
+          "startup_timeout": 30.0,
+          "case_timeout": null,
+          "guest_timeout": null,
+          "stability": false
+        },
+        "accelerator": "tcg",
+        "tcg_cache_mib": 64,
+        "clock_policy": 1,
+        "fixture_sha256": "ed607ca8fbf2093bf8484f6e9e7d9b60f8969b944ab3e9576f1b666aa6eb318e",
+        "dtb_sha256": null,
+        "machine": "q35",
+        "cpu_model": "qemu64"
+      },
+      "workloads": [
+        {
+          "workload": "users.frame",
+          "status": "failed",
+          "observed": "assertion",
+          "termination": "protocol_end",
+          "completion": {
+            "v": 1,
+            "event": "end",
+            "workload": "users.frame",
+            "completed": 4,
+            "selected": 4,
+            "failed": 1,
+            "reason": "complete"
+          },
+          "case_timeout_seconds": 5.0,
+          "guest_timeout_seconds": 60.0,
+          "elapsed_seconds": 1.0865064872195944,
+          "case_counts": {
+            "passed": 3,
+            "failed": 1,
+            "error": 0,
+            "not_run": 0
+          },
+          "nonpassing_cases": [
+            {
+              "name": "return_reschedule",
+              "status": "failed",
+              "assertions": {
+                "v": 1,
+                "event": "case_end",
+                "workload": "users.frame",
+                "case": "return_reschedule",
+                "passed": 0,
+                "failed": 1
+              },
+              "elapsed_seconds": 0.020602013915777206
+            }
+          ],
+          "cases": [
+            {
+              "name": "native_frame",
+              "status": "passed",
+              "assertions": {
+                "v": 1,
+                "event": "case_end",
+                "workload": "users.frame",
+                "case": "native_frame",
+                "passed": 11,
+                "failed": 0
+              },
+              "elapsed_seconds": 7.508997805416584e-05
+            },
+            {
+              "name": "fork_registers",
+              "status": "passed",
+              "assertions": {
+                "v": 1,
+                "event": "case_end",
+                "workload": "users.frame",
+                "case": "fork_registers",
+                "passed": 1,
+                "failed": 0
+              },
+              "elapsed_seconds": 0.025149055989459157
+            },
+            {
+              "name": "signal_return",
+              "status": "passed",
+              "assertions": {
+                "v": 1,
+                "event": "case_end",
+                "workload": "users.frame",
+                "case": "signal_return",
+                "passed": 1,
+                "failed": 0
+              },
+              "elapsed_seconds": 0.02490512398071587
+            },
+            {
+              "name": "return_reschedule",
+              "status": "failed",
+              "assertions": {
+                "v": 1,
+                "event": "case_end",
+                "workload": "users.frame",
+                "case": "return_reschedule",
+                "passed": 0,
+                "failed": 1
+              },
+              "elapsed_seconds": 0.020602013915777206
+            }
+          ],
+          "serial": {
+            "path": "rpi3b-return-reschedule-2026-10-18-resched-x64-qemu-users.frame.log",
+            "sha256": "722e9366d059485438383a325c01fd22d11df1a286e9f92d5c4fe1e641f7deeb"
+          }
+        }
+      ],
+      "report_sha256": "e0f5e0948bf146b3d3d3de1c620cdda4dc302abe55bcb3ec274751826ee7a6f9"
+    },
+    "pi": {
+      "label": "resched-pi-frame",
+      "jtag_khz": 2000,
+      "schema_version": 1,
+      "catalog_version": 11,
+      "finalized": true,
+      "provenance": {
+        "build": {
+          "type": "Debug",
+          "compiler": "Clang 23.1.2",
+          "flags": {
+            "compile": "-march=armv8-a -mgeneral-regs-only -mstrict-align -ffreestanding -fno-exceptions -fno-rtti -fno-stack-protector -fpie -Weverything -Werror -Wno-c++-compat -Wno-c++98-compat -Wno-c++98-compat-pedantic -Wno-c++11-compat -Wno-c++14-compat -Wno-c++17-compat -Wno-c++20-compat -Wno-padded -Wno-unsafe-buffer-usage -Wno-gnu-zero-variadic-macro-arguments -Wno-gnu-anonymous-struct -Wno-nested-anon-types -Wno-missing-prototypes -Wno-missing-variable-declarations -Wno-global-constructors -Wno-exit-time-destructors -Wno-weak-vtables -Wno-inline -Wno-reserved-identifier -Wno-reserved-macro-identifier -Wno-covered-switch-default -Wno-nrvo -Wno-lifetime-safety-suggestions -g",
+            "link": "-fuse-ld=lld -nostdlib -nostartfiles -Wl,-pie,--no-dynamic-linker,-z,notext,-Bsymbolic -T /Users/shifu/code/os/moss/src/linker/kernel_arm64.ld "
+          }
+        },
+        "image_sha256": "8767a29d315dd14e8695366ebd4cea24b1c8502a33413feb2910c3de9a26a237",
+        "fixture_sha256": "965138dbdf571bd03baba89c909ef5735669569a550faf611314f60093524211",
+        "symbols_sha256": "3921652d21862a4715e3050811d65662322ac7bd30725e237471c725a4b57c50",
+        "schema_version": 1,
+        "source_status": "recorded",
+        "revision": "cd9abbff3525d8e5bff8e7e85ce736bf48fc8caa",
+        "dirty": true,
+        "source_sha256": "95b8d47216e84e0c61b19f4c9b9ae0eb3b271a2378e1a93c4a15ea338a4a7e27"
+      },
+      "workload": "users.frame",
+      "status": "passed",
+      "parameters": {
+        "cpus": 4,
+        "memory_mib": 948,
+        "startup_timeout": 30,
+        "case_timeout": 30,
+        "timeout": 60
+      },
+      "observed": "pass",
+      "cases": [
+        {
+          "name": "native_frame",
+          "status": "passed",
+          "assertions": {
+            "v": 1,
+            "event": "case_end",
+            "workload": "users.frame",
+            "case": "native_frame",
+            "passed": 11,
+            "failed": 0
+          },
+          "elapsed_seconds": 0.008227862999774516
+        },
+        {
+          "name": "fork_registers",
+          "status": "passed",
+          "assertions": {
+            "v": 1,
+            "event": "case_end",
+            "workload": "users.frame",
+            "case": "fork_registers",
+            "passed": 1,
+            "failed": 0
+          },
+          "elapsed_seconds": 0.016763200983405113
+        },
+        {
+          "name": "signal_return",
+          "status": "passed",
+          "assertions": {
+            "v": 1,
+            "event": "case_end",
+            "workload": "users.frame",
+            "case": "signal_return",
+            "passed": 1,
+            "failed": 0
+          },
+          "elapsed_seconds": 0.00823635095730424
+        },
+        {
+          "name": "return_reschedule",
+          "status": "passed",
+          "assertions": {
+            "v": 1,
+            "event": "case_end",
+            "workload": "users.frame",
+            "case": "return_reschedule",
+            "passed": 1,
+            "failed": 0
+          },
+          "elapsed_seconds": 0.008392788004130125
+        }
+      ],
+      "ready": {
+        "v": 1,
+        "event": "ready",
+        "workload": "users.frame",
+        "detected_cpus": 4,
+        "online_mask": 15,
+        "work_mask": 15,
+        "ram_bytes": 994050048,
+        "managed_pages": 238037
+      },
+      "worker": {
+        "v": 1,
+        "event": "worker",
+        "workload": "users.frame",
+        "cpu": 0,
+        "affinity": 1
+      },
+      "completion": {
+        "v": 1,
+        "event": "end",
+        "workload": "users.frame",
+        "completed": 4,
+        "selected": 4,
+        "failed": 0,
+        "reason": "complete"
+      },
+      "termination": "protocol_end",
+      "elapsed_seconds": 6.442380278953351,
+      "deployment": {
+        "deployment": "JTAG RAM only",
+        "image_base": 2097152,
+        "dtb_base": 805306368,
+        "initrd_base": 536870912,
+        "boot_check": "validation_passed"
+      },
+      "uploaded_sha256": {
+        "kernel": "8767a29d315dd14e8695366ebd4cea24b1c8502a33413feb2910c3de9a26a237",
+        "initramfs": "965138dbdf571bd03baba89c909ef5735669569a550faf611314f60093524211",
+        "dtb": "a572f5c58c22fb91c6b20dadd5ca8dac3f24c170c9863bf19f215f14d068acde"
+      },
+      "serial": {
+        "path": "rpi3b-return-reschedule-2026-10-18-resched-pi-frame.log",
+        "sha256": "df9ddee46dfc3a1bed4e00942d1b54d6a31b9ac968e250f97f431728b64836d6"
+      },
+      "host_log": {
+        "path": "rpi3b-return-reschedule-2026-10-18-resched-pi-frame-host.log",
+        "sha256": "cad8fd4761162d2473bda62b41f2446a76a6ed0e692535ae1d0f0bcf7305cc6d"
+      }
+    },
+    "explanation": "Initial x64 probe matched syscall_number after RAX had become the result; final probe matches the assembly post-syscall PC on all three ISAs. Production syscall ABI and assertions are unchanged."
+  },
+  "pi_readback_failure": {
+    "label": "resched-pi-final-frame",
+    "jtag_khz": 2000,
+    "schema_version": 1,
+    "catalog_version": 11,
+    "finalized": true,
+    "provenance": {
+      "build": {
+        "type": "Debug",
+        "compiler": "Clang 23.1.2",
+        "flags": {
+          "compile": "-march=armv8-a -mgeneral-regs-only -mstrict-align -ffreestanding -fno-exceptions -fno-rtti -fno-stack-protector -fpie -Weverything -Werror -Wno-c++-compat -Wno-c++98-compat -Wno-c++98-compat-pedantic -Wno-c++11-compat -Wno-c++14-compat -Wno-c++17-compat -Wno-c++20-compat -Wno-padded -Wno-unsafe-buffer-usage -Wno-gnu-zero-variadic-macro-arguments -Wno-gnu-anonymous-struct -Wno-nested-anon-types -Wno-missing-prototypes -Wno-missing-variable-declarations -Wno-global-constructors -Wno-exit-time-destructors -Wno-weak-vtables -Wno-inline -Wno-reserved-identifier -Wno-reserved-macro-identifier -Wno-covered-switch-default -Wno-nrvo -Wno-lifetime-safety-suggestions -g",
+          "link": "-fuse-ld=lld -nostdlib -nostartfiles -Wl,-pie,--no-dynamic-linker,-z,notext,-Bsymbolic -T /Users/shifu/code/os/moss/src/linker/kernel_arm64.ld "
+        }
+      },
+      "image_sha256": "d5c2f67c2be395144defbb425c7c16b67f2294dd93fa36e828e9faad376b5f92",
+      "fixture_sha256": "adaa6e5f8672c3d2e7b48d8c7f110738030b137613b2985b0a7ac17a78c39159",
+      "symbols_sha256": "a51c39328488042681ec79781a06a5b09b7ba2115a0db7cdcb70dcc0dd04cda1",
+      "schema_version": 1,
+      "source_status": "recorded",
+      "revision": "cd9abbff3525d8e5bff8e7e85ce736bf48fc8caa",
+      "dirty": true,
+      "source_sha256": "6e50b778c6b939c1ecf264f699f6ca08a03dc407125637e1d08ddbf5c7119b15"
+    },
+    "workload": "users.frame",
+    "status": "error",
+    "parameters": {
+      "cpus": 4,
+      "memory_mib": 948,
+      "startup_timeout": 30,
+      "case_timeout": 30,
+      "timeout": 60
+    },
+    "observed": "deployment: JTAG readback differs from /Volumes/MossBuild/moss/evidence/resched-pi-final-frame/artifacts/validation_kernel/moss.test.bin; saved /Volumes/MossBuild/moss/evidence/resched-pi-final-frame/artifacts/validation_kernel/moss.test.bin.readback",
+    "cases": [
+      {
+        "name": "native_frame",
+        "status": "not_run",
+        "reason": "deployment_failed"
+      },
+      {
+        "name": "fork_registers",
+        "status": "not_run",
+        "reason": "deployment_failed"
+      },
+      {
+        "name": "signal_return",
+        "status": "not_run",
+        "reason": "deployment_failed"
+      },
+      {
+        "name": "return_reschedule",
+        "status": "not_run",
+        "reason": "deployment_failed"
+      }
+    ],
+    "deployment": {
+      "deployment": "JTAG RAM only",
+      "image_base": 2097152,
+      "dtb_base": 805306368,
+      "initrd_base": 536870912,
+      "boot_check": "not_run"
+    },
+    "uploaded_sha256": {
+      "kernel": "d5c2f67c2be395144defbb425c7c16b67f2294dd93fa36e828e9faad376b5f92",
+      "initramfs": "adaa6e5f8672c3d2e7b48d8c7f110738030b137613b2985b0a7ac17a78c39159",
+      "dtb": "dd906e7e7d9d392f8d8b9f354a36f2aef33df05b4e61fda73ebb21983a818d61"
+    },
+    "host_log": {
+      "path": "rpi3b-return-reschedule-2026-10-18-resched-pi-final-frame-host.log",
+      "sha256": "e233c6ccb900714459b956efa7d476a5f527cae0ab8b120c11d589d4eb06bb2c"
+    },
+    "investigation": [
+      {
+        "jtag_khz": 2000,
+        "state": "halted",
+        "words": "0x52800028 0xa200100 0xa9417bfd 0x910083ff 0xd65f03c0 0xd100c3ff 0xa9027bfd 0x910083fd"
+      },
+      {
+        "jtag_khz": 1000,
+        "state": "halted",
+        "words": "0x52800028 0xa200100 0xa9417bfd 0x910083ff 0xd65f03c0 0xd100c3ff 0xa9027bfd 0x910083fd"
+      }
+    ],
+    "mismatch": {
+      "expected_size": 1005896,
+      "readback_size": 1005896,
+      "offsets": [
+        "0x3f090",
+        "0x3f091",
+        "0x3f092",
+        "0x3f093"
+      ],
+      "expected_sha256": "d5c2f67c2be395144defbb425c7c16b67f2294dd93fa36e828e9faad376b5f92",
+      "readback_sha256": "b6619e976ec734961110588cec433831d667ef3e2292c589f385b6ab7677ee06",
+      "cause": "unconfirmed; subsequent halted reads at 2MHz and 1MHz matched, and fresh 1MHz full uploads/readbacks passed"
+    }
+  },
+  "pi": [
+    {
+      "label": "resched-pi-final-frame-1mhz",
+      "jtag_khz": 1000,
+      "schema_version": 1,
+      "catalog_version": 11,
+      "finalized": true,
+      "provenance": {
+        "build": {
+          "type": "Debug",
+          "compiler": "Clang 23.1.2",
+          "flags": {
+            "compile": "-march=armv8-a -mgeneral-regs-only -mstrict-align -ffreestanding -fno-exceptions -fno-rtti -fno-stack-protector -fpie -Weverything -Werror -Wno-c++-compat -Wno-c++98-compat -Wno-c++98-compat-pedantic -Wno-c++11-compat -Wno-c++14-compat -Wno-c++17-compat -Wno-c++20-compat -Wno-padded -Wno-unsafe-buffer-usage -Wno-gnu-zero-variadic-macro-arguments -Wno-gnu-anonymous-struct -Wno-nested-anon-types -Wno-missing-prototypes -Wno-missing-variable-declarations -Wno-global-constructors -Wno-exit-time-destructors -Wno-weak-vtables -Wno-inline -Wno-reserved-identifier -Wno-reserved-macro-identifier -Wno-covered-switch-default -Wno-nrvo -Wno-lifetime-safety-suggestions -g",
+            "link": "-fuse-ld=lld -nostdlib -nostartfiles -Wl,-pie,--no-dynamic-linker,-z,notext,-Bsymbolic -T /Users/shifu/code/os/moss/src/linker/kernel_arm64.ld "
+          }
+        },
+        "image_sha256": "d5c2f67c2be395144defbb425c7c16b67f2294dd93fa36e828e9faad376b5f92",
+        "fixture_sha256": "adaa6e5f8672c3d2e7b48d8c7f110738030b137613b2985b0a7ac17a78c39159",
+        "symbols_sha256": "a51c39328488042681ec79781a06a5b09b7ba2115a0db7cdcb70dcc0dd04cda1",
+        "schema_version": 1,
+        "source_status": "recorded",
+        "revision": "cd9abbff3525d8e5bff8e7e85ce736bf48fc8caa",
+        "dirty": true,
+        "source_sha256": "6e50b778c6b939c1ecf264f699f6ca08a03dc407125637e1d08ddbf5c7119b15"
+      },
+      "workload": "users.frame",
+      "status": "passed",
+      "parameters": {
+        "cpus": 4,
+        "memory_mib": 948,
+        "startup_timeout": 30,
+        "case_timeout": 30,
+        "timeout": 60
+      },
+      "observed": "pass",
+      "cases": [
+        {
+          "name": "native_frame",
+          "status": "passed",
+          "assertions": {
+            "v": 1,
+            "event": "case_end",
+            "workload": "users.frame",
+            "case": "native_frame",
+            "passed": 11,
+            "failed": 0
+          },
+          "elapsed_seconds": 0.008737433003261685
+        },
+        {
+          "name": "fork_registers",
+          "status": "passed",
+          "assertions": {
+            "v": 1,
+            "event": "case_end",
+            "workload": "users.frame",
+            "case": "fork_registers",
+            "passed": 1,
+            "failed": 0
+          },
+          "elapsed_seconds": 0.016735703917220235
+        },
+        {
+          "name": "signal_return",
+          "status": "passed",
+          "assertions": {
+            "v": 1,
+            "event": "case_end",
+            "workload": "users.frame",
+            "case": "signal_return",
+            "passed": 1,
+            "failed": 0
+          },
+          "elapsed_seconds": 0.008392066927626729
+        },
+        {
+          "name": "return_reschedule",
+          "status": "passed",
+          "assertions": {
+            "v": 1,
+            "event": "case_end",
+            "workload": "users.frame",
+            "case": "return_reschedule",
+            "passed": 1,
+            "failed": 0
+          },
+          "elapsed_seconds": 0.007616554037667811
+        }
+      ],
+      "ready": {
+        "v": 1,
+        "event": "ready",
+        "workload": "users.frame",
+        "detected_cpus": 4,
+        "online_mask": 15,
+        "work_mask": 15,
+        "ram_bytes": 994050048,
+        "managed_pages": 238036
+      },
+      "worker": {
+        "v": 1,
+        "event": "worker",
+        "workload": "users.frame",
+        "cpu": 0,
+        "affinity": 1
+      },
+      "completion": {
+        "v": 1,
+        "event": "end",
+        "workload": "users.frame",
+        "completed": 4,
+        "selected": 4,
+        "failed": 0,
+        "reason": "complete"
+      },
+      "termination": "protocol_end",
+      "elapsed_seconds": 6.443844932015054,
+      "deployment": {
+        "deployment": "JTAG RAM only",
+        "image_base": 2097152,
+        "dtb_base": 805306368,
+        "initrd_base": 536870912,
+        "boot_check": "validation_passed"
+      },
+      "uploaded_sha256": {
+        "kernel": "d5c2f67c2be395144defbb425c7c16b67f2294dd93fa36e828e9faad376b5f92",
+        "initramfs": "adaa6e5f8672c3d2e7b48d8c7f110738030b137613b2985b0a7ac17a78c39159",
+        "dtb": "dd906e7e7d9d392f8d8b9f354a36f2aef33df05b4e61fda73ebb21983a818d61"
+      },
+      "serial": {
+        "path": "rpi3b-return-reschedule-2026-10-18-resched-pi-final-frame-1mhz.log",
+        "sha256": "fd5f46acc568c9dce1566abe4557a6afa6c4e9a325d7f1e6435ae3ed7a1f9dcb"
+      },
+      "host_log": {
+        "path": "rpi3b-return-reschedule-2026-10-18-resched-pi-final-frame-1mhz-host.log",
+        "sha256": "2d8a31706bec7a23ead99d49056ecc571fddd96df7f6f0da05cb91d0042479f8"
+      }
+    },
+    {
+      "label": "resched-pi-final-scheduler",
+      "jtag_khz": 1000,
+      "schema_version": 1,
+      "catalog_version": 11,
+      "finalized": true,
+      "provenance": {
+        "build": {
+          "type": "Debug",
+          "compiler": "Clang 23.1.2",
+          "flags": {
+            "compile": "-march=armv8-a -mgeneral-regs-only -mstrict-align -ffreestanding -fno-exceptions -fno-rtti -fno-stack-protector -fpie -Weverything -Werror -Wno-c++-compat -Wno-c++98-compat -Wno-c++98-compat-pedantic -Wno-c++11-compat -Wno-c++14-compat -Wno-c++17-compat -Wno-c++20-compat -Wno-padded -Wno-unsafe-buffer-usage -Wno-gnu-zero-variadic-macro-arguments -Wno-gnu-anonymous-struct -Wno-nested-anon-types -Wno-missing-prototypes -Wno-missing-variable-declarations -Wno-global-constructors -Wno-exit-time-destructors -Wno-weak-vtables -Wno-inline -Wno-reserved-identifier -Wno-reserved-macro-identifier -Wno-covered-switch-default -Wno-nrvo -Wno-lifetime-safety-suggestions -g",
+            "link": "-fuse-ld=lld -nostdlib -nostartfiles -Wl,-pie,--no-dynamic-linker,-z,notext,-Bsymbolic -T /Users/shifu/code/os/moss/src/linker/kernel_arm64.ld "
+          }
+        },
+        "image_sha256": "d5c2f67c2be395144defbb425c7c16b67f2294dd93fa36e828e9faad376b5f92",
+        "fixture_sha256": "adaa6e5f8672c3d2e7b48d8c7f110738030b137613b2985b0a7ac17a78c39159",
+        "symbols_sha256": "a51c39328488042681ec79781a06a5b09b7ba2115a0db7cdcb70dcc0dd04cda1",
+        "schema_version": 1,
+        "source_status": "recorded",
+        "revision": "cd9abbff3525d8e5bff8e7e85ce736bf48fc8caa",
+        "dirty": true,
+        "source_sha256": "6e50b778c6b939c1ecf264f699f6ca08a03dc407125637e1d08ddbf5c7119b15"
+      },
+      "workload": "scheduler",
+      "status": "passed",
+      "parameters": {
+        "cpus": 4,
+        "memory_mib": 948,
+        "startup_timeout": 30,
+        "case_timeout": 30,
+        "timeout": 60
+      },
+      "observed": "pass",
+      "cases": [
+        {
+          "name": "pelt_large_runtime",
+          "status": "passed",
+          "assertions": {
+            "v": 1,
+            "event": "case_end",
+            "workload": "scheduler",
+            "case": "pelt_large_runtime",
+            "passed": 20,
+            "failed": 0
+          },
+          "elapsed_seconds": 0.011057207942940295
+        },
+        {
+          "name": "pelt_partitioned_runtime",
+          "status": "passed",
+          "assertions": {
+            "v": 1,
+            "event": "case_end",
+            "workload": "scheduler",
+            "case": "pelt_partitioned_runtime",
+            "passed": 5,
+            "failed": 0
+          },
+          "elapsed_seconds": 0.011626685969531536
+        },
+        {
+          "name": "pelt_half_life",
+          "status": "passed",
+          "assertions": {
+            "v": 1,
+            "event": "case_end",
+            "workload": "scheduler",
+            "case": "pelt_half_life",
+            "passed": 2,
+            "failed": 0
+          },
+          "elapsed_seconds": 0.008746151928789914
+        },
+        {
+          "name": "pelt_continuous_normalization",
+          "status": "passed",
+          "assertions": {
+            "v": 1,
+            "event": "case_end",
+            "workload": "scheduler",
+            "case": "pelt_continuous_normalization",
+            "passed": 4,
+            "failed": 0
+          },
+          "elapsed_seconds": 0.011223911889828742
+        },
+        {
+          "name": "kernel_stack_initialization",
+          "status": "passed",
+          "assertions": {
+            "v": 1,
+            "event": "case_end",
+            "workload": "scheduler",
+            "case": "kernel_stack_initialization",
+            "passed": 260,
+            "failed": 0
+          },
+          "elapsed_seconds": 0.200215844088234
+        },
+        {
+          "name": "cfs_self_selection",
+          "status": "passed",
+          "assertions": {
+            "v": 1,
+            "event": "case_end",
+            "workload": "scheduler",
+            "case": "cfs_self_selection",
+            "passed": 5,
+            "failed": 0
+          },
+          "elapsed_seconds": 0.008352119009941816
+        },
+        {
+          "name": "rr_self_selection",
+          "status": "passed",
+          "assertions": {
+            "v": 1,
+            "event": "case_end",
+            "workload": "scheduler",
+            "case": "rr_self_selection",
+            "passed": 5,
+            "failed": 0
+          },
+          "elapsed_seconds": 0.008309717057272792
+        },
+        {
+          "name": "try_lock_preemption",
+          "status": "passed",
+          "assertions": {
+            "v": 1,
+            "event": "case_end",
+            "workload": "scheduler",
+            "case": "try_lock_preemption",
+            "passed": 5,
+            "failed": 0
+          },
+          "elapsed_seconds": 0.01047172409016639
+        },
+        {
+          "name": "reschedule_safe_point",
+          "status": "passed",
+          "assertions": {
+            "v": 1,
+            "event": "case_end",
+            "workload": "scheduler",
+            "case": "reschedule_safe_point",
+            "passed": 6,
+            "failed": 0
+          },
+          "elapsed_seconds": 0.012230845051817596
+        },
+        {
+          "name": "cpu_runtime_accounting",
+          "status": "passed",
+          "assertions": {
+            "v": 1,
+            "event": "case_end",
+            "workload": "scheduler",
+            "case": "cpu_runtime_accounting",
+            "passed": 14,
+            "failed": 0
+          },
+          "elapsed_seconds": 0.008284121053293347
+        },
+        {
+          "name": "cpu_budget_accounting",
+          "status": "passed",
+          "assertions": {
+            "v": 1,
+            "event": "case_end",
+            "workload": "scheduler",
+            "case": "cpu_budget_accounting",
+            "passed": 20,
+            "failed": 0
+          },
+          "elapsed_seconds": 0.01130834803916514
+        },
+        {
+          "name": "cpu_budget_admission",
+          "status": "passed",
+          "assertions": {
+            "v": 1,
+            "event": "case_end",
+            "workload": "scheduler",
+            "case": "cpu_budget_admission",
+            "passed": 12,
+            "failed": 0
+          },
+          "elapsed_seconds": 0.010714114992879331
+        },
+        {
+          "name": "cfs_cpu_budget_queue",
+          "status": "passed",
+          "assertions": {
+            "v": 1,
+            "event": "case_end",
+            "workload": "scheduler",
+            "case": "cfs_cpu_budget_queue",
+            "passed": 20,
+            "failed": 0
+          },
+          "elapsed_seconds": 0.008214315981604159
+        },
+        {
+          "name": "rt_cpu_budget_queue",
+          "status": "passed",
+          "assertions": {
+            "v": 1,
+            "event": "case_end",
+            "workload": "scheduler",
+            "case": "rt_cpu_budget_queue",
+            "passed": 17,
+            "failed": 0
+          },
+          "elapsed_seconds": 0.007848122040741146
+        },
+        {
+          "name": "ipc_priority_inheritance",
+          "status": "passed",
+          "assertions": {
+            "v": 1,
+            "event": "case_end",
+            "workload": "scheduler",
+            "case": "ipc_priority_inheritance",
+            "passed": 43,
+            "failed": 0
+          },
+          "elapsed_seconds": 0.028305753017775714
+        },
+        {
+          "name": "ipc_deadline_tightening",
+          "status": "passed",
+          "assertions": {
+            "v": 1,
+            "event": "case_end",
+            "workload": "scheduler",
+            "case": "ipc_deadline_tightening",
+            "passed": 27,
+            "failed": 0
+          },
+          "elapsed_seconds": 0.013018807047046721
+        },
+        {
+          "name": "ipc_call_graph_limits",
+          "status": "passed",
+          "assertions": {
+            "v": 1,
+            "event": "case_end",
+            "workload": "scheduler",
+            "case": "ipc_call_graph_limits",
+            "passed": 82,
+            "failed": 0
+          },
+          "elapsed_seconds": 0.008145966101437807
+        },
+        {
+          "name": "migration_current_owner",
+          "status": "passed",
+          "assertions": {
+            "v": 1,
+            "event": "case_end",
+            "workload": "scheduler",
+            "case": "migration_current_owner",
+            "passed": 8,
+            "failed": 0
+          },
+          "elapsed_seconds": 0.00906928803306073
+        }
+      ],
+      "ready": {
+        "v": 1,
+        "event": "ready",
+        "workload": "scheduler",
+        "detected_cpus": 4,
+        "online_mask": 15,
+        "work_mask": 15,
+        "ram_bytes": 994050048,
+        "managed_pages": 238036
+      },
+      "worker": {
+        "v": 1,
+        "event": "worker",
+        "workload": "scheduler",
+        "cpu": 0,
+        "affinity": 1
+      },
+      "completion": {
+        "v": 1,
+        "event": "end",
+        "workload": "scheduler",
+        "completed": 18,
+        "selected": 18,
+        "failed": 0,
+        "reason": "complete"
+      },
+      "termination": "protocol_end",
+      "elapsed_seconds": 7.01416426198557,
+      "deployment": {
+        "deployment": "JTAG RAM only",
+        "image_base": 2097152,
+        "dtb_base": 805306368,
+        "initrd_base": 536870912,
+        "boot_check": "validation_passed"
+      },
+      "uploaded_sha256": {
+        "kernel": "d5c2f67c2be395144defbb425c7c16b67f2294dd93fa36e828e9faad376b5f92",
+        "initramfs": "adaa6e5f8672c3d2e7b48d8c7f110738030b137613b2985b0a7ac17a78c39159",
+        "dtb": "8650b1c8b0101ffe64fb3dc472371d89da14e40d15e85ac067790b3790e4e82a"
+      },
+      "serial": {
+        "path": "rpi3b-return-reschedule-2026-10-18-resched-pi-final-scheduler.log",
+        "sha256": "1d623f088fb54e93956d38525635d795e21d9379fec7e06c0cada4d49ede836d"
+      },
+      "host_log": {
+        "path": "rpi3b-return-reschedule-2026-10-18-resched-pi-final-scheduler-host.log",
+        "sha256": "18d9098e617d02bdc9e438213a2f7785587dcd250d9bd8be974fc8a81d08d771"
+      }
+    },
+    {
+      "label": "resched-pi-final-ipc",
+      "jtag_khz": 1000,
+      "schema_version": 1,
+      "catalog_version": 11,
+      "finalized": true,
+      "provenance": {
+        "build": {
+          "type": "Debug",
+          "compiler": "Clang 23.1.2",
+          "flags": {
+            "compile": "-march=armv8-a -mgeneral-regs-only -mstrict-align -ffreestanding -fno-exceptions -fno-rtti -fno-stack-protector -fpie -Weverything -Werror -Wno-c++-compat -Wno-c++98-compat -Wno-c++98-compat-pedantic -Wno-c++11-compat -Wno-c++14-compat -Wno-c++17-compat -Wno-c++20-compat -Wno-padded -Wno-unsafe-buffer-usage -Wno-gnu-zero-variadic-macro-arguments -Wno-gnu-anonymous-struct -Wno-nested-anon-types -Wno-missing-prototypes -Wno-missing-variable-declarations -Wno-global-constructors -Wno-exit-time-destructors -Wno-weak-vtables -Wno-inline -Wno-reserved-identifier -Wno-reserved-macro-identifier -Wno-covered-switch-default -Wno-nrvo -Wno-lifetime-safety-suggestions -g",
+            "link": "-fuse-ld=lld -nostdlib -nostartfiles -Wl,-pie,--no-dynamic-linker,-z,notext,-Bsymbolic -T /Users/shifu/code/os/moss/src/linker/kernel_arm64.ld "
+          }
+        },
+        "image_sha256": "d5c2f67c2be395144defbb425c7c16b67f2294dd93fa36e828e9faad376b5f92",
+        "fixture_sha256": "adaa6e5f8672c3d2e7b48d8c7f110738030b137613b2985b0a7ac17a78c39159",
+        "symbols_sha256": "a51c39328488042681ec79781a06a5b09b7ba2115a0db7cdcb70dcc0dd04cda1",
+        "schema_version": 1,
+        "source_status": "recorded",
+        "revision": "cd9abbff3525d8e5bff8e7e85ce736bf48fc8caa",
+        "dirty": true,
+        "source_sha256": "6e50b778c6b939c1ecf264f699f6ca08a03dc407125637e1d08ddbf5c7119b15"
+      },
+      "workload": "users.ipc",
+      "status": "passed",
+      "parameters": {
+        "cpus": 4,
+        "memory_mib": 948,
+        "startup_timeout": 30,
+        "case_timeout": 30,
+        "timeout": 60
+      },
+      "observed": "pass",
+      "cases": [
+        {
+          "name": "roundtrip",
+          "status": "passed",
+          "assertions": {
+            "v": 1,
+            "event": "case_end",
+            "workload": "users.ipc",
+            "case": "roundtrip",
+            "passed": 1,
+            "failed": 0
+          },
+          "elapsed_seconds": 0.01673131191637367
+        },
+        {
+          "name": "deadline",
+          "status": "passed",
+          "assertions": {
+            "v": 1,
+            "event": "case_end",
+            "workload": "users.ipc",
+            "case": "deadline",
+            "passed": 1,
+            "failed": 0
+          },
+          "elapsed_seconds": 2.0146140799624845
+        },
+        {
+          "name": "deadline_propagation",
+          "status": "passed",
+          "assertions": {
+            "v": 1,
+            "event": "case_end",
+            "workload": "users.ipc",
+            "case": "deadline_propagation",
+            "passed": 1,
+            "failed": 0
+          },
+          "elapsed_seconds": 3.0118401560466737
+        },
+        {
+          "name": "bounded_mutual_wait",
+          "status": "passed",
+          "assertions": {
+            "v": 1,
+            "event": "case_end",
+            "workload": "users.ipc",
+            "case": "bounded_mutual_wait",
+            "passed": 1,
+            "failed": 0
+          },
+          "elapsed_seconds": 1.0153461989248171
+        },
+        {
+          "name": "peer_death",
+          "status": "passed",
+          "assertions": {
+            "v": 1,
+            "event": "case_end",
+            "workload": "users.ipc",
+            "case": "peer_death",
+            "passed": 1,
+            "failed": 0
+          },
+          "elapsed_seconds": 0.015554148005321622
+        },
+        {
+          "name": "signal_cancel",
+          "status": "passed",
+          "assertions": {
+            "v": 1,
+            "event": "case_end",
+            "workload": "users.ipc",
+            "case": "signal_cancel",
+            "passed": 1,
+            "failed": 0
+          },
+          "elapsed_seconds": 0.031086156028322875
+        },
+        {
+          "name": "capability_transfer",
+          "status": "passed",
+          "assertions": {
+            "v": 1,
+            "event": "case_end",
+            "workload": "users.ipc",
+            "case": "capability_transfer",
+            "passed": 1,
+            "failed": 0
+          },
+          "elapsed_seconds": 0.01384396490175277
+        },
+        {
+          "name": "delivery_rollback",
+          "status": "passed",
+          "assertions": {
+            "v": 1,
+            "event": "case_end",
+            "workload": "users.ipc",
+            "case": "delivery_rollback",
+            "passed": 1,
+            "failed": 0
+          },
+          "elapsed_seconds": 0.01113398710731417
+        },
+        {
+          "name": "memory_object",
+          "status": "passed",
+          "assertions": {
+            "v": 1,
+            "event": "case_end",
+            "workload": "users.ipc",
+            "case": "memory_object",
+            "passed": 1,
+            "failed": 0
+          },
+          "elapsed_seconds": 0.011276765959337354
+        },
+        {
+          "name": "badged_sender",
+          "status": "passed",
+          "assertions": {
+            "v": 1,
+            "event": "case_end",
+            "workload": "users.ipc",
+            "case": "badged_sender",
+            "passed": 1,
+            "failed": 0
+          },
+          "elapsed_seconds": 0.011326742940582335
+        },
+        {
+          "name": "nested_roundtrip",
+          "status": "passed",
+          "assertions": {
+            "v": 1,
+            "event": "case_end",
+            "workload": "users.ipc",
+            "case": "nested_roundtrip",
+            "passed": 1,
+            "failed": 0
+          },
+          "elapsed_seconds": 0.012770449975505471
+        },
+        {
+          "name": "reply_handoff",
+          "status": "passed",
+          "assertions": {
+            "v": 1,
+            "event": "case_end",
+            "workload": "users.ipc",
+            "case": "reply_handoff",
+            "passed": 1,
+            "failed": 0
+          },
+          "elapsed_seconds": 0.01424238202162087
+        },
+        {
+          "name": "reply_handoff_drop",
+          "status": "passed",
+          "assertions": {
+            "v": 1,
+            "event": "case_end",
+            "workload": "users.ipc",
+            "case": "reply_handoff_drop",
+            "passed": 1,
+            "failed": 0
+          },
+          "elapsed_seconds": 0.013839964987710118
+        },
+        {
+          "name": "priority_latency",
+          "status": "passed",
+          "assertions": {
+            "v": 1,
+            "event": "case_end",
+            "workload": "users.ipc",
+            "case": "priority_latency",
+            "passed": 1,
+            "failed": 0
+          },
+          "elapsed_seconds": 2.0650404769694433
+        },
+        {
+          "name": "reply_handoff_latency",
+          "status": "passed",
+          "assertions": {
+            "v": 1,
+            "event": "case_end",
+            "workload": "users.ipc",
+            "case": "reply_handoff_latency",
+            "passed": 1,
+            "failed": 0
+          },
+          "elapsed_seconds": 2.0707862389972433
+        },
+        {
+          "name": "domain_control",
+          "status": "passed",
+          "assertions": {
+            "v": 1,
+            "event": "case_end",
+            "workload": "users.ipc",
+            "case": "domain_control",
+            "passed": 1,
+            "failed": 0
+          },
+          "elapsed_seconds": 0.0691603219602257
+        },
+        {
+          "name": "domain_selection",
+          "status": "passed",
+          "assertions": {
+            "v": 1,
+            "event": "case_end",
+            "workload": "users.ipc",
+            "case": "domain_selection",
+            "passed": 1,
+            "failed": 0
+          },
+          "elapsed_seconds": 0.06428397097624838
+        },
+        {
+          "name": "domain_wait_any",
+          "status": "passed",
+          "assertions": {
+            "v": 1,
+            "event": "case_end",
+            "workload": "users.ipc",
+            "case": "domain_wait_any",
+            "passed": 1,
+            "failed": 0
+          },
+          "elapsed_seconds": 0.06399241997860372
+        },
+        {
+          "name": "domain_spawn",
+          "status": "passed",
+          "assertions": {
+            "v": 1,
+            "event": "case_end",
+            "workload": "users.ipc",
+            "case": "domain_spawn",
+            "passed": 1,
+            "failed": 0
+          },
+          "elapsed_seconds": 0.020801116013899446
+        },
+        {
+          "name": "code_revocation",
+          "status": "passed",
+          "assertions": {
+            "v": 1,
+            "event": "case_end",
+            "workload": "users.ipc",
+            "case": "code_revocation",
+            "passed": 1,
+            "failed": 0
+          },
+          "elapsed_seconds": 0.3178164060227573
+        },
+        {
+          "name": "code_service_survival",
+          "status": "passed",
+          "assertions": {
+            "v": 1,
+            "event": "case_end",
+            "workload": "users.ipc",
+            "case": "code_service_survival",
+            "passed": 1,
+            "failed": 0
+          },
+          "elapsed_seconds": 0.022462627035565674
+        },
+        {
+          "name": "sched_profile",
+          "status": "passed",
+          "assertions": {
+            "v": 1,
+            "event": "case_end",
+            "workload": "users.ipc",
+            "case": "sched_profile",
+            "passed": 1,
+            "failed": 0
+          },
+          "elapsed_seconds": 0.017301728948950768
+        }
+      ],
+      "ready": {
+        "v": 1,
+        "event": "ready",
+        "workload": "users.ipc",
+        "detected_cpus": 4,
+        "online_mask": 15,
+        "work_mask": 15,
+        "ram_bytes": 994050048,
+        "managed_pages": 238036
+      },
+      "worker": {
+        "v": 1,
+        "event": "worker",
+        "workload": "users.ipc",
+        "cpu": 0,
+        "affinity": 1
+      },
+      "completion": {
+        "v": 1,
+        "event": "end",
+        "workload": "users.ipc",
+        "completed": 22,
+        "selected": 22,
+        "failed": 0,
+        "reason": "complete"
+      },
+      "termination": "protocol_end",
+      "elapsed_seconds": 17.53009077894967,
+      "deployment": {
+        "deployment": "JTAG RAM only",
+        "image_base": 2097152,
+        "dtb_base": 805306368,
+        "initrd_base": 536870912,
+        "boot_check": "validation_passed"
+      },
+      "uploaded_sha256": {
+        "kernel": "d5c2f67c2be395144defbb425c7c16b67f2294dd93fa36e828e9faad376b5f92",
+        "initramfs": "adaa6e5f8672c3d2e7b48d8c7f110738030b137613b2985b0a7ac17a78c39159",
+        "dtb": "2f9d69d53221b4aa63631c84c1639faa2752abd721be63f3ea0c25b05b15fbae"
+      },
+      "serial": {
+        "path": "rpi3b-return-reschedule-2026-10-18-resched-pi-final-ipc.log",
+        "sha256": "4b9492e0ccb8b0ad64ca774446e2bd8963cdbd786fad1bae1125ccce3fbe26b0"
+      },
+      "host_log": {
+        "path": "rpi3b-return-reschedule-2026-10-18-resched-pi-final-ipc-host.log",
+        "sha256": "b0f6b1e968cc6a045861987ad98e6a322055374fb8956ae90079d42545bee496"
+      }
+    }
+  ],
+  "qemu": [
+    {
+      "label": "resched-final-arm64-qemu",
+      "finalized": true,
+      "catalog_version": 11,
+      "provenance": {
+        "build": {
+          "type": "Debug",
+          "compiler": "Clang 23.1.2",
+          "flags": {
+            "compile": "-march=armv8-a -mgeneral-regs-only -mstrict-align -ffreestanding -fno-exceptions -fno-rtti -fno-stack-protector -fpie -Weverything -Werror -Wno-c++-compat -Wno-c++98-compat -Wno-c++98-compat-pedantic -Wno-c++11-compat -Wno-c++14-compat -Wno-c++17-compat -Wno-c++20-compat -Wno-padded -Wno-unsafe-buffer-usage -Wno-gnu-zero-variadic-macro-arguments -Wno-gnu-anonymous-struct -Wno-nested-anon-types -Wno-missing-prototypes -Wno-missing-variable-declarations -Wno-global-constructors -Wno-exit-time-destructors -Wno-weak-vtables -Wno-inline -Wno-reserved-identifier -Wno-reserved-macro-identifier -Wno-covered-switch-default -Wno-nrvo -Wno-lifetime-safety-suggestions -g",
+            "link": "-fuse-ld=lld -nostdlib -nostartfiles -Wl,-pie,--no-dynamic-linker,-z,notext,-Bsymbolic -T /Users/shifu/code/os/moss/src/linker/kernel_arm64.ld "
+          }
+        },
+        "image_sha256": "d5c2f67c2be395144defbb425c7c16b67f2294dd93fa36e828e9faad376b5f92",
+        "fixture_sha256": "adaa6e5f8672c3d2e7b48d8c7f110738030b137613b2985b0a7ac17a78c39159",
+        "symbols_sha256": "a51c39328488042681ec79781a06a5b09b7ba2115a0db7cdcb70dcc0dd04cda1",
+        "schema_version": 1,
+        "source_status": "recorded",
+        "revision": "cd9abbff3525d8e5bff8e7e85ce736bf48fc8caa",
+        "dirty": true,
+        "source_sha256": "6e50b778c6b939c1ecf264f699f6ca08a03dc407125637e1d08ddbf5c7119b15",
+        "manifest": "/Volumes/MossBuild/moss/build/arm64-debug/moss-artifacts.json"
+      },
+      "comparison_environment": {
+        "arch": "ARM64",
+        "build": {
+          "type": "Debug",
+          "compiler": "Clang 23.1.2",
+          "flags": {
+            "compile": "-march=armv8-a -mgeneral-regs-only -mstrict-align -ffreestanding -fno-exceptions -fno-rtti -fno-stack-protector -fpie -Weverything -Werror -Wno-c++-compat -Wno-c++98-compat -Wno-c++98-compat-pedantic -Wno-c++11-compat -Wno-c++14-compat -Wno-c++17-compat -Wno-c++20-compat -Wno-padded -Wno-unsafe-buffer-usage -Wno-gnu-zero-variadic-macro-arguments -Wno-gnu-anonymous-struct -Wno-nested-anon-types -Wno-missing-prototypes -Wno-missing-variable-declarations -Wno-global-constructors -Wno-exit-time-destructors -Wno-weak-vtables -Wno-inline -Wno-reserved-identifier -Wno-reserved-macro-identifier -Wno-covered-switch-default -Wno-nrvo -Wno-lifetime-safety-suggestions -g",
+            "link": "-fuse-ld=lld -nostdlib -nostartfiles -Wl,-pie,--no-dynamic-linker,-z,notext,-Bsymbolic -T /Users/shifu/code/os/moss/src/linker/kernel_arm64.ld "
+          }
+        },
+        "qemu": "QEMU emulator version 11.1.2",
+        "host": {
+          "system": "Darwin",
+          "node": "wus-MacBook-Pro.local",
+          "release": "24.6.0",
+          "version": "Darwin Kernel Version 24.6.0: Sun Aug 23 20:30:56 PDT 2026; root:xnu-11417.140.69.712.69~1/RELEASE_X86_64",
+          "machine": "x86_64",
+          "processor": "i386",
+          "cpu_affinity": null,
+          "cpu_governors": {}
+        },
+        "settings": {
+          "cpus": 4,
+          "host_cpus": null,
+          "memory_mib": 2048,
+          "expected_ram_mib": 2048,
+          "warmup": 5,
+          "samples": 30,
+          "order": 0,
+          "startup_timeout": 30.0,
+          "case_timeout": null,
+          "guest_timeout": null,
+          "stability": false
+        },
+        "accelerator": "tcg",
+        "tcg_cache_mib": 64,
+        "clock_policy": 1,
+        "fixture_sha256": "adaa6e5f8672c3d2e7b48d8c7f110738030b137613b2985b0a7ac17a78c39159",
+        "dtb_sha256": null,
+        "machine": "virt,gic-version=2",
+        "cpu_model": "cortex-a72"
+      },
+      "workloads": [
+        {
+          "workload": "users.frame",
+          "status": "passed",
+          "observed": "pass",
+          "termination": "protocol_end",
+          "completion": {
+            "v": 1,
+            "event": "end",
+            "workload": "users.frame",
+            "completed": 4,
+            "selected": 4,
+            "failed": 0,
+            "reason": "complete"
+          },
+          "case_timeout_seconds": 5.0,
+          "guest_timeout_seconds": 60.0,
+          "elapsed_seconds": 0.6510577010922134,
+          "case_counts": {
+            "passed": 4,
+            "failed": 0,
+            "error": 0,
+            "not_run": 0
+          },
+          "nonpassing_cases": []
+        },
+        {
+          "workload": "scheduler",
+          "status": "passed",
+          "observed": "pass",
+          "termination": "protocol_end",
+          "completion": {
+            "v": 1,
+            "event": "end",
+            "workload": "scheduler",
+            "completed": 18,
+            "selected": 18,
+            "failed": 0,
+            "reason": "complete"
+          },
+          "case_timeout_seconds": 5.0,
+          "guest_timeout_seconds": 60.0,
+          "elapsed_seconds": 2.0096739780856296,
+          "case_counts": {
+            "passed": 18,
+            "failed": 0,
+            "error": 0,
+            "not_run": 0
+          },
+          "nonpassing_cases": []
+        },
+        {
+          "workload": "users.uaccess",
+          "status": "passed",
+          "observed": "pass",
+          "termination": "protocol_end",
+          "completion": {
+            "v": 1,
+            "event": "end",
+            "workload": "users.uaccess",
+            "completed": 12,
+            "selected": 12,
+            "failed": 0,
+            "reason": "complete"
+          },
+          "case_timeout_seconds": 5.0,
+          "guest_timeout_seconds": 60.0,
+          "elapsed_seconds": 8.409150999039412,
+          "case_counts": {
+            "passed": 12,
+            "failed": 0,
+            "error": 0,
+            "not_run": 0
+          },
+          "nonpassing_cases": []
+        },
+        {
+          "workload": "users.exec",
+          "status": "passed",
+          "observed": "pass",
+          "termination": "protocol_end",
+          "completion": {
+            "v": 1,
+            "event": "end",
+            "workload": "users.exec",
+            "completed": 32,
+            "selected": 32,
+            "failed": 0,
+            "reason": "complete"
+          },
+          "case_timeout_seconds": 5.0,
+          "guest_timeout_seconds": 60.0,
+          "elapsed_seconds": 2.1113846539519727,
+          "case_counts": {
+            "passed": 32,
+            "failed": 0,
+            "error": 0,
+            "not_run": 0
+          },
+          "nonpassing_cases": []
+        },
+        {
+          "workload": "users.signals",
+          "status": "passed",
+          "observed": "pass",
+          "termination": "protocol_end",
+          "completion": {
+            "v": 1,
+            "event": "end",
+            "workload": "users.signals",
+            "completed": 35,
+            "selected": 35,
+            "failed": 0,
+            "reason": "complete"
+          },
+          "case_timeout_seconds": 30.0,
+          "guest_timeout_seconds": 60.0,
+          "elapsed_seconds": 7.054691636003554,
+          "case_counts": {
+            "passed": 35,
+            "failed": 0,
+            "error": 0,
+            "not_run": 0
+          },
+          "nonpassing_cases": []
+        },
+        {
+          "workload": "users.ipc",
+          "status": "passed",
+          "observed": "pass",
+          "termination": "protocol_end",
+          "completion": {
+            "v": 1,
+            "event": "end",
+            "workload": "users.ipc",
+            "completed": 22,
+            "selected": 22,
+            "failed": 0,
+            "reason": "complete"
+          },
+          "case_timeout_seconds": 5.0,
+          "guest_timeout_seconds": 60.0,
+          "elapsed_seconds": 13.79570928006433,
+          "case_counts": {
+            "passed": 22,
+            "failed": 0,
+            "error": 0,
+            "not_run": 0
+          },
+          "nonpassing_cases": []
+        },
+        {
+          "workload": "users.timers",
+          "status": "passed",
+          "observed": "pass",
+          "termination": "protocol_end",
+          "completion": {
+            "v": 1,
+            "event": "end",
+            "workload": "users.timers",
+            "completed": 10,
+            "selected": 10,
+            "failed": 0,
+            "reason": "complete"
+          },
+          "case_timeout_seconds": 5.0,
+          "guest_timeout_seconds": 60.0,
+          "elapsed_seconds": 2.174876449047588,
+          "case_counts": {
+            "passed": 10,
+            "failed": 0,
+            "error": 0,
+            "not_run": 0
+          },
+          "nonpassing_cases": []
+        },
+        {
+          "workload": "users",
+          "status": "passed",
+          "observed": "pass",
+          "termination": "protocol_end",
+          "completion": {
+            "v": 1,
+            "event": "end",
+            "workload": "users",
+            "completed": 14,
+            "selected": 14,
+            "failed": 0,
+            "reason": "complete"
+          },
+          "case_timeout_seconds": 5.0,
+          "guest_timeout_seconds": 60.0,
+          "elapsed_seconds": 2.430175432935357,
+          "case_counts": {
+            "passed": 14,
+            "failed": 0,
+            "error": 0,
+            "not_run": 0
+          },
+          "nonpassing_cases": []
+        }
+      ],
+      "report_sha256": "92ac06cf2a664177cd948e07fcc5575a523cfb4f25b0fd49ba95755439692394"
+    },
+    {
+      "label": "resched-final-x64-qemu",
+      "finalized": true,
+      "catalog_version": 11,
+      "provenance": {
+        "build": {
+          "type": "Debug",
+          "compiler": "Clang 23.1.2",
+          "flags": {
+            "compile": "-mno-red-zone -mno-mmx -mno-sse -mno-sse2 -mno-sse3 -mno-ssse3 -mno-sse4.1 -mno-sse4.2 -mno-avx -mno-avx2 -mno-80387 -mno-fp-ret-in-387 -mtune=x86-64 -mcmodel=kernel -ffreestanding -fno-exceptions -fno-rtti -fno-stack-protector -fno-pic -fno-pie -Weverything -Werror -Wno-c++-compat -Wno-c++98-compat -Wno-c++98-compat-pedantic -Wno-c++11-compat -Wno-c++14-compat -Wno-c++17-compat -Wno-c++20-compat -Wno-padded -Wno-unsafe-buffer-usage -Wno-gnu-zero-variadic-macro-arguments -Wno-gnu-anonymous-struct -Wno-nested-anon-types -Wno-missing-prototypes -Wno-missing-variable-declarations -Wno-global-constructors -Wno-exit-time-destructors -Wno-weak-vtables -Wno-inline -Wno-reserved-identifier -Wno-reserved-macro-identifier -Wno-covered-switch-default -Wno-nrvo -Wno-lifetime-safety-suggestions -g",
+            "link": "-fuse-ld=lld -nostdlib -nostartfiles -static -T /Users/shifu/code/os/moss/src/linker/kernel_x64.ld "
+          }
+        },
+        "image_sha256": "f06564d2f78619ce0ae46c6322d3000d12314d48852b8c3b8c1a1d7357039b8b",
+        "fixture_sha256": "b9e83b22cbec55ab85c8c85dd7ae25e8c6aa686b2318533d830cad4d5c670698",
+        "symbols_sha256": "f06564d2f78619ce0ae46c6322d3000d12314d48852b8c3b8c1a1d7357039b8b",
+        "schema_version": 1,
+        "source_status": "recorded",
+        "revision": "cd9abbff3525d8e5bff8e7e85ce736bf48fc8caa",
+        "dirty": true,
+        "source_sha256": "6e50b778c6b939c1ecf264f699f6ca08a03dc407125637e1d08ddbf5c7119b15",
+        "manifest": "/Volumes/MossBuild/moss/build/x64-debug/moss-artifacts.json"
+      },
+      "comparison_environment": {
+        "arch": "X64",
+        "build": {
+          "type": "Debug",
+          "compiler": "Clang 23.1.2",
+          "flags": {
+            "compile": "-mno-red-zone -mno-mmx -mno-sse -mno-sse2 -mno-sse3 -mno-ssse3 -mno-sse4.1 -mno-sse4.2 -mno-avx -mno-avx2 -mno-80387 -mno-fp-ret-in-387 -mtune=x86-64 -mcmodel=kernel -ffreestanding -fno-exceptions -fno-rtti -fno-stack-protector -fno-pic -fno-pie -Weverything -Werror -Wno-c++-compat -Wno-c++98-compat -Wno-c++98-compat-pedantic -Wno-c++11-compat -Wno-c++14-compat -Wno-c++17-compat -Wno-c++20-compat -Wno-padded -Wno-unsafe-buffer-usage -Wno-gnu-zero-variadic-macro-arguments -Wno-gnu-anonymous-struct -Wno-nested-anon-types -Wno-missing-prototypes -Wno-missing-variable-declarations -Wno-global-constructors -Wno-exit-time-destructors -Wno-weak-vtables -Wno-inline -Wno-reserved-identifier -Wno-reserved-macro-identifier -Wno-covered-switch-default -Wno-nrvo -Wno-lifetime-safety-suggestions -g",
+            "link": "-fuse-ld=lld -nostdlib -nostartfiles -static -T /Users/shifu/code/os/moss/src/linker/kernel_x64.ld "
+          }
+        },
+        "qemu": "QEMU emulator version 11.1.2",
+        "host": {
+          "system": "Darwin",
+          "node": "wus-MacBook-Pro.local",
+          "release": "24.6.0",
+          "version": "Darwin Kernel Version 24.6.0: Sun Aug 23 20:30:56 PDT 2026; root:xnu-11417.140.69.712.69~1/RELEASE_X86_64",
+          "machine": "x86_64",
+          "processor": "i386",
+          "cpu_affinity": null,
+          "cpu_governors": {}
+        },
+        "settings": {
+          "cpus": 4,
+          "host_cpus": null,
+          "memory_mib": 2048,
+          "expected_ram_mib": 2048,
+          "warmup": 5,
+          "samples": 30,
+          "order": 0,
+          "startup_timeout": 30.0,
+          "case_timeout": null,
+          "guest_timeout": null,
+          "stability": false
+        },
+        "accelerator": "tcg",
+        "tcg_cache_mib": 64,
+        "clock_policy": 1,
+        "fixture_sha256": "b9e83b22cbec55ab85c8c85dd7ae25e8c6aa686b2318533d830cad4d5c670698",
+        "dtb_sha256": null,
+        "machine": "q35",
+        "cpu_model": "qemu64"
+      },
+      "workloads": [
+        {
+          "workload": "users.frame",
+          "status": "passed",
+          "observed": "pass",
+          "termination": "protocol_end",
+          "completion": {
+            "v": 1,
+            "event": "end",
+            "workload": "users.frame",
+            "completed": 4,
+            "selected": 4,
+            "failed": 0,
+            "reason": "complete"
+          },
+          "case_timeout_seconds": 5.0,
+          "guest_timeout_seconds": 60.0,
+          "elapsed_seconds": 0.9126663079950958,
+          "case_counts": {
+            "passed": 4,
+            "failed": 0,
+            "error": 0,
+            "not_run": 0
+          },
+          "nonpassing_cases": []
+        },
+        {
+          "workload": "scheduler",
+          "status": "passed",
+          "observed": "pass",
+          "termination": "protocol_end",
+          "completion": {
+            "v": 1,
+            "event": "end",
+            "workload": "scheduler",
+            "completed": 18,
+            "selected": 18,
+            "failed": 0,
+            "reason": "complete"
+          },
+          "case_timeout_seconds": 5.0,
+          "guest_timeout_seconds": 60.0,
+          "elapsed_seconds": 1.842925893026404,
+          "case_counts": {
+            "passed": 18,
+            "failed": 0,
+            "error": 0,
+            "not_run": 0
+          },
+          "nonpassing_cases": []
+        },
+        {
+          "workload": "users.uaccess",
+          "status": "passed",
+          "observed": "pass",
+          "termination": "protocol_end",
+          "completion": {
+            "v": 1,
+            "event": "end",
+            "workload": "users.uaccess",
+            "completed": 12,
+            "selected": 12,
+            "failed": 0,
+            "reason": "complete"
+          },
+          "case_timeout_seconds": 5.0,
+          "guest_timeout_seconds": 60.0,
+          "elapsed_seconds": 10.469208815018646,
+          "case_counts": {
+            "passed": 12,
+            "failed": 0,
+            "error": 0,
+            "not_run": 0
+          },
+          "nonpassing_cases": []
+        },
+        {
+          "workload": "users.exec",
+          "status": "passed",
+          "observed": "pass",
+          "termination": "protocol_end",
+          "completion": {
+            "v": 1,
+            "event": "end",
+            "workload": "users.exec",
+            "completed": 32,
+            "selected": 32,
+            "failed": 0,
+            "reason": "complete"
+          },
+          "case_timeout_seconds": 5.0,
+          "guest_timeout_seconds": 60.0,
+          "elapsed_seconds": 3.016397731960751,
+          "case_counts": {
+            "passed": 32,
+            "failed": 0,
+            "error": 0,
+            "not_run": 0
+          },
+          "nonpassing_cases": []
+        },
+        {
+          "workload": "users.signals",
+          "status": "passed",
+          "observed": "pass",
+          "termination": "protocol_end",
+          "completion": {
+            "v": 1,
+            "event": "end",
+            "workload": "users.signals",
+            "completed": 35,
+            "selected": 35,
+            "failed": 0,
+            "reason": "complete"
+          },
+          "case_timeout_seconds": 30.0,
+          "guest_timeout_seconds": 60.0,
+          "elapsed_seconds": 7.740612411987968,
+          "case_counts": {
+            "passed": 35,
+            "failed": 0,
+            "error": 0,
+            "not_run": 0
+          },
+          "nonpassing_cases": []
+        },
+        {
+          "workload": "users.ipc",
+          "status": "passed",
+          "observed": "pass",
+          "termination": "protocol_end",
+          "completion": {
+            "v": 1,
+            "event": "end",
+            "workload": "users.ipc",
+            "completed": 22,
+            "selected": 22,
+            "failed": 0,
+            "reason": "complete"
+          },
+          "case_timeout_seconds": 5.0,
+          "guest_timeout_seconds": 60.0,
+          "elapsed_seconds": 13.948496310040355,
+          "case_counts": {
+            "passed": 22,
+            "failed": 0,
+            "error": 0,
+            "not_run": 0
+          },
+          "nonpassing_cases": []
+        },
+        {
+          "workload": "users.timers",
+          "status": "passed",
+          "observed": "pass",
+          "termination": "protocol_end",
+          "completion": {
+            "v": 1,
+            "event": "end",
+            "workload": "users.timers",
+            "completed": 10,
+            "selected": 10,
+            "failed": 0,
+            "reason": "complete"
+          },
+          "case_timeout_seconds": 5.0,
+          "guest_timeout_seconds": 60.0,
+          "elapsed_seconds": 2.573586162063293,
+          "case_counts": {
+            "passed": 10,
+            "failed": 0,
+            "error": 0,
+            "not_run": 0
+          },
+          "nonpassing_cases": []
+        },
+        {
+          "workload": "users",
+          "status": "passed",
+          "observed": "pass",
+          "termination": "protocol_end",
+          "completion": {
+            "v": 1,
+            "event": "end",
+            "workload": "users",
+            "completed": 14,
+            "selected": 14,
+            "failed": 0,
+            "reason": "complete"
+          },
+          "case_timeout_seconds": 5.0,
+          "guest_timeout_seconds": 60.0,
+          "elapsed_seconds": 5.830468338914216,
+          "case_counts": {
+            "passed": 14,
+            "failed": 0,
+            "error": 0,
+            "not_run": 0
+          },
+          "nonpassing_cases": []
+        }
+      ],
+      "report_sha256": "48abe63b23753496cd9258b2ee38108088defef4238cb232d73b0d6b61db5420"
+    },
+    {
+      "label": "resched-final-riscv64-qemu",
+      "finalized": true,
+      "catalog_version": 11,
+      "provenance": {
+        "build": {
+          "type": "Debug",
+          "compiler": "Clang 23.1.2",
+          "flags": {
+            "compile": "-march=rv64imac -mabi=lp64 -mcmodel=medany -mstrict-align -ffreestanding -fno-exceptions -fno-rtti -fno-stack-protector -fpie -Weverything -Werror -Wno-c++-compat -Wno-c++98-compat -Wno-c++98-compat-pedantic -Wno-c++11-compat -Wno-c++14-compat -Wno-c++17-compat -Wno-c++20-compat -Wno-padded -Wno-unsafe-buffer-usage -Wno-gnu-zero-variadic-macro-arguments -Wno-gnu-anonymous-struct -Wno-nested-anon-types -Wno-missing-prototypes -Wno-missing-variable-declarations -Wno-global-constructors -Wno-exit-time-destructors -Wno-weak-vtables -Wno-inline -Wno-reserved-identifier -Wno-reserved-macro-identifier -Wno-covered-switch-default -Wno-nrvo -Wno-lifetime-safety-suggestions -g",
+            "link": "-fuse-ld=lld -nostdlib -nostartfiles -Wl,-pie,--no-dynamic-linker,-z,notext,-Bsymbolic -T /Users/shifu/code/os/moss/src/linker/kernel_riscv64.ld "
+          }
+        },
+        "image_sha256": "87b431fdca03a8202120a84d231355d13876707a615b1cf44a7c02e51f3f7fd2",
+        "fixture_sha256": "a5819202ba4e399cd4df132c452df7ea52c78851bed90ae0e90e25a411036b51",
+        "symbols_sha256": "6686ed1b6edf03ed88c16e4f0902fb49627d7762312535e9b471f71b34347a5e",
+        "schema_version": 1,
+        "source_status": "recorded",
+        "revision": "cd9abbff3525d8e5bff8e7e85ce736bf48fc8caa",
+        "dirty": true,
+        "source_sha256": "6e50b778c6b939c1ecf264f699f6ca08a03dc407125637e1d08ddbf5c7119b15",
+        "manifest": "/Volumes/MossBuild/moss/build/riscv64-debug/moss-artifacts.json"
+      },
+      "comparison_environment": {
+        "arch": "RISCV64",
+        "build": {
+          "type": "Debug",
+          "compiler": "Clang 23.1.2",
+          "flags": {
+            "compile": "-march=rv64imac -mabi=lp64 -mcmodel=medany -mstrict-align -ffreestanding -fno-exceptions -fno-rtti -fno-stack-protector -fpie -Weverything -Werror -Wno-c++-compat -Wno-c++98-compat -Wno-c++98-compat-pedantic -Wno-c++11-compat -Wno-c++14-compat -Wno-c++17-compat -Wno-c++20-compat -Wno-padded -Wno-unsafe-buffer-usage -Wno-gnu-zero-variadic-macro-arguments -Wno-gnu-anonymous-struct -Wno-nested-anon-types -Wno-missing-prototypes -Wno-missing-variable-declarations -Wno-global-constructors -Wno-exit-time-destructors -Wno-weak-vtables -Wno-inline -Wno-reserved-identifier -Wno-reserved-macro-identifier -Wno-covered-switch-default -Wno-nrvo -Wno-lifetime-safety-suggestions -g",
+            "link": "-fuse-ld=lld -nostdlib -nostartfiles -Wl,-pie,--no-dynamic-linker,-z,notext,-Bsymbolic -T /Users/shifu/code/os/moss/src/linker/kernel_riscv64.ld "
+          }
+        },
+        "qemu": "QEMU emulator version 11.1.2",
+        "host": {
+          "system": "Darwin",
+          "node": "wus-MacBook-Pro.local",
+          "release": "24.6.0",
+          "version": "Darwin Kernel Version 24.6.0: Sun Aug 23 20:30:56 PDT 2026; root:xnu-11417.140.69.712.69~1/RELEASE_X86_64",
+          "machine": "x86_64",
+          "processor": "i386",
+          "cpu_affinity": null,
+          "cpu_governors": {}
+        },
+        "settings": {
+          "cpus": 4,
+          "host_cpus": null,
+          "memory_mib": 2048,
+          "expected_ram_mib": 2048,
+          "warmup": 5,
+          "samples": 30,
+          "order": 0,
+          "startup_timeout": 30.0,
+          "case_timeout": null,
+          "guest_timeout": null,
+          "stability": false
+        },
+        "accelerator": "tcg",
+        "tcg_cache_mib": 64,
+        "clock_policy": 1,
+        "fixture_sha256": "a5819202ba4e399cd4df132c452df7ea52c78851bed90ae0e90e25a411036b51",
+        "dtb_sha256": null,
+        "machine": "virt",
+        "cpu_model": "rv64"
+      },
+      "workloads": [
+        {
+          "workload": "users.frame",
+          "status": "passed",
+          "observed": "pass",
+          "termination": "protocol_end",
+          "completion": {
+            "v": 1,
+            "event": "end",
+            "workload": "users.frame",
+            "completed": 4,
+            "selected": 4,
+            "failed": 0,
+            "reason": "complete"
+          },
+          "case_timeout_seconds": 5.0,
+          "guest_timeout_seconds": 60.0,
+          "elapsed_seconds": 2.616541254101321,
+          "case_counts": {
+            "passed": 4,
+            "failed": 0,
+            "error": 0,
+            "not_run": 0
+          },
+          "nonpassing_cases": []
+        },
+        {
+          "workload": "scheduler",
+          "status": "passed",
+          "observed": "pass",
+          "termination": "protocol_end",
+          "completion": {
+            "v": 1,
+            "event": "end",
+            "workload": "scheduler",
+            "completed": 18,
+            "selected": 18,
+            "failed": 0,
+            "reason": "complete"
+          },
+          "case_timeout_seconds": 5.0,
+          "guest_timeout_seconds": 60.0,
+          "elapsed_seconds": 3.497126800008118,
+          "case_counts": {
+            "passed": 18,
+            "failed": 0,
+            "error": 0,
+            "not_run": 0
+          },
+          "nonpassing_cases": []
+        },
+        {
+          "workload": "users.uaccess",
+          "status": "passed",
+          "observed": "pass",
+          "termination": "protocol_end",
+          "completion": {
+            "v": 1,
+            "event": "end",
+            "workload": "users.uaccess",
+            "completed": 12,
+            "selected": 12,
+            "failed": 0,
+            "reason": "complete"
+          },
+          "case_timeout_seconds": 5.0,
+          "guest_timeout_seconds": 60.0,
+          "elapsed_seconds": 24.421220559976064,
+          "case_counts": {
+            "passed": 12,
+            "failed": 0,
+            "error": 0,
+            "not_run": 0
+          },
+          "nonpassing_cases": []
+        },
+        {
+          "workload": "users.exec",
+          "status": "error",
+          "observed": "case_timeout",
+          "termination": "timeout",
+          "completion": null,
+          "case_timeout_seconds": 5.0,
+          "guest_timeout_seconds": 60.0,
+          "elapsed_seconds": 16.905617308919318,
+          "case_counts": {
+            "passed": 25,
+            "failed": 0,
+            "error": 1,
+            "not_run": 6
+          },
+          "nonpassing_cases": [
+            {
+              "name": "allocation_rollback",
+              "status": "error",
+              "reason": "case_timeout",
+              "elapsed_seconds": 5.016164529020898
+            },
+            {
+              "name": "mutable_snapshot_rollback",
+              "status": "not_run",
+              "reason": "case_timeout"
+            },
+            {
+              "name": "boundary_load_plan",
+              "status": "not_run",
+              "reason": "case_timeout"
+            },
+            {
+              "name": "source_version",
+              "status": "not_run",
+              "reason": "case_timeout"
+            },
+            {
+              "name": "registration_gate",
+              "status": "not_run",
+              "reason": "case_timeout"
+            },
+            {
+              "name": "shared_thread_gate",
+              "status": "not_run",
+              "reason": "case_timeout"
+            },
+            {
+              "name": "startup_capability",
+              "status": "not_run",
+              "reason": "case_timeout"
+            }
+          ]
+        },
+        {
+          "workload": "users.signals",
+          "status": "passed",
+          "observed": "pass",
+          "termination": "protocol_end",
+          "completion": {
+            "v": 1,
+            "event": "end",
+            "workload": "users.signals",
+            "completed": 35,
+            "selected": 35,
+            "failed": 0,
+            "reason": "complete"
+          },
+          "case_timeout_seconds": 30.0,
+          "guest_timeout_seconds": 60.0,
+          "elapsed_seconds": 16.44072451198008,
+          "case_counts": {
+            "passed": 35,
+            "failed": 0,
+            "error": 0,
+            "not_run": 0
+          },
+          "nonpassing_cases": []
+        },
+        {
+          "workload": "users.ipc",
+          "status": "passed",
+          "observed": "pass",
+          "termination": "protocol_end",
+          "completion": {
+            "v": 1,
+            "event": "end",
+            "workload": "users.ipc",
+            "completed": 22,
+            "selected": 22,
+            "failed": 0,
+            "reason": "complete"
+          },
+          "case_timeout_seconds": 5.0,
+          "guest_timeout_seconds": 60.0,
+          "elapsed_seconds": 17.45650473702699,
+          "case_counts": {
+            "passed": 22,
+            "failed": 0,
+            "error": 0,
+            "not_run": 0
+          },
+          "nonpassing_cases": []
+        },
+        {
+          "workload": "users.timers",
+          "status": "passed",
+          "observed": "pass",
+          "termination": "protocol_end",
+          "completion": {
+            "v": 1,
+            "event": "end",
+            "workload": "users.timers",
+            "completed": 10,
+            "selected": 10,
+            "failed": 0,
+            "reason": "complete"
+          },
+          "case_timeout_seconds": 5.0,
+          "guest_timeout_seconds": 60.0,
+          "elapsed_seconds": 3.2560222760075703,
+          "case_counts": {
+            "passed": 10,
+            "failed": 0,
+            "error": 0,
+            "not_run": 0
+          },
+          "nonpassing_cases": []
+        },
+        {
+          "workload": "users",
+          "status": "passed",
+          "observed": "pass",
+          "termination": "protocol_end",
+          "completion": {
+            "v": 1,
+            "event": "end",
+            "workload": "users",
+            "completed": 14,
+            "selected": 14,
+            "failed": 0,
+            "reason": "complete"
+          },
+          "case_timeout_seconds": 5.0,
+          "guest_timeout_seconds": 60.0,
+          "elapsed_seconds": 5.692582739982754,
+          "case_counts": {
+            "passed": 14,
+            "failed": 0,
+            "error": 0,
+            "not_run": 0
+          },
+          "nonpassing_cases": []
+        }
+      ],
+      "report_sha256": "fb2c9f7988034ad1a2e3fce676efa16a0eaea0db344d6f91c16c4f07cdc41516"
+    }
+  ],
+  "riscv64_exec_isolated": {
+    "label": "resched-riscv64-exec-isolated",
+    "finalized": true,
+    "catalog_version": 11,
+    "provenance": {
+      "build": {
+        "type": "Debug",
+        "compiler": "Clang 23.1.2",
+        "flags": {
+          "compile": "-march=rv64imac -mabi=lp64 -mcmodel=medany -mstrict-align -ffreestanding -fno-exceptions -fno-rtti -fno-stack-protector -fpie -Weverything -Werror -Wno-c++-compat -Wno-c++98-compat -Wno-c++98-compat-pedantic -Wno-c++11-compat -Wno-c++14-compat -Wno-c++17-compat -Wno-c++20-compat -Wno-padded -Wno-unsafe-buffer-usage -Wno-gnu-zero-variadic-macro-arguments -Wno-gnu-anonymous-struct -Wno-nested-anon-types -Wno-missing-prototypes -Wno-missing-variable-declarations -Wno-global-constructors -Wno-exit-time-destructors -Wno-weak-vtables -Wno-inline -Wno-reserved-identifier -Wno-reserved-macro-identifier -Wno-covered-switch-default -Wno-nrvo -Wno-lifetime-safety-suggestions -g",
+          "link": "-fuse-ld=lld -nostdlib -nostartfiles -Wl,-pie,--no-dynamic-linker,-z,notext,-Bsymbolic -T /Users/shifu/code/os/moss/src/linker/kernel_riscv64.ld "
+        }
+      },
+      "image_sha256": "87b431fdca03a8202120a84d231355d13876707a615b1cf44a7c02e51f3f7fd2",
+      "fixture_sha256": "a5819202ba4e399cd4df132c452df7ea52c78851bed90ae0e90e25a411036b51",
+      "symbols_sha256": "6686ed1b6edf03ed88c16e4f0902fb49627d7762312535e9b471f71b34347a5e",
+      "schema_version": 1,
+      "source_status": "recorded",
+      "revision": "cd9abbff3525d8e5bff8e7e85ce736bf48fc8caa",
+      "dirty": true,
+      "source_sha256": "6e50b778c6b939c1ecf264f699f6ca08a03dc407125637e1d08ddbf5c7119b15",
+      "manifest": "/Volumes/MossBuild/moss/build/riscv64-debug/moss-artifacts.json"
+    },
+    "comparison_environment": {
+      "arch": "RISCV64",
+      "build": {
+        "type": "Debug",
+        "compiler": "Clang 23.1.2",
+        "flags": {
+          "compile": "-march=rv64imac -mabi=lp64 -mcmodel=medany -mstrict-align -ffreestanding -fno-exceptions -fno-rtti -fno-stack-protector -fpie -Weverything -Werror -Wno-c++-compat -Wno-c++98-compat -Wno-c++98-compat-pedantic -Wno-c++11-compat -Wno-c++14-compat -Wno-c++17-compat -Wno-c++20-compat -Wno-padded -Wno-unsafe-buffer-usage -Wno-gnu-zero-variadic-macro-arguments -Wno-gnu-anonymous-struct -Wno-nested-anon-types -Wno-missing-prototypes -Wno-missing-variable-declarations -Wno-global-constructors -Wno-exit-time-destructors -Wno-weak-vtables -Wno-inline -Wno-reserved-identifier -Wno-reserved-macro-identifier -Wno-covered-switch-default -Wno-nrvo -Wno-lifetime-safety-suggestions -g",
+          "link": "-fuse-ld=lld -nostdlib -nostartfiles -Wl,-pie,--no-dynamic-linker,-z,notext,-Bsymbolic -T /Users/shifu/code/os/moss/src/linker/kernel_riscv64.ld "
+        }
+      },
+      "qemu": "QEMU emulator version 11.1.2",
+      "host": {
+        "system": "Darwin",
+        "node": "wus-MacBook-Pro.local",
+        "release": "24.6.0",
+        "version": "Darwin Kernel Version 24.6.0: Sun Aug 23 20:30:56 PDT 2026; root:xnu-11417.140.69.712.69~1/RELEASE_X86_64",
+        "machine": "x86_64",
+        "processor": "i386",
+        "cpu_affinity": null,
+        "cpu_governors": {}
+      },
+      "settings": {
+        "cpus": 4,
+        "host_cpus": null,
+        "memory_mib": 2048,
+        "expected_ram_mib": 2048,
+        "warmup": 5,
+        "samples": 30,
+        "order": 0,
+        "startup_timeout": 30.0,
+        "case_timeout": null,
+        "guest_timeout": null,
+        "stability": false
+      },
+      "accelerator": "tcg",
+      "tcg_cache_mib": 64,
+      "clock_policy": 1,
+      "fixture_sha256": "a5819202ba4e399cd4df132c452df7ea52c78851bed90ae0e90e25a411036b51",
+      "dtb_sha256": null,
+      "machine": "virt",
+      "cpu_model": "rv64"
+    },
+    "workloads": [
+      {
+        "workload": "users.exec",
+        "status": "passed",
+        "observed": "pass",
+        "termination": "protocol_end",
+        "completion": {
+          "v": 1,
+          "event": "end",
+          "workload": "users.exec",
+          "completed": 32,
+          "selected": 32,
+          "failed": 0,
+          "reason": "complete"
+        },
+        "case_timeout_seconds": 5.0,
+        "guest_timeout_seconds": 60.0,
+        "elapsed_seconds": 5.455872497987002,
+        "case_counts": {
+          "passed": 32,
+          "failed": 0,
+          "error": 0,
+          "not_run": 0
+        },
+        "nonpassing_cases": [],
+        "cases": [
+          {
+            "name": "rejects_invalid_entry",
+            "status": "passed",
+            "assertions": {
+              "v": 1,
+              "event": "case_end",
+              "workload": "users.exec",
+              "case": "rejects_invalid_entry",
+              "passed": 1,
+              "failed": 0
+            },
+            "elapsed_seconds": 0.06833938194904476
+          },
+          {
+            "name": "rejects_phentsize",
+            "status": "passed",
+            "assertions": {
+              "v": 1,
+              "event": "case_end",
+              "workload": "users.exec",
+              "case": "rejects_phentsize",
+              "passed": 1,
+              "failed": 0
+            },
+            "elapsed_seconds": 0.022977634915150702
+          },
+          {
+            "name": "rejects_load_size",
+            "status": "passed",
+            "assertions": {
+              "v": 1,
+              "event": "case_end",
+              "workload": "users.exec",
+              "case": "rejects_load_size",
+              "passed": 1,
+              "failed": 0
+            },
+            "elapsed_seconds": 0.025073777069337666
+          },
+          {
+            "name": "rejects_truncated_header",
+            "status": "passed",
+            "assertions": {
+              "v": 1,
+              "event": "case_end",
+              "workload": "users.exec",
+              "case": "rejects_truncated_header",
+              "passed": 1,
+              "failed": 0
+            },
+            "elapsed_seconds": 0.02132982003968209
+          },
+          {
+            "name": "rejects_truncated_phdr",
+            "status": "passed",
+            "assertions": {
+              "v": 1,
+              "event": "case_end",
+              "workload": "users.exec",
+              "case": "rejects_truncated_phdr",
+              "passed": 1,
+              "failed": 0
+            },
+            "elapsed_seconds": 7.19419913366437e-05
+          },
+          {
+            "name": "rejects_file_range",
+            "status": "passed",
+            "assertions": {
+              "v": 1,
+              "event": "case_end",
+              "workload": "users.exec",
+              "case": "rejects_file_range",
+              "passed": 1,
+              "failed": 0
+            },
+            "elapsed_seconds": 0.024935523979365826
+          },
+          {
+            "name": "rejects_user_range",
+            "status": "passed",
+            "assertions": {
+              "v": 1,
+              "event": "case_end",
+              "workload": "users.exec",
+              "case": "rejects_user_range",
+              "passed": 1,
+              "failed": 0
+            },
+            "elapsed_seconds": 0.020313382032327354
+          },
+          {
+            "name": "rejects_address_overflow",
+            "status": "passed",
+            "assertions": {
+              "v": 1,
+              "event": "case_end",
+              "workload": "users.exec",
+              "case": "rejects_address_overflow",
+              "passed": 1,
+              "failed": 0
+            },
+            "elapsed_seconds": 0.024450178956612945
+          },
+          {
+            "name": "rejects_page_offset",
+            "status": "passed",
+            "assertions": {
+              "v": 1,
+              "event": "case_end",
+              "workload": "users.exec",
+              "case": "rejects_page_offset",
+              "passed": 1,
+              "failed": 0
+            },
+            "elapsed_seconds": 0.02361121994908899
+          },
+          {
+            "name": "rejects_alignment",
+            "status": "passed",
+            "assertions": {
+              "v": 1,
+              "event": "case_end",
+              "workload": "users.exec",
+              "case": "rejects_alignment",
+              "passed": 1,
+              "failed": 0
+            },
+            "elapsed_seconds": 0.0001534860348328948
+          },
+          {
+            "name": "rejects_reserved_range",
+            "status": "passed",
+            "assertions": {
+              "v": 1,
+              "event": "case_end",
+              "workload": "users.exec",
+              "case": "rejects_reserved_range",
+              "passed": 1,
+              "failed": 0
+            },
+            "elapsed_seconds": 0.020839311997406185
+          },
+          {
+            "name": "rejects_page_overlap",
+            "status": "passed",
+            "assertions": {
+              "v": 1,
+              "event": "case_end",
+              "workload": "users.exec",
+              "case": "rejects_page_overlap",
+              "passed": 1,
+              "failed": 0
+            },
+            "elapsed_seconds": 0.024919659015722573
+          },
+          {
+            "name": "rejects_program_header_limit",
+            "status": "passed",
+            "assertions": {
+              "v": 1,
+              "event": "case_end",
+              "workload": "users.exec",
+              "case": "rejects_program_header_limit",
+              "passed": 1,
+              "failed": 0
+            },
+            "elapsed_seconds": 0.024797954014502466
+          },
+          {
+            "name": "rejects_wx",
+            "status": "passed",
+            "assertions": {
+              "v": 1,
+              "event": "case_end",
+              "workload": "users.exec",
+              "case": "rejects_wx",
+              "passed": 1,
+              "failed": 0
+            },
+            "elapsed_seconds": 6.265693809837103e-05
+          },
+          {
+            "name": "rejects_dynamic",
+            "status": "passed",
+            "assertions": {
+              "v": 1,
+              "event": "case_end",
+              "workload": "users.exec",
+              "case": "rejects_dynamic",
+              "passed": 1,
+              "failed": 0
+            },
+            "elapsed_seconds": 0.024521750980056822
+          },
+          {
+            "name": "rejects_interp",
+            "status": "passed",
+            "assertions": {
+              "v": 1,
+              "event": "case_end",
+              "workload": "users.exec",
+              "case": "rejects_interp",
+              "passed": 1,
+              "failed": 0
+            },
+            "elapsed_seconds": 0.02393017301801592
+          },
+          {
+            "name": "rejects_orphan_tls_file",
+            "status": "passed",
+            "assertions": {
+              "v": 1,
+              "event": "case_end",
+              "workload": "users.exec",
+              "case": "rejects_orphan_tls_file",
+              "passed": 1,
+              "failed": 0
+            },
+            "elapsed_seconds": 7.299007847905159e-05
+          },
+          {
+            "name": "bad_env_vector",
+            "status": "passed",
+            "assertions": {
+              "v": 1,
+              "event": "case_end",
+              "workload": "users.exec",
+              "case": "bad_env_vector",
+              "passed": 1,
+              "failed": 0
+            },
+            "elapsed_seconds": 0.02054025698453188
+          },
+          {
+            "name": "bad_env_string",
+            "status": "passed",
+            "assertions": {
+              "v": 1,
+              "event": "case_end",
+              "workload": "users.exec",
+              "case": "bad_env_string",
+              "passed": 1,
+              "failed": 0
+            },
+            "elapsed_seconds": 0.023965754080563784
+          },
+          {
+            "name": "argument_count_limit",
+            "status": "passed",
+            "assertions": {
+              "v": 1,
+              "event": "case_end",
+              "workload": "users.exec",
+              "case": "argument_count_limit",
+              "passed": 1,
+              "failed": 0
+            },
+            "elapsed_seconds": 0.024452522047795355
+          },
+          {
+            "name": "combined_count_limit",
+            "status": "passed",
+            "assertions": {
+              "v": 1,
+              "event": "case_end",
+              "workload": "users.exec",
+              "case": "combined_count_limit",
+              "passed": 1,
+              "failed": 0
+            },
+            "elapsed_seconds": 0.025051689008250833
+          },
+          {
+            "name": "string_byte_limit",
+            "status": "passed",
+            "assertions": {
+              "v": 1,
+              "event": "case_end",
+              "workload": "users.exec",
+              "case": "string_byte_limit",
+              "passed": 1,
+              "failed": 0
+            },
+            "elapsed_seconds": 0.7603893380146474
+          },
+          {
+            "name": "exact_combined_count",
+            "status": "passed",
+            "assertions": {
+              "v": 1,
+              "event": "case_end",
+              "workload": "users.exec",
+              "case": "exact_combined_count",
+              "passed": 1,
+              "failed": 0
+            },
+            "elapsed_seconds": 0.3712306210072711
+          },
+          {
+            "name": "exact_string_bytes",
+            "status": "passed",
+            "assertions": {
+              "v": 1,
+              "event": "case_end",
+              "workload": "users.exec",
+              "case": "exact_string_bytes",
+              "passed": 1,
+              "failed": 0
+            },
+            "elapsed_seconds": 0.9048788319341838
+          },
+          {
+            "name": "empty_vectors",
+            "status": "passed",
+            "assertions": {
+              "v": 1,
+              "event": "case_end",
+              "workload": "users.exec",
+              "case": "empty_vectors",
+              "passed": 1,
+              "failed": 0
+            },
+            "elapsed_seconds": 0.28545839700382203
+          },
+          {
+            "name": "allocation_rollback",
+            "status": "passed",
+            "assertions": {
+              "v": 1,
+              "event": "case_end",
+              "workload": "users.exec",
+              "case": "allocation_rollback",
+              "passed": 549,
+              "failed": 0
+            },
+            "elapsed_seconds": 1.5378233910305426
+          },
+          {
+            "name": "mutable_snapshot_rollback",
+            "status": "passed",
+            "assertions": {
+              "v": 1,
+              "event": "case_end",
+              "workload": "users.exec",
+              "case": "mutable_snapshot_rollback",
+              "passed": 826,
+              "failed": 0
+            },
+            "elapsed_seconds": 0.07006003893911839
+          },
+          {
+            "name": "boundary_load_plan",
+            "status": "passed",
+            "assertions": {
+              "v": 1,
+              "event": "case_end",
+              "workload": "users.exec",
+              "case": "boundary_load_plan",
+              "passed": 1,
+              "failed": 0
+            },
+            "elapsed_seconds": 0.048743638093583286
+          },
+          {
+            "name": "source_version",
+            "status": "passed",
+            "assertions": {
+              "v": 1,
+              "event": "case_end",
+              "workload": "users.exec",
+              "case": "source_version",
+              "passed": 7,
+              "failed": 0
+            },
+            "elapsed_seconds": 0.025000603054650128
+          },
+          {
+            "name": "registration_gate",
+            "status": "passed",
+            "assertions": {
+              "v": 1,
+              "event": "case_end",
+              "workload": "users.exec",
+              "case": "registration_gate",
+              "passed": 3,
+              "failed": 0
+            },
+            "elapsed_seconds": 0.023258229019120336
+          },
+          {
+            "name": "shared_thread_gate",
+            "status": "passed",
+            "assertions": {
+              "v": 1,
+              "event": "case_end",
+              "workload": "users.exec",
+              "case": "shared_thread_gate",
+              "passed": 1,
+              "failed": 0
+            },
+            "elapsed_seconds": 3.781705163419247e-05
+          },
+          {
+            "name": "startup_capability",
+            "status": "passed",
+            "assertions": {
+              "v": 1,
+              "event": "case_end",
+              "workload": "users.exec",
+              "case": "startup_capability",
+              "passed": 1,
+              "failed": 0
+            },
+            "elapsed_seconds": 0.02461252303328365
+          }
+        ],
+        "serial": {
+          "path": "rpi3b-return-reschedule-2026-10-18-resched-riscv64-exec-isolated-users.exec.log",
+          "sha256": "75fdd3b5d48ec584a837128c7ba00139fcbcf87438f285bffe435e2b7499c625"
+        }
+      }
+    ],
+    "report_sha256": "bd191b3c820cd6a57861bb7baf0b3109d1cbea9edf2bffed63ea346b03282f76"
+  },
+  "riscv64_deadline_failure": {
+    "status": "unresolved",
+    "original": {
+      "label": "resched-final-riscv64-qemu",
+      "finalized": true,
+      "catalog_version": 11,
+      "provenance": {
+        "build": {
+          "type": "Debug",
+          "compiler": "Clang 23.1.2",
+          "flags": {
+            "compile": "-march=rv64imac -mabi=lp64 -mcmodel=medany -mstrict-align -ffreestanding -fno-exceptions -fno-rtti -fno-stack-protector -fpie -Weverything -Werror -Wno-c++-compat -Wno-c++98-compat -Wno-c++98-compat-pedantic -Wno-c++11-compat -Wno-c++14-compat -Wno-c++17-compat -Wno-c++20-compat -Wno-padded -Wno-unsafe-buffer-usage -Wno-gnu-zero-variadic-macro-arguments -Wno-gnu-anonymous-struct -Wno-nested-anon-types -Wno-missing-prototypes -Wno-missing-variable-declarations -Wno-global-constructors -Wno-exit-time-destructors -Wno-weak-vtables -Wno-inline -Wno-reserved-identifier -Wno-reserved-macro-identifier -Wno-covered-switch-default -Wno-nrvo -Wno-lifetime-safety-suggestions -g",
+            "link": "-fuse-ld=lld -nostdlib -nostartfiles -Wl,-pie,--no-dynamic-linker,-z,notext,-Bsymbolic -T /Users/shifu/code/os/moss/src/linker/kernel_riscv64.ld "
+          }
+        },
+        "image_sha256": "87b431fdca03a8202120a84d231355d13876707a615b1cf44a7c02e51f3f7fd2",
+        "fixture_sha256": "a5819202ba4e399cd4df132c452df7ea52c78851bed90ae0e90e25a411036b51",
+        "symbols_sha256": "6686ed1b6edf03ed88c16e4f0902fb49627d7762312535e9b471f71b34347a5e",
+        "schema_version": 1,
+        "source_status": "recorded",
+        "revision": "cd9abbff3525d8e5bff8e7e85ce736bf48fc8caa",
+        "dirty": true,
+        "source_sha256": "6e50b778c6b939c1ecf264f699f6ca08a03dc407125637e1d08ddbf5c7119b15",
+        "manifest": "/Volumes/MossBuild/moss/build/riscv64-debug/moss-artifacts.json"
+      },
+      "comparison_environment": {
+        "arch": "RISCV64",
+        "build": {
+          "type": "Debug",
+          "compiler": "Clang 23.1.2",
+          "flags": {
+            "compile": "-march=rv64imac -mabi=lp64 -mcmodel=medany -mstrict-align -ffreestanding -fno-exceptions -fno-rtti -fno-stack-protector -fpie -Weverything -Werror -Wno-c++-compat -Wno-c++98-compat -Wno-c++98-compat-pedantic -Wno-c++11-compat -Wno-c++14-compat -Wno-c++17-compat -Wno-c++20-compat -Wno-padded -Wno-unsafe-buffer-usage -Wno-gnu-zero-variadic-macro-arguments -Wno-gnu-anonymous-struct -Wno-nested-anon-types -Wno-missing-prototypes -Wno-missing-variable-declarations -Wno-global-constructors -Wno-exit-time-destructors -Wno-weak-vtables -Wno-inline -Wno-reserved-identifier -Wno-reserved-macro-identifier -Wno-covered-switch-default -Wno-nrvo -Wno-lifetime-safety-suggestions -g",
+            "link": "-fuse-ld=lld -nostdlib -nostartfiles -Wl,-pie,--no-dynamic-linker,-z,notext,-Bsymbolic -T /Users/shifu/code/os/moss/src/linker/kernel_riscv64.ld "
+          }
+        },
+        "qemu": "QEMU emulator version 11.1.2",
+        "host": {
+          "system": "Darwin",
+          "node": "wus-MacBook-Pro.local",
+          "release": "24.6.0",
+          "version": "Darwin Kernel Version 24.6.0: Sun Aug 23 20:30:56 PDT 2026; root:xnu-11417.140.69.712.69~1/RELEASE_X86_64",
+          "machine": "x86_64",
+          "processor": "i386",
+          "cpu_affinity": null,
+          "cpu_governors": {}
+        },
+        "settings": {
+          "cpus": 4,
+          "host_cpus": null,
+          "memory_mib": 2048,
+          "expected_ram_mib": 2048,
+          "warmup": 5,
+          "samples": 30,
+          "order": 0,
+          "startup_timeout": 30.0,
+          "case_timeout": null,
+          "guest_timeout": null,
+          "stability": false
+        },
+        "accelerator": "tcg",
+        "tcg_cache_mib": 64,
+        "clock_policy": 1,
+        "fixture_sha256": "a5819202ba4e399cd4df132c452df7ea52c78851bed90ae0e90e25a411036b51",
+        "dtb_sha256": null,
+        "machine": "virt",
+        "cpu_model": "rv64"
+      },
+      "workloads": [
+        {
+          "workload": "users.exec",
+          "status": "error",
+          "observed": "case_timeout",
+          "termination": "timeout",
+          "completion": null,
+          "case_timeout_seconds": 5.0,
+          "guest_timeout_seconds": 60.0,
+          "elapsed_seconds": 16.905617308919318,
+          "case_counts": {
+            "passed": 25,
+            "failed": 0,
+            "error": 1,
+            "not_run": 6
+          },
+          "nonpassing_cases": [
+            {
+              "name": "allocation_rollback",
+              "status": "error",
+              "reason": "case_timeout",
+              "elapsed_seconds": 5.016164529020898
+            },
+            {
+              "name": "mutable_snapshot_rollback",
+              "status": "not_run",
+              "reason": "case_timeout"
+            },
+            {
+              "name": "boundary_load_plan",
+              "status": "not_run",
+              "reason": "case_timeout"
+            },
+            {
+              "name": "source_version",
+              "status": "not_run",
+              "reason": "case_timeout"
+            },
+            {
+              "name": "registration_gate",
+              "status": "not_run",
+              "reason": "case_timeout"
+            },
+            {
+              "name": "shared_thread_gate",
+              "status": "not_run",
+              "reason": "case_timeout"
+            },
+            {
+              "name": "startup_capability",
+              "status": "not_run",
+              "reason": "case_timeout"
+            }
+          ],
+          "cases": [
+            {
+              "name": "rejects_invalid_entry",
+              "status": "passed",
+              "assertions": {
+                "v": 1,
+                "event": "case_end",
+                "workload": "users.exec",
+                "case": "rejects_invalid_entry",
+                "passed": 1,
+                "failed": 0
+              },
+              "elapsed_seconds": 0.16354583494830877
+            },
+            {
+              "name": "rejects_phentsize",
+              "status": "passed",
+              "assertions": {
+                "v": 1,
+                "event": "case_end",
+                "workload": "users.exec",
+                "case": "rejects_phentsize",
+                "passed": 1,
+                "failed": 0
+              },
+              "elapsed_seconds": 0.02111479500308633
+            },
+            {
+              "name": "rejects_load_size",
+              "status": "passed",
+              "assertions": {
+                "v": 1,
+                "event": "case_end",
+                "workload": "users.exec",
+                "case": "rejects_load_size",
+                "passed": 1,
+                "failed": 0
+              },
+              "elapsed_seconds": 0.0680572809651494
+            },
+            {
+              "name": "rejects_truncated_header",
+              "status": "passed",
+              "assertions": {
+                "v": 1,
+                "event": "case_end",
+                "workload": "users.exec",
+                "case": "rejects_truncated_header",
+                "passed": 1,
+                "failed": 0
+              },
+              "elapsed_seconds": 0.04170525504741818
+            },
+            {
+              "name": "rejects_truncated_phdr",
+              "status": "passed",
+              "assertions": {
+                "v": 1,
+                "event": "case_end",
+                "workload": "users.exec",
+                "case": "rejects_truncated_phdr",
+                "passed": 1,
+                "failed": 0
+              },
+              "elapsed_seconds": 0.024090191000141203
+            },
+            {
+              "name": "rejects_file_range",
+              "status": "passed",
+              "assertions": {
+                "v": 1,
+                "event": "case_end",
+                "workload": "users.exec",
+                "case": "rejects_file_range",
+                "passed": 1,
+                "failed": 0
+              },
+              "elapsed_seconds": 0.04277197702322155
+            },
+            {
+              "name": "rejects_user_range",
+              "status": "passed",
+              "assertions": {
+                "v": 1,
+                "event": "case_end",
+                "workload": "users.exec",
+                "case": "rejects_user_range",
+                "passed": 1,
+                "failed": 0
+              },
+              "elapsed_seconds": 0.06754543399438262
+            },
+            {
+              "name": "rejects_address_overflow",
+              "status": "passed",
+              "assertions": {
+                "v": 1,
+                "event": "case_end",
+                "workload": "users.exec",
+                "case": "rejects_address_overflow",
+                "passed": 1,
+                "failed": 0
+              },
+              "elapsed_seconds": 0.042589944088831544
+            },
+            {
+              "name": "rejects_page_offset",
+              "status": "passed",
+              "assertions": {
+                "v": 1,
+                "event": "case_end",
+                "workload": "users.exec",
+                "case": "rejects_page_offset",
+                "passed": 1,
+                "failed": 0
+              },
+              "elapsed_seconds": 0.06284816097468138
+            },
+            {
+              "name": "rejects_alignment",
+              "status": "passed",
+              "assertions": {
+                "v": 1,
+                "event": "case_end",
+                "workload": "users.exec",
+                "case": "rejects_alignment",
+                "passed": 1,
+                "failed": 0
+              },
+              "elapsed_seconds": 0.044448281987570226
+            },
+            {
+              "name": "rejects_reserved_range",
+              "status": "passed",
+              "assertions": {
+                "v": 1,
+                "event": "case_end",
+                "workload": "users.exec",
+                "case": "rejects_reserved_range",
+                "passed": 1,
+                "failed": 0
+              },
+              "elapsed_seconds": 0.06321084802038968
+            },
+            {
+              "name": "rejects_page_overlap",
+              "status": "passed",
+              "assertions": {
+                "v": 1,
+                "event": "case_end",
+                "workload": "users.exec",
+                "case": "rejects_page_overlap",
+                "passed": 1,
+                "failed": 0
+              },
+              "elapsed_seconds": 0.06610904796980321
+            },
+            {
+              "name": "rejects_program_header_limit",
+              "status": "passed",
+              "assertions": {
+                "v": 1,
+                "event": "case_end",
+                "workload": "users.exec",
+                "case": "rejects_program_header_limit",
+                "passed": 1,
+                "failed": 0
+              },
+              "elapsed_seconds": 0.06848903093487024
+            },
+            {
+              "name": "rejects_wx",
+              "status": "passed",
+              "assertions": {
+                "v": 1,
+                "event": "case_end",
+                "workload": "users.exec",
+                "case": "rejects_wx",
+                "passed": 1,
+                "failed": 0
+              },
+              "elapsed_seconds": 0.025080453953705728
+            },
+            {
+              "name": "rejects_dynamic",
+              "status": "passed",
+              "assertions": {
+                "v": 1,
+                "event": "case_end",
+                "workload": "users.exec",
+                "case": "rejects_dynamic",
+                "passed": 1,
+                "failed": 0
+              },
+              "elapsed_seconds": 0.07285842404235154
+            },
+            {
+              "name": "rejects_interp",
+              "status": "passed",
+              "assertions": {
+                "v": 1,
+                "event": "case_end",
+                "workload": "users.exec",
+                "case": "rejects_interp",
+                "passed": 1,
+                "failed": 0
+              },
+              "elapsed_seconds": 0.04754034406505525
+            },
+            {
+              "name": "rejects_orphan_tls_file",
+              "status": "passed",
+              "assertions": {
+                "v": 1,
+                "event": "case_end",
+                "workload": "users.exec",
+                "case": "rejects_orphan_tls_file",
+                "passed": 1,
+                "failed": 0
+              },
+              "elapsed_seconds": 0.022882969002239406
+            },
+            {
+              "name": "bad_env_vector",
+              "status": "passed",
+              "assertions": {
+                "v": 1,
+                "event": "case_end",
+                "workload": "users.exec",
+                "case": "bad_env_vector",
+                "passed": 1,
+                "failed": 0
+              },
+              "elapsed_seconds": 0.040526481927372515
+            },
+            {
+              "name": "bad_env_string",
+              "status": "passed",
+              "assertions": {
+                "v": 1,
+                "event": "case_end",
+                "workload": "users.exec",
+                "case": "bad_env_string",
+                "passed": 1,
+                "failed": 0
+              },
+              "elapsed_seconds": 0.04195748898200691
+            },
+            {
+              "name": "argument_count_limit",
+              "status": "passed",
+              "assertions": {
+                "v": 1,
+                "event": "case_end",
+                "workload": "users.exec",
+                "case": "argument_count_limit",
+                "passed": 1,
+                "failed": 0
+              },
+              "elapsed_seconds": 0.0905282610328868
+            },
+            {
+              "name": "combined_count_limit",
+              "status": "passed",
+              "assertions": {
+                "v": 1,
+                "event": "case_end",
+                "workload": "users.exec",
+                "case": "combined_count_limit",
+                "passed": 1,
+                "failed": 0
+              },
+              "elapsed_seconds": 0.11212472198531032
+            },
+            {
+              "name": "string_byte_limit",
+              "status": "passed",
+              "assertions": {
+                "v": 1,
+                "event": "case_end",
+                "workload": "users.exec",
+                "case": "string_byte_limit",
+                "passed": 1,
+                "failed": 0
+              },
+              "elapsed_seconds": 1.8925736378878355
+            },
+            {
+              "name": "exact_combined_count",
+              "status": "passed",
+              "assertions": {
+                "v": 1,
+                "event": "case_end",
+                "workload": "users.exec",
+                "case": "exact_combined_count",
+                "passed": 1,
+                "failed": 0
+              },
+              "elapsed_seconds": 1.1376584370154887
+            },
+            {
+              "name": "exact_string_bytes",
+              "status": "passed",
+              "assertions": {
+                "v": 1,
+                "event": "case_end",
+                "workload": "users.exec",
+                "case": "exact_string_bytes",
+                "passed": 1,
+                "failed": 0
+              },
+              "elapsed_seconds": 3.6797265890054405
+            },
+            {
+              "name": "empty_vectors",
+              "status": "passed",
+              "assertions": {
+                "v": 1,
+                "event": "case_end",
+                "workload": "users.exec",
+                "case": "empty_vectors",
+                "passed": 1,
+                "failed": 0
+              },
+              "elapsed_seconds": 1.44888008502312
+            },
+            {
+              "name": "allocation_rollback",
+              "status": "error",
+              "reason": "case_timeout",
+              "elapsed_seconds": 5.016164529020898
+            },
+            {
+              "name": "mutable_snapshot_rollback",
+              "status": "not_run",
+              "reason": "case_timeout"
+            },
+            {
+              "name": "boundary_load_plan",
+              "status": "not_run",
+              "reason": "case_timeout"
+            },
+            {
+              "name": "source_version",
+              "status": "not_run",
+              "reason": "case_timeout"
+            },
+            {
+              "name": "registration_gate",
+              "status": "not_run",
+              "reason": "case_timeout"
+            },
+            {
+              "name": "shared_thread_gate",
+              "status": "not_run",
+              "reason": "case_timeout"
+            },
+            {
+              "name": "startup_capability",
+              "status": "not_run",
+              "reason": "case_timeout"
+            }
+          ],
+          "serial": {
+            "path": "rpi3b-return-reschedule-2026-10-18-resched-final-riscv64-qemu-users.exec.log",
+            "sha256": "500192bf49288afcb302ba39fd4538dca17635b9d3d375c837b6dd3decf4a136"
+          }
+        }
+      ],
+      "report_sha256": "fb2c9f7988034ad1a2e3fce676efa16a0eaea0db344d6f91c16c4f07cdc41516"
+    },
+    "gdb": {
+      "path": "rpi3b-return-reschedule-2026-10-18-rv64-timeout-gdb.json",
+      "sha256": "eef84477a5317afb46d4be2ce77e1932aaa88216527569bdba39340f5954609d"
+    },
+    "gdb_log": {
+      "path": "rpi3b-return-reschedule-2026-10-18-rv64-timeout-gdb.log",
+      "sha256": "d214a9f02f661cef31335f4209aecabb8bd8b478bf97799b36e59ee3b073ed91"
+    },
+    "observation": "Original 5s deadline expired at 5.016s during PagePressure destruction, inside order-10 free_pages metadata validation. Other harts idle; OpenSBI boot hart 2 maps to logical CPU0. No panic or cause established. Same-image isolated run passed all 32 cases, allocation_rollback 1.538s, with original deadlines. The failure remains part of this batch; neither host load nor a kernel race is established as its cause."
+  },
+  "host_checks": {
+    "tests": "173 passed in 18.22s",
+    "clang_tidy_translation_units": 3,
+    "compiler_builds": [
+      "arm64-debug",
+      "x64-debug",
+      "riscv64-debug"
+    ],
+    "release_performance": "not measured",
+    "tests_log": {
+      "path": "rpi3b-return-reschedule-2026-10-18-host-tests.log",
+      "sha256": "b66ca319f2219ee42469b967e49b44e9cd089df14f0b7914730680af30ba965c"
+    },
+    "lint_log": {
+      "path": "rpi3b-return-reschedule-2026-10-18-lint.log",
+      "sha256": "b6697fd031d6087bdde65b4a830c59c4846aa8d12c664489089edb2f5fc2e6ee"
+    }
+  },
+  "production": {
+    "boot_check": "shell_input_passed",
+    "jtag_khz": 1000,
+    "uploaded_sha256": {
+      "kernel": "37655d21380d72742b620e2e731f7bfd17d6d94901b77747116aede318d4f9b0",
+      "initramfs": "839e2f1d42fc0ff96e5851a8db283255ebbe936c6b6d375cb20cae656c15f8ad",
+      "dtb": "8ad5e579a69a3ea6c043e9a6e6231d3e31d953f8ec5859fe79fe761795b2b407"
+    },
+    "serial": {
+      "path": "rpi3b-return-reschedule-2026-10-18-production.log",
+      "sha256": "8df546aa3a3c307b2395416fe4278da80961ecebdd761419bca7971bc9accfed"
+    },
+    "openocd_detach": "shutdown without halt after successful shell input and next prompt"
+  },
+  "tested_source_patch": {
+    "base_revision": "cd9abbff3525d8e5bff8e7e85ce736bf48fc8caa",
+    "path": "resched-tested-source.patch",
+    "sha256": "9399cfb0e8caf129b4dd44880d76c862028603249d7eea1d45aa34585d6c6ba6",
+    "paths": [
+      "scripts/kernel_validation.py",
+      "scripts/tests/test_kernel_validation.py",
+      "src/kernel/src/kernel_main.cpp",
+      "src/process/src/process-scheduler.cppm",
+      "src/test/validation.cpp",
+      "src/test/validation/core_scheduler.cpp",
+      "src/test/validation/registry.cpp",
+      "src/test/validation/signal_control.cpp",
+      "src/test/validation/signal_control.hpp",
+      "src/userspace/validation.c",
+      "src/userspace/validation/internal.h",
+      "src/userspace/validation_frame.S"
+    ],
+    "note": "Production and validation source diff; build-time source identities include the then-current documentation state and remain preserved in each provenance record."
+  },
+  "complete_local_archive": {
+    "name": "p0-return-reschedule-validation-2026-10-18.tar.gz",
+    "bytes": 42103478,
+    "sha256": "80ebe0ae46d68a7f0eae9b9d3e0004c6ad26cd47fd071e1f01cbe10e191fe5be",
+    "contents": "All original resched run directories, matching validation and production artifacts, original firmware DTB, build/host logs, failed readback, GDB snapshot and tested source patch."
+  }
+}

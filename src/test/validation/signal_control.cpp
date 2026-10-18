@@ -93,10 +93,35 @@ constexpr long CPU_BOUND_ARM_PROBE = 60;
 constexpr long CPU_BOUND_CHECK_PROBE = 61;
 constexpr long STOP_STATE_PROBE = 62;
 constexpr long STOP_PENDING_PROBE = 63;
+// Both participants and every probe access run on CPU0 with IRQs masked.
+enum class ReturnProbe { Idle, Parked, Armed, Woken, Ran };
+ReturnProbe return_probe = ReturnProbe::Idle;
+ProcessId return_parent = INVALID_PROCESS_ID;
+ProcessId return_child = INVALID_PROCESS_ID;
+u64 return_probe_pc = 0;
+bool return_timer_masked = false;
 constexpr long MAX_PROCESS_ID = (1L << (sizeof(ProcessId) * 8)) - 1;
 } // namespace
 
 extern "C" void moss_validation_user_return(void *raw_frame) noexcept {
+  if (arch::get_current_cpu_id() == 0 && ut::same_id(active_case, "return_reschedule") &&
+      return_probe == ReturnProbe::Armed) {
+    auto *thread = process::CfsScheduler::get_current_task();
+    auto &frame = *static_cast<moss::abi::TrapFrame *>(raw_frame);
+    // x64's saved RAX now holds the result, so syscall_number() cannot identify
+    // the returning call. Match the common assembly probe's exact return PC.
+    if (thread && thread->owner_pid == return_parent && affinity_valid() && frame.pc == return_probe_pc) {
+      auto child = process::g_process_manager->find_process(return_child);
+      if (child) {
+        // Both tasks are pinned to CPU0, so wakeup sends no IPI. Mask its
+        // timer to prevent a later tick from hiding a missing return handoff.
+        hal::timer::disable();
+        return_timer_masked = true;
+        return_probe = ReturnProbe::Woken;
+        process::g_scheduler->task_wakeup(child->get_main_thread(), 0);
+      }
+    }
+  }
   const auto pid = __atomic_load_n(&cpu_bound_probe_pid, __ATOMIC_ACQUIRE);
   if (pid == INVALID_PROCESS_ID || !ut::same_id(active_case, "cpu_bound_irq")) {
     return;
@@ -150,6 +175,65 @@ extern "C" void moss_validation_child_exit_notified(u32 child_pid, u32 parent_pi
 }
 
 long signal_control(long op, long arg1, long arg2) {
+  if (op == RETURN_RESCHEDULE_PROBE && ut::same_id(selection, "users.frame") &&
+      ut::same_id(active_case, "return_reschedule") && affinity_valid()) {
+    auto *thread = process::CfsScheduler::get_current_task();
+    if (arg1 == 0 && return_probe == ReturnProbe::Idle) {
+      auto child = process::current_process();
+      if (!child || child->parent_pid() == 0) {
+        return -1;
+      }
+      return_parent = child->parent_pid();
+      return_child = child->pid();
+      // The child is currently off its queue and IRQs are masked. Make this
+      // sole peer RT so wakeup must outrank its CFS parent, regardless of time.
+      thread->sched_class = process::SchedClass::RealTime;
+      thread->sched_policy = process::SchedPolicy::Fifo;
+      thread->rt.priority = process::priority::DEFAULT_RT_PRIORITY;
+      (void)process::g_scheduler->prepare_sleep();
+      return_probe = ReturnProbe::Parked;
+      process::g_scheduler->commit_sleep();
+      if (return_probe == ReturnProbe::Woken) {
+        return_probe = ReturnProbe::Ran;
+      }
+      return 1;
+    }
+    if (arg1 == 1) {
+      if (return_probe == ReturnProbe::Idle) {
+        return 0; // The parent yields until the child has saved its continuation.
+      }
+      auto child = process::g_process_manager->find_process(return_child);
+      auto *peer = child ? child->get_main_thread() : nullptr;
+      if (return_probe != ReturnProbe::Parked || thread->owner_pid != return_parent ||
+          !mm::PageTableManager::is_user_range(static_cast<u64>(arg2), 1) || !peer ||
+          peer->state != process::ProcessState::Sleeping || peer->sleep_handoff.load() != 0) {
+        return -1;
+      }
+      return_probe_pc = static_cast<u64>(arg2);
+      return_probe = ReturnProbe::Armed;
+      return 1;
+    }
+    if (arg1 == 2 && thread->owner_pid == return_parent && arg2 == static_cast<long>(return_child)) {
+      const bool ran = return_probe == ReturnProbe::Ran && !thread->need_resched && !arch::interrupts_enabled();
+      if (return_timer_masked) {
+        // Reload the deadline before unmasking: x64's one-shot may have
+        // expired while masked and enabling alone would leave it stopped.
+        timer::TimerSubsystem::instance().reprogram_local();
+        hal::timer::enable();
+        return_timer_masked = false;
+      }
+      auto child = process::g_process_manager->find_process(return_child);
+      if (child) {
+        // Also release the parked child if the probe failed before wakeup.
+        process::g_scheduler->task_wakeup(child->get_main_thread(), 0);
+      }
+      return_probe = ReturnProbe::Idle;
+      return_parent = return_child = INVALID_PROCESS_ID;
+      return_probe_pc = 0;
+      return ran;
+    }
+    return -1;
+  }
   if (ut::same_id(selection, "users.signals") && ut::same_id(active_case, "wait_registration")) {
     if (op == 52 && affinity_valid() && arg1 == 0 && g_num_cpus >= 2 &&
         __atomic_load_n(&wait_exit_phase, __ATOMIC_ACQUIRE) == 0) {

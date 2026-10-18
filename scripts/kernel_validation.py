@@ -106,6 +106,7 @@ CATALOG = {
         "cfs_self_selection",
         "rr_self_selection",
         "try_lock_preemption",
+        "reschedule_safe_point",
         "cpu_runtime_accounting",
         "cpu_budget_accounting",
         "cpu_budget_admission",
@@ -144,7 +145,7 @@ CATALOG = {
         "kernel_page_table",
         "kernel_mmio",
     ],
-    "users.frame": ["native_frame", "fork_registers", "signal_return"],
+    "users.frame": ["native_frame", "fork_registers", "signal_return", "return_reschedule"],
     "users.uaccess": [
         "allocation_fault",
         "write_fault",
@@ -344,9 +345,9 @@ CATALOG = {
         )
     },
 }
-# Scheduler coverage now checks try-lock guards against the real tick.
-# Older catalogs lack that safety regression and are not matching baselines.
-CATALOG_VERSION = 10
+# Common user-return rescheduling now has a real peer/register regression;
+# older catalogs do not prove this handoff and are not matching baselines.
+CATALOG_VERSION = 11
 FUNCTIONAL = [
     "drivers",
     "resources",

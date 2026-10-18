@@ -2634,8 +2634,8 @@ public:
     }
 
     // Preemption guard: if the task holds a spinlock (preempt_count > 0),
-    // do NOT context-switch. Mark need_resched; the next timer tick after
-    // the critical section retries. Account time even while it cannot switch.
+    // do NOT context-switch. Mark need_resched; user return or the next tick
+    // after the critical section retries. Account time even while blocked.
     bool preempt_blocked = (curr->preempt_count > 0);
 
     // Donation changes the server's dispatch priority, not which thread
@@ -2679,7 +2679,7 @@ public:
         }
         curr->need_resched = true;
         if (preempt_blocked) {
-          return; // Retry at the next tick after preemption becomes possible.
+          return; // Leave the request for user return or the next eligible tick.
         }
         curr->state = ProcessState::Ready;
         record_preemption();
@@ -2694,7 +2694,7 @@ public:
       curr->need_resched = true;
       update_current(curr, delta);
       if (preempt_blocked) {
-        return; // Retry at the next tick after preemption becomes possible.
+        return; // Leave the request for user return or the next eligible tick.
       }
       curr->state = ProcessState::Ready;
       record_preemption();
@@ -2887,6 +2887,9 @@ private:
         } else {
           // Dispatch runs on bootstrap: every outgoing task returns there before
           // the next selection. No continuation is replaced before its save.
+          // Selection consumes requests from the previous run. Queue/priority
+          // publishers take this lock, so a new request after dispatch survives.
+          task->need_resched.store(false, moss::memory_order_relaxed);
           CfsScheduler::set_current_task(task);
           task->state = ProcessState::Running;
           task->se.exec_start = now; // Start both CPU-time and CFS accounting at dispatch.
@@ -3025,15 +3028,6 @@ private:
     }
   }
 
-  void check_need_resched() noexcept {
-    Thread *curr = get_current_task();
-    if (curr && curr->need_resched) {
-      // This hook does not dispatch. Wiring a safe return/unlock preemption
-      // point still needs a lock/IRQ-context audit; scheduling here blindly
-      // could suspend a lock owner needed by the next task.
-    }
-  }
-
   [[nodiscard]] static u32 get_current_cpu_id() noexcept { return arch::get_current_cpu_id(); }
 
   // CFS periods, load-balance intervals and CPU runtime are nanoseconds;
@@ -3041,6 +3035,28 @@ private:
   [[nodiscard]] static u64 get_current_time() noexcept { return timer::TimerSubsystem::instance().now_ns(); }
 
 public:
+  // Caller is an audited return checkpoint with IRQs masked. Unlock only
+  // reduces nesting; it must not suspend arbitrary kernel/IRQ lock owners.
+  void check_need_resched() noexcept {
+    Thread *curr = get_current_task();
+    if (!curr || !curr->need_resched.load(moss::memory_order_acquire)) {
+      return;
+    }
+    if (arch::interrupts_enabled() || !curr->is_preemptible() || curr->state != ProcessState::Running) {
+      return; // Preserve the request until a safe checkpoint.
+    }
+    (void)curr->need_resched.exchange(false, moss::memory_order_acq_rel);
+    // Account the sub-tick interval before selection, including self-selection;
+    // bootstrap then charges only time elapsed after this sample.
+    const u64 delta = curr->se.charge_runtime(get_current_time());
+    if (curr->effective_rt_priority() == 0) {
+      update_current(curr, delta);
+      curr->se.prev_sum_exec_runtime = curr->se.sum_exec_runtime;
+    }
+    record_preemption();
+    reschedule_current(curr, get_current_cpu_id());
+  }
+
   // Called after a process exits (sys_exit).  Picks the next runnable task
   // and switches to it.  Never returns to the caller because the exited
   // task's context is no longer valid.

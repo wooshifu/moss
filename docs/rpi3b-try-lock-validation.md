@@ -49,5 +49,6 @@ OpenOCD 脱离后保留正常 Moss 运行。全部部署仅写 RAM。
 
 本修复补齐与普通 lock 相同的抢占保护 hook。没有测量其 Release 热路径成本，
 不从 Debug 的正确性回归声称吞吐改善或 Linux 对比达标。
-check_need_resched 尚不调度，最外层 preempt_enable 仍仅减计数；
-完整安全点和任务所有权审计继续保持开放。
+第二批结束时 check_need_resched 尚不调度，最外层 preempt_enable 仍仅减计数；
+统一用户返回随后见[第三批验收](rpi3b-return-reschedule-validation.md)，
+其他安全点和完整任务所有权审计继续保持开放。

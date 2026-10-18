@@ -1920,8 +1920,36 @@ IRQ 锁的成功/失败/嵌套计数，以及外锁尚在时的 RR 抢占延后�
 runner 增加 scheduler，catalog 升至 v10。
 宿主定向回归 **173 passed**，lint/格式通过，完整范围与原始日志见
 [本批验收](docs/rpi3b-try-lock-validation.md)。
-check_need_resched、最外层抢占恢复与 on-CPU 交接仍未闭环；MOSS-017 保持开放。
+本批结束时 check_need_resched、最外层抢占恢复与 on-CPU 交接仍未闭环；
+统一用户返回随后见 3.111，MOSS-017 保持开放。
 本批没有 Release/Linux 性能对照，不以 Debug 正确性断言推导性能结论。
+
+### 3.111 统一用户返回的抢占安全点（2026-10-18）
+
+三 ISA 的 user_return_handler 在信号检查前调用公开的 check_need_resched。
+无请求立即返回；IRQ 未屏蔽、preempt_count 非零或非 Running 时保留请求。
+安全时原子消费请求，补记实际 sub-tick CPU/CFS 时间，复用现有 bootstrap
+保存/恢复和自选路径；借用 TrapFrame 保留到原线程恢复后，再处理期间到达的信号。
+真正派发时在已有转换锁内清除上次运行的请求，避免旧 tick 标志导致重复调度。
+没有在任意 unlock/preempt_enable 内加入调度，最外层恢复仍只减少嵌套计数。
+
+新增 scheduler/reschedule_safe_point 的旧实现为 **4 个断言通过、2 个失败**；
+新增 users.frame/return_reschedule 用两个 CPU0 真实进程及寄存器探针，
+在父进程 syscall 返回时关闭本核 timer 并唤醒 RT 子进程，要求子进程先运行再返回父进程。
+旧实现错误 mask 为 `0x4`，不能由稍后的 tick 掩盖；清理恢复 timer 并检查子进程回收。
+x64 首次探针误用已被结果覆盖的 RAX 识别 syscall，失败记录保留；
+最终三 ISA 均按汇编 post-syscall PC 触发，没有调整生产 ABI 或断言。
+
+三架构 Debug 构建通过；最终 ARM64、x64 QEMU 各 **147/147**，
+RV64 为 **140 passed、1 timeout、6 not_run**。该超时发生于 users.exec 的
+PagePressure 页面回收，原 5 秒时限未调整；相同镜像隔离 users.exec **32/32** 通过，
+但根因仍未确认，不将矩阵记为一次全绿。宿主 **173 passed**，定向 lint/格式通过。
+Pi 同一最终镜像 users.frame **4/4**、scheduler **18/18**、users.ipc **22/22** 已通过；
+首次 2 MHz 回读差异在进入内核前中止，四字节差异、只读复查和 1 MHz 全量重部署均保留。
+完整范围、原始日志与镜像身份见[本批验收](docs/rpi3b-return-reschedule-validation.md)。
+
+内核态 IRQ 返回、其他最外层抢占恢复、完整迁移/on-CPU 协议、长期负载与
+Release/Linux 性能继续开放；MOSS-017 未关闭。
 
 ## 4. 问题总表与当前状态
 
@@ -1943,7 +1971,7 @@ check_need_resched、最外层抢占恢复与 on-CPU 交接仍未闭环；MOSS-0
 | MOSS-014 | P1 | fork 用户现场与继承状态 | 部分实现；三 ISA GP/条件码及 x64 legacy FP 已有回归；2026-10-18 补 ARM64 实时 FP/NEON 继承和 Pi 红绿对照。完整属性继承、其他扩展状态/信号组合及失败覆盖仍开放，不能关闭整项。 |
 | MOSS-015 | P1 | exec 原子替换 | 已关闭（3.25）；全部可失败准备均在旧地址空间仍有效时完成，提交后才回收旧所有权；PFA 与六级 heap 失败、可变 ELF 快照及 FD 语义已在六配置通过。 |
 | MOSS-016 | P1 | ELF 校验与分段策略 | 已关闭（3.26）；不可变 LoadPlan、checked arithmetic、严格拒绝 oracle、17 个畸形映像，以及非页对齐 RX/RW 的实际字节/零填充/最终权限已在六配置通过。 |
-| MOSS-017 | P1 | 运行队列 / 迁移 / on-CPU | 部分修复；已有 task_transition_lock_、take_next_task、migrate_ready_task 与 migration_current_owner 回归，3.28 自身 affinity 红绿证据保留；剩余为交接/抢占安全点和完整负载验收，check_need_resched 仍不调度。 |
+| MOSS-017 | P1 | 运行队列 / 迁移 / on-CPU | 部分修复；已有 task_transition_lock_、take_next_task、migrate_ready_task 与 migration_current_owner 回归，3.28 自身 affinity 红绿证据保留；3.110 补 try-lock 抢占配对，3.111 接通统一用户返回安全点；其余安全点、完整交接/负载及 Release 性能仍待验收。 |
 | MOSS-018 | P1 | wait/console 丢失唤醒 | 部分修复；wait 的 child-exit/登记交错及 EINTR 已有红绿验收（3.59～3.60）；console 的 RX 排队窗口、双读者及跨 CPU IRQ/登记交错分别在 3.62～3.64 验收。SA_RESTART 限定重启子集已验收（3.65）；历史 SMP 超时因果仍待确认。 |
 | MOSS-019 | P1 | nanosleep / timer 生命周期 | 部分修复；三 ISA 实际睡眠、容量失败、deadline 溢出、跨 CPU 交接及同步取消已有实现；捕获信号的 EINTR 与相对剩余时间已有九预设红绿验收（3.61）。更广定时交错仍待验收。 |
 | MOSS-020 | P1 | 信号投递 / STOP/CONT/SIGCHLD | 部分修复；结果/handler 参数写回、SIGCHLD、pipe/console 中断与部分传输、wait/nanosleep EINTR、限定 SA_RESTART 重试及 CPU-bound IRQ 投递已验收（3.60～3.66）。基本 STOP/CONT 交接、waitpid 一次性状态、信号致死状态、SA_NOCLDSTOP、进程组 wait 筛选与成员变更唤醒、SA_NOCLDWAIT/显式 SIG_IGN 自动回收及 action 一致快照通过（3.67～3.74）；完整 job control 与更广交错仍待补。 |
@@ -2217,8 +2245,9 @@ fork_registers 失败，修复后两者通过；catalog 升至 v9，旧 GP-only 
 
 **2026-10-18 源码复核：** 当前已有 `task_transition_lock_` 下的取任务/迁移、
 出队当前任务和保存 continuation 后交接，以及 `migration_current_owner` 回归。
-下面保留原审计位置作为历史；尚需闭合的是完整交错与抢占安全点。
-`check_need_resched()` 仍没有执行调度，本轮只修正其误导注释。
+下面保留原审计位置作为历史；3.110 已补 try-lock 抢占计数配对，
+3.111 接通统一用户返回的 `check_need_resched()`，保留不安全上下文的请求。
+内核态 IRQ 返回、最外层抢占恢复、完整交接交错与性能验收仍未闭合。
 
 **原始位置与事实（修复前）：** `src/process/src/process-scheduler.cppm:407` 的入队会初始化节点，缺少足够的重复入队防护；`:452` 选中任务后返回裸指针并解锁，之后另行出队。`:1156` 的公共入队路径在队列操作后再更新部分线程状态。`:1630` 的 tick 在旧任务现场完全切换保存前将其重新放回可被选择的集合。
 
@@ -2226,7 +2255,8 @@ fork_registers 失败，修复后两者通过；catalog 升至 v9，旧 GP-only 
 
 **影响：** 竞争时可重复出队、双 CPU 选择同一任务、破坏红黑树节点或把尚在旧 CPU 执行的任务交给新 CPU。现有一次 SMP hello 成功不能覆盖这些交错。
 
-另外 `preempt_enable()` 的计数下降与调度请求处理没有完整闭环，`src/process/src/process-scheduler.cppm:2081` 的 `check_need_resched()` 为空。设置 `need_resched` 不等于返回用户态前一定执行抢占。
+原始审计时 `check_need_resched()` 为空；3.111 现在在用户返回时消费安全的调度请求。
+`preempt_enable()` 仍只减少计数，不在任意锁释放处调度；非用户返回安全点仍待单独审计。
 
 **修复：**
 
