@@ -40,7 +40,7 @@
 
 ## 当前架构与构建边界
 
-MOSS 当前是 C++26 freestanding 内核，三架构已有实际启动、中断、调度及用户态执行路径。内核仍承担 POSIX 进程、普通 ELF、VFS 和启动驱动；独立的用户态 supervisor、文件/命名空间服务、Code Authority Service、受限 Loader Service 和 Process Compatibility Service 已经通过 capability 控制 IPC 协作。文件服务已从只读启动归档供应启动文件，并承载 `/scratch` 易失文件。Loader 可从已封存的不具名文件装载带有界启动参数及静态 libc TLS 模板的原生域，再由 supervisor 将恢复 scope 内的域登记为 Process Service 子进程；普通 shell 文件路径和 POSIX `execve` 尚未迁出内核。
+MOSS 当前是 C++26 freestanding 内核，三架构已有实际启动、中断、调度及用户态执行路径。内核承担 POSIX 进程、普通 ELF、VFS 和启动驱动；独立的用户态 supervisor、文件/命名空间服务、Code Authority Service、受限 Loader Service 和 Process Compatibility Service 已经通过 capability 控制 IPC 协作。文件服务已从只读启动归档供应启动文件，并承载 `/scratch` 易失文件。Loader 可从已封存的不具名文件装载带有界启动参数及静态 libc TLS 模板的原生域，再由 supervisor 将恢复 scope 内的域登记为 Process Service 子进程；普通 shell 文件路径和 POSIX `execve` 按 ADR-0036 继续由内核处理。
 
 按 [ADR-0005](docs/adr/0005-generic-kernels-and-independent-runners.md)，同一源码树生成三个 ISA 各自的原生镜像；**同一 ISA 的镜像在满足已支持启动协议和设备契约的机器间复用，不是一个二进制跨三个 ISA 运行**。
 
@@ -134,8 +134,8 @@ ADR-0008～0033 中的实现记录不是完成声明；其强制服务迁移边�
   - [x] 定义对外预算契约并实现有界 Scheduling Profile Capability、准入和可观察指标；线程范围、同步 IPC 的费用归属、时钟不可用时的拒绝规则及策略服务失效行为见 3.106。动态 deadline 的完整验收仍开放。
   - [x] 在途 deadline 的内核收紧机制：后续绑定的更早 donor 沿当前等待链单调收紧绝对期限，预留定时器容量并原地提前到期，Reply 按最新可见期限判定；合成等待链与定时器集成回归见 3.107。现有用户态 Reply 不能复制且服务线程阻塞后不能再接收，尚无真实在途新增 donor 的入口与端到端验收，故上级动态 deadline 项继续开放。
   - [x] 已知 IPC 调用边的深度与死锁准入：绑定和重绑在 IPC 依赖锁下拒绝成环及超过 16 条边的路径，分别返回 `EDEADLK`、`ELOOP`；多 donor 分支、16/17 边界、拒绝清理和有限期限互等恢复经三架构 Debug QEMU 验收，见 3.108。尚未绑定接收线程的无限期调用仍需外部取消，不能据此声称所有用户态死锁已解决。
-- [ ] 完成 capability 寻址的执行域、用户态兼容进程与通用 Loader Service；现有 Loader 仅支持受限静态原生域，内核 PID/信号/普通 `execve` 的 ELF 政策仍待逐步迁出（ADR-0024/0025）。
-- [ ] 将实际 VFS、pager 和非启动设备迁到隔离服务，补资源授权、失败恢复和 DMA 限制；保留有依据的启动机制例外（ADR-0015～0019）。
+- [ ] 按 ADR-0036 收敛普通 POSIX 与原生域/Process/Loader 服务的重叠边界，保留单一 POSIX 文件描述和 VM 真值；现有 ABI、消费者及恢复契约须逐项验收，普通 PID/信号/ELF exec 留在内核。
+- [ ] 为新增隔离设备或服务明确资源授权、所有权、失败恢复与 DMA 限制，并测量端到端成本；普通 VFS/page cache、首批存储和网络数据路径按 ADR-0036 留在内核，不再以全部迁移为前置任务。
 - [ ] 将代码批准及撤销准入扩展到普通 exec、fork、权限升级和 pager；把现有 supervisor 私有 Code Authority Service 扩展为具备产品审核策略和授权输入的装载链，建立启动认证并验证并发撤销及真实平台交接。现有原生域机制和受限服务不等于这些目标已实现（ADR-0026～0033）。
 
 ## P0：隔离与基础所有权

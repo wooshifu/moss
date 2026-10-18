@@ -1,6 +1,6 @@
 # Moss Kernel
 
-The vocabulary used to describe Moss system architecture and evidence about kernel behavior and performance.
+The vocabulary used to describe Moss system architecture and evidence about kernel behavior and performance. Definitions do not establish implementation or acceptance; the current residency boundary is defined by [ADR-0036](docs/adr/0036-develop-a-general-purpose-hybrid-kernel.md) and progress by the [kernel roadmap](docs/kernel-roadmap.md).
 
 ## Language
 
@@ -11,23 +11,23 @@ An operating system whose kernel/user ABI and system-service contracts are owned
 _Avoid_: Android-compatible Moss, Linux-compatible Moss
 
 **Mechanism Kernel Domain**:
-The privileged Moss protection domain that owns machine-wide execution, memory-protection, interrupt and authority invariants. Functionality belongs here only when isolation cannot satisfy an accepted system contract.
-_Avoid_: Monolithic side, macro-kernel module
+The privileged Moss protection domain that owns machine-wide execution, memory-protection, interrupt and authority invariants, together with the VM, scheduling, ordinary POSIX process/exec, VFS/page-cache and initial storage/network paths assigned to it by the hybrid boundary.
+_Avoid_: Mechanisms-only microkernel, complete operating system
 
 **Isolated System Service**:
 A Moss system component that runs in its own protection domain and accesses resources only through explicit kernel-mediated authority. Its failure may disrupt the service and its clients but must not corrupt the Mechanism Kernel Domain.
 _Avoid_: User-space helper, trusted daemon
 
 **Kernel Residency Exception**:
-An explicit decision to place a subsystem path in the Mechanism Kernel Domain because it is required for bootstrap, depends on privilege that cannot be safely mediated, or violates a measured latency, throughput or power budget across the service boundary.
-_Avoid_: Performance-sensitive code, temporary kernel code
+A separately justified addition beyond the agreed hybrid kernel boundary, required for bootstrap, privilege that cannot be safely mediated, or a measured latency, throughput or power budget. Residency already assigned by that boundary does not require an exception.
+_Avoid_: Blanket justification for kernel residency, temporary kernel code
 
 **Moss Capability Handle**:
 A process-local reference to a kernel object carrying explicit, non-amplifiable rights. Possession authorizes only those operations, and transfer or revocation is mediated by the Mechanism Kernel Domain.
 _Avoid_: Global object ID, permission-bearing PID, file descriptor
 
 **POSIX Compatibility View**:
-A source-compatibility projection of file descriptors, paths, process identifiers and credentials over Moss capability-backed services. It does not define the underlying cross-domain authority model.
+A source-compatibility interface for file descriptors, paths, process identifiers and credentials, with one authoritative POSIX file-description and VM state for ordinary applications. Kernel paths and explicitly delegated services remain subject to their respective authority checks.
 _Avoid_: Native kernel authority model, Linux ABI
 
 **Bounded Control Message**:
@@ -103,31 +103,31 @@ An explicitly declared Driver Recovery Domain that controls a bus-mastering devi
 _Avoid_: Isolated Device Driver, safe userspace DMA
 
 **Filesystem Namespace Service**:
-An Isolated System Service that owns pathname interpretation, mount namespaces, current-directory context and routing to filesystem services. Successful resolution returns an object capability; the Mechanism Kernel Domain does not interpret paths or mount relationships.
-_Avoid_: Kernel VFS, global path authority
+An Isolated System Service role that resolves paths to capability-addressed filesystem objects within its delegated namespace. Ordinary POSIX pathname and mount resolution belongs to the kernel VFS.
+_Avoid_: Universal POSIX namespace broker, global path authority
 
 **Filesystem Service**:
 An Isolated System Service that implements an in-memory, persistent or remote filesystem's object model, format parsing, directory operations and access policy. It exposes capability-authorized file and directory protocols rather than kernel inode or dentry callbacks.
 _Avoid_: Filesystem kernel module, userspace helper for kernel VFS
 
 **File Object Capability**:
-A Moss Capability Handle authorizing operations on one open file or directory object supplied by a Filesystem Service. A POSIX file descriptor is a compatibility-layer number referring to such authority, not the native object identity.
+A Moss Capability Handle authorizing operations on one open file or directory object supplied by a Filesystem Service. Ordinary POSIX file descriptors refer to the authoritative POSIX open-file descriptions; they do not imply a service capability or share its identity.
 _Avoid_: Kernel `File *`, globally meaningful file descriptor
 
 **Pager-Backed Memory Object**:
-A Moss Memory Object whose absent contents are supplied and whose dirty contents are reconciled by an authorized Pager Service. The kernel manages physical residency, mappings, access checks and memory accounting without interpreting the external content as a file or other domain object.
+A Moss Memory Object whose absent contents are supplied and whose dirty contents are reconciled by an authorized Pager Service. Physical residency, mappings, access checks and memory accounting remain kernel responsibilities; ordinary file-backed VM and page-cache paths also belong to the kernel.
 _Avoid_: Kernel file mapping, userspace-controlled page table
 
 **Pager Service**:
-An Isolated System Service that interprets offsets in a Pager-Backed Memory Object, supplies requested contents and implements coherence, truncation and writeback policy. It does not choose physical frames or install process page-table entries.
+An Isolated System Service role that supplies contents and implements coherence, truncation and writeback policy for its Pager-Backed Memory Objects. It does not choose physical frames, install process page-table entries or replace ordinary kernel VM/page-cache ownership.
 _Avoid_: Kernel page cache policy, unrestricted external page-fault handler
 
 **Network Stack Service**:
-An Isolated System Service that implements packet protocols, routing, transport state and network policy above an Isolated Device Driver. It exchanges packet buffers through a Shared Memory Data Plane and exposes capability-authorized network objects to clients.
+An Isolated System Service role for packet protocols, routing, transport state and network policy within an explicitly delegated network path. It exchanges packet buffers through a Shared Memory Data Plane and is distinct from the initial kernel network data path.
 _Avoid_: Kernel network stack, NIC driver with embedded TCP/IP
 
 **Socket Capability**:
-A Moss Capability Handle authorizing operations on one endpoint owned by a Network Stack Service. POSIX socket descriptors and operations are compatibility projections over this object and its data plane.
+A Moss Capability Handle authorizing operations on one endpoint owned by a Network Stack Service. Ordinary POSIX sockets need not use that service path; their authority and lifetime belong to the ordinary POSIX object model.
 _Avoid_: Kernel socket object, globally addressable connection ID
 
 **Graphics Execution Service**:
@@ -163,11 +163,11 @@ A capability-addressed kernel protection object containing an address space, cap
 _Avoid_: Globally addressable PID, POSIX process object in the native ABI
 
 **Process Compatibility Service**:
-An Isolated System Service that builds POSIX process identities and relationships over Execution Domain and Thread capabilities. It owns PID namespaces, parent and child policy, process groups, sessions, compatibility credentials, wait state and signal semantics.
+An Isolated System Service that provides compatibility identities, relationships, wait state and signal operations for Execution Domains explicitly registered with it. Ordinary POSIX process identity, relationships, credentials, wait and signal state remain kernel responsibilities.
 _Avoid_: Kernel PID manager, native authority through uid or PID
 
 **Loader Service**:
-An Isolated System Service that parses executable formats and constructs a new Execution Domain from capability-authorized Memory Objects, mappings, initial thread state and explicitly inherited handles. The kernel validates generic execution invariants without parsing the executable format.
+An Isolated System Service that parses executable formats and constructs a new Execution Domain from capability-authorized Memory Objects, mappings, initial thread state and explicitly inherited handles. Ordinary POSIX ELF loading and atomic exec replacement remain kernel responsibilities.
 _Avoid_: Kernel ELF loader, executable parser in a syscall
 
 **Code Authority Service**:
