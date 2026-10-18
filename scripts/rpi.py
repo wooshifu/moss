@@ -167,8 +167,13 @@ def console(fd: int, log: Path, *, timeout: float | None, send: str | None, expe
                         print("\nBoot check: shell ready; sending input probe...", file=sys.stderr, flush=True)
                         write_all(fd, PROBE_COMMAND)
                         sent = True
-                    if check and sent and PROBE_RESULT in normalized and normalized.endswith(PROMPT):
-                        return True
+                        # Only bytes read after sending the probe can prove this exchange.
+                        received.clear()
+                    elif check and sent:
+                        result_start = normalized.find(PROBE_RESULT)
+                        # Later asynchronous service logs cannot undo a completed round trip.
+                        if result_start >= 0 and PROMPT in normalized[result_start + len(PROBE_RESULT) :]:
+                            return True
                     if expect is not None and expect.encode() in normalized:
                         return True
                     # Retain enough tail for split prompts/markers; raw logs retain all bytes.

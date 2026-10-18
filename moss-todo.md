@@ -2048,6 +2048,23 @@ P0-3 后续源码复核发现各核 timer 均进入 scheduler_tick，而 tick_co
 periodic_balance 的 last_balance_time_ 仍为共享普通字段；下一步需明确全局扫描
 拥有者/同步并补确定性回归。尚未运行该交错，不把它当作上述超时的已确认根因。
 
+### 3.116 Pi host 输入检查与异步服务日志（2026-10-18）
+
+3.115 基线启动已收到独立结果行和下一 prompt，但随后 supervisor 日志使旧
+`console()` 的 endswith(PROMPT) 判定按原 90 秒超时。现在只接受探针发送后
+收到的独立结果行及其后的 prompt，后续服务日志不撤销已完成往返；发送前残留
+marker 也不能使新探针误报成功。复用原 UART 独占和日志路径，期限保持原值。
+
+八个真实 PTY 用例覆盖 echo-only、正常结果、异步日志、分包、无 prompt、
+prompt 在结果前、嵌入 marker 和探针前旧结果。旧实现 **3 failed、5 passed**，
+新实现全部通过；完整原始 Pi 失败响应回放也为旧超时、新通过。
+相关宿主 **260 passed、1 skipped**，Ruff/format 通过。当前普通生产镜像运行于
+Pi 3B+，新 runner 实际 UART 探针及下一 prompt 通过，退出后释放串口。
+
+原部署结果仍为 failed，主机回放与新真机往返分别记录。本批没有改动内核镜像，
+不将主机误报当作 3.114 输入截断、其他 IRQ 屏蔽或历史 SMP 超时的共同原因。
+范围、镜像身份和原始证据见[本批验收](docs/rpi3b-shell-check-validation.md)。
+
 ## 4. 问题总表与当前状态
 
 | 编号 | 优先级 | 审计主题 | 当前状态与下一步 |

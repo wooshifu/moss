@@ -159,11 +159,33 @@ def test_jtag_load_rejects_empty_image(tmp_path):
         OpenOCD().load(image, INITRD_BASE)
 
 
+# The supervisor tail reproduces the preserved Pi log, including its observed timings.
 @pytest.mark.parametrize(
-    "reply,passed",
-    [(b"echo MOSS_RPI_INPUT_OK\r\nmoss$ ", False), (b"echo MOSS_RPI_INPUT_OK\r\nMOSS_RPI_INPUT_OK\r\nmoss$ ", True)],
+    "initial,reply,passed",
+    [
+        pytest.param(b"moss$ ", (b"echo MOSS_RPI_INPUT_OK\r\nmoss$ ",), False, id="echo_only"),
+        pytest.param(
+            b"moss$ ", (b"echo MOSS_RPI_INPUT_OK\r\nMOSS_RPI_INPUT_OK\r\nmoss$ ",), True, id="result_and_prompt"
+        ),
+        pytest.param(
+            b"moss$ ",
+            (b"echo MOSS_RPI_INPUT_OK\r\nMOSS_RPI_INPUT_OK\r\nmoss$ ready since_init_ms=117 delta_ms=22\r\n",),
+            True,
+            id="supervisor_after_prompt",
+        ),
+        pytest.param(
+            b"moss$ ",
+            (b"echo MOSS_RPI_INPUT_OK\r\nMOSS_RPI_IN", b"PUT_OK\r\nmoss", b"$ ready since_init_ms=117 delta_ms=22\r\n"),
+            True,
+            id="split_result_and_prompt",
+        ),
+        pytest.param(b"moss$ ", (b"MOSS_RPI_INPUT_OK\r\n",), False, id="result_without_prompt"),
+        pytest.param(b"moss$ ", (b"moss$ \r\nMOSS_RPI_INPUT_OK\r\n",), False, id="prompt_before_result"),
+        pytest.param(b"moss$ ", (b"supervisor: MOSS_RPI_INPUT_OK\r\nmoss$ ",), False, id="embedded_marker"),
+        pytest.param(b"\r\nMOSS_RPI_INPUT_OK\r\nmoss$ ", (), False, id="result_before_probe"),
+    ],
 )
-def test_boot_check_requires_command_output(tmp_path, reply, passed):
+def test_boot_check_requires_command_output(tmp_path, initial, reply, passed):
     master, slave = pty.openpty()
     program = """
 import sys
@@ -172,7 +194,7 @@ from scripts.rpi import uart, console
 with uart(sys.argv[1]) as fd:
     console(fd, Path(sys.argv[2]), timeout=1, send=None, expect=None, check=True)
 """
-    # One second bounds an echo-only failure; the PTY has no hardware boot delay.
+    # One second bounds invalid/missing replies; the PTY has no hardware boot delay.
     process = subprocess.Popen(
         [sys.executable, "-c", program, os.ttyname(slave), str(tmp_path / "check.log")],
         cwd=Path(__file__).resolve().parents[2],
@@ -180,17 +202,28 @@ with uart(sys.argv[1]) as fd:
         stderr=subprocess.PIPE,
     )
     try:
+        # Three seconds accommodates host scheduling, without changing the console deadline.
+        host_timeout = 3
         # Wait for the child to open/configure the slave before delivering a boot prompt.
-        assert select.select([process.stderr], [], [], 3)[0], "console did not open"
+        assert select.select([process.stderr], [], [], host_timeout)[0], "console did not open"
         process.stderr.readline()
-        os.write(master, b"moss$ ")
-        assert select.select([master], [], [], 3)[0], "check did not send its probe"
-        assert os.read(master, 4096) == b"echo MOSS_RPI_INPUT_OK\n"
-        os.write(master, reply)
+        os.write(master, initial)
+        assert select.select([master], [], [], host_timeout)[0], "check did not send its probe"
+        assert os.read(master, len(rpi.PROBE_COMMAND)) == rpi.PROBE_COMMAND
+        assert select.select([process.stdout], [], [], host_timeout)[0], "console did not log the initial prompt"
+        assert process.stdout.read(len(initial)) == initial
+        for chunk in reply:
+            os.write(master, chunk)
+            # Wait for console to read/echo each fragment before sending the next;
+            # otherwise the PTY could coalesce a purported split-response test.
+            assert select.select([process.stdout], [], [], host_timeout)[0], "console did not read the reply"
+            assert process.stdout.read(len(chunk)) == chunk
+        # Five seconds covers the one-second console deadline and interpreter teardown.
         _, stderr = process.communicate(timeout=5)
         assert (process.returncode == 0) == passed, stderr.decode()
         if not passed:
             assert b"Expected shell response was not received" in stderr
+        assert (tmp_path / "check.log").read_bytes() == initial + b"".join(reply)
     finally:
         if process.poll() is None:
             process.kill()

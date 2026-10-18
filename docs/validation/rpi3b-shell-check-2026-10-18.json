@@ -1,0 +1,213 @@
+{
+  "date": "2026-10-18",
+  "base_revision": "c79f2c629cf5d665315b59fa5576e919ce9addff",
+  "scope": "Host console shell-input completion after a fresh probe",
+  "source": {
+    "scripts/rpi.py": {
+      "path": "/Users/shifu/code/os/moss/scripts/rpi.py",
+      "bytes": 33584,
+      "sha256": "3f4e98f4991b222f3322c072b0e18bdff5ec27f36385dfc7c234a9116ea6a825"
+    },
+    "scripts/tests/test_rpi.py": {
+      "path": "/Users/shifu/code/os/moss/scripts/tests/test_rpi.py",
+      "bytes": 17275,
+      "sha256": "7daa615514ea3922e85ee9a5502ee2ad79a08d01f6c8813c9ece47f4dcedd81a"
+    },
+    "docs/rpi3b.md": {
+      "path": "/Users/shifu/code/os/moss/docs/rpi3b.md",
+      "bytes": 7738,
+      "sha256": "9027f675d6038e57a819ef9bb5163a4965ef1a41feb9b3b16529200afad91c49"
+    },
+    "docs/kernel-roadmap.md": {
+      "path": "/Users/shifu/code/os/moss/docs/kernel-roadmap.md",
+      "bytes": 15446,
+      "sha256": "d66d9e891148497c4ca2ef03bc88b114688d3d66c238c893892749b49eea0267"
+    },
+    "todo.md": {
+      "path": "/Users/shifu/code/os/moss/todo.md",
+      "bytes": 72694,
+      "sha256": "6422cd9e5ec9ce31880884c7093838df26d158757bc72ebe986a894f12bc43eb"
+    },
+    "moss-todo.md": {
+      "path": "/Users/shifu/code/os/moss/moss-todo.md",
+      "bytes": 438491,
+      "sha256": "3be5ab961b13cb8bb2c243c22c6135e803d66913f8178cf60ce34b880d9bdff0"
+    },
+    "docs/rpi3b-shell-check-validation.md": {
+      "path": "/Users/shifu/code/os/moss/docs/rpi3b-shell-check-validation.md",
+      "bytes": 3837,
+      "sha256": "999f7b5800c48a44dab09eb7cd0766f546f5fd640123f2930da9a5e31a082eec"
+    }
+  },
+  "patch": {
+    "path": "/Volumes/MossBuild/moss/evidence/shell-check-async-2026-10-18/source.patch",
+    "bytes": 11830,
+    "sha256": "2bac1f864ba3821bd35ccb40f7cc10d2db6c6de6bffe0c4a0d9dda1bf66c7db3"
+  },
+  "host": {
+    "red_cases": {
+      "test_boot_check_requires_command_output[echo_only]": "passed",
+      "test_boot_check_requires_command_output[result_and_prompt]": "passed",
+      "test_boot_check_requires_command_output[supervisor_after_prompt]": "failed",
+      "test_boot_check_requires_command_output[split_result_and_prompt]": "failed",
+      "test_boot_check_requires_command_output[result_without_prompt]": "passed",
+      "test_boot_check_requires_command_output[prompt_before_result]": "passed",
+      "test_boot_check_requires_command_output[embedded_marker]": "passed",
+      "test_boot_check_requires_command_output[result_before_probe]": "failed"
+    },
+    "green_total": {
+      "name": "pytest",
+      "errors": "0",
+      "failures": "0",
+      "skipped": "1",
+      "tests": "261",
+      "time": "34.579",
+      "timestamp": "2026-10-18T21:22:29.819256+08:00",
+      "hostname": "wus-MacBook-Pro.local"
+    },
+    "green_directed_cases": 8
+  },
+  "original_failed_deployment": {
+    "deployment": "JTAG RAM only",
+    "image_base": 2097152,
+    "dtb_base": 805306368,
+    "initrd_base": 536870912,
+    "boot_check": "failed",
+    "files": {
+      "kernel": {
+        "path": "/Volumes/MossBuild/moss/evidence/loader-startup-diagnosis/perf-baseline-02/moss.bin",
+        "sha256": "2c6eb12755952f5a95bafcc0a36815ab790e76ce13b455209233e2abba58946f"
+      },
+      "initramfs": {
+        "path": "/Volumes/MossBuild/moss/evidence/loader-startup-diagnosis/perf-baseline-02/initramfs.cpio",
+        "sha256": "13109e659f832d03b635a2a4ae6286f8fbcf90c210ee4220e22f7d831d1f03f3"
+      },
+      "dtb": {
+        "path": "/Volumes/MossBuild/moss/evidence/loader-startup-diagnosis/perf-baseline-02/deploy/moss.dtb",
+        "sha256": "696a2e0c55418362f4893e0efcdafbd9c0cfbb8051646db8542896ee06cd970a"
+      }
+    },
+    "error": "Expected shell response was not received; inspect serial.log"
+  },
+  "exact_response_replay": {
+    "response_sha256": "4e8b04dd3f70c2f23affe448d23790dea8b54c700360754466892089ee5ec28f",
+    "results": [
+      {
+        "variant": "old",
+        "source_sha256": "44a08e4b530b002dede3f7c03d6d733c5f6194778ca0356b24f8e65a77b287a1",
+        "returncode": 1,
+        "timeout": true
+      },
+      {
+        "variant": "fixed",
+        "source_sha256": "3f4e98f4991b222f3322c072b0e18bdff5ec27f36385dfc7c234a9116ea6a825",
+        "returncode": 0,
+        "timeout": false
+      }
+    ]
+  },
+  "live_pi": {
+    "status": "passed",
+    "board": "Raspberry Pi 3 Model B Plus Rev 1.3",
+    "port": "/dev/cu.usbserial-14440",
+    "deployment": {
+      "deployment": "JTAG RAM only",
+      "image_base": 2097152,
+      "dtb_base": 805306368,
+      "initrd_base": 536870912,
+      "boot_check": "shell_input_passed",
+      "files": {
+        "kernel": {
+          "path": "/Volumes/MossBuild/moss/evidence/loader-startup-diagnosis/regression-green-artifacts/moss.bin",
+          "sha256": "5cd1adb36c921bff738e89dba39ad21ba6f87fd38e1fce8310d1849db61fb4e7"
+        },
+        "initramfs": {
+          "path": "/Volumes/MossBuild/moss/evidence/loader-startup-diagnosis/regression-green-artifacts/initramfs.cpio",
+          "sha256": "839e2f1d42fc0ff96e5851a8db283255ebbe936c6b6d375cb20cae656c15f8ad"
+        },
+        "dtb": {
+          "path": "/Volumes/MossBuild/moss/evidence/loader-startup-diagnosis/production-restore/moss.dtb",
+          "sha256": "8ad5e579a69a3ea6c043e9a6e6231d3e31d953f8ec5859fe79fe761795b2b407"
+        }
+      }
+    },
+    "runner_sha256": "3f4e98f4991b222f3322c072b0e18bdff5ec27f36385dfc7c234a9116ea6a825",
+    "timeout_seconds": 30,
+    "elapsed_seconds": 0.5620873130392283
+  },
+  "final_connection_state": {
+    "uart_lsof": {
+      "exit_code": 1,
+      "stdout": "",
+      "stderr": ""
+    },
+    "debug_ports": {
+      "3333": "closed",
+      "3334": "closed",
+      "3335": "closed",
+      "3336": "closed",
+      "6666": "closed"
+    }
+  },
+  "checks": [
+    {
+      "command": [
+        "uv",
+        "run",
+        "--frozen",
+        "ruff",
+        "check",
+        "scripts/rpi.py",
+        "scripts/tests/test_rpi.py"
+      ],
+      "exit_code": 0,
+      "stdout": "All checks passed!\n",
+      "stderr": ""
+    },
+    {
+      "command": [
+        "uv",
+        "run",
+        "--frozen",
+        "ruff",
+        "format",
+        "--check",
+        "scripts/rpi.py",
+        "scripts/tests/test_rpi.py"
+      ],
+      "exit_code": 0,
+      "stdout": "2 files already formatted\n",
+      "stderr": ""
+    },
+    {
+      "command": [
+        "git",
+        "diff",
+        "--check"
+      ],
+      "exit_code": 0,
+      "stdout": "",
+      "stderr": ""
+    }
+  ],
+  "limits": [
+    "The live exchange used an already running, previously readback-verified image",
+    "Startup asynchronous bytes were verified by PTY replay; the new live exchange had no such startup log",
+    "No kernel rebuild, QEMU rerun, upload or performance claim; prior kernel failures remain open"
+  ],
+  "full_evidence": {
+    "path": "/Volumes/MossBuild/moss/evidence/rpi3b-shell-check-2026-10-18-full.tar.gz",
+    "bytes": 369577,
+    "sha256": "ea8a69ec32b28513608fe5435365930b966ee7ecb27e803036c5215325e69610"
+  },
+  "text_evidence": {
+    "path": "/Users/shifu/code/os/moss/docs/validation/rpi3b-shell-check-2026-10-18-evidence.tar.gz",
+    "bytes": 334244,
+    "sha256": "03a3771b2007e0436d69ec9b21daf66a6e8ba36f7371f13a83d5b96490da1fae"
+  },
+  "file_index": {
+    "path": "/Volumes/MossBuild/moss/evidence/shell-check-async-2026-10-18/file-index.json",
+    "bytes": 100374,
+    "sha256": "26a9836ff92c46f1b12726213a704f6b9cf171416fccd97309cddfe72d714fd9"
+  }
+}

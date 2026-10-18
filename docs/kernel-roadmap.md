@@ -166,3 +166,14 @@ P1 的存储与网络可按具体消费者分片推进，TCP 依赖可用的收�
   的确定性回归；本批未据此解释上述超时，也未修改这些调度路径。
 
 详见 [本批验收记录](rpi3b-instruction-cache-validation.md)。
+
+## 第八批实施结果（2026-10-18）
+
+- [x] 修复 Pi host `--check` 对 prompt 后 supervisor 日志的误报；探针发送后
+  的独立结果行及后续 prompt 完成往返，发送前残留结果不能作为新探针成功。
+- [x] 八个真实 PTY 边界用例在旧实现为 3 failed、5 passed，新实现全部通过；
+  原 Pi 失败响应逐字节回放也为旧超时、新通过。相关宿主 **260 passed、1 skipped**。
+- [x] 当前普通镜像继续运行在 Pi 3B+，新 runner 的实际 UART 命令往返通过。
+  原部署的 90 秒失败记录保持 failed；本批为主机判定修复，不关闭内核 RX/调度开放项。
+
+详见 [本批验收记录](rpi3b-shell-check-validation.md)。

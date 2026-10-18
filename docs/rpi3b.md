@@ -77,8 +77,11 @@ console, and reads back every uploaded byte before entering the Image with the
 DTB in `x0`. CPU secondary startup uses the firmware spin tables in that tree.
 
 `--check` waits up to 90 seconds after entry for `moss$ `, sends an `echo` command,
-and requires its output and the next prompt. Exit status zero proves shell input
-and response for this run. `build/rpi3b/result.json` records image hashes and the
+and requires a standalone result line received after sending the command, followed
+by the next prompt. Service logs following that prompt do not undo completion;
+command echo, old results and a prompt preceding the result cannot pass the check.
+Exit status zero proves shell input and response for this run.
+`build/rpi3b/result.json` records image hashes and the
 result; `serial.log` contains received bytes. This smoke check does not establish
 complete device support or stability.
 
