@@ -77,3 +77,15 @@ P1 的存储与网络可按具体消费者分片推进，TCP 依赖可用的收�
 - [ ] Release/Linux 同板性能基线、其余物理套件和 P0-3/4 继续推进；不由本批结果代替。
 
 镜像身份、红绿对照与范围见 [本批验收记录](rpi3b-fork-validation.md)。
+
+## 第二批实施结果（2026-10-18）
+
+- [x] 修复 P0-3 的前置缺陷：try_lock 成功遗漏抢占计数，unlock 会错误消耗外层锁的保护。
+  保护在 CAS 前建立，失败回滚，成功保持到解锁；VM 事务、日志和 IRQ 锁共用此修复。
+- [x] 新增真实 scheduler_tick 回归，检查两种锁的成功/失败/嵌套计数，以及持外层锁时延后抢占；
+  旧 ARM64 QEMU 为 3 个断言通过、2 个失败，新 Pi scheduler 17/17 通过。
+- [x] 真机 runner 增加无需主机输入的 scheduler 套件，catalog 升至 v10。
+- [ ] check_need_resched、IRQ/syscall 返回安全点、完整 on-CPU 交接和性能预算仍属于 P0-3，
+  不因这次锁保护修复而关闭。
+
+详见 [本批验收记录](rpi3b-try-lock-validation.md)。

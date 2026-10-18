@@ -1906,6 +1906,23 @@ initramfs、symbols/provenance；首批选择无输入注入的四个套件。AR
 本轮未建立 Release/Linux 性能对照，也未关闭 MOSS-014 整项、抢占闭环、
 完整 VM/进程事务或其余套件的物理覆盖。
 
+### 3.110 try_lock 的抢占计数配对（2026-10-18）
+
+`TicketSpinLock::try_lock()` 原先成功不增加抢占计数、unlock 却递减，会消耗
+外层锁的保护。现与普通 lock 共用 hook：CAS 前禁止抢占，失败回滚、成功保持
+到解锁。VM 事务、日志和 IRQ 锁包装均使用这一根部修复，没有增加阻塞或分配。
+
+新增 `scheduler/try_lock_preemption` 使用真实 scheduler_tick，检查普通锁和
+IRQ 锁的成功/失败/嵌套计数，以及外锁尚在时的 RR 抢占延后。
+旧 ARM64 QEMU 为 3 个断言通过、2 个失败，后九项保留 not_run；修复后
+三架构 Debug 的 scheduler、users.frame、users.uaccess、users.exec 共 **192 case**
+通过。真机同镜像 scheduler **17/17**、users.uaccess **12/12** 通过，
+runner 增加 scheduler，catalog 升至 v10。
+宿主定向回归 **173 passed**，lint/格式通过，完整范围与原始日志见
+[本批验收](docs/rpi3b-try-lock-validation.md)。
+check_need_resched、最外层抢占恢复与 on-CPU 交接仍未闭环；MOSS-017 保持开放。
+本批没有 Release/Linux 性能对照，不以 Debug 正确性断言推导性能结论。
+
 ## 4. 问题总表与当前状态
 
 | 编号 | 优先级 | 审计主题 | 当前状态与下一步 |

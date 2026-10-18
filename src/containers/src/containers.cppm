@@ -223,9 +223,20 @@ public:
   }
 
   [[nodiscard]] bool try_lock() noexcept {
+    // Guard before acquiring ownership: a tick must not switch away while
+    // this lock is held, even when an outer lock already guards the thread.
+    if (g_preempt_disable_fn) {
+      g_preempt_disable_fn();
+    }
     u32 current = now_serving_.load(MemoryOrder::Acquire);
     u32 next = current;
-    return next_ticket_.compare_exchange_weak(next, current + 1, MemoryOrder::Acquire, MemoryOrder::Relaxed);
+    if (next_ticket_.compare_exchange_weak(next, current + 1, MemoryOrder::Acquire, MemoryOrder::Relaxed)) {
+      return true; // Keep this guard until unlock(), just as lock() does.
+    }
+    if (g_preempt_enable_fn) {
+      g_preempt_enable_fn(); // A failed try owns no lock and must leave no guard.
+    }
+    return false;
   }
 
   [[nodiscard]] bool is_locked() const noexcept {

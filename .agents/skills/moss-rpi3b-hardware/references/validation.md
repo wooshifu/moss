@@ -72,7 +72,7 @@ uv run scripts/rpi_perf.py measure --port "$PORT" --output "$RUN/perf" \
 
 ## 物理板内核套件 runner
 
-当前 `scripts/rpi.py validate` 可运行无需输入注入的 `mm`、`users.frame`、
+当前 `scripts/rpi.py validate` 可运行无需输入注入的 `mm`、`scheduler`、`users.frame`、
 `users.uaccess`、`users.ipc`，每次一套件、独立启动。使用新结果目录：
 
 ```sh

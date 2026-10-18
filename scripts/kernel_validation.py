@@ -105,6 +105,7 @@ CATALOG = {
         "kernel_stack_initialization",
         "cfs_self_selection",
         "rr_self_selection",
+        "try_lock_preemption",
         "cpu_runtime_accounting",
         "cpu_budget_accounting",
         "cpu_budget_admission",
@@ -343,9 +344,9 @@ CATALOG = {
         )
     },
 }
-# ARM64 register probes now also enforce FP/NEON inheritance. Version the
-# stronger coverage so older GP-only reports cannot serve as its baseline.
-CATALOG_VERSION = 9
+# Scheduler coverage now checks try-lock guards against the real tick.
+# Older catalogs lack that safety regression and are not matching baselines.
+CATALOG_VERSION = 10
 FUNCTIONAL = [
     "drivers",
     "resources",

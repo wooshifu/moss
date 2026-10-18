@@ -199,8 +199,7 @@ with uart(sys.argv[1]) as fd:
         os.close(slave)
 
 
-def validation_stream(*, failed=False):
-    workload = "users.frame"
+def validation_stream(workload, *, failed=False):
     records = []
 
     def emit(event, **fields):
@@ -221,6 +220,7 @@ def validation_stream(*, failed=False):
     return b"".join(b"@@MOSS " + json.dumps(record).encode() + b"\r\n" for record in records)
 
 
+@pytest.mark.parametrize("workload", ["users.frame", "scheduler"])
 @pytest.mark.parametrize(
     "scenario,status,observed",
     [
@@ -234,9 +234,9 @@ def validation_stream(*, failed=False):
         ("partial_after_end", "error", "infrastructure:"),
     ],
 )
-def test_hardware_collector_requires_complete_protocol(tmp_path, scenario, status, observed):
+def test_hardware_collector_requires_complete_protocol(tmp_path, workload, scenario, status, observed):
     master, slave = pty.openpty()
-    serial = validation_stream(failed=scenario == "assertion")
+    serial = validation_stream(workload, failed=scenario == "assertion")
     if scenario == "text":
         serial = b"PASS all tests passed\r\n"
     elif scenario == "incomplete":
@@ -244,7 +244,9 @@ def test_hardware_collector_requires_complete_protocol(tmp_path, scenario, statu
     elif scenario == "panic":
         serial = b"KERNEL PANIC: regression\r\n"
     elif scenario == "wrong_workload":
-        serial = serial.replace(b"users.frame", b"users.ipc")
+        # Rejection is immediate at ready. Do not leave a PTY writer blocked
+        # on a full catalog after the collector has correctly stopped reading.
+        serial = serial.splitlines(keepends=True)[0].replace(workload.encode(), b"users.ipc")
     elif scenario == "after_end":
         serial += serial.splitlines(keepends=True)[0]
     elif scenario == "partial_after_end":
@@ -259,7 +261,7 @@ def test_hardware_collector_requires_complete_protocol(tmp_path, scenario, statu
             # Queued PTY bytes need no board boot allowance; a tenth of a second
             # bounds negative cases without slowing ordinary hardware deadlines.
             result = rpi.collect_validation(
-                fd, log, Protocol("users.frame", 4, 948, 5, 30), startup_timeout=0.1, case_timeout=0.1, timeout=0.1
+                fd, log, Protocol(workload, 4, 948, 5, 30), startup_timeout=0.1, case_timeout=0.1, timeout=0.1
             )
             sender.join(timeout=1)  # Bytes are consumed; bound a broken test writer.
             assert not sender.is_alive()
@@ -272,7 +274,9 @@ def test_hardware_collector_requires_complete_protocol(tmp_path, scenario, statu
         else:
             assert log.read_bytes() == serial
         if scenario == "assertion":
-            assert [case["status"] for case in result["cases"]] == ["failed", "not_run", "not_run"]
+            assert [case["status"] for case in result["cases"]] == ["failed"] + ["not_run"] * (
+                len(CATALOG[workload]) - 1
+            )
         elif scenario in ("text", "panic"):
             assert all(case["status"] == "not_run" for case in result["cases"])
     finally:

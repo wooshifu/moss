@@ -137,6 +137,63 @@ void scheduler_self_selection(bool realtime) {
   ut::expect(scheduler->get_cpu_nr_running(cpu) == 0);
 }
 
+void try_lock_preemption() {
+  using namespace process;
+  unique_ptr<CfsScheduler> scheduler(new CfsScheduler());
+  if (!ut::expect(scheduler.get() != nullptr)) {
+    return;
+  }
+  Thread current(0, 0);
+  const auto cpu = arch::get_current_cpu_id();
+  current.cpu = cpu;
+  current.cpu_affinity_mask = CpuBitmap::single(cpu);
+  current.state = ProcessState::Running;
+  current.sched_class = SchedClass::RealTime;
+  current.sched_policy = SchedPolicy::RR;
+  current.rt.priority = priority::DEFAULT_RT_PRIORITY;
+
+  // As in self-selection, a private queue and masked IRQs let the real tick
+  // inspect this context without ever dispatching an uninitialized stack.
+  const bool restore_irqs = arch::interrupts_enabled();
+  arch::disable_interrupts();
+  auto *original = CfsScheduler::get_current_task();
+  CfsScheduler::set_current_task(&current);
+  const auto exercise = [&](auto &inner) {
+    containers::TicketSpinLock outer;
+    outer.lock();
+    const auto switches = scheduler->total_preemptions();
+    const bool acquired = inner.try_lock();
+    // Two locks must contribute two guards. A failed recursive try must
+    // neither leak a guard nor remove the one protecting the current owner.
+    const bool nested = acquired && current.preempt_count == 2;
+    const bool refused = acquired && !inner.try_lock() && current.preempt_count == 2;
+    if (acquired) {
+      inner.unlock();
+    }
+    const bool outer_guarded = current.preempt_count == 1;
+    current.rt.time_slice_remaining = 0; // Force RR expiry on this tick, independent of elapsed time.
+    current.need_resched = false;
+    scheduler->scheduler_tick();
+    const bool deferred =
+        current.need_resched && current.state == ProcessState::Running && scheduler->total_preemptions() == switches;
+    outer.unlock();
+    return nested && refused && outer_guarded && deferred && current.preempt_count == 0;
+  };
+  containers::TicketSpinLock plain;
+  containers::IrqSpinLock irq_safe;
+  const bool plain_guarded = exercise(plain);
+  const bool irq_guarded = exercise(irq_safe);
+  const bool irqs_masked = !arch::interrupts_enabled();
+  CfsScheduler::set_current_task(original);
+  if (restore_irqs) {
+    arch::enable_interrupts();
+  }
+  ut::expect(plain_guarded);
+  ut::expect(irq_guarded);
+  ut::expect(irqs_masked);
+  ut::expect(scheduler->get_cpu_nr_running(cpu) == 0);
+}
+
 void cpu_runtime_accounting() {
   using namespace process;
   Thread cfs(0, 0), rt(1, 0);
@@ -907,6 +964,7 @@ void register_scheduler_cases() {
     ut::register_test("kernel_stack_initialization", kernel_stack_initialization);
     ut::register_test("cfs_self_selection", [] { scheduler_self_selection(false); });
     ut::register_test("rr_self_selection", [] { scheduler_self_selection(true); });
+    ut::register_test("try_lock_preemption", try_lock_preemption);
     ut::register_test("cpu_runtime_accounting", cpu_runtime_accounting);
     ut::register_test("cpu_budget_accounting", cpu_budget_accounting);
     ut::register_test("cpu_budget_admission", cpu_budget_admission);

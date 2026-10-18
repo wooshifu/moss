@@ -1,0 +1,874 @@
+{
+  "schema_version": 1,
+  "date": "2026-10-18",
+  "catalog_version": 10,
+  "board": "Raspberry Pi 3 Model B Plus Rev 1.3",
+  "adapter": "J-Link 000050120677",
+  "build_type": "Debug",
+  "compiler": "Clang 23.1.2",
+  "runs": [
+    {
+      "label": "qemu-before-fix",
+      "environment": "QEMU ARM64 TCG",
+      "workload": "scheduler",
+      "status": "failed",
+      "observed": "assertion",
+      "termination": "protocol_end",
+      "completion": {
+        "v": 1,
+        "event": "end",
+        "workload": "scheduler",
+        "completed": 8,
+        "selected": 17,
+        "failed": 1,
+        "reason": "complete"
+      },
+      "cases": [
+        {
+          "name": "pelt_large_runtime",
+          "status": "passed",
+          "assertions": {
+            "v": 1,
+            "event": "case_end",
+            "workload": "scheduler",
+            "case": "pelt_large_runtime",
+            "passed": 20,
+            "failed": 0
+          },
+          "elapsed_seconds": 8.653698023408651e-05
+        },
+        {
+          "name": "pelt_partitioned_runtime",
+          "status": "passed",
+          "assertions": {
+            "v": 1,
+            "event": "case_end",
+            "workload": "scheduler",
+            "case": "pelt_partitioned_runtime",
+            "passed": 5,
+            "failed": 0
+          },
+          "elapsed_seconds": 7.162394467741251e-05
+        },
+        {
+          "name": "pelt_half_life",
+          "status": "passed",
+          "assertions": {
+            "v": 1,
+            "event": "case_end",
+            "workload": "scheduler",
+            "case": "pelt_half_life",
+            "passed": 2,
+            "failed": 0
+          },
+          "elapsed_seconds": 0.02102674904745072
+        },
+        {
+          "name": "pelt_continuous_normalization",
+          "status": "passed",
+          "assertions": {
+            "v": 1,
+            "event": "case_end",
+            "workload": "scheduler",
+            "case": "pelt_continuous_normalization",
+            "passed": 4,
+            "failed": 0
+          },
+          "elapsed_seconds": 5.5132084526121616e-05
+        },
+        {
+          "name": "kernel_stack_initialization",
+          "status": "passed",
+          "assertions": {
+            "v": 1,
+            "event": "case_end",
+            "workload": "scheduler",
+            "case": "kernel_stack_initialization",
+            "passed": 528,
+            "failed": 0
+          },
+          "elapsed_seconds": 0.8578866309253499
+        },
+        {
+          "name": "cfs_self_selection",
+          "status": "passed",
+          "assertions": {
+            "v": 1,
+            "event": "case_end",
+            "workload": "scheduler",
+            "case": "cfs_self_selection",
+            "passed": 5,
+            "failed": 0
+          },
+          "elapsed_seconds": 4.3862033635377884e-05
+        },
+        {
+          "name": "rr_self_selection",
+          "status": "passed",
+          "assertions": {
+            "v": 1,
+            "event": "case_end",
+            "workload": "scheduler",
+            "case": "rr_self_selection",
+            "passed": 5,
+            "failed": 0
+          },
+          "elapsed_seconds": 3.5746023058891296e-05
+        },
+        {
+          "name": "try_lock_preemption",
+          "status": "failed",
+          "assertions": {
+            "v": 1,
+            "event": "case_end",
+            "workload": "scheduler",
+            "case": "try_lock_preemption",
+            "passed": 3,
+            "failed": 2
+          },
+          "elapsed_seconds": 3.467791248112917e-05
+        },
+        {
+          "name": "cpu_runtime_accounting",
+          "status": "not_run",
+          "reason": "assertion"
+        },
+        {
+          "name": "cpu_budget_accounting",
+          "status": "not_run",
+          "reason": "assertion"
+        },
+        {
+          "name": "cpu_budget_admission",
+          "status": "not_run",
+          "reason": "assertion"
+        },
+        {
+          "name": "cfs_cpu_budget_queue",
+          "status": "not_run",
+          "reason": "assertion"
+        },
+        {
+          "name": "rt_cpu_budget_queue",
+          "status": "not_run",
+          "reason": "assertion"
+        },
+        {
+          "name": "ipc_priority_inheritance",
+          "status": "not_run",
+          "reason": "assertion"
+        },
+        {
+          "name": "ipc_deadline_tightening",
+          "status": "not_run",
+          "reason": "assertion"
+        },
+        {
+          "name": "ipc_call_graph_limits",
+          "status": "not_run",
+          "reason": "assertion"
+        },
+        {
+          "name": "migration_current_owner",
+          "status": "not_run",
+          "reason": "assertion"
+        }
+      ],
+      "ready": {
+        "v": 1,
+        "event": "ready",
+        "workload": "scheduler",
+        "detected_cpus": 4,
+        "online_mask": 15,
+        "work_mask": 15,
+        "ram_bytes": 2147483648,
+        "managed_pages": 518289
+      },
+      "worker": {
+        "v": 1,
+        "event": "worker",
+        "workload": "scheduler",
+        "cpu": 0,
+        "affinity": 1
+      },
+      "serial_log": "rpi3b-try-lock-2026-10-18-qemu-before-fix.log",
+      "serial_sha256": "7b86766ee4ea0fc9ffb0dee1888b254f532c35c903d47d1515985fef6cbb45a3",
+      "provenance": {
+        "build": {
+          "type": "Debug",
+          "compiler": "Clang 23.1.2",
+          "flags": {
+            "compile": "-march=armv8-a -mgeneral-regs-only -mstrict-align -ffreestanding -fno-exceptions -fno-rtti -fno-stack-protector -fpie -Weverything -Werror -Wno-c++-compat -Wno-c++98-compat -Wno-c++98-compat-pedantic -Wno-c++11-compat -Wno-c++14-compat -Wno-c++17-compat -Wno-c++20-compat -Wno-padded -Wno-unsafe-buffer-usage -Wno-gnu-zero-variadic-macro-arguments -Wno-gnu-anonymous-struct -Wno-nested-anon-types -Wno-missing-prototypes -Wno-missing-variable-declarations -Wno-global-constructors -Wno-exit-time-destructors -Wno-weak-vtables -Wno-inline -Wno-reserved-identifier -Wno-reserved-macro-identifier -Wno-covered-switch-default -Wno-nrvo -Wno-lifetime-safety-suggestions -g",
+            "link": "-fuse-ld=lld -nostdlib -nostartfiles -Wl,-pie,--no-dynamic-linker,-z,notext,-Bsymbolic -T /Users/shifu/code/os/moss/src/linker/kernel_arm64.ld "
+          }
+        },
+        "image_sha256": "36be6c5d2e8e4c5bd07f1705e6bbb28c242e997b96eac67096177bee063ff080",
+        "fixture_sha256": "da4e9abb8cf58c4fce658f3a9055fd6f28b1792643b54d2ebe03242b4e30a5aa",
+        "symbols_sha256": "684246ed3accb95f5c753698bed97eb39a2e63545588f3105015336e89bbb7a9",
+        "schema_version": 1,
+        "source_status": "recorded",
+        "revision": "6e145d5537c40a7c5887a9adce7a1bd11ebdf765",
+        "dirty": true,
+        "source_sha256": "043c0146b82371128e0039fca14ccac3fa3ae93098ff2b7c069b91a057597f05"
+      }
+    },
+    {
+      "label": "pi-scheduler",
+      "environment": "physical Pi 3B+",
+      "workload": "scheduler",
+      "status": "passed",
+      "observed": "pass",
+      "termination": "protocol_end",
+      "completion": {
+        "v": 1,
+        "event": "end",
+        "workload": "scheduler",
+        "completed": 17,
+        "selected": 17,
+        "failed": 0,
+        "reason": "complete"
+      },
+      "cases": [
+        {
+          "name": "pelt_large_runtime",
+          "status": "passed",
+          "assertions": {
+            "v": 1,
+            "event": "case_end",
+            "workload": "scheduler",
+            "case": "pelt_large_runtime",
+            "passed": 20,
+            "failed": 0
+          },
+          "elapsed_seconds": 0.01394643890671432
+        },
+        {
+          "name": "pelt_partitioned_runtime",
+          "status": "passed",
+          "assertions": {
+            "v": 1,
+            "event": "case_end",
+            "workload": "scheduler",
+            "case": "pelt_partitioned_runtime",
+            "passed": 5,
+            "failed": 0
+          },
+          "elapsed_seconds": 0.016659524058923125
+        },
+        {
+          "name": "pelt_half_life",
+          "status": "passed",
+          "assertions": {
+            "v": 1,
+            "event": "case_end",
+            "workload": "scheduler",
+            "case": "pelt_half_life",
+            "passed": 2,
+            "failed": 0
+          },
+          "elapsed_seconds": 0.01672726299148053
+        },
+        {
+          "name": "pelt_continuous_normalization",
+          "status": "passed",
+          "assertions": {
+            "v": 1,
+            "event": "case_end",
+            "workload": "scheduler",
+            "case": "pelt_continuous_normalization",
+            "passed": 4,
+            "failed": 0
+          },
+          "elapsed_seconds": 0.011107351048849523
+        },
+        {
+          "name": "kernel_stack_initialization",
+          "status": "passed",
+          "assertions": {
+            "v": 1,
+            "event": "case_end",
+            "workload": "scheduler",
+            "case": "kernel_stack_initialization",
+            "passed": 260,
+            "failed": 0
+          },
+          "elapsed_seconds": 0.20087612699717283
+        },
+        {
+          "name": "cfs_self_selection",
+          "status": "passed",
+          "assertions": {
+            "v": 1,
+            "event": "case_end",
+            "workload": "scheduler",
+            "case": "cfs_self_selection",
+            "passed": 5,
+            "failed": 0
+          },
+          "elapsed_seconds": 0.008234647917561233
+        },
+        {
+          "name": "rr_self_selection",
+          "status": "passed",
+          "assertions": {
+            "v": 1,
+            "event": "case_end",
+            "workload": "scheduler",
+            "case": "rr_self_selection",
+            "passed": 5,
+            "failed": 0
+          },
+          "elapsed_seconds": 0.008436852949671447
+        },
+        {
+          "name": "try_lock_preemption",
+          "status": "passed",
+          "assertions": {
+            "v": 1,
+            "event": "case_end",
+            "workload": "scheduler",
+            "case": "try_lock_preemption",
+            "passed": 5,
+            "failed": 0
+          },
+          "elapsed_seconds": 0.011024089064449072
+        },
+        {
+          "name": "cpu_runtime_accounting",
+          "status": "passed",
+          "assertions": {
+            "v": 1,
+            "event": "case_end",
+            "workload": "scheduler",
+            "case": "cpu_runtime_accounting",
+            "passed": 14,
+            "failed": 0
+          },
+          "elapsed_seconds": 0.011123085976578295
+        },
+        {
+          "name": "cpu_budget_accounting",
+          "status": "passed",
+          "assertions": {
+            "v": 1,
+            "event": "case_end",
+            "workload": "scheduler",
+            "case": "cpu_budget_accounting",
+            "passed": 20,
+            "failed": 0
+          },
+          "elapsed_seconds": 0.008360348991118371
+        },
+        {
+          "name": "cpu_budget_admission",
+          "status": "passed",
+          "assertions": {
+            "v": 1,
+            "event": "case_end",
+            "workload": "scheduler",
+            "case": "cpu_budget_admission",
+            "passed": 12,
+            "failed": 0
+          },
+          "elapsed_seconds": 0.01111383200623095
+        },
+        {
+          "name": "cfs_cpu_budget_queue",
+          "status": "passed",
+          "assertions": {
+            "v": 1,
+            "event": "case_end",
+            "workload": "scheduler",
+            "case": "cfs_cpu_budget_queue",
+            "passed": 20,
+            "failed": 0
+          },
+          "elapsed_seconds": 0.011093824985437095
+        },
+        {
+          "name": "rt_cpu_budget_queue",
+          "status": "passed",
+          "assertions": {
+            "v": 1,
+            "event": "case_end",
+            "workload": "scheduler",
+            "case": "rt_cpu_budget_queue",
+            "passed": 17,
+            "failed": 0
+          },
+          "elapsed_seconds": 0.008383271982893348
+        },
+        {
+          "name": "ipc_priority_inheritance",
+          "status": "passed",
+          "assertions": {
+            "v": 1,
+            "event": "case_end",
+            "workload": "scheduler",
+            "case": "ipc_priority_inheritance",
+            "passed": 43,
+            "failed": 0
+          },
+          "elapsed_seconds": 0.02502641302999109
+        },
+        {
+          "name": "ipc_deadline_tightening",
+          "status": "passed",
+          "assertions": {
+            "v": 1,
+            "event": "case_end",
+            "workload": "scheduler",
+            "case": "ipc_deadline_tightening",
+            "passed": 27,
+            "failed": 0
+          },
+          "elapsed_seconds": 0.013111595064401627
+        },
+        {
+          "name": "ipc_call_graph_limits",
+          "status": "passed",
+          "assertions": {
+            "v": 1,
+            "event": "case_end",
+            "workload": "scheduler",
+            "case": "ipc_call_graph_limits",
+            "passed": 82,
+            "failed": 0
+          },
+          "elapsed_seconds": 0.008309941040351987
+        },
+        {
+          "name": "migration_current_owner",
+          "status": "passed",
+          "assertions": {
+            "v": 1,
+            "event": "case_end",
+            "workload": "scheduler",
+            "case": "migration_current_owner",
+            "passed": 8,
+            "failed": 0
+          },
+          "elapsed_seconds": 0.011081655975431204
+        }
+      ],
+      "ready": {
+        "v": 1,
+        "event": "ready",
+        "workload": "scheduler",
+        "detected_cpus": 4,
+        "online_mask": 15,
+        "work_mask": 15,
+        "ram_bytes": 994050048,
+        "managed_pages": 238037
+      },
+      "worker": {
+        "v": 1,
+        "event": "worker",
+        "workload": "scheduler",
+        "cpu": 0,
+        "affinity": 1
+      },
+      "serial_log": "rpi3b-try-lock-2026-10-18-pi-scheduler.log",
+      "serial_sha256": "a0d6823cc9313d936c9bdff46a52d43de8158f40f6aaae4a5d87878d610d555f",
+      "provenance": {
+        "build": {
+          "type": "Debug",
+          "compiler": "Clang 23.1.2",
+          "flags": {
+            "compile": "-march=armv8-a -mgeneral-regs-only -mstrict-align -ffreestanding -fno-exceptions -fno-rtti -fno-stack-protector -fpie -Weverything -Werror -Wno-c++-compat -Wno-c++98-compat -Wno-c++98-compat-pedantic -Wno-c++11-compat -Wno-c++14-compat -Wno-c++17-compat -Wno-c++20-compat -Wno-padded -Wno-unsafe-buffer-usage -Wno-gnu-zero-variadic-macro-arguments -Wno-gnu-anonymous-struct -Wno-nested-anon-types -Wno-missing-prototypes -Wno-missing-variable-declarations -Wno-global-constructors -Wno-exit-time-destructors -Wno-weak-vtables -Wno-inline -Wno-reserved-identifier -Wno-reserved-macro-identifier -Wno-covered-switch-default -Wno-nrvo -Wno-lifetime-safety-suggestions -g",
+            "link": "-fuse-ld=lld -nostdlib -nostartfiles -Wl,-pie,--no-dynamic-linker,-z,notext,-Bsymbolic -T /Users/shifu/code/os/moss/src/linker/kernel_arm64.ld "
+          }
+        },
+        "image_sha256": "46c82a3eb2e28a0739393c3470f8dc3d12a7e812e60d4b70fecf07e3d6967629",
+        "fixture_sha256": "da4e9abb8cf58c4fce658f3a9055fd6f28b1792643b54d2ebe03242b4e30a5aa",
+        "symbols_sha256": "ff9d570e2d5b8164d90e6034781a05f02ff4f181c5d342258f18f006f6d02423",
+        "schema_version": 1,
+        "source_status": "recorded",
+        "revision": "6e145d5537c40a7c5887a9adce7a1bd11ebdf765",
+        "dirty": true,
+        "source_sha256": "a72c040b67ebaaf0f2aedd61e66e37d76b7b5f64bc8c85470a129c1c479a642b"
+      },
+      "jtag_khz": 2000,
+      "uploaded_sha256": {
+        "kernel": "46c82a3eb2e28a0739393c3470f8dc3d12a7e812e60d4b70fecf07e3d6967629",
+        "initramfs": "da4e9abb8cf58c4fce658f3a9055fd6f28b1792643b54d2ebe03242b4e30a5aa",
+        "dtb": "ae20827979142b6001ce900dc2fad3d63fcda89862a62c71ca8e8c45fd2b652a"
+      },
+      "boot_check": "validation_passed"
+    },
+    {
+      "label": "pi-uaccess",
+      "environment": "physical Pi 3B+",
+      "workload": "users.uaccess",
+      "status": "passed",
+      "observed": "pass",
+      "termination": "protocol_end",
+      "completion": {
+        "v": 1,
+        "event": "end",
+        "workload": "users.uaccess",
+        "completed": 12,
+        "selected": 12,
+        "failed": 0,
+        "reason": "complete"
+      },
+      "cases": [
+        {
+          "name": "allocation_fault",
+          "status": "passed",
+          "assertions": {
+            "v": 1,
+            "event": "case_end",
+            "workload": "users.uaccess",
+            "case": "allocation_fault",
+            "passed": 255,
+            "failed": 0
+          },
+          "elapsed_seconds": 0.20221906900405884
+        },
+        {
+          "name": "write_fault",
+          "status": "passed",
+          "assertions": {
+            "v": 1,
+            "event": "case_end",
+            "workload": "users.uaccess",
+            "case": "write_fault",
+            "passed": 255,
+            "failed": 0
+          },
+          "elapsed_seconds": 0.20139706798363477
+        },
+        {
+          "name": "read_fault",
+          "status": "passed",
+          "assertions": {
+            "v": 1,
+            "event": "case_end",
+            "workload": "users.uaccess",
+            "case": "read_fault",
+            "passed": 254,
+            "failed": 0
+          },
+          "elapsed_seconds": 0.2012040700064972
+        },
+        {
+          "name": "partial_read",
+          "status": "passed",
+          "assertions": {
+            "v": 1,
+            "event": "case_end",
+            "workload": "users.uaccess",
+            "case": "partial_read",
+            "passed": 264,
+            "failed": 0
+          },
+          "elapsed_seconds": 0.20330179203301668
+        },
+        {
+          "name": "partial_write",
+          "status": "passed",
+          "assertions": {
+            "v": 1,
+            "event": "case_end",
+            "workload": "users.uaccess",
+            "case": "partial_write",
+            "passed": 255,
+            "failed": 0
+          },
+          "elapsed_seconds": 0.20144338009413332
+        },
+        {
+          "name": "partial_pipe_read",
+          "status": "passed",
+          "assertions": {
+            "v": 1,
+            "event": "case_end",
+            "workload": "users.uaccess",
+            "case": "partial_pipe_read",
+            "passed": 254,
+            "failed": 0
+          },
+          "elapsed_seconds": 0.2013193549355492
+        },
+        {
+          "name": "sigframe_fault",
+          "status": "passed",
+          "assertions": {
+            "v": 1,
+            "event": "case_end",
+            "workload": "users.uaccess",
+            "case": "sigframe_fault",
+            "passed": 252,
+            "failed": 0
+          },
+          "elapsed_seconds": 0.22039084893185645
+        },
+        {
+          "name": "sigreturn_fault",
+          "status": "passed",
+          "assertions": {
+            "v": 1,
+            "event": "case_end",
+            "workload": "users.uaccess",
+            "case": "sigreturn_fault",
+            "passed": 257,
+            "failed": 0
+          },
+          "elapsed_seconds": 0.2011203629663214
+        },
+        {
+          "name": "devices",
+          "status": "passed",
+          "assertions": {
+            "v": 1,
+            "event": "case_end",
+            "workload": "users.uaccess",
+            "case": "devices",
+            "passed": 255,
+            "failed": 0
+          },
+          "elapsed_seconds": 0.20378350105602294
+        },
+        {
+          "name": "cow_copy_fault",
+          "status": "passed",
+          "assertions": {
+            "v": 1,
+            "event": "case_end",
+            "workload": "users.uaccess",
+            "case": "cow_copy_fault",
+            "passed": 301,
+            "failed": 0
+          },
+          "elapsed_seconds": 0.20652581192553043
+        },
+        {
+          "name": "cow_partial_read",
+          "status": "passed",
+          "assertions": {
+            "v": 1,
+            "event": "case_end",
+            "workload": "users.uaccess",
+            "case": "cow_partial_read",
+            "passed": 301,
+            "failed": 0
+          },
+          "elapsed_seconds": 0.2064492889912799
+        },
+        {
+          "name": "cow_user_fault",
+          "status": "passed",
+          "assertions": {
+            "v": 1,
+            "event": "case_end",
+            "workload": "users.uaccess",
+            "case": "cow_user_fault",
+            "passed": 269,
+            "failed": 0
+          },
+          "elapsed_seconds": 0.24453288200311363
+        }
+      ],
+      "ready": {
+        "v": 1,
+        "event": "ready",
+        "workload": "users.uaccess",
+        "detected_cpus": 4,
+        "online_mask": 15,
+        "work_mask": 15,
+        "ram_bytes": 994050048,
+        "managed_pages": 238037
+      },
+      "worker": {
+        "v": 1,
+        "event": "worker",
+        "workload": "users.uaccess",
+        "cpu": 0,
+        "affinity": 1
+      },
+      "serial_log": "rpi3b-try-lock-2026-10-18-pi-uaccess.log",
+      "serial_sha256": "d20aa58d6d003e4585101a17811a5fb3f57faf2de5ff44493699c75f4ca754af",
+      "provenance": {
+        "build": {
+          "type": "Debug",
+          "compiler": "Clang 23.1.2",
+          "flags": {
+            "compile": "-march=armv8-a -mgeneral-regs-only -mstrict-align -ffreestanding -fno-exceptions -fno-rtti -fno-stack-protector -fpie -Weverything -Werror -Wno-c++-compat -Wno-c++98-compat -Wno-c++98-compat-pedantic -Wno-c++11-compat -Wno-c++14-compat -Wno-c++17-compat -Wno-c++20-compat -Wno-padded -Wno-unsafe-buffer-usage -Wno-gnu-zero-variadic-macro-arguments -Wno-gnu-anonymous-struct -Wno-nested-anon-types -Wno-missing-prototypes -Wno-missing-variable-declarations -Wno-global-constructors -Wno-exit-time-destructors -Wno-weak-vtables -Wno-inline -Wno-reserved-identifier -Wno-reserved-macro-identifier -Wno-covered-switch-default -Wno-nrvo -Wno-lifetime-safety-suggestions -g",
+            "link": "-fuse-ld=lld -nostdlib -nostartfiles -Wl,-pie,--no-dynamic-linker,-z,notext,-Bsymbolic -T /Users/shifu/code/os/moss/src/linker/kernel_arm64.ld "
+          }
+        },
+        "image_sha256": "46c82a3eb2e28a0739393c3470f8dc3d12a7e812e60d4b70fecf07e3d6967629",
+        "fixture_sha256": "da4e9abb8cf58c4fce658f3a9055fd6f28b1792643b54d2ebe03242b4e30a5aa",
+        "symbols_sha256": "ff9d570e2d5b8164d90e6034781a05f02ff4f181c5d342258f18f006f6d02423",
+        "schema_version": 1,
+        "source_status": "recorded",
+        "revision": "6e145d5537c40a7c5887a9adce7a1bd11ebdf765",
+        "dirty": true,
+        "source_sha256": "a72c040b67ebaaf0f2aedd61e66e37d76b7b5f64bc8c85470a129c1c479a642b"
+      },
+      "jtag_khz": 2000,
+      "uploaded_sha256": {
+        "kernel": "46c82a3eb2e28a0739393c3470f8dc3d12a7e812e60d4b70fecf07e3d6967629",
+        "initramfs": "da4e9abb8cf58c4fce658f3a9055fd6f28b1792643b54d2ebe03242b4e30a5aa",
+        "dtb": "dffea4e1de51e81e383ead076f62b94e439ac782f4791e26ebd20cb37584dc2c"
+      },
+      "boot_check": "validation_passed"
+    }
+  ],
+  "qemu_regressions": [
+    {
+      "arch": "arm64",
+      "finalized": true,
+      "provenance": {
+        "build": {
+          "type": "Debug",
+          "compiler": "Clang 23.1.2",
+          "flags": {
+            "compile": "-march=armv8-a -mgeneral-regs-only -mstrict-align -ffreestanding -fno-exceptions -fno-rtti -fno-stack-protector -fpie -Weverything -Werror -Wno-c++-compat -Wno-c++98-compat -Wno-c++98-compat-pedantic -Wno-c++11-compat -Wno-c++14-compat -Wno-c++17-compat -Wno-c++20-compat -Wno-padded -Wno-unsafe-buffer-usage -Wno-gnu-zero-variadic-macro-arguments -Wno-gnu-anonymous-struct -Wno-nested-anon-types -Wno-missing-prototypes -Wno-missing-variable-declarations -Wno-global-constructors -Wno-exit-time-destructors -Wno-weak-vtables -Wno-inline -Wno-reserved-identifier -Wno-reserved-macro-identifier -Wno-covered-switch-default -Wno-nrvo -Wno-lifetime-safety-suggestions -g",
+            "link": "-fuse-ld=lld -nostdlib -nostartfiles -Wl,-pie,--no-dynamic-linker,-z,notext,-Bsymbolic -T /Users/shifu/code/os/moss/src/linker/kernel_arm64.ld "
+          }
+        },
+        "image_sha256": "46c82a3eb2e28a0739393c3470f8dc3d12a7e812e60d4b70fecf07e3d6967629",
+        "fixture_sha256": "da4e9abb8cf58c4fce658f3a9055fd6f28b1792643b54d2ebe03242b4e30a5aa",
+        "symbols_sha256": "ff9d570e2d5b8164d90e6034781a05f02ff4f181c5d342258f18f006f6d02423",
+        "schema_version": 1,
+        "source_status": "recorded",
+        "revision": "6e145d5537c40a7c5887a9adce7a1bd11ebdf765",
+        "dirty": true,
+        "source_sha256": "a72c040b67ebaaf0f2aedd61e66e37d76b7b5f64bc8c85470a129c1c479a642b"
+      },
+      "workloads": [
+        {
+          "workload": "scheduler",
+          "status": "passed",
+          "cases": 17
+        },
+        {
+          "workload": "users.frame",
+          "status": "passed",
+          "cases": 3
+        },
+        {
+          "workload": "users.uaccess",
+          "status": "passed",
+          "cases": 12
+        },
+        {
+          "workload": "users.exec",
+          "status": "passed",
+          "cases": 32
+        }
+      ]
+    },
+    {
+      "arch": "x64",
+      "finalized": true,
+      "provenance": {
+        "build": {
+          "type": "Debug",
+          "compiler": "Clang 23.1.2",
+          "flags": {
+            "compile": "-mno-red-zone -mno-mmx -mno-sse -mno-sse2 -mno-sse3 -mno-ssse3 -mno-sse4.1 -mno-sse4.2 -mno-avx -mno-avx2 -mno-80387 -mno-fp-ret-in-387 -mtune=x86-64 -mcmodel=kernel -ffreestanding -fno-exceptions -fno-rtti -fno-stack-protector -fno-pic -fno-pie -Weverything -Werror -Wno-c++-compat -Wno-c++98-compat -Wno-c++98-compat-pedantic -Wno-c++11-compat -Wno-c++14-compat -Wno-c++17-compat -Wno-c++20-compat -Wno-padded -Wno-unsafe-buffer-usage -Wno-gnu-zero-variadic-macro-arguments -Wno-gnu-anonymous-struct -Wno-nested-anon-types -Wno-missing-prototypes -Wno-missing-variable-declarations -Wno-global-constructors -Wno-exit-time-destructors -Wno-weak-vtables -Wno-inline -Wno-reserved-identifier -Wno-reserved-macro-identifier -Wno-covered-switch-default -Wno-nrvo -Wno-lifetime-safety-suggestions -g",
+            "link": "-fuse-ld=lld -nostdlib -nostartfiles -static -T /Users/shifu/code/os/moss/src/linker/kernel_x64.ld "
+          }
+        },
+        "image_sha256": "a7201eafec1d8a60e9fbe639be6be162d5bf473273cf399e75d5f827f9ff43b6",
+        "fixture_sha256": "8319fe3952004acf3e1781ea72756411f8f17c5679d2e4daa4f37dd3fcc57aae",
+        "symbols_sha256": "a7201eafec1d8a60e9fbe639be6be162d5bf473273cf399e75d5f827f9ff43b6",
+        "schema_version": 1,
+        "source_status": "recorded",
+        "revision": "6e145d5537c40a7c5887a9adce7a1bd11ebdf765",
+        "dirty": true,
+        "source_sha256": "a72c040b67ebaaf0f2aedd61e66e37d76b7b5f64bc8c85470a129c1c479a642b"
+      },
+      "workloads": [
+        {
+          "workload": "scheduler",
+          "status": "passed",
+          "cases": 17
+        },
+        {
+          "workload": "users.frame",
+          "status": "passed",
+          "cases": 3
+        },
+        {
+          "workload": "users.uaccess",
+          "status": "passed",
+          "cases": 12
+        },
+        {
+          "workload": "users.exec",
+          "status": "passed",
+          "cases": 32
+        }
+      ]
+    },
+    {
+      "arch": "riscv64",
+      "finalized": true,
+      "provenance": {
+        "build": {
+          "type": "Debug",
+          "compiler": "Clang 23.1.2",
+          "flags": {
+            "compile": "-march=rv64imac -mabi=lp64 -mcmodel=medany -mstrict-align -ffreestanding -fno-exceptions -fno-rtti -fno-stack-protector -fpie -Weverything -Werror -Wno-c++-compat -Wno-c++98-compat -Wno-c++98-compat-pedantic -Wno-c++11-compat -Wno-c++14-compat -Wno-c++17-compat -Wno-c++20-compat -Wno-padded -Wno-unsafe-buffer-usage -Wno-gnu-zero-variadic-macro-arguments -Wno-gnu-anonymous-struct -Wno-nested-anon-types -Wno-missing-prototypes -Wno-missing-variable-declarations -Wno-global-constructors -Wno-exit-time-destructors -Wno-weak-vtables -Wno-inline -Wno-reserved-identifier -Wno-reserved-macro-identifier -Wno-covered-switch-default -Wno-nrvo -Wno-lifetime-safety-suggestions -g",
+            "link": "-fuse-ld=lld -nostdlib -nostartfiles -Wl,-pie,--no-dynamic-linker,-z,notext,-Bsymbolic -T /Users/shifu/code/os/moss/src/linker/kernel_riscv64.ld "
+          }
+        },
+        "image_sha256": "8fce3786ecf2e92b80ee6bdc10d188adb9b67d0457a35c3911d3d4943d709c12",
+        "fixture_sha256": "472c57a766be3c7c857b9fb471b5f7dd564d3d24e5e5bb3fb2991047f939251e",
+        "symbols_sha256": "d46f6078b7431cc1266980a7f2c433b01bb2f13149b6e297f388a8eedc4dab31",
+        "schema_version": 1,
+        "source_status": "recorded",
+        "revision": "6e145d5537c40a7c5887a9adce7a1bd11ebdf765",
+        "dirty": true,
+        "source_sha256": "27c567e74755a56b6732e403cad5bd5aceb607e4584515fb0af49b9360a47c78"
+      },
+      "workloads": [
+        {
+          "workload": "scheduler",
+          "status": "passed",
+          "cases": 17
+        },
+        {
+          "workload": "users.frame",
+          "status": "passed",
+          "cases": 3
+        },
+        {
+          "workload": "users.uaccess",
+          "status": "passed",
+          "cases": 12
+        },
+        {
+          "workload": "users.exec",
+          "status": "passed",
+          "cases": 32
+        }
+      ]
+    }
+  ],
+  "production": {
+    "boot_check": "shell_input_passed",
+    "jtag_khz": 2000,
+    "uploaded_sha256": {
+      "kernel": "c7ebaddb5f6f3e7a8b137a794c59891089ab00f9b316755edaad2c8175d95236",
+      "initramfs": "839e2f1d42fc0ff96e5851a8db283255ebbe936c6b6d375cb20cae656c15f8ad",
+      "dtb": "8ad5e579a69a3ea6c043e9a6e6231d3e31d953f8ec5859fe79fe761795b2b407"
+    },
+    "serial_log": "rpi3b-try-lock-2026-10-18-production.log",
+    "serial_sha256": "5c4f3e780ecd707dc135af415f3844c0a0dd2a5ccf5731cbaa9a04a84c142ac6"
+  },
+  "host_checks": {
+    "tests": "173 passed",
+    "clang_tidy_translation_units": 2,
+    "compiler_builds": [
+      "arm64-debug",
+      "x64-debug",
+      "riscv64-debug"
+    ],
+    "release_performance": "not measured"
+  }
+}

@@ -239,6 +239,7 @@ ADR-0008～0033 中的实现记录不是完成声明；其强制服务迁移边�
   - [x] 当前契约明确拒绝 PT_INTERP/PT_DYNAMIC 和共享页的 LOAD；纯 NOBITS TLS 可作为 runtime 元数据，file-backed TLS 必须由一个 LOAD 覆盖。关闭本项不表示支持动态加载、内核 TLS 初始化或任意可加载 ELF。
 - [ ] **MOSS-017**：原子取任务、去重入队、on-CPU 交接、迁移锁序和 affinity；对已有 RB 算法补不变量/交错测试，不重写一套。
   - 当前源码已有 `task_transition_lock_`、`take_next_task()`、`migrate_ready_task()` 和 `migration_current_owner` 回归；剩余是所有权交接/抢占安全点和负载验收，不是缺少整套原子队列实现。本次不凭源码将整项关闭。
+  - [x] `TicketSpinLock::try_lock()` 与普通加锁配对抢占保护：CAS 前禁止抢占，失败回滚、成功由 unlock 释放；嵌套外层锁的真实 tick 回归已通过 Pi scheduler 17/17（3.110）。返回安全点与完整交接仍待完成。
   - [x] current task、初始上下文、地址空间及入口栈在本 CPU 的同一 IRQ 临界区内发布；这不替代跨 CPU 的运行队列/on-CPU 所有权协议（3.18）。
   - [x] 修复实际双 CPU 用例暴露的 ARM64 从核未开启 MMU：复用主核已建页表，在各从核配置 MMU 和高地址直映后才发布 online（工作区，3.9）；不代表运行队列所有权或运行中任务迁移已完成。
   - [x] ARM64 激活从核时补齐 `Active` 发布后的 `DSB SY → SEV` 完成顺序；三模式构建、Debug/Release CTest 5/5 与实际指令检查通过，偶发挂起完整验收另列（3.15）。

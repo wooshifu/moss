@@ -62,7 +62,7 @@ PROBE_COMMAND = b"echo MOSS_RPI_INPUT_OK\n"
 PROBE_RESULT = b"\nMOSS_RPI_INPUT_OK\n"
 # These suites need no host input injection, lifecycle release or benchmark
 # calibration. Add other suites only with their corresponding host contracts.
-VALIDATION_WORKLOADS = ("mm", "users.frame", "users.uaccess", "users.ipc")
+VALIDATION_WORKLOADS = ("mm", "scheduler", "users.frame", "users.uaccess", "users.ipc")
 
 
 def transfer_progress(label: str, completed: int, total: int, started: float) -> None:
