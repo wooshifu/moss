@@ -1,0 +1,769 @@
+{
+  "schema_version": 1,
+  "date": "2026-10-18",
+  "scope": "Task-context VFS console writes deliver IRQs and restore entry state; broader IRQ masking and scheduler audit remain open.",
+  "source_revision": "0ca7d191395ff2656d408affdd9f907b8bbd802b",
+  "patch_sha256": "ccb179dfae962c72f1e82ed0b49bd07cb61ae4e362df980b4b80f7b3d6039e29",
+  "candidate_identity": {
+    "source_revision": "0ca7d191395ff2656d408affdd9f907b8bbd802b",
+    "patch_sha256": "d908043371fef5a946d7c71309d90327053219bb0ddbf9338b82085edc2975ea",
+    "files": {
+      "kernel": "2c6eb12755952f5a95bafcc0a36815ab790e76ce13b455209233e2abba58946f",
+      "debug_symbols": "4e9360a03faaf2bd117c1738f93084294b016c6b160ae77b5d19799e98d0632f",
+      "initramfs": "13109e659f832d03b635a2a4ae6286f8fbcf90c210ee4220e22f7d831d1f03f3"
+    },
+    "old_kernel_sha256": "c1ce5713274ba185d40b0a924b28de00fc227c108d3abf4406f73ab695ea1c4c",
+    "old_initramfs_sha256": "13109e659f832d03b635a2a4ae6286f8fbcf90c210ee4220e22f7d831d1f03f3",
+    "production_source_sha256": {
+      "src/vfs/src/vfs_init.cpp": "002436ee4ab28cfb3dad33cc02c805d9b841f1ffea731c268042797db6b21090",
+      "src/drivers/serial/src/uart.cppm": "7438efa1179b1760a0e07b736b5ca362d235ad43e10309ecde475c3c00437c31"
+    }
+  },
+  "hardware": {
+    "board": "Raspberry Pi 3 Model B Plus Rev 1.3",
+    "cpus": 4,
+    "ram_mib": 948,
+    "jlink_serial": "000050120677",
+    "jtag_khz": 1000,
+    "uart_baud": 115200
+  },
+  "fixed_archive_comparison": {
+    "old_boot": {
+      "deployment": "JTAG RAM only",
+      "image_base": 2097152,
+      "dtb_base": 805306368,
+      "initrd_base": 536870912,
+      "boot_check": "failed",
+      "files": {
+        "kernel": {
+          "path": "/Volumes/MossBuild/moss/evidence/return-perf-optimized/moss.bin",
+          "sha256": "c1ce5713274ba185d40b0a924b28de00fc227c108d3abf4406f73ab695ea1c4c"
+        },
+        "initramfs": {
+          "path": "/Volumes/MossBuild/moss/evidence/return-perf-optimized/initramfs.cpio",
+          "sha256": "13109e659f832d03b635a2a4ae6286f8fbcf90c210ee4220e22f7d831d1f03f3"
+        },
+        "dtb": {
+          "path": "/Volumes/MossBuild/moss/evidence/uart-startup-old-01/moss.dtb",
+          "sha256": "696a2e0c55418362f4893e0efcdafbd9c0cfbb8051646db8542896ee06cd970a"
+        }
+      },
+      "error": "Expected shell response was not received; inspect serial.log"
+    },
+    "new_boot": {
+      "deployment": "JTAG RAM only",
+      "image_base": 2097152,
+      "dtb_base": 805306368,
+      "initrd_base": 536870912,
+      "boot_check": "shell_input_passed",
+      "files": {
+        "kernel": {
+          "path": "/Volumes/MossBuild/moss/evidence/uart-console-new-fixed/moss.bin",
+          "sha256": "2c6eb12755952f5a95bafcc0a36815ab790e76ce13b455209233e2abba58946f"
+        },
+        "initramfs": {
+          "path": "/Volumes/MossBuild/moss/evidence/uart-console-new-fixed/initramfs.cpio",
+          "sha256": "13109e659f832d03b635a2a4ae6286f8fbcf90c210ee4220e22f7d831d1f03f3"
+        },
+        "dtb": {
+          "path": "/Volumes/MossBuild/moss/evidence/uart-console-new-fixed/deploy/moss.dtb",
+          "sha256": "696a2e0c55418362f4893e0efcdafbd9c0cfbb8051646db8542896ee06cd970a"
+        }
+      }
+    },
+    "old_getpid": {
+      "status": "failed",
+      "cases": [
+        {
+          "name": "MOSS_UART_EXEC_00",
+          "status": "failed",
+          "received_before_input": 96
+        }
+      ],
+      "workload": "getpid_raw",
+      "iterations": 2048,
+      "error": "independent marker and next prompt missing"
+    },
+    "old_exec": {
+      "status": "failed",
+      "cases": [
+        {
+          "name": "MOSS_UART_EXEC_00",
+          "status": "failed",
+          "received_before_input": 87
+        }
+      ],
+      "error": "independent marker and next prompt missing"
+    },
+    "old_ordinary_archive_nonreproduction": {
+      "status": "passed",
+      "cases": [
+        {
+          "name": "MOSS_UART_IDLE_00",
+          "status": "passed"
+        },
+        {
+          "name": "MOSS_UART_IDLE_01",
+          "status": "passed"
+        },
+        {
+          "name": "MOSS_UART_IDLE_02",
+          "status": "passed"
+        },
+        {
+          "name": "MOSS_UART_IDLE_03",
+          "status": "passed"
+        },
+        {
+          "name": "MOSS_UART_IDLE_04",
+          "status": "passed"
+        },
+        {
+          "name": "MOSS_UART_IDLE_05",
+          "status": "passed"
+        },
+        {
+          "name": "MOSS_UART_IDLE_06",
+          "status": "passed"
+        },
+        {
+          "name": "MOSS_UART_IDLE_07",
+          "status": "passed"
+        },
+        {
+          "name": "MOSS_UART_IDLE_08",
+          "status": "passed"
+        },
+        {
+          "name": "MOSS_UART_IDLE_09",
+          "status": "passed"
+        },
+        {
+          "name": "MOSS_UART_DUPLEX_00",
+          "status": "passed",
+          "received_before_input": 160
+        },
+        {
+          "name": "MOSS_UART_DUPLEX_01",
+          "status": "passed",
+          "received_before_input": 160
+        },
+        {
+          "name": "MOSS_UART_DUPLEX_02",
+          "status": "passed",
+          "received_before_input": 160
+        }
+      ],
+      "port": "/dev/cu.usbserial-14440"
+    },
+    "new_getpid": {
+      "status": "passed",
+      "cases": [
+        {
+          "name": "MOSS_UART_EXEC_00",
+          "status": "passed",
+          "received_before_input": 96
+        },
+        {
+          "name": "MOSS_UART_EXEC_01",
+          "status": "passed",
+          "received_before_input": 96
+        },
+        {
+          "name": "MOSS_UART_EXEC_02",
+          "status": "passed",
+          "received_before_input": 96
+        }
+      ],
+      "workload": "getpid_raw",
+      "iterations": 2048
+    },
+    "new_exec": {
+      "status": "passed",
+      "cases": [
+        {
+          "name": "MOSS_UART_EXEC_00",
+          "status": "passed",
+          "received_before_input": 87
+        },
+        {
+          "name": "MOSS_UART_EXEC_01",
+          "status": "passed",
+          "received_before_input": 87
+        },
+        {
+          "name": "MOSS_UART_EXEC_02",
+          "status": "passed",
+          "received_before_input": 87
+        }
+      ],
+      "workload": "exec",
+      "iterations": 4
+    },
+    "new_idle_and_write": {
+      "status": "passed",
+      "cases": [
+        {
+          "name": "MOSS_UART_IDLE_00",
+          "status": "passed"
+        },
+        {
+          "name": "MOSS_UART_IDLE_01",
+          "status": "passed"
+        },
+        {
+          "name": "MOSS_UART_IDLE_02",
+          "status": "passed"
+        },
+        {
+          "name": "MOSS_UART_IDLE_03",
+          "status": "passed"
+        },
+        {
+          "name": "MOSS_UART_IDLE_04",
+          "status": "passed"
+        },
+        {
+          "name": "MOSS_UART_IDLE_05",
+          "status": "passed"
+        },
+        {
+          "name": "MOSS_UART_IDLE_06",
+          "status": "passed"
+        },
+        {
+          "name": "MOSS_UART_IDLE_07",
+          "status": "passed"
+        },
+        {
+          "name": "MOSS_UART_IDLE_08",
+          "status": "passed"
+        },
+        {
+          "name": "MOSS_UART_IDLE_09",
+          "status": "passed"
+        },
+        {
+          "name": "MOSS_UART_DUPLEX_00",
+          "status": "passed",
+          "received_before_input": 160
+        },
+        {
+          "name": "MOSS_UART_DUPLEX_01",
+          "status": "passed",
+          "received_before_input": 160
+        },
+        {
+          "name": "MOSS_UART_DUPLEX_02",
+          "status": "passed",
+          "received_before_input": 160
+        }
+      ],
+      "port": "/dev/cu.usbserial-14440"
+    },
+    "script_caveat": "Old exec used an initial script with an unreached DONE assertion error. Current archived script identity applies to old/new getpid; it is not claimed as the exact old exec source."
+  },
+  "pi_vfs": {
+    "schema_version": 1,
+    "catalog_version": 12,
+    "finalized": true,
+    "provenance": {
+      "build": {
+        "type": "Release",
+        "compiler": "Clang 23.1.2",
+        "flags": {
+          "compile": "-march=armv8-a -mgeneral-regs-only -mstrict-align -ffreestanding -fno-exceptions -fno-rtti -fno-stack-protector -fpie -Weverything -Werror -Wno-c++-compat -Wno-c++98-compat -Wno-c++98-compat-pedantic -Wno-c++11-compat -Wno-c++14-compat -Wno-c++17-compat -Wno-c++20-compat -Wno-padded -Wno-unsafe-buffer-usage -Wno-gnu-zero-variadic-macro-arguments -Wno-gnu-anonymous-struct -Wno-nested-anon-types -Wno-missing-prototypes -Wno-missing-variable-declarations -Wno-global-constructors -Wno-exit-time-destructors -Wno-weak-vtables -Wno-inline -Wno-reserved-identifier -Wno-reserved-macro-identifier -Wno-covered-switch-default -Wno-nrvo -Wno-lifetime-safety-suggestions -g0 -Os -DNDEBUG -ffunction-sections -fdata-sections",
+          "link": "-fuse-ld=lld -nostdlib -nostartfiles -Wl,-pie,--no-dynamic-linker,-z,notext,-Bsymbolic -T /Users/shifu/code/os/moss/src/linker/kernel_arm64.ld -Wl,-z,max-page-size=0x1000 -Wl,--gc-sections -Wl,--strip-all"
+        }
+      },
+      "image_sha256": "006d48a9efafc8fc3a73ed70cc7182515c4d6600af1f9dc82cee5be5ad1e5824",
+      "fixture_sha256": "1251950ce055df50e2cc5dc3fcd9b23a4453d0e8b0f8532b7559406d9eac498c",
+      "symbols_sha256": "044ef67a03d356d483adb53264e6ad0ae19eaf6ecc7da2ceb35f88d366b9c450",
+      "schema_version": 1,
+      "source_status": "recorded",
+      "revision": "0ca7d191395ff2656d408affdd9f907b8bbd802b",
+      "dirty": true,
+      "source_sha256": "b06c776b2fe88f3d617522bf5e57a5476a9fcede8745dd7b3346459b54558d43"
+    },
+    "workload": "vfs",
+    "status": "passed",
+    "parameters": {
+      "cpus": 4,
+      "memory_mib": 948,
+      "startup_timeout": 30,
+      "case_timeout": 30,
+      "timeout": 60
+    },
+    "observed": "pass",
+    "cases": [
+      {
+        "name": "read_position_eof",
+        "status": "passed",
+        "assertions": {
+          "v": 1,
+          "event": "case_end",
+          "workload": "vfs",
+          "case": "read_position_eof",
+          "passed": 8,
+          "failed": 0
+        },
+        "elapsed_seconds": 0.007926927995868027
+      },
+      {
+        "name": "errors_readonly",
+        "status": "passed",
+        "assertions": {
+          "v": 1,
+          "event": "case_end",
+          "workload": "vfs",
+          "case": "errors_readonly",
+          "passed": 4,
+          "failed": 0
+        },
+        "elapsed_seconds": 0.008305327966809273
+      },
+      {
+        "name": "console_write_irqs",
+        "status": "passed",
+        "assertions": {
+          "v": 1,
+          "event": "case_end",
+          "workload": "vfs",
+          "case": "console_write_irqs",
+          "passed": 20,
+          "failed": 0
+        },
+        "elapsed_seconds": 0.011396592017263174
+      },
+      {
+        "name": "fd_boundaries",
+        "status": "passed",
+        "assertions": {
+          "v": 1,
+          "event": "case_end",
+          "workload": "vfs",
+          "case": "fd_boundaries",
+          "passed": 435,
+          "failed": 0
+        },
+        "elapsed_seconds": 0.010892134974710643
+      },
+      {
+        "name": "pipe_reuse",
+        "status": "passed",
+        "assertions": {
+          "v": 1,
+          "event": "case_end",
+          "workload": "vfs",
+          "case": "pipe_reuse",
+          "passed": 6000,
+          "failed": 0
+        },
+        "elapsed_seconds": 0.08113823796156794
+      },
+      {
+        "name": "pipe_fd_rollback",
+        "status": "passed",
+        "assertions": {
+          "v": 1,
+          "event": "case_end",
+          "workload": "vfs",
+          "case": "pipe_fd_rollback",
+          "passed": 4513,
+          "failed": 0
+        },
+        "elapsed_seconds": 0.020890436018817127
+      },
+      {
+        "name": "directory_capacity",
+        "status": "passed",
+        "assertions": {
+          "v": 1,
+          "event": "case_end",
+          "workload": "vfs",
+          "case": "directory_capacity",
+          "passed": 1904,
+          "failed": 0
+        },
+        "elapsed_seconds": 0.016699550906196237
+      },
+      {
+        "name": "writable_lifecycle",
+        "status": "passed",
+        "assertions": {
+          "v": 1,
+          "event": "case_end",
+          "workload": "vfs",
+          "case": "writable_lifecycle",
+          "passed": 4294,
+          "failed": 0
+        },
+        "elapsed_seconds": 0.09669915703125298
+      },
+      {
+        "name": "rename_lifecycle",
+        "status": "passed",
+        "assertions": {
+          "v": 1,
+          "event": "case_end",
+          "workload": "vfs",
+          "case": "rename_lifecycle",
+          "passed": 14004,
+          "failed": 0
+        },
+        "elapsed_seconds": 0.15248648601118475
+      },
+      {
+        "name": "rename_boundaries",
+        "status": "passed",
+        "assertions": {
+          "v": 1,
+          "event": "case_end",
+          "workload": "vfs",
+          "case": "rename_boundaries",
+          "passed": 798,
+          "failed": 0
+        },
+        "elapsed_seconds": 0.015610217000357807
+      },
+      {
+        "name": "access_permissions",
+        "status": "passed",
+        "assertions": {
+          "v": 1,
+          "event": "case_end",
+          "workload": "vfs",
+          "case": "access_permissions",
+          "passed": 3392,
+          "failed": 0
+        },
+        "elapsed_seconds": 0.02195872098673135
+      },
+      {
+        "name": "working_directory_lifecycle",
+        "status": "passed",
+        "assertions": {
+          "v": 1,
+          "event": "case_end",
+          "workload": "vfs",
+          "case": "working_directory_lifecycle",
+          "passed": 13000,
+          "failed": 0
+        },
+        "elapsed_seconds": 0.08124821807723492
+      }
+    ],
+    "ready": {
+      "v": 1,
+      "event": "ready",
+      "workload": "vfs",
+      "detected_cpus": 4,
+      "online_mask": 15,
+      "work_mask": 15,
+      "ram_bytes": 994050048,
+      "managed_pages": 238137
+    },
+    "worker": {
+      "v": 1,
+      "event": "worker",
+      "workload": "vfs",
+      "cpu": 0,
+      "affinity": 1
+    },
+    "completion": {
+      "v": 1,
+      "event": "end",
+      "workload": "vfs",
+      "completed": 12,
+      "selected": 12,
+      "failed": 0,
+      "reason": "complete"
+    },
+    "termination": "protocol_end",
+    "elapsed_seconds": 3.0615799319930375,
+    "serial_log": "/Volumes/MossBuild/moss/evidence/uart-console-vfs-pi/serial.log"
+  },
+  "qemu": {
+    "uart-console-old-qemu-final-test": {
+      "finalized": true,
+      "catalog_version": 12,
+      "case_status_counts": {
+        "passed": 2,
+        "failed": 1,
+        "not_run": 9
+      },
+      "nonpassed": [
+        {
+          "workload": "vfs",
+          "name": "console_write_irqs",
+          "status": "failed",
+          "assertions": {
+            "v": 1,
+            "event": "case_end",
+            "workload": "vfs",
+            "case": "console_write_irqs",
+            "passed": 17,
+            "failed": 3
+          },
+          "elapsed_seconds": 0.00012066902127116919
+        },
+        {
+          "workload": "vfs",
+          "name": "fd_boundaries",
+          "status": "not_run",
+          "reason": "assertion"
+        },
+        {
+          "workload": "vfs",
+          "name": "pipe_reuse",
+          "status": "not_run",
+          "reason": "assertion"
+        },
+        {
+          "workload": "vfs",
+          "name": "pipe_fd_rollback",
+          "status": "not_run",
+          "reason": "assertion"
+        },
+        {
+          "workload": "vfs",
+          "name": "directory_capacity",
+          "status": "not_run",
+          "reason": "assertion"
+        },
+        {
+          "workload": "vfs",
+          "name": "writable_lifecycle",
+          "status": "not_run",
+          "reason": "assertion"
+        },
+        {
+          "workload": "vfs",
+          "name": "rename_lifecycle",
+          "status": "not_run",
+          "reason": "assertion"
+        },
+        {
+          "workload": "vfs",
+          "name": "rename_boundaries",
+          "status": "not_run",
+          "reason": "assertion"
+        },
+        {
+          "workload": "vfs",
+          "name": "access_permissions",
+          "status": "not_run",
+          "reason": "assertion"
+        },
+        {
+          "workload": "vfs",
+          "name": "working_directory_lifecycle",
+          "status": "not_run",
+          "reason": "assertion"
+        }
+      ]
+    },
+    "uart-console-new-arm64-qemu": {
+      "finalized": true,
+      "catalog_version": 12,
+      "case_status_counts": {
+        "passed": 110,
+        "error": 1,
+        "not_run": 3
+      },
+      "nonpassed": [
+        {
+          "workload": "vfs",
+          "name": "rename_lifecycle",
+          "status": "error",
+          "reason": "case_timeout",
+          "elapsed_seconds": 5.01349439099431
+        },
+        {
+          "workload": "vfs",
+          "name": "rename_boundaries",
+          "status": "not_run",
+          "reason": "case_timeout"
+        },
+        {
+          "workload": "vfs",
+          "name": "access_permissions",
+          "status": "not_run",
+          "reason": "case_timeout"
+        },
+        {
+          "workload": "vfs",
+          "name": "working_directory_lifecycle",
+          "status": "not_run",
+          "reason": "case_timeout"
+        }
+      ]
+    },
+    "uart-console-new-arm64-vfs-isolated": {
+      "finalized": true,
+      "catalog_version": 12,
+      "case_status_counts": {
+        "passed": 12
+      },
+      "nonpassed": []
+    },
+    "uart-console-new-x64-qemu": {
+      "finalized": true,
+      "catalog_version": 12,
+      "case_status_counts": {
+        "passed": 114
+      },
+      "nonpassed": []
+    },
+    "uart-console-new-riscv64-qemu": {
+      "finalized": true,
+      "catalog_version": 12,
+      "case_status_counts": {
+        "passed": 102,
+        "error": 1,
+        "not_run": 11
+      },
+      "nonpassed": [
+        {
+          "workload": "users.uaccess",
+          "name": "allocation_fault",
+          "status": "error",
+          "reason": "case_timeout",
+          "elapsed_seconds": 5.018231414025649
+        },
+        {
+          "workload": "users.uaccess",
+          "name": "write_fault",
+          "status": "not_run",
+          "reason": "case_timeout"
+        },
+        {
+          "workload": "users.uaccess",
+          "name": "read_fault",
+          "status": "not_run",
+          "reason": "case_timeout"
+        },
+        {
+          "workload": "users.uaccess",
+          "name": "partial_read",
+          "status": "not_run",
+          "reason": "case_timeout"
+        },
+        {
+          "workload": "users.uaccess",
+          "name": "partial_write",
+          "status": "not_run",
+          "reason": "case_timeout"
+        },
+        {
+          "workload": "users.uaccess",
+          "name": "partial_pipe_read",
+          "status": "not_run",
+          "reason": "case_timeout"
+        },
+        {
+          "workload": "users.uaccess",
+          "name": "sigframe_fault",
+          "status": "not_run",
+          "reason": "case_timeout"
+        },
+        {
+          "workload": "users.uaccess",
+          "name": "sigreturn_fault",
+          "status": "not_run",
+          "reason": "case_timeout"
+        },
+        {
+          "workload": "users.uaccess",
+          "name": "devices",
+          "status": "not_run",
+          "reason": "case_timeout"
+        },
+        {
+          "workload": "users.uaccess",
+          "name": "cow_copy_fault",
+          "status": "not_run",
+          "reason": "case_timeout"
+        },
+        {
+          "workload": "users.uaccess",
+          "name": "cow_partial_read",
+          "status": "not_run",
+          "reason": "case_timeout"
+        },
+        {
+          "workload": "users.uaccess",
+          "name": "cow_user_fault",
+          "status": "not_run",
+          "reason": "case_timeout"
+        }
+      ]
+    },
+    "uart-console-new-riscv64-uaccess-isolated": {
+      "finalized": true,
+      "catalog_version": 12,
+      "case_status_counts": {
+        "passed": 12
+      },
+      "nonpassed": []
+    }
+  },
+  "host_tests": {
+    "passed": 181,
+    "log": "uart-console-host-tests.log"
+  },
+  "clang_tidy": {
+    "translation_units": 2,
+    "log": "uart-console-lint.log",
+    "whole_repository": false
+  },
+  "production_restore": {
+    "deployment": "JTAG RAM only",
+    "image_base": 2097152,
+    "dtb_base": 805306368,
+    "initrd_base": 536870912,
+    "boot_check": "shell_input_passed",
+    "files": {
+      "kernel": {
+        "path": "/Volumes/MossBuild/moss/evidence/uart-console-production-inputs/moss.bin",
+        "sha256": "2c6eb12755952f5a95bafcc0a36815ab790e76ce13b455209233e2abba58946f"
+      },
+      "initramfs": {
+        "path": "/Volumes/MossBuild/moss/evidence/uart-console-production-inputs/initramfs.cpio",
+        "sha256": "839e2f1d42fc0ff96e5851a8db283255ebbe936c6b6d375cb20cae656c15f8ad"
+      },
+      "dtb": {
+        "path": "/Volumes/MossBuild/moss/evidence/uart-console-production/moss.dtb",
+        "sha256": "8ad5e579a69a3ea6c043e9a6e6231d3e31d953f8ec5859fe79fe761795b2b407"
+      }
+    }
+  },
+  "detach": {
+    "time_ns": 1792324399142663000,
+    "mode": "read target states, then shut down OpenOCD without halting",
+    "targets": "    TargetName         Type       Endian TapName            State       \n--  ------------------ ---------- ------ ------------------ ------------\n 0  bcm2837.ap         mem_ap     little bcm2837.cpu        running\n 1* bcm2837.cpu0       aarch64    little bcm2837.cpu        running\n 2  bcm2837.cpu1       aarch64    little bcm2837.cpu        running\n 3  bcm2837.cpu2       aarch64    little bcm2837.cpu        running\n 4  bcm2837.cpu3       aarch64    little bcm2837.cpu        running\n",
+    "shutdown_requested": true,
+    "shutdown_control_reply": "-600 {}",
+    "shutdown_wrapper_exception": "RuntimeError: OpenOCD failed: shutdown\n-600 {}",
+    "openocd_process_exit_code": 0,
+    "listeners_and_uart_reader_after_shutdown": "lsof returned exit 1 with no matching entries",
+    "target_state_observation": "All four CPUs were running immediately before shutdown; no halt issued."
+  },
+  "unresolved": [
+    "ARM64 rename_lifecycle and RV64 allocation_fault reached original five-second QEMU limits; independent passes do not close the causes.",
+    "Old Loader fault addr=0x4061ac2e0 pc=0x20002c6d0 and supervisor restart; no UART causal claim.",
+    "Other long IRQ masks, sustained duplex, quantitative output cost, Linux comparison, per-operation tails and complete scheduling ownership remain open.",
+    "A locally frozen production manifest initially omitted validation fields; loader rejected it before contacting the target. Rejection log and initial manifest are retained."
+  ],
+  "archives": {
+    "repository_text": {
+      "path": "docs/validation/rpi3b-console-write-2026-10-18-evidence.tar.gz",
+      "sha256": "f5c1bb7f50fbe01eb3514009b07a9c6f9738a3dafcc08a4e662f5ed3fa12f907"
+    },
+    "local_complete": {
+      "filename": "uart-console-complete-evidence.tar.gz",
+      "sha256": "3a02c9b9aa843fe770dcad910aebf93c66823eda890b1830e13e3f1ee91be376"
+    },
+    "file_index_sha256": "f467821dc5738e03dad02bcacaa57070ec2f1a70b51cc9aafb215b00b821528b"
+  }
+}

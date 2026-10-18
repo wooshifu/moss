@@ -1987,6 +1987,35 @@ MOSS-017 仍开放：其他返回点、最外层抢占恢复、完整所有权�
 
 本批只有文档变更，完成相对链接、术语与差异核对；没有新增构建、QEMU 或真机结果。
 
+### 3.114 控制台输出期间的 Pi RX 溢出（2026-10-18）
+
+重部署 3.112 的相同固定服务镜像和归档后，默认检查再次只留下
+`echo MOSS_RPI_IN`，按原 90 秒期限失败；进一步输入前读取 PL011 RSR 为 `0x8`
+（overrun），观察前后四核 running。CPU0 的 getpid/exec 探针输出期间注入命令，
+也出现截断和 overrun；getpid 无需 fork/exec 即复现。原普通镜像的空闲/长输出
+13 次未复现、失败后的限速恢复及清 ECR 均另记，不能覆盖原失败。
+
+根因路径为普通 `do_write -> console_write` 沿用 syscall 的 IRQ mask，导致整个
+TX 等待期间不能及时处理 RX。本批只在已释放 FD-table 锁、持稳定 File 引用的
+task-context 控制台写中开放 IRQ，并在完整写、部分写和零进度 EFAULT 后恢复入口状态。
+原用户复制与逐字 UART guard 保留，没有新增分配、缓冲层或 syscall。
+
+同归档新镜像的原默认启动检查通过；在同一结果行前 32 字节注入的 getpid **3/3**、
+exec **3/3**，空闲输入和 4096 字节输出期间输入 **13/13** 通过，重放前后 RSR 为零。
+新增 vfs/console_write_irqs 对两种入口 IRQ 状态及三种写进度检查 **20 个断言**：
+旧实现 **17 passed、3 failed**，新三 ISA QEMU 均 **20/20**，新 Pi Release VFS
+套件 **12/12**。Pi runner 接通无宿主输入的 vfs，catalog 升至 v12。
+
+ARM64 Release 与三架构 Debug 构建通过，宿主 **181/181**、定向 lint **2 TU**
+和格式检查通过。七套件首次 QEMU 为 ARM64 **110 passed、1 timeout、3 not_run**、
+x64 **114/114**、RV64 **102 passed、1 timeout、11 not_run**。ARM64 rename 和
+RV64 allocation_fault 的原 5 秒超时/GDB 保留，同镜像独立 VFS/uaccess 各 **12/12**
+不覆盖首次失败。旧启动另有 Loader 用户缺页后被 supervisor 重启，因果未确认。
+
+完整镜像身份、红绿范围、原始串口与首次失败见
+[本批验收](docs/rpi3b-console-write-validation.md)。本批不声明吞吐或尾延迟改善；
+其他长 IRQ 屏蔽、持续全双工负载、量化成本和历史 SMP 超时仍开放，MOSS-017/018 未关闭。
+
 ## 4. 问题总表与当前状态
 
 | 编号 | 优先级 | 审计主题 | 当前状态与下一步 |
@@ -2008,7 +2037,7 @@ MOSS-017 仍开放：其他返回点、最外层抢占恢复、完整所有权�
 | MOSS-015 | P1 | exec 原子替换 | 已关闭（3.25）；全部可失败准备均在旧地址空间仍有效时完成，提交后才回收旧所有权；PFA 与六级 heap 失败、可变 ELF 快照及 FD 语义已在六配置通过。 |
 | MOSS-016 | P1 | ELF 校验与分段策略 | 已关闭（3.26）；不可变 LoadPlan、checked arithmetic、严格拒绝 oracle、17 个畸形映像，以及非页对齐 RX/RW 的实际字节/零填充/最终权限已在六配置通过。 |
 | MOSS-017 | P1 | 运行队列 / 迁移 / on-CPU | 部分修复；已有 task_transition_lock_、take_next_task、migrate_ready_task 与 migration_current_owner 回归，3.28 自身 affinity 红绿证据保留；3.110 补 try-lock 抢占配对，3.111 接通统一用户返回，3.112 补无请求路径及局部 Release 对照；其他安全点、完整交接/负载、Linux 和长期性能仍开放。 |
-| MOSS-018 | P1 | wait/console 丢失唤醒 | 部分修复；wait 的 child-exit/登记交错及 EINTR 已有红绿验收（3.59～3.60）；console 的 RX 排队窗口、双读者及跨 CPU IRQ/登记交错分别在 3.62～3.64 验收。SA_RESTART 限定重启子集已验收（3.65）；3.112 新观察到 Pi 启动输入截断，位置/根因与历史 SMP 超时仍待确认。 |
+| MOSS-018 | P1 | wait/console 丢失唤醒 | 部分修复；wait 的 child-exit/登记交错及 EINTR 已有红绿验收（3.59～3.60）；console 的 RX 排队窗口、双读者及跨 CPU IRQ/登记交错分别在 3.62～3.64 验收，SA_RESTART 限定子集见 3.65。3.114 复现 Pi PL011 overrun 并修复普通 VFS 写的 IRQ 屏蔽窗口；同归档输入红绿及 Pi VFS 已通过。其他长 IRQ 屏蔽、持续负载/成本和历史 SMP 超时仍待验收。 |
 | MOSS-019 | P1 | nanosleep / timer 生命周期 | 部分修复；三 ISA 实际睡眠、容量失败、deadline 溢出、跨 CPU 交接及同步取消已有实现；捕获信号的 EINTR 与相对剩余时间已有九预设红绿验收（3.61）。更广定时交错仍待验收。 |
 | MOSS-020 | P1 | 信号投递 / STOP/CONT/SIGCHLD | 部分修复；结果/handler 参数写回、SIGCHLD、pipe/console 中断与部分传输、wait/nanosleep EINTR、限定 SA_RESTART 重试及 CPU-bound IRQ 投递已验收（3.60～3.66）。基本 STOP/CONT 交接、waitpid 一次性状态、信号致死状态、SA_NOCLDSTOP、进程组 wait 筛选与成员变更唤醒、SA_NOCLDWAIT/显式 SIG_IGN 自动回收及 action 一致快照通过（3.67～3.74）；完整 job control 与更广交错仍待补。 |
 | MOSS-021 | P1 | 信号状态生命周期 | 已关闭（3.23）；状态由 `Process` 拥有，fork/exec/exit 规则已核对，继承/重置及跨旧 256 槽边界的 300 次生命周期在六配置通过。 |

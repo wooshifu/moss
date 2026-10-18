@@ -86,6 +86,7 @@ CATALOG = {
     "vfs": [
         "read_position_eof",
         "errors_readonly",
+        "console_write_irqs",
         "fd_boundaries",
         "pipe_reuse",
         "pipe_fd_rollback",
@@ -345,9 +346,9 @@ CATALOG = {
         )
     },
 }
-# Common user-return rescheduling now has a real peer/register regression;
-# older catalogs do not prove this handoff and are not matching baselines.
-CATALOG_VERSION = 11
+# Console writes now check live IRQ delivery and entry-state restoration;
+# older catalogs do not prove this contract and are not matching baselines.
+CATALOG_VERSION = 12
 FUNCTIONAL = [
     "drivers",
     "resources",

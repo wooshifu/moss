@@ -278,4 +278,4 @@ inline void log(const char *prefix, u64 value) noexcept {
 
 // Note: The old `extern "C" void early_debug_print(...)` is kept in
 // kernel_main.cpp for backward compatibility with assembly and test code.
-// New code should `import moss.drivers.uart;` and call hal::uart::puts() directly.
+// New code should `import moss.drivers.uart;` and call drivers::uart::puts() directly.

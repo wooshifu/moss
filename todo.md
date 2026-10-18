@@ -247,7 +247,8 @@ ADR-0008～0033 中的实现记录不是完成声明；其强制服务迁移边�
   - [x] ARM64 激活从核时补齐 `Active` 发布后的 `DSB SY → SEV` 完成顺序；三模式构建、Debug/Release CTest 5/5 与实际指令检查通过，偶发挂起完整验收另列（3.15）。
   - [x] 调用线程收紧自身 affinity 时，在返回用户态前经 bootstrap 保存 continuation，再发布到目标 CPU；旧实现的 cycle 1 确定性红例、单例绿例及 32/32 并发压力已保留（3.28）。远程目标、一般抢占迁移及完整 on-CPU 协议仍未关闭。
 - [ ] **MOSS-018（部分修复）**：wait/console 已有登记—睡眠协议和坏 status 可重试；child-exit 交错、wait EINTR、真实 RX 排队窗口、双读者及跨 CPU IRQ/登记交错已验收；SA_RESTART 限定重启子集亦已通过，历史 SMP 超时因果仍待确认。
-  - [ ] Pi Release 两次候选启动在并发输出期间将默认检查命令截为同一 16 字节前缀；独立限速恢复成功，但丢失位置、UART 输出的 IRQ 屏蔽与调度交错的关系仍待定位。保留原 90 秒失败，不将恢复改记为原启动通过（3.112）。
+  - [x] Pi Release 的 16 字节输入截断已复现并读取到 PL011 RX overrun：普通 VFS console_write 在 TX 等待期间沿用 syscall 的 IRQ mask。本批只在该 task-context 操作中开放 IRQ 并恢复入口状态；同归档默认启动、getpid/exec 输出期间输入各 3/3、空闲/长输出输入 13/13 及 Pi VFS 12/12 通过（3.114）。原 90 秒失败和独立恢复记录保留。
+  - [ ] printk/长字符串 TransmitGuard 等其他 IRQ 屏蔽窗口、持续全双工负载和量化输出成本仍需验收；不因普通 VFS 路径修复关闭整项（3.114）。
   - [x] `sys_wait4()` 准备睡眠后登记 waiter、重查 Zombie；status copyout 失败不 reap。console 受锁保护检查/登记、支持多 waiter，已有 console 信号中断用例（3.41）。
   - [x] child exit 在 wait 登记前完成真实唤醒的双 CPU 顺序已有验证钩子固定；移除登记后的 Zombie 重查使新用例超时，恢复后九预设 `users.signals` 各 20/20、完整 CTest 43/43（3.59）。
   - [x] waitpid 被捕获信号唤醒后返回 EINTR，保留未写的 status 和可重试回收；旧实现超时红例、九预设 `users.signals` 各 21/21、完整 CTest 43/43（3.60）。

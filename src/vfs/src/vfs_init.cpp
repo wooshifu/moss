@@ -846,18 +846,29 @@ static long console_read([[maybe_unused]] File *file, OutputBuffer buffer) noexc
 }
 
 static long console_write([[maybe_unused]] File *file, InputBuffer buffer) noexcept {
+  // This blocking VFS operation runs in task context with a retained File and
+  // no FD-table lock. A syscall's masked IRQ state must not span the whole
+  // serial write: RX can overflow while TX waits. Restore entry state on both
+  // success and a short/faulting copy; UART guards still protect each TX byte.
+  const bool restore_irqs = arch::interrupts_enabled();
+  arch::enable_interrupts();
   const usize count = buffer.size();
+  long result = static_cast<long>(count);
   for (usize i = 0; i < count; ++i) {
     char c = 0;
     if (buffer.copy_to(i, &c, 1) != 1) {
-      return i ? static_cast<long>(i) : -static_cast<long>(VfsError::BadAddress);
+      result = i ? static_cast<long>(i) : -static_cast<long>(VfsError::BadAddress);
+      break;
     }
     if (c == '\n') {
       uart::putc('\r');
     }
     uart::putc(c);
   }
-  return static_cast<long>(count);
+  if (!restore_irqs) {
+    arch::disable_interrupts();
+  }
+  return result;
 }
 
 static long console_lseek([[maybe_unused]] File *file, [[maybe_unused]] i64 offset,

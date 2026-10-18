@@ -68,6 +68,55 @@ void file_errors() {
   ut::expect(vfs::syscall::do_close(table, fd) == 0);
 }
 
+namespace {
+bool console_copy_irqs = false;
+usize console_copy_remaining = 0;
+
+usize console_irq_copy(void *target, u64 source, usize count) noexcept {
+  console_copy_irqs = console_copy_irqs && arch::interrupts_enabled();
+  const usize copied = count < console_copy_remaining ? count : console_copy_remaining;
+  console_copy_remaining -= copied;
+  __builtin_memcpy(target, reinterpret_cast<const void *>(source), copied);
+  return count - copied;
+}
+} // namespace
+
+void console_write_irqs() {
+  vfs::FdTable table;
+  const long fd = vfs::syscall::do_open(&table, "/dev/console", vfs::O_WRONLY, 0);
+  if (!ut::expect(fd >= 0)) {
+    return;
+  }
+  // Two bytes exercise no progress, partial output and full success. Newlines
+  // keep actual UART output separate from the validation protocol records.
+  constexpr char bytes[] = {'\n', '\n'};
+  constexpr bool entry_states[] = {false, true};
+  const bool original_irqs = arch::interrupts_enabled();
+  for (const bool enabled : entry_states) {
+    for (usize limit = 0; limit <= sizeof(bytes); ++limit) {
+      console_copy_irqs = true;
+      console_copy_remaining = limit;
+      if (enabled) {
+        arch::enable_interrupts();
+      } else {
+        arch::disable_interrupts();
+      }
+      const long result = vfs::syscall::do_write(
+          &table, fd, vfs::InputBuffer::user(reinterpret_cast<u64>(bytes), sizeof(bytes), console_irq_copy));
+      const bool restored = arch::interrupts_enabled() == enabled;
+      if (original_irqs) {
+        arch::enable_interrupts();
+      } else {
+        arch::disable_interrupts();
+      }
+      ut::expect(console_copy_irqs);
+      ut::expect(restored);
+      ut::expect(result == (limit ? static_cast<long>(limit) : -static_cast<long>(vfs::VfsError::BadAddress)));
+    }
+  }
+  ut::expect(vfs::syscall::do_close(&table, fd) == 0);
+}
+
 void fd_boundaries() {
   vfs::FdTable table;
   long fd = vfs::syscall::do_open(&table, "/fixture.bin", 0, 0);
@@ -367,6 +416,7 @@ void register_vfs_cases() {
   ut::register_suite("vfs", [] {
     ut::register_test("read_position_eof", file_read);
     ut::register_test("errors_readonly", file_errors);
+    ut::register_test("console_write_irqs", console_write_irqs);
     ut::register_test("fd_boundaries", fd_boundaries);
     ut::register_test("pipe_reuse", pipe_reuse);
     ut::register_test("pipe_fd_rollback", pipe_fd_rollback);
