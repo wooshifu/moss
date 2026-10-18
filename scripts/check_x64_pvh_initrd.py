@@ -22,6 +22,7 @@ if __package__ in (None, ""):
 from qemu import build_qemu_args, resolve_qemu
 from scripts.artifacts import Artifacts
 from scripts.gen_initramfs import make_cpio_entry, make_cpio_trailer
+from scripts.qemu_sockets import connect_socket, server_socket
 
 # One MiB is large enough to move QEMU's page-aligned module interval while
 # remaining negligible beside the minimum supported 256-MiB guest RAM.
@@ -158,16 +159,7 @@ def mutate_pvh_boot_info(
     kernel: Path, gdb_socket: Path, child: subprocess.Popen[bytes], mutation: str
 ) -> dict[str, int]:
     deadline = time.monotonic() + GDB_BREAK_TIMEOUT_SECONDS
-    while not gdb_socket.exists():
-        if child.poll() is not None:
-            raise RuntimeError("QEMU exited before publishing its GDB socket")
-        if time.monotonic() >= deadline:
-            raise TimeoutError("QEMU did not publish its GDB socket")
-        time.sleep(POLL_INTERVAL_SECONDS)
-
-    with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as connection:
-        connection.settimeout(max(POLL_INTERVAL_SECONDS, deadline - time.monotonic()))
-        connection.connect(str(gdb_socket))
+    with connect_socket(gdb_socket, child, deadline) as connection:
         remote = GdbRemote(connection)
         entry = elf64_entry(kernel)
         breakpoint = f"{GDB_HARDWARE_BREAKPOINT_TYPE},{entry:x},{GDB_X86_BREAKPOINT_KIND}"
@@ -336,7 +328,7 @@ def run_case(
     if mutation:
         if gdb_socket is None:
             raise ValueError("PVH mutation requires a GDB socket")
-        args += ["-S", "-gdb", f"unix:{gdb_socket},server=on,wait=off"]
+        args += ["-S", "-gdb", server_socket(gdb_socket)]
     serial = output / "serial.log"
     qemu_log = output / "qemu.log"
     started = time.monotonic()

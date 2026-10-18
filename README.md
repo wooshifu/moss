@@ -21,6 +21,29 @@ uv run cmake --list-presets workflow
 compiler parallelism within each preset. Architecture and build-type filters
 still apply. Verbose output is grouped by preset and printed when it finishes.
 
+### Windows (native PowerShell)
+
+Install uv, LLVM 23 or newer (including LLD and LLVM binary tools), QEMU with
+all three system emulators, and the Visual Studio C++ Build Tools/Windows SDK
+for BusyBox's two host generators. Add LLVM and QEMU to `PATH`, then run:
+
+```powershell
+$env:PATH = "C:\Program Files\LLVM\bin;C:\Program Files\qemu;$env:PATH"
+$env:PYTHONUTF8 = "1"
+uv sync --frozen --no-install-project
+uv run build.py --jobs 2
+uv run python -m pytest
+```
+
+These commands use native Windows tools; WSL, MSYS and a POSIX shell are not
+required. GDB is optional. Without an ARM64-capable, Python-enabled
+`gdb-multiarch` or `gdb` on `PATH`, ARM64 Debug omits only
+`moss-console-input` and `moss-console-registration`; all
+other build and QEMU test stages remain enabled. Failure diagnostics still
+collect QMP evidence without GDB. Windows QEMU control connections use loopback
+TCP. POSIX serial/PTY, signal-delivery and LP64-only host probes are skipped on
+Windows; guest validation still exercises the native target ABI.
+
 ## Testing
 
 CMake configure/build do not require QEMU; workflows also run CTest through the

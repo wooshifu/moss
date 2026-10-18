@@ -21,6 +21,67 @@ permissions:
   packages: read
 
 jobs:
+  windows:
+    if: github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success'
+    runs-on: windows-2025
+    strategy:
+      fail-fast: false
+      matrix:
+        preset:
+          - arm64-debug
+          - arm64-release
+          - arm64-relwithdebinfo
+          - x64-debug
+          - x64-release
+          - x64-relwithdebinfo
+          - riscv64-debug
+          - riscv64-release
+          - riscv64-relwithdebinfo
+    env:
+      PYTHONUTF8: '1'
+      CMAKE_BUILD_PARALLEL_LEVEL: '4'
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
+          persist-credentials: false
+
+      - uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+
+      - name: Install native LLVM and QEMU
+        shell: pwsh
+        run: |
+          choco install llvm qemu --yes --no-progress --force
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          'C:\Program Files\LLVM\bin' >> $env:GITHUB_PATH
+          'C:\Program Files\qemu' >> $env:GITHUB_PATH
+
+      - name: Sync locked build dependencies
+        run: uv sync --frozen --no-install-project
+
+      # GDB is intentionally absent: only the two optional input-barrier probes
+      # need it. The remaining CTest suites must run on a native Windows host.
+      - name: Configure, build and test
+        run: uv run cmake --workflow --preset ${{ matrix.preset }}
+
+      - name: Host-side regression tests
+        if: ${{ !cancelled() && matrix.preset == 'arm64-debug' }}
+        run: uv run python -m pytest
+
+      - name: Preserve test reports
+        if: failure()
+        uses: actions/upload-artifact@v6
+        with:
+          name: windows-${{ matrix.preset }}
+          path: |
+            build/${{ matrix.preset }}/Testing/Temporary/
+            build/${{ matrix.preset }}/validation/
+            build/${{ matrix.preset }}/production-boot/
+            build/${{ matrix.preset }}/supervisor-reset/
+            build/${{ matrix.preset }}/pvh-initrd/
+
   workflow:
     if: github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success'
     runs-on: ubuntu-24.04

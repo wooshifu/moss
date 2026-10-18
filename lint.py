@@ -384,10 +384,8 @@ def resolve_tools(
         if override:
             path = find_executable(override, Path.cwd())
         else:
-            siblings = [compiler.parent / name for compiler in compilers]
-            path = next(
-                (candidate for candidate in siblings if candidate.is_file() and os.access(candidate, os.X_OK)), None
-            )
+            siblings = [shutil.which(str(compiler.parent / name)) for compiler in compilers]
+            path = next((Path(candidate) for candidate in siblings if candidate), None)
             if path is None:
                 path = find_executable(name, root)
         tool = probe_tool(path.resolve(), root, registry)
@@ -433,7 +431,13 @@ def exclude_header_response(
     )
     response = build_dir / "moss-clang-tidy-exclusions.rsp"
     # Vendored path lists can exceed the kernel's limit for one argv string.
-    response.write_text(shlex.quote(f"--exclude-header-filter=(^|.*/)({expression})$") + "\n", encoding="utf-8")
+    expression = expression.replace("/", r"[/\\]")
+    # LLVM uses Windows response-file tokenization on Windows: single quotes
+    # are literal there. Double-quoted JSON strings work with both tokenizers.
+    response.write_text(
+        json.dumps(r"--exclude-header-filter=(^|.*[/\\])(" + expression + ")$", ensure_ascii=False) + "\n",
+        encoding="utf-8",
+    )
     return f"@{response}"
 
 

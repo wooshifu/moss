@@ -2,6 +2,7 @@
 
 import re
 import shutil
+import struct
 import subprocess
 from pathlib import Path
 
@@ -70,6 +71,8 @@ int main(int argc, char **argv) {
 
 @pytest.fixture(scope="module")
 def format_probe(tmp_path_factory):
+    if struct.calcsize("l") != 8:
+        pytest.skip("Moss decimal/syscall header requires an LP64 host; Windows uses LLP64")
     compiler = shutil.which("clang")
     if compiler is None:
         pytest.skip("system Clang with UBSan required")
@@ -142,7 +145,7 @@ def test_embedded_init_assembled_lengths_and_failure_status(
     assembly.write_text(source, encoding="utf-8")
 
     def run(*argv):
-        result = subprocess.run(argv, capture_output=True, text=True, check=False)
+        result = subprocess.run([shutil.which(argv[0]), *argv[1:]], capture_output=True, text=True, check=False)
         assert result.returncode == 0, result.stdout + result.stderr
         return result.stdout
 

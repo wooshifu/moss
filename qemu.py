@@ -172,7 +172,7 @@ def build_qemu_args(
                 and os.access(shm_path, os.W_OK | os.X_OK)
                 and shutil.disk_usage(shm_path).free >= memory_mib * 1024**2
             ):
-                args += ["-mem-path", str(shm_path)]
+                args += ["-mem-path", shm_path.as_posix()]
         except OSError:
             pass
     if debug_mode:

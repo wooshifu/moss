@@ -2,7 +2,6 @@
 
 import json
 import os
-import socket
 import threading
 import time
 from pathlib import Path
@@ -38,7 +37,7 @@ def test_saved_pinning_requires_complete_binding_evidence(damage):
 
 
 @pytest.mark.parametrize("damage", [None, "missing_cpu", "foreign_thread", "affinity_not_applied"])
-def test_qmp_resumes_only_after_owned_thread_binding(qmp_sockets, monkeypatch, damage):
+def test_qmp_resumes_only_after_owned_thread_binding(qmp_sockets, qmp_listener, monkeypatch, damage):
     path = qmp_sockets / "qmp.sock"
     actions = []
     affinity = {0}
@@ -59,14 +58,12 @@ def test_qmp_resumes_only_after_owned_thread_binding(qmp_sockets, monkeypatch, d
     task_root = f"/proc/{os.getpid()}/task/"
 
     def exists(candidate):
-        if str(candidate).startswith(task_root):
-            return str(candidate) == f"{task_root}{os.getpid()}"
+        if candidate.as_posix().startswith(task_root):
+            return candidate.as_posix() == f"{task_root}{os.getpid()}"
         return original_exists(candidate)
 
     monkeypatch.setattr(Path, "exists", exists)
-    with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as listener:
-        listener.bind(str(path))
-        listener.listen()
+    with qmp_listener(path) as listener:
 
         def server():
             with listener.accept()[0] as connection, connection.makefile("rwb") as stream:

@@ -3,13 +3,13 @@
 import json
 import re
 import shutil
-import socket
 import subprocess
 import time
 from contextlib import contextmanager
 from pathlib import Path
 
 from scripts.artifacts import Artifacts
+from scripts.qemu_sockets import connect_socket, gdb_address
 
 # This extra budget starts after failure, outside all test/benchmark measurements.
 CAPTURE_TIMEOUT = 10.0
@@ -17,53 +17,42 @@ CAPTURE_TIMEOUT = 10.0
 
 @contextmanager
 def qmp_session(path: Path, process: subprocess.Popen, deadline: float):
-    family = getattr(socket, "AF_UNIX", None)
-    if family is None:
-        raise ValueError("QMP Unix sockets are not supported by this Python build")
-    with socket.socket(family, socket.SOCK_STREAM) as client:
-        while True:
-            if process.poll() is not None or time.monotonic() >= deadline:
-                raise ValueError("QMP startup failed or timed out")
+    with connect_socket(path, process, deadline) as client, client.makefile("rwb") as stream:
+
+        def receive():
             client.settimeout(max(0.001, deadline - time.monotonic()))
-            try:
-                client.connect(str(path))
-                break
-            except (FileNotFoundError, ConnectionRefusedError):
-                time.sleep(0.01)
-        with client.makefile("rwb") as stream:
+            line = stream.readline(2**20)
+            if not line.endswith(b"\n") or time.monotonic() >= deadline:
+                raise ValueError("incomplete or timed-out QMP response")
+            return json.loads(line)
 
-            def receive():
-                client.settimeout(max(0.001, deadline - time.monotonic()))
-                line = stream.readline(2**20)
-                if not line.endswith(b"\n") or time.monotonic() >= deadline:
-                    raise ValueError("incomplete or timed-out QMP response")
-                return json.loads(line)
+        if "QMP" not in receive():
+            raise ValueError("missing QMP greeting")
 
-            if "QMP" not in receive():
-                raise ValueError("missing QMP greeting")
+        def command(name, arguments=None):
+            request = {"execute": name, "id": name}
+            if arguments is not None:
+                request["arguments"] = arguments
+            stream.write(json.dumps(request).encode() + b"\n")
+            stream.flush()
+            while True:
+                response = receive()
+                if "event" in response:
+                    continue
+                if response.get("id") != name or "return" not in response:
+                    raise ValueError(f"QMP {name} failed: {response}")
+                return response["return"]
 
-            def command(name, arguments=None):
-                request = {"execute": name, "id": name}
-                if arguments is not None:
-                    request["arguments"] = arguments
-                stream.write(json.dumps(request).encode() + b"\n")
-                stream.flush()
-                while True:
-                    response = receive()
-                    if "event" in response:
-                        continue
-                    if response.get("id") != name or "return" not in response:
-                        raise ValueError(f"QMP {name} failed: {response}")
-                    return response["return"]
-
-            command("qmp_capabilities")
-            yield command
+        command("qmp_capabilities")
+        yield command
 
 
 def image_load_offset(arch: str, image: Path, roms: str) -> int:
     if arch == "X64":
         return 0  # PVH loads the ELF's declared addresses, without PIE relocation.
-    addresses = re.findall(r'addr=([0-9a-fA-F]+)[^\r\n]* name="' + re.escape(str(image)) + r'"', roms)
+    addresses = re.findall(
+        r'addr=([0-9a-fA-F]+)[^\r\n]* name="' + re.escape(image.as_posix()) + r'"', roms.replace("\\", "/")
+    )
     if len(addresses) != 1:
         raise ValueError("cannot identify the loaded Image in QEMU info roms")
     return int(addresses[0], 16)
@@ -159,7 +148,7 @@ def capture_failure(
             script, log = directory / f"{prefix}.gdb", directory / f"{prefix}.log"
             output = directory / f"{prefix}.json"
             configuration = dict(
-                socket=str(sockets / "gdb.sock"),
+                socket=gdb_address(sockets / "gdb.sock"),
                 symbols=str(symbols),
                 offset=result["symbol_load_offset"],
                 cpus=cpus,

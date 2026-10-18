@@ -270,26 +270,42 @@ if(MOSS_BUILD_TESTS)
     endif()
     if(MOSS_TARGET_ARCH STREQUAL "ARM64" AND CMAKE_BUILD_TYPE STREQUAL "Debug")
         # Debian names the cross-target debugger gdb-multiarch, while native GDB builds on macOS expose the same remote
-        # protocol support as gdb. The controlled input test requires either.
-        find_program(MOSS_GDB_EXECUTABLE NAMES gdb-multiarch gdb REQUIRED)
-        add_test(NAME moss-console-input COMMAND uv run ${CMAKE_SOURCE_DIR}/scripts/check_production_boot.py --manifest
-                                                 ${CMAKE_BINARY_DIR}/moss-artifacts.json --gdb ${MOSS_GDB_EXECUTABLE}
-        )
-        add_test(NAME moss-console-registration
-                 COMMAND uv run ${CMAKE_SOURCE_DIR}/scripts/check_production_boot.py --manifest
-                         ${CMAKE_BINARY_DIR}/moss-artifacts.json --gdb ${MOSS_GDB_EXECUTABLE} --registration-race
-        )
-        set_tests_properties(
-            moss-console-input moss-console-registration
-            PROPERTIES TIMEOUT
-                       65 # 50 s GDB probe plus 15 s for startup, bounded cleanup and report writing.
-                       RUN_SERIAL
-                       TRUE
-                       LABELS
-                       "kernel"
-                       WORKING_DIRECTORY
-                       ${CMAKE_SOURCE_DIR}
-        )
+        # protocol support as gdb. Only the controlled input probes need it; ordinary builds and QEMU validation work
+        # without a debugger.
+        find_program(MOSS_GDB_EXECUTABLE NAMES gdb-multiarch gdb)
+        if(MOSS_GDB_EXECUTABLE)
+            execute_process(
+                COMMAND "${MOSS_GDB_EXECUTABLE}" -nx -batch -ex "set architecture aarch64" -ex "python import gdb"
+                RESULT_VARIABLE _gdb_probe
+                OUTPUT_QUIET ERROR_QUIET
+                TIMEOUT 10
+            )
+        endif()
+        if(MOSS_GDB_EXECUTABLE AND "${_gdb_probe}" STREQUAL "0")
+            add_test(NAME moss-console-input
+                     COMMAND uv run ${CMAKE_SOURCE_DIR}/scripts/check_production_boot.py --manifest
+                             ${CMAKE_BINARY_DIR}/moss-artifacts.json --gdb ${MOSS_GDB_EXECUTABLE}
+            )
+            add_test(NAME moss-console-registration
+                     COMMAND uv run ${CMAKE_SOURCE_DIR}/scripts/check_production_boot.py --manifest
+                             ${CMAKE_BINARY_DIR}/moss-artifacts.json --gdb ${MOSS_GDB_EXECUTABLE} --registration-race
+            )
+            set_tests_properties(
+                moss-console-input moss-console-registration
+                PROPERTIES TIMEOUT
+                           65 # 50 s GDB probe plus 15 s for startup, bounded cleanup and report writing.
+                           RUN_SERIAL
+                           TRUE
+                           LABELS
+                           "kernel"
+                           WORKING_DIRECTORY
+                           ${CMAKE_SOURCE_DIR}
+            )
+        else()
+            message(
+                STATUS "ARM64 GDB with Python unavailable: skipping moss-console-input and moss-console-registration"
+            )
+        endif()
     endif()
     set_tests_properties(
         moss-functional moss-framework

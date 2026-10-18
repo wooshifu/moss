@@ -3,21 +3,22 @@
 import argparse
 import json
 import os
-import pty
 import re
 import select
 import subprocess
 import sys
-import termios
 import threading
 from pathlib import Path
 
 import pytest
 
-from scripts import rpi
-from scripts.artifacts import Artifacts
-from scripts.kernel_validation import CATALOG, Protocol
-from scripts.rpi import INITRD_BASE, TRANSFER_CHUNK, OpenOCD
+termios = pytest.importorskip("termios", reason="POSIX serial/PTY tests require termios")
+pty = pytest.importorskip("pty", reason="POSIX serial tests require a PTY")
+
+from scripts import rpi  # noqa: E402
+from scripts.artifacts import Artifacts  # noqa: E402
+from scripts.kernel_validation import CATALOG, Protocol  # noqa: E402
+from scripts.rpi import INITRD_BASE, TRANSFER_CHUNK, OpenOCD  # noqa: E402
 
 
 def test_production_helpers_and_perf_tool_need_no_validation_packages():

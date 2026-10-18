@@ -44,7 +44,9 @@ def test_validation_marker_is_added_only_to_copy():
         "gdb_failure",
     ],
 )
-def test_production_probe_requires_exec_and_subsequent_shell_output(tmp_path, monkeypatch, mode):
+def test_production_probe_requires_exec_and_subsequent_shell_output(tmp_path, monkeypatch, mode, python_command):
+    if mode == "late_panic" and sys.platform == "win32":
+        pytest.skip("Windows TerminateProcess cannot deliver the fixture's POSIX SIGTERM handler")
     files = {name: tmp_path / name for name in ("kernel", "initramfs", "debug_symbols")}
     for path in files.values():
         path.write_bytes(b"image")
@@ -275,7 +277,7 @@ assert input() == 'echo MOSS_PRODUCTION_READY'
         script += "print('MOSS_CONSOLE_OBJECT_WRITE\\n\\nMOSS_CONSOLE_READY\\nmoss$ ', end='', flush=True)\n"
         script += "time.sleep(30)\n"
     monkeypatch.setattr(boot, "resolve_qemu", lambda _: "unused")
-    monkeypatch.setattr(boot, "build_qemu_args", lambda *_a, **_kw: [sys.executable, "-c", script])
+    monkeypatch.setattr(boot, "build_qemu_args", lambda *_a, **_kw: python_command(script))
     popen = boot.subprocess.Popen
 
     def launch(args, **kwargs):

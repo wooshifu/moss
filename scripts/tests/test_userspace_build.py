@@ -73,10 +73,12 @@ add_custom_target(userspace-fixture DEPENDS
         str(build),
         "-G",
         "Ninja",
-        f"-DCMAKE_C_COMPILER={shutil.which('clang')}",
-        f"-DCMAKE_CXX_COMPILER={shutil.which('clang++')}",
-        f"-DCMAKE_ASM_COMPILER={shutil.which('clang')}",
+        f"-DCMAKE_C_COMPILER={Path(shutil.which('clang')).resolve()}",
+        f"-DCMAKE_CXX_COMPILER={Path(shutil.which('clang++')).resolve()}",
+        f"-DCMAKE_ASM_COMPILER={Path(shutil.which('clang')).resolve()}",
         f"-DCMAKE_C_COMPILER_TARGET={triple}",
+        f"-DCMAKE_CXX_COMPILER_TARGET={triple}",
+        f"-DCMAKE_ASM_COMPILER_TARGET={triple}",
         "-DCMAKE_SYSTEM_NAME=Generic",
         "-DCMAKE_TRY_COMPILE_TARGET_TYPE=STATIC_LIBRARY",
         "-DCMAKE_BUILD_TYPE=Debug",
@@ -241,9 +243,9 @@ def test_validation_fixture_packages_the_real_runtime_programs(tmp_path):
 
 @pytest.mark.parametrize("arch,machine", [("X64", 62), ("ARM64", 183), ("RISCV64", 243)])
 def test_vendored_runtime_build_is_native_and_incremental(tmp_path, arch, machine):
-    required = ("clang", "clang++", "llvm-ar", "llvm-strip", "ld.lld", "cmake", "ninja", "sh", "bzip2", "uv")
+    required = ("clang", "clang++", "llvm-ar", "llvm-strip", "ld.lld", "cmake", "ninja", "uv")
     if any(shutil.which(tool) is None for tool in required):
-        pytest.skip("LLVM, CMake, Ninja and BusyBox host-generator tools required")
+        pytest.skip("LLVM, CMake, Ninja and uv required")
     repository = Path(__file__).resolve().parents[2]
     root = tmp_path / "native runtime project"
     shutil.copytree(repository / "src/userspace", root / "src/userspace", symlinks=True)
@@ -265,8 +267,12 @@ add_subdirectory(src/userspace)
     forbidden = tmp_path / "forbidden tools"
     forbidden.mkdir()
     for tool in ("make", "gmake", "meson", "curl", "wget"):
-        path = forbidden / tool
-        path.write_text("#!/bin/sh\necho 'Forbidden legacy build or download tool' >&2\nexit 97\n")
+        path = forbidden / (tool + (".cmd" if os.name == "nt" else ""))
+        path.write_text(
+            "@echo Forbidden legacy build or download tool >&2\n@exit /b 97\n"
+            if os.name == "nt"
+            else "#!/bin/sh\necho 'Forbidden legacy build or download tool' >&2\nexit 97\n"
+        )
         path.chmod(0o755)
     env = dict(os.environ, PATH=f"{forbidden}{os.pathsep}{os.environ['PATH']}", UV_OFFLINE="1")
 
@@ -283,6 +289,7 @@ add_subdirectory(src/userspace)
         return digest.hexdigest()
 
     before = source_digest()
+    triple = {"ARM64": "aarch64-unknown-elf", "X64": "x86_64-unknown-elf", "RISCV64": "riscv64-unknown-elf"}[arch]
     run(
         "cmake",
         "-S",
@@ -291,11 +298,14 @@ add_subdirectory(src/userspace)
         str(build),
         "-G",
         "Ninja",
-        f"-DCMAKE_C_COMPILER={shutil.which('clang')}",
-        f"-DCMAKE_CXX_COMPILER={shutil.which('clang++')}",
-        f"-DCMAKE_ASM_COMPILER={shutil.which('clang')}",
+        f"-DCMAKE_C_COMPILER={Path(shutil.which('clang')).resolve()}",
+        f"-DCMAKE_CXX_COMPILER={Path(shutil.which('clang++')).resolve()}",
+        f"-DCMAKE_ASM_COMPILER={Path(shutil.which('clang')).resolve()}",
         "-DCMAKE_SYSTEM_NAME=Generic",
         "-DCMAKE_BUILD_TYPE=Debug",
+        f"-DCMAKE_C_COMPILER_TARGET={triple}",
+        f"-DCMAKE_CXX_COMPILER_TARGET={triple}",
+        f"-DCMAKE_ASM_COMPILER_TARGET={triple}",
         "-DCMAKE_EXPORT_COMPILE_COMMANDS=ON",
         f"-DMOSS_TARGET_ARCH={arch}",
     )

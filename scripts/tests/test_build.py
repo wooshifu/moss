@@ -48,6 +48,8 @@ sys.exit(7 if preset == os.environ.get("FAIL_PRESET") else 0)
 """
     )
     fake_cmake.chmod(0o755)
+    if os.name == "nt":
+        (tmp_path / "cmake.cmd").write_text(f'@"{sys.executable}" "{fake_cmake}" %*\n')
 
     def run(*args, parallel=1, fail=""):
         return subprocess.run(
@@ -61,6 +63,8 @@ sys.exit(7 if preset == os.environ.get("FAIL_PRESET") else 0)
             },
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             timeout=30,
         )
 
@@ -80,7 +84,8 @@ def test_concurrency_limit(build_cli, args, parallel):
         peak = max(peak, active)
     assert peak == parallel
     assert len({r["pid"] for r in records}) == 3
-    assert len({r["worker"] for r in records}) == parallel
+    if os.name != "nt":  # Windows batch launchers introduce an intermediate cmd.exe.
+        assert len({r["worker"] for r in records}) == parallel
 
 
 @pytest.mark.parametrize("verbose", [False, True])

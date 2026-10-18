@@ -7,6 +7,7 @@ import os
 import platform
 import shutil
 import signal
+import socket
 import statistics
 import subprocess
 import sys
@@ -35,6 +36,7 @@ from qemu import (
 )
 from scripts.artifacts import Artifacts
 from scripts.qemu_diagnostics import capture_failure, qmp_session
+from scripts.qemu_sockets import server_socket
 
 CATALOG = {
     "drivers": [
@@ -823,18 +825,42 @@ def run_guest(cfg: Artifacts, workload: str, directory: Path, settings: dict, it
     failure_capture = {"status": "not_needed"}
     diagnostic_elapsed = 0.0
     serial_inputs = []
+    console_listener = console = None
+
+    def send_serial(data: bytes) -> None:
+        if console is not None:
+            console.sendall(data)
+        else:
+            process.stdin.write(data)
+            process.stdin.flush()
+
     try:
-        # Short, private Unix paths avoid port races across concurrent presets.
+        # Keep control endpoints private to this guest, including diagnostics.
         qmp_directory = tempfile.TemporaryDirectory(prefix="moss-qmp-")
         sockets = Path(qmp_directory.name)
         args += [
             "-qmp",
-            f"unix:{sockets / 'control.sock'},server=on,wait=off",
+            server_socket(sockets / "control.sock"),
             "-gdb",
-            f"unix:{sockets / 'gdb.sock'},server=on,wait=off",
+            server_socket(sockets / "gdb.sock"),
         ]
         if settings.get("host_cpus"):
             args += ["-S"]
+        if (
+            sys.platform == "win32"
+            and (settings.get("stability") or workload in ("users.signals", "users.console_irq"))
+            and "-chardev" in args
+        ):
+            # The Windows stdio backend does not preserve piped serial input.
+            # Match the production probe's byte-preserving loopback transport.
+            chardev = args.index("-chardev") + 1
+            if args[chardev].startswith("stdio,id=char0,"):
+                console_listener = socket.socket()
+                console_listener.bind(("127.0.0.1", 0))
+                console_listener.listen(1)
+                console_listener.settimeout(min(5, settings["startup_timeout"]))
+                port = console_listener.getsockname()[1]
+                args[chardev] = f"socket,id=char0,host=127.0.0.1,port={port}"
         with (
             serial_path.open("wb") as serial_out,
             error_path.open("wb") as diagnostics,
@@ -848,11 +874,22 @@ def run_guest(cfg: Artifacts, workload: str, directory: Path, settings: dict, it
                 stdout=serial_out,
                 stderr=diagnostics,
             )
+            if console_listener is not None:
+                console = console_listener.accept()[0]
+                console.setblocking(False)
             if settings.get("host_cpus"):
                 host_bindings = pin_vcpus(
                     sockets / "control.sock", process, settings["host_cpus"], start + settings["startup_timeout"]
                 )
             while True:
+                if console is not None:
+                    try:
+                        chunk = console.recv(2**20)
+                    except (BlockingIOError, ConnectionResetError):
+                        chunk = b""
+                    if chunk:
+                        serial_out.write(chunk)
+                        serial_out.flush()
                 if serial_path.stat().st_size > 32 * 2**20:
                     raise ValueError("serial log exceeded 32 MiB")
                 pending += serial_in.read(2**20)
@@ -867,32 +904,28 @@ def run_guest(cfg: Artifacts, workload: str, directory: Path, settings: dict, it
                     ):
                         # The fixture consumes one byte before forking, then checks
                         # that a caught signal returns the second as a partial read.
-                        process.stdin.write(b"kk")
-                        process.stdin.flush()
+                        send_serial(b"kk")
                         serial_inputs.append({"case": state.active, "hex": "6b6b"})
                     if (
                         workload == "users.signals"
                         and state.active == "console_multi_reader"
                         and line == b"MOSS_CONSOLE_MULTI_READY"
                     ):
-                        process.stdin.write(b"ab")
-                        process.stdin.flush()
+                        send_serial(b"ab")
                         serial_inputs.append({"case": state.active, "hex": "6162"})
                     if (
                         workload == "users.signals"
                         and state.active == "console_restarted"
                         and line == b"MOSS_CONSOLE_RESTART_READY"
                     ):
-                        process.stdin.write(b"r")
-                        process.stdin.flush()
+                        send_serial(b"r")
                         serial_inputs.append({"case": state.active, "hex": "72"})
                     if (
                         workload == "users.console_irq"
                         and state.active == "irq_before_registration"
                         and line == b"MOSS_CONSOLE_IRQ_READY"
                     ):
-                        process.stdin.write(b"r")
-                        process.stdin.flush()
+                        send_serial(b"r")
                         serial_inputs.append({"case": state.active, "hex": "72"})
                 if len(pending) > 65536:
                     raise ValueError("unbounded partial serial line")
@@ -918,8 +951,7 @@ def run_guest(cfg: Artifacts, workload: str, directory: Path, settings: dict, it
                 ):
                     # This only permits completion; the guest must still meet
                     # its own duration, cycle and exact resource checks.
-                    process.stdin.write(b"S")
-                    process.stdin.flush()
+                    send_serial(b"S")
                     stability_release_seconds = now - state.case_started
                 if not state.ready and now - start >= settings["startup_timeout"]:
                     reason = "startup_timeout"
@@ -967,6 +999,20 @@ def run_guest(cfg: Artifacts, workload: str, directory: Path, settings: dict, it
             raw_exit = process.returncode
             if process.stdin:
                 process.stdin.close()
+        if console is not None:
+            # Retain evidence already queued when the guest exits or is stopped.
+            with serial_path.open("ab") as serial_tail:
+                while True:
+                    try:
+                        chunk = console.recv(2**20)
+                    except (BlockingIOError, ConnectionResetError):
+                        break
+                    if not chunk:
+                        break
+                    serial_tail.write(chunk)
+            console.close()
+        if console_listener is not None:
+            console_listener.close()
         if qmp_directory:
             qmp_directory.cleanup()
     serial = serial_path.read_bytes() if serial_path.exists() else b""
