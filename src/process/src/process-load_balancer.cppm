@@ -53,6 +53,8 @@ private:
   BalancePolicy policy_;
   u32 imbalance_threshold_;
   u64 migration_cost_;
+  // Only CPU0's IRQ-masked periodic callback accesses this timestamp. Idle
+  // stealing does not change the global scan interval; policy is set at init.
   u64 last_balance_time_;
   u64 balance_interval_;
 
@@ -89,7 +91,9 @@ public:
   }
 
   void periodic_balance(u64 current_time, CfsScheduler &scheduler) noexcept {
-    if (current_time - last_balance_time_ < balance_interval_) {
+    // Enforce ownership before reading the plain timestamp, including for
+    // direct callers. CPU0 already owns the shared HrTimer queue on every ISA.
+    if (current_cpu_id() != 0 || current_time - last_balance_time_ < balance_interval_) {
       return;
     }
 

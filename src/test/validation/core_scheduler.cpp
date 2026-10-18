@@ -1003,6 +1003,120 @@ void migration_current_owner() {
   ut::expect(scheduler->get_cpu_nr_running(source) == 0 && scheduler->get_cpu_nr_running(target) == 0);
 }
 
+void periodic_scan_ownership() {
+  using namespace process;
+  auto *original = CfsScheduler::get_current_task();
+  if (!ut::expect(g_scheduler && original && arch::get_current_cpu_id() == 0 && g_num_cpus >= 2)) {
+    return;
+  }
+  unique_ptr<CfsScheduler> scheduler(new CfsScheduler());
+  unique_ptr<LoadBalancer> balancer(new LoadBalancer());
+  if (!ut::expect(scheduler && balancer)) {
+    return;
+  }
+  // Keep this independent of the implementation's counter: the existing
+  // contract is one global scan per eight CPU0 ticks, regardless of SMP size.
+  constexpr u32 scan_ticks = 8;
+  // The balancer's default 4 ms gate is checked separately from the scheduler's
+  // coarser 48 ms callback cadence, using synthetic absolute timestamps.
+  constexpr u64 interval_ns = 4'000'000;
+  static u32 scans = 0, scan_cpus = 0;
+  scans = scan_cpus = 0;
+  scheduler->set_balance_callback(+[](u64, CfsScheduler *) {
+    ++scans;
+    scan_cpus |= 1U << arch::get_current_cpu_id();
+  });
+
+  const bool restore_irqs = arch::interrupts_enabled();
+  arch::disable_interrupts();
+  const auto original_mask = static_cast<u32>(original->cpu_affinity_mask.low_word());
+  // Reuse the production continuation handoff, without changing CPU identity
+  // registers. Restore the validation worker's CPU0 affinity before returning.
+  g_scheduler->set_task_affinity_mask(original, static_cast<u32>(CpuBitmap::all().low_word()));
+  const auto tick = [&](u32 count) {
+    Thread current(0, 0);
+    current.cpu = arch::get_current_cpu_id();
+    current.state = ProcessState::Running;
+    current.sched_class = SchedClass::RealTime;
+    current.sched_policy = SchedPolicy::RR;
+    current.rt.priority = priority::DEFAULT_RT_PRIORITY;
+    current.rt.time_slice_remaining = 0; // Force a local reschedule request on every tested CPU.
+    current.preempt_disable();           // Never dispatch this synthetic, stackless context.
+    const u64 now = timer::TimerSubsystem::instance().now_ns();
+    if (now <= cfs_params::SCHED_LATENCY_NS) {
+      return false;
+    }
+    current.se.exec_start = now - cfs_params::SCHED_LATENCY_NS;
+    CfsScheduler::set_current_task(&current);
+    for (u32 i = 0; i < count; ++i) {
+      scheduler->scheduler_tick();
+    }
+    CfsScheduler::set_current_task(original);
+    return current.need_resched && current.state == ProcessState::Running &&
+           current.se.cpu_runtime_ns.load() >= cfs_params::SCHED_LATENCY_NS && scheduler->total_preemptions() == 0;
+  };
+  bool local_ticks = tick(scan_ticks - 1);
+  const bool before_eighth = scans == 0;
+
+  // Three ready tasks cross periodic_balance's >2 admission threshold. Their
+  // neutral CFS weights exceed its raw load cutoff; no synthetic task executes.
+  Thread first(0, 0), second(1, 0), third(2, 0);
+  Thread *tasks[] = {&first, &second, &third};
+  const auto refill = [&] {
+    for (auto *task : tasks) {
+      scheduler->dequeue_task(task);
+      task->se.load_avg = task->se.weight;
+      scheduler->enqueue_task(task, 0);
+    }
+  };
+  refill();
+  u32 visited = 1; // Bit zero records the initial CPU0 phase.
+  for (u32 cpu = 1; cpu < g_num_cpus; ++cpu) {
+    if (!g_scheduler->migrate_current(cpu) || arch::get_current_cpu_id() != cpu) {
+      break;
+    }
+    visited |= 1U << cpu;
+    local_ticks = tick(scan_ticks) && local_ticks;
+    balancer->periodic_balance(interval_ns, *scheduler);
+  }
+  const bool peers_ignored = scans == 0 && scheduler->get_cpu_nr_running(0) == 3;
+  const bool returned = g_scheduler->migrate_current(0) && arch::get_current_cpu_id() == 0;
+  // Reset the queue even on the old implementation. An unauthorized peer scan
+  // must neither migrate work nor consume the owner's next interval.
+  refill();
+  local_ticks = tick(1) && local_ticks;
+  const bool eighth = scans == 1 && scan_cpus == 1;
+  balancer->periodic_balance(interval_ns, *scheduler);
+  const bool owner_migrated = scheduler->get_cpu_nr_running(0) == 2 && scheduler->get_cpu_nr_running(1) == 1;
+  refill();
+  balancer->periodic_balance(interval_ns, *scheduler);
+  balancer->periodic_balance(2 * interval_ns - 1, *scheduler);
+  const bool interval_retained = scheduler->get_cpu_nr_running(0) == 3;
+  balancer->periodic_balance(2 * interval_ns, *scheduler);
+  const bool next_interval = scheduler->get_cpu_nr_running(0) == 2;
+  local_ticks = tick(scan_ticks - 1) && local_ticks;
+  const bool next_seventh = scans == 1;
+  local_ticks = tick(1) && local_ticks;
+  for (auto *task : tasks) {
+    scheduler->dequeue_task(task);
+  }
+  g_scheduler->set_task_affinity_mask(original, original_mask);
+  if (restore_irqs) {
+    arch::enable_interrupts();
+  }
+  logging::klog::warn("Periodic scan: visited_mask={} scan_cpus={} scans={}", visited, scan_cpus, scans);
+  ut::expect(returned && visited == CpuBitmap::all().low_word());
+  ut::expect(local_ticks);
+  ut::expect(before_eighth);
+  ut::expect(peers_ignored);
+  ut::expect(eighth);
+  ut::expect(owner_migrated);
+  ut::expect(interval_retained && next_interval);
+  ut::expect(next_seventh && scans == 2 && scan_cpus == 1);
+  ut::expect(scheduler->total_context_switches() == 0 && scheduler->get_cpu_nr_running(0) == 0 &&
+             scheduler->get_cpu_nr_running(1) == 0);
+}
+
 void register_scheduler_cases() {
   ut::register_suite("scheduler", [] {
     ut::register_test("pelt_large_runtime", moss::test::scheduler_regression::pelt_large_runtime);
@@ -1014,6 +1128,7 @@ void register_scheduler_cases() {
     ut::register_test("rr_self_selection", [] { scheduler_self_selection(true); });
     ut::register_test("try_lock_preemption", try_lock_preemption);
     ut::register_test("reschedule_safe_point", reschedule_safe_point);
+    ut::register_test("periodic_scan_ownership", periodic_scan_ownership);
     ut::register_test("cpu_runtime_accounting", cpu_runtime_accounting);
     ut::register_test("cpu_budget_accounting", cpu_budget_accounting);
     ut::register_test("cpu_budget_admission", cpu_budget_admission);

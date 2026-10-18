@@ -161,9 +161,9 @@ P1 的存储与网络可按具体消费者分片推进，TCP 依赖可用的收�
   仅作成本参考。首次回读失败、基线启动检查误报和 UART 忙均保留独立记录。
 - [ ] RV64 首轮 clone_allocation_rollback 压力释放超时保留；其他历史超时、
   长期负载、Linux 同板对照和完整调度/生命周期工作继续开放。
-- [ ] 后续 P0-3 源码审计还发现：各核 timer 均进入 scheduler_tick，而 tick_count_
-  与 periodic_balance 的 last_balance_time_ 为共享普通字段。应补全局扫描拥有者/同步
-  的确定性回归；本批未据此解释上述超时，也未修改这些调度路径。
+- [x] 第七批后续 P0-3 审计发现各核 timer 共享 tick_count_ 和 periodic_balance 的
+  last_balance_time_ 普通字段；第九批已补 CPU0 拥有者及确定性红绿回归，见下文。
+  第七批当时未修改这些路径，也没有据此解释上述超时。
 
 详见 [本批验收记录](rpi3b-instruction-cache-validation.md)。
 
@@ -177,3 +177,24 @@ P1 的存储与网络可按具体消费者分片推进，TCP 依赖可用的收�
   原部署的 90 秒失败记录保持 failed；本批为主机判定修复，不关闭内核 RX/调度开放项。
 
 详见 [本批验收记录](rpi3b-shell-check-validation.md)。
+
+## 第九批实施结果（2026-10-18）
+
+- [x] CPU0 独占全局 tick 计数和周期负载扫描，保持八个 CPU0 调度 tick 的既有策略；
+  从核继续本地 CPU 时间、预算与抢占处理，不增加共享原子读改写或全局热路径锁。
+- [x] catalog v14 新回归通过真实 continuation 迁移访问四核，验证扫描归属、
+  第八 tick、负载迁移间隔及从核本地记账。最终同回归 Pi 旧实现 7 passed/4 failed，
+  新 scheduler 19/19、新断言 11/11；首版 RR 测试误读 CFS 字段的失败也保留。
+- [x] ARM64 Release 与三架构 Debug 构建、定向 lint 3 TU、宿主 260 passed/1 skipped；
+  三架构默认四核五套相关 QEMU 各 59/59，ARM64 两核 scheduler 19/19。
+- [ ] 额外 ARM64 十六核首轮为 9 passed、1 timeout、9 not_run，5 秒期限不变。
+  现场各核等待 task_transition_lock_；相同镜像隔离重跑 19/19 不覆盖首次失败，
+  锁竞争、长期负载和完整调度交接仍属 P0-3，不把它归因于本批两个字段。
+- [ ] 原 idle 注释误称 NO_HZ_IDLE，实际周期 scheduler timer 保持全局 heap 非空；
+  本批仅更正注释，未实现动态 tick、CPU 热插拔或负载策略调优。
+- [x] 同板 Release、同探针/用户归档两版各两轮成本采集完成：raw getpid 两版均约
+  0.897–0.904 µs，exec 旧 10.196–10.301 ms、新 10.279–10.288 ms；仅作局部成本参考。
+  两次性能镜像启动的 prompt 被并发字符交错打散，原 90 秒检查失败保留，独立新往返后
+  才采样。并发 TX 归 MOSS-018；无回切、Linux 或持续 SMP 性能结论。
+
+详见 [本批验收记录](rpi3b-periodic-scan-validation.md)。

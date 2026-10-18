@@ -239,7 +239,7 @@ ADR-0008～0033 中的实现记录不是完成声明；其强制服务迁移边�
   - [x] 独立非页对齐 RX/RW fixture 检查页前缀、跨页文件字节、BSS/圆整页尾清零、真实执行/写入，以及 RX 禁写、RW 禁执行；严格拒绝 oracle 防止误接受伪装成成功，六配置 `users.exec` 28/28 通过。
   - [x] 当前契约明确拒绝 PT_INTERP/PT_DYNAMIC 和共享页的 LOAD；纯 NOBITS TLS 可作为 runtime 元数据，file-backed TLS 必须由一个 LOAD 覆盖。关闭本项不表示支持动态加载、内核 TLS 初始化或任意可加载 ELF。
 - [ ] **MOSS-017**：原子取任务、去重入队、on-CPU 交接、迁移锁序和 affinity；对已有 RB 算法补不变量/交错测试，不重写一套。
-  - [ ] 各核 scheduler_tick 的共享 tick_count_ 与负载均衡 last_balance_time_ 尚需全局扫描拥有者/同步回归；这是 3.115 的源码发现，未将其归因于历史超时。
+  - [x] 全局周期扫描由 CPU0 独占，其他核不访问 tick_count_ 或 last_balance_time_，本核 CPU 时间、预算与抢占处理保留。Pi 同最终回归旧实现 7 passed/4 failed、新 scheduler 19/19；不解释历史超时或关闭完整所有权工作，见 [3.117 验收](docs/rpi3b-periodic-scan-validation.md)。
   - 当前源码已有 `task_transition_lock_`、`take_next_task()`、`migrate_ready_task()` 和 `migration_current_owner` 回归；剩余是所有权交接/抢占安全点和负载验收，不是缺少整套原子队列实现。本次不凭源码将整项关闭。
   - [x] `TicketSpinLock::try_lock()` 与普通加锁配对抢占保护：CAS 前禁止抢占，失败回滚、成功由 unlock 释放；嵌套外层锁的真实 tick 回归已通过 Pi scheduler 17/17（3.110）。本项不涵盖返回安全点与完整交接。
   - [x] 统一用户返回调用 `check_need_resched()`：IRQ masked、Running 且可抢占时消费请求并经 bootstrap 交接；不安全时保留请求，不在任意 unlock 调度。旧实现红例、新 Pi users.frame 4/4 与 scheduler 18/18 已通过（3.111）。内核态返回、最外层抢占恢复、完整迁移/on-CPU 协议仍开放。
@@ -249,6 +249,7 @@ ADR-0008～0033 中的实现记录不是完成声明；其强制服务迁移边�
   - [x] ARM64 激活从核时补齐 `Active` 发布后的 `DSB SY → SEV` 完成顺序；三模式构建、Debug/Release CTest 5/5 与实际指令检查通过，偶发挂起完整验收另列（3.15）。
   - [x] 调用线程收紧自身 affinity 时，在返回用户态前经 bootstrap 保存 continuation，再发布到目标 CPU；旧实现的 cycle 1 确定性红例、单例绿例及 32/32 并发压力已保留（3.28）。远程目标、一般抢占迁移及完整 on-CPU 协议仍未关闭。
 - [ ] **MOSS-018（部分修复）**：wait/console 已有登记—睡眠协议和坏 status 可重试；child-exit 交错、wait EINTR、真实 RX 排队窗口、双读者及跨 CPU IRQ/登记交错已验收；SA_RESTART 限定重启子集亦已通过，历史 SMP 超时因果仍待确认。
+  - [ ] 3.117 成本旧/新镜像启动均见 init 日志与 shell 逐字符交错，初始 prompt 被打散，原 90 秒检查失败；之后独立换行/探针往返通过。保留原失败，继续定位并发 TX/输出边界，不归因于全局扫描字段。
   - [x] Pi host `--check` 改按探针发送后的独立结果行与下一 prompt 完成，prompt 后异步日志不再造成误报，旧结果不能误判新往返。PTY 红绿、原始失败字节回放及新 runner 的真实 Pi 往返通过；原 90 秒失败记录不改判（[3.116](docs/rpi3b-shell-check-validation.md)）。
   - [x] Pi Release 的 16 字节输入截断已复现并读取到 PL011 RX overrun：普通 VFS console_write 在 TX 等待期间沿用 syscall 的 IRQ mask。本批只在该 task-context 操作中开放 IRQ 并恢复入口状态；同归档默认启动、getpid/exec 输出期间输入各 3/3、空闲/长输出输入 13/13 及 Pi VFS 12/12 通过（3.114）。原 90 秒失败和独立恢复记录保留。
   - [ ] printk/长字符串 TransmitGuard 等其他 IRQ 屏蔽窗口、持续全双工负载和量化输出成本仍需验收；不因普通 VFS 路径修复关闭整项（3.114）。

@@ -108,6 +108,7 @@ CATALOG = {
         "rr_self_selection",
         "try_lock_preemption",
         "reschedule_safe_point",
+        "periodic_scan_ownership",
         "cpu_runtime_accounting",
         "cpu_budget_accounting",
         "cpu_budget_admission",
@@ -347,9 +348,9 @@ CATALOG = {
         )
     },
 }
-# Executable-page publication now checks physical-frame reuse across CPUs;
+# Global periodic scanning now checks CPU0 ownership;
 # older catalogs do not prove this contract and are not matching baselines.
-CATALOG_VERSION = 13
+CATALOG_VERSION = 14
 FUNCTIONAL = [
     "drivers",
     "resources",

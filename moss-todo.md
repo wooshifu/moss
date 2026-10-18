@@ -2047,6 +2047,7 @@ fork+exec+wait 为 9.71–9.72 ms，较本次旧镜像约高 0.6%；两版温度
 P0-3 后续源码复核发现各核 timer 均进入 scheduler_tick，而 tick_count_ 与
 periodic_balance 的 last_balance_time_ 仍为共享普通字段；下一步需明确全局扫描
 拥有者/同步并补确定性回归。尚未运行该交错，不把它当作上述超时的已确认根因。
+此为第七批当时状态；该字段归属切片随后由 3.117 闭合，历史超时没有合并归因。
 
 ### 3.116 Pi host 输入检查与异步服务日志（2026-10-18）
 
@@ -2064,6 +2065,35 @@ Pi 3B+，新 runner 实际 UART 探针及下一 prompt 通过，退出后释放�
 原部署结果仍为 failed，主机回放与新真机往返分别记录。本批没有改动内核镜像，
 不将主机误报当作 3.114 输入截断、其他 IRQ 屏蔽或历史 SMP 超时的共同原因。
 范围、镜像身份和原始证据见[本批验收](docs/rpi3b-shell-check-validation.md)。
+
+### 3.117 全局周期扫描的 CPU0 所有权（2026-10-18）
+
+3.115 的两个共享字段现在由 CPU0 独占：scheduler_tick 仅在 CPU0 递增
+tick_count_ 并调用全局扫描，periodic_balance 在读取 last_balance_time_ 前
+拒绝从核。复用 CPU0 现有 HrTimer owner，不在各核 tick 上增加共享原子或锁；
+本地预算补充、CPU 时间记账与抢占逻辑保留。原八 tick（约 48 ms）及默认
+4 ms balancer gate 不变，没有把未校准的旧常量描述成新的性能目标。
+
+catalog v14 的 periodic_scan_ownership 通过真实 continuation 迁移遍历四核，
+验证第八 tick、扫描核、从核本地记账/延后抢占，以及实际队列迁移的间隔边界。
+相同最终用例旧 Pi 为 **7 passed、4 failed**（scans=5、scan_cpus=15），
+新 Pi 为 **11/11**（scans=2、scan_cpus=1），完整 scheduler **19/19**。
+首版 RR 回归误读 CFS 字段而产生的额外失败保留；修正后重新完成真机红绿。
+
+ARM64 Release、三架构 Debug 构建、宿主 **260 passed、1 skipped**、定向 lint
+**3 TU** 和格式检查通过。默认四核五个相关 QEMU 套件三 ISA 各 **59/59**，
+ARM64 两核 scheduler **19/19**。额外十六核首轮仍为 **9 passed、1 timeout、
+9 not_run**，现场各核等待 task_transition_lock_；同镜像隔离重跑 **19/19**，
+原 5 秒期限和首轮判定不变，不能据此关闭锁竞争或长期负载问题。
+
+idle 注释原称 NO_HZ_IDLE，但周期调度 timer 实际保持全局 heap 非空；
+本批仅更正注释，未实现动态 tick 或 CPU owner 热插拔交接。
+同板 Release、同用户归档的旧/新版各两轮成本采集已完成：raw getpid 两版均约
+0.897–0.904 µs，exec 旧 10.196–10.301 ms、新 10.279–10.288 ms。两次性能镜像
+启动的 prompt 均被 init/shell 字符交错打散，原 90 秒失败保留，独立新往返后
+才采样；MOSS-018 继续开放。没有回切、Linux 或持续 SMP 性能达标结论。
+完整镜像身份、Release 成本对照、原始证据与剩余范围见
+[本批验收](docs/rpi3b-periodic-scan-validation.md)。MOSS-017 和历史超时继续开放。
 
 ## 4. 问题总表与当前状态
 
@@ -2085,7 +2115,7 @@ Pi 3B+，新 runner 实际 UART 探针及下一 prompt 通过，退出后释放�
 | MOSS-014 | P1 | fork 用户现场与继承状态 | 部分实现；三 ISA GP/条件码及 x64 legacy FP 已有回归；2026-10-18 补 ARM64 实时 FP/NEON 继承和 Pi 红绿对照。完整属性继承、其他扩展状态/信号组合及失败覆盖仍开放，不能关闭整项。 |
 | MOSS-015 | P1 | exec 原子替换 | 已关闭（3.25）；全部可失败准备均在旧地址空间仍有效时完成，提交后才回收旧所有权；PFA 与六级 heap 失败、可变 ELF 快照及 FD 语义已在六配置通过。 |
 | MOSS-016 | P1 | ELF 校验与分段策略 | 已关闭（3.26）；不可变 LoadPlan、checked arithmetic、严格拒绝 oracle、17 个畸形映像，以及非页对齐 RX/RW 的实际字节/零填充/最终权限已在六配置通过。 |
-| MOSS-017 | P1 | 运行队列 / 迁移 / on-CPU | 部分修复；已有 task_transition_lock_、take_next_task、migrate_ready_task 与 migration_current_owner 回归，3.28 自身 affinity 红绿证据保留；3.110 补 try-lock 抢占配对，3.111 接通统一用户返回，3.112 补无请求路径及局部 Release 对照；其他安全点、完整交接/负载、Linux 和长期性能仍开放。 |
+| MOSS-017 | P1 | 运行队列 / 迁移 / on-CPU | 部分修复；已有 task_transition_lock_、take_next_task、migrate_ready_task 与 migration_current_owner 回归，3.28 自身 affinity 红绿证据保留；3.110 补 try-lock 配对，3.111 接通统一用户返回，3.112 补无请求成本，3.117 补 CPU0 全局周期扫描拥有者及 Pi 红绿；十六核首轮锁等待超时、其他安全点、完整交接/负载、Linux 和长期性能仍开放。 |
 | MOSS-018 | P1 | wait/console 丢失唤醒 | 部分修复；wait 的 child-exit/登记交错及 EINTR 已有红绿验收（3.59～3.60）；console 的 RX 排队窗口、双读者及跨 CPU IRQ/登记交错分别在 3.62～3.64 验收，SA_RESTART 限定子集见 3.65。3.114 复现 Pi PL011 overrun 并修复普通 VFS 写的 IRQ 屏蔽窗口；同归档输入红绿及 Pi VFS 已通过。其他长 IRQ 屏蔽、持续负载/成本和历史 SMP 超时仍待验收。 |
 | MOSS-019 | P1 | nanosleep / timer 生命周期 | 部分修复；三 ISA 实际睡眠、容量失败、deadline 溢出、跨 CPU 交接及同步取消已有实现；捕获信号的 EINTR 与相对剩余时间已有九预设红绿验收（3.61）。更广定时交错仍待验收。 |
 | MOSS-020 | P1 | 信号投递 / STOP/CONT/SIGCHLD | 部分修复；结果/handler 参数写回、SIGCHLD、pipe/console 中断与部分传输、wait/nanosleep EINTR、限定 SA_RESTART 重试及 CPU-bound IRQ 投递已验收（3.60～3.66）。基本 STOP/CONT 交接、waitpid 一次性状态、信号致死状态、SA_NOCLDSTOP、进程组 wait 筛选与成员变更唤醒、SA_NOCLDWAIT/显式 SIG_IGN 自动回收及 action 一致快照通过（3.67～3.74）；完整 job control 与更广交错仍待补。 |
@@ -2362,6 +2392,8 @@ fork_registers 失败，修复后两者通过；catalog 升至 v9，旧 GP-only 
 下面保留原审计位置作为历史；3.110 已补 try-lock 抢占计数配对，
 3.111 接通统一用户返回的 `check_need_resched()`，保留不安全上下文的请求。
 3.112 减少无请求路径工作并完成该返回点的局部 Release 真机对照。
+3.117 将两个共享周期扫描字段限定为 CPU0 拥有，并补真实四核红绿回归；
+额外十六核首次锁等待超时及原始现场保留，未将它与历史超时合并归因。
 内核态 IRQ 返回、最外层抢占恢复、完整交接交错与性能验收仍未闭合。
 
 **原始位置与事实（修复前）：** `src/process/src/process-scheduler.cppm:407` 的入队会初始化节点，缺少足够的重复入队防护；`:452` 选中任务后返回裸指针并解锁，之后另行出队。`:1156` 的公共入队路径在队列操作后再更新部分线程状态。`:1630` 的 tick 在旧任务现场完全切换保存前将其重新放回可被选择的集合。

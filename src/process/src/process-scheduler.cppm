@@ -1228,11 +1228,13 @@ private:
   containers::PerCpuAtomicCounter<u64> total_switches_;
   containers::PerCpuAtomicCounter<u64> total_preemptions_;
 
-  // Timer-driven scheduling tick
+  // CPU0's periodic HrTimer stays armed even while idle and owns the global
+  // scan cadence. Other CPUs tick local accounting only; no shared RMW is
+  // needed on their timer path. CPU hot-unplug would require owner transfer.
   timer::HrTimer sched_tick_;
   u64 tick_count_{0};
 
-  // Periodic load balance callback — set by process.cpp to avoid
+  // Periodic load balance callback — set during kernel initialization to avoid
   // circular partition dependency (scheduler → load_balancer).
   // Signature: void(u64 now, CfsScheduler& sched)
   void (*balance_callback_)(u64, CfsScheduler *){nullptr};
@@ -2198,12 +2200,12 @@ public:
         // migrates a task to this CPU's runqueue, it sends SGI 0 which
         // breaks WFI below and lets us pick up the new task.
 
-        // Tickless idle (NO_HZ_IDLE): disable per-CPU timer before WFI
-        // so idle CPUs are not woken every 6ms by timer PPI (IRQ 27).
-        // Only SGI 0 (reschedule IPI) can wake us — sent by enqueue_task()
-        // when a task is placed on this CPU's runqueue.
+        // Mask this CPU's timer only when the shared HrTimer heap is empty.
+        // The periodic scheduler timer normally keeps it nonempty, including
+        // while CPU0 is idle: its global tick cadence must keep running.
+        // Reschedule IPIs and other enabled IRQs can also wake WFI.
         //
-        // Exception: if there are pending HrTimers (e.g. nanosleep),
+        // With pending HrTimers (including nanosleep and the scheduler tick),
         // keep the timer enabled so the ISR can fire and wake blocked
         // threads.  reprogram_next() already set the compare register
         // to the earliest expiry.
@@ -2607,15 +2609,16 @@ public:
       return;
     }
 
-    tick_count_++;
     u32 cpu = get_current_cpu_id();
     const u64 now = get_current_time();
     // Even an idle CPU must release parked work after its period expires.
     replenish_cpu_budgets(now);
 
-    // Amortize balance scans over eight 6 ms ticks (~48 ms); the choice of
-    // eight ticks has no recorded workload calibration.
-    if (tick_count_ % 8 == 0 && balance_callback_) {
+    // Only CPU0 touches the plain counter or invokes the global scanner.
+    // Keep the existing eight 6 ms ticks (~48 ms) policy, independent of CPU
+    // count; the choice of eight has no recorded workload calibration.
+    constexpr u64 balance_ticks = 8;
+    if (cpu == 0 && ++tick_count_ % balance_ticks == 0 && balance_callback_) {
       balance_callback_(now, this);
     }
 
