@@ -626,6 +626,13 @@ bool moss::kernel::mm::resolve_user_demand_fault(const UserFaultContext &context
   }
 #endif
 
+#if defined(MOSS_ARCH_ARM64)
+  if (vma_flags & VMA_EXEC) {
+    // First dispatch precedes demand population. A local I-cache invalidation
+    // there cannot publish these later direct-map writes or cover migration.
+    arch::publish_instruction_range(phys_to_virt(page_pa), PAGE_SIZE);
+  }
+#endif
   auto map_result = mm::PageTableManager::map_user_page(pgd_phys, fault_page, page_pa, perms);
   if (!map_result) {
     if (shared) {

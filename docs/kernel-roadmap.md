@@ -145,3 +145,24 @@ P1 的存储与网络可按具体消费者分片推进，TCP 依赖可用的收�
   继续开放，不因这个控制台路径修复关闭 MOSS-017/018。
 
 详见 [本批验收记录](rpi3b-console-write-validation.md)。
+
+## 第七批实施结果（2026-10-18）
+
+- [x] 定位第六批 Loader 用户缺页的 ARM64 指令发布缺口：demand population
+  晚于首次 dispatch 的本核 I-cache 失效。新增共享发布路径，在可执行 PTE 前
+  清 D-cache 到 PoU 并广播 I-cache 失效，普通 demand 与 native domain 共用。
+- [x] 同一物理 frame 重填与 CPU0/CPU1/回迁执行回归在旧 Pi 失败，新 Pi
+  users.vm **10/10**、新断言 **14/14**；相同旧实现 QEMU 通过，不能代替真机。
+  新生产镜像 Loader 重启和新 shell 存活 **50/50**。
+- [x] 物理 runner 增加 users.vm，BCM fixture 的只读 MMIO 身份与隔离检查通过；
+  catalog v13，宿主 **254 passed、1 skipped**，ARM64/x64 定向 QEMU 各 **88/88**。
+- [x] 同板 Release、同用户归档两轮成本检查：raw getpid 约 0.893–0.897 µs，
+  fork+exec+wait 约 9.71–9.72 ms，较本次旧镜像约高 0.6%；无回切和 Linux 对照，
+  仅作成本参考。首次回读失败、基线启动检查误报和 UART 忙均保留独立记录。
+- [ ] RV64 首轮 clone_allocation_rollback 压力释放超时保留；其他历史超时、
+  长期负载、Linux 同板对照和完整调度/生命周期工作继续开放。
+- [ ] 后续 P0-3 源码审计还发现：各核 timer 均进入 scheduler_tick，而 tick_count_
+  与 periodic_balance 的 last_balance_time_ 为共享普通字段。应补全局扫描拥有者/同步
+  的确定性回归；本批未据此解释上述超时，也未修改这些调度路径。
+
+详见 [本批验收记录](rpi3b-instruction-cache-validation.md)。

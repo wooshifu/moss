@@ -8,6 +8,44 @@ enum vm_fault_access {
   VM_FAULT_EXECUTE,
 };
 
+static int instruction_on_cpu(long entry, long expected, unsigned cpu) {
+  const unsigned mask = 1U << cpu; // Native affinity uses one bit per CPU.
+  return syscall3(SYS_SCHED_SETAFFINITY, 0, sizeof(mask), (long)&mask) == 0 && current_cpu() == (long)cpu &&
+         ((long (*)(void))entry)() == expected;
+}
+
+unsigned long vm_instruction_publication(void) {
+  // Private controls 65/66 install/refill/release an RX VMA. The kernel checks
+  // that refill reuses exactly the first fetch's physical frame.
+  enum { INSTRUCTION_PREPARE = 65, INSTRUCTION_RELEASE = 66 };
+  long entry = control(INSTRUCTION_PREPARE, 37, 0);
+  if (!entry) {
+    return 1;
+  }
+  unsigned long errors = ((long (*)(void))entry)() != 37;
+  struct TopInfo topology;
+  const int topology_ok = topinfo(&topology) == 0;
+  errors |= (unsigned long)!topology_ok << 4;
+  const int remote = topology_ok && topology.nr_cpus > 1;
+  if (remote) {
+    // Warm CPU1's old instructions, then refill on CPU0. Both cores must see
+    // the new bytes, including after a task returns to a previously used CPU.
+    errors |= (unsigned long)!instruction_on_cpu(entry, 37, 1) << 5;
+    errors |= (unsigned long)!instruction_on_cpu(entry, 37, 0) << 6;
+  }
+  long replacement = control(INSTRUCTION_PREPARE, 41, 0);
+  errors |= (unsigned long)(replacement != entry) << 1;
+  if (replacement == entry) {
+    errors |= (unsigned long)(((long (*)(void))entry)() != 41) << 2;
+    if (remote) {
+      errors |= (unsigned long)!instruction_on_cpu(entry, 41, 1) << 7;
+      errors |= (unsigned long)!instruction_on_cpu(entry, 41, 0) << 8;
+    }
+  }
+  errors |= (unsigned long)(control(INSTRUCTION_RELEASE, 0, 0) != 1) << 3;
+  return errors;
+}
+
 static int vm_fault(long address, enum vm_fault_access access) {
   long child = syscall0(SYS_FORK);
   if (child == 0) {
@@ -125,7 +163,7 @@ unsigned long vm_kernel_isolation(long target) {
       }
       long child = fork();
       if (child == 0) {
-        // Use aligned 32-bit accesses for the interrupt-controller registers
+        // Use aligned 32-bit accesses for the read-only MMIO registers
         // as well as RAM. Inline assembly keeps forbidden writes to text/RO
         // objects from being optimized away as undefined C behavior.
         if (write) {

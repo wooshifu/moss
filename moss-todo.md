@@ -2016,6 +2016,38 @@ RV64 allocation_fault 的原 5 秒超时/GDB 保留，同镜像独立 VFS/uacces
 [本批验收](docs/rpi3b-console-write-validation.md)。本批不声明吞吐或尾延迟改善；
 其他长 IRQ 屏蔽、持续全双工负载、量化成本和历史 SMP 超时仍开放，MOSS-017/018 未关闭。
 
+### 3.115 ARM64 可执行页发布与 Loader 启动（2026-10-18）
+
+3.114 留下的 Loader 用户缺页在真实 Pi 三次独立重启循环中复现。
+普通 ELF 的 demand population 发生在首次 dispatch 的本核 I-cache 失效之后，
+此前缺页路径写完 direct-map alias 就发布 RX PTE，遗漏 D-cache 到 I-cache 的同步。
+现在 ARM64 demand resolver 与原生域构造共用 CVAU 到 PoU、DSB ISH、IC IALLUIS、
+DSB ISH、ISB 发布顺序，然后才安装可执行 PTE；普通数据页与 syscall 无新增维护。
+
+新增 catalog v13 `users.vm/instruction_publication`，要求同物理 frame 从返回 37
+重填为返回 41，CPU0、CPU1、回迁 CPU0 均实际执行新指令。相同 fixture 在旧 Pi
+为 **13 passed、1 failed**、后五 case not_run；旧 QEMU ARM64 却 **10/10**。
+新 Pi `users.vm` **10/10**、新增断言 **14/14**，生产 Loader 换代和新 shell 存活
+**50/50**。Pi runner 加入 users.vm，BCM MMIO fixture 使用确认类型后的 PL011
+只读 Peripheral ID0，实际隔离检查 **57/57**。
+
+ARM64 Release 和三架构 Debug 构建通过；宿主 **254 passed、1 skipped**，定向 lint
+**3 TU**、格式和差异检查通过。六个相关 QEMU 套件 ARM64/x64 各 **88/88**；
+RV64 首轮 **82 passed、1 timeout、5 not_run**，其 `clone_allocation_rollback` 现场在 PagePressure
+析构的 order-10 free_pages 引用计数扫描，未放宽原 5 秒期限。
+红例 sidecar 遗漏使 provenance 保留 unrecorded，另存精确二进制与构建/patch 证据；
+不以事后来源补造 recorded。完整范围见[本批验收](docs/rpi3b-instruction-cache-validation.md)。
+
+同板 Release、同用户归档与探针两轮对照中，raw getpid 为 0.893–0.897 µs，
+fork+exec+wait 为 9.71–9.72 ms，较本次旧镜像约高 0.6%；两版温度 42.932–43.470°C，
+计时期间不 halt。首轮回读不匹配在启动前停止，降速后完整匹配才继续；基线启动检查
+因 prompt 后异步日志按原期限失败，独立恢复和一次 UART 忙的 collector 失败均另记。
+没有回切、单次尾延迟或 Linux 对照，不能据此声明整体性能达标。
+
+P0-3 后续源码复核发现各核 timer 均进入 scheduler_tick，而 tick_count_ 与
+periodic_balance 的 last_balance_time_ 仍为共享普通字段；下一步需明确全局扫描
+拥有者/同步并补确定性回归。尚未运行该交错，不把它当作上述超时的已确认根因。
+
 ## 4. 问题总表与当前状态
 
 | 编号 | 优先级 | 审计主题 | 当前状态与下一步 |

@@ -7,5 +7,8 @@ inline constexpr const char *kernel_isolation_cases[] = {"kernel_text", "kernel_
 // Private validation protocol pair, following exec controls 48/49.
 inline constexpr long ISOLATION_PREPARE = 50;
 inline constexpr long ISOLATION_VERIFY = 51;
+// Next unused private controls after the return-reschedule probe (64).
+inline constexpr long INSTRUCTION_PREPARE = 65;
+inline constexpr long INSTRUCTION_RELEASE = 66;
 long isolation_control(long op, long arg1, long arg2);
 } // namespace moss::test::validation

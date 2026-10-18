@@ -378,6 +378,25 @@ inline void invalidate_icache() noexcept {
 #endif
 }
 
+#if defined(MOSS_ARCH_ARM64)
+// Publish newly written, immutable code before making its PTE executable.
+// The direct-map write alias can differ from every user fetch alias; invalidate
+// all inner-shareable I-caches so later migration cannot fetch an old frame's code.
+inline void publish_instruction_range(VirtAddr start, usize bytes) noexcept {
+  u64 ctr;
+  asm volatile("mrs %0, ctr_el0" : "=r"(ctr));
+  // CTR_EL0.DminLine [19:16] is log2(words); architectural words are 4 bytes.
+  // Callers supply a valid, non-wrapping range in the kernel's writable alias.
+  const usize line_bytes = usize{4} << ((ctr >> 16) & 0xf);
+  for (VirtAddr address = start & ~(line_bytes - 1); address < start + bytes; address += line_bytes) {
+    asm volatile("dc cvau, %0" ::"r"(address) : "memory");
+  }
+  // Clean to PoU must complete before invalidating instructions. Unlike CIVAC,
+  // CVAU preserves the writer's data-cache lines and needs no PoC writeback.
+  asm volatile("dsb ish; ic ialluis; dsb ish; isb" ::: "memory");
+}
+#endif
+
 inline void flush_cache_line(VirtAddr addr) noexcept {
 #if defined(MOSS_ARCH_ARM64)
   asm volatile("dc civac, %0" ::"r"(addr) : "memory");

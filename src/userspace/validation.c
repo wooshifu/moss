@@ -732,7 +732,8 @@ void _start(long argc, const char **argv) {
     control(3, 0, 0);
   } else if (mode == 5) {
     // Preserve the users.vm driver's numbered case order.
-    unsigned long (*const tests[])(void) = {vm_private_cow, vm_readonly_cow, vm_access_permissions, vm_brk_lifecycle};
+    unsigned long (*const tests[])(void) = {vm_private_cow, vm_readonly_cow, vm_access_permissions, vm_brk_lifecycle,
+                                            vm_instruction_publication};
     for (long test = 0; test < (long)(sizeof(tests) / sizeof(tests[0])); ++test) {
       control(1, test, 0);
       unsigned long errors = tests[test]();
@@ -740,7 +741,7 @@ void _start(long argc, const char **argv) {
         control(3, 0, 0);
       }
     }
-    // Five kernel target classes follow the four existing VM cases. Each
+    // Five kernel target classes follow the VM cases above. Each
     // class tests read/write against both mappings of the same physical object.
     for (long target = 0; target < 5; ++target) {
       control(1, (long)(sizeof(tests) / sizeof(tests[0])) + target, 0);

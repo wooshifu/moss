@@ -136,6 +136,7 @@ void declare_cases() {
     ut::register_test("readonly_cow", empty_case);
     ut::register_test("access_permissions", empty_case);
     ut::register_test("brk_lifecycle", empty_case);
+    ut::register_test("instruction_publication", empty_case);
     for (const auto *name : kernel_isolation_cases) {
       ut::register_test(name, empty_case);
     }

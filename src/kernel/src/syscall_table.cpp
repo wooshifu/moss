@@ -1373,15 +1373,7 @@ long sys_domain_spawn(long factory_handle, long image_addr, long /*unused*/, lon
     }
 #if defined(MOSS_ARCH_ARM64)
     if (flags & vma_flags::EXEC) {
-      // Direct-map writes must reach the point of coherency before another
-      // CPU's first user dispatch invalidates its instruction cache.
-      u64 ctr = 0;
-      asm volatile("mrs %0, ctr_el0" : "=r"(ctr));
-      const usize line_bytes = usize{4} << ((ctr >> 16) & 0xf);
-      for (usize offset = 0; offset < PAGE_SIZE; offset += line_bytes) {
-        arch::flush_cache_line(phys_to_virt(*frame) + offset);
-      }
-      arch::data_sync_barrier();
+      arch::publish_instruction_range(phys_to_virt(*frame), PAGE_SIZE);
     }
 #endif
     if (add_region && !space->add_vma(address, address + PAGE_SIZE, flags, type)) {

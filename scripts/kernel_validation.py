@@ -140,6 +140,7 @@ CATALOG = {
         "readonly_cow",
         "access_permissions",
         "brk_lifecycle",
+        "instruction_publication",
         "kernel_text",
         "kernel_rodata",
         "kernel_data",
@@ -346,9 +347,9 @@ CATALOG = {
         )
     },
 }
-# Console writes now check live IRQ delivery and entry-state restoration;
+# Executable-page publication now checks physical-frame reuse across CPUs;
 # older catalogs do not prove this contract and are not matching baselines.
-CATALOG_VERSION = 12
+CATALOG_VERSION = 13
 FUNCTIONAL = [
     "drivers",
     "resources",

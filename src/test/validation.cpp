@@ -377,7 +377,8 @@ extern "C" long moss_validation_call(long op, long arg1, [[maybe_unused]] long a
   if (op == 3) {
     finish();
   }
-  if ((op == moss::test::validation::ISOLATION_PREPARE || op == moss::test::validation::ISOLATION_VERIFY) &&
+  if ((op == moss::test::validation::ISOLATION_PREPARE || op == moss::test::validation::ISOLATION_VERIFY ||
+       op == moss::test::validation::INSTRUCTION_PREPARE || op == moss::test::validation::INSTRUCTION_RELEASE) &&
       (ut::same_id(selection, "users.vm") || ut::same_id(selection, "users.signals"))) {
     return moss::test::validation::isolation_control(op, arg1, arg2);
   }

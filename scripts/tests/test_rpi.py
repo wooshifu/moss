@@ -220,7 +220,7 @@ def validation_stream(workload, *, failed=False):
     return b"".join(b"@@MOSS " + json.dumps(record).encode() + b"\r\n" for record in records)
 
 
-@pytest.mark.parametrize("workload", ["users.frame", "scheduler", "vfs"])
+@pytest.mark.parametrize("workload", ["users.frame", "scheduler", "vfs", "users.vm"])
 @pytest.mark.parametrize(
     "scenario,status,observed",
     [

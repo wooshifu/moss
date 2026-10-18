@@ -1,0 +1,1112 @@
+{
+  "date": "2026-10-18",
+  "base_revision": "20b42f90a8897ac742b028cc015246a2834420ef",
+  "scope": "ARM64 executable-page publication; demand fault and native domain construction",
+  "hardware": {
+    "red": {
+      "schema_version": 1,
+      "catalog_version": 13,
+      "finalized": true,
+      "provenance": {
+        "build": {
+          "type": "Release",
+          "compiler": "Clang 23.1.2",
+          "flags": {
+            "compile": "-march=armv8-a -mgeneral-regs-only -mstrict-align -ffreestanding -fno-exceptions -fno-rtti -fno-stack-protector -fpie -Weverything -Werror -Wno-c++-compat -Wno-c++98-compat -Wno-c++98-compat-pedantic -Wno-c++11-compat -Wno-c++14-compat -Wno-c++17-compat -Wno-c++20-compat -Wno-padded -Wno-unsafe-buffer-usage -Wno-gnu-zero-variadic-macro-arguments -Wno-gnu-anonymous-struct -Wno-nested-anon-types -Wno-missing-prototypes -Wno-missing-variable-declarations -Wno-global-constructors -Wno-exit-time-destructors -Wno-weak-vtables -Wno-inline -Wno-reserved-identifier -Wno-reserved-macro-identifier -Wno-covered-switch-default -Wno-nrvo -Wno-lifetime-safety-suggestions -g0 -Os -DNDEBUG -ffunction-sections -fdata-sections",
+            "link": "-fuse-ld=lld -nostdlib -nostartfiles -Wl,-pie,--no-dynamic-linker,-z,notext,-Bsymbolic -T /Users/shifu/code/os/moss/src/linker/kernel_arm64.ld -Wl,-z,max-page-size=0x1000 -Wl,--gc-sections -Wl,--strip-all"
+          }
+        },
+        "image_sha256": "594b12d6c0e89c7220b83cb311bd3812e5f475f634b8469fada49c19662b528e",
+        "fixture_sha256": "c3cff96a1b39a1f4fade7e4c4125b2ce1b9a0f6fc002901210fecf7900f11a57",
+        "symbols_sha256": "d4c3250d75acaf642b3ea5a9c3a95d547782da9b7e667fc28666025fb69f7a6d",
+        "source_status": "unrecorded",
+        "revision": null,
+        "dirty": null,
+        "source_sha256": null,
+        "schema_version": 1
+      },
+      "workload": "users.vm",
+      "status": "failed",
+      "parameters": {
+        "cpus": 4,
+        "memory_mib": 948,
+        "startup_timeout": 30,
+        "case_timeout": 30,
+        "timeout": 60
+      },
+      "observed": "assertion",
+      "cases": [
+        {
+          "name": "private_cow",
+          "status": "passed",
+          "assertions": {
+            "v": 1,
+            "event": "case_end",
+            "workload": "users.vm",
+            "case": "private_cow",
+            "passed": 1,
+            "failed": 0
+          },
+          "elapsed_seconds": 0.008338812040165067
+        },
+        {
+          "name": "readonly_cow",
+          "status": "passed",
+          "assertions": {
+            "v": 1,
+            "event": "case_end",
+            "workload": "users.vm",
+            "case": "readonly_cow",
+            "passed": 1,
+            "failed": 0
+          },
+          "elapsed_seconds": 0.0884303159546107
+        },
+        {
+          "name": "access_permissions",
+          "status": "passed",
+          "assertions": {
+            "v": 1,
+            "event": "case_end",
+            "workload": "users.vm",
+            "case": "access_permissions",
+            "passed": 1,
+            "failed": 0
+          },
+          "elapsed_seconds": 0.1307857489446178
+        },
+        {
+          "name": "brk_lifecycle",
+          "status": "passed",
+          "assertions": {
+            "v": 1,
+            "event": "case_end",
+            "workload": "users.vm",
+            "case": "brk_lifecycle",
+            "passed": 1,
+            "failed": 0
+          },
+          "elapsed_seconds": 0.16941601503640413
+        },
+        {
+          "name": "instruction_publication",
+          "status": "failed",
+          "assertions": {
+            "v": 1,
+            "event": "case_end",
+            "workload": "users.vm",
+            "case": "instruction_publication",
+            "passed": 13,
+            "failed": 1
+          },
+          "elapsed_seconds": 0.02219704701565206
+        },
+        {
+          "name": "kernel_text",
+          "status": "not_run",
+          "reason": "assertion"
+        },
+        {
+          "name": "kernel_rodata",
+          "status": "not_run",
+          "reason": "assertion"
+        },
+        {
+          "name": "kernel_data",
+          "status": "not_run",
+          "reason": "assertion"
+        },
+        {
+          "name": "kernel_page_table",
+          "status": "not_run",
+          "reason": "assertion"
+        },
+        {
+          "name": "kernel_mmio",
+          "status": "not_run",
+          "reason": "assertion"
+        }
+      ],
+      "ready": {
+        "v": 1,
+        "event": "ready",
+        "workload": "users.vm",
+        "detected_cpus": 4,
+        "online_mask": 15,
+        "work_mask": 15,
+        "ram_bytes": 994050048,
+        "managed_pages": 238137
+      },
+      "worker": {
+        "v": 1,
+        "event": "worker",
+        "workload": "users.vm",
+        "cpu": 0,
+        "affinity": 1
+      },
+      "completion": {
+        "v": 1,
+        "event": "end",
+        "workload": "users.vm",
+        "completed": 5,
+        "selected": 10,
+        "failed": 1,
+        "reason": "complete"
+      },
+      "termination": "protocol_end",
+      "elapsed_seconds": 2.8948768789414316,
+      "serial_log": "/Volumes/MossBuild/moss/evidence/loader-startup-diagnosis/pi-regression-red/serial.log"
+    },
+    "green": {
+      "schema_version": 1,
+      "catalog_version": 13,
+      "finalized": true,
+      "provenance": {
+        "build": {
+          "type": "Release",
+          "compiler": "Clang 23.1.2",
+          "flags": {
+            "compile": "-march=armv8-a -mgeneral-regs-only -mstrict-align -ffreestanding -fno-exceptions -fno-rtti -fno-stack-protector -fpie -Weverything -Werror -Wno-c++-compat -Wno-c++98-compat -Wno-c++98-compat-pedantic -Wno-c++11-compat -Wno-c++14-compat -Wno-c++17-compat -Wno-c++20-compat -Wno-padded -Wno-unsafe-buffer-usage -Wno-gnu-zero-variadic-macro-arguments -Wno-gnu-anonymous-struct -Wno-nested-anon-types -Wno-missing-prototypes -Wno-missing-variable-declarations -Wno-global-constructors -Wno-exit-time-destructors -Wno-weak-vtables -Wno-inline -Wno-reserved-identifier -Wno-reserved-macro-identifier -Wno-covered-switch-default -Wno-nrvo -Wno-lifetime-safety-suggestions -g0 -Os -DNDEBUG -ffunction-sections -fdata-sections",
+            "link": "-fuse-ld=lld -nostdlib -nostartfiles -Wl,-pie,--no-dynamic-linker,-z,notext,-Bsymbolic -T /Users/shifu/code/os/moss/src/linker/kernel_arm64.ld -Wl,-z,max-page-size=0x1000 -Wl,--gc-sections -Wl,--strip-all"
+          }
+        },
+        "image_sha256": "3186571f3321ab2380dac51c2cd8fee95c76ccffd4f49517d8c44839669e23ab",
+        "fixture_sha256": "c3cff96a1b39a1f4fade7e4c4125b2ce1b9a0f6fc002901210fecf7900f11a57",
+        "symbols_sha256": "a68955c76839f679897f48b33b4371a781b813dba1bcac4ed6e8296bf585c5c6",
+        "schema_version": 1,
+        "source_status": "recorded",
+        "revision": "20b42f90a8897ac742b028cc015246a2834420ef",
+        "dirty": true,
+        "source_sha256": "00b17efa4a1ecc5f76b43e213080286b9ca5258845c04f98c0b14ea5a3626e2a"
+      },
+      "workload": "users.vm",
+      "status": "passed",
+      "parameters": {
+        "cpus": 4,
+        "memory_mib": 948,
+        "startup_timeout": 30,
+        "case_timeout": 30,
+        "timeout": 60
+      },
+      "observed": "pass",
+      "cases": [
+        {
+          "name": "private_cow",
+          "status": "passed",
+          "assertions": {
+            "v": 1,
+            "event": "case_end",
+            "workload": "users.vm",
+            "case": "private_cow",
+            "passed": 1,
+            "failed": 0
+          },
+          "elapsed_seconds": 0.009695162996649742
+        },
+        {
+          "name": "readonly_cow",
+          "status": "passed",
+          "assertions": {
+            "v": 1,
+            "event": "case_end",
+            "workload": "users.vm",
+            "case": "readonly_cow",
+            "passed": 1,
+            "failed": 0
+          },
+          "elapsed_seconds": 0.0890820559579879
+        },
+        {
+          "name": "access_permissions",
+          "status": "passed",
+          "assertions": {
+            "v": 1,
+            "event": "case_end",
+            "workload": "users.vm",
+            "case": "access_permissions",
+            "passed": 1,
+            "failed": 0
+          },
+          "elapsed_seconds": 0.130261079990305
+        },
+        {
+          "name": "brk_lifecycle",
+          "status": "passed",
+          "assertions": {
+            "v": 1,
+            "event": "case_end",
+            "workload": "users.vm",
+            "case": "brk_lifecycle",
+            "passed": 1,
+            "failed": 0
+          },
+          "elapsed_seconds": 0.16901545599102974
+        },
+        {
+          "name": "instruction_publication",
+          "status": "passed",
+          "assertions": {
+            "v": 1,
+            "event": "case_end",
+            "workload": "users.vm",
+            "case": "instruction_publication",
+            "passed": 14,
+            "failed": 0
+          },
+          "elapsed_seconds": 0.00825616403017193
+        },
+        {
+          "name": "kernel_text",
+          "status": "passed",
+          "assertions": {
+            "v": 1,
+            "event": "case_end",
+            "workload": "users.vm",
+            "case": "kernel_text",
+            "passed": 57,
+            "failed": 0
+          },
+          "elapsed_seconds": 0.16945299797225744
+        },
+        {
+          "name": "kernel_rodata",
+          "status": "passed",
+          "assertions": {
+            "v": 1,
+            "event": "case_end",
+            "workload": "users.vm",
+            "case": "kernel_rodata",
+            "passed": 57,
+            "failed": 0
+          },
+          "elapsed_seconds": 0.1678404250415042
+        },
+        {
+          "name": "kernel_data",
+          "status": "passed",
+          "assertions": {
+            "v": 1,
+            "event": "case_end",
+            "workload": "users.vm",
+            "case": "kernel_data",
+            "passed": 57,
+            "failed": 0
+          },
+          "elapsed_seconds": 0.17019460699521005
+        },
+        {
+          "name": "kernel_page_table",
+          "status": "passed",
+          "assertions": {
+            "v": 1,
+            "event": "case_end",
+            "workload": "users.vm",
+            "case": "kernel_page_table",
+            "passed": 49,
+            "failed": 0
+          },
+          "elapsed_seconds": 0.16949716792441905
+        },
+        {
+          "name": "kernel_mmio",
+          "status": "passed",
+          "assertions": {
+            "v": 1,
+            "event": "case_end",
+            "workload": "users.vm",
+            "case": "kernel_mmio",
+            "passed": 57,
+            "failed": 0
+          },
+          "elapsed_seconds": 0.1673109430121258
+        }
+      ],
+      "ready": {
+        "v": 1,
+        "event": "ready",
+        "workload": "users.vm",
+        "detected_cpus": 4,
+        "online_mask": 15,
+        "work_mask": 15,
+        "ram_bytes": 994050048,
+        "managed_pages": 238137
+      },
+      "worker": {
+        "v": 1,
+        "event": "worker",
+        "workload": "users.vm",
+        "cpu": 0,
+        "affinity": 1
+      },
+      "completion": {
+        "v": 1,
+        "event": "end",
+        "workload": "users.vm",
+        "completed": 10,
+        "selected": 10,
+        "failed": 0,
+        "reason": "complete"
+      },
+      "termination": "protocol_end",
+      "elapsed_seconds": 3.7712981490185484,
+      "serial_log": "/Volumes/MossBuild/moss/evidence/loader-startup-diagnosis/pi-regression-green/serial.log"
+    }
+  },
+  "loader_loop": {
+    "status": "passed",
+    "requested_cycles": 50,
+    "cycles": [
+      {
+        "cycle": 0,
+        "status": "passed",
+        "elapsed_seconds": 1.1841991739347577
+      },
+      {
+        "cycle": 1,
+        "status": "passed",
+        "elapsed_seconds": 1.180429641972296
+      },
+      {
+        "cycle": 2,
+        "status": "passed",
+        "elapsed_seconds": 1.1768074659630656
+      },
+      {
+        "cycle": 3,
+        "status": "passed",
+        "elapsed_seconds": 1.17627195303794
+      },
+      {
+        "cycle": 4,
+        "status": "passed",
+        "elapsed_seconds": 1.175703763961792
+      },
+      {
+        "cycle": 5,
+        "status": "passed",
+        "elapsed_seconds": 1.1753618960501626
+      },
+      {
+        "cycle": 6,
+        "status": "passed",
+        "elapsed_seconds": 1.177143243025057
+      },
+      {
+        "cycle": 7,
+        "status": "passed",
+        "elapsed_seconds": 1.178878695005551
+      },
+      {
+        "cycle": 8,
+        "status": "passed",
+        "elapsed_seconds": 1.1799225260037929
+      },
+      {
+        "cycle": 9,
+        "status": "passed",
+        "elapsed_seconds": 1.1815132619813085
+      },
+      {
+        "cycle": 10,
+        "status": "passed",
+        "elapsed_seconds": 1.1841276289196685
+      },
+      {
+        "cycle": 11,
+        "status": "passed",
+        "elapsed_seconds": 1.1809539910173044
+      },
+      {
+        "cycle": 12,
+        "status": "passed",
+        "elapsed_seconds": 1.1822002560365945
+      },
+      {
+        "cycle": 13,
+        "status": "passed",
+        "elapsed_seconds": 1.2013466859934852
+      },
+      {
+        "cycle": 14,
+        "status": "passed",
+        "elapsed_seconds": 1.1799418730661273
+      },
+      {
+        "cycle": 15,
+        "status": "passed",
+        "elapsed_seconds": 1.217447345959954
+      },
+      {
+        "cycle": 16,
+        "status": "passed",
+        "elapsed_seconds": 1.1846745719667524
+      },
+      {
+        "cycle": 17,
+        "status": "passed",
+        "elapsed_seconds": 1.1980875950539485
+      },
+      {
+        "cycle": 18,
+        "status": "passed",
+        "elapsed_seconds": 1.177828699001111
+      },
+      {
+        "cycle": 19,
+        "status": "passed",
+        "elapsed_seconds": 1.1792170220287517
+      },
+      {
+        "cycle": 20,
+        "status": "passed",
+        "elapsed_seconds": 1.1851936859311536
+      },
+      {
+        "cycle": 21,
+        "status": "passed",
+        "elapsed_seconds": 1.1901840729406103
+      },
+      {
+        "cycle": 22,
+        "status": "passed",
+        "elapsed_seconds": 1.1796436799922958
+      },
+      {
+        "cycle": 23,
+        "status": "passed",
+        "elapsed_seconds": 1.2127784140175208
+      },
+      {
+        "cycle": 24,
+        "status": "passed",
+        "elapsed_seconds": 1.1858475080225617
+      },
+      {
+        "cycle": 25,
+        "status": "passed",
+        "elapsed_seconds": 1.1838899259455502
+      },
+      {
+        "cycle": 26,
+        "status": "passed",
+        "elapsed_seconds": 1.1804390180623159
+      },
+      {
+        "cycle": 27,
+        "status": "passed",
+        "elapsed_seconds": 1.1901682820171118
+      },
+      {
+        "cycle": 28,
+        "status": "passed",
+        "elapsed_seconds": 1.1790060619823635
+      },
+      {
+        "cycle": 29,
+        "status": "passed",
+        "elapsed_seconds": 1.178485649987124
+      },
+      {
+        "cycle": 30,
+        "status": "passed",
+        "elapsed_seconds": 1.1793628280283883
+      },
+      {
+        "cycle": 31,
+        "status": "passed",
+        "elapsed_seconds": 1.183940451941453
+      },
+      {
+        "cycle": 32,
+        "status": "passed",
+        "elapsed_seconds": 1.1782182739116251
+      },
+      {
+        "cycle": 33,
+        "status": "passed",
+        "elapsed_seconds": 1.1767174169654027
+      },
+      {
+        "cycle": 34,
+        "status": "passed",
+        "elapsed_seconds": 1.1758846099255607
+      },
+      {
+        "cycle": 35,
+        "status": "passed",
+        "elapsed_seconds": 1.181003195932135
+      },
+      {
+        "cycle": 36,
+        "status": "passed",
+        "elapsed_seconds": 1.1770532879745588
+      },
+      {
+        "cycle": 37,
+        "status": "passed",
+        "elapsed_seconds": 1.1805675850482658
+      },
+      {
+        "cycle": 38,
+        "status": "passed",
+        "elapsed_seconds": 1.1808864830527455
+      },
+      {
+        "cycle": 39,
+        "status": "passed",
+        "elapsed_seconds": 1.1766274040564895
+      },
+      {
+        "cycle": 40,
+        "status": "passed",
+        "elapsed_seconds": 1.182443524012342
+      },
+      {
+        "cycle": 41,
+        "status": "passed",
+        "elapsed_seconds": 1.1842807260109112
+      },
+      {
+        "cycle": 42,
+        "status": "passed",
+        "elapsed_seconds": 1.1847776350332424
+      },
+      {
+        "cycle": 43,
+        "status": "passed",
+        "elapsed_seconds": 1.1818650179775432
+      },
+      {
+        "cycle": 44,
+        "status": "passed",
+        "elapsed_seconds": 1.1825698079774156
+      },
+      {
+        "cycle": 45,
+        "status": "passed",
+        "elapsed_seconds": 1.1812607829924673
+      },
+      {
+        "cycle": 46,
+        "status": "passed",
+        "elapsed_seconds": 1.1816791370511055
+      },
+      {
+        "cycle": 47,
+        "status": "passed",
+        "elapsed_seconds": 1.1810969020007178
+      },
+      {
+        "cycle": 48,
+        "status": "passed",
+        "elapsed_seconds": 1.1820257710060105
+      },
+      {
+        "cycle": 49,
+        "status": "passed",
+        "elapsed_seconds": 1.1799731780774891
+      }
+    ]
+  },
+  "qemu": {
+    "arm64": {
+      "report": {
+        "path": "/Volumes/MossBuild/moss/evidence/loader-startup-diagnosis/qemu-green-arm64/results.json",
+        "bytes": 51977,
+        "sha256": "f3649e1baaad3f2066c19eec7b0ded8bcec04347fc72eada11f042eae669b450"
+      },
+      "case_counts": {
+        "passed": 88
+      },
+      "provenance": {
+        "build": {
+          "type": "Debug",
+          "compiler": "Clang 23.1.2",
+          "flags": {
+            "compile": "-march=armv8-a -mgeneral-regs-only -mstrict-align -ffreestanding -fno-exceptions -fno-rtti -fno-stack-protector -fpie -Weverything -Werror -Wno-c++-compat -Wno-c++98-compat -Wno-c++98-compat-pedantic -Wno-c++11-compat -Wno-c++14-compat -Wno-c++17-compat -Wno-c++20-compat -Wno-padded -Wno-unsafe-buffer-usage -Wno-gnu-zero-variadic-macro-arguments -Wno-gnu-anonymous-struct -Wno-nested-anon-types -Wno-missing-prototypes -Wno-missing-variable-declarations -Wno-global-constructors -Wno-exit-time-destructors -Wno-weak-vtables -Wno-inline -Wno-reserved-identifier -Wno-reserved-macro-identifier -Wno-covered-switch-default -Wno-nrvo -Wno-lifetime-safety-suggestions -g",
+            "link": "-fuse-ld=lld -nostdlib -nostartfiles -Wl,-pie,--no-dynamic-linker,-z,notext,-Bsymbolic -T /Users/shifu/code/os/moss/src/linker/kernel_arm64.ld "
+          }
+        },
+        "image_sha256": "9a94bac59f9190b40a8118c326da08c877ec434bbea1cdcdee0bc160a2fa1c3f",
+        "fixture_sha256": "550dc966ddb3c9302e4cb8ffe86ed0168743c2e7f8f0e0f36598526288cbbd2a",
+        "symbols_sha256": "9f0891a3ccf98ccb1431ee4919ad37b743e62169f143a287a477d49db34ba4fb",
+        "schema_version": 1,
+        "source_status": "recorded",
+        "revision": "20b42f90a8897ac742b028cc015246a2834420ef",
+        "dirty": true,
+        "source_sha256": "00b17efa4a1ecc5f76b43e213080286b9ca5258845c04f98c0b14ea5a3626e2a",
+        "manifest": "/Volumes/MossBuild/moss/build/arm64-debug/moss-artifacts.json"
+      }
+    },
+    "x64": {
+      "report": {
+        "path": "/Volumes/MossBuild/moss/evidence/loader-startup-diagnosis/qemu-green-x64/results.json",
+        "bytes": 51954,
+        "sha256": "c2528337ad4abf677b54288c0304250af39108d3bea3f2ce43d21b7438c9acc8"
+      },
+      "case_counts": {
+        "passed": 88
+      },
+      "provenance": {
+        "build": {
+          "type": "Debug",
+          "compiler": "Clang 23.1.2",
+          "flags": {
+            "compile": "-mno-red-zone -mno-mmx -mno-sse -mno-sse2 -mno-sse3 -mno-ssse3 -mno-sse4.1 -mno-sse4.2 -mno-avx -mno-avx2 -mno-80387 -mno-fp-ret-in-387 -mtune=x86-64 -mcmodel=kernel -ffreestanding -fno-exceptions -fno-rtti -fno-stack-protector -fno-pic -fno-pie -Weverything -Werror -Wno-c++-compat -Wno-c++98-compat -Wno-c++98-compat-pedantic -Wno-c++11-compat -Wno-c++14-compat -Wno-c++17-compat -Wno-c++20-compat -Wno-padded -Wno-unsafe-buffer-usage -Wno-gnu-zero-variadic-macro-arguments -Wno-gnu-anonymous-struct -Wno-nested-anon-types -Wno-missing-prototypes -Wno-missing-variable-declarations -Wno-global-constructors -Wno-exit-time-destructors -Wno-weak-vtables -Wno-inline -Wno-reserved-identifier -Wno-reserved-macro-identifier -Wno-covered-switch-default -Wno-nrvo -Wno-lifetime-safety-suggestions -g",
+            "link": "-fuse-ld=lld -nostdlib -nostartfiles -static -T /Users/shifu/code/os/moss/src/linker/kernel_x64.ld "
+          }
+        },
+        "image_sha256": "0661c1f13b42d1890074361213ca467d02a40858c79735ed90840ef0127e940d",
+        "fixture_sha256": "1cdf32c754f60bd463ee5f89aefa1a160105040ce2b803f524e6c24698899b41",
+        "symbols_sha256": "0661c1f13b42d1890074361213ca467d02a40858c79735ed90840ef0127e940d",
+        "schema_version": 1,
+        "source_status": "recorded",
+        "revision": "20b42f90a8897ac742b028cc015246a2834420ef",
+        "dirty": true,
+        "source_sha256": "00b17efa4a1ecc5f76b43e213080286b9ca5258845c04f98c0b14ea5a3626e2a",
+        "manifest": "/Volumes/MossBuild/moss/build/x64-debug/moss-artifacts.json"
+      }
+    },
+    "riscv64": {
+      "report": {
+        "path": "/Volumes/MossBuild/moss/evidence/loader-startup-diagnosis/qemu-green-riscv64/results.json",
+        "bytes": 89654,
+        "sha256": "085beb5976907ca4c40dd055a4134aa731f21ef314f03abfac0a5601e37d77d1"
+      },
+      "case_counts": {
+        "passed": 82,
+        "error": 1,
+        "not_run": 5
+      },
+      "provenance": {
+        "build": {
+          "type": "Debug",
+          "compiler": "Clang 23.1.2",
+          "flags": {
+            "compile": "-march=rv64imac -mabi=lp64 -mcmodel=medany -mstrict-align -ffreestanding -fno-exceptions -fno-rtti -fno-stack-protector -fpie -Weverything -Werror -Wno-c++-compat -Wno-c++98-compat -Wno-c++98-compat-pedantic -Wno-c++11-compat -Wno-c++14-compat -Wno-c++17-compat -Wno-c++20-compat -Wno-padded -Wno-unsafe-buffer-usage -Wno-gnu-zero-variadic-macro-arguments -Wno-gnu-anonymous-struct -Wno-nested-anon-types -Wno-missing-prototypes -Wno-missing-variable-declarations -Wno-global-constructors -Wno-exit-time-destructors -Wno-weak-vtables -Wno-inline -Wno-reserved-identifier -Wno-reserved-macro-identifier -Wno-covered-switch-default -Wno-nrvo -Wno-lifetime-safety-suggestions -g",
+            "link": "-fuse-ld=lld -nostdlib -nostartfiles -Wl,-pie,--no-dynamic-linker,-z,notext,-Bsymbolic -T /Users/shifu/code/os/moss/src/linker/kernel_riscv64.ld "
+          }
+        },
+        "image_sha256": "0e5966b4930c0a241d05ddb29f58a03a01220ff86e2de8c274741701596e791d",
+        "fixture_sha256": "584d389cea62aad1bd7e8081c7719b464e3d1e60d0051f5c9440a9715afddee9",
+        "symbols_sha256": "a96e147c31dc42e82f0416b852e71021ac49c1c76079ca82cbbbf279096a7314",
+        "schema_version": 1,
+        "source_status": "recorded",
+        "revision": "20b42f90a8897ac742b028cc015246a2834420ef",
+        "dirty": true,
+        "source_sha256": "00b17efa4a1ecc5f76b43e213080286b9ca5258845c04f98c0b14ea5a3626e2a",
+        "manifest": "/Volumes/MossBuild/moss/build/riscv64-debug/moss-artifacts.json"
+      }
+    }
+  },
+  "performance_plan": {
+    "workloads": [
+      "getpid_raw",
+      "fault",
+      "fork_libc",
+      "exec"
+    ],
+    "boots": [
+      "perf-baseline-02",
+      "perf-fixed"
+    ],
+    "rounds_per_boot": 2,
+    "pmu": false,
+    "archive_from": "return-perf-optimized/initramfs.cpio",
+    "archive_sha256": "13109e659f832d03b635a2a4ae6286f8fbcf90c210ee4220e22f7d831d1f03f3",
+    "placement_contract": "Probe pins CPU0; retained service wrappers require successful CPU2 affinity before entering production main",
+    "timing": "Two warmup batches, seven retained batch means; serial output outside guest timing; CPU3 sensor read only before and after rounds",
+    "limits": [
+      "One boot per variant and fixed baseline-then-candidate order; no rollback or randomized interleaving",
+      "No per-operation p99 or Linux comparison",
+      "Anonymous fault covers the unchanged data path; exec is fork+exec+wait, not isolated instruction-publication cost"
+    ],
+    "deployment_retry": {
+      "reason": "1MHz baseline initramfs full readback mismatched before boot",
+      "initial_report": "perf-baseline/deploy/result.json",
+      "bounded_retry_khz": 500,
+      "required": "New output directory and full-image match; do not run unverified archive"
+    },
+    "baseline_boot_check": {
+      "status": "failed",
+      "reason": "Complete independent result and next prompt were followed by asynchronous supervisor output; original endswith-prompt check reached original 90s deadline",
+      "recovery": "perf-baseline-02/input-recovery.json",
+      "first_collector_attempt": "UART busy; no samples"
+    },
+    "deployment_jtag_khz": {
+      "perf-baseline": 1000,
+      "perf-baseline-02": 500,
+      "perf-fixed": 500
+    },
+    "baseline_valid_data": "Two successful rounds after exclusive UART recovery; the earlier UART-busy attempt contains no samples"
+  },
+  "performance": {
+    "perf-baseline-02": {
+      "kernel": {
+        "path": "/Volumes/MossBuild/moss/evidence/loader-startup-diagnosis/perf-baseline-02/moss.bin",
+        "bytes": 280656,
+        "sha256": "2c6eb12755952f5a95bafcc0a36815ab790e76ce13b455209233e2abba58946f"
+      },
+      "initramfs": {
+        "path": "/Volumes/MossBuild/moss/evidence/loader-startup-diagnosis/perf-baseline-02/initramfs.cpio",
+        "bytes": 9283320,
+        "sha256": "13109e659f832d03b635a2a4ae6286f8fbcf90c210ee4220e22f7d831d1f03f3"
+      },
+      "probe": {
+        "path": "/Volumes/MossBuild/moss/evidence/loader-startup-diagnosis/perf-baseline-02/rpi-perf.elf",
+        "bytes": 685184,
+        "sha256": "59999f2c0f004b86c04aa4b1fbfb0e2bce78f7ffead259211283ed2e263806bc"
+      },
+      "build": {
+        "type": "Release",
+        "compiler": "Clang 23.1.2",
+        "flags": {
+          "compile": "-march=armv8-a -mgeneral-regs-only -mstrict-align -ffreestanding -fno-exceptions -fno-rtti -fno-stack-protector -fpie -Weverything -Werror -Wno-c++-compat -Wno-c++98-compat -Wno-c++98-compat-pedantic -Wno-c++11-compat -Wno-c++14-compat -Wno-c++17-compat -Wno-c++20-compat -Wno-padded -Wno-unsafe-buffer-usage -Wno-gnu-zero-variadic-macro-arguments -Wno-gnu-anonymous-struct -Wno-nested-anon-types -Wno-missing-prototypes -Wno-missing-variable-declarations -Wno-global-constructors -Wno-exit-time-destructors -Wno-weak-vtables -Wno-inline -Wno-reserved-identifier -Wno-reserved-macro-identifier -Wno-covered-switch-default -Wno-nrvo -Wno-lifetime-safety-suggestions -g0 -Os -DNDEBUG -ffunction-sections -fdata-sections",
+          "link": "-fuse-ld=lld -nostdlib -nostartfiles -Wl,-pie,--no-dynamic-linker,-z,notext,-Bsymbolic -T /Users/shifu/code/os/moss/src/linker/kernel_arm64.ld -Wl,-z,max-page-size=0x1000 -Wl,--gc-sections -Wl,--strip-all"
+        }
+      },
+      "rounds": [
+        {
+          "record": {
+            "round": 1,
+            "started_ns": 1792328336810002000,
+            "status": "passed",
+            "temperature_before": {
+              "time_ns": 1792328336810339000,
+              "observation_ns": 121750000,
+              "access": "CPU3 kernel identity MMIO mapping",
+              "control": 70778886,
+              "status": 1710,
+              "millidegrees_c": 42932
+            },
+            "temperature_after": {
+              "time_ns": 1792328339056511000,
+              "observation_ns": 119457000,
+              "access": "CPU3 kernel identity MMIO mapping",
+              "control": 70778886,
+              "status": 1710,
+              "millidegrees_c": 42932
+            },
+            "finished_ns": 1792328339175982000,
+            "measurement_files": [
+              "measurements-1792328336939841000.json"
+            ]
+          },
+          "measurement": {
+            "path": "/Volumes/MossBuild/moss/evidence/loader-startup-diagnosis/perf-baseline-02/measurements-1792328336939841000.json",
+            "bytes": 10289,
+            "sha256": "d46c72031a214c6fe546ab00c3fc724f13762ad6d1cd6a5dc9e833750560630c"
+          },
+          "cases": [
+            {
+              "workload": "getpid_raw",
+              "bytes": 1,
+              "median_ns": 897.5104,
+              "min_ns": 894.8047,
+              "max_ns": 897.53645
+            },
+            {
+              "workload": "fault",
+              "bytes": 1048576,
+              "median_ns": 2517721.375,
+              "min_ns": 2511464.75,
+              "max_ns": 2519661.5
+            },
+            {
+              "workload": "fork_libc",
+              "bytes": 1,
+              "median_ns": 1815371.125,
+              "min_ns": 1810214.875,
+              "max_ns": 1820039.125
+            },
+            {
+              "workload": "exec",
+              "bytes": 1,
+              "median_ns": 9657786.5,
+              "min_ns": 9614388.0,
+              "max_ns": 9665794.25
+            }
+          ]
+        },
+        {
+          "record": {
+            "round": 2,
+            "started_ns": 1792328339176855000,
+            "status": "passed",
+            "temperature_before": {
+              "time_ns": 1792328339177046000,
+              "observation_ns": 119585000,
+              "access": "CPU3 kernel identity MMIO mapping",
+              "control": 70778886,
+              "status": 1710,
+              "millidegrees_c": 42932
+            },
+            "temperature_after": {
+              "time_ns": 1792328341415575000,
+              "observation_ns": 285036000,
+              "access": "CPU3 kernel identity MMIO mapping",
+              "control": 70778886,
+              "status": 1709,
+              "millidegrees_c": 43470
+            },
+            "finished_ns": 1792328341700670000,
+            "measurement_files": [
+              "measurements-1792328339300503000.json"
+            ]
+          },
+          "measurement": {
+            "path": "/Volumes/MossBuild/moss/evidence/loader-startup-diagnosis/perf-baseline-02/measurements-1792328339300503000.json",
+            "bytes": 10290,
+            "sha256": "d09d2b9b2896546d9c9e8e40d271c56523a979a8adae83ca7d2d94954d81d1a3"
+          },
+          "cases": [
+            {
+              "workload": "getpid_raw",
+              "bytes": 1,
+              "median_ns": 892.5052,
+              "min_ns": 890.76565,
+              "max_ns": 895.59375
+            },
+            {
+              "workload": "fault",
+              "bytes": 1048576,
+              "median_ns": 2518118.5,
+              "min_ns": 2510279.875,
+              "max_ns": 2520794.25
+            },
+            {
+              "workload": "fork_libc",
+              "bytes": 1,
+              "median_ns": 1754453.125,
+              "min_ns": 1752630.25,
+              "max_ns": 1758099.0
+            },
+            {
+              "workload": "exec",
+              "bytes": 1,
+              "median_ns": 9662871.125,
+              "min_ns": 9642936.25,
+              "max_ns": 9667415.25
+            }
+          ]
+        }
+      ],
+      "input_recovery": {
+        "original_boot_check": "failed: complete marker and prompt followed by asynchronous service output; original 90 second deadline",
+        "status": "passed",
+        "newline_response": "\r\nmoss$ ",
+        "probe_response": "echo MOSS_INSTRUCTION_PERF_RECOVERY_OK\r\nMOSS_INSTRUCTION_PERF_RECOVERY_OK\r\nmoss$ "
+      }
+    },
+    "perf-fixed": {
+      "kernel": {
+        "path": "/Volumes/MossBuild/moss/evidence/loader-startup-diagnosis/perf-fixed/moss.bin",
+        "bytes": 280656,
+        "sha256": "5cd1adb36c921bff738e89dba39ad21ba6f87fd38e1fce8310d1849db61fb4e7"
+      },
+      "initramfs": {
+        "path": "/Volumes/MossBuild/moss/evidence/loader-startup-diagnosis/perf-fixed/initramfs.cpio",
+        "bytes": 9283320,
+        "sha256": "13109e659f832d03b635a2a4ae6286f8fbcf90c210ee4220e22f7d831d1f03f3"
+      },
+      "probe": {
+        "path": "/Volumes/MossBuild/moss/evidence/loader-startup-diagnosis/perf-fixed/rpi-perf.elf",
+        "bytes": 685184,
+        "sha256": "59999f2c0f004b86c04aa4b1fbfb0e2bce78f7ffead259211283ed2e263806bc"
+      },
+      "build": {
+        "type": "Release",
+        "compiler": "Clang 23.1.2",
+        "flags": {
+          "compile": "-march=armv8-a -mgeneral-regs-only -mstrict-align -ffreestanding -fno-exceptions -fno-rtti -fno-stack-protector -fpie -Weverything -Werror -Wno-c++-compat -Wno-c++98-compat -Wno-c++98-compat-pedantic -Wno-c++11-compat -Wno-c++14-compat -Wno-c++17-compat -Wno-c++20-compat -Wno-padded -Wno-unsafe-buffer-usage -Wno-gnu-zero-variadic-macro-arguments -Wno-gnu-anonymous-struct -Wno-nested-anon-types -Wno-missing-prototypes -Wno-missing-variable-declarations -Wno-global-constructors -Wno-exit-time-destructors -Wno-weak-vtables -Wno-inline -Wno-reserved-identifier -Wno-reserved-macro-identifier -Wno-covered-switch-default -Wno-nrvo -Wno-lifetime-safety-suggestions -g0 -Os -DNDEBUG -ffunction-sections -fdata-sections",
+          "link": "-fuse-ld=lld -nostdlib -nostartfiles -Wl,-pie,--no-dynamic-linker,-z,notext,-Bsymbolic -T /Users/shifu/code/os/moss/src/linker/kernel_arm64.ld -Wl,-z,max-page-size=0x1000 -Wl,--gc-sections -Wl,--strip-all"
+        }
+      },
+      "rounds": [
+        {
+          "record": {
+            "round": 1,
+            "started_ns": 1792329020792535000,
+            "status": "passed",
+            "temperature_before": {
+              "time_ns": 1792329020793749000,
+              "observation_ns": 140184000,
+              "access": "CPU3 kernel identity MMIO mapping",
+              "control": 70778886,
+              "status": 1709,
+              "millidegrees_c": 43470
+            },
+            "temperature_after": {
+              "time_ns": 1792329023050229000,
+              "observation_ns": 122501000,
+              "access": "CPU3 kernel identity MMIO mapping",
+              "control": 70778886,
+              "status": 1709,
+              "millidegrees_c": 43470
+            },
+            "finished_ns": 1792329023172739000,
+            "measurement_files": [
+              "measurements-1792329020942959000.json"
+            ]
+          },
+          "measurement": {
+            "path": "/Volumes/MossBuild/moss/evidence/loader-startup-diagnosis/perf-fixed/measurements-1792329020942959000.json",
+            "bytes": 10203,
+            "sha256": "cffc50f34a85f762c7027fedbe2cd0143f6c6a4be0e60b084ac236e733360e2f"
+          },
+          "cases": [
+            {
+              "workload": "getpid_raw",
+              "bytes": 1,
+              "median_ns": 892.513,
+              "min_ns": 892.02605,
+              "max_ns": 893.21095
+            },
+            {
+              "workload": "fault",
+              "bytes": 1048576,
+              "median_ns": 2509961.0,
+              "min_ns": 2498170.5,
+              "max_ns": 2512304.625
+            },
+            {
+              "workload": "fork_libc",
+              "bytes": 1,
+              "median_ns": 1758229.25,
+              "min_ns": 1754427.0,
+              "max_ns": 1761256.5
+            },
+            {
+              "workload": "exec",
+              "bytes": 1,
+              "median_ns": 9711197.875,
+              "min_ns": 9689655.0,
+              "max_ns": 9721282.625
+            }
+          ]
+        },
+        {
+          "record": {
+            "round": 2,
+            "started_ns": 1792329023173342000,
+            "status": "passed",
+            "temperature_before": {
+              "time_ns": 1792329023173469000,
+              "observation_ns": 99290000,
+              "access": "CPU3 kernel identity MMIO mapping",
+              "control": 70778886,
+              "status": 1710,
+              "millidegrees_c": 42932
+            },
+            "temperature_after": {
+              "time_ns": 1792329025379706000,
+              "observation_ns": 120956000,
+              "access": "CPU3 kernel identity MMIO mapping",
+              "control": 70778886,
+              "status": 1709,
+              "millidegrees_c": 43470
+            },
+            "finished_ns": 1792329025500673000,
+            "measurement_files": [
+              "measurements-1792329023275152000.json"
+            ]
+          },
+          "measurement": {
+            "path": "/Volumes/MossBuild/moss/evidence/loader-startup-diagnosis/perf-fixed/measurements-1792329023275152000.json",
+            "bytes": 10207,
+            "sha256": "1cd63558152cb29fad1739526010675283c806fbfb96881b2a0851858bc27990"
+          },
+          "cases": [
+            {
+              "workload": "getpid_raw",
+              "bytes": 1,
+              "median_ns": 896.9844,
+              "min_ns": 894.04945,
+              "max_ns": 897.57555
+            },
+            {
+              "workload": "fault",
+              "bytes": 1048576,
+              "median_ns": 2514082.125,
+              "min_ns": 2502024.75,
+              "max_ns": 2515572.875
+            },
+            {
+              "workload": "fork_libc",
+              "bytes": 1,
+              "median_ns": 1753763.0,
+              "min_ns": 1751510.375,
+              "max_ns": 1760931.0
+            },
+            {
+              "workload": "exec",
+              "bytes": 1,
+              "median_ns": 9723671.875,
+              "min_ns": 9679687.5,
+              "max_ns": 9733255.25
+            }
+          ]
+        }
+      ]
+    }
+  },
+  "production_restore": {
+    "deployment": "JTAG RAM only",
+    "image_base": 2097152,
+    "dtb_base": 805306368,
+    "initrd_base": 536870912,
+    "boot_check": "shell_input_passed",
+    "files": {
+      "kernel": {
+        "path": "/Volumes/MossBuild/moss/evidence/loader-startup-diagnosis/regression-green-artifacts/moss.bin",
+        "sha256": "5cd1adb36c921bff738e89dba39ad21ba6f87fd38e1fce8310d1849db61fb4e7"
+      },
+      "initramfs": {
+        "path": "/Volumes/MossBuild/moss/evidence/loader-startup-diagnosis/regression-green-artifacts/initramfs.cpio",
+        "sha256": "839e2f1d42fc0ff96e5851a8db283255ebbe936c6b6d375cb20cae656c15f8ad"
+      },
+      "dtb": {
+        "path": "/Volumes/MossBuild/moss/evidence/loader-startup-diagnosis/production-restore/moss.dtb",
+        "sha256": "8ad5e579a69a3ea6c043e9a6e6231d3e31d953f8ec5859fe79fe761795b2b407"
+      }
+    }
+  },
+  "detach": {
+    "targets": "    TargetName         Type       Endian TapName            State       \n--  ------------------ ---------- ------ ------------------ ------------\n 0  bcm2837.ap         mem_ap     little bcm2837.cpu        running\n 1* bcm2837.cpu0       aarch64    little bcm2837.cpu        running\n 2  bcm2837.cpu1       aarch64    little bcm2837.cpu        running\n 3  bcm2837.cpu2       aarch64    little bcm2837.cpu        running\n 4  bcm2837.cpu3       aarch64    little bcm2837.cpu        running\n",
+    "all_cpus_running": true,
+    "shutdown_requested": true,
+    "control_port_closed": true
+  },
+  "first_failures": [
+    "current-pi-loop",
+    "current-pi-loop-02",
+    "jtag-fault-01",
+    "pi-regression-red",
+    "build-cache-regression-01.log",
+    "perf-baseline/readback-failure.json",
+    "perf-baseline-02/deploy/result.json",
+    "perf-baseline-02/performance-rounds-attempt-01.json",
+    "qemu-green-riscv64/mm.transactions/diagnostics",
+    "production-detach-attempt-01.json"
+  ],
+  "limits": [
+    "No Linux baseline, single-operation tails, long-duration or arbitrary-platform claim",
+    "Historical and current pressure-release QEMU timeouts remain open",
+    "Red binary provenance sidecar was absent and remains unrecorded"
+  ],
+  "full_evidence": {
+    "path": "/Volumes/MossBuild/moss/evidence/rpi3b-instruction-cache-2026-10-18-full.tar.gz",
+    "bytes": 41861806,
+    "sha256": "0848b2660f87669721633ede0da884f1d296e453c670db8d868ad21b268def53"
+  },
+  "text_evidence": {
+    "path": "/Users/shifu/code/os/moss/docs/validation/rpi3b-instruction-cache-2026-10-18-evidence.tar.gz",
+    "bytes": 587444,
+    "sha256": "b1e6cdf4e27e177a99836d2cabbef752c736db054e82aa272cdd462b7ae34901"
+  },
+  "file_index": {
+    "path": "/Volumes/MossBuild/moss/evidence/loader-startup-diagnosis/file-index.json",
+    "bytes": 43210,
+    "sha256": "a97a4965ee7be9053425d2dd365ec1a6528673c11fb5f81b00e064e6603685d7"
+  }
+}

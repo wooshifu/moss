@@ -59,6 +59,7 @@ unsigned long uaccess_cow_user_fault(void);
 unsigned long vm_private_cow(void);
 unsigned long vm_readonly_cow(void);
 unsigned long vm_access_permissions(void);
+unsigned long vm_instruction_publication(void);
 unsigned long vm_kernel_isolation(long target);
 unsigned long vm_brk_lifecycle(void);
 unsigned long numbers_regression(void);

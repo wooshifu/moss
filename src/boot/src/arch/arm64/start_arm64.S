@@ -790,7 +790,7 @@ lower_el_sync_dispatch:
     str     x0,        [sp, #MOSS_TF_SP]
 
     // Read ESR_EL1 and extract Exception Class
-    mrs     x9, esr_el1                 // save ESR in callee-saved-safe x9
+    mrs     x9, esr_el1                 // retained until dispatch; no call precedes its consumption
     lsr     x10, x9, #26               // EC = bits[31:26]
     and     x10, x10, #0x3F
 

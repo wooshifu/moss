@@ -110,9 +110,9 @@ errors are also retained. Boot/total deadlines default to 30/60 seconds and
 each case to 30 seconds, measured after transfer; these are host watchdogs,
 not performance budgets. Reset and attach again before the next suite.
 
-The supported suites are `mm`, `scheduler`, `users.frame`, `users.uaccess` and
-`users.ipc`. Other suites requiring serial input injection, lifecycle release
-or benchmark calibration are not advertised by this runner. Physical suite
+The supported suites are `mm`, `scheduler`, `vfs`, `users.frame`, `users.vm`,
+`users.uaccess` and `users.ipc`. Other suites requiring serial input injection,
+lifecycle release or benchmark calibration are not advertised by this runner. Physical suite
 validation is distinct from QEMU `--machine raspi3b` and from shell `--check`.
 Each completed feature additionally needs the corresponding real-board
 consumer/failure checks under [ADR-0036](adr/0036-develop-a-general-purpose-hybrid-kernel.md).

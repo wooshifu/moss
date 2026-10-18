@@ -197,6 +197,7 @@ ADR-0008～0033 中的实现记录不是完成声明；其强制服务迁移边�
   - [x] 首次上下文/入口栈发布提前关 IRQ，恢复调用者原有 IRQ 状态；已捕获 RV64 `sd tp, 256(sp)` 覆盖初始 PC 的真实交错。修复前 1/4 CPU 注入均失败，修复后各 10 次通过，Sv39 另 3 次同镜像通过，均包含完整 users.vm（3.18）。
   - [ ] 完整异常入口与抢占交错验收；最初自然 `pc=0` 报告 `1789054088760333000` 未抓寄存器现场，不能以本次确认的一个原因宣称所有历史/后续启动故障已解决。
 - [ ] **MOSS-008**：仅可写私有页允许 COW；RO/text/NX/NONE 不能因 fork 或 fault 被放宽权限。
+  - [x] ARM64 新可执行页在 RX PTE 发布前清 D-cache 到 PoU 并广播 I-cache 失效，demand 与 native domain 共用发布契约。同物理 frame 重填/跨核执行在 Pi 旧实现红、新实现绿；Pi users.vm 10/10、生产 Loader 换代 50/50，见 [3.115 验收](docs/rpi3b-instruction-cache-validation.md)。不关闭其余权限与生命周期工作。
   - [x] clone 保留真实只读页，fault 检查可写 VMA；真实页表三代引用/释放及用户态多代 COW、最后引用写入、fork 后 text/rodata 写入拒绝，三架构九配置默认回归通过（3.16）。
   - [x] 双引用 COW 页分配失败不放宽权限或损坏内容/引用；共享页错误放开写权限的变异准确变红，恢复后单页分裂、用户异常和回收验收通过（3.31）。
   - [x] 修复 `mm.concurrent/fault_unmap` 的提交页身份采样竞态；旧版可复现、修复版 200 次通过且去锁红例仍失败（3.55）。
@@ -238,6 +239,7 @@ ADR-0008～0033 中的实现记录不是完成声明；其强制服务迁移边�
   - [x] 独立非页对齐 RX/RW fixture 检查页前缀、跨页文件字节、BSS/圆整页尾清零、真实执行/写入，以及 RX 禁写、RW 禁执行；严格拒绝 oracle 防止误接受伪装成成功，六配置 `users.exec` 28/28 通过。
   - [x] 当前契约明确拒绝 PT_INTERP/PT_DYNAMIC 和共享页的 LOAD；纯 NOBITS TLS 可作为 runtime 元数据，file-backed TLS 必须由一个 LOAD 覆盖。关闭本项不表示支持动态加载、内核 TLS 初始化或任意可加载 ELF。
 - [ ] **MOSS-017**：原子取任务、去重入队、on-CPU 交接、迁移锁序和 affinity；对已有 RB 算法补不变量/交错测试，不重写一套。
+  - [ ] 各核 scheduler_tick 的共享 tick_count_ 与负载均衡 last_balance_time_ 尚需全局扫描拥有者/同步回归；这是 3.115 的源码发现，未将其归因于历史超时。
   - 当前源码已有 `task_transition_lock_`、`take_next_task()`、`migrate_ready_task()` 和 `migration_current_owner` 回归；剩余是所有权交接/抢占安全点和负载验收，不是缺少整套原子队列实现。本次不凭源码将整项关闭。
   - [x] `TicketSpinLock::try_lock()` 与普通加锁配对抢占保护：CAS 前禁止抢占，失败回滚、成功由 unlock 释放；嵌套外层锁的真实 tick 回归已通过 Pi scheduler 17/17（3.110）。本项不涵盖返回安全点与完整交接。
   - [x] 统一用户返回调用 `check_need_resched()`：IRQ masked、Running 且可抢占时消费请求并经 bootstrap 交接；不安全时保留请求，不在任意 unlock 调度。旧实现红例、新 Pi users.frame 4/4 与 scheduler 18/18 已通过（3.111）。内核态返回、最外层抢占恢复、完整迁移/on-CPU 协议仍开放。
