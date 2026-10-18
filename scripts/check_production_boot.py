@@ -415,7 +415,7 @@ quit
             while time.monotonic() - started < timeout:
                 try:
                     chunk = console.recv(2**20) if console else incoming.read(2**20)
-                except BlockingIOError:
+                except (BlockingIOError, ConnectionResetError):
                     chunk = b""
                 if console and chunk:
                     out.write(chunk)

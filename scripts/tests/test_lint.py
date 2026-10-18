@@ -18,6 +18,8 @@ import pytest
 
 import lint
 
+EXE_SUFFIX = ".exe" if os.name == "nt" else ""
+
 
 def write(root: Path, path: str, content: str = "\n") -> Path:
     target = root / path
@@ -64,7 +66,7 @@ def fake_tools(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     """Executable lookup is real; replace only the subprocess boundary."""
     tool_dir = tmp_path / "system llvm"
     for name in ["clang++", "clang-tidy", "clang-apply-replacements", "cmake"]:
-        write(tool_dir, name).chmod(0o755)
+        write(tool_dir, name + EXE_SUFFIX).chmod(0o755)
     monkeypatch.setenv("PATH", str(tool_dir) + os.pathsep + os.environ.get("PATH", ""))
     calls = []
     outcomes = {}
@@ -72,7 +74,8 @@ def fake_tools(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     def run(_self, path, argv, _root, *, live=False):
         calls.append((path, tuple(argv), live))
         if "--version" in argv:
-            label = "clang" if Path(argv[0]).name == "clang++" else Path(argv[0]).name
+            name = Path(argv[0]).name.removesuffix(".exe")
+            label = "clang" if name == "clang++" else name
             return lint.LintResult(path, 0, f"{label} version 23.1.0\n")
         result = outcomes.get(path, lint.LintResult(path, 0))
         if isinstance(result, BaseException):
@@ -125,8 +128,6 @@ def test_selection_and_exclusions_cover_the_whole_repository(project, fake_tools
     command = next(argv for path, argv, _live in calls if path == "src/main.cpp")
     response = next(arg[1:] for arg in command if arg.startswith("@"))
     header_filter = shlex.split(Path(response).read_text())[0]
-    assert "src/vendor/.*" in header_filter
-    assert "third_party/.*" in header_filter
     expression = header_filter.split("=", 1)[1]
     assert re.search(expression, str(root / "src/vendor/api.h"))
     assert re.search(expression, str(root / "third_party/library/api.h"))
@@ -143,7 +144,8 @@ def test_large_exclusion_filter_stays_out_of_argv(tmp_path):
     assert len(argument.encode()) < 128 * 1024
     parsed = shlex.split(response)
     assert len(parsed) == 1
-    assert re.escape(excluded[0]) in parsed[0] and re.escape(excluded[-1]) in parsed[0]
+    expression = parsed[0].split("=", 1)[1]
+    assert re.search(expression, excluded[0]) and re.search(expression, excluded[-1])
 
     write(tmp_path, "lint.toml", 'exclude = ["third_party/**"]\n')
     lint.exclude_header_response(excluded, tmp_path, lint.load_excludes(tmp_path))
@@ -271,21 +273,21 @@ def test_database_rejects_repository_escape(project):
 def test_tool_priority_and_check_does_not_require_apply(project, fake_tools, monkeypatch):
     root, _repo = project
     tool_dir, _calls, _outcomes = fake_tools
-    alternate = write(root.parent, "alternate/clang-tidy")
+    alternate = write(root.parent, "alternate/clang-tidy" + EXE_SUFFIX)
     alternate.chmod(0o755)
     monkeypatch.setenv("PATH", str(alternate.parent) + os.pathsep + os.environ["PATH"])
     # Resolve the compiler explicitly so its sibling takes precedence over PATH.
-    commands = [lint.CompilationCommand("src/api.cppm", root, (str(tool_dir / "clang++"), "-c"))]
+    commands = [lint.CompilationCommand("src/api.cppm", root, (str(tool_dir / ("clang++" + EXE_SUFFIX)), "-c"))]
     args = lint.build_parser().parse_args(["--check"])
     registry = lint.ProcessRegistry()
-    (tool_dir / "clang-apply-replacements").unlink()
+    (tool_dir / ("clang-apply-replacements" + EXE_SUFFIX)).unlink()
     tidy, apply = lint.resolve_tools(commands, root, registry, args)
-    assert tidy.path == tool_dir / "clang-tidy"
+    assert tidy.path == tool_dir / ("clang-tidy" + EXE_SUFFIX)
     assert apply is None
     args.clang_tidy = str(alternate)
     assert lint.resolve_tools(commands, root, registry, args)[0].path == alternate
     args.clang_tidy = None
-    (tool_dir / "clang-tidy").unlink()
+    (tool_dir / ("clang-tidy" + EXE_SUFFIX)).unlink()
     assert lint.resolve_tools(commands, root, registry, args)[0].path == alternate
 
 

@@ -70,7 +70,7 @@ def run_case(cfg: Artifacts, output: Path, *, early: bool, timeout: float = 20) 
             while time.monotonic() - started < timeout:
                 try:
                     chunk = console.recv(2**20) if console else incoming.read(2**20)
-                except BlockingIOError:
+                except (BlockingIOError, ConnectionResetError):
                     chunk = b""
                 if console and chunk:
                     out.write(chunk)
@@ -89,7 +89,7 @@ def run_case(cfg: Artifacts, output: Path, *, early: bool, timeout: float = 20) 
                 if child.poll() is not None:
                     # QEMU may exit between the last serial read and poll().
                     if console:
-                        with suppress(BlockingIOError):
+                        with suppress(BlockingIOError, ConnectionResetError):
                             tail = console.recv(2**20)
                             out.write(tail)
                             pending += tail.replace(b"\r", b"")

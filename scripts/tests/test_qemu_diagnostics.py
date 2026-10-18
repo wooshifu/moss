@@ -2,7 +2,6 @@
 
 import ast
 import json
-import socket
 import subprocess
 import sys
 import threading
@@ -36,7 +35,7 @@ def test_missing_or_ambiguous_load_base_is_not_guessed(roms):
 
 
 @pytest.mark.parametrize("mode", ["complete", "no_gdb", "gdb_timeout", "no_load_offset"])
-def test_capture_stops_guest_keeps_all_cpus_and_bounds_debugger(tmp_path, qmp_sockets, monkeypatch, mode):
+def test_capture_stops_guest_keeps_all_cpus_and_bounds_debugger(tmp_path, qmp_sockets, qmp_listener, monkeypatch, mode):
     cfg = Artifacts.load(manifest(tmp_path))
     actions = []
     sockets = qmp_sockets
@@ -67,9 +66,7 @@ def test_capture_stops_guest_keeps_all_cpus_and_bounds_debugger(tmp_path, qmp_so
         return SimpleNamespace(returncode=0)
 
     monkeypatch.setattr(qd.subprocess, "run", debugger_run)
-    with socket.socket(socket.AF_UNIX) as listener:
-        listener.bind(str(sockets / "control.sock"))
-        listener.listen()
+    with qmp_listener(sockets / "control.sock") as listener:
 
         def server():
             with listener.accept()[0] as connection, connection.makefile("rwb") as stream:

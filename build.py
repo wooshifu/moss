@@ -47,7 +47,7 @@ def get_cmake_presets() -> list[str]:
     """获取所有可用的 CMAKE workflow 预设"""
     try:
         result = subprocess.run(
-            ["cmake", "--list-presets", "workflow"],
+            [shutil.which("cmake") or "cmake", "--list-presets", "workflow"],
             capture_output=True,
             text=True,
             encoding="utf-8",
@@ -82,7 +82,7 @@ def execute_build(preset: str, verbose: bool, dry_run: bool) -> BuildResult:
     start_time = time.monotonic()
     try:
         completed = subprocess.run(
-            ["cmake", "--workflow", "--preset", preset],
+            [shutil.which("cmake") or "cmake", "--workflow", "--preset", preset],
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             text=True,

@@ -2,13 +2,15 @@
 
 import json
 import os
-import pty
 import select
 import threading
 
 import pytest
 
-from scripts import rpi_perf
+pytest.importorskip("termios", reason="Raspberry Pi serial collector requires POSIX termios")
+pty = pytest.importorskip("pty", reason="Serial collector tests require a PTY")
+
+from scripts import rpi_perf  # noqa: E402
 
 
 @pytest.mark.parametrize("failure", [None, "missing_sample", "duplicate_sample", "wrong_warmup", "guest_error"])
