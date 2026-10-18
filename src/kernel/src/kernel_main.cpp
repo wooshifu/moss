@@ -208,10 +208,12 @@ void user_return_handler(void *raw_frame) noexcept {
   auto *previous = thread->trap_frame;
   thread->trap_frame = &frame;
   moss_validation_user_return(raw_frame);
-  // All three entry paths mask IRQs before this user-only checkpoint. Keep
+  // All ISA entry paths mask IRQs before this user-only checkpoint. Keep
   // the borrowed frame live across bootstrap's save/resume, then deliver any
   // signals that arrived while this thread was off the CPU.
-  if (g_scheduler) {
+  // Reuse this thread on the common no-request path; the scheduler rechecks
+  // the request and safety conditions before consuming it.
+  if (thread->need_resched.load(moss::memory_order_acquire) && g_scheduler) {
     g_scheduler->check_need_resched();
   }
   u32 signo = 0;

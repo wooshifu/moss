@@ -1,0 +1,1450 @@
+{
+  "schema_version": 1,
+  "date": "2026-10-18",
+  "board": "Raspberry Pi 3 Model B Plus Rev 1.3",
+  "adapter": "J-Link 000050120677",
+  "jtag_khz": 1000,
+  "method": {
+    "date": "2026-10-18",
+    "board": "Raspberry Pi 3 Model B Plus Rev 1.3",
+    "baseline_revision": "cd9abbff3525d8e5bff8e7e85ce736bf48fc8caa",
+    "candidate_revision": "24a8975",
+    "preset": "arm64-release",
+    "kernel_performance_probe_option": "OFF",
+    "measurement_mode": "wall time through production clock_gettime; no PMU or individual-operation quantiles",
+    "service_placement": "Reuse prepare --pmu only for CPU2 service wrappers; measure without --pmu. Caller CPU0; cross-core IPC peer CPU1; temperature read on CPU3 between runs.",
+    "workloads": [
+      "clock",
+      "getpid_raw",
+      "getpid_libc",
+      "yield",
+      "fork_raw",
+      "fork_libc",
+      "exec",
+      "ipc0",
+      "ipc1"
+    ],
+    "runs_per_boot": 2,
+    "warmup_batches": 2,
+    "retained_batches": 7,
+    "initial_boot_order": [
+      "baseline",
+      "candidate"
+    ],
+    "limits": "Report every sample and failure. Two runs within one boot do not count as independent cold boots. Protocol success is not a performance budget, a Linux comparison or a sustained-tail guarantee."
+  },
+  "pairing": {
+    "baseline_kernel_revision": "cd9abbff3525d8e5bff8e7e85ce736bf48fc8caa",
+    "candidate_kernel_revision": "24a89757d871256ddfd3669c17b841299c2bc338",
+    "shared_user_payload_revision": "24a8975",
+    "abi_and_probe_source_diff": [],
+    "userspace_source_changes": [
+      "src/userspace/validation.c",
+      "src/userspace/validation/internal.h",
+      "src/userspace/validation_frame.S"
+    ],
+    "pairing": "Controlled comparison, as in the existing Pi performance experiment: byte-identical user archive, services and probe; production ABI and user sources unchanged between kernel revisions. Each kernel and its symbols retain their own build identity.",
+    "shared_sha256": {
+      "initramfs.cpio": "13109e659f832d03b635a2a4ae6286f8fbcf90c210ee4220e22f7d831d1f03f3",
+      "rpi-perf.elf": "59999f2c0f004b86c04aa4b1fbfb0e2bce78f7ffead259211283ed2e263806bc",
+      "probe-preparation.json": "259eb436f409e057b0c2b4737508789c3175c99ed7176fd1270ba916b45182a0"
+    },
+    "kernel_sha256": {
+      "baseline": "22445c81f2ed27d9372feff2ed870a76cc1902b7cebe7d9d68876bed8b3d2d80",
+      "candidate": "8cf23fd902973a76ab3cba91aacc996714acbe21f37c90b7bf0049b37103844f"
+    }
+  },
+  "actual_boot_order": [
+    "baseline-controlled",
+    "candidate",
+    "optimized",
+    "baseline-rollback"
+  ],
+  "variants": {
+    "baseline-controlled": {
+      "build": {
+        "type": "Release",
+        "compiler": "Clang 23.1.2",
+        "flags": {
+          "compile": "-march=armv8-a -mgeneral-regs-only -mstrict-align -ffreestanding -fno-exceptions -fno-rtti -fno-stack-protector -fpie -Weverything -Werror -Wno-c++-compat -Wno-c++98-compat -Wno-c++98-compat-pedantic -Wno-c++11-compat -Wno-c++14-compat -Wno-c++17-compat -Wno-c++20-compat -Wno-padded -Wno-unsafe-buffer-usage -Wno-gnu-zero-variadic-macro-arguments -Wno-gnu-anonymous-struct -Wno-nested-anon-types -Wno-missing-prototypes -Wno-missing-variable-declarations -Wno-global-constructors -Wno-exit-time-destructors -Wno-weak-vtables -Wno-inline -Wno-reserved-identifier -Wno-reserved-macro-identifier -Wno-covered-switch-default -Wno-nrvo -Wno-lifetime-safety-suggestions -g0 -Os -DNDEBUG -ffunction-sections -fdata-sections",
+          "link": "-fuse-ld=lld -nostdlib -nostartfiles -Wl,-pie,--no-dynamic-linker,-z,notext,-Bsymbolic -T /Volumes/MossBuild/moss/worktrees/resched-baseline/src/linker/kernel_arm64.ld -Wl,-z,max-page-size=0x1000 -Wl,--gc-sections -Wl,--strip-all"
+        }
+      },
+      "kernel_sha256": "22445c81f2ed27d9372feff2ed870a76cc1902b7cebe7d9d68876bed8b3d2d80",
+      "initramfs_sha256": "13109e659f832d03b635a2a4ae6286f8fbcf90c210ee4220e22f7d831d1f03f3",
+      "probe_sha256": "59999f2c0f004b86c04aa4b1fbfb0e2bce78f7ffead259211283ed2e263806bc",
+      "preparation_sha256": "259eb436f409e057b0c2b4737508789c3175c99ed7176fd1270ba916b45182a0",
+      "deployment": {
+        "deployment": "JTAG RAM only",
+        "image_base": 2097152,
+        "dtb_base": 805306368,
+        "initrd_base": 536870912,
+        "boot_check": "shell_input_passed",
+        "files": {
+          "kernel": {
+            "path": "/Volumes/MossBuild/moss/evidence/return-perf-baseline-controlled/moss.bin",
+            "sha256": "22445c81f2ed27d9372feff2ed870a76cc1902b7cebe7d9d68876bed8b3d2d80"
+          },
+          "initramfs": {
+            "path": "/Volumes/MossBuild/moss/evidence/return-perf-baseline-controlled/initramfs.cpio",
+            "sha256": "13109e659f832d03b635a2a4ae6286f8fbcf90c210ee4220e22f7d831d1f03f3"
+          },
+          "dtb": {
+            "path": "/Volumes/MossBuild/moss/evidence/return-perf-baseline-controlled/deploy/moss.dtb",
+            "sha256": "696a2e0c55418362f4893e0efcdafbd9c0cfbb8051646db8542896ee06cd970a"
+          }
+        }
+      },
+      "rounds": [
+        {
+          "round": 1,
+          "started_ns": 1792318356277578000,
+          "status": "passed",
+          "temperature_before": {
+            "time_ns": 1792318356278122000,
+            "observation_ns": 205911000,
+            "access": "CPU3 kernel identity MMIO mapping",
+            "control": 70778886,
+            "status": 1706,
+            "millidegrees_c": 45084
+          },
+          "temperature_after": {
+            "time_ns": 1792318361957834000,
+            "observation_ns": 329804000,
+            "access": "CPU3 kernel identity MMIO mapping",
+            "control": 70778886,
+            "status": 1704,
+            "millidegrees_c": 46160
+          },
+          "finished_ns": 1792318362287803000,
+          "measurement_files": [
+            "measurements-1792318356498717000.json"
+          ],
+          "measurement": {
+            "path": "return-perf-baseline-controlled/measurements-1792318356498717000.json",
+            "bytes": 20289,
+            "sha256": "8cb13f35a2b53c69532e9a9bf027ac5259c38fc6b9ef5d4e5ef072f6e2a587e8"
+          },
+          "cases": [
+            {
+              "workload": "clock",
+              "bytes": 1,
+              "min_ns": 3970.4323,
+              "median_ns": 3977.67185,
+              "max_ns": 3988.27865,
+              "median_system_switches_per_op": 0.0
+            },
+            {
+              "workload": "getpid_raw",
+              "bytes": 1,
+              "min_ns": 889.9401,
+              "median_ns": 890.5052,
+              "max_ns": 890.96355,
+              "median_system_switches_per_op": 0.0
+            },
+            {
+              "workload": "getpid_libc",
+              "bytes": 1,
+              "min_ns": 583.802,
+              "median_ns": 584.01,
+              "max_ns": 587.552,
+              "median_system_switches_per_op": 0.0
+            },
+            {
+              "workload": "yield",
+              "bytes": 1,
+              "min_ns": 6507.031,
+              "median_ns": 6516.667,
+              "max_ns": 6551.823,
+              "median_system_switches_per_op": 1.0
+            },
+            {
+              "workload": "fork_raw",
+              "bytes": 1,
+              "min_ns": 1079824.25,
+              "median_ns": 1080846.375,
+              "max_ns": 1081764.25,
+              "median_system_switches_per_op": 2.0
+            },
+            {
+              "workload": "fork_libc",
+              "bytes": 1,
+              "min_ns": 1855761.75,
+              "median_ns": 1859609.375,
+              "max_ns": 1860716.125,
+              "median_system_switches_per_op": 7.125
+            },
+            {
+              "workload": "exec",
+              "bytes": 1,
+              "min_ns": 9799075.5,
+              "median_ns": 9815696.5,
+              "max_ns": 9829570.25,
+              "median_system_switches_per_op": 13.125
+            },
+            {
+              "workload": "ipc0",
+              "bytes": 1,
+              "min_ns": 117978.854,
+              "median_ns": 118041.25,
+              "max_ns": 118116.98,
+              "median_system_switches_per_op": 2.0
+            },
+            {
+              "workload": "ipc1",
+              "bytes": 1,
+              "min_ns": 104647.24,
+              "median_ns": 104806.25,
+              "max_ns": 122579.791,
+              "median_system_switches_per_op": 2.0
+            }
+          ]
+        },
+        {
+          "round": 2,
+          "started_ns": 1792318362290319000,
+          "status": "passed",
+          "temperature_before": {
+            "time_ns": 1792318362290745000,
+            "observation_ns": 336964000,
+            "access": "CPU3 kernel identity MMIO mapping",
+            "control": 70778886,
+            "status": 1705,
+            "millidegrees_c": 45622
+          },
+          "temperature_after": {
+            "time_ns": 1792318368043758000,
+            "observation_ns": 223124000,
+            "access": "CPU3 kernel identity MMIO mapping",
+            "control": 70778886,
+            "status": 1706,
+            "millidegrees_c": 45084
+          },
+          "finished_ns": 1792318368266898000,
+          "measurement_files": [
+            "measurements-1792318362632003000.json"
+          ],
+          "measurement": {
+            "path": "return-perf-baseline-controlled/measurements-1792318362632003000.json",
+            "bytes": 20292,
+            "sha256": "e4580d0e2bb1f226cba40f4f46e28fd971062f76885bcb5e34f6cb40edbf975a"
+          },
+          "cases": [
+            {
+              "workload": "clock",
+              "bytes": 1,
+              "min_ns": 3921.0,
+              "median_ns": 3937.7396,
+              "max_ns": 3938.65105,
+              "median_system_switches_per_op": 0.0
+            },
+            {
+              "workload": "getpid_raw",
+              "bytes": 1,
+              "min_ns": 890.08595,
+              "median_ns": 890.1276,
+              "max_ns": 891.7448,
+              "median_system_switches_per_op": 0.0
+            },
+            {
+              "workload": "getpid_libc",
+              "bytes": 1,
+              "min_ns": 583.803,
+              "median_ns": 583.958,
+              "max_ns": 584.27,
+              "median_system_switches_per_op": 0.0
+            },
+            {
+              "workload": "yield",
+              "bytes": 1,
+              "min_ns": 6501.875,
+              "median_ns": 6528.75,
+              "max_ns": 6558.333,
+              "median_system_switches_per_op": 1.0
+            },
+            {
+              "workload": "fork_raw",
+              "bytes": 1,
+              "min_ns": 1080358.125,
+              "median_ns": 1081028.625,
+              "max_ns": 1081497.375,
+              "median_system_switches_per_op": 2.0
+            },
+            {
+              "workload": "fork_libc",
+              "bytes": 1,
+              "min_ns": 1841718.75,
+              "median_ns": 1844414.125,
+              "max_ns": 1853339.75,
+              "median_system_switches_per_op": 7.125
+            },
+            {
+              "workload": "exec",
+              "bytes": 1,
+              "min_ns": 9804296.875,
+              "median_ns": 9828248.75,
+              "max_ns": 9843222.625,
+              "median_system_switches_per_op": 13.125
+            },
+            {
+              "workload": "ipc0",
+              "bytes": 1,
+              "min_ns": 118543.178,
+              "median_ns": 118565.677,
+              "max_ns": 118609.635,
+              "median_system_switches_per_op": 2.0
+            },
+            {
+              "workload": "ipc1",
+              "bytes": 1,
+              "min_ns": 104689.375,
+              "median_ns": 110739.479,
+              "max_ns": 116683.49,
+              "median_system_switches_per_op": 2.0
+            }
+          ]
+        }
+      ]
+    },
+    "candidate": {
+      "build": {
+        "type": "Release",
+        "compiler": "Clang 23.1.2",
+        "flags": {
+          "compile": "-march=armv8-a -mgeneral-regs-only -mstrict-align -ffreestanding -fno-exceptions -fno-rtti -fno-stack-protector -fpie -Weverything -Werror -Wno-c++-compat -Wno-c++98-compat -Wno-c++98-compat-pedantic -Wno-c++11-compat -Wno-c++14-compat -Wno-c++17-compat -Wno-c++20-compat -Wno-padded -Wno-unsafe-buffer-usage -Wno-gnu-zero-variadic-macro-arguments -Wno-gnu-anonymous-struct -Wno-nested-anon-types -Wno-missing-prototypes -Wno-missing-variable-declarations -Wno-global-constructors -Wno-exit-time-destructors -Wno-weak-vtables -Wno-inline -Wno-reserved-identifier -Wno-reserved-macro-identifier -Wno-covered-switch-default -Wno-nrvo -Wno-lifetime-safety-suggestions -g0 -Os -DNDEBUG -ffunction-sections -fdata-sections",
+          "link": "-fuse-ld=lld -nostdlib -nostartfiles -Wl,-pie,--no-dynamic-linker,-z,notext,-Bsymbolic -T /Users/shifu/code/os/moss/src/linker/kernel_arm64.ld -Wl,-z,max-page-size=0x1000 -Wl,--gc-sections -Wl,--strip-all"
+        }
+      },
+      "kernel_sha256": "8cf23fd902973a76ab3cba91aacc996714acbe21f37c90b7bf0049b37103844f",
+      "initramfs_sha256": "13109e659f832d03b635a2a4ae6286f8fbcf90c210ee4220e22f7d831d1f03f3",
+      "probe_sha256": "59999f2c0f004b86c04aa4b1fbfb0e2bce78f7ffead259211283ed2e263806bc",
+      "preparation_sha256": "259eb436f409e057b0c2b4737508789c3175c99ed7176fd1270ba916b45182a0",
+      "deployment": {
+        "deployment": "JTAG RAM only",
+        "image_base": 2097152,
+        "dtb_base": 805306368,
+        "initrd_base": 536870912,
+        "boot_check": "failed",
+        "files": {
+          "kernel": {
+            "path": "/Volumes/MossBuild/moss/evidence/return-perf-candidate/moss.bin",
+            "sha256": "8cf23fd902973a76ab3cba91aacc996714acbe21f37c90b7bf0049b37103844f"
+          },
+          "initramfs": {
+            "path": "/Volumes/MossBuild/moss/evidence/return-perf-candidate/initramfs.cpio",
+            "sha256": "13109e659f832d03b635a2a4ae6286f8fbcf90c210ee4220e22f7d831d1f03f3"
+          },
+          "dtb": {
+            "path": "/Volumes/MossBuild/moss/evidence/return-perf-candidate/deploy/moss.dtb",
+            "sha256": "696a2e0c55418362f4893e0efcdafbd9c0cfbb8051646db8542896ee06cd970a"
+          }
+        },
+        "error": "Expected shell response was not received; inspect serial.log"
+      },
+      "rounds": [
+        {
+          "round": 1,
+          "started_ns": 1792319105662422000,
+          "status": "passed",
+          "temperature_before": {
+            "time_ns": 1792319105662959000,
+            "observation_ns": 140064000,
+            "access": "CPU3 kernel identity MMIO mapping",
+            "control": 70778886,
+            "status": 1708,
+            "millidegrees_c": 44008
+          },
+          "temperature_after": {
+            "time_ns": 1792319110900749000,
+            "observation_ns": 89045000,
+            "access": "CPU3 kernel identity MMIO mapping",
+            "control": 70778886,
+            "status": 1704,
+            "millidegrees_c": 46160
+          },
+          "finished_ns": 1792319110989806000,
+          "measurement_files": [
+            "measurements-1792319105817163000.json"
+          ],
+          "measurement": {
+            "path": "return-perf-candidate/measurements-1792319105817163000.json",
+            "bytes": 20312,
+            "sha256": "f3e03c6dd9353c32a83732fc71ff3f99230b6893f439f3a4303d1316299b6a3a"
+          },
+          "cases": [
+            {
+              "workload": "clock",
+              "bytes": 1,
+              "min_ns": 4043.65105,
+              "median_ns": 4044.16405,
+              "max_ns": 4063.71355,
+              "median_system_switches_per_op": 0.0
+            },
+            {
+              "workload": "getpid_raw",
+              "bytes": 1,
+              "min_ns": 972.52865,
+              "median_ns": 973.04165,
+              "max_ns": 973.28125,
+              "median_system_switches_per_op": 0.0
+            },
+            {
+              "workload": "getpid_libc",
+              "bytes": 1,
+              "min_ns": 581.875,
+              "median_ns": 582.083,
+              "max_ns": 582.239,
+              "median_system_switches_per_op": 0.0
+            },
+            {
+              "workload": "yield",
+              "bytes": 1,
+              "min_ns": 6610.365,
+              "median_ns": 6619.063,
+              "max_ns": 6639.167,
+              "median_system_switches_per_op": 1.0
+            },
+            {
+              "workload": "fork_raw",
+              "bytes": 1,
+              "min_ns": 1020286.375,
+              "median_ns": 1020755.125,
+              "max_ns": 1021588.5,
+              "median_system_switches_per_op": 2.0
+            },
+            {
+              "workload": "fork_libc",
+              "bytes": 1,
+              "min_ns": 1705768.25,
+              "median_ns": 1714029.875,
+              "max_ns": 1716901.125,
+              "median_system_switches_per_op": 7.125
+            },
+            {
+              "workload": "exec",
+              "bytes": 1,
+              "min_ns": 9552708.25,
+              "median_ns": 9564596.375,
+              "max_ns": 9568691.375,
+              "median_system_switches_per_op": 13.125
+            },
+            {
+              "workload": "ipc0",
+              "bytes": 1,
+              "min_ns": 98712.396,
+              "median_ns": 98720.468,
+              "max_ns": 98734.063,
+              "median_system_switches_per_op": 2.0
+            },
+            {
+              "workload": "ipc1",
+              "bytes": 1,
+              "min_ns": 96197.656,
+              "median_ns": 96210.417,
+              "max_ns": 96221.458,
+              "median_system_switches_per_op": 2.0
+            }
+          ]
+        },
+        {
+          "round": 2,
+          "started_ns": 1792319110990548000,
+          "status": "passed",
+          "temperature_before": {
+            "time_ns": 1792319110990751000,
+            "observation_ns": 368251000,
+            "access": "CPU3 kernel identity MMIO mapping",
+            "control": 70778886,
+            "status": 1706,
+            "millidegrees_c": 45084
+          },
+          "temperature_after": {
+            "time_ns": 1792319116436641000,
+            "observation_ns": 97628000,
+            "access": "CPU3 kernel identity MMIO mapping",
+            "control": 70778886,
+            "status": 1706,
+            "millidegrees_c": 45084
+          },
+          "finished_ns": 1792319116534283000,
+          "measurement_files": [
+            "measurements-1792319111363866000.json"
+          ],
+          "measurement": {
+            "path": "return-perf-candidate/measurements-1792319111363866000.json",
+            "bytes": 20302,
+            "sha256": "2e40c8a32795f2609eef49b1b264e47b16ac4e085f22f0148122a552ec3a3802"
+          },
+          "cases": [
+            {
+              "workload": "clock",
+              "bytes": 1,
+              "min_ns": 4027.7474,
+              "median_ns": 4043.625,
+              "max_ns": 4095.9271,
+              "median_system_switches_per_op": 0.0
+            },
+            {
+              "workload": "getpid_raw",
+              "bytes": 1,
+              "min_ns": 972.52865,
+              "median_ns": 972.91145,
+              "max_ns": 973.1901,
+              "median_system_switches_per_op": 0.0
+            },
+            {
+              "workload": "getpid_libc",
+              "bytes": 1,
+              "min_ns": 581.979,
+              "median_ns": 582.136,
+              "max_ns": 582.188,
+              "median_system_switches_per_op": 0.0
+            },
+            {
+              "workload": "yield",
+              "bytes": 1,
+              "min_ns": 6622.604,
+              "median_ns": 6657.292,
+              "max_ns": 6694.115,
+              "median_system_switches_per_op": 1.0
+            },
+            {
+              "workload": "fork_raw",
+              "bytes": 1,
+              "min_ns": 1007714.875,
+              "median_ns": 1008372.375,
+              "max_ns": 1008912.75,
+              "median_system_switches_per_op": 2.0
+            },
+            {
+              "workload": "fork_libc",
+              "bytes": 1,
+              "min_ns": 1749713.5,
+              "median_ns": 1753873.75,
+              "max_ns": 1763685.0,
+              "median_system_switches_per_op": 7.125
+            },
+            {
+              "workload": "exec",
+              "bytes": 1,
+              "min_ns": 9616425.875,
+              "median_ns": 9627669.375,
+              "max_ns": 9637682.25,
+              "median_system_switches_per_op": 13.125
+            },
+            {
+              "workload": "ipc0",
+              "bytes": 1,
+              "min_ns": 96545.26,
+              "median_ns": 96568.646,
+              "max_ns": 96583.594,
+              "median_system_switches_per_op": 2.0
+            },
+            {
+              "workload": "ipc1",
+              "bytes": 1,
+              "min_ns": 95991.875,
+              "median_ns": 96055.833,
+              "max_ns": 96105.73,
+              "median_system_switches_per_op": 2.0
+            }
+          ]
+        }
+      ],
+      "input_recovery": {
+        "original_boot_check": "failed: partial echo and 90 second deadline",
+        "status": "passed",
+        "newline_response": "\r\nMOSS_RPI_IN\r\nmoss$ ",
+        "probe_response": "echo MOSS_RETURN_PERF_RECOVERY_OK\r\nMOSS_RETURN_PERF_RECOVERY_OK\r\nmoss$ "
+      }
+    },
+    "optimized": {
+      "build": {
+        "type": "Release",
+        "compiler": "Clang 23.1.2",
+        "flags": {
+          "compile": "-march=armv8-a -mgeneral-regs-only -mstrict-align -ffreestanding -fno-exceptions -fno-rtti -fno-stack-protector -fpie -Weverything -Werror -Wno-c++-compat -Wno-c++98-compat -Wno-c++98-compat-pedantic -Wno-c++11-compat -Wno-c++14-compat -Wno-c++17-compat -Wno-c++20-compat -Wno-padded -Wno-unsafe-buffer-usage -Wno-gnu-zero-variadic-macro-arguments -Wno-gnu-anonymous-struct -Wno-nested-anon-types -Wno-missing-prototypes -Wno-missing-variable-declarations -Wno-global-constructors -Wno-exit-time-destructors -Wno-weak-vtables -Wno-inline -Wno-reserved-identifier -Wno-reserved-macro-identifier -Wno-covered-switch-default -Wno-nrvo -Wno-lifetime-safety-suggestions -g0 -Os -DNDEBUG -ffunction-sections -fdata-sections",
+          "link": "-fuse-ld=lld -nostdlib -nostartfiles -Wl,-pie,--no-dynamic-linker,-z,notext,-Bsymbolic -T /Users/shifu/code/os/moss/src/linker/kernel_arm64.ld -Wl,-z,max-page-size=0x1000 -Wl,--gc-sections -Wl,--strip-all"
+        }
+      },
+      "kernel_sha256": "c1ce5713274ba185d40b0a924b28de00fc227c108d3abf4406f73ab695ea1c4c",
+      "initramfs_sha256": "13109e659f832d03b635a2a4ae6286f8fbcf90c210ee4220e22f7d831d1f03f3",
+      "probe_sha256": "59999f2c0f004b86c04aa4b1fbfb0e2bce78f7ffead259211283ed2e263806bc",
+      "preparation_sha256": "259eb436f409e057b0c2b4737508789c3175c99ed7176fd1270ba916b45182a0",
+      "deployment": {
+        "deployment": "JTAG RAM only",
+        "image_base": 2097152,
+        "dtb_base": 805306368,
+        "initrd_base": 536870912,
+        "boot_check": "failed",
+        "files": {
+          "kernel": {
+            "path": "/Volumes/MossBuild/moss/evidence/return-perf-optimized/moss.bin",
+            "sha256": "c1ce5713274ba185d40b0a924b28de00fc227c108d3abf4406f73ab695ea1c4c"
+          },
+          "initramfs": {
+            "path": "/Volumes/MossBuild/moss/evidence/return-perf-optimized/initramfs.cpio",
+            "sha256": "13109e659f832d03b635a2a4ae6286f8fbcf90c210ee4220e22f7d831d1f03f3"
+          },
+          "dtb": {
+            "path": "/Volumes/MossBuild/moss/evidence/return-perf-optimized/deploy/moss.dtb",
+            "sha256": "696a2e0c55418362f4893e0efcdafbd9c0cfbb8051646db8542896ee06cd970a"
+          }
+        },
+        "error": "Expected shell response was not received; inspect serial.log"
+      },
+      "rounds": [
+        {
+          "round": 1,
+          "started_ns": 1792319869430613000,
+          "status": "passed",
+          "temperature_before": {
+            "time_ns": 1792319869431903000,
+            "observation_ns": 101881000,
+            "access": "CPU3 kernel identity MMIO mapping",
+            "control": 70778886,
+            "status": 1708,
+            "millidegrees_c": 44008
+          },
+          "temperature_after": {
+            "time_ns": 1792319874594436000,
+            "observation_ns": 73483000,
+            "access": "CPU3 kernel identity MMIO mapping",
+            "control": 70778886,
+            "status": 1706,
+            "millidegrees_c": 45084
+          },
+          "finished_ns": 1792319874667927000,
+          "measurement_files": [
+            "measurements-1792319869540742000.json"
+          ],
+          "measurement": {
+            "path": "return-perf-optimized/measurements-1792319869540742000.json",
+            "bytes": 20302,
+            "sha256": "ef461e648d701dd69b22ebd3f46c041d6087ab9744249e7b5be00818f3ddba07"
+          },
+          "cases": [
+            {
+              "workload": "clock",
+              "bytes": 1,
+              "min_ns": 3967.1484,
+              "median_ns": 3967.5677,
+              "max_ns": 3970.08595,
+              "median_system_switches_per_op": 0.0
+            },
+            {
+              "workload": "getpid_raw",
+              "bytes": 1,
+              "min_ns": 891.6458,
+              "median_ns": 893.6953,
+              "max_ns": 895.3776,
+              "median_system_switches_per_op": 0.0
+            },
+            {
+              "workload": "getpid_libc",
+              "bytes": 1,
+              "min_ns": 581.927,
+              "median_ns": 582.031,
+              "max_ns": 582.292,
+              "median_system_switches_per_op": 0.0
+            },
+            {
+              "workload": "yield",
+              "bytes": 1,
+              "min_ns": 6549.323,
+              "median_ns": 6569.74,
+              "max_ns": 6583.75,
+              "median_system_switches_per_op": 1.0
+            },
+            {
+              "workload": "fork_raw",
+              "bytes": 1,
+              "min_ns": 1032571.625,
+              "median_ns": 1033606.75,
+              "max_ns": 1034335.875,
+              "median_system_switches_per_op": 2.0
+            },
+            {
+              "workload": "fork_libc",
+              "bytes": 1,
+              "min_ns": 1732148.375,
+              "median_ns": 1739049.5,
+              "max_ns": 1750573.0,
+              "median_system_switches_per_op": 7.125
+            },
+            {
+              "workload": "exec",
+              "bytes": 1,
+              "min_ns": 9536744.75,
+              "median_ns": 9540813.75,
+              "max_ns": 9542851.625,
+              "median_system_switches_per_op": 13.125
+            },
+            {
+              "workload": "ipc0",
+              "bytes": 1,
+              "min_ns": 98119.323,
+              "median_ns": 98205.625,
+              "max_ns": 98245.052,
+              "median_system_switches_per_op": 2.0
+            },
+            {
+              "workload": "ipc1",
+              "bytes": 1,
+              "min_ns": 96743.073,
+              "median_ns": 96766.145,
+              "max_ns": 96786.563,
+              "median_system_switches_per_op": 2.0
+            }
+          ]
+        },
+        {
+          "round": 2,
+          "started_ns": 1792319874668415000,
+          "status": "passed",
+          "temperature_before": {
+            "time_ns": 1792319874668546000,
+            "observation_ns": 71737000,
+            "access": "CPU3 kernel identity MMIO mapping",
+            "control": 70778886,
+            "status": 1706,
+            "millidegrees_c": 45084
+          },
+          "temperature_after": {
+            "time_ns": 1792319879784522000,
+            "observation_ns": 73670000,
+            "access": "CPU3 kernel identity MMIO mapping",
+            "control": 70778886,
+            "status": 1705,
+            "millidegrees_c": 45622
+          },
+          "finished_ns": 1792319879858201000,
+          "measurement_files": [
+            "measurements-1792319874742585000.json"
+          ],
+          "measurement": {
+            "path": "return-perf-optimized/measurements-1792319874742585000.json",
+            "bytes": 20305,
+            "sha256": "b49cfa33439668e602c098ffd43e04873cfa7ed805324db28c71943c8a8fef83"
+          },
+          "cases": [
+            {
+              "workload": "clock",
+              "bytes": 1,
+              "min_ns": 3947.8177,
+              "median_ns": 3964.40365,
+              "max_ns": 3964.78385,
+              "median_system_switches_per_op": 0.0
+            },
+            {
+              "workload": "getpid_raw",
+              "bytes": 1,
+              "min_ns": 902.02345,
+              "median_ns": 902.3229,
+              "max_ns": 902.52605,
+              "median_system_switches_per_op": 0.0
+            },
+            {
+              "workload": "getpid_libc",
+              "bytes": 1,
+              "min_ns": 581.98,
+              "median_ns": 582.135,
+              "max_ns": 582.187,
+              "median_system_switches_per_op": 0.0
+            },
+            {
+              "workload": "yield",
+              "bytes": 1,
+              "min_ns": 6582.448,
+              "median_ns": 6649.427,
+              "max_ns": 6679.948,
+              "median_system_switches_per_op": 1.0
+            },
+            {
+              "workload": "fork_raw",
+              "bytes": 1,
+              "min_ns": 1033450.5,
+              "median_ns": 1034453.125,
+              "max_ns": 1035475.25,
+              "median_system_switches_per_op": 2.0
+            },
+            {
+              "workload": "fork_libc",
+              "bytes": 1,
+              "min_ns": 1731484.375,
+              "median_ns": 1738984.375,
+              "max_ns": 1744498.75,
+              "median_system_switches_per_op": 7.125
+            },
+            {
+              "workload": "exec",
+              "bytes": 1,
+              "min_ns": 9584934.875,
+              "median_ns": 9613001.375,
+              "max_ns": 9626582.0,
+              "median_system_switches_per_op": 13.125
+            },
+            {
+              "workload": "ipc0",
+              "bytes": 1,
+              "min_ns": 98090.99,
+              "median_ns": 98139.115,
+              "max_ns": 98221.406,
+              "median_system_switches_per_op": 2.0
+            },
+            {
+              "workload": "ipc1",
+              "bytes": 1,
+              "min_ns": 95712.24,
+              "median_ns": 95723.437,
+              "max_ns": 95743.125,
+              "median_system_switches_per_op": 2.0
+            }
+          ]
+        }
+      ],
+      "input_recovery": {
+        "original_boot_check": "failed: partial echo and 90 second deadline",
+        "status": "passed",
+        "newline_response": "\r\nMOSS_RPI_IN\r\nmoss$ ",
+        "probe_response": "echo MOSS_RETURN_PERF_RECOVERY_OK\r\nMOSS_RETURN_PERF_RECOVERY_OK\r\nmoss$ "
+      }
+    },
+    "baseline-rollback": {
+      "build": {
+        "type": "Release",
+        "compiler": "Clang 23.1.2",
+        "flags": {
+          "compile": "-march=armv8-a -mgeneral-regs-only -mstrict-align -ffreestanding -fno-exceptions -fno-rtti -fno-stack-protector -fpie -Weverything -Werror -Wno-c++-compat -Wno-c++98-compat -Wno-c++98-compat-pedantic -Wno-c++11-compat -Wno-c++14-compat -Wno-c++17-compat -Wno-c++20-compat -Wno-padded -Wno-unsafe-buffer-usage -Wno-gnu-zero-variadic-macro-arguments -Wno-gnu-anonymous-struct -Wno-nested-anon-types -Wno-missing-prototypes -Wno-missing-variable-declarations -Wno-global-constructors -Wno-exit-time-destructors -Wno-weak-vtables -Wno-inline -Wno-reserved-identifier -Wno-reserved-macro-identifier -Wno-covered-switch-default -Wno-nrvo -Wno-lifetime-safety-suggestions -g0 -Os -DNDEBUG -ffunction-sections -fdata-sections",
+          "link": "-fuse-ld=lld -nostdlib -nostartfiles -Wl,-pie,--no-dynamic-linker,-z,notext,-Bsymbolic -T /Volumes/MossBuild/moss/worktrees/resched-baseline/src/linker/kernel_arm64.ld -Wl,-z,max-page-size=0x1000 -Wl,--gc-sections -Wl,--strip-all"
+        }
+      },
+      "kernel_sha256": "22445c81f2ed27d9372feff2ed870a76cc1902b7cebe7d9d68876bed8b3d2d80",
+      "initramfs_sha256": "13109e659f832d03b635a2a4ae6286f8fbcf90c210ee4220e22f7d831d1f03f3",
+      "probe_sha256": "59999f2c0f004b86c04aa4b1fbfb0e2bce78f7ffead259211283ed2e263806bc",
+      "preparation_sha256": "259eb436f409e057b0c2b4737508789c3175c99ed7176fd1270ba916b45182a0",
+      "deployment": {
+        "deployment": "JTAG RAM only",
+        "image_base": 2097152,
+        "dtb_base": 805306368,
+        "initrd_base": 536870912,
+        "boot_check": "shell_input_passed",
+        "files": {
+          "kernel": {
+            "path": "/Volumes/MossBuild/moss/evidence/return-perf-baseline-rollback/moss.bin",
+            "sha256": "22445c81f2ed27d9372feff2ed870a76cc1902b7cebe7d9d68876bed8b3d2d80"
+          },
+          "initramfs": {
+            "path": "/Volumes/MossBuild/moss/evidence/return-perf-baseline-rollback/initramfs.cpio",
+            "sha256": "13109e659f832d03b635a2a4ae6286f8fbcf90c210ee4220e22f7d831d1f03f3"
+          },
+          "dtb": {
+            "path": "/Volumes/MossBuild/moss/evidence/return-perf-baseline-rollback/deploy/moss.dtb",
+            "sha256": "696a2e0c55418362f4893e0efcdafbd9c0cfbb8051646db8542896ee06cd970a"
+          }
+        }
+      },
+      "rounds": [
+        {
+          "round": 1,
+          "started_ns": 1792320306855616000,
+          "status": "passed",
+          "temperature_before": {
+            "time_ns": 1792320306856175000,
+            "observation_ns": 128460000,
+            "access": "CPU3 kernel identity MMIO mapping",
+            "control": 70778886,
+            "status": 1708,
+            "millidegrees_c": 44008
+          },
+          "temperature_after": {
+            "time_ns": 1792320312301793000,
+            "observation_ns": 95920000,
+            "access": "CPU3 kernel identity MMIO mapping",
+            "control": 70778886,
+            "status": 1706,
+            "millidegrees_c": 45084
+          },
+          "finished_ns": 1792320312397734000,
+          "measurement_files": [
+            "measurements-1792320306996747000.json"
+          ],
+          "measurement": {
+            "path": "return-perf-baseline-rollback/measurements-1792320306996747000.json",
+            "bytes": 20288,
+            "sha256": "c49dd6bde3c0bd1d76da689603ea079863326ef55205b2d751e96c33def48075"
+          },
+          "cases": [
+            {
+              "workload": "clock",
+              "bytes": 1,
+              "min_ns": 3972.78385,
+              "median_ns": 3980.51825,
+              "max_ns": 3992.39845,
+              "median_system_switches_per_op": 0.0
+            },
+            {
+              "workload": "getpid_raw",
+              "bytes": 1,
+              "min_ns": 884.625,
+              "median_ns": 887.9219,
+              "max_ns": 889.15105,
+              "median_system_switches_per_op": 0.0
+            },
+            {
+              "workload": "getpid_libc",
+              "bytes": 1,
+              "min_ns": 584.062,
+              "median_ns": 584.063,
+              "max_ns": 584.271,
+              "median_system_switches_per_op": 0.0
+            },
+            {
+              "workload": "yield",
+              "bytes": 1,
+              "min_ns": 6503.854,
+              "median_ns": 6506.406,
+              "max_ns": 6536.562,
+              "median_system_switches_per_op": 1.0
+            },
+            {
+              "workload": "fork_raw",
+              "bytes": 1,
+              "min_ns": 1063593.75,
+              "median_ns": 1064720.0,
+              "max_ns": 1065266.875,
+              "median_system_switches_per_op": 2.0
+            },
+            {
+              "workload": "fork_libc",
+              "bytes": 1,
+              "min_ns": 1821777.25,
+              "median_ns": 1823964.875,
+              "max_ns": 1825787.75,
+              "median_system_switches_per_op": 7.125
+            },
+            {
+              "workload": "exec",
+              "bytes": 1,
+              "min_ns": 9695449.25,
+              "median_ns": 9698925.75,
+              "max_ns": 9709654.875,
+              "median_system_switches_per_op": 13.125
+            },
+            {
+              "workload": "ipc0",
+              "bytes": 1,
+              "min_ns": 115156.354,
+              "median_ns": 115183.021,
+              "max_ns": 115231.511,
+              "median_system_switches_per_op": 2.0
+            },
+            {
+              "workload": "ipc1",
+              "bytes": 1,
+              "min_ns": 101662.864,
+              "median_ns": 101688.646,
+              "max_ns": 107650.781,
+              "median_system_switches_per_op": 2.0
+            }
+          ]
+        },
+        {
+          "round": 2,
+          "started_ns": 1792320312399355000,
+          "status": "passed",
+          "temperature_before": {
+            "time_ns": 1792320312399527000,
+            "observation_ns": 98204000,
+            "access": "CPU3 kernel identity MMIO mapping",
+            "control": 70778886,
+            "status": 1706,
+            "millidegrees_c": 45084
+          },
+          "temperature_after": {
+            "time_ns": 1792320317781188000,
+            "observation_ns": 145017000,
+            "access": "CPU3 kernel identity MMIO mapping",
+            "control": 70778886,
+            "status": 1706,
+            "millidegrees_c": 45084
+          },
+          "finished_ns": 1792320317926221000,
+          "measurement_files": [
+            "measurements-1792320312501517000.json"
+          ],
+          "measurement": {
+            "path": "return-perf-baseline-rollback/measurements-1792320312501517000.json",
+            "bytes": 20285,
+            "sha256": "945d82be6bc053f06238b7fb483643429a4bd979711cf6c5d029fc860c29b5fa"
+          },
+          "cases": [
+            {
+              "workload": "clock",
+              "bytes": 1,
+              "min_ns": 3936.33335,
+              "median_ns": 3938.4245,
+              "max_ns": 3939.28905,
+              "median_system_switches_per_op": 0.0
+            },
+            {
+              "workload": "getpid_raw",
+              "bytes": 1,
+              "min_ns": 888.15365,
+              "median_ns": 888.7682,
+              "max_ns": 889.4922,
+              "median_system_switches_per_op": 0.0
+            },
+            {
+              "workload": "getpid_libc",
+              "bytes": 1,
+              "min_ns": 584.011,
+              "median_ns": 584.167,
+              "max_ns": 587.656,
+              "median_system_switches_per_op": 0.0
+            },
+            {
+              "workload": "yield",
+              "bytes": 1,
+              "min_ns": 6544.167,
+              "median_ns": 6581.25,
+              "max_ns": 6612.813,
+              "median_system_switches_per_op": 1.0
+            },
+            {
+              "workload": "fork_raw",
+              "bytes": 1,
+              "min_ns": 1049440.0,
+              "median_ns": 1050104.25,
+              "max_ns": 1050742.125,
+              "median_system_switches_per_op": 2.0
+            },
+            {
+              "workload": "fork_libc",
+              "bytes": 1,
+              "min_ns": 1754108.125,
+              "median_ns": 1765208.25,
+              "max_ns": 1780000.0,
+              "median_system_switches_per_op": 7.125
+            },
+            {
+              "workload": "exec",
+              "bytes": 1,
+              "min_ns": 9635208.25,
+              "median_ns": 9642552.0,
+              "max_ns": 9652558.625,
+              "median_system_switches_per_op": 13.125
+            },
+            {
+              "workload": "ipc0",
+              "bytes": 1,
+              "min_ns": 115068.698,
+              "median_ns": 115112.083,
+              "max_ns": 115122.032,
+              "median_system_switches_per_op": 2.0
+            },
+            {
+              "workload": "ipc1",
+              "bytes": 1,
+              "min_ns": 101506.354,
+              "median_ns": 101588.542,
+              "max_ns": 101610.417,
+              "median_system_switches_per_op": 2.0
+            }
+          ]
+        }
+      ]
+    }
+  },
+  "optimized_source": {
+    "base_revision": "24a89757d871256ddfd3669c17b841299c2bc338",
+    "dirty": true,
+    "patch_sha256": "d5a2f9931b328e69446f2bb7ab7dad1a9a2b31c8a429b970ed82e2a631c9b1b6",
+    "kernel_sha256": "c1ce5713274ba185d40b0a924b28de00fc227c108d3abf4406f73ab695ea1c4c",
+    "validation_provenance": {
+      "build": {
+        "type": "Release",
+        "compiler": "Clang 23.1.2",
+        "flags": {
+          "compile": "-march=armv8-a -mgeneral-regs-only -mstrict-align -ffreestanding -fno-exceptions -fno-rtti -fno-stack-protector -fpie -Weverything -Werror -Wno-c++-compat -Wno-c++98-compat -Wno-c++98-compat-pedantic -Wno-c++11-compat -Wno-c++14-compat -Wno-c++17-compat -Wno-c++20-compat -Wno-padded -Wno-unsafe-buffer-usage -Wno-gnu-zero-variadic-macro-arguments -Wno-gnu-anonymous-struct -Wno-nested-anon-types -Wno-missing-prototypes -Wno-missing-variable-declarations -Wno-global-constructors -Wno-exit-time-destructors -Wno-weak-vtables -Wno-inline -Wno-reserved-identifier -Wno-reserved-macro-identifier -Wno-covered-switch-default -Wno-nrvo -Wno-lifetime-safety-suggestions -g0 -Os -DNDEBUG -ffunction-sections -fdata-sections",
+          "link": "-fuse-ld=lld -nostdlib -nostartfiles -Wl,-pie,--no-dynamic-linker,-z,notext,-Bsymbolic -T /Users/shifu/code/os/moss/src/linker/kernel_arm64.ld -Wl,-z,max-page-size=0x1000 -Wl,--gc-sections -Wl,--strip-all"
+        }
+      },
+      "image_sha256": "e57267bb27878348fc7bb76e85d1892e26c109c01ef03a9a2ef0f3c1c0bbf9e4",
+      "fixture_sha256": "1251950ce055df50e2cc5dc3fcd9b23a4453d0e8b0f8532b7559406d9eac498c",
+      "symbols_sha256": "e6fce64e311547ecc56805d902ba07536d4b23d7861c48c50528adb4190c2bb6",
+      "schema_version": 1,
+      "source_status": "recorded",
+      "revision": "24a89757d871256ddfd3669c17b841299c2bc338",
+      "dirty": true,
+      "source_sha256": "bfa8cfa104147fa480c13499bc3088dc23eb28c148ac17fe05e71ef57e1abdcd"
+    }
+  },
+  "release_frame_hardware": {
+    "candidate": {
+      "schema_version": 1,
+      "catalog_version": 11,
+      "finalized": true,
+      "provenance": {
+        "build": {
+          "type": "Release",
+          "compiler": "Clang 23.1.2",
+          "flags": {
+            "compile": "-march=armv8-a -mgeneral-regs-only -mstrict-align -ffreestanding -fno-exceptions -fno-rtti -fno-stack-protector -fpie -Weverything -Werror -Wno-c++-compat -Wno-c++98-compat -Wno-c++98-compat-pedantic -Wno-c++11-compat -Wno-c++14-compat -Wno-c++17-compat -Wno-c++20-compat -Wno-padded -Wno-unsafe-buffer-usage -Wno-gnu-zero-variadic-macro-arguments -Wno-gnu-anonymous-struct -Wno-nested-anon-types -Wno-missing-prototypes -Wno-missing-variable-declarations -Wno-global-constructors -Wno-exit-time-destructors -Wno-weak-vtables -Wno-inline -Wno-reserved-identifier -Wno-reserved-macro-identifier -Wno-covered-switch-default -Wno-nrvo -Wno-lifetime-safety-suggestions -g0 -Os -DNDEBUG -ffunction-sections -fdata-sections",
+            "link": "-fuse-ld=lld -nostdlib -nostartfiles -Wl,-pie,--no-dynamic-linker,-z,notext,-Bsymbolic -T /Users/shifu/code/os/moss/src/linker/kernel_arm64.ld -Wl,-z,max-page-size=0x1000 -Wl,--gc-sections -Wl,--strip-all"
+          }
+        },
+        "image_sha256": "3d07043178eea67e4b3d96aa2551629305b0fef58eb144d404a2a851654a8f99",
+        "fixture_sha256": "1251950ce055df50e2cc5dc3fcd9b23a4453d0e8b0f8532b7559406d9eac498c",
+        "symbols_sha256": "e9cce07207da447e35b603c76bb101ff54a7a2539c0b42c672450544e83ab392",
+        "schema_version": 1,
+        "source_status": "recorded",
+        "revision": "24a89757d871256ddfd3669c17b841299c2bc338",
+        "dirty": false,
+        "source_sha256": "cfb0e0e916504b3fc12ccc68b22a8097c8fe50f84ae1672fdc0ab478ccdeb52b"
+      },
+      "workload": "users.frame",
+      "status": "passed",
+      "parameters": {
+        "cpus": 4,
+        "memory_mib": 948,
+        "startup_timeout": 30,
+        "case_timeout": 30,
+        "timeout": 60
+      },
+      "observed": "pass",
+      "cases": [
+        {
+          "name": "native_frame",
+          "status": "passed",
+          "assertions": {
+            "v": 1,
+            "event": "case_end",
+            "workload": "users.frame",
+            "case": "native_frame",
+            "passed": 11,
+            "failed": 0
+          },
+          "elapsed_seconds": 0.013970564003102481
+        },
+        {
+          "name": "fork_registers",
+          "status": "passed",
+          "assertions": {
+            "v": 1,
+            "event": "case_end",
+            "workload": "users.frame",
+            "case": "fork_registers",
+            "passed": 1,
+            "failed": 0
+          },
+          "elapsed_seconds": 0.02408423798624426
+        },
+        {
+          "name": "signal_return",
+          "status": "passed",
+          "assertions": {
+            "v": 1,
+            "event": "case_end",
+            "workload": "users.frame",
+            "case": "signal_return",
+            "passed": 1,
+            "failed": 0
+          },
+          "elapsed_seconds": 0.008139387937262654
+        },
+        {
+          "name": "return_reschedule",
+          "status": "passed",
+          "assertions": {
+            "v": 1,
+            "event": "case_end",
+            "workload": "users.frame",
+            "case": "return_reschedule",
+            "passed": 1,
+            "failed": 0
+          },
+          "elapsed_seconds": 0.008267632103525102
+        }
+      ],
+      "ready": {
+        "v": 1,
+        "event": "ready",
+        "workload": "users.frame",
+        "detected_cpus": 4,
+        "online_mask": 15,
+        "work_mask": 15,
+        "ram_bytes": 994050048,
+        "managed_pages": 238137
+      },
+      "worker": {
+        "v": 1,
+        "event": "worker",
+        "workload": "users.frame",
+        "cpu": 0,
+        "affinity": 1
+      },
+      "completion": {
+        "v": 1,
+        "event": "end",
+        "workload": "users.frame",
+        "completed": 4,
+        "selected": 4,
+        "failed": 0,
+        "reason": "complete"
+      },
+      "termination": "protocol_end",
+      "elapsed_seconds": 2.473522864980623,
+      "serial_log": "/Volumes/MossBuild/moss/evidence/return-perf-candidate-release-frame/serial.log"
+    },
+    "optimized": {
+      "schema_version": 1,
+      "catalog_version": 11,
+      "finalized": true,
+      "provenance": {
+        "build": {
+          "type": "Release",
+          "compiler": "Clang 23.1.2",
+          "flags": {
+            "compile": "-march=armv8-a -mgeneral-regs-only -mstrict-align -ffreestanding -fno-exceptions -fno-rtti -fno-stack-protector -fpie -Weverything -Werror -Wno-c++-compat -Wno-c++98-compat -Wno-c++98-compat-pedantic -Wno-c++11-compat -Wno-c++14-compat -Wno-c++17-compat -Wno-c++20-compat -Wno-padded -Wno-unsafe-buffer-usage -Wno-gnu-zero-variadic-macro-arguments -Wno-gnu-anonymous-struct -Wno-nested-anon-types -Wno-missing-prototypes -Wno-missing-variable-declarations -Wno-global-constructors -Wno-exit-time-destructors -Wno-weak-vtables -Wno-inline -Wno-reserved-identifier -Wno-reserved-macro-identifier -Wno-covered-switch-default -Wno-nrvo -Wno-lifetime-safety-suggestions -g0 -Os -DNDEBUG -ffunction-sections -fdata-sections",
+            "link": "-fuse-ld=lld -nostdlib -nostartfiles -Wl,-pie,--no-dynamic-linker,-z,notext,-Bsymbolic -T /Users/shifu/code/os/moss/src/linker/kernel_arm64.ld -Wl,-z,max-page-size=0x1000 -Wl,--gc-sections -Wl,--strip-all"
+          }
+        },
+        "image_sha256": "e57267bb27878348fc7bb76e85d1892e26c109c01ef03a9a2ef0f3c1c0bbf9e4",
+        "fixture_sha256": "1251950ce055df50e2cc5dc3fcd9b23a4453d0e8b0f8532b7559406d9eac498c",
+        "symbols_sha256": "e6fce64e311547ecc56805d902ba07536d4b23d7861c48c50528adb4190c2bb6",
+        "schema_version": 1,
+        "source_status": "recorded",
+        "revision": "24a89757d871256ddfd3669c17b841299c2bc338",
+        "dirty": true,
+        "source_sha256": "bfa8cfa104147fa480c13499bc3088dc23eb28c148ac17fe05e71ef57e1abdcd"
+      },
+      "workload": "users.frame",
+      "status": "passed",
+      "parameters": {
+        "cpus": 4,
+        "memory_mib": 948,
+        "startup_timeout": 30,
+        "case_timeout": 30,
+        "timeout": 60
+      },
+      "observed": "pass",
+      "cases": [
+        {
+          "name": "native_frame",
+          "status": "passed",
+          "assertions": {
+            "v": 1,
+            "event": "case_end",
+            "workload": "users.frame",
+            "case": "native_frame",
+            "passed": 11,
+            "failed": 0
+          },
+          "elapsed_seconds": 0.01533567497972399
+        },
+        {
+          "name": "fork_registers",
+          "status": "passed",
+          "assertions": {
+            "v": 1,
+            "event": "case_end",
+            "workload": "users.frame",
+            "case": "fork_registers",
+            "passed": 1,
+            "failed": 0
+          },
+          "elapsed_seconds": 0.024955071043223143
+        },
+        {
+          "name": "signal_return",
+          "status": "passed",
+          "assertions": {
+            "v": 1,
+            "event": "case_end",
+            "workload": "users.frame",
+            "case": "signal_return",
+            "passed": 1,
+            "failed": 0
+          },
+          "elapsed_seconds": 0.008428597007878125
+        },
+        {
+          "name": "return_reschedule",
+          "status": "passed",
+          "assertions": {
+            "v": 1,
+            "event": "case_end",
+            "workload": "users.frame",
+            "case": "return_reschedule",
+            "passed": 1,
+            "failed": 0
+          },
+          "elapsed_seconds": 0.008326046983711421
+        }
+      ],
+      "ready": {
+        "v": 1,
+        "event": "ready",
+        "workload": "users.frame",
+        "detected_cpus": 4,
+        "online_mask": 15,
+        "work_mask": 15,
+        "ram_bytes": 994050048,
+        "managed_pages": 238137
+      },
+      "worker": {
+        "v": 1,
+        "event": "worker",
+        "workload": "users.frame",
+        "cpu": 0,
+        "affinity": 1
+      },
+      "completion": {
+        "v": 1,
+        "event": "end",
+        "workload": "users.frame",
+        "completed": 4,
+        "selected": 4,
+        "failed": 0,
+        "reason": "complete"
+      },
+      "termination": "protocol_end",
+      "elapsed_seconds": 2.472247082972899,
+      "serial_log": "/Volumes/MossBuild/moss/evidence/return-perf-optimized-release-frame/serial.log"
+    }
+  },
+  "optimized_debug_qemu": {
+    "arm64": {
+      "report": {
+        "path": "return-perf-optimized-arm64-qemu/results.json",
+        "bytes": 27829,
+        "sha256": "d509c8e12a802e48f19d6c30e050376dd002ad48141867d141b932a0b9d5398b"
+      },
+      "provenance": {
+        "build": {
+          "type": "Debug",
+          "compiler": "Clang 23.1.2",
+          "flags": {
+            "compile": "-march=armv8-a -mgeneral-regs-only -mstrict-align -ffreestanding -fno-exceptions -fno-rtti -fno-stack-protector -fpie -Weverything -Werror -Wno-c++-compat -Wno-c++98-compat -Wno-c++98-compat-pedantic -Wno-c++11-compat -Wno-c++14-compat -Wno-c++17-compat -Wno-c++20-compat -Wno-padded -Wno-unsafe-buffer-usage -Wno-gnu-zero-variadic-macro-arguments -Wno-gnu-anonymous-struct -Wno-nested-anon-types -Wno-missing-prototypes -Wno-missing-variable-declarations -Wno-global-constructors -Wno-exit-time-destructors -Wno-weak-vtables -Wno-inline -Wno-reserved-identifier -Wno-reserved-macro-identifier -Wno-covered-switch-default -Wno-nrvo -Wno-lifetime-safety-suggestions -g",
+            "link": "-fuse-ld=lld -nostdlib -nostartfiles -Wl,-pie,--no-dynamic-linker,-z,notext,-Bsymbolic -T /Users/shifu/code/os/moss/src/linker/kernel_arm64.ld "
+          }
+        },
+        "image_sha256": "6571b1f30eef0b6e495c4d6ee95c1b5e33e0c75dd8ff9762697c4cdd36239af0",
+        "fixture_sha256": "adaa6e5f8672c3d2e7b48d8c7f110738030b137613b2985b0a7ac17a78c39159",
+        "symbols_sha256": "03050ac60cf1d1577114305387de1e0a5ed48376720a7e2e30906a5a711d7f81",
+        "schema_version": 1,
+        "source_status": "recorded",
+        "revision": "24a89757d871256ddfd3669c17b841299c2bc338",
+        "dirty": true,
+        "source_sha256": "bfa8cfa104147fa480c13499bc3088dc23eb28c148ac17fe05e71ef57e1abdcd",
+        "manifest": "/Volumes/MossBuild/moss/build/arm64-debug/moss-artifacts.json"
+      },
+      "case_counts": {
+        "passed": 44
+      }
+    },
+    "x64": {
+      "report": {
+        "path": "return-perf-optimized-x64-qemu/results.json",
+        "bytes": 27883,
+        "sha256": "eec5862231bec56685559d23a9b7fb253c2b1d8e3fa08ccd483e3bdc81a4a173"
+      },
+      "provenance": {
+        "build": {
+          "type": "Debug",
+          "compiler": "Clang 23.1.2",
+          "flags": {
+            "compile": "-mno-red-zone -mno-mmx -mno-sse -mno-sse2 -mno-sse3 -mno-ssse3 -mno-sse4.1 -mno-sse4.2 -mno-avx -mno-avx2 -mno-80387 -mno-fp-ret-in-387 -mtune=x86-64 -mcmodel=kernel -ffreestanding -fno-exceptions -fno-rtti -fno-stack-protector -fno-pic -fno-pie -Weverything -Werror -Wno-c++-compat -Wno-c++98-compat -Wno-c++98-compat-pedantic -Wno-c++11-compat -Wno-c++14-compat -Wno-c++17-compat -Wno-c++20-compat -Wno-padded -Wno-unsafe-buffer-usage -Wno-gnu-zero-variadic-macro-arguments -Wno-gnu-anonymous-struct -Wno-nested-anon-types -Wno-missing-prototypes -Wno-missing-variable-declarations -Wno-global-constructors -Wno-exit-time-destructors -Wno-weak-vtables -Wno-inline -Wno-reserved-identifier -Wno-reserved-macro-identifier -Wno-covered-switch-default -Wno-nrvo -Wno-lifetime-safety-suggestions -g",
+            "link": "-fuse-ld=lld -nostdlib -nostartfiles -static -T /Users/shifu/code/os/moss/src/linker/kernel_x64.ld "
+          }
+        },
+        "image_sha256": "586f02c6b300e43f159bd447b940d84c64cf88766014a18bd3989ec5433a6403",
+        "fixture_sha256": "b9e83b22cbec55ab85c8c85dd7ae25e8c6aa686b2318533d830cad4d5c670698",
+        "symbols_sha256": "586f02c6b300e43f159bd447b940d84c64cf88766014a18bd3989ec5433a6403",
+        "schema_version": 1,
+        "source_status": "recorded",
+        "revision": "24a89757d871256ddfd3669c17b841299c2bc338",
+        "dirty": true,
+        "source_sha256": "bfa8cfa104147fa480c13499bc3088dc23eb28c148ac17fe05e71ef57e1abdcd",
+        "manifest": "/Volumes/MossBuild/moss/build/x64-debug/moss-artifacts.json"
+      },
+      "case_counts": {
+        "passed": 44
+      }
+    },
+    "riscv64": {
+      "report": {
+        "path": "return-perf-optimized-riscv64-qemu/results.json",
+        "bytes": 27915,
+        "sha256": "b21c588bb57abff159dc519b9691bcde4600044c40c9c3700df08bbed67776e5"
+      },
+      "provenance": {
+        "build": {
+          "type": "Debug",
+          "compiler": "Clang 23.1.2",
+          "flags": {
+            "compile": "-march=rv64imac -mabi=lp64 -mcmodel=medany -mstrict-align -ffreestanding -fno-exceptions -fno-rtti -fno-stack-protector -fpie -Weverything -Werror -Wno-c++-compat -Wno-c++98-compat -Wno-c++98-compat-pedantic -Wno-c++11-compat -Wno-c++14-compat -Wno-c++17-compat -Wno-c++20-compat -Wno-padded -Wno-unsafe-buffer-usage -Wno-gnu-zero-variadic-macro-arguments -Wno-gnu-anonymous-struct -Wno-nested-anon-types -Wno-missing-prototypes -Wno-missing-variable-declarations -Wno-global-constructors -Wno-exit-time-destructors -Wno-weak-vtables -Wno-inline -Wno-reserved-identifier -Wno-reserved-macro-identifier -Wno-covered-switch-default -Wno-nrvo -Wno-lifetime-safety-suggestions -g",
+            "link": "-fuse-ld=lld -nostdlib -nostartfiles -Wl,-pie,--no-dynamic-linker,-z,notext,-Bsymbolic -T /Users/shifu/code/os/moss/src/linker/kernel_riscv64.ld "
+          }
+        },
+        "image_sha256": "683119daa628e02f804a4997505402e3287dc84d107ed0fa5c95187b21d4906c",
+        "fixture_sha256": "a5819202ba4e399cd4df132c452df7ea52c78851bed90ae0e90e25a411036b51",
+        "symbols_sha256": "7a530dacd766d35a0bc365627825efa94a5cf9dd1f29a97e8726027155f80be8",
+        "schema_version": 1,
+        "source_status": "recorded",
+        "revision": "24a89757d871256ddfd3669c17b841299c2bc338",
+        "dirty": true,
+        "source_sha256": "bfa8cfa104147fa480c13499bc3088dc23eb28c148ac17fe05e71ef57e1abdcd",
+        "manifest": "/Volumes/MossBuild/moss/build/riscv64-debug/moss-artifacts.json"
+      },
+      "case_counts": {
+        "passed": 44
+      }
+    }
+  },
+  "production": {
+    "deployment": "JTAG RAM only",
+    "image_base": 2097152,
+    "dtb_base": 805306368,
+    "initrd_base": 536870912,
+    "boot_check": "shell_input_passed",
+    "files": {
+      "kernel": {
+        "path": "/Volumes/MossBuild/moss/evidence/return-perf-production-artifacts/moss.bin",
+        "sha256": "c1ce5713274ba185d40b0a924b28de00fc227c108d3abf4406f73ab695ea1c4c"
+      },
+      "initramfs": {
+        "path": "/Volumes/MossBuild/moss/evidence/return-perf-production-artifacts/initramfs.cpio",
+        "sha256": "839e2f1d42fc0ff96e5851a8db283255ebbe936c6b6d375cb20cae656c15f8ad"
+      },
+      "dtb": {
+        "path": "/Volumes/MossBuild/moss/evidence/return-perf-production/moss.dtb",
+        "sha256": "8ad5e579a69a3ea6c043e9a6e6231d3e31d953f8ec5859fe79fe761795b2b407"
+      }
+    }
+  },
+  "detach": {
+    "time_ns": 1792320793735356000,
+    "target_states_before_shutdown": "    TargetName         Type       Endian TapName            State       \n--  ------------------ ---------- ------ ------------------ ------------\n 0  bcm2837.ap         mem_ap     little bcm2837.cpu        running\n 1* bcm2837.cpu0       aarch64    little bcm2837.cpu        running\n 2  bcm2837.cpu1       aarch64    little bcm2837.cpu        running\n 3  bcm2837.cpu2       aarch64    little bcm2837.cpu        running\n 4  bcm2837.cpu3       aarch64    little bcm2837.cpu        running\n",
+    "shutdown_requested": true,
+    "mode": "shutdown without halt after strict production shell input check"
+  },
+  "raw_archive": {
+    "path": "rpi3b-2026-10-18-return-reschedule-evidence.tar.gz",
+    "bytes": 388649,
+    "sha256": "336f4f2e85c149ee34bfccb0c2e54771d2cc62a3f51621695c2bfc7b75291fd3"
+  },
+  "complete_local_archive": {
+    "name": "p0-return-reschedule-performance-2026-10-18.tar.gz",
+    "bytes": 71781756,
+    "sha256": "cbc90ee1ab87930ba42f427162803317a625c075756eeecc28276e50220d8e7d"
+  },
+  "limits": [
+    "Batch means are not single-operation tail latency or PMU measurements.",
+    "Each boot contains two rounds; seven retained batches are not independent boots.",
+    "CPU frequency/throttling was not observed. No Linux comparison or sustained-load acceptance.",
+    "Original candidate boot input failures remain failures despite independent recovery.",
+    "The earlier RV64 users.exec timeout and full scheduler ownership remain unresolved."
+  ]
+}

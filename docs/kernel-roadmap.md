@@ -28,7 +28,7 @@
 | --- | --- | --- |
 | P0-1 | 建立可重用的 Pi 内核套件 runner | 成套镜像/fixture/symbols 与 provenance；先开 UART、cache-off、上传全回读；严格 ready/catalog/case/end；失败后未执行 case 标 not_run。首批仅接通无需输入注入的 mm、users.frame、users.uaccess、users.ipc |
 | P0-2 | 修复 ARM64 fork FP/NEON 继承 | 捕获调用线程实时状态，父子进程不经 exec 检查所有向量及 FPCR/FPSR；保留旧实现红例、新实现绿例和真机证据，不扩大普通 syscall 帧 |
-| P0-3 | 完成抢占与调度交接审计 | 已接通统一用户返回的 check_need_resched；继续核实内核态 IRQ 返回与最外层抢占恢复，补确定性交错、锁持有者、affinity/on-CPU 单一所有者验收和 Release 成本，避免在任意 unlock 调度 |
+| P0-3 | 完成抢占与调度交接审计 | 已接通统一用户返回并完成该路径的局部 Release 成本对照；继续核实内核态 IRQ 返回与最外层抢占恢复，补确定性交错、锁持有者、affinity/on-CPU 单一所有者及负载成本验收，避免在任意 unlock 调度 |
 | P0-4 | 关闭生命周期与失败事务的剩余缺口 | 复用已有 fork FD/process/metadata OOM 和 migration_current_owner 用例；补共享 exec/root、并发 unmap/fault/退出、迟到 IPC donor、取消/服务死亡交错，逐项核对资源计数 |
 | P1-1 | 存储基础：Pi SD 控制器、块 I/O、缓存和持久文件系统 | 根据实际 DTB 选择 SDHCI/SDHOST 路径；先完成 IRQ/超时/DMA/页寿命与 flush 契约，再接文件系统；验证落盘、重启、故障恢复及读写性能。virtio-blk 可补 QEMU 回归，不能代替 Pi 验收 |
 | P1-2 | VM/VFS 的通用映射能力 | 部分 unmap、mprotect、共享/文件后备 mmap、统一页缓存与脏页/writeback；并发截断、权限、OOM 与回收先明确，再开放接口；复用现有 Memory Objects |
@@ -104,3 +104,19 @@ P1 的存储与网络可按具体消费者分片推进，TCP 依赖可用的收�
   长期负载和 Release/Linux 同板性能仍需后续批次；MOSS-017 保持开放。
 
 详见 [本批验收记录](rpi3b-return-reschedule-validation.md)。
+
+## 第四批实施结果（2026-10-18）
+
+- [x] 用户返回无请求路径直接读取已取得线程的标志，跳过重复 current 查询；
+  有请求时仍由调度函数重新检查安全条件，不更改请求消费与信号语义。
+- [x] Pi Release 原候选及最终候选 users.frame 各 4/4；最终三架构 Debug 定向 QEMU
+  各 44/44，定向 lint 1 TU 和格式检查通过。
+- [x] 同板 PMU-OFF、相同用户态归档的九场景对照，按基线、原候选、最终候选、
+  回切基线启动，各测两轮。raw getpid 从原候选约 0.973 µs 降至 0.894–0.902 µs；
+  基线两次启动约 0.888–0.891 µs。fork/exec 回切存在漂移，不能归因全部差值。
+- [ ] 两次候选启动的默认输入命令均截为同一前缀；独立恢复和后续采集成功不覆盖
+  原超时。UART 输出期间的 IRQ 屏蔽、接收和调度交错需要单独定位，见 MOSS-018。
+- [ ] Linux 同板对照、单次尾延迟、长期负载、其他安全点和完整 on-CPU 协议仍开放；
+  第三批 RV64 users.exec 原超时也不由本批定向回归关闭。
+
+详见 [Release 成本与原始证据](rpi3b-return-reschedule-performance.md)。

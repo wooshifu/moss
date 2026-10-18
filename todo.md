@@ -241,11 +241,13 @@ ADR-0008～0033 中的实现记录不是完成声明；其强制服务迁移边�
   - 当前源码已有 `task_transition_lock_`、`take_next_task()`、`migrate_ready_task()` 和 `migration_current_owner` 回归；剩余是所有权交接/抢占安全点和负载验收，不是缺少整套原子队列实现。本次不凭源码将整项关闭。
   - [x] `TicketSpinLock::try_lock()` 与普通加锁配对抢占保护：CAS 前禁止抢占，失败回滚、成功由 unlock 释放；嵌套外层锁的真实 tick 回归已通过 Pi scheduler 17/17（3.110）。本项不涵盖返回安全点与完整交接。
   - [x] 统一用户返回调用 `check_need_resched()`：IRQ masked、Running 且可抢占时消费请求并经 bootstrap 交接；不安全时保留请求，不在任意 unlock 调度。旧实现红例、新 Pi users.frame 4/4 与 scheduler 18/18 已通过（3.111）。内核态返回、最外层抢占恢复、完整迁移/on-CPU 协议仍开放。
+  - [x] 用户返回无请求路径复用已有 current 指针，保留调度函数的完整安全检查；Pi Release users.frame 4/4、三架构定向 QEMU 共 132 项通过。九场景、四次启动的 Release 对照保留全部原始批次与回切漂移；raw getpid 从原候选约 0.973 µs 降至 0.894–0.902 µs，不代表所有 syscall 或 Linux 性能达标（3.112）。
   - [x] current task、初始上下文、地址空间及入口栈在本 CPU 的同一 IRQ 临界区内发布；这不替代跨 CPU 的运行队列/on-CPU 所有权协议（3.18）。
   - [x] 修复实际双 CPU 用例暴露的 ARM64 从核未开启 MMU：复用主核已建页表，在各从核配置 MMU 和高地址直映后才发布 online（工作区，3.9）；不代表运行队列所有权或运行中任务迁移已完成。
   - [x] ARM64 激活从核时补齐 `Active` 发布后的 `DSB SY → SEV` 完成顺序；三模式构建、Debug/Release CTest 5/5 与实际指令检查通过，偶发挂起完整验收另列（3.15）。
   - [x] 调用线程收紧自身 affinity 时，在返回用户态前经 bootstrap 保存 continuation，再发布到目标 CPU；旧实现的 cycle 1 确定性红例、单例绿例及 32/32 并发压力已保留（3.28）。远程目标、一般抢占迁移及完整 on-CPU 协议仍未关闭。
 - [ ] **MOSS-018（部分修复）**：wait/console 已有登记—睡眠协议和坏 status 可重试；child-exit 交错、wait EINTR、真实 RX 排队窗口、双读者及跨 CPU IRQ/登记交错已验收；SA_RESTART 限定重启子集亦已通过，历史 SMP 超时因果仍待确认。
+  - [ ] Pi Release 两次候选启动在并发输出期间将默认检查命令截为同一 16 字节前缀；独立限速恢复成功，但丢失位置、UART 输出的 IRQ 屏蔽与调度交错的关系仍待定位。保留原 90 秒失败，不将恢复改记为原启动通过（3.112）。
   - [x] `sys_wait4()` 准备睡眠后登记 waiter、重查 Zombie；status copyout 失败不 reap。console 受锁保护检查/登记、支持多 waiter，已有 console 信号中断用例（3.41）。
   - [x] child exit 在 wait 登记前完成真实唤醒的双 CPU 顺序已有验证钩子固定；移除登记后的 Zombie 重查使新用例超时，恢复后九预设 `users.signals` 各 20/20、完整 CTest 43/43（3.59）。
   - [x] waitpid 被捕获信号唤醒后返回 EINTR，保留未写的 status 和可重试回收；旧实现超时红例、九预设 `users.signals` 各 21/21、完整 CTest 43/43（3.60）。

@@ -1951,6 +1951,31 @@ Pi 同一最终镜像 users.frame **4/4**、scheduler **18/18**、users.ipc **22
 内核态 IRQ 返回、其他最外层抢占恢复、完整迁移/on-CPU 协议、长期负载与
 Release/Linux 性能继续开放；MOSS-017 未关闭。
 
+### 3.112 用户返回的 Release 成本与无请求路径（2026-10-18）
+
+第三批原候选 `24a8975` 无请求时仍调用调度函数并再次取得 current。
+同板 Release 两轮 raw getpid 约 0.973 µs，最初基线 `cd9abbf` 为 0.890–0.891 µs。
+本批在 user_return_handler 直接读取已有线程的 need_resched；无请求时跳过调用，
+有请求时仍由 check_need_resched 完整重查安全条件，再消费请求。
+最终两轮为 0.894–0.902 µs，回切基线为 0.888–0.889 µs。
+这些是七个保留批次平均耗时的中位数，不是单次 p99 或某个函数的独占周期。
+
+九个场景使用字节一致的用户态归档和探针，内核为 Clang 23.1.2、Release -Os、
+PMU-OFF。顺序为基线、原候选、最终候选、回切基线，各启动两轮；记录 44.008–46.160°C
+的轮次前后温度，计时期间不 halt。回切 fork/exec 和 IPC 存在漂移，不能将最初差值
+全部归因版本。原/最终候选的 Pi Release users.frame 各 **4/4**，最终三架构 Debug
+定向 QEMU 各 **44/44**，lint **1 TU** 和格式检查通过。
+
+两次候选默认启动检查均在收到相同的 `echo MOSS_RPI_IN` 前缀后按原 90 秒期限失败；
+换行后实际执行截断命令，随后限速独立 marker 及下一 prompt 验证通过。
+两次基线原检查通过；全部性能采集完整。原失败保留，不能算原启动通过。
+UART TransmitGuard 在完整字符串输出和 FIFO 等待时屏蔽本核 IRQ，是待验证路径，
+但当前尚无 overrun/交错证据建立根因。该接收可靠性缺口归 MOSS-018 继续跟踪。
+
+详见[Release 真机记录与数据](docs/rpi3b-return-reschedule-performance.md)。
+MOSS-017 仍开放：其他返回点、最外层抢占恢复、完整所有权、Linux 对照和长期尾延迟
+未完成。第三批 RV64 users.exec 原 5 秒超时继续保留，不能由本批定向回归关闭。
+
 ## 4. 问题总表与当前状态
 
 | 编号 | 优先级 | 审计主题 | 当前状态与下一步 |
@@ -1971,8 +1996,8 @@ Release/Linux 性能继续开放；MOSS-017 未关闭。
 | MOSS-014 | P1 | fork 用户现场与继承状态 | 部分实现；三 ISA GP/条件码及 x64 legacy FP 已有回归；2026-10-18 补 ARM64 实时 FP/NEON 继承和 Pi 红绿对照。完整属性继承、其他扩展状态/信号组合及失败覆盖仍开放，不能关闭整项。 |
 | MOSS-015 | P1 | exec 原子替换 | 已关闭（3.25）；全部可失败准备均在旧地址空间仍有效时完成，提交后才回收旧所有权；PFA 与六级 heap 失败、可变 ELF 快照及 FD 语义已在六配置通过。 |
 | MOSS-016 | P1 | ELF 校验与分段策略 | 已关闭（3.26）；不可变 LoadPlan、checked arithmetic、严格拒绝 oracle、17 个畸形映像，以及非页对齐 RX/RW 的实际字节/零填充/最终权限已在六配置通过。 |
-| MOSS-017 | P1 | 运行队列 / 迁移 / on-CPU | 部分修复；已有 task_transition_lock_、take_next_task、migrate_ready_task 与 migration_current_owner 回归，3.28 自身 affinity 红绿证据保留；3.110 补 try-lock 抢占配对，3.111 接通统一用户返回安全点；其余安全点、完整交接/负载及 Release 性能仍待验收。 |
-| MOSS-018 | P1 | wait/console 丢失唤醒 | 部分修复；wait 的 child-exit/登记交错及 EINTR 已有红绿验收（3.59～3.60）；console 的 RX 排队窗口、双读者及跨 CPU IRQ/登记交错分别在 3.62～3.64 验收。SA_RESTART 限定重启子集已验收（3.65）；历史 SMP 超时因果仍待确认。 |
+| MOSS-017 | P1 | 运行队列 / 迁移 / on-CPU | 部分修复；已有 task_transition_lock_、take_next_task、migrate_ready_task 与 migration_current_owner 回归，3.28 自身 affinity 红绿证据保留；3.110 补 try-lock 抢占配对，3.111 接通统一用户返回，3.112 补无请求路径及局部 Release 对照；其他安全点、完整交接/负载、Linux 和长期性能仍开放。 |
+| MOSS-018 | P1 | wait/console 丢失唤醒 | 部分修复；wait 的 child-exit/登记交错及 EINTR 已有红绿验收（3.59～3.60）；console 的 RX 排队窗口、双读者及跨 CPU IRQ/登记交错分别在 3.62～3.64 验收。SA_RESTART 限定重启子集已验收（3.65）；3.112 新观察到 Pi 启动输入截断，位置/根因与历史 SMP 超时仍待确认。 |
 | MOSS-019 | P1 | nanosleep / timer 生命周期 | 部分修复；三 ISA 实际睡眠、容量失败、deadline 溢出、跨 CPU 交接及同步取消已有实现；捕获信号的 EINTR 与相对剩余时间已有九预设红绿验收（3.61）。更广定时交错仍待验收。 |
 | MOSS-020 | P1 | 信号投递 / STOP/CONT/SIGCHLD | 部分修复；结果/handler 参数写回、SIGCHLD、pipe/console 中断与部分传输、wait/nanosleep EINTR、限定 SA_RESTART 重试及 CPU-bound IRQ 投递已验收（3.60～3.66）。基本 STOP/CONT 交接、waitpid 一次性状态、信号致死状态、SA_NOCLDSTOP、进程组 wait 筛选与成员变更唤醒、SA_NOCLDWAIT/显式 SIG_IGN 自动回收及 action 一致快照通过（3.67～3.74）；完整 job control 与更广交错仍待补。 |
 | MOSS-021 | P1 | 信号状态生命周期 | 已关闭（3.23）；状态由 `Process` 拥有，fork/exec/exit 规则已核对，继承/重置及跨旧 256 槽边界的 300 次生命周期在六配置通过。 |
@@ -2247,6 +2272,7 @@ fork_registers 失败，修复后两者通过；catalog 升至 v9，旧 GP-only 
 出队当前任务和保存 continuation 后交接，以及 `migration_current_owner` 回归。
 下面保留原审计位置作为历史；3.110 已补 try-lock 抢占计数配对，
 3.111 接通统一用户返回的 `check_need_resched()`，保留不安全上下文的请求。
+3.112 减少无请求路径工作并完成该返回点的局部 Release 真机对照。
 内核态 IRQ 返回、最外层抢占恢复、完整交接交错与性能验收仍未闭合。
 
 **原始位置与事实（修复前）：** `src/process/src/process-scheduler.cppm:407` 的入队会初始化节点，缺少足够的重复入队防护；`:452` 选中任务后返回裸指针并解锁，之后另行出队。`:1156` 的公共入队路径在队列操作后再更新部分线程状态。`:1630` 的 tick 在旧任务现场完全切换保存前将其重新放回可被选择的集合。
