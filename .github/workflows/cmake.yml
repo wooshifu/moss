@@ -90,6 +90,19 @@ jobs:
       credentials:
         username: ${{ github.actor }}
         password: ${{ secrets.GITHUB_TOKEN }}
+    strategy:
+      fail-fast: false
+      matrix:
+        preset:
+          - arm64-debug
+          - arm64-release
+          - arm64-relwithdebinfo
+          - x64-debug
+          - x64-release
+          - x64-relwithdebinfo
+          - riscv64-debug
+          - riscv64-release
+          - riscv64-relwithdebinfo
     defaults:
       run:
         # Container jobs otherwise use sh; pipefail must preserve listing errors.
@@ -121,47 +134,13 @@ jobs:
         with:
           path: ${{ env.SCCACHE_DIR }}
           # Cache archives are immutable; each attempt saves the accumulated results under a new key.
-          key: sccache-${{ runner.os }}-${{ runner.arch }}-${{ steps.toolchain.outputs.llvm }}-${{ steps.toolchain.outputs.sccache }}-${{ github.run_id }}-${{ github.run_attempt }}
+          key: sccache-${{ runner.os }}-${{ runner.arch }}-${{ matrix.preset }}-${{ steps.toolchain.outputs.llvm }}-${{ steps.toolchain.outputs.sccache }}-${{ github.run_id }}-${{ github.run_attempt }}
           restore-keys: |
-            sccache-${{ runner.os }}-${{ runner.arch }}-${{ steps.toolchain.outputs.llvm }}-${{ steps.toolchain.outputs.sccache }}-
+            sccache-${{ runner.os }}-${{ runner.arch }}-${{ matrix.preset }}-${{ steps.toolchain.outputs.llvm }}-${{ steps.toolchain.outputs.sccache }}-
 
-      # Keep checking subsequent presets after a failure, but skip them if preparation
-      # failed or the run was cancelled. Any failed step still fails the job.
-      - name: ARM64 Debug
+      - name: Configure, build and test
         if: ${{ !cancelled() && steps.compiler-cache.outcome == 'success' }}
-        run: cmake --workflow --preset arm64-debug
-
-      - name: ARM64 Release
-        if: ${{ !cancelled() && steps.compiler-cache.outcome == 'success' }}
-        run: cmake --workflow --preset arm64-release
-
-      - name: ARM64 RelWithDebInfo
-        if: ${{ !cancelled() && steps.compiler-cache.outcome == 'success' }}
-        run: cmake --workflow --preset arm64-relwithdebinfo
-
-      - name: X64 Debug
-        if: ${{ !cancelled() && steps.compiler-cache.outcome == 'success' }}
-        run: cmake --workflow --preset x64-debug
-
-      - name: X64 Release
-        if: ${{ !cancelled() && steps.compiler-cache.outcome == 'success' }}
-        run: cmake --workflow --preset x64-release
-
-      - name: X64 RelWithDebInfo
-        if: ${{ !cancelled() && steps.compiler-cache.outcome == 'success' }}
-        run: cmake --workflow --preset x64-relwithdebinfo
-
-      - name: RISCV64 Debug
-        if: ${{ !cancelled() && steps.compiler-cache.outcome == 'success' }}
-        run: cmake --workflow --preset riscv64-debug
-
-      - name: RISCV64 Release
-        if: ${{ !cancelled() && steps.compiler-cache.outcome == 'success' }}
-        run: cmake --workflow --preset riscv64-release
-
-      - name: RISCV64 RelWithDebInfo
-        if: ${{ !cancelled() && steps.compiler-cache.outcome == 'success' }}
-        run: cmake --workflow --preset riscv64-relwithdebinfo
+        run: cmake --workflow --preset ${{ matrix.preset }}
 
       - name: Report compiler cache statistics
         if: always() && steps.toolchain.outcome == 'success'

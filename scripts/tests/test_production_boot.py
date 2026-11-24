@@ -39,6 +39,7 @@ def test_validation_marker_is_added_only_to_copy():
         "old_child_reported_before_loss",
         "old_child_survived",
         "pending_call_not_released",
+        "process_probe_failed",
         "gdb_complete",
         "gdb_unverified",
         "gdb_failure",
@@ -189,7 +190,10 @@ assert input() == 'echo MOSS_PRODUCTION_READY'
             script += "print('MOSS_OLD_CHILD_SURVIVED', flush=True)\n"
         script += "print('moss$ ', end='', flush=True)\n"
         script += "assert input() == '/moss-process.elf probe'\n"
-        script += "print('\\nMOSS_PROCESS_READY\\nmoss$ ', end='', flush=True)\n"
+        if mode == "process_probe_failed":
+            script += "print('\\nMOSS_PROCESS_ERROR\\nmoss$ ', end='', flush=True)\ntime.sleep(30)\n"
+        else:
+            script += "print('\\nMOSS_PROCESS_READY\\nmoss$ ', end='', flush=True)\n"
         script += "assert input() == '/moss-domain.elf terminate namespace'\n"
         script += (
             "print('moss-init: namespace service died\\nmoss-init: namespace service started pid=54\\n"
@@ -346,6 +350,9 @@ assert input() == 'echo MOSS_PRODUCTION_READY'
         assert "panicked" in result["observed"]
     if mode == "sleep_runtime_failure":
         assert "fatal runtime error" in result["observed"]
+    if mode == "process_probe_failed":
+        assert result["observed"] == "production process probe failed"
+        assert result["elapsed_seconds"] < 4
     if mode == "old_child_survived":
         assert result["observed"] == "old managed child survived process service loss"
     if mode in ("gdb_unverified", "gdb_failure"):

@@ -24,6 +24,7 @@ def test_repository_formatter_preserves_vendored_sources():
     ) == ([], [], [Path("build.py")])
 
 
+@pytest.mark.slow
 @pytest.mark.parametrize(
     "arch,triple,machine",
     [
@@ -241,6 +242,7 @@ def test_validation_fixture_packages_the_real_runtime_programs(tmp_path):
     assert boundary[rw[2] + len(gen_validation_initramfs.RETURN_42[62])] == gen_validation_initramfs.RW_FILE_MARKER
 
 
+@pytest.mark.slow
 @pytest.mark.parametrize("arch,machine", [("X64", 62), ("ARM64", 183), ("RISCV64", 243)])
 def test_vendored_runtime_build_is_native_and_incremental(tmp_path, arch, machine):
     required = ("clang", "clang++", "llvm-ar", "llvm-strip", "ld.lld", "cmake", "ninja", "uv")

@@ -73,6 +73,7 @@
             "displayName": "RISC-V 64 Debug Unit Tests",
             "configurePreset": "riscv64-debug",
             "execution": {
+                "jobs": 4,
                 "timeout": 420
             },
             "output": {
@@ -84,6 +85,7 @@
             "displayName": "RISC-V 64 Release Unit Tests",
             "configurePreset": "riscv64-release",
             "execution": {
+                "jobs": 4,
                 "timeout": 420
             },
             "output": {
@@ -95,6 +97,7 @@
             "displayName": "RISC-V 64 RelWithDebInfo Unit Tests",
             "configurePreset": "riscv64-relwithdebinfo",
             "execution": {
+                "jobs": 4,
                 "timeout": 420
             },
             "output": {

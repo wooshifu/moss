@@ -11,6 +11,7 @@
 #include <sys/sysinfo.h>
 #include <sys/utsname.h>
 #include <sys/wait.h>
+#include <unistd.h>
 
 #define MOSS_SYSCALL_RAW_ONLY
 #include <moss-process-protocol.h>
@@ -19,6 +20,12 @@
 
 namespace {
 int error(long result) { return result < 0 ? static_cast<int>(-result) : 0; }
+
+// The child's attach is idempotent for the same domain, but service scope
+// publication can race fork under load. Retry briefly before declaring the
+// permanent fork failure that exit 127 represents.
+constexpr unsigned long fork_attach_retry_ns = 10000000UL;
+enum { FORK_ATTACH_RETRIES = 100 };
 
 unsigned long forked_session = 0;
 // Compatibility PIDs are stable for an image lifetime. Fork publishes the
@@ -747,14 +754,23 @@ int Sysdeps<Fork>::operator()(pid_t *child) {
       syscall1(SYS_CAP_CLOSE, session);
       forked_session = child_session;
       __atomic_store_n(&cached_pid, id, __ATOMIC_RELAXED);
-      long self = syscall0(SYS_DOMAIN_SELF);
-      bool attached =
-          self > 0 && process_child_request(
-                          child_session, MOSS_PROCESS_ATTACH_CHILD, id, self);
-      if (self > 0)
-        syscall1(SYS_CAP_CLOSE, self);
-      if (!attached)
+        bool attached = false;
+        for (unsigned int retry_index = 0; retry_index < FORK_ATTACH_RETRIES; ++retry_index) {
+          long self = syscall0(SYS_DOMAIN_SELF);
+          if (self > 0) {
+            attached = process_child_request(child_session, MOSS_PROCESS_ATTACH_CHILD, id, self);
+            syscall1(SYS_CAP_CLOSE, self);
+            if (attached)
+              break;
+          }
+          unsigned long delay = fork_attach_retry_ns;
+          syscall1(SYS_NANOSLEEP, reinterpret_cast<long>(&delay));
+        }
+        if (!attached) {
+          static const char message[] = "MOSS_FORK_ATTACH_FAILED\n";
+          syscall3(SYS_WRITE, STDERR_FILENO, reinterpret_cast<long>(message), sizeof(message) - 1);
         sysdep<Exit>(127);
+        }
       *child = 0;
       return 0;
     }

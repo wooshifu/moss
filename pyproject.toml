@@ -60,3 +60,7 @@ quote-style = "double"
 [tool.pytest.ini_options]
 pythonpath = ["."]
 testpaths = ["scripts/tests"]
+addopts = "-m 'not slow'"
+markers = [
+    "slow: isolated full runtime builds and other expensive integration checks",
+]

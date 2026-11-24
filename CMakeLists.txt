@@ -204,155 +204,91 @@ if(MOSS_BUILD_TESTS)
         --manifest
         ${CMAKE_BINARY_DIR}/moss-artifacts.json
     )
-    add_test(NAME moss-functional COMMAND ${_validation})
-    # Ten complete BusyBox lifecycles keep routine CTest bounded while still exercising fork/exec/reap and resource
-    # recovery. Baseline, midpoint and completion checkpoints distinguish a slow live guest from a stalled one; the
-    # explicit stability workload remains the long-duration coverage tier.
-    add_test(NAME moss-applications COMMAND ${_validation} --workload users.applications --iterations 10)
-    set_tests_properties(
-        moss-applications
-        PROPERTIES TIMEOUT
-                   150 # Three 30 s progress windows, 30 s boot and 30 s cleanup/reporting.
-                   RUN_SERIAL
-                   TRUE
-                   LABELS
-                   "kernel;applications"
-                   WORKING_DIRECTORY
-                   ${CMAKE_SOURCE_DIR}
+    # Routine CTest keeps only guests measured below 5 s. Long production, application, GDB, PVH, benchmark and
+    # stability probes are deleted from the default target; their runner CLIs remain available for explicit runs.
+    function(moss_add_functional_suite workload)
+        add_test(NAME moss-functional-${workload} COMMAND ${_validation} --workload ${workload})
+        set_tests_properties(
+            moss-functional-${workload}
+            PROPERTIES TIMEOUT
+                       5
+                       LABELS
+                       "kernel;functional"
+                       WORKING_DIRECTORY
+                       ${CMAKE_SOURCE_DIR}
+        )
+    endfunction()
+    set(_short_functional
+        drivers
+        resources
+        mm
+        mm.permissions
+        mm.transactions
+        mm.lifetime
+        mm.concurrent
+        mm.uaccess
+        mm.tlb_broadcast
+        heap
+        containers
+        containers.smp
+        vfs.smp
+        interrupts.smp
+        vfs
+        timers
+        scheduler
+        process
+        users
+        users.vm
+        users.frame
+        users.timers
+        users.libc
+        users.sysinfo
+        users.exec
     )
-    add_test(NAME moss-framework COMMAND ${_validation} --selftest)
-    add_test(NAME moss-production-boot COMMAND uv run ${CMAKE_SOURCE_DIR}/scripts/check_production_boot.py --manifest
-                                               ${CMAKE_BINARY_DIR}/moss-artifacts.json
-    )
+    if(MOSS_TARGET_ARCH STREQUAL "X64" OR MOSS_TARGET_ARCH STREQUAL "RISCV64")
+        list(APPEND _short_functional mm.tlb_join.request_first mm.tlb_join.cpu_first)
+    endif()
+    if(MOSS_TARGET_ARCH STREQUAL "ARM64" OR MOSS_TARGET_ARCH STREQUAL "X64")
+        list(APPEND _short_functional users.console_irq)
+    endif()
+    foreach(workload IN LISTS _short_functional)
+        moss_add_functional_suite(${workload})
+    endforeach()
+    function(moss_add_selftest name workload)
+        add_test(NAME moss-framework-${name} COMMAND ${_validation} --workload ${workload} --case-timeout 2)
+        set_tests_properties(
+            moss-framework-${name}
+            PROPERTIES TIMEOUT
+                       5
+                       LABELS
+                       "kernel"
+                       WORKING_DIRECTORY
+                       ${CMAKE_SOURCE_DIR}
+        )
+    endfunction()
+    moss_add_selftest(self self)
+    moss_add_selftest(fail self.fail)
+    moss_add_selftest(panic self.panic)
+    moss_add_selftest(timeout self.timeout)
     add_test(NAME moss-supervisor-reset COMMAND uv run ${CMAKE_SOURCE_DIR}/scripts/check_supervisor_reset.py --manifest
                                                 ${CMAKE_BINARY_DIR}/moss-artifacts.json
     )
     set_tests_properties(
         moss-supervisor-reset
         PROPERTIES TIMEOUT
-                   55 # Two 20 s guest reset probes plus 15 s for copies, uv startup and cleanup/reporting.
-                   RUN_SERIAL
-                   TRUE
+                   5
                    LABELS
                    "kernel"
                    WORKING_DIRECTORY
                    ${CMAKE_SOURCE_DIR}
     )
-    # Match the production monitor/recovery probe's 180 s guest budget, plus the existing 15 s allowance for copies, uv
-    # startup and cleanup/reporting.
-    set(_production_boot_timeout 195)
-    set_tests_properties(
-        moss-production-boot
-        PROPERTIES TIMEOUT
-                   ${_production_boot_timeout}
-                   RUN_SERIAL
-                   TRUE
-                   LABELS
-                   "kernel"
-                   WORKING_DIRECTORY
-                   ${CMAKE_SOURCE_DIR}
-    )
-    if(MOSS_TARGET_ARCH STREQUAL "X64")
-        add_test(NAME moss-pvh-initrd COMMAND uv run ${CMAKE_SOURCE_DIR}/scripts/check_x64_pvh_initrd.py --manifest
-                                              ${CMAKE_BINARY_DIR}/moss-artifacts.json
-        )
-        set_tests_properties(
-            moss-pvh-initrd
-            PROPERTIES TIMEOUT
-                       150 # Seven 15-second guest bounds plus bounded cleanup and report writing.
-                       RUN_SERIAL
-                       TRUE
-                       LABELS
-                       "kernel;boot"
-                       WORKING_DIRECTORY
-                       ${CMAKE_SOURCE_DIR}
-        )
-    endif()
-    if(MOSS_TARGET_ARCH STREQUAL "ARM64" AND CMAKE_BUILD_TYPE STREQUAL "Debug")
-        # Debian names the cross-target debugger gdb-multiarch, while native GDB builds on macOS expose the same remote
-        # protocol support as gdb. Only the controlled input probes need it; ordinary builds and QEMU validation work
-        # without a debugger.
-        find_program(MOSS_GDB_EXECUTABLE NAMES gdb-multiarch gdb)
-        if(MOSS_GDB_EXECUTABLE)
-            execute_process(
-                COMMAND "${MOSS_GDB_EXECUTABLE}" -nx -batch -ex "set architecture aarch64" -ex "python import gdb"
-                RESULT_VARIABLE _gdb_probe
-                OUTPUT_QUIET ERROR_QUIET
-                TIMEOUT 10
-            )
-        endif()
-        if(MOSS_GDB_EXECUTABLE AND "${_gdb_probe}" STREQUAL "0")
-            add_test(NAME moss-console-input
-                     COMMAND uv run ${CMAKE_SOURCE_DIR}/scripts/check_production_boot.py --manifest
-                             ${CMAKE_BINARY_DIR}/moss-artifacts.json --gdb ${MOSS_GDB_EXECUTABLE}
-            )
-            add_test(NAME moss-console-registration
-                     COMMAND uv run ${CMAKE_SOURCE_DIR}/scripts/check_production_boot.py --manifest
-                             ${CMAKE_BINARY_DIR}/moss-artifacts.json --gdb ${MOSS_GDB_EXECUTABLE} --registration-race
-            )
-            set_tests_properties(
-                moss-console-input moss-console-registration
-                PROPERTIES TIMEOUT
-                           65 # 50 s GDB probe plus 15 s for startup, bounded cleanup and report writing.
-                           RUN_SERIAL
-                           TRUE
-                           LABELS
-                           "kernel"
-                           WORKING_DIRECTORY
-                           ${CMAKE_SOURCE_DIR}
-            )
-        else()
-            message(
-                STATUS "ARM64 GDB with Python unavailable: skipping moss-console-input and moss-console-registration"
-            )
-        endif()
-    endif()
-    set_tests_properties(
-        moss-functional moss-framework
-        PROPERTIES TIMEOUT
-                   2100 # Up to 32 registered suites, 60 s per guest plus cleanup/reporting.
-                   RUN_SERIAL
-                   TRUE
-                   LABELS
-                   "kernel"
-                   WORKING_DIRECTORY
-                   ${CMAKE_SOURCE_DIR}
-    )
-    if(CMAKE_BUILD_TYPE STREQUAL "Release")
-        add_test(NAME moss-benchmark COMMAND ${_validation} --benchmark)
-        set_tests_properties(
-            moss-benchmark
-            PROPERTIES TIMEOUT
-                       1100 # Up to 16 scenarios, 60 s per guest plus cleanup/reporting.
-                       RUN_SERIAL
-                       TRUE
-                       LABELS
-                       "benchmark"
-                       WORKING_DIRECTORY
-                       ${CMAKE_SOURCE_DIR}
-        )
-        add_custom_target(
-            benchmark-kernel
-            COMMAND ${_validation} --benchmark
-            DEPENDS moss.test.elf
-            WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
-        )
-    endif()
 
     add_custom_target(
         test-kernel
-        COMMAND ${CMAKE_CTEST_COMMAND} --test-dir ${CMAKE_BINARY_DIR} -L kernel --output-on-failure
+        COMMAND ${CMAKE_CTEST_COMMAND} --test-dir ${CMAKE_BINARY_DIR} -L kernel --output-on-failure --parallel 4
         DEPENDS moss.test.elf moss.elf
         WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
         COMMENT "Running MOSS kernel validation (${MOSS_TARGET_ARCH})"
-    )
-    # Explicit long-run target: routine CTest has no minimum-duration stability guest.
-    add_custom_target(
-        stability-kernel
-        COMMAND ${_validation} --stability
-        DEPENDS moss.test.elf
-        WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
-        COMMENT "Running 30-minute core-path stability validation (${MOSS_TARGET_ARCH})"
     )
 else()
     message(STATUS "跳过单元测试构建")

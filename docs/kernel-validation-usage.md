@@ -32,7 +32,7 @@ uv run cmake --build --preset arm64-debug
 uv run ctest --preset arm64-debug-test
 ```
 
-CTest runs `moss-functional`, `moss-applications`, `moss-framework`, `moss-production-boot` and `moss-supervisor-reset`. The application test performs 10 full workflows, including a baseline and completion resource checkpoint; use `--iterations 1000` for the former extended routine profile. X64 also runs `moss-pvh-initrd`; ARM64 Debug runs `moss-console-input` and requires either `gdb-multiarch` or `gdb` at configure time; Release provides `moss-benchmark`. The `test-kernel` build target includes both functional and application tests; `benchmark-kernel` runs benchmarks in Release. The explicit `stability-kernel` target runs the minimum-30-minute core-path workload; it is not part of routine CTest. Full application stability uses the explicit command below. Use `kernel_validation.py run` for validation; the normal runner does not dispatch tests. Configure with `-DMOSS_BUILD_TESTS=OFF` to exclude validation images and validation userspace programs.
+Routine CTest runs only short per-suite `moss-functional-*` guests, four split `moss-framework-*` selftests, and `moss-supervisor-reset`; each registered test has a 5 s CTest deadline. Long production-boot, application, GDB console, PVH initrd, benchmark and stability tests are deleted from the default target. Their runner CLIs remain available for explicit manual runs, but `test-kernel` no longer invokes them. Use `kernel_validation.py run` for validation; the normal runner does not dispatch tests. Configure with `-DMOSS_BUILD_TESTS=OFF` to exclude validation images and validation userspace programs.
 
 The default is QEMU TCG with four real online vCPUs and 2048 MiB RAM. CPU count is never silently clamped. The resource suite verifies work executed on every requested CPU and writes to owned memory beyond the old 256 MiB window. The present early mappings require RAM/device addresses below 4 GiB; the largest usable RAM size therefore depends on the firmware's physical layout. The default resource profile remains the baseline regression; additional machine/layout profiles verify image portability.
 
@@ -93,7 +93,7 @@ the original verdict. Successful runs do not attach GDB. Ctrl-C/SIGTERM skips
 capture and reaps the guest; exited guests have no live snapshot. Each guest uses
 private Unix sockets, so concurrent presets do not share debugger ports.
 
-`--cpus`, `--memory-mib`, `--warmup`, `--samples`, `--iterations`, and `--order` are explicit overrides. `--machine`, `--cpu`, `--qemu` and `--dtb` select the runtime environment. `--expected-ram-mib` explicitly checks firmware-visible RAM when firmware reserves part of the installed RAM; it defaults to `--memory-mib` and is recorded separately. Ordinary host deadlines remain 30 s for startup, 60 s per guest, and 5 s per case except `pfa`, `users.signals`, `users.lifecycle` and the event benchmarks (30 s). The distinct `users.applications` workload has the progress-based budget below. An explicit `--case-timeout` overrides the case default, including a shorter value; `--guest-timeout` overrides the total guest budget, subject to the existing stability minimum. Reports retain `case_timeout_seconds`, its `case_timeout_kind` (`total` or `no_progress`), `guest_timeout_seconds` and each case's host-observed `elapsed_seconds`; these are not kernel microbenchmarks. Functional/framework CTest budgets remain 2100 s; the 10-cycle application test has a 150 s budget. Ctrl-C or SIGTERM finalizes partial reports and terminates/reaps QEMU; workloads not started are recorded as such.
+`--cpus`, `--memory-mib`, `--warmup`, `--samples`, `--iterations`, and `--order` are explicit overrides. `--machine`, `--cpu`, `--qemu` and `--dtb` select the runtime environment. `--expected-ram-mib` explicitly checks firmware-visible RAM when firmware reserves part of the installed RAM; it defaults to `--memory-mib` and is recorded separately. Ordinary host deadlines remain 30 s for startup, 60 s per guest, and 5 s per case except `pfa`, `users.signals`, `users.lifecycle` and the event benchmarks (30 s). The distinct `users.applications` workload has the progress-based budget below. An explicit `--case-timeout` overrides the case default, including a shorter value; `--guest-timeout` overrides the total guest budget, subject to the existing stability minimum. Reports retain `case_timeout_seconds`, its `case_timeout_kind` (`total` or `no_progress`), `guest_timeout_seconds` and each case's host-observed `elapsed_seconds`; these are not kernel microbenchmarks. Routine CTest entries use a 5 s deadline and a 2 s expected-fatal selftest case deadline. Ctrl-C or SIGTERM finalizes partial reports and terminates/reaps QEMU; workloads not started are recorded as such.
 
 ## Pipe Regression
 
@@ -249,9 +249,9 @@ cycles records exact resource recovery, giving a baseline and completion checkpo
 for CTest's 10-cycle run (or **101 checkpoints** with `--iterations 1000`). The original core-only
 workload still records every 100 cycles and reports zero application cycles.
 
-This is a separate routine CTest (`moss-applications`), not a longer deadline for
-the original core case. It passes `--iterations 10`, so its 30 s **no-progress**
-watchdog observes the baseline and completion checkpoint and its total budget is
+This is an explicit CLI workload (`users.applications`), not a routine CTest entry.
+The former 10-cycle CTest passed `--iterations 10`, so its 30 s **no-progress**
+watchdog observed the baseline and completion checkpoint and its total budget was
 90 s, with another 60 s for CTest cleanup/reporting. Direct invocation keeps the
 1,000-cycle default unless `--iterations` supplies another checkpoint-aligned
 count. A short explicit total budget still terminates a progressing guest. Direct CLI invocation without
@@ -651,4 +651,4 @@ five-scenario results do not cover the expanded thirteen-scenario catalog.
 Current collection settings, raw evidence and acceptance outcomes are recorded
 in the [expanded performance acceptance record](kernel-validation.md#expanded-performance-acceptance-on-2026-09-15).
 
-Host-tool regression tests use `uv run pytest scripts/tests`. Those tests validate orchestration and parsing only; real kernel acceptance is the QEMU matrix above.
+Host-tool regression tests use `uv run pytest scripts/tests`; the default marker expression excludes `slow` isolated runtime builds. Run the expensive integration tier explicitly with `uv run pytest scripts/tests -m slow -o addopts=`. Those tests validate orchestration and parsing only; real kernel acceptance is the QEMU matrix above.

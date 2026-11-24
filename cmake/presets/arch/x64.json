@@ -73,6 +73,7 @@
             "displayName": "x64 Debug Unit Tests",
             "configurePreset": "x64-debug",
             "execution": {
+                "jobs": 4,
                 "timeout": 420
             },
             "output": {
@@ -84,6 +85,7 @@
             "displayName": "x64 Release Unit Tests",
             "configurePreset": "x64-release",
             "execution": {
+                "jobs": 4,
                 "timeout": 420
             },
             "output": {
@@ -95,6 +97,7 @@
             "displayName": "x64 RelWithDebInfo Unit Tests",
             "configurePreset": "x64-relwithdebinfo",
             "execution": {
+                "jobs": 4,
                 "timeout": 420
             },
             "output": {

@@ -36,11 +36,8 @@ uv run python -m pytest
 ```
 
 These commands use native Windows tools; WSL, MSYS and a POSIX shell are not
-required. GDB is optional. Without an ARM64-capable, Python-enabled
-`gdb-multiarch` or `gdb` on `PATH`, ARM64 Debug omits only
-`moss-console-input` and `moss-console-registration`; all
-other build and QEMU test stages remain enabled. Failure diagnostics still
-collect QMP evidence without GDB. Windows QEMU control connections use loopback
+required. GDB is optional and is not needed by routine CTest. Failure
+diagnostics still collect QMP evidence without GDB. Windows QEMU control connections use loopback
 TCP. POSIX serial/PTY, signal-delivery and LP64-only host probes are skipped on
 Windows; guest validation still exercises the native target ABI.
 

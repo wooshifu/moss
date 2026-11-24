@@ -20,7 +20,7 @@ Tests boot the validation kernel `moss.test.elf` in QEMU:
 
 ```sh
 uv run ctest --preset arm64-debug-test                            # all CTest entries
-uv run ctest --preset arm64-debug-test -R moss-production-boot    # a single CTest entry
+uv run ctest --preset arm64-debug-test -R moss-functional-vfs    # a single CTest entry
 # A single validation suite (repeat --workload for more). Suite IDs are the keys of CATALOG in scripts/kernel_validation.py.
 uv run scripts/kernel_validation.py run --manifest build/arm64-debug/moss-artifacts.json --workload users.signals
 uv run scripts/kernel_validation.py run --manifest build/arm64-debug/moss-artifacts.json --selftest
@@ -31,12 +31,9 @@ uv run python -m pytest scripts/tests/test_kernel_validation.py -k <name>       
 - The smallest unit you can select is a **suite**. Each suite boots a fresh guest, runs its cases in order and stops at the first failure. Some suites need ≥2 vCPUs (`users.timers` needs 3) or a specific architecture, and the runner rejects selections that don't meet those requirements.
 - Reports are written to `build/<preset>/validation/<id>/results.json` (plus `junit.xml`). When a live guest fails, QMP/GDB captures go to `<workload>/diagnostics/`.
 - CTest entries:
-  - All presets: `moss-functional`, `moss-applications`, `moss-framework`, `moss-production-boot`, `moss-supervisor-reset`.
-  - x64: `moss-pvh-initrd`.
-  - ARM64 Debug: `moss-console-input` and `moss-console-registration`. Configuring this preset fails unless `gdb-multiarch` or `gdb` is installed.
-  - Release: `moss-benchmark`.
-  - The 30-minute stability run is a separate `stability-kernel` build target.
-- Allocator tests touch all of guest RAM, and `RUN_SERIAL` only serializes within one CTest process. Running presets concurrently can therefore exhaust host memory; limit with `build.py -j 2`.
+  - All presets: short per-suite `moss-functional-*` guests, split `moss-framework-*` selftests, and `moss-supervisor-reset`; each has a 5 s deadline.
+  - Long production-boot, application, GDB console, PVH initrd, benchmark and stability tests are not routine CTest entries; use the runner CLIs explicitly when needed.
+- Allocator tests touch all of guest RAM. Running presets concurrently can therefore exhaust host memory; limit with `build.py -j 2`.
 - `-DMOSS_BUILD_TESTS=OFF` omits the validation image and its userspace programs.
 
 The quality gate must pass with zero warnings before any commit:

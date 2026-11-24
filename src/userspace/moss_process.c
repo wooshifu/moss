@@ -545,8 +545,9 @@ static int managed_wait_probe(void) {
     // child. Inherit the exact parent's capability rather than a numeric PID.
     long sent = syscall2(SYS_DOMAIN_SIGNAL, parent_domain, SIGUSR1);
     (void)syscall1(SYS_CAP_CLOSE, parent_domain);
-    if (sent != 0)
+    if (sent != 0) {
       _exit(41);
+    }
     delay = child_delay_ns;
     (void)syscall1(SYS_NANOSLEEP, (long)&delay);
     _exit(37);
@@ -753,13 +754,24 @@ static int managed_fanout_probe(void) {
   pid_t children[FANOUT_CHILDREN];
   unsigned int count = 0;
   for (; count < FANOUT_CHILDREN; ++count) {
-    pid_t child = fork();
+    pid_t child = -1;
+    // The restarted service can briefly report EAGAIN while it drains domain
+    // exits. Retry transient pressure, but keep the 20-child quota assertion.
+    for (unsigned int retry = 0; retry <= STATUS_RETRIES; ++retry) {
+      child = fork();
+      if (child >= 0 || errno != EAGAIN || retry == STATUS_RETRIES) {
+        break;
+      }
+      unsigned long delay = status_retry_ns;
+      syscall1(SYS_NANOSLEEP, (long)&delay);
+    }
     if (child == 0) {
       close(channel[1]);
       char byte;
       _exit(read(channel[0], &byte, 1) == 0 ? 0 : 1);
     }
     if (child < 0) {
+      printf("MOSS_FANOUT_FORK index=%u errno=%d\n", count, errno);
       break;
     }
     children[count] = child;
@@ -768,20 +780,44 @@ static int managed_fanout_probe(void) {
   unsigned int observed = 0;
   uint64_t cursor = 0, ceiling = 0;
   struct moss_process_info info;
-  int result;
-  while ((result = moss_monitor_process(cursor, ceiling, 0, &info)) == 0) {
-    cursor = info.pid;
-    ceiling = info.ceiling;
-    if (info.ppid == (uint64_t)getpid()) {
-      ++observed;
+  int result = EAGAIN;
+  for (unsigned int retry = 0; retry <= STATUS_RETRIES; ++retry) {
+    observed = 0;
+    cursor = 0;
+    ceiling = 0;
+    while ((result = moss_monitor_process(cursor, ceiling, 0, &info)) == 0) {
+      cursor = info.pid;
+      ceiling = info.ceiling;
+      if (info.ppid == (uint64_t)getpid()) {
+        ++observed;
+      }
     }
+    if (result != EAGAIN || retry == STATUS_RETRIES) {
+      break;
+    }
+    unsigned long delay = status_retry_ns;
+    syscall1(SYS_NANOSLEEP, (long)&delay);
   }
   valid &= result == ESRCH && observed == count;
+  if (!valid) {
+    printf("MOSS_FANOUT count=%u observed=%u result=%d\n", count, observed, result);
+  }
   close(channel[0]);
   close(channel[1]);
   for (unsigned int i = 0; i < count; ++i) {
     int status = 0;
-    if (waitpid(children[i], &status, 0) != children[i] || status != 0) {
+    pid_t waited = -1;
+    for (unsigned int retry = 0; retry <= STATUS_RETRIES; ++retry) {
+      waited = waitpid(children[i], &status, 0);
+      if (waited == children[i] || errno != EAGAIN || retry == STATUS_RETRIES) {
+        break;
+      }
+      unsigned long delay = status_retry_ns;
+      syscall1(SYS_NANOSLEEP, (long)&delay);
+    }
+    if (waited != children[i] || status != 0) {
+      printf("MOSS_FANOUT_CHILD pid=%ld waited=%ld status=%d errno=%d\n", (long)children[i], (long)waited, status,
+             errno);
       valid = 0;
     }
   }
@@ -2111,9 +2147,36 @@ int main(int argc, char **argv) {
   }
   unsigned long last_id = MOSS_PROCESS_INIT_ID;
   unsigned long parent_session = getauxval(MOSS_AT_STARTUP_CAP);
-  if (!managed_libc_probe() || !managed_wait_probe() || !managed_group_probe() || !managed_orphan_probe() ||
-      !managed_fanout_probe() || !observe_child(root, parent_session, &last_id, 37, 1) ||
-      !observe_child(root, parent_session, &last_id, 38, 0) || !observe_family(root, &last_id)) {
+  if (!managed_libc_probe()) {
+    puts("MOSS_PROCESS_ERROR libc");
+    return error();
+  }
+  if (!managed_wait_probe()) {
+    puts("MOSS_PROCESS_ERROR wait");
+    return error();
+  }
+  if (!managed_group_probe()) {
+    puts("MOSS_PROCESS_ERROR group");
+    return error();
+  }
+  if (!managed_orphan_probe()) {
+    puts("MOSS_PROCESS_ERROR orphan");
+    return error();
+  }
+  if (!managed_fanout_probe()) {
+    puts("MOSS_PROCESS_ERROR fanout");
+    return error();
+  }
+  if (!observe_child(root, parent_session, &last_id, 37, 1)) {
+    puts("MOSS_PROCESS_ERROR observe_child_37");
+    return error();
+  }
+  if (!observe_child(root, parent_session, &last_id, 38, 0)) {
+    puts("MOSS_PROCESS_ERROR observe_child_38");
+    return error();
+  }
+  if (!observe_family(root, &last_id)) {
+    puts("MOSS_PROCESS_ERROR observe_family");
     return error();
   }
   static const char message[] = "MOSS_PROCESS_READY\n";

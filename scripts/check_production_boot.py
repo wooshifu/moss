@@ -66,13 +66,13 @@ def run(
     dtb: Path | None = None,
 ) -> dict:
     if timeout is None:
-        # Controlled ARM GDB probes retain their 50 s barrier bound; recent
-        # complete runs took at most 44.38 s.
+        # Controlled ARM GDB probes retain a 90 s barrier bound; concurrent
+        # Debug GDB probes can exceed the ordinary 54 s production path.
         # With monitor checks, ARM64 Debug completed all 184 steps in 100.35 s
         # on a shared host; RISCV64 previously needed 124.67 s. Reuse its 180 s
         # budget for ordinary runs, including headroom and bounded failure.
         # Keep CMake's outer timeout above this bound for copies and cleanup.
-        timeout = 50 if gdb else 180
+        timeout = 90 if gdb else 180
     # The debugger barriers below use virt's Image load base and PL011 registers.
     if registration_race and not gdb:
         raise ValueError("registration race probe requires GDB")
@@ -428,6 +428,8 @@ quit
                     raise ValueError("production boot panicked or entered validation")
                 if b"mlibc: fatal runtime error" in pending:
                     raise ValueError("production service hit a fatal runtime error")
+                if b"MOSS_PROCESS_ERROR" in pending:
+                    raise ValueError("production process probe failed")
                 pending = KERNEL_DIAGNOSTIC.sub(b"", pending)
                 old_child_started |= b"MOSS_OLD_CHILD_STARTED" in pending
                 while stage < len(steps) and steps[stage][0] in pending:
@@ -549,6 +551,8 @@ quit
             result.update(status="error", observed="production boot panicked or entered validation")
         if b"mlibc: fatal runtime error" in evidence:
             result.update(status="error", observed="production service hit a fatal runtime error")
+        if b"MOSS_PROCESS_ERROR" in evidence:
+            result.update(status="error", observed="production process probe failed")
         result.update(elapsed_seconds=time.monotonic() - started, completed_steps=stage)
         (output / "results.json").write_text(json.dumps(result, indent=2) + "\n")
     return result
