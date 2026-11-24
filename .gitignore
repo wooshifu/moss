@@ -36,4 +36,5 @@ compile_commands.json
 
 # AI
 .codebase-memory/
+.codegraph/
 
