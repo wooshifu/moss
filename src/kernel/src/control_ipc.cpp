@@ -129,12 +129,14 @@ public:
   [[nodiscard]] containers::WaitQueue *event_queue() noexcept { return &readable_events_; }
   [[nodiscard]] bool readable() noexcept {
     containers::LockGuard<containers::IrqSpinLock> guard(lock_);
-    if (closed_)
+    if (closed_) {
       return true;
+    }
     for (const auto &call : calls_) {
       if (call && call->queued && !call->delivery_claimed && call->outcome == Outcome::Pending &&
-          call->donation.rejection.load(memory_order_acquire) == process::IpcBindResult::Bound)
+          call->donation.rejection.load(memory_order_acquire) == process::IpcBindResult::Bound) {
         return true;
+      }
     }
     return false;
   }
@@ -440,8 +442,9 @@ protected:
     // its one-shot handle before committing the response.
     call->events.for_each_waiter([](void *data) {
       auto *thread = static_cast<process::Thread *>(data);
-      if (process::g_scheduler)
+      if (process::g_scheduler) {
         process::g_scheduler->task_wakeup(thread, thread->wake_cpu);
+      }
     });
   }
 
@@ -938,10 +941,12 @@ static long receive_message(long endpoint, long request_addr, long reply_addr, b
   }
 }
 
-long sys_ipc_receive(long endpoint, long request_addr, long reply_addr, long, long, long) noexcept {
+long sys_ipc_receive(long endpoint, long request_addr, long reply_addr, long /*unused*/, long /*unused*/,
+                     long /*unused*/) noexcept {
   return receive_message(endpoint, request_addr, reply_addr, true);
 }
-long sys_ipc_try_receive(long endpoint, long request_addr, long reply_addr, long, long, long) noexcept {
+long sys_ipc_try_receive(long endpoint, long request_addr, long reply_addr, long /*unused*/, long /*unused*/,
+                         long /*unused*/) noexcept {
   return receive_message(endpoint, request_addr, reply_addr, false);
 }
 

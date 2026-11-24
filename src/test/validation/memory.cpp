@@ -394,20 +394,24 @@ void runtime_memory_ranges() {
           source[i] = static_cast<u8>(i);
           actual[i] = expected[i] = static_cast<u8>(~i);
         }
-        for (usize i = 0; i < length; ++i)
+        for (usize i = 0; i < length; ++i) {
           expected[to + i] = source[from + i];
+        }
         ut::expect(runtime_copy(actual + to, source + from, length) == actual + to);
         ut::expect(moss::memcmp(actual, expected, bytes) == 0);
-        for (usize i = 0; i < length; ++i)
+        for (usize i = 0; i < length; ++i) {
           expected[to + i] = static_cast<u8>(~length);
+        }
         ut::expect(runtime_fill(actual + to, static_cast<int>(~length), length) == actual + to);
         ut::expect(moss::memcmp(actual, expected, bytes) == 0);
         for (unsigned direction = 0; direction != 2; ++direction) {
-          for (usize i = 0; i < bytes; ++i)
+          for (usize i = 0; i < bytes; ++i) {
             actual[i] = expected[i] = source[i];
+          }
           const usize input = direction ? from : to, output = direction ? to : from;
-          for (usize i = 0; i < length; ++i)
+          for (usize i = 0; i < length; ++i) {
             expected[output + i] = source[input + i];
+          }
           ut::expect(runtime_move(actual + output, actual + input, length) == actual + output);
           ut::expect(moss::memcmp(actual, expected, bytes) == 0);
         }

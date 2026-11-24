@@ -219,7 +219,7 @@ static int system_commands_runtime(void) {
   }
   const char *commands[] = {"free -b", "free", "free -k", "free -m", "free -g"};
   // Binary display units used by BusyBox; default and -k both mean KiB.
-  const unsigned long units[] = {1, 1024, 1024, 1024 * 1024, 1024 * 1024 * 1024};
+  const unsigned long units[] = {1, 1024, 1024, 1024UL * 1024, 1024UL * 1024 * 1024};
   for (size_t i = 0; i < sizeof(commands) / sizeof(commands[0]); ++i) {
     unsigned long total, used, available, shared, cached, idle;
     if (capture_system_command(commands[i], output, sizeof(output))) {

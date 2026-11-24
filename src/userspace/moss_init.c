@@ -1520,9 +1520,12 @@ static enum ServiceLoss supervise(struct Service *file, struct Service *namespac
         *code_probe = 0;
       }
       stop_service(code);
-      enum ServiceLoss retry_loss =
-          selftest ? (restart_delay() == 0 ? NO_SERVICE_LOSS : SUPERVISOR_FAILURE)
-                   : wait_to_retry_late_service(file, namespace, process, pipe, console, *shell_domain);
+      enum ServiceLoss retry_loss;
+      if (selftest) {
+        retry_loss = restart_delay() == 0 ? NO_SERVICE_LOSS : SUPERVISOR_FAILURE;
+      } else {
+        retry_loss = wait_to_retry_late_service(file, namespace, process, pipe, console, *shell_domain);
+      }
       if (retry_loss != NO_SERVICE_LOSS) {
         report(STDERR_FILENO, "moss-init: code authority service launch failed\n");
         return retry_loss;
@@ -1579,9 +1582,12 @@ static enum ServiceLoss supervise(struct Service *file, struct Service *namespac
       loader->pid = 0;
       report(STDOUT_FILENO, "moss-init: loader service died\n");
       stop_service(loader);
-      enum ServiceLoss retry_loss =
-          selftest ? (restart_delay() == 0 ? NO_SERVICE_LOSS : SUPERVISOR_FAILURE)
-                   : wait_to_retry_late_service(file, namespace, process, pipe, console, *shell_domain);
+      enum ServiceLoss retry_loss;
+      if (selftest) {
+        retry_loss = restart_delay() == 0 ? NO_SERVICE_LOSS : SUPERVISOR_FAILURE;
+      } else {
+        retry_loss = wait_to_retry_late_service(file, namespace, process, pipe, console, *shell_domain);
+      }
       if (retry_loss != NO_SERVICE_LOSS) {
         report(STDERR_FILENO, "moss-init: loader service launch failed\n");
         return retry_loss;

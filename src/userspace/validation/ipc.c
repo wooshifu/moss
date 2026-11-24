@@ -935,7 +935,10 @@ unsigned long ipc_bounded_mutual_wait(void) {
       _exit(92);
     }
     const struct moss_ipc_message answer = {.size = 1, .payload = {'d'}};
-    if (ipc_reply(reply, &answer) != -IPC_ETIMEDOUT || ipc_reply(reply, &answer) != -IPC_EBADF) {
+    if (ipc_reply(reply, &answer) != -IPC_ETIMEDOUT) {
+      _exit(93);
+    }
+    if (ipc_reply(reply, &answer) != -IPC_EBADF) {
       _exit(93);
     }
     _exit(37);
@@ -958,7 +961,10 @@ unsigned long ipc_bounded_mutual_wait(void) {
       _exit(95);
     }
     const struct moss_ipc_message answer = {.size = 1, .payload = {'e'}};
-    if (ipc_reply(reply, &answer) != -IPC_ETIMEDOUT || ipc_reply(reply, &answer) != -IPC_EBADF) {
+    if (ipc_reply(reply, &answer) != -IPC_ETIMEDOUT) {
+      _exit(96);
+    }
+    if (ipc_reply(reply, &answer) != -IPC_EBADF) {
       _exit(96);
     }
     _exit(37);

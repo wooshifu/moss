@@ -270,8 +270,9 @@ VoidResult PageTableManager::setup_kernel_high_half_tables() {
     }
   };
   clean(early_tables, next_table_index * sizeof(PageTable));
-  clean(&kernel_pgd, sizeof(kernel_pgd));
-  clean(&kernel_high_pgd, sizeof(kernel_high_pgd));
+  // The pointer slots themselves are cleaned, not the tables they point to.
+  clean(&kernel_pgd, sizeof(PageTable *));
+  clean(&kernel_high_pgd, sizeof(PageTable *));
   asm volatile("dsb sy" ::: "memory");
 #endif
 
