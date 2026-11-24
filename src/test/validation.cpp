@@ -92,6 +92,10 @@ void kernel_uart_puts(const char *str) noexcept { hal::uart::puts(str); }
 
 namespace {
 
+#if defined(MOSS_COVERAGE)
+extern "C" void moss_coverage_finalize() noexcept;
+#endif
+
 // Match valid_id's 80-character limit and reserve one byte for the terminator.
 [[noreturn]] void finish(const char *reason = "complete") {
   Event("end")
@@ -100,6 +104,9 @@ namespace {
       .number("failed", failed ? 1 : 0)
       .str("reason", reason)
       .send();
+#if defined(MOSS_COVERAGE)
+  moss_coverage_finalize();
+#endif
   kernel_test_exit(failed ? 1 : 0);
 }
 

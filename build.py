@@ -71,7 +71,11 @@ def filter_presets(
     if preset:
         return [preset] if preset in all_presets else []
 
-    return [p for p in all_presets if (not arch or arch in p) and (not build_type or build_type in p)]
+    return [
+        p
+        for p in all_presets
+        if not p.endswith("-coverage") and (not arch or arch in p) and (not build_type or build_type in p)
+    ]
 
 
 def execute_build(preset: str, verbose: bool, dry_run: bool) -> BuildResult:
@@ -159,13 +163,15 @@ def main(
 
     示例:
 
-    • uv run build.py                    # 全部预设并发构建
+    • uv run build.py                    # 全部常规预设并发构建（不含 coverage）
 
     • uv run build.py --jobs 2           # 同时构建两个预设
 
     • uv run build.py --build-type debug  # 全部架构 debug 版本
 
     • uv run build.py --arch arm64       # 仅 ARM64 架构
+
+    • uv run build.py --preset arm64-coverage  # 显式运行覆盖率预设
     """
 
     # 参数验证

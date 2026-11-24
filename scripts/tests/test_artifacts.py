@@ -367,3 +367,17 @@ def test_workflows_reuse_matching_build_and_test_presets():
                 {"type": "test", "name": f"{name}-test"},
             ]
             assert tests[f"{name}-test"]["configurePreset"] == name
+
+
+def test_coverage_presets_are_separate_and_do_not_override_normal_flags():
+    root = Path(__file__).resolve().parents[2]
+    base = json.loads((root / "cmake" / "presets" / "base.json").read_text())
+    presets = {preset["name"]: preset for preset in base["configurePresets"]}
+    normal = json.dumps(presets["build-relwithdebinfo"])
+    assert "fprofile" not in normal and "fcoverage" not in normal
+    assert presets["build-coverage"]["cacheVariables"]["MOSS_COVERAGE"] == "ON"
+    for arch in ("arm64", "riscv64", "x64"):
+        data = json.loads((root / "cmake" / "presets" / "arch" / f"{arch}.json").read_text())
+        coverage = next(item for item in data["configurePresets"] if item["name"] == f"{arch}-coverage")
+        assert coverage["inherits"] == [f"{arch}-base", "build-coverage"]
+        assert all("jobs" not in preset.get("execution", {}) for preset in data["testPresets"])

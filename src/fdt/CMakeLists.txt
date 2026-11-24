@@ -27,6 +27,11 @@ target_compile_options(
             -w
 ) # 抑制 vendored C 代码的所有警告
 
+if(MOSS_COVERAGE)
+    # Vendored libfdt is outside the project coverage report.
+    target_compile_options(moss_libfdt_c PRIVATE -fno-profile-instr-generate -fno-coverage-mapping)
+endif()
+
 target_include_directories(moss_libfdt_c PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/libfdt)
 
 # === C++26 模块封装 ===

@@ -453,7 +453,8 @@ early_uart_lock:
 // =============================================================================
 .type early_uart_acquire, @function
 early_uart_acquire:
-    adr     x27, early_uart_lock
+    adrp    x27, early_uart_lock
+    add     x27, x27, :lo12:early_uart_lock
 1:
     ldxr    w28, [x27]                  // load-exclusive: read lock value
     cbnz    w28, 1b                     // spin while locked (value != 0)
@@ -466,7 +467,8 @@ early_uart_acquire:
 
 .type early_uart_release, @function
 early_uart_release:
-    adr     x27, early_uart_lock
+    adrp    x27, early_uart_lock
+    add     x27, x27, :lo12:early_uart_lock
     dmb     sy                          // release barrier
     str     wzr, [x27]                  // unlock: write 0
     ret

@@ -156,3 +156,42 @@ jobs:
         with:
           path: ${{ env.SCCACHE_DIR }}
           key: ${{ steps.compiler-cache.outputs.cache-primary-key }}
+
+  coverage:
+    if: github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success'
+    runs-on: ubuntu-24.04
+    container:
+      image: ghcr.io/${{ github.repository }}-toolchain:latest
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+    strategy:
+      fail-fast: false
+      matrix:
+        preset:
+          - arm64-coverage
+          - x64-coverage
+          - riscv64-coverage
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
+          persist-credentials: false
+
+      - name: Sync locked build dependencies
+        run: uv sync --frozen --no-install-project
+
+      - name: Configure, build, test and report coverage
+        run: cmake --workflow --preset ${{ matrix.preset }}
+
+      - name: Preserve coverage evidence
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: coverage-${{ matrix.preset }}
+          path: |
+            build/${{ matrix.preset }}/coverage/
+            build/${{ matrix.preset }}/validation/

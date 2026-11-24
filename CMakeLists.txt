@@ -75,6 +75,21 @@ else()
 endif()
 
 option(MOSS_BUILD_TESTS "构建MOSS内核单元测试" ON)
+option(MOSS_COVERAGE "Build LLVM source-based coverage targets" OFF)
+set(MOSS_COVERAGE_ARENA_MIB
+    32
+    CACHE STRING "Kernel arena budget for userspace coverage counters"
+)
+
+if(MOSS_COVERAGE)
+    if(NOT CMAKE_BUILD_TYPE STREQUAL "RelWithDebInfo")
+        message(FATAL_ERROR "MOSS_COVERAGE requires CMAKE_BUILD_TYPE=RelWithDebInfo")
+    endif()
+    if(NOT MOSS_BUILD_TESTS)
+        message(FATAL_ERROR "MOSS_COVERAGE requires MOSS_BUILD_TESTS=ON")
+    endif()
+    add_compile_options(-fprofile-instr-generate -fcoverage-mapping -mllvm --profile-correlate=binary)
+endif()
 
 # === 添加子模块（按依赖顺序）===
 # intrinsics 是零依赖的基础模块，必须最先编译
@@ -98,6 +113,9 @@ add_subdirectory(src/logging)
 add_subdirectory(src/timer)
 add_subdirectory(src/process)
 add_subdirectory(src/vfs)
+if(MOSS_COVERAGE)
+    add_subdirectory(src/coverage)
+endif()
 add_subdirectory(src/kernel)
 add_subdirectory(src/boot)
 
@@ -132,6 +150,15 @@ target_link_libraries(
             moss_process
             moss_vfs
 )
+
+if(MOSS_COVERAGE)
+    math(EXPR MOSS_COVERAGE_ARENA_BYTES "${MOSS_COVERAGE_ARENA_MIB} * 1024 * 1024")
+    target_compile_definitions(moss_coverage PRIVATE MOSS_COVERAGE_ARENA_BYTES=${MOSS_COVERAGE_ARENA_BYTES})
+    target_link_libraries(moss.elf PRIVATE moss_coverage)
+    target_link_options(
+        moss.elf PRIVATE "-Wl,--wrap=moss_validation_call" "-Wl,--wrap=moss_validation_address_space_retiring"
+    )
+endif()
 
 # 设置输出目录
 set_target_properties(moss.elf PROPERTIES RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
@@ -204,6 +231,12 @@ if(MOSS_BUILD_TESTS)
         --manifest
         ${CMAKE_BINARY_DIR}/moss-artifacts.json
     )
+    if(MOSS_COVERAGE)
+        set(MOSS_TEST_TIMEOUT_SCALE 3)
+    else()
+        set(MOSS_TEST_TIMEOUT_SCALE 1)
+    endif()
+    math(EXPR MOSS_SHORT_TEST_TIMEOUT "5 * ${MOSS_TEST_TIMEOUT_SCALE}")
     # Routine CTest keeps only guests measured below 5 s. Long production, application, GDB, PVH, benchmark and
     # stability probes are deleted from the default target; their runner CLIs remain available for explicit runs.
     function(moss_add_functional_suite workload)
@@ -211,7 +244,7 @@ if(MOSS_BUILD_TESTS)
         set_tests_properties(
             moss-functional-${workload}
             PROPERTIES TIMEOUT
-                       5
+                       ${MOSS_SHORT_TEST_TIMEOUT}
                        LABELS
                        "kernel;functional"
                        WORKING_DIRECTORY
@@ -259,7 +292,7 @@ if(MOSS_BUILD_TESTS)
         set_tests_properties(
             moss-framework-${name}
             PROPERTIES TIMEOUT
-                       5
+                       ${MOSS_SHORT_TEST_TIMEOUT}
                        LABELS
                        "kernel"
                        WORKING_DIRECTORY
@@ -276,12 +309,37 @@ if(MOSS_BUILD_TESTS)
     set_tests_properties(
         moss-supervisor-reset
         PROPERTIES TIMEOUT
-                   5
+                   ${MOSS_SHORT_TEST_TIMEOUT}
                    LABELS
                    "kernel"
                    WORKING_DIRECTORY
                    ${CMAKE_SOURCE_DIR}
     )
+    if(MOSS_COVERAGE)
+        set(_coverage_deps moss-supervisor-reset)
+        foreach(workload IN LISTS _short_functional)
+            list(APPEND _coverage_deps moss-functional-${workload})
+        endforeach()
+        foreach(name IN ITEMS self fail panic timeout)
+            list(APPEND _coverage_deps moss-framework-${name})
+        endforeach()
+        add_test(NAME moss-coverage-report COMMAND uv run ${CMAKE_SOURCE_DIR}/scripts/coverage.py --build-dir
+                                                   ${CMAKE_BINARY_DIR}
+        )
+        set_tests_properties(
+            moss-coverage-report
+            PROPERTIES TIMEOUT
+                       300
+                       RUN_SERIAL
+                       TRUE
+                       DEPENDS
+                       "${_coverage_deps}"
+                       LABELS
+                       "coverage"
+                       WORKING_DIRECTORY
+                       ${CMAKE_SOURCE_DIR}
+        )
+    endif()
 
     add_custom_target(
         test-kernel
@@ -317,6 +375,11 @@ else()
     set(_validation_initrd_json "null")
     set(_validation_symbols_json "null")
 endif()
+if(MOSS_COVERAGE)
+    set(_coverage_json "true")
+else()
+    set(_coverage_json "false")
+endif()
 string(TOUPPER "${CMAKE_BUILD_TYPE}" _build_config)
 # JSON escaping also handles Windows paths and quoted compiler flags.
 function(moss_json_string out value)
@@ -337,7 +400,7 @@ file(
     CONTENT
         "{\n  \"schema_version\": 1,
   \"target\": { \"architecture\": \"${MOSS_TARGET_ARCH}\", \"boot_protocol\": \"${_boot_protocol}\" },
-  \"build\": { \"type\": \"${CMAKE_BUILD_TYPE}\", \"compiler\": ${_compiler}, \"flags\": { \"compile\": ${_compile_flags}, \"link\": ${_link_flags} } },
+  \"build\": { \"type\": \"${CMAKE_BUILD_TYPE}\", \"coverage\": ${_coverage_json}, \"compiler\": ${_compiler}, \"flags\": { \"compile\": ${_compile_flags}, \"link\": ${_link_flags} } },
   \"artifacts\": {
     \"kernel\": \"${_kernel_image}\", \"debug_symbols\": \"bin/moss.elf\",
     \"initramfs\": \"initramfs.cpio\",

@@ -17,6 +17,9 @@ foreach(config DEBUG RELEASE RELWITHDEBINFO MINSIZEREL)
 endforeach()
 set(CMAKE_CXX_SCAN_FOR_MODULES OFF)
 set_property(DIRECTORY PROPERTY COMPILE_DEFINITIONS "")
+if(MOSS_COVERAGE)
+    set_property(DIRECTORY PROPERTY COMPILE_OPTIONS "")
+endif()
 get_filename_component(MOSS_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/../../.." ABSOLUTE)
 set(MOSS_THIRD_PARTY "${MOSS_ROOT}/third_party")
 if(MOSS_TARGET_ARCH STREQUAL "X64")
@@ -50,10 +53,45 @@ add_custom_target(compiler-rt-builtins DEPENDS ${MLIBC_BUILTINS_TARGET})
 
 function(add_moss_runtime_program TARGET SOURCE OUTPUT)
     add_executable(${TARGET} EXCLUDE_FROM_ALL ${SOURCE} $<TARGET_OBJECTS:mlibc-crt1>)
-    target_compile_options(${TARGET} PRIVATE ${MLIBC_ARCH_FLAGS} -O2 -ffreestanding -fno-stack-protector)
+    # Validation probes are outside the coverage baseline. libc_validation's sysinfo test compares free RAM around its
+    # own allocations, so extra instrumented pages would make that assertion measure coverage overhead.
+    set(_coverage_probe FALSE)
+    if(OUTPUT STREQUAL "libc_validation" OR OUTPUT STREQUAL "loader_libc_probe")
+        set(_coverage_probe TRUE)
+    endif()
+    set(_compile_options ${MLIBC_ARCH_FLAGS} -O2 -ffreestanding -fno-stack-protector)
+    if(MOSS_COVERAGE AND NOT _coverage_probe)
+        list(
+            APPEND
+            _compile_options
+            -fprofile-instr-generate
+            -fcoverage-mapping
+            -mllvm
+            --profile-correlate=binary
+        )
+    endif()
+    target_compile_options(${TARGET} PRIVATE ${_compile_options})
     target_include_directories(${TARGET} PRIVATE "${MOSS_ROOT}/src/abi/include")
     target_include_directories(${TARGET} SYSTEM PRIVATE "${MLIBC_SYSROOT}/usr/include")
     target_link_libraries(${TARGET} PRIVATE mlibc ${MLIBC_BUILTINS_TARGET})
+    if(MOSS_COVERAGE AND NOT _coverage_probe)
+        set(_coverage_target moss_coverage_user_${TARGET})
+        add_library(${_coverage_target} OBJECT ${MOSS_ROOT}/src/coverage/user_coverage.c)
+        target_compile_options(
+            ${_coverage_target}
+            PRIVATE ${MLIBC_ARCH_FLAGS}
+                    -O2
+                    -ffreestanding
+                    -fno-stack-protector
+                    -fno-profile-instr-generate
+                    -fno-coverage-mapping
+        )
+        target_compile_definitions(${_coverage_target} PRIVATE MOSS_COVERAGE_PROGRAM_ID="${OUTPUT}")
+        target_include_directories(
+            ${_coverage_target} PRIVATE "${MOSS_ROOT}/src/abi/include" "${MOSS_ROOT}/src/userspace"
+        )
+        target_link_libraries(${TARGET} PRIVATE ${_coverage_target})
+    endif()
     target_link_options(
         ${TARGET}
         PRIVATE

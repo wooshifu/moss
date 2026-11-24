@@ -53,6 +53,19 @@
                 "CMAKE_ASM_FLAGS_RELWITHDEBINFO": "-g3",
                 "CMAKE_EXE_LINKER_FLAGS_RELWITHDEBINFO": "-Wl,-z,max-page-size=0x1000 -Wl,--gc-sections"
             }
+        },
+        {
+            "name": "build-coverage",
+            "hidden": true,
+            "cacheVariables": {
+                "CMAKE_BUILD_TYPE": "RelWithDebInfo",
+                "MOSS_COVERAGE": "ON",
+                "MOSS_COVERAGE_ARENA_MIB": "32",
+                "CMAKE_C_FLAGS_RELWITHDEBINFO": "-O1 -g -DNDEBUG -ffunction-sections -fdata-sections",
+                "CMAKE_CXX_FLAGS_RELWITHDEBINFO": "-O1 -g -DNDEBUG -ffunction-sections -fdata-sections",
+                "CMAKE_ASM_FLAGS_RELWITHDEBINFO": "-g",
+                "CMAKE_EXE_LINKER_FLAGS_RELWITHDEBINFO": "-Wl,-z,max-page-size=0x1000 -Wl,--gc-sections"
+            }
         }
     ]
 }

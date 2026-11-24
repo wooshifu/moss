@@ -117,6 +117,29 @@ Replace `arm64` with `riscv64` or `x64`. Machine, CPU, RAM and firmware
 are runner options, not build options. See [generic boot](docs/generic-boot.md)
 and [ADR-0005](docs/adr/0005-generic-kernels-and-independent-runners.md).
 
+### Coverage
+
+Coverage is a separate RelWithDebInfo preset, so the normal debug/release/
+relwithdebinfo presets keep their original compiler flags. It uses LLVM
+source-based line and branch instrumentation for the kernel and the mlibc
+userspace programs; third-party sources, standalone validation probes,
+BusyBox and mlibc itself are not instrumented.
+
+```bash
+uv run cmake --workflow --preset arm64-coverage
+uv run cmake --workflow --preset x64-coverage
+uv run cmake --workflow --preset riscv64-coverage
+```
+
+`uv run build.py` intentionally skips coverage; select a coverage preset
+explicitly. The report test writes `build/<preset>/coverage/summary.txt`,
+`summary.json`, `.profdata` files and HTML under `coverage/html/<program>/`.
+The first version records a baseline and does not fail on a percentage
+threshold. `MOSS_COVERAGE_ARENA_MIB` (default `32`) bounds the kernel arena
+that exports userspace counters. The short CTest baseline exercises the kernel;
+the instrumented mlibc programs contribute records when a longer userspace
+workload is run explicitly through `scripts/kernel_validation.py`.
+
 For a physical Raspberry Pi 3B+, see the [uv serial console and JTAG RAM loader](docs/rpi3b.md).
 
 ## Lint and formatting

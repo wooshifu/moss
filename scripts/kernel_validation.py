@@ -35,7 +35,7 @@ from qemu import (
     resolve_resources,
 )
 from scripts.artifacts import Artifacts
-from scripts.qemu_diagnostics import capture_failure, qmp_session
+from scripts.qemu_diagnostics import capture_coverage, capture_failure, qmp_session
 from scripts.qemu_sockets import server_socket
 
 CATALOG = {
@@ -821,11 +821,15 @@ def run_guest(cfg: Artifacts, workload: str, directory: Path, settings: dict, it
     stability_release_seconds = None
     start = time.monotonic()
     qmp_directory = None
+    sockets = None
     host_bindings = None
     failure_capture = {"status": "not_needed"}
+    coverage_capture = {"status": "not_requested"}
     diagnostic_elapsed = 0.0
     serial_inputs = []
     console_listener = console = None
+    coverage_marker_seen = False
+    coverage_wait_deadline = None
 
     def send_serial(data: bytes) -> None:
         if console is not None:
@@ -897,6 +901,8 @@ def run_guest(cfg: Artifacts, workload: str, directory: Path, settings: dict, it
                     line, pending = pending.split(b"\n", 1)
                     line = line.rstrip(b"\r")
                     state.accept(line)
+                    if line.strip() == b"MOSS_COVERAGE_FINALIZED":
+                        coverage_marker_seen = True
                     if (
                         workload == "users.signals"
                         and state.active == "console_partial_interrupt"
@@ -931,7 +937,10 @@ def run_guest(cfg: Artifacts, workload: str, directory: Path, settings: dict, it
                     raise ValueError("unbounded partial serial line")
                 if state.end:
                     termination = "protocol_end"
-                    break
+                    if not cfg.build.get("coverage") or coverage_marker_seen:
+                        break
+                    if coverage_wait_deadline is None:
+                        coverage_wait_deadline = time.monotonic() + 1.0
                 raw_exit = process.poll()
                 now = time.monotonic()
                 if raw_exit is not None:
@@ -965,6 +974,8 @@ def run_guest(cfg: Artifacts, workload: str, directory: Path, settings: dict, it
                 if reason:
                     termination = "timeout"
                     break
+                if coverage_wait_deadline is not None and now >= coverage_wait_deadline:
+                    break
                 time.sleep(0.02)
     except (OSError, ValueError) as error:
         reason = f"infrastructure: {error}"
@@ -987,6 +998,14 @@ def run_guest(cfg: Artifacts, workload: str, directory: Path, settings: dict, it
                         diagnostic_elapsed = time.monotonic() - capture_started
                         failure_capture["elapsed_seconds"] = diagnostic_elapsed
             finally:
+                if cfg.build.get("coverage"):
+                    if sockets is not None and process.poll() is None:
+                        try:
+                            coverage_capture = capture_coverage(cfg, process, sockets, directory / "coverage")
+                        except (OSError, ValueError, subprocess.SubprocessError, KeyboardInterrupt) as error:
+                            coverage_capture = {"status": "error", "errors": [str(error)]}
+                    else:
+                        coverage_capture = {"status": "unavailable", "errors": ["guest is not alive"]}
                 process.terminate()
                 try:
                     process.wait(timeout=2)
@@ -1075,6 +1094,7 @@ def run_guest(cfg: Artifacts, workload: str, directory: Path, settings: dict, it
         "parameters": {"order": settings["order"], "iterations": iterations},
         "host_bindings": host_bindings,
         "diagnostics": failure_capture,
+        "coverage": coverage_capture,
     }
     if workload in BENCHMARK_KINDS:
         result["parameters"]["measurement_kind"] = BENCHMARK_KINDS[workload]

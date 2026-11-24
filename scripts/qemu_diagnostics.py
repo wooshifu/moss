@@ -3,6 +3,7 @@
 import json
 import re
 import shutil
+import struct
 import subprocess
 import time
 from contextlib import contextmanager
@@ -11,7 +12,7 @@ from pathlib import Path
 from scripts.artifacts import Artifacts
 from scripts.qemu_sockets import connect_socket, gdb_address
 
-# This extra budget starts after failure, outside all test/benchmark measurements.
+# This extra budget starts after the run, outside all test/benchmark measurements.
 CAPTURE_TIMEOUT = 10.0
 
 
@@ -56,6 +57,76 @@ def image_load_offset(arch: str, image: Path, roms: str) -> int:
     if len(addresses) != 1:
         raise ValueError("cannot identify the loaded Image in QEMU info roms")
     return int(addresses[0], 16)
+
+
+def elf_symbols(path: Path, names: set[str]) -> dict[str, tuple[int, int]]:
+    nm = shutil.which("llvm-nm")
+    if nm is None:
+        raise ValueError("llvm-nm is required to read coverage symbols")
+    output = subprocess.check_output([nm, "-S", "-n", str(path)], text=True, timeout=30)
+    symbols = {}
+    for line in output.splitlines():
+        fields = line.split()
+        if len(fields) >= 4 and fields[3] in names:
+            symbols[fields[3]] = (int(fields[0], 16), int(fields[1], 16))
+    missing = sorted(names - symbols.keys())
+    if missing:
+        raise ValueError(f"coverage symbols are missing: {', '.join(missing)}")
+    return symbols
+
+
+def read_pmemsave(command, address: int, size: int, path: Path) -> bytes:
+    path.unlink(missing_ok=True)
+    result = command(
+        "human-monitor-command", {"command-line": f'pmemsave 0x{address:x} 0x{size:x} "{path.as_posix()}"'}
+    )
+    if not path.exists():
+        raise ValueError(f"pmemsave did not create {path}: {result!r}")
+    data = path.read_bytes()
+    if len(data) != size:
+        raise ValueError(f"pmemsave returned {len(data)} bytes instead of {size}")
+    return data
+
+
+def capture_coverage(cfg: Artifacts, process: subprocess.Popen, sockets: Path, directory: Path) -> dict:
+    """Freeze the guest and copy the kernel coverage arena before it exits."""
+    if not cfg.build.get("coverage"):
+        return {"status": "not_requested"}
+    directory.mkdir(parents=True, exist_ok=True)
+    deadline = time.monotonic() + CAPTURE_TIMEOUT
+    symbols = elf_symbols(
+        cfg.require("validation_debug_symbols"),
+        {"moss_coverage_arena", "moss_coverage_used", "moss_coverage_errors"},
+    )
+    arena_address, arena_size = symbols["moss_coverage_arena"]
+    if arena_size == 0:
+        raise ValueError("coverage arena symbol has no size")
+    with qmp_session(sockets / "control.sock", process, deadline) as command:
+        command("stop")
+        roms = command("human-monitor-command", {"command-line": "info roms"})
+        offset = image_load_offset(cfg.arch, cfg.require("validation_kernel"), roms)
+        used_address = offset + symbols["moss_coverage_used"][0]
+        used = struct.unpack("<Q", read_pmemsave(command, used_address, 8, directory / "coverage.used"))[0]
+        errors = struct.unpack(
+            "<Q",
+            read_pmemsave(command, offset + symbols["moss_coverage_errors"][0], 8, directory / "coverage.errors"),
+        )[0]
+        if used > arena_size:
+            raise ValueError("coverage arena usage exceeds the built arena")
+        arena_path = directory / "coverage.arena"
+        if used:
+            data = read_pmemsave(command, offset + arena_address, used, arena_path)
+        else:
+            arena_path.write_bytes(b"")
+            data = b""
+    return {
+        "status": "captured",
+        "arena": str(arena_path),
+        "used": used,
+        "errors": errors,
+        "symbol_load_offset": offset,
+        "arena_bytes": len(data),
+    }
 
 
 GDB_CAPTURE = r"""

@@ -52,6 +52,18 @@ add_dependencies(moss.test.elf validation-initramfs)
 # Keep ELF symbols from this exact link before applying the Release image policy. --strip-debug overrides the preset's
 # --strip-all in LLD; Release still has no DWARF.
 target_link_options(moss.test.elf PRIVATE "$<$<CONFIG:Release>:-Wl,--strip-debug>")
+if(MOSS_COVERAGE)
+    # Test-only code is outside the coverage report; keep the validation image free of instrumentation that would only
+    # inflate it.
+    target_compile_definitions(moss.test.elf PRIVATE MOSS_COVERAGE=1)
+    get_target_property(_moss_test_sources moss.test.elf SOURCES)
+    set_source_files_properties(
+        ${_moss_test_sources} PROPERTIES COMPILE_OPTIONS "-fno-profile-instr-generate;-fno-coverage-mapping"
+    )
+    target_link_options(
+        moss.test.elf PRIVATE "-Wl,--wrap=moss_validation_call" "-Wl,--wrap=moss_validation_address_space_retiring"
+    )
+endif()
 add_custom_command(
     TARGET moss.test.elf
     POST_BUILD

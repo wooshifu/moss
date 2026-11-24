@@ -6,13 +6,13 @@ Moss is a hybrid kernel for ARM64, x64 and RISC-V 64, written in freestanding C+
 
 You need Clang/LLVM ≥ 23 with LLD and the LLVM binutils, plus a matching `clang-tidy`/`clang-apply-replacements` for lint. You also need `uv`, and QEMU for anything that boots. CMake, Ninja, clang-format, cmake-format, ruff and pytest come from the uv dev group, so prefix `cmake`/`ctest` with `uv run`.
 
-The presets are `{arm64,x64,riscv64}-{debug,release,relwithdebinfo}`. Each one builds into `build/<preset>`, and its test preset is `<preset>-test`. Configuring without a preset is a fatal error.
+The normal presets are `{arm64,x64,riscv64}-{debug,release,relwithdebinfo}`; each architecture also has an explicit `-coverage` preset. Each one builds into `build/<preset>`, and its test preset is `<preset>-test`. Configuring without a preset is a fatal error.
 
 ```sh
 uv run cmake --preset arm64-debug                # configure
 uv run cmake --build --preset arm64-debug        # build (no QEMU needed)
 uv run cmake --workflow --preset arm64-debug     # configure + build + CTest
-uv run build.py [--arch x64] [--build-type release] [-j 2] [--dry-run]   # all 9 workflows, concurrently
+uv run build.py [--arch x64] [--build-type release] [-j 2] [--dry-run]   # all 9 normal workflows; coverage is opt-in
 uv run qemu.py --manifest build/arm64-debug/moss-artifacts.json [--smp N] [--memory-mib N] [--machine M] [-- <extra qemu args>]
 ```
 
@@ -31,9 +31,19 @@ uv run python -m pytest scripts/tests/test_kernel_validation.py -k <name>       
 - The smallest unit you can select is a **suite**. Each suite boots a fresh guest, runs its cases in order and stops at the first failure. Some suites need ≥2 vCPUs (`users.timers` needs 3) or a specific architecture, and the runner rejects selections that don't meet those requirements.
 - Reports are written to `build/<preset>/validation/<id>/results.json` (plus `junit.xml`). When a live guest fails, QMP/GDB captures go to `<workload>/diagnostics/`.
 - CTest entries:
-  - All presets: short per-suite `moss-functional-*` guests, split `moss-framework-*` selftests, and `moss-supervisor-reset`; each has a 5 s deadline.
+- Normal presets: short per-suite `moss-functional-*` guests, split `moss-framework-*` selftests, and `moss-supervisor-reset`; each has a 5 s deadline. Coverage presets scale the deadline to 15 s.
   - Long production-boot, application, GDB console, PVH initrd, benchmark and stability tests are not routine CTest entries; use the runner CLIs explicitly when needed.
 - Allocator tests touch all of guest RAM. Running presets concurrently can therefore exhaust host memory; limit with `build.py -j 2`.
+
+Coverage is separate from the normal presets and must be selected explicitly:
+
+```bash
+uv run cmake --workflow --preset arm64-coverage
+uv run cmake --workflow --preset x64-coverage
+uv run cmake --workflow --preset riscv64-coverage
+```
+
+These presets use RelWithDebInfo, instrument the kernel and mlibc runtime programs, and write `build/<preset>/coverage/summary.txt`, `summary.json` and HTML under `coverage/html/<program>/`. `uv run build.py` skips coverage unless `--preset <arch>-coverage` is passed. The first version has no percentage gate.
 - `-DMOSS_BUILD_TESTS=OFF` omits the validation image and its userspace programs.
 
 The quality gate must pass with zero warnings before any commit:

@@ -25,7 +25,7 @@ import sys
 import time
 from pathlib import Path
 
-presets = ["arm64-debug", "x64-debug", "riscv64-debug"]
+presets = ["arm64-debug", "x64-debug", "riscv64-debug", "arm64-coverage"]
 if "--list-presets" in sys.argv:
     for preset in presets:
         print(f'  "{preset}"')
@@ -111,6 +111,14 @@ def test_filter_and_dry_run(build_cli):
     assert result.returncode == 0, result.stdout + result.stderr
     assert result.stdout.count("cmake --workflow --preset") == 3
     assert not any(root.glob("*-debug.json"))
+
+
+def test_coverage_preset_requires_explicit_selection(build_cli):
+    root, run = build_cli
+    result = run("--preset", "arm64-coverage")
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert (root / "arm64-coverage.json").exists()
+    assert not (root / "arm64-debug.json").exists()
 
 
 @pytest.mark.parametrize("jobs", ["0", "-1", "invalid"])
