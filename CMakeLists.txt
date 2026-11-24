@@ -27,6 +27,7 @@ list(APPEND CMAKE_MODULE_PATH "${CMAKE_SOURCE_DIR}/cmake")
 include(arch_support)
 include(ensure_prerequisites)
 include(toolchain_detection)
+include(compiler_cache)
 
 # === 多架构配置 ===
 message(STATUS "开始配置 Moss 内核构建系统...")
@@ -37,6 +38,9 @@ moss_check_prerequisites(${MOSS_TARGET_ARCH})
 
 # 初始化 Clang 工具链
 moss_initialize_clang_toolchain(${MOSS_TARGET_ARCH})
+
+# 有 sccache 时自动作为编译器 launcher（含 ASM）；未安装则直接跳过
+moss_enable_compiler_cache()
 
 # Validate target architecture
 if(NOT MOSS_TARGET_ARCH)

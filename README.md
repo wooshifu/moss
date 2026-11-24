@@ -117,6 +117,17 @@ Replace `arm64` with `riscv64` or `x64`. Machine, CPU, RAM and firmware
 are runner options, not build options. See [generic boot](docs/generic-boot.md)
 and [ADR-0005](docs/adr/0005-generic-kernels-and-independent-runners.md).
 
+### Compiler cache
+
+If [sccache](https://github.com/mozilla/sccache) is installed, configuring
+automatically uses it as the C, C++ and assembly (`.S`) compiler launcher;
+without it the build works unchanged. sccache is the supported cache because
+ccache cannot cache C++ module interface units. A launcher you set yourself
+(`CMAKE_C_COMPILER_LAUNCHER`/`CMAKE_CXX_COMPILER_LAUNCHER`, as CI does) is kept
+as is, and `-DMOSS_ENABLE_SCCACHE=OFF` disables the automatic use. The tool is
+re-detected on every configure. Check hits with `sccache --show-stats`; a
+second full rebuild after `clean` is served entirely from the cache.
+
 ### Coverage
 
 Coverage is a separate RelWithDebInfo preset, so the normal debug/release/

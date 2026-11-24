@@ -33,6 +33,8 @@ Presets are `{arm64,x64,riscv64}-{debug,release,relwithdebinfo}`, e.g. `arm64-de
 
 The project uses `-Weverything -Werror` — every warning is a build failure. Fix all warnings before proceeding.
 
+Configure uses sccache automatically (C, C++ and `.S`) when it is installed (no error if it is missing); `-DMOSS_ENABLE_SCCACHE=OFF` disables it, and `sccache --show-stats` shows hits. It re-detects sccache each configure and keeps any launcher you already set. ccache is not supported because it cannot cache C++ module interface units.
+
 ## Step 2 — Run & Test
 
 Every build writes the artifact manifest `build/<preset>/moss-artifacts.json`. The Python runners read it; CMake holds no QEMU, machine or board settings. `qemu.py` boots the production image:
