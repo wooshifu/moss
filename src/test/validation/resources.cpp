@@ -187,31 +187,37 @@ void process_heap_rollback() {
 void process_edges() {
   using namespace process;
 
-  Process bare(500, INVALID_PROCESS_ID);
-  ut::expect(!bare.create_thread(0x1000, 0x2000, 0x1000).has_value());
+  auto *bare = new Process(500, INVALID_PROCESS_ID);
+  if (!ut::expect(bare != nullptr)) {
+    return;
+  }
+  ut::expect(!bare->create_thread(0x1000, 0x2000, 0x1000).has_value());
   ut::expect(!user_space::allocate_user_heap(nullptr, moss::kernel::PAGE_SIZE).has_value());
-  ut::expect(!user_space::allocate_user_heap(&bare, moss::kernel::PAGE_SIZE).has_value());
-  ut::expect(!user_space::allocate_user_heap(&bare, 0).has_value());
+  ut::expect(!user_space::allocate_user_heap(bare, moss::kernel::PAGE_SIZE).has_value());
+  ut::expect(!user_space::allocate_user_heap(bare, 0).has_value());
 
   auto space_result = user_space::create_user_address_space();
   if (!ut::expect(static_cast<bool>(space_result))) {
     return;
   }
   auto space = *space_result;
-  Process proc(501, INVALID_PROCESS_ID);
-  if (!ut::expect(proc.set_address_space(space).has_value())) {
+  auto *proc = new Process(501, INVALID_PROCESS_ID);
+  if (!ut::expect(proc != nullptr)) {
+    return;
+  }
+  if (!ut::expect(proc->set_address_space(space).has_value())) {
     return;
   }
 
   moss::abi::DomainInfo info{};
-  proc.monitor_snapshot(info);
+  proc->monitor_snapshot(info);
   ut::expect(info.threads == 0);
 
   const bool restore_irqs = arch::interrupts_enabled();
   arch::disable_interrupts();
-  auto created = proc.create_thread(0x1000, 0x2000, 0x1000);
+  auto created = proc->create_thread(0x1000, 0x2000, 0x1000);
   ut::expect(static_cast<bool>(created));
-  auto *main = proc.get_main_thread();
+  auto *main = proc->get_main_thread();
   if (main && g_scheduler) {
     g_scheduler->dequeue_task(main);
     main->state = ProcessState::Sleeping;
@@ -219,27 +225,27 @@ void process_edges() {
   if (restore_irqs) {
     arch::enable_interrupts();
   }
-  proc.monitor_snapshot(info);
+  proc->monitor_snapshot(info);
   ut::expect(info.threads == 1);
-  ut::expect(proc.try_begin_exec());
-  ut::expect(!proc.try_begin_exec());
-  proc.finish_exec();
+  ut::expect(proc->try_begin_exec());
+  ut::expect(!proc->try_begin_exec());
+  proc->finish_exec();
 
-  auto *extra = new Thread(600, proc.pid());
+  auto *extra = new Thread(600, proc->pid());
   if (ut::expect(extra != nullptr)) {
     extra->state = ProcessState::Sleeping;
-    ut::expect(proc.register_thread(extra).has_value());
-    ut::expect(!proc.try_begin_exec());
+    ut::expect(proc->register_thread(extra).has_value());
+    ut::expect(!proc->try_begin_exec());
   }
 
   // A heap failure while publishing a thread must withdraw the reserved count.
-  auto *pending = new Thread(601, proc.pid());
+  auto *pending = new Thread(601, proc->pid());
   if (ut::expect(pending != nullptr)) {
     pending->state = ProcessState::Sleeping;
     {
       HeapPressure pressure;
       if (ut::expect(pressure.acquire(sizeof(void *)))) {
-        ut::expect(!proc.register_thread(pending).has_value());
+        ut::expect(!proc->register_thread(pending).has_value());
       }
     }
     delete pending;
@@ -249,25 +255,25 @@ void process_edges() {
   {
     HeapPressure pressure;
     if (ut::expect(pressure.acquire(sizeof(void *)))) {
-      ut::expect(!proc.create_thread(0x1000, 0x2000, 0x1000).has_value());
+      ut::expect(!proc->create_thread(0x1000, 0x2000, 0x1000).has_value());
     }
   }
 
   // Heap growth admission and VMA conflict rollback.
-  ut::expect(user_space::allocate_user_heap(&proc, moss::kernel::PAGE_SIZE).has_value());
-  const VirtAddr break_addr = proc.address_space()->brk_current;
-  auto conflict = proc.address_space()->add_vma(break_addr, break_addr + moss::kernel::PAGE_SIZE,
+  ut::expect(user_space::allocate_user_heap(proc, moss::kernel::PAGE_SIZE).has_value());
+  const VirtAddr break_addr = proc->address_space()->brk_current;
+  auto conflict = proc->address_space()->add_vma(break_addr, break_addr + moss::kernel::PAGE_SIZE,
                                                  vma_flags::READ | vma_flags::WRITE, VmaType::MMAP);
   ut::expect(conflict);
-  ut::expect(!user_space::allocate_user_heap(&proc, moss::kernel::PAGE_SIZE).has_value());
-  proc.address_space()->remove_vma(break_addr, break_addr + moss::kernel::PAGE_SIZE);
-  ut::expect(!user_space::allocate_user_heap(&proc, 1ULL << 40).has_value());
+  ut::expect(!user_space::allocate_user_heap(proc, moss::kernel::PAGE_SIZE).has_value());
+  proc->address_space()->remove_vma(break_addr, break_addr + moss::kernel::PAGE_SIZE);
+  ut::expect(!user_space::allocate_user_heap(proc, 1ULL << 40).has_value());
 
-  proc.set_state(ProcessState::Zombie);
-  proc.monitor_snapshot(info);
+  proc->set_state(ProcessState::Zombie);
+  proc->monitor_snapshot(info);
   ut::expect(info.state == static_cast<u32>(ProcessState::Zombie));
 
-  ut::expect(!proc.register_thread(nullptr).has_value());
+  ut::expect(!proc->register_thread(nullptr).has_value());
   {
     CfsScheduler scheduler;
     auto *linked = new Thread(603, 0);
@@ -276,7 +282,7 @@ void process_edges() {
       delete linked;
     }
   }
-  ut::expect(!user_space::allocate_user_heap(&proc, USER_MAX).has_value());
+  ut::expect(!user_space::allocate_user_heap(proc, USER_MAX).has_value());
 }
 
 } // namespace moss::test::validation

@@ -104,9 +104,9 @@ VoidResult Thread::allocate_kernel_stack() noexcept {
   if (kernel_stack_base || kernel_stack_size) {
     return VoidResult{ErrorCode::InvalidState};
   }
-  // 2 阶分配得到 4 个 4 KiB 页，即固定 16 KiB 异常/系统调用栈；
-  // 实测栈深度的选值依据尚未记录，扩大该值会增加每线程常驻内存。
-  constexpr usize order = 2;
+  // 4 阶分配得到 16 个 4 KiB 页，即 64 KiB 异常/系统调用栈。内联的 VFS
+  // 路径实测需要约 35 KiB，16 KiB 栈会在深调用链上越过栈底。
+  constexpr usize order = 4;
   auto block = mm::allocate_pages(order);
   if (!block) {
     return VoidResult{ErrorCode::OutOfMemory};

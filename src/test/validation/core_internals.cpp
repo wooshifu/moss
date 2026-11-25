@@ -984,7 +984,9 @@ void memory_manager_surfaces() {
 }
 
 namespace cpio_fixture {
-static u8 archive[32768]{};
+// Backed by direct-mapped pages: virt_to_phys() is only valid for the direct
+// map, and the initramfs parser consumes a physical address.
+static u8 *archive = nullptr;
 
 void hex_field(char *field, u32 value) noexcept {
   constexpr char digits[] = "0123456789ABCDEF";
@@ -1065,7 +1067,13 @@ void kernel_elf_edges() {
     header->e_ident[5] = elf::ELF_DATA_LSB;
     header->e_ident[6] = elf::ELF_VERSION;
     header->e_type = elf::ET_EXEC;
+#if defined(MOSS_ARCH_ARM64)
     header->e_machine = elf::EM_AARCH64;
+#elif defined(MOSS_ARCH_X64)
+    header->e_machine = elf::EM_X64;
+#else
+    header->e_machine = elf::EM_RISCV64;
+#endif
     header->e_version = elf::ELF_VERSION;
     header->e_entry = 0x1000;
     header->e_phoff = sizeof(elf::ElfHeader);
@@ -1114,7 +1122,7 @@ void kernel_elf_edges() {
   header->e_type = elf::ET_DYN;
   ut::expect(!elf::validate_elf_header(header, sizeof(image)));
   reset();
-  header->e_machine = elf::EM_X64;
+  header->e_machine = elf::EM_NONE;
   ut::expect(!elf::validate_elf_header(header, sizeof(image)));
   reset();
   header->e_ident[6] = 2;
@@ -1426,9 +1434,21 @@ void kernel_entry_paths() {
 
 void initramfs_edges() {
   using namespace initramfs;
+  // Order 3 allocates 32 KiB, matching the former static fixture buffer.
+  auto block = mm::allocate_pages(3);
+  if (!ut::expect(static_cast<bool>(block))) {
+    return;
+  }
+#if defined(MOSS_ARCH_X64)
+  // Initramfs::init parses identity-mapped RAM on x64, so write through the
+  // same address it will read instead of the high-half direct map.
+  cpio_fixture::archive = reinterpret_cast<u8 *>(static_cast<VirtAddr>(*block));
+#else
+  cpio_fixture::archive = reinterpret_cast<u8 *>(phys_to_virt(*block));
+#endif
   auto *buffer = cpio_fixture::archive;
   const usize size = cpio_fixture::build();
-  const auto physical = virt_to_phys(reinterpret_cast<VirtAddr>(buffer));
+  const auto physical = *block;
   InitramfsArchive archive;
   ut::expect(archive.init(physical, size));
   ut::expect(archive.is_initialized() && archive.file_count() == 3);
@@ -1527,6 +1547,7 @@ void initramfs_edges() {
   at = cpio_fixture::append_entry(at, "TRAILER!!!", nullptr, 0);
   InitramfsArchive overflow;
   ut::expect(!overflow.init(physical, at));
+  ut::expect(mm::free_pages(*block, 3).has_value());
 }
 
 void uart_formatting() {

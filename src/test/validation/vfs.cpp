@@ -700,7 +700,10 @@ void syscall_edges() {
 }
 
 void syscall_error_paths() {
-  vfs::FdTable table;
+  auto *table = new vfs::FdTable();
+  if (!ut::expect(table != nullptr)) {
+    return;
+  }
   vfs::Stat status{};
   vfs::DirEntry entry{};
   u8 byte = 0;
@@ -721,71 +724,74 @@ void syscall_error_paths() {
   ut::expect(vfs::OutputBuffer::kernel(&byte, 1).copy_from(0, &byte, 2) == 0);
   ut::expect(vfs::OutputBuffer::kernel(&byte, 1).copy_from(0, &byte, 0) == 0);
 
-  vfs::FdTable local;
-  local.init();
-  ut::expect(local.duplicate(-1) == bad_fd);
-  ut::expect(local.duplicate_to(0, -1) == bad_fd);
-  ut::expect(local.duplicate_to(0, vfs::MAX_FDS) == bad_fd);
-  ut::expect(local.acquire_file(-1).get() == nullptr);
-  ut::expect(local.acquire_file(vfs::MAX_FDS).get() == nullptr);
-  ut::expect(local.get_file(-1) == nullptr && local.get_file(vfs::MAX_FDS) == nullptr);
-  ut::expect(local.descriptor_flags(-1) == bad_fd);
-  ut::expect(local.set_descriptor_flags(-1, 0) == bad_fd);
-  ut::expect(local.close_fd(-1) == bad_fd);
-  local.close_on_exec();
+  auto *local = new vfs::FdTable();
+  if (!ut::expect(local != nullptr)) {
+    return;
+  }
+  local->init();
+  ut::expect(local->duplicate(-1) == bad_fd);
+  ut::expect(local->duplicate_to(0, -1) == bad_fd);
+  ut::expect(local->duplicate_to(0, vfs::MAX_FDS) == bad_fd);
+  ut::expect(local->acquire_file(-1).get() == nullptr);
+  ut::expect(local->acquire_file(vfs::MAX_FDS).get() == nullptr);
+  ut::expect(local->get_file(-1) == nullptr && local->get_file(vfs::MAX_FDS) == nullptr);
+  ut::expect(local->descriptor_flags(-1) == bad_fd);
+  ut::expect(local->set_descriptor_flags(-1, 0) == bad_fd);
+  ut::expect(local->close_fd(-1) == bad_fd);
+  local->close_on_exec();
   ut::expect(vfs::syscall::do_read(nullptr, 0, output) == invalid);
-  ut::expect(vfs::syscall::do_read(&table, 999, output) == bad_fd);
-  ut::expect(vfs::syscall::do_read(&table, 0, vfs::OutputBuffer::kernel(nullptr, 1)) == invalid);
+  ut::expect(vfs::syscall::do_read(table, 999, output) == bad_fd);
+  ut::expect(vfs::syscall::do_read(table, 0, vfs::OutputBuffer::kernel(nullptr, 1)) == invalid);
   ut::expect(vfs::syscall::do_write(nullptr, 0, input) == invalid);
-  ut::expect(vfs::syscall::do_write(&table, 999, input) == bad_fd);
-  ut::expect(vfs::syscall::do_write(&table, 0, vfs::InputBuffer::kernel(nullptr, 1)) == invalid);
+  ut::expect(vfs::syscall::do_write(table, 999, input) == bad_fd);
+  ut::expect(vfs::syscall::do_write(table, 0, vfs::InputBuffer::kernel(nullptr, 1)) == invalid);
   ut::expect(vfs::syscall::do_lseek(nullptr, 0, 0, 0) == invalid);
-  ut::expect(vfs::syscall::do_lseek(&table, 999, 0, 0) == bad_fd);
+  ut::expect(vfs::syscall::do_lseek(table, 999, 0, 0) == bad_fd);
   ut::expect(vfs::syscall::do_close(nullptr, 0) == invalid);
-  ut::expect(vfs::syscall::do_close(&table, 999) == bad_fd);
+  ut::expect(vfs::syscall::do_close(table, 999) == bad_fd);
   ut::expect(vfs::syscall::do_fstat(nullptr, 0, &status) == invalid);
-  ut::expect(vfs::syscall::do_fstat(&table, 999, &status) == bad_fd);
+  ut::expect(vfs::syscall::do_fstat(table, 999, &status) == bad_fd);
   ut::expect(vfs::syscall::do_fcntl(nullptr, 0, 1, 0) == bad_fd);
   ut::expect(vfs::syscall::do_dup(nullptr, 0) == invalid);
   ut::expect(vfs::syscall::do_dup2(nullptr, 0, 1) == invalid);
   ut::expect(vfs::syscall::do_getdents(nullptr, 0, vfs::OutputBuffer::kernel(&entry, sizeof(entry))) == bad_fd);
-  ut::expect(vfs::syscall::do_getdents(&table, 999, vfs::OutputBuffer::kernel(&entry, sizeof(entry))) == bad_fd);
-  ut::expect(vfs::syscall::do_stat(nullptr, &status, &table, 0, 0) == invalid);
-  ut::expect(vfs::syscall::do_stat("/missing-coverage", &status, &table, 0, 0) ==
+  ut::expect(vfs::syscall::do_getdents(table, 999, vfs::OutputBuffer::kernel(&entry, sizeof(entry))) == bad_fd);
+  ut::expect(vfs::syscall::do_stat(nullptr, &status, table, 0, 0) == invalid);
+  ut::expect(vfs::syscall::do_stat("/missing-coverage", &status, table, 0, 0) ==
              -static_cast<long>(vfs::VfsError::NoEntry));
-  ut::expect(vfs::syscall::do_rename(nullptr, "/other", &table, 0, 0) < 0);
-  ut::expect(vfs::syscall::do_rename("/fixture.bin", nullptr, &table, 0, 0) < 0);
-  ut::expect(vfs::syscall::do_rename("/fixture.bin", "/missing/x", &table, 0, 0) ==
+  ut::expect(vfs::syscall::do_rename(nullptr, "/other", table, 0, 0) < 0);
+  ut::expect(vfs::syscall::do_rename("/fixture.bin", nullptr, table, 0, 0) < 0);
+  ut::expect(vfs::syscall::do_rename("/fixture.bin", "/missing/x", table, 0, 0) ==
              -static_cast<long>(vfs::VfsError::NoEntry));
-  ut::expect(vfs::syscall::do_mkdir(nullptr, 0755, 0, 0, &table) < 0);
-  ut::expect(vfs::syscall::do_rmdir(".", &table, 0, 0) == invalid);
-  ut::expect(vfs::syscall::do_rmdir("..", &table, 0, 0) == invalid);
-  ut::expect(vfs::syscall::do_unlink("/", &table, 0, 0) == -static_cast<long>(vfs::VfsError::IsDirectory));
-  ut::expect(vfs::syscall::do_rmdir("/", &table, 0, 0) == -static_cast<long>(vfs::VfsError::Busy));
+  ut::expect(vfs::syscall::do_mkdir(nullptr, 0755, 0, 0, table) < 0);
+  ut::expect(vfs::syscall::do_rmdir(".", table, 0, 0) == invalid);
+  ut::expect(vfs::syscall::do_rmdir("..", table, 0, 0) == invalid);
+  ut::expect(vfs::syscall::do_unlink("/", table, 0, 0) == -static_cast<long>(vfs::VfsError::IsDirectory));
+  ut::expect(vfs::syscall::do_rmdir("/", table, 0, 0) == -static_cast<long>(vfs::VfsError::Busy));
   ut::expect(vfs::syscall::do_open(nullptr, "/fixture.bin", 0, 0) == invalid);
-  ut::expect(vfs::syscall::do_open(&table, nullptr, 0, 0) == invalid);
+  ut::expect(vfs::syscall::do_open(table, nullptr, 0, 0) == invalid);
 
   long pipefd[2] = {-1, -1};
-  ut::expect(vfs::syscall::do_pipe(&table, nullptr) == invalid);
-  ut::expect(vfs::syscall::do_pipe(&table, pipefd) == 0);
-  auto *read_end = table.get_file(pipefd[0]);
-  auto *write_end = table.get_file(pipefd[1]);
+  ut::expect(vfs::syscall::do_pipe(table, nullptr) == invalid);
+  ut::expect(vfs::syscall::do_pipe(table, pipefd) == 0);
+  auto *read_end = table->get_file(pipefd[0]);
+  auto *write_end = table->get_file(pipefd[1]);
   if (ut::expect(read_end != nullptr && write_end != nullptr)) {
     ut::expect(read_end->f_ops->release(nullptr) == 0);
     ut::expect(write_end->f_ops->release(nullptr) == 0);
     ut::expect(read_end->f_ops->read(nullptr, output) == -static_cast<long>(vfs::VfsError::InvalidArg));
     ut::expect(write_end->f_ops->write(nullptr, input) == -static_cast<long>(vfs::VfsError::InvalidArg));
   }
-  (void)vfs::syscall::do_close(&table, pipefd[0]);
-  (void)vfs::syscall::do_close(&table, pipefd[1]);
+  (void)vfs::syscall::do_close(table, pipefd[0]);
+  (void)vfs::syscall::do_close(table, pipefd[1]);
 
   // File operation table gaps are reported as unsupported, not as bad fds.
   // An empty, blocking-capable pipe must not wait without a scheduler.
   {
     long empty_pipe[2] = {-1, -1};
-    if (ut::expect(vfs::syscall::do_pipe(&table, empty_pipe) == 0)) {
-      auto *reader = table.get_file(empty_pipe[0]);
-      auto *writer = table.get_file(empty_pipe[1]);
+    if (ut::expect(vfs::syscall::do_pipe(table, empty_pipe) == 0)) {
+      auto *reader = table->get_file(empty_pipe[0]);
+      auto *writer = table->get_file(empty_pipe[1]);
       if (ut::expect(reader != nullptr && writer != nullptr)) {
         ut::expect(reader->f_ops->write(reader, input) == -static_cast<long>(vfs::VfsError::BadFd));
         ut::expect(writer->f_ops->read(writer, output) == -static_cast<long>(vfs::VfsError::BadFd));
@@ -798,37 +804,37 @@ void syscall_error_paths() {
         process::g_scheduler = saved_scheduler;
         reader->flags &= ~vfs::O_NONBLOCK;
       }
-      (void)vfs::syscall::do_close(&table, empty_pipe[0]);
-      (void)vfs::syscall::do_close(&table, empty_pipe[1]);
+      (void)vfs::syscall::do_close(table, empty_pipe[0]);
+      (void)vfs::syscall::do_close(table, empty_pipe[1]);
     }
   }
 
-  const long file_fd = vfs::syscall::do_open(&table, "/fixture.bin", vfs::O_RDWR, 0);
+  const long file_fd = vfs::syscall::do_open(table, "/fixture.bin", vfs::O_RDWR, 0);
   if (ut::expect(file_fd >= 0)) {
-    ut::expect(table.duplicate(file_fd, -1) == invalid);
-    ut::expect(table.duplicate(file_fd, vfs::MAX_FDS) == invalid);
-    auto *file = table.get_file(file_fd);
+    ut::expect(table->duplicate(file_fd, -1) == invalid);
+    ut::expect(table->duplicate(file_fd, vfs::MAX_FDS) == invalid);
+    auto *file = table->get_file(file_fd);
     if (ut::expect(file != nullptr)) {
       const auto *saved_ops = file->f_ops;
       auto *saved_inode = file->inode;
       const i64 saved_pos = file->pos;
       file->f_ops = nullptr;
-      ut::expect(vfs::syscall::do_read(&table, file_fd, output) == -static_cast<long>(vfs::VfsError::NotSupported));
-      ut::expect(vfs::syscall::do_write(&table, file_fd, input) == -static_cast<long>(vfs::VfsError::NotSupported));
+      ut::expect(vfs::syscall::do_read(table, file_fd, output) == -static_cast<long>(vfs::VfsError::NotSupported));
+      ut::expect(vfs::syscall::do_write(table, file_fd, input) == -static_cast<long>(vfs::VfsError::NotSupported));
       file->f_ops = saved_ops;
       file->inode = nullptr;
-      ut::expect(vfs::syscall::do_fstat(&table, file_fd, &status) == -static_cast<long>(vfs::VfsError::InvalidArg));
+      ut::expect(vfs::syscall::do_fstat(table, file_fd, &status) == -static_cast<long>(vfs::VfsError::InvalidArg));
       ut::expect(saved_ops->read(file, output) == -static_cast<long>(vfs::VfsError::InvalidArg));
       ut::expect(saved_ops->lseek(file, 0, vfs::SeekWhence::Set) == -static_cast<long>(vfs::VfsError::InvalidArg));
       file->inode = saved_inode;
       file->pos = saved_pos;
     }
-    ut::expect(vfs::syscall::do_close(&table, file_fd) == 0);
+    ut::expect(vfs::syscall::do_close(table, file_fd) == 0);
   }
   const long mutable_fd =
-      vfs::syscall::do_open(&table, "/mutable-probe", vfs::O_CREAT | vfs::O_RDWR | vfs::O_TRUNC, 0600);
+      vfs::syscall::do_open(table, "/mutable-probe", vfs::O_CREAT | vfs::O_RDWR | vfs::O_TRUNC, 0600);
   if (ut::expect(mutable_fd >= 0)) {
-    auto *mutable_file = table.get_file(mutable_fd);
+    auto *mutable_file = table->get_file(mutable_fd);
     if (ut::expect(mutable_file != nullptr && mutable_file->inode != nullptr)) {
       const auto *ops = mutable_file->f_ops;
       mutable_file->pos = -1;
@@ -840,8 +846,8 @@ void syscall_error_paths() {
       ut::expect(ops->lseek(mutable_file, 0, vfs::SeekWhence::End) == -static_cast<long>(vfs::VfsError::Overflow));
       mutable_file->inode->size = saved_size;
     }
-    ut::expect(vfs::syscall::do_close(&table, mutable_fd) == 0);
-    ut::expect(vfs::syscall::do_unlink("/mutable-probe", &table, 0, 0) == 0);
+    ut::expect(vfs::syscall::do_close(table, mutable_fd) == 0);
+    ut::expect(vfs::syscall::do_unlink("/mutable-probe", table, 0, 0) == 0);
   }
   (void)vfs::devfs::console_file_ops();
   vfs::free_file(nullptr);
@@ -872,30 +878,30 @@ void syscall_error_paths() {
     long_name[i] = 'x';
   }
   long_name[vfs::MAX_NAME_LEN] = 0;
-  ut::expect(vfs::syscall::do_chdir(&table, "/") == 0);
+  ut::expect(vfs::syscall::do_chdir(table, "/") == 0);
   for (unsigned depth = 0; depth < 6; ++depth) {
-    ut::expect(vfs::syscall::do_mkdir(long_name, 0700, 0, 0, &table) == 0);
-    ut::expect(vfs::syscall::do_chdir(&table, long_name) == 0);
+    ut::expect(vfs::syscall::do_mkdir(long_name, 0700, 0, 0, table) == 0);
+    ut::expect(vfs::syscall::do_chdir(table, long_name) == 0);
   }
   u8 cwd_buffer[vfs::MAX_PATH_LEN]{};
-  ut::expect(vfs::syscall::do_getcwd(&table, vfs::OutputBuffer::kernel(cwd_buffer, sizeof(cwd_buffer))) ==
+  ut::expect(vfs::syscall::do_getcwd(table, vfs::OutputBuffer::kernel(cwd_buffer, sizeof(cwd_buffer))) ==
              -static_cast<long>(vfs::VfsError::NameTooLong));
-  ut::expect(vfs::syscall::do_chdir(&table, "/") == 0);
+  ut::expect(vfs::syscall::do_chdir(table, "/") == 0);
 
   char oversized_path[vfs::MAX_PATH_LEN];
   for (usize i = 0; i < sizeof(oversized_path) - 1; ++i) {
     oversized_path[i] = 'y';
   }
   oversized_path[sizeof(oversized_path) - 1] = 0;
-  ut::expect(vfs::syscall::do_mkdir(oversized_path, 0700, 0, 0, &table) ==
+  ut::expect(vfs::syscall::do_mkdir(oversized_path, 0700, 0, 0, table) ==
              -static_cast<long>(vfs::VfsError::NameTooLong));
-  ut::expect(vfs::syscall::do_mkdir("/fixture.bin/child", 0700, 0, 0, &table) ==
+  ut::expect(vfs::syscall::do_mkdir("/fixture.bin/child", 0700, 0, 0, table) ==
              -static_cast<long>(vfs::VfsError::NotDirectory));
-  ut::expect(vfs::syscall::do_mkdir("/dev/child", 0700, 0, 0, &table) ==
+  ut::expect(vfs::syscall::do_mkdir("/dev/child", 0700, 0, 0, table) ==
              -static_cast<long>(vfs::VfsError::NotSupported));
-  ut::expect(vfs::syscall::do_rename("/dev/null", "/dev/null2", &table, 0, 0) ==
+  ut::expect(vfs::syscall::do_rename("/dev/null", "/dev/null2", table, 0, 0) ==
              -static_cast<long>(vfs::VfsError::NotSupported));
-  ut::expect(vfs::syscall::do_unlink("/dev/null", &table, 0, 0) ==
+  ut::expect(vfs::syscall::do_unlink("/dev/null", table, 0, 0) ==
              -static_cast<long>(vfs::VfsError::NotSupported));
 
   // Synthetic children exercise the wire type table and inode overflow guard.
@@ -927,44 +933,44 @@ void syscall_error_paths() {
     constexpr u8 wire_types[] = {8, 4, 2, 6, 1, 12, 10};
     for (usize index = 0; index < sizeof(types) / sizeof(types[0]); ++index) {
       fake_inode.type = types[index];
-      const long dir_fd = vfs::syscall::do_open(&table, "/", vfs::O_RDONLY, 0);
+      const long dir_fd = vfs::syscall::do_open(table, "/", vfs::O_RDONLY, 0);
       if (!ut::expect(dir_fd >= 0)) {
         break;
       }
-      ut::expect(vfs::syscall::do_getdents(&table, dir_fd, vfs::OutputBuffer::kernel(&entry, sizeof(entry))) ==
+      ut::expect(vfs::syscall::do_getdents(table, dir_fd, vfs::OutputBuffer::kernel(&entry, sizeof(entry))) ==
                  sizeof(entry));
-      ut::expect(vfs::syscall::do_getdents(&table, dir_fd, vfs::OutputBuffer::kernel(&entry, sizeof(entry))) ==
+      ut::expect(vfs::syscall::do_getdents(table, dir_fd, vfs::OutputBuffer::kernel(&entry, sizeof(entry))) ==
                  sizeof(entry));
-      ut::expect(vfs::syscall::do_getdents(&table, dir_fd, vfs::OutputBuffer::kernel(&entry, sizeof(entry))) ==
+      ut::expect(vfs::syscall::do_getdents(table, dir_fd, vfs::OutputBuffer::kernel(&entry, sizeof(entry))) ==
                  sizeof(entry));
       ut::expect(entry.type == wire_types[index] && entry.name[0] == 'z');
-      (void)vfs::syscall::do_close(&table, dir_fd);
+      (void)vfs::syscall::do_close(table, dir_fd);
     }
     fake_inode.type = static_cast<vfs::FileType>(7);
     {
-      const long dir_fd = vfs::syscall::do_open(&table, "/", vfs::O_RDONLY, 0);
+      const long dir_fd = vfs::syscall::do_open(table, "/", vfs::O_RDONLY, 0);
       if (ut::expect(dir_fd >= 0)) {
-        ut::expect(vfs::syscall::do_getdents(&table, dir_fd, vfs::OutputBuffer::kernel(&entry, sizeof(entry))) ==
+        ut::expect(vfs::syscall::do_getdents(table, dir_fd, vfs::OutputBuffer::kernel(&entry, sizeof(entry))) ==
                    sizeof(entry));
-        ut::expect(vfs::syscall::do_getdents(&table, dir_fd, vfs::OutputBuffer::kernel(&entry, sizeof(entry))) ==
+        ut::expect(vfs::syscall::do_getdents(table, dir_fd, vfs::OutputBuffer::kernel(&entry, sizeof(entry))) ==
                    sizeof(entry));
-        ut::expect(vfs::syscall::do_getdents(&table, dir_fd, vfs::OutputBuffer::kernel(&entry, sizeof(entry))) ==
+        ut::expect(vfs::syscall::do_getdents(table, dir_fd, vfs::OutputBuffer::kernel(&entry, sizeof(entry))) ==
                    -static_cast<long>(vfs::VfsError::IoError));
-        (void)vfs::syscall::do_close(&table, dir_fd);
+        (void)vfs::syscall::do_close(table, dir_fd);
       }
     }
     fake_inode.type = vfs::FileType::Regular;
     fake_inode.ino = 0x7ffffffffffffffdULL;
     {
-      const long dir_fd = vfs::syscall::do_open(&table, "/", vfs::O_RDONLY, 0);
+      const long dir_fd = vfs::syscall::do_open(table, "/", vfs::O_RDONLY, 0);
       if (ut::expect(dir_fd >= 0)) {
-        ut::expect(vfs::syscall::do_getdents(&table, dir_fd, vfs::OutputBuffer::kernel(&entry, sizeof(entry))) ==
+        ut::expect(vfs::syscall::do_getdents(table, dir_fd, vfs::OutputBuffer::kernel(&entry, sizeof(entry))) ==
                    sizeof(entry));
-        ut::expect(vfs::syscall::do_getdents(&table, dir_fd, vfs::OutputBuffer::kernel(&entry, sizeof(entry))) ==
+        ut::expect(vfs::syscall::do_getdents(table, dir_fd, vfs::OutputBuffer::kernel(&entry, sizeof(entry))) ==
                    sizeof(entry));
-        ut::expect(vfs::syscall::do_getdents(&table, dir_fd, vfs::OutputBuffer::kernel(&entry, sizeof(entry))) ==
+        ut::expect(vfs::syscall::do_getdents(table, dir_fd, vfs::OutputBuffer::kernel(&entry, sizeof(entry))) ==
                    -static_cast<long>(vfs::VfsError::Overflow));
-        (void)vfs::syscall::do_close(&table, dir_fd);
+        (void)vfs::syscall::do_close(table, dir_fd);
       }
     }
 
@@ -979,29 +985,29 @@ void syscall_error_paths() {
     fake_inode.ref_count = 1;
     fake_inode.ino = 9;
     fake_inode.file_ops = &failing_ops;
-    ut::expect(vfs::syscall::do_open(&table, "/z", vfs::O_RDONLY, 0) ==
+    ut::expect(vfs::syscall::do_open(table, "/z", vfs::O_RDONLY, 0) ==
                -static_cast<long>(vfs::VfsError::IoError));
 
     root_inode->children[0] = saved_first;
     root_inode->child_count = saved_count;
   }
-  // Exhaust the fixed pipe-state pool, which is smaller than the fd table.
+  // Exhaust the fixed pipe-state pool, which is smaller than the fd table->
   {
     long pipe_ends[2] = {-1, -1};
     u32 created = 0;
     for (; created < 128; ++created) {
-      if (vfs::syscall::do_pipe(&table, pipe_ends) != 0) {
+      if (vfs::syscall::do_pipe(table, pipe_ends) != 0) {
         break;
       }
     }
     ut::expect(created == 64);
-    ut::expect(vfs::syscall::do_pipe(&table, pipe_ends) == -static_cast<long>(vfs::VfsError::NoMemory));
-    table.close_all();
-    ut::expect(vfs::syscall::do_pipe(&table, pipe_ends) == 0);
-    (void)vfs::syscall::do_close(&table, pipe_ends[0]);
-    (void)vfs::syscall::do_close(&table, pipe_ends[1]);
+    ut::expect(vfs::syscall::do_pipe(table, pipe_ends) == -static_cast<long>(vfs::VfsError::NoMemory));
+    table->close_all();
+    ut::expect(vfs::syscall::do_pipe(table, pipe_ends) == 0);
+    (void)vfs::syscall::do_close(table, pipe_ends[0]);
+    (void)vfs::syscall::do_close(table, pipe_ends[1]);
   }
-  table.close_all();
+  table->close_all();
 }
 
 void rename_lifecycle();

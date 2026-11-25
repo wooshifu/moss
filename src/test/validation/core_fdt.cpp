@@ -25,6 +25,26 @@ constexpr u32 kFdtEndNode = 2;
 constexpr u32 kFdtProperty = 3;
 constexpr u32 kFdtEnd = 9;
 
+// The RISC-V parser normalizes CPU bring-up to SBI and installs the
+// architectural supervisor timer interrupt regardless of the DTB hints.
+platform::CpuEnableMethod expected_cpu_enable(platform::CpuEnableMethod parsed) noexcept {
+#if defined(MOSS_ARCH_RISCV64)
+  (void)parsed;
+  return platform::CpuEnableMethod::Sbi;
+#else
+  return parsed;
+#endif
+}
+
+u32 expected_timer_interrupt(u32 parsed) noexcept {
+#if defined(MOSS_ARCH_RISCV64)
+  (void)parsed;
+  return 5;
+#else
+  return parsed;
+#endif
+}
+
 void store_be32(u8 *out, u32 value) noexcept {
   out[0] = static_cast<u8>(value >> 24);
   out[1] = static_cast<u8>(value >> 16);
@@ -270,10 +290,17 @@ void cpu_topology() {
   ut::expect(info.timebase_frequency == 24000000);
   ut::expect(info.mmu_levels == 3);
   ut::expect(info.cpus[0].hardware_id == 0 && info.cpus[1].hardware_id == 1 && info.cpus[2].hardware_id == 2);
+#if defined(MOSS_ARCH_RISCV64)
+  // The RISC-V parser normalizes every CPU to SBI regardless of the DTB hint.
+  ut::expect(info.cpus[0].enable_method == platform::CpuEnableMethod::Sbi);
+  ut::expect(info.cpus[1].enable_method == platform::CpuEnableMethod::Sbi);
+  ut::expect(info.cpus[2].enable_method == platform::CpuEnableMethod::Sbi);
+#else
   ut::expect(info.cpus[0].enable_method == platform::CpuEnableMethod::Psci);
   ut::expect(info.cpus[1].enable_method == platform::CpuEnableMethod::SpinTable);
   ut::expect(info.cpus[1].release_address == 0x123456789abcdef0ULL);
   ut::expect(info.cpus[2].enable_method == platform::CpuEnableMethod::None);
+#endif
 }
 
 void cpu_rejections() {
@@ -750,7 +777,12 @@ void interrupt_sources_and_firmware() {
   dtb.end().finish();
   const auto parsed = parse_platform(dtb, saved);
   ut::expect(parsed.ok);
+#if defined(MOSS_ARCH_RISCV64)
+  // RISC-V uses the architectural supervisor timer interrupt, not a GIC PPI.
+  ut::expect(parsed.info.timer_interrupt == 5);
+#else
   ut::expect(parsed.info.timer_interrupt == 27);
+#endif
   ut::expect(parsed.info.psci_valid && !parsed.info.psci_smc);
 
   DtbBuilder smc;
@@ -1578,7 +1610,8 @@ void parser_edges() {
     dtb.begin("memory").string("device_type", "memory").words("reg", reg, count_of(reg)).end();
     dtb.end().finish();
     const auto info = parsed_dtb(dtb);
-    ut::expect(info.ok && info.info.cpu_count == 1 && info.info.cpus[0].enable_method == platform::CpuEnableMethod::None);
+    ut::expect(info.ok && info.info.cpu_count == 1 &&
+               info.info.cpus[0].enable_method == expected_cpu_enable(platform::CpuEnableMethod::None));
   }
   {
     DtbBuilder dtb;
@@ -1744,7 +1777,8 @@ void parser_edges() {
     const auto expected = method[0] == 'p' ? platform::CpuEnableMethod::Psci
                           : method[0] == 's' ? platform::CpuEnableMethod::SpinTable
                                              : platform::CpuEnableMethod::None;
-    ut::expect(info.ok && info.info.cpu_count == 1 && info.info.cpus[0].enable_method == expected);
+    ut::expect(info.ok && info.info.cpu_count == 1 &&
+               info.info.cpus[0].enable_method == expected_cpu_enable(expected));
     if (expected == platform::CpuEnableMethod::SpinTable) {
       ut::expect(info.info.cpus[0].release_address == 0x80000);
     }
@@ -1951,7 +1985,7 @@ void parser_edges() {
     dtb.begin("timer").string("compatible", "arm,armv8-timer").raw_string("status", "off", 4).end();
     dtb.end().finish();
     const auto info = parsed_dtb(dtb);
-    ut::expect(info.ok && info.info.timer_interrupt == 0);
+    ut::expect(info.ok && info.info.timer_interrupt == expected_timer_interrupt(0));
   }
   {
     DtbBuilder dtb;

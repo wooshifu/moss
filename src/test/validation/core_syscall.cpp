@@ -109,6 +109,15 @@ constexpr u64 kPrivilegedTrapStatus =
     1ULL << 8;
 #endif
 
+// x64 reports the privilege level through CS; ARM64/RISC-V use status bits.
+void mark_user_frame(moss::abi::TrapFrame &frame) noexcept {
+#if defined(MOSS_ARCH_X64)
+  frame.cs = 3;
+#else
+  frame.status = 0;
+#endif
+}
+
 void basic_contracts() {
   ut::expect(sys_getpid(0, 0, 0, 0, 0, 0) > 0);
   (void)sys_getppid(0, 0, 0, 0, 0, 0);
@@ -746,7 +755,7 @@ void fork_domain_errors() {
     return;
   }
   moss::abi::TrapFrame frame{};
-  frame.status = 0;
+  mark_user_frame(frame);
   frame.pc = static_cast<u64>(code);
   frame.sp = static_cast<u64>(code + 4 * page);
   thread->trap_frame = &frame;
@@ -1273,7 +1282,7 @@ void fork_allocation_matrix() {
     return;
   }
   moss::abi::TrapFrame frame{};
-  frame.status = 0;
+  mark_user_frame(frame);
   frame.pc = static_cast<u64>(code);
   frame.sp = static_cast<u64>(code + 4 * page);
   thread->trap_frame = &frame;
@@ -2384,7 +2393,7 @@ void failure_paths() {
     handles[handle_count] = handle;
   }
   moss::abi::TrapFrame frame{};
-  frame.status = 0;
+  mark_user_frame(frame);
   frame.pc = code;
   frame.sp = code + 4 * page;
   if (auto *thread = process::CfsScheduler::get_current_task()) {
@@ -2613,7 +2622,7 @@ void kernel_entry_edges() {
     return;
   }
   moss::abi::TrapFrame frame{};
-  frame.status = 0;
+  mark_user_frame(frame);
   set_syscall_number(frame, static_cast<long>(syscall::SyscallNumber::SYS_GETPID));
   moss::abi::entry::system_call_handler(&frame);
   ut::expect(frame.result() == fixture.proc->pid());
@@ -2646,7 +2655,7 @@ void fork_page_failure_matrix() {
     return;
   }
   moss::abi::TrapFrame frame{};
-  frame.status = 0;
+  mark_user_frame(frame);
   frame.pc = static_cast<u64>(code);
   frame.sp = static_cast<u64>(code + 4 * page);
   thread->trap_frame = &frame;
@@ -2720,7 +2729,7 @@ void profile_budget_edges() {
   ut::expect(sys_cap_close(self, 0, 0, 0, 0, 0) == 0);
 
   moss::abi::TrapFrame frame{};
-  frame.status = 0;
+  mark_user_frame(frame);
   frame.pc = static_cast<u64>(code);
   frame.sp = static_cast<u64>(code + 4 * page);
   thread->trap_frame = &frame;

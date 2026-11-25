@@ -287,10 +287,11 @@ void mapping_edges() {
   ut::expect(mm::free_pages(*spare, 0).has_value());
   ut::expect(mm::free_pages(*spare_two, 0).has_value());
 
-  const auto block_unmap = Tables::unmap_page(0x200000);
-  const auto absent_unmap = Tables::unmap_page(0x100000000ULL);
-  const auto zero_unmap = Tables::unmap_page(0);
-  ut::expect(!block_unmap.has_value() && !absent_unmap.has_value() && !zero_unmap.has_value());
+  // Low physical addresses are live kernel mappings on x64, so probe the
+  // unmapped spare range instead of unmapping boot identity pages.
+  const auto block_unmap = Tables::unmap_page(spare_va + (1ULL << 30));
+  const auto absent_unmap = Tables::unmap_page(spare_va + (1ULL << 39));
+  ut::expect(!block_unmap.has_value() && !absent_unmap.has_value());
   ut::expect(true);
 }
 

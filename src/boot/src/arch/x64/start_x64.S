@@ -176,7 +176,7 @@ _start:
     // Clear direction flag — required for REP STOSB below to move forward
     cld
 
-    // Set up temporary kernel stack (8 KB, defined in .bss.stack below)
+    // Set up temporary kernel stack (64 KB, defined in .bss.stack below)
     lea stack_top(%rip), %rsp
 
     // Zero BSS section: memset(BSS_START, 0, BSS_END - BSS_START)
@@ -244,14 +244,14 @@ _start:
 .size _start, . - _start
 
 // =============================================================================
-// Temporary kernel stack (8 KiB, 16-byte ABI alignment, in BSS)
+// Temporary kernel stack (64 KiB, 16-byte ABI alignment, in BSS)
 // =============================================================================
 .section ".bss.stack", "aw", @nobits
 .align 16
 stack_bottom:
-    // 8192 is the temporary early-call stack budget, not the linker/per-AP
-    // 32 KiB policy. Its exact maximum-depth sizing evidence is not recorded.
-    .skip 8192                          // 8 KB stack
+    // 65536 covers the largest kernel-validation Debug frame (48 KiB) with
+    // call-depth headroom; it is not the linker/per-AP 32 KiB policy.
+    .skip 65536                         // 64 KB stack
 stack_top:
 
 // PVH boot info (saved from 32-bit mode)
