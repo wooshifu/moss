@@ -586,13 +586,13 @@ inline bool valid_id(const char *id) {
 struct Registry {
   // Fixed static budgets keep registration available before heap initialization.
   // These are harness capacity choices; exhaustion is a registration error.
-  // The new IPC cases exhaust the former 272 slots. Grow the harness by 16
-  // registration slots; this capacity does not set IPC call-chain depth.
-  static constexpr unsigned case_capacity = 288;
-  // The current catalogs have 36/35/33 suites on x64/RV64/ARM64 respectively.
-  // Budget 40 slots: at least four spare registrations and only 320 bytes of pointers
-  // per Registry on supported 64-bit targets. Keep exhaustion fail-closed.
-  static constexpr unsigned suite_capacity = 40;
+  // The ARM64 catalog registers 387 cases. Budget 400 slots: 13 spare
+  // registrations; this capacity does not set IPC call-chain depth.
+  static constexpr unsigned case_capacity = 400;
+  // The ARM64 catalog registers 44 suites; x64 adds its arch-specific suites.
+  // Budget 48 slots: at least three spare registrations and only 384 bytes of
+  // pointers per Registry on supported 64-bit targets. Keep exhaustion fail-closed.
+  static constexpr unsigned suite_capacity = 48;
   test_base cases[case_capacity]{};
   const char *suites[suite_capacity]{};
   unsigned case_count = 0;

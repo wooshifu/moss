@@ -103,6 +103,33 @@ void vma_boundaries() {
     const auto stub = user_layout::SIGRETURN_PAGE;
     ut::expect(!space.add_vma(stub, stub + page_size, vma_flags::WRITE, VmaType::SIGRETURN));
     ut::expect(space.add_vma(stub, stub + page_size, vma_flags::READ | vma_flags::EXEC, VmaType::SIGRETURN));
+
+    ut::expect(!space.add_vma(stub, stub, heap_flags, VmaType::HEAP));
+    ut::expect(!space.add_vma(0, 0, heap_flags, VmaType::HEAP));
+    u8 backing = 0;
+    VmaRegion backing_only(stub, stub + page_size, vma_flags::READ, VmaType::DATA, &backing, 0, 0);
+    ut::expect(!backing_only.has_backing());
+    VmaRegion sigreturn_wrong(stub + page_size, stub + 2 * page_size, vma_flags::READ, VmaType::SIGRETURN);
+    ut::expect(!space.add_vma(stub + page_size, stub + 2 * page_size, vma_flags::READ, VmaType::SIGRETURN));
+    (void)sigreturn_wrong;
+
+    auto memory = make_shared<capability::Object>(capability::ObjectType::Memory);
+    const PhysAddr pages[] = {0x1000};
+    ut::expect(!space.add_vma(base, base + page_size, vma_flags::READ, VmaType::MMAP, nullptr, 0, 0, memory, nullptr,
+                              1));
+    ut::expect(!space.add_vma(base, base + page_size, vma_flags::READ, VmaType::DATA, nullptr, 0, 0, memory, pages,
+                              1));
+    ut::expect(!space.add_vma(base, base + page_size, vma_flags::READ, VmaType::MMAP, nullptr, 0, 0, memory, pages, 0));
+    ut::expect(!space.add_vma(base, base + 2 * page_size, vma_flags::READ, VmaType::MMAP, nullptr, 0, 0, memory, pages,
+                              1));
+    ut::expect(!space.add_vma(base, base + page_size, vma_flags::READ | vma_flags::EXEC, VmaType::MMAP, nullptr, 0, 0,
+                              memory, pages, 1));
+    ut::expect(!space.add_vma(base, base + page_size, vma_flags::READ | vma_flags::DEMAND_ZERO, VmaType::MMAP,
+                              nullptr, 0, 0, memory, pages, 1));
+    ut::expect(space.remove_vma(base, base + page_size));
+    ut::expect(space.remove_vma(base + page_size, base + 2 * page_size));
+    ut::expect(space.add_vma(base, base + page_size, vma_flags::READ, VmaType::MMAP, nullptr, 0, 0, memory, pages, 1));
+    ut::expect(space.remove_vma(base, base + page_size));
   }
   ut::expect(mm::PageFrameAllocator::get_memory_stats().free_pages == before);
 }

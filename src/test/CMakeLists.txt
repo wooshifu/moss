@@ -4,6 +4,11 @@ add_executable(
     validation.cpp
     validation/core.cpp
     validation/core_containers.cpp
+    validation/core_fdt.cpp
+    validation/core_internals.cpp
+    validation/core_irqchip.cpp
+    validation/core_page_table.cpp
+    validation/core_syscall.cpp
     validation/core_scheduler.cpp
     validation/drivers.cpp
     validation/memory.cpp
@@ -53,13 +58,8 @@ add_dependencies(moss.test.elf validation-initramfs)
 # --strip-all in LLD; Release still has no DWARF.
 target_link_options(moss.test.elf PRIVATE "$<$<CONFIG:Release>:-Wl,--strip-debug>")
 if(MOSS_COVERAGE)
-    # Test-only code is outside the coverage report; keep the validation image free of instrumentation that would only
-    # inflate it.
-    target_compile_definitions(moss.test.elf PRIVATE MOSS_COVERAGE=1)
-    get_target_property(_moss_test_sources moss.test.elf SOURCES)
-    set_source_files_properties(
-        ${_moss_test_sources} PROPERTIES COMPILE_OPTIONS "-fno-profile-instr-generate;-fno-coverage-mapping"
-    )
+    # Test sources stay outside the report, but they must still be instrumented: inline and template kernel code
+    # instantiated from a test translation unit otherwise has no coverage counters.
     target_link_options(
         moss.test.elf PRIVATE "-Wl,--wrap=moss_validation_call" "-Wl,--wrap=moss_validation_address_space_retiring"
     )

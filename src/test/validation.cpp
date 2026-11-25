@@ -94,6 +94,7 @@ namespace {
 
 #if defined(MOSS_COVERAGE)
 extern "C" void moss_coverage_finalize() noexcept;
+extern "C" void moss_validation_panic_complete() noexcept { moss_coverage_finalize(); }
 #endif
 
 // Match valid_id's 80-character limit and reserve one byte for the terminator.

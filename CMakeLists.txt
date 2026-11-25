@@ -92,6 +92,7 @@ if(MOSS_COVERAGE)
     if(NOT MOSS_BUILD_TESTS)
         message(FATAL_ERROR "MOSS_COVERAGE requires MOSS_BUILD_TESTS=ON")
     endif()
+    add_compile_definitions(MOSS_COVERAGE=1)
     add_compile_options(-fprofile-instr-generate -fcoverage-mapping -mllvm --profile-correlate=binary)
 endif()
 
@@ -244,7 +245,14 @@ if(MOSS_BUILD_TESTS)
     # Routine CTest keeps only guests measured below 5 s. Long production, application, GDB, PVH, benchmark and
     # stability probes are deleted from the default target; their runner CLIs remain available for explicit runs.
     function(moss_add_functional_suite workload)
-        add_test(NAME moss-functional-${workload} COMMAND ${_validation} --workload ${workload})
+        if(workload STREQUAL "fdt" OR workload STREQUAL "irqchip")
+            # These suites replace the live platform/controller snapshot while exercising discovery and MMIO paths; a
+            # single vCPU keeps other CPUs from observing that transient state.
+            set(_suite_cpus --cpus 1)
+        else()
+            set(_suite_cpus)
+        endif()
+        add_test(NAME moss-functional-${workload} COMMAND ${_validation} ${_suite_cpus} --workload ${workload})
         set_tests_properties(
             moss-functional-${workload}
             PROPERTIES TIMEOUT
@@ -288,9 +296,37 @@ if(MOSS_BUILD_TESTS)
     if(MOSS_TARGET_ARCH STREQUAL "ARM64" OR MOSS_TARGET_ARCH STREQUAL "X64")
         list(APPEND _short_functional users.console_irq)
     endif()
+    if(MOSS_COVERAGE)
+        # Coverage starts from the complete functional catalog, not the short routine-test subset, so the reported
+        # baseline represents all existing validation suites rather than only the fast smoke set.
+        list(
+            APPEND
+            _short_functional
+            fdt
+            internals
+            page_table
+            syscall_contracts
+            pfa
+            users.uaccess
+            users.signals
+            users.lifecycle
+            users.ipc
+            users.busybox
+        )
+        if(MOSS_TARGET_ARCH STREQUAL "ARM64")
+            list(APPEND _short_functional irqchip)
+        endif()
+    endif()
     foreach(workload IN LISTS _short_functional)
         moss_add_functional_suite(${workload})
     endforeach()
+    if(MOSS_COVERAGE)
+        # Coverage suites run the full edge matrix in one guest; the routine
+        # 5 s budget only covers the smoke subset.
+        foreach(workload IN ITEMS syscall_contracts containers internals vfs users.ipc)
+            set_tests_properties(moss-functional-${workload} PROPERTIES TIMEOUT 30)
+        endforeach()
+    endif()
     function(moss_add_selftest name workload)
         add_test(NAME moss-framework-${name} COMMAND ${_validation} --workload ${workload} --case-timeout 2)
         set_tests_properties(
@@ -307,6 +343,37 @@ if(MOSS_BUILD_TESTS)
     moss_add_selftest(fail self.fail)
     moss_add_selftest(panic self.panic)
     moss_add_selftest(timeout self.timeout)
+    if(MOSS_TARGET_ARCH STREQUAL "ARM64")
+        moss_add_selftest(fault self.fault)
+    endif()
+    if(MOSS_COVERAGE AND MOSS_TARGET_ARCH STREQUAL "ARM64")
+        add_test(NAME moss-functional-internals-gicv3 COMMAND ${_validation} --machine virt,gic-version=3 --cpus 4
+                                                              --workload internals
+        )
+        set_tests_properties(
+            moss-functional-internals-gicv3
+            PROPERTIES TIMEOUT
+                       ${MOSS_SHORT_TEST_TIMEOUT}
+                       LABELS
+                       "kernel;functional"
+                       WORKING_DIRECTORY
+                       ${CMAKE_SOURCE_DIR}
+        )
+        foreach(workload IN ITEMS fdt)
+            add_test(NAME moss-functional-${workload}-raspi3b
+                     COMMAND ${_validation} --machine raspi3b --workload ${workload}
+            )
+            set_tests_properties(
+                moss-functional-${workload}-raspi3b
+                PROPERTIES TIMEOUT
+                           30
+                           LABELS
+                           "kernel;functional"
+                           WORKING_DIRECTORY
+                           ${CMAKE_SOURCE_DIR}
+            )
+        endforeach()
+    endif()
     add_test(NAME moss-supervisor-reset COMMAND uv run ${CMAKE_SOURCE_DIR}/scripts/check_supervisor_reset.py --manifest
                                                 ${CMAKE_BINARY_DIR}/moss-artifacts.json
     )
@@ -324,11 +391,29 @@ if(MOSS_BUILD_TESTS)
         foreach(workload IN LISTS _short_functional)
             list(APPEND _coverage_deps moss-functional-${workload})
         endforeach()
+        if(MOSS_TARGET_ARCH STREQUAL "ARM64")
+            list(
+                APPEND
+                _coverage_deps
+                moss-functional-internals-gicv3
+                moss-functional-fdt-raspi3b
+            )
+        endif()
         foreach(name IN ITEMS self fail panic timeout)
             list(APPEND _coverage_deps moss-framework-${name})
         endforeach()
+        if(MOSS_TARGET_ARCH STREQUAL "ARM64")
+            list(APPEND _coverage_deps moss-framework-fault)
+        endif()
+        if(MOSS_TARGET_ARCH STREQUAL "ARM64")
+            set(_coverage_gate_args)
+        else()
+            # Only the ARM64 job is a gate; other architectures publish the
+            # same report without failing on the threshold.
+            set(_coverage_gate_args --no-gate)
+        endif()
         add_test(NAME moss-coverage-report COMMAND uv run ${CMAKE_SOURCE_DIR}/scripts/coverage.py --build-dir
-                                                   ${CMAKE_BINARY_DIR}
+                                                   ${CMAKE_BINARY_DIR} ${_coverage_gate_args}
         )
         set_tests_properties(
             moss-coverage-report

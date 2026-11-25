@@ -145,11 +145,13 @@ uv run cmake --workflow --preset riscv64-coverage
 `uv run build.py` intentionally skips coverage; select a coverage preset
 explicitly. The report test writes `build/<preset>/coverage/summary.txt`,
 `summary.json`, `.profdata` files and HTML under `coverage/html/<program>/`.
-The first version records a baseline and does not fail on a percentage
-threshold. `MOSS_COVERAGE_ARENA_MIB` (default `32`) bounds the kernel arena
-that exports userspace counters. The short CTest baseline exercises the kernel;
-the instrumented mlibc programs contribute records when a longer userspace
-workload is run explicitly through `scripts/kernel_validation.py`.
+The ARM64 gate requires 92% kernel line coverage and 83% kernel branch
+coverage, plus per-file branch floors for `syscall_table.cpp` (83.5%),
+`process-scheduler.cppm` (83.5%) and `control_ipc.cpp` (71%); x64 and RISC-V
+only publish the report. `MOSS_COVERAGE_ARENA_MIB` (default `32`) bounds the
+kernel arena that exports userspace counters. The short CTest baseline exercises
+the kernel; the instrumented mlibc programs contribute records when a longer
+userspace workload is run explicitly through `scripts/kernel_validation.py`.
 
 For a physical Raspberry Pi 3B+, see the [uv serial console and JTAG RAM loader](docs/rpi3b.md).
 

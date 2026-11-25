@@ -222,6 +222,184 @@ void container_reentry() {
   ut::expect(mm::RuntimeHeapAllocator::get_heap_stats().allocated_bytes == before);
 }
 
+void container_atomic_orders() {
+  containers::AtomicU32 value{0};
+  ut::expect(value.load(containers::MemoryOrder::Consume) == 0);
+  value.store(1, containers::MemoryOrder::Relaxed);
+  ut::expect(value.load(containers::MemoryOrder::Acquire) == 1);
+  value.store(2, containers::MemoryOrder::Release);
+  ut::expect(value.load(containers::MemoryOrder::AcqRel) == 2);
+  ut::expect(value.load(containers::MemoryOrder::SeqCst) == 2);
+  volatile int invalid = 99;
+  auto order = containers::to_intrinsics_order(static_cast<containers::MemoryOrder>(invalid));
+  ut::expect(static_cast<int>(order) >= 0);
+}
+
+void container_wait_queue() {
+  containers::WaitQueue queue;
+  int first = 0;
+  int second = 0;
+  int third = 0;
+  queue.add_waiter(&first);
+  queue.add_waiter(&second, true);
+  queue.add_waiter(&third, true);
+  u32 woken = 0;
+  ut::expect(queue.wake_up([&](void *) { ++woken; }) == 2);
+  ut::expect(woken == 2);
+  queue.clear();
+  ut::expect(!queue.has_waiters());
+  queue.add_waiter(&first);
+  queue.add_waiter(&second);
+  ut::expect(queue.wake_one([&](void *thread) { ut::expect(thread == &second); }));
+  queue.remove_waiter(&second);
+  ut::expect(queue.wake_one([&](void *thread) { ut::expect(thread == &first); }));
+  queue.remove_waiter(&first);
+  ut::expect(!queue.wake_one([](void *) {}));
+  ut::expect(!queue.has_waiters());
+  ut::expect(queue.try_add_waiter(&first));
+}
+
+void container_slab_reuse() {
+  containers::SlabAllocator allocator;
+  auto too_large = allocator.allocate(5000);
+  ut::expect(!too_large && too_large.error() == containers::SlabError::InvalidSize);
+  ut::expect(allocator.deallocate(nullptr, 8).has_value());
+  ut::expect(!allocator.deallocate(reinterpret_cast<void *>(1), 5000));
+
+  void *objects[520]{};
+  for (auto &object : objects) {
+    auto result = allocator.allocate(8);
+    ut::expect(result.has_value());
+    object = result.has_value() ? *result : nullptr;
+  }
+  for (auto object : objects) {
+    ut::expect(allocator.deallocate(object, 8).has_value());
+  }
+  for (auto &object : objects) {
+    auto result = allocator.allocate(8);
+    ut::expect(result.has_value());
+    object = result.has_value() ? *result : nullptr;
+  }
+  for (auto object : objects) {
+    ut::expect(allocator.deallocate(object, 8).has_value());
+  }
+}
+
+void capability_table_edges() {
+  using namespace capability;
+  Table source;
+  Table target;
+  auto object = make_shared<Object>(ObjectType::Memory);
+  ut::expect(!source.install({}, rights::MAP_READ).has_value());
+  ut::expect(!source.install(object, 0).has_value());
+  auto handle = source.install(object, rights::MAP_READ | rights::MAP_WRITE | rights::TRANSFER | rights::DUPLICATE);
+  if (!ut::expect(handle.has_value())) {
+    return;
+  }
+  ut::expect(!source.lookup(INVALID_HANDLE, ObjectType::Memory, rights::MAP_READ).has_value());
+  ut::expect(!source.lookup(*handle, ObjectType::Endpoint, rights::MAP_READ).has_value());
+  ut::expect(!source.lookup(*handle, ObjectType::Memory, rights::SEND).has_value());
+  ut::expect(!source.duplicate(INVALID_HANDLE, rights::MAP_READ).has_value());
+  ut::expect(!source.duplicate(*handle, rights::SEND).has_value());
+  ut::expect(!source.duplicate(*handle, 0).has_value());
+  Escrow empty_escrow;
+  empty_escrow = moss::move(empty_escrow);
+  IpcCapture empty_capture;
+  empty_capture = moss::move(empty_capture);
+  ut::expect(!source.capture_for_ipc(INVALID_HANDLE, rights::MAP_READ).has_value());
+  ut::expect(!source.capture_for_ipc(*handle, 0).has_value());
+  ut::expect(!source.capture_for_ipc(*handle, rights::SEND).has_value());
+  ut::expect(!source.reserve_escrow(empty_escrow).has_value());
+  ut::expect(!source.transfer_to(source, *handle, rights::MAP_READ, false).has_value());
+  const auto duplicate = source.duplicate(*handle, rights::MAP_READ | rights::DUPLICATE);
+  ut::expect(duplicate.has_value());
+  if (duplicate) {
+    ut::expect(source.set_inheritable(*duplicate, true).has_value());
+    ut::expect(source.set_keep_on_exec(*duplicate, true).has_value());
+    ut::expect(source.set_inheritable(INVALID_HANDLE, true).error() == ErrorCode::NotFound);
+    ut::expect(source.set_keep_on_exec(INVALID_HANDLE, true).error() == ErrorCode::NotFound);
+  }
+
+  ForkSelection selections[1]{{.handle = *handle,
+                               .rights = rights::MAP_READ | rights::DUPLICATE,
+                               .flags = fork_flags::INHERIT}};
+  ut::expect(source.clone_selected_to(target, selections, 1).has_value());
+  ut::expect(!source.clone_selected_to(source, selections, 1).has_value());
+  ut::expect(!source.clone_selected_to(target, selections, 1).has_value());
+  ut::expect(!source.clone_selected_to(target, nullptr, 1).has_value());
+  ut::expect(!source.clone_selected_to(target, selections, Table::capacity() + 1).has_value());
+  ForkSelection bad[1]{{.handle = *handle, .rights = rights::SEND, .flags = 0}};
+  Table scratch;
+  ut::expect(!source.clone_selected_to(scratch, bad, 1).has_value());
+  bad[0].rights = rights::MAP_READ | rights::DUPLICATE;
+  bad[0].flags = 2;
+  ut::expect(!source.clone_selected_to(scratch, bad, 1).has_value());
+  bad[0].handle = INVALID_HANDLE;
+  ut::expect(!source.clone_selected_to(scratch, bad, 1).has_value());
+
+  Table full;
+  for (usize i = 0; i < Table::capacity(); ++i) {
+    ut::expect(full.install(make_shared<Object>(ObjectType::Endpoint), rights::SEND).has_value());
+  }
+  ut::expect(full.install(make_shared<Object>(ObjectType::Endpoint), rights::SEND).error() ==
+             ErrorCode::ResourceExhausted);
+
+  auto capture = source.capture_for_ipc(*handle, rights::MAP_READ);
+  ut::expect(capture.has_value());
+  if (capture) {
+    Escrow escrow = capture->take_escrow();
+    ut::expect(!capture->escrow());
+    Table destination;
+    auto reserved = destination.reserve_escrow(escrow);
+    ut::expect(reserved.has_value());
+    if (reserved) {
+      ut::expect(destination.publish_reserved(*reserved).has_value());
+      ut::expect(destination.close(*reserved).has_value());
+    }
+  }
+  ut::expect(source.close(*handle).has_value());
+  ut::expect(!source.close(*handle).has_value());
+
+  Table waitables;
+  const ObjectType waitable_types[] = {ObjectType::Endpoint,      ObjectType::Memory,
+                                       ObjectType::DomainFactory, ObjectType::CodeVersion,
+                                       ObjectType::CodeAuthority, ObjectType::CodeApproval,
+                                       ObjectType::DomainScope,   ObjectType::SchedulingProfile,
+                                       static_cast<ObjectType>(255)};
+  for (const auto type : waitable_types) {
+    auto installed = waitables.install(make_shared<Object>(type), rights::MAP_READ);
+    ut::expect(installed.has_value());
+    if (installed) {
+      ut::expect(!waitables.lookup_waitable(*installed).has_value());
+    }
+  }
+  auto domain = waitables.install(make_shared<Object>(ObjectType::Domain), rights::DOMAIN_OBSERVE);
+  ut::expect(domain.has_value() && waitables.lookup_waitable(*domain).has_value());
+  auto denied = waitables.install(make_shared<Object>(ObjectType::Domain), rights::MAP_READ);
+  ut::expect(denied.has_value() && !waitables.lookup_waitable(*denied).has_value());
+
+  auto first_reserved = waitables.reserve(make_shared<Object>(ObjectType::Memory), rights::MAP_READ);
+  auto second_reserved = waitables.reserve(make_shared<Object>(ObjectType::Memory), rights::MAP_READ);
+  if (ut::expect(first_reserved.has_value() && second_reserved.has_value())) {
+    ut::expect(waitables.publish_reserved(*first_reserved, *second_reserved).has_value());
+    ut::expect(!waitables.publish_reserved(*first_reserved).has_value());
+    ut::expect(!waitables.publish_reserved(*first_reserved, *first_reserved).has_value());
+  }
+  auto unpublished = waitables.reserve(make_shared<Object>(ObjectType::Memory), rights::MAP_READ);
+  if (ut::expect(unpublished.has_value())) {
+    ut::expect(waitables.publish_reserved(*unpublished, INVALID_HANDLE).has_value());
+    ut::expect(!waitables.discard_reserved(*unpublished).has_value());
+  }
+  ut::expect(!source.clone_inheritable_to(source).has_value());
+  ut::expect(!source.clone_inheritable_to(target).has_value());
+  Table inherited_target;
+  ut::expect(source.clone_inheritable_to(inherited_target).has_value());
+  source.clear();
+}
+
+void container_resource_edges();
+void map_and_wait_edges();
+
 void register_containers_cases() {
   ut::register_suite("containers", [] {
     ut::register_test("queue_reuse", moss::test::queue_regression::run);
@@ -231,7 +409,148 @@ void register_containers_cases() {
     ut::register_test("map_ownership", container_map_ownership);
     ut::register_test("held_reader", container_held_reader);
     ut::register_test("reentry", container_reentry);
+    ut::register_test("atomic_orders", container_atomic_orders);
+    ut::register_test("wait_queue", container_wait_queue);
+    ut::register_test("slab_reuse", container_slab_reuse);
+    ut::register_test("capability_limits", capability_table_edges);
+    ut::register_test("resource_edges", container_resource_edges);
+    ut::register_test("map_and_wait_edges", map_and_wait_edges);
   });
+}
+
+void container_resource_edges() {
+  using namespace containers;
+  SlabCache cache(8);
+  ut::expect(cache.object_size() == 8);
+  ut::expect(cache.total_objects() == 0);
+  ut::expect(cache.utilization() == 0);
+  auto first = cache.allocate();
+  if (ut::expect(static_cast<bool>(first))) {
+    ut::expect(cache.allocated_objects() == 1);
+    ut::expect(cache.utilization() <= 100);
+    ut::expect(cache.deallocate(*first).has_value());
+    ut::expect(cache.allocated_objects() == 0);
+    ut::expect(cache.utilization() == 0);
+  }
+  ut::expect(cache.deallocate(nullptr).has_value());
+  ut::expect(!cache.deallocate(reinterpret_cast<void *>(1)).has_value());
+
+  // A middle page must be removed from the full list before it becomes the
+  // empty-list head; otherwise it could be allocated twice.
+  static void *objects[1536]{};
+  for (auto &object : objects) {
+    auto allocated = cache.allocate();
+    if (!ut::expect(static_cast<bool>(allocated))) {
+      break;
+    }
+    object = *allocated;
+  }
+  for (usize i = 512; i < 1024; ++i) {
+    ut::expect(cache.deallocate(objects[i]).has_value());
+  }
+  for (usize i = 0; i < 1536; ++i) {
+    if (i < 512 || i >= 1024) {
+      ut::expect(cache.deallocate(objects[i]).has_value());
+    }
+  }
+  ut::expect(cache.allocated_objects() == 0);
+
+  SlabCache pressured(8);
+  {
+    PagePressure pressure;
+    if (ut::expect(pressure.acquire(0))) {
+      ut::expect(!pressured.allocate());
+    }
+  }
+  auto recovered = pressured.allocate();
+  if (ut::expect(static_cast<bool>(recovered))) {
+    ut::expect(pressured.deallocate(*recovered).has_value());
+  }
+
+  ut::expect(ContainerLibrary::initialize());
+  ContainerLibrary::print_statistics();
+  ut::expect(ContainerLibrary::is_initialized());
+
+  Optional<u32> empty;
+  Optional<u32> engaged(7u);
+  Optional<u32> target(9u);
+  target = moss::move(engaged);
+  ut::expect(target.has_value() && *target == 7u && !engaged.has_value());
+  empty = moss::move(target);
+  ut::expect(empty.has_value() && *empty == 7u && !target.has_value());
+  empty = Optional<u32>{};
+  ut::expect(!empty.has_value());
+  Optional<u32> another(11u);
+  engaged = moss::move(another);
+  ut::expect(engaged.has_value() && *engaged == 11u);
+  target = engaged;
+  ut::expect(target.has_value() && *target == 11u && engaged.has_value());
+  target.reset();
+  ut::expect(!target.has_value());
+}
+
+void map_and_wait_edges() {
+  containers::LockedList<u32> list;
+  ut::expect(!list.update_if_unless([](const u32 &) { return true; }, [](const u32 &) { return false; },
+                                    [](u32 &) {}));
+  list.push_front(1U);
+  list.push_front(2U);
+  list.push_front(3U);
+  ut::expect(!list.update_if_unless([](const u32 &value) { return value == 2U; },
+                                    [](const u32 &value) { return value == 3U; }, [](u32 &) {}));
+  ut::expect(!list.update_if_unless([](const u32 &value) { return value == 99U; },
+                                    [](const u32 &) { return true; }, [](u32 &) {}));
+  ut::expect(list.update_if_unless([](const u32 &value) { return value == 2U; },
+                                   [](const u32 &value) { return value == 99U; },
+                                   [](u32 &value) { value = 20U; }));
+  u32 visited = 0;
+  list.for_each([&](const u32 &) { ++visited; });
+  ut::expect(visited == 3);
+  u32 snapshot = 0;
+  list.for_each_snapshot([&](const u32 &) { ++snapshot; });
+  ut::expect(snapshot == 3);
+  list.clear();
+  ut::expect(list.empty());
+
+  containers::WaitQueue queue;
+  u32 wakes = 0;
+  ut::expect(queue.wake_up([&](void *) { ++wakes; }) == 0);
+  ut::expect(!queue.wake_one([&](void *) { ++wakes; }));
+  u32 first = 1, second = 2, third = 3;
+  queue.add_waiter(&first, true);
+  queue.add_waiter(&second, true);
+  queue.add_waiter(&third, false);
+  wakes = 0;
+  ut::expect(queue.wake_up([&](void *) { ++wakes; }) == 2);
+  ut::expect(wakes == 2);
+  ut::expect(queue.wake_one([&](void *) { ++wakes; }));
+  queue.clear();
+  ut::expect(!queue.has_waiters());
+
+  containers::LockedHashMap<u32, u32, 4> map;
+  for (u32 i = 0; i < 16; ++i) {
+    map.insert_or_update(i, i * 10U);
+  }
+  for (u32 i = 0; i < 16; ++i) {
+    map.insert_or_update(i, i * 20U);
+  }
+  auto found = map.find(7U);
+  ut::expect(found.has_value() && *found == 140U);
+  ut::expect(!map.find(99U).has_value());
+  ut::expect(map.get_or_insert(7U, [] { return 0U; }) == 140U);
+  ut::expect(map.get_or_insert(99U, [] { return 990U; }) == 990U);
+  ut::expect(map.extract(99U).has_value());
+  ut::expect(!map.extract(99U).has_value());
+  {
+    HeapPressure pressure;
+    if (ut::expect(pressure.acquire(sizeof(u64)))) {
+      ut::expect(!map.try_insert_or_update(100U, 1000U));
+      pressure.release();
+    }
+  }
+  map.clear();
+  map.clear();
+  ut::expect(true);
 }
 
 } // namespace moss::test::validation

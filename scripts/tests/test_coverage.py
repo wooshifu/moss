@@ -110,12 +110,22 @@ def test_generate_merges_records_and_ignores_python_tools(tmp_path, monkeypatch)
 
     monkeypatch.setattr(coverage, "require_tool", lambda name: name)
     monkeypatch.setattr(coverage, "run", fake_run)
-    summary = coverage.generate(build, tmp_path / "report")
+    summary = coverage.generate(build, tmp_path / "report", enforce=False)
     assert summary["arenas"] == 2
     assert summary["programs"]["kernel"]["records"] == 2
     assert summary["programs"]["kernel"]["totals"]["lines"]["covered"] == 2
+    assert summary["gates"]["enforced"] is False
     assert any(command[1] == "merge" for command in calls)
     assert (tmp_path / "report" / "summary.json").is_file()
+
+
+def test_ignore_regex_uses_plain_alternation(tmp_path):
+    manifest = tmp_path / ".coverage.ignore"
+    manifest.write_text("src/foo.cpp\nsrc/bar/*.cppm\n")
+    pattern = coverage.load_ignore_regex(manifest)
+    assert "(?:" not in pattern
+    assert "src/foo\\.cpp" in pattern
+    assert "src/bar/.*\\.cppm" in pattern
 
 
 def test_generate_rejects_unknown_program(tmp_path, monkeypatch):

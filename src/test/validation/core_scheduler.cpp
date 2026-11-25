@@ -34,6 +34,243 @@ namespace bench = moss::bench;
 using moss::test::validation::HeapPressure;
 
 namespace moss::test::validation {
+void wake_and_migrate_edges() {
+  using namespace process;
+  unique_ptr<process::CfsScheduler> scheduler(new process::CfsScheduler());
+  if (!ut::expect(scheduler.get() != nullptr)) {
+    return;
+  }
+  const auto cpu = arch::get_current_cpu_id();
+  Thread task(30, 0);
+  task.cpu = cpu;
+  task.cpu_affinity_mask.set(cpu);
+  task.state = ProcessState::Sleeping;
+
+  scheduler->task_wakeup(nullptr, cpu);
+  scheduler->task_wakeup(&task, g_num_cpus);
+  ut::expect(task.state == ProcessState::Sleeping);
+
+  task.sleep_handoff.store(2);
+  scheduler->task_wakeup(&task, cpu);
+  ut::expect(task.state == ProcessState::Sleeping);
+  task.sleep_handoff.store(0);
+
+  task.cpu_affinity_mask.set_from_u32(0);
+  scheduler->task_wakeup(&task, cpu);
+  ut::expect(task.state == ProcessState::Sleeping);
+  task.cpu_affinity_mask.set(cpu);
+
+  task.state = ProcessState::Running;
+  scheduler->task_wakeup(&task, cpu);
+  ut::expect(task.state == ProcessState::Running);
+
+  task.state = ProcessState::Sleeping;
+  scheduler->task_wakeup(&task, cpu);
+  ut::expect(task.state == ProcessState::Ready && task.se.rb_on_rq);
+  scheduler->dequeue_task(&task);
+  task.state = ProcessState::Sleeping;
+
+  ut::expect(scheduler->take_next_task(g_num_cpus) == nullptr);
+  ut::expect(scheduler->take_next_task(cpu) == nullptr);
+
+  auto *original = CfsScheduler::get_current_task();
+  const bool restore_irqs = arch::interrupts_enabled();
+  arch::disable_interrupts();
+  CfsScheduler::set_current_task(&task);
+  task.state = ProcessState::Running;
+  task.se.vruntime = 1000;
+  scheduler->enqueue_task(&task, cpu);
+  task.se.vruntime = 1000;
+  scheduler->reset_current_to_min_vruntime();
+  ut::expect(task.se.vruntime <= 1000);
+  scheduler->dequeue_task(&task);
+  ut::expect(!scheduler->migrate_current(g_num_cpus));
+  ut::expect(scheduler->migrate_current(cpu));
+  CfsScheduler::set_current_task(nullptr);
+  scheduler->reset_current_to_min_vruntime();
+  CfsScheduler::set_current_task(original);
+  if (restore_irqs) {
+    arch::enable_interrupts();
+  }
+  ut::expect(true);
+}
+void tick_edge_paths() {
+  using namespace process;
+  unique_ptr<CfsScheduler> scheduler(new CfsScheduler());
+  if (!ut::expect(scheduler.get() != nullptr)) {
+    return;
+  }
+  Thread current(10, 0), peer(11, 0);
+  const auto cpu = arch::get_current_cpu_id();
+  current.cpu = peer.cpu = cpu;
+  current.cpu_affinity_mask.set(cpu);
+  peer.cpu_affinity_mask.set(cpu);
+  current.state = ProcessState::Running;
+  current.sched_class = SchedClass::RealTime;
+  current.sched_policy = SchedPolicy::RR;
+  current.rt.priority = 50;
+  current.rt.time_slice_remaining = 0;
+  peer.sched_class = SchedClass::RealTime;
+  peer.rt.priority = 60;
+  peer.state = ProcessState::Ready;
+
+  const bool restore_irqs = arch::interrupts_enabled();
+  arch::disable_interrupts();
+  auto *original = CfsScheduler::get_current_task();
+  CfsScheduler::set_current_task(&current);
+
+  // A non-running current task is observed but not charged or dispatched.
+  current.state = ProcessState::Sleeping;
+  scheduler->scheduler_tick();
+  ut::expect(current.state == ProcessState::Sleeping);
+
+  // RR slice expiry self-selects when no peer is eligible.
+  current.state = ProcessState::Running;
+  const auto before = scheduler->total_preemptions();
+  scheduler->scheduler_tick();
+  ut::expect(scheduler->total_preemptions() > before);
+  ut::expect(current.state == ProcessState::Running && !current.se.rb_on_rq);
+
+  // A terminated RT task must not be re-enqueued by a pending preemption.
+  current.state = ProcessState::Terminated;
+  current.need_resched = false;
+  scheduler->scheduler_tick();
+  ut::expect(current.state == ProcessState::Terminated && !current.need_resched);
+
+  // A higher-priority RT arrival with preemption blocked marks the request.
+  current.state = ProcessState::Running;
+  current.preempt_count = 1;
+  scheduler->enqueue_task(&peer, cpu);
+  scheduler->scheduler_tick();
+  ut::expect(current.state == ProcessState::Running && current.need_resched);
+  scheduler->dequeue_task(&peer);
+  current.need_resched = false;
+  current.preempt_count = 0;
+
+  // An RT task waiting behind a CFS current also marks the request.
+  current.sched_class = SchedClass::Normal;
+  current.rt.priority = 0;
+  current.se.vruntime = 10000000ULL;
+  current.preempt_count = 1;
+  scheduler->enqueue_task(&peer, cpu);
+  scheduler->scheduler_tick();
+  ut::expect(current.state == ProcessState::Running && current.need_resched);
+  scheduler->dequeue_task(&peer);
+  current.need_resched = false;
+
+  // A CFS peer with lower vruntime behind a preempt-blocked current requests
+  // a reschedule without switching synthetic contexts.
+  peer.sched_class = SchedClass::Normal;
+  peer.preempt_count = 0;
+  peer.se.vruntime = 0;
+  peer.state = ProcessState::Ready;
+  scheduler->enqueue_task(&peer, cpu);
+  scheduler->scheduler_tick();
+  ut::expect(current.need_resched);
+  scheduler->dequeue_task(&peer);
+  current.preempt_count = 0;
+
+  CfsScheduler::set_current_task(original);
+  if (restore_irqs) {
+    arch::enable_interrupts();
+  }
+}
+void ipc_cycle_and_tree_edges() {
+  using namespace process;
+  unique_ptr<CfsScheduler> scheduler(new CfsScheduler());
+  if (!ut::expect(scheduler.get() != nullptr)) {
+    return;
+  }
+  Thread caller(20, 0), first(21, 0), second(22, 0), waiting(23, 0), server(24, 0);
+  first.sched_class = SchedClass::RealTime;
+  first.rt.priority = 80;
+  second.se.nice.store(15);
+  PriorityDonation to_second{}, to_first{}, external{}, internal{}, wait{};
+  to_second.caller = &first;
+  to_second.server = &second;
+  to_first.caller = &second;
+  to_first.server = &first;
+  external.caller = &caller;
+  external.server = &first;
+  external.next = &internal;
+  internal.caller = &second;
+  internal.server = &first;
+  second.ipc_wait = &to_first;
+  first.ipc_wait = &to_second;
+  second.ipc_donors = &to_second;
+  first.ipc_donors = &external;
+  first.ipc_scheduler = second.ipc_scheduler = scheduler.get();
+
+  // Rebuild a manually linked donation cycle, including an internal donor
+  // that must be ignored through the epoch marker and one outside donor.
+  scheduler->set_base_nice(&second, 5);
+  ut::expect(second.effective_rt_priority() == 80);
+  first.ipc_wait = nullptr;
+  second.ipc_wait = nullptr;
+  first.ipc_donors = nullptr;
+  second.ipc_donors = nullptr;
+  first.ipc_scheduler = second.ipc_scheduler = nullptr;
+
+  // A thread that is itself waiting must unlink its donation from the server.
+  wait.caller = &waiting;
+  wait.server = &server;
+  waiting.ipc_wait = &wait;
+  server.ipc_donors = &wait;
+  server.ipc_scheduler = scheduler.get();
+  scheduler->forget_ipc_thread(&waiting);
+  ut::expect(wait.caller == nullptr && wait.server == nullptr && waiting.ipc_wait == nullptr);
+  ut::expect(server.ipc_donors == nullptr && !waiting.ipc_scheduler);
+  scheduler->forget_ipc_thread(nullptr);
+
+  // Exhaustive deletion orders over a six-node tree reach every red-black
+  // delete-fixup sibling and child color combination.
+  constexpr usize nodes = 6;
+  Thread tree0(0, 0), tree1(1, 0), tree2(2, 0), tree3(3, 0), tree4(4, 0), tree5(5, 0);
+  Thread *tree[nodes] = {&tree0, &tree1, &tree2, &tree3, &tree4, &tree5};
+  u32 order[nodes] = {0, 1, 2, 3, 4, 5};
+  u32 cursor[nodes]{};
+  for (usize i = 0; i < nodes; ++i) {
+    tree[i]->se.vruntime = 10 * (i + 1);
+  }
+  usize permutation = 0;
+  bool intact = true;
+  for (;;) {
+    CfsRunqueue queue;
+    for (usize i = 0; i < nodes; ++i) {
+      queue.enqueue_task(tree[i]);
+    }
+    for (usize i = 0; i < nodes; ++i) {
+      queue.dequeue_task(tree[order[i]]);
+    }
+    intact = intact && queue.pick_next_task() == nullptr && !tree[0]->se.rb_on_rq;
+    ++permutation;
+    // Iterative Heap's algorithm; no allocation in the test fixture.
+    usize i = 0;
+    while (i < nodes) {
+      if (cursor[i] < i) {
+        if (i % 2 == 0) {
+          const u32 swap = order[0];
+          order[0] = order[i];
+          order[i] = swap;
+        } else {
+          const u32 swap = order[cursor[i]];
+          order[cursor[i]] = order[i];
+          order[i] = swap;
+        }
+        ++cursor[i];
+        break;
+      }
+      cursor[i] = 0;
+      ++i;
+    }
+    if (i == nodes) {
+      break;
+    }
+  }
+  ut::expect(intact);
+  ut::expect(permutation == 720);
+}
+
 void kernel_stack_initialization() {
   process::Process owner(0);
   auto *thread = new process::Thread(0, 0);
@@ -1117,6 +1354,680 @@ void periodic_scan_ownership() {
              scheduler->get_cpu_nr_running(1) == 0);
 }
 
+void runqueue_contracts() {
+  using namespace process;
+
+  Thread tasks[8] = {{1, 0}, {2, 0}, {3, 0}, {4, 0}, {5, 0}, {6, 0}, {7, 0}, {8, 0}};
+  CfsRunqueue cfs;
+  ut::expect(cfs.nr_running() == 0 && cfs.total_weight() == 0 && cfs.pick_next_task() == nullptr);
+  cfs.enqueue_task(nullptr);
+  cfs.dequeue_task(nullptr);
+  ut::expect(cfs_params::nice_to_weight(100) == 1 && cfs_params::nice_to_weight(19) ==
+             cfs_params::NICE_TO_WEIGHT[cfs_params::nice_to_weight_index(19)]);
+  for (u32 i = 0; i < 8; ++i) {
+    tasks[i].state = ProcessState::Ready;
+    tasks[i].se.vruntime = (i + 1) * 100;
+    tasks[i].se.weight = 1024 + i;
+    tasks[i].se.prev_sum_exec_runtime = 0;
+    tasks[i].cpu_affinity_mask = CpuBitmap::all();
+  }
+  for (auto &task : tasks) {
+    cfs.enqueue_task(&task);
+  }
+  ut::expect(cfs.nr_running() == 8 && cfs.total_weight() > 0);
+  ut::expect(cfs.pick_next_task() == &tasks[0] && cfs.pick_last_task() == &tasks[7]);
+  const u64 min_vruntime = cfs.min_vruntime();
+  ut::expect(min_vruntime >= 100);
+  cfs.dump_runqueue();
+
+  tasks[0].se.sum_exec_runtime = 1000;
+  cfs.update_curr_task(&tasks[0], 1000);
+  (void)cfs.should_preempt(&tasks[0]);
+  cfs.update_curr_task(nullptr, 10);
+  tasks[7].se.prev_sum_exec_runtime = 0;
+  tasks[7].se.sum_exec_runtime = cfs_params::SCHED_LATENCY_NS * 2;
+  ut::expect(cfs.should_preempt(&tasks[7]));
+
+  cfs.place_entity(&tasks[0], true);
+  cfs.place_entity(&tasks[0], false);
+  ut::expect(cfs.pick_migration_task(0, &tasks[0]) != nullptr);
+  ut::expect(cfs.pick_migration_task(0, &tasks[7]) != nullptr);
+
+  for (auto &task : tasks) {
+    cfs.dequeue_task(&task);
+    cfs.dequeue_task(&task);
+  }
+  ut::expect(cfs.nr_running() == 0 && cfs.pick_next_task() == nullptr);
+
+  Thread *random_tasks[32]{};
+  for (u32 i = 0; i < 32; ++i) {
+    random_tasks[i] = new Thread(1000 + i, 0);
+    random_tasks[i]->state = ProcessState::Ready;
+    random_tasks[i]->se.vruntime = ((i * 37U) % 101U) + 1U;
+    random_tasks[i]->se.weight = 1024U + (i % 8U);
+    random_tasks[i]->se.prev_sum_exec_runtime = 0;
+    random_tasks[i]->cpu_affinity_mask = CpuBitmap::all();
+    cfs.enqueue_task(random_tasks[i]);
+  }
+  ut::expect(cfs.nr_running() == 32);
+  for (u32 i = 0; i < 32; ++i) {
+    const u32 index = (i * 13U + 7U) % 32U;
+    cfs.dequeue_task(random_tasks[index]);
+  }
+  ut::expect(cfs.nr_running() == 0 && cfs.pick_next_task() == nullptr);
+  for (auto *task : random_tasks) {
+    delete task;
+  }
+
+  RtRunqueue rt;
+  Thread rt_tasks[6] = {{9, 0}, {10, 0}, {11, 0}, {12, 0}, {13, 0}, {14, 0}};
+  rt.enqueue_task(nullptr);
+  rt.dequeue_task(nullptr);
+  for (u32 i = 0; i < 6; ++i) {
+    rt_tasks[i].sched_class = SchedClass::RealTime;
+    rt_tasks[i].rt.priority = 5;
+  }
+  rt_tasks[2].rt.priority = 70;
+  rt_tasks[3].rt.priority = 70;
+  rt_tasks[4].rt.priority = 0;
+  rt_tasks[5].rt.priority = 100;
+  for (auto &task : rt_tasks) {
+    rt.enqueue_task(&task);
+  }
+  ut::expect(rt.nr_running() == 6 && rt.highest_priority() == 70);
+  ut::expect(rt.pick_next_task() == &rt_tasks[2]);
+  rt.requeue_task(nullptr);
+  rt.requeue_task(&rt_tasks[2]);
+  ut::expect(rt.pick_next_task() == &rt_tasks[3]);
+  rt.requeue_task(&rt_tasks[2]);
+  rt.dequeue_task(&rt_tasks[3]);
+  rt.dequeue_task(&rt_tasks[2]);
+  rt.dequeue_task(&rt_tasks[4]);
+  rt.dequeue_task(&rt_tasks[5]);
+  rt.requeue_task(&rt_tasks[0]);
+  rt.dequeue_task(&rt_tasks[0]);
+  rt.dequeue_task(&rt_tasks[0]);
+  rt.dequeue_task(&rt_tasks[1]);
+  ut::expect(rt.nr_running() == 0 && rt.highest_priority() == 0 && rt.pick_next_task() == nullptr);
+}
+
+void idle_contracts() {
+  using namespace process;
+
+  IdleTask idle(0);
+  ut::expect(idle.get_cpu_id() == 0 && idle.get_idle_time_ns() == 0);
+  idle.enter_idle(100);
+  ut::expect(idle.snapshot_idle_time_ns(150) == 50);
+  idle.exit_idle(200);
+  ut::expect(idle.get_idle_time_ns() == 100);
+  idle.snapshot_idle_time_ns(250);
+  idle.accumulate_idle_time(7);
+  ut::expect(idle.get_idle_time_ns() == 107);
+  idle.reset_idle_time();
+  ut::expect(idle.get_idle_time_ns() == 0);
+  idle.enter_idle(0);
+  idle.exit_idle(0);
+  ut::expect(idle.get_idle_time_ns() == 0);
+
+  auto *previous = g_idle_tasks.get_cpu(0);
+  ut::expect(set_idle_task(0, &idle));
+  ut::expect(get_idle_task(0) == &idle);
+  ut::expect(!set_idle_task(g_num_cpus, &idle));
+  ut::expect(get_idle_task(g_num_cpus) == nullptr);
+  ut::expect(!is_cpu_idle(g_num_cpus));
+  wakeup_idle_cpu(g_num_cpus);
+  ut::expect(create_idle_task(g_num_cpus) == nullptr);
+  is_cpu_idle(0);
+  wakeup_idle_cpu(0);
+  auto *created = create_idle_task(0);
+  if (created != nullptr) {
+    g_idle_tasks.get_cpu(0) = previous;
+    delete created;
+  }
+  ut::expect(created == nullptr || created->get_cpu_id() == 0);
+  set_idle_task(0, previous);
+}
+
+void scheduler_lifecycle() {
+  using namespace process;
+
+  CfsScheduler scheduler;
+  Thread current(30, 0), peer(31, 0);
+  const auto cpu = arch::get_current_cpu_id();
+  current.cpu = peer.cpu = cpu;
+  current.cpu_affinity_mask = CpuBitmap::single(cpu);
+  peer.cpu_affinity_mask = CpuBitmap::single(cpu);
+  current.state = ProcessState::Running;
+  current.se.exec_start = timer::TimerSubsystem::instance().now_ns();
+  peer.se.nice = 0;
+  const bool restore_irqs = arch::interrupts_enabled();
+  arch::disable_interrupts();
+  auto *original = CfsScheduler::get_current_task();
+  CfsScheduler::set_current_task(&current);
+
+  scheduler.enqueue_task(&peer, cpu);
+  ut::expect(scheduler.get_cpu_nr_running(cpu) == 1 && scheduler.monitor_runnable(cpu) == 2);
+  ut::expect(scheduler.monitor_cpu(&peer) == cpu);
+  ut::expect(scheduler.has_runnable_tasks(cpu));
+  ut::expect(scheduler.pick_next_task(cpu) == &peer && scheduler.pick_last_task(cpu) == &peer);
+  scheduler.set_base_nice(&peer, 7);
+  ut::expect(peer.se.nice.load() == 7 && peer.se.weight.load() == cfs_params::nice_to_weight(7));
+  scheduler.set_base_nice(&peer, 100);
+  scheduler.reset_current_to_min_vruntime();
+  scheduler.replenish_cpu_budgets(current.se.exec_start + 1);
+  scheduler.task_blocked(&peer);
+  ut::expect(peer.state == ProcessState::Sleeping && !peer.se.rb_on_rq);
+  scheduler.task_wakeup(&peer, cpu);
+  ut::expect(peer.state == ProcessState::Ready && peer.se.rb_on_rq);
+  scheduler.task_terminate(&peer);
+  ut::expect(peer.state == ProcessState::Terminated && !peer.se.rb_on_rq);
+  scheduler.transition_task_state(&peer, ProcessState::Zombie);
+  ut::expect(peer.state == ProcessState::Zombie);
+  scheduler.transition_task_state(&peer, ProcessState::Ready);
+  ut::expect(peer.state == ProcessState::Zombie);
+  Thread transitions[8] = {{61, 0}, {62, 0}, {63, 0}, {64, 0}, {65, 0}, {66, 0}, {67, 0}, {68, 0}};
+  transitions[0].state = ProcessState::Created;
+  scheduler.transition_task_state(&transitions[0], ProcessState::Ready);
+  ut::expect(transitions[0].state == ProcessState::Ready);
+  scheduler.transition_task_state(&transitions[0], ProcessState::Sleeping);
+  ut::expect(transitions[0].state == ProcessState::Sleeping);
+  scheduler.transition_task_state(&transitions[0], ProcessState::DiskSleep);
+  scheduler.transition_task_state(&transitions[0], ProcessState::Stopped);
+  scheduler.transition_task_state(&transitions[0], ProcessState::Terminated);
+  ut::expect(transitions[0].state == ProcessState::Terminated);
+  scheduler.transition_task_state(&transitions[0], ProcessState::Zombie);
+  ut::expect(transitions[0].state == ProcessState::Zombie);
+  scheduler.transition_task_state(&transitions[0], ProcessState::Ready);
+  ut::expect(transitions[0].state == ProcessState::Zombie);
+  transitions[1].state = ProcessState::Running;
+  scheduler.transition_task_state(&transitions[1], ProcessState::Ready);
+  scheduler.transition_task_state(&transitions[1], ProcessState::DiskSleep);
+  scheduler.transition_task_state(&transitions[1], ProcessState::Stopped);
+  scheduler.transition_task_state(&transitions[1], ProcessState::Terminated);
+  ut::expect(transitions[1].state == ProcessState::Terminated);
+  scheduler.transition_task_state(&transitions[2], ProcessState::Ready);
+  scheduler.transition_task_state(&transitions[3], ProcessState::Running);
+  ut::expect(transitions[2].state == ProcessState::Ready && transitions[3].state == ProcessState::Created);
+  scheduler.transition_task_state(nullptr, ProcessState::Ready);
+  scheduler.set_base_nice(nullptr, 0);
+  scheduler.task_blocked(nullptr);
+  scheduler.task_wakeup(nullptr, cpu);
+  scheduler.task_terminate(nullptr);
+  scheduler.update_current(nullptr, 10);
+  ut::expect(!scheduler.should_preempt_current(nullptr));
+  scheduler.dequeue_task(nullptr);
+  scheduler.enqueue_task(nullptr, cpu);
+  scheduler.place_entity(nullptr, cpu, false);
+  scheduler.reset_current_to_min_vruntime();
+  scheduler.update_current(&current, 1000);
+  scheduler.dump_runqueue(cpu);
+  (void)scheduler.get_cpu_load(cpu);
+  ut::expect(scheduler.get_cpu_nr_running(cpu) == 0);
+  ut::expect(scheduler.get_cpu_nr_running(g_num_cpus) == 0);
+  ut::expect(!scheduler.has_runnable_tasks(g_num_cpus));
+  ut::expect(scheduler.pick_next_task(g_num_cpus) == nullptr && scheduler.pick_last_task(g_num_cpus) == nullptr);
+  scheduler.dequeue_task(nullptr);
+  scheduler.place_entity(nullptr, cpu, true);
+  ut::expect(scheduler.get_cpu_min_vruntime(g_num_cpus) == 0);
+
+  // Invalid and stale scheduler inputs must return without mutating queues.
+  PriorityDonation donation{};
+  Thread ipc_thread(70, 0);
+  ut::expect(!scheduler.begin_ipc_call(nullptr, nullptr));
+  ipc_thread.ipc_wait = &donation;
+  ut::expect(!scheduler.begin_ipc_call(&donation, &ipc_thread));
+  ipc_thread.ipc_wait = nullptr;
+  scheduler.arm_ipc_deadline_timer(nullptr, nullptr);
+  scheduler.arm_ipc_deadline_timer(&donation, nullptr);
+  ut::expect(scheduler.bind_ipc_server(nullptr, &peer) == IpcBindResult::Stale);
+  ut::expect(scheduler.bind_ipc_server(&donation, &peer) == IpcBindResult::Stale);
+  ut::expect(scheduler.rebind_ipc_server(nullptr, nullptr, nullptr) == IpcBindResult::Stale);
+  ut::expect(scheduler.rebind_ipc_server(&donation, nullptr, nullptr) == IpcBindResult::Stale);
+  ut::expect(scheduler.end_ipc_call(nullptr) == IpcBindResult::Stale);
+  scheduler.set_base_nice(&peer, priority::MIN_NICE - 1);
+  scheduler.set_base_nice(&peer, priority::MAX_NICE + 1);
+  ut::expect(!scheduler.migrate_ready_task(g_num_cpus, cpu));
+  ut::expect(!scheduler.migrate_ready_task(cpu, g_num_cpus));
+  ut::expect(!scheduler.migrate_ready_task(cpu, cpu));
+  ut::expect(scheduler.get_current_task_on_cpu(g_num_cpus) == nullptr);
+  scheduler.set_idle_task(g_num_cpus, nullptr);
+  scheduler.set_idle_task(cpu, nullptr);
+  ut::expect(scheduler.get_idle_task(g_num_cpus) == nullptr);
+  scheduler.replenish_cpu_budgets(timer::TimerSubsystem::instance().now_ns());
+  peer.state = ProcessState::Terminated;
+  ut::expect(scheduler.request_cpu_budget(&peer, 1, 10) == BudgetProfileResult::Invalid);
+  peer.state = ProcessState::Running;
+  ut::expect(scheduler.request_cpu_budget(nullptr, 1, 10) == BudgetProfileResult::Invalid);
+  ut::expect(scheduler.request_cpu_budget(&peer, 0, 10) == BudgetProfileResult::Invalid);
+  ut::expect(scheduler.request_cpu_budget(&peer, 20, 10) == BudgetProfileResult::Invalid);
+
+  CfsScheduler::set_current_task(original);
+  if (restore_irqs) {
+    arch::enable_interrupts();
+  }
+}
+
+void process_surfaces() {
+  using namespace process;
+  constexpr usize page = moss::kernel::PAGE_SIZE;
+
+  Process proc(77);
+  proc.set_name("probe");
+  proc.set_command("probe command", 13);
+  ut::expect(proc.name()[0] == 'p');
+  auto *thread = new Thread(Process::allocate_thread_id(), proc.pid());
+  if (!ut::expect(thread != nullptr && proc.register_thread(thread).has_value())) {
+    return;
+  }
+  ut::expect(proc.thread_count() == 1 && proc.get_main_thread() == thread);
+  proc.update_cpu_time(10, 20);
+  proc.record_context_switch(true);
+  proc.record_context_switch(false);
+  proc.record_page_fault(true);
+  proc.record_page_fault(false);
+  moss::abi::DomainInfo info{};
+  proc.monitor_snapshot(info);
+  ut::expect(info.threads == 1 && info.uid == 0 && info.state == static_cast<u32>(ProcessState::Created));
+  ut::expect(proc.try_begin_exec());
+  auto *blocked = new Thread(Process::allocate_thread_id(), proc.pid());
+  ut::expect(!proc.register_thread(blocked));
+  delete blocked;
+  proc.finish_exec();
+  proc.cleanup_files();
+
+  auto as = shared_ptr<AddressSpace>(new AddressSpace(0, 0));
+  ut::expect(!proc.set_address_space(shared_ptr<AddressSpace>{}));
+  ut::expect(proc.set_address_space(as));
+  ut::expect(proc.address_space().get() == as.get());
+  ut::expect(user_space::map_user_memory(nullptr, user_layout::CODE_BASE, 0, page, vma_flags::READ).error() ==
+             ErrorCode::InvalidArgument);
+  ut::expect(user_space::map_user_memory(as.get(), user_layout::CODE_BASE, 0, 0, vma_flags::READ).error() ==
+             ErrorCode::InvalidArgument);
+  ut::expect(user_space::map_user_memory(as.get(), USER_MAX, 0, page, vma_flags::READ).error() ==
+             ErrorCode::InvalidArgument);
+  ut::expect(user_space::map_user_memory(as.get(), user_layout::CODE_BASE, 0, page, vma_flags::READ).has_value());
+  ut::expect(user_space::map_user_memory(as.get(), user_layout::CODE_BASE, 0, page, vma_flags::READ).error() ==
+             ErrorCode::AlreadyExists);
+  ut::expect(user_space::allocate_user_heap(nullptr, page).error() == ErrorCode::InvalidArgument);
+  ut::expect(user_space::allocate_user_heap(&proc, 0).error() == ErrorCode::InvalidArgument);
+  auto heap = user_space::allocate_user_heap(&proc, page);
+  ut::expect(heap.has_value() && *heap == user_layout::HEAP_START);
+  ut::expect(user_space::allocate_user_heap(&proc, page).has_value());
+  proc.clear_address_space();
+  ut::expect(!proc.address_space());
+
+  auto real = user_space::create_user_address_space();
+  if (ut::expect(real.has_value())) {
+    auto owned = *real;
+    ut::expect(owned->add_vma(user_layout::CODE_BASE, user_layout::CODE_BASE + page,
+                              vma_flags::READ | vma_flags::WRITE | vma_flags::DEMAND_ZERO));
+    ut::expect(owned->resolve_fault(user_layout::CODE_BASE, mm::UserFaultAccess::Read, false));
+    ut::expect(owned->resolve_fault(user_layout::CODE_BASE, mm::UserFaultAccess::Write, false));
+    ut::expect(!owned->resolve_fault(user_layout::CODE_BASE + 2 * page, mm::UserFaultAccess::Read, false));
+    ut::expect(owned->add_vma(user_layout::STACK_TOP - user_layout::STACK_SIZE, user_layout::STACK_TOP,
+                              vma_flags::READ | vma_flags::WRITE, VmaType::STACK));
+    VirtAddr grown = 0;
+    ut::expect(owned->resolve_fault(user_layout::STACK_TOP - user_layout::STACK_SIZE - page,
+                                    mm::UserFaultAccess::Read, false, &grown));
+    ut::expect(grown == user_layout::STACK_TOP - user_layout::STACK_SIZE - page);
+    ut::expect(!owned->resolve_fault(USER_MAX, mm::UserFaultAccess::Read, false));
+  }
+
+  Process bad(78);
+  ut::expect(bad.create_thread(user_layout::CODE_BASE, user_layout::CODE_BASE, page).error() ==
+             ErrorCode::InvalidState);
+  user_space::release_asid(0);
+  user_space::release_asid(256);
+
+  ProcessManager manager;
+  auto first = manager.create_process();
+  ut::expect(first.has_value() && manager.total_processes() == 1);
+  if (first) {
+    auto first_proc = *first;
+    ut::expect(manager.process_exists(first_proc->pid()));
+    ut::expect(manager.find_process(first_proc->pid()).get() == first_proc.get());
+    ut::expect(manager.terminate_process(first_proc->pid(), 3).has_value());
+    ut::expect(manager.total_processes() == 0 && !manager.process_exists(first_proc->pid()));
+  }
+  ut::expect(!manager.terminate_process(INVALID_PROCESS_ID, 0));
+}
+
+void load_balancer_contracts() {
+  using namespace process;
+
+  CfsScheduler scheduler;
+  LoadBalancer balancer;
+  Thread tasks[4] = {{40, 0}, {41, 0}, {42, 0}, {43, 0}};
+  const auto current_cpu = arch::get_current_cpu_id();
+  const u32 other_cpu = (current_cpu + 1) % g_num_cpus;
+  for (u32 i = 0; i < 4; ++i) {
+    tasks[i].cpu = other_cpu;
+    tasks[i].state = ProcessState::Ready;
+    tasks[i].se.load_avg = 100;
+    tasks[i].se.vruntime = 100 + i;
+    tasks[i].cpu_affinity_mask = CpuBitmap::all();
+  }
+  for (u32 i = 0; i < 3; ++i) {
+    scheduler.enqueue_task(&tasks[i], other_cpu);
+  }
+  ut::expect(balancer.get_stats(g_num_cpus).migrations_count == 0);
+  ut::expect(balancer.get_stats(other_cpu).migrations_count == 0);
+  balancer.set_policy(BalancePolicy::Aggressive);
+  balancer.set_policy(BalancePolicy::NUMA_Aware);
+  balancer.set_policy(static_cast<BalancePolicy>(99));
+  balancer.set_policy(BalancePolicy::Conservative);
+  ut::expect(!balancer.migrate_task(g_num_cpus, other_cpu, scheduler));
+  ut::expect(!balancer.migrate_task(other_cpu, other_cpu, scheduler));
+  ut::expect(balancer.migrate_task(other_cpu, current_cpu, scheduler));
+  ut::expect(balancer.get_stats(other_cpu).migrations_count == 1);
+  ut::expect(balancer.get_global_stats().migrations_count >= 1);
+
+  ut::expect(balancer.idle_balance(g_num_cpus, scheduler) == false);
+  ut::expect(balancer.select_cpu_for_task(nullptr, scheduler) == 0);
+  Thread affinity(44, 0);
+  affinity.cpu = other_cpu;
+  affinity.cpu_affinity_mask = CpuBitmap::single(other_cpu);
+  ut::expect(balancer.select_cpu_for_task(&affinity, scheduler) == other_cpu);
+  balancer.set_policy(BalancePolicy::NUMA_Aware);
+  ut::expect(balancer.select_cpu_for_task(&affinity, scheduler) == other_cpu);
+  balancer.set_policy(BalancePolicy::Conservative);
+
+  for (u32 i = 0; i < 3; ++i) {
+    scheduler.dequeue_task(&tasks[i]);
+    tasks[i].se.load_avg = 100;
+    tasks[i].state = ProcessState::Ready;
+    scheduler.enqueue_task(&tasks[i], current_cpu);
+  }
+  balancer.periodic_balance(0, scheduler);
+  balancer.periodic_balance(8000000, scheduler);
+  for (u32 i = 0; i < 3; ++i) {
+    scheduler.dequeue_task(&tasks[i]);
+  }
+
+  // A valid idle CPU reaches busiest selection, benefit accounting and the
+  // scheduler-owned migration path.
+  for (u32 i = 0; i < 3; ++i) {
+    tasks[i].cpu = other_cpu;
+    tasks[i].state = ProcessState::Ready;
+    tasks[i].se.load_avg = 100;
+    tasks[i].se.vruntime = 100 + i;
+    scheduler.enqueue_task(&tasks[i], other_cpu);
+  }
+  ut::expect(balancer.idle_balance(current_cpu, scheduler));
+  auto *saved_balancer = process::g_load_balancer;
+  auto *saved_scheduler = process::g_scheduler;
+  process::g_load_balancer = &balancer;
+  process::g_scheduler = &scheduler;
+  process::try_idle_balance(current_cpu);
+  process::g_load_balancer = saved_balancer;
+  process::g_scheduler = saved_scheduler;
+  for (u32 i = 0; i < 3; ++i) {
+    scheduler.dequeue_task(&tasks[i]);
+  }
+}
+
+void runqueue_edges() {
+  using namespace process;
+  CfsRunqueue queue;
+  queue.enqueue_task(nullptr);
+  queue.dequeue_task(nullptr);
+  ut::expect(queue.pick_next_task() == nullptr);
+  ut::expect(queue.pick_last_task() == nullptr);
+  ut::expect(queue.pick_migration_task(0, nullptr) == nullptr);
+  ut::expect(queue.nr_running() == 0 && queue.total_weight() == 0);
+
+  Thread first(300, 0), middle(301, 0), last(302, 0);
+  Thread *tasks[] = {&first, &middle, &last};
+  for (u32 i = 0; i < 3; ++i) {
+    tasks[i]->se.vruntime = 10ULL * (i + 1);
+    tasks[i]->se.weight = 1024;
+    tasks[i]->state = ProcessState::Ready;
+    tasks[i]->cpu_affinity_mask.set(0);
+    queue.enqueue_task(tasks[i]);
+  }
+  ut::expect(queue.nr_running() == 3);
+  ut::expect(queue.pick_next_task() == &first);
+  ut::expect(queue.pick_last_task() == &last);
+
+  last.cpu_affinity_mask.set_from_u32(0);
+  middle.state = ProcessState::Running;
+  ut::expect(queue.pick_migration_task(1, &first) == nullptr);
+  middle.state = ProcessState::Ready;
+  middle.cpu_affinity_mask.set(1);
+  ut::expect(queue.pick_migration_task(1, &first) == &middle);
+
+  ut::expect(!queue.should_preempt(nullptr));
+  ut::expect(!queue.should_preempt(&first));
+  first.se.sum_exec_runtime = first.se.prev_sum_exec_runtime + cfs_params::SCHED_LATENCY_NS;
+  last.se.vruntime = first.se.vruntime + cfs_params::SCHED_LATENCY_NS;
+  ut::expect(queue.should_preempt(&last));
+  last.se.vruntime = 0;
+  first.se.sum_exec_runtime = first.se.prev_sum_exec_runtime;
+  middle.se.vruntime = cfs_params::SCHED_LATENCY_NS;
+  ut::expect(queue.should_preempt(&middle));
+
+  queue.update_curr_task(nullptr, 1);
+  queue.update_curr_task(&first, 0);
+  first.se.vruntime = 100;
+  queue.update_curr_task(&first, 1000);
+  ut::expect(first.se.sum_exec_runtime == 1000);
+  queue.place_entity(&first, true);
+  const auto forked = first.se.vruntime;
+  queue.place_entity(&first, false);
+  ut::expect(first.se.vruntime <= forked);
+  queue.dump_runqueue();
+  queue.dequeue_task(&first);
+  queue.dequeue_task(&middle);
+  queue.dequeue_task(&last);
+  queue.dequeue_task(&first);
+  ut::expect(queue.nr_running() == 0);
+
+  RtRunqueue rt;
+  Thread zero(310, 0), one(311, 0), two(312, 0);
+  zero.rt.priority = 0;
+  one.rt.priority = 40;
+  two.rt.priority = 40;
+  rt.enqueue_task(&zero);
+  rt.enqueue_task(&one);
+  rt.enqueue_task(&two);
+  ut::expect(rt.nr_running() == 3);
+  rt.requeue_task(nullptr);
+  rt.requeue_task(&zero);
+  ut::expect(rt.pick_next_task() != nullptr);
+  rt.requeue_task(&one);
+  ut::expect(rt.pick_next_task() != nullptr);
+  rt.dequeue_task(&one);
+  rt.dequeue_task(&two);
+  zero.rt.priority = 40;
+  rt.requeue_task(&zero);
+  rt.dequeue_task(&zero);
+  ut::expect(true);
+}
+
+void budget_edges() {
+  using namespace process;
+  unique_ptr<CfsScheduler> scheduler(new CfsScheduler());
+  if (!ut::expect(scheduler.get() != nullptr)) {
+    return;
+  }
+  Thread task(320, 0);
+  ut::expect(scheduler->request_cpu_budget(nullptr, 1, 10) == BudgetProfileResult::Invalid);
+  ut::expect(scheduler->request_cpu_budget(&task, 0, 10) == BudgetProfileResult::Invalid);
+  ut::expect(scheduler->request_cpu_budget(&task, 11, 10) == BudgetProfileResult::Invalid);
+  auto &timers = timer::TimerSubsystem::instance();
+  const bool was_initialized = timers.is_initialized();
+  if (was_initialized) {
+    timers.shutdown();
+  }
+  ut::expect(scheduler->request_cpu_budget(&task, 1, 10) == BudgetProfileResult::ClockUnavailable);
+  if (!timers.is_initialized()) {
+    ut::expect(timers.initialize().has_value());
+  }
+  ut::expect(scheduler->request_cpu_budget(&task, 1, 10) == BudgetProfileResult::Applied);
+  ut::expect(scheduler->request_cpu_budget(&task, 1, 10) == BudgetProfileResult::AlreadyConfigured);
+  task.state = ProcessState::Terminated;
+  ut::expect(scheduler->request_cpu_budget(&task, 1, 10) == BudgetProfileResult::Invalid);
+  const auto status = scheduler->cpu_budget_status(&task);
+  ut::expect((status.flags & BudgetProfileStatus::Terminated) != 0);
+  (void)scheduler->cpu_budget_status(nullptr);
+  (void)scheduler->monitor_runnable(g_num_cpus);
+  (void)scheduler->monitor_cpu(&task);
+  scheduler->replenish_cpu_budgets(0);
+  ut::expect(scheduler->get_cpu_load(g_num_cpus) == 0);
+  ut::expect(scheduler->get_cpu_nr_running(g_num_cpus) == 0);
+  send_reschedule_ipi(g_num_cpus);
+  send_reschedule_ipi(arch::get_current_cpu_id());
+  ut::expect(true);
+}
+
+void scheduler_state_matrix() {
+  using namespace process;
+  CfsScheduler scheduler;
+  Thread task(500, 0);
+  const ProcessState states[] = {ProcessState::Created, ProcessState::Ready,    ProcessState::Running,
+                                 ProcessState::Sleeping, ProcessState::DiskSleep, ProcessState::Terminated,
+                                 ProcessState::Zombie,   ProcessState::Stopped};
+  u32 valid = 0;
+  for (const auto from : states) {
+    for (const auto to : states) {
+      task.state = from;
+      scheduler.transition_task_state(&task, to);
+      if (task.state == to && from != to) {
+        ++valid;
+      }
+    }
+  }
+  scheduler.transition_task_state(nullptr, ProcessState::Ready);
+  ut::expect(valid == 18);
+
+  const auto cpu = arch::get_current_cpu_id();
+  task.cpu = cpu;
+  task.cpu_affinity_mask.set(cpu);
+  scheduler.enqueue_task(nullptr, cpu);
+  scheduler.enqueue_task(&task, g_num_cpus);
+  scheduler.dequeue_task(nullptr);
+  ut::expect(scheduler.take_next_task(g_num_cpus) == nullptr);
+  ut::expect(!scheduler.migrate_ready_task(g_num_cpus, cpu));
+  ut::expect(!scheduler.migrate_ready_task(cpu, g_num_cpus));
+  ut::expect(!scheduler.migrate_ready_task(cpu, cpu));
+  ut::expect(scheduler.pick_last_task(g_num_cpus) == nullptr);
+  ut::expect(scheduler.get_cpu_load(g_num_cpus) == 0);
+  ut::expect(scheduler.get_cpu_nr_running(g_num_cpus) == 0);
+  scheduler.dump_runqueue(g_num_cpus);
+  scheduler.update_current(nullptr, 1);
+  ut::expect(!scheduler.should_preempt_current(nullptr));
+  scheduler.place_entity(nullptr, cpu, false);
+  scheduler.place_entity(&task, g_num_cpus, false);
+  ut::expect(scheduler.get_cpu_min_vruntime(g_num_cpus) == 0);
+  scheduler.set_idle_task(g_num_cpus, nullptr);
+
+  Thread budget_a(620, 0), budget_b(621, 0), budget_c(622, 0);
+  budget_a.state = ProcessState::Ready;
+  budget_b.state = ProcessState::Ready;
+  budget_c.state = ProcessState::Ready;
+  ut::expect(scheduler.request_cpu_budget(nullptr, 1, 1) == BudgetProfileResult::Invalid);
+  ut::expect(scheduler.request_cpu_budget(&budget_a, 0, 1) == BudgetProfileResult::Invalid);
+  ut::expect(scheduler.request_cpu_budget(&budget_a, 2, 1) == BudgetProfileResult::Invalid);
+  budget_a.state = ProcessState::Terminated;
+  ut::expect(scheduler.request_cpu_budget(&budget_a, 1, 2) == BudgetProfileResult::Invalid);
+  budget_a.state = ProcessState::Ready;
+  ut::expect(scheduler.request_cpu_budget(&budget_a, 1, 2) == BudgetProfileResult::Applied);
+  ut::expect(scheduler.request_cpu_budget(&budget_a, 1, 2) == BudgetProfileResult::AlreadyConfigured);
+  ut::expect(scheduler.request_cpu_budget(&budget_b, 1, 3) == BudgetProfileResult::Invalid);
+  ut::expect(scheduler.request_cpu_budget(&budget_b, 2, 2) == BudgetProfileResult::Capacity);
+  CfsScheduler empty_scheduler;
+  ut::expect(empty_scheduler.request_cpu_budget(&budget_c, 1, 2) == BudgetProfileResult::Applied);
+
+  Thread ipc_caller(630, 0), ipc_server(631, 0), ipc_next(632, 0), ipc_donor(633, 0);
+  PriorityDonation donor_call{}, active_call{}, stale_call{};
+  donor_call.caller = &ipc_donor;
+  donor_call.deadline_ns.store(50);
+  ipc_donor.ipc_wait = &donor_call;
+  ipc_caller.ipc_donors = &donor_call;
+  ut::expect(!scheduler.begin_ipc_call(nullptr, &ipc_caller));
+  ut::expect(!scheduler.begin_ipc_call(&active_call, nullptr));
+  u64 inherited_deadline = 0;
+  ut::expect(scheduler.begin_ipc_call(&active_call, &ipc_caller, &inherited_deadline));
+  ut::expect(inherited_deadline == 50 && active_call.deadline_ns.load() == 50);
+  ut::expect(!scheduler.begin_ipc_call(&stale_call, &ipc_caller));
+  ut::expect(scheduler.bind_ipc_server(nullptr, &ipc_server) == IpcBindResult::Stale);
+  ut::expect(scheduler.rebind_ipc_server(nullptr, &ipc_server, &ipc_next) == IpcBindResult::Stale);
+  stale_call.caller = &ipc_donor;
+  ut::expect(scheduler.bind_ipc_server(&stale_call, &ipc_server) == IpcBindResult::Stale);
+  ut::expect(scheduler.bind_ipc_server(&active_call, nullptr) == IpcBindResult::Bound);
+  ut::expect(scheduler.bind_ipc_server(&active_call, &ipc_server) == IpcBindResult::Bound);
+  ut::expect(scheduler.bind_ipc_server(&active_call, &ipc_server) == IpcBindResult::Bound);
+  ut::expect(scheduler.rebind_ipc_server(&active_call, &ipc_server, &ipc_next) == IpcBindResult::Bound);
+  u64 final_deadline = 0;
+  (void)scheduler.end_ipc_call(&active_call, &final_deadline);
+  ut::expect(final_deadline == 50 && active_call.deadline_ns.load() == 0);
+  (void)scheduler.end_ipc_call(nullptr);
+  scheduler.forget_ipc_thread(nullptr);
+  scheduler.set_base_nice(nullptr, 0);
+  scheduler.set_base_nice(&ipc_server, priority::MIN_NICE - 1);
+  scheduler.set_base_nice(&ipc_server, priority::MAX_NICE + 1);
+  scheduler.set_base_nice(&ipc_server, 10);
+  scheduler.set_base_nice(&ipc_server, -10);
+  scheduler.reset_current_to_min_vruntime();
+
+  Thread timer_target(640, 0);
+  PriorityDonation timer_call{};
+  timer::HrTimer timer_probe;
+  timer_probe.init(timer::TimerMode::OneShot, [](void *) noexcept {}, nullptr);
+  ut::expect(scheduler.begin_ipc_call(&timer_call, &timer_target));
+  scheduler.arm_ipc_deadline_timer(nullptr, nullptr);
+  scheduler.arm_ipc_deadline_timer(&stale_call, &timer_probe);
+  scheduler.arm_ipc_deadline_timer(&timer_call, nullptr);
+  scheduler.arm_ipc_deadline_timer(&timer_call, &timer_probe);
+  if (static_cast<bool>(timer_probe.reserve())) {
+    timer_call.deadline_ns.store(timer::TimerSubsystem::instance().now_ns() + 1'000'000);
+    scheduler.arm_ipc_deadline_timer(&timer_call, &timer_probe);
+    timer_probe.cancel_sync();
+  }
+  scheduler.end_ipc_call(&timer_call);
+  ut::expect(true);
+}
+
+void cfs_tree_internal_edges() {
+  using namespace process;
+  CfsRunqueue queue;
+  Thread tasks[12] = {{601, 0}, {602, 0}, {603, 0}, {604, 0}, {605, 0}, {606, 0},
+                      {607, 0}, {608, 0}, {609, 0}, {610, 0}, {611, 0}, {612, 0}};
+  for (u32 i = 0; i < 12; ++i) {
+    tasks[i].se.vruntime = (i * 17U) % 37U;
+    tasks[i].se.weight = 1024;
+    tasks[i].state = ProcessState::Ready;
+    queue.enqueue_task(&tasks[i]);
+  }
+  ut::expect(queue.nr_running() == 12);
+  ut::expect(queue.pick_next_task() != nullptr);
+  for (u32 i = 0; i < 12; ++i) {
+    queue.dequeue_task(&tasks[(i * 5U) % 12U]);
+  }
+  ut::expect(queue.nr_running() == 0 && queue.pick_next_task() == nullptr);
+
+  RtRunqueue rt;
+  Thread rt_one(650, 0), rt_two(651, 0), rt_three(652, 0);
+  rt_one.sched_class = SchedClass::RealTime;
+  rt_two.sched_class = SchedClass::RealTime;
+  rt_one.rt.priority = 40;
+  rt_two.rt.priority = 40;
+  rt.enqueue_task(&rt_one);
+  rt.enqueue_task(&rt_two);
+  rt.requeue_task(nullptr);
+  rt.requeue_task(&rt_one);
+  ut::expect(rt.pick_next_task() == &rt_two);
+  rt.requeue_task(&rt_two);
+  ut::expect(rt.pick_next_task() == &rt_one);
+  rt.dequeue_task(&rt_one);
+  rt.dequeue_task(&rt_two);
+  rt_three.rt.priority = 40;
+  rt.enqueue_task(&rt_three);
+  rt.requeue_task(&rt_three);
+  rt.dequeue_task(&rt_three);
+  ut::expect(rt.nr_running() == 0);
+}
+
 void register_scheduler_cases() {
   ut::register_suite("scheduler", [] {
     ut::register_test("pelt_large_runtime", moss::test::scheduler_regression::pelt_large_runtime);
@@ -1138,6 +2049,18 @@ void register_scheduler_cases() {
     ut::register_test("ipc_deadline_tightening", ipc_deadline_tightening);
     ut::register_test("ipc_call_graph_limits", ipc_call_graph_limits);
     ut::register_test("migration_current_owner", migration_current_owner);
+    ut::register_test("runqueue_contracts", runqueue_contracts);
+    ut::register_test("idle_contracts", idle_contracts);
+    ut::register_test("scheduler_lifecycle", scheduler_lifecycle);
+    ut::register_test("process_surfaces", process_surfaces);
+    ut::register_test("load_balancer_contracts", load_balancer_contracts);
+    ut::register_test("runqueue_edges", runqueue_edges);
+    ut::register_test("budget_edges", budget_edges);
+    ut::register_test("ipc_cycle_and_tree_edges", ipc_cycle_and_tree_edges);
+    ut::register_test("tick_edge_paths", tick_edge_paths);
+    ut::register_test("wake_and_migrate_edges", wake_and_migrate_edges);
+    ut::register_test("scheduler_state_matrix", scheduler_state_matrix);
+    ut::register_test("cfs_tree_internal_edges", cfs_tree_internal_edges);
   });
 }
 

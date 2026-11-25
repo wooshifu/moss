@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import shutil
 import struct
 import subprocess
@@ -27,7 +28,12 @@ RAW_HEADER_QWORDS = 19
 RAW_MAGIC = 0xFF6C70726F667281
 RAW_VERSION = 11
 RAW_VALUE_KIND_LAST = 2
-IGNORE_FILENAME = r"third_party|src/test|fdt/libfdt|drivers/src/drivers\.cppm"
+BASE_IGNORE_FILENAME = (r"third_party|src/test|src/fdt/libfdt")
+CRITICAL_BRANCH_MODULES = {
+    "kernel/src/syscall_table.cpp": 83.5,
+    "process/src/process-scheduler.cppm": 83.5,
+    "kernel/src/control_ipc.cpp": 71.0,
+}
 
 
 class CoverageError(ValueError):
@@ -127,7 +133,111 @@ def totals(export: str) -> dict[str, Any]:
     return value
 
 
-def generate(build_dir: Path, output: Path) -> dict[str, Any]:
+
+def load_ignore_regex(path: Path) -> str:
+    """Build the llvm-cov filename filter from the explicit ignore manifest."""
+    patterns = [BASE_IGNORE_FILENAME]
+    if not path.is_file():
+        return "|".join(patterns)
+    for raw in path.read_text().splitlines():
+        value = raw.split("#", 1)[0].strip()
+        if not value:
+            continue
+        # Paths are repository-relative. llvm-cov matches the absolute
+        # filename, so an unanchored escaped path is sufficient and keeps the
+        # manifest portable across build directories.
+        pattern = re.escape(value).replace(r"\*", ".*")
+        patterns.append(pattern)
+    # llvm-cov uses POSIX-style regex and does not understand non-capturing
+    # groups; alternation alone is sufficient here.
+    return "|".join(patterns)
+
+
+def parse_report_files(report: str) -> dict[str, dict[str, Any]]:
+    rows: dict[str, dict[str, Any]] = {}
+    for line in report.splitlines():
+        parts = line.split()
+        if len(parts) != 13:
+            continue
+        if not all(parts[index].endswith("%") for index in (3, 6, 9, 12)):
+            continue
+        name = parts[0]
+        rows[name] = {
+            "regions": {"count": int(parts[1]), "missed": int(parts[2])},
+            "functions": {"count": int(parts[4]), "missed": int(parts[5])},
+            "lines": {"count": int(parts[7]), "missed": int(parts[8])},
+            "branches": {"count": int(parts[10]), "missed": int(parts[11])},
+        }
+    return rows
+
+
+def audit_coverage(
+    summary: dict[str, Any],
+    min_lines: float,
+    min_branches: float,
+    enforce: bool,
+) -> None:
+    errors: list[str] = []
+    for program_id, program in summary["programs"].items():
+        value = program["totals"]
+        lines = value.get("lines", {})
+        branches = value.get("branches", {})
+        line_percent = float(lines.get("percent", 0.0))
+        branch_percent = float(branches.get("percent", 0.0))
+        program["files"] = {
+            name: {
+                **row,
+                "lines": {
+                    **row["lines"],
+                    "percent": (row["lines"]["count"] - row["lines"]["missed"])
+                    * 100.0
+                    / row["lines"]["count"]
+                    if row["lines"]["count"]
+                    else 0.0,
+                },
+                "branches": {
+                    **row["branches"],
+                    "percent": (row["branches"]["count"] - row["branches"]["missed"])
+                    * 100.0
+                    / row["branches"]["count"]
+                    if row["branches"]["count"]
+                    else 0.0,
+                },
+            }
+            for name, row in program.get("file_rows", {}).items()
+        }
+        program.pop("file_rows", None)
+        if program_id == "kernel" and line_percent < min_lines:
+            errors.append(f"{program_id} lines {line_percent:.2f}% < {min_lines:.2f}%")
+        if program_id == "kernel" and branch_percent < min_branches:
+            errors.append(f"{program_id} branches {branch_percent:.2f}% < {min_branches:.2f}%")
+        if program_id == "kernel":
+            for module, minimum in CRITICAL_BRANCH_MODULES.items():
+                row = program["files"].get(module)
+                if row is None:
+                    errors.append(f"critical module missing from report: {module}")
+                    continue
+                actual = row["branches"]["percent"]
+                if actual < minimum:
+                    errors.append(f"critical module {module} branches {actual:.2f}% < {minimum:.2f}%")
+    summary["gates"] = {
+        "min_lines": min_lines,
+        "min_branches": min_branches,
+        "enforced": enforce,
+        "errors": errors,
+    }
+    if enforce and errors:
+        raise CoverageError("coverage gate failed: " + "; ".join(errors))
+
+
+def generate(
+    build_dir: Path,
+    output: Path,
+    ignore_file: Path | None = None,
+    min_lines: float = 92.0,
+    min_branches: float = 83.0,
+    enforce: bool = True,
+) -> dict[str, Any]:
     artifacts = Artifacts.load(build_dir / "moss-artifacts.json")
     if not artifacts.build.get("coverage"):
         raise CoverageError("the artifact manifest is not a coverage build")
@@ -154,7 +264,13 @@ def generate(build_dir: Path, output: Path) -> dict[str, Any]:
         shutil.rmtree(output / stale, ignore_errors=True)
     for stale in ("summary.txt", "summary.json"):
         (output / stale).unlink(missing_ok=True)
-    summary: dict[str, Any] = {"schema_version": 1, "arenas": len(arenas), "programs": {}}
+    ignore_regex = load_ignore_regex(ignore_file or Path(__file__).resolve().parents[1] / ".coverage.ignore")
+    summary: dict[str, Any] = {
+        "schema_version": 1,
+        "arenas": len(arenas),
+        "ignore_regex": ignore_regex,
+        "programs": {},
+    }
     report_text = []
     for program_id in sorted(records):
         program_records = records[program_id]
@@ -178,7 +294,7 @@ def generate(build_dir: Path, output: Path) -> dict[str, Any]:
                 "report",
                 str(elf),
                 f"-instr-profile={profdata}",
-                f"-ignore-filename-regex={IGNORE_FILENAME}",
+                f"-ignore-filename-regex={ignore_regex}",
             ]
         ).stdout
         report_text.append(f"=== {program_id} ===\n{report}")
@@ -191,7 +307,7 @@ def generate(build_dir: Path, output: Path) -> dict[str, Any]:
                 f"-instr-profile={profdata}",
                 "-format=html",
                 f"-output-dir={html_dir}",
-                f"-ignore-filename-regex={IGNORE_FILENAME}",
+                f"-ignore-filename-regex={ignore_regex}",
                 "-show-line-counts-or-regions",
                 "-show-branches=count",
             ]
@@ -203,7 +319,7 @@ def generate(build_dir: Path, output: Path) -> dict[str, Any]:
                 str(elf),
                 f"-instr-profile={profdata}",
                 "-summary-only",
-                f"-ignore-filename-regex={IGNORE_FILENAME}",
+                f"-ignore-filename-regex={ignore_regex}",
             ]
         ).stdout
         summary["programs"][program_id] = {
@@ -212,8 +328,10 @@ def generate(build_dir: Path, output: Path) -> dict[str, Any]:
             "records": len(program_records),
             "counters": program_records[0].counter_count,
             "totals": totals(exported),
+            "file_rows": parse_report_files(report),
         }
     (output / "summary.txt").write_text("\n".join(report_text))
+    audit_coverage(summary, min_lines, min_branches, enforce)
     (output / "summary.json").write_text(json.dumps(summary, indent=2) + "\n")
     return summary
 
@@ -222,10 +340,21 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--build-dir", type=Path, required=True)
     parser.add_argument("--output", type=Path)
+    parser.add_argument("--ignore-file", type=Path)
+    parser.add_argument("--min-lines", type=float, default=92.0)
+    parser.add_argument("--min-branches", type=float, default=83.0)
+    parser.add_argument("--no-gate", action="store_true", help="Generate reports without enforcing thresholds")
     arguments = parser.parse_args()
     build_dir = arguments.build_dir.resolve()
     try:
-        summary = generate(build_dir, (arguments.output or build_dir / "coverage").resolve())
+        summary = generate(
+            build_dir,
+            (arguments.output or build_dir / "coverage").resolve(),
+            arguments.ignore_file,
+            arguments.min_lines,
+            arguments.min_branches,
+            not arguments.no_gate,
+        )
     except (
         CoverageError,
         OSError,
@@ -240,8 +369,10 @@ def main() -> int:
         lines = value["totals"].get("lines", {})
         branches = value["totals"].get("branches", {})
         print(
-            f"{program_id}: lines {lines.get('covered', 0)}/{lines.get('count', 0)}, "
-            f"branches {branches.get('covered', 0)}/{branches.get('count', 0)}"
+            f"{program_id}: lines {lines.get('percent', 0.0):.2f}% "
+            f"({lines.get('covered', 0)}/{lines.get('count', 0)}), "
+            f"branches {branches.get('percent', 0.0):.2f}% "
+            f"({branches.get('covered', 0)}/{branches.get('count', 0)})"
         )
     return 0
 

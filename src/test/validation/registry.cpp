@@ -58,6 +58,7 @@ using moss::test::validation::map_allocation_rollback;
 using moss::test::validation::map_preserves_existing;
 using moss::test::validation::map_rejects_blocks;
 using moss::test::validation::process_heap_rollback;
+using moss::test::validation::process_edges;
 using moss::test::validation::raw_user_copy_fixup;
 using moss::test::validation::resources;
 using moss::test::validation::timer_capacity;
@@ -79,6 +80,16 @@ void failing_case() { ut::expect(false); }
   hal::uart::TransmitGuard guard;
   arch::kernel_panic("validation intentional panic");
 }
+[[noreturn]] void fault_case() {
+  Event("fatal").str("case", active_case).str("kind", "panic").send();
+  // USER_MAX itself is outside every user mapping and outside the user range,
+  // so a same-EL write reaches the kernel fault diagnostic instead of uaccess.
+  volatile u64 *address = reinterpret_cast<volatile u64 *>(0x0000800000000000ULL);
+  *address = 1;
+  for (;;) {
+    arch::cpu_yield();
+  }
+}
 [[noreturn]] void timeout_case() {
   Event("fatal").str("case", active_case).str("kind", "timeout").send();
   for (;;) {
@@ -89,6 +100,11 @@ void failing_case() { ut::expect(false); }
 void declare_cases() {
   moss::test::validation::register_driver_cases();
   ut::register_suite("resources", [] { ut::register_test("cpu_memory", resources); });
+  moss::test::validation::register_fdt_cases();
+  moss::test::validation::register_internals_cases();
+  moss::test::validation::register_irqchip_cases();
+  moss::test::validation::register_page_table_cases();
+  moss::test::validation::register_syscall_cases();
   moss::test::validation::register_mm_cases();
   moss::test::validation::register_pfa_cases();
   moss::test::validation::register_heap_cases();
@@ -103,7 +119,10 @@ void declare_cases() {
     ut::register_test("capacity", timer_capacity);
   });
   moss::test::validation::register_scheduler_cases();
-  ut::register_suite("process", [] { ut::register_test("heap_rollback", process_heap_rollback); });
+  ut::register_suite("process", [] {
+    ut::register_test("heap_rollback", process_heap_rollback);
+    ut::register_test("edges", process_edges);
+  });
   ut::register_suite("users", [] {
     ut::register_test("syscall_values", empty_case);
     ut::register_test("user_ranges", empty_case);
@@ -317,6 +336,7 @@ void declare_cases() {
     ut::register_test("not_run", empty_case);
   });
   ut::register_suite("self.panic", [] { ut::register_test("intentional_panic", panic_case); });
+  ut::register_suite("self.fault", [] { ut::register_test("kernel_page_fault", fault_case); });
   ut::register_suite("self.timeout", [] { ut::register_test("intentional_timeout", timeout_case); });
 }
 

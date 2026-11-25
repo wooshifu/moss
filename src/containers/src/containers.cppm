@@ -1608,6 +1608,10 @@ private:
   }
 
   void move_page_to_empty(SlabPage *page) noexcept {
+    // A page becomes empty from partial, but a stale link in partial would let
+    // the same page be allocated and moved again later.
+    remove_page_from_list(partial_pages_, page);
+    remove_page_from_list(full_pages_, page);
     SlabPage *old_head = empty_pages_.load(moss::MemoryOrder::Relaxed);
     do {
       page->next.store(old_head, moss::MemoryOrder::Relaxed);

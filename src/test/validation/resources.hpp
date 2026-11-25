@@ -15,4 +15,5 @@ struct LifecycleResources {
 void *fd_table();
 void resources();
 void process_heap_rollback();
+void process_edges();
 } // namespace moss::test::validation

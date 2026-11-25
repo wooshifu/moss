@@ -241,6 +241,97 @@ void console_ring() {
   ut::expect(moss::boot::g_gic_controller == controller);
   ut::expect(moss::kernel::timer::TimerSubsystem::instance().clocksource().frequency_hz() == clock);
 }
+class FailingPowerDriver final : public Driver {
+public:
+  FailingPowerDriver() noexcept : Driver("failing-power", DeviceType::UART, HardwareId::Pl011, "test,uart") {}
+  VoidResult probe(Device & /*device*/, BindMode /*mode*/) noexcept override { return VoidResult{}; }
+  void remove(Device & /*device*/) noexcept override {}
+  VoidResult suspend(Device & /*device*/) noexcept override { return VoidResult{ErrorCode::DeviceError}; }
+};
+
+struct ListedDevices {
+  unsigned count;
+};
+
+void list_callback(const Device &device, void *context) noexcept {
+  auto *listed = static_cast<ListedDevices *>(context);
+  if (device.state() == DeviceState::Active) {
+    ++listed->count;
+  }
+}
+
+void surface_edges() {
+  auto parent = device("parent");
+  auto child = device("child");
+  if (!ut::expect(static_cast<bool>(parent) && static_cast<bool>(child))) {
+    return;
+  }
+  DeviceResource first{};
+  first.memory = {.start = 0x1000, .end = 0x2000, .mapped_addr = 0};
+  DeviceResource second{};
+  second.memory = {.start = 0x3000, .end = 0x4000, .mapped_addr = 0};
+  ut::expect(parent->add_resource(first));
+  ut::expect(parent->add_resource(second));
+  ut::expect(parent->get_resource(DeviceResource::Memory).has_value());
+  ut::expect(parent->get_resource(DeviceResource::Memory, 1).has_value());
+  ut::expect(!parent->get_resource(DeviceResource::Memory, 2).has_value());
+  ut::expect(!parent->get_resource(DeviceResource::IRQ).has_value());
+  parent->add_property("clock", "1000000", 7);
+  ut::expect(parent->get_property("clock") != nullptr);
+  ut::expect(parent->get_property("missing") == nullptr);
+  parent->add_child(child.get());
+  ut::expect(child->parent() == parent.get() && parent->parent() == nullptr);
+  parent->update_access();
+  ut::expect(parent->get_statistics().access_count > 0);
+
+  Counts counts;
+  DeviceManager manager;
+  auto parent_driver = shared_ptr<Driver>::try_make<MockDriver>(allocate, counts, manager);
+  if (!ut::expect(static_cast<bool>(parent_driver))) {
+    return;
+  }
+  ut::expect(manager.register_driver(parent_driver).has_value());
+  auto parent_id = manager.register_device(parent);
+  auto child_id = manager.register_device(child);
+  if (!ut::expect(parent_id.has_value() && child_id.has_value())) {
+    return;
+  }
+  ListedDevices listed{0};
+  manager.list_devices(list_callback, &listed);
+  ut::expect(listed.count >= 2);
+  ut::expect(!static_cast<bool>(manager.get_device_by_name(nullptr)));
+
+  // Publishing through a heap-backed registry must fail cleanly under pressure.
+  {
+    auto pressured_device = device("pressured");
+    Counts pressured_counts;
+    auto pressured_driver = shared_ptr<Driver>::try_make<MockDriver>(allocate, pressured_counts, manager);
+    if (static_cast<bool>(pressured_device) && static_cast<bool>(pressured_driver)) {
+      HeapPressure pressure;
+      if (ut::expect(pressure.acquire(sizeof(void *)))) {
+        ut::expect(!manager.register_device(pressured_device).has_value());
+        ut::expect(!manager.register_driver(pressured_driver).has_value());
+      }
+      ut::expect(pressured_device->state() == DeviceState::Uninitialized);
+    }
+  }
+
+  auto failing = shared_ptr<Driver>::try_make<FailingPowerDriver>(allocate);
+  auto failing_device = device("failing-power-device");
+  if (ut::expect(static_cast<bool>(failing) && static_cast<bool>(failing_device))) {
+    DeviceManager power_manager;
+    ut::expect(power_manager.register_driver(failing).has_value());
+    auto power_id = power_manager.register_device(failing_device);
+    if (ut::expect(power_id.has_value())) {
+      ut::expect(failing_device->state() == DeviceState::Active);
+      ut::expect(!power_manager.suspend_all_devices().has_value());
+      ut::expect(failing_device->state() == DeviceState::Active);
+    }
+  }
+
+  ut::expect(manager.unregister_device(*parent_id).has_value());
+  ut::expect(manager.unregister_device(*child_id).has_value());
+}
 } // namespace driver_tests
 
 void register_driver_cases() {
@@ -251,6 +342,7 @@ void register_driver_cases() {
     ut::register_test("registration_rollback", driver_tests::registration_rollback);
     ut::register_test("irq_registration_rollback", driver_tests::irq_registration_rollback);
     ut::register_test("console_ring", driver_tests::console_ring);
+    ut::register_test("surface_edges", driver_tests::surface_edges);
   });
 }
 } // namespace moss::test::validation

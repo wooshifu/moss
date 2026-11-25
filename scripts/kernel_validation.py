@@ -46,6 +46,7 @@ CATALOG = {
         "registration_rollback",
         "irq_registration_rollback",
         "console_ring",
+        "surface_edges",
     ],
     "resources": ["cpu_memory"],
     "mm": [
@@ -59,6 +60,86 @@ CATALOG = {
     ],
     "pfa": ["release_contract", "exhaustion"],
     "heap": ["alignment", "invalid_requests", "release_contract", "reuse", "exhaustion"],
+    "fdt": [
+        "missing_nodes",
+        "cpu_topology",
+        "cpu_rejections",
+        "memory_layout",
+        "chosen_uart",
+        "uart_rejections",
+        "interrupt_controllers",
+        "reserved_memory",
+        "interrupt_sources",
+        "order_cpu_topology",
+        "matrix_edges",
+        "intc_edges",
+        "parser_edges",
+    ],
+    "internals": [
+        "arch_primitives",
+        "containers_extended",
+        "logging_formats",
+        "logging_ring_and_chains",
+        "types_errors",
+        "memory_paths",
+        "memory_manager_surfaces",
+        "uart_formatting",
+        "initramfs_edges",
+        "kernel_elf_edges",
+        "boot_edges",
+        "kernel_entry_paths",
+    ],
+    "irqchip": ["gicv2", "gicv3", "bcm2836", "helpers", "generic_controller", "ipi"],
+    "page_table": [
+        "invalid_paths",
+        "free_tree",
+        "clone",
+        "faults",
+        "mapping_edges",
+        "allocation_failures",
+        "allocation_edges",
+        "block_mapping_paths",
+    ],
+    "syscall_contracts": [
+        "basic",
+        "handles",
+        "filesystem",
+        "memory",
+        "scheduling",
+        "time_signal",
+        "ipc",
+        "dispatcher",
+        "null_contexts",
+        "missing_managers",
+        "partial_context_matrix",
+        "allocation_failures",
+        "argument_matrix",
+        "filesystem_syscall_paths",
+        "fork_domain_errors",
+        "control_ipc_error_paths",
+        "environment_matrix",
+        "fork_allocation_matrix",
+        "memory_allocation_matrix",
+        "process_paths",
+        "edge_paths",
+        "ipc_edge_paths",
+        "domain_spawn_edges",
+        "ipc_cancel_paths",
+        "code_capability_paths",
+        "domain_spawn_allocation_matrix",
+        "failure_paths",
+        "control_edges",
+        "missing_process_edges",
+        "kernel_entry_edges",
+        "fork_page_failure_matrix",
+        "profile_budget_edges",
+        "kill_group_edges",
+        "dispatcher_edges",
+        "ipc_branch_paths",
+        "capability_exhaustion_paths",
+        "syscall_state_edges",
+        "syscall_state_paths",
+    ],
     "containers": [
         "queue_reuse",
         "capability_process_handles",
@@ -67,6 +148,12 @@ CATALOG = {
         "map_ownership",
         "held_reader",
         "reentry",
+        "atomic_orders",
+        "wait_queue",
+        "slab_reuse",
+        "capability_limits",
+        "resource_edges",
+        "map_and_wait_edges",
     ],
     "containers.smp": ["interleaving"],
     "vfs.smp": ["shared_references"],
@@ -92,12 +179,18 @@ CATALOG = {
         "fd_boundaries",
         "pipe_reuse",
         "pipe_fd_rollback",
+        "pipe_edges",
+        "devfs_edges",
         "directory_capacity",
         "writable_lifecycle",
         "rename_lifecycle",
         "rename_boundaries",
         "access_permissions",
         "working_directory_lifecycle",
+        "syscall_edges",
+        "syscall_error_paths",
+        "ramfs_errors",
+        "pool_exhaustion",
     ],
     "timers": ["clocksource_high_frequency", "contracts", "dispatch", "capacity"],
     "scheduler": [
@@ -120,8 +213,20 @@ CATALOG = {
         "ipc_deadline_tightening",
         "ipc_call_graph_limits",
         "migration_current_owner",
+        "runqueue_contracts",
+        "idle_contracts",
+        "scheduler_lifecycle",
+        "process_surfaces",
+        "load_balancer_contracts",
+        "runqueue_edges",
+        "budget_edges",
+        "ipc_cycle_and_tree_edges",
+        "tick_edge_paths",
+        "wake_and_migrate_edges",
+        "scheduler_state_matrix",
+        "cfs_tree_internal_edges",
     ],
-    "process": ["heap_rollback"],
+    "process": ["heap_rollback", "edges"],
     "users": [
         "syscall_values",
         "user_ranges",
@@ -330,6 +435,7 @@ CATALOG = {
     "self": ["accounting_registration", "registry_limits", "cleanup_guards", "heap_bounds"],
     "self.fail": ["intentional_assertion", "not_run"],
     "self.panic": ["intentional_panic"],
+    "self.fault": ["kernel_page_fault"],
     "self.timeout": ["intentional_timeout"],
     **{
         f"bench.{name}": [f"bench.{name}"]
@@ -352,10 +458,15 @@ CATALOG = {
 }
 # Global periodic scanning now checks CPU0 ownership;
 # older catalogs do not prove this contract and are not matching baselines.
-CATALOG_VERSION = 14
+CATALOG_VERSION = 93
 FUNCTIONAL = [
     "drivers",
     "resources",
+    "fdt",
+    "internals",
+    "irqchip",
+    "page_table",
+    "syscall_contracts",
     "mm",
     "mm.permissions",
     "mm.transactions",
@@ -679,19 +790,33 @@ class Protocol:
     def outcome(self, termination: str | None, reason: str | None, serial: bytes) -> tuple[str, str]:
         if reason == "cancelled":
             return "error", "cancelled"
-        expected = {"self.fail": "assertion", "self.panic": "panic", "self.timeout": "timeout"}.get(
-            self.workload, "pass"
-        )
+        expected = {
+            "self.fail": "assertion",
+            "self.panic": "panic",
+            "self.fault": "fault",
+            "self.timeout": "timeout",
+        }.get(self.workload, "pass")
         panic_lines = [line for line in serial.splitlines() if b"[P]" in line or b"KERNEL PANIC:" in line]
-        if any(b"validation intentional panic" not in line for line in panic_lines):
+        if expected != "fault" and any(b"validation intentional panic" not in line for line in panic_lines):
             return "error", "unexpected_kernel_panic"
-        if expected != "panic" and panic_lines:
+        if expected not in ("panic", "fault") and panic_lines:
             return "error", "unexpected_kernel_panic"
-        if any(
+        if expected != "fault" and any(
             marker in serial
             for marker in (b"KERNEL PAGE FAULT", b"HALTED", b"RISC-V 64 EXCEPTION", b"UNHANDLED USER EXCEPTION")
         ):
             return "error", "unexpected_kernel_panic"
+        if (
+            expected == "fault"
+            and self.fatal == "panic"
+            and self.active == self.expected[0]
+            and any(
+                marker in serial
+                for marker in (b"KERNEL PAGE FAULT", b"UNHANDLED EXCEPTION", b"KERNEL PANIC", b"HALTED")
+            )
+            and reason == "case_timeout"
+        ):
+            return "passed", "fault"
         if (
             expected == "panic"
             and self.fatal == "panic"
@@ -703,7 +828,9 @@ class Protocol:
             return "passed", "panic"
         if expected == "timeout" and self.fatal == "timeout" and reason == "case_timeout":
             return "passed", "timeout"
-        if any(marker in serial for marker in (b"[P]", b"KERNEL PAGE FAULT", b"HALTED", b"RISC-V 64 EXCEPTION")):
+        if expected != "fault" and any(
+            marker in serial for marker in (b"[P]", b"KERNEL PAGE FAULT", b"HALTED", b"RISC-V 64 EXCEPTION")
+        ):
             return "error", "unexpected_kernel_panic"
         if reason:
             return "error", reason

@@ -43,7 +43,7 @@ uv run cmake --workflow --preset x64-coverage
 uv run cmake --workflow --preset riscv64-coverage
 ```
 
-These presets use RelWithDebInfo, instrument the kernel and mlibc runtime programs, and write `build/<preset>/coverage/summary.txt`, `summary.json` and HTML under `coverage/html/<program>/`. `uv run build.py` skips coverage unless `--preset <arch>-coverage` is passed. The first version has no percentage gate.
+These presets use RelWithDebInfo, instrument the kernel and mlibc runtime programs, and write `build/<preset>/coverage/summary.txt`, `summary.json` and HTML under `coverage/html/<program>/`. `uv run build.py` skips coverage unless `--preset <arch>-coverage` is passed. The ARM64 gate requires 92% kernel lines, 83% kernel branches and per-file branch floors (83.5% `syscall_table.cpp`, 83.5% `process-scheduler.cppm`, 71% `control_ipc.cpp`); x64 and RISC-V only publish the report.
 - `-DMOSS_BUILD_TESTS=OFF` omits the validation image and its userspace programs.
 
 The quality gate must pass with zero warnings before any commit:

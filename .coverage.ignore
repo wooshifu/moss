@@ -1,0 +1,29 @@
+# Explicit coverage scope for hard-to-test or low-value kernel paths.
+# Paths are repository-relative and interpreted by scripts/coverage.py.
+#
+# Boot, firmware, interrupt-controller and architecture entry code is
+# exercised by hardware/QEMU handoff paths that cannot be made deterministic
+# in the normal unit-test image.
+src/aal/src/arch.cppm
+src/aal/src/panic.cpp
+src/boot/src/arch/arm64/boot_impl.cpp
+src/boot/src/boot.cpp
+src/drivers/irqchip/src/irqchip.cppm
+src/drivers/serial/src/uart.cppm
+src/hal/mmu/src/mmu_hal.cppm
+src/interrupts/src/interrupts.cppm
+src/interrupts/src/ipi_hardware_simple.cpp
+src/interrupts/src/ipi_simple.cpp
+src/kernel/src/kernel-main.cppm
+src/kernel/src/kernel_main.cpp
+src/kernel/src/runtime_support.cpp
+# Memory-management declarations/wrappers whose implementations are not
+# linked into this kernel image.
+src/mm/src/mm-interface.cppm
+src/mm/src/mm-policy.cppm
+src/mm/src/mm-reclaim.cppm
+src/mm/src/mm_interface_impl.cpp
+# Fault/panic entry paths intentionally terminate or halt; a passing test
+# cannot execute their non-returning bodies.
+src/mm/src/page_fault.cpp
+src/platform/src/platform.cppm

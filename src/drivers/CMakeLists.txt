@@ -26,10 +26,6 @@ target_link_libraries(
 # Keep the former in-kernel matching/callback framework available for its lifecycle regressions without making it part
 # of the production image.
 add_library(moss_drivers_validation OBJECT EXCLUDE_FROM_ALL)
-if(MOSS_COVERAGE)
-    # Test-only fixture; keep it out of the coverage image and report.
-    target_compile_options(moss_drivers_validation PRIVATE -fno-profile-instr-generate -fno-coverage-mapping)
-endif()
 target_sources(
     moss_drivers_validation
     PUBLIC FILE_SET CXX_MODULES FILES src/drivers.cppm
